@@ -1,0 +1,3 @@
+# Cargo build artifacts
+gui-tauri/src-tauri/target/
+gui-tauri/src-tauri/target2/

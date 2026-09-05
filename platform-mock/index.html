@@ -1,0 +1,1095 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TAA 平台模拟器</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f6f7f9; --panel:#fff; --text:#1f2937; --muted:#6b7280; --ok:#0f8f4f; --bad:#c2410c; --line:#e5e7eb; --code:#111827; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#0b1220; --panel:#111827; --text:#e5e7eb; --muted:#9ca3af; --line:#243244; --code:#f9fafb; } }
+    @media (max-width: 960px) { .two-col-layout, .three-col-layout { grid-template-columns: 1fr !important; } }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+    main { width: 80%; margin: 0 auto; padding: 32px 20px; }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    h2 { margin: 0 0 10px; }
+    h3 { margin: 16px 0 8px; font-size: 16px; }
+    p { line-height: 1.65; }
+    .muted { color: var(--muted); }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:16px; margin: 20px 0; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:18px; box-shadow: 0 8px 24px rgba(0,0,0,.06); margin-bottom:16px; }
+    .card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; }
+    .card-head h2 { margin:0; }
+    .card-note { margin:0; color:var(--muted); line-height:1.55; }
+    .card-compact { display:flex; flex-direction:column; gap:12px; min-height:120px; }
+    .status { display:flex; align-items:center; gap:12px; font-size:20px; font-weight:700; }
+    .dot { width:14px; height:14px; border-radius:999px; background:#9ca3af; }
+    .dot.ok { background:var(--ok); box-shadow:0 0 0 6px rgba(15,143,79,.12); }
+    .dot.bad { background:var(--bad); box-shadow:0 0 0 6px rgba(194,65,12,.12); }
+    dl { display:grid; grid-template-columns: 140px 1fr; gap:10px 14px; margin:16px 0 0; }
+    dt { color:var(--muted); }
+    dd { margin:0; word-break:break-all; }
+    code, pre { background: rgba(127,127,127,.12); color:var(--code); border-radius:8px; }
+    code { padding:2px 6px; }
+    pre { padding:14px; overflow-x:auto; line-height:1.5; }
+    button { border:0; border-radius:10px; padding:10px 14px; cursor:pointer; background:#2563eb; color:white; font-weight:650; }
+    button.secondary { background:#64748b; }
+    button.success { background:var(--ok); }
+    button.danger { background:var(--bad); }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
+    input, textarea, select { width:100%; padding:9px; border:1px solid var(--line); border-radius:8px; background:transparent; color:var(--text); }
+    textarea { min-height:120px; padding:12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow:auto; resize:vertical; }
+    label { display:block; margin:10px 0 6px; font-weight:650; }
+    .taa-addr-bar { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px 18px; margin-bottom:20px; display:flex; align-items:center; gap:12px; }
+    .taa-addr-bar label { margin:0; white-space:nowrap; }
+    .taa-addr-bar input { flex:1; margin:0; }
+    .test-result { margin-top:10px; padding:10px; border-radius:8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:13px; white-space:pre-wrap; word-break:break-all; display:none; }
+    .test-result.pass { background:rgba(15,143,79,.1); border:1px solid rgba(15,143,79,.3); color:var(--ok); display:block; }
+    .test-result.fail { background:rgba(194,65,12,.1); border:1px solid rgba(194,65,12,.3); color:var(--bad); display:block; }
+    .test-result.running { background:rgba(37,99,235,.1); border:1px solid rgba(37,99,235,.3); color:#2563eb; display:block; }
+    .batch-results { margin-top:16px; }
+    .batch-item { padding:8px 12px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px; font-size:14px; }
+    .batch-item .badge { display:inline-block; width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+    .batch-item .badge.ok { background:var(--ok); }
+    .batch-item .badge.bad { background:var(--bad); }
+    .batch-item .badge.pending { background:#9ca3af; }
+    .batch-item .badge.running { background:#2563eb; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.4; } }
+    .result-panel { display:flex; flex-direction:column; gap:8px; }
+    .result-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    .result-state { display:inline-flex; align-items:center; gap:8px; font-size:14px; font-weight:700; }
+    .result-state::before { content:''; width:8px; height:8px; border-radius:999px; background:#9ca3af; display:inline-block; }
+    .test-result.pass .result-state::before { background:var(--ok); }
+    .test-result.fail .result-state::before { background:var(--bad); }
+    .test-result.running .result-state::before { background:#2563eb; }
+    .result-note { color:var(--muted); font-size:13px; line-height:1.5; }
+    .result-body-btn { padding:6px 10px; font-size:12px; border-radius:8px; }
+    .modal-overlay { position:fixed; inset:0; background:rgba(15,23,42,.58); display:none; align-items:center; justify-content:center; padding:20px; z-index:1000; }
+    .modal-overlay.open { display:flex; }
+    .modal { width:min(980px, 100%); max-height:min(86vh, 900px); background:var(--panel); border:1px solid var(--line); border-radius:16px; box-shadow:0 24px 80px rgba(0,0,0,.3); display:flex; flex-direction:column; overflow:hidden; }
+    .modal-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:16px 18px; border-bottom:1px solid var(--line); }
+    .modal-head h3 { margin:0; font-size:16px; }
+    .modal-actions { display:flex; gap:8px; }
+    .modal-body { margin:0; padding:18px; overflow:auto; white-space:pre-wrap; word-break:break-word; line-height:1.6; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:13px; }
+    .modal-backdrop { position:absolute; inset:0; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>TAA 平台模拟器</h1>
+  <p class="muted">用于本地联调 TAA 全部接口。上半部分模拟 <strong>平台接收</strong> TAA 主动上报的请求；下半部分模拟 <strong>平台下发</strong> 请求到 TAA，测试所有接口连通性。</p>
+
+  <div class="taa-addr-bar">
+    <label for="taaAddr">TAA 服务地址</label>
+    <input id="taaAddr" value="" placeholder="自动检测中...">
+    <button onclick="runAllTests()">一键测试全部接口</button>
+    <span id="taaProxyBadge" class="muted" style="font-size:13px"></span>
+  </div>
+
+  <!-- ─── 平台接收 + 获取远程证明报告 ─── -->
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; margin:20px 0 12px; flex-wrap:wrap;">
+    <h2 style="margin:0;">环境检查</h2>
+    <!-- 连通性检查：红绿灯 + 检查按钮 + 可展开 JSON 预览 -->
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <span id="healthDot" class="dot" title="未检查"></span>
+      <span id="healthLabel" class="muted" style="font-size:13px;">未检查</span>
+      <button onclick="testHealth()" style="padding:5px 12px; font-size:13px;">检查连通性</button>
+      <button onclick="toggleHealthDetail()" class="secondary" style="padding:5px 12px; font-size:13px;">查看结果</button>
+    </div>
+  </div>
+  <div id="healthDetail" style="display:none; margin-bottom:12px;">
+    <pre id="healthDetailContent" style="background:rgba(127,127,127,.08); padding:12px; border-radius:10px; font-size:13px; max-height:300px; overflow:auto; white-space:pre-wrap; word-break:break-all; margin:0;"></pre>
+  </div>
+
+  <div class="two-col-layout" style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-bottom:16px;">
+    <!-- 左列：平台注册 -->
+    <div style="display:flex; flex-direction:column; gap:16px;">
+      <!-- 平台注册 -->
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>平台注册</h2>
+            <div class="status" style="margin-top:10px;"><span id="dot" class="dot"></span><span id="statusText">等待 TAA 注册请求</span></div>
+          </div>
+          <button id="registerBodyBtn" class="secondary" onclick="openRegisterBodyModal()" disabled>查看返回</button>
+        </div>
+        <div class="card-compact">
+          <p id="registerSummary" class="card-note">完整返回体仅在弹窗中展示。</p>
+          <div class="actions">
+            <button onclick="refreshStatus()">刷新状态</button>
+            <button class="secondary" onclick="resetStatus()">清空接收记录</button>
+          </div>
+          <p class="muted" style="margin:0;font-size:12px;">最后刷新：<span id="lastRefresh">-</span></p>
+        </div>
+      </section>
+    </div>
+
+    <!-- 右列：远程报告证明获取 -->
+    <section class="card" id="card-attestation" style="display:flex; flex-direction:column;">
+      <div class="card-head">
+        <div>
+          <h2>/v1/taa/getAttestation — 获取远程证明报告</h2>
+          <p class="card-note">获取远程证明报告并保存为本地文件。</p>
+        </div>
+      </div>
+      <label for="attestRequestId">requestId</label>
+      <input id="attestRequestId" value="req-mock-attest-001">
+      <div class="actions">
+        <button onclick="testGetAttestation()">发送测试</button>
+        <button id="saveReportBtn" class="success" onclick="saveAttestationReport()" disabled>保存报告文件</button>
+      </div>
+      <div id="attestationResult" class="test-result"></div>
+    </section>
+  </div>
+
+  <!-- ─── 训练流程（平台 → TAA）接口测试 ─── -->
+  <h2>训练流程</h2>
+  <p class="muted">以下各卡片模拟平台向 TAA 发送请求，用于验证各接口的连通性和参数校验。点击"发送测试"即可使用模拟数据调用 TAA 对应接口。</p>
+
+  <!-- ─── 文件上传 + 资源下发（左）| 训练结果上报（中）| 导出结果（右） ─── -->
+  <div class="three-col-layout" style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:16px; margin-bottom:16px;">
+    <!-- 左列：文件上传 + 资源下发（上下排列） -->
+    <div style="display:flex; flex-direction:column; gap:16px;">
+      <!-- 文件上传 -->
+      <section class="card">
+        <h2>① 文件上传（生成 resourceUrl）</h2>
+        <p class="muted">上传资源文件，服务器保存到本地并生成可访问的 URL。</p>
+        <label for="uploadFile">选择文件</label>
+        <input id="uploadFile" type="file">
+        <div class="actions">
+          <button onclick="uploadFile()">上传文件</button>
+        </div>
+        <div id="uploadResult" class="test-result"></div>
+        <div id="uploadedUrl" style="margin-top:10px; display:none;">
+          <label>生成的 resourceUrl（点击复制）：</label>
+          <input id="uploadedUrlInput" readonly onclick="this.select(); document.execCommand('copy');" style="cursor:pointer; background:rgba(37,99,235,.05);">
+        </div>
+      </section>
+
+      <!-- 数据下发 -->
+      <section class="card" id="card-import">
+        <h2>② /v1/taa/import — 下发数据</h2>
+        <label for="importResourceUrl">resourceUrl</label>
+        <input id="importResourceUrl" value="http://example.com/data.tar.gz">
+        <label for="importRequestId">requestId</label>
+        <input id="importRequestId" value="req-mock-import-001">
+        <label for="importTaskId">taskId（可选）</label>
+        <input id="importTaskId" value="">
+        <div class="actions">
+          <button onclick="testImport()">发送测试</button>
+        </div>
+        <div id="importResult" class="test-result"></div>
+      </section>
+
+      <!-- 模型下发 -->
+      <section class="card" id="card-importModel">
+        <h2>② /v1/taa/importModel — 下发模型</h2>
+        <label for="importModelResourceUrl">resourceUrl</label>
+        <input id="importModelResourceUrl" value="http://example.com/model.tar.gz">
+        <label for="importModelRequestId">requestId</label>
+        <input id="importModelRequestId" value="req-mock-importModel-001">
+        <label for="importModelTaskId">taskId（可选）</label>
+        <input id="importModelTaskId" value="">
+        <label for="importModelPublicKey">publicKey（留空=不传）</label>
+        <textarea id="importModelPublicKey" placeholder="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"></textarea>
+        <div class="actions">
+          <button onclick="testImportModel()">发送测试</button>
+        </div>
+        <div id="importModelResult" class="test-result"></div>
+      </section>
+
+      <!-- 资源信息获取 -->
+      <section class="card" id="card-resourceInfo">
+        <h2>/v1/taa/getResourceInfo — 资源信息获取</h2>
+        <p class="muted">传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理。</p>
+        <label for="resourceInfoUrl">resourceUrl</label>
+        <input id="resourceInfoUrl" value="http://example.com/data.tar.gz">
+        <div class="actions">
+          <button onclick="testGetResourceInfo()">发送测试</button>
+        </div>
+        <div id="resourceInfoResult" class="test-result"></div>
+      </section>
+    </div>
+
+    <!-- 中列：训练结果上报 + 模型导入结果上报 -->
+    <div style="display:flex; flex-direction:column; gap:16px;">
+    <section class="card" style="display:flex; flex-direction:column;">
+      <div class="card-head">
+        <div>
+          <h2>③ 训练结果上报</h2>
+          <div class="status" style="margin-top:10px;"><span id="reportResDot" class="dot"></span><span id="reportResStatusText">等待训练结果上报</span></div>
+        </div>
+        <button id="reportResBodyBtn" class="secondary" onclick="openReportResBodyModal()" disabled>查看返回</button>
+      </div>
+      <div class="card-compact" style="flex:1; min-height:120px;">
+        <div class="status" style="font-size:16px;"><span id="reportResBodyDot" class="dot"></span><span id="reportResBodyStatus">等待训练结果上报</span></div>
+        <p id="reportResSummary" class="card-note">完整返回体只在弹窗中展示。</p>
+        <p id="reportResBodySummary" class="muted" style="margin:0;font-size:12px;">-</p>
+        <div class="actions">
+          <button onclick="refreshReportResStatus()">刷新上报状态</button>
+          <button class="secondary" onclick="resetReportResStatus()">清空上报记录</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 模型导入结果上报 -->
+    <section class="card" style="display:flex; flex-direction:column;">
+      <div class="card-head">
+        <div>
+          <h2>/v1/taa/reportModelImport — 模型导入结果上报</h2>
+          <div class="status" style="margin-top:10px;"><span id="reportModelImportDot" class="dot"></span><span id="reportModelImportStatusText">等待模型导入结果上报</span></div>
+        </div>
+        <button id="reportModelImportBodyBtn" class="secondary" onclick="openReportModelImportBodyModal()" disabled>查看返回</button>
+      </div>
+      <div class="card-compact" style="flex:1; min-height:120px;">
+        <div class="status" style="font-size:16px;"><span id="reportModelImportBodyDot" class="dot"></span><span id="reportModelImportBodyStatus">等待模型导入结果上报</span></div>
+        <p id="reportModelImportSummary" class="card-note">完整返回体只在弹窗中展示。</p>
+        <p id="reportModelImportBodySummary" class="muted" style="margin:0;font-size:12px;">-</p>
+        <div class="actions">
+          <button onclick="refreshReportModelImportStatus()">刷新上报状态</button>
+          <button class="secondary" onclick="resetReportModelImportStatus()">清空上报记录</button>
+        </div>
+      </div>
+    </section>
+    </div>
+
+    <!-- 右列：导出结果（紧凑）+ 阶段切换（上下排列） -->
+    <div style="display:flex; flex-direction:column; gap:16px;">
+      <section class="card" id="card-export">
+        <h2>④ /v1/taa/export — 导出结果</h2>
+        <label for="exportTaskId">taskId</label>
+        <input id="exportTaskId" value="task-mock-001">
+        <label for="exportPublicKey">publicKey（phase 1/2 必填，phase 3 留空）</label>
+        <input id="exportPublicKey" value="" placeholder="可复用上方 importModelPublicKey">
+        <div class="actions">
+          <button onclick="testExport()">发送测试</button>
+        </div>
+        <div id="exportResult" class="test-result"></div>
+      </section>
+
+      <!-- 阶段切换 -->
+      <section class="card" id="card-switch">
+        <h2>/v1/taa/switch — 阶段切换</h2>
+        <label for="switchPhase">phase（1=调试, 2=测试, 3=正式训练, 4=推理）</label>
+        <input id="switchPhase" value="2">
+        <div class="actions">
+          <button onclick="testSwitch()">发送测试</button>
+        </div>
+        <div id="switchResult" class="test-result"></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- 一键测试结果 -->
+  <section class="card" id="card-batch" style="display:none">
+    <h2>一键测试结果</h2>
+    <div id="batchResults" class="batch-results"></div>
+  </section>
+
+  <!-- TAA 实时日志 -->
+  <h2>TAA 实时日志</h2>
+  <section class="card">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
+      <div class="status" style="font-size:16px;">
+        <span id="logStatusDot" class="dot"></span>
+        <span id="logStatusText">等待日志...</span>
+      </div>
+      <span class="muted" id="logOpBadge" style="font-size:13px; padding:2px 8px; border-radius:6px; background:rgba(127,127,127,.12);">idle</span>
+    </div>
+    <div style="display:flex; gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
+      <label style="margin:0; font-size:13px;">自动刷新</label>
+      <select id="logInterval" style="width:auto; padding:4px 8px;" onchange="updateLogInterval()">
+        <option value="1000">1秒</option>
+        <option value="3000" selected>3秒</option>
+        <option value="5000">5秒</option>
+        <option value="10000">10秒</option>
+      </select>
+      <label style="margin:0; font-size:13px;">级别过滤</label>
+      <select id="logLevelFilter" style="width:auto; padding:4px 8px;" onchange="filterLogs()">
+        <option value="">全部</option>
+        <option value="info">info</option>
+        <option value="warn">warn</option>
+        <option value="error">error</option>
+      </select>
+      <label style="margin:0; font-size:13px;">组件过滤</label>
+      <select id="logComponentFilter" style="width:auto; padding:4px 8px;" onchange="filterLogs()">
+        <option value="">全部</option>
+        <option value="import">import</option>
+        <option value="decrypt">decrypt</option>
+        <option value="extract">extract</option>
+        <option value="debug">debug</option>
+        <option value="audit">audit</option>
+        <option value="report">report</option>
+      </select>
+      <button onclick="fetchLogs()" style="padding:6px 12px; font-size:13px;">刷新</button>
+      <button class="secondary" id="logPauseBtn" onclick="toggleLogPause()" style="padding:6px 12px; font-size:13px;">暂停</button>
+      <button class="danger" onclick="clearLogs()" style="padding:6px 12px; font-size:13px;">清空</button>
+      <span class="muted" id="logCount" style="font-size:13px;">0 条日志</span>
+    </div>
+    <pre id="logOutput" style="background:#0b1220; color:#e5e7eb; min-height:300px; max-height:600px; overflow-y:auto; font-size:13px; line-height:1.6; padding:14px; border-radius:10px; margin:0; white-space:pre-wrap; word-break:break-all;"></pre>
+  </section>
+
+</main>
+<div id="bodyModal" class="modal-overlay" aria-hidden="true" onclick="if (event.target === this) closeBodyModal();">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="bodyModalTitle">
+    <div class="modal-head">
+      <h3 id="bodyModalTitle">返回 body</h3>
+      <div class="modal-actions">
+        <button class="secondary" onclick="copyBodyModal()">复制</button>
+        <button class="secondary" onclick="closeBodyModal()">关闭</button>
+      </div>
+    </div>
+    <pre id="bodyModalContent" class="modal-body"></pre>
+  </div>
+</div>
+<script>
+// ── 工具函数 ──────────────────────────────────
+function text(id, value) { document.getElementById(id).textContent = value || '-'; }
+function area(id, value) { document.getElementById(id).value = value || ''; }
+function getTaaAddr() { return document.getElementById('taaAddr').value.replace(/\/+$/, ''); }
+function genId(prefix) { return prefix + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6); }
+
+const resultBodies = {};
+let lastRegisterData = null;
+let lastReportResData = null;
+let lastReportModelImportData = null;
+let currentModalBody = '';
+
+function formatModalBody(body) {
+  if (body == null || body === '') return '暂无内容';
+  if (typeof body === 'string') return body;
+  try {
+    return JSON.stringify(body, null, 2);
+  } catch {
+    return String(body);
+  }
+}
+
+function openBodyModal(title, body) {
+  currentModalBody = formatModalBody(body);
+  document.getElementById('bodyModalTitle').textContent = title;
+  document.getElementById('bodyModalContent').textContent = currentModalBody;
+  const modal = document.getElementById('bodyModal');
+  modal.classList.add('open');
+  modal.setAttribute('aria-hidden', 'false');
+}
+
+function closeBodyModal() {
+  const modal = document.getElementById('bodyModal');
+  modal.classList.remove('open');
+  modal.setAttribute('aria-hidden', 'true');
+}
+
+async function copyBodyModal() {
+  if (!currentModalBody) return;
+  try {
+    await navigator.clipboard.writeText(currentModalBody);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = currentModalBody;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+}
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeBodyModal();
+});
+
+const RESULT_TITLES = {
+  uploadResult: '文件上传返回',
+  importResult: '/v1/taa/import 返回',
+  importModelResult: '/v1/taa/importModel 返回',
+  resourceInfoResult: '/v1/taa/getResourceInfo 返回',
+  switchResult: '/v1/taa/switch 返回',
+  exportResult: '/v1/taa/export 返回',
+  attestationResult: '/v1/taa/getAttestation 返回',
+};
+
+function openStoredResult(elId) {
+  openBodyModal(RESULT_TITLES[elId] || '返回 body', resultBodies[elId]);
+}
+
+function showResult(elId, ok, text) {
+  const el = document.getElementById(elId);
+  resultBodies[elId] = text || '';
+  el.className = 'test-result ' + (ok ? 'pass' : 'fail');
+  el.innerHTML = '';
+  const row = document.createElement('div');
+  row.className = 'result-row';
+  const state = document.createElement('span');
+  state.className = 'result-state';
+  state.textContent = ok ? '请求完成' : '请求失败';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'secondary result-body-btn';
+  btn.textContent = '查看返回';
+  btn.onclick = () => openStoredResult(elId);
+  btn.disabled = !text;
+  row.appendChild(state);
+  row.appendChild(btn);
+  const note = document.createElement('div');
+  note.className = 'result-note';
+  note.textContent = text ? '完整返回已收起到弹窗中。' : '暂无返回内容。';
+  el.appendChild(row);
+  el.appendChild(note);
+}
+function showResultRunning(elId, text) {
+  const el = document.getElementById(elId);
+  el.className = 'test-result running';
+  el.innerHTML = '';
+  const row = document.createElement('div');
+  row.className = 'result-row';
+  const state = document.createElement('span');
+  state.className = 'result-state';
+  state.textContent = text || '请求中...';
+  row.appendChild(state);
+  el.appendChild(row);
+}
+
+function setHealthState(className, title, labelText, labelColor, detailText) {
+  const dot = document.getElementById('healthDot');
+  const label = document.getElementById('healthLabel');
+  const detail = document.getElementById('healthDetailContent');
+  dot.className = className;
+  dot.title = title;
+  label.textContent = labelText;
+  label.style.color = labelColor || '';
+  detail.textContent = detailText;
+}
+
+function buildImportBody(resourceUrl, requestId, publicKey) {
+  const body = { resourceUrl, requestId };
+  if (publicKey) body.publicKey = publicKey;
+  return body;
+}
+
+function getBatchImportPublicKey() {
+  const manual = document.getElementById('importModelPublicKey').value.trim();
+  if (manual) return manual;
+  return (lastRegisterData && lastRegisterData.taaPublicKey) ? lastRegisterData.taaPublicKey.trim() : '';
+}
+
+function getBatchExportPublicKey() {
+  const manual = document.getElementById('exportPublicKey').value.trim();
+  if (manual) return manual;
+  return (lastRegisterData && lastRegisterData.taaPublicKey) ? lastRegisterData.taaPublicKey.trim() : '';
+}
+
+function taaFetch(endpoint, body, timeoutMs) {
+  const opts = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  };
+  if (timeoutMs) {
+    const ctrl = new AbortController();
+    opts.signal = ctrl.signal;
+    setTimeout(() => ctrl.abort(), timeoutMs);
+  }
+  return fetch(getTaaAddr() + endpoint, opts);
+}
+
+async function postToTAA(endpoint, body, timeoutMs) {
+  const res = await taaFetch(endpoint, body, timeoutMs);
+  const data = await res.json().catch(() => ({}));
+  return { status: res.status, data };
+}
+
+// postToTAAFile 用于 /v1/taa/export：成功时直接返回二进制文件流，失败时返回 JSON。
+async function postToTAAFile(endpoint, body, timeoutMs) {
+  const res = await taaFetch(endpoint, body, timeoutMs);
+  const contentType = res.headers.get('Content-Type') || '';
+  if (!res.ok) {
+    const data = contentType.includes('application/json')
+      ? await res.json().catch(() => ({}))
+      : { msg: await res.text().catch(() => '') };
+    return { status: res.status, data };
+  }
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
+  return {
+    status: res.status,
+    blob: await res.blob(),
+    filename: filenameMatch ? filenameMatch[1] : 'result.bin',
+    encrypted: res.headers.get('X-TAA-Encrypted') === 'true',
+    taskId: res.headers.get('X-TAA-Task-Id') || '',
+    contentLength: res.headers.get('Content-Length') || '',
+  };
+}
+
+function downloadBlob(blob, filename, revokeDelayMs = 1000) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  if (revokeDelayMs <= 0) {
+    URL.revokeObjectURL(url);
+  } else {
+    setTimeout(() => URL.revokeObjectURL(url), revokeDelayMs);
+  }
+}
+
+function formatResp(r) {
+  return 'HTTP ' + r.status + '\n' + JSON.stringify(r.data, null, 2);
+}
+function responseResult(data) {
+  if (data && Object.prototype.hasOwnProperty.call(data, 'result')) return data.result || {};
+  return data || {};
+}
+function formatJSONText(raw) {
+  if (!raw) return '';
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
+}
+
+// ── 注册状态 ──────────────────────────────────
+function renderRegister(data) {
+  lastRegisterData = data || null;
+  const dot = document.getElementById('dot');
+  dot.className = 'dot';
+  if (!data.received) {
+    text('statusText', '等待 TAA 注册请求');
+    text('registerSummary', '完整返回体仅在弹窗中展示。');
+    text('lastRefresh', '-');
+    document.getElementById('registerBodyBtn').disabled = true;
+    return;
+  }
+  dot.classList.add(data.accepted ? 'ok' : 'bad');
+  text('statusText', data.accepted ? '已收到注册请求，并已返回 HTTP 200' : '已收到请求，但参数校验失败');
+  text('registerSummary', '完整返回体仅在弹窗中展示。');
+  document.getElementById('registerBodyBtn').disabled = false;
+}
+function openRegisterBodyModal() {
+  openBodyModal('平台注册返回 body', lastRegisterData);
+}
+async function refreshStatus() {
+  try {
+    const res = await fetch('/api/register/status', { cache: 'no-store' });
+    const data = await res.json();
+    renderRegister(responseResult(data));
+    text('lastRefresh', new Date().toLocaleString());
+  } catch (err) {
+    text('statusText', '刷新状态失败');
+    text('message', String(err));
+    text('lastRefresh', '刷新失败');
+  }
+}
+async function resetStatus() {
+  await fetch('/api/register/reset', { method: 'POST' });
+  await refreshStatus();
+}
+function renderReportRes(data) {
+  lastReportResData = data || null;
+  const dot = document.getElementById('reportResDot');
+  dot.className = 'dot';
+  const bodyDot = document.getElementById('reportResBodyDot');
+  bodyDot.className = 'dot';
+  if (!data.received) {
+    text('reportResStatusText', '等待训练结果上报');
+    text('reportResSummary', '完整返回体仅在弹窗中展示。');
+    text('reportResBodyStatus', '等待训练结果上报');
+    text('reportResBodySummary', '这里不再直接渲染返回字段。');
+    document.getElementById('reportResBodyBtn').disabled = true;
+    return;
+  }
+  dot.classList.add(data.accepted ? 'ok' : 'bad');
+  bodyDot.classList.add(data.accepted ? 'ok' : 'bad');
+  text('reportResStatusText', data.accepted ? '已收到训练结果上报，并已返回 HTTP 200' : '已收到上报，但参数校验失败');
+  text('reportResSummary', '完整返回体仅在弹窗中展示。');
+  text('reportResBodyStatus', data.accepted ? '已收到训练结果上报' : '已收到上报但参数校验失败');
+  text('reportResBodySummary', '点击右上角按钮查看完整返回体。');
+  document.getElementById('reportResBodyBtn').disabled = false;
+}
+function openReportResBodyModal() {
+  openBodyModal('训练结果上报 body', lastReportResData);
+}
+async function refreshReportResStatus() {
+  try {
+    const res = await fetch('/api/reportRes/status', { cache: 'no-store' });
+    const data = await res.json();
+    renderReportRes({ ...responseResult(data), code: data.error, msg: data.msg });
+  } catch (err) {
+    text('reportResStatusText', '刷新上报状态失败');
+    text('reportResSummary', String(err));
+  }
+}
+async function resetReportResStatus() {
+  await fetch('/api/reportRes/reset', { method: 'POST' });
+  await refreshReportResStatus();
+}
+function renderReportModelImport(data) {
+  lastReportModelImportData = data || null;
+  const dot = document.getElementById('reportModelImportDot');
+  dot.className = 'dot';
+  const bodyDot = document.getElementById('reportModelImportBodyDot');
+  bodyDot.className = 'dot';
+  if (!data.received) {
+    text('reportModelImportStatusText', '等待模型导入结果上报');
+    text('reportModelImportSummary', '完整返回体仅在弹窗中展示。');
+    text('reportModelImportBodyStatus', '等待模型导入结果上报');
+    text('reportModelImportBodySummary', '这里不再直接渲染返回字段。');
+    document.getElementById('reportModelImportBodyBtn').disabled = true;
+    return;
+  }
+  dot.classList.add(data.accepted ? 'ok' : 'bad');
+  bodyDot.classList.add(data.accepted ? 'ok' : 'bad');
+  text('reportModelImportStatusText', data.accepted ? '已收到模型导入结果上报，并已返回 HTTP 200' : '已收到上报，但参数校验失败');
+  text('reportModelImportSummary', '完整返回体仅在弹窗中展示。');
+  text('reportModelImportBodyStatus', data.accepted ? '已收到模型导入结果上报' : '已收到上报但参数校验失败');
+  text('reportModelImportBodySummary', '点击右上角按钮查看完整返回体。');
+  document.getElementById('reportModelImportBodyBtn').disabled = false;
+}
+function openReportModelImportBodyModal() {
+  openBodyModal('模型导入结果上报 body', lastReportModelImportData);
+}
+async function refreshReportModelImportStatus() {
+  try {
+    const res = await fetch('/api/reportModelImport/status', { cache: 'no-store' });
+    const data = await res.json();
+    renderReportModelImport({ ...responseResult(data), code: data.error, msg: data.msg });
+  } catch (err) {
+    text('reportModelImportStatusText', '刷新上报状态失败');
+    text('reportModelImportSummary', String(err));
+  }
+}
+async function resetReportModelImportStatus() {
+  await fetch('/api/reportModelImport/reset', { method: 'POST' });
+  await refreshReportModelImportStatus();
+}
+
+// ── 文件上传 ─────────────────────────────────
+async function uploadFile() {
+  const fileInput = document.getElementById('uploadFile');
+  if (!fileInput.files.length) {
+    alert('请先选择文件');
+    return;
+  }
+  const file = fileInput.files[0];
+  const formData = new FormData();
+  formData.append('file', file);
+
+  showResultRunning('uploadResult', '正在上传文件...');
+  try {
+    const res = await fetch('/api/upload', {
+      method: 'POST',
+      body: formData,
+    });
+    const data = await res.json();
+    if (res.status === 200 && data.error === 0) {
+      showResult('uploadResult', true, `文件上传成功\n\n文件名: ${data.result.originalName}\n保存名: ${data.result.filename}\n大小: ${data.result.size} bytes\nURL: ${data.result.url}`);
+      // Show the URL input for easy copying
+      document.getElementById('uploadedUrl').style.display = 'block';
+      document.getElementById('uploadedUrlInput').value = data.result.url;
+    } else {
+      showResult('uploadResult', false, `上传失败: ${data.msg}`);
+    }
+  } catch (e) {
+    showResult('uploadResult', false, '上传失败: ' + e.message);
+  }
+}
+
+// ── 各接口测试 ─────────────────────────────────
+async function testHealth() {
+  setHealthState('dot', '检查中', '检查中...', '', '');
+  try {
+    const r = await postToTAA('/v1/taa/health', {}, 10000);
+    const ok = r.status === 200 && r.data.error === 0;
+    setHealthState('dot ' + (ok ? 'ok' : 'bad'), ok ? '连通正常' : '连通异常', ok ? '连通正常' : 'HTTP ' + r.status, ok ? 'var(--ok)' : 'var(--bad)', formatResp(r));
+  } catch (e) {
+    const msg = e.name === 'AbortError'
+      ? '请求超时（10s）：TAA 服务响应过慢或不可达。\n请确认：\n1. TAA 服务地址是否正确\n2. TAA 服务是否已启动\n3. 浏览器能否直接访问该地址（K8s Pod 端口可能需要 NodePort 或 port-forward 暴露）'
+      : '请求失败: ' + e.message + '\n\n可能原因：\n1. TAA 服务地址不正确或服务未启动\n2. 网络不通（防火墙、K8s Pod 网络隔离）\n3. TAA 未部署包含 CORS 支持的新版本\n4. 浏览器混合内容限制（HTTPS 页面访问 HTTP 地址）';
+    setHealthState('dot bad', '不可达', '不可达', 'var(--bad)', msg);
+  }
+}
+
+function toggleHealthDetail() {
+  const el = document.getElementById('healthDetail');
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function testImport() {
+  showResultRunning('importResult', '正在请求...');
+  try {
+    const r = await postToTAA('/v1/taa/import', buildImportBody(
+      document.getElementById('importResourceUrl').value,
+      document.getElementById('importRequestId').value,
+    ));
+    showResult('importResult', r.status === 200 && r.data.error === 0, formatResp(r));
+  } catch (e) {
+    showResult('importResult', false, '请求失败: ' + e.message + '\n请确认 TAA 服务地址是否正确且服务已启动。');
+  }
+}
+
+async function testImportModel() {
+  showResultRunning('importModelResult', '正在请求...');
+  try {
+    const r = await postToTAA('/v1/taa/importModel', buildImportBody(
+      document.getElementById('importModelResourceUrl').value,
+      document.getElementById('importModelRequestId').value,
+      document.getElementById('importModelPublicKey').value.trim(),
+    ));
+    showResult('importModelResult', r.status === 200 && r.data.error === 0, formatResp(r));
+  } catch (e) {
+    showResult('importModelResult', false, '请求失败: ' + e.message + '\n请确认 TAA 服务地址是否正确且服务已启动。');
+  }
+}
+
+async function testGetResourceInfo() {
+  showResultRunning('resourceInfoResult', '正在请求...');
+  try {
+    const resourceUrl = document.getElementById('resourceInfoUrl').value.trim();
+    const r = await postToTAA('/v1/taa/getResourceInfo', { resourceUrl }, 10000);
+    const payload = responseResult(r.data);
+    const rendered = typeof payload === 'string' ? formatJSONText(payload) : JSON.stringify(payload, null, 2);
+    showResult('resourceInfoResult', r.status === 200 && r.data.error === 0, 'HTTP ' + r.status + '\n' + rendered);
+  } catch (e) {
+    showResult('resourceInfoResult', false, '请求失败: ' + e.message + '\n请确认 TAA 服务地址是否正确且服务已启动。');
+  }
+}
+
+async function testSwitch() {
+  showResultRunning('switchResult', '正在请求...');
+  try {
+    const r = await postToTAA('/v1/taa/switch', {
+      phase: Number(document.getElementById('switchPhase').value),
+    });
+    showResult('switchResult', r.status === 200 && r.data.error === 0, formatResp(r));
+  } catch (e) {
+    showResult('switchResult', false, '请求失败: ' + e.message);
+  }
+}
+
+async function testExport() {
+  showResultRunning('exportResult', '正在请求...');
+  try {
+    const pk = document.getElementById('exportPublicKey').value;
+    const body = { taskId: document.getElementById('exportTaskId').value };
+    if (pk) body.publicKey = pk;
+    else body.publicKey = null;
+    const r = await postToTAAFile('/v1/taa/export', body);
+    if (r.status === 200 && r.blob) {
+      downloadBlob(r.blob, r.filename);
+      showResult('exportResult', true,
+        'HTTP 200\n已直接返回并下载结果文件\n' +
+        'filename: ' + r.filename + '\n' +
+        'taskId: ' + r.taskId + '\n' +
+        'encrypted: ' + r.encrypted + '\n' +
+        'size: ' + r.blob.size + ' bytes' + (r.contentLength ? ' (Content-Length: ' + r.contentLength + ')' : '')
+      );
+      return;
+    }
+    showResult('exportResult', false, formatResp(r));
+  } catch (e) {
+    showResult('exportResult', false, '请求失败: ' + e.message);
+  }
+}
+
+// 暂存最近一次 getAttestation 返回的报告数据（Base64 字符串）
+let _lastAttestationBase64 = null;
+let _lastAttestationValues = null;
+
+function base64ToUint8Array(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function testGetAttestation() {
+  showResultRunning('attestationResult', '正在请求（attestation helper 可能需要数秒）...');
+  document.getElementById('saveReportBtn').disabled = true;
+  _lastAttestationBase64 = null;
+  _lastAttestationValues = null;
+  try {
+    const body = { requestId: document.getElementById('attestRequestId').value };
+    const url = getTaaAddr() + '/v1/taa/getAttestation';
+    const ctrl = new AbortController();
+    setTimeout(() => ctrl.abort(), 45000);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    const payload = responseResult(data);
+    const ok = res.status === 200 && data.error === 0 && !!payload.attestation;
+    const attB64 = payload.attestation || '';
+    const attValues = payload.attestationValues || '';
+    let binaryLen = 0;
+    try { binaryLen = atob(attB64).length; } catch {}
+
+    // 截断 Base64 显示避免页面卡顿
+    let display = { ...data, result: { ...payload } };
+    if (attB64.length > 80) {
+      display.result.attestation = attB64.slice(0, 80) + '...(' + attB64.length + ' chars, decoded=' + binaryLen + ' bytes)';
+    }
+    if (attValues) {
+      try { display.result.attestationValues = JSON.parse(attValues); } catch {}
+    }
+    const displayText = 'HTTP ' + res.status + '\n' + JSON.stringify(display, null, 2);
+
+    if (ok) {
+      _lastAttestationBase64 = attB64;
+      _lastAttestationValues = attValues;
+      document.getElementById('saveReportBtn').disabled = false;
+    }
+    showResult('attestationResult', ok, displayText);
+  } catch (e) {
+    let msg;
+    if (e.name === 'AbortError') {
+      msg = '请求超时（45s）：attestation helper 可能挂起。\n\n请检查 TAA 容器内日志：\n  kubectl exec <pod> -- tail /tmp/taa.log\n\n常见原因：\n1. /dev/csv-guest 设备不可用\n2. attestation helper 二进制无法执行\n3. ioctl 调用阻塞';
+    } else if (e.message.includes('Failed to fetch') || e.message.includes('NetworkError')) {
+      msg = '网络请求失败: Failed to fetch\n\n请先用上方 /v1/taa/health 接口确认基础连通性。\n\n如 health 通过但本接口失败，说明 attestation helper 有问题。\n如 health 也失败，请检查：\n1. TAA 地址是否正确\n2. 是否部署了最新版本\n3. 浏览器控制台 (F12) 查看具体错误';
+    } else {
+      msg = '请求失败: ' + e.message;
+    }
+    showResult('attestationResult', false, msg);
+  }
+}
+
+function saveAttestationReport() {
+  if (!_lastAttestationBase64) { alert('没有可保存的报告，请先点击"发送测试"获取报告'); return; }
+  // 将 Base64 解码为原始二进制（2548 字节）并保存
+  const bytes = base64ToUint8Array(_lastAttestationBase64);
+  downloadBlob(new Blob([bytes], { type: 'application/octet-stream' }), 'report.cert', 0);
+  // 同时保存 attestationValues JSON
+  if (_lastAttestationValues) {
+    downloadBlob(new Blob([_lastAttestationValues], { type: 'application/json' }), 'attestation-values.json', 0);
+  }
+}
+
+// ── 一键测试全部接口 ─────────────────────────
+async function runAllTests() {
+  const card = document.getElementById('card-batch');
+  const container = document.getElementById('batchResults');
+  card.style.display = 'block';
+
+  const tests = [
+    { name: '/v1/taa/health（连通性检查）', fn: () => postToTAA('/v1/taa/health', {}, 10000) },
+    { name: '/v1/taa/getResourceInfo（资源信息获取）', fn: () => postToTAA('/v1/taa/getResourceInfo', { resourceUrl: 'http://mock.example.com/data.tar.gz' }, 10000) },
+    { name: '/v1/taa/importModel（下发模型）', fn: () => postToTAA('/v1/taa/importModel', buildImportBody('http://mock.example.com/model.tar.gz', genId('batch-import'), getBatchImportPublicKey())) },
+    { name: '/v1/taa/import（下发数据）', fn: () => postToTAA('/v1/taa/import', buildImportBody('http://mock.example.com/data.tar.gz', genId('batch-import'))) },
+    { name: '/v1/taa/switch（切换到测试阶段）', fn: () => postToTAA('/v1/taa/switch', { phase: 2 }) },
+    { name: '/v1/taa/switch（切换到训练阶段）', fn: () => postToTAA('/v1/taa/switch', { phase: 3 }) },
+    { name: '/v1/taa/export（导出结果，直接文件流）', fn: () => postToTAAFile('/v1/taa/export', { publicKey: getBatchExportPublicKey(), taskId: 'batch-task-001' }) },
+    { name: '/v1/taa/getAttestation（获取证明报告，最长45s）', fn: () => postToTAA('/v1/taa/getAttestation', { requestId: genId('batch-attest') }, 45000) },
+    { name: '/v1/taa/reportRes（上报训练结果 → 本平台）', fn: async () => {
+      const res = await fetch('/v1/taa/reportRes', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dockerId: 'batch-docker',
+          requestId: genId('batch-reportRes'),
+          taskId: 'batch-task-001',
+          code: 0,
+          msg: null,
+          report: JSON.stringify({ schema_version: '1.0', training_task: { status: 'succeeded' } }),
+        }),
+      });
+      return { status: res.status, data: await res.json().catch(() => ({})) };
+    }},
+    { name: '/v1/taa/reportModelImport（上报模型导入结果 → 本平台）', fn: async () => {
+      const res = await fetch('/v1/taa/reportModelImport', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dockerId: 'batch-docker',
+          taskId: 'batch-task-001',
+          code: 0,
+          msg: null,
+          report: JSON.stringify({ conclusion: { passed: true, risk_level: 'NONE' }, file_reports: null }),
+        }),
+      });
+      return { status: res.status, data: await res.json().catch(() => ({})) };
+    }},
+  ];
+
+  container.innerHTML = tests.map((t, i) =>
+    `<div class="batch-item" id="batch-${i}"><span class="badge pending"></span><span>${t.name}</span></div>`
+  ).join('');
+
+  for (let i = 0; i < tests.length; i++) {
+    const item = document.getElementById('batch-' + i);
+    const badge = item.querySelector('.badge');
+    badge.className = 'badge running';
+    item.querySelector('span:last-child').textContent = tests[i].name + ' — 测试中...';
+
+    try {
+      const r = await tests[i].fn();
+      const ok = r.status === 200 && (r.blob || r.data?.error === 0 || r.data?.error === undefined);
+      badge.className = 'badge ' + (ok ? 'ok' : 'bad');
+      item.querySelector('span:last-child').textContent =
+        tests[i].name + ' — HTTP ' + r.status + (ok ? ' ✓' : ' ✗ ' + (r.data?.msg || ''));
+    } catch (e) {
+      badge.className = 'badge bad';
+      item.querySelector('span:last-child').textContent = tests[i].name + ' — 失败: ' + e.message;
+    }
+  }
+
+  // 刷新平台接收状态
+  await refreshReportResStatus();
+  await refreshReportModelImportStatus();
+}
+
+// ── 自动检测 TAA 代理 ─────────────────────────
+async function detectTAAProxy() {
+  const addrInput = document.getElementById('taaAddr');
+  const badge = document.getElementById('taaProxyBadge');
+  try {
+    const res = await fetch('/api/taa-target', { cache: 'no-store' });
+    const data = await res.json();
+    const payload = responseResult(data);
+    if (payload.taaTarget) {
+      // 使用反向代理路径，浏览器通过 platform-mock 转发到 TAA Pod
+      addrInput.value = location.origin + '/taa';
+      badge.textContent = '✓ 已自动连接 TAA Pod（通过反向代理）';
+      badge.style.color = 'var(--ok)';
+    } else {
+      addrInput.value = 'http://127.0.0.1:6001';
+      badge.textContent = '⚠ 未检测到 TAA Pod，请手动填写 TAA 地址';
+      badge.style.color = 'var(--bad)';
+    }
+  } catch {
+    addrInput.value = 'http://127.0.0.1:6001';
+    badge.textContent = '⚠ 检测失败，请手动填写 TAA 地址';
+    badge.style.color = 'var(--bad)';
+  }
+}
+
+// ── TAA 实时日志 ─────────────────────────────
+let logPaused = false;
+let logTimer = null;
+let allLogs = []; // all fetched logs for filtering
+
+function logColor(level) {
+  switch (level) {
+    case 'error': return '#ef4444';
+    case 'warn':  return '#f59e0b';
+    default:      return '#22d3ee';
+  }
+}
+
+function logBadge(level) {
+  switch (level) {
+    case 'error': return '<span style="color:#ef4444;font-weight:700;">[ERROR]</span>';
+    case 'warn':  return '<span style="color:#f59e0b;font-weight:700;">[WARN] </span>';
+    default:      return '<span style="color:#22d3ee;font-weight:700;">[INFO] </span>';
+  }
+}
+
+function formatLogTime(ts) {
+  if (!ts) return '--:--:--';
+  const d = new Date(ts);
+  return d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+}
+
+function renderLogs() {
+  const levelFilter = document.getElementById('logLevelFilter').value;
+  const compFilter = document.getElementById('logComponentFilter').value;
+  const output = document.getElementById('logOutput');
+
+  const filtered = allLogs.filter(l => {
+    if (levelFilter && l.level !== levelFilter) return false;
+    if (compFilter && l.component !== compFilter) return false;
+    return true;
+  });
+
+  output.innerHTML = filtered.map(l =>
+    `<span style="color:#6b7280;">${formatLogTime(l.timestamp)}</span> ${logBadge(l.level)} <span style="color:#a78bfa;">[${l.component}]</span> ${escapeHtml(l.message)}`
+  ).join('\n');
+
+  document.getElementById('logCount').textContent = `${filtered.length} / ${allLogs.length} 条日志`;
+  output.scrollTop = output.scrollHeight;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function fetchLogs() {
+  if (logPaused) return;
+  try {
+    const res = await fetch('/api/taa/logs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const data = await res.json();
+    const result = responseResult(data);
+    if (!result) return;
+
+    if (result.logs && result.logs.length > 0) {
+      allLogs = allLogs.concat(result.logs);
+      // Keep max 5000 entries in memory
+      if (allLogs.length > 5000) allLogs = allLogs.slice(-5000);
+    }
+
+    // Update status
+    const op = result.currentOp || 'idle';
+    const badge = document.getElementById('logOpBadge');
+    badge.textContent = op;
+    badge.style.background = op === 'idle' ? 'rgba(127,127,127,.12)' : 'rgba(37,99,235,.15)';
+    badge.style.color = op === 'idle' ? 'var(--muted)' : '#2563eb';
+
+    const dot = document.getElementById('logStatusDot');
+    const statusText = document.getElementById('logStatusText');
+    if (allLogs.length > 0) {
+      dot.className = 'dot ok';
+      statusText.textContent = '日志接收中';
+    } else {
+      dot.className = 'dot';
+      statusText.textContent = '等待日志...';
+    }
+
+    renderLogs();
+  } catch (e) {
+    // Silently ignore fetch errors — will retry on next interval
+  }
+}
+
+function filterLogs() {
+  renderLogs();
+}
+
+function clearLogs() {
+  allLogs = [];
+  document.getElementById('logOutput').innerHTML = '';
+  document.getElementById('logCount').textContent = '0 条日志';
+}
+
+function toggleLogPause() {
+  logPaused = !logPaused;
+  const btn = document.getElementById('logPauseBtn');
+  btn.textContent = logPaused ? '继续' : '暂停';
+  btn.className = logPaused ? 'success' : 'secondary';
+}
+
+function updateLogInterval() {
+  if (logTimer) clearInterval(logTimer);
+  const ms = parseInt(document.getElementById('logInterval').value) || 3000;
+  logTimer = setInterval(fetchLogs, ms);
+}
+
+// ── 初始化 ─────────────────────────────────
+detectTAAProxy();
+refreshStatus();
+refreshReportResStatus();
+refreshReportModelImportStatus();
+setInterval(refreshStatus, 1000);
+setInterval(refreshReportResStatus, 1000);
+setInterval(refreshReportModelImportStatus, 1000);
+logTimer = setInterval(fetchLogs, 3000);
+fetchLogs();
+</script>
+</body>
+</html>

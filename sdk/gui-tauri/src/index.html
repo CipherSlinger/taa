@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>格物平台加密工具 v1.0</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Left Sidebar -->
+  <nav class="sidebar">
+    <div class="sidebar-brand">
+      <svg class="sidebar-logo" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      <span class="app-name">格物平台</span>
+    </div>
+    <div class="sidebar-nav">
+      <button class="nav-btn active" data-tab="crypto">
+        <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <span>加解密管理</span>
+      </button>
+      <button class="nav-btn" data-tab="attestation">
+        <svg class="nav-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <span>远程报告验证</span>
+      </button>
+    </div>
+    <span class="sidebar-version">v1.0</span>
+  </nav>
+
+  <!-- Main Content Area -->
+  <div class="main-area">
+
+    <!-- Tab 1: Crypto -->
+    <div class="tab-content active" id="tab-crypto">
+
+      <!-- Key Management Card -->
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          <h2 class="card-title">密钥管理</h2>
+          <button class="btn-generate-inline" id="genKeyBtn" data-tooltip="生成新的密钥对 (Ctrl+G)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            生成密钥对
+          </button>
+        </div>
+
+        <div class="key-grid">
+          <!-- Public Key -->
+          <div class="key-row public">
+            <div class="key-toolbar">
+              <span class="key-label">公钥 <span class="key-badge">PUBLIC</span></span>
+              <div class="toolbar-btns">
+                <button class="btn-tool" id="copyPubBtn" data-tooltip="复制"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                <button class="btn-tool" id="importPubBtn" data-tooltip="导入"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button>
+                <button class="btn-tool" id="savePubBtn" data-tooltip="保存"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
+              </div>
+            </div>
+            <textarea id="publicKey" placeholder="粘贴或导入公钥 PEM..." spellcheck="false"></textarea>
+          </div>
+
+          <!-- Private Key -->
+          <div class="key-row private">
+            <div class="key-toolbar">
+              <span class="key-label">私钥 <span class="key-badge">PRIVATE</span></span>
+              <div class="toolbar-btns">
+                <button class="btn-tool" id="copyPrvBtn" data-tooltip="复制"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                <button class="btn-tool" id="importPrvBtn" data-tooltip="导入"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button>
+                <button class="btn-tool" id="savePrvBtn" data-tooltip="保存"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
+              </div>
+            </div>
+            <textarea id="privateKey" placeholder="粘贴或导入私钥 PEM..." spellcheck="false"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- Crypto Operations Card -->
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          <h2 class="card-title">数据加解密</h2>
+        </div>
+
+        <!-- Crypto Row: Drop Zone + Action Buttons -->
+        <div class="crypto-row">
+          <div class="drop-zone" id="dropZone">
+            <div class="drop-hint">
+              <span class="drop-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></span>
+              <span class="drop-hint-text">拖拽文件到此处，或 <button class="btn-link" id="browseBtn">选择文件</button> · <button class="btn-link" id="browseFolderBtn">选择文件夹</button></span>
+            </div>
+            <div class="file-info hidden" id="fileInfo">
+              <div class="file-icon" id="fileIcon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
+              <div class="file-details">
+                <div class="file-name" id="fileName"></div>
+                <div class="file-size" id="fileSize"></div>
+                <div class="file-output hidden" id="fileOutput"></div>
+              </div>
+              <button class="btn-icon btn-save-output hidden" id="saveOutputBtn" data-tooltip="保存输出文件"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
+              <button class="btn-icon" id="clearFileBtn" data-tooltip="清除选择"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+            </div>
+          </div>
+          <div class="crypto-btns">
+            <button class="btn btn-primary btn-encrypt" id="encryptBtn" data-tooltip="加密文件 (Ctrl+E)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              加密
+            </button>
+            <button class="btn btn-outline btn-decrypt" id="decryptBtn" data-tooltip="解密文件 (Ctrl+D)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
+              解密
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 2: Attestation -->
+    <div class="tab-content" id="tab-attestation">
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <h2 class="card-title">远程报告验证</h2>
+          <button class="btn-flow" id="showFlowBtn" data-tooltip="查看验证流程详解">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+            报告验证详解
+          </button>
+        </div>
+
+        <div class="att-form">
+          <div class="form-row">
+            <label>报告文件</label>
+            <input type="text" id="reportFileInput" placeholder="选择 attestation report..." readonly>
+            <button class="btn btn-secondary" id="reportBrowseBtn">浏览...</button>
+          </div>
+          <div class="form-row">
+            <label class="checkbox-label">
+              <input type="checkbox" id="verifyChainCheck">
+              <span>验证证书链（联网获取证书）</span>
+            </label>
+          </div>
+          <button class="btn btn-primary btn-verify" id="verifyBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+            开始验证
+          </button>
+        </div>
+
+        <div class="verdict-banner hidden" id="verdictBanner">
+          <svg class="verdict-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+          <div class="verdict-text">
+            <span class="verdict-title"></span>
+            <span class="verdict-detail"></span>
+          </div>
+        </div>
+
+        <div class="att-results">
+          <div class="results-header">验证结果</div>
+          <div class="att-table-wrap">
+            <table id="attestationTable">
+              <thead><tr><th>字段</th><th>值</th></tr></thead>
+<tbody id="attestationBody">
+</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Verification Flow Overlay -->
+  <div class="flow-overlay hidden" id="flowOverlay">
+    <div class="flow-panel">
+      <div class="flow-header">
+        <h3>远程报告验证流程详解</h3>
+        <div class="flow-controls">
+          <button class="btn-flow-ctrl" id="flowPrev" data-tooltip="上一步">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <span class="flow-progress" id="flowProgress">1 / 12</span>
+          <button class="btn-flow-ctrl" id="flowNext" data-tooltip="下一步">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+          <button class="btn-icon flow-close" id="flowClose">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="flow-progress-bar"><div class="flow-progress-fill" id="flowProgressFill"></div></div>
+      <div class="flow-viz" id="flowViz"></div>
+    </div>
+  </div>
+
+  <!-- History Panel -->
+  <div class="history-panel collapsed" id="historyPanel">
+    <div class="history-header" id="historyHeader">
+      <span>最近操作 <span class="history-count" id="historyCount"></span></span>
+      <span class="history-toggle" id="historyToggle">▼</span>
+    </div>
+    <div class="history-list" id="historyList">
+      <div class="history-empty">暂无操作记录</div>
+    </div>
+  </div>
+
+  <!-- Status Bar -->
+  <div class="status-bar">
+    <div class="status-left">
+      <div class="progress-bar"><div class="progress-fill"></div></div>
+      <span class="status-msg">就绪</span>
+    </div>
+    <div class="status-right">
+      <span class="shortcut-bar"><kbd>Ctrl</kbd>+<kbd>G</kbd> 生成 · <kbd>Ctrl</kbd>+<kbd>E</kbd> 加密 · <kbd>Ctrl</kbd>+<kbd>D</kbd> 解密</span>
+    </div>
+    <button class="btn-tool hidden" id="saveBtn" data-tooltip="保存文件">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+    </button>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

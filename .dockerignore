@@ -1,0 +1,8 @@
+app
+.git
+.cache
+.claude
+docs
+README.md
+test_hello.sh
+*.tar

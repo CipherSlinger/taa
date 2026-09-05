@@ -1,0 +1,18 @@
+.claude/
+.local/
+
+# 编译产物
+bin/
+models/
+
+# 测试相关
+docs/audit/references/
+uploads/
+
+# 审计
+models/audit/audit-results/
+models/audit/ollama-qwen2.5-coder-0.5b/
+models/audit/ollama-qwen2.5-coder-1.5b/
+models/audit/benchmarks/
+
+sdk/

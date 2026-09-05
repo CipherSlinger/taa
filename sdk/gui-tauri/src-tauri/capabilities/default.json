@@ -1,0 +1,6 @@
+{
+  "identifier": "main-window-drag-drop",
+  "description": "Allow the app window to register native drag-drop listeners.",
+  "windows": ["main"],
+  "permissions": ["core:event:allow-listen"]
+}

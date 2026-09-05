@@ -1,0 +1,3 @@
+/opt/kata/share/kata-containers/vmlinuz-confidential-csv.container -> /opt/kata/share/kata-containers/vmlinuz-6.6.0+-153-confidential-csv
+/opt/kata/share/kata-containers/kata-containers-initrd-confidential-csv.img -> /opt/kata/share/kata-containers/kata-containers-initrd-2026-07-24-10:36:12.922811362+0000-97bd01058-csv.initrd
+/opt/kata/share/ovmf/OVMFCSV.fd -> /opt/kata/share/ovmf/OVMFCSV.fd

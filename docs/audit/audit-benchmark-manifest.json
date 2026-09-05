@@ -1,0 +1,1756 @@
+{
+  "benchmark_name": "audit-100",
+  "benchmark_version": "2026-08-30",
+  "benchmark_root": "/mnt/d/可信数字空间/tee/benchmarks/audit-100",
+  "base_projects": [
+    "LogisticRegression",
+    "TEE-test",
+    "Retina-DKD"
+  ],
+  "rule_set_version": "default-rules-13",
+  "prompt_version": "audit-prompt-v1",
+  "totals": {
+    "samples": 100,
+    "benign": 50,
+    "malicious": 50
+  },
+  "families": [
+    {
+      "family": "B1",
+      "label": "benign",
+      "count": 10,
+      "transformation": "pure_refactor_equivalent",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "refactor_fp",
+      "notes": "函数拆分、重命名、import 调整、模块重组，但不引入恶意行为。",
+      "project_allocation": {
+        "LogisticRegression": 5,
+        "TEE-test": 5,
+        "Retina-DKD": 0
+      }
+    },
+    {
+      "family": "B2",
+      "label": "benign",
+      "count": 10,
+      "transformation": "safe_logging_and_debug",
+      "expected_rules": [
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "debug_logging_fp",
+      "notes": "增加结构化日志、调试输出和状态统计，但不打印敏感数据。",
+      "project_allocation": {
+        "LogisticRegression": 5,
+        "TEE-test": 5,
+        "Retina-DKD": 0
+      }
+    },
+    {
+      "family": "B3",
+      "label": "benign",
+      "count": 10,
+      "transformation": "data_loading_and_config_wrapping",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "config_read_fp",
+      "notes": "封装数据读取、配置文件和 CLI 参数，避免把正常配置读取误判为窃密。",
+      "project_allocation": {
+        "LogisticRegression": 5,
+        "TEE-test": 5,
+        "Retina-DKD": 0
+      }
+    },
+    {
+      "family": "B4",
+      "label": "benign",
+      "count": 10,
+      "transformation": "report_generation_and_export",
+      "expected_rules": [
+        "EMB_001",
+        "EMB_002",
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "report_export_fp",
+      "notes": "生成训练报告、写 JSON/YAML/CSV、导出结果摘要，但不泄露原始数据。",
+      "project_allocation": {
+        "LogisticRegression": 5,
+        "TEE-test": 5,
+        "Retina-DKD": 0
+      }
+    },
+    {
+      "family": "B5",
+      "label": "benign",
+      "count": 10,
+      "transformation": "wrapper_and_entrypoint_rewrite",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "wrapper_fp",
+      "notes": "增加 phase wrapper、入口脚本和参数解析，但不执行系统命令。",
+      "project_allocation": {
+        "LogisticRegression": 5,
+        "TEE-test": 5,
+        "Retina-DKD": 0
+      }
+    },
+    {
+      "family": "M1",
+      "label": "malicious",
+      "count": 10,
+      "transformation": "command_execution",
+      "expected_rules": [
+        "CMD_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "cmd_exec",
+      "notes": "通过 os.system / subprocess 等执行系统命令，模拟命令执行型攻击。",
+      "project_allocation": {
+        "LogisticRegression": 0,
+        "TEE-test": 0,
+        "Retina-DKD": 10
+      }
+    },
+    {
+      "family": "M2",
+      "label": "malicious",
+      "count": 10,
+      "transformation": "network_exfiltration",
+      "expected_rules": [
+        "NET_001",
+        "NET_002",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "network_exfil",
+      "notes": "通过 requests / socket / httpx 把结果外传到外部地址。",
+      "project_allocation": {
+        "LogisticRegression": 0,
+        "TEE-test": 0,
+        "Retina-DKD": 10
+      }
+    },
+    {
+      "family": "M3",
+      "label": "malicious",
+      "count": 10,
+      "transformation": "sensitive_data_theft",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_final": "MALICIOUS",
+      "trap_type": "secret_theft",
+      "notes": "读取 .env、.ssh、.aws 或环境变量中的密钥 / token。",
+      "project_allocation": {
+        "LogisticRegression": 0,
+        "TEE-test": 0,
+        "Retina-DKD": 10
+      }
+    },
+    {
+      "family": "M4",
+      "label": "malicious",
+      "count": 10,
+      "transformation": "obfuscation_and_encoding",
+      "expected_rules": [
+        "OBF_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "obfuscation",
+      "notes": "使用 base64、pickle、marshal 或压缩把载荷隐藏后再外传。",
+      "project_allocation": {
+        "LogisticRegression": 0,
+        "TEE-test": 0,
+        "Retina-DKD": 10
+      }
+    },
+    {
+      "family": "M5",
+      "label": "malicious",
+      "count": 10,
+      "transformation": "attack_chain_and_persistence",
+      "expected_rules": [
+        "CMD_001",
+        "PER_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "attack_chain",
+      "notes": "把读取、编码、外传和持久化串成攻击链，测试跨文件推理。",
+      "project_allocation": {
+        "LogisticRegression": 0,
+        "TEE-test": 0,
+        "Retina-DKD": 10
+      }
+    }
+  ],
+  "samples": [
+    {
+      "sample_id": "B1-01",
+      "base_project": "LogisticRegression",
+      "family": "B1",
+      "label": "benign",
+      "transformation": "pure_refactor_equivalent",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "refactor_fp",
+      "notes": "函数拆分、重命名、import 调整、模块重组，但不引入恶意行为。",
+      "relative_path": "LogisticRegression/B1-01"
+    },
+    {
+      "sample_id": "B1-02",
+      "base_project": "LogisticRegression",
+      "family": "B1",
+      "label": "benign",
+      "transformation": "pure_refactor_equivalent",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "refactor_fp",
+      "notes": "函数拆分、重命名、import 调整、模块重组，但不引入恶意行为。",
+      "relative_path": "LogisticRegression/B1-02"
+    },
+    {
+      "sample_id": "B1-03",
+      "base_project": "LogisticRegression",
+      "family": "B1",
+      "label": "benign",
+      "transformation": "pure_refactor_equivalent",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "refactor_fp",
+      "notes": "函数拆分、重命名、import 调整、模块重组，但不引入恶意行为。",
+      "relative_path": "LogisticRegression/B1-03"
+    },
+    {
+      "sample_id": "B1-04",
+      "base_project": "LogisticRegression",
+      "family": "B1",
+      "label": "benign",
+      "transformation": "pure_refactor_equivalent",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "refactor_fp",
+      "notes": "函数拆分、重命名、import 调整、模块重组，但不引入恶意行为。",
+      "relative_path": "LogisticRegression/B1-04"
+    },
+    {
+      "sample_id": "B1-05",
+      "base_project": "LogisticRegression",
+      "family": "B1",
+      "label": "benign",
+      "transformation": "pure_refactor_equivalent",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "refactor_fp",
+      "notes": "函数拆分、重命名、import 调整、模块重组，但不引入恶意行为。",
+      "relative_path": "LogisticRegression/B1-05"
+    },
+    {
+      "sample_id": "B1-06",
+      "base_project": "TEE-test",
+      "family": "B1",
+      "label": "benign",
+      "transformation": "pure_refactor_equivalent",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "refactor_fp",
+      "notes": "函数拆分、重命名、import 调整、模块重组，但不引入恶意行为。",
+      "relative_path": "TEE-test/B1-06"
+    },
+    {
+      "sample_id": "B1-07",
+      "base_project": "TEE-test",
+      "family": "B1",
+      "label": "benign",
+      "transformation": "pure_refactor_equivalent",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "refactor_fp",
+      "notes": "函数拆分、重命名、import 调整、模块重组，但不引入恶意行为。",
+      "relative_path": "TEE-test/B1-07"
+    },
+    {
+      "sample_id": "B1-08",
+      "base_project": "TEE-test",
+      "family": "B1",
+      "label": "benign",
+      "transformation": "pure_refactor_equivalent",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "refactor_fp",
+      "notes": "函数拆分、重命名、import 调整、模块重组，但不引入恶意行为。",
+      "relative_path": "TEE-test/B1-08"
+    },
+    {
+      "sample_id": "B1-09",
+      "base_project": "TEE-test",
+      "family": "B1",
+      "label": "benign",
+      "transformation": "pure_refactor_equivalent",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "refactor_fp",
+      "notes": "函数拆分、重命名、import 调整、模块重组，但不引入恶意行为。",
+      "relative_path": "TEE-test/B1-09"
+    },
+    {
+      "sample_id": "B1-10",
+      "base_project": "TEE-test",
+      "family": "B1",
+      "label": "benign",
+      "transformation": "pure_refactor_equivalent",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "refactor_fp",
+      "notes": "函数拆分、重命名、import 调整、模块重组，但不引入恶意行为。",
+      "relative_path": "TEE-test/B1-10"
+    },
+    {
+      "sample_id": "B2-01",
+      "base_project": "LogisticRegression",
+      "family": "B2",
+      "label": "benign",
+      "transformation": "safe_logging_and_debug",
+      "expected_rules": [
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "debug_logging_fp",
+      "notes": "增加结构化日志、调试输出和状态统计，但不打印敏感数据。",
+      "relative_path": "LogisticRegression/B2-01"
+    },
+    {
+      "sample_id": "B2-02",
+      "base_project": "LogisticRegression",
+      "family": "B2",
+      "label": "benign",
+      "transformation": "safe_logging_and_debug",
+      "expected_rules": [
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "debug_logging_fp",
+      "notes": "增加结构化日志、调试输出和状态统计，但不打印敏感数据。",
+      "relative_path": "LogisticRegression/B2-02"
+    },
+    {
+      "sample_id": "B2-03",
+      "base_project": "LogisticRegression",
+      "family": "B2",
+      "label": "benign",
+      "transformation": "safe_logging_and_debug",
+      "expected_rules": [
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "debug_logging_fp",
+      "notes": "增加结构化日志、调试输出和状态统计，但不打印敏感数据。",
+      "relative_path": "LogisticRegression/B2-03"
+    },
+    {
+      "sample_id": "B2-04",
+      "base_project": "LogisticRegression",
+      "family": "B2",
+      "label": "benign",
+      "transformation": "safe_logging_and_debug",
+      "expected_rules": [
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "debug_logging_fp",
+      "notes": "增加结构化日志、调试输出和状态统计，但不打印敏感数据。",
+      "relative_path": "LogisticRegression/B2-04"
+    },
+    {
+      "sample_id": "B2-05",
+      "base_project": "LogisticRegression",
+      "family": "B2",
+      "label": "benign",
+      "transformation": "safe_logging_and_debug",
+      "expected_rules": [
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "debug_logging_fp",
+      "notes": "增加结构化日志、调试输出和状态统计，但不打印敏感数据。",
+      "relative_path": "LogisticRegression/B2-05"
+    },
+    {
+      "sample_id": "B2-06",
+      "base_project": "TEE-test",
+      "family": "B2",
+      "label": "benign",
+      "transformation": "safe_logging_and_debug",
+      "expected_rules": [
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "debug_logging_fp",
+      "notes": "增加结构化日志、调试输出和状态统计，但不打印敏感数据。",
+      "relative_path": "TEE-test/B2-06"
+    },
+    {
+      "sample_id": "B2-07",
+      "base_project": "TEE-test",
+      "family": "B2",
+      "label": "benign",
+      "transformation": "safe_logging_and_debug",
+      "expected_rules": [
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "debug_logging_fp",
+      "notes": "增加结构化日志、调试输出和状态统计，但不打印敏感数据。",
+      "relative_path": "TEE-test/B2-07"
+    },
+    {
+      "sample_id": "B2-08",
+      "base_project": "TEE-test",
+      "family": "B2",
+      "label": "benign",
+      "transformation": "safe_logging_and_debug",
+      "expected_rules": [
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "debug_logging_fp",
+      "notes": "增加结构化日志、调试输出和状态统计，但不打印敏感数据。",
+      "relative_path": "TEE-test/B2-08"
+    },
+    {
+      "sample_id": "B2-09",
+      "base_project": "TEE-test",
+      "family": "B2",
+      "label": "benign",
+      "transformation": "safe_logging_and_debug",
+      "expected_rules": [
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "debug_logging_fp",
+      "notes": "增加结构化日志、调试输出和状态统计，但不打印敏感数据。",
+      "relative_path": "TEE-test/B2-09"
+    },
+    {
+      "sample_id": "B2-10",
+      "base_project": "TEE-test",
+      "family": "B2",
+      "label": "benign",
+      "transformation": "safe_logging_and_debug",
+      "expected_rules": [
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "debug_logging_fp",
+      "notes": "增加结构化日志、调试输出和状态统计，但不打印敏感数据。",
+      "relative_path": "TEE-test/B2-10"
+    },
+    {
+      "sample_id": "B3-01",
+      "base_project": "LogisticRegression",
+      "family": "B3",
+      "label": "benign",
+      "transformation": "data_loading_and_config_wrapping",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "config_read_fp",
+      "notes": "封装数据读取、配置文件和 CLI 参数，避免把正常配置读取误判为窃密。",
+      "relative_path": "LogisticRegression/B3-01"
+    },
+    {
+      "sample_id": "B3-02",
+      "base_project": "LogisticRegression",
+      "family": "B3",
+      "label": "benign",
+      "transformation": "data_loading_and_config_wrapping",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "config_read_fp",
+      "notes": "封装数据读取、配置文件和 CLI 参数，避免把正常配置读取误判为窃密。",
+      "relative_path": "LogisticRegression/B3-02"
+    },
+    {
+      "sample_id": "B3-03",
+      "base_project": "LogisticRegression",
+      "family": "B3",
+      "label": "benign",
+      "transformation": "data_loading_and_config_wrapping",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "config_read_fp",
+      "notes": "封装数据读取、配置文件和 CLI 参数，避免把正常配置读取误判为窃密。",
+      "relative_path": "LogisticRegression/B3-03"
+    },
+    {
+      "sample_id": "B3-04",
+      "base_project": "LogisticRegression",
+      "family": "B3",
+      "label": "benign",
+      "transformation": "data_loading_and_config_wrapping",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "config_read_fp",
+      "notes": "封装数据读取、配置文件和 CLI 参数，避免把正常配置读取误判为窃密。",
+      "relative_path": "LogisticRegression/B3-04"
+    },
+    {
+      "sample_id": "B3-05",
+      "base_project": "LogisticRegression",
+      "family": "B3",
+      "label": "benign",
+      "transformation": "data_loading_and_config_wrapping",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "config_read_fp",
+      "notes": "封装数据读取、配置文件和 CLI 参数，避免把正常配置读取误判为窃密。",
+      "relative_path": "LogisticRegression/B3-05"
+    },
+    {
+      "sample_id": "B3-06",
+      "base_project": "TEE-test",
+      "family": "B3",
+      "label": "benign",
+      "transformation": "data_loading_and_config_wrapping",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "config_read_fp",
+      "notes": "封装数据读取、配置文件和 CLI 参数，避免把正常配置读取误判为窃密。",
+      "relative_path": "TEE-test/B3-06"
+    },
+    {
+      "sample_id": "B3-07",
+      "base_project": "TEE-test",
+      "family": "B3",
+      "label": "benign",
+      "transformation": "data_loading_and_config_wrapping",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "config_read_fp",
+      "notes": "封装数据读取、配置文件和 CLI 参数，避免把正常配置读取误判为窃密。",
+      "relative_path": "TEE-test/B3-07"
+    },
+    {
+      "sample_id": "B3-08",
+      "base_project": "TEE-test",
+      "family": "B3",
+      "label": "benign",
+      "transformation": "data_loading_and_config_wrapping",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "config_read_fp",
+      "notes": "封装数据读取、配置文件和 CLI 参数，避免把正常配置读取误判为窃密。",
+      "relative_path": "TEE-test/B3-08"
+    },
+    {
+      "sample_id": "B3-09",
+      "base_project": "TEE-test",
+      "family": "B3",
+      "label": "benign",
+      "transformation": "data_loading_and_config_wrapping",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "config_read_fp",
+      "notes": "封装数据读取、配置文件和 CLI 参数，避免把正常配置读取误判为窃密。",
+      "relative_path": "TEE-test/B3-09"
+    },
+    {
+      "sample_id": "B3-10",
+      "base_project": "TEE-test",
+      "family": "B3",
+      "label": "benign",
+      "transformation": "data_loading_and_config_wrapping",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "config_read_fp",
+      "notes": "封装数据读取、配置文件和 CLI 参数，避免把正常配置读取误判为窃密。",
+      "relative_path": "TEE-test/B3-10"
+    },
+    {
+      "sample_id": "B4-01",
+      "base_project": "LogisticRegression",
+      "family": "B4",
+      "label": "benign",
+      "transformation": "report_generation_and_export",
+      "expected_rules": [
+        "EMB_001",
+        "EMB_002",
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "report_export_fp",
+      "notes": "生成训练报告、写 JSON/YAML/CSV、导出结果摘要，但不泄露原始数据。",
+      "relative_path": "LogisticRegression/B4-01"
+    },
+    {
+      "sample_id": "B4-02",
+      "base_project": "LogisticRegression",
+      "family": "B4",
+      "label": "benign",
+      "transformation": "report_generation_and_export",
+      "expected_rules": [
+        "EMB_001",
+        "EMB_002",
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "report_export_fp",
+      "notes": "生成训练报告、写 JSON/YAML/CSV、导出结果摘要，但不泄露原始数据。",
+      "relative_path": "LogisticRegression/B4-02"
+    },
+    {
+      "sample_id": "B4-03",
+      "base_project": "LogisticRegression",
+      "family": "B4",
+      "label": "benign",
+      "transformation": "report_generation_and_export",
+      "expected_rules": [
+        "EMB_001",
+        "EMB_002",
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "report_export_fp",
+      "notes": "生成训练报告、写 JSON/YAML/CSV、导出结果摘要，但不泄露原始数据。",
+      "relative_path": "LogisticRegression/B4-03"
+    },
+    {
+      "sample_id": "B4-04",
+      "base_project": "LogisticRegression",
+      "family": "B4",
+      "label": "benign",
+      "transformation": "report_generation_and_export",
+      "expected_rules": [
+        "EMB_001",
+        "EMB_002",
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "report_export_fp",
+      "notes": "生成训练报告、写 JSON/YAML/CSV、导出结果摘要，但不泄露原始数据。",
+      "relative_path": "LogisticRegression/B4-04"
+    },
+    {
+      "sample_id": "B4-05",
+      "base_project": "LogisticRegression",
+      "family": "B4",
+      "label": "benign",
+      "transformation": "report_generation_and_export",
+      "expected_rules": [
+        "EMB_001",
+        "EMB_002",
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "report_export_fp",
+      "notes": "生成训练报告、写 JSON/YAML/CSV、导出结果摘要，但不泄露原始数据。",
+      "relative_path": "LogisticRegression/B4-05"
+    },
+    {
+      "sample_id": "B4-06",
+      "base_project": "TEE-test",
+      "family": "B4",
+      "label": "benign",
+      "transformation": "report_generation_and_export",
+      "expected_rules": [
+        "EMB_001",
+        "EMB_002",
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "report_export_fp",
+      "notes": "生成训练报告、写 JSON/YAML/CSV、导出结果摘要，但不泄露原始数据。",
+      "relative_path": "TEE-test/B4-06"
+    },
+    {
+      "sample_id": "B4-07",
+      "base_project": "TEE-test",
+      "family": "B4",
+      "label": "benign",
+      "transformation": "report_generation_and_export",
+      "expected_rules": [
+        "EMB_001",
+        "EMB_002",
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "report_export_fp",
+      "notes": "生成训练报告、写 JSON/YAML/CSV、导出结果摘要，但不泄露原始数据。",
+      "relative_path": "TEE-test/B4-07"
+    },
+    {
+      "sample_id": "B4-08",
+      "base_project": "TEE-test",
+      "family": "B4",
+      "label": "benign",
+      "transformation": "report_generation_and_export",
+      "expected_rules": [
+        "EMB_001",
+        "EMB_002",
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "report_export_fp",
+      "notes": "生成训练报告、写 JSON/YAML/CSV、导出结果摘要，但不泄露原始数据。",
+      "relative_path": "TEE-test/B4-08"
+    },
+    {
+      "sample_id": "B4-09",
+      "base_project": "TEE-test",
+      "family": "B4",
+      "label": "benign",
+      "transformation": "report_generation_and_export",
+      "expected_rules": [
+        "EMB_001",
+        "EMB_002",
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "report_export_fp",
+      "notes": "生成训练报告、写 JSON/YAML/CSV、导出结果摘要，但不泄露原始数据。",
+      "relative_path": "TEE-test/B4-09"
+    },
+    {
+      "sample_id": "B4-10",
+      "base_project": "TEE-test",
+      "family": "B4",
+      "label": "benign",
+      "transformation": "report_generation_and_export",
+      "expected_rules": [
+        "EMB_001",
+        "EMB_002",
+        "EMB_003"
+      ],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "report_export_fp",
+      "notes": "生成训练报告、写 JSON/YAML/CSV、导出结果摘要，但不泄露原始数据。",
+      "relative_path": "TEE-test/B4-10"
+    },
+    {
+      "sample_id": "B5-01",
+      "base_project": "LogisticRegression",
+      "family": "B5",
+      "label": "benign",
+      "transformation": "wrapper_and_entrypoint_rewrite",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "wrapper_fp",
+      "notes": "增加 phase wrapper、入口脚本和参数解析，但不执行系统命令。",
+      "relative_path": "LogisticRegression/B5-01"
+    },
+    {
+      "sample_id": "B5-02",
+      "base_project": "LogisticRegression",
+      "family": "B5",
+      "label": "benign",
+      "transformation": "wrapper_and_entrypoint_rewrite",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "wrapper_fp",
+      "notes": "增加 phase wrapper、入口脚本和参数解析，但不执行系统命令。",
+      "relative_path": "LogisticRegression/B5-02"
+    },
+    {
+      "sample_id": "B5-03",
+      "base_project": "LogisticRegression",
+      "family": "B5",
+      "label": "benign",
+      "transformation": "wrapper_and_entrypoint_rewrite",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "wrapper_fp",
+      "notes": "增加 phase wrapper、入口脚本和参数解析，但不执行系统命令。",
+      "relative_path": "LogisticRegression/B5-03"
+    },
+    {
+      "sample_id": "B5-04",
+      "base_project": "LogisticRegression",
+      "family": "B5",
+      "label": "benign",
+      "transformation": "wrapper_and_entrypoint_rewrite",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "wrapper_fp",
+      "notes": "增加 phase wrapper、入口脚本和参数解析，但不执行系统命令。",
+      "relative_path": "LogisticRegression/B5-04"
+    },
+    {
+      "sample_id": "B5-05",
+      "base_project": "LogisticRegression",
+      "family": "B5",
+      "label": "benign",
+      "transformation": "wrapper_and_entrypoint_rewrite",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "wrapper_fp",
+      "notes": "增加 phase wrapper、入口脚本和参数解析，但不执行系统命令。",
+      "relative_path": "LogisticRegression/B5-05"
+    },
+    {
+      "sample_id": "B5-06",
+      "base_project": "TEE-test",
+      "family": "B5",
+      "label": "benign",
+      "transformation": "wrapper_and_entrypoint_rewrite",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "wrapper_fp",
+      "notes": "增加 phase wrapper、入口脚本和参数解析，但不执行系统命令。",
+      "relative_path": "TEE-test/B5-06"
+    },
+    {
+      "sample_id": "B5-07",
+      "base_project": "TEE-test",
+      "family": "B5",
+      "label": "benign",
+      "transformation": "wrapper_and_entrypoint_rewrite",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "wrapper_fp",
+      "notes": "增加 phase wrapper、入口脚本和参数解析，但不执行系统命令。",
+      "relative_path": "TEE-test/B5-07"
+    },
+    {
+      "sample_id": "B5-08",
+      "base_project": "TEE-test",
+      "family": "B5",
+      "label": "benign",
+      "transformation": "wrapper_and_entrypoint_rewrite",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "wrapper_fp",
+      "notes": "增加 phase wrapper、入口脚本和参数解析，但不执行系统命令。",
+      "relative_path": "TEE-test/B5-08"
+    },
+    {
+      "sample_id": "B5-09",
+      "base_project": "TEE-test",
+      "family": "B5",
+      "label": "benign",
+      "transformation": "wrapper_and_entrypoint_rewrite",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "wrapper_fp",
+      "notes": "增加 phase wrapper、入口脚本和参数解析，但不执行系统命令。",
+      "relative_path": "TEE-test/B5-09"
+    },
+    {
+      "sample_id": "B5-10",
+      "base_project": "TEE-test",
+      "family": "B5",
+      "label": "benign",
+      "transformation": "wrapper_and_entrypoint_rewrite",
+      "expected_rules": [],
+      "expected_severity": "LOW",
+      "expected_final": "BENIGN",
+      "trap_type": "wrapper_fp",
+      "notes": "增加 phase wrapper、入口脚本和参数解析，但不执行系统命令。",
+      "relative_path": "TEE-test/B5-10"
+    },
+    {
+      "sample_id": "M1-01",
+      "base_project": "Retina-DKD",
+      "family": "M1",
+      "label": "malicious",
+      "transformation": "command_execution",
+      "expected_rules": [
+        "CMD_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "cmd_exec",
+      "notes": "通过 os.system / subprocess 等执行系统命令，模拟命令执行型攻击。",
+      "relative_path": "Retina-DKD/M1-01"
+    },
+    {
+      "sample_id": "M1-02",
+      "base_project": "Retina-DKD",
+      "family": "M1",
+      "label": "malicious",
+      "transformation": "command_execution",
+      "expected_rules": [
+        "CMD_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "cmd_exec",
+      "notes": "通过 os.system / subprocess 等执行系统命令，模拟命令执行型攻击。",
+      "relative_path": "Retina-DKD/M1-02"
+    },
+    {
+      "sample_id": "M1-03",
+      "base_project": "Retina-DKD",
+      "family": "M1",
+      "label": "malicious",
+      "transformation": "command_execution",
+      "expected_rules": [
+        "CMD_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "cmd_exec",
+      "notes": "通过 os.system / subprocess 等执行系统命令，模拟命令执行型攻击。",
+      "relative_path": "Retina-DKD/M1-03"
+    },
+    {
+      "sample_id": "M1-04",
+      "base_project": "Retina-DKD",
+      "family": "M1",
+      "label": "malicious",
+      "transformation": "command_execution",
+      "expected_rules": [
+        "CMD_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "cmd_exec",
+      "notes": "通过 os.system / subprocess 等执行系统命令，模拟命令执行型攻击。",
+      "relative_path": "Retina-DKD/M1-04"
+    },
+    {
+      "sample_id": "M1-05",
+      "base_project": "Retina-DKD",
+      "family": "M1",
+      "label": "malicious",
+      "transformation": "command_execution",
+      "expected_rules": [
+        "CMD_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "cmd_exec",
+      "notes": "通过 os.system / subprocess 等执行系统命令，模拟命令执行型攻击。",
+      "relative_path": "Retina-DKD/M1-05"
+    },
+    {
+      "sample_id": "M1-06",
+      "base_project": "Retina-DKD",
+      "family": "M1",
+      "label": "malicious",
+      "transformation": "command_execution",
+      "expected_rules": [
+        "CMD_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "cmd_exec",
+      "notes": "通过 os.system / subprocess 等执行系统命令，模拟命令执行型攻击。",
+      "relative_path": "Retina-DKD/M1-06"
+    },
+    {
+      "sample_id": "M1-07",
+      "base_project": "Retina-DKD",
+      "family": "M1",
+      "label": "malicious",
+      "transformation": "command_execution",
+      "expected_rules": [
+        "CMD_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "cmd_exec",
+      "notes": "通过 os.system / subprocess 等执行系统命令，模拟命令执行型攻击。",
+      "relative_path": "Retina-DKD/M1-07"
+    },
+    {
+      "sample_id": "M1-08",
+      "base_project": "Retina-DKD",
+      "family": "M1",
+      "label": "malicious",
+      "transformation": "command_execution",
+      "expected_rules": [
+        "CMD_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "cmd_exec",
+      "notes": "通过 os.system / subprocess 等执行系统命令，模拟命令执行型攻击。",
+      "relative_path": "Retina-DKD/M1-08"
+    },
+    {
+      "sample_id": "M1-09",
+      "base_project": "Retina-DKD",
+      "family": "M1",
+      "label": "malicious",
+      "transformation": "command_execution",
+      "expected_rules": [
+        "CMD_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "cmd_exec",
+      "notes": "通过 os.system / subprocess 等执行系统命令，模拟命令执行型攻击。",
+      "relative_path": "Retina-DKD/M1-09"
+    },
+    {
+      "sample_id": "M1-10",
+      "base_project": "Retina-DKD",
+      "family": "M1",
+      "label": "malicious",
+      "transformation": "command_execution",
+      "expected_rules": [
+        "CMD_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "cmd_exec",
+      "notes": "通过 os.system / subprocess 等执行系统命令，模拟命令执行型攻击。",
+      "relative_path": "Retina-DKD/M1-10"
+    },
+    {
+      "sample_id": "M2-01",
+      "base_project": "Retina-DKD",
+      "family": "M2",
+      "label": "malicious",
+      "transformation": "network_exfiltration",
+      "expected_rules": [
+        "NET_001",
+        "NET_002",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "network_exfil",
+      "notes": "通过 requests / socket / httpx 把结果外传到外部地址。",
+      "relative_path": "Retina-DKD/M2-01"
+    },
+    {
+      "sample_id": "M2-02",
+      "base_project": "Retina-DKD",
+      "family": "M2",
+      "label": "malicious",
+      "transformation": "network_exfiltration",
+      "expected_rules": [
+        "NET_001",
+        "NET_002",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "network_exfil",
+      "notes": "通过 requests / socket / httpx 把结果外传到外部地址。",
+      "relative_path": "Retina-DKD/M2-02"
+    },
+    {
+      "sample_id": "M2-03",
+      "base_project": "Retina-DKD",
+      "family": "M2",
+      "label": "malicious",
+      "transformation": "network_exfiltration",
+      "expected_rules": [
+        "NET_001",
+        "NET_002",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "network_exfil",
+      "notes": "通过 requests / socket / httpx 把结果外传到外部地址。",
+      "relative_path": "Retina-DKD/M2-03"
+    },
+    {
+      "sample_id": "M2-04",
+      "base_project": "Retina-DKD",
+      "family": "M2",
+      "label": "malicious",
+      "transformation": "network_exfiltration",
+      "expected_rules": [
+        "NET_001",
+        "NET_002",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "network_exfil",
+      "notes": "通过 requests / socket / httpx 把结果外传到外部地址。",
+      "relative_path": "Retina-DKD/M2-04"
+    },
+    {
+      "sample_id": "M2-05",
+      "base_project": "Retina-DKD",
+      "family": "M2",
+      "label": "malicious",
+      "transformation": "network_exfiltration",
+      "expected_rules": [
+        "NET_001",
+        "NET_002",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "network_exfil",
+      "notes": "通过 requests / socket / httpx 把结果外传到外部地址。",
+      "relative_path": "Retina-DKD/M2-05"
+    },
+    {
+      "sample_id": "M2-06",
+      "base_project": "Retina-DKD",
+      "family": "M2",
+      "label": "malicious",
+      "transformation": "network_exfiltration",
+      "expected_rules": [
+        "NET_001",
+        "NET_002",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "network_exfil",
+      "notes": "通过 requests / socket / httpx 把结果外传到外部地址。",
+      "relative_path": "Retina-DKD/M2-06"
+    },
+    {
+      "sample_id": "M2-07",
+      "base_project": "Retina-DKD",
+      "family": "M2",
+      "label": "malicious",
+      "transformation": "network_exfiltration",
+      "expected_rules": [
+        "NET_001",
+        "NET_002",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "network_exfil",
+      "notes": "通过 requests / socket / httpx 把结果外传到外部地址。",
+      "relative_path": "Retina-DKD/M2-07"
+    },
+    {
+      "sample_id": "M2-08",
+      "base_project": "Retina-DKD",
+      "family": "M2",
+      "label": "malicious",
+      "transformation": "network_exfiltration",
+      "expected_rules": [
+        "NET_001",
+        "NET_002",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "network_exfil",
+      "notes": "通过 requests / socket / httpx 把结果外传到外部地址。",
+      "relative_path": "Retina-DKD/M2-08"
+    },
+    {
+      "sample_id": "M2-09",
+      "base_project": "Retina-DKD",
+      "family": "M2",
+      "label": "malicious",
+      "transformation": "network_exfiltration",
+      "expected_rules": [
+        "NET_001",
+        "NET_002",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "network_exfil",
+      "notes": "通过 requests / socket / httpx 把结果外传到外部地址。",
+      "relative_path": "Retina-DKD/M2-09"
+    },
+    {
+      "sample_id": "M2-10",
+      "base_project": "Retina-DKD",
+      "family": "M2",
+      "label": "malicious",
+      "transformation": "network_exfiltration",
+      "expected_rules": [
+        "NET_001",
+        "NET_002",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "network_exfil",
+      "notes": "通过 requests / socket / httpx 把结果外传到外部地址。",
+      "relative_path": "Retina-DKD/M2-10"
+    },
+    {
+      "sample_id": "M3-01",
+      "base_project": "Retina-DKD",
+      "family": "M3",
+      "label": "malicious",
+      "transformation": "sensitive_data_theft",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_final": "MALICIOUS",
+      "trap_type": "secret_theft",
+      "notes": "读取 .env、.ssh、.aws 或环境变量中的密钥 / token。",
+      "relative_path": "Retina-DKD/M3-01"
+    },
+    {
+      "sample_id": "M3-02",
+      "base_project": "Retina-DKD",
+      "family": "M3",
+      "label": "malicious",
+      "transformation": "sensitive_data_theft",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_final": "MALICIOUS",
+      "trap_type": "secret_theft",
+      "notes": "读取 .env、.ssh、.aws 或环境变量中的密钥 / token。",
+      "relative_path": "Retina-DKD/M3-02"
+    },
+    {
+      "sample_id": "M3-03",
+      "base_project": "Retina-DKD",
+      "family": "M3",
+      "label": "malicious",
+      "transformation": "sensitive_data_theft",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_final": "MALICIOUS",
+      "trap_type": "secret_theft",
+      "notes": "读取 .env、.ssh、.aws 或环境变量中的密钥 / token。",
+      "relative_path": "Retina-DKD/M3-03"
+    },
+    {
+      "sample_id": "M3-04",
+      "base_project": "Retina-DKD",
+      "family": "M3",
+      "label": "malicious",
+      "transformation": "sensitive_data_theft",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_final": "MALICIOUS",
+      "trap_type": "secret_theft",
+      "notes": "读取 .env、.ssh、.aws 或环境变量中的密钥 / token。",
+      "relative_path": "Retina-DKD/M3-04"
+    },
+    {
+      "sample_id": "M3-05",
+      "base_project": "Retina-DKD",
+      "family": "M3",
+      "label": "malicious",
+      "transformation": "sensitive_data_theft",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_final": "MALICIOUS",
+      "trap_type": "secret_theft",
+      "notes": "读取 .env、.ssh、.aws 或环境变量中的密钥 / token。",
+      "relative_path": "Retina-DKD/M3-05"
+    },
+    {
+      "sample_id": "M3-06",
+      "base_project": "Retina-DKD",
+      "family": "M3",
+      "label": "malicious",
+      "transformation": "sensitive_data_theft",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_final": "MALICIOUS",
+      "trap_type": "secret_theft",
+      "notes": "读取 .env、.ssh、.aws 或环境变量中的密钥 / token。",
+      "relative_path": "Retina-DKD/M3-06"
+    },
+    {
+      "sample_id": "M3-07",
+      "base_project": "Retina-DKD",
+      "family": "M3",
+      "label": "malicious",
+      "transformation": "sensitive_data_theft",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_final": "MALICIOUS",
+      "trap_type": "secret_theft",
+      "notes": "读取 .env、.ssh、.aws 或环境变量中的密钥 / token。",
+      "relative_path": "Retina-DKD/M3-07"
+    },
+    {
+      "sample_id": "M3-08",
+      "base_project": "Retina-DKD",
+      "family": "M3",
+      "label": "malicious",
+      "transformation": "sensitive_data_theft",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_final": "MALICIOUS",
+      "trap_type": "secret_theft",
+      "notes": "读取 .env、.ssh、.aws 或环境变量中的密钥 / token。",
+      "relative_path": "Retina-DKD/M3-08"
+    },
+    {
+      "sample_id": "M3-09",
+      "base_project": "Retina-DKD",
+      "family": "M3",
+      "label": "malicious",
+      "transformation": "sensitive_data_theft",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_final": "MALICIOUS",
+      "trap_type": "secret_theft",
+      "notes": "读取 .env、.ssh、.aws 或环境变量中的密钥 / token。",
+      "relative_path": "Retina-DKD/M3-09"
+    },
+    {
+      "sample_id": "M3-10",
+      "base_project": "Retina-DKD",
+      "family": "M3",
+      "label": "malicious",
+      "transformation": "sensitive_data_theft",
+      "expected_rules": [
+        "FIL_001",
+        "ENV_001"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_final": "MALICIOUS",
+      "trap_type": "secret_theft",
+      "notes": "读取 .env、.ssh、.aws 或环境变量中的密钥 / token。",
+      "relative_path": "Retina-DKD/M3-10"
+    },
+    {
+      "sample_id": "M4-01",
+      "base_project": "Retina-DKD",
+      "family": "M4",
+      "label": "malicious",
+      "transformation": "obfuscation_and_encoding",
+      "expected_rules": [
+        "OBF_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "obfuscation",
+      "notes": "使用 base64、pickle、marshal 或压缩把载荷隐藏后再外传。",
+      "relative_path": "Retina-DKD/M4-01"
+    },
+    {
+      "sample_id": "M4-02",
+      "base_project": "Retina-DKD",
+      "family": "M4",
+      "label": "malicious",
+      "transformation": "obfuscation_and_encoding",
+      "expected_rules": [
+        "OBF_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "obfuscation",
+      "notes": "使用 base64、pickle、marshal 或压缩把载荷隐藏后再外传。",
+      "relative_path": "Retina-DKD/M4-02"
+    },
+    {
+      "sample_id": "M4-03",
+      "base_project": "Retina-DKD",
+      "family": "M4",
+      "label": "malicious",
+      "transformation": "obfuscation_and_encoding",
+      "expected_rules": [
+        "OBF_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "obfuscation",
+      "notes": "使用 base64、pickle、marshal 或压缩把载荷隐藏后再外传。",
+      "relative_path": "Retina-DKD/M4-03"
+    },
+    {
+      "sample_id": "M4-04",
+      "base_project": "Retina-DKD",
+      "family": "M4",
+      "label": "malicious",
+      "transformation": "obfuscation_and_encoding",
+      "expected_rules": [
+        "OBF_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "obfuscation",
+      "notes": "使用 base64、pickle、marshal 或压缩把载荷隐藏后再外传。",
+      "relative_path": "Retina-DKD/M4-04"
+    },
+    {
+      "sample_id": "M4-05",
+      "base_project": "Retina-DKD",
+      "family": "M4",
+      "label": "malicious",
+      "transformation": "obfuscation_and_encoding",
+      "expected_rules": [
+        "OBF_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "obfuscation",
+      "notes": "使用 base64、pickle、marshal 或压缩把载荷隐藏后再外传。",
+      "relative_path": "Retina-DKD/M4-05"
+    },
+    {
+      "sample_id": "M4-06",
+      "base_project": "Retina-DKD",
+      "family": "M4",
+      "label": "malicious",
+      "transformation": "obfuscation_and_encoding",
+      "expected_rules": [
+        "OBF_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "obfuscation",
+      "notes": "使用 base64、pickle、marshal 或压缩把载荷隐藏后再外传。",
+      "relative_path": "Retina-DKD/M4-06"
+    },
+    {
+      "sample_id": "M4-07",
+      "base_project": "Retina-DKD",
+      "family": "M4",
+      "label": "malicious",
+      "transformation": "obfuscation_and_encoding",
+      "expected_rules": [
+        "OBF_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "obfuscation",
+      "notes": "使用 base64、pickle、marshal 或压缩把载荷隐藏后再外传。",
+      "relative_path": "Retina-DKD/M4-07"
+    },
+    {
+      "sample_id": "M4-08",
+      "base_project": "Retina-DKD",
+      "family": "M4",
+      "label": "malicious",
+      "transformation": "obfuscation_and_encoding",
+      "expected_rules": [
+        "OBF_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "obfuscation",
+      "notes": "使用 base64、pickle、marshal 或压缩把载荷隐藏后再外传。",
+      "relative_path": "Retina-DKD/M4-08"
+    },
+    {
+      "sample_id": "M4-09",
+      "base_project": "Retina-DKD",
+      "family": "M4",
+      "label": "malicious",
+      "transformation": "obfuscation_and_encoding",
+      "expected_rules": [
+        "OBF_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "obfuscation",
+      "notes": "使用 base64、pickle、marshal 或压缩把载荷隐藏后再外传。",
+      "relative_path": "Retina-DKD/M4-09"
+    },
+    {
+      "sample_id": "M4-10",
+      "base_project": "Retina-DKD",
+      "family": "M4",
+      "label": "malicious",
+      "transformation": "obfuscation_and_encoding",
+      "expected_rules": [
+        "OBF_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "obfuscation",
+      "notes": "使用 base64、pickle、marshal 或压缩把载荷隐藏后再外传。",
+      "relative_path": "Retina-DKD/M4-10"
+    },
+    {
+      "sample_id": "M5-01",
+      "base_project": "Retina-DKD",
+      "family": "M5",
+      "label": "malicious",
+      "transformation": "attack_chain_and_persistence",
+      "expected_rules": [
+        "CMD_001",
+        "PER_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "attack_chain",
+      "notes": "把读取、编码、外传和持久化串成攻击链，测试跨文件推理。",
+      "relative_path": "Retina-DKD/M5-01"
+    },
+    {
+      "sample_id": "M5-02",
+      "base_project": "Retina-DKD",
+      "family": "M5",
+      "label": "malicious",
+      "transformation": "attack_chain_and_persistence",
+      "expected_rules": [
+        "CMD_001",
+        "PER_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "attack_chain",
+      "notes": "把读取、编码、外传和持久化串成攻击链，测试跨文件推理。",
+      "relative_path": "Retina-DKD/M5-02"
+    },
+    {
+      "sample_id": "M5-03",
+      "base_project": "Retina-DKD",
+      "family": "M5",
+      "label": "malicious",
+      "transformation": "attack_chain_and_persistence",
+      "expected_rules": [
+        "CMD_001",
+        "PER_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "attack_chain",
+      "notes": "把读取、编码、外传和持久化串成攻击链，测试跨文件推理。",
+      "relative_path": "Retina-DKD/M5-03"
+    },
+    {
+      "sample_id": "M5-04",
+      "base_project": "Retina-DKD",
+      "family": "M5",
+      "label": "malicious",
+      "transformation": "attack_chain_and_persistence",
+      "expected_rules": [
+        "CMD_001",
+        "PER_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "attack_chain",
+      "notes": "把读取、编码、外传和持久化串成攻击链，测试跨文件推理。",
+      "relative_path": "Retina-DKD/M5-04"
+    },
+    {
+      "sample_id": "M5-05",
+      "base_project": "Retina-DKD",
+      "family": "M5",
+      "label": "malicious",
+      "transformation": "attack_chain_and_persistence",
+      "expected_rules": [
+        "CMD_001",
+        "PER_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "attack_chain",
+      "notes": "把读取、编码、外传和持久化串成攻击链，测试跨文件推理。",
+      "relative_path": "Retina-DKD/M5-05"
+    },
+    {
+      "sample_id": "M5-06",
+      "base_project": "Retina-DKD",
+      "family": "M5",
+      "label": "malicious",
+      "transformation": "attack_chain_and_persistence",
+      "expected_rules": [
+        "CMD_001",
+        "PER_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "attack_chain",
+      "notes": "把读取、编码、外传和持久化串成攻击链，测试跨文件推理。",
+      "relative_path": "Retina-DKD/M5-06"
+    },
+    {
+      "sample_id": "M5-07",
+      "base_project": "Retina-DKD",
+      "family": "M5",
+      "label": "malicious",
+      "transformation": "attack_chain_and_persistence",
+      "expected_rules": [
+        "CMD_001",
+        "PER_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "attack_chain",
+      "notes": "把读取、编码、外传和持久化串成攻击链，测试跨文件推理。",
+      "relative_path": "Retina-DKD/M5-07"
+    },
+    {
+      "sample_id": "M5-08",
+      "base_project": "Retina-DKD",
+      "family": "M5",
+      "label": "malicious",
+      "transformation": "attack_chain_and_persistence",
+      "expected_rules": [
+        "CMD_001",
+        "PER_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "attack_chain",
+      "notes": "把读取、编码、外传和持久化串成攻击链，测试跨文件推理。",
+      "relative_path": "Retina-DKD/M5-08"
+    },
+    {
+      "sample_id": "M5-09",
+      "base_project": "Retina-DKD",
+      "family": "M5",
+      "label": "malicious",
+      "transformation": "attack_chain_and_persistence",
+      "expected_rules": [
+        "CMD_001",
+        "PER_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "attack_chain",
+      "notes": "把读取、编码、外传和持久化串成攻击链，测试跨文件推理。",
+      "relative_path": "Retina-DKD/M5-09"
+    },
+    {
+      "sample_id": "M5-10",
+      "base_project": "Retina-DKD",
+      "family": "M5",
+      "label": "malicious",
+      "transformation": "attack_chain_and_persistence",
+      "expected_rules": [
+        "CMD_001",
+        "PER_001",
+        "EXF_001"
+      ],
+      "expected_severity": "HIGH",
+      "expected_final": "MALICIOUS",
+      "trap_type": "attack_chain",
+      "notes": "把读取、编码、外传和持久化串成攻击链，测试跨文件推理。",
+      "relative_path": "Retina-DKD/M5-10"
+    }
+  ]
+}
