@@ -77,13 +77,15 @@ func DefaultRules() []Rule {
 			ID:          "CMD_001",
 			Category:    "命令执行",
 			Severity:    SeverityHigh,
-			Description: "子进程/系统命令 — 可执行 curl/wget 外传数据",
+			Description: "shell 命令执行或危险外部命令 — 可能绕过参数化保护",
 			Patterns: compilePatterns(
-				`subprocess\.(run|call|Popen|check_output|check_call)\s*\(`,
 				`os\.system\s*\(`,
 				`os\.popen\s*\(`,
 				`os\.exec[a-z]*\s*\(`,
 				`commands\.getoutput`,
+				`subprocess\.(?:run|call|Popen|check_output|check_call)\s*\([^)]*shell\s*=\s*True`,
+				`subprocess\.(?:run|call|Popen|check_output|check_call)\s*\(\s*\[\s*['\"](?:bash|sh|zsh|fish|curl|wget|rm|cmd\.exe|powershell|pwsh)['\"]`,
+				`subprocess\.(?:run|call|Popen|check_output|check_call)\s*\(\s*['\"](?:bash|sh|zsh|fish|curl|wget|rm|cmd\.exe|powershell|pwsh)['\"]`,
 			),
 		},
 		{
@@ -108,7 +110,7 @@ func DefaultRules() []Rule {
 			Patterns: compilePatterns(
 				`(?:^|[^.\w])eval\s*\(`,
 				`(?:^|[^.\w])exec\s*\(`,
-				`compile\s*\(.*['"]exec['"]`,
+				`compile\s*\(.*['\"]exec['\"]`,
 				`__import__\s*\(`,
 				`importlib\.import_module\s*\(`,
 			),
@@ -166,14 +168,13 @@ func DefaultRules() []Rule {
 			ID:          "EMB_001",
 			Category:    "结果嵌入数据",
 			Severity:    SeverityHigh,
-			Description: "将训练数据直接写入输出文件 — 可能通过结果文件泄露原始数据",
+			Description: "将原始数据直接写入输出文件 — 可能通过结果文件泄露原始数据",
 			Patterns: compilePatterns(
-				`open\s*\(.*['\"][wa].*['\"]\).*\.write\s*\(.*(data|dataset|images|samples|batch)`,
-				`shutil\.copy\s*\(.*(data|dataset|train|test|image)`,
-				`shutil\.copytree\s*\(.*(data|dataset|train|test)`,
-				`np\.save\s*\(.*(data|dataset|images|samples|x_train|y_train)`,
-				`np\.savez\s*\(.*(data|dataset|images|samples)`,
-				`torch\.save\s*\(.*(data|dataset|images|samples)`,
+				`torch\.save\s*\(\s*(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train)\b`,
+				`np\.save\s*\(\s*['\"][^'\"]*['\"]\s*,\s*(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train)\b`,
+				`np\.savez\s*\(\s*['\"][^'\"]*['\"]\s*,[^)]*(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train)\s*=`,
+				`shutil\.copy\s*\([^)]*(?:data|dataset|train|test|image)\b`,
+				`shutil\.copytree\s*\([^)]*(?:data|dataset|train|test|image)\b`,
 			),
 		},
 		{
@@ -193,11 +194,11 @@ func DefaultRules() []Rule {
 			ID:          "EMB_003",
 			Category:    "结果嵌入数据",
 			Severity:    SeverityMedium,
-			Description: "将原始数据打印到日志/标准输出 — 可能在日志文件中泄露",
+			Description: "将原始数据直接打印到日志/标准输出 — 可能在日志文件中泄露",
 			Patterns: compilePatterns(
-				`print\s*\(.*(data|dataset|images|samples|batch|x_train|y_train)\s*\)`,
-				`logging\.(info|debug|warning)\s*\(.*(data|dataset|images|samples)\s*\)`,
-				`sys\.stdout\.write\s*\(.*(data|dataset|samples)`,
+				`print\s*\(\s*(?:raw_|train_|test_)?(?:data|images|samples|batch|x_train|y_train)\b`,
+				`logging\.(?:info|debug|warning)\s*\(\s*(?:raw_|train_|test_)?(?:data|images|samples|batch|x_train|y_train)\b`,
+				`sys\.stdout\.write\s*\(\s*(?:raw_|train_|test_)?(?:data|images|samples|batch|x_train|y_train)\b`,
 			),
 		},
 		{
@@ -206,7 +207,7 @@ func DefaultRules() []Rule {
 			Severity:    SeverityHigh,
 			Description: "将数据编码后嵌入模型权重或输出 — 隐写术数据泄露",
 			Patterns: compilePatterns(
-				`(state_dict|weights|params).*(data|dataset|embed|hide|stegano)`,
+				`(?:state_dict|weights|params).*(?:hidden|secret|payload|stego|embed|hide)(?:_?data)?`,
 				`base64.*save|save.*base64`,
 				`encode.*state_dict|state_dict.*encode`,
 				`zlib.*save|save.*zlib`,
@@ -215,7 +216,6 @@ func DefaultRules() []Rule {
 		},
 	}
 }
-
 func compilePatterns(patterns ...string) []*regexp.Regexp {
 	compiled := make([]*regexp.Regexp, 0, len(patterns))
 	for _, p := range patterns {

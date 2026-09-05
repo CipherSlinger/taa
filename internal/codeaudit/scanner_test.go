@@ -431,6 +431,66 @@ def train(model, optimizer, epochs):
 	}
 }
 
+func TestScannerIgnoresDatasetLengthLogging(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "train.py", `
+import torch
+def train(test_dataset):
+    print(len(test_dataset))
+    return torch.tensor(1)
+`)
+	scanner := NewDefaultScanner()
+	report, err := scanner.ScanDirectory(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Passed {
+		t.Fatalf("expected benign dataset length logging to pass, got findings: %+v", report.Findings)
+	}
+}
+
+func TestScannerIgnoresCheckpointSaveWithDatasetPath(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "train.py", `
+import torch
+
+def train(model, model_name, dataset, test_dataset):
+    print(len(test_dataset))
+    torch.save(model.state_dict(), 'model/model_' + model_name + '_' + dataset + '/model_1.pth')
+`)
+	scanner := NewDefaultScanner()
+	report, err := scanner.ScanDirectory(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Passed {
+		t.Fatalf("expected benign checkpoint save to pass, got findings: %+v", report.Findings)
+	}
+}
+
+func TestScannerIgnoresSafeSubprocessRun(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "runner.py", `
+import subprocess
+import sys
+
+def run_py(python_name, dataset, model_name, xlsx_name, dataset_num, model_name_save, basic_model, gpu, wam,
+           windows_num, el, er, layer_num):
+    cmd = [sys.executable, python_name, '-s', dataset, '-m', model_name, '-x', xlsx_name, '-d', str(dataset_num),
+           '-mnp', model_name_save, '-b', basic_model, '-g', str(gpu), '-w', wam, '-n', str(windows_num),
+           '-el', str(el), '-er', str(er), '-l', str(layer_num)]
+    subprocess.run(cmd, check=True)
+`)
+	scanner := NewDefaultScanner()
+	report, err := scanner.ScanDirectory(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Passed {
+		t.Fatalf("expected safe subprocess usage to pass, got findings: %+v", report.Findings)
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────
 
 func assertFindingHasRule(t *testing.T, report *Report, ruleID string) {
