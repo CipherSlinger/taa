@@ -102,7 +102,6 @@ LOCAL_TAA_BIND="${LOCAL_TAA_BIND:-:${LOCAL_TAA_PORT}}"
 LOCAL_PLATFORM_LOG_FILE="${LOCAL_PLATFORM_LOG_FILE:-$PROJECT_DIR/.local/logs/platform-mock.log}"
 LOCAL_TAA_LOG_FILE="${LOCAL_TAA_LOG_FILE:-$PROJECT_DIR/.local/logs/taa.log}"
 LOCAL_OLLAMA_LOG_FILE="${LOCAL_OLLAMA_LOG_FILE:-$PROJECT_DIR/.local/logs/ollama.log}"
-LOCAL_OLLAMA_LOADER="${LOCAL_OLLAMA_LOADER:-$OLLAMA_LOCAL_DIR/lib/glibc/ld-linux-x86-64.so.2}"
 LOCAL_OLLAMA_URL="${LOCAL_OLLAMA_URL:-http://${OLLAMA_HOST}}"
 LOCAL_DOCKER_ID="${LOCAL_DOCKER_ID:-127.0.0.1}"
 
@@ -432,17 +431,9 @@ if [[ "$DEPLOY_LOCAL" == true ]]; then
     "$MOCK_BINARY_PATH" -addr "$LOCAL_PLATFORM_BIND" -state-dir "$LOCAL_PLATFORM_STATE_DIR" -taa-target "$LOCAL_TAA_URL" -allow-empty-attestation
   wait_for_http_ready "platform-mock" GET "$LOCAL_PLATFORM_URL/api/register/status" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL" "$LOCAL_PLATFORM_LOG_FILE"
 
-  step "starting local ollama (via custom loader: $LOCAL_OLLAMA_LOADER)"
-  if [[ ! -f "$LOCAL_OLLAMA_LOADER" ]]; then
-    err "custom dynamic linker not found: $LOCAL_OLLAMA_LOADER"
-    exit 1
-  fi
+  step "starting local ollama"
   start_local_background "ollama" "$LOCAL_RUN_DIR/ollama.pid" "$LOCAL_OLLAMA_LOG_FILE" \
-    env OLLAMA_HOST="$OLLAMA_HOST" \
-        OLLAMA_MODELS="$OLLAMA_LOCAL_DIR/models/models" \
-        OLLAMA_LIBRARY_PATH="$OLLAMA_LOCAL_DIR/lib/ollama" \
-    "$LOCAL_OLLAMA_LOADER" --library-path "$OLLAMA_LOCAL_DIR/lib/glibc" \
-    "$OLLAMA_LOCAL_DIR/ollama" serve
+    sh -lc "cd '$OLLAMA_LOCAL_DIR' && exec env OLLAMA_HOST='$OLLAMA_HOST' OLLAMA_MODELS='$OLLAMA_LOCAL_DIR/models/models' OLLAMA_LIBRARY_PATH='$OLLAMA_LOCAL_DIR/lib/ollama' ./start-ollama.sh"
   wait_for_http_ready "ollama" GET "$LOCAL_OLLAMA_URL/api/tags" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL" "$LOCAL_OLLAMA_LOG_FILE"
 
   step "starting local taa"
