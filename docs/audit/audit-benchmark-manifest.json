@@ -1,7 +1,7 @@
 {
   "benchmark_name": "audit-100",
   "benchmark_version": "2026-08-30",
-  "benchmark_root": "/mnt/d/可信数字空间/tee/benchmarks/audit-100",
+  "benchmark_root": "benchmarks/audit-100",
   "base_projects": [
     "LogisticRegression",
     "TEE-test",

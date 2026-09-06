@@ -14,5 +14,6 @@ models/audit/audit-results/
 models/audit/ollama-qwen2.5-coder-0.5b/
 models/audit/ollama-qwen2.5-coder-1.5b/
 models/audit/benchmarks/
+benchmarks/
 
 sdk/

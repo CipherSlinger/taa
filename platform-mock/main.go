@@ -16,6 +16,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +75,14 @@ type apiResponse struct {
 	Msg    string `json:"msg"`
 	Result any    `json:"result"`
 	Error  int    `json:"error"`
+}
+
+type uploadedFileRecord struct {
+	Filename     string    `json:"filename"`
+	OriginalName string    `json:"originalName"`
+	Size         int64     `json:"size"`
+	URL          string    `json:"url"`
+	UploadedAt   time.Time `json:"uploadedAt"`
 }
 
 type registerStateStore struct {
@@ -186,7 +196,9 @@ type reportRequest struct {
 	Report    string  `json:"report"`
 }
 
-func discoverTAAAddr(kubectlPod, kubectlNS string) string {
+const defaultTAAPort = "6001"
+
+func discoverTAAAddr(kubectlPod, kubectlNS, port string) string {
 	if kubectlPod == "" {
 		return ""
 	}
@@ -198,7 +210,10 @@ func discoverTAAAddr(kubectlPod, kubectlNS string) string {
 	if err != nil || len(out) == 0 {
 		return ""
 	}
-	return "http://" + strings.TrimSpace(string(out)) + ":6001"
+	if port == "" {
+		port = defaultTAAPort
+	}
+	return "http://" + strings.TrimSpace(string(out)) + ":" + port
 }
 
 func main() {
@@ -207,6 +222,7 @@ func main() {
 	taaTarget := flag.String("taa-target", "", "TAA service address for reverse proxy (e.g. http://10.244.0.5:6001). Auto-detected via -taa-pod if empty")
 	taaPod := flag.String("taa-pod", envOrDefault("TAA_POD", "simple-busybox"), "Kubernetes pod name for auto-discovering TAA address")
 	taaNS := flag.String("taa-ns", envOrDefault("TAA_NS", ""), "Kubernetes namespace for TAA pod (empty = default namespace)")
+	taaPort := flag.String("taa-port", envOrDefault("TAA_PORT", defaultTAAPort), "TAA service port for auto-discovery fallback")
 	allowEmptyAttestation := flag.Bool("allow-empty-attestation", false, "allow registration without attestation report (for local testing without TEE hardware)")
 	flag.Parse()
 
@@ -217,7 +233,7 @@ func main() {
 	// Resolve TAA proxy target
 	taaAddr := strings.TrimRight(strings.TrimSpace(*taaTarget), "/")
 	if taaAddr == "" {
-		taaAddr = discoverTAAAddr(*taaPod, *taaNS)
+		taaAddr = discoverTAAAddr(*taaPod, *taaNS, strings.TrimSpace(*taaPort))
 	}
 	if taaAddr != "" {
 		log.Printf("TAA reverse proxy target: %s (pod=%s)", taaAddr, *taaPod)
@@ -229,6 +245,10 @@ func main() {
 	reportStore := newReportStateStore(*stateDir)
 	reportResStore := newReportStateStore(*stateDir, "reportRes-state.json")
 	reportModelImportStore := newReportStateStore(*stateDir, "reportModelImport-state.json")
+	uploadDir := "./uploads"
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		log.Printf("failed to create upload directory: %v", err)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", indexHandler)
 	mux.HandleFunc("/v1/taa/register", registerHandler(registerStore, *allowEmptyAttestation))
@@ -244,18 +264,15 @@ func main() {
 	mux.HandleFunc("/api/reportModelImport/status", reportStatusHandler(reportModelImportStore))
 	mux.HandleFunc("/api/reportModelImport/reset", reportResetHandler(reportModelImportStore))
 	mux.HandleFunc("/api/taa-target", taaTargetHandler(taaAddr))
-	mux.HandleFunc("/api/upload", uploadHandler(*addr))
+	mux.HandleFunc("/api/upload", uploadHandler(*addr, uploadDir))
+	mux.HandleFunc("/api/uploads", uploadListHandler(*addr, uploadDir))
+	mux.HandleFunc("/api/uploads/reset", uploadResetHandler(uploadDir))
 	mux.HandleFunc("/api/taa/logs", taaLogsHandler(taaAddr))
 	mux.HandleFunc("/api/taa/status", taaStatusHandler(taaAddr))
 	mux.HandleFunc("/api/taa/getResourceInfo", taaGetResourceInfoHandler(taaAddr))
 
 	// Serve uploaded files
-	uploadDir := "./uploads"
-	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
-		log.Printf("failed to create upload directory: %v", err)
-	} else {
-		mux.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(uploadDir))))
-	}
+	mux.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(uploadDir))))
 
 	// TAA reverse proxy: /taa/* → TAA pod
 	if taaAddr != "" {
@@ -925,7 +942,133 @@ func taaGetResourceInfoHandler(taaAddr string) http.HandlerFunc {
 	}
 }
 
-func uploadHandler(addr string) http.HandlerFunc {
+func listUploadedFiles(uploadDir, addr string) ([]uploadedFileRecord, error) {
+	entries, err := os.ReadDir(uploadDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []uploadedFileRecord{}, nil
+		}
+		return nil, err
+	}
+
+	files := make([]uploadedFileRecord, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		filename := entry.Name()
+		originalName := filename
+		uploadedAt := info.ModTime().UTC()
+		if prefix, rest, ok := strings.Cut(filename, "_"); ok {
+			if nanos, err := strconv.ParseInt(prefix, 10, 64); err == nil {
+				uploadedAt = time.Unix(0, nanos).UTC()
+			}
+			if rest != "" {
+				originalName = rest
+			}
+		}
+		files = append(files, uploadedFileRecord{
+			Filename:     filename,
+			OriginalName: originalName,
+			Size:         info.Size(),
+			URL:          fmt.Sprintf("http://%s/files/%s", platformIP(addr), filename),
+			UploadedAt:   uploadedAt,
+		})
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].UploadedAt.Equal(files[j].UploadedAt) {
+			return files[i].Filename > files[j].Filename
+		}
+		return files[i].UploadedAt.After(files[j].UploadedAt)
+	})
+	return files, nil
+}
+
+func clearUploadedFiles(uploadDir string) (int, error) {
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		return 0, err
+	}
+	entries, err := os.ReadDir(uploadDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	count := 0
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(uploadDir, entry.Name())); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
+}
+
+func uploadListHandler(addr, uploadDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 GET 方法", nil, http.StatusMethodNotAllowed)
+			return
+		}
+
+		files, err := listUploadedFiles(uploadDir, addr)
+		if err != nil {
+			writeEnvelope(w, http.StatusInternalServerError, "读取上传文件列表失败: "+err.Error(), nil, http.StatusInternalServerError)
+			return
+		}
+		writeEnvelope(w, http.StatusOK, "success", map[string]any{
+			"files": files,
+		}, 0)
+	}
+}
+
+func uploadResetHandler(uploadDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
+			return
+		}
+
+		deleted, err := clearUploadedFiles(uploadDir)
+		if err != nil {
+			writeEnvelope(w, http.StatusInternalServerError, "清空上传文件失败: "+err.Error(), nil, http.StatusInternalServerError)
+			return
+		}
+		writeEnvelope(w, http.StatusOK, "reset", map[string]any{
+			"deleted": deleted,
+		}, 0)
+	}
+}
+
+func sanitizeUploadFilename(name string) string {
+	cleaned := strings.ReplaceAll(name, "\\", "/")
+	cleaned = filepath.Base(cleaned)
+	cleaned = strings.TrimSpace(cleaned)
+	if cleaned == "" || cleaned == "." || cleaned == string(filepath.Separator) {
+		return "upload"
+	}
+	return cleaned
+}
+
+func uploadHandler(addr, uploadDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -953,14 +1096,14 @@ func uploadHandler(addr string) http.HandlerFunc {
 		defer file.Close()
 
 		// Create upload directory if not exists
-		uploadDir := "./uploads"
 		if err := os.MkdirAll(uploadDir, 0o755); err != nil {
 			writeEnvelope(w, http.StatusInternalServerError, "创建上传目录失败: "+err.Error(), nil, http.StatusInternalServerError)
 			return
 		}
 
+		originalName := sanitizeUploadFilename(header.Filename)
 		// Generate unique filename to avoid conflicts
-		filename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), header.Filename)
+		filename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), originalName)
 		filePath := filepath.Join(uploadDir, filename)
 
 		// Create destination file
@@ -982,13 +1125,14 @@ func uploadHandler(addr string) http.HandlerFunc {
 		host := platformIP(addr)
 		fileURL := fmt.Sprintf("http://%s/files/%s", host, filename)
 
-		log.Printf("file uploaded: %s → %s", header.Filename, fileURL)
+		log.Printf("file uploaded: %s → %s", originalName, fileURL)
 
 		writeEnvelope(w, http.StatusOK, "文件上传成功", map[string]any{
 			"filename":     filename,
-			"originalName": header.Filename,
+			"originalName": originalName,
 			"size":         header.Size,
 			"url":          fileURL,
+			"uploadedAt":   time.Now().UTC(),
 		}, 0)
 	}
 }

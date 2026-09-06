@@ -62,7 +62,9 @@ fi
 		t.Fatalf("generate SM2 key: %v", err)
 	}
 
-	state := NewTAAState(attestationPath, "127.0.0.1:65535", "test-docker-001", helperPath, "auto", sm2Key, nil, SecurityConfig{
+	userData := sm2UserDataFromPublicKey(&sm2Key.PublicKey)
+
+	state := NewTAAState(attestationPath, "127.0.0.1:65535", "test-docker-001", helperPath, "auto", sm2Key, userData, SecurityConfig{
 		ScanEnabled: false,
 		ModelDir:    modelDir,
 		DataDir:     dataDir,
@@ -70,6 +72,19 @@ fi
 		ResultDir:   resultDir,
 	})
 	return state, attestationPath
+}
+
+func sm2UserDataFromPublicKey(pub *teecrypto.SM2PublicKey) []byte {
+	userData := make([]byte, 64)
+	if pub == nil || pub.X == nil || pub.Y == nil {
+		return userData
+	}
+
+	xBytes := pub.X.Bytes()
+	yBytes := pub.Y.Bytes()
+	copy(userData[32-len(xBytes):32], xBytes)
+	copy(userData[64-len(yBytes):], yBytes)
+	return userData
 }
 
 func setupTestServer(t *testing.T) (*TAAState, *httptest.Server) {
@@ -755,7 +770,7 @@ func TestExportHandler(t *testing.T) {
 // ── Test: /v1/taa/getAttestation ─────────────────────────
 
 func TestGetAttestationHandler(t *testing.T) {
-	_, server := setupTestServer(t)
+	state, server := setupTestServer(t)
 
 	t.Run("success returns json", func(t *testing.T) {
 		resp := postJSON(t, server.URL+"/v1/taa/getAttestation", map[string]any{
@@ -795,6 +810,22 @@ func TestGetAttestationHandler(t *testing.T) {
 		attestationValues, ok := result["attestationValues"].(string)
 		if !ok || attestationValues == "" {
 			t.Fatal("attestationValues is empty")
+		}
+		var attValues struct {
+			UserData string `json:"userdata"`
+		}
+		if err := json.Unmarshal([]byte(attestationValues), &attValues); err != nil {
+			t.Fatalf("unmarshal attestationValues: %v", err)
+		}
+		if !strings.HasPrefix(attValues.UserData, "-----BEGIN PUBLIC KEY-----") {
+			t.Fatalf("userdata = %q, want PEM public key", attValues.UserData)
+		}
+		parsedPub, err := teecrypto.ParseSM2PublicKeyPEM([]byte(attValues.UserData))
+		if err != nil {
+			t.Fatalf("parse userdata PEM: %v", err)
+		}
+		if got := sm2UserDataFromPublicKey(parsedPub); !bytes.Equal(got, state.UserData) {
+			t.Fatalf("userdata bytes = %x, want %x", got, state.UserData)
 		}
 	})
 

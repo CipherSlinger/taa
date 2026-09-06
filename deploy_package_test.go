@@ -45,6 +45,33 @@ func TestDeployShLocalStartsOllamaViaStartScript(t *testing.T) {
 	}
 }
 
+func TestDeployShCopiesOllamaArchiveIntoContainer(t *testing.T) {
+	data, err := os.ReadFile("deploy.sh")
+	if err != nil {
+		t.Fatalf("read deploy.sh: %v", err)
+	}
+	text := string(data)
+	start := strings.Index(text, "copy_ollama_to_container() {")
+	if start < 0 {
+		t.Fatal("deploy.sh ollama container copy block not found")
+	}
+	endRel := strings.Index(text[start:], "if [[ \"$DEPLOY_PLATFORM_MOCK\" == true ]]; then")
+	if endRel < 0 {
+		t.Fatal("deploy.sh ollama container copy block end not found")
+	}
+	end := start + endRel
+	block := text[start:end]
+	if !strings.Contains(block, "-czf") || !strings.Contains(block, "-xzf") {
+		t.Fatal("deploy.sh should archive ollama before copying it into the container")
+	}
+	if !strings.Contains(block, "REMOTE_OLLAMA_ARCHIVE") || !strings.Contains(block, "CONTAINER_OLLAMA_ARCHIVE") {
+		t.Fatal("deploy.sh should use explicit archive paths for ollama transfer")
+	}
+	if strings.Contains(block, "container_cp \"$REMOTE_OLLAMA_DIR\"") {
+		t.Fatal("deploy.sh should not copy the full ollama directory into the container anymore")
+	}
+}
+
 func TestStartOllamaScriptLaunchesLocalBinary(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("models", "audit", "ollama-qwen2.5-coder-0.5b", "start-ollama.sh"))
 	if err != nil {

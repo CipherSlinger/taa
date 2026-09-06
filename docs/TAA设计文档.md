@@ -272,13 +272,14 @@ USERDATA = SM3(taaPublicKey || dockerId || platformIP || timestamp)
 
 - 64 字节（SM3 输出 32 字节，重复填充到 64 字节）
 - 通过 `ATTESTATION_USERDATA` 环境变量传入 helper
+- 在 `/v1/taa/getAttestation` 返回时，`userdata` 会转换为 PEM 格式的 SM2 公钥字符串
 - 绑定 TAA 公钥、容器、平台与 TEE 硬件
 
 ### 7.3 attestationValues 字段
 
 ```json
 {
-  "userdata": "098e3d33...",
+  "userdata": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----",
   "mnonce": "dc4f8eb0...",
   "digest": "afb78b2e...",
   "chipId": "..."

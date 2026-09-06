@@ -15,7 +15,7 @@ NC='\033[0m' # No Color
 
 # Kubernetes 目标：默认部署到 osr 命名空间下的指定 TAA Pod。
 TARGET_NAMESPACE="${TARGET_NAMESPACE:-osr}"
-TARGET_POD="${TARGET_POD:-taa-env-slim-v2-1-0062040056ca0130-8695d7b6cf-sdl5m}"
+TARGET_POD="${TARGET_POD:-taa-env-slim-base-402ca5dd0469c7c9-594c85455c-sfzkq}"
 
 # 项目与远程宿主机：本地源码目录、SSH 登录信息和远程工作目录。
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -59,16 +59,22 @@ K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
 
 # Docker 部署模式：设为 "docker" 时通过 docker exec/cp 操作容器而非 kubectl。
 DEPLOY_MODE="${DEPLOY_MODE:-k8s}"
-TARGET_CONTAINER="${TARGET_CONTAINER:-brave_shockley}"
+TARGET_CONTAINER="${TARGET_CONTAINER:-taa-env-slim-v2}"
 # TAA 容器运行参数：容器内工作目录、监听地址、注册用容器标识和日志路径。
 TAA_CONTAINER_WORKDIR="${TAA_CONTAINER_WORKDIR:-${CON_WORKDIR}}"
 TAA_CONTAINER_ADDR="${TAA_CONTAINER_ADDR:-:${CON_PORT}}"
-TAA_LOG_FILE="${TAA_LOG_FILE:-/tmp/taa.log}"
+if [[ "$DEBUG" == true ]]; then
+  TAA_LOG_FILE="${TAA_LOG_FILE:-$TAA_CONTAINER_WORKDIR/taa.log}"
+else
+  TAA_LOG_FILE="${TAA_LOG_FILE:-/tmp/taa.log}"
+fi
 # Ollama / Qwen：本地离线包、远程缓存目录、容器内目录、服务监听和模型配置。
 OLLAMA_LOCAL_DIR="${OLLAMA_LOCAL_DIR:-$PROJECT_DIR/models/audit/ollama-qwen2.5-coder-0.5b}"
 OLLAMA_DIR_NAME="${OLLAMA_DIR_NAME:-$(basename "$OLLAMA_LOCAL_DIR")}"
 REMOTE_OLLAMA_DIR="${REMOTE_OLLAMA_DIR:-$REMOTE_DIR/$OLLAMA_DIR_NAME}"
+REMOTE_OLLAMA_ARCHIVE="${REMOTE_OLLAMA_ARCHIVE:-$REMOTE_DIR/$OLLAMA_DIR_NAME.tar.gz}"
 CONTAINER_OLLAMA_DIR="${CONTAINER_OLLAMA_DIR:-$TAA_CONTAINER_WORKDIR/$OLLAMA_DIR_NAME}"
+CONTAINER_OLLAMA_ARCHIVE="${CONTAINER_OLLAMA_ARCHIVE:-$TAA_CONTAINER_WORKDIR/$OLLAMA_DIR_NAME.tar.gz}"
 OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
 OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5-coder:0.5b}"
 OLLAMA_LOG_FILE="${OLLAMA_LOG_FILE:-/tmp/ollama.log}"
@@ -96,7 +102,7 @@ LOCAL_RUN_DIR="${LOCAL_RUN_DIR:-$PROJECT_DIR/.local/run}"
 LOCAL_TAA_MODEL_DIR="${LOCAL_TAA_MODEL_DIR:-$LOCAL_RUNTIME_DIR/models}"
 LOCAL_TAA_DATA_DIR="${LOCAL_TAA_DATA_DIR:-$LOCAL_RUNTIME_DIR/data}"
 LOCAL_TAA_RESULT_DIR="${LOCAL_TAA_RESULT_DIR:-$LOCAL_RUNTIME_DIR/results}"
-LOCAL_TAA_PORT="${LOCAL_TAA_PORT:-6001}"
+LOCAL_TAA_PORT="${LOCAL_TAA_PORT:-$CON_PORT}"
 LOCAL_TAA_URL="${LOCAL_TAA_URL:-http://127.0.0.1:${LOCAL_TAA_PORT}}"
 LOCAL_TAA_BIND="${LOCAL_TAA_BIND:-:${LOCAL_TAA_PORT}}"
 LOCAL_PLATFORM_LOG_FILE="${LOCAL_PLATFORM_LOG_FILE:-$PROJECT_DIR/.local/logs/platform-mock.log}"
@@ -381,6 +387,7 @@ if [[ "$DEPLOY_MODE" == "docker" ]]; then
 else
   CONTAINER_LABEL="${TARGET_POD}"
 fi
+REMOTE_DOCKER_ID="${REMOTE_DOCKER_ID:-$CONTAINER_LABEL}"
 
 DEPLOY_COMPONENTS=""
 [[ "$DEPLOY_PLATFORM_MOCK" == true ]] && DEPLOY_COMPONENTS+="$PLATFORM_LABEL "
@@ -393,6 +400,15 @@ banner "Deploying: ${DEPLOY_COMPONENTS}→ ${DEPLOY_TARGET_DESC}"
 if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
   make MOCK_BINARY="$MOCK_BINARY_PATH" platform-mock-build
 fi
+if [[ "$DEPLOY_QWEN" == true ]]; then
+  require_dir "ollama package not found" "$OLLAMA_LOCAL_DIR"
+  require_file "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/ollama"
+  require_file "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/start-ollama.sh"
+  require_dir "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/models/models"
+  require_dir "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/lib/ollama"
+  info "ollama package: $(du -sh "$OLLAMA_LOCAL_DIR" | awk '{print $1}') at $OLLAMA_LOCAL_DIR"
+fi
+
 if [[ "$DEPLOY_TAA" == true ]]; then
   make TAA_BINARY="$TAA_BINARY_PATH" taa
   make attestation-ioctl
@@ -409,14 +425,6 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   require_file "build failed" "$ATT_HSK_SOURCE"
 fi
 
-if [[ "$DEPLOY_QWEN" == true ]]; then
-  require_dir "ollama package not found" "$OLLAMA_LOCAL_DIR"
-  require_file "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/ollama"
-  require_file "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/start-ollama.sh"
-  require_dir "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/models/models"
-  require_dir "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/lib/ollama"
-  info "ollama package: $(du -sh "$OLLAMA_LOCAL_DIR" | awk '{print $1}') at $OLLAMA_LOCAL_DIR"
-fi
 
 if [[ "$DEPLOY_LOCAL" == true ]]; then
   step "preparing local runtime directories"
@@ -500,29 +508,32 @@ sync_ollama_to_remote() {
 }
 
 copy_ollama_to_container() {
-  step "copying ollama package into container"
+  step "copying ollama archive into container"
   remote_ssh "$(container_exec) sh -lc 'command -v tar >/dev/null 2>&1 || { echo kubectl cp requires tar inside the container; exit 1; }'"
-  remote_ssh "$(container_exec) sh -lc 'rm -rf '$CONTAINER_OLLAMA_DIR' && mkdir -p '$TAA_CONTAINER_WORKDIR''"
+  remote_ssh "command -v tar >/dev/null 2>&1 || { echo remote tar is required to package ollama; exit 1; }"
+  remote_ssh "rm -f '$REMOTE_OLLAMA_ARCHIVE' && tar -C '$REMOTE_DIR' -czf '$REMOTE_OLLAMA_ARCHIVE' '$OLLAMA_DIR_NAME'"
+  remote_ssh "$(container_exec) sh -lc 'rm -rf '$CONTAINER_OLLAMA_DIR' '$CONTAINER_OLLAMA_ARCHIVE' && mkdir -p '$TAA_CONTAINER_WORKDIR''"
 
-  local pkg_size
-  pkg_size=$(du -sh "$REMOTE_OLLAMA_DIR" 2>/dev/null | cut -f1 || echo "unknown")
-  info "transferring $pkg_size from $REMOTE_OLLAMA_DIR to $CONTAINER_LABEL:$CONTAINER_OLLAMA_DIR"
+  local archive_size
+  archive_size=$(du -sh "$REMOTE_OLLAMA_ARCHIVE" 2>/dev/null | cut -f1 || echo "unknown")
+  info "transferring $archive_size archive from $REMOTE_OLLAMA_ARCHIVE to $CONTAINER_LABEL:$CONTAINER_OLLAMA_ARCHIVE"
 
   # Show progress while container cp runs
   local spin='-\|/'
   local i=0
-  remote_ssh "$(container_cp "$REMOTE_OLLAMA_DIR" "$CONTAINER_OLLAMA_DIR")" &
+  remote_ssh "$(container_cp "$REMOTE_OLLAMA_ARCHIVE" "$CONTAINER_OLLAMA_ARCHIVE")" &
   local cp_pid=$!
 
   while kill -0 "$cp_pid" 2>/dev/null; do
     printf "\r   ${GREEN}✓${NC} transferring... %s" "${spin:i++%${#spin}:1}"
     sleep 0.2
   done
-  printf "\r   ${GREEN}✓${NC} transfer complete, setting permissions\n"
+  printf "\r   ${GREEN}✓${NC} transfer complete, extracting archive\n"
 
   wait "$cp_pid" || { err "container cp failed"; return 1; }
 
-  remote_ssh "$(container_exec) sh -lc 'chmod +x '$CONTAINER_OLLAMA_DIR/ollama' '$CONTAINER_OLLAMA_DIR/start-ollama.sh' && test -x '$CONTAINER_OLLAMA_DIR/ollama' && test -f '$CONTAINER_OLLAMA_DIR/start-ollama.sh' && test -d '$CONTAINER_OLLAMA_DIR/models/models' && test -d '$CONTAINER_OLLAMA_DIR/lib/ollama''"
+  remote_ssh "$(container_exec) sh -lc 'tar -xzf '$CONTAINER_OLLAMA_ARCHIVE' -C '$TAA_CONTAINER_WORKDIR' && rm -f '$CONTAINER_OLLAMA_ARCHIVE' && chmod +x '$CONTAINER_OLLAMA_DIR/ollama' '$CONTAINER_OLLAMA_DIR/start-ollama.sh' && test -x '$CONTAINER_OLLAMA_DIR/ollama' && test -f '$CONTAINER_OLLAMA_DIR/start-ollama.sh' && test -d '$CONTAINER_OLLAMA_DIR/models/models' && test -d '$CONTAINER_OLLAMA_DIR/lib/ollama''"
+  remote_ssh "rm -f '$REMOTE_OLLAMA_ARCHIVE'"
 
   # Create symlink for hardcoded dynamic linker path
   # The ollama binary expects /taatest/ollama-qwen2.5-coder-0.5b/lib/glibc/ld-linux-x86-64.so.2
@@ -531,42 +542,6 @@ copy_ollama_to_container() {
     step "creating symlink for dynamic linker compatibility"
     remote_ssh "$(container_exec) sh -lc 'mkdir -p /taatest && rm -rf $hardcoded_path && ln -s '$CONTAINER_OLLAMA_DIR' $hardcoded_path'"
   fi
-}
-
-start_ollama_and_wait() {
-  step "starting ollama inside container"
-  remote_ssh "$(container_exec) sh -lc 'cd '$CONTAINER_OLLAMA_DIR' && OLLAMA_HOST='$OLLAMA_HOST' nohup ./start-ollama.sh > '$OLLAMA_LOG_FILE' 2>&1 < /dev/null & sleep 1; tail -n 30 '$OLLAMA_LOG_FILE' || true'"
-
-  step "waiting for ollama to become ready"
-  local ready_attempts=$(( (OLLAMA_READY_TIMEOUT + OLLAMA_READY_INTERVAL - 1) / OLLAMA_READY_INTERVAL ))
-  remote_ssh "$(container_exec) sh -lc '
-    i=0
-    max=$ready_attempts
-    while [ \"\$i\" -lt \"\$max\" ]; do
-      if command -v curl >/dev/null 2>&1; then
-        curl -fsS http://$OLLAMA_HOST/api/tags >/dev/null && '$CONTAINER_OLLAMA_DIR/ollama' list | grep -q '$OLLAMA_MODEL' && exit 0
-      elif command -v wget >/dev/null 2>&1; then
-        wget -q -O - http://$OLLAMA_HOST/api/tags >/dev/null && '$CONTAINER_OLLAMA_DIR/ollama' list | grep -q '$OLLAMA_MODEL' && exit 0
-      else
-        '$CONTAINER_OLLAMA_DIR/ollama' list 2>/dev/null | grep -q '$OLLAMA_MODEL' && exit 0
-      fi
-      i=\$((i + 1))
-      sleep '$OLLAMA_READY_INTERVAL'
-    done
-    echo ollama did not become ready within '$OLLAMA_READY_TIMEOUT' seconds
-    echo --- ollama log ---
-    tail -n 100 '$OLLAMA_LOG_FILE' || true
-    echo --- processes ---
-    ps || true
-    echo --- ports ---
-    ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null || netstat -ltn 2>/dev/null || true
-    echo --- ollama files ---
-    ls -l '$CONTAINER_OLLAMA_DIR' || true
-    ls -ld '$CONTAINER_OLLAMA_DIR/models/models' '$CONTAINER_OLLAMA_DIR/lib/ollama' || true
-    ldd '$CONTAINER_OLLAMA_DIR/ollama' 2>/dev/null || true
-    exit 1
-  '"
-  remote_ssh "$(container_exec) sh -lc '$CONTAINER_OLLAMA_DIR/ollama list || true'"
 }
 
 if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
@@ -592,7 +567,7 @@ if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
     echo "  discovered TAA container IP: $TAA_POD_IP"
   else
     echo "  warning: could not discover TAA container IP, falling back to -taa-pod auto-discovery"
-    TAA_TARGET_ARG="-taa-pod '$TARGET_POD' -taa-ns '$TARGET_NAMESPACE'"
+    TAA_TARGET_ARG="-taa-pod '$TARGET_POD' -taa-ns '$TARGET_NAMESPACE' -taa-port '$CON_PORT'"
   fi
 
   step "starting remote $PLATFORM_LABEL on ${PLATFORM_ADDR}"
@@ -606,24 +581,17 @@ if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
   remote_ssh "curl -fsS 'http://127.0.0.1:${PLATFORM_PORT}/api/register/status' >/dev/null && echo '$PLATFORM_LABEL status endpoint is ready'"
 fi
 
-if [[ "$DEPLOY_TAA" == true ]]; then
-  step "pausing taa inside container"
-  TAA_MANUAL_WAS_PRESENT=false
-  if remote_ssh "$(container_exec) sh -lc 'test -e /root/taa/manual'"; then
-    TAA_MANUAL_WAS_PRESENT=true
-    info "taa manual mode already enabled; leaving it paused during deployment"
-  else
-    remote_ssh "$(container_exec) sh -lc 'touch /root/taa/manual'"
-    info "taa autostart paused for deployment"
-  fi
-  remote_ssh "$(container_exec) sh -lc 'pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
-  for _ in {1..30}; do
-    if ! remote_ssh "$(container_exec) sh -lc 'pgrep -x taa >/dev/null 2>&1'"; then
-      break
-    fi
-    sleep 1
-  done
+if [[ "$DEPLOY_QWEN" == true ]]; then
+  step "stopping old ollama inside container (will be used by TAA at runtime)"
+  remote_ssh "$(container_exec) sh -lc 'killall ollama >/dev/null 2>&1 || true; pkill -x ollama >/dev/null 2>&1 || true; killall llama-server >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true'"
 
+  sync_ollama_to_remote
+  copy_ollama_to_container
+  # ensureQwenAvailable() 会在 TAA 启动时自动拉起 ollama（包已先同步完成）
+fi
+
+
+if [[ "$DEPLOY_TAA" == true ]]; then
   step "uploading taa and attestation helper to remote host"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TAA_BINARY_PATH" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/$BINARY_NAME.new"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$ATT_HELPER_SOURCE" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/get-attestation.new"
@@ -633,6 +601,7 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   step "replacing remote taa and attestation helper"
   remote_ssh "mv '$REMOTE_DIR/$BINARY_NAME.new' '$REMOTE_DIR/$BINARY_NAME' && mv '$REMOTE_DIR/get-attestation.new' '$REMOTE_DIR/get-attestation' && mv '$REMOTE_DIR/hrk.cert.new' '$REMOTE_DIR/hrk.cert' && mv '$REMOTE_DIR/hsk_cek.cert.new' '$REMOTE_DIR/hsk_cek.cert' && chmod +x '$REMOTE_DIR/$BINARY_NAME' '$REMOTE_DIR/get-attestation'"
 
+  TAA_MANUAL_WAS_PRESENT=false
   step "copying runtime files into container"
   remote_ssh "$(container_exec) sh -lc 'mkdir -p $TAA_CONTAINER_WORKDIR/attestation'"
   remote_ssh "$(container_cp "$REMOTE_DIR/$BINARY_NAME" "$TAA_CONTAINER_WORKDIR/$BINARY_NAME")"
@@ -650,9 +619,35 @@ if [[ "$DEPLOY_TAA" == true ]]; then
     warn "/dev/csv-guest not found in container — attestation will fail (expected in non-TEE Docker)"
   fi
 
-  if [[ "$TAA_MANUAL_WAS_PRESENT" == false ]]; then
-    step "restoring taa service inside container"
-    remote_ssh "$(container_exec) sh -lc 'rm -f /root/taa/manual'"
+  if [[ "$DEBUG" == true ]]; then
+    step "starting debug taa inside container"
+    remote_ssh "$(container_exec) sh -lc 'pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
+    remote_ssh "$(container_exec) sh -lc 'mkdir -p $TAA_CONTAINER_WORKDIR/models $TAA_CONTAINER_WORKDIR/data $TAA_CONTAINER_WORKDIR/results && cd $TAA_CONTAINER_WORKDIR && nohup env PLATFORM_IP=$REMOTE_PLATFORM_IP DOCKER_ID=$REMOTE_DOCKER_ID OLLAMA_DIR=$TAA_CONTAINER_WORKDIR/$OLLAMA_DIR_NAME SECURITY_LLM_ENDPOINT=http://127.0.0.1:11434 SECURITY_LLM_MODEL=$OLLAMA_MODEL MODEL_DIR=$TAA_CONTAINER_WORKDIR/models DATA_DIR=$TAA_CONTAINER_WORKDIR/data RESULT_DIR=$TAA_CONTAINER_WORKDIR/results $TAA_CONTAINER_WORKDIR/$BINARY_NAME -addr $TAA_CONTAINER_ADDR > $TAA_LOG_FILE 2>&1 < /dev/null &'"
+  else
+    step "pausing taa inside container"
+    if remote_ssh "$(container_exec) sh -lc 'test -e /root/taa/manual'"; then
+      TAA_MANUAL_WAS_PRESENT=true
+      info "taa manual mode already enabled; leaving it paused during deployment"
+    else
+      TAA_MANUAL_WAS_PRESENT=false
+      remote_ssh "$(container_exec) sh -lc 'touch /root/taa/manual'"
+      info "taa autostart paused for deployment"
+    fi
+    remote_ssh "$(container_exec) sh -lc 'pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
+    for _ in {1..30}; do
+      if ! remote_ssh "$(container_exec) sh -lc 'pgrep -x taa >/dev/null 2>&1'"; then
+        break
+      fi
+      sleep 1
+    done
+  fi
+
+  if [[ "$DEBUG" == true || "$TAA_MANUAL_WAS_PRESENT" == false ]]; then
+    if [[ "$DEBUG" == false ]]; then
+      step "restoring taa service inside container"
+      remote_ssh "$(container_exec) sh -lc 'rm -f /root/taa/manual'"
+    fi
+
     step "waiting for taa service to become ready"
     ready_attempts=$(( (OLLAMA_READY_TIMEOUT + OLLAMA_READY_INTERVAL - 1) / OLLAMA_READY_INTERVAL ))
     remote_ssh "$(container_exec) sh -lc '
@@ -676,19 +671,13 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   remote_ssh "$(container_exec) sh -lc 'tail -n 50 $TAA_LOG_FILE || true'"
 fi
 
-if [[ "$DEPLOY_QWEN" == true ]]; then
-  step "stopping old ollama inside container (will be started by TAA at runtime)"
-  remote_ssh "$(container_exec) sh -lc 'killall ollama >/dev/null 2>&1 || true; pkill -x ollama >/dev/null 2>&1 || true; killall llama-server >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true'"
-
-  sync_ollama_to_remote
-  copy_ollama_to_container
-  # ollama 启动由 TAA 服务在 main.go 的 ensureQwenAvailable() 自动处理
-fi
-
 echo ""
 banner "Deploy Complete"
 if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
   info "${BOLD}${PLATFORM_LABEL}${NC} → ${REMOTE_HOST}:${PLATFORM_PORT}"
+fi
+if [[ "$DEPLOY_QWEN" == true ]]; then
+  info "${BOLD}ollama${NC} → ${CONTAINER_LABEL}:${CONTAINER_OLLAMA_DIR} (auto-start by TAA)"
 fi
 if [[ "$DEPLOY_TAA" == true ]]; then
   info "${BOLD}taa${NC} → ${CONTAINER_LABEL}:${TAA_CONTAINER_WORKDIR} (addr ${TAA_CONTAINER_ADDR})"
@@ -696,8 +685,5 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   echo -e "     ${DIM}log:${NC}  ${TAA_LOG_FILE}"
   echo -e "     ${DIM}platform:${NC} ${REMOTE_PLATFORM_IP}"
   echo -e "     ${DIM}attestation:${NC} ${ATT_REPORT_FILE}"
-fi
-if [[ "$DEPLOY_QWEN" == true ]]; then
-  info "${BOLD}ollama${NC} → ${CONTAINER_LABEL}:${CONTAINER_OLLAMA_DIR} (auto-start by TAA)"
 fi
 echo ""

@@ -150,7 +150,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 | `requestId` | `string` | 请求 ID，与请求中的 `requestId` 一致 |
 | `verifiedPass` | `bool` | TAA 验证结果：`true` 表示验证通过，`false` 表示验证失败 |
 | `attestation` | `string` | 远程证明报告，Base64 编码后的二进制内容（`0x9F4` = 2548 字节原始数据） |
-| `attestationValues` | `string` (JSON) | attestation report 核心字段提取，JSON 字符串，包含 USERDATA、MNONCE、DIGEST、CHIP_ID（均为 hex 编码），格式与注册接口 `attestationValues` 字段一致 |
+| `attestationValues` | `string` (JSON) | attestation report 核心字段提取，JSON 字符串，包含 `userdata`（PEM 格式 SM2 公钥）、`mnonce`、`digest`、`chipId`，其中后3项为 hex 编码 |
 
 **成功响应示例**（200 OK）：
 
@@ -161,7 +161,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
     "requestId": "req-att-001",
     "verifiedPass": true,
     "attestation": "base64-encoded-attestation-report...",
-    "attestationValues": "{\"userdata\":\"0123...\",\"mnonce\":\"0123...\",\"digest\":\"0123...\",\"chipId\":\"0123...\"}"
+    "attestationValues": "{\"userdata\":\"-----BEGIN PUBLIC KEY-----\\n...\\n-----END PUBLIC KEY-----\",\"mnonce\":\"0123...\",\"digest\":\"0123...\",\"chipId\":\"0123...\"}"
   },
   "error": 0
 }

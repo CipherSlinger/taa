@@ -84,8 +84,8 @@ func DefaultRules() []Rule {
 				`os\.exec[a-z]*\s*\(`,
 				`commands\.getoutput`,
 				`subprocess\.(?:run|call|Popen|check_output|check_call)\s*\([^)]*shell\s*=\s*True`,
-				`subprocess\.(?:run|call|Popen|check_output|check_call)\s*\(\s*\[\s*['\"](?:bash|sh|zsh|fish|curl|wget|rm|cmd\.exe|powershell|pwsh)['\"]`,
-				`subprocess\.(?:run|call|Popen|check_output|check_call)\s*\(\s*['\"](?:bash|sh|zsh|fish|curl|wget|rm|cmd\.exe|powershell|pwsh)['\"]`,
+				`subprocess\.(?:run|call|Popen|check_output|check_call)\s*\(\s*\[\s*['\"](?:bash|sh|zsh|fish|echo|curl|wget|rm|cmd\.exe|powershell|pwsh)['\"]`,
+				`subprocess\.(?:run|call|Popen|check_output|check_call)\s*\(\s*['\"](?:bash|sh|zsh|fish|echo|curl|wget|rm|cmd\.exe|powershell|pwsh)['\"]`,
 			),
 		},
 		{
@@ -196,7 +196,7 @@ func DefaultRules() []Rule {
 			Severity:    SeverityMedium,
 			Description: "将原始数据直接打印到日志/标准输出 — 可能在日志文件中泄露",
 			Patterns: compilePatterns(
-				`print\s*\(\s*(?:raw_|train_|test_)?(?:data|images|samples|batch|x_train|y_train)\b`,
+				`print\s*\(\s*(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\b`,
 				`logging\.(?:info|debug|warning)\s*\(\s*(?:raw_|train_|test_)?(?:data|images|samples|batch|x_train|y_train)\b`,
 				`sys\.stdout\.write\s*\(\s*(?:raw_|train_|test_)?(?:data|images|samples|batch|x_train|y_train)\b`,
 			),
