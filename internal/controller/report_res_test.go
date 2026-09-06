@@ -30,7 +30,7 @@ func TestReportResIncludesTrainingReport(t *testing.T) {
 	}))
 	defer server.Close()
 
-	report := `{"schema_version":"1.0","training_task":{"status":"succeeded"},"codeaudit":{}}`
+	report := `{"schema_version":"1.0","training_task":{"status":"succeeded"},"codeaudit":{"conclusion":{"passed":true,"risk_level":"NONE","summary":"ok","recommendation":"none","statistics":{"total_findings":0,"high":0,"medium":0,"malicious":0,"suspicious":0,"benign":0,"uncertain":0}},"file_reports":null}}`
 	if err := ReportRes(context.Background(), server.URL, "docker-1", "req-1", "task-1", 0, "", report); err != nil {
 		t.Fatalf("ReportRes() error = %v", err)
 	}

@@ -73,7 +73,7 @@ USERDATA = taaPublicKey.X(32 bytes) || taaPublicKey.Y(32 bytes)
 }
 ```
 
-`userdata`、`mnonce`、`digest` 为 ANONCE 异或还原后的 hex 编码；`chipId` 为按 ANONCE 还原后的 ASCII 字符串。
+`userdata` 为 PEM 格式的 SM2 公钥字符串；`mnonce`、`digest` 为 ANONCE 异或还原后的 hex 编码；`chipId` 为按 ANONCE 还原后的 ASCII 字符串。
 
 ## 调试模式
 

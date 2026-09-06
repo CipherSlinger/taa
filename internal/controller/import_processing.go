@@ -143,7 +143,7 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	s.setCurrentOp("reporting")
 	s.Logs.Add(LogInfo, "report", "生成训练报告: taskId=%s", req.TaskID)
 	finishedAt := time.Now().UTC()
-	report, err := s.buildAndSaveTrainingReport(req.TaskID, startedAt, finishedAt, "succeeded", 0, "", nil, false, true, reportResultDir, reportDataDir)
+	report, err := s.buildAndSaveTrainingReport(req.TaskID, startedAt, finishedAt, "succeeded", 0, "", s.getLastAudit(), true, true, reportResultDir, reportDataDir)
 	if err != nil {
 		s.Logs.Add(LogError, "report", "生成训练报告失败: %v", err)
 		s.setCurrentOp("idle")
@@ -165,6 +165,7 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 // auditAndReportModelImport 对解压后的模型代码执行安全审计（静态扫描 + 可选 LLM 语义验证），
 // 并将审计结果通过 /v1/taa/reportModelImport 上报平台。
 func (s *TAAState) auditAndReportModelImport(req importRequest) {
+	s.setLastAudit(nil)
 	if !s.Security.ScanEnabled {
 		s.Logs.Add(LogInfo, "audit", "安全扫描未启用，跳过模型代码审计")
 		return
@@ -192,12 +193,12 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) {
 		s.setCurrentOp("idle")
 		return
 	}
+	s.setLastAudit(audit)
 
 	code := 0
-	msg := ""
+	msg := audit.Conclusion.Summary
 	if !audit.Conclusion.Passed {
 		code = 2
-		msg = audit.Conclusion.Summary
 	}
 	s.Logs.Add(LogInfo, "audit", "审计完成: passed=%v, riskLevel=%s, totalFindings=%d",
 		audit.Conclusion.Passed, audit.Conclusion.RiskLevel, audit.Conclusion.Statistics.TotalFindings)
@@ -230,17 +231,7 @@ func newLLMClient(cfg codeaudit.LLMConfig) codeaudit.LLMClient {
 	return nil
 }
 
-// auditReportJSON 将审计报告序列化为 JSON 字符串；失败时返回空串。
-func auditReportJSON(audit *codeaudit.AuditReport) string {
-	if audit == nil {
-		return ""
-	}
-	data, err := json.Marshal(audit)
-	if err != nil {
-		return ""
-	}
-	return string(data)
-}
+// auditReportJSON is implemented in codeaudit_projection.go.
 
 // llmAvailable 探测 Ollama 服务是否就绪且模型已加载。
 // 仅用于 fail-closed 预检，使用较短的超时避免长时间阻塞。
@@ -277,7 +268,7 @@ func (s *TAAState) reportImportFailure(req importRequest, phase int, isModel boo
 	if phase == 1 {
 		resultDir = filepath.Join(s.Security.ResultDir, "debug")
 	}
-	s.reportTrainingFailureFromResult(req, startedAt, reason, nil, false, true, resultDir, s.Security.DataDir)
+	s.reportTrainingFailureFromResult(req, startedAt, reason, s.getLastAudit(), true, true, resultDir, s.Security.DataDir)
 	s.setCurrentOp("idle")
 }
 
@@ -629,7 +620,7 @@ func buildDirectoryChecksum(dir, algorithm string) (map[string]any, error) {
 		if err != nil {
 			return err
 		}
-		if info.IsDir() {
+		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return nil
 		}
 		files = append(files, path)
@@ -650,9 +641,12 @@ func buildDirectoryChecksum(dir, algorithm string) (map[string]any, error) {
 		h.Write([]byte(filepath.ToSlash(rel)))
 		h.Write([]byte{0})
 
-		info, err := os.Stat(fpath)
+		info, err := os.Lstat(fpath)
 		if err != nil {
 			return nil, fmt.Errorf("stat file %s: %w", fpath, err)
+		}
+		if !info.Mode().IsRegular() {
+			continue
 		}
 		totalSize += info.Size()
 
@@ -753,19 +747,9 @@ func buildTrainingReport(taskID string, startedAt, finishedAt time.Time, status 
 	}
 
 	if includeAudit && audit != nil {
-		if status != "succeeded" {
-			audit.Conclusion.Passed = false
-			if strings.TrimSpace(audit.Conclusion.RiskLevel) == "" {
-				audit.Conclusion.RiskLevel = "CRITICAL"
-			}
-			if strings.TrimSpace(audit.Conclusion.Summary) == "" {
-				audit.Conclusion.Summary = failureReason
-			}
-			if strings.TrimSpace(audit.Conclusion.Recommendation) == "" {
-				audit.Conclusion.Recommendation = "人工复核"
-			}
+		if projected := projectCodeAuditSection(audit); projected != nil {
+			report["codeaudit"] = projected
 		}
-		report["codeaudit"] = audit
 	}
 
 	return report, nil

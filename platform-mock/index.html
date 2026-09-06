@@ -65,6 +65,21 @@
     .test-result.running .result-state::before { background:#2563eb; }
     .result-note { color:var(--muted); font-size:13px; line-height:1.5; }
     .result-body-btn { padding:6px 10px; font-size:12px; border-radius:8px; }
+    .upload-history { margin-top:16px; display:flex; flex-direction:column; gap:12px; }
+    .upload-history-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+    .upload-history-head h3 { margin:0; font-size:16px; }
+    .upload-history-head p { margin:0; }
+    .upload-latest { display:flex; gap:8px; align-items:center; }
+    .upload-latest input { flex:1; }
+    .upload-empty { padding:14px; border:1px dashed var(--line); border-radius:12px; color:var(--muted); background:rgba(127,127,127,.04); }
+    .upload-item { display:flex; justify-content:space-between; gap:12px; padding:12px 0; border-top:1px solid var(--line); }
+    .upload-item:first-child { border-top:0; padding-top:0; }
+    .upload-item-main { min-width:0; display:flex; flex-direction:column; gap:6px; }
+    .upload-item-title { font-weight:700; line-height:1.45; word-break:break-word; }
+    .upload-item-meta { color:var(--muted); font-size:12px; line-height:1.45; word-break:break-word; }
+    .upload-item-url { color:var(--text); font-size:13px; line-height:1.5; word-break:break-all; }
+    .upload-item-actions { flex-shrink:0; display:flex; align-items:flex-start; }
+    .upload-item-actions button { white-space:nowrap; }
     .modal-overlay { position:fixed; inset:0; background:rgba(15,23,42,.58); display:none; align-items:center; justify-content:center; padding:20px; z-index:1000; }
     .modal-overlay.open { display:flex; }
     .modal { width:min(980px, 100%); max-height:min(86vh, 900px); background:var(--panel); border:1px solid var(--line); border-radius:16px; box-shadow:0 24px 80px rgba(0,0,0,.3); display:flex; flex-direction:column; overflow:hidden; }
@@ -116,6 +131,13 @@
         </div>
         <div class="card-compact">
           <p id="registerSummary" class="card-note">完整返回体仅在弹窗中展示。</p>
+          <div id="registerPublicKeyBox" hidden style="margin-top:10px;">
+            <label for="registerPublicKey">TAA 公钥</label>
+            <textarea id="registerPublicKey" readonly style="min-height:120px; cursor:text; background:rgba(37,99,235,.05);" onclick="this.select();"></textarea>
+            <div class="actions" style="margin-top:8px;">
+              <button class="secondary" onclick="copyRegisterPublicKey()">复制公钥</button>
+            </div>
+          </div>
           <div class="actions">
             <button onclick="refreshStatus()">刷新状态</button>
             <button class="secondary" onclick="resetStatus()">清空接收记录</button>
@@ -147,73 +169,83 @@
   <h2>训练流程</h2>
   <p class="muted">以下各卡片模拟平台向 TAA 发送请求，用于验证各接口的连通性和参数校验。点击"发送测试"即可使用模拟数据调用 TAA 对应接口。</p>
 
-  <!-- ─── 文件上传 + 资源下发（左）| 训练结果上报（中）| 导出结果（右） ─── -->
-  <div class="three-col-layout" style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:16px; margin-bottom:16px;">
-    <!-- 左列：文件上传 + 资源下发（上下排列） -->
-    <div style="display:flex; flex-direction:column; gap:16px;">
-      <!-- 文件上传 -->
-      <section class="card">
-        <h2>① 文件上传（生成 resourceUrl）</h2>
-        <p class="muted">上传资源文件，服务器保存到本地并生成可访问的 URL。</p>
-        <label for="uploadFile">选择文件</label>
-        <input id="uploadFile" type="file">
-        <div class="actions">
-          <button onclick="uploadFile()">上传文件</button>
+  <!-- 第一行：文件上传 + 模型/数据下发 -->
+  <div class="three-col-layout" style="display:grid; grid-template-columns: repeat(3, 1fr); gap:16px; margin-bottom:16px;">
+    <section class="card" id="card-upload" style="display:flex; flex-direction:column;">
+      <div class="card-head">
+        <div>
+          <h2>① 文件上传（生成 resourceUrl）</h2>
+          <p class="card-note">上传资源文件，服务器保存到本地并生成可访问的 URL。</p>
         </div>
-        <div id="uploadResult" class="test-result"></div>
-        <div id="uploadedUrl" style="margin-top:10px; display:none;">
-          <label>生成的 resourceUrl（点击复制）：</label>
-          <input id="uploadedUrlInput" readonly onclick="this.select(); document.execCommand('copy');" style="cursor:pointer; background:rgba(37,99,235,.05);">
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; justify-content:flex-end;">
+          <span id="uploadedFilesCount" class="muted" style="font-size:13px;">0 个文件</span>
+          <button type="button" class="danger" onclick="clearUploadedFiles()" style="padding:7px 12px; font-size:13px;">清空所有上传文件</button>
         </div>
-      </section>
+      </div>
+      <label for="uploadFile">选择文件</label>
+      <input id="uploadFile" type="file">
+      <div class="actions">
+        <button onclick="uploadFile()">上传文件</button>
+      </div>
+      <div id="uploadResult" class="test-result"></div>
+      <div id="uploadedUrl" style="margin-top:10px; display:none;">
+        <label>最近上传的 resourceUrl（点击复制）：</label>
+        <div class="upload-latest">
+          <input id="uploadedUrlInput" readonly onclick="copyText(this.value)" style="cursor:pointer; background:rgba(37,99,235,.05);">
+          <button type="button" class="secondary" onclick="copyText(document.getElementById('uploadedUrlInput').value)">复制</button>
+        </div>
+      </div>
+      <div class="upload-history">
+        <div class="upload-history-head">
+          <h3>已上传文件</h3>
+          <p class="muted">点击“复制 URL”即可拿到可访问地址。</p>
+        </div>
+        <div id="uploadedFilesList"></div>
+      </div>
+    </section>
 
-      <!-- 数据下发 -->
-      <section class="card" id="card-import">
-        <h2>② /v1/taa/import — 下发数据</h2>
-        <label for="importResourceUrl">resourceUrl</label>
-        <input id="importResourceUrl" value="http://example.com/data.tar.gz">
-        <label for="importRequestId">requestId</label>
-        <input id="importRequestId" value="req-mock-import-001">
-        <label for="importTaskId">taskId（可选）</label>
-        <input id="importTaskId" value="">
-        <div class="actions">
-          <button onclick="testImport()">发送测试</button>
+    <section class="card" id="card-importModel" style="display:flex; flex-direction:column;">
+      <div class="card-head">
+        <div>
+          <h2>② /v1/taa/importModel — 下发模型</h2>
+          <div class="status" style="margin-top:10px; font-size:14px; font-weight:650;">
+            <span id="reportModelImportDot" class="dot"></span>
+            <span id="reportModelImportStatusText">等待模型导入结果上报</span>
+          </div>
         </div>
-        <div id="importResult" class="test-result"></div>
-      </section>
+        <button id="reportModelImportBodyBtn" class="secondary" onclick="openReportModelImportBodyModal()" disabled>查看返回</button>
+      </div>
+      <label for="importModelResourceUrl">resourceUrl</label>
+      <input id="importModelResourceUrl" value="http://example.com/model.tar.gz">
+      <label for="importModelRequestId">requestId</label>
+      <input id="importModelRequestId" value="req-mock-importModel-001">
+      <label for="importModelTaskId">taskId（可选）</label>
+      <input id="importModelTaskId" value="">
+      <label for="importModelPublicKey">publicKey（留空=不传）</label>
+      <textarea id="importModelPublicKey" placeholder="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"></textarea>
+      <div class="actions">
+        <button onclick="testImportModel()">发送测试</button>
+      </div>
+      <div id="importModelResult" class="test-result"></div>
+    </section>
 
-      <!-- 模型下发 -->
-      <section class="card" id="card-importModel">
-        <h2>② /v1/taa/importModel — 下发模型</h2>
-        <label for="importModelResourceUrl">resourceUrl</label>
-        <input id="importModelResourceUrl" value="http://example.com/model.tar.gz">
-        <label for="importModelRequestId">requestId</label>
-        <input id="importModelRequestId" value="req-mock-importModel-001">
-        <label for="importModelTaskId">taskId（可选）</label>
-        <input id="importModelTaskId" value="">
-        <label for="importModelPublicKey">publicKey（留空=不传）</label>
-        <textarea id="importModelPublicKey" placeholder="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"></textarea>
-        <div class="actions">
-          <button onclick="testImportModel()">发送测试</button>
-        </div>
-        <div id="importModelResult" class="test-result"></div>
-      </section>
+    <section class="card" id="card-import">
+      <h2>② /v1/taa/import — 下发数据</h2>
+      <label for="importResourceUrl">resourceUrl</label>
+      <input id="importResourceUrl" value="http://example.com/data.tar.gz">
+      <label for="importRequestId">requestId</label>
+      <input id="importRequestId" value="req-mock-import-001">
+      <label for="importTaskId">taskId（可选）</label>
+      <input id="importTaskId" value="">
+      <div class="actions">
+        <button onclick="testImport()">发送测试</button>
+      </div>
+      <div id="importResult" class="test-result"></div>
+    </section>
+  </div>
 
-      <!-- 资源信息获取 -->
-      <section class="card" id="card-resourceInfo">
-        <h2>/v1/taa/getResourceInfo — 资源信息获取</h2>
-        <p class="muted">传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理。</p>
-        <label for="resourceInfoUrl">resourceUrl</label>
-        <input id="resourceInfoUrl" value="http://example.com/data.tar.gz">
-        <div class="actions">
-          <button onclick="testGetResourceInfo()">发送测试</button>
-        </div>
-        <div id="resourceInfoResult" class="test-result"></div>
-      </section>
-    </div>
-
-    <!-- 中列：训练结果上报 + 模型导入结果上报 -->
-    <div style="display:flex; flex-direction:column; gap:16px;">
+  <!-- 第二行：训练结果上报 + 导出结果 -->
+  <div class="two-col-layout" style="display:grid; grid-template-columns: repeat(2, 1fr); gap:16px; margin-bottom:16px;">
     <section class="card" style="display:flex; flex-direction:column;">
       <div class="card-head">
         <div>
@@ -233,52 +265,41 @@
       </div>
     </section>
 
-    <!-- 模型导入结果上报 -->
-    <section class="card" style="display:flex; flex-direction:column;">
-      <div class="card-head">
-        <div>
-          <h2>/v1/taa/reportModelImport — 模型导入结果上报</h2>
-          <div class="status" style="margin-top:10px;"><span id="reportModelImportDot" class="dot"></span><span id="reportModelImportStatusText">等待模型导入结果上报</span></div>
-        </div>
-        <button id="reportModelImportBodyBtn" class="secondary" onclick="openReportModelImportBodyModal()" disabled>查看返回</button>
+    <section class="card" id="card-export">
+      <h2>④ /v1/taa/export — 导出结果</h2>
+      <label for="exportTaskId">taskId</label>
+      <input id="exportTaskId" value="task-mock-001">
+      <label for="exportPublicKey">publicKey（phase 1/2 必填，phase 3 留空）</label>
+      <input id="exportPublicKey" value="" placeholder="可复用上方 importModelPublicKey">
+      <div class="actions">
+        <button onclick="testExport()">发送测试</button>
       </div>
-      <div class="card-compact" style="flex:1; min-height:120px;">
-        <div class="status" style="font-size:16px;"><span id="reportModelImportBodyDot" class="dot"></span><span id="reportModelImportBodyStatus">等待模型导入结果上报</span></div>
-        <p id="reportModelImportSummary" class="card-note">完整返回体只在弹窗中展示。</p>
-        <p id="reportModelImportBodySummary" class="muted" style="margin:0;font-size:12px;">-</p>
-        <div class="actions">
-          <button onclick="refreshReportModelImportStatus()">刷新上报状态</button>
-          <button class="secondary" onclick="resetReportModelImportStatus()">清空上报记录</button>
-        </div>
-      </div>
+      <div id="exportResult" class="test-result"></div>
     </section>
-    </div>
+  </div>
 
-    <!-- 右列：导出结果（紧凑）+ 阶段切换（上下排列） -->
-    <div style="display:flex; flex-direction:column; gap:16px;">
-      <section class="card" id="card-export">
-        <h2>④ /v1/taa/export — 导出结果</h2>
-        <label for="exportTaskId">taskId</label>
-        <input id="exportTaskId" value="task-mock-001">
-        <label for="exportPublicKey">publicKey（phase 1/2 必填，phase 3 留空）</label>
-        <input id="exportPublicKey" value="" placeholder="可复用上方 importModelPublicKey">
-        <div class="actions">
-          <button onclick="testExport()">发送测试</button>
-        </div>
-        <div id="exportResult" class="test-result"></div>
-      </section>
+  <!-- 第三行：阶段切换 + 资源信息获取 -->
+  <div class="two-col-layout" style="display:grid; grid-template-columns: repeat(2, 1fr); gap:16px; margin-bottom:16px;">
+    <section class="card" id="card-switch">
+      <h2>/v1/taa/switch — 阶段切换</h2>
+      <label for="switchPhase">phase（1=调试, 2=测试, 3=正式训练, 4=推理）</label>
+      <input id="switchPhase" value="2">
+      <div class="actions">
+        <button onclick="testSwitch()">发送测试</button>
+      </div>
+      <div id="switchResult" class="test-result"></div>
+    </section>
 
-      <!-- 阶段切换 -->
-      <section class="card" id="card-switch">
-        <h2>/v1/taa/switch — 阶段切换</h2>
-        <label for="switchPhase">phase（1=调试, 2=测试, 3=正式训练, 4=推理）</label>
-        <input id="switchPhase" value="2">
-        <div class="actions">
-          <button onclick="testSwitch()">发送测试</button>
-        </div>
-        <div id="switchResult" class="test-result"></div>
-      </section>
-    </div>
+    <section class="card" id="card-resourceInfo">
+      <h2>/v1/taa/getResourceInfo — 资源信息获取</h2>
+      <p class="muted">传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理。</p>
+      <label for="resourceInfoUrl">resourceUrl</label>
+      <input id="resourceInfoUrl" value="http://example.com/data.tar.gz">
+      <div class="actions">
+        <button onclick="testGetResourceInfo()">发送测试</button>
+      </div>
+      <div id="resourceInfoResult" class="test-result"></div>
+    </section>
   </div>
 
   <!-- 一键测试结果 -->
@@ -354,7 +375,9 @@ const resultBodies = {};
 let lastRegisterData = null;
 let lastReportResData = null;
 let lastReportModelImportData = null;
+const RESOURCE_INFO_TIMEOUT_MS = 120000;
 let currentModalBody = '';
+let uploadedFiles = [];
 
 function formatModalBody(body) {
   if (body == null || body === '') return '暂无内容';
@@ -381,17 +404,125 @@ function closeBodyModal() {
   modal.setAttribute('aria-hidden', 'true');
 }
 
-async function copyBodyModal() {
-  if (!currentModalBody) return;
+async function copyText(text) {
+  if (!text) return false;
   try {
-    await navigator.clipboard.writeText(currentModalBody);
+    await navigator.clipboard.writeText(text);
+    return true;
   } catch {
     const ta = document.createElement('textarea');
-    ta.value = currentModalBody;
+    ta.value = text;
+    ta.setAttribute('readonly', 'readonly');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    ta.style.left = '-9999px';
     document.body.appendChild(ta);
     ta.select();
-    document.execCommand('copy');
+    ta.setSelectionRange(0, ta.value.length);
+    const ok = document.execCommand('copy');
     ta.remove();
+    return ok;
+  }
+}
+
+async function copyBodyModal() {
+  return copyText(currentModalBody);
+}
+
+function formatUploadSize(size) {
+  const value = Number(size) || 0;
+  if (value < 1024) return `${value} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let scaled = value / 1024;
+  let index = 0;
+  while (scaled >= 1024 && index < units.length - 1) {
+    scaled /= 1024;
+    index += 1;
+  }
+  const text = scaled >= 10 || Number.isInteger(scaled) ? scaled.toFixed(0) : scaled.toFixed(1);
+  return `${text} ${units[index]}`;
+}
+
+function formatUploadTime(value) {
+  if (!value) return '-';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleString('zh-CN', { hour12: false });
+}
+
+function normalizeUploadedFile(file) {
+  if (!file) return null;
+  return {
+    filename: file.filename || '',
+    originalName: file.originalName || file.filename || '',
+    size: Number(file.size || 0),
+    url: file.url || '',
+    uploadedAt: file.uploadedAt || '',
+  };
+}
+
+function renderUploadedFiles(files) {
+  uploadedFiles = Array.isArray(files) ? files.slice() : [];
+  const countEl = document.getElementById('uploadedFilesCount');
+  const listEl = document.getElementById('uploadedFilesList');
+  const latestWrap = document.getElementById('uploadedUrl');
+  const latestInput = document.getElementById('uploadedUrlInput');
+  if (countEl) countEl.textContent = `${uploadedFiles.length} 个文件`;
+  if (!listEl) return;
+
+  if (!uploadedFiles.length) {
+    if (latestWrap) latestWrap.style.display = 'none';
+    if (latestInput) latestInput.value = '';
+    listEl.innerHTML = '<div class="upload-empty">暂无上传文件，上传后会自动保存到这里。</div>';
+    return;
+  }
+
+  const latest = uploadedFiles[0];
+  if (latestWrap) latestWrap.style.display = 'block';
+  if (latestInput) latestInput.value = latest.url || '';
+
+  listEl.innerHTML = uploadedFiles.map(file => {
+    const originalName = escapeHtml(file.originalName || file.filename || '未命名文件');
+    const filename = escapeHtml(file.filename || '-');
+    const url = escapeHtml(file.url || '');
+    const uploadedAt = escapeHtml(formatUploadTime(file.uploadedAt));
+    const size = escapeHtml(formatUploadSize(file.size));
+    return `<div class="upload-item"><div class="upload-item-main"><div class="upload-item-title">${originalName}</div><div class="upload-item-meta">保存名 ${filename} · ${size} · ${uploadedAt}</div><div class="upload-item-url">${url}</div></div><div class="upload-item-actions"><button type="button" class="secondary" data-url="${encodeURIComponent(file.url || '')}" onclick="copyText(decodeURIComponent(this.dataset.url))">复制 URL</button></div></div>`;
+  }).join('');
+}
+
+async function refreshUploadedFiles() {
+  try {
+    const res = await fetch('/api/uploads', { cache: 'no-store' });
+    const data = await res.json();
+    const result = responseResult(data);
+    renderUploadedFiles((result && result.files) || []);
+  } catch (err) {
+    if (uploadedFiles.length === 0) {
+      const listEl = document.getElementById('uploadedFilesList');
+      if (listEl) listEl.innerHTML = `<div class="upload-empty">加载上传历史失败：${escapeHtml(String(err))}</div>`;
+      const latestWrap = document.getElementById('uploadedUrl');
+      if (latestWrap) latestWrap.style.display = 'none';
+      const countEl = document.getElementById('uploadedFilesCount');
+      if (countEl) countEl.textContent = '加载失败';
+    }
+  }
+}
+
+async function clearUploadedFiles() {
+  showResultRunning('uploadResult', '正在清空上传文件...');
+  try {
+    const res = await fetch('/api/uploads/reset', { method: 'POST' });
+    const data = await res.json();
+    if (res.status === 200 && data.error === 0) {
+      renderUploadedFiles([]);
+      showResult('uploadResult', true, `已清空 ${data.result && typeof data.result.deleted === 'number' ? data.result.deleted : 0} 个文件`);
+      await refreshUploadedFiles();
+    } else {
+      showResult('uploadResult', false, `清空失败: ${data.msg || '未知错误'}`);
+    }
+  } catch (e) {
+    showResult('uploadResult', false, '清空失败: ' + e.message);
   }
 }
 
@@ -551,26 +682,80 @@ function formatJSONText(raw) {
     return raw;
   }
 }
+function parseJSONMaybe(raw) {
+  if (raw == null || raw === '') return raw;
+  if (typeof raw !== 'string') return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+function buildReportModelImportBodyPreview(data) {
+  if (!data) return {};
+  const rawBody = parseJSONMaybe(data.rawBody);
+  const body = rawBody && typeof rawBody === 'object' ? { ...rawBody } : { ...data };
+  delete body.received;
+  delete body.accepted;
+  delete body.rawBody;
+  if (Object.prototype.hasOwnProperty.call(body, 'report')) {
+    body.report = parseJSONMaybe(body.report);
+  }
+  return body;
+}
+function setReportModelImportPending() {
+  renderReportModelImport({ received: false, accepted: false });
+}
+function isAbortLikeError(err) {
+  const msg = String(err && err.message ? err.message : err || '').toLowerCase();
+  return err && (err.name === 'AbortError' || msg.includes('aborted') || msg.includes('aborterror'));
+}
 
 // ── 注册状态 ──────────────────────────────────
 function renderRegister(data) {
   lastRegisterData = data || null;
   const dot = document.getElementById('dot');
   dot.className = 'dot';
+  const publicKeyBox = document.getElementById('registerPublicKeyBox');
+  const publicKeyField = document.getElementById('registerPublicKey');
   if (!data.received) {
     text('statusText', '等待 TAA 注册请求');
     text('registerSummary', '完整返回体仅在弹窗中展示。');
     text('lastRefresh', '-');
     document.getElementById('registerBodyBtn').disabled = true;
+    publicKeyBox.hidden = true;
+    publicKeyField.value = '';
     return;
   }
   dot.classList.add(data.accepted ? 'ok' : 'bad');
   text('statusText', data.accepted ? '已收到注册请求，并已返回 HTTP 200' : '已收到请求，但参数校验失败');
   text('registerSummary', '完整返回体仅在弹窗中展示。');
   document.getElementById('registerBodyBtn').disabled = false;
+  const publicKey = data.accepted ? String(data.taaPublicKey || '').trim() : '';
+  if (publicKey) {
+    publicKeyBox.hidden = false;
+    publicKeyField.value = publicKey;
+  } else {
+    publicKeyBox.hidden = true;
+    publicKeyField.value = '';
+  }
 }
 function openRegisterBodyModal() {
   openBodyModal('平台注册返回 body', lastRegisterData);
+}
+async function copyRegisterPublicKey() {
+  const key = (lastRegisterData && lastRegisterData.taaPublicKey) ? String(lastRegisterData.taaPublicKey).trim() : '';
+  if (!key) return;
+  try {
+    await navigator.clipboard.writeText(key);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = key;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
 }
 async function refreshStatus() {
   try {
@@ -630,27 +815,20 @@ async function resetReportResStatus() {
 function renderReportModelImport(data) {
   lastReportModelImportData = data || null;
   const dot = document.getElementById('reportModelImportDot');
+  const bodyBtn = document.getElementById('reportModelImportBodyBtn');
   dot.className = 'dot';
-  const bodyDot = document.getElementById('reportModelImportBodyDot');
-  bodyDot.className = 'dot';
-  if (!data.received) {
+  if (!data || !data.received) {
+    dot.classList.add('bad');
     text('reportModelImportStatusText', '等待模型导入结果上报');
-    text('reportModelImportSummary', '完整返回体仅在弹窗中展示。');
-    text('reportModelImportBodyStatus', '等待模型导入结果上报');
-    text('reportModelImportBodySummary', '这里不再直接渲染返回字段。');
-    document.getElementById('reportModelImportBodyBtn').disabled = true;
+    bodyBtn.disabled = true;
     return;
   }
   dot.classList.add(data.accepted ? 'ok' : 'bad');
-  bodyDot.classList.add(data.accepted ? 'ok' : 'bad');
   text('reportModelImportStatusText', data.accepted ? '已收到模型导入结果上报，并已返回 HTTP 200' : '已收到上报，但参数校验失败');
-  text('reportModelImportSummary', '完整返回体仅在弹窗中展示。');
-  text('reportModelImportBodyStatus', data.accepted ? '已收到模型导入结果上报' : '已收到上报但参数校验失败');
-  text('reportModelImportBodySummary', '点击右上角按钮查看完整返回体。');
-  document.getElementById('reportModelImportBodyBtn').disabled = false;
+  bodyBtn.disabled = false;
 }
 function openReportModelImportBodyModal() {
-  openBodyModal('模型导入结果上报 body', lastReportModelImportData);
+  openBodyModal('模型导入结果上报 body', buildReportModelImportBodyPreview(lastReportModelImportData));
 }
 async function refreshReportModelImportStatus() {
   try {
@@ -659,12 +837,15 @@ async function refreshReportModelImportStatus() {
     renderReportModelImport({ ...responseResult(data), code: data.error, msg: data.msg });
   } catch (err) {
     text('reportModelImportStatusText', '刷新上报状态失败');
-    text('reportModelImportSummary', String(err));
   }
 }
 async function resetReportModelImportStatus() {
-  await fetch('/api/reportModelImport/reset', { method: 'POST' });
-  await refreshReportModelImportStatus();
+  try {
+    await fetch('/api/reportModelImport/reset', { method: 'POST' });
+  } catch {
+    // 保持前端进入“等待上报”状态，即使清理请求失败也不要卡住旧状态。
+  }
+  setReportModelImportPending();
 }
 
 // ── 文件上传 ─────────────────────────────────
@@ -686,10 +867,13 @@ async function uploadFile() {
     });
     const data = await res.json();
     if (res.status === 200 && data.error === 0) {
+      const uploaded = normalizeUploadedFile(data.result);
+      if (uploaded) {
+        renderUploadedFiles([uploaded, ...uploadedFiles.filter(item => item.filename !== uploaded.filename)]);
+      }
       showResult('uploadResult', true, `文件上传成功\n\n文件名: ${data.result.originalName}\n保存名: ${data.result.filename}\n大小: ${data.result.size} bytes\nURL: ${data.result.url}`);
-      // Show the URL input for easy copying
-      document.getElementById('uploadedUrl').style.display = 'block';
-      document.getElementById('uploadedUrlInput').value = data.result.url;
+      fileInput.value = '';
+      await refreshUploadedFiles();
     } else {
       showResult('uploadResult', false, `上传失败: ${data.msg}`);
     }
@@ -733,7 +917,9 @@ async function testImport() {
 
 async function testImportModel() {
   showResultRunning('importModelResult', '正在请求...');
+  setReportModelImportPending();
   try {
+    await fetch('/api/reportModelImport/reset', { method: 'POST' }).catch(() => {});
     const r = await postToTAA('/v1/taa/importModel', buildImportBody(
       document.getElementById('importModelResourceUrl').value,
       document.getElementById('importModelRequestId').value,
@@ -749,12 +935,15 @@ async function testGetResourceInfo() {
   showResultRunning('resourceInfoResult', '正在请求...');
   try {
     const resourceUrl = document.getElementById('resourceInfoUrl').value.trim();
-    const r = await postToTAA('/v1/taa/getResourceInfo', { resourceUrl }, 10000);
+    const r = await postToTAA('/v1/taa/getResourceInfo', { resourceUrl }, RESOURCE_INFO_TIMEOUT_MS);
     const payload = responseResult(r.data);
     const rendered = typeof payload === 'string' ? formatJSONText(payload) : JSON.stringify(payload, null, 2);
     showResult('resourceInfoResult', r.status === 200 && r.data.error === 0, 'HTTP ' + r.status + '\n' + rendered);
   } catch (e) {
-    showResult('resourceInfoResult', false, '请求失败: ' + e.message + '\n请确认 TAA 服务地址是否正确且服务已启动。');
+    const msg = isAbortLikeError(e)
+      ? '请求超时（120s）：资源信息分析较慢，请稍后重试或检查 TAA 是否仍在执行。'
+      : '请求失败: ' + e.message + '\n请确认 TAA 服务地址是否正确且服务已启动。';
+    showResult('resourceInfoResult', false, msg);
   }
 }
 
@@ -878,7 +1067,7 @@ async function runAllTests() {
 
   const tests = [
     { name: '/v1/taa/health（连通性检查）', fn: () => postToTAA('/v1/taa/health', {}, 10000) },
-    { name: '/v1/taa/getResourceInfo（资源信息获取）', fn: () => postToTAA('/v1/taa/getResourceInfo', { resourceUrl: 'http://mock.example.com/data.tar.gz' }, 10000) },
+    { name: '/v1/taa/getResourceInfo（资源信息获取）', fn: () => postToTAA('/v1/taa/getResourceInfo', { resourceUrl: 'http://mock.example.com/data.tar.gz' }, RESOURCE_INFO_TIMEOUT_MS) },
     { name: '/v1/taa/importModel（下发模型）', fn: () => postToTAA('/v1/taa/importModel', buildImportBody('http://mock.example.com/model.tar.gz', genId('batch-import'), getBatchImportPublicKey())) },
     { name: '/v1/taa/import（下发数据）', fn: () => postToTAA('/v1/taa/import', buildImportBody('http://mock.example.com/data.tar.gz', genId('batch-import'))) },
     { name: '/v1/taa/switch（切换到测试阶段）', fn: () => postToTAA('/v1/taa/switch', { phase: 2 }) },
@@ -1013,7 +1202,12 @@ function renderLogs() {
 }
 
 function escapeHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
 }
 
 async function fetchLogs() {
@@ -1082,8 +1276,10 @@ function updateLogInterval() {
 
 // ── 初始化 ─────────────────────────────────
 detectTAAProxy();
+refreshUploadedFiles();
 refreshStatus();
 refreshReportResStatus();
+setReportModelImportPending();
 refreshReportModelImportStatus();
 setInterval(refreshStatus, 1000);
 setInterval(refreshReportResStatus, 1000);

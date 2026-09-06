@@ -26,6 +26,9 @@ import (
 // maxDownloadBytes 限制单次资源下载的最大字节数，防止 OOM。
 const maxDownloadBytes = 512 << 20 // 512 MB
 
+// scriptTimeout 是脚本执行的统一超时时间。
+const scriptTimeout = 10 * time.Minute
+
 // ── 公共返回格式 ──────────────────────────────────────────
 
 type apiResponse struct {
@@ -66,6 +69,7 @@ type TAAState struct {
 	ExportPublicKey      string                   // phase1 import 时保存的公钥，phase3 export 时使用
 	Security             SecurityConfig           // immutable after startup — no mutex needed
 	Logs                 *LogStore                // 结构化日志存储
+	LastAudit            *codeaudit.AuditReport   // 最近一次模型代码审计结果，用于训练报告输出
 	CurrentOp            string                   // 当前操作: idle/downloading/decrypting/extracting/debugging/training/auditing/reporting
 }
 
@@ -733,7 +737,13 @@ func (s *TAAState) buildAttestationResult(ctx context.Context, attestationFile, 
 		return nil, "", false, "获取报告失败: " + err.Error()
 	}
 
-	return reportData, reportValues, true, "success"
+	formattedValues, err := formatAttestationValuesUserDataPEM(reportValues, userData)
+	if err != nil {
+		log.Printf("get attestation failed: format userdata as PEM: %v", err)
+		return nil, "", false, "获取报告失败: " + err.Error()
+	}
+
+	return reportData, formattedValues, true, "success"
 }
 
 func (s *TAAState) getAttestationHandler(w http.ResponseWriter, r *http.Request) {
@@ -838,7 +848,7 @@ func (s *TAAState) resourceInfoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Logs.Add(LogInfo, "getResourceInfo", "解压到临时目录: %s", tmpDataDir)
 
-	output, err := s.loadResourceInfoOutput(r.Context(), tmpDataDir, true)
+	output, err := s.loadResourceInfoOutput(context.Background(), tmpDataDir, true)
 	if err != nil {
 		s.Logs.Add(LogError, "getResourceInfo", "生成资源信息失败: %v", err)
 		s.setCurrentOp("idle")
@@ -916,7 +926,7 @@ func runPythonScript(script, outputDir string, env map[string]string, args ...st
 		return "", fmt.Errorf("create output dir: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
 	defer cancel()
 
 	cmdArgs := append([]string{script}, args...)
@@ -1001,13 +1011,18 @@ func (s *TAAState) loadResourceInfoOutput(ctx context.Context, dataDir string, i
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, scriptTimeout)
 	defer cancel()
 
+	startedAt := time.Now()
+	s.Logs.Add(LogInfo, "getResourceInfo", "准备执行资源信息脚本: script=%s dataDir=%s includeDataDir=%t", script, dataDir, includeDataDir)
 	output, err := runResourceInfoScript(ctx, script, args...)
+	elapsed := time.Since(startedAt)
 	if err != nil {
+		s.Logs.Add(LogError, "getResourceInfo", "resource_info.py 执行失败: elapsed=%s ctxErr=%v err=%v", elapsed.Round(time.Millisecond), ctx.Err(), err)
 		return "", err
 	}
+	s.Logs.Add(LogInfo, "getResourceInfo", "resource_info.py 执行完成: elapsed=%s outputBytes=%d", elapsed.Round(time.Millisecond), len(output))
 	return strings.TrimSpace(output), nil
 }
 
