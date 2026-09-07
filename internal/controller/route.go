@@ -104,6 +104,7 @@ type importRequest struct {
 
 type exportRequest struct {
 	PublicKey *string `json:"publicKey"`
+	RequestID string  `json:"requestId"`
 	TaskID    string  `json:"taskId"`
 }
 
@@ -525,8 +526,8 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("请求解析失败: %v", err))
 		return
 	}
-	if req.TaskID == "" {
-		writeError(w, http.StatusBadRequest, "taskId 不能为空")
+	if strings.TrimSpace(req.RequestID) == "" {
+		writeError(w, http.StatusBadRequest, "requestId 不能为空")
 		return
 	}
 
@@ -585,7 +586,7 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resultData = data
-		filename = "result-debug.tar.gz"
+		filename = fmt.Sprintf("result-debug-%s.tar.gz", safeFilenamePart(req.RequestID))
 		s.Logs.Add(LogInfo, "export", "阶段1: 压缩完成，大小=%d bytes", len(resultData))
 
 	case 2, 3:
@@ -598,7 +599,7 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resultData = data
-		filename = "result-train.tar.gz"
+		filename = fmt.Sprintf("result-train-%s.tar.gz", safeFilenamePart(req.RequestID))
 		s.Logs.Add(LogInfo, "export", "阶段%d: 压缩完成，大小=%d bytes", phase, len(resultData))
 	}
 
@@ -693,6 +694,21 @@ func compressDirToTarGz(srcDir string) ([]byte, error) {
 	result := buf.Bytes()
 	log.Printf("compressDirToTarGz: 压缩完成，最终大小=%d bytes", len(result))
 	return result, nil
+}
+
+func safeFilenamePart(value string) string {
+	value = strings.TrimSpace(value)
+	mapped := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' {
+			return r
+		}
+		return '-'
+	}, value)
+	mapped = strings.Trim(mapped, ".-")
+	if mapped == "" {
+		return "request"
+	}
+	return mapped
 }
 
 // writeFileStream 直接返回二进制文件流：成功时写入 octet-stream 附件头并从 body 复制内容。

@@ -531,7 +531,8 @@ func TestExportHandler(t *testing.T) {
 		}
 
 		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
-			"taskId": "task-001",
+			"requestId": "req-export-phase1-plain",
+			"taskId":    "task-001",
 		})
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
@@ -569,6 +570,7 @@ func TestExportHandler(t *testing.T) {
 		}
 
 		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+			"requestId": "req-export-phase1-encrypted",
 			"publicKey": string(pubPEM),
 			"taskId":    "task-001-phase1",
 		})
@@ -596,6 +598,7 @@ func TestExportHandler(t *testing.T) {
 		}
 
 		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+			"requestId": "req-export-phase2-encrypted",
 			"publicKey": string(pubPEM),
 			"taskId":    "task-002",
 		})
@@ -635,7 +638,8 @@ func TestExportHandler(t *testing.T) {
 		}
 
 		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
-			"taskId": "task-003",
+			"requestId": "req-export-phase2-plain",
+			"taskId":    "task-003",
 		})
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
@@ -674,6 +678,7 @@ func TestExportHandler(t *testing.T) {
 
 		// phase3 必须不传 publicKey
 		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+			"requestId": "req-export-phase3-saved-key",
 			"publicKey": nil,
 			"taskId":    "task-004",
 		})
@@ -713,6 +718,7 @@ func TestExportHandler(t *testing.T) {
 		}
 
 		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+			"requestId": "req-export-phase3-request-key",
 			"publicKey": string(pubPEM),
 			"taskId":    "task-005",
 		})
@@ -744,7 +750,8 @@ func TestExportHandler(t *testing.T) {
 		state.mu.Unlock()
 
 		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
-			"taskId": "task-006",
+			"requestId": "req-export-phase3-no-key",
+			"taskId":    "task-006",
 		})
 		defer resp.Body.Close()
 		api := decodeResponse(t, resp)
@@ -756,13 +763,45 @@ func TestExportHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects missing taskId", func(t *testing.T) {
+	t.Run("rejects missing requestId", func(t *testing.T) {
 		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
 			"publicKey": "mock-public-key",
 		})
 		api := decodeResponse(t, resp)
 		if resp.StatusCode != http.StatusBadRequest || api.Error == 0 {
-			t.Fatalf("expected taskId validation error, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+			t.Fatalf("expected requestId validation error, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		}
+		if !strings.Contains(api.Msg, "requestId 不能为空") {
+			t.Fatalf("msg = %q, want requestId validation", api.Msg)
+		}
+	})
+
+	t.Run("allows missing taskId and uses requestId in filename and header", func(t *testing.T) {
+		state.mu.Lock()
+		state.CurrentPhase = 2
+		state.mu.Unlock()
+
+		trainDir := filepath.Join(state.Security.ResultDir, "train")
+		if err := os.MkdirAll(trainDir, 0o755); err != nil {
+			t.Fatalf("create train dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(trainDir, "request.bin"), exportPlaintext, 0o644); err != nil {
+			t.Fatalf("write train/request.bin: %v", err)
+		}
+
+		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+			"requestId": "req-export-no-task",
+		})
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("expected 200 without taskId, got %d body=%s", resp.StatusCode, body)
+		}
+		if got := resp.Header.Get("X-TAA-Task-Id"); got != "" {
+			t.Fatalf("X-TAA-Task-Id = %q, want empty when taskId omitted", got)
+		}
+		if got := resp.Header.Get("Content-Disposition"); !strings.Contains(got, "req-export-no-task") {
+			t.Fatalf("Content-Disposition = %q, want requestId in filename", got)
 		}
 	})
 }
@@ -941,6 +980,7 @@ func TestExportResultCheck(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+		"requestId": "req-export-result-check",
 		"publicKey": string(pubPEM),
 		"taskId":    "task-001",
 	})
@@ -1027,7 +1067,8 @@ func TestFullWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp = postJSON(t, server.URL+"/v1/taa/export", map[string]any{
-		"taskId": "task-wf-001",
+		"requestId": "req-export-full-workflow",
+		"taskId":    "task-wf-001",
 	})
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
