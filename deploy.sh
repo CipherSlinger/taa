@@ -63,7 +63,11 @@ TARGET_CONTAINER="${TARGET_CONTAINER:-taa-env-slim-v2}"
 # TAA 容器运行参数：容器内工作目录、监听地址、注册用容器标识和日志路径。
 TAA_CONTAINER_WORKDIR="${TAA_CONTAINER_WORKDIR:-${CON_WORKDIR}}"
 TAA_CONTAINER_ADDR="${TAA_CONTAINER_ADDR:-:${CON_PORT}}"
-TAA_CONFIG_FILE="${TAA_CONFIG_FILE:-taa-config.json}"
+# TAA 程序固定读取工作目录下的 taa-config.json，脚本侧文件名必须保持一致。
+TAA_CONFIG_FILE="taa-config.json"
+TAA_LOCAL_CONFIG_TEMPLATE="${TAA_LOCAL_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-local.json}"
+TAA_DEBUG_CONFIG_TEMPLATE="${TAA_DEBUG_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-debug.json}"
+TAA_PRODUCTION_CONFIG_TEMPLATE="${TAA_PRODUCTION_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-production.json}"
 REMOTE_TAA_CONFIG_PATH="${REMOTE_TAA_CONFIG_PATH:-$REMOTE_DIR/$TAA_CONFIG_FILE}"
 CONTAINER_TAA_CONFIG_PATH="${CONTAINER_TAA_CONFIG_PATH:-$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE}"
 CONTRACT="${CONTRACT:-}"
@@ -212,8 +216,12 @@ Environment overrides:
       TAA 在目标容器内的工作目录。
   TAA_CONTAINER_ADDR=${TAA_CONTAINER_ADDR}
       写入 TAA 配置文件的容器内监听地址与端口。
-  TAA_CONFIG_FILE=${TAA_CONFIG_FILE}
-      TAA 配置文件名；部署时复制到 TAA 工作目录。
+  TAA_LOCAL_CONFIG_TEMPLATE=${TAA_LOCAL_CONFIG_TEMPLATE}
+      local 场景 TAA 配置模板。
+  TAA_DEBUG_CONFIG_TEMPLATE=${TAA_DEBUG_CONFIG_TEMPLATE}
+      debug 场景 TAA 配置模板。
+  TAA_PRODUCTION_CONFIG_TEMPLATE=${TAA_PRODUCTION_CONFIG_TEMPLATE}
+      正式非 debug 场景 TAA 配置模板。
   CONTRACT=${CONTRACT}
       debug/local 场景写入配置文件的合约 ID；正式非 debug 场景由运行环境注入。
   ATT_DIR=${ATT_DIR}
@@ -329,54 +337,84 @@ require_dir() {
   [[ -d "$path" ]] || { err "$label: $path"; exit 1; }
 }
 
-json_escape() {
-  local value="$1"
-  value=${value//\\/\\\\}
-  value=${value//\"/\\\"}
-  value=${value//$'\n'/\\n}
-  value=${value//$'\r'/\\r}
-  value=${value//$'\t'/\\t}
-  printf '%s' "$value"
+require_command() {
+  local name="$1"
+  command -v "$name" >/dev/null 2>&1 || { err "$name is required"; exit 1; }
+}
+
+select_taa_config_template() {
+  if [[ "$DEPLOY_LOCAL" == true ]]; then
+    printf '%s' "$TAA_LOCAL_CONFIG_TEMPLATE"
+  elif [[ "$DEBUG" == true ]]; then
+    printf '%s' "$TAA_DEBUG_CONFIG_TEMPLATE"
+  else
+    printf '%s' "$TAA_PRODUCTION_CONFIG_TEMPLATE"
+  fi
 }
 
 write_taa_config() {
   local path="$1"
-  local addr="$2"
-  local platform_ip="$3"
-  local docker_id="$4"
-  local contract="$5"
-  local model_dir="$6"
-  local data_dir="$7"
-  local result_dir="$8"
-  local llm_dir="$9"
-  local llm_endpoint="${10}"
-  local llm_model="${11}"
-  local include_identity="${12}"
+  local template="$2"
+  local addr="$3"
+  local platform_ip="$4"
+  local docker_id="$5"
+  local contract="$6"
+  local model_dir="$7"
+  local data_dir="$8"
+  local result_dir="$9"
+  local llm_dir="${10}"
+  local llm_endpoint="${11}"
+  local llm_model="${12}"
+  local include_identity="${13}"
 
+  require_file "taa config template not found" "$template"
+  require_command python3
   ensure_parent_dir "$path"
-  {
-    printf '{\n'
-    printf '  "addr": "%s",\n' "$(json_escape "$addr")"
-    if [[ "$include_identity" == true ]]; then
-      printf '  "platformIP": "%s",\n' "$(json_escape "$platform_ip")"
-      printf '  "dockerID": "%s",\n' "$(json_escape "$docker_id")"
-      printf '  "contract": "%s",\n' "$(json_escape "$contract")"
-    fi
-    printf '  "securityScan": true,\n'
-    printf '  "modelDir": "%s",\n' "$(json_escape "$model_dir")"
-    printf '  "resultCheck": true,\n'
-    printf '  "dataDir": "%s",\n' "$(json_escape "$data_dir")"
-    printf '  "resultDir": "%s",\n' "$(json_escape "$result_dir")"
-    printf '  "llm": {\n'
-    printf '    "enabled": true,\n'
-    printf '    "endpoint": "%s",\n' "$(json_escape "$llm_endpoint")"
-    printf '    "model": "%s",\n' "$(json_escape "$llm_model")"
-    printf '    "policy": "assist",\n'
-    printf '    "failClosed": true,\n'
-    printf '    "dir": "%s"\n' "$(json_escape "$llm_dir")"
-    printf '  }\n'
-    printf '}\n'
-  } >"$path"
+  python3 - "$template" "$path" "$addr" "$platform_ip" "$docker_id" "$contract" "$model_dir" "$data_dir" "$result_dir" "$llm_dir" "$llm_endpoint" "$llm_model" "$include_identity" <<'PY'
+import json
+import sys
+
+(
+    template,
+    path,
+    addr,
+    platform_ip,
+    docker_id,
+    contract,
+    model_dir,
+    data_dir,
+    result_dir,
+    llm_dir,
+    llm_endpoint,
+    llm_model,
+    include_identity,
+) = sys.argv[1:]
+
+with open(template, "r", encoding="utf-8") as f:
+    cfg = json.load(f)
+
+cfg["addr"] = addr
+cfg["modelDir"] = model_dir
+cfg["dataDir"] = data_dir
+cfg["resultDir"] = result_dir
+
+if include_identity == "true":
+    cfg["platformIP"] = platform_ip
+    cfg["dockerID"] = docker_id
+    cfg["contract"] = contract
+else:
+    for key in ("platformIP", "dockerID", "contract"):
+        cfg.pop(key, None)
+
+llm = cfg.setdefault("llm", {})
+llm["endpoint"] = llm_endpoint
+llm["model"] = llm_model
+llm["dir"] = llm_dir
+
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+PY
 }
 
 if [[ $# -eq 0 ]]; then
@@ -504,8 +542,9 @@ if [[ "$DEPLOY_LOCAL" == true ]]; then
     sh -lc "cd '$OLLAMA_LOCAL_DIR' && exec env OLLAMA_HOST='$OLLAMA_HOST' OLLAMA_MODELS='$OLLAMA_LOCAL_DIR/models/models' OLLAMA_LIBRARY_PATH='$OLLAMA_LOCAL_DIR/lib/ollama' ./start-ollama.sh"
   wait_for_http_ready "ollama" GET "$LOCAL_OLLAMA_URL/api/tags" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL" "$LOCAL_OLLAMA_LOG_FILE"
 
-  step "writing local taa config"
-  write_taa_config "$LOCAL_TAA_CONFIG_PATH" "$LOCAL_TAA_BIND" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_ID" "$CONTRACT" "$LOCAL_TAA_MODEL_DIR" "$LOCAL_TAA_DATA_DIR" "$LOCAL_TAA_RESULT_DIR" "$OLLAMA_LOCAL_DIR" "$LOCAL_OLLAMA_URL" "$OLLAMA_MODEL" true
+  TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
+  step "writing local taa config from $(basename "$TAA_CONFIG_TEMPLATE")"
+  write_taa_config "$LOCAL_TAA_CONFIG_PATH" "$TAA_CONFIG_TEMPLATE" "$LOCAL_TAA_BIND" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_ID" "$CONTRACT" "$LOCAL_TAA_MODEL_DIR" "$LOCAL_TAA_DATA_DIR" "$LOCAL_TAA_RESULT_DIR" "$OLLAMA_LOCAL_DIR" "$LOCAL_OLLAMA_URL" "$OLLAMA_MODEL" true
 
   step "starting local taa"
   start_local_background "taa" "$LOCAL_RUN_DIR/taa.pid" "$LOCAL_TAA_LOG_FILE" \
@@ -656,12 +695,13 @@ fi
 
 
 if [[ "$DEPLOY_TAA" == true ]]; then
-  step "writing remote taa config"
+  TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
+  step "writing remote taa config from $(basename "$TAA_CONFIG_TEMPLATE")"
   INCLUDE_TAA_IDENTITY=true
   if [[ "$DEBUG" == false ]]; then
     INCLUDE_TAA_IDENTITY=false
   fi
-  write_taa_config "$REMOTE_TAA_CONFIG_SOURCE" "$TAA_CONTAINER_ADDR" "$REMOTE_PLATFORM_IP" "$REMOTE_DOCKER_ID" "$CONTRACT" "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" "$TAA_CONTAINER_WORKDIR/$OLLAMA_DIR_NAME" "http://127.0.0.1:11434" "$OLLAMA_MODEL" "$INCLUDE_TAA_IDENTITY"
+  write_taa_config "$REMOTE_TAA_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" "$TAA_CONTAINER_ADDR" "$REMOTE_PLATFORM_IP" "$REMOTE_DOCKER_ID" "$CONTRACT" "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" "$TAA_CONTAINER_WORKDIR/$OLLAMA_DIR_NAME" "http://127.0.0.1:11434" "$OLLAMA_MODEL" "$INCLUDE_TAA_IDENTITY"
 
   step "uploading taa, config, and attestation helper to remote host"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TAA_BINARY_PATH" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/$BINARY_NAME.new"
@@ -690,6 +730,11 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   remote_ssh "$(container_exec) sh -lc 'test -x $TAA_CONTAINER_WORKDIR/attestation/get-attestation && test -f $TAA_CONTAINER_WORKDIR/hrk.cert && test -f $TAA_CONTAINER_WORKDIR/hsk_cek.cert'"
   if ! remote_ssh "$(container_exec) sh -lc 'test -e /dev/csv-guest'" 2>/dev/null; then
     warn "/dev/csv-guest not found in container — attestation will fail (expected in non-TEE Docker)"
+  fi
+
+  if [[ "$DEBUG" == false ]]; then
+    step "checking production identity env inside container"
+    remote_ssh "$(container_exec) sh -lc 'test -n \"\${PLATFORM_IP:-}\" && test -n \"\${DOCKER_ID:-}\" && test -n \"\${CONTRACT:-}\" || { echo PLATFORM_IP, DOCKER_ID, and CONTRACT must be injected in production non-debug mode; exit 1; }'"
   fi
 
   if [[ "$DEBUG" == true ]]; then
