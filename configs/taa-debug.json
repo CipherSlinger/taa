@@ -1,0 +1,19 @@
+{
+  "addr": ":6001",
+  "platformIP": "127.0.0.1:8080",
+  "dockerID": "taa-debug",
+  "contract": "",
+  "securityScan": true,
+  "modelDir": "/root/taadebug/models",
+  "resultCheck": true,
+  "dataDir": "/root/taadebug/data",
+  "resultDir": "/root/taadebug/results",
+  "llm": {
+    "enabled": true,
+    "endpoint": "http://127.0.0.1:11434",
+    "model": "qwen2.5-coder:0.5b",
+    "policy": "assist",
+    "failClosed": true,
+    "dir": "/root/taadebug/ollama-qwen2.5-coder-0.5b"
+  }
+}
