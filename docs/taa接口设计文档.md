@@ -589,7 +589,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-> 当前实现仅校验 `phase` 取值范围为 `1` ~ `4`，允许在有效阶段之间直接切换。
+> 当前实现仅校验 `phase` 取值范围为 `1` ~ `4`，目前允许在有效阶段之间直接切换。
 
 **响应内容类型**：`application/json`
 
@@ -619,13 +619,15 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
+| `requestId` | `string` | 是 | 随机值，用于防碰撞；TAA 会将其写入导出文件名 |
 | `publicKey` | `string/null` | 否 | SM2 公钥 PEM。phase 1/2 中为空、缺省或 `null` 时明文导出，非空时使用该公钥做 SM2+SM4-GCM 信封加密；phase 3 中当前实现不使用请求中的 `publicKey`，固定使用 phase 1 导入模型时保存的公钥加密 |
-| `taskId` | `string` | 是 | 任务 ID，写入响应头 `X-TAA-Task-Id` |
+| `taskId` | `string` | 否 | 任务 ID；缺省时响应头 `X-TAA-Task-Id` 为空 |
 
 **请求示例（phase 1/2 明文导出）**：
 
 ```jsonc
 {
+  "requestId": "req-export-001",
   "publicKey": null,
   "taskId": "task-001"
 }
@@ -635,6 +637,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 ```jsonc
 {
+  "requestId": "req-export-002",
   "publicKey": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----",
   "taskId": "task-001"
 }
@@ -644,9 +647,9 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 | 当前阶段 | 明文导出内容 | 明文文件名 | 加密规则 |
 | --- | --- | --- | --- |
-| phase 1（调试） | `RESULT_DIR/debug` 目录压缩得到的 tar.gz 文件 | `result-debug.tar.gz` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
-| phase 2（测试） | `RESULT_DIR/train` 目录压缩得到的 tar.gz 文件 | `result-train.tar.gz` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
-| phase 3（正式训练） | `RESULT_DIR/train` 目录压缩得到的 tar.gz 文件 | `result-train.tar.gz` | 固定使用 phase 1 `/v1/taa/importModel` 保存的公钥加密，文件名追加 `.enc`；未保存公钥时返回 400 |
+| phase 1（调试） | `RESULT_DIR/debug` 目录压缩得到的 tar.gz 文件 | `result-debug-{requestId}.tar.gz` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
+| phase 2（测试） | `RESULT_DIR/train` 目录压缩得到的 tar.gz 文件 | `result-train-{requestId}.tar.gz` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
+| phase 3（正式训练） | `RESULT_DIR/train` 目录压缩得到的 tar.gz 文件 | `result-train-{requestId}.tar.gz` | 固定使用 phase 1 `/v1/taa/importModel` 保存的公钥加密，文件名追加 `.enc`；未保存公钥时返回 400 |
 | phase 4（推理） | 暂不支持 | - | 返回 400 |
 
 **成功响应内容类型**：`application/octet-stream`
@@ -656,9 +659,9 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 | 响应头 | 说明 |
 | --- | --- |
 | `Content-Type` | 固定为 `application/octet-stream` |
-| `Content-Disposition` | 附件下载文件名。明文时为 `result-debug.tar.gz` 或 `result-train.tar.gz`；加密时追加 `.enc` |
+| `Content-Disposition` | 附件下载文件名。明文时为 `result-debug-{requestId}.tar.gz` 或 `result-train-{requestId}.tar.gz`；加密时追加 `.enc` |
 | `Content-Length` | 文件大小，单位为字节；加密导出时为加密后的文件大小 |
-| `X-TAA-Task-Id` | 任务 ID，与请求中的 `taskId` 一致 |
+| `X-TAA-Task-Id` | 任务 ID，与请求中的 `taskId` 一致；`taskId` 缺省时为空 |
 | `X-TAA-Encrypted` | 是否加密，`true` 表示响应体为 SM2+SM4-GCM 信封加密结果，`false` 表示响应体为明文 tar.gz 压缩包 |
 
 **成功响应体**：结果文件二进制流。
@@ -671,12 +674,12 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 ```http
 HTTP/1.1 200 OK
 Content-Type: application/octet-stream
-Content-Disposition: attachment; filename="result-train.tar.gz"
+Content-Disposition: attachment; filename="result-train-req-export-001.tar.gz"
 Content-Length: 10485760
 X-TAA-Task-Id: task-001
 X-TAA-Encrypted: false
 
-<result-train.tar.gz binary stream>
+<result-train-req-export-001.tar.gz binary stream>
 ```
 
 **成功响应示例（200 OK，phase 3 加密导出）**：
@@ -684,7 +687,7 @@ X-TAA-Encrypted: false
 ```http
 HTTP/1.1 200 OK
 Content-Type: application/octet-stream
-Content-Disposition: attachment; filename="result-train.tar.gz.enc"
+Content-Disposition: attachment; filename="result-train-req-export-002.tar.gz.enc"
 Content-Length: 10485918
 X-TAA-Task-Id: task-001
 X-TAA-Encrypted: true
@@ -697,8 +700,8 @@ X-TAA-Encrypted: true
 ```sh
 curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
   -H "Content-Type: application/json" \
-  -d '{"publicKey":null,"taskId":"task-001"}' \
-  -o result-train.tar.gz
+  -d '{"requestId":"req-export-001","publicKey":null,"taskId":"task-001"}' \
+  -o result-train-req-export-001.tar.gz
 ```
 
 **失败响应内容类型**：`application/json`
@@ -709,7 +712,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
 ```jsonc
 {
-  "msg": "taskId 不能为空",
+  "msg": "requestId 不能为空",
   "result": null,
   "error": 400
 }
