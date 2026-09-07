@@ -9,7 +9,7 @@ This repo implements Hygon CSV attestation and sealing-key tooling for two paths
 - **User-mode VM path**: uses `vmmcall` directly from the guest to fetch attestation data or sealing keys.
 - **Kernel/Kata path**: uses the `csv-guest` kernel misc device and an ioctl bridge when `/proc/self/pagemap` access is not usable inside the guest/container.
 
-The shared ABI lives in `csv_status.h`; most implementation logic lives in `csv_sdk/csv_status.c`.
+The shared ABI lives in `csv_c/csv_status.h`; most implementation logic lives in `csv_sdk/csv_status.c`.
 
 ## Build and run
 
@@ -23,37 +23,36 @@ Override `INCDIR` and `LIBDIR` on the command line if you have GmSSL installed e
 Common commands from the repo root:
 
 ```bash
-make                          # build all default targets
-make dynamic_csv_sdk          # build libcsv.so
-make static_csv_sdk           # build libcsv.a
-make vmmcall-get-attestation  # build user-mode attestation tool
-make ioctl-get-attestation    # build kata/kernel attestation tool; also copies to get-attestation
-make verify-attestation       # build report verifier
-make get_key                  # build user-mode sealing-key tool
-make ioctl_get_key            # build ioctl sealing-key tool
-make calc-vm-digest           # build VM digest calculator
-make dcu_attestation_demo     # build DCU attestation demo
-make release_csv_cipher       # create reduced csv_cipher/ SDK/demo package
-make clean                    # remove built binaries and libraries
+make attestation-ioctl        # build kata/kernel attestation helper into bin/; also copies to get-attestation
+make attestation-vmmcall      # build user-mode attestation helper into bin/
+make -C attestation/csv_c BIN_DIR=$(pwd)/bin              # build all attestation targets
+make -C attestation/csv_c BIN_DIR=$(pwd)/bin dynamic_csv_sdk          # build libcsv.so
+make -C attestation/csv_c BIN_DIR=$(pwd)/bin static_csv_sdk           # build libcsv.a
+make -C attestation/csv_c BIN_DIR=$(pwd)/bin verify-attestation       # build report verifier
+make -C attestation/csv_c BIN_DIR=$(pwd)/bin get_key                  # build user-mode sealing-key tool
+make -C attestation/csv_c BIN_DIR=$(pwd)/bin ioctl_get_key            # build ioctl sealing-key tool
+make -C attestation/csv_c BIN_DIR=$(pwd)/bin calc-vm-digest           # build VM digest calculator
+make -C attestation/csv_c BIN_DIR=$(pwd)/bin dcu_attestation_demo     # build DCU attestation demo
+make -C attestation/csv_c BIN_DIR=$(pwd)/bin clean                    # remove built binaries and libraries
 ```
 
 There is no automated test suite. Use `make` as the compile check; it builds with `gcc -Wall`. The practical smoke flow is:
 
 ```bash
-./vmmcall-get-attestation      # generates report.cert in VM/user-mode path
-./ioctl-get-attestation        # generates report.cert and nonce.bin via /dev/csv-guest
-./verify-attestation false     # verifies report.cert without certificate-chain validation
-./verify-attestation true      # verifies report.cert and the certificate chain
-./verify-attestation true oca.cert  # optional OCA certificate input
+./bin/vmmcall-get-attestation      # generates report.cert in VM/user-mode path
+./bin/ioctl-get-attestation        # generates report.cert and nonce.bin via /dev/csv-guest
+./bin/verify-attestation false     # verifies report.cert without certificate-chain validation
+./bin/verify-attestation true      # verifies report.cert and the certificate chain
+./bin/verify-attestation true oca.cert  # optional OCA certificate input
 ```
 
 Other useful binaries:
 
 ```bash
-./get_key
-./ioctl_get_key
-./calc-vm-digest <bios> <kernel> <initrd> <cmdline>
-./dcu_attestation_demo
+./bin/get_key
+./bin/ioctl_get_key
+./bin/calc-vm-digest <bios> <kernel> <initrd> <cmdline>
+./bin/dcu_attestation_demo
 ```
 
 `verify-attestation` expects `report.cert` in the working directory. When chain verification is enabled, it downloads certificates from Hygon URLs and falls back to local files next to the executable when available (`hrk.cert`, `hsk_cek.cert`, optional OCA cert).
@@ -72,7 +71,7 @@ Then copy `ioctl-get-attestation` or `ioctl_get_key` into the container and run 
 
 ### Shared data model and ABI
 
-`csv_status.h` is the central contract between all parts of the project. It defines:
+`csv_c/csv_status.h` is the central contract between all parts of the project. It defines:
 
 - attestation report layouts
 - certificate-chain layouts
@@ -99,25 +98,21 @@ The file is shared by both the report and sealing-key paths, so changes here ten
 
 The top-level tools are intentionally small:
 
-- `vmmcall_get_attestation.c` / `vmmcall_get_key.c`: user-mode VM entry points
-- `ioctl_get_attestation.c` / `ioctl_get_key.c`: Kata/kernel entry points
-- `verify_attestation.c`: report verification and optional OCA export
-- `calc_vm_digest.c`: builds the CSV hash table from BIOS/kernel/initrd/cmdline inputs and computes the SM3 digest used for boot measurement
-- `dcu_attestation_demo.c`: hardware-specific DCU attestation demo that iterates over `/sys/devices/virtual/kfd/kfd/topology/nodes` and talks to `/dev/mkfd`
+- `csv_c/vmmcall_get_attestation.c` / `csv_c/vmmcall_get_key.c`: user-mode VM entry points
+- `csv_c/ioctl_get_attestation.c` / `csv_c/ioctl_get_key.c`: Kata/kernel entry points
+- `csv_c/verify_attestation.c`: report verification and optional OCA export
+- `csv_c/calc_vm_digest.c`: builds the CSV hash table from BIOS/kernel/initrd/cmdline inputs and computes the SM3 digest used for boot measurement
+- `csv_c/dcu_attestation_demo.c`: hardware-specific DCU attestation demo that iterates over `/sys/devices/virtual/kfd/kfd/topology/nodes` and talks to `/dev/mkfd`
 
-### Kernel bridge (`csv-guest.c`)
+### Kernel bridge (`csv_c/csv-guest.c`)
 
-`csv-guest.c` is a miscdevice kernel module that exposes `/dev/csv-guest`. Its ioctl path:
+`csv_c/csv-guest.c` is a miscdevice kernel module that exposes `/dev/csv-guest`. Its ioctl path:
 
 1. copies user data into kernel memory
 2. issues the attestation hypercall
 3. copies the result back to user space
 
 This is the path intended for Kata/container setups where the user-mode pagemap approach is blocked.
-
-### Release variant
-
-`make release_csv_cipher` creates a reduced `csv_cipher/` package around `csv_status.c` and `demo.c`, using `release_csv_cipher.Makefile` as that package's Makefile. That release Makefile defaults to `/opt/gmssl/include/` and `/opt/gmssl/lib/`, unlike the top-level Makefile, so override `INCDIR`/`LIBDIR` or edit the release package if you build it in this local environment.
 
 ## Files that matter operationally
 

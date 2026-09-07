@@ -23,17 +23,17 @@ platform-mock-build:
 	@go build -o $(MOCK_BINARY) ./platform-mock
 
 attestation-ioctl:
-	@$(MAKE) -C attestation BIN_DIR=$(abspath $(BIN_DIR)) ioctl-get-attestation
+	@$(MAKE) -C attestation/csv_c BIN_DIR=$(abspath $(BIN_DIR)) ioctl-get-attestation
 
 attestation-vmmcall:
-	@$(MAKE) -C attestation BIN_DIR=$(abspath $(BIN_DIR)) vmmcall-get-attestation
+	@$(MAKE) -C attestation/csv_c BIN_DIR=$(abspath $(BIN_DIR)) vmmcall-get-attestation
 
 docker: manifest/docker/Dockerfile
 	@docker build -t taa:latest -f manifest/docker/Dockerfile .
 
 clean:
 	@rm -f $(TAA_BINARY) $(MOCK_BINARY)
-	@$(MAKE) -C attestation clean
+	@$(MAKE) -C attestation/csv_c BIN_DIR=$(abspath $(BIN_DIR)) clean
 	@rmdir $(BIN_DIR) 2>/dev/null || true
 
 help:
