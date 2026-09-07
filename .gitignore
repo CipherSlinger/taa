@@ -4,6 +4,7 @@
 # 编译产物
 bin/
 models/
+taa-config.json
 
 # 测试相关
 docs/audit/references/

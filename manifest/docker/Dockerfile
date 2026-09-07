@@ -6,6 +6,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/app main.go
 
 FROM scratch
 
+WORKDIR /
 COPY --from=builder /out/app /app
-EXPOSE 9001
+COPY configs/taa-production.json /taa-config.json
+EXPOSE 6001
 ENTRYPOINT ["/app"]

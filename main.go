@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"flag"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -20,6 +20,7 @@ import (
 )
 
 const (
+	defaultConfigFile      = "taa-config.json"
 	fixedAttestationFile   = "attestation.report"
 	fixedAttestationHelper = "./attestation/get-attestation"
 	fixedAttestationMode   = "auto"
@@ -32,6 +33,9 @@ type taaKeyPair struct {
 
 type startupConfig struct {
 	Addr               string
+	PlatformIP         string
+	DockerID           string
+	Contract           string
 	EnableSecurityScan bool
 	ModelDir           string
 	EnableResultCheck  bool
@@ -42,76 +46,179 @@ type startupConfig struct {
 	LLMModel           string
 	LLMPolicy          string
 	LLMFailClosed      bool
+	LLMDir             string
 }
 
-func parseStartupFlags(args []string) (startupConfig, error) {
-	fs := flag.NewFlagSet("taa", flag.ContinueOnError)
-	addr := fs.String("addr", ":6001", "HTTP listen address")
-	enableSecurityScan := fs.Bool("security-scan", envBool("SECURITY_SCAN", true), "enable source code security scan on model import")
-	modelDir := fs.String("model-dir", envDefault("MODEL_DIR", "/opt/taa/models"), "directory where imported model code is stored (type=1)")
-	enableResultCheck := fs.Bool("result-check", envBool("RESULT_CHECK", true), "enable plaintext data leakage check on result export")
-	dataDir := fs.String("data-dir", envDefault("DATA_DIR", "/opt/taa/data"), "directory where imported data is stored (type=2 test data, type=3 training data)")
-	resultDir := fs.String("result-dir", envDefault("RESULT_DIR", "/opt/taa/results"), "directory where training results are stored")
+type startupConfigFile struct {
+	Addr               string               `json:"addr"`
+	PlatformIP         string               `json:"platformIP"`
+	DockerID           string               `json:"dockerID"`
+	Contract           string               `json:"contract"`
+	EnableSecurityScan *bool                `json:"securityScan"`
+	ModelDir           string               `json:"modelDir"`
+	EnableResultCheck  *bool                `json:"resultCheck"`
+	DataDir            string               `json:"dataDir"`
+	ResultDir          string               `json:"resultDir"`
+	LLM                startupLLMConfigFile `json:"llm"`
+}
 
-	// LLM verifier configuration.
-	enableLLM := fs.Bool("security-llm-verify", envBool("SECURITY_LLM_VERIFY", true), "enable LLM semantic verification on suspicious findings")
-	llmEndpoint := fs.String("security-llm-endpoint", envDefault("SECURITY_LLM_ENDPOINT", "http://127.0.0.1:11434"), "local LLM inference endpoint (Ollama/llama.cpp)")
-	llmModel := fs.String("security-llm-model", envDefault("SECURITY_LLM_MODEL", "qwen2.5-coder:0.5b"), "model name for LLM verifier")
-	llmPolicy := fs.String("security-llm-policy", envDefault("SECURITY_LLM_POLICY", "assist"), "LLM policy: assist (informational) or gate (can downgrade findings)")
-	llmFailClosed := fs.Bool("security-llm-fail-closed", envBool("SECURITY_LLM_FAIL_CLOSED", true), "block import if LLM verifier is unavailable")
+type startupLLMConfigFile struct {
+	Enabled    *bool  `json:"enabled"`
+	Endpoint   string `json:"endpoint"`
+	Model      string `json:"model"`
+	Policy     string `json:"policy"`
+	FailClosed *bool  `json:"failClosed"`
+	Dir        string `json:"dir"`
+}
 
-	var flagArgs []string
-	if len(args) > 1 {
-		flagArgs = args[1:]
+func loadStartupConfig(path string) (startupConfig, error) {
+	cfg := defaultStartupConfig()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return startupConfig{}, fmt.Errorf("read startup config %s: %w", path, err)
 	}
-	if err := fs.Parse(flagArgs); err != nil {
-		return startupConfig{}, err
+
+	var fileCfg startupConfigFile
+	if err := json.Unmarshal(data, &fileCfg); err != nil {
+		return startupConfig{}, fmt.Errorf("parse startup config %s: %w", path, err)
 	}
 
+	applyStartupConfigFile(&cfg, fileCfg)
+	return cfg, nil
+}
+
+func defaultStartupConfig() startupConfig {
 	return startupConfig{
-		Addr:               *addr,
-		EnableSecurityScan: *enableSecurityScan,
-		ModelDir:           *modelDir,
-		EnableResultCheck:  *enableResultCheck,
-		DataDir:            *dataDir,
-		ResultDir:          *resultDir,
-		EnableLLM:          *enableLLM,
-		LLMEndpoint:        *llmEndpoint,
-		LLMModel:           *llmModel,
-		LLMPolicy:          *llmPolicy,
-		LLMFailClosed:      *llmFailClosed,
-	}, nil
+		Addr:               ":6001",
+		PlatformIP:         os.Getenv("PLATFORM_IP"),
+		DockerID:           os.Getenv("DOCKER_ID"),
+		Contract:           os.Getenv("CONTRACT"),
+		EnableSecurityScan: true,
+		ModelDir:           "/opt/taa/models",
+		EnableResultCheck:  true,
+		DataDir:            "/opt/taa/data",
+		ResultDir:          "/opt/taa/results",
+		EnableLLM:          true,
+		LLMEndpoint:        "http://127.0.0.1:11434",
+		LLMModel:           "qwen2.5-coder:0.5b",
+		LLMPolicy:          "assist",
+		LLMFailClosed:      true,
+	}
+}
+
+func applyStartupConfigFile(cfg *startupConfig, fileCfg startupConfigFile) {
+	if fileCfg.Addr != "" {
+		cfg.Addr = fileCfg.Addr
+	}
+	if fileCfg.PlatformIP != "" {
+		cfg.PlatformIP = fileCfg.PlatformIP
+	}
+	if fileCfg.DockerID != "" {
+		cfg.DockerID = fileCfg.DockerID
+	}
+	if fileCfg.Contract != "" {
+		cfg.Contract = fileCfg.Contract
+	}
+	if fileCfg.EnableSecurityScan != nil {
+		cfg.EnableSecurityScan = *fileCfg.EnableSecurityScan
+	}
+	if fileCfg.ModelDir != "" {
+		cfg.ModelDir = fileCfg.ModelDir
+	}
+	if fileCfg.EnableResultCheck != nil {
+		cfg.EnableResultCheck = *fileCfg.EnableResultCheck
+	}
+	if fileCfg.DataDir != "" {
+		cfg.DataDir = fileCfg.DataDir
+	}
+	if fileCfg.ResultDir != "" {
+		cfg.ResultDir = fileCfg.ResultDir
+	}
+	if fileCfg.LLM.Enabled != nil {
+		cfg.EnableLLM = *fileCfg.LLM.Enabled
+	}
+	if fileCfg.LLM.Endpoint != "" {
+		cfg.LLMEndpoint = fileCfg.LLM.Endpoint
+	}
+	if fileCfg.LLM.Model != "" {
+		cfg.LLMModel = fileCfg.LLM.Model
+	}
+	if fileCfg.LLM.Policy != "" {
+		cfg.LLMPolicy = fileCfg.LLM.Policy
+	}
+	if fileCfg.LLM.FailClosed != nil {
+		cfg.LLMFailClosed = *fileCfg.LLM.FailClosed
+	}
+	if fileCfg.LLM.Dir != "" {
+		cfg.LLMDir = fileCfg.LLM.Dir
+	}
 }
 
 func main() {
-	cfg, err := parseStartupFlags(os.Args)
-	if err != nil {
+	if err := run(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func run() error {
+	cfg, err := loadStartupConfig(defaultConfigFile)
+	if err != nil {
+		return err
 	}
 
 	if cfg.EnableLLM {
-		ensureQwenAvailable(cfg.LLMEndpoint, cfg.LLMModel)
+		ensureQwenAvailable(cfg.LLMEndpoint, cfg.LLMModel, cfg.LLMDir)
 	}
 
 	keyPair, err := generateTAAKeyPair()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	platformIP := os.Getenv("PLATFORM_IP")
-	dockerID := os.Getenv("DOCKER_ID")
+	platformIP := cfg.PlatformIP
+	dockerID := cfg.DockerID
 
-	// 生成 USERDATA
 	timestamp := time.Now().Unix()
 	userData, err := deriveUserData(&keyPair.PrivateKey.PublicKey)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
+	logUserDataSummary(platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, userData)
+
+	if err := prepareAttestationReport(userData); err != nil {
+		return err
+	}
+
+	if err := registerPlatform(platformIP, dockerID, keyPair.PublicKeyPEM, timestamp); err != nil {
+		log.Printf("WARNING: platform register failed, continuing startup: %v", err)
+	} else {
+		log.Printf("platform register completed")
+	}
+	logGeneratedTAAKeyPair(keyPair)
+
+	sec := buildSecurityConfig(cfg)
+	if err := ensureSecurityDirectories(sec); err != nil {
+		return err
+	}
+	logSecurityConfig(sec)
+
+	state := controller.NewTAAState(fixedAttestationFile, platformIP, dockerID, fixedAttestationHelper, fixedAttestationMode, keyPair.PrivateKey, userData, sec)
+
+	server := newTAAServer(cfg.Addr, state)
+	log.Printf("taa service listening on %s", cfg.Addr)
+
+	return server.ListenAndServe()
+}
+
+func logUserDataSummary(platformIP, dockerID, publicKeyPEM string, timestamp int64, userData []byte) {
 	log.Printf("generated userdata: taa SM2 public key raw X||Y")
 	log.Printf("  input: taaPublicKey(%d bytes) + dockerId(%s) + platformIP(%s) + timestamp(%d)",
-		len(keyPair.PublicKeyPEM), dockerID, platformIP, timestamp)
+		len(publicKeyPEM), dockerID, platformIP, timestamp)
 	log.Printf("  userdata (64 bytes hex): %x", userData)
+}
 
+func prepareAttestationReport(userData []byte) error {
 	log.Printf("generating attestation report: helper=%q output=%s", fixedAttestationHelper, fixedAttestationFile)
 	if err := attestation.Generate(context.Background(), attestation.Config{
 		OutputPath: fixedAttestationFile,
@@ -121,21 +228,21 @@ func main() {
 	}); err != nil {
 		log.Printf("WARNING: generating attestation report failed, continuing with empty report: %v", err)
 		if writeErr := os.WriteFile(fixedAttestationFile, nil, 0o600); writeErr != nil {
-			log.Fatalf("write empty attestation report: %v", writeErr)
+			return fmt.Errorf("write empty attestation report: %w", writeErr)
 		}
 	} else {
 		log.Printf("attestation report ready: %s", fixedAttestationFile)
 	}
+	return nil
+}
 
+func registerPlatform(platformIP, dockerID, publicKeyPEM string, timestamp int64) error {
 	log.Printf("notifying platform register: platform=%s dockerId=%s attestation=%s timestamp=%d", platformIP, dockerID, fixedAttestationFile, timestamp)
-	if err := controller.NoticeRegister(context.Background(), platformIP, dockerID, fixedAttestationFile, keyPair.PublicKeyPEM, timestamp); err != nil {
-		log.Printf("WARNING: platform register failed, continuing startup: %v", err)
-	} else {
-		log.Printf("platform register completed")
-	}
-	logGeneratedTAAKeyPair(keyPair)
+	return controller.NoticeRegister(context.Background(), platformIP, dockerID, fixedAttestationFile, publicKeyPEM, timestamp)
+}
 
-	sec := controller.SecurityConfig{
+func buildSecurityConfig(cfg startupConfig) controller.SecurityConfig {
+	return controller.SecurityConfig{
 		ScanEnabled: cfg.EnableSecurityScan,
 		ModelDir:    cfg.ModelDir,
 		ResultCheck: cfg.EnableResultCheck,
@@ -151,15 +258,18 @@ func main() {
 			FailClosed:  cfg.LLMFailClosed,
 		},
 	}
-	// 确保所有资源目录存在
+}
+
+func ensureSecurityDirectories(sec controller.SecurityConfig) error {
 	for _, dir := range []string{sec.ModelDir, sec.DataDir, sec.ResultDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			log.Fatalf("create directory %s: %v", dir, err)
+			return fmt.Errorf("create directory %s: %w", dir, err)
 		}
 	}
+	return nil
+}
 
-	state := controller.NewTAAState(fixedAttestationFile, platformIP, dockerID, fixedAttestationHelper, fixedAttestationMode, keyPair.PrivateKey, userData, sec)
-
+func logSecurityConfig(sec controller.SecurityConfig) {
 	if sec.ScanEnabled {
 		log.Printf("security scan enabled: model-dir=%s", sec.ModelDir)
 		if sec.LLM.Enabled {
@@ -170,42 +280,22 @@ func main() {
 	if sec.ResultCheck {
 		log.Printf("result check enabled: data-dir=%s result-dir=%s", sec.DataDir, sec.ResultDir)
 	}
+}
 
+func newTAAServer(addr string, state *controller.TAAState) *http.Server {
 	mux := http.NewServeMux()
 	controller.RegisterRoutes(mux, state)
 
-	server := &http.Server{
-		Addr:              cfg.Addr,
+	return &http.Server{
+		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-
-	log.Printf("taa service listening on %s", cfg.Addr)
-
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatal(err)
-	}
-}
-
-func envDefault(key, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-	return value
-}
-
-func envBool(key string, fallback bool) bool {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	return v == "true"
 }
 
 // ensureQwenAvailable 检查 qwen (ollama) 服务是否可用，不可用时尝试启动。
 // 启动失败仅打印警告，不阻塞 TAA 启动。
-func ensureQwenAvailable(endpoint, model string) {
+func ensureQwenAvailable(endpoint, model, ollamaDir string) {
 	log.Printf("checking qwen service: endpoint=%s model=%s", endpoint, model)
 
 	// 1. 检查是否已经可用
@@ -217,7 +307,6 @@ func ensureQwenAvailable(endpoint, model string) {
 	// 2. 尝试启动 ollama
 	log.Printf("qwen service not available, attempting to start...")
 
-	ollamaDir := envDefault("OLLAMA_DIR", "")
 	if ollamaDir == "" {
 		// 默认路径：容器内 TAA 工作目录下的 ollama 包
 		// deploy.sh 部署到 $CON_WORKDIR/ollama-qwen2.5-coder-0.5b
@@ -234,7 +323,7 @@ func ensureQwenAvailable(endpoint, model string) {
 	}
 
 	if ollamaDir == "" {
-		log.Printf("WARNING: qwen 启动失败: 未找到 ollama 包目录 (设置 OLLAMA_DIR 环境变量指定路径)")
+		log.Printf("WARNING: qwen 启动失败: 未找到 ollama 包目录 (在 %s 的 llm.dir 指定路径)", defaultConfigFile)
 		log.Printf("WARNING: 代码审计将仅使用静态扫描，LLM 语义分析不可用")
 		return
 	}
