@@ -48,7 +48,7 @@ Agent 公共请求返回参数如下：
 | 7 | 平台 → TAA | `/v1/taa/importModel` | `POST` | 平台下发模型训练代码 |
 | 8 | 平台 → TAA | `/v1/taa/getResourceInfo` | `POST` | 平台传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理 |
 | 9 | 平台 → TAA | `/v1/taa/switch` | `POST` | 平台通知 TAA 切换运行阶段 |
-| 10 | 平台 → TAA | `/v1/taa/export` | `POST` | 平台请求 TAA 导出结果，成功时直接返回结果文件流 |
+| 10 | 平台 → TAA | `/v1/taa/export` | `POST` | 平台请求 TAA 导出当前阶段结果目录压缩包，成功时直接返回文件流 |
 | 11 | 平台 → TAA | `/v1/taa/logs` | `POST` | 查询 TAA 结构化日志 |
 | 12 | 平台 → TAA | `/v1/taa/status` | `POST` | 查询 TAA 完整状态信息 |
 
@@ -589,9 +589,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-> 处于阶段1，只允许切换为2
-> 处于阶段2， 只允许切换为1/3
-> 处于阶段3， 只允许切换为4（预留）
+> 当前实现仅校验 `phase` 取值范围为 `1` ~ `4`，允许在有效阶段之间直接切换。
 
 **响应内容类型**：`application/json`
 
@@ -609,7 +607,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 ### 4.4 请求 TAA 导出结果
 
-该接口用于请求导出训练结果权重文件密文。考虑到结果文件可能较大，成功时接口直接返回二进制文件流。
+该接口用于请求导出 TAA 当前阶段产生的结果目录压缩包。考虑到结果文件可能较大，成功时接口直接返回二进制文件流。
 
 > 注意：该接口与其他 TAA 接口不同，**成功响应不是公共 JSON 格式**；只有失败响应继续遵循 [2. 公共返回格式](#2-公共返回格式)。
 
@@ -621,10 +619,10 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `publicKey` | `string/null` | 否 | SM2 公钥 PEM。为空、缺省或 `null` 时导出明文结果文件；非空时 TAA 使用该 SM2 公钥对结果文件做信封加密后导出 |
-| `taskId` | `string` | 是 | 任务 ID，用于生成下载文件名和响应头 |
+| `publicKey` | `string/null` | 否 | SM2 公钥 PEM。phase 1/2 中为空、缺省或 `null` 时明文导出，非空时使用该公钥做 SM2+SM4-GCM 信封加密；phase 3 中当前实现不使用请求中的 `publicKey`，固定使用 phase 1 导入模型时保存的公钥加密 |
+| `taskId` | `string` | 是 | 任务 ID，写入响应头 `X-TAA-Task-Id` |
 
-**请求示例（明文导出）**：
+**请求示例（phase 1/2 明文导出）**：
 
 ```jsonc
 {
@@ -633,7 +631,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-**请求示例（加密导出）**：
+**请求示例（phase 1/2 加密导出）**：
 
 ```jsonc
 {
@@ -642,6 +640,15 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
+**当前阶段导出内容**：
+
+| 当前阶段 | 明文导出内容 | 明文文件名 | 加密规则 |
+| --- | --- | --- | --- |
+| phase 1（调试） | `RESULT_DIR/debug` 目录压缩得到的 tar.gz 文件 | `result-debug.tar.gz` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
+| phase 2（测试） | `RESULT_DIR/train` 目录压缩得到的 tar.gz 文件 | `result-train.tar.gz` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
+| phase 3（正式训练） | `RESULT_DIR/train` 目录压缩得到的 tar.gz 文件 | `result-train.tar.gz` | 固定使用 phase 1 `/v1/taa/importModel` 保存的公钥加密，文件名追加 `.enc`；未保存公钥时返回 400 |
+| phase 4（推理） | 暂不支持 | - | 返回 400 |
+
 **成功响应内容类型**：`application/octet-stream`
 
 **成功响应头**：
@@ -649,40 +656,40 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 | 响应头 | 说明 |
 | --- | --- |
 | `Content-Type` | 固定为 `application/octet-stream` |
-| `Content-Disposition` | 附件下载文件名，格式为 `attachment; filename="result-{taskId}.bin"` |
+| `Content-Disposition` | 附件下载文件名。明文时为 `result-debug.tar.gz` 或 `result-train.tar.gz`；加密时追加 `.enc` |
 | `Content-Length` | 文件大小，单位为字节；加密导出时为加密后的文件大小 |
 | `X-TAA-Task-Id` | 任务 ID，与请求中的 `taskId` 一致 |
-| `X-TAA-Encrypted` | 是否加密，`true` 表示响应体为 SM2 信封加密结果，`false` 表示响应体为明文结果 |
+| `X-TAA-Encrypted` | 是否加密，`true` 表示响应体为 SM2+SM4-GCM 信封加密结果，`false` 表示响应体为明文 tar.gz 压缩包 |
 
 **成功响应体**：结果文件二进制流。
 
-- `X-TAA-Encrypted: false` 时，响应体为 `RESULT_DIR/result.bin` 明文内容。
-- `X-TAA-Encrypted: true` 时，响应体为信封加密后的二进制内容，格式为 `WrappedKey(129B) || AES-GCM Ciphertext`。
+- `X-TAA-Encrypted: false` 时，响应体为当前阶段结果目录压缩得到的 tar.gz 文件。
+- `X-TAA-Encrypted: true` 时，响应体为信封加密后的二进制内容，格式为 `WrappedKey(129B) || SM4-GCM Ciphertext`。
 
-**成功响应示例（200 OK，明文导出）**：
+**成功响应示例（200 OK，phase 2 明文导出）**：
 
 ```http
 HTTP/1.1 200 OK
 Content-Type: application/octet-stream
-Content-Disposition: attachment; filename="result-task-001.bin"
+Content-Disposition: attachment; filename="result-train.tar.gz"
 Content-Length: 10485760
 X-TAA-Task-Id: task-001
 X-TAA-Encrypted: false
 
-<result.bin binary stream>
+<result-train.tar.gz binary stream>
 ```
 
-**成功响应示例（200 OK，加密导出）**：
+**成功响应示例（200 OK，phase 3 加密导出）**：
 
 ```http
 HTTP/1.1 200 OK
 Content-Type: application/octet-stream
-Content-Disposition: attachment; filename="result-task-001.bin"
+Content-Disposition: attachment; filename="result-train.tar.gz.enc"
 Content-Length: 10485918
 X-TAA-Task-Id: task-001
 X-TAA-Encrypted: true
 
-<WrappedKey(129B) || AES-GCM Ciphertext>
+<WrappedKey(129B) || SM4-GCM Ciphertext>
 ```
 
 **调用示例**：
@@ -691,7 +698,7 @@ X-TAA-Encrypted: true
 curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
   -H "Content-Type: application/json" \
   -d '{"publicKey":null,"taskId":"task-001"}' \
-  -o result-task-001.bin
+  -o result-train.tar.gz
 ```
 
 **失败响应内容类型**：`application/json`
@@ -710,7 +717,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
 ```jsonc
 {
-  "msg": "读取训练结果失败: open /opt/taa/results/result.bin: no such file or directory",
+  "msg": "压缩 train 目录失败: 目录不存在: stat /opt/taa/results/train: no such file or directory",
   "result": null,
   "error": 500
 }
@@ -719,6 +726,14 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 ```jsonc
 {
   "msg": "publicKey 解析失败: ...",
+  "result": null,
+  "error": 400
+}
+```
+
+```jsonc
+{
+  "msg": "阶段 3 需要先通过阶段 1 导入公钥",
   "result": null,
   "error": 400
 }
@@ -739,7 +754,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
  | `resourceUrl` | `string` | 是 | 资源下载地址 |
  | `requestId` | `string` | 是 | 随机值，用于防重放 |
  | `taskId` | `string` | 否 | 任务 ID，用于训练报告生成 |
- | `publicKey` | `string` | 否 | SM2 公钥 PEM。TAA 在 phase=1 时使用该公钥保存用于后续结果导出解密 |
+ | `publicKey` | `string` | 否 | SM2 公钥 PEM。TAA 在 phase=1 时校验并保存该公钥，用于后续 phase=3 结果加密导出 |
 
 **请求示例**：
 

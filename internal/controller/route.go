@@ -133,7 +133,7 @@ func RegisterRoutes(mux *http.ServeMux, state *TAAState) {
 		handler http.HandlerFunc
 	}{
 		{"/v1/taa/health", state.healthHandler},
-		{"/v1/taa/reportRes", state.reportResHandler},
+		// {"/v1/taa/reportRes", state.reportResHandler}, // /v1/taa/reportRes 为 TAA -> 平台上报接口，TAA 服务端不再接收该路径。
 		{"/v1/taa/import", state.importHandler},
 		{"/v1/taa/importModel", state.modelImportHandler},
 		{"/v1/taa/getResourceInfo", state.resourceInfoHandler},
@@ -862,29 +862,32 @@ func (s *TAAState) resourceInfoHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── Handler: /v1/taa/reportRes (平台 → TAA) ─────────────
-
-func (s *TAAState) reportResHandler(w http.ResponseWriter, r *http.Request) {
-	var req reportResPlatformRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("请求解析失败: %v", err))
-		return
-	}
-
-	if req.RequestID == "" {
-		writeError(w, http.StatusBadRequest, "requestId 不能为空")
-		return
-	}
-
-	s.mu.Lock()
-	if req.Code == 0 {
-		s.TrainingDone = true
-	}
-	s.mu.Unlock()
-
-	log.Printf("report result received: requestId=%s code=%d", req.RequestID, req.Code)
-
-	writeEnvelope(w, http.StatusOK, "结果已接收", nil, 0)
-}
+//
+// /v1/taa/reportRes 在接口文档中定义为 TAA -> 平台的训练结果上报接口，
+// TAA 服务端不再注册或接收该路径。保留以下历史实现注释，便于必要时追溯。
+//
+// func (s *TAAState) reportResHandler(w http.ResponseWriter, r *http.Request) {
+// 	var req reportResPlatformRequest
+// 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+// 		writeError(w, http.StatusBadRequest, fmt.Sprintf("请求解析失败: %v", err))
+// 		return
+// 	}
+//
+// 	if req.RequestID == "" {
+// 		writeError(w, http.StatusBadRequest, "requestId 不能为空")
+// 		return
+// 	}
+//
+// 	s.mu.Lock()
+// 	if req.Code == 0 {
+// 		s.TrainingDone = true
+// 	}
+// 	s.mu.Unlock()
+//
+// 	log.Printf("report result received: requestId=%s code=%d", req.RequestID, req.Code)
+//
+// 	writeEnvelope(w, http.StatusOK, "结果已接收", nil, 0)
+// }
 
 // ── Script helpers ──────────────────────────────────────
 

@@ -851,61 +851,20 @@ func TestGetAttestationHandler(t *testing.T) {
 	})
 }
 
-// ── Test: /v1/taa/reportRes (平台 → TAA) ────────────────
+// ── Test: /v1/taa/reportRes 服务端禁用 ────────────────
 
-func TestReportResHandler(t *testing.T) {
-	state, server := setupTestServer(t)
+func TestReportResHandlerDisabled(t *testing.T) {
+	_, server := setupTestServer(t)
 
-	t.Run("success result", func(t *testing.T) {
-		resp := postJSON(t, server.URL+"/v1/taa/reportRes", map[string]any{
-			"requestId": "req-report-001",
-			"code":      0,
-			"msg":       nil,
-		})
-		api := decodeResponse(t, resp)
-		if resp.StatusCode != 200 || api.Error != 0 {
-			t.Fatalf("expected 200/0, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
-		}
-		state.mu.RLock()
-		done := state.TrainingDone
-		state.mu.RUnlock()
-		if !done {
-			t.Fatal("TrainingDone should be true after code=0")
-		}
+	resp := postJSON(t, server.URL+"/v1/taa/reportRes", map[string]any{
+		"requestId": "req-report-001",
+		"code":      0,
+		"msg":       nil,
 	})
-
-	t.Run("failure result", func(t *testing.T) {
-		state.mu.Lock()
-		state.TrainingDone = false
-		state.mu.Unlock()
-
-		failMsg := "training failed"
-		resp := postJSON(t, server.URL+"/v1/taa/reportRes", map[string]any{
-			"requestId": "req-report-002",
-			"code":      1,
-			"msg":       failMsg,
-		})
-		api := decodeResponse(t, resp)
-		if resp.StatusCode != 200 || api.Error != 0 {
-			t.Fatalf("expected 200/0, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
-		}
-		state.mu.RLock()
-		done := state.TrainingDone
-		state.mu.RUnlock()
-		if done {
-			t.Fatal("TrainingDone should remain false after code!=0")
-		}
-	})
-
-	t.Run("missing requestId", func(t *testing.T) {
-		resp := postJSON(t, server.URL+"/v1/taa/reportRes", map[string]any{
-			"code": 0,
-		})
-		api := decodeResponse(t, resp)
-		if api.Error == 0 {
-			t.Fatal("expected error for missing requestId")
-		}
-	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
 }
 
 // extractTarGzMap 将 tar.gz 字节解压为文件名→内容的映射（跳过目录项）。
@@ -1047,16 +1006,16 @@ func TestFullWorkflow(t *testing.T) {
 		t.Fatalf("switch to training: %s", api.Msg)
 	}
 
-	// 4. Simulate training done (platform reports to TAA)
+	// 4. /v1/taa/reportRes is a TAA -> platform callback only; TAA server no longer accepts it.
 	resp = postJSON(t, server.URL+"/v1/taa/reportRes", map[string]any{
 		"requestId": "req-wf-003",
 		"code":      0,
 		"msg":       nil,
 	})
-	api = decodeResponse(t, resp)
-	if api.Error != 0 {
-		t.Fatalf("report result: %s", api.Msg)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("reportRes status = %d, want 404", resp.StatusCode)
 	}
+	resp.Body.Close()
 
 	// 5. Export result (phase 3 uses saved key, publicKey must be empty)
 	wfPlaintext := []byte("mock training result")
