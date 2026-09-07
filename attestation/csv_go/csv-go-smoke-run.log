@@ -1,0 +1,3 @@
+csv_go smoke status: fail
+result file: csv-go-smoke-result.json
+csv_go smoke failed: open /dev/csv-guest: open /dev/csv-guest: no such file or directory
