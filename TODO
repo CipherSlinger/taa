@@ -1,61 +1,11 @@
-# TAA 密码安全审阅报告 & 优化建议
+- 多次训练导出对应的结果报告（requestid - taskid - 不同阶段不同批次）
+- 命令行
 
 
 1. 检测密文方式不要依赖后缀
-
----
-### 1.7 密钥材料未从内存中安全擦除 [HIGH]
-- **位置**: 全项目多处
-  - `main.go` → `generateTAAKeyPair()` 返回的私钥在进程生命周期内常驻内存
-  - `route.go` → `decryptResourceToTempFile()` 中 `dataKey` 使用后仅设 `nil`
-  - `route.go` → AES 明文 `plaintext` 使用后仅设 `nil`
-- **问题**: Go 的 GC 不保证及时回收内存，密钥材料可能在堆上残留很长时间。
-  简单的 `= nil` 赋值不会覆写底层内存。冷启动攻击或内存转储可恢复密钥。
-- **建议**:
-  - 使用 `crypto/subtle` 或手动 `for i := range key { key[i] = 0 }` 覆写密钥字节。
-  - 封装 `SecureBuffer` 类型，提供 `Wipe()` 方法在使用后立即清零。
-  - 对敏感数据使用 `mlock()` 防止被换出到 swap。
-  - 考虑使用 `runtime.KeepAlive()` 确保清零代码不被编译器优化掉。
-
-### 1.8 SM2 信封加密缺少密钥确认 [MEDIUM]
-- **位置**: `sdk/crypto/sm2.go` → `WrapKeySM2()` / `UnwrapKeySM2()`
-- **问题**: SM2 密钥信封解密后没有密钥确认（Key Confirmation）机制。
-  接收方无法确认发送方确实拥有对应公钥，存在 **Key Compromise Impersonation** 风险。
-- **建议**:
-  - 在信封中加入 MAC 标签：`WrappedKey = SM2_Encrypt(aesKey) || HMAC-SM3(aesKey, context)`。
-  - 或使用 SM2 签名对信封进行签名认证。
-
----
-
-## 二、密钥管理与生命周期（High）
-
-### 2.1 TAA SM2 私钥无轮换机制 [HIGH]
-- **位置**: `main.go` → `generateTAAKeyPair()`
-- **问题**: TAA 每次启动生成一个 SM2 密钥对，在整个运行期间使用同一密钥。
-  没有密钥轮换、密钥过期或密钥撤销机制。若密钥泄露，所有历史通信均可解密。
-- **建议**:
-  - 实现定期密钥轮换（如每 24 小时或每 N 次操作后）。
-  - 引入密钥版本标识，支持多版本密钥共存过渡。
-  - 与平台协商密钥更新协议。
-
-### 2.2 无完美前向保密（PFS）[HIGH]
-- **位置**: 信封加密架构
-- **问题**: 所有资源加密均使用 TAA 的长期 SM2 密钥对。如果 TAA 私钥被泄露，
-  所有历史加密资源均可被解密。缺乏完美前向保密机制。
-- **建议**:
-  - 引入临时 Diffie-Hellman 密钥交换（如 SM2 ECDHE），每次会话生成临时密钥对。
-  - 长期密钥仅用于认证，不直接用于数据加密。
----
-
-## 三、网络安全（Critical / High）
-### 3.3 CORS 配置过于宽松 [HIGH]
-- **位置**: `route.go` → `postOnly()` (L146)
-- **问题**: `Access-Control-Allow-Origin: *` 允许任意来源的网页向 TAA 发送请求。
-  如果 TAA 在非隔离网络中运行，恶意网页可通过浏览器发起请求。
-- **建议**:
-  - 将 CORS 限制为已知可信来源。
-  - 或在 TEE 场景下，如果仅接受容器内部请求，应绑定监听地址为 `127.0.0.1`。
-  - 添加 `Origin` 请求头校验。
+2. 模型方进度管控
+3. taa 意外崩掉（私钥如何处理），使用sealing key加密保存
+4. 只支持python 正则匹配，修改为使用 semgrep 扫描
 
 ### 3.4 无任何认证/授权机制 [CRITICAL]
 - **位置**: 所有 HTTP handler
@@ -82,6 +32,7 @@
   - 限制重定向次数和重定向目标。
   - 设置连接超时（当前无超时）。
 
+
 ### 3.6 资源下载使用 http.DefaultClient [HIGH]
 - **位置**: `route.go` → `downloadToTempFile()` (L400)
   ```go
@@ -100,31 +51,7 @@
     - 自定义 `Transport` 禁用压缩（防止 Zip Bomb 传输层攻击）
   - 与 `platformHTTPClient` 模式保持一致。
 
-### 3.7 无请求速率限制 [HIGH]
-- **位置**: 所有 HTTP handler
-- **问题**: 无任何速率限制，攻击者可高频调用 import 接口触发大量资源下载和
-  Python 脚本执行，造成 DoS。
-- **建议**:
-  - 实现全局请求速率限制（如每秒最多 N 个请求）。
-  - 对 import 接口实现并发限制（同时最多处理 1 个导入）。
-  - 添加请求队列机制。
-
 ---
-
-## 四、命令注入与代码执行安全（Critical / High）
-
-### 4.1 Ollama 启动命令存在命令注入风险 [CRITICAL]
-- **位置**: `main.go` → `ensureQwenAvailable()` (L242)
-- **问题**:
-  ```go
-  cmd := exec.Command("sh", "-c", fmt.Sprintf("cd %s && OLLAMA_HOST=%s nohup ./start-ollama.sh ...", ollamaDir, endpoint))
-  ```
-  `ollamaDir` 来自环境变量 `OLLAMA_DIR`，`endpoint` 来自命令行参数。
-  如果任一包含 shell 元字符（如 `; rm -rf /`），将导致 **任意命令执行**。
-- **建议**:
-  - 避免使用 `sh -c` 构造命令字符串。
-  - 改用 `exec.Command` 直接传参：`exec.Command(startScript)` 配合 `cmd.Dir = ollamaDir`。
-  - 对 `endpoint` 使用 `cmd.Env` 传递环境变量，而非拼接到命令字符串中。
 
 ### 4.2 Python 脚本执行缺乏沙箱隔离 [HIGH]
 - **位置**: `route.go` → `runScript()` / `runTrainScript()` (L824-859)
@@ -140,38 +67,8 @@
   - 限制脚本的网络访问（禁止出站连接）。
   - 设置资源限制（CPU、内存、磁盘 I/O）。
   - 使用独立的用户身份（非 root）运行脚本。
-
-### 4.3 Attestation Helper 路径未做安全校验 [MEDIUM]
-- **位置**: `internal/attestation/generate.go` → `resolveHelper()` / `resolveCandidate()`
-- **问题**: helper 路径可以是任意可执行文件，包括 `exec.LookPath` 搜索到的系统命令。
-  如果攻击者能控制工作目录中的文件名，可能劫持 helper 执行。
-- **建议**:
-  - 对 helper 路径进行完整性校验（SM3 摘要比对）。
-  - 限制 helper 搜索范围为指定目录。
-  - 验证 helper 文件的所有者和权限。
-
 ---
 
-## 五、输入验证与数据安全（High / Medium）
-
-### 5.1 请求体无大小限制 [MEDIUM]
-- **位置**: 所有 handler 中的 `json.NewDecoder(r.Body).Decode()`
-- **问题**: JSON 请求体未设置大小限制。攻击者可发送超大 JSON 导致内存耗尽。
-- **建议**:
-  - 使用 `http.MaxBytesReader(w, r.Body, maxBytes)` 限制请求体大小。
-  - 建议上限：1MB（注册/切换请求）或 10MB（包含公钥的请求）。
-
-### 5.2 归档解压无炸弹防护 [HIGH]
-- **位置**: `import_processing.go` → `extractArchiveFile()` / `extractZipArchive()`
-- **问题**:
-  - ZIP 归档未检查压缩比（Zip Bomb：极小的压缩包解压后可能达 TB 级别）。
-  - 未限制解压后的总文件数和总大小。
-  - tar 流式解压未限制单个文件大小。
-- **建议**:
-  - 检查 ZIP 的压缩比，超过阈值（如 100:1）时拒绝。
-  - 限制解压后总大小（如 2GB）和文件数（如 10000 个）。
-  - 对每个文件设置大小上限。
-  - 考虑使用解压配额机制。
 
 ### 5.3 临时文件权限过于宽松 [MEDIUM]
 - **位置**: 多处 `os.CreateTemp()` 调用
@@ -181,26 +78,8 @@
   - 使用 TAA 专属的临时目录（如 `/opt/taa/tmp`），设置目录权限 0700。
   - 处理完成后立即安全删除（覆写后删除）。
 
-### 5.4 下载资源 URL 的 Content-Length 可伪造 [MEDIUM]
-- **位置**: `route.go` → `downloadToTempFile()` (L419-421)
-- **问题**: 当 `resp.ContentLength >= 0` 时使用 `LimitReader(resp.Body, resp.ContentLength+1)`。
-  但如果服务器不返回 Content-Length（chunked transfer），则无大小限制，
-  攻击者可发送无限流数据。
-- **建议**:
-  - 无论 Content-Length 是否存在，都应设置 `LimitReader` 上限为 `maxDownloadBytes + 1`。
-  - 添加下载超时（当前无超时控制）。
 
-### 5.5 HTTP 下载客户端无超时控制 [MEDIUM]
-- **位置**: `route.go` → `downloadToTempFile()` (L400)
-  ```go
-  resp, err := http.Get(resourceURL)
-  ```
-- **问题**: 使用默认的 `http.DefaultClient`（无超时），恶意服务器可保持连接不关闭，
-  耗尽 TAA 的文件描述符和 goroutine 资源。
-- **建议**:
-  - 使用带超时的自定义 `http.Client`：
-    `client := &http.Client{Timeout: 10 * time.Minute}`。
-  - 设置 `Transport` 的连接超时和 TLS 握手超时。
+## 五、输入验证与数据安全（High / Medium）
 
 ### 5.6 导出时 compressDirToTarGz 将整个归档加载到内存 [MEDIUM]
 - **位置**: `route.go` → `exportHandler()` / `compressDirToTarGz()` (L620-677)
@@ -514,55 +393,3 @@
   - 使用 `signal.Notify` 捕获终止信号。
   - 调用 `server.Shutdown(ctx)` 优雅关闭。
   - 在关闭时清理临时文件并覆写敏感内存。
-
----
-
-## 十二、优化建议优先级排序
-
-### P0 — 必须立即修复（阻断性安全风险）
-1. **§3.4** 添加 API 认证机制（含 reportRes 接口 §10.5）
-2. **§6.1** 将代码审计移到脚本执行之前
-3. **§4.1** 修复 Ollama 启动命令的命令注入漏洞
-4. **§3.1/3.2** 启用 TLS 或记录安全假设
-5. **§3.6** 资源下载替换 DefaultClient + 添加超时
-
-### P1 — 尽快修复（严重安全风险）
-6. **§1.1** SM2 标量乘法常量时间化
-7. **§1.7** 密钥材料安全擦除
-8. **§3.5** 修复 SSRF 漏洞（URL 校验 + DNS rebinding 防护）
-9. **§4.2** Python 脚本沙箱隔离
-10. **§1.4** 统一 SM2/SM3 实现
-11. **§2.1/2.2** 密钥轮换与前向保密
-12. **§8.1** 修复并发竞态 + **§8.2** goroutine 无界增长
-
-### P2 — 计划修复（重要安全改进）
-13. **§3.3** 收紧 CORS 配置
-14. **§3.7** 添加请求速率限制
-15. **§5.2** 归档炸弹防护
-16. **§5.5** HTTP 下载客户端超时控制
-17. **§6.2** 增强代码审计规则（AST 分析）
-18. **§6.3** 升级 LLM 审计模型 + 防 prompt 注入
-19. **§6.5** LLM Prompt 注入防护（代码片段清洗）
-20. **§10.1** 改进注册验证流程
-21. **§10.4** 阶段切换验证前置条件
-22. **§10.5** reportRes 接口来源验证
-23. **§11.1** 安全日志持久化
-24. **§1.2** 修复随机数模偏差
-25. **§5.1** 请求体大小限制
-26. **§10.9** 导出压缩防符号链接跟踪
-
-### P3 — 持续改进（安全加固）
-27. **§1.5** USERDATA 拼接加长度前缀
-28. **§1.6** KDF 域分离
-29. **§1.8** 密钥确认机制
-30. **§2.3** 公钥完整性保护
-31. **§5.6** 导出流式处理防 OOM
-32. **§5.7** 训练报告真实指标
-33. **§7.1/7.2** 减少信息泄露
-34. **§9.1** 移除硬编码凭据
-35. **§10.3** 请求重放保护
-36. **§10.7** 注册重试上限 + 指数退避
-37. **§10.8** SM3 panic 改为 error
-38. **§11.3** 优雅关闭机制
-39. **训练超时配置化** — 把 TAA 和 Retina-DKD 的超时改成配置输入，去掉硬编码常量。
-40. **Ollama 离线包瘦身** — 将 `models/audit/ollama-qwen2.5-coder-0.5b` 拆分为 CPU-only 基础包和可选 GPU 库/模型缓存，降低部署体积与复制耗时。

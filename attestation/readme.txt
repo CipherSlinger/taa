@@ -2,7 +2,7 @@
 	attestation 主要分为两部分，get-attestation 和verify-attestation，get-attestation 有两种方案实现，
 	一种是在内核态调用vmmcall 获取attestation report，另外一种是在用户态调用vmmcal，内核态调用vmmcall 需要配合驱动支持，
 	由于kata 容器安全性做了隔离，正常启动容器访问不了/proc/self/pagemap 文件，导致原有attestation 代码不能将虚拟机地址转换成物理地址，导致
-获取attestation report失败，无法使用用户态vmmcall，kata 使用内核驱动csv-guest.c 配合ioctl_get_attestation 获取attestation report文件
+获取attestation report失败，无法使用用户态vmmcall，kata 使用内核驱动csv_c/csv-guest.c 配合ioctl_get_attestation 获取attestation report文件
 	同时，提供attestation 的静态和动态两种编译方式，静态编译生成的可执行文件不依赖库，可单独执行，便于测试使用，为默认编译项，
 动态编译生成的可执行文件依赖库，程序执行时需调用库，但编译速度快，生成的文件体积小，这里提供SDK和两种编译方式供用户进行二次开发
 
@@ -18,35 +18,35 @@
 
 编译介绍：
 	1、静态编译：
-		$ gcc -c csv_sdk/*.c
+		$ gcc -c -Icsv_c csv_sdk/*.c
 		$ ar -r libcsv.a *.o
-		$ gcc -o get-attestation vmmcall_get_attestation.c -L. libcsv.a
-		将csv_sdk 目录下的.c 文件编译为.o 文件，再将这些.o 文件组合为.a 静态库文件，最后链接该静态库文件编译生成可执行程序
+		$ gcc -I. -Icsv_c -o get-attestation csv_c/vmmcall_get_attestation.c -L. libcsv.a
+		将 csv_sdk 目录下的 .c 文件编译为 .o 文件，再将这些 .o 文件组合为 .a 静态库文件，最后链接该静态库文件编译生成可执行程序
 	2、动态编译：
-		$ gcc -c -fpic csv_sdk/*.c
+		$ gcc -c -fpic -Icsv_c csv_sdk/*.c
 		$ gcc -o libcsv.so -shared *.o
-		$ gcc -o get-attestation vmmcall_get_attestation.c -L. libcsv.so
+		$ gcc -o get-attestation csv_c/vmmcall_get_attestation.c -L. libcsv.so
 		将csv_sdk 目录下的.c 文件编译为.o 文件，再将这些.o 文件编译为.so 动态库文件，最后链接该动态库文件编译生成可执行程序
 
 
 代码介绍
 	.
-	├── calc_vm_digest.c
-	├── csv_status.h
-	├── csv-guest.c                             // csv-guest 驱动程序，必须静态编译到kata内核中
+	├── csv_c/calc_vm_digest.c
+	├── csv_c/csv_status.h
+	├── csv_c/csv-guest.c                             // csv-guest 驱动程序，必须静态编译到kata内核中
 	├── csv_sdk                                 // 封装好的SDK，可供用户进行二次开发
 	│   ├── csv_sdk.h
 	│   ├── csv_status.c
 	│   ├── ioctl_get_attestation_report.c
 	│   ├── ioctl_get_sealing_key.c
 	│   └── vmmcall_get_sealing_key.c
-	├── ioctl_get_attestation.c                 // 通过驱动配合获取attestation report
-	├── ioctl_get_key.c                         // 通过驱动配合获取sealing key
-	├── Makefile
+	├── csv_c/ioctl_get_attestation.c                 // 通过驱动配合获取attestation report
+	├── csv_c/ioctl_get_key.c                         // 通过驱动配合获取sealing key
+	├── csv_c/Makefile
 	├── readme.txt
-	├── verify_attestation.c                    // 验证 report.cert 程序
-	├── vmmcall_get_attestation.c               // 用户态获取attestation report
-	└── vmmcall_get_key.c                       // 用户态获取sealing key
+	├── csv_c/verify_attestation.c                    // 验证 report.cert 程序
+	├── csv_c/vmmcall_get_attestation.c               // 用户态获取attestation report
+	└── csv_c/vmmcall_get_key.c                       // 用户态获取sealing key
 
 
 SDK使用介绍

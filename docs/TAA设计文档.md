@@ -399,10 +399,18 @@ tee/
 │   ├── sm2/                     SM2 国密椭圆曲线实现
 │   └── sm3/                     SM3 国密哈希算法实现
 ├── attestation/                 远程证明 C 工具链
-│   ├── get-attestation          ioctl 模式 helper
-│   ├── vmmcall-get-attestation  vmmcall 模式 helper
-│   ├── csv_sdk/                 CSV SDK (C)
-│   └── csv-guest.c              内核驱动
+│   ├── csv_c/                   非 SDK 的 C 工具
+│   │   ├── Makefile             C 工具链构建脚本
+│   │   ├── csv_status.h         共享 ABI 头文件
+│   │   ├── calc_vm_digest.c     VM 测量值计算
+│   │   ├── csv-guest.c         内核驱动
+│   │   ├── dcu_attestation_demo.c  DCU 证明示例
+│   │   ├── ioctl_get_attestation.c  ioctl 模式 helper
+│   │   ├── ioctl_get_key.c      ioctl sealing-key helper
+│   │   ├── verify_attestation.c  证明验证工具
+│   │   ├── vmmcall_get_attestation.c  vmmcall 模式 helper
+│   │   └── vmmcall_get_key.c    vmmcall sealing-key helper
+│   └── csv_sdk/                 CSV SDK (C)
 ├── models/                      模型项目
 │   ├── LogisticRegression/      逻辑回归模型
 │   ├── TEE-test/                MNIST/CIFAR-10 测试
