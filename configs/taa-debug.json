@@ -1,5 +1,5 @@
 {
-  "addr": ":6001",
+  "addr": ":9001",
   "platformIP": "127.0.0.1:8080",
   "dockerID": "taa-debug",
   "contract": "",
