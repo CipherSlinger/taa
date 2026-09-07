@@ -252,6 +252,12 @@ TAA 从工作目录下的 `taa-config.json` 读取启动配置，不再通过命
 
 正式非 debug 部署生成的配置文件不写 `platformIP`、`dockerID`、`contract`，由运行环境注入 `PLATFORM_IP`、`DOCKER_ID`、`CONTRACT`。
 
+仓库提供三类配置模板：
+
+- `configs/taa-local.json`：本地联调模板，包含本地平台地址和本地运行目录。
+- `configs/taa-debug.json`：debug 容器模板，包含平台地址、容器标识和 `/root/taadebug` 工作目录。
+- `configs/taa-production.json`：正式部署模板，不包含 `platformIP`、`dockerID`、`contract`，用于从环境变量读取运行身份。
+
 ## 本地运行
 
 ### 1. 启动平台模拟器
