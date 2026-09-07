@@ -63,6 +63,10 @@ TARGET_CONTAINER="${TARGET_CONTAINER:-taa-env-slim-v2}"
 # TAA 容器运行参数：容器内工作目录、监听地址、注册用容器标识和日志路径。
 TAA_CONTAINER_WORKDIR="${TAA_CONTAINER_WORKDIR:-${CON_WORKDIR}}"
 TAA_CONTAINER_ADDR="${TAA_CONTAINER_ADDR:-:${CON_PORT}}"
+TAA_CONFIG_FILE="${TAA_CONFIG_FILE:-taa-config.json}"
+REMOTE_TAA_CONFIG_PATH="${REMOTE_TAA_CONFIG_PATH:-$REMOTE_DIR/$TAA_CONFIG_FILE}"
+CONTAINER_TAA_CONFIG_PATH="${CONTAINER_TAA_CONFIG_PATH:-$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE}"
+CONTRACT="${CONTRACT:-}"
 if [[ "$DEBUG" == true ]]; then
   TAA_LOG_FILE="${TAA_LOG_FILE:-$TAA_CONTAINER_WORKDIR/taa.log}"
 else
@@ -98,7 +102,9 @@ LOCAL_PLATFORM_BIND="${LOCAL_PLATFORM_BIND:-0.0.0.0:${LOCAL_PLATFORM_PORT}}"
 LOCAL_PLATFORM_IP="${LOCAL_PLATFORM_IP:-127.0.0.1:${LOCAL_PLATFORM_PORT}}"
 LOCAL_PLATFORM_URL="${LOCAL_PLATFORM_URL:-http://127.0.0.1:${LOCAL_PLATFORM_PORT}}"
 LOCAL_RUNTIME_DIR="${LOCAL_RUNTIME_DIR:-$PROJECT_DIR/.local/taa}"
+LOCAL_TAA_CONFIG_PATH="${LOCAL_TAA_CONFIG_PATH:-$LOCAL_RUNTIME_DIR/$TAA_CONFIG_FILE}"
 LOCAL_RUN_DIR="${LOCAL_RUN_DIR:-$PROJECT_DIR/.local/run}"
+REMOTE_TAA_CONFIG_SOURCE="${REMOTE_TAA_CONFIG_SOURCE:-$LOCAL_RUN_DIR/remote-$TAA_CONFIG_FILE}"
 LOCAL_TAA_MODEL_DIR="${LOCAL_TAA_MODEL_DIR:-$LOCAL_RUNTIME_DIR/models}"
 LOCAL_TAA_DATA_DIR="${LOCAL_TAA_DATA_DIR:-$LOCAL_RUNTIME_DIR/data}"
 LOCAL_TAA_RESULT_DIR="${LOCAL_TAA_RESULT_DIR:-$LOCAL_RUNTIME_DIR/results}"
@@ -205,7 +211,11 @@ Environment overrides:
   TAA_CONTAINER_WORKDIR=${TAA_CONTAINER_WORKDIR}
       TAA 在目标容器内的工作目录。
   TAA_CONTAINER_ADDR=${TAA_CONTAINER_ADDR}
-      TAA 服务在容器内监听的地址与端口。
+      写入 TAA 配置文件的容器内监听地址与端口。
+  TAA_CONFIG_FILE=${TAA_CONFIG_FILE}
+      TAA 配置文件名；部署时复制到 TAA 工作目录。
+  CONTRACT=${CONTRACT}
+      debug/local 场景写入配置文件的合约 ID；正式非 debug 场景由运行环境注入。
   ATT_DIR=${ATT_DIR}
       本地 attestation helper 和证书目录。
 
@@ -317,6 +327,56 @@ require_dir() {
   local label="$1"
   local path="$2"
   [[ -d "$path" ]] || { err "$label: $path"; exit 1; }
+}
+
+json_escape() {
+  local value="$1"
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//$'\n'/\\n}
+  value=${value//$'\r'/\\r}
+  value=${value//$'\t'/\\t}
+  printf '%s' "$value"
+}
+
+write_taa_config() {
+  local path="$1"
+  local addr="$2"
+  local platform_ip="$3"
+  local docker_id="$4"
+  local contract="$5"
+  local model_dir="$6"
+  local data_dir="$7"
+  local result_dir="$8"
+  local llm_dir="$9"
+  local llm_endpoint="${10}"
+  local llm_model="${11}"
+  local include_identity="${12}"
+
+  ensure_parent_dir "$path"
+  {
+    printf '{\n'
+    printf '  "addr": "%s",\n' "$(json_escape "$addr")"
+    if [[ "$include_identity" == true ]]; then
+      printf '  "platformIP": "%s",\n' "$(json_escape "$platform_ip")"
+      printf '  "dockerID": "%s",\n' "$(json_escape "$docker_id")"
+      printf '  "contract": "%s",\n' "$(json_escape "$contract")"
+    fi
+    printf '  "securityScan": true,\n'
+    printf '  "modelDir": "%s",\n' "$(json_escape "$model_dir")"
+    printf '  "resultCheck": true,\n'
+    printf '  "dataDir": "%s",\n' "$(json_escape "$data_dir")"
+    printf '  "resultDir": "%s",\n' "$(json_escape "$result_dir")"
+    printf '  "llm": {\n'
+    printf '    "enabled": true,\n'
+    printf '    "endpoint": "%s",\n' "$(json_escape "$llm_endpoint")"
+    printf '    "model": "%s",\n' "$(json_escape "$llm_model")"
+    printf '    "policy": "assist",\n'
+    printf '    "failClosed": true,\n'
+    printf '    "dir": "%s"\n' "$(json_escape "$llm_dir")"
+    printf '  }\n'
+    printf '}\n'
+  } >"$path"
 }
 
 if [[ $# -eq 0 ]]; then
@@ -444,9 +504,12 @@ if [[ "$DEPLOY_LOCAL" == true ]]; then
     sh -lc "cd '$OLLAMA_LOCAL_DIR' && exec env OLLAMA_HOST='$OLLAMA_HOST' OLLAMA_MODELS='$OLLAMA_LOCAL_DIR/models/models' OLLAMA_LIBRARY_PATH='$OLLAMA_LOCAL_DIR/lib/ollama' ./start-ollama.sh"
   wait_for_http_ready "ollama" GET "$LOCAL_OLLAMA_URL/api/tags" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL" "$LOCAL_OLLAMA_LOG_FILE"
 
+  step "writing local taa config"
+  write_taa_config "$LOCAL_TAA_CONFIG_PATH" "$LOCAL_TAA_BIND" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_ID" "$CONTRACT" "$LOCAL_TAA_MODEL_DIR" "$LOCAL_TAA_DATA_DIR" "$LOCAL_TAA_RESULT_DIR" "$OLLAMA_LOCAL_DIR" "$LOCAL_OLLAMA_URL" "$OLLAMA_MODEL" true
+
   step "starting local taa"
   start_local_background "taa" "$LOCAL_RUN_DIR/taa.pid" "$LOCAL_TAA_LOG_FILE" \
-    sh -lc "cd '$LOCAL_RUNTIME_DIR' && exec env PLATFORM_IP='$LOCAL_PLATFORM_IP' DOCKER_ID='$LOCAL_DOCKER_ID' OLLAMA_DIR='$OLLAMA_LOCAL_DIR' SECURITY_LLM_ENDPOINT='$LOCAL_OLLAMA_URL' SECURITY_LLM_MODEL='$OLLAMA_MODEL' MODEL_DIR='$LOCAL_TAA_MODEL_DIR' DATA_DIR='$LOCAL_TAA_DATA_DIR' RESULT_DIR='$LOCAL_TAA_RESULT_DIR' '$TAA_BINARY_PATH' -addr '$LOCAL_TAA_BIND'"
+    sh -lc "cd '$LOCAL_RUNTIME_DIR' && exec '$TAA_BINARY_PATH'"
   wait_for_http_ready "taa" POST "$LOCAL_TAA_URL/v1/taa/health" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL" "$LOCAL_TAA_LOG_FILE"
 
   echo ""
@@ -457,6 +520,7 @@ if [[ "$DEPLOY_LOCAL" == true ]]; then
   info "${BOLD}taa${NC} → ${LOCAL_TAA_URL}"
   echo -e "     ${DIM}cwd:${NC}   ${LOCAL_RUNTIME_DIR}"
   echo -e "     ${DIM}log:${NC}   ${LOCAL_TAA_LOG_FILE}"
+  echo -e "     ${DIM}config:${NC} ${LOCAL_TAA_CONFIG_PATH}"
   echo -e "     ${DIM}model:${NC} ${LOCAL_TAA_MODEL_DIR}"
   echo -e "     ${DIM}data:${NC}  ${LOCAL_TAA_DATA_DIR}"
   echo -e "     ${DIM}result:${NC} ${LOCAL_TAA_RESULT_DIR}"
@@ -592,26 +656,35 @@ fi
 
 
 if [[ "$DEPLOY_TAA" == true ]]; then
-  step "uploading taa and attestation helper to remote host"
+  step "writing remote taa config"
+  INCLUDE_TAA_IDENTITY=true
+  if [[ "$DEBUG" == false ]]; then
+    INCLUDE_TAA_IDENTITY=false
+  fi
+  write_taa_config "$REMOTE_TAA_CONFIG_SOURCE" "$TAA_CONTAINER_ADDR" "$REMOTE_PLATFORM_IP" "$REMOTE_DOCKER_ID" "$CONTRACT" "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" "$TAA_CONTAINER_WORKDIR/$OLLAMA_DIR_NAME" "http://127.0.0.1:11434" "$OLLAMA_MODEL" "$INCLUDE_TAA_IDENTITY"
+
+  step "uploading taa, config, and attestation helper to remote host"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TAA_BINARY_PATH" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/$BINARY_NAME.new"
+  sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$REMOTE_TAA_CONFIG_SOURCE" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_TAA_CONFIG_PATH.new"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$ATT_HELPER_SOURCE" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/get-attestation.new"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$ATT_HRK_SOURCE" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/hrk.cert.new"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$ATT_HSK_SOURCE" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/hsk_cek.cert.new"
 
-  step "replacing remote taa and attestation helper"
-  remote_ssh "mv '$REMOTE_DIR/$BINARY_NAME.new' '$REMOTE_DIR/$BINARY_NAME' && mv '$REMOTE_DIR/get-attestation.new' '$REMOTE_DIR/get-attestation' && mv '$REMOTE_DIR/hrk.cert.new' '$REMOTE_DIR/hrk.cert' && mv '$REMOTE_DIR/hsk_cek.cert.new' '$REMOTE_DIR/hsk_cek.cert' && chmod +x '$REMOTE_DIR/$BINARY_NAME' '$REMOTE_DIR/get-attestation'"
+  step "replacing remote taa, config, and attestation helper"
+  remote_ssh "mv '$REMOTE_DIR/$BINARY_NAME.new' '$REMOTE_DIR/$BINARY_NAME' && mv '$REMOTE_TAA_CONFIG_PATH.new' '$REMOTE_TAA_CONFIG_PATH' && mv '$REMOTE_DIR/get-attestation.new' '$REMOTE_DIR/get-attestation' && mv '$REMOTE_DIR/hrk.cert.new' '$REMOTE_DIR/hrk.cert' && mv '$REMOTE_DIR/hsk_cek.cert.new' '$REMOTE_DIR/hsk_cek.cert' && chmod +x '$REMOTE_DIR/$BINARY_NAME' '$REMOTE_DIR/get-attestation'"
 
   TAA_MANUAL_WAS_PRESENT=false
   step "copying runtime files into container"
   remote_ssh "$(container_exec) sh -lc 'mkdir -p $TAA_CONTAINER_WORKDIR/attestation'"
   remote_ssh "$(container_cp "$REMOTE_DIR/$BINARY_NAME" "$TAA_CONTAINER_WORKDIR/$BINARY_NAME")"
+  remote_ssh "$(container_cp "$REMOTE_TAA_CONFIG_PATH" "$CONTAINER_TAA_CONFIG_PATH")"
   remote_ssh "$(container_cp "$REMOTE_DIR/get-attestation" "$TAA_CONTAINER_WORKDIR/attestation/get-attestation")"
   remote_ssh "$(container_cp "$REMOTE_DIR/hrk.cert" "$TAA_CONTAINER_WORKDIR/hrk.cert")"
   remote_ssh "$(container_cp "$REMOTE_DIR/hsk_cek.cert" "$TAA_CONTAINER_WORKDIR/hsk_cek.cert")"
   remote_ssh "$(container_exec) sh -lc 'chmod +x $TAA_CONTAINER_WORKDIR/$BINARY_NAME $TAA_CONTAINER_WORKDIR/attestation/get-attestation'"
 
   step "verifying copied files inside container"
-  remote_ssh "$(container_exec) sh -lc 'ls -l $TAA_CONTAINER_WORKDIR/$BINARY_NAME $TAA_CONTAINER_WORKDIR/attestation/get-attestation $TAA_CONTAINER_WORKDIR/hrk.cert $TAA_CONTAINER_WORKDIR/hsk_cek.cert 2>/dev/null'"
+  remote_ssh "$(container_exec) sh -lc 'ls -l $TAA_CONTAINER_WORKDIR/$BINARY_NAME $CONTAINER_TAA_CONFIG_PATH $TAA_CONTAINER_WORKDIR/attestation/get-attestation $TAA_CONTAINER_WORKDIR/hrk.cert $TAA_CONTAINER_WORKDIR/hsk_cek.cert 2>/dev/null'"
 
   step "checking attestation helper prerequisites inside container"
   remote_ssh "$(container_exec) sh -lc 'test -x $TAA_CONTAINER_WORKDIR/attestation/get-attestation && test -f $TAA_CONTAINER_WORKDIR/hrk.cert && test -f $TAA_CONTAINER_WORKDIR/hsk_cek.cert'"
@@ -622,7 +695,7 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   if [[ "$DEBUG" == true ]]; then
     step "starting debug taa inside container"
     remote_ssh "$(container_exec) sh -lc 'pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
-    remote_ssh "$(container_exec) sh -lc 'mkdir -p $TAA_CONTAINER_WORKDIR/models $TAA_CONTAINER_WORKDIR/data $TAA_CONTAINER_WORKDIR/results && cd $TAA_CONTAINER_WORKDIR && nohup env PLATFORM_IP=$REMOTE_PLATFORM_IP DOCKER_ID=$REMOTE_DOCKER_ID OLLAMA_DIR=$TAA_CONTAINER_WORKDIR/$OLLAMA_DIR_NAME SECURITY_LLM_ENDPOINT=http://127.0.0.1:11434 SECURITY_LLM_MODEL=$OLLAMA_MODEL MODEL_DIR=$TAA_CONTAINER_WORKDIR/models DATA_DIR=$TAA_CONTAINER_WORKDIR/data RESULT_DIR=$TAA_CONTAINER_WORKDIR/results $TAA_CONTAINER_WORKDIR/$BINARY_NAME -addr $TAA_CONTAINER_ADDR > $TAA_LOG_FILE 2>&1 < /dev/null &'"
+    remote_ssh "$(container_exec) sh -lc 'mkdir -p $TAA_CONTAINER_WORKDIR/models $TAA_CONTAINER_WORKDIR/data $TAA_CONTAINER_WORKDIR/results && cd $TAA_CONTAINER_WORKDIR && nohup $TAA_CONTAINER_WORKDIR/$BINARY_NAME > $TAA_LOG_FILE 2>&1 < /dev/null &'"
   else
     step "pausing taa inside container"
     if remote_ssh "$(container_exec) sh -lc 'test -e /root/taa/manual'"; then
@@ -682,6 +755,7 @@ fi
 if [[ "$DEPLOY_TAA" == true ]]; then
   info "${BOLD}taa${NC} → ${CONTAINER_LABEL}:${TAA_CONTAINER_WORKDIR} (addr ${TAA_CONTAINER_ADDR})"
   echo -e "     ${DIM}host:${NC} ${REMOTE_HOST}:${REMOTE_DIR}/${BINARY_NAME}"
+  echo -e "     ${DIM}config:${NC} ${CONTAINER_TAA_CONFIG_PATH}"
   echo -e "     ${DIM}log:${NC}  ${TAA_LOG_FILE}"
   echo -e "     ${DIM}platform:${NC} ${REMOTE_PLATFORM_IP}"
   echo -e "     ${DIM}attestation:${NC} ${ATT_REPORT_FILE}"

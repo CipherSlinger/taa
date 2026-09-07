@@ -1,0 +1,19 @@
+{
+  "addr": ":6001",
+  "platformIP": "127.0.0.1:8080",
+  "dockerID": "127.0.0.1",
+  "contract": "",
+  "securityScan": true,
+  "modelDir": ".local/taa/models",
+  "resultCheck": true,
+  "dataDir": ".local/taa/data",
+  "resultDir": ".local/taa/results",
+  "llm": {
+    "enabled": true,
+    "endpoint": "http://127.0.0.1:11434",
+    "model": "qwen2.5-coder:0.5b",
+    "policy": "assist",
+    "failClosed": true,
+    "dir": ""
+  }
+}

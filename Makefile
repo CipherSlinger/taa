@@ -12,7 +12,8 @@ test:
 	@go test ./...
 
 run: taa attestation-ioctl
-	@$(TAA_BINARY) -addr :6001
+	@if [ ! -f taa-config.json ]; then cp configs/taa-local.json taa-config.json; fi
+	@$(TAA_BINARY)
 
 platform-mock:
 	@go run ./platform-mock -addr 0.0.0.0:8080
