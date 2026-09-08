@@ -349,10 +349,10 @@ func isArchiveFile(filePath string) (bool, error) {
 // 判断策略：
 // 1. 若 resourceURL 以 .enc 结尾，直接判定为密文并解密；
 // 2. 若非 .enc 结尾，检测文件头部是否为明文压缩包（ZIP / GZIP / TAR）：
-//    - 若是压缩包，判定为明文，直接返回原路径（isDecrypted = false）；
-//    - 若非压缩包，尝试作为密文解密：
-//      - 解密成功返回明文临时文件路径（isDecrypted = true）；
-//      - 解密失败返回错误。
+//   - 若是压缩包，判定为明文，直接返回原路径（isDecrypted = false）；
+//   - 若非压缩包，尝试作为密文解密：
+//   - 解密成功返回明文临时文件路径（isDecrypted = true）；
+//   - 解密失败返回错误。
 //
 // 调用方注意：若 isDecrypted 为 true，调用方需负责清理返回的 plainPath（例如 defer os.Remove(plainPath)）。
 func (s *TAAState) resolvePlaintextResource(resourceURL, downloadedPath, logScope string) (string, bool, error) {
