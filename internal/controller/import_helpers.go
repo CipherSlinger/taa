@@ -2,7 +2,6 @@ package controller
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,29 +10,11 @@ import (
 )
 
 func sm3HexOfFile(path string) (string, error) {
-	f, err := os.Open(path)
+	_, hex, err := teecrypto.HashFileSM3(path)
 	if err != nil {
-		return "", fmt.Errorf("open %s: %w", path, err)
+		return "", err
 	}
-	defer f.Close()
-
-	h := teecrypto.NewSM3()
-	buf := make([]byte, 64*1024)
-	for {
-		n, readErr := f.Read(buf)
-		if n > 0 {
-			if _, err := h.Write(buf[:n]); err != nil {
-				return "", fmt.Errorf("hash %s: %w", path, err)
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return "", fmt.Errorf("read %s: %w", path, readErr)
-		}
-	}
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
+	return hex, nil
 }
 
 func dataDirForHash(root, hash string) string {

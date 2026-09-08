@@ -2,7 +2,10 @@ package crypto
 
 import (
 	"crypto/hmac"
+	"fmt"
 	"hash"
+	"io"
+	"os"
 
 	gmsmsm3 "github.com/tjfoc/gmsm/sm3"
 )
@@ -30,4 +33,24 @@ func HMACSM3(key, data []byte) [sm3Size]byte {
 	h := hmac.New(gmsmsm3.New, key)
 	h.Write(data)
 	return toFixedSize(h.Sum(nil))
+}
+
+// HashFileSM3 以流式方式计算文件的 SM3 摘要和大小。
+func HashFileSM3(path string) (size int64, hex string, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, "", fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	st, err := f.Stat()
+	if err != nil {
+		return 0, "", fmt.Errorf("stat %s: %w", path, err)
+	}
+
+	h := NewSM3()
+	if _, err := io.Copy(h, f); err != nil {
+		return 0, "", fmt.Errorf("hash %s: %w", path, err)
+	}
+	return st.Size(), fmt.Sprintf("%x", h.Sum(nil)), nil
 }

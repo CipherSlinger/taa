@@ -88,8 +88,7 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 			return
 		}
 
-		dataRoot := filepath.Join(s.Security.DataDir)
-		dataDir := dataDirForHash(dataRoot, hash)
+		dataDir := dataDirForHash(s.Security.DataDir, hash)
 		trainRecord = ImportIndexRecord{
 			RequestID: req.RequestID,
 			TaskID:    req.TaskID,
