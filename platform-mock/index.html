@@ -255,7 +255,10 @@
       <input id="importModelRequestId" value="req-mock-importModel-001">
       <label for="importModelTaskId">taskId（可选）</label>
       <input id="importModelTaskId" value="">
-      <label for="importModelPublicKey">publicKey（留空=不传）</label>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; margin-bottom:4px;">
+        <label for="importModelPublicKey" style="margin:0;">publicKey（留空=不传）</label>
+        <button type="button" class="secondary" style="padding:4px 10px; font-size:12px;" onclick="generateImportModelPublicKey(this)">创建公钥</button>
+      </div>
       <textarea id="importModelPublicKey" placeholder="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"></textarea>
       <label for="importModelCommands">commands（每行一条命令，支持 &lt;in&gt; 和 &lt;out&gt; 占位符）</label>
       <textarea id="importModelCommands">echo prepare runtimeConfig
@@ -309,10 +312,27 @@ python3 train.py --input &lt;in&gt; --output &lt;out&gt;</textarea>
 
     <section class="card" id="card-export">
       <h2>④ /v1/taa/export — 导出结果</h2>
+      <label for="exportRequestId">requestId</label>
+      <input id="exportRequestId" value="" placeholder="requestId（留空则不传）">
       <label for="exportTaskId">taskId</label>
       <input id="exportTaskId" value="task-mock-001">
       <label for="exportPublicKey">publicKey（phase 1/2 必填，phase 3 留空）</label>
       <input id="exportPublicKey" value="" placeholder="可复用上方 importModelPublicKey">
+
+      <div style="margin: 10px 0 6px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+        <label class="switch-label" for="exportDecryptSwitch">
+          <span class="switch-wrapper">
+            <input type="checkbox" id="exportDecryptSwitch">
+            <span class="switch-slider"></span>
+          </span>
+          <span>是否解密</span>
+        </label>
+        <span class="muted" style="font-size: 12px;">开启后自动使用私钥解密下载数据</span>
+      </div>
+
+      <label for="exportPrivateKey">解密私钥（PEM）</label>
+      <textarea id="exportPrivateKey" rows="4" placeholder="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"></textarea>
+
       <div class="actions">
         <button onclick="testExport()">发送测试</button>
       </div>
@@ -503,8 +523,6 @@ let lastReportModelImportData = null;
 const RESOURCE_INFO_TIMEOUT_MS = 120000;
 let currentModalBody = '';
 let uploadedFiles = [];
-let requestLogPaused = false;
-let requestLogTimer = null;
 let allRequestLogs = [];
 
 function formatModalBody(body) {
@@ -1142,6 +1160,51 @@ async function testImport() {
   }
 }
 
+async function generateImportModelPublicKey(btn) {
+  const origText = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '生成中...';
+  }
+  try {
+    const res = await fetch('/api/crypto/generate-key', { method: 'POST' });
+    const data = await res.json();
+    if (res.status === 200 && data.error === 0 && data.result) {
+      const pubKey = data.result.publicKey || '';
+      const privKey = data.result.privateKey || '';
+      document.getElementById('importModelPublicKey').value = pubKey;
+
+      const exportPrivKey = document.getElementById('exportPrivateKey');
+      if (exportPrivKey) {
+        exportPrivKey.value = privKey;
+      }
+      const exportPubKey = document.getElementById('exportPublicKey');
+      if (exportPubKey && !exportPubKey.value.trim()) {
+        exportPubKey.value = pubKey;
+      }
+      if (btn) {
+        btn.textContent = '已创建!';
+        setTimeout(() => {
+          btn.textContent = origText;
+          btn.disabled = false;
+        }, 1500);
+      }
+    } else {
+      alert(`创建公钥失败: ${data.msg || '未知错误'}`);
+      if (btn) {
+        btn.textContent = origText;
+        btn.disabled = false;
+      }
+    }
+  } catch (err) {
+    alert(`创建公钥失败: ${err.message}`);
+    if (btn) {
+      btn.textContent = origText;
+      btn.disabled = false;
+    }
+  }
+}
+
 async function testImportModel() {
   showResultRunning('importModelResult', '正在请求...');
   setReportModelImportPending();
@@ -1196,14 +1259,62 @@ async function testExport() {
   showResultRunning('exportResult', '正在请求...');
   try {
     const pk = document.getElementById('exportPublicKey').value;
-    const body = { taskId: document.getElementById('exportTaskId').value };
+    const taskId = document.getElementById('exportTaskId').value.trim();
+    const requestId = (document.getElementById('exportRequestId') ? document.getElementById('exportRequestId').value : '').trim();
+    const body = {};
+    if (taskId) body.taskId = taskId;
+    if (requestId) body.requestId = requestId;
     if (pk) body.publicKey = pk;
     else body.publicKey = null;
     const r = await postToTAAFile('/v1/taa/export', body);
     if (r.status === 200 && r.blob) {
+      const shouldDecrypt = Boolean(document.getElementById('exportDecryptSwitch') && document.getElementById('exportDecryptSwitch').checked);
+      if (shouldDecrypt) {
+        const privKey = (document.getElementById('exportPrivateKey') ? document.getElementById('exportPrivateKey').value : '').trim();
+        if (!privKey) {
+          showResult('exportResult', false, '已开启解密开关，但未填写解密私钥 PEM，请先输入私钥或在上方“创建公钥”生成密钥对');
+          return;
+        }
+
+        showResultRunning('exportResult', 'TAA 导出成功，正在解密数据...');
+        const formData = new FormData();
+        formData.append('privateKey', privKey);
+        formData.append('file', r.blob, r.filename);
+
+        const decRes = await fetch('/api/crypto/decrypt', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!decRes.ok) {
+          const errData = await decRes.json().catch(() => ({}));
+          showResult('exportResult', false, `解密失败: ${errData.msg || 'HTTP ' + decRes.status}`);
+          return;
+        }
+
+        const decBlob = await decRes.blob();
+        let saveFilename = r.filename;
+        if (saveFilename.toLowerCase().endsWith('.enc')) {
+          saveFilename = saveFilename.slice(0, -4);
+        } else {
+          saveFilename = saveFilename + '.dec';
+        }
+
+        downloadBlob(decBlob, saveFilename);
+        showResult('exportResult', true,
+          'HTTP 200\n已成功解密并保存结果文件\n' +
+          '保存文件名: ' + saveFilename + '\n' +
+          '原始文件名: ' + r.filename + '\n' +
+          'taskId: ' + r.taskId + '\n' +
+          '密文大小: ' + r.blob.size + ' bytes\n' +
+          '解密后大小: ' + decBlob.size + ' bytes'
+        );
+        return;
+      }
+
       downloadBlob(r.blob, r.filename);
       showResult('exportResult', true,
-        'HTTP 200\n已直接返回并下载结果文件\n' +
+        'HTTP 200\n已直接返回并保存原文件\n' +
         'filename: ' + r.filename + '\n' +
         'taskId: ' + r.taskId + '\n' +
         'encrypted: ' + r.encrypted + '\n' +
@@ -1383,23 +1494,19 @@ async function detectTAAProxy() {
 // ── 平台发往 TAA 的请求体记录 ─────────────────────────
 function formatRequestBody(body) {
   if (body == null) return '{}';
-  if (typeof body === 'object') {
+  const parsed = parseJSONMaybe(body);
+  if (parsed && typeof parsed === 'object') {
     try {
-      return JSON.stringify(body, null, 2);
+      return JSON.stringify(parsed, null, 2);
     } catch {
-      return String(body);
+      return String(parsed);
     }
   }
-  if (typeof body === 'string') {
-    const trimmed = body.trim();
-    if (!trimmed) return '{}';
-    try {
-      return JSON.stringify(JSON.parse(trimmed), null, 2);
-    } catch {
-      return trimmed;
-    }
+  if (typeof parsed === 'string') {
+    const trimmed = parsed.trim();
+    return trimmed || '{}';
   }
-  return String(body);
+  return String(parsed);
 }
 
 function formatRequestLogTime(ts) {
@@ -1407,6 +1514,12 @@ function formatRequestLogTime(ts) {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return String(ts);
   return d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+}
+
+function getFilteredRequestLogs() {
+  const filterEl = document.getElementById('requestLogEndpointFilter');
+  const endpointFilter = filterEl ? filterEl.value : '';
+  return allRequestLogs.filter(l => !endpointFilter || (l.endpoint || l.path || '').includes(endpointFilter));
 }
 
 function recordTaaRequest(method, endpoint, body, id) {
@@ -1430,12 +1543,11 @@ function recordTaaRequest(method, endpoint, body, id) {
 }
 
 function renderRequestLogs() {
-  const filterEl = document.getElementById('requestLogEndpointFilter');
-  const endpointFilter = filterEl ? filterEl.value : '';
   const output = document.getElementById('requestLogOutput');
   const dot = document.getElementById('requestLogStatusDot');
   const statusText = document.getElementById('requestLogStatusText');
   const countEl = document.getElementById('requestLogCount');
+  const filtered = getFilteredRequestLogs();
 
   if (allRequestLogs.length > 0) {
     dot.className = 'dot ok';
@@ -1444,11 +1556,6 @@ function renderRequestLogs() {
     dot.className = 'dot';
     statusText.textContent = '等待发送请求...';
   }
-
-  const filtered = allRequestLogs.filter(l => {
-    if (endpointFilter && !(l.endpoint || l.path || '').includes(endpointFilter)) return false;
-    return true;
-  });
 
   if (countEl) {
     countEl.textContent = `${filtered.length} / ${allRequestLogs.length} 条请求体`;
@@ -1481,13 +1588,7 @@ function renderRequestLogs() {
 }
 
 function copyTaaRequestBody(index) {
-  const filterEl = document.getElementById('requestLogEndpointFilter');
-  const endpointFilter = filterEl ? filterEl.value : '';
-  const filtered = allRequestLogs.filter(l => {
-    if (endpointFilter && !(l.endpoint || l.path || '').includes(endpointFilter)) return false;
-    return true;
-  });
-  const item = filtered[index];
+  const item = getFilteredRequestLogs()[index];
   if (item && item.body) {
     copyText(item.body);
   }
