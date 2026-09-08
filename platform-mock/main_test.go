@@ -23,7 +23,7 @@ func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
 	if strings.Contains(indexHTML, "③ 资源下载结果上报") {
 		t.Fatal("index should not show the resource download result report card")
 	}
-	for _, want := range []string{"③ 训练结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult", "saveReportBtn", "reportResBodyBtn", "reportResReportBtn", "openReportResReportModal", "查看报告", "reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "importModelCommands", "importModelEnv", "resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport", "uploadedUrlInput", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件", "平台发往 TAA 的请求体记录", "requestLogStatusDot", "requestLogOutput", "requestLogEndpointFilter", "uploadEncryptSwitch", "启用加密", "deleteUploadedFile", "创建公钥", "generateImportModelPublicKey", "exportDecryptSwitch", "是否解密", "exportPrivateKey", "exportRequestId"} {
+	for _, want := range []string{"③ 训练结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult", "saveReportBtn", "reportResBodyBtn", "reportResReportBtn", "openReportResReportModal", "查看报告", "reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "importModelCommands", "importModelEnv", "resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport", "uploadedUrlInput", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件", "平台发往 TAA 的请求体记录", "requestLogStatusDot", "requestLogOutput", "requestLogEndpointFilter", "uploadEncryptSwitch", "启用加密", "deleteUploadedFile", "创建公钥", "generateImportModelPublicKey", "exportDecryptSwitch", "是否解密", "exportPrivateKey", "exportRequestId", "resourceInfoTreeContainer", "resourceInfoModalBtn", "resourceInfoModal", "loadSampleResourceTree", "renderResourceInfoTreeShell"} {
 		if !strings.Contains(indexHTML, want) {
 			t.Fatalf("index missing %q", want)
 		}
@@ -234,9 +234,8 @@ func newUploadTestServer(t *testing.T, uploadDir string, registerStores ...*regi
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/upload", uploadHandler("127.0.0.1:6001", uploadDir, registerStores...))
-	mux.HandleFunc("/api/upload/delete", uploadDeleteHandler(uploadDir))
+	registerUploadDeleteRoutes(mux, uploadDir)
 	mux.HandleFunc("/api/uploads", uploadListHandler("127.0.0.1:6001", uploadDir))
-	mux.HandleFunc("/api/uploads/delete", uploadDeleteHandler(uploadDir))
 	mux.HandleFunc("/api/uploads/reset", uploadResetHandler(uploadDir))
 	mux.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(uploadDir))))
 	return httptest.NewServer(mux)

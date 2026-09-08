@@ -48,8 +48,8 @@ func reportToPlatform(ctx context.Context, platformAddr, dockerID, requestID, ta
 	if strings.TrimSpace(dockerID) == "" {
 		return fmt.Errorf("DOCKER_ID is required")
 	}
-	if requireRequestID && strings.TrimSpace(requestID) == "" {
-		return fmt.Errorf("requestId is required")
+	if requireRequestID && strings.TrimSpace(requestID) == "" && strings.TrimSpace(taskID) == "" {
+		return fmt.Errorf("requestId 和 taskId 不能同时为空")
 	}
 
 	var msgPtr *string
