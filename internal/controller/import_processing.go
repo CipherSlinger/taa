@@ -147,15 +147,17 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		return
 	}
 
-	if store, err := s.importIndexStore(); err == nil {
-		if record, ok := store.LookupByTaskID(req.TaskID); ok {
-			trainRecord = record
-		}
+	trainRecord, _ = s.resolveTrainingRecord(req, isModel)
+	trainOutputDir := trainRecord.ResultDir
+	if trainOutputDir == "" {
+		trainOutputDir = resultDirForRequestTask(s.Security.ResultDir, req.RequestID, req.TaskID)
 	}
-	if trainRecord.RequestID == "" {
-		trainRecord = ImportIndexRecord{
-			RequestID: req.RequestID,
-			TaskID:    req.TaskID,
+	trainDataDir := trainRecord.DataDir
+	if trainDataDir == "" {
+		if trainRecord.Hash != "" {
+			trainDataDir = dataDirForHash(s.Security.DataDir, trainRecord.Hash)
+		} else {
+			trainDataDir = s.Security.DataDir
 		}
 	}
 
@@ -172,15 +174,12 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 
 	StepSeparator("Run runtimeConfig")
 	s.setCurrentOp("training")
-	trainOutputDir := trainRecord.ResultDir
-	if trainOutputDir == "" {
-		trainOutputDir = resultDirForRequestTask(s.Security.ResultDir, req.RequestID, req.TaskID)
+	resolvedCommands := resolveRuntimeCommands(cfg.Commands, trainDataDir, trainOutputDir)
+	s.Logs.Add(LogInfo, "train", "开始执行 runtimeConfig: commands=%d, envKeys=%v, 数据输入目录 (<in>): %s (hash=%s), 结果输出目录 (<out>): %s",
+		len(cfg.Commands), envKeys(env), trainDataDir, trainRecord.Hash, trainOutputDir)
+	for i, cmd := range resolvedCommands {
+		s.Logs.Add(LogInfo, "train", "  [cmd %d] %s", i+1, cmd)
 	}
-	trainDataDir := trainRecord.DataDir
-	if trainDataDir == "" {
-		trainDataDir = s.Security.DataDir
-	}
-	s.Logs.Add(LogInfo, "train", "开始执行 runtimeConfig: commands=%d, envKeys=%v, 数据目录: %s, 输出目录: %s", len(cfg.Commands), envKeys(env), trainDataDir, trainOutputDir)
 	if output, err := runRuntimeConfig(cfg, env, s.Security.ModelDir, trainDataDir, trainOutputDir, req.TaskID, startedAt.UTC().Format(time.RFC3339)); err != nil {
 		s.Logs.Add(LogError, "train", "执行 runtimeConfig 失败: %v\noutput: %s", err, output)
 		s.setCurrentOp("idle")

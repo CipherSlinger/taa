@@ -4,32 +4,14 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 )
-
-func writeResourceInfoProbe(t *testing.T, modelDir string) {
-	t.Helper()
-	script := "#!/usr/bin/env python3\n" +
-		"from argparse import ArgumentParser\n" +
-		"import json\n" +
-		"\n" +
-		"parser = ArgumentParser(add_help=False)\n" +
-		"parser.add_argument(\"--data-dir\", dest=\"data_dir\", default=None)\n" +
-		"args, _ = parser.parse_known_args()\n" +
-		"payload = {\n" +
-		"    \"data_dir\": args.data_dir,\n" +
-		"}\n" +
-		"print(json.dumps(payload, indent=2, ensure_ascii=False))\n"
-	if err := os.WriteFile(filepath.Join(modelDir, "resource_info.py"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write probe resource_info.py: %v", err)
-	}
-}
 
 func postEmptyJSON(t *testing.T, url string) *http.Response {
 	t.Helper()
@@ -75,16 +57,16 @@ func TestResourceInfoHandlerRequiresResourceUrl(t *testing.T) {
 	}
 }
 
-func TestResourceInfoHandlerDownloadsAndAnalyzes(t *testing.T) {
+func TestResourceInfoHandlerDownloadsAndBuildsFileTree(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("python3 scripts are not supported on windows")
 	}
 
-	state, server := setupTestServer(t)
-	writeResourceInfoProbe(t, state.Security.ModelDir)
+	_, server := setupTestServer(t)
 
 	archiveData := createTestTarGz(t, map[string]string{
-		"data.csv": "col1,col2\n1,2\n3,4\n",
+		"dataset/users.csv": "user_id,name\n1,Alice\n2,Bob\n",
+		"dataset/notes.txt": "hello\nworld\n",
 	})
 
 	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -93,7 +75,7 @@ func TestResourceInfoHandlerDownloadsAndAnalyzes(t *testing.T) {
 	}))
 	defer fileServer.Close()
 
-	body := map[string]string{"resourceUrl": fileServer.URL + "/data.tar.gz"}
+	body := map[string]string{"resourceUrl": fileServer.URL + "/dataset.tar.gz"}
 	resp := postJSON(t, server.URL+"/v1/taa/getResourceInfo", body)
 	api := decodeResponse(t, resp)
 	if resp.StatusCode != http.StatusOK {
@@ -107,8 +89,16 @@ func TestResourceInfoHandlerDownloadsAndAnalyzes(t *testing.T) {
 	if !ok {
 		t.Fatalf("result type = %T, want string", api.Result)
 	}
-	if !strings.Contains(result, "data_dir") {
-		t.Fatalf("result = %q, want it to contain data_dir", result)
+
+	var report map[string]any
+	if err := json.Unmarshal([]byte(result), &report); err != nil {
+		t.Fatalf("unmarshal result JSON: %v", err)
+	}
+	if _, ok := report["tree"].(map[string]any); !ok {
+		t.Fatalf("result tree missing or wrong type: %#v", report["tree"])
+	}
+	if _, ok := report["structured_files"]; !ok {
+		t.Fatalf("result missing structured_files: %#v", report)
 	}
 }
 
@@ -118,10 +108,9 @@ func TestResourceInfoHandlerDecryptsEncryptedResource(t *testing.T) {
 	}
 
 	state, server := setupTestServer(t)
-	writeResourceInfoProbe(t, state.Security.ModelDir)
 
 	archiveData := createTestTarGz(t, map[string]string{
-		"data.csv": "col1,col2\n1,2\n3,4\n",
+		"dataset/users.csv": "user_id,name\n1,Alice\n2,Bob\n",
 	})
 
 	state.mu.RLock()
@@ -135,7 +124,7 @@ func TestResourceInfoHandlerDecryptsEncryptedResource(t *testing.T) {
 	}))
 	defer fileServer.Close()
 
-	body := map[string]string{"resourceUrl": fileServer.URL + "/data.tar.gz.enc"}
+	body := map[string]string{"resourceUrl": fileServer.URL + "/dataset.tar.gz.enc"}
 	resp := postJSON(t, server.URL+"/v1/taa/getResourceInfo", body)
 	api := decodeResponse(t, resp)
 	if resp.StatusCode != http.StatusOK {
@@ -149,8 +138,12 @@ func TestResourceInfoHandlerDecryptsEncryptedResource(t *testing.T) {
 	if !ok {
 		t.Fatalf("result type = %T, want string", api.Result)
 	}
-	if !strings.Contains(result, "data_dir") {
-		t.Fatalf("result = %q, want it to contain data_dir", result)
+	var report map[string]any
+	if err := json.Unmarshal([]byte(result), &report); err != nil {
+		t.Fatalf("unmarshal result JSON: %v", err)
+	}
+	if report["tree"] == nil {
+		t.Fatalf("result missing tree: %#v", report)
 	}
 }
 
@@ -187,5 +180,83 @@ output_dir.mkdir(parents=True, exist_ok=True)
 	}
 	if string(got) != "beta" {
 		t.Fatalf("result = %q, want beta", string(got))
+	}
+}
+
+func TestResolveRuntimeCommands(t *testing.T) {
+	commands := []string{
+		"python3 train.py --input <in> --output <out>",
+		"echo in=<IN> out=<OUT>",
+		"python3 eval.py --data <in>/dataset --save <out>/model",
+		"echo no placeholder",
+	}
+	dataDir := "/data/store/abc123hash"
+	outputDir := "/results/req01-task01"
+
+	resolved := resolveRuntimeCommands(commands, dataDir, outputDir)
+	want := []string{
+		"python3 train.py --input /data/store/abc123hash --output /results/req01-task01",
+		"echo in=/data/store/abc123hash out=/results/req01-task01",
+		"python3 eval.py --data /data/store/abc123hash/dataset --save /results/req01-task01/model",
+		"echo no placeholder",
+	}
+
+	for i := range want {
+		if resolved[i] != want[i] {
+			t.Errorf("command[%d] = %q, want %q", i, resolved[i], want[i])
+		}
+	}
+}
+
+func TestResolveRuntimeEnv(t *testing.T) {
+	env := map[string]string{
+		"DATA_PATH":   "<in>",
+		"RESULT_PATH": "<out>",
+		"NORMAL":      "value",
+	}
+	dataDir := "/data/store/hash"
+	outputDir := "/results/task"
+
+	resolved := resolveRuntimeEnv(env, dataDir, outputDir)
+	if resolved["DATA_PATH"] != dataDir {
+		t.Errorf("DATA_PATH = %q, want %q", resolved["DATA_PATH"], dataDir)
+	}
+	if resolved["RESULT_PATH"] != outputDir {
+		t.Errorf("RESULT_PATH = %q, want %q", resolved["RESULT_PATH"], outputDir)
+	}
+	if resolved["NORMAL"] != "value" {
+		t.Errorf("NORMAL = %q, want value", resolved["NORMAL"])
+	}
+}
+
+func TestRunRuntimeConfigReplacesInOut(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataDir := filepath.Join(tmpDir, "data", "testhash")
+	outputDir := filepath.Join(tmpDir, "results", "task-test")
+
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "input.txt"), []byte("sample-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := runtimeConfig{
+		Commands: []string{
+			`cat "<in>/input.txt" > "<out>/copied.txt"`,
+		},
+	}
+
+	out, err := runRuntimeConfig(cfg, nil, tmpDir, dataDir, outputDir, "task-test", "2026-09-08T00:00:00Z")
+	if err != nil {
+		t.Fatalf("runRuntimeConfig failed: %v\noutput: %s", err, out)
+	}
+
+	copied, err := os.ReadFile(filepath.Join(outputDir, "copied.txt"))
+	if err != nil {
+		t.Fatalf("read copied file: %v", err)
+	}
+	if string(copied) != "sample-data" {
+		t.Fatalf("copied content = %q, want sample-data", string(copied))
 	}
 }

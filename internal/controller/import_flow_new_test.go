@@ -541,3 +541,141 @@ func newMockQwenServer(t *testing.T) *httptest.Server {
 		_ = json.NewEncoder(w).Encode(map[string]string{"response": response})
 	}))
 }
+
+func TestPhase1TrainingRuntimeConfigWithInOutPlaceholders(t *testing.T) {
+	state, server := setupTestServer(t)
+	state.mu.Lock()
+	state.CurrentPhase = 1
+	state.DockerID = "docker-in-out-test"
+	state.mu.Unlock()
+
+	platformReportCh := make(chan importedReportPayload, 10)
+	platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == reportResEndpoint {
+			var payload importedReportPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode reportRes payload: %v", err)
+			}
+			platformReportCh <- payload
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer platformServer.Close()
+
+	state.mu.Lock()
+	state.PlatformIP = platformServer.URL
+	state.mu.Unlock()
+
+	trainScript := `#!/usr/bin/env python3
+from argparse import ArgumentParser
+from pathlib import Path
+import json
+
+parser = ArgumentParser(add_help=False)
+parser.add_argument("--input", dest="input_dir", required=True)
+parser.add_argument("--output", dest="output_dir", required=True)
+args, _ = parser.parse_known_args()
+
+input_dir = Path(args.input_dir)
+output_dir = Path(args.output_dir)
+output_dir.mkdir(parents=True, exist_ok=True)
+
+data_file = input_dir / "data" / "dataset.txt"
+if not data_file.exists():
+    raise RuntimeError(f"missing dataset at {data_file}")
+
+(output_dir / "trained_model.bin").write_text("weights-12345")
+(output_dir / "marker.txt").write_text("in-out-success\n")
+result = {"dataset": {"total_samples": 10, "splits": {"train": 10, "test": 0}}, "metrics": {"accuracy": 0.99}}
+(output_dir / "training_result.json").write_text(json.dumps(result))
+`
+	modelArchive := buildTarGzArchive(t, map[string]archiveEntry{
+		"train.py": {
+			mode: 0o755,
+			data: []byte(trainScript),
+		},
+	})
+
+	dataArchive := buildTarGzArchive(t, map[string]archiveEntry{
+		"data/dataset.txt": {
+			mode: 0o644,
+			data: []byte("feature1,feature2,label\n1,2,0\n"),
+		},
+	})
+
+	resourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "model") {
+			_, _ = w.Write(modelArchive)
+		} else {
+			_, _ = w.Write(dataArchive)
+		}
+	}))
+	defer resourceServer.Close()
+
+	dataResp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+		"resourceUrl": resourceServer.URL + "/data.tar.gz",
+		"requestId":   "req-data-in-out-01",
+		"taskId":      "task-in-out-01",
+	})
+	apiData := decodeResponse(t, dataResp)
+	if dataResp.StatusCode != http.StatusOK || apiData.Error != 0 {
+		t.Fatalf("import data failed: code=%d msg=%s", dataResp.StatusCode, apiData.Msg)
+	}
+
+	runtimeCfgJSON := makeRuntimeConfigJSON(t, []string{
+		"python3 train.py --input <in> --output <out>",
+	}, map[string]string{"PYTHONUNBUFFERED": "1"})
+
+	modelResp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+		"resourceUrl":   resourceServer.URL + "/model.tar.gz",
+		"requestId":     "req-model-in-out-01",
+		"taskId":        "task-in-out-01",
+		"runtimeConfig": runtimeCfgJSON,
+	})
+	apiModel := decodeResponse(t, modelResp)
+	if modelResp.StatusCode != http.StatusOK || apiModel.Error != 0 {
+		t.Fatalf("import model failed: code=%d msg=%s", modelResp.StatusCode, apiModel.Msg)
+	}
+
+	var payload importedReportPayload
+	select {
+	case payload = <-platformReportCh:
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for reportRes")
+	}
+	if payload.Code != 0 {
+		t.Fatalf("reportRes code = %d, want 0, msg: %v", payload.Code, payload.Msg)
+	}
+
+	expectedResultDir := resultDirForRequestTask(state.Security.ResultDir, "req-data-in-out-01", "task-in-out-01")
+	marker, err := os.ReadFile(filepath.Join(expectedResultDir, "marker.txt"))
+	if err != nil {
+		t.Fatalf("read marker file: %v", err)
+	}
+	if string(marker) != "in-out-success\n" {
+		t.Fatalf("marker content = %q, want in-out-success\\n", string(marker))
+	}
+
+	exportResp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+		"taskId": "task-in-out-01",
+	})
+	if exportResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(exportResp.Body)
+		exportResp.Body.Close()
+		t.Fatalf("export failed: code=%d body=%s", exportResp.StatusCode, body)
+	}
+	exportTarGz, err := io.ReadAll(exportResp.Body)
+	exportResp.Body.Close()
+	if err != nil {
+		t.Fatalf("read export body: %v", err)
+	}
+
+	files := extractTarGzMap(t, exportTarGz)
+	dirName := filepath.Base(expectedResultDir)
+	if _, ok := files[dirName+"/trained_model.bin"]; !ok {
+		t.Fatalf("exported archive missing trained_model.bin: got keys %v", keysOfMap(files))
+	}
+	if _, ok := files[dirName+"/training_report.json"]; !ok {
+		t.Fatalf("exported archive missing training_report.json: got keys %v", keysOfMap(files))
+	}
+}

@@ -77,3 +77,38 @@ func ensureArchiveExtractedIntoDir(dst, archivePath string) (bool, error) {
 	}
 	return true, nil
 }
+
+func (s *TAAState) resolveTrainingRecord(req importRequest, isModel bool) (ImportIndexRecord, error) {
+	store, err := s.importIndexStore()
+	if err == nil {
+		if !isModel {
+			if record, err := store.Lookup(req.RequestID, req.TaskID); err == nil {
+				return record, nil
+			}
+		}
+		if req.TaskID != "" {
+			if record, ok := store.LookupByTaskID(req.TaskID); ok {
+				return record, nil
+			}
+		}
+		if req.RequestID != "" {
+			if record, ok := store.LookupByRequestID(req.RequestID); ok {
+				return record, nil
+			}
+		}
+	}
+
+	s.mu.RLock()
+	cur := s.CurrentDataRecord
+	s.mu.RUnlock()
+	if cur.RequestID != "" || cur.TaskID != "" || cur.DataDir != "" {
+		return cur, nil
+	}
+
+	return ImportIndexRecord{
+		RequestID: req.RequestID,
+		TaskID:    req.TaskID,
+		DataDir:   s.Security.DataDir,
+		ResultDir: resultDirForRequestTask(s.Security.ResultDir, req.RequestID, req.TaskID),
+	}, nil
+}
