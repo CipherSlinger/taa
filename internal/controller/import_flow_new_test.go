@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -645,6 +646,31 @@ result = {"dataset": {"total_samples": 10, "splits": {"train": 10, "test": 0}}, 
 	}
 	if payload.Code != 0 {
 		t.Fatalf("reportRes code = %d, want 0, msg: %v", payload.Code, payload.Msg)
+	}
+
+	var report map[string]any
+	if err := json.Unmarshal([]byte(payload.Report), &report); err != nil {
+		t.Fatalf("unmarshal reportRes report: %v", err)
+	}
+	trainingTask, ok := report["training_task"].(map[string]any)
+	if !ok {
+		t.Fatalf("report missing training_task: %#v", report)
+	}
+	modelChecksum, ok := trainingTask["model_checksum"].(map[string]any)
+	if !ok {
+		t.Fatalf("training_task missing model_checksum: %#v", trainingTask)
+	}
+	if modelChecksum["algorithm"] != "sm3" {
+		t.Fatalf("model_checksum algorithm = %v, want sm3", modelChecksum["algorithm"])
+	}
+	sm3Hasher := teecrypto.NewSM3()
+	sm3Hasher.Write(modelArchive)
+	wantModelHash := fmt.Sprintf("%x", sm3Hasher.Sum(nil))
+	if modelChecksum["value"] != wantModelHash {
+		t.Fatalf("model_checksum value = %v, want %v", modelChecksum["value"], wantModelHash)
+	}
+	if int64(modelChecksum["size"].(float64)) != int64(len(modelArchive)) {
+		t.Fatalf("model_checksum size = %v, want %d", modelChecksum["size"], len(modelArchive))
 	}
 
 	expectedResultDir := resultDirForRequestTask(state.Security.ResultDir, "req-data-in-out-01", "task-in-out-01")
