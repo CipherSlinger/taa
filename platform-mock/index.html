@@ -917,6 +917,8 @@ async function testImport() {
     const r = await postToTAA('/v1/taa/import', buildImportBody(
       document.getElementById('importResourceUrl').value,
       document.getElementById('importRequestId').value,
+      '',
+      document.getElementById('importTaskId').value.trim(),
     ));
     showResult('importResult', r.status === 200 && r.data.error === 0, formatResp(r));
   } catch (e) {
