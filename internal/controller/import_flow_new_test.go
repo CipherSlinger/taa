@@ -310,7 +310,8 @@ result = {"dataset": {"total_samples": 1, "splits": {"train": 1, "test": 0}}, "m
 				}
 			}
 
-			markerPath := filepath.Join(state.Security.ResultDir, "debug", "marker.txt")
+			markerDir := resultDirForRequestTask(state.Security.ResultDir, "req-"+strings.ReplaceAll(tc.name, " ", "-")+"-data", "task-"+strings.ReplaceAll(tc.name, " ", "-"))
+			markerPath := filepath.Join(markerDir, "marker.txt")
 			if _, err := os.Stat(markerPath); err != nil {
 				t.Fatalf("train marker missing at %s: %v", markerPath, err)
 			}
@@ -436,7 +437,8 @@ func runPhase1FlowCase(t *testing.T, tc phase1FlowCase) {
 		t.Fatalf("training_task.status = %v, want succeeded", trainingTask["status"])
 	}
 	if tc.wantTrainMarker {
-		markerPath := filepath.Join(state.Security.ResultDir, "debug", "marker.txt")
+		markerDir := resultDirForRequestTask(state.Security.ResultDir, "req-"+strings.ReplaceAll(tc.name, " ", "-")+"-data", "task-"+strings.ReplaceAll(tc.name, " ", "-"))
+		markerPath := filepath.Join(markerDir, "marker.txt")
 		if _, err := os.Stat(markerPath); err != nil {
 			t.Fatalf("train marker missing at %s: %v", markerPath, err)
 		}
@@ -450,15 +452,8 @@ type archiveEntry struct {
 
 func augmentArchiveEntries(entries map[string]archiveEntry) map[string]archiveEntry {
 	copyEntries := make(map[string]archiveEntry, len(entries))
-	hasResourceInfo := false
 	for name, entry := range entries {
 		copyEntries[name] = entry
-		if strings.HasSuffix(name, "resource_info.py") {
-			hasResourceInfo = true
-		}
-	}
-	if !hasResourceInfo {
-		copyEntries["resource_info.py"] = archiveEntry{mode: 0o755, data: resourceInfoScriptFixture()}
 	}
 	return copyEntries
 }

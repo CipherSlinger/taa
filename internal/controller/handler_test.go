@@ -171,6 +171,37 @@ func openSealedForTAA(t *testing.T, priv *teecrypto.SM2PrivateKey, sealed []byte
 	return decrypted
 }
 
+func seedExportIndexRecord(t *testing.T, state *TAAState, requestID, taskID, resultSubdir string) ImportIndexRecord {
+	t.Helper()
+	store, err := state.importIndexStore()
+	if err != nil {
+		t.Fatalf("load import index store: %v", err)
+	}
+	record := ImportIndexRecord{
+		RequestID: requestID,
+		TaskID:    taskID,
+		Hash:      "test-hash-" + requestID + "-" + taskID,
+		DataDir:   filepath.Join(state.Security.DataDir, "seeded-"+requestID+"-"+taskID),
+		ResultDir: filepath.Join(state.Security.ResultDir, resultSubdir),
+	}
+	if err := os.MkdirAll(record.DataDir, 0o755); err != nil {
+		t.Fatalf("create seeded data dir: %v", err)
+	}
+	if err := os.MkdirAll(record.ResultDir, 0o755); err != nil {
+		t.Fatalf("create seeded result dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(record.ResultDir, "training_report.json"), []byte(`{"status":"ok"}`), 0o644); err != nil {
+		t.Fatalf("write seeded training report: %v", err)
+	}
+	if err := store.Reserve(requestID, taskID); err != nil {
+		t.Fatalf("reserve import index record: %v", err)
+	}
+	if err := store.Commit(record); err != nil {
+		t.Fatalf("commit import index record: %v", err)
+	}
+	return record
+}
+
 // ── Test: /v1/taa/switch ─────────────────────────────────
 
 func TestSwitchHandler(t *testing.T) {
@@ -347,138 +378,138 @@ func TestImportHandler(t *testing.T) {
 	})
 
 	t.Run("phase1 runtimeConfig empty fails training", func(t *testing.T) {
-			state, server := setupTestServer(t)
-			state.mu.Lock()
-			state.CurrentPhase = 1
-			state.mu.Unlock()
+		state, server := setupTestServer(t)
+		state.mu.Lock()
+		state.CurrentPhase = 1
+		state.mu.Unlock()
 
-			reportCh := make(chan importedReportPayload, 1)
-			platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != reportResEndpoint {
-					t.Fatalf("unexpected report endpoint: %s", r.URL.Path)
-				}
-				var payload importedReportPayload
-				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-					t.Fatalf("decode reportRes payload: %v", err)
-				}
-				reportCh <- payload
-				w.WriteHeader(http.StatusOK)
-			}))
-			defer platformServer.Close()
-
-			state.mu.Lock()
-			state.PlatformIP = platformServer.URL
-			state.mu.Unlock()
-
-			resourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if strings.Contains(r.URL.Path, "model") {
-					_, _ = w.Write(buildTarGzArchive(t, map[string]archiveEntry{"placeholder.txt": {mode: 0o644, data: []byte("model\n")}}))
-					return
-				}
-				_, _ = w.Write(buildTarGzArchive(t, map[string]archiveEntry{"sample.txt": {mode: 0o644, data: []byte("training data\n")}}))
-			}))
-			defer resourceServer.Close()
-
-			resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
-				"resourceUrl": resourceServer.URL + "/model.tar.gz",
-				"requestId":   "req-import-empty-runtime-config",
-				"taskId":      "task-empty-runtime-config",
-			})
-			api := decodeResponse(t, resp)
-			if resp.StatusCode != http.StatusOK || api.Error != 0 {
-				t.Fatalf("import model: expected 200/0, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		reportCh := make(chan importedReportPayload, 1)
+		platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != reportResEndpoint {
+				t.Fatalf("unexpected report endpoint: %s", r.URL.Path)
 			}
-
-			resp = postJSON(t, server.URL+"/v1/taa/import", map[string]any{
-				"resourceUrl": resourceServer.URL + "/data.tar.gz",
-				"requestId":   "req-import-empty-runtime-config-data",
-				"taskId":      "task-empty-runtime-config",
-			})
-			api = decodeResponse(t, resp)
-			if resp.StatusCode != http.StatusOK || api.Error != 0 {
-				t.Fatalf("import data: expected 200/0, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+			var payload importedReportPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode reportRes payload: %v", err)
 			}
+			reportCh <- payload
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer platformServer.Close()
 
-			select {
-			case payload := <-reportCh:
-				if payload.Code != 1 {
-					t.Fatalf("reportRes code = %d, want 1", payload.Code)
-				}
-				if payload.Msg == nil || !strings.Contains(*payload.Msg, "runtimeConfig 不能为空") {
-					t.Fatalf("reportRes msg = %v, want runtimeConfig failure", payload.Msg)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatal("timed out waiting for empty runtimeConfig failure report")
+		state.mu.Lock()
+		state.PlatformIP = platformServer.URL
+		state.mu.Unlock()
+
+		resourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "model") {
+				_, _ = w.Write(buildTarGzArchive(t, map[string]archiveEntry{"placeholder.txt": {mode: 0o644, data: []byte("model\n")}}))
+				return
 			}
+			_, _ = w.Write(buildTarGzArchive(t, map[string]archiveEntry{"sample.txt": {mode: 0o644, data: []byte("training data\n")}}))
+		}))
+		defer resourceServer.Close()
+
+		resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+			"resourceUrl": resourceServer.URL + "/model.tar.gz",
+			"requestId":   "req-import-empty-runtime-config",
+			"taskId":      "task-empty-runtime-config",
 		})
+		api := decodeResponse(t, resp)
+		if resp.StatusCode != http.StatusOK || api.Error != 0 {
+			t.Fatalf("import model: expected 200/0, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		}
 
-		t.Run("phase1 runtimeConfig empty fails training", func(t *testing.T) {
-			state, server := setupTestServer(t)
-			state.mu.Lock()
-			state.CurrentPhase = 1
-			state.mu.Unlock()
-
-			reportCh := make(chan importedReportPayload, 1)
-			platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != reportResEndpoint {
-					t.Fatalf("unexpected report endpoint: %s", r.URL.Path)
-				}
-				var payload importedReportPayload
-				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-					t.Fatalf("decode reportRes payload: %v", err)
-				}
-				reportCh <- payload
-				w.WriteHeader(http.StatusOK)
-			}))
-			defer platformServer.Close()
-
-			state.mu.Lock()
-			state.PlatformIP = platformServer.URL
-			state.mu.Unlock()
-
-			resourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if strings.Contains(r.URL.Path, "model") {
-					_, _ = w.Write(buildTarGzArchive(t, map[string]archiveEntry{"placeholder.txt": {mode: 0o644, data: []byte("model\n")}}))
-					return
-				}
-				_, _ = w.Write(buildTarGzArchive(t, map[string]archiveEntry{"sample.txt": {mode: 0o644, data: []byte("training data\n")}}))
-			}))
-			defer resourceServer.Close()
-
-			resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
-				"resourceUrl": resourceServer.URL + "/model.tar.gz",
-				"requestId":   "req-import-empty-runtime-config",
-				"taskId":      "task-empty-runtime-config",
-			})
-			api := decodeResponse(t, resp)
-			if resp.StatusCode != http.StatusOK || api.Error != 0 {
-				t.Fatalf("import model: expected 200/0, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
-			}
-
-			resp = postJSON(t, server.URL+"/v1/taa/import", map[string]any{
-				"resourceUrl": resourceServer.URL + "/data.tar.gz",
-				"requestId":   "req-import-empty-runtime-config-data",
-				"taskId":      "task-empty-runtime-config",
-			})
-			api = decodeResponse(t, resp)
-			if resp.StatusCode != http.StatusOK || api.Error != 0 {
-				t.Fatalf("import data: expected 200/0, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
-			}
-
-			select {
-			case payload := <-reportCh:
-				if payload.Code != 1 {
-					t.Fatalf("reportRes code = %d, want 1", payload.Code)
-				}
-				if payload.Msg == nil || !strings.Contains(*payload.Msg, "runtimeConfig 不能为空") {
-					t.Fatalf("reportRes msg = %v, want runtimeConfig failure", payload.Msg)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatal("timed out waiting for empty runtimeConfig failure report")
-			}
+		resp = postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+			"resourceUrl": resourceServer.URL + "/data.tar.gz",
+			"requestId":   "req-import-empty-runtime-config-data",
+			"taskId":      "task-empty-runtime-config",
 		})
+		api = decodeResponse(t, resp)
+		if resp.StatusCode != http.StatusOK || api.Error != 0 {
+			t.Fatalf("import data: expected 200/0, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		}
 
-		t.Run("phase1 import with invalid publicKey returns error", func(t *testing.T) {
+		select {
+		case payload := <-reportCh:
+			if payload.Code != 1 {
+				t.Fatalf("reportRes code = %d, want 1", payload.Code)
+			}
+			if payload.Msg == nil || !strings.Contains(*payload.Msg, "runtimeConfig 不能为空") {
+				t.Fatalf("reportRes msg = %v, want runtimeConfig failure", payload.Msg)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out waiting for empty runtimeConfig failure report")
+		}
+	})
+
+	t.Run("phase1 runtimeConfig empty fails training", func(t *testing.T) {
+		state, server := setupTestServer(t)
+		state.mu.Lock()
+		state.CurrentPhase = 1
+		state.mu.Unlock()
+
+		reportCh := make(chan importedReportPayload, 1)
+		platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != reportResEndpoint {
+				t.Fatalf("unexpected report endpoint: %s", r.URL.Path)
+			}
+			var payload importedReportPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode reportRes payload: %v", err)
+			}
+			reportCh <- payload
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer platformServer.Close()
+
+		state.mu.Lock()
+		state.PlatformIP = platformServer.URL
+		state.mu.Unlock()
+
+		resourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "model") {
+				_, _ = w.Write(buildTarGzArchive(t, map[string]archiveEntry{"placeholder.txt": {mode: 0o644, data: []byte("model\n")}}))
+				return
+			}
+			_, _ = w.Write(buildTarGzArchive(t, map[string]archiveEntry{"sample.txt": {mode: 0o644, data: []byte("training data\n")}}))
+		}))
+		defer resourceServer.Close()
+
+		resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+			"resourceUrl": resourceServer.URL + "/model.tar.gz",
+			"requestId":   "req-import-empty-runtime-config",
+			"taskId":      "task-empty-runtime-config",
+		})
+		api := decodeResponse(t, resp)
+		if resp.StatusCode != http.StatusOK || api.Error != 0 {
+			t.Fatalf("import model: expected 200/0, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		}
+
+		resp = postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+			"resourceUrl": resourceServer.URL + "/data.tar.gz",
+			"requestId":   "req-import-empty-runtime-config-data",
+			"taskId":      "task-empty-runtime-config",
+		})
+		api = decodeResponse(t, resp)
+		if resp.StatusCode != http.StatusOK || api.Error != 0 {
+			t.Fatalf("import data: expected 200/0, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		}
+
+		select {
+		case payload := <-reportCh:
+			if payload.Code != 1 {
+				t.Fatalf("reportRes code = %d, want 1", payload.Code)
+			}
+			if payload.Msg == nil || !strings.Contains(*payload.Msg, "runtimeConfig 不能为空") {
+				t.Fatalf("reportRes msg = %v, want runtimeConfig failure", payload.Msg)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out waiting for empty runtimeConfig failure report")
+		}
+	})
+
+	t.Run("phase1 import with invalid publicKey returns error", func(t *testing.T) {
 		state, server := setupTestServer(t)
 		state.mu.Lock()
 		state.CurrentPhase = 1
@@ -680,21 +711,14 @@ func TestExportHandler(t *testing.T) {
 
 	exportPlaintext := []byte("export test result data")
 
-	t.Run("phase1 without publicKey returns plaintext tar.gz", func(t *testing.T) {
-		state.mu.Lock()
-		state.CurrentPhase = 1
-		state.mu.Unlock()
-
-		debugDir := filepath.Join(state.Security.ResultDir, "debug")
-		if err := os.MkdirAll(debugDir, 0o755); err != nil {
-			t.Fatalf("create debug dir: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(debugDir, "phase1.bin"), exportPlaintext, 0o644); err != nil {
-			t.Fatalf("write debug/phase1.bin: %v", err)
+	t.Run("indexed lookup returns plaintext tar.gz", func(t *testing.T) {
+		record := seedExportIndexRecord(t, state, "req-export-plain", "task-001", "export-plain")
+		if err := os.WriteFile(filepath.Join(record.ResultDir, "phase1.bin"), exportPlaintext, 0o644); err != nil {
+			t.Fatalf("write seeded phase1.bin: %v", err)
 		}
 
 		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
-			"requestId": "req-export-phase1-plain",
+			"requestId": "req-export-plain",
 			"taskId":    "task-001",
 		})
 		defer resp.Body.Close()
@@ -702,66 +726,35 @@ func TestExportHandler(t *testing.T) {
 			body, _ := io.ReadAll(resp.Body)
 			t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, body)
 		}
+		if got := resp.Header.Get("X-TAA-Task-Id"); got != "task-001" {
+			t.Fatalf("X-TAA-Task-Id = %q, want task-001", got)
+		}
 		if got := resp.Header.Get("X-TAA-Encrypted"); got == "true" {
 			t.Fatalf("X-TAA-Encrypted = %q, want not true (plaintext)", got)
 		}
-		// 验证明文 tar.gz 包含 debug/phase1.bin
+		if got := resp.Header.Get("Content-Disposition"); !strings.Contains(got, filepath.Base(record.ResultDir)+".tar.gz") {
+			t.Fatalf("Content-Disposition = %q, want filename based on result dir", got)
+		}
 		raw, err := io.ReadAll(resp.Body)
 		if err != nil {
 			t.Fatalf("read response body: %v", err)
 		}
 		files := extractTarGzMap(t, raw)
-		if got, ok := files["debug/phase1.bin"]; !ok {
-			t.Fatalf("plaintext tar.gz missing debug/phase1.bin, got keys: %v", keysOfMap(files))
+		if got, ok := files["export-plain/phase1.bin"]; !ok {
+			t.Fatalf("plaintext tar.gz missing export-plain/phase1.bin, got keys: %v", keysOfMap(files))
 		} else if !bytes.Equal(got, exportPlaintext) {
-			t.Fatalf("plaintext debug/phase1.bin = %q, want %q", got, exportPlaintext)
+			t.Fatalf("plaintext export-plain/phase1.bin = %q, want %q", got, exportPlaintext)
 		}
 	})
 
-	t.Run("phase1 with publicKey returns encrypted tar.gz", func(t *testing.T) {
-		state.mu.Lock()
-		state.CurrentPhase = 1
-		state.mu.Unlock()
-
-		// Phase 1 正式模式导出 debug 目录
-		debugDir := filepath.Join(state.Security.ResultDir, "debug")
-		if err := os.MkdirAll(debugDir, 0o755); err != nil {
-			t.Fatalf("create debug dir: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(debugDir, "phase1.bin"), exportPlaintext, 0o644); err != nil {
-			t.Fatalf("write debug/phase1.bin: %v", err)
+	t.Run("indexed lookup returns encrypted tar.gz", func(t *testing.T) {
+		record := seedExportIndexRecord(t, state, "req-export-encrypted", "task-002", "export-encrypted")
+		if err := os.WriteFile(filepath.Join(record.ResultDir, "train.bin"), exportPlaintext, 0o644); err != nil {
+			t.Fatalf("write seeded train.bin: %v", err)
 		}
 
 		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
-			"requestId": "req-export-phase1-encrypted",
-			"publicKey": string(pubPEM),
-			"taskId":    "task-001-phase1",
-		})
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, body)
-		}
-		if got := resp.Header.Get("X-TAA-Encrypted"); got != "true" {
-			t.Fatalf("X-TAA-Encrypted = %q, want true", got)
-		}
-	})
-
-	t.Run("phase2 with publicKey returns encrypted tar.gz", func(t *testing.T) {
-		state.mu.Lock()
-		state.CurrentPhase = 2
-		state.mu.Unlock()
-
-		trainDir := filepath.Join(state.Security.ResultDir, "train")
-		if err := os.MkdirAll(trainDir, 0o755); err != nil {
-			t.Fatalf("create train dir: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(trainDir, "debug.bin"), exportPlaintext, 0o644); err != nil {
-			t.Fatalf("write train/debug.bin: %v", err)
-		}
-
-		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
-			"requestId": "req-export-phase2-encrypted",
+			"requestId": "req-export-encrypted",
 			"publicKey": string(pubPEM),
 			"taskId":    "task-002",
 		})
@@ -770,85 +763,8 @@ func TestExportHandler(t *testing.T) {
 			body, _ := io.ReadAll(resp.Body)
 			t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, body)
 		}
-		if got := resp.Header.Get("X-TAA-Encrypted"); got != "true" {
-			t.Fatalf("X-TAA-Encrypted = %q, want true", got)
-		}
-		sealed, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatalf("read response body: %v", err)
-		}
-		decrypted := openSealedForTAA(t, sm2Key, sealed)
-		// 解密后应为 tar.gz，验证包含 train/debug.bin
-		files := extractTarGzMap(t, decrypted)
-		if got, ok := files["train/debug.bin"]; !ok {
-			t.Fatalf("decrypted tar.gz missing train/debug.bin, got keys: %v", keysOfMap(files))
-		} else if !bytes.Equal(got, exportPlaintext) {
-			t.Fatalf("decrypted train/debug.bin = %q, want %q", got, exportPlaintext)
-		}
-	})
-
-	t.Run("phase2 without publicKey returns plaintext tar.gz", func(t *testing.T) {
-		state.mu.Lock()
-		state.CurrentPhase = 2
-		state.mu.Unlock()
-
-		trainDir := filepath.Join(state.Security.ResultDir, "train")
-		if err := os.MkdirAll(trainDir, 0o755); err != nil {
-			t.Fatalf("create train dir: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(trainDir, "debug.bin"), exportPlaintext, 0o644); err != nil {
-			t.Fatalf("write train/debug.bin: %v", err)
-		}
-
-		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
-			"requestId": "req-export-phase2-plain",
-			"taskId":    "task-003",
-		})
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, body)
-		}
-		if got := resp.Header.Get("X-TAA-Encrypted"); got == "true" {
-			t.Fatalf("X-TAA-Encrypted = %q, want not true (plaintext)", got)
-		}
-		raw, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatalf("read response body: %v", err)
-		}
-		files := extractTarGzMap(t, raw)
-		if got, ok := files["train/debug.bin"]; !ok {
-			t.Fatalf("plaintext tar.gz missing train/debug.bin, got keys: %v", keysOfMap(files))
-		} else if !bytes.Equal(got, exportPlaintext) {
-			t.Fatalf("plaintext train/debug.bin = %q, want %q", got, exportPlaintext)
-		}
-	})
-
-	t.Run("phase3 with saved key returns encrypted tar.gz", func(t *testing.T) {
-		// 设置保存的公钥
-		state.mu.Lock()
-		state.CurrentPhase = 3
-		state.ExportPublicKey = string(pubPEM)
-		state.mu.Unlock()
-
-		trainDir := filepath.Join(state.Security.ResultDir, "train")
-		if err := os.MkdirAll(trainDir, 0o755); err != nil {
-			t.Fatalf("create train dir: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(trainDir, "train.bin"), exportPlaintext, 0o644); err != nil {
-			t.Fatalf("write train/train.bin: %v", err)
-		}
-
-		// phase3 必须不传 publicKey
-		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
-			"requestId": "req-export-phase3-saved-key",
-			"publicKey": nil,
-			"taskId":    "task-004",
-		})
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, body)
+		if got := resp.Header.Get("X-TAA-Task-Id"); got != "task-002" {
+			t.Fatalf("X-TAA-Task-Id = %q, want task-002", got)
 		}
 		if got := resp.Header.Get("X-TAA-Encrypted"); got != "true" {
 			t.Fatalf("X-TAA-Encrypted = %q, want true", got)
@@ -859,97 +775,30 @@ func TestExportHandler(t *testing.T) {
 		}
 		decrypted := openSealedForTAA(t, sm2Key, sealed)
 		files := extractTarGzMap(t, decrypted)
-		if got, ok := files["train/train.bin"]; !ok {
-			t.Fatalf("decrypted tar.gz missing train/train.bin, got keys: %v", keysOfMap(files))
+		if got, ok := files["export-encrypted/train.bin"]; !ok {
+			t.Fatalf("decrypted tar.gz missing export-encrypted/train.bin, got keys: %v", keysOfMap(files))
 		} else if !bytes.Equal(got, exportPlaintext) {
-			t.Fatalf("decrypted train/train.bin = %q, want %q", got, exportPlaintext)
+			t.Fatalf("decrypted export-encrypted/train.bin = %q, want %q", got, exportPlaintext)
 		}
 	})
 
-	t.Run("phase3 with publicKey returns encrypted tar.gz", func(t *testing.T) {
-		state.mu.Lock()
-		state.CurrentPhase = 3
-		state.ExportPublicKey = string(pubPEM)
-		state.mu.Unlock()
-
-		trainDir := filepath.Join(state.Security.ResultDir, "train")
-		if err := os.MkdirAll(trainDir, 0o755); err != nil {
-			t.Fatalf("create train dir: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(trainDir, "train.bin"), exportPlaintext, 0o644); err != nil {
-			t.Fatalf("write train/train.bin: %v", err)
-		}
-
-		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
-			"requestId": "req-export-phase3-request-key",
-			"publicKey": string(pubPEM),
-			"taskId":    "task-005",
-		})
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, body)
-		}
-		if got := resp.Header.Get("X-TAA-Encrypted"); got != "true" {
-			t.Fatalf("X-TAA-Encrypted = %q, want true", got)
-		}
-		sealed, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatalf("read response body: %v", err)
-		}
-		decrypted := openSealedForTAA(t, sm2Key, sealed)
-		files := extractTarGzMap(t, decrypted)
-		if got, ok := files["train/train.bin"]; !ok {
-			t.Fatalf("decrypted tar.gz missing train/train.bin, got keys: %v", keysOfMap(files))
-		} else if !bytes.Equal(got, exportPlaintext) {
-			t.Fatalf("decrypted train/train.bin = %q, want %q", got, exportPlaintext)
-		}
-	})
-
-	t.Run("phase3 without savedKey returns error", func(t *testing.T) {
-		state.mu.Lock()
-		state.CurrentPhase = 3
-		state.ExportPublicKey = ""
-		state.mu.Unlock()
-
-		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
-			"requestId": "req-export-phase3-no-key",
-			"taskId":    "task-006",
-		})
-		defer resp.Body.Close()
-		api := decodeResponse(t, resp)
-		if resp.StatusCode == http.StatusOK && api.Error == 0 {
-			t.Fatalf("expected error for phase3 export without savedKey, got 200/0")
-		}
-		if !strings.Contains(api.Msg, "阶段 3") {
-			t.Fatalf("unexpected msg: %s", api.Msg)
-		}
-	})
-
-	t.Run("rejects missing requestId", func(t *testing.T) {
+	t.Run("rejects missing requestId and taskId", func(t *testing.T) {
 		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
 			"publicKey": "mock-public-key",
 		})
 		api := decodeResponse(t, resp)
 		if resp.StatusCode != http.StatusBadRequest || api.Error == 0 {
-			t.Fatalf("expected requestId validation error, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+			t.Fatalf("expected requestId/taskId validation error, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
 		}
-		if !strings.Contains(api.Msg, "requestId 不能为空") {
-			t.Fatalf("msg = %q, want requestId validation", api.Msg)
+		if !strings.Contains(api.Msg, "requestId 和 taskId 不能同时为空") {
+			t.Fatalf("msg = %q, want requestId/taskId validation", api.Msg)
 		}
 	})
 
-	t.Run("allows missing taskId and uses requestId in filename and header", func(t *testing.T) {
-		state.mu.Lock()
-		state.CurrentPhase = 2
-		state.mu.Unlock()
-
-		trainDir := filepath.Join(state.Security.ResultDir, "train")
-		if err := os.MkdirAll(trainDir, 0o755); err != nil {
-			t.Fatalf("create train dir: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(trainDir, "request.bin"), exportPlaintext, 0o644); err != nil {
-			t.Fatalf("write train/request.bin: %v", err)
+	t.Run("allows missing taskId and looks up by requestId", func(t *testing.T) {
+		record := seedExportIndexRecord(t, state, "req-export-no-task", "task-003", "export-no-task")
+		if err := os.WriteFile(filepath.Join(record.ResultDir, "request.bin"), exportPlaintext, 0o644); err != nil {
+			t.Fatalf("write seeded request.bin: %v", err)
 		}
 
 		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
@@ -963,8 +812,35 @@ func TestExportHandler(t *testing.T) {
 		if got := resp.Header.Get("X-TAA-Task-Id"); got != "" {
 			t.Fatalf("X-TAA-Task-Id = %q, want empty when taskId omitted", got)
 		}
-		if got := resp.Header.Get("Content-Disposition"); !strings.Contains(got, "req-export-no-task") {
-			t.Fatalf("Content-Disposition = %q, want requestId in filename", got)
+		if got := resp.Header.Get("Content-Disposition"); !strings.Contains(got, filepath.Base(record.ResultDir)+".tar.gz") {
+			t.Fatalf("Content-Disposition = %q, want result-dir filename", got)
+		}
+		raw, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read response body: %v", err)
+		}
+		files := extractTarGzMap(t, raw)
+		if got, ok := files["export-no-task/request.bin"]; !ok {
+			t.Fatalf("plaintext tar.gz missing export-no-task/request.bin, got keys: %v", keysOfMap(files))
+		} else if !bytes.Equal(got, exportPlaintext) {
+			t.Fatalf("plaintext export-no-task/request.bin = %q, want %q", got, exportPlaintext)
+		}
+	})
+
+	t.Run("rejects mismatched requestId and taskId", func(t *testing.T) {
+		seedExportIndexRecord(t, state, "req-export-mismatch-req", "task-mismatch-a", "export-mismatch-a")
+		seedExportIndexRecord(t, state, "req-export-mismatch-task", "task-mismatch-b", "export-mismatch-b")
+
+		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+			"requestId": "req-export-mismatch-req",
+			"taskId":    "task-mismatch-b",
+		})
+		api := decodeResponse(t, resp)
+		if resp.StatusCode != http.StatusBadRequest || api.Error == 0 {
+			t.Fatalf("expected mismatch validation error, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		}
+		if !strings.Contains(api.Msg, "命中了不同记录") {
+			t.Fatalf("unexpected msg: %s", api.Msg)
 		}
 	})
 }
@@ -1110,10 +986,9 @@ func keysOfMap(m map[string][]byte) []string {
 // ── Test: /v1/taa/export with result check ───────────────
 
 func TestExportResultCheck(t *testing.T) {
-	state, _ := setupTestState(t)
-	state.Security.ResultCheck = true
-
+	state, server := setupTestServer(t)
 	sm2Key := state.SM2PrivateKey
+	// 准备公钥 PEM
 	sdkPub := &sm2Key.PublicKey
 	pubPEM, err := teecrypto.MarshalSM2PublicKeyPEM(sdkPub)
 	if err != nil {
@@ -1124,22 +999,14 @@ func TestExportResultCheck(t *testing.T) {
 	state.Security.ResultDir = resultDir
 	resultPlaintext := []byte("model=ok\n")
 
-	// 切换到 phase 2 并准备 train 目录
-	state.mu.Lock()
-	state.CurrentPhase = 2
-	state.mu.Unlock()
-
-	trainDir := filepath.Join(resultDir, "train")
-	if err := os.MkdirAll(trainDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(trainDir, "train.bin"), resultPlaintext, 0o644); err != nil {
+	record := seedExportIndexRecord(t, state, "req-export-result-check", "task-001", "train")
+	if err := os.WriteFile(filepath.Join(record.ResultDir, "train.bin"), resultPlaintext, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	mux := http.NewServeMux()
 	RegisterRoutes(mux, state)
-	server := httptest.NewServer(mux)
+	server = httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
 	resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
@@ -1220,18 +1087,16 @@ func TestFullWorkflow(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// 5. Export result (phase 3 uses saved key, publicKey must be empty)
+	// 5. Export result by indexed lookup
 	wfPlaintext := []byte("mock training result")
-	trainDir := filepath.Join(state.Security.ResultDir, "train")
-	if err := os.MkdirAll(trainDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(trainDir, "debug.bin"), wfPlaintext, 0o644); err != nil {
+	wfRecord := seedExportIndexRecord(t, state, "req-export-full-workflow", "task-wf-001", "train")
+	if err := os.WriteFile(filepath.Join(wfRecord.ResultDir, "debug.bin"), wfPlaintext, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	resp = postJSON(t, server.URL+"/v1/taa/export", map[string]any{
 		"requestId": "req-export-full-workflow",
 		"taskId":    "task-wf-001",
+		"publicKey": string(wfPubPEM),
 	})
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -1277,91 +1142,4 @@ func TestFullWorkflow(t *testing.T) {
 	if attResult["attestationValues"] == "" {
 		t.Fatal("attestationValues is empty")
 	}
-
-	t.Logf("full workflow passed: phase=%d modelImported=%v dataImported=%v trainingDone=%v",
-		state.CurrentPhase, state.ModelImported, state.DataImported, state.TrainingDone)
-	fmt.Println("=== Full workflow test PASSED ===")
-}
-
-func TestGetAttestationHandlerFallsBackOnHelperFailure(t *testing.T) {
-	state, server := setupTestServer(t)
-	state.mu.Lock()
-	state.HelperPath = filepath.Join(t.TempDir(), "missing-helper.sh")
-	state.mu.Unlock()
-
-	resp := postJSON(t, server.URL+"/v1/taa/getAttestation", map[string]any{
-		"requestId": "req-att-fallback-001",
-	})
-	api := decodeResponse(t, resp)
-	if resp.StatusCode != http.StatusOK || api.Error != 0 {
-		t.Fatalf("expected 200/0, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
-	}
-	if !strings.Contains(api.Msg, "获取报告失败") {
-		t.Fatalf("msg = %q, want failure notice", api.Msg)
-	}
-	result, ok := api.Result.(map[string]any)
-	if !ok {
-		t.Fatalf("result is not a map: %T", api.Result)
-	}
-	if result["attestation"] != "" {
-		t.Fatalf("attestation = %v, want empty", result["attestation"])
-	}
-	if result["attestationValues"] != "" {
-		t.Fatalf("attestationValues = %v, want empty", result["attestationValues"])
-	}
-	if result["verifiedPass"] != false {
-		t.Fatalf("verifiedPass = %v, want false", result["verifiedPass"])
-	}
-}
-
-// setupModelTrainScript writes a minimal train.py into ModelDir, simulating the
-// Phase 1 model package extraction that happens before Phase 2/3 in production.
-func setupModelTrainScript(t *testing.T, modelDir string) {
-	t.Helper()
-	script := "#!/usr/bin/env python3\n" +
-		"from argparse import ArgumentParser\n" +
-		"from pathlib import Path\n" +
-		"import json\n" +
-		"\n" +
-		"parser = ArgumentParser(add_help=False)\n" +
-		"parser.add_argument(\"--data-dir\", dest=\"data_dir\", required=True)\n" +
-		"parser.add_argument(\"--output\", \"-o\", dest=\"output_dir\", required=True)\n" +
-		"args, _ = parser.parse_known_args()\n" +
-		"output_dir = Path(args.output_dir)\n" +
-		"output_dir.mkdir(parents=True, exist_ok=True)\n" +
-		"result = {\n" +
-		"    \"dataset\": {\"total_samples\": 1, \"splits\": {\"train\": 1, \"test\": 0}},\n" +
-		"    \"metrics\": {\"loss\": 0.0, \"accuracy\": 1.0},\n" +
-		"}\n" +
-		"(output_dir / \"marker.txt\").write_text(\"ok\\n\")\n" +
-		"(output_dir / \"training_result.json\").write_text(json.dumps(result, indent=2, ensure_ascii=False) + \"\\n\")\n" +
-		"(output_dir / \"training_report.json\").write_text(json.dumps({\n" +
-		"    \"training_task\": {\"status\": \"succeeded\", \"exit_code\": 0},\n" +
-		"    \"dataset\": result[\"dataset\"],\n" +
-		"    \"metrics\": result[\"metrics\"],\n" +
-		"}, indent=2, ensure_ascii=False) + \"\\n\")\n"
-	if err := os.WriteFile(filepath.Join(modelDir, "train.py"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write model train.py: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(modelDir, "resource_info.py"), resourceInfoScriptFixture(), 0o755); err != nil {
-		t.Fatalf("write model resource_info.py: %v", err)
-	}
-}
-
-func resourceInfoScriptFixture() []byte {
-	return []byte("#!/usr/bin/env python3\n" +
-		"from argparse import ArgumentParser\n" +
-		"from pathlib import Path\n" +
-		"import json\n" +
-		"\n" +
-		"parser = ArgumentParser(add_help=False)\n" +
-		"parser.add_argument(\"--data-dir\", dest=\"data_dir\", default=str(Path.cwd()))\n" +
-		"args, _ = parser.parse_known_args()\n" +
-		"payload = {\n" +
-		"    \"total_samples\": 1,\n" +
-		"    \"splits\": {\"train\": 1, \"test\": 0},\n" +
-		"    \"data_structure\": {\"features\": [{\"name\": \"feature1\", \"type\": \"float\", \"description\": \"feature 1\"}, {\"name\": \"label\", \"type\": \"int\", \"description\": \"label\"}]},\n" +
-		"    \"checksum\": {\"algorithm\": \"sm3\", \"value\": \"fixture\"},\n" +
-		"}\n" +
-		"print(json.dumps(payload, indent=2, ensure_ascii=False))\n")
 }
