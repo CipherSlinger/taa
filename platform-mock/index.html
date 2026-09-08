@@ -78,8 +78,19 @@
     .upload-item-title { font-weight:700; line-height:1.45; word-break:break-word; }
     .upload-item-meta { color:var(--muted); font-size:12px; line-height:1.45; word-break:break-word; }
     .upload-item-url { color:var(--text); font-size:13px; line-height:1.5; word-break:break-all; }
-    .upload-item-actions { flex-shrink:0; display:flex; align-items:flex-start; }
-    .upload-item-actions button { white-space:nowrap; }
+    .upload-item-actions { flex-shrink:0; display:flex; align-items:center; gap:8px; }
+    .upload-item-actions button { white-space:nowrap; padding:6px 10px; font-size:12px; }
+    /* Toggle Switch */
+    .switch-label { display:inline-flex; align-items:center; gap:8px; cursor:pointer; user-select:none; font-size:13px; font-weight:600; color:var(--text); margin:0; }
+    .switch-wrapper { position:relative; width:40px; height:22px; display:inline-block; vertical-align:middle; }
+    .switch-wrapper input { opacity:0; width:0; height:0; position:absolute; margin:0; }
+    .switch-slider { position:absolute; inset:0; background:#cbd5e1; border-radius:999px; transition:background-color .2s ease; cursor:pointer; }
+    .switch-slider::before { content:""; position:absolute; height:16px; width:16px; left:3px; bottom:3px; background:white; border-radius:50%; box-shadow:0 1px 3px rgba(0,0,0,.25); transition:transform .2s cubic-bezier(0.4,0,0.2,1); }
+    .switch-wrapper input:checked + .switch-slider { background:#2563eb; }
+    .switch-wrapper input:checked + .switch-slider::before { transform:translateX(18px); }
+    @media (prefers-color-scheme: dark) {
+      .switch-slider { background:#475569; }
+    }
     .modal-overlay { position:fixed; inset:0; background:rgba(15,23,42,.58); display:none; align-items:center; justify-content:center; padding:20px; z-index:1000; }
     .modal-overlay.open { display:flex; }
     .modal { width:min(980px, 100%); max-height:min(86vh, 900px); background:var(--panel); border:1px solid var(--line); border-radius:16px; box-shadow:0 24px 80px rgba(0,0,0,.3); display:flex; flex-direction:column; overflow:hidden; }
@@ -197,15 +208,15 @@
       </div>
       <label for="uploadFile">选择文件</label>
       <input id="uploadFile" type="file">
-      <div style="margin: 8px 0 6px; display: flex; align-items: center; gap: 8px;">
-        <label style="margin: 0; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; font-weight: 500;">
-          <input type="checkbox" id="uploadEncryptSwitch" onchange="toggleUploadEncryptOptions()">
-          <span>是否加密（开启后自动进行 SM2+SM4-GCM 加密，并添加 .enc 后缀）</span>
+      <div style="margin: 10px 0 6px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+        <label class="switch-label" for="uploadEncryptSwitch">
+          <span class="switch-wrapper">
+            <input type="checkbox" id="uploadEncryptSwitch">
+            <span class="switch-slider"></span>
+          </span>
+          <span>启用加密</span>
         </label>
-      </div>
-      <div id="uploadEncryptBox" style="display: none; margin-bottom: 8px;">
-        <label for="uploadEncryptPublicKey" style="font-size: 12px;">加密公钥（PEM 格式，留空默认使用 TAA 注册公钥）：</label>
-        <textarea id="uploadEncryptPublicKey" rows="2" style="font-size: 12px; font-family: monospace;" placeholder="留空则自动使用平台接收到的 TAA 注册公钥"></textarea>
+        <span class="muted" style="font-size: 12px;">自动使用 TAA 注册公钥加密并追加 .enc 后缀</span>
       </div>
       <div class="actions">
         <button onclick="uploadFile()">上传文件</button>
@@ -617,12 +628,36 @@ function renderUploadedFiles(files) {
   listEl.innerHTML = uploadedFiles.map(file => {
     const originalName = escapeHtml(file.originalName || file.filename || '未命名文件');
     const filename = escapeHtml(file.filename || '-');
+    const rawFilename = file.filename || '';
     const url = escapeHtml(file.url || '');
     const uploadedAt = escapeHtml(formatUploadTime(file.uploadedAt));
     const size = escapeHtml(formatUploadSize(file.size));
     const encBadge = (file.encrypted || (file.originalName && file.originalName.toLowerCase().endsWith('.enc')) || (file.filename && file.filename.toLowerCase().endsWith('.enc'))) ? '<span class="badge ok" style="margin-left:6px; font-size:11px; padding:2px 6px;">已加密</span>' : '';
-    return `<div class="upload-item"><div class="upload-item-main"><div class="upload-item-title">${originalName}${encBadge}</div><div class="upload-item-meta">保存名 ${filename} · ${size} · ${uploadedAt}</div><div class="upload-item-url">${url}</div></div><div class="upload-item-actions"><button type="button" class="secondary" data-url="${encodeURIComponent(file.url || '')}" onclick="copyText(decodeURIComponent(this.dataset.url))">复制 URL</button></div></div>`;
+    return `<div class="upload-item"><div class="upload-item-main"><div class="upload-item-title">${originalName}${encBadge}</div><div class="upload-item-meta">保存名 ${filename} · ${size} · ${uploadedAt}</div><div class="upload-item-url">${url}</div></div><div class="upload-item-actions"><button type="button" class="danger" data-filename="${encodeURIComponent(rawFilename)}" onclick="deleteUploadedFile(decodeURIComponent(this.dataset.filename))">删除</button><button type="button" class="secondary" data-url="${encodeURIComponent(file.url || '')}" onclick="copyText(decodeURIComponent(this.dataset.url))">复制 URL</button></div></div>`;
   }).join('');
+}
+
+async function deleteUploadedFile(filename) {
+  if (!filename) return;
+  if (!confirm(`确认删除文件 ${filename} 吗？`)) return;
+
+  try {
+    const res = await fetch('/api/upload/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename }),
+    });
+    const data = await res.json();
+    if (res.status === 200 && data.error === 0) {
+      uploadedFiles = uploadedFiles.filter(item => item.filename !== filename);
+      renderUploadedFiles(uploadedFiles);
+      await refreshUploadedFiles();
+    } else {
+      alert(`删除失败: ${data.msg || '未知错误'}`);
+    }
+  } catch (err) {
+    alert(`删除失败: ${err.message}`);
+  }
 }
 
 async function refreshUploadedFiles() {
@@ -1029,21 +1064,6 @@ async function resetReportModelImportStatus() {
 }
 
 // ── 文件上传 ─────────────────────────────────
-function toggleUploadEncryptOptions() {
-  const switchEl = document.getElementById('uploadEncryptSwitch');
-  const isEnc = switchEl ? switchEl.checked : false;
-  const box = document.getElementById('uploadEncryptBox');
-  if (box) {
-    box.style.display = isEnc ? 'block' : 'none';
-  }
-  if (isEnc) {
-    const pkInput = document.getElementById('uploadEncryptPublicKey');
-    if (pkInput && !pkInput.value.trim() && lastRegisterData && lastRegisterData.taaPublicKey) {
-      pkInput.placeholder = '默认使用已接收的 TAA 注册公钥 (' + lastRegisterData.taaPublicKey.length + ' 字符)';
-    }
-  }
-}
-
 async function uploadFile() {
   const fileInput = document.getElementById('uploadFile');
   if (!fileInput.files.length) {
@@ -1058,11 +1078,7 @@ async function uploadFile() {
   const isEncrypted = encryptSwitch && encryptSwitch.checked;
   if (isEncrypted) {
     formData.append('encrypt', 'true');
-    const pkInput = document.getElementById('uploadEncryptPublicKey');
-    const customPk = pkInput ? pkInput.value.trim() : '';
-    if (customPk) {
-      formData.append('publicKey', customPk);
-    } else if (lastRegisterData && lastRegisterData.taaPublicKey) {
+    if (lastRegisterData && lastRegisterData.taaPublicKey) {
       formData.append('publicKey', lastRegisterData.taaPublicKey);
     }
   }
@@ -1079,7 +1095,7 @@ async function uploadFile() {
       if (uploaded) {
         renderUploadedFiles([uploaded, ...uploadedFiles.filter(item => item.filename !== uploaded.filename)]);
       }
-      const encNote = data.result.encrypted ? ' (已完成 SM2+SM4-GCM 加密)' : '';
+      const encNote = data.result.encrypted ? ' (已使用 TAA 注册公钥加密)' : '';
       showResult('uploadResult', true, `文件上传成功${encNote}\n\n文件名: ${data.result.originalName}\n保存名: ${data.result.filename}\n大小: ${data.result.size} bytes\nURL: ${data.result.url}`);
       fileInput.value = '';
       await refreshUploadedFiles();
