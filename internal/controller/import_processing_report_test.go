@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -84,6 +85,12 @@ func TestBuildTrainingReportAddsModelChecksumAndKeepsTrainingMetrics(t *testing.
 	if dataset["checksum"].(map[string]any)["algorithm"] != "sm3" {
 		t.Fatalf("dataset checksum = %v", dataset["checksum"])
 	}
+	if _, ok := dataset["data_structure"]; ok {
+		t.Fatalf("dataset should not include data_structure: %v", dataset)
+	}
+	if _, ok := report["data_structure"]; ok {
+		t.Fatalf("report should not include data_structure: %v", report)
+	}
 	codeauditSection, ok := report["codeaudit"].(map[string]any)
 	if !ok {
 		t.Fatalf("report missing codeaudit: %v", report)
@@ -154,4 +161,41 @@ func mustParseReportTime(t *testing.T, value string) (result time.Time) {
 		t.Fatalf("parse time %q: %v", value, err)
 	}
 	return parsed
+}
+
+func TestBuildAndSaveTrainingReportDoesNotScanDataset(t *testing.T) {
+	resultDir := t.TempDir()
+	modelDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(modelDir, "model.bin"), []byte("test-model"), 0o644); err != nil {
+		t.Fatalf("write model file: %v", err)
+	}
+
+	state := &TAAState{
+		Security: SecurityConfig{
+			ModelDir: modelDir,
+		},
+	}
+
+	startedAt := time.Now().Add(-10 * time.Second)
+	finishedAt := time.Now()
+
+	// buildAndSaveTrainingReport 不再包含 dataDir 和 loadResourceDataset
+	data, err := state.buildAndSaveTrainingReport("task-123", startedAt, finishedAt, "succeeded", 0, "", nil, false, resultDir)
+	if err != nil {
+		t.Fatalf("buildAndSaveTrainingReport: %v", err)
+	}
+
+	var report map[string]any
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+
+	if _, ok := report["data_structure"]; ok {
+		t.Fatalf("report should not contain data_structure: %v", report)
+	}
+	if dataset, ok := report["dataset"].(map[string]any); ok {
+		if _, ok := dataset["data_structure"]; ok {
+			t.Fatalf("dataset should not contain data_structure: %v", dataset)
+		}
+	}
 }
