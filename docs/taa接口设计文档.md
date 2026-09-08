@@ -270,10 +270,10 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
     "started_at": "2026-08-25T10:05:30Z",                 // 任务开始时间
     "finished_at": "2026-08-25T14:28:50Z",                // 任务完成时间
     "duration_seconds": 15800,                            // 总耗时（秒）
-    "model_checksum": {                                   // 模型/结果文件校验（TAA 填写）
-      "size": 581632,                                     // 文件原始大小（字节）
-      "algorithm": "sm3",                                // 哈希算法
-      "value": "a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd"  // 哈希值
+    "model_checksum": {                                   // 模型代码及权重压缩包完整性校验（与 /v1/taa/import 一致对明文压缩包计算 SM3）
+      "size": 581632,                                     // 压缩包原始大小（字节）
+      "algorithm": "sm3",                                // 哈希算法，固定为 sm3
+      "value": "a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd"  // 压缩包 SM3 哈希值
     },
     "metrics": {                                          // 训练指标（TAA 填写）
       "final_accuracy": 0.9087,                           // 最终验证集准确率

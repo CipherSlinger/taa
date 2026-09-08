@@ -74,9 +74,29 @@ type TAAState struct {
 	Logs                 *LogStore                // 结构化日志存储
 	LastAudit            *codeaudit.AuditReport   // 最近一次模型代码审计结果，用于训练报告输出
 	CurrentDataRecord    ImportIndexRecord        // 当前绑定的数据导入记录
+	ModelChecksum        map[string]any           // 模型压缩包校验和 (size, algorithm, value)
 	CurrentOp            string                   // 当前操作: idle/downloading/decrypting/extracting/debugging/training/auditing/reporting
 	importIndex          *ImportIndexStore
 	importIndexErr       error
+}
+
+func (s *TAAState) setModelChecksum(checksum map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ModelChecksum = checksum
+}
+
+func (s *TAAState) getModelChecksum() map[string]any {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.ModelChecksum == nil {
+		return nil
+	}
+	out := make(map[string]any, len(s.ModelChecksum))
+	for k, v := range s.ModelChecksum {
+		out[k] = v
+	}
+	return out
 }
 
 func NewTAAState(attestationFile, platformIP, dockerID, helperPath, helperMode string, sm2Key *teecrypto.SM2PrivateKey, userData []byte, sec SecurityConfig) *TAAState {
@@ -848,20 +868,15 @@ func (s *TAAState) resourceInfoHandler(w http.ResponseWriter, r *http.Request) {
 	s.Logs.Add(LogInfo, "getResourceInfo", "下载完成 (%d bytes) -> %s", size, ciphertextPath)
 	defer os.Remove(ciphertextPath)
 
-	plaintextPath := ciphertextPath
-	if resourceURLHasEncSuffix(req.ResourceURL) {
-		s.setCurrentOp("decrypting")
-		s.Logs.Add(LogInfo, "getResourceInfo", "资源 URL 以 .enc 结尾，开始解密")
-		decryptedPath, err := s.decryptResourceToTempFile(ciphertextPath)
-		if err != nil {
-			s.Logs.Add(LogError, "getResourceInfo", "解密失败: %v", err)
-			s.setCurrentOp("idle")
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("解密资源失败: %v", err))
-			return
-		}
-		plaintextPath = decryptedPath
+	s.setCurrentOp("decrypting")
+	plaintextPath, isDecrypted, err := s.resolvePlaintextResource(req.ResourceURL, ciphertextPath, "getResourceInfo")
+	if err != nil {
+		s.setCurrentOp("idle")
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if isDecrypted {
 		defer os.Remove(plaintextPath)
-		s.Logs.Add(LogInfo, "getResourceInfo", "解密成功 -> %s", plaintextPath)
 	}
 
 	s.setCurrentOp("analyzing")
