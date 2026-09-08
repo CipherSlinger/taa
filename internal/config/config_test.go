@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"os"
@@ -11,7 +11,7 @@ func TestLoadStartupConfigFallsBackToIdentityEnvironment(t *testing.T) {
 	t.Setenv("DOCKER_ID", "env-docker")
 	t.Setenv("CONTRACT", "env-contract")
 
-	path := filepath.Join(t.TempDir(), defaultConfigFile)
+	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
 		"addr": ":7001",
 		"securityScan": false,
@@ -28,9 +28,9 @@ func TestLoadStartupConfigFallsBackToIdentityEnvironment(t *testing.T) {
 		}
 	}`)
 
-	cfg, err := loadStartupConfig(path)
+	cfg, err := LoadStartupConfig(path)
 	if err != nil {
-		t.Fatalf("loadStartupConfig() error = %v", err)
+		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
 	if cfg.PlatformIP != "env-platform:8080" {
@@ -49,7 +49,7 @@ func TestLoadStartupConfigUsesIdentityFromFile(t *testing.T) {
 	t.Setenv("DOCKER_ID", "env-docker")
 	t.Setenv("CONTRACT", "env-contract")
 
-	path := filepath.Join(t.TempDir(), defaultConfigFile)
+	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
 		"addr": ":7001",
 		"platformIP": "file-platform:8080",
@@ -57,9 +57,9 @@ func TestLoadStartupConfigUsesIdentityFromFile(t *testing.T) {
 		"contract": "file-contract"
 	}`)
 
-	cfg, err := loadStartupConfig(path)
+	cfg, err := LoadStartupConfig(path)
 	if err != nil {
-		t.Fatalf("loadStartupConfig() error = %v", err)
+		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
 	if cfg.PlatformIP != "file-platform:8080" {
@@ -74,12 +74,12 @@ func TestLoadStartupConfigUsesIdentityFromFile(t *testing.T) {
 }
 
 func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
-	path := filepath.Join(t.TempDir(), defaultConfigFile)
+	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{}`)
 
-	cfg, err := loadStartupConfig(path)
+	cfg, err := LoadStartupConfig(path)
 	if err != nil {
-		t.Fatalf("loadStartupConfig() error = %v", err)
+		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
 	if cfg.Addr != ":6001" {
@@ -118,16 +118,16 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 }
 
 func TestLoadStartupConfigReadsLLMDir(t *testing.T) {
-	path := filepath.Join(t.TempDir(), defaultConfigFile)
+	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
 		"llm": {
 			"dir": "/opt/taa/ollama-qwen"
 		}
 	}`)
 
-	cfg, err := loadStartupConfig(path)
+	cfg, err := LoadStartupConfig(path)
 	if err != nil {
-		t.Fatalf("loadStartupConfig() error = %v", err)
+		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 	if cfg.LLMDir != "/opt/taa/ollama-qwen" {
 		t.Fatalf("LLMDir = %q, want file value", cfg.LLMDir)
@@ -147,12 +147,12 @@ func TestLoadStartupConfigDoesNotReadOtherRuntimeEnvironment(t *testing.T) {
 	t.Setenv("RESULT_DIR", "/env/results")
 	t.Setenv("OLLAMA_DIR", "/env/ollama")
 
-	path := filepath.Join(t.TempDir(), defaultConfigFile)
+	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{}`)
 
-	cfg, err := loadStartupConfig(path)
+	cfg, err := LoadStartupConfig(path)
 	if err != nil {
-		t.Fatalf("loadStartupConfig() error = %v", err)
+		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
 	if !cfg.EnableSecurityScan || !cfg.EnableResultCheck || !cfg.EnableLLM || !cfg.LLMFailClosed {
@@ -167,9 +167,9 @@ func TestLoadStartupConfigDoesNotReadOtherRuntimeEnvironment(t *testing.T) {
 }
 
 func TestLoadStartupConfigMissingFileReturnsError(t *testing.T) {
-	_, err := loadStartupConfig(filepath.Join(t.TempDir(), defaultConfigFile))
+	_, err := LoadStartupConfig(filepath.Join(t.TempDir(), DefaultFileName))
 	if err == nil {
-		t.Fatal("loadStartupConfig() error = nil, want missing file error")
+		t.Fatal("LoadStartupConfig() error = nil, want missing file error")
 	}
 }
 
