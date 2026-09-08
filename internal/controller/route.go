@@ -75,6 +75,7 @@ type TAAState struct {
 	LastAudit            *codeaudit.AuditReport   // 最近一次模型代码审计结果，用于训练报告输出
 	CurrentDataRecord    ImportIndexRecord        // 当前绑定的数据导入记录
 	ModelChecksum        map[string]any           // 模型压缩包校验和 (size, algorithm, value)
+	DataChecksum         map[string]any           // 数据压缩包校验和 (size, algorithm, value)
 	CurrentOp            string                   // 当前操作: idle/downloading/decrypting/extracting/debugging/training/auditing/reporting
 	importIndex          *ImportIndexStore
 	importIndexErr       error
@@ -94,6 +95,25 @@ func (s *TAAState) getModelChecksum() map[string]any {
 	}
 	out := make(map[string]any, len(s.ModelChecksum))
 	for k, v := range s.ModelChecksum {
+		out[k] = v
+	}
+	return out
+}
+
+func (s *TAAState) setDataChecksum(checksum map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.DataChecksum = checksum
+}
+
+func (s *TAAState) getDataChecksum() map[string]any {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.DataChecksum == nil {
+		return nil
+	}
+	out := make(map[string]any, len(s.DataChecksum))
+	for k, v := range s.DataChecksum {
 		out[k] = v
 	}
 	return out
@@ -938,7 +958,6 @@ func (s *TAAState) resourceInfoHandler(w http.ResponseWriter, r *http.Request) {
 // }
 
 // ── Script helpers ──────────────────────────────────────
-
 
 // runPythonScript executes a Python script via python3 with the given output path and optional extra args.
 // Does not depend on bash or any shell shebang.

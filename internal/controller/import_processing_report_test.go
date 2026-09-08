@@ -59,6 +59,7 @@ func TestBuildTrainingReportAddsModelChecksumAndKeepsTrainingMetrics(t *testing.
 		0,
 		"",
 		map[string]any{"algorithm": "sm3", "value": "model-digest"},
+		map[string]any{"algorithm": "sm3", "value": "data-archive-digest", "size": int64(934)},
 		trainingResult,
 		audit,
 		true,
@@ -82,8 +83,18 @@ func TestBuildTrainingReportAddsModelChecksumAndKeepsTrainingMetrics(t *testing.
 		t.Fatalf("training_task.model_checksum = %v", trainingTask["model_checksum"])
 	}
 	dataset := report["dataset"].(map[string]any)
-	if dataset["checksum"].(map[string]any)["algorithm"] != "sm3" {
-		t.Fatalf("dataset checksum = %v", dataset["checksum"])
+	datasetChecksum, ok := dataset["checksum"].(map[string]any)
+	if !ok {
+		t.Fatalf("dataset missing checksum: %v", dataset)
+	}
+	if datasetChecksum["algorithm"] != "sm3" {
+		t.Fatalf("dataset checksum algorithm = %v, want sm3", datasetChecksum["algorithm"])
+	}
+	if datasetChecksum["value"] != "data-archive-digest" {
+		t.Fatalf("dataset checksum value = %v, want data-archive-digest (TAA 注入值覆盖训练脚本值)", datasetChecksum["value"])
+	}
+	if datasetChecksum["size"] != int64(934) {
+		t.Fatalf("dataset checksum size = %v, want 934", datasetChecksum["size"])
 	}
 	if _, ok := dataset["data_structure"]; ok {
 		t.Fatalf("dataset should not include data_structure: %v", dataset)
