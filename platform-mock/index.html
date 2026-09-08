@@ -86,7 +86,20 @@
     .modal-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:16px 18px; border-bottom:1px solid var(--line); }
     .modal-head h3 { margin:0; font-size:16px; }
     .modal-actions { display:flex; gap:8px; }
-    .modal-body { margin:0; padding:18px; overflow:auto; white-space:pre-wrap; word-break:break-word; line-height:1.6; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:13px; }
+    .modal-body { margin:0; padding:18px; overflow:auto; white-space:pre-wrap; word-break:break-word; line-height:1.6; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:13px; background:rgba(127,127,127,.05); }
+    .json-key { color: #0284c7; font-weight: 600; }
+    .json-string { color: #059669; }
+    .json-number { color: #d97706; }
+    .json-boolean { color: #db2777; font-weight: 600; }
+    .json-null { color: #6b7280; font-style: italic; }
+    @media (prefers-color-scheme: dark) {
+      .modal-body { background: #07111d; color: #e5e7eb; }
+      .json-key { color: #38bdf8; }
+      .json-string { color: #34d399; }
+      .json-number { color: #fbbf24; }
+      .json-boolean { color: #f472b6; }
+      .json-null { color: #9ca3af; }
+    }
     .modal-backdrop { position:absolute; inset:0; }
   </style>
 </head>
@@ -257,7 +270,10 @@ python3 train.py --input &lt;in&gt; --output &lt;out&gt;</textarea>
           <h2>③ 训练结果上报</h2>
           <div class="status" style="margin-top:10px;"><span id="reportResDot" class="dot"></span><span id="reportResStatusText">等待训练结果上报</span></div>
         </div>
-        <button id="reportResBodyBtn" class="secondary" onclick="openReportResBodyModal()" disabled>查看返回</button>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <button id="reportResReportBtn" style="padding:6px 12px; font-size:13px;" onclick="openReportResReportModal()" disabled>查看报告</button>
+          <button id="reportResBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportResBodyModal()" disabled>查看返回</button>
+        </div>
       </div>
       <div class="card-compact" style="flex:1; min-height:120px;">
         <div class="status" style="font-size:16px;"><span id="reportResBodyDot" class="dot"></span><span id="reportResBodyStatus">等待训练结果上报</span></div>
@@ -389,7 +405,7 @@ python3 train.py --input &lt;in&gt; --output &lt;out&gt;</textarea>
     <div class="modal-head">
       <h3 id="bodyModalTitle">返回 body</h3>
       <div class="modal-actions">
-        <button class="secondary" onclick="copyBodyModal()">复制</button>
+        <button class="secondary" onclick="copyBodyModal(this)">复制</button>
         <button class="secondary" onclick="closeBodyModal()">关闭</button>
       </div>
     </div>
@@ -398,6 +414,62 @@ python3 train.py --input &lt;in&gt; --output &lt;out&gt;</textarea>
 </div>
 <script>
 // ── 工具函数 ──────────────────────────────────
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function highlightJSON(jsonStr) {
+  if (typeof jsonStr !== 'string') return '';
+  const tokenRegex = /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g;
+  let result = '';
+  let lastIndex = 0;
+  let match;
+  while ((match = tokenRegex.exec(jsonStr)) !== null) {
+    result += escapeHtml(jsonStr.slice(lastIndex, match.index));
+    lastIndex = tokenRegex.lastIndex;
+    const token = match[0];
+    let cls = 'json-number';
+    if (token.startsWith('"')) {
+      if (token.endsWith(':')) {
+        cls = 'json-key';
+      } else {
+        cls = 'json-string';
+      }
+    } else if (token === 'true' || token === 'false') {
+      cls = 'json-boolean';
+    } else if (token === 'null') {
+      cls = 'json-null';
+    }
+    result += '<span class="' + cls + '">' + escapeHtml(token) + '</span>';
+  }
+  result += escapeHtml(jsonStr.slice(lastIndex));
+  return result;
+}
+
+function parseJSONRecursively(val) {
+  if (val == null) return null;
+  if (typeof val === 'object') return val;
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (!trimmed) return trimmed;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === 'string' && (parsed.trim().startsWith('{') || parsed.trim().startsWith('['))) {
+        return parseJSONRecursively(parsed);
+      }
+      return parsed;
+    } catch {
+      return val;
+    }
+  }
+  return val;
+}
+
 function text(id, value) { document.getElementById(id).textContent = value || '-'; }
 function area(id, value) { document.getElementById(id).value = value || ''; }
 function getTaaAddr() { return document.getElementById('taaAddr').value.replace(/\/+$/, ''); }
@@ -416,18 +488,27 @@ let allRequestLogs = [];
 
 function formatModalBody(body) {
   if (body == null || body === '') return '暂无内容';
-  if (typeof body === 'string') return body;
-  try {
-    return JSON.stringify(body, null, 2);
-  } catch {
-    return String(body);
+  const parsed = parseJSONRecursively(body);
+  if (parsed && typeof parsed === 'object') {
+    try {
+      return JSON.stringify(parsed, null, 2);
+    } catch {
+      return String(parsed);
+    }
   }
+  return String(parsed != null ? parsed : body);
 }
 
 function openBodyModal(title, body) {
   currentModalBody = formatModalBody(body);
   document.getElementById('bodyModalTitle').textContent = title;
-  document.getElementById('bodyModalContent').textContent = currentModalBody;
+  const contentEl = document.getElementById('bodyModalContent');
+  const trimmed = currentModalBody.trim();
+  if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    contentEl.innerHTML = highlightJSON(currentModalBody);
+  } else {
+    contentEl.textContent = currentModalBody;
+  }
   const modal = document.getElementById('bodyModal');
   modal.classList.add('open');
   modal.setAttribute('aria-hidden', 'false');
@@ -460,8 +541,14 @@ async function copyText(text) {
   }
 }
 
-async function copyBodyModal() {
-  return copyText(currentModalBody);
+async function copyBodyModal(btn) {
+  const ok = await copyText(currentModalBody);
+  if (btn && ok) {
+    const orig = btn.textContent;
+    btn.textContent = '已复制!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  }
+  return ok;
 }
 
 function formatUploadSize(size) {
@@ -820,30 +907,68 @@ async function resetStatus() {
   await fetch('/api/register/reset', { method: 'POST' });
   await refreshStatus();
 }
+function buildReportResBodyPreview(data) {
+  if (!data) return {};
+  const rawBody = parseJSONMaybe(data.rawBody);
+  const body = rawBody && typeof rawBody === 'object' ? { ...rawBody } : { ...data };
+  delete body.received;
+  delete body.accepted;
+  delete body.rawBody;
+  if (Object.prototype.hasOwnProperty.call(body, 'report')) {
+    body.report = parseJSONRecursively(body.report);
+  }
+  return body;
+}
+
 function renderReportRes(data) {
   lastReportResData = data || null;
   const dot = document.getElementById('reportResDot');
   dot.className = 'dot';
   const bodyDot = document.getElementById('reportResBodyDot');
   bodyDot.className = 'dot';
-  if (!data.received) {
+  const reportBtn = document.getElementById('reportResReportBtn');
+  const bodyBtn = document.getElementById('reportResBodyBtn');
+  if (!data || !data.received) {
     text('reportResStatusText', '等待训练结果上报');
-    text('reportResSummary', '完整返回体仅在弹窗中展示。');
+    text('reportResSummary', '完整返回体与具体报告只在弹窗中展示。');
     text('reportResBodyStatus', '等待训练结果上报');
     text('reportResBodySummary', '这里不再直接渲染返回字段。');
-    document.getElementById('reportResBodyBtn').disabled = true;
+    if (reportBtn) reportBtn.disabled = true;
+    if (bodyBtn) bodyBtn.disabled = true;
     return;
   }
   dot.classList.add(data.accepted ? 'ok' : 'bad');
   bodyDot.classList.add(data.accepted ? 'ok' : 'bad');
   text('reportResStatusText', data.accepted ? '已收到训练结果上报，并已返回 HTTP 200' : '已收到上报，但参数校验失败');
-  text('reportResSummary', '完整返回体仅在弹窗中展示。');
+  text('reportResSummary', '完整返回体与具体报告只在弹窗中展示。');
   text('reportResBodyStatus', data.accepted ? '已收到训练结果上报' : '已收到上报但参数校验失败');
-  text('reportResBodySummary', '点击右上角按钮查看完整返回体。');
-  document.getElementById('reportResBodyBtn').disabled = false;
+  text('reportResBodySummary', '点击右上角“查看报告”查看美化后的具体报告，“查看返回”查看完整上报体。');
+  if (reportBtn) reportBtn.disabled = false;
+  if (bodyBtn) bodyBtn.disabled = false;
 }
+
+function openReportResReportModal() {
+  const data = lastReportResData;
+  if (!data || !data.received) {
+    openBodyModal('训练结果具体报告 (report)', '等待训练结果上报中，暂无报告数据。');
+    return;
+  }
+  let reportContent = data.report;
+  if ((reportContent == null || reportContent === '') && data.rawBody) {
+    const raw = parseJSONMaybe(data.rawBody);
+    if (raw && typeof raw === 'object' && raw.report != null) {
+      reportContent = raw.report;
+    }
+  }
+  if (reportContent == null || reportContent === '') {
+    openBodyModal('训练结果具体报告 (report)', '已收到训练结果上报，但报告内容 (report 字段) 为空。');
+    return;
+  }
+  openBodyModal('训练结果具体报告 (report)', reportContent);
+}
+
 function openReportResBodyModal() {
-  openBodyModal('训练结果上报 body', lastReportResData);
+  openBodyModal('训练结果上报 body', buildReportResBodyPreview(lastReportResData));
 }
 async function refreshReportResStatus() {
   try {
@@ -1397,15 +1522,6 @@ function renderLogs() {
 
   document.getElementById('logCount').textContent = `${filtered.length} / ${allLogs.length} 条日志`;
   output.scrollTop = output.scrollHeight;
-}
-
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g,'&amp;')
-    .replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;')
-    .replace(/"/g,'&quot;')
-    .replace(/'/g,'&#39;');
 }
 
 async function fetchLogs() {
