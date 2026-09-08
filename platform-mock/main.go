@@ -470,7 +470,9 @@ func main() {
 	mux.HandleFunc("/api/reportModelImport/reset", reportResetHandler(reportModelImportStore))
 	mux.HandleFunc("/api/taa-target", taaTargetHandler(taaAddr))
 	mux.HandleFunc("/api/upload", uploadHandler(*addr, uploadDir, registerStore))
+	mux.HandleFunc("/api/upload/delete", uploadDeleteHandler(uploadDir))
 	mux.HandleFunc("/api/uploads", uploadListHandler(*addr, uploadDir))
+	mux.HandleFunc("/api/uploads/delete", uploadDeleteHandler(uploadDir))
 	mux.HandleFunc("/api/uploads/reset", uploadResetHandler(uploadDir))
 	mux.HandleFunc("/api/request-logs/status", requestLogsStatusHandler)
 	mux.HandleFunc("/api/request-logs/reset", requestLogsResetHandler)
@@ -1296,6 +1298,62 @@ func uploadResetHandler(uploadDir string) http.HandlerFunc {
 	}
 }
 
+func uploadDeleteHandler(uploadDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+			w.Header().Set("Allow", "POST, DELETE")
+			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 或 DELETE 方法", nil, http.StatusMethodNotAllowed)
+			return
+		}
+
+		filename := r.URL.Query().Get("filename")
+		if filename == "" {
+			if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+				var req struct {
+					Filename string `json:"filename"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+					filename = req.Filename
+				}
+			} else {
+				filename = r.FormValue("filename")
+			}
+		}
+
+		filename = strings.TrimSpace(filename)
+		if filename == "" {
+			writeEnvelope(w, http.StatusBadRequest, "缺少 filename 参数", nil, http.StatusBadRequest)
+			return
+		}
+
+		baseName := filepath.Base(filename)
+		if baseName == "." || baseName == "/" || baseName == "\\" || baseName == "" {
+			writeEnvelope(w, http.StatusBadRequest, "非法文件名", nil, http.StatusBadRequest)
+			return
+		}
+
+		targetPath := filepath.Join(uploadDir, baseName)
+		if err := os.Remove(targetPath); err != nil {
+			if os.IsNotExist(err) {
+				writeEnvelope(w, http.StatusNotFound, "文件不存在: "+baseName, nil, http.StatusNotFound)
+				return
+			}
+			writeEnvelope(w, http.StatusInternalServerError, "删除文件失败: "+err.Error(), nil, http.StatusInternalServerError)
+			return
+		}
+
+		log.Printf("file deleted: %s", baseName)
+		writeEnvelope(w, http.StatusOK, "文件删除成功", map[string]any{
+			"filename": baseName,
+		}, 0)
+	}
+}
+
 func sanitizeUploadFilename(name string) string {
 	cleaned := strings.ReplaceAll(name, "\\", "/")
 	cleaned = filepath.Base(cleaned)
@@ -1356,7 +1414,7 @@ func uploadHandler(addr, uploadDir string, registerStores ...*registerStateStore
 				pubKeyPEM = strings.TrimSpace(registerStores[0].get().TaaPublicKey)
 			}
 			if pubKeyPEM == "" {
-				writeEnvelope(w, http.StatusBadRequest, "开启加密但未提供公钥，且未获取到 TAA 注册公钥，请先填写公钥或等待 TAA 注册", nil, http.StatusBadRequest)
+				writeEnvelope(w, http.StatusBadRequest, "开启加密但尚未获取到 TAA 注册公钥，请等待 TAA 完成注册", nil, http.StatusBadRequest)
 				return
 			}
 

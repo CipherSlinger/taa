@@ -23,7 +23,7 @@ func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
 	if strings.Contains(indexHTML, "③ 资源下载结果上报") {
 		t.Fatal("index should not show the resource download result report card")
 	}
-	for _, want := range []string{"③ 训练结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult", "saveReportBtn", "reportResBodyBtn", "reportResReportBtn", "openReportResReportModal", "查看报告", "reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "importModelCommands", "importModelEnv", "resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport", "uploadedUrlInput", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件", "平台发往 TAA 的请求体记录", "requestLogStatusDot", "requestLogOutput", "requestLogEndpointFilter", "uploadEncryptSwitch", "uploadEncryptPublicKey", "toggleUploadEncryptOptions"} {
+	for _, want := range []string{"③ 训练结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult", "saveReportBtn", "reportResBodyBtn", "reportResReportBtn", "openReportResReportModal", "查看报告", "reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "importModelCommands", "importModelEnv", "resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport", "uploadedUrlInput", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件", "平台发往 TAA 的请求体记录", "requestLogStatusDot", "requestLogOutput", "requestLogEndpointFilter", "uploadEncryptSwitch", "启用加密", "deleteUploadedFile"} {
 		if !strings.Contains(indexHTML, want) {
 			t.Fatalf("index missing %q", want)
 		}
@@ -234,7 +234,9 @@ func newUploadTestServer(t *testing.T, uploadDir string, registerStores ...*regi
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/upload", uploadHandler("127.0.0.1:6001", uploadDir, registerStores...))
+	mux.HandleFunc("/api/upload/delete", uploadDeleteHandler(uploadDir))
 	mux.HandleFunc("/api/uploads", uploadListHandler("127.0.0.1:6001", uploadDir))
+	mux.HandleFunc("/api/uploads/delete", uploadDeleteHandler(uploadDir))
 	mux.HandleFunc("/api/uploads/reset", uploadResetHandler(uploadDir))
 	mux.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(uploadDir))))
 	return httptest.NewServer(mux)
@@ -405,6 +407,82 @@ func TestUploadResetHandlerClearsFiles(t *testing.T) {
 	files := readUploadList(t, resp)
 	if len(files) != 0 {
 		t.Fatalf("files after reset = %+v, want empty", files)
+	}
+}
+
+func TestUploadDeleteHandler(t *testing.T) {
+	uploadDir := filepath.Join(t.TempDir(), "uploads")
+	server := newUploadTestServer(t, uploadDir)
+	defer server.Close()
+
+	respA := postMultipartUpload(t, server.URL+"/api/upload", "del-a.txt", []byte("a"))
+	time.Sleep(2 * time.Millisecond)
+	respB := postMultipartUpload(t, server.URL+"/api/upload", "del-b.txt", []byte("b"))
+
+	fileA := respA.Result.(map[string]any)["filename"].(string)
+	fileB := respB.Result.(map[string]any)["filename"].(string)
+
+	// 1. 通过 POST /api/upload/delete 删除文件 A
+	delBody, _ := json.Marshal(map[string]string{"filename": fileA})
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/upload/delete", bytes.NewReader(delBody))
+	if err != nil {
+		t.Fatalf("create delete req: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("send delete req: %v", err)
+	}
+	var api apiResponse
+	if err := json.NewDecoder(resp.Body).Decode(&api); err != nil {
+		t.Fatalf("decode delete resp: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || api.Error != 0 {
+		t.Fatalf("delete status = %d, err = %d, msg = %s", resp.StatusCode, api.Error, api.Msg)
+	}
+
+	// 验证磁盘和列表仅剩文件 B
+	listResp, err := http.Get(server.URL + "/api/uploads")
+	if err != nil {
+		t.Fatalf("get uploads list: %v", err)
+	}
+	files := readUploadList(t, listResp)
+	if len(files) != 1 || files[0].Filename != fileB {
+		t.Fatalf("files after delete = %+v, want only fileB (%s)", files, fileB)
+	}
+
+	// 2. 再次删除已不存在的文件 A，返回 404
+	req404, _ := http.NewRequest(http.MethodPost, server.URL+"/api/upload/delete", bytes.NewReader(delBody))
+	req404.Header.Set("Content-Type", "application/json")
+	resp404, err := http.DefaultClient.Do(req404)
+	if err != nil {
+		t.Fatalf("send delete 404 req: %v", err)
+	}
+	resp404.Body.Close()
+	if resp404.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp404.StatusCode)
+	}
+
+	// 3. 通过 DELETE 方法与 URL 参数删除文件 B
+	reqDel, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/uploads/delete?filename="+fileB, nil)
+	respDel, err := http.DefaultClient.Do(reqDel)
+	if err != nil {
+		t.Fatalf("send delete method req: %v", err)
+	}
+	respDel.Body.Close()
+	if respDel.StatusCode != http.StatusOK {
+		t.Fatalf("delete via query param status = %d, want 200", respDel.StatusCode)
+	}
+
+	// 列表变为空
+	listResp2, err := http.Get(server.URL + "/api/uploads")
+	if err != nil {
+		t.Fatalf("get uploads list 2: %v", err)
+	}
+	files2 := readUploadList(t, listResp2)
+	if len(files2) != 0 {
+		t.Fatalf("files after all deletes = %+v, want empty", files2)
 	}
 }
 
