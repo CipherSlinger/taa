@@ -223,6 +223,11 @@
       <input id="importModelTaskId" value="">
       <label for="importModelPublicKey">publicKey（留空=不传）</label>
       <textarea id="importModelPublicKey" placeholder="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"></textarea>
+      <label for="importModelCommands">commands（每行一条命令）</label>
+      <textarea id="importModelCommands">echo prepare runtimeConfig
+python3 train.py</textarea>
+      <label for="importModelEnv">env（JSON 字符串）</label>
+      <textarea id="importModelEnv">{"CUDA_VISIBLE_DEVICES":"0"}</textarea>
       <div class="actions">
         <button onclick="testImportModel()">发送测试</button>
       </div>
@@ -592,9 +597,21 @@ function setHealthState(className, title, labelText, labelColor, detailText) {
   detail.textContent = detailText;
 }
 
-function buildImportBody(resourceUrl, requestId, publicKey) {
+function buildRuntimeConfig(commandsText, envText) {
+  const commands = (commandsText || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const env = (envText || '').trim();
+  if (!commands.length && !env) return '';
+  return JSON.stringify({ commands, env });
+}
+
+function buildImportBody(resourceUrl, requestId, publicKey, taskId, runtimeConfig) {
   const body = { resourceUrl, requestId };
+  if (taskId) body.taskId = taskId;
   if (publicKey) body.publicKey = publicKey;
+  if (runtimeConfig) body.runtimeConfig = runtimeConfig;
   return body;
 }
 
@@ -602,6 +619,12 @@ function getBatchImportPublicKey() {
   const manual = document.getElementById('importModelPublicKey').value.trim();
   if (manual) return manual;
   return (lastRegisterData && lastRegisterData.taaPublicKey) ? lastRegisterData.taaPublicKey.trim() : '';
+}
+
+function getBatchRuntimeConfig() {
+  const commandsText = document.getElementById('importModelCommands').value.trim() || 'echo prepare runtimeConfig\npython3 train.py';
+  const envText = document.getElementById('importModelEnv').value.trim() || '{"CUDA_VISIBLE_DEVICES":"0"}';
+  return buildRuntimeConfig(commandsText, envText);
 }
 
 function getBatchExportPublicKey() {
@@ -745,17 +768,7 @@ function openRegisterBodyModal() {
 }
 async function copyRegisterPublicKey() {
   const key = (lastRegisterData && lastRegisterData.taaPublicKey) ? String(lastRegisterData.taaPublicKey).trim() : '';
-  if (!key) return;
-  try {
-    await navigator.clipboard.writeText(key);
-  } catch {
-    const ta = document.createElement('textarea');
-    ta.value = key;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    ta.remove();
-  }
+  await copyText(key);
 }
 async function refreshStatus() {
   try {
@@ -840,11 +853,7 @@ async function refreshReportModelImportStatus() {
   }
 }
 async function resetReportModelImportStatus() {
-  try {
-    await fetch('/api/reportModelImport/reset', { method: 'POST' });
-  } catch {
-    // 保持前端进入“等待上报”状态，即使清理请求失败也不要卡住旧状态。
-  }
+  await fetch('/api/reportModelImport/reset', { method: 'POST' }).catch(() => {});
   setReportModelImportPending();
 }
 
@@ -920,10 +929,16 @@ async function testImportModel() {
   setReportModelImportPending();
   try {
     await fetch('/api/reportModelImport/reset', { method: 'POST' }).catch(() => {});
+    const runtimeConfig = buildRuntimeConfig(
+      document.getElementById('importModelCommands').value,
+      document.getElementById('importModelEnv').value,
+    );
     const r = await postToTAA('/v1/taa/importModel', buildImportBody(
       document.getElementById('importModelResourceUrl').value,
       document.getElementById('importModelRequestId').value,
       document.getElementById('importModelPublicKey').value.trim(),
+      document.getElementById('importModelTaskId').value.trim(),
+      runtimeConfig,
     ));
     showResult('importModelResult', r.status === 200 && r.data.error === 0, formatResp(r));
   } catch (e) {
@@ -1068,7 +1083,7 @@ async function runAllTests() {
   const tests = [
     { name: '/v1/taa/health（连通性检查）', fn: () => postToTAA('/v1/taa/health', {}, 10000) },
     { name: '/v1/taa/getResourceInfo（资源信息获取）', fn: () => postToTAA('/v1/taa/getResourceInfo', { resourceUrl: 'http://mock.example.com/data.tar.gz' }, RESOURCE_INFO_TIMEOUT_MS) },
-    { name: '/v1/taa/importModel（下发模型）', fn: () => postToTAA('/v1/taa/importModel', buildImportBody('http://mock.example.com/model.tar.gz', genId('batch-import'), getBatchImportPublicKey())) },
+    { name: '/v1/taa/importModel（下发模型）', fn: () => postToTAA('/v1/taa/importModel', buildImportBody('http://mock.example.com/model.tar.gz', genId('batch-import'), getBatchImportPublicKey(), genId('batch-task'), getBatchRuntimeConfig())) },
     { name: '/v1/taa/import（下发数据）', fn: () => postToTAA('/v1/taa/import', buildImportBody('http://mock.example.com/data.tar.gz', genId('batch-import'))) },
     { name: '/v1/taa/switch（切换到测试阶段）', fn: () => postToTAA('/v1/taa/switch', { phase: 2 }) },
     { name: '/v1/taa/switch（切换到训练阶段）', fn: () => postToTAA('/v1/taa/switch', { phase: 3 }) },
