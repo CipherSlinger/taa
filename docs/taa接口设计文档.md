@@ -218,7 +218,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 0,
   "msg": null,
-  "report": "{\"generated_at\":\"2026-09-02T10:03:43Z\",\"report_id\":\"train-report-20260902-100343-ae53fa14\",\"dataset\":{\"total_samples\":12500,\"splits\":{\"train\":10000,\"test\":1000},\"data_structure\":{\"features\":[{\"name\":\"feature1\",\"type\":\"float\",\"description\":\"\u7b2c\u4e00\u4e2a\u7279\u5f81\"},{\"name\":\"feature2\",\"type\":\"int\",\"description\":\"\u7b2c\u4e8c\u4e2a\u7279\u5f81\"},{\"name\":\"label\",\"type\":\"int\",\"description\":\"\u76ee\u6807\u6807\u7b7e\uff080-9\"}]},\"checksum\":{\"size\":540672,\"algorithm\":\"sm3\",\"value\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}},\"training_task\":{\"task_id\":\"task-20260825-001\",\"status\":\"succeeded\",\"exit_code\":0,\"failure_reason\":null,\"started_at\":\"2026-09-02T10:03:35Z\",\"finished_at\":\"2026-09-02T10:03:43Z\",\"duration_seconds\":8,\"model_checksum\":{\"size\":581632,\"algorithm\":\"sm3\",\"value\":\"a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd\"},\"metrics\":{\"final_accuracy\":0.9087,\"final_loss\":0.2145,\"epochs\":[{\"epoch\":1,\"accuracy\":0.5231,\"loss\":1.2345},{\"epoch\":2,\"accuracy\":0.6789,\"loss\":0.9876}]}},\"codeaudit\":{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"\u672a\u53d1\u73b0\u5b89\u5168\u95ee\u9898\uff0c\u4ee3\u7801\u901a\u8fc7\u5ba1\u8ba1\",\"recommendation\":\"\u65e0\u9700\u4fee\u590d\",\"statistics\":{\"total_findings\":0,\"high\":0,\"medium\":0,\"malicious\":0,\"suspicious\":0,\"benign\":0,\"uncertain\":0}},\"file_reports\":null}}"
+  "report": "{\"generated_at\":\"2026-09-02T10:03:43Z\",\"report_id\":\"train-report-20260902-100343-ae53fa14\",\"dataset\":{\"total_samples\":12500,\"splits\":{\"train\":10000,\"test\":1000},\"checksum\":{\"size\":540672,\"algorithm\":\"sm3\",\"value\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}},\"training_task\":{\"task_id\":\"task-20260825-001\",\"status\":\"succeeded\",\"exit_code\":0,\"failure_reason\":null,\"started_at\":\"2026-09-02T10:03:35Z\",\"finished_at\":\"2026-09-02T10:03:43Z\",\"duration_seconds\":8,\"model_checksum\":{\"size\":581632,\"algorithm\":\"sm3\",\"value\":\"a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd\"},\"metrics\":{\"final_accuracy\":0.9087,\"final_loss\":0.2145,\"epochs\":[{\"epoch\":1,\"accuracy\":0.5231,\"loss\":1.2345},{\"epoch\":2,\"accuracy\":0.6789,\"loss\":0.9876}]}},\"codeaudit\":{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"\u672a\u53d1\u73b0\u5b89\u5168\u95ee\u9898\uff0c\u4ee3\u7801\u901a\u8fc7\u5ba1\u8ba1\",\"recommendation\":\"\u65e0\u9700\u4fee\u590d\",\"statistics\":{\"total_findings\":0,\"high\":0,\"medium\":0,\"malicious\":0,\"suspicious\":0,\"benign\":0,\"uncertain\":0}},\"file_reports\":null}}"
 }
 ```
 
@@ -255,15 +255,6 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
     "splits": {                                           // 数据集划分
       "train": 10000,                                     // 训练集样本数
       "test": 1000                                        // 测试集样本数
-    },
-    "data_structure": {                                   // 数据结构描述（TAA / resource_info.py 填写）
-      "features": [                                       // 特征/列列表
-        {
-          "name": "feature1",                             // 特征名称
-          "type": "float",                                // 特征类型：float / int / string 等
-          "description": "第一个特征"                     // 特征含义说明
-        }
-      ]
     },
     "checksum": {                                         // 数据集完整性校验
       "size": 540672,                                     // 数据集原始大小（字节）

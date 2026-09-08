@@ -192,7 +192,7 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	s.setCurrentOp("reporting")
 	s.Logs.Add(LogInfo, "report", "生成训练报告: taskId=%s", req.TaskID)
 	finishedAt := time.Now().UTC()
-	report, err := s.buildAndSaveTrainingReport(req.TaskID, startedAt, finishedAt, "succeeded", 0, "", s.getLastAudit(), true, true, trainOutputDir, trainDataDir)
+	report, err := s.buildAndSaveTrainingReport(req.TaskID, startedAt, finishedAt, "succeeded", 0, "", s.getLastAudit(), true, trainOutputDir)
 	if err != nil {
 		s.Logs.Add(LogError, "report", "生成训练报告失败: %v", err)
 		s.setCurrentOp("idle")
@@ -317,7 +317,7 @@ func (s *TAAState) reportImportFailure(req importRequest, phase int, isModel boo
 	if phase == 1 {
 		resultDir = filepath.Join(s.Security.ResultDir, "debug")
 	}
-	s.reportTrainingFailureFromResult(req, startedAt, reason, s.getLastAudit(), true, true, resultDir, s.Security.DataDir)
+	s.reportTrainingFailureFromResult(req, startedAt, reason, s.getLastAudit(), true, resultDir)
 	s.setCurrentOp("idle")
 }
 
@@ -346,11 +346,11 @@ func (s *TAAState) clearImportedState(isModel bool, phase int) {
 	s.CurrentDataRecord = ImportIndexRecord{}
 }
 
-func (s *TAAState) reportTrainingFailureFromResult(req importRequest, startedAt time.Time, reason string, audit *codeaudit.AuditReport, includeAudit bool, includeDataDir bool, resultDir, dataDir string) {
+func (s *TAAState) reportTrainingFailureFromResult(req importRequest, startedAt time.Time, reason string, audit *codeaudit.AuditReport, includeAudit bool, resultDir string) {
 	s.Logs.Add(LogError, "import", "训练流程失败: %s", reason)
 	s.Logs.Add(LogInfo, "report", "生成失败报告: taskId=%s", req.TaskID)
 	finishedAt := time.Now().UTC()
-	report, err := s.buildAndSaveTrainingReport(req.TaskID, startedAt, finishedAt, "failed", 1, reason, audit, includeAudit, includeDataDir, resultDir, dataDir)
+	report, err := s.buildAndSaveTrainingReport(req.TaskID, startedAt, finishedAt, "failed", 1, reason, audit, includeAudit, resultDir)
 	if err != nil {
 		s.Logs.Add(LogError, "report", "生成失败报告失败: %v", err)
 		return
@@ -622,17 +622,11 @@ func safeJoinWithBase(baseDir, baseAbs, name string) (string, error) {
 	return full, nil
 }
 
-func (s *TAAState) buildAndSaveTrainingReport(taskID string, startedAt, finishedAt time.Time, status string, exitCode int, failureReason string, audit *codeaudit.AuditReport, includeAudit bool, includeDataDir bool, resultDir, dataDir string) ([]byte, error) {
+func (s *TAAState) buildAndSaveTrainingReport(taskID string, startedAt, finishedAt time.Time, status string, exitCode int, failureReason string, audit *codeaudit.AuditReport, includeAudit bool, resultDir string) ([]byte, error) {
 	trainingResult, err := loadTrainingResult(filepath.Join(resultDir, "training_result.json"))
 	if err != nil {
 		return nil, err
 	}
-
-	dataset, err := s.loadResourceDataset(context.Background(), dataDir, includeDataDir)
-	if err != nil {
-		return nil, err
-	}
-	trainingResult["dataset"] = dataset
 
 	modelChecksum, err := buildDirectoryChecksum(s.Security.ModelDir, "sm3")
 	if err != nil {
@@ -789,12 +783,14 @@ func buildTrainingReport(taskID string, startedAt, finishedAt time.Time, status 
 		trainingTask["model_checksum"] = modelChecksum
 	}
 
+	dataset := cleanDatasetField(objectField(trainingResult, "dataset"))
+
 	report := map[string]any{
 		"report_id":      newTrainingReportID(finishedAt),
 		"generated_at":   finishedAt.UTC().Format(time.RFC3339),
 		"schema_version": "1.0",
 		"training_task":  trainingTask,
-		"dataset":        objectField(trainingResult, "dataset"),
+		"dataset":        dataset,
 	}
 
 	if includeAudit && audit != nil {
@@ -804,6 +800,20 @@ func buildTrainingReport(taskID string, startedAt, finishedAt time.Time, status 
 	}
 
 	return report, nil
+}
+
+func cleanDatasetField(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(src))
+	for k, v := range src {
+		if k == "data_structure" {
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 func objectField(src map[string]any, key string) map[string]any {
