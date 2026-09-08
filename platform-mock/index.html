@@ -197,6 +197,16 @@
       </div>
       <label for="uploadFile">选择文件</label>
       <input id="uploadFile" type="file">
+      <div style="margin: 8px 0 6px; display: flex; align-items: center; gap: 8px;">
+        <label style="margin: 0; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; font-weight: 500;">
+          <input type="checkbox" id="uploadEncryptSwitch" onchange="toggleUploadEncryptOptions()">
+          <span>是否加密（开启后自动进行 SM2+SM4-GCM 加密，并添加 .enc 后缀）</span>
+        </label>
+      </div>
+      <div id="uploadEncryptBox" style="display: none; margin-bottom: 8px;">
+        <label for="uploadEncryptPublicKey" style="font-size: 12px;">加密公钥（PEM 格式，留空默认使用 TAA 注册公钥）：</label>
+        <textarea id="uploadEncryptPublicKey" rows="2" style="font-size: 12px; font-family: monospace;" placeholder="留空则自动使用平台接收到的 TAA 注册公钥"></textarea>
+      </div>
       <div class="actions">
         <button onclick="uploadFile()">上传文件</button>
       </div>
@@ -580,6 +590,7 @@ function normalizeUploadedFile(file) {
     size: Number(file.size || 0),
     url: file.url || '',
     uploadedAt: file.uploadedAt || '',
+    encrypted: Boolean(file.encrypted),
   };
 }
 
@@ -609,7 +620,8 @@ function renderUploadedFiles(files) {
     const url = escapeHtml(file.url || '');
     const uploadedAt = escapeHtml(formatUploadTime(file.uploadedAt));
     const size = escapeHtml(formatUploadSize(file.size));
-    return `<div class="upload-item"><div class="upload-item-main"><div class="upload-item-title">${originalName}</div><div class="upload-item-meta">保存名 ${filename} · ${size} · ${uploadedAt}</div><div class="upload-item-url">${url}</div></div><div class="upload-item-actions"><button type="button" class="secondary" data-url="${encodeURIComponent(file.url || '')}" onclick="copyText(decodeURIComponent(this.dataset.url))">复制 URL</button></div></div>`;
+    const encBadge = (file.encrypted || (file.originalName && file.originalName.toLowerCase().endsWith('.enc')) || (file.filename && file.filename.toLowerCase().endsWith('.enc'))) ? '<span class="badge ok" style="margin-left:6px; font-size:11px; padding:2px 6px;">已加密</span>' : '';
+    return `<div class="upload-item"><div class="upload-item-main"><div class="upload-item-title">${originalName}${encBadge}</div><div class="upload-item-meta">保存名 ${filename} · ${size} · ${uploadedAt}</div><div class="upload-item-url">${url}</div></div><div class="upload-item-actions"><button type="button" class="secondary" data-url="${encodeURIComponent(file.url || '')}" onclick="copyText(decodeURIComponent(this.dataset.url))">复制 URL</button></div></div>`;
   }).join('');
 }
 
@@ -1017,6 +1029,21 @@ async function resetReportModelImportStatus() {
 }
 
 // ── 文件上传 ─────────────────────────────────
+function toggleUploadEncryptOptions() {
+  const switchEl = document.getElementById('uploadEncryptSwitch');
+  const isEnc = switchEl ? switchEl.checked : false;
+  const box = document.getElementById('uploadEncryptBox');
+  if (box) {
+    box.style.display = isEnc ? 'block' : 'none';
+  }
+  if (isEnc) {
+    const pkInput = document.getElementById('uploadEncryptPublicKey');
+    if (pkInput && !pkInput.value.trim() && lastRegisterData && lastRegisterData.taaPublicKey) {
+      pkInput.placeholder = '默认使用已接收的 TAA 注册公钥 (' + lastRegisterData.taaPublicKey.length + ' 字符)';
+    }
+  }
+}
+
 async function uploadFile() {
   const fileInput = document.getElementById('uploadFile');
   if (!fileInput.files.length) {
@@ -1027,7 +1054,20 @@ async function uploadFile() {
   const formData = new FormData();
   formData.append('file', file);
 
-  showResultRunning('uploadResult', '正在上传文件...');
+  const encryptSwitch = document.getElementById('uploadEncryptSwitch');
+  const isEncrypted = encryptSwitch && encryptSwitch.checked;
+  if (isEncrypted) {
+    formData.append('encrypt', 'true');
+    const pkInput = document.getElementById('uploadEncryptPublicKey');
+    const customPk = pkInput ? pkInput.value.trim() : '';
+    if (customPk) {
+      formData.append('publicKey', customPk);
+    } else if (lastRegisterData && lastRegisterData.taaPublicKey) {
+      formData.append('publicKey', lastRegisterData.taaPublicKey);
+    }
+  }
+
+  showResultRunning('uploadResult', isEncrypted ? '正在加密并上传文件...' : '正在上传文件...');
   try {
     const res = await fetch('/api/upload', {
       method: 'POST',
@@ -1039,7 +1079,8 @@ async function uploadFile() {
       if (uploaded) {
         renderUploadedFiles([uploaded, ...uploadedFiles.filter(item => item.filename !== uploaded.filename)]);
       }
-      showResult('uploadResult', true, `文件上传成功\n\n文件名: ${data.result.originalName}\n保存名: ${data.result.filename}\n大小: ${data.result.size} bytes\nURL: ${data.result.url}`);
+      const encNote = data.result.encrypted ? ' (已完成 SM2+SM4-GCM 加密)' : '';
+      showResult('uploadResult', true, `文件上传成功${encNote}\n\n文件名: ${data.result.originalName}\n保存名: ${data.result.filename}\n大小: ${data.result.size} bytes\nURL: ${data.result.url}`);
       fileInput.value = '';
       await refreshUploadedFiles();
     } else {
