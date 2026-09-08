@@ -297,6 +297,33 @@ var (
 	magicParq1  = []byte("PAR1")
 )
 
+// IsArchiveFile 检查文件是否为已知明文压缩包格式（ZIP / GZIP / TAR）。
+func IsArchiveFile(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	hdr := make([]byte, 512)
+	n, err := f.Read(hdr)
+	if err != nil && err != io.EOF {
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
+	if n >= 2 {
+		if hdr[0] == 0x50 && hdr[1] == 0x4B {
+			return true, nil
+		}
+		if hdr[0] == 0x1F && hdr[1] == 0x8B {
+			return true, nil
+		}
+	}
+	if n >= 262 && bytes.Equal(hdr[257:262], []byte("ustar")) {
+		return true, nil
+	}
+	return false, nil
+}
+
 // detectFormat 基于头部魔数判断格式；文本类继续细分。
 // ext 仅作文本细分参考，二进制格式完全由魔数决定。
 func detectFormat(head []byte, path string) string {
