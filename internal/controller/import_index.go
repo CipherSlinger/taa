@@ -60,18 +60,22 @@ func LoadImportIndexStore(path string) (*ImportIndexStore, error) {
 		record.RequestID = strings.TrimSpace(record.RequestID)
 		record.TaskID = strings.TrimSpace(record.TaskID)
 		record.Hash = strings.TrimSpace(record.Hash)
-		if record.RequestID == "" || record.TaskID == "" || record.Hash == "" {
+		if (record.RequestID == "" && record.TaskID == "") || record.Hash == "" {
 			return nil, fmt.Errorf("invalid import index record: requestId/taskId/hash required")
 		}
-		if _, ok := store.byRequestID[record.RequestID]; ok {
-			return nil, fmt.Errorf("duplicate requestId in import index: %s", record.RequestID)
+		if record.RequestID != "" {
+			if _, ok := store.byRequestID[record.RequestID]; ok {
+				return nil, fmt.Errorf("duplicate requestId in import index: %s", record.RequestID)
+			}
+			store.byRequestID[record.RequestID] = record
 		}
-		if _, ok := store.byTaskID[record.TaskID]; ok {
-			return nil, fmt.Errorf("duplicate taskId in import index: %s", record.TaskID)
+		if record.TaskID != "" {
+			if _, ok := store.byTaskID[record.TaskID]; ok {
+				return nil, fmt.Errorf("duplicate taskId in import index: %s", record.TaskID)
+			}
+			store.byTaskID[record.TaskID] = record
 		}
 		store.records = append(store.records, record)
-		store.byRequestID[record.RequestID] = record
-		store.byTaskID[record.TaskID] = record
 	}
 	return store, nil
 }
@@ -79,31 +83,36 @@ func LoadImportIndexStore(path string) (*ImportIndexStore, error) {
 func (s *ImportIndexStore) Reserve(requestID, taskID string) error {
 	requestID = strings.TrimSpace(requestID)
 	taskID = strings.TrimSpace(taskID)
-	if requestID == "" {
-		return fmt.Errorf("requestId 不能为空")
-	}
-	if taskID == "" {
-		return fmt.Errorf("taskId 不能为空")
+	if requestID == "" && taskID == "" {
+		return fmt.Errorf("requestId 和 taskId 不能同时为空")
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.byRequestID[requestID]; ok {
-		return fmt.Errorf("requestId 已存在: %s", requestID)
+	if requestID != "" {
+		if _, ok := s.byRequestID[requestID]; ok {
+			return fmt.Errorf("requestId 已存在: %s", requestID)
+		}
+		if _, ok := s.pendingReqIDs[requestID]; ok {
+			return fmt.Errorf("requestId 正在处理中: %s", requestID)
+		}
 	}
-	if _, ok := s.byTaskID[taskID]; ok {
-		return fmt.Errorf("taskId 已存在: %s", taskID)
-	}
-	if _, ok := s.pendingReqIDs[requestID]; ok {
-		return fmt.Errorf("requestId 正在处理中: %s", requestID)
-	}
-	if _, ok := s.pendingTaskIDs[taskID]; ok {
-		return fmt.Errorf("taskId 正在处理中: %s", taskID)
+	if taskID != "" {
+		if _, ok := s.byTaskID[taskID]; ok {
+			return fmt.Errorf("taskId 已存在: %s", taskID)
+		}
+		if _, ok := s.pendingTaskIDs[taskID]; ok {
+			return fmt.Errorf("taskId 正在处理中: %s", taskID)
+		}
 	}
 
-	s.pendingReqIDs[requestID] = struct{}{}
-	s.pendingTaskIDs[taskID] = struct{}{}
+	if requestID != "" {
+		s.pendingReqIDs[requestID] = struct{}{}
+	}
+	if taskID != "" {
+		s.pendingTaskIDs[taskID] = struct{}{}
+	}
 	return nil
 }
 
@@ -113,24 +122,28 @@ func (s *ImportIndexStore) Commit(record ImportIndexRecord) error {
 	record.Hash = strings.TrimSpace(record.Hash)
 	record.DataDir = strings.TrimSpace(record.DataDir)
 	record.ResultDir = strings.TrimSpace(record.ResultDir)
-	if record.RequestID == "" || record.TaskID == "" || record.Hash == "" {
-		return fmt.Errorf("requestId/taskId/hash 不能为空")
+	if (record.RequestID == "" && record.TaskID == "") || record.Hash == "" {
+		return fmt.Errorf("requestId 和 taskId 不能同时为空且 hash 不能为空")
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.pendingReqIDs[record.RequestID]; !ok {
-		return fmt.Errorf("requestId 未预留: %s", record.RequestID)
+	if record.RequestID != "" {
+		if _, ok := s.pendingReqIDs[record.RequestID]; !ok {
+			return fmt.Errorf("requestId 未预留: %s", record.RequestID)
+		}
+		if _, ok := s.byRequestID[record.RequestID]; ok {
+			return fmt.Errorf("requestId 已存在: %s", record.RequestID)
+		}
 	}
-	if _, ok := s.pendingTaskIDs[record.TaskID]; !ok {
-		return fmt.Errorf("taskId 未预留: %s", record.TaskID)
-	}
-	if _, ok := s.byRequestID[record.RequestID]; ok {
-		return fmt.Errorf("requestId 已存在: %s", record.RequestID)
-	}
-	if _, ok := s.byTaskID[record.TaskID]; ok {
-		return fmt.Errorf("taskId 已存在: %s", record.TaskID)
+	if record.TaskID != "" {
+		if _, ok := s.pendingTaskIDs[record.TaskID]; !ok {
+			return fmt.Errorf("taskId 未预留: %s", record.TaskID)
+		}
+		if _, ok := s.byTaskID[record.TaskID]; ok {
+			return fmt.Errorf("taskId 已存在: %s", record.TaskID)
+		}
 	}
 
 	oldRecords := append([]ImportIndexRecord(nil), s.records...)
@@ -140,10 +153,14 @@ func (s *ImportIndexStore) Commit(record ImportIndexRecord) error {
 	oldPendingTask := cloneImportIndexPending(s.pendingTaskIDs)
 
 	s.records = append(s.records, record)
-	s.byRequestID[record.RequestID] = record
-	s.byTaskID[record.TaskID] = record
-	delete(s.pendingReqIDs, record.RequestID)
-	delete(s.pendingTaskIDs, record.TaskID)
+	if record.RequestID != "" {
+		s.byRequestID[record.RequestID] = record
+		delete(s.pendingReqIDs, record.RequestID)
+	}
+	if record.TaskID != "" {
+		s.byTaskID[record.TaskID] = record
+		delete(s.pendingTaskIDs, record.TaskID)
+	}
 
 	if err := s.saveLocked(); err != nil {
 		s.records = oldRecords
@@ -165,8 +182,12 @@ func (s *ImportIndexStore) Rollback(requestID, taskID string) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.pendingReqIDs, requestID)
-	delete(s.pendingTaskIDs, taskID)
+	if requestID != "" {
+		delete(s.pendingReqIDs, requestID)
+	}
+	if taskID != "" {
+		delete(s.pendingTaskIDs, taskID)
+	}
 }
 
 func (s *ImportIndexStore) LookupByRequestID(requestID string) (ImportIndexRecord, bool) {

@@ -112,6 +112,284 @@
       .json-null { color: #9ca3af; }
     }
     .modal-backdrop { position:absolute; inset:0; }
+
+    /* 目录树组件 (dstree) 样式 */
+    :root {
+      --tree-hover: rgba(37, 99, 235, 0.06);
+      --tree-sel: rgba(37, 99, 235, 0.14);
+      --chip-bg: rgba(127, 127, 127, 0.08);
+      --chip-border: rgba(127, 127, 127, 0.2);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --tree-hover: rgba(59, 130, 246, 0.12);
+        --tree-sel: rgba(59, 130, 246, 0.25);
+        --chip-bg: rgba(255, 255, 255, 0.06);
+        --chip-border: rgba(255, 255, 255, 0.15);
+      }
+    }
+    .dstree-shell {
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      background: var(--panel);
+      margin-top: 12px;
+    }
+    .dstree-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 10px 14px;
+      background: rgba(127,127,127,.05);
+      border-bottom: 1px solid var(--line);
+    }
+    .dstree-title-area {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .dstree-stats-area {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .dstree-stat-item b {
+      color: var(--text);
+      font-size: 13px;
+    }
+    .dstree-stat-item b.hl {
+      color: var(--ok);
+    }
+    .dstree-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(127,127,127,.02);
+    }
+    .dstree-toolbar-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .dstree-btn-sm {
+      padding: 4px 10px !important;
+      font-size: 12px !important;
+      border-radius: 6px !important;
+    }
+    .dstree-legend {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-wrap: wrap;
+      margin-left: auto;
+    }
+    .dstree-fmt {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 4px;
+      border: 1px solid transparent;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      line-height: 1.3;
+    }
+    .dstree-fmt-csv     { color: #059669; background: rgba(16,185,129,.1); border-color: rgba(16,185,129,.3); }
+    .dstree-fmt-xlsx    { color: #2563eb; background: rgba(37,99,235,.1); border-color: rgba(37,99,235,.3); }
+    .dstree-fmt-json    { color: #d97706; background: rgba(217,119,6,.1); border-color: rgba(217,119,6,.3); }
+    .dstree-fmt-sqlite  { color: #9333ea; background: rgba(147,51,234,.1); border-color: rgba(147,51,234,.3); }
+    .dstree-fmt-parquet { color: #e11d48; background: rgba(225,29,72,.1); border-color: rgba(225,29,72,.3); }
+    .dstree-fmt-image   { color: #0d9488; background: rgba(13,148,136,.1); border-color: rgba(13,148,136,.3); }
+    .dstree-fmt-text    { color: #4b5563; background: rgba(107,114,128,.1); border-color: rgba(107,114,128,.3); }
+    .dstree-fmt-other   { color: #64748b; background: rgba(100,116,139,.1); border-color: rgba(100,116,139,.3); }
+    @media (prefers-color-scheme: dark) {
+      .dstree-fmt-csv     { color: #34d399; background: rgba(52,211,153,.15); border-color: rgba(52,211,153,.3); }
+      .dstree-fmt-xlsx    { color: #60a5fa; background: rgba(96,165,250,.15); border-color: rgba(96,165,250,.3); }
+      .dstree-fmt-json    { color: #fbbf24; background: rgba(251,191,36,.15); border-color: rgba(251,191,36,.3); }
+      .dstree-fmt-sqlite  { color: #c084fc; background: rgba(192,132,252,.15); border-color: rgba(192,132,252,.3); }
+      .dstree-fmt-parquet { color: #fb7185; background: rgba(251,113,133,.15); border-color: rgba(251,113,133,.3); }
+      .dstree-fmt-image   { color: #2dd4bf; background: rgba(45,212,191,.15); border-color: rgba(45,212,191,.3); }
+      .dstree-fmt-text    { color: #9ca3af; background: rgba(156,163,175,.15); border-color: rgba(156,163,175,.3); }
+      .dstree-fmt-other   { color: #cbd5e1; background: rgba(148,163,184,.15); border-color: rgba(148,163,184,.3); }
+    }
+    .dstree-body-split {
+      display: flex;
+      min-height: 280px;
+      max-height: 520px;
+    }
+    .dstree-tree-pane {
+      flex: 1;
+      min-width: 0;
+      overflow: auto;
+      padding: 12px 14px;
+    }
+    .dstree-detail-pane {
+      width: 250px;
+      flex-shrink: 0;
+      border-left: 1px solid var(--line);
+      background: rgba(127,127,127,.03);
+      padding: 14px;
+      overflow-y: auto;
+      font-size: 12px;
+    }
+    @media (max-width: 860px) {
+      .dstree-body-split {
+        flex-direction: column;
+        max-height: none;
+      }
+      .dstree-detail-pane {
+        width: auto;
+        border-left: none;
+        border-top: 1px solid var(--line);
+      }
+    }
+    .dstree-node {
+      position: relative;
+    }
+    .dstree-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      transition: background 0.15s ease;
+      user-select: none;
+      white-space: nowrap;
+    }
+    .dstree-row:hover {
+      background: var(--tree-hover);
+    }
+    .dstree-row.selected {
+      background: var(--tree-sel);
+      outline: 1px solid rgba(37, 99, 235, 0.4);
+    }
+    .dstree-caret {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 11px;
+      border-radius: 3px;
+    }
+    .dstree-caret:hover {
+      background: rgba(127,127,127,0.15);
+      color: var(--text);
+    }
+    .dstree-caret-spacer {
+      width: 16px;
+      display: inline-block;
+    }
+    .dstree-icon {
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+    .dstree-name {
+      color: var(--text);
+      font-weight: 500;
+    }
+    .dstree-dirname {
+      color: #0284c7;
+      font-weight: 600;
+    }
+    @media (prefers-color-scheme: dark) {
+      .dstree-dirname { color: #38bdf8; }
+    }
+    .dstree-children {
+      margin-left: 14px;
+      padding-left: 10px;
+      border-left: 1px solid var(--line);
+    }
+    .dstree-meta-dim {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .dstree-count {
+      color: var(--ok);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .dstree-warn-empty {
+      color: #d97706;
+      font-size: 11px;
+      font-weight: 600;
+      background: rgba(217, 119, 6, 0.1);
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+    .dstree-warn-parse {
+      color: var(--bad);
+      font-size: 11px;
+      background: rgba(194, 65, 12, 0.1);
+      padding: 1px 4px;
+      border-radius: 3px;
+      max-width: 260px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .dstree-schema-line {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin: 2px 0 4px 34px;
+      font-size: 11px;
+    }
+    .dstree-schema-label {
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 10px;
+      text-transform: uppercase;
+      margin-right: 2px;
+      padding: 1px 4px;
+      border-radius: 3px;
+      background: rgba(127,127,127,0.1);
+    }
+    .dstree-field-chip {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: var(--chip-bg);
+      border: 1px solid var(--chip-border);
+      color: #2563eb;
+      padding: 0 6px;
+      border-radius: 4px;
+      line-height: 1.4;
+    }
+    @media (prefers-color-scheme: dark) {
+      .dstree-field-chip { color: #93c5fd; }
+    }
+    .dstree-table-chip {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: var(--chip-bg);
+      border: 1px solid var(--chip-border);
+      color: var(--text);
+      padding: 0 6px;
+      border-radius: 4px;
+      line-height: 1.4;
+    }
+    .dstree-table-chip b {
+      color: var(--ok);
+      font-weight: 600;
+      margin-left: 2px;
+    }
   </style>
 </head>
 <body>
@@ -251,9 +529,9 @@
       </div>
       <label for="importModelResourceUrl">resourceUrl</label>
       <input id="importModelResourceUrl" value="http://example.com/model.tar.gz">
-      <label for="importModelRequestId">requestId</label>
+      <label for="importModelRequestId">requestId（与 taskId 二选一或都填）</label>
       <input id="importModelRequestId" value="req-mock-importModel-001">
-      <label for="importModelTaskId">taskId（可选）</label>
+      <label for="importModelTaskId">taskId（可选，与 requestId 至少填一项）</label>
       <input id="importModelTaskId" value="">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; margin-bottom:4px;">
         <label for="importModelPublicKey" style="margin:0;">publicKey（留空=不传）</label>
@@ -275,9 +553,9 @@ python3 train.py --input &lt;in&gt; --output &lt;out&gt;</textarea>
       <h2>② /v1/taa/import — 下发数据</h2>
       <label for="importResourceUrl">resourceUrl</label>
       <input id="importResourceUrl" value="http://example.com/data.tar.gz">
-      <label for="importRequestId">requestId</label>
+      <label for="importRequestId">requestId（与 taskId 二选一或都填）</label>
       <input id="importRequestId" value="req-mock-import-001">
-      <label for="importTaskId">taskId（可选）</label>
+      <label for="importTaskId">taskId（可选，与 requestId 至少填一项）</label>
       <input id="importTaskId" value="">
       <div class="actions">
         <button onclick="testImport()">发送测试</button>
@@ -312,9 +590,9 @@ python3 train.py --input &lt;in&gt; --output &lt;out&gt;</textarea>
 
     <section class="card" id="card-export">
       <h2>④ /v1/taa/export — 导出结果</h2>
-      <label for="exportRequestId">requestId</label>
-      <input id="exportRequestId" value="" placeholder="requestId（留空则不传）">
-      <label for="exportTaskId">taskId</label>
+      <label for="exportRequestId">requestId（与 taskId 二选一或都填）</label>
+      <input id="exportRequestId" value="" placeholder="requestId（与 taskId 至少填一项）">
+      <label for="exportTaskId">taskId（可选，与 requestId 至少填一项）</label>
       <input id="exportTaskId" value="task-mock-001">
       <label for="exportPublicKey">publicKey（phase 1/2 必填，phase 3 留空）</label>
       <input id="exportPublicKey" value="" placeholder="可复用上方 importModelPublicKey">
@@ -352,15 +630,24 @@ python3 train.py --input &lt;in&gt; --output &lt;out&gt;</textarea>
       <div id="switchResult" class="test-result"></div>
     </section>
 
-    <section class="card" id="card-resourceInfo">
-      <h2>/v1/taa/getResourceInfo — 资源信息获取</h2>
-      <p class="muted">传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理。</p>
+    <section class="card" id="card-resourceInfo" style="display:flex; flex-direction:column;">
+      <div class="card-head">
+        <div>
+          <h2>/v1/taa/getResourceInfo — 资源信息获取</h2>
+          <p class="card-note">传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理。</p>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <button id="resourceInfoModalBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openResourceInfoModal()" disabled>弹窗全屏查看</button>
+        </div>
+      </div>
       <label for="resourceInfoUrl">resourceUrl</label>
       <input id="resourceInfoUrl" value="http://example.com/data.tar.gz">
       <div class="actions">
         <button onclick="testGetResourceInfo()">发送测试</button>
+        <button type="button" class="secondary" onclick="loadSampleResourceTree()">加载示例树</button>
       </div>
       <div id="resourceInfoResult" class="test-result"></div>
+      <div id="resourceInfoTreeContainer" style="display:none; margin-top:14px;"></div>
     </section>
   </div>
 
@@ -451,6 +738,20 @@ python3 train.py --input &lt;in&gt; --output &lt;out&gt;</textarea>
       </div>
     </div>
     <pre id="bodyModalContent" class="modal-body"></pre>
+  </div>
+</div>
+<div id="resourceInfoModal" class="modal-overlay" aria-hidden="true" onclick="if (event.target === this) closeResourceInfoModal();">
+  <div class="modal" style="width:min(1280px, 96%); max-height:min(90vh, 950px); display:flex; flex-direction:column;" role="dialog" aria-modal="true" aria-labelledby="resourceInfoModalTitle">
+    <div class="modal-head">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span style="font-size:18px;">🌳</span>
+        <h3 id="resourceInfoModalTitle">资源信息目录树 (filetree)</h3>
+      </div>
+      <div class="modal-actions">
+        <button class="secondary" onclick="closeResourceInfoModal()">关闭</button>
+      </div>
+    </div>
+    <div id="resourceInfoModalBody" style="padding:14px; overflow:auto; flex:1; min-height:0; display:flex; flex-direction:column;"></div>
   </div>
 </div>
 <script>
@@ -790,7 +1091,8 @@ function buildRuntimeConfig(commandsText, envText) {
 }
 
 function buildImportBody(resourceUrl, requestId, publicKey, taskId, runtimeConfig) {
-  const body = { resourceUrl, requestId };
+  const body = { resourceUrl };
+  if (requestId) body.requestId = requestId;
   if (taskId) body.taskId = taskId;
   if (publicKey) body.publicKey = publicKey;
   if (runtimeConfig) body.runtimeConfig = runtimeConfig;
@@ -1227,14 +1529,626 @@ async function testImportModel() {
   }
 }
 
+// ── 资源信息目录树 (filetree / dstree) ───────────────────────────
+let resourceInfoReportData = null;
+let resourceInfoTreeExpanded = new Set();
+let resourceInfoSelectedNode = null;
+let resourceInfoViewMode = 'tree'; // 'tree' | 'raw'
+let resourceInfoSearchFilter = '';
+let resourceInfoRawResponseText = '';
+let isResourceInfoModalOpen = false;
+
+function formatHumanSize(bytes) {
+  if (bytes == null || isNaN(bytes)) return '0 B';
+  const b = Number(bytes);
+  if (b === 0) return '0 B';
+  if (b < 1024) return b + ' B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.min(Math.floor(Math.log(b) / Math.log(1024)), units.length - 1);
+  const val = b / Math.pow(1024, i);
+  return `${val >= 10 || i === 0 ? val.toFixed(0) : val.toFixed(1)} ${units[i]}`;
+}
+
+function getDstreeFormatInfo(fmt) {
+  if (!fmt) return { label: '?', className: 'dstree-fmt-other' };
+  const lower = String(fmt).toLowerCase().trim();
+  const short = lower.split('/').pop() || lower;
+  if (short === 'csv' || short === 'tsv' || lower.includes('csv') || lower.includes('tsv')) {
+    return { label: short.toUpperCase(), className: 'dstree-fmt-csv' };
+  }
+  if (short === 'xlsx' || short === 'xls' || lower.includes('spreadsheet') || lower.includes('excel')) {
+    return { label: 'XLSX', className: 'dstree-fmt-xlsx' };
+  }
+  if (short === 'json' || short === 'jsonl' || lower.includes('json')) {
+    return { label: short.toUpperCase(), className: 'dstree-fmt-json' };
+  }
+  if (short === 'sqlite' || short === 'db' || lower.includes('sqlite')) {
+    return { label: 'SQLITE', className: 'dstree-fmt-sqlite' };
+  }
+  if (short === 'parquet' || lower.includes('parquet')) {
+    return { label: 'PARQUET', className: 'dstree-fmt-parquet' };
+  }
+  if (['png', 'jpeg', 'jpg', 'gif', 'bmp', 'webp', 'svg'].includes(short) || lower.startsWith('image/')) {
+    return { label: short.toUpperCase(), className: 'dstree-fmt-image' };
+  }
+  if (['txt', 'text', 'md', 'markdown', 'log', 'sh', 'py', 'go', 'yaml', 'yml'].includes(short) || lower.startsWith('text/')) {
+    return { label: short.toUpperCase(), className: 'dstree-fmt-text' };
+  }
+  return { label: short.toUpperCase(), className: 'dstree-fmt-other' };
+}
+
+function ensureNodePaths(node, parentPath = '') {
+  if (!node) return;
+  const currentPath = parentPath ? (parentPath === '/' ? `/${node.name}` : `${parentPath}/${node.name}`) : (node.name || '');
+  node.path = node.path || currentPath;
+  if (Array.isArray(node.children)) {
+    for (const child of node.children) {
+      ensureNodePaths(child, node.path);
+    }
+  }
+}
+
+function defaultExpandTree(root) {
+  resourceInfoTreeExpanded.clear();
+  if (!root) return;
+  resourceInfoTreeExpanded.add(root.path);
+  if (Array.isArray(root.children)) {
+    for (const child of root.children) {
+      if (child.type === 'dir') {
+        resourceInfoTreeExpanded.add(child.path);
+      }
+    }
+  }
+}
+
+function expandAllTreeNodes(node = resourceInfoReportData?.tree) {
+  if (!node) return;
+  if (node.type === 'dir') {
+    resourceInfoTreeExpanded.add(node.path);
+    if (Array.isArray(node.children)) {
+      for (const child of node.children) {
+        expandAllTreeNodes(child);
+      }
+    }
+  }
+  refreshResourceInfoTreeViews();
+}
+
+function collapseAllTreeNodes() {
+  resourceInfoTreeExpanded.clear();
+  refreshResourceInfoTreeViews();
+}
+
+function findNodeByPath(root, path) {
+  if (!root) return null;
+  if (root.path === path) return root;
+  if (Array.isArray(root.children)) {
+    for (const child of root.children) {
+      const found = findNodeByPath(child, path);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function nodeMatchesFilter(node, filterText) {
+  if (!filterText) return true;
+  const q = filterText.toLowerCase().trim();
+  if (node.name && node.name.toLowerCase().includes(q)) return true;
+  if (node.path && node.path.toLowerCase().includes(q)) return true;
+  const fmt = node.fmt || node.format || '';
+  if (fmt && fmt.toLowerCase().includes(q)) return true;
+  if (node.fields && Array.isArray(node.fields)) {
+    for (const f of node.fields) {
+      const fn = typeof f === 'object' && f !== null ? `${f.name || ''} ${f.type || ''}` : String(f);
+      if (fn.toLowerCase().includes(q)) return true;
+    }
+  }
+  if (node.tables && Array.isArray(node.tables)) {
+    for (const t of node.tables) {
+      if (t.name && t.name.toLowerCase().includes(q)) return true;
+    }
+  }
+  return false;
+}
+
+function subtreeHasMatch(node, filterText) {
+  if (!filterText) return true;
+  if (nodeMatchesFilter(node, filterText)) return true;
+  if (Array.isArray(node.children)) {
+    for (const child of node.children) {
+      if (subtreeHasMatch(child, filterText)) return true;
+    }
+  }
+  return false;
+}
+
+function renderTreeNodeHTML(node, filterText, isModal = false) {
+  if (!node) return '';
+  const hasSubtreeMatch = subtreeHasMatch(node, filterText);
+  if (filterText && !hasSubtreeMatch) {
+    return '';
+  }
+
+  const isDir = node.type === 'dir';
+  const hasFilter = Boolean(filterText && filterText.trim());
+  const isOpen = isDir && (hasFilter ? true : resourceInfoTreeExpanded.has(node.path));
+  const isSelected = resourceInfoSelectedNode && resourceInfoSelectedNode.path === node.path;
+  const fmtInfo = isDir ? null : getDstreeFormatInfo(node.fmt || node.format);
+  const isEmpty = !isDir && (node.empty || node.size === 0);
+  const sizeText = !isDir ? (node.size_h || formatHumanSize(node.size)) : '';
+  const rowCountText = !isDir ? (node.rows != null ? `${node.rows} 行` : (node.count || '')) : '';
+  const fileCount = isDir ? (node.file_count != null ? node.file_count : (node.children ? node.children.length : 0)) : 0;
+
+  let html = `<div class="dstree-node" data-path="${escapeHtml(node.path)}">`;
+  html += `<div class="dstree-row ${isSelected ? 'selected' : ''}" onclick="onSelectTreeNode('${escapeHtml(node.path)}')">`;
+
+  if (isDir) {
+    html += `<span class="dstree-caret" onclick="onToggleTreeNode(event, '${escapeHtml(node.path)}')">${isOpen ? '▾' : '▸'}</span>`;
+    html += `<span class="dstree-icon">${isOpen ? '📂' : '📁'}</span>`;
+    html += `<span class="dstree-name dstree-dirname">${escapeHtml(node.name)}/</span>`;
+    html += `<span class="dstree-meta-dim">(${fileCount} 个文件)</span>`;
+  } else {
+    html += `<span class="dstree-caret-spacer"></span>`;
+    html += `<span class="dstree-icon">📄</span>`;
+    html += `<span class="dstree-name">${escapeHtml(node.name)}</span>`;
+    html += `<span class="dstree-fmt ${fmtInfo.className}">${escapeHtml(fmtInfo.label)}</span>`;
+    if (isEmpty) {
+      html += `<span class="dstree-warn-empty">⚠ 空文件</span>`;
+    }
+    if (node.warning) {
+      html += `<span class="dstree-warn-parse" title="${escapeHtml(node.warning)}">⚠ ${escapeHtml(node.warning)}</span>`;
+    }
+    if (rowCountText) {
+      html += `<span class="dstree-count">${escapeHtml(rowCountText)}</span>`;
+    }
+    if (sizeText) {
+      html += `<span class="dstree-meta-dim">${escapeHtml(sizeText)}</span>`;
+    }
+  }
+
+  html += `</div>`;
+
+  if (!isDir && node.fields && node.fields.length) {
+    html += `<div class="dstree-schema-line">`;
+    html += `<span class="dstree-schema-label">schema</span>`;
+    for (const f of node.fields) {
+      const fieldName = typeof f === 'object' && f !== null ? f.name : String(f);
+      const fieldType = typeof f === 'object' && f !== null ? f.type : '';
+      const chipTitle = fieldType ? `${fieldName}: ${fieldType}` : fieldName;
+      html += `<span class="dstree-field-chip" title="${escapeHtml(chipTitle)}">${escapeHtml(fieldName)}${fieldType ? `<span style="opacity:0.75; font-size:10px;">: ${escapeHtml(fieldType)}</span>` : ''}</span>`;
+    }
+    html += `</div>`;
+  }
+
+  if (!isDir && node.tables && node.tables.length) {
+    html += `<div class="dstree-schema-line">`;
+    html += `<span class="dstree-schema-label">tables</span>`;
+    for (const t of node.tables) {
+      html += `<span class="dstree-table-chip">${escapeHtml(t.name)} <b>${t.rows != null ? t.rows : 0} 行</b></span>`;
+    }
+    html += `</div>`;
+  }
+
+  if (isDir && isOpen && node.children && node.children.length) {
+    html += `<div class="dstree-children">`;
+    for (const child of node.children) {
+      html += renderTreeNodeHTML(child, filterText, isModal);
+    }
+    html += `</div>`;
+  }
+
+  html += `</div>`;
+  return html;
+}
+
+function renderTreeDetailHTML(node) {
+  if (!node) {
+    return `<div style="color:var(--muted); text-align:center; padding:40px 10px;">点击左侧文件或目录查看详情</div>`;
+  }
+
+  const isDir = node.type === 'dir';
+  const fmtInfo = isDir ? null : getDstreeFormatInfo(node.fmt || node.format);
+  const sizeText = !isDir ? (node.size_h || formatHumanSize(node.size)) : '';
+  const rawSize = !isDir && node.size != null ? `${node.size.toLocaleString()} 字节` : '';
+  const rowCountText = !isDir ? (node.rows != null ? `${node.rows} 行` : (node.count || '')) : '';
+  const fileCount = isDir ? (node.file_count != null ? node.file_count : (node.children ? node.children.length : 0)) : 0;
+
+  let html = `
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px; padding-bottom:8px; border-bottom:1px solid var(--line);">
+      <span style="font-size:20px;">${isDir ? '📁' : '📄'}</span>
+      <div style="font-weight:700; font-size:14px; word-break:break-all;">${escapeHtml(node.name)}${isDir ? '/' : ''}</div>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:8px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px;">
+      <div><span class="muted">路径: </span><span style="word-break:break-all; font-weight:600;">${escapeHtml(node.path || '/')}</span></div>
+      <div><span class="muted">类型: </span><span>${isDir ? '目录 (dir)' : '文件 (file)'}</span></div>
+  `;
+
+  if (!isDir) {
+    html += `
+      <div><span class="muted">格式: </span><span class="dstree-fmt ${fmtInfo.className}">${escapeHtml(node.fmt || node.format || '未知')}</span></div>
+      <div><span class="muted">大小: </span><span>${escapeHtml(sizeText)} ${rawSize ? `(${rawSize})` : ''}</span></div>
+      ${rowCountText ? `<div><span class="muted">数据量: </span><span style="color:var(--ok); font-weight:600;">${escapeHtml(rowCountText)}</span></div>` : ''}
+      ${node.isObject ? `<div><span class="muted">结构形态: </span><span>JSON Object (键值对象)</span></div>` : ''}
+      ${node.warning ? `<div><span class="muted">警告: </span><span style="color:var(--bad); font-weight:600;">${escapeHtml(node.warning)}</span></div>` : ''}
+      ${node.size === 0 || node.empty ? `<div><span class="muted">状态: </span><span style="color:#d97706; font-weight:600;">空文件（0 字节）</span></div>` : ''}
+    `;
+  } else {
+    html += `
+      <div><span class="muted">文件总数: </span><span style="color:var(--ok); font-weight:600;">${fileCount} 个文件</span></div>
+      ${node.children ? `<div><span class="muted">直接子项: </span><span>${node.children.length} 项</span></div>` : ''}
+    `;
+  }
+
+  html += `</div>`;
+
+  if (!isDir && node.fields && node.fields.length) {
+    html += `
+      <div style="margin-top:14px;">
+        <div style="font-size:11px; font-weight:700; text-transform:uppercase; color:var(--muted); margin-bottom:8px; padding-bottom:4px; border-bottom:1px solid var(--line);">
+          Schema 字段定义 (${node.fields.length} 个)
+        </div>
+        <div style="display:flex; flex-direction:column; gap:4px; max-height:160px; overflow-y:auto; padding-right:2px;">
+    `;
+    for (const f of node.fields) {
+      const fieldName = typeof f === 'object' && f !== null ? f.name : String(f);
+      const fieldType = typeof f === 'object' && f !== null ? f.type : '';
+      html += `
+        <div style="display:flex; justify-content:space-between; align-items:center; background:var(--chip-bg); border:1px solid var(--chip-border); border-radius:4px; padding:2px 8px; font-size:11px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">
+          <span style="color:var(--text); font-weight:600;">${escapeHtml(fieldName)}</span>
+          ${fieldType ? `<span class="muted">${escapeHtml(fieldType)}</span>` : ''}
+        </div>
+      `;
+    }
+    html += `</div></div>`;
+  }
+
+  if (!isDir && node.tables && node.tables.length) {
+    html += `
+      <div style="margin-top:14px;">
+        <div style="font-size:11px; font-weight:700; text-transform:uppercase; color:var(--muted); margin-bottom:8px; padding-bottom:4px; border-bottom:1px solid var(--line);">
+          SQLite 表级明细 (${node.tables.length} 张表)
+        </div>
+        <div style="display:flex; flex-direction:column; gap:4px; max-height:160px; overflow-y:auto; padding-right:2px;">
+    `;
+    for (const t of node.tables) {
+      html += `
+        <div class="dstree-table-chip" style="display:flex; justify-content:space-between; align-items:center; padding:3px 8px; font-size:11px;">
+          <span>${escapeHtml(t.name)}</span>
+          <b>${t.rows != null ? t.rows : 0} 行</b>
+        </div>
+      `;
+    }
+    html += `</div></div>`;
+  }
+
+  return html;
+}
+
+function onToggleTreeNode(e, path) {
+  if (e) e.stopPropagation();
+  if (resourceInfoTreeExpanded.has(path)) {
+    resourceInfoTreeExpanded.delete(path);
+  } else {
+    resourceInfoTreeExpanded.add(path);
+  }
+  refreshResourceInfoTreeViews();
+}
+
+function onSelectTreeNode(path) {
+  const rootNode = resourceInfoReportData?.tree || (resourceInfoReportData?.name ? resourceInfoReportData : null);
+  const node = findNodeByPath(rootNode, path);
+  if (!node) return;
+  resourceInfoSelectedNode = node;
+  if (node.type === 'dir') {
+    if (resourceInfoTreeExpanded.has(path)) {
+      resourceInfoTreeExpanded.delete(path);
+    } else {
+      resourceInfoTreeExpanded.add(path);
+    }
+  }
+  refreshResourceInfoTreeViews();
+}
+
+function onTreeSearchInput(val) {
+  resourceInfoSearchFilter = val;
+  refreshResourceInfoTreeViews();
+}
+
+function switchResourceInfoViewMode(mode) {
+  resourceInfoViewMode = mode;
+  refreshResourceInfoTreeViews();
+}
+
+function renderResourceInfoTreeShell(targetEl, isModal = false) {
+  if (!targetEl || !resourceInfoReportData) return;
+  const report = resourceInfoReportData;
+  const tree = report.tree || (report.name ? report : null);
+
+  let html = `
+    <div class="dstree-shell ${isModal ? 'dstree-modal-shell' : ''}">
+      <div class="dstree-topbar">
+        <div class="dstree-title-area">
+          <span style="font-size:16px;">🌳</span>
+          <span>${escapeHtml(tree?.name || '数据集')}</span>
+          <span class="muted" style="font-weight:normal; font-size:12px;">v${escapeHtml(report.version || '1.0.0')}</span>
+        </div>
+        <div class="dstree-stats-area">
+          <span class="dstree-stat-item"><b>${report.total_files != null ? report.total_files : 0}</b> 个文件</span>
+          <span class="dstree-stat-item"><b class="hl">${report.structured_files != null ? report.structured_files : 0}</b> 个结构化</span>
+          <span class="dstree-stat-item">${escapeHtml(report.total_size_h || formatHumanSize(report.total_size))}</span>
+          ${report.generated_at ? `<span class="dstree-meta-dim">${escapeHtml(report.generated_at)}</span>` : ''}
+        </div>
+      </div>
+  `;
+
+  if (report.checksum) {
+    html += `
+      <div style="padding:6px 14px; font-size:11px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; background:rgba(127,127,127,.03); border-bottom:1px solid var(--line); display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+        <span class="muted">校验和 (${escapeHtml(report.checksum.algorithm || 'SM3')}):</span>
+        <span style="word-break:break-all; color:var(--text); font-weight:600;">${escapeHtml(report.checksum.value)}</span>
+        ${report.checksum.size != null ? `<span class="muted">(${formatHumanSize(report.checksum.size)})</span>` : ''}
+      </div>
+    `;
+  }
+
+  if (Array.isArray(report.by_format) && report.by_format.length > 0) {
+    html += `
+      <div style="padding:6px 14px; font-size:11px; background:rgba(127,127,127,.02); border-bottom:1px solid var(--line); display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <span class="muted">格式分布:</span>
+    `;
+    for (const st of report.by_format) {
+      const fmtInfo = getDstreeFormatInfo(st.format);
+      html += `<span class="dstree-fmt ${fmtInfo.className}" style="font-size:10px;">${escapeHtml(fmtInfo.label)} ×${st.count}</span>`;
+    }
+    html += `</div>`;
+  }
+
+  html += `
+    <div class="dstree-toolbar">
+      <div class="dstree-toolbar-group">
+        <button type="button" class="secondary dstree-btn-sm" onclick="expandAllTreeNodes()">全部展开</button>
+        <button type="button" class="secondary dstree-btn-sm" onclick="collapseAllTreeNodes()">全部折叠</button>
+        <div style="display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden;">
+          <button type="button" class="dstree-btn-sm ${resourceInfoViewMode === 'tree' ? 'success' : 'secondary'}" style="border-radius:0;" onclick="switchResourceInfoViewMode('tree')">🌳 目录树</button>
+          <button type="button" class="dstree-btn-sm ${resourceInfoViewMode === 'raw' ? 'success' : 'secondary'}" style="border-radius:0;" onclick="switchResourceInfoViewMode('raw')">📄 原始 JSON</button>
+        </div>
+        <input type="text" placeholder="过滤文件或字段..." value="${escapeHtml(resourceInfoSearchFilter)}" oninput="onTreeSearchInput(this.value)" style="width:150px; padding:3px 8px; font-size:12px; border-radius:6px; margin:0;">
+      </div>
+      <div class="dstree-legend">
+        <span class="dstree-fmt dstree-fmt-csv">CSV</span>
+        <span class="dstree-fmt dstree-fmt-xlsx">XLSX</span>
+        <span class="dstree-fmt dstree-fmt-json">JSON</span>
+        <span class="dstree-fmt dstree-fmt-sqlite">SQLITE</span>
+        <span class="dstree-fmt dstree-fmt-parquet">PARQUET</span>
+        <span class="dstree-fmt dstree-fmt-image">IMAGE</span>
+        <span class="dstree-fmt dstree-fmt-text">TEXT</span>
+      </div>
+    </div>
+  `;
+
+  if (resourceInfoViewMode === 'tree') {
+    html += `
+      <div class="dstree-body-split">
+        <div class="dstree-tree-pane" style="${isModal ? 'max-height: calc(85vh - 200px);' : ''}">
+          ${renderTreeNodeHTML(tree, resourceInfoSearchFilter, isModal)}
+        </div>
+        <aside class="dstree-detail-pane" style="${isModal ? 'width: 320px; max-height: calc(85vh - 200px);' : ''}">
+          ${renderTreeDetailHTML(resourceInfoSelectedNode || tree)}
+        </aside>
+      </div>
+    `;
+  } else {
+    const rawFormatted = resourceInfoRawResponseText || JSON.stringify(report, null, 2);
+    html += `
+      <div style="padding:12px; overflow:auto; max-height:${isModal ? 'calc(85vh - 200px)' : '480px'}; background:rgba(127,127,127,.03);">
+        <div style="display:flex; justify-content:flex-end; margin-bottom:6px;">
+          <button type="button" class="secondary dstree-btn-sm" onclick="copyText(resourceInfoRawResponseText || JSON.stringify(resourceInfoReportData, null, 2))">复制 JSON</button>
+        </div>
+        <pre style="margin:0; font-size:12px; line-height:1.5; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:pre-wrap; word-break:break-all;">${highlightJSON(rawFormatted)}</pre>
+      </div>
+    `;
+  }
+
+  html += `</div>`;
+  targetEl.innerHTML = html;
+}
+
+function refreshResourceInfoTreeViews() {
+  const container = document.getElementById('resourceInfoTreeContainer');
+  if (container && container.style.display !== 'none') {
+    renderResourceInfoTreeShell(container, false);
+  }
+  if (isResourceInfoModalOpen) {
+    const modalBody = document.getElementById('resourceInfoModalBody');
+    if (modalBody) {
+      renderResourceInfoTreeShell(modalBody, true);
+    }
+  }
+}
+
+function openResourceInfoModal() {
+  if (!resourceInfoReportData) return;
+  isResourceInfoModalOpen = true;
+  const modal = document.getElementById('resourceInfoModal');
+  const modalBody = document.getElementById('resourceInfoModalBody');
+  if (modal && modalBody) {
+    modal.classList.add('open');
+    modal.setAttribute('aria-hidden', 'false');
+    renderResourceInfoTreeShell(modalBody, true);
+  }
+}
+
+function closeResourceInfoModal() {
+  isResourceInfoModalOpen = false;
+  const modal = document.getElementById('resourceInfoModal');
+  if (modal) {
+    modal.classList.remove('open');
+    modal.setAttribute('aria-hidden', 'true');
+  }
+}
+
+function loadSampleResourceTree() {
+  const sampleData = {
+    version: "1.0.0",
+    generated_at: new Date().toISOString(),
+    total_files: 17,
+    total_size: 18800,
+    total_size_h: "18.4KB",
+    structured_files: 5,
+    checksum: {
+      algorithm: "SM3",
+      value: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      size: 18800
+    },
+    by_format: [
+      { format: "image/png", count: 8, size_sum: 1115 },
+      { format: "text/csv", count: 1, size_sum: 119 },
+      { format: "spreadsheet/xlsx", count: 1, size_sum: 4916 },
+      { format: "database/sqlite", count: 1, size_sum: 12288 },
+      { format: "text/jsonl", count: 1, size_sum: 240 },
+      { format: "text/json", count: 1, size_sum: 71 },
+      { format: "text/plain", count: 4, size_sum: 51 }
+    ],
+    tree: {
+      name: "dataset",
+      type: "dir",
+      file_count: 17,
+      children: [
+        {
+          name: "annotations",
+          type: "dir",
+          file_count: 3,
+          children: [
+            {
+              name: "empty.csv",
+              type: "file",
+              fmt: "csv",
+              size: 0,
+              size_h: "0B",
+              empty: true,
+              warning: "空文件"
+            },
+            {
+              name: "train_labels.csv",
+              type: "file",
+              fmt: "csv",
+              size: 119,
+              size_h: "119B",
+              rows: 4,
+              fields: [
+                { name: "image", type: "string" },
+                { name: "label", type: "int" },
+                { name: "bbox", type: "string" }
+              ]
+            },
+            {
+              name: "metadata.jsonl",
+              type: "file",
+              fmt: "jsonl",
+              size: 240,
+              size_h: "240B",
+              rows: 10,
+              fields: [
+                { name: "id", type: "string" },
+                { name: "timestamp", type: "int64" }
+              ]
+            }
+          ]
+        },
+        {
+          name: "images",
+          type: "dir",
+          file_count: 8,
+          children: [
+            { name: "cat_001.png", type: "file", fmt: "png", size: 140, size_h: "140B" },
+            { name: "cat_002.png", type: "file", fmt: "png", size: 145, size_h: "145B" },
+            { name: "dog_001.png", type: "file", fmt: "png", size: 138, size_h: "138B" }
+          ]
+        },
+        {
+          name: "tables",
+          type: "dir",
+          file_count: 2,
+          children: [
+            {
+              name: "stats.xlsx",
+              type: "file",
+              fmt: "xlsx",
+              size: 4916,
+              size_h: "4.8KB",
+              rows: 120,
+              fields: [
+                { name: "department", type: "string" },
+                { name: "revenue", type: "float64" },
+                { name: "headcount", type: "int" }
+              ]
+            },
+            {
+              name: "records.db",
+              type: "file",
+              fmt: "sqlite",
+              size: 12288,
+              size_h: "12.0KB",
+              tables: [
+                { name: "users", rows: 50 },
+                { name: "logs", rows: 1250 }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  };
+
+  resourceInfoReportData = sampleData;
+  resourceInfoRawResponseText = JSON.stringify(sampleData, null, 2);
+  ensureNodePaths(resourceInfoReportData.tree, '');
+  defaultExpandTree(resourceInfoReportData.tree);
+  resourceInfoSelectedNode = resourceInfoReportData.tree;
+  const modalBtn = document.getElementById('resourceInfoModalBtn');
+  if (modalBtn) modalBtn.disabled = false;
+  const container = document.getElementById('resourceInfoTreeContainer');
+  if (container) container.style.display = 'block';
+  refreshResourceInfoTreeViews();
+  showResult('resourceInfoResult', true, '已加载示例目录树数据（17 个文件，5 个结构化）');
+}
+
 async function testGetResourceInfo() {
-  showResultRunning('resourceInfoResult', '正在请求...');
+  showResultRunning('resourceInfoResult', '正在请求并分析资源...');
   try {
     const resourceUrl = document.getElementById('resourceInfoUrl').value.trim();
     const r = await postToTAA('/v1/taa/getResourceInfo', { resourceUrl }, RESOURCE_INFO_TIMEOUT_MS);
     const payload = responseResult(r.data);
-    const rendered = typeof payload === 'string' ? formatJSONText(payload) : JSON.stringify(payload, null, 2);
-    showResult('resourceInfoResult', r.status === 200 && r.data.error === 0, 'HTTP ' + r.status + '\n' + rendered);
+    let rawText = '';
+    let reportObj = null;
+    if (typeof payload === 'string') {
+      rawText = payload;
+      try {
+        reportObj = JSON.parse(payload);
+      } catch (_) {}
+    } else if (payload && typeof payload === 'object') {
+      reportObj = payload;
+      rawText = JSON.stringify(payload, null, 2);
+    }
+
+    if (reportObj && (reportObj.tree || reportObj.name)) {
+      resourceInfoReportData = reportObj;
+      resourceInfoRawResponseText = rawText || JSON.stringify(reportObj, null, 2);
+      const rootNode = reportObj.tree || reportObj;
+      ensureNodePaths(rootNode, '');
+      defaultExpandTree(rootNode);
+      resourceInfoSelectedNode = rootNode;
+      const modalBtn = document.getElementById('resourceInfoModalBtn');
+      if (modalBtn) modalBtn.disabled = false;
+      const container = document.getElementById('resourceInfoTreeContainer');
+      if (container) container.style.display = 'block';
+      refreshResourceInfoTreeViews();
+      showResult('resourceInfoResult', true, 'HTTP ' + r.status + ' 资源解析成功（共 ' + (reportObj.total_files || 0) + ' 个文件）');
+    } else {
+      const rendered = typeof payload === 'string' ? formatJSONText(payload) : JSON.stringify(payload, null, 2);
+      showResult('resourceInfoResult', r.status === 200 && r.data.error === 0, 'HTTP ' + r.status + '\n' + rendered);
+    }
   } catch (e) {
     const msg = isAbortLikeError(e)
       ? '请求超时（120s）：资源信息分析较慢，请稍后重试或检查 TAA 是否仍在执行。'
@@ -1522,6 +2436,24 @@ function getFilteredRequestLogs() {
   return allRequestLogs.filter(l => !endpointFilter || (l.endpoint || l.path || '').includes(endpointFilter));
 }
 
+function buildRequestLogHTML(l, index) {
+  const timeStr = formatRequestLogTime(l.timestamp);
+  const endpointStr = escapeHtml(l.endpoint || l.path || '-');
+  const methodStr = escapeHtml(l.method || 'POST');
+  const bodyStr = l.body || '{}';
+  return `<div class="req-item" style="margin-bottom:12px; border:1px solid rgba(255,255,255,.08); border-radius:8px; background:rgba(255,255,255,.03); overflow:hidden;">` +
+    `<div style="display:flex; align-items:center; justify-content:space-between; padding:8px 12px; background:rgba(255,255,255,.05); border-bottom:1px solid rgba(255,255,255,.06); font-family:ui-monospace,monospace; font-size:12px;">` +
+    `<div>` +
+    `<span style="color:#9ca3af;">[${timeStr}]</span> ` +
+    `<span style="color:#38bdf8; font-weight:700; margin:0 4px;">${methodStr}</span> ` +
+    `<span style="color:#f8fafc; font-weight:600;">${endpointStr}</span>` +
+    `</div>` +
+    `<div><button type="button" class="secondary" style="padding:3px 8px; font-size:11px; border-radius:6px;" onclick="copyTaaRequestBody(${index})">复制请求体</button></div>` +
+    `</div>` +
+    `<pre style="margin:0; padding:12px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; line-height:1.5; color:#34d399; overflow-x:auto; white-space:pre-wrap; word-break:break-all; background:transparent;">${escapeHtml(bodyStr)}</pre>` +
+    `</div>`;
+}
+
 function recordTaaRequest(method, endpoint, body, id) {
   const reqId = id || genId('taa-req');
   if (allRequestLogs.some(item => item.id === reqId)) {
@@ -1538,7 +2470,19 @@ function recordTaaRequest(method, endpoint, body, id) {
   if (allRequestLogs.length > 500) {
     allRequestLogs = allRequestLogs.slice(-500);
   }
-  renderRequestLogs();
+  const filterEl = document.getElementById('requestLogEndpointFilter');
+  const endpointFilter = filterEl ? filterEl.value : '';
+  if (endpointFilter || allRequestLogs.length === 1) {
+    renderRequestLogs();
+    return reqId;
+  }
+  const output = document.getElementById('requestLogOutput');
+  if (output) {
+    output.innerHTML += buildRequestLogHTML(entry, allRequestLogs.length - 1);
+    output.scrollTop = output.scrollHeight;
+  } else {
+    renderRequestLogs();
+  }
   return reqId;
 }
 
@@ -1566,23 +2510,7 @@ function renderRequestLogs() {
     return;
   }
 
-  output.innerHTML = filtered.map((l, index) => {
-    const timeStr = formatRequestLogTime(l.timestamp);
-    const endpointStr = escapeHtml(l.endpoint || l.path || '-');
-    const methodStr = escapeHtml(l.method || 'POST');
-    const bodyStr = l.body || '{}';
-    return `<div class="req-item" style="margin-bottom:12px; border:1px solid rgba(255,255,255,.08); border-radius:8px; background:rgba(255,255,255,.03); overflow:hidden;">` +
-      `<div style="display:flex; align-items:center; justify-content:space-between; padding:8px 12px; background:rgba(255,255,255,.05); border-bottom:1px solid rgba(255,255,255,.06); font-family:ui-monospace,monospace; font-size:12px;">` +
-      `<div>` +
-      `<span style="color:#9ca3af;">[${timeStr}]</span> ` +
-      `<span style="color:#38bdf8; font-weight:700; margin:0 4px;">${methodStr}</span> ` +
-      `<span style="color:#f8fafc; font-weight:600;">${endpointStr}</span>` +
-      `</div>` +
-      `<div><button type="button" class="secondary" style="padding:3px 8px; font-size:11px; border-radius:6px;" onclick="copyTaaRequestBody(${index})">复制请求体</button></div>` +
-      `</div>` +
-      `<pre style="margin:0; padding:12px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; line-height:1.5; color:#34d399; overflow-x:auto; white-space:pre-wrap; word-break:break-all; background:transparent;">${escapeHtml(bodyStr)}</pre>` +
-      `</div>`;
-  }).join('');
+  output.innerHTML = filtered.map((l, index) => buildRequestLogHTML(l, index)).join('');
 
   output.scrollTop = output.scrollHeight;
 }
@@ -1600,7 +2528,7 @@ async function fetchRequestLogs() {
     const data = await res.json();
     const result = responseResult(data);
     if (result && Array.isArray(result.logs) && result.logs.length > 0) {
-      let added = false;
+      const newEntries = [];
       for (const log of result.logs) {
         const path = log.path || log.endpoint || '';
         if (path.includes('/logs') || path.includes('/status') || path.includes('/register') || path.includes('/report')) {
@@ -1608,19 +2536,34 @@ async function fetchRequestLogs() {
         }
         const logId = log.id || (log.timestamp + '-' + path);
         if (!allRequestLogs.some(item => item.id === logId)) {
-          allRequestLogs.push({
+          newEntries.push({
             id: logId,
             timestamp: log.timestamp || new Date().toISOString(),
             method: log.method || 'POST',
             endpoint: path,
             body: formatRequestBody(log.body),
           });
-          added = true;
         }
       }
-      if (added) {
-        if (allRequestLogs.length > 500) allRequestLogs = allRequestLogs.slice(-500);
-        renderRequestLogs();
+      if (newEntries.length > 0) {
+        allRequestLogs.push(...newEntries);
+        if (allRequestLogs.length > 500) {
+          allRequestLogs = allRequestLogs.slice(-500);
+        }
+        const filterEl = document.getElementById('requestLogEndpointFilter');
+        const endpointFilter = filterEl ? filterEl.value : '';
+        if (endpointFilter || allRequestLogs.length === newEntries.length) {
+          renderRequestLogs();
+          return;
+        }
+        const output = document.getElementById('requestLogOutput');
+        if (output) {
+          const startIndex = allRequestLogs.length - newEntries.length;
+          output.innerHTML += newEntries.map((log, offset) => buildRequestLogHTML(log, startIndex + offset)).join('');
+          output.scrollTop = output.scrollHeight;
+        } else {
+          renderRequestLogs();
+        }
       }
     }
   } catch {

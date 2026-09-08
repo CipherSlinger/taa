@@ -354,12 +354,8 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "resourceUrl 不能为空")
 		return
 	}
-	if req.RequestID == "" {
-		writeError(w, http.StatusBadRequest, "requestId 不能为空")
-		return
-	}
-	if req.TaskID == "" {
-		writeError(w, http.StatusBadRequest, "taskId 不能为空")
+	if req.RequestID == "" && req.TaskID == "" {
+		writeError(w, http.StatusBadRequest, "requestId 和 taskId 不能同时为空")
 		return
 	}
 
@@ -414,12 +410,15 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("请求解析失败: %v", err))
 		return
 	}
+	req.ResourceURL = strings.TrimSpace(req.ResourceURL)
+	req.RequestID = strings.TrimSpace(req.RequestID)
+	req.TaskID = strings.TrimSpace(req.TaskID)
 	if req.ResourceURL == "" {
 		writeError(w, http.StatusBadRequest, "resourceUrl 不能为空")
 		return
 	}
-	if req.RequestID == "" {
-		writeError(w, http.StatusBadRequest, "requestId 不能为空")
+	if req.RequestID == "" && req.TaskID == "" {
+		writeError(w, http.StatusBadRequest, "requestId 和 taskId 不能同时为空")
 		return
 	}
 
@@ -940,36 +939,6 @@ func (s *TAAState) resourceInfoHandler(w http.ResponseWriter, r *http.Request) {
 
 // ── Script helpers ──────────────────────────────────────
 
-// findScript searches for a script in the root of baseDir or one level below it.
-func findScript(baseDir, scriptName string) (string, error) {
-	log.Printf("findScript: searching for %s in %s", scriptName, baseDir)
-
-	root := filepath.Join(baseDir, scriptName)
-	if info, err := os.Stat(root); err == nil && !info.IsDir() {
-		log.Printf("findScript: found at root: %s", root)
-		return root, nil
-	}
-
-	entries, err := os.ReadDir(baseDir)
-	if err != nil {
-		return "", fmt.Errorf("read script dir: %w", err)
-	}
-
-	log.Printf("findScript: found %d entries in %s", len(entries), baseDir)
-	for _, e := range entries {
-		if e.IsDir() {
-			log.Printf("findScript: checking subdir: %s", e.Name())
-			candidate := filepath.Join(baseDir, e.Name(), scriptName)
-			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-				log.Printf("findScript: found in subdir: %s", candidate)
-				return candidate, nil
-			}
-		} else {
-			log.Printf("findScript: skipping file: %s", e.Name())
-		}
-	}
-	return "", fmt.Errorf("%s not found in %s", scriptName, baseDir)
-}
 
 // runPythonScript executes a Python script via python3 with the given output path and optional extra args.
 // Does not depend on bash or any shell shebang.
@@ -1031,13 +1000,17 @@ func parseRuntimeConfig(raw string) (runtimeConfig, map[string]string, error) {
 	return cfg, env, nil
 }
 
-func resolveRuntimeCommands(commands []string, dataDir, outputDir string) []string {
-	replacer := strings.NewReplacer(
+func newInOutReplacer(dataDir, outputDir string) *strings.Replacer {
+	return strings.NewReplacer(
 		"<in>", dataDir,
 		"<out>", outputDir,
 		"<IN>", dataDir,
 		"<OUT>", outputDir,
 	)
+}
+
+func resolveRuntimeCommands(commands []string, dataDir, outputDir string) []string {
+	replacer := newInOutReplacer(dataDir, outputDir)
 	resolved := make([]string, len(commands))
 	for i, cmd := range commands {
 		resolved[i] = replacer.Replace(cmd)
@@ -1049,12 +1022,7 @@ func resolveRuntimeEnv(env map[string]string, dataDir, outputDir string) map[str
 	if len(env) == 0 {
 		return env
 	}
-	replacer := strings.NewReplacer(
-		"<in>", dataDir,
-		"<out>", outputDir,
-		"<IN>", dataDir,
-		"<OUT>", outputDir,
-	)
+	replacer := newInOutReplacer(dataDir, outputDir)
 	resolved := make(map[string]string, len(env))
 	for k, v := range env {
 		resolved[k] = replacer.Replace(v)
@@ -1106,12 +1074,7 @@ func mergedRuntimeEnv(userEnv, systemEnv map[string]string) []string {
 		merged[key] = value
 	}
 
-	keys := make([]string, 0, len(merged))
-	for key := range merged {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
+	keys := envKeys(merged)
 	out := make([]string, 0, len(keys))
 	for _, key := range keys {
 		out = append(out, key+"="+merged[key])
@@ -1126,13 +1089,4 @@ func envKeys(env map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-// runTrainScript executes a Python training script via python3 with --data-dir and --output arguments.
-// Does not depend on bash or any shell shebang.
-func runTrainScript(script, dataDir, outputDir, taskID, startedAt string) (string, error) {
-	return runPythonScript(script, outputDir, map[string]string{
-		"TAA_TASK_ID":    taskID,
-		"TAA_STARTED_AT": startedAt,
-	}, "--data-dir", dataDir)
 }

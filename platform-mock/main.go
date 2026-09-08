@@ -233,7 +233,7 @@ func (s *requestLogStore) add(entry requestLogEntry) {
 	}
 	s.mu.Lock()
 	s.entries = append(s.entries, entry)
-	if len(s.entries) > s.max {
+	if len(s.entries) > s.max*2 {
 		s.entries = append([]requestLogEntry(nil), s.entries[len(s.entries)-s.max:]...)
 	}
 	s.mu.Unlock()
@@ -419,6 +419,12 @@ func discoverTAAAddr(kubectlPod, kubectlNS, port string) string {
 		port = defaultTAAPort
 	}
 	return "http://" + strings.TrimSpace(string(out)) + ":" + port
+}
+
+func registerUploadDeleteRoutes(mux *http.ServeMux, uploadDir string) {
+	deleteHandler := uploadDeleteHandler(uploadDir)
+	mux.HandleFunc("/api/upload/delete", deleteHandler)
+	mux.HandleFunc("/api/uploads/delete", deleteHandler)
 }
 
 func main() {
@@ -752,9 +758,9 @@ func reportResHandler(store *reportStateStore) http.HandlerFunc {
 			state.Msg = *req.Msg
 		}
 
-		if state.RequestID == "" {
+		if state.RequestID == "" && state.TaskID == "" {
 			state.StatusCode = http.StatusBadRequest
-			state.Message = "缺少 requestId"
+			state.Message = "requestId 和 taskId 不能同时为空"
 		} else {
 			state.Accepted = true
 			state.StatusCode = http.StatusOK

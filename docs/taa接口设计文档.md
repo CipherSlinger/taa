@@ -517,8 +517,8 @@ TAA 接收到 `resourceUrl` 后，下载资源文件（若为 `.enc` 结尾则�
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `resourceUrl` | `string` | 是 | 资源下载地址 |
-| `requestId` | `string` | 是 | 随机值，用于防重放 |
-| `taskId` | `string` | 否 | 测试和训练时任务id |
+| `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空 |
+| `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空 |
 | `publicKey` | `string` | 否 | SM2 公钥 PEM，用于资源解密和结果导出 |
 
 **请求示例**：
@@ -629,9 +629,9 @@ TAA 接收到 `resourceUrl` 后，下载资源文件（若为 `.enc` 结尾则�
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `requestId` | `string` | 是 | 随机值，用于防碰撞；TAA 会将其写入导出文件名 |
+| `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空；TAA 会将其写入导出文件名 |
 | `publicKey` | `string/null` | 否 | SM2 公钥 PEM。phase 1/2 中为空、缺省或 `null` 时明文导出，非空时使用该公钥做 SM2+SM4-GCM 信封加密；phase 3 中当前实现不使用请求中的 `publicKey`，固定使用 phase 1 导入模型时保存的公钥加密 |
-| `taskId` | `string` | 否 | 任务 ID；缺省时响应头 `X-TAA-Task-Id` 为空 |
+| `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空；缺省时响应头 `X-TAA-Task-Id` 为空 |
 
 **请求示例（phase 1/2 明文导出）**：
 
@@ -765,8 +765,8 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
  | 参数 | 类型 | 必填 | 说明 |
  | --- | --- | --- | --- |
  | `resourceUrl` | `string` | 是 | 资源下载地址 |
- | `requestId` | `string` | 是 | 随机值，用于防重放 |
- | `taskId` | `string` | 否 | 任务 ID，用于训练报告生成 |
+ | `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空 |
+ | `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空 |
  | `publicKey` | `string` | 否 | SM2 公钥 PEM。TAA 在 phase=1 时校验并保存该公钥，用于后续 phase=3 结果加密导出 |
  | `runtimeConfig` | `string` | 否 | 运行配置 JSON 字符串。字符串内容应为 JSON 对象，包含顺序执行的命令列表和环境变量；缺省时按默认训练流程执行 |
 
