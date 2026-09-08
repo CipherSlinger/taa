@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
@@ -187,6 +188,207 @@ func (s *reportStateStore) reset() {
 	}
 }
 
+type requestLogEntry struct {
+	ID        string `json:"id"`
+	Timestamp string `json:"timestamp"`
+	Direction string `json:"direction,omitempty"`
+	Level     string `json:"level,omitempty"`
+	Component string `json:"component,omitempty"`
+	Method    string `json:"method"`
+	Path      string `json:"path"`
+	Status    int    `json:"status,omitempty"`
+	Message   string `json:"message,omitempty"`
+	Body      string `json:"body,omitempty"`
+}
+
+type requestLogStore struct {
+	mu      sync.RWMutex
+	path    string
+	entries []requestLogEntry
+	max     int
+}
+
+func newRequestLogStore(max int) *requestLogStore {
+	if max <= 0 {
+		max = 500
+	}
+	return &requestLogStore{max: max}
+}
+
+func (s *requestLogStore) add(entry requestLogEntry) {
+	if entry.ID == "" {
+		entry.ID = fmt.Sprintf("req-%d", time.Now().UnixNano())
+	}
+	if entry.Timestamp == "" {
+		entry.Timestamp = time.Now().Format(time.RFC3339Nano)
+	}
+	if entry.Level == "" {
+		entry.Level = "info"
+	}
+	if entry.Direction == "" {
+		entry.Direction = "out"
+	}
+	s.mu.Lock()
+	s.entries = append(s.entries, entry)
+	if len(s.entries) > s.max {
+		s.entries = append([]requestLogEntry(nil), s.entries[len(s.entries)-s.max:]...)
+	}
+	s.mu.Unlock()
+}
+
+func (s *requestLogStore) list() []requestLogEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]requestLogEntry(nil), s.entries...)
+}
+
+func (s *requestLogStore) drain() []requestLogEntry {
+	s.mu.Lock()
+	entries := append([]requestLogEntry(nil), s.entries...)
+	s.entries = nil
+	s.mu.Unlock()
+	return entries
+}
+
+func (s *requestLogStore) reset() {
+	s.mu.Lock()
+	s.entries = nil
+	s.mu.Unlock()
+}
+
+func summarizeRequestBody(body []byte, limit int) string {
+	text := strings.TrimSpace(string(body))
+	if text == "" {
+		return "{}"
+	}
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	return text[:limit]
+}
+
+func logRequestWithID(store *requestLogStore, id, direction, component, method, path string, status int, message string, body []byte) {
+	if store == nil {
+		return
+	}
+	store.add(requestLogEntry{
+		ID:        id,
+		Timestamp: time.Now().Format(time.RFC3339Nano),
+		Direction: direction,
+		Level:     logLevelFromStatus(status),
+		Component: component,
+		Method:    method,
+		Path:      path,
+		Status:    status,
+		Message:   message,
+		Body:      summarizeRequestBody(body, 1<<20),
+	})
+}
+
+func logRequest(store *requestLogStore, direction, component, method, path string, status int, message string, body []byte) {
+	logRequestWithID(store, "", direction, component, method, path, status, message, body)
+}
+
+func logLevelFromStatus(status int) string {
+	switch {
+	case status >= 500:
+		return "error"
+	case status >= 400:
+		return "warn"
+	default:
+		return "info"
+	}
+}
+
+func requestComponentFromPath(path string) string {
+	switch {
+	case strings.HasPrefix(path, "/v1/taa/register"):
+		return "register"
+	case strings.HasPrefix(path, "/v1/taa/reportResourceRes"):
+		return "reportResourceRes"
+	case strings.HasPrefix(path, "/v1/taa/reportRes"):
+		return "reportRes"
+	case strings.HasPrefix(path, "/v1/taa/reportModelImport"):
+		return "reportModelImport"
+	case strings.HasPrefix(path, "/v1/taa/logs") || strings.HasPrefix(path, "/api/taa/logs"):
+		return "taa-logs"
+	case strings.HasPrefix(path, "/v1/taa/status") || strings.HasPrefix(path, "/api/taa/status"):
+		return "taa-status"
+	case strings.HasPrefix(path, "/v1/taa/getResourceInfo") || strings.HasPrefix(path, "/api/taa/getResourceInfo"):
+		return "taa-resourceInfo"
+	case strings.HasPrefix(path, "/api/upload") || strings.HasPrefix(path, "/api/uploads"):
+		return "uploads"
+	case strings.HasPrefix(path, "/taa/"):
+		return "taa-proxy"
+	case strings.HasPrefix(path, "/v1/taa/"):
+		return "taa-callback"
+	default:
+		cleaned := strings.TrimSpace(strings.Trim(path, "/"))
+		if cleaned == "" {
+			return "root"
+		}
+		return cleaned
+	}
+}
+
+const requestLogBodyLimit = 8 << 10
+
+func shouldCaptureRequestBody(r *http.Request) bool {
+	if r == nil || r.Body == nil {
+		return false
+	}
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return false
+	}
+	contentType := strings.ToLower(r.Header.Get("Content-Type"))
+	if strings.Contains(contentType, "multipart/form-data") {
+		return false
+	}
+	if contentType == "" {
+		return false
+	}
+	return strings.Contains(contentType, "json") || strings.Contains(contentType, "text/") || strings.Contains(contentType, "x-www-form-urlencoded")
+}
+
+func captureRequestBody(r *http.Request) []byte {
+	if !shouldCaptureRequestBody(r) {
+		return nil
+	}
+	if r.ContentLength < 0 || r.ContentLength > requestLogBodyLimit {
+		return nil
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil || len(body) == 0 {
+		return nil
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return body
+}
+
+func loggingReverseProxyHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := captureRequestBody(r)
+		reqID := r.Header.Get("X-Mock-Req-Id")
+		if reqID == "" {
+			reqID = fmt.Sprintf("req-%d", time.Now().UnixNano())
+		}
+		path := r.URL.Path
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		if !strings.HasPrefix(path, "/v1/taa/logs") && !strings.HasPrefix(path, "/v1/taa/status") {
+			bodyText := strings.TrimSpace(string(body))
+			if bodyText == "" {
+				bodyText = "{}"
+			}
+			logRequestWithID(requestLogs, reqID, "out", requestComponentFromPath(path), r.Method, path, http.StatusOK, "", []byte(bodyText))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+var requestLogs = newRequestLogStore(1000)
+
 type reportRequest struct {
 	DockerID  string  `json:"dockerId"`
 	RequestID string  `json:"requestId"`
@@ -267,6 +469,8 @@ func main() {
 	mux.HandleFunc("/api/upload", uploadHandler(*addr, uploadDir))
 	mux.HandleFunc("/api/uploads", uploadListHandler(*addr, uploadDir))
 	mux.HandleFunc("/api/uploads/reset", uploadResetHandler(uploadDir))
+	mux.HandleFunc("/api/request-logs/status", requestLogsStatusHandler)
+	mux.HandleFunc("/api/request-logs/reset", requestLogsResetHandler)
 	mux.HandleFunc("/api/taa/logs", taaLogsHandler(taaAddr))
 	mux.HandleFunc("/api/taa/status", taaStatusHandler(taaAddr))
 	mux.HandleFunc("/api/taa/getResourceInfo", taaGetResourceInfoHandler(taaAddr))
@@ -285,7 +489,7 @@ func main() {
 				log.Printf("TAA proxy error: %s %s → %v", r.Method, r.URL.Path, err)
 				writeEnvelope(w, http.StatusBadGateway, "TAA proxy error: "+err.Error(), nil, http.StatusBadGateway)
 			}
-			mux.Handle("/taa/", http.StripPrefix("/taa", proxy))
+			mux.Handle("/taa/", http.StripPrefix("/taa", loggingReverseProxyHandler(proxy)))
 		}
 	}
 
@@ -820,6 +1024,74 @@ func taaTargetHandler(taaAddr string) http.HandlerFunc {
 	}
 }
 
+func requestLogsStatusHandler(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
+		return
+	}
+	entries := requestLogs.list()
+	writeEnvelope(w, http.StatusOK, "ok", map[string]any{
+		"logs":  entries,
+		"total": len(entries),
+	}, 0)
+}
+
+func requestLogsResetHandler(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
+		return
+	}
+	requestLogs.reset()
+	writeEnvelope(w, http.StatusOK, "reset", nil, 0)
+}
+
+func proxyJSONToTAA(ctx context.Context, taaAddr, endpoint string, body []byte) (int, []byte, error) {
+	component := requestComponentFromPath(endpoint)
+	targetURL := strings.TrimRight(taaAddr, "/") + endpoint
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+	if err != nil {
+		if !strings.Contains(endpoint, "/logs") && !strings.Contains(endpoint, "/status") {
+			logRequest(requestLogs, "out", component, http.MethodPost, endpoint, http.StatusInternalServerError, "创建请求失败: "+err.Error(), body)
+		}
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	start := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		if !strings.Contains(endpoint, "/logs") && !strings.Contains(endpoint, "/status") {
+			logRequest(requestLogs, "out", component, http.MethodPost, endpoint, http.StatusBadGateway, "TAA 请求失败: "+err.Error(), body)
+		}
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		if !strings.Contains(endpoint, "/logs") && !strings.Contains(endpoint, "/status") {
+			logRequest(requestLogs, "out", component, http.MethodPost, endpoint, http.StatusBadGateway, "读取 TAA 响应失败: "+err.Error(), body)
+		}
+		return resp.StatusCode, nil, err
+	}
+	if !strings.Contains(endpoint, "/logs") && !strings.Contains(endpoint, "/status") {
+		logRequest(requestLogs, "out", component, http.MethodPost, endpoint, resp.StatusCode, fmt.Sprintf("TAA HTTP %d (%s)", resp.StatusCode, time.Since(start).Round(time.Millisecond)), body)
+	}
+	return resp.StatusCode, respBody, nil
+}
+
 // taaLogsHandler proxies log requests to TAA's /v1/taa/logs endpoint.
 func taaLogsHandler(taaAddr string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -829,37 +1101,23 @@ func taaLogsHandler(taaAddr string) http.HandlerFunc {
 			return
 		}
 
-		// Read request body (may contain since parameter)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			writeEnvelope(w, http.StatusBadRequest, "读取请求体失败: "+err.Error(), nil, http.StatusBadRequest)
 			return
 		}
 
-		// Forward to TAA
-		targetURL := strings.TrimRight(taaAddr, "/") + "/v1/taa/logs"
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(body))
+		status, respBody, err := proxyJSONToTAA(r.Context(), taaAddr, "/v1/taa/logs", body)
 		if err != nil {
-			writeEnvelope(w, http.StatusInternalServerError, "创建请求失败: "+err.Error(), nil, http.StatusInternalServerError)
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			writeEnvelope(w, http.StatusBadGateway, "TAA 请求失败: "+err.Error(), nil, http.StatusBadGateway)
-			return
-		}
-		defer resp.Body.Close()
-
-		respBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			writeEnvelope(w, http.StatusBadGateway, "读取 TAA 响应失败: "+err.Error(), nil, http.StatusBadGateway)
+			if status == 0 {
+				status = http.StatusBadGateway
+			}
+			writeEnvelope(w, status, "TAA 请求失败: "+err.Error(), nil, status)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(resp.StatusCode)
+		w.WriteHeader(status)
 		w.Write(respBody)
 	}
 }
@@ -873,29 +1131,17 @@ func taaStatusHandler(taaAddr string) http.HandlerFunc {
 			return
 		}
 
-		targetURL := strings.TrimRight(taaAddr, "/") + "/v1/taa/status"
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, strings.NewReader("{}"))
+		status, respBody, err := proxyJSONToTAA(r.Context(), taaAddr, "/v1/taa/status", []byte("{}"))
 		if err != nil {
-			writeEnvelope(w, http.StatusInternalServerError, "创建请求失败: "+err.Error(), nil, http.StatusInternalServerError)
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			writeEnvelope(w, http.StatusBadGateway, "TAA 请求失败: "+err.Error(), nil, http.StatusBadGateway)
-			return
-		}
-		defer resp.Body.Close()
-
-		respBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			writeEnvelope(w, http.StatusBadGateway, "读取 TAA 响应失败: "+err.Error(), nil, http.StatusBadGateway)
+			if status == 0 {
+				status = http.StatusBadGateway
+			}
+			writeEnvelope(w, status, "TAA 请求失败: "+err.Error(), nil, status)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(resp.StatusCode)
+		w.WriteHeader(status)
 		w.Write(respBody)
 	}
 }
@@ -915,29 +1161,17 @@ func taaGetResourceInfoHandler(taaAddr string) http.HandlerFunc {
 			return
 		}
 
-		targetURL := strings.TrimRight(taaAddr, "/") + "/v1/taa/getResourceInfo"
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(body))
+		status, respBody, err := proxyJSONToTAA(r.Context(), taaAddr, "/v1/taa/getResourceInfo", body)
 		if err != nil {
-			writeEnvelope(w, http.StatusInternalServerError, "创建请求失败: "+err.Error(), nil, http.StatusInternalServerError)
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			writeEnvelope(w, http.StatusBadGateway, "TAA 请求失败: "+err.Error(), nil, http.StatusBadGateway)
-			return
-		}
-		defer resp.Body.Close()
-
-		respBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			writeEnvelope(w, http.StatusBadGateway, "读取 TAA 响应失败: "+err.Error(), nil, http.StatusBadGateway)
+			if status == 0 {
+				status = http.StatusBadGateway
+			}
+			writeEnvelope(w, status, "TAA 请求失败: "+err.Error(), nil, status)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(resp.StatusCode)
+		w.WriteHeader(status)
 		w.Write(respBody)
 	}
 }
