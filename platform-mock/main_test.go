@@ -23,7 +23,7 @@ func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
 	if strings.Contains(indexHTML, "③ 资源下载结果上报") {
 		t.Fatal("index should not show the resource download result report card")
 	}
-	for _, want := range []string{"③ 训练结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult", "saveReportBtn", "reportResBodyBtn", "reportResReportBtn", "openReportResReportModal", "查看报告", "reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "importModelCommands", "importModelEnv", "resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport", "uploadedUrlInput", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件", "平台发往 TAA 的请求体记录", "requestLogStatusDot", "requestLogOutput", "requestLogEndpointFilter", "uploadEncryptSwitch", "启用加密", "deleteUploadedFile"} {
+	for _, want := range []string{"③ 训练结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult", "saveReportBtn", "reportResBodyBtn", "reportResReportBtn", "openReportResReportModal", "查看报告", "reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "importModelCommands", "importModelEnv", "resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport", "uploadedUrlInput", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件", "平台发往 TAA 的请求体记录", "requestLogStatusDot", "requestLogOutput", "requestLogEndpointFilter", "uploadEncryptSwitch", "启用加密", "deleteUploadedFile", "创建公钥", "generateImportModelPublicKey", "exportDecryptSwitch", "是否解密", "exportPrivateKey", "exportRequestId"} {
 		if !strings.Contains(indexHTML, want) {
 			t.Fatalf("index missing %q", want)
 		}
@@ -624,5 +624,200 @@ func TestUploadHandlerEncryption(t *testing.T) {
 	})
 	if status != http.StatusBadRequest || api.Error != http.StatusBadRequest {
 		t.Fatalf("status = %d, error = %d, want 400", status, api.Error)
+	}
+}
+
+func TestCryptoGenerateKeyHandler(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/crypto/generate-key", cryptoGenerateKeyHandler)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	// 1. POST 请求生成 SM2 密钥对
+	resp, err := http.Post(server.URL+"/api/crypto/generate-key", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /api/crypto/generate-key: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var api struct {
+		Msg    string `json:"msg"`
+		Error  int    `json:"error"`
+		Result struct {
+			PublicKey  string `json:"publicKey"`
+			PrivateKey string `json:"privateKey"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&api); err != nil {
+		t.Fatalf("decode generate-key response: %v", err)
+	}
+	if api.Error != 0 {
+		t.Fatalf("api error = %d, msg = %s", api.Error, api.Msg)
+	}
+	if !strings.Contains(api.Result.PublicKey, "BEGIN PUBLIC KEY") {
+		t.Fatalf("invalid publicKey PEM: %s", api.Result.PublicKey)
+	}
+	if !strings.Contains(api.Result.PrivateKey, "BEGIN PRIVATE KEY") {
+		t.Fatalf("invalid privateKey PEM: %s", api.Result.PrivateKey)
+	}
+
+	// 验证公私钥可被成功解析并完成加解密往返
+	pubKey, err := crypto.ParseSM2PublicKeyPEM([]byte(api.Result.PublicKey))
+	if err != nil {
+		t.Fatalf("parse generated public key: %v", err)
+	}
+	privKey, err := crypto.ParseSM2PrivateKeyPEM([]byte(api.Result.PrivateKey))
+	if err != nil {
+		t.Fatalf("parse generated private key: %v", err)
+	}
+
+	testData := []byte("platform-mock key generation test")
+	sealed, err := crypto.SealSM2SM4GCM(pubKey, testData)
+	if err != nil {
+		t.Fatalf("seal test data: %v", err)
+	}
+	opened, err := crypto.OpenSM2SM4GCM(privKey, sealed)
+	if err != nil {
+		t.Fatalf("open sealed data: %v", err)
+	}
+	if !bytes.Equal(opened, testData) {
+		t.Fatalf("opened = %q, want %q", opened, testData)
+	}
+
+	// 2. GET 请求同样支持
+	getResp, err := http.Get(server.URL + "/api/crypto/generate-key")
+	if err != nil {
+		t.Fatalf("GET /api/crypto/generate-key: %v", err)
+	}
+	getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", getResp.StatusCode)
+	}
+}
+
+func TestCryptoDecryptHandler(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/crypto/decrypt", cryptoDecryptHandler)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	privKey, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	privPEM, err := crypto.MarshalSM2PrivateKeyPEM(privKey)
+	if err != nil {
+		t.Fatalf("marshal private key: %v", err)
+	}
+
+	rawPlaintext := []byte("trained model export archive data contents")
+	sealed, err := crypto.SealSM2SM4GCM(&privKey.PublicKey, rawPlaintext)
+	if err != nil {
+		t.Fatalf("seal test data: %v", err)
+	}
+
+	// 1. Multipart Form 上传解密
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("privateKey", string(privPEM)); err != nil {
+		t.Fatalf("write privateKey field: %v", err)
+	}
+	part, err := writer.CreateFormFile("file", "export.tar.gz.enc")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := io.Copy(part, bytes.NewReader(sealed)); err != nil {
+		t.Fatalf("copy sealed file: %v", err)
+	}
+	writer.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/crypto/decrypt", &body)
+	if err != nil {
+		t.Fatalf("create decrypt req: %v", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do decrypt req: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("decrypt multipart status = %d, body = %s", resp.StatusCode, errBody)
+	}
+	decryptedBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read decrypted body: %v", err)
+	}
+	if !bytes.Equal(decryptedBytes, rawPlaintext) {
+		t.Fatalf("decrypted = %q, want %q", decryptedBytes, rawPlaintext)
+	}
+
+	// 2. JSON 格式解密
+	jsonPayload, _ := json.Marshal(map[string]string{
+		"privateKey": string(privPEM),
+		"ciphertext": base64.StdEncoding.EncodeToString(sealed),
+	})
+	jsonResp, err := http.Post(server.URL+"/api/crypto/decrypt", "application/json", bytes.NewReader(jsonPayload))
+	if err != nil {
+		t.Fatalf("do decrypt json req: %v", err)
+	}
+	defer jsonResp.Body.Close()
+
+	if jsonResp.StatusCode != http.StatusOK {
+		t.Fatalf("decrypt json status = %d", jsonResp.StatusCode)
+	}
+	var jsonResult struct {
+		Msg    string `json:"msg"`
+		Error  int    `json:"error"`
+		Result struct {
+			Plaintext string `json:"plaintext"`
+			Size      int    `json:"size"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(jsonResp.Body).Decode(&jsonResult); err != nil {
+		t.Fatalf("decode decrypt json result: %v", err)
+	}
+	decodedPlaintext, err := base64.StdEncoding.DecodeString(jsonResult.Result.Plaintext)
+	if err != nil {
+		t.Fatalf("decode base64 plaintext: %v", err)
+	}
+	if !bytes.Equal(decodedPlaintext, rawPlaintext) {
+		t.Fatalf("json decrypted = %q, want %q", decodedPlaintext, rawPlaintext)
+	}
+
+	// 3. 错误密钥解密失败
+	otherKey, _ := crypto.GenerateSM2KeyPair()
+	otherPEM, _ := crypto.MarshalSM2PrivateKeyPEM(otherKey)
+	failPayload, _ := json.Marshal(map[string]string{
+		"privateKey": string(otherPEM),
+		"ciphertext": base64.StdEncoding.EncodeToString(sealed),
+	})
+	failResp, err := http.Post(server.URL+"/api/crypto/decrypt", "application/json", bytes.NewReader(failPayload))
+	if err != nil {
+		t.Fatalf("fail decrypt req: %v", err)
+	}
+	failResp.Body.Close()
+	if failResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("fail status = %d, want 400", failResp.StatusCode)
+	}
+
+	// 4. 缺少 privateKey 返回 400
+	missingKeyPayload, _ := json.Marshal(map[string]string{
+		"ciphertext": base64.StdEncoding.EncodeToString(sealed),
+	})
+	missingResp, err := http.Post(server.URL+"/api/crypto/decrypt", "application/json", bytes.NewReader(missingKeyPayload))
+	if err != nil {
+		t.Fatalf("missing key req: %v", err)
+	}
+	missingResp.Body.Close()
+	if missingResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing key status = %d, want 400", missingResp.StatusCode)
 	}
 }
