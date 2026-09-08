@@ -32,21 +32,14 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 
 	StepSeparator("Decrypt")
 	s.setCurrentOp("decrypting")
-	plaintextPath := ciphertextPath
-	if resourceURLHasEncSuffix(req.ResourceURL) {
-		s.Logs.Add(LogInfo, "decrypt", "资源 URL 以 .enc 结尾，开始解密资源: %s", ciphertextPath)
-		decryptedPath, err := s.decryptResourceToTempFile(ciphertextPath)
-		if err != nil {
-			s.Logs.Add(LogError, "decrypt", "解密失败: %v", err)
-			s.setCurrentOp("idle")
-			s.reportImportFailure(req, phase, isModel, startedAt, fmt.Sprintf("解密资源失败: %v", err))
-			return
-		}
-		plaintextPath = decryptedPath
+	plaintextPath, isDecrypted, err := s.resolvePlaintextResource(req.ResourceURL, ciphertextPath, "decrypt")
+	if err != nil {
+		s.setCurrentOp("idle")
+		s.reportImportFailure(req, phase, isModel, startedAt, err.Error())
+		return
+	}
+	if isDecrypted {
 		defer os.Remove(plaintextPath)
-		s.Logs.Add(LogInfo, "decrypt", "解密成功 -> %s", plaintextPath)
-	} else {
-		s.Logs.Add(LogInfo, "decrypt", "资源 URL 非 .enc 后缀，跳过解密: %s", req.ResourceURL)
 	}
 
 	s.mu.Lock()
@@ -59,6 +52,24 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 
 	trainRecord := ImportIndexRecord{}
 	if isModel {
+		hash, err := sm3HexOfFile(plaintextPath)
+		if err != nil {
+			s.Logs.Add(LogError, "hash", "计算模型压缩包哈希失败: %v", err)
+			s.setCurrentOp("idle")
+			s.reportImportFailure(req, phase, true, startedAt, fmt.Sprintf("计算模型压缩包哈希失败: %v", err))
+			return
+		}
+		var size int64
+		if fi, statErr := os.Stat(plaintextPath); statErr == nil {
+			size = fi.Size()
+		}
+		s.setModelChecksum(map[string]any{
+			"size":      size,
+			"algorithm": "sm3",
+			"value":     hash,
+		})
+		s.Logs.Add(LogInfo, "hash", "计算模型压缩包哈希成功: %s (%d bytes)", hash, size)
+
 		s.Logs.Add(LogInfo, "extract", "开始解压到: %s", s.Security.ModelDir)
 		if err := extractArchiveToDir(s.Security.ModelDir, plaintextPath); err != nil {
 			s.Logs.Add(LogError, "extract", "解压失败: %v", err)
@@ -327,6 +338,80 @@ func resourceURLHasEncSuffix(resourceURL string) bool {
 		path = u.Path
 	}
 	return strings.HasSuffix(strings.ToLower(path), ".enc")
+}
+
+// isArchiveFile 检查文件是否为已知明文压缩包格式（ZIP / GZIP / TAR）。
+func isArchiveFile(filePath string) (bool, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return false, fmt.Errorf("打开文件检测格式失败: %w", err)
+	}
+	defer f.Close()
+
+	hdr := make([]byte, 512)
+	n, err := f.Read(hdr)
+	if err != nil && err != io.EOF {
+		return false, fmt.Errorf("读取文件头部失败: %w", err)
+	}
+
+	if n >= 2 {
+		// ZIP: starts with "PK" (0x50 0x4B)
+		if hdr[0] == 0x50 && hdr[1] == 0x4B {
+			return true, nil
+		}
+		// GZIP: starts with 0x1F 0x8B
+		if hdr[0] == 0x1F && hdr[1] == 0x8B {
+			return true, nil
+		}
+	}
+	// TAR: check for "ustar" magic at offset 257
+	if n >= 262 && string(hdr[257:262]) == "ustar" {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+// resolvePlaintextResource 决策并准备资源的明文文件路径。
+// 判断策略：
+// 1. 若 resourceURL 以 .enc 结尾，直接判定为密文并解密；
+// 2. 若非 .enc 结尾，检测文件头部是否为明文压缩包（ZIP / GZIP / TAR）：
+//    - 若是压缩包，判定为明文，直接返回原路径（isDecrypted = false）；
+//    - 若非压缩包，尝试作为密文解密：
+//      - 解密成功返回明文临时文件路径（isDecrypted = true）；
+//      - 解密失败返回错误。
+//
+// 调用方注意：若 isDecrypted 为 true，调用方需负责清理返回的 plainPath（例如 defer os.Remove(plainPath)）。
+func (s *TAAState) resolvePlaintextResource(resourceURL, downloadedPath, logScope string) (string, bool, error) {
+	if resourceURLHasEncSuffix(resourceURL) {
+		s.Logs.Add(LogInfo, logScope, "资源 URL 以 .enc 结尾，开始解密资源: %s", downloadedPath)
+		decryptedPath, err := s.decryptResourceToTempFile(downloadedPath)
+		if err != nil {
+			s.Logs.Add(LogError, logScope, "解密失败: %v", err)
+			return "", false, fmt.Errorf("解密资源失败: %w", err)
+		}
+		s.Logs.Add(LogInfo, logScope, "解密成功 -> %s", decryptedPath)
+		return decryptedPath, true, nil
+	}
+
+	isArchive, err := isArchiveFile(downloadedPath)
+	if err != nil {
+		s.Logs.Add(LogError, logScope, "检测资源格式失败: %v", err)
+		return "", false, fmt.Errorf("检测资源格式失败: %w", err)
+	}
+	if isArchive {
+		s.Logs.Add(LogInfo, logScope, "资源 URL 非 .enc 后缀且检测到明文压缩包格式，跳过解密: %s", resourceURL)
+		return downloadedPath, false, nil
+	}
+
+	s.Logs.Add(LogInfo, logScope, "资源 URL 非 .enc 后缀且未检测到压缩包魔数，尝试作为密文解密: %s", downloadedPath)
+	decryptedPath, err := s.decryptResourceToTempFile(downloadedPath)
+	if err != nil {
+		s.Logs.Add(LogError, logScope, "尝试解密失败: %v", err)
+		return "", false, fmt.Errorf("资源非 .enc 后缀且非有效压缩包，尝试解密失败: %w", err)
+	}
+	s.Logs.Add(LogInfo, logScope, "尝试解密成功 -> %s", decryptedPath)
+	return decryptedPath, true, nil
 }
 
 func (s *TAAState) clearImportedState(isModel bool, phase int) {
@@ -628,9 +713,13 @@ func (s *TAAState) buildAndSaveTrainingReport(taskID string, startedAt, finished
 		return nil, err
 	}
 
-	modelChecksum, err := buildDirectoryChecksum(s.Security.ModelDir, "sm3")
-	if err != nil {
-		return nil, err
+	modelChecksum := s.getModelChecksum()
+	if modelChecksum == nil {
+		var err error
+		modelChecksum, err = buildDirectoryChecksum(s.Security.ModelDir, "sm3")
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	report, err := buildTrainingReport(taskID, startedAt, finishedAt, status, exitCode, failureReason, modelChecksum, trainingResult, audit, includeAudit)
