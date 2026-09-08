@@ -758,9 +758,11 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
  | `requestId` | `string` | 是 | 随机值，用于防重放 |
  | `taskId` | `string` | 否 | 任务 ID，用于训练报告生成 |
  | `publicKey` | `string` | 否 | SM2 公钥 PEM。TAA 在 phase=1 时校验并保存该公钥，用于后续 phase=3 结果加密导出 |
- | `runtimeConfig` | `object/null` | 否 | 运行配置。包含顺序执行的命令列表和环境变量；缺省时按默认训练流程执行 |
+ | `runtimeConfig` | `string` | 否 | 运行配置 JSON 字符串。字符串内容应为 JSON 对象，包含顺序执行的命令列表和环境变量；缺省时按默认训练流程执行 |
 
-**`runtimeConfig` 字段说明**：
+**`runtimeConfig` 字段格式**：
+
+`runtimeConfig` 的值是一个 JSON 字符串，字符串解析后的内容结构如下：
 
 | 子字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -773,7 +775,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 - 前一条命令成功后，才执行下一条命令。
 - 任一条命令失败时，立即停止后续执行，并将失败结果上报平台。
 - `env` 中定义的环境变量对该次导入模型的执行过程生效。
-- `runtimeConfig` 为空或缺省时，TAA 按默认模型导入流程执行，不额外注入命令和环境变量。
+- `runtimeConfig` 为空、缺省或为空字符串时，TAA 按默认模型导入流程执行，不额外注入命令和环境变量。
 
 **请求示例**：
 
