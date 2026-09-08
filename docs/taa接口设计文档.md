@@ -767,14 +767,15 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 | 子字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `commands` | `array[string]` | 否 | 按顺序执行的命令列表。数组顺序即执行顺序，任一命令失败则停止后续执行 |
-| `env` | `object` | 否 | 运行时环境变量，键值对形式，注入到每条命令的执行环境中 |
+| `env` | `string` | 否 | 运行时环境变量 JSON 字符串。字符串内容应为 JSON 对象，解析后得到键值对并注入到每条命令的执行环境中 |
 
 **执行规则**：
 
 - `commands` 按数组顺序执行。
 - 前一条命令成功后，才执行下一条命令。
 - 任一条命令失败时，立即停止后续执行，并将失败结果上报平台。
-- `env` 中定义的环境变量对该次导入模型的执行过程生效。
+- `env` 为空、缺省或为空字符串时，不额外注入环境变量。
+- `env` 字符串解析后的环境变量对该次导入模型的执行过程生效。
 - `runtimeConfig` 为空、缺省或为空字符串时，TAA 按默认模型导入流程执行，不额外注入命令和环境变量。
 
 **请求示例**：
@@ -791,10 +792,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
       "python train.py --epochs 20 --batch-size 64",
       "python export_model.py"
     ],
-    "env": {
-      "CUDA_VISIBLE_DEVICES": "0",
-      "OMP_NUM_THREADS": "4"
-    }
+    "env": "{\"CUDA_VISIBLE_DEVICES\":\"0\",\"OMP_NUM_THREADS\":\"4\"}"
   }
 }
 ```
