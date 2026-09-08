@@ -1,21 +1,19 @@
-// dstree — 目录树解析工具（多模态数据集 → JSON）
+// filetree — 目录树解析工具（多模态数据集 → JSON）
 // ================================================================
 // 扫描一个数据集目录，按魔数（magic bytes）识别文件格式（不信扩展名），
 // 对结构化文件就地解析 schema 与数据量，输出一棵带标注的目录树 JSON。
 //
 // 覆盖格式：CSV / TSV / XLSX / JSON / JSONL / SQLite / Parquet(仅识别)
-//           PNG / JPEG / GIF / WEBP / PDF / ZIP / GZIP / 纯文本
+//
+//	PNG / JPEG / GIF / WEBP / PDF / ZIP / GZIP / 纯文本
 //
 // 设计约束（面向 TEE 侧部署）：
 //   - CSV/JSONL 逐行流式读取，内存占用与文件大小无关
 //   - 单文件解析上限（默认 128MB）与文件总数上限（默认 100000），防 zip bomb / 恶意超大输入
 //   - 单个文件解析失败只降级为警告标注，不中断整棵树
 //
-// 用法：
-//   go build -o dstree .
-//   ./dstree -root /path/to/dataset -o tree.json
-//   ./dstree -root /path/to/dataset            # 输出到 stdout
-package main
+// 该包只提供库接口，由上层应用直接调用。
+package filetree
 
 import (
 	"archive/zip"
@@ -24,7 +22,6 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -37,11 +34,13 @@ import (
 	goparquet "github.com/fraugster/parquet-go"
 	"github.com/xuri/excelize/v2"
 	_ "modernc.org/sqlite" // 纯 Go SQLite 驱动，无 CGO 依赖
+
+	teecrypto "taa/crypto"
 )
 
 const (
 	toolVersion = "1.0.0"
-	headSize    = 512   // 魔数探测读取的头部字节数
+	headSize    = 512     // 魔数探测读取的头部字节数
 	sniffSize   = 1 << 20 // 文本嗅探上限 1MB
 )
 
@@ -59,16 +58,16 @@ type Field struct {
 
 // Node 目录树节点：目录与文件统一结构，文件无 children
 type Node struct {
-	Name     string      `json:"name"`
-	Type     string      `json:"type"` // "dir" | "file"
+	Name string `json:"name"`
+	Type string `json:"type"` // "dir" | "file"
 
 	// 文件属性
 	Format   string      `json:"fmt,omitempty"` // 魔数探测出的格式标签
 	Size     int64       `json:"size,omitempty"`
-	Rows     *int64      `json:"rows,omitempty"`    // 数值型行/条数（前端可排序）
+	Rows     *int64      `json:"rows,omitempty"`     // 数值型行/条数（前端可排序）
 	IsObject bool        `json:"isObject,omitempty"` // JSON 是否为对象
 	Fields   []Field     `json:"fields,omitempty"`   // schema：顶层字段/表头
-	Tables   []TableInfo `json:"tables,omitempty"`    // SQLite 表级明细
+	Tables   []TableInfo `json:"tables,omitempty"`   // SQLite 表级明细
 	Warning  string      `json:"warning,omitempty"`  // 解析失败/截断等警告
 
 	// 目录属性
@@ -83,17 +82,226 @@ type FormatStat struct {
 	SizeSum int64  `json:"size_sum"`
 }
 
+// ChecksumInfo 描述资源归档或数据集的完整性校验和信息
+type ChecksumInfo struct {
+	Size      int64  `json:"size,omitempty"`
+	Algorithm string `json:"algorithm"`
+	Value     string `json:"value"`
+}
+
 // Report 最终 JSON 报告
 type Report struct {
-	Version      string       `json:"version"`
-	GeneratedAt  string       `json:"generated_at"`
-	TotalFiles   int          `json:"total_files"`
-	TotalSize    int64        `json:"total_size"`
-	TotalSizeH   string       `json:"total_size_h"`
-	Structured   int          `json:"structured_files"` // 成功解析出 schema/行数的文件数
-	Warnings     []string     `json:"warnings,omitempty"`
-	ByFormat     []FormatStat `json:"by_format"`
-	Tree         *Node        `json:"tree"`
+	Version     string        `json:"version"`
+	GeneratedAt string        `json:"generated_at"`
+	TotalFiles  int           `json:"total_files"`
+	TotalSize   int64         `json:"total_size"`
+	TotalSizeH  string        `json:"total_size_h"`
+	Structured  int           `json:"structured_files"` // 成功解析出 schema/行数的文件数
+	Warnings    []string      `json:"warnings,omitempty"`
+	ByFormat    []FormatStat  `json:"by_format"`
+	Checksum    *ChecksumInfo `json:"checksum,omitempty"`
+	Tree        *Node         `json:"tree"`
+}
+
+// Options 控制扫描上限与校验和计算。
+type Options struct {
+	MaxFiles      int
+	MaxParseBytes int64
+	ArchivePath   string        // 可选：明文压缩包路径；若提供，优先计算该归档包的 SM3 校验和（与 import 接口逻辑一致）
+	Checksum      *ChecksumInfo // 可选：直接注入的校验和信���
+}
+
+// DefaultOptions 返回与 CLI 相同的默认扫描参数。
+func DefaultOptions() Options {
+	return Options{
+		MaxFiles:      100000,
+		MaxParseBytes: 128 << 20,
+	}
+}
+
+// computeFileSM3 计算单个归档文件的 SM3 校验和与大小（与 import 数据导入接口对压缩包计算 SM3 哈希的逻辑一致）
+func computeFileSM3(path string) (*ChecksumInfo, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open file for sm3: %w", err)
+	}
+	defer f.Close()
+
+	st, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat file for sm3: %w", err)
+	}
+
+	h := teecrypto.NewSM3()
+	buf := make([]byte, 64*1024)
+	for {
+		n, rerr := f.Read(buf)
+		if n > 0 {
+			if _, werr := h.Write(buf[:n]); werr != nil {
+				return nil, fmt.Errorf("write sm3: %w", werr)
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return nil, fmt.Errorf("read file for sm3: %w", rerr)
+		}
+	}
+
+	return &ChecksumInfo{
+		Size:      st.Size(),
+		Algorithm: "sm3",
+		Value:     fmt.Sprintf("%x", h.Sum(nil)),
+	}, nil
+}
+
+// computeDirectorySM3 计算目录下所有常规文件（按相对路径排序）的流式 SM3 校验和与累计大小
+func computeDirectorySM3(dir string) (*ChecksumInfo, error) {
+	var files []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return nil
+		}
+		files = append(files, path)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk dir for sm3: %w", err)
+	}
+	sort.Strings(files)
+
+	h := teecrypto.NewSM3()
+	var totalSize int64
+	buf := make([]byte, 64*1024)
+
+	for _, fpath := range files {
+		rel, err := filepath.Rel(dir, fpath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve rel path for %s: %w", fpath, err)
+		}
+		h.Write([]byte(filepath.ToSlash(rel)))
+		h.Write([]byte{0})
+
+		info, err := os.Lstat(fpath)
+		if err != nil {
+			return nil, fmt.Errorf("stat file %s: %w", fpath, err)
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		totalSize += info.Size()
+
+		f, err := os.Open(fpath)
+		if err != nil {
+			return nil, fmt.Errorf("open file %s: %w", fpath, err)
+		}
+		for {
+			n, rerr := f.Read(buf)
+			if n > 0 {
+				h.Write(buf[:n])
+			}
+			if rerr == io.EOF {
+				break
+			}
+			if rerr != nil {
+				f.Close()
+				return nil, fmt.Errorf("read file %s: %w", fpath, rerr)
+			}
+		}
+		f.Close()
+	}
+
+	return &ChecksumInfo{
+		Size:      totalSize,
+		Algorithm: "sm3",
+		Value:     fmt.Sprintf("%x", h.Sum(nil)),
+	}, nil
+}
+
+// BuildReport 扫描数据集目录并返回完整报告。
+func BuildReport(root string, opts Options) (*Report, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("路径错误: %w", err)
+	}
+	st, err := os.Stat(abs)
+	if err != nil {
+		return nil, err
+	}
+	if !st.IsDir() {
+		return nil, fmt.Errorf("不是有效目录: %s", root)
+	}
+
+	if opts.MaxFiles <= 0 {
+		opts.MaxFiles = DefaultOptions().MaxFiles
+	}
+	if opts.MaxParseBytes <= 0 {
+		opts.MaxParseBytes = DefaultOptions().MaxParseBytes
+	}
+
+	s := &scanner{
+		root:     abs,
+		maxFiles: opts.MaxFiles,
+		maxParse: opts.MaxParseBytes,
+		byFormat: map[string]*FormatStat{},
+	}
+	tree, err := s.scan(abs, "")
+	if err != nil {
+		return nil, err
+	}
+	tree.Name = filepath.Base(abs)
+
+	formats := make([]FormatStat, 0, len(s.byFormat))
+	for _, v := range s.byFormat {
+		formats = append(formats, *v)
+	}
+	sort.Slice(formats, func(i, j int) bool { return formats[i].Count > formats[j].Count })
+
+	var checksum *ChecksumInfo
+	if opts.Checksum != nil {
+		checksum = opts.Checksum
+	} else if opts.ArchivePath != "" {
+		c, err := computeFileSM3(opts.ArchivePath)
+		if err != nil {
+			return nil, fmt.Errorf("计算归档包 SM3 校验和失败: %w", err)
+		}
+		checksum = c
+	} else {
+		c, err := computeDirectorySM3(abs)
+		if err == nil {
+			checksum = c
+		}
+	}
+
+	return &Report{
+		Version:     toolVersion,
+		GeneratedAt: time.Now().Format(time.RFC3339),
+		TotalFiles:  s.fileCount,
+		TotalSize:   s.totalSize,
+		TotalSizeH:  humanSize(s.totalSize),
+		Structured:  s.structured,
+		Warnings:    s.warnings,
+		ByFormat:    formats,
+		Checksum:    checksum,
+		Tree:        tree,
+	}, nil
+}
+
+// MarshalReport 扫描数据集目录并直接返回 JSON。
+func MarshalReport(root string, opts Options) ([]byte, error) {
+	report, err := BuildReport(root, opts)
+	if err != nil {
+		return nil, err
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -962,14 +1170,14 @@ func describeSQLite(path string, n *Node) error {
 // ---------------------------------------------------------------------------
 
 type scanner struct {
-	root      string
-	maxFiles  int
-	maxParse  int64 // 单文件解析上限
-	totalSize int64
-	fileCount int
+	root       string
+	maxFiles   int
+	maxParse   int64 // 单文件解析上限
+	totalSize  int64
+	fileCount  int
 	structured int
-	byFormat  map[string]*FormatStat
-	warnings  []string
+	byFormat   map[string]*FormatStat
+	warnings   []string
 }
 
 func (s *scanner) warn(msg string) {
@@ -986,7 +1194,10 @@ func (s *scanner) scan(dir string, rel string) (*Node, error) {
 		Name: filepath.Base(dir),
 		Type: "dir",
 	}
-	type item struct{ ent os.DirEntry; child *Node }
+	type item struct {
+		ent   os.DirEntry
+		child *Node
+	}
 	var dirs, files []item
 
 	for _, e := range entries {
@@ -1117,74 +1328,3 @@ func humanSize(n int64) string {
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
-
-func main() {
-	var (
-		root     = flag.String("root", "../models/examples/Retina-DKD/test/", "要扫描的数据集目录")
-		out      = flag.String("o", "./Retina-DKD-filetree.json", "输出 JSON 文件路径（缺省输出到 stdout）")
-		maxFiles = flag.Int("max-files", 100000, "文件总数上限")
-		maxParse = flag.Int64("max-parse-mb", 128, "单文件结构化解析上限（MB）")
-	)
-	flag.Parse()
-
-	abs, err := filepath.Abs(*root)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "路径错误:", err)
-		os.Exit(1)
-	}
-	st, err := os.Stat(abs)
-	if err != nil || !st.IsDir() {
-		fmt.Fprintln(os.Stderr, "不是有效目录:", *root)
-		os.Exit(1)
-	}
-
-	s := &scanner{
-		root:     abs,
-		maxFiles: *maxFiles,
-		maxParse: *maxParse << 20,
-		byFormat: map[string]*FormatStat{},
-	}
-	tree, err := s.scan(abs, "")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "扫描失败:", err)
-		os.Exit(1)
-	}
-	tree.Name = filepath.Base(abs)
-
-	// 格式分布排序
-	formats := make([]FormatStat, 0, len(s.byFormat))
-	for _, v := range s.byFormat {
-		formats = append(formats, *v)
-	}
-	sort.Slice(formats, func(i, j int) bool { return formats[i].Count > formats[j].Count })
-
-	report := Report{
-		Version:     toolVersion,
-		GeneratedAt:  time.Now().Format(time.RFC3339),
-		TotalFiles:   s.fileCount,
-		TotalSize:    s.totalSize,
-		TotalSizeH:   humanSize(s.totalSize),
-		Structured:   s.structured,
-		Warnings:     s.warnings,
-		ByFormat:     formats,
-		Tree:         tree,
-	}
-
-	data, err := json.MarshalIndent(report, "", "  ")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "JSON 序列化失败:", err)
-		os.Exit(1)
-	}
-	data = append(data, '\n')
-
-	if *out != "" {
-		if err := os.WriteFile(*out, data, 0o644); err != nil {
-			fmt.Fprintln(os.Stderr, "写入失败:", err)
-			os.Exit(1)
-		}
-		fmt.Fprintf(os.Stderr, "已写入 %s：%d 个文件，%s，结构化文件 %d 个\n",
-			*out, report.TotalFiles, report.TotalSizeH, report.Structured)
-	} else {
-		os.Stdout.Write(data)
-	}
-}

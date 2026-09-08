@@ -100,6 +100,16 @@ func TestResourceInfoHandlerDownloadsAndBuildsFileTree(t *testing.T) {
 	if _, ok := report["structured_files"]; !ok {
 		t.Fatalf("result missing structured_files: %#v", report)
 	}
+	checksum, ok := report["checksum"].(map[string]any)
+	if !ok || checksum == nil {
+		t.Fatalf("result missing checksum: %#v", report)
+	}
+	if checksum["algorithm"] != "sm3" {
+		t.Fatalf("checksum algorithm = %v, want sm3", checksum["algorithm"])
+	}
+	if checksum["value"] == "" {
+		t.Fatalf("checksum value is empty: %#v", checksum)
+	}
 }
 
 func TestResourceInfoHandlerDecryptsEncryptedResource(t *testing.T) {
@@ -144,6 +154,16 @@ func TestResourceInfoHandlerDecryptsEncryptedResource(t *testing.T) {
 	}
 	if report["tree"] == nil {
 		t.Fatalf("result missing tree: %#v", report)
+	}
+	checksum, ok := report["checksum"].(map[string]any)
+	if !ok || checksum == nil {
+		t.Fatalf("result missing checksum: %#v", report)
+	}
+	if checksum["algorithm"] != "sm3" {
+		t.Fatalf("checksum algorithm = %v, want sm3", checksum["algorithm"])
+	}
+	if checksum["value"] == "" {
+		t.Fatalf("checksum value is empty: %#v", checksum)
 	}
 }
 

@@ -882,7 +882,7 @@ func (s *TAAState) resourceInfoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Logs.Add(LogInfo, "getResourceInfo", "解压到临时目录: %s", tmpDataDir)
 
-	output, err := buildResourceInfoJSON(tmpDataDir)
+	output, err := buildResourceInfoJSON(tmpDataDir, plaintextPath)
 	if err != nil {
 		s.Logs.Add(LogError, "getResourceInfo", "生成资源树失败: %v", err)
 		s.setCurrentOp("idle")

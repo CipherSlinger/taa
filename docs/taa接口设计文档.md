@@ -428,6 +428,8 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 ### 4.1.1 资源信息获取
 
+TAA 接收到 `resourceUrl` 后，下载资源文件（若为 `.enc` 结尾则使用实例 SM2 私钥进行信封解密），将解密后的明文归档压缩包解压到临时目录，调用 `filetree` 解析器分析多模态数据集的目录结构、魔数格式识别及结构化文件元信息（CSV / TSV / JSON / JSONL / XLSX / SQLite / Parquet 等的 schema 与数据量），同时计算资源压缩包的国密 SM3 校验和（与 `/v1/taa/import` 接口哈希逻辑保持一致），分析完成后自动清理临时文件。
+
 **请求**：`POST /v1/taa/getResourceInfo`
 
 **请求内容类型**：`application/json`
@@ -436,13 +438,13 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `resourceUrl` | `string` | 是 | 资源下载地址 |
+| `resourceUrl` | `string` | 是 | 资源下载地址（支持 `.enc` 加密包或普通压缩包） |
 
 **请求示例**：
 
 ```jsonc
 {
-  "resourceUrl": "https://example.com/data/sample.csv.enc"
+  "resourceUrl": "https://example.com/data/sample.tar.gz.enc"
 }
 ```
 **响应内容类型**：`application/json`
@@ -453,14 +455,31 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `result` | `string` | `resource_info.py` 输出的 JSON 字符串 |
+| `result` | `string` | `filetree` 模块解析输出的 JSON 字符串，包含目录树结构、格式统计及资源包 SM3 校验和 |
+
+**`result` 反序列化后的主要字段说明**：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `version` | `string` | 工具版本号，如 `"1.0.0"` |
+| `generated_at` | `string` | 生成时间戳（RFC3339 格式） |
+| `total_files` | `int` | 数据集解压后的文件总数 |
+| `total_size` | `int64` | 数据集总字节数 |
+| `total_size_h` | `string` | 人类可读的总大小，如 `"528.0KB"` |
+| `structured_files` | `int` | 成功解析出 schema / 行数的结构化文件数量 |
+| `by_format` | `array` | 按格式汇总的统计列表（含 `format`、`count`、`size_sum`） |
+| `checksum` | `object` | 资源包完整性校验信息（与 `/v1/taa/import` 一致对明文压缩包计算 SM3 哈希） |
+| `checksum.algorithm` | `string` | 校验和算法，固定为 `"sm3"` |
+| `checksum.value` | `string` | 64 位十六进制 SM3 哈希值 |
+| `checksum.size` | `int64` | 压缩包原始字节大小 |
+| `tree` | `object` | 目录树根节点对象，递归包含子目录和文件的 schema、行数等详细标注 |
 
 **成功响应示例**（200 OK）：
 
 ```jsonc
 {
   "msg": "ok",
-  "result": "{\n  \"total_samples\": 2000,\n  \"splits\": {\n    \"train\": 1600,\n    \"test\": 400\n  },\n  \"data_structure\": {\n    \"features\": [\n      {\"name\": \"feature1\", \"type\": \"float\", \"description\": \"第1个特征\"}\n    ]\n  },\n  \"checksum\": {\"algorithm\": \"sha256\", \"value\": \"...\"}\n}",
+  "result": "{\n  \"version\": \"1.0.0\",\n  \"generated_at\": \"2026-09-08T10:00:00Z\",\n  \"total_files\": 2,\n  \"total_size\": 540672,\n  \"total_size_h\": \"528.0KB\",\n  \"structured_files\": 1,\n  \"by_format\": [\n    {\"format\": \"csv\", \"count\": 1, \"size_sum\": 340000},\n    {\"format\": \"txt\", \"count\": 1, \"size_sum\": 200672}\n  ],\n  \"checksum\": {\n    \"size\": 540672,\n    \"algorithm\": \"sm3\",\n    \"value\": \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"\n  },\n  \"tree\": {\n    \"name\": \"dataset\",\n    \"type\": \"dir\",\n    \"file_count\": 2,\n    \"children\": [\n      {\n        \"name\": \"users.csv\",\n        \"type\": \"file\",\n        \"fmt\": \"csv\",\n        \"size\": 340000,\n        \"rows\": 2000,\n        \"fields\": [\n          {\"name\": \"user_id\", \"type\": \"int\"},\n          {\"name\": \"name\", \"type\": \"str\"}\n        ]\n      }\n    ]\n  }\n}",
   "error": 0
 }
 ```
