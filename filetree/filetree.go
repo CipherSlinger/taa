@@ -30,6 +30,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	goparquet "github.com/fraugster/parquet-go"
 	"github.com/xuri/excelize/v2"
@@ -121,44 +122,23 @@ func DefaultOptions() Options {
 
 // computeFileSM3 计算单个归档文件的 SM3 校验和与大小（与 import 数据导入接口对压缩包计算 SM3 哈希的逻辑一致）
 func computeFileSM3(path string) (*ChecksumInfo, error) {
-	f, err := os.Open(path)
+	size, hex, err := teecrypto.HashFileSM3(path)
 	if err != nil {
-		return nil, fmt.Errorf("open file for sm3: %w", err)
+		return nil, fmt.Errorf("hash file for sm3: %w", err)
 	}
-	defer f.Close()
-
-	st, err := f.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("stat file for sm3: %w", err)
-	}
-
-	h := teecrypto.NewSM3()
-	buf := make([]byte, 64*1024)
-	for {
-		n, rerr := f.Read(buf)
-		if n > 0 {
-			if _, werr := h.Write(buf[:n]); werr != nil {
-				return nil, fmt.Errorf("write sm3: %w", werr)
-			}
-		}
-		if rerr == io.EOF {
-			break
-		}
-		if rerr != nil {
-			return nil, fmt.Errorf("read file for sm3: %w", rerr)
-		}
-	}
-
 	return &ChecksumInfo{
-		Size:      st.Size(),
+		Size:      size,
 		Algorithm: "sm3",
-		Value:     fmt.Sprintf("%x", h.Sum(nil)),
+		Value:     hex,
 	}, nil
 }
 
 // computeDirectorySM3 计算目录下所有常规文件（按相对路径排序）的流式 SM3 校验和与累计大小
 func computeDirectorySM3(dir string) (*ChecksumInfo, error) {
-	var files []string
+	var files []struct {
+		path string
+		size int64
+	}
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -166,38 +146,33 @@ func computeDirectorySM3(dir string) (*ChecksumInfo, error) {
 		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return nil
 		}
-		files = append(files, path)
+		files = append(files, struct {
+			path string
+			size int64
+		}{path: path, size: info.Size()})
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("walk dir for sm3: %w", err)
 	}
-	sort.Strings(files)
+	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
 
 	h := teecrypto.NewSM3()
 	var totalSize int64
 	buf := make([]byte, 64*1024)
 
-	for _, fpath := range files {
-		rel, err := filepath.Rel(dir, fpath)
+	for _, file := range files {
+		rel, err := filepath.Rel(dir, file.path)
 		if err != nil {
-			return nil, fmt.Errorf("resolve rel path for %s: %w", fpath, err)
+			return nil, fmt.Errorf("resolve rel path for %s: %w", file.path, err)
 		}
 		h.Write([]byte(filepath.ToSlash(rel)))
 		h.Write([]byte{0})
+		totalSize += file.size
 
-		info, err := os.Lstat(fpath)
+		f, err := os.Open(file.path)
 		if err != nil {
-			return nil, fmt.Errorf("stat file %s: %w", fpath, err)
-		}
-		if !info.Mode().IsRegular() {
-			continue
-		}
-		totalSize += info.Size()
-
-		f, err := os.Open(fpath)
-		if err != nil {
-			return nil, fmt.Errorf("open file %s: %w", fpath, err)
+			return nil, fmt.Errorf("open file %s: %w", file.path, err)
 		}
 		for {
 			n, rerr := f.Read(buf)
@@ -209,7 +184,7 @@ func computeDirectorySM3(dir string) (*ChecksumInfo, error) {
 			}
 			if rerr != nil {
 				f.Close()
-				return nil, fmt.Errorf("read file %s: %w", fpath, rerr)
+				return nil, fmt.Errorf("read file %s: %w", file.path, rerr)
 			}
 		}
 		f.Close()
@@ -458,13 +433,7 @@ func isText(head []byte) bool {
 	if float64(nul)/float64(len(head)) > 0.05 {
 		return false
 	}
-	s := string(bytes.Runes(head))
-	for _, r := range s {
-		if r == 0xFFFD { // 无效 UTF-8 替换符
-			return false
-		}
-	}
-	return true
+	return utf8.Valid(head)
 }
 
 // classifyText 文本细分：csv / json / jsonl / txt / md / yaml
@@ -576,37 +545,24 @@ func finalizeFields(order []string, states map[string]*typeState) []Field {
 	return fields
 }
 
-func inferAnyType(v interface{}) string {
-	switch x := v.(type) {
-	case nil:
+func detectScalarType(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
 		return ""
-	case string:
-		return inferTextType(x)
-	case json.Number:
-		return inferNumberType(x.String())
-	case float32:
-		return inferNumberType(strconv.FormatFloat(float64(x), 'f', -1, 32))
-	case float64:
-		return inferNumberType(strconv.FormatFloat(x, 'f', -1, 64))
-	case int:
-		return "int"
-	case int8, int16, int32, int64:
-		return "int"
-	case uint, uint8, uint16, uint32, uint64:
-		return "int"
-	case bool:
-		return "bool"
-	case time.Time:
-		return "datetime"
-	case map[string]interface{}:
-		return "object"
-	case []interface{}:
-		return "list"
-	case []byte:
-		return inferTextType(string(x))
-	default:
-		return inferTextType(fmt.Sprint(x))
 	}
+	lower := strings.ToLower(s)
+	if lower == "true" || lower == "false" {
+		return "bool"
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05", "2006-01-02 15:04:05Z07:00"} {
+		if _, err := time.Parse(layout, s); err == nil {
+			return "datetime"
+		}
+	}
+	if _, err := time.Parse("2006-01-02", s); err == nil {
+		return "date"
+	}
+	return "str"
 }
 
 func inferJSONValueType(v interface{}) string {
@@ -631,23 +587,7 @@ func inferJSONValueType(v interface{}) string {
 }
 
 func inferJSONTextType(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
-	}
-	lower := strings.ToLower(s)
-	if lower == "true" || lower == "false" {
-		return "bool"
-	}
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05", "2006-01-02 15:04:05Z07:00"} {
-		if _, err := time.Parse(layout, s); err == nil {
-			return "datetime"
-		}
-	}
-	if _, err := time.Parse("2006-01-02", s); err == nil {
-		return "date"
-	}
-	return "str"
+	return detectScalarType(s)
 }
 
 func inferNumberType(s string) string {
@@ -667,21 +607,9 @@ func inferNumberType(s string) string {
 }
 
 func inferTextType(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
-	}
-	lower := strings.ToLower(s)
-	if lower == "true" || lower == "false" {
-		return "bool"
-	}
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05", "2006-01-02 15:04:05Z07:00"} {
-		if _, err := time.Parse(layout, s); err == nil {
-			return "datetime"
-		}
-	}
-	if _, err := time.Parse("2006-01-02", s); err == nil {
-		return "date"
+	typ := detectScalarType(s)
+	if typ != "str" {
+		return typ
 	}
 	if typ := inferNumberType(s); typ != "str" {
 		return typ
@@ -1246,7 +1174,7 @@ func (s *scanner) dirCount(n *Node) int {
 	c := 0
 	for _, ch := range n.Children {
 		if ch.Type == "dir" {
-			c += s.dirCount(ch)
+			c += ch.FileCount
 		} else {
 			c++
 		}
