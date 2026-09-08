@@ -15,13 +15,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"taa/crypto"
 )
 
 func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
 	if strings.Contains(indexHTML, "③ 资源下载结果上报") {
 		t.Fatal("index should not show the resource download result report card")
 	}
-	for _, want := range []string{"③ 训练结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult", "saveReportBtn", "reportResBodyBtn", "reportResReportBtn", "openReportResReportModal", "查看报告", "reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "importModelCommands", "importModelEnv", "resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport", "uploadedUrlInput", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件", "平台发往 TAA 的请求体记录", "requestLogStatusDot", "requestLogOutput", "requestLogEndpointFilter"} {
+	for _, want := range []string{"③ 训练结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult", "saveReportBtn", "reportResBodyBtn", "reportResReportBtn", "openReportResReportModal", "查看报告", "reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "importModelCommands", "importModelEnv", "resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport", "uploadedUrlInput", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件", "平台发往 TAA 的请求体记录", "requestLogStatusDot", "requestLogOutput", "requestLogEndpointFilter", "uploadEncryptSwitch", "uploadEncryptPublicKey", "toggleUploadEncryptOptions"} {
 		if !strings.Contains(indexHTML, want) {
 			t.Fatalf("index missing %q", want)
 		}
@@ -228,14 +230,52 @@ func TestDiscoverTAAAddrUsesConfiguredPort(t *testing.T) {
 	}
 }
 
-func newUploadTestServer(t *testing.T, uploadDir string) *httptest.Server {
+func newUploadTestServer(t *testing.T, uploadDir string, registerStores ...*registerStateStore) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/upload", uploadHandler("127.0.0.1:6001", uploadDir))
+	mux.HandleFunc("/api/upload", uploadHandler("127.0.0.1:6001", uploadDir, registerStores...))
 	mux.HandleFunc("/api/uploads", uploadListHandler("127.0.0.1:6001", uploadDir))
 	mux.HandleFunc("/api/uploads/reset", uploadResetHandler(uploadDir))
 	mux.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(uploadDir))))
 	return httptest.NewServer(mux)
+}
+
+func postMultipartUploadWithFields(t *testing.T, url, filename string, content []byte, fields map[string]string) (int, apiResponse) {
+	t.Helper()
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	for k, v := range fields {
+		if err := writer.WriteField(k, v); err != nil {
+			t.Fatalf("write field %s: %v", k, err)
+		}
+	}
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, url, body)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("send request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var api apiResponse
+	if err := json.NewDecoder(resp.Body).Decode(&api); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return resp.StatusCode, api
 }
 
 func postMultipartUpload(t *testing.T, url, filename string, content []byte) apiResponse {
@@ -397,5 +437,114 @@ func TestUploadHandlerSanitizesFilename(t *testing.T) {
 	}
 	if files[0].OriginalName != "escape.txt" {
 		t.Fatalf("originalName = %q, want escape.txt", files[0].OriginalName)
+	}
+}
+
+func TestUploadHandlerEncryption(t *testing.T) {
+	privKey, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate SM2 key pair: %v", err)
+	}
+	pubPEM, err := crypto.MarshalSM2PublicKeyPEM(&privKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal SM2 public key PEM: %v", err)
+	}
+
+	regStore := &registerStateStore{path: filepath.Join(t.TempDir(), "register.json")}
+	uploadDir := filepath.Join(t.TempDir(), "uploads")
+	server := newUploadTestServer(t, uploadDir, regStore)
+	defer server.Close()
+
+	rawContent := []byte("hello sm2 sm4 gcm envelope encryption")
+
+	// 1. 开启加密开关，传入公钥，文件名自动补齐 .enc
+	status, api := postMultipartUploadWithFields(t, server.URL+"/api/upload", "model.tar.gz", rawContent, map[string]string{
+		"encrypt":   "true",
+		"publicKey": string(pubPEM),
+	})
+	if status != http.StatusOK || api.Error != 0 {
+		t.Fatalf("encrypted upload failed: status=%d, api=%+v", status, api)
+	}
+	resMap, ok := api.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result is not map: %+v", api.Result)
+	}
+	if orig, ok := resMap["originalName"].(string); !ok || orig != "model.tar.gz.enc" {
+		t.Fatalf("originalName = %v, want model.tar.gz.enc", resMap["originalName"])
+	}
+	if enc, ok := resMap["encrypted"].(bool); !ok || !enc {
+		t.Fatalf("encrypted flag = %v, want true", resMap["encrypted"])
+	}
+
+	storedName, ok := resMap["filename"].(string)
+	if !ok || !strings.HasSuffix(storedName, ".enc") {
+		t.Fatalf("stored filename = %v, want suffix .enc", resMap["filename"])
+	}
+
+	cipherBytes, err := os.ReadFile(filepath.Join(uploadDir, storedName))
+	if err != nil {
+		t.Fatalf("read ciphertext: %v", err)
+	}
+	decrypted, err := crypto.OpenSM2SM4GCM(privKey, cipherBytes)
+	if err != nil {
+		t.Fatalf("OpenSM2SM4GCM decrypt failed: %v", err)
+	}
+	if !bytes.Equal(decrypted, rawContent) {
+		t.Fatalf("decrypted = %q, want %q", string(decrypted), string(rawContent))
+	}
+
+	// 2. 文件名本身已带 .enc 后缀时，不重复添加
+	status, api = postMultipartUploadWithFields(t, server.URL+"/api/upload", "already.tar.gz.enc", rawContent, map[string]string{
+		"encrypt":   "true",
+		"publicKey": string(pubPEM),
+	})
+	if status != http.StatusOK || api.Error != 0 {
+		t.Fatalf("upload already.enc failed: status=%d, api=%+v", status, api)
+	}
+	resMap = api.Result.(map[string]any)
+	if orig := resMap["originalName"].(string); orig != "already.tar.gz.enc" {
+		t.Fatalf("originalName = %q, want already.tar.gz.enc", orig)
+	}
+
+	// 3. 未传 publicKey 时，从 registerStore 回退获取公钥
+	regStore.set(registerState{TaaPublicKey: string(pubPEM)})
+	status, api = postMultipartUploadWithFields(t, server.URL+"/api/upload", "data.tar.gz", rawContent, map[string]string{
+		"encrypt": "true",
+	})
+	if status != http.StatusOK || api.Error != 0 {
+		t.Fatalf("upload with fallback key failed: status=%d, api=%+v", status, api)
+	}
+	resMap = api.Result.(map[string]any)
+	if orig := resMap["originalName"].(string); orig != "data.tar.gz.enc" {
+		t.Fatalf("originalName with fallback = %q, want data.tar.gz.enc", orig)
+	}
+	fallbackCipher, err := os.ReadFile(filepath.Join(uploadDir, resMap["filename"].(string)))
+	if err != nil {
+		t.Fatalf("read fallback cipher: %v", err)
+	}
+	decryptedFallback, err := crypto.OpenSM2SM4GCM(privKey, fallbackCipher)
+	if err != nil {
+		t.Fatalf("decrypt fallback cipher failed: %v", err)
+	}
+	if !bytes.Equal(decryptedFallback, rawContent) {
+		t.Fatalf("decrypted fallback = %q, want %q", string(decryptedFallback), string(rawContent))
+	}
+
+	// 4. 开启加密但既无 publicKey 也无注册公钥时，返回 400 错误
+	regStore.set(registerState{})
+	status, api = postMultipartUploadWithFields(t, server.URL+"/api/upload", "err.txt", rawContent, map[string]string{
+		"encrypt": "true",
+	})
+	if status != http.StatusBadRequest || api.Error != http.StatusBadRequest {
+		t.Fatalf("status = %d, error = %d, want 400", status, api.Error)
+	}
+
+	// 5. 传入非法公钥时，返回 400 错误
+	status, api = postMultipartUploadWithFields(t, server.URL+"/api/upload", "err.txt", rawContent, map[string]string{
+		"encrypt":   "true",
+		"publicKey": "invalid-pem-key",
+	})
+	if status != http.StatusBadRequest || api.Error != http.StatusBadRequest {
+		t.Fatalf("status = %d, error = %d, want 400", status, api.Error)
 	}
 }

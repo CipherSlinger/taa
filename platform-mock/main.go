@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"taa/crypto"
 )
 
 //go:embed index.html
@@ -84,6 +86,7 @@ type uploadedFileRecord struct {
 	Size         int64     `json:"size"`
 	URL          string    `json:"url"`
 	UploadedAt   time.Time `json:"uploadedAt"`
+	Encrypted    bool      `json:"encrypted"`
 }
 
 type registerStateStore struct {
@@ -466,7 +469,7 @@ func main() {
 	mux.HandleFunc("/api/reportModelImport/status", reportStatusHandler(reportModelImportStore))
 	mux.HandleFunc("/api/reportModelImport/reset", reportResetHandler(reportModelImportStore))
 	mux.HandleFunc("/api/taa-target", taaTargetHandler(taaAddr))
-	mux.HandleFunc("/api/upload", uploadHandler(*addr, uploadDir))
+	mux.HandleFunc("/api/upload", uploadHandler(*addr, uploadDir, registerStore))
 	mux.HandleFunc("/api/uploads", uploadListHandler(*addr, uploadDir))
 	mux.HandleFunc("/api/uploads/reset", uploadResetHandler(uploadDir))
 	mux.HandleFunc("/api/request-logs/status", requestLogsStatusHandler)
@@ -1211,6 +1214,7 @@ func listUploadedFiles(uploadDir, addr string) ([]uploadedFileRecord, error) {
 			Size:         info.Size(),
 			URL:          fmt.Sprintf("http://%s/files/%s", platformIP(addr), filename),
 			UploadedAt:   uploadedAt,
+			Encrypted:    strings.HasSuffix(strings.ToLower(originalName), ".enc"),
 		})
 	}
 
@@ -1302,7 +1306,7 @@ func sanitizeUploadFilename(name string) string {
 	return cleaned
 }
 
-func uploadHandler(addr, uploadDir string) http.HandlerFunc {
+func uploadHandler(addr, uploadDir string, registerStores ...*registerStateStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -1336,22 +1340,74 @@ func uploadHandler(addr, uploadDir string) http.HandlerFunc {
 		}
 
 		originalName := sanitizeUploadFilename(header.Filename)
-		// Generate unique filename to avoid conflicts
-		filename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), originalName)
-		filePath := filepath.Join(uploadDir, filename)
 
-		// Create destination file
-		dst, err := os.Create(filePath)
-		if err != nil {
-			writeEnvelope(w, http.StatusInternalServerError, "创建文件失败: "+err.Error(), nil, http.StatusInternalServerError)
-			return
-		}
-		defer dst.Close()
+		encryptVal := strings.TrimSpace(r.FormValue("encrypt"))
+		shouldEncrypt := strings.EqualFold(encryptVal, "true") || encryptVal == "1" || strings.EqualFold(encryptVal, "on")
 
-		// Copy uploaded file to destination
-		if _, err := io.Copy(dst, file); err != nil {
-			writeEnvelope(w, http.StatusInternalServerError, "保存文件失败: "+err.Error(), nil, http.StatusInternalServerError)
-			return
+		var (
+			fileSize int64
+			filename string
+			filePath string
+		)
+
+		if shouldEncrypt {
+			pubKeyPEM := strings.TrimSpace(r.FormValue("publicKey"))
+			if pubKeyPEM == "" && len(registerStores) > 0 && registerStores[0] != nil {
+				pubKeyPEM = strings.TrimSpace(registerStores[0].get().TaaPublicKey)
+			}
+			if pubKeyPEM == "" {
+				writeEnvelope(w, http.StatusBadRequest, "开启加密但未提供公钥，且未获取到 TAA 注册公钥，请先填写公钥或等待 TAA 注册", nil, http.StatusBadRequest)
+				return
+			}
+
+			pubKey, err := crypto.ParseSM2PublicKeyPEM([]byte(pubKeyPEM))
+			if err != nil {
+				writeEnvelope(w, http.StatusBadRequest, "解析 SM2 公钥失败: "+err.Error(), nil, http.StatusBadRequest)
+				return
+			}
+
+			fileBytes, err := io.ReadAll(file)
+			if err != nil {
+				writeEnvelope(w, http.StatusInternalServerError, "读取上传文件内容失败: "+err.Error(), nil, http.StatusInternalServerError)
+				return
+			}
+
+			cipherBytes, err := crypto.SealSM2SM4GCM(pubKey, fileBytes)
+			if err != nil {
+				writeEnvelope(w, http.StatusInternalServerError, "SM2+SM4-GCM 加密失败: "+err.Error(), nil, http.StatusInternalServerError)
+				return
+			}
+
+			if !strings.HasSuffix(strings.ToLower(originalName), ".enc") {
+				originalName += ".enc"
+			}
+
+			filename = fmt.Sprintf("%d_%s", time.Now().UnixNano(), originalName)
+			filePath = filepath.Join(uploadDir, filename)
+
+			if err := os.WriteFile(filePath, cipherBytes, 0o644); err != nil {
+				writeEnvelope(w, http.StatusInternalServerError, "保存加密文件失败: "+err.Error(), nil, http.StatusInternalServerError)
+				return
+			}
+			fileSize = int64(len(cipherBytes))
+		} else {
+			filename = fmt.Sprintf("%d_%s", time.Now().UnixNano(), originalName)
+			filePath = filepath.Join(uploadDir, filename)
+
+			// Create destination file
+			dst, err := os.Create(filePath)
+			if err != nil {
+				writeEnvelope(w, http.StatusInternalServerError, "创建文件失败: "+err.Error(), nil, http.StatusInternalServerError)
+				return
+			}
+			defer dst.Close()
+
+			// Copy uploaded file to destination
+			if _, err := io.Copy(dst, file); err != nil {
+				writeEnvelope(w, http.StatusInternalServerError, "保存文件失败: "+err.Error(), nil, http.StatusInternalServerError)
+				return
+			}
+			fileSize = header.Size
 		}
 
 		// Generate URL for the uploaded file
@@ -1359,13 +1415,14 @@ func uploadHandler(addr, uploadDir string) http.HandlerFunc {
 		host := platformIP(addr)
 		fileURL := fmt.Sprintf("http://%s/files/%s", host, filename)
 
-		log.Printf("file uploaded: %s → %s", originalName, fileURL)
+		log.Printf("file uploaded: %s → %s (encrypted=%v)", originalName, fileURL, shouldEncrypt)
 
 		writeEnvelope(w, http.StatusOK, "文件上传成功", map[string]any{
 			"filename":     filename,
 			"originalName": originalName,
-			"size":         header.Size,
+			"size":         fileSize,
 			"url":          fileURL,
+			"encrypted":    shouldEncrypt,
 			"uploadedAt":   time.Now().UTC(),
 		}, 0)
 	}
