@@ -20,6 +20,7 @@ import (
 	"time"
 
 	teecrypto "taa/crypto"
+	filetree "taa/filetree"
 	"taa/internal/codeaudit"
 )
 
@@ -341,34 +342,7 @@ func resourceURLHasEncSuffix(resourceURL string) bool {
 
 // isArchiveFile 检查文件是否为已知明文压缩包格式（ZIP / GZIP / TAR）。
 func isArchiveFile(filePath string) (bool, error) {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return false, fmt.Errorf("打开文件检测格式失败: %w", err)
-	}
-	defer f.Close()
-
-	hdr := make([]byte, 512)
-	n, err := f.Read(hdr)
-	if err != nil && err != io.EOF {
-		return false, fmt.Errorf("读取文件头部失败: %w", err)
-	}
-
-	if n >= 2 {
-		// ZIP: starts with "PK" (0x50 0x4B)
-		if hdr[0] == 0x50 && hdr[1] == 0x4B {
-			return true, nil
-		}
-		// GZIP: starts with 0x1F 0x8B
-		if hdr[0] == 0x1F && hdr[1] == 0x8B {
-			return true, nil
-		}
-	}
-	// TAR: check for "ustar" magic at offset 257
-	if n >= 262 && string(hdr[257:262]) == "ustar" {
-		return true, nil
-	}
-
-	return false, nil
+	return filetree.IsArchiveFile(filePath)
 }
 
 // resolvePlaintextResource 决策并准备资源的明文文件路径。
