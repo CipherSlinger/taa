@@ -1,57 +1,7 @@
-- 多次训练导出对应的结果报告（requestid - taskid - 不同阶段不同批次）
-- 命令行
-
-
 1. 检测密文方式不要依赖后缀
 2. 模型方进度管控
 3. taa 意外崩掉（私钥如何处理），使用sealing key加密保存
 4. 只支持python 正则匹配，修改为使用 semgrep 扫描
-
-### 3.4 无任何认证/授权机制 [CRITICAL]
-- **位置**: 所有 HTTP handler
-- **问题**: 所有 API 端点（import、export、switch、getAttestation）均无认证。
-  任何能访问 TAA 端口的实体均可：
-  - 触发资源导入（可能导致恶意代码执行）
-  - 导出训练结果
-  - 切换运行阶段
-  - 获取 attestation 报告
-- **建议**:
-  - 实现基于 SM2 签名的请求认证（平台使用私钥签名请求，TAA 使用平台公钥验证）。
-  - 或实现 Bearer Token 认证，在注册时协商共享密钥。
-  - 至少添加 IP 白名单或网络层隔离。
-
-### 3.5 资源下载存在 SSRF 风险 [HIGH]
-- **位置**: `route.go` → `downloadToTempFile()` (L399-433)
-- **问题**: `http.Get(resourceURL)` 直接请求用户提供的 URL，无任何过滤。
-  攻击者可传入内部网络地址（如 `http://169.254.169.254/` 元数据服务、
-  `http://localhost:6001/` 自身服务），实现 **SSRF（服务器端请求伪造）**。
-- **建议**:
-  - 验证 URL 目标地址，禁止访问私有 IP 段（10.x、172.16-31.x、192.168.x、169.254.x）。
-  - 禁止 `file://`、`gopher://` 等非 HTTP 协议。
-  - 使用 DNS 解析后二次校验（防止 DNS rebinding）。
-  - 限制重定向次数和重定向目标。
-  - 设置连接超时（当前无超时）。
-
-
-### 3.6 资源下载使用 http.DefaultClient [HIGH]
-- **位置**: `route.go` → `downloadToTempFile()` (L400)
-  ```go
-  resp, err := http.Get(resourceURL)
-  ```
-- **问题**: `http.Get` 使用 `http.DefaultClient`，具有以下风险：
-  - **无超时**：默认 `Timeout` 为 0（永不超时），恶意服务器可保持连接无限期。
-  - **无重定向控制**：默认最多 10 次重定向，但不校验重定向目标协议和地址。
-    可被重定向到 `file://` 或内部服务地址。
-  - **无 TLS 配置**：无法控制证书验证策略。
-  - **共享 Transport**：与其他使用 DefaultClient 的代码共享连接池。
-- **建议**:
-  - 使用独立的 `http.Client` 并设置：
-    - `Timeout: 10 * time.Minute`（下载超时）
-    - `CheckRedirect` 回调校验重定向目标
-    - 自定义 `Transport` 禁用压缩（防止 Zip Bomb 传输层攻击）
-  - 与 `platformHTTPClient` 模式保持一致。
-
----
 
 ### 4.2 Python 脚本执行缺乏沙箱隔离 [HIGH]
 - **位置**: `route.go` → `runScript()` / `runTrainScript()` (L824-859)
@@ -104,45 +54,6 @@
 
 ## 六、代码审计系统安全性（High / Medium）
 
-### 6.1 代码审计在脚本执行之后执行 [CRITICAL]
-- **位置**: `import_processing.go` → `processImportedResource()` 流程
-- **问题**: 当前流程为：解密 → 解压 → **执行 debug.py/train.py** → 代码审计。
-  恶意代码在审计之前就已经执行，可能造成不可逆的损害。
-- **建议**:
-  - **将代码审计移到脚本执行之前**：解密 → 解压 → 审计 → (审计通过) → 执行。
-  - 审计不通过时应中止流程，不执行任何代码。
-
-### 6.2 静态扫描规则易被绕过 [HIGH]
-- **位置**: `codeaudit/rules.go`
-- **问题**:
-  - 仅扫描 `.py` 文件，忽略 `.so`、`.pyd`、`.whl` 等二进制依赖。
-  - 正则匹配基于单行，无法检测跨行构造的恶意代码。
-  - 字符串拼接绕过：`"req" + "uests" + ".get()"` 不匹配 `requests.get`。
-  - Unicode 同形字绕过：使用 Unicode 字符替代 ASCII 字符。
-  - 注释行被跳过（`#` 开头），但 `";"` 后的代码不算注释。
-  - 不检测编码后的代码（base64 编码的 Python 代码）。
-- **建议**:
-  - 增加 AST（抽象语法树）分析，替代纯正则匹配。
-  - 检测可疑的字符串拼接模式。
-  - 扫描 `.whl`、`.egg` 等打包文件中的嵌入代码。
-  - 增加对 `__import__` 的间接调用检测。
-  - 添加对混淆代码（高熵字符串、异常长的行）的检测。
-
-### 6.3 LLM 审计模型可靠性不足 [HIGH]
-- **位置**: `codeaudit/verifier.go`, `codeaudit/llm.go`
-- **问题**:
-  - 使用 `qwen2.5-coder:0.5b`（500M 参数）作为安全审计模型，模型能力极为有限。
-  - 小模型容易被对抗性 prompt 欺骗（精心构造的代码可误导模型判断为 BENIGN）。
-  - `num_predict: 200` 限制输出长度，可能导致分析不完整。
-  - LLM 的 JSON 解析使用手工括号匹配，对嵌套字符串中的 `{}` 处理不正确。
-  - 无 prompt 注入防护：恶意代码注释中可包含误导 LLM 的指令。
-- **建议**:
-  - 升级到至少 7B 参数的模型（如 qwen2.5-coder:7b）。
-  - 使用结构化输出（JSON mode）替代自由文本 + 括号提取。
-  - 增加 prompt 注入检测，过滤代码片段中的类 prompt 内容。
-  - 对 LLM 判定为 BENIGN 的 HIGH finding 进行二次审查。
-  - 记录 LLM 审计的原始输入输出，用于事后审计。
-
 ### 6.4 结果导出明文泄露检测不足 [MEDIUM]
 - **位置**: `codeaudit/result_checker.go`
 - **问题**:
@@ -191,14 +102,6 @@
 - **建议**:
   - 对外返回通用错误消息，详细错误仅记录在日志中。
   - 使用错误码替代描述性错误文本。
-
-### 7.3 getAttestation 响应包含完整报告 [LOW]
-- **位置**: `route.go` → `getAttestationHandler()` (L749)
-- **问题**: 返回 Base64 编码的完整 attestation 报告（约 2548 字节），
-  以及提取的所有字段。频繁调用可被用于时序分析。
-- **建议**:
-  - 对 getAttestation 接口添加速率限制。
-  - 考虑返回报告的摘要而非完整内容。
 
 ---
 
@@ -378,18 +281,3 @@
   - 将安全相关日志持久化到磁盘文件或外部日志系统。
   - 实现日志签名，防止篡改。
   - 接入集中式日志收集系统（如 syslog、ELK）。
-
-### 11.2 无健康检查认证 [LOW]
-- **位置**: `healthHandler` / `statusHandler`
-- **问题**: health 和 status 接口无认证，暴露系统内部状态（当前阶段、导入状态等）。
-- **建议**:
-  - 区分公开的健康检查（仅返回 200 OK）和需要认证的状态查询。
-
-### 11.3 无优雅关闭机制 [LOW]
-- **位置**: `main.go` → `server.ListenAndServe()`
-- **问题**: 收到 SIGTERM/SIGINT 时直接退出，正在处理的请求和 goroutine 被强制终止。
-  临时文件可能未被清理，密钥材料可能未被擦除。
-- **建议**:
-  - 使用 `signal.Notify` 捕获终止信号。
-  - 调用 `server.Shutdown(ctx)` 优雅关闭。
-  - 在关闭时清理临时文件并覆写敏感内存。
