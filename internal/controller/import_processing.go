@@ -117,27 +117,28 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		return
 	}
 
-	StepSeparator("Run train.py")
-	s.setCurrentOp("training")
-	s.Logs.Add(LogInfo, "train", "查找 train.py: %s", s.Security.ModelDir)
-	trainScript, err := findScript(s.Security.ModelDir, "train.py")
+	s.mu.RLock()
+	runtimeConfigRaw := s.RuntimeConfig
+	s.mu.RUnlock()
+	cfg, env, err := parseRuntimeConfig(runtimeConfigRaw)
 	if err != nil {
-		s.Logs.Add(LogError, "train", "查找 train.py 失败: %v", err)
+		s.Logs.Add(LogError, "train", "%v", err)
 		s.setCurrentOp("idle")
-		s.reportImportFailure(req, phase, isModel, startedAt, fmt.Sprintf("查找 train.py 失败: %v", err))
+		s.reportImportFailure(req, phase, isModel, startedAt, err.Error())
 		return
 	}
-	s.Logs.Add(LogInfo, "train", "找到 train.py: %s", trainScript)
 
+	StepSeparator("Run runtimeConfig")
+	s.setCurrentOp("training")
 	trainOutputDir := reportResultDir
-	s.Logs.Add(LogInfo, "train", "开始执行 train.py, 数据目录: %s, 输出目录: %s", s.Security.DataDir, trainOutputDir)
-	if output, err := runTrainScript(trainScript, s.Security.DataDir, trainOutputDir, req.TaskID, startedAt.UTC().Format(time.RFC3339)); err != nil {
-		s.Logs.Add(LogError, "train", "执行 train.py 失败: %v\noutput: %s", err, output)
+	s.Logs.Add(LogInfo, "train", "开始执行 runtimeConfig: commands=%d, envKeys=%v, 数据目录: %s, 输出目录: %s", len(cfg.Commands), envKeys(env), s.Security.DataDir, trainOutputDir)
+	if output, err := runRuntimeConfig(cfg, env, s.Security.ModelDir, s.Security.DataDir, trainOutputDir, req.TaskID, startedAt.UTC().Format(time.RFC3339)); err != nil {
+		s.Logs.Add(LogError, "train", "执行 runtimeConfig 失败: %v\noutput: %s", err, output)
 		s.setCurrentOp("idle")
-		s.reportImportFailure(req, phase, isModel, startedAt, fmt.Sprintf("执行 train.py 失败: %v", err))
+		s.reportImportFailure(req, phase, isModel, startedAt, fmt.Sprintf("执行 runtimeConfig 失败: %v", err))
 		return
 	}
-	s.Logs.Add(LogInfo, "train", "train.py 执行成功")
+	s.Logs.Add(LogInfo, "train", "runtimeConfig 执行成功")
 
 	StepSeparator("Build & Upload Report")
 	s.setCurrentOp("reporting")
@@ -285,6 +286,7 @@ func (s *TAAState) clearImportedState(isModel bool, phase int) {
 	defer s.mu.Unlock()
 	if isModel {
 		s.ModelImported = false
+		s.RuntimeConfig = ""
 		return
 	}
 	switch phase {
