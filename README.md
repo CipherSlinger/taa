@@ -74,7 +74,7 @@ flowchart LR
 ├── attestation/                      # CSV 证明 helper 与相关二进制工具
 ├── platform-mock/                    # 平台模拟器
 ├── docs/                             # 设计与接口文档
-├── manifest/docker/Dockerfile        # Docker 镜像构建文件
+├── deploy/manifest/docker/Dockerfile # Docker 镜像构建文件
 ├── Makefile                          # 构建、运行、镜像命令
 └── go.mod                            # Go 模块定义
 ```

@@ -28,8 +28,9 @@ attestation-ioctl:
 attestation-vmmcall:
 	@$(MAKE) -C attestation/csv_c BIN_DIR=$(abspath $(BIN_DIR)) vmmcall-get-attestation
 
-docker: manifest/docker/Dockerfile
-	@docker build -t taa:latest -f manifest/docker/Dockerfile .
+docker: deploy/manifest/docker/Dockerfile
+	@if [ -f deploy/.dockerignore ]; then cp deploy/.dockerignore .dockerignore; trap 'rm -f .dockerignore' EXIT INT TERM; fi; \
+	docker build -t taa:latest -f deploy/manifest/docker/Dockerfile .
 
 clean:
 	@rm -f $(TAA_BINARY) $(MOCK_BINARY)
