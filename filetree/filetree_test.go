@@ -1,4 +1,4 @@
-package main
+package filetree
 
 import (
 	"database/sql"
@@ -11,8 +11,8 @@ import (
 	goparquet "github.com/fraugster/parquet-go"
 	"github.com/fraugster/parquet-go/parquet"
 	"github.com/fraugster/parquet-go/parquetschema"
-	_ "modernc.org/sqlite"
 	"github.com/xuri/excelize/v2"
+	_ "modernc.org/sqlite"
 )
 
 func TestScanMatchesExampleContract(t *testing.T) {
@@ -329,5 +329,63 @@ func mustWriteParquetFile(t *testing.T, path string) {
 	}
 	if err := fw.Close(); err != nil {
 		t.Fatalf("close parquet failed: %v", err)
+	}
+}
+
+func TestReportChecksum(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "a.txt"), []byte("hello"))
+	mustWriteFile(t, filepath.Join(root, "b.txt"), []byte("world"))
+
+	// 1. 默认目录遍历计算 SM3
+	repDefault, err := BuildReport(root, DefaultOptions())
+	if err != nil {
+		t.Fatalf("BuildReport failed: %v", err)
+	}
+	if repDefault.Checksum == nil {
+		t.Fatal("repDefault.Checksum is nil")
+	}
+	if repDefault.Checksum.Algorithm != "sm3" {
+		t.Fatalf("algorithm = %q, want %q", repDefault.Checksum.Algorithm, "sm3")
+	}
+	if repDefault.Checksum.Value == "" {
+		t.Fatal("checksum value is empty")
+	}
+	if repDefault.Checksum.Size != 10 {
+		t.Fatalf("checksum size = %d, want 10", repDefault.Checksum.Size)
+	}
+
+	// 2. 指定 ArchivePath
+	archiveFile := filepath.Join(t.TempDir(), "data.tar.gz")
+	mustWriteFile(t, archiveFile, []byte("fake-tar-gz-content"))
+	repArchive, err := BuildReport(root, Options{
+		ArchivePath: archiveFile,
+	})
+	if err != nil {
+		t.Fatalf("BuildReport with archive failed: %v", err)
+	}
+	if repArchive.Checksum == nil {
+		t.Fatal("repArchive.Checksum is nil")
+	}
+	if repArchive.Checksum.Algorithm != "sm3" {
+		t.Fatalf("algorithm = %q, want %q", repArchive.Checksum.Algorithm, "sm3")
+	}
+	if repArchive.Checksum.Size != int64(len("fake-tar-gz-content")) {
+		t.Fatalf("archive checksum size = %d, want %d", repArchive.Checksum.Size, len("fake-tar-gz-content"))
+	}
+
+	// 3. 显式传入 Checksum
+	repExplicit, err := BuildReport(root, Options{
+		Checksum: &ChecksumInfo{
+			Algorithm: "sm3",
+			Value:     "custom-sm3-hash",
+			Size:      12345,
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildReport with explicit checksum failed: %v", err)
+	}
+	if repExplicit.Checksum == nil || repExplicit.Checksum.Value != "custom-sm3-hash" {
+		t.Fatalf("explicit checksum = %#v", repExplicit.Checksum)
 	}
 }
