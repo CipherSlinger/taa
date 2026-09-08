@@ -55,6 +55,7 @@ type SecurityConfig struct {
 type TAAState struct {
 	mu                   sync.RWMutex
 	attestMu             sync.Mutex
+	importIndexOnce      sync.Once
 	CurrentPhase         int
 	ModelImported        bool
 	DataImported         bool
@@ -72,7 +73,10 @@ type TAAState struct {
 	Security             SecurityConfig           // immutable after startup — no mutex needed
 	Logs                 *LogStore                // 结构化日志存储
 	LastAudit            *codeaudit.AuditReport   // 最近一次模型代码审计结果，用于训练报告输出
+	CurrentDataRecord    ImportIndexRecord        // 当前绑定的数据导入记录
 	CurrentOp            string                   // 当前操作: idle/downloading/decrypting/extracting/debugging/training/auditing/reporting
+	importIndex          *ImportIndexStore
+	importIndexErr       error
 }
 
 func NewTAAState(attestationFile, platformIP, dockerID, helperPath, helperMode string, sm2Key *teecrypto.SM2PrivateKey, userData []byte, sec SecurityConfig) *TAAState {
@@ -98,11 +102,11 @@ type switchRequest struct {
 }
 
 type importRequest struct {
-	ResourceURL    string  `json:"resourceUrl"`
-	RequestID      string  `json:"requestId"`
-	TaskID         string  `json:"taskId"`
-	PublicKey      *string `json:"publicKey,omitempty"`
-	RuntimeConfig  string  `json:"runtimeConfig,omitempty"`
+	ResourceURL   string  `json:"resourceUrl"`
+	RequestID     string  `json:"requestId"`
+	TaskID        string  `json:"taskId"`
+	PublicKey     *string `json:"publicKey,omitempty"`
+	RuntimeConfig string  `json:"runtimeConfig,omitempty"`
 }
 
 type runtimeConfig struct {
@@ -323,12 +327,29 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("请求解析失败: %v", err))
 		return
 	}
+	req.ResourceURL = strings.TrimSpace(req.ResourceURL)
+	req.RequestID = strings.TrimSpace(req.RequestID)
+	req.TaskID = strings.TrimSpace(req.TaskID)
 	if req.ResourceURL == "" {
 		writeError(w, http.StatusBadRequest, "resourceUrl 不能为空")
 		return
 	}
 	if req.RequestID == "" {
 		writeError(w, http.StatusBadRequest, "requestId 不能为空")
+		return
+	}
+	if req.TaskID == "" {
+		writeError(w, http.StatusBadRequest, "taskId 不能为空")
+		return
+	}
+
+	store, err := s.importIndexStore()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("加载导入索引失败: %v", err))
+		return
+	}
+	if err := store.Reserve(req.RequestID, req.TaskID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -339,11 +360,19 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 	s.Logs.Add(LogInfo, "import", "收到数据 import 请求: taskId=%s, requestId=%s, phase=%d",
 		req.TaskID, req.RequestID, phase)
 
+	if strings.TrimSpace(req.RuntimeConfig) != "" {
+		s.mu.Lock()
+		s.RuntimeConfig = req.RuntimeConfig
+		s.mu.Unlock()
+		s.Logs.Add(LogInfo, "import", "已保存 runtimeConfig (长度=%d)", len(req.RuntimeConfig))
+	}
+
 	msg := "资源已接收，下载处理中"
 	s.setCurrentOp("downloading")
 	s.Logs.Add(LogInfo, "import", "开始下载资源: %s", req.ResourceURL)
 	ciphertextPath, size, err := downloadToTempFile(req.ResourceURL)
 	if err != nil {
+		store.Rollback(req.RequestID, req.TaskID)
 		s.Logs.Add(LogError, "import", "下载资源失败: %v", err)
 		s.setCurrentOp("idle")
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("下载资源失败: %v", err))
@@ -543,81 +572,52 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("请求解析失败: %v", err))
 		return
 	}
-	if strings.TrimSpace(req.RequestID) == "" {
-		writeError(w, http.StatusBadRequest, "requestId 不能为空")
+	req.RequestID = strings.TrimSpace(req.RequestID)
+	req.TaskID = strings.TrimSpace(req.TaskID)
+	if req.RequestID == "" && req.TaskID == "" {
+		writeError(w, http.StatusBadRequest, "requestId 和 taskId 不能同时为空")
 		return
 	}
 
-	s.mu.RLock()
-	resultDir := s.Security.ResultDir
-	phase := s.CurrentPhase
-	savedPublicKey := s.ExportPublicKey
-	s.mu.RUnlock()
+	store, err := s.importIndexStore()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("加载导入索引失败: %v", err))
+		return
+	}
 
-	s.Logs.Add(LogInfo, "export", "收到导出请求: taskId=%s, phase=%d, savedPublicKey长度=%d", req.TaskID, phase, len(savedPublicKey))
+	record, err := store.Lookup(req.RequestID, req.TaskID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
-	// ── 确定公钥和是否加密 ──
+	if _, err := os.Stat(filepath.Join(record.ResultDir, "training_report.json")); err != nil {
+		if os.IsNotExist(err) {
+			writeError(w, http.StatusNotFound, fmt.Sprintf("结果文件不存在: %s", filepath.Join(record.ResultDir, "training_report.json")))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("检查结果文件失败: %v", err))
+		return
+	}
+
+	s.Logs.Add(LogInfo, "export", "收到导出请求: requestId=%s, taskId=%s, hash=%s, resultDir=%s", req.RequestID, req.TaskID, record.Hash, record.ResultDir)
+
+	resultData, err := compressDirToTarGz(record.ResultDir)
+	if err != nil {
+		s.Logs.Add(LogError, "export", "压缩结果目录失败: %v", err)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("压缩结果目录失败: %v", err))
+		return
+	}
+
+	filename := filepath.Base(record.ResultDir) + ".tar.gz"
 	var pubKeyPEM string
 	var encrypt bool
-
-	switch phase {
-	case 1, 2:
-		// 阶段 1/2：若传入公钥则加密返回，否则返回明文
-		if req.PublicKey != nil && *req.PublicKey != "" {
-			pubKeyPEM = *req.PublicKey
-			encrypt = true
-			s.Logs.Add(LogInfo, "export", "阶段%d: 使用请求中的 publicKey 加密 (长度=%d)", phase, len(pubKeyPEM))
-		} else {
-			s.Logs.Add(LogInfo, "export", "阶段%d: 未传入 publicKey，返回明文", phase)
-		}
-
-	case 3:
-		// 阶段 3：始终使用 savedPublicKey 加密
-		if savedPublicKey == "" {
-			s.Logs.Add(LogError, "export", "阶段3: ExportPublicKey 为空，无法加密导出")
-			writeError(w, http.StatusBadRequest, "阶段 3 需要先通过阶段 1 导入公钥")
-			return
-		}
-		pubKeyPEM = savedPublicKey
+	if req.PublicKey != nil && strings.TrimSpace(*req.PublicKey) != "" {
+		pubKeyPEM = strings.TrimSpace(*req.PublicKey)
 		encrypt = true
-		s.Logs.Add(LogInfo, "export", "阶段3: 使用阶段1保存的 ExportPublicKey 加密 (长度=%d)\n%s", len(pubKeyPEM), pubKeyPEM)
-
-	default:
-		s.Logs.Add(LogError, "export", "不支持的阶段: %d", phase)
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("当前阶段 %d 不支持导出", phase))
-		return
-	}
-
-	// ── 确定导出内容 ──
-	var resultData []byte
-	var filename string
-
-	switch phase {
-	case 1:
-		debugDir := filepath.Join(resultDir, "debug")
-		s.Logs.Add(LogInfo, "export", "阶段1: 压缩 debug 目录: %s", debugDir)
-		data, err := compressDirToTarGz(debugDir)
-		if err != nil {
-			s.Logs.Add(LogError, "export", "阶段1: 压缩 debug 目录失败: %v", err)
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("压缩 debug 目录失败: %v", err))
-			return
-		}
-		resultData = data
-		filename = fmt.Sprintf("result-debug-%s.tar.gz", safeFilenamePart(req.RequestID))
-		s.Logs.Add(LogInfo, "export", "阶段1: 压缩完成，大小=%d bytes", len(resultData))
-
-	case 2, 3:
-		srcDir := filepath.Join(resultDir, "train")
-		s.Logs.Add(LogInfo, "export", "阶段%d: 压缩 train 目录: %s", phase, srcDir)
-		data, err := compressDirToTarGz(srcDir)
-		if err != nil {
-			s.Logs.Add(LogError, "export", "阶段%d: 压缩 train 目录失败: %v", phase, err)
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("压缩 train 目录失败: %v", err))
-			return
-		}
-		resultData = data
-		filename = fmt.Sprintf("result-train-%s.tar.gz", safeFilenamePart(req.RequestID))
-		s.Logs.Add(LogInfo, "export", "阶段%d: 压缩完成，大小=%d bytes", phase, len(resultData))
+		s.Logs.Add(LogInfo, "export", "使用请求中的 publicKey 加密 (长度=%d)", len(pubKeyPEM))
+	} else {
+		s.Logs.Add(LogInfo, "export", "未传入 publicKey，返回明文")
 	}
 
 	if encrypt {
@@ -636,10 +636,11 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 		filename += ".enc"
 		s.Logs.Add(LogInfo, "export", "加密完成: 明文=%d bytes, 密文=%d bytes, taskId=%s, filename=%s", len(resultData), len(sealed), req.TaskID, filename)
 		writeFileStream(w, req.TaskID, filename, true, int64(len(sealed)), bytes.NewReader(sealed), "导出加密结果失败")
-	} else {
-		s.Logs.Add(LogInfo, "export", "明文导出: 大小=%d bytes, taskId=%s, filename=%s", len(resultData), req.TaskID, filename)
-		writeFileStream(w, req.TaskID, filename, false, int64(len(resultData)), bytes.NewReader(resultData), "导出明文结果失败")
+		return
 	}
+
+	s.Logs.Add(LogInfo, "export", "明文导出: 大小=%d bytes, taskId=%s, filename=%s", len(resultData), req.TaskID, filename)
+	writeFileStream(w, req.TaskID, filename, false, int64(len(resultData)), bytes.NewReader(resultData), "导出明文结果失败")
 }
 
 // compressDirToTarGz 将目录压缩为 tar.gz 格式的字节切片。
@@ -881,17 +882,17 @@ func (s *TAAState) resourceInfoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Logs.Add(LogInfo, "getResourceInfo", "解压到临时目录: %s", tmpDataDir)
 
-	output, err := s.loadResourceInfoOutput(context.Background(), tmpDataDir, true)
+	output, err := buildResourceInfoJSON(tmpDataDir)
 	if err != nil {
-		s.Logs.Add(LogError, "getResourceInfo", "生成资源信息失败: %v", err)
+		s.Logs.Add(LogError, "getResourceInfo", "生成资源树失败: %v", err)
 		s.setCurrentOp("idle")
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("生成资源信息失败: %v", err))
 		return
 	}
 
 	s.setCurrentOp("idle")
-	s.Logs.Add(LogInfo, "getResourceInfo", "资源信息分析完成，临时文件已清理")
-	writeEnvelope(w, http.StatusOK, "ok", output, 0)
+	s.Logs.Add(LogInfo, "getResourceInfo", "资源树分析完成，临时文件已清理")
+	writeEnvelope(w, http.StatusOK, "ok", string(output), 0)
 }
 
 // ── Handler: /v1/taa/reportRes (平台 → TAA) ─────────────
@@ -1015,18 +1016,50 @@ func parseRuntimeConfig(raw string) (runtimeConfig, map[string]string, error) {
 	return cfg, env, nil
 }
 
+func resolveRuntimeCommands(commands []string, dataDir, outputDir string) []string {
+	replacer := strings.NewReplacer(
+		"<in>", dataDir,
+		"<out>", outputDir,
+		"<IN>", dataDir,
+		"<OUT>", outputDir,
+	)
+	resolved := make([]string, len(commands))
+	for i, cmd := range commands {
+		resolved[i] = replacer.Replace(cmd)
+	}
+	return resolved
+}
+
+func resolveRuntimeEnv(env map[string]string, dataDir, outputDir string) map[string]string {
+	if len(env) == 0 {
+		return env
+	}
+	replacer := strings.NewReplacer(
+		"<in>", dataDir,
+		"<out>", outputDir,
+		"<IN>", dataDir,
+		"<OUT>", outputDir,
+	)
+	resolved := make(map[string]string, len(env))
+	for k, v := range env {
+		resolved[k] = replacer.Replace(v)
+	}
+	return resolved
+}
+
 func runRuntimeConfig(cfg runtimeConfig, env map[string]string, modelDir, dataDir, outputDir, taskID, startedAt string) (string, error) {
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return "", fmt.Errorf("create output dir: %w", err)
 	}
 
-	commandLine := strings.Join(cfg.Commands, " && ")
+	resolvedCommands := resolveRuntimeCommands(cfg.Commands, dataDir, outputDir)
+	commandLine := strings.Join(resolvedCommands, " && ")
 	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", commandLine)
 	cmd.Dir = modelDir
-	cmd.Env = mergedRuntimeEnv(env, map[string]string{
+	cmd.Env = mergedRuntimeEnv(resolveRuntimeEnv(env, dataDir, outputDir), map[string]string{
 		"TAA_TASK_ID":    taskID,
 		"TAA_STARTED_AT": startedAt,
 		"TAA_DATA_DIR":   dataDir,
@@ -1087,86 +1120,4 @@ func runTrainScript(script, dataDir, outputDir, taskID, startedAt string) (strin
 		"TAA_TASK_ID":    taskID,
 		"TAA_STARTED_AT": startedAt,
 	}, "--data-dir", dataDir)
-}
-
-// findResourceInfoScript searches for resource_info.py in the model directory and its subdirectories.
-func findResourceInfoScript(modelDir string) (string, error) {
-	return findScript(modelDir, "resource_info.py")
-}
-
-// resourceInfoScriptArgs returns the argv tail for resource_info.py.
-// Debug phase reads the bundled test data by default; later phases use the imported data directory.
-func resourceInfoScriptArgs(dataDir string, includeDataDir bool) ([]string, error) {
-	if !includeDataDir {
-		return nil, nil
-	}
-	if strings.TrimSpace(dataDir) == "" {
-		return nil, fmt.Errorf("data dir is required")
-	}
-	return []string{"--data-dir", dataDir}, nil
-}
-
-// runResourceInfoScript executes resource_info.py via python3.
-// Does not depend on bash or any shell shebang.
-func runResourceInfoScript(ctx context.Context, script string, args ...string) (string, error) {
-	cmdArgs := append([]string{script}, args...)
-	cmd := exec.CommandContext(ctx, "python3", cmdArgs...)
-	cmd.Dir = filepath.Dir(script)
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(output), fmt.Errorf("%s exited with error: %w", filepath.Base(script), err)
-	}
-	return string(output), nil
-}
-
-// loadResourceInfoOutput runs resource_info.py and returns the raw JSON string it prints.
-func (s *TAAState) loadResourceInfoOutput(ctx context.Context, dataDir string, includeDataDir bool) (string, error) {
-	s.mu.RLock()
-	modelDir := s.Security.ModelDir
-	s.mu.RUnlock()
-
-	script, err := findResourceInfoScript(modelDir)
-	if err != nil {
-		return "", err
-	}
-
-	args, err := resourceInfoScriptArgs(dataDir, includeDataDir)
-	if err != nil {
-		return "", err
-	}
-
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(ctx, scriptTimeout)
-	defer cancel()
-
-	startedAt := time.Now()
-	s.Logs.Add(LogInfo, "getResourceInfo", "准备执行资源信息脚本: script=%s dataDir=%s includeDataDir=%t", script, dataDir, includeDataDir)
-	output, err := runResourceInfoScript(ctx, script, args...)
-	elapsed := time.Since(startedAt)
-	if err != nil {
-		s.Logs.Add(LogError, "getResourceInfo", "resource_info.py 执行失败: elapsed=%s ctxErr=%v err=%v", elapsed.Round(time.Millisecond), ctx.Err(), err)
-		return "", err
-	}
-	s.Logs.Add(LogInfo, "getResourceInfo", "resource_info.py 执行完成: elapsed=%s outputBytes=%d", elapsed.Round(time.Millisecond), len(output))
-	return strings.TrimSpace(output), nil
-}
-
-// loadResourceDataset runs resource_info.py and parses the dataset JSON it prints.
-func (s *TAAState) loadResourceDataset(ctx context.Context, dataDir string, includeDataDir bool) (map[string]any, error) {
-	output, err := s.loadResourceInfoOutput(ctx, dataDir, includeDataDir)
-	if err != nil {
-		return nil, err
-	}
-
-	var dataset map[string]any
-	if err := json.Unmarshal([]byte(output), &dataset); err != nil {
-		return nil, fmt.Errorf("parse resource info JSON: %w", err)
-	}
-	if dataset == nil {
-		dataset = map[string]any{}
-	}
-	return dataset, nil
 }
