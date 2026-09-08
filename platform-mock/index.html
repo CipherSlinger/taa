@@ -313,10 +313,37 @@ python3 train.py</textarea>
     <div id="batchResults" class="batch-results"></div>
   </section>
 
+  <!-- 平台发往 TAA 的请求体记录 -->
+  <h2>平���发往 TAA 的请求体记录</h2>
+  <section class="card">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap;">
+      <div class="status" style="font-size:16px;">
+        <span id="requestLogStatusDot" class="dot"></span>
+        <span id="requestLogStatusText">等待发送请求...</span>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <label style="margin:0; font-size:13px;">接口过滤</label>
+        <select id="requestLogEndpointFilter" style="width:auto; padding:4px 8px;" onchange="renderRequestLogs()">
+          <option value="">全部接口</option>
+          <option value="/v1/taa/importModel">/v1/taa/importModel（下发模型）</option>
+          <option value="/v1/taa/import">/v1/taa/import（下发数据）</option>
+          <option value="/v1/taa/switch">/v1/taa/switch（阶段切换）</option>
+          <option value="/v1/taa/export">/v1/taa/export（导出结果）</option>
+          <option value="/v1/taa/getResourceInfo">/v1/taa/getResourceInfo（资源信息）</option>
+          <option value="/v1/taa/getAttestation">/v1/taa/getAttestation（远程证明报告）</option>
+          <option value="/v1/taa/health">/v1/taa/health（健康检查）</option>
+        </select>
+        <button class="secondary" onclick="clearRequestLogs()" style="padding:6px 12px; font-size:13px;">清空记录</button>
+        <span class="muted" id="requestLogCount" style="font-size:13px;">0 条请求体</span>
+      </div>
+    </div>
+    <div id="requestLogOutput" class="log-window" style="background:#07111d; color:#e5e7eb; min-height:260px; max-height:550px; overflow-y:auto; font-size:13px; line-height:1.6; padding:14px; border-radius:10px; margin:0;"></div>
+  </section>
+
   <!-- TAA 实时日志 -->
   <h2>TAA 实时日志</h2>
   <section class="card">
-    <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap;">
       <div class="status" style="font-size:16px;">
         <span id="logStatusDot" class="dot"></span>
         <span id="logStatusText">等待日志...</span>
@@ -353,7 +380,7 @@ python3 train.py</textarea>
       <button class="danger" onclick="clearLogs()" style="padding:6px 12px; font-size:13px;">清空</button>
       <span class="muted" id="logCount" style="font-size:13px;">0 条日志</span>
     </div>
-    <pre id="logOutput" style="background:#0b1220; color:#e5e7eb; min-height:300px; max-height:600px; overflow-y:auto; font-size:13px; line-height:1.6; padding:14px; border-radius:10px; margin:0; white-space:pre-wrap; word-break:break-all;"></pre>
+    <pre id="logOutput" class="log-window" style="background:#0b1220; color:#e5e7eb; min-height:300px; max-height:600px; overflow-y:auto; font-size:13px; line-height:1.6; padding:14px; border-radius:10px; margin:0; white-space:pre-wrap; word-break:break-all;"></pre>
   </section>
 
 </main>
@@ -383,6 +410,9 @@ let lastReportModelImportData = null;
 const RESOURCE_INFO_TIMEOUT_MS = 120000;
 let currentModalBody = '';
 let uploadedFiles = [];
+let requestLogPaused = false;
+let requestLogTimer = null;
+let allRequestLogs = [];
 
 function formatModalBody(body) {
   if (body == null || body === '') return '暂无内容';
@@ -634,9 +664,13 @@ function getBatchExportPublicKey() {
 }
 
 function taaFetch(endpoint, body, timeoutMs) {
+  const reqId = recordTaaRequest('POST', endpoint, body);
   const opts = {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Mock-Req-Id': reqId,
+    },
     body: JSON.stringify(body),
   };
   if (timeoutMs) {
@@ -1019,15 +1053,7 @@ async function testGetAttestation() {
   _lastAttestationValues = null;
   try {
     const body = { requestId: document.getElementById('attestRequestId').value };
-    const url = getTaaAddr() + '/v1/taa/getAttestation';
-    const ctrl = new AbortController();
-    setTimeout(() => ctrl.abort(), 45000);
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    });
+    const res = await taaFetch('/v1/taa/getAttestation', body, 45000);
     const data = await res.json().catch(() => ({}));
     const payload = responseResult(data);
     const ok = res.status === 200 && data.error === 0 && !!payload.attestation;
@@ -1172,6 +1198,161 @@ async function detectTAAProxy() {
   }
 }
 
+// ── 平台发往 TAA 的请求体记录 ─────────────────────────
+function formatRequestBody(body) {
+  if (body == null) return '{}';
+  if (typeof body === 'object') {
+    try {
+      return JSON.stringify(body, null, 2);
+    } catch {
+      return String(body);
+    }
+  }
+  if (typeof body === 'string') {
+    const trimmed = body.trim();
+    if (!trimmed) return '{}';
+    try {
+      return JSON.stringify(JSON.parse(trimmed), null, 2);
+    } catch {
+      return trimmed;
+    }
+  }
+  return String(body);
+}
+
+function formatRequestLogTime(ts) {
+  if (!ts) return '--:--:--';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return String(ts);
+  return d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+}
+
+function recordTaaRequest(method, endpoint, body, id) {
+  const reqId = id || genId('taa-req');
+  if (allRequestLogs.some(item => item.id === reqId)) {
+    return reqId;
+  }
+  const entry = {
+    id: reqId,
+    timestamp: new Date().toISOString(),
+    method: method || 'POST',
+    endpoint: endpoint || '',
+    body: formatRequestBody(body),
+  };
+  allRequestLogs.push(entry);
+  if (allRequestLogs.length > 500) {
+    allRequestLogs = allRequestLogs.slice(-500);
+  }
+  renderRequestLogs();
+  return reqId;
+}
+
+function renderRequestLogs() {
+  const filterEl = document.getElementById('requestLogEndpointFilter');
+  const endpointFilter = filterEl ? filterEl.value : '';
+  const output = document.getElementById('requestLogOutput');
+  const dot = document.getElementById('requestLogStatusDot');
+  const statusText = document.getElementById('requestLogStatusText');
+  const countEl = document.getElementById('requestLogCount');
+
+  if (allRequestLogs.length > 0) {
+    dot.className = 'dot ok';
+    statusText.textContent = `已记录 ${allRequestLogs.length} 条发往 TAA 的请求体`;
+  } else {
+    dot.className = 'dot';
+    statusText.textContent = '等待发送请求...';
+  }
+
+  const filtered = allRequestLogs.filter(l => {
+    if (endpointFilter && !(l.endpoint || l.path || '').includes(endpointFilter)) return false;
+    return true;
+  });
+
+  if (countEl) {
+    countEl.textContent = `${filtered.length} / ${allRequestLogs.length} 条请求体`;
+  }
+
+  if (!filtered.length) {
+    output.innerHTML = '<div style="color:#6b7280; text-align:center; padding:40px 0;">暂无发往 TAA 的请求记录。点击上方任意接口的“发送测试”即可在此查看下发的完整请求体。</div>';
+    return;
+  }
+
+  output.innerHTML = filtered.map((l, index) => {
+    const timeStr = formatRequestLogTime(l.timestamp);
+    const endpointStr = escapeHtml(l.endpoint || l.path || '-');
+    const methodStr = escapeHtml(l.method || 'POST');
+    const bodyStr = l.body || '{}';
+    return `<div class="req-item" style="margin-bottom:12px; border:1px solid rgba(255,255,255,.08); border-radius:8px; background:rgba(255,255,255,.03); overflow:hidden;">` +
+      `<div style="display:flex; align-items:center; justify-content:space-between; padding:8px 12px; background:rgba(255,255,255,.05); border-bottom:1px solid rgba(255,255,255,.06); font-family:ui-monospace,monospace; font-size:12px;">` +
+      `<div>` +
+      `<span style="color:#9ca3af;">[${timeStr}]</span> ` +
+      `<span style="color:#38bdf8; font-weight:700; margin:0 4px;">${methodStr}</span> ` +
+      `<span style="color:#f8fafc; font-weight:600;">${endpointStr}</span>` +
+      `</div>` +
+      `<div><button type="button" class="secondary" style="padding:3px 8px; font-size:11px; border-radius:6px;" onclick="copyTaaRequestBody(${index})">复制请求体</button></div>` +
+      `</div>` +
+      `<pre style="margin:0; padding:12px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; line-height:1.5; color:#34d399; overflow-x:auto; white-space:pre-wrap; word-break:break-all; background:transparent;">${escapeHtml(bodyStr)}</pre>` +
+      `</div>`;
+  }).join('');
+
+  output.scrollTop = output.scrollHeight;
+}
+
+function copyTaaRequestBody(index) {
+  const filterEl = document.getElementById('requestLogEndpointFilter');
+  const endpointFilter = filterEl ? filterEl.value : '';
+  const filtered = allRequestLogs.filter(l => {
+    if (endpointFilter && !(l.endpoint || l.path || '').includes(endpointFilter)) return false;
+    return true;
+  });
+  const item = filtered[index];
+  if (item && item.body) {
+    copyText(item.body);
+  }
+}
+
+async function fetchRequestLogs() {
+  try {
+    const res = await fetch('/api/request-logs/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const data = await res.json();
+    const result = responseResult(data);
+    if (result && Array.isArray(result.logs) && result.logs.length > 0) {
+      let added = false;
+      for (const log of result.logs) {
+        const path = log.path || log.endpoint || '';
+        if (path.includes('/logs') || path.includes('/status') || path.includes('/register') || path.includes('/report')) {
+          continue;
+        }
+        const logId = log.id || (log.timestamp + '-' + path);
+        if (!allRequestLogs.some(item => item.id === logId)) {
+          allRequestLogs.push({
+            id: logId,
+            timestamp: log.timestamp || new Date().toISOString(),
+            method: log.method || 'POST',
+            endpoint: path,
+            body: formatRequestBody(log.body),
+          });
+          added = true;
+        }
+      }
+      if (added) {
+        if (allRequestLogs.length > 500) allRequestLogs = allRequestLogs.slice(-500);
+        renderRequestLogs();
+      }
+    }
+  } catch {
+    // Ignore transient network errors.
+  }
+}
+
+async function clearRequestLogs() {
+  allRequestLogs = [];
+  renderRequestLogs();
+  try {
+    await fetch('/api/request-logs/reset', { method: 'POST' });
+  } catch {}
+}
+
 // ── TAA 实时日志 ─────────────────────────────
 let logPaused = false;
 let logTimer = null;
@@ -1298,9 +1479,12 @@ refreshStatus();
 refreshReportResStatus();
 setReportModelImportPending();
 refreshReportModelImportStatus();
+renderRequestLogs();
+fetchRequestLogs();
 setInterval(refreshStatus, 1000);
 setInterval(refreshReportResStatus, 1000);
 setInterval(refreshReportModelImportStatus, 1000);
+setInterval(fetchRequestLogs, 2000);
 logTimer = setInterval(fetchLogs, 3000);
 fetchLogs();
 </script>

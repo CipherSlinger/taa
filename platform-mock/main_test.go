@@ -21,10 +21,55 @@ func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
 	if strings.Contains(indexHTML, "③ 资源下载结果上报") {
 		t.Fatal("index should not show the resource download result report card")
 	}
-	for _, want := range []string{"③ 训练结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult", "saveReportBtn", "reportResBodyBtn", "reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "importModelCommands", "importModelEnv", "resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport", "uploadedUrlInput", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件"} {
+	for _, want := range []string{"③ 训练结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult", "saveReportBtn", "reportResBodyBtn", "reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "importModelCommands", "importModelEnv", "resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport", "uploadedUrlInput", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件", "平台发往 TAA 的请求体记录", "requestLogStatusDot", "requestLogOutput", "requestLogEndpointFilter"} {
 		if !strings.Contains(indexHTML, want) {
 			t.Fatalf("index missing %q", want)
 		}
+	}
+}
+
+func TestRequestLogsHandlersExposeAndResetCapturedTraffic(t *testing.T) {
+	requestLogs.reset()
+	requestLogs.add(requestLogEntry{Timestamp: "2026-09-08T12:00:00Z", Direction: "in", Level: "info", Component: "register", Method: http.MethodPost, Path: "/v1/taa/register", Status: http.StatusOK, Message: "HTTP 200 POST (2ms)", Body: `{"dockerId":"docker-1"}`})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/request-logs/status", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	requestLogsStatusHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	var api struct {
+		Result struct {
+			Logs  []requestLogEntry `json:"logs"`
+			Total int               `json:"total"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&api); err != nil {
+		t.Fatalf("decode request logs response: %v", err)
+	}
+	if got := len(api.Result.Logs); got != 1 || api.Result.Total != 1 {
+		t.Fatalf("logs = %+v, want 1 entry", api.Result)
+	}
+	if api.Result.Logs[0].Component != "register" || api.Result.Logs[0].Direction != "in" {
+		t.Fatalf("unexpected log entry: %+v", api.Result.Logs[0])
+	}
+
+	resetReq := httptest.NewRequest(http.MethodPost, "/api/request-logs/reset", nil)
+	resetW := httptest.NewRecorder()
+	requestLogsResetHandler(resetW, resetReq)
+	if resetW.Code != http.StatusOK {
+		t.Fatalf("reset status = %d, want 200; body=%s", resetW.Code, resetW.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	requestLogsStatusHandler(w, httptest.NewRequest(http.MethodPost, "/api/request-logs/status", strings.NewReader(`{}`)))
+	if err := json.NewDecoder(w.Body).Decode(&api); err != nil {
+		t.Fatalf("decode reset request logs response: %v", err)
+	}
+	if api.Result.Total != 0 || len(api.Result.Logs) != 0 {
+		t.Fatalf("logs after reset = %+v, want empty", api.Result)
 	}
 }
 
