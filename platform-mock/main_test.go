@@ -21,7 +21,7 @@ func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
 	if strings.Contains(indexHTML, "③ 资源下载结果上报") {
 		t.Fatal("index should not show the resource download result report card")
 	}
-	for _, want := range []string{"③ 训练结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult", "saveReportBtn", "reportResBodyBtn", "reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport", "uploadedUrlInput", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件"} {
+	for _, want := range []string{"③ 训练结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult", "saveReportBtn", "reportResBodyBtn", "reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "importModelCommands", "importModelEnv", "resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport", "uploadedUrlInput", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件"} {
 		if !strings.Contains(indexHTML, want) {
 			t.Fatalf("index missing %q", want)
 		}
