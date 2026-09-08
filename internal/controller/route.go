@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +68,7 @@ type TAAState struct {
 	SM2PrivateKey        *teecrypto.SM2PrivateKey // TAA 启动时生成的 SM2 私钥，用于解密资源信封
 	UserData             []byte                   // TAA 启动时生成的 64 字节 USERDATA，用于重新生成远程证明报告
 	ExportPublicKey      string                   // phase1 import 时保存的公钥，phase3 export 时使用
+	RuntimeConfig        string                   // importModel 保存的运行配置，训练时按该配置执行命令
 	Security             SecurityConfig           // immutable after startup — no mutex needed
 	Logs                 *LogStore                // 结构化日志存储
 	LastAudit            *codeaudit.AuditReport   // 最近一次模型代码审计结果，用于训练报告输出
@@ -96,10 +98,16 @@ type switchRequest struct {
 }
 
 type importRequest struct {
-	ResourceURL string  `json:"resourceUrl"`
-	RequestID   string  `json:"requestId"`
-	TaskID      string  `json:"taskId"`
-	PublicKey   *string `json:"publicKey,omitempty"`
+	ResourceURL    string  `json:"resourceUrl"`
+	RequestID      string  `json:"requestId"`
+	TaskID         string  `json:"taskId"`
+	PublicKey      *string `json:"publicKey,omitempty"`
+	RuntimeConfig  string  `json:"runtimeConfig,omitempty"`
+}
+
+type runtimeConfig struct {
+	Commands []string `json:"commands"`
+	Env      string   `json:"env"`
 }
 
 type exportRequest struct {
@@ -391,6 +399,15 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 
 	s.Logs.Add(LogInfo, "importModel", "收到模型 import 请求: taskId=%s, requestId=%s, phase=%d",
 		req.TaskID, req.RequestID, phase)
+
+	s.mu.Lock()
+	s.RuntimeConfig = req.RuntimeConfig
+	s.mu.Unlock()
+	if strings.TrimSpace(req.RuntimeConfig) == "" {
+		s.Logs.Add(LogWarn, "importModel", "runtimeConfig 为空，后续训练将失败")
+	} else {
+		s.Logs.Add(LogInfo, "importModel", "已保存 runtimeConfig (长度=%d)", len(req.RuntimeConfig))
+	}
 
 	s.setCurrentOp("downloading")
 	s.Logs.Add(LogInfo, "importModel", "开始下载资源: %s", req.ResourceURL)
@@ -969,6 +986,98 @@ func runPythonScript(script, outputDir string, env map[string]string, args ...st
 // runScript executes a Python script via python3 with --output argument.
 func runScript(script, outputDir string) (string, error) {
 	return runPythonScript(script, outputDir, nil)
+}
+
+func parseRuntimeConfig(raw string) (runtimeConfig, map[string]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return runtimeConfig{}, nil, fmt.Errorf("runtimeConfig 不能为空")
+	}
+
+	var cfg runtimeConfig
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return runtimeConfig{}, nil, fmt.Errorf("解析 runtimeConfig 失败: %w", err)
+	}
+	if len(cfg.Commands) == 0 {
+		return runtimeConfig{}, nil, fmt.Errorf("runtimeConfig.commands 不能为空")
+	}
+	for i, command := range cfg.Commands {
+		if strings.TrimSpace(command) == "" {
+			return runtimeConfig{}, nil, fmt.Errorf("runtimeConfig.commands[%d] 不能为空", i)
+		}
+	}
+
+	env := map[string]string{}
+	if strings.TrimSpace(cfg.Env) != "" {
+		if err := json.Unmarshal([]byte(cfg.Env), &env); err != nil {
+			return runtimeConfig{}, nil, fmt.Errorf("解析 runtimeConfig.env 失败: %w", err)
+		}
+	}
+	return cfg, env, nil
+}
+
+func runRuntimeConfig(cfg runtimeConfig, env map[string]string, modelDir, dataDir, outputDir, taskID, startedAt string) (string, error) {
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return "", fmt.Errorf("create output dir: %w", err)
+	}
+
+	commandLine := strings.Join(cfg.Commands, " && ")
+	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", commandLine)
+	cmd.Dir = modelDir
+	cmd.Env = mergedRuntimeEnv(env, map[string]string{
+		"TAA_TASK_ID":    taskID,
+		"TAA_STARTED_AT": startedAt,
+		"TAA_DATA_DIR":   dataDir,
+		"TAA_OUTPUT_DIR": outputDir,
+	})
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return string(output), fmt.Errorf("runtimeConfig command timed out after %s", scriptTimeout)
+		}
+		return string(output), fmt.Errorf("runtimeConfig command exited with error: %w", err)
+	}
+	return string(output), nil
+}
+
+func mergedRuntimeEnv(userEnv, systemEnv map[string]string) []string {
+	merged := map[string]string{}
+	for _, item := range os.Environ() {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			merged[key] = value
+		}
+	}
+	for key, value := range userEnv {
+		merged[key] = value
+	}
+	for key, value := range systemEnv {
+		merged[key] = value
+	}
+
+	keys := make([]string, 0, len(merged))
+	for key := range merged {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, key+"="+merged[key])
+	}
+	return out
+}
+
+func envKeys(env map[string]string) []string {
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // runTrainScript executes a Python training script via python3 with --data-dir and --output arguments.

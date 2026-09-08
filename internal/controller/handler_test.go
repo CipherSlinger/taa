@@ -97,6 +97,37 @@ func setupTestServer(t *testing.T) (*TAAState, *httptest.Server) {
 	return state, server
 }
 
+func makeRuntimeConfigJSON(t *testing.T, commands []string, env map[string]string) string {
+	t.Helper()
+	payload := struct {
+		Commands []string `json:"commands"`
+		Env      string   `json:"env,omitempty"`
+	}{Commands: commands}
+	if env != nil {
+		data, err := json.Marshal(env)
+		if err != nil {
+			t.Fatalf("marshal runtime env: %v", err)
+		}
+		payload.Env = string(data)
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal runtime config: %v", err)
+	}
+	return string(data)
+}
+
+func makePhase1TrainingRuntimeConfigJSON(t *testing.T, marker string) string {
+	t.Helper()
+	return makeRuntimeConfigJSON(t, []string{
+		`mkdir -p "$TAA_OUTPUT_DIR"`,
+		fmt.Sprintf(`printf '%%s\n' %q > "$TAA_OUTPUT_DIR/marker.txt"`, marker),
+		`cat > "$TAA_OUTPUT_DIR/training_result.json" <<'JSON'
+{"dataset":{"total_samples":1,"splits":{"train":1,"test":0}},"metrics":{"loss":0.0,"accuracy":1.0}}
+JSON`,
+	}, map[string]string{"PYTHONUNBUFFERED": "1"})
+}
+
 func postJSON(t *testing.T, url string, body any) *http.Response {
 	t.Helper()
 	data, err := json.Marshal(body)
@@ -203,7 +234,7 @@ func TestSwitchHandler(t *testing.T) {
 func TestImportHandler(t *testing.T) {
 	state, server := setupTestServer(t)
 
-	t.Run("phase1 requires both model and data then runs train.py", func(t *testing.T) {
+	t.Run("phase1 requires both model and data then runs runtimeConfig", func(t *testing.T) {
 		reportCh := make(chan importedReportPayload, 1)
 		platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
@@ -315,7 +346,139 @@ func TestImportHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("phase1 import with invalid publicKey returns error", func(t *testing.T) {
+	t.Run("phase1 runtimeConfig empty fails training", func(t *testing.T) {
+			state, server := setupTestServer(t)
+			state.mu.Lock()
+			state.CurrentPhase = 1
+			state.mu.Unlock()
+
+			reportCh := make(chan importedReportPayload, 1)
+			platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != reportResEndpoint {
+					t.Fatalf("unexpected report endpoint: %s", r.URL.Path)
+				}
+				var payload importedReportPayload
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode reportRes payload: %v", err)
+				}
+				reportCh <- payload
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer platformServer.Close()
+
+			state.mu.Lock()
+			state.PlatformIP = platformServer.URL
+			state.mu.Unlock()
+
+			resourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.Contains(r.URL.Path, "model") {
+					_, _ = w.Write(buildTarGzArchive(t, map[string]archiveEntry{"placeholder.txt": {mode: 0o644, data: []byte("model\n")}}))
+					return
+				}
+				_, _ = w.Write(buildTarGzArchive(t, map[string]archiveEntry{"sample.txt": {mode: 0o644, data: []byte("training data\n")}}))
+			}))
+			defer resourceServer.Close()
+
+			resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+				"resourceUrl": resourceServer.URL + "/model.tar.gz",
+				"requestId":   "req-import-empty-runtime-config",
+				"taskId":      "task-empty-runtime-config",
+			})
+			api := decodeResponse(t, resp)
+			if resp.StatusCode != http.StatusOK || api.Error != 0 {
+				t.Fatalf("import model: expected 200/0, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+			}
+
+			resp = postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+				"resourceUrl": resourceServer.URL + "/data.tar.gz",
+				"requestId":   "req-import-empty-runtime-config-data",
+				"taskId":      "task-empty-runtime-config",
+			})
+			api = decodeResponse(t, resp)
+			if resp.StatusCode != http.StatusOK || api.Error != 0 {
+				t.Fatalf("import data: expected 200/0, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+			}
+
+			select {
+			case payload := <-reportCh:
+				if payload.Code != 1 {
+					t.Fatalf("reportRes code = %d, want 1", payload.Code)
+				}
+				if payload.Msg == nil || !strings.Contains(*payload.Msg, "runtimeConfig 不能为空") {
+					t.Fatalf("reportRes msg = %v, want runtimeConfig failure", payload.Msg)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("timed out waiting for empty runtimeConfig failure report")
+			}
+		})
+
+		t.Run("phase1 runtimeConfig empty fails training", func(t *testing.T) {
+			state, server := setupTestServer(t)
+			state.mu.Lock()
+			state.CurrentPhase = 1
+			state.mu.Unlock()
+
+			reportCh := make(chan importedReportPayload, 1)
+			platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != reportResEndpoint {
+					t.Fatalf("unexpected report endpoint: %s", r.URL.Path)
+				}
+				var payload importedReportPayload
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode reportRes payload: %v", err)
+				}
+				reportCh <- payload
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer platformServer.Close()
+
+			state.mu.Lock()
+			state.PlatformIP = platformServer.URL
+			state.mu.Unlock()
+
+			resourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.Contains(r.URL.Path, "model") {
+					_, _ = w.Write(buildTarGzArchive(t, map[string]archiveEntry{"placeholder.txt": {mode: 0o644, data: []byte("model\n")}}))
+					return
+				}
+				_, _ = w.Write(buildTarGzArchive(t, map[string]archiveEntry{"sample.txt": {mode: 0o644, data: []byte("training data\n")}}))
+			}))
+			defer resourceServer.Close()
+
+			resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+				"resourceUrl": resourceServer.URL + "/model.tar.gz",
+				"requestId":   "req-import-empty-runtime-config",
+				"taskId":      "task-empty-runtime-config",
+			})
+			api := decodeResponse(t, resp)
+			if resp.StatusCode != http.StatusOK || api.Error != 0 {
+				t.Fatalf("import model: expected 200/0, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+			}
+
+			resp = postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+				"resourceUrl": resourceServer.URL + "/data.tar.gz",
+				"requestId":   "req-import-empty-runtime-config-data",
+				"taskId":      "task-empty-runtime-config",
+			})
+			api = decodeResponse(t, resp)
+			if resp.StatusCode != http.StatusOK || api.Error != 0 {
+				t.Fatalf("import data: expected 200/0, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+			}
+
+			select {
+			case payload := <-reportCh:
+				if payload.Code != 1 {
+					t.Fatalf("reportRes code = %d, want 1", payload.Code)
+				}
+				if payload.Msg == nil || !strings.Contains(*payload.Msg, "runtimeConfig 不能为空") {
+					t.Fatalf("reportRes msg = %v, want runtimeConfig failure", payload.Msg)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("timed out waiting for empty runtimeConfig failure report")
+			}
+		})
+
+		t.Run("phase1 import with invalid publicKey returns error", func(t *testing.T) {
 		state, server := setupTestServer(t)
 		state.mu.Lock()
 		state.CurrentPhase = 1

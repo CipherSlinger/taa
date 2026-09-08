@@ -30,7 +30,7 @@ type importedReportPayload struct {
 }
 
 func TestPhase1RequiresBothModelAndDataBeforeTraining(t *testing.T) {
-	t.Run("model first then data triggers train.py", func(t *testing.T) {
+	t.Run("model first then data triggers runtimeConfig", func(t *testing.T) {
 		runPhase1FlowCase(t, phase1FlowCase{
 			name: "model first then data",
 			modelArchiveData: buildTarGzArchive(t, map[string]archiveEntry{
@@ -50,7 +50,7 @@ func TestPhase1RequiresBothModelAndDataBeforeTraining(t *testing.T) {
 		})
 	})
 
-	t.Run("data first then model triggers train.py", func(t *testing.T) {
+	t.Run("data first then model triggers runtimeConfig", func(t *testing.T) {
 		runPhase1FlowCase(t, phase1FlowCase{
 			name: "data first then model",
 			modelArchiveData: buildTarGzArchive(t, map[string]archiveEntry{
@@ -246,10 +246,11 @@ result = {"dataset": {"total_samples": 1, "splits": {"train": 1, "test": 0}}, "m
 
 			importModel := func() {
 				resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
-					"resourceUrl": resourceServer.URL + "/model.tar.gz",
-					"requestId":   "req-" + strings.ReplaceAll(tc.name, " ", "-") + "-model",
-					"taskId":      "task-" + strings.ReplaceAll(tc.name, " ", "-"),
-					"publicKey":   string(pubKeyPEM),
+					"resourceUrl":   resourceServer.URL + "/model.tar.gz",
+					"requestId":     "req-" + strings.ReplaceAll(tc.name, " ", "-") + "-model",
+					"taskId":        "task-" + strings.ReplaceAll(tc.name, " ", "-"),
+					"publicKey":     string(pubKeyPEM),
+					"runtimeConfig": makePhase1TrainingRuntimeConfigJSON(t, tc.name),
 				})
 				api := decodeResponse(t, resp)
 				if resp.StatusCode != http.StatusOK || api.Error != 0 {
@@ -379,10 +380,11 @@ func runPhase1FlowCase(t *testing.T, tc phase1FlowCase) {
 
 	importModel := func() {
 		resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
-			"resourceUrl": resourceServer.URL + "/model.tar.gz",
-			"requestId":   "req-" + strings.ReplaceAll(tc.name, " ", "-") + "-model",
-			"taskId":      "task-" + strings.ReplaceAll(tc.name, " ", "-"),
-			"publicKey":   string(pubKeyPEM),
+			"resourceUrl":   resourceServer.URL + "/model.tar.gz",
+			"requestId":     "req-" + strings.ReplaceAll(tc.name, " ", "-") + "-model",
+			"taskId":        "task-" + strings.ReplaceAll(tc.name, " ", "-"),
+			"publicKey":     string(pubKeyPEM),
+			"runtimeConfig": makePhase1TrainingRuntimeConfigJSON(t, tc.name),
 		})
 		api := decodeResponse(t, resp)
 		if resp.StatusCode != http.StatusOK || api.Error != 0 {
