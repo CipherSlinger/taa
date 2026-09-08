@@ -18,16 +18,30 @@ import (
 	"taa/internal/controller"
 )
 
+// ============================================================================
+// 常量与数据结构定义
+// ============================================================================
+
 const (
-	fixedAttestationFile   = "attestation.report"
+	// fixedAttestationFile 为生成的 TEE 远程证明报告默认落盘路径
+	fixedAttestationFile = "attestation.report"
+
+	// fixedAttestationHelper 为底层 TEE 硬件度量工具路径（如海光 CSV get-attestation 命令行工具）
 	fixedAttestationHelper = "./attestation/get-attestation"
-	fixedAttestationMode   = "auto"
+
+	// fixedAttestationMode 为远程证明生成模式，auto 表示自动探测底层 TEE 硬件与驱动环境
+	fixedAttestationMode = "auto"
 )
 
+// taaKeyPair 保存 TAA 启动时生成的国密 SM2 私钥对象与 PEM 格式公钥字符串
 type taaKeyPair struct {
 	PrivateKey   *teecrypto.SM2PrivateKey
 	PublicKeyPEM string
 }
+
+// ============================================================================
+// 程序主入口与启动流程编排
+// ============================================================================
 
 func main() {
 	if err := run(); err != nil {
@@ -35,16 +49,28 @@ func main() {
 	}
 }
 
+// run 编排 TAA 服务的完整生命周期与启动流程：
+//  1. 加载启动配置 (config.json)
+//  2. 预检并按需拉起 LLM (Ollama/Qwen) 辅助审计服务
+//  3. 生成本实例专用的国密 SM2 密钥对
+//  4. 派生 64 字节 UserData 并将其与 TEE 报告绑定
+//  5. 生成底层 TEE 硬件远程证明报告 (Attestation Report)
+//  6. 向管控平台注册本 TAA 实例 (发送度量报告、公钥及元数据)
+//  7. 初始化安全检查与代码审计目录
+//  8. 构建全局控制器状态并启动 HTTP 服务
 func run() error {
+	// 1. 加载启动配置文件
 	cfg, err := config.LoadStartupConfig(config.DefaultFileName)
 	if err != nil {
 		return err
 	}
 
+	// 2. 若启用了 LLM 代码审计，检查并按需在后台拉起 Qwen (Ollama) 服务
 	if cfg.EnableLLM {
 		ensureQwenAvailable(cfg.LLMEndpoint, cfg.LLMModel, cfg.LLMDir)
 	}
 
+	// 3. 生成本 TAA 实例运行期的国密 SM2 密钥对（公钥用于通信加密与验签）
 	keyPair, err := generateTAAKeyPair()
 	if err != nil {
 		return err
@@ -52,18 +78,21 @@ func run() error {
 
 	platformIP := cfg.PlatformIP
 	dockerID := cfg.DockerID
-
 	timestamp := time.Now().Unix()
+
+	// 4. 将 SM2 公钥坐标 (X||Y) 填充为 64 字节 UserData，供 TEE 硬件报告度量签名
 	userData, err := deriveUserData(&keyPair.PrivateKey.PublicKey)
 	if err != nil {
 		return err
 	}
 	logUserDataSummary(platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, userData)
 
+	// 5. 调用底层工具生成包含 UserData 的远程证明报告
 	if err := prepareAttestationReport(userData); err != nil {
 		return err
 	}
 
+	// 6. 向管控平台注册本 TAA 实例，通知平台就绪并提交度量报告与公钥
 	if err := registerPlatform(platformIP, dockerID, keyPair.PublicKeyPEM, timestamp); err != nil {
 		log.Printf("WARNING: platform register failed, continuing startup: %v", err)
 	} else {
@@ -71,13 +100,24 @@ func run() error {
 	}
 	logGeneratedTAAKeyPair(keyPair)
 
+	// 7. 构建安全策略配置并确保模型/数据/结果目录已就绪
 	sec := buildSecurityConfig(cfg)
 	if err := ensureSecurityDirectories(sec); err != nil {
 		return err
 	}
 	logSecurityConfig(sec)
 
-	state := controller.NewTAAState(fixedAttestationFile, platformIP, dockerID, fixedAttestationHelper, fixedAttestationMode, keyPair.PrivateKey, userData, sec)
+	// 8. 创建全局状态管理器并启动 HTTP 服务提供 TAA 外部接口
+	state := controller.NewTAAState(
+		fixedAttestationFile,
+		platformIP,
+		dockerID,
+		fixedAttestationHelper,
+		fixedAttestationMode,
+		keyPair.PrivateKey,
+		userData,
+		sec,
+	)
 
 	server := newTAAServer(cfg.Addr, state)
 	log.Printf("taa service listening on %s", cfg.Addr)
@@ -85,105 +125,28 @@ func run() error {
 	return server.ListenAndServe()
 }
 
-func logUserDataSummary(platformIP, dockerID, publicKeyPEM string, timestamp int64, userData []byte) {
-	log.Printf("generated userdata: taa SM2 public key raw X||Y")
-	log.Printf("  input: taaPublicKey(%d bytes) + dockerId(%s) + platformIP(%s) + timestamp(%d)",
-		len(publicKeyPEM), dockerID, platformIP, timestamp)
-	log.Printf("  userdata (64 bytes hex): %x", userData)
-}
+// ============================================================================
+// 辅助服务检测与管理 (LLM / Ollama)
+// ============================================================================
 
-func prepareAttestationReport(userData []byte) error {
-	log.Printf("generating attestation report: helper=%q output=%s", fixedAttestationHelper, fixedAttestationFile)
-	if err := attestation.Generate(context.Background(), attestation.Config{
-		OutputPath: fixedAttestationFile,
-		HelperPath: fixedAttestationHelper,
-		Mode:       fixedAttestationMode,
-		UserData:   userData,
-	}); err != nil {
-		log.Printf("WARNING: generating attestation report failed, continuing with empty report: %v", err)
-		if writeErr := os.WriteFile(fixedAttestationFile, nil, 0o600); writeErr != nil {
-			return fmt.Errorf("write empty attestation report: %w", writeErr)
-		}
-	} else {
-		log.Printf("attestation report ready: %s", fixedAttestationFile)
-	}
-	return nil
-}
-
-func registerPlatform(platformIP, dockerID, publicKeyPEM string, timestamp int64) error {
-	log.Printf("notifying platform register: platform=%s dockerId=%s attestation=%s timestamp=%d", platformIP, dockerID, fixedAttestationFile, timestamp)
-	return controller.NoticeRegister(context.Background(), platformIP, dockerID, fixedAttestationFile, publicKeyPEM, timestamp)
-}
-
-func buildSecurityConfig(cfg config.StartupConfig) controller.SecurityConfig {
-	return controller.SecurityConfig{
-		ScanEnabled: cfg.EnableSecurityScan,
-		ModelDir:    cfg.ModelDir,
-		ResultCheck: cfg.EnableResultCheck,
-		DataDir:     cfg.DataDir,
-		ResultDir:   cfg.ResultDir,
-		LLM: codeaudit.LLMConfig{
-			Enabled:     cfg.EnableLLM,
-			Endpoint:    cfg.LLMEndpoint,
-			Model:       cfg.LLMModel,
-			Timeout:     60 * time.Second,
-			MaxFindings: 20,
-			Policy:      cfg.LLMPolicy,
-			FailClosed:  cfg.LLMFailClosed,
-		},
-	}
-}
-
-func ensureSecurityDirectories(sec controller.SecurityConfig) error {
-	for _, dir := range []string{sec.ModelDir, sec.DataDir, sec.ResultDir} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create directory %s: %w", dir, err)
-		}
-	}
-	return nil
-}
-
-func logSecurityConfig(sec controller.SecurityConfig) {
-	if sec.ScanEnabled {
-		log.Printf("security scan enabled: model-dir=%s", sec.ModelDir)
-		if sec.LLM.Enabled {
-			log.Printf("  LLM verifier enabled: model=%s endpoint=%s policy=%s fail-closed=%v",
-				sec.LLM.Model, sec.LLM.Endpoint, sec.LLM.Policy, sec.LLM.FailClosed)
-		}
-	}
-	if sec.ResultCheck {
-		log.Printf("result check enabled: data-dir=%s result-dir=%s", sec.DataDir, sec.ResultDir)
-	}
-}
-
-func newTAAServer(addr string, state *controller.TAAState) *http.Server {
-	mux := http.NewServeMux()
-	controller.RegisterRoutes(mux, state)
-
-	return &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-}
-
-// ensureQwenAvailable 检查 qwen (ollama) 服务是否可用，不可用时尝试启动。
-// 启动失败仅打印警告，不阻塞 TAA 启动。
+// ensureQwenAvailable 检查 Qwen (Ollama) 语义审计模型服务是否可用。
+// 若未就绪，则尝试定位并执行后台启动脚本，并在指定超时时间内轮询就绪状态。
+// 启动失败仅记录警告日志，降级为静态规则审计，不阻断 TAA 主流程启动。
 func ensureQwenAvailable(endpoint, model, ollamaDir string) {
 	log.Printf("checking qwen service: endpoint=%s model=%s", endpoint, model)
 
-	// 1. 检查是否已经可用
+	// 1. 检查是否已经就绪
 	if isOllamaReady(endpoint, model) {
 		log.Printf("qwen service already available")
 		return
 	}
 
-	// 2. 尝试启动 ollama
+	// 2. 未就绪，尝试自动寻找目录并启动 ollama 服务
 	log.Printf("qwen service not available, attempting to start...")
 
 	if ollamaDir == "" {
-		// 默认路径：容器内 TAA 工作目录下的 ollama 包
-		// deploy.sh 部署到 $CON_WORKDIR/ollama-qwen2.5-coder-0.5b
+		// 默认路径：容器内 TAA 工作目录下的 ollama 离线包
+		// deploy.sh 通常部署到 $CON_WORKDIR/ollama-qwen2.5-coder-0.5b
 		candidates := []string{
 			"/root/taa/ollama-qwen2.5-coder-0.5b",
 			"/root/taadebug/ollama-qwen2.5-coder-0.5b",
@@ -217,7 +180,7 @@ func ensureQwenAvailable(endpoint, model, ollamaDir string) {
 	}
 	log.Printf("ollama start command executed, waiting for readiness...")
 
-	// 3. 等待就绪（最多 120 秒，每 2 秒检查一次）
+	// 3. 轮询等待就绪（最多 120 秒，每 2 秒重试一次）
 	const maxWait = 120 * time.Second
 	const interval = 2 * time.Second
 	deadline := time.Now().Add(maxWait)
@@ -233,9 +196,8 @@ func ensureQwenAvailable(endpoint, model, ollamaDir string) {
 	log.Printf("WARNING: ollama 日志: 请检查 /tmp/ollama.log")
 }
 
-// isOllamaReady 检查 ollama 服务是否就绪且模型已加载。
+// isOllamaReady 发送 HTTP 请求检查 Ollama 的 /api/tags 端点，确认服务正常运行且模型已加载
 func isOllamaReady(endpoint, model string) bool {
-	// endpoint 可能含 http:// 前缀，也可能不含
 	base := endpoint
 	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
 		base = "http://" + base
@@ -250,24 +212,16 @@ func isOllamaReady(endpoint, model string) bool {
 		return false
 	}
 
-	// 检查模型是否已加载（可选，因为模型可能还没拉取）
+	// 检查指定模型名是否存在于返回的模型列表中（若未指定 model 则只要服务连通即可）
 	body, _ := io.ReadAll(resp.Body)
-	// 简单检查模型名是否出现在 tags 响应中
 	return strings.Contains(string(body), model) || model == ""
 }
 
-// deriveUserData generates the 64-byte USERDATA field for the attestation report.
-// It stores the TAA SM2 public key as raw X||Y coordinates.
-func deriveUserData(pub *teecrypto.SM2PublicKey) ([]byte, error) {
-	if pub == nil || pub.X == nil || pub.Y == nil {
-		return nil, fmt.Errorf("TAA SM2 public key is required")
-	}
-	userData := make([]byte, 64)
-	copy(userData[32-len(pub.X.Bytes()):32], pub.X.Bytes())
-	copy(userData[64-len(pub.Y.Bytes()):], pub.Y.Bytes())
-	return userData, nil
-}
+// ============================================================================
+// 密码学密钥对与 TEE 度量 UserData 生成
+// ============================================================================
 
+// generateTAAKeyPair 生成本 TAA 实例专用的国密 SM2 密钥对，并编码导出 PEM 格式公钥
 func generateTAAKeyPair() (*taaKeyPair, error) {
 	priv, err := teecrypto.GenerateSM2KeyPair()
 	if err != nil {
@@ -282,9 +236,125 @@ func generateTAAKeyPair() (*taaKeyPair, error) {
 	return &taaKeyPair{PrivateKey: priv, PublicKeyPEM: string(pubPEM)}, nil
 }
 
+// deriveUserData 将 TAA 的 SM2 公钥未压缩坐标 (X||Y) 打包成 64 字节数组（前 32 字节 X，后 32 字节 Y），
+// 填入 TEE 报告的 USERDATA 字段中，实现硬件度量报告与应用公钥身份的密码学强绑定。
+func deriveUserData(pub *teecrypto.SM2PublicKey) ([]byte, error) {
+	if pub == nil || pub.X == nil || pub.Y == nil {
+		return nil, fmt.Errorf("TAA SM2 public key is required")
+	}
+	userData := make([]byte, 64)
+	copy(userData[32-len(pub.X.Bytes()):32], pub.X.Bytes())
+	copy(userData[64-len(pub.Y.Bytes()):], pub.Y.Bytes())
+	return userData, nil
+}
+
+// logGeneratedTAAKeyPair 打印生成的 TAA SM2 公钥 PEM 文本
 func logGeneratedTAAKeyPair(keyPair *taaKeyPair) {
 	if keyPair == nil {
 		return
 	}
 	log.Printf("generated TAA SM2 public key:\n%s", keyPair.PublicKeyPEM)
+}
+
+// logUserDataSummary 打印 UserData 与关联元数据摘要日志
+func logUserDataSummary(platformIP, dockerID, publicKeyPEM string, timestamp int64, userData []byte) {
+	log.Printf("generated userdata: taa SM2 public key raw X||Y")
+	log.Printf("  input: taaPublicKey(%d bytes) + dockerId(%s) + platformIP(%s) + timestamp(%d)",
+		len(publicKeyPEM), dockerID, platformIP, timestamp)
+	log.Printf("  userdata (64 bytes hex): %x", userData)
+}
+
+// ============================================================================
+// TEE 远程证明报告与管控平台注册
+// ============================================================================
+
+// prepareAttestationReport 调用底层 TEE 工具生成远程证明报告。
+// 若在非 TEE 环境或生成失败，写入空报告并记录警告，允许服务在降级模式下继续启动。
+func prepareAttestationReport(userData []byte) error {
+	log.Printf("generating attestation report: helper=%q output=%s", fixedAttestationHelper, fixedAttestationFile)
+	if err := attestation.Generate(context.Background(), attestation.Config{
+		OutputPath: fixedAttestationFile,
+		HelperPath: fixedAttestationHelper,
+		Mode:       fixedAttestationMode,
+		UserData:   userData,
+	}); err != nil {
+		log.Printf("WARNING: generating attestation report failed, continuing with empty report: %v", err)
+		if writeErr := os.WriteFile(fixedAttestationFile, nil, 0o600); writeErr != nil {
+			return fmt.Errorf("write empty attestation report: %w", writeErr)
+		}
+	} else {
+		log.Printf("attestation report ready: %s", fixedAttestationFile)
+	}
+	return nil
+}
+
+// registerPlatform 向管控平台发起注册请求，上报 DockerID、度量报告、TAA 公钥及时间戳
+func registerPlatform(platformIP, dockerID, publicKeyPEM string, timestamp int64) error {
+	log.Printf("notifying platform register: platform=%s dockerId=%s attestation=%s timestamp=%d",
+		platformIP, dockerID, fixedAttestationFile, timestamp)
+	return controller.NoticeRegister(context.Background(), platformIP, dockerID, fixedAttestationFile, publicKeyPEM, timestamp)
+}
+
+// ============================================================================
+// 安全扫描与代码审计环境初始化
+// ============================================================================
+
+// buildSecurityConfig 将全局启动配置转换为控制器使用的 SecurityConfig 结构体
+func buildSecurityConfig(cfg config.StartupConfig) controller.SecurityConfig {
+	return controller.SecurityConfig{
+		ScanEnabled: cfg.EnableSecurityScan,
+		ModelDir:    cfg.ModelDir,
+		ResultCheck: cfg.EnableResultCheck,
+		DataDir:     cfg.DataDir,
+		ResultDir:   cfg.ResultDir,
+		LLM: codeaudit.LLMConfig{
+			Enabled:     cfg.EnableLLM,
+			Endpoint:    cfg.LLMEndpoint,
+			Model:       cfg.LLMModel,
+			Timeout:     60 * time.Second,
+			MaxFindings: 20,
+			Policy:      cfg.LLMPolicy,
+			FailClosed:  cfg.LLMFailClosed,
+		},
+	}
+}
+
+// ensureSecurityDirectories 确保模型目录、数据目录和结果目录在本地文件系统中存在
+func ensureSecurityDirectories(sec controller.SecurityConfig) error {
+	for _, dir := range []string{sec.ModelDir, sec.DataDir, sec.ResultDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create directory %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+// logSecurityConfig 打印安全扫描、大模型审计及结果检查策略的配置摘要
+func logSecurityConfig(sec controller.SecurityConfig) {
+	if sec.ScanEnabled {
+		log.Printf("security scan enabled: model-dir=%s", sec.ModelDir)
+		if sec.LLM.Enabled {
+			log.Printf("  LLM verifier enabled: model=%s endpoint=%s policy=%s fail-closed=%v",
+				sec.LLM.Model, sec.LLM.Endpoint, sec.LLM.Policy, sec.LLM.FailClosed)
+		}
+	}
+	if sec.ResultCheck {
+		log.Printf("result check enabled: data-dir=%s result-dir=%s", sec.DataDir, sec.ResultDir)
+	}
+}
+
+// ============================================================================
+// HTTP 服务初始化与路由绑定
+// ============================================================================
+
+// newTAAServer 注册 TAA 控制器路由并创建配置了安全超时的 HTTP Server 实例
+func newTAAServer(addr string, state *controller.TAAState) *http.Server {
+	mux := http.NewServeMux()
+	controller.RegisterRoutes(mux, state)
+
+	return &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 }
