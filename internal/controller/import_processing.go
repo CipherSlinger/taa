@@ -81,13 +81,18 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		s.Logs.Add(LogInfo, "extract", "解压成功")
 		s.auditAndReportModelImport(req)
 	} else {
-		hash, err := sm3HexOfFile(plaintextPath)
+		size, hash, err := teecrypto.HashFileSM3(plaintextPath)
 		if err != nil {
 			s.Logs.Add(LogError, "hash", "计算压缩包哈希失败: %v", err)
 			s.setCurrentOp("idle")
 			s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("计算压缩包哈希失败: %v", err))
 			return
 		}
+		s.setDataChecksum(map[string]any{
+			"size":      size,
+			"algorithm": "sm3",
+			"value":     hash,
+		})
 
 		dataDir := dataDirForHash(s.Security.DataDir, hash)
 		trainRecord = ImportIndexRecord{
@@ -695,7 +700,9 @@ func (s *TAAState) buildAndSaveTrainingReport(taskID string, startedAt, finished
 		}
 	}
 
-	report, err := buildTrainingReport(taskID, startedAt, finishedAt, status, exitCode, failureReason, modelChecksum, trainingResult, audit, includeAudit)
+	dataChecksum := s.getDataChecksum()
+
+	report, err := buildTrainingReport(taskID, startedAt, finishedAt, status, exitCode, failureReason, modelChecksum, dataChecksum, trainingResult, audit, includeAudit)
 	if err != nil {
 		return nil, err
 	}
@@ -807,7 +814,7 @@ func loadTrainingResult(path string) (map[string]any, error) {
 	return result, nil
 }
 
-func buildTrainingReport(taskID string, startedAt, finishedAt time.Time, status string, exitCode int, failureReason string, modelChecksum map[string]any, trainingResult map[string]any, audit *codeaudit.AuditReport, includeAudit bool) (map[string]any, error) {
+func buildTrainingReport(taskID string, startedAt, finishedAt time.Time, status string, exitCode int, failureReason string, modelChecksum map[string]any, dataChecksum map[string]any, trainingResult map[string]any, audit *codeaudit.AuditReport, includeAudit bool) (map[string]any, error) {
 	if taskID == "" {
 		taskID = "task-20260825-001"
 	}
@@ -846,6 +853,9 @@ func buildTrainingReport(taskID string, startedAt, finishedAt time.Time, status 
 	}
 
 	dataset := cleanDatasetField(objectField(trainingResult, "dataset"))
+	if dataChecksum != nil {
+		dataset["checksum"] = dataChecksum
+	}
 
 	report := map[string]any{
 		"report_id":      newTrainingReportID(finishedAt),

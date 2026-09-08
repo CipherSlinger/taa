@@ -673,6 +673,24 @@ result = {"dataset": {"total_samples": 10, "splits": {"train": 10, "test": 0}}, 
 		t.Fatalf("model_checksum size = %v, want %d", modelChecksum["size"], len(modelArchive))
 	}
 
+	dataset, ok := report["dataset"].(map[string]any)
+	if !ok {
+		t.Fatalf("report missing dataset: %#v", report)
+	}
+	dataChecksum, ok := dataset["checksum"].(map[string]any)
+	if !ok {
+		t.Fatalf("dataset missing checksum: %#v", dataset)
+	}
+	if dataChecksum["algorithm"] != "sm3" {
+		t.Fatalf("dataset checksum algorithm = %v, want sm3", dataChecksum["algorithm"])
+	}
+	dataHasher := teecrypto.NewSM3()
+	dataHasher.Write(dataArchive)
+	wantDataHash := fmt.Sprintf("%x", dataHasher.Sum(nil))
+	if dataChecksum["value"] != wantDataHash {
+		t.Fatalf("dataset checksum value = %v, want %v", dataChecksum["value"], wantDataHash)
+	}
+
 	expectedResultDir := resultDirForRequestTask(state.Security.ResultDir, "req-data-in-out-01", "task-in-out-01")
 	marker, err := os.ReadFile(filepath.Join(expectedResultDir, "marker.txt"))
 	if err != nil {
