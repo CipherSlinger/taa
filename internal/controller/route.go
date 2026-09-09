@@ -944,24 +944,29 @@ func (s *TAAState) resourceInfoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.setCurrentOp("analyzing")
-	tmpDataDir, err := os.MkdirTemp("", "taa-resource-info-*")
+	_, hash, err := teecrypto.HashFileSM3(plaintextPath)
 	if err != nil {
-		s.Logs.Add(LogError, "getResourceInfo", "创建临时目录失败: %v", err)
+		s.Logs.Add(LogError, "getResourceInfo", "计算资源压缩包哈希失败: %v", err)
 		s.setCurrentOp("idle")
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("创建临时目录失败: %v", err))
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("计算资源哈希失败: %v", err))
 		return
 	}
-	defer os.RemoveAll(tmpDataDir)
 
-	if err := extractArchiveFile(tmpDataDir, plaintextPath); err != nil {
-		s.Logs.Add(LogError, "getResourceInfo", "解压资源失败: %v", err)
+	dataDir := dataDirForHash(s.Security.DataDir, hash)
+	extracted, err := ensureArchiveExtractedIntoDir(dataDir, plaintextPath)
+	if err != nil {
+		s.Logs.Add(LogError, "getResourceInfo", "展开 hash 数据目录失败: %v", err)
 		s.setCurrentOp("idle")
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("解压资源失败: %v", err))
 		return
 	}
-	s.Logs.Add(LogInfo, "getResourceInfo", "解压到临时目录: %s", tmpDataDir)
+	if extracted {
+		s.Logs.Add(LogInfo, "getResourceInfo", "hash 数据目录保存完成: %s (hash=%s)", dataDir, hash)
+	} else {
+		s.Logs.Add(LogInfo, "getResourceInfo", "hash 数据目录已存在，复用: %s (hash=%s)", dataDir, hash)
+	}
 
-	output, err := buildResourceInfoJSON(tmpDataDir, plaintextPath)
+	output, err := buildResourceInfoJSON(dataDir, plaintextPath)
 	if err != nil {
 		s.Logs.Add(LogError, "getResourceInfo", "生成资源树失败: %v", err)
 		s.setCurrentOp("idle")
@@ -970,7 +975,7 @@ func (s *TAAState) resourceInfoHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.setCurrentOp("idle")
-	s.Logs.Add(LogInfo, "getResourceInfo", "资源树分析完成，临时文件已清理")
+	s.Logs.Add(LogInfo, "getResourceInfo", "资源树分析完成，数据已持久化备份至 %s", dataDir)
 	writeEnvelope(w, http.StatusOK, "ok", string(output), 0)
 }
 

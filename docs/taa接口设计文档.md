@@ -45,7 +45,7 @@ Agent 公共请求返回参数如下：
 | 5 | 平台 → TAA | `/v1/taa/health` | `POST` | 平台检查 TAA 连通性 |
 | 6 | 平台 → TAA | `/v1/taa/import` | `POST` | 平台下发数据资源 |
 | 7 | 平台 → TAA | `/v1/taa/importModel` | `POST` | 平台下发模型训练代码 |
-| 8 | 平台 → TAA | `/v1/taa/getResourceInfo` | `POST` | 平台传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理 |
+| 8 | 平台 → TAA | `/v1/taa/getResourceInfo` | `POST` | 平台传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，按 SM3 哈希持久化保存目录与唯一标识备份 |
 | 9 | 平台 → TAA | `/v1/taa/switch` | `POST` | 平台通知 TAA 切换运行阶段 |
 | 10 | 平台 → TAA | `/v1/taa/export` | `POST` | 平台请求 TAA 导出当前阶段结果目录压缩包，成功时直接返回文件流 |
 | 11 | 平台 → TAA | `/v1/taa/logs` | `POST` | 查询 TAA 结构化日志 |
@@ -427,7 +427,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 ### 4.1.1 资源信息获取
 
-TAA 接收到 `resourceUrl` 后，下载资源文件（若为 `.enc` 结尾则使用实例 SM2 私钥进行信封解密），将解密后的明文归档压缩包解压到临时目录，调用 `filetree` 解析器分析多模态数据集的目录结构、魔数格式识别及结构化文件元信息（CSV / TSV / JSON / JSONL / XLSX / SQLite / Parquet 等的 schema 与数据量），同时计算资源压缩包的国密 SM3 校验和（与 `/v1/taa/import` 接口哈希逻辑保持一致），分析完成后自动清理临时文件。
+TAA 接收到 `resourceUrl` 后，下载资源文件（若为 `.enc` 结尾则使用实例 SM2 私钥进行信封解密），计算明文归档压缩包的国密 SM3 校验和（与 `/v1/taa/import` 接口哈希逻辑保持一致），并将数据幂等解压保存到对应哈希文件夹（`/opt/taa/data/<hash>`）作为唯一标识备份；随后调用 `filetree` 解析器分析多模态数据集的目录结构、魔数格式识别及结构化文件元信息（CSV / TSV / JSON / JSONL / XLSX / SQLite / Parquet 等的 schema 与数据量），已保存的哈希数据目录予以持久保留以避免后续重复解压并支持统一资源管理。
 
 **请求**：`POST /v1/taa/getResourceInfo`
 
