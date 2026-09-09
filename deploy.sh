@@ -111,6 +111,7 @@ fi
 LOCAL_PLATFORM_BIND="${LOCAL_PLATFORM_BIND:-0.0.0.0:${LOCAL_PLATFORM_PORT}}"
 LOCAL_PLATFORM_IP="${LOCAL_PLATFORM_IP:-127.0.0.1:${LOCAL_PLATFORM_PORT}}"
 LOCAL_PLATFORM_URL="${LOCAL_PLATFORM_URL:-http://127.0.0.1:${LOCAL_PLATFORM_PORT}}"
+LOCAL_PLATFORM_UPLOAD_DIR="${LOCAL_PLATFORM_UPLOAD_DIR:-$PROJECT_DIR/uploads}"
 LOCAL_RUNTIME_DIR="${LOCAL_RUNTIME_DIR:-$PROJECT_DIR/.local/taa}"
 LOCAL_TAA_CONFIG_PATH="${LOCAL_TAA_CONFIG_PATH:-$LOCAL_RUNTIME_DIR/$TAA_CONFIG_FILE}"
 LOCAL_RUN_DIR="${LOCAL_RUN_DIR:-$PROJECT_DIR/.local/run}"
@@ -292,6 +293,8 @@ Environment overrides:
       Platform Mock 监听端口。
   PLATFORM_ADDR=${PLATFORM_ADDR}
       Platform Mock 绑定地址。
+  LOCAL_PLATFORM_UPLOAD_DIR=${LOCAL_PLATFORM_UPLOAD_DIR}
+      Platform Mock 上传与静态文件服务目录（默认 $PROJECT_DIR/uploads）。
   REMOTE_PLATFORM_IP=${REMOTE_PLATFORM_IP}
       TAA 容器访问 Platform Mock 使用的地址。
   MOCK_BINARY_PATH=${MOCK_BINARY_PATH}
@@ -647,7 +650,7 @@ fi
 
 if [[ "$DEPLOY_LOCAL" == true ]]; then
   step "preparing local runtime directories"
-  mkdir -p "$LOCAL_PLATFORM_STATE_DIR" "$LOCAL_RUNTIME_DIR/attestation" "$LOCAL_TAA_MODEL_DIR" "$LOCAL_TAA_DATA_DIR" "$LOCAL_TAA_RESULT_DIR" "$LOCAL_TAA_INPUT_DIR" "$LOCAL_TAA_OUTPUT_DIR"
+  mkdir -p "$LOCAL_PLATFORM_STATE_DIR" "$LOCAL_PLATFORM_UPLOAD_DIR" "$LOCAL_RUNTIME_DIR/attestation" "$LOCAL_TAA_MODEL_DIR" "$LOCAL_TAA_DATA_DIR" "$LOCAL_TAA_RESULT_DIR" "$LOCAL_TAA_INPUT_DIR" "$LOCAL_TAA_OUTPUT_DIR"
   cp "$ATT_HELPER_SOURCE" "$LOCAL_RUNTIME_DIR/attestation/get-attestation"
   cp "$ATT_HRK_SOURCE" "$LOCAL_RUNTIME_DIR/hrk.cert"
   cp "$ATT_HSK_SOURCE" "$LOCAL_RUNTIME_DIR/hsk_cek.cert"
@@ -655,7 +658,7 @@ if [[ "$DEPLOY_LOCAL" == true ]]; then
 
   step "starting local platform-mock on ${LOCAL_PLATFORM_BIND}"
   start_local_background "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid" "$LOCAL_PLATFORM_LOG_FILE" \
-    "$MOCK_BINARY_PATH" -addr "$LOCAL_PLATFORM_BIND" -state-dir "$LOCAL_PLATFORM_STATE_DIR" -taa-target "$LOCAL_TAA_URL" -allow-empty-attestation
+    "$MOCK_BINARY_PATH" -addr "$LOCAL_PLATFORM_BIND" -state-dir "$LOCAL_PLATFORM_STATE_DIR" -upload-dir "$LOCAL_PLATFORM_UPLOAD_DIR" -taa-target "$LOCAL_TAA_URL" -allow-empty-attestation
   wait_for_http_ready "platform-mock" GET "$LOCAL_PLATFORM_URL/api/register/status" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL" "$LOCAL_PLATFORM_LOG_FILE"
 
   step "starting local ollama"
@@ -675,8 +678,9 @@ if [[ "$DEPLOY_LOCAL" == true ]]; then
   echo ""
   banner "Deploy Complete"
   info "${BOLD}platform-mock${NC} → ${LOCAL_PLATFORM_URL}"
-  echo -e "     ${DIM}state:${NC} ${LOCAL_PLATFORM_STATE_DIR}"
-  echo -e "     ${DIM}log:${NC}   ${LOCAL_PLATFORM_LOG_FILE}"
+  echo -e "     ${DIM}state:${NC}   ${LOCAL_PLATFORM_STATE_DIR}"
+  echo -e "     ${DIM}uploads:${NC} ${LOCAL_PLATFORM_UPLOAD_DIR}"
+  echo -e "     ${DIM}log:${NC}     ${LOCAL_PLATFORM_LOG_FILE}"
   info "${BOLD}taa${NC} → ${LOCAL_TAA_URL}"
   echo -e "     ${DIM}cwd:${NC}   ${LOCAL_RUNTIME_DIR}"
   echo -e "     ${DIM}log:${NC}   ${LOCAL_TAA_LOG_FILE}"
@@ -705,11 +709,11 @@ if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
   # 1. 启动本地 platform-mock（若包含 platform-mock）
   if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
     step "preparing local platform-mock runtime directory"
-    mkdir -p "$LOCAL_PLATFORM_STATE_DIR" "$LOCAL_RUN_DIR"
+    mkdir -p "$LOCAL_PLATFORM_STATE_DIR" "$LOCAL_PLATFORM_UPLOAD_DIR" "$LOCAL_RUN_DIR"
 
     step "starting local platform-mock on ${LOCAL_PLATFORM_BIND}"
     start_local_background "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid" "$LOCAL_PLATFORM_LOG_FILE" \
-      "$MOCK_BINARY_PATH" -addr "$LOCAL_PLATFORM_BIND" -state-dir "$LOCAL_PLATFORM_STATE_DIR" -taa-target "$LOCAL_TAA_URL" -allow-empty-attestation
+      "$MOCK_BINARY_PATH" -addr "$LOCAL_PLATFORM_BIND" -state-dir "$LOCAL_PLATFORM_STATE_DIR" -upload-dir "$LOCAL_PLATFORM_UPLOAD_DIR" -taa-target "$LOCAL_TAA_URL" -allow-empty-attestation
     wait_for_http_ready "platform-mock" GET "$LOCAL_PLATFORM_URL/api/register/status" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL" "$LOCAL_PLATFORM_LOG_FILE"
   fi
 
@@ -808,8 +812,9 @@ if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
   banner "Deploy Complete (Local Docker)"
   if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
     info "${BOLD}platform-mock${NC} → ${LOCAL_PLATFORM_URL}"
-    echo -e "     ${DIM}state:${NC} ${LOCAL_PLATFORM_STATE_DIR}"
-    echo -e "     ${DIM}log:${NC}   ${LOCAL_PLATFORM_LOG_FILE}"
+    echo -e "     ${DIM}state:${NC}   ${LOCAL_PLATFORM_STATE_DIR}"
+    echo -e "     ${DIM}uploads:${NC} ${LOCAL_PLATFORM_UPLOAD_DIR}"
+    echo -e "     ${DIM}log:${NC}     ${LOCAL_PLATFORM_LOG_FILE}"
   fi
   if [[ "$DEPLOY_QWEN" == true ]]; then
     info "${BOLD}ollama${NC} → ${LOCAL_DOCKER_CONTAINER}:${CONTAINER_OLLAMA_DIR} (${LOCAL_OLLAMA_URL})"
