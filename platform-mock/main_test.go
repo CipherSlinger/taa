@@ -58,6 +58,30 @@ func TestRequestIdAndTaskIdRandomizeButtons(t *testing.T) {
 	}
 }
 
+func TestGenerateKeyDoesNotAutoFillExportPublicKey(t *testing.T) {
+	// 验证私钥仍然会同步到导出结果的解密私钥输入框
+	if !strings.Contains(indexHTML, "exportPrivKey.value = privKey") {
+		t.Fatal("generateImportModelPublicKey should keep syncing privateKey to exportPrivateKey")
+	}
+
+	// 验证不再自动将公钥赋值给 exportPublicKey
+	forbiddenSnippets := []string{
+		"exportPubKey.value = pubKey",
+		"exportPubKey.value =",
+		"document.getElementById('exportPublicKey').value = pubKey",
+	}
+	for _, snippet := range forbiddenSnippets {
+		if strings.Contains(indexHTML, snippet) {
+			t.Fatalf("exportPublicKey must not be auto-filled, found forbidden snippet: %q", snippet)
+		}
+	}
+
+	// 验证 exportPublicKey 明确标注为选填/仅功能验证使用
+	if !strings.Contains(indexHTML, `id="exportPublicKey" value="" placeholder="选填，留空=不传，需要验证时手动输入"`) {
+		t.Fatal("exportPublicKey placeholder should indicate optional manual input")
+	}
+}
+
 func TestRequestLogsHandlersExposeAndResetCapturedTraffic(t *testing.T) {
 	requestLogs.reset()
 	requestLogs.add(requestLogEntry{Timestamp: "2026-09-08T12:00:00Z", Direction: "in", Level: "info", Component: "register", Method: http.MethodPost, Path: "/v1/taa/register", Status: http.StatusOK, Message: "HTTP 200 POST (2ms)", Body: `{"dockerId":"docker-1"}`})

@@ -620,8 +620,8 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
       <input id="exportRequestId" value="" placeholder="requestId（与 taskId 至少填一项）">
       <label for="exportTaskId">taskId（可选，与 requestId 至少填一项）</label>
       <input id="exportTaskId" value="task-mock-001">
-      <label for="exportPublicKey">publicKey（phase 1/2 必填，phase 3 留空）</label>
-      <input id="exportPublicKey" value="" placeholder="可复用上方 importModelPublicKey">
+      <label for="exportPublicKey">publicKey（可选，留空=不传，仅功能验证使用）</label>
+      <input id="exportPublicKey" value="" placeholder="选填，留空=不传，需要验证时手动输入">
 
       <div style="margin: 10px 0 6px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
         <label class="switch-label" for="exportDecryptSwitch">
@@ -1609,10 +1609,6 @@ async function generateImportModelPublicKey(btn) {
       const exportPrivKey = document.getElementById('exportPrivateKey');
       if (exportPrivKey) {
         exportPrivKey.value = privKey;
-      }
-      const exportPubKey = document.getElementById('exportPublicKey');
-      if (exportPubKey && !exportPubKey.value.trim()) {
-        exportPubKey.value = pubKey;
       }
       if (btn) {
         btn.textContent = '已创建!';
