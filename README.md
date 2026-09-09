@@ -62,17 +62,22 @@ flowchart LR
 
 ```text
 .
-├── main.go                           # 程序入口：启动、证明、注册、服务初始化
-├── internal/controller/              # HTTP 路由、资源处理、结果上报、平台交互
-│   ├── route.go                      # 路由注册、状态管理、导入/导出/证明接口
-│   ├── register.go                   # 启动注册平台
-│   ├── report.go                     # 训练/模型导入结果上报
-│   └── platform_client.go            # 平台地址与共享 HTTP 客户端
-├── internal/attestation/             # 远程证明报告生成与字段提取
-├── internal/codeaudit/               # 代码安全审计：静态扫描 + LLM 验证
+├── cmd/                              # 可执行程序入口（Thin Entrypoint）
+│   ├── taa/                          # TAA 主服务入口 (main.go)
+│   └── platform-mock/                # 平台模拟器入口 (main.go)
+├── internal/                         # 内部私有代码
+│   ├── app/                          # 应用启动编排层
+│   │   ├── taa/                      # TAA 启动编排、注册与 HTTP 服务组装
+│   │   └── mock/                     # 平台模拟器服务与嵌入控制台
+│   ├── controller/                   # HTTP 路由、资源处理、结果上报、平台交互
+│   │   ├── route.go                  # 路由注册、状态管理、导入/导出/证明接口
+│   │   ├── register.go               # 启动注册平台
+│   │   ├── report.go                 # 训练/模型导入结果上报
+│   │   └── platform_client.go        # 平台地址与共享 HTTP 客户端
+│   ├── attestation/                  # 远程证明报告生成与字段提取
+│   └── codeaudit/                    # 代码安全审计：静态扫描 + LLM 验证
 ├── crypto/                           # 国密加解密与证书/密钥工具
 ├── attestation/                      # CSV 证明 helper 与相关二进制工具
-├── platform-mock/                    # 平台模拟器
 ├── docs/                             # 设计与接口文档
 ├── deploy/manifest/docker/Dockerfile # Docker 镜像构建文件
 ├── Makefile                          # 构建、运行、镜像命令
@@ -250,7 +255,7 @@ TAA 从工作目录下的 `taa-config.json` 读取启动配置，不再通过命
 | `llm.failClosed` | `true` | LLM 不可用时是否失败关闭 |
 | `llm.dir` | 空 | Ollama / Qwen 离线包目录；为空时尝试默认部署目录 |
 
-正式非 debug 部署生成的配置文件不写 `platformIP`、`dockerID`、`contract`，由运行环境注入 `PLATFORM_IP`、`DOCKER_ID`、`CONTRACT`。
+正式非 debug 部署生成的配置文件不写 `platformIP`、`dockerID`、`contract`，由运行环境注入 `PLATFORM_IP`、`DOCKER_ID`（`CONTRACT` 为可选预留）。
 
 仓库提供三类配置模板：
 
@@ -335,10 +340,11 @@ make taa
 
 ## 本地平台模拟器
 
-平台模拟器源码：
+平台模拟器入口与控制台资源：
 
 ```text
-platform-mock/index.html
+cmd/platform-mock/main.go
+internal/app/mock/index.html
 ```
 
 构建单文件二进制：
@@ -350,13 +356,13 @@ make platform-mock-build
 运行：
 
 ```sh
-./platform-mock -addr 0.0.0.0:8080
+./bin/platform-mock -addr 0.0.0.0:8080
 ```
 
 后台运行：
 
 ```sh
-nohup ./platform-mock -addr :8080 > platform-mock.log 2>&1 &
+nohup ./bin/platform-mock -addr :8080 > platform-mock.log 2>&1 &
 ```
 
 ## 文档

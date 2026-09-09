@@ -33,19 +33,22 @@ TAA（Trusted Application Attestation）是一个运行在 Hygon CSV（可信安
 
 | 组件 | 位置 | 职责 |
 |------|------|------|
-| TAA 主服务 | `main.go` | 启动入口，密钥生成，注册，HTTP 服务 |
+| TAA 主服务入口 | `cmd/taa/main.go` | 极简入口，参数解析与系统信号监听 |
+| TAA 启动编排 | `internal/app/taa/` | 启动生命周期编排、密钥生成、注册、HTTP 服务初始化 |
+| 平台模拟器入口 | `cmd/platform-mock/main.go` | 平台模拟器可执行入口 |
+| 平台模拟器核心 | `internal/app/mock/` | 模拟器 HTTP 服务、反向代理与嵌入控制台 |
 | 控制器 | `internal/controller/` | HTTP 路由、导入/导出/审计/阶段切换逻辑 |
 | 远程证明 | `internal/attestation/` + `attestation/` | 调用 CSV 硬件生成远程证明报告 |
-| 安全审计 | `internal/security/` | Python 代码静态扫描 + LLM 语义验证 |
-| 加密工具 | `taa/crypto` | SM2 信封加密/解密，SM4-GCM |
+| 安全审计 | `internal/codeaudit/` | Python 代码静态扫描 + LLM 语义验证 |
+| 加密工具 | `crypto/` | SM2 信封加密/解密，SM4-GCM |
 | Ollama/Qwen | `ollama-qwen2.5-coder-0.5b/` | 本地 LLM 推理，用于代码审计的语义验证 |
 
 ## 3. 启动流程
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         TAA 启动 (main.go)                          │
-├─────────────────────────────────────────────────────────────────────┤
+│              TAA 启动 (cmd/taa -> internal/app/taa)                 │
+├───────────────────────────���─────────────────────────────────────────┤
 │                                                                     │
 │  1. 解析启动参数 (-debug, -addr, -security-scan 等)                  │
 │  2. 生成 SM2 密钥对 (taaKeyPair)                                    │
@@ -373,11 +376,22 @@ TAA_DEBUG_MODE=true ./deploy.sh taa
 
 ```
 tee/
-├── main.go                      启动入口
+├── cmd/
+│   ├── taa/                     TAA 主服务可执行入口
+│   │   └── main.go
+│   └── platform-mock/           平台模拟器可执行入口
+│       └── main.go
 ├── Makefile                     构建命令
 ├── deploy.sh                    部署脚本
 ├── go.mod                       Go 模块定义
 ├── internal/
+│   ├── app/                     应用启动编排层
+│   │   ├── taa/                 TAA 启动编排与服务初始化
+│   │   │   ├── app.go
+│   │   │   └── server.go
+│   │   └── mock/                平台模拟器服务与嵌入控制台
+│   │       ├── server.go
+│   │       └── index.html
 │   ├── controller/              HTTP 路由和控制器
 │   │   ├── route.go             路由注册、TAAState、handler
 │   │   ├── import_processing.go 导入流程（解密、解压、训练）
@@ -389,13 +403,14 @@ tee/
 │   ├── attestation/             远程证明
 │   │   ├── generate.go          调用 helper 生成报告
 │   │   └── report.go            报告字段提取
-│   ├── security/                代码安全审计
+│   ├── codeaudit/               代码安全审计
 │   │   ├── audit.go             审计入口
 │   │   ├── scanner.go           静态扫描引擎
 │   │   ├── rules.go             安全规则定义
 │   │   ├── llm.go               Ollama LLM 客户端
 │   │   ├── verifier.go          LLM 语义验证
 │   │   └── result_checker.go    导出结果泄露检测
+│   ├── crypto/                  国密加解密与证书/密钥工具
 │   ├── sm2/                     SM2 国密椭圆曲线实现
 │   └── sm3/                     SM3 国密哈希算法实现
 ├── attestation/                 远程证明 C 工具链
@@ -416,7 +431,6 @@ tee/
 │   ├── TEE-test/                MNIST/CIFAR-10 测试
 │   └── Retina-DKD/              视网膜疾病模型
 ├── ollama-qwen2.5-coder-0.5b/  Ollama 离线包
-├── cmd/platform-mock/           平台模拟器
 └── docs/                        文档
     ├── taa接口设计文档.md
     └── TAA设计文档.md            (本文件)

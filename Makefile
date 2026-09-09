@@ -7,7 +7,8 @@ BASE_IMAGE ?= taa-env-slim:latest
 
 taa:
 	@mkdir -p $(dir $(TAA_BINARY))
-	@go build -o $(TAA_BINARY) main.go
+	@echo "[build] building taa daemon from ./cmd/taa..."
+	@go build -o $(TAA_BINARY) ./cmd/taa
 
 test:
 	@go test ./...
@@ -17,11 +18,12 @@ run: taa attestation-ioctl
 	@$(TAA_BINARY)
 
 platform-mock:
-	@go run ./platform-mock -addr 0.0.0.0:8080
+	@go run ./cmd/platform-mock -addr 0.0.0.0:8080
 
 platform-mock-build:
 	@mkdir -p $(dir $(MOCK_BINARY))
-	@go build -o $(MOCK_BINARY) ./platform-mock
+	@echo "[build] building platform-mock from ./cmd/platform-mock..."
+	@go build -o $(MOCK_BINARY) ./cmd/platform-mock
 
 attestation-ioctl:
 	@$(MAKE) -C attestation/csv_c BIN_DIR=$(abspath $(BIN_DIR)) ioctl-get-attestation
