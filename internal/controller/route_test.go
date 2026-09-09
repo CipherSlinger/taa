@@ -209,6 +209,10 @@ func TestResolveRuntimeCommands(t *testing.T) {
 		"echo in=<IN> out=<OUT>",
 		"python3 eval.py --data <in>/dataset --save <out>/model",
 		"echo no placeholder",
+		"python3 train.py --input /opt/taa/input --output /opt/taa/output",
+		"python3 train.py --input <input> --output <output>",
+		"python3 train.py --input <INPUT> --output <OUTPUT>",
+		"cat /opt/taa/input/data.csv > /opt/taa/output/result.csv",
 	}
 	dataDir := "/data/store/abc123hash"
 	outputDir := "/results/req01-task01"
@@ -219,6 +223,10 @@ func TestResolveRuntimeCommands(t *testing.T) {
 		"echo in=/data/store/abc123hash out=/results/req01-task01",
 		"python3 eval.py --data /data/store/abc123hash/dataset --save /results/req01-task01/model",
 		"echo no placeholder",
+		"python3 train.py --input /data/store/abc123hash --output /results/req01-task01",
+		"python3 train.py --input /data/store/abc123hash --output /results/req01-task01",
+		"python3 train.py --input /data/store/abc123hash --output /results/req01-task01",
+		"cat /data/store/abc123hash/data.csv > /results/req01-task01/result.csv",
 	}
 
 	for i := range want {
@@ -232,6 +240,8 @@ func TestResolveRuntimeEnv(t *testing.T) {
 	env := map[string]string{
 		"DATA_PATH":   "<in>",
 		"RESULT_PATH": "<out>",
+		"OPT_IN":      "/opt/taa/input",
+		"OPT_OUT":     "/opt/taa/output",
 		"NORMAL":      "value",
 	}
 	dataDir := "/data/store/hash"
@@ -243,6 +253,12 @@ func TestResolveRuntimeEnv(t *testing.T) {
 	}
 	if resolved["RESULT_PATH"] != outputDir {
 		t.Errorf("RESULT_PATH = %q, want %q", resolved["RESULT_PATH"], outputDir)
+	}
+	if resolved["OPT_IN"] != dataDir {
+		t.Errorf("OPT_IN = %q, want %q", resolved["OPT_IN"], dataDir)
+	}
+	if resolved["OPT_OUT"] != outputDir {
+		t.Errorf("OPT_OUT = %q, want %q", resolved["OPT_OUT"], outputDir)
 	}
 	if resolved["NORMAL"] != "value" {
 		t.Errorf("NORMAL = %q, want value", resolved["NORMAL"])
@@ -264,6 +280,38 @@ func TestRunRuntimeConfigReplacesInOut(t *testing.T) {
 	cfg := runtimeConfig{
 		Commands: []string{
 			`cat "<in>/input.txt" > "<out>/copied.txt"`,
+		},
+	}
+
+	out, err := runRuntimeConfig(cfg, nil, tmpDir, dataDir, outputDir, "task-test", "2026-09-08T00:00:00Z")
+	if err != nil {
+		t.Fatalf("runRuntimeConfig failed: %v\noutput: %s", err, out)
+	}
+
+	copied, err := os.ReadFile(filepath.Join(outputDir, "copied.txt"))
+	if err != nil {
+		t.Fatalf("read copied file: %v", err)
+	}
+	if string(copied) != "sample-data" {
+		t.Fatalf("copied content = %q, want sample-data", string(copied))
+	}
+}
+
+func TestRunRuntimeConfigReplacesOptTaaPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataDir := filepath.Join(tmpDir, "data", "testhash")
+	outputDir := filepath.Join(tmpDir, "results", "task-test")
+
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "input.txt"), []byte("sample-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := runtimeConfig{
+		Commands: []string{
+			`cat "/opt/taa/input/input.txt" > "/opt/taa/output/copied.txt"`,
 		},
 	}
 
