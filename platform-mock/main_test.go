@@ -848,3 +848,37 @@ func TestCryptoDecryptHandler(t *testing.T) {
 		t.Fatalf("missing key status = %d, want 400", missingResp.StatusCode)
 	}
 }
+
+func TestUploadFilesStaticServing(t *testing.T) {
+	uploadDir := filepath.Join(t.TempDir(), "custom-uploads")
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		t.Fatalf("mkdir uploadDir: %v", err)
+	}
+	testFile := "test-model.zip.enc"
+	testContent := []byte("dummy encrypted model data")
+	if err := os.WriteFile(filepath.Join(uploadDir, testFile), testContent, 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(uploadDir))))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/files/" + testFile)
+	if err != nil {
+		t.Fatalf("get file: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !bytes.Equal(body, testContent) {
+		t.Fatalf("content = %q, want %q", string(body), string(testContent))
+	}
+}
+

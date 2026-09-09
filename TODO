@@ -1,3 +1,5 @@
+getResouceInfo 数据也不删除，统一管理
+
 1. 模型方进度管控
 2. taa 意外崩掉（私钥如何处理），使用sealing key加密保存
 3. 只支持python 正则匹配，修改为使用 semgrep 扫描

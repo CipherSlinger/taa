@@ -430,6 +430,7 @@ func registerUploadDeleteRoutes(mux *http.ServeMux, uploadDir string) {
 func main() {
 	addr := flag.String("addr", ":8080", "mock platform listen address")
 	stateDir := flag.String("state-dir", envOrDefault("STATE_DIR", "/root/taa"), "directory for mock platform state files")
+	uploadDirFlag := flag.String("upload-dir", envOrDefault("UPLOAD_DIR", "./uploads"), "directory for uploaded files served at /files/")
 	taaTarget := flag.String("taa-target", "", "TAA service address for reverse proxy (e.g. http://10.244.0.5:6001). Auto-detected via -taa-pod if empty")
 	taaPod := flag.String("taa-pod", envOrDefault("TAA_POD", "simple-busybox"), "Kubernetes pod name for auto-discovering TAA address")
 	taaNS := flag.String("taa-ns", envOrDefault("TAA_NS", ""), "Kubernetes namespace for TAA pod (empty = default namespace)")
@@ -456,9 +457,14 @@ func main() {
 	reportStore := newReportStateStore(*stateDir)
 	reportResStore := newReportStateStore(*stateDir, "reportRes-state.json")
 	reportModelImportStore := newReportStateStore(*stateDir, "reportModelImport-state.json")
-	uploadDir := "./uploads"
+	uploadDir := *uploadDirFlag
+	if abs, err := filepath.Abs(uploadDir); err == nil {
+		uploadDir = abs
+	}
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
-		log.Printf("failed to create upload directory: %v", err)
+		log.Printf("failed to create upload directory %s: %v", uploadDir, err)
+	} else {
+		log.Printf("upload directory: %s", uploadDir)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", indexHandler)
