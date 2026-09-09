@@ -43,14 +43,6 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		defer os.Remove(plaintextPath)
 	}
 
-	s.mu.Lock()
-	if isModel {
-		s.ModelImported = true
-	} else {
-		s.DataImported = true
-	}
-	s.mu.Unlock()
-
 	trainRecord := ImportIndexRecord{}
 	if isModel {
 		hash, err := sm3HexOfFile(plaintextPath)
@@ -80,6 +72,9 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		}
 		s.Logs.Add(LogInfo, "extract", "解压成功")
 		s.auditAndReportModelImport(req)
+		s.mu.Lock()
+		s.ModelImported = true
+		s.mu.Unlock()
 	} else {
 		size, hash, err := teecrypto.HashFileSM3(plaintextPath)
 		if err != nil {
@@ -131,23 +126,32 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		}
 		s.mu.Lock()
 		s.CurrentDataRecord = trainRecord
+		s.DataImported = true
 		s.mu.Unlock()
 		s.Logs.Add(LogInfo, "index", "导入索引写入成功: requestId=%s taskId=%s hash=%s", req.RequestID, req.TaskID, hash)
 	}
 
 	shouldTrain := false
 	if phase == 1 {
-		s.mu.RLock()
+		s.mu.Lock()
 		modelImported := s.ModelImported
 		dataImported := s.DataImported
 		bothImported := modelImported && dataImported
-		s.mu.RUnlock()
 		if !bothImported {
+			s.mu.Unlock()
 			s.Logs.Add(LogInfo, "import", "阶段1: 等待模型和数据都导入完成后执行训练 (modelImported=%v, dataImported=%v)",
 				modelImported, dataImported)
 			s.setCurrentOp("idle")
 			return
 		}
+		if s.Phase1TrainingStarted {
+			s.mu.Unlock()
+			s.Logs.Add(LogInfo, "import", "阶段1: 训练已启动，跳过重复触发")
+			s.setCurrentOp("idle")
+			return
+		}
+		s.Phase1TrainingStarted = true
+		s.mu.Unlock()
 		shouldTrain = true
 	} else {
 		if isModel {
@@ -164,9 +168,16 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	}
 
 	trainRecord, _ = s.resolveTrainingRecord(req, isModel)
+	trainReq := req
+	if isModel && trainRecord.RequestID != "" {
+		trainReq.RequestID = trainRecord.RequestID
+	}
+	if isModel && trainRecord.TaskID != "" {
+		trainReq.TaskID = trainRecord.TaskID
+	}
 	trainOutputDir := trainRecord.ResultDir
 	if trainOutputDir == "" {
-		trainOutputDir = resultDirForRequestTask(s.Security.ResultDir, req.RequestID, req.TaskID)
+		trainOutputDir = resultDirForRequestTask(s.Security.ResultDir, trainReq.RequestID, trainReq.TaskID)
 	}
 	trainDataDir := trainRecord.DataDir
 	if trainDataDir == "" {
@@ -187,7 +198,7 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	if err != nil {
 		s.Logs.Add(LogError, "train", "%v", err)
 		s.setCurrentOp("idle")
-		s.reportImportFailure(req, phase, false, startedAt, err.Error())
+		s.reportImportFailure(trainReq, phase, false, startedAt, err.Error())
 		return
 	}
 
@@ -197,33 +208,33 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	if err := os.MkdirAll(modelInputDir, 0o755); err != nil {
 		s.Logs.Add(LogError, "train", "创建模型输入目录失败: %v", err)
 		s.setCurrentOp("idle")
-		s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("创建模型输入目录失败: %v", err))
+		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("创建模型输入目录失败: %v", err))
 		return
 	}
 	if err := cleanDirContents(modelInputDir); err != nil {
 		s.Logs.Add(LogError, "train", "清空模型输入目录失败: %v", err)
 		s.setCurrentOp("idle")
-		s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("清空模型输入目录失败: %v", err))
+		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("清空模型输入目录失败: %v", err))
 		return
 	}
 	if err := copyDir(modelInputDir, trainDataDir); err != nil {
 		s.Logs.Add(LogError, "train", "复制训练数据到模型输入目录失败: %v", err)
 		s.setCurrentOp("idle")
-		s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("复制训练数据到模型输入目录失败: %v", err))
+		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("复制训练数据到模型输入目录失败: %v", err))
 		return
 	}
 	s.Logs.Add(LogInfo, "train", "训练数据已复制到模型输入目录: %s", modelInputDir)
 
 	if err := os.MkdirAll(modelOutputDir, 0o755); err != nil {
-		s.Logs.Add(LogError, "train", "创建模型输出目录失败: %v", err)
+		s.Logs.Add(LogError, "train", "创建模型输出���录失败: %v", err)
 		s.setCurrentOp("idle")
-		s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("创建模型输出目录失败: %v", err))
+		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("创建模型输出目录失败: %v", err))
 		return
 	}
 	if err := cleanDirContents(modelOutputDir); err != nil {
 		s.Logs.Add(LogError, "train", "清空模型输出目录失败: %v", err)
 		s.setCurrentOp("idle")
-		s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("清空模型输出目录失败: %v", err))
+		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("清空模型输出目录失败: %v", err))
 		return
 	}
 
@@ -235,10 +246,10 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	for i, cmd := range resolvedCommands {
 		s.Logs.Add(LogInfo, "train", "  [cmd %d] %s", i+1, cmd)
 	}
-	if output, err := runRuntimeConfig(cfg, env, s.Security.ModelDir, modelInputDir, modelOutputDir, req.TaskID, startedAt.UTC().Format(time.RFC3339)); err != nil {
+	if output, err := runRuntimeConfig(cfg, env, s.Security.ModelDir, modelInputDir, modelOutputDir, trainReq.TaskID, startedAt.UTC().Format(time.RFC3339)); err != nil {
 		s.Logs.Add(LogError, "train", "执行 runtimeConfig 失败: %v\noutput: %s", err, output)
 		s.setCurrentOp("idle")
-		s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("执行 runtimeConfig 失败: %v", err))
+		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("执行 runtimeConfig 失败: %v", err))
 		return
 	}
 	s.Logs.Add(LogInfo, "train", "runtimeConfig 执行成功")
@@ -248,13 +259,13 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	if err := os.MkdirAll(trainOutputDir, 0o755); err != nil {
 		s.Logs.Add(LogError, "train", "创建结果目录失败: %v", err)
 		s.setCurrentOp("idle")
-		s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("创建结果目录失败: %v", err))
+		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("创建结果目录失败: %v", err))
 		return
 	}
 	if err := copyDir(trainOutputDir, modelOutputDir); err != nil {
 		s.Logs.Add(LogError, "train", "拷贝训练产物失败: %v", err)
 		s.setCurrentOp("idle")
-		s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("拷贝训练产物失败: %v", err))
+		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("拷贝训练产物失败: %v", err))
 		return
 	}
 	s.Logs.Add(LogInfo, "train", "训练产物拷贝完成: %s", trainOutputDir)
@@ -268,9 +279,9 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 
 	StepSeparator("Build & Upload Report")
 	s.setCurrentOp("reporting")
-	s.Logs.Add(LogInfo, "report", "生成训练报告: taskId=%s", req.TaskID)
+	s.Logs.Add(LogInfo, "report", "生成训练报告: taskId=%s", trainReq.TaskID)
 	finishedAt := time.Now().UTC()
-	report, err := s.buildAndSaveTrainingReport(req.TaskID, startedAt, finishedAt, "succeeded", 0, "", s.getLastAudit(), true, trainOutputDir)
+	report, err := s.buildAndSaveTrainingReport(trainReq.TaskID, startedAt, finishedAt, "succeeded", 0, "", s.getLastAudit(), true, trainOutputDir)
 	if err != nil {
 		s.Logs.Add(LogError, "report", "生成训练报告失败: %v", err)
 		s.setCurrentOp("idle")
@@ -278,15 +289,15 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	}
 	s.Logs.Add(LogInfo, "report", "训练报告生成成功并写入 training_report.json (%d bytes)", len(report))
 
-	s.Logs.Add(LogInfo, "report", "上报训练结果到平台: code=0, taskId=%s", req.TaskID)
+	s.Logs.Add(LogInfo, "report", "上报训练结果到平台: code=0, taskId=%s", trainReq.TaskID)
 
 	s.mu.Lock()
 	s.TrainingDone = true
 	s.mu.Unlock()
 
-	s.reportTrainingAsync(req.RequestID, req.TaskID, 0, "", string(report))
+	s.reportTrainingAsync(trainReq.RequestID, trainReq.TaskID, 0, "", string(report))
 	s.setCurrentOp("idle")
-	s.Logs.Add(LogInfo, "import", "资源导入流程完成: taskId=%s", req.TaskID)
+	s.Logs.Add(LogInfo, "import", "资源导入流程完成: taskId=%s", trainReq.TaskID)
 }
 
 // auditAndReportModelImport 对解压后的模型代码执行安全审计（静态扫描 + 可选 LLM 语义验证），
