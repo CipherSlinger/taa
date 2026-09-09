@@ -5,6 +5,7 @@
   "resultCheck": true,
   "dataDir": "/root/taa/data",
   "resultDir": "/root/taa/results",
+  "keysDir": "/opt/taa/keys",
   "llm": {
     "enabled": true,
     "endpoint": "http://127.0.0.1:11434",

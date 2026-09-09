@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -34,6 +35,12 @@ const (
 
 	// fixedAttestationMode 为远程证明生成模式，auto 表示自动探测底层 TEE 硬件与驱动环境
 	fixedAttestationMode = "auto"
+
+	// defaultSM2PrivateKeyFile 为 TAA 实例 SM2 私钥存储文件名（PKCS#8 PEM 格式，严格权限 0600）
+	defaultSM2PrivateKeyFile = "sm2_private_key.pem"
+
+	// defaultSM2PublicKeyFile 为 TAA 实例 SM2 公钥存储文件名（SubjectPublicKeyInfo PEM 格式，权限 0644）
+	defaultSM2PublicKeyFile = "sm2_public_key.pem"
 )
 
 // taaKeyPair 保存 TAA 启动时生成的国密 SM2 私钥对象与 PEM 格式公钥字符串
@@ -78,10 +85,19 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		ensureQwenAvailable(ctx, cfg.LLMEndpoint, cfg.LLMModel, cfg.LLMDir)
 	}
 
-	// 2. 生成本 TAA 实例运行期的国密 SM2 密钥对（公钥用于通信加密与验签）
-	keyPair, err := generateTAAKeyPair()
+	// 2. 加载或生成本 TAA 实例专用的国密 SM2 密钥对（优先从持久化目录加载，若不存在则生成并落盘）
+	keysDir := cfg.KeysDir
+	if keysDir == "" {
+		keysDir = "/opt/taa/keys"
+	}
+	keyPair, loaded, err := loadOrGenerateTAAKeyPair(keysDir)
 	if err != nil {
-		return err
+		return fmt.Errorf("initialize TAA SM2 key pair: %w", err)
+	}
+	if loaded {
+		log.Printf("loaded persistent TAA SM2 key pair from %s", keysDir)
+	} else {
+		log.Printf("generated and saved persistent TAA SM2 key pair to %s", keysDir)
 	}
 
 	platformIP := cfg.PlatformIP
@@ -230,6 +246,157 @@ func isOllamaReady(endpoint, model string) bool {
 // ============================================================================
 // 密码学密钥对与 TEE 度量 UserData 生成
 // ============================================================================
+
+// writeKeyFileAtomic 使用临时文件+fsync+原子重命名的方式安全写入密钥文件，并严格设置指定权限
+func writeKeyFileAtomic(targetPath string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(targetPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("ensure key dir %s: %w", dir, err)
+	}
+
+	tmpFile, err := os.CreateTemp(dir, ".tmp-key-*")
+	if err != nil {
+		return fmt.Errorf("create temp key file in %s: %w", dir, err)
+	}
+	tmpPath := tmpFile.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmpFile.Chmod(perm); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("set permissions on %s: %w", tmpPath, err)
+	}
+
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("write key data to %s: %w", tmpPath, err)
+	}
+
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("fsync key file %s: %w", tmpPath, err)
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close key file %s: %w", tmpPath, err)
+	}
+
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		return fmt.Errorf("atomic rename %s to %s: %w", tmpPath, targetPath, err)
+	}
+
+	cleanup = false
+	return nil
+}
+
+// loadOrGenerateTAAKeyPair 优先从 keysDir 目录检查并加载已有的国密 SM2 公私钥对；
+// 若密钥不存在，则生成新的 SM2 密钥对并以安全权限持久化落盘（私钥 0600，公钥 0644）；
+// 若检测到公私钥不匹配或非预期的单边损坏，采用 Fail-Closed 严格报错以避免覆盖损坏历史解密凭证；
+// 若仅公钥缺失而私钥完整，则通过私钥自愈派生公钥并补齐落盘。
+// 返回的 loaded 表示是否从现有文件中成功加载。
+func loadOrGenerateTAAKeyPair(keysDir string) (*taaKeyPair, bool, error) {
+	cleanDir := strings.TrimSpace(keysDir)
+	if cleanDir == "" {
+		cleanDir = "/opt/taa/keys"
+	}
+	cleanDir = filepath.Clean(cleanDir)
+
+	privPath := filepath.Join(cleanDir, defaultSM2PrivateKeyFile)
+	pubPath := filepath.Join(cleanDir, defaultSM2PublicKeyFile)
+
+	privStat, privErr := os.Stat(privPath)
+	pubStat, pubErr := os.Stat(pubPath)
+
+	privExists := privErr == nil && !privStat.IsDir()
+	pubExists := pubErr == nil && !pubStat.IsDir()
+
+	// 1. 两个文件均存在：加载并校验一致性
+	if privExists && pubExists {
+		privData, err := os.ReadFile(privPath)
+		if err != nil {
+			return nil, false, fmt.Errorf("read private key file %s: %w", privPath, err)
+		}
+		pubData, err := os.ReadFile(pubPath)
+		if err != nil {
+			return nil, false, fmt.Errorf("read public key file %s: %w", pubPath, err)
+		}
+
+		privKey, err := teecrypto.ParseSM2PrivateKeyPEM(privData)
+		if err != nil {
+			return nil, false, fmt.Errorf("parse private key from %s: %w", privPath, err)
+		}
+		pubKey, err := teecrypto.ParseSM2PublicKeyPEM(pubData)
+		if err != nil {
+			return nil, false, fmt.Errorf("parse public key from %s: %w", pubPath, err)
+		}
+
+		// 严格校验公私钥点坐标一致性
+		if privKey.PublicKey.X == nil || privKey.PublicKey.Y == nil ||
+			pubKey.X == nil || pubKey.Y == nil ||
+			privKey.PublicKey.X.Cmp(pubKey.X) != 0 || privKey.PublicKey.Y.Cmp(pubKey.Y) != 0 {
+			return nil, false, fmt.Errorf("key mismatch in %s: public key does not correspond to private key", cleanDir)
+		}
+
+		log.Printf("successfully loaded persistent TAA SM2 key pair from %s", cleanDir)
+		return &taaKeyPair{PrivateKey: privKey, PublicKeyPEM: string(pubData)}, true, nil
+	}
+
+	// 2. 异常状态检测：公钥存在但私钥缺失 -> Fail-Closed 严禁重新生成
+	if !privExists && pubExists {
+		return nil, false, fmt.Errorf("inconsistent key state in %s: public key exists (%s) but private key (%s) is missing; refusing to overwrite to prevent data loss", cleanDir, pubPath, privPath)
+	}
+
+	// 3. 自愈状态检测：私钥存在但公钥缺失 -> 从私钥派生并自动补充公钥
+	if privExists && !pubExists {
+		privData, err := os.ReadFile(privPath)
+		if err != nil {
+			return nil, false, fmt.Errorf("read private key file %s: %w", privPath, err)
+		}
+		privKey, err := teecrypto.ParseSM2PrivateKeyPEM(privData)
+		if err != nil {
+			return nil, false, fmt.Errorf("parse private key from %s: %w", privPath, err)
+		}
+		pubPEM, err := teecrypto.MarshalSM2PublicKeyPEM(&privKey.PublicKey)
+		if err != nil {
+			return nil, false, fmt.Errorf("marshal derived public key: %w", err)
+		}
+		if err := writeKeyFileAtomic(pubPath, pubPEM, 0o644); err != nil {
+			return nil, false, fmt.Errorf("self-heal and write public key to %s: %w", pubPath, err)
+		}
+		log.Printf("self-healed missing public key from private key in %s", cleanDir)
+		return &taaKeyPair{PrivateKey: privKey, PublicKeyPEM: string(pubPEM)}, true, nil
+	}
+
+	// 4. 双文件均不存在：首次启动生成新密钥并持久化落盘
+	if err := os.MkdirAll(cleanDir, 0o700); err != nil {
+		return nil, false, fmt.Errorf("create keys dir %s: %w", cleanDir, err)
+	}
+
+	keyPair, err := generateTAAKeyPair()
+	if err != nil {
+		return nil, false, err
+	}
+
+	privPEM, err := teecrypto.MarshalSM2PrivateKeyPEM(keyPair.PrivateKey)
+	if err != nil {
+		return nil, false, fmt.Errorf("marshal private key: %w", err)
+	}
+
+	if err := writeKeyFileAtomic(privPath, privPEM, 0o600); err != nil {
+		return nil, false, fmt.Errorf("persist private key to %s: %w", privPath, err)
+	}
+
+	if err := writeKeyFileAtomic(pubPath, []byte(keyPair.PublicKeyPEM), 0o644); err != nil {
+		return nil, false, fmt.Errorf("persist public key to %s: %w", pubPath, err)
+	}
+
+	log.Printf("generated and persisted new TAA SM2 key pair to %s", cleanDir)
+	return keyPair, false, nil
+}
 
 // generateTAAKeyPair 生成本 TAA 实例专用的国密 SM2 密钥对，并编码导出 PEM 格式公钥
 func generateTAAKeyPair() (*taaKeyPair, error) {
