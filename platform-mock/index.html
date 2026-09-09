@@ -1114,7 +1114,7 @@ function getBatchRuntimeConfig() {
 function getBatchExportPublicKey() {
   const manual = document.getElementById('exportPublicKey').value.trim();
   if (manual) return manual;
-  return (lastRegisterData && lastRegisterData.taaPublicKey) ? lastRegisterData.taaPublicKey.trim() : '';
+  return '';
 }
 
 function taaFetch(endpoint, body, timeoutMs) {
@@ -2184,9 +2184,22 @@ async function testExport() {
     if (r.status === 200 && r.blob) {
       const shouldDecrypt = Boolean(document.getElementById('exportDecryptSwitch') && document.getElementById('exportDecryptSwitch').checked);
       if (shouldDecrypt) {
+        const isEncrypted = Boolean(r.encrypted || (r.filename && r.filename.toLowerCase().endsWith('.enc')));
+        if (!isEncrypted) {
+          downloadBlob(r.blob, r.filename);
+          showResult('exportResult', true,
+            'HTTP 200\n提示: 响应结果为明文（未加密，无需解密），已直接保存原文件\n' +
+            '保存文件名: ' + r.filename + '\n' +
+            'taskId: ' + r.taskId + '\n' +
+            'encrypted: ' + r.encrypted + '\n' +
+            '大小: ' + r.blob.size + ' bytes' + (r.contentLength ? ' (Content-Length: ' + r.contentLength + ')' : '')
+          );
+          return;
+        }
+
         const privKey = (document.getElementById('exportPrivateKey') ? document.getElementById('exportPrivateKey').value : '').trim();
         if (!privKey) {
-          showResult('exportResult', false, '已开启解密开关，但未填写解密私钥 PEM，请先输入私钥或在上方“创建公钥”生成密钥对');
+          showResult('exportResult', false, '已开启解密开关且导出结果为加密数据，但未填写解密私钥 PEM，请先输入私钥或在上方“创建公钥”生成密钥对');
           return;
         }
 
@@ -2322,7 +2335,7 @@ async function runAllTests() {
     { name: '/v1/taa/import（下发数据）', fn: () => postToTAA('/v1/taa/import', buildImportBody('http://mock.example.com/data.tar.gz', genId('batch-import'))) },
     { name: '/v1/taa/switch（切换到测试阶段）', fn: () => postToTAA('/v1/taa/switch', { phase: 2 }) },
     { name: '/v1/taa/switch（切换到训练阶段）', fn: () => postToTAA('/v1/taa/switch', { phase: 3 }) },
-    { name: '/v1/taa/export（导出结果，直接文件流）', fn: () => postToTAAFile('/v1/taa/export', { publicKey: getBatchExportPublicKey(), taskId: 'batch-task-001' }) },
+    { name: '/v1/taa/export（导出结果，直接文件流）', fn: () => postToTAAFile('/v1/taa/export', { publicKey: getBatchExportPublicKey() || null, taskId: 'batch-task-001' }) },
     { name: '/v1/taa/getAttestation（获取证明报告，最长45s）', fn: () => postToTAA('/v1/taa/getAttestation', { requestId: genId('batch-attest') }, 45000) },
     { name: '/v1/taa/reportRes（上报训练结果 → 本平台）', fn: async () => {
       const res = await fetch('/v1/taa/reportRes', {
