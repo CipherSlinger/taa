@@ -11,10 +11,9 @@ CONTRACT=合约ID（预留）
 ```
 
 ```env
-# 路径约定
-/opt/taa/models         # 模型+训练代码
-/opt/taa/data           # 测试数据
-/opt/taa/results        # 训练结果
+# 模型方路径约定
+/opt/taa/input          # 输入目录（唯一只读权限路径，未实现权限管理）
+/opt/taa/output         # 输出目录（唯一写权限路径，未实现权限管理）
 ```
 
 ## 2. 公共返回格式

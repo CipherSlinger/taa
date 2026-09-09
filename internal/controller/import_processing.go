@@ -168,11 +168,13 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 
 	trainRecord, _ = s.resolveTrainingRecord(req, isModel)
 	trainReq := req
-	if isModel && trainRecord.RequestID != "" {
-		trainReq.RequestID = trainRecord.RequestID
-	}
-	if isModel && trainRecord.TaskID != "" {
-		trainReq.TaskID = trainRecord.TaskID
+	if isModel {
+		if trainRecord.RequestID != "" {
+			trainReq.RequestID = trainRecord.RequestID
+		}
+		if trainRecord.TaskID != "" {
+			trainReq.TaskID = trainRecord.TaskID
+		}
 	}
 	trainOutputDir := trainRecord.ResultDir
 	if trainOutputDir == "" {
