@@ -141,6 +141,21 @@ func TestLoadStartupConfigReadsKeysDir(t *testing.T) {
 	}
 }
 
+func TestLoadStartupConfigIgnoresWhitespaceKeysDir(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"keysDir": "   \t  "
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+	if cfg.KeysDir != "/opt/taa/keys" {
+		t.Fatalf("KeysDir = %q, want default /opt/taa/keys", cfg.KeysDir)
+	}
+}
+
 func TestLoadStartupConfigReadsLLMDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
@@ -170,6 +185,7 @@ func TestLoadStartupConfigDoesNotReadOtherRuntimeEnvironment(t *testing.T) {
 	t.Setenv("DATA_DIR", "/env/data")
 	t.Setenv("RESULT_DIR", "/env/results")
 	t.Setenv("OLLAMA_DIR", "/env/ollama")
+	t.Setenv("KEYS_DIR", "/env/keys")
 
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{}`)
@@ -182,7 +198,7 @@ func TestLoadStartupConfigDoesNotReadOtherRuntimeEnvironment(t *testing.T) {
 	if !cfg.EnableSecurityScan || !cfg.EnableResultCheck || !cfg.EnableLLM || !cfg.LLMFailClosed {
 		t.Fatalf("boolean runtime config unexpectedly read from environment: %+v", cfg)
 	}
-	if cfg.ModelDir != "/opt/taa/models" || cfg.DataDir != "/opt/taa/data" || cfg.ResultDir != "/opt/taa/results" {
+	if cfg.ModelDir != "/opt/taa/models" || cfg.DataDir != "/opt/taa/data" || cfg.ResultDir != "/opt/taa/results" || cfg.KeysDir != "/opt/taa/keys" {
 		t.Fatalf("directory runtime config unexpectedly read from environment: %+v", cfg)
 	}
 	if cfg.LLMEndpoint != "http://127.0.0.1:11434" || cfg.LLMModel != "qwen2.5-coder:0.5b" || cfg.LLMPolicy != "assist" || cfg.LLMDir != "" {
