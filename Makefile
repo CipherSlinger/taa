@@ -1,8 +1,9 @@
-.PHONY: taa docker test run platform-mock platform-mock-build attestation-ioctl attestation-vmmcall clean help
+.PHONY: taa docker docker-base test run platform-mock platform-mock-build attestation-ioctl attestation-vmmcall clean help
 
 BIN_DIR ?= bin
 TAA_BINARY ?= $(BIN_DIR)/taa
 MOCK_BINARY ?= $(BIN_DIR)/platform-mock
+BASE_IMAGE ?= taa-env-slim:latest
 
 taa:
 	@mkdir -p $(dir $(TAA_BINARY))
@@ -32,6 +33,9 @@ docker: deploy/manifest/docker/Dockerfile
 	@if [ -f deploy/.dockerignore ]; then cp deploy/.dockerignore .dockerignore; trap 'rm -f .dockerignore' EXIT INT TERM; fi; \
 	docker build -t taa:latest -f deploy/manifest/docker/Dockerfile .
 
+docker-base: deploy/manifest/docker/Dockerfile.base
+	docker build -t $(BASE_IMAGE) -f deploy/manifest/docker/Dockerfile.base deploy/manifest/docker
+
 clean:
 	@rm -f $(TAA_BINARY) $(MOCK_BINARY)
 	@$(MAKE) -C attestation/csv_c BIN_DIR=$(abspath $(BIN_DIR)) clean
@@ -46,4 +50,5 @@ help:
 	@echo "make attestation-ioctl  构建 ioctl-attestation helper 到 bin/"
 	@echo "make attestation-vmmcall 构建 vmmcall-attestation helper 到 bin/"
 	@echo "make docker             构建 Docker 镜像"
+	@echo "make docker-base        构建标准基础环境镜像 (taa-env-slim:latest)"
 	@echo "make clean              清理构建产物"
