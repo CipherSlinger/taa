@@ -62,7 +62,7 @@ func TestResourceInfoHandlerDownloadsAndBuildsFileTree(t *testing.T) {
 		t.Skip("python3 scripts are not supported on windows")
 	}
 
-	_, server := setupTestServer(t)
+	state, server := setupTestServer(t)
 
 	archiveData := createTestTarGz(t, map[string]string{
 		"dataset/users.csv": "user_id,name\n1,Alice\n2,Bob\n",
@@ -107,8 +107,33 @@ func TestResourceInfoHandlerDownloadsAndBuildsFileTree(t *testing.T) {
 	if checksum["algorithm"] != "sm3" {
 		t.Fatalf("checksum algorithm = %v, want sm3", checksum["algorithm"])
 	}
-	if checksum["value"] == "" {
+	hashVal, ok := checksum["value"].(string)
+	if !ok || hashVal == "" {
 		t.Fatalf("checksum value is empty: %#v", checksum)
+	}
+
+	// 验证资源已被持久化保存到数据目录下的 hash 文件夹
+	savedDir := filepath.Join(state.Security.DataDir, hashVal)
+	if fi, err := os.Stat(savedDir); err != nil || !fi.IsDir() {
+		t.Fatalf("expected persistent dataDir at %s, err=%v", savedDir, err)
+	}
+	csvFile := filepath.Join(savedDir, "dataset", "users.csv")
+	content, err := os.ReadFile(csvFile)
+	if err != nil {
+		t.Fatalf("read saved csv file: %v", err)
+	}
+	if string(content) != "user_id,name\n1,Alice\n2,Bob\n" {
+		t.Fatalf("saved csv content mismatch: %q", string(content))
+	}
+
+	// 再次调用，验证复用现有 hash 数据目录
+	resp2 := postJSON(t, server.URL+"/v1/taa/getResourceInfo", body)
+	api2 := decodeResponse(t, resp2)
+	if resp2.StatusCode != http.StatusOK || api2.Error != 0 {
+		t.Fatalf("second call failed: status=%d, err=%d, msg=%s", resp2.StatusCode, api2.Error, api2.Msg)
+	}
+	if fi, err := os.Stat(savedDir); err != nil || !fi.IsDir() {
+		t.Fatalf("expected persistent dataDir to remain at %s, err=%v", savedDir, err)
 	}
 }
 
@@ -162,8 +187,18 @@ func TestResourceInfoHandlerDecryptsEncryptedResource(t *testing.T) {
 	if checksum["algorithm"] != "sm3" {
 		t.Fatalf("checksum algorithm = %v, want sm3", checksum["algorithm"])
 	}
-	if checksum["value"] == "" {
+	hashVal, ok := checksum["value"].(string)
+	if !ok || hashVal == "" {
 		t.Fatalf("checksum value is empty: %#v", checksum)
+	}
+
+	savedDir := filepath.Join(state.Security.DataDir, hashVal)
+	if fi, err := os.Stat(savedDir); err != nil || !fi.IsDir() {
+		t.Fatalf("expected persistent dataDir for encrypted resource at %s, err=%v", savedDir, err)
+	}
+	csvFile := filepath.Join(savedDir, "dataset", "users.csv")
+	if _, err := os.Stat(csvFile); err != nil {
+		t.Fatalf("expected decrypted file at %s, err=%v", csvFile, err)
 	}
 }
 
