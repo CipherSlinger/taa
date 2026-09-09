@@ -329,6 +329,62 @@ func TestRunRuntimeConfigReplacesOptTaaPaths(t *testing.T) {
 	}
 }
 
+func TestRunRuntimeConfigWithCdAndRelativeModelDirs(t *testing.T) {
+	tmpDir := t.TempDir()
+	subModelDir := filepath.Join(tmpDir, "models", "my-sub-model")
+	if err := os.MkdirAll(subModelDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	currWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(currWd) }()
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+
+	relInput := filepath.Join(".local", "taa", "input")
+	relOutput := filepath.Join(".local", "taa", "output")
+	if err := os.MkdirAll(relInput, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(relInput, "input.txt"), []byte("sub-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sec := SecurityConfig{
+		ModelInputDir:  relInput,
+		ModelOutputDir: relOutput,
+	}
+
+	if !filepath.IsAbs(sec.GetModelInputDir()) {
+		t.Fatalf("GetModelInputDir should be absolute, got %s", sec.GetModelInputDir())
+	}
+
+	cfg := runtimeConfig{
+		Commands: []string{
+			"cd my-sub-model",
+			`cat "` + sec.GetModelInputDir() + `/input.txt" > "` + sec.GetModelOutputDir() + `/copied.txt"`,
+		},
+	}
+
+	out, err := runRuntimeConfig(cfg, nil, filepath.Join(tmpDir, "models"), sec.GetModelInputDir(), sec.GetModelOutputDir(), "task-sub", "2026-09-08T00:00:00Z")
+	if err != nil {
+		t.Fatalf("runRuntimeConfig failed: %v\noutput: %s", err, out)
+	}
+
+	copied, err := os.ReadFile(filepath.Join(sec.GetModelOutputDir(), "copied.txt"))
+	if err != nil {
+		t.Fatalf("read copied file: %v", err)
+	}
+	if string(copied) != "sub-data" {
+		t.Fatalf("copied content = %q, want sub-data", string(copied))
+	}
+}
+
 func TestSecurityConfigModelDirs(t *testing.T) {
 	var emptySec SecurityConfig
 	if emptySec.GetModelInputDir() != DefaultModelInputDir {
@@ -347,6 +403,19 @@ func TestSecurityConfigModelDirs(t *testing.T) {
 	}
 	if customSec.GetModelOutputDir() != "/custom/output" {
 		t.Errorf("GetModelOutputDir = %q, want /custom/output", customSec.GetModelOutputDir())
+	}
+
+	relSec := SecurityConfig{
+		ModelInputDir:  ".local/taa/input",
+		ModelOutputDir: ".local/taa/output",
+	}
+	wantInputAbs, _ := filepath.Abs(".local/taa/input")
+	wantOutputAbs, _ := filepath.Abs(".local/taa/output")
+	if relSec.GetModelInputDir() != wantInputAbs {
+		t.Errorf("GetModelInputDir = %q, want %q", relSec.GetModelInputDir(), wantInputAbs)
+	}
+	if relSec.GetModelOutputDir() != wantOutputAbs {
+		t.Errorf("GetModelOutputDir = %q, want %q", relSec.GetModelOutputDir(), wantOutputAbs)
 	}
 }
 
