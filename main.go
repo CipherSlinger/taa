@@ -302,11 +302,13 @@ func registerPlatform(platformIP, dockerID, publicKeyPEM string, timestamp int64
 // buildSecurityConfig 将全局启动配置转换为控制器使用的 SecurityConfig 结构体
 func buildSecurityConfig(cfg config.StartupConfig) controller.SecurityConfig {
 	return controller.SecurityConfig{
-		ScanEnabled: cfg.EnableSecurityScan,
-		ModelDir:    cfg.ModelDir,
-		ResultCheck: cfg.EnableResultCheck,
-		DataDir:     cfg.DataDir,
-		ResultDir:   cfg.ResultDir,
+		ScanEnabled:    cfg.EnableSecurityScan,
+		ModelDir:       cfg.ModelDir,
+		ResultCheck:    cfg.EnableResultCheck,
+		DataDir:        cfg.DataDir,
+		ResultDir:      cfg.ResultDir,
+		ModelInputDir:  cfg.ModelInputDir,
+		ModelOutputDir: cfg.ModelOutputDir,
 		LLM: codeaudit.LLMConfig{
 			Enabled:     cfg.EnableLLM,
 			Endpoint:    cfg.LLMEndpoint,
@@ -319,9 +321,9 @@ func buildSecurityConfig(cfg config.StartupConfig) controller.SecurityConfig {
 	}
 }
 
-// ensureSecurityDirectories 确保模型目录、数据目录和结果目录在本地文件系统中存在
+// ensureSecurityDirectories 确保模型目录、数据目录、结果目录以及模型输入输出目录在本地文件系统中存在
 func ensureSecurityDirectories(sec controller.SecurityConfig) error {
-	for _, dir := range []string{sec.ModelDir, sec.DataDir, sec.ResultDir} {
+	for _, dir := range []string{sec.ModelDir, sec.DataDir, sec.ResultDir, sec.GetModelInputDir(), sec.GetModelOutputDir()} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("create directory %s: %w", dir, err)
 		}
@@ -331,6 +333,7 @@ func ensureSecurityDirectories(sec controller.SecurityConfig) error {
 
 // logSecurityConfig 打印安全扫描、大模型审计及结果检查策略的配置摘要
 func logSecurityConfig(sec controller.SecurityConfig) {
+	log.Printf("model staging directories: input=%s output=%s", sec.GetModelInputDir(), sec.GetModelOutputDir())
 	if sec.ScanEnabled {
 		log.Printf("security scan enabled: model-dir=%s", sec.ModelDir)
 		if sec.LLM.Enabled {

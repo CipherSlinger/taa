@@ -44,12 +44,33 @@ type apiResponse struct {
 // Separated from TAAState so it doesn't need the phase mutex and can't be
 // accidentally left at zero values.
 type SecurityConfig struct {
-	ScanEnabled bool                // 是否在 import type=1 时执行源码安全扫描
-	ModelDir    string              // 模型代码存放目录（扫描目标，type=1）
-	DataDir     string              // 数据目录（type=2 测试数据，type=3 训练数据，用于数据指纹比对）
-	ResultCheck bool                // 是否在 export 时检查明文数据泄露
-	ResultDir   string              // 训练结果目录（导出前检查）
-	LLM         codeaudit.LLMConfig // 本地 LLM 语义验证配置
+	ScanEnabled    bool                // 是否在 import type=1 时执行源码安全扫描
+	ModelDir       string              // 模型代码存放目录（扫描目标，type=1）
+	DataDir        string              // 数据目录（type=2 测试数据，type=3 训练数据，用于数据指纹比对）
+	ResultCheck    bool                // 是否在 export 时检查明文数据泄露
+	ResultDir      string              // 训练结果目录（导出前检查）
+	ModelInputDir  string              // 模型数据输入目录（缺省 /opt/taa/input）
+	ModelOutputDir string              // 模型结果输出目录（缺省 /opt/taa/output）
+	LLM            codeaudit.LLMConfig // 本地 LLM 语义验证配置
+}
+
+const (
+	DefaultModelInputDir  = "/opt/taa/input"
+	DefaultModelOutputDir = "/opt/taa/output"
+)
+
+func (sec SecurityConfig) GetModelInputDir() string {
+	if strings.TrimSpace(sec.ModelInputDir) != "" {
+		return sec.ModelInputDir
+	}
+	return DefaultModelInputDir
+}
+
+func (sec SecurityConfig) GetModelOutputDir() string {
+	if strings.TrimSpace(sec.ModelOutputDir) != "" {
+		return sec.ModelOutputDir
+	}
+	return DefaultModelOutputDir
 }
 
 type TAAState struct {

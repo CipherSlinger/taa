@@ -100,6 +100,12 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if cfg.ResultDir != "/opt/taa/results" {
 		t.Fatalf("ResultDir = %q, want default", cfg.ResultDir)
 	}
+	if cfg.ModelInputDir != "/opt/taa/input" {
+		t.Fatalf("ModelInputDir = %q, want default", cfg.ModelInputDir)
+	}
+	if cfg.ModelOutputDir != "/opt/taa/output" {
+		t.Fatalf("ModelOutputDir = %q, want default", cfg.ModelOutputDir)
+	}
 	if !cfg.EnableLLM {
 		t.Fatalf("EnableLLM = false, want default true")
 	}
