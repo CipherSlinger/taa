@@ -147,7 +147,6 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		if s.Phase1TrainingStarted {
 			s.mu.Unlock()
 			s.Logs.Add(LogInfo, "import", "阶段1: 训练已启动，跳过重复触发")
-			s.setCurrentOp("idle")
 			return
 		}
 		s.Phase1TrainingStarted = true
