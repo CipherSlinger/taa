@@ -104,6 +104,10 @@ SELECTED_COMPONENT=false
 STEP=0
 
 LOCAL_PLATFORM_STATE_DIR="${LOCAL_PLATFORM_STATE_DIR:-$PROJECT_DIR/.local/platform-mock}"
+LOCAL_PLATFORM_PORT_USER_SET=false
+if [[ -n "${LOCAL_PLATFORM_PORT:-}" ]]; then
+  LOCAL_PLATFORM_PORT_USER_SET=true
+fi
 if [[ "$DEBUG" == true ]]; then
   LOCAL_PLATFORM_PORT="${LOCAL_PLATFORM_PORT:-28080}"
 else
@@ -232,16 +236,19 @@ ensure_local_docker_container() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [docker] [local] [local-docker] [platform-mock] [taa] [qwen]
+Usage: $(basename "$0") [docker] [local] [local-docker] [start|stop] [platform-mock] [taa] [qwen]
 
 Without arguments, all three components are deployed remotely.
 Pass docker to switch deploy mode to remote Docker; pass local to start the
 full stack on the local machine; pass local-docker to deploy TAA and its
 dependencies into a local Docker container for testing.
+Pass start or stop to control service lifecycle (default: start).
 When no component names are given, taa and qwen are deployed by default
 (with platform-mock started for local/local-docker modes).
 Provide one or more names to deploy them separately.
 Examples:
+  $(basename "$0") local start
+  $(basename "$0") local stop
   $(basename "$0") local-docker
   $(basename "$0") local-docker taa
   $(basename "$0") local-docker qwen
@@ -321,7 +328,7 @@ Environment overrides:
   TAA_PRODUCTION_CONFIG_TEMPLATE=${TAA_PRODUCTION_CONFIG_TEMPLATE}
       正式非 debug 场景 TAA 配置模板。
   CONTRACT=${CONTRACT}
-      debug/local 场景写入配置文件的合约 ID；正式非 debug 场景由运行环境注入。
+      debug/local 场景写入配置文件的合约 ID；正式非 debug 场景由运行环境注入（预留可选）。
   ATT_DIR=${ATT_DIR}
       本地 attestation helper 和证书目录。
 
@@ -351,6 +358,7 @@ stop_pidfile() {
     pid=$(<"$pidfile")
     if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
       warn "stopping old $name (pid $pid)"
+      pkill -P "$pid" 2>/dev/null || true
       kill "$pid" 2>/dev/null || true
       for _ in {1..50}; do
         if ! kill -0 "$pid" 2>/dev/null; then
@@ -358,6 +366,7 @@ stop_pidfile() {
         fi
         sleep 0.1
       done
+      pkill -9 -P "$pid" 2>/dev/null || true
       kill -9 "$pid" 2>/dev/null || true
     fi
     rm -f "$pidfile"
@@ -525,6 +534,8 @@ with open(path, "w", encoding="utf-8") as f:
 PY
 }
 
+ACTION="start"
+
 if [[ $# -eq 0 ]]; then
   DEPLOY_PLATFORM_MOCK=true
   DEPLOY_TAA=true
@@ -546,6 +557,12 @@ else
         DEPLOY_TAA=true
         DEPLOY_QWEN=true
         SELECTED_COMPONENT=true
+        ;;
+      start)
+        ACTION="start"
+        ;;
+      stop)
+        ACTION="stop"
         ;;
       platform-mock)
         DEPLOY_PLATFORM_MOCK=true
@@ -596,7 +613,38 @@ else
   fi
 fi
 
+if [[ "$DEPLOY_LOCAL" == true && "$LOCAL_PLATFORM_PORT_USER_SET" == false ]]; then
+  LOCAL_PLATFORM_PORT="8080"
+  LOCAL_PLATFORM_BIND="0.0.0.0:${LOCAL_PLATFORM_PORT}"
+  LOCAL_PLATFORM_IP="127.0.0.1:${LOCAL_PLATFORM_PORT}"
+  LOCAL_PLATFORM_URL="http://127.0.0.1:${LOCAL_PLATFORM_PORT}"
+fi
+
 cd "$PROJECT_DIR"
+
+if [[ "$ACTION" == "stop" ]]; then
+  banner "Stopping Services"
+  if [[ "$DEPLOY_LOCAL" == true || ("$DEPLOY_LOCAL_DOCKER" == false && "$DOCKER_ARG" == false && "$DEPLOY_MODE" != "docker" && "$DEPLOY_MODE" != "k8s") ]]; then
+    step "stopping local processes"
+    if [[ "$SELECTED_COMPONENT" == true && ("$DEPLOY_TAA" == true || "$DEPLOY_PLATFORM_MOCK" == true || "$DEPLOY_QWEN" == true) && ("$DEPLOY_TAA" == false || "$DEPLOY_PLATFORM_MOCK" == false || "$DEPLOY_QWEN" == false) ]]; then
+      [[ "$DEPLOY_TAA" == true ]] && stop_pidfile "taa" "$LOCAL_RUN_DIR/taa.pid"
+      [[ "$DEPLOY_PLATFORM_MOCK" == true ]] && stop_pidfile "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid"
+      [[ "$DEPLOY_QWEN" == true ]] && stop_pidfile "ollama" "$LOCAL_RUN_DIR/ollama.pid"
+    else
+      stop_pidfile "taa" "$LOCAL_RUN_DIR/taa.pid"
+      stop_pidfile "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid"
+      stop_pidfile "ollama" "$LOCAL_RUN_DIR/ollama.pid"
+    fi
+  fi
+  if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
+    step "stopping local-docker processes"
+    stop_pidfile "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid"
+    stop_pidfile "taa" "$LOCAL_RUN_DIR/taa.pid"
+    stop_pidfile "ollama" "$LOCAL_RUN_DIR/ollama.pid"
+  fi
+  info "all target services stopped cleanly"
+  exit 0
+fi
 
 # 用户可见的平台标签：DEBUG 模式显示 "platform-mock"，生产模式显示 "platform"
 PLATFORM_LABEL="platform"
@@ -1002,7 +1050,7 @@ if [[ "$DEPLOY_TAA" == true ]]; then
 
   if [[ "$DEBUG" == false ]]; then
     step "checking production identity env inside container"
-    remote_ssh "$(container_exec) sh -lc 'test -n \"\${PLATFORM_IP:-}\" && test -n \"\${DOCKER_ID:-}\" && test -n \"\${CONTRACT:-}\" || { echo PLATFORM_IP, DOCKER_ID, and CONTRACT must be injected in production non-debug mode; exit 1; }'"
+    remote_ssh "$(container_exec) sh -lc 'test -n \"\${PLATFORM_IP:-}\" && test -n \"\${DOCKER_ID:-}\" || { echo PLATFORM_IP and DOCKER_ID must be injected in production non-debug mode; exit 1; }'"
   fi
 
   if [[ "$DEBUG" == true ]]; then
