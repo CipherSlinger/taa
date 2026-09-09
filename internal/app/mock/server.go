@@ -75,6 +75,31 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
+// envOrDefault returns the value of the environment variable key, or
+// fallback if it is unset or empty.
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// DefaultConfig returns the default Config for the platform mock service,
+// resolving values from environment variables where applicable (STATE_DIR,
+// UPLOAD_DIR, TAA_POD, TAA_NS, TAA_PORT). cmd/platform-mock uses this as the
+// base Config before applying command-line flag overrides, so that all
+// environment-variable resolution stays inside this package.
+func DefaultConfig() Config {
+	return Config{
+		Addr:      ":8080",
+		StateDir:  envOrDefault("STATE_DIR", "/root/taa"),
+		UploadDir: envOrDefault("UPLOAD_DIR", "./uploads"),
+		TAAPod:    envOrDefault("TAA_POD", "simple-busybox"),
+		TAANS:     envOrDefault("TAA_NS", ""),
+		TAAPort:   envOrDefault("TAA_PORT", defaultTAAPort),
+	}
+}
+
 // Server is the platform mock HTTP server.
 type Server struct {
 	cfg        Config
