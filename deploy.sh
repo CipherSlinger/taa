@@ -130,13 +130,8 @@ LOCAL_OLLAMA_LOG_FILE="${LOCAL_OLLAMA_LOG_FILE:-$PROJECT_DIR/.local/logs/ollama.
 LOCAL_OLLAMA_URL="${LOCAL_OLLAMA_URL:-http://${OLLAMA_HOST}}"
 LOCAL_DOCKER_ID="${LOCAL_DOCKER_ID:-127.0.0.1}"
 LOCAL_DOCKER_CONTAINER="${LOCAL_DOCKER_CONTAINER:-$TARGET_CONTAINER}"
-if [[ -z "${LOCAL_DOCKER_IMAGE:-}" ]]; then
-  if docker image inspect taa-env-slim:latest >/dev/null 2>&1; then
-    LOCAL_DOCKER_IMAGE="taa-env-slim:latest"
-  else
-    LOCAL_DOCKER_IMAGE="ubuntu:22.04"
-  fi
-fi
+LOCAL_DOCKER_IMAGE_ARCHIVE="${LOCAL_DOCKER_IMAGE_ARCHIVE:-$PROJECT_DIR/deploy/taa-env-slim-v2.tar.gz}"
+LOCAL_DOCKER_IMAGE="${LOCAL_DOCKER_IMAGE:-taa-env:slim-v2}"
 LOCAL_DOCKER_NETWORK="${LOCAL_DOCKER_NETWORK:-host}"
 FORCE_QWEN_COPY="${FORCE_QWEN_COPY:-false}"
 
@@ -175,7 +170,39 @@ container_cp() {
 }
 
 ensure_local_docker_container() {
+  step "checking local docker image: $LOCAL_DOCKER_IMAGE"
+  if ! docker image inspect "$LOCAL_DOCKER_IMAGE" >/dev/null 2>&1; then
+    if [[ -f "$LOCAL_DOCKER_IMAGE_ARCHIVE" ]]; then
+      step "loading local docker image from $LOCAL_DOCKER_IMAGE_ARCHIVE"
+      docker load -i "$LOCAL_DOCKER_IMAGE_ARCHIVE"
+    else
+      warn "image '$LOCAL_DOCKER_IMAGE' not found and archive '$LOCAL_DOCKER_IMAGE_ARCHIVE' does not exist"
+    fi
+  fi
+
   step "checking local docker container: $LOCAL_DOCKER_CONTAINER"
+  if docker ps -a --format '{{.Names}}' | grep -Eq "^${LOCAL_DOCKER_CONTAINER}\$"; then
+    local current_image
+    current_image=$(docker inspect --format '{{.Config.Image}}' "$LOCAL_DOCKER_CONTAINER" 2>/dev/null || true)
+    local current_image_id
+    current_image_id=$(docker inspect --format '{{.Image}}' "$LOCAL_DOCKER_CONTAINER" 2>/dev/null || true)
+    local target_image_id
+    target_image_id=$(docker image inspect --format '{{.Id}}' "$LOCAL_DOCKER_IMAGE" 2>/dev/null || true)
+
+    local image_mismatch=false
+    if [[ -n "$current_image" && "$current_image" != "$LOCAL_DOCKER_IMAGE" ]]; then
+      if [[ -z "$target_image_id" || "$current_image_id" != "$target_image_id" ]]; then
+        image_mismatch=true
+      fi
+    fi
+
+    if [[ "$image_mismatch" == true ]]; then
+      warn "container $LOCAL_DOCKER_CONTAINER image mismatch (current: $current_image, expected: $LOCAL_DOCKER_IMAGE)"
+      info "recreating container $LOCAL_DOCKER_CONTAINER using $LOCAL_DOCKER_IMAGE"
+      docker rm -f "$LOCAL_DOCKER_CONTAINER" >/dev/null
+    fi
+  fi
+
   if docker ps --format '{{.Names}}' | grep -Eq "^${LOCAL_DOCKER_CONTAINER}\$"; then
     info "local docker container is already running: $LOCAL_DOCKER_CONTAINER"
   elif docker ps -a --format '{{.Names}}' | grep -Eq "^${LOCAL_DOCKER_CONTAINER}\$"; then
@@ -183,14 +210,20 @@ ensure_local_docker_container() {
     docker start "$LOCAL_DOCKER_CONTAINER" >/dev/null
   else
     info "creating and starting local docker container: $LOCAL_DOCKER_CONTAINER (image: $LOCAL_DOCKER_IMAGE, network: $LOCAL_DOCKER_NETWORK)"
-    docker run -d --name "$LOCAL_DOCKER_CONTAINER" --network "$LOCAL_DOCKER_NETWORK" "$LOCAL_DOCKER_IMAGE" tail -f /dev/null >/dev/null
+    docker run -d --name "$LOCAL_DOCKER_CONTAINER" --network "$LOCAL_DOCKER_NETWORK" --entrypoint tail "$LOCAL_DOCKER_IMAGE" -f /dev/null >/dev/null
   fi
+
+  # 在容器工作目录标记 manual 模式，防止镜像内置的 start.sh 自启动造成端口竞争
+  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR' && touch '$TAA_CONTAINER_WORKDIR/manual'" >/dev/null 2>&1 || true
 
   if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "command -v python3 >/dev/null 2>&1"; then
     step "installing python3 inside container: $LOCAL_DOCKER_CONTAINER"
     docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 < /dev/null"
-    info "python3 installed inside container: $(docker exec -i "$LOCAL_DOCKER_CONTAINER" python3 --version 2>&1)"
   fi
+  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "if ! command -v python >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then ln -s \$(which python3) /usr/local/bin/python; fi" >/dev/null 2>&1 || true
+  local py_ver
+  py_ver=$(docker exec -i "$LOCAL_DOCKER_CONTAINER" python3 --version 2>&1 || true)
+  info "container python runtime: $py_ver"
 }
 
 usage() {
@@ -229,8 +262,10 @@ Environment overrides:
   # Local Docker mode (local-docker)
   LOCAL_DOCKER_CONTAINER=${LOCAL_DOCKER_CONTAINER}
       本地 Docker 目标容器名称（默认复用 TARGET_CONTAINER，如 taa-env-slim-v2）。
+  LOCAL_DOCKER_IMAGE_ARCHIVE=${LOCAL_DOCKER_IMAGE_ARCHIVE}
+      本地基础镜像归档文件路径（默认 deploy/taa-env-slim-v2.tar.gz）。
   LOCAL_DOCKER_IMAGE=${LOCAL_DOCKER_IMAGE}
-      本地 Docker 基础镜像（默认优先使用 taa-env-slim:latest，未构建时使用 ubuntu:22.04）。
+      本地 Docker 基础镜像名称（默认 taa-env:slim-v2）。
   LOCAL_DOCKER_NETWORK=${LOCAL_DOCKER_NETWORK}
       本地 Docker 容器网络模式（默认 host）。
   FORCE_QWEN_COPY=${FORCE_QWEN_COPY}
@@ -682,6 +717,7 @@ if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
   if [[ "$DEPLOY_QWEN" == true ]]; then
     step "preparing ollama/qwen dependencies inside container"
     stop_pidfile "ollama" "$LOCAL_RUN_DIR/ollama.pid"
+    pkill -f "$OLLAMA_LOCAL_DIR/ollama" >/dev/null 2>&1 || true
     docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc 'pkill -x ollama >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true'
     for _ in {1..20}; do
       if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pgrep -x ollama >/dev/null 2>&1"; then
@@ -751,6 +787,7 @@ if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
 
     step "stopping old taa"
     stop_pidfile "taa" "$LOCAL_RUN_DIR/taa.pid"
+    pkill -f "$TAA_BINARY_PATH" >/dev/null 2>&1 || true
     docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall '$BINARY_NAME' >/dev/null 2>&1 || true"
     for _ in {1..30}; do
       if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pgrep -x '$BINARY_NAME' >/dev/null 2>&1"; then
