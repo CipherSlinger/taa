@@ -484,11 +484,12 @@ write_taa_config() {
   local include_identity="${13}"
   local model_input_dir="${14:-}"
   local model_output_dir="${15:-}"
+  local keys_dir="${16:-}"
 
   require_file "taa config template not found" "$template"
   require_command python3
   ensure_parent_dir "$path"
-  python3 - "$template" "$path" "$addr" "$platform_ip" "$docker_id" "$contract" "$model_dir" "$data_dir" "$result_dir" "$llm_dir" "$llm_endpoint" "$llm_model" "$include_identity" "$model_input_dir" "$model_output_dir" <<'PY'
+  python3 - "$template" "$path" "$addr" "$platform_ip" "$docker_id" "$contract" "$model_dir" "$data_dir" "$result_dir" "$llm_dir" "$llm_endpoint" "$llm_model" "$include_identity" "$model_input_dir" "$model_output_dir" "$keys_dir" <<'PY'
 import json
 import sys
 
@@ -508,7 +509,8 @@ import sys
     include_identity,
     model_input_dir,
     model_output_dir,
-) = sys.argv[1:16]
+    keys_dir,
+) = sys.argv[1:17]
 
 with open(template, "r", encoding="utf-8") as f:
     cfg = json.load(f)
@@ -521,6 +523,8 @@ if model_input_dir:
     cfg["modelInputDir"] = model_input_dir
 if model_output_dir:
     cfg["modelOutputDir"] = model_output_dir
+if keys_dir:
+    cfg["keysDir"] = keys_dir
 
 if include_identity == "true":
     cfg["platformIP"] = platform_ip
@@ -720,7 +724,7 @@ if [[ "$DEPLOY_LOCAL" == true ]]; then
 
   TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
   step "writing local taa config from $(basename "$TAA_CONFIG_TEMPLATE")"
-  write_taa_config "$LOCAL_TAA_CONFIG_PATH" "$TAA_CONFIG_TEMPLATE" "$LOCAL_TAA_BIND" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_ID" "$CONTRACT" "$LOCAL_TAA_MODEL_DIR" "$LOCAL_TAA_DATA_DIR" "$LOCAL_TAA_RESULT_DIR" "$OLLAMA_LOCAL_DIR" "$LOCAL_OLLAMA_URL" "$OLLAMA_MODEL" true "$LOCAL_TAA_INPUT_DIR" "$LOCAL_TAA_OUTPUT_DIR"
+  write_taa_config "$LOCAL_TAA_CONFIG_PATH" "$TAA_CONFIG_TEMPLATE" "$LOCAL_TAA_BIND" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_ID" "$CONTRACT" "$LOCAL_TAA_MODEL_DIR" "$LOCAL_TAA_DATA_DIR" "$LOCAL_TAA_RESULT_DIR" "$OLLAMA_LOCAL_DIR" "$LOCAL_OLLAMA_URL" "$OLLAMA_MODEL" true "$LOCAL_TAA_INPUT_DIR" "$LOCAL_TAA_OUTPUT_DIR" "$LOCAL_TAA_KEYS_DIR"
 
   step "starting local taa"
   start_local_background "taa" "$LOCAL_RUN_DIR/taa.pid" "$LOCAL_TAA_LOG_FILE" \
@@ -839,7 +843,7 @@ if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
     TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
     step "writing taa config for local docker from $(basename "$TAA_CONFIG_TEMPLATE")"
     ensure_parent_dir "$LOCAL_DOCKER_CONFIG_SOURCE"
-    write_taa_config "$LOCAL_DOCKER_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" "$TAA_CONTAINER_ADDR" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_CONTAINER" "$CONTRACT" "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" "$CONTAINER_OLLAMA_DIR" "$LOCAL_OLLAMA_URL" "$OLLAMA_MODEL" true "$LOCAL_DOCKER_INPUT_DIR" "$LOCAL_DOCKER_OUTPUT_DIR"
+    write_taa_config "$LOCAL_DOCKER_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" "$TAA_CONTAINER_ADDR" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_CONTAINER" "$CONTRACT" "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" "$CONTAINER_OLLAMA_DIR" "$LOCAL_OLLAMA_URL" "$OLLAMA_MODEL" true "$LOCAL_DOCKER_INPUT_DIR" "$LOCAL_DOCKER_OUTPUT_DIR" "$TAA_CONTAINER_WORKDIR/keys"
     docker cp "$LOCAL_DOCKER_CONFIG_SOURCE" "$LOCAL_DOCKER_CONTAINER:$CONTAINER_TAA_CONFIG_PATH"
 
     step "stopping old taa"
@@ -1015,7 +1019,7 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   if [[ "$DEBUG" == false ]]; then
     INCLUDE_TAA_IDENTITY=false
   fi
-  write_taa_config "$REMOTE_TAA_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" "$TAA_CONTAINER_ADDR" "$REMOTE_PLATFORM_IP" "$REMOTE_DOCKER_ID" "$CONTRACT" "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" "$TAA_CONTAINER_WORKDIR/$OLLAMA_DIR_NAME" "http://127.0.0.1:11434" "$OLLAMA_MODEL" "$INCLUDE_TAA_IDENTITY"
+  write_taa_config "$REMOTE_TAA_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" "$TAA_CONTAINER_ADDR" "$REMOTE_PLATFORM_IP" "$REMOTE_DOCKER_ID" "$CONTRACT" "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" "$TAA_CONTAINER_WORKDIR/$OLLAMA_DIR_NAME" "http://127.0.0.1:11434" "$OLLAMA_MODEL" "$INCLUDE_TAA_IDENTITY" "" "" "$TAA_CONTAINER_WORKDIR/keys"
 
   step "uploading taa, config, and attestation helper to remote host"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TAA_BINARY_PATH" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/$BINARY_NAME.new"
