@@ -69,17 +69,30 @@
     .upload-history-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap; }
     .upload-history-head h3 { margin:0; font-size:16px; }
     .upload-history-head p { margin:0; }
-    .upload-latest { display:flex; gap:8px; align-items:center; }
-    .upload-latest input { flex:1; }
     .upload-empty { padding:14px; border:1px dashed var(--line); border-radius:12px; color:var(--muted); background:rgba(127,127,127,.04); }
-    .upload-item { display:flex; justify-content:space-between; gap:12px; padding:12px 0; border-top:1px solid var(--line); }
-    .upload-item:first-child { border-top:0; padding-top:0; }
-    .upload-item-main { min-width:0; display:flex; flex-direction:column; gap:6px; }
-    .upload-item-title { font-weight:700; line-height:1.45; word-break:break-word; }
+    .upload-item { display:flex; justify-content:space-between; gap:12px; padding:10px 8px; border-top:1px solid var(--line); border-radius:8px; cursor:grab; transition:background 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease; user-select:none; }
+    .upload-item:first-child { border-top:0; }
+    .upload-item:hover { background:rgba(37,99,235,0.05); }
+    .upload-item:active { cursor:grabbing; }
+    .upload-item.dragging { opacity:0.4; background:rgba(37,99,235,0.12); box-shadow:0 4px 12px rgba(0,0,0,0.15); }
+    .upload-item-main { min-width:0; flex:1; display:flex; flex-direction:column; gap:6px; }
+    .upload-item-header { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+    .upload-item-title { font-weight:700; font-size:14px; line-height:1.45; word-break:break-all; display:flex; align-items:center; gap:6px; }
+    .upload-item-time { font-size:14px; font-weight:650; color:#0284c7; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:nowrap; flex-shrink:0; }
+    @media (prefers-color-scheme: dark) {
+      .upload-item-time { color:#38bdf8; }
+    }
     .upload-item-meta { color:var(--muted); font-size:12px; line-height:1.45; word-break:break-word; }
-    .upload-item-url { color:var(--text); font-size:13px; line-height:1.5; word-break:break-all; }
+    .upload-item-url { color:var(--text); font-size:12px; line-height:1.5; word-break:break-all; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; opacity:0.85; }
     .upload-item-actions { flex-shrink:0; display:flex; align-items:center; gap:8px; }
     .upload-item-actions button { white-space:nowrap; padding:6px 10px; font-size:12px; }
+    .drop-zone-card.drag-target-hover { outline:2px dashed #2563eb !important; outline-offset:-2px; background:rgba(37,99,235,0.05) !important; }
+    .drop-zone-card.drop-hint { box-shadow:0 0 0 2px rgba(37,99,235,0.2); }
+    @keyframes flashInputSuccess {
+      0% { background-color:rgba(16,185,129,0.35); box-shadow:0 0 0 3px rgba(16,185,129,0.4); }
+      100% { background-color:transparent; box-shadow:none; }
+    }
+    .input-flash-success { animation:flashInputSuccess 1.2s ease-out; }
     /* Toggle Switch */
     .switch-label { display:inline-flex; align-items:center; gap:8px; cursor:pointer; user-select:none; font-size:13px; font-weight:600; color:var(--text); margin:0; }
     .switch-wrapper { position:relative; width:40px; height:22px; display:inline-block; vertical-align:middle; }
@@ -500,17 +513,10 @@
         <button onclick="uploadFile()">上传文件</button>
       </div>
       <div id="uploadResult" class="test-result"></div>
-      <div id="uploadedUrl" style="margin-top:10px; display:none;">
-        <label>最近上传的 resourceUrl（点击复制）：</label>
-        <div class="upload-latest">
-          <input id="uploadedUrlInput" readonly onclick="copyText(this.value)" style="cursor:pointer; background:rgba(37,99,235,.05);">
-          <button type="button" class="secondary" onclick="copyText(document.getElementById('uploadedUrlInput').value)">复制</button>
-        </div>
-      </div>
       <div class="upload-history">
         <div class="upload-history-head">
           <h3>已上传文件</h3>
-          <p class="muted">点击“复制 URL”即可拿到可访问地址。</p>
+          <p class="muted">支持拖拽文件项至右侧板块自动填入 URL，也可直接点击“复制 URL”。</p>
         </div>
         <div id="uploadedFilesList"></div>
       </div>
@@ -924,35 +930,119 @@ function normalizeUploadedFile(file) {
   };
 }
 
+function onUploadItemDragStart(ev, el) {
+  const url = decodeURIComponent(el.dataset.url || '');
+  if (!url) return;
+  ev.dataTransfer.setData('text/plain', url);
+  ev.dataTransfer.setData('application/x-resource-url', url);
+  ev.dataTransfer.effectAllowed = 'copy';
+  el.classList.add('dragging');
+  document.querySelectorAll('.drop-zone-card').forEach(card => card.classList.add('drop-hint'));
+}
+
+function onUploadItemDragEnd(ev, el) {
+  el.classList.remove('dragging');
+  document.querySelectorAll('.drop-zone-card').forEach(card => {
+    card.classList.remove('drop-hint');
+    card.classList.remove('drag-target-hover');
+  });
+}
+
+function setupResourceUrlDropZones() {
+  const dropTargets = [
+    { cardId: 'card-importModel', inputId: 'importModelResourceUrl' },
+    { cardId: 'card-import', inputId: 'importResourceUrl' },
+    { cardId: 'card-resourceInfo', inputId: 'resourceInfoUrl' },
+  ];
+
+  dropTargets.forEach(({ cardId, inputId }) => {
+    const card = document.getElementById(cardId);
+    const input = document.getElementById(inputId);
+    if (!card || !input) return;
+
+    card.classList.add('drop-zone-card');
+
+    card.addEventListener('dragover', (ev) => {
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = 'copy';
+      card.classList.add('drag-target-hover');
+    });
+
+    card.addEventListener('dragleave', (ev) => {
+      if (!card.contains(ev.relatedTarget)) {
+        card.classList.remove('drag-target-hover');
+      }
+    });
+
+    const handleDrop = (ev) => {
+      ev.preventDefault();
+      card.classList.remove('drag-target-hover');
+      card.classList.remove('drop-hint');
+      const url = ev.dataTransfer.getData('application/x-resource-url') || ev.dataTransfer.getData('text/plain') || '';
+      if (url && url.trim()) {
+        input.value = url.trim();
+        input.classList.remove('input-flash-success');
+        void input.offsetWidth;
+        input.classList.add('input-flash-success');
+        setTimeout(() => input.classList.remove('input-flash-success'), 1200);
+      }
+    };
+
+    card.addEventListener('drop', handleDrop);
+    input.addEventListener('dragover', (ev) => {
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = 'copy';
+      card.classList.add('drag-target-hover');
+    });
+    input.addEventListener('drop', (ev) => {
+      ev.stopPropagation();
+      handleDrop(ev);
+    });
+  });
+}
+
 function renderUploadedFiles(files) {
   uploadedFiles = Array.isArray(files) ? files.slice() : [];
   const countEl = document.getElementById('uploadedFilesCount');
   const listEl = document.getElementById('uploadedFilesList');
-  const latestWrap = document.getElementById('uploadedUrl');
-  const latestInput = document.getElementById('uploadedUrlInput');
   if (countEl) countEl.textContent = `${uploadedFiles.length} 个文件`;
   if (!listEl) return;
 
   if (!uploadedFiles.length) {
-    if (latestWrap) latestWrap.style.display = 'none';
-    if (latestInput) latestInput.value = '';
     listEl.innerHTML = '<div class="upload-empty">暂无上传文件，上传后会自动保存到这里。</div>';
     return;
   }
 
-  const latest = uploadedFiles[0];
-  if (latestWrap) latestWrap.style.display = 'block';
-  if (latestInput) latestInput.value = latest.url || '';
-
-  listEl.innerHTML = uploadedFiles.map(file => {
+  listEl.innerHTML = uploadedFiles.map((file, index) => {
     const originalName = escapeHtml(file.originalName || file.filename || '未命名文件');
     const filename = escapeHtml(file.filename || '-');
     const rawFilename = file.filename || '';
-    const url = escapeHtml(file.url || '');
+    const rawUrl = file.url || '';
+    const url = escapeHtml(rawUrl);
     const uploadedAt = escapeHtml(formatUploadTime(file.uploadedAt));
     const size = escapeHtml(formatUploadSize(file.size));
-    const encBadge = (file.encrypted || (file.originalName && file.originalName.toLowerCase().endsWith('.enc')) || (file.filename && file.filename.toLowerCase().endsWith('.enc'))) ? '<span class="badge ok" style="margin-left:6px; font-size:11px; padding:2px 6px;">已加密</span>' : '';
-    return `<div class="upload-item"><div class="upload-item-main"><div class="upload-item-title">${originalName}${encBadge}</div><div class="upload-item-meta">保存名 ${filename} · ${size} · ${uploadedAt}</div><div class="upload-item-url">${url}</div></div><div class="upload-item-actions"><button type="button" class="danger" data-filename="${encodeURIComponent(rawFilename)}" onclick="deleteUploadedFile(decodeURIComponent(this.dataset.filename))">删除</button><button type="button" class="secondary" data-url="${encodeURIComponent(file.url || '')}" onclick="copyText(decodeURIComponent(this.dataset.url))">复制 URL</button></div></div>`;
+    const isLatest = index === 0;
+    const latestBadge = isLatest ? '<span class="badge info" style="margin-left:4px; font-size:11px; padding:1px 5px; font-weight:600;">最新</span>' : '';
+    const encBadge = (file.encrypted || (file.originalName && file.originalName.toLowerCase().endsWith('.enc')) || (file.filename && file.filename.toLowerCase().endsWith('.enc'))) ? '<span class="badge ok" style="margin-left:4px; font-size:11px; padding:1px 5px;">已加密</span>' : '';
+    return `<div class="upload-item" draggable="true" data-url="${encodeURIComponent(rawUrl)}" ondragstart="onUploadItemDragStart(event, this)" ondragend="onUploadItemDragEnd(event, this)" title="按住拖拽至「下发模型」或「下发数据」可自动填入 resourceUrl">` +
+      `<div class="upload-item-main">` +
+        `<div class="upload-item-header">` +
+          `<div class="upload-item-title">` +
+            `<span style="cursor:grab; opacity:0.5; font-size:14px; user-select:none;" title="按住拖拽">⋮⋮</span>` +
+            `<span>${originalName}</span>` +
+            latestBadge +
+            encBadge +
+          `</div>` +
+          `<span class="upload-item-time" title="上传时间">${uploadedAt}</span>` +
+        `</div>` +
+        `<div class="upload-item-meta">保存名 ${filename} · ${size}</div>` +
+        `<div class="upload-item-url">${url}</div>` +
+      `</div>` +
+      `<div class="upload-item-actions">` +
+        `<button type="button" class="danger" data-filename="${encodeURIComponent(rawFilename)}" onclick="deleteUploadedFile(decodeURIComponent(this.dataset.filename))">删除</button>` +
+        `<button type="button" class="secondary" data-url="${encodeURIComponent(rawUrl)}" onclick="copyText(decodeURIComponent(this.dataset.url))">复制 URL</button>` +
+      `</div>` +
+    `</div>`;
   }).join('');
 }
 
@@ -989,8 +1079,6 @@ async function refreshUploadedFiles() {
     if (uploadedFiles.length === 0) {
       const listEl = document.getElementById('uploadedFilesList');
       if (listEl) listEl.innerHTML = `<div class="upload-empty">加载上传历史失败：${escapeHtml(String(err))}</div>`;
-      const latestWrap = document.getElementById('uploadedUrl');
-      if (latestWrap) latestWrap.style.display = 'none';
       const countEl = document.getElementById('uploadedFilesCount');
       if (countEl) countEl.textContent = '加载失败';
     }
@@ -2704,6 +2792,7 @@ function updateLogInterval() {
 
 // ── 初始化 ─────────────────────────────────
 detectTAAProxy();
+setupResourceUrlDropZones();
 refreshUploadedFiles();
 refreshStatus();
 refreshReportResStatus();
