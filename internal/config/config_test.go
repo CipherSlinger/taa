@@ -106,6 +106,9 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if cfg.ModelOutputDir != "/opt/taa/output" {
 		t.Fatalf("ModelOutputDir = %q, want default", cfg.ModelOutputDir)
 	}
+	if cfg.KeysDir != "/opt/taa/keys" {
+		t.Fatalf("KeysDir = %q, want default", cfg.KeysDir)
+	}
 	if !cfg.EnableLLM {
 		t.Fatalf("EnableLLM = false, want default true")
 	}
@@ -120,6 +123,21 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	}
 	if !cfg.LLMFailClosed {
 		t.Fatalf("LLMFailClosed = false, want default true")
+	}
+}
+
+func TestLoadStartupConfigReadsKeysDir(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"keysDir": ".local/taa/keys"
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+	if cfg.KeysDir != ".local/taa/keys" {
+		t.Fatalf("KeysDir = %q, want file value", cfg.KeysDir)
 	}
 }
 

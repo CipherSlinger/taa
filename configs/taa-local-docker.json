@@ -10,6 +10,7 @@
   "resultDir": "/root/taa/results",
   "modelInputDir": "/opt/taa/input",
   "modelOutputDir": "/opt/taa/output",
+  "keysDir": "/opt/taa/keys",
   "llm": {
     "enabled": true,
     "endpoint": "http://127.0.0.1:11434",

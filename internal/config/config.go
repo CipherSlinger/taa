@@ -20,6 +20,7 @@ type StartupConfig struct {
 	ResultDir          string
 	ModelInputDir      string
 	ModelOutputDir     string
+	KeysDir            string
 	EnableLLM          bool
 	LLMEndpoint        string
 	LLMModel           string
@@ -40,6 +41,7 @@ type startupConfigFile struct {
 	ResultDir          string               `json:"resultDir"`
 	ModelInputDir      string               `json:"modelInputDir"`
 	ModelOutputDir     string               `json:"modelOutputDir"`
+	KeysDir            string               `json:"keysDir"`
 	LLM                startupLLMConfigFile `json:"llm"`
 }
 
@@ -82,6 +84,7 @@ func defaultStartupConfig() StartupConfig {
 		ResultDir:          "/opt/taa/results",
 		ModelInputDir:      "/opt/taa/input",
 		ModelOutputDir:     "/opt/taa/output",
+		KeysDir:            "/opt/taa/keys",
 		EnableLLM:          true,
 		LLMEndpoint:        "http://127.0.0.1:11434",
 		LLMModel:           "qwen2.5-coder:0.5b",
@@ -123,6 +126,9 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if fileCfg.ModelOutputDir != "" {
 		cfg.ModelOutputDir = fileCfg.ModelOutputDir
+	}
+	if fileCfg.KeysDir != "" {
+		cfg.KeysDir = fileCfg.KeysDir
 	}
 	if fileCfg.LLM.Enabled != nil {
 		cfg.EnableLLM = *fileCfg.LLM.Enabled

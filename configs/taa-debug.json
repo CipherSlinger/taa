@@ -8,6 +8,7 @@
   "resultCheck": true,
   "dataDir": "/root/taadebug/data",
   "resultDir": "/root/taadebug/results",
+  "keysDir": "/root/taadebug/keys",
   "llm": {
     "enabled": true,
     "endpoint": "http://127.0.0.1:11434",
