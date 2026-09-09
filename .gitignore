@@ -17,3 +17,4 @@ models/audit/ollama-qwen2.5-coder-1.5b/
 models/audit/benchmarks/
 
 sdk/
+*.tar.gz

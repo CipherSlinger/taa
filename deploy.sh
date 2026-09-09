@@ -373,6 +373,12 @@ stop_pidfile() {
   fi
 }
 
+stop_selected_local_processes() {
+  [[ "$DEPLOY_TAA" == true ]] && stop_pidfile "taa" "$LOCAL_RUN_DIR/taa.pid"
+  [[ "$DEPLOY_PLATFORM_MOCK" == true ]] && stop_pidfile "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid"
+  [[ "$DEPLOY_QWEN" == true ]] && stop_pidfile "ollama" "$LOCAL_RUN_DIR/ollama.pid"
+}
+
 start_local_background() {
   local name="$1"
   local pidfile="$2"
@@ -626,21 +632,11 @@ if [[ "$ACTION" == "stop" ]]; then
   banner "Stopping Services"
   if [[ "$DEPLOY_LOCAL" == true || ("$DEPLOY_LOCAL_DOCKER" == false && "$DOCKER_ARG" == false && "$DEPLOY_MODE" != "docker" && "$DEPLOY_MODE" != "k8s") ]]; then
     step "stopping local processes"
-    if [[ "$SELECTED_COMPONENT" == true && ("$DEPLOY_TAA" == true || "$DEPLOY_PLATFORM_MOCK" == true || "$DEPLOY_QWEN" == true) && ("$DEPLOY_TAA" == false || "$DEPLOY_PLATFORM_MOCK" == false || "$DEPLOY_QWEN" == false) ]]; then
-      [[ "$DEPLOY_TAA" == true ]] && stop_pidfile "taa" "$LOCAL_RUN_DIR/taa.pid"
-      [[ "$DEPLOY_PLATFORM_MOCK" == true ]] && stop_pidfile "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid"
-      [[ "$DEPLOY_QWEN" == true ]] && stop_pidfile "ollama" "$LOCAL_RUN_DIR/ollama.pid"
-    else
-      stop_pidfile "taa" "$LOCAL_RUN_DIR/taa.pid"
-      stop_pidfile "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid"
-      stop_pidfile "ollama" "$LOCAL_RUN_DIR/ollama.pid"
-    fi
+    stop_selected_local_processes
   fi
   if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
     step "stopping local-docker processes"
-    stop_pidfile "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid"
-    stop_pidfile "taa" "$LOCAL_RUN_DIR/taa.pid"
-    stop_pidfile "ollama" "$LOCAL_RUN_DIR/ollama.pid"
+    stop_selected_local_processes
   fi
   info "all target services stopped cleanly"
   exit 0
