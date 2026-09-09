@@ -2,6 +2,9 @@ app
 .git
 .cache
 .claude
+.local
+models
+bin
 docs
 README.md
 test_hello.sh

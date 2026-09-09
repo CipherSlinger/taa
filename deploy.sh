@@ -128,7 +128,13 @@ LOCAL_OLLAMA_LOG_FILE="${LOCAL_OLLAMA_LOG_FILE:-$PROJECT_DIR/.local/logs/ollama.
 LOCAL_OLLAMA_URL="${LOCAL_OLLAMA_URL:-http://${OLLAMA_HOST}}"
 LOCAL_DOCKER_ID="${LOCAL_DOCKER_ID:-127.0.0.1}"
 LOCAL_DOCKER_CONTAINER="${LOCAL_DOCKER_CONTAINER:-$TARGET_CONTAINER}"
-LOCAL_DOCKER_IMAGE="${LOCAL_DOCKER_IMAGE:-ubuntu:22.04}"
+if [[ -z "${LOCAL_DOCKER_IMAGE:-}" ]]; then
+  if docker image inspect taa-env-slim:latest >/dev/null 2>&1; then
+    LOCAL_DOCKER_IMAGE="taa-env-slim:latest"
+  else
+    LOCAL_DOCKER_IMAGE="ubuntu:22.04"
+  fi
+fi
 LOCAL_DOCKER_NETWORK="${LOCAL_DOCKER_NETWORK:-host}"
 FORCE_QWEN_COPY="${FORCE_QWEN_COPY:-false}"
 
@@ -222,7 +228,7 @@ Environment overrides:
   LOCAL_DOCKER_CONTAINER=${LOCAL_DOCKER_CONTAINER}
       本地 Docker 目标容器名称（默认复用 TARGET_CONTAINER，如 taa-env-slim-v2）。
   LOCAL_DOCKER_IMAGE=${LOCAL_DOCKER_IMAGE}
-      本地 Docker 基础镜像（默认 ubuntu:22.04）。
+      本地 Docker 基础镜像（默认优先使用 taa-env-slim:latest，未构建时使用 ubuntu:22.04）。
   LOCAL_DOCKER_NETWORK=${LOCAL_DOCKER_NETWORK}
       本地 Docker 容器网络模式（默认 host）。
   FORCE_QWEN_COPY=${FORCE_QWEN_COPY}

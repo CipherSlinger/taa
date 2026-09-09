@@ -1,0 +1,44 @@
+# 标准 TAA 基础运行环境镜像
+# 基于 Ubuntu 22.04 LTS，预置 Python3 运行时环境与基础系统工具，
+# 适用于 TAA 本地容器化测试（local-docker）及容器化运行环境（taa-env-slim）。
+
+FROM ubuntu:22.04
+
+LABEL maintainer="OSR TEE Team" \
+      description="Standard base runtime environment for TAA with Python3 and basic system tools"
+
+# 避免 apt-get 交互提示
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# 安装 Python3 运行时、包管理及常用系统调试与运维工具
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-dev \
+    tar \
+    curl \
+    ca-certificates \
+    procps \
+    net-tools \
+    iproute2 \
+    && ln -sf /usr/bin/python3 /usr/bin/python \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建标准工作目录与数据/暂存目录结构
+RUN mkdir -p /root/taa/models \
+             /root/taa/data \
+             /root/taa/results \
+             /root/taa/attestation \
+             /opt/taa/input \
+             /opt/taa/output \
+             /taatest
+
+WORKDIR /root/taa
+
+# 暴露 TAA 核心服务端口 (6001) 与 Ollama 大模型审计服务端口 (11434)
+EXPOSE 6001 11434
+
+# 默认常驻运行，供 deploy.sh 部署与测试编排
+CMD ["tail", "-f", "/dev/null"]
