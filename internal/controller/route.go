@@ -140,6 +140,20 @@ func (s *TAAState) getDataChecksum() map[string]any {
 	return out
 }
 
+func (s *TAAState) getTAAPublicKeyPEM() string {
+	s.mu.RLock()
+	priv := s.SM2PrivateKey
+	s.mu.RUnlock()
+	if priv == nil {
+		return ""
+	}
+	pubPEM, err := teecrypto.MarshalSM2PublicKeyPEM(&priv.PublicKey)
+	if err != nil {
+		return ""
+	}
+	return string(pubPEM)
+}
+
 func NewTAAState(attestationFile, platformIP, dockerID, helperPath, helperMode string, sm2Key *teecrypto.SM2PrivateKey, userData []byte, sec SecurityConfig) *TAAState {
 	return &TAAState{
 		CurrentPhase:    1,

@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func createTestZip(t *testing.T, files map[string]string) []byte {
@@ -147,6 +148,9 @@ func TestResolvePlaintextResource(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "解密资源失败") {
 		t.Errorf("case 2 want '解密资源失败', got: %v", err)
 	}
+	if err == nil || !strings.Contains(err.Error(), "taaPublicKey:") || !strings.Contains(err.Error(), "-----BEGIN PUBLIC KEY-----") {
+		t.Errorf("case 2 want taaPublicKey in error, got: %v", err)
+	}
 
 	// Case 3: URL 非 .enc 后缀，文件为有效明文压缩包 -> 跳过解密，直接返回原路径，isDecrypted=false
 	plainFilePath := filepath.Join(tmpDir, "data.tar.gz")
@@ -190,6 +194,9 @@ func TestResolvePlaintextResource(t *testing.T) {
 	_, _, err = state.resolvePlaintextResource("http://example.com/plain.txt", invalidPath, "test")
 	if err == nil || !strings.Contains(err.Error(), "资源非 .enc 后缀且非有效压缩包，尝试解密失败") {
 		t.Errorf("case 5 want '资源非 .enc 后缀且非有效压缩包，尝试解密失败', got: %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "taaPublicKey:") || !strings.Contains(err.Error(), "-----BEGIN PUBLIC KEY-----") {
+		t.Errorf("case 5 want taaPublicKey in error, got: %v", err)
 	}
 }
 
@@ -236,5 +243,85 @@ func TestResourceInfoHandlerDecryptsWithoutEncSuffix(t *testing.T) {
 	}
 	if report["tree"] == nil {
 		t.Fatalf("result missing tree: %#v", report)
+	}
+}
+
+func TestResourceInfoHandlerDecryptFailureReturnsPublicKey(t *testing.T) {
+	state, server := setupTestServer(t)
+
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write([]byte("broken-sealed-ciphertext"))
+	}))
+	defer fileServer.Close()
+
+	body := map[string]string{"resourceUrl": fileServer.URL + "/dataset.tar.gz.enc"}
+	resp := postJSON(t, server.URL+"/v1/taa/getResourceInfo", body)
+	api := decodeResponse(t, resp)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; msg=%s", resp.StatusCode, api.Msg)
+	}
+	if !strings.Contains(api.Msg, "解密资源失败") {
+		t.Fatalf("msg missing '解密资源失败', got: %s", api.Msg)
+	}
+	if !strings.Contains(api.Msg, "taaPublicKey:") || !strings.Contains(api.Msg, "-----BEGIN PUBLIC KEY-----") {
+		t.Fatalf("msg missing taaPublicKey, got: %s", api.Msg)
+	}
+	_ = state
+}
+
+func TestDataImportDecryptFailureReportsPublicKey(t *testing.T) {
+	state, server := setupTestServer(t)
+
+	type reportPayload struct {
+		Code   int     `json:"code"`
+		Msg    *string `json:"msg"`
+		Report string  `json:"report"`
+	}
+	reportResCh := make(chan reportPayload, 1)
+	platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/taa/reportRes" {
+			var payload reportPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode report payload: %v", err)
+			}
+			reportResCh <- payload
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer platformServer.Close()
+
+	state.mu.Lock()
+	state.PlatformIP = platformServer.URL
+	state.mu.Unlock()
+
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("broken-data-cipher"))
+	}))
+	defer fileServer.Close()
+
+	resp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+		"resourceUrl": fileServer.URL + "/data.tar.gz.enc",
+		"requestId":   "req-data-decrypt-fail",
+		"taskId":      "task-data-decrypt-fail",
+	})
+	api := decodeResponse(t, resp)
+	if resp.StatusCode != http.StatusOK || api.Error != 0 {
+		t.Fatalf("import data: expected 200/0, got %d/%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+	}
+
+	select {
+	case payload := <-reportResCh:
+		if payload.Code != 1 {
+			t.Fatalf("reportRes code = %d, want 1", payload.Code)
+		}
+		if payload.Msg == nil || !strings.Contains(*payload.Msg, "解密资源失败") {
+			t.Fatalf("reportRes msg = %v, want decrypt failure", payload.Msg)
+		}
+		if !strings.Contains(*payload.Msg, "taaPublicKey:") || !strings.Contains(*payload.Msg, "-----BEGIN PUBLIC KEY-----") {
+			t.Fatalf("reportRes msg missing taaPublicKey, got: %v", *payload.Msg)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for data import failure report")
 	}
 }

@@ -428,6 +428,9 @@ func (s *TAAState) resolvePlaintextResource(resourceURL, downloadedPath, logScop
 		decryptedPath, err := s.decryptResourceToTempFile(downloadedPath)
 		if err != nil {
 			s.Logs.Add(LogError, logScope, "解密失败: %v", err)
+			if pubKey := s.getTAAPublicKeyPEM(); pubKey != "" {
+				return "", false, fmt.Errorf("解密资源失败: %w, taaPublicKey: %s", err, pubKey)
+			}
 			return "", false, fmt.Errorf("解密资源失败: %w", err)
 		}
 		s.Logs.Add(LogInfo, logScope, "解密成功 -> %s", decryptedPath)
@@ -448,6 +451,9 @@ func (s *TAAState) resolvePlaintextResource(resourceURL, downloadedPath, logScop
 	decryptedPath, err := s.decryptResourceToTempFile(downloadedPath)
 	if err != nil {
 		s.Logs.Add(LogError, logScope, "尝试解密失败: %v", err)
+		if pubKey := s.getTAAPublicKeyPEM(); pubKey != "" {
+			return "", false, fmt.Errorf("资源非 .enc 后缀且非有效压缩包，尝试解密失败: %w, taaPublicKey: %s", err, pubKey)
+		}
 		return "", false, fmt.Errorf("资源非 .enc 后缀且非有效压缩包，尝试解密失败: %w", err)
 	}
 	s.Logs.Add(LogInfo, logScope, "尝试解密成功 -> %s", decryptedPath)

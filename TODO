@@ -1,6 +1,6 @@
-2. 模型方进度管控
-3. taa 意外崩掉（私钥如何处理），使用sealing key加密保存
-4. 只支持python 正则匹配，修改为使用 semgrep 扫描
+1. 模型方进度管控
+2. taa 意外崩掉（私钥如何处理），使用sealing key加密保存
+3. 只支持python 正则匹配，修改为使用 semgrep 扫描
 
 
 ### 5.3 临时文件权限过于宽松 [MEDIUM]
