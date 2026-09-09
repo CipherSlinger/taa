@@ -60,17 +60,25 @@ const (
 )
 
 func (sec SecurityConfig) GetModelInputDir() string {
+	dir := DefaultModelInputDir
 	if strings.TrimSpace(sec.ModelInputDir) != "" {
-		return sec.ModelInputDir
+		dir = sec.ModelInputDir
 	}
-	return DefaultModelInputDir
+	if abs, err := filepath.Abs(dir); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(dir)
 }
 
 func (sec SecurityConfig) GetModelOutputDir() string {
+	dir := DefaultModelOutputDir
 	if strings.TrimSpace(sec.ModelOutputDir) != "" {
-		return sec.ModelOutputDir
+		dir = sec.ModelOutputDir
 	}
-	return DefaultModelOutputDir
+	if abs, err := filepath.Abs(dir); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(dir)
 }
 
 type TAAState struct {

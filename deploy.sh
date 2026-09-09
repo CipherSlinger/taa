@@ -15,7 +15,7 @@ NC='\033[0m' # No Color
 
 # Kubernetes 目标：默认部署到 osr 命名空间下的指定 TAA Pod。
 TARGET_NAMESPACE="${TARGET_NAMESPACE:-osr}"
-TARGET_POD="${TARGET_POD:-taa-env-slim-v2-20260906-09bd9031aeec03fd-5bf7955d4-7bpc2}"
+TARGET_POD="${TARGET_POD:-taa-env-slim-v2-20260906-800277a02e047abd-dfbd65cd-zst7g}"
 
 # 项目与远程宿主机：本地源码目录、SSH 登录信息和远程工作目录。
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -66,6 +66,7 @@ TAA_CONTAINER_ADDR="${TAA_CONTAINER_ADDR:-:${CON_PORT}}"
 # TAA 程序固定读取工作目录下的 taa-config.json，脚本侧文件名必须保持一致。
 TAA_CONFIG_FILE="taa-config.json"
 TAA_LOCAL_CONFIG_TEMPLATE="${TAA_LOCAL_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-local.json}"
+TAA_LOCAL_DOCKER_CONFIG_TEMPLATE="${TAA_LOCAL_DOCKER_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-local-docker.json}"
 TAA_DEBUG_CONFIG_TEMPLATE="${TAA_DEBUG_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-debug.json}"
 TAA_PRODUCTION_CONFIG_TEMPLATE="${TAA_PRODUCTION_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-production.json}"
 REMOTE_TAA_CONFIG_PATH="${REMOTE_TAA_CONFIG_PATH:-$REMOTE_DIR/$TAA_CONFIG_FILE}"
@@ -134,6 +135,8 @@ LOCAL_DOCKER_CONTAINER="${LOCAL_DOCKER_CONTAINER:-$TARGET_CONTAINER}"
 LOCAL_DOCKER_IMAGE_ARCHIVE="${LOCAL_DOCKER_IMAGE_ARCHIVE:-$PROJECT_DIR/deploy/taa-env-slim-v2.tar.gz}"
 LOCAL_DOCKER_IMAGE="${LOCAL_DOCKER_IMAGE:-taa-env:slim-v2}"
 LOCAL_DOCKER_NETWORK="${LOCAL_DOCKER_NETWORK:-host}"
+LOCAL_DOCKER_INPUT_DIR="${LOCAL_DOCKER_INPUT_DIR:-/opt/taa/input}"
+LOCAL_DOCKER_OUTPUT_DIR="${LOCAL_DOCKER_OUTPUT_DIR:-/opt/taa/output}"
 FORCE_QWEN_COPY="${FORCE_QWEN_COPY:-false}"
 
 banner() {
@@ -311,6 +314,8 @@ Environment overrides:
       写入 TAA 配置文件的容器内监听地址与端口。
   TAA_LOCAL_CONFIG_TEMPLATE=${TAA_LOCAL_CONFIG_TEMPLATE}
       local 场景 TAA 配置模板。
+  TAA_LOCAL_DOCKER_CONFIG_TEMPLATE=${TAA_LOCAL_DOCKER_CONFIG_TEMPLATE}
+      local-docker 场景 TAA 配置模板。
   TAA_DEBUG_CONFIG_TEMPLATE=${TAA_DEBUG_CONFIG_TEMPLATE}
       debug 场景 TAA 配置模板。
   TAA_PRODUCTION_CONFIG_TEMPLATE=${TAA_PRODUCTION_CONFIG_TEMPLATE}
@@ -436,7 +441,9 @@ require_command() {
 }
 
 select_taa_config_template() {
-  if [[ "$DEPLOY_LOCAL" == true || "$DEPLOY_LOCAL_DOCKER" == true ]]; then
+  if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
+    printf '%s' "$TAA_LOCAL_DOCKER_CONFIG_TEMPLATE"
+  elif [[ "$DEPLOY_LOCAL" == true ]]; then
     printf '%s' "$TAA_LOCAL_CONFIG_TEMPLATE"
   elif [[ "$DEBUG" == true ]]; then
     printf '%s' "$TAA_DEBUG_CONFIG_TEMPLATE"
@@ -769,7 +776,7 @@ if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
   # 3. 部署 taa 进本地容器
   if [[ "$DEPLOY_TAA" == true ]]; then
     step "preparing runtime directories inside container"
-    docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR/models' '$TAA_CONTAINER_WORKDIR/data' '$TAA_CONTAINER_WORKDIR/results' '$TAA_CONTAINER_WORKDIR/attestation'"
+    docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR/models' '$TAA_CONTAINER_WORKDIR/data' '$TAA_CONTAINER_WORKDIR/results' '$TAA_CONTAINER_WORKDIR/attestation' '$LOCAL_DOCKER_INPUT_DIR' '$LOCAL_DOCKER_OUTPUT_DIR'"
 
     step "copying taa binary, attestation helper, and certificates into container"
     docker cp "$TAA_BINARY_PATH" "$LOCAL_DOCKER_CONTAINER:$TAA_CONTAINER_WORKDIR/$BINARY_NAME"
@@ -786,7 +793,7 @@ if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
     TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
     step "writing taa config for local docker from $(basename "$TAA_CONFIG_TEMPLATE")"
     ensure_parent_dir "$LOCAL_DOCKER_CONFIG_SOURCE"
-    write_taa_config "$LOCAL_DOCKER_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" "$TAA_CONTAINER_ADDR" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_CONTAINER" "$CONTRACT" "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" "$CONTAINER_OLLAMA_DIR" "$LOCAL_OLLAMA_URL" "$OLLAMA_MODEL" true
+    write_taa_config "$LOCAL_DOCKER_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" "$TAA_CONTAINER_ADDR" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_CONTAINER" "$CONTRACT" "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" "$CONTAINER_OLLAMA_DIR" "$LOCAL_OLLAMA_URL" "$OLLAMA_MODEL" true "$LOCAL_DOCKER_INPUT_DIR" "$LOCAL_DOCKER_OUTPUT_DIR"
     docker cp "$LOCAL_DOCKER_CONFIG_SOURCE" "$LOCAL_DOCKER_CONTAINER:$CONTAINER_TAA_CONFIG_PATH"
 
     step "stopping old taa"
