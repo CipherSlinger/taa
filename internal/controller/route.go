@@ -1056,6 +1056,12 @@ func parseRuntimeConfig(raw string) (runtimeConfig, map[string]string, error) {
 
 func newInOutReplacer(dataDir, outputDir string) *strings.Replacer {
 	return strings.NewReplacer(
+		DefaultModelInputDir, dataDir,
+		DefaultModelOutputDir, outputDir,
+		"<input>", dataDir,
+		"<output>", outputDir,
+		"<INPUT>", dataDir,
+		"<OUTPUT>", outputDir,
 		"<in>", dataDir,
 		"<out>", outputDir,
 		"<IN>", dataDir,
@@ -1097,10 +1103,13 @@ func runRuntimeConfig(cfg runtimeConfig, env map[string]string, modelDir, dataDi
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", commandLine)
 	cmd.Dir = modelDir
 	cmd.Env = mergedRuntimeEnv(resolveRuntimeEnv(env, dataDir, outputDir), map[string]string{
-		"TAA_TASK_ID":    taskID,
-		"TAA_STARTED_AT": startedAt,
-		"TAA_DATA_DIR":   dataDir,
-		"TAA_OUTPUT_DIR": outputDir,
+		"TAA_TASK_ID":          taskID,
+		"TAA_STARTED_AT":       startedAt,
+		"TAA_DATA_DIR":         dataDir,
+		"TAA_INPUT_DIR":        dataDir,
+		"TAA_MODEL_INPUT_DIR":  dataDir,
+		"TAA_MODEL_OUTPUT_DIR": outputDir,
+		"TAA_OUTPUT_DIR":       outputDir,
 	})
 
 	output, err := cmd.CombinedOutput()
