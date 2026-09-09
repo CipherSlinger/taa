@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 const DefaultFileName = "taa-config.json"
@@ -127,8 +128,8 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	if fileCfg.ModelOutputDir != "" {
 		cfg.ModelOutputDir = fileCfg.ModelOutputDir
 	}
-	if fileCfg.KeysDir != "" {
-		cfg.KeysDir = fileCfg.KeysDir
+	if strings.TrimSpace(fileCfg.KeysDir) != "" {
+		cfg.KeysDir = strings.TrimSpace(fileCfg.KeysDir)
 	}
 	if fileCfg.LLM.Enabled != nil {
 		cfg.EnableLLM = *fileCfg.LLM.Enabled

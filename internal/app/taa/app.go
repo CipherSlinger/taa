@@ -247,11 +247,42 @@ func isOllamaReady(endpoint, model string) bool {
 // 密码学密钥对与 TEE 度量 UserData 生成
 // ============================================================================
 
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open dir for sync: %w", err)
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		return fmt.Errorf("fsync dir: %w", err)
+	}
+	return nil
+}
+
+// checkKeyFileExists 检查指定路径的密钥文件是否存在。若发生权限错误、I/O 错误或目标为目录，
+// 严格返回错误（Fail-Closed），避免将异常状态误判为文件不存在而触发非预期的重新生成覆盖。
+func checkKeyFileExists(path string) (bool, error) {
+	st, err := os.Stat(path)
+	if err == nil {
+		if st.IsDir() {
+			return false, fmt.Errorf("expected key file but found directory: %s", path)
+		}
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("stat key file %s: %w", path, err)
+}
+
 // writeKeyFileAtomic 使用临时文件+fsync+原子重命名的方式安全写入密钥文件，并严格设置指定权限
 func writeKeyFileAtomic(targetPath string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(targetPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("ensure key dir %s: %w", dir, err)
+	}
+	if fi, err := os.Stat(dir); err == nil && fi.Mode().Perm() != 0o700 {
+		_ = os.Chmod(dir, 0o700)
 	}
 
 	tmpFile, err := os.CreateTemp(dir, ".tmp-key-*")
@@ -259,37 +290,49 @@ func writeKeyFileAtomic(targetPath string, data []byte, perm os.FileMode) error 
 		return fmt.Errorf("create temp key file in %s: %w", dir, err)
 	}
 	tmpPath := tmpFile.Name()
-	cleanup := true
+
+	cleanupNeeded := true
 	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
+		if cleanupNeeded {
+			if rmErr := os.Remove(tmpPath); rmErr != nil && !os.IsNotExist(rmErr) {
+				log.Printf("ERROR: failed to clean up temporary key file %s: %v", tmpPath, rmErr)
+			}
 		}
 	}()
 
-	if err := tmpFile.Chmod(perm); err != nil {
-		_ = tmpFile.Close()
-		return fmt.Errorf("set permissions on %s: %w", tmpPath, err)
-	}
+	isClosed := false
+	defer func() {
+		if !isClosed {
+			_ = tmpFile.Close()
+		}
+	}()
 
 	if _, err := tmpFile.Write(data); err != nil {
-		_ = tmpFile.Close()
 		return fmt.Errorf("write key data to %s: %w", tmpPath, err)
 	}
 
+	if err := tmpFile.Chmod(perm); err != nil {
+		return fmt.Errorf("set permissions on %s: %w", tmpPath, err)
+	}
+
 	if err := tmpFile.Sync(); err != nil {
-		_ = tmpFile.Close()
 		return fmt.Errorf("fsync key file %s: %w", tmpPath, err)
 	}
 
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("close key file %s: %w", tmpPath, err)
 	}
+	isClosed = true
 
 	if err := os.Rename(tmpPath, targetPath); err != nil {
 		return fmt.Errorf("atomic rename %s to %s: %w", tmpPath, targetPath, err)
 	}
 
-	cleanup = false
+	if err := syncDir(dir); err != nil {
+		log.Printf("WARNING: fsync parent dir %s: %v", dir, err)
+	}
+
+	cleanupNeeded = false
 	return nil
 }
 
@@ -308,14 +351,25 @@ func loadOrGenerateTAAKeyPair(keysDir string) (*taaKeyPair, bool, error) {
 	privPath := filepath.Join(cleanDir, defaultSM2PrivateKeyFile)
 	pubPath := filepath.Join(cleanDir, defaultSM2PublicKeyFile)
 
-	privStat, privErr := os.Stat(privPath)
-	pubStat, pubErr := os.Stat(pubPath)
-
-	privExists := privErr == nil && !privStat.IsDir()
-	pubExists := pubErr == nil && !pubStat.IsDir()
+	privExists, err := checkKeyFileExists(privPath)
+	if err != nil {
+		return nil, false, err
+	}
+	pubExists, err := checkKeyFileExists(pubPath)
+	if err != nil {
+		return nil, false, err
+	}
 
 	// 1. 两个文件均存在：加载并校验一致性
 	if privExists && pubExists {
+		// 防御性安全加固：若私钥或密钥目录权限被外部篡改，在加载时自动收紧权限
+		if privStat, err := os.Stat(privPath); err == nil && privStat.Mode().Perm() != 0o600 {
+			_ = os.Chmod(privPath, 0o600)
+		}
+		if dirStat, err := os.Stat(cleanDir); err == nil && dirStat.Mode().Perm() != 0o700 {
+			_ = os.Chmod(cleanDir, 0o700)
+		}
+
 		privData, err := os.ReadFile(privPath)
 		if err != nil {
 			return nil, false, fmt.Errorf("read private key file %s: %w", privPath, err)
@@ -419,9 +473,14 @@ func deriveUserData(pub *teecrypto.SM2PublicKey) ([]byte, error) {
 	if pub == nil || pub.X == nil || pub.Y == nil {
 		return nil, fmt.Errorf("TAA SM2 public key is required")
 	}
+	xBytes := pub.X.Bytes()
+	yBytes := pub.Y.Bytes()
+	if len(xBytes) > 32 || len(yBytes) > 32 {
+		return nil, fmt.Errorf("SM2 coordinate size exceeds 32 bytes: x=%d y=%d", len(xBytes), len(yBytes))
+	}
 	userData := make([]byte, 64)
-	copy(userData[32-len(pub.X.Bytes()):32], pub.X.Bytes())
-	copy(userData[64-len(pub.Y.Bytes()):], pub.Y.Bytes())
+	copy(userData[32-len(xBytes):32], xBytes)
+	copy(userData[64-len(yBytes):], yBytes)
 	return userData, nil
 }
 

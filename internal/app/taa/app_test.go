@@ -3,6 +3,7 @@ package taa
 import (
 	"bytes"
 	"context"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,6 +42,35 @@ func TestDeriveUserDataAndKeyPair(t *testing.T) {
 func TestDeriveUserDataNilPublicKey(t *testing.T) {
 	if _, err := deriveUserData(nil); err == nil {
 		t.Fatalf("expected error for nil public key")
+	}
+}
+
+// TestDeriveUserDataExcessiveCoordinateLength 校验公钥坐标长度超过 32 字节时返回错误而非 panic
+func TestDeriveUserDataExcessiveCoordinateLength(t *testing.T) {
+	hugeVal := new(big.Int).Lsh(big.NewInt(1), 260) // > 32 字节
+	pub := &teecrypto.SM2PublicKey{
+		X: hugeVal,
+		Y: big.NewInt(1),
+	}
+	if _, err := deriveUserData(pub); err == nil {
+		t.Fatalf("expected error when coordinate length exceeds 32 bytes")
+	}
+}
+
+// TestCheckKeyFileExists_DirectoryTargetFails 校验路径为目录时 checkKeyFileExists 严格返回错误而非假定存在
+func TestCheckKeyFileExists_DirectoryTargetFails(t *testing.T) {
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "sub-dir")
+	if err := os.Mkdir(subDir, 0o700); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+
+	exists, err := checkKeyFileExists(subDir)
+	if err == nil {
+		t.Fatalf("expected error when key file target is a directory, got exists=%v", exists)
+	}
+	if !strings.Contains(err.Error(), "found directory") {
+		t.Fatalf("expected 'found directory' error message, got: %v", err)
 	}
 }
 
@@ -230,6 +260,51 @@ func TestLoadOrGenerateTAAKeyPair_RebootPersistenceAndCryptoRoundTrip(t *testing
 	}
 	if !bytes.Equal(decrypted, plaintext) {
 		t.Fatalf("decrypted text mismatch: got %q, want %q", string(decrypted), string(plaintext))
+	}
+}
+
+func TestLoadOrGenerateTAAKeyPair_TightensPermissionsOnReboot(t *testing.T) {
+	keysDir := t.TempDir()
+
+	// 首次启动生成
+	_, _, err := loadOrGenerateTAAKeyPair(keysDir)
+	if err != nil {
+		t.Fatalf("first boot failed: %v", err)
+	}
+
+	privPath := filepath.Join(keysDir, defaultSM2PrivateKeyFile)
+
+	// 模拟外部意外将私钥修改为过于宽松的权限 0666，目录修改为 0777
+	if err := os.Chmod(privPath, 0o666); err != nil {
+		t.Fatalf("chmod private key failed: %v", err)
+	}
+	if err := os.Chmod(keysDir, 0o777); err != nil {
+		t.Fatalf("chmod keysDir failed: %v", err)
+	}
+
+	// 重启加载时应自动收紧权限
+	_, loaded, err := loadOrGenerateTAAKeyPair(keysDir)
+	if err != nil {
+		t.Fatalf("reboot failed: %v", err)
+	}
+	if !loaded {
+		t.Fatalf("expected loaded=true on reboot")
+	}
+
+	privInfo, err := os.Stat(privPath)
+	if err != nil {
+		t.Fatalf("stat private key failed: %v", err)
+	}
+	if privInfo.Mode().Perm() != 0o600 {
+		t.Errorf("expected private key permission tightened to 0600, got %o", privInfo.Mode().Perm())
+	}
+
+	dirInfo, err := os.Stat(keysDir)
+	if err != nil {
+		t.Fatalf("stat keysDir failed: %v", err)
+	}
+	if dirInfo.Mode().Perm() != 0o700 {
+		t.Errorf("expected keysDir permission tightened to 0700, got %o", dirInfo.Mode().Perm())
 	}
 }
 
