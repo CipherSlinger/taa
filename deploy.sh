@@ -177,6 +177,12 @@ ensure_local_docker_container() {
     info "creating and starting local docker container: $LOCAL_DOCKER_CONTAINER (image: $LOCAL_DOCKER_IMAGE, network: $LOCAL_DOCKER_NETWORK)"
     docker run -d --name "$LOCAL_DOCKER_CONTAINER" --network "$LOCAL_DOCKER_NETWORK" "$LOCAL_DOCKER_IMAGE" tail -f /dev/null >/dev/null
   fi
+
+  if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "command -v python3 >/dev/null 2>&1"; then
+    step "installing python3 inside container: $LOCAL_DOCKER_CONTAINER"
+    docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 < /dev/null"
+    info "python3 installed inside container: $(docker exec -i "$LOCAL_DOCKER_CONTAINER" python3 --version 2>&1)"
+  fi
 }
 
 usage() {
