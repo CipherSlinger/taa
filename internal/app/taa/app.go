@@ -47,8 +47,9 @@ type taaKeyPair struct {
 // ============================================================================
 
 // Run 加载指定路径的启动配置文件并编排 TAA 服务的完整生命周期。
-// configPath 为空时使用 config.DefaultFileName 默认路径。
-func Run(ctx context.Context, configPath string) error {
+// configPath 为空时使用 config.DefaultFileName 默认路径；
+// addr 非空时覆盖配置文件中的监听地址。
+func Run(ctx context.Context, configPath, addr string) error {
 	path := config.DefaultFileName
 	if configPath != "" {
 		path = configPath
@@ -56,6 +57,9 @@ func Run(ctx context.Context, configPath string) error {
 	cfg, err := config.LoadStartupConfig(path)
 	if err != nil {
 		return fmt.Errorf("load startup config: %w", err)
+	}
+	if addr != "" {
+		cfg.Addr = addr
 	}
 	return RunWithConfig(ctx, cfg)
 }
@@ -71,7 +75,7 @@ func Run(ctx context.Context, configPath string) error {
 func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	// 1. 若启用了 LLM 代码审计，检查并按需在后台拉起 Qwen (Ollama) 服务
 	if cfg.EnableLLM {
-		ensureQwenAvailable(cfg.LLMEndpoint, cfg.LLMModel, cfg.LLMDir)
+		ensureQwenAvailable(ctx, cfg.LLMEndpoint, cfg.LLMModel, cfg.LLMDir)
 	}
 
 	// 2. 生成本 TAA 实例运行期的国密 SM2 密钥对（公钥用于通信加密与验签）
@@ -92,12 +96,12 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	logUserDataSummary(platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, userData)
 
 	// 4. 调用底层工具生成包含 UserData 的远程证明报告
-	if err := prepareAttestationReport(userData); err != nil {
+	if err := prepareAttestationReport(ctx, userData); err != nil {
 		return err
 	}
 
 	// 5. 向管控平台注册本 TAA 实例，通知平台就绪并提交度量报告与公钥
-	if err := registerPlatform(platformIP, dockerID, keyPair.PublicKeyPEM, timestamp); err != nil {
+	if err := registerPlatform(ctx, platformIP, dockerID, keyPair.PublicKeyPEM, timestamp); err != nil {
 		log.Printf("WARNING: platform register failed, continuing startup: %v", err)
 	} else {
 		log.Printf("platform register completed")
@@ -133,7 +137,7 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 // ensureQwenAvailable 检查 Qwen (Ollama) 语义审计模型服务是否可用。
 // 若未就绪，则尝试定位并执行后台启动脚本，并在指定超时时间内轮询就绪状态。
 // 启动失败仅记录警告日志，降级为静态规则审计，不阻断 TAA 主流程启动。
-func ensureQwenAvailable(endpoint, model, ollamaDir string) {
+func ensureQwenAvailable(ctx context.Context, endpoint, model, ollamaDir string) {
 	log.Printf("checking qwen service: endpoint=%s model=%s", endpoint, model)
 
 	// 1. 检查是否已经就绪
@@ -190,7 +194,12 @@ func ensureQwenAvailable(endpoint, model, ollamaDir string) {
 			log.Printf("qwen service started successfully")
 			return
 		}
-		time.Sleep(interval)
+		select {
+		case <-ctx.Done():
+			log.Printf("context cancelled while waiting for qwen service: %v", ctx.Err())
+			return
+		case <-time.After(interval):
+		}
 	}
 
 	log.Printf("WARNING: qwen 服务在 %v 内未就绪，代码审计将仅使用静态扫描", maxWait)
@@ -271,9 +280,9 @@ func logUserDataSummary(platformIP, dockerID, publicKeyPEM string, timestamp int
 
 // prepareAttestationReport 调用底层 TEE 工具生成远程证明报告。
 // 若在非 TEE 环境或生成失败，写入空报告并记录警告，允许服务在降级模式下继续启动。
-func prepareAttestationReport(userData []byte) error {
+func prepareAttestationReport(ctx context.Context, userData []byte) error {
 	log.Printf("generating attestation report: helper=%q output=%s", fixedAttestationHelper, fixedAttestationFile)
-	if err := attestation.Generate(context.Background(), attestation.Config{
+	if err := attestation.Generate(ctx, attestation.Config{
 		OutputPath: fixedAttestationFile,
 		HelperPath: fixedAttestationHelper,
 		Mode:       fixedAttestationMode,
@@ -290,10 +299,10 @@ func prepareAttestationReport(userData []byte) error {
 }
 
 // registerPlatform 向管控平台发起注册请求，上报 DockerID、度量报告、TAA 公钥及时间戳
-func registerPlatform(platformIP, dockerID, publicKeyPEM string, timestamp int64) error {
+func registerPlatform(ctx context.Context, platformIP, dockerID, publicKeyPEM string, timestamp int64) error {
 	log.Printf("notifying platform register: platform=%s dockerId=%s attestation=%s timestamp=%d",
 		platformIP, dockerID, fixedAttestationFile, timestamp)
-	return controller.NoticeRegister(context.Background(), platformIP, dockerID, fixedAttestationFile, publicKeyPEM, timestamp)
+	return controller.NoticeRegister(ctx, platformIP, dockerID, fixedAttestationFile, publicKeyPEM, timestamp)
 }
 
 // ============================================================================

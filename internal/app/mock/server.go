@@ -146,6 +146,7 @@ func NewServer(cfg Config) *Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", indexHandler)
+	mux.HandleFunc("/index.html", indexHandler)
 	mux.HandleFunc("/v1/taa/register", registerHandler(registerStore, cfg.AllowEmptyAttestation))
 	mux.HandleFunc("/v1/taa/reportResourceRes", reportResourceResHandler(reportStore))
 	mux.HandleFunc("/v1/taa/reportRes", reportResHandler(reportResStore))
@@ -635,7 +636,7 @@ func registerUploadDeleteRoutes(mux *http.ServeMux, uploadDir string) {
 }
 
 func indexHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	if r.URL.Path != "/" && r.URL.Path != "/index.html" {
 		http.NotFound(w, r)
 		return
 	}

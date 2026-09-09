@@ -1,6 +1,9 @@
 package taa
 
 import (
+	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,5 +111,36 @@ func TestBuildSecurityConfig(t *testing.T) {
 	}
 	if sec.LLM.FailClosed != wantLLM.FailClosed {
 		t.Errorf("LLM.FailClosed = %v, want %v", sec.LLM.FailClosed, wantLLM.FailClosed)
+	}
+}
+
+// TestRunConfigNotFound 校验配置文件不存在时 Run 返回错误
+func TestRunConfigNotFound(t *testing.T) {
+	ctx := context.Background()
+	err := Run(ctx, filepath.Join(t.TempDir(), "nonexistent-config.json"), "")
+	if err == nil {
+		t.Fatal("expected error when config file does not exist")
+	}
+	if !strings.Contains(err.Error(), "load startup config") {
+		t.Fatalf("expected 'load startup config' error, got: %v", err)
+	}
+}
+
+// TestEnsureQwenAvailableCancelledContext 校验上下文被取消时 ensureQwenAvailable 能够立即退出而非挂起
+func TestEnsureQwenAvailableCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		ensureQwenAvailable(ctx, "http://127.0.0.1:65534", "test-model", t.TempDir())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// 成功快速返回
+	case <-time.After(2 * time.Second):
+		t.Fatal("ensureQwenAvailable did not return promptly with cancelled context")
 	}
 }

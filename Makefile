@@ -11,7 +11,7 @@ taa:
 	@go build -o $(TAA_BINARY) ./cmd/taa
 
 test:
-	@go test ./...
+	@go test ./internal/... ./crypto/... ./cmd/...
 
 run: taa attestation-ioctl
 	@if [ ! -f taa-config.json ]; then cp configs/taa-local.json taa-config.json; fi

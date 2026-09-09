@@ -905,3 +905,39 @@ func TestUploadFilesStaticServing(t *testing.T) {
 		t.Fatalf("content = %q, want %q", string(body), string(testContent))
 	}
 }
+
+func TestIndexHandlerServesRootAndIndexHTML(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", indexHandler)
+	mux.HandleFunc("/index.html", indexHandler)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	for _, path := range []string{"/", "/index.html"} {
+		resp, err := http.Get(server.URL + path)
+		if err != nil {
+			t.Fatalf("get %s: %v", path, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("status for %s = %d, want 200", path, resp.StatusCode)
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/html") {
+			t.Errorf("content-type for %s = %q, want text/html", path, ct)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if string(body) != indexHTML {
+			t.Errorf("body mismatch for %s", path)
+		}
+	}
+
+	// Non-matching path returns 404
+	resp, err := http.Get(server.URL + "/nonexistent")
+	if err != nil {
+		t.Fatalf("get /nonexistent: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status for /nonexistent = %d, want 404", resp.StatusCode)
+	}
+}
