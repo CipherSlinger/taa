@@ -2,7 +2,7 @@ FROM golang:1.24-alpine AS builder
 
 WORKDIR /src
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/app main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/app ./cmd/taa
 
 FROM scratch
 
