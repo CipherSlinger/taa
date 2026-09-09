@@ -90,6 +90,7 @@ type TAAState struct {
 	DataImported         bool
 	TrainingDataImported bool
 	TrainingDone         bool
+	Phase1TrainingStarted bool
 	AttestationFile      string
 	HelperPath           string
 	HelperMode           string
@@ -397,6 +398,7 @@ func (s *TAAState) switchHandler(w http.ResponseWriter, r *http.Request) {
 
 	current := s.CurrentPhase
 	s.CurrentPhase = req.Phase
+	s.Phase1TrainingStarted = false
 	s.Logs.Add(LogInfo, "phase", "阶段切换: %d(%s) -> %d(%s)", current, phaseName(current), req.Phase, phaseName(req.Phase))
 
 	writeEnvelope(w, http.StatusOK, "阶段切换成功", nil, 0)
