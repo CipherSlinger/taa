@@ -93,6 +93,9 @@
       100% { background-color:transparent; box-shadow:none; }
     }
     .input-flash-success { animation:flashInputSuccess 1.2s ease-out; }
+    .input-action-group { display:flex; gap:8px; align-items:center; }
+    .input-action-group input { flex:1; min-width:0; margin:0; }
+    .btn-field-random { white-space:nowrap; padding:8px 12px; font-size:12px; font-weight:600; flex-shrink:0; height:38px; display:inline-flex; align-items:center; justify-content:center; }
     /* Toggle Switch */
     .switch-label { display:inline-flex; align-items:center; gap:8px; cursor:pointer; user-select:none; font-size:13px; font-weight:600; color:var(--text); margin:0; }
     .switch-wrapper { position:relative; width:40px; height:22px; display:inline-block; vertical-align:middle; }
@@ -471,7 +474,10 @@
         </div>
       </div>
       <label for="attestRequestId">requestId</label>
-      <input id="attestRequestId" value="req-mock-attest-001">
+      <div class="input-action-group">
+        <input id="attestRequestId" value="req-mock-attest-001">
+        <button type="button" class="secondary btn-field-random" onclick="randomizeField('attestRequestId', 'req-attest')" title="生成随机 requestId">随机生成</button>
+      </div>
       <div class="actions">
         <button onclick="testGetAttestation()">发送测试</button>
         <button id="saveReportBtn" class="success" onclick="saveAttestationReport()" disabled>保存报告文件</button>
@@ -536,9 +542,15 @@
       <label for="importModelResourceUrl">resourceUrl</label>
       <input id="importModelResourceUrl" value="http://example.com/model.tar.gz">
       <label for="importModelRequestId">requestId（与 taskId 二选一或都填）</label>
-      <input id="importModelRequestId" value="req-mock-importModel-001">
+      <div class="input-action-group">
+        <input id="importModelRequestId" value="req-mock-importModel-001">
+        <button type="button" class="secondary btn-field-random" onclick="randomizeField('importModelRequestId', 'req-model')" title="生成随机 requestId">随机生成</button>
+      </div>
       <label for="importModelTaskId">taskId（可选，与 requestId 至少填一项）</label>
-      <input id="importModelTaskId" value="">
+      <div class="input-action-group">
+        <input id="importModelTaskId" value="">
+        <button type="button" class="secondary btn-field-random" onclick="randomizeField('importModelTaskId', 'task-model')" title="生成随机 taskId">随机生成</button>
+      </div>
       <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; margin-bottom:4px;">
         <label for="importModelPublicKey" style="margin:0;">publicKey（留空=不传）</label>
         <button type="button" class="secondary" style="padding:4px 10px; font-size:12px;" onclick="generateImportModelPublicKey(this)">创建公钥</button>
@@ -551,6 +563,7 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
       <textarea id="importModelEnv">{"CUDA_VISIBLE_DEVICES":"0"}</textarea>
       <div class="actions">
         <button onclick="testImportModel()">发送测试</button>
+        <button type="button" class="secondary" onclick="randomizeImportModelIds()" title="同时随机生成 requestId 与 taskId">随机 ID</button>
       </div>
       <div id="importModelResult" class="test-result"></div>
     </section>
@@ -560,11 +573,18 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
       <label for="importResourceUrl">resourceUrl</label>
       <input id="importResourceUrl" value="http://example.com/data.tar.gz">
       <label for="importRequestId">requestId（与 taskId 二选一或都填）</label>
-      <input id="importRequestId" value="req-mock-import-001">
+      <div class="input-action-group">
+        <input id="importRequestId" value="req-mock-import-001">
+        <button type="button" class="secondary btn-field-random" onclick="randomizeField('importRequestId', 'req-data')" title="生成随机 requestId">随机生成</button>
+      </div>
       <label for="importTaskId">taskId（可选，与 requestId 至少填一项）</label>
-      <input id="importTaskId" value="">
+      <div class="input-action-group">
+        <input id="importTaskId" value="">
+        <button type="button" class="secondary btn-field-random" onclick="randomizeField('importTaskId', 'task-data')" title="生成随机 taskId">随机生成</button>
+      </div>
       <div class="actions">
         <button onclick="testImport()">发送测试</button>
+        <button type="button" class="secondary" onclick="randomizeImportIds()" title="同时随机生成 requestId 与 taskId">随机 ID</button>
       </div>
       <div id="importResult" class="test-result"></div>
     </section>
@@ -822,6 +842,28 @@ function text(id, value) { document.getElementById(id).textContent = value || '-
 function area(id, value) { document.getElementById(id).value = value || ''; }
 function getTaaAddr() { return document.getElementById('taaAddr').value.replace(/\/+$/, ''); }
 function genId(prefix) { return prefix + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6); }
+
+function randomizeField(id, prefix) {
+  const input = document.getElementById(id);
+  if (!input) return '';
+  const newId = genId(prefix || 'id');
+  input.value = newId;
+  input.classList.remove('input-flash-success');
+  void input.offsetWidth;
+  input.classList.add('input-flash-success');
+  setTimeout(() => input.classList.remove('input-flash-success'), 1200);
+  return newId;
+}
+
+function randomizeImportModelIds() {
+  randomizeField('importModelRequestId', 'req-model');
+  randomizeField('importModelTaskId', 'task-model');
+}
+
+function randomizeImportIds() {
+  randomizeField('importRequestId', 'req-data');
+  randomizeField('importTaskId', 'task-data');
+}
 
 const resultBodies = {};
 let lastRegisterData = null;
