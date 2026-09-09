@@ -8,6 +8,8 @@
   "resultCheck": true,
   "dataDir": ".local/taa/data",
   "resultDir": ".local/taa/results",
+  "modelInputDir": ".local/taa/input",
+  "modelOutputDir": ".local/taa/output",
   "llm": {
     "enabled": true,
     "endpoint": "http://127.0.0.1:11434",

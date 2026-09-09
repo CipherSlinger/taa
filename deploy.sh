@@ -119,6 +119,8 @@ LOCAL_DOCKER_CONFIG_SOURCE="${LOCAL_DOCKER_CONFIG_SOURCE:-$LOCAL_RUN_DIR/local-d
 LOCAL_TAA_MODEL_DIR="${LOCAL_TAA_MODEL_DIR:-$LOCAL_RUNTIME_DIR/models}"
 LOCAL_TAA_DATA_DIR="${LOCAL_TAA_DATA_DIR:-$LOCAL_RUNTIME_DIR/data}"
 LOCAL_TAA_RESULT_DIR="${LOCAL_TAA_RESULT_DIR:-$LOCAL_RUNTIME_DIR/results}"
+LOCAL_TAA_INPUT_DIR="${LOCAL_TAA_INPUT_DIR:-$LOCAL_RUNTIME_DIR/input}"
+LOCAL_TAA_OUTPUT_DIR="${LOCAL_TAA_OUTPUT_DIR:-$LOCAL_RUNTIME_DIR/output}"
 LOCAL_TAA_PORT="${LOCAL_TAA_PORT:-$CON_PORT}"
 LOCAL_TAA_URL="${LOCAL_TAA_URL:-http://127.0.0.1:${LOCAL_TAA_PORT}}"
 LOCAL_TAA_BIND="${LOCAL_TAA_BIND:-:${LOCAL_TAA_PORT}}"
@@ -419,11 +421,13 @@ write_taa_config() {
   local llm_endpoint="${11}"
   local llm_model="${12}"
   local include_identity="${13}"
+  local model_input_dir="${14:-}"
+  local model_output_dir="${15:-}"
 
   require_file "taa config template not found" "$template"
   require_command python3
   ensure_parent_dir "$path"
-  python3 - "$template" "$path" "$addr" "$platform_ip" "$docker_id" "$contract" "$model_dir" "$data_dir" "$result_dir" "$llm_dir" "$llm_endpoint" "$llm_model" "$include_identity" <<'PY'
+  python3 - "$template" "$path" "$addr" "$platform_ip" "$docker_id" "$contract" "$model_dir" "$data_dir" "$result_dir" "$llm_dir" "$llm_endpoint" "$llm_model" "$include_identity" "$model_input_dir" "$model_output_dir" <<'PY'
 import json
 import sys
 
@@ -441,7 +445,9 @@ import sys
     llm_endpoint,
     llm_model,
     include_identity,
-) = sys.argv[1:]
+    model_input_dir,
+    model_output_dir,
+) = sys.argv[1:16]
 
 with open(template, "r", encoding="utf-8") as f:
     cfg = json.load(f)
@@ -450,6 +456,10 @@ cfg["addr"] = addr
 cfg["modelDir"] = model_dir
 cfg["dataDir"] = data_dir
 cfg["resultDir"] = result_dir
+if model_input_dir:
+    cfg["modelInputDir"] = model_input_dir
+if model_output_dir:
+    cfg["modelOutputDir"] = model_output_dir
 
 if include_identity == "true":
     cfg["platformIP"] = platform_ip
@@ -602,7 +612,7 @@ fi
 
 if [[ "$DEPLOY_LOCAL" == true ]]; then
   step "preparing local runtime directories"
-  mkdir -p "$LOCAL_PLATFORM_STATE_DIR" "$LOCAL_RUNTIME_DIR/attestation" "$LOCAL_TAA_MODEL_DIR" "$LOCAL_TAA_DATA_DIR" "$LOCAL_TAA_RESULT_DIR"
+  mkdir -p "$LOCAL_PLATFORM_STATE_DIR" "$LOCAL_RUNTIME_DIR/attestation" "$LOCAL_TAA_MODEL_DIR" "$LOCAL_TAA_DATA_DIR" "$LOCAL_TAA_RESULT_DIR" "$LOCAL_TAA_INPUT_DIR" "$LOCAL_TAA_OUTPUT_DIR"
   cp "$ATT_HELPER_SOURCE" "$LOCAL_RUNTIME_DIR/attestation/get-attestation"
   cp "$ATT_HRK_SOURCE" "$LOCAL_RUNTIME_DIR/hrk.cert"
   cp "$ATT_HSK_SOURCE" "$LOCAL_RUNTIME_DIR/hsk_cek.cert"
@@ -620,7 +630,7 @@ if [[ "$DEPLOY_LOCAL" == true ]]; then
 
   TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
   step "writing local taa config from $(basename "$TAA_CONFIG_TEMPLATE")"
-  write_taa_config "$LOCAL_TAA_CONFIG_PATH" "$TAA_CONFIG_TEMPLATE" "$LOCAL_TAA_BIND" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_ID" "$CONTRACT" "$LOCAL_TAA_MODEL_DIR" "$LOCAL_TAA_DATA_DIR" "$LOCAL_TAA_RESULT_DIR" "$OLLAMA_LOCAL_DIR" "$LOCAL_OLLAMA_URL" "$OLLAMA_MODEL" true
+  write_taa_config "$LOCAL_TAA_CONFIG_PATH" "$TAA_CONFIG_TEMPLATE" "$LOCAL_TAA_BIND" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_ID" "$CONTRACT" "$LOCAL_TAA_MODEL_DIR" "$LOCAL_TAA_DATA_DIR" "$LOCAL_TAA_RESULT_DIR" "$OLLAMA_LOCAL_DIR" "$LOCAL_OLLAMA_URL" "$OLLAMA_MODEL" true "$LOCAL_TAA_INPUT_DIR" "$LOCAL_TAA_OUTPUT_DIR"
 
   step "starting local taa"
   start_local_background "taa" "$LOCAL_RUN_DIR/taa.pid" "$LOCAL_TAA_LOG_FILE" \
@@ -639,6 +649,8 @@ if [[ "$DEPLOY_LOCAL" == true ]]; then
   echo -e "     ${DIM}model:${NC} ${LOCAL_TAA_MODEL_DIR}"
   echo -e "     ${DIM}data:${NC}  ${LOCAL_TAA_DATA_DIR}"
   echo -e "     ${DIM}result:${NC} ${LOCAL_TAA_RESULT_DIR}"
+  echo -e "     ${DIM}input:${NC}  ${LOCAL_TAA_INPUT_DIR}"
+  echo -e "     ${DIM}output:${NC} ${LOCAL_TAA_OUTPUT_DIR}"
   info "${BOLD}ollama${NC} → ${LOCAL_OLLAMA_URL}"
   echo -e "     ${DIM}log:${NC}   ${LOCAL_OLLAMA_LOG_FILE}"
   echo -e "     ${DIM}model:${NC} ${OLLAMA_LOCAL_DIR}"
