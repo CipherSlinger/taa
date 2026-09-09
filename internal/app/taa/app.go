@@ -360,16 +360,27 @@ func loadOrGenerateTAAKeyPair(keysDir string) (*taaKeyPair, bool, error) {
 		return nil, false, err
 	}
 
-	// 1. 两个文件均存在：加载并校验一致性
-	if privExists && pubExists {
-		// 防御性安全加固：若私钥或密钥目录权限被外部篡改，在加载时自动收紧权限
+	// 防御性安全加固：若私钥存在但权限被外部篡改，在加载或自愈前主动收紧权限；若属于组或其他用户可读且收紧失败则 Fail-Closed
+	if privExists {
 		if privStat, err := os.Stat(privPath); err == nil && privStat.Mode().Perm() != 0o600 {
-			_ = os.Chmod(privPath, 0o600)
+			if err := os.Chmod(privPath, 0o600); err != nil {
+				if privStat.Mode().Perm()&0o077 != 0 {
+					return nil, false, fmt.Errorf("insecure private key permissions (%o) on %s and failed to tighten: %w", privStat.Mode().Perm(), privPath, err)
+				}
+				log.Printf("WARNING: failed to tighten private key permissions on %s from %o to 0600: %v", privPath, privStat.Mode().Perm(), err)
+			}
 		}
 		if dirStat, err := os.Stat(cleanDir); err == nil && dirStat.Mode().Perm() != 0o700 {
-			_ = os.Chmod(cleanDir, 0o700)
+			if err := os.Chmod(cleanDir, 0o700); err != nil {
+				if dirStat.Mode().Perm()&0o077 != 0 {
+					log.Printf("WARNING: insecure keys directory permissions (%o) on %s and failed to tighten: %v", dirStat.Mode().Perm(), cleanDir, err)
+				}
+			}
 		}
+	}
 
+	// 1. 两个文件均存在：加载并校验一致性
+	if privExists && pubExists {
 		privData, err := os.ReadFile(privPath)
 		if err != nil {
 			return nil, false, fmt.Errorf("read private key file %s: %w", privPath, err)
