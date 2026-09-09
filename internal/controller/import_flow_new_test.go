@@ -139,6 +139,9 @@ func TestPhase1ModelImportFailureReportsModelImport(t *testing.T) {
 			if payload.Msg == nil || !strings.Contains(*payload.Msg, "解密资源失败") {
 				t.Fatalf("reportModelImport msg = %v, want decrypt failure", payload.Msg)
 			}
+			if !strings.Contains(*payload.Msg, "taaPublicKey:") || !strings.Contains(*payload.Msg, "-----BEGIN PUBLIC KEY-----") {
+				t.Fatalf("reportModelImport msg missing taaPublicKey, got: %v", *payload.Msg)
+			}
 		case payload := <-trainingResCh:
 			t.Fatalf("got reportRes instead of reportModelImport: %+v", payload)
 		case <-time.After(10 * time.Second):
