@@ -538,9 +538,9 @@
         <button type="button" class="secondary" style="padding:4px 10px; font-size:12px;" onclick="generateImportModelPublicKey(this)">创建公钥</button>
       </div>
       <textarea id="importModelPublicKey" placeholder="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"></textarea>
-      <label for="importModelCommands">commands（每行一条命令，支持 &lt;in&gt; 和 &lt;out&gt; 占位符）</label>
+      <label for="importModelCommands">commands（每行一条命令，默认输入 /opt/taa/input，输出 /opt/taa/output，仍支持 &lt;in&gt; 和 &lt;out&gt; 占位符）</label>
       <textarea id="importModelCommands">echo prepare runtimeConfig
-python3 train.py --input &lt;in&gt; --output &lt;out&gt;</textarea>
+python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
       <label for="importModelEnv">env（JSON 字符串）</label>
       <textarea id="importModelEnv">{"CUDA_VISIBLE_DEVICES":"0"}</textarea>
       <div class="actions">
@@ -1106,7 +1106,7 @@ function getBatchImportPublicKey() {
 }
 
 function getBatchRuntimeConfig() {
-  const commandsText = document.getElementById('importModelCommands').value.trim() || 'echo prepare runtimeConfig\npython3 train.py --input <in> --output <out>';
+  const commandsText = document.getElementById('importModelCommands').value.trim() || 'echo prepare runtimeConfig\npython3 train.py --input /opt/taa/input --output /opt/taa/output';
   const envText = document.getElementById('importModelEnv').value.trim() || '{"CUDA_VISIBLE_DEVICES":"0"}';
   return buildRuntimeConfig(commandsText, envText);
 }

@@ -64,12 +64,17 @@ fi
 
 	userData := sm2UserDataFromPublicKey(&sm2Key.PublicKey)
 
+	inputDir := filepath.Join(tmpDir, "input")
+	outputDir := filepath.Join(tmpDir, "output")
+
 	state := NewTAAState(attestationPath, "127.0.0.1:65535", "test-docker-001", helperPath, "auto", sm2Key, userData, SecurityConfig{
-		ScanEnabled: false,
-		ModelDir:    modelDir,
-		DataDir:     dataDir,
-		ResultCheck: false,
-		ResultDir:   resultDir,
+		ScanEnabled:    false,
+		ModelDir:       modelDir,
+		DataDir:        dataDir,
+		ResultCheck:    false,
+		ResultDir:      resultDir,
+		ModelInputDir:  inputDir,
+		ModelOutputDir: outputDir,
 	})
 	return state, attestationPath
 }

@@ -280,3 +280,75 @@ func TestRunRuntimeConfigReplacesInOut(t *testing.T) {
 		t.Fatalf("copied content = %q, want sample-data", string(copied))
 	}
 }
+
+func TestSecurityConfigModelDirs(t *testing.T) {
+	var emptySec SecurityConfig
+	if emptySec.GetModelInputDir() != DefaultModelInputDir {
+		t.Errorf("GetModelInputDir = %q, want %q", emptySec.GetModelInputDir(), DefaultModelInputDir)
+	}
+	if emptySec.GetModelOutputDir() != DefaultModelOutputDir {
+		t.Errorf("GetModelOutputDir = %q, want %q", emptySec.GetModelOutputDir(), DefaultModelOutputDir)
+	}
+
+	customSec := SecurityConfig{
+		ModelInputDir:  "/custom/input",
+		ModelOutputDir: "/custom/output",
+	}
+	if customSec.GetModelInputDir() != "/custom/input" {
+		t.Errorf("GetModelInputDir = %q, want /custom/input", customSec.GetModelInputDir())
+	}
+	if customSec.GetModelOutputDir() != "/custom/output" {
+		t.Errorf("GetModelOutputDir = %q, want /custom/output", customSec.GetModelOutputDir())
+	}
+}
+
+func TestCopyDirAndCleanDirContents(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src")
+	dstDir := filepath.Join(tmpDir, "dst")
+
+	if err := os.MkdirAll(filepath.Join(srcDir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "file1.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "sub", "file2.txt"), []byte("world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. 测试 copyDir
+	if err := copyDir(dstDir, srcDir); err != nil {
+		t.Fatalf("copyDir failed: %v", err)
+	}
+
+	f1, err := os.ReadFile(filepath.Join(dstDir, "file1.txt"))
+	if err != nil || string(f1) != "hello" {
+		t.Fatalf("file1 content mismatch or read error: %v, got %s", err, string(f1))
+	}
+	f2, err := os.ReadFile(filepath.Join(dstDir, "sub", "file2.txt"))
+	if err != nil || string(f2) != "world" {
+		t.Fatalf("file2 content mismatch or read error: %v, got %s", err, string(f2))
+	}
+
+	// 2. 测试同目录 copyDir 幂等
+	if err := copyDir(dstDir, dstDir); err != nil {
+		t.Fatalf("copyDir same dir should succeed, got: %v", err)
+	}
+
+	// 3. 测试 cleanDirContents
+	if err := cleanDirContents(dstDir); err != nil {
+		t.Fatalf("cleanDirContents failed: %v", err)
+	}
+	entries, err := os.ReadDir(dstDir)
+	if err != nil {
+		t.Fatalf("read dstDir after clean: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("cleanDirContents left %d entries, want 0", len(entries))
+	}
+	// 确认根目录本身仍存在
+	if fi, err := os.Stat(dstDir); err != nil || !fi.IsDir() {
+		t.Fatalf("dstDir itself should still exist as directory")
+	}
+}

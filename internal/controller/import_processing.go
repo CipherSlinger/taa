@@ -177,6 +177,9 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		}
 	}
 
+	modelInputDir := s.Security.GetModelInputDir()
+	modelOutputDir := s.Security.GetModelOutputDir()
+
 	s.mu.RLock()
 	runtimeConfigRaw := s.RuntimeConfig
 	s.mu.RUnlock()
@@ -188,21 +191,80 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		return
 	}
 
+	StepSeparator("Stage Input Data")
+	s.setCurrentOp("staging")
+	s.Logs.Add(LogInfo, "train", "准备模型输入目录: %s (源数据目录: %s)", modelInputDir, trainDataDir)
+	if err := os.MkdirAll(modelInputDir, 0o755); err != nil {
+		s.Logs.Add(LogError, "train", "创建模型输入目录失败: %v", err)
+		s.setCurrentOp("idle")
+		s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("创建模型输入目录失败: %v", err))
+		return
+	}
+	if err := cleanDirContents(modelInputDir); err != nil {
+		s.Logs.Add(LogError, "train", "清空模型输入目录失败: %v", err)
+		s.setCurrentOp("idle")
+		s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("清空模型输入目录失败: %v", err))
+		return
+	}
+	if err := copyDir(modelInputDir, trainDataDir); err != nil {
+		s.Logs.Add(LogError, "train", "复制训练数据到模型输入目录失败: %v", err)
+		s.setCurrentOp("idle")
+		s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("复制训练数据到模型输入目录失败: %v", err))
+		return
+	}
+	s.Logs.Add(LogInfo, "train", "训练数据已复制到模型输入目录: %s", modelInputDir)
+
+	if err := os.MkdirAll(modelOutputDir, 0o755); err != nil {
+		s.Logs.Add(LogError, "train", "创建模型输出目录失败: %v", err)
+		s.setCurrentOp("idle")
+		s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("创建模型输出目录失败: %v", err))
+		return
+	}
+	if err := cleanDirContents(modelOutputDir); err != nil {
+		s.Logs.Add(LogError, "train", "清空模型输出目录失败: %v", err)
+		s.setCurrentOp("idle")
+		s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("清空模型输出目录失败: %v", err))
+		return
+	}
+
 	StepSeparator("Run runtimeConfig")
 	s.setCurrentOp("training")
-	resolvedCommands := resolveRuntimeCommands(cfg.Commands, trainDataDir, trainOutputDir)
-	s.Logs.Add(LogInfo, "train", "开始执行 runtimeConfig: commands=%d, envKeys=%v, 数据输入目录 (<in>): %s (hash=%s), 结果输出目录 (<out>): %s",
-		len(cfg.Commands), envKeys(env), trainDataDir, trainRecord.Hash, trainOutputDir)
+	resolvedCommands := resolveRuntimeCommands(cfg.Commands, modelInputDir, modelOutputDir)
+	s.Logs.Add(LogInfo, "train", "开始执行 runtimeConfig: commands=%d, envKeys=%v, 输入目录: %s (源hash=%s), 输出目录: %s",
+		len(cfg.Commands), envKeys(env), modelInputDir, trainRecord.Hash, modelOutputDir)
 	for i, cmd := range resolvedCommands {
 		s.Logs.Add(LogInfo, "train", "  [cmd %d] %s", i+1, cmd)
 	}
-	if output, err := runRuntimeConfig(cfg, env, s.Security.ModelDir, trainDataDir, trainOutputDir, req.TaskID, startedAt.UTC().Format(time.RFC3339)); err != nil {
+	if output, err := runRuntimeConfig(cfg, env, s.Security.ModelDir, modelInputDir, modelOutputDir, req.TaskID, startedAt.UTC().Format(time.RFC3339)); err != nil {
 		s.Logs.Add(LogError, "train", "执行 runtimeConfig 失败: %v\noutput: %s", err, output)
 		s.setCurrentOp("idle")
 		s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("执行 runtimeConfig 失败: %v", err))
 		return
 	}
 	s.Logs.Add(LogInfo, "train", "runtimeConfig 执行成功")
+
+	StepSeparator("Collect Output Results")
+	s.Logs.Add(LogInfo, "train", "从模型输出目录拷贝产物到结果目录: %s -> %s", modelOutputDir, trainOutputDir)
+	if err := os.MkdirAll(trainOutputDir, 0o755); err != nil {
+		s.Logs.Add(LogError, "train", "创建结果目录失败: %v", err)
+		s.setCurrentOp("idle")
+		s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("创建结果目录失败: %v", err))
+		return
+	}
+	if err := copyDir(trainOutputDir, modelOutputDir); err != nil {
+		s.Logs.Add(LogError, "train", "拷贝训练产物失败: %v", err)
+		s.setCurrentOp("idle")
+		s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("拷贝训练产物失败: %v", err))
+		return
+	}
+	s.Logs.Add(LogInfo, "train", "训练产物拷贝完成: %s", trainOutputDir)
+
+	if modelInputDir != trainDataDir {
+		_ = cleanDirContents(modelInputDir)
+	}
+	if modelOutputDir != trainOutputDir {
+		_ = cleanDirContents(modelOutputDir)
+	}
 
 	StepSeparator("Build & Upload Report")
 	s.setCurrentOp("reporting")
