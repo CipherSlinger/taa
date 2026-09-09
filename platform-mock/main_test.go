@@ -23,9 +23,37 @@ func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
 	if strings.Contains(indexHTML, "③ 资源下载结果上报") {
 		t.Fatal("index should not show the resource download result report card")
 	}
-	for _, want := range []string{"③ 训练结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult", "saveReportBtn", "reportResBodyBtn", "reportResReportBtn", "openReportResReportModal", "查看报告", "reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "importModelCommands", "importModelEnv", "resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport", "setupResourceUrlDropZones", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件", "平台发往 TAA 的请求体记录", "requestLogStatusDot", "requestLogOutput", "requestLogEndpointFilter", "uploadEncryptSwitch", "启用加密", "deleteUploadedFile", "创建公钥", "generateImportModelPublicKey", "exportDecryptSwitch", "是否解密", "exportPrivateKey", "exportRequestId", "resourceInfoTreeContainer", "resourceInfoModalBtn", "resourceInfoModal", "loadSampleResourceTree", "renderResourceInfoTreeShell"} {
+	for _, want := range []string{"③ 训练结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult", "saveReportBtn", "reportResBodyBtn", "reportResReportBtn", "openReportResReportModal", "查看报告", "reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "importModelCommands", "importModelEnv", "resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport", "setupResourceUrlDropZones", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件", "平台发往 TAA 的请求体记录", "requestLogStatusDot", "requestLogOutput", "requestLogEndpointFilter", "uploadEncryptSwitch", "启用加密", "deleteUploadedFile", "创建公钥", "generateImportModelPublicKey", "exportDecryptSwitch", "是否解密", "exportPrivateKey", "exportRequestId", "resourceInfoTreeContainer", "resourceInfoModalBtn", "resourceInfoModal", "loadSampleResourceTree", "renderResourceInfoTreeShell", "randomizeField", "randomizeImportModelIds", "randomizeImportIds"} {
 		if !strings.Contains(indexHTML, want) {
 			t.Fatalf("index missing %q", want)
+		}
+	}
+}
+
+func TestRequestIdAndTaskIdRandomizeButtons(t *testing.T) {
+	requiredTriggers := []string{
+		`randomizeField('attestRequestId'`,
+		`randomizeField('importModelRequestId'`,
+		`randomizeField('importModelTaskId'`,
+		`randomizeField('importRequestId'`,
+		`randomizeField('importTaskId'`,
+		`randomizeImportModelIds()`,
+		`randomizeImportIds()`,
+	}
+	for _, trigger := range requiredTriggers {
+		if !strings.Contains(indexHTML, trigger) {
+			t.Fatalf("index.html missing expected random generator trigger: %q", trigger)
+		}
+	}
+
+	forbiddenTriggers := []string{
+		`randomizeField('exportRequestId'`,
+		`randomizeField('exportTaskId'`,
+		`randomizeExportIds`,
+	}
+	for _, forbidden := range forbiddenTriggers {
+		if strings.Contains(indexHTML, forbidden) {
+			t.Fatalf("export interface must not have random generation buttons, found: %q", forbidden)
 		}
 	}
 }
