@@ -403,13 +403,6 @@
       display: block;
       box-shadow: 0 2px 8px rgba(37, 99, 235, 0.06);
     }
-    .batch-results { margin-top:16px; }
-    .batch-item { padding:8px 12px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px; font-size:14px; }
-    .batch-item .badge { display:inline-block; width:8px; height:8px; border-radius:50%; flex-shrink:0; }
-    .batch-item .badge.ok { background:var(--ok); }
-    .batch-item .badge.bad { background:var(--bad); }
-    .batch-item .badge.pending { background:#9ca3af; }
-    .batch-item .badge.running { background:#2563eb; animation: pulse 1s infinite; }
     @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.4; } }
     .result-panel { display:flex; flex-direction:column; gap:8px; }
     .result-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
@@ -917,7 +910,6 @@
   <div class="taa-addr-bar">
     <label for="taaAddr">TAA 服务地址</label>
     <input id="taaAddr" value="" placeholder="自动检测中...">
-    <button onclick="runAllTests()">一键测试全部接口</button>
   </div>
 
   <!-- ─── 平台接收 + 获取远程证明报告 ─── -->
@@ -1084,6 +1076,7 @@
           <div class="status" style="margin-top:10px; font-size:14px; font-weight:650;">
             <span id="reportModelImportDot" class="dot"></span>
             <span id="reportModelImportStatusText">等待模型导入结果上报</span>
+            <span class="muted" style="font-size:12px; font-weight:normal;">(/v1/taa/reportModelImport)</span>
           </div>
         </div>
         <button id="reportModelImportBodyBtn" class="secondary" onclick="openReportModelImportBodyModal()" disabled>查看返回</button>
@@ -1149,7 +1142,7 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
         <div class="card-head">
           <div>
             <h2>③ 训练结果上报</h2>
-            <div class="status" style="margin-top:10px;"><span id="reportResDot" class="dot"></span><span id="reportResStatusText">等待训练结果上报</span></div>
+            <div class="status" style="margin-top:10px;"><span id="reportResDot" class="dot"></span><span id="reportResStatusText">等待训练结果上报</span><span class="muted" style="font-size:12px; font-weight:normal; margin-left:6px;">(/v1/taa/reportRes)</span></div>
           </div>
           <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
             <button id="reportResReportBtn" style="padding:6px 12px; font-size:13px;" onclick="openReportResReportModal()" disabled>查看报告</button>
@@ -1203,12 +1196,6 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
       <div id="exportResult" class="test-result"></div>
     </section>
   </div>
-
-  <!-- 一键测试结果 -->
-  <section class="card" id="card-batch" style="display:none">
-    <h2>一键测试结果</h2>
-    <div id="batchResults" class="batch-results"></div>
-  </section>
 
   <!-- 平台发往 TAA 的请求体记录 -->
   <h2>平台发往 TAA 的请求体记录</h2>
@@ -1776,24 +1763,6 @@ function buildImportBody(resourceUrl, requestId, publicKey, taskId, runtimeConfi
   if (publicKey) body.publicKey = publicKey;
   if (runtimeConfig) body.runtimeConfig = runtimeConfig;
   return body;
-}
-
-function getBatchImportPublicKey() {
-  const manual = document.getElementById('importModelPublicKey').value.trim();
-  if (manual) return manual;
-  return (lastRegisterData && lastRegisterData.taaPublicKey) ? lastRegisterData.taaPublicKey.trim() : '';
-}
-
-function getBatchRuntimeConfig() {
-  const commandsText = document.getElementById('importModelCommands').value.trim() || 'echo prepare runtimeConfig\npython3 train.py --input /opt/taa/input --output /opt/taa/output';
-  const envText = document.getElementById('importModelEnv').value.trim() || '{"CUDA_VISIBLE_DEVICES":"0"}';
-  return buildRuntimeConfig(commandsText, envText);
-}
-
-function getBatchExportPublicKey() {
-  const manual = document.getElementById('exportPublicKey').value.trim();
-  if (manual) return manual;
-  return '';
 }
 
 function taaFetch(endpoint, body, timeoutMs) {
@@ -3047,77 +3016,6 @@ function saveAttestationReport() {
   if (_lastAttestationValues) {
     downloadBlob(new Blob([_lastAttestationValues], { type: 'application/json' }), 'attestation-values.json', 0);
   }
-}
-
-// ── 一键测试全部接口 ─────────────────────────
-async function runAllTests() {
-  const card = document.getElementById('card-batch');
-  const container = document.getElementById('batchResults');
-  card.style.display = 'block';
-
-  const tests = [
-    { name: '/v1/taa/health（连通性检查）', fn: () => postToTAA('/v1/taa/health', {}, 10000) },
-    { name: '/v1/taa/getResourceInfo（资源信息获取）', fn: () => postToTAA('/v1/taa/getResourceInfo', { resourceUrl: 'http://mock.example.com/data.tar.gz' }, RESOURCE_INFO_TIMEOUT_MS) },
-    { name: '/v1/taa/importModel（下发模型）', fn: () => postToTAA('/v1/taa/importModel', buildImportBody('http://mock.example.com/model.tar.gz', genId('batch-import'), getBatchImportPublicKey(), genId('batch-task'), getBatchRuntimeConfig())) },
-    { name: '/v1/taa/import（下发数据）', fn: () => postToTAA('/v1/taa/import', buildImportBody('http://mock.example.com/data.tar.gz', genId('batch-import'))) },
-    { name: '/v1/taa/switch（切换到测试阶段）', fn: () => postToTAA('/v1/taa/switch', { phase: 2 }) },
-    { name: '/v1/taa/switch（切换到训练阶段）', fn: () => postToTAA('/v1/taa/switch', { phase: 3 }) },
-    { name: '/v1/taa/export（导出结果，直接文件流）', fn: () => postToTAAFile('/v1/taa/export', { publicKey: getBatchExportPublicKey() || null, taskId: 'batch-task-001' }) },
-    { name: '/v1/taa/getAttestation（获取证明报告，最长45s）', fn: () => postToTAA('/v1/taa/getAttestation', { requestId: genId('batch-attest') }, 45000) },
-    { name: '/v1/taa/reportRes（上报训练结果 → 本平台）', fn: async () => {
-      const res = await fetch('/v1/taa/reportRes', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          dockerId: 'batch-docker',
-          requestId: genId('batch-reportRes'),
-          taskId: 'batch-task-001',
-          code: 0,
-          msg: null,
-          report: JSON.stringify({ schema_version: '1.0', training_task: { status: 'succeeded' } }),
-        }),
-      });
-      return { status: res.status, data: await res.json().catch(() => ({})) };
-    }},
-    { name: '/v1/taa/reportModelImport（上报模型导入结果 → 本平台）', fn: async () => {
-      const res = await fetch('/v1/taa/reportModelImport', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          dockerId: 'batch-docker',
-          taskId: 'batch-task-001',
-          code: 0,
-          msg: null,
-          report: JSON.stringify({ conclusion: { passed: true, risk_level: 'NONE' }, file_reports: null }),
-        }),
-      });
-      return { status: res.status, data: await res.json().catch(() => ({})) };
-    }},
-  ];
-
-  container.innerHTML = tests.map((t, i) =>
-    `<div class="batch-item" id="batch-${i}"><span class="badge pending"></span><span>${t.name}</span></div>`
-  ).join('');
-
-  for (let i = 0; i < tests.length; i++) {
-    const item = document.getElementById('batch-' + i);
-    const badge = item.querySelector('.badge');
-    badge.className = 'badge running';
-    item.querySelector('span:last-child').textContent = tests[i].name + ' — 测试中...';
-
-    try {
-      const r = await tests[i].fn();
-      const ok = r.status === 200 && (r.blob || r.data?.error === 0 || r.data?.error === undefined);
-      badge.className = 'badge ' + (ok ? 'ok' : 'bad');
-      item.querySelector('span:last-child').textContent =
-        tests[i].name + ' — HTTP ' + r.status + (ok ? ' ✓' : ' ✗ ' + (r.data?.msg || ''));
-    } catch (e) {
-      badge.className = 'badge bad';
-      item.querySelector('span:last-child').textContent = tests[i].name + ' — 失败: ' + e.message;
-    }
-  }
-
-  // 刷新平台接收状态
-  await refreshReportResStatus();
-  await refreshReportModelImportStatus();
 }
 
 // ── 自动检测 TAA 代理 ─────────────────────────
