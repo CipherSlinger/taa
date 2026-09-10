@@ -57,16 +57,12 @@ fi
 ATT_REPORT_FILE="${CON_WORKDIR}/attestation.report"
 K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
 
-# Docker 部署模式：设为 "docker" 时通过 docker exec/cp 操作容器而非 kubectl。
-DEPLOY_MODE="${DEPLOY_MODE:-k8s}"
-TARGET_CONTAINER="${TARGET_CONTAINER:-taa-env-slim-v2}"
 # TAA 容器运行参数：容器内工作目录、监听地址、注册用容器标识和日志路径。
 TAA_CONTAINER_WORKDIR="${TAA_CONTAINER_WORKDIR:-${CON_WORKDIR}}"
 TAA_CONTAINER_ADDR="${TAA_CONTAINER_ADDR:-:${CON_PORT}}"
 # TAA 程序固定读取工作目录下的 taa-config.json，脚本侧文件名必须保持一致。
 TAA_CONFIG_FILE="taa-config.json"
 TAA_LOCAL_CONFIG_TEMPLATE="${TAA_LOCAL_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-local.json}"
-TAA_LOCAL_DOCKER_CONFIG_TEMPLATE="${TAA_LOCAL_DOCKER_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-local-docker.json}"
 TAA_DEBUG_CONFIG_TEMPLATE="${TAA_DEBUG_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-debug.json}"
 TAA_PRODUCTION_CONFIG_TEMPLATE="${TAA_PRODUCTION_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-production.json}"
 REMOTE_TAA_CONFIG_PATH="${REMOTE_TAA_CONFIG_PATH:-$REMOTE_DIR/$TAA_CONFIG_FILE}"
@@ -94,20 +90,13 @@ OLLAMA_READY_INTERVAL="${OLLAMA_READY_INTERVAL:-2}"
 PASSWORD="${TARGET_PASSWORD:-Osrd@2026}"
 
 DEPLOY_LOCAL=false
-DEPLOY_LOCAL_DOCKER=false
 DEPLOY_PLATFORM_MOCK=false
 DEPLOY_TAA=false
 DEPLOY_QWEN=false
-DOCKER_ARG=false
-LOCAL_DOCKER_ARG=false
 SELECTED_COMPONENT=false
 STEP=0
 
 LOCAL_PLATFORM_STATE_DIR="${LOCAL_PLATFORM_STATE_DIR:-$PROJECT_DIR/.local/platform-mock}"
-LOCAL_PLATFORM_PORT_USER_SET=false
-if [[ -n "${LOCAL_PLATFORM_PORT:-}" ]]; then
-  LOCAL_PLATFORM_PORT_USER_SET=true
-fi
 if [[ "$DEBUG" == true ]]; then
   LOCAL_PLATFORM_PORT="${LOCAL_PLATFORM_PORT:-28080}"
 else
@@ -117,26 +106,16 @@ LOCAL_PLATFORM_BIND="${LOCAL_PLATFORM_BIND:-0.0.0.0:${LOCAL_PLATFORM_PORT}}"
 LOCAL_PLATFORM_IP="${LOCAL_PLATFORM_IP:-127.0.0.1:${LOCAL_PLATFORM_PORT}}"
 LOCAL_PLATFORM_URL="${LOCAL_PLATFORM_URL:-http://127.0.0.1:${LOCAL_PLATFORM_PORT}}"
 LOCAL_PLATFORM_UPLOAD_DIR="${LOCAL_PLATFORM_UPLOAD_DIR:-$PROJECT_DIR/uploads}"
-LOCAL_RUNTIME_DIR="${LOCAL_RUNTIME_DIR:-$PROJECT_DIR/.local/taa}"
-LOCAL_TAA_CONFIG_PATH="${LOCAL_TAA_CONFIG_PATH:-$LOCAL_RUNTIME_DIR/$TAA_CONFIG_FILE}"
 LOCAL_RUN_DIR="${LOCAL_RUN_DIR:-$PROJECT_DIR/.local/run}"
 REMOTE_TAA_CONFIG_SOURCE="${REMOTE_TAA_CONFIG_SOURCE:-$LOCAL_RUN_DIR/remote-$TAA_CONFIG_FILE}"
-LOCAL_DOCKER_CONFIG_SOURCE="${LOCAL_DOCKER_CONFIG_SOURCE:-$LOCAL_RUN_DIR/local-docker-$TAA_CONFIG_FILE}"
-LOCAL_TAA_MODEL_DIR="${LOCAL_TAA_MODEL_DIR:-$LOCAL_RUNTIME_DIR/models}"
-LOCAL_TAA_DATA_DIR="${LOCAL_TAA_DATA_DIR:-$LOCAL_RUNTIME_DIR/data}"
-LOCAL_TAA_RESULT_DIR="${LOCAL_TAA_RESULT_DIR:-$LOCAL_RUNTIME_DIR/results}"
-LOCAL_TAA_INPUT_DIR="${LOCAL_TAA_INPUT_DIR:-$LOCAL_RUNTIME_DIR/input}"
-LOCAL_TAA_OUTPUT_DIR="${LOCAL_TAA_OUTPUT_DIR:-$LOCAL_RUNTIME_DIR/output}"
-LOCAL_TAA_KEYS_DIR="${LOCAL_TAA_KEYS_DIR:-$LOCAL_RUNTIME_DIR/keys}"
+LOCAL_DOCKER_CONFIG_SOURCE="${LOCAL_DOCKER_CONFIG_SOURCE:-$LOCAL_RUN_DIR/local-$TAA_CONFIG_FILE}"
 LOCAL_TAA_PORT="${LOCAL_TAA_PORT:-$CON_PORT}"
 LOCAL_TAA_URL="${LOCAL_TAA_URL:-http://127.0.0.1:${LOCAL_TAA_PORT}}"
-LOCAL_TAA_BIND="${LOCAL_TAA_BIND:-:${LOCAL_TAA_PORT}}"
 LOCAL_PLATFORM_LOG_FILE="${LOCAL_PLATFORM_LOG_FILE:-$PROJECT_DIR/.local/logs/platform-mock.log}"
 LOCAL_TAA_LOG_FILE="${LOCAL_TAA_LOG_FILE:-$PROJECT_DIR/.local/logs/taa.log}"
 LOCAL_OLLAMA_LOG_FILE="${LOCAL_OLLAMA_LOG_FILE:-$PROJECT_DIR/.local/logs/ollama.log}"
 LOCAL_OLLAMA_URL="${LOCAL_OLLAMA_URL:-http://${OLLAMA_HOST}}"
-LOCAL_DOCKER_ID="${LOCAL_DOCKER_ID:-127.0.0.1}"
-LOCAL_DOCKER_CONTAINER="${LOCAL_DOCKER_CONTAINER:-$TARGET_CONTAINER}"
+LOCAL_DOCKER_CONTAINER="${LOCAL_DOCKER_CONTAINER:-taa-env-slim-v2}"
 LOCAL_DOCKER_IMAGE_ARCHIVE="${LOCAL_DOCKER_IMAGE_ARCHIVE:-$PROJECT_DIR/deploy/taa-env-slim-v2.tar.gz}"
 LOCAL_DOCKER_IMAGE="${LOCAL_DOCKER_IMAGE:-taa-env:slim-v2}"
 LOCAL_DOCKER_NETWORK="${LOCAL_DOCKER_NETWORK:-host}"
@@ -159,23 +138,15 @@ info()    { echo -e "   ${GREEN}✓${NC} $1"; }
 warn()    { echo -e "   ${YELLOW}⚠${NC} $1"; }
 err()     { echo -e "   ${RED}✗${NC} $1" >&2; }
 
-# ── Container helpers (docker / k8s) ───────────────────────
+# ── Container helpers (k8s) ────────────────────────────────
 # 在容器内执行命令（通过 remote_ssh 在远程宿主机上操作）。
 container_exec() {
-  if [[ "$DEPLOY_MODE" == "docker" ]]; then
-    echo "docker exec -i '$TARGET_CONTAINER'"
-  else
-    echo "kubectl $K_NS exec '$TARGET_POD' --"
-  fi
+  echo "kubectl $K_NS exec '$TARGET_POD' --"
 }
 
 # 从远程宿主机复制文件到容器内。
 container_cp() {
-  if [[ "$DEPLOY_MODE" == "docker" ]]; then
-    echo "docker cp '$1' '$TARGET_CONTAINER':'$2'"
-  else
-    echo "kubectl $K_NS cp '$1' '$TARGET_POD':'$2'"
-  fi
+  echo "kubectl $K_NS cp '$1' '$TARGET_POD':'$2'"
 }
 
 ensure_local_docker_container() {
@@ -200,9 +171,9 @@ ensure_local_docker_container() {
 
     local image_mismatch=false
     if [[ -n "$current_image" && "$current_image" != "$LOCAL_DOCKER_IMAGE" ]]; then
-      if [[ -z "$target_image_id" || "$current_image_id" != "$target_image_id" ]]; then
-        image_mismatch=true
-      fi
+      image_mismatch=true
+    elif [[ -n "$target_image_id" && -n "$current_image_id" && "$current_image_id" != "$target_image_id" ]]; then
+      image_mismatch=true
     fi
 
     if [[ "$image_mismatch" == true ]]; then
@@ -227,37 +198,38 @@ ensure_local_docker_container() {
 
   if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "command -v python3 >/dev/null 2>&1"; then
     step "installing python3 inside container: $LOCAL_DOCKER_CONTAINER"
-    docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 < /dev/null"
+    docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 < /dev/null" || {
+      err "failed to install python3 in container $LOCAL_DOCKER_CONTAINER; ensure base image has python3 or network access is available"
+      exit 1
+    }
   fi
   docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "if ! command -v python >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then ln -s \$(which python3) /usr/local/bin/python; fi" >/dev/null 2>&1 || true
   local py_ver
-  py_ver=$(docker exec -i "$LOCAL_DOCKER_CONTAINER" python3 --version 2>&1 || true)
+  if ! py_ver=$(docker exec -i "$LOCAL_DOCKER_CONTAINER" python3 --version 2>&1); then
+    err "python3 runtime check failed inside container $LOCAL_DOCKER_CONTAINER: $py_ver"
+    exit 1
+  fi
   info "container python runtime: $py_ver"
 }
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [docker] [local] [local-docker] [start|stop] [platform-mock] [taa] [qwen]
+Usage: $(basename "$0") [local] [start|stop] [platform-mock] [taa] [qwen]
 
-Without arguments, all three components are deployed remotely.
-Pass docker to switch deploy mode to remote Docker; pass local to start the
-full stack on the local machine; pass local-docker to deploy TAA and its
-dependencies into a local Docker container for testing.
+Without arguments, all three components are deployed remotely via Kubernetes.
+Pass local to deploy TAA and its dependencies into a local Docker container
+for testing, with platform-mock running locally on host.
 Pass start or stop to control service lifecycle (default: start).
-When no component names are given, taa and qwen are deployed by default
-(with platform-mock started for local/local-docker modes).
+When no component names are given, all three components are deployed by default.
 Provide one or more names to deploy them separately.
 Examples:
   $(basename "$0") local start
   $(basename "$0") local stop
-  $(basename "$0") local-docker
-  $(basename "$0") local-docker taa
-  $(basename "$0") local-docker qwen
-  $(basename "$0") local-docker platform-mock
-  $(basename "$0") local-docker taa qwen
-  $(basename "$0") docker
-  $(basename "$0") docker taa qwen
   $(basename "$0") local
+  $(basename "$0") local taa
+  $(basename "$0") local qwen
+  $(basename "$0") local platform-mock
+  $(basename "$0") local taa qwen
   $(basename "$0") platform-mock
   $(basename "$0") taa
   $(basename "$0") qwen
@@ -265,15 +237,9 @@ Examples:
   $(basename "$0") platform-mock taa qwen
 
 Environment overrides:
-  # Deploy mode
-  DEPLOY_MODE=${DEPLOY_MODE}
-      部署模式：k8s（通过 kubectl 操作 Pod）或 docker（通过 docker 操作容器）。
-  TARGET_CONTAINER=${TARGET_CONTAINER}
-      Docker 模式下的目标容器名称。
-
-  # Local Docker mode (local-docker)
+  # Local mode (local)
   LOCAL_DOCKER_CONTAINER=${LOCAL_DOCKER_CONTAINER}
-      本地 Docker 目标容器名称（默认复用 TARGET_CONTAINER，如 taa-env-slim-v2）。
+      本地 Docker 目标容器名称（默认 taa-env-slim-v2）。
   LOCAL_DOCKER_IMAGE_ARCHIVE=${LOCAL_DOCKER_IMAGE_ARCHIVE}
       本地基础镜像归档文件路径（默认 deploy/taa-env-slim-v2.tar.gz）。
   LOCAL_DOCKER_IMAGE=${LOCAL_DOCKER_IMAGE}
@@ -283,7 +249,7 @@ Environment overrides:
   FORCE_QWEN_COPY=${FORCE_QWEN_COPY}
       设为 true 时强制重新将 ollama/qwen 完整离线包拷贝进容器。
 
-  # Kubernetes / Pod (DEPLOY_MODE=k8s)
+  # Kubernetes / Pod (Remote mode)
   TARGET_POD=${TARGET_POD}
       目标 TAA Pod 名称。
   TARGET_NAMESPACE=${TARGET_NAMESPACE}
@@ -304,6 +270,8 @@ Environment overrides:
       Platform Mock 监听端口。
   PLATFORM_ADDR=${PLATFORM_ADDR}
       Platform Mock 绑定地址。
+  LOCAL_PLATFORM_PORT=${LOCAL_PLATFORM_PORT}
+      本地 Platform Mock 监听端口。
   LOCAL_PLATFORM_UPLOAD_DIR=${LOCAL_PLATFORM_UPLOAD_DIR}
       Platform Mock 上传与静态文件服务目录（默认 $PROJECT_DIR/uploads）。
   REMOTE_PLATFORM_IP=${REMOTE_PLATFORM_IP}
@@ -322,8 +290,6 @@ Environment overrides:
       写入 TAA 配置文件的容器内监听地址与端口。
   TAA_LOCAL_CONFIG_TEMPLATE=${TAA_LOCAL_CONFIG_TEMPLATE}
       local 场景 TAA 配置模板。
-  TAA_LOCAL_DOCKER_CONFIG_TEMPLATE=${TAA_LOCAL_DOCKER_CONFIG_TEMPLATE}
-      local-docker 场景 TAA 配置模板。
   TAA_DEBUG_CONFIG_TEMPLATE=${TAA_DEBUG_CONFIG_TEMPLATE}
       debug 场景 TAA 配置模板。
   TAA_PRODUCTION_CONFIG_TEMPLATE=${TAA_PRODUCTION_CONFIG_TEMPLATE}
@@ -457,9 +423,7 @@ require_command() {
 }
 
 select_taa_config_template() {
-  if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
-    printf '%s' "$TAA_LOCAL_DOCKER_CONFIG_TEMPLATE"
-  elif [[ "$DEPLOY_LOCAL" == true ]]; then
+  if [[ "$DEPLOY_LOCAL" == true ]]; then
     printf '%s' "$TAA_LOCAL_CONFIG_TEMPLATE"
   elif [[ "$DEBUG" == true ]]; then
     printf '%s' "$TAA_DEBUG_CONFIG_TEMPLATE"
@@ -554,20 +518,8 @@ if [[ $# -eq 0 ]]; then
 else
   for arg in "$@"; do
     case "$arg" in
-      docker)
-        DEPLOY_MODE="docker"
-        DOCKER_ARG=true
-        ;;
-      local-docker)
-        DEPLOY_LOCAL_DOCKER=true
-        LOCAL_DOCKER_ARG=true
-        ;;
-      local)
+      local|local-docker)
         DEPLOY_LOCAL=true
-        DEPLOY_PLATFORM_MOCK=true
-        DEPLOY_TAA=true
-        DEPLOY_QWEN=true
-        SELECTED_COMPONENT=true
         ;;
       start)
         ACTION="start"
@@ -599,49 +551,39 @@ else
     esac
   done
 
-  if [[ "$DEPLOY_LOCAL" == true && "$DEPLOY_LOCAL_DOCKER" == true ]]; then
-    err "cannot specify both local and local-docker"
-    exit 1
-  fi
-  if [[ "$DOCKER_ARG" == true && "$DEPLOY_LOCAL_DOCKER" == true ]]; then
-    err "cannot specify both docker (remote) and local-docker"
-    exit 1
-  fi
-
   if [[ "$SELECTED_COMPONENT" == false ]]; then
-    if [[ "$DOCKER_ARG" == true ]]; then
-      DEPLOY_TAA=true
-      DEPLOY_QWEN=true
-    elif [[ "$LOCAL_DOCKER_ARG" == true ]]; then
-      DEPLOY_PLATFORM_MOCK=true
-      DEPLOY_TAA=true
-      DEPLOY_QWEN=true
-    else
-      DEPLOY_PLATFORM_MOCK=true
-      DEPLOY_TAA=true
-      DEPLOY_QWEN=true
-    fi
+    DEPLOY_PLATFORM_MOCK=true
+    DEPLOY_TAA=true
+    DEPLOY_QWEN=true
   fi
-fi
-
-if [[ "$DEPLOY_LOCAL" == true && "$LOCAL_PLATFORM_PORT_USER_SET" == false ]]; then
-  LOCAL_PLATFORM_PORT="8080"
-  LOCAL_PLATFORM_BIND="0.0.0.0:${LOCAL_PLATFORM_PORT}"
-  LOCAL_PLATFORM_IP="127.0.0.1:${LOCAL_PLATFORM_PORT}"
-  LOCAL_PLATFORM_URL="http://127.0.0.1:${LOCAL_PLATFORM_PORT}"
 fi
 
 cd "$PROJECT_DIR"
 
 if [[ "$ACTION" == "stop" ]]; then
   banner "Stopping Services"
-  if [[ "$DEPLOY_LOCAL" == true || ("$DEPLOY_LOCAL_DOCKER" == false && "$DOCKER_ARG" == false && "$DEPLOY_MODE" != "docker" && "$DEPLOY_MODE" != "k8s") ]]; then
+  if [[ "$DEPLOY_LOCAL" == true ]]; then
     step "stopping local processes"
     stop_selected_local_processes
-  fi
-  if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
-    step "stopping local-docker processes"
-    stop_selected_local_processes
+    if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -Eq "^${LOCAL_DOCKER_CONTAINER}\$"; then
+      if [[ "$DEPLOY_TAA" == true ]]; then
+        docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall '$BINARY_NAME' >/dev/null 2>&1 || true" 2>/dev/null || true
+      fi
+      if [[ "$DEPLOY_QWEN" == true ]]; then
+        docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pkill -x ollama >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true" 2>/dev/null || true
+      fi
+    fi
+  else
+    step "stopping remote processes"
+    if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
+      remote_ssh "pkill -x '$MOCK_BINARY_NAME' >/dev/null 2>&1 || true"
+    fi
+    if [[ "$DEPLOY_TAA" == true ]]; then
+      remote_ssh "$(container_exec) sh -lc 'touch /root/taa/manual && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
+    fi
+    if [[ "$DEPLOY_QWEN" == true ]]; then
+      remote_ssh "$(container_exec) sh -lc 'killall ollama >/dev/null 2>&1 || true; pkill -x ollama >/dev/null 2>&1 || true; killall llama-server >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true'"
+    fi
   fi
   info "all target services stopped cleanly"
   exit 0
@@ -649,15 +591,13 @@ fi
 
 # 用户可见的平台标签：DEBUG 模式显示 "platform-mock"，生产模式显示 "platform"
 PLATFORM_LABEL="platform"
-if [[ "$DEBUG" == true || "$DEPLOY_LOCAL" == true || "$DEPLOY_LOCAL_DOCKER" == true ]]; then
+if [[ "$DEBUG" == true || "$DEPLOY_LOCAL" == true ]]; then
   PLATFORM_LABEL="platform-mock"
 fi
 
-# 容器标识显示名：local-docker 显示本地容器名，docker 模式显示远程容器名，k8s 模式显示 Pod 名。
-if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
+# 容器标识显示名：local 模式显示本地容器名，k8s 模式显示 Pod 名。
+if [[ "$DEPLOY_LOCAL" == true ]]; then
   CONTAINER_LABEL="${LOCAL_DOCKER_CONTAINER}"
-elif [[ "$DEPLOY_MODE" == "docker" ]]; then
-  CONTAINER_LABEL="${TARGET_CONTAINER}"
 else
   CONTAINER_LABEL="${TARGET_POD}"
 fi
@@ -668,10 +608,8 @@ DEPLOY_COMPONENTS=""
 [[ "$DEPLOY_TAA" == true ]] && DEPLOY_COMPONENTS+="taa "
 [[ "$DEPLOY_QWEN" == true ]] && DEPLOY_COMPONENTS+="qwen "
 DEPLOY_TARGET_DESC="${REMOTE_USER}@${REMOTE_HOST}"
-if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
+if [[ "$DEPLOY_LOCAL" == true ]]; then
   DEPLOY_TARGET_DESC="local docker (${LOCAL_DOCKER_CONTAINER})"
-elif [[ "$DEPLOY_LOCAL" == true ]]; then
-  DEPLOY_TARGET_DESC="local machine"
 fi
 banner "Deploying: ${DEPLOY_COMPONENTS}→ ${DEPLOY_TARGET_DESC}"
 
@@ -705,56 +643,6 @@ fi
 
 
 if [[ "$DEPLOY_LOCAL" == true ]]; then
-  step "preparing local runtime directories"
-  mkdir -p "$LOCAL_PLATFORM_STATE_DIR" "$LOCAL_PLATFORM_UPLOAD_DIR" "$LOCAL_RUNTIME_DIR/attestation" "$LOCAL_TAA_MODEL_DIR" "$LOCAL_TAA_DATA_DIR" "$LOCAL_TAA_RESULT_DIR" "$LOCAL_TAA_INPUT_DIR" "$LOCAL_TAA_OUTPUT_DIR" "$LOCAL_TAA_KEYS_DIR"
-  cp "$ATT_HELPER_SOURCE" "$LOCAL_RUNTIME_DIR/attestation/get-attestation"
-  cp "$ATT_HRK_SOURCE" "$LOCAL_RUNTIME_DIR/hrk.cert"
-  cp "$ATT_HSK_SOURCE" "$LOCAL_RUNTIME_DIR/hsk_cek.cert"
-  chmod +x "$LOCAL_RUNTIME_DIR/attestation/get-attestation"
-
-  step "starting local platform-mock on ${LOCAL_PLATFORM_BIND}"
-  start_local_background "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid" "$LOCAL_PLATFORM_LOG_FILE" \
-    "$MOCK_BINARY_PATH" -addr "$LOCAL_PLATFORM_BIND" -state-dir "$LOCAL_PLATFORM_STATE_DIR" -upload-dir "$LOCAL_PLATFORM_UPLOAD_DIR" -taa-target "$LOCAL_TAA_URL" -allow-empty-attestation
-  wait_for_http_ready "platform-mock" GET "$LOCAL_PLATFORM_URL/api/register/status" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL" "$LOCAL_PLATFORM_LOG_FILE"
-
-  step "starting local ollama"
-  start_local_background "ollama" "$LOCAL_RUN_DIR/ollama.pid" "$LOCAL_OLLAMA_LOG_FILE" \
-    sh -lc "cd '$OLLAMA_LOCAL_DIR' && exec env OLLAMA_HOST='$OLLAMA_HOST' OLLAMA_MODELS='$OLLAMA_LOCAL_DIR/models/models' OLLAMA_LIBRARY_PATH='$OLLAMA_LOCAL_DIR/lib/ollama' ./start-ollama.sh"
-  wait_for_http_ready "ollama" GET "$LOCAL_OLLAMA_URL/api/tags" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL" "$LOCAL_OLLAMA_LOG_FILE"
-
-  TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
-  step "writing local taa config from $(basename "$TAA_CONFIG_TEMPLATE")"
-  write_taa_config "$LOCAL_TAA_CONFIG_PATH" "$TAA_CONFIG_TEMPLATE" "$LOCAL_TAA_BIND" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_ID" "$CONTRACT" "$LOCAL_TAA_MODEL_DIR" "$LOCAL_TAA_DATA_DIR" "$LOCAL_TAA_RESULT_DIR" "$OLLAMA_LOCAL_DIR" "$LOCAL_OLLAMA_URL" "$OLLAMA_MODEL" true "$LOCAL_TAA_INPUT_DIR" "$LOCAL_TAA_OUTPUT_DIR" "$LOCAL_TAA_KEYS_DIR"
-
-  step "starting local taa"
-  start_local_background "taa" "$LOCAL_RUN_DIR/taa.pid" "$LOCAL_TAA_LOG_FILE" \
-    sh -lc "cd '$LOCAL_RUNTIME_DIR' && exec '$TAA_BINARY_PATH'"
-  wait_for_http_ready "taa" POST "$LOCAL_TAA_URL/v1/taa/health" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL" "$LOCAL_TAA_LOG_FILE"
-
-  echo ""
-  banner "Deploy Complete"
-  info "${BOLD}platform-mock${NC} → ${LOCAL_PLATFORM_URL}"
-  echo -e "     ${DIM}state:${NC}   ${LOCAL_PLATFORM_STATE_DIR}"
-  echo -e "     ${DIM}uploads:${NC} ${LOCAL_PLATFORM_UPLOAD_DIR}"
-  echo -e "     ${DIM}log:${NC}     ${LOCAL_PLATFORM_LOG_FILE}"
-  info "${BOLD}taa${NC} → ${LOCAL_TAA_URL}"
-  echo -e "     ${DIM}cwd:${NC}   ${LOCAL_RUNTIME_DIR}"
-  echo -e "     ${DIM}log:${NC}   ${LOCAL_TAA_LOG_FILE}"
-  echo -e "     ${DIM}config:${NC} ${LOCAL_TAA_CONFIG_PATH}"
-  echo -e "     ${DIM}model:${NC} ${LOCAL_TAA_MODEL_DIR}"
-  echo -e "     ${DIM}data:${NC}  ${LOCAL_TAA_DATA_DIR}"
-  echo -e "     ${DIM}result:${NC} ${LOCAL_TAA_RESULT_DIR}"
-  echo -e "     ${DIM}input:${NC}  ${LOCAL_TAA_INPUT_DIR}"
-  echo -e "     ${DIM}output:${NC} ${LOCAL_TAA_OUTPUT_DIR}"
-  echo -e "     ${DIM}keys:${NC}   ${LOCAL_TAA_KEYS_DIR}"
-  info "${BOLD}ollama${NC} → ${LOCAL_OLLAMA_URL}"
-  echo -e "     ${DIM}log:${NC}   ${LOCAL_OLLAMA_LOG_FILE}"
-  echo -e "     ${DIM}model:${NC} ${OLLAMA_LOCAL_DIR}"
-  echo ""
-  exit 0
-fi
-
-if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
   require_command docker
   docker info >/dev/null 2>&1 || { err "docker daemon is not running or accessible"; exit 1; }
 
@@ -820,13 +708,17 @@ if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
 
     step "starting ollama inside container"
     docker exec -d "$LOCAL_DOCKER_CONTAINER" sh -lc "cd '$CONTAINER_OLLAMA_DIR' && exec env OLLAMA_HOST='$OLLAMA_HOST' OLLAMA_MODELS='$CONTAINER_OLLAMA_DIR/models/models' OLLAMA_LIBRARY_PATH='$CONTAINER_OLLAMA_DIR/lib/ollama' ./start-ollama.sh > '$OLLAMA_LOG_FILE' 2>&1"
-    wait_for_http_ready "ollama" GET "$LOCAL_OLLAMA_URL/api/tags" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL"
+    if ! wait_for_http_ready "ollama" GET "$LOCAL_OLLAMA_URL/api/tags" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL"; then
+      echo -e "   ${YELLOW}↳${NC} ollama container log (${OLLAMA_LOG_FILE}):"
+      docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "tail -n 60 '$OLLAMA_LOG_FILE' 2>/dev/null || true"
+      exit 1
+    fi
   fi
 
   # 3. 部署 taa 进本地容器
   if [[ "$DEPLOY_TAA" == true ]]; then
     step "preparing runtime directories inside container"
-    docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR/models' '$TAA_CONTAINER_WORKDIR/data' '$TAA_CONTAINER_WORKDIR/results' '$TAA_CONTAINER_WORKDIR/attestation' '$LOCAL_DOCKER_INPUT_DIR' '$LOCAL_DOCKER_OUTPUT_DIR'"
+    docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR/models' '$TAA_CONTAINER_WORKDIR/data' '$TAA_CONTAINER_WORKDIR/results' '$TAA_CONTAINER_WORKDIR/attestation' '$TAA_CONTAINER_WORKDIR/keys' '$LOCAL_DOCKER_INPUT_DIR' '$LOCAL_DOCKER_OUTPUT_DIR' && chmod 700 '$TAA_CONTAINER_WORKDIR/keys'"
 
     step "copying taa binary, attestation helper, and certificates into container"
     docker cp "$TAA_BINARY_PATH" "$LOCAL_DOCKER_CONTAINER:$TAA_CONTAINER_WORKDIR/$BINARY_NAME"
@@ -861,12 +753,15 @@ if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
     docker exec -d "$LOCAL_DOCKER_CONTAINER" sh -lc "cd '$TAA_CONTAINER_WORKDIR' && nohup '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' > '$TAA_LOG_FILE' 2>&1 &"
 
     step "waiting for taa service to become ready"
-    wait_for_http_ready "taa" POST "$LOCAL_TAA_URL/v1/taa/health" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL"
-    docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "tail -n 25 '$TAA_LOG_FILE' 2>/dev/null || true"
+    if ! wait_for_http_ready "taa" POST "$LOCAL_TAA_URL/v1/taa/health" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL"; then
+      echo -e "   ${YELLOW}↳${NC} taa container log (${TAA_LOG_FILE}):"
+      docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "tail -n 60 '$TAA_LOG_FILE' 2>/dev/null || true"
+      exit 1
+    fi
   fi
 
   echo ""
-  banner "Deploy Complete (Local Docker)"
+  banner "Deploy Complete (Local)"
   if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
     info "${BOLD}platform-mock${NC} → ${LOCAL_PLATFORM_URL}"
     echo -e "     ${DIM}state:${NC}   ${LOCAL_PLATFORM_STATE_DIR}"
@@ -881,6 +776,7 @@ if [[ "$DEPLOY_LOCAL_DOCKER" == true ]]; then
     echo -e "     ${DIM}container:${NC} ${LOCAL_DOCKER_CONTAINER}"
     echo -e "     ${DIM}config:${NC}    ${CONTAINER_TAA_CONFIG_PATH}"
     echo -e "     ${DIM}log:${NC}       ${TAA_LOG_FILE}"
+    echo -e "     ${DIM}keys:${NC}      ${LOCAL_DOCKER_CONTAINER}:$TAA_CONTAINER_WORKDIR/keys"
     echo -e "     ${DIM}platform:${NC}  ${LOCAL_PLATFORM_IP}"
     echo -e "     ${DIM}attestation:${NC} ${ATT_REPORT_FILE}"
   fi
@@ -936,7 +832,7 @@ copy_ollama_to_container() {
   remote_ssh "$(container_exec) sh -lc 'rm -rf '$CONTAINER_OLLAMA_DIR' '$CONTAINER_OLLAMA_ARCHIVE' && mkdir -p '$TAA_CONTAINER_WORKDIR''"
 
   local archive_size
-  archive_size=$(du -sh "$REMOTE_OLLAMA_ARCHIVE" 2>/dev/null | cut -f1 || echo "unknown")
+  archive_size=$(remote_ssh "du -sh '$REMOTE_OLLAMA_ARCHIVE' 2>/dev/null | cut -f1" 2>/dev/null || echo "unknown")
   info "transferring $archive_size archive from $REMOTE_OLLAMA_ARCHIVE to $CONTAINER_LABEL:$CONTAINER_OLLAMA_ARCHIVE"
 
   # Show progress while container cp runs
@@ -975,19 +871,14 @@ if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
   step "replacing remote $PLATFORM_LABEL"
   remote_ssh "mv '$REMOTE_DIR/$MOCK_BINARY_NAME.new' '$REMOTE_DIR/$MOCK_BINARY_NAME' && chmod +x '$REMOTE_DIR/$MOCK_BINARY_NAME'"
 
-  # 在远程主机上获取 TAA 容器/Pod IP，直接传给平台（避免平台运行时 kubectl 失败）
-  TAA_POD_IP=""
-  if [[ "$DEPLOY_MODE" == "docker" ]]; then
-    TAA_POD_IP=$(remote_ssh "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' '$TARGET_CONTAINER' 2>/dev/null" || echo "")
-  else
-    TAA_POD_IP=$(remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o jsonpath='{.status.podIP}' 2>/dev/null" || echo "")
-  fi
+  # 在远程主机上获取 TAA Pod IP，直接传给平台（避免平台运行时 kubectl 失败）
+  TAA_POD_IP=$(remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o jsonpath='{.status.podIP}' 2>/dev/null" || echo "")
   TAA_TARGET_ARG=""
   if [[ -n "$TAA_POD_IP" ]]; then
     TAA_TARGET_ARG="-taa-target http://${TAA_POD_IP}:${CON_PORT}"
-    echo "  discovered TAA container IP: $TAA_POD_IP"
+    echo "  discovered TAA Pod IP: $TAA_POD_IP"
   else
-    echo "  warning: could not discover TAA container IP, falling back to -taa-pod auto-discovery"
+    echo "  warning: could not discover TAA Pod IP, falling back to -taa-pod auto-discovery"
     TAA_TARGET_ARG="-taa-pod '$TARGET_POD' -taa-ns '$TARGET_NAMESPACE' -taa-port '$CON_PORT'"
   fi
 
