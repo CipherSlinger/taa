@@ -435,11 +435,11 @@
     <pre id="healthDetailContent" style="background:rgba(127,127,127,.08); padding:12px; border-radius:10px; font-size:13px; max-height:300px; overflow:auto; white-space:pre-wrap; word-break:break-all; margin:0;"></pre>
   </div>
 
-  <div class="two-col-layout" style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-bottom:16px;">
-    <!-- 左列：平台注册 -->
-    <div style="display:flex; flex-direction:column; gap:16px;">
+  <div class="two-col-layout" style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-bottom:16px; align-items:start;">
+    <!-- 左列：平台注册 与 /v1/taa/getAttestation — 获取远程证明报告（合并板块） -->
+    <section class="card" id="card-attestation" style="display:flex; flex-direction:column; gap:16px;">
       <!-- 平台注册 -->
-      <section class="card">
+      <div>
         <div class="card-head">
           <div>
             <h2>平台注册</h2>
@@ -462,27 +462,50 @@
           </div>
           <p class="muted" style="margin:0;font-size:12px;">最后刷新：<span id="lastRefresh">-</span></p>
         </div>
-      </section>
-    </div>
+      </div>
 
-    <!-- 右列：远程报告证明获取 -->
-    <section class="card" id="card-attestation" style="display:flex; flex-direction:column;">
+      <hr style="border:0; border-top:1px solid var(--line); margin:2px 0;">
+
+      <!-- /v1/taa/getAttestation — 获取远程证明报告 -->
+      <div style="display:flex; flex-direction:column;">
+        <div class="card-head">
+          <div>
+            <h2>/v1/taa/getAttestation — 获取远程证明报告</h2>
+            <p class="card-note">获取远程证明报告并保存为本地文件。</p>
+          </div>
+        </div>
+        <label for="attestRequestId">requestId</label>
+        <div class="input-action-group">
+          <input id="attestRequestId" value="req-mock-attest-001">
+          <button type="button" class="secondary btn-field-random" onclick="randomizeField('attestRequestId', 'req-attest')" title="生成随机 requestId">随机生成</button>
+        </div>
+        <div class="actions">
+          <button onclick="testGetAttestation()">发送测试</button>
+          <button id="saveReportBtn" class="success" onclick="saveAttestationReport()" disabled>保存报告文件</button>
+        </div>
+        <div id="attestationResult" class="test-result"></div>
+      </div>
+    </section>
+
+    <!-- 右列：/v1/taa/getResourceInfo — 资源信息获取 -->
+    <section class="card" id="card-resourceInfo" style="display:flex; flex-direction:column;">
       <div class="card-head">
         <div>
-          <h2>/v1/taa/getAttestation — 获取远程证明报告</h2>
-          <p class="card-note">获取远程证明报告并保存为本地文件。</p>
+          <h2>/v1/taa/getResourceInfo — 资源信息获取</h2>
+          <p class="card-note">传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理。</p>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <button id="resourceInfoModalBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openResourceInfoModal()" disabled>弹窗全屏查看</button>
         </div>
       </div>
-      <label for="attestRequestId">requestId</label>
-      <div class="input-action-group">
-        <input id="attestRequestId" value="req-mock-attest-001">
-        <button type="button" class="secondary btn-field-random" onclick="randomizeField('attestRequestId', 'req-attest')" title="生成随机 requestId">随机生成</button>
-      </div>
+      <label for="resourceInfoUrl">resourceUrl</label>
+      <input id="resourceInfoUrl" value="http://example.com/data.tar.gz">
       <div class="actions">
-        <button onclick="testGetAttestation()">发送测试</button>
-        <button id="saveReportBtn" class="success" onclick="saveAttestationReport()" disabled>保存报告文件</button>
+        <button onclick="testGetResourceInfo()">发送测试</button>
+        <button type="button" class="secondary" onclick="loadSampleResourceTree()">加载示例树</button>
       </div>
-      <div id="attestationResult" class="test-result"></div>
+      <div id="resourceInfoResult" class="test-result"></div>
+      <div id="resourceInfoTreeContainer" style="display:none; margin-top:14px;"></div>
     </section>
   </div>
 
@@ -644,38 +667,16 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
     </section>
   </div>
 
-  <!-- 第三行：阶段切换 + 资源信息获取 -->
-  <div class="two-col-layout" style="display:grid; grid-template-columns: repeat(2, 1fr); gap:16px; margin-bottom:16px;">
-    <section class="card" id="card-switch">
-      <h2>/v1/taa/switch — 阶段切换</h2>
-      <label for="switchPhase">phase（1=调试, 2=测试, 3=正式训练, 4=推理）</label>
-      <input id="switchPhase" value="2">
-      <div class="actions">
-        <button onclick="testSwitch()">发送测试</button>
-      </div>
-      <div id="switchResult" class="test-result"></div>
-    </section>
-
-    <section class="card" id="card-resourceInfo" style="display:flex; flex-direction:column;">
-      <div class="card-head">
-        <div>
-          <h2>/v1/taa/getResourceInfo — 资源信息获取</h2>
-          <p class="card-note">传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理。</p>
-        </div>
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <button id="resourceInfoModalBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openResourceInfoModal()" disabled>弹窗全屏查看</button>
-        </div>
-      </div>
-      <label for="resourceInfoUrl">resourceUrl</label>
-      <input id="resourceInfoUrl" value="http://example.com/data.tar.gz">
-      <div class="actions">
-        <button onclick="testGetResourceInfo()">发送测试</button>
-        <button type="button" class="secondary" onclick="loadSampleResourceTree()">加载示例树</button>
-      </div>
-      <div id="resourceInfoResult" class="test-result"></div>
-      <div id="resourceInfoTreeContainer" style="display:none; margin-top:14px;"></div>
-    </section>
-  </div>
+  <!-- 第三行：阶段切换 -->
+  <section class="card" id="card-switch">
+    <h2>/v1/taa/switch — 阶段切换</h2>
+    <label for="switchPhase">phase（1=调试, 2=测试, 3=正式训练, 4=推理）</label>
+    <input id="switchPhase" value="2">
+    <div class="actions">
+      <button onclick="testSwitch()">发送测试</button>
+    </div>
+    <div id="switchResult" class="test-result"></div>
+  </section>
 
   <!-- 一键测试结果 -->
   <section class="card" id="card-batch" style="display:none">
