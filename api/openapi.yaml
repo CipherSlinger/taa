@@ -1,0 +1,714 @@
+openapi: 3.0.3
+info:
+  title: TAA (Trusted Application Agent) API 接口协议
+  version: 1.0.0
+  description: |
+    TAA（Trusted Application Agent）是运行在 Hygon CSV TEE 可信执行环境中的密态计算执行框架与代理守护进程。
+    本规范定义了平台与 TAA 之间的所有双向交互协议：
+    - 平台向 TAA 下发的控制指令（健康检查、状态查询、资源导入、阶段切换、结果导出等）
+    - TAA 向平台主动发起的上报与回调（启动注册、证明报告上报、训练结果与代码审计报告回传等）
+servers:
+  - url: http://127.0.0.1:6001
+    description: TAA 实例监听端点（默认端口 6001）
+  - url: http://127.0.0.1:18080
+    description: 管控平台或 Platform-Mock 接收端点
+
+paths:
+  # =========================================================================
+  # 平台 → TAA 控制接口
+  # =========================================================================
+
+  /v1/taa/health:
+    post:
+      summary: 健康检查
+      description: 平台检查 TAA 服务的连通性与存活状态。
+      tags:
+        - 运维与监控
+      responses:
+        '200':
+          description: 服务正常
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                msg: "success"
+                result:
+                  status: "ok"
+                error: 0
+
+  /v1/taa/status:
+    post:
+      summary: 状态查询
+      description: 查询 TAA 运行状态、当前阶段、资源导入就绪情况以及当前执行的操作。
+      tags:
+        - 运维与监控
+      responses:
+        '200':
+          description: 成功返回状态
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      result:
+                        $ref: '#/components/schemas/StatusResult'
+              example:
+                msg: "success"
+                result:
+                  currentPhase: 1
+                  modelImported: true
+                  dataImported: false
+                  trainingDataImported: false
+                  trainingDone: false
+                  currentOp: "idle"
+                error: 0
+
+  /v1/taa/logs:
+    post:
+      summary: 日志查询
+      description: 按时间戳增量获取 TAA 实例在 TEE 内部记录的结构化运行日志。
+      tags:
+        - 运维与监控
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogsRequest'
+            example:
+              since: "2026-09-02T10:00:00Z"
+      responses:
+        '200':
+          description: 成功返回日志列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      result:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/LogEntry'
+              example:
+                msg: "success"
+                result:
+                  - timestamp: "2026-09-02T10:03:35Z"
+                    level: "INFO"
+                    message: "resource downloaded and decrypted successfully"
+                error: 0
+
+  /v1/taa/getAttestation:
+    post:
+      summary: 获取远程证明报告
+      description: 平台主动向 TAA 请求获取最新的 Hygon CSV 远程证明报告（包含 USERDATA 绑定的公钥）。
+      tags:
+        - 远程证明
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GetAttestationRequest'
+            example:
+              requestId: "req-att-001"
+      responses:
+        '200':
+          description: 成功获取远程证明报告
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      result:
+                        $ref: '#/components/schemas/GetAttestationResult'
+              example:
+                msg: "success"
+                result:
+                  requestId: "req-att-001"
+                  verifiedPass: true
+                  attestation: "base64-encoded-attestation-report..."
+                  attestationValues: '{"userdata":"-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----","mnonce":"0123...","digest":"0123...","chipId":"0123..."}'
+                error: 0
+
+  /v1/taa/import:
+    post:
+      summary: 导入数据资源
+      description: 平台向 TAA 下发测试数据（type=2）或正式训练数据（type=3）的密态资源包进行解密和校验。
+      tags:
+        - 资源流转
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportRequest'
+            example:
+              resourceUrl: "http://platform.internal/files/encrypted-data.tar.gz.enc"
+              type: 2
+              taskId: "task-20260902-001"
+              requestId: "req-imp-001"
+      responses:
+        '200':
+          description: 资源导入成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                msg: "资源导入成功"
+                result:
+                  taskId: "task-20260902-001"
+                error: 0
+
+  /v1/taa/importModel:
+    post:
+      summary: 导入模型代码
+      description: 平台向 TAA 下发模型代码密态资源包（Phase 1），TAA 在 TEE 内完成解封、解压、静态代码扫描及 LLM 语义安全审计。
+      tags:
+        - 资源流转
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportModelRequest'
+            example:
+              resourceUrl: "http://platform.internal/files/model-package.tar.gz.enc"
+              taskId: "task-20260902-001"
+              requestId: "req-model-001"
+              runtimeConfig: "python3 train.py --epochs 10"
+      responses:
+        '200':
+          description: 模型导入成功并完成代码安全审计
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                msg: "模型导入成功，审计已通过"
+                result:
+                  taskId: "task-20260902-001"
+                  auditPassed: true
+                error: 0
+
+  /v1/taa/getResourceInfo:
+    post:
+      summary: 获取资源预分析与目录树信息
+      description: 平台传入 resourceUrl，TAA 下载并解密资源，按魔数识别多模态数据结构并输出带注释的目录树 JSON。
+      tags:
+        - 资源流转
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GetResourceInfoRequest'
+            example:
+              resourceUrl: "http://platform.internal/files/dataset.zip"
+      responses:
+        '200':
+          description: 成功解析资源结构
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - properties:
+                      result:
+                        $ref: '#/components/schemas/ResourceInfoResult'
+              example:
+                msg: "success"
+                result:
+                  name: "dataset.zip"
+                  size: 10485760
+                  fileCount: 15
+                  fileTree:
+                    type: "directory"
+                    name: "root"
+                    children: []
+                error: 0
+
+  /v1/taa/switch:
+    post:
+      summary: 切换运行阶段
+      description: 平台通知 TAA 切换计算阶段（1=调试, 2=测试, 3=正式训练, 4=推理），并拉起对应沙箱执行脚本。
+      tags:
+        - 任务执行
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SwitchRequest'
+            example:
+              phase: 2
+      responses:
+        '200':
+          description: 阶段切换成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                msg: "阶段切换成功"
+                result:
+                  phase: 2
+                  phaseName: "测试"
+                error: 0
+
+  /v1/taa/export:
+    post:
+      summary: 导出结果
+      description: 平台请求 TAA 打包导出当前阶段的结果。若提供 publicKey 则以 SM2 信封加密后返回文件流，否则仅允许在 Phase 1/2 以明文流返回。
+      tags:
+        - 任务执行
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportRequest'
+            example:
+              taskId: "task-20260902-001"
+              publicKey: "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
+      responses:
+        '200':
+          description: 导出结果二进制流（或自包含信封密文）
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              example: "attachment; filename=\"result-task-001.bin\""
+            X-TAA-Task-Id:
+              schema:
+                type: string
+              example: "task-20260902-001"
+            X-TAA-Encrypted:
+              schema:
+                type: string
+              example: "true"
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: 参数错误或未通过结果泄露检查
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+
+  # =========================================================================
+  # TAA → 平台 回调与上报接口
+  # =========================================================================
+
+  /v1/taa/register:
+    post:
+      summary: TAA 启动注册
+      description: TAA 启动后主动向平台发送自身绑定的 SM2 公钥、Hygon CSV 远程证明报告以及运行元数据。
+      tags:
+        - 平台回调
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '200':
+          description: 平台成功确认注册
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                msg: "success"
+                result:
+                  received: true
+                  verifiedPass: true
+                error: 0
+
+  /v1/taa/reportRes:
+    post:
+      summary: 上报训练完成结果
+      description: 训练或推理执行完成后，TAA 向平台回传包含数据集摘要、模型哈希、训练指标和审计摘要的报告。
+      tags:
+        - 平台回调
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportResRequest'
+      responses:
+        '200':
+          description: 平台成功接收训练结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                msg: "success"
+                result:
+                  received: true
+                error: 0
+
+  /v1/taa/reportModelImport:
+    post:
+      summary: 上报模型导入与代码审计结果
+      description: TAA 完成模型解包和代码审计后，向平台回传代码审计结论与可疑特征明细。
+      tags:
+        - 平台回调
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportModelImportRequest'
+      responses:
+        '200':
+          description: 平台成功接收模型导入审计结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                msg: "success"
+                result:
+                  received: true
+                error: 0
+
+components:
+  schemas:
+    # ── 公共响应包装 ────────────────────────────────────────────────────────
+    ApiResponse:
+      type: object
+      required:
+        - msg
+        - error
+      properties:
+        msg:
+          type: string
+          description: 返回消息说明
+          example: "success"
+        result:
+          type: object
+          nullable: true
+          description: 具体的业务数据对象；无数据时为 null
+        error:
+          type: integer
+          description: 错误码，0 表示成功，非 0 表示各类业务或系统错误
+          example: 0
+
+    # ── 状态模型 ────────────────────────────────────────────────────────────
+    StatusResult:
+      type: object
+      properties:
+        currentPhase:
+          type: integer
+          description: 当前阶段 (1=调试, 2=测试, 3=训练, 4=推理)
+          example: 1
+        modelImported:
+          type: boolean
+          description: 模型代码是否已导入
+        dataImported:
+          type: boolean
+          description: 测试数据是否已导入
+        trainingDataImported:
+          type: boolean
+          description: 训练数据是否已导入
+        trainingDone:
+          type: boolean
+          description: 训练是否已完成
+        currentOp:
+          type: string
+          description: 当前后台操作 (idle/downloading/decrypting/extracting/training/auditing 等)
+          example: "idle"
+
+    # ── 日志模型 ────────────────────────────────────────────────────────────
+    LogsRequest:
+      type: object
+      properties:
+        since:
+          type: string
+          format: date-time
+          description: 仅获取此 ISO8601 时间戳之后的增量日志
+          example: "2026-09-02T10:00:00Z"
+
+    LogEntry:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: 日志产生时间
+        level:
+          type: string
+          enum: [DEBUG, INFO, WARN, ERROR]
+          description: 日志级别
+        message:
+          type: string
+          description: 日志内容
+
+    # ── 证明模型 ────────────────────────────────────────────────────────────
+    GetAttestationRequest:
+      type: object
+      required:
+        - requestId
+      properties:
+        requestId:
+          type: string
+          description: 防重放请求唯一标识符
+          example: "req-att-001"
+
+    GetAttestationResult:
+      type: object
+      properties:
+        requestId:
+          type: string
+        verifiedPass:
+          type: boolean
+          description: TAA 本地对 CSV 报告的验证结果
+        attestation:
+          type: string
+          description: Base64 编码的 Hygon CSV 二进制远程证明报告 (长度 0x9F4 字节)
+        attestationValues:
+          type: string
+          description: 报告关键字段提取后的 JSON 序列化字符串 (含 userdata, mnonce, digest, chipId 等)
+
+    # ── 资源导入模型 ────────────────────────────────────────────────────────
+    ImportRequest:
+      type: object
+      required:
+        - resourceUrl
+        - type
+        - taskId
+        - requestId
+      properties:
+        resourceUrl:
+          type: string
+          description: 加密数据资源的 HTTP(S) 下载地址
+        type:
+          type: integer
+          enum: [2, 3]
+          description: 资源类型 (2=测试数据, 3=训练数据)
+        taskId:
+          type: string
+          description: 任务唯一标识
+        requestId:
+          type: string
+          description: 请求唯一标识
+
+    ImportModelRequest:
+      type: object
+      required:
+        - resourceUrl
+        - taskId
+        - requestId
+      properties:
+        resourceUrl:
+          type: string
+          description: 加密模型代码包的 HTTP(S) 下载地址
+        taskId:
+          type: string
+          description: 任务唯一标识
+        requestId:
+          type: string
+          description: 请求唯一标识
+        runtimeConfig:
+          type: string
+          description: 模型训练启动命令与参数配置
+          example: "python3 train.py --epochs 10"
+
+    GetResourceInfoRequest:
+      type: object
+      required:
+        - resourceUrl
+      properties:
+        resourceUrl:
+          type: string
+          description: 待预分析的资源 URL
+
+    ResourceInfoResult:
+      type: object
+      properties:
+        name:
+          type: string
+          description: 资源原始文件名
+        size:
+          type: integer
+          description: 资源字节大小
+        fileCount:
+          type: integer
+          description: 解包后文件总数
+        fileTree:
+          type: object
+          description: 多模态目录树结构与 Schema 注释
+
+    # ── 阶段切换与导出 ──────────────────────────────────────────────────────
+    SwitchRequest:
+      type: object
+      required:
+        - phase
+      properties:
+        phase:
+          type: integer
+          enum: [1, 2, 3, 4]
+          description: 目标计算阶段 (1=调试, 2=测试, 3=正式训练, 4=推理)
+
+    ExportRequest:
+      type: object
+      properties:
+        taskId:
+          type: string
+          description: 任务 ID
+        publicKey:
+          type: string
+          description: 结果接收方的国密 SM2 公钥 PEM。若为空且处于 Phase 1/2 则导出明文，否则必须提供公钥进行信封重加密
+
+    # ── 回调请求模型 ────────────────────────────────────────────────────────
+    RegisterRequest:
+      type: object
+      required:
+        - dockerId
+        - attestation
+        - taaPublicKey
+        - attestationValues
+        - timestamp
+        - verifiedPass
+      properties:
+        dockerId:
+          type: string
+          description: 容器/环境唯一标识
+        attestation:
+          type: string
+          description: Base64 编码的 CSV 证明报告
+        taaPublicKey:
+          type: string
+          description: TAA 实例专属 SM2 公钥 PEM
+        attestationValues:
+          type: string
+          description: 报告提取核心字段 JSON
+        timestamp:
+          type: string
+          description: Unix 时间戳（秒）
+        verifiedPass:
+          type: boolean
+          description: 本地验证是否通过
+        authInfo:
+          type: object
+          nullable: true
+          description: 授权元数据（预留，当前固定 null）
+
+    ReportResRequest:
+      type: object
+      required:
+        - dockerId
+        - requestId
+        - code
+      properties:
+        dockerId:
+          type: string
+        requestId:
+          type: string
+        taskId:
+          type: string
+        code:
+          type: integer
+          description: 执行状态码 (0=成功, 非0=异常)
+        msg:
+          type: string
+          nullable: true
+          description: 错误或警告信息
+        report:
+          type: string
+          description: 详细执行指标与报告 JSON
+
+    ReportModelImportRequest:
+      type: object
+      required:
+        - dockerId
+        - requestId
+        - code
+      properties:
+        dockerId:
+          type: string
+        requestId:
+          type: string
+        taskId:
+          type: string
+        code:
+          type: integer
+        msg:
+          type: string
+          nullable: true
+        auditReport:
+          $ref: '#/components/schemas/AuditReport'
+
+    # ── 代码审计模型 ────────────────────────────────────────────────────────
+    AuditReport:
+      type: object
+      properties:
+        conclusion:
+          type: object
+          properties:
+            passed:
+              type: boolean
+              description: 综合是否通过审计
+            risk_level:
+              type: string
+              enum: [NONE, LOW, MEDIUM, HIGH, CRITICAL]
+            summary:
+              type: string
+            recommendation:
+              type: string
+            statistics:
+              type: object
+              properties:
+                total_findings:
+                  type: integer
+                high:
+                  type: integer
+                medium:
+                  type: integer
+                malicious:
+                  type: integer
+                suspicious:
+                  type: integer
+                benign:
+                  type: integer
+                uncertain:
+                  type: integer
+        file_reports:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              filename:
+                type: string
+              findings:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    rule_id:
+                      type: string
+                    line:
+                      type: integer
+                    severity:
+                      type: string
+                    description:
+                      type: string
+                    llm_verdict:
+                      type: string
+                      enum: [BENIGN, SUSPICIOUS, MALICIOUS, UNCERTAIN]
+                    confidence:
+                      type: number
+                    reasoning:
+                      type: string

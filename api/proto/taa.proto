@@ -1,0 +1,254 @@
+syntax = "proto3";
+
+package taa.v1;
+
+option go_package = "taa/api/v1;taav1";
+
+// ── 通用响应包装 ─────────────────────────────────────────────────────────────
+
+message ApiResponse {
+  string msg = 1;
+  int32 error = 2;
+  string result_json = 3; // 嵌套业务对象的 JSON 序列化字符串（兼容通用结构）
+}
+
+// ── TAA 控制与状态接口 ────────────────────────────────────────────────────────
+
+service TAAService {
+  // 健康检查
+  rpc Health(HealthRequest) returns (ApiResponse);
+
+  // 状态查询
+  rpc Status(StatusRequest) returns (StatusResponse);
+
+  // 增量日志查询
+  rpc Logs(LogsRequest) returns (LogsResponse);
+
+  // 获取最新的 CSV 远程证明报告
+  rpc GetAttestation(GetAttestationRequest) returns (GetAttestationResponse);
+
+  // 下发并导入测试/训练数据
+  rpc Import(ImportRequest) returns (ApiResponse);
+
+  // 下发并导入模型代码（触发代码安全审计）
+  rpc ImportModel(ImportModelRequest) returns (ApiResponse);
+
+  // 预分析资源结构与多模态目录树
+  rpc GetResourceInfo(GetResourceInfoRequest) returns (GetResourceInfoResponse);
+
+  // 切换运行计算阶段
+  rpc Switch(SwitchRequest) returns (ApiResponse);
+
+  // 导出计算结果
+  rpc Export(ExportRequest) returns (ExportResponse);
+}
+
+// ── 平台接收与上报回调接口 ────────────────────────────────────────────────────
+
+service PlatformCallbackService {
+  // TAA 启动后向平台注册身份、证明报告与公钥
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // 训练或推理任务完成后上报执行结果指标
+  rpc ReportRes(ReportResRequest) returns (ReportResResponse);
+
+  // 模型导入与代码审计完成后上报审计报告
+  rpc ReportModelImport(ReportModelImportRequest) returns (ReportModelImportResponse);
+}
+
+// ── 消息体定义 ───────────────────────────────────────────────────────────────
+
+message HealthRequest {}
+
+message StatusRequest {}
+
+message StatusResponse {
+  string msg = 1;
+  int32 error = 2;
+  StatusData result = 3;
+}
+
+message StatusData {
+  int32 current_phase = 1;
+  bool model_imported = 2;
+  bool data_imported = 3;
+  bool training_data_imported = 4;
+  bool training_done = 5;
+  string current_op = 6;
+}
+
+message LogsRequest {
+  string since = 1; // ISO8601 可选起始时间戳
+}
+
+message LogEntry {
+  string timestamp = 1;
+  string level = 2;
+  string message = 3;
+}
+
+message LogsResponse {
+  string msg = 1;
+  int32 error = 2;
+  repeated LogEntry result = 3;
+}
+
+message GetAttestationRequest {
+  string request_id = 1;
+}
+
+message GetAttestationResponse {
+  string msg = 1;
+  int32 error = 2;
+  GetAttestationResult result = 3;
+}
+
+message GetAttestationResult {
+  string request_id = 1;
+  bool verified_pass = 2;
+  string attestation = 3; // Base64 编码的 CSV 报告
+  string attestation_values = 4; // 报告核心提取字段 JSON
+}
+
+message ImportRequest {
+  string resource_url = 1;
+  int32 type = 2; // 2=测试数据, 3=训练数据
+  string task_id = 3;
+  string request_id = 4;
+}
+
+message ImportModelRequest {
+  string resource_url = 1;
+  string task_id = 2;
+  string request_id = 3;
+  string runtime_config = 4;
+}
+
+message GetResourceInfoRequest {
+  string resource_url = 1;
+}
+
+message GetResourceInfoResponse {
+  string msg = 1;
+  int32 error = 2;
+  ResourceInfoData result = 3;
+}
+
+message ResourceInfoData {
+  string name = 1;
+  int64 size = 2;
+  int32 file_count = 3;
+  string file_tree_json = 4; // 多模态目录树结构与 Schema 注释 JSON
+}
+
+message SwitchRequest {
+  int32 phase = 1; // 1=调试, 2=测试, 3=训练, 4=推理
+}
+
+message ExportRequest {
+  string task_id = 1;
+  string public_key = 2; // 导出公钥 (PEM 格式 SM2 公钥)
+}
+
+message ExportResponse {
+  string task_id = 1;
+  bool encrypted = 2;
+  bytes payload = 3; // 归档文件明文包或 SM2+SM4 密文流
+}
+
+// ── 平台注册与上报消息体 ─────────────────────────────────────────────────────
+
+message RegisterRequest {
+  string docker_id = 1;
+  string attestation = 2; // Base64 编码报告
+  string taa_public_key = 3; // PEM 格式 SM2 公钥
+  string attestation_values = 4; // JSON 格式提取字段
+  string timestamp = 5;
+  bool verified_pass = 6;
+  string auth_info = 7;
+}
+
+message RegisterResponse {
+  string msg = 1;
+  int32 error = 2;
+  RegisterResult result = 3;
+}
+
+message RegisterResult {
+  bool received = 1;
+  bool verified_pass = 2;
+}
+
+message ReportResRequest {
+  string docker_id = 1;
+  string request_id = 2;
+  string task_id = 3;
+  int32 code = 4;
+  string msg = 5;
+  string report = 6; // 训练结果报告 JSON 串
+}
+
+message ReportResResponse {
+  string msg = 1;
+  int32 error = 2;
+  ReportResult result = 3;
+}
+
+message ReportResult {
+  bool received = 1;
+}
+
+message ReportModelImportRequest {
+  string docker_id = 1;
+  string request_id = 2;
+  string task_id = 3;
+  int32 code = 4;
+  string msg = 5;
+  AuditReport audit_report = 6;
+}
+
+message ReportModelImportResponse {
+  string msg = 1;
+  int32 error = 2;
+  ReportResult result = 3;
+}
+
+// ── 代码审计模型 ─────────────────────────────────────────────────────────────
+
+message AuditReport {
+  AuditConclusion conclusion = 1;
+  repeated FileAuditReport file_reports = 2;
+}
+
+message AuditConclusion {
+  bool passed = 1;
+  string risk_level = 2; // NONE / LOW / MEDIUM / HIGH / CRITICAL
+  string summary = 3;
+  string recommendation = 4;
+  AuditStatistics statistics = 5;
+}
+
+message AuditStatistics {
+  int32 total_findings = 1;
+  int32 high = 2;
+  int32 medium = 3;
+  int32 malicious = 4;
+  int32 suspicious = 5;
+  int32 benign = 6;
+  int32 uncertain = 7;
+}
+
+message FileAuditReport {
+  string filename = 1;
+  repeated AuditFinding findings = 2;
+}
+
+message AuditFinding {
+  string rule_id = 1;
+  int32 line = 2;
+  string severity = 3;
+  string description = 4;
+  string llm_verdict = 5; // BENIGN / SUSPICIOUS / MALICIOUS / UNCERTAIN
+  double confidence = 6;
+  string reasoning = 7;
+}
