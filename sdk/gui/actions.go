@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"taa/crypto"
+	"taa/pkg/crypto"
 )
 
 func generateSM4KeyBase64() (string, error) {

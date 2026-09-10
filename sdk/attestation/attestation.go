@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"taa/crypto"
+	"taa/pkg/crypto"
 )
 
 const (

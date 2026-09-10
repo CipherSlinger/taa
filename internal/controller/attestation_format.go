@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math/big"
 
-	teecrypto "taa/crypto"
+	teecrypto "taa/pkg/crypto"
 	"taa/internal/attestation"
 )
 

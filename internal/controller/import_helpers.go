@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	teecrypto "taa/crypto"
+	teecrypto "taa/pkg/crypto"
 	"taa/pkg/utils"
 )
 

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	taacrypto "taa/crypto"
+	taacrypto "taa/pkg/crypto"
 )
 
 var DownloadCertFunc = DownloadCert

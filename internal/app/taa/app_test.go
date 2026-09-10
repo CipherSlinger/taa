@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	teecrypto "taa/crypto"
+	teecrypto "taa/pkg/crypto"
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 )

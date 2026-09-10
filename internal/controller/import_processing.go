@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	teecrypto "taa/crypto"
+	teecrypto "taa/pkg/crypto"
 	filetree "taa/pkg/filetree"
 	"taa/internal/codeaudit"
 )

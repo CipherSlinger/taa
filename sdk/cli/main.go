@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"taa/crypto"
+	"taa/pkg/crypto"
 )
 
 // fatal 打印错误信息并退出程序。

@@ -27,7 +27,7 @@ import (
 	"sync"
 	"time"
 
-	"taa/crypto"
+	"taa/pkg/crypto"
 )
 
 //go:embed index.html

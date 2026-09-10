@@ -36,7 +36,7 @@ import (
 	"github.com/xuri/excelize/v2"
 	_ "modernc.org/sqlite" // 纯 Go SQLite 驱动，无 CGO 依赖
 
-	teecrypto "taa/crypto"
+	teecrypto "taa/pkg/crypto"
 )
 
 const (

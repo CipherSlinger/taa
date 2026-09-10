@@ -26,7 +26,7 @@ go get teecrypto
 ## 快速开始
 
 ```go
-import "taa/crypto"
+import "taa/pkg/crypto"
 
 // 1. 生成 SM4 密钥
 key, _ := crypto.GenerateSM4Key()

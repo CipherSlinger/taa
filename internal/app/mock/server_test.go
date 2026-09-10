@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"taa/crypto"
+	"taa/pkg/crypto"
 )
 
 func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {

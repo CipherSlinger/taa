@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"teecrypto/attestation"
-	"taa/crypto"
+	"taa/pkg/crypto"
 )
 
 func TestEncryptDecryptTextSM4(t *testing.T) {
