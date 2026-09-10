@@ -308,6 +308,30 @@ func TestScannerOnTEEtestModel(t *testing.T) {
 	}
 }
 
+func TestScannerOnRetinaDKDFiles(t *testing.T) {
+	files := []string{
+		filepath.Join("..", "..", "models", "examples", "Retina-DKD", "Retina-DKD", "test_isolate_all.py"),
+		filepath.Join("..", "..", "models", "examples", "Retina-DKD", "Retina-DKD", "test_fusion.py"),
+		filepath.Join("..", "..", "models", "examples", "Retina-DKD", "Retina-DKD", "test_fusion_pat.py"),
+		filepath.Join("..", "..", "models", "examples", "Retina-DKD", "Retina-DKD", "test_run.py"),
+	}
+	if _, err := os.Stat(files[0]); os.IsNotExist(err) {
+		t.Skip("Retina-DKD files not available, skipping")
+	}
+	scanner := NewDefaultScanner()
+	for _, file := range files {
+		findings, err := scanner.ScanFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(findings) > 0 {
+			for _, f := range findings {
+				t.Errorf("unexpected finding in %s: line %d [%s] %s", filepath.Base(file), f.Line, f.RuleID, f.CodeSnippet)
+			}
+		}
+	}
+}
+
 // ── Context extraction tests ─────────────────────────────
 
 func TestScannerCapturesContext(t *testing.T) {
@@ -465,6 +489,50 @@ def train(model, model_name, dataset, test_dataset):
 	}
 	if !report.Passed {
 		t.Fatalf("expected benign checkpoint save to pass, got findings: %+v", report.Findings)
+	}
+}
+
+func TestScannerIgnoresDatasetNameAndSeparatorLogging(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "eval.py", `
+def evaluate(dataset, model_name):
+    print(model_name + ':')
+    print(dataset + '--------')
+    print(dataset)
+    print("ave_acc: %.2f%%" % 85.5)
+`)
+	scanner := NewDefaultScanner()
+	report, err := scanner.ScanDirectory(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Findings) != 0 {
+		t.Fatalf("expected 0 findings for dataset name/separator logging, got: %+v", report.Findings)
+	}
+}
+
+func TestScannerDetectsRawDataLogging(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "leak.py", `
+def leak(raw_data, images, samples, batch, x_train):
+    print(raw_data)
+    print(images)
+    print(samples)
+    print(batch)
+    print(x_train)
+`)
+	scanner := NewDefaultScanner()
+	report, err := scanner.ScanDirectory(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Findings) != 5 {
+		t.Fatalf("expected 5 EMB_003 findings for raw data logging, got %d: %+v", len(report.Findings), report.Findings)
+	}
+	for _, f := range report.Findings {
+		if f.RuleID != "EMB_003" {
+			t.Errorf("expected rule EMB_003, got %s", f.RuleID)
+		}
 	}
 }
 
