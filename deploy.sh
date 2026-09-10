@@ -406,14 +406,14 @@ http_probe() {
   local method="$1"
   local url="$2"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsS -X "$method" "$url" >/dev/null
+    curl -fsS -X "$method" "$url" >/dev/null 2>&1
     return $?
   fi
   if command -v wget >/dev/null 2>&1; then
     if [[ "$method" == "POST" ]]; then
-      wget -q -O - --method=POST --body-data='' "$url" >/dev/null
+      wget -q -O - --method=POST --body-data='' "$url" >/dev/null 2>&1
     else
-      wget -q -O - "$url" >/dev/null
+      wget -q -O - "$url" >/dev/null 2>&1
     fi
     return $?
   fi
