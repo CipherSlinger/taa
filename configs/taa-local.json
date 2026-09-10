@@ -17,6 +17,6 @@
     "model": "qwen2.5-coder:0.5b",
     "policy": "assist",
     "failClosed": true,
-    "dir": "/root/taa/ollama-qwen2.5-coder-0.5b"
+    "dir": "/root/taa/ollama-qwen"
   }
 }

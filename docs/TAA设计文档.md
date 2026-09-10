@@ -154,7 +154,7 @@ sequenceDiagram
 | 远程证明 | `internal/attestation/` + `attestation/` | 调用 CSV 硬件生成远程证明报告 |
 | 安全审计 | `internal/codeaudit/` | Python 代码静态扫描 + LLM 语义验证 |
 | 加密工具 | `crypto/` | SM2 信封加密/解密，SM4-GCM |
-| Ollama/Qwen | `ollama-qwen2.5-coder-0.5b/` | 本地 LLM 推理，用于代码审计的语义验证 |
+| Ollama/Qwen | `ollama-qwen/` | 本地 LLM 推理，用于代码审计的语义验证 |
 
 ## 3. 启动流程
 
@@ -478,7 +478,7 @@ TAA_DEBUG_MODE=true ./deploy.sh taa
 │   └── get-attestation          证明 helper
 ├── hrk.cert                     HRK 根证书
 ├── hsk_cek.cert                 HSK/CEK 证书
-└── ollama-qwen2.5-coder-0.5b/  Ollama 离线包
+└── ollama-qwen/                Ollama 离线包
     ├── ollama                   Ollama 二进制
     ├── start-ollama.sh          启动脚本
     ├── models/                  模型文件
@@ -543,7 +543,7 @@ tee/
 │   ├── LogisticRegression/      逻辑回归模型
 │   ├── TEE-test/                MNIST/CIFAR-10 测试
 │   └── Retina-DKD/              视网膜疾病模型
-├── ollama-qwen2.5-coder-0.5b/  Ollama 离线包
+├── ollama-qwen/                Ollama 离线包
 └── docs/                        文档
     ├── taa接口设计文档.md
     └── TAA设计文档.md            (本文件)

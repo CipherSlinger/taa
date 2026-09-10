@@ -167,8 +167,10 @@ func ensureQwenAvailable(ctx context.Context, endpoint, model, ollamaDir string)
 
 	if ollamaDir == "" {
 		// 默认路径：容器内 TAA 工作目录下的 ollama 离线包
-		// deploy.sh 通常部署到 $CON_WORKDIR/ollama-qwen2.5-coder-0.5b
+		// deploy.sh 通常部署到 $CON_WORKDIR/ollama-qwen
 		candidates := []string{
+			"/root/taa/ollama-qwen",
+			"/root/taadebug/ollama-qwen",
 			"/root/taa/ollama-qwen2.5-coder-0.5b",
 			"/root/taadebug/ollama-qwen2.5-coder-0.5b",
 		}

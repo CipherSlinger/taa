@@ -74,7 +74,7 @@ else
   TAA_LOG_FILE="${TAA_LOG_FILE:-/tmp/taa.log}"
 fi
 # Ollama / Qwen：本地离线包、远程缓存目录、容器内目录、服务监听和模型配置。
-OLLAMA_LOCAL_DIR="${OLLAMA_LOCAL_DIR:-$PROJECT_DIR/models/audit/ollama-qwen2.5-coder-0.5b}"
+OLLAMA_LOCAL_DIR="${OLLAMA_LOCAL_DIR:-$PROJECT_DIR/models/audit/ollama-qwen}"
 OLLAMA_DIR_NAME="${OLLAMA_DIR_NAME:-$(basename "$OLLAMA_LOCAL_DIR")}"
 REMOTE_OLLAMA_DIR="${REMOTE_OLLAMA_DIR:-$REMOTE_DIR/$OLLAMA_DIR_NAME}"
 REMOTE_OLLAMA_ARCHIVE="${REMOTE_OLLAMA_ARCHIVE:-$REMOTE_DIR/$OLLAMA_DIR_NAME.tar.gz}"
@@ -90,6 +90,7 @@ OLLAMA_READY_INTERVAL="${OLLAMA_READY_INTERVAL:-2}"
 PASSWORD="${TARGET_PASSWORD:-Osrd@2026}"
 
 DEPLOY_LOCAL=false
+DEPLOY_REMOTE=false
 DEPLOY_PLATFORM_MOCK=false
 DEPLOY_TAA=false
 DEPLOY_QWEN=false
@@ -214,11 +215,12 @@ ensure_local_docker_container() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [local] [start|stop] [platform-mock] [taa] [qwen]
+Usage: $(basename "$0") [local|remote] [start|stop] [platform-mock] [taa] [qwen]
 
 Without arguments, all three components are deployed remotely via Kubernetes.
 Pass local to deploy TAA and its dependencies into a local Docker container
 for testing, with platform-mock running locally on host.
+Pass remote to explicitly target remote deployment via Kubernetes (default mode).
 Pass start or stop to control service lifecycle (default: start).
 When no component names are given, all three components are deployed by default.
 Provide one or more names to deploy them separately.
@@ -230,6 +232,13 @@ Examples:
   $(basename "$0") local qwen
   $(basename "$0") local platform-mock
   $(basename "$0") local taa qwen
+  $(basename "$0") remote start
+  $(basename "$0") remote stop
+  $(basename "$0") remote
+  $(basename "$0") remote taa
+  $(basename "$0") remote qwen
+  $(basename "$0") remote platform-mock
+  $(basename "$0") remote taa qwen
   $(basename "$0") platform-mock
   $(basename "$0") taa
   $(basename "$0") qwen
@@ -521,6 +530,9 @@ else
       local|local-docker)
         DEPLOY_LOCAL=true
         ;;
+      remote)
+        DEPLOY_REMOTE=true
+        ;;
       start)
         ACTION="start"
         ;;
@@ -550,6 +562,12 @@ else
         ;;
     esac
   done
+
+  if [[ "$DEPLOY_LOCAL" == true && "$DEPLOY_REMOTE" == true ]]; then
+    err "cannot specify both local and remote"
+    usage >&2
+    exit 1
+  fi
 
   if [[ "$SELECTED_COMPONENT" == false ]]; then
     DEPLOY_PLATFORM_MOCK=true
@@ -699,11 +717,15 @@ if [[ "$DEPLOY_LOCAL" == true ]]; then
 
     docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "chmod +x '$CONTAINER_OLLAMA_DIR/ollama' '$CONTAINER_OLLAMA_DIR/start-ollama.sh'"
 
-    # 动态链接器兼容软链接
+    # 动态链接器及向后兼容软链接
     hardcoded_path="/taatest/ollama-qwen2.5-coder-0.5b"
     if [[ "$CONTAINER_OLLAMA_DIR" != "$hardcoded_path" ]]; then
       step "creating symlink for dynamic linker compatibility inside container"
       docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "mkdir -p /taatest && rm -rf '$hardcoded_path' && ln -s '$CONTAINER_OLLAMA_DIR' '$hardcoded_path'"
+    fi
+    legacy_container_path="$TAA_CONTAINER_WORKDIR/ollama-qwen2.5-coder-0.5b"
+    if [[ "$CONTAINER_OLLAMA_DIR" != "$legacy_container_path" ]]; then
+      docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "rm -rf '$legacy_container_path' && ln -s '$CONTAINER_OLLAMA_DIR' '$legacy_container_path'"
     fi
 
     step "starting ollama inside container"
@@ -852,12 +874,16 @@ copy_ollama_to_container() {
   remote_ssh "$(container_exec) sh -lc 'tar -xzf '$CONTAINER_OLLAMA_ARCHIVE' -C '$TAA_CONTAINER_WORKDIR' && rm -f '$CONTAINER_OLLAMA_ARCHIVE' && chmod +x '$CONTAINER_OLLAMA_DIR/ollama' '$CONTAINER_OLLAMA_DIR/start-ollama.sh' && test -x '$CONTAINER_OLLAMA_DIR/ollama' && test -f '$CONTAINER_OLLAMA_DIR/start-ollama.sh' && test -d '$CONTAINER_OLLAMA_DIR/models/models' && test -d '$CONTAINER_OLLAMA_DIR/lib/ollama''"
   remote_ssh "rm -f '$REMOTE_OLLAMA_ARCHIVE'"
 
-  # Create symlink for hardcoded dynamic linker path
+  # Create symlink for hardcoded dynamic linker path and backward compatibility
   # The ollama binary expects /taatest/ollama-qwen2.5-coder-0.5b/lib/glibc/ld-linux-x86-64.so.2
   local hardcoded_path="/taatest/ollama-qwen2.5-coder-0.5b"
   if [[ "$CONTAINER_OLLAMA_DIR" != "$hardcoded_path" ]]; then
     step "creating symlink for dynamic linker compatibility"
     remote_ssh "$(container_exec) sh -lc 'mkdir -p /taatest && rm -rf $hardcoded_path && ln -s '$CONTAINER_OLLAMA_DIR' $hardcoded_path'"
+  fi
+  local legacy_container_path="$TAA_CONTAINER_WORKDIR/ollama-qwen2.5-coder-0.5b"
+  if [[ "$CONTAINER_OLLAMA_DIR" != "$legacy_container_path" ]]; then
+    remote_ssh "$(container_exec) sh -lc 'rm -rf $legacy_container_path && ln -s '$CONTAINER_OLLAMA_DIR' $legacy_container_path'"
   fi
 }
 
