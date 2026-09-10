@@ -27,7 +27,7 @@ func DefaultLLMConfig() LLMConfig {
 		Enabled:     true,
 		Endpoint:    "http://127.0.0.1:11434",
 		Model:       "qwen2.5-coder:0.5b",
-		Timeout:     60 * time.Second,
+		Timeout:     120 * time.Second,
 		MaxFindings: 20,
 		Policy:      "assist",
 		FailClosed:  true,
@@ -57,7 +57,7 @@ type OllamaClient struct {
 // NewOllamaClient creates a client for the given Ollama endpoint.
 func NewOllamaClient(endpoint, model string, timeout time.Duration) *OllamaClient {
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		timeout = 120 * time.Second
 	}
 	return &OllamaClient{
 		endpoint: endpoint,
@@ -68,10 +68,11 @@ func NewOllamaClient(endpoint, model string, timeout time.Duration) *OllamaClien
 
 // ollamaGenerateRequest is the request body for Ollama's /api/generate endpoint.
 type ollamaGenerateRequest struct {
-	Model   string            `json:"model"`
-	Prompt  string            `json:"prompt"`
-	Stream  bool              `json:"stream"`
-	Options map[string]any    `json:"options,omitempty"`
+	Model   string         `json:"model"`
+	Prompt  string         `json:"prompt"`
+	Stream  bool           `json:"stream"`
+	Think   *bool          `json:"think,omitempty"`
+	Options map[string]any `json:"options,omitempty"`
 }
 
 // ollamaGenerateResponse is the response body from Ollama's /api/generate endpoint.
@@ -80,13 +81,15 @@ type ollamaGenerateResponse struct {
 }
 
 func (c *OllamaClient) VerifyFinding(ctx context.Context, prompt string) (LLMDecision, error) {
+	noThink := false
 	reqBody, err := json.Marshal(ollamaGenerateRequest{
 		Model:  c.model,
 		Prompt: prompt,
 		Stream: false,
+		Think:  &noThink,
 		Options: map[string]any{
-			"temperature":  0.1,
-			"num_predict":  200,
+			"temperature": 0.1,
+			"num_predict": 160,
 		},
 	})
 	if err != nil {
@@ -163,13 +166,15 @@ func parseDecision(raw string) LLMDecision {
 
 // AnalyzeFile runs a file-level analysis prompt and returns a FileSummary.
 func (c *OllamaClient) AnalyzeFile(ctx context.Context, prompt string) (FileSummary, error) {
+	noThink := false
 	reqBody, err := json.Marshal(ollamaGenerateRequest{
 		Model:  c.model,
 		Prompt: prompt,
 		Stream: false,
+		Think:  &noThink,
 		Options: map[string]any{
-			"temperature":  0.1,
-			"num_predict":  300,
+			"temperature": 0.1,
+			"num_predict": 160,
 		},
 	})
 	if err != nil {

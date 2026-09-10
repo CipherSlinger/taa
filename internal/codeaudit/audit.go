@@ -377,8 +377,19 @@ func buildSummaryText(stats AuditStatistics, riskLevel string) string {
 	if stats.Suspicious > 0 {
 		parts = append(parts, fmt.Sprintf("发现 %d 处可疑代码", stats.Suspicious))
 	}
-	if stats.Benign > 0 && len(parts) > 0 {
-		parts = append(parts, fmt.Sprintf("%d 处已确认为正常", stats.Benign))
+	if stats.Benign > 0 {
+		if len(parts) > 0 {
+			parts = append(parts, fmt.Sprintf("%d 处已确认为正常", stats.Benign))
+		} else {
+			parts = append(parts, fmt.Sprintf("发现 %d 处安全提示项（已由大模型确认为正常）", stats.Benign))
+		}
+	}
+	if stats.Uncertain > 0 {
+		if len(parts) > 0 {
+			parts = append(parts, fmt.Sprintf("%d 处需人工复核", stats.Uncertain))
+		} else {
+			parts = append(parts, fmt.Sprintf("发现 %d 处待确认提示项（语义分析不确定）", stats.Uncertain))
+		}
 	}
 
 	if len(parts) == 0 {
@@ -389,6 +400,8 @@ func buildSummaryText(stats AuditStatistics, riskLevel string) string {
 
 	if riskLevel == "CRITICAL" {
 		summary += "。存在数据泄露风险，建议阻断导入"
+	} else if riskLevel == "LOW" || riskLevel == "NONE" {
+		summary += "。代码符合安全规范，准予导入"
 	}
 	return summary
 }
