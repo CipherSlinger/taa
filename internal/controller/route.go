@@ -165,6 +165,12 @@ func (s *TAAState) getSavedModelResourceURL() string {
 	return s.SavedModelResourceURL
 }
 
+func (s *TAAState) getExportPublicKey() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ExportPublicKey
+}
+
 func (s *TAAState) setLatestDataRecord(record ImportIndexRecord) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -560,8 +566,12 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 
 	var publicKey string
-	if phase == 1 && req.PublicKey != nil && *req.PublicKey != "" {
-		if _, err := teecrypto.ParseSM2PublicKeyPEM([]byte(*req.PublicKey)); err != nil {
+	hasPublicKeyInput := req.PublicKey != nil && strings.TrimSpace(*req.PublicKey) != ""
+	savedPublicKey := s.getExportPublicKey()
+
+	if phase == 1 && hasPublicKeyInput {
+		cleanKey := strings.TrimSpace(*req.PublicKey)
+		if _, err := teecrypto.ParseSM2PublicKeyPEM([]byte(cleanKey)); err != nil {
 			writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("publicKey 解析失败: %v", err), err))
 			return
 		}
@@ -571,11 +581,15 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 			s.ExportPublicKey = publicKey
 			s.Logs.Add(LogInfo, "importModel", "阶段1: 已保存 ExportPublicKey 用于后续阶段3导出 (长度=%d)\n%s", len(publicKey), publicKey)
 		} else {
-			s.Logs.Add(LogInfo, "importModel", "阶段1: ExportPublicKey 已存在，跳过保存 (已有长度=%d, 新长度=%d)", len(s.ExportPublicKey), len(publicKey))
+			s.Logs.Add(LogInfo, "importModel", "阶段1: ExportPublicKey 已存在，保留首次公钥，跳过保存 (已有长度=%d, 新长度=%d)", len(s.ExportPublicKey), len(publicKey))
 		}
 		s.mu.Unlock()
 	} else if phase == 1 {
-		s.Logs.Add(LogWarn, "importModel", "阶段1: 未提供 publicKey，后续阶段3导出可能失败")
+		if savedPublicKey == "" {
+			s.Logs.Add(LogWarn, "importModel", "阶段1: 未提供 publicKey，后续阶段3导出可能失败")
+		} else {
+			s.Logs.Add(LogInfo, "importModel", "阶段1: 请求未提供 publicKey，复用已保存的 ExportPublicKey (长度=%d)", len(savedPublicKey))
+		}
 	}
 
 	s.Logs.Add(LogInfo, "importModel", "收到模型 import 请求: taskId=%s, requestId=%s, phase=%d, resourceUrlEmpty=%v",

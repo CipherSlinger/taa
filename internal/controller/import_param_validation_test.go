@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	teecrypto "taa/pkg/crypto"
 )
 
 func waitForIdle(t *testing.T, state *TAAState) {
@@ -393,4 +395,127 @@ func TestImportIndexStore_LatestTracking(t *testing.T) {
 	if !ok || latest.Hash != "hash-data-2" {
 		t.Fatalf("expected reloaded Latest to be rec2, got: %+v", latest)
 	}
+}
+
+func TestImportModel_PublicKeyReuseAndLog(t *testing.T) {
+	state, server := setupTestServer(t)
+
+	key1, err := teecrypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate SM2 key 1: %v", err)
+	}
+	pubPEM1, err := teecrypto.MarshalSM2PublicKeyPEM(&key1.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal SM2 key 1: %v", err)
+	}
+
+	key2, err := teecrypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate SM2 key 2: %v", err)
+	}
+	pubPEM2, err := teecrypto.MarshalSM2PublicKeyPEM(&key2.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal SM2 key 2: %v", err)
+	}
+
+	// 1. 首次未提供公钥：应记录 Warn
+	t.Run("first import without publicKey warns", func(t *testing.T) {
+		_ = state.Logs.Drain()
+		resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+			"resourceUrl": "http://example.com/model1.tar.gz",
+			"taskId":      "task-pub-1",
+		})
+		_ = decodeResponse(t, resp)
+		logs := state.Logs.Drain()
+		foundWarn := false
+		for _, l := range logs {
+			if strings.Contains(l.Message, "未提供 publicKey，后续阶段3导出可能失败") {
+				foundWarn = true
+				break
+			}
+		}
+		if !foundWarn {
+			t.Fatal("expected warning log when first import has no publicKey")
+		}
+	})
+
+	// 2. 首次提供公钥：应保存并记录 Info
+	t.Run("first import with publicKey saves and logs info", func(t *testing.T) {
+		_ = state.Logs.Drain()
+		resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+			"resourceUrl": "http://example.com/model1.tar.gz",
+			"taskId":      "task-pub-2",
+			"publicKey":   string(pubPEM1),
+		})
+		_ = decodeResponse(t, resp)
+		if state.getExportPublicKey() != string(pubPEM1) {
+			t.Fatalf("expected ExportPublicKey to be saved as pubPEM1, got %q", state.getExportPublicKey())
+		}
+		logs := state.Logs.Drain()
+		foundSave := false
+		for _, l := range logs {
+			if strings.Contains(l.Message, "已保存 ExportPublicKey") {
+				foundSave = true
+				break
+			}
+		}
+		if !foundSave {
+			t.Fatal("expected '已保存 ExportPublicKey' log")
+		}
+	})
+
+	// 3. 后续请求未提供公钥（不传或留空）：不应有 Warn，应记录复用 Info，且公钥未丢失
+	t.Run("subsequent import without publicKey reuses saved key without warn", func(t *testing.T) {
+		_ = state.Logs.Drain()
+		resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+			"resourceUrl": "http://example.com/model1.tar.gz",
+			"taskId":      "task-pub-3",
+		})
+		_ = decodeResponse(t, resp)
+		if state.getExportPublicKey() != string(pubPEM1) {
+			t.Fatalf("expected ExportPublicKey to remain pubPEM1, got %q", state.getExportPublicKey())
+		}
+		logs := state.Logs.Drain()
+		foundReuse := false
+		foundWarn := false
+		for _, l := range logs {
+			if strings.Contains(l.Message, "请求未提供 publicKey，复用已保存的 ExportPublicKey") {
+				foundReuse = true
+			}
+			if strings.Contains(l.Message, "未提供 publicKey，后续阶段3导出可能失败") {
+				foundWarn = true
+			}
+		}
+		if !foundReuse {
+			t.Fatal("expected '复用已保存的 ExportPublicKey' log")
+		}
+		if foundWarn {
+			t.Fatal("unexpected warning log when publicKey is already saved")
+		}
+	})
+
+	// 4. 后续请求提供新公钥：应保留首次公钥，跳过覆盖
+	t.Run("subsequent import with different publicKey skips overwrite", func(t *testing.T) {
+		_ = state.Logs.Drain()
+		resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+			"resourceUrl": "http://example.com/model1.tar.gz",
+			"taskId":      "task-pub-4",
+			"publicKey":   string(pubPEM2),
+		})
+		_ = decodeResponse(t, resp)
+		if state.getExportPublicKey() != string(pubPEM1) {
+			t.Fatalf("expected ExportPublicKey to still be pubPEM1, got %q", state.getExportPublicKey())
+		}
+		logs := state.Logs.Drain()
+		foundSkip := false
+		for _, l := range logs {
+			if strings.Contains(l.Message, "ExportPublicKey 已存在，保留首次公钥，跳过保存") {
+				foundSkip = true
+				break
+			}
+		}
+		if !foundSkip {
+			t.Fatal("expected '保留首次公钥，跳过保存' log")
+		}
+	})
 }
