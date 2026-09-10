@@ -521,19 +521,19 @@
       <h2 style="margin:0;">训练流程</h2>
       <div class="phase-switch-bar">
         <span style="padding:0 6px 0 8px; color:var(--muted); font-size:12px; font-weight:600;">阶段切换:</span>
-        <button type="button" class="phase-switch-btn" data-phase="1" onclick="quickSwitchPhase(1)">1 调试</button>
-        <button type="button" class="phase-switch-btn active" data-phase="2" onclick="quickSwitchPhase(2)">2 测试</button>
+        <button type="button" class="phase-switch-btn active" data-phase="1" onclick="quickSwitchPhase(1)">1 调试</button>
+        <button type="button" class="phase-switch-btn" data-phase="2" onclick="quickSwitchPhase(2)">2 测试</button>
         <button type="button" class="phase-switch-btn" data-phase="3" onclick="quickSwitchPhase(3)">3 训练</button>
         <button type="button" class="phase-switch-btn" data-phase="4" onclick="quickSwitchPhase(4)">4 推理</button>
       </div>
     </div>
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <span id="phaseSwitchDot" class="dot ok" style="width:10px; height:10px;"></span>
-      <span id="phaseSwitchText" class="muted" style="font-size:13px;">当前阶段: 2 测试</span>
+      <span id="phaseSwitchText" class="muted" style="font-size:13px;">当前阶段: 1 调试</span>
       <button type="button" class="secondary" id="phaseSwitchDetailBtn" style="padding:4px 10px; font-size:12px; display:none;" onclick="togglePhaseSwitchDetail()">查看返回</button>
     </div>
   </div>
-  <input type="hidden" id="switchPhase" value="2">
+  <input type="hidden" id="switchPhase" value="1">
   <div id="switchResult" class="test-result"></div>
   <div id="phaseSwitchDetail" style="display:none; margin-bottom:12px;">
     <pre id="phaseSwitchDetailContent" style="background:rgba(127,127,127,.08); padding:12px; border-radius:10px; font-size:13px; max-height:200px; overflow:auto; white-space:pre-wrap; word-break:break-all; margin:0;"></pre>
@@ -2300,7 +2300,7 @@ async function testGetResourceInfo() {
   }
 }
 
-let currentPhase = 2;
+let currentPhase = 1;
 let lastPhaseSwitchResp = null;
 
 async function quickSwitchPhase(phase) {
@@ -2360,7 +2360,7 @@ function togglePhaseSwitchDetail() {
 }
 
 async function testSwitch(phase) {
-  const p = phase !== undefined ? phase : (document.getElementById('switchPhase')?.value || 2);
+  const p = phase !== undefined ? phase : (document.getElementById('switchPhase')?.value || 1);
   return quickSwitchPhase(Number(p));
 }
 
