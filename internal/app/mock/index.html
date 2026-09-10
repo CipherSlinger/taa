@@ -5,49 +5,386 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TAA 平台模拟器</title>
   <style>
-    :root { color-scheme: light dark; --bg:#f6f7f9; --panel:#fff; --text:#1f2937; --muted:#6b7280; --ok:#0f8f4f; --bad:#c2410c; --line:#e5e7eb; --code:#111827; }
-    @media (prefers-color-scheme: dark) { :root { --bg:#0b1220; --panel:#111827; --text:#e5e7eb; --muted:#9ca3af; --line:#243244; --code:#f9fafb; } }
-    @media (max-width: 960px) { .two-col-layout, .three-col-layout { grid-template-columns: 1fr !important; } }
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc;
+      --panel: #ffffff;
+      --panel-sub: #f1f5f9;
+      --input-bg: #ffffff;
+      --text: #0f172a;
+      --muted: #64748b;
+      --ok: #10b981;
+      --bad: #f43f5e;
+      --line: #e2e8f0;
+      --line-sub: rgba(226, 232, 240, 0.8);
+      --code: #0f172a;
+      --accent: #2563eb;
+      --accent-hover: #1d4ed8;
+      --accent-active: #1e40af;
+      --ring: rgba(37, 99, 235, 0.16);
+      --card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 6px 18px -4px rgba(0, 0, 0, 0.05);
+      --card-radius: 14px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #090d16;
+        --panel: #0f172a;
+        --panel-sub: #131d33;
+        --input-bg: #0b1220;
+        --text: #f1f5f9;
+        --muted: #94a3b8;
+        --ok: #10b981;
+        --bad: #f43f5e;
+        --line: #1e293b;
+        --line-sub: rgba(30, 41, 59, 0.8);
+        --code: #f8fafc;
+        --accent: #3b82f6;
+        --accent-hover: #60a5fa;
+        --accent-active: #2563eb;
+        --ring: rgba(59, 130, 246, 0.25);
+        --card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.3), 0 10px 24px -4px rgba(0, 0, 0, 0.35);
+      }
+    }
+    @media (max-width: 960px) {
+      .two-col-layout, .three-col-layout { grid-template-columns: 1fr !important; }
+    }
+    @media (max-width: 768px) {
+      main { width: 100% !important; padding: 18px 12px 48px !important; }
+      .taa-addr-bar { flex-wrap: wrap !important; }
+      .taa-addr-bar input { width: 100% !important; min-width: 0 !important; }
+    }
     * { box-sizing: border-box; }
-    body { margin:0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
-    main { width: 80%; margin: 0 auto; padding: 32px 20px; }
-    h1 { margin: 0 0 8px; font-size: 28px; }
-    h2 { margin: 0 0 10px; }
-    h3 { margin: 16px 0 8px; font-size: 16px; }
-    p { line-height: 1.65; }
-    .muted { color: var(--muted); }
-    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:16px; margin: 20px 0; }
-    .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:18px; box-shadow: 0 8px 24px rgba(0,0,0,.06); margin-bottom:16px; }
-    .card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; }
-    .card-head h2 { margin:0; }
-    .card-note { margin:0; color:var(--muted); line-height:1.55; }
-    .card-compact { display:flex; flex-direction:column; gap:12px; min-height:120px; }
-    .status { display:flex; align-items:center; gap:12px; font-size:20px; font-weight:700; }
-    .dot { width:14px; height:14px; border-radius:999px; background:#9ca3af; }
-    .dot.ok { background:var(--ok); box-shadow:0 0 0 6px rgba(15,143,79,.12); }
-    .dot.bad { background:var(--bad); box-shadow:0 0 0 6px rgba(194,65,12,.12); }
-    dl { display:grid; grid-template-columns: 140px 1fr; gap:10px 14px; margin:16px 0 0; }
-    dt { color:var(--muted); }
-    dd { margin:0; word-break:break-all; }
-    code, pre { background: rgba(127,127,127,.12); color:var(--code); border-radius:8px; }
-    code { padding:2px 6px; }
-    pre { padding:14px; overflow-x:auto; line-height:1.5; }
-    button { border:0; border-radius:10px; padding:10px 14px; cursor:pointer; background:#2563eb; color:white; font-weight:650; }
-    button.secondary { background:#64748b; }
-    button.success { background:var(--ok); }
-    button.danger { background:var(--bad); }
-    button:disabled { opacity:.5; cursor:not-allowed; }
-    .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
-    input, textarea, select { width:100%; padding:9px; border:1px solid var(--line); border-radius:8px; background:transparent; color:var(--text); }
-    textarea { min-height:120px; padding:12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre; overflow:auto; resize:vertical; }
-    label { display:block; margin:10px 0 6px; font-weight:650; }
-    .taa-addr-bar { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px 18px; margin-bottom:20px; display:flex; align-items:center; gap:12px; }
-    .taa-addr-bar label { margin:0; white-space:nowrap; }
-    .taa-addr-bar input { flex:1; margin:0; }
-    .test-result { margin-top:10px; padding:10px; border-radius:8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:13px; white-space:pre-wrap; word-break:break-all; display:none; }
-    .test-result.pass { background:rgba(15,143,79,.1); border:1px solid rgba(15,143,79,.3); color:var(--ok); display:block; }
-    .test-result.fail { background:rgba(194,65,12,.1); border:1px solid rgba(194,65,12,.3); color:var(--bad); display:block; }
-    .test-result.running { background:rgba(37,99,235,.1); border:1px solid rgba(37,99,235,.3); color:#2563eb; display:block; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    main {
+      max-width: 1420px;
+      width: 94%;
+      margin: 0 auto;
+      padding: 32px 16px 64px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 26px;
+      font-weight: 750;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .header-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border-radius: 999px;
+      background: rgba(37, 99, 235, 0.1);
+      color: var(--accent);
+      border: 1px solid rgba(37, 99, 235, 0.2);
+    }
+    h2 {
+      margin: 0 0 10px;
+      font-size: 17px;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+    }
+    h3 {
+      margin: 16px 0 8px;
+      font-size: 15px;
+      font-weight: 650;
+    }
+    p {
+      line-height: 1.6;
+    }
+    .muted {
+      color: var(--muted);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      margin: 20px 0;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--card-radius);
+      padding: 20px;
+      box-shadow: var(--card-shadow);
+      margin-bottom: 16px;
+      transition: border-color .2s ease, box-shadow .2s ease;
+    }
+    .card:hover {
+      border-color: rgba(37, 99, 235, 0.25);
+    }
+    .sub-panel {
+      background: var(--panel-sub);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px;
+    }
+    .card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--line-sub);
+    }
+    .card-head h2 {
+      margin: 0;
+      font-size: 16px;
+    }
+    .card-note {
+      margin: 4px 0 0;
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 13px;
+    }
+    .card-compact {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 120px;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 16px;
+      font-weight: 650;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #9ca3af;
+      flex-shrink: 0;
+      transition: all .2s ease;
+    }
+    .dot.ok {
+      background: var(--ok);
+      box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.18);
+    }
+    .dot.bad {
+      background: var(--bad);
+      box-shadow: 0 0 0 4px rgba(244, 63, 94, 0.18);
+    }
+    dl {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 10px 14px;
+      margin: 16px 0 0;
+    }
+    dt {
+      color: var(--muted);
+    }
+    dd {
+      margin: 0;
+      word-break: break-all;
+    }
+    code, pre {
+      background: rgba(127, 127, 127, .08);
+      color: var(--code);
+      border-radius: 8px;
+    }
+    code {
+      padding: 2px 6px;
+      font-size: 12px;
+    }
+    pre {
+      padding: 14px;
+      overflow-x: auto;
+      line-height: 1.5;
+      font-size: 13px;
+    }
+    button {
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 8px 14px;
+      cursor: pointer;
+      background: var(--accent);
+      color: white;
+      font-size: 13px;
+      font-weight: 600;
+      transition: all .15s cubic-bezier(0.4, 0, 0.2, 1);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      user-select: none;
+    }
+    button:hover:not(:disabled) {
+      background: var(--accent-hover);
+      transform: translateY(-1px);
+      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+    }
+    button:active:not(:disabled) {
+      background: var(--accent-active);
+      transform: translateY(0);
+      box-shadow: none;
+    }
+    button.secondary {
+      background: var(--panel-sub);
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+    button.secondary:hover:not(:disabled) {
+      background: rgba(127, 127, 127, 0.14);
+      color: var(--text);
+      transform: translateY(-1px);
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+    }
+    button.success {
+      background: var(--ok);
+      color: white;
+    }
+    button.success:hover:not(:disabled) {
+      background: #059669;
+      transform: translateY(-1px);
+      box-shadow: 0 2px 8px rgba(16, 185, 129, 0.25);
+    }
+    button.danger {
+      background: var(--bad);
+      color: white;
+    }
+    button.danger:hover:not(:disabled) {
+      background: #e11d48;
+      transform: translateY(-1px);
+      box-shadow: 0 2px 8px rgba(244, 63, 94, 0.25);
+    }
+    button:disabled {
+      opacity: .45;
+      cursor: not-allowed;
+      transform: none !important;
+      box-shadow: none !important;
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+      align-items: center;
+    }
+    input, textarea, select {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--input-bg);
+      color: var(--text);
+      font-size: 13px;
+      transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
+    }
+    input[type="file"] {
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 12.5px;
+    }
+    input[type="file"]::file-selector-button {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 5px 12px;
+      background: var(--panel-sub);
+      color: var(--text);
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 12px;
+      margin-right: 12px;
+      transition: all .15s ease;
+    }
+    input[type="file"]::file-selector-button:hover {
+      background: rgba(127, 127, 127, 0.16);
+    }
+    input:focus, textarea:focus, select:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--ring);
+    }
+    textarea {
+      min-height: 110px;
+      padding: 10px 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      white-space: pre;
+      overflow: auto;
+      resize: vertical;
+      line-height: 1.5;
+    }
+    label {
+      display: block;
+      margin: 10px 0 5px;
+      font-size: 13px;
+      font-weight: 650;
+      color: var(--text);
+    }
+    .taa-addr-bar {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--card-radius);
+      padding: 12px 18px;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: var(--card-shadow);
+    }
+    .taa-addr-bar label {
+      margin: 0;
+      white-space: nowrap;
+      font-weight: 650;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .taa-addr-bar input {
+      flex: 1;
+      margin: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .test-result {
+      margin-top: 14px;
+      padding: 12px 16px;
+      border-radius: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      display: none;
+      border: 1px solid transparent;
+      line-height: 1.55;
+      transition: all .2s ease;
+    }
+    .test-result.pass {
+      background: rgba(16, 185, 129, 0.08);
+      border-color: rgba(16, 185, 129, 0.32);
+      color: var(--ok);
+      display: block;
+      box-shadow: 0 2px 8px rgba(16, 185, 129, 0.06);
+    }
+    .test-result.fail {
+      background: rgba(244, 63, 94, 0.08);
+      border-color: rgba(244, 63, 94, 0.32);
+      color: var(--bad);
+      display: block;
+      box-shadow: 0 2px 8px rgba(244, 63, 94, 0.06);
+    }
+    .test-result.running {
+      background: rgba(37, 99, 235, 0.08);
+      border-color: rgba(37, 99, 235, 0.32);
+      color: var(--accent);
+      display: block;
+      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.06);
+    }
     .batch-results { margin-top:16px; }
     .batch-item { padding:8px 12px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px; font-size:14px; }
     .batch-item .badge { display:inline-block; width:8px; height:8px; border-radius:50%; flex-shrink:0; }
@@ -58,34 +395,110 @@
     @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.4; } }
     .result-panel { display:flex; flex-direction:column; gap:8px; }
     .result-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
-    .result-state { display:inline-flex; align-items:center; gap:8px; font-size:14px; font-weight:700; }
+    .result-state { display:inline-flex; align-items:center; gap:8px; font-size:13.5px; font-weight:700; }
     .result-state::before { content:''; width:8px; height:8px; border-radius:999px; background:#9ca3af; display:inline-block; }
-    .test-result.pass .result-state::before { background:var(--ok); }
-    .test-result.fail .result-state::before { background:var(--bad); }
-    .test-result.running .result-state::before { background:#2563eb; }
-    .result-note { color:var(--muted); font-size:13px; line-height:1.5; }
-    .result-body-btn { padding:6px 10px; font-size:12px; border-radius:8px; }
+    .test-result.pass .result-state::before { background:var(--ok); box-shadow: 0 0 0 3px rgba(16,185,129,0.25); }
+    .test-result.fail .result-state::before { background:var(--bad); box-shadow: 0 0 0 3px rgba(244,63,94,0.25); }
+    .test-result.running .result-state::before { background:#2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.25); animation: pulse 1s infinite; }
+    .result-note { color:var(--muted); font-size:12.5px; line-height:1.5; margin-top:4px; }
+    .result-body-btn { padding:5px 11px; font-size:12px; border-radius:6px; }
+    .terminal-shell {
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+      background: #090d16;
+      margin-top: 10px;
+    }
+    .terminal-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 14px;
+      background: #0f172a;
+      border-bottom: 1px solid #1e293b;
+      font-size: 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: #94a3b8;
+    }
+    .terminal-dots {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .t-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+    .t-dot.red { background: #ef4444; opacity: 0.85; }
+    .t-dot.yellow { background: #f59e0b; opacity: 0.85; }
+    .t-dot.green { background: #10b981; opacity: 0.85; }
+    .terminal-title {
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .log-window {
+      background: #090d16;
+      color: #e2e8f0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      scrollbar-width: thin;
+      scrollbar-color: #334155 #0f172a;
+    }
+    .log-window::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .log-window::-webkit-scrollbar-track {
+      background: #0b1220;
+    }
+    .log-window::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 4px;
+    }
+    .log-window::-webkit-scrollbar-thumb:hover {
+      background: #475569;
+    }
+    .log-method-badge {
+      display: inline-block;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 4px;
+      letter-spacing: 0.04em;
+    }
+    .log-method-post {
+      background: rgba(37, 99, 235, 0.2);
+      color: #60a5fa;
+      border: 1px solid rgba(37, 99, 235, 0.35);
+    }
+    .log-method-get {
+      background: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+    }
     .upload-history { margin-top:16px; display:flex; flex-direction:column; gap:12px; }
     .upload-history-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap; }
-    .upload-history-head h3 { margin:0; font-size:16px; }
+    .upload-history-head h3 { margin:0; font-size:15px; }
     .upload-history-head p { margin:0; }
-    .upload-empty { padding:14px; border:1px dashed var(--line); border-radius:12px; color:var(--muted); background:rgba(127,127,127,.04); }
-    .upload-item { display:flex; justify-content:space-between; gap:12px; padding:10px 8px; border-top:1px solid var(--line); border-radius:8px; cursor:grab; transition:background 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease; user-select:none; }
+    .upload-empty { padding:14px; border:1px dashed var(--line); border-radius:10px; color:var(--muted); background:rgba(127,127,127,.04); }
+    .upload-item { display:flex; justify-content:space-between; gap:12px; padding:10px 10px; border-top:1px solid var(--line); border-radius:8px; cursor:grab; transition:background 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease; user-select:none; }
     .upload-item:first-child { border-top:0; }
-    .upload-item:hover { background:rgba(37,99,235,0.05); }
+    .upload-item:hover { background:rgba(37,99,235,0.06); }
     .upload-item:active { cursor:grabbing; }
     .upload-item.dragging { opacity:0.4; background:rgba(37,99,235,0.12); box-shadow:0 4px 12px rgba(0,0,0,0.15); }
-    .upload-item-main { min-width:0; flex:1; display:flex; flex-direction:column; gap:6px; }
+    .upload-item-main { min-width:0; flex:1; display:flex; flex-direction:column; gap:5px; }
     .upload-item-header { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
-    .upload-item-title { font-weight:700; font-size:14px; line-height:1.45; word-break:break-all; display:flex; align-items:center; gap:6px; }
-    .upload-item-time { font-size:14px; font-weight:650; color:#0284c7; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:nowrap; flex-shrink:0; }
+    .upload-item-title { font-weight:700; font-size:13.5px; line-height:1.45; word-break:break-all; display:flex; align-items:center; gap:6px; }
+    .upload-item-time { font-size:13px; font-weight:650; color:#0284c7; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:nowrap; flex-shrink:0; }
     @media (prefers-color-scheme: dark) {
       .upload-item-time { color:#38bdf8; }
     }
     .upload-item-meta { color:var(--muted); font-size:12px; line-height:1.45; word-break:break-word; }
     .upload-item-url { color:var(--text); font-size:12px; line-height:1.5; word-break:break-all; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; opacity:0.85; }
     .upload-item-actions { flex-shrink:0; display:flex; align-items:center; gap:8px; }
-    .upload-item-actions button { white-space:nowrap; padding:6px 10px; font-size:12px; }
+    .upload-item-actions button { white-space:nowrap; padding:5px 9px; font-size:12px; }
     .drop-zone-card.drag-target-hover { outline:2px dashed #2563eb !important; outline-offset:-2px; background:rgba(37,99,235,0.05) !important; }
     .drop-zone-card.drop-hint { box-shadow:0 0 0 2px rgba(37,99,235,0.2); }
     @keyframes flashInputSuccess {
@@ -95,7 +508,7 @@
     .input-flash-success { animation:flashInputSuccess 1.2s ease-out; }
     .input-action-group { display:flex; gap:8px; align-items:center; }
     .input-action-group input { flex:1; min-width:0; margin:0; }
-    .btn-field-random { white-space:nowrap; padding:8px 12px; font-size:12px; font-weight:600; flex-shrink:0; height:38px; display:inline-flex; align-items:center; justify-content:center; }
+    .btn-field-random { white-space:nowrap; padding:0 12px; font-size:12px; font-weight:600; flex-shrink:0; height:37px; display:inline-flex; align-items:center; justify-content:center; }
     /* Toggle Switch */
     .switch-label { display:inline-flex; align-items:center; gap:8px; cursor:pointer; user-select:none; font-size:13px; font-weight:600; color:var(--text); margin:0; }
     .switch-wrapper { position:relative; width:40px; height:22px; display:inline-block; vertical-align:middle; }
@@ -108,14 +521,70 @@
       .switch-slider { background:#475569; }
     }
     /* Phase Switcher */
-    .phase-switch-bar { display:inline-flex; align-items:center; background:rgba(127,127,127,.08); border:1px solid var(--line); border-radius:999px; padding:3px; gap:2px; }
-    .phase-switch-btn { border:0; border-radius:999px; padding:4px 11px; font-size:12px; font-weight:600; cursor:pointer; background:transparent; color:var(--muted); transition:all .18s ease; white-space:nowrap; }
-    .phase-switch-btn:hover { color:var(--text); background:rgba(127,127,127,.12); }
-    .phase-switch-btn.active { background:#2563eb; color:#fff; box-shadow:0 1px 3px rgba(37,99,235,.3); }
-    .phase-switch-btn:disabled { opacity:.5; cursor:not-allowed; }
-    .modal-overlay { position:fixed; inset:0; background:rgba(15,23,42,.58); display:none; align-items:center; justify-content:center; padding:20px; z-index:1000; }
-    .modal-overlay.open { display:flex; }
-    .modal { width:min(980px, 100%); max-height:min(86vh, 900px); background:var(--panel); border:1px solid var(--line); border-radius:16px; box-shadow:0 24px 80px rgba(0,0,0,.3); display:flex; flex-direction:column; overflow:hidden; }
+    .phase-switch-bar {
+      display: inline-flex;
+      align-items: center;
+      background: var(--panel-sub);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 3px;
+      gap: 3px;
+      box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+    }
+    .phase-switch-btn {
+      border: 0;
+      border-radius: 999px;
+      padding: 5px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      background: transparent;
+      color: var(--muted);
+      transition: all .18s cubic-bezier(0.4, 0, 0.2, 1);
+      white-space: nowrap;
+    }
+    .phase-switch-btn:hover:not(.active) {
+      color: var(--text);
+      background: rgba(127, 127, 127, .1);
+    }
+    .phase-switch-btn.active {
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 1px 4px rgba(37, 99, 235, .35);
+    }
+    .phase-switch-btn:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.65);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 1000;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      width: min(980px, 100%);
+      max-height: min(86vh, 900px);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, .35);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      animation: modalSlideIn .18s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes modalSlideIn {
+      from { opacity: 0; transform: scale(0.97) translateY(8px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
     .modal-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:16px 18px; border-bottom:1px solid var(--line); }
     .modal-head h3 { margin:0; font-size:16px; }
     .modal-actions { display:flex; gap:8px; }
@@ -416,28 +885,40 @@
 </head>
 <body>
 <main>
-  <h1>TAA 平台模拟器</h1>
-  <p class="muted">用于本地联调 TAA 全部接口。上半部分模拟 <strong>平台接收</strong> TAA 主动上报的请求；下半部分模拟 <strong>平台下发</strong> 请求到 TAA，测试所有接口连通性。</p>
+  <header style="margin-bottom: 22px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom: 6px;">
+      <h1>
+        TAA 平台模拟器
+        <span class="header-badge">TEE Enclave Console</span>
+      </h1>
+      <span id="taaProxyBadge" class="muted" style="font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"></span>
+    </div>
+    <p class="muted" style="margin:0; font-size:13.5px;">用于本地联调 TAA 全部接口。上半部分模拟 <strong>平台接收</strong> TAA 主动上报的请求；下半部分模拟 <strong>平台下发</strong> 请求到 TAA，测试所有接口连通性。</p>
+  </header>
 
   <div class="taa-addr-bar">
     <label for="taaAddr">TAA 服务地址</label>
     <input id="taaAddr" value="" placeholder="自动检测中...">
     <button onclick="runAllTests()">一键测试全部接口</button>
-    <span id="taaProxyBadge" class="muted" style="font-size:13px"></span>
   </div>
 
   <!-- ─── 平台接收 + 获取远程证明报告 ─── -->
-  <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; margin:20px 0 12px; flex-wrap:wrap;">
-    <h2 style="margin:0;">环境检查</h2>
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; margin:20px 0 14px; flex-wrap:wrap; background:var(--panel-sub); border:1px solid var(--line); border-radius:10px; padding:10px 16px;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <h2 style="margin:0; font-size:14px; font-weight:650;">环境检查</h2>
+      <span class="muted" style="font-size:12px;">·</span>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span id="healthDot" class="dot" title="未检查"></span>
+        <span id="healthLabel" class="muted" style="font-size:13px;">未检查</span>
+      </div>
+    </div>
     <!-- 连通性检查：红绿灯 + 检查按钮 + 可展开 JSON 预览 -->
-    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-      <span id="healthDot" class="dot" title="未检查"></span>
-      <span id="healthLabel" class="muted" style="font-size:13px;">未检查</span>
-      <button onclick="testHealth()" style="padding:5px 12px; font-size:13px;">检查连通性</button>
-      <button onclick="toggleHealthDetail()" class="secondary" style="padding:5px 12px; font-size:13px;">查看结果</button>
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+      <button onclick="testHealth()" style="padding:5px 12px; font-size:12px;">检查连通性</button>
+      <button onclick="toggleHealthDetail()" class="secondary" style="padding:5px 12px; font-size:12px;">查看结果</button>
     </div>
   </div>
-  <div id="healthDetail" style="display:none; margin-bottom:12px;">
+  <div id="healthDetail" style="display:none; margin-bottom:14px;">
     <pre id="healthDetailContent" style="background:rgba(127,127,127,.08); padding:12px; border-radius:10px; font-size:13px; max-height:300px; overflow:auto; white-space:pre-wrap; word-break:break-all; margin:0;"></pre>
   </div>
 
@@ -445,36 +926,34 @@
     <!-- 左列：平台注册 与 /v1/taa/getAttestation — 获取远程证明报告（合并板块） -->
     <section class="card" id="card-attestation" style="display:flex; flex-direction:column; gap:16px;">
       <!-- 平台注册 -->
-      <div>
-        <div class="card-head">
+      <div class="sub-panel">
+        <div class="card-head" style="margin-bottom:12px; padding-bottom:10px;">
           <div>
             <h2>平台注册</h2>
-            <div class="status" style="margin-top:10px;"><span id="dot" class="dot"></span><span id="statusText">等待 TAA 注册请求</span></div>
+            <div class="status" style="margin-top:8px;"><span id="dot" class="dot"></span><span id="statusText">等待 TAA 注册请求</span></div>
           </div>
           <button id="registerBodyBtn" class="secondary" onclick="openRegisterBodyModal()" disabled>查看返回</button>
         </div>
-        <div class="card-compact">
+        <div class="card-compact" style="min-height:auto;">
           <p id="registerSummary" class="card-note">完整返回体仅在弹窗中展示。</p>
           <div id="registerPublicKeyBox" hidden style="margin-top:10px;">
             <label for="registerPublicKey">TAA 公钥</label>
-            <textarea id="registerPublicKey" readonly style="min-height:120px; cursor:text; background:rgba(37,99,235,.05);" onclick="this.select();"></textarea>
+            <textarea id="registerPublicKey" readonly style="min-height:110px; cursor:text; background:rgba(37,99,235,.05);" onclick="this.select();"></textarea>
             <div class="actions" style="margin-top:8px;">
               <button class="secondary" onclick="copyRegisterPublicKey()">复制公钥</button>
             </div>
           </div>
-          <div class="actions">
+          <div class="actions" style="margin-top:12px;">
             <button onclick="refreshStatus()">刷新状态</button>
             <button class="secondary" onclick="resetStatus()">清空接收记录</button>
           </div>
-          <p class="muted" style="margin:0;font-size:12px;">最后刷新：<span id="lastRefresh">-</span></p>
+          <p class="muted" style="margin:6px 0 0; font-size:12px;">最后刷新：<span id="lastRefresh">-</span></p>
         </div>
       </div>
 
-      <hr style="border:0; border-top:1px solid var(--line); margin:2px 0;">
-
       <!-- /v1/taa/getAttestation — 获取远程证明报告 -->
-      <div style="display:flex; flex-direction:column;">
-        <div class="card-head">
+      <div class="sub-panel" style="display:flex; flex-direction:column;">
+        <div class="card-head" style="margin-bottom:12px; padding-bottom:10px;">
           <div>
             <h2>/v1/taa/getAttestation — 获取远程证明报告</h2>
             <p class="card-note">获取远程证明报告并保存为本地文件。</p>
@@ -485,7 +964,7 @@
           <input id="attestRequestId" value="req-mock-attest-001">
           <button type="button" class="secondary btn-field-random" onclick="randomizeField('attestRequestId', 'req-attest')" title="生成随机 requestId">随机生成</button>
         </div>
-        <div class="actions">
+        <div class="actions" style="margin-top:12px;">
           <button onclick="testGetAttestation()">发送测试</button>
           <button id="saveReportBtn" class="success" onclick="saveAttestationReport()" disabled>保存报告文件</button>
         </div>
@@ -541,7 +1020,7 @@
   <p class="muted">以下各卡片模拟平台向 TAA 发送请求，用于验证各接口的连通性和参数校验。点击"发送测试"即可使用模拟数据调用 TAA 对应接口。</p>
 
   <!-- 第一行：文件上传 + 模型/数据下发 -->
-  <div class="three-col-layout" style="display:grid; grid-template-columns: repeat(3, 1fr); gap:16px; margin-bottom:16px;">
+  <div class="three-col-layout" style="display:grid; grid-template-columns: repeat(3, 1fr); gap:16px; margin-bottom:16px; align-items:start;">
     <section class="card" id="card-upload" style="display:flex; flex-direction:column;">
       <div class="card-head">
         <div>
@@ -589,7 +1068,7 @@
         </div>
         <button id="reportModelImportBodyBtn" class="secondary" onclick="openReportModelImportBodyModal()" disabled>查看返回</button>
       </div>
-      <label for="importModelResourceUrl">resourceUrl</label>
+      <label for="importModelResourceUrl">resourceUrl（首次必填，后续留空表示复用模型直接训练最新数据）</label>
       <input id="importModelResourceUrl" value="http://example.com/model.tar.gz">
       <label for="importModelRequestId">requestId（与 taskId 二选一或都填）</label>
       <div class="input-action-group">
@@ -618,8 +1097,13 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
       <div id="importModelResult" class="test-result"></div>
     </section>
 
-    <section class="card" id="card-import">
-      <h2>② /v1/taa/import — 下发数据</h2>
+    <section class="card" id="card-import" style="display:flex; flex-direction:column;">
+      <div class="card-head">
+        <div>
+          <h2>② /v1/taa/import — 下发数据</h2>
+          <p class="card-note">下发训练或推理任务所需的数据资源包。</p>
+        </div>
+      </div>
       <label for="importResourceUrl">resourceUrl</label>
       <input id="importResourceUrl" value="http://example.com/data.tar.gz">
       <label for="importRequestId">requestId（与 taskId 二选一或都填）</label>
@@ -641,7 +1125,7 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
   </div>
 
   <!-- 第二行：训练结果上报 + 导出结果 -->
-  <div class="two-col-layout" style="display:grid; grid-template-columns: repeat(2, 1fr); gap:16px; margin-bottom:16px;">
+  <div class="two-col-layout" style="display:grid; grid-template-columns: repeat(2, 1fr); gap:16px; margin-bottom:16px; align-items:start;">
     <section class="card" style="display:flex; flex-direction:column;">
       <div class="card-head">
         <div>
@@ -664,8 +1148,13 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
       </div>
     </section>
 
-    <section class="card" id="card-export">
-      <h2>④ /v1/taa/export — 导出结果</h2>
+    <section class="card" id="card-export" style="display:flex; flex-direction:column;">
+      <div class="card-head">
+        <div>
+          <h2>④ /v1/taa/export — 导出结果</h2>
+          <p class="card-note">向 TAA 发送导出请求，获取最终生成的模型或推理结果文件。</p>
+        </div>
+      </div>
       <label for="exportRequestId">requestId（与 taskId 二选一或都填）</label>
       <input id="exportRequestId" value="" placeholder="requestId（与 taskId 至少填一项）">
       <label for="exportTaskId">taskId（可选，与 requestId 至少填一项）</label>
@@ -724,7 +1213,18 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
         <span class="muted" id="requestLogCount" style="font-size:13px;">0 条请求体</span>
       </div>
     </div>
-    <div id="requestLogOutput" class="log-window" style="background:#07111d; color:#e5e7eb; min-height:260px; max-height:550px; overflow-y:auto; font-size:13px; line-height:1.6; padding:14px; border-radius:10px; margin:0;"></div>
+    <div class="terminal-shell">
+      <div class="terminal-bar">
+        <div class="terminal-dots">
+          <span class="t-dot red"></span>
+          <span class="t-dot yellow"></span>
+          <span class="t-dot green"></span>
+        </div>
+        <span class="terminal-title">tee-request-payloads</span>
+        <span class="muted" style="font-size:11px;">JSON / REST</span>
+      </div>
+      <div id="requestLogOutput" class="log-window" style="min-height:260px; max-height:550px; overflow-y:auto; font-size:13px; line-height:1.6; padding:14px; margin:0;"></div>
+    </div>
   </section>
 
   <!-- TAA 实时日志 -->
@@ -767,7 +1267,18 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
       <button class="danger" onclick="clearLogs()" style="padding:6px 12px; font-size:13px;">清空</button>
       <span class="muted" id="logCount" style="font-size:13px;">0 条日志</span>
     </div>
-    <pre id="logOutput" class="log-window" style="background:#0b1220; color:#e5e7eb; min-height:300px; max-height:600px; overflow-y:auto; font-size:13px; line-height:1.6; padding:14px; border-radius:10px; margin:0; white-space:pre-wrap; word-break:break-all;"></pre>
+    <div class="terminal-shell">
+      <div class="terminal-bar">
+        <div class="terminal-dots">
+          <span class="t-dot red"></span>
+          <span class="t-dot yellow"></span>
+          <span class="t-dot green"></span>
+        </div>
+        <span class="terminal-title">taa-enclave-syslog</span>
+        <span class="muted" style="font-size:11px;">STDOUT / STDERR</span>
+      </div>
+      <pre id="logOutput" class="log-window" style="min-height:300px; max-height:600px; overflow-y:auto; font-size:13px; line-height:1.6; padding:14px; margin:0; white-space:pre-wrap; word-break:break-all;"></pre>
+    </div>
   </section>
 
 </main>
@@ -2648,17 +3159,29 @@ function buildRequestLogHTML(l, index) {
   const timeStr = formatRequestLogTime(l.timestamp);
   const endpointStr = escapeHtml(l.endpoint || l.path || '-');
   const methodStr = escapeHtml(l.method || 'POST');
+  const methodClass = methodStr.toUpperCase() === 'GET' ? 'log-method-get' : 'log-method-post';
   const bodyStr = l.body || '{}';
+  let bodyHighlighted = '';
+  try {
+    const parsed = parseJSONMaybe(bodyStr);
+    if (parsed && typeof parsed === 'object') {
+      bodyHighlighted = highlightJSON(JSON.stringify(parsed, null, 2));
+    } else {
+      bodyHighlighted = escapeHtml(bodyStr);
+    }
+  } catch {
+    bodyHighlighted = escapeHtml(bodyStr);
+  }
   return `<div class="req-item" style="margin-bottom:12px; border:1px solid rgba(255,255,255,.08); border-radius:8px; background:rgba(255,255,255,.03); overflow:hidden;">` +
     `<div style="display:flex; align-items:center; justify-content:space-between; padding:8px 12px; background:rgba(255,255,255,.05); border-bottom:1px solid rgba(255,255,255,.06); font-family:ui-monospace,monospace; font-size:12px;">` +
-    `<div>` +
-    `<span style="color:#9ca3af;">[${timeStr}]</span> ` +
-    `<span style="color:#38bdf8; font-weight:700; margin:0 4px;">${methodStr}</span> ` +
+    `<div style="display:flex; align-items:center; gap:8px;">` +
+    `<span style="color:#94a3b8; font-size:11px;">[${timeStr}]</span> ` +
+    `<span class="log-method-badge ${methodClass}">${methodStr}</span> ` +
     `<span style="color:#f8fafc; font-weight:600;">${endpointStr}</span>` +
     `</div>` +
     `<div><button type="button" class="secondary" style="padding:3px 8px; font-size:11px; border-radius:6px;" onclick="copyTaaRequestBody(${index})">复制请求体</button></div>` +
     `</div>` +
-    `<pre style="margin:0; padding:12px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; line-height:1.5; color:#34d399; overflow-x:auto; white-space:pre-wrap; word-break:break-all; background:transparent;">${escapeHtml(bodyStr)}</pre>` +
+    `<pre style="margin:0; padding:12px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; line-height:1.55; color:#e2e8f0; overflow-x:auto; white-space:pre-wrap; word-break:break-all; background:transparent;">${bodyHighlighted}</pre>` +
     `</div>`;
 }
 
@@ -2802,9 +3325,9 @@ function logColor(level) {
 
 function logBadge(level) {
   switch (level) {
-    case 'error': return '<span style="color:#ef4444;font-weight:700;">[ERROR]</span>';
-    case 'warn':  return '<span style="color:#f59e0b;font-weight:700;">[WARN] </span>';
-    default:      return '<span style="color:#22d3ee;font-weight:700;">[INFO] </span>';
+    case 'error': return '<span style="color:#f87171;font-weight:700;background:rgba(239,68,68,0.15);padding:1px 5px;border-radius:4px;border:1px solid rgba(239,68,68,0.3);font-size:11px;">ERROR</span>';
+    case 'warn':  return '<span style="color:#fbbf24;font-weight:700;background:rgba(245,158,11,0.15);padding:1px 5px;border-radius:4px;border:1px solid rgba(245,158,11,0.3);font-size:11px;">WARN</span>';
+    default:      return '<span style="color:#38bdf8;font-weight:700;background:rgba(14,165,233,0.15);padding:1px 5px;border-radius:4px;border:1px solid rgba(14,165,233,0.3);font-size:11px;">INFO</span>';
   }
 }
 
