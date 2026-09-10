@@ -763,11 +763,11 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
  | 参数 | 类型 | 必填 | 说明 |
  | --- | --- | --- | --- |
- | `resourceUrl` | `string` | 是 | 资源下载地址 |
+ | `resourceUrl` | `string` | 否* | 资源下载地址。与 `publicKey` 规则一致：若之前未传输过且请求中为空，则报错（400）；若之前已传输并保存过，则允许为空。当为空时，直接复用已保存模型，使用 `runtimeConfig` 中的 `commands` 对最新数据索引对应的数据执行训练 |
  | `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空 |
  | `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空 |
- | `publicKey` | `string` | 否 | SM2 公钥 PEM。TAA 在 phase=1 时校验并保存该公钥，用于后续 phase=3 结果加密导出 |
- | `runtimeConfig` | `string` | 否 | 运行配置 JSON 字符串。字符串内容应为 JSON 对象，包含顺序执行的命令列表和环境变量；缺省时按默认训练流程执行 |
+ | `publicKey` | `string` | 否 | SM2 公钥 PEM。TAA 在 phase=1 时校验并保存该公��，用于后续 phase=3 结果加密导出 |
+ | `runtimeConfig` | `string` | 否* | 运行配置 JSON 字符串。包含顺序执行的命令列表和环境变量。当 `resourceUrl` 为空时必填且 `commands` 不能为空；缺省时按默认训练流程执行 |
 
 **`runtimeConfig` 字段格式**：
 
@@ -775,7 +775,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
 | 子字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `commands` | `array[string]` | 否 | 按顺序执行的命令列表。数组顺序即执行顺序，任一命令失败则停止后续执行 |
+| `commands` | `array[string]` | 否* | 按顺序执行的命令列表。数组顺序即执行顺序，任一命令失败则停止后续执行。当 `resourceUrl` 为空复用模型时必填且至少包含一条命令 |
 | `env` | `string` | 否 | 运行时环境变量 JSON 字符串。字符串内容应为 JSON 对象，解析后得到键值对并注入到每条命令的执行环境中 |
 
 **执行规则**：
@@ -786,6 +786,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 - `env` 为空、缺省或为空字符串时，不额外注入环境变量。
 - `env` 字符串解析后的环境变量对该次导入模型的执行过程生效。
 - `runtimeConfig` 为空、缺省或为空字符串时，TAA 按默认模型导入流程执行，不额外注入命令和环境变量。
+- **resourceUrl 复用与最新数据训练**：当 `resourceUrl` 为空且之前已传输/保存过模型时，TAA 直接跳过模型下载与审计，从数据索引记录中获取最新导入的数据（Latest Data Record），根据 `runtimeConfig` 中的 `commands` 与环境变量对该数据直接执行训练。训练完成后通过 `/v1/taa/reportRes` 异步上报结果，并支持平台后续按 `taskId`/`requestId` 调用 `/v1/taa/export` 导出该轮训练产物。若之前未保存过模型或未找到已导入数据，则返回 400 错误。
 
 **请求示例**：
 

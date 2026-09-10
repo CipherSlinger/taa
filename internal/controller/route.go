@@ -101,11 +101,13 @@ type TAAState struct {
 	SM2PrivateKey        *teecrypto.SM2PrivateKey // TAA 启动时生成的 SM2 私钥，用于解密资源信封
 	UserData             []byte                   // TAA 启动时生成的 64 字节 USERDATA，用于重新生成远程证明报告
 	ExportPublicKey      string                   // phase1 import 时保存的公钥，phase3 export 时使用
+	SavedModelResourceURL string                  // phase1 / importModel 保存的模型资源 URL，允许后续下发模型时为空复用
 	RuntimeConfig        string                   // importModel 保存的运行配置，训练时按该配置执行命令
 	Security             SecurityConfig           // immutable after startup — no mutex needed
 	Logs                 *LogStore                // 结构化日志存储
 	LastAudit            *codeaudit.AuditReport   // 最近一次模型代码审计结果，用于训练报告输出
 	CurrentDataRecord    ImportIndexRecord        // 当前绑定的数据导入记录
+	LatestDataRecord     ImportIndexRecord        // 下发数据接口始终记录的最新数据索引
 	ModelChecksum        map[string]any           // 模型压缩包校验和 (size, algorithm, value)
 	DataChecksum         map[string]any           // 数据压缩包校验和 (size, algorithm, value)
 	CurrentOp            string                   // 当前操作: idle/downloading/decrypting/extracting/debugging/training/auditing/reporting
@@ -149,6 +151,45 @@ func (s *TAAState) getDataChecksum() map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+func (s *TAAState) setSavedModelResourceURL(url string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.SavedModelResourceURL = url
+}
+
+func (s *TAAState) getSavedModelResourceURL() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.SavedModelResourceURL
+}
+
+func (s *TAAState) setLatestDataRecord(record ImportIndexRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.LatestDataRecord = record
+	s.CurrentDataRecord = record
+}
+
+func (s *TAAState) getLatestDataRecord() (ImportIndexRecord, bool) {
+	s.mu.RLock()
+	record := s.LatestDataRecord
+	s.mu.RUnlock()
+	if record.RequestID != "" || record.TaskID != "" || record.DataDir != "" || record.Hash != "" {
+		return record, true
+	}
+	store, err := s.importIndexStore()
+	if err == nil {
+		if rec, ok := store.Latest(); ok {
+			s.mu.Lock()
+			s.LatestDataRecord = rec
+			s.CurrentDataRecord = rec
+			s.mu.Unlock()
+			return rec, true
+		}
+	}
+	return ImportIndexRecord{}, false
 }
 
 func (s *TAAState) getTAAPublicKeyPEM() string {
@@ -496,13 +537,22 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	req.ResourceURL = strings.TrimSpace(req.ResourceURL)
 	req.RequestID = strings.TrimSpace(req.RequestID)
 	req.TaskID = strings.TrimSpace(req.TaskID)
-	if req.ResourceURL == "" {
-		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "resourceUrl 不能为空"))
-		return
-	}
 	if req.RequestID == "" && req.TaskID == "" {
 		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "requestId 和 taskId 不能同时为空"))
 		return
+	}
+
+	savedModelURL := s.getSavedModelResourceURL()
+	s.mu.RLock()
+	modelImported := s.ModelImported
+	s.mu.RUnlock()
+	hasSavedModel := savedModelURL != "" || modelImported
+
+	if req.ResourceURL == "" {
+		if !hasSavedModel {
+			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "resourceUrl 不能为空: 之前未传输过且请求中为空"))
+			return
+		}
 	}
 
 	s.mu.RLock()
@@ -528,16 +578,54 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 		s.Logs.Add(LogWarn, "importModel", "阶段1: 未提供 publicKey，后续阶段3导出可能失败")
 	}
 
-	s.Logs.Add(LogInfo, "importModel", "收到模型 import 请求: taskId=%s, requestId=%s, phase=%d",
-		req.TaskID, req.RequestID, phase)
+	s.Logs.Add(LogInfo, "importModel", "收到模型 import 请求: taskId=%s, requestId=%s, phase=%d, resourceUrlEmpty=%v",
+		req.TaskID, req.RequestID, phase, req.ResourceURL == "")
 
-	s.mu.Lock()
-	s.RuntimeConfig = req.RuntimeConfig
-	s.mu.Unlock()
+	if strings.TrimSpace(req.RuntimeConfig) != "" {
+		s.mu.Lock()
+		s.RuntimeConfig = req.RuntimeConfig
+		s.mu.Unlock()
+		s.Logs.Add(LogInfo, "importModel", "已保存 runtimeConfig (长度=%d)", len(req.RuntimeConfig))
+	}
+
+	// 若 resourceUrl 为空且已有保存的模型，直接复用已导入模型与最新数据索引进行训练
+	if req.ResourceURL == "" {
+		s.mu.RLock()
+		runtimeConfigToUse := s.RuntimeConfig
+		s.mu.RUnlock()
+		if strings.TrimSpace(runtimeConfigToUse) == "" {
+			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "runtimeConfig 不能为空"))
+			return
+		}
+		cfg, env, err := parseRuntimeConfig(runtimeConfigToUse)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("runtimeConfig 解析失败: %v", err), err))
+			return
+		}
+		if len(cfg.Commands) == 0 {
+			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "runtimeConfig.commands 不能为空"))
+			return
+		}
+
+		latestRecord, ok := s.getLatestDataRecord()
+		if !ok || (latestRecord.DataDir == "" && latestRecord.Hash == "") {
+			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "未找到已导入的数据，无法执行训练"))
+			return
+		}
+
+		s.Logs.Add(LogInfo, "importModel", "resourceUrl 为空，复用已保存模型直接基于最新数据执行训练: taskId=%s, requestId=%s, latestDataHash=%s",
+			req.TaskID, req.RequestID, latestRecord.Hash)
+
+		msg := "模型已复用，开始对最新数据执行训练，训练结果将通过 reportRes 上报"
+		writeEnvelope(w, http.StatusOK, msg, nil, 0)
+
+		go s.trainOnLatestData(req, phase, latestRecord, cfg, env)
+		return
+	}
+
+	s.setSavedModelResourceURL(req.ResourceURL)
 	if strings.TrimSpace(req.RuntimeConfig) == "" {
 		s.Logs.Add(LogWarn, "importModel", "runtimeConfig 为空，后续训练将失败")
-	} else {
-		s.Logs.Add(LogInfo, "importModel", "已保存 runtimeConfig (长度=%d)", len(req.RuntimeConfig))
 	}
 
 	s.setCurrentOp("downloading")

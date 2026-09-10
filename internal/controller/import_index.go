@@ -20,16 +20,18 @@ type ImportIndexRecord struct {
 
 type importIndexSnapshot struct {
 	Records []ImportIndexRecord `json:"records"`
+	Latest  *ImportIndexRecord  `json:"latest,omitempty"`
 }
 
 type ImportIndexStore struct {
-	mu            sync.RWMutex
-	path          string
-	records       []ImportIndexRecord
-	byRequestID   map[string]ImportIndexRecord
-	byTaskID      map[string]ImportIndexRecord
-	pendingReqIDs map[string]struct{}
+	mu             sync.RWMutex
+	path           string
+	records        []ImportIndexRecord
+	byRequestID    map[string]ImportIndexRecord
+	byTaskID       map[string]ImportIndexRecord
+	pendingReqIDs  map[string]struct{}
 	pendingTaskIDs map[string]struct{}
+	latestRecord   *ImportIndexRecord
 }
 
 func LoadImportIndexStore(path string) (*ImportIndexStore, error) {
@@ -76,6 +78,13 @@ func LoadImportIndexStore(path string) (*ImportIndexStore, error) {
 			store.byTaskID[record.TaskID] = record
 		}
 		store.records = append(store.records, record)
+	}
+	if snap.Latest != nil {
+		rec := *snap.Latest
+		store.latestRecord = &rec
+	} else if len(store.records) > 0 {
+		rec := store.records[len(store.records)-1]
+		store.latestRecord = &rec
 	}
 	return store, nil
 }
@@ -151,8 +160,11 @@ func (s *ImportIndexStore) Commit(record ImportIndexRecord) error {
 	oldByTask := cloneImportIndexMap(s.byTaskID)
 	oldPendingReq := cloneImportIndexPending(s.pendingReqIDs)
 	oldPendingTask := cloneImportIndexPending(s.pendingTaskIDs)
+	oldLatest := s.latestRecord
 
 	s.records = append(s.records, record)
+	recCopy := record
+	s.latestRecord = &recCopy
 	if record.RequestID != "" {
 		s.byRequestID[record.RequestID] = record
 		delete(s.pendingReqIDs, record.RequestID)
@@ -168,6 +180,7 @@ func (s *ImportIndexStore) Commit(record ImportIndexRecord) error {
 		s.byTaskID = oldByTask
 		s.pendingReqIDs = oldPendingReq
 		s.pendingTaskIDs = oldPendingTask
+		s.latestRecord = oldLatest
 		return err
 	}
 	return nil
@@ -252,8 +265,23 @@ func (s *ImportIndexStore) Lookup(requestID, taskID string) (ImportIndexRecord, 
 	}
 }
 
+func (s *ImportIndexStore) Latest() (ImportIndexRecord, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.latestRecord != nil {
+		return *s.latestRecord, true
+	}
+	if len(s.records) > 0 {
+		return s.records[len(s.records)-1], true
+	}
+	return ImportIndexRecord{}, false
+}
+
 func (s *ImportIndexStore) saveLocked() error {
-	snap := importIndexSnapshot{Records: append([]ImportIndexRecord(nil), s.records...)}
+	snap := importIndexSnapshot{
+		Records: append([]ImportIndexRecord(nil), s.records...),
+		Latest:  s.latestRecord,
+	}
 	sort.Slice(snap.Records, func(i, j int) bool {
 		if snap.Records[i].RequestID != snap.Records[j].RequestID {
 			return snap.Records[i].RequestID < snap.Records[j].RequestID
