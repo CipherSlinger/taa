@@ -984,3 +984,238 @@ result = {"dataset": {"total_samples": 5, "splits": {"train": 5, "test": 0}}, "m
 		t.Fatalf("marker content = %q, want opt-taa-dirs-success\\n", string(marker))
 	}
 }
+
+func TestPhase1ModelReuseAndTrainOnLatestData(t *testing.T) {
+	state, server := setupTestServer(t)
+	state.mu.Lock()
+	state.CurrentPhase = 1
+	state.DockerID = "docker-model-reuse-test"
+	state.mu.Unlock()
+
+	platformReportCh := make(chan importedReportPayload, 10)
+	platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == reportResEndpoint {
+			var payload importedReportPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode reportRes payload: %v", err)
+			}
+			platformReportCh <- payload
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer platformServer.Close()
+
+	state.mu.Lock()
+	state.PlatformIP = platformServer.URL
+	state.mu.Unlock()
+
+	trainScript := `#!/usr/bin/env python3
+from argparse import ArgumentParser
+from pathlib import Path
+import json
+
+parser = ArgumentParser(add_help=False)
+parser.add_argument("--input", dest="input_dir", required=True)
+parser.add_argument("--output", dest="output_dir", required=True)
+parser.add_argument("--marker", dest="marker_name", default="default")
+args, _ = parser.parse_known_args()
+
+input_dir = Path(args.input_dir)
+output_dir = Path(args.output_dir)
+output_dir.mkdir(parents=True, exist_ok=True)
+
+data_file = input_dir / "data" / "dataset.txt"
+if not data_file.exists():
+    raise RuntimeError(f"missing dataset at {data_file}")
+data_content = data_file.read_text().strip()
+
+(output_dir / "marker.txt").write_text(f"{args.marker_name}:{data_content}\n")
+(output_dir / "model.bin").write_text("trained-weights-ok")
+result = {"dataset": {"content": data_content}, "metrics": {"marker": args.marker_name}}
+(output_dir / "training_result.json").write_text(json.dumps(result))
+`
+
+	modelArchive := buildTarGzArchive(t, map[string]archiveEntry{
+		"train.py": {
+			mode: 0o755,
+			data: []byte(trainScript),
+		},
+	})
+
+	dataArchive1 := buildTarGzArchive(t, map[string]archiveEntry{
+		"data/dataset.txt": {
+			mode: 0o644,
+			data: []byte("dataset-v1"),
+		},
+	})
+
+	dataArchive2 := buildTarGzArchive(t, map[string]archiveEntry{
+		"data/dataset.txt": {
+			mode: 0o644,
+			data: []byte("dataset-v2"),
+		},
+	})
+
+	resourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/model.tar.gz":
+			w.Header().Set("Content-Type", "application/gzip")
+			_, _ = w.Write(modelArchive)
+		case "/data1.tar.gz":
+			w.Header().Set("Content-Type", "application/gzip")
+			_, _ = w.Write(dataArchive1)
+		case "/data2.tar.gz":
+			w.Header().Set("Content-Type", "application/gzip")
+			_, _ = w.Write(dataArchive2)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer resourceServer.Close()
+
+	// 1. Initial importModel with empty resourceUrl must fail (400) because model was never imported
+	respFail := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+		"resourceUrl": "",
+		"taskId":      "task-first-model",
+	})
+	apiFail := decodeResponse(t, respFail)
+	if respFail.StatusCode != http.StatusBadRequest || !strings.Contains(apiFail.Msg, "resourceUrl 不能为空") {
+		t.Fatalf("expected 400 with 'resourceUrl 不能为空', got %d / %s", respFail.StatusCode, apiFail.Msg)
+	}
+
+	// 2. Import dataset 1
+	data1Resp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+		"resourceUrl": resourceServer.URL + "/data1.tar.gz",
+		"requestId":   "req-data-01",
+		"taskId":      "task-data-01",
+	})
+	apiData1 := decodeResponse(t, data1Resp)
+	if data1Resp.StatusCode != http.StatusOK || apiData1.Error != 0 {
+		t.Fatalf("import data1 failed: %d / %s", data1Resp.StatusCode, apiData1.Msg)
+	}
+
+	// 3. Import model with valid resourceUrl
+	cmd1 := "python3 train.py --input <in> --output <out> --marker run1"
+	runtimeCfgJSON1 := makeRuntimeConfigJSON(t, []string{cmd1}, nil)
+	modelResp1 := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+		"resourceUrl":   resourceServer.URL + "/model.tar.gz",
+		"requestId":     "req-model-01",
+		"taskId":        "task-data-01",
+		"runtimeConfig": runtimeCfgJSON1,
+	})
+	apiModel1 := decodeResponse(t, modelResp1)
+	if modelResp1.StatusCode != http.StatusOK || apiModel1.Error != 0 {
+		t.Fatalf("import model 1 failed: %d / %s", modelResp1.StatusCode, apiModel1.Msg)
+	}
+
+	// Wait for reportRes 1
+	select {
+	case payload := <-platformReportCh:
+		if payload.Code != 0 {
+			t.Fatalf("reportRes 1 code = %d, msg: %v", payload.Code, payload.Msg)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for reportRes 1")
+	}
+
+	// Check marker for run1
+	resultDir1 := resultDirForRequestTask(state.Security.ResultDir, "req-data-01", "task-data-01")
+	marker1, err := os.ReadFile(filepath.Join(resultDir1, "marker.txt"))
+	if err != nil {
+		t.Fatalf("read marker1: %v", err)
+	}
+	if string(marker1) != "run1:dataset-v1\n" {
+		t.Fatalf("marker1 content = %q, want 'run1:dataset-v1\\n'", string(marker1))
+	}
+
+	// 4. Import dataset 2 (updates latest data index to dataset 2)
+	data2Resp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+		"resourceUrl": resourceServer.URL + "/data2.tar.gz",
+		"requestId":   "req-data-02",
+		"taskId":      "task-data-02",
+	})
+	apiData2 := decodeResponse(t, data2Resp)
+	if data2Resp.StatusCode != http.StatusOK || apiData2.Error != 0 {
+		t.Fatalf("import data2 failed: %d / %s", data2Resp.StatusCode, apiData2.Msg)
+	}
+
+	// Wait for dataset 2 import to complete and register in state
+	data2WaitDeadline := time.Now().Add(15 * time.Second)
+	data2Ready := false
+	for time.Now().Before(data2WaitDeadline) {
+		rec, ok := state.getLatestDataRecord()
+		if ok && rec.TaskID == "task-data-02" {
+			data2Ready = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !data2Ready {
+		t.Fatal("timed out waiting for dataset 2 import to complete")
+	}
+	waitForIdle(t, state)
+
+	// 5. Call importModel with EMPTY resourceUrl and new taskId "task-reuse-02"
+	// Should directly execute training on the latest dataset (dataset 2) using commands in runtimeConfig!
+	cmd2 := "python3 train.py --input <in> --output <out> --marker run2-reused"
+	runtimeCfgJSON2 := makeRuntimeConfigJSON(t, []string{cmd2}, nil)
+	modelResp2 := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+		"resourceUrl":   "",
+		"requestId":     "req-reuse-02",
+		"taskId":        "task-reuse-02",
+		"runtimeConfig": runtimeCfgJSON2,
+	})
+	apiModel2 := decodeResponse(t, modelResp2)
+	if modelResp2.StatusCode != http.StatusOK || apiModel2.Error != 0 {
+		t.Fatalf("import model reuse failed: %d / %s", modelResp2.StatusCode, apiModel2.Msg)
+	}
+	if !strings.Contains(apiModel2.Msg, "模型已复用") {
+		t.Fatalf("expected msg to contain '模型已复用', got: %q", apiModel2.Msg)
+	}
+
+	// Wait for reportRes 2
+	select {
+	case payload := <-platformReportCh:
+		if payload.Code != 0 {
+			t.Fatalf("reportRes 2 code = %d, msg: %v", payload.Code, payload.Msg)
+		}
+		if payload.TaskID != "task-reuse-02" {
+			t.Fatalf("reportRes 2 taskId = %q, want task-reuse-02", payload.TaskID)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for reportRes 2")
+	}
+
+	// Check marker for run2: must have used dataset-v2!
+	resultDir2 := resultDirForRequestTask(state.Security.ResultDir, "req-reuse-02", "task-reuse-02")
+	marker2, err := os.ReadFile(filepath.Join(resultDir2, "marker.txt"))
+	if err != nil {
+		t.Fatalf("read marker2: %v", err)
+	}
+	if string(marker2) != "run2-reused:dataset-v2\n" {
+		t.Fatalf("marker2 content = %q, want 'run2-reused:dataset-v2\\n'", string(marker2))
+	}
+
+	// 6. Test export for task-reuse-02
+	exportResp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+		"taskId": "task-reuse-02",
+	})
+	if exportResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(exportResp.Body)
+		exportResp.Body.Close()
+		t.Fatalf("export failed: code=%d body=%s", exportResp.StatusCode, body)
+	}
+	exportTarGz, err := io.ReadAll(exportResp.Body)
+	exportResp.Body.Close()
+	if err != nil {
+		t.Fatalf("read export body: %v", err)
+	}
+	files := extractTarGzMap(t, exportTarGz)
+	dirName := filepath.Base(resultDir2)
+	if _, ok := files[dirName+"/marker.txt"]; !ok {
+		t.Fatalf("exported archive missing marker.txt: got keys %v", keysOfMap(files))
+	}
+	if _, ok := files[dirName+"/training_report.json"]; !ok {
+		t.Fatalf("exported archive missing training_report.json: got keys %v", keysOfMap(files))
+	}
+}

@@ -76,6 +76,7 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		s.mu.Lock()
 		s.ModelImported = true
 		s.mu.Unlock()
+		s.setSavedModelResourceURL(req.ResourceURL)
 	} else {
 		size, hash, err := teecrypto.HashFileSM3(plaintextPath)
 		if err != nil {
@@ -125,8 +126,8 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 			s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("保存导入索引失败: %v", err))
 			return
 		}
+		s.setLatestDataRecord(trainRecord)
 		s.mu.Lock()
-		s.CurrentDataRecord = trainRecord
 		s.DataImported = true
 		s.mu.Unlock()
 		s.Logs.Add(LogInfo, "index", "导入索引写入成功: requestId=%s taskId=%s hash=%s", req.RequestID, req.TaskID, hash)
@@ -148,6 +149,7 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		if s.Phase1TrainingStarted {
 			s.mu.Unlock()
 			s.Logs.Add(LogInfo, "import", "阶段1: 训练已启动，跳过重复触发")
+			s.setCurrentOp("idle")
 			return
 		}
 		s.Phase1TrainingStarted = true
@@ -177,6 +179,58 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 			trainReq.TaskID = trainRecord.TaskID
 		}
 	}
+
+	s.mu.RLock()
+	runtimeConfigRaw := s.RuntimeConfig
+	s.mu.RUnlock()
+	cfg, env, err := parseRuntimeConfig(runtimeConfigRaw)
+	if err != nil {
+		s.Logs.Add(LogError, "train", "%v", err)
+		s.setCurrentOp("idle")
+		s.reportImportFailure(trainReq, phase, false, startedAt, err.Error())
+		return
+	}
+
+	s.executeTraining(trainReq, phase, trainRecord, cfg, env, startedAt)
+}
+
+func (s *TAAState) trainOnLatestData(req importRequest, phase int, latestRecord ImportIndexRecord, cfg runtimeConfig, env map[string]string) {
+	startedAt := time.Now().UTC()
+	PhaseSeparator(fmt.Sprintf("Phase %d Train On Latest Data: taskId=%s", phase, req.TaskID))
+	s.Logs.Add(LogInfo, "train", "开始基于最新数据执行训练: taskId=%s, requestId=%s, phase=%d, dataHash=%s",
+		req.TaskID, req.RequestID, phase, latestRecord.Hash)
+
+	trainReq := req
+	trainRecord := latestRecord
+
+	// 判断是否指定了新的 requestId 或 taskId
+	isNewRequest := (req.RequestID != "" && req.RequestID != latestRecord.RequestID) ||
+		(req.TaskID != "" && req.TaskID != latestRecord.TaskID)
+
+	if isNewRequest {
+		trainRecord.RequestID = req.RequestID
+		trainRecord.TaskID = req.TaskID
+		trainRecord.ResultDir = resultDirForRequestTask(s.Security.ResultDir, req.RequestID, req.TaskID)
+
+		store, err := s.importIndexStore()
+		if err == nil {
+			_ = store.Reserve(req.RequestID, req.TaskID)
+			_ = store.Commit(trainRecord)
+		}
+		s.setLatestDataRecord(trainRecord)
+	} else {
+		if trainReq.RequestID == "" {
+			trainReq.RequestID = latestRecord.RequestID
+		}
+		if trainReq.TaskID == "" {
+			trainReq.TaskID = latestRecord.TaskID
+		}
+	}
+
+	s.executeTraining(trainReq, phase, trainRecord, cfg, env, startedAt)
+}
+
+func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecord ImportIndexRecord, cfg runtimeConfig, env map[string]string, startedAt time.Time) {
 	trainOutputDir := trainRecord.ResultDir
 	if trainOutputDir == "" {
 		trainOutputDir = resultDirForRequestTask(s.Security.ResultDir, trainReq.RequestID, trainReq.TaskID)
@@ -192,17 +246,6 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 
 	modelInputDir := s.Security.GetModelInputDir()
 	modelOutputDir := s.Security.GetModelOutputDir()
-
-	s.mu.RLock()
-	runtimeConfigRaw := s.RuntimeConfig
-	s.mu.RUnlock()
-	cfg, env, err := parseRuntimeConfig(runtimeConfigRaw)
-	if err != nil {
-		s.Logs.Add(LogError, "train", "%v", err)
-		s.setCurrentOp("idle")
-		s.reportImportFailure(trainReq, phase, false, startedAt, err.Error())
-		return
-	}
 
 	StepSeparator("Stage Input Data")
 	s.setCurrentOp("staging")
@@ -478,6 +521,7 @@ func (s *TAAState) clearImportedState(isModel bool, phase int) {
 	defer s.mu.Unlock()
 	if isModel {
 		s.ModelImported = false
+		s.SavedModelResourceURL = ""
 		s.RuntimeConfig = ""
 		return
 	}

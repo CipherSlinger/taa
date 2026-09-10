@@ -506,24 +506,23 @@ components:
 
     ImportModelRequest:
       type: object
-      required:
-        - resourceUrl
-        - taskId
-        - requestId
       properties:
         resourceUrl:
           type: string
-          description: 加密模型代码包的 HTTP(S) 下载地址
+          description: 模型代码包的 HTTP(S) 下载地址。若之前未传输过且请求中为空则报错；若之前已传输保存过，则允许为空。为空时直接复用已保存模型，使用 runtimeConfig 中的 commands 对最新数据索引对应的数据执行训练。
         taskId:
           type: string
-          description: 任务唯一标识
+          description: 任务唯一标识（与 requestId 不能同时为空）
         requestId:
           type: string
-          description: 请求唯一标识
+          description: 请求唯一标识（与 taskId 不能同时为空）
+        publicKey:
+          type: string
+          description: SM2 公钥 PEM。TAA 在 phase=1 时保存，用于后续 phase=3 结果加密导出
         runtimeConfig:
           type: string
-          description: 模型训练启动命令与参数配置
-          example: "python3 train.py --epochs 10"
+          description: 模型运行配置 JSON 字符串（包含 commands 和 env）。resourceUrl 为空时必填且 commands 不能为空。
+          example: '{"commands":["python3 train.py --input <in> --output <out>"]}'
 
     GetResourceInfoRequest:
       type: object
