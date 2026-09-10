@@ -18,6 +18,7 @@ import (
 	"time"
 
 	teecrypto "taa/pkg/crypto"
+	pkgerrors "taa/pkg/errors"
 )
 
 func setupTestState(t *testing.T) (*TAAState, string) {
@@ -1147,4 +1148,77 @@ func TestFullWorkflow(t *testing.T) {
 	if attResult["attestationValues"] == "" {
 		t.Fatal("attestationValues is empty")
 	}
+}
+
+// ── Test: writeErr 与 pkg/errors 统一错误映射机制 ───────────
+
+func TestWriteErrWithPkgErrors(t *testing.T) {
+	t.Run("pkg/errors.New 结构化错误提取 Code 与 Message", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		err := pkgerrors.New(pkgerrors.CodeInvalidArgument, "参数格式错误")
+		writeErr(rec, http.StatusInternalServerError, err)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+		var resp apiResponse
+		if unmarshalErr := json.Unmarshal(rec.Body.Bytes(), &resp); unmarshalErr != nil {
+			t.Fatalf("unmarshal: %v", unmarshalErr)
+		}
+		if resp.Error != pkgerrors.CodeInvalidArgument {
+			t.Fatalf("resp.Error = %d, want %d", resp.Error, pkgerrors.CodeInvalidArgument)
+		}
+		if resp.Msg != "参数格式错误" {
+			t.Fatalf("resp.Msg = %q, want %q", resp.Msg, "参数格式错误")
+		}
+	})
+
+	t.Run("pkg/errors.Wrap 链式包装错误提取外层描述与内置 Code", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		cause := fmt.Errorf("connection refused")
+		wrapped := pkgerrors.Wrap(pkgerrors.CodeInternal, "数据库访问失败", cause)
+		writeErr(rec, http.StatusBadRequest, wrapped)
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+		}
+		var resp apiResponse
+		if unmarshalErr := json.Unmarshal(rec.Body.Bytes(), &resp); unmarshalErr != nil {
+			t.Fatalf("unmarshal: %v", unmarshalErr)
+		}
+		if resp.Error != pkgerrors.CodeInternal {
+			t.Fatalf("resp.Error = %d, want %d", resp.Error, pkgerrors.CodeInternal)
+		}
+		if resp.Msg != "数据库访问失败" {
+			t.Fatalf("resp.Msg = %q, want %q", resp.Msg, "数据库访问失败")
+		}
+	})
+
+	t.Run("标准 error 回退为 defaultStatus", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		stdErr := fmt.Errorf("simple error")
+		writeErr(rec, http.StatusNotFound, stdErr)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+		}
+		var resp apiResponse
+		if unmarshalErr := json.Unmarshal(rec.Body.Bytes(), &resp); unmarshalErr != nil {
+			t.Fatalf("unmarshal: %v", unmarshalErr)
+		}
+		if resp.Error != http.StatusNotFound {
+			t.Fatalf("resp.Error = %d, want %d", resp.Error, http.StatusNotFound)
+		}
+		if resp.Msg != "simple error" {
+			t.Fatalf("resp.Msg = %q, want %q", resp.Msg, "simple error")
+		}
+	})
+
+	t.Run("nil 错误不写入任何响应", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		writeErr(rec, http.StatusInternalServerError, nil)
+		if rec.Body.Len() != 0 {
+			t.Fatalf("rec.Body.Len() = %d, want 0", rec.Body.Len())
+		}
+	})
 }
