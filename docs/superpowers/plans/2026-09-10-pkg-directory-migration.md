@@ -37,9 +37,9 @@
 - Test: `internal/controller/log_store_test.go`
 - Test: `internal/app/mock/server_test.go`
 
-- [ ] **Step 1.1.1: 改造 `internal/controller/log_store.go`**
+- [x] **Step 1.1.1: 改造 `internal/controller/log_store.go`**
   将其底层存储委托给 `pkg/logger.Store`，保持 `LogLevel` 与已有公共方法（`Add`, `Drain`, `Since`, `All`, `Count`）签名不变，确保对外 API 零破坏。
-- [ ] **Step 1.1.2: 运行测试验证**
+- [x] **Step 1.1.2: 运行测试验证**
   ```bash
   go test -v ./internal/controller -run TestLogStore
   go test -v ./internal/app/mock
@@ -54,8 +54,8 @@
 - Modify: `internal/controller/route.go`（调用 `utils.SafeFilename`）
 - Test: `internal/controller/...`
 
-- [ ] **Step 1.2.1: 替换调用并删除重复私有函数**
-- [ ] **Step 1.2.2: 运行 controller 全部单元测试**
+- [x] **Step 1.2.1: 替换调用并删除重复私有函数**
+- [x] **Step 1.2.2: 运行 controller 全部单元测试**
   ```bash
   go test -v ./internal/controller/...
   ```
@@ -74,20 +74,20 @@
 - Modify: `internal/controller/resource_info.go`（更新 import: `taa/pkg/filetree`）
 - Delete: 原根目录 `filetree/`
 
-- [ ] **Step 2.1.1: 创建 `pkg/filetree` 并迁移代码**
+- [x] **Step 2.1.1: 创建 `pkg/filetree` 并迁移代码**
   ```bash
   mkdir -p pkg/filetree
   git mv filetree/filetree.go pkg/filetree/filetree.go
   git mv filetree/filetree_test.go pkg/filetree/filetree_test.go
   ```
-- [ ] **Step 2.1.2: 更新业务代码 import 路径**
+- [x] **Step 2.1.2: 更新业务代码 import 路径**
   将 `taa/filetree` 替换为 `taa/pkg/filetree`。
-- [ ] **Step 2.1.3: 运行验证**
+- [x] **Step 2.1.3: 运行验证**
   ```bash
   go test -v ./pkg/filetree/...
   go test -v ./internal/controller -run "TestResourceInfo|TestImport"
   ```
-- [ ] **Step 2.1.4: 清理空目录并提交**
+- [x] **Step 2.1.4: 清理空目录并提交**
   ```bash
   rm -rf filetree/
   git add . && git commit -m "refactor(filetree): 将数据集目录树解析引擎迁移至 pkg/filetree"
@@ -107,7 +107,7 @@
 - Modify: 更新 `sdk/` 内部代码引用为 `taa/pkg/crypto`
 - Test: `pkg/crypto/...`, `sdk/...`, `internal/...`
 
-- [ ] **Step 3.1.1: 迁移源码到 `pkg/crypto`**
+- [x] **Step 3.1.1: 迁移源码到 `pkg/crypto`**
   ```bash
   mkdir -p pkg/crypto
   git mv crypto/sm2.go pkg/crypto/sm2.go
@@ -120,17 +120,17 @@
   git mv crypto/crypto_test.go pkg/crypto/crypto_test.go
   git mv crypto/archive_test.go pkg/crypto/archive_test.go
   ```
-- [ ] **Step 3.1.2: 批量更新工程内 import 路径**
+- [x] **Step 3.1.2: 批量更新工程内 import 路径**
   将全工程中的 `"taa/crypto"` 全量更新为 `"taa/pkg/crypto"`。
-- [ ] **Step 3.1.3: 在根目录 `crypto/` 设立兼容包（可选/渐进过渡）**
+- [x] **Step 3.1.3: 在根目录 `crypto/` 设立兼容包（可选/渐进过渡）**
   若需保留历史兼容，保留轻量导入转发；或直接清理根目录 `crypto/` 并同步修正 `sdk/CLAUDE.md` 与 `sdk/go.mod`。
-- [ ] **Step 3.1.4: 双重验证测试**
+- [x] **Step 3.1.4: 双重验证测试**
   ```bash
   go test -v ./pkg/crypto/...
   go test -v ./internal/... ./cmd/...
   (cd sdk && go test -v ./...)
   ```
-- [ ] **Step 3.1.5: 提交变更**
+- [x] **Step 3.1.5: 提交变更**
   ```bash
   git add . && git commit -m "refactor(crypto): 将国密密码学与密钥信封库迁移至 pkg/crypto"
   ```
@@ -148,18 +148,18 @@
 - Modify: 更新其中的密码学依赖（使用 `taa/pkg/crypto`）
 - Test: `pkg/csvattest/...`
 
-- [ ] **Step 4.1.1: 迁移代码至 `pkg/csvattest`**
+- [x] **Step 4.1.1: 迁移代码至 `pkg/csvattest`**
   ```bash
   mkdir -p pkg/csvattest
   git mv attestation/csv_go/*.go pkg/csvattest/
   ```
-- [ ] **Step 4.1.2: 规范包名与引用路径**
+- [x] **Step 4.1.2: 规范包名与引用路径**
   修正 `package csvattest`，调整内部测试与文档。
-- [ ] **Step 4.1.3: 运行驱动单元测试**
+- [x] **Step 4.1.3: 运行驱动单元测试**
   ```bash
   go test -v ./pkg/csvattest/...
   ```
-- [ ] **Step 4.1.4: 清理空目录并提交**
+- [x] **Step 4.1.4: 清理空目录并提交**
   ```bash
   rm -rf attestation/csv_go/
   git add . && git commit -m "refactor(attestation): 将海光 CSV 证明纯 Go 驱动迁移至 pkg/csvattest"
@@ -177,12 +177,12 @@
 - Modify: `internal/controller/import_processing.go`（解密、解包、哈希校验错误包裹）
 - Test: `internal/controller/handler_test.go`
 
-- [ ] **Step 5.1.1: 增强 `writeError` 支持提取 `errors.CodeOf(err)`**
-- [ ] **Step 5.1.2: 运行全套控制器接口集成测试**
+- [x] **Step 5.1.1: 增强 `writeError` 支持提取 `errors.CodeOf(err)`**
+- [x] **Step 5.1.2: 运行全套控制器接口集成测试**
   ```bash
   go test -v ./internal/controller/...
   ```
-- [ ] **Step 5.1.3: 提交变更**
+- [x] **Step 5.1.3: 提交变更**
   ```bash
   git add . && git commit -m "feat(controller): 全面接入 pkg/errors 统一接口错误码与链路追踪"
   ```
@@ -191,8 +191,8 @@
 
 ## 最终验证清单 (Verification Checklist)
 
-- [ ] `go test ./pkg/...` 全部通过
-- [ ] `go test ./internal/... ./cmd/...` 全部通过
-- [ ] `(cd sdk && go test ./...)` 客户端 SDK 单元测试通过
-- [ ] `make taa && make platform-mock-build` 二进制构建产物正常且无编译警告
-- [ ] `git status` 无残留未追踪冗余文件
+- [x] `go test ./pkg/...` 全部通过
+- [x] `go test ./internal/... ./cmd/...` 全部通过
+- [x] `(cd sdk && go test ./...)` 客户端 SDK 单元测试通过
+- [x] `make taa && make platform-mock-build` 二进制构建产物正常且无编译警告
+- [x] `git status` 无残留未追踪冗余文件
