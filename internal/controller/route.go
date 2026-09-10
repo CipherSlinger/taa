@@ -702,7 +702,42 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.Logs.Add(LogInfo, "export", "收到导出请求: requestId=%s, taskId=%s, hash=%s, resultDir=%s", req.RequestID, req.TaskID, record.Hash, record.ResultDir)
+	s.mu.RLock()
+	phase := s.CurrentPhase
+	savedPublicKey := s.ExportPublicKey
+	s.mu.RUnlock()
+
+	s.Logs.Add(LogInfo, "export", "收到导出请求: requestId=%s, taskId=%s, hash=%s, resultDir=%s, phase=%d", req.RequestID, req.TaskID, record.Hash, record.ResultDir, phase)
+
+	// ── 确定公钥和是否加密 ──
+	var pubKeyPEM string
+	var encrypt bool
+
+	switch phase {
+	case 1, 2:
+		if req.PublicKey != nil && strings.TrimSpace(*req.PublicKey) != "" {
+			pubKeyPEM = strings.TrimSpace(*req.PublicKey)
+			encrypt = true
+			s.Logs.Add(LogInfo, "export", "阶段%d: 使用请求中的 publicKey 加密 (长度=%d)", phase, len(pubKeyPEM))
+		} else {
+			s.Logs.Add(LogInfo, "export", "阶段%d: 未传入 publicKey，返回明文", phase)
+		}
+
+	case 3:
+		if savedPublicKey == "" {
+			s.Logs.Add(LogError, "export", "阶段3: ExportPublicKey 为空，无法加密导出")
+			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "阶段 3 需要先通过阶段 1 导入公钥"))
+			return
+		}
+		pubKeyPEM = savedPublicKey
+		encrypt = true
+		s.Logs.Add(LogInfo, "export", "阶段3: 使用阶段1保存的 ExportPublicKey 加密 (长度=%d)\n%s", len(pubKeyPEM), pubKeyPEM)
+
+	default:
+		s.Logs.Add(LogError, "export", "不支持的阶段: %d", phase)
+		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, fmt.Sprintf("当前阶段 %d 不支持导出", phase)))
+		return
+	}
 
 	resultData, err := compressDirToTarGz(record.ResultDir)
 	if err != nil {
@@ -712,15 +747,6 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filename := filepath.Base(record.ResultDir) + ".tar.gz"
-	var pubKeyPEM string
-	var encrypt bool
-	if req.PublicKey != nil && strings.TrimSpace(*req.PublicKey) != "" {
-		pubKeyPEM = strings.TrimSpace(*req.PublicKey)
-		encrypt = true
-		s.Logs.Add(LogInfo, "export", "使用请求中的 publicKey 加密 (长度=%d)", len(pubKeyPEM))
-	} else {
-		s.Logs.Add(LogInfo, "export", "未传入 publicKey，返回明文")
-	}
 
 	if encrypt {
 		pub, err := teecrypto.ParseSM2PublicKeyPEM([]byte(pubKeyPEM))
