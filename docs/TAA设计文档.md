@@ -11,23 +11,136 @@ TAA（Trusted Application Attestation）是一个运行在 Hygon CSV（可信安
 
 ## 2. 系统架构
 
-### 2.1 整体数据流
+### 2.1 整体数据流与核心链路
 
-```
-  平台                     TAA 容器                    远程证明
-  ────                    ────────                    ────────
+TAA 构建了跨**数据/模型提供方（客户端 SDK）**、**管控平台**与 **Hygon CSV TEE 可信边界（TAA 实例）**的三方密态计算闭环。数据流转全过程保证“出端即加密、计算在密态、审计后执行、结果可回传”。
 
-  ┌──────┐              ┌──────────────┐           ┌──────────┐
-  │      │── register ──▶│              │── vmmcall ─▶│          │
-  │      │              │   TAA 服务    │           │ CSV 硬件  │
-  │ 平台  │── import ───▶│   (:6001)    │◀─ report ──│          │
-  │      │◀── reportRes ─│              │           └──────────┘
-  │      │              │   ┌────────┐  │
-  │      │── export ───▶│   │ Ollama │  │
-  │      │◀── result ────│   │ (Qwen) │  │
-  │      │              │   └────────┘  │
-  └──────┘              └──────────────┘
+#### 2.1.1 核心数据流转时序图
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Provider as 数据/模型提供方 (Client SDK)
+    participant Platform as 管控平台 (Platform)
+    participant TAA as TAA 守护进程 (TEE 边界)
+    participant CSV as 海光 CSV 硬件 (PSP/Driver)
+    participant Engine as 审计与执行引擎 (Local LLM/Train)
+
+    %% 阶段 1：启动、证明与身份注册
+    Note over TAA,CSV: 阶段 1：启动与硬件证明绑定
+    TAA->>TAA: 实例启动，生成/加载持久化 SM2 密钥对
+    TAA->>TAA: 构造 USERDATA = taaPublicKey.X || taaPublicKey.Y (64B)
+    TAA->>CSV: IOCTL / VMMCALL 请求硬件度量
+    CSV-->>TAA: 返回 CSV 远程证明报告 (report.cert)
+    TAA->>Platform: POST /v1/taa/register (证明报告 + SM2 公钥 + 宿主元数据)
+    Platform->>Platform: 验证硬件背书与 USERDATA 绑定关系
+
+    %% 阶段 2：密态资源封装与下发
+    Note over Provider,Platform: 阶段 2：密态资源封装与下发
+    Provider->>Platform: 获取目标 TAA 实例的证明报告与 SM2 公钥
+    Provider->>Provider: SDK 离线/在线校验硬件证书链 (HRK→HSK→CEK→PEK)
+    Provider->>Provider: 生成一次性随机 SM4 密钥，SM4-GCM 加密资源包
+    Provider->>Provider: 使用 TAA 公钥进行 SM2 信封加密 (WrapKeySM2)
+    Provider->>Platform: 上传自包含密文资源包 (WrappedKey || Nonce || Ciphertext || Tag)
+    Platform->>TAA: POST /v1/taa/import (资源 URL + 阶段类型 + 任务 ID)
+
+    %% 阶段 3：密态解密、审计与执行
+    Note over TAA,Engine: 阶段 3：TEE 内解密、代码审计与执行
+    TAA->>Platform: HTTP GET 下载加密资源包至 TEE 安全内存/盘
+    TAA->>TAA: 使用 TAA SM2 私钥解封数据密钥并经 SM4-GCM 解密
+    TAA->>TAA: 解压并校验资源目录结构 (防 Zip-Slip 逃逸)
+    alt Phase 1/2 模型代码导入
+        TAA->>Engine: AST / 正则静态规则扫描 (网络外联/反弹Shell等)
+        TAA->>Engine: 本地 Qwen-Coder 语义二次分析消除误报
+        TAA->>Platform: POST /v1/taa/reportRes (上报审计通过或阻断)
+    end
+    Platform->>TAA: POST /v1/taa/switch (阶段切换与执行触发)
+    TAA->>Engine: 隔离环境中拉起执行脚本 (debug.sh / train.sh)
+    Engine-->>TAA: 训练/推理完成，产出结果文件
+
+    %% 阶段 4：防泄露检查与密态导出
+    Note over Platform,Provider: 阶段 4：防泄露检查与密态导出
+    TAA->>TAA: 扫描输出目录进行敏感数据明文泄漏检查
+    Platform->>TAA: POST /v1/taa/export (携带数据方 ExportPublicKey)
+    alt 指定导出公钥 (密态导出)
+        TAA->>TAA: 重新执行 SM2 信封加密 (SM4-GCM + ExportPublicKey)
+        TAA-->>Platform: 返回信封密文流及任务元数据
+    else 无导出公钥 (调试明文导出)
+        TAA-->>Platform: 返回原始产物 (仅限 Phase 1/2 调试模式)
+    end
+    Platform-->>Provider: 回传最终训练结果/模型权重
 ```
+
+#### 2.1.2 阶段流转架构拓扑
+
+```text
+ [数据/模型提供方 (teecrypto SDK)]
+   │
+   │ 1. 验证 TAA 证明报告 (HRK 根证书链)
+   │ 2. 生成一次性 SM4 会话密钥加密资源包 (SM4-GCM)
+   │ 3. 使用 TAA SM2 公钥封装会话密钥 (信封加密)
+   ▼
+┌────────────────────────────────────────────────────────┐
+│ 管控平台 (Platform / Platform-Mock)                     │
+│  - 维护容器生命周期与阶段切换 (Phase 1/2/3/4)            │
+│  - 透传下发密态资源包 (URL)                             │
+│  - 收集 TAA 注册身份、审计状态、心跳与训练结果          │
+└───────────────────────┬────────────────────────────────┘
+                        │
+                        │ HTTP POST 调度指令 (import / switch / export)
+                        ▼
+┌────────────────────────────────────────────────────────┐
+│ Hygon CSV TEE 可信硬件边界 (TAA Pod / Container)        │
+│                                                        │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ 1. 身份与度量 (启动即证明)                       │  │
+│  │    SM2 私钥 (/opt/taa/keys) ──► USERDATA (64B)   │  │
+│  │    /dev/csv-guest IOCTL ────► Attestation Report │  │
+│  └──────────────────────────────────────────────────┘  │
+│                           │                            │
+│                           ▼                            │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ 2. 密态导入与解密                                │  │
+│  │    下载密文包 ──► SM2 私钥解封 SM4 密钥 ──►      │  │
+│  │    SM4-GCM 解密 ──► 解包落盘 (/opt/taa/input)    │  │
+│  └──────────────────────────────────────────────────┘  │
+│                           │                            │
+│                           ▼                            │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ 3. 深度代码安全审计                              │  │
+│  │    AST/正则静态扫描 ──► 检出可疑高危特征         │  │
+│  │    本地轻量大模型 (Ollama Qwen-Coder) 语义研判   │  │
+│  │    阻断恶意逃逸 / 排除常规误报                   │  │
+│  └──────────────────────────────────────────────────┘  │
+│                           │                            │
+│                           ▼                            │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ 4. 隔离执行与结果防泄露检查                      │  │
+│  │    运行模型代码 (debug.sh / train.sh)            │  │
+│  │    输出目录敏感明文排查 (ResultCheck)            │  │
+│  └──────────────────────────────────────────────────┘  │
+│                           │                            │
+│                           ▼                            │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ 5. 结果重加密与导出                              │  │
+│  │    读取 ExportPublicKey ──► SM2+SM4 信封重加密   │  │
+│  │    HTTP Response 返回密文流给平台                │  │
+│  └──────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────┘
+```
+
+#### 2.1.3 核心数据流控制点矩阵
+
+| 流转步骤 | 发起方 → 接收方 | 传输格式 / 算法 | 安全保护与控制目标 |
+|---------|----------------|----------------|-------------------|
+| **身份注册** | TAA → 管控平台 | Base64(CSV 报告) + SM2 公钥 | **启动即证明**：通过海光硬件 PSP 签名与 `USERDATA` 绑定，防止伪造容器身份与公钥劫持 |
+| **客户端验签** | SDK 内部验证 | SM2 验签 + 证书链 (HRK→PEK) | **离线背书**：客户端独立校验 TAA 是否真实运行在合法 CSV TEE 环境中 |
+| **资源封装** | 客户端 → 平台 | SM2 信封 + SM4-GCM 密文 | **出端即加密**：平台侧全程无法窥探模型源码与敏感原始数据 |
+| **资源导入** | 平台 → TAA | HTTP 下发密文包 URL | **按需解密**：TAA 在可信内存内解封一次性 SM4 密钥并还原文件 |
+| **代码审计** | TAA 内部流转 | Python AST 规则 + 本地 LLM 语义分析 | **审计后执行**：防止反弹 Shell、外联通信、数据外发等恶意行为 |
+| **训练执行** | TAA 内部流转 | 隔离沙箱 /opt/taa/ | **密态计算**：模型与数据在 TEE 物理内存加密保障下执行计算 |
+| **防泄露检测** | TAA 内部流转 | 熵值与特征扫描 | **出口设卡**：防止恶意代码将原始输入数据明文打包至模型输出权重中 |
+| **结果导出** | TAA → 平台 → 提供方 | SM2 信封 (ExportPublicKey) | **密态回传**：计算结果经使用方指定公钥重新加密，平台仅作为密文管道 |
 
 ### 2.2 核心组件
 
@@ -129,9 +242,9 @@ Phase 1 (调试)     Phase 2 (测试)     Phase 3 (正式训练)
           └────────┬───────────┘
                    ▼
           ┌─── 解密 ───────────────────────────────────┐
-          │  拆分: WrappedKey(129B) || AES-GCM密文      │
-          │  SM2 私钥解包 → AES 数据密钥                 │
-          │  AES-256-GCM 解密 → 明文归档包               │
+          │  拆分: WrappedKey || SM4-GCM 密文           │
+          │  SM2 私钥解包 → SM4 会话密钥 (16B)          │
+          │  SM4-GCM 解密 → 明文归档包                   │
           └────────┬───────────────────────────────────┘
                    ▼
           ┌─── 解压 ───────────────────────────────────┐
