@@ -638,6 +638,206 @@
     }
   }
 
+  /* Semgrep 增强扫描模块设计体系 */
+  .semgrep-section {
+    margin-top: 28px;
+    padding: 24px;
+    background: var(--panel);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+    border-radius: 18px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .semgrep-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .semgrep-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .semgrep-icon-badge {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--accent) 15%, var(--panel));
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 19px;
+  }
+
+  .semgrep-title {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text);
+    margin: 0;
+  }
+
+  .semgrep-tag {
+    font-size: 11.5px;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 20px;
+    background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+    color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  }
+
+  .semgrep-lead {
+    font-size: 13.5px;
+    line-height: 1.65;
+    color: var(--text);
+    margin: 0;
+  }
+
+  .semgrep-compare-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+
+  @media (max-width: 768px) {
+    .semgrep-compare-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .semgrep-compare-card {
+    padding: 16px 18px;
+    border-radius: 14px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .semgrep-compare-card.current {
+    border-left: 4px solid var(--muted);
+  }
+
+  .semgrep-compare-card.enhanced {
+    border-left: 4px solid var(--accent);
+    background: color-mix(in srgb, var(--accent) 4%, var(--panel-2));
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+  }
+
+  .semgrep-compare-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .semgrep-compare-title {
+    font-size: 13.5px;
+    font-weight: 700;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .semgrep-compare-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .semgrep-compare-list li {
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--text);
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .semgrep-compare-list li::before {
+    content: "•";
+    color: var(--accent);
+    font-weight: bold;
+  }
+
+  .semgrep-compare-card.current .semgrep-compare-list li::before {
+    color: var(--muted);
+  }
+
+  .semgrep-perks-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 14px;
+  }
+
+  .semgrep-perk-card {
+    padding: 16px;
+    border-radius: 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: transform 0.15s ease, border-color 0.15s ease;
+  }
+
+  .semgrep-perk-card:hover {
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+    transform: translateY(-2px);
+  }
+
+  .semgrep-perk-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .semgrep-perk-icon {
+    font-size: 16px;
+  }
+
+  .semgrep-perk-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .semgrep-perk-desc {
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--muted);
+    margin: 0;
+  }
+
+  .semgrep-rule-demo {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .semgrep-demo-title {
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
   /* 时序流程图样式系统 */
   figure.sequence-figure {
     margin: 20px 0 24px;
@@ -1774,6 +1974,121 @@
             }
           })();
         </script>
+
+        <!-- Semgrep 语义增强扫描引擎与框架提升 -->
+        <div class="semgrep-section">
+          <div class="semgrep-head">
+            <div class="semgrep-title-wrap">
+              <div class="semgrep-icon-badge">🎯</div>
+              <div>
+                <h3 class="semgrep-title">进阶演进：引入 Semgrep 深度语义与污点扫描引擎</h3>
+                <span style="font-size: 12px; color: var(--muted);">从单行文本正则匹配升级为 AST 语法树结构化分析与数据流追踪</span>
+              </div>
+            </div>
+            <span class="semgrep-tag">架构升级提案 · AST & 污点分析</span>
+          </div>
+
+          <p class="semgrep-lead">
+            当前静态扫描基于纯文本与正则匹配（Regex Scanner），具备<strong>极低延迟（&lt;10ms）与零外部依赖</strong>的天然优势；但在面临攻击者采用<strong>模块导入重命名（Alias Evasion）、动态反射加载与跨行数据传递</strong>时存在检测盲区。
+            将 <strong>Semgrep</strong> 引入 TAA 静态扫描层，能够基于抽象语法树（AST）建立<strong>语义模式匹配</strong>与<strong>端到端污点追踪（Taint Tracking）</strong>，使第一道防线从“单行关键词粗筛”跃升为“结构化攻击链路预判”。
+          </p>
+
+          <!-- 机制对比面板 -->
+          <div class="semgrep-compare-grid">
+            <div class="semgrep-compare-card current">
+              <div class="semgrep-compare-head">
+                <span class="semgrep-compare-title">⚠️ 现状：纯文本 / 正则扫描 (Regex Baseline)</span>
+                <span style="font-size: 11px; color: var(--muted); font-weight: 600;">当前引擎</span>
+              </div>
+              <ul class="semgrep-compare-list">
+                <li><strong>匹配粒度：</strong>基于单行文本字符串或基础正则，逐行无状态扫描。</li>
+                <li><strong>别名逃逸盲区：</strong>无法感知 <code>import socket as s; s.connect()</code> 或 <code>getattr(os, "system")</code> 等别名重命名。</li>
+                <li><strong>数据流盲区：</strong>无法判断变量取值来源，无法追踪 <code>key = os.getenv(); requests.post(key)</code> 的跨行传递。</li>
+                <li><strong>证据颗粒：</strong>仅能机械切取触发行前后固定的 3 行物理代码作为局部上下文。</li>
+              </ul>
+            </div>
+
+            <div class="semgrep-compare-card enhanced">
+              <div class="semgrep-compare-head">
+                <span class="semgrep-compare-title" style="color: var(--accent);">🚀 增强：Semgrep AST 语义与污点引擎 (Semgrep Enhanced)</span>
+                <span class="semgrep-tag" style="padding: 2px 8px; font-size: 10.5px;">引入后提升</span>
+              </div>
+              <ul class="semgrep-compare-list">
+                <li><strong>匹配粒度：</strong>基于抽象语法树（AST）节点匹配，天然理解 Python 语言结构与作用域。</li>
+                <li><strong>语法归一化：</strong>无论函数如何起别名、引用重命名，AST 层面全部归一化为统一调用签名。</li>
+                <li><strong>跨行污点追踪：</strong>支持 <code>pattern-sources → pattern-sinks</code>，完整追踪敏感数据从读取到外发的全链路。</li>
+                <li><strong>结构化证据链：</strong>输出清晰的数据流流动节点清单（Taint Path），直接向 LLM 提供高信度事实证据。</li>
+              </ul>
+            </div>
+          </div>
+
+          <!-- 四大核心能力提升 -->
+          <div class="semgrep-perks-grid">
+            <div class="semgrep-perk-card">
+              <div class="semgrep-perk-header">
+                <span class="semgrep-perk-icon">🛡️</span>
+                <span class="semgrep-perk-name">1. 消除别名与混淆逃逸</span>
+              </div>
+              <p class="semgrep-perk-desc">
+                基于语法树符号解析，即便攻击代码采用 <code>import urllib.request as u</code>、<code>from os import system as cmd</code> 或将敏感库解构重命名，Semgrep 均能穿透混淆并准确捕获调用点。
+              </p>
+            </div>
+
+            <div class="semgrep-perk-card">
+              <div class="semgrep-perk-header">
+                <span class="semgrep-perk-icon">🧬</span>
+                <span class="semgrep-perk-name">2. 跨行污点渗漏追踪 (Taint)</span>
+              </div>
+              <p class="semgrep-perk-desc">
+                将“凭证读取”（Source，如 <code>os.environ</code>、<code>.ssh</code>）与“网络外发”（Sink，如 <code>requests.post</code>、<code>socket.send</code>）关联。只要变量产生数据流交叉即触发污点告警，识别真正的外发通道。
+              </p>
+            </div>
+
+            <div class="semgrep-perk-card">
+              <div class="semgrep-perk-header">
+                <span class="semgrep-perk-icon">🎯</span>
+                <span class="semgrep-perk-name">3. 压降 40%~60% 语法误报</span>
+              </div>
+              <p class="semgrep-perk-desc">
+                利用 <code>pattern-not-inside</code> 语法排除测试框架（如 <code>pytest/unittest</code> 中的 mock 调用）与绘图指标上报代码，在进入大模型前滤除无效噪点，大幅节省 TEE 容器内推理算力。
+              </p>
+            </div>
+
+            <div class="semgrep-perk-card">
+              <div class="semgrep-perk-header">
+                <span class="semgrep-perk-icon">🤖</span>
+                <span class="semgrep-perk-name">4. 赋能 LLM 结构化证据链</span>
+              </div>
+              <p class="semgrep-perk-desc">
+                打破传统 7 行固定上下文的割裂限制，将 Semgrep 计算出的污点流动跃迁行号与调用链直接注入 <code>Finding Prompt</code>，让大模型免于在冗余代码中盲目搜索，使研判准确度呈代际提升。
+              </p>
+            </div>
+          </div>
+
+          <!-- 声明式规则 YAML 示例展示 -->
+          <div class="semgrep-rule-demo">
+            <span class="semgrep-demo-title">📋 框架适配示例：TAA 敏感凭证跨行外传污点规则 (Semgrep Taint Rule Spec)</span>
+            <div class="codebox" style="margin: 0; font-size: 12px; line-height: 1.5;"><span style="color: var(--muted);"># Semgrep 污点分析规则：捕获敏感凭据提取并经由网络外发</span>
+<span style="color: var(--accent);">rules:</span>
+  - <span style="color: var(--accent);">id:</span> <span style="color: var(--text);">taa-secret-exfiltration-taint</span>
+    <span style="color: var(--accent);">languages:</span> [python]
+    <span style="color: var(--accent);">severity:</span> ERROR
+    <span style="color: var(--accent);">message:</span> <span style="color: var(--warn);">"检测到系统敏感环境变量或私钥凭证通过网络信道被外发传出"</span>
+    <span style="color: var(--accent);">mode:</span> <span style="font-weight: bold; color: var(--accent);">taint</span>
+    <span style="color: var(--accent);">pattern-sources:</span>
+      - <span style="color: var(--accent);">pattern:</span> os.environ[...]
+      - <span style="color: var(--accent);">pattern:</span> os.getenv(...)
+      - <span style="color: var(--accent);">pattern:</span> open(..., ".ssh/id_rsa").read()
+    <span style="color: var(--accent);">pattern-sinks:</span>
+      - <span style="color: var(--accent);">pattern:</span> requests.post(..., data=$VAR, ...)
+      - <span style="color: var(--accent);">pattern:</span> requests.get(..., params=$VAR, ...)
+      - <span style="color: var(--accent);">pattern:</span> socket.socket().sendall(...)
+    <span style="color: var(--accent);">pattern-not-inside:</span>
+      - <span style="color: var(--accent);">pattern:</span> |
+          def test_...(...):
+              ...</div>
+          </div>
+        </div>
 
         <div class="callout">
           <strong>设计判断：</strong>静态扫描的职责不是“判断有没有恶意”，而是“把值得判断的代码段精确送进 LLM”。所以规则必须宽，但证据必须窄；命中可以多，但上下文一定要短、准、可解释。
