@@ -119,7 +119,7 @@ func TestBuildSecurityConfig(t *testing.T) {
 		Enabled:     cfg.EnableLLM,
 		Endpoint:    cfg.LLMEndpoint,
 		Model:       cfg.LLMModel,
-		Timeout:     60 * time.Second,
+		Timeout:     120 * time.Second,
 		MaxFindings: 20,
 		Policy:      cfg.LLMPolicy,
 		FailClosed:  cfg.LLMFailClosed,

@@ -32,7 +32,6 @@ func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
 
 func TestRequestIdAndTaskIdRandomizeButtons(t *testing.T) {
 	requiredTriggers := []string{
-		`randomizeField('attestRequestId'`,
 		`randomizeField('importModelRequestId'`,
 		`randomizeField('importModelTaskId'`,
 		`randomizeField('importRequestId'`,

@@ -165,6 +165,24 @@ func (s *TAAState) getSavedModelResourceURL() string {
 	return s.SavedModelResourceURL
 }
 
+func (s *TAAState) hasSavedModel() bool {
+	s.mu.RLock()
+	savedURL := s.SavedModelResourceURL
+	modelImported := s.ModelImported
+	modelDir := s.Security.ModelDir
+	s.mu.RUnlock()
+
+	if savedURL != "" || modelImported {
+		return true
+	}
+	if modelDir != "" {
+		if entries, err := os.ReadDir(modelDir); err == nil && len(entries) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *TAAState) getExportPublicKey() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -464,6 +482,11 @@ func (s *TAAState) switchHandler(w http.ResponseWriter, r *http.Request) {
 	current := s.CurrentPhase
 	s.CurrentPhase = req.Phase
 	s.Phase1TrainingStarted = false
+	if current != 1 && req.Phase == 1 {
+		s.ModelImported = false
+		s.DataImported = false
+		s.Logs.Add(LogInfo, "phase", "切换至阶段1: 重置 ModelImported 与 DataImported 标志")
+	}
 	s.Logs.Add(LogInfo, "phase", "阶段切换: %d(%s) -> %d(%s)", current, phaseName(current), req.Phase, phaseName(req.Phase))
 
 	writeEnvelope(w, http.StatusOK, "阶段切换成功", nil, 0)
@@ -548,11 +571,7 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	savedModelURL := s.getSavedModelResourceURL()
-	s.mu.RLock()
-	modelImported := s.ModelImported
-	s.mu.RUnlock()
-	hasSavedModel := savedModelURL != "" || modelImported
+	hasSavedModel := s.hasSavedModel()
 
 	if req.ResourceURL == "" {
 		if !hasSavedModel {
@@ -618,6 +637,40 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(cfg.Commands) == 0 {
 			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "runtimeConfig.commands 不能为空"))
+			return
+		}
+
+		s.mu.Lock()
+		s.ModelImported = true
+		dataImported := s.DataImported
+		s.mu.Unlock()
+
+		if phase == 1 {
+			if !dataImported {
+				s.Logs.Add(LogInfo, "importModel", "阶段1: 模型参数命令已导入(ModelImported=true)，等待数据重新导入后执行训练: taskId=%s, requestId=%s",
+					req.TaskID, req.RequestID)
+				msg := "模型参数命令已导入，等待数据重新导入后执行训练"
+				writeEnvelope(w, http.StatusOK, msg, nil, 0)
+				return
+			}
+
+			s.mu.Lock()
+			s.Phase1TrainingStarted = true
+			s.mu.Unlock()
+
+			latestRecord, ok := s.getLatestDataRecord()
+			if !ok || (latestRecord.DataDir == "" && latestRecord.Hash == "") {
+				writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "未找到已导入的数据，无法执行训练"))
+				return
+			}
+
+			s.Logs.Add(LogInfo, "importModel", "阶段1: 模型参数命令已更新且数据已就绪，复用模型对最新数据执行训练: taskId=%s, requestId=%s, latestDataHash=%s",
+				req.TaskID, req.RequestID, latestRecord.Hash)
+
+			msg := "模型已复用，开始对最新数据执行训练，训练结果将通过 reportRes 上报"
+			writeEnvelope(w, http.StatusOK, msg, nil, 0)
+
+			go s.trainOnLatestData(req, phase, latestRecord, cfg, env)
 			return
 		}
 
