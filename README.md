@@ -295,7 +295,7 @@ make taa
 
 `deploy.sh` 会按部署场景生成并打包 `taa-config.json`：
 
-- local：生成本地 `.local/taa/taa-config.json`，包含本地平台地址和容器标识。
+- local：生成本地容器化测试配置，TAA 与 Qwen 运行在本地 Docker 容器（taa-env-slim-v2），platform-mock 运行在宿主机。
 - debug：生成 debug 容器配置，包含平台地址、容器标识和 debug 工作目录。
 - 正式非 debug：生成正式容器配置，但不包含 `platformIP`、`dockerID`、`contract`，这些字段从运行环境变量读取。
 

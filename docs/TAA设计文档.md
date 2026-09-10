@@ -452,14 +452,22 @@ TAA_DEBUG_MODE=true ./deploy.sh taa
 
 ### 10.1 部署脚本
 
-```sh
-# 全部部署
-./deploy.sh
+`deploy.sh` 支持 `local`（本地 Docker 容器化测试）与 `remote`（远程 Kubernetes 部署，默认模式）：
 
-# 单独部署
-./deploy.sh platform-mock   # 平台模拟器
-./deploy.sh taa              # TAA 服务
-./deploy.sh qwen             # Ollama/Qwen LLM
+```sh
+# 远程 Kubernetes 部署（默认环境，remote 参数可选）
+./deploy.sh [remote]                    # 全部组件部署
+./deploy.sh [remote] taa                # 仅部署 TAA 服务
+./deploy.sh [remote] qwen               # 仅部署 Ollama/Qwen LLM
+./deploy.sh [remote] platform-mock      # 仅部署平台模拟器
+./deploy.sh [remote] stop               # 停止远程服务
+
+# 本地 Docker 容器化测试（TAA 与 Qwen 容器化运行，platform-mock 宿主机运行）
+./deploy.sh local                       # 全部组件本地启动
+./deploy.sh local taa                   # 仅本地启动 TAA
+./deploy.sh local qwen                  # 仅本地启动 Ollama/Qwen LLM
+./deploy.sh local platform-mock         # 仅本地启动平台模拟器
+./deploy.sh local stop                  # 停止本地进程与容器内服务
 ```
 
 ### 10.2 部署流程
