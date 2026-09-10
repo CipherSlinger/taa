@@ -1,4 +1,4 @@
-package csvgo
+package csvattest
 
 type platformOps interface {
 	mmap(length int) ([]byte, error)

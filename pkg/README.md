@@ -48,13 +48,13 @@
 
 经过对本项目全量代码库的系统性检索，以下现有实现属于与具体 TAA 业务解耦的“通用轮子”，具备迁入 `pkg/` 的高度价值：
 
-| 原模块路径 | 功能描述 | 业务解耦度 | 建议迁移目标 | 梳理与建议理由 |
-|---|---|:---:|---|---|
-| `filetree/` | **多模态数据集目录树解析与 Schema 提取**<br>通过魔数识别 CSV/TSV/XLSX/JSON/SQLite/Parquet/图片/PDF/压缩包，防 Zip Bomb 与内存溢出。 | **100% 纯轮子** | `pkg/filetree` | 位于根目录，其实现完全与 TAA、TEE 业务无耦合。外部任何数据管理平台或 AI 数据预处理项目均可直接复用。 |
-| `crypto/` | **国密 SM2/SM3/SM4-GCM 加密与安全信封**<br>实现了 SM4-GCM 对称加解密、SM2 密钥生成/加解密/PEM 解析、国密混合信封封装及防目录逃逸的归档解压。 | **100% 纯轮子** | `pkg/crypto` | 现位于根目录 `crypto/`，客户端 SDK（`sdk/`）已在复用它。作为成熟通用的国密计算库，符合 `pkg/` 标准定位。 |
-| `internal/controller/log_store.go`<br>`internal/app/mock/server.go` (内嵌) | **有界结构化内存日志记录器**<br>支持增量获取、日志上限丢弃与 ANSI 彩色终端输出。 | **100% 纯轮子** | `pkg/logger`<br>*(本次已落地)* | 两处出现重复代码实现，逻辑完全一致。抽取至 `pkg/logger` 后可供控制台、控制器与各子应用统一引用。 |
-| `internal/controller/import_helpers.go`<br>`internal/controller/route.go` | **文件目录操作与文件名清洗**<br>包含 `copyDir`、`copyFile`、`cleanDirContents`、`safeFilenamePart`。 | **100% 纯轮子** | `pkg/utils`<br>*(本次已落地)* | 当前散落在 Controller 内部，但在模型解包、数据准备、产物备份等多处被调用，属于通用基础文件工具。 |
-| `attestation/csv_go/` | **海光 CSV TEE 纯 Go 底层通信与证书链验证**<br>封装 `/dev/csv-guest` IOCTL，解析 CSV 证明报告并验证 HRK→HSK→CEK→PEK 证书链。 | **硬件驱动级轮子** | `pkg/csvattest` 或独立 SDK | 与上层应用逻辑解耦，是纯粹的海光 CSV 硬件交互驱动与报告验证器，适合封装为通用硬件证明库供所有 CSV 机密计算应用导入。 |
+| 原模块路径 | 功能描述 | 业务解耦度 | 迁移目标 | 迁移状态 |
+|---|---|:---:|---|:---:|
+| `filetree/` | **多模态数据集目录树解析与 Schema 提取**<br>通过魔数识别 CSV/TSV/XLSX/JSON/SQLite/Parquet/图片/PDF/压缩包，防 Zip Bomb 与内存溢出。 | **100% 纯轮子** | `pkg/filetree` | **已完成** |
+| `crypto/` | **国密 SM2/SM3/SM4-GCM 加密与安全信封**<br>实现了 SM4-GCM 对称加解密、SM2 密钥生成/加解密/PEM 解析、国密混合信封封装及防目录逃逸的归档解压。 | **100% 纯轮子** | `pkg/crypto` | **已完成** (含根目录兼容过渡垫片) |
+| `internal/controller/log_store.go`<br>`internal/app/mock/server.go` (内嵌) | **有界结构化内存日志记录器**<br>支持增量获取、日志上限丢弃与 ANSI 彩色终端输出。 | **100% 纯轮子** | `pkg/logger` | **已完成** |
+| `internal/controller/import_helpers.go`<br>`internal/controller/route.go` | **文件目录操作与文件名清洗**<br>包含 `copyDir`、`copyFile`、`cleanDirContents`、`safeFilenamePart`。 | **100% 纯轮子** | `pkg/utils` | **已完成** |
+| `attestation/csv_go/` | **海光 CSV TEE 纯 Go 底层通信与证书链验证**<br>封装 `/dev/csv-guest` IOCTL，解析 CSV 证明报告并验证 HRK→HSK→CEK→PEK 证书链。 | **硬件驱动级轮子** | `pkg/csvattest` | **已完成** |
 
 ---
 
