@@ -22,6 +22,7 @@ import (
 	teecrypto "taa/crypto"
 	"taa/internal/attestation"
 	"taa/internal/codeaudit"
+	"taa/pkg/utils"
 )
 
 // maxDownloadBytes 限制单次资源下载的最大字节数，防止 OOM。
@@ -799,18 +800,11 @@ func compressDirToTarGz(srcDir string) ([]byte, error) {
 }
 
 func safeFilenamePart(value string) string {
-	value = strings.TrimSpace(value)
-	mapped := strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' {
-			return r
-		}
-		return '-'
-	}, value)
-	mapped = strings.Trim(mapped, ".-")
-	if mapped == "" {
+	res := utils.SafeFilename(value)
+	if res == "default" {
 		return "request"
 	}
-	return mapped
+	return res
 }
 
 // writeFileStream 直接返回二进制文件流：成功时写入 octet-stream 附件头并从 body 复制内容。
