@@ -638,6 +638,235 @@
     }
   }
 
+  /* Benchmark 现代化直观展示设计体系 */
+  .bm-concept-banner {
+    margin-top: 18px;
+    padding: 20px 22px;
+    border-radius: 16px;
+    background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .bm-banner-top {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .bm-banner-icon {
+    font-size: 24px;
+  }
+
+  .bm-banner-title {
+    font-size: 15.5px;
+    font-weight: 700;
+    color: var(--accent);
+    margin: 0;
+  }
+
+  .bm-banner-text {
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--text);
+    margin: 0;
+  }
+
+  .bm-goal-matrix {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-top: 18px;
+  }
+
+  @media (max-width: 768px) {
+    .bm-goal-matrix {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .bm-goal-card {
+    padding: 18px 20px;
+    border-radius: 14px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .bm-goal-card.benign {
+    border-top: 4px solid var(--success, #10b981);
+    box-shadow: 0 4px 16px rgba(16, 185, 129, 0.04);
+  }
+
+  .bm-goal-card.malicious {
+    border-top: 4px solid var(--danger, #ef4444);
+    box-shadow: 0 4px 16px rgba(239, 68, 68, 0.04);
+  }
+
+  .bm-goal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .bm-goal-title {
+    font-size: 14.5px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .bm-goal-card.benign .bm-goal-title { color: var(--success, #10b981); }
+  .bm-goal-card.malicious .bm-goal-title { color: var(--danger, #ef4444); }
+
+  .bm-goal-badge {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+  }
+
+  .bm-goal-desc {
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--text);
+    margin: 0;
+  }
+
+  /* 10 个家族直观清单卡片 */
+  .bm-family-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 14px;
+    margin-top: 14px;
+  }
+
+  .bm-family-card {
+    padding: 14px 16px;
+    border-radius: 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: transform 0.15s ease, border-color 0.15s ease;
+  }
+
+  .bm-family-card:hover {
+    transform: translateY(-2px);
+    border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+  }
+
+  .bm-family-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .bm-family-tag-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .bm-fid-badge {
+    font-family: var(--mono);
+    font-weight: 800;
+    font-size: 12px;
+    padding: 2px 7px;
+    border-radius: 6px;
+  }
+
+  .bm-family-card.is-benign .bm-fid-badge {
+    background: color-mix(in srgb, var(--success, #10b981) 15%, transparent);
+    color: var(--success, #10b981);
+    border: 1px solid color-mix(in srgb, var(--success, #10b981) 30%, transparent);
+  }
+
+  .bm-family-card.is-malicious .bm-fid-badge {
+    background: color-mix(in srgb, var(--danger, #ef4444) 15%, transparent);
+    color: var(--danger, #ef4444);
+    border: 1px solid color-mix(in srgb, var(--danger, #ef4444) 30%, transparent);
+  }
+
+  .bm-family-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .bm-family-desc {
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--muted);
+    margin: 0;
+  }
+
+  .bm-family-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--muted);
+    padding-top: 6px;
+    border-top: 1px dashed var(--line);
+  }
+
+  /* 评测流水线卡片 */
+  .bm-step-flow {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+  }
+
+  .bm-step-card {
+    padding: 14px 16px;
+    border-radius: 12px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: relative;
+  }
+
+  .bm-step-num {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .bm-step-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .bm-step-desc {
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--muted);
+    margin: 0;
+  }
+
   /* Semgrep 增强扫描模块设计体系 */
   .semgrep-section {
     margin-top: 28px;
@@ -2326,162 +2555,291 @@ print("done")
         </div>
       </section>
 
-      <section class="section" id="benchmark-design">
-        <h2>4. Benchmark 设计</h2>
-        <p class="lead">benchmark 的目标不是单纯压分，而是验证审计链路是否能稳稳地区分“看起来像危险”与“真的有危险”。因此样本设计必须做 source isolation，必须覆盖 benign trap 和恶意链路，必须把生成、评测和结果回放写成一条闭环。</p>
-        <div class="callout">
-          <strong>这里的“10 家族”指样本变体类别，不是模型类别。</strong> 每个家族都代表一类会触发不同审计规则的代码改写；良性家族用来测误报，恶意家族用来测漏报。每个家族再各生成 10 个样本，所以总数是 100。
+            <section class="section" id="benchmark-design">
+        <h2>4. Benchmark 设计（代码审计标准化考卷）</h2>
+        <p class="lead">很多代码安全工具宣称“检测率 99%”，但在实际落地时往往暴露出两大弊病：要么<strong>误报过多（把正常读写配置的代码也当成黑客拦截，导致业务停摆）</strong>，要么<strong>漏报严重（黑客稍微把代码换个名字就轻易绕过，形同虚设）</strong>。为此，我们设计了一套包含 100 个真实样本的标准化考卷 —— <strong>audit-100 Benchmark</strong>，用于量化检验审计系统是否具备“既不冤枉好人，也绝不放过坏人”的实战能力。</p>
+
+        <!-- 通俗概述横幅 -->
+        <div class="bm-concept-banner">
+          <div class="bm-banner-top">
+            <span class="bm-banner-icon">🎯</span>
+            <h3 class="bm-banner-title">一句话搞懂 Benchmark 是什么：一套 100 道题的代码安全期末考卷</h3>
+          </div>
+          <p class="bm-banner-text">
+            我们从真实的开源 AI 项目（逻辑回归、TEE测试桩、视网膜病变识别模型）中衍生出 <strong>100 个独立的代码测试沙箱</strong>。
+            其中 <strong>50 个是规规矩矩的“良性好代码”</strong>，用来考察审计系统<strong>“会不会冤枉好人（测误报率）”</strong>；
+            另外 <strong>50 个是注入了真实后门的“恶意坏代码”</strong>，用来考察审计系统<strong>“能不能抓住坏人（测漏报率）”</strong>。
+          </p>
         </div>
 
-        <div class="grid-2">
-          <div class="card">
-            <h3>样本总览</h3>
-            <h4>100 样本 / 10 家族 / 50 良性 / 50 恶意</h4>
-            <ul>
-              <li>基座项目：`LogisticRegression`、`TEE-test`、`Retina-DKD`。</li>
-              <li>良性样本来自前两个项目，恶性样本来自 `Retina-DKD`，实现 source isolation。</li>
-              <li>每个家族 10 个样本，便于横向比较与回归追踪。</li>
-            </ul>
-          </div>
-          <div class="card">
-            <h3>生成策略</h3>
-            <h4>复制基座 → 写变体 → 写支持文件 → 生成 sample.json</h4>
-            <ul>
-              <li>不直接修改源项目，保证可重复。</li>
-              <li>良性家族只做重构、日志、配置包装、报告导出、入口改写。</li>
-              <li>恶性家族引入命令执行、网络外传、秘密读取、混淆编码和攻击链。</li>
-            </ul>
-          </div>
-        </div>
-
-        <div class="grid-2">
-          <div class="card">
-            <h3>10 个家族</h3>
-            <h4>B1-B5 / M1-M5</h4>
-            <div class="table-wrap" style="margin-top: 12px; border-radius: 14px; box-shadow: none;">
-              <table style="min-width: 0;">
-                <thead>
-                  <tr>
-                    <th>家族</th>
-                    <th>类型</th>
-                    <th>在测什么</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr><td>B1</td><td>良性</td><td>纯重构，不改变行为，测“代码变了但语义没变”是否会被误报。</td></tr>
-                  <tr><td>B2</td><td>良性</td><td>安全日志与调试输出，测正常日志是否会被当成泄密。</td></tr>
-                  <tr><td>B3</td><td>良性</td><td>配置与数据读取包装，测普通读取/封装是否会被当成窃密。</td></tr>
-                  <tr><td>B4</td><td>良性</td><td>报告生成与导出，测序列化、落盘、导出是否会触发误报。</td></tr>
-                  <tr><td>B5</td><td>良性</td><td>入口与 wrapper 改写，测适配层重组是否会被误判为执行链。</td></tr>
-                  <tr><td>M1</td><td>恶意</td><td>命令执行，测 shell / subprocess / exec 类风险是否被抓到。</td></tr>
-                  <tr><td>M2</td><td>恶意</td><td>网络外传，测 HTTP 或 socket 外联是否被抓到。</td></tr>
-                  <tr><td>M3</td><td>恶意</td><td>敏感数据读取，测凭证、密钥、私有配置是否被抓到。</td></tr>
-                  <tr><td>M4</td><td>恶意</td><td>混淆与编码，测 base64 / pickle / marshal / zlib 等隐藏载荷是否被抓到。</td></tr>
-                  <tr><td>M5</td><td>恶意</td><td>攻击链与持久化，测多步组合、持久化写入和自启动改写是否被抓到。</td></tr>
-                </tbody>
-              </table>
+        <!-- ��立统一的两大阵营 -->
+        <div class="bm-goal-matrix">
+          <div class="bm-goal-card benign">
+            <div class="bm-goal-head">
+              <span class="bm-goal-title">🛡️ 50 道良性陷阱题（测误报 · 考辨别力）</span>
+              <span class="bm-goal-badge" style="color: var(--success, #10b981);">目标：全数放行 (PASS)</span>
             </div>
+            <p class="bm-goal-desc">
+              <strong>这些全是正常合法的算法工程代码</strong>，但我们故意使用了容易被初级安全工具误判的写法（例如读取本地模型参数、打点记录训练 Loss、保存图表或重组目录）。
+            </p>
+            <p class="bm-goal-desc" style="color: var(--muted); font-size: 12px;">
+              <strong>考核标准：</strong>如果审计系统看到 <code>open()</code> 读超参数或 <code>print()</code> 打日志就草率报警阻断，说明系统过于死板、误报太高，在生产环境中根本无法落地使用。
+            </p>
           </div>
-          <div class="card">
-            <h3>评测约束</h3>
-            <h4>同一 manifest，双模式验证</h4>
-            <ul>
-              <li>先 static-only 跑一遍，确认基线稳定。</li>
-              <li>再在本地 Ollama 上跑语义验证。</li>
-              <li>LLM 不可用时不能静默降低严格度。</li>
-              <li>输出结果必须保留 `llm_available_rate` 与 `fail_closed_count`。</li>
-            </ul>
+
+          <div class="bm-goal-card malicious">
+            <div class="bm-goal-head">
+              <span class="bm-goal-title">🚨 50 道实战攻防题（测漏报 · 考防御力）</span>
+              <span class="bm-goal-badge" style="color: var(--danger, #ef4444);">目标：坚决阻断 (BLOCK)</span>
+            </div>
+            <p class="bm-goal-desc">
+              <strong>这些被植入了真实的黑客攻击载荷</strong>，涵盖派生操作系统底层 Shell、偷窥系统 <code>.ssh</code> 私钥、偷传环境变量 API 密钥，以及通过 Base64 混淆或持久化自启动驻留。
+            </p>
+            <p class="bm-goal-desc" style="color: var(--muted); font-size: 12px;">
+              <strong>考核标准：</strong>第一道静态规则必须捕获异常蛛丝马迹，第二道大模型必须识破攻击意图并给出高危判定。若有任何一个样本被漏放通过，即构成重大安全事件。
+            </p>
           </div>
         </div>
 
-        <div class="chart-grid">
-          <div class="chart-card">
-            <div class="chart-title">
-              <h3>样本分配：源项目隔离</h3>
-              <div class="hint">LogisticRegression / TEE-test / Retina-DKD</div>
-            </div>
-            <div class="bars">
-              <div class="bar-row">
-                <div class="name">LogisticRegression</div>
-                <div class="track"><div class="fill" style="width: 25%;"></div></div>
-                <div class="value">25</div>
+        <!-- 10 个家族全景拆解 -->
+        <h3 style="margin-top: 28px; margin-bottom: 8px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+          <span>🧩</span> 10 个测试题型家族（每个题型 10 道题，覆盖常见攻防场景）
+        </h3>
+        <p style="font-size: 13px; color: var(--muted); margin: 0 0 12px;">
+          我们将 100 道题细分为 10 种典型代码特征（5 个良性家族 B1~B5 + 5 个恶意家族 M1~M5）。这样当评测分数波动时，能立即定位是“哪一种特定场景”的识别逻辑出了偏差：
+        </p>
+
+        <div class="bm-family-grid">
+          <!-- B1 -->
+          <div class="bm-family-card is-benign">
+            <div class="bm-family-head">
+              <div class="bm-family-tag-row">
+                <span class="bm-fid-badge">B1</span>
+                <span class="bm-family-name">纯代码结构重构</span>
               </div>
-              <div class="bar-row">
-                <div class="name">TEE-test</div>
-                <div class="track"><div class="fill ok" style="width: 25%;"></div></div>
-                <div class="value">25</div>
-              </div>
-              <div class="bar-row">
-                <div class="name">Retina-DKD</div>
-                <div class="track"><div class="fill warn" style="width: 50%;"></div></div>
-                <div class="value">50</div>
-              </div>
+              <span class="rule-cat-badge">良性 (10题)</span>
             </div>
-            <div class="legend">
-              <span class="item"><span class="swatch"></span>良性来源</span>
-              <span class="item"><span class="swatch ok"></span>良性来源</span>
-              <span class="item"><span class="swatch warn"></span>恶性来源</span>
+            <p class="bm-family-desc">拆分长函数、变量重命名、调整 import 引用或目录搬家。考查：代码外观变了，但没有任何危险动作，系统能否保持淡定不误报？</p>
+            <div class="bm-family-foot">
+              <span>预期规则：无</span>
+              <span style="color: var(--success, #10b981); font-weight: 700;">预期：放行 (BENIGN)</span>
             </div>
-            <div class="mini-note">设计含义：良性与恶性样本不混源，能更好验证审计器是否真在识别行为，而不是识别“项目名”。</div>
           </div>
 
-          <div class="chart-card">
-            <div class="chart-title">
-              <h3>家族分布</h3>
-              <div class="hint">10 families × 10 samples</div>
+          <!-- B2 -->
+          <div class="bm-family-card is-benign">
+            <div class="bm-family-head">
+              <div class="bm-family-tag-row">
+                <span class="bm-fid-badge">B2</span>
+                <span class="bm-family-name">安全日志与调试输出</span>
+              </div>
+              <span class="rule-cat-badge">良性 (10题)</span>
             </div>
-            <div class="bars">
-              <div class="bar-row"><div class="name">B1</div><div class="track"><div class="fill" style="width: 20%;"></div></div><div class="value">10</div></div>
-              <div class="bar-row"><div class="name">B2</div><div class="track"><div class="fill" style="width: 20%;"></div></div><div class="value">10</div></div>
-              <div class="bar-row"><div class="name">B3</div><div class="track"><div class="fill" style="width: 20%;"></div></div><div class="value">10</div></div>
-              <div class="bar-row"><div class="name">B4</div><div class="track"><div class="fill" style="width: 20%;"></div></div><div class="value">10</div></div>
-              <div class="bar-row"><div class="name">B5</div><div class="track"><div class="fill" style="width: 20%;"></div></div><div class="value">10</div></div>
-              <div class="bar-row"><div class="name">M1</div><div class="track"><div class="fill warn" style="width: 20%;"></div></div><div class="value">10</div></div>
-              <div class="bar-row"><div class="name">M2</div><div class="track"><div class="fill warn" style="width: 20%;"></div></div><div class="value">10</div></div>
-              <div class="bar-row"><div class="name">M3</div><div class="track"><div class="fill warn" style="width: 20%;"></div></div><div class="value">10</div></div>
-              <div class="bar-row"><div class="name">M4</div><div class="track"><div class="fill warn" style="width: 20%;"></div></div><div class="value">10</div></div>
-              <div class="bar-row"><div class="name">M5</div><div class="track"><div class="fill warn" style="width: 20%;"></div></div><div class="value">10</div></div>
+            <p class="bm-family-desc">在控制台正常打印 Loss 训练曲线、迭代步数与状态统计。考查：审计器能否识别普通的运行打点，避免把正规日志当成泄密？</p>
+            <div class="bm-family-foot">
+              <span>触发观察：EMB_003</span>
+              <span style="color: var(--success, #10b981); font-weight: 700;">预期：放行 (BENIGN)</span>
             </div>
-            <div class="mini-note">每个家族都对应明确的 transformation、expected_rules、expected_severity 和 trap_type，便于回归时定位是哪一类语义变了。</div>
+          </div>
+
+          <!-- B3 -->
+          <div class="bm-family-card is-benign">
+            <div class="bm-family-head">
+              <div class="bm-family-tag-row">
+                <span class="bm-fid-badge">B3</span>
+                <span class="bm-family-name">配置与数据封装读取</span>
+              </div>
+              <span class="rule-cat-badge">良性 (10题)</span>
+            </div>
+            <p class="bm-family-desc">通过封装类读取本地超参数 JSON 文件或读取 DATA_DIR 等业务环境变量。考查：能否准确区分“读业务配置”与“窃取密码”？</p>
+            <div class="bm-family-foot">
+              <span>触发观察：FIL_001, ENV_001</span>
+              <span style="color: var(--success, #10b981); font-weight: 700;">预期：放行 (BENIGN)</span>
+            </div>
+          </div>
+
+          <!-- B4 -->
+          <div class="bm-family-card is-benign">
+            <div class="bm-family-head">
+              <div class="bm-family-tag-row">
+                <span class="bm-fid-badge">B4</span>
+                <span class="bm-family-name">训练报告生成与导出</span>
+              </div>
+              <span class="rule-cat-badge">良性 (10题)</span>
+            </div>
+            <p class="bm-family-desc">将评估结果写成 CSV 报表、绘制 PNG 曲线图或保存模型缓存。考查：能否避免把正规文件导出和序列化误判为恶意木马？</p>
+            <div class="bm-family-foot">
+              <span>触发观察：EMB_001, EMB_002</span>
+              <span style="color: var(--success, #10b981); font-weight: 700;">预期：放行 (BENIGN)</span>
+            </div>
+          </div>
+
+          <!-- B5 -->
+          <div class="bm-family-card is-benign">
+            <div class="bm-family-head">
+              <div class="bm-family-tag-row">
+                <span class="bm-fid-badge">B5</span>
+                <span class="bm-family-name">入口脚本与阶段包装</span>
+              </div>
+              <span class="rule-cat-badge">良性 (10题)</span>
+            </div>
+            <p class="bm-family-desc">编写 CLI 启动适配层、重构 pipeline 调用入口。考查：能否正确放行常规工程化包装，不产生调用链误报？</p>
+            <div class="bm-family-foot">
+              <span>预期规则：无</span>
+              <span style="color: var(--success, #10b981); font-weight: 700;">预期：放行 (BENIGN)</span>
+            </div>
+          </div>
+
+          <!-- M1 -->
+          <div class="bm-family-card is-malicious">
+            <div class="bm-family-head">
+              <div class="bm-family-tag-row">
+                <span class="bm-fid-badge">M1</span>
+                <span class="bm-family-name">系统底层命令执行</span>
+              </div>
+              <span class="rule-cat-badge" style="color: var(--danger, #ef4444);">高危 (10题)</span>
+            </div>
+            <p class="bm-family-desc">通过 <code>os.system</code>、<code>subprocess.Popen</code> 等直接调用系统 Bash/Sh 执行指令，试图突破 Python 沙箱。</p>
+            <div class="bm-family-foot">
+              <span>核心拦截：CMD_001</span>
+              <span style="color: var(--danger, #ef4444); font-weight: 700;">预期：阻断 (MALICIOUS)</span>
+            </div>
+          </div>
+
+          <!-- M2 -->
+          <div class="bm-family-card is-malicious">
+            <div class="bm-family-head">
+              <div class="bm-family-tag-row">
+                <span class="bm-fid-badge">M2</span>
+                <span class="bm-family-name">隐蔽网络连接与外发</span>
+              </div>
+              <span class="rule-cat-badge" style="color: var(--danger, #ef4444);">高危 (10题)</span>
+            </div>
+            <p class="bm-family-desc">利用 <code>requests</code> 发起 HTTP POST 或建立裸 <code>socket</code> 连接，向攻击者的外部服务器偷传内网敏感数据。</p>
+            <div class="bm-family-foot">
+              <span>核心拦截：NET_001, NET_002</span>
+              <span style="color: var(--danger, #ef4444); font-weight: 700;">预期：阻断 (MALICIOUS)</span>
+            </div>
+          </div>
+
+          <!-- M3 -->
+          <div class="bm-family-card is-malicious">
+            <div class="bm-family-head">
+              <div class="bm-family-tag-row">
+                <span class="bm-fid-badge">M3</span>
+                <span class="bm-family-name">敏感环境与凭证窃取</span>
+              </div>
+              <span class="rule-cat-badge" style="color: var(--warn);">中危 (10题)</span>
+            </div>
+            <p class="bm-family-desc">针对性窥探容器内的 <code>.env</code> 文件、宿主 <code>id_rsa</code> 私钥或窃取系统注入的云厂商 Token 与密码。</p>
+            <div class="bm-family-foot">
+              <span>核心拦截：FIL_001, ENV_001</span>
+              <span style="color: var(--danger, #ef4444); font-weight: 700;">预期：阻断 (MALICIOUS)</span>
+            </div>
+          </div>
+
+          <!-- M4 -->
+          <div class="bm-family-card is-malicious">
+            <div class="bm-family-head">
+              <div class="bm-family-tag-row">
+                <span class="bm-fid-badge">M4</span>
+                <span class="bm-family-name">混淆编码与隐藏载荷</span>
+              </div>
+              <span class="rule-cat-badge" style="color: var(--danger, #ef4444);">高危 (10题)</span>
+            </div>
+            <p class="bm-family-desc">使用多层 Base64 编码、Zlib 压缩或借助 Pickle/Marshal 反序列化绕过静态语法扫描，暗中释放恶意二进制载荷。</p>
+            <div class="bm-family-foot">
+              <span>核心拦截：OBF_001, EXF_001</span>
+              <span style="color: var(--danger, #ef4444); font-weight: 700;">预期：阻断 (MALICIOUS)</span>
+            </div>
+          </div>
+
+          <!-- M5 -->
+          <div class="bm-family-card is-malicious">
+            <div class="bm-family-head">
+              <div class="bm-family-tag-row">
+                <span class="bm-fid-badge">M5</span>
+                <span class="bm-family-name">复合攻击链与持久化后门</span>
+              </div>
+              <span class="rule-cat-badge" style="color: var(--danger, #ef4444);">高危 (10题)</span>
+            </div>
+            <p class="bm-family-desc">先窃取密钥凭证，再经编码压缩外传，最后向用户 <code>.bashrc</code> 写入定时任务建立后门，考查跨文件深度攻击链。</p>
+            <div class="bm-family-foot">
+              <span>核心拦截：PER_001, EXF_001</span>
+              <span style="color: var(--danger, #ef4444); font-weight: 700;">预期：阻断 (MALICIOUS)</span>
+            </div>
           </div>
         </div>
 
-        <div class="chart-grid">
-          <div class="chart-card">
-            <div class="chart-title">
-              <h3>生成与评测流水线</h3>
-              <div class="hint">benchmark materialize → evaluator</div>
+        <!-- 为什么使用 3 个项目进行源项目隔离？ -->
+        <div class="card" style="margin-top: 24px; padding: 20px;">
+          <h3 style="margin-top:0; font-size: 15px; display: flex; align-items: center; gap: 8px;">
+            <span>🔬</span> 源项目隔离设计：防止大模型“开卷背答案”
+          </h3>
+          <p style="font-size: 13px; line-height: 1.6; color: var(--text); margin: 0 0 12px;">
+            在做 AI 评测时，很多大模型会“走捷径偷懒”：如果好代码和坏代码都在同一个项目里修改，大模型很容易记住该项目的某些固定函数名或代码��格。比如看到某个变量名就推断“这肯定是同一个开发者写的好代码”，从而得出虚假高分。
+          </p>
+          <div class="spec-grid" style="margin-top: 8px;">
+            <div class="spec" style="background: var(--panel-2);">
+              <div class="tag">良性样本来源 (50题)</div>
+              <h4 style="margin: 4px 0 8px; font-size: 13.5px;">LogisticRegression (25题) + TEE-test (25题)</h4>
+              <p style="font-size: 12.5px; color: var(--muted); margin:0;">涵盖经典机器学习算法与底层 TEE 测试桩。代码写法标准、包含大量常规工程封装，用于专门验证<strong>良性业务常态</strong>。</p>
             </div>
-            <div class="grid-2">
-              <div class="card">
-                <h3>落盘结构</h3>
-                <h4>每个样本一个目录</h4>
-                <ul>
-                  <li><span class="mono">sample.json</span>：样本元数据。</li>
-                  <li><span class="mono">benchmark_variant.py</span>：家族特定变体。</li>
-                  <li>源项目复制的其余代码保持原样，便于回放。</li>
-                  <li>恶性样本额外写入支持文件，如 <span class="mono">data_router.py</span>、<span class="mono">state_loader.py</span>、<span class="mono">flow_adapter.py</span>。</li>
-                </ul>
-              </div>
-              <div class="card">
-                <h3>评测入口</h3>
-                <h4>同一 manifest，双模式验证</h4>
-                <ul>
-                  <li>先 static-only 跑一遍，确认基线稳定。</li>
-                  <li>再在本地 Ollama 上跑语义验证。</li>
-                  <li>结果写出 <span class="mono">summary.json</span>、<span class="mono">sample-results.jsonl</span>、<span class="mono">sample-results.csv</span>、<span class="mono">final-report.md</span>。</li>
-                  <li>每个样本还会保存 <span class="mono">audit_report.json</span>，便于单样本回放。</li>
-                </ul>
-              </div>
+            <div class="spec" style="background: var(--panel-2);">
+              <div class="tag" style="color: var(--danger, #ef4444);">恶性样本来源 (50题)</div>
+              <h4 style="margin: 4px 0 8px; font-size: 13.5px;">Retina-DKD 深度学习医学项目 (50题)</h4>
+              <p style="font-size: 12.5px; color: var(--muted); margin:0;">基于复杂的深度学习图像处理项目，在真实训练链路中植入 5 种不同维度的攻击手法，专门验证<strong>隐蔽恶意攻击拦截</strong>。</p>
             </div>
-            <div class="codebox">python3 tools/generate_benchmark_samples.py --clean
+          </div>
+          <p style="font-size: 12px; color: var(--muted); margin: 10px 0 0;">
+            💡 <strong>设计收益：</strong>彻底切断了审计器根据“项目名”投机猜答案的可能，强迫第一道正则与第二道大模型必须深入代码逻辑，分析具体的代码行为（是单纯读写文件还是在向外发数据）。
+          </p>
+        </div>
+
+        <!-- 评测全流程与标准指标 -->
+        <h3 style="margin-top: 28px; margin-bottom: 8px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+          <span>🔄</span> 评测流水线：这套考卷是怎么考的？
+        </h3>
+        <div class="bm-step-flow">
+          <div class="bm-step-card">
+            <div class="bm-step-num">1</div>
+            <span class="bm-step-title">一键出题 (Materialize)</span>
+            <p class="bm-step-desc">运行生成脚本，根据 10 大家族规范从基座项目衍生出 100 个独立目录，每个样本自带 <code>sample.json</code> 标定标准答案。</p>
+          </div>
+          <div class="bm-step-card">
+            <div class="bm-step-num">2</div>
+            <span class="bm-step-title">静态扫描初筛 (Static)</span>
+            <p class="bm-step-desc">用快速正则/AST 扫描 100 个样本代码，捕获可疑代码行生成候选 Findings。基线模式下直接以此生成初步阻断决策。</p>
+          </div>
+          <div class="bm-step-card">
+            <div class="bm-step-num">3</div>
+            <span class="bm-step-title">大模型双级裁决 (LLM)</span>
+            <p class="bm-step-desc">将候选代码送入本地 Qwen 模型，逐点判定单点语义（排除良性误报），按文件判定复合攻击链，输出最终 Gate 报告。</p>
+          </div>
+          <div class="bm-step-card">
+            <div class="bm-step-num">4</div>
+            <span class="bm-step-title">自动阅卷打分 (Metrics)</span>
+            <p class="bm-step-desc">对比实际拦截结果与标准答案，自动计算准确率、误报率、漏报率，并产出 JSON、CSV、Markdown 全局量化成绩单。</p>
+          </div>
+        </div>
+
+        <!-- 一键运行命令盒 -->
+        <div class="codebox" style="margin-top: 16px;"><span style="color: var(--muted);"># 1. 重新生成 100 个标准测试沙箱（清空重建）</span>
+python3 tools/generate_benchmark_samples.py --clean
+
+<span style="color: var(--muted);"># 2. 跑第一遍：单静态基线模式（用于观察纯正则规则的原始误报率与漏报率）</span>
 python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --llm-backend none
+
+<span style="color: var(--muted);"># 3. 跑第二遍：动静协同模式（引入本地 Ollama 大模型，验证语义二次纠偏效果）</span>
 python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --llm-backend ollama --llm-model qwen2.5-coder:0.5b</div>
-          </div>
+
+        <div class="callout" style="margin-top: 16px;">
+          <strong>为什么评测必须做动静对比？</strong>
+          只有对比“纯静态”与“静态+大模型”，才能清晰衡量引入本地 LLM 到底帮我们挽救了多少被冤枉的良性代码（降低误报），以及补全了多少复合攻击链（降低漏报）。这构成了后续性能与结果分析的数据基石。
         </div>
       </section>
 
-      <section class="section" id="benchmark-results">
+<section class="section" id="benchmark-results">
         <h2>5. Benchmark 结果</h2>
         <p class="lead">完整 benchmark 已经实际跑过两遍：一遍 static-only，一遍本地 Ollama。两次都达成 100/100 正确分类，但 LLM 可用率只有 41%，说明系统在 LLM 不稳定时确实退回到了静态基线，而且没有把失败悄悄变成放行。</p>
 
