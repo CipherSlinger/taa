@@ -315,7 +315,29 @@ func TestImportModel_ResourceURLReuseValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("empty resourceUrl fails when no imported data exists", func(t *testing.T) {
+	t.Run("empty resourceUrl in phase 1 succeeds and sets ModelImported=true waiting for data", func(t *testing.T) {
+		resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+			"resourceUrl":   "",
+			"taskId":        "task-model-empty-url",
+			"runtimeConfig": `{"commands": ["echo test"]}`,
+		})
+		api := decodeResponse(t, resp)
+		if resp.StatusCode != http.StatusOK || api.Error != 0 {
+			t.Fatalf("expected 200 success in phase 1, got status=%d error=%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		}
+		if !strings.Contains(api.Msg, "模型参数命令已导入，等待数据重新导入后执行训练") {
+			t.Fatalf("expected waiting for data message, got: %q", api.Msg)
+		}
+		if !state.ModelImported {
+			t.Fatalf("expected ModelImported=true, got false")
+		}
+	})
+
+	t.Run("empty resourceUrl in phase 2 fails when no imported data exists", func(t *testing.T) {
+		state.mu.Lock()
+		state.CurrentPhase = 2
+		state.mu.Unlock()
+
 		resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
 			"resourceUrl":   "",
 			"taskId":        "task-model-empty-url",
@@ -323,7 +345,7 @@ func TestImportModel_ResourceURLReuseValidation(t *testing.T) {
 		})
 		api := decodeResponse(t, resp)
 		if resp.StatusCode != http.StatusBadRequest || api.Error == 0 {
-			t.Fatalf("expected 400 error, got status=%d error=%d", resp.StatusCode, api.Error)
+			t.Fatalf("expected 400 error in phase 2, got status=%d error=%d", resp.StatusCode, api.Error)
 		}
 		if !strings.Contains(api.Msg, "未找到已导入的数据，无法执行训练") {
 			t.Fatalf("expected '未找到已导入的数据，无法执行训练', got: %q", api.Msg)
