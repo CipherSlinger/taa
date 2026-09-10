@@ -27,20 +27,19 @@ func TestStoreBasics(t *testing.T) {
 }
 
 func TestStoreOverflow(t *testing.T) {
-	store := NewStore(3, WithStdout(false))
+	store := NewStore(4, WithStdout(false))
 
-	store.Info("c", "1")
-	store.Info("c", "2")
-	store.Info("c", "3")
-	store.Info("c", "4") // should drop "1"
-
-	if store.Count() != 3 {
-		t.Fatalf("expected count 3, got %d", store.Count())
+	for i := 0; i < 10; i++ {
+		store.Info("test", "msg%d", i)
 	}
 
-	all := store.All()
-	if all[0].Message != "2" || all[1].Message != "3" || all[2].Message != "4" {
-		t.Fatalf("unexpected entries: %+v", all)
+	entries := store.All()
+	if len(entries) > 4 {
+		t.Fatalf("expected at most 4 entries, got %d", len(entries))
+	}
+	last := entries[len(entries)-1]
+	if last.Message != "msg9" {
+		t.Fatalf("last entry = %q, want msg9", last.Message)
 	}
 }
 
@@ -63,16 +62,29 @@ func TestStoreSince(t *testing.T) {
 }
 
 func TestStoreDrain(t *testing.T) {
-	store := NewStore(5, WithStdout(false))
-	store.Info("c", "1")
-	store.Info("c", "2")
+	store := NewStore(10, WithStdout(false))
+	store.Info("a", "msg1")
+	store.Warn("b", "msg2")
 
-	drained := store.Drain()
-	if len(drained) != 2 {
-		t.Fatalf("expected 2 drained entries, got %d", len(drained))
+	entries := store.Drain()
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
 	}
-	if store.Count() != 0 {
-		t.Fatalf("expected 0 count after drain, got %d", store.Count())
+
+	// Second drain should return nothing
+	entries = store.Drain()
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries after drain, got %d", len(entries))
+	}
+
+	// Add more and drain again
+	store.Error("c", "msg3")
+	entries = store.Drain()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].Level != LevelError {
+		t.Fatalf("level = %s, want error", entries[0].Level)
 	}
 }
 

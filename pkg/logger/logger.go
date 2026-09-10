@@ -1,5 +1,5 @@
 // Package logger 提供通用的轻量级分级日志记录器与有界内存日志存储池（Ring Buffer），
-// 支持终端 ANSI 彩色高亮、时间区间过滤及 JSON 序列化，完全独立于特定业务。
+// 支持终端 ANSI 彩色高亮、增量排空、二分时间过滤及 JSON 序列化，完全独立于特定业务。
 package logger
 
 import (
@@ -35,15 +35,16 @@ const (
 type Entry struct {
 	Timestamp time.Time `json:"timestamp"`
 	Level     Level     `json:"level"`
-	Component string    `json:"component,omitempty"`
+	Component string    `json:"component"`
 	Message   string    `json:"message"`
 }
 
 // Store 是一个线程安全的有界内存日志缓冲区（达到上限时自动淘汰最旧日志）。
 type Store struct {
-	mu      sync.RWMutex
+	mu      sync.Mutex
 	entries []Entry
 	maxSize int
+	cursor  int // 下一次未读日志索引
 	stdout  bool
 }
 
@@ -99,13 +100,24 @@ func (s *Store) Add(level Level, component, format string, args ...any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// 达到最大容量时淘汰较旧条目，并校准 cursor
 	if len(s.entries) >= s.maxSize {
-		// 丢弃最老的一条记录
-		copy(s.entries, s.entries[1:])
-		s.entries[len(s.entries)-1] = entry
-	} else {
-		s.entries = append(s.entries, entry)
+		drop := s.maxSize / 2
+		if drop <= 0 {
+			drop = 1
+		}
+		if drop > len(s.entries) {
+			drop = len(s.entries)
+		}
+		s.entries = s.entries[drop:]
+		if s.cursor >= drop {
+			s.cursor -= drop
+		} else {
+			s.cursor = 0
+		}
 	}
+
+	s.entries = append(s.entries, entry)
 }
 
 // Info 记录一条 Info 级别日志。
@@ -128,50 +140,64 @@ func (s *Store) Debug(component, format string, args ...any) {
 	s.Add(LevelDebug, component, format, args...)
 }
 
-// Since 获取指定时间点之后的增量日志切片（不破坏缓冲区）。
-func (s *Store) Since(t time.Time) []Entry {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+// Drain 返回自上一次 Drain 以来所有未读的增量日志，并推进内部已读游标。
+func (s *Store) Drain() []Entry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	result := make([]Entry, 0)
-	for _, entry := range s.entries {
-		if entry.Timestamp.After(t) {
-			result = append(result, entry)
+	if s.cursor >= len(s.entries) {
+		return nil
+	}
+	result := make([]Entry, len(s.entries)-s.cursor)
+	copy(result, s.entries[s.cursor:])
+	s.cursor = len(s.entries)
+	return result
+}
+
+// Since 二分查找并返回给定时间戳之后的所有日志切片副本。
+func (s *Store) Since(t time.Time) []Entry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	lo, hi := 0, len(s.entries)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if s.entries[mid].Timestamp.Before(t) || s.entries[mid].Timestamp.Equal(t) {
+			lo = mid + 1
+		} else {
+			hi = mid
 		}
 	}
+
+	if lo >= len(s.entries) {
+		return nil
+	}
+	result := make([]Entry, len(s.entries)-lo)
+	copy(result, s.entries[lo:])
 	return result
 }
 
 // All 返回当前缓冲区内的所有日志副本。
 func (s *Store) All() []Entry {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	res := make([]Entry, len(s.entries))
 	copy(res, s.entries)
 	return res
 }
 
-// Drain 清空并返回缓冲区内的所有日志记录。
-func (s *Store) Drain() []Entry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	res := s.entries
-	s.entries = make([]Entry, 0, s.maxSize)
-	return res
-}
-
 // Count 返回当前存储的日志总条数。
 func (s *Store) Count() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return len(s.entries)
 }
 
-// Clear 清空日志缓冲区。
+// Clear 清空日志缓冲区并重置游标。
 func (s *Store) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.entries = make([]Entry, 0, s.maxSize)
+	s.cursor = 0
 }
