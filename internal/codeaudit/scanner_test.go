@@ -309,26 +309,22 @@ func TestScannerOnTEEtestModel(t *testing.T) {
 }
 
 func TestScannerOnRetinaDKDFiles(t *testing.T) {
-	files := []string{
-		filepath.Join("..", "..", "models", "examples", "Retina-DKD", "Retina-DKD", "test_isolate_all.py"),
-		filepath.Join("..", "..", "models", "examples", "Retina-DKD", "Retina-DKD", "test_fusion.py"),
-		filepath.Join("..", "..", "models", "examples", "Retina-DKD", "Retina-DKD", "test_fusion_pat.py"),
-		filepath.Join("..", "..", "models", "examples", "Retina-DKD", "Retina-DKD", "test_run.py"),
-	}
-	if _, err := os.Stat(files[0]); os.IsNotExist(err) {
+	dir := filepath.Join("..", "..", "models", "examples", "Retina-DKD")
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		t.Skip("Retina-DKD files not available, skipping")
 	}
 	scanner := NewDefaultScanner()
-	for _, file := range files {
-		findings, err := scanner.ScanFile(file)
-		if err != nil {
-			t.Fatal(err)
+	report, err := scanner.ScanDirectory(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Findings) > 0 {
+		for _, f := range report.Findings {
+			t.Errorf("unexpected finding in %s: line %d [%s] %s", filepath.Base(f.File), f.Line, f.RuleID, f.CodeSnippet)
 		}
-		if len(findings) > 0 {
-			for _, f := range findings {
-				t.Errorf("unexpected finding in %s: line %d [%s] %s", filepath.Base(file), f.Line, f.RuleID, f.CodeSnippet)
-			}
-		}
+	}
+	if !report.Passed {
+		t.Errorf("expected Retina-DKD scan to pass, got passed=false (high=%d, med=%d)", report.HighCount, report.MediumCount)
 	}
 }
 
