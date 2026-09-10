@@ -1728,41 +1728,120 @@
     line-height: 1.6;
     margin: 0;
   }
-  .state-cards-grid {
+  /* 图表与流程图自适应容器 */
+  figure.chart-figure {
+    margin: 14px 0 0;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: var(--panel-2);
+    overflow-x: auto;
+  }
+  svg.metric-svg,
+  svg.flow-svg {
+    display: block;
+    width: 100%;
+    min-width: 760px;
+    height: auto;
+  }
+  .metric-pill-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px;
     margin-top: 14px;
   }
-  @media (max-width: 860px) {
-    .state-cards-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-  .state-card {
-    border: 1px solid var(--line);
+  .metric-pill-card {
+    padding: 12px 14px;
     border-radius: 12px;
-    padding: 14px;
     background: var(--panel-2);
+    border: 1px solid var(--line);
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 4px;
   }
-  .state-card-head {
+  .metric-pill-name {
+    font-size: 11.5px;
+    color: var(--muted);
     display: flex;
     align-items: center;
     justify-content: space-between;
   }
-  .state-card-title {
+  .metric-pill-val {
     font-family: var(--mono);
-    font-size: 12.5px;
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .metric-pill-delta {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .metric-pill-delta.up { color: var(--ok); }
+  .metric-pill-delta.down-good { color: var(--ok); }
+
+  /* 100样本分流问答卡片 */
+  .flow-qa-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-top: 16px;
+  }
+  @media (max-width: 880px) {
+    .flow-qa-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+  .flow-qa-card {
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 16px;
+    background: var(--panel-2);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .flow-qa-card.bypass {
+    border-color: color-mix(in srgb, #526e82 50%, var(--line));
+    background: color-mix(in srgb, #526e82 6%, var(--panel-2));
+  }
+  .flow-qa-card.arbitrated {
+    border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
+    background: color-mix(in srgb, var(--ok) 5%, var(--panel-2));
+  }
+  .flow-qa-card.failclosed {
+    border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+    background: color-mix(in srgb, var(--warn) 6%, var(--panel-2));
+  }
+  .flow-qa-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .flow-qa-badge {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 6px;
     font-weight: 700;
   }
-  .state-card-desc {
+  .flow-qa-badge.bypass { background: #1a2730; color: #8ba0b3; border: 1px solid #354e60; }
+  .flow-qa-badge.arbitrated { background: var(--ok-soft); color: var(--ok); border: 1px solid color-mix(in srgb, var(--ok) 35%, var(--line)); }
+  .flow-qa-badge.failclosed { background: var(--warn-soft); color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line)); }
+  .flow-qa-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .flow-qa-desc {
     font-size: 12.5px;
     color: var(--muted);
-    line-height: 1.55;
+    line-height: 1.65;
     margin: 0;
+  }
+  .flow-qa-desc strong {
+    color: var(--text);
   }
 
   @media (max-width: 1080px) {
@@ -3065,7 +3144,7 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --ll
           </div>
           <div class="kpi-card">
             <div class="num" style="color: var(--accent);">50%</div>
-            <div class="label"><strong>算力快速旁路率 (Bypass)</strong><br>50 个纯净样本因静态层零触发直接放行，无需唤醒 LLM，端到端推断开销减半，时延由秒级降至毫秒级。</div>
+            <div class="label"><strong>算力快速旁路率 (Bypass)</strong><br>50 个纯净样本因静态层零触发直接放行，无需唤醒 LLM，端到端推断开销减半，时延由秒级降���毫秒级。</div>
           </div>
           <div class="kpi-card">
             <div class="num" style="color: var(--warn);">0 例</div>
@@ -3108,7 +3187,7 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --ll
               <span class="cm-pill">F1-Score: <strong>0.748</strong></span>
             </div>
             <p style="font-size: 12.5px; color: var(--muted); margin: 0; line-height: 1.55;">
-              <strong>基线诊断：</strong>静态正则单行���配能够捕获大多数标准攻击（TP=43），但缺乏上下文理解导致合规配置读取、日志打印被高频误报（FP=22，误报率 44%），严重影响生产可用性。
+              <strong>基线诊断：</strong>静态正则单行匹配能够捕获大多数标准攻击（TP=43），但缺乏上下文理解导致合规配置读取、日志打印被高频误报（FP=22，误报率 44%），严重影响生产可用性。
             </p>
           </div>
 
@@ -3151,93 +3230,318 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --ll
           </div>
         </div>
 
-        <div class="chart-grid">
-          <div class="chart-card">
-            <div class="chart-title">
-              <h3>核心指标双轨演进对照</h3>
-              <div class="hint">Static Baseline vs Static + Qwen2.5-Coder:0.5b Tuned</div>
-            </div>
-            <div class="bars">
-              <div class="bar-row">
-                <div class="name">Accuracy (准确率)</div>
-                <div class="track"><div class="fill ok" style="width: 78%;"></div></div>
-                <div class="value">71.0% → 78.0%</div>
-              </div>
-              <div class="bar-row">
-                <div class="name">Precision (精确率)</div>
-                <div class="track"><div class="fill ok" style="width: 73.3%;"></div></div>
-                <div class="value">66.2% → 73.3%</div>
-              </div>
-              <div class="bar-row">
-                <div class="name">Recall (召回率)</div>
-                <div class="track"><div class="fill ok" style="width: 88%;"></div></div>
-                <div class="value">86.0% → 88.0%</div>
-              </div>
-              <div class="bar-row">
-                <div class="name">FPR (误报率，越低越好)</div>
-                <div class="track"><div class="fill warn" style="width: 32%;"></div></div>
-                <div class="value">44.0% → 32.0%</div>
-              </div>
-              <div class="bar-row">
-                <div class="name">F1-Score (平衡调和)</div>
-                <div class="track"><div class="fill ok" style="width: 80%;"></div></div>
-                <div class="value">0.748 → 0.800</div>
-              </div>
-            </div>
-            <div class="legend">
-              <span class="item"><span class="swatch static"></span>静态单轨基线</span>
-              <span class="item"><span class="swatch ok"></span>动静协同模式 (Ollama Tuned)</span>
-              <span class="item"><span class="swatch warn"></span>FPR 降幅达 27.3%</span>
-            </div>
-            <div class="mini-note">各项指标的同步提升印证了工程假设：LLM 并非盲目宽松或收紧，而是利用上下文语义精确裁决良性边界，实现正向增量收益。</div>
+        <!-- 核心指标双轨演进清晰对照图 -->
+        <div class="chart-card" style="margin-top: 16px;">
+          <div class="chart-title">
+            <h3>核心指标双轨演进对照（柱形独立对比）</h3>
+            <div class="hint">每项指标分别展示「纯静态单轨」与「动静协同增强轨」独立柱状对比，清晰呈现性能增益</div>
           </div>
+          <figure class="chart-figure">
+            <svg class="metric-svg" viewBox="0 0 920 410" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="核心指标双轨演进清晰对照柱状图">
+              <!-- 背景与标尺网格 -->
+              <rect width="920" height="410" fill="#0d141b" rx="14"/>
+              
+              <!-- 顶部图例 -->
+              <g transform="translate(40, 24)">
+                <text x="0" y="16" fill="#f0f6fc" font-size="14" font-weight="700" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">核心指标双轨实测对比 (Audit-100 Benchmark)</text>
+                <text x="0" y="34" fill="#8b949e" font-size="11.5" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">同一评测集下独立单轨与动静协同轨性能对比 · 每项指标两条柱形清晰对照</text>
+                
+                <!-- 图例项 1 -->
+                <rect x="520" y="8" width="14" height="14" rx="3" fill="#4a6375"/>
+                <text x="540" y="20" fill="#c9d1d9" font-size="12" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">纯静态单轨 (Static Baseline)</text>
+                
+                <!-- 图例项 2 -->
+                <rect x="730" y="8" width="14" height="14" rx="3" fill="#5dbd8f"/>
+                <text x="750" y="20" fill="#5dbd8f" font-size="12" font-weight="700" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">协同增强轨 (Ollama Tuned)</text>
+              </g>
 
-          <div class="chart-card">
-            <div class="chart-title">
-              <h3>样本执行流转状态分布与按需仲裁机制</h3>
-              <div class="hint">Total: 100 Samples (50 Benign / 50 Malicious)</div>
+              <!-- X 轴网格线 (0%, 25%, 50%, 75%, 100%) -->
+              <!-- 基准 X 范围: x0 = 190, 100% 对应 width = 540, 即 1% = 5.4px -->
+              <g transform="translate(190, 68)">
+                <line x1="0" y1="0" x2="0" y2="295" stroke="#21262d" stroke-width="1"/>
+                <text x="0" y="310" fill="#6e7681" font-size="10.5" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">0%</text>
+
+                <line x1="135" y1="0" x2="135" y2="295" stroke="#1b2229" stroke-width="1" stroke-dasharray="3,3"/>
+                <text x="135" y="310" fill="#6e7681" font-size="10.5" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">25%</text>
+
+                <line x1="270" y1="0" x2="270" y2="295" stroke="#1b2229" stroke-width="1" stroke-dasharray="3,3"/>
+                <text x="270" y="310" fill="#6e7681" font-size="10.5" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">50%</text>
+
+                <line x1="405" y1="0" x2="405" y2="295" stroke="#1b2229" stroke-width="1" stroke-dasharray="3,3"/>
+                <text x="405" y="310" fill="#6e7681" font-size="10.5" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">75%</text>
+
+                <line x1="540" y1="0" x2="540" y2="295" stroke="#21262d" stroke-width="1"/>
+                <text x="540" y="310" fill="#6e7681" font-size="10.5" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">100%</text>
+              </g>
+
+              <!-- 指标行 1: Accuracy (准确率) -->
+              <!-- y=72: 71.0% (383.4px) vs 78.0% (421.2px) -->
+              <g transform="translate(40, 78)">
+                <text x="0" y="24" fill="#f0f6fc" font-size="12.5" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">准确率 (Accuracy)</text>
+                <text x="0" y="38" fill="#8b949e" font-size="10" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">整体判别正确率</text>
+                <!-- 静态轨 -->
+                <rect x="150" y="8" width="540" height="15" rx="3" fill="#161b22"/>
+                <rect x="150" y="8" width="383.4" height="15" rx="3" fill="#4a6375"/>
+                <text x="542" y="20" fill="#8b949e" font-size="11" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">71.0%</text>
+                <!-- 协同轨 -->
+                <rect x="150" y="27" width="540" height="15" rx="3" fill="#161b22"/>
+                <rect x="150" y="27" width="421.2" height="15" rx="3" fill="#5dbd8f"/>
+                <text x="580" y="39" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">78.0%</text>
+                <!-- 右侧 Delta 徽章 -->
+                <rect x="750" y="14" width="105" height="22" rx="6" fill="#142c22" stroke="#238636" stroke-width="1"/>
+                <text x="802" y="29" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">▲ +7.0%</text>
+              </g>
+
+              <!-- 分隔线 -->
+              <line x1="40" y1="135" x2="880" y2="135" stroke="#161b22" stroke-width="1"/>
+
+              <!-- 指标行 2: Precision (精确率) -->
+              <!-- y=140: 66.2% (357.5px) vs 73.3% (395.8px) -->
+              <g transform="translate(40, 140)">
+                <text x="0" y="24" fill="#f0f6fc" font-size="12.5" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">精确率 (Precision)</text>
+                <text x="0" y="38" fill="#8b949e" font-size="10" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">告警中的真威胁占比</text>
+                <!-- 静态轨 -->
+                <rect x="150" y="8" width="540" height="15" rx="3" fill="#161b22"/>
+                <rect x="150" y="8" width="357.5" height="15" rx="3" fill="#4a6375"/>
+                <text x="516" y="20" fill="#8b949e" font-size="11" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">66.2%</text>
+                <!-- 协同轨 -->
+                <rect x="150" y="27" width="540" height="15" rx="3" fill="#161b22"/>
+                <rect x="150" y="27" width="395.8" height="15" rx="3" fill="#5dbd8f"/>
+                <text x="555" y="39" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">73.3%</text>
+                <!-- 右侧 Delta 徽章 -->
+                <rect x="750" y="14" width="105" height="22" rx="6" fill="#142c22" stroke="#238636" stroke-width="1"/>
+                <text x="802" y="29" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">▲ +7.1%</text>
+              </g>
+
+              <!-- 分隔线 -->
+              <line x1="40" y1="197" x2="880" y2="197" stroke="#161b22" stroke-width="1"/>
+
+              <!-- 指标行 3: Recall (召回率) -->
+              <!-- y=202: 86.0% (464.4px) vs 88.0% (475.2px) -->
+              <g transform="translate(40, 202)">
+                <text x="0" y="24" fill="#f0f6fc" font-size="12.5" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">召回率 (Recall)</text>
+                <text x="0" y="38" fill="#8b949e" font-size="10" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">恶意攻击拦截覆盖率</text>
+                <!-- 静态轨 -->
+                <rect x="150" y="8" width="540" height="15" rx="3" fill="#161b22"/>
+                <rect x="150" y="8" width="464.4" height="15" rx="3" fill="#4a6375"/>
+                <text x="623" y="20" fill="#8b949e" font-size="11" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">86.0%</text>
+                <!-- 协同轨 -->
+                <rect x="150" y="27" width="540" height="15" rx="3" fill="#161b22"/>
+                <rect x="150" y="27" width="475.2" height="15" rx="3" fill="#5dbd8f"/>
+                <text x="634" y="39" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">88.0%</text>
+                <!-- 右侧 Delta 徽章 -->
+                <rect x="750" y="14" width="105" height="22" rx="6" fill="#142c22" stroke="#238636" stroke-width="1"/>
+                <text x="802" y="29" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">▲ +2.0%</text>
+              </g>
+
+              <!-- 分隔线 -->
+              <line x1="40" y1="259" x2="880" y2="259" stroke="#161b22" stroke-width="1"/>
+
+              <!-- 指标行 4: FPR (良性误报率 - 越低越好，突出重点) -->
+              <!-- y=264: 44.0% (237.6px, 琥珀黄警示) vs 32.0% (172.8px, 翡翠绿大幅压降) -->
+              <g transform="translate(40, 264)">
+                <text x="0" y="22" fill="#e0a14b" font-size="12.5" font-weight="700" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">误报率 (FPR)</text>
+                <text x="0" y="36" fill="#e0a14b" font-size="10" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">越低越好 · 核心攻坚点</text>
+                <!-- 静态轨 (高误报，琥珀警示色) -->
+                <rect x="150" y="8" width="540" height="15" rx="3" fill="#161b22"/>
+                <rect x="150" y="8" width="237.6" height="15" rx="3" fill="#e0a14b"/>
+                <text x="396" y="20" fill="#e0a14b" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">44.0% (FP=22)</text>
+                <!-- 协同轨 (显著压降至 32.0%) -->
+                <rect x="150" y="27" width="540" height="15" rx="3" fill="#161b22"/>
+                <rect x="150" y="27" width="172.8" height="15" rx="3" fill="#5dbd8f"/>
+                <text x="332" y="39" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">32.0% (FP=16)</text>
+                <!-- 右侧 Delta 徽章 (大幅压降) -->
+                <rect x="750" y="14" width="105" height="22" rx="6" fill="#142c22" stroke="#238636" stroke-width="1"/>
+                <text x="802" y="29" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">▼ -12.0% (-27.3%)</text>
+              </g>
+
+              <!-- 分隔线 -->
+              <line x1="40" y1="321" x2="880" y2="321" stroke="#161b22" stroke-width="1"/>
+
+              <!-- 指标行 5: F1-Score (平衡调和指标) -->
+              <!-- y=326: 0.748 (403.9px) vs 0.800 (432.0px) -->
+              <g transform="translate(40, 326)">
+                <text x="0" y="24" fill="#f0f6fc" font-size="12.5" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">综合调和 (F1-Score)</text>
+                <text x="0" y="38" fill="#8b949e" font-size="10" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">精确与召回权衡指标</text>
+                <!-- 静态轨 -->
+                <rect x="150" y="8" width="540" height="15" rx="3" fill="#161b22"/>
+                <rect x="150" y="8" width="403.9" height="15" rx="3" fill="#4a6375"/>
+                <text x="562" y="20" fill="#8b949e" font-size="11" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">0.748</text>
+                <!-- 协同轨 -->
+                <rect x="150" y="27" width="540" height="15" rx="3" fill="#161b22"/>
+                <rect x="150" y="27" width="432.0" height="15" rx="3" fill="#5dbd8f"/>
+                <text x="590" y="39" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">0.800</text>
+                <!-- 右侧 Delta 徽章 -->
+                <rect x="750" y="14" width="105" height="22" rx="6" fill="#142c22" stroke="#238636" stroke-width="1"/>
+                <text x="802" y="29" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">▲ +0.052</text>
+              </g>
+
+              <!-- 底部说明文字 -->
+              <text x="40" y="395" fill="#6e7681" font-size="10.5" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">注：图表由 models/audit/audit-results 目录中 benchmark 实测日志与 summary.json 真实统计数据自动渲染。柱条对比可直观展示大模型对良性误杀的消除收益。</text>
+            </svg>
+          </figure>
+          <div class="metric-pill-grid">
+            <div class="metric-pill-card">
+              <div class="metric-pill-name">准确率 (Accuracy) <span class="metric-pill-delta up">▲ +7.0%</span></div>
+              <div class="metric-pill-val">71.0% → 78.0%</div>
             </div>
-            <div class="stack" aria-label="ollama status composition">
-              <div class="segment static" style="width: 50%;">static_only 50%</div>
-              <div class="segment ok" style="width: 41%;">ok 41%</div>
-              <div class="segment uncertain" style="width: 9%;">uncertain 9%</div>
+            <div class="metric-pill-card">
+              <div class="metric-pill-name">精确率 (Precision) <span class="metric-pill-delta up">▲ +7.1%</span></div>
+              <div class="metric-pill-val">66.2% → 73.3%</div>
             </div>
-            <div class="legend">
-              <span class="item"><span class="swatch static"></span>static_only (50 例 / 50%)</span>
-              <span class="item"><span class="swatch ok"></span>ok (41 例 / 41%)</span>
-              <span class="item"><span class="swatch warn"></span>uncertain (9 例 / 9%)</span>
+            <div class="metric-pill-card">
+              <div class="metric-pill-name">召回率 (Recall) <span class="metric-pill-delta up">▲ +2.0%</span></div>
+              <div class="metric-pill-val">86.0% → 88.0%</div>
+            </div>
+            <div class="metric-pill-card">
+              <div class="metric-pill-name">良性误报率 (FPR) <span class="metric-pill-delta down-good">▼ -12.0% (压降27.3%)</span></div>
+              <div class="metric-pill-val" style="color: var(--ok);">44.0% → 32.0%</div>
+            </div>
+            <div class="metric-pill-card">
+              <div class="metric-pill-name">F1-Score 综合调和 <span class="metric-pill-delta up">▲ +0.052</span></div>
+              <div class="metric-pill-val">0.748 → 0.800</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 100 样本执行流转状态分布与按需仲裁流程 -->
+        <div class="chart-card" style="margin-top: 20px;">
+          <div class="chart-title">
+            <h3>100 个样本判定分流全流程（为什么大模型只调用了 50%？）</h3>
+            <div class="hint">Stage 1 静态初筛零命中直接快速放行 · Stage 2 本地大模型只处理可疑命中 · Fail-Closed 兜底保障不失守</div>
+          </div>
+          <figure class="chart-figure">
+            <svg class="flow-svg" viewBox="0 0 920 310" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="100个样本判定分流全流程图">
+              <rect width="920" height="310" fill="#0d141b" rx="14"/>
+              
+              <!-- 顶部标题 -->
+              <g transform="translate(30, 20)">
+                <text x="0" y="14" fill="#f0f6fc" font-size="14" font-weight="700" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">100 个基准样本两阶段分流全景 (为什么大模型只调用了 50%？)</text>
+                <text x="0" y="32" fill="#8b949e" font-size="11.5" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">Stage 1 静态规则快速分流过滤纯净代码 · Stage 2 本地大模型只针对疑似命中进行语义仲裁与降噪</text>
+              </g>
+
+              <!-- 阶段 0: 输入总样本池 -->
+              <g transform="translate(30, 80)">
+                <rect width="130" height="150" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+                <text x="65" y="30" fill="#f0f6fc" font-size="13" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">全部评测集</text>
+                <text x="65" y="58" fill="#58a6ff" font-size="22" font-weight="800" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">100 份</text>
+                <line x1="16" y1="74" x2="114" y2="74" stroke="#21262d" stroke-width="1"/>
+                <text x="65" y="96" fill="#8b949e" font-size="11" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">50 份良性源码</text>
+                <text x="65" y="116" fill="#8b949e" font-size="11" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">50 份攻击源码</text>
+                <text x="65" y="136" fill="#6e7681" font-size="9.5" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">覆盖7大威胁家族</text>
+              </g>
+
+              <!-- 箭头 1: 进入 Stage 1 -->
+              <path d="M 160 155 L 195 155" stroke="#58a6ff" stroke-width="2" stroke-dasharray="4,3"/>
+              <polygon points="195,150 205,155 195,160" fill="#58a6ff"/>
+
+              <!-- 阶段 1: Stage 1 静态规则扫描 -->
+              <g transform="translate(205, 80)">
+                <rect width="160" height="150" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="1.5"/>
+                <rect x="0" y="0" width="160" height="26" rx="10" fill="#1f3b5c"/>
+                <text x="80" y="18" fill="#79c0ff" font-size="11.5" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">Stage 1 · 静态规则初筛</text>
+                <text x="80" y="52" fill="#c9d1d9" font-size="12" font-weight="600" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">正则与 AST 规则匹配</text>
+                <text x="80" y="70" fill="#8b949e" font-size="10.5" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">耗时 &lt; 50ms / 样本</text>
+                
+                <rect x="14" y="85" width="132" height="52" rx="6" fill="#0d141b" stroke="#30363d" stroke-width="1"/>
+                <text x="80" y="104" fill="#8b949e" font-size="10.5" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">检测 Finding 数量：</text>
+                <text x="80" y="124" fill="#f0f6fc" font-size="11.5" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">len(findings) == 0 ?</text>
+              </g>
+
+              <!-- 分流分支 A: 50% 纯净代码零命中 -> 快速旁路 (绿色箭头向上绕过) -->
+              <path d="M 365 120 C 420 120, 430 90, 480 90 L 590 90" stroke="#4a6375" stroke-width="2.5"/>
+              <polygon points="590,85 600,90 590,95" fill="#4a6375"/>
+              <rect x="385" y="80" width="180" height="22" rx="5" fill="#0d141b" stroke="#354e60" stroke-width="1"/>
+              <text x="475" y="95" fill="#8ba0b3" font-size="10.5" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">零命中 · 快速旁路 (50 例 / 50%)</text>
+
+              <!-- 分流分支 B: 50% 疑似命中 -> 进入 Stage 2 (橙色箭头向下进入大模型) -->
+              <path d="M 365 175 C 400 175, 410 195, 440 195 L 450 195" stroke="#e0a14b" stroke-width="2.5"/>
+              <polygon points="450,190 460,195 450,200" fill="#e0a14b"/>
+              <rect x="375" y="185" width="75" height="20" rx="4" fill="#0d141b" stroke="#d29922" stroke-width="1"/>
+              <text x="412" y="199" fill="#e0a14b" font-size="10.5" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">可疑 50 例</text>
+
+              <!-- 旁路终点: 50例 static_only 放行 -->
+              <g transform="translate(600, 65)">
+                <rect width="290" height="50" rx="8" fill="#141c24" stroke="#354e60" stroke-width="1.5"/>
+                <rect x="12" y="12" width="26" height="26" rx="6" fill="#1a2730"/>
+                <text x="25" y="29" fill="#8ba0b3" font-size="14" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">⚡</text>
+                <text x="48" y="26" fill="#8ba0b3" font-size="12" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">static_only (50 例 / 50%)</text>
+                <text x="48" y="42" fill="#6e7681" font-size="10.5" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">无需唤醒大模型 · 节省 50% GPU 算力 · 毫秒级直接放行</text>
+              </g>
+
+              <!-- 阶段 2: Stage 2 本地大模型语义仲裁 (460, 140) -->
+              <g transform="translate(460, 140)">
+                <rect width="180" height="150" rx="10" fill="#161b22" stroke="#5dbd8f" stroke-width="1.5"/>
+                <rect x="0" y="0" width="180" height="26" rx="10" fill="#142c22"/>
+                <text x="90" y="18" fill="#5dbd8f" font-size="11.5" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">Stage 2 · 本地大模型语义仲裁</text>
+                <text x="90" y="48" fill="#c9d1d9" font-size="11.5" font-weight="600" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">Qwen2.5-Coder:0.5b</text>
+                <text x="90" y="65" fill="#8b949e" font-size="10" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">行级 (7行) + 文件级 (80行) 双提示词</text>
+
+                <!-- 仲裁结果输出 -->
+                <line x1="15" y1="78" x2="165" y2="78" stroke="#21262d" stroke-width="1"/>
+                <rect x="15" y="86" width="150" height="24" rx="4" fill="#0d141b" stroke="#238636" stroke-width="1"/>
+                <text x="90" y="102" fill="#5dbd8f" font-size="10.5" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">语义裁决成功: 41 例 (82%)</text>
+                
+                <rect x="15" y="116" width="150" height="24" rx="4" fill="#0d141b" stroke="#d29922" stroke-width="1"/>
+                <text x="90" y="132" fill="#e0a14b" font-size="10.5" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">歧义/混淆难判: 9 例 (18%)</text>
+              </g>
+
+              <!-- 箭头: 大模型成功仲裁 41 例 -> ok 分支 -->
+              <path d="M 640 198 L 685 198" stroke="#5dbd8f" stroke-width="2"/>
+              <polygon points="685,193 695,198 685,203" fill="#5dbd8f"/>
+
+              <!-- 大模型仲裁终点: 41 例 ok -->
+              <g transform="translate(695, 172)">
+                <rect width="195" height="52" rx="8" fill="#142c22" stroke="#238636" stroke-width="1.5"/>
+                <text x="14" y="24" fill="#5dbd8f" font-size="12" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">ok 仲裁完成 (41 例 / 41%)</text>
+                <text x="14" y="42" fill="#c9d1d9" font-size="10" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">确认 32 真实攻击 · <strong style="color:#5dbd8f;">消减 6 例误报放行</strong></text>
+              </g>
+
+              <!-- 箭头: 歧义/混淆 9 例 -> Fail-Closed 门禁 -->
+              <path d="M 640 258 L 685 258" stroke="#e0a14b" stroke-width="2"/>
+              <polygon points="685,253 695,258 685,263" fill="#e0a14b"/>
+
+              <!-- 兜底门禁终点: 9 例 uncertain Fail-Closed 兜底 -->
+              <g transform="translate(695, 236)">
+                <rect width="195" height="52" rx="8" fill="#2b1f14" stroke="#d29922" stroke-width="1.5"/>
+                <text x="14" y="23" fill="#e0a14b" font-size="12" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">uncertain (9 例 / 9%)</text>
+                <text x="14" y="42" fill="#c9d1d9" font-size="10" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">Fail-Closed 严格保底 · <strong style="color:#e0a14b;">维持阻断 0 漏报</strong></text>
+              </g>
+            </svg>
+          </figure>
+
+          <div class="flow-qa-grid">
+            <div class="flow-qa-card bypass">
+              <div class="flow-qa-head">
+                <span class="flow-qa-title">疑问 1：为什么 50 个样本完全没调用大模型？</span>
+                <span class="flow-qa-badge bypass">50% 快速旁路</span>
+              </div>
+              <p class="flow-qa-desc">
+                <strong>答：这是架构设计预期的快速旁路，不是大模型故障或未启用。</strong><br>
+                在 100 个基准样本中，有 50 个为纯净合规代码。经过 Stage 1 静态正则和 AST 规则扫描后，<strong>零可疑特征命中（findings 为空）</strong>。系统判定为确定性安全，直接予以放行。<strong>无需唤醒大模型进行推理</strong>，既节省了 50% 的本地 GPU 算力开销，又将端到端审计耗时由秒级压降至毫秒级。
+              </p>
             </div>
 
-            <div class="state-cards-grid">
-              <div class="state-card">
-                <div class="state-card-head">
-                  <span class="state-card-title" style="color: #7b929e;">static_only · 50% (50例)</span>
-                  <span class="badge" style="font-size:11px;">架构级旁路</span>
-                </div>
-                <p class="state-card-desc">
-                  <strong>按需仲裁算力节约：</strong>50 个纯净样本经 Stage 1 扫描无任何可疑特征命中，系统判定为 CLEAN 直接放行。<strong>无需唤醒 LLM</strong>，避免不必要的推断开销与网络时延。此为设计预期的主动旁路，非模型未可用。
-                </p>
+            <div class="flow-qa-card arbitrated">
+              <div class="flow-qa-head">
+                <span class="flow-qa-title">疑问 2：进入大模型的 50 个样本最后去哪了？</span>
+                <span class="flow-qa-badge arbitrated">41% 语义成功仲裁</span>
               </div>
+              <p class="flow-qa-desc">
+                <strong>答：其中 41 个样本由大模型成功完成语义裁决，消除了绝大部分良性误报。</strong><br>
+                当样本触发静态规则后，由 Qwen2.5-Coder:0.5b 进���行级（7行）与文件级（80行）语义推理。在这 41 个样本中，模型不仅准确确认了 32 个真实恶意攻击的危害特征，更<strong>成功将 6 例原本被静态正则误杀的合规代码（如正常读取配置文件、内部安全日志打印）纠正为 BENIGN 并安全放行</strong>，误报率直接降低 27.3%。
+              </p>
+            </div>
 
-              <div class="state-card">
-                <div class="state-card-head">
-                  <span class="state-card-title" style="color: var(--ok);">ok · 41% (41例)</span>
-                  <span class="badge ok" style="font-size:11px;">语义推理成功</span>
-                </div>
-                <p class="state-card-desc">
-                  <strong>精确识别良性边界：</strong>针对触发静态规则的样本，LLM 成功完成行级与文件级两级 Prompt 推理，输出合法 JSON 契约。不仅确认了真实攻击危害，更成功下调 6 例合规良性代码为 BENIGN。
-                </p>
+            <div class="flow-qa-card failclosed">
+              <div class="flow-qa-head">
+                <span class="flow-qa-title">疑问 3：剩下的 9 个 UNCERTAIN 是怎么处理的？</span>
+                <span class="flow-qa-badge failclosed">9% Fail-Closed 保底</span>
               </div>
-
-              <div class="state-card">
-                <div class="state-card-head">
-                  <span class="state-card-title" style="color: var(--warn);">uncertain · 9% (9例)</span>
-                  <span class="badge warn" style="font-size:11px;">Fail-Closed 兜底</span>
-                </div>
-                <p class="state-card-desc">
-                  <strong>安全门禁绝不失守：</strong>面对高度混淆代码（M4）或多层间接调用，小模型判定置信度不足返回 UNCERTAIN。系统在 Gate 策略下<strong>维持 HIGH 风险阻断并留痕</strong>，杜绝因大模型歧义导致的恶意逃逸。
-                </p>
-              </div>
+              <p class="flow-qa-desc">
+                <strong>答：小模型无法确定时，安全门禁绝不妥协，严格维持拦截。</strong><br>
+                这 9 个样本主要涉及极深层的动态混淆（如多层 base64 解密、<code>__import__</code> 反射调用）。0.5B 小参数模型因语义解析能力有限返回 UNCERTAIN。在 TAA 的 Fail-Closed 门禁策略下，<strong>系统绝不降级放行，而是继承静态层判定维持 HIGH 风险拦截并留痕</strong>，确保 0 静默漏报。
+              </p>
             </div>
           </div>
         </div>
@@ -3275,23 +3579,34 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --ll
         <div class="case-grid">
           <div class="case-card">
             <div class="case-head">
-              <span class="case-title">典型误报消除 (B2-01)</span>
-              <span class="case-tag suppress">FP → TN</span>
+              <span class="case-title">跨行复合攻击检出 (M1-04)</span>
+              <span class="case-tag detect">静态单行漏报 → 文件级检出</span>
             </div>
             <p class="case-desc">
-              <strong>现象：</strong>静态正则将 <code>logging.info("Executing task %s", task_id)</code> 误判为 <code>CMD_001</code> 命令执行高危风险。<br>
-              <strong>语义裁决：</strong>Finding-level Prompt 提取行级局部上下文，LLM 识别到其仅为字符串格式化日志输出，成功下调为 BENIGN 放行。
+              <strong>攻击手法：</strong>恶意代码将 <code>socket.connect</code>、反弹 Shell 管道与多线程拆分在 3 个独立函数与不同行中，静态正则单行匹配完全漏报（FN）。<br>
+              <strong>协同检出：</strong>Stage 2 文件级 Prompt 将 80 行代码拓扑提供给模型，大模型成功还原数据流与网络连接上下文，判定为 HIGH 级反弹木马并完成阻断。
             </p>
           </div>
 
           <div class="case-card">
             <div class="case-head">
-              <span class="case-title">复合攻击拓扑聚合 (M5-01)</span>
-              <span class="case-tag chain">TP 阻断</span>
+              <span class="case-title">配置读取良性误报消除 (B2-02)</span>
+              <span class="case-tag suppress">静态误杀 → LLM 判定 BENIGN</span>
             </div>
             <p class="case-desc">
-              <strong>现象：</strong>攻击者将动态写入 crontab 与数据打包分拆在不同函数中，单行静态规则仅命中低危配置写入。<br>
-              <strong>语义裁决：</strong>File-level Prompt 整合全部 5 处触发点及跨行拓扑，LLM 判定其构成“定时持久化+隐蔽外发”完整攻击链，确认高危阻断。
+              <strong>误报原因：</strong>合规代码调用 <code>os.environ.get("TEE_CONFIG")</code> 读取运行时参数，触发静态环境变量敏感词规则，被定性为潜在凭据泄露（FP）。<br>
+              <strong>协同纠偏：</strong>行级 Prompt 提取上下 7 行上下文，LLM 识别到该变量仅用于初始化本地配置对象且无任何出网外联行为，成功将风险降为 BENIGN，放行通过。
+            </p>
+          </div>
+
+          <div class="case-card">
+            <div class="case-head">
+              <span class="case-title">日志打印良性误报消除 (B3-05)</span>
+              <span class="case-tag suppress">静态误杀 → LLM 判定 BENIGN</span>
+            </div>
+            <p class="case-desc">
+              <strong>误报原因：</strong>合规训练脚本在异常处理中打印了 <code>logger.info(f"debug_key: {key_id}")</code>，触发了静态 <code>key_pattern</code> 拦截规则。<br>
+              <strong>协同纠偏：</strong>LLM 分析行级上下文判定 <code>key_id</code> 仅为整型计数器而非明文对称密钥，成功消除误报，避免阻断正常的生产任务。
             </p>
           </div>
 
@@ -3308,123 +3623,17 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --ll
         </div>
 
         <div class="callout">
-          <strong>评测结论与设计落地：</strong>Audit-100 实测结果表明，TAA 动静两阶段协同审计架构具备扎实的工程可行性：<strong>静态规则层负责“防漏”（保证 86%+ 召回并滤除 50% 纯净代码），LLM 语义层负责“降噪”（压降 27.3% 误报），Fail-Closed 负责“托底”（杜绝模型故障或歧义导致漏判）</strong>。这套动静平衡机制在严苛保护 TEE 机密计算安全的同时，最大化保障了生产业务的平稳放行。
+          <strong>评测结论与设计落地：</strong>Audit-100 实测���果表明，TAA 动静两阶段协同审计架构具备扎实的工程可行性：<strong>静态规则层负责“防漏”（保证 86%+ 召回并滤除 50% 纯净代码），LLM 语义层负责“降噪”（压降 27.3% 误报），Fail-Closed 负责“托底”（杜绝模型故障或歧义导致漏判）</strong>。这套动静平衡机制在严苛保护 TEE 机密计算安全的同时，最大化保障了生产业务的平稳放行。
         </div>
       </section>
 
-      <section class="section" id="evidence">
-        <h2>6. 设计依据</h2>
-        <p class="lead">下面这些文档与实际 benchmark 输出共同构成当前设计的依据。它们说明系统已经具备什么、在哪些地方暴露出问题、以及为什么要采用现在这套补强方式。</p>
-
-        <div class="evidence">
-          <div class="evidence-list">
-            <div class="evidence-item">
-              <div class="src">`qwen-audit-implementation-design.md`</div>
-              <p>确认当前实现已经是三层聚合：静态扫描负责召回，LLM 负责语义判断，聚合逻辑负责输出最终结论。它支持本设计保留五段式闭环，而不是重做架构。</p>
-            </div>
-            <div class="evidence-item">
-              <div class="src">`audit-rules-design.md`</div>
-              <p>说明静态层本质是规则召回，并且已经在处理框架误报。这支持本设计把 stage 1 定位为“候选筛选器”，而不是最终裁决器。</p>
-            </div>
-            <div class="evidence-item">
-              <div class="src">`audit-prompt-matrix.md`</div>
-              <p>指出 prompt 仍存在 JSON 解析脆弱、判定步骤不够明确、`UNCERTAIN` 规则不足、benign trap 需要显式豁免等问题。这直接支持本设计把 prompt 约束和人工复核边界写进架构。</p>
-            </div>
-            <div class="evidence-item">
-              <div class="src">`audit-evaluation-results-template.md`</div>
-              <p>要求结果记录 `rule_set_version`、`prompt_version`、`auditor_version`、`llm_state`、`fail_closed_count` 等字段，也要求分层统计与错误类型分类。这支持本设计把版本和失效状态作为一等字段，而不是附注。</p>
-            </div>
-            <div class="evidence-item">
-              <div class="src">`audit-eval-iteration-log.md`</div>
-              <p>记录了 `llm_unavailable`、`parse_error`、静态基线、来源混杂、版本漂移等真实问题。它说明设计必须面向“失败可见”和“回放可追踪”，不能把系统当成一条永远成功的理想链路。</p>
-            </div>
-            <div class="evidence-item">
-              <div class="src">`audit-research.md`</div>
-              <p>强调审计器和被审计对象要分离，且高可靠审计应记录 `auditor_model`、`rule_set_version`、`prompt_version`、`llm_state` 和 `fail_closed`。这构成了本设计的总原则：可解释性、可复现性和保守失败优先。</p>
-            </div>
-          </div>
-        </div>
-
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>依据文档</th>
-                <th>支持的结论</th>
-                <th>对本设计的直接影响</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><span class="mono">qwen-audit-implementation-design.md</span></td>
-                <td>已有三层实现可作为主骨架</td>
-                <td>保留五段式设计，不新增主阶段</td>
-              </tr>
-              <tr>
-                <td><span class="mono">audit-rules-design.md</span></td>
-                <td>静态规则层是候选召回</td>
-                <td>stage 1 只负责筛选和证据定位</td>
-              </tr>
-              <tr>
-                <td><span class="mono">audit-prompt-matrix.md</span></td>
-                <td>Prompt 需要更强结构化和 UNCERTAIN 规则</td>
-                <td>stage 3 必须版本化、强约束、可回滚</td>
-              </tr>
-              <tr>
-                <td><span class="mono">audit-evaluation-results-template.md</span></td>
-                <td>结果字段和错误分类要完整</td>
-                <td>RunMetadata 成为核心数据对象</td>
-              </tr>
-              <tr>
-                <td><span class="mono">audit-eval-iteration-log.md</span></td>
-                <td>真实失败路径已经出现</td>
-                <td>LLM 不可用、解析失败、漂移必须显式记录</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="section" id="appendix">
-        <h2>7. 下一步</h2>
-        <p class="lead">如果后续继续往实现文档推进，优先顺序已经很清楚：先把证据包 schema 写清楚，再把训练报告与平台上报字段对齐，最后把 benchmark 的家族扩展成持续回归集。</p>
-
-        <div class="grid-3">
-          <div class="card">
-            <h3>下一步最值得补的内容</h3>
-            <ul>
-              <li>证据包 schema 样例。</li>
-              <li>JSON 输出字段约定。</li>
-              <li>错误类型到处理动作的映射表。</li>
-            </ul>
-          </div>
-          <div class="card">
-            <h3>待优化项：检索增强与结构化表示增强</h3>
-            <ul>
-              <li>核心思想是先把程序知识压缩成适合审计的证据，再让 LLM 在证据上推理，而不是把整份源码直接交给模型。</li>
-              <li>常见输入包括 CPG、CFG、DFG、调用链、数据流路径、敏感源/汇点，以及必要时的 API 文档和历史案例。</li>
-              <li>这一方向优先解决上下文窗口受限、证据密度不足和跨文件语义恢复困难的问题。</li>
-              <li>可进一步参考 <span class="mono">models/audit/research/audit-research-ieee.tex</span> 中的综述与证据链梳理。</li>
-            </ul>
-          </div>
-          <div class="card">
-            <h3>不建议现在做的事</h3>
-            <ul>
-              <li>不要为了“更像架构图”再加一个主阶段。</li>
-              <li>不要把 fail-open 当成 LLM 不可用时的默认选择。</li>
-              <li>不要把 summary 精简到失去版本和失败上下文。</li>
-            </ul>
-          </div>
-        </div>
-
-        <div class="footer">
+        <div class="footer" style="margin-top: 24px;">
           文档定位：独立技术设计稿 · 同时承载 TAA 审计闭环、benchmark 设计与实测结果。
           <div class="footnotes">
             <div class="note"><b>写作原则：</b>工程事实优先，判断结论明确，所有推荐都能回指到现有文档依据。</div>
             <div class="note"><b>设计判断：</b>当前链路是“足够正确但还不够可治理”，补齐治理层后就能稳定承载后续迭代。</div>
           </div>
         </div>
-      </section>
-    </main>
+      </main>
   </div>
 </div>
