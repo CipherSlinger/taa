@@ -45,8 +45,11 @@
         --card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.3), 0 10px 24px -4px rgba(0, 0, 0, 0.35);
       }
     }
+    @media (max-width: 1400px) {
+      .four-col-layout { grid-template-columns: repeat(2, 1fr) !important; }
+    }
     @media (max-width: 960px) {
-      .two-col-layout, .three-col-layout { grid-template-columns: 1fr !important; }
+      .two-col-layout, .three-col-layout, .four-col-layout { grid-template-columns: 1fr !important; }
     }
     @media (max-width: 768px) {
       main { width: 100% !important; padding: 18px 12px 48px !important; }
@@ -63,8 +66,8 @@
       -moz-osx-font-smoothing: grayscale;
     }
     main {
-      max-width: 1420px;
-      width: 94%;
+      max-width: 1680px;
+      width: 96%;
       margin: 0 auto;
       padding: 32px 16px 64px;
     }
@@ -113,6 +116,21 @@
       grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
       gap: 16px;
       margin: 20px 0;
+    }
+    .four-col-layout {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 16px;
+      align-items: start;
+    }
+    .flow-col-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .flow-col-stack .card {
+      margin-bottom: 0;
     }
     .card {
       background: var(--panel);
@@ -1019,8 +1037,9 @@
   </div>
   <p class="muted">以下各卡片模拟平台向 TAA 发送请求，用于验证各接口的连通性和参数校验。点击"发送测试"即可使用模拟数据调用 TAA 对应接口。</p>
 
-  <!-- 第一行：文件上传 + 模型/数据下发 -->
-  <div class="three-col-layout" style="display:grid; grid-template-columns: repeat(3, 1fr); gap:16px; margin-bottom:16px; align-items:start;">
+  <!-- 训练流程：四列横向流式布局 -->
+  <div class="four-col-layout">
+    <!-- 第 1 列：文件上传 -->
     <section class="card" id="card-upload" style="display:flex; flex-direction:column;">
       <div class="card-head">
         <div>
@@ -1057,6 +1076,7 @@
       </div>
     </section>
 
+    <!-- 第 2 列：下发模型 -->
     <section class="card" id="card-importModel" style="display:flex; flex-direction:column;">
       <div class="card-head">
         <div>
@@ -1097,57 +1117,58 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
       <div id="importModelResult" class="test-result"></div>
     </section>
 
-    <section class="card" id="card-import" style="display:flex; flex-direction:column;">
-      <div class="card-head">
-        <div>
-          <h2>② /v1/taa/import — 下发数据</h2>
-          <p class="card-note">下发训练或推理任务所需的数据资源包。</p>
+    <!-- 第 3 列：下发数据 + 训练结果上报（垂直堆叠） -->
+    <div class="flow-col-stack">
+      <section class="card" id="card-import" style="display:flex; flex-direction:column;">
+        <div class="card-head">
+          <div>
+            <h2>② /v1/taa/import — 下发数据</h2>
+            <p class="card-note">下发训练或推理任务所需的数据资源包。</p>
+          </div>
         </div>
-      </div>
-      <label for="importResourceUrl">resourceUrl</label>
-      <input id="importResourceUrl" value="http://example.com/data.tar.gz">
-      <label for="importRequestId">requestId（与 taskId 二选一或都填）</label>
-      <div class="input-action-group">
-        <input id="importRequestId" value="req-mock-import-001">
-        <button type="button" class="secondary btn-field-random" onclick="randomizeField('importRequestId', 'req-data')" title="生成随机 requestId">随机生成</button>
-      </div>
-      <label for="importTaskId">taskId（可选，与 requestId 至少填一项）</label>
-      <div class="input-action-group">
-        <input id="importTaskId" value="">
-        <button type="button" class="secondary btn-field-random" onclick="randomizeField('importTaskId', 'task-data')" title="生成随机 taskId">随机生成</button>
-      </div>
-      <div class="actions">
-        <button onclick="testImport()">发送测试</button>
-        <button type="button" class="secondary" onclick="randomizeImportIds()" title="同时随机生成 requestId 与 taskId">随机 ID</button>
-      </div>
-      <div id="importResult" class="test-result"></div>
-    </section>
-  </div>
-
-  <!-- 第二行：训练结果上报 + 导出结果 -->
-  <div class="two-col-layout" style="display:grid; grid-template-columns: repeat(2, 1fr); gap:16px; margin-bottom:16px; align-items:start;">
-    <section class="card" style="display:flex; flex-direction:column;">
-      <div class="card-head">
-        <div>
-          <h2>③ 训练结果上报</h2>
-          <div class="status" style="margin-top:10px;"><span id="reportResDot" class="dot"></span><span id="reportResStatusText">等待训练结果上报</span></div>
+        <label for="importResourceUrl">resourceUrl</label>
+        <input id="importResourceUrl" value="http://example.com/data.tar.gz">
+        <label for="importRequestId">requestId（与 taskId 二选一或都填）</label>
+        <div class="input-action-group">
+          <input id="importRequestId" value="req-mock-import-001">
+          <button type="button" class="secondary btn-field-random" onclick="randomizeField('importRequestId', 'req-data')" title="生成随机 requestId">随机生成</button>
         </div>
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <button id="reportResReportBtn" style="padding:6px 12px; font-size:13px;" onclick="openReportResReportModal()" disabled>查看报告</button>
-          <button id="reportResBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportResBodyModal()" disabled>查看返回</button>
+        <label for="importTaskId">taskId（可选，与 requestId 至少填一项）</label>
+        <div class="input-action-group">
+          <input id="importTaskId" value="">
+          <button type="button" class="secondary btn-field-random" onclick="randomizeField('importTaskId', 'task-data')" title="生成随机 taskId">随机生成</button>
         </div>
-      </div>
-      <div class="card-compact" style="flex:1; min-height:120px;">
-        <div class="status" style="font-size:16px;"><span id="reportResBodyDot" class="dot"></span><span id="reportResBodyStatus">等待训练结果上报</span></div>
-        <p id="reportResSummary" class="card-note">完整返回体只在弹窗中展示。</p>
-        <p id="reportResBodySummary" class="muted" style="margin:0;font-size:12px;">-</p>
         <div class="actions">
-          <button onclick="refreshReportResStatus()">刷新上报状态</button>
-          <button class="secondary" onclick="resetReportResStatus()">清空上报记录</button>
+          <button onclick="testImport()">发送测试</button>
+          <button type="button" class="secondary" onclick="randomizeImportIds()" title="同时随机生成 requestId 与 taskId">随机 ID</button>
         </div>
-      </div>
-    </section>
+        <div id="importResult" class="test-result"></div>
+      </section>
 
+      <section class="card" id="card-reportRes" style="display:flex; flex-direction:column;">
+        <div class="card-head">
+          <div>
+            <h2>③ 训练结果上报</h2>
+            <div class="status" style="margin-top:10px;"><span id="reportResDot" class="dot"></span><span id="reportResStatusText">等待训练结果上报</span></div>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <button id="reportResReportBtn" style="padding:6px 12px; font-size:13px;" onclick="openReportResReportModal()" disabled>查看报告</button>
+            <button id="reportResBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportResBodyModal()" disabled>查看返回</button>
+          </div>
+        </div>
+        <div class="card-compact" style="flex:1; min-height:120px;">
+          <div class="status" style="font-size:16px;"><span id="reportResBodyDot" class="dot"></span><span id="reportResBodyStatus">等待训练结果上报</span></div>
+          <p id="reportResSummary" class="card-note">完整返回体只在弹窗中展示。</p>
+          <p id="reportResBodySummary" class="muted" style="margin:0;font-size:12px;">-</p>
+          <div class="actions">
+            <button onclick="refreshReportResStatus()">刷新上报状态</button>
+            <button class="secondary" onclick="resetReportResStatus()">清空上报记录</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 第 4 列：导出结果 -->
     <section class="card" id="card-export" style="display:flex; flex-direction:column;">
       <div class="card-head">
         <div>
