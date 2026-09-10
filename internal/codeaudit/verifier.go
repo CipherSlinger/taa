@@ -25,10 +25,19 @@ const analysisPromptTemplate = `你是一个代码安全审计专家。请分析
 严重度: %s
 规则说明: %s
 
-## 判定优先级
-1. 只有在上下文表明读取的是密钥、令牌、密码、证书、私钥、敏感文件或外传/持久化载荷时，才判为 MALICIOUS 或 SUSPICIOUS。
-2. 如果只是正常配置读取、训练参数、日志统计、报告导出、路径封装或框架常见 API 的良性用法，判为 BENIGN。
-3. 如果证据不足、上下文不完整或语义无法确认，必须返回 UNCERTAIN。
+## 判定优先级与安全边界
+1. 恶意/可疑判定 (MALICIOUS 或 SUSPICIOUS)：
+   - 必须有上下文明确表明代码在窃取或外发凭据（密钥、令牌、密码、证书、私钥、敏感配置文件）；
+   - 或明确在通过未授权网络、隐写载荷、非法持久化通道外传真实的敏感原始数据/特征矩阵；
+   - 只有确凿恶意利用证据时才可判定为 MALICIOUS 或 SUSPICIOUS。
+
+2. 良性判定 (BENIGN)（严格消除训练与日志误报）：
+   - 日志与标准输出（如 EMB_003）：打印数据集名称/路径标识/类别标签/状态分隔线（例如 print(dataset + '--------')、print(dataset)）、打印训练批次统计、模型参数结构、计算进度、评估指标（如 accuracy、loss、AUC、sensitivity、specificity、F1-score、ci 置信区间等），均属完全正常的训练与科研评估日志，绝非敏感数据泄露，必须判为 BENIGN；
+   - 结果保存与导出（如 EMB_001/EMB_002/EMB_004）：正常保存训练生成的模型权重（如 torch.save(model.state_dict(), ...)）、导出评估图表（如 matplotlib/plt 保存 ROC 曲线或分布图）、写入评估结果指标文件，必须判为 BENIGN；
+   - 常规配置读取、环境参数封装、合法子进程参数调用等框架良性用法，必须判为 BENIGN。
+
+3. 不确定判定 (UNCERTAIN)：
+   - 仅在上下文严重缺失、证据不足且语义完全无法确认意图时返回。
 
 ## 请回答
 1. verdict: MALICIOUS(恶意) / SUSPICIOUS(可疑) / BENIGN(正常) / UNCERTAIN(不确定)
@@ -194,23 +203,24 @@ func SummarizeLLMVerdicts(report *Report) string {
 
 // ── File-level analysis ───────────────────────────────────
 
-const fileAnalysisPromptTemplate = `分析此 Python 文件的安全性。
+const fileAnalysisPromptTemplate = `你是一个严谨的代码安全审计专家，请分析以下 Python 代码文件是否存在恶意后门、敏感数据外传或攻击行为。
 
-文件: %s (%d 行)
-发现 %d 个可疑点: %s
+## 文件信息
+文件: %s (共 %d 行)
+静态规则扫描提示 (%d 处需确认点): %s
 
+## 文件内容（节选）
 ` + "```python" + `
 %s
 ` + "```" + `
 
-判断:
-1. risk_level: HIGH/MEDIUM/LOW
-2. summary: 一句话安全结论(中文)
-3. chained: 多个可疑点是否构成攻击链(true/false)
-4. exfiltration: 是否有数据外传(true/false)
+## 判定基准
+1. 正常的模型构建、前向推理、反向传播、权重保存、性能指标计算与打印（如 acc、auc、loss、dataset 标签与分隔符等）、训练结果导出（如混淆矩阵、ROC 曲线等）属于良性科研与训练逻辑，风险等级为 LOW，chained 为 false，exfiltration 为 false。
+2. 只有当代码中确凿存在未经授权的网络外发、系统后门、动态恶意执行或将敏感原始数据伪装外传时，才可判定 risk_level 为 HIGH/MEDIUM，并标记 chained 或 exfiltration 为 true。
+3. 严禁将常规的模型评估、指标打印或数据集名称输出误判为数据外传或攻击链。
 
-严格按 JSON 回答:
-{"risk_level":"...","summary":"...","chained":true,"exfiltration":true}`
+## 请严格按以下 JSON 格式输出，不要包含其他内容:
+{"risk_level":"HIGH/MEDIUM/LOW","summary":"一句话安全结论(中文)","chained":false,"exfiltration":false}`
 
 // GenerateAuditReport is the high-level entry point that performs a full
 // security audit: static scan → finding-level LLM → file-level LLM → aggregate.
