@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	teecrypto "taa/crypto"
+	teecrypto "taa/pkg/crypto"
 	"taa/internal/attestation"
 	"taa/internal/codeaudit"
 	"taa/pkg/utils"

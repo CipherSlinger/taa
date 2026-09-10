@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"testing"
 
-	taacrypto "taa/crypto"
+	taacrypto "taa/pkg/crypto"
 )
 
 type fakeOps struct {

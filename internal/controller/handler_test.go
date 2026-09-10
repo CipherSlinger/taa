@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	teecrypto "taa/crypto"
+	teecrypto "taa/pkg/crypto"
 )
 
 func setupTestState(t *testing.T) (*TAAState, string) {

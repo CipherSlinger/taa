@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	taacrypto "taa/crypto"
+	taacrypto "taa/pkg/crypto"
 )
 
 type defaultPlatformOps struct{}
