@@ -1,4 +1,4 @@
-package csvgo
+package csvattest
 
 import "fmt"
 

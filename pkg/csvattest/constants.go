@@ -1,4 +1,4 @@
-package csvgo
+package csvattest
 
 const (
 	ReportSize     = 0x9f4

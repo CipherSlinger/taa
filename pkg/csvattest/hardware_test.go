@@ -1,6 +1,6 @@
 //go:build csv_hardware && linux && amd64
 
-package csvgo
+package csvattest
 
 import (
 	"crypto/rand"

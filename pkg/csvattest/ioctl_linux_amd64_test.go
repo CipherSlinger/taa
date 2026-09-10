@@ -1,6 +1,6 @@
 //go:build linux && amd64
 
-package csvgo
+package csvattest
 
 import (
 	"bytes"
