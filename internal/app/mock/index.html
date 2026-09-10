@@ -107,6 +107,12 @@
     @media (prefers-color-scheme: dark) {
       .switch-slider { background:#475569; }
     }
+    /* Phase Switcher */
+    .phase-switch-bar { display:inline-flex; align-items:center; background:rgba(127,127,127,.08); border:1px solid var(--line); border-radius:999px; padding:3px; gap:2px; }
+    .phase-switch-btn { border:0; border-radius:999px; padding:4px 11px; font-size:12px; font-weight:600; cursor:pointer; background:transparent; color:var(--muted); transition:all .18s ease; white-space:nowrap; }
+    .phase-switch-btn:hover { color:var(--text); background:rgba(127,127,127,.12); }
+    .phase-switch-btn.active { background:#2563eb; color:#fff; box-shadow:0 1px 3px rgba(37,99,235,.3); }
+    .phase-switch-btn:disabled { opacity:.5; cursor:not-allowed; }
     .modal-overlay { position:fixed; inset:0; background:rgba(15,23,42,.58); display:none; align-items:center; justify-content:center; padding:20px; z-index:1000; }
     .modal-overlay.open { display:flex; }
     .modal { width:min(980px, 100%); max-height:min(86vh, 900px); background:var(--panel); border:1px solid var(--line); border-radius:16px; box-shadow:0 24px 80px rgba(0,0,0,.3); display:flex; flex-direction:column; overflow:hidden; }
@@ -510,7 +516,28 @@
   </div>
 
   <!-- ─── 训练流程（平台 → TAA）接口测试 ─── -->
-  <h2>训练流程</h2>
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; margin:24px 0 10px; flex-wrap:wrap;">
+    <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+      <h2 style="margin:0;">训练流程</h2>
+      <div class="phase-switch-bar">
+        <span style="padding:0 6px 0 8px; color:var(--muted); font-size:12px; font-weight:600;">阶段切换:</span>
+        <button type="button" class="phase-switch-btn" data-phase="1" onclick="quickSwitchPhase(1)">1 调试</button>
+        <button type="button" class="phase-switch-btn active" data-phase="2" onclick="quickSwitchPhase(2)">2 测试</button>
+        <button type="button" class="phase-switch-btn" data-phase="3" onclick="quickSwitchPhase(3)">3 训练</button>
+        <button type="button" class="phase-switch-btn" data-phase="4" onclick="quickSwitchPhase(4)">4 推理</button>
+      </div>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <span id="phaseSwitchDot" class="dot ok" style="width:10px; height:10px;"></span>
+      <span id="phaseSwitchText" class="muted" style="font-size:13px;">当前阶段: 2 测试</span>
+      <button type="button" class="secondary" id="phaseSwitchDetailBtn" style="padding:4px 10px; font-size:12px; display:none;" onclick="togglePhaseSwitchDetail()">查看返回</button>
+    </div>
+  </div>
+  <input type="hidden" id="switchPhase" value="2">
+  <div id="switchResult" class="test-result"></div>
+  <div id="phaseSwitchDetail" style="display:none; margin-bottom:12px;">
+    <pre id="phaseSwitchDetailContent" style="background:rgba(127,127,127,.08); padding:12px; border-radius:10px; font-size:13px; max-height:200px; overflow:auto; white-space:pre-wrap; word-break:break-all; margin:0;"></pre>
+  </div>
   <p class="muted">以下各卡片模拟平台向 TAA 发送请求，用于验证各接口的连通性和参数校验。点击"发送测试"即可使用模拟数据调用 TAA 对应接口。</p>
 
   <!-- 第一行：文件上传 + 模型/数据下发 -->
@@ -666,17 +693,6 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
       <div id="exportResult" class="test-result"></div>
     </section>
   </div>
-
-  <!-- 第三行：阶段切换 -->
-  <section class="card" id="card-switch">
-    <h2>/v1/taa/switch — 阶段切换</h2>
-    <label for="switchPhase">phase（1=调试, 2=测试, 3=正式训练, 4=推理）</label>
-    <input id="switchPhase" value="2">
-    <div class="actions">
-      <button onclick="testSwitch()">发送测试</button>
-    </div>
-    <div id="switchResult" class="test-result"></div>
-  </section>
 
   <!-- 一键测试结果 -->
   <section class="card" id="card-batch" style="display:none">
@@ -2284,16 +2300,68 @@ async function testGetResourceInfo() {
   }
 }
 
-async function testSwitch() {
-  showResultRunning('switchResult', '正在请求...');
+let currentPhase = 2;
+let lastPhaseSwitchResp = null;
+
+async function quickSwitchPhase(phase) {
+  const phaseNames = { 1: '1 调试', 2: '2 测试', 3: '3 训练', 4: '4 推理' };
+  const phaseName = phaseNames[phase] || `阶段 ${phase}`;
+  const statusEl = document.getElementById('phaseSwitchText');
+  const dotEl = document.getElementById('phaseSwitchDot');
+  const detailBtn = document.getElementById('phaseSwitchDetailBtn');
+  const detailContent = document.getElementById('phaseSwitchDetailContent');
+  const buttons = document.querySelectorAll('.phase-switch-btn');
+
+  buttons.forEach(btn => btn.disabled = true);
+  if (dotEl) dotEl.className = 'dot';
+  if (statusEl) statusEl.textContent = `正在切换至 ${phaseName}...`;
+  showResultRunning('switchResult', `正在切换至 ${phaseName}...`);
+
   try {
-    const r = await postToTAA('/v1/taa/switch', {
-      phase: Number(document.getElementById('switchPhase').value),
-    });
-    showResult('switchResult', r.status === 200 && r.data.error === 0, formatResp(r));
+    const r = await postToTAA('/v1/taa/switch', { phase: Number(phase) });
+    lastPhaseSwitchResp = r;
+    const ok = r.status === 200 && (r.data?.error === 0 || r.data?.error === undefined);
+    if (ok) {
+      currentPhase = Number(phase);
+      const phaseInput = document.getElementById('switchPhase');
+      if (phaseInput) phaseInput.value = currentPhase;
+      buttons.forEach(btn => {
+        if (Number(btn.dataset.phase) === Number(phase)) {
+          btn.classList.add('active');
+        } else {
+          btn.classList.remove('active');
+        }
+      });
+      if (dotEl) dotEl.className = 'dot ok';
+      if (statusEl) statusEl.textContent = `当前阶段: ${phaseName}`;
+    } else {
+      if (dotEl) dotEl.className = 'dot bad';
+      const msg = r.data?.msg || `HTTP ${r.status}`;
+      if (statusEl) statusEl.textContent = `切换失败: ${msg}`;
+    }
+    if (detailBtn) detailBtn.style.display = 'inline-block';
+    if (detailContent) detailContent.textContent = formatResp(r);
+    showResult('switchResult', ok, formatResp(r));
   } catch (e) {
+    if (dotEl) dotEl.className = 'dot bad';
+    if (statusEl) statusEl.textContent = `切换失败: ${e.message}`;
+    if (detailBtn) detailBtn.style.display = 'inline-block';
+    if (detailContent) detailContent.textContent = '请求失败: ' + e.message;
     showResult('switchResult', false, '请求失败: ' + e.message);
+  } finally {
+    buttons.forEach(btn => btn.disabled = false);
   }
+}
+
+function togglePhaseSwitchDetail() {
+  const el = document.getElementById('phaseSwitchDetail');
+  if (!el) return;
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function testSwitch(phase) {
+  const p = phase !== undefined ? phase : (document.getElementById('switchPhase')?.value || 2);
+  return quickSwitchPhase(Number(p));
 }
 
 async function testExport() {
