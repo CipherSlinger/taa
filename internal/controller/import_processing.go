@@ -20,7 +20,7 @@ import (
 	"time"
 
 	teecrypto "taa/crypto"
-	filetree "taa/filetree"
+	filetree "taa/pkg/filetree"
 	"taa/internal/codeaudit"
 )
 
