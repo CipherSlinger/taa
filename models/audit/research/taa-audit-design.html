@@ -455,7 +455,7 @@
   /* 规则卡片网格系统 */
   .rule-card-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
     gap: 16px;
   }
 
@@ -632,65 +632,10 @@
     color: var(--accent);
   }
 
-  .rule-dual-box {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    margin-top: 2px;
-  }
-
   @media (max-width: 680px) {
-    .rule-dual-box {
-      grid-template-columns: 1fr;
-    }
     .rule-card-grid {
       grid-template-columns: 1fr;
     }
-  }
-
-  .rule-box-intent,
-  .rule-box-benign {
-    padding: 12px 14px;
-    border-radius: 12px;
-    font-size: 13px;
-    line-height: 1.55;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .rule-box-intent {
-    background: color-mix(in srgb, var(--accent) 6%, var(--panel));
-    border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
-  }
-
-  .rule-box-intent .box-title {
-    font-size: 11.5px;
-    font-weight: 700;
-    color: var(--accent);
-    display: flex;
-    align-items: center;
-    gap: 5px;
-  }
-
-  .rule-box-benign {
-    background: color-mix(in srgb, var(--warn) 6%, var(--panel));
-    border: 1px solid color-mix(in srgb, var(--warn) 22%, var(--line));
-  }
-
-  .rule-box-benign .box-title {
-    font-size: 11.5px;
-    font-weight: 700;
-    color: var(--warn);
-    display: flex;
-    align-items: center;
-    gap: 5px;
-  }
-
-  .rule-box-desc {
-    color: var(--text);
-    font-size: 12.5px;
-    margin: 0;
   }
 
   /* 现代紧凑表格样式 */
@@ -704,7 +649,7 @@
 
   .rule-table-modern {
     width: 100%;
-    min-width: 980px;
+    min-width: 780px;
     border-collapse: separate;
     border-spacing: 0;
     background: var(--panel);
@@ -725,8 +670,8 @@
   .rule-table-modern td {
     padding: 13px 15px;
     border-bottom: 1px solid var(--line);
-    vertical-align: top;
-    font-size: 12.5px;
+    vertical-align: middle;
+    font-size: 13px;
     line-height: 1.55;
     white-space: normal;
   }
@@ -742,31 +687,7 @@
   .rule-table-modern .tb-trigger-cell {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
-    max-width: 320px;
-  }
-
-  .rule-table-modern .tb-dual-cell {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .rule-table-modern .tb-label {
-    font-size: 10.5px;
-    font-weight: 700;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    margin-bottom: 2px;
-  }
-
-  .rule-table-modern .tb-label.intent {
-    color: var(--accent);
-  }
-
-  .rule-table-modern .tb-label.benign {
-    color: var(--warn);
+    gap: 6px;
   }
 
   .rule-card.is-hidden,
@@ -1334,16 +1255,6 @@
                   <code class="rule-code-chip">httplib2.Http</code>
                 </div>
               </div>
-              <div class="rule-dual-box">
-                <div class="rule-box-intent">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 拦截目标与威胁意图</span>
-                  <p class="rule-box-desc">检测显式 HTTP/HTTPS 外部通信信道，拦截代码向远端未知服务器偷传敏感数据、回传模型参数或拉取反向控制指令。</p>
-                </div>
-                <div class="rule-box-benign">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 常见良性误报边界（需 LLM 判定）</span>
-                  <p class="rule-box-desc">正常训练过程发送监控指标打点、从可信源拉取开源公开模型权重，或加载公开预训练分词器配置。</p>
-                </div>
-              </div>
             </article>
 
             <!-- NET_002 -->
@@ -1365,16 +1276,6 @@
                   <code class="rule-code-chip">socket.create_connection</code>
                   <code class="rule-code-chip">.connect(...)</code>
                   <code class="rule-code-chip">.sendall()</code>
-                </div>
-              </div>
-              <div class="rule-dual-box">
-                <div class="rule-box-intent">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 拦截目标与威胁意图</span>
-                  <p class="rule-box-desc">识别试图脱离上层标准 HTTP 协议栈监控、利用原生 TCP/UDP 原始套接字与攻击者公网 IP 建立的反弹连接与信道传输。</p>
-                </div>
-                <div class="rule-box-benign">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 常见良性误报边界（需 LLM 判定）</span>
-                  <p class="rule-box-desc">本地 Unix 域套接字或 127.0.0.1 回环通信、测试桩 IPC、以及连接本地数据库/缓存代理探针。</p>
                 </div>
               </div>
             </article>
@@ -1402,16 +1303,6 @@
                   <code class="rule-code-chip">commands.getoutput</code>
                 </div>
               </div>
-              <div class="rule-dual-box">
-                <div class="rule-box-intent">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 拦截目标与威胁意图</span>
-                  <p class="rule-box-desc">识别通过拼接 shell 脚本、外部管道命令直接调用 Bash/Sh，试图突破 Python 运行时沙箱并执行任意操作系统指令。</p>
-                </div>
-                <div class="rule-box-benign">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 常见良性误报边界（需 LLM 判定）</span>
-                  <p class="rule-box-desc">离线自动化构建脚本中调用 git/tar 等只读实用工具、调用 nvidia-smi 查看显卡拓扑信息或本地测试执行。</p>
-                </div>
-              </div>
             </article>
 
             <!-- DYN_001 -->
@@ -1434,16 +1325,6 @@
                   <code class="rule-code-chip">compile(..., 'exec')</code>
                   <code class="rule-code-chip">__import__(...)</code>
                   <code class="rule-code-chip">importlib.import_module(...)</code>
-                </div>
-              </div>
-              <div class="rule-dual-box">
-                <div class="rule-box-intent">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 拦截目标与威胁意图</span>
-                  <p class="rule-box-desc">检测在代码中动态拼接文本、求值与编译未知源码，从而逃避静态正则规则检测并执行恶意 Payload 的动态执行行为。</p>
-                </div>
-                <div class="rule-box-benign">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 常见良性误报边界（需 LLM 判定）</span>
-                  <p class="rule-box-desc">深度学习框架中用于加载模型算子的动态注册表、通过类名字符串动态初始化优化器或测试替身（Mock）。</p>
                 </div>
               </div>
             </article>
@@ -1469,16 +1350,6 @@
                   <code class="rule-code-chip">.aws / .kube</code>
                 </div>
               </div>
-              <div class="rule-dual-box">
-                <div class="rule-box-intent">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 拦截目标与威胁意图</span>
-                  <p class="rule-box-desc">检测对宿主系统 SSH 秘钥、云厂商访问令牌、Kubernetes 认证凭证与环境配置文件等隐私凭据的恶意读取。</p>
-                </div>
-                <div class="rule-box-benign">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 常见良性误报边界（需 LLM 判定）</span>
-                  <p class="rule-box-desc">模型正规读取公开数据集配置、数据集包含带 password 字段的数据样例、读取模型架构超参数 JSON 文件。</p>
-                </div>
-              </div>
             </article>
 
             <!-- ENV_001 -->
@@ -1500,16 +1371,6 @@
                   <code class="rule-code-chip">secret / token / api_key / access_key</code>
                   <code class="rule-code-chip">password / passwd / cred / auth</code>
                   <code class="rule-code-chip">kube / aws / gcp / azure / github</code>
-                </div>
-              </div>
-              <div class="rule-dual-box">
-                <div class="rule-box-intent">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 拦截目标与威胁意图</span>
-                  <p class="rule-box-desc">拦截恶意代码窃取容器通过环境变量注入的云平台 API 密钥、数据库连接串及集群管理员凭据。</p>
-                </div>
-                <div class="rule-box-benign">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 常见良性误报边界（需 LLM 判定）</span>
-                  <p class="rule-box-desc">读取常规业务环境参数（如 DATA_DIR、MODEL_NAME、BATCH_SIZE），用于指定模型训练过程的基础运行环境配置。</p>
                 </div>
               </div>
             </article>
@@ -1537,16 +1398,6 @@
                   <code class="rule-code-chip">binascii.a2b / b2a</code>
                 </div>
               </div>
-              <div class="rule-dual-box">
-                <div class="rule-box-intent">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 拦截目标与威胁意图</span>
-                  <p class="rule-box-desc">识别攻击者通过 Base64 嵌套加密、Zlib 压缩或利用 Pickle 反序列化绕过静态语法扫描，从而藏匿恶意可执行二进制载荷。</p>
-                </div>
-                <div class="rule-box-benign">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 常见良性误报边界（需 LLM 判定）</span>
-                  <p class="rule-box-desc">训练评估结果图表导出、常规模型权重与特征缓存的序列化保存打包、压缩数据集解包等正常算法工程行为。</p>
-                </div>
-              </div>
             </article>
 
             <!-- PER_001 -->
@@ -1568,16 +1419,6 @@
                   <code class="rule-code-chip">.bashrc / .bash_profile / .zshrc / .profile</code>
                   <code class="rule-code-chip">systemctl enable / start</code>
                   <code class="rule-code-chip">/etc/init.d / /etc/systemd</code>
-                </div>
-              </div>
-              <div class="rule-dual-box">
-                <div class="rule-box-intent">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 拦截目标与威胁意图</span>
-                  <p class="rule-box-desc">识别试图将木马脚本持久化写入用户登录环境或系统级别驻留守护进程，实现容器或主机重启后长期生存的行为。</p>
-                </div>
-                <div class="rule-box-benign">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 常见良性误报边界（需 LLM 判定）</span>
-                  <p class="rule-box-desc">测试环��准备脚本初始化本地 shell 别名、教学演示脚本、设置当前用户的单次 PATH 临时环境变量。</p>
                 </div>
               </div>
             </article>
@@ -1603,16 +1444,6 @@
                   <code class="rule-code-chip">upload.*file / file.*upload</code>
                 </div>
               </div>
-              <div class="rule-dual-box">
-                <div class="rule-box-intent">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 拦截目标与威胁意图</span>
-                  <p class="rule-box-desc">检测攻击链中“先提取并打包/编码高敏感数据，紧接着触发网络连接外传”的复合连贯恶意行为，高精度捕捉渗漏特征。</p>
-                </div>
-                <div class="rule-box-benign">
-                  <span class="box-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 常见良性误报边界（需 LLM 判定）</span>
-                  <p class="rule-box-desc">模型训练过程的 Loss 指标与实验日志定期上报给可视化平台、训练进度同步或合规数据文件同步。</p>
-                </div>
-              </div>
             </article>
           </div>
 
@@ -1621,50 +1452,40 @@
             <table class="rule-table-modern">
               <thead>
                 <tr>
-                  <th style="width: 100px;">规则 ID</th>
-                  <th style="width: 130px;">类别 / 级别</th>
-                  <th style="width: 320px;">触发模式与代码特征</th>
-                  <th>防御目标（威胁意图）</th>
-                  <th>良性误报边界（LLM 语义研判重点）</th>
+                  <th style="width: 110px;">规则 ID</th>
+                  <th style="width: 260px;">规则名称与行为描述</th>
+                  <th style="width: 150px;">类别 / 级别</th>
+                  <th>触发模式与代码匹配签名</th>
                 </tr>
               </thead>
               <tbody>
                 <tr data-severity="HIGH" data-category="network">
                   <td><span class="rule-id-badge">NET_001</span></td>
+                  <td><strong>显式 HTTP/HTTPS 外部网络调用</strong></td>
                   <td>
                     <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start;">
                       <span class="rule-cat-badge">网络传输</span>
-                      <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH</span>
+                      <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span>
                     </div>
                   </td>
                   <td>
                     <div class="tb-trigger-cell">
-                      <code class="rule-code-chip">requests.get/post/put...</code>
-                      <code class="rule-code-chip">urllib.request.urlopen</code>
+                      <code class="rule-code-chip">requests.get / post / put / delete / patch</code>
+                      <code class="rule-code-chip">urllib.request.urlopen / urlretrieve</code>
                       <code class="rule-code-chip">http.client</code>
                       <code class="rule-code-chip">httpx.*</code>
                       <code class="rule-code-chip">aiohttp.ClientSession</code>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label intent"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 显式 HTTP 外部调用</span>
-                      <span>找出显式 HTTP/HTTPS 传输点，用于识别代码向远端未知服务器外发数据或拉取控制指令。</span>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label benign"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 监控指标打点 / 公共模型</span>
-                      <span>正常发送训练监控指标打点、从可信源下载公开模型权重或拉取公开依赖配置。</span>
+                      <code class="rule-code-chip">httplib2.Http</code>
                     </div>
                   </td>
                 </tr>
                 <tr data-severity="HIGH" data-category="network">
                   <td><span class="rule-id-badge">NET_002</span></td>
+                  <td><strong>原生 Socket 低层套接字外联</strong></td>
                   <td>
                     <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start;">
                       <span class="rule-cat-badge">底层网络</span>
-                      <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH</span>
+                      <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span>
                     </div>
                   </td>
                   <td>
@@ -1675,219 +1496,135 @@
                       <code class="rule-code-chip">.sendall()</code>
                     </div>
                   </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label intent"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 原生 Socket 绕过监控</span>
-                      <span>识别脱离标准 HTTP 协议栈监控、利用原生 TCP/UDP 建立原始套接字的外联行为。</span>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label benign"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 本地 IPC / 回环服务</span>
-                      <span>进程间本地 IPC 通信、测试桩、本地数据库或日志服务的回环连接。</span>
-                    </div>
-                  </td>
                 </tr>
                 <tr data-severity="HIGH" data-category="execution">
                   <td><span class="rule-id-badge">CMD_001</span></td>
+                  <td><strong>系统底层 Shell 命令派生与进程调用</strong></td>
                   <td>
                     <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start;">
                       <span class="rule-cat-badge">命令执行</span>
-                      <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH</span>
+                      <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span>
                     </div>
                   </td>
                   <td>
                     <div class="tb-trigger-cell">
-                      <code class="rule-code-chip">subprocess.run/call/Popen</code>
-                      <code class="rule-code-chip">os.system / popen / exec*</code>
+                      <code class="rule-code-chip">subprocess.run / call / Popen</code>
+                      <code class="rule-code-chip">subprocess.check_output</code>
+                      <code class="rule-code-chip">os.system</code>
+                      <code class="rule-code-chip">os.popen</code>
+                      <code class="rule-code-chip">os.exec*</code>
                       <code class="rule-code-chip">commands.getoutput</code>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label intent"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 进程派生与 Shell 执行</span>
-                      <span>识别 shell 拼接执行、管道交互、突破 Python 沙箱拉取或执行外部命令。</span>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label benign"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 离线构建 / 测试脚本</span>
-                      <span>本地自动化测试脚本、容器内离线构建调用、受控命令行环境探针。</span>
                     </div>
                   </td>
                 </tr>
                 <tr data-severity="MEDIUM" data-category="execution">
                   <td><span class="rule-id-badge">DYN_001</span></td>
+                  <td><strong>动态代码求值与运行时模块注入</strong></td>
                   <td>
                     <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start;">
                       <span class="rule-cat-badge">动态执行</span>
-                      <span class="rule-sev-pill sev-medium"><span class="sev-dot"></span>MEDIUM</span>
+                      <span class="rule-sev-pill sev-medium"><span class="sev-dot"></span>MEDIUM 中危</span>
                     </div>
                   </td>
                   <td>
                     <div class="tb-trigger-cell">
-                      <code class="rule-code-chip">eval / exec</code>
+                      <code class="rule-code-chip">eval(...)</code>
+                      <code class="rule-code-chip">exec(...)</code>
                       <code class="rule-code-chip">compile(..., 'exec')</code>
-                      <code class="rule-code-chip">__import__</code>
-                      <code class="rule-code-chip">importlib.import_module</code>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label intent"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 动态求值与模块注入</span>
-                      <span>识别逃避静态语法树分析，在运行时动态拼接代码、编译并执行任意代码段。</span>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label benign"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 插件加载 / 注册中心</span>
-                      <span>深度学习框架插���动态注册中心、模块懒加载机制、单元测试 Mock 替身。</span>
+                      <code class="rule-code-chip">__import__(...)</code>
+                      <code class="rule-code-chip">importlib.import_module(...)</code>
                     </div>
                   </td>
                 </tr>
                 <tr data-severity="MEDIUM" data-category="credential">
                   <td><span class="rule-id-badge">FIL_001</span></td>
+                  <td><strong>私钥秘钥与系统配置文件窃取</strong></td>
                   <td>
                     <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start;">
                       <span class="rule-cat-badge">敏感文件</span>
-                      <span class="rule-sev-pill sev-medium"><span class="sev-dot"></span>MEDIUM</span>
+                      <span class="rule-sev-pill sev-medium"><span class="sev-dot"></span>MEDIUM 中危</span>
                     </div>
                   </td>
                   <td>
                     <div class="tb-trigger-cell">
-                      <code class="rule-code-chip">open / read_text / read_bytes</code>
+                      <code class="rule-code-chip">open / Path.read_text / read_bytes</code>
                       <code class="rule-code-chip">.ssh / id_rsa / authorized_keys</code>
                       <code class="rule-code-chip">.env / password / credential</code>
                       <code class="rule-code-chip">.aws / .kube</code>
                     </div>
                   </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label intent"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 系统密钥凭证窥探</span>
-                      <span>识别针对性读取宿主系统私钥、云访问令牌、Kubernetes 凭据和数据库密码等高敏文件。</span>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label benign"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 训练配置 / 样本字段</span>
-                      <span>正常读取开源数据集配置、训练集样本数据含 password 键值、模型元数据读取。</span>
-                    </div>
-                  </td>
                 </tr>
                 <tr data-severity="MEDIUM" data-category="credential">
                   <td><span class="rule-id-badge">ENV_001</span></td>
+                  <td><strong>系统与平台敏感环境密钥提取</strong></td>
                   <td>
                     <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start;">
                       <span class="rule-cat-badge">环境变量</span>
-                      <span class="rule-sev-pill sev-medium"><span class="sev-dot"></span>MEDIUM</span>
+                      <span class="rule-sev-pill sev-medium"><span class="sev-dot"></span>MEDIUM 中危</span>
                     </div>
                   </td>
                   <td>
                     <div class="tb-trigger-cell">
                       <code class="rule-code-chip">os.environ[...] / os.getenv(...)</code>
-                      <code class="rule-code-chip">secret / token / api_key</code>
+                      <code class="rule-code-chip">secret / token / api_key / access_key</code>
                       <code class="rule-code-chip">password / passwd / cred / auth</code>
                       <code class="rule-code-chip">kube / aws / gcp / azure / github</code>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label intent"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 注入环境密钥提取</span>
-                      <span>识别恶意窃取容器宿主注入的敏感云服务密钥、API Token 和平台鉴权凭据。</span>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label benign"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 算法常规超参数</span>
-                      <span>读取普通运行参数（DATA_DIR、MODEL_NAME、BATCH_SIZE）或数据根目录。</span>
                     </div>
                   </td>
                 </tr>
                 <tr data-severity="HIGH" data-category="payload">
                   <td><span class="rule-id-badge">OBF_001</span></td>
+                  <td><strong>编码解压与反序列化隐蔽载荷</strong></td>
                   <td>
                     <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start;">
                       <span class="rule-cat-badge">代码混淆</span>
-                      <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH</span>
+                      <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span>
                     </div>
                   </td>
                   <td>
                     <div class="tb-trigger-cell">
-                      <code class="rule-code-chip">base64.b64decode / encode</code>
+                      <code class="rule-code-chip">base64.b64decode / b64encode</code>
                       <code class="rule-code-chip">pickle.loads / dumps</code>
                       <code class="rule-code-chip">marshal.loads / dumps</code>
                       <code class="rule-code-chip">zlib.decompress</code>
                       <code class="rule-code-chip">codecs.decode</code>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label intent"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 隐藏载荷与反序列化绕过</span>
-                      <span>识别隐藏攻击载荷、通过反序列化漏洞实现任意代码��行或对窃取数据压缩后外传。</span>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label benign"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 结果导出 / 数据集打包</span>
-                      <span>训练报告导出、模型特征与缓存序列化打包、正规文件压缩与格式编解码转换。</span>
+                      <code class="rule-code-chip">binascii.a2b / b2a</code>
                     </div>
                   </td>
                 </tr>
                 <tr data-severity="HIGH" data-category="payload">
                   <td><span class="rule-id-badge">PER_001</span></td>
+                  <td><strong>定时任务与系统启动服务驻留篡改</strong></td>
                   <td>
                     <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start;">
                       <span class="rule-cat-badge">持久化后门</span>
-                      <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH</span>
+                      <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span>
                     </div>
                   </td>
                   <td>
                     <div class="tb-trigger-cell">
                       <code class="rule-code-chip">crontab / cron.tab</code>
-                      <code class="rule-code-chip">.bashrc / .bash_profile / .zshrc</code>
+                      <code class="rule-code-chip">.bashrc / .bash_profile / .zshrc / .profile</code>
                       <code class="rule-code-chip">systemctl enable / start</code>
                       <code class="rule-code-chip">/etc/init.d / /etc/systemd</code>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label intent"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 启动文件篡改与后门常驻</span>
-                      <span>识别将恶意代码持久化写入用户 Shell 环境文件或系统启动项，实现重启后自动驻留。</span>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label benign"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 环境脚本初始化</span>
-                      <span>自动化测试初始化用户环境别名、教学演示脚本、设置当前用户的临时 PATH 变量。</span>
                     </div>
                   </td>
                 </tr>
                 <tr data-severity="HIGH" data-category="payload">
                   <td><span class="rule-id-badge">EXF_001</span></td>
+                  <td><strong>编码压缩与网络外发复合攻击链</strong></td>
                   <td>
                     <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start;">
                       <span class="rule-cat-badge">复合外传</span>
-                      <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH</span>
+                      <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span>
                     </div>
                   </td>
                   <td>
                     <div class="tb-trigger-cell">
-                      <code class="rule-code-chip">base64.*request</code>
-                      <code class="rule-code-chip">json.dumps.*post</code>
-                      <code class="rule-code-chip">encode.*send</code>
-                      <code class="rule-code-chip">upload.*file</code>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label intent"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> 编码封装与外传组合链</span>
-                      <span>识别“先将数据进行序列化/Base64编码，紧随其后调用网络传输外发”的复合特征链。</span>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="tb-dual-cell">
-                      <span class="tb-label benign"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> 训练指标与日志上报</span>
-                      <span>训练过程中的 Loss 曲线与指标定期向实验追踪平台上报、模型结构导出。</span>
+                      <code class="rule-code-chip">base64.*request / request.*base64</code>
+                      <code class="rule-code-chip">json.dumps.*post / post.*json.dumps</code>
+                      <code class="rule-code-chip">encode.*send / send.*encode</code>
+                      <code class="rule-code-chip">upload.*file / file.*upload</code>
                     </div>
                   </td>
                 </tr>
