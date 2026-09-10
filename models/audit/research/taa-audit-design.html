@@ -2555,58 +2555,58 @@ print("done")
         </div>
       </section>
 
-            <section class="section" id="benchmark-design">
-        <h2>4. Benchmark 设计（代码审计标准化考卷）</h2>
-        <p class="lead">很多代码安全工具宣称“检测率 99%”，但在实际落地时往往暴露出两大弊病：要么<strong>误报过多（把正常读写配置的代码也当成黑客拦截，导致业务停摆）</strong>，要么<strong>漏报严重（黑客稍微把代码换个名字就轻易绕过，形同虚设）</strong>。为此，我们设计了一套包含 100 个真实样本的标准化考卷 —— <strong>audit-100 Benchmark</strong>，用于量化检验审计系统是否具备“既不冤枉好人，也绝不放过坏人”的实战能力。</p>
+                  <section class="section" id="benchmark-design">
+        <h2>4. Benchmark 评测基准设计 (Audit-100)</h2>
+        <p class="lead">评估代码安全审计引擎的核心挑战在于平衡<strong>误报率（False Positive Rate, FPR）</strong>与<strong>漏报率（False Negative Rate, FNR）</strong>。若规则过于宽泛，常规的超参数读取或指标上报会被粗暴阻断，破坏正常训练；若规则过于保守或缺乏语义理解，攻击者通过简单重命名、反射调用或编码混淆即可实现逃逸。为此，我们构建了标准化的 <strong>audit-100 Benchmark</strong>，提供可量化、可复现的动静协同审计评测基准。</p>
 
-        <!-- 通俗概述横幅 -->
+        <!-- 架构概述卡片 -->
         <div class="bm-concept-banner">
           <div class="bm-banner-top">
             <span class="bm-banner-icon">🎯</span>
-            <h3 class="bm-banner-title">一句话搞懂 Benchmark 是什么：一套 100 道题的代码安全期末考卷</h3>
+            <h3 class="bm-banner-title">基准全景：100 样本 / 10 细分家族 / 50:50 对称样本集</h3>
           </div>
           <p class="bm-banner-text">
-            我们从真实的开源 AI 项目（逻辑回归、TEE测试桩、视网膜病变识别模型）中衍生出 <strong>100 个独立的代码测试沙箱</strong>。
-            其中 <strong>50 个是规规矩矩的“良性好代码”</strong>，用来考察审计系统<strong>“会不会冤枉好人（测误报率）”</strong>；
-            另外 <strong>50 个是注入了真实后门的“恶意坏代码”</strong>，用来考察审计系统<strong>“能不能抓住坏人（测漏报率）”</strong>。
+            评测集基于 3 个真实开源 AI 项目（<code>LogisticRegression</code>、<code>TEE-test</code>、<code>Retina-DKD</code>）作为源码基座，严格派生出 100 个具备独立执行沙箱的代码样本。
+            样本集按 <strong>50 个良性误报探针（Benign FP Probes）</strong> 与 <strong>50 个恶意攻击载荷（Malicious Attack Samples）</strong> 对称分布，
+            用于精准测试<strong>“静态宽规则召回”</strong>与<strong>“大模型语义二次仲裁”</strong>在实际工程代码中的协同表现。
           </p>
         </div>
 
-        <!-- ��立统一的两大阵营 -->
+        <!-- 对立统一的两大评测阵营 -->
         <div class="bm-goal-matrix">
           <div class="bm-goal-card benign">
             <div class="bm-goal-head">
-              <span class="bm-goal-title">🛡️ 50 道良性陷阱题（测误报 · 考辨别力）</span>
-              <span class="bm-goal-badge" style="color: var(--success, #10b981);">目标：全数放行 (PASS)</span>
+              <span class="bm-goal-title">🛡️ 50 组良性探针样本（误报抑制与语义豁免测试）</span>
+              <span class="bm-goal-badge" style="color: var(--success, #10b981);">预期决策：放行 (PASS)</span>
             </div>
             <p class="bm-goal-desc">
-              <strong>这些全是正常合法的算法工程代码</strong>，但我们故意使用了容易被初级安全工具误判的写法（例如读取本地模型参数、打点记录训练 Loss、保存图表或重组目录）。
+              <strong>构造原理：</strong>覆盖算法工程中的合法操作，但这批代码在语法特征上极易触发宽召回静态正则（如文件 I/O 读参、环境目录获取、指标标准输出、模型结构序列化落盘等）。
             </p>
-            <p class="bm-goal-desc" style="color: var(--muted); font-size: 12px;">
-              <strong>考核标准：</strong>如果审计系统看到 <code>open()</code> 读超参数或 <code>print()</code> 打日志就草率报警阻断，说明系统过于死板、误报太高，在生产环境中根本无法落地使用。
+            <p class="bm-goal-desc" style="color: var(--muted); font-size: 12.5px;">
+              <strong>评测重点：</strong>检验 LLM 能否结合上下文理解业务真实意图，准确排除语法假阳性（False Positive）。若审计引擎草率将正常操作判定为高危并阻断，则记为误报缺陷。
             </p>
           </div>
 
           <div class="bm-goal-card malicious">
             <div class="bm-goal-head">
-              <span class="bm-goal-title">🚨 50 道实战攻防题（测漏报 · 考防御力）</span>
-              <span class="bm-goal-badge" style="color: var(--danger, #ef4444);">目标：坚决阻断 (BLOCK)</span>
+              <span class="bm-goal-title">🚨 50 组恶意攻击样本（威胁捕获与载荷识别测试）</span>
+              <span class="bm-goal-badge" style="color: var(--danger, #ef4444);">预期决策：阻断 (BLOCK)</span>
             </div>
             <p class="bm-goal-desc">
-              <strong>这些被植入了真实的黑客攻击载荷</strong>，涵盖派生操作系统底层 Shell、偷窥系统 <code>.ssh</code> 私钥、偷传环境变量 API 密钥，以及通过 Base64 混淆或持久化自启动驻留。
+              <strong>构造原理：</strong>覆盖真实的攻防对抗向量，包括操作系统子进程命令派生、敏感凭据窥探、反弹 Socket/HTTP 外联通信、Base64/Pickle 混淆载荷以及系统级持久化驻留。
             </p>
-            <p class="bm-goal-desc" style="color: var(--muted); font-size: 12px;">
-              <strong>考核标准：</strong>第一道静态规则必须捕获异常蛛丝马迹，第二道大模型必须识破攻击意图并给出高危判定。若有任何一个样本被漏放通过，即构成重大安全事件。
+            <p class="bm-goal-desc" style="color: var(--muted); font-size: 12.5px;">
+              <strong>评测重点：</strong>检验第一道静态规则能否有效兜底捕获异常指纹，并检验 LLM 能否穿透代码混淆识破攻击链并输出高危告警。若有任何样本逃逸被放行，则记为漏报事故。
             </p>
           </div>
         </div>
 
-        <!-- 10 个家族全景拆解 -->
+        <!-- 10 个家族分类标准体系 -->
         <h3 style="margin-top: 28px; margin-bottom: 8px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
-          <span>🧩</span> 10 个测试题型家族（每个题型 10 道题，覆盖常见攻防场景）
+          <span>🧩</span> 10 维代码变体家族矩阵（5 良性 B1~B5 + 5 恶意 M1~M5）
         </h3>
         <p style="font-size: 13px; color: var(--muted); margin: 0 0 12px;">
-          我们将 100 道题细分为 10 种典型代码特征（5 个良性家族 B1~B5 + 5 个恶意家族 M1~M5）。这样当评测分数波动时，能立即定位是“哪一种特定场景”的识别逻辑出了偏差：
+          评测集将 100 个样本结构化归类为 10 个特定代码家族（Family），每个家族各包含 10 个同类变体样本。此举消除了黑盒测试中的归因模糊性，任何指标波动均能精确定位至具体的语义对抗维度：
         </p>
 
         <div class="bm-family-grid">
@@ -2615,14 +2615,14 @@ print("done")
             <div class="bm-family-head">
               <div class="bm-family-tag-row">
                 <span class="bm-fid-badge">B1</span>
-                <span class="bm-family-name">纯代码结构重构</span>
+                <span class="bm-family-name">等价语法重构 (Pure Refactor)</span>
               </div>
-              <span class="rule-cat-badge">良性 (10题)</span>
+              <span class="rule-cat-badge">良性基线 (10样本)</span>
             </div>
-            <p class="bm-family-desc">拆分长函数、变量重命名、调整 import 引用或目录搬家。考查：代码外观变了，但没有任何危险动作，系统能否保持淡定不误报？</p>
+            <p class="bm-family-desc">函数拆分、变量重命名、import 路径重组与目录重构。验证静态与大模型对“代码形态改变但控制流等价”的代码保持稳定性，不产生无意义告警。</p>
             <div class="bm-family-foot">
-              <span>预期规则：无</span>
-              <span style="color: var(--success, #10b981); font-weight: 700;">预期：放行 (BENIGN)</span>
+              <span>预期命中规则：无</span>
+              <span style="color: var(--success, #10b981); font-weight: 700;">预期裁决：BENIGN (放行)</span>
             </div>
           </div>
 
@@ -2631,14 +2631,14 @@ print("done")
             <div class="bm-family-head">
               <div class="bm-family-tag-row">
                 <span class="bm-fid-badge">B2</span>
-                <span class="bm-family-name">安全日志与调试输出</span>
+                <span class="bm-family-name">诊断日志与状态打点 (Safe Logging)</span>
               </div>
-              <span class="rule-cat-badge">良性 (10题)</span>
+              <span class="rule-cat-badge">良性基线 (10样本)</span>
             </div>
-            <p class="bm-family-desc">在控制台正常打印 Loss 训练曲线、迭代步数与状态统计。考查：审计器能否识别普通的运行打点，避免把正规日志当成泄密？</p>
+            <p class="bm-family-desc">标准输出模型训练 Loss、准确率指标、Step 计数与进度打点。验证审计器能够准确区分常规指标打印与敏感数据（如 Token/密码）打印泄露。</p>
             <div class="bm-family-foot">
               <span>触发观察：EMB_003</span>
-              <span style="color: var(--success, #10b981); font-weight: 700;">预期：放行 (BENIGN)</span>
+              <span style="color: var(--success, #10b981); font-weight: 700;">预期裁决：BENIGN (放行)</span>
             </div>
           </div>
 
@@ -2647,14 +2647,14 @@ print("done")
             <div class="bm-family-head">
               <div class="bm-family-tag-row">
                 <span class="bm-fid-badge">B3</span>
-                <span class="bm-family-name">配置与数据封装读取</span>
+                <span class="bm-family-name">配置解析与数据流封装 (Config Wrapping)</span>
               </div>
-              <span class="rule-cat-badge">良性 (10题)</span>
+              <span class="rule-cat-badge">良性基线 (10样本)</span>
             </div>
-            <p class="bm-family-desc">通过封装类读取本地超参数 JSON 文件或读取 DATA_DIR 等业务环境变量。考查：能否准确区分“读业务配置”与“窃取密码”？</p>
+            <p class="bm-family-desc">封装读取本地超参数 JSON/YAML，读取 DATA_DIR 等非敏感运行环境变量。测试系统对“普通业务配置读取”与“敏感凭证窃取”的语义区分能力。</p>
             <div class="bm-family-foot">
               <span>触发观察：FIL_001, ENV_001</span>
-              <span style="color: var(--success, #10b981); font-weight: 700;">预期：放行 (BENIGN)</span>
+              <span style="color: var(--success, #10b981); font-weight: 700;">预期裁决：BENIGN (放行)</span>
             </div>
           </div>
 
@@ -2663,14 +2663,14 @@ print("done")
             <div class="bm-family-head">
               <div class="bm-family-tag-row">
                 <span class="bm-fid-badge">B4</span>
-                <span class="bm-family-name">训练报告生成与导出</span>
+                <span class="bm-family-name">指标导出与状态序列化 (Artifact Export)</span>
               </div>
-              <span class="rule-cat-badge">良性 (10题)</span>
+              <span class="rule-cat-badge">良性基线 (10样本)</span>
             </div>
-            <p class="bm-family-desc">将评估结果写成 CSV 报表、绘制 PNG 曲线图或保存模型缓存。考查：能否避免把正规文件导出和序列化误判为恶意木马？</p>
+            <p class="bm-family-desc">将评估结果写成 CSV/PNG、使用序列化保存模型检查点（Checkpoints）。测试审计器能否将常规文件 I/O 与恶意数据窃取、反序列化攻击解耦。</p>
             <div class="bm-family-foot">
               <span>触发观察：EMB_001, EMB_002</span>
-              <span style="color: var(--success, #10b981); font-weight: 700;">预期：放行 (BENIGN)</span>
+              <span style="color: var(--success, #10b981); font-weight: 700;">预期裁决：BENIGN (放行)</span>
             </div>
           </div>
 
@@ -2679,14 +2679,14 @@ print("done")
             <div class="bm-family-head">
               <div class="bm-family-tag-row">
                 <span class="bm-fid-badge">B5</span>
-                <span class="bm-family-name">入口脚本与阶段包装</span>
+                <span class="bm-family-name">适配层封装与 CLI 重构 (Wrapper & Entrypoint)</span>
               </div>
-              <span class="rule-cat-badge">良性 (10题)</span>
+              <span class="rule-cat-badge">良性基线 (10样本)</span>
             </div>
-            <p class="bm-family-desc">编写 CLI 启动适配层、重构 pipeline 调用入口。考查：能否正确放行常规工程化包装，不产生调用链误报？</p>
+            <p class="bm-family-desc">重构主训练脚本的入口调用逻辑，增加 CLI 参数解析与流程包装。测试复杂的模块封装层是否会被静态规则误判为多级调用链风险。</p>
             <div class="bm-family-foot">
-              <span>预期规则：无</span>
-              <span style="color: var(--success, #10b981); font-weight: 700;">预期：放行 (BENIGN)</span>
+              <span>预期命中规则：无</span>
+              <span style="color: var(--success, #10b981); font-weight: 700;">预期裁决：BENIGN (放行)</span>
             </div>
           </div>
 
@@ -2695,14 +2695,14 @@ print("done")
             <div class="bm-family-head">
               <div class="bm-family-tag-row">
                 <span class="bm-fid-badge">M1</span>
-                <span class="bm-family-name">系统底层命令执行</span>
+                <span class="bm-family-name">系统子进程命令执行 (Command Injection)</span>
               </div>
-              <span class="rule-cat-badge" style="color: var(--danger, #ef4444);">高危 (10题)</span>
+              <span class="rule-cat-badge" style="color: var(--danger, #ef4444);">高危攻击 (10样本)</span>
             </div>
-            <p class="bm-family-desc">通过 <code>os.system</code>、<code>subprocess.Popen</code> 等直接调用系统 Bash/Sh 执行指令，试图突破 Python 沙箱。</p>
+            <p class="bm-family-desc">调用 <code>subprocess.Popen</code>、<code>os.system</code> 等派生 OS 底层 Shell，执行任意系统命令，测试容器沙箱逃逸防御与进程派生检测能力。</p>
             <div class="bm-family-foot">
-              <span>核心拦截：CMD_001</span>
-              <span style="color: var(--danger, #ef4444); font-weight: 700;">预期：阻断 (MALICIOUS)</span>
+              <span>基线拦截规则：CMD_001</span>
+              <span style="color: var(--danger, #ef4444); font-weight: 700;">预期裁决：MALICIOUS (阻断)</span>
             </div>
           </div>
 
@@ -2711,14 +2711,14 @@ print("done")
             <div class="bm-family-head">
               <div class="bm-family-tag-row">
                 <span class="bm-fid-badge">M2</span>
-                <span class="bm-family-name">隐蔽网络连接与外发</span>
+                <span class="bm-family-name">网络隐蔽信道外传 (Network Exfiltration)</span>
               </div>
-              <span class="rule-cat-badge" style="color: var(--danger, #ef4444);">高危 (10题)</span>
+              <span class="rule-cat-badge" style="color: var(--danger, #ef4444);">高危攻击 (10样本)</span>
             </div>
-            <p class="bm-family-desc">利用 <code>requests</code> 发起 HTTP POST 或建立裸 <code>socket</code> 连接，向攻击者的外部服务器偷传内网敏感数据。</p>
+            <p class="bm-family-desc">使用 <code>requests.post</code>、<code>urllib</code> 或原生 <code>socket</code> 建立外联通信，向远端 C2 服务器回传内网环境或模型资产数据。</p>
             <div class="bm-family-foot">
-              <span>核心拦截：NET_001, NET_002</span>
-              <span style="color: var(--danger, #ef4444); font-weight: 700;">预期：阻断 (MALICIOUS)</span>
+              <span>基线拦截规则：NET_001, NET_002</span>
+              <span style="color: var(--danger, #ef4444); font-weight: 700;">预期裁决：MALICIOUS (阻断)</span>
             </div>
           </div>
 
@@ -2727,14 +2727,14 @@ print("done")
             <div class="bm-family-head">
               <div class="bm-family-tag-row">
                 <span class="bm-fid-badge">M3</span>
-                <span class="bm-family-name">敏感环境与凭证窃取</span>
+                <span class="bm-family-name">敏感凭证与密钥探测 (Credential Theft)</span>
               </div>
-              <span class="rule-cat-badge" style="color: var(--warn);">中危 (10题)</span>
+              <span class="rule-cat-badge" style="color: var(--warn);">中危攻击 (10样本)</span>
             </div>
-            <p class="bm-family-desc">针对性窥探容器内的 <code>.env</code> 文件、宿主 <code>id_rsa</code> 私钥或窃取系统注入的云厂商 Token 与密码。</p>
+            <p class="bm-family-desc">针对性窥探容器内 <code>.env</code> 文件、宿主 <code>id_rsa</code> 私钥，或遍历环境变量窃取云厂商 API Token、数据库连接串。</p>
             <div class="bm-family-foot">
-              <span>核心拦截：FIL_001, ENV_001</span>
-              <span style="color: var(--danger, #ef4444); font-weight: 700;">预期：阻断 (MALICIOUS)</span>
+              <span>基线拦截规则：FIL_001, ENV_001</span>
+              <span style="color: var(--danger, #ef4444); font-weight: 700;">预期裁决：MALICIOUS (阻断)</span>
             </div>
           </div>
 
@@ -2743,14 +2743,14 @@ print("done")
             <div class="bm-family-head">
               <div class="bm-family-tag-row">
                 <span class="bm-fid-badge">M4</span>
-                <span class="bm-family-name">混淆编码与隐藏载荷</span>
+                <span class="bm-family-name">混淆编码与隐藏载荷 (Obfuscation & Packing)</span>
               </div>
-              <span class="rule-cat-badge" style="color: var(--danger, #ef4444);">高危 (10题)</span>
+              <span class="rule-cat-badge" style="color: var(--danger, #ef4444);">高危攻击 (10样本)</span>
             </div>
-            <p class="bm-family-desc">使用多层 Base64 编码、Zlib 压缩或借助 Pickle/Marshal 反序列化绕过静态语法扫描，暗中释放恶意二进制载荷。</p>
+            <p class="bm-family-desc">利用多层嵌套 Base64 编码、Zlib 压缩或借助 Pickle/Marshal 反序列化逃避静态语法检测，在运行时动态还原并释放恶意载荷。</p>
             <div class="bm-family-foot">
-              <span>核心拦截：OBF_001, EXF_001</span>
-              <span style="color: var(--danger, #ef4444); font-weight: 700;">预期：阻断 (MALICIOUS)</span>
+              <span>基线拦截规则：OBF_001, EXF_001</span>
+              <span style="color: var(--danger, #ef4444); font-weight: 700;">预期裁决：MALICIOUS (阻断)</span>
             </div>
           </div>
 
@@ -2759,83 +2759,83 @@ print("done")
             <div class="bm-family-head">
               <div class="bm-family-tag-row">
                 <span class="bm-fid-badge">M5</span>
-                <span class="bm-family-name">复合攻击链与持久化后门</span>
+                <span class="bm-family-name">复合攻击链与持久化后门 (Persistence & Chaining)</span>
               </div>
-              <span class="rule-cat-badge" style="color: var(--danger, #ef4444);">高危 (10题)</span>
+              <span class="rule-cat-badge" style="color: var(--danger, #ef4444);">高危攻击 (10样本)</span>
             </div>
-            <p class="bm-family-desc">先窃取密钥凭证，再经编码压缩外传，最后向用户 <code>.bashrc</code> 写入定时任务建立后门，考查跨文件深度攻击链。</p>
+            <p class="bm-family-desc">跨文件编排攻击向量：提取敏感变量 → 序列化打包 → 网络隐蔽外发 → 向 <code>.bashrc</code> 写入定时任务常驻，测试跨文件全局攻击链判定。</p>
             <div class="bm-family-foot">
-              <span>核心拦截：PER_001, EXF_001</span>
-              <span style="color: var(--danger, #ef4444); font-weight: 700;">预期：阻断 (MALICIOUS)</span>
+              <span>基线拦截规则：PER_001, EXF_001</span>
+              <span style="color: var(--danger, #ef4444); font-weight: 700;">预期裁决：MALICIOUS (阻断)</span>
             </div>
           </div>
         </div>
 
-        <!-- 为什么使用 3 个项目进行源项目隔离？ -->
+        <!-- 源项目隔离机制架构 -->
         <div class="card" style="margin-top: 24px; padding: 20px;">
           <h3 style="margin-top:0; font-size: 15px; display: flex; align-items: center; gap: 8px;">
-            <span>🔬</span> 源项目隔离设计：防止大模型“开卷背答案”
+            <span>🔬</span> 源项目隔离架构：消除数据集先验偏置 (Source Isolation)
           </h3>
           <p style="font-size: 13px; line-height: 1.6; color: var(--text); margin: 0 0 12px;">
-            在做 AI 评测时，很多大模型会“走捷径偷懒”：如果好代码和坏代码都在同一个项目里修改，大模型很容易记住该项目的某些固定函数名或代码��格。比如看到某个变量名就推断“这肯定是同一个开发者写的好代码”，从而得出虚假高分。
+            在 LLM 安全评测中，若良性与恶意样本源自同一工程，模型极易由于<strong>上下文先验偏置（Contextual Bias）</strong>产生虚假泛化：例如仅凭该项目的特定模块名、作者注释或编码风格即可推断标签，而无需真正理解代码执行语义。为此我们严格实施<strong>源项目隔离（Source Isolation）</strong>：
           </p>
           <div class="spec-grid" style="margin-top: 8px;">
             <div class="spec" style="background: var(--panel-2);">
-              <div class="tag">良性样本来源 (50题)</div>
-              <h4 style="margin: 4px 0 8px; font-size: 13.5px;">LogisticRegression (25题) + TEE-test (25题)</h4>
-              <p style="font-size: 12.5px; color: var(--muted); margin:0;">涵盖经典机器学习算法与底层 TEE 测试桩。代码写法标准、包含大量常规工程封装，用于专门验证<strong>良性业务常态</strong>。</p>
+              <div class="tag">良性样本基座 (50 样本)</div>
+              <h4 style="margin: 4px 0 8px; font-size: 13.5px;">LogisticRegression (25) + TEE-test (25)</h4>
+              <p style="font-size: 12.5px; color: var(--muted); margin:0;">涵盖经典线性分类模型与底层 TEE 测试桩。代码符合业界标准算法实践，包含规范的类封装与评估流水线，作为<strong>合法业务基准</strong>。</p>
             </div>
             <div class="spec" style="background: var(--panel-2);">
-              <div class="tag" style="color: var(--danger, #ef4444);">恶性样本来源 (50题)</div>
-              <h4 style="margin: 4px 0 8px; font-size: 13.5px;">Retina-DKD 深度学习医学项目 (50题)</h4>
-              <p style="font-size: 12.5px; color: var(--muted); margin:0;">基于复杂的深度学习图像处理项目，在真实训练链路中植入 5 种不同维度的攻击手法，专门验证<strong>隐蔽恶意攻击拦截</strong>。</p>
+              <div class="tag" style="color: var(--danger, #ef4444);">恶意样本基座 (50 样本)</div>
+              <h4 style="margin: 4px 0 8px; font-size: 13.5px;">Retina-DKD 深度学习医学影像项目 (50)</h4>
+              <p style="font-size: 12.5px; color: var(--muted); margin:0;">基于复杂的 ResNet 图像处理模型，在真实深度学习训练流程中植入隐蔽的攻击载荷，作为<strong>高危对抗基准</strong>。</p>
             </div>
           </div>
           <p style="font-size: 12px; color: var(--muted); margin: 10px 0 0;">
-            💡 <strong>设计收益：</strong>彻底切断了审计器根据“项目名”投机猜答案的可能，强迫第一道正则与第二道大模型必须深入代码逻辑，分析具体的代码行为（是单纯读写文件还是在向外发数据）。
+            💡 <strong>工程收益：</strong>彻底切断了审计器根据“项目名/固定函数名”猜测结论的投机途径，迫使静态规则与 LLM 必须严格基于 AST 节点、数据流流动路径与调用语义做出判定。
           </p>
         </div>
 
-        <!-- 评测全流程与标准指标 -->
+        <!-- 评测生命周期流水线 -->
         <h3 style="margin-top: 28px; margin-bottom: 8px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
-          <span>🔄</span> 评测流水线：这套考卷是怎么考的？
+          <span>🔄</span> 评测生命周期：全自动化度量与双轨验证
         </h3>
         <div class="bm-step-flow">
           <div class="bm-step-card">
             <div class="bm-step-num">1</div>
-            <span class="bm-step-title">一键出题 (Materialize)</span>
-            <p class="bm-step-desc">运行生成脚本，根据 10 大家族规范从基座项目衍生出 100 个独立目录，每个样本自带 <code>sample.json</code> 标定标准答案。</p>
+            <span class="bm-step-title">样本实体化 (Materialize)</span>
+            <p class="bm-step-desc">执行脚本基于基座项目复制并应用变体规则，生成 100 个独立目录，注入 <code>sample.json</code> 标定 Ground Truth 标签。</p>
           </div>
           <div class="bm-step-card">
             <div class="bm-step-num">2</div>
-            <span class="bm-step-title">静态扫描初筛 (Static)</span>
-            <p class="bm-step-desc">用快速正则/AST 扫描 100 个样本代码，捕获可疑代码行生成候选 Findings。基线模式下直接以此生成初步阻断决策。</p>
+            <span class="bm-step-title">静态规则初筛 (Static Baseline)</span>
+            <p class="bm-step-desc">以快速正则/AST 扫描代码库，捕获可疑代码行生成 <code>List[Finding]</code>。在纯静态模式下直接聚合统计输出基线阻断决策。</p>
           </div>
           <div class="bm-step-card">
             <div class="bm-step-num">3</div>
-            <span class="bm-step-title">大模型双级裁决 (LLM)</span>
-            <p class="bm-step-desc">将候选代码送入本地 Qwen 模型，逐点判定单点语义（排除良性误报），按文件判定复合攻击链，输出最终 Gate 报告。</p>
+            <span class="bm-step-title">LLM 双级语义裁决 (Semantic Audit)</span>
+            <p class="bm-step-desc">向本地 Qwen 提交 Finding 级 Prompt（过滤行级误报）与 File 级 Prompt（宏观攻击链判定），输出结构化决策。</p>
           </div>
           <div class="bm-step-card">
             <div class="bm-step-num">4</div>
-            <span class="bm-step-title">自动阅卷打分 (Metrics)</span>
-            <p class="bm-step-desc">对比实际拦截结果与标准答案，自动计算准确率、误报率、漏报率，并产出 JSON、CSV、Markdown 全局量化成绩单。</p>
+            <span class="bm-step-title">度量指标生成 (Metrics Aggregation)</span>
+            <p class="bm-step-desc">对比预测结果与标定真值，自动计算 Accuracy、Precision、Recall、F1-Score 及 Fail-Closed 容灾率，导出四联报告。</p>
           </div>
         </div>
 
-        <!-- 一键运行命令盒 -->
-        <div class="codebox" style="margin-top: 16px;"><span style="color: var(--muted);"># 1. 重新生成 100 个标准测试沙箱（清空重建）</span>
+        <!-- CLI 一键执行复现指令 -->
+        <div class="codebox" style="margin-top: 16px;"><span style="color: var(--muted);"># 1. 自动化固化生成 100 个标准测试沙箱（幂等初始化）</span>
 python3 tools/generate_benchmark_samples.py --clean
 
-<span style="color: var(--muted);"># 2. 跑第一遍：单静态基线模式（用于观察纯正则规则的原始误报率与漏报率）</span>
+<span style="color: var(--muted);"># 2. 执行第一轮：纯静态基线评测（用于度量纯规则扫描的原始召回率与误报水平）</span>
 python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --llm-backend none
 
-<span style="color: var(--muted);"># 3. 跑第二遍：动静协同模式（引入本地 Ollama 大模型，验证语义二次纠偏效果）</span>
+<span style="color: var(--muted);"># 3. 执行第二轮：动静协同评测（引入本地 Ollama 模型，度量语义纠偏与攻击链推导收益）</span>
 python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --llm-backend ollama --llm-model qwen2.5-coder:0.5b</div>
 
         <div class="callout" style="margin-top: 16px;">
-          <strong>为什么评测必须做动静对比？</strong>
-          只有对比“纯静态”与“静态+大模型”，才能清晰衡量引入本地 LLM 到底帮我们挽救了多少被冤枉的良性代码（降低误报），以及补全了多少复合攻击链（降低漏报）。这构成了后续性能与结果分析的数据基石。
+          <strong>为什么必须实施动静双轨对比？</strong>
+          纯静态扫描具备“高召回率（不漏报）但高误报率”的特点；引入本地 LLM 的核心价值在于利用语义理解“压降误报（豁免合规操作）并串联攻击链”。只有通过严格的双轨对比，才能真实量化大模型为审计体系带来的增量价值（ROI）。
         </div>
       </section>
 
