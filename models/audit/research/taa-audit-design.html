@@ -2011,79 +2011,8 @@ print("done")
         </div>
       </section>
 
-      <section class="section" id="data">
-        <h2>4. 数据对象与报告契约</h2>
-        <p class="lead">设计上最重要的不是某个函数名，而是中间对象是否足够清楚。只要对象稳定，阶段之间就能解耦，报告就能回放，评测也能对齐。当前已经落地的训练报告投影，证明了这个方向是对的：`codeaudit` 只保留 `conclusion` 和 `file_reports`，外层训练失败不再篡改结论。</p>
-
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>对象</th>
-                <th>职责</th>
-                <th>主要字段</th>
-                <th>设计理由</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><span class="mono">Finding</span></td>
-                <td>静态规则命中的候选点</td>
-                <td><span class="mono">file</span>、<span class="mono">line</span>、<span class="mono">rule_id</span>、<span class="mono">category</span>、<span class="mono">severity</span>、<span class="mono">code_snippet</span>、<span class="mono">context_before</span>、<span class="mono">context_after</span></td>
-                <td>这是进入 LLM 之前最小粒度的证据单元，必须可定位、可复核。</td>
-              </tr>
-              <tr>
-                <td><span class="mono">FileSummary</span></td>
-                <td>文件级语义结论</td>
-                <td><span class="mono">risk_level</span>、<span class="mono">summary</span>、<span class="mono">chained</span>、<span class="mono">exfiltration</span></td>
-                <td>用于判断跨文件或多点命中是否构成攻击链。</td>
-              </tr>
-              <tr>
-                <td><span class="mono">AuditConclusion</span></td>
-                <td>最终策略结论</td>
-                <td><span class="mono">passed</span>、<span class="mono">risk_level</span>、<span class="mono">summary</span>、<span class="mono">recommendation</span></td>
-                <td>把“模型说了什么”和“系统最终做什么”分开。</td>
-              </tr>
-              <tr>
-                <td><span class="mono">AuditStatistics</span></td>
-                <td>结果计数</td>
-                <td><span class="mono">total_findings</span>、<span class="mono">high</span>、<span class="mono">medium</span>、<span class="mono">malicious</span>、<span class="mono">suspicious</span>、<span class="mono">benign</span>、<span class="mono">uncertain</span></td>
-                <td>为评测、报表和回归定位提供统一计数口径。</td>
-              </tr>
-              <tr>
-                <td><span class="mono">RunMetadata</span></td>
-                <td>回放与版本治理</td>
-                <td><span class="mono">run_id</span>、<span class="mono">benchmark_version</span>、<span class="mono">auditor_version</span>、<span class="mono">rule_set_version</span>、<span class="mono">prompt_version</span>、<span class="mono">llm_state</span></td>
-                <td>没有这些字段，就无法解释为什么同样样本会在不同轮次得出不同结论。</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="grid-2">
-          <div class="card">
-            <h3>训练报告投影契约</h3>
-            <h4>只保留子结构，不泄漏外层审计对象</h4>
-            <ul>
-              <li>`codeaudit` 只包含 `<span class="mono">conclusion</span>` 与 `<span class="mono">file_reports</span>`。</li>
-              <li>外层 `report_id`、`target`、`statistics`、`scan_metadata` 不应进入训练输出。</li>
-              <li>`conclusion` 必须保持原审计结果，不被训练失败路径改写。</li>
-            </ul>
-          </div>
-          <div class="card">
-            <h3>为什么这样拆</h3>
-            <h4>边界清晰，回放一致</h4>
-            <ul>
-              <li>训练报告要的是审计结论投影，不是完整审计对象。</li>
-              <li>平台上报与本地文件应该共享同一投影逻辑。</li>
-              <li>这样才能避免“双轨 JSON 不一致”。</li>
-            </ul>
-          </div>
-        </div>
-      </section>
-
       <section class="section" id="benchmark-design">
-        <h2>5. Benchmark 设计</h2>
+        <h2>4. Benchmark 设计</h2>
         <p class="lead">benchmark 的目标不是单纯压分，而是验证审计链路是否能稳稳地区分“看起来像危险”与“真的有危险”。因此样本设计必须做 source isolation，必须覆盖 benign trap 和恶意链路，必须把生成、评测和结果回放写成一条闭环。</p>
         <div class="callout">
           <strong>这里的“10 家族”指样本变体类别，不是模型类别。</strong> 每个家族都代表一类会触发不同审计规则的代码改写；良性家族用来测误报，恶意家族用来测漏报。每个家族再各生成 10 个样本，所以总数是 100。
@@ -2238,7 +2167,7 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --ll
       </section>
 
       <section class="section" id="benchmark-results">
-        <h2>6. Benchmark 结果</h2>
+        <h2>5. Benchmark 结果</h2>
         <p class="lead">完整 benchmark 已经实际跑过两遍：一遍 static-only，一遍本地 Ollama。两次都达成 100/100 正确分类，但 LLM 可用率只有 41%，说明系统在 LLM 不稳定时确实退回到了静态基线，而且没有把失败悄悄变成放行。</p>
 
         <div class="kpi">
@@ -2370,7 +2299,7 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --ll
       </section>
 
       <section class="section" id="evidence">
-        <h2>7. 设计依据</h2>
+        <h2>6. 设计依据</h2>
         <p class="lead">下面这些文档与实际 benchmark 输出共同构成当前设计的依据。它们说明系统已经具备什么、在哪些地方暴露出问题、以及为什么要采用现在这套补强方式。</p>
 
         <div class="evidence">
@@ -2443,7 +2372,7 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --ll
       </section>
 
       <section class="section" id="appendix">
-        <h2>8. 下一步</h2>
+        <h2>7. 下一步</h2>
         <p class="lead">如果后续继续往实现文档推进，优先顺序已经很清楚：先把证据包 schema 写清楚，再把训练报告与平台上报字段对齐，最后把 benchmark 的家族扩展成持续回归集。</p>
 
         <div class="grid-3">
