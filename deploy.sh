@@ -81,7 +81,9 @@ REMOTE_OLLAMA_ARCHIVE="${REMOTE_OLLAMA_ARCHIVE:-$REMOTE_DIR/$OLLAMA_DIR_NAME.tar
 CONTAINER_OLLAMA_DIR="${CONTAINER_OLLAMA_DIR:-$TAA_CONTAINER_WORKDIR/$OLLAMA_DIR_NAME}"
 CONTAINER_OLLAMA_ARCHIVE="${CONTAINER_OLLAMA_ARCHIVE:-$TAA_CONTAINER_WORKDIR/$OLLAMA_DIR_NAME.tar.gz}"
 OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5-coder:0.5b}"
+ENV_OLLAMA_MODEL="${OLLAMA_MODEL:-}"
+CLI_MODEL=""
+OLLAMA_MODEL=""
 OLLAMA_LOG_FILE="${OLLAMA_LOG_FILE:-/tmp/ollama.log}"
 OLLAMA_READY_TIMEOUT="${OLLAMA_READY_TIMEOUT:-120}"
 OLLAMA_READY_INTERVAL="${OLLAMA_READY_INTERVAL:-2}"
@@ -242,17 +244,19 @@ ensure_local_docker_container() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [local|remote] [start|stop] [platform-mock] [taa] [qwen]
+Usage: $(basename "$0") [local|remote] [start|stop] [platform-mock] [taa] [qwen] [--model <name>]
 
 Without arguments, all three components are deployed remotely via Kubernetes.
 Pass local (or local-docker) to deploy TAA and its dependencies into a local Docker container
 for testing, with platform-mock running locally on host.
 Pass remote to explicitly target remote deployment via Kubernetes (default mode).
 Pass start or stop to control service lifecycle (default: start).
+Pass --model <name> (or --model=<name>) to explicitly specify the LLM audit model (overriding config files).
 When no component names are given, all three components are deployed by default.
 Provide one or more names to deploy them separately.
 Examples:
   $(basename "$0") local start
+  $(basename "$0") local start --model qwen3:8b
   $(basename "$0") local stop
   $(basename "$0") local
   $(basename "$0") local taa
@@ -345,7 +349,7 @@ Environment overrides:
   OLLAMA_HOST=${OLLAMA_HOST}
       Ollama 在容器内监听的地址与端口。
   OLLAMA_MODEL=${OLLAMA_MODEL}
-      启动检查使用的 Qwen 模型名称。
+      启动检查使用的 Qwen 模型名称（若未通过环境或参数指定，优先从当前部署模式对应的配置文件模板读取）。
   OLLAMA_READY_TIMEOUT=${OLLAMA_READY_TIMEOUT}
       等待 Ollama 就绪的最长时间（秒）。
   OLLAMA_READY_INTERVAL=${OLLAMA_READY_INTERVAL}
@@ -470,6 +474,43 @@ select_taa_config_template() {
   else
     printf '%s' "$TAA_PRODUCTION_CONFIG_TEMPLATE"
   fi
+}
+
+get_taa_config_llm_model() {
+  local template="$1"
+  if [[ -f "$template" ]]; then
+    python3 - "$template" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        data = json.load(f)
+    model = (data.get("llm") or {}).get("model")
+    if model and isinstance(model, str) and model.strip():
+        print(model.strip())
+except Exception:
+    pass
+PY
+  fi
+}
+
+resolve_target_ollama_model() {
+  if [[ -n "$CLI_MODEL" ]]; then
+    printf '%s' "$CLI_MODEL"
+    return 0
+  fi
+  local template
+  template="$(select_taa_config_template)"
+  local model
+  model="$(get_taa_config_llm_model "$template")"
+  if [[ -n "$model" ]]; then
+    printf '%s' "$model"
+    return 0
+  fi
+  if [[ -n "$ENV_OLLAMA_MODEL" ]]; then
+    printf '%s' "$ENV_OLLAMA_MODEL"
+    return 0
+  fi
+  printf '%s' "qwen2.5-coder:0.5b"
 }
 
 write_taa_config() {
@@ -658,7 +699,8 @@ if [[ $# -eq 0 ]]; then
   DEPLOY_QWEN=true
   ACTION="start"
 else
-  for arg in "$@"; do
+  while [[ $# -gt 0 ]]; do
+    arg="$1"
     case "$arg" in
       local|local-docker)
         DEPLOY_LOCAL=true
@@ -694,6 +736,18 @@ else
         DEPLOY_QWEN=true
         SELECTED_COMPONENT=true
         ;;
+      --model=*)
+        CLI_MODEL="${arg#*=}"
+        ;;
+      --model)
+        shift
+        if [[ $# -eq 0 || "$1" == -* ]]; then
+          err "--model requires a model name argument"
+          usage >&2
+          exit 1
+        fi
+        CLI_MODEL="$1"
+        ;;
       -h|--help|help)
         usage
         exit 0
@@ -704,6 +758,7 @@ else
         exit 1
         ;;
     esac
+    shift
   done
 
   ACTION="${ACTION:-start}"
@@ -774,6 +829,7 @@ DEPLOY_TARGET_DESC="${REMOTE_USER}@${REMOTE_HOST}"
 if [[ "$DEPLOY_LOCAL" == true ]]; then
   DEPLOY_TARGET_DESC="local docker (${LOCAL_DOCKER_CONTAINER})"
 fi
+OLLAMA_MODEL="$(resolve_target_ollama_model)"
 banner "Deploying: ${DEPLOY_COMPONENTS}→ ${DEPLOY_TARGET_DESC}"
 
 if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
