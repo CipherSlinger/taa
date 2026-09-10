@@ -49,10 +49,10 @@ ATT_HSK_SOURCE="${ATT_HSK_SOURCE:-$ATT_DIR/hsk_cek.cert}"
 # 远程容器目录：TAA 容器内的工作目录、attestation helper 和证书路径，以及 attestation report 文件路径。
 if [[ ${DEBUG} == false ]]; then
   CON_WORKDIR="${CON_WORKDIR:-/root/taa}"
-  CON_PORT=6001
+  CON_PORT="${CON_PORT:-6001}"
 else
   CON_WORKDIR="${CON_WORKDIR:-/root/taadebug}"
-  CON_PORT=9001
+  CON_PORT="${CON_PORT:-9001}"
 fi
 ATT_REPORT_FILE="${CON_WORKDIR}/attestation.report"
 K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
@@ -150,6 +150,32 @@ container_cp() {
   echo "kubectl $K_NS cp '$1' '$TARGET_POD':'$2'"
 }
 
+SSH_OPTS=(
+  -q
+  -o LogLevel=ERROR
+  -o StrictHostKeyChecking=accept-new
+  -o UserKnownHostsFile="$HOME/.ssh/known_hosts"
+)
+
+ensure_remote_ssh() {
+  if [[ "$DEPLOY_LOCAL" == true ]]; then
+    return 0
+  fi
+  if [[ -z "$PASSWORD" ]]; then
+    read -rsp "Password for ${REMOTE_USER}@${REMOTE_HOST}: " PASSWORD
+    echo
+  fi
+  if ! command -v sshpass >/dev/null 2>&1; then
+    err "sshpass is required for password-based copy. Install it or set up SSH keys."
+    exit 1
+  fi
+}
+
+remote_ssh() {
+  ensure_remote_ssh
+  sshpass -p "$PASSWORD" ssh "${SSH_OPTS[@]}" "${REMOTE_USER}@${REMOTE_HOST}" "$@"
+}
+
 ensure_local_docker_container() {
   step "checking local docker image: $LOCAL_DOCKER_IMAGE"
   if ! docker image inspect "$LOCAL_DOCKER_IMAGE" >/dev/null 2>&1; then
@@ -218,7 +244,7 @@ usage() {
 Usage: $(basename "$0") [local|remote] [start|stop] [platform-mock] [taa] [qwen]
 
 Without arguments, all three components are deployed remotely via Kubernetes.
-Pass local to deploy TAA and its dependencies into a local Docker container
+Pass local (or local-docker) to deploy TAA and its dependencies into a local Docker container
 for testing, with platform-mock running locally on host.
 Pass remote to explicitly target remote deployment via Kubernetes (default mode).
 Pass start or stop to control service lifecycle (default: start).
@@ -307,6 +333,8 @@ Environment overrides:
       debug/local 场景写入配置文件的合约 ID；正式非 debug 场景由运行环境注入（预留可选）。
   ATT_DIR=${ATT_DIR}
       本地 attestation helper 和证书目录。
+  TAA_KEEP_MANUAL=${TAA_KEEP_MANUAL:-false}
+      远程部署后是否保持容器 manual 挂起状态而不自启（默认 false）。
 
   # Ollama / Qwen
   OLLAMA_LOCAL_DIR=${OLLAMA_LOCAL_DIR}
@@ -518,12 +546,13 @@ with open(path, "w", encoding="utf-8") as f:
 PY
 }
 
-ACTION="start"
+ACTION=""
 
 if [[ $# -eq 0 ]]; then
   DEPLOY_PLATFORM_MOCK=true
   DEPLOY_TAA=true
   DEPLOY_QWEN=true
+  ACTION="start"
 else
   for arg in "$@"; do
     case "$arg" in
@@ -534,9 +563,19 @@ else
         DEPLOY_REMOTE=true
         ;;
       start)
+        if [[ -n "$ACTION" && "$ACTION" != "start" ]]; then
+          err "cannot specify both start and stop"
+          usage >&2
+          exit 1
+        fi
         ACTION="start"
         ;;
       stop)
+        if [[ -n "$ACTION" && "$ACTION" != "stop" ]]; then
+          err "cannot specify both start and stop"
+          usage >&2
+          exit 1
+        fi
         ACTION="stop"
         ;;
       platform-mock)
@@ -562,6 +601,8 @@ else
         ;;
     esac
   done
+
+  ACTION="${ACTION:-start}"
 
   if [[ "$DEPLOY_LOCAL" == true && "$DEPLOY_REMOTE" == true ]]; then
     err "cannot specify both local and remote"
@@ -597,7 +638,7 @@ if [[ "$ACTION" == "stop" ]]; then
       remote_ssh "pkill -x '$MOCK_BINARY_NAME' >/dev/null 2>&1 || true"
     fi
     if [[ "$DEPLOY_TAA" == true ]]; then
-      remote_ssh "$(container_exec) sh -lc 'touch /root/taa/manual && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
+      remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_CONTAINER_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
     fi
     if [[ "$DEPLOY_QWEN" == true ]]; then
       remote_ssh "$(container_exec) sh -lc 'killall ollama >/dev/null 2>&1 || true; pkill -x ollama >/dev/null 2>&1 || true; killall llama-server >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true'"
@@ -806,26 +847,7 @@ if [[ "$DEPLOY_LOCAL" == true ]]; then
   exit 0
 fi
 
-if [[ -z "$PASSWORD" ]]; then
-  read -rsp "Password for ${REMOTE_USER}@${REMOTE_HOST}: " PASSWORD
-  echo
-fi
-
-if ! command -v sshpass >/dev/null 2>&1; then
-  err "sshpass is required for password-based copy. Install it or set up SSH keys."
-  exit 1
-fi
-
-SSH_OPTS=(
-  -q
-  -o LogLevel=ERROR
-  -o StrictHostKeyChecking=accept-new
-  -o UserKnownHostsFile="$HOME/.ssh/known_hosts"
-)
-
-remote_ssh() {
-  sshpass -p "$PASSWORD" ssh "${SSH_OPTS[@]}" "${REMOTE_USER}@${REMOTE_HOST}" "$@"
-}
+ensure_remote_ssh
 
 sync_ollama_to_remote() {
   step "syncing ollama package to remote host"
@@ -948,7 +970,19 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   step "replacing remote taa, config, and attestation helper"
   remote_ssh "mv '$REMOTE_DIR/$BINARY_NAME.new' '$REMOTE_DIR/$BINARY_NAME' && mv '$REMOTE_TAA_CONFIG_PATH.new' '$REMOTE_TAA_CONFIG_PATH' && mv '$REMOTE_DIR/get-attestation.new' '$REMOTE_DIR/get-attestation' && mv '$REMOTE_DIR/hrk.cert.new' '$REMOTE_DIR/hrk.cert' && mv '$REMOTE_DIR/hsk_cek.cert.new' '$REMOTE_DIR/hsk_cek.cert' && chmod +x '$REMOTE_DIR/$BINARY_NAME' '$REMOTE_DIR/get-attestation'"
 
-  TAA_MANUAL_WAS_PRESENT=false
+  step "pausing old taa inside container for update"
+  if [[ "$DEBUG" == true ]]; then
+    remote_ssh "$(container_exec) sh -lc 'pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
+  else
+    remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_CONTAINER_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
+  fi
+  for _ in {1..30}; do
+    if ! remote_ssh "$(container_exec) sh -lc 'pgrep -x taa >/dev/null 2>&1'"; then
+      break
+    fi
+    sleep 1
+  done
+
   step "copying runtime files into container"
   remote_ssh "$(container_exec) sh -lc 'mkdir -p $TAA_CONTAINER_WORKDIR/attestation'"
   remote_ssh "$(container_cp "$REMOTE_DIR/$BINARY_NAME" "$TAA_CONTAINER_WORKDIR/$BINARY_NAME")"
@@ -974,33 +1008,17 @@ if [[ "$DEPLOY_TAA" == true ]]; then
 
   if [[ "$DEBUG" == true ]]; then
     step "starting debug taa inside container"
-    remote_ssh "$(container_exec) sh -lc 'pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
     remote_ssh "$(container_exec) sh -lc 'mkdir -p $TAA_CONTAINER_WORKDIR/models $TAA_CONTAINER_WORKDIR/data $TAA_CONTAINER_WORKDIR/results && cd $TAA_CONTAINER_WORKDIR && nohup $TAA_CONTAINER_WORKDIR/$BINARY_NAME > $TAA_LOG_FILE 2>&1 < /dev/null &'"
   else
-    step "pausing taa inside container"
-    if remote_ssh "$(container_exec) sh -lc 'test -e /root/taa/manual'"; then
-      TAA_MANUAL_WAS_PRESENT=true
-      info "taa manual mode already enabled; leaving it paused during deployment"
+    if [[ "${TAA_KEEP_MANUAL:-false}" == true ]]; then
+      warn "TAA_KEEP_MANUAL is enabled; leaving taa manual mode paused"
     else
-      TAA_MANUAL_WAS_PRESENT=false
-      remote_ssh "$(container_exec) sh -lc 'touch /root/taa/manual'"
-      info "taa autostart paused for deployment"
+      step "restoring taa service inside container"
+      remote_ssh "$(container_exec) sh -lc 'rm -f \"$TAA_CONTAINER_WORKDIR/manual\"'"
     fi
-    remote_ssh "$(container_exec) sh -lc 'pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
-    for _ in {1..30}; do
-      if ! remote_ssh "$(container_exec) sh -lc 'pgrep -x taa >/dev/null 2>&1'"; then
-        break
-      fi
-      sleep 1
-    done
   fi
 
-  if [[ "$DEBUG" == true || "$TAA_MANUAL_WAS_PRESENT" == false ]]; then
-    if [[ "$DEBUG" == false ]]; then
-      step "restoring taa service inside container"
-      remote_ssh "$(container_exec) sh -lc 'rm -f /root/taa/manual'"
-    fi
-
+  if [[ "$DEBUG" == true || "${TAA_KEEP_MANUAL:-false}" == false ]]; then
     step "waiting for taa service to become ready"
     ready_attempts=$(( (OLLAMA_READY_TIMEOUT + OLLAMA_READY_INTERVAL - 1) / OLLAMA_READY_INTERVAL ))
     remote_ssh "$(container_exec) sh -lc '
@@ -1017,8 +1035,6 @@ if [[ "$DEPLOY_TAA" == true ]]; then
       tail -n 50 $TAA_LOG_FILE || true
       exit 1
     '"
-  else
-    warn "taa was already paused before deployment; leaving manual mode enabled"
   fi
 
   remote_ssh "$(container_exec) sh -lc 'tail -n 50 $TAA_LOG_FILE || true'"
