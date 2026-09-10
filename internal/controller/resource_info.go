@@ -1,7 +1,7 @@
 package controller
 
 import (
-	filetree "taa/filetree"
+	filetree "taa/pkg/filetree"
 )
 
 func buildResourceInfoJSON(dataDir, archivePath string) (string, error) {
