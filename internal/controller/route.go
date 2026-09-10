@@ -22,6 +22,7 @@ import (
 	teecrypto "taa/pkg/crypto"
 	"taa/internal/attestation"
 	"taa/internal/codeaudit"
+	pkgerrors "taa/pkg/errors"
 	"taa/pkg/utils"
 )
 
@@ -284,6 +285,22 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeEnvelope(w, status, msg, nil, status)
 }
 
+// writeErr 根据 error 对象的类型写入统一 API 错误响应。
+// 若 err 为 pkg/errors.Error，自动使用其内置 Code 作为 HTTP 状态码与业务错误码，
+// 否则使用 defaultStatus。
+func writeErr(w http.ResponseWriter, defaultStatus int, err error) {
+	if err == nil {
+		return
+	}
+	code := pkgerrors.CodeOf(err, defaultStatus)
+	var appErr *pkgerrors.Error
+	msg := err.Error()
+	if pkgerrors.As(err, &appErr) {
+		msg = appErr.Message()
+	}
+	writeEnvelope(w, code, msg, nil, code)
+}
+
 func phaseName(phase int) string {
 	switch phase {
 	case 1:
@@ -385,12 +402,12 @@ func (s *TAAState) setCurrentOp(op string) {
 func (s *TAAState) switchHandler(w http.ResponseWriter, r *http.Request) {
 	var req switchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("请求解析失败: %v", err))
+		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("请求解析失败: %v", err), err))
 		return
 	}
 
 	if req.Phase < 1 || req.Phase > 4 {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("无效的阶段值: %d，有效范围 1-4", req.Phase))
+		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, fmt.Sprintf("无效的阶段值: %d，有效范围 1-4", req.Phase)))
 		return
 	}
 
@@ -410,28 +427,28 @@ func (s *TAAState) switchHandler(w http.ResponseWriter, r *http.Request) {
 func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 	var req importRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("请求解析失败: %v", err))
+		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("请求解析失败: %v", err), err))
 		return
 	}
 	req.ResourceURL = strings.TrimSpace(req.ResourceURL)
 	req.RequestID = strings.TrimSpace(req.RequestID)
 	req.TaskID = strings.TrimSpace(req.TaskID)
 	if req.ResourceURL == "" {
-		writeError(w, http.StatusBadRequest, "resourceUrl 不能为空")
+		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "resourceUrl 不能为空"))
 		return
 	}
 	if req.RequestID == "" && req.TaskID == "" {
-		writeError(w, http.StatusBadRequest, "requestId 和 taskId 不能同时为空")
+		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "requestId 和 taskId 不能同时为空"))
 		return
 	}
 
 	store, err := s.importIndexStore()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("加载导入索引失败: %v", err))
+		writeErr(w, http.StatusInternalServerError, pkgerrors.Wrap(pkgerrors.CodeInternal, fmt.Sprintf("加载导入索引失败: %v", err), err))
 		return
 	}
 	if err := store.Reserve(req.RequestID, req.TaskID); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, err.Error(), err))
 		return
 	}
 
@@ -473,18 +490,18 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	var req importRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("请求解析失败: %v", err))
+		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("请求解析失败: %v", err), err))
 		return
 	}
 	req.ResourceURL = strings.TrimSpace(req.ResourceURL)
 	req.RequestID = strings.TrimSpace(req.RequestID)
 	req.TaskID = strings.TrimSpace(req.TaskID)
 	if req.ResourceURL == "" {
-		writeError(w, http.StatusBadRequest, "resourceUrl 不能为空")
+		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "resourceUrl 不能为空"))
 		return
 	}
 	if req.RequestID == "" && req.TaskID == "" {
-		writeError(w, http.StatusBadRequest, "requestId 和 taskId 不能同时为空")
+		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "requestId 和 taskId 不能同时为空"))
 		return
 	}
 
@@ -495,7 +512,7 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	var publicKey string
 	if phase == 1 && req.PublicKey != nil && *req.PublicKey != "" {
 		if _, err := teecrypto.ParseSM2PublicKeyPEM([]byte(*req.PublicKey)); err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("publicKey 解析失败: %v", err))
+			writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("publicKey 解析失败: %v", err), err))
 			return
 		}
 		publicKey = *req.PublicKey
@@ -654,25 +671,25 @@ func (s *TAAState) reportTrainingAsync(requestID, taskID string, code int, msg, 
 func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 	var req exportRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("请求解析失败: %v", err))
+		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("请求解析失败: %v", err), err))
 		return
 	}
 	req.RequestID = strings.TrimSpace(req.RequestID)
 	req.TaskID = strings.TrimSpace(req.TaskID)
 	if req.RequestID == "" && req.TaskID == "" {
-		writeError(w, http.StatusBadRequest, "requestId 和 taskId 不能同时为空")
+		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "requestId 和 taskId 不能同时为空"))
 		return
 	}
 
 	store, err := s.importIndexStore()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("加载导入索引失败: %v", err))
+		writeErr(w, http.StatusInternalServerError, pkgerrors.Wrap(pkgerrors.CodeInternal, fmt.Sprintf("加载导入索引失败: %v", err), err))
 		return
 	}
 
 	record, err := store.Lookup(req.RequestID, req.TaskID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, err.Error(), err))
 		return
 	}
 
@@ -861,12 +878,12 @@ func (s *TAAState) buildAttestationResult(ctx context.Context, attestationFile, 
 func (s *TAAState) getAttestationHandler(w http.ResponseWriter, r *http.Request) {
 	var req getAttestationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("请求解析失败: %v", err))
+		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("请求解析失败: %v", err), err))
 		return
 	}
 
 	if req.RequestID == "" {
-		writeError(w, http.StatusBadRequest, "requestId 不能为空")
+		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "requestId 不能为空"))
 		return
 	}
 
@@ -904,11 +921,11 @@ func (s *TAAState) getAttestationHandler(w http.ResponseWriter, r *http.Request)
 func (s *TAAState) resourceInfoHandler(w http.ResponseWriter, r *http.Request) {
 	var req resourceInfoRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("请求解析失败: %v", err))
+		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("请求解析失败: %v", err), err))
 		return
 	}
 	if req.ResourceURL == "" {
-		writeError(w, http.StatusBadRequest, "resourceUrl 不能为空")
+		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "resourceUrl 不能为空"))
 		return
 	}
 
