@@ -318,13 +318,14 @@ func TestScannerOnRetinaDKDFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Findings) > 0 {
-		for _, f := range report.Findings {
-			t.Errorf("unexpected finding in %s: line %d [%s] %s", filepath.Base(f.File), f.Line, f.RuleID, f.CodeSnippet)
-		}
+	if report.HighCount != 0 {
+		t.Errorf("expected 0 HIGH findings, got %d", report.HighCount)
+	}
+	if report.MediumCount == 0 {
+		t.Errorf("expected Medium warning findings retained for Retina-DKD, got 0")
 	}
 	if !report.Passed {
-		t.Errorf("expected Retina-DKD scan to pass, got passed=false (high=%d, med=%d)", report.HighCount, report.MediumCount)
+		t.Errorf("expected Retina-DKD scan to pass with Medium warnings, got passed=false")
 	}
 }
 
@@ -488,7 +489,7 @@ def train(model, model_name, dataset, test_dataset):
 	}
 }
 
-func TestScannerIgnoresDatasetNameAndSeparatorLogging(t *testing.T) {
+func TestScannerDetectsDatasetPrintingAsMedium(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir, "eval.py", `
 def evaluate(dataset, model_name):
@@ -502,8 +503,16 @@ def evaluate(dataset, model_name):
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Findings) != 0 {
-		t.Fatalf("expected 0 findings for dataset name/separator logging, got: %+v", report.Findings)
+	if len(report.Findings) != 2 {
+		t.Fatalf("expected 2 Medium findings for dataset printing, got: %d (%+v)", len(report.Findings), report.Findings)
+	}
+	if !report.Passed {
+		t.Fatalf("Medium findings should not block import")
+	}
+	for _, f := range report.Findings {
+		if f.Severity != SeverityMedium || f.RuleID != "EMB_003" {
+			t.Errorf("expected EMB_003 MEDIUM, got %s %s", f.RuleID, f.Severity)
+		}
 	}
 }
 
