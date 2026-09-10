@@ -98,7 +98,9 @@ def run_training(input_dir: Path, output_dir: Path) -> int:
 
     try:
         os.chdir(CODE_DIR)
-        actual_input_dir = input_dir / "data" if (input_dir / "data").is_dir() else input_dir
+        actual_input_dir = input_dir
+        if (input_dir / "data").is_dir() and not (input_dir / "cls_dkd").is_dir() and not (input_dir / "risk_factor_5.xlsx").is_file():
+            actual_input_dir = input_dir / "data"
         try:
             ensure_symlink(CODE_DIR / "data", actual_input_dir)
             ensure_symlink(CODE_DIR / "model", output_dir)
@@ -154,7 +156,7 @@ def run_training(input_dir: Path, output_dir: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
-    parser.add_argument("--data-dir", "--input", "-i", dest="input_dir", default="/opt/taa/input/data")
+    parser.add_argument("--data-dir", "--input", "-i", dest="input_dir", default="/opt/taa/input")
     parser.add_argument("--output", "--output-dir", "-o", dest="output_dir", default="/opt/taa/output")
     args, unknown = parser.parse_known_args()
     if unknown:
