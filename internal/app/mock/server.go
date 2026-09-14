@@ -67,7 +67,7 @@ func (c Config) withDefaults() Config {
 		c.StateDir = "/root/taa"
 	}
 	if c.UploadDir == "" {
-		c.UploadDir = "./uploads"
+		c.UploadDir = ".local/upload"
 	}
 	if c.TAAPort == "" {
 		c.TAAPort = defaultTAAPort
@@ -93,7 +93,7 @@ func DefaultConfig() Config {
 	return Config{
 		Addr:      ":8080",
 		StateDir:  envOrDefault("STATE_DIR", "/root/taa"),
-		UploadDir: envOrDefault("UPLOAD_DIR", "./uploads"),
+		UploadDir: envOrDefault("UPLOAD_DIR", ".local/upload"),
 		TAAPod:    envOrDefault("TAA_POD", "simple-busybox"),
 		TAANS:     envOrDefault("TAA_NS", ""),
 		TAAPort:   envOrDefault("TAA_PORT", defaultTAAPort),

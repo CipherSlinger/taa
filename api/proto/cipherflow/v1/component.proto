@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+package cipherflow.v1;
+
+option go_package = "taa/api/proto/cipherflow/v1;cipherflowv1";
+option java_multiple_files = true;
+option java_package = "com.cipherflow.v1";
+
+import "cipherflow/v1/types.proto";
+import "cipherflow/v1/security.proto";
+
+// ── 组件与算子契约定义 ─────────────────────────────────────────────────────────
+
+// 输入输出通道类型枚举
+enum IoType {
+  IO_TYPE_UNSPECIFIED = 0;
+  DATASET = 1;       // 原始/预处理数据集
+  MODEL_WEIGHT = 2;  // 模型权重与网络架构
+  REPORT = 3;        // 评测报告/结果表格
+  CHECKPOINT = 4;    // 检查点持久化快照
+  CUSTOM_FILE = 5;   // 通用文件/归档包
+}
+
+// 组件输入/输出通道插槽定义
+message IoDef {
+  // 插槽名称（如 "train_data", "output_weights", "metrics_report"）
+  string name = 1;
+
+  // 插槽作用描述
+  string desc = 2;
+
+  // 支持的数据形态
+  repeated IoType types = 3;
+
+  // 是否为可选插槽
+  bool is_optional = 4;
+
+  // 绑定的沙箱固定相对/绝对路径（如 "/opt/taa/input/train"）
+  string fixed_path = 5;
+
+  // 数据格式要求
+  DataFormat format = 6;
+}
+
+// 硬件算力与运行规格
+enum HardwareDeviceType {
+  DEVICE_CPU = 0;
+  DEVICE_HYGON_DCU = 1;    // 海光 DCU 异构加速卡
+  DEVICE_NVIDIA_CUDA = 2;   // NVIDIA CUDA 加速卡
+  DEVICE_CUSTOM_ACCEL = 3; // 其他国产加速硬件
+}
+
+// 硬件资源配额与超时约束
+message ResourceRequirements {
+  // 计算设备类型
+  HardwareDeviceType device_type = 1;
+
+  // 设备编号标识（如 "0", "0,1"；"-1" 表示纯 CPU）
+  string device_ids = 2;
+
+  // 推荐最小 CPU 核心数
+  int32 min_cpu_cores = 3;
+
+  // 推荐最小主机内存（MB）
+  int64 min_memory_mb = 4;
+
+  // 推荐最小显存/显存池（MB）
+  int64 min_gpu_memory_mb = 5;
+
+  // 任务超时强制保护时限（秒，如 3600）
+  int64 timeout_seconds = 6;
+}
+
+// 模型组件完整规约定义（面向模型提供方的元数据清单）
+message ComponentDef {
+  // 领域命名空间（例如 "cipherflow.model.cv", "cipherflow.model.tabular", "cipherflow.model.nlp"）
+  string domain = 1;
+
+  // 组件名称（例如 "logistic_regression", "retina_dkd", "transmuf"）
+  string name = 2;
+
+  // 语义化版本号（例如 "1.0.0"）
+  string version = 3;
+
+  // 组件功能与应用场景描述
+  string desc = 4;
+
+  // 输入通道定义列表
+  repeated IoDef inputs = 5;
+
+  // 输出通道定义列表
+  repeated IoDef outputs = 6;
+
+  // 可配置超参数元数据定义列表
+  repeated AttributeDef attrs = 7;
+
+  // 硬件运行要求
+  ResourceRequirements resources = 8;
+
+  // 安全合规声明
+  ModelSecurityDeclaration security = 9;
+
+  // 默认启动入口命令（如 "python3 train.py"）
+  string default_entrypoint = 10;
+}

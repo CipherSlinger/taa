@@ -6,7 +6,14 @@ import (
 	"fmt"
 	"math/big"
 	"time"
+
+	"github.com/google/uuid"
 )
+
+// NewUUID 生成标准的 RFC 4122 v4 UUID 字符串。
+func NewUUID() string {
+	return uuid.NewString()
+}
 
 // RandomHex 生成指定字节数的随机十六进制字符串。
 func RandomHex(byteCount int) (string, error) {

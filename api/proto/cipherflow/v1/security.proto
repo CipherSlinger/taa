@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package cipherflow.v1;
+
+option go_package = "taa/api/proto/cipherflow/v1;cipherflowv1";
+option java_multiple_files = true;
+option java_package = "com.cipherflow.v1";
+
+// ── 代码审计合规与反数据泄露规约 ─────────────────────────────────────────────
+
+// 模型提供方安全与合规声明（静态代码审计与运行时防护的重要依据）
+message ModelSecurityDeclaration {
+  // 承诺严禁任何形式的网络外联通信（TEE 密态计算环境完全断网运行）
+  bool no_network_access = 1;
+
+  // 承诺对输入数据目录仅执行只读读取，严禁执行写入、追加、软硬链接篡改
+  bool read_only_input = 2;
+
+  // 承诺不将输入原始训练/测试样本（明文图片、原始记录）直接复制或隐写到输出目录中
+  // TAA 的 ResultChecker 会比对原始数据指纹，检测到原始特征将直接阻断导出
+  bool no_raw_data_export = 3;
+
+  // 声明该模型依赖的第三方 Python 包列表（如 ["torch==2.1.0", "numpy>=1.24", "pandas"]）
+  repeated string declared_dependencies = 4;
+
+  // 预期输出产物扩展名白名单（如 [".pt", ".pth", ".onnx", ".json", ".xlsx", ".csv", ".log"]）
+  repeated string expected_output_extensions = 5;
+
+  // 预期产出总大小安全上限（字节，默认 524288000 即 500MB），用于 TAA ResultChecker 异常大小报警
+  int64 max_output_size_bytes = 6;
+
+  // 声明的合法入口脚本文件名列表（如 ["train.py", "test.py", "debug.py"]）
+  repeated string declared_entrypoints = 7;
+
+  // 模型提供方公司/机构身份标识
+  string provider_identity = 8;
+}
+
+// 审计规则符合性与沙箱豁免配置
+message SecurityPolicyConstraint {
+  // 是否强制要求通过 LLM 深度语义仲裁（对应 fail-closed 策略）
+  bool enforce_llm_verification = 1;
+
+  // 允许的最大静态扫描安全告警容忍阈值
+  int32 max_tolerable_warnings = 2;
+
+  // 允许访问的隔离工作目录白名单（默认仅限 ["/opt/taa/input", "/opt/taa/output", "/opt/taa/checkpoint", "/opt/taa/models"]）
+  repeated string allowed_file_paths = 3;
+}

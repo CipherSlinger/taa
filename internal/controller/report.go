@@ -37,6 +37,14 @@ func ReportModelImport(ctx context.Context, platformAddr, dockerID, requestID, t
 	return reportToPlatform(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report, reportModelImportEndpoint, true)
 }
 
+// ReportTaskOutcome 根据任务类型自动分流上报至相应平台通道。
+func ReportTaskOutcome(ctx context.Context, platformAddr, dockerID, requestID, taskID, taskType string, code int, msg, report string) error {
+	if taskType == "model_import" {
+		return ReportModelImport(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report)
+	}
+	return ReportRes(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report)
+}
+
 // reportToPlatform is a helper that sends a report to the platform.
 func reportToPlatform(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report, endpoint string, requireRequestID bool) error {
 	if ctx == nil {

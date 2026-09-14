@@ -1,0 +1,120 @@
+syntax = "proto3";
+
+package cipherflow.v1;
+
+option go_package = "taa/api/proto/cipherflow/v1;cipherflowv1";
+option java_multiple_files = true;
+option java_package = "com.cipherflow.v1";
+
+import "cipherflow/v1/progress.proto";
+
+// ── 训练执行结果与指标规约（对应 training_result.json）─────────────────────────
+
+// 训练任务执行元信息
+message TrainingTaskSummary {
+  // 任务唯一标识，平台透传
+  string task_id = 1;
+
+  // 最终执行状态：succeeded / failed / timeout / cancelled
+  string status = 2;
+
+  // 进程退出码，0 表示正常成功
+  int32 exit_code = 3;
+
+  // 失败或异常退出原因说明（成功时为空字符串）
+  string failure_reason = 4;
+
+  // 任务开始时间戳（ISO8601 UTC）
+  string started_at = 5;
+
+  // 任务结束时间戳（ISO8601 UTC）
+  string finished_at = 6;
+
+  // 整体执行持续时间（秒）
+  int64 duration_seconds = 7;
+}
+
+// 核心指标与收敛汇总
+message MetricsSummary {
+  // 最终准确率（0.0 ~ 1.0）
+  double final_accuracy = 1;
+
+  // 最终损失值
+  double final_loss = 2;
+
+  // 最终 AUC-ROC
+  double final_auc = 3;
+
+  // 最终 F1 综合分数
+  double final_f1 = 4;
+
+  // 最终精确率 Precision
+  double final_precision = 5;
+
+  // 最终召回率 Recall
+  double final_recall = 6;
+
+  // 自定义扩展指标字典（例如 {"mAP": 0.825, "bleu": 42.1}）
+  map<string, double> custom_metrics = 7;
+
+  // 完整的逐轮次评估历史记录
+  repeated EpochSummary epochs = 8;
+}
+
+// 数据集样本划分统计
+message DatasetSplitStats {
+  int64 train = 1; // 训练集样本数
+  int64 val = 2;   // 验证集样本数
+  int64 test = 3;  // 测试集样本数
+}
+
+// 数据集使用概览
+message DatasetSummary {
+  // 数据集总样本量
+  int64 total_samples = 1;
+
+  // 样本划分情况
+  DatasetSplitStats splits = 2;
+
+  // 特征维度数（若为表格或特征向量）
+  int32 feature_count = 3;
+
+  // 分类类别数（若为分类任务）
+  int32 class_count = 4;
+
+  // 扩展统计信息
+  map<string, string> extra_info = 5;
+}
+
+// 模型产出物清单描述
+message ArtifactManifest {
+  // 主权重文件相对路径（例如 "weights/best_model.pt"）
+  string primary_weight_path = 1;
+
+  // 模型导出格式（如 "PyTorch", "ONNX", "TorchScript", "Safetensors"）
+  string format = 2;
+
+  // 评测报告表格相对路径（例如 "test_result.xlsx"）
+  string evaluation_report_path = 3;
+
+  // 产出物总文件大小（字节）
+  int64 total_size_bytes = 4;
+
+  // 产物文件相对路径与哈希映射表 (relative_path -> sm3_hex)
+  map<string, string> file_checksums = 5;
+}
+
+// 完整的训练结果契约体（必须序列化保存在 /opt/taa/output/training_result.json）
+message TrainingResult {
+  // 任务元信息
+  TrainingTaskSummary training_task = 1;
+
+  // 训练与验证指标汇总
+  MetricsSummary metrics = 2;
+
+  // 数据集使用统计
+  DatasetSummary dataset = 3;
+
+  // 产出物清单
+  ArtifactManifest artifacts = 4;
+}

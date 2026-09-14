@@ -150,13 +150,13 @@ func TestPhase1ModelImportFailureReportsModelImport(t *testing.T) {
 	})
 }
 
-func TestPhase1ModelAuditFailureStillTrains(t *testing.T) {
+func TestPhase1ModelAuditFailureAbortsTraining(t *testing.T) {
 	cases := []struct {
 		name string
 		llm  codeaudit.LLMConfig
 	}{
-		{name: "static audit failure continues training", llm: codeaudit.LLMConfig{Enabled: false}},
-		{name: "fail-closed continues training", llm: codeaudit.LLMConfig{Enabled: true, Model: "qwen2.5-coder:0.5b", FailClosed: true}},
+		{name: "static audit failure aborts training", llm: codeaudit.LLMConfig{Enabled: false}},
+		{name: "fail-closed aborts training", llm: codeaudit.LLMConfig{Enabled: true, Model: "qwen2.5-coder:0.5b", FailClosed: true}},
 	}
 
 	for _, tc := range cases {
@@ -275,49 +275,48 @@ result = {"dataset": {"total_samples": 1, "splits": {"train": 1, "test": 0}}, "m
 			}
 
 			importModel()
+
+			// 验证审计上报为失败 (code=2)
+			select {
+			case payload := <-modelImportCh:
+				if payload.Code != 2 {
+					t.Fatalf("reportModelImport code = %d, want 2", payload.Code)
+				}
+				if payload.RequestID != "req-"+strings.ReplaceAll(tc.name, " ", "-")+"-model" {
+					t.Fatalf("reportModelImport requestId = %q", payload.RequestID)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for reportModelImport")
+			}
+
+			// 验证 ModelImported 为 false
+			state.mu.RLock()
+			modelImported := state.ModelImported
+			state.mu.RUnlock()
+			if modelImported {
+				t.Fatalf("expected ModelImported=false after audit failure")
+			}
+
+			// 验证 ModelDir 内容已被物理清空
+			entries, _ := os.ReadDir(state.Security.ModelDir)
+			if len(entries) != 0 {
+				t.Fatalf("expected ModelDir to be cleaned, found %d entries", len(entries))
+			}
+
+			// 尝试导入数据，由于模型审计失败未放行，绝对不应触发训练
 			importData()
 
-			gotModelImport := false
-			gotTraining := false
-			deadline := time.After(15 * time.Second)
-			for !gotModelImport || !gotTraining {
-				select {
-				case payload := <-modelImportCh:
-					if payload.Code != 2 {
-						t.Fatalf("reportModelImport code = %d, want 2", payload.Code)
-					}
-					if payload.RequestID != "req-"+strings.ReplaceAll(tc.name, " ", "-")+"-model" {
-						t.Fatalf("reportModelImport requestId = %q", payload.RequestID)
-					}
-					if payload.Msg == nil || *payload.Msg == "" {
-						t.Fatal("reportModelImport msg empty, want audit failure")
-					}
-					gotModelImport = true
-				case payload := <-trainingResCh:
-					if payload.Code != 0 {
-						t.Fatalf("reportRes code = %d, want 0", payload.Code)
-					}
-					if payload.Report == "" {
-						t.Fatal("reportRes payload missing report")
-					}
-					var report map[string]any
-					if err := json.Unmarshal([]byte(payload.Report), &report); err != nil {
-						t.Fatalf("reportRes report is not valid JSON: %v", err)
-					}
-					trainingTask := report["training_task"].(map[string]any)
-					if trainingTask["status"] != "succeeded" {
-						t.Fatalf("training_task.status = %v, want succeeded", trainingTask["status"])
-					}
-					gotTraining = true
-				case <-deadline:
-					t.Fatal("timed out waiting for audit failure training flow")
-				}
+			select {
+			case payload := <-trainingResCh:
+				t.Fatalf("unexpected training report received: %+v", payload)
+			case <-time.After(500 * time.Millisecond):
+				// 期望没有训练上报
 			}
 
 			markerDir := resultDirForRequestTask(state.Security.ResultDir, "req-"+strings.ReplaceAll(tc.name, " ", "-")+"-data", "task-"+strings.ReplaceAll(tc.name, " ", "-"))
 			markerPath := filepath.Join(markerDir, "marker.txt")
-			if _, err := os.Stat(markerPath); err != nil {
-				t.Fatalf("train marker missing at %s: %v", markerPath, err)
+			if _, err := os.Stat(markerPath); err == nil {
+				t.Fatalf("training marker should not exist: %s", markerPath)
 			}
 		})
 	}

@@ -940,3 +940,16 @@ func TestIndexHandlerServesRootAndIndexHTML(t *testing.T) {
 		t.Errorf("status for /nonexistent = %d, want 404", resp.StatusCode)
 	}
 }
+
+func TestDefaultConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.UploadDir != ".local/upload" {
+		t.Errorf("DefaultConfig().UploadDir = %q, want %q", cfg.UploadDir, ".local/upload")
+	}
+
+	emptyCfg := Config{}
+	resolved := emptyCfg.withDefaults()
+	if resolved.UploadDir != ".local/upload" {
+		t.Errorf("Config{}.withDefaults().UploadDir = %q, want %q", resolved.UploadDir, ".local/upload")
+	}
+}

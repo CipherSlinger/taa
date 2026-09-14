@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package cipherflow.v1;
+
+option go_package = "taa/api/proto/cipherflow/v1;cipherflowv1";
+option java_multiple_files = true;
+option java_package = "com.cipherflow.v1";
+
+// ── 属性与数据类型 ─────────────────────────────────────────────────────────────
+
+// 属性数据类型枚举
+enum AttrType {
+  ATTR_TYPE_UNSPECIFIED = 0;
+  AT_FLOAT = 1;
+  AT_INT = 2;
+  AT_STRING = 3;
+  AT_BOOL = 4;
+  AT_FLOATS = 5;
+  AT_INTS = 6;
+  AT_STRINGS = 7;
+  AT_BOOLS = 8;
+  AT_STRUCT = 9;
+  AT_UNION = 10;
+}
+
+// 具体的属性取值容器（兼容并精炼通用属性定义）
+message Attribute {
+  float f = 1;
+  int64 i64 = 2;
+  string s = 3;
+  bool b = 4;
+
+  repeated float fs = 5;
+  repeated int64 i64s = 6;
+  repeated string ss = 7;
+  repeated bool bs = 8;
+
+  bool is_na = 9; // 显式标记缺失
+}
+
+// 属性元数据定义（用于组件定义 ComponentDef）
+message AttributeDef {
+  repeated string prefixes = 1; // 命名空间前缀
+  string name = 2;              // 属性名称，如 "learning_rate", "batch_size"
+  string desc = 3;              // 属性说明
+  AttrType type = 4;            // 属性类型
+  bool is_optional = 5;         // 是否可选
+  Attribute default_value = 6;  // 默认值
+  Attribute allowed_values = 7; // 枚举允许值列表
+  Attribute lower_bound = 8;    // 下界
+  Attribute upper_bound = 9;    // 上界
+}
+
+// 键值对通用条目
+message KeyValue {
+  string key = 1;
+  string value = 2;
+}
+
+// 浮点型指标条目
+message MetricEntry {
+  string name = 1;
+  double value = 2;
+  int64 step = 3;
+  int64 epoch = 4;
+  string timestamp = 5;
+}
+
+// 存储与数据格式类型
+enum DataFormat {
+  DATA_FORMAT_UNSPECIFIED = 0;
+  CSV = 1;
+  PARQUET = 2;
+  IMAGE_FOLDER = 3;    // 多模态图像分类/检测目录树
+  TEXT_FOLDER = 4;     // 文本语料目录
+  NUMPY_NPZ = 5;       // NumPy 归档数组
+  PYTORCH_TENSOR = 6;  // PyTorch Tensor / pt 文件
+  HUGGINGFACE_DIR = 7; // HuggingFace 数据集/模型格式
+}

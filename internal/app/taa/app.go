@@ -100,6 +100,17 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		log.Printf("generated and saved persistent TAA SM2 key pair to %s", keysDir)
 	}
 
+	// 派生 SealingKey 并初始化持久化密封状态存储
+	sealingKey := controller.DeriveSealingKey(keyPair.PrivateKey)
+	statePath := filepath.Join(keysDir, "state.sealed")
+	stateStore, err := controller.NewStateStore(statePath, sealingKey)
+	if err != nil {
+		return fmt.Errorf("initialize state store: %w", err)
+	}
+	if _, err := stateStore.DetectAndHandleKeyDrift(!loaded); err != nil {
+		return fmt.Errorf("detect and handle key drift (fail-closed): %w", err)
+	}
+
 	platformIP := cfg.PlatformIP
 	dockerID := cfg.DockerID
 	timestamp := time.Now().Unix()
@@ -131,7 +142,7 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	}
 	logSecurityConfig(sec)
 
-	// 7. 创建全局状态管理器并启动 HTTP 服务提供 TAA 外部接口
+	// 7. 创建全局状态管理器并恢复受保护持久化状态
 	state := controller.NewTAAState(
 		fixedAttestationFile,
 		platformIP,
@@ -142,6 +153,19 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		userData,
 		sec,
 	)
+	state.SetStateStore(stateStore)
+
+	pState := stateStore.GetState()
+	if pState != nil {
+		state.RestoreFromPersistentState(pState)
+		if pState.ActiveTask != nil && pState.ActiveTask.Status == "RUNNING" {
+			log.Printf("detected interrupted active task during startup, executing crash recovery: taskId=%s, type=%s",
+				pState.ActiveTask.TaskID, pState.ActiveTask.Type)
+			if err := reconcileCrashRecovery(ctx, state, stateStore, pState.ActiveTask); err != nil {
+				log.Printf("WARNING: reconcile crash recovery failed: %v", err)
+			}
+		}
+	}
 
 	return startServer(ctx, cfg.Addr, state)
 }

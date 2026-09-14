@@ -111,3 +111,27 @@ func OpenSM2SM4GCM(priv *SM2PrivateKey, sealed []byte) ([]byte, error) {
 	}
 	return OpenSM2(priv, env)
 }
+
+// DeriveSealingKey 利用 SM2 私钥标量 D 派生 16 字节 SM4 状态密封密钥:
+// SM3(privKey.D || "TAA-STATE-SEALING-V1" || 0x00000001)[:16]
+func DeriveSealingKey(privKey *SM2PrivateKey) []byte {
+	if privKey == nil || privKey.D == nil {
+		return nil
+	}
+
+	dBytes := make([]byte, 32)
+	privKey.D.FillBytes(dBytes)
+
+	label := []byte("TAA-STATE-SEALING-V1")
+	counter := []byte{0x00, 0x00, 0x00, 0x01}
+
+	material := make([]byte, 0, len(dBytes)+len(label)+len(counter))
+	material = append(material, dBytes...)
+	material = append(material, label...)
+	material = append(material, counter...)
+
+	sum := SM3Sum(material)
+	key := make([]byte, 16)
+	copy(key, sum[:16])
+	return key
+}

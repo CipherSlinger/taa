@@ -1,0 +1,155 @@
+syntax = "proto3";
+
+package cipherflow.v1;
+
+option go_package = "taa/api/proto/cipherflow/v1;cipherflowv1";
+option java_multiple_files = true;
+option java_package = "com.cipherflow.v1";
+
+// ── 训练计算阶段 ─────────────────────────────────────────────────────────────
+
+// 计算生命周期阶段
+enum ExecutionPhase {
+  PHASE_UNSPECIFIED = 0;
+  PHASE_DEBUG = 1;      // 阶段1：调试跑通模式（少量样本快速排错，产物允许明文导出）
+  PHASE_TEST = 2;       // 阶段2：基准测试模式（验证集评测，产物返回平台）
+  PHASE_TRAIN = 3;      // 阶段3：密态正式训练模式（全量数据，产物必须 SM2 信封加密导出）
+  PHASE_INFERENCE = 4;  // 阶段4：推理部署模式（加载模型执行批量预测或在线服务）
+}
+
+// ── 训练进度消息 ─────────────────────────────────────────────────────────────
+
+// 实时训练进度载荷（单次上报）
+message TrainingProgress {
+  // 任务唯一标识
+  string task_id = 1;
+
+  // 当前运行阶段
+  ExecutionPhase phase = 2;
+
+  // 当前轮次（1-indexed，如第 15 轮）
+  int32 current_epoch = 3;
+
+  // 总轮次（如共 100 轮）
+  int32 total_epochs = 4;
+
+  // 当前全局迭代步数（1-indexed，如第 1250 步）
+  int64 current_step = 5;
+
+  // 总迭代步数（若未知或不可计算可置 0）
+  int64 total_steps = 6;
+
+  // 总体训练进度百分比 (0.0% ~ 100.0%)
+  float percentage = 7;
+
+  // 任务累计已运行耗时（秒）
+  int64 elapsed_seconds = 8;
+
+  // 预估剩余完成时间 ETA（秒）
+  int64 eta_seconds = 9;
+
+  // 实时样本吞吐率（samples/sec）
+  float throughput_samples_per_sec = 10;
+
+  // 实时 Token 吞吐率（tokens/sec，用于 LLM 预训练或微调）
+  float throughput_tokens_per_sec = 11;
+
+  // 实时训练关键指标键值对（例如 {"loss": 0.235, "accuracy": 0.912, "lr": 0.0001, "gpu_mem_mb": 4200}）
+  map<string, double> current_metrics = 12;
+
+  // 当前所处的细分微阶段描述（例如 "data_loading", "forward_backward", "validating", "checkpoint_saving"）
+  string stage_name = 13;
+
+  // 人类可读的实时进度描述文本
+  string message = 14;
+
+  // 上报时间戳（ISO8601 UTC 字符串，如 "2026-09-11T14:30:00Z"）
+  string timestamp = 15;
+}
+
+// 逐轮次评估汇总（通常在每个 Epoch 结束时上报）
+message EpochSummary {
+  string task_id = 1;
+  int32 epoch = 2;
+  double train_loss = 3;
+  double train_accuracy = 4;
+  double val_loss = 5;
+  double val_accuracy = 6;
+  double learning_rate = 7;
+  int64 duration_seconds = 8;
+
+  // 扩展指标（如 AUC、F1-Score、Precision、Recall）
+  map<string, double> extra_metrics = 9;
+
+  // 该 Epoch 是否更新了最佳模型权重
+  bool is_best_epoch = 10;
+
+  string timestamp = 11;
+}
+
+// ── 进度反馈与控制指令 ─────────────────────────────────────────────────────────
+
+// 向模型端下发的实时控制指令
+enum ProgressControlAction {
+  ACTION_CONTINUE = 0;           // 继续正常训练
+  ACTION_EARLY_STOP = 1;         // 触发早停（收敛条件满足或平台下发早停）
+  ACTION_TRIGGER_CHECKPOINT = 2; // 触发立即保存当前检查点
+  ACTION_ABORT = 3;              // 强制中断退出（出现越界行为或超时）
+}
+
+// 进度上报确认响应
+message ProgressReportAck {
+  // 是否成功接收
+  bool success = 1;
+
+  // 下发的控制指令
+  ProgressControlAction action = 2;
+
+  // 响应说明或控制原因
+  string message = 3;
+
+  // 服务端当前时间戳
+  string ack_timestamp = 4;
+}
+
+// ── 进度传输配置契约 ─────────────────────────────────────────────────────────
+
+// 进度上报通道传输模式
+enum ProgressTransportMode {
+  TRANSPORT_UNSPECIFIED = 0;
+  HTTP_POST = 1;     // 本地 HTTP POST 请求（如 http://127.0.0.1:6001/internal/progress）
+  GRPC_STREAM = 2;   // 本地 gRPC 双向流或一元调用
+  FILE_FLUSH = 3;    // 本地持久化文件（写入 /opt/taa/output/progress.json）
+  STDOUT_STREAM = 4; // 标准输出格式化日志拦截（[CIPHERFLOW_PROGRESS] {"epoch": 1, ...}）
+}
+
+// 进度上报配置项（由运行环境注入到模型环境变量或配置中）
+message ProgressReporterConfig {
+  // 传输模式
+  ProgressTransportMode mode = 1;
+
+  // 上报端点（HTTP 或 gRPC 地址）
+  string endpoint = 2;
+
+  // 按 step 上报的间隔阈值（如每 10 个 step 上报一次，0 表示不按 step 限制）
+  int32 interval_steps = 3;
+
+  // 按时间上报的间隔阈值（如每 5 秒上报一次）
+  int32 interval_seconds = 4;
+
+  // 进度输出文件路径（仅在 FILE_FLUSH 模式下有效，默认 "/opt/taa/output/progress.json"）
+  string file_path = 5;
+}
+
+// ── 训练进度 gRPC 服务定义 ─────────────────────────────────────────────────────
+
+service TrainingProgressService {
+  // 单次上报训练进度（一元 RPC）
+  rpc ReportProgress (TrainingProgress) returns (ProgressReportAck);
+
+  // 流式长连接实时推送训练进度（客户端流式 RPC）
+  rpc StreamProgress (stream TrainingProgress) returns (ProgressReportAck);
+
+  // Epoch 结束时上报阶段评估汇总（一元 RPC）
+  rpc ReportEpochSummary (EpochSummary) returns (ProgressReportAck);
+}

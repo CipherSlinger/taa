@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package cipherflow.v1;
+
+option go_package = "taa/api/proto/cipherflow/v1;cipherflowv1";
+option java_multiple_files = true;
+option java_package = "com.cipherflow.v1";
+
+// ── 检查点与故障自愈断点续训规约 ─────────────────────────────────────────────
+
+// 检查点元数据信息
+message CheckpointMeta {
+  // 检查点唯一标识（如 "ckpt-epoch-010-step-00500"）
+  string checkpoint_id = 1;
+
+  // 任务唯一标识
+  string task_id = 2;
+
+  // 保存时完成的 Epoch 编号
+  int32 epoch = 3;
+
+  // 保存时完成的全局迭代步数
+  int64 step = 4;
+
+  // 检查点生成时间戳（ISO8601 UTC）
+  string created_at = 5;
+
+  // 保存该检查点时的关键验证指标（如 {"val_loss": 0.182, "val_acc": 0.934}）
+  map<string, double> metrics = 6;
+
+  // 检查点包含的文件名相对列表（如 ["model_state.pt", "optimizer_state.pt"]）
+  repeated string file_names = 7;
+
+  // 检查点总文件大小（字节）
+  int64 total_size_bytes = 8;
+
+  // 检查点目录或核心权重文件的 SM3 哈希校验值
+  string sm3_checksum = 9;
+
+  // 是否为目前为止验证指标最优的检查点
+  bool is_best = 10;
+
+  // 扩展元数据键值
+  map<string, string> extra_info = 11;
+}
+
+// 断点恢复执行模式枚举
+enum ResumeMode {
+  RESUME_NONE = 0;          // 不恢复，强制从头全新训练
+  RESUME_AUTO_LATEST = 1;   // 自动扫描检查点目录并恢复最新的检查点（推荐自愈模式）
+  RESUME_SPECIFIC = 2;      // 从平台或配置明确指定的具体检查点路径恢复
+  RESUME_BEST = 3;          // 自动加载评估指标表现最好的检查点
+}
+
+// 任务启动时的断点恢复配置（由环境在拉起模型时注入）
+message ResumeConfig {
+  // 恢复模式
+  ResumeMode mode = 1;
+
+  // 指定加载的检查点具体文件或目录路径（当 mode 为 RESUME_SPECIFIC 时必填）
+  string checkpoint_path = 2;
+
+  // 恢复后是否自动跳过已完成的 Epoch
+  bool skip_completed_epochs = 3;
+
+  // 是否要求模型架构与超参数严格一致校验
+  bool strict_match = 4;
+}
+
+// 检查点定时/定步保存策略（指导模型训练循环何时落盘 checkpoint）
+message CheckpointSavePolicy {
+  // 每隔 N 个 Epoch 保存一次检查点（0 表示不按 Epoch 定期保存）
+  int32 save_every_n_epochs = 1;
+
+  // 每隔 N 个 Step 保存一次检查点（0 表示不按 Step 定期保存）
+  int64 save_every_n_steps = 2;
+
+  // 是否仅保留验证集指标最佳的检查点（省去磁盘开销）
+  bool save_best_only = 3;
+
+  // 最多保留的历史检查点数量轮转上限（超过时自动清理最老旧检查点）
+  int32 max_keep_checkpoints = 4;
+}

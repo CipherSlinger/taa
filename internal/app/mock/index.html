@@ -46,12 +46,17 @@
       }
     }
     @media (max-width: 1400px) {
-      .four-col-layout { grid-template-columns: repeat(2, 1fr) !important; }
+      .five-col-layout { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+    }
+    @media (max-width: 1060px) {
+      .five-col-layout { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
     }
     @media (max-width: 960px) {
+      .top-dashboard-grid { grid-template-columns: 1fr !important; }
       .two-col-layout, .three-col-layout, .four-col-layout { grid-template-columns: 1fr !important; }
     }
-    @media (max-width: 768px) {
+    @media (max-width: 720px) {
+      .five-col-layout { grid-template-columns: 1fr !important; }
       main { width: 100% !important; padding: 18px 12px 48px !important; }
       .taa-addr-bar { flex-wrap: wrap !important; }
       .taa-addr-bar input { width: 100% !important; min-width: 0 !important; }
@@ -117,12 +122,55 @@
       gap: 16px;
       margin: 20px 0;
     }
+    .top-dashboard-grid {
+      display: grid;
+      grid-template-columns: 420px 1fr;
+      gap: 16px;
+      margin-bottom: 24px;
+      align-items: stretch;
+    }
     .four-col-layout {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
       gap: 16px;
       margin-bottom: 16px;
       align-items: start;
+    }
+    .five-col-layout {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 16px;
+      margin-bottom: 16px;
+      align-items: start;
+    }
+    .icon-btn-compact {
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-sub);
+      color: var(--muted);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: all .15s ease;
+      flex-shrink: 0;
+    }
+    .icon-btn-compact:hover {
+      color: var(--accent);
+      background: rgba(37, 99, 235, 0.08);
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+    .icon-btn-compact:active {
+      transform: translateY(0);
+    }
+    .icon-btn-compact.copied {
+      color: var(--ok) !important;
+      border-color: var(--ok) !important;
+      background: rgba(16, 185, 129, 0.1) !important;
     }
     .flow-col-stack {
       display: flex;
@@ -489,11 +537,17 @@
       color: #34d399;
       border: 1px solid rgba(16, 185, 129, 0.35);
     }
-    .upload-history { margin-top:16px; display:flex; flex-direction:column; gap:10px; }
-    .upload-history-head { display:flex; flex-direction:column; gap:4px; }
-    .upload-history-head h3 { margin:0; font-size:14px; font-weight:650; }
-    .upload-history-head p { margin:0; font-size:12px; }
-    .upload-empty { padding:12px; font-size:12.5px; text-align:center; border:1px dashed var(--line); border-radius:8px; color:var(--muted); background:rgba(127,127,127,.04); }
+    .upload-history {
+      margin-top: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: rgba(127, 127, 127, 0.03);
+    }
+    .upload-empty { padding:12px; font-size:12.5px; text-align:center; color:var(--muted); }
     .upload-item {
       display: flex;
       align-items: center;
@@ -963,51 +1017,34 @@
     <p class="muted" style="margin:0; font-size:13.5px;">用于本地联调 TAA 全部接口。上半部分模拟 <strong>平台接收</strong> TAA 主动上报的请求；下半部分模拟 <strong>平台下发</strong> 请求到 TAA，测试所有接口连通性。</p>
   </header>
 
-  <div class="taa-addr-bar">
-    <label for="taaAddr">TAA 服务地址</label>
-    <input id="taaAddr" value="" placeholder="自动检测中...">
-  </div>
-
-  <!-- ─── 平台接收 + 获取远程证明报告 ─── -->
-  <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; margin:20px 0 14px; flex-wrap:wrap; background:var(--panel-sub); border:1px solid var(--line); border-radius:10px; padding:10px 16px;">
-    <div style="display:flex; align-items:center; gap:10px;">
-      <h2 style="margin:0; font-size:14px; font-weight:650;">环境检查</h2>
-      <span class="muted" style="font-size:12px;">·</span>
-      <div style="display:flex; align-items:center; gap:8px;">
-        <span id="healthDot" class="dot" title="未检查"></span>
-        <span id="healthLabel" class="muted" style="font-size:13px;">未检查</span>
-      </div>
-    </div>
-    <!-- 连通性检查：红绿灯 + 检查按钮 + 可展开 JSON 预览 -->
-    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-      <button onclick="testHealth()" style="padding:5px 12px; font-size:12px;">检查连通性</button>
-      <button onclick="toggleHealthDetail()" class="secondary" style="padding:5px 12px; font-size:12px;">查看结果</button>
-    </div>
-  </div>
-  <div id="healthDetail" style="display:none; margin-bottom:14px;">
-    <pre id="healthDetailContent" style="background:rgba(127,127,127,.08); padding:12px; border-radius:10px; font-size:13px; max-height:300px; overflow:auto; white-space:pre-wrap; word-break:break-all; margin:0;"></pre>
-  </div>
-
-  <div class="two-col-layout" style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-bottom:16px; align-items:start;">
-    <!-- 左列：平台注册（包含获取远程证明报告与报告保存） -->
-    <section class="card" id="card-attestation" style="display:flex; flex-direction:column;">
+  <div class="top-dashboard-grid">
+    <!-- 左侧：变窄的平台注册板块 -->
+    <section class="card" id="card-attestation" style="display:flex; flex-direction:column; margin-bottom:0;">
       <div class="card-head" style="margin-bottom:12px; padding-bottom:10px;">
         <div>
           <h2>平台注册</h2>
-          <div class="status" style="margin-top:8px;"><span id="dot" class="dot"></span><span id="statusText">等待 TAA 注册请求</span></div>
+          <div class="status" style="margin-top:8px; font-size:14px;"><span id="dot" class="dot"></span><span id="statusText">等待 TAA 注册请求</span></div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
           <button id="registerBodyBtn" class="secondary" onclick="openRegisterBodyModal()" disabled>查看返回</button>
         </div>
       </div>
       <div class="card-compact" style="min-height:auto;">
-        <p id="registerSummary" class="card-note">完整返回体仅在弹窗中展示。</p>
-        <div id="registerPublicKeyBox" hidden style="margin-top:10px;">
-          <label for="registerPublicKey">TAA 公钥</label>
-          <textarea id="registerPublicKey" readonly style="min-height:110px; cursor:text; background:rgba(37,99,235,.05);" onclick="this.select();"></textarea>
-          <div class="actions" style="margin-top:8px;">
-            <button class="secondary" onclick="copyRegisterPublicKey()">复制公钥</button>
+        <p id="registerSummary" class="card-note" style="margin:0 0 8px;">完整返回体仅在弹窗中展示。</p>
+        <div id="registerPublicKeyBox" hidden style="margin-top:4px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+            <label for="registerPublicKey" style="margin:0; font-size:12.5px; font-weight:650;">TAA 注册公钥</label>
+            <button type="button" id="copyPubKeyBtn" class="icon-btn-compact" onclick="copyRegisterPublicKey(this)" title="复制公钥" aria-label="复制公钥">
+              <svg class="copy-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+              <svg class="check-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:none; color:var(--ok);">
+                <polyline points="20 6 9 17 4 12"></polyline>
+              </svg>
+            </button>
           </div>
+          <textarea id="registerPublicKey" readonly style="min-height:90px; font-size:11.5px; font-family:ui-monospace,Menlo,monospace; line-height:1.45; cursor:text; background:rgba(37,99,235,.04); border-radius:8px; margin:0;" onclick="this.select();"></textarea>
         </div>
         <input type="hidden" id="attestRequestId" value="req-mock-attest-001">
         <div id="attestationResult" class="test-result" style="display:none;"></div>
@@ -1017,29 +1054,44 @@
           <button class="secondary" onclick="refreshStatus()">刷新状态</button>
           <button class="secondary" onclick="resetStatus()">清空接收记录</button>
         </div>
-        <p class="muted" style="margin:6px 0 0; font-size:12px;">最后刷新：<span id="lastRefresh">-</span></p>
+        <p class="muted" style="margin:8px 0 0; font-size:12px;">最后刷新：<span id="lastRefresh">-</span></p>
       </div>
     </section>
 
-    <!-- 右列：/v1/taa/getResourceInfo — 资源信息获取 -->
-    <section class="card" id="card-resourceInfo" style="display:flex; flex-direction:column;">
-      <div class="card-head">
-        <div>
-          <h2>/v1/taa/getResourceInfo — 资源信息获取</h2>
-          <p class="card-note">传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理。</p>
+    <!-- 右侧：服务连接与环境检查面板 -->
+    <section class="card" id="card-service-env" style="display:flex; flex-direction:column; margin-bottom:0; justify-content:space-between;">
+      <div>
+        <div class="card-head" style="margin-bottom:12px; padding-bottom:10px;">
+          <div>
+            <h2>服务连接与环境检查</h2>
+            <p class="card-note">配置 TAA 目标服务地址，并执行连通性与健康状态探测。</p>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <button onclick="testHealth()" style="padding:6px 14px; font-size:13px;">检查连通性</button>
+            <button onclick="toggleHealthDetail()" class="secondary" style="padding:6px 12px; font-size:13px;">查看结果</button>
+          </div>
         </div>
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <button id="resourceInfoModalBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openResourceInfoModal()" disabled>弹窗全屏查看</button>
+        <div style="display:flex; flex-direction:column; gap:12px;">
+          <div class="taa-addr-bar" style="margin:0; box-shadow:none; background:var(--panel-sub);">
+            <label for="taaAddr">TAA 服务地址</label>
+            <input id="taaAddr" value="" placeholder="自动检测中...">
+          </div>
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; background:var(--panel-sub); border:1px solid var(--line); border-radius:10px; padding:10px 14px; flex-wrap:wrap;">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span style="font-size:13px; font-weight:650;">环境状态</span>
+              <span class="muted" style="font-size:12px;">·</span>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span id="healthDot" class="dot" title="未检查"></span>
+                <span id="healthLabel" class="muted" style="font-size:13px;">未检查</span>
+              </div>
+            </div>
+            <span class="muted" style="font-size:12px; font-family:ui-monospace,Menlo,monospace;">GET /v1/taa/health</span>
+          </div>
         </div>
       </div>
-      <label for="resourceInfoUrl">resourceUrl</label>
-      <input id="resourceInfoUrl" value="http://example.com/data.tar.gz">
-      <div class="actions">
-        <button onclick="testGetResourceInfo()">发送测试</button>
-        <button type="button" class="secondary" onclick="loadSampleResourceTree()">加载示例树</button>
+      <div id="healthDetail" style="display:none; margin-top:12px;">
+        <pre id="healthDetailContent" style="background:rgba(127,127,127,.08); padding:12px; border-radius:10px; font-size:13px; max-height:220px; overflow:auto; white-space:pre-wrap; word-break:break-all; margin:0;"></pre>
       </div>
-      <div id="resourceInfoResult" class="test-result"></div>
-      <div id="resourceInfoTreeContainer" style="display:none; margin-top:14px;"></div>
     </section>
   </div>
 
@@ -1068,13 +1120,34 @@
   </div>
   <p class="muted">以下各卡片模拟平台向 TAA 发送请求，用于验证各接口的连通性和参数校验。点击"发送测试"即可使用模拟数据调用 TAA 对应接口。</p>
 
-  <!-- 训练流程：四列横向流式布局 -->
-  <div class="four-col-layout">
-    <!-- 第 1 列：文件上传 -->
+  <!-- 训练流程：五列横向流式布局 -->
+  <div class="five-col-layout">
+    <!-- 第 1 列：资源信息获取（挪到文件上传板块左侧） -->
+    <section class="card drop-zone-card" id="card-resourceInfo" style="display:flex; flex-direction:column;">
+      <div class="card-head">
+        <div>
+          <h2>⓪ /v1/taa/getResourceInfo — 资源信息获取</h2>
+          <p class="card-note">传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理。</p>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <button id="resourceInfoModalBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openResourceInfoModal()" disabled>弹窗全屏查看</button>
+        </div>
+      </div>
+      <label for="resourceInfoUrl">resourceUrl</label>
+      <input id="resourceInfoUrl" value="http://example.com/data.tar.gz">
+      <div class="actions">
+        <button onclick="testGetResourceInfo()">发送测试</button>
+        <button type="button" class="secondary" onclick="loadSampleResourceTree()">加载示例树</button>
+      </div>
+      <div id="resourceInfoResult" class="test-result"></div>
+      <div id="resourceInfoTreeContainer" style="display:none; margin-top:14px;"></div>
+    </section>
+
+    <!-- 第 2 列：文件上传 -->
     <section class="card" id="card-upload" style="display:flex; flex-direction:column;">
       <div class="card-head">
         <div>
-          <h2>① 文件上传（生成 resourceUrl）</h2>
+          <h2>① 文件上传</h2>
           <p class="card-note">上传资源文件，服务器保存到本地并生成可访问的 URL。</p>
         </div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
@@ -1102,15 +1175,9 @@
       </div>
       <div id="uploadResult" style="display:none;"></div>
       <div class="upload-history">
-        <div class="upload-history-head" style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; flex-wrap:wrap;">
-          <div>
-            <h3 style="margin:0;">已上传文件</h3>
-            <p class="muted" style="margin:2px 0 0; font-size:12px;">拖拽文件项至右侧卡片可自动填入 resourceUrl。</p>
-          </div>
-          <div style="display:flex; align-items:center; gap:8px;">
-            <span id="uploadedFilesCount" class="muted" style="font-size:12px;">0 个文件</span>
-            <button type="button" class="danger" onclick="clearUploadedFiles()" style="padding:4px 10px; font-size:12px;">清空所有上传文件</button>
-          </div>
+        <div id="uploadClearBar" style="display:none; justify-content:flex-end; margin-bottom:4px;">
+          <span id="uploadedFilesCount" style="display:none;"></span>
+          <button type="button" class="danger" onclick="clearUploadedFiles()" style="padding:3px 8px; font-size:11.5px;">清空所有上传文件</button>
         </div>
         <div id="uploadedFilesList" style="display:flex; flex-direction:column; gap:6px;"></div>
       </div>
@@ -1136,27 +1203,27 @@
           <button id="reportModelImportBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportModelImportBodyModal()" disabled title="查看模型导入回调上报返回体">查看上报</button>
         </div>
       </div>
-      <label for="importModelResourceUrl">resourceUrl（首次必填，后续留空表示复用模型直接训练最新数据）</label>
+      <label for="importModelResourceUrl">resourceUrl</label>
       <input id="importModelResourceUrl" value="http://example.com/model.tar.gz">
-      <label for="importModelRequestId">requestId（与 taskId 二选一或都填）</label>
+      <label for="importModelRequestId">requestId</label>
       <div class="input-action-group">
         <input id="importModelRequestId" value="req-mock-importModel-001">
         <button type="button" class="secondary btn-field-random" onclick="randomizeField('importModelRequestId', 'req-model')" title="生成随机 requestId">随机生成</button>
       </div>
-      <label for="importModelTaskId">taskId（可选，与 requestId 至少填一项）</label>
+      <label for="importModelTaskId">taskId</label>
       <div class="input-action-group">
         <input id="importModelTaskId" value="">
         <button type="button" class="secondary btn-field-random" onclick="randomizeField('importModelTaskId', 'task-model')" title="生成随机 taskId">随机生成</button>
       </div>
       <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; margin-bottom:4px;">
-        <label for="importModelPublicKey" style="margin:0;">publicKey（留空=不传）</label>
+        <label for="importModelPublicKey" style="margin:0;">publicKey</label>
         <button type="button" class="secondary" style="padding:4px 10px; font-size:12px;" onclick="generateImportModelPublicKey(this)">创建公钥</button>
       </div>
       <textarea id="importModelPublicKey" placeholder="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"></textarea>
       <label for="importModelCommands">commands</label>
       <textarea id="importModelCommands">echo prepare runtimeConfig
 python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
-      <label for="importModelEnv">env（JSON 字符串）</label>
+      <label for="importModelEnv">env</label>
       <textarea id="importModelEnv">{"CUDA_VISIBLE_DEVICES":"0"}</textarea>
       <div class="actions">
         <button onclick="testImportModel()">发送测试</button>
@@ -1183,12 +1250,12 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
         </div>
         <label for="importResourceUrl">resourceUrl</label>
         <input id="importResourceUrl" value="http://example.com/data.tar.gz">
-        <label for="importRequestId">requestId（与 taskId 二选一或都填）</label>
+        <label for="importRequestId">requestId</label>
         <div class="input-action-group">
           <input id="importRequestId" value="req-mock-import-001">
           <button type="button" class="secondary btn-field-random" onclick="randomizeField('importRequestId', 'req-data')" title="生成随机 requestId">随机生成</button>
         </div>
-        <label for="importTaskId">taskId（可选，与 requestId 至少填一项）</label>
+        <label for="importTaskId">taskId</label>
         <div class="input-action-group">
           <input id="importTaskId" value="">
           <button type="button" class="secondary btn-field-random" onclick="randomizeField('importTaskId', 'task-data')" title="生成随机 taskId">随机生成</button>
@@ -1240,11 +1307,11 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
           <button id="exportBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('exportResult')" disabled>查看返回</button>
         </div>
       </div>
-      <label for="exportRequestId">requestId（与 taskId 二选一或都填）</label>
-      <input id="exportRequestId" value="" placeholder="requestId（与 taskId 至少填一项）">
-      <label for="exportTaskId">taskId（可选，与 requestId 至少填一项）</label>
+      <label for="exportRequestId">requestId</label>
+      <input id="exportRequestId" value="" placeholder="requestId">
+      <label for="exportTaskId">taskId</label>
       <input id="exportTaskId" value="task-mock-001">
-      <label for="exportPublicKey">publicKey（可选，留空=不传，仅功能验证使用）</label>
+      <label for="exportPublicKey">publicKey</label>
       <input id="exportPublicKey" value="" placeholder="选填，留空=不传，需要验证时手动输入">
 
       <div style="margin: 10px 0 6px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
@@ -1258,7 +1325,7 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
         <span class="muted" style="font-size: 12px;">开启后自动使用私钥解密下载数据</span>
       </div>
 
-      <label for="exportPrivateKey">解密私钥（PEM）</label>
+      <label for="exportPrivateKey">解密私钥</label>
       <textarea id="exportPrivateKey" rows="4" placeholder="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"></textarea>
 
       <div class="actions">
@@ -1671,11 +1738,13 @@ function renderUploadedFiles(files) {
   uploadedFiles = Array.isArray(files) ? files.slice() : [];
   const countEl = document.getElementById('uploadedFilesCount');
   const listEl = document.getElementById('uploadedFilesList');
+  const clearBar = document.getElementById('uploadClearBar');
   if (countEl) countEl.textContent = `${uploadedFiles.length} 个文件`;
+  if (clearBar) clearBar.style.display = uploadedFiles.length ? 'flex' : 'none';
   if (!listEl) return;
 
   if (!uploadedFiles.length) {
-    listEl.innerHTML = '<div class="upload-empty">暂无上传文件，上传后可在此处拖拽填入 URL。</div>';
+    listEl.innerHTML = '<div class="upload-empty">暂无上传文件</div>';
     return;
   }
 
@@ -2041,9 +2110,24 @@ function openRegisterBodyModal() {
   const body = lastRegisterModalBody != null ? lastRegisterModalBody : lastRegisterData;
   openBodyModal(title, body);
 }
-async function copyRegisterPublicKey() {
+async function copyRegisterPublicKey(btnEl) {
   const key = (lastRegisterData && lastRegisterData.taaPublicKey) ? String(lastRegisterData.taaPublicKey).trim() : '';
-  await copyText(key);
+  if (!key) return;
+  const ok = await copyText(key);
+  if (ok && btnEl && btnEl.querySelector) {
+    const copySvg = btnEl.querySelector('.copy-icon');
+    const checkSvg = btnEl.querySelector('.check-icon');
+    if (copySvg && checkSvg) {
+      copySvg.style.display = 'none';
+      checkSvg.style.display = 'inline-block';
+      btnEl.classList.add('copied');
+      setTimeout(() => {
+        copySvg.style.display = 'inline-block';
+        checkSvg.style.display = 'none';
+        btnEl.classList.remove('copied');
+      }, 1500);
+    }
+  }
 }
 async function refreshStatus() {
   try {

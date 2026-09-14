@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	teecrypto "taa/pkg/crypto"
@@ -28,9 +29,6 @@ import (
 
 // maxDownloadBytes 限制单次资源下载的最大字节数，防止 OOM。
 const maxDownloadBytes = 512 << 20 // 512 MB
-
-// scriptTimeout 是脚本执行的统一超时时间。
-const scriptTimeout = 10 * time.Minute
 
 // ── 公共返回格式 ──────────────────────────────────────────
 
@@ -111,8 +109,211 @@ type TAAState struct {
 	ModelChecksum        map[string]any           // 模型压缩包校验和 (size, algorithm, value)
 	DataChecksum         map[string]any           // 数据压缩包校验和 (size, algorithm, value)
 	CurrentOp            string                   // 当前操作: idle/downloading/decrypting/extracting/debugging/training/auditing/reporting
+	ActiveTaskID         string                   // 当前独占执行的任务 ID
+	ActiveRequestID      string                   // 当前独占执行的请求 ID
+	activeToken          int64                    // 当前独占令牌
+	activeTask           *ActiveTaskSnapshot      // 当前在飞任务快照
+	stateStore           *StateStore              // 持久化密封存储
 	importIndex          *ImportIndexStore
 	importIndexErr       error
+}
+
+// SetStateStore 注入密封状态存储引擎
+func (s *TAAState) SetStateStore(store *StateStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stateStore = store
+}
+
+// GetStateStore 获取当前绑定的密封状态存储引擎
+func (s *TAAState) GetStateStore() *StateStore {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.stateStore
+}
+
+// GetActiveTask 获取当前在飞任务快照副本
+func (s *TAAState) GetActiveTask() *ActiveTaskSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.activeTask == nil {
+		return nil
+	}
+	cloned := *s.activeTask
+	return &cloned
+}
+
+// ResetActiveTask 重置在飞任务状态并密封落盘
+func (s *TAAState) ResetActiveTask() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activeTask = nil
+	s.ActiveTaskID = ""
+	s.ActiveRequestID = ""
+	s.activeToken = 0
+	s.CurrentOp = "idle"
+	if err := s.sealStateLocked(); err != nil {
+		s.Logs.Add(LogError, "state", "ResetActiveTask 持久化密封失败: %v", err)
+	}
+}
+
+// RestoreFromPersistentState 从已解密验证的受保护持久化状态还原运行时内存
+func (s *TAAState) RestoreFromPersistentState(p *PersistentState) {
+	if p == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if p.CurrentPhase >= 1 && p.CurrentPhase <= 4 {
+		s.CurrentPhase = p.CurrentPhase
+	}
+	s.ModelImported = p.ModelImported
+	s.DataImported = p.DataImported
+	s.TrainingDataImported = p.TrainingDataImported
+	s.ExportPublicKey = p.ExportPublicKey
+	s.SavedModelResourceURL = p.SavedModelResourceURL
+	s.RuntimeConfig = p.RuntimeConfig
+
+	if p.ModelChecksum != nil {
+		s.ModelChecksum = make(map[string]any, len(p.ModelChecksum))
+		for k, v := range p.ModelChecksum {
+			s.ModelChecksum[k] = v
+		}
+	}
+	if p.DataChecksum != nil {
+		s.DataChecksum = make(map[string]any, len(p.DataChecksum))
+		for k, v := range p.DataChecksum {
+			s.DataChecksum[k] = v
+		}
+	}
+	if p.ActiveTask != nil {
+		taskCopy := *p.ActiveTask
+		s.activeTask = &taskCopy
+		s.ActiveTaskID = p.ActiveTask.TaskID
+		s.ActiveRequestID = p.ActiveTask.RequestID
+		s.CurrentOp = p.ActiveTask.Status
+	} else {
+		s.activeTask = nil
+		s.ActiveTaskID = ""
+		s.ActiveRequestID = ""
+		s.CurrentOp = "idle"
+	}
+}
+
+// sealStateLocked 在持有 s.mu 锁的情况下同步密封受保护状态到磁盘。
+// 若未配置 stateStore，则安全返回 nil。
+func (s *TAAState) sealStateLocked() error {
+	if s.stateStore == nil {
+		return nil
+	}
+
+	var state PersistentState
+	if base := s.stateStore.GetState(); base != nil {
+		state = *base
+	} else {
+		state = *newCleanPersistentState()
+	}
+
+	state.CurrentPhase = s.CurrentPhase
+	state.ModelImported = s.ModelImported
+	state.DataImported = s.DataImported
+	state.TrainingDataImported = s.TrainingDataImported
+	state.ExportPublicKey = s.ExportPublicKey
+	state.SavedModelResourceURL = s.SavedModelResourceURL
+	state.RuntimeConfig = s.RuntimeConfig
+
+	if s.ModelChecksum != nil {
+		state.ModelChecksum = make(map[string]any, len(s.ModelChecksum))
+		for k, v := range s.ModelChecksum {
+			state.ModelChecksum[k] = v
+		}
+	} else {
+		state.ModelChecksum = nil
+	}
+
+	if s.DataChecksum != nil {
+		state.DataChecksum = make(map[string]any, len(s.DataChecksum))
+		for k, v := range s.DataChecksum {
+			state.DataChecksum[k] = v
+		}
+	} else {
+		state.DataChecksum = nil
+	}
+
+	if s.activeTask != nil {
+		taskCopy := *s.activeTask
+		state.ActiveTask = &taskCopy
+	} else {
+		state.ActiveTask = nil
+	}
+
+	return s.stateStore.SealState(&state)
+}
+
+func (s *TAAState) saveModelSuccess(resourceURL string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ModelImported = true
+	s.SavedModelResourceURL = resourceURL
+	if err := s.sealStateLocked(); err != nil {
+		s.Logs.Add(LogError, "state", "持久化模型导入成功状态失败: %v", err)
+	}
+}
+
+// SaveModelSuccess 导出供调用的模型导入成功状态更新方法
+func (s *TAAState) SaveModelSuccess(resourceURL string) {
+	s.saveModelSuccess(resourceURL)
+}
+
+func (s *TAAState) saveDataSuccess(record ImportIndexRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.LatestDataRecord = record
+	s.CurrentDataRecord = record
+	if s.CurrentPhase == 3 {
+		s.TrainingDataImported = true
+	} else {
+		s.DataImported = true
+	}
+	if err := s.sealStateLocked(); err != nil {
+		s.Logs.Add(LogError, "state", "持久化数据导入成功状态失败: %v", err)
+	}
+}
+
+// SaveDataSuccess 导出供调用的数据导入成功状态更新方法
+func (s *TAAState) SaveDataSuccess(record ImportIndexRecord) {
+	s.saveDataSuccess(record)
+}
+
+func (s *TAAState) updateImportState(isModel bool, imported bool, phase int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if isModel {
+		s.ModelImported = imported
+		if !imported {
+			s.SavedModelResourceURL = ""
+			s.RuntimeConfig = ""
+		}
+	} else {
+		switch phase {
+		case 1, 2:
+			s.DataImported = imported
+		case 3:
+			s.TrainingDataImported = imported
+		}
+		if !imported {
+			s.CurrentDataRecord = ImportIndexRecord{}
+		}
+	}
+	if err := s.sealStateLocked(); err != nil {
+		s.Logs.Add(LogError, "state", "持久化导入状态更新失败: %v", err)
+	}
+}
+
+// UpdateImportState 导出供调用的导入状态更新方法
+func (s *TAAState) UpdateImportState(isModel bool, imported bool, phase int) {
+	s.updateImportState(isModel, imported, phase)
 }
 
 func (s *TAAState) setModelChecksum(checksum map[string]any) {
@@ -134,6 +335,11 @@ func (s *TAAState) getModelChecksum() map[string]any {
 	return out
 }
 
+// GetModelChecksum 获取当前模型压缩包校验和快照
+func (s *TAAState) GetModelChecksum() map[string]any {
+	return s.getModelChecksum()
+}
+
 func (s *TAAState) setDataChecksum(checksum map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -151,6 +357,11 @@ func (s *TAAState) getDataChecksum() map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// GetDataChecksum 获取当前数据压缩包校验和快照
+func (s *TAAState) GetDataChecksum() map[string]any {
+	return s.getDataChecksum()
 }
 
 func (s *TAAState) setSavedModelResourceURL(url string) {
@@ -258,6 +469,32 @@ type importRequest struct {
 	TaskID        string  `json:"taskId"`
 	PublicKey     *string `json:"publicKey,omitempty"`
 	RuntimeConfig string  `json:"runtimeConfig,omitempty"`
+}
+
+func (r *importRequest) UnmarshalJSON(data []byte) error {
+	type Alias importRequest
+	aux := &struct {
+		RuntimeConfig any `json:"runtimeConfig"`
+		*Alias
+	}{
+		Alias: (*Alias)(r),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	switch v := aux.RuntimeConfig.(type) {
+	case string:
+		r.RuntimeConfig = v
+	case nil:
+		r.RuntimeConfig = ""
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		r.RuntimeConfig = string(b)
+	}
+	return nil
 }
 
 type runtimeConfig struct {
@@ -458,8 +695,210 @@ func (s *TAAState) statusHandler(w http.ResponseWriter, r *http.Request) {
 // setCurrentOp is a helper to update the current operation.
 func (s *TAAState) setCurrentOp(op string) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.CurrentOp = op
+}
+
+// isTrainingBusyLocked 检查是否处于正在训练/执行阶段（调用方需持有 s.mu 读锁或写锁）。
+func (s *TAAState) isTrainingBusyLocked() bool {
+	return s.CurrentOp == "staging" || s.CurrentOp == "training" || s.CurrentOp == "reporting"
+}
+
+// tryAcquireTask 尝试原子抢占训练/导入任务执行权（单任务互斥）。
+// isModel: true 表示模型导入流程，false 表示数据导入/训练流程
+// initialOp: 初始操作标识（如 "downloading" 或 "staging"）
+func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel bool) (func(), error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	activeTaskInfo := func() (string, string) {
+		task := s.ActiveTaskID
+		if task == "" {
+			task = s.ActiveRequestID
+		}
+		if task == "" {
+			task = "unknown"
+		}
+		op := s.CurrentOp
+		if op == "" {
+			op = "busy"
+		}
+		return task, op
+	}
+
+	// 1. 若当前处于训练执行阶段，全局绝对互斥，禁止任何新任务下发
+	if s.isTrainingBusyLocked() {
+		task, op := activeTaskInfo()
+		return nil, pkgerrors.New(pkgerrors.CodeConflict,
+			fmt.Sprintf("当前已有训练任务正在执行中 (taskId: %s, op: %s)，请等待完成后再提交", task, op))
+	}
+
+	// 2. 检查是否有其他任务正在处理（如正在下载、解密、审计等）
+	if s.ActiveTaskID != "" || (s.CurrentOp != "" && s.CurrentOp != "idle") {
+		isPhase1Pair := false
+		if s.CurrentPhase == 1 && !s.isTrainingBusyLocked() {
+			if !isModel && s.ModelImported && !s.DataImported {
+				isPhase1Pair = true
+			} else if isModel && s.DataImported && !s.ModelImported {
+				isPhase1Pair = true
+			} else if s.ActiveTaskID == taskID && taskID != "" {
+				if isModel && !s.ModelImported {
+					isPhase1Pair = true
+				} else if !isModel && !s.DataImported {
+					isPhase1Pair = true
+				}
+			}
+		}
+
+		if !isPhase1Pair {
+			task, op := activeTaskInfo()
+			return nil, pkgerrors.New(pkgerrors.CodeConflict,
+				fmt.Sprintf("当前已有任务正在执行中 (taskId: %s, op: %s)，请等待完成后再提交", task, op))
+		}
+	}
+
+	token := time.Now().UnixNano()
+	s.activeToken = token
+	s.ActiveTaskID = taskID
+	s.ActiveRequestID = requestID
+	s.CurrentOp = initialOp
+
+	taskType := "data_import"
+	if isModel {
+		taskType = "model_import"
+	} else if initialOp == "staging" || initialOp == "training" {
+		taskType = "training"
+	}
+
+	s.activeTask = &ActiveTaskSnapshot{
+		RequestID:        requestID,
+		TaskID:           taskID,
+		Type:             taskType,
+		Phase:            s.CurrentPhase,
+		Status:           "RUNNING",
+		ResultDir:        resultDirForRequestTask(s.Security.ResultDir, requestID, taskID),
+		StartedAt:        time.Now().UTC(),
+		RecoveryAttempts: 0,
+	}
+	if err := s.sealStateLocked(); err != nil {
+		s.Logs.Add(LogError, "task", "持久化在飞任务快照失败: %v", err)
+	}
+
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.activeToken == token {
+				s.activeToken = 0
+				s.ActiveTaskID = ""
+				s.ActiveRequestID = ""
+				s.CurrentOp = "idle"
+				s.activeTask = nil
+				if err := s.sealStateLocked(); err != nil {
+					s.Logs.Add(LogError, "task", "清除在飞任务快照持久化失败: %v", err)
+				}
+			}
+		})
+	}
+
+	return release, nil
+}
+
+// runAsyncSafe 在独立 goroutine 中安全执行异步处理逻辑，统一管理锁释放与 panic 恢复。
+func (s *TAAState) runAsyncSafe(name string, release func(), fn func()) {
+	go func() {
+		if release != nil {
+			defer release()
+		}
+		defer func() {
+			if r := recover(); r != nil {
+				s.handleAsyncPanic(name, r)
+			}
+		}()
+		fn()
+	}()
+}
+
+// handleAsyncPanic 实现规约 11（Async Goroutine Panic Recovery & Compensation）
+func (s *TAAState) handleAsyncPanic(name string, r any) {
+	panicMsg := fmt.Sprintf("%v", r)
+	s.Logs.Add(LogError, "panic", "%s 发生异常恢复: %v", name, r)
+	log.Printf("[PANIC RECOVERY] %s recovered from panic: %v", name, r)
+
+	// 1. 读取当前在飞任务信息并清空内存在飞任务，落盘密封存储
+	s.mu.Lock()
+	snapshot := s.activeTask
+	taskID := s.ActiveTaskID
+	requestID := s.ActiveRequestID
+	startedAt := time.Now().UTC()
+	taskType := ""
+	resultDir := ""
+
+	if snapshot != nil {
+		if snapshot.TaskID != "" {
+			taskID = snapshot.TaskID
+		}
+		if snapshot.RequestID != "" {
+			requestID = snapshot.RequestID
+		}
+		if !snapshot.StartedAt.IsZero() {
+			startedAt = snapshot.StartedAt
+		}
+		taskType = snapshot.Type
+		resultDir = snapshot.ResultDir
+	}
+	if taskType == "" {
+		if strings.Contains(strings.ToLower(name), "model") {
+			taskType = "model_import"
+		} else {
+			taskType = "data_import"
+		}
+	}
+	if resultDir == "" && (requestID != "" || taskID != "") {
+		resultDir = resultDirForRequestTask(s.Security.ResultDir, requestID, taskID)
+	}
+
+	modelChecksum := s.ModelChecksum
+	dataChecksum := s.DataChecksum
+	platformIP := s.PlatformIP
+	dockerID := s.DockerID
+
+	s.activeTask = nil
+	s.ActiveTaskID = ""
+	s.ActiveRequestID = ""
+	s.activeToken = 0
+	s.CurrentOp = "idle"
+	if err := s.sealStateLocked(); err != nil {
+		s.Logs.Add(LogError, "panic", "清除在飞任务并持久化状态失败: %v", err)
+	}
 	s.mu.Unlock()
+
+	// 2. 构建规约 11 标准崩溃失败报告 (exit_code: 137, status: "failed")
+	finishedAt := time.Now().UTC()
+	failureReason := fmt.Sprintf("%s 发生异常 panic: %s", name, panicMsg)
+	reportMap, err := BuildCrashFailureReport(taskID, startedAt, finishedAt, failureReason, modelChecksum, dataChecksum)
+	var reportJSON string
+	if err == nil {
+		if b, mErr := json.Marshal(reportMap); mErr == nil {
+			reportJSON = string(b)
+		}
+	}
+	if reportJSON == "" {
+		reportJSON = fmt.Sprintf(`{"status":"failed","exit_code":137,"failure_reason":%q}`, failureReason)
+	}
+
+	if resultDir != "" && reportMap != nil {
+		_ = writeJSONFile(filepath.Join(resultDir, "training_report.json"), reportMap)
+	}
+
+	// 3. Fail-Closed: 主动向管控平台发送失败通知（通过 ReportTaskOutcome 自动分流）
+	if platformIP != "" && dockerID != "" && (requestID != "" || taskID != "") {
+		log.Printf("[PANIC RECOVERY] notifying platform of %s failure: requestId=%s, taskId=%s", taskType, requestID, taskID)
+		if repErr := ReportTaskOutcome(context.Background(), platformIP, dockerID, requestID, taskID, taskType, 1, failureReason, reportJSON); repErr != nil {
+			log.Printf("[PANIC RECOVERY] ReportTaskOutcome failed: %v", repErr)
+		}
+	}
 }
 
 // ── Handler: /v1/taa/switch ──────────────────────────────
@@ -479,15 +918,40 @@ func (s *TAAState) switchHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.isTrainingBusyLocked() || s.ActiveTaskID != "" || (s.CurrentOp != "" && s.CurrentOp != "idle") {
+		task := s.ActiveTaskID
+		if task == "" {
+			task = s.ActiveRequestID
+		}
+		if task == "" {
+			task = "unknown"
+		}
+		op := s.CurrentOp
+		if op == "" {
+			op = "busy"
+		}
+		writeErr(w, http.StatusConflict, pkgerrors.New(pkgerrors.CodeConflict,
+			fmt.Sprintf("当前已有任务正在执行中 (taskId: %s, op: %s)，严禁切换运行阶段", task, op)))
+		return
+	}
+
 	current := s.CurrentPhase
 	s.CurrentPhase = req.Phase
 	s.Phase1TrainingStarted = false
+	s.activeToken = 0
+	s.ActiveTaskID = ""
+	s.ActiveRequestID = ""
+	s.activeTask = nil
 	if current != 1 && req.Phase == 1 {
 		s.ModelImported = false
 		s.DataImported = false
 		s.Logs.Add(LogInfo, "phase", "切换至阶段1: 重置 ModelImported 与 DataImported 标志")
 	}
 	s.Logs.Add(LogInfo, "phase", "阶段切换: %d(%s) -> %d(%s)", current, phaseName(current), req.Phase, phaseName(req.Phase))
+
+	if err := s.sealStateLocked(); err != nil {
+		s.Logs.Add(LogError, "phase", "持久化阶段切换状态失败: %v", err)
+	}
 
 	writeEnvelope(w, http.StatusOK, "阶段切换成功", nil, 0)
 }
@@ -512,12 +976,21 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	release, err := s.tryAcquireTask(req.TaskID, req.RequestID, "downloading", false)
+	if err != nil {
+		s.Logs.Add(LogWarn, "import", "拒绝并发任务请求: %v", err)
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+
 	store, err := s.importIndexStore()
 	if err != nil {
+		release()
 		writeErr(w, http.StatusInternalServerError, pkgerrors.Wrap(pkgerrors.CodeInternal, fmt.Sprintf("加载导入索引失败: %v", err), err))
 		return
 	}
 	if err := store.Reserve(req.RequestID, req.TaskID); err != nil {
+		release()
 		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, err.Error(), err))
 		return
 	}
@@ -542,8 +1015,8 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 	ciphertextPath, size, err := downloadToTempFile(req.ResourceURL)
 	if err != nil {
 		store.Rollback(req.RequestID, req.TaskID)
+		release()
 		s.Logs.Add(LogError, "import", "下载资源失败: %v", err)
-		s.setCurrentOp("idle")
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("下载资源失败: %v", err))
 		return
 	}
@@ -552,7 +1025,9 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 	msg = "数据已接收，训练结果将通过 reportRes 上报"
 	writeEnvelope(w, http.StatusOK, msg, nil, 0)
 
-	go s.processImportedResource(req, phase, false, ciphertextPath)
+	s.runAsyncSafe("processImportedResource", release, func() {
+		s.processImportedResource(req, phase, false, ciphertextPath)
+	})
 }
 
 // ── Handler: /v1/taa/importModel ─────────────────────────
@@ -598,6 +1073,7 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		if s.ExportPublicKey == "" {
 			s.ExportPublicKey = publicKey
+			_ = s.sealStateLocked()
 			s.Logs.Add(LogInfo, "importModel", "阶段1: 已保存 ExportPublicKey 用于后续阶段3导出 (长度=%d)\n%s", len(publicKey), publicKey)
 		} else {
 			s.Logs.Add(LogInfo, "importModel", "阶段1: ExportPublicKey 已存在，保留首次公钥，跳过保存 (已有长度=%d, 新长度=%d)", len(s.ExportPublicKey), len(publicKey))
@@ -617,6 +1093,7 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.RuntimeConfig) != "" {
 		s.mu.Lock()
 		s.RuntimeConfig = req.RuntimeConfig
+		_ = s.sealStateLocked()
 		s.mu.Unlock()
 		s.Logs.Add(LogInfo, "importModel", "已保存 runtimeConfig (长度=%d)", len(req.RuntimeConfig))
 	}
@@ -624,8 +1101,13 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	// 若 resourceUrl 为空且已有保存的模型，直接复用已导入模型与最新数据索引进行训练
 	if req.ResourceURL == "" {
 		s.mu.RLock()
+		isBusy := s.isTrainingBusyLocked()
 		runtimeConfigToUse := s.RuntimeConfig
 		s.mu.RUnlock()
+		if isBusy {
+			writeErr(w, http.StatusConflict, pkgerrors.New(pkgerrors.CodeConflict, "当前已有训练任务正在执行中，请等待完成后再提交"))
+			return
+		}
 		if strings.TrimSpace(runtimeConfigToUse) == "" {
 			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "runtimeConfig 不能为空"))
 			return
@@ -642,51 +1124,58 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 
 		s.mu.Lock()
 		s.ModelImported = true
+		_ = s.sealStateLocked()
 		dataImported := s.DataImported
 		s.mu.Unlock()
 
-		if phase == 1 {
-			if !dataImported {
-				s.Logs.Add(LogInfo, "importModel", "阶段1: 模型参数命令已导入(ModelImported=true)，等待数据重新导入后执行训练: taskId=%s, requestId=%s",
-					req.TaskID, req.RequestID)
-				msg := "模型参数命令已导入，等待数据重新导入后执行训练"
-				writeEnvelope(w, http.StatusOK, msg, nil, 0)
-				return
-			}
+		if phase == 1 && !dataImported {
+			s.Logs.Add(LogInfo, "importModel", "阶段1: 模型参数命令已导入(ModelImported=true)，等待数据重新导入后执行训练: taskId=%s, requestId=%s",
+				req.TaskID, req.RequestID)
+			msg := "模型参数命令已导入，等待数据重新导入后执行训练"
+			writeEnvelope(w, http.StatusOK, msg, nil, 0)
+			return
+		}
 
+		release, err := s.tryAcquireTask(req.TaskID, req.RequestID, "staging", false)
+		if err != nil {
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
+
+		if phase == 1 {
 			s.mu.Lock()
 			s.Phase1TrainingStarted = true
 			s.mu.Unlock()
-
-			latestRecord, ok := s.getLatestDataRecord()
-			if !ok || (latestRecord.DataDir == "" && latestRecord.Hash == "") {
-				writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "未找到已导入的数据，无法执行训练"))
-				return
-			}
-
-			s.Logs.Add(LogInfo, "importModel", "阶段1: 模型参数命令已更新且数据已就绪，复用模型对最新数据执行训练: taskId=%s, requestId=%s, latestDataHash=%s",
-				req.TaskID, req.RequestID, latestRecord.Hash)
-
-			msg := "模型已复用，开始对最新数据执行训练，训练结果将通过 reportRes 上报"
-			writeEnvelope(w, http.StatusOK, msg, nil, 0)
-
-			go s.trainOnLatestData(req, phase, latestRecord, cfg, env)
-			return
 		}
 
 		latestRecord, ok := s.getLatestDataRecord()
 		if !ok || (latestRecord.DataDir == "" && latestRecord.Hash == "") {
+			release()
 			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "未找到已导入的数据，无法执行训练"))
 			return
 		}
 
-		s.Logs.Add(LogInfo, "importModel", "resourceUrl 为空，复用已保存模型直接基于最新数据执行训练: taskId=%s, requestId=%s, latestDataHash=%s",
-			req.TaskID, req.RequestID, latestRecord.Hash)
+		if phase == 1 {
+			s.Logs.Add(LogInfo, "importModel", "阶段1: 模型参数命令已更新且数据已就绪，复用模型对最新数据执行训练: taskId=%s, requestId=%s, latestDataHash=%s",
+				req.TaskID, req.RequestID, latestRecord.Hash)
+		} else {
+			s.Logs.Add(LogInfo, "importModel", "resourceUrl 为空，复用已保存模型直接基于最新数据执行训练: taskId=%s, requestId=%s, latestDataHash=%s",
+				req.TaskID, req.RequestID, latestRecord.Hash)
+		}
 
 		msg := "模型已复用，开始对最新数据执行训练，训练结果将通过 reportRes 上报"
 		writeEnvelope(w, http.StatusOK, msg, nil, 0)
 
-		go s.trainOnLatestData(req, phase, latestRecord, cfg, env)
+		s.runAsyncSafe("trainOnLatestData", release, func() {
+			s.trainOnLatestData(req, phase, latestRecord, cfg, env)
+		})
+		return
+	}
+
+	release, err := s.tryAcquireTask(req.TaskID, req.RequestID, "downloading", true)
+	if err != nil {
+		s.Logs.Add(LogWarn, "importModel", "拒绝并发任务请求: %v", err)
+		writeErr(w, http.StatusConflict, err)
 		return
 	}
 
@@ -695,12 +1184,11 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 		s.Logs.Add(LogWarn, "importModel", "runtimeConfig 为空，后续训练将失败")
 	}
 
-	s.setCurrentOp("downloading")
 	s.Logs.Add(LogInfo, "importModel", "开始下载资源: %s", req.ResourceURL)
 	ciphertextPath, size, err := downloadToTempFile(req.ResourceURL)
 	if err != nil {
+		release()
 		s.Logs.Add(LogError, "importModel", "下载资源失败: %v", err)
-		s.setCurrentOp("idle")
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("下载资源失败: %v", err))
 		return
 	}
@@ -709,7 +1197,9 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	msg := "模型已接收，训练结果将通过 reportRes 上报"
 	writeEnvelope(w, http.StatusOK, msg, nil, 0)
 
-	go s.processImportedResource(req, phase, true, ciphertextPath)
+	s.runAsyncSafe("processImportedResource", release, func() {
+		s.processImportedResource(req, phase, true, ciphertextPath)
+	})
 }
 
 // downloadToTempFile 将资源从 URL 流式写入临时文件，避免将整个文件加载到内存。
@@ -733,10 +1223,7 @@ func downloadToTempFile(resourceURL string) (string, int64, error) {
 	}
 	path := f.Name()
 
-	var reader io.Reader = resp.Body
-	if resp.ContentLength >= 0 {
-		reader = io.LimitReader(resp.Body, resp.ContentLength+1)
-	}
+	reader := io.LimitReader(resp.Body, maxDownloadBytes+1)
 	n, err := io.Copy(f, reader)
 	f.Close()
 	if err != nil {
@@ -858,30 +1345,36 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.RLock()
-	phase := s.CurrentPhase
+	currentPhase := s.CurrentPhase
 	savedPublicKey := s.ExportPublicKey
 	s.mu.RUnlock()
 
-	s.Logs.Add(LogInfo, "export", "收到导出请求: requestId=%s, taskId=%s, hash=%s, resultDir=%s, phase=%d", req.RequestID, req.TaskID, record.Hash, record.ResultDir, phase)
+	recordPhase := record.Phase
+	if recordPhase == 0 {
+		recordPhase = currentPhase
+	}
+
+	s.Logs.Add(LogInfo, "export", "收到导出请求: requestId=%s, taskId=%s, hash=%s, resultDir=%s, recordPhase=%d, currentPhase=%d",
+		req.RequestID, req.TaskID, record.Hash, record.ResultDir, recordPhase, currentPhase)
 
 	// ── 确定公钥和是否加密 ──
 	var pubKeyPEM string
 	var encrypt bool
 
-	switch phase {
+	switch recordPhase {
 	case 1, 2:
 		if req.PublicKey != nil && strings.TrimSpace(*req.PublicKey) != "" {
 			pubKeyPEM = strings.TrimSpace(*req.PublicKey)
 			encrypt = true
-			s.Logs.Add(LogInfo, "export", "阶段%d: 使用请求中的 publicKey 加密 (长度=%d)", phase, len(pubKeyPEM))
+			s.Logs.Add(LogInfo, "export", "阶段%d: 使用请求中的 publicKey 加密 (长度=%d)", recordPhase, len(pubKeyPEM))
 		} else {
-			s.Logs.Add(LogInfo, "export", "阶段%d: 未传入 publicKey，返回明文", phase)
+			s.Logs.Add(LogInfo, "export", "阶段%d: 未传入 publicKey，返回明文", recordPhase)
 		}
 
 	case 3:
 		if savedPublicKey == "" {
 			s.Logs.Add(LogError, "export", "阶段3: ExportPublicKey 为空，无法加密导出")
-			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "阶段 3 需要先通过阶段 1 导入公钥"))
+			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "阶段 3 产物必须使用阶段 1 导入的公钥加密导出"))
 			return
 		}
 		pubKeyPEM = savedPublicKey
@@ -889,8 +1382,8 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 		s.Logs.Add(LogInfo, "export", "阶段3: 使用阶段1保存的 ExportPublicKey 加密 (长度=%d)\n%s", len(pubKeyPEM), pubKeyPEM)
 
 	default:
-		s.Logs.Add(LogError, "export", "不支持的阶段: %d", phase)
-		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, fmt.Sprintf("当前阶段 %d 不支持导出", phase)))
+		s.Logs.Add(LogError, "export", "不支持的阶段: %d", recordPhase)
+		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, fmt.Sprintf("当前阶段 %d 不支持导出", recordPhase)))
 		return
 	}
 
@@ -939,6 +1432,12 @@ func compressDirToTarGz(srcDir string) ([]byte, error) {
 		return nil, fmt.Errorf("路径不是目录: %s", srcDir)
 	}
 
+	evalSrcDir, err := filepath.EvalSymlinks(srcDir)
+	if err != nil {
+		evalSrcDir = srcDir
+	}
+	cleanSrcDir := filepath.Clean(evalSrcDir)
+
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
@@ -949,6 +1448,18 @@ func compressDirToTarGz(srcDir string) ([]byte, error) {
 		if err != nil {
 			return err
 		}
+
+		if info.Mode()&os.ModeSymlink != 0 {
+			evalPath, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return fmt.Errorf("解析物理路径失败 %s: %w", path, err)
+			}
+			cleanEval := filepath.Clean(evalPath)
+			if cleanEval != cleanSrcDir && !strings.HasPrefix(cleanEval, cleanSrcDir+string(filepath.Separator)) {
+				return fmt.Errorf("检测到非法越界软链接: %s -> %s", path, evalPath)
+			}
+		}
+
 		relPath, err := filepath.Rel(baseDir, path)
 		if err != nil {
 			return err
@@ -975,9 +1486,12 @@ func compressDirToTarGz(srcDir string) ([]byte, error) {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-		_, err = io.Copy(tw, f)
-		return err
+		_, copyErr := io.Copy(tw, f)
+		closeErr := f.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
 	})
 	if err != nil {
 		log.Printf("compressDirToTarGz: 遍历目录失败: %v", err)
@@ -1208,12 +1722,9 @@ func runPythonScript(script, outputDir string, env map[string]string, args ...st
 		return "", fmt.Errorf("create output dir: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
-	defer cancel()
-
 	cmdArgs := append([]string{script}, args...)
 	cmdArgs = append(cmdArgs, "--output", outputDir)
-	cmd := exec.CommandContext(ctx, "python3", cmdArgs...)
+	cmd := exec.Command("python3", cmdArgs...)
 	cmd.Dir = filepath.Dir(script)
 	if len(env) > 0 {
 		cmd.Env = os.Environ()
@@ -1240,8 +1751,39 @@ func parseRuntimeConfig(raw string) (runtimeConfig, map[string]string, error) {
 	}
 
 	var cfg runtimeConfig
+	var env map[string]string
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
-		return runtimeConfig{}, nil, fmt.Errorf("解析 runtimeConfig 失败: %w", err)
+		if strings.Contains(err.Error(), "cannot unmarshal object into Go struct field runtimeConfig.env of type string") {
+			var objCfg struct {
+				Commands []string       `json:"commands"`
+				Env      map[string]any `json:"env"`
+			}
+			if errObj := json.Unmarshal([]byte(raw), &objCfg); errObj != nil {
+				return runtimeConfig{}, nil, fmt.Errorf("解析 runtimeConfig 失败: %w", errObj)
+			}
+			cfg.Commands = objCfg.Commands
+			if objCfg.Env != nil {
+				env = make(map[string]string, len(objCfg.Env))
+				for k, v := range objCfg.Env {
+					switch val := v.(type) {
+					case string:
+						env[k] = val
+					default:
+						b, err := json.Marshal(val)
+						if err == nil && !bytes.Equal(b, []byte("null")) {
+							env[k] = string(b)
+						} else {
+							env[k] = fmt.Sprintf("%v", val)
+						}
+					}
+				}
+				if envBytes, err := json.Marshal(env); err == nil {
+					cfg.Env = string(envBytes)
+				}
+			}
+		} else {
+			return runtimeConfig{}, nil, fmt.Errorf("解析 runtimeConfig 失败: %w", err)
+		}
 	}
 	if len(cfg.Commands) == 0 {
 		return runtimeConfig{}, nil, fmt.Errorf("runtimeConfig.commands 不能为空")
@@ -1252,10 +1794,12 @@ func parseRuntimeConfig(raw string) (runtimeConfig, map[string]string, error) {
 		}
 	}
 
-	env := map[string]string{}
-	if strings.TrimSpace(cfg.Env) != "" {
-		if err := json.Unmarshal([]byte(cfg.Env), &env); err != nil {
-			return runtimeConfig{}, nil, fmt.Errorf("解析 runtimeConfig.env 失败: %w", err)
+	if env == nil {
+		env = map[string]string{}
+		if strings.TrimSpace(cfg.Env) != "" {
+			if err := json.Unmarshal([]byte(cfg.Env), &env); err != nil {
+				return runtimeConfig{}, nil, fmt.Errorf("解析 runtimeConfig.env 失败: %w", err)
+			}
 		}
 	}
 	return cfg, env, nil
@@ -1304,10 +1848,9 @@ func runRuntimeConfig(cfg runtimeConfig, env map[string]string, modelDir, dataDi
 
 	resolvedCommands := resolveRuntimeCommands(cfg.Commands, dataDir, outputDir)
 	commandLine := strings.Join(resolvedCommands, " && ")
-	ctx, cancel := context.WithTimeout(context.Background(), scriptTimeout)
-	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", commandLine)
+	cmd := exec.Command("/bin/sh", "-c", commandLine)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = modelDir
 	cmd.Env = mergedRuntimeEnv(resolveRuntimeEnv(env, dataDir, outputDir), map[string]string{
 		"TAA_TASK_ID":          taskID,
@@ -1321,12 +1864,17 @@ func runRuntimeConfig(cfg runtimeConfig, env map[string]string, modelDir, dataDi
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return string(output), fmt.Errorf("runtimeConfig command timed out after %s", scriptTimeout)
-		}
 		return string(output), fmt.Errorf("runtimeConfig command exited with error: %w", err)
 	}
 	return string(output), nil
+}
+
+// KillProcessGroup 级联清理进程及其所属的整个进程组。
+func KillProcessGroup(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 0 {
+		return nil
+	}
+	return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 }
 
 func mergedRuntimeEnv(userEnv, systemEnv map[string]string) []string {

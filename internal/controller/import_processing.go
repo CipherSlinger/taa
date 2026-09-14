@@ -22,6 +22,7 @@ import (
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 	filetree "taa/pkg/filetree"
+	"taa/pkg/utils"
 	"taa/internal/codeaudit"
 )
 
@@ -72,11 +73,13 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 			return
 		}
 		s.Logs.Add(LogInfo, "extract", "解压成功")
-		s.auditAndReportModelImport(req)
-		s.mu.Lock()
-		s.ModelImported = true
-		s.mu.Unlock()
-		s.setSavedModelResourceURL(req.ResourceURL)
+		if !s.auditAndReportModelImport(req) {
+			s.Logs.Add(LogError, "import", "模型安全审计未通过，终止导入流程并清除模型代码: taskId=%s", req.TaskID)
+			s.clearImportedState(true, phase)
+			s.setCurrentOp("idle")
+			return
+		}
+		s.saveModelSuccess(req.ResourceURL)
 	} else {
 		size, hash, err := teecrypto.HashFileSM3(plaintextPath)
 		if err != nil {
@@ -98,6 +101,7 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 			Hash:      hash,
 			DataDir:   dataDir,
 			ResultDir: resultDirForRequestTask(s.Security.ResultDir, req.RequestID, req.TaskID),
+			Phase:     phase,
 		}
 
 		extracted, err := ensureArchiveExtractedIntoDir(dataDir, plaintextPath)
@@ -126,10 +130,7 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 			s.reportImportFailure(req, phase, false, startedAt, fmt.Sprintf("保存导入索引失败: %v", err))
 			return
 		}
-		s.setLatestDataRecord(trainRecord)
-		s.mu.Lock()
-		s.DataImported = true
-		s.mu.Unlock()
+		s.saveDataSuccess(trainRecord)
 		s.Logs.Add(LogInfo, "index", "导入索引写入成功: requestId=%s taskId=%s hash=%s", req.RequestID, req.TaskID, hash)
 	}
 
@@ -202,6 +203,7 @@ func (s *TAAState) trainOnLatestData(req importRequest, phase int, latestRecord 
 
 	trainReq := req
 	trainRecord := latestRecord
+	trainRecord.Phase = phase
 
 	// 判断是否指定了新的 requestId 或 taskId
 	isNewRequest := (req.RequestID != "" && req.RequestID != latestRecord.RequestID) ||
@@ -346,12 +348,12 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 }
 
 // auditAndReportModelImport 对解压后的模型代码执行安全审计（静态扫描 + 可选 LLM 语义验证），
-// 并将审计结果通过 /v1/taa/reportModelImport 上报平台。
-func (s *TAAState) auditAndReportModelImport(req importRequest) {
+// 并将审计结果通过 /v1/taa/reportModelImport 上报平台。返回是否审计通过。
+func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 	s.setLastAudit(nil)
 	if !s.Security.ScanEnabled {
 		s.Logs.Add(LogInfo, "audit", "安全扫描未启用，跳过模型代码审计")
-		return
+		return true
 	}
 
 	cfg := s.Security.LLM
@@ -364,30 +366,41 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) {
 	// 若不可用则直接判定失败，避免降级为纯静态扫描静默放行。
 	if cfg.Enabled && cfg.FailClosed && !llmAvailable(cfg.Endpoint, cfg.Model) {
 		s.Logs.Add(LogError, "audit", "LLM 服务不可用，按 fail-closed 策略上报失败: endpoint=%s model=%s", cfg.Endpoint, cfg.Model)
+		if err := cleanDirContents(s.Security.ModelDir); err != nil {
+			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
+		}
 		s.reportModelImportAsync(req.RequestID, req.TaskID, 2, "LLM 服务不可用，按 fail-closed 策略上报失败", "")
 		s.setCurrentOp("idle")
-		return
+		return false
 	}
 
 	audit, err := codeaudit.GenerateAuditReport(context.Background(), s.Security.ModelDir, cfg, newLLMClient(cfg))
 	if err != nil {
 		s.Logs.Add(LogError, "audit", "模型代码审计失败: %v", err)
+		if err := cleanDirContents(s.Security.ModelDir); err != nil {
+			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
+		}
 		s.reportModelImportAsync(req.RequestID, req.TaskID, 2, fmt.Sprintf("代码审计失败: %v", err), "")
 		s.setCurrentOp("idle")
-		return
+		return false
 	}
 	s.setLastAudit(audit)
 
 	code := 0
 	msg := audit.Conclusion.Summary
-	if !audit.Conclusion.Passed {
+	passed := audit.Conclusion.Passed
+	if !passed {
 		code = 2
+		if err := cleanDirContents(s.Security.ModelDir); err != nil {
+			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
+		}
 	}
 	s.Logs.Add(LogInfo, "audit", "审计完成: passed=%v, riskLevel=%s, totalFindings=%d",
 		audit.Conclusion.Passed, audit.Conclusion.RiskLevel, audit.Conclusion.Statistics.TotalFindings)
 
 	s.reportModelImportAsync(req.RequestID, req.TaskID, code, msg, auditReportJSON(audit))
 	s.setCurrentOp("idle")
+	return passed
 }
 
 // reportModelImportAsync 异步将模型代码审计结果上报平台，避免阻塞导入流程。
@@ -442,6 +455,11 @@ func llmAvailable(endpoint, model string) bool {
 func (s *TAAState) reportImportFailure(req importRequest, phase int, isModel bool, startedAt time.Time, reason string) {
 	s.Logs.Add(LogError, "import", "导入失败: %s", reason)
 	s.clearImportedState(isModel, phase)
+	if !isModel {
+		if store, err := s.importIndexStore(); err == nil {
+			store.Rollback(req.RequestID, req.TaskID)
+		}
+	}
 	if isModel {
 		s.reportModelImportAsync(req.RequestID, req.TaskID, 1, reason, "")
 		s.setCurrentOp("idle")
@@ -517,21 +535,7 @@ func (s *TAAState) resolvePlaintextResource(resourceURL, downloadedPath, logScop
 }
 
 func (s *TAAState) clearImportedState(isModel bool, phase int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if isModel {
-		s.ModelImported = false
-		s.SavedModelResourceURL = ""
-		s.RuntimeConfig = ""
-		return
-	}
-	switch phase {
-	case 1, 2:
-		s.DataImported = false
-	case 3:
-		s.TrainingDataImported = false
-	}
-	s.CurrentDataRecord = ImportIndexRecord{}
+	s.updateImportState(isModel, false, phase)
 }
 
 func (s *TAAState) reportTrainingFailureFromResult(req importRequest, startedAt time.Time, reason string, audit *codeaudit.AuditReport, includeAudit bool, resultDir string) {
@@ -681,6 +685,8 @@ func extractArchiveFile(dst, filePath string) error {
 	return fmt.Errorf("unsupported archive format or extract failed")
 }
 
+const maxExtractBytes int64 = 2 << 30 // 2 GB
+
 func extractZipArchive(dst string, data []byte) error {
 	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
@@ -690,6 +696,7 @@ func extractZipArchive(dst string, data []byte) error {
 	if err != nil {
 		return err
 	}
+	var totalExtractedBytes int64
 	for _, f := range r.File {
 		target, err := safeJoinWithBase(dst, baseAbs, f.Name)
 		if err != nil {
@@ -708,25 +715,44 @@ func extractZipArchive(dst string, data []byte) error {
 		if err != nil {
 			return err
 		}
-		err = writeExtractedFile(target, rc, f.Mode())
+		remain := maxExtractBytes - totalExtractedBytes
+		if remain < 0 {
+			rc.Close()
+			_ = cleanDirContents(dst)
+			return fmt.Errorf("解压累计字节超过上限 %d bytes", maxExtractBytes)
+		}
+		written, err := writeExtractedFileWithLimit(target, rc, f.Mode(), remain)
 		rc.Close()
 		if err != nil {
+			_ = cleanDirContents(dst)
 			return err
 		}
+		totalExtractedBytes += written
 	}
 	return nil
 }
 
-func writeExtractedFile(target string, src io.Reader, mode os.FileMode) error {
+func writeExtractedFileWithLimit(target string, src io.Reader, mode os.FileMode, maxBytes int64) (int64, error) {
 	out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if _, err := io.Copy(out, src); err != nil {
-		out.Close()
-		return err
+	lr := io.LimitReader(src, maxBytes+1)
+	n, err := io.Copy(out, lr)
+	closeErr := out.Close()
+	if err != nil {
+		_ = os.Remove(target)
+		return n, err
 	}
-	return out.Close()
+	if closeErr != nil {
+		_ = os.Remove(target)
+		return n, closeErr
+	}
+	if n > maxBytes {
+		_ = os.Remove(target)
+		return n, fmt.Errorf("解压数据超过配额上限 %d bytes", maxExtractBytes)
+	}
+	return n, nil
 }
 
 // chmodScripts walks a directory and adds the executable bit (+x) to all .sh files.
@@ -755,6 +781,7 @@ func extractTarStream(dst string, src io.Reader) error {
 	if err != nil {
 		return err
 	}
+	var totalExtractedBytes int64
 	tr := tar.NewReader(src)
 	for {
 		hdr, err := tr.Next()
@@ -779,9 +806,17 @@ func extractTarStream(dst string, src io.Reader) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			if err := writeExtractedFile(target, tr, hdr.FileInfo().Mode()); err != nil {
+			remain := maxExtractBytes - totalExtractedBytes
+			if remain < 0 {
+				_ = cleanDirContents(dst)
+				return fmt.Errorf("解压累计字节超过上限 %d bytes", maxExtractBytes)
+			}
+			written, err := writeExtractedFileWithLimit(target, tr, hdr.FileInfo().Mode(), remain)
+			if err != nil {
+				_ = cleanDirContents(dst)
 				return err
 			}
+			totalExtractedBytes += written
 		case tar.TypeSymlink, tar.TypeLink:
 			return fmt.Errorf("unsupported archive entry type for %s", hdr.Name)
 		default:
@@ -939,6 +974,20 @@ func loadTrainingResult(path string) (map[string]any, error) {
 	return result, nil
 }
 
+// BuildCrashFailureReport 构造崩溃/异常自愈场景下的标准 Schema 1.0 失败报告
+func BuildCrashFailureReport(taskID string, startedAt, finishedAt time.Time, failureReason string, modelChecksum, dataChecksum map[string]any) (map[string]any, error) {
+	if dataChecksum == nil {
+		dataChecksum = map[string]any{
+			"algorithm": "sm3",
+			"value":     "N/A",
+		}
+	}
+	if strings.TrimSpace(failureReason) == "" {
+		failureReason = "TAA 异常崩溃重启，执行已被安全终止 (Process Interrupted by Crash)"
+	}
+	return buildTrainingReport(taskID, startedAt, finishedAt, "failed", 137, failureReason, modelChecksum, dataChecksum, nil, nil, false)
+}
+
 func buildTrainingReport(taskID string, startedAt, finishedAt time.Time, status string, exitCode int, failureReason string, modelChecksum map[string]any, dataChecksum map[string]any, trainingResult map[string]any, audit *codeaudit.AuditReport, includeAudit bool) (map[string]any, error) {
 	if taskID == "" {
 		taskID = "task-20260825-001"
@@ -1035,18 +1084,7 @@ func durationSeconds(startedAt, finishedAt time.Time) int64 {
 }
 
 func writeJSONFile(path string, payload any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create report dir: %w", err)
-	}
-	data, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal report json: %w", err)
-	}
-	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", filepath.Base(path), err)
-	}
-	return nil
+	return utils.WriteJSONFile(path, payload, 0o644)
 }
 
 func newTrainingReportID(now time.Time) string {

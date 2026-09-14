@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package cipherflow.v1;
+
+option go_package = "taa/api/proto/cipherflow/v1;cipherflowv1";
+option java_multiple_files = true;
+option java_package = "com.cipherflow.v1";
+
+import "cipherflow/v1/types.proto";
+import "cipherflow/v1/sandbox.proto";
+import "cipherflow/v1/progress.proto";
+import "cipherflow/v1/checkpoint.proto";
+import "cipherflow/v1/result.proto";
+import "cipherflow/v1/component.proto";
+
+// ── 执行与评估参数契约（调度层与模型执行层直接契约）───────────────────────────
+
+// 节点评估执行参数（全面适配密态运行环境）
+message TeeNodeEvalParam {
+  // 协议规范版本，如 "cipherflow.v1"
+  string version = 1;
+
+  // 任务唯一标识（平台透传）
+  string task_id = 2;
+
+  // 组件唯一标识（Domain/Name:Version）
+  string comp_id = 3;
+
+  // 当前执行阶段（Phase 1 调试 / Phase 2 测试 / Phase 3 训练 / Phase 4 推理）
+  ExecutionPhase phase = 4;
+
+  // 沙箱物理路径契约（包含固定输入/输出/检查点路径）
+  TeePathContract paths = 5;
+
+  // 训练进度实时上报配置
+  ProgressReporterConfig progress_config = 6;
+
+  // 故障自愈断点续训配置
+  ResumeConfig resume_config = 7;
+
+  // 检查点定时/定步落盘策略
+  CheckpointSavePolicy checkpoint_policy = 8;
+
+  // 运行时具体超参数键值对映射表 (attr_name -> Attribute)
+  map<string, Attribute> attrs = 9;
+
+  // 硬件运行规格配额要求
+  ResourceRequirements resources = 10;
+
+  // 注入子进程的环境变量映射表 (如 TAA_TASK_ID, TAA_INPUT_DIR)
+  map<string, string> env_vars = 11;
+
+  // 显式执行命令列表（从 runtimeConfig 解析出的执行序列）
+  repeated string commands = 12;
+}
+
+// 节点评估执行最终结果（进程执行完毕后汇总）
+message TeeNodeEvalResult {
+  // 协议规范版本
+  string version = 1;
+
+  // 任务唯一标识
+  string task_id = 2;
+
+  // 执行阶段
+  ExecutionPhase phase = 3;
+
+  // 训练结果汇总（对齐 /opt/taa/output/training_result.json）
+  TrainingResult training_result = 4;
+
+  // 最终保存的检查点元数据（若生成了检查点）
+  CheckpointMeta final_checkpoint = 5;
+
+  // 产出文件相对路径列表
+  repeated string exported_files = 6;
+
+  // 总体成功标记
+  bool success = 7;
+
+  // 错误或失败信息
+  string error_message = 8;
+}

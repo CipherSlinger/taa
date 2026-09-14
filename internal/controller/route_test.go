@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -502,5 +503,98 @@ func TestCopyDirAndCleanDirContents(t *testing.T) {
 	// 确认根目录本身仍存在
 	if fi, err := os.Stat(dstDir); err != nil || !fi.IsDir() {
 		t.Fatalf("dstDir itself should still exist as directory")
+	}
+}
+
+func TestParseRuntimeConfig_EnvString(t *testing.T) {
+	raw := `{"commands": ["echo 1", "python3 train.py"], "env": "{\"CUDA_VISIBLE_DEVICES\":\"0\"}"}`
+	cfg, env, err := parseRuntimeConfig(raw)
+	if err != nil {
+		t.Fatalf("parseRuntimeConfig failed: %v", err)
+	}
+	if len(cfg.Commands) != 2 {
+		t.Fatalf("commands length = %d, want 2", len(cfg.Commands))
+	}
+	if env["CUDA_VISIBLE_DEVICES"] != "0" {
+		t.Fatalf("env[CUDA_VISIBLE_DEVICES] = %q, want '0'", env["CUDA_VISIBLE_DEVICES"])
+	}
+}
+
+func TestParseRuntimeConfig_EnvObject(t *testing.T) {
+	raw := `{"commands": ["echo 1", "python3 train.py"], "env": {"CUDA_VISIBLE_DEVICES": "0", "BATCH_SIZE": 32}}`
+	cfg, env, err := parseRuntimeConfig(raw)
+	if err != nil {
+		t.Fatalf("parseRuntimeConfig with object env failed: %v", err)
+	}
+	if len(cfg.Commands) != 2 {
+		t.Fatalf("commands length = %d, want 2", len(cfg.Commands))
+	}
+	if env["CUDA_VISIBLE_DEVICES"] != "0" {
+		t.Fatalf("env[CUDA_VISIBLE_DEVICES] = %q, want '0'", env["CUDA_VISIBLE_DEVICES"])
+	}
+	if env["BATCH_SIZE"] != "32" {
+		t.Fatalf("env[BATCH_SIZE] = %q, want '32'", env["BATCH_SIZE"])
+	}
+	if strings.TrimSpace(cfg.Env) == "" {
+		t.Fatalf("cfg.Env should be populated after parsing object env, got empty")
+	}
+}
+
+func TestParseRuntimeConfig_EnvEmptyObjectAndNull(t *testing.T) {
+	// env is empty object {}
+	rawObj := `{"commands": ["echo 1"], "env": {}}`
+	cfg1, env1, err := parseRuntimeConfig(rawObj)
+	if err != nil {
+		t.Fatalf("parseRuntimeConfig with empty object env failed: %v", err)
+	}
+	if len(cfg1.Commands) != 1 || len(env1) != 0 {
+		t.Fatalf("expected 1 command and 0 env, got %d commands, %d env", len(cfg1.Commands), len(env1))
+	}
+
+	// env is null
+	rawNull := `{"commands": ["echo 1"], "env": null}`
+	cfg2, env2, err := parseRuntimeConfig(rawNull)
+	if err != nil {
+		t.Fatalf("parseRuntimeConfig with null env failed: %v", err)
+	}
+	if len(cfg2.Commands) != 1 || len(env2) != 0 {
+		t.Fatalf("expected 1 command and 0 env, got %d commands, %d env", len(cfg2.Commands), len(env2))
+	}
+}
+
+func TestParseRuntimeConfig_EnvInvalidType(t *testing.T) {
+	raw := `{"commands": ["echo 1"], "env": 12345}`
+	_, _, err := parseRuntimeConfig(raw)
+	if err == nil {
+		t.Fatalf("parseRuntimeConfig with number env should fail, got nil err")
+	}
+}
+
+func TestImportRequestUnmarshalJSON(t *testing.T) {
+	// 1. runtimeConfig as string
+	jsonStr := `{"resourceUrl":"http://example.com/res","requestId":"req-1","taskId":"task-1","runtimeConfig":"{\"commands\":[\"echo 1\"]}"}`
+	var req1 importRequest
+	if err := json.Unmarshal([]byte(jsonStr), &req1); err != nil {
+		t.Fatalf("unmarshal req1 failed: %v", err)
+	}
+	if req1.RuntimeConfig != `{"commands":["echo 1"]}` {
+		t.Fatalf("req1.RuntimeConfig = %q, want '{\"commands\":[\"echo 1\"]}'", req1.RuntimeConfig)
+	}
+
+	// 2. runtimeConfig as object
+	jsonObj := `{"resourceUrl":"http://example.com/res","requestId":"req-2","taskId":"task-2","runtimeConfig":{"commands":["echo 2"],"env":{"A":"B"}}}`
+	var req2 importRequest
+	if err := json.Unmarshal([]byte(jsonObj), &req2); err != nil {
+		t.Fatalf("unmarshal req2 failed: %v", err)
+	}
+	cfg, env, err := parseRuntimeConfig(req2.RuntimeConfig)
+	if err != nil {
+		t.Fatalf("parseRuntimeConfig on req2.RuntimeConfig failed: %v", err)
+	}
+	if len(cfg.Commands) != 1 || cfg.Commands[0] != "echo 2" {
+		t.Fatalf("cfg.Commands = %v, want ['echo 2']", cfg.Commands)
+	}
+	if env["A"] != "B" {
+		t.Fatalf("env['A'] = %q, want 'B'", env["A"])
 	}
 }

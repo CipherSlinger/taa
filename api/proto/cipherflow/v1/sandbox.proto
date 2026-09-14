@@ -1,0 +1,126 @@
+syntax = "proto3";
+
+package cipherflow.v1;
+
+option go_package = "taa/api/proto/cipherflow/v1;cipherflowv1";
+option java_multiple_files = true;
+option java_package = "com.cipherflow.v1";
+
+import "cipherflow/v1/types.proto";
+
+// ── 沙箱与物理路径契约 ─────────────────────────────────────────────────────────
+
+// 路径访问权限枚举
+enum PathAccessMode {
+  ACCESS_MODE_UNSPECIFIED = 0;
+  READ_ONLY = 1;  // 只读权限（严格保障原始数据不被篡改）
+  READ_WRITE = 2; // 读写权限（仅允许在输出/检查点沙箱内写入）
+}
+
+// 约定固定输入路径规范（模型提供方只读访问）
+message InputPathSpec {
+  // 固定输入根路径，默认固定为 "/opt/taa/input"
+  string root_dir = 1;
+
+  // 训练集数据目录，如 "/opt/taa/input/train" 或 "/opt/taa/input"
+  string train_data_dir = 2;
+
+  // 验证集数据目录，如 "/opt/taa/input/val"
+  string val_data_dir = 3;
+
+  // 测试集数据目录，如 "/opt/taa/input/test"
+  string test_data_dir = 4;
+
+  // 数据集标注/标签文件路径，如 "/opt/taa/input/labels.csv" 或 "/opt/taa/input/annotations.json"
+  string label_file_path = 5;
+
+  // 预训练模型权重目录（若有外部下发的预训练底模），如 "/opt/taa/input/pretrained_weights"
+  string pretrained_weights_dir = 6;
+
+  // 数据格式声明
+  DataFormat data_format = 7;
+
+  // 自定义扩展输入槽位映射表 (slot_name -> absolute_path)
+  map<string, string> custom_input_slots = 8;
+
+  // 访问权限，固定为 READ_ONLY
+  PathAccessMode access_mode = 9;
+}
+
+// 约定固定输出路径规范（模型提供方写出产物）
+message OutputPathSpec {
+  // 固定输出根路径，默认固定为 "/opt/taa/output"
+  string root_dir = 1;
+
+  // 最终模型权重与格式化产物保存目录，如 "/opt/taa/output/weights"
+  string weights_dir = 2;
+
+  // 训练结果汇总文件固定路径，必须为 "/opt/taa/output/training_result.json"
+  string training_result_file = 3;
+
+  // 评测/测试结果表格固定路径，如 "/opt/taa/output/test_result.xlsx" 或 "predictions.csv"
+  string evaluation_result_file = 4;
+
+  // 训练过程日志与 TensorBoard 事件目录，如 "/opt/taa/output/logs"
+  string logs_dir = 5;
+
+  // 实时进度持久化文件（用于文件轮询模式上报进度），如 "/opt/taa/output/progress.json"
+  string progress_file = 6;
+
+  // 自定义扩展输出产物槽位映射表 (artifact_name -> absolute_path)
+  map<string, string> custom_output_slots = 7;
+
+  // 访问权限，固定为 READ_WRITE
+  PathAccessMode access_mode = 8;
+}
+
+// 检查点持久化路径规范（用于故障崩溃自愈与断点续训）
+message CheckpointPathSpec {
+  // 检查点根目录，默认固定为 "/opt/taa/checkpoint" 或 "/opt/taa/output/checkpoints"
+  string root_dir = 1;
+
+  // 最新检查点文件/目录路径，如 "/opt/taa/checkpoint/latest.pt"
+  string latest_checkpoint_path = 2;
+
+  // 最佳评估指标检查点路径，如 "/opt/taa/checkpoint/best.pt"
+  string best_checkpoint_path = 3;
+
+  // 检查点元数据描述文件路径，如 "/opt/taa/checkpoint/checkpoint_meta.json"
+  string meta_file_path = 4;
+
+  // 访问权限，固定为 READ_WRITE
+  PathAccessMode access_mode = 5;
+}
+
+// 工作区与临时目录规范
+message WorkspacePathSpec {
+  // 模型源码解压工作目录，默认 "/opt/taa/models"
+  string model_code_dir = 1;
+
+  // 安全临时暂存目录，如 "/opt/taa/tmp"
+  string temp_dir = 2;
+
+  // 进程通信 IPC Unix Domain Socket 路径，如 "/opt/taa/ipc/agent.sock"
+  string ipc_socket_path = 3;
+}
+
+// 整体沙箱路径契约（注入至模型执行环境中）
+message TeePathContract {
+  // 协议规范版本，当前为 "cipherflow.v1"
+  string version = 1;
+
+  // 任务唯一标识
+  string task_id = 2;
+
+  // 输入路径规约
+  InputPathSpec input = 3;
+
+  // 输出路径规约
+  OutputPathSpec output = 4;
+
+  // 检查点路径规约
+  CheckpointPathSpec checkpoint = 5;
+
+  // 工作区路径规约
+  WorkspacePathSpec workspace = 6;
+}

@@ -877,7 +877,7 @@ func TestExportHandler(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest || api.Error != 400 {
 			t.Fatalf("expected 400 when ExportPublicKey empty in phase 3, got status=%d error=%d msg=%s", resp.StatusCode, api.Error, api.Msg)
 		}
-		if !strings.Contains(api.Msg, "阶段 3 需要先通过阶段 1 导入公钥") {
+		if !strings.Contains(api.Msg, "阶段 3 产物必须使用阶段 1 导入的公钥加密导出") {
 			t.Fatalf("unexpected msg: %s", api.Msg)
 		}
 	})

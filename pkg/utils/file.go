@@ -2,11 +2,13 @@
 package utils
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // SafeFilename 过滤文件名或路径片段中的非法字符与路径遍历尝试（如 ".."、"/"、"\"），
@@ -125,4 +127,96 @@ func EnsureDir(dir string, perm os.FileMode) error {
 		perm = 0o755
 	}
 	return os.MkdirAll(dir, perm)
+}
+
+// AtomicWriteFile 采用临时文件写入、落盘、原子重命名并同步父目录项的强一致性写入机制，
+// 防止进程崩溃或掉电导致 0 字节文件损坏。
+func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	if perm == 0 {
+		perm = 0o644
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create dir %s: %w", dir, err)
+	}
+
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("write temp file: %w", err)
+	}
+
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("sync temp file: %w", err)
+	}
+
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close temp file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("atomic rename file: %w", err)
+	}
+
+	if parentDir, err := os.Open(dir); err == nil {
+		_ = parentDir.Sync()
+		_ = parentDir.Close()
+	}
+
+	return nil
+}
+
+// WriteJSONFile 将结构体序列化为格式化 JSON 并原子落盘至指定路径。
+func WriteJSONFile(path string, payload any, perm os.FileMode) error {
+	if perm == 0 {
+		perm = 0o644
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal json: %w", err)
+	}
+	data = append(data, '\n')
+	return AtomicWriteFile(path, data, perm)
+}
+
+// ArchiveFailedDir 将失败/中断的结果目录原子重命名归档为黑匣子目录（.failed-<id>-<timestamp>）。
+func ArchiveFailedDir(dir, id string) (string, error) {
+	if dir == "" {
+		return "", nil
+	}
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return "", nil
+	}
+	if id == "" {
+		id = "unknown"
+	}
+
+	parentDir := filepath.Dir(dir)
+	timestamp := time.Now().Unix()
+	archiveDir := filepath.Join(parentDir, fmt.Sprintf(".failed-%s-%d", id, timestamp))
+	if _, err := os.Stat(archiveDir); err == nil {
+		archiveDir = filepath.Join(parentDir, fmt.Sprintf(".failed-%s-%d", id, time.Now().UnixNano()))
+	}
+
+	if err := os.Rename(dir, archiveDir); err != nil {
+		return "", fmt.Errorf("archive failed dir %s to %s: %w", dir, archiveDir, err)
+	}
+	return archiveDir, nil
 }
