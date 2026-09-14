@@ -18,7 +18,7 @@
 本次重构目标：
 
 - 彻底删除 `DataImported` 的运行时字段、持久化字段和 API 返回字段；
-- 保留 `TrainingDataImported` 作为阶段 3 的兼容状态字段，但不参与训练触发；
+- 彻底删除所有数据导入完成状态，包括 `DataImported` 和 `TrainingDataImported`；
 - 彻底删除 `TrainingDone` 和 `Phase1TrainingStarted`；
 - 新增唯一实时训练状态 `TrainingRunning`；
 - 数据导入完成后以 `ModelImported` 作为训练触发前置条件；
@@ -34,9 +34,8 @@
 保留：
 
 ```go
-ModelImported        bool
-TrainingDataImported bool
-TrainingRunning      bool
+ModelImported   bool
+TrainingRunning bool
 ```
 
 删除：
@@ -52,7 +51,6 @@ Phase1TrainingStarted bool
 | 字段 | 语义 | 设置时机 | 清除时机 |
 | :--- | :--- | :--- | :--- |
 | `ModelImported` | 当前已有可复用模型状态/模型请求已被接受 | 模型请求完成基础参数校验、携带非空 URL 且成功取得任务执行权后立即置为 `true` | 模型下载、解密、解压或审计失败时回滚为 `false`；阶段切换不清除 |
-| `TrainingDataImported` | 阶段 3 数据导入兼容状态 | 阶段 3 数据成功保存后置为 `true` | 阶段 3 数据处理失败时清除 |
 | `TrainingRunning` | 当前是否存在真实训练执行任务 | 训练任务获得独占执行权、开始进入训练流程前置为 `true` | 训练成功、失败、报告生成失败、panic 或崩溃恢复完成后置为 `false` |
 
 `TrainingRunning` 不表示最近一次结果，也不依赖 `CurrentPhase`。
@@ -63,6 +61,7 @@ Phase1TrainingStarted bool
 
 ```go
 DataImported
+TrainingDataImported
 TrainingDone
 ```
 
@@ -72,7 +71,7 @@ TrainingDone
 TrainingRunning bool `json:"trainingRunning"`
 ```
 
-`TrainingDataImported` 暂时保留并继续持久化，以保持阶段 3 兼容性。由于旧版本密封 JSON 中包含已删除字段，Go JSON 反序列化会忽略未知字段；保存新版本时不再写回这些字段。`DefaultStateVersion` 递增到 `1.4`，用于明确标识新状态结构。
+由于旧版本密封 JSON 中可能包含已删除字段，Go JSON 反序列化会忽略未知字段；保存新版本时不再写回这些字段。`DefaultStateVersion` 递增到 `1.4`，用于明确标识新状态结构。
 
 ### 2.3 状态接口
 
@@ -80,7 +79,6 @@ TrainingRunning bool `json:"trainingRunning"`
 
 - 删除 `dataImported`；
 - 删除 `trainingDone`；
-- 保留 `trainingDataImported`；
 - 新增 `trainingRunning`。
 
 状态查询只反映当前内存和密封状态，不通过历史报告推断训练是否完成。
@@ -121,7 +119,7 @@ TrainingRunning bool `json:"trainingRunning"`
 
 模型先到、数据后到时，数据流程直接使用最新数据启动训练。数据先到、模型后到时，模型流程在模型处理成功后复用 `LatestDataRecord` 启动训练。上述行为适用于所有阶段。
 
-阶段 3 数据成功仍可设置 `TrainingDataImported = true`，但该字段不参与训练触发。
+数据导入成功只更新数据索引和当前数据记录，不再设置任何数据导入完成标志。
 
 ---
 
@@ -178,7 +176,7 @@ CurrentOp = "idle"
 ## 5. 异常处理与恢复
 
 1. 模型请求在异步处理前置位，但下载/解密/解压/审计失败时必须回滚 `ModelImported`，并清理模型目录；
-2. 数据导入失败不再清除不存在的 `DataImported`，但需保留导入索引回滚、当前数据记录清理和失败报告逻辑；
+2. 数据导入失败不再清除任何数据导入状态，但需保留导入索引回滚、当前数据记录清理和失败报告逻辑；
 3. 训练异常由统一 defer/释放函数清除 `TrainingRunning`；
 4. panic 恢复需要清除 `TrainingRunning`，保留现有失败报告、平台补偿上报和活动任务清理；
 5. 冷启动恢复读取 `TrainingRunning` 与 `ActiveTask`，若发现任务状态为 RUNNING，按现有 crash recovery 处理并在完成后将其置为 `false`；
@@ -190,12 +188,11 @@ CurrentOp = "idle"
 
 ### 6.1 状态结构与 API
 
-- 编译级检查：`TAAState` 不再包含 `DataImported`、`TrainingDone`、`Phase1TrainingStarted`；
+- 编译级检查：`TAAState` 不再包含 `DataImported`、`TrainingDataImported`、`TrainingDone`、`Phase1TrainingStarted`；
 - 密封 JSON 不包含 `dataImported`、`trainingDone`；
 - 密封 JSON 包含 `trainingRunning`；
 - 旧状态加载后可忽略已删除字段，并按 1.4 结构重新保存；
 - `/health` 和 `/status` 不返回 `dataImported`、`trainingDone`，返回 `trainingRunning`；
-- `TrainingDataImported` 仍按阶段 3 兼容规则工作。
 
 ### 6.2 导入触发
 
@@ -227,5 +224,5 @@ git diff --check
 
 - 不重构导入索引的数据目录结构；
 - 不修改模型审计策略和报告 Schema；
-- 不删除 `TrainingDataImported`，其后续清理另行评估；
+- 不改变模型审计策略和报告 Schema；
 - 不改变模型或数据请求的外部 API 路径和 HTTP 方法。
