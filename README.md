@@ -51,7 +51,7 @@ flowchart LR
     style Mock fill:#f1f5f9,stroke:#64748b,stroke-width:1.5px
 ```
 
-1. **启动即证明**：生成 SM2 密钥对，构造 USERDATA，调用 attestation helper 获取远程证明报告。
+1. **启动即证明**：生成 SM2 密钥对，构造 USERDATA，通过纯 Go 原生通信（pkg/csvattest）生成远程证明报告。
 2. **注册即绑定**：将 TAA 公钥、证明报告和证明字段上报平台，完成容器身份与 TEE 硬件绑定。
 3. **资源密态流转**：平台通过 HTTP 下发加密资源，TAA 在 TEE 内下载、解密、解包和落盘。
 4. **审计后执行**：模型代码导入时执行静态扫描，并可启用本地 LLM 语义验证，降低误报。
@@ -127,7 +127,7 @@ TAA 启动后会：
 
 - 生成随机 SM2 公私钥对
 - 构造 USERDATA = `taaPublicKey.X || taaPublicKey.Y`
-- 调用 `attestation/get-attestation` 生成远程证明报告
+- 通过纯 Go 原生通信（pkg/csvattest）生成远程证明报告
 - 主动向平台调用注册接口
 
 注册请求包含：

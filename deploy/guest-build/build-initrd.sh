@@ -13,12 +13,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# 本地构建输入和输出。TAA 启动时会固定调用 ./attestation/get-attestation，
-# 因此除了 TAA 主程序，还必须把标准 helper（默认 bin/get-attestation）一起注入 initrd。
+# 本地构建输入和输出。TAA 使用纯 Go 原生实现远程证明，无需注入外部 helper。
 # BASE_INITRD 必须是远程原始 Kata CSV initrd，不能是已经注入过 TAA 的输出文件；
 # 否则再次追加会产生重复 payload 路径，并以不可控方式改变启动度量。
 TAA_SRC="$ROOT_DIR/bin/taa"
-ATTESTATION_HELPER_SRC="${ATTESTATION_HELPER_SRC:-$ROOT_DIR/bin/get-attestation}"
 BASE_INITRD="$SCRIPT_DIR/base/kata-containers-initrd-confidential-csv.img"
 OUT_DIR="$SCRIPT_DIR/out"
 INITRD_OUT="$OUT_DIR/kata-containers-initrd-taa-csv.initrd"
@@ -73,7 +71,6 @@ Commands:
   all     Run build, deploy, then launch.
 
 Environment overrides:
-  ATTESTATION_HELPER_SRC=$ATTESTATION_HELPER_SRC
   REMOTE_USER=$REMOTE_USER
   REMOTE_HOST=$REMOTE_HOST
   REMOTE_BUNDLE_DIR=$REMOTE_BUNDLE_DIR
@@ -149,12 +146,6 @@ check_build_inputs() {
     exit 1
   fi
 
-  if [[ ! -x "$ATTESTATION_HELPER_SRC" ]]; then
-    echo "error: missing executable attestation helper: $ATTESTATION_HELPER_SRC" >&2
-    echo "hint: run 'make attestation-ioctl' from the repository root first" >&2
-    exit 1
-  fi
-
   if [[ ! -f "$BASE_INITRD" ]]; then
     echo "error: missing base Kata CSV initrd: $BASE_INITRD" >&2
     echo "hint: place kata-containers-initrd-confidential-csv.img under guest-build/base/" >&2
@@ -205,24 +196,22 @@ build_initrd() {
   # 拒绝把已经注入过的镜像当作 base。重复执行具备幂等性，
   # 因为每次都从 BASE_INITRD 开始并覆盖 INITRD_OUT；这个保护用于防止误把
   # 已注入输出文件当作新的 base。
-  if manifest_has_entry "$base_manifest" "usr/local/bin/taa" || manifest_has_entry "$base_manifest" "usr/local/bin/taa-init" || manifest_has_entry "$base_manifest" "attestation/get-attestation"; then
+  if manifest_has_entry "$base_manifest" "usr/local/bin/taa" || manifest_has_entry "$base_manifest" "usr/local/bin/taa-init"; then
     echo "error: base initrd already contains TAA payload paths; refusing to append a duplicate" >&2
     echo "hint: use the original remote Kata CSV initrd as $BASE_INITRD" >&2
     exit 1
   fi
 
-  mkdir -p "$OUT_DIR" "$BUILD_WORK_DIR/extra/usr/local/bin" "$BUILD_WORK_DIR/extra/attestation"
+  mkdir -p "$OUT_DIR" "$BUILD_WORK_DIR/extra/usr/local/bin"
 
   echo "解包 base initrd"
 
   # 将压缩的 base initrd 转成原始 cpio 文件，并向该归档追加额外条目。
   # 不解包已有条目，因此原始 Kata 内容、文件元数据、符号链接和设备节点都会保留。
-  # attestation/get-attestation 也必须注入，因为 TAA 启动时会固定调用该 helper。
   gzip -dc "$BASE_INITRD" > "$BUILD_WORK_DIR/base.cpio"
 
-  echo "注入 TAA 和 attestation helper"
+  echo "注入 TAA"
   install -m 0755 "$TAA_SRC" "$BUILD_WORK_DIR/extra/usr/local/bin/taa"
-  install -m 0755 "$ATTESTATION_HELPER_SRC" "$BUILD_WORK_DIR/extra/attestation/get-attestation"
 
   echo "写入 init wrapper"
 
@@ -286,11 +275,8 @@ EOF
 
   # 只把新增文件追加到复制出的 base cpio。不要把 usr、usr/local、etc/default
   # 这类 base 中已经存在的父目录再次写入归档，否则内核解包追加段时可能用
-  # 后出现的目录条目覆盖 base 目录的权限/属主/时间戳。这里显式列出需要追加的
-  # 文件，以及 base 中不存在但 helper 路径必需的 attestation 目录。
+  # 后出现的目录条目覆盖 base 目录的权限/属主/时间戳。这里显式列出需要追加的文件。
   append_entries=(
-    "attestation"
-    "attestation/get-attestation"
     "usr/local/bin/taa"
     "usr/local/bin/taa-init"
   )
@@ -329,7 +315,7 @@ EOF
   gzip -n -9 < "$BUILD_WORK_DIR/base.cpio" > "$BUILD_WORK_DIR/initrd.candidate"
   archive_manifest "$BUILD_WORK_DIR/initrd.candidate" "$candidate_manifest"
 
-  for entry in usr/local/bin/taa usr/local/bin/taa-init attestation/get-attestation; do
+  for entry in usr/local/bin/taa usr/local/bin/taa-init; do
     if ! manifest_has_entry "$candidate_manifest" "$entry"; then
       echo "error: built initrd is missing $entry" >&2
       exit 1
@@ -357,8 +343,6 @@ EOF
   manifest_print_entry "$candidate_manifest" "usr/local/bin/taa"
   echo "usr/local/bin/taa-init"
   manifest_print_entry "$candidate_manifest" "usr/local/bin/taa-init"
-  echo "attestation/get-attestation"
-  manifest_print_entry "$candidate_manifest" "attestation/get-attestation"
   if taa_env_file_needed; then
     echo "etc/default/taa.env"
     manifest_print_entry "$candidate_manifest" "etc/default/taa.env"
