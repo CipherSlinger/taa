@@ -9,21 +9,21 @@
     - [2.1.2 平台 → TAA（业务与控制接口）](#212-平台--taa业务与控制接口)
     - [2.1.3 调试接口（平台 → TAA）](#213-调试接口平台--taa)
 - [3. TAA → 平台](#3-taa--平台)
-  - [3.1 TAA 启动后生成远程证明报告并通知平台](#31-taa-启动后生成远程证明报告并通知平台)
-  - [3.2 获取远程证明报告](#32-获取远程证明报告)
+  - [3.1 TAA 启动后生成远程证明报告并通知平台（/v1/taa/register）](#31-taa-启动后生成远程证明报告并通知平台v1taaregister)
+  - [3.2 获取远程证明报告（/v1/taa/getAttestation）](#32-获取远程证明报告v1taagetattestation)
     - [3.2.1 远程证明报告二进制格式](#321-远程证明报告二进制格式)
-  - [3.4 TAA 上报训练完成结果](#34-taa-上报训练完成结果)
-  - [3.5 TAA 上报模型导入结果](#35-taa-上报模型导入结果)
-  - [3.6 TAA 上报代码安全审计结果](#36-taa-上报代码安全审计结果)
-  - [3.7 TAA 上报任务终端日志](#37-taa-上报任务终端日志)
-  - [3.8 TAA 上报任务进度](#38-taa-上报任务进度)
+  - [3.4 TAA 上报训练完成结果（/v1/taa/reportRes）](#34-taa-上报训练完成结果v1taareportres)
+  - [3.5 TAA 上报模型导入结果（/v1/taa/reportModelImport）](#35-taa-上报模型导入结果v1taareportmodelimport)
+  - [3.6 TAA 上报代码安全审计结果（/v1/taa/reportAudit）](#36-taa-上报代码安全审计结果v1taareportaudit)
+  - [3.7 TAA 上报任务终端日志（/v1/taa/modelLog）](#37-taa-上报任务终端日志v1taamodellog)
+  - [3.8 TAA 上报任务进度（/v1/taa/reportProgress）](#38-taa-上报任务进度v1taareportprogress)
 - [4. 平台 → TAA](#4-平台--taa)
-  - [4.1 资源信息获取](#41-资源信息获取)
-  - [4.2 下发资源数据](#42-下发资源数据)
-  - [4.3 通知 TAA 阶段切换](#43-通知-taa-阶段切换)
-  - [4.4 请求 TAA 导出结果](#44-请求-taa-导出结果)
+  - [4.1 资源信息获取（/v1/taa/getResourceInfo）](#41-资源信息获取v1taagetresourceinfo)
+  - [4.2 下发资源数据（/v1/taa/import）](#42-下发资源数据v1taaimport)
+  - [4.3 通知 TAA 阶段切换（/v1/taa/switch）](#43-通知-taa-阶段切换v1taaswitch)
+  - [4.4 请求 TAA 导出结果（/v1/taa/export）](#44-请求-taa-导出结果v1taaexport)
   - [4.5 下发模型资源（/v1/taa/importModel）](#45-下发模型资源v1taaimportmodel)
-  - [4.6 中止当前训练任务](#46-中止当前训练任务)
+  - [4.6 中止当前训练任务（/v1/taa/stopTraining）](#46-中止当前训练任务v1taastoptraining)
 - [5. 调试接口](#5-调试接口)
   - [5.1 连通性检查（/v1/taa/health）](#51-连通性检查v1taahealth)
   - [5.2 查询 TAA 完整状态（/v1/taa/status）](#52-查询-taa-完整状态v1taastatus)
@@ -102,9 +102,9 @@ Agent 公共请求返回参数如下：
 
 ## 3. TAA → 平台
 
-### 3.1 TAA 启动后生成远程证明报告并通知平台
+### 3.1 TAA 启动后生成远程证明报告并通知平台（/v1/taa/register）
 
-TAA 服务启动时先生成随机 SM2 公私钥对（国密标准椭圆曲线密码算法，GB/T 32918-2016），并先调用 attestation helper 生成远程证明报告，保存到 `attestation.report` 后，再调用平台注册接口。
+TAA 服务启动时先生成随机 SM2 公私钥对，生成远程证明报告后，再调用平台注册接口。
 
 **请求**：`POST http://{PLATFORM_IP}/v1/taa/register`
 
@@ -163,7 +163,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 **成功响应示例**（200 OK）
 
-### 3.2 获取远程证明报告
+### 3.2 获取远程证明报告（/v1/taa/getAttestation）
 
 **请求**：`POST /v1/taa/getAttestation`
 
@@ -238,7 +238,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 ---
 
-### 3.4 TAA 上报训练完成结果
+### 3.4 TAA 上报训练完成结果（/v1/taa/reportRes）
 
 **请求**：`POST /v1/taa/reportRes`
 
@@ -359,7 +359,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 > phase 2 测试阶段（明文结果返回平台）
 > phase 3 拒绝调用
 
-### 3.5 TAA 上报模型导入结果
+### 3.5 TAA 上报模型导入结果（/v1/taa/reportModelImport）
 
 **请求**：`POST /v1/taa/reportModelImport`
 
@@ -430,7 +430,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-### 3.6 TAA 上报代码安全审计结果
+### 3.6 TAA 上报代码安全审计结果（/v1/taa/reportAudit）
 
 **请求**：`POST /v1/taa/reportAudit`
 
@@ -512,15 +512,11 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-### 3.7 TAA 上报任务终端日志
-
-TAA 在任务执行过程中通过该接口向平台批量上报任务终端日志。该接口与 `/v1/taa/logs` 不同：`/v1/taa/logs` 由平台主动查询 TAA 本地结构化日志，`/v1/taa/modelLog` 由 TAA 主动推送任务日志。
+### 3.7 TAA 上报任务终端日志（/v1/taa/modelLog）
 
 **请求**：`POST http://{PLATFORM_IP}/v1/taa/modelLog`
 
 **请求内容类型**：`application/json`
-
-**触发时机**：任务执行过程中，TAA 按批次主动上报日志；同一批次因网络异常重试时，必须保持原有序号。
 
 **参数**：
 
@@ -584,9 +580,9 @@ TAA 在任务执行过程中通过该接口向平台批量上报任务终端日�
 }
 ```
 
-### 3.8 TAA 上报任务进度
+### 3.8 TAA 上报任务进度（/v1/taa/reportProgress）
 
-TAA 在任务执行过程中通过该接口向平台上报当前任务的数值进度。该接口只传递进度百分比，不表达任务阶段、运行状态或最终结果；任务最终结果仍通过 `/v1/taa/reportRes` 上报。
+TAA 在任务执行过程中通过该接口向平台上报当前任务的数值进度。
 
 **请求**：`POST http://{PLATFORM_IP}/v1/taa/reportProgress`
 
@@ -644,9 +640,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 
 ## 4. 平台 → TAA
 
-### 4.1 资源信息获取
-
-TAA 接收到 `resourceUrl` 后，下载资源文件（若为 `.enc` 结尾则使用实例 SM2 私钥进行信封解密），计算明文归档压缩包的国密 SM3 校验和（与 `/v1/taa/import` 接口哈希逻辑保持一致），并将数据幂等解压保存到对应哈希文件夹（`/opt/taa/data/<hash>`）作为唯一标识备份；随后调用 `filetree` 解析器分析多模态数据集的目录结构、魔数格式识别及结构化文件元信息（CSV / TSV / JSON / JSONL / XLSX / SQLite / Parquet 等的 schema 与数据量），已保存的哈希数据目录予以持久保留以避免后续重复解压并支持统一资源管理。
+### 4.1 资源信息获取（/v1/taa/getResourceInfo）
 
 **请求**：`POST /v1/taa/getResourceInfo`
 
@@ -724,7 +718,7 @@ TAA 接收到 `resourceUrl` 后，下载资源文件（若为 `.enc` 结尾则�
 }
 ```
 
-### 4.2 下发资源数据
+### 4.2 下发资源数据（/v1/taa/import）
 
 **请求**：`POST /v1/taa/import`
 
@@ -797,9 +791,7 @@ TAA 接收到 `resourceUrl` 后，下载资源文件（若为 `.enc` 结尾则�
 ```
 
 
-### 4.3 通知 TAA 阶段切换
-
-> **安全考量**：如何防止平台和模型提供方共谋直接进入正式训练阶段偷取数据？参见模型方规约与远程证明验证逻辑。
+### 4.3 通知 TAA 阶段切换（/v1/taa/switch）
 
 **请求**：`POST /v1/taa/switch`
 
@@ -819,8 +811,6 @@ TAA 接收到 `resourceUrl` 后，下载资源文件（若为 `.enc` 结尾则�
 }
 ```
 
-> 当前实现仅校验 `phase` 取值范围为 `1` ~ `4`，目前允许在有效阶段之间直接切换。
-
 **响应内容类型**：`application/json`
 
 **响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，该接口成功时 `result` 为 `null`。
@@ -835,7 +825,7 @@ TAA 接收到 `resourceUrl` 后，下载资源文件（若为 `.enc` 结尾则�
 }
 ```
 
-### 4.4 请求 TAA 导出结果
+### 4.4 请求 TAA 导出结果（/v1/taa/export）
 
 该接口用于请求导出 TAA 当前阶段产生的结果目录压缩包。考虑到结果文件可能较大，成功时接口直接返回二进制文件流。
 
@@ -972,7 +962,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 }
 ```
 
-### 4.5 下发模型资源（`/v1/taa/importModel`）
+### 4.5 下发模型资源（/v1/taa/importModel）
 
 该接口**专门用于平台向 TAA 下发模型资源**（模型代码 + 训练代码 + 数据），复用 `/v1/taa/import` 的资源接收与处理流程，区别在于：固定处理模型导入场景，**移除 `type` 字段**。
 
@@ -1074,7 +1064,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
 > **加密格式说明**：与 `/v1/taa/import` 相同。
 
-### 4.6 中止当前训练任务
+### 4.6 中止当前训练任务（/v1/taa/stopTraining）
 
 该接口用于平台请求 TAA 中止当前正在执行的训练任务。TAA 当前为单任务模式，请求不需要传入 `taskId` 或 `requestId`，接口始终针对当前训练任务处理。
 
