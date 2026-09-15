@@ -663,9 +663,9 @@ TAA 接收到 `resourceUrl` 后，下载资源文件（若为 `.enc` 结尾则�
 
 | 当前阶段 | 明文导出内容 | 明文文件名 | 加密规则 |
 | --- | --- | --- | --- |
-| phase 1（调试） | `RESULT_DIR/debug` 目录压缩得到的 tar.gz 文件 | `result-debug-{requestId}.tar.gz` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
-| phase 2（测试） | `RESULT_DIR/train` 目录压缩得到的 tar.gz 文件 | `result-train-{requestId}.tar.gz` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
-| phase 3（正式训练） | `RESULT_DIR/train` 目录压缩得到的 tar.gz 文件 | `result-train-{requestId}.tar.gz` | 固定使用 phase 1 `/v1/taa/importModel` 保存的公钥加密，文件名追加 `.enc`；未保存公钥时返回 400 |
+| phase 1（调试） | `RESULT_DIR/debug` 目录压缩得到的 zip 文件 | `result-debug-{requestId}.zip` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
+| phase 2（测试） | `RESULT_DIR/train` 目录压缩得到的 zip 文件 | `result-train-{requestId}.zip` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
+| phase 3（正式训练） | `RESULT_DIR/train` 目录压缩得到的 zip 文件 | `result-train-{requestId}.zip` | 固定使用 phase 1 `/v1/taa/importModel` 保存的公钥加密，文件名追加 `.enc`；未保存公钥时返回 400 |
 | phase 4（推理） | 暂不支持 | - | 返回 400 |
 
 **成功响应内容类型**：`application/octet-stream`
@@ -675,14 +675,14 @@ TAA 接收到 `resourceUrl` 后，下载资源文件（若为 `.enc` 结尾则�
 | 响应头 | 说明 |
 | --- | --- |
 | `Content-Type` | 固定为 `application/octet-stream` |
-| `Content-Disposition` | 附件下载文件名。明文时为 `result-debug-{requestId}.tar.gz` 或 `result-train-{requestId}.tar.gz`；加密时追加 `.enc` |
+| `Content-Disposition` | 附件下载文件名。明文时为 `result-debug-{requestId}.zip` 或 `result-train-{requestId}.zip`；加密时追加 `.enc` |
 | `Content-Length` | 文件大小，单位为字节；加密导出时为加密后的文件大小 |
 | `X-TAA-Task-Id` | 任务 ID，与请求中的 `taskId` 一致；`taskId` 缺省时为空 |
-| `X-TAA-Encrypted` | 是否加密，`true` 表示响应体为 SM2+SM4-GCM 信封加密结果，`false` 表示响应体为明文 tar.gz 压缩包 |
+| `X-TAA-Encrypted` | 是否加密，`true` 表示响应体为 SM2+SM4-GCM 信封加密结果，`false` 表示响应体为明文 zip 压缩包 |
 
 **成功响应体**：结果文件二进制流。
 
-- `X-TAA-Encrypted: false` 时，响应体为当前阶段结果目录压缩得到的 tar.gz 文件。
+- `X-TAA-Encrypted: false` 时，响应体为当前阶段结果目录压缩得到的 zip 文件。
 - `X-TAA-Encrypted: true` 时，响应体为信封加密后的二进制内容，格式为 `WrappedKey(129B) || SM4-GCM Ciphertext`。
 
 **成功响应示例（200 OK，phase 2 明文导出）**：
@@ -690,12 +690,12 @@ TAA 接收到 `resourceUrl` 后，下载资源文件（若为 `.enc` 结尾则�
 ```http
 HTTP/1.1 200 OK
 Content-Type: application/octet-stream
-Content-Disposition: attachment; filename="result-train-req-export-001.tar.gz"
+Content-Disposition: attachment; filename="result-train-req-export-001.zip"
 Content-Length: 10485760
 X-TAA-Task-Id: task-001
 X-TAA-Encrypted: false
 
-<result-train-req-export-001.tar.gz binary stream>
+<result-train-req-export-001.zip binary stream>
 ```
 
 **成功响应示例（200 OK，phase 3 加密导出）**：
@@ -703,7 +703,7 @@ X-TAA-Encrypted: false
 ```http
 HTTP/1.1 200 OK
 Content-Type: application/octet-stream
-Content-Disposition: attachment; filename="result-train-req-export-002.tar.gz.enc"
+Content-Disposition: attachment; filename="result-train-req-export-002.zip.enc"
 Content-Length: 10485918
 X-TAA-Task-Id: task-001
 X-TAA-Encrypted: true
@@ -717,7 +717,7 @@ X-TAA-Encrypted: true
 curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
   -H "Content-Type: application/json" \
   -d '{"requestId":"req-export-001","publicKey":null,"taskId":"task-001"}' \
-  -o result-train-req-export-001.tar.gz
+  -o result-train-req-export-001.zip
 ```
 
 **失败响应内容类型**：`application/json`

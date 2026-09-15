@@ -149,7 +149,7 @@ type ImportIndexRecord struct {
 - **临时碎片清除**：自愈启动时自动扫描并清理历史遗留的 `*.tmp` 孤儿文件，防止悬挂碎片堆积。
 
 ### 3.6 导出打包软链接穿透越界防护（Symlink Escaping in Export Packaging）
-在 `/v1/taa/export` 打包压缩目录（`compressDirToTarGz`）时，抵御模型训练脚本在 `/opt/taa/output` 构造软链接偷取宿主敏感文件的攻击：
+在 `/v1/taa/export` 打包压缩目录（`compressDirToZip`）时，抵御模型训练脚本在 `/opt/taa/output` 构造软链接偷取宿主敏感文件的攻击：
 - **符号链接物理路径解析**：遍历目录时对所有文件/链接调用 `filepath.EvalSymlinks(path)`；
 - **沙箱越界阻断**：若链接指向的目标物理路径脱离了 `srcDir`（例如恶意软链接指向 `/opt/taa/keys/private.pem`、`/etc/shadow` 或 `/root/.ssh`），**坚决拒绝打包入流并记录严重安全报警**，从根源杜绝 TAA SM2 根私钥外泄。
 
@@ -390,7 +390,7 @@ flowchart TD
 3. **控制层并发防御与安全导出阻断 (`internal/controller/route.go`)**：
    - `switchHandler` 增加 `isTrainingBusyLocked()` 409 拒绝门禁；
    - `exportHandler` 强制基于 `record.Phase`（而非瞬态 `s.CurrentPhase`）断言加密策略，Phase 3 产物无公钥坚决拒绝明文导出；
-   - `compressDirToTarGz` 注入 `filepath.EvalSymlinks` 软链接越界检查，杜绝越界偷取 `/opt/taa/keys/private.pem`���
+   - `compressDirToZip` 注入 `filepath.EvalSymlinks` 软链接越界检查，杜绝越界偷取 `/opt/taa/keys/private.pem`；
    - `downloadToTempFile` 全局无条件应用 `io.LimitReader` 阻断 Chunked 超限流；
    - `hasSavedModel()` 移除单纯探测物理目录非空的判定，严格以 `s.ModelImported == true` 为唯一法定依据；
    - `runAsyncSafe` 强化 Panic 兜底，自动向平台补偿投递致命错误上报。
