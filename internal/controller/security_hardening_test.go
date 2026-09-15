@@ -128,45 +128,7 @@ func TestExportHandlerPhaseAffinity(t *testing.T) {
 	}
 }
 
-// 3. 打包导出软链接穿透越界防护测试
-func TestCompressDirToTarGzSymlinkDefense(t *testing.T) {
-	tempDir := t.TempDir()
-	srcDir := filepath.Join(tempDir, "export-box")
-	secretDir := filepath.Join(tempDir, "secret-box")
-	if err := os.MkdirAll(srcDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(secretDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	secretFile := filepath.Join(secretDir, "private.pem")
-	if err := os.WriteFile(secretFile, []byte("SUPER_SECRET_KEY"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	// 在 srcDir 内创建指向 secretFile 的软链接
-	maliciousLink := filepath.Join(srcDir, "leak_key.pem")
-	if err := os.Symlink(secretFile, maliciousLink); err != nil {
-		t.Fatal(err)
-	}
-
-	// 正常文件
-	if err := os.WriteFile(filepath.Join(srcDir, "normal.txt"), []byte("normal"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// 尝试压缩，必须报错拦截
-	_, err := compressDirToTarGz(srcDir)
-	if err == nil {
-		t.Fatalf("expected error on symlink escape, but compressDirToTarGz succeeded")
-	}
-	if !strings.Contains(err.Error(), "非法越界软链接") {
-		t.Fatalf("expected error mentioning 非法越界软链接, got: %v", err)
-	}
-}
-
-// 3.1 ZIP 导出软链接穿透越界防护测试
+// 3. ZIP 导出软链接穿透越界防护测试
 func TestSecurity_ExportSymlinkEscapeDefense(t *testing.T) {
 	tempDir := t.TempDir()
 	srcDir := filepath.Join(tempDir, "export-box")

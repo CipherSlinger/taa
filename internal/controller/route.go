@@ -1,10 +1,8 @@
 package controller
 
 import (
-	"archive/tar"
 	"archive/zip"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -90,8 +88,6 @@ type TAAState struct {
 	ModelImported         bool
 	TrainingRunning       bool
 	AttestationFile       string
-	HelperPath            string
-	HelperMode            string
 	PlatformIP            string
 	DockerID              string
 	SM2PrivateKey         *teecrypto.SM2PrivateKey // TAA 启动时生成的 SM2 私钥，用于解密资源信封
@@ -425,12 +421,10 @@ func (s *TAAState) getTAAPublicKeyPEM() string {
 	return string(pubPEM)
 }
 
-func NewTAAState(attestationFile, platformIP, dockerID, helperPath, helperMode string, sm2Key *teecrypto.SM2PrivateKey, userData []byte, sec SecurityConfig) *TAAState {
+func NewTAAState(attestationFile, platformIP, dockerID string, sm2Key *teecrypto.SM2PrivateKey, userData []byte, sec SecurityConfig) *TAAState {
 	return &TAAState{
 		CurrentPhase:    1,
 		AttestationFile: attestationFile,
-		HelperPath:      helperPath,
-		HelperMode:      helperMode,
 		PlatformIP:      platformIP,
 		DockerID:        dockerID,
 		SM2PrivateKey:   sm2Key,
@@ -1341,14 +1335,14 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resultData, err := compressDirToTarGz(record.ResultDir)
+	resultData, err := compressDirToZip(record.ResultDir)
 	if err != nil {
 		s.Logs.Add(LogError, "export", "压缩结果目录失败: %v", err)
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("压缩结果目录失败: %v", err))
 		return
 	}
 
-	filename := filepath.Base(record.ResultDir) + ".tar.gz"
+	filename := filepath.Base(record.ResultDir) + ".zip"
 
 	if encrypt {
 		pub, err := teecrypto.ParseSM2PublicKeyPEM([]byte(pubKeyPEM))
@@ -1371,98 +1365,6 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 
 	s.Logs.Add(LogInfo, "export", "明文导出: 大小=%d bytes, taskId=%s, filename=%s", len(resultData), req.TaskID, filename)
 	writeFileStream(w, req.TaskID, filename, false, int64(len(resultData)), bytes.NewReader(resultData), "导出明文结果失败")
-}
-
-// compressDirToTarGz 将目录压缩为 tar.gz 格式的字节切片。
-func compressDirToTarGz(srcDir string) ([]byte, error) {
-	log.Printf("compressDirToTarGz: 开始压缩目录: %s", srcDir)
-	info, err := os.Stat(srcDir)
-	if err != nil {
-		log.Printf("compressDirToTarGz: 目录不存在: %v", err)
-		return nil, fmt.Errorf("目录不存在: %w", err)
-	}
-	if !info.IsDir() {
-		log.Printf("compressDirToTarGz: 路径不是目录: %s", srcDir)
-		return nil, fmt.Errorf("路径不是目录: %s", srcDir)
-	}
-
-	evalSrcDir, err := filepath.EvalSymlinks(srcDir)
-	if err != nil {
-		evalSrcDir = srcDir
-	}
-	cleanSrcDir := filepath.Clean(evalSrcDir)
-
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gz)
-
-	baseDir := filepath.Dir(srcDir)
-	fileCount := 0
-	err = filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if info.Mode()&os.ModeSymlink != 0 {
-			evalPath, err := filepath.EvalSymlinks(path)
-			if err != nil {
-				return fmt.Errorf("解析物理路径失败 %s: %w", path, err)
-			}
-			cleanEval := filepath.Clean(evalPath)
-			if cleanEval != cleanSrcDir && !strings.HasPrefix(cleanEval, cleanSrcDir+string(filepath.Separator)) {
-				return fmt.Errorf("检测到非法越界软链接: %s -> %s", path, evalPath)
-			}
-		}
-
-		relPath, err := filepath.Rel(baseDir, path)
-		if err != nil {
-			return err
-		}
-		// 统一使用 / 分隔符，兼容跨平台
-		relPath = filepath.ToSlash(relPath)
-
-		hdr, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			return err
-		}
-		hdr.Name = relPath
-
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-		if info.IsDir() {
-			log.Printf("compressDirToTarGz:   [目录] %s", relPath)
-			return nil
-		}
-		fileCount++
-		log.Printf("compressDirToTarGz:   [文件] %s (%d bytes)", relPath, info.Size())
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		_, copyErr := io.Copy(tw, f)
-		closeErr := f.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		return closeErr
-	})
-	if err != nil {
-		log.Printf("compressDirToTarGz: 遍历目录失败: %v", err)
-		return nil, err
-	}
-
-	log.Printf("compressDirToTarGz: 共压缩 %d 个文件", fileCount)
-
-	if err := tw.Close(); err != nil {
-		return nil, err
-	}
-	if err := gz.Close(); err != nil {
-		return nil, err
-	}
-	result := buf.Bytes()
-	log.Printf("compressDirToTarGz: 压缩完成，最终大小=%d bytes", len(result))
-	return result, nil
 }
 
 // compressDirToZip 将目录压缩为 zip 格式的字节切片，并对软链接进行越界安全校验。
@@ -1615,14 +1517,12 @@ func writeFileStream(w http.ResponseWriter, taskID, filename string, encrypted b
 
 // ── Handler: /v1/taa/getAttestation ──────────────────────
 
-func (s *TAAState) buildAttestationResult(ctx context.Context, attestationFile, helperPath, helperMode string, userData []byte) ([]byte, string, bool, string) {
+func (s *TAAState) buildAttestationResult(ctx context.Context, attestationFile string, userData []byte) ([]byte, string, bool, string) {
 	generateCtx, generateCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer generateCancel()
 
 	if err := attestation.Generate(generateCtx, attestation.Config{
 		OutputPath: attestationFile,
-		HelperPath: helperPath,
-		Mode:       helperMode,
 		UserData:   userData,
 	}); err != nil {
 		log.Printf("get attestation failed: generate report: %v", err)
@@ -1664,8 +1564,6 @@ func (s *TAAState) getAttestationHandler(w http.ResponseWriter, r *http.Request)
 
 	s.mu.RLock()
 	attestationFile := s.AttestationFile
-	helperPath := s.HelperPath
-	helperMode := s.HelperMode
 	userData := s.UserData
 	s.mu.RUnlock()
 
@@ -1673,7 +1571,7 @@ func (s *TAAState) getAttestationHandler(w http.ResponseWriter, r *http.Request)
 	s.attestMu.Lock()
 	defer s.attestMu.Unlock()
 
-	reportData, reportValues, verifiedPass, msg := s.buildAttestationResult(r.Context(), attestationFile, helperPath, helperMode, userData)
+	reportData, reportValues, verifiedPass, msg := s.buildAttestationResult(r.Context(), attestationFile, userData)
 	attestationBase64 := ""
 	if len(reportData) > 0 {
 		attestationBase64 = base64.StdEncoding.EncodeToString(reportData)
