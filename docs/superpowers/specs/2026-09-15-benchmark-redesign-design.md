@@ -117,6 +117,43 @@
 - **审计执行端极轻量化**：`tools/audit_benchmark_eval.py` 必须保证**纯 Python 3.10+ 标准库运行**（只使用 `re`, `json`, `urllib`, `argparse`, `dataclasses` 等），不需要评测宿主机预装任何 PyTorch、CUDA 或 Transformers 依赖；
 - **目标执行端按需隔离**：只有在被审计工程需要做本地语法编译与 dry-run 验证时，才在独立的虚拟环境或 TEE 容器中载入对应的轻量依赖。
 
+### 2.17 安全底线保底修复：重构 Gate 决策公式，消除 Fail-Open 致命漏洞
+- **杜���无法判定时的盲目放行**：针对原代码中 `uncertain > 0` 导致 `passed = True` 的逻辑漏洞，重构 `compute_conclusion` 门禁决策判定公式：
+  ```python
+  has_high_or_medium = (stats.get("high", 0) > 0) or (stats.get("medium", 0) > 0)
+  has_uncertain = stats.get("uncertain", 0) > 0
+  # 核心安全底线：任何高/中危告警在未能被明确豁免为 BENIGN 时，一律强制阻断
+  if malicious > 0 or suspicious > 0:
+      passed = False
+  elif has_uncertain and has_high_or_medium:
+      passed = False  # 真正落实 Fail-Closed：看不懂/超时一律阻断
+  elif not has_llm_verdict and has_high_or_medium:
+      passed = False
+  else:
+      passed = True
+  ```
+- 确保系统在网络超时、接口异常、JSON 解析失败或模型输出 UNCERTAIN 时，**绝对维持阻断拦截（Fail-Closed）**，守死安全防漏底线。
+
+### 2.18 决策层深度融合：打通 File 级宏观攻击链与 Finding 级决策阻断
+- **终结文件级推理算力空转**：重构 `compute_conclusion(stats, file_summaries, policy)`，使文件级宏观研判直接参与 Gate 门禁最终裁决；
+- **微观与宏观双阶融合**：
+  1. *攻击链拦截提升*：若任意文件的 `file_summary.risk_level in ("CRITICAL", "HIGH")` 或 `file_summary.chained == True` 或 `file_summary.exfiltration == True`，全局 `risk_level` 强制提升至相应级别，并在 Gate 策略下直接判定 `passed = False`；
+  2. *杜绝“见木不见林”*：即使单个 Finding 在局部被判定为疑似正常，只要 File 级研判识别出跨行、跨函数的复合攻击链（`chained=True`），门禁一律执行阻断，实现“行级去伪存真 + 文件级链式围堵”的完整闭环。
+
+### 2.19 基座代码文件规模归一化标准（File-Count Normalization）
+- **消除跨基座文件规模级差**：针对历史工程文件量极不均衡（Retina-DKD 含 53 个文件，而 XGBoost 仅 3 个文件）导致单样耗时与算力吞吐量严重失真的缺陷，确立归一化标准；
+- **核心业务集收敛**：所有 4 大真实基座纳入基准库时，必须剥离外围历史测试脚本，统一规范收敛为 **3 ~ 6 个核心业务文件**（总行数控制在 500 ~ 1500 行），使各基座在大模型盲审与协同推理时的文件规模处于同一量级，保障耗时度量的科学性。
+
+### 2.20 双轨基准公平对照规范（Fair Checklist Baseline）
+- **消除信息不对称偏置**：为科学回应同行对“动静协同是否仅因偷递规则描述元数据而获胜”的方法学质疑，基准评测体系拓展为公平三轨对照：
+  - *Track A: Pure-LLM-Raw*（仅输入全量裸代码盲审）；
+  - *Track B: Pure-LLM-Checklist*（端到端输入全代码 + 相同的静态规则 Checklist 审查清单）；
+  - *Track C: Static-LLM-Synergistic*（动静协同两阶段架构：毫秒级初筛 + 快速旁路 + 7 行定向切片仲裁）；
+- 精准度量并解耦“先验规则知识增益”与“动静两阶段架构工程 ROI 增益”。
+
+### 2.21 多向量并发混合渗透载荷规范（Multi-Vector APT Traps）
+- **贴合真实高级持续性威胁**：在 M5 复合攻击家族中，专门构建同时包含凭证嗅探 + 数据编码 + 隐蔽网络外联的多向量混合载荷（Hybrid Attack Traps）；
+- **全量多目标度量**：评估审计系统在多重告警并发时的多目标全量检出率（Recall per Attack Vector），防范攻击者利用次要告警掩护核心数据外传通道。
 ---
 
 ## 3. 4 大真实工业训练基座定义与工程规范

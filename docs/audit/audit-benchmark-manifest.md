@@ -104,6 +104,22 @@
 - **安全沙箱无害化**：网络外联强制使用无效保留域名（`.example.invalid`），持久化重定向至临时沙箱目录，杜绝测试意外执行污染宿主机；
 - **统计置信区间**：引入 1,000 次 Bootstrap 自动计算 95% 置信区间，避免 100 样本偶然抖动。
 
+### 2.13 门禁 Fail-Closed 决策与底线保底规范 (True Fail-Closed Gate Spec)
+
+- **消除 UNCERTAIN 放行漏洞**：重构门禁判定逻辑，当存在高危告警且大模型异常、超时或返回 UNCERTAIN 时，必须强制判定 `passed = False`，落实无法判定时绝对维持阻断的 Fail-Closed 底线。
+
+### 2.14 双阶决策打通与 File 级攻击链融合 (Dual-Level Synthesis)
+
+- **宏观与微观双重门禁**：`compute_conclusion` 深度结合 `file_summaries`，若文件级研判发现 `chained == True` 或 `exfiltration == True`，强制触发全局拦截，杜绝复合攻击链被漏报。
+
+### 2.15 基座文件规模归一化标准 (File-Count Normalization)
+
+- **消除耗时失真**：4 大基座统一剥离外围历史脚本，核心业务代码严格收敛至 **3 ~ 6 个文件**（500 ~ 1500 行），使单样本处理耗时具备可比性。
+
+### 2.16 公平三轨基准对比体系 (Fair Three-Track Baseline)
+
+- **解耦先验知识与架构增益**：设立 `pure-llm-raw`（裸代码）、`pure-llm-checklist`（相同检查清单）、`static-llm-synergistic`（动静协同）三轨对照，科学度量工程架构 ROI。
+
 ---
 
 ## 3. 良性样本家族

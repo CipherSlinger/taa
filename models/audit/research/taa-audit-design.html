@@ -3660,6 +3660,8 @@
               <li>File 级必须返回 <span class="mono">risk_level / summary / chained / exfiltration</span>。</li>
               <li>后端缺失时，直接返回 <span class="mono">UNCERTAIN</span>，理由写“未配置推理后端”。</li>
               <li>模型返回无法解析时，继续返回 <span class="mono">UNCERTAIN</span>，理由保留原始错误。</li>
+              <li><strong style="color:var(--danger);">Fail-Closed 判定底线：</strong>存在高/中危告警且大模型返回 <span class="mono">UNCERTAIN</span>（或超时/解析失败）时，门禁必须维持阻断（<span class="mono">passed = false</span>），绝对杜绝安全穿透。</li>
+              <li><strong style="color:var(--warn);">File 级决策联动：</strong>若文件级分析判定 <span class="mono">chained = true</span> 或 <span class="mono">exfiltration = true</span>，直接升级全局风险并触发门禁拦截。</li>
             </ul>
           </div>
           <div class="card">
