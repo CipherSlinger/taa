@@ -277,6 +277,28 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 		return
 	}
 
+	for name, dir := range map[string]string{
+		"模型输出": modelOutputDir,
+		"模型日志": s.Security.GetModelLogDir(),
+		"模型进度": s.Security.GetModelProgressDir(),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			s.Logs.Add(LogError, "train", "创建%s目录失败: %v", name, err)
+			s.setCurrentOp("idle")
+			s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("创建%s目录失败: %v", name, err))
+			return
+		}
+		if err := cleanDirContents(dir); err != nil {
+			s.Logs.Add(LogError, "train", "清空%s目录失败: %v", name, err)
+			s.setCurrentOp("idle")
+			s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("清空%s目录失败: %v", name, err))
+			return
+		}
+	}
+
+	watcher := s.startModelReportWatcher(context.Background(), trainReq.RequestID, trainReq.TaskID)
+	defer watcher.Stop()
+
 	StepSeparator("Run runtimeConfig")
 	s.setCurrentOp("training")
 	resolvedCommands := resolveRuntimeCommands(cfg.Commands, modelInputDir, modelOutputDir)
@@ -286,11 +308,13 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 		s.Logs.Add(LogInfo, "train", "  [cmd %d] %s", i+1, cmd)
 	}
 	if output, err := runRuntimeConfig(cfg, env, s.Security.ModelDir, modelInputDir, modelOutputDir, trainReq.TaskID, startedAt.UTC().Format(time.RFC3339)); err != nil {
+		watcher.Stop()
 		s.Logs.Add(LogError, "train", "执行 runtimeConfig 失败: %v\noutput: %s", err, output)
 		s.setCurrentOp("idle")
 		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("执行 runtimeConfig 失败: %v", err))
 		return
 	}
+	watcher.Stop()
 	s.Logs.Add(LogInfo, "train", "runtimeConfig 执行成功")
 
 	StepSeparator("Collect Output Results")

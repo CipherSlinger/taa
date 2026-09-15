@@ -408,6 +408,56 @@ paths:
                   received: true
                 error: 0
 
+  /v1/taa/modelLog:
+    post:
+      summary: 上报任务终端日志
+      description: TAA 在任务执行过程中向平台批量上报模型终端日志。
+      tags:
+        - 平台回调
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelLogRequest'
+      responses:
+        '200':
+          description: 平台成功接收日志
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                msg: "success"
+                result:
+                  received: true
+                error: 0
+
+  /v1/taa/reportProgress:
+    post:
+      summary: 上报任务进度
+      description: TAA 在任务执行过程中向平台主动上报当前任务的数值进度百分比。
+      tags:
+        - 平台回调
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportProgressRequest'
+      responses:
+        '200':
+          description: 平台成功接收进度
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                msg: "success"
+                result:
+                  received: true
+                error: 0
+
 components:
   schemas:
     # ── 公共响应包装 ────────────────────────────────────────────────────────
@@ -707,6 +757,72 @@ components:
         report:
           type: string
           description: 代码审计报告 JSON 字符串（格式与 AuditReport 一致）
+
+    ModelLogRequest:
+      type: object
+      required:
+        - dockerId
+        - requestId
+        - seqStart
+        - entries
+      properties:
+        dockerId:
+          type: string
+          description: 容器唯一标识
+        requestId:
+          type: string
+          description: 请求标识
+        taskId:
+          type: string
+          description: 任务唯一标识（可选）
+        seqStart:
+          type: integer
+          format: int64
+          description: 本批日志起始序号
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelLogEntry'
+
+    ModelLogEntry:
+      type: object
+      required:
+        - seq
+        - message
+      properties:
+        seq:
+          type: integer
+          format: int64
+          description: 递增日志序号
+        message:
+          type: string
+          description: 日志正文内容
+
+    ReportProgressRequest:
+      type: object
+      required:
+        - dockerId
+        - requestId
+        - percent
+        - timestamp
+      properties:
+        dockerId:
+          type: string
+          description: 容器唯一标识
+        requestId:
+          type: string
+          description: 请求标识
+        taskId:
+          type: string
+          description: 任务唯一标识（可选）
+        percent:
+          type: number
+          format: double
+          description: 当前任务进度百分比 (0.0 ~ 100.0)
+        timestamp:
+          type: string
+          format: date-time
+          description: 进度快照生成时间
 
     # ── 代码审计模型 ────────────────────────────────────────────────────────
     AuditReport:

@@ -21,6 +21,8 @@ type StartupConfig struct {
 	ResultDir          string
 	ModelInputDir      string
 	ModelOutputDir     string
+	ModelLogDir        string
+	ModelProgressDir   string
 	KeysDir            string
 	EnableLLM          bool
 	LLMEndpoint        string
@@ -42,6 +44,8 @@ type startupConfigFile struct {
 	ResultDir          string               `json:"resultDir"`
 	ModelInputDir      string               `json:"modelInputDir"`
 	ModelOutputDir     string               `json:"modelOutputDir"`
+	ModelLogDir        string               `json:"modelLogDir"`
+	ModelProgressDir   string               `json:"modelProgressDir"`
 	KeysDir            string               `json:"keysDir"`
 	LLM                startupLLMConfigFile `json:"llm"`
 }
@@ -84,7 +88,9 @@ func defaultStartupConfig() StartupConfig {
 		DataDir:            "/opt/taa/data",
 		ResultDir:          "/opt/taa/results",
 		ModelInputDir:      "/opt/taa/input",
-		ModelOutputDir:     "/opt/taa/output",
+		ModelOutputDir:     "/opt/taa/output/result",
+		ModelLogDir:        "/opt/taa/output/log",
+		ModelProgressDir:   "/opt/taa/output/progress",
 		KeysDir:            "/opt/taa/keys",
 		EnableLLM:          true,
 		LLMEndpoint:        "http://127.0.0.1:11434",
@@ -127,6 +133,12 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if fileCfg.ModelOutputDir != "" {
 		cfg.ModelOutputDir = fileCfg.ModelOutputDir
+	}
+	if fileCfg.ModelLogDir != "" {
+		cfg.ModelLogDir = fileCfg.ModelLogDir
+	}
+	if fileCfg.ModelProgressDir != "" {
+		cfg.ModelProgressDir = fileCfg.ModelProgressDir
 	}
 	if strings.TrimSpace(fileCfg.KeysDir) != "" {
 		cfg.KeysDir = strings.TrimSpace(fileCfg.KeysDir)

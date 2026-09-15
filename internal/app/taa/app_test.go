@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	teecrypto "taa/pkg/crypto"
 	"taa/internal/codeaudit"
 	"taa/internal/config"
+	teecrypto "taa/pkg/crypto"
 )
 
 // TestDeriveUserDataAndKeyPair 校验国密 SM2 密钥生成与 UserData 派生逻辑：
@@ -84,6 +84,8 @@ func TestBuildSecurityConfig(t *testing.T) {
 		ResultDir:          "/opt/taa/results",
 		ModelInputDir:      "/opt/taa/models/input",
 		ModelOutputDir:     "/opt/taa/models/output",
+		ModelLogDir:        "/opt/taa/models/log",
+		ModelProgressDir:   "/opt/taa/models/progress",
 		EnableLLM:          true,
 		LLMEndpoint:        "127.0.0.1:11434",
 		LLMModel:           "qwen2.5-coder:0.5b",
@@ -113,6 +115,12 @@ func TestBuildSecurityConfig(t *testing.T) {
 	}
 	if sec.ModelOutputDir != cfg.ModelOutputDir {
 		t.Errorf("ModelOutputDir = %q, want %q", sec.ModelOutputDir, cfg.ModelOutputDir)
+	}
+	if sec.ModelLogDir != cfg.ModelLogDir {
+		t.Errorf("ModelLogDir = %q, want %q", sec.ModelLogDir, cfg.ModelLogDir)
+	}
+	if sec.ModelProgressDir != cfg.ModelProgressDir {
+		t.Errorf("ModelProgressDir = %q, want %q", sec.ModelProgressDir, cfg.ModelProgressDir)
 	}
 
 	wantLLM := codeaudit.LLMConfig{

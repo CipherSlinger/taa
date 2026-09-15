@@ -103,8 +103,14 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if cfg.ModelInputDir != "/opt/taa/input" {
 		t.Fatalf("ModelInputDir = %q, want default", cfg.ModelInputDir)
 	}
-	if cfg.ModelOutputDir != "/opt/taa/output" {
+	if cfg.ModelOutputDir != "/opt/taa/output/result" {
 		t.Fatalf("ModelOutputDir = %q, want default", cfg.ModelOutputDir)
+	}
+	if cfg.ModelLogDir != "/opt/taa/output/log" {
+		t.Fatalf("ModelLogDir = %q, want default", cfg.ModelLogDir)
+	}
+	if cfg.ModelProgressDir != "/opt/taa/output/progress" {
+		t.Fatalf("ModelProgressDir = %q, want default", cfg.ModelProgressDir)
 	}
 	if cfg.KeysDir != "/opt/taa/keys" {
 		t.Fatalf("KeysDir = %q, want default", cfg.KeysDir)

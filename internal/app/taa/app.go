@@ -15,11 +15,11 @@ import (
 	"strings"
 	"time"
 
-	teecrypto "taa/pkg/crypto"
 	"taa/internal/attestation"
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 	"taa/internal/controller"
+	teecrypto "taa/pkg/crypto"
 )
 
 // ============================================================================
@@ -565,13 +565,15 @@ func registerPlatform(ctx context.Context, platformIP, dockerID, publicKeyPEM st
 // buildSecurityConfig 将全局启动配置转换为控制器使用的 SecurityConfig 结构体
 func buildSecurityConfig(cfg config.StartupConfig) controller.SecurityConfig {
 	return controller.SecurityConfig{
-		ScanEnabled:    cfg.EnableSecurityScan,
-		ModelDir:       cfg.ModelDir,
-		ResultCheck:    cfg.EnableResultCheck,
-		DataDir:        cfg.DataDir,
-		ResultDir:      cfg.ResultDir,
-		ModelInputDir:  cfg.ModelInputDir,
-		ModelOutputDir: cfg.ModelOutputDir,
+		ScanEnabled:      cfg.EnableSecurityScan,
+		ModelDir:         cfg.ModelDir,
+		ResultCheck:      cfg.EnableResultCheck,
+		DataDir:          cfg.DataDir,
+		ResultDir:        cfg.ResultDir,
+		ModelInputDir:    cfg.ModelInputDir,
+		ModelOutputDir:   cfg.ModelOutputDir,
+		ModelLogDir:      cfg.ModelLogDir,
+		ModelProgressDir: cfg.ModelProgressDir,
 		LLM: codeaudit.LLMConfig{
 			Enabled:     cfg.EnableLLM,
 			Endpoint:    cfg.LLMEndpoint,
@@ -586,7 +588,15 @@ func buildSecurityConfig(cfg config.StartupConfig) controller.SecurityConfig {
 
 // ensureSecurityDirectories 确保模型目录、数据目录、结果目录以及模型输入输出目录在本地文件系统中存在
 func ensureSecurityDirectories(sec controller.SecurityConfig) error {
-	for _, dir := range []string{sec.ModelDir, sec.DataDir, sec.ResultDir, sec.GetModelInputDir(), sec.GetModelOutputDir()} {
+	for _, dir := range []string{
+		sec.ModelDir,
+		sec.DataDir,
+		sec.ResultDir,
+		sec.GetModelInputDir(),
+		sec.GetModelOutputDir(),
+		sec.GetModelLogDir(),
+		sec.GetModelProgressDir(),
+	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("create directory %s: %w", dir, err)
 		}
@@ -596,7 +606,7 @@ func ensureSecurityDirectories(sec controller.SecurityConfig) error {
 
 // logSecurityConfig 打印安全扫描、大模型审计及结果检查策略的配置摘要
 func logSecurityConfig(sec controller.SecurityConfig) {
-	log.Printf("model staging directories: input=%s output=%s", sec.GetModelInputDir(), sec.GetModelOutputDir())
+	log.Printf("model staging directories: input=%s output=%s log=%s progress=%s", sec.GetModelInputDir(), sec.GetModelOutputDir(), sec.GetModelLogDir(), sec.GetModelProgressDir())
 	if sec.ScanEnabled {
 		log.Printf("security scan enabled: model-dir=%s", sec.ModelDir)
 		if sec.LLM.Enabled {

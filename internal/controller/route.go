@@ -43,19 +43,23 @@ type apiResponse struct {
 // Separated from TAAState so it doesn't need the phase mutex and can't be
 // accidentally left at zero values.
 type SecurityConfig struct {
-	ScanEnabled    bool                // 是否在 import type=1 时执行源码安全扫描
-	ModelDir       string              // 模型代码存放目录（扫描目标，type=1）
-	DataDir        string              // 数据目录（type=2 测试数据，type=3 训练数据，用于数据指纹比对）
-	ResultCheck    bool                // 是否在 export 时检查明文数据泄露
-	ResultDir      string              // 训练结果目录（导出前检查）
-	ModelInputDir  string              // 模型数据输入目录（缺省 /opt/taa/input）
-	ModelOutputDir string              // 模型结果输出目录（缺省 /opt/taa/output）
-	LLM            codeaudit.LLMConfig // 本地 LLM 语义验证配置
+	ScanEnabled      bool                // 是否在 import type=1 时执行源码安全扫描
+	ModelDir         string              // 模型代码存放目录（扫描目标，type=1）
+	DataDir          string              // 数据目录（type=2 测试数据，type=3 训练数据，用于数据指纹比对）
+	ResultCheck      bool                // 是否在 export 时检查明文数据泄露
+	ResultDir        string              // 训练结果目录（导出前检查）
+	ModelInputDir    string              // 模型数据输入目录（缺省 /opt/taa/input）
+	ModelOutputDir   string              // 模型结果输出目录（缺省 /opt/taa/output/result）
+	ModelLogDir      string              // 模型日志目录（缺省 /opt/taa/output/log）
+	ModelProgressDir string              // 模型进度目录（缺省 /opt/taa/output/progress）
+	LLM              codeaudit.LLMConfig // 本地 LLM 语义验证配置
 }
 
 const (
-	DefaultModelInputDir  = "/opt/taa/input"
-	DefaultModelOutputDir = "/opt/taa/output"
+	DefaultModelInputDir    = "/opt/taa/input"
+	DefaultModelOutputDir   = "/opt/taa/output/result"
+	DefaultModelLogDir      = "/opt/taa/output/log"
+	DefaultModelProgressDir = "/opt/taa/output/progress"
 )
 
 func (sec SecurityConfig) GetModelInputDir() string {
@@ -73,6 +77,28 @@ func (sec SecurityConfig) GetModelOutputDir() string {
 	dir := DefaultModelOutputDir
 	if strings.TrimSpace(sec.ModelOutputDir) != "" {
 		dir = sec.ModelOutputDir
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(dir)
+}
+
+func (sec SecurityConfig) GetModelLogDir() string {
+	dir := DefaultModelLogDir
+	if strings.TrimSpace(sec.ModelLogDir) != "" {
+		dir = sec.ModelLogDir
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(dir)
+}
+
+func (sec SecurityConfig) GetModelProgressDir() string {
+	dir := DefaultModelProgressDir
+	if strings.TrimSpace(sec.ModelProgressDir) != "" {
+		dir = sec.ModelProgressDir
 	}
 	if abs, err := filepath.Abs(dir); err == nil {
 		return filepath.Clean(abs)
@@ -1784,9 +1810,13 @@ func parseRuntimeConfig(raw string) (runtimeConfig, map[string]string, error) {
 }
 
 func newInOutReplacer(dataDir, outputDir string) *strings.Replacer {
+	outputRoot := filepath.Dir(filepath.Clean(outputDir))
 	return strings.NewReplacer(
 		DefaultModelInputDir, dataDir,
+		DefaultModelLogDir, filepath.Join(outputRoot, "log"),
+		DefaultModelProgressDir, filepath.Join(outputRoot, "progress"),
 		DefaultModelOutputDir, outputDir,
+		"/opt/taa/output", outputRoot,
 		"<input>", dataDir,
 		"<output>", outputDir,
 		"<INPUT>", dataDir,

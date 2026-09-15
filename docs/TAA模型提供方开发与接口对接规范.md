@@ -55,11 +55,12 @@ TAA 容器内对文件系统划分出明确的物理安全边界：
 │   └── weights/          # 预训练初始底模 (若有)                        │
 │                                                                        │
 │  [输出目录] /opt/taa/output (读写沙箱 READ_WRITE)                       │
-│   ├── weights/          # 训练产出的模型权重文件 (*.pt, *.onnx)        │
-│   ├── training_result.json # 必须产出的标准化训练结果与汇总指标        │
-│   ├── test_result.xlsx  # 评测阶段生成的明细指标表格                   │
-│   ├── logs/             # 训练日志与 TensorBoard 曲线                  │
-│   └── progress.json     # 实时进度状态文件 (轮询通道)                  │
+│   ├── result/           # 训练代码主输出目录 (权重、结果、评测等产物)   │
+│   │   ├── weights/      # 训练产出的模型权重文件 (*.pt, *.onnx)        │
+│   │   ├── training_result.json # 必须产出的标准化训练结果与汇总指标    │
+│   │   └── test_result.xlsx  # 评测阶段生成的明细指标表格               │
+│   ├── log/              # 模型实时终端日志目录 (*.jsonl / *.log)       │
+│   └── progress/         # 实时进度状态目录 (*.json 轮询通道)           │
 │                                                                        │
 │  [自愈目录] /opt/taa/checkpoint (持久化断点目录 READ_WRITE)            │
 │   ├── latest.pt         # 最新权重快照                                 │
@@ -73,10 +74,10 @@ TAA 容器内对文件系统划分出明确的物理安全边界：
 
 #### 规则约束：
 1. **输入只读**：模型脚本绝对不可在 `/opt/taa/input` 内创建或修改文件。
-2. **输出自包含**：所有需要带出 TEE 的文件必须保存到 `/opt/taa/output`。
+2. **输出自包含**：所有需要带出 TEE 的文件必须保存到 `/opt/taa/output/result`；实时日志与进度分别写入 `/opt/taa/output/log` 与 `/opt/taa/output/progress`。
 3. **宏替换与环境注入**：TAA 在执行 `runtimeConfig` 时，会自动提供宏替换与环境变量：
-   - 命令行宏：`<input>`、`<output>` 自动替换为实际路径。
-   - 环境变量：`TAA_INPUT_DIR`、`TAA_OUTPUT_DIR`、`TAA_CHECKPOINT_DIR`、`TAA_TASK_ID`。
+   - 命令行宏：`<input>` 自动替换为输入数据实际路径，`<output>` 自动替换为训练代码产物目录 `/opt/taa/output/result`。
+   - 环境变量：`TAA_INPUT_DIR`、`TAA_OUTPUT_DIR`（指向 `/opt/taa/output/result`）、`TAA_CHECKPOINT_DIR`、`TAA_TASK_ID`。
 
 ---
 
@@ -111,8 +112,9 @@ TAA 容器内对文件系统划分出明确的物理安全边界：
      ```
    - TAA 子进程管道自动拦截解析该标记行（兼容 `[CIPHERFLOW_PROGRESS]` 与 `[TAA_PROGRESS]`），不影响常规日志。
 2. **通道 B：文件持久化落盘 (File Flush)**
-   - 模型定时将最新进度原子写入 `/opt/taa/output/progress.json`。
-   - TAA 控制器具备文件变更探测能力，即时抓取进度。
+   - 模型定时将最新进度原子写入 `/opt/taa/output/progress/` 目录下的 JSON 文件（如 `/opt/taa/output/progress/progress.json`）。
+   - TAA 控制器具备文件变更探测能力，即时抓取进度并通过 `/v1/taa/reportProgress` 接口向平台上报。
+   - 模型方终端日志追加写入 `/opt/taa/output/log/` 目录下的 JSONL 文件，TAA 自动增量读取并通过 `/v1/taa/modelLog` 接口上报。
 3. **通道 C：本地 HTTP / gRPC 内部调用**
    - 模型通过本地接口 `POST http://127.0.0.1:6001/internal/progress` 发送 Protobuf JSON。
 
@@ -143,9 +145,9 @@ TAA 的平台调度由 `/v1/taa/switch` 推进，模型代码通过 `cipherflow.
 
 ---
 
-### 3.5 契约五：最终结果文件规约 (`/opt/taa/output/training_result.json`)
+### 3.5 契约五：最终结果文件规约 (`/opt/taa/output/result/training_result.json`)
 
-训练进程成功退出（`exit_code=0`）后，TAA 立即读取 `/opt/taa/output/training_result.json`，与代码审计报告、数据集校验和聚合后构建最终的 `training_report.json` 并上报平台。
+训练进程成功退出（`exit_code=0`）后，TAA 立即读取 `/opt/taa/output/result/training_result.json`，与代码审计报告、数据集校验和聚合后构建最终的 `training_report.json` 并上报平台。
 
 #### 标准结构示例：
 ```json

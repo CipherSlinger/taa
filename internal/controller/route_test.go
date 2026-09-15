@@ -455,16 +455,30 @@ func TestSecurityConfigModelDirs(t *testing.T) {
 	if emptySec.GetModelOutputDir() != DefaultModelOutputDir {
 		t.Errorf("GetModelOutputDir = %q, want %q", emptySec.GetModelOutputDir(), DefaultModelOutputDir)
 	}
+	if emptySec.GetModelLogDir() != DefaultModelLogDir {
+		t.Errorf("GetModelLogDir = %q, want %q", emptySec.GetModelLogDir(), DefaultModelLogDir)
+	}
+	if emptySec.GetModelProgressDir() != DefaultModelProgressDir {
+		t.Errorf("GetModelProgressDir = %q, want %q", emptySec.GetModelProgressDir(), DefaultModelProgressDir)
+	}
 
 	customSec := SecurityConfig{
-		ModelInputDir:  "/custom/input",
-		ModelOutputDir: "/custom/output",
+		ModelInputDir:    "/custom/input",
+		ModelOutputDir:   "/custom/output",
+		ModelLogDir:      "/custom/log",
+		ModelProgressDir: "/custom/progress",
 	}
 	if customSec.GetModelInputDir() != "/custom/input" {
 		t.Errorf("GetModelInputDir = %q, want /custom/input", customSec.GetModelInputDir())
 	}
 	if customSec.GetModelOutputDir() != "/custom/output" {
 		t.Errorf("GetModelOutputDir = %q, want /custom/output", customSec.GetModelOutputDir())
+	}
+	if customSec.GetModelLogDir() != "/custom/log" {
+		t.Errorf("GetModelLogDir = %q, want /custom/log", customSec.GetModelLogDir())
+	}
+	if customSec.GetModelProgressDir() != "/custom/progress" {
+		t.Errorf("GetModelProgressDir = %q, want /custom/progress", customSec.GetModelProgressDir())
 	}
 
 	relSec := SecurityConfig{

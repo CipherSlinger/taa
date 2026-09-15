@@ -42,9 +42,11 @@ CONTRACT=合约ID（预留）
 ```
 
 ```env
-# 模型方路径约定
+# 模型方路径约定（详细规约参见 docs/TAA模型提供方开发与接口对接规范.md）
 /opt/taa/input          # 输入目录（只读权限路径 READ_ONLY）
-/opt/taa/output         # 输出目录（写权限路径 READ_WRITE）
+/opt/taa/output/result  # 训练代码主输出目录（写权限路径 READ_WRITE）
+/opt/taa/output/log     # 模型终端日志目录（写权限路径 READ_WRITE）
+/opt/taa/output/progress # 训练进度目录（写权限路径 READ_WRITE）
 ```
 
 ## 2. 公共返回格式
