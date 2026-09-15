@@ -47,16 +47,12 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 
 	trainRecord := ImportIndexRecord{}
 	if isModel {
-		hash, err := sm3HexOfFile(plaintextPath)
+		size, hash, err := teecrypto.HashFileSM3(plaintextPath)
 		if err != nil {
 			s.Logs.Add(LogError, "hash", "计算模型压缩包哈希失败: %v", err)
 			s.setCurrentOp("idle")
 			s.reportImportFailure(req, phase, true, startedAt, fmt.Sprintf("计算模型压缩包哈希失败: %v", err))
 			return
-		}
-		var size int64
-		if fi, statErr := os.Stat(plaintextPath); statErr == nil {
-			size = fi.Size()
 		}
 		s.setModelChecksum(map[string]any{
 			"size":      size,
@@ -134,7 +130,6 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		s.Logs.Add(LogInfo, "index", "导入索引写入成功: requestId=%s taskId=%s hash=%s", req.RequestID, req.TaskID, hash)
 	}
 
-	shouldTrain := false
 	if isModel {
 		latestRecord, ok := s.getLatestDataRecord()
 		if !ok || (latestRecord.DataDir == "" && latestRecord.Hash == "") {
@@ -150,7 +145,6 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 			s.setCurrentOp("idle")
 			return
 		}
-		shouldTrain = true
 	} else {
 		s.mu.RLock()
 		modelImported := s.ModelImported
@@ -168,12 +162,6 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 			s.setCurrentOp("idle")
 			return
 		}
-		shouldTrain = true
-	}
-
-	if !shouldTrain {
-		s.setCurrentOp("idle")
-		return
 	}
 
 	trainRecord, _ = s.resolveTrainingRecord(req, isModel)
@@ -246,11 +234,6 @@ func (s *TAAState) trainOnLatestData(req importRequest, phase int, latestRecord 
 }
 
 func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecord ImportIndexRecord, cfg runtimeConfig, env map[string]string, startedAt time.Time) {
-	s.mu.Lock()
-	s.TrainingRunning = true
-	_ = s.sealStateLocked()
-	s.mu.Unlock()
-
 	defer func() {
 		s.mu.Lock()
 		s.TrainingRunning = false

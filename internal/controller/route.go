@@ -681,6 +681,22 @@ func (s *TAAState) isTrainingBusyLocked() bool {
 	return s.TrainingRunning || s.CurrentOp == "staging" || s.CurrentOp == "training" || s.CurrentOp == "reporting"
 }
 
+// activeTaskInfoLocked 获取当前占用任务的信息描述（调用方需持有 s.mu 读锁或写锁）。
+func (s *TAAState) activeTaskInfoLocked() (string, string) {
+	task := s.ActiveTaskID
+	if task == "" {
+		task = s.ActiveRequestID
+	}
+	if task == "" {
+		task = "unknown"
+	}
+	op := s.CurrentOp
+	if op == "" {
+		op = "busy"
+	}
+	return task, op
+}
+
 // tryAcquireTask 尝试原子抢占训练/导入任务执行权（单任务互斥）。
 // isModel: true 表示模型导入流程，false 表示数据导入/训练流程
 // initialOp: 初始操作标识（如 "downloading" 或 "staging"）
@@ -688,24 +704,9 @@ func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel b
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	activeTaskInfo := func() (string, string) {
-		task := s.ActiveTaskID
-		if task == "" {
-			task = s.ActiveRequestID
-		}
-		if task == "" {
-			task = "unknown"
-		}
-		op := s.CurrentOp
-		if op == "" {
-			op = "busy"
-		}
-		return task, op
-	}
-
 	// 1. 若当前处于训练执行阶段，全局绝对互斥，禁止任何新任务下发
 	if s.isTrainingBusyLocked() {
-		task, op := activeTaskInfo()
+		task, op := s.activeTaskInfoLocked()
 		return nil, pkgerrors.New(pkgerrors.CodeConflict,
 			fmt.Sprintf("当前已有训练任务正在执行中 (taskId: %s, op: %s)，请等待完成后再提交", task, op))
 	}
@@ -713,7 +714,7 @@ func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel b
 	// 2. 检查是否有其他任务正在处理（如正在下载、解密、审计等）
 	if s.ActiveTaskID != "" || (s.CurrentOp != "" && s.CurrentOp != "idle") {
 		isSameTaskPair := false
-		if !s.isTrainingBusyLocked() && taskID != "" && s.ActiveTaskID == taskID {
+		if taskID != "" && s.ActiveTaskID == taskID {
 			if s.activeTask != nil {
 				currentIsModel := (s.activeTask.Type == "model_import")
 				if currentIsModel != isModel {
@@ -723,7 +724,7 @@ func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel b
 		}
 
 		if !isSameTaskPair {
-			task, op := activeTaskInfo()
+			task, op := s.activeTaskInfoLocked()
 			return nil, pkgerrors.New(pkgerrors.CodeConflict,
 				fmt.Sprintf("当前已有任务正在执行中 (taskId: %s, op: %s)，请等待完成后再提交", task, op))
 		}
@@ -909,17 +910,7 @@ func (s *TAAState) switchHandler(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 
 	if s.isTrainingBusyLocked() || s.ActiveTaskID != "" || (s.CurrentOp != "" && s.CurrentOp != "idle") {
-		task := s.ActiveTaskID
-		if task == "" {
-			task = s.ActiveRequestID
-		}
-		if task == "" {
-			task = "unknown"
-		}
-		op := s.CurrentOp
-		if op == "" {
-			op = "busy"
-		}
+		task, op := s.activeTaskInfoLocked()
 		writeErr(w, http.StatusConflict, pkgerrors.New(pkgerrors.CodeConflict,
 			fmt.Sprintf("当前已有任务正在执行中 (taskId: %s, op: %s)，严禁切换运行阶段", task, op)))
 		return
@@ -1086,10 +1077,12 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	if req.ResourceURL == "" {
 		s.mu.RLock()
 		isBusy := s.isTrainingBusyLocked()
+		task, op := s.activeTaskInfoLocked()
 		runtimeConfigToUse := s.RuntimeConfig
 		s.mu.RUnlock()
 		if isBusy {
-			writeErr(w, http.StatusConflict, pkgerrors.New(pkgerrors.CodeConflict, "当前已有训练任务正在执行中，请等待完成后再提交"))
+			writeErr(w, http.StatusConflict, pkgerrors.New(pkgerrors.CodeConflict,
+				fmt.Sprintf("当前已有训练任务正在执行中 (taskId: %s, op: %s)，请等待完成后再提交", task, op)))
 			return
 		}
 		if strings.TrimSpace(runtimeConfigToUse) == "" {

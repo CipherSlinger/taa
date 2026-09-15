@@ -69,16 +69,8 @@ func reconcileCrashRecovery(ctx context.Context, state *controller.TAAState, sto
 			}
 		}
 
-		// 内存状态复位并密封落盘（state.ResetActiveTask 自动同步落盘至 store）
-		if state != nil {
-			state.ResetActiveTask()
-		} else if store != nil {
-			if pState := store.GetState(); pState != nil {
-				pState.ActiveTask = nil
-				pState.TrainingRunning = false
-				_ = store.SealState(pState)
-			}
-		}
+		// 内存状态复位并密封落盘
+		resetRecoveryTaskState(state, store)
 		return nil
 	}
 
@@ -244,6 +236,13 @@ func reconcileCrashRecovery(ctx context.Context, state *controller.TAAState, sto
 	// ------------------------------------------------------------------------
 	// 规约 7 任务解封与落盘 + 规约 8 状态复位
 	// ------------------------------------------------------------------------
+	resetRecoveryTaskState(state, store)
+
+	log.Printf("[RECOVERY] crash recovery reconciliation completed for task %s", taskID)
+	return nil
+}
+
+func resetRecoveryTaskState(state *controller.TAAState, store *controller.StateStore) {
 	if state != nil {
 		state.ResetActiveTask()
 	} else if store != nil {
@@ -255,9 +254,6 @@ func reconcileCrashRecovery(ctx context.Context, state *controller.TAAState, sto
 			}
 		}
 	}
-
-	log.Printf("[RECOVERY] crash recovery reconciliation completed for task %s", taskID)
-	return nil
 }
 
 // cleanTempFragments 扫描清除 /tmp/taa-download-* 与 /tmp/*.extract-* 残留碎片文件
