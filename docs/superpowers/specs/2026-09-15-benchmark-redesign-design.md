@@ -154,6 +154,38 @@
 ### 2.21 多向量并发混合渗透载荷规范（Multi-Vector APT Traps）
 - **贴合真实高级持续性威胁**：在 M5 复合攻击家族中，专门构建同时包含凭证嗅探 + 数据编码 + 隐蔽网络外联的多向量混合载荷（Hybrid Attack Traps）；
 - **全量多目标度量**：评估审计系统在多重告警并发时的多目标全量检出率（Recall per Attack Vector），防范攻击者利用次要告警掩护核心数据外传通道。
+
+### 2.22 规则库跨语言单点真理与 13 规则全量对齐（Rule & Regex Single Source of Truth）
+- **根除规则集遗漏缺陷**：针对 Python 评测端遗漏 `EMB_001` ~ `EMB_004` 导致 B2/B4 家族永远 0 Finding 的严重缺陷，确立规则跨语言强一致性标准；
+- **全量 13 条生产规则对齐**：Python 评测引擎必须严格装载与 Go 生产端 `DefaultRules()` 100% 对应的 13 条规则：
+  - 网络与命令：`NET_001` (HTTP请求), `NET_002` (原始Socket), `CMD_001` (参数化系统命令);
+  - 混淆与动态：`OBF_001` (编码/反序列化), `DYN_001` (动态执行);
+  - 凭证与持久化：`FIL_001` (敏感文件), `ENV_001` (敏感环境变量), `PER_001` (系统持久化), `EXF_001` (数据编码外传);
+  - 数据嵌入与隐写：`EMB_001` (原始数据落盘), `EMB_002` (数据拷入输出目录), `EMB_003` (日志打印原始数据), `EMB_004` (数据隐写嵌入权重)。
+
+### 2.23 样本生成器数据过滤器重构（Data Directory & Image Filter Fix）
+- **消除物化阶段数据误删**：废除 `generate_benchmark_samples.py` 中对 `"data"` 目录和 `".png"/ ".jpg"` 图像扩展名的盲目过滤；
+- **微缩资产白名单放行**：对 4 大基座的合法微缩数据集（`creditcard_sample.csv`、微缩眼底切片、工业缺陷切片、分词器 YAML/JSON）显式放行拷贝，仅排除 `.git`、`__pycache__`、`*.pyc` 等开发缓存，杜绝沙箱运行时出现 `FileNotFoundError`。
+
+### 2.24 全端 Gate 门禁判定对齐（Unified Gate Policy Across Go & Python）
+- **终结生产与评测逻辑分歧**：针对 Go 生产端 `recalculatePassed`、`ComputeConclusion` 与 Python `compute_conclusion` 判定公式不一致的架构裂痕，统一三处核心代码的 Gate 门禁判定：
+  - 任何高危或中危告警，未被 LLM 明确判定为 `BENIGN` 时（包括模型输出 `UNCERTAIN`、解析错误或服务超时），门禁**统一且绝对判定 `passed = false`**；
+  - 彻底消除生产端模型导入（`auditAndReportModelImport`）和基准评测中的 Fail-Open 穿透漏洞。
+
+### 2.25 规则正则跨语言语义对齐（Regex Semantic Parity）
+- **消除正则判定精度差**：针对 Python 评测端 `CMD_001` 宽泛报警而 Go 端精准识别的问题，将 Python 扫描器正则全面升级为生产级精准模式：
+  - 对 `subprocess` 仅在显式 `shell=True` 或调用危险外壳程序（`bash/sh/curl/wget/rm` 等）时报警，对合规的参数化内部调用（如 `subprocess.run(["python3", ...])`）予以放行，消除跨语言误报漂移。
+
+### 2.26 生产级标准 Prompt 镜像与 FPR 评估保真（Production Prompt Parity）
+- **评测提示词精准度镜像**：将 Go 生产端 `verifier.go` 中经过真实业务场景反复验证打磨的精细良性豁免指引（显式说明打印数据集名称/状态分隔线/评估指标如 AUC/ROC/Loss，以及合规模型权重持久化均必须判为 `BENIGN`），直接镜像同步至 Python 评测引擎；
+- **保障评测结果具有生产代表性**：避免因评测端 Prompt 过于泛化导致虚假 FPR，确保离线评测得分能 1:1 映射至 TAA 线上生产环境。
+
+### 2.27 评测统计中 Fail-Closed 口径补全（Fail-Closed Accounting Fix）
+- **消除统计漏项**：修正 `audit_benchmark_eval.py` 中的门禁保底计数口径：
+  ```python
+  fail_closed = (llm_state in {"llm_unavailable", "parse_error", "uncertain"}) and blocked
+  ```
+  确保因代码深度混淆触发大模型 `UNCERTAIN` 进而被门禁严格阻断的样本，能够 100% 正确计入 `fail_closed_count` 指标，真实呈现架构韧性。
 ---
 
 ## 3. 4 大真实工业训练基座定义与工程规范

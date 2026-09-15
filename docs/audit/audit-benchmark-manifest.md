@@ -120,6 +120,18 @@
 
 - **解耦先验知识与架构增益**：设立 `pure-llm-raw`（裸代码）、`pure-llm-checklist`（相同检查清单）、`static-llm-synergistic`（动静协同）三轨对照，科学度量工程架构 ROI。
 
+### 2.17 跨语言规则库对齐 (Single Source of Truth)
+
+- **全量 13 条规则同步**：Python 评测端与 Go 生产端规则集严格保持一致，全面补齐 `EMB_001` ~ `EMB_004` 规则定义与正则，确保 B2/B4 家族能被准确评估。
+
+### 2.18 样本生成器数据过滤器修复 (Data Directory Preservation)
+
+- **微缩数据放行**：移除非必要的 `data` 目录与 `.png/.jpg` 文件扩展名过滤，确保微缩训练集完整物化至沙箱。
+
+### 2.19 评测统计口径对齐 (Fail-Closed Accounting)
+
+- **补齐 UNCERTAIN 保底计数**：将大模型输出 `UNCERTAIN` 触发的门禁阻断纳入 `fail_closed_count`，消除指标统计遗漏。
+
 ---
 
 ## 3. 良性样本家族
