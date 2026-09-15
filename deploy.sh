@@ -32,6 +32,10 @@ fi
 
 SPIN_FRAMES=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
 CURRENT_SPINNER_PID=""
+CURRENT_STEP_NAME=""
+LAST_FAILED_TASK=""
+LAST_ERR_LINE=""
+LAST_ERR_CMD=""
 TEMP_EXPORT_FILE=""
 TEMP_BUILDER_CONTAINER=""
 TEMP_FILELIST=""
@@ -39,7 +43,14 @@ TEMP_FILELIST=""
 cursor_hide() { [[ "$IS_TTY" == true ]] && printf "\033[?25l" 2>/dev/null || true; }
 cursor_show() { [[ "$IS_TTY" == true ]] && printf "\033[?25h" 2>/dev/null || true; }
 
+handle_err() {
+  LAST_ERR_LINE="${1:-unknown}"
+  LAST_ERR_CMD="${2:-unknown}"
+}
+trap 'handle_err $LINENO "$BASH_COMMAND"' ERR
+
 cleanup_display() {
+  local exit_code=$?
   cursor_show
   if [[ -n "${CURRENT_SPINNER_PID:-}" ]]; then
     kill "$CURRENT_SPINNER_PID" 2>/dev/null || true
@@ -56,12 +67,30 @@ cleanup_display() {
     docker rm -f "$TEMP_BUILDER_CONTAINER" >/dev/null 2>&1 || true
     TEMP_BUILDER_CONTAINER=""
   fi
+
+  if [[ $exit_code -ne 0 ]]; then
+    echo "" >&2
+    echo -e "${RED}╭──────────────────────────────────────────────────────────────────╮${NC}" >&2
+    echo -e "${RED}│${NC}  ${BOLD}${RED}Deployment Terminated with Error (exit code: ${exit_code})${NC}" >&2
+    if [[ -n "${CURRENT_STEP_NAME:-}" ]]; then
+      echo -e "${RED}│${NC}  Failed step : ${BOLD}${CURRENT_STEP_NAME}${NC}" >&2
+    fi
+    if [[ -n "${LAST_FAILED_TASK:-}" ]]; then
+      echo -e "${RED}│${NC}  Failed task : ${YELLOW}${LAST_FAILED_TASK}${NC}" >&2
+    elif [[ -n "${LAST_ERR_LINE:-}" && -n "${LAST_ERR_CMD:-}" ]]; then
+      echo -e "${RED}│${NC}  Failed line : ${BOLD}${LAST_ERR_LINE}${NC} (${DIM}${LAST_ERR_CMD}${NC})" >&2
+    fi
+    if [[ -f "/tmp/taa-deploy-last-error.log" ]]; then
+      echo -e "${RED}│${NC}  Error log   : ${MUTED}/tmp/taa-deploy-last-error.log${NC}" >&2
+    fi
+    echo -e "${RED}╰──────────────────────────────────────────────────────────────────╯${NC}" >&2
+  fi
 }
 trap cleanup_display EXIT INT TERM
 
 # Kubernetes 目标：默认部署到 osr 命名空间下的指定 TAA Pod。
 TARGET_NAMESPACE="${TARGET_NAMESPACE:-osr}"
-TARGET_POD="${TARGET_POD:-taa-env-slim-v2-20260906-03a067f37caa8905-847c8567f8-mj2d7}"
+TARGET_POD="${TARGET_POD:-taa-env-slim-v2-20260911-f04a06a02701d8b0-6f7b755d86-5m5cd}"
 
 # 项目与远程宿主机：本地源码目录、SSH 登录信息和远程工作目录。
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -194,6 +223,8 @@ banner() {
 
 step() {
   STEP=$((STEP + 1))
+  CURRENT_STEP_NAME="$1"
+  LAST_FAILED_TASK=""
   printf "  ${PURPLE}◆${NC} ${CYAN}[%02d]${NC} ${BOLD}%s${NC}\n" "$STEP" "$1"
 }
 
@@ -209,15 +240,30 @@ spin_task() {
   logfile="$(mktemp /tmp/deploy_task.XXXXXX)"
 
   if [[ "$IS_TTY" != true ]]; then
+    local rc=0
     if "$@" >"$logfile" 2>&1; then
       info "$label"
       rm -f "$logfile"
       return 0
     else
-      local rc=$?
+      rc=$?
+      LAST_FAILED_TASK="$label"
       err "$label (failed with exit code $rc)"
-      cat "$logfile" >&2
-      rm -f "$logfile"
+      if [[ -f "$logfile" ]]; then
+        local err_dump="/tmp/taa-deploy-last-error.log"
+        cp -f "$logfile" "$err_dump" 2>/dev/null || true
+        local line_count
+        line_count=$(wc -l < "$logfile" 2>/dev/null || echo "0")
+        if (( line_count > 50 )); then
+          echo -e "   ${YELLOW}↳ Last 50 lines of task log (total ${line_count} lines):${NC}" >&2
+          tail -n 50 "$logfile" | sed 's/^/     /' >&2 || tail -n 50 "$logfile" >&2
+        else
+          echo -e "   ${YELLOW}↳ Task log:${NC}" >&2
+          sed 's/^/     /' "$logfile" >&2 || cat "$logfile" >&2
+        fi
+        detail "Full error log captured at $err_dump"
+        rm -f "$logfile"
+      fi
       return $rc
     fi
   fi
@@ -242,8 +288,8 @@ spin_task() {
     sleep 0.08
   done
 
-  wait "$pid"
-  local rc=$?
+  local rc=0
+  wait "$pid" || rc=$?
   CURRENT_SPINNER_PID=""
   cursor_show
   printf "\r\033[K"
@@ -254,10 +300,21 @@ spin_task() {
     rm -f "$logfile"
     return 0
   else
+    LAST_FAILED_TASK="$label"
     err "$label (failed after ${total_elapsed}s, exit code $rc)"
     if [[ -f "$logfile" ]]; then
-      echo -e "   ${YELLOW}↳ Task log:${NC}" >&2
-      tail -n 40 "$logfile" >&2 || true
+      local err_dump="/tmp/taa-deploy-last-error.log"
+      cp -f "$logfile" "$err_dump" 2>/dev/null || true
+      local line_count
+      line_count=$(wc -l < "$logfile" 2>/dev/null || echo "0")
+      if (( line_count > 50 )); then
+        echo -e "   ${YELLOW}↳ Last 50 lines of task log (total ${line_count} lines):${NC}" >&2
+        tail -n 50 "$logfile" | sed 's/^/     /' >&2 || tail -n 50 "$logfile" >&2
+      else
+        echo -e "   ${YELLOW}↳ Task log:${NC}" >&2
+        sed 's/^/     /' "$logfile" >&2 || cat "$logfile" >&2
+      fi
+      detail "Full error log captured at $err_dump"
       rm -f "$logfile"
     fi
     return $rc
@@ -304,6 +361,31 @@ ensure_remote_ssh() {
 remote_ssh() {
   ensure_remote_ssh
   sshpass -p "$PASSWORD" ssh "${SSH_OPTS[@]}" "${REMOTE_USER}@${REMOTE_HOST}" "$@"
+}
+
+check_remote_connectivity() {
+  if [[ "$DEPLOY_LOCAL" == true ]]; then
+    return 0
+  fi
+  ensure_remote_ssh
+  if ! sshpass -p "$PASSWORD" ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${REMOTE_USER}@${REMOTE_HOST}" "true" 2>/dev/null; then
+    err "cannot connect to remote host ${REMOTE_USER}@${REMOTE_HOST} via SSH (connection timed out or authentication failed)"
+    detail "Please check network connection, REMOTE_HOST ($REMOTE_HOST), or TARGET_PASSWORD credentials."
+    exit 1
+  fi
+  info "remote host SSH connection verified: ${REMOTE_USER}@${REMOTE_HOST}"
+}
+
+check_remote_pod() {
+  if [[ "$DEPLOY_LOCAL" == true ]]; then
+    return 0
+  fi
+  if ! remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
+    err "target pod '$TARGET_POD' not found in namespace '${TARGET_NAMESPACE:-default}' on remote host"
+    detail "Please check TARGET_POD or run 'kubectl get pods -n ${TARGET_NAMESPACE:-default}' on the remote host to check running pods."
+    exit 1
+  fi
+  info "remote target pod verified: ${TARGET_POD} (namespace: ${TARGET_NAMESPACE:-default})"
 }
 
 ensure_local_docker_container() {
@@ -398,8 +480,9 @@ save_local_docker_image() {
   fi
 
   step "building taa daemon and attestation helper"
+  ensure_go_compiler
   spin_task "building taa daemon from ./cmd/taa" make TAA_BINARY="$TAA_BINARY_PATH" taa
-  spin_task "building attestation helper from ./attestation/csv_c" make attestation-ioctl
+  spin_task "building attestation helper from ./attestation/csv_c" build_attestation_helper
   require_file "build failed: taa binary" "$TAA_BINARY_PATH"
   require_file "build failed: attestation helper" "$ATT_HELPER_SOURCE"
   require_file "certificate missing: hrk.cert" "$ATT_HRK_SOURCE"
@@ -838,18 +921,97 @@ wait_for_http_ready() {
 require_file() {
   local label="$1"
   local path="$2"
-  [[ -f "$path" ]] || { err "$label: $path"; exit 1; }
+  [[ -f "$path" ]] || { err "$label: file not found ($path)"; exit 1; }
 }
 
 require_dir() {
   local label="$1"
   local path="$2"
-  [[ -d "$path" ]] || { err "$label: $path"; exit 1; }
+  [[ -d "$path" ]] || { err "$label: directory not found ($path)"; exit 1; }
 }
 
 require_command() {
   local name="$1"
-  command -v "$name" >/dev/null 2>&1 || { err "$name is required"; exit 1; }
+  command -v "$name" >/dev/null 2>&1 || { err "command '$name' is required but not installed or not in PATH"; exit 1; }
+}
+
+ensure_go_compiler() {
+  # 优先检测本地已安装的高版本 Go 路径（例如 /usr/local/go/bin、/snap/bin）
+  for candidate in /usr/local/go/bin /snap/bin; do
+    if [[ -x "$candidate/go" ]]; then
+      local current_go
+      current_go=$(command -v go 2>/dev/null || echo "")
+      if [[ "$current_go" != "$candidate/go" ]]; then
+        export PATH="$candidate:$PATH"
+        break
+      fi
+    fi
+  done
+
+  if ! command -v go >/dev/null 2>&1; then
+    err "go compiler is required but not found in PATH"
+    exit 1
+  fi
+
+  if [[ -f "$PROJECT_DIR/go.mod" ]]; then
+    local req_ver
+    req_ver=$(awk '/^go [0-9]/ {print $2}' "$PROJECT_DIR/go.mod" | head -n 1)
+    if [[ -n "$req_ver" ]]; then
+      local cur_ver
+      cur_ver=$(GOTOOLCHAIN=local go version 2>/dev/null | awk '{print $3}' | sed 's/^go//' || echo "")
+      if [[ -n "$cur_ver" ]]; then
+        local cur_major cur_minor req_major req_minor
+        cur_major=$(echo "$cur_ver" | cut -d. -f1)
+        cur_minor=$(echo "$cur_ver" | cut -d. -f2)
+        req_major=$(echo "$req_ver" | cut -d. -f1)
+        req_minor=$(echo "$req_ver" | cut -d. -f2)
+        if (( cur_major < req_major || (cur_major == req_major && cur_minor < req_minor) )); then
+          warn "Current local go version ($cur_ver) is lower than go.mod requirement ($req_ver)."
+          warn "If offline, toolchain auto-download will fail. Ensure a Go $req_ver+ compiler is installed and exported in PATH."
+        fi
+      fi
+    fi
+  fi
+}
+
+build_attestation_helper() {
+  local make_log
+  make_log="$(mktemp /tmp/attestation_build.XXXXXX)"
+
+  if make attestation-ioctl >"$make_log" 2>&1; then
+    rm -f "$make_log"
+    return 0
+  fi
+
+  # 源码构建失败（例如缺少外部 GmSSL 路径权限等）时，若本地已有现成可用二进制，给出告警并复用
+  if [[ -f "$ATT_HELPER_SOURCE" && -s "$ATT_HELPER_SOURCE" ]]; then
+    chmod +x "$ATT_HELPER_SOURCE" 2>/dev/null || true
+    echo "Warning: make attestation-ioctl failed; falling back to existing binary at $ATT_HELPER_SOURCE" >&2
+    if [[ -f "$make_log" ]]; then
+      head -n 5 "$make_log" | sed 's/^/  [build note] /' >&2 || true
+      rm -f "$make_log"
+    fi
+    return 0
+  fi
+
+  if [[ -f "$PROJECT_DIR/attestation/bin/get-attestation" && -s "$PROJECT_DIR/attestation/bin/get-attestation" ]]; then
+    ensure_parent_dir "$ATT_HELPER_SOURCE"
+    cp -f "$PROJECT_DIR/attestation/bin/get-attestation" "$ATT_HELPER_SOURCE"
+    chmod +x "$ATT_HELPER_SOURCE" 2>/dev/null || true
+    echo "Warning: make attestation-ioctl failed; restored pre-compiled helper from attestation/bin/get-attestation" >&2
+    if [[ -f "$make_log" ]]; then
+      head -n 5 "$make_log" | sed 's/^/  [build note] /' >&2 || true
+      rm -f "$make_log"
+    fi
+    return 0
+  fi
+
+  echo "Error: failed to build attestation helper and no pre-built binary exists at $ATT_HELPER_SOURCE" >&2
+  if [[ -f "$make_log" ]]; then
+    cat "$make_log" >&2
+    rm -f "$make_log"
+  fi
+  return 1
 }
 
 select_taa_config_template() {
@@ -1248,6 +1410,42 @@ fi
 
 cd "$PROJECT_DIR"
 
+wait_for_remote_taa_ready() {
+  local wait_start_ts
+  wait_start_ts=$(date +%s)
+  local ready_attempts=$(( (OLLAMA_READY_TIMEOUT + OLLAMA_READY_INTERVAL - 1) / OLLAMA_READY_INTERVAL ))
+  local taa_ready=false
+  cursor_hide
+  local spin_len=${#SPIN_FRAMES[@]}
+  local i=0
+  for ((attempt=1; attempt<=ready_attempts; attempt++)); do
+    if remote_ssh "$(container_exec) curl -fsS -X POST http://127.0.0.1:$CON_PORT/v1/taa/health >/dev/null 2>&1"; then
+      taa_ready=true
+      break
+    fi
+    if [[ "$IS_TTY" == true ]]; then
+      local now
+      now=$(date +%s)
+      local elapsed=$((now - wait_start_ts))
+      local frame="${SPIN_FRAMES[$i]}"
+      printf "\r   ${CYAN}%s${NC} waiting for remote taa service to become ready ${DIM}(%ds / %ds)...${NC}" "$frame" "$elapsed" "$OLLAMA_READY_TIMEOUT"
+      i=$(( (i + 1) % spin_len ))
+    fi
+    sleep "$OLLAMA_READY_INTERVAL"
+  done
+  cursor_show
+  printf "\r\033[K"
+  if [[ "$taa_ready" == true ]]; then
+    local total_elapsed=$(( $(date +%s) - wait_start_ts ))
+    info "remote taa ready: http://127.0.0.1:$CON_PORT/v1/taa/health ${DIM}(took ${total_elapsed}s)${NC}"
+    return 0
+  else
+    err "remote taa did not become ready within ${OLLAMA_READY_TIMEOUT}s"
+    remote_ssh "$(container_exec) tail -n 50 $TAA_LOG_FILE || true"
+    return 1
+  fi
+}
+
 if [[ "$ACTION" == "stop" ]]; then
   banner "Stopping Services"
   if [[ "$DEPLOY_LOCAL" == true ]]; then
@@ -1314,6 +1512,7 @@ OLLAMA_MODEL="$(resolve_target_ollama_model)"
 banner "Deploying: ${DEPLOY_COMPONENTS}→ ${DEPLOY_TARGET_DESC}" "Target model: ${OLLAMA_MODEL}"
 
 if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
+  ensure_go_compiler
   spin_task "building platform-mock from ./cmd/platform-mock" make MOCK_BINARY="$MOCK_BINARY_PATH" platform-mock-build
 fi
 if [[ "$DEPLOY_QWEN" == true ]]; then
@@ -1332,8 +1531,9 @@ if [[ "$DEPLOY_QWEN" == true ]]; then
 fi
 
 if [[ "$DEPLOY_TAA" == true ]]; then
+  ensure_go_compiler
   spin_task "building taa daemon from ./cmd/taa" make TAA_BINARY="$TAA_BINARY_PATH" taa
-  spin_task "building attestation helper from ./attestation/csv_c" make attestation-ioctl
+  spin_task "building attestation helper from ./attestation/csv_c" build_attestation_helper
 fi
 
 if [[ "$DEPLOY_PLATFORM_MOCK" == true && ! -f "$MOCK_BINARY_PATH" ]]; then
@@ -1341,10 +1541,10 @@ if [[ "$DEPLOY_PLATFORM_MOCK" == true && ! -f "$MOCK_BINARY_PATH" ]]; then
   exit 1
 fi
 if [[ "$DEPLOY_TAA" == true ]]; then
-  require_file "build failed" "$TAA_BINARY_PATH"
-  require_file "build failed" "$ATT_HELPER_SOURCE"
-  require_file "build failed" "$ATT_HRK_SOURCE"
-  require_file "build failed" "$ATT_HSK_SOURCE"
+  require_file "build verification failed (taa binary missing)" "$TAA_BINARY_PATH"
+  require_file "build verification failed (attestation helper missing)" "$ATT_HELPER_SOURCE"
+  require_file "certificate missing" "$ATT_HRK_SOURCE"
+  require_file "certificate missing" "$ATT_HSK_SOURCE"
 fi
 
 
@@ -1757,6 +1957,14 @@ copy_ollama_to_container() {
   info "ollama package and model '$OLLAMA_MODEL' verified inside container"
 }
 
+step "checking remote host connectivity: ${REMOTE_USER}@${REMOTE_HOST}"
+check_remote_connectivity
+
+if [[ "$DEPLOY_TAA" == true || "$DEPLOY_QWEN" == true ]]; then
+  step "checking remote target pod: ${TARGET_POD} (${TARGET_NAMESPACE})"
+  check_remote_pod
+fi
+
 if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
   step "stopping old remote $PLATFORM_LABEL"
   remote_ssh "mkdir -p '$REMOTE_DIR'; pkill -x '$MOCK_BINARY_NAME' >/dev/null 2>&1 || true"
@@ -1868,36 +2076,7 @@ if [[ "$DEPLOY_TAA" == true ]]; then
 
   if [[ "$DEBUG" == true || "${TAA_KEEP_MANUAL:-false}" == false ]]; then
     step "waiting for taa service to become ready"
-    local wait_start_ts=$(date +%s)
-    local ready_attempts=$(( (OLLAMA_READY_TIMEOUT + OLLAMA_READY_INTERVAL - 1) / OLLAMA_READY_INTERVAL ))
-    local taa_ready=false
-    cursor_hide
-    local spin_len=${#SPIN_FRAMES[@]}
-    local i=0
-    for ((attempt=1; attempt<=ready_attempts; attempt++)); do
-      if remote_ssh "$(container_exec) curl -fsS -X POST http://127.0.0.1:$CON_PORT/v1/taa/health >/dev/null 2>&1"; then
-        taa_ready=true
-        break
-      fi
-      if [[ "$IS_TTY" == true ]]; then
-        local now=$(date +%s)
-        local elapsed=$((now - wait_start_ts))
-        local frame="${SPIN_FRAMES[$i]}"
-        printf "\r   ${CYAN}%s${NC} waiting for remote taa service to become ready ${DIM}(%ds / %ds)...${NC}" "$frame" "$elapsed" "$OLLAMA_READY_TIMEOUT"
-        i=$(( (i + 1) % spin_len ))
-      fi
-      sleep "$OLLAMA_READY_INTERVAL"
-    done
-    cursor_show
-    printf "\r\033[K"
-    if [[ "$taa_ready" == true ]]; then
-      local total_elapsed=$(( $(date +%s) - wait_start_ts ))
-      info "remote taa ready: http://127.0.0.1:$CON_PORT/v1/taa/health ${DIM}(took ${total_elapsed}s)${NC}"
-    else
-      err "remote taa did not become ready within ${OLLAMA_READY_TIMEOUT}s"
-      remote_ssh "$(container_exec) tail -n 50 $TAA_LOG_FILE || true"
-      exit 1
-    fi
+    wait_for_remote_taa_ready
   fi
 
   remote_ssh "$(container_exec) sh -lc 'tail -n 50 $TAA_LOG_FILE || true'"
