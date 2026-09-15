@@ -40,19 +40,20 @@ Agent 公共请求返回参数如下：
 | --- | --- | --- | --- | --- |
 | 1 | TAA → 平台 | `/v1/taa/register` | `POST` | TAA 启动后生成远程证明报告并通知平台 |
 | 2 | TAA → 平台 | `/v1/taa/reportRes` | `POST` | TAA 上报训练完成结果 |
-| 3 | TAA → 平台 | `/v1/taa/reportModelImport` | `POST` | TAA 上报模型导入结果（含代码审计报告） |
-| 4 | TAA → 平台 | `/v1/taa/modelLog` | `POST` | TAA 上报任务终端日志 |
-| 5 | TAA → 平台 | `/v1/taa/reportProgress` | `POST` | TAA 上报任务数值进度 |
-| 6 | 平台 → TAA | `/v1/taa/getAttestation` | `POST` | 平台获取远程证明报告 |
-| 7 | 平台 → TAA | `/v1/taa/health` | `POST` | 平台检查 TAA 连通性 |
-| 8 | 平台 → TAA | `/v1/taa/import` | `POST` | 平台下发数据资源 |
-| 9 | 平台 → TAA | `/v1/taa/importModel` | `POST` | 平台下发模型训练代码 |
-| 10 | 平台 → TAA | `/v1/taa/getResourceInfo` | `POST` | 平台传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，按 SM3 哈希持久化保存目录与唯一标识备份 |
-| 11 | 平台 → TAA | `/v1/taa/switch` | `POST` | 平台通知 TAA 切换运行阶段 |
-| 12 | 平台 → TAA | `/v1/taa/export` | `POST` | 平台请求 TAA 导出当前阶段结果目录压缩包，成功时直接返回文件流 |
-| 13 | 平台 → TAA | `/v1/taa/logs` | `POST` | 查询 TAA 结构化日志 |
-| 14 | 平台 → TAA | `/v1/taa/status` | `POST` | 查询 TAA 完整状态信息 |
-| 15 | 平台 → TAA | `/v1/taa/stopTraining` | `POST` | 平台同步请求 TAA 中止当前训练任务 |
+| 3 | TAA → 平台 | `/v1/taa/reportModelImport` | `POST` | TAA 上报模型导入与完整性校验结果 |
+| 4 | TAA → 平台 | `/v1/taa/reportAudit` | `POST` | TAA 上报模型代码安全审计结果 |
+| 5 | TAA → 平台 | `/v1/taa/modelLog` | `POST` | TAA 上报任务终端日志 |
+| 6 | TAA → 平台 | `/v1/taa/reportProgress` | `POST` | TAA 上报任务数值进度 |
+| 7 | 平台 → TAA | `/v1/taa/getAttestation` | `POST` | 平台获取远程证明报告 |
+| 8 | 平台 → TAA | `/v1/taa/health` | `POST` | 平台检查 TAA 连通性 |
+| 9 | 平台 → TAA | `/v1/taa/import` | `POST` | 平台下发数据资源 |
+| 10 | 平台 → TAA | `/v1/taa/importModel` | `POST` | 平台下发模型训练代码 |
+| 11 | 平台 → TAA | `/v1/taa/getResourceInfo` | `POST` | 平台传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，按 SM3 哈希持久化保存目录与唯一标识备份 |
+| 12 | 平台 → TAA | `/v1/taa/switch` | `POST` | 平台通知 TAA 切换运行阶段 |
+| 13 | 平台 → TAA | `/v1/taa/export` | `POST` | 平台请求 TAA 导出当前阶段结果目录压缩包，成功时直接返回文件流 |
+| 14 | 平台 → TAA | `/v1/taa/logs` | `POST` | 查询 TAA 结构化日志 |
+| 15 | 平台 → TAA | `/v1/taa/status` | `POST` | 查询 TAA 完整状态信息 |
+| 16 | 平台 → TAA | `/v1/taa/stopTraining` | `POST` | 平台同步请求 TAA 中止当前训练任务 |
 
 ---
 
@@ -321,7 +322,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 **请求内容类型**：`application/json`
 
-**触发时机**：TAA 接收 `/v1/taa/importModel` 请求后，立即下载资源并异步处理。模型下载完成后，TAA 使用 Qwen 对模型代码进行安全审计，审计完成后调用此接口上报结果。
+**触发时机**：TAA 接收 `/v1/taa/importModel` 请求后立即下载资源并异步处理。在资源解封、解密、计算原始压缩包 SM3 checksum 并解压到模型目录后，**立即调用此接口**向平台上报模型导入与完整性校验结果（无需等待代码安全审计完成）。
 
 **参数**：
 
@@ -330,12 +331,11 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 | `dockerId` | `string` | 是 | 取值为容器启动参数 `DOCKER_ID` |
 | `requestId` | `string` | 是 | 与 `/v1/taa/importModel` 请求中的 `requestId` 一致，用于绑定同一轮模型导入 |
 | `taskId` | `string` | 否 | 任务 ID，与 `/v1/taa/importModel` 请求中的 `taskId` 一致 |
-| `code` | `number` | 是 | `0` 表示导入和审计成功，`1` 表示资源下载/导入失败，`2` 表示审计失败 |
-| `msg` | `string` | 否 | 失败时为失败原因 |
-| `report` | `string` | 否 | 代码审计报告 JSON 字符串，格式与训练结果报告中的 `codeaudit` 字段完全一致 |
-| `checksum` | `object` | 否 | 模型压缩包完整性校验（逻辑与 `/v1/taa/reportRes` 的 `training_task.model_checksum` 完全一致，包含 `size`、`algorithm`、`value`） |
+| `code` | `number` | 是 | `0` 表示模型下载、解密、解压和校验成功，`1` 表示资源下载/解密/解压等导入流程失败 |
+| `msg` | `string` | 否 | 失败时为失败原因，成功时为 null |
+| `checksum` | `object` | 否 | 模型压缩包完整性校验（逻辑与 `/v1/taa/reportRes` 的 `training_task.model_checksum` 完全一致，包含 `size`、`algorithm`、`value`，导入成功时必填） |
 
-**请求示例**：
+**请求示例（成功）**：
 
 ```jsonc
 {
@@ -344,7 +344,6 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 0,
   "msg": null,
-  "report": "{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"未发现安全问题，代码通过审计\",\"recommendation\":\"无需修复\",\"statistics\":{\"total_findings\":0,\"high\":0,\"medium\":0,\"malicious\":0,\"suspicious\":0,\"benign\":0,\"uncertain\":0}},\"file_reports\":null}",
   "checksum": {
     "size": 581632,
     "algorithm": "sm3",
@@ -353,7 +352,18 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-**`report` 字段内容格式**：与训练结果报告中的 `codeaudit` 字段完全一致，详见 [3.4 节 `report` 字段内容示例](#34-taa-上报训练完成结果) 中的 `codeaudit` 部分。
+**请求示例（失败）**：
+
+```jsonc
+{
+  "dockerId": "DOCKER_ID",
+  "requestId": "request-001",
+  "taskId": "task-001",
+  "code": 1,
+  "msg": "解密失败: SM2 私钥解封对称密钥错误",
+  "checksum": null
+}
+```
 
 **响应内容类型**：`application/json`
 
@@ -377,7 +387,89 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-### 3.6 TAA 上报任务终端日志
+### 3.6 TAA 上报代码安全审计结果
+
+**请求**：`POST /v1/taa/reportAudit`
+
+**请求内容类型**：`application/json`
+
+**触发时机**：TAA 完成模型解压后，对模型代码执行安全审计（静态扫描规则分析 + LLM 语义审查）。审计流程完成后，调用此接口上报审计结论与明细报告。
+
+**参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `dockerId` | `string` | 是 | 取值为容器启动参数 `DOCKER_ID` |
+| `requestId` | `string` | 是 | 与 `/v1/taa/importModel` 请求中的 `requestId` 一致，用于绑定同一轮模型导入 |
+| `taskId` | `string` | 否 | 任务 ID，与 `/v1/taa/importModel` 请求中的 `taskId` 一致 |
+| `code` | `number` | 是 | 审计状态码：<br>• `0`：代码审计通过<br>• `1`：**代码审计未通过**（发现恶意/高危违规代码）<br>• `2`：**LLM 服务不可用**（模型探测失败或服务离线，按 Fail-Closed 策略拦截） |
+| `msg` | `string` | 否 | 审计结论摘要或异常说明 |
+| `report` | `string` | 否 | 代码审计报告 JSON 字符串，格式与训练结果报告中的 `codeaudit` 字段完全一致。当 LLM 服务不可用时可为空字符串 |
+
+**请求示例（审计通过）**：
+
+```jsonc
+{
+  "dockerId": "DOCKER_ID",
+  "requestId": "request-001",
+  "taskId": "task-001",
+  "code": 0,
+  "msg": null,
+  "report": "{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"未发现安全问题，代码通过审计\",\"recommendation\":\"无需修复\",\"statistics\":{\"total_findings\":0,\"high\":0,\"medium\":0,\"malicious\":0,\"suspicious\":0,\"benign\":0,\"uncertain\":0}},\"file_reports\":null}"
+}
+```
+
+**请求示例（代码审计未通过：检出违规/后门代码）**：
+
+```jsonc
+{
+  "dockerId": "DOCKER_ID",
+  "requestId": "request-001",
+  "taskId": "task-001",
+  "code": 1,
+  "msg": "代码安全审计未通过: 发现反弹 Shell 风险",
+  "report": "{\"conclusion\":{\"passed\":false,\"risk_level\":\"CRITICAL\",\"summary\":\"发现高危后门代码\",\"recommendation\":\"请清理非法网络外联指令\",\"statistics\":{\"total_findings\":1,\"high\":1,\"medium\":0,\"malicious\":1,\"suspicious\":0,\"benign\":0,\"uncertain\":0}},\"file_reports\":[{\"filename\":\"train.py\",\"findings\":[{\"rule_id\":\"SEC-PY-003\",\"line\":42,\"severity\":\"HIGH\",\"description\":\"可疑网络反弹 Shell 代码\",\"llm_verdict\":\"MALICIOUS\"}]}]}"
+}
+```
+
+**请求示例（LLM 服务不可用：Fail-Closed 拦截）**：
+
+```jsonc
+{
+  "dockerId": "DOCKER_ID",
+  "requestId": "request-001",
+  "taskId": "task-001",
+  "code": 2,
+  "msg": "LLM 服务不可用，按 Fail-Closed 策略拦截",
+  "report": ""
+}
+```
+
+**`report` 字段内容格式**：与训练结果报告中的 `codeaudit` 字段完全一致，详见 [3.4 节 `report` 字段内容示例](#34-taa-上报训练完成结果) 中的 `codeaudit` 部分。
+
+**响应内容类型**：`application/json`
+
+**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，业务字段放在 `result` 中。
+
+**响应结果字段**：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `received` | `bool` | 平台是否成功接收代码安全审计结果上报 |
+
+**成功响应示例**（200 OK）：
+
+```jsonc
+{
+  "msg": "success",
+  "result": {
+    "received": true
+  },
+  "error": 0
+}
+```
+
+### 3.7 TAA 上报任务终端日志
 
 TAA 在任务执行过程中通过该接口向平台批量上报任务终端日志。该接口与 `/v1/taa/logs` 不同：`/v1/taa/logs` 由平台主动查询 TAA 本地结构化日志，`/v1/taa/modelLog` 由 TAA 主动推送任务日志。
 
@@ -452,7 +544,7 @@ TAA 在任务执行过程中通过该接口向平台批量上报任务终端日�
 }
 ```
 
-### 3.7 TAA 上报任务进度
+### 3.8 TAA 上报任务进度
 
 TAA 在任务执行过程中通过该接口向平台上报当前任务的数值进度。该接口只传递进度百分比，不表达任务阶段、运行状态或最终结果；任务最终结果仍通过 `/v1/taa/reportRes` 上报。
 
