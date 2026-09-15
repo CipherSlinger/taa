@@ -14,7 +14,6 @@ CONTRACT=合约ID（预留）
 # 模型方路径约定（详细规约参见 docs/TAA模型提供方开发与接口对接规范.md）
 /opt/taa/input          # 输入目录（只读权限路径 READ_ONLY）
 /opt/taa/output         # 输出目录（写权限路径 READ_WRITE）
-/opt/taa/checkpoint     # 检查点自愈持久化目录（读写权限）
 ```
 
 ## 2. 公共返回格式
@@ -42,15 +41,18 @@ Agent 公共请求返回参数如下：
 | 1 | TAA → 平台 | `/v1/taa/register` | `POST` | TAA 启动后生成远程证明报告并通知平台 |
 | 2 | TAA → 平台 | `/v1/taa/reportRes` | `POST` | TAA 上报训练完成结果 |
 | 3 | TAA → 平台 | `/v1/taa/reportModelImport` | `POST` | TAA 上报模型导入结果（含代码审计报告） |
-| 4 | 平台 → TAA | `/v1/taa/getAttestation` | `POST` | 平台获取远程证明报告 |
-| 5 | 平台 → TAA | `/v1/taa/health` | `POST` | 平台检查 TAA 连通性 |
-| 6 | 平台 → TAA | `/v1/taa/import` | `POST` | 平台下发数据资源 |
-| 7 | 平台 → TAA | `/v1/taa/importModel` | `POST` | 平台下发模型训练代码 |
-| 8 | 平台 → TAA | `/v1/taa/getResourceInfo` | `POST` | 平台传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，按 SM3 哈希持久化保存目录与唯一标识备份 |
-| 9 | 平台 → TAA | `/v1/taa/switch` | `POST` | 平台通知 TAA 切换运行阶段 |
-| 10 | 平台 → TAA | `/v1/taa/export` | `POST` | 平台请求 TAA 导出当前阶段结果目录压缩包，成功时直接返回文件流 |
-| 11 | 平台 → TAA | `/v1/taa/logs` | `POST` | 查询 TAA 结构化日志 |
-| 12 | 平台 → TAA | `/v1/taa/status` | `POST` | 查询 TAA 完整状态信息 |
+| 4 | TAA → 平台 | `/v1/taa/modelLog` | `POST` | TAA 上报任务终端日志 |
+| 5 | TAA → 平台 | `/v1/taa/reportProgress` | `POST` | TAA 上报任务数值进度 |
+| 6 | 平台 → TAA | `/v1/taa/getAttestation` | `POST` | 平台获取远程证明报告 |
+| 7 | 平台 → TAA | `/v1/taa/health` | `POST` | 平台检查 TAA 连通性 |
+| 8 | 平台 → TAA | `/v1/taa/import` | `POST` | 平台下发数据资源 |
+| 9 | 平台 → TAA | `/v1/taa/importModel` | `POST` | 平台下发模型训练代码 |
+| 10 | 平台 → TAA | `/v1/taa/getResourceInfo` | `POST` | 平台传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，按 SM3 哈希持久化保存目录与唯一标识备份 |
+| 11 | 平台 → TAA | `/v1/taa/switch` | `POST` | 平台通知 TAA 切换运行阶段 |
+| 12 | 平台 → TAA | `/v1/taa/export` | `POST` | 平台请求 TAA 导出当前阶段结果目录压缩包，成功时直接返回文件流 |
+| 13 | 平台 → TAA | `/v1/taa/logs` | `POST` | 查询 TAA 结构化日志 |
+| 14 | 平台 → TAA | `/v1/taa/status` | `POST` | 查询 TAA 完整状态信息 |
+| 15 | 平台 → TAA | `/v1/taa/stopTraining` | `POST` | 平台同步请求 TAA 中止当前训练任务 |
 
 ---
 
@@ -362,6 +364,137 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `received` | `bool` | 平台是否成功接收模型导入结果上报 |
+
+**成功响应示例**（200 OK）：
+
+```jsonc
+{
+  "msg": "success",
+  "result": {
+    "received": true
+  },
+  "error": 0
+}
+```
+
+### 3.6 TAA 上报任务终端日志
+
+TAA 在任务执行过程中通过该接口向平台批量上报任务终端日志。该接口与 `/v1/taa/logs` 不同：`/v1/taa/logs` 由平台主动查询 TAA 本地结构化日志，`/v1/taa/modelLog` 由 TAA 主动推送任务日志。
+
+**请求**：`POST http://{PLATFORM_IP}/v1/taa/modelLog`
+
+**请求内容类型**：`application/json`
+
+**触发时机**：任务执行过程中，TAA 按批次主动上报日志；同一批次因网络异常重试时，必须保持原有序号。
+
+**参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `dockerId` | `string` | 是 | 取值为容器启动参数 `DOCKER_ID` |
+| `requestId` | `string` | 是 | 当前任务请求标识，用于关联同一任务的日志 |
+| `taskId` | `string` | 否 | 平台任务 ID；单任务模式下可缺省 |
+| `seqStart` | `uint64` | 是 | 本批日志的起始序号 |
+| `entries` | `array` | 是 | 日志条目数组，不应为空 |
+
+**`entries` 字段**：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `seq` | `uint64` | 是 | 同一 `dockerId + requestId` 下递增的日志序号，用于排序和去重 |
+| `timestamp` | `string` | 是 | 日志产生时间，RFC3339 格式 |
+| `message` | `string` | 是 | 日志内容；标准输出、标准错误和 TAA 系统日志统一通过该字段上报 |
+
+**请求示例**：
+
+```jsonc
+{
+  "dockerId": "DOCKER_ID",
+  "requestId": "req-001",
+  "taskId": "task-001",
+  "seqStart": 41,
+  "entries": [
+    {
+      "seq": 41,
+      "timestamp": "2026-09-15T09:30:00Z",
+      "message": "epoch=1 loss=0.8234"
+    },
+    {
+      "seq": 42,
+      "timestamp": "2026-09-15T09:30:01Z",
+      "message": "epoch=1 accuracy=0.9123"
+    }
+  ]
+}
+```
+
+平台按 `dockerId + requestId + seq` 去重，允许 TAA 因网络失败重复发送同一日志。TAA 仅在平台返回 HTTP `200` 且公共返回格式中的 `error=0` 时确认本批日志已接收；网络错误、HTTP `408`、`429` 或 `5xx` 可按指数退避重试，参数错误等其他 `4xx` 不应自动重试。
+
+**响应内容类型**：`application/json`
+
+**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，业务字段放在 `result` 中。
+
+**响应结果字段**：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `received` | `bool` | 平台是否成功接收本次日志上报 |
+
+**成功响应示例**（200 OK）：
+
+```jsonc
+{
+  "msg": "success",
+  "result": {
+    "received": true
+  },
+  "error": 0
+}
+```
+
+### 3.7 TAA 上报任务进度
+
+TAA 在任务执行过程中通过该接口向平台上报当前任务的数值进度。该接口只传递进度百分比，不表达任务阶段、运行状态或最终结果；任务最终结果仍通过 `/v1/taa/reportRes` 上报。
+
+**请求**：`POST http://{PLATFORM_IP}/v1/taa/reportProgress`
+
+**请求内容类型**：`application/json`
+
+**触发时机**：任务执行过程中，TAA 根据进度变化主动上报当前进度快照。
+
+**参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `dockerId` | `string` | 是 | 取值为容器启动参数 `DOCKER_ID` |
+| `requestId` | `string` | 是 | 当前任务请求标识，用于关联同一任务的进度 |
+| `taskId` | `string` | 否 | 平台任务 ID；单任务模式下可缺省 |
+| `percent` | `number` | 是 | 当前任务进度百分比，取值范围为 `0` ~ `100` |
+| `timestamp` | `string` | 是 | 进度产生时间，RFC3339 格式 |
+
+平台按 `dockerId + requestId` 关联进度快照，并依据 `timestamp` 防止较早的进度覆盖较新的进度。网络重试可以重复提交同一进度快照；进度上报不替代最终结果上报，也不包含任务状态或阶段信息。
+
+**请求示例**：
+
+```jsonc
+{
+  "dockerId": "DOCKER_ID",
+  "requestId": "req-001",
+  "taskId": "task-001",
+  "percent": 35.5,
+  "timestamp": "2026-09-15T09:31:00Z"
+}
+```
+
+**响应内容类型**：`application/json`
+
+**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，业务字段放在 `result` 中。
+
+**响应结果字段**：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `received` | `bool` | 平台是否成功接收本次进度上报 |
 
 **成功响应示例**（200 OK）：
 
@@ -978,6 +1111,47 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
     "currentOp": "idle",
     "logCount": 5
   },
+  "error": 0
+}
+```
+
+### 4.8 中止当前训练任务
+
+该接口用于平台请求 TAA 中止当前正在执行的训练任务。TAA 当前为单任务模式，请求不需要传入 `taskId` 或 `requestId`，接口始终针对当前训练任务处理。
+
+**请求**：`POST /v1/taa/stopTraining`
+
+**请求内容类型**：`application/json`
+
+**请求示例**：
+
+```jsonc
+{}
+```
+
+**处理规则**：
+
+- 接口采用同步处理方式，TAA 等待训练进程及其子进程退出，并完成训练任务状态清理后返回。
+- 当前存在训练任务时，成功中止后返回 HTTP `200`，公共返回格式中的 `error=0`。
+- 当前不存在训练任务时，仍返回 HTTP `200`，公共返回格式中的 `error=0`，仅通过 `msg` 提示不存在训练任务；该场景按幂等成功处理。
+- 该接口不区分或处理其他非训练任务，也不调用 `modelLog`、`reportProgress` 或 `/v1/taa/reportRes`。
+
+**成功响应示例（当前存在训练任务并已中止）**：
+
+```jsonc
+{
+  "msg": "训练任务已中止",
+  "result": null,
+  "error": 0
+}
+```
+
+**成功响应示例（当前不存在训练任务）**：
+
+```jsonc
+{
+  "msg": "不存在训练任务",
+  "result": null,
   "error": 0
 }
 ```
