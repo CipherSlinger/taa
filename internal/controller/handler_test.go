@@ -2,8 +2,10 @@ package controller
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -17,30 +19,27 @@ import (
 	"testing"
 	"time"
 
+	"taa/internal/attestation"
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 )
 
 func setupTestState(t *testing.T) (*TAAState, string) {
 	t.Helper()
+	cleanupFetcher := attestation.SetReportFetcherForTest(func(ctx context.Context, devicePath string, userData, nonce []byte) ([]byte, error) {
+		report := make([]byte, attestation.ReportSize)
+		if len(userData) == attestation.UserDataSize {
+			copy(report[0x040:0x080], userData)
+		}
+		return report, nil
+	})
+	t.Cleanup(cleanupFetcher)
+
 	tmpDir := t.TempDir()
 	attestationPath := filepath.Join(tmpDir, "attestation.report")
 	mockReport := bytes.Repeat([]byte{0xAB}, 64)
 	if err := os.WriteFile(attestationPath, mockReport, 0o600); err != nil {
 		t.Fatalf("write mock attestation: %v", err)
-	}
-
-	// 创建 mock helper 脚本：生成 report.cert 和 nonce.bin
-	helperPath := filepath.Join(tmpDir, "mock-helper.sh")
-	helperScript := `#!/bin/sh
-dd if=/dev/urandom of=report.cert bs=1 count=2548 2>/dev/null
-# 如果 nonce.bin 已存在则保留（由 Go 预写入），否则生成随机 nonce
-if [ ! -f nonce.bin ]; then
-    dd if=/dev/urandom of=nonce.bin bs=1 count=16 2>/dev/null
-fi
-`
-	if err := os.WriteFile(helperPath, []byte(helperScript), 0o755); err != nil {
-		t.Fatalf("write mock helper: %v", err)
 	}
 
 	// 创建临时目录用于测试
@@ -68,7 +67,7 @@ fi
 	inputDir := filepath.Join(tmpDir, "input")
 	outputDir := filepath.Join(tmpDir, "output")
 
-	state := NewTAAState(attestationPath, "127.0.0.1:65535", "test-docker-001", helperPath, "auto", sm2Key, userData, SecurityConfig{
+	state := NewTAAState(attestationPath, "127.0.0.1:65535", "test-docker-001", sm2Key, userData, SecurityConfig{
 		ScanEnabled:    false,
 		ModelDir:       modelDir,
 		DataDir:        dataDir,
@@ -738,7 +737,7 @@ func TestExportHandler(t *testing.T) {
 		if got := resp.Header.Get("X-TAA-Encrypted"); got == "true" {
 			t.Fatalf("X-TAA-Encrypted = %q, want not true (plaintext)", got)
 		}
-		if got := resp.Header.Get("Content-Disposition"); !strings.Contains(got, filepath.Base(record.ResultDir)+".tar.gz") {
+		if got := resp.Header.Get("Content-Disposition"); !strings.Contains(got, filepath.Base(record.ResultDir)+".zip") && !strings.Contains(got, filepath.Base(record.ResultDir)+".tar.gz") {
 			t.Fatalf("Content-Disposition = %q, want filename based on result dir", got)
 		}
 		raw, err := io.ReadAll(resp.Body)
@@ -818,7 +817,7 @@ func TestExportHandler(t *testing.T) {
 		if got := resp.Header.Get("X-TAA-Task-Id"); got != "" {
 			t.Fatalf("X-TAA-Task-Id = %q, want empty when taskId omitted", got)
 		}
-		if got := resp.Header.Get("Content-Disposition"); !strings.Contains(got, filepath.Base(record.ResultDir)+".tar.gz") {
+		if got := resp.Header.Get("Content-Disposition"); !strings.Contains(got, filepath.Base(record.ResultDir)+".zip") && !strings.Contains(got, filepath.Base(record.ResultDir)+".tar.gz") {
 			t.Fatalf("Content-Disposition = %q, want result-dir filename", got)
 		}
 		raw, err := io.ReadAll(resp.Body)
@@ -913,8 +912,8 @@ func TestExportHandler(t *testing.T) {
 		if got := resp.Header.Get("X-TAA-Encrypted"); got != "true" {
 			t.Fatalf("X-TAA-Encrypted = %q, want true", got)
 		}
-		if disp := resp.Header.Get("Content-Disposition"); !strings.Contains(disp, ".tar.gz.enc") {
-			t.Fatalf("Content-Disposition = %q, want .tar.gz.enc", disp)
+		if disp := resp.Header.Get("Content-Disposition"); !strings.Contains(disp, ".zip.enc") && !strings.Contains(disp, ".tar.gz.enc") {
+			t.Fatalf("Content-Disposition = %q, want .zip.enc or .tar.gz.enc", disp)
 		}
 		sealed, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -1114,9 +1113,39 @@ func TestReportResHandlerDisabled(t *testing.T) {
 	}
 }
 
-// extractTarGzMap 将 tar.gz 字节解压为文件名→内容的映射（跳过目录项）。
+// extractZipMap 将 zip 字节解压为 文件名->内容的映射（跳过目录项）。
+func extractZipMap(t *testing.T, zipData []byte) map[string][]byte {
+	t.Helper()
+	r, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	if err != nil {
+		t.Fatalf("zip.NewReader failed: %v", err)
+	}
+
+	files := make(map[string][]byte)
+	for _, f := range r.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatalf("failed to open zip file entry %s: %v", f.Name, err)
+		}
+		content, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatalf("failed to read zip file entry %s: %v", f.Name, err)
+		}
+		files[f.Name] = content
+	}
+	return files
+}
+
+// extractTarGzMap 将 tar.gz 或 zip 字节解压为文件名→内容的映射（跳过目录项）。
 func extractTarGzMap(t *testing.T, data []byte) map[string][]byte {
 	t.Helper()
+	if len(data) >= 4 && data[0] == 'P' && data[1] == 'K' && data[2] == 0x03 && data[3] == 0x04 {
+		return extractZipMap(t, data)
+	}
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("gzip reader: %v", err)

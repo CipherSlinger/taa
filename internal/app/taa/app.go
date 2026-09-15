@@ -30,12 +30,6 @@ const (
 	// fixedAttestationFile 为生成的 TEE 远程证明报告默认落盘路径
 	fixedAttestationFile = "attestation.report"
 
-	// fixedAttestationHelper 为底层 TEE 硬件度量工具路径（如海光 CSV get-attestation 命令行工具）
-	fixedAttestationHelper = "./attestation/get-attestation"
-
-	// fixedAttestationMode 为远程证明生成模式，auto 表示自动探测底层 TEE 硬件与驱动环境
-	fixedAttestationMode = "auto"
-
 	// defaultSM2PrivateKeyFile 为 TAA 实例 SM2 私钥存储文件名（PKCS#8 PEM 格式，严格权限 0600）
 	defaultSM2PrivateKeyFile = "sm2_private_key.pem"
 
@@ -147,8 +141,6 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		fixedAttestationFile,
 		platformIP,
 		dockerID,
-		fixedAttestationHelper,
-		fixedAttestationMode,
 		keyPair.PrivateKey,
 		userData,
 		sec,
@@ -544,11 +536,9 @@ func logUserDataSummary(platformIP, dockerID, publicKeyPEM string, timestamp int
 // prepareAttestationReport 调用底层 TEE 工具生成远程证明报告。
 // 若在非 TEE 环境或生成失败，写入空报告并记录警告，允许服务在降级模式下继续启动。
 func prepareAttestationReport(ctx context.Context, userData []byte) error {
-	log.Printf("generating attestation report: helper=%q output=%s", fixedAttestationHelper, fixedAttestationFile)
+	log.Printf("generating attestation report: output=%s", fixedAttestationFile)
 	if err := attestation.Generate(ctx, attestation.Config{
 		OutputPath: fixedAttestationFile,
-		HelperPath: fixedAttestationHelper,
-		Mode:       fixedAttestationMode,
 		UserData:   userData,
 	}); err != nil {
 		log.Printf("WARNING: generating attestation report failed, continuing with empty report: %v", err)

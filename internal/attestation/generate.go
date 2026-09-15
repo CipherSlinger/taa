@@ -51,6 +51,15 @@ var defaultReportFetcher reportFetcherFunc = func(ctx context.Context, devicePat
 	return reportBuf, nil
 }
 
+// SetReportFetcherForTest sets the report fetcher function used by Generate and returns a restore function.
+func SetReportFetcherForTest(fn func(ctx context.Context, devicePath string, userData, nonce []byte) ([]byte, error)) func() {
+	prev := defaultReportFetcher
+	defaultReportFetcher = fn
+	return func() {
+		defaultReportFetcher = prev
+	}
+}
+
 // Generate creates a CSV attestation report using pure Go and writes it to OutputPath.
 func Generate(ctx context.Context, cfg Config) error {
 	if ctx == nil {
