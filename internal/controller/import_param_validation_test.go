@@ -333,7 +333,7 @@ func TestImportModel_ResourceURLReuseValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("empty resourceUrl in phase 2 fails when no imported data exists", func(t *testing.T) {
+	t.Run("empty resourceUrl in phase 2 succeeds and sets ModelImported=true waiting for data", func(t *testing.T) {
 		state.mu.Lock()
 		state.CurrentPhase = 2
 		state.mu.Unlock()
@@ -344,11 +344,14 @@ func TestImportModel_ResourceURLReuseValidation(t *testing.T) {
 			"runtimeConfig": `{"commands": ["echo test"]}`,
 		})
 		api := decodeResponse(t, resp)
-		if resp.StatusCode != http.StatusBadRequest || api.Error == 0 {
-			t.Fatalf("expected 400 error in phase 2, got status=%d error=%d", resp.StatusCode, api.Error)
+		if resp.StatusCode != http.StatusOK || api.Error != 0 {
+			t.Fatalf("expected 200 success in phase 2, got status=%d error=%d msg=%s", resp.StatusCode, api.Error, api.Msg)
 		}
-		if !strings.Contains(api.Msg, "未找到已导入的数据，无法执行训练") {
-			t.Fatalf("expected '未找到已导入的数据，无法执行训练', got: %q", api.Msg)
+		if !strings.Contains(api.Msg, "等待数据") {
+			t.Fatalf("expected waiting for data message, got: %q", api.Msg)
+		}
+		if !state.ModelImported {
+			t.Fatalf("expected ModelImported=true, got false")
 		}
 	})
 }

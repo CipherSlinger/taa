@@ -130,50 +130,69 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		s.Logs.Add(LogInfo, "index", "导入索引写入成功: requestId=%s taskId=%s hash=%s", req.RequestID, req.TaskID, hash)
 	}
 
+	// 模型导入（带 URL）完成后，仅设置并保存模型就绪状态，绝不触发训练任务
 	if isModel {
-		latestRecord, ok := s.getLatestDataRecord()
-		if !ok || (latestRecord.DataDir == "" && latestRecord.Hash == "") {
-			s.Logs.Add(LogInfo, "import", "阶段%d: 模型导入完成，等待数据导入后执行训练", phase)
-			s.setCurrentOp("idle")
-			return
-		}
-		s.mu.RLock()
-		isBusy := s.isTrainingBusyLocked()
-		s.mu.RUnlock()
-		if isBusy {
-			s.Logs.Add(LogInfo, "import", "阶段%d: 模型导入完成，已有训练任务正在执行中，跳过重复触发训练", phase)
-			s.setCurrentOp("idle")
-			return
-		}
-	} else {
-		s.mu.RLock()
-		modelImported := s.ModelImported
-		modelInProgress := (s.activeTask != nil && s.activeTask.Type == "model_import") || s.CurrentOp == "auditing"
-		isBusy := s.isTrainingBusyLocked()
-		s.mu.RUnlock()
-		if !modelImported || modelInProgress || isBusy {
-			if isBusy {
-				s.Logs.Add(LogInfo, "import", "阶段%d: 数据导入完成，已有训练任务正在执行中，跳过重复触发训练", phase)
-			} else if modelInProgress {
-				s.Logs.Add(LogInfo, "import", "阶段%d: 数据导入完成，模型仍在导入审计中，等待模型就绪后执行训练", phase)
-			} else {
-				s.Logs.Add(LogInfo, "import", "阶段%d: 数据导入完成，等待模型导入后执行训练", phase)
-			}
-			s.setCurrentOp("idle")
-			return
-		}
+		s.Logs.Add(LogInfo, "import", "阶段%d: 模型导入与安全审计完成，等待数据下发后执行训练: taskId=%s", phase, req.TaskID)
+		s.setCurrentOp("idle")
+		return
 	}
 
-	trainRecord, _ = s.resolveTrainingRecord(req, isModel)
-	trainReq := req
-	if isModel {
-		if trainRecord.RequestID != "" {
-			trainReq.RequestID = trainRecord.RequestID
-		}
-		if trainRecord.TaskID != "" {
-			trainReq.TaskID = trainRecord.TaskID
-		}
+	// ── 只有下发数据时，才触发训练任务，并做前置准备条件检查 ──
+	// 1. 检查模型是否已就绪及是否在飞
+	s.mu.RLock()
+	modelImported := s.ModelImported
+	modelInProgress := (s.activeTask != nil && s.activeTask.Type == "model_import") || s.CurrentOp == "auditing"
+	isBusy := s.isTrainingBusyLocked()
+	runtimeConfigRaw := s.RuntimeConfig
+	s.mu.RUnlock()
+
+	if !modelImported {
+		s.Logs.Add(LogInfo, "import", "阶段%d: 数据导入完成，等待模型导入后执行训练", phase)
+		s.setCurrentOp("idle")
+		return
 	}
+	if modelInProgress {
+		s.Logs.Add(LogInfo, "import", "阶段%d: 数据导入完成，模型仍在导入审计中，等待模型就绪后执行训练", phase)
+		s.setCurrentOp("idle")
+		return
+	}
+	if isBusy {
+		s.Logs.Add(LogInfo, "import", "阶段%d: 数据导入完成，已有训练任务正在执行中，跳过重复触发训练", phase)
+		s.setCurrentOp("idle")
+		return
+	}
+
+	// 2. 检查运行配置 runtimeConfig 是否有效
+	if strings.TrimSpace(runtimeConfigRaw) == "" {
+		s.Logs.Add(LogError, "train", "runtimeConfig 不能为空")
+		s.setCurrentOp("idle")
+		s.reportImportFailure(req, phase, false, startedAt, "runtimeConfig 不能为空")
+		return
+	}
+	cfg, env, err := parseRuntimeConfig(runtimeConfigRaw)
+	if err != nil {
+		s.Logs.Add(LogError, "train", "%v", err)
+		s.setCurrentOp("idle")
+		s.reportImportFailure(req, phase, false, startedAt, err.Error())
+		return
+	}
+	if len(cfg.Commands) == 0 {
+		s.Logs.Add(LogError, "train", "runtimeConfig.commands 不能为空")
+		s.setCurrentOp("idle")
+		s.reportImportFailure(req, phase, false, startedAt, "runtimeConfig.commands 不能为空")
+		return
+	}
+
+	// 3. 提升为训练独占任务
+	if err := s.promoteCurrentTaskToTraining(); err != nil {
+		s.Logs.Add(LogError, "train", "提升为训练任务失败: %v", err)
+		s.setCurrentOp("idle")
+		s.reportImportFailure(req, phase, false, startedAt, err.Error())
+		return
+	}
+
+	trainRecord, _ = s.resolveTrainingRecord(req, false)
+	trainReq := req
 	if trainReq.TaskID == "" {
 		if trainRecord.TaskID != "" {
 			trainReq.TaskID = trainRecord.TaskID
@@ -183,66 +202,6 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	}
 	if trainReq.RequestID == "" && trainRecord.RequestID != "" {
 		trainReq.RequestID = trainRecord.RequestID
-	}
-
-	s.mu.RLock()
-	runtimeConfigRaw := s.RuntimeConfig
-	s.mu.RUnlock()
-	cfg, env, err := parseRuntimeConfig(runtimeConfigRaw)
-	if err != nil {
-		s.Logs.Add(LogError, "train", "%v", err)
-		s.setCurrentOp("idle")
-		s.reportImportFailure(trainReq, phase, false, startedAt, err.Error())
-		return
-	}
-
-	if err := s.promoteCurrentTaskToTraining(); err != nil {
-		s.Logs.Add(LogError, "train", "提升为训练任务失败: %v", err)
-		s.setCurrentOp("idle")
-		s.reportImportFailure(trainReq, phase, false, startedAt, err.Error())
-		return
-	}
-
-	s.executeTraining(trainReq, phase, trainRecord, cfg, env, startedAt)
-}
-
-func (s *TAAState) trainOnLatestData(req importRequest, phase int, latestRecord ImportIndexRecord, cfg runtimeConfig, env map[string]string) {
-	trainReq := req
-	trainRecord := latestRecord
-	trainRecord.Phase = phase
-
-	// 自动补齐 taskId / requestId：若当前请求未显式指定，优先继承最新数据记录；依然为空时以对方兜底
-	if trainReq.TaskID == "" {
-		if latestRecord.TaskID != "" {
-			trainReq.TaskID = latestRecord.TaskID
-		} else if trainReq.RequestID != "" {
-			trainReq.TaskID = trainReq.RequestID
-		}
-	}
-	if trainReq.RequestID == "" && latestRecord.RequestID != "" {
-		trainReq.RequestID = latestRecord.RequestID
-	}
-
-	startedAt := time.Now().UTC()
-	PhaseSeparator(fmt.Sprintf("Phase %d Train On Latest Data: taskId=%s", phase, trainReq.TaskID))
-	s.Logs.Add(LogInfo, "train", "开始基于最新数据执行训练: taskId=%s, requestId=%s, phase=%d, dataHash=%s",
-		trainReq.TaskID, trainReq.RequestID, phase, latestRecord.Hash)
-
-	// 判断是否指定了新的 requestId 或 taskId
-	isNewRequest := (trainReq.RequestID != "" && trainReq.RequestID != latestRecord.RequestID) ||
-		(trainReq.TaskID != "" && trainReq.TaskID != latestRecord.TaskID)
-
-	if isNewRequest {
-		trainRecord.RequestID = trainReq.RequestID
-		trainRecord.TaskID = trainReq.TaskID
-		trainRecord.ResultDir = resultDirForRequestTask(s.Security.ResultDir, trainReq.RequestID, trainReq.TaskID)
-
-		store, err := s.importIndexStore()
-		if err == nil {
-			_ = store.Reserve(trainReq.RequestID, trainReq.TaskID)
-			_ = store.Commit(trainRecord)
-		}
-		s.setLatestDataRecord(trainRecord)
 	}
 
 	s.executeTraining(trainReq, phase, trainRecord, cfg, env, startedAt)

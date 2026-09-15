@@ -1165,7 +1165,7 @@ result = {"dataset": {"content": data_content}, "metrics": {"marker": args.marke
 	}
 
 	// 5. Call importModel with EMPTY resourceUrl and new taskId "task-reuse-02"
-	// Should directly execute training on the latest dataset (dataset 2) using commands in runtimeConfig!
+	// Updates runtimeConfig, does NOT trigger training.
 	cmd2 := "python3 train.py --input <in> --output <out> --marker run2-reused"
 	runtimeCfgJSON2 := makeRuntimeConfigJSON(t, []string{cmd2}, nil)
 	modelResp2 := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
@@ -1178,8 +1178,15 @@ result = {"dataset": {"content": data_content}, "metrics": {"marker": args.marke
 	if modelResp2.StatusCode != http.StatusOK || apiModel2.Error != 0 {
 		t.Fatalf("import model reuse failed: %d / %s", modelResp2.StatusCode, apiModel2.Msg)
 	}
-	if !strings.Contains(apiModel2.Msg, "模型已复用") {
-		t.Fatalf("expected msg to contain '模型已复用', got: %q", apiModel2.Msg)
+
+	// 5b. Trigger training by submitting dataset 2
+	triggerDataResp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+		"resourceUrl": resourceServer.URL + "/data2.tar.gz",
+		"requestId":   "req-reuse-02",
+		"taskId":      "task-reuse-02",
+	})
+	if triggerDataResp.StatusCode != http.StatusOK {
+		t.Fatalf("trigger data import failed: %d", triggerDataResp.StatusCode)
 	}
 
 	// Wait for reportRes 2
@@ -1228,13 +1235,13 @@ result = {"dataset": {"content": data_content}, "metrics": {"marker": args.marke
 		t.Fatalf("exported archive missing training_report.json: got keys %v", keysOfMap(files))
 	}
 
-	// 7. 测试下发 taskId 为空时的模型复用训练：必须自动补齐 taskId 且 reportRes 必须上报非空 taskId
+	// 7. 测试下发空 URL 模型更新配置，随后下发数据触发训练
 	cmd3 := "python3 train.py --input <in> --output <out> --marker run3-autofill"
 	runtimeCfgJSON3 := makeRuntimeConfigJSON(t, []string{cmd3}, nil)
 	modelResp3 := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
 		"resourceUrl":   "",
-		"requestId":     "req-reuse-03-autofill",
-		"taskId":        "",
+		"requestId":     "req-reuse-03",
+		"taskId":        "task-reuse-03",
 		"runtimeConfig": runtimeCfgJSON3,
 	})
 	apiModel3 := decodeResponse(t, modelResp3)
@@ -1242,16 +1249,23 @@ result = {"dataset": {"content": data_content}, "metrics": {"marker": args.marke
 		t.Fatalf("import model reuse 3 failed: %d / %s", modelResp3.StatusCode, apiModel3.Msg)
 	}
 
+	// 7b. 下发数据以触发训练
+	triggerDataResp3 := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+		"resourceUrl": resourceServer.URL + "/data2.tar.gz",
+		"requestId":   "req-data-03",
+		"taskId":      "task-reuse-03",
+	})
+	if triggerDataResp3.StatusCode != http.StatusOK {
+		t.Fatalf("trigger data import 3 failed: %d", triggerDataResp3.StatusCode)
+	}
+
 	select {
 	case payload := <-platformReportCh:
 		if payload.Code != 0 {
 			t.Fatalf("reportRes 3 code = %d, msg: %v", payload.Code, payload.Msg)
 		}
-		if payload.TaskID == "" {
-			t.Fatal("reportRes 3 taskId is empty, expected auto-filled non-empty taskId")
-		}
-		if payload.TaskID != "task-reuse-02" {
-			t.Fatalf("reportRes 3 taskId = %q, want inherited task-reuse-02", payload.TaskID)
+		if payload.TaskID != "task-reuse-03" {
+			t.Fatalf("reportRes 3 taskId = %q, want task-reuse-03", payload.TaskID)
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("timed out waiting for reportRes 3")

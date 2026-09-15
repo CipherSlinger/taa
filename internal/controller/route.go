@@ -1073,7 +1073,7 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 		s.Logs.Add(LogInfo, "importModel", "已保存 runtimeConfig (长度=%d)", len(req.RuntimeConfig))
 	}
 
-	// 若 resourceUrl 为空且已有保存的模型，直接复用已导入模型与最新数据索引进行训练
+	// 若 resourceUrl 为空且已有保存的模型，仅更新 runtimeConfig，绝不触发训练任务
 	if req.ResourceURL == "" {
 		s.mu.RLock()
 		isBusy := s.isTrainingBusyLocked()
@@ -1089,7 +1089,7 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "runtimeConfig 不能为空"))
 			return
 		}
-		cfg, env, err := parseRuntimeConfig(runtimeConfigToUse)
+		cfg, _, err := parseRuntimeConfig(runtimeConfigToUse)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("runtimeConfig 解析失败: %v", err), err))
 			return
@@ -1104,44 +1104,10 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 		_ = s.sealStateLocked()
 		s.mu.Unlock()
 
-		latestRecord, ok := s.getLatestDataRecord()
-		hasData := ok && (latestRecord.DataDir != "" || latestRecord.Hash != "")
-
-		// 自动补齐 taskId：若请求未显式指定，优先继承最新数据索引中的 taskId；若依然为空则以 requestId 兜底
-		if req.TaskID == "" {
-			if latestRecord.TaskID != "" {
-				req.TaskID = latestRecord.TaskID
-			} else if req.RequestID != "" {
-				req.TaskID = req.RequestID
-			}
-		}
-
-		if phase == 1 && !hasData {
-			s.Logs.Add(LogInfo, "importModel", "阶段1: 模型参数命令已导入(ModelImported=true)，等待数据重新导入后执行训练: taskId=%s, requestId=%s",
-				req.TaskID, req.RequestID)
-			msg := "模型参数命令已导入，等待数据重新导入后执行训练"
-			writeEnvelope(w, http.StatusOK, msg, nil, 0)
-			return
-		}
-		if !hasData {
-			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "未找到已导入的数据，无法执行训练"))
-			return
-		}
-		release, err := s.tryAcquireTask(req.TaskID, req.RequestID, "staging", false)
-		if err != nil {
-			writeErr(w, http.StatusConflict, err)
-			return
-		}
-
-		s.Logs.Add(LogInfo, "importModel", "resourceUrl 为空，复用已保存模型直接基于最新数据执行训练: taskId=%s, requestId=%s, latestDataHash=%s",
-			req.TaskID, req.RequestID, latestRecord.Hash)
-
-		msg := "模型已复用，开始对最新数据执行训练，训练结果将通过 reportRes 上报"
+		s.Logs.Add(LogInfo, "importModel", "阶段%d: 模型运行配置已更新(ModelImported=true)，等待数据下发以触发训练任务: taskId=%s, requestId=%s",
+			phase, req.TaskID, req.RequestID)
+		msg := "模型参数命令已导入，等待数据重新导入后执行训练"
 		writeEnvelope(w, http.StatusOK, msg, nil, 0)
-
-		s.runAsyncSafe("trainOnLatestData", release, func() {
-			s.trainOnLatestData(req, phase, latestRecord, cfg, env)
-		})
 		return
 	}
 
