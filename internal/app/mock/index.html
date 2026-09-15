@@ -1193,6 +1193,11 @@
             <span id="reportModelImportStatusText">等待模型导入结果上报</span>
             <span class="muted" style="font-size:12px; font-weight:normal;">(/v1/taa/reportModelImport)</span>
           </div>
+          <div class="status" style="margin-top:4px; font-size:13px; font-weight:600;">
+            <span id="reportAuditDot" class="dot"></span>
+            <span id="reportAuditStatusText">等待代码审计结果上报</span>
+            <span class="muted" style="font-size:12px; font-weight:normal;">(/v1/taa/reportAudit)</span>
+          </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
           <div id="importModelStatusBox" class="status" style="font-size:12px; display:none;">
@@ -1200,7 +1205,8 @@
             <span id="importModelStatusText"></span>
           </div>
           <button id="importModelBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('importModelResult')" disabled>查看返回</button>
-          <button id="reportModelImportBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportModelImportBodyModal()" disabled title="查看模型导入回调上报返回体">查看上报</button>
+          <button id="reportModelImportBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportModelImportBodyModal()" disabled title="查看模型导入回调上报返回体">导入上报</button>
+          <button id="reportAuditBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportAuditBodyModal()" disabled title="查看代码审计回调上报返回体">审计上报</button>
         </div>
       </div>
       <label for="importModelResourceUrl">resourceUrl</label>
@@ -1543,6 +1549,7 @@ const resultBodies = {};
 let lastRegisterData = null;
 let lastReportResData = null;
 let lastReportModelImportData = null;
+let lastReportAuditData = null;
 const RESOURCE_INFO_TIMEOUT_MS = 120000;
 let currentModalBody = '';
 let uploadedFiles = [];
@@ -2066,6 +2073,21 @@ function buildReportModelImportBodyPreview(data) {
 function setReportModelImportPending() {
   renderReportModelImport({ received: false, accepted: false });
 }
+function buildReportAuditBodyPreview(data) {
+  if (!data) return {};
+  const rawBody = parseJSONMaybe(data.rawBody);
+  const body = rawBody && typeof rawBody === 'object' ? { ...rawBody } : { ...data };
+  delete body.received;
+  delete body.accepted;
+  delete body.rawBody;
+  if (Object.prototype.hasOwnProperty.call(body, 'report')) {
+    body.report = parseJSONMaybe(body.report);
+  }
+  return body;
+}
+function setReportAuditPending() {
+  renderReportAudit({ received: false, accepted: false });
+}
 function isAbortLikeError(err) {
   const msg = String(err && err.message ? err.message : err || '').toLowerCase();
   return err && (err.name === 'AbortError' || msg.includes('aborted') || msg.includes('aborterror'));
@@ -2248,6 +2270,37 @@ async function resetReportModelImportStatus() {
   await fetch('/api/reportModelImport/reset', { method: 'POST' }).catch(() => {});
   setReportModelImportPending();
 }
+function renderReportAudit(data) {
+  lastReportAuditData = data || null;
+  const dot = document.getElementById('reportAuditDot');
+  const bodyBtn = document.getElementById('reportAuditBodyBtn');
+  dot.className = 'dot';
+  if (!data || !data.received) {
+    dot.classList.add('bad');
+    text('reportAuditStatusText', '等待代码审计结果上报');
+    bodyBtn.disabled = true;
+    return;
+  }
+  dot.classList.add(data.accepted ? 'ok' : 'bad');
+  text('reportAuditStatusText', data.accepted ? '已收到代码审计结果上报，并已返回 HTTP 200' : '已收到上报，但参数校验失败');
+  bodyBtn.disabled = false;
+}
+function openReportAuditBodyModal() {
+  openBodyModal('代码安全审计结果上报 body', buildReportAuditBodyPreview(lastReportAuditData));
+}
+async function refreshReportAuditStatus() {
+  try {
+    const res = await fetch('/api/reportAudit/status', { cache: 'no-store' });
+    const data = await res.json();
+    renderReportAudit({ ...responseResult(data), code: data.error, msg: data.msg });
+  } catch (err) {
+    text('reportAuditStatusText', '刷新上报状态失败');
+  }
+}
+async function resetReportAuditStatus() {
+  await fetch('/api/reportAudit/reset', { method: 'POST' }).catch(() => {});
+  setReportAuditPending();
+}
 
 // ── 文件上传 ─────────────────────────────────
 async function uploadFile() {
@@ -2372,8 +2425,10 @@ async function generateImportModelPublicKey(btn) {
 async function testImportModel() {
   showResultRunning('importModelResult', '正在请求...');
   setReportModelImportPending();
+  setReportAuditPending();
   try {
     await fetch('/api/reportModelImport/reset', { method: 'POST' }).catch(() => {});
+    await fetch('/api/reportAudit/reset', { method: 'POST' }).catch(() => {});
     const runtimeConfig = buildRuntimeConfig(
       document.getElementById('importModelCommands').value,
       document.getElementById('importModelEnv').value,
@@ -3582,11 +3637,14 @@ refreshStatus();
 refreshReportResStatus();
 setReportModelImportPending();
 refreshReportModelImportStatus();
+setReportAuditPending();
+refreshReportAuditStatus();
 renderRequestLogs();
 fetchRequestLogs();
 setInterval(refreshStatus, 1000);
 setInterval(refreshReportResStatus, 1000);
 setInterval(refreshReportModelImportStatus, 1000);
+setInterval(refreshReportAuditStatus, 1000);
 setInterval(fetchRequestLogs, 2000);
 logTimer = setInterval(fetchLogs, 3000);
 fetchLogs();

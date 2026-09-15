@@ -133,6 +133,7 @@ func NewServer(cfg Config) *Server {
 	reportStore := newReportStateStore(cfg.StateDir)
 	reportResStore := newReportStateStore(cfg.StateDir, "reportRes-state.json")
 	reportModelImportStore := newReportStateStore(cfg.StateDir, "reportModelImport-state.json")
+	reportAuditStore := newReportStateStore(cfg.StateDir, "reportAudit-state.json")
 
 	uploadDir := cfg.UploadDir
 	if abs, err := filepath.Abs(uploadDir); err == nil {
@@ -151,6 +152,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/v1/taa/reportResourceRes", reportResourceResHandler(reportStore))
 	mux.HandleFunc("/v1/taa/reportRes", reportResHandler(reportResStore))
 	mux.HandleFunc("/v1/taa/reportModelImport", reportModelImportHandler(reportModelImportStore))
+	mux.HandleFunc("/v1/taa/reportAudit", reportAuditHandler(reportAuditStore))
 	mux.HandleFunc("/api/register/status", registerStatusHandler(registerStore))
 	mux.HandleFunc("/api/register/reset", registerResetHandler(registerStore))
 	mux.HandleFunc("/api/reportResourceRes/status", reportStatusHandler(reportStore))
@@ -159,6 +161,8 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/reportRes/reset", reportResetHandler(reportResStore))
 	mux.HandleFunc("/api/reportModelImport/status", reportStatusHandler(reportModelImportStore))
 	mux.HandleFunc("/api/reportModelImport/reset", reportResetHandler(reportModelImportStore))
+	mux.HandleFunc("/api/reportAudit/status", reportStatusHandler(reportAuditStore))
+	mux.HandleFunc("/api/reportAudit/reset", reportResetHandler(reportAuditStore))
 	mux.HandleFunc("/api/taa-target", taaTargetHandler(taaAddr))
 	mux.HandleFunc("/api/upload", uploadHandler(cfg.Addr, uploadDir, registerStore))
 	registerUploadDeleteRoutes(mux, uploadDir)
@@ -524,6 +528,8 @@ func requestComponentFromPath(path string) string {
 		return "reportRes"
 	case strings.HasPrefix(path, "/v1/taa/reportModelImport"):
 		return "reportModelImport"
+	case strings.HasPrefix(path, "/v1/taa/reportAudit"):
+		return "reportAudit"
 	case strings.HasPrefix(path, "/v1/taa/logs") || strings.HasPrefix(path, "/api/taa/logs"):
 		return "taa-logs"
 	case strings.HasPrefix(path, "/v1/taa/status") || strings.HasPrefix(path, "/api/taa/status"):
@@ -897,7 +903,7 @@ func reportResHandler(store *reportStateStore) http.HandlerFunc {
 	}
 }
 
-// reportModelImportHandler handles POST /v1/taa/reportModelImport — TAA 上报模型导入结果（含代码审计报告）
+// reportModelImportHandler handles POST /v1/taa/reportModelImport — TAA 上报模型导入与完整性校验结果
 func reportModelImportHandler(store *reportStateStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
@@ -963,6 +969,78 @@ func reportModelImportHandler(store *reportStateStore) http.HandlerFunc {
 		}
 
 		log.Printf("reportModelImport accepted: dockerId=%s taskId=%s code=%d", state.DockerID, state.TaskID, state.Code)
+		writeEnvelope(w, http.StatusOK, "success", map[string]any{
+			"received": true,
+		}, 0)
+	}
+}
+
+// reportAuditHandler handles POST /v1/taa/reportAudit — TAA 上报模型代码安全审计结果
+func reportAuditHandler(store *reportStateStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
+			return
+		}
+
+		state := reportState{
+			Received:   true,
+			ReceivedAt: time.Now().Format(time.RFC3339),
+		}
+
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			state.StatusCode = http.StatusBadRequest
+			state.Message = "读取请求体失败: " + err.Error()
+			store.set(state)
+			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
+			return
+		}
+		state.RawBody = string(bodyBytes)
+		state.ContentType = r.Header.Get("Content-Type")
+
+		var req reportRequest
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
+			state.StatusCode = http.StatusBadRequest
+			state.Message = "解析 JSON 失败: " + err.Error()
+			store.set(state)
+			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
+			return
+		}
+
+		state.DockerID = req.DockerID
+		state.RequestID = req.RequestID
+		state.TaskID = req.TaskID
+		state.Code = req.Code
+		state.Report = req.Report
+		state.Checksum = req.Checksum
+		if req.Msg != nil {
+			state.Msg = *req.Msg
+		}
+
+		if state.DockerID == "" {
+			state.StatusCode = http.StatusBadRequest
+			state.Message = "缺少 dockerId"
+		} else {
+			state.Accepted = true
+			state.StatusCode = http.StatusOK
+			state.Message = "平台已收到代码审计结果上报，并返回 HTTP 200"
+		}
+
+		store.set(state)
+		if !state.Accepted {
+			log.Printf("reportAudit rejected: status=%d dockerId=%q taskId=%q message=%s", state.StatusCode, state.DockerID, state.TaskID, state.Message)
+			writeEnvelope(w, state.StatusCode, state.Message, reportStateResult(state), state.StatusCode)
+			return
+		}
+
+		log.Printf("reportAudit accepted: dockerId=%s taskId=%s code=%d", state.DockerID, state.TaskID, state.Code)
 		writeEnvelope(w, http.StatusOK, "success", map[string]any{
 			"received": true,
 		}, 0)

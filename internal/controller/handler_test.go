@@ -389,7 +389,8 @@ func TestImportHandler(t *testing.T) {
 		reportCh := make(chan importedReportPayload, 1)
 		platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != reportResEndpoint {
-				t.Fatalf("unexpected report endpoint: %s", r.URL.Path)
+				w.WriteHeader(http.StatusOK)
+				return
 			}
 			var payload importedReportPayload
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -455,7 +456,8 @@ func TestImportHandler(t *testing.T) {
 		reportCh := make(chan importedReportPayload, 1)
 		platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != reportResEndpoint {
-				t.Fatalf("unexpected report endpoint: %s", r.URL.Path)
+				w.WriteHeader(http.StatusOK)
+				return
 			}
 			var payload importedReportPayload
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {

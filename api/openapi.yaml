@@ -360,8 +360,8 @@ paths:
 
   /v1/taa/reportModelImport:
     post:
-      summary: 上报模型导入与代码审计结果
-      description: TAA 完成模型解包和代码审计后，向平台回传代码审计结论与可疑特征明细。
+      summary: 上报模型导入与完整性校验结果
+      description: TAA 完成模型解包、解密与完整性校验（SM3 checksum）后，向平台回传模型导入状态与完整性信息。
       tags:
         - 平台回调
       requestBody:
@@ -372,7 +372,32 @@ paths:
               $ref: '#/components/schemas/ReportModelImportRequest'
       responses:
         '200':
-          description: 平台成功接收模型导入审计结果
+          description: 平台成功接收模型导入结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                msg: "success"
+                result:
+                  received: true
+                error: 0
+
+  /v1/taa/reportAudit:
+    post:
+      summary: 上报模型代码安全审计结果
+      description: TAA 完成模型代码静态规则扫描与 LLM 语义审查后，向平台回传代码审计结论与明细报告。
+      tags:
+        - 平台回调
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportAuditRequest'
+      responses:
+        '200':
+          description: 平台成功接收代码安全审计结果
           content:
             application/json:
               schema:
@@ -643,13 +668,11 @@ components:
           type: string
         code:
           type: integer
-          description: 0=导入和审计成功, 1=资源下载/导入失败, 2=审计失败
+          description: 0=模型导入成功, 1=资源下载/解密/解压失败
         msg:
           type: string
           nullable: true
-        report:
-          type: string
-          description: 代码审计报告 JSON 字符串
+          description: 成功时固定为 "模型导入成功"，失败时为失败原因
         checksum:
           type: object
           description: 模型压缩包完整性校验（与 reportRes.training_task.model_checksum 格式一致）
@@ -660,6 +683,30 @@ components:
               type: string
             value:
               type: string
+
+    ReportAuditRequest:
+      type: object
+      required:
+        - dockerId
+        - requestId
+        - code
+      properties:
+        dockerId:
+          type: string
+        requestId:
+          type: string
+        taskId:
+          type: string
+        code:
+          type: integer
+          description: 0=代码审计通过, 1=代码审计未通过, 2=LLM服务不可用
+        msg:
+          type: string
+          nullable: true
+          description: 审计结论摘要或异常说明
+        report:
+          type: string
+          description: 代码审计报告 JSON 字符串（格式与 AuditReport 一致）
 
     # ── 代码审计模型 ────────────────────────────────────────────────────────
     AuditReport:
