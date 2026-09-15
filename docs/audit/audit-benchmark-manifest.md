@@ -132,6 +132,22 @@
 
 - **补齐 UNCERTAIN 保底计数**：将大模型输出 `UNCERTAIN` 触发的门禁阻断纳入 `fail_closed_count`，消除指标统计遗漏。
 
+### 2.20 变体源码去指纹化与 Prompt 路径防作弊脱敏 (Zero-Leakage Sanitization)
+
+- **抹除一切金标泄露痕迹**：源码彻底清除 `Benchmark variant`、`family="B1"`、`benign` 注释，Prompt 中的文件路径进行相对路径脱敏，杜绝模型利用样本路径字母盲猜作弊。
+
+### 2.21 思考模型兼容与预测预算扩容 (Thinking Mode Adaptation)
+
+- **剥离思维链标记**：解析 JSON 前置剥离 `<think>...</think>` 标签，Token 预测预算统一提升至 **800**，全面兼容前沿深度推理模型。
+
+### 2.22 增量断点落盘与断点续评机制 (Incremental Checkpointing & Resume)
+
+- **单样即时写盘**：每个样本判定结束立即追加至 `sample-results.jsonl`，支持 `--resume` 命令行断点续跑，杜绝长时间评测中途崩溃数据全失。
+
+### 2.23 随机种子固定与端点动态分发 (Seed Pinning & Dynamic Endpoints)
+
+- **确定性复现**：全局固定 `seed: 42`，消除 GPU 浮点调度抖动；支持 `--llm-endpoint` 远程调度与 3 次指数退避重试保护。
+
 ---
 
 ## 3. 良性样本家族

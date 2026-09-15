@@ -186,6 +186,29 @@
   fail_closed = (llm_state in {"llm_unavailable", "parse_error", "uncertain"}) and blocked
   ```
   确保因代码深度混淆触发大模型 `UNCERTAIN` 进而被门禁严格阻断的样本，能够 100% 正确计入 `fail_closed_count` 指标，真实呈现架构韧性。
+
+### 2.28 源码去指纹化与 Prompt 路径防作弊脱敏规范（Zero-Leakage Prompt & Code Sanitization）
+- **彻底根绝金标泄露漏洞**：严禁在变体源码与注释中出现任何 `Benchmark variant`、`family="B1"`、`benign` 或样本 ID（如 `B1-01` / `M1-01`），所有变体代码的函数名、类名���注释必须 100% 伪装成普通工业业务代码；
+- **Prompt 路径脱敏匿名化**：输入大模型的 Prompt 路径必须截断为工程相对路径（例如 `trainer.py` 或 `pipeline/utils.py`），严禁包含宿主机全路径或带有 `M1` / `B1` 的目录名，杜绝大模型根据路径字母或注释直接猜测良恶标签的作弊捷径。
+
+### 2.29 现代思考模型标记剥离与预算扩容规范（Thinking Mode Stripping & Budget Scaling）
+- **思考标记前置剥离**：针对 Qwen 2.5/3 开启 Thinking 模式或 DeepSeek-R1 系列模型输出的 `<think>...</think>` 思考链，在 `extract_json_response` 解析前必须使用正则 `re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)` 彻底剥除，防止思考过程中的中间符号破坏贪婪 JSON 解析；
+- **预测预算自适应扩容**：调用参数中的 `num_predict`（生成最大 Token 数）统一由 200 提升至 **800**，为前沿思考模型留足思维链空间，杜绝因 Token 耗尽导致的假性截断与语法解析失败。
+
+### 2.30 增量断点落盘与评测断点续跑机制（Incremental Checkpointing & Resume Spec）
+- **杜绝单点崩溃前功尽弃**：评测执行器废除全部评测完成后一次性写盘的旧逻辑，改为**每个样本评测完成立即向 `sample-results.jsonl` 追加写入**；
+- **原生支持 `--resume` 续评**：评测脚本新增 `--resume` 命令行参数。中断后重新启动时，自动读取已有结果并跳过已完成的 `sample_id`，大幅节约耗时与算力成本，增强长时间自动化评测的工程韧性。
+
+### 2.31 随机种子全局绑定与推理确定性规范（Deterministic Seed Pinning）
+- **消除 GPU 浮点非确定性漂移**：在调用本地 Ollama 与 llama.cpp REST API 时，请求选项中显式固定传递 `"seed": 42`；
+- **保证结果 100% 可复现**：确保在相同硬件与权重下，多次独立执行评测能够获得完全一致的判定结果，保障学术基准研究的科学严肃性。
+
+### 2.32 推理端点动态配置与远程 GPU 加速（Configurable Inference Endpoints）
+- **解除 localhost 硬编码限制**：评测引擎与分析器全面支持 `--llm-endpoint` 命令行参数与 `OLLAMA_HOST` 环境变量，允许将推理流量无缝分发至远程高性能 GPU 算力集群或局域网私有化模型服务。
+
+### 2.33 并发请求防雪崩与指数退避重试机制（Exponential Backoff & Fault Tolerance）
+- **边缘算力自愈保护**：针对包含多个复杂 Findings 的样本连续发送 HTTP 请求易导致小内存服务假死的问题，在客户端封装 3 次自动重试机制；
+- **指数退避重试**：遇网络重置或 HTTP 500 自动按照 1s, 2s, 4s 间隔重试，避免因瞬时显存回收延迟导致单样评测异常中断。
 ---
 
 ## 3. 4 大真实工业训练基座定义与工程规范
