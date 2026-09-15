@@ -1,5 +1,36 @@
 # TAA 接口设计文档
 
+## 目录
+
+- [1. 前置要求](#1-前置要求)
+- [2. 公共返回格式](#2-公共返回格式)
+  - [2.1 接口一览](#21-接口一览)
+    - [2.1.1 TAA → 平台（回调与上报接口）](#211-taa--平台回调与上报接口)
+    - [2.1.2 平台 → TAA（业务与控制接口）](#212-平台--taa业务与控制接口)
+    - [2.1.3 调试接口（平台 → TAA）](#213-调试接口平台--taa)
+- [3. TAA → 平台](#3-taa--平台)
+  - [3.1 TAA 启动后生成远程证明报告并通知平台](#31-taa-启动后生成远程证明报告并通知平台)
+  - [3.2 获取远程证明报告](#32-获取远程证明报告)
+    - [3.2.1 远程证明报告二进制格式](#321-远程证明报告二进制格式)
+  - [3.4 TAA 上报训练完成结果](#34-taa-上报训练完成结果)
+  - [3.5 TAA 上报模型导入结果](#35-taa-上报模型导入结果)
+  - [3.6 TAA 上报代码安全审计结果](#36-taa-上报代码安全审计结果)
+  - [3.7 TAA 上报任务终端日志](#37-taa-上报任务终端日志)
+  - [3.8 TAA 上报任务进度](#38-taa-上报任务进度)
+- [4. 平台 → TAA](#4-平台--taa)
+  - [4.1 资源信息获取](#41-资源信息获取)
+  - [4.2 下发资源数据](#42-下发资源数据)
+  - [4.3 通知 TAA 阶段切换](#43-通知-taa-阶段切换)
+  - [4.4 请求 TAA 导出结果](#44-请求-taa-导出结果)
+  - [4.5 下发模型资源（/v1/taa/importModel）](#45-下发模型资源v1taaimportmodel)
+  - [4.6 中止当前训练任务](#46-中止当前训练任务)
+- [5. 调试接口](#5-调试接口)
+  - [5.1 连通性检查（/v1/taa/health）](#51-连通性检查v1taahealth)
+  - [5.2 查询 TAA 完整状态（/v1/taa/status）](#52-查询-taa-完整状态v1taastatus)
+  - [5.3 查询 TAA 结构化日志（/v1/taa/logs）](#53-查询-taa-结构化日志v1taalogs)
+
+---
+
 ## 1. 前置要求
 
 TAA 所在 Pod 容器需提供以下运行参数：
@@ -11,7 +42,7 @@ CONTRACT=合约ID（预留）
 ```
 
 ```env
-# 模型方路径约定（详细规约参见 docs/TAA模型提供方开发与接口对接规范.md）
+# 模型方路径约定
 /opt/taa/input          # 输入目录（只读权限路径 READ_ONLY）
 /opt/taa/output         # 输出目录（写权限路径 READ_WRITE）
 ```
@@ -506,7 +537,6 @@ TAA 在任务执行过程中通过该接口向平台批量上报任务终端日�
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `seq` | `uint64` | 是 | 同一 `dockerId + requestId` 下递增的日志序号，用于排序和去重 |
-| `timestamp` | `string` | 是 | 日志产生时间，RFC3339 格式 |
 | `message` | `string` | 是 | 日志内容；标准输出、标准错误和 TAA 系统日志统一通过该字段上报 |
 
 **请求示例**：
@@ -520,12 +550,10 @@ TAA 在任务执行过程中通过该接口向平台批量上报任务终端日�
   "entries": [
     {
       "seq": 41,
-      "timestamp": "2026-09-15T09:30:00Z",
       "message": "epoch=1 loss=0.8234"
     },
     {
       "seq": 42,
-      "timestamp": "2026-09-15T09:30:01Z",
       "message": "epoch=1 accuracy=0.9123"
     }
   ]
@@ -576,7 +604,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | `percent` | `number` | 是 | 当前任务进度百分比，取值范围为 `0` ~ `100` |
 | `timestamp` | `string` | 是 | 进度产生时间，RFC3339 格式 |
 
-平台按 `dockerId + requestId` 关联进度快照，并依据 `timestamp` 防止较早的进度覆盖较新的进度。网络重试可以重复提交同一进度快照；进度上报不替代最终结果上报，也不包含任务状态或阶段信息。
+平台按 `dockerId + requestId` 关联进度快照，并依据 `timestamp` 防止较早的进度覆盖较新的进度。
 
 **请求示例**：
 
@@ -616,60 +644,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 
 ## 4. 平台 → TAA
 
-### 4.1 连通性检查
-
-**请求**：`POST /v1/taa/health`
-
-**请求内容类型**：`application/json`
-
-**功能说明**：轻量级接口，不调用 attestation helper，用于快速确认 TAA 服务是否可达和正常运行。
-
-**参数**：无
-
-**请求示例**：
-
-```jsonc
-{}
-```
-
-**响应内容类型**：`application/json`
-
-**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，业务字段放在 `result` 中。
-
-**响应结果字段**：
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `phase` | `number` | 当前阶段：`1` 调试，`2` 测试，`3` 正式训练，`4` 推理 |
-| `phaseName` | `string` | 阶段名称 |
-| `modelImported` | `bool` | 模型是否已导入 |
-| `dataImported` | `bool` | 数据是否已导入 |
-| `trainingDone` | `bool` | 训练是否已完成 |
-| `currentOp` | `string` | 当前操作状态：`idle`、`downloading`、`decrypting`、`training` 等 |
-
-**成功响应示例**（200 OK）：
-
-```jsonc
-{
-  "msg": "ok",
-  "result": {
-    "phase": 1,
-    "phaseName": "调试",
-    "modelImported": false,
-    "dataImported": false,
-    "trainingDone": false,
-    "currentOp": "idle"
-  },
-  "error": 0
-}
-```
-
-**使用场景**：
-- 在调用其他接口前，先确认 TAA 服务是否正常运行
-- 检查 TAA 当前所处的阶段状态
-- 查看资源导入和训练完成状态
-
-### 4.1.1 资源信息获取
+### 4.1 资源信息获取
 
 TAA 接收到 `resourceUrl` 后，下载资源文件（若为 `.enc` 结尾则使用实例 SM2 私钥进行信封解密），计算明文归档压缩包的国密 SM3 校验和（与 `/v1/taa/import` 接口哈希逻辑保持一致），并将数据幂等解压保存到对应哈希文件夹（`/opt/taa/data/<hash>`）作为唯一标识备份；随后调用 `filetree` 解析器分析多模态数据集的目录结构、魔数格式识别及结构化文件元信息（CSV / TSV / JSON / JSONL / XLSX / SQLite / Parquet 等的 schema 与数据量），已保存的哈希数据目录予以持久保留以避免后续重复解压并支持统一资源管理。
 
@@ -822,7 +797,9 @@ TAA 接收到 `resourceUrl` 后，下载资源文件（若为 `.enc` 结尾则�
 ```
 
 
-### 4.3 通知 TAA 阶段切换（`如何防止平台和模型提供方共谋直接进入正式训练阶段偷取数据？`）
+### 4.3 通知 TAA 阶段切换
+
+> **安全考量**：如何防止平台和模型提供方共谋直接进入正式训练阶段偷取数据？参见模型方规约与远程证明验证逻辑。
 
 **请求**：`POST /v1/taa/switch`
 
@@ -1097,7 +1074,157 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
 > **加密格式说明**：与 `/v1/taa/import` 相同。
 
-### 4.6 查询 TAA 结构化日志（`/v1/taa/logs`）
+### 4.6 中止当前训练任务
+
+该接口用于平台请求 TAA 中止当前正在执行的训练任务。TAA 当前为单任务模式，请求不需要传入 `taskId` 或 `requestId`，接口始终针对当前训练任务处理。
+
+**请求**：`POST /v1/taa/stopTraining`
+
+**请求内容类型**：`application/json`
+
+**请求示例**：
+
+```jsonc
+{}
+```
+
+**处理规则**：
+
+- 接口采用同步处理方式，TAA 等待训练进程及其子进程退出，并完成训练任务状态清理后返回。
+- 当前存在训练任务时，成功中止后返回 HTTP `200`，公共返回格式中的 `error=0`。
+- 当前不存在训练任务时，仍返回 HTTP `200`，公共返回格式中的 `error=0`，仅通过 `msg` 提示不存在训练任务；该场景按幂等成功处理。
+- 该接口不区分或处理其他非训练任务，也不调用 `modelLog`、`reportProgress` 或 `/v1/taa/reportRes`。
+
+**成功响应示例（当前存在训练任务并已中止）**：
+
+```jsonc
+{
+  "msg": "训练任务已中止",
+  "result": null,
+  "error": 0
+}
+```
+
+**成功响应示例（当前不存在训练任务）**：
+
+```jsonc
+{
+  "msg": "不存在训练任务",
+  "result": null,
+  "error": 0
+}
+```
+
+---
+
+## 5. 调试接口
+
+### 5.1 连通性检查（/v1/taa/health）
+
+**请求**：`POST /v1/taa/health`
+
+**请求内容类型**：`application/json`
+
+**功能说明**：轻量级接口，不调用 attestation helper，用于快速确认 TAA 服务是否可达和正常运行。
+
+**参数**：无
+
+**请求示例**：
+
+```jsonc
+{}
+```
+
+**响应内容类型**：`application/json`
+
+**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，业务字段放在 `result` 中。
+
+**响应结果字段**：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `phase` | `number` | 当前阶段：`1` 调试，`2` 测试，`3` 正式训练，`4` 推理 |
+| `phaseName` | `string` | 阶段名称 |
+| `modelImported` | `bool` | 模型是否已导入 |
+| `dataImported` | `bool` | 数据是否已导入 |
+| `trainingDone` | `bool` | 训练是否已完成 |
+| `currentOp` | `string` | 当前操作状态：`idle`、`downloading`、`decrypting`、`training` 等 |
+
+**成功响应示例**（200 OK）：
+
+```jsonc
+{
+  "msg": "ok",
+  "result": {
+    "phase": 1,
+    "phaseName": "调试",
+    "modelImported": false,
+    "dataImported": false,
+    "trainingDone": false,
+    "currentOp": "idle"
+  },
+  "error": 0
+}
+```
+
+**使用场景**：
+- 在调用其他接口前，先确认 TAA 服务是否正常运行
+- 检查 TAA 当前所处的阶段状态
+- 查看资源导入和训练完成状态
+
+### 5.2 查询 TAA 完整状态（/v1/taa/status）
+
+该接口用于查询 TAA 的完整状态信息，比 `/v1/taa/health` 返回更多字段。
+
+**请求**：`POST /v1/taa/status`
+
+**请求内容类型**：`application/json`
+
+**参数**：无
+
+**请求示例**：
+
+```jsonc
+{}
+```
+
+**响应内容类型**：`application/json`
+
+**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，业务字段放在 `result` 中。
+
+**响应结果字段**：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `phase` | `number` | 当前阶段：`1` 调试，`2` 测试，`3` 正式训练，`4` 推理 |
+| `phaseName` | `string` | 阶段名称 |
+| `modelImported` | `bool` | 模型是否已导入 |
+| `dataImported` | `bool` | 数据是否已导入 |
+| `trainingDataImported` | `bool` | 训练数据是否已导入 |
+| `trainingDone` | `bool` | 训练是否已完成 |
+| `currentOp` | `string` | 当前操作状态 |
+| `logCount` | `number` | 日志缓冲区中的日志数量 |
+
+**成功响应示例**（200 OK）：
+
+```jsonc
+{
+  "msg": "ok",
+  "result": {
+    "phase": 1,
+    "phaseName": "调试",
+    "modelImported": true,
+    "dataImported": false,
+    "trainingDataImported": false,
+    "trainingDone": false,
+    "currentOp": "idle",
+    "logCount": 5
+  },
+  "error": 0
+}
+```
+
+### 5.3 查询 TAA 结构化日志（/v1/taa/logs）
 
 该接口用于查询 TAA 运行过程中的结构化日志。
 
@@ -1163,99 +1290,6 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
     "currentOp": "idle",
     "total": 2
   },
-  "error": 0
-}
-```
-
-### 4.7 查询 TAA 完整状态（`/v1/taa/status`）
-
-该接口用于查询 TAA 的完整状态信息，比 `/v1/taa/health` 返回更多字段。
-
-**请求**：`POST /v1/taa/status`
-
-**请求内容类型**：`application/json`
-
-**参数**：无
-
-**请求示例**：
-
-```jsonc
-{}
-```
-
-**响应内容类型**：`application/json`
-
-**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，业务字段放在 `result` 中。
-
-**响应结果字段**：
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `phase` | `number` | 当前阶段：`1` 调试，`2` 测试，`3` 正式训练，`4` 推理 |
-| `phaseName` | `string` | 阶段名称 |
-| `modelImported` | `bool` | 模型是否已导入 |
-| `dataImported` | `bool` | 数据是否已导入 |
-| `trainingDataImported` | `bool` | 训练数据是否已导入 |
-| `trainingDone` | `bool` | 训练是否已完成 |
-| `currentOp` | `string` | 当前操作状态 |
-| `logCount` | `number` | 日志缓冲区中的日志数量 |
-
-**成功响应示例**（200 OK）：
-
-```jsonc
-{
-  "msg": "ok",
-  "result": {
-    "phase": 1,
-    "phaseName": "调试",
-    "modelImported": true,
-    "dataImported": false,
-    "trainingDataImported": false,
-    "trainingDone": false,
-    "currentOp": "idle",
-    "logCount": 5
-  },
-  "error": 0
-}
-```
-
-### 4.8 中止当前训练任务
-
-该接口用于平台请求 TAA 中止当前正在执行的训练任务。TAA 当前为单任务模式，请求不需要传入 `taskId` 或 `requestId`，接口始终针对当前训练任务处理。
-
-**请求**：`POST /v1/taa/stopTraining`
-
-**请求内容类型**：`application/json`
-
-**请求示例**：
-
-```jsonc
-{}
-```
-
-**处理规则**：
-
-- 接口采用同步处理方式，TAA 等待训练进程及其子进程退出，并完成训练任务状态清理后返回。
-- 当前存在训练任务时，成功中止后返回 HTTP `200`，公共返回格式中的 `error=0`。
-- 当前不存在训练任务时，仍返回 HTTP `200`，公共返回格式中的 `error=0`，仅通过 `msg` 提示不存在训练任务；该场景按幂等成功处理。
-- 该接口不区分或处理其他非训练任务，也不调用 `modelLog`、`reportProgress` 或 `/v1/taa/reportRes`。
-
-**成功响应示例（当前存在训练任务并已中止）**：
-
-```jsonc
-{
-  "msg": "训练任务已中止",
-  "result": null,
-  "error": 0
-}
-```
-
-**成功响应示例（当前不存在训练任务）**：
-
-```jsonc
-{
-  "msg": "不存在训练任务",
-  "result": null,
   "error": 0
 }
 ```
