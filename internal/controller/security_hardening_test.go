@@ -2,8 +2,10 @@ package controller
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -161,6 +163,176 @@ func TestCompressDirToTarGzSymlinkDefense(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "非法越界软链接") {
 		t.Fatalf("expected error mentioning 非法越界软链接, got: %v", err)
+	}
+}
+
+// 3.1 ZIP 导出软链接穿透越界防护测试
+func TestSecurity_ExportSymlinkEscapeDefense(t *testing.T) {
+	tempDir := t.TempDir()
+	srcDir := filepath.Join(tempDir, "export-box")
+	secretDir := filepath.Join(tempDir, "secret-box")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(secretDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	secretFile := filepath.Join(secretDir, "private.pem")
+	if err := os.WriteFile(secretFile, []byte("SUPER_SECRET_KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 在 srcDir 内创建指向 secretFile 的软链接
+	maliciousLink := filepath.Join(srcDir, "leak_key.pem")
+	if err := os.Symlink(secretFile, maliciousLink); err != nil {
+		t.Fatal(err)
+	}
+
+	// 正常文件
+	if err := os.WriteFile(filepath.Join(srcDir, "normal.txt"), []byte("normal"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 尝试压缩，必须报错拦截
+	_, err := compressDirToZip(srcDir)
+	if err == nil {
+		t.Fatalf("expected error on symlink escape, but compressDirToZip succeeded")
+	}
+	if !strings.Contains(err.Error(), "非法越界软链接") {
+		t.Fatalf("expected error mentioning 非法越界软链接, got: %v", err)
+	}
+}
+
+// 3.2 ZIP 导出正向测试：普通文件、子目录、内部合法软链接（文件与目录链接）打包与读取
+func TestCompressDirToZip_SuccessAndInternalSymlink(t *testing.T) {
+	tempDir := t.TempDir()
+	srcDir := filepath.Join(tempDir, "export-box")
+	subDir := filepath.Join(srcDir, "subdir")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. 普通文件
+	normalFile := filepath.Join(srcDir, "hello.txt")
+	if err := os.WriteFile(normalFile, []byte("hello world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. 子目录中的文件
+	subFile := filepath.Join(subDir, "inner.txt")
+	if err := os.WriteFile(subFile, []byte("inner content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. 内部合法文件软链接
+	fileSymlink := filepath.Join(srcDir, "link_file.txt")
+	if err := os.Symlink("hello.txt", fileSymlink); err != nil {
+		t.Fatal(err)
+	}
+
+	// 4. 内部合法目录软链接
+	dirSymlink := filepath.Join(srcDir, "link_dir")
+	if err := os.Symlink("subdir", dirSymlink); err != nil {
+		t.Fatal(err)
+	}
+
+	// 验证入口路径清洗：传入末尾冗余的 / 和 . 路径
+	uncleanSrcDir := srcDir + string(filepath.Separator) + "."
+	zipData, err := compressDirToZip(uncleanSrcDir)
+	if err != nil {
+		t.Fatalf("compressDirToZip failed: %v", err)
+	}
+	if len(zipData) == 0 {
+		t.Fatalf("compressDirToZip returned empty data")
+	}
+
+	// 验证 zip 内容可被 zip.Reader 正常读取解析
+	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	if err != nil {
+		t.Fatalf("zip.NewReader failed: %v", err)
+	}
+
+	entries := make(map[string]*zip.File)
+	for _, f := range zr.File {
+		entries[f.Name] = f
+	}
+
+	baseName := filepath.Base(srcDir) // "export-box"
+
+	// 验证普通文件
+	helloEntry, ok := entries[baseName+"/hello.txt"]
+	if !ok {
+		t.Fatalf("missing entry %s/hello.txt", baseName)
+	}
+	rc, err := helloEntry.Open()
+	if err != nil {
+		t.Fatalf("open %s/hello.txt failed: %v", baseName, err)
+	}
+	content, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil || string(content) != "hello world" {
+		t.Fatalf("unexpected content for hello.txt: got %q, err %v", string(content), err)
+	}
+
+	// 验证子目录中的文件
+	innerEntry, ok := entries[baseName+"/subdir/inner.txt"]
+	if !ok {
+		t.Fatalf("missing entry %s/subdir/inner.txt", baseName)
+	}
+	rc, err = innerEntry.Open()
+	if err != nil {
+		t.Fatalf("open %s/subdir/inner.txt failed: %v", baseName, err)
+	}
+	content, err = io.ReadAll(rc)
+	rc.Close()
+	if err != nil || string(content) != "inner content" {
+		t.Fatalf("unexpected content for inner.txt: got %q, err %v", string(content), err)
+	}
+
+	// 验证子目录
+	subDirEntry, ok := entries[baseName+"/subdir/"]
+	if !ok {
+		t.Fatalf("missing directory entry %s/subdir/", baseName)
+	}
+	if !subDirEntry.Mode().IsDir() {
+		t.Fatalf("expected %s/subdir/ to be directory, mode=%v", baseName, subDirEntry.Mode())
+	}
+
+	// 验证内部合法文件软链接
+	fileLinkEntry, ok := entries[baseName+"/link_file.txt"]
+	if !ok {
+		t.Fatalf("missing entry %s/link_file.txt", baseName)
+	}
+	if fileLinkEntry.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected %s/link_file.txt to have ModeSymlink, got mode=%v", baseName, fileLinkEntry.Mode())
+	}
+	rc, err = fileLinkEntry.Open()
+	if err != nil {
+		t.Fatalf("open %s/link_file.txt failed: %v", baseName, err)
+	}
+	content, err = io.ReadAll(rc)
+	rc.Close()
+	if err != nil || string(content) != "hello.txt" {
+		t.Fatalf("unexpected link target for link_file.txt: got %q, err %v", string(content), err)
+	}
+
+	// 验证内部合法目录软链接
+	dirLinkEntry, ok := entries[baseName+"/link_dir"]
+	if !ok {
+		t.Fatalf("missing entry %s/link_dir", baseName)
+	}
+	if dirLinkEntry.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected %s/link_dir to have ModeSymlink, got mode=%v", baseName, dirLinkEntry.Mode())
+	}
+	rc, err = dirLinkEntry.Open()
+	if err != nil {
+		t.Fatalf("open %s/link_dir failed: %v", baseName, err)
+	}
+	content, err = io.ReadAll(rc)
+	rc.Close()
+	if err != nil || string(content) != "subdir" {
+		t.Fatalf("unexpected link target for link_dir: got %q, err %v", string(content), err)
 	}
 }
 
