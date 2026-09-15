@@ -155,7 +155,7 @@ func TestReportModelImportStatusIncludesRequestID(t *testing.T) {
 	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportModelImport-state.json")}
 	handler := reportModelImportHandler(store)
 
-	body := strings.NewReader(`{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","code":0,"msg":null,"report":"{\"conclusion\":{\"passed\":true}}"}`)
+	body := strings.NewReader(`{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","code":0,"msg":null,"report":"{\"conclusion\":{\"passed\":true}}","checksum":{"size":581632,"algorithm":"sm3","value":"a1b2c3d4"}}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportModelImport", body)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -170,6 +170,9 @@ func TestReportModelImportStatusIncludesRequestID(t *testing.T) {
 	}
 	if state.Report != `{"conclusion":{"passed":true}}` {
 		t.Fatalf("report = %q", state.Report)
+	}
+	if state.Checksum == nil || state.Checksum["algorithm"] != "sm3" || state.Checksum["value"] != "a1b2c3d4" {
+		t.Fatalf("checksum = %+v", state.Checksum)
 	}
 	if !json.Valid([]byte(state.RawBody)) {
 		t.Fatalf("raw body is not JSON: %q", state.RawBody)

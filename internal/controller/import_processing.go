@@ -381,15 +381,40 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 	return passed
 }
 
+// resolveModelChecksum 获取模型压缩包 SM3 校验和，若未缓存则回退扫描模型目录计算 SM3 校验和。
+// 该逻辑与训练结果上报（reportRes）中 training_task.model_checksum 的解析逻辑完全一致。
+func (s *TAAState) resolveModelChecksum() map[string]any {
+	modelChecksum := s.getModelChecksum()
+	if modelChecksum == nil {
+		var err error
+		modelChecksum, err = buildDirectoryChecksum(s.Security.ModelDir, "sm3")
+		if err != nil {
+			return nil
+		}
+	}
+	if modelChecksum != nil && modelChecksum["value"] == "N/A" {
+		return nil
+	}
+	return modelChecksum
+}
+
 // reportModelImportAsync 异步将模型代码审计结果上报平台，避免阻塞导入流程。
-func (s *TAAState) reportModelImportAsync(requestID, taskID string, code int, msg, report string) {
+func (s *TAAState) reportModelImportAsync(requestID, taskID string, code int, msg, report string, checksum ...map[string]any) {
 	s.mu.RLock()
 	platformIP, dockerID := s.PlatformIP, s.DockerID
 	s.mu.RUnlock()
-	log.Printf("reportModelImportAsync: scheduling audit report upload, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, reportLen=%d",
-		platformIP, dockerID, requestID, taskID, code, len(report))
+
+	var cs map[string]any
+	if len(checksum) > 0 {
+		cs = checksum[0]
+	} else {
+		cs = s.resolveModelChecksum()
+	}
+
+	log.Printf("reportModelImportAsync: scheduling audit report upload, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, reportLen=%d, hasChecksum=%v",
+		platformIP, dockerID, requestID, taskID, code, len(report), cs != nil)
 	go func() {
-		if err := ReportModelImport(context.Background(), platformIP, dockerID, requestID, taskID, code, msg, report); err != nil {
+		if err := ReportModelImport(context.Background(), platformIP, dockerID, requestID, taskID, code, msg, report, cs); err != nil {
 			log.Printf("reportModelImportAsync: report audit result failed: requestID=%s taskID=%s, err=%v", requestID, taskID, err)
 		} else {
 			log.Printf("reportModelImportAsync: report audit result succeeded: requestID=%s taskID=%s", requestID, taskID)

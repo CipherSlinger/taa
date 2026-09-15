@@ -50,3 +50,49 @@ func TestReportModelImportIncludesRequestID(t *testing.T) {
 		t.Fatalf("raw body does not contain requestId: %s", rawBody)
 	}
 }
+
+func TestReportModelImportIncludesChecksum(t *testing.T) {
+	var got struct {
+		DockerID  string         `json:"dockerId"`
+		RequestID string         `json:"requestId"`
+		TaskID    string         `json:"taskId"`
+		Code      int            `json:"code"`
+		Msg       *string        `json:"msg"`
+		Report    string         `json:"report"`
+		Checksum  map[string]any `json:"checksum"`
+	}
+	var rawBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != reportModelImportEndpoint {
+			t.Fatalf("path = %s, want %s", r.URL.Path, reportModelImportEndpoint)
+		}
+		rawBody, _ = io.ReadAll(r.Body)
+		if err := json.Unmarshal(rawBody, &got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	report := `{"conclusion":{"passed":true},"file_reports":null}`
+	checksum := map[string]any{
+		"size":      int64(12345),
+		"algorithm": "sm3",
+		"value":     "a1b2c3d4e5f6",
+	}
+
+	if err := ReportModelImport(context.Background(), server.URL, "docker-1", "req-1", "task-1", 0, "", report, checksum); err != nil {
+		t.Fatalf("ReportModelImport() error = %v", err)
+	}
+
+	if got.Checksum == nil {
+		t.Fatalf("expected checksum to be present in payload, got nil. rawBody: %s", rawBody)
+	}
+	if got.Checksum["algorithm"] != "sm3" || got.Checksum["value"] != "a1b2c3d4e5f6" {
+		t.Fatalf("got checksum = %+v", got.Checksum)
+	}
+	if !bytes.Contains(rawBody, []byte(`"checksum"`)) {
+		t.Fatalf("raw body missing checksum field: %s", rawBody)
+	}
+}
+

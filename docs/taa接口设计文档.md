@@ -331,6 +331,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 | `code` | `number` | 是 | `0` 表示导入和审计成功，`1` 表示资源下载/导入失败，`2` 表示审计失败 |
 | `msg` | `string` | 否 | 失败时为失败原因 |
 | `report` | `string` | 否 | 代码审计报告 JSON 字符串，格式与训练结果报告中的 `codeaudit` 字段完全一致 |
+| `checksum` | `object` | 否 | 模型压缩包完整性校验（逻辑与 `/v1/taa/reportRes` 的 `training_task.model_checksum` 完全一致，包含 `size`、`algorithm`、`value`） |
 
 **请求示例**：
 
@@ -341,7 +342,12 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 0,
   "msg": null,
-  "report": "{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"未发现安全问题，代码通过审计\",\"recommendation\":\"无需修复\",\"statistics\":{\"total_findings\":0,\"high\":0,\"medium\":0,\"malicious\":0,\"suspicious\":0,\"benign\":0,\"uncertain\":0}},\"file_reports\":null}"
+  "report": "{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"未发现安全问题，代码通过审计\",\"recommendation\":\"无需修复\",\"statistics\":{\"total_findings\":0,\"high\":0,\"medium\":0,\"malicious\":0,\"suspicious\":0,\"benign\":0,\"uncertain\":0}},\"file_reports\":null}",
+  "checksum": {
+    "size": 581632,
+    "algorithm": "sm3",
+    "value": "a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd"
+  }
 }
 ```
 

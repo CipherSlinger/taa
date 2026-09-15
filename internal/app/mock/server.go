@@ -269,19 +269,20 @@ type registerRequest struct {
 }
 
 type reportState struct {
-	Received    bool   `json:"received"`
-	Accepted    bool   `json:"accepted"`
-	ReceivedAt  string `json:"receivedAt"`
-	DockerID    string `json:"dockerId"`
-	RequestID   string `json:"requestId"`
-	TaskID      string `json:"taskId"`
-	Code        int    `json:"code"`
-	Msg         string `json:"msg"`
-	Report      string `json:"report"`
-	ContentType string `json:"contentType"`
-	StatusCode  int    `json:"statusCode"`
-	Message     string `json:"message"`
-	RawBody     string `json:"rawBody"`
+	Received    bool           `json:"received"`
+	Accepted    bool           `json:"accepted"`
+	ReceivedAt  string         `json:"receivedAt"`
+	DockerID    string         `json:"dockerId"`
+	RequestID   string         `json:"requestId"`
+	TaskID      string         `json:"taskId"`
+	Code        int            `json:"code"`
+	Msg         string         `json:"msg"`
+	Report      string         `json:"report"`
+	Checksum    map[string]any `json:"checksum,omitempty"`
+	ContentType string         `json:"contentType"`
+	StatusCode  int            `json:"statusCode"`
+	Message     string         `json:"message"`
+	RawBody     string         `json:"rawBody"`
 }
 
 type apiResponse struct {
@@ -603,12 +604,13 @@ func loggingReverseProxyHandler(next http.Handler) http.Handler {
 var requestLogs = newRequestLogStore(1000)
 
 type reportRequest struct {
-	DockerID  string  `json:"dockerId"`
-	RequestID string  `json:"requestId"`
-	TaskID    string  `json:"taskId"`
-	Code      int     `json:"code"`
-	Msg       *string `json:"msg"`
-	Report    string  `json:"report"`
+	DockerID  string         `json:"dockerId"`
+	RequestID string         `json:"requestId"`
+	TaskID    string         `json:"taskId"`
+	Code      int            `json:"code"`
+	Msg       *string        `json:"msg"`
+	Report    string         `json:"report"`
+	Checksum  map[string]any `json:"checksum,omitempty"`
 }
 
 func discoverTAAAddr(kubectlPod, kubectlNS, port string) string {
@@ -939,6 +941,7 @@ func reportModelImportHandler(store *reportStateStore) http.HandlerFunc {
 		state.TaskID = req.TaskID
 		state.Code = req.Code
 		state.Report = req.Report
+		state.Checksum = req.Checksum
 		if req.Msg != nil {
 			state.Msg = *req.Msg
 		}

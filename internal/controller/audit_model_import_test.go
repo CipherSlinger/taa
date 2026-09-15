@@ -185,3 +185,100 @@ func TestAuditAndReportModelImportStaticPass(t *testing.T) {
 		t.Fatal("timed out waiting for reportModelImport (static pass)")
 	}
 }
+
+func TestAuditAndReportModelImportIncludesChecksum(t *testing.T) {
+	state, _ := setupTestState(t)
+	modelDir := t.TempDir()
+	code := "import torch\nimport torch.nn as nn\nmodel = nn.Linear(10, 2)\n"
+	if err := os.WriteFile(filepath.Join(modelDir, "train.py"), []byte(code), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	received := make(chan reportRequest, 1)
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != reportModelImportEndpoint {
+			return
+		}
+		var rr reportRequest
+		_ = json.NewDecoder(r.Body).Decode(&rr)
+		received <- rr
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer platform.Close()
+
+	state.Security.ScanEnabled = true
+	state.Security.ModelDir = modelDir
+	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
+	state.PlatformIP = platform.URL
+	state.DockerID = "docker-test"
+	state.setModelChecksum(map[string]any{
+		"size":      int64(9999),
+		"algorithm": "sm3",
+		"value":     "sm3-model-hash-12345",
+	})
+
+	state.auditAndReportModelImport(importRequest{RequestID: "req-1", TaskID: "task-1"})
+
+	select {
+	case rr := <-received:
+		if rr.Code != 0 {
+			t.Fatalf("code = %d, want 0", rr.Code)
+		}
+		if rr.Checksum == nil {
+			t.Fatalf("expected Checksum to be included in reportModelImport, got nil")
+		}
+		if rr.Checksum["algorithm"] != "sm3" || rr.Checksum["value"] != "sm3-model-hash-12345" || int64(rr.Checksum["size"].(float64)) != 9999 {
+			t.Fatalf("unexpected checksum: %+v", rr.Checksum)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for reportModelImport")
+	}
+}
+
+func TestAuditAndReportModelImportFallbackDirectoryChecksum(t *testing.T) {
+	state, _ := setupTestState(t)
+	modelDir := t.TempDir()
+	code := "import torch\nimport torch.nn as nn\nmodel = nn.Linear(10, 2)\n"
+	if err := os.WriteFile(filepath.Join(modelDir, "train.py"), []byte(code), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	received := make(chan reportRequest, 1)
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != reportModelImportEndpoint {
+			return
+		}
+		var rr reportRequest
+		_ = json.NewDecoder(r.Body).Decode(&rr)
+		received <- rr
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer platform.Close()
+
+	state.Security.ScanEnabled = true
+	state.Security.ModelDir = modelDir
+	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
+	state.PlatformIP = platform.URL
+	state.DockerID = "docker-test"
+	// ModelChecksum is nil, should fallback to calculating directory checksum
+
+	state.auditAndReportModelImport(importRequest{RequestID: "req-1", TaskID: "task-1"})
+
+	select {
+	case rr := <-received:
+		if rr.Code != 0 {
+			t.Fatalf("code = %d, want 0", rr.Code)
+		}
+		if rr.Checksum == nil {
+			t.Fatalf("expected Checksum to be calculated from modelDir and included, got nil")
+		}
+		if rr.Checksum["algorithm"] != "sm3" {
+			t.Fatalf("checksum algorithm = %v, want sm3", rr.Checksum["algorithm"])
+		}
+		if rr.Checksum["value"] == "" || rr.Checksum["value"] == "N/A" {
+			t.Fatalf("checksum value is empty or N/A: %+v", rr.Checksum)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for reportModelImport")
+	}
+}

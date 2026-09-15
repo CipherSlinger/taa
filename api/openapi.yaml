@@ -643,11 +643,23 @@ components:
           type: string
         code:
           type: integer
+          description: 0=导入和审计成功, 1=资源下载/导入失败, 2=审计失败
         msg:
           type: string
           nullable: true
-        auditReport:
-          $ref: '#/components/schemas/AuditReport'
+        report:
+          type: string
+          description: 代码审计报告 JSON 字符串
+        checksum:
+          type: object
+          description: 模型压缩包完整性校验（与 reportRes.training_task.model_checksum 格式一致）
+          properties:
+            size:
+              type: integer
+            algorithm:
+              type: string
+            value:
+              type: string
 
     # ── 代码审计模型 ────────────────────────────────────────────────────────
     AuditReport:

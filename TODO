@@ -1,13 +1,26 @@
-- qwen thinking 模式
-- [x] 训练任务重复下发报错（单任务执行）
-模型下载上报增加hash
+- 任务终止接口
+- 任务终端日志(syslog)
+- 任务进度
+- 模型下发、审计接口拆分
+
+- 高中低风险
+
+- [x] 模型下载上报增加 hash 字段（checksum）
+- 结果返回使用zip包格式
+- 远程证明使用go封装
 
 
-- 模型方进度管控
+架构调整：
+taa / qwen 独立 + 通信协议
+-----------------------------------------------------------------------------------------
+
+TAA 优化：
 - taa 重启敏感数据持久化处理：使用sealing key加密保存
 - 只支持python 正则匹配，修改为使用 semgrep 扫描
 
-1. Finding 级并发仲裁（Worker Pool）：
+代码审计：
+- qwen thinking 模式
+- Finding 级并发仲裁（Worker Pool）：
    目前 Go 端是单协程 for 循环逐个验证，若改用 3~5 个 Worker 的并发协程池并发向 Ollama 发送切片推理，12 次请求耗时可直接除以并发度。
-2. 同文件多 Finding 聚合送审（Batch Prompting）：
+- 同文件多 Finding 聚合送审（Batch Prompting）：
    将同一个文件内命中的多处 Finding 合并为一个结构化 Prompt 一次性交由 LLM 判决，把 15 次 HTTP 往返骤降为 2~3 次。

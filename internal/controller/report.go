@@ -16,37 +16,42 @@ const (
 )
 
 type reportRequest struct {
-	DockerID  string  `json:"dockerId"`
-	RequestID string  `json:"requestId"`
-	TaskID    string  `json:"taskId"`
-	Code      int     `json:"code"`
-	Msg       *string `json:"msg"`
-	Report    string  `json:"report,omitempty"`
+	DockerID  string         `json:"dockerId"`
+	RequestID string         `json:"requestId"`
+	TaskID    string         `json:"taskId"`
+	Code      int            `json:"code"`
+	Msg       *string        `json:"msg"`
+	Report    string         `json:"report,omitempty"`
+	Checksum  map[string]any `json:"checksum,omitempty"`
 }
 
 // ReportRes notifies the platform of the training/test completion result.
 // It follows the TAA -> platform contract defined in docs/taa接口设计文档.md §3.4.
 func ReportRes(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report string) error {
-	return reportToPlatform(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report, reportResEndpoint, true)
+	return reportToPlatform(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report, nil, reportResEndpoint, true)
 }
 
-// ReportModelImport notifies the platform of the model import result, including the code audit report.
+// ReportModelImport notifies the platform of the model import result, including the code audit report and model archive checksum.
 // It follows the TAA -> platform contract defined in docs/taa接口设计文档.md §3.5.
 // The requestId is required and must match the originating importModel request.
-func ReportModelImport(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report string) error {
-	return reportToPlatform(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report, reportModelImportEndpoint, true)
+func ReportModelImport(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report string, checksum ...map[string]any) error {
+	var cs map[string]any
+	if len(checksum) > 0 {
+		cs = checksum[0]
+	}
+	return reportToPlatform(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report, cs, reportModelImportEndpoint, true)
 }
 
 // ReportTaskOutcome 根据任务类型自动分流上报至相应平台通道。
-func ReportTaskOutcome(ctx context.Context, platformAddr, dockerID, requestID, taskID, taskType string, code int, msg, report string) error {
+func ReportTaskOutcome(ctx context.Context, platformAddr, dockerID, requestID, taskID, taskType string, code int, msg, report string, checksum ...map[string]any) error {
 	if taskType == "model_import" {
-		return ReportModelImport(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report)
+		return ReportModelImport(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report, checksum...)
 	}
 	return ReportRes(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report)
 }
 
 // reportToPlatform is a helper that sends a report to the platform.
-func reportToPlatform(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report, endpoint string, requireRequestID bool) error {
+func reportToPlatform(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report string, checksum map[string]any, endpoint string, requireRequestID bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -84,6 +89,7 @@ func reportToPlatform(ctx context.Context, platformAddr, dockerID, requestID, ta
 		Code:      code,
 		Msg:       msgPtr,
 		Report:    report,
+		Checksum:  checksum,
 	})
 	if err != nil {
 		return err
