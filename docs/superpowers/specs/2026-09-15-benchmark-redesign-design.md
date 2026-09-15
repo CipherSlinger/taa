@@ -59,6 +59,34 @@
 - **Audit-100 v1（历史经验基准）**：在旧版 3 基座（含模拟项目）上测得的 12 组对照矩阵数据（保留在 HTML 报告第 5 节，明确标注为 v1 历史基线）；
 - **Audit-100 v2（全正交真实工业基准）**：本次重构确立的 4 大真实基座全正交架构，作为下一阶段物化执行与模型重新评测的新标准。
 
+### 2.7 微侵入式生命周期钩子规范（Intrusive Lifecycle Hook Spec）
+- **杜绝孤立死代码（Eliminate Orphan Dead-Code）**：针对变体代码 `benchmark_variant.py` 孤立于根目录、未被主流程引用的缺陷，v2 规范要求在样本生成时将变体挂载至业务主执行流；
+- **标准化钩子切入点**：在基座的 `train.py` 中的关键生命周期（如数据加载完成、单个 epoch 结束或指标计算后），插入单行受控调用：
+  ```python
+  try:
+      import benchmark_variant
+      benchmark_variant.on_epoch_end(epoch=0, metrics=metrics)
+  except ImportError:
+      pass
+  ```
+  使恶意载荷或良性探针成为主干控制流的真实环节，支持未来基于调用图与污点分析的高阶审查（如 Semgrep / LLM 链路研判）。
+
+### 2.8 微缩工程超参协同自适应规范（Hyperparameter Co-Adaptation Spec）
+- **消除运行时/编译时崩溃**：针对微缩数据集（100 行表格、5 张切片）可能引发的 DataLoader 批大小越界与交叉验证折数越界问题，基座工程配置执行协同降维：
+  - `batch_size` 统一自适应设定为 `4`；
+  - `KFold(n_splits=...)` 设定为 `2`；
+  - 默认训练 `epochs` 设定为 `1`；
+  - 确保基座样本在执行 `python3 -m py_compile` 语法编译与离线 dry-run 测试时 100% 零异常跑通。
+
+### 2.9 样本指纹与完整性哈希门禁（Checksum Integrity Gate）
+- **防漂移哈希签名**：在固化的 `audit-benchmark-manifest.json` 中，为每个样本记录核心代码（`train.py`、`benchmark_variant.py`、辅助模块）的 SHA-256 哈希值；
+- **评测前置校验**：评测引擎启动时自动执行指纹校验，若检测到本地测试沙箱被篡改或文件缺失，自动触发告警或按需重生成，保障基准数据的科学严肃性。
+
+### 2.10 脚本层硬编码解耦与语法 Bug 修复要求
+- **清单与执行解耦**：彻底重构 `audit_benchmark_eval.py` 中的硬编码 `PROJECT_ALLOCATION`，将其升级为 4 基座正交配比，并将 `build_manifest()` 改为优先解析已固化的外部 JSON，避免执行时强行冲刷覆盖��置文件；
+- **修复历史导入 Bug**：修正生成器模板中 `from benchmark_transport import relay_blob` 引用不存在模块的问题，统一对齐为 `from data_router import relay_blob`；
+- **槽位平衡算法**：挑选模板的槽位算法由纯 index 取模升级为结合工程名与家族的双重哈希分配，保证 4 大基座在 10 大对抗家族中均匀覆盖所有代码风格模板。
+
 ---
 
 ## 3. 4 大真实工业训练基座定义与工程规范

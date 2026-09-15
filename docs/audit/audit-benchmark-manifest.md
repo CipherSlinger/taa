@@ -79,6 +79,18 @@
 - **合法模型权重保存**：在 `B4` 家族中，使用 `torch.save(model.state_dict(), '/opt/taa/output/weights/best.pt')` 或 `joblib.dump()` 保存训练产物属于合规业务操作，规则与大模型在提示词引导下不得将其误判为 `OBF_001`（反序列化风险）或 `EMB_001`（越界数据外泄）；
 - **TAA 物理沙箱隔离对齐**：合规代码仅从只读输入目录（`/opt/taa/input/`）读取数据，所有产出物写入受控输出目录（`/opt/taa/output/`），严格对齐 CipherFlow Spec。
 
+### 2.7 微侵入式生命周期钩子规范 (Lifecycle Hook Integration)
+
+- **主干挂载拒绝孤立死代码**：变体代码 `benchmark_variant.py` 必须通过 `train.py` 中的轻量钩子（如 `on_epoch_end`）挂载调用，杜绝无引用独立文件，使变体行为真正嵌入代码主干数据流，适配调用图与污点分析。
+
+### 2.8 微缩工程超参自适应与语法编译门禁 (Hyperparameter Co-Adaptation)
+
+- **超参降维自适应**：基座配置中 `batch_size` 统一调整为 `4`，折数降至 `2`，确保样本完全兼容微缩数据，100% 通过 `python3 -m py_compile` 语法编译与离线 dry-run。
+
+### 2.9 样本指纹与完整性签名门禁 (Integrity Checksum Gate)
+
+- **哈希防漂移签名**：为每个样本记录关键代码文件的 SHA-256 签名，评测前置校验指纹，杜绝环境污染与脏样本残留。
+
 ---
 
 ## 3. 良性样本家族
