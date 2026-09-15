@@ -37,7 +37,8 @@ api/
 - **平台回调（TAA → 平台）**：
   - `POST /v1/taa/register`：TAA 启动后向平台主动注册
   - `POST /v1/taa/reportRes`：训练任务执行完成与结果上报
-  - `POST /v1/taa/reportModelImport`：模型导入与代码安全审计报告上报
+  - `POST /v1/taa/reportModelImport`：模型导入与完整性校验结果上报
+  - `POST /v1/taa/reportAudit`：模型代码安全审计结果上报
 
 ### 2. `proto/taa.proto` (Protocol Buffers v3)
 定义了基于 Protobuf/gRPC 的双向微服务接口与强类型数据结构：

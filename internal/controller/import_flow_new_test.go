@@ -191,6 +191,7 @@ func TestPhase1ModelAuditFailureAbortsTraining(t *testing.T) {
 			}
 
 			modelImportCh := make(chan importedReportPayload, 1)
+			auditCh := make(chan importedReportPayload, 1)
 			trainingResCh := make(chan importedReportPayload, 1)
 			platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var payload importedReportPayload
@@ -200,6 +201,8 @@ func TestPhase1ModelAuditFailureAbortsTraining(t *testing.T) {
 				switch r.URL.Path {
 				case reportModelImportEndpoint:
 					modelImportCh <- payload
+				case reportAuditEndpoint:
+					auditCh <- payload
 				case reportResEndpoint:
 					trainingResCh <- payload
 				default:
@@ -278,11 +281,11 @@ result = {"dataset": {"total_samples": 1, "splits": {"train": 1, "test": 0}}, "m
 
 			importModel()
 
-			// 验证审计上报为失败 (code=2)
+			// 1. 验证模型导入阶段上报成功 (code=0, 包含 checksum)
 			select {
 			case payload := <-modelImportCh:
-				if payload.Code != 2 {
-					t.Fatalf("reportModelImport code = %d, want 2", payload.Code)
+				if payload.Code != 0 {
+					t.Fatalf("reportModelImport code = %d, want 0", payload.Code)
 				}
 				if payload.RequestID != "req-"+strings.ReplaceAll(tc.name, " ", "-")+"-model" {
 					t.Fatalf("reportModelImport requestId = %q", payload.RequestID)
@@ -304,6 +307,23 @@ result = {"dataset": {"total_samples": 1, "splits": {"train": 1, "test": 0}}, "m
 				}
 			case <-time.After(5 * time.Second):
 				t.Fatal("timed out waiting for reportModelImport")
+			}
+
+			// 2. 验证审计阶段上报为失败 (静态审计失败 code=1, fail-closed code=2)
+			wantAuditCode := 1
+			if tc.name == "fail-closed aborts training" {
+				wantAuditCode = 2
+			}
+			select {
+			case payload := <-auditCh:
+				if payload.Code != wantAuditCode {
+					t.Fatalf("reportAudit code = %d, want %d", payload.Code, wantAuditCode)
+				}
+				if payload.RequestID != "req-"+strings.ReplaceAll(tc.name, " ", "-")+"-model" {
+					t.Fatalf("reportAudit requestId = %q", payload.RequestID)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for reportAudit")
 			}
 
 			// 验证 ModelImported 为 false

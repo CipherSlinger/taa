@@ -259,8 +259,13 @@ func TestReportToPlatform_AllowsEitherRequestIDOrTaskID(t *testing.T) {
 	}
 
 	// ReportModelImport with only taskId should succeed
-	if err := ReportModelImport(context.Background(), server.URL, "docker-1", "", "task-1", 0, "", "{}"); err != nil {
+	if err := ReportModelImport(context.Background(), server.URL, "docker-1", "", "task-1", 0, ""); err != nil {
 		t.Fatalf("ReportModelImport with only taskId failed: %v", err)
+	}
+
+	// ReportAudit with only taskId should succeed
+	if err := ReportAudit(context.Background(), server.URL, "docker-1", "", "task-1", 0, "", "{}"); err != nil {
+		t.Fatalf("ReportAudit with only taskId failed: %v", err)
 	}
 }
 

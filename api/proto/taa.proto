@@ -52,8 +52,11 @@ service PlatformCallbackService {
   // 训练或推理任务完成后上报执行结果指标
   rpc ReportRes(ReportResRequest) returns (ReportResResponse);
 
-  // 模型导入与代码审计完成后上报审计报告
+  // 模型导入与完整性校验完成后上报结果与 checksum
   rpc ReportModelImport(ReportModelImportRequest) returns (ReportModelImportResponse);
+
+  // 模型代码安全审计完成后上报审计报告
+  rpc ReportAudit(ReportAuditRequest) returns (ReportAuditResponse);
 }
 
 // ── 消息体定义 ───────────────────────────────────────────────────────────────
@@ -198,16 +201,37 @@ message ReportResult {
   bool received = 1;
 }
 
+message Checksum {
+  int64 size = 1;
+  string algorithm = 2;
+  string value = 3;
+}
+
 message ReportModelImportRequest {
   string docker_id = 1;
   string request_id = 2;
   string task_id = 3;
   int32 code = 4;
   string msg = 5;
-  AuditReport audit_report = 6;
+  Checksum checksum = 6;
 }
 
 message ReportModelImportResponse {
+  string msg = 1;
+  int32 error = 2;
+  ReportResult result = 3;
+}
+
+message ReportAuditRequest {
+  string docker_id = 1;
+  string request_id = 2;
+  string task_id = 3;
+  int32 code = 4;
+  string msg = 5;
+  string report = 6;
+}
+
+message ReportAuditResponse {
   string msg = 1;
   int32 error = 2;
   ReportResult result = 3;

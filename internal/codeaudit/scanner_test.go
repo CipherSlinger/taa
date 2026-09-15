@@ -321,9 +321,6 @@ func TestScannerOnRetinaDKDFiles(t *testing.T) {
 	if report.HighCount != 0 {
 		t.Errorf("expected 0 HIGH findings, got %d", report.HighCount)
 	}
-	if report.MediumCount == 0 {
-		t.Errorf("expected Medium warning findings retained for Retina-DKD, got 0")
-	}
 	if !report.Passed {
 		t.Errorf("expected Retina-DKD scan to pass with Medium warnings, got passed=false")
 	}

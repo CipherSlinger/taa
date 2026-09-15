@@ -69,6 +69,16 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 			return
 		}
 		s.Logs.Add(LogInfo, "extract", "解压成功")
+
+		// ── 阶段一：模型解封解密与解压完成，立马上报模型导入结果与 checksum ──
+		checksum := map[string]any{
+			"size":      size,
+			"algorithm": "sm3",
+			"value":     hash,
+		}
+		s.reportModelImportAsync(req.RequestID, req.TaskID, 0, "模型导入成功", checksum)
+
+		// ── 阶段二：对解压后的模型代码执行安全审计并上报 reportAudit ──
 		if !s.auditAndReportModelImport(req) {
 			s.Logs.Add(LogError, "import", "模型安全审计未通过，终止导入流程并清除模型代码: taskId=%s", req.TaskID)
 			s.clearImportedState(true, phase)
@@ -326,7 +336,7 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 }
 
 // auditAndReportModelImport 对解压后的模型代码执行安全审计（静态扫描 + 可选 LLM 语义验证），
-// 并将审计结果通过 /v1/taa/reportModelImport 上报平台。返回是否审计通过。
+// 并将审计结果通过 /v1/taa/reportAudit 上报平台。返回是否审计通过。
 func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 	s.setLastAudit(nil)
 	if !s.Security.ScanEnabled {
@@ -347,7 +357,7 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 		if err := cleanDirContents(s.Security.ModelDir); err != nil {
 			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
 		}
-		s.reportModelImportAsync(req.RequestID, req.TaskID, 2, "LLM 服务不可用，按 fail-closed 策略上报失败", "")
+		s.reportAuditAsync(req.RequestID, req.TaskID, 2, "LLM 服务不可用，按 fail-closed 策略上报失败", "")
 		s.setCurrentOp("idle")
 		return false
 	}
@@ -358,7 +368,7 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 		if err := cleanDirContents(s.Security.ModelDir); err != nil {
 			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
 		}
-		s.reportModelImportAsync(req.RequestID, req.TaskID, 2, fmt.Sprintf("代码审计失败: %v", err), "")
+		s.reportAuditAsync(req.RequestID, req.TaskID, 2, fmt.Sprintf("代码审计失败: %v", err), "")
 		s.setCurrentOp("idle")
 		return false
 	}
@@ -368,7 +378,7 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 	msg := audit.Conclusion.Summary
 	passed := audit.Conclusion.Passed
 	if !passed {
-		code = 2
+		code = 1
 		if err := cleanDirContents(s.Security.ModelDir); err != nil {
 			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
 		}
@@ -376,7 +386,7 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 	s.Logs.Add(LogInfo, "audit", "审计完成: passed=%v, riskLevel=%s, totalFindings=%d",
 		audit.Conclusion.Passed, audit.Conclusion.RiskLevel, audit.Conclusion.Statistics.TotalFindings)
 
-	s.reportModelImportAsync(req.RequestID, req.TaskID, code, msg, auditReportJSON(audit))
+	s.reportAuditAsync(req.RequestID, req.TaskID, code, msg, auditReportJSON(audit))
 	s.setCurrentOp("idle")
 	return passed
 }
@@ -398,8 +408,8 @@ func (s *TAAState) resolveModelChecksum() map[string]any {
 	return modelChecksum
 }
 
-// reportModelImportAsync 异步将模型代码审计结果上报平台，避免阻塞导入流程。
-func (s *TAAState) reportModelImportAsync(requestID, taskID string, code int, msg, report string, checksum ...map[string]any) {
+// reportModelImportAsync 异步将模型导入及完整性校验结果上报平台。
+func (s *TAAState) reportModelImportAsync(requestID, taskID string, code int, msg string, checksum ...map[string]any) {
 	s.mu.RLock()
 	platformIP, dockerID := s.PlatformIP, s.DockerID
 	s.mu.RUnlock()
@@ -407,17 +417,34 @@ func (s *TAAState) reportModelImportAsync(requestID, taskID string, code int, ms
 	var cs map[string]any
 	if len(checksum) > 0 {
 		cs = checksum[0]
-	} else {
+	} else if code == 0 {
 		cs = s.resolveModelChecksum()
 	}
 
-	log.Printf("reportModelImportAsync: scheduling audit report upload, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, reportLen=%d, hasChecksum=%v",
-		platformIP, dockerID, requestID, taskID, code, len(report), cs != nil)
+	log.Printf("reportModelImportAsync: scheduling model import upload, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, hasChecksum=%v",
+		platformIP, dockerID, requestID, taskID, code, cs != nil)
 	go func() {
-		if err := ReportModelImport(context.Background(), platformIP, dockerID, requestID, taskID, code, msg, report, cs); err != nil {
-			log.Printf("reportModelImportAsync: report audit result failed: requestID=%s taskID=%s, err=%v", requestID, taskID, err)
+		if err := ReportModelImport(context.Background(), platformIP, dockerID, requestID, taskID, code, msg, cs); err != nil {
+			log.Printf("reportModelImportAsync: report model import result failed: requestID=%s taskID=%s, err=%v", requestID, taskID, err)
 		} else {
-			log.Printf("reportModelImportAsync: report audit result succeeded: requestID=%s taskID=%s", requestID, taskID)
+			log.Printf("reportModelImportAsync: report model import result succeeded: requestID=%s taskID=%s", requestID, taskID)
+		}
+	}()
+}
+
+// reportAuditAsync 异步将模型代码安全审计结果上报平台。
+func (s *TAAState) reportAuditAsync(requestID, taskID string, code int, msg, report string) {
+	s.mu.RLock()
+	platformIP, dockerID := s.PlatformIP, s.DockerID
+	s.mu.RUnlock()
+
+	log.Printf("reportAuditAsync: scheduling audit report upload, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, reportLen=%d",
+		platformIP, dockerID, requestID, taskID, code, len(report))
+	go func() {
+		if err := ReportAudit(context.Background(), platformIP, dockerID, requestID, taskID, code, msg, report); err != nil {
+			log.Printf("reportAuditAsync: report audit result failed: requestID=%s taskID=%s, err=%v", requestID, taskID, err)
+		} else {
+			log.Printf("reportAuditAsync: report audit result succeeded: requestID=%s taskID=%s", requestID, taskID)
 		}
 	}()
 }
@@ -464,7 +491,7 @@ func (s *TAAState) reportImportFailure(req importRequest, phase int, isModel boo
 		}
 	}
 	if isModel {
-		s.reportModelImportAsync(req.RequestID, req.TaskID, 1, reason, "")
+		s.reportModelImportAsync(req.RequestID, req.TaskID, 1, reason)
 		s.setCurrentOp("idle")
 		return
 	}

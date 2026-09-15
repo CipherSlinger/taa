@@ -332,8 +332,7 @@ flowchart TD
   "requestId": "req-model-2001",
   "taskId": "task-model-2001",
   "code": 1,
-  "msg": "TAA 异常崩溃重启，模型导入与代码审计中断，请重新下发",
-  "report": ""
+  "msg": "TAA 异常崩溃重启，模型导入与代码审计中断，请重新下发"
 }
 ```
 

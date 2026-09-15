@@ -193,6 +193,31 @@ func TestReportModelImportRequiresDockerID(t *testing.T) {
 	}
 }
 
+func TestReportAuditStatusIncludesRequestID(t *testing.T) {
+	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportAudit-state.json")}
+	handler := reportAuditHandler(store)
+
+	body := strings.NewReader(`{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","code":0,"msg":null,"report":"{\"conclusion\":{\"passed\":true}}"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	state := store.get()
+	if state.DockerID != "docker-1" || state.RequestID != "req-1" || state.TaskID != "task-1" || state.Code != 0 {
+		t.Fatalf("state = %+v", state)
+	}
+	if state.Report != `{"conclusion":{"passed":true}}` {
+		t.Fatalf("report = %q", state.Report)
+	}
+	if !json.Valid([]byte(state.RawBody)) {
+		t.Fatalf("raw body is not JSON: %q", state.RawBody)
+	}
+}
+
 func TestTAAGetResourceInfoProxy(t *testing.T) {
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
