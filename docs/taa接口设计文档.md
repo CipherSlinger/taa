@@ -36,24 +36,36 @@ Agent 公共请求返回参数如下：
 
 ### 2.1 接口一览
 
-| 序号 | 方向 | 接口 | 方法 | 功能说明 |
-| --- | --- | --- | --- | --- |
-| 1 | TAA → 平台 | `/v1/taa/register` | `POST` | TAA 启动后生成远程证明报告并通知平台 |
-| 2 | TAA → 平台 | `/v1/taa/reportRes` | `POST` | TAA 上报训练完成结果 |
-| 3 | TAA → 平台 | `/v1/taa/reportModelImport` | `POST` | TAA 上报模型导入与完整性校验结果 |
-| 4 | TAA → 平台 | `/v1/taa/reportAudit` | `POST` | TAA 上报模型代码安全审计结果 |
-| 5 | TAA → 平台 | `/v1/taa/modelLog` | `POST` | TAA 上报任务终端日志 |
-| 6 | TAA → 平台 | `/v1/taa/reportProgress` | `POST` | TAA 上报任务数值进度 |
-| 7 | 平台 → TAA | `/v1/taa/getAttestation` | `POST` | 平台获取远程证明报告 |
-| 8 | 平台 → TAA | `/v1/taa/health` | `POST` | 平台检查 TAA 连通性 |
-| 9 | 平台 → TAA | `/v1/taa/import` | `POST` | 平台下发数据资源 |
-| 10 | 平台 → TAA | `/v1/taa/importModel` | `POST` | 平台下发模型训练代码 |
-| 11 | 平台 → TAA | `/v1/taa/getResourceInfo` | `POST` | 平台传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，按 SM3 哈希持久化保存目录与唯一标识备份 |
-| 12 | 平台 → TAA | `/v1/taa/switch` | `POST` | 平台通知 TAA 切换运行阶段 |
-| 13 | 平台 → TAA | `/v1/taa/export` | `POST` | 平台请求 TAA 导出当前阶段结果目录压缩包，成功时直接返回文件流 |
-| 14 | 平台 → TAA | `/v1/taa/logs` | `POST` | 查询 TAA 结构化日志 |
-| 15 | 平台 → TAA | `/v1/taa/status` | `POST` | 查询 TAA 完整状态信息 |
-| 16 | 平台 → TAA | `/v1/taa/stopTraining` | `POST` | 平台同步请求 TAA 中止当前训练任务 |
+#### 2.1.1 TAA → 平台（回调与上报接口）
+
+| 序号 | 接口 | 方法 | 功能说明 |
+| --- | --- | --- | --- |
+| 1 | `/v1/taa/register` | `POST` | TAA 启动后生成远程证明报告并通知平台 |
+| 2 | `/v1/taa/reportRes` | `POST` | TAA 上报训练完成结果 |
+| 3 | `/v1/taa/reportModelImport` | `POST` | TAA 上报模型导入与完整性校验结果 |
+| 4 | `/v1/taa/reportAudit` | `POST` | TAA 上报模型代码安全审计结果 |
+| 5 | `/v1/taa/modelLog` | `POST` | TAA 上报任务终端日志 |
+| 6 | `/v1/taa/reportProgress` | `POST` | TAA 上报任务数值进度 |
+
+#### 2.1.2 平台 → TAA（业务与控制接口）
+
+| 序号 | 接口 | 方法 | 功能说明 |
+| --- | --- | --- | --- |
+| 1 | `/v1/taa/getAttestation` | `POST` | 平台获取远程证明报告 |
+| 2 | `/v1/taa/import` | `POST` | 平台下发数据资源 |
+| 3 | `/v1/taa/importModel` | `POST` | 平台下发模型训练代码 |
+| 4 | `/v1/taa/getResourceInfo` | `POST` | 平台传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，按 SM3 哈希持久化保存目录与唯一标识备份 |
+| 5 | `/v1/taa/switch` | `POST` | 平台通知 TAA 切换运行阶段 |
+| 6 | `/v1/taa/export` | `POST` | 平台请求 TAA 导出当前阶段结果目录压缩包，成功时直接返回文件流 |
+| 7 | `/v1/taa/stopTraining` | `POST` | 平台同步请求 TAA 中止当前训练任务 |
+
+#### 2.1.3 调试接口（平台 → TAA）
+
+| 序号 | 接口 | 方法 | 功能说明 |
+| --- | --- | --- | --- |
+| 1 | `/v1/taa/health` | `POST` | 平台检查 TAA 连通性 |
+| 2 | `/v1/taa/status` | `POST` | 查询 TAA 完整状态信息 |
+| 3 | `/v1/taa/logs` | `POST` | 查询 TAA 结构化日志 |
 
 ---
 
