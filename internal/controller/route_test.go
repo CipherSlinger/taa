@@ -45,6 +45,32 @@ func createTestTarGz(t *testing.T, files map[string]string) []byte {
 	return buf.Bytes()
 }
 
+func TestHealthAndStatusExposeTrainingRunningOnly(t *testing.T) {
+	state, server := setupTestServer(t)
+
+	for _, endpoint := range []string{"/v1/taa/health", "/v1/taa/status"} {
+		resp := postEmptyJSON(t, server.URL+endpoint)
+		api := decodeResponse(t, resp)
+		if resp.StatusCode != http.StatusOK || api.Error != 0 {
+			t.Fatalf("%s returned status=%d error=%d", endpoint, resp.StatusCode, api.Error)
+		}
+		result, ok := api.Result.(map[string]any)
+		if !ok {
+			t.Fatalf("%s result type = %T, want map[string]any", endpoint, api.Result)
+		}
+		for _, removed := range []string{"dataImported", "trainingDataImported", "trainingDone"} {
+			if _, exists := result[removed]; exists {
+				t.Fatalf("%s result contains removed field %q: %#v", endpoint, removed, result)
+			}
+		}
+		if _, exists := result["trainingRunning"]; !exists {
+			t.Fatalf("%s result missing trainingRunning: %#v", endpoint, result)
+		}
+	}
+
+	_ = state
+}
+
 func TestResourceInfoHandlerRequiresResourceUrl(t *testing.T) {
 	_, server := setupTestServer(t)
 

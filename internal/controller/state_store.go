@@ -15,24 +15,23 @@ import (
 
 const (
 	// DefaultStateVersion 默认状态存储格式版本号
-	DefaultStateVersion = "1.3"
+	DefaultStateVersion = "1.4"
 )
 
 // PersistentState 定义 TAA 核心受保护运行状态
 type PersistentState struct {
-	Version               string              `json:"version"`               // 固定 "1.3"
+	Version               string              `json:"version"`               // 固定 "1.4"
 	StateSeq              uint64              `json:"stateSeq"`              // 单调递增版本序列号
 	IncarnationID         string              `json:"incarnationId"`         // 冷启动纪元 UUID
 	CurrentPhase          int                 `json:"currentPhase"`          // 当前阶段 1~4
 	ModelImported         bool                `json:"modelImported"`         // 模型已解密且通过审计
-	DataImported          bool                `json:"dataImported"`          // 数据是否已导入
-	TrainingDataImported  bool                `json:"trainingDataImported"`  // 训练数据是否已导入
+	TrainingRunning       bool                `json:"trainingRunning"`       // 是否存在正在执行的训练任务
 	ExportPublicKey       string              `json:"exportPublicKey"`       // Phase 1 保存的公钥 PEM
 	SavedModelResourceURL string              `json:"savedModelResourceURL"` // 密态存储
 	RuntimeConfig         string              `json:"runtimeConfig"`         // 密态存储
 	ModelChecksum         map[string]any      `json:"modelChecksum"`
 	DataChecksum          map[string]any      `json:"dataChecksum"`
-	ActiveTask            *ActiveTaskSnapshot `json:"activeTask,omitempty"`  // 在飞任务快照
+	ActiveTask            *ActiveTaskSnapshot `json:"activeTask,omitempty"` // 在飞任务快照
 	UpdatedAt             time.Time           `json:"updatedAt"`
 }
 

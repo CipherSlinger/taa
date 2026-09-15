@@ -75,6 +75,7 @@ func reconcileCrashRecovery(ctx context.Context, state *controller.TAAState, sto
 		} else if store != nil {
 			if pState := store.GetState(); pState != nil {
 				pState.ActiveTask = nil
+				pState.TrainingRunning = false
 				_ = store.SealState(pState)
 			}
 		}
@@ -248,6 +249,7 @@ func reconcileCrashRecovery(ctx context.Context, state *controller.TAAState, sto
 	} else if store != nil {
 		if pState := store.GetState(); pState != nil {
 			pState.ActiveTask = nil
+			pState.TrainingRunning = false
 			if err := store.SealState(pState); err != nil {
 				log.Printf("WARNING: seal state after crash recovery failed: %v", err)
 			}

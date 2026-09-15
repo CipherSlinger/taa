@@ -19,11 +19,11 @@ import (
 	"strings"
 	"time"
 
+	"taa/internal/codeaudit"
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 	filetree "taa/pkg/filetree"
 	"taa/pkg/utils"
-	"taa/internal/codeaudit"
 )
 
 func (s *TAAState) processImportedResource(req importRequest, phase int, isModel bool, ciphertextPath string) {
@@ -135,30 +135,36 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	}
 
 	shouldTrain := false
-	if phase == 1 {
-		s.mu.Lock()
-		modelImported := s.ModelImported
-		dataImported := s.DataImported
-		bothImported := modelImported && dataImported
-		if !bothImported {
-			s.mu.Unlock()
-			s.Logs.Add(LogInfo, "import", "阶段1: 等待模型和数据都导入完成后执行训练 (modelImported=%v, dataImported=%v)",
-				modelImported, dataImported)
+	if isModel {
+		latestRecord, ok := s.getLatestDataRecord()
+		if !ok || (latestRecord.DataDir == "" && latestRecord.Hash == "") {
+			s.Logs.Add(LogInfo, "import", "阶段%d: 模型导入完成，等待数据导入后执行训练", phase)
 			s.setCurrentOp("idle")
 			return
 		}
-		if s.Phase1TrainingStarted {
-			s.mu.Unlock()
-			s.Logs.Add(LogInfo, "import", "阶段1: 训练已启动，跳过重复触发")
+		s.mu.RLock()
+		isBusy := s.isTrainingBusyLocked()
+		s.mu.RUnlock()
+		if isBusy {
+			s.Logs.Add(LogInfo, "import", "阶段%d: 模型导入完成，已有训练任务正在执行中，跳过重复触发训练", phase)
 			s.setCurrentOp("idle")
 			return
 		}
-		s.Phase1TrainingStarted = true
-		s.mu.Unlock()
 		shouldTrain = true
 	} else {
-		if isModel {
-			s.Logs.Add(LogInfo, "import", "阶段%d: 模型导入完成，等待数据导入后执行训练", phase)
+		s.mu.RLock()
+		modelImported := s.ModelImported
+		modelInProgress := (s.activeTask != nil && s.activeTask.Type == "model_import") || s.CurrentOp == "auditing"
+		isBusy := s.isTrainingBusyLocked()
+		s.mu.RUnlock()
+		if !modelImported || modelInProgress || isBusy {
+			if isBusy {
+				s.Logs.Add(LogInfo, "import", "阶段%d: 数据导入完成，已有训练任务正在执行中，跳过重复触发训练", phase)
+			} else if modelInProgress {
+				s.Logs.Add(LogInfo, "import", "阶段%d: 数据导入完成，模型仍在导入审计中，等待模型就绪后执行训练", phase)
+			} else {
+				s.Logs.Add(LogInfo, "import", "阶段%d: 数据导入完成，等待模型导入后执行训练", phase)
+			}
 			s.setCurrentOp("idle")
 			return
 		}
@@ -187,6 +193,13 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	cfg, env, err := parseRuntimeConfig(runtimeConfigRaw)
 	if err != nil {
 		s.Logs.Add(LogError, "train", "%v", err)
+		s.setCurrentOp("idle")
+		s.reportImportFailure(trainReq, phase, false, startedAt, err.Error())
+		return
+	}
+
+	if err := s.promoteCurrentTaskToTraining(); err != nil {
+		s.Logs.Add(LogError, "train", "提升为训练任务失败: %v", err)
 		s.setCurrentOp("idle")
 		s.reportImportFailure(trainReq, phase, false, startedAt, err.Error())
 		return
@@ -233,6 +246,18 @@ func (s *TAAState) trainOnLatestData(req importRequest, phase int, latestRecord 
 }
 
 func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecord ImportIndexRecord, cfg runtimeConfig, env map[string]string, startedAt time.Time) {
+	s.mu.Lock()
+	s.TrainingRunning = true
+	_ = s.sealStateLocked()
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		s.TrainingRunning = false
+		_ = s.sealStateLocked()
+		s.mu.Unlock()
+	}()
+
 	trainOutputDir := trainRecord.ResultDir
 	if trainOutputDir == "" {
 		trainOutputDir = resultDirForRequestTask(s.Security.ResultDir, trainReq.RequestID, trainReq.TaskID)
@@ -337,10 +362,6 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 	s.Logs.Add(LogInfo, "report", "训练报告生成成功并写入 training_report.json (%d bytes)", len(report))
 
 	s.Logs.Add(LogInfo, "report", "上报训练结果到平台: code=0, taskId=%s", trainReq.TaskID)
-
-	s.mu.Lock()
-	s.TrainingDone = true
-	s.mu.Unlock()
 
 	s.reportTrainingAsync(trainReq.RequestID, trainReq.TaskID, 0, "", string(report))
 	s.setCurrentOp("idle")
@@ -548,10 +569,6 @@ func (s *TAAState) reportTrainingFailureFromResult(req importRequest, startedAt 
 		return
 	}
 	s.Logs.Add(LogInfo, "report", "上报训练失败结果到平台: code=1, taskId=%s", req.TaskID)
-
-	s.mu.Lock()
-	s.TrainingDone = false
-	s.mu.Unlock()
 
 	s.reportTrainingAsync(req.RequestID, req.TaskID, 1, reason, string(report))
 	s.setCurrentOp("idle")

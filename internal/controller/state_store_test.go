@@ -57,6 +57,32 @@ func TestStateStore_DeriveSealingKey(t *testing.T) {
 	}
 }
 
+func TestPersistentStateJSONUsesTrainingRunning(t *testing.T) {
+	state := PersistentState{
+		Version:         DefaultStateVersion,
+		ModelImported:   true,
+		TrainingRunning: true,
+	}
+
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal persistent state failed: %v", err)
+	}
+
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatalf("unmarshal persistent state JSON failed: %v", err)
+	}
+	for _, removed := range []string{"dataImported", "trainingDataImported", "trainingDone"} {
+		if _, ok := fields[removed]; ok {
+			t.Fatalf("persistent state JSON contains removed field %q: %s", removed, data)
+		}
+	}
+	if got, ok := fields["trainingRunning"].(bool); !ok || !got {
+		t.Fatalf("persistent state JSON trainingRunning = %#v, want true", fields["trainingRunning"])
+	}
+}
+
 func TestStateStore_SealAndUnseal(t *testing.T) {
 	tempDir := t.TempDir()
 	statePath := filepath.Join(tempDir, "state.bin")
@@ -79,8 +105,7 @@ func TestStateStore_SealAndUnseal(t *testing.T) {
 		IncarnationID:         "epoch-uuid-12345",
 		CurrentPhase:          2,
 		ModelImported:         true,
-		DataImported:          true,
-		TrainingDataImported:  true,
+		TrainingRunning:       true,
 		ExportPublicKey:       "-----BEGIN PUBLIC KEY-----\nMIIB...PEM\n-----END PUBLIC KEY-----",
 		SavedModelResourceURL: "oss://model-bucket/encrypted/model.tar.gz",
 		RuntimeConfig:         `{"batch_size":32,"lr":0.001}`,
@@ -151,8 +176,8 @@ func TestStateStore_SealAndUnseal(t *testing.T) {
 	if loadedState.CurrentPhase != 2 {
 		t.Fatalf("expected currentPhase 2, got %d", loadedState.CurrentPhase)
 	}
-	if !loadedState.ModelImported || !loadedState.DataImported || !loadedState.TrainingDataImported {
-		t.Fatalf("expected all imported flags to be true")
+	if !loadedState.ModelImported || !loadedState.TrainingRunning {
+		t.Fatalf("expected modelImported and trainingRunning to be true")
 	}
 	if loadedState.ExportPublicKey != initialState.ExportPublicKey {
 		t.Fatalf("exportPublicKey mismatch")

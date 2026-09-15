@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	teecrypto "taa/pkg/crypto"
 	"taa/internal/codeaudit"
+	teecrypto "taa/pkg/crypto"
 )
 
 type importedReportPayload struct {
@@ -1153,6 +1153,16 @@ result = {"dataset": {"content": data_content}, "metrics": {"marker": args.marke
 		t.Fatal("timed out waiting for dataset 2 import to complete")
 	}
 	waitForIdle(t, state)
+
+	// 数据导入完成后阶段1会按当前模型与数据状态执行一次训练；先消费该结果，再验证空 URL 模型复用。
+	select {
+	case payload := <-platformReportCh:
+		if payload.Code != 0 || payload.TaskID != "task-data-02" {
+			t.Fatalf("dataset 2 training report = %+v, want successful task-data-02 report", payload)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for dataset 2 training report")
+	}
 
 	// 5. Call importModel with EMPTY resourceUrl and new taskId "task-reuse-02"
 	// Should directly execute training on the latest dataset (dataset 2) using commands in runtimeConfig!

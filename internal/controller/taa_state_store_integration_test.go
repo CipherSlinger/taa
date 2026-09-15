@@ -179,8 +179,8 @@ func TestTAAState_ImportSuccessMethods_Sealing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unseal state failed: %v", err)
 	}
-	if !diskState2.DataImported {
-		t.Fatal("expected DataImported=true in disk state")
+	if diskState2.CurrentPhase != rec.Phase || diskState2.ModelImported != diskState.ModelImported {
+		t.Fatalf("saveDataSuccess changed unrelated state: %+v", diskState2)
 	}
 
 	// 测试 updateImportState 清除
@@ -208,8 +208,7 @@ func TestTAAState_ResetActiveTaskAndRestore(t *testing.T) {
 		IncarnationID:         "test-incarnation",
 		CurrentPhase:          3,
 		ModelImported:         true,
-		DataImported:          true,
-		TrainingDataImported:  true,
+		TrainingRunning:       true,
 		ExportPublicKey:       "test-pubkey",
 		SavedModelResourceURL: "test-url",
 		RuntimeConfig:         `{"commands":["python test.py"]}`,
@@ -231,10 +230,10 @@ func TestTAAState_ResetActiveTaskAndRestore(t *testing.T) {
 	state.RestoreFromPersistentState(p)
 
 	state.mu.RLock()
-	if state.CurrentPhase != 3 || !state.ModelImported || !state.TrainingDataImported {
+	if state.CurrentPhase != 3 || !state.ModelImported || !state.TrainingRunning {
 		state.mu.RUnlock()
-		t.Fatalf("RestoreFromPersistentState failed to restore flags: phase=%d, model=%v, trainData=%v",
-			state.CurrentPhase, state.ModelImported, state.TrainingDataImported)
+		t.Fatalf("RestoreFromPersistentState failed to restore flags: phase=%d, model=%v, trainingRunning=%v",
+			state.CurrentPhase, state.ModelImported, state.TrainingRunning)
 	}
 	if state.ActiveTaskID != "task-crash-001" || state.ActiveRequestID != "req-crash-001" {
 		state.mu.RUnlock()

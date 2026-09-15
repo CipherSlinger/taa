@@ -20,9 +20,9 @@ import (
 	"syscall"
 	"time"
 
-	teecrypto "taa/pkg/crypto"
 	"taa/internal/attestation"
 	"taa/internal/codeaudit"
+	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 	"taa/pkg/utils"
 )
@@ -82,40 +82,37 @@ func (sec SecurityConfig) GetModelOutputDir() string {
 }
 
 type TAAState struct {
-	mu                   sync.RWMutex
-	attestMu             sync.Mutex
-	importIndexOnce      sync.Once
-	CurrentPhase         int
-	ModelImported        bool
-	DataImported         bool
-	TrainingDataImported bool
-	TrainingDone         bool
-	Phase1TrainingStarted bool
-	AttestationFile      string
-	HelperPath           string
-	HelperMode           string
-	PlatformIP           string
-	DockerID             string
-	SM2PrivateKey        *teecrypto.SM2PrivateKey // TAA 启动时生成的 SM2 私钥，用于解密资源信封
-	UserData             []byte                   // TAA 启动时生成的 64 字节 USERDATA，用于重新生成远程证明报告
-	ExportPublicKey      string                   // phase1 import 时保存的公钥，phase3 export 时使用
-	SavedModelResourceURL string                  // phase1 / importModel 保存的模型资源 URL，允许后续下发模型时为空复用
-	RuntimeConfig        string                   // importModel 保存的运行配置，训练时按该配置执行命令
-	Security             SecurityConfig           // immutable after startup — no mutex needed
-	Logs                 *LogStore                // 结构化日志存储
-	LastAudit            *codeaudit.AuditReport   // 最近一次模型代码审计结果，用于训练报告输出
-	CurrentDataRecord    ImportIndexRecord        // 当前绑定的数据导入记录
-	LatestDataRecord     ImportIndexRecord        // 下发数据接口始终记录的最新数据索引
-	ModelChecksum        map[string]any           // 模型压缩包校验和 (size, algorithm, value)
-	DataChecksum         map[string]any           // 数据压缩包校验和 (size, algorithm, value)
-	CurrentOp            string                   // 当前操作: idle/downloading/decrypting/extracting/debugging/training/auditing/reporting
-	ActiveTaskID         string                   // 当前独占执行的任务 ID
-	ActiveRequestID      string                   // 当前独占执行的请求 ID
-	activeToken          int64                    // 当前独占令牌
-	activeTask           *ActiveTaskSnapshot      // 当前在飞任务快照
-	stateStore           *StateStore              // 持久化密封存储
-	importIndex          *ImportIndexStore
-	importIndexErr       error
+	mu                    sync.RWMutex
+	attestMu              sync.Mutex
+	importIndexOnce       sync.Once
+	CurrentPhase          int
+	ModelImported         bool
+	TrainingRunning       bool
+	AttestationFile       string
+	HelperPath            string
+	HelperMode            string
+	PlatformIP            string
+	DockerID              string
+	SM2PrivateKey         *teecrypto.SM2PrivateKey // TAA 启动时生成的 SM2 私钥，用于解密资源信封
+	UserData              []byte                   // TAA 启动时生成的 64 字节 USERDATA，用于重新生成远程证明报告
+	ExportPublicKey       string                   // phase1 import 时保存的公钥，phase3 export 时使用
+	SavedModelResourceURL string                   // phase1 / importModel 保存的模型资源 URL，允许后续下发模型时为空复用
+	RuntimeConfig         string                   // importModel 保存的运行配置，训练时按该配置执行命令
+	Security              SecurityConfig           // immutable after startup — no mutex needed
+	Logs                  *LogStore                // 结构化日志存储
+	LastAudit             *codeaudit.AuditReport   // 最近一次模型代码审计结果，用于训练报告输出
+	CurrentDataRecord     ImportIndexRecord        // 当前绑定的数据导入记录
+	LatestDataRecord      ImportIndexRecord        // 下发数据接口始终记录的最新数据索引
+	ModelChecksum         map[string]any           // 模型压缩包校验和 (size, algorithm, value)
+	DataChecksum          map[string]any           // 数据压缩包校验和 (size, algorithm, value)
+	CurrentOp             string                   // 当前操作: idle/downloading/decrypting/extracting/debugging/training/auditing/reporting
+	ActiveTaskID          string                   // 当前独占执行的任务 ID
+	ActiveRequestID       string                   // 当前独占执行的请求 ID
+	activeToken           int64                    // 当前独占令牌
+	activeTask            *ActiveTaskSnapshot      // 当前在飞任务快照
+	stateStore            *StateStore              // 持久化密封存储
+	importIndex           *ImportIndexStore
+	importIndexErr        error
 }
 
 // SetStateStore 注入密封状态存储引擎
@@ -152,6 +149,7 @@ func (s *TAAState) ResetActiveTask() {
 	s.ActiveRequestID = ""
 	s.activeToken = 0
 	s.CurrentOp = "idle"
+	s.TrainingRunning = false
 	if err := s.sealStateLocked(); err != nil {
 		s.Logs.Add(LogError, "state", "ResetActiveTask 持久化密封失败: %v", err)
 	}
@@ -169,8 +167,7 @@ func (s *TAAState) RestoreFromPersistentState(p *PersistentState) {
 		s.CurrentPhase = p.CurrentPhase
 	}
 	s.ModelImported = p.ModelImported
-	s.DataImported = p.DataImported
-	s.TrainingDataImported = p.TrainingDataImported
+	s.TrainingRunning = p.TrainingRunning
 	s.ExportPublicKey = p.ExportPublicKey
 	s.SavedModelResourceURL = p.SavedModelResourceURL
 	s.RuntimeConfig = p.RuntimeConfig
@@ -217,8 +214,7 @@ func (s *TAAState) sealStateLocked() error {
 
 	state.CurrentPhase = s.CurrentPhase
 	state.ModelImported = s.ModelImported
-	state.DataImported = s.DataImported
-	state.TrainingDataImported = s.TrainingDataImported
+	state.TrainingRunning = s.TrainingRunning
 	state.ExportPublicKey = s.ExportPublicKey
 	state.SavedModelResourceURL = s.SavedModelResourceURL
 	state.RuntimeConfig = s.RuntimeConfig
@@ -271,11 +267,6 @@ func (s *TAAState) saveDataSuccess(record ImportIndexRecord) {
 	defer s.mu.Unlock()
 	s.LatestDataRecord = record
 	s.CurrentDataRecord = record
-	if s.CurrentPhase == 3 {
-		s.TrainingDataImported = true
-	} else {
-		s.DataImported = true
-	}
 	if err := s.sealStateLocked(); err != nil {
 		s.Logs.Add(LogError, "state", "持久化数据导入成功状态失败: %v", err)
 	}
@@ -295,16 +286,8 @@ func (s *TAAState) updateImportState(isModel bool, imported bool, phase int) {
 			s.SavedModelResourceURL = ""
 			s.RuntimeConfig = ""
 		}
-	} else {
-		switch phase {
-		case 1, 2:
-			s.DataImported = imported
-		case 3:
-			s.TrainingDataImported = imported
-		}
-		if !imported {
-			s.CurrentDataRecord = ImportIndexRecord{}
-		}
+	} else if !imported {
+		s.CurrentDataRecord = ImportIndexRecord{}
 	}
 	if err := s.sealStateLocked(); err != nil {
 		s.Logs.Add(LogError, "state", "持久化导入状态更新失败: %v", err)
@@ -624,18 +607,16 @@ func (s *TAAState) healthHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	phase := s.CurrentPhase
 	modelImported := s.ModelImported
-	dataImported := s.DataImported
-	trainingDone := s.TrainingDone
+	trainingRunning := s.TrainingRunning
 	currentOp := s.CurrentOp
 	s.mu.RUnlock()
 
 	writeEnvelope(w, http.StatusOK, "ok", map[string]any{
-		"phase":         phase,
-		"phaseName":     phaseName(phase),
-		"modelImported": modelImported,
-		"dataImported":  dataImported,
-		"trainingDone":  trainingDone,
-		"currentOp":     currentOp,
+		"phase":           phase,
+		"phaseName":       phaseName(phase),
+		"modelImported":   modelImported,
+		"trainingRunning": trainingRunning,
+		"currentOp":       currentOp,
 	}, 0)
 }
 
@@ -674,21 +655,17 @@ func (s *TAAState) statusHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	phase := s.CurrentPhase
 	modelImported := s.ModelImported
-	dataImported := s.DataImported
-	trainingDataImported := s.TrainingDataImported
-	trainingDone := s.TrainingDone
+	trainingRunning := s.TrainingRunning
 	currentOp := s.CurrentOp
 	s.mu.RUnlock()
 
 	writeEnvelope(w, http.StatusOK, "ok", map[string]any{
-		"phase":                phase,
-		"phaseName":            phaseName(phase),
-		"modelImported":        modelImported,
-		"dataImported":         dataImported,
-		"trainingDataImported": trainingDataImported,
-		"trainingDone":         trainingDone,
-		"currentOp":            currentOp,
-		"logCount":             s.Logs.Count(),
+		"phase":           phase,
+		"phaseName":       phaseName(phase),
+		"modelImported":   modelImported,
+		"trainingRunning": trainingRunning,
+		"currentOp":       currentOp,
+		"logCount":        s.Logs.Count(),
 	}, 0)
 }
 
@@ -701,7 +678,7 @@ func (s *TAAState) setCurrentOp(op string) {
 
 // isTrainingBusyLocked 检查是否处于正在训练/执行阶段（调用方需持有 s.mu 读锁或写锁）。
 func (s *TAAState) isTrainingBusyLocked() bool {
-	return s.CurrentOp == "staging" || s.CurrentOp == "training" || s.CurrentOp == "reporting"
+	return s.TrainingRunning || s.CurrentOp == "staging" || s.CurrentOp == "training" || s.CurrentOp == "reporting"
 }
 
 // tryAcquireTask 尝试原子抢占训练/导入任务执行权（单任务互斥）。
@@ -735,22 +712,17 @@ func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel b
 
 	// 2. 检查是否有其他任务正在处理（如正在下载、解密、审计等）
 	if s.ActiveTaskID != "" || (s.CurrentOp != "" && s.CurrentOp != "idle") {
-		isPhase1Pair := false
-		if s.CurrentPhase == 1 && !s.isTrainingBusyLocked() {
-			if !isModel && s.ModelImported && !s.DataImported {
-				isPhase1Pair = true
-			} else if isModel && s.DataImported && !s.ModelImported {
-				isPhase1Pair = true
-			} else if s.ActiveTaskID == taskID && taskID != "" {
-				if isModel && !s.ModelImported {
-					isPhase1Pair = true
-				} else if !isModel && !s.DataImported {
-					isPhase1Pair = true
+		isSameTaskPair := false
+		if !s.isTrainingBusyLocked() && taskID != "" && s.ActiveTaskID == taskID {
+			if s.activeTask != nil {
+				currentIsModel := (s.activeTask.Type == "model_import")
+				if currentIsModel != isModel {
+					isSameTaskPair = true
 				}
 			}
 		}
 
-		if !isPhase1Pair {
+		if !isSameTaskPair {
 			task, op := activeTaskInfo()
 			return nil, pkgerrors.New(pkgerrors.CodeConflict,
 				fmt.Sprintf("当前已有任务正在执行中 (taskId: %s, op: %s)，请等待完成后再提交", task, op))
@@ -768,6 +740,7 @@ func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel b
 		taskType = "model_import"
 	} else if initialOp == "staging" || initialOp == "training" {
 		taskType = "training"
+		s.TrainingRunning = true
 	}
 
 	s.activeTask = &ActiveTaskSnapshot{
@@ -795,6 +768,7 @@ func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel b
 				s.ActiveRequestID = ""
 				s.CurrentOp = "idle"
 				s.activeTask = nil
+				s.TrainingRunning = false
 				if err := s.sealStateLocked(); err != nil {
 					s.Logs.Add(LogError, "task", "清除在飞任务快照持久化失败: %v", err)
 				}
@@ -803,6 +777,21 @@ func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel b
 	}
 
 	return release, nil
+}
+
+// promoteCurrentTaskToTraining 将当前处于飞行的导入任务状态提升为独占训练状态
+func (s *TAAState) promoteCurrentTaskToTraining() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.TrainingRunning {
+		return pkgerrors.New(pkgerrors.CodeConflict, "��前已有训练任务正在执行中，请等待完成后再提交")
+	}
+	s.TrainingRunning = true
+	s.CurrentOp = "training"
+	if s.activeTask != nil {
+		s.activeTask.Type = "training"
+	}
+	return s.sealStateLocked()
 }
 
 // runAsyncSafe 在独立 goroutine 中安全执行异步处理逻辑，统一管理锁释放与 panic 恢复。
@@ -869,6 +858,7 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 	s.ActiveRequestID = ""
 	s.activeToken = 0
 	s.CurrentOp = "idle"
+	s.TrainingRunning = false
 	if err := s.sealStateLocked(); err != nil {
 		s.Logs.Add(LogError, "panic", "清除在飞任务并持久化状态失败: %v", err)
 	}
@@ -937,16 +927,10 @@ func (s *TAAState) switchHandler(w http.ResponseWriter, r *http.Request) {
 
 	current := s.CurrentPhase
 	s.CurrentPhase = req.Phase
-	s.Phase1TrainingStarted = false
 	s.activeToken = 0
 	s.ActiveTaskID = ""
 	s.ActiveRequestID = ""
 	s.activeTask = nil
-	if current != 1 && req.Phase == 1 {
-		s.ModelImported = false
-		s.DataImported = false
-		s.Logs.Add(LogInfo, "phase", "切换至阶段1: 重置 ModelImported 与 DataImported 标志")
-	}
 	s.Logs.Add(LogInfo, "phase", "阶段切换: %d(%s) -> %d(%s)", current, phaseName(current), req.Phase, phaseName(req.Phase))
 
 	if err := s.sealStateLocked(); err != nil {
@@ -1125,43 +1109,29 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.ModelImported = true
 		_ = s.sealStateLocked()
-		dataImported := s.DataImported
 		s.mu.Unlock()
 
-		if phase == 1 && !dataImported {
+		latestRecord, ok := s.getLatestDataRecord()
+		hasData := ok && (latestRecord.DataDir != "" || latestRecord.Hash != "")
+		if phase == 1 && !hasData {
 			s.Logs.Add(LogInfo, "importModel", "阶段1: 模型参数命令已导入(ModelImported=true)，等待数据重新导入后执行训练: taskId=%s, requestId=%s",
 				req.TaskID, req.RequestID)
 			msg := "模型参数命令已导入，等待数据重新导入后执行训练"
 			writeEnvelope(w, http.StatusOK, msg, nil, 0)
 			return
 		}
-
+		if !hasData {
+			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "未找到已导入的数据，无法执行训练"))
+			return
+		}
 		release, err := s.tryAcquireTask(req.TaskID, req.RequestID, "staging", false)
 		if err != nil {
 			writeErr(w, http.StatusConflict, err)
 			return
 		}
 
-		if phase == 1 {
-			s.mu.Lock()
-			s.Phase1TrainingStarted = true
-			s.mu.Unlock()
-		}
-
-		latestRecord, ok := s.getLatestDataRecord()
-		if !ok || (latestRecord.DataDir == "" && latestRecord.Hash == "") {
-			release()
-			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "未找到已导入的数据，无法执行训练"))
-			return
-		}
-
-		if phase == 1 {
-			s.Logs.Add(LogInfo, "importModel", "阶段1: 模型参数命令已更新且数据已就绪，复用模型对最新数据执行训练: taskId=%s, requestId=%s, latestDataHash=%s",
-				req.TaskID, req.RequestID, latestRecord.Hash)
-		} else {
-			s.Logs.Add(LogInfo, "importModel", "resourceUrl 为空，复用已保存模型直接基于最新数据执行训练: taskId=%s, requestId=%s, latestDataHash=%s",
-				req.TaskID, req.RequestID, latestRecord.Hash)
-		}
+		s.Logs.Add(LogInfo, "importModel", "resourceUrl 为空，复用已保存模型直接基于最新数据执行训练: taskId=%s, requestId=%s, latestDataHash=%s",
+			req.TaskID, req.RequestID, latestRecord.Hash)
 
 		msg := "模型已复用，开始对最新数据执行训练，训练结果将通过 reportRes 上报"
 		writeEnvelope(w, http.StatusOK, msg, nil, 0)
@@ -1178,6 +1148,11 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
+
+	s.mu.Lock()
+	s.ModelImported = true
+	_ = s.sealStateLocked()
+	s.mu.Unlock()
 
 	s.setSavedModelResourceURL(req.ResourceURL)
 	if strings.TrimSpace(req.RuntimeConfig) == "" {
@@ -1704,7 +1679,7 @@ func (s *TAAState) resourceInfoHandler(w http.ResponseWriter, r *http.Request) {
 //
 // 	s.mu.Lock()
 // 	if req.Code == 0 {
-// 		s.TrainingDone = true
+// 		// 结果接收逻辑已由平台上报链路处理。
 // 	}
 // 	s.mu.Unlock()
 //
