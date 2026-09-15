@@ -45,3 +45,60 @@ func TestReportResIncludesTrainingReport(t *testing.T) {
 		t.Fatalf("report = %q, want %q", got.Report, report)
 	}
 }
+
+func TestReportResAutoFillsEmptyTaskIDFromRequestID(t *testing.T) {
+	type reportResBody struct {
+		DockerID  string `json:"dockerId"`
+		RequestID string `json:"requestId"`
+		TaskID    string `json:"taskId"`
+	}
+
+	var got reportResBody
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		// 模拟真实管控平台强校验
+		if got.DockerID == "" || got.RequestID == "" || got.TaskID == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":  1,
+				"msg":    "requestId、dockerId 和 taskId 不能为空",
+				"result": nil,
+			})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":  0,
+			"msg":    "success",
+			"result": map[string]any{"received": true},
+		})
+	}))
+	defer server.Close()
+
+	// 1. 传入空 taskId，应自动由 requestId 补齐并成功上报
+	reqID := "contract-model-import-2c928082a0994fef01a0a30dcfba0078"
+	if err := ReportRes(context.Background(), server.URL, "docker-1", reqID, "", 0, "", "{}"); err != nil {
+		t.Fatalf("ReportRes with empty taskId failed: %v", err)
+	}
+	if got.TaskID != reqID {
+		t.Fatalf("expected TaskID to be auto-filled to %q, got %q", reqID, got.TaskID)
+	}
+	if got.RequestID != reqID {
+		t.Fatalf("expected RequestID to be %q, got %q", reqID, got.RequestID)
+	}
+
+	// 2. 传入空 requestId，应自动由 taskId 补齐并成功上报
+	taskID := "task-standalone-001"
+	if err := ReportRes(context.Background(), server.URL, "docker-1", "", taskID, 0, "", "{}"); err != nil {
+		t.Fatalf("ReportRes with empty requestId failed: %v", err)
+	}
+	if got.RequestID != taskID {
+		t.Fatalf("expected RequestID to be auto-filled to %q, got %q", taskID, got.RequestID)
+	}
+	if got.TaskID != taskID {
+		t.Fatalf("expected TaskID to be %q, got %q", taskID, got.TaskID)
+	}
+}
+

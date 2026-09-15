@@ -1106,6 +1106,16 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 
 		latestRecord, ok := s.getLatestDataRecord()
 		hasData := ok && (latestRecord.DataDir != "" || latestRecord.Hash != "")
+
+		// 自动补齐 taskId：若请求未显式指定，优先继承最新数据索引中的 taskId；若依然为空则以 requestId 兜底
+		if req.TaskID == "" {
+			if latestRecord.TaskID != "" {
+				req.TaskID = latestRecord.TaskID
+			} else if req.RequestID != "" {
+				req.TaskID = req.RequestID
+			}
+		}
+
 		if phase == 1 && !hasData {
 			s.Logs.Add(LogInfo, "importModel", "阶段1: 模型参数命令已导入(ModelImported=true)，等待数据重新导入后执行训练: taskId=%s, requestId=%s",
 				req.TaskID, req.RequestID)
@@ -1261,6 +1271,15 @@ func (s *TAAState) decryptResourceToTempFile(ciphertextPath string) (string, err
 }
 
 func (s *TAAState) reportTrainingAsync(requestID, taskID string, code int, msg, report string) {
+	requestID = strings.TrimSpace(requestID)
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" && requestID != "" {
+		taskID = requestID
+	}
+	if requestID == "" && taskID != "" {
+		requestID = taskID
+	}
+
 	s.mu.RLock()
 	platformIP, dockerID := s.PlatformIP, s.DockerID
 	s.mu.RUnlock()

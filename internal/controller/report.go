@@ -17,8 +17,8 @@ const (
 
 type reportRequest struct {
 	DockerID  string  `json:"dockerId"`
-	RequestID string  `json:"requestId,omitempty"`
-	TaskID    string  `json:"taskId,omitempty"`
+	RequestID string  `json:"requestId"`
+	TaskID    string  `json:"taskId"`
 	Code      int     `json:"code"`
 	Msg       *string `json:"msg"`
 	Report    string  `json:"report,omitempty"`
@@ -56,8 +56,19 @@ func reportToPlatform(ctx context.Context, platformAddr, dockerID, requestID, ta
 	if strings.TrimSpace(dockerID) == "" {
 		return fmt.Errorf("DOCKER_ID is required")
 	}
-	if requireRequestID && strings.TrimSpace(requestID) == "" && strings.TrimSpace(taskID) == "" {
+	requestID = strings.TrimSpace(requestID)
+	taskID = strings.TrimSpace(taskID)
+	if requireRequestID && requestID == "" && taskID == "" {
 		return fmt.Errorf("requestId 和 taskId 不能同时为空")
+	}
+
+	// 真实管控平台强要求: requestId、dockerId 和 taskId 不能为空。
+	// 当外部调用方缺省任一标识时，自动相互补齐兜底，确保发往平台的上报请求中两者均非空。
+	if taskID == "" && requestID != "" {
+		taskID = requestID
+	}
+	if requestID == "" && taskID != "" {
+		requestID = taskID
 	}
 
 	var msgPtr *string

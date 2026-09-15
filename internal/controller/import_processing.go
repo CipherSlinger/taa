@@ -174,6 +174,16 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 			trainReq.TaskID = trainRecord.TaskID
 		}
 	}
+	if trainReq.TaskID == "" {
+		if trainRecord.TaskID != "" {
+			trainReq.TaskID = trainRecord.TaskID
+		} else if trainReq.RequestID != "" {
+			trainReq.TaskID = trainReq.RequestID
+		}
+	}
+	if trainReq.RequestID == "" && trainRecord.RequestID != "" {
+		trainReq.RequestID = trainRecord.RequestID
+	}
 
 	s.mu.RLock()
 	runtimeConfigRaw := s.RuntimeConfig
@@ -197,37 +207,42 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 }
 
 func (s *TAAState) trainOnLatestData(req importRequest, phase int, latestRecord ImportIndexRecord, cfg runtimeConfig, env map[string]string) {
-	startedAt := time.Now().UTC()
-	PhaseSeparator(fmt.Sprintf("Phase %d Train On Latest Data: taskId=%s", phase, req.TaskID))
-	s.Logs.Add(LogInfo, "train", "开始基于最新数据执行训练: taskId=%s, requestId=%s, phase=%d, dataHash=%s",
-		req.TaskID, req.RequestID, phase, latestRecord.Hash)
-
 	trainReq := req
 	trainRecord := latestRecord
 	trainRecord.Phase = phase
 
+	// 自动补齐 taskId / requestId：若当前请求未显式指定，优先继承最新数据记录；依然为空时以对方兜底
+	if trainReq.TaskID == "" {
+		if latestRecord.TaskID != "" {
+			trainReq.TaskID = latestRecord.TaskID
+		} else if trainReq.RequestID != "" {
+			trainReq.TaskID = trainReq.RequestID
+		}
+	}
+	if trainReq.RequestID == "" && latestRecord.RequestID != "" {
+		trainReq.RequestID = latestRecord.RequestID
+	}
+
+	startedAt := time.Now().UTC()
+	PhaseSeparator(fmt.Sprintf("Phase %d Train On Latest Data: taskId=%s", phase, trainReq.TaskID))
+	s.Logs.Add(LogInfo, "train", "开始基于最新数据执行训练: taskId=%s, requestId=%s, phase=%d, dataHash=%s",
+		trainReq.TaskID, trainReq.RequestID, phase, latestRecord.Hash)
+
 	// 判断是否指定了新的 requestId 或 taskId
-	isNewRequest := (req.RequestID != "" && req.RequestID != latestRecord.RequestID) ||
-		(req.TaskID != "" && req.TaskID != latestRecord.TaskID)
+	isNewRequest := (trainReq.RequestID != "" && trainReq.RequestID != latestRecord.RequestID) ||
+		(trainReq.TaskID != "" && trainReq.TaskID != latestRecord.TaskID)
 
 	if isNewRequest {
-		trainRecord.RequestID = req.RequestID
-		trainRecord.TaskID = req.TaskID
-		trainRecord.ResultDir = resultDirForRequestTask(s.Security.ResultDir, req.RequestID, req.TaskID)
+		trainRecord.RequestID = trainReq.RequestID
+		trainRecord.TaskID = trainReq.TaskID
+		trainRecord.ResultDir = resultDirForRequestTask(s.Security.ResultDir, trainReq.RequestID, trainReq.TaskID)
 
 		store, err := s.importIndexStore()
 		if err == nil {
-			_ = store.Reserve(req.RequestID, req.TaskID)
+			_ = store.Reserve(trainReq.RequestID, trainReq.TaskID)
 			_ = store.Commit(trainRecord)
 		}
 		s.setLatestDataRecord(trainRecord)
-	} else {
-		if trainReq.RequestID == "" {
-			trainReq.RequestID = latestRecord.RequestID
-		}
-		if trainReq.TaskID == "" {
-			trainReq.TaskID = latestRecord.TaskID
-		}
 	}
 
 	s.executeTraining(trainReq, phase, trainRecord, cfg, env, startedAt)
@@ -989,8 +1004,9 @@ func BuildCrashFailureReport(taskID string, startedAt, finishedAt time.Time, fai
 }
 
 func buildTrainingReport(taskID string, startedAt, finishedAt time.Time, status string, exitCode int, failureReason string, modelChecksum map[string]any, dataChecksum map[string]any, trainingResult map[string]any, audit *codeaudit.AuditReport, includeAudit bool) (map[string]any, error) {
+	taskID = strings.TrimSpace(taskID)
 	if taskID == "" {
-		taskID = "task-20260825-001"
+		taskID = "task-" + finishedAt.UTC().Format("20060102-150405")
 	}
 	if status == "" {
 		status = "succeeded"

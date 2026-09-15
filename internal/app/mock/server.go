@@ -872,9 +872,9 @@ func reportResHandler(store *reportStateStore) http.HandlerFunc {
 			state.Msg = *req.Msg
 		}
 
-		if state.RequestID == "" && state.TaskID == "" {
+		if strings.TrimSpace(state.DockerID) == "" || strings.TrimSpace(state.RequestID) == "" || strings.TrimSpace(state.TaskID) == "" {
 			state.StatusCode = http.StatusBadRequest
-			state.Message = "requestId 和 taskId 不能同时为空"
+			state.Message = "requestId、dockerId 和 taskId 不能为空"
 		} else {
 			state.Accepted = true
 			state.StatusCode = http.StatusOK

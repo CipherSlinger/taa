@@ -1227,4 +1227,33 @@ result = {"dataset": {"content": data_content}, "metrics": {"marker": args.marke
 	if _, ok := files[dirName+"/training_report.json"]; !ok {
 		t.Fatalf("exported archive missing training_report.json: got keys %v", keysOfMap(files))
 	}
+
+	// 7. 测试下发 taskId 为空时的模型复用训练：必须自动补齐 taskId 且 reportRes 必须上报非空 taskId
+	cmd3 := "python3 train.py --input <in> --output <out> --marker run3-autofill"
+	runtimeCfgJSON3 := makeRuntimeConfigJSON(t, []string{cmd3}, nil)
+	modelResp3 := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+		"resourceUrl":   "",
+		"requestId":     "req-reuse-03-autofill",
+		"taskId":        "",
+		"runtimeConfig": runtimeCfgJSON3,
+	})
+	apiModel3 := decodeResponse(t, modelResp3)
+	if modelResp3.StatusCode != http.StatusOK || apiModel3.Error != 0 {
+		t.Fatalf("import model reuse 3 failed: %d / %s", modelResp3.StatusCode, apiModel3.Msg)
+	}
+
+	select {
+	case payload := <-platformReportCh:
+		if payload.Code != 0 {
+			t.Fatalf("reportRes 3 code = %d, msg: %v", payload.Code, payload.Msg)
+		}
+		if payload.TaskID == "" {
+			t.Fatal("reportRes 3 taskId is empty, expected auto-filled non-empty taskId")
+		}
+		if payload.TaskID != "task-reuse-02" {
+			t.Fatalf("reportRes 3 taskId = %q, want inherited task-reuse-02", payload.TaskID)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for reportRes 3")
+	}
 }
