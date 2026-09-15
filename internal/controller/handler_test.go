@@ -1,10 +1,8 @@
 package controller
 
 import (
-	"archive/tar"
 	"archive/zip"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -1142,39 +1140,6 @@ func extractZipMap(t *testing.T, zipData []byte) map[string][]byte {
 			t.Fatalf("failed to read zip file entry %s: %v", f.Name, err)
 		}
 		files[f.Name] = content
-	}
-	return files
-}
-
-// extractTarGzMap 将 tar.gz 或 zip 字节解压为文件名→内容的映射（跳过目录项）。
-func extractTarGzMap(t *testing.T, data []byte) map[string][]byte {
-	t.Helper()
-	if len(data) >= 4 && data[0] == 'P' && data[1] == 'K' && data[2] == 0x03 && data[3] == 0x04 {
-		return extractZipMap(t, data)
-	}
-	gz, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		t.Fatalf("gzip reader: %v", err)
-	}
-	defer gz.Close()
-	tr := tar.NewReader(gz)
-	files := make(map[string][]byte)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatalf("tar next: %v", err)
-		}
-		if hdr.Typeflag == tar.TypeDir {
-			continue
-		}
-		data, err := io.ReadAll(tr)
-		if err != nil {
-			t.Fatalf("tar read %s: %v", hdr.Name, err)
-		}
-		files[hdr.Name] = data
 	}
 	return files
 }
