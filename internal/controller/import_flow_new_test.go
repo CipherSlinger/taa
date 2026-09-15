@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,12 +23,13 @@ import (
 )
 
 type importedReportPayload struct {
-	DockerID  string  `json:"dockerId"`
-	RequestID string  `json:"requestId"`
-	TaskID    string  `json:"taskId"`
-	Code      int     `json:"code"`
-	Msg       *string `json:"msg"`
-	Report    string  `json:"report"`
+	DockerID  string         `json:"dockerId"`
+	RequestID string         `json:"requestId"`
+	TaskID    string         `json:"taskId"`
+	Code      int            `json:"code"`
+	Msg       *string        `json:"msg"`
+	Report    string         `json:"report"`
+	Checksum  map[string]any `json:"checksum"`
 }
 
 func TestPhase1RequiresBothModelAndDataBeforeTraining(t *testing.T) {
@@ -284,6 +286,21 @@ result = {"dataset": {"total_samples": 1, "splits": {"train": 1, "test": 0}}, "m
 				}
 				if payload.RequestID != "req-"+strings.ReplaceAll(tc.name, " ", "-")+"-model" {
 					t.Fatalf("reportModelImport requestId = %q", payload.RequestID)
+				}
+				if payload.Checksum == nil {
+					t.Fatalf("reportModelImport missing checksum")
+				}
+				if payload.Checksum["algorithm"] != "sm3" {
+					t.Fatalf("reportModelImport checksum algorithm = %v, want sm3", payload.Checksum["algorithm"])
+				}
+				h := teecrypto.NewSM3()
+				_, _ = h.Write(modelArchiveData)
+				wantModelHash := hex.EncodeToString(h.Sum(nil))
+				if payload.Checksum["value"] != wantModelHash {
+					t.Fatalf("reportModelImport checksum value = %v, want %v", payload.Checksum["value"], wantModelHash)
+				}
+				if int64(payload.Checksum["size"].(float64)) != int64(len(modelArchiveData)) {
+					t.Fatalf("reportModelImport checksum size = %v, want %d", payload.Checksum["size"], len(modelArchiveData))
 				}
 			case <-time.After(5 * time.Second):
 				t.Fatal("timed out waiting for reportModelImport")
@@ -710,19 +727,23 @@ result = {"dataset": {"total_samples": 10, "splits": {"train": 10, "test": 0}}, 
 		exportResp.Body.Close()
 		t.Fatalf("export failed: code=%d body=%s", exportResp.StatusCode, body)
 	}
-	exportTarGz, err := io.ReadAll(exportResp.Body)
+	exportZip, err := io.ReadAll(exportResp.Body)
 	exportResp.Body.Close()
 	if err != nil {
 		t.Fatalf("read export body: %v", err)
 	}
 
-	files := extractTarGzMap(t, exportTarGz)
+	if disp := exportResp.Header.Get("Content-Disposition"); !strings.Contains(disp, ".zip\"") {
+		t.Fatalf("Content-Disposition = %q, want filename ending with .zip\"", disp)
+	}
+
+	files := extractZipMap(t, exportZip)
 	dirName := filepath.Base(expectedResultDir)
 	if _, ok := files[dirName+"/trained_model.bin"]; !ok {
-		t.Fatalf("exported archive missing trained_model.bin: got keys %v", keysOfMap(files))
+		t.Fatalf("exported zip missing trained_model.bin: got keys %v", keysOfMap(files))
 	}
 	if _, ok := files[dirName+"/training_report.json"]; !ok {
-		t.Fatalf("exported archive missing training_report.json: got keys %v", keysOfMap(files))
+		t.Fatalf("exported zip missing training_report.json: got keys %v", keysOfMap(files))
 	}
 }
 
@@ -1221,18 +1242,21 @@ result = {"dataset": {"content": data_content}, "metrics": {"marker": args.marke
 		exportResp.Body.Close()
 		t.Fatalf("export failed: code=%d body=%s", exportResp.StatusCode, body)
 	}
-	exportTarGz, err := io.ReadAll(exportResp.Body)
+	exportZip, err := io.ReadAll(exportResp.Body)
 	exportResp.Body.Close()
 	if err != nil {
 		t.Fatalf("read export body: %v", err)
 	}
-	files := extractTarGzMap(t, exportTarGz)
+	if disp := exportResp.Header.Get("Content-Disposition"); !strings.Contains(disp, ".zip\"") {
+		t.Fatalf("Content-Disposition = %q, want filename ending with .zip\"", disp)
+	}
+	files := extractZipMap(t, exportZip)
 	dirName := filepath.Base(resultDir2)
 	if _, ok := files[dirName+"/marker.txt"]; !ok {
-		t.Fatalf("exported archive missing marker.txt: got keys %v", keysOfMap(files))
+		t.Fatalf("exported zip missing marker.txt: got keys %v", keysOfMap(files))
 	}
 	if _, ok := files[dirName+"/training_report.json"]; !ok {
-		t.Fatalf("exported archive missing training_report.json: got keys %v", keysOfMap(files))
+		t.Fatalf("exported zip missing training_report.json: got keys %v", keysOfMap(files))
 	}
 
 	// 7. 测试下发空 URL 模型更新配置，随后下发数据触发训练

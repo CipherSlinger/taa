@@ -716,7 +716,7 @@ func TestExportHandler(t *testing.T) {
 
 	exportPlaintext := []byte("export test result data")
 
-	t.Run("indexed lookup returns plaintext tar.gz", func(t *testing.T) {
+	t.Run("indexed lookup returns plaintext zip", func(t *testing.T) {
 		record := seedExportIndexRecord(t, state, "req-export-plain", "task-001", "export-plain")
 		if err := os.WriteFile(filepath.Join(record.ResultDir, "phase1.bin"), exportPlaintext, 0o644); err != nil {
 			t.Fatalf("write seeded phase1.bin: %v", err)
@@ -737,22 +737,22 @@ func TestExportHandler(t *testing.T) {
 		if got := resp.Header.Get("X-TAA-Encrypted"); got == "true" {
 			t.Fatalf("X-TAA-Encrypted = %q, want not true (plaintext)", got)
 		}
-		if got := resp.Header.Get("Content-Disposition"); !strings.Contains(got, filepath.Base(record.ResultDir)+".zip") && !strings.Contains(got, filepath.Base(record.ResultDir)+".tar.gz") {
-			t.Fatalf("Content-Disposition = %q, want filename based on result dir", got)
+		if got := resp.Header.Get("Content-Disposition"); !strings.Contains(got, filepath.Base(record.ResultDir)+".zip\"") {
+			t.Fatalf("Content-Disposition = %q, want filename ending with .zip\"", got)
 		}
 		raw, err := io.ReadAll(resp.Body)
 		if err != nil {
 			t.Fatalf("read response body: %v", err)
 		}
-		files := extractTarGzMap(t, raw)
+		files := extractZipMap(t, raw)
 		if got, ok := files["export-plain/phase1.bin"]; !ok {
-			t.Fatalf("plaintext tar.gz missing export-plain/phase1.bin, got keys: %v", keysOfMap(files))
+			t.Fatalf("plaintext zip missing export-plain/phase1.bin, got keys: %v", keysOfMap(files))
 		} else if !bytes.Equal(got, exportPlaintext) {
 			t.Fatalf("plaintext export-plain/phase1.bin = %q, want %q", got, exportPlaintext)
 		}
 	})
 
-	t.Run("indexed lookup returns encrypted tar.gz", func(t *testing.T) {
+	t.Run("indexed lookup returns encrypted zip", func(t *testing.T) {
 		record := seedExportIndexRecord(t, state, "req-export-encrypted", "task-002", "export-encrypted")
 		if err := os.WriteFile(filepath.Join(record.ResultDir, "train.bin"), exportPlaintext, 0o644); err != nil {
 			t.Fatalf("write seeded train.bin: %v", err)
@@ -774,14 +774,17 @@ func TestExportHandler(t *testing.T) {
 		if got := resp.Header.Get("X-TAA-Encrypted"); got != "true" {
 			t.Fatalf("X-TAA-Encrypted = %q, want true", got)
 		}
+		if got := resp.Header.Get("Content-Disposition"); !strings.Contains(got, filepath.Base(record.ResultDir)+".zip.enc\"") {
+			t.Fatalf("Content-Disposition = %q, want filename ending with .zip.enc\"", got)
+		}
 		sealed, err := io.ReadAll(resp.Body)
 		if err != nil {
 			t.Fatalf("read response body: %v", err)
 		}
 		decrypted := openSealedForTAA(t, sm2Key, sealed)
-		files := extractTarGzMap(t, decrypted)
+		files := extractZipMap(t, decrypted)
 		if got, ok := files["export-encrypted/train.bin"]; !ok {
-			t.Fatalf("decrypted tar.gz missing export-encrypted/train.bin, got keys: %v", keysOfMap(files))
+			t.Fatalf("decrypted zip missing export-encrypted/train.bin, got keys: %v", keysOfMap(files))
 		} else if !bytes.Equal(got, exportPlaintext) {
 			t.Fatalf("decrypted export-encrypted/train.bin = %q, want %q", got, exportPlaintext)
 		}
@@ -817,16 +820,16 @@ func TestExportHandler(t *testing.T) {
 		if got := resp.Header.Get("X-TAA-Task-Id"); got != "" {
 			t.Fatalf("X-TAA-Task-Id = %q, want empty when taskId omitted", got)
 		}
-		if got := resp.Header.Get("Content-Disposition"); !strings.Contains(got, filepath.Base(record.ResultDir)+".zip") && !strings.Contains(got, filepath.Base(record.ResultDir)+".tar.gz") {
-			t.Fatalf("Content-Disposition = %q, want result-dir filename", got)
+		if got := resp.Header.Get("Content-Disposition"); !strings.Contains(got, filepath.Base(record.ResultDir)+".zip\"") {
+			t.Fatalf("Content-Disposition = %q, want result-dir filename ending with .zip\"", got)
 		}
 		raw, err := io.ReadAll(resp.Body)
 		if err != nil {
 			t.Fatalf("read response body: %v", err)
 		}
-		files := extractTarGzMap(t, raw)
+		files := extractZipMap(t, raw)
 		if got, ok := files["export-no-task/request.bin"]; !ok {
-			t.Fatalf("plaintext tar.gz missing export-no-task/request.bin, got keys: %v", keysOfMap(files))
+			t.Fatalf("plaintext zip missing export-no-task/request.bin, got keys: %v", keysOfMap(files))
 		} else if !bytes.Equal(got, exportPlaintext) {
 			t.Fatalf("plaintext export-no-task/request.bin = %q, want %q", got, exportPlaintext)
 		}
@@ -912,17 +915,17 @@ func TestExportHandler(t *testing.T) {
 		if got := resp.Header.Get("X-TAA-Encrypted"); got != "true" {
 			t.Fatalf("X-TAA-Encrypted = %q, want true", got)
 		}
-		if disp := resp.Header.Get("Content-Disposition"); !strings.Contains(disp, ".zip.enc") && !strings.Contains(disp, ".tar.gz.enc") {
-			t.Fatalf("Content-Disposition = %q, want .zip.enc or .tar.gz.enc", disp)
+		if disp := resp.Header.Get("Content-Disposition"); !strings.Contains(disp, ".zip.enc\"") {
+			t.Fatalf("Content-Disposition = %q, want .zip.enc\"", disp)
 		}
 		sealed, err := io.ReadAll(resp.Body)
 		if err != nil {
 			t.Fatalf("read response body: %v", err)
 		}
 		decrypted := openSealedForTAA(t, sm2Key, sealed)
-		files := extractTarGzMap(t, decrypted)
+		files := extractZipMap(t, decrypted)
 		if got, ok := files["export-p3-savedkey/out.bin"]; !ok {
-			t.Fatalf("decrypted tar.gz missing export-p3-savedkey/out.bin, got keys: %v", keysOfMap(files))
+			t.Fatalf("decrypted zip missing export-p3-savedkey/out.bin, got keys: %v", keysOfMap(files))
 		} else if !bytes.Equal(got, exportPlaintext) {
 			t.Fatalf("decrypted content = %q, want %q", got, exportPlaintext)
 		}
@@ -966,14 +969,17 @@ func TestExportHandler(t *testing.T) {
 			body, _ := io.ReadAll(resp.Body)
 			t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, body)
 		}
+		if disp := resp.Header.Get("Content-Disposition"); !strings.Contains(disp, ".zip.enc\"") {
+			t.Fatalf("Content-Disposition = %q, want .zip.enc\"", disp)
+		}
 		sealed, err := io.ReadAll(resp.Body)
 		if err != nil {
 			t.Fatalf("read response body: %v", err)
 		}
 		decrypted := openSealedForTAA(t, sm2Key, sealed)
-		files := extractTarGzMap(t, decrypted)
+		files := extractZipMap(t, decrypted)
 		if got, ok := files["export-p3-override/out.bin"]; !ok {
-			t.Fatalf("decrypted tar.gz missing export-p3-override/out.bin, got keys: %v", keysOfMap(files))
+			t.Fatalf("decrypted zip missing export-p3-override/out.bin, got keys: %v", keysOfMap(files))
 		} else if !bytes.Equal(got, exportPlaintext) {
 			t.Fatalf("decrypted content = %q, want %q", got, exportPlaintext)
 		}
@@ -1220,14 +1226,17 @@ func TestExportResultCheck(t *testing.T) {
 	if got := resp.Header.Get("Content-Type"); got != "application/octet-stream" {
 		t.Fatalf("Content-Type = %q, want application/octet-stream", got)
 	}
+	if disp := resp.Header.Get("Content-Disposition"); !strings.Contains(disp, ".zip.enc\"") {
+		t.Fatalf("Content-Disposition = %q, want .zip.enc\"", disp)
+	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read response body: %v", err)
 	}
 	decrypted := openSealedForTAA(t, sm2Key, body)
-	files := extractTarGzMap(t, decrypted)
+	files := extractZipMap(t, decrypted)
 	if got, ok := files["train/train.bin"]; !ok {
-		t.Fatalf("tar.gz missing train/train.bin, got keys: %v", keysOfMap(files))
+		t.Fatalf("decrypted zip missing train/train.bin, got keys: %v", keysOfMap(files))
 	} else if !bytes.Equal(got, resultPlaintext) {
 		t.Fatalf("result = %q, want %q", got, resultPlaintext)
 	}
@@ -1309,15 +1318,19 @@ func TestFullWorkflow(t *testing.T) {
 		resp.Body.Close()
 		t.Fatalf("export X-TAA-Encrypted = %q, want true", got)
 	}
+	if disp := resp.Header.Get("Content-Disposition"); !strings.Contains(disp, ".zip.enc\"") {
+		resp.Body.Close()
+		t.Fatalf("Content-Disposition = %q, want .zip.enc\"", disp)
+	}
 	sealed, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
 		t.Fatalf("read export body: %v", err)
 	}
 	wfDecrypted := openSealedForTAA(t, wfSM2Key, sealed)
-	files := extractTarGzMap(t, wfDecrypted)
+	files := extractZipMap(t, wfDecrypted)
 	if got, ok := files["train/debug.bin"]; !ok {
-		t.Fatalf("tar.gz missing train/debug.bin, got keys: %v", keysOfMap(files))
+		t.Fatalf("decrypted zip missing train/debug.bin, got keys: %v", keysOfMap(files))
 	} else if !bytes.Equal(got, wfPlaintext) {
 		t.Fatalf("export result = %q, want %q", got, wfPlaintext)
 	}
