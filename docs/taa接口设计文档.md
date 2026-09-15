@@ -344,7 +344,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 | `requestId` | `string` | 是 | 与 `/v1/taa/importModel` 请求中的 `requestId` 一致，用于绑定同一轮模型导入 |
 | `taskId` | `string` | 否 | 任务 ID，与 `/v1/taa/importModel` 请求中的 `taskId` 一致 |
 | `code` | `number` | 是 | `0` 表示模型下载、解密、解压和校验成功，`1` 表示资源下载/解密/解压等导入流程失败 |
-| `msg` | `string` | 否 | 失败时为失败原因，成功时为 null |
+| `msg` | `string` | 否 | 成功时固定为 `"模型导入成功"`，失败时为具体失败原因 |
 | `checksum` | `object` | 否 | 模型压缩包完整性校验（逻辑与 `/v1/taa/reportRes` 的 `training_task.model_checksum` 完全一致，包含 `size`、`algorithm`、`value`，导入成功时必填） |
 
 **请求示例（成功）**：
@@ -355,7 +355,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "requestId": "request-001",
   "taskId": "task-001",
   "code": 0,
-  "msg": null,
+  "msg": "模型导入成功",
   "checksum": {
     "size": 581632,
     "algorithm": "sm3",
