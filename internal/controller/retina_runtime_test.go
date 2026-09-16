@@ -35,7 +35,11 @@ func TestRetinaDKDScriptsPreferBundledPython(t *testing.T) {
 	}
 
 	for _, name := range []string{"debug.py", "train.py"} {
-		data, err := os.ReadFile(filepath.Join(srcScriptDir, name))
+		srcPath := filepath.Join(srcScriptDir, name)
+		if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+			t.Skipf("%s not available, skipping wrapper script test", name)
+		}
+		data, err := os.ReadFile(srcPath)
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
@@ -134,7 +138,11 @@ func TestRetinaDKDTrainScriptRunsUnderPython3(t *testing.T) {
 		}
 	}
 
-	data, err := os.ReadFile(filepath.Join(srcScriptDir, "train.py"))
+	srcPath := filepath.Join(srcScriptDir, "train.py")
+	if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+		t.Skip("train.py not available, skipping wrapper script test")
+	}
+	data, err := os.ReadFile(srcPath)
 	if err != nil {
 		t.Fatalf("read train.py: %v", err)
 	}
@@ -185,5 +193,24 @@ func TestRetinaDKDTrainScriptRunsUnderPython3(t *testing.T) {
 	want := filepath.Join(scriptDir, "python", "bin", "python3")
 	if !strings.Contains(log, want) {
 		t.Fatalf("expected bundled python path %q in log, got:\n%s", want, log)
+	}
+}
+
+func TestRetinaDKDFusionReportingHelpers(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+
+	testScript := filepath.Join(repoRoot, "models", "examples", "Retina-DKD", "Retina-DKD", "test_reporting_helpers.py")
+	if _, err := os.Stat(testScript); os.IsNotExist(err) {
+		t.Skip("test_reporting_helpers.py not found, skipping")
+	}
+
+	cmd := exec.Command("python3", "-m", "unittest", testScript)
+	cmd.Dir = filepath.Dir(testScript)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("test_reporting_helpers failed: %v\noutput:\n%s", err, string(out))
 	}
 }
