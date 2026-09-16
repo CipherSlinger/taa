@@ -1,4 +1,4 @@
-.PHONY: taa docker docker-base test run platform-mock platform-mock-build clean help
+.PHONY: taa docker docker-base test deploy-test run platform-mock platform-mock-build clean help
 
 BIN_DIR ?= bin
 TAA_BINARY ?= $(BIN_DIR)/taa
@@ -10,8 +10,11 @@ taa:
 	@echo "[build] building taa daemon from ./cmd/taa..."
 	@go build -o $(TAA_BINARY) ./cmd/taa
 
-test:
+test: deploy-test
 	@go test ./pkg/... ./internal/... ./cmd/...
+
+deploy-test:
+	@bash tests/deploy_ollama_preflight_test.sh
 
 run: taa
 	@if [ ! -f taa-config.json ]; then cp configs/taa-local.json taa-config.json; fi
