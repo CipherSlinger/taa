@@ -1301,3 +1301,209 @@ func TestReportProgressStatusAndReset(t *testing.T) {
 	}
 }
 
+func TestModelLogDeduplicationAndRingBuffer(t *testing.T) {
+	// 容量设为 5
+	store := newModelLogStore(t.TempDir(), 5)
+	handler := modelLogHandler(store)
+
+	sendLogs := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler(w, req)
+		return w
+	}
+
+	// 1. 发送一批日志（seq 1..2），验证接收后状态中包含 2 条日志，且顺序为 seq 1, 2
+	w1 := sendLogs(`{
+		"dockerId": "docker-1",
+		"requestId": "req-1",
+		"taskId": "task-1",
+		"seqStart": 1,
+		"entries": [
+			{"seq": 1, "message": "log 1", "timestamp": "2026-09-16T10:00:00Z"},
+			{"seq": 2, "message": "log 2", "timestamp": "2026-09-16T10:00:01Z"}
+		]
+	}`)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("batch 1 status = %d, want 200; body=%s", w1.Code, w1.Body.String())
+	}
+	st1 := store.get()
+	if st1.TotalCount != 2 || len(st1.Entries) != 2 {
+		t.Fatalf("state 1 count mismatch: total=%d entries=%d, want 2", st1.TotalCount, len(st1.Entries))
+	}
+	if st1.Entries[0].Seq != 1 || st1.Entries[1].Seq != 2 {
+		t.Fatalf("state 1 entries order mismatch: %+v", st1.Entries)
+	}
+	if st1.LastSeq != 2 {
+		t.Fatalf("state 1 lastSeq = %d, want 2", st1.LastSeq)
+	}
+
+	// 2. 发送带有重复日志（seq 2）以及新日志（seq 3）的批次，验证去重生效，总条数为 3，且没有重复项，按 seq 排序
+	w2 := sendLogs(`{
+		"dockerId": "docker-1",
+		"requestId": "req-1",
+		"taskId": "task-1",
+		"seqStart": 2,
+		"entries": [
+			{"seq": 2, "message": "log 2 duplicate", "timestamp": "2026-09-16T10:00:01Z"},
+			{"seq": 3, "message": "log 3", "timestamp": "2026-09-16T10:00:02Z"}
+		]
+	}`)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("batch 2 status = %d, want 200; body=%s", w2.Code, w2.Body.String())
+	}
+	st2 := store.get()
+	if st2.TotalCount != 3 || len(st2.Entries) != 3 {
+		t.Fatalf("state 2 count mismatch: total=%d entries=%d, want 3", st2.TotalCount, len(st2.Entries))
+	}
+	if st2.Entries[0].Seq != 1 || st2.Entries[1].Seq != 2 || st2.Entries[2].Seq != 3 {
+		t.Fatalf("state 2 entries order/dedup mismatch: %+v", st2.Entries)
+	}
+	if st2.Entries[1].Message != "log 2" {
+		t.Fatalf("state 2 seq 2 message should not be overwritten by duplicate: %q", st2.Entries[1].Message)
+	}
+	if st2.LastSeq != 3 {
+		t.Fatalf("state 2 lastSeq = %d, want 3", st2.LastSeq)
+	}
+
+	// 3. 验证环形缓冲容量限制（例如容量设为 5，写入 8 条日志，最终仅保留最新的 5 条）
+	w3 := sendLogs(`{
+		"dockerId": "docker-1",
+		"requestId": "req-1",
+		"taskId": "task-1",
+		"seqStart": 4,
+		"entries": [
+			{"seq": 4, "message": "log 4"},
+			{"seq": 5, "message": "log 5"},
+			{"seq": 6, "message": "log 6"},
+			{"seq": 7, "message": "log 7"},
+			{"seq": 8, "message": "log 8"}
+		]
+	}`)
+	if w3.Code != http.StatusOK {
+		t.Fatalf("batch 3 status = %d, want 200; body=%s", w3.Code, w3.Body.String())
+	}
+	st3 := store.get()
+	if st3.TotalCount != 8 {
+		t.Fatalf("state 3 totalCount = %d, want 8", st3.TotalCount)
+	}
+	if len(st3.Entries) != 5 {
+		t.Fatalf("state 3 entries len = %d, want capacity 5", len(st3.Entries))
+	}
+	expectedSeqs := []uint64{4, 5, 6, 7, 8}
+	for i, expected := range expectedSeqs {
+		if st3.Entries[i].Seq != expected {
+			t.Fatalf("entry %d seq = %d, want %d", i, st3.Entries[i].Seq, expected)
+		}
+	}
+	if st3.LastSeq != 8 {
+		t.Fatalf("state 3 lastSeq = %d, want 8", st3.LastSeq)
+	}
+}
+
+func TestModelLogValidation(t *testing.T) {
+	store := newModelLogStore(t.TempDir(), 2000)
+	handler := modelLogHandler(store)
+
+	send := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler(w, req)
+		return w
+	}
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "missing dockerId",
+			body: `{"requestId":"req-1","entries":[{"seq":1,"message":"hello"}]}`,
+		},
+		{
+			name: "missing requestId",
+			body: `{"dockerId":"docker-1","entries":[{"seq":1,"message":"hello"}]}`,
+		},
+		{
+			name: "entries is empty",
+			body: `{"dockerId":"docker-1","requestId":"req-1","entries":[]}`,
+		},
+		{
+			name: "entry message is empty",
+			body: `{"dockerId":"docker-1","requestId":"req-1","entries":[{"seq":1,"message":""}]}`,
+		},
+		{
+			name: "entry message is whitespace",
+			body: `{"dockerId":"docker-1","requestId":"req-1","entries":[{"seq":1,"message":"   "}]}`,
+		},
+	}
+
+	for _, tc := range cases {
+		w := send(tc.body)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("case %s status = %d, want 400; body=%s", tc.name, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestModelLogStatusAndReset(t *testing.T) {
+	store := newModelLogStore(t.TempDir(), 2000)
+	logHandler := modelLogHandler(store)
+	statusHandler := modelLogStatusHandler(store)
+	resetHandler := modelLogResetHandler(store)
+
+	// 发送一条日志
+	reqLog := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", strings.NewReader(`{
+		"dockerId": "docker-1",
+		"requestId": "req-1",
+		"taskId": "task-1",
+		"seqStart": 1,
+		"entries": [
+			{"seq": 1, "message": "starting training", "timestamp": "2026-09-16T10:00:00Z"}
+		]
+	}`))
+	reqLog.Header.Set("Content-Type", "application/json")
+	wLog := httptest.NewRecorder()
+	logHandler(wLog, reqLog)
+	if wLog.Code != http.StatusOK {
+		t.Fatalf("log status = %d, want 200; body=%s", wLog.Code, wLog.Body.String())
+	}
+
+	// 验证 /api/modelLog/status
+	wStatus := httptest.NewRecorder()
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/modelLog/status", nil)
+	statusHandler(wStatus, reqStatus)
+	if wStatus.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", wStatus.Code)
+	}
+
+	var resp struct {
+		Msg    string        `json:"msg"`
+		Result modelLogState `json:"result"`
+	}
+	if err := json.NewDecoder(wStatus.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if resp.Result.DockerID != "docker-1" || resp.Result.RequestID != "req-1" || resp.Result.TotalCount != 1 {
+		t.Fatalf("status result mismatch: %+v", resp.Result)
+	}
+	if len(resp.Result.Entries) != 1 || resp.Result.Entries[0].Message != "starting training" {
+		t.Fatalf("status entries mismatch: %+v", resp.Result.Entries)
+	}
+
+	// 验证 /api/modelLog/reset
+	wReset := httptest.NewRecorder()
+	reqReset := httptest.NewRequest(http.MethodPost, "/api/modelLog/reset", nil)
+	resetHandler(wReset, reqReset)
+	if wReset.Code != http.StatusOK {
+		t.Fatalf("reset code = %d, want 200", wReset.Code)
+	}
+
+	stAfterReset := store.get()
+	if stAfterReset.TotalCount != 0 || len(stAfterReset.Entries) != 0 || stAfterReset.DockerID != "" {
+		t.Fatalf("store after reset = %+v, want empty", stAfterReset)
+	}
+}
+

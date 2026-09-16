@@ -135,6 +135,7 @@ func NewServer(cfg Config) *Server {
 	reportModelImportStore := newReportStateStore(cfg.StateDir, "reportModelImport-state.json")
 	reportAuditStore := newReportStateStore(cfg.StateDir, "reportAudit-state.json")
 	progressStore := newProgressStateStore(cfg.StateDir)
+	modelLogStore := newModelLogStore(cfg.StateDir, 2000)
 
 	uploadDir := cfg.UploadDir
 	if abs, err := filepath.Abs(uploadDir); err == nil {
@@ -155,6 +156,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/v1/taa/reportModelImport", reportModelImportHandler(reportModelImportStore))
 	mux.HandleFunc("/v1/taa/reportAudit", reportAuditHandler(reportAuditStore))
 	mux.HandleFunc("/v1/taa/reportProgress", reportProgressHandler(progressStore))
+	mux.HandleFunc("/v1/taa/modelLog", modelLogHandler(modelLogStore))
 	mux.HandleFunc("/api/register/status", registerStatusHandler(registerStore))
 	mux.HandleFunc("/api/register/reset", registerResetHandler(registerStore))
 	mux.HandleFunc("/api/reportResourceRes/status", reportStatusHandler(reportStore))
@@ -167,6 +169,8 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/reportAudit/reset", reportResetHandler(reportAuditStore))
 	mux.HandleFunc("/api/reportProgress/status", progressStatusHandler(progressStore))
 	mux.HandleFunc("/api/reportProgress/reset", progressResetHandler(progressStore))
+	mux.HandleFunc("/api/modelLog/status", modelLogStatusHandler(modelLogStore))
+	mux.HandleFunc("/api/modelLog/reset", modelLogResetHandler(modelLogStore))
 	mux.HandleFunc("/api/taa-target", taaTargetHandler(taaAddr))
 	mux.HandleFunc("/api/upload", uploadHandler(cfg.Addr, uploadDir, registerStore))
 	registerUploadDeleteRoutes(mux, uploadDir)
@@ -481,6 +485,143 @@ func (s *progressStateStore) reset() {
 	}
 }
 
+type modelLogEntry struct {
+	Seq       uint64 `json:"seq"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp,omitempty"`
+}
+
+type modelLogState struct {
+	DockerID   string          `json:"dockerId"`
+	RequestID  string          `json:"requestId"`
+	TaskID     string          `json:"taskId"`
+	TotalCount int             `json:"totalCount"`
+	LastSeq    uint64          `json:"lastSeq"`
+	Entries    []modelLogEntry `json:"entries"`
+}
+
+type modelLogRequest struct {
+	DockerID  string          `json:"dockerId"`
+	RequestID string          `json:"requestId"`
+	TaskID    string          `json:"taskId,omitempty"`
+	SeqStart  uint64          `json:"seqStart"`
+	Entries   []modelLogEntry `json:"entries"`
+}
+
+type modelLogStore struct {
+	mu       sync.RWMutex
+	path     string
+	capacity int
+	seen     map[string]struct{}
+	state    modelLogState
+}
+
+func newModelLogStore(stateDir string, capacity int) *modelLogStore {
+	if capacity <= 0 {
+		capacity = 2000
+	}
+	store := &modelLogStore{
+		path:     defaultStateFile(stateDir, "modelLog-state.json"),
+		capacity: capacity,
+		seen:     make(map[string]struct{}),
+	}
+	store.load()
+	return store
+}
+
+func (s *modelLogStore) load() {
+	state, err := loadJSONFile[modelLogState](s.path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("load modelLog state failed: %v", err)
+		}
+		return
+	}
+	s.state = state
+	for _, entry := range state.Entries {
+		key := fmt.Sprintf("%s:%s:%d", state.DockerID, state.RequestID, entry.Seq)
+		s.seen[key] = struct{}{}
+	}
+}
+
+func (s *modelLogStore) get() modelLogState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cpy := s.state
+	if len(s.state.Entries) > 0 {
+		cpy.Entries = append([]modelLogEntry(nil), s.state.Entries...)
+	} else {
+		cpy.Entries = []modelLogEntry{}
+	}
+	return cpy
+}
+
+func (s *modelLogStore) reset() {
+	s.mu.Lock()
+	s.state = modelLogState{
+		Entries: []modelLogEntry{},
+	}
+	s.seen = make(map[string]struct{})
+	path := s.path
+	s.mu.Unlock()
+	if err := saveJSONFile(path, modelLogState{Entries: []modelLogEntry{}}); err != nil {
+		log.Printf("save modelLog state failed: %v", err)
+	}
+}
+
+func (s *modelLogStore) addEntries(dockerId, requestId, taskId string, entries []modelLogEntry) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var toAdd []modelLogEntry
+	for _, entry := range entries {
+		key := fmt.Sprintf("%s:%s:%d", dockerId, requestId, entry.Seq)
+		if _, exists := s.seen[key]; exists {
+			continue
+		}
+		s.seen[key] = struct{}{}
+		toAdd = append(toAdd, entry)
+	}
+
+	addedCount := len(toAdd)
+	if addedCount == 0 {
+		return 0
+	}
+
+	s.state.DockerID = dockerId
+	s.state.RequestID = requestId
+	if taskId != "" {
+		s.state.TaskID = taskId
+	}
+	s.state.TotalCount += addedCount
+
+	s.state.Entries = append(s.state.Entries, toAdd...)
+	sort.Slice(s.state.Entries, func(i, j int) bool {
+		return s.state.Entries[i].Seq < s.state.Entries[j].Seq
+	})
+
+	if s.capacity > 0 && len(s.state.Entries) > s.capacity {
+		s.state.Entries = append([]modelLogEntry(nil), s.state.Entries[len(s.state.Entries)-s.capacity:]...)
+	}
+
+	for _, entry := range toAdd {
+		if entry.Seq > s.state.LastSeq {
+			s.state.LastSeq = entry.Seq
+		}
+	}
+	if len(s.state.Entries) > 0 && s.state.Entries[len(s.state.Entries)-1].Seq > s.state.LastSeq {
+		s.state.LastSeq = s.state.Entries[len(s.state.Entries)-1].Seq
+	}
+
+	stateToSave := s.state
+	path := s.path
+	if err := saveJSONFile(path, stateToSave); err != nil {
+		log.Printf("save modelLog state failed: %v", err)
+	}
+
+	return addedCount
+}
+
 type requestLogEntry struct {
 	ID        string `json:"id"`
 	Timestamp string `json:"timestamp"`
@@ -607,6 +748,8 @@ func requestComponentFromPath(path string) string {
 		return "reportAudit"
 	case strings.HasPrefix(path, "/v1/taa/reportProgress") || strings.HasPrefix(path, "/api/reportProgress"):
 		return "reportProgress"
+	case strings.HasPrefix(path, "/v1/taa/modelLog") || strings.HasPrefix(path, "/api/modelLog"):
+		return "modelLog"
 	case strings.HasPrefix(path, "/v1/taa/logs") || strings.HasPrefix(path, "/api/taa/logs"):
 		return "taa-logs"
 	case strings.HasPrefix(path, "/v1/taa/status") || strings.HasPrefix(path, "/api/taa/status"):
@@ -1379,6 +1522,87 @@ func progressStatusHandler(store *progressStateStore) http.HandlerFunc {
 }
 
 func progressResetHandler(store *progressStateStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
+			return
+		}
+		store.reset()
+		writeEnvelope(w, http.StatusOK, "reset", nil, 0)
+	}
+}
+
+func modelLogHandler(store *modelLogStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
+			return
+		}
+
+		if !strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+			writeEnvelope(w, http.StatusBadRequest, "Content-Type 应为 application/json", nil, http.StatusBadRequest)
+			return
+		}
+
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeEnvelope(w, http.StatusBadRequest, "读取请求体失败: "+err.Error(), nil, http.StatusBadRequest)
+			return
+		}
+
+		var req modelLogRequest
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
+			writeEnvelope(w, http.StatusBadRequest, "解析 JSON 失败: "+err.Error(), nil, http.StatusBadRequest)
+			return
+		}
+
+		if strings.TrimSpace(req.DockerID) == "" {
+			writeEnvelope(w, http.StatusBadRequest, "缺少 dockerId", nil, http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(req.RequestID) == "" {
+			writeEnvelope(w, http.StatusBadRequest, "缺少 requestId", nil, http.StatusBadRequest)
+			return
+		}
+		if len(req.Entries) == 0 {
+			writeEnvelope(w, http.StatusBadRequest, "entries 不能为空", nil, http.StatusBadRequest)
+			return
+		}
+		for _, e := range req.Entries {
+			if strings.TrimSpace(e.Message) == "" {
+				writeEnvelope(w, http.StatusBadRequest, "entry.message 不能为空", nil, http.StatusBadRequest)
+				return
+			}
+		}
+
+		added := store.addEntries(req.DockerID, req.RequestID, req.TaskID, req.Entries)
+		log.Printf("modelLog accepted: dockerId=%s requestId=%s added=%d total=%d", req.DockerID, req.RequestID, added, store.get().TotalCount)
+		writeEnvelope(w, http.StatusOK, "success", map[string]any{
+			"received": true,
+		}, 0)
+	}
+}
+
+func modelLogStatusHandler(store *modelLogStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		state := store.get()
+		if state.Entries == nil {
+			state.Entries = []modelLogEntry{}
+		}
+		writeEnvelope(w, http.StatusOK, "success", state, 0)
+	}
+}
+
+func modelLogResetHandler(store *modelLogStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method != http.MethodPost {
