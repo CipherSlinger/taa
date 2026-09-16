@@ -21,12 +21,13 @@ import argparse
 import csv
 import json
 import os
+import random
 import sys
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
@@ -51,6 +52,22 @@ BASE_PROJECTS = (
     "p3_detection_industrial",
     "p4_bert_sentiment",
 )
+
+CHECKLIST_RULES_PROMPT = """Security Checklist Rules to Enforce:
+1. NET_001 (Network Requests): requests, urllib, httpx, aiohttp, http.client
+2. NET_002 (Raw Socket): socket.socket, socket.create_connection
+3. CMD_001 (Command Execution): os.system, os.popen, os.exec*, subprocess with shell or system binaries
+4. OBF_001 (Code Obfuscation): base64 decode, pickle, marshal, zlib decompress, binascii
+5. DYN_001 (Dynamic Execution): eval, exec, compile, __import__, importlib.import_module
+6. FIL_001 (Sensitive File Access): reading .ssh, .env, credentials, AWS/kube configs, id_rsa
+7. ENV_001 (Sensitive Environment Variable): reading secrets, tokens, API keys, credentials from os.environ / os.getenv
+8. PER_001 (Persistence Backdoor): crontab, .bashrc, .bash_profile, .zshrc, systemd services
+9. EXF_001 (Data Exfiltration): encoding data combined with network transmission
+10. EMB_001 (Result Embedded Data): writing raw dataset/samples into output files (np.save, torch.save, shutil)
+11. EMB_002 (Export Directory Copy): copying/moving data to model output or export directories
+12. EMB_003 (Log Plaintext Data): printing or logging raw training/batch dataset to stdout or logs
+13. EMB_004 (Steganographic Weights): embedding secret/encoded data into model weights, state_dict, or outputs
+"""
 
 # Orthogonal allocation across 10 families and 4 base projects.
 # Each base project receives exactly 25 samples; each family has 10 samples.
@@ -305,6 +322,60 @@ def discover_sample_py_files(sample_dir: Path, extensions: tuple[str, ...] = (".
     return sorted(py_files)
 
 
+def check_sample_attribution(sample_row: dict[str, Any], sample_meta: dict[str, Any] | None = None) -> bool:
+    """Check whether a blocked malicious sample accurately attributes its primary attack finding.
+
+    Attribution rules:
+    - Benign samples: attribution is not applicable (returns False).
+    - Malicious samples that are not blocked: returns False.
+    - Malicious blocked samples in static-llm mode:
+      Checks if primary_attack_finding['rule_id'] was triggered in primary_attack_finding['file']
+      by a finding judged MALICIOUS or SUSPICIOUS (or flagged with HIGH/MEDIUM severity if unreviewed).
+    - Malicious blocked samples in pure-llm / pure-llm-checklist mode:
+      Checks if the file containing the primary attack was judged MALICIOUS or SUSPICIOUS.
+    """
+    if sample_row.get("label") != "malicious":
+        return False
+    if not sample_row.get("blocked", False):
+        return False
+
+    meta = sample_meta or sample_row.get("sample_meta") or {}
+    paf = meta.get("primary_attack_finding")
+    if not paf:
+        return False
+
+    target_file = Path(paf.get("file", "benchmark_variant.py")).name
+    target_rule = paf.get("rule_id")
+
+    audit_mode = sample_row.get("audit_mode", "static-llm")
+    report = sample_row.get("audit_report") or {}
+    file_reports = report.get("file_reports") or []
+
+    if audit_mode in ("pure-llm", "pure-llm-checklist"):
+        for f_rep in file_reports:
+            file_name = Path(f_rep.get("file", f_rep.get("file_path", ""))).name
+            if file_name == target_file:
+                verdict = str(f_rep.get("verdict", "")).upper()
+                risk = str(f_rep.get("risk_level", "")).upper()
+                if verdict in ("MALICIOUS", "SUSPICIOUS") or risk in ("CRITICAL", "HIGH"):
+                    return True
+        return False
+
+    # static-llm mode: check matching rule_id in target_file
+    for f_rep in file_reports:
+        file_name = Path(f_rep.get("file", f_rep.get("file_path", ""))).name
+        if file_name == target_file:
+            for finding in f_rep.get("findings", []):
+                if finding.get("rule_id") == target_rule:
+                    verdict = str(finding.get("llm_verdict", "")).upper()
+                    if verdict in ("MALICIOUS", "SUSPICIOUS"):
+                        return True
+                    if not verdict or verdict == "UNCERTAIN":
+                        if finding.get("severity") in ("HIGH", "MEDIUM"):
+                            return True
+    return False
+
+
 def analyse_sample(
     sample: SampleSpec,
     sample_dir: Path,
@@ -320,6 +391,15 @@ def analyse_sample(
     sample_out_dir.mkdir(parents=True, exist_ok=True)
     report_path = sample_out_dir / "audit_report.json"
 
+    # Load sample metadata if present (for ground truth attribution)
+    sample_meta: dict[str, Any] = {}
+    sample_json_path = sample_dir / "sample.json"
+    if sample_json_path.exists():
+        try:
+            sample_meta = json.loads(sample_json_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
     if not sample_dir.exists():
         return {
             "sample_id": sample.sample_id,
@@ -330,6 +410,7 @@ def analyse_sample(
             "predicted_verdict": "UNCERTAIN",
             "predicted_risk": "UNKNOWN",
             "blocked": False,
+            "attributed": False,
             "audit_mode": audit_mode,
             "bypass": False,
             "matched_rules": [],
@@ -347,13 +428,16 @@ def analyse_sample(
             "llm_available": False,
             "fail_closed": False,
             "audit_report": None,
+            "sample_meta": sample_meta,
         }
 
     started_at = utc_now_iso()
 
-    if audit_mode == "pure-llm":
+    if audit_mode in ("pure-llm", "pure-llm-checklist"):
         py_files = discover_sample_py_files(sample_dir, extensions=extensions)
         analyzer = LLMSecurityAnalyzer(model_name=llm_model, backend=llm_backend) if llm_backend != "none" else None
+        if analyzer is not None and audit_mode == "pure-llm-checklist":
+            analyzer.PURE_LLM_FILE_PROMPT = CHECKLIST_RULES_PROMPT + "\n\n" + LLMSecurityAnalyzer.PURE_LLM_FILE_PROMPT
 
         file_results: list[dict[str, Any]] = []
         for py_file in py_files:
@@ -480,8 +564,8 @@ def analyse_sample(
             },
             "file_reports": file_results,
             "scan_metadata": {
-                "audit_mode": "pure-llm",
-                "rules_count": 0,
+                "audit_mode": audit_mode,
+                "rules_count": 13 if audit_mode == "pure-llm-checklist" else 0,
                 "llm_model": llm_model,
                 "llm_enabled": (llm_backend != "none"),
                 "policy": policy,
@@ -505,7 +589,7 @@ def analyse_sample(
         elif sample.label == "malicious" and predicted_label == "benign":
             error_type = "false_negative"
 
-        return {
+        row = {
             "sample_id": sample.sample_id,
             "base_project": sample.base_project,
             "family": sample.family,
@@ -533,7 +617,10 @@ def analyse_sample(
             "started_at": started_at,
             "finished_at": finished_at,
             "audit_report": report,
+            "sample_meta": sample_meta,
         }
+        row["attributed"] = check_sample_attribution(row, sample_meta)
+        return row
 
     # Two-stage static-llm mode: static rules scan followed by LLM semantic evaluation
     scanner = load_module_scanner()
@@ -584,7 +671,7 @@ def analyse_sample(
     elif sample.label == "malicious" and predicted_label == "benign":
         error_type = "false_negative"
 
-    return {
+    row = {
         "sample_id": sample.sample_id,
         "base_project": sample.base_project,
         "family": sample.family,
@@ -612,7 +699,10 @@ def analyse_sample(
         "started_at": started_at,
         "finished_at": finished_at,
         "audit_report": report,
+        "sample_meta": sample_meta,
     }
+    row["attributed"] = check_sample_attribution(row, sample_meta)
+    return row
 
 
 def group_findings_by_file(findings: Iterable[Any]) -> dict[str, list[Any]]:
@@ -668,8 +758,12 @@ def infer_predicted_verdict(report: dict[str, Any], llm_state: str) -> str:
 def confusion_counts(results: list[dict[str, Any]]) -> dict[str, int]:
     tp = fp = tn = fn = 0
     for row in results:
-        truth = row["label"] == "malicious"
-        pred = row["predicted_label"] == "malicious"
+        truth = row.get("label") == "malicious"
+        pred_val = row.get("predicted_label")
+        if pred_val is None:
+            pred = bool(row.get("blocked", False))
+        else:
+            pred = pred_val == "malicious"
         if truth and pred:
             tp += 1
         elif truth and not pred:
@@ -687,6 +781,24 @@ def safe_div(numerator: float, denominator: float) -> float:
     return numerator / denominator
 
 
+def compute_attribution_precision(results: list[dict[str, Any]]) -> float:
+    """Compute attribution precision: (true_attributions) / (total_blocked_malicious)."""
+    blocked_malicious = 0
+    true_attributions = 0
+    for row in results:
+        if row.get("label") == "malicious" and row.get("blocked", False):
+            blocked_malicious += 1
+            if row.get("attributed") is True:
+                true_attributions += 1
+            elif "attributed" not in row:
+                meta = row.get("sample_meta")
+                if check_sample_attribution(row, meta):
+                    true_attributions += 1
+    if blocked_malicious == 0:
+        return 0.0
+    return true_attributions / blocked_malicious
+
+
 def metric_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     counts = confusion_counts(results)
     tp = counts["tp"]
@@ -700,8 +812,9 @@ def metric_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     f1 = safe_div(2 * precision * recall, precision + recall)
     f05 = safe_div(1.25 * precision * recall, 0.25 * precision + recall)
     accuracy = safe_div(tp + tn, tp + tn + fp + fn)
-    llm_available_rate = safe_div(sum(1 for row in results if row["llm_available"]), len(results))
-    fail_closed_count = sum(1 for row in results if row["fail_closed"])
+    attribution_precision = compute_attribution_precision(results)
+    llm_available_rate = safe_div(sum(1 for row in results if row.get("llm_available", True)), len(results))
+    fail_closed_count = sum(1 for row in results if row.get("fail_closed", False))
     bypass_count = sum(1 for row in results if row.get("bypass", False))
     bypass_rate = safe_div(bypass_count, len(results))
 
@@ -713,11 +826,144 @@ def metric_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         "f1": f1,
         "f0_5": f05,
         "accuracy": accuracy,
+        "attribution_precision": attribution_precision,
         "llm_available_rate": llm_available_rate,
         "fail_closed_count": fail_closed_count,
         "bypass_count": bypass_count,
         "bypass_rate": bypass_rate,
     }
+
+
+def compute_bootstrap_ci(
+    samples_metrics: list[Any],
+    metric_fn: Optional[Callable[[list[Any]], float]] = None,
+    n_bootstraps: int = 1000,
+    confidence_level: float = 0.95,
+    seed: int = 42,
+) -> dict[str, float]:
+    """Calculate point estimate and bootstrap confidence interval.
+
+    Resamples samples_metrics with replacement n_bootstraps times using random.Random(seed).
+    """
+    if not samples_metrics:
+        return {"mean": 0.0, "ci_lower": 0.0, "ci_upper": 0.0}
+
+    if metric_fn is None:
+        metric_fn = lambda xs: sum(xs) / len(xs) if xs else 0.0
+
+    original_point_estimate = float(metric_fn(samples_metrics))
+
+    if len(samples_metrics) == 1 or n_bootstraps <= 1:
+        return {
+            "mean": original_point_estimate,
+            "ci_lower": original_point_estimate,
+            "ci_upper": original_point_estimate,
+        }
+
+    rng = random.Random(seed)
+    n = len(samples_metrics)
+    boot_estimates = []
+    for _ in range(n_bootstraps):
+        resample = [samples_metrics[rng.randint(0, n - 1)] for _ in range(n)]
+        boot_estimates.append(float(metric_fn(resample)))
+
+    boot_estimates.sort()
+    alpha = 1.0 - confidence_level
+    lower_idx = int((alpha / 2.0) * n_bootstraps)
+    upper_idx = int((1.0 - alpha / 2.0) * n_bootstraps)
+    lower_idx = max(0, min(lower_idx, n_bootstraps - 1))
+    upper_idx = max(0, min(upper_idx, n_bootstraps - 1))
+
+    ci_lower = boot_estimates[lower_idx]
+    ci_upper = boot_estimates[upper_idx]
+
+    return {
+        "mean": original_point_estimate,
+        "ci_lower": ci_lower,
+        "ci_upper": ci_upper,
+    }
+
+
+def bootstrap_metric_ci(
+    values: list[float],
+    n_bootstraps: int = 1000,
+    confidence_level: float = 0.95,
+    seed: int = 42,
+) -> tuple[float, float, float]:
+    """Bootstrap confidence interval returning (mean, ci_lower, ci_upper) tuple."""
+    res = compute_bootstrap_ci(
+        values,
+        metric_fn=None,
+        n_bootstraps=n_bootstraps,
+        confidence_level=confidence_level,
+        seed=seed,
+    )
+    return res["mean"], res["ci_lower"], res["ci_upper"]
+
+
+def compute_all_bootstrap_ci(
+    results: list[dict[str, Any]],
+    n_bootstraps: int = 1000,
+    confidence_level: float = 0.95,
+    seed: int = 42,
+) -> dict[str, dict[str, float]]:
+    """Compute 95% bootstrap confidence intervals for primary metrics."""
+    metrics_keys = ("accuracy", "precision", "recall", "f1", "fpr", "attribution_precision")
+    if not results:
+        empty_ci = {"mean": 0.0, "ci_lower": 0.0, "ci_upper": 0.0}
+        return {m: dict(empty_ci) for m in metrics_keys}
+
+    # Ensure attribution status is precomputed for bootstrap efficiency
+    for row in results:
+        if "attributed" not in row:
+            meta = row.get("sample_meta")
+            row["attributed"] = check_sample_attribution(row, meta)
+
+    def _accuracy(batch: list[dict[str, Any]]) -> float:
+        c = confusion_counts(batch)
+        return safe_div(c["tp"] + c["tn"], c["tp"] + c["tn"] + c["fp"] + c["fn"])
+
+    def _precision(batch: list[dict[str, Any]]) -> float:
+        c = confusion_counts(batch)
+        return safe_div(c["tp"], c["tp"] + c["fp"])
+
+    def _recall(batch: list[dict[str, Any]]) -> float:
+        c = confusion_counts(batch)
+        return safe_div(c["tp"], c["tp"] + c["fn"])
+
+    def _f1(batch: list[dict[str, Any]]) -> float:
+        c = confusion_counts(batch)
+        p = safe_div(c["tp"], c["tp"] + c["fp"])
+        r = safe_div(c["tp"], c["tp"] + c["fn"])
+        return safe_div(2 * p * r, p + r)
+
+    def _fpr(batch: list[dict[str, Any]]) -> float:
+        c = confusion_counts(batch)
+        return safe_div(c["fp"], c["fp"] + c["tn"])
+
+    def _attribution_precision(batch: list[dict[str, Any]]) -> float:
+        return compute_attribution_precision(batch)
+
+    metrics_map: dict[str, Callable[[list[dict[str, Any]]], float]] = {
+        "accuracy": _accuracy,
+        "precision": _precision,
+        "recall": _recall,
+        "f1": _f1,
+        "fpr": _fpr,
+        "attribution_precision": _attribution_precision,
+    }
+
+    ci_dict: dict[str, dict[str, float]] = {}
+    for metric_name, fn in metrics_map.items():
+        ci_dict[metric_name] = compute_bootstrap_ci(
+            results,
+            metric_fn=fn,
+            n_bootstraps=n_bootstraps,
+            confidence_level=confidence_level,
+            seed=seed,
+        )
+
+    return ci_dict
 
 
 def error_breakdown(results: list[dict[str, Any]]) -> dict[str, int]:
@@ -742,6 +988,16 @@ def build_summary_report(
     metrics = metric_summary(results)
     bypass_count = metrics["bypass_count"]
     bypass_rate = metrics["bypass_rate"]
+    rule_set_version = DEFAULT_RULE_SET_VERSION if audit_mode in ("static-llm", "pure-llm-checklist") else "none (pure-llm)"
+    if audit_mode == "static-llm":
+        prompt_version = DEFAULT_PROMPT_VERSION
+    elif audit_mode == "pure-llm-checklist":
+        prompt_version = "pure-llm-checklist-v1"
+    else:
+        prompt_version = "pure-llm-v1"
+
+    ci_95 = compute_all_bootstrap_ci(results)
+
     return {
         "run_id": f"{BENCHMARK_NAME}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
         "run_time": utc_now_iso(),
@@ -749,8 +1005,8 @@ def build_summary_report(
         "audit_mode": audit_mode,
         "llm_model": llm_model if llm_backend != "none" else "none",
         "auditor_version": f"{llm_backend}:{llm_model}" if llm_backend != "none" else "static-only",
-        "rule_set_version": DEFAULT_RULE_SET_VERSION if audit_mode == "static-llm" else "none (pure-llm)",
-        "prompt_version": DEFAULT_PROMPT_VERSION if audit_mode == "static-llm" else "pure-llm-v1",
+        "rule_set_version": rule_set_version,
+        "prompt_version": prompt_version,
         "policy": policy,
         "bypass_count": bypass_count,
         "bypass_rate": bypass_rate,
@@ -759,6 +1015,7 @@ def build_summary_report(
         "benchmark_root": str(benchmark_root),
         "counts": counts,
         "metrics": metrics,
+        "confidence_intervals_95": ci_95,
         "errors": error_breakdown(results),
     }
 
@@ -772,6 +1029,7 @@ def write_results_bundle(results_dir: Path, results: list[dict[str, Any]], summa
         for row in results:
             row = dict(row)
             row.pop("audit_report", None)
+            row.pop("sample_meta", None)
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     write_json(results_dir / "confusion-matrix.json", summary["counts"])
@@ -789,6 +1047,7 @@ def write_csv(path: Path, results: list[dict[str, Any]]) -> None:
         "predicted_label",
         "predicted_risk",
         "blocked",
+        "attributed",
         "audit_mode",
         "bypass",
         "llm_state",
@@ -809,6 +1068,7 @@ def write_csv(path: Path, results: list[dict[str, Any]]) -> None:
                 "predicted_label": row["predicted_label"],
                 "predicted_risk": row["predicted_risk"],
                 "blocked": row["blocked"],
+                "attributed": row.get("attributed", False),
                 "audit_mode": row.get("audit_mode", ""),
                 "bypass": row.get("bypass", False),
                 "llm_state": row["llm_state"],
@@ -846,6 +1106,7 @@ def write_markdown(path: Path, results: list[dict[str, Any]], summary: dict[str,
         f"- f1: {metric['f1']:.4f}",
         f"- f0.5: {metric['f0_5']:.4f}",
         f"- accuracy: {metric['accuracy']:.4f}",
+        f"- attribution_precision: {metric.get('attribution_precision', 0.0):.4f}",
         f"- bypass_rate: {metric.get('bypass_rate', 0.0):.4f}",
         f"- eval_duration_sec: {summary.get('eval_duration_sec', 0):.2f}",
         f"- llm_available_rate: {metric['llm_available_rate']:.4f}",
@@ -863,6 +1124,16 @@ def write_markdown(path: Path, results: list[dict[str, Any]], summary: dict[str,
     ]
     for key in sorted(errors):
         lines.append(f"- {key}: {errors[key]}")
+
+    if "confidence_intervals_95" in summary:
+        lines.extend([
+            "",
+            "## 95% 置信区间 (Bootstrap CI)",
+            "",
+        ])
+        for name, ci in summary["confidence_intervals_95"].items():
+            lines.append(f"- {name}: {ci['mean']:.4f} [95% CI: {ci['ci_lower']:.4f} - {ci['ci_upper']:.4f}]")
+
     lines.extend([
         "",
         "## 样本概览",
@@ -875,16 +1146,16 @@ def write_markdown(path: Path, results: list[dict[str, Any]], summary: dict[str,
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run and export the code-audit benchmark")
     parser.add_argument("--benchmark-root", type=Path, default=DEFAULT_BENCHMARK_ROOT, help="root directory containing benchmark sample folders")
     parser.add_argument("--manifest-out", type=Path, default=DEFAULT_MANIFEST_OUT, help="write the normalized benchmark manifest to this file")
     parser.add_argument("--results-dir", type=Path, default=DEFAULT_RESULTS_DIR, help="directory for benchmark output artifacts")
     parser.add_argument(
         "--audit-mode",
-        choices=["pure-llm", "static-llm"],
+        choices=["pure-llm", "pure-llm-checklist", "static-llm"],
         default="static-llm",
-        help="audit mode: pure-llm (direct LLM file audit) or static-llm (two-stage static scan + LLM arbitration)",
+        help="audit mode: pure-llm (direct LLM file audit), pure-llm-checklist (LLM with rule checklist prompt), or static-llm (two-stage static scan + LLM arbitration)",
     )
     parser.add_argument("--policy", choices=["assist", "gate"], default="gate", help="audit policy to use")
     parser.add_argument("--llm-backend", choices=["none", "ollama", "llamacpp"], default="none", help="LLM backend used for semantic verification")
@@ -894,7 +1165,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0, help="limit the number of samples to evaluate")
     parser.add_argument("--notes", default="", help="free-form notes recorded in the summary")
     parser.add_argument("--dump-manifest", action="store_true", help="write the normalized manifest and exit")
-    return parser.parse_args()
+    return parser.parse_args(args)
 
 
 def main() -> int:
