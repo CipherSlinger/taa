@@ -1152,3 +1152,152 @@ func TestReportAuditStatisticsParsing(t *testing.T) {
 	checkCount("low", 2)
 }
 
+func TestReportProgressHandlingAndTimestampOrdering(t *testing.T) {
+	store := newProgressStateStore(t.TempDir())
+	handler := reportProgressHandler(store)
+
+	sendProgress := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportProgress", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler(w, req)
+		return w
+	}
+
+	// 1. 正常上报 35.5% 进度
+	w1 := sendProgress(`{
+		"dockerId": "docker-1",
+		"requestId": "req-1",
+		"taskId": "task-1",
+		"percent": 35.5,
+		"timestamp": "2026-09-15T09:30:00Z"
+	}`)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("normal progress status = %d, want 200; body=%s", w1.Code, w1.Body.String())
+	}
+	state1 := store.get()
+	if !state1.Accepted || state1.Percent != 35.5 {
+		t.Fatalf("state after 35.5%% = %+v, want percent 35.5 and accepted true", state1)
+	}
+	if state1.DockerID != "docker-1" || state1.RequestID != "req-1" || state1.TaskID != "task-1" {
+		t.Fatalf("state IDs mismatch: %+v", state1)
+	}
+
+	// 2. 较早时间戳到达（如 09:20:00Z < 09:30:00Z），验证返回 HTTP 200，但 store 中 Percent 保持 35.5
+	w2 := sendProgress(`{
+		"dockerId": "docker-1",
+		"requestId": "req-1",
+		"taskId": "task-1",
+		"percent": 20.0,
+		"timestamp": "2026-09-15T09:20:00Z"
+	}`)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("earlier timestamp status = %d, want 200; body=%s", w2.Code, w2.Body.String())
+	}
+	state2 := store.get()
+	if state2.Percent != 35.5 {
+		t.Fatalf("state after out-of-order earlier timestamp = %+v, want percent to remain 35.5", state2)
+	}
+
+	// 3. 更新时间戳到达（如 09:40:00Z > 09:30:00Z），验证更新后 store.get().Percent == 80.0
+	w3 := sendProgress(`{
+		"dockerId": "docker-1",
+		"requestId": "req-1",
+		"taskId": "task-1",
+		"percent": 80.0,
+		"timestamp": "2026-09-15T09:40:00Z"
+	}`)
+	if w3.Code != http.StatusOK {
+		t.Fatalf("newer timestamp status = %d, want 200; body=%s", w3.Code, w3.Body.String())
+	}
+	state3 := store.get()
+	if state3.Percent != 80.0 {
+		t.Fatalf("state after newer timestamp = %+v, want percent 80.0", state3)
+	}
+
+	// 4. 必填参数校验返回 HTTP 400
+	invalidCases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "missing dockerId",
+			body: `{"requestId":"req-1","taskId":"task-1","percent":50.0,"timestamp":"2026-09-15T09:50:00Z"}`,
+		},
+		{
+			name: "missing requestId",
+			body: `{"dockerId":"docker-1","taskId":"task-1","percent":50.0,"timestamp":"2026-09-15T09:50:00Z"}`,
+		},
+		{
+			name: "percent < 0",
+			body: `{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","percent":-1.0,"timestamp":"2026-09-15T09:50:00Z"}`,
+		},
+		{
+			name: "percent > 100",
+			body: `{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","percent":100.5,"timestamp":"2026-09-15T09:50:00Z"}`,
+		},
+		{
+			name: "invalid timestamp",
+			body: `{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","percent":50.0,"timestamp":"not-a-timestamp"}`,
+		},
+	}
+
+	for _, tc := range invalidCases {
+		w := sendProgress(tc.body)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("case %s status = %d, want 400; body=%s", tc.name, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestReportProgressStatusAndReset(t *testing.T) {
+	store := newProgressStateStore(t.TempDir())
+	reportHandler := reportProgressHandler(store)
+	statusHandler := progressStatusHandler(store)
+	resetHandler := progressResetHandler(store)
+
+	// 上报一次进度
+	reqReport := httptest.NewRequest(http.MethodPost, "/v1/taa/reportProgress", strings.NewReader(`{
+		"dockerId": "docker-1",
+		"requestId": "req-1",
+		"taskId": "task-1",
+		"percent": 60.0,
+		"timestamp": "2026-09-15T10:00:00Z"
+	}`))
+	reqReport.Header.Set("Content-Type", "application/json")
+	wReport := httptest.NewRecorder()
+	reportHandler(wReport, reqReport)
+	if wReport.Code != http.StatusOK {
+		t.Fatalf("report status = %d, want 200", wReport.Code)
+	}
+
+	// 检查 status handler
+	wStatus := httptest.NewRecorder()
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/reportProgress/status", nil)
+	statusHandler(wStatus, reqStatus)
+	if wStatus.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", wStatus.Code)
+	}
+	var resp struct {
+		Msg    string        `json:"msg"`
+		Result progressState `json:"result"`
+	}
+	if err := json.NewDecoder(wStatus.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if resp.Result.Percent != 60.0 || resp.Result.DockerID != "docker-1" {
+		t.Fatalf("status result = %+v, want percent 60.0", resp.Result)
+	}
+
+	// 重置
+	wReset := httptest.NewRecorder()
+	reqReset := httptest.NewRequest(http.MethodPost, "/api/reportProgress/reset", nil)
+	resetHandler(wReset, reqReset)
+	if wReset.Code != http.StatusOK {
+		t.Fatalf("reset code = %d, want 200", wReset.Code)
+	}
+	if store.get().Percent != 0 || store.get().Received {
+		t.Fatalf("store after reset = %+v, want empty", store.get())
+	}
+}
+

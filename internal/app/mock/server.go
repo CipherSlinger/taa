@@ -134,6 +134,7 @@ func NewServer(cfg Config) *Server {
 	reportResStore := newReportStateStore(cfg.StateDir, "reportRes-state.json")
 	reportModelImportStore := newReportStateStore(cfg.StateDir, "reportModelImport-state.json")
 	reportAuditStore := newReportStateStore(cfg.StateDir, "reportAudit-state.json")
+	progressStore := newProgressStateStore(cfg.StateDir)
 
 	uploadDir := cfg.UploadDir
 	if abs, err := filepath.Abs(uploadDir); err == nil {
@@ -153,6 +154,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/v1/taa/reportRes", reportResHandler(reportResStore))
 	mux.HandleFunc("/v1/taa/reportModelImport", reportModelImportHandler(reportModelImportStore))
 	mux.HandleFunc("/v1/taa/reportAudit", reportAuditHandler(reportAuditStore))
+	mux.HandleFunc("/v1/taa/reportProgress", reportProgressHandler(progressStore))
 	mux.HandleFunc("/api/register/status", registerStatusHandler(registerStore))
 	mux.HandleFunc("/api/register/reset", registerResetHandler(registerStore))
 	mux.HandleFunc("/api/reportResourceRes/status", reportStatusHandler(reportStore))
@@ -163,6 +165,8 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/reportModelImport/reset", reportResetHandler(reportModelImportStore))
 	mux.HandleFunc("/api/reportAudit/status", reportStatusHandler(reportAuditStore))
 	mux.HandleFunc("/api/reportAudit/reset", reportResetHandler(reportAuditStore))
+	mux.HandleFunc("/api/reportProgress/status", progressStatusHandler(progressStore))
+	mux.HandleFunc("/api/reportProgress/reset", progressResetHandler(progressStore))
 	mux.HandleFunc("/api/taa-target", taaTargetHandler(taaAddr))
 	mux.HandleFunc("/api/upload", uploadHandler(cfg.Addr, uploadDir, registerStore))
 	registerUploadDeleteRoutes(mux, uploadDir)
@@ -406,6 +410,77 @@ func (s *reportStateStore) reset() {
 	}
 }
 
+type progressState struct {
+	Received   bool    `json:"received"`
+	Accepted   bool    `json:"accepted"`
+	ReceivedAt string  `json:"receivedAt"`
+	DockerID   string  `json:"dockerId"`
+	RequestID  string  `json:"requestId"`
+	TaskID     string  `json:"taskId"`
+	Percent    float64 `json:"percent"`
+	Timestamp  string  `json:"timestamp"`
+	StatusCode int     `json:"statusCode"`
+	Message    string  `json:"message"`
+	RawBody    string  `json:"rawBody"`
+}
+
+type reportProgressRequest struct {
+	DockerID  string  `json:"dockerId"`
+	RequestID string  `json:"requestId"`
+	TaskID    string  `json:"taskId"`
+	Percent   float64 `json:"percent"`
+	Timestamp string  `json:"timestamp"`
+}
+
+type progressStateStore struct {
+	mu    sync.RWMutex
+	path  string
+	state progressState
+}
+
+func newProgressStateStore(stateDir string) *progressStateStore {
+	store := &progressStateStore{path: defaultStateFile(stateDir, "reportProgress-state.json")}
+	store.load()
+	return store
+}
+
+func (s *progressStateStore) load() {
+	state, err := loadJSONFile[progressState](s.path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("load progress state failed: %v", err)
+		}
+		return
+	}
+	s.state = state
+}
+
+func (s *progressStateStore) get() progressState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state
+}
+
+func (s *progressStateStore) set(state progressState) {
+	s.mu.Lock()
+	s.state = state
+	path := s.path
+	s.mu.Unlock()
+	if err := saveJSONFile(path, state); err != nil {
+		log.Printf("save progress state failed: %v", err)
+	}
+}
+
+func (s *progressStateStore) reset() {
+	s.mu.Lock()
+	s.state = progressState{}
+	path := s.path
+	s.mu.Unlock()
+	if err := saveJSONFile(path, progressState{}); err != nil {
+		log.Printf("save progress state failed: %v", err)
+	}
+}
+
 type requestLogEntry struct {
 	ID        string `json:"id"`
 	Timestamp string `json:"timestamp"`
@@ -530,6 +605,8 @@ func requestComponentFromPath(path string) string {
 		return "reportModelImport"
 	case strings.HasPrefix(path, "/v1/taa/reportAudit"):
 		return "reportAudit"
+	case strings.HasPrefix(path, "/v1/taa/reportProgress") || strings.HasPrefix(path, "/api/reportProgress"):
+		return "reportProgress"
 	case strings.HasPrefix(path, "/v1/taa/logs") || strings.HasPrefix(path, "/api/taa/logs"):
 		return "taa-logs"
 	case strings.HasPrefix(path, "/v1/taa/status") || strings.HasPrefix(path, "/api/taa/status"):
@@ -1177,6 +1254,131 @@ func reportStatusHandler(store *reportStateStore) http.HandlerFunc {
 }
 
 func reportResetHandler(store *reportStateStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
+			return
+		}
+		store.reset()
+		writeEnvelope(w, http.StatusOK, "reset", nil, 0)
+	}
+}
+
+func parseProgressTimestamp(ts string) (time.Time, error) {
+	ts = strings.TrimSpace(ts)
+	if ts == "" {
+		return time.Time{}, fmt.Errorf("timestamp 为空")
+	}
+	if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+		return t, nil
+	}
+	return time.Parse(time.RFC3339, ts)
+}
+
+func reportProgressHandler(store *progressStateStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
+			return
+		}
+
+		if !strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+			writeEnvelope(w, http.StatusBadRequest, "Content-Type 应为 application/json", nil, http.StatusBadRequest)
+			return
+		}
+
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeEnvelope(w, http.StatusBadRequest, "读取请求体失败: "+err.Error(), nil, http.StatusBadRequest)
+			return
+		}
+
+		var req reportProgressRequest
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
+			writeEnvelope(w, http.StatusBadRequest, "解析 JSON 失败: "+err.Error(), nil, http.StatusBadRequest)
+			return
+		}
+
+		if strings.TrimSpace(req.DockerID) == "" {
+			writeEnvelope(w, http.StatusBadRequest, "缺少 dockerId", nil, http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(req.RequestID) == "" {
+			writeEnvelope(w, http.StatusBadRequest, "缺少 requestId", nil, http.StatusBadRequest)
+			return
+		}
+		if req.Percent < 0 || req.Percent > 100 {
+			writeEnvelope(w, http.StatusBadRequest, "percent 必须在 0 到 100 之间", nil, http.StatusBadRequest)
+			return
+		}
+
+		newTime, err := parseProgressTimestamp(req.Timestamp)
+		if err != nil {
+			writeEnvelope(w, http.StatusBadRequest, "非法时间戳格式: "+err.Error(), nil, http.StatusBadRequest)
+			return
+		}
+
+		// 防逆序检查：如果此前已有状态且之前的时间戳解析成功，且当前新时间戳早于之前时间戳，则不更新状态，直接返回 200
+		currState := store.get()
+		if currState.Received && currState.Accepted && currState.Timestamp != "" {
+			if prevTime, err := parseProgressTimestamp(currState.Timestamp); err == nil {
+				if newTime.Before(prevTime) {
+					log.Printf("reportProgress ignored out-of-order timestamp: curr=%s incoming=%s", currState.Timestamp, req.Timestamp)
+					writeEnvelope(w, http.StatusOK, "success", map[string]any{
+						"received": true,
+					}, 0)
+					return
+				}
+			}
+		}
+
+		state := progressState{
+			Received:   true,
+			Accepted:   true,
+			ReceivedAt: time.Now().Format(time.RFC3339),
+			DockerID:   req.DockerID,
+			RequestID:  req.RequestID,
+			TaskID:     req.TaskID,
+			Percent:    req.Percent,
+			Timestamp:  req.Timestamp,
+			StatusCode: http.StatusOK,
+			Message:    "平台已收到训练进度上报，并返回 HTTP 200",
+			RawBody:    string(bodyBytes),
+		}
+
+		store.set(state)
+		log.Printf("reportProgress accepted: dockerId=%s requestId=%s percent=%.2f timestamp=%s", state.DockerID, state.RequestID, state.Percent, state.Timestamp)
+		writeEnvelope(w, http.StatusOK, "success", map[string]any{
+			"received": true,
+		}, 0)
+	}
+}
+
+func progressStatusHandler(store *progressStateStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		state := store.get()
+		msg := state.Message
+		if msg == "" {
+			msg = "success"
+		}
+		var errCode int
+		if !state.Accepted && state.Received {
+			errCode = state.StatusCode
+		}
+		writeEnvelope(w, http.StatusOK, msg, state, errCode)
+	}
+}
+
+func progressResetHandler(store *progressStateStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method != http.MethodPost {
