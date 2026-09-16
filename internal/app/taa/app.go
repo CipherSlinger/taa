@@ -553,7 +553,11 @@ func prepareAttestationReport(ctx context.Context, userData []byte, hrkCertPath,
 	}
 
 	reportBytes, err := os.ReadFile(fixedAttestationFile)
-	if err != nil || len(reportBytes) == 0 {
+	if err != nil {
+		log.Printf("WARNING: failed to read attestation report %s: %v", fixedAttestationFile, err)
+		return false, nil
+	}
+	if len(reportBytes) == 0 {
 		return false, nil
 	}
 

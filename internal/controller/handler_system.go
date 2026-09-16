@@ -146,7 +146,7 @@ func (s *TAAState) switchHandler(w http.ResponseWriter, r *http.Request) {
 
 // ── Handler: /v1/taa/getAttestation ──────────────────────
 
-func (s *TAAState) buildAttestationResult(ctx context.Context, attestationFile string, userData []byte) ([]byte, string, bool, string) {
+func (s *TAAState) buildAttestationResult(ctx context.Context, attestationFile string, userData []byte, hrkCertPath, hskCekCertPath string) ([]byte, string, bool, string) {
 	generateCtx, generateCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer generateCancel()
 
@@ -178,7 +178,7 @@ func (s *TAAState) buildAttestationResult(ctx context.Context, attestationFile s
 
 	verifiedPass := false
 	var verifyMsg string
-	if _, verifyErr := attestation.VerifyReport(reportData, s.HRKCertPath, s.HSKCekCertPath); verifyErr != nil {
+	if _, verifyErr := attestation.VerifyReport(reportData, hrkCertPath, hskCekCertPath); verifyErr != nil {
 		log.Printf("get attestation self-verification failed: %v", verifyErr)
 		verifyMsg = "自检验证失败: " + verifyErr.Error()
 	} else {
@@ -205,13 +205,15 @@ func (s *TAAState) getAttestationHandler(w http.ResponseWriter, r *http.Request)
 	s.mu.RLock()
 	attestationFile := s.AttestationFile
 	userData := s.UserData
+	hrkCertPath := s.HRKCertPath
+	hskCekCertPath := s.HSKCekCertPath
 	s.mu.RUnlock()
 
 	// 同一时刻只允许一个 attestation 重新生成
 	s.attestMu.Lock()
 	defer s.attestMu.Unlock()
 
-	reportData, reportValues, verifiedPass, msg := s.buildAttestationResult(r.Context(), attestationFile, userData)
+	reportData, reportValues, verifiedPass, msg := s.buildAttestationResult(r.Context(), attestationFile, userData, hrkCertPath, hskCekCertPath)
 	attestationBase64 := ""
 	if len(reportData) > 0 {
 		attestationBase64 = base64.StdEncoding.EncodeToString(reportData)

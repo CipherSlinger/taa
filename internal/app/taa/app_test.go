@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"taa/internal/attestation"
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 	teecrypto "taa/pkg/crypto"
@@ -496,10 +497,15 @@ func TestPrepareAttestationReport(t *testing.T) {
 		}
 		defer func() { _ = os.Chdir(origDir) }()
 
+		restore := attestation.SetReportFetcherForTest(func(ctx context.Context, devicePath string, userData, nonce []byte) ([]byte, error) {
+			return make([]byte, attestation.ReportSize), nil
+		})
+		defer restore()
+
 		ctx := context.Background()
 		userData := make([]byte, 64)
 
-		// Even with dummy cert paths passed, self-verification fails gracefully
+		// With mock report generated, self-verification fails cleanly because certs are missing
 		passed, err := prepareAttestationReport(ctx, userData, "/nonexistent/hrk.cert", "/nonexistent/hsk.cert")
 		if err != nil {
 			t.Fatalf("prepareAttestationReport() error = %v, want nil", err)
