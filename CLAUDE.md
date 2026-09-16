@@ -5,3 +5,5 @@
 
 subagent 数量不要超过 2 个，subagent不再嵌套 subagent
 边工作边汇报你正在做什么，清晰总结
+
+write-plan 所有plan或spec保存到.claude目录下，而不是docs目录下 
