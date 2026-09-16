@@ -972,6 +972,28 @@ require_command() {
   command -v "$name" >/dev/null 2>&1 || { err "command '$name' is required but not installed or not in PATH"; exit 1; }
 }
 
+verify_ollama_binary() {
+  local binary="$1"
+  local output rc
+
+  chmod +x "$binary" 2>/dev/null || true
+  if command -v timeout >/dev/null 2>&1; then
+    output=$(timeout 10 "$binary" --version 2>&1) || rc=$?
+  else
+    output=$("$binary" --version 2>&1) || rc=$?
+  fi
+  rc=${rc:-0}
+
+  if [[ $rc -ne 0 ]]; then
+    err "ollama binary is invalid or incomplete: $binary"
+    if [[ -n "$output" ]]; then
+      detail "$output"
+    fi
+    detail "Please replace the offline Ollama package with a complete Linux x86_64 binary."
+    exit 1
+  fi
+}
+
 ensure_go_compiler() {
   # 优先检测本地已安装的高版本 Go 路径（例如 /usr/local/go/bin、/snap/bin）
   for candidate in /usr/local/go/bin /snap/bin; do
@@ -1553,6 +1575,7 @@ if [[ "$DEPLOY_QWEN" == true ]]; then
   require_file "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/start-ollama.sh"
   require_dir "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/models/models"
   require_dir "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/lib/ollama"
+  verify_ollama_binary "$OLLAMA_LOCAL_DIR/ollama"
   if [[ "$OLLAMA_PRUNE_SYNC" == true ]]; then
     model_meta="$(resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "json")"
     model_mb="$(python3 -c 'import sys, json; print(json.loads(sys.argv[1])["weight_mb"])' "$model_meta" 2>/dev/null || echo "unknown")"
