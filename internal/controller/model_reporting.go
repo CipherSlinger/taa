@@ -415,10 +415,20 @@ func (w *reportWatcher) start() {
 }
 
 func (w *reportWatcher) Stop() {
+	w.stop(true)
+}
+
+func (w *reportWatcher) StopWithoutFlush() {
+	w.stop(false)
+}
+
+func (w *reportWatcher) stop(flush bool) {
 	w.stopOnce.Do(func() {
 		w.cancel()
 		w.wg.Wait()
-		w.flushWithContext(context.Background())
+		if flush {
+			w.flushWithContext(context.Background())
+		}
 	})
 }
 
