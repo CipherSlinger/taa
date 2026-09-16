@@ -1092,6 +1092,7 @@ write_taa_config() {
   ensure_parent_dir "$path"
   python3 - "$template" "$path" "$addr" "$platform_ip" "$docker_id" "$contract" "$model_dir" "$data_dir" "$result_dir" "$llm_dir" "$llm_endpoint" "$llm_model" "$include_identity" "$model_input_dir" "$model_output_dir" "$keys_dir" <<'PY'
 import json
+import os
 import sys
 
 (
@@ -1141,8 +1142,10 @@ llm["model"] = llm_model
 llm["dir"] = llm_dir
 
 workdir = "/root/taa"
-if model_dir and "/" in model_dir:
-    workdir = model_dir.rsplit("/", 1)[0]
+if model_dir:
+    cleaned = model_dir.rstrip("/")
+    if "/" in cleaned:
+        workdir = os.path.dirname(cleaned)
 
 attestation = cfg.setdefault("attestation", {})
 attestation["hrkCertPath"] = f"{workdir}/certs/hrk.cert"
@@ -1749,6 +1752,7 @@ deploy_docker_taa() {
   ' _ "$TAA_BINARY_PATH" "$LOCAL_DOCKER_CONTAINER" "$TAA_CONTAINER_WORKDIR" "$BINARY_NAME" "$ATT_HRK_SOURCE" "$ATT_HSK_SOURCE"
 
   step "checking attestation prerequisites inside container"
+  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "test -f '$TAA_CONTAINER_WORKDIR/certs/hrk.cert' && test -f '$TAA_CONTAINER_WORKDIR/certs/hsk_cek.cert'" >/dev/null
   if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc 'test -e /dev/csv-guest' 2>/dev/null; then
     warn "/dev/csv-guest not found in container — attestation will fail (expected in non-TEE Docker)"
   else
