@@ -61,7 +61,7 @@ tests/
 - Create: `models/audit/benchmarks/base-projects/p4_bert_sentiment/data/`
 - Test: `tests/test_benchmark_base_projects.py`
 
-- [ ] **Step 1: 编写基座工程自检单元测试**
+- [x] **Step 1: 编写基座工程自检单元测试**
 
 在 `tests/test_benchmark_base_projects.py` 中编写测试：
 1. 检查 `base-projects` 下存在 `p1_xgboost_finance`, `p2_retina_resnet`, `p3_detection_industrial`, `p4_bert_sentiment` 四个目录；
@@ -92,12 +92,12 @@ class TestBenchmarkBaseProjects(unittest.TestCase):
             self.assertTrue((base_dir / "data").is_dir(), f"Data directory missing: {base_dir / 'data'}")
 ```
 
-- [ ] **Step 2: 运行测试以确认基座目录尚未创建 (FAIL)**
+- [x] **Step 2: 运行测试以确认基座目录尚未创建 (FAIL)**
 
 运行: `python3 -m unittest tests/test_benchmark_base_projects.py -v`
 预期结果: FAIL (Base project directory missing)
 
-- [ ] **Step 3: 构建 P1 XGBoost 金融表格风控基座**
+- [x] **Step 3: 构建 P1 XGBoost 金融表格风控基座**
 
 创建 `models/audit/benchmarks/base-projects/p1_xgboost_finance/`:
 - `data/creditcard_sample.csv`: 真实微缩抽样 100 条脱敏金融数据 (`Time,V1...V28,Amount,Class`)；
@@ -113,7 +113,7 @@ class TestBenchmarkBaseProjects(unittest.TestCase):
       pass
   ```
 
-- [ ] **Step 4: 构建 P2 Retina ResNet 医学影像分类基座**
+- [x] **Step 4: 构建 P2 Retina ResNet 医学影像分类基座**
 
 创建 `models/audit/benchmarks/base-projects/p2_retina_resnet/`:
 - `data/`: 放置 5 张真实医学眼底切片灰度图（各 ~40KB，总计 < 250KB）；
@@ -121,7 +121,7 @@ class TestBenchmarkBaseProjects(unittest.TestCase):
 - `model.py`: ResNet-50 骨干网络与��类头；
 - `train.py`: 训练主循环，计算 CrossEntropyLoss，保存检查点，插入 `benchmark_variant.on_epoch_end` 钩子，**杜绝任何原生 os.system 或 eval 底噪**。
 
-- [ ] **Step 5: 构建 P3 Detection Industrial 工业质检目标检测基座**
+- [x] **Step 5: 构建 P3 Detection Industrial 工业质检目标检测基座**
 
 创建 `models/audit/benchmarks/base-projects/p3_detection_industrial/`:
 - `data/`: 放置 5 张微型工业表面划痕/缺陷切片图与对应的边界框标签 `annotations.yaml`；
@@ -129,7 +129,7 @@ class TestBenchmarkBaseProjects(unittest.TestCase):
 - `model.py`: 基于 BSD-3-Clause / Apache-2.0 商业友好许可的精简检测网络（TorchVision Detection / YOLOX 结构），彻底排除 AGPL 协议源码；
 - `train.py`: 边界框回归训练主干，合规评估 mAP，插入 `benchmark_variant.on_epoch_end` 钩子。
 
-- [ ] **Step 6: 构建 P4 BERT 现代文本情感分析微调基座**
+- [x] **Step 6: 构建 P4 BERT 现代文本情感分析微调基座**
 
 创建 `models/audit/benchmarks/base-projects/p4_bert_sentiment/`:
 - `data/`: 迷你 `vocab.txt` (100 常用词) 与 20 条脱敏短评语料；
@@ -137,12 +137,12 @@ class TestBenchmarkBaseProjects(unittest.TestCase):
 - `model.py`: Transformer 编码层与序列分类器定义；
 - `train.py`: 微调前向计算、梯度累积与评估指标统计，插入 `benchmark_variant.on_epoch_end` 钩子。
 
-- [ ] **Step 7: 运行自检测试并验证 0 Finding 门禁 (PASS)**
+- [x] **Step 7: 运行自检测试并验证 0 Finding 门禁 (PASS)**
 
 运行: `python3 -m unittest tests/test_benchmark_base_projects.py -v`
 预期结果: PASS (4 个基座全部存在、全部通过 py_compile、代码结构符合规范)
 
-- [ ] **Step 8: 提交基座工程**
+- [x] **Step 8: 提交基座工程**
 
 ```bash
 git add models/audit/benchmarks/base-projects/ tests/test_benchmark_base_projects.py
@@ -157,7 +157,7 @@ git commit -m "feat(audit): add four self-contained industrial benchmark base pr
 - Modify: `models/examples/code_security_analyzer.py`
 - Test: `tests/test_code_security_analyzer_v2.py`
 
-- [ ] **Step 1: 编写引擎 13 规则、400 行切片与 Fail-Closed 单元测试**
+- [x] **Step 1: 编写引擎 13 规则、400 行切片与 Fail-Closed 单元测试**
 
 在 `tests/test_code_security_analyzer_v2.py` 中编写测试套件：
 1. **规则覆盖测试**：验证 `StaticScanner` 拥有完整的 13 条规则，包含 `EMB_001`~`EMB_004`，对 `torch.save(raw_data)` 命中 `EMB_001`，对 `os.environ.get('AWS_SECRET')` 命中 `ENV_001`，对合规 `torch.save(model.state_dict())` 不产生误报；
@@ -167,19 +167,19 @@ git commit -m "feat(audit): add four self-contained industrial benchmark base pr
    - 验证全部告警被判定为 `BENIGN` 时，返回 `passed = True`；
    - 验证 `file_summary` 中包含 `chained = True` 时，强制返回 `passed = False`。
 
-- [ ] **Step 2: 运行测试以确认当前引擎未实现 13 规则与 Fail-Closed (FAIL)**
+- [x] **Step 2: 运行测试以确认当前引擎未实现 13 规则与 Fail-Closed (FAIL)**
 
 运行: `python3 -m unittest tests/test_code_security_analyzer_v2.py -v`
 预期结果: FAIL
 
-- [ ] **Step 3: 在 `code_security_analyzer.py` 中对齐 13 条生产规则**
+- [x] **Step 3: 在 `code_security_analyzer.py` 中对齐 13 条生产规则**
 
 同步 Go `internal/codeaudit/rules.go`：
 - 在 `StaticScanner.RULES` 中补齐 `EMB_001`（原始数据落盘）、`EMB_002`（数据拷入输出目录）、`EMB_003`（日志打印原始数据）、`EMB_004`（数据隐写嵌入权重）；
 - 升级 `ENV_001` 正则，支持忽略大小写（`re.IGNORECASE`）检测 `API_KEY`、`TOKEN` 等全大写环境变量；
 - 优化 `CMD_001` 正则，仅在 `shell=True` 或调用 `bash/sh/curl/wget/rm` 等危险外壳时触发，放行常规参数化子进程。
 
-- [ ] **Step 4: 改造长文件感知：400 行全局阈值 + Finding 锚点上下文切片**
+- [x] **Step 4: 改造长文件感知：400 行全局阈值 + Finding 锚点上下文切片**
 
 在 `code_security_analyzer.py` 的 `analyze_file` 与切片逻辑中：
 - 将头部盲目截取行数从 80 行提升至 400 行；
@@ -189,7 +189,7 @@ git commit -m "feat(audit): add four self-contained industrial benchmark base pr
   3. 保留末尾 `if __name__ == '__main__':` 入口定义；
   4. 组合为结构化上下文提供给大模型整文件研判。
 
-- [ ] **Step 5: 重构 `compute_conclusion` 落实 Fail-Closed 安全底线与攻击链融合**
+- [x] **Step 5: 重构 `compute_conclusion` 落实 Fail-Closed 安全底线与攻击链融合**
 
 在 `code_security_analyzer.py` 中重构决策门禁：
 ```python
@@ -216,16 +216,16 @@ def compute_conclusion(stats: dict, file_summaries: list = None, policy: dict = 
     return {"passed": True, "verdict": "BENIGN", "reason": "All findings cleared as benign or zero findings"}
 ```
 
-- [ ] **Step 6: 同步生产级 Prompt 模板与良性白名单指导**
+- [x] **Step 6: 同步生产级 Prompt 模板与良性白名单指导**
 
 将 Go 端 `verifier.go` 中的 Prompt 判定准则同步至 `LLMSecurityAnalyzer.DEFAULT_PROMPT_TEMPLATE`，明确阐述模型权重保存、Loss 打印、本地配置读取均属于合规操作，必须判定为 `BENIGN`。
 
-- [ ] **Step 7: 运行引擎测试验证对齐效果 (PASS)**
+- [x] **Step 7: 运行引擎测试验证对齐效果 (PASS)**
 
 运行: `python3 -m unittest tests/test_code_security_analyzer_v2.py -v`
 预期结果: PASS
 
-- [ ] **Step 8: 提交引擎重构代码**
+- [x] **Step 8: 提交引擎重构代码**
 
 ```bash
 git add models/examples/code_security_analyzer.py tests/test_code_security_analyzer_v2.py
@@ -240,7 +240,7 @@ git commit -m "feat(audit): upgrade python security analyzer with 13 rules and f
 - Modify: `models/audit/tools/generate_benchmark_samples.py`
 - Test: `tests/test_benchmark_samples_matrix.py`
 
-- [ ] **Step 1: 编写 100 样本正交物化验证测试**
+- [x] **Step 1: 编写 100 样本正交物化验证测试**
 
 在 `tests/test_benchmark_samples_matrix.py` 中编写验证脚本：
 1. 验证目标目录 `models/audit/benchmarks/audit-100/` 下存在恰好 100 个独立沙箱；
@@ -250,12 +250,12 @@ git commit -m "feat(audit): upgrade python security analyzer with 13 rules and f
 5. 验证每个沙箱的 `sample.json` 均包含 `primary_attack_finding` 和 `findings_manifest` 结构；
 6. 验证所有生成的 `benchmark_variant.py` 均包含 `def on_epoch_end(epoch, metrics):` 入口。
 
-- [ ] **Step 2: 运行测试以确认当前生成器未支持 4 基座正交生成 (FAIL)**
+- [x] **Step 2: 运行测试以确认当前生成器未支持 4 基座正交生成 (FAIL)**
 
 运行: `python3 -m unittest tests/test_benchmark_samples_matrix.py -v`
 预期结果: FAIL
 
-- [ ] **Step 3: 重构 `generate_benchmark_samples.py` 的正交分配与基座读取**
+- [x] **Step 3: 重构 `generate_benchmark_samples.py` 的正交分配与基座读取**
 
 在 `generate_benchmark_samples.py` 中：
 1. 废除旧的 3 基座分配字典，升级为 4 基座正交分配：
@@ -276,7 +276,7 @@ git commit -m "feat(audit): upgrade python security analyzer with 13 rules and f
 2. 将复制源从旧的 `models/examples/` 重定向到 `models/audit/benchmarks/base-projects/`；
 3. 放行微缩数据目录 `data/` 及其内部 `.csv`, `.png`, `.yaml`, `.txt` 文件的拷贝，仅过滤 `.git`, `__pycache__`, `*.pyc`。
 
-- [ ] **Step 4: 改造变体代码生成器：标准钩子、提示词防越狱探针与 Safe Sink**
+- [x] **Step 4: 改造变体代码生成器：标准钩子、提示词防越狱探针与 Safe Sink**
 
 为 10 个家族模板统一添加生命周期接口与安全靶场约束：
 - 所有模板统一封装在 `def on_epoch_end(epoch, metrics=None):` 中执行；
@@ -285,7 +285,7 @@ git commit -m "feat(audit): upgrade python security analyzer with 13 rules and f
 - 所有文件持久化强制指向 `/tmp/sandbox_test_profile`；
 - 在 `sample.json` 中写出 `primary_attack_finding` 与 `findings_manifest`。
 
-- [ ] **Step 5: 执行生成命令原地物化 100 样本测试沙箱**
+- [x] **Step 5: 执行生成命令原地物化 100 样本测试沙箱**
 
 运行命令:
 ```bash
@@ -293,12 +293,12 @@ python3 models/audit/tools/generate_benchmark_samples.py --clean
 ```
 预期输出: 成功物化 100 个样本沙箱，并在 `docs/audit/audit-benchmark-manifest.json` 更新清单元数据。
 
-- [ ] **Step 6: 运行正交性与语法自检测试 (PASS)**
+- [x] **Step 6: 运行正交性与语法自检测试 (PASS)**
 
 运行: `python3 -m unittest tests/test_benchmark_samples_matrix.py -v`
 预期结果: PASS (100 个样本严格满足 50:50 良恶、4 基座 25 样本、10 家族各 10 样本的完全正交要求，且全部通过 py_compile)
 
-- [ ] **Step 7: 提交样本生成器修改与清单文件**
+- [x] **Step 7: 提交样本生成器修改与清单文件**
 
 ```bash
 git add models/audit/tools/generate_benchmark_samples.py docs/audit/audit-benchmark-manifest.json tests/test_benchmark_samples_matrix.py
