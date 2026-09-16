@@ -1652,3 +1652,34 @@ func TestModelLogPrintsMessagesInSeqOrder(t *testing.T) {
 	}
 }
 
+func TestHealthCheckIntegratedIntoRegistration(t *testing.T) {
+	// Legacy standalone cards and functions should be removed
+	for _, unwanted := range []string{
+		`id="card-service-env"`,
+		"toggleHealthDetail",
+		`id="healthDetailContent"`,
+		"top-dashboard-grid",
+	} {
+		if strings.Contains(indexHTML, unwanted) {
+			t.Fatalf("indexHTML should not contain %q after integration", unwanted)
+		}
+	}
+
+	// Integrated elements and functions should be present
+	for _, want := range []string{
+		`id="card-attestation"`,
+		`id="taaAddr"`,
+		`id="healthDot"`,
+		`id="healthLabel"`,
+		"testHealth()",
+		`id="healthResultBtn"`,
+		"openHealthResultModal",
+		"lastHealthData",
+	} {
+		if !strings.Contains(indexHTML, want) {
+			t.Fatalf("indexHTML missing integrated element or function %q", want)
+		}
+	}
+}
+
+
