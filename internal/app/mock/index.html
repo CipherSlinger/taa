@@ -52,7 +52,6 @@
       .five-col-layout { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
     }
     @media (max-width: 960px) {
-      .top-dashboard-grid { grid-template-columns: 1fr !important; }
       .two-col-layout, .three-col-layout, .four-col-layout { grid-template-columns: 1fr !important; }
     }
     @media (max-width: 720px) {
@@ -121,13 +120,6 @@
       grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
       gap: 16px;
       margin: 20px 0;
-    }
-    .top-dashboard-grid {
-      display: grid;
-      grid-template-columns: 420px 1fr;
-      gap: 16px;
-      margin-bottom: 24px;
-      align-items: stretch;
     }
     .four-col-layout {
       display: grid;
@@ -1017,83 +1009,67 @@
     <p class="muted" style="margin:0; font-size:13.5px;">用于本地联调 TAA 全部接口。上半部分模拟 <strong>平台接收</strong> TAA 主动上报的请求；下半部分模拟 <strong>平台下发</strong> 请求到 TAA，测试所有接口连通性。</p>
   </header>
 
-  <div class="top-dashboard-grid">
-    <!-- 左侧：变窄的平台注册板块 -->
-    <section class="card" id="card-attestation" style="display:flex; flex-direction:column; margin-bottom:0;">
-      <div class="card-head" style="margin-bottom:12px; padding-bottom:10px;">
-        <div>
-          <h2>平台注册</h2>
-          <div class="status" style="margin-top:8px; font-size:14px;"><span id="dot" class="dot"></span><span id="statusText">等待 TAA 注册请求</span></div>
-        </div>
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <button id="registerBodyBtn" class="secondary" onclick="openRegisterBodyModal()" disabled>查看返回</button>
-        </div>
+  <!-- Top: Unified platform registration and service connection control panel -->
+  <section class="card" id="card-attestation" style="display:flex; flex-direction:column; margin-bottom:24px;">
+    <!-- Row 1: Platform registration status and global record operations -->
+    <div class="card-head" style="margin-bottom:12px; padding-bottom:10px; flex-wrap:wrap; gap:12px;">
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <h2 style="margin:0;">平台注册</h2>
+        <div class="status" style="font-size:13.5px;"><span id="dot" class="dot"></span><span id="statusText">等待 TAA 注册请求</span></div>
       </div>
-      <div class="card-compact" style="min-height:auto;">
-        <p id="registerSummary" class="card-note" style="margin:0 0 8px;">完整返回体仅在弹窗中展示。</p>
-        <div id="registerPublicKeyBox" hidden style="margin-top:4px;">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
-            <label for="registerPublicKey" style="margin:0; font-size:12.5px; font-weight:650;">TAA 注册公钥</label>
-            <button type="button" id="copyPubKeyBtn" class="icon-btn-compact" onclick="copyRegisterPublicKey(this)" title="复制公钥" aria-label="复制公钥">
-              <svg class="copy-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-              </svg>
-              <svg class="check-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:none; color:var(--ok);">
-                <polyline points="20 6 9 17 4 12"></polyline>
-              </svg>
-            </button>
-          </div>
-          <textarea id="registerPublicKey" readonly style="min-height:90px; font-size:11.5px; font-family:ui-monospace,Menlo,monospace; line-height:1.45; cursor:text; background:rgba(37,99,235,.04); border-radius:8px; margin:0;" onclick="this.select();"></textarea>
-        </div>
-        <input type="hidden" id="attestRequestId" value="req-mock-attest-001">
-        <div id="attestationResult" class="test-result" style="display:none;"></div>
-        <div class="actions" style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
-          <button onclick="testGetAttestation()">获取远程证明报告</button>
-          <button id="saveReportBtn" class="success" onclick="saveAttestationReport()" disabled>保存报告文件</button>
-          <button class="secondary" onclick="refreshStatus()">刷新状态</button>
-          <button class="secondary" onclick="resetStatus()">清空接收记录</button>
-        </div>
-        <p class="muted" style="margin:8px 0 0; font-size:12px;">最后刷新：<span id="lastRefresh">-</span></p>
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <button id="registerBodyBtn" class="secondary" onclick="openRegisterBodyModal()" disabled>查看注册返回</button>
+        <button class="secondary" onclick="refreshStatus()">刷新状态</button>
+        <button class="secondary" onclick="resetStatus()">清空接收记录</button>
       </div>
-    </section>
+    </div>
 
-    <!-- 右侧：服务连接与环境检查面板 -->
-    <section class="card" id="card-service-env" style="display:flex; flex-direction:column; margin-bottom:0; justify-content:space-between;">
-      <div>
-        <div class="card-head" style="margin-bottom:12px; padding-bottom:10px;">
-          <div>
-            <h2>服务连接与环境检查</h2>
-            <p class="card-note">配置 TAA 目标服务地址，并执行连通性与健康状态探测。</p>
-          </div>
-          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-            <button onclick="testHealth()" style="padding:6px 14px; font-size:13px;">检查连通性</button>
-            <button onclick="toggleHealthDetail()" class="secondary" style="padding:6px 12px; font-size:13px;">查看结果</button>
-          </div>
+    <!-- Row 2: TAA service address and health check toolbar -->
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; background:var(--panel-sub); border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin-bottom:12px; flex-wrap:wrap;">
+      <div style="display:flex; align-items:center; gap:10px; flex:1; min-width:280px;">
+        <label for="taaAddr" style="font-size:13px; font-weight:650; white-space:nowrap; margin:0;">TAA 服务地址</label>
+        <input id="taaAddr" value="" placeholder="自动检测中..." style="flex:1; min-width:180px; padding:6px 10px; font-size:13px; border-radius:6px; border:1px solid var(--line); background:var(--bg);">
+      </div>
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-size:13px; font-weight:650;">环境状态</span>
+          <span id="healthDot" class="dot" title="未检查"></span>
+          <span id="healthLabel" class="muted" style="font-size:13px;">未检查</span>
         </div>
-        <div style="display:flex; flex-direction:column; gap:12px;">
-          <div class="taa-addr-bar" style="margin:0; box-shadow:none; background:var(--panel-sub);">
-            <label for="taaAddr">TAA 服务地址</label>
-            <input id="taaAddr" value="" placeholder="自动检测中...">
-          </div>
-          <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; background:var(--panel-sub); border:1px solid var(--line); border-radius:10px; padding:10px 14px; flex-wrap:wrap;">
-            <div style="display:flex; align-items:center; gap:10px;">
-              <span style="font-size:13px; font-weight:650;">环境状态</span>
-              <span class="muted" style="font-size:12px;">·</span>
-              <div style="display:flex; align-items:center; gap:8px;">
-                <span id="healthDot" class="dot" title="未检查"></span>
-                <span id="healthLabel" class="muted" style="font-size:13px;">未检查</span>
-              </div>
-            </div>
-            <span class="muted" style="font-size:12px; font-family:ui-monospace,Menlo,monospace;">GET /v1/taa/health</span>
-          </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button type="button" onclick="testHealth()" style="padding:6px 14px; font-size:13px;">检查连通性</button>
+          <button type="button" id="healthResultBtn" class="secondary" onclick="openHealthResultModal()" style="padding:6px 12px; font-size:13px;" disabled>查看结果</button>
         </div>
       </div>
-      <div id="healthDetail" style="display:none; margin-top:12px;">
-        <pre id="healthDetailContent" style="background:rgba(127,127,127,.08); padding:12px; border-radius:10px; font-size:13px; max-height:220px; overflow:auto; white-space:pre-wrap; word-break:break-all; margin:0;"></pre>
+    </div>
+
+    <!-- Row 3: Public key display and attestation operations -->
+    <div class="card-compact" style="min-height:auto;">
+      <p id="registerSummary" class="card-note" style="margin:0 0 8px;">完整返回体仅在弹窗中展示。</p>
+      <div id="registerPublicKeyBox" hidden style="margin-top:4px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+          <label for="registerPublicKey" style="margin:0; font-size:12.5px; font-weight:650;">TAA 注册公钥</label>
+          <button type="button" id="copyPubKeyBtn" class="icon-btn-compact" onclick="copyRegisterPublicKey(this)" title="复制公钥" aria-label="复制公钥">
+            <svg class="copy-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            <svg class="check-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:none; color:var(--ok);">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          </button>
+        </div>
+        <textarea id="registerPublicKey" readonly style="min-height:80px; font-size:11.5px; font-family:ui-monospace,Menlo,monospace; line-height:1.45; cursor:text; background:rgba(37,99,235,.04); border-radius:8px; margin:0;" onclick="this.select();"></textarea>
       </div>
-    </section>
-  </div>
+      <input type="hidden" id="attestRequestId" value="req-mock-attest-001">
+      <div id="attestationResult" class="test-result" style="display:none;"></div>
+      <div class="actions" style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
+        <button onclick="testGetAttestation()">获取远程证明报告</button>
+        <button id="saveReportBtn" class="success" onclick="saveAttestationReport()" disabled>保存报告文件</button>
+      </div>
+      <p class="muted" style="margin:8px 0 0; font-size:12px;">最后刷新：<span id="lastRefresh">-</span></p>
+    </div>
+  </section>
 
   <!-- ─── 训练流程（平台 → TAA）接口测试 ─── -->
   <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; margin:24px 0 10px; flex-wrap:wrap;">
