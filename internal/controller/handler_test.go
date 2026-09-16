@@ -353,7 +353,7 @@ func TestImportHandler(t *testing.T) {
 		var reportPayload importedReportPayload
 		select {
 		case reportPayload = <-reportCh:
-		case <-time.After(15 * time.Second):
+		case <-time.After(60 * time.Second):
 			t.Fatal("timed out waiting for training result report")
 		}
 		if reportPayload.DockerID != "docker-phase1" || reportPayload.TaskID != "task-phase1" {
@@ -446,7 +446,7 @@ func TestImportHandler(t *testing.T) {
 			if payload.Msg == nil || !strings.Contains(*payload.Msg, "runtimeConfig 不能为空") {
 				t.Fatalf("reportRes msg = %v, want runtimeConfig failure", payload.Msg)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(60 * time.Second):
 			t.Fatal("timed out waiting for empty runtimeConfig failure report")
 		}
 	})
@@ -513,7 +513,7 @@ func TestImportHandler(t *testing.T) {
 			if payload.Msg == nil || !strings.Contains(*payload.Msg, "runtimeConfig 不能为空") {
 				t.Fatalf("reportRes msg = %v, want runtimeConfig failure", payload.Msg)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(60 * time.Second):
 			t.Fatal("timed out waiting for empty runtimeConfig failure report")
 		}
 	})

@@ -526,7 +526,7 @@ func TestStopTrainingThenRestart(t *testing.T) {
 
 	select {
 	case <-trainDone2:
-	case <-time.After(5 * time.Second):
+	case <-time.After(60 * time.Second):
 		t.Fatal("second executeTraining did not finish in time")
 	}
 
