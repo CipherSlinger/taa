@@ -355,14 +355,14 @@ git commit -m "feat(audit): implement three-track evaluation and bootstrap confi
 - Modify: `models/audit/tools/generate_matrix_results.py`
 - Test: 验证脚本执行与数据格式校验
 
-- [ ] **Step 1: 升级 `generate_matrix_results.py` 表格生成与报告更新功能**
+- [x] **Step 1: 升级 `generate_matrix_results.py` 表格生成与报告更新功能**
 
 在 `generate_matrix_results.py` 中：
 1. 适配三轨对比（Raw vs Checklist vs Static-LLM）及 4 大新基座的数据聚合；
 2. 在报表输出中呈现 `Attribution Precision`、`Bypass Rate` 与 `95% CI`；
 3. 提供 `--dry-run` 打印测试结果，提供 `--update-html` 刷新 `models/audit/research/taa-audit-design.html`。
 
-- [ ] **Step 2: 执行基准套件整体端到端演练 (Dry-Run / Mock)**
+- [x] **Step 2: 执行基准套件整体端到端演练 (Dry-Run / Mock)**
 
 运行：
 ```bash
@@ -372,7 +372,7 @@ python3 -m unittest discover -s tests -p "test_*.py" -v
 ```
 预期结果: 所有单元测试全部通过（4 大基座编译无误、13 规则完全对齐、Fail-Closed 逻辑生效、100 样本正交生成完好）。
 
-- [ ] **Step 3: 最终提交**
+- [x] **Step 3: 最终提交**
 
 ```bash
 git add models/audit/tools/generate_matrix_results.py
