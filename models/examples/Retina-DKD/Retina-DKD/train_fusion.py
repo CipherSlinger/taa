@@ -32,8 +32,8 @@ parser.add_argument('-l_num', '--layer_num', type=int, required=False, default=1
 parser.add_argument('-ld', '--load_model', type=int, required=False, default='-1', help="the number of model")
 parser.add_argument('-d', '--dataset', type=str, required=False, default='', help="dataset describe")
 parser.add_argument('-nw', '--num_workers', type=int, required=False, default=4, help="num_workers for DataLoader")
-parser.add_argument('--data-root', type=str, required=False, default='/opt/taa/input', help='data root (default: /opt/taa/input)')
-parser.add_argument('--output-dir', type=str, required=False, default='/opt/taa/output', help='output root directory for checkpoints and results (default: /opt/taa/output)')
+parser.add_argument('--data-root', type=str, required=False, default=None, help='data root (default: /opt/taa/input)')
+parser.add_argument('--output-dir', type=str, required=False, default=None, help='output root directory for checkpoints and results (default: /opt/taa/output)')
 parser.add_argument('--log-dir', type=str, required=False, default=None, help='log directory for training output (default: None)')
 parser.add_argument('--progress-dir', type=str, required=False, default=None, help='progress directory for training progress (default: None)')
 args = parser.parse_args()
@@ -92,7 +92,10 @@ if not pretrain:
 
 
 def resolve_data_root(data_root_text: str | None) -> Path:
-    target = data_root_text or os.environ.get('TAA_DATA_DIR') or os.environ.get('TAA_INPUT_DIR') or '/opt/taa/input'
+    if data_root_text and data_root_text != '/opt/taa/input':
+        target = data_root_text
+    else:
+        target = os.environ.get('TAA_DATA_DIR') or os.environ.get('TAA_INPUT_DIR') or data_root_text or '/opt/taa/input'
     path = Path(target).expanduser().resolve(strict=False)
     if (path / 'data').is_dir() and not (path / f'cls{args.dataset}').is_dir() and not (path / 'risk_factor_5.xlsx').is_file():
         return path / 'data'
@@ -100,7 +103,10 @@ def resolve_data_root(data_root_text: str | None) -> Path:
 
 
 def resolve_output_dir(output_dir_text: str | None) -> Path:
-    target = output_dir_text or os.environ.get('TAA_OUTPUT_DIR') or '/opt/taa/output'
+    if output_dir_text and output_dir_text != '/opt/taa/output':
+        target = output_dir_text
+    else:
+        target = os.environ.get('TAA_OUTPUT_DIR') or os.environ.get('TAA_MODEL_OUTPUT_DIR') or output_dir_text or '/opt/taa/output'
     return Path(target).expanduser().resolve(strict=False)
 
 
