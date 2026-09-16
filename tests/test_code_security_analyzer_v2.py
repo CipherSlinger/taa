@@ -315,6 +315,49 @@ class TestCodeSecurityAnalyzerV2(unittest.TestCase):
             if os.path.exists(short_file_path):
                 os.unlink(short_file_path)
 
+    def test_compute_conclusion_defensive_typing(self):
+        """
+        Verify that compute_conclusion safely handles ill-typed stats and summaries.
+        """
+        # stats is None or non-dict
+        c_none = compute_conclusion(None)
+        self.assertFalse(c_none["passed"])
+        self.assertEqual(c_none["verdict"], "UNCERTAIN")
+
+        # stats values are strings or None
+        c_strings = compute_conclusion({"high": "1", "uncertain": None})
+        self.assertFalse(c_strings["passed"])
+
+        # file_summaries is invalid type
+        c_invalid_summary = compute_conclusion({"high": 0, "total_findings": 0}, file_summaries=123)
+        self.assertTrue(c_invalid_summary["passed"])
+
+    def test_extract_finding_centered_context_budget_capping(self):
+        """
+        Verify that when many findings are scattered across thousands of lines,
+        the sliced output adheres to the max_lines budget.
+        """
+        extract_fn = getattr(code_security_analyzer, "extract_finding_centered_context")
+        lines = [f"line_{i} = {i}\n" for i in range(1, 2001)]
+        # 30 findings spread out
+        findings = [
+            Finding(
+                file="test.py",
+                line=i * 60,
+                rule_id="NET_001",
+                category="Network",
+                severity="HIGH",
+                description="desc",
+                code_snippet="req",
+                context_before="",
+                context_after="",
+            )
+            for i in range(1, 30)
+        ]
+        sliced = extract_fn(lines, findings, max_lines=400, context_window=15)
+        sliced_line_count = len(sliced.splitlines())
+        self.assertLessEqual(sliced_line_count, 450)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -273,6 +273,7 @@ class StaticScanner:
             if stripped.startswith("#") or stripped.startswith("//"):
                 continue
 
+            matched_rule = False
             for rule, compiled_pats in self.compiled:
                 for pat in compiled_pats:
                     if pat.search(line):
@@ -293,7 +294,10 @@ class StaticScanner:
                             context_after=ctx_after,
                             suggestion=suggestion_for_rule(rule["id"]),
                         ))
+                        matched_rule = True
                         break
+                if matched_rule:
+                    break
         return findings
 
     def scan_directory(self, dirpath: str, extensions=(".py",)) -> List[Finding]:
@@ -394,6 +398,23 @@ def extract_finding_centered_context(
                 merged[-1][1] = max(prev_end, end)
             else:
                 merged.append([start, end])
+
+    # Enforce line budget if merged intervals exceed max_lines
+    total_budget_lines = sum(end - start for start, end in merged)
+    if total_budget_lines > max_lines:
+        capped_merged = []
+        accumulated = 0
+        for start, end in merged:
+            interval_len = end - start
+            if accumulated + interval_len <= max_lines:
+                capped_merged.append([start, end])
+                accumulated += interval_len
+            else:
+                remaining = max_lines - accumulated
+                if remaining > 5:
+                    capped_merged.append([start, start + remaining])
+                break
+        merged = capped_merged if capped_merged else [[0, min(max_lines, total_lines)]]
 
     # Build formatted snippet with section headers
     sections = []
@@ -706,6 +727,17 @@ def compute_conclusion(
     policy: Optional[Union[dict, str]] = "gate",
 ) -> dict:
     """Compute audit conclusion (Fail-Closed Security Gate)."""
+    # Defensive handling for missing or invalid stats
+    if not isinstance(stats, dict):
+        return {
+            "passed": False,
+            "verdict": "UNCERTAIN",
+            "reason": "Fail-Closed: Invalid or missing stats structure",
+            "risk_level": "CRITICAL",
+            "summary": "Invalid stats structure",
+            "recommendation": "Review audit inputs",
+        }
+
     # Backwards compatibility: policy passed as 2nd positional argument
     if isinstance(file_summaries, str):
         policy = file_summaries
@@ -717,13 +749,19 @@ def compute_conclusion(
     elif isinstance(policy, dict):
         policy_str = policy.get("policy", "gate")
 
-    malicious = stats.get("malicious", 0)
-    suspicious = stats.get("suspicious", 0)
-    benign = stats.get("benign", 0)
-    uncertain = stats.get("uncertain", 0)
-    high = stats.get("high", 0)
-    medium = stats.get("medium", 0)
-    total = stats.get("total_findings", 0)
+    def _safe_int(val) -> int:
+        try:
+            return int(val) if val is not None else 0
+        except (ValueError, TypeError):
+            return 0
+
+    malicious = _safe_int(stats.get("malicious"))
+    suspicious = _safe_int(stats.get("suspicious"))
+    benign = _safe_int(stats.get("benign"))
+    uncertain = _safe_int(stats.get("uncertain"))
+    high = _safe_int(stats.get("high"))
+    medium = _safe_int(stats.get("medium"))
+    total = _safe_int(stats.get("total_findings"))
 
     has_high_or_medium = (high > 0) or (medium > 0)
     has_uncertain = uncertain > 0
@@ -733,7 +771,7 @@ def compute_conclusion(
 
     # Check file summaries for chained attacks or high-risk indicators
     file_chain_detected = False
-    if file_summaries:
+    if file_summaries and isinstance(file_summaries, (list, tuple, set, dict)):
         raw_list = (
             list(file_summaries.values())
             if isinstance(file_summaries, dict)
@@ -893,7 +931,7 @@ def generate_audit_report(
             bad_rule_ids.add(f.rule_id)
     if not bad_rule_ids:
         for f in findings:
-            if f.severity == "HIGH" and not f.llm_verdict:
+            if f.severity in ("HIGH", "MEDIUM") and not f.llm_verdict:
                 bad_rule_ids.add(f.rule_id)
     if bad_rule_ids:
         suggestions = [f"{rid}: {suggestion_for_rule(rid)}" for rid in sorted(bad_rule_ids)]
