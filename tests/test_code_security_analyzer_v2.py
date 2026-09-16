@@ -8,6 +8,7 @@ import os
 import sys
 import unittest
 import tempfile
+from unittest.mock import MagicMock
 from pathlib import Path
 
 # Add models/examples to sys.path to import code_security_analyzer
@@ -255,6 +256,64 @@ class TestCodeSecurityAnalyzerV2(unittest.TestCase):
 
         self.assertTrue(len(prompt) > 0)
         self.assertIn("state_dict", prompt)
+
+    def test_audit_file_pure_llm_structured_slicing(self):
+        """
+        Verify that audit_file_pure_llm applies structured head/tail slicing with
+        an English truncation notice when file line count exceeds max_lines.
+        """
+        analyzer = LLMSecurityAnalyzer(backend="ollama")
+        captured_prompts = []
+        analyzer._call_ollama = MagicMock(
+            side_effect=lambda prompt, **kwargs: (
+                captured_prompts.append(prompt),
+                {"verdict": "BENIGN", "risk_level": "LOW", "reason": "ok", "exfiltration": False},
+            )[1]
+        )
+
+        # 1. Test file exceeding max_lines: 500 lines with max_lines=400
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            for i in range(1, 485):
+                f.write(f"line_{i} = {i}\n")
+            f.write("if __name__ == '__main__':\n")
+            for i in range(486, 501):
+                f.write(f"    print({i})\n")
+            large_file_path = f.name
+
+        try:
+            res = analyzer.audit_file_pure_llm(large_file_path, max_lines=400)
+            self.assertEqual(res["verdict"], "BENIGN")
+            self.assertEqual(len(captured_prompts), 1)
+            prompt = captured_prompts[0]
+
+            expected_notice = "# ... (Truncated: total 500 lines, showing top and bottom entrypoint)"
+            self.assertIn(expected_notice, prompt)
+            self.assertIn("line_1 = 1", prompt)
+            self.assertIn("if __name__ == '__main__':", prompt)
+            # Intermediate lines should be omitted by slicing
+            self.assertNotIn("line_380 = 380", prompt)
+        finally:
+            if os.path.exists(large_file_path):
+                os.unlink(large_file_path)
+
+        # 2. Test file within max_lines limit: no truncation notice
+        captured_prompts.clear()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            for i in range(1, 20):
+                f.write(f"x_{i} = {i}\n")
+            short_file_path = f.name
+
+        try:
+            res = analyzer.audit_file_pure_llm(short_file_path, max_lines=400)
+            self.assertEqual(res["verdict"], "BENIGN")
+            self.assertEqual(len(captured_prompts), 1)
+            prompt = captured_prompts[0]
+            self.assertNotIn("Truncated:", prompt)
+            self.assertIn("x_1 = 1", prompt)
+            self.assertIn("x_19 = 19", prompt)
+        finally:
+            if os.path.exists(short_file_path):
+                os.unlink(short_file_path)
 
 
 if __name__ == "__main__":
