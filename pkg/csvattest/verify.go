@@ -45,6 +45,7 @@ type VerificationResult struct {
 	HRKURL            string
 	HSKCEKURL         string
 	CertDetails       *CertChainDetails
+	rawReport         []byte
 }
 
 type PubKeyDetails struct {
@@ -104,7 +105,16 @@ func VerifyReport(reportFile string, verifyChain bool) (*VerificationResult, err
 	return VerifyReportData(data, filepath.Dir(reportFile), verifyChain)
 }
 
-func VerifyReportData(data []byte, certDir string, verifyChain bool) (*VerificationResult, error) {
+// VerifyOptions controls attestation verification options including explicit cert paths.
+type VerifyOptions struct {
+	VerifyChain    bool
+	HRKCertPath    string
+	HSKCekCertPath string
+	CertDir        string
+}
+
+// ParseReport parses an attestation report buffer into a VerificationResult.
+func ParseReport(data []byte) (*VerificationResult, error) {
 	if len(data) < ReportSize {
 		return nil, fmt.Errorf("%w: report has %d bytes, need %d", ErrShortBuffer, len(data), ReportSize)
 	}
@@ -146,6 +156,7 @@ func VerifyReportData(data []byte, certDir string, verifyChain bool) (*Verificat
 		Reserved2:    reserved2,
 		MAC:          mac,
 		HRKURL:       HRKCertURL,
+		rawReport:    append([]byte(nil), report...),
 	}
 
 	chipIDASCII, err := ChipIDASCII(result.ChipID)
@@ -161,37 +172,113 @@ func VerifyReportData(data []byte, certDir string, verifyChain bool) (*Verificat
 	}
 	result.PEKDetails = pekDetails
 
-	pekPub, err := parseHygonPubKey(pekCert[OffsetCSVPubKey:])
-	if err != nil {
-		return result, fmt.Errorf("解析报告内 PEK 公钥失败: %w", err)
-	}
-
-	r, s := ParseHygonSignature(report[OffsetReportSig1:])
-	if !taacrypto.VerifySM2Signature(pekPub.Key, pekPub.UserID, report[:SignedSize], r, s) {
-		return result, errors.New("报告签名验证失败")
-	}
-	result.ReportVerified = true
-
-	if verifyChain {
-		certs, err := LoadCertChain(certDir, chipIDASCII)
-		if err != nil {
-			return result, err
-		}
-		result.ChainSource = certs.Source
-		result.ChainDownloadNote = certs.DownloadNote
-		result.HRKURL = certs.HRKURL
-		result.HSKCEKURL = certs.HSKCEKURL
-		details, err := VerifyCertChain(certs, pekCert)
-		if details != nil {
-			result.CertDetails = details
-			result.PEKDetails = details.PEK
-		}
-		if err != nil {
-			return result, err
-		}
-		result.ChainVerified = true
-	}
 	return result, nil
+}
+
+// VerifyReportPEKSignature verifies the PEK signature on the report header.
+func VerifyReportPEKSignature(res *VerificationResult) error {
+	if res == nil {
+		return errors.New("verification result is nil")
+	}
+	pekPub, err := parseHygonPubKey(res.PEKCert[OffsetCSVPubKey:])
+	if err != nil {
+		return fmt.Errorf("解析报告内 PEK 公钥失败: %w", err)
+	}
+
+	r, s := ParseHygonSignature(res.Signature)
+	var signed []byte
+	if len(res.rawReport) >= SignedSize {
+		signed = res.rawReport[:SignedSize]
+	} else {
+		signed = make([]byte, SignedSize)
+		copy(signed[OffsetReportPubkeyDigest:], res.PubkeyDigest)
+		copy(signed[OffsetReportVMID:], res.VMID)
+		copy(signed[OffsetReportVMVersion:], res.VMVersion)
+		copy(signed[OffsetUserData:], UnmaskWords(res.UserData, res.ANonce))
+		copy(signed[OffsetMNonce:], UnmaskWords(res.MNonce, res.ANonce))
+		copy(signed[OffsetMeasure:], UnmaskWords(res.Digest, res.ANonce))
+		policyBytes := make([]byte, 4)
+		binary.LittleEndian.PutUint32(policyBytes, res.Policy)
+		copy(signed[OffsetReportPolicy:], UnmaskWords(policyBytes, res.ANonce))
+	}
+
+	if !taacrypto.VerifySM2Signature(pekPub.Key, pekPub.UserID, signed, r, s) {
+		return errors.New("报告签名验证失败")
+	}
+	res.ReportVerified = true
+	return nil
+}
+
+var loadCertChain = LoadCertChain
+
+// VerifyReportWithOptions verifies an attestation report using the provided options.
+func VerifyReportWithOptions(data []byte, opts VerifyOptions) (*VerificationResult, error) {
+	res, err := ParseReport(data)
+	if err != nil {
+		return res, err
+	}
+
+	if err := VerifyReportPEKSignature(res); err != nil {
+		return res, err
+	}
+
+	if !opts.VerifyChain {
+		return res, nil
+	}
+
+	var certs *CertChainInput
+	if opts.HRKCertPath != "" && opts.HSKCekCertPath != "" {
+		certs, err = LoadCertChainFromFiles(opts.HRKCertPath, opts.HSKCekCertPath)
+		if err != nil {
+			return res, fmt.Errorf("load certs from files: %w", err)
+		}
+	} else {
+		certs, err = loadCertChain(opts.CertDir, res.ChipIDASCII)
+		if err != nil {
+			return res, err
+		}
+	}
+
+	res.ChainSource = certs.Source
+	res.ChainDownloadNote = certs.DownloadNote
+	if certs.HRKURL != "" {
+		res.HRKURL = certs.HRKURL
+	}
+	if certs.HSKCEKURL != "" {
+		res.HSKCEKURL = certs.HSKCEKURL
+	}
+
+	details, err := VerifyCertChain(certs, res.PEKCert)
+	if details != nil {
+		res.CertDetails = details
+		res.PEKDetails = details.PEK
+	}
+	if err != nil {
+		return res, err
+	}
+	res.ChainVerified = true
+	return res, nil
+}
+
+// VerifyReportData verifies an attestation report using a certificate directory.
+func VerifyReportData(data []byte, certDir string, verifyChain bool) (*VerificationResult, error) {
+	return VerifyReportWithOptions(data, VerifyOptions{
+		VerifyChain: verifyChain,
+		CertDir:     certDir,
+	})
+}
+
+// LoadCertChainFromFiles loads HRK and HSK/CEK certificates from explicit file paths.
+func LoadCertChainFromFiles(hrkPath, hskCekPath string) (*CertChainInput, error) {
+	hrk, err := readFixedFile(hrkPath, HrkCertSize)
+	if err != nil {
+		return nil, fmt.Errorf("read hrk cert %s: %w", hrkPath, err)
+	}
+	hskCek, err := readFixedFile(hskCekPath, HskCekSize)
+	if err != nil {
+		return nil, fmt.Errorf("read hsk_cek cert %s: %w", hskCekPath, err)
+	}
+	return &CertChainInput{HRK: hrk, HSKCEK: hskCek, Source: "local file"}, nil
 }
 
 func LoadCertChain(certDir string, chipIDASCII string) (*CertChainInput, error) {
@@ -214,18 +301,14 @@ func LoadCertChain(certDir string, chipIDASCII string) (*CertChainInput, error) 
 	return nil, fmt.Errorf("下载证书失败且本地证书不可用(chip_id=%s): HRK 下载=%v; HSK/CEK 下载=%v; 本地=%v", chipIDASCII, hrkErr, hskCekErr, localErr)
 }
 
+// LoadLocalCertChain loads certificates from a directory containing hrk.cert and hsk_cek.cert.
 func LoadLocalCertChain(certDir string) (*CertChainInput, error) {
-	hrkPath := filepath.Join(certDir, "hrk.cert")
-	hskCekPath := filepath.Join(certDir, "hsk_cek.cert")
-	hrk, err := readFixedFile(hrkPath, HrkCertSize)
+	chain, err := LoadCertChainFromFiles(filepath.Join(certDir, "hrk.cert"), filepath.Join(certDir, "hsk_cek.cert"))
 	if err != nil {
-		return nil, fmt.Errorf("读取 %s 失败: %w", hrkPath, err)
+		return nil, err
 	}
-	hskCek, err := readFixedFile(hskCekPath, HskCekSize)
-	if err != nil {
-		return nil, fmt.Errorf("读取 %s 失败: %w", hskCekPath, err)
-	}
-	return &CertChainInput{HRK: hrk, HSKCEK: hskCek, Source: "本地文件"}, nil
+	chain.Source = "本地文件"
+	return chain, nil
 }
 
 func DownloadCert(rawURL string, expectedSize int) ([]byte, error) {
