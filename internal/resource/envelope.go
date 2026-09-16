@@ -183,3 +183,32 @@ func CompressDirToZip(srcDir string) ([]byte, error) {
 	}
 	return buf.Bytes(), nil
 }
+
+// ResolvePlaintextResource 决策并准备资源的明文文件路径。
+// 若 URL 以 .enc 结尾，必须解密；
+// 若非 .enc 且为有效压缩包，直接返回原路径（isDecrypted = false）；
+// 否则尝试解密（isDecrypted = true）。
+func ResolvePlaintextResource(resourceURL, downloadedPath string, privKey *teecrypto.SM2PrivateKey) (string, bool, error) {
+	if ResourceURLHasEncSuffix(resourceURL) {
+		decryptedPath, err := DecryptResourceEnvelope(privKey, downloadedPath)
+		if err != nil {
+			return "", false, fmt.Errorf("解密资源失败: %w", err)
+		}
+		return decryptedPath, true, nil
+	}
+
+	isArchive, err := IsArchiveFile(downloadedPath)
+	if err != nil {
+		return "", false, fmt.Errorf("检测资源格式失败: %w", err)
+	}
+	if isArchive {
+		return downloadedPath, false, nil
+	}
+
+	decryptedPath, err := DecryptResourceEnvelope(privKey, downloadedPath)
+	if err != nil {
+		return "", false, fmt.Errorf("资源非 .enc 后缀且非有效压缩包，尝试解密失败: %w", err)
+	}
+	return decryptedPath, true, nil
+}
+
