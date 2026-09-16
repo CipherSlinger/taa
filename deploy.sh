@@ -491,7 +491,8 @@ save_local_docker_image() {
 
   step "building taa daemon"
   ensure_go_compiler
-  spin_task "building taa daemon from ./cmd/taa" make TAA_BINARY="$TAA_BINARY_PATH" taa
+  ensure_parent_dir "$TAA_BINARY_PATH"
+  spin_task "building taa daemon from ./cmd/taa" go build -o "$TAA_BINARY_PATH" ./cmd/taa
   require_file "build failed: taa binary" "$TAA_BINARY_PATH"
   require_file "certificate missing: hrk.cert" "$ATT_HRK_SOURCE"
   require_file "certificate missing: hsk_cek.cert" "$ATT_HSK_SOURCE"
@@ -1546,7 +1547,8 @@ banner "Deploying: ${DEPLOY_COMPONENTS}→ ${DEPLOY_TARGET_DESC}" "Target model:
 
 if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
   ensure_go_compiler
-  spin_task "building platform-mock from ./cmd/platform-mock" make MOCK_BINARY="$MOCK_BINARY_PATH" platform-mock-build
+  ensure_parent_dir "$MOCK_BINARY_PATH"
+  spin_task "building platform-mock from ./cmd/platform-mock" go build -o "$MOCK_BINARY_PATH" ./cmd/platform-mock
 fi
 if [[ "$DEPLOY_QWEN" == true ]]; then
   require_dir "ollama package not found" "$OLLAMA_LOCAL_DIR"
@@ -1566,7 +1568,8 @@ fi
 
 if [[ "$DEPLOY_TAA" == true ]]; then
   ensure_go_compiler
-  spin_task "building taa daemon from ./cmd/taa" make TAA_BINARY="$TAA_BINARY_PATH" taa
+  ensure_parent_dir "$TAA_BINARY_PATH"
+  spin_task "building taa daemon from ./cmd/taa" go build -o "$TAA_BINARY_PATH" ./cmd/taa
 fi
 
 if [[ "$DEPLOY_PLATFORM_MOCK" == true && ! -f "$MOCK_BINARY_PATH" ]]; then

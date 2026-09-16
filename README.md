@@ -101,7 +101,6 @@ flowchart LR
 ├── models/                           # Bundled offline models & runtimes (e.g., Ollama / Qwen)
 ├── docs/                             # Architecture specifications & API design documents
 ├── deploy.sh                         # Unified multi-mode deployment, lifecycle & packaging script
-├── Makefile                          # Build, testing, and execution targets
 └── go.mod                            # Go module definition (Go 1.26+)
 ```
 
@@ -304,7 +303,7 @@ TAA includes a full-featured management platform emulator with an embedded Web G
 
 ```bash
 # Build standalone platform mock binary
-make platform-mock-build
+go build -o bin/platform-mock ./cmd/platform-mock
 
 # Run in foreground
 ./bin/platform-mock -addr 0.0.0.0:18080 -taa-target http://127.0.0.1:6001
@@ -336,10 +335,10 @@ make platform-mock-build
 
 ```bash
 # Build TAA enclave daemon
-make taa
+go build -o bin/taa ./cmd/taa
 
 # Build platform mock emulator
-make platform-mock-build
+go build -o bin/platform-mock ./cmd/platform-mock
 
 # Run all unit tests
 go test ./...
