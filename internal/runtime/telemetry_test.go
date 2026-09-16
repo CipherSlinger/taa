@@ -81,6 +81,42 @@ func TestJSONLLogReaderIncremental(t *testing.T) {
 	}
 }
 
+func TestJSONLLogReaderPrependTimestamp(t *testing.T) {
+	logDir := t.TempDir()
+	reader := NewJSONLLogReader(logDir)
+
+	logFile := filepath.Join(logDir, "train.log")
+	content := `{"timestamp": "2026-09-16T10:00:00Z", "message": "[Train] Starting Epoch 1/30 (lr=0.001)"}` + "\n" +
+		`{"time": "2026-09-16T10:00:05Z", "message": "Epoch 1 finished"}` + "\n" +
+		`{"timestamp": "2026-09-16T10:00:10Z", "msg": "Evaluating..."}` + "\n"
+	if err := os.WriteFile(logFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := reader.ReadNew()
+	if err != nil {
+		t.Fatalf("ReadNew failed: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(entries))
+	}
+
+	expected0 := "[2026-09-16T10:00:00Z] [Train] Starting Epoch 1/30 (lr=0.001)"
+	if entries[0].Message != expected0 {
+		t.Fatalf("entries[0].Message = %q, want %q", entries[0].Message, expected0)
+	}
+
+	expected1 := "[2026-09-16T10:00:05Z] Epoch 1 finished"
+	if entries[1].Message != expected1 {
+		t.Fatalf("entries[1].Message = %q, want %q", entries[1].Message, expected1)
+	}
+
+	expected2 := "[2026-09-16T10:00:10Z] Evaluating..."
+	if entries[2].Message != expected2 {
+		t.Fatalf("entries[2].Message = %q, want %q", entries[2].Message, expected2)
+	}
+}
+
 func TestReadLatestProgress(t *testing.T) {
 	progressDir := t.TempDir()
 

@@ -1594,3 +1594,61 @@ func TestTAAStopTrainingProxyAndLogging(t *testing.T) {
 	}
 }
 
+func TestModelLogPrintsMessagesInSeqOrder(t *testing.T) {
+	store := newModelLogStore(t.TempDir(), 100)
+	var output bytes.Buffer
+	store.out = &output
+	handler := modelLogHandler(store)
+
+	body := `{
+		"dockerId": "docker-test",
+		"requestId": "req-test",
+		"taskId": "task-test",
+		"seqStart": 1,
+		"entries": [
+			{"seq": 3, "message": "[2026-09-16T10:00:02Z] third log"},
+			{"seq": 1, "message": "[2026-09-16T10:00:00Z] first log"},
+			{"seq": 2, "message": "[2026-09-16T10:00:01Z] second log"}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("modelLog status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	expected := "[2026-09-16T10:00:00Z] first log\n[2026-09-16T10:00:01Z] second log\n[2026-09-16T10:00:02Z] third log\n"
+	if output.String() != expected {
+		t.Fatalf("printed log output mismatch:\ngot:\n%q\nwant:\n%q", output.String(), expected)
+	}
+
+	// 再次发送重复的 seq 2 和新日志 seq 4，验证只打印新增的 seq 4
+	body2 := `{
+		"dockerId": "docker-test",
+		"requestId": "req-test",
+		"taskId": "task-test",
+		"seqStart": 2,
+		"entries": [
+			{"seq": 2, "message": "[2026-09-16T10:00:01Z] second log duplicate"},
+			{"seq": 4, "message": "[2026-09-16T10:00:03Z] fourth log"}
+		]
+	}`
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", strings.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	handler(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("modelLog 2 status = %d, want 200; body=%s", w2.Code, w2.Body.String())
+	}
+
+	expectedTotal := expected + "[2026-09-16T10:00:03Z] fourth log\n"
+	if output.String() != expectedTotal {
+		t.Fatalf("total printed log output mismatch:\ngot:\n%q\nwant:\n%q", output.String(), expectedTotal)
+	}
+}
+

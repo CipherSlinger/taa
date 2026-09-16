@@ -126,8 +126,27 @@ func logMessageFromLine(line string) string {
 		case string:
 			return strings.TrimSpace(value)
 		case map[string]any:
-			if message, ok := value["message"].(string); ok {
-				return strings.TrimSpace(message)
+			var msg string
+			if m, ok := value["message"].(string); ok {
+				msg = strings.TrimSpace(m)
+			} else if m, ok := value["msg"].(string); ok {
+				msg = strings.TrimSpace(m)
+			}
+
+			var tsStr string
+			if ts, ok := value["timestamp"].(string); ok {
+				tsStr = strings.TrimSpace(ts)
+			} else if ts, ok := value["time"].(string); ok {
+				tsStr = strings.TrimSpace(ts)
+			} else if ts, ok := value["ts"].(string); ok {
+				tsStr = strings.TrimSpace(ts)
+			}
+
+			if msg != "" {
+				if tsStr != "" && !strings.HasPrefix(msg, "["+tsStr+"]") {
+					return fmt.Sprintf("[%s] %s", tsStr, msg)
+				}
+				return msg
 			}
 		}
 	}

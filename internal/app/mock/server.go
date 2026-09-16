@@ -515,6 +515,7 @@ type modelLogStore struct {
 	capacity int
 	seen     map[string]struct{}
 	state    modelLogState
+	out      io.Writer
 }
 
 func newModelLogStore(stateDir string, capacity int) *modelLogStore {
@@ -525,6 +526,7 @@ func newModelLogStore(stateDir string, capacity int) *modelLogStore {
 		path:     defaultStateFile(stateDir, "modelLog-state.json"),
 		capacity: capacity,
 		seen:     make(map[string]struct{}),
+		out:      os.Stdout,
 	}
 	store.load()
 	return store
@@ -595,6 +597,18 @@ func (s *modelLogStore) addEntries(dockerId, requestId, taskId string, entries [
 		s.state.TaskID = taskId
 	}
 	s.state.TotalCount += addedCount
+
+	// 按照 seq 升序排序新接收的日志，并直接打印消息
+	sort.Slice(toAdd, func(i, j int) bool {
+		return toAdd[i].Seq < toAdd[j].Seq
+	})
+	out := s.out
+	if out == nil {
+		out = os.Stdout
+	}
+	for _, entry := range toAdd {
+		fmt.Fprintln(out, entry.Message)
+	}
 
 	s.state.Entries = append(s.state.Entries, toAdd...)
 	sort.Slice(s.state.Entries, func(i, j int) bool {
