@@ -1,6 +1,6 @@
 # 远程证明证书动态配置化与加载自检实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 将海光 CSV 远程证明根证书与背书证书从遗留目录迁移至 `deploy/certs/`，支持配置文件显式配置证书路径，在 TAA 服务生命周期中集成基于配置证书的报告自检与动态 `verifiedPass` 判定，并完成 `deploy.sh` 自动化闭环与遗留 `attestation/` 目录清理。
 
@@ -21,7 +21,7 @@
 - Create: `deploy/certs/hsk_cek.cert`
 - Delete: `attestation/` (整个目录及其下全部文件)
 
-- [ ] **Step 1: 创建目标目录并复制证书文件**
+- [x] **Step 1: 创建目标目录并复制证书文件**
 
 ```bash
 mkdir -p deploy/certs
@@ -30,7 +30,7 @@ cp attestation/hsk_cek.cert deploy/certs/hsk_cek.cert
 chmod 0644 deploy/certs/hrk.cert deploy/certs/hsk_cek.cert
 ```
 
-- [ ] **Step 2: 验证新证书文件完整性**
+- [x] **Step 2: 验证新证书文件完整性**
 
 ```bash
 ls -l deploy/certs/
@@ -40,20 +40,20 @@ cmp attestation/hsk_cek.cert deploy/certs/hsk_cek.cert
 ```
 Expected: 文件存在、大小一致（hrk.cert 832B, hsk_cek.cert 2916B），cmp 返回码 0。
 
-- [ ] **Step 3: 删除根目录 `attestation/` 目录**
+- [x] **Step 3: 删除根目录 `attestation/` 目录**
 
 ```bash
 git rm -r attestation/
 ```
 
-- [ ] **Step 4: 暂存证书文件并确认工作区状态**
+- [x] **Step 4: 暂存证书文件并确认工作区状态**
 
 ```bash
 git add deploy/certs/hrk.cert deploy/certs/hsk_cek.cert
 git status -s deploy/certs/ attestation/
 ```
 
-- [ ] **Step 5: 提交更改**
+- [x] **Step 5: 提交更改**
 
 ```bash
 git commit -m "refactor(attestation): migrate certificates to deploy/certs and remove legacy attestation directory"
@@ -70,7 +70,7 @@ git commit -m "refactor(attestation): migrate certificates to deploy/certs and r
 - Modify: `configs/taa-docker.json`
 - Modify: `configs/taa-local.json`
 
-- [ ] **Step 1: 编写配置解析失败的单元测试**
+- [x] **Step 1: 编写配置解析失败的单元测试**
 
 在 `internal/config/config_test.go` 文件末尾增加针对 `attestation` 字段解析及回退的测试用例：
 
@@ -128,14 +128,14 @@ func TestLoadStartupConfigAttestationTrimWhitespace(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 ```bash
 go test -v ./internal/config -run "TestLoadStartupConfigReadsAttestationCertPaths"
 ```
 Expected: 编译报错或断言失败（`cfg.AttestationHRKCertPath` 未定义）。
 
-- [ ] **Step 3: 在 `internal/config/config.go` 中实现配置扩展**
+- [x] **Step 3: 在 `internal/config/config.go` 中实现配置扩展**
 
 修改 `internal/config/config.go`：
 1. 在 `StartupConfig` 结构体中添加：
@@ -177,7 +177,7 @@ type startupConfigFile struct {
 	}
 ```
 
-- [ ] **Step 4: 更新模板配置文件**
+- [x] **Step 4: 更新模板配置文件**
 
 在 `configs/taa-production.json` 和 `configs/taa-docker.json` 中增加：
 ```json
@@ -194,14 +194,14 @@ type startupConfigFile struct {
   },
 ```
 
-- [ ] **Step 5: 重新运行单测并验证通过**
+- [x] **Step 5: 重新运行单测并验证通过**
 
 ```bash
 go test -v ./internal/config/...
 ```
 Expected: PASS 全部通过。
 
-- [ ] **Step 6: 提交更改**
+- [x] **Step 6: 提交更改**
 
 ```bash
 git add internal/config/ configs/
@@ -216,7 +216,7 @@ git commit -m "feat(config): add attestation certificate path configuration supp
 - Modify: `pkg/csvattest/verify.go`
 - Modify: `pkg/csvattest/verify_test.go`
 
-- [ ] **Step 1: 编写测试用例验证显式证书路径加载**
+- [x] **Step 1: 编写测试用例验证显式证书路径加载**
 
 在 `pkg/csvattest/verify_test.go` 中添加测试：
 
@@ -251,14 +251,14 @@ func TestLoadCertChainFromFiles_MissingFile(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 ```bash
 go test -v ./pkg/csvattest -run "TestLoadCertChainFromFiles"
 ```
 Expected: FAIL（函数未定义）。
 
-- [ ] **Step 3: 在 `pkg/csvattest/verify.go` 实现显式证书路径与选项模式**
+- [x] **Step 3: 在 `pkg/csvattest/verify.go` 实现显式证书路径与选项模式**
 
 1. 实现 `LoadCertChainFromFiles`:
 ```go
@@ -345,14 +345,14 @@ func VerifyReportData(data []byte, certDir string, verifyChain bool) (*Verificat
 }
 ```
 
-- [ ] **Step 4: 运行 `pkg/csvattest` 全量单测验证**
+- [x] **Step 4: 运行 `pkg/csvattest` 全量单测验证**
 
 ```bash
 go test -v ./pkg/csvattest/...
 ```
 Expected: PASS 全部通过。
 
-- [ ] **Step 5: 提交更改**
+- [x] **Step 5: 提交更改**
 
 ```bash
 git add pkg/csvattest/
@@ -367,7 +367,7 @@ git commit -m "feat(csvattest): support explicit certificate file paths for atte
 - Create: `internal/attestation/verify.go`
 - Create: `internal/attestation/verify_test.go`
 
-- [ ] **Step 1: 编写业务门面单元测试**
+- [x] **Step 1: 编写业务门面单元测试**
 
 编写 `internal/attestation/verify_test.go`:
 
@@ -406,14 +406,14 @@ func TestVerifyReport_ValidCertPaths(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行测试验证编译失败**
+- [x] **Step 2: 运行测试验证编译失败**
 
 ```bash
 go test -v ./internal/attestation -run "TestVerifyReport"
 ```
 Expected: FAIL（`VerifyReport` 未定义）。
 
-- [ ] **Step 3: 实现 `internal/attestation/verify.go`**
+- [x] **Step 3: 实现 `internal/attestation/verify.go`**
 
 ```go
 package attestation
@@ -439,14 +439,14 @@ func VerifyReport(reportData []byte, hrkCertPath, hskCekCertPath string) (*csvat
 }
 ```
 
-- [ ] **Step 4: 运行 `internal/attestation` 全量单测验证**
+- [x] **Step 4: 运行 `internal/attestation` 全量单测验证**
 
 ```bash
 go test -v ./internal/attestation/...
 ```
 Expected: PASS 全部通过。
 
-- [ ] **Step 5: 提交更改**
+- [x] **Step 5: 提交更改**
 
 ```bash
 git add internal/attestation/
@@ -464,7 +464,7 @@ git commit -m "feat(attestation): add attestation report verification facade"
 - Modify: `internal/controller/handler_system.go`
 - Modify: `internal/controller/handler_test.go`
 
-- [ ] **Step 1: 修改 `internal/controller` 接收证书路径并执行自检**
+- [x] **Step 1: 修改 `internal/controller` 接收证书路径并执行自检**
 
 1. 在 `internal/controller/route.go` 中，为 `TAAState` 添加证书路径字段并更新构造函数：
 ```go
@@ -495,7 +495,7 @@ func NewTAAState(attestationFile, platformIP, dockerID, hrkCertPath, hskCekCertP
 	return reportData, formattedValues, verifiedPass, verifyMsg
 ```
 
-- [ ] **Step 2: 修改 `internal/app/taa/app.go` 启动自检与透传**
+- [x] **Step 2: 修改 `internal/app/taa/app.go` 启动自检与透传**
 
 1. 修改 `prepareAttestationReport` 签名与逻辑：
 ```go
@@ -538,18 +538,18 @@ func registerPlatform(ctx context.Context, platformIP, dockerID, publicKeyPEM st
    - 初始化 `controller.NewTAAState(fixedAttestationFile, cfg.PlatformIP, cfg.DockerID, cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath, ...)`。
    - `registerPlatform(ctx, ..., verifiedPass)`。
 
-- [ ] **Step 3: 修复并扩展 `internal/controller/handler_test.go` 与 `internal/app/taa/app_test.go`**
+- [x] **Step 3: 修复并扩展 `internal/controller/handler_test.go` 与 `internal/app/taa/app_test.go`**
 
 更新测试中 `NewTAAState` 的调用，传入测试证书路径（如 `filepath.Join(tmpDir, "hrk.cert")`），确保全部相关单测通过。
 
-- [ ] **Step 4: 运行 `app` 与 `controller` 测试**
+- [x] **Step 4: 运行 `app` 与 `controller` 测试**
 
 ```bash
 go test -v ./internal/app/taa/... ./internal/controller/...
 ```
 Expected: PASS 全部通过。
 
-- [ ] **Step 5: 提交更改**
+- [x] **Step 5: 提交更改**
 
 ```bash
 git add internal/app/taa/ internal/controller/
@@ -563,7 +563,7 @@ git commit -m "feat(taa): integrate certificate chain self-verification into sta
 **Files:**
 - Modify: `deploy.sh`
 
-- [ ] **Step 1: 更新证书源目录与目标目录**
+- [x] **Step 1: 更新证书源目录与目标目录**
 
 修改 `deploy.sh`:
 1. 替换 `ATT_DIR` 为 `CERT_DIR`:
@@ -577,7 +577,7 @@ ATT_HSK_SOURCE="${ATT_HSK_SOURCE:-$CERT_DIR/hsk_cek.cert}"
    - 将各个模式中拷贝证书至容器根目录的 `docker cp ... /root/taa/hrk.cert` 修改为拷贝至 `$TAA_CONTAINER_WORKDIR/certs/hrk.cert` 和 `hsk_cek.cert`。
    - 确保容器目录初始化命令包含 `mkdir -p '$TAA_CONTAINER_WORKDIR/certs'`。
 
-- [ ] **Step 2: 更新 `write_taa_config` 动态注入 `attestation` 配置块**
+- [x] **Step 2: 更新 `write_taa_config` 动态注入 `attestation` 配置块**
 
 在 `deploy.sh` 的 `write_taa_config` 函数中的 Python 脚本段添加：
 ```python
@@ -587,14 +587,14 @@ attestation["hskCekCertPath"] = f"{workdir}/certs/hsk_cek.cert"
 ```
 （其中 `workdir` 对应传入的容器工作目录，若无则使用目标路径 `/root/taa`）。
 
-- [ ] **Step 3: 验证部署脚本语法**
+- [x] **Step 3: 验证部署脚本语法**
 
 ```bash
 bash -n deploy.sh
 ```
 Expected: 退出码 0，无任何语法错误。
 
-- [ ] **Step 4: 提交更改**
+- [x] **Step 4: 提交更改**
 
 ```bash
 git add deploy.sh
@@ -608,14 +608,14 @@ git commit -m "fix(deploy): update certificate source paths and inject dynamic a
 **Files:**
 - 全局
 
-- [ ] **Step 1: 执行全量单元测试**
+- [x] **Step 1: 执行全量单元测试**
 
 ```bash
 go test ./...
 ```
 Expected: 所有包单测全部通过。
 
-- [ ] **Step 2: 验证主程序与平台 Mock 构建**
+- [x] **Step 2: 验证主程序与平台 Mock 构建**
 
 ```bash
 go build -o bin/taa ./cmd/taa
@@ -623,7 +623,7 @@ go build -o bin/platform-mock ./cmd/platform-mock
 ```
 Expected: 成功生成 `bin/taa` 与 `bin/platform-mock`，退出码 0。
 
-- [ ] **Step 3: 验证整个仓库中无废弃 `attestation/` 路径残留**
+- [x] **Step 3: 验证整个仓库中无废弃 `attestation/` 路径残留**
 
 ```bash
 git grep "attestation/hrk.cert" || true
@@ -632,7 +632,7 @@ git grep "attestation/csv_c" || true
 ```
 Expected: 没有任何活跃代码或脚本指向已删除的历史路径。
 
-- [ ] **Step 4: 提交最终整体验收与文档同步**
+- [x] **Step 4: 提交最终整体验收与文档同步**
 
 ```bash
 git status
