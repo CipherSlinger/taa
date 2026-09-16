@@ -18,3 +18,9 @@ models/audit/benchmarks/
 
 sdk/
 *.tar.gz
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.cover
