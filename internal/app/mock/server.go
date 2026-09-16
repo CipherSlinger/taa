@@ -903,6 +903,47 @@ func reportResHandler(store *reportStateStore) http.HandlerFunc {
 	}
 }
 
+func isValidModelChecksum(cs map[string]any) bool {
+	if cs == nil || len(cs) == 0 {
+		return false
+	}
+	alg, ok := cs["algorithm"].(string)
+	if !ok || strings.TrimSpace(alg) == "" {
+		return false
+	}
+	val, ok := cs["value"].(string)
+	if !ok || strings.TrimSpace(val) == "" {
+		return false
+	}
+	switch v := cs["size"].(type) {
+	case float64:
+		if v <= 0 {
+			return false
+		}
+	case int:
+		if v <= 0 {
+			return false
+		}
+	case int64:
+		if v <= 0 {
+			return false
+		}
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil || n <= 0 {
+			return false
+		}
+	case string:
+		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil || n <= 0 {
+			return false
+		}
+	default:
+		return false
+	}
+	return true
+}
+
 // reportModelImportHandler handles POST /v1/taa/reportModelImport — TAA 上报模型导入与完整性校验结果
 func reportModelImportHandler(store *reportStateStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -952,9 +993,15 @@ func reportModelImportHandler(store *reportStateStore) http.HandlerFunc {
 			state.Msg = *req.Msg
 		}
 
-		if state.DockerID == "" {
+		if strings.TrimSpace(state.DockerID) == "" {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "缺少 dockerId"
+		} else if strings.TrimSpace(state.RequestID) == "" {
+			state.StatusCode = http.StatusBadRequest
+			state.Message = "缺少 requestId"
+		} else if state.Code == 0 && !isValidModelChecksum(state.Checksum) {
+			state.StatusCode = http.StatusBadRequest
+			state.Message = "导入成功时 checksum 不能为空且必须包含 size、algorithm 与 value"
 		} else {
 			state.Accepted = true
 			state.StatusCode = http.StatusOK
@@ -1024,9 +1071,15 @@ func reportAuditHandler(store *reportStateStore) http.HandlerFunc {
 			state.Msg = *req.Msg
 		}
 
-		if state.DockerID == "" {
+		if strings.TrimSpace(state.DockerID) == "" {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "缺少 dockerId"
+		} else if strings.TrimSpace(state.RequestID) == "" {
+			state.StatusCode = http.StatusBadRequest
+			state.Message = "缺少 requestId"
+		} else if state.Code != 0 && state.Code != 1 && state.Code != 2 {
+			state.StatusCode = http.StatusBadRequest
+			state.Message = "code 必须为 0(通过)、1(未通过) 或 2(LLM不可用)"
 		} else {
 			state.Accepted = true
 			state.StatusCode = http.StatusOK
@@ -1056,19 +1109,39 @@ func registerStatusHandler(store *registerStateStore) http.HandlerFunc {
 }
 
 func reportStateResult(state reportState) map[string]any {
-	return map[string]any{
+	res := map[string]any{
 		"received":    state.Received,
 		"accepted":    state.Accepted,
 		"receivedAt":  state.ReceivedAt,
 		"dockerId":    state.DockerID,
 		"requestId":   state.RequestID,
 		"taskId":      state.TaskID,
+		"code":        state.Code,
+		"msg":         state.Msg,
+		"checksum":    state.Checksum,
 		"report":      state.Report,
 		"contentType": state.ContentType,
 		"statusCode":  state.StatusCode,
 		"message":     state.Message,
 		"rawBody":     state.RawBody,
 	}
+	if state.Report != "" {
+		var reportObj struct {
+			Conclusion struct {
+				RiskLevel  string         `json:"risk_level"`
+				Statistics map[string]any `json:"statistics"`
+			} `json:"conclusion"`
+		}
+		if err := json.Unmarshal([]byte(state.Report), &reportObj); err == nil {
+			if reportObj.Conclusion.RiskLevel != "" {
+				res["riskLevel"] = reportObj.Conclusion.RiskLevel
+			}
+			if reportObj.Conclusion.Statistics != nil {
+				res["statistics"] = reportObj.Conclusion.Statistics
+			}
+		}
+	}
+	return res
 }
 
 func reportStateEnvelope(state reportState) (string, int) {

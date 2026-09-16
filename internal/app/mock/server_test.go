@@ -981,3 +981,174 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("Config{}.withDefaults().UploadDir = %q, want %q", resolved.UploadDir, ".local/upload")
 	}
 }
+
+func TestReportModelImportStrictValidationAndChecksum(t *testing.T) {
+	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportModelImport-state.json")}
+	handler := reportModelImportHandler(store)
+
+	// 1. 缺少 requestId 时返回 400
+	reqNoReqID := httptest.NewRequest(http.MethodPost, "/v1/taa/reportModelImport", strings.NewReader(`{
+		"dockerId": "docker-1",
+		"code": 0,
+		"checksum": {"size": 581632, "algorithm": "sm3", "value": "a1b2c3d4"}
+	}`))
+	reqNoReqID.Header.Set("Content-Type", "application/json")
+	wNoReqID := httptest.NewRecorder()
+	handler(wNoReqID, reqNoReqID)
+	if wNoReqID.Code != http.StatusBadRequest {
+		t.Fatalf("missing requestId status = %d, want 400; body=%s", wNoReqID.Code, wNoReqID.Body.String())
+	}
+	if !strings.Contains(wNoReqID.Body.String(), "缺少 requestId") {
+		t.Fatalf("body = %s, want to contain '缺少 requestId'", wNoReqID.Body.String())
+	}
+
+	// 2. code=0 时缺少 checksum 返回 400
+	reqNoChecksum := httptest.NewRequest(http.MethodPost, "/v1/taa/reportModelImport", strings.NewReader(`{
+		"dockerId": "docker-1",
+		"requestId": "req-1",
+		"code": 0
+	}`))
+	reqNoChecksum.Header.Set("Content-Type", "application/json")
+	wNoChecksum := httptest.NewRecorder()
+	handler(wNoChecksum, reqNoChecksum)
+	if wNoChecksum.Code != http.StatusBadRequest {
+		t.Fatalf("missing checksum status = %d, want 400; body=%s", wNoChecksum.Code, wNoChecksum.Body.String())
+	}
+	if !strings.Contains(wNoChecksum.Body.String(), "导入成功时 checksum 不能为空且必须包含 size、algorithm 与 value") {
+		t.Fatalf("body = %s, want to contain checksum error message", wNoChecksum.Body.String())
+	}
+
+	// 3. 合法上报时返回 200，且通过 reportStateResult 能正确获取到 checksum 字段内容
+	validBody := `{
+		"dockerId": "docker-1",
+		"requestId": "req-1",
+		"taskId": "task-1",
+		"code": 0,
+		"checksum": {"size": 581632, "algorithm": "sm3", "value": "a1b2c3d4"}
+	}`
+	reqValid := httptest.NewRequest(http.MethodPost, "/v1/taa/reportModelImport", strings.NewReader(validBody))
+	reqValid.Header.Set("Content-Type", "application/json")
+	wValid := httptest.NewRecorder()
+	handler(wValid, reqValid)
+	if wValid.Code != http.StatusOK {
+		t.Fatalf("valid request status = %d, want 200; body=%s", wValid.Code, wValid.Body.String())
+	}
+
+	result := reportStateResult(store.get())
+	if result["code"] != 0 {
+		t.Fatalf("result code = %v, want 0", result["code"])
+	}
+	checksumMap, ok := result["checksum"].(map[string]any)
+	if !ok || checksumMap == nil {
+		t.Fatalf("result checksum is not a valid map: %+v", result["checksum"])
+	}
+	if checksumMap["algorithm"] != "sm3" || checksumMap["value"] != "a1b2c3d4" {
+		t.Fatalf("checksum mismatch: %+v", checksumMap)
+	}
+	switch s := checksumMap["size"].(type) {
+	case float64:
+		if int64(s) != 581632 {
+			t.Fatalf("checksum size = %v, want 581632", s)
+		}
+	case int:
+		if s != 581632 {
+			t.Fatalf("checksum size = %v, want 581632", s)
+		}
+	case int64:
+		if s != 581632 {
+			t.Fatalf("checksum size = %v, want 581632", s)
+		}
+	default:
+		t.Fatalf("unexpected type for size: %T (%v)", checksumMap["size"], checksumMap["size"])
+	}
+}
+
+func TestReportAuditStatisticsParsing(t *testing.T) {
+	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportAudit-state.json")}
+	handler := reportAuditHandler(store)
+
+	// 1. 测试缺少 dockerId
+	reqNoDockerID := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", strings.NewReader(`{
+		"requestId": "req-1",
+		"code": 0
+	}`))
+	reqNoDockerID.Header.Set("Content-Type", "application/json")
+	wNoDockerID := httptest.NewRecorder()
+	handler(wNoDockerID, reqNoDockerID)
+	if wNoDockerID.Code != http.StatusBadRequest {
+		t.Fatalf("missing dockerId status = %d, want 400", wNoDockerID.Code)
+	}
+
+	// 2. 测试缺少 requestId
+	reqNoReqID := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", strings.NewReader(`{
+		"dockerId": "docker-1",
+		"code": 0
+	}`))
+	reqNoReqID.Header.Set("Content-Type", "application/json")
+	wNoReqID := httptest.NewRecorder()
+	handler(wNoReqID, reqNoReqID)
+	if wNoReqID.Code != http.StatusBadRequest {
+		t.Fatalf("missing requestId status = %d, want 400", wNoReqID.Code)
+	}
+
+	// 3. 测试 code 校验 (必须为 0, 1, 2)
+	reqBadCode := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", strings.NewReader(`{
+		"dockerId": "docker-1",
+		"requestId": "req-1",
+		"code": 3
+	}`))
+	reqBadCode.Header.Set("Content-Type", "application/json")
+	wBadCode := httptest.NewRecorder()
+	handler(wBadCode, reqBadCode)
+	if wBadCode.Code != http.StatusBadRequest {
+		t.Fatalf("bad code status = %d, want 400", wBadCode.Code)
+	}
+
+	// 4. 测试上报带有 report 并解析 risk_level 和 statistics
+	reportContent := `{"conclusion":{"risk_level":"LOW","statistics":{"high":0,"medium":1,"low":2}}}`
+	bodyBytes, _ := json.Marshal(map[string]any{
+		"dockerId":  "docker-1",
+		"requestId": "req-1",
+		"taskId":    "task-1",
+		"code":      0,
+		"report":    reportContent,
+	})
+	reqValid := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", bytes.NewReader(bodyBytes))
+	reqValid.Header.Set("Content-Type", "application/json")
+	wValid := httptest.NewRecorder()
+	handler(wValid, reqValid)
+	if wValid.Code != http.StatusOK {
+		t.Fatalf("valid reportAudit status = %d, want 200; body=%s", wValid.Code, wValid.Body.String())
+	}
+
+	result := reportStateResult(store.get())
+	if result["riskLevel"] != "LOW" {
+		t.Fatalf("result riskLevel = %v, want LOW", result["riskLevel"])
+	}
+	statsMap, ok := result["statistics"].(map[string]any)
+	if !ok || statsMap == nil {
+		t.Fatalf("result statistics is not map: %+v", result["statistics"])
+	}
+	checkCount := func(key string, want int) {
+		val, exists := statsMap[key]
+		if !exists {
+			t.Fatalf("statistics missing key %q", key)
+		}
+		switch v := val.(type) {
+		case float64:
+			if int(v) != want {
+				t.Fatalf("statistics[%q] = %v, want %d", key, v, want)
+			}
+		case int:
+			if v != want {
+				t.Fatalf("statistics[%q] = %v, want %d", key, v, want)
+			}
+		default:
+			t.Fatalf("unexpected type for statistics[%q]: %T (%v)", key, val, val)
+		}
+	}
+	checkCount("high", 0)
+	checkCount("medium", 1)
+	checkCount("low", 2)
+}
+
