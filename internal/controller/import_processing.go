@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -217,13 +218,94 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	s.executeTraining(trainReq, phase, trainRecord, cfg, env, startedAt)
 }
 
-func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecord ImportIndexRecord, cfg runtimeConfig, env map[string]string, startedAt time.Time) {
-	defer func() {
-		s.mu.Lock()
+func (s *TAAState) ensureTrainingControl(trainReq importRequest, phase int, trainRecord ImportIndexRecord, startedAt time.Time) *trainingControl {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	control := s.trainingControl
+	if control == nil {
+		control = newTrainingControl()
+		s.trainingControl = control
+	}
+
+	s.TrainingRunning = true
+	s.CurrentOp = "training"
+	if s.ActiveTaskID == "" {
+		s.ActiveTaskID = trainReq.TaskID
+	}
+	if s.ActiveRequestID == "" {
+		s.ActiveRequestID = trainReq.RequestID
+	}
+
+	if s.activeTask == nil {
+		resultDir := trainRecord.ResultDir
+		if resultDir == "" {
+			resultDir = resultDirForRequestTask(s.Security.ResultDir, trainReq.RequestID, trainReq.TaskID)
+		}
+		if startedAt.IsZero() {
+			startedAt = time.Now().UTC()
+		}
+		s.activeTask = &ActiveTaskSnapshot{
+			RequestID: trainReq.RequestID,
+			TaskID:    trainReq.TaskID,
+			Type:      "training",
+			Phase:     phase,
+			Status:    "RUNNING",
+			ResultDir: resultDir,
+			StartedAt: startedAt.UTC(),
+		}
+	} else {
+		s.activeTask.Type = "training"
+		if s.activeTask.RequestID == "" {
+			s.activeTask.RequestID = trainReq.RequestID
+		}
+		if s.activeTask.TaskID == "" {
+			s.activeTask.TaskID = trainReq.TaskID
+		}
+		if s.activeTask.ResultDir == "" {
+			s.activeTask.ResultDir = trainRecord.ResultDir
+		}
+	}
+
+	if err := s.sealStateLocked(); err != nil {
+		s.Logs.Add(LogError, "state", "训练控制状态持久化失败: %v", err)
+	}
+	return control
+}
+
+func (s *TAAState) finishTrainingControl(control *trainingControl) {
+	if control == nil {
+		return
+	}
+
+	s.mu.Lock()
+	if s.trainingControl == control {
+		s.trainingControl = nil
+		s.activeTask = nil
+		s.ActiveTaskID = ""
+		s.ActiveRequestID = ""
+		s.activeToken = 0
+		s.CurrentOp = "idle"
 		s.TrainingRunning = false
-		_ = s.sealStateLocked()
-		s.mu.Unlock()
-	}()
+		if err := s.sealStateLocked(); err != nil {
+			s.Logs.Add(LogError, "state", "训练控制状态清理持久化失败: %v", err)
+		}
+	}
+	s.mu.Unlock()
+	control.finish()
+}
+
+func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecord ImportIndexRecord, cfg runtimeConfig, env map[string]string, startedAt time.Time) {
+	control := s.ensureTrainingControl(trainReq, phase, trainRecord, startedAt)
+	defer s.finishTrainingControl(control)
+
+	checkCancelled := func() bool {
+		return control.isCancelled()
+	}
+	if checkCancelled() {
+		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+		return
+	}
 
 	trainOutputDir := trainRecord.ResultDir
 	if trainOutputDir == "" {
@@ -245,34 +327,65 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 	s.setCurrentOp("staging")
 	s.Logs.Add(LogInfo, "train", "准备模型输入目录: %s (源数据目录: %s)", modelInputDir, trainDataDir)
 	if err := os.MkdirAll(modelInputDir, 0o755); err != nil {
+		if checkCancelled() {
+			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+			return
+		}
 		s.Logs.Add(LogError, "train", "创建模型输入目录失败: %v", err)
-		s.setCurrentOp("idle")
 		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("创建模型输入目录失败: %v", err))
 		return
 	}
+	if checkCancelled() {
+		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+		return
+	}
 	if err := cleanDirContents(modelInputDir); err != nil {
+		if checkCancelled() {
+			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+			return
+		}
 		s.Logs.Add(LogError, "train", "清空模型输入目录失败: %v", err)
-		s.setCurrentOp("idle")
 		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("清空模型输入目录失败: %v", err))
 		return
 	}
+	if checkCancelled() {
+		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+		return
+	}
 	if err := copyDir(modelInputDir, trainDataDir); err != nil {
+		if checkCancelled() {
+			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+			return
+		}
 		s.Logs.Add(LogError, "train", "复制训练数据到模型输入目录失败: %v", err)
-		s.setCurrentOp("idle")
 		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("复制训练数据到模型输入目录失败: %v", err))
+		return
+	}
+	if checkCancelled() {
+		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
 		return
 	}
 	s.Logs.Add(LogInfo, "train", "训练数据已复制到模型输入目录: %s", modelInputDir)
 
 	if err := os.MkdirAll(modelOutputDir, 0o755); err != nil {
-		s.Logs.Add(LogError, "train", "创建模型输出���录失败: %v", err)
-		s.setCurrentOp("idle")
+		if checkCancelled() {
+			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+			return
+		}
+		s.Logs.Add(LogError, "train", "创建模型输出目录失败: %v", err)
 		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("创建模型输出目录失败: %v", err))
 		return
 	}
+	if checkCancelled() {
+		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+		return
+	}
 	if err := cleanDirContents(modelOutputDir); err != nil {
+		if checkCancelled() {
+			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+			return
+		}
 		s.Logs.Add(LogError, "train", "清空模型输出目录失败: %v", err)
-		s.setCurrentOp("idle")
 		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("清空模型输出目录失败: %v", err))
 		return
 	}
@@ -283,52 +396,97 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 		"模型进度": s.Security.GetModelProgressDir(),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
+			if checkCancelled() {
+				s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+				return
+			}
 			s.Logs.Add(LogError, "train", "创建%s目录失败: %v", name, err)
-			s.setCurrentOp("idle")
 			s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("创建%s目录失败: %v", name, err))
 			return
 		}
+		if checkCancelled() {
+			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+			return
+		}
 		if err := cleanDirContents(dir); err != nil {
+			if checkCancelled() {
+				s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+				return
+			}
 			s.Logs.Add(LogError, "train", "清空%s目录失败: %v", name, err)
-			s.setCurrentOp("idle")
 			s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("清空%s目录失败: %v", name, err))
 			return
 		}
 	}
 
 	watcher := s.startModelReportWatcher(context.Background(), trainReq.RequestID, trainReq.TaskID)
-	defer watcher.Stop()
+	defer func() {
+		if checkCancelled() {
+			watcher.StopWithoutFlush()
+			return
+		}
+		watcher.Stop()
+	}()
 
 	StepSeparator("Run runtimeConfig")
 	s.setCurrentOp("training")
+	if checkCancelled() {
+		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+		return
+	}
 	resolvedCommands := resolveRuntimeCommands(cfg.Commands, modelInputDir, modelOutputDir)
 	s.Logs.Add(LogInfo, "train", "开始执行 runtimeConfig: commands=%d, envKeys=%v, 输入目录: %s (源hash=%s), 输出目录: %s",
 		len(cfg.Commands), envKeys(env), modelInputDir, trainRecord.Hash, modelOutputDir)
 	for i, cmd := range resolvedCommands {
 		s.Logs.Add(LogInfo, "train", "  [cmd %d] %s", i+1, cmd)
 	}
-	if output, err := runRuntimeConfig(cfg, env, s.Security.ModelDir, modelInputDir, modelOutputDir, trainReq.TaskID, startedAt.UTC().Format(time.RFC3339)); err != nil {
+	output, err := runRuntimeConfigWithControl(control, cfg, env, s.Security.ModelDir, modelInputDir, modelOutputDir, trainReq.TaskID, startedAt.UTC().Format(time.RFC3339))
+	if checkCancelled() || errors.Is(err, context.Canceled) {
+		watcher.StopWithoutFlush()
+	} else {
 		watcher.Stop()
+	}
+	if err != nil {
+		if checkCancelled() || errors.Is(err, context.Canceled) {
+			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+			return
+		}
 		s.Logs.Add(LogError, "train", "执行 runtimeConfig 失败: %v\noutput: %s", err, output)
-		s.setCurrentOp("idle")
 		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("执行 runtimeConfig 失败: %v", err))
 		return
 	}
-	watcher.Stop()
+	if checkCancelled() {
+		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+		return
+	}
 	s.Logs.Add(LogInfo, "train", "runtimeConfig 执行成功")
 
 	StepSeparator("Collect Output Results")
 	s.Logs.Add(LogInfo, "train", "从模型输出目录拷贝产物到结果目录: %s -> %s", modelOutputDir, trainOutputDir)
 	if err := os.MkdirAll(trainOutputDir, 0o755); err != nil {
+		if checkCancelled() {
+			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+			return
+		}
 		s.Logs.Add(LogError, "train", "创建结果目录失败: %v", err)
-		s.setCurrentOp("idle")
 		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("创建结果目录失败: %v", err))
 		return
 	}
+	if checkCancelled() {
+		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+		return
+	}
 	if err := copyDir(trainOutputDir, modelOutputDir); err != nil {
+		if checkCancelled() {
+			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+			return
+		}
 		s.Logs.Add(LogError, "train", "拷贝训练产物失败: %v", err)
-		s.setCurrentOp("idle")
 		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("拷贝训练产物失败: %v", err))
+		return
+	}
+	if checkCancelled() {
+		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
 		return
 	}
 	s.Logs.Add(LogInfo, "train", "训练产物拷贝完成: %s", trainOutputDir)
@@ -340,20 +498,35 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 		_ = cleanDirContents(modelOutputDir)
 	}
 
+	if checkCancelled() {
+		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+		return
+	}
 	StepSeparator("Build & Upload Report")
 	s.setCurrentOp("reporting")
 	s.Logs.Add(LogInfo, "report", "生成训练报告: taskId=%s", trainReq.TaskID)
 	finishedAt := time.Now().UTC()
 	report, err := s.buildAndSaveTrainingReport(trainReq.TaskID, startedAt, finishedAt, "succeeded", 0, "", s.getLastAudit(), true, trainOutputDir)
 	if err != nil {
+		if checkCancelled() {
+			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+			return
+		}
 		s.Logs.Add(LogError, "report", "生成训练报告失败: %v", err)
-		s.setCurrentOp("idle")
+		return
+	}
+	if checkCancelled() {
+		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
 		return
 	}
 	s.Logs.Add(LogInfo, "report", "训练报告生成成功并写入 training_report.json (%d bytes)", len(report))
 
 	s.Logs.Add(LogInfo, "report", "上报训练结果到平台: code=0, taskId=%s", trainReq.TaskID)
 
+	if checkCancelled() {
+		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+		return
+	}
 	s.reportTrainingAsync(trainReq.RequestID, trainReq.TaskID, 0, "", string(report))
 	s.setCurrentOp("idle")
 	s.Logs.Add(LogInfo, "import", "资源导入流程完成: taskId=%s", trainReq.TaskID)

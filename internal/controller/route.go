@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -133,6 +134,7 @@ type TAAState struct {
 	ActiveRequestID       string                   // 当前独占执行的请求 ID
 	activeToken           int64                    // 当前独占令牌
 	activeTask            *ActiveTaskSnapshot      // 当前在飞任务快照
+	trainingControl       *trainingControl         // 当前训练任务的中止控制对象
 	stateStore            *StateStore              // 持久化密封存储
 	importIndex           *ImportIndexStore
 	importIndexErr        error
@@ -166,7 +168,8 @@ func (s *TAAState) GetActiveTask() *ActiveTaskSnapshot {
 // ResetActiveTask 重置在飞任务状态并密封落盘
 func (s *TAAState) ResetActiveTask() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	control := s.trainingControl
+	s.trainingControl = nil
 	s.activeTask = nil
 	s.ActiveTaskID = ""
 	s.ActiveRequestID = ""
@@ -175,6 +178,10 @@ func (s *TAAState) ResetActiveTask() {
 	s.TrainingRunning = false
 	if err := s.sealStateLocked(); err != nil {
 		s.Logs.Add(LogError, "state", "ResetActiveTask 持久化密封失败: %v", err)
+	}
+	s.mu.Unlock()
+	if control != nil {
+		control.finish()
 	}
 }
 
@@ -539,6 +546,7 @@ func RegisterRoutes(mux *http.ServeMux, state *TAAState) {
 	}{
 		{"/v1/taa/health", state.healthHandler},
 		// {"/v1/taa/reportRes", state.reportResHandler}, // /v1/taa/reportRes 为 TAA -> 平台上报接口，TAA 服务端不再接收该路径。
+		{"/v1/taa/stopTraining", state.stopTrainingHandler},
 		{"/v1/taa/import", state.importHandler},
 		{"/v1/taa/importModel", state.modelImportHandler},
 		{"/v1/taa/getResourceInfo", state.resourceInfoHandler},
@@ -670,6 +678,35 @@ func (s *TAAState) logsHandler(w http.ResponseWriter, r *http.Request) {
 	}, 0)
 }
 
+// ── Handler: /v1/taa/stopTraining ────────────────────────
+
+func (s *TAAState) stopTrainingHandler(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	control := s.trainingControl
+	isTraining := s.TrainingRunning && s.activeTask != nil && s.activeTask.Type == "training"
+	s.mu.RUnlock()
+
+	if control == nil || !isTraining {
+		writeEnvelope(w, http.StatusOK, "不存在训练任务", nil, 0)
+		return
+	}
+
+	cmd := control.requestStop()
+	if cmd != nil {
+		if err := KillProcessGroup(cmd); err != nil {
+			s.Logs.Add(LogWarn, "stopTraining", "中止训练进程组警告: %v", err)
+		}
+	}
+
+	select {
+	case <-control.done:
+		writeEnvelope(w, http.StatusOK, "训练任务已中止", nil, 0)
+	case <-time.After(5 * time.Second):
+		s.Logs.Add(LogError, "stopTraining", "等待训练任务中止超时 (5s)")
+		writeError(w, http.StatusInternalServerError, "中止训练任务超时")
+	}
+}
+
 // ── Handler: /v1/taa/status ──────────────────────────────
 
 func (s *TAAState) statusHandler(w http.ResponseWriter, r *http.Request) {
@@ -783,17 +820,23 @@ func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel b
 	release := func() {
 		once.Do(func() {
 			s.mu.Lock()
-			defer s.mu.Unlock()
+			var control *trainingControl
 			if s.activeToken == token {
+				control = s.trainingControl
 				s.activeToken = 0
 				s.ActiveTaskID = ""
 				s.ActiveRequestID = ""
 				s.CurrentOp = "idle"
 				s.activeTask = nil
 				s.TrainingRunning = false
+				s.trainingControl = nil
 				if err := s.sealStateLocked(); err != nil {
 					s.Logs.Add(LogError, "task", "清除在飞任务快照持久化失败: %v", err)
 				}
+			}
+			s.mu.Unlock()
+			if control != nil {
+				control.finish()
 			}
 		})
 	}
@@ -805,14 +848,15 @@ func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel b
 func (s *TAAState) promoteCurrentTaskToTraining() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.TrainingRunning {
-		return pkgerrors.New(pkgerrors.CodeConflict, "��前已有训练任务正在执行中，请等待完成后再提交")
+	if s.TrainingRunning || s.trainingControl != nil {
+		return pkgerrors.New(pkgerrors.CodeConflict, "当前已有训练任务正在执行中，请等待完成后再提交")
 	}
 	s.TrainingRunning = true
 	s.CurrentOp = "training"
 	if s.activeTask != nil {
 		s.activeTask.Type = "training"
 	}
+	s.trainingControl = newTrainingControl()
 	return s.sealStateLocked()
 }
 
@@ -1809,14 +1853,44 @@ func parseRuntimeConfig(raw string) (runtimeConfig, map[string]string, error) {
 	return cfg, env, nil
 }
 
-func newInOutReplacer(dataDir, outputDir string) *strings.Replacer {
+func replacePathToken(value, old, replacement string) string {
+	var b strings.Builder
+	for {
+		idx := strings.Index(value, old)
+		if idx < 0 {
+			b.WriteString(value)
+			return b.String()
+		}
+		after := idx + len(old)
+		if after < len(value) && isPathContinuation(value[after]) {
+			b.WriteString(value[:after])
+			value = value[after:]
+			continue
+		}
+		b.WriteString(value[:idx])
+		b.WriteString(replacement)
+		value = value[after:]
+	}
+}
+
+func isPathContinuation(ch byte) bool {
+	return ch == '/' || ch == '.' || ch == '_' || ch == '-' || (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
+}
+
+func withTrailingSlash(dir string) string {
+	return strings.TrimRight(dir, string(filepath.Separator)) + string(filepath.Separator)
+}
+
+func resolveRuntimeValue(value, dataDir, outputDir string) string {
 	outputRoot := filepath.Dir(filepath.Clean(outputDir))
-	return strings.NewReplacer(
-		DefaultModelInputDir, dataDir,
-		DefaultModelLogDir, filepath.Join(outputRoot, "log"),
-		DefaultModelProgressDir, filepath.Join(outputRoot, "progress"),
-		DefaultModelOutputDir, outputDir,
-		"/opt/taa/output", outputRoot,
+	logDir := filepath.Join(outputRoot, "log")
+	progressDir := filepath.Join(outputRoot, "progress")
+
+	value = strings.NewReplacer(
+		DefaultModelInputDir+"/", withTrailingSlash(dataDir),
+		DefaultModelLogDir+"/", withTrailingSlash(logDir),
+		DefaultModelProgressDir+"/", withTrailingSlash(progressDir),
+		DefaultModelOutputDir+"/", withTrailingSlash(outputDir),
 		"<input>", dataDir,
 		"<output>", outputDir,
 		"<INPUT>", dataDir,
@@ -1825,14 +1899,28 @@ func newInOutReplacer(dataDir, outputDir string) *strings.Replacer {
 		"<out>", outputDir,
 		"<IN>", dataDir,
 		"<OUT>", outputDir,
-	)
+	).Replace(value)
+
+	for _, pair := range []struct {
+		old string
+		new string
+	}{
+		{DefaultModelInputDir, dataDir},
+		{DefaultModelLogDir, logDir},
+		{DefaultModelProgressDir, progressDir},
+		{DefaultModelOutputDir, outputDir},
+		{"/opt/taa/output", outputDir},
+	} {
+		value = replacePathToken(value, pair.old, pair.new)
+	}
+	value = strings.ReplaceAll(value, "/opt/taa/output/", withTrailingSlash(outputDir))
+	return value
 }
 
 func resolveRuntimeCommands(commands []string, dataDir, outputDir string) []string {
-	replacer := newInOutReplacer(dataDir, outputDir)
 	resolved := make([]string, len(commands))
 	for i, cmd := range commands {
-		resolved[i] = replacer.Replace(cmd)
+		resolved[i] = resolveRuntimeValue(cmd, dataDir, outputDir)
 	}
 	return resolved
 }
@@ -1841,40 +1929,56 @@ func resolveRuntimeEnv(env map[string]string, dataDir, outputDir string) map[str
 	if len(env) == 0 {
 		return env
 	}
-	replacer := newInOutReplacer(dataDir, outputDir)
 	resolved := make(map[string]string, len(env))
 	for k, v := range env {
-		resolved[k] = replacer.Replace(v)
+		resolved[k] = resolveRuntimeValue(v, dataDir, outputDir)
 	}
 	return resolved
 }
 
 func runRuntimeConfig(cfg runtimeConfig, env map[string]string, modelDir, dataDir, outputDir, taskID, startedAt string) (string, error) {
+	return runRuntimeConfigWithControl(nil, cfg, env, modelDir, dataDir, outputDir, taskID, startedAt)
+}
+
+func runRuntimeConfigWithControl(control *trainingControl, cfg runtimeConfig, env map[string]string, modelDir, dataDir, outputDir, taskID, startedAt string) (string, error) {
+	if control != nil && control.isCancelled() {
+		return "", context.Canceled
+	}
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return "", fmt.Errorf("create output dir: %w", err)
 	}
-
-	resolvedCommands := resolveRuntimeCommands(cfg.Commands, dataDir, outputDir)
-	commandLine := strings.Join(resolvedCommands, " && ")
-
-	cmd := exec.Command("/bin/sh", "-c", commandLine)
+	commandLine := strings.Join(resolveRuntimeCommands(cfg.Commands, dataDir, outputDir), " && ")
+	ctx := context.Background()
+	if control != nil {
+		ctx = control.ctx
+	}
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", commandLine)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = modelDir
 	cmd.Env = mergedRuntimeEnv(resolveRuntimeEnv(env, dataDir, outputDir), map[string]string{
-		"TAA_TASK_ID":          taskID,
-		"TAA_STARTED_AT":       startedAt,
-		"TAA_DATA_DIR":         dataDir,
-		"TAA_INPUT_DIR":        dataDir,
-		"TAA_MODEL_INPUT_DIR":  dataDir,
-		"TAA_MODEL_OUTPUT_DIR": outputDir,
-		"TAA_OUTPUT_DIR":       outputDir,
+		"TAA_TASK_ID": taskID, "TAA_STARTED_AT": startedAt, "TAA_DATA_DIR": dataDir,
+		"TAA_INPUT_DIR": dataDir, "TAA_MODEL_INPUT_DIR": dataDir,
+		"TAA_MODEL_OUTPUT_DIR": outputDir, "TAA_OUTPUT_DIR": outputDir,
 	})
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(output), fmt.Errorf("runtimeConfig command exited with error: %w", err)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if control != nil {
+		if err := control.startCommand(cmd); err != nil {
+			return "", err
+		}
+		defer control.clearCommand(cmd)
+	} else if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("runtimeConfig command exited with error: %w", err)
 	}
-	return string(output), nil
+	err := cmd.Wait()
+	if control != nil && control.isCancelled() {
+		return output.String(), context.Canceled
+	}
+	if err != nil {
+		return output.String(), fmt.Errorf("runtimeConfig command exited with error: %w", err)
+	}
+	return output.String(), nil
 }
 
 // KillProcessGroup 级联清理进程及其所属的整个进程组。
@@ -1882,7 +1986,11 @@ func KillProcessGroup(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 0 {
 		return nil
 	}
-	return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
 }
 
 func mergedRuntimeEnv(userEnv, systemEnv map[string]string) []string {

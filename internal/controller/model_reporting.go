@@ -150,11 +150,11 @@ func sendReportingJSON(ctx context.Context, platformAddr, endpoint string, paylo
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&ack); err != nil {
 		return fmt.Errorf("decode platform acknowledgement: %w", err)
 	}
-	if ack.Error != 0 {
-		return fmt.Errorf("platform rejected report: error=%d msg=%s", ack.Error, ack.Msg)
-	}
 	if !ack.Result.Received {
 		return fmt.Errorf("platform acknowledgement received=false")
+	}
+	if ack.Error != 0 {
+		return fmt.Errorf("platform rejected report: error=%d msg=%s", ack.Error, ack.Msg)
 	}
 	return nil
 }
@@ -418,10 +418,20 @@ func (w *reportWatcher) start() {
 }
 
 func (w *reportWatcher) Stop() {
+	w.stop(true)
+}
+
+func (w *reportWatcher) StopWithoutFlush() {
+	w.stop(false)
+}
+
+func (w *reportWatcher) stop(flush bool) {
 	w.stopOnce.Do(func() {
 		w.cancel()
 		w.wg.Wait()
-		w.flushWithContext(context.Background())
+		if flush {
+			w.flushWithContext(context.Background())
+		}
 	})
 }
 
