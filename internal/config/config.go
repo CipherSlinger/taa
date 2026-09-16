@@ -10,44 +10,52 @@ import (
 const DefaultFileName = "taa-config.json"
 
 type StartupConfig struct {
-	Addr               string
-	PlatformIP         string
-	DockerID           string
-	Contract           string
-	EnableSecurityScan bool
-	ModelDir           string
-	EnableResultCheck  bool
-	DataDir            string
-	ResultDir          string
-	ModelInputDir      string
-	ModelOutputDir     string
-	ModelLogDir        string
-	ModelProgressDir   string
-	KeysDir            string
-	EnableLLM          bool
-	LLMEndpoint        string
-	LLMModel           string
-	LLMPolicy          string
-	LLMFailClosed      bool
-	LLMDir             string
+	Addr                      string
+	PlatformIP                string
+	DockerID                  string
+	Contract                  string
+	EnableSecurityScan        bool
+	ModelDir                  string
+	EnableResultCheck         bool
+	DataDir                   string
+	ResultDir                 string
+	ModelInputDir             string
+	ModelOutputDir            string
+	ModelLogDir               string
+	ModelProgressDir          string
+	KeysDir                   string
+	AttestationHRKCertPath    string
+	AttestationHSKCekCertPath string
+	EnableLLM                 bool
+	LLMEndpoint               string
+	LLMModel                  string
+	LLMPolicy                 string
+	LLMFailClosed             bool
+	LLMDir                    string
 }
 
 type startupConfigFile struct {
-	Addr               string               `json:"addr"`
-	PlatformIP         string               `json:"platformIP"`
-	DockerID           string               `json:"dockerID"`
-	Contract           string               `json:"contract"`
-	EnableSecurityScan *bool                `json:"securityScan"`
-	ModelDir           string               `json:"modelDir"`
-	EnableResultCheck  *bool                `json:"resultCheck"`
-	DataDir            string               `json:"dataDir"`
-	ResultDir          string               `json:"resultDir"`
-	ModelInputDir      string               `json:"modelInputDir"`
-	ModelOutputDir     string               `json:"modelOutputDir"`
-	ModelLogDir        string               `json:"modelLogDir"`
-	ModelProgressDir   string               `json:"modelProgressDir"`
-	KeysDir            string               `json:"keysDir"`
-	LLM                startupLLMConfigFile `json:"llm"`
+	Addr               string                       `json:"addr"`
+	PlatformIP         string                       `json:"platformIP"`
+	DockerID           string                       `json:"dockerID"`
+	Contract           string                       `json:"contract"`
+	EnableSecurityScan *bool                        `json:"securityScan"`
+	ModelDir           string                       `json:"modelDir"`
+	EnableResultCheck  *bool                        `json:"resultCheck"`
+	DataDir            string                       `json:"dataDir"`
+	ResultDir          string                       `json:"resultDir"`
+	ModelInputDir      string                       `json:"modelInputDir"`
+	ModelOutputDir     string                       `json:"modelOutputDir"`
+	ModelLogDir        string                       `json:"modelLogDir"`
+	ModelProgressDir   string                       `json:"modelProgressDir"`
+	KeysDir            string                       `json:"keysDir"`
+	Attestation        startupAttestationConfigFile `json:"attestation"`
+	LLM                startupLLMConfigFile         `json:"llm"`
+}
+
+type startupAttestationConfigFile struct {
+	HRKCertPath    string `json:"hrkCertPath"`
+	HSKCekCertPath string `json:"hskCekCertPath"`
 }
 
 type startupLLMConfigFile struct {
@@ -77,26 +85,37 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 }
 
 func defaultStartupConfig() StartupConfig {
+	hrkDefault := "/root/taa/certs/hrk.cert"
+	hskDefault := "/root/taa/certs/hsk_cek.cert"
+	if _, err := os.Stat(hrkDefault); err != nil {
+		if _, localErr := os.Stat("deploy/certs/hrk.cert"); localErr == nil {
+			hrkDefault = "deploy/certs/hrk.cert"
+			hskDefault = "deploy/certs/hsk_cek.cert"
+		}
+	}
+
 	return StartupConfig{
-		Addr:               ":6001",
-		PlatformIP:         os.Getenv("PLATFORM_IP"),
-		DockerID:           os.Getenv("DOCKER_ID"),
-		Contract:           os.Getenv("CONTRACT"),
-		EnableSecurityScan: true,
-		ModelDir:           "/opt/taa/models",
-		EnableResultCheck:  true,
-		DataDir:            "/opt/taa/data",
-		ResultDir:          "/opt/taa/results",
-		ModelInputDir:      "/opt/taa/input",
-		ModelOutputDir:     "/opt/taa/output/result",
-		ModelLogDir:        "/opt/taa/output/log",
-		ModelProgressDir:   "/opt/taa/output/progress",
-		KeysDir:            "/opt/taa/keys",
-		EnableLLM:          true,
-		LLMEndpoint:        "http://127.0.0.1:11434",
-		LLMModel:           "qwen2.5-coder:0.5b",
-		LLMPolicy:          "assist",
-		LLMFailClosed:      true,
+		Addr:                      ":6001",
+		PlatformIP:                os.Getenv("PLATFORM_IP"),
+		DockerID:                  os.Getenv("DOCKER_ID"),
+		Contract:                  os.Getenv("CONTRACT"),
+		EnableSecurityScan:        true,
+		ModelDir:                  "/opt/taa/models",
+		EnableResultCheck:         true,
+		DataDir:                   "/opt/taa/data",
+		ResultDir:                 "/opt/taa/results",
+		ModelInputDir:             "/opt/taa/input",
+		ModelOutputDir:            "/opt/taa/output/result",
+		ModelLogDir:               "/opt/taa/output/log",
+		ModelProgressDir:          "/opt/taa/output/progress",
+		KeysDir:                   "/opt/taa/keys",
+		AttestationHRKCertPath:    hrkDefault,
+		AttestationHSKCekCertPath: hskDefault,
+		EnableLLM:                 true,
+		LLMEndpoint:               "http://127.0.0.1:11434",
+		LLMModel:                  "qwen2.5-coder:0.5b",
+		LLMPolicy:                 "assist",
+		LLMFailClosed:             true,
 	}
 }
 
@@ -142,6 +161,12 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if strings.TrimSpace(fileCfg.KeysDir) != "" {
 		cfg.KeysDir = strings.TrimSpace(fileCfg.KeysDir)
+	}
+	if trimmed := strings.TrimSpace(fileCfg.Attestation.HRKCertPath); trimmed != "" {
+		cfg.AttestationHRKCertPath = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.Attestation.HSKCekCertPath); trimmed != "" {
+		cfg.AttestationHSKCekCertPath = trimmed
 	}
 	if fileCfg.LLM.Enabled != nil {
 		cfg.EnableLLM = *fileCfg.LLM.Enabled

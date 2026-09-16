@@ -130,6 +130,9 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if !cfg.LLMFailClosed {
 		t.Fatalf("LLMFailClosed = false, want default true")
 	}
+	if cfg.AttestationHRKCertPath == "" || cfg.AttestationHSKCekCertPath == "" {
+		t.Fatalf("Attestation cert paths unexpectedly empty: hrk=%q, hsk=%q", cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
+	}
 }
 
 func TestLoadStartupConfigReadsKeysDir(t *testing.T) {
@@ -216,6 +219,89 @@ func TestLoadStartupConfigMissingFileReturnsError(t *testing.T) {
 	_, err := LoadStartupConfig(filepath.Join(t.TempDir(), DefaultFileName))
 	if err == nil {
 		t.Fatal("LoadStartupConfig() error = nil, want missing file error")
+	}
+}
+
+func TestLoadStartupConfigReadsAttestationCertPaths(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"attestation": {
+			"hrkCertPath": "/custom/path/hrk.cert",
+			"hskCekCertPath": "/custom/path/hsk_cek.cert"
+		}
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if cfg.AttestationHRKCertPath != "/custom/path/hrk.cert" {
+		t.Errorf("AttestationHRKCertPath = %q, want %q", cfg.AttestationHRKCertPath, "/custom/path/hrk.cert")
+	}
+	if cfg.AttestationHSKCekCertPath != "/custom/path/hsk_cek.cert" {
+		t.Errorf("AttestationHSKCekCertPath = %q, want %q", cfg.AttestationHSKCekCertPath, "/custom/path/hsk_cek.cert")
+	}
+}
+
+func TestLoadStartupConfigAttestationTrimWhitespace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"attestation": {
+			"hrkCertPath": "  /trimmed/hrk.cert  ",
+			"hskCekCertPath": "  /trimmed/hsk_cek.cert  "
+		}
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if cfg.AttestationHRKCertPath != "/trimmed/hrk.cert" {
+		t.Errorf("AttestationHRKCertPath = %q, want %q", cfg.AttestationHRKCertPath, "/trimmed/hrk.cert")
+	}
+	if cfg.AttestationHSKCekCertPath != "/trimmed/hsk_cek.cert" {
+		t.Errorf("AttestationHSKCekCertPath = %q, want %q", cfg.AttestationHSKCekCertPath, "/trimmed/hsk_cek.cert")
+	}
+}
+
+func TestLoadStartupConfigTemplateFiles(t *testing.T) {
+	templates := []struct {
+		relPath    string
+		wantHRK    string
+		wantHSKCek string
+	}{
+		{
+			relPath:    "../../configs/taa-production.json",
+			wantHRK:    "/root/taa/certs/hrk.cert",
+			wantHSKCek: "/root/taa/certs/hsk_cek.cert",
+		},
+		{
+			relPath:    "../../configs/taa-docker.json",
+			wantHRK:    "/root/taa/certs/hrk.cert",
+			wantHSKCek: "/root/taa/certs/hsk_cek.cert",
+		},
+		{
+			relPath:    "../../configs/taa-local.json",
+			wantHRK:    "deploy/certs/hrk.cert",
+			wantHSKCek: "deploy/certs/hsk_cek.cert",
+		},
+	}
+
+	for _, tc := range templates {
+		t.Run(filepath.Base(tc.relPath), func(t *testing.T) {
+			cfg, err := LoadStartupConfig(tc.relPath)
+			if err != nil {
+				t.Fatalf("LoadStartupConfig(%s) error = %v", tc.relPath, err)
+			}
+			if cfg.AttestationHRKCertPath != tc.wantHRK {
+				t.Errorf("AttestationHRKCertPath = %q, want %q", cfg.AttestationHRKCertPath, tc.wantHRK)
+			}
+			if cfg.AttestationHSKCekCertPath != tc.wantHSKCek {
+				t.Errorf("AttestationHSKCekCertPath = %q, want %q", cfg.AttestationHSKCekCertPath, tc.wantHSKCek)
+			}
+		})
 	}
 }
 

@@ -13,6 +13,10 @@
   "modelLogDir": ".local/taa/output/log",
   "modelProgressDir": ".local/taa/output/progress",
   "keysDir": ".local/taa/keys",
+  "attestation": {
+    "hrkCertPath": "deploy/certs/hrk.cert",
+    "hskCekCertPath": "deploy/certs/hsk_cek.cert"
+  },
   "llm": {
     "enabled": true,
     "endpoint": "http://127.0.0.1:11434",
