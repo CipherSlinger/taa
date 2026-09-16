@@ -97,23 +97,17 @@ func TestComputeStatistics(t *testing.T) {
 	}
 	stats := ComputeStatistics(findings)
 
-	if stats.TotalFindings != 5 {
-		t.Fatalf("total = %d, want 5", stats.TotalFindings)
+	if stats.Total() != 5 {
+		t.Fatalf("total = %d, want 5", stats.Total())
 	}
-	if stats.High != 3 {
-		t.Fatalf("high = %d, want 3", stats.High)
+	if stats.High != 1 {
+		t.Fatalf("high = %d, want 1", stats.High)
 	}
 	if stats.Medium != 2 {
 		t.Fatalf("medium = %d, want 2", stats.Medium)
 	}
-	if stats.Malicious != 1 {
-		t.Fatalf("malicious = %d, want 1", stats.Malicious)
-	}
-	if stats.Suspicious != 1 {
-		t.Fatalf("suspicious = %d, want 1", stats.Suspicious)
-	}
-	if stats.Benign != 2 {
-		t.Fatalf("benign = %d, want 2", stats.Benign)
+	if stats.Low != 2 {
+		t.Fatalf("low = %d, want 2", stats.Low)
 	}
 }
 
@@ -131,7 +125,7 @@ func TestComputeConclusionClean(t *testing.T) {
 }
 
 func TestComputeConclusionCritical(t *testing.T) {
-	stats := AuditStatistics{TotalFindings: 2, High: 2, Malicious: 1, Benign: 1}
+	stats := AuditStatistics{High: 1, Low: 1}
 	conclusion := ComputeConclusion(stats, nil, "gate")
 	if conclusion.Passed {
 		t.Fatal("malicious code should not pass")
@@ -142,48 +136,48 @@ func TestComputeConclusionCritical(t *testing.T) {
 }
 
 func TestComputeConclusionGatePolicyDowngrade(t *testing.T) {
-	// HIGH findings exist but all judged BENIGN by LLM
-	stats := AuditStatistics{TotalFindings: 2, High: 2, Benign: 2}
+	// HIGH findings exist but all judged BENIGN by LLM -> categorized as Low
+	stats := AuditStatistics{Low: 2}
 	conclusion := ComputeConclusion(stats, nil, "gate")
 	if !conclusion.Passed {
 		t.Fatal("gate mode should pass when all HIGH are BENIGN")
 	}
-	if conclusion.RiskLevel != "MEDIUM" {
-		t.Fatalf("risk_level = %s, want MEDIUM (downgraded HIGH)", conclusion.RiskLevel)
+	if conclusion.RiskLevel != "LOW" {
+		t.Fatalf("risk_level = %s, want LOW (downgraded HIGH)", conclusion.RiskLevel)
 	}
 }
 
 func TestComputeConclusionAssistPolicy(t *testing.T) {
-	// HIGH findings with LLM saying SUSPICIOUS — assist mode still blocks
-	stats := AuditStatistics{TotalFindings: 1, High: 1, Suspicious: 1}
+	// High findings block in assist mode
+	stats := AuditStatistics{High: 1}
 	conclusion := ComputeConclusion(stats, nil, "assist")
 	if conclusion.Passed {
-		t.Fatal("assist mode should not pass with HIGH+SUSPICIOUS")
+		t.Fatal("assist mode should not pass with High findings")
 	}
-	if conclusion.RiskLevel != "HIGH" {
-		t.Fatalf("risk_level = %s, want HIGH", conclusion.RiskLevel)
+	if conclusion.RiskLevel != "CRITICAL" {
+		t.Fatalf("risk_level = %s, want CRITICAL", conclusion.RiskLevel)
 	}
 }
 
 func TestComputeConclusionAssistStaticOnlyBlocks(t *testing.T) {
-	stats := AuditStatistics{TotalFindings: 1, High: 1}
+	stats := AuditStatistics{High: 1}
 	conclusion := ComputeConclusion(stats, nil, "assist")
 	if conclusion.Passed {
 		t.Fatal("assist mode should not pass with unresolved HIGH findings")
 	}
-	if conclusion.RiskLevel != "MEDIUM" {
-		t.Fatalf("risk_level = %s, want MEDIUM", conclusion.RiskLevel)
+	if conclusion.RiskLevel != "CRITICAL" {
+		t.Fatalf("risk_level = %s, want CRITICAL", conclusion.RiskLevel)
 	}
 }
 
 func TestComputeConclusionGateStaticOnlyBlocks(t *testing.T) {
-	stats := AuditStatistics{TotalFindings: 2, High: 1, Medium: 1}
+	stats := AuditStatistics{High: 1, Medium: 1}
 	conclusion := ComputeConclusion(stats, nil, "gate")
 	if conclusion.Passed {
 		t.Fatal("gate mode should block static findings when no LLM verdicts are present")
 	}
-	if conclusion.RiskLevel != "HIGH" {
-		t.Fatalf("risk_level = %s, want HIGH", conclusion.RiskLevel)
+	if conclusion.RiskLevel != "CRITICAL" {
+		t.Fatalf("risk_level = %s, want CRITICAL", conclusion.RiskLevel)
 	}
 }
 
@@ -271,8 +265,8 @@ func TestAssembleAuditReport(t *testing.T) {
 	if audit.Target.TotalLines != 50 {
 		t.Fatalf("total_lines = %d, want 50", audit.Target.TotalLines)
 	}
-	if audit.Statistics.Malicious != 1 {
-		t.Fatalf("malicious = %d, want 1", audit.Statistics.Malicious)
+	if audit.Statistics.High != 1 {
+		t.Fatalf("high = %d, want 1", audit.Statistics.High)
 	}
 	if audit.Conclusion.Passed {
 		t.Fatal("should not pass with MALICIOUS finding")
@@ -318,8 +312,8 @@ class Model(nn.Module):
 	if len(audit.FileReports) != 0 {
 		t.Fatalf("expected 0 file reports, got %d", len(audit.FileReports))
 	}
-	if audit.Statistics.TotalFindings != 0 {
-		t.Fatalf("expected 0 findings, got %d", audit.Statistics.TotalFindings)
+	if audit.Statistics.Total() != 0 {
+		t.Fatalf("expected 0 findings, got %d", audit.Statistics.Total())
 	}
 }
 
@@ -355,8 +349,8 @@ def steal_data(data):
 	if audit.Conclusion.RiskLevel != "CRITICAL" {
 		t.Fatalf("risk_level = %s, want CRITICAL", audit.Conclusion.RiskLevel)
 	}
-	if audit.Statistics.Malicious < 1 {
-		t.Fatalf("expected at least 1 MALICIOUS, got %d", audit.Statistics.Malicious)
+	if audit.Statistics.High < 1 {
+		t.Fatalf("expected at least 1 HIGH, got %d", audit.Statistics.High)
 	}
 	if len(audit.FileReports) != 1 {
 		t.Fatalf("expected 1 file report, got %d", len(audit.FileReports))
@@ -386,7 +380,7 @@ requests.post("http://example.com", json={"key": "value"})
 		t.Fatal(err)
 	}
 	// Should still have findings from static scan.
-	if audit.Statistics.TotalFindings == 0 {
+	if audit.Statistics.Total() == 0 {
 		t.Fatal("expected findings from static scan")
 	}
 	// File report should have inferred risk level.

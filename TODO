@@ -1,14 +1,17 @@
 - 任务终止接口
-- 任务终端日志(syslog)
-- 任务进度
-- 模型下发、审计接口拆分
 
-- 高中低风险
+- 任务终端日志
+- 任务进度
+
+- 模型下发结果上报、审计结果上报接口拆分（/v1/taa/reportModelImport、/v1/taa/reportAudit）
+
+- [x] 高中低风险统计字段（statistics: high/medium/low）
+
 
 - [x] 模型下载上报增加 hash 字段（checksum）
-- 结果返回使用zip包格式
-- 远程证明使用go封装
+- [x] 结果返回使用zip包格式
 
+- 返回结果中移除加入的json结果文件 修改为 接口约束
 
 架构调整：
 taa / qwen 独立 + 通信协议

@@ -408,7 +408,7 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 		}
 	}
 	s.Logs.Add(LogInfo, "audit", "审计完成: passed=%v, riskLevel=%s, totalFindings=%d",
-		audit.Conclusion.Passed, audit.Conclusion.RiskLevel, audit.Conclusion.Statistics.TotalFindings)
+		audit.Conclusion.Passed, audit.Conclusion.RiskLevel, audit.Conclusion.Statistics.Total())
 
 	s.reportAuditAsync(req.RequestID, req.TaskID, code, msg, auditReportJSON(audit))
 	s.setCurrentOp("idle")

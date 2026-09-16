@@ -266,7 +266,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 0,
   "msg": null,
-  "report": "{\"generated_at\":\"2026-09-02T10:03:43Z\",\"report_id\":\"train-report-20260902-100343-ae53fa14\",\"dataset\":{\"total_samples\":12500,\"splits\":{\"train\":10000,\"test\":1000},\"checksum\":{\"size\":540672,\"algorithm\":\"sm3\",\"value\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}},\"training_task\":{\"task_id\":\"task-20260825-001\",\"status\":\"succeeded\",\"exit_code\":0,\"failure_reason\":null,\"started_at\":\"2026-09-02T10:03:35Z\",\"finished_at\":\"2026-09-02T10:03:43Z\",\"duration_seconds\":8,\"model_checksum\":{\"size\":581632,\"algorithm\":\"sm3\",\"value\":\"a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd\"},\"metrics\":{\"final_accuracy\":0.9087,\"final_loss\":0.2145,\"epochs\":[{\"epoch\":1,\"accuracy\":0.5231,\"loss\":1.2345},{\"epoch\":2,\"accuracy\":0.6789,\"loss\":0.9876}]}},\"codeaudit\":{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"\u672a\u53d1\u73b0\u5b89\u5168\u95ee\u9898\uff0c\u4ee3\u7801\u901a\u8fc7\u5ba1\u8ba1\",\"recommendation\":\"\u65e0\u9700\u4fee\u590d\",\"statistics\":{\"total_findings\":0,\"high\":0,\"medium\":0,\"malicious\":0,\"suspicious\":0,\"benign\":0,\"uncertain\":0}},\"file_reports\":null}}"
+  "report": "{\"generated_at\":\"2026-09-02T10:03:43Z\",\"report_id\":\"train-report-20260902-100343-ae53fa14\",\"dataset\":{\"total_samples\":12500,\"splits\":{\"train\":10000,\"test\":1000},\"checksum\":{\"size\":540672,\"algorithm\":\"sm3\",\"value\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}},\"training_task\":{\"task_id\":\"task-20260825-001\",\"status\":\"succeeded\",\"exit_code\":0,\"failure_reason\":null,\"started_at\":\"2026-09-02T10:03:35Z\",\"finished_at\":\"2026-09-02T10:03:43Z\",\"duration_seconds\":8,\"model_checksum\":{\"size\":581632,\"algorithm\":\"sm3\",\"value\":\"a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd\"},\"metrics\":{\"final_accuracy\":0.9087,\"final_loss\":0.2145,\"epochs\":[{\"epoch\":1,\"accuracy\":0.5231,\"loss\":1.2345},{\"epoch\":2,\"accuracy\":0.6789,\"loss\":0.9876}]}},\"codeaudit\":{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"\u672a\u53d1\u73b0\u5b89\u5168\u95ee\u9898\uff0c\u4ee3\u7801\u901a\u8fc7\u5ba1\u8ba1\",\"recommendation\":\"\u65e0\u9700\u4fee\u590d\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null}}"
 }
 ```
 
@@ -341,14 +341,10 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
       "risk_level": "NONE",                               // 综合风险等级：NONE / LOW / MEDIUM / HIGH / CRITICAL
       "summary": "未发现安全问题，代码通过审计",           // 审计结论摘要
       "recommendation": "无需修复",                        // 处理建议
-      "statistics": {                                     // findings 统计
-        "total_findings": 0,                              // findings 总数
-        "high": 0,                                        // 严重度 HIGH 数量
-        "medium": 0,                                      // 严重度 MEDIUM 数量
-        "malicious": 0,                                   // LLM 判定 MALICIOUS 数量
-        "suspicious": 0,                                  // LLM 判定 SUSPICIOUS 数量
-        "benign": 0,                                      // LLM 判定 BENIGN 数量
-        "uncertain": 0                                    // LLM 判定 UNCERTAIN 数量
+      "statistics": {                                     // 大模型 findings 归类统计
+        "high": 0,                                        // 大模型归类为高危的数量
+        "medium": 0,                                      // 大模型归类为中危的数量
+        "low": 0                                          // 大模型归类为低危/良性的数量
       }
     },
     "file_reports": null                                   // 按文件聚合的 findings 明细；null 表示无 findings，存在 findings 时为数组
@@ -460,7 +456,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 0,
   "msg": null,
-  "report": "{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"未发现安全问题，代码通过审计\",\"recommendation\":\"无需修复\",\"statistics\":{\"total_findings\":0,\"high\":0,\"medium\":0,\"malicious\":0,\"suspicious\":0,\"benign\":0,\"uncertain\":0}},\"file_reports\":null}"
+  "report": "{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"未发现安全问题，代码通过审计\",\"recommendation\":\"无需修复\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null}"
 }
 ```
 
@@ -473,7 +469,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 1,
   "msg": "代码安全审计未通过: 发现反弹 Shell 风险",
-  "report": "{\"conclusion\":{\"passed\":false,\"risk_level\":\"CRITICAL\",\"summary\":\"发现高危后门代码\",\"recommendation\":\"请清理非法网络外联指令\",\"statistics\":{\"total_findings\":1,\"high\":1,\"medium\":0,\"malicious\":1,\"suspicious\":0,\"benign\":0,\"uncertain\":0}},\"file_reports\":[{\"filename\":\"train.py\",\"findings\":[{\"rule_id\":\"SEC-PY-003\",\"line\":42,\"severity\":\"HIGH\",\"description\":\"可疑网络反弹 Shell 代码\",\"llm_verdict\":\"MALICIOUS\"}]}]}"
+  "report": "{\"conclusion\":{\"passed\":false,\"risk_level\":\"CRITICAL\",\"summary\":\"发现高危后门代码\",\"recommendation\":\"请清理非法网络外联指令\",\"statistics\":{\"high\":1,\"medium\":0,\"low\":0}},\"file_reports\":[{\"filename\":\"train.py\",\"findings\":[{\"rule_id\":\"SEC-PY-003\",\"line\":42,\"severity\":\"HIGH\",\"description\":\"可疑网络反弹 Shell 代码\",\"llm_verdict\":\"MALICIOUS\"}]}]}"
 }
 ```
 

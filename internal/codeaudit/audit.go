@@ -41,15 +41,16 @@ type AuditConclusion struct {
 	Statistics     AuditStatistics `json:"statistics"`
 }
 
-// AuditStatistics holds aggregated finding counts.
+// AuditStatistics holds aggregated finding counts classified into high, medium, and low risk by the LLM.
 type AuditStatistics struct {
-	TotalFindings int `json:"total_findings"`
-	High          int `json:"high"`
-	Medium        int `json:"medium"`
-	Malicious     int `json:"malicious"`
-	Suspicious    int `json:"suspicious"`
-	Benign        int `json:"benign"`
-	Uncertain     int `json:"uncertain"`
+	High   int `json:"high"`
+	Medium int `json:"medium"`
+	Low    int `json:"low"`
+}
+
+// Total returns the total number of findings across all risk categories.
+func (s AuditStatistics) Total() int {
+	return s.High + s.Medium + s.Low
 }
 
 // FileReport is the analysis result for a single source file.
@@ -165,27 +166,53 @@ func InferRiskLevel(highCount, mediumCount int) string {
 	return "LOW"
 }
 
-// ComputeStatistics aggregates finding counts.
-func ComputeStatistics(findings []Finding) AuditStatistics {
-	stats := AuditStatistics{
-		TotalFindings: len(findings),
+// ClassifyFindingRisk determines the final risk level (HIGH, MEDIUM, LOW) of a finding,
+// prioritized by the LLM's evaluation and falling back to static scan severity.
+func ClassifyFindingRisk(f Finding) string {
+	switch strings.ToUpper(strings.TrimSpace(f.LLMRisk)) {
+	case "HIGH", "CRITICAL":
+		return "HIGH"
+	case "MEDIUM":
+		return "MEDIUM"
+	case "LOW", "NONE":
+		return "LOW"
 	}
-	for _, f := range findings {
-		switch f.Severity {
-		case SeverityHigh:
-			stats.High++
-		case SeverityMedium:
-			stats.Medium++
+
+	switch strings.ToUpper(strings.TrimSpace(f.LLMVerdict)) {
+	case "MALICIOUS":
+		return "HIGH"
+	case "SUSPICIOUS":
+		return "MEDIUM"
+	case "BENIGN":
+		return "LOW"
+	case "UNCERTAIN":
+		if f.Severity == SeverityHigh {
+			return "HIGH"
 		}
-		switch f.LLMVerdict {
-		case "MALICIOUS":
-			stats.Malicious++
-		case "SUSPICIOUS":
-			stats.Suspicious++
-		case "BENIGN":
-			stats.Benign++
-		case "UNCERTAIN":
-			stats.Uncertain++
+		return "MEDIUM"
+	}
+
+	switch f.Severity {
+	case SeverityHigh:
+		return "HIGH"
+	case SeverityMedium:
+		return "MEDIUM"
+	default:
+		return "LOW"
+	}
+}
+
+// ComputeStatistics aggregates finding counts categorized into high, medium, low by LLM evaluation.
+func ComputeStatistics(findings []Finding) AuditStatistics {
+	stats := AuditStatistics{}
+	for _, f := range findings {
+		switch ClassifyFindingRisk(f) {
+		case "HIGH":
+			stats.High++
+		case "MEDIUM":
+			stats.Medium++
+		case "LOW":
+			stats.Low++
 		}
 	}
 	return stats
@@ -195,37 +222,22 @@ func ComputeStatistics(findings []Finding) AuditStatistics {
 func ComputeConclusion(stats AuditStatistics, fileReports []FileReport, policy string) AuditConclusion {
 	riskLevel := "NONE"
 
-	if stats.Malicious > 0 {
+	if stats.High > 0 {
 		riskLevel = "CRITICAL"
-	} else if stats.High > 0 && stats.Suspicious > 0 {
-		riskLevel = "HIGH"
-	} else if stats.High > 0 {
-		// HIGH findings exist but LLM judged them BENIGN
-		riskLevel = "MEDIUM"
 	} else if stats.Medium > 0 {
+		riskLevel = "MEDIUM"
+	} else if stats.Low > 0 {
 		riskLevel = "LOW"
 	}
 
-	// Pass/fail depends on policy.
-	hasLLMVerdict := stats.Malicious > 0 || stats.Suspicious > 0 || stats.Benign > 0 || stats.Uncertain > 0
 	var passed bool
 	switch policy {
 	case "gate":
-		// Gate mode: block on MALICIOUS/SUSPICIOUS, and also block on raw static
-		// findings when no LLM verdict is available to downgrade them.
-		passed = stats.Malicious == 0 && stats.Suspicious == 0
-		if passed && !hasLLMVerdict && (stats.High > 0 || stats.Medium > 0) {
-			passed = false
-			if stats.High > 0 {
-				riskLevel = "HIGH"
-			} else {
-				riskLevel = "MEDIUM"
-			}
-		}
+		// Gate mode: block on High and Medium risk findings. Low (benign) findings pass.
+		passed = stats.High == 0 && stats.Medium == 0
 	default:
-		// Assist mode (default): preserve the static scan decision.
-		// Any HIGH finding still blocks, even if LLM is absent or says BENIGN.
-		passed = stats.Malicious == 0 && stats.High == 0
+		// Assist mode (default): block on High risk findings.
+		passed = stats.High == 0
 	}
 
 	summary := buildSummaryText(stats, riskLevel)
@@ -236,7 +248,7 @@ func ComputeConclusion(stats AuditStatistics, fileReports []FileReport, policy s
 		RiskLevel:      riskLevel,
 		Summary:        summary,
 		Recommendation: recommendation,
-		Statistics:      stats,
+		Statistics:     stats,
 	}
 }
 
@@ -366,39 +378,32 @@ func CountFileLines(path string) int {
 // ── Internal helpers ──────────────────────────────────────
 
 func buildSummaryText(stats AuditStatistics, riskLevel string) string {
-	if stats.TotalFindings == 0 {
+	if stats.Total() == 0 {
 		return "未发现安全问题，代码通过审计"
 	}
 
 	parts := []string{}
-	if stats.Malicious > 0 {
-		parts = append(parts, fmt.Sprintf("发现 %d 处恶意代码", stats.Malicious))
+	if stats.High > 0 {
+		parts = append(parts, fmt.Sprintf("发现 %d 处高危风险代码", stats.High))
 	}
-	if stats.Suspicious > 0 {
-		parts = append(parts, fmt.Sprintf("发现 %d 处可疑代码", stats.Suspicious))
+	if stats.Medium > 0 {
+		parts = append(parts, fmt.Sprintf("发现 %d 处中危风险代码", stats.Medium))
 	}
-	if stats.Benign > 0 {
+	if stats.Low > 0 {
 		if len(parts) > 0 {
-			parts = append(parts, fmt.Sprintf("%d 处已确认为正常", stats.Benign))
+			parts = append(parts, fmt.Sprintf("%d 处低危/良性提示项", stats.Low))
 		} else {
-			parts = append(parts, fmt.Sprintf("发现 %d 处安全提示项（已由大模型确认为正常）", stats.Benign))
-		}
-	}
-	if stats.Uncertain > 0 {
-		if len(parts) > 0 {
-			parts = append(parts, fmt.Sprintf("%d 处需人工复核", stats.Uncertain))
-		} else {
-			parts = append(parts, fmt.Sprintf("发现 %d 处待确认提示项（语义分析不确定）", stats.Uncertain))
+			parts = append(parts, fmt.Sprintf("发现 %d 处低危/良性提示项（大模型确认为正常）", stats.Low))
 		}
 	}
 
 	if len(parts) == 0 {
-		return fmt.Sprintf("发现 %d 处安全问题（静态扫描），未经语义分析", stats.TotalFindings)
+		return fmt.Sprintf("发现 %d 处安全提示项", stats.Total())
 	}
 
 	summary := "审计结论: " + strings.Join(parts, "，")
 
-	if riskLevel == "CRITICAL" {
+	if riskLevel == "CRITICAL" || riskLevel == "HIGH" {
 		summary += "。存在数据泄露风险，建议阻断导入"
 	} else if riskLevel == "LOW" || riskLevel == "NONE" {
 		summary += "。代码符合安全规范，准予导入"
@@ -407,23 +412,13 @@ func buildSummaryText(stats AuditStatistics, riskLevel string) string {
 }
 
 func buildRecommendation(fileReports []FileReport) string {
-	// Collect unique rule IDs from malicious/suspicious findings.
+	// Collect unique rule IDs from high/medium risk findings.
 	ruleIDs := make(map[string]bool)
 	for _, fr := range fileReports {
 		for _, f := range fr.Findings {
-			if f.LLMVerdict == "MALICIOUS" || f.LLMVerdict == "SUSPICIOUS" {
+			risk := ClassifyFindingRisk(f)
+			if risk == "HIGH" || risk == "MEDIUM" {
 				ruleIDs[f.RuleID] = true
-			}
-		}
-	}
-
-	if len(ruleIDs) == 0 {
-		// Check for unresolved HIGH findings.
-		for _, fr := range fileReports {
-			for _, f := range fr.Findings {
-				if f.Severity == SeverityHigh && f.LLMVerdict == "" {
-					ruleIDs[f.RuleID] = true
-				}
 			}
 		}
 	}

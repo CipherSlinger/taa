@@ -253,13 +253,9 @@ message AuditConclusion {
 }
 
 message AuditStatistics {
-  int32 total_findings = 1;
-  int32 high = 2;
-  int32 medium = 3;
-  int32 malicious = 4;
-  int32 suspicious = 5;
-  int32 benign = 6;
-  int32 uncertain = 7;
+  int32 high = 1;
+  int32 medium = 2;
+  int32 low = 3;
 }
 
 message FileAuditReport {

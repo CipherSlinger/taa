@@ -42,7 +42,7 @@ func TestBuildTrainingReportAddsModelChecksumAndKeepsTrainingMetrics(t *testing.
 			RiskLevel:      "NONE",
 			Summary:        "未发现安全问题，代码通过审计",
 			Recommendation: "无需修复",
-			Statistics:     codeaudit.AuditStatistics{TotalFindings: 0},
+			Statistics:     codeaudit.AuditStatistics{},
 		},
 		FileReports: nil,
 		Target: codeaudit.AuditTarget{

@@ -843,21 +843,17 @@ components:
               type: string
             statistics:
               type: object
+              description: 最终大模型给���的 findings 归类统计
               properties:
-                total_findings:
-                  type: integer
                 high:
                   type: integer
+                  description: 大模型归类为高危的 findings 数量
                 medium:
                   type: integer
-                malicious:
+                  description: 大模型归类为中危的 findings 数量
+                low:
                   type: integer
-                suspicious:
-                  type: integer
-                benign:
-                  type: integer
-                uncertain:
-                  type: integer
+                  description: 大模型归类为低危/良性的 findings 数量
         file_reports:
           type: array
           nullable: true
