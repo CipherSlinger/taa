@@ -150,7 +150,7 @@ MODELS_SPEC: List[Dict[str, Any]] = [
             "duration_sec": 38000.0,
             "fail_closed_count": 0,
             "llm_available_rate": 1.0,
-            "diag": "长上下文注意力极强，但全文件盲���延迟沉重 (单样 > 6 分钟)，偶发合规误杀 13 例，归因率 82.2%。",
+            "diag": "长上下文注意力极强，但全文件盲审延迟沉重 (单样 > 6 分钟)，偶发合规误杀 13 例，归因率 82.2%。",
         },
         "pure_llm_checklist": {
             "tp": 47, "fp": 9, "tn": 41, "fn": 3,
@@ -679,7 +679,7 @@ def update_html_report(html_path: Union[str, Path], runs: list[dict[str, Any]]) 
           </p>
         </div>
 
-        <p class="lead">Audit-100 v2 评测套件在受控测试沙箱环境中，针对本地离线模型库支持的全部 6 款 Qwen 审计大模型（<code>qwen2.5-coder:0.5b</code>、<code>1.5b</code>、<code>3b</code>、<code>7b</code>、<code>qwen3:8b</code>、<code>14b</code>），全面执行了<strong>【Track A: 纯端到端 LLM 盲�� (Pure Raw)】</strong>、<strong>【Track B: 纯 LLM 带规则清单 (Pure Checklist)】</strong>与<strong>【Track C: 生产级动静两阶段协同 (Static-LLM)】</strong>的 <strong>18 组严密对照评测</strong>。实测数据定量揭示了动静协同架构的三大核心工程优势：<strong>在相同模型下将良性误报率（FPR）压降至 6%~20%</strong>；<strong>通过静态零命中实现 50% 算力零成本快速旁路</strong>；并将<strong>关键攻击归因率提升至 93.5%~98.0%</strong>；同时在模型超限或宕机时<strong>通过 Fail-Closed 守牢 100% 拦截底线</strong>。</p>
+        <p class="lead">Audit-100 v2 评测套件在受控测试沙箱环境中，针对本地离线模型库支持的全部 6 款 Qwen 审计大模型（<code>qwen2.5-coder:0.5b</code>、<code>1.5b</code>、<code>3b</code>、<code>7b</code>、<code>qwen3:8b</code>、<code>14b</code>），全面执行了<strong>【Track A: 纯端到端 LLM 盲审 (Pure Raw)】</strong>、<strong>【Track B: 纯 LLM 带规则清单 (Pure Checklist)】</strong>与<strong>【Track C: 生产级动静两阶段协同 (Static-LLM)】</strong>的 <strong>18 组严密对照评测</strong>。实测数据定量揭示了动静协同架构的三大核心工程优势：<strong>在相同模型下将良性误报率（FPR）压降至 6%~20%</strong>；<strong>通过静态零命中实现 50% 算力零成本快速旁路</strong>；并将<strong>关键攻击归因率提升至 93.5%~98.0%</strong>；同时在模型超限或宕机时<strong>通过 Fail-Closed 守牢 100% 拦截底线</strong>。</p>
 
         <!-- 评测核心指标定义与释义标准 -->
         <div class="metrics-glossary-section">
@@ -714,7 +714,7 @@ def update_html_report(html_path: Union[str, Path], runs: list[dict[str, Any]]) 
                 <span class="g-title">误报率 (False Positive Rate / FPR)</span>
                 <span class="g-formula mono">FP / (FP + TN)</span>
               </div>
-              <p class="g-meaning"><strong>指标含义：</strong>在全部 50 个正常合规业务代码中，系统误将其断定为恶意而拦截的比例（误杀越少，FPR ��低）。</p>
+              <p class="g-meaning"><strong>指标含义：</strong>在全部 50 个正常合规业务代码中，系统误将其断定为恶意而拦截的比例（误杀越少，FPR 越低）。</p>
               <p class="g-sec"><strong>安全工程意义：<span style="color: var(--warn);">【业务可用性生命线】</span></strong>误报率过高会导致大量科研、训练算法脚本被误杀，造成业务停摆与告警疲劳。</p>
             </div>
 
