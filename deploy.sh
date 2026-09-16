@@ -116,9 +116,9 @@ MOCK_BINARY_NAME="${MOCK_BINARY_NAME:-platform-mock}"
 MOCK_BINARY_PATH="${MOCK_BINARY_PATH:-$PROJECT_DIR/bin/$MOCK_BINARY_NAME}"
 
 # 远程证明文件：HRK 证书、HSK/CEK 证书的本地源路径。
-ATT_DIR="${ATT_DIR:-$PROJECT_DIR/attestation}"
-ATT_HRK_SOURCE="${ATT_HRK_SOURCE:-$ATT_DIR/hrk.cert}"
-ATT_HSK_SOURCE="${ATT_HSK_SOURCE:-$ATT_DIR/hsk_cek.cert}"
+CERT_DIR="${CERT_DIR:-$PROJECT_DIR/deploy/certs}"
+ATT_HRK_SOURCE="${ATT_HRK_SOURCE:-$CERT_DIR/hrk.cert}"
+ATT_HSK_SOURCE="${ATT_HSK_SOURCE:-$CERT_DIR/hsk_cek.cert}"
 
 # 远程容器目录：TAA 容器内的工作目录和证书路径，以及 attestation report 文件路径。
 if [[ ${DEBUG} == false ]]; then
@@ -550,7 +550,7 @@ save_local_docker_image() {
 
   spin_task "initializing container directories and symlinks" docker run --name "$builder_container" --entrypoint bash "$base_image" -c "
     rm -f /root/taa/manual /root/taa/taa.log /tmp/ollama.log 2>/dev/null || true
-    mkdir -p /root/taa/models /root/taa/data /root/taa/results /root/taa/attestation /root/taa/ollama-qwen /opt/taa/keys /opt/taa/input /opt/taa/output /taatest
+    mkdir -p /root/taa/models /root/taa/data /root/taa/results /root/taa/certs /root/taa/ollama-qwen /opt/taa/keys /opt/taa/input /opt/taa/output /taatest
     chmod 700 /opt/taa/keys
     ln -sfn /root/taa/ollama-qwen /taatest/ollama-qwen2.5-coder-0.5b
     ln -sfn /root/taa/ollama-qwen /root/taa/ollama-qwen2.5-coder-0.5b
@@ -564,8 +564,8 @@ save_local_docker_image() {
   spin_task "copying runtime files into container" bash -c '
     set -euo pipefail
     docker cp "$1" "$2:/root/taa/taa"
-    docker cp "$3" "$2:/root/taa/hrk.cert"
-    docker cp "$4" "$2:/root/taa/hsk_cek.cert"
+    docker cp "$3" "$2:/root/taa/certs/hrk.cert"
+    docker cp "$4" "$2:/root/taa/certs/hsk_cek.cert"
     docker cp "$5" "$2:/root/taa/taa-config.json"
   ' _ "$TAA_BINARY_PATH" "$builder_container" "$ATT_HRK_SOURCE" "$ATT_HSK_SOURCE" "$prod_config_source"
 
@@ -778,7 +778,7 @@ Environment overrides:
       正式非 debug 场景 TAA 配置模板。
   CONTRACT=${CONTRACT}
       debug 场景写入配置文件的合约 ID；正式非 debug 场景由运行环境注入（预留可选）。
-  ATT_DIR=${ATT_DIR}
+  CERT_DIR=${CERT_DIR}
       本地 attestation 证书目录。
   TAA_KEEP_MANUAL=${TAA_KEEP_MANUAL:-false}
       远程部署后是否保持容器 manual 挂起状态而不自启（默认 false）。
@@ -1139,6 +1139,14 @@ llm = cfg.setdefault("llm", {})
 llm["endpoint"] = llm_endpoint
 llm["model"] = llm_model
 llm["dir"] = llm_dir
+
+workdir = "/root/taa"
+if model_dir and "/" in model_dir:
+    workdir = model_dir.rsplit("/", 1)[0]
+
+attestation = cfg.setdefault("attestation", {})
+attestation["hrkCertPath"] = f"{workdir}/certs/hrk.cert"
+attestation["hskCekCertPath"] = f"{workdir}/certs/hsk_cek.cert"
 
 with open(path, "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -1728,15 +1736,15 @@ deploy_docker_qwen() {
 
 deploy_docker_taa() {
   step "preparing runtime directories inside container"
-  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR/models' '$TAA_CONTAINER_WORKDIR/data' '$TAA_CONTAINER_WORKDIR/results' '$TAA_CONTAINER_WORKDIR/attestation' '$TAA_CONTAINER_WORKDIR/keys' '$LOCAL_DOCKER_INPUT_DIR' '$LOCAL_DOCKER_OUTPUT_DIR' && chmod 700 '$TAA_CONTAINER_WORKDIR/keys'" >/dev/null 2>&1
+  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR/models' '$TAA_CONTAINER_WORKDIR/data' '$TAA_CONTAINER_WORKDIR/results' '$TAA_CONTAINER_WORKDIR/certs' '$TAA_CONTAINER_WORKDIR/keys' '$LOCAL_DOCKER_INPUT_DIR' '$LOCAL_DOCKER_OUTPUT_DIR' && chmod 700 '$TAA_CONTAINER_WORKDIR/keys'" >/dev/null 2>&1
   info "runtime directories initialized: $TAA_CONTAINER_WORKDIR"
 
   step "copying taa binary and certificates into container"
   spin_task "copying binary and certificates into container" bash -c '
     set -euo pipefail
     docker cp "$1" "$2:$3/$4" >/dev/null
-    docker cp "$5" "$2:$3/hrk.cert" >/dev/null
-    docker cp "$6" "$2:$3/hsk_cek.cert" >/dev/null
+    docker cp "$5" "$2:$3/certs/hrk.cert" >/dev/null
+    docker cp "$6" "$2:$3/certs/hsk_cek.cert" >/dev/null
     docker exec -i "$2" sh -lc "chmod +x \"$3/$4\"" >/dev/null
   ' _ "$TAA_BINARY_PATH" "$LOCAL_DOCKER_CONTAINER" "$TAA_CONTAINER_WORKDIR" "$BINARY_NAME" "$ATT_HRK_SOURCE" "$ATT_HSK_SOURCE"
 
@@ -2077,17 +2085,18 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   done
 
   step "copying runtime files into container"
+  remote_ssh "$(container_exec) sh -lc 'mkdir -p $TAA_CONTAINER_WORKDIR/certs'"
   remote_ssh "$(container_cp "$REMOTE_DIR/$BINARY_NAME" "$TAA_CONTAINER_WORKDIR/$BINARY_NAME")"
   remote_ssh "$(container_cp "$REMOTE_TAA_CONFIG_PATH" "$CONTAINER_TAA_CONFIG_PATH")"
-  remote_ssh "$(container_cp "$REMOTE_DIR/hrk.cert" "$TAA_CONTAINER_WORKDIR/hrk.cert")"
-  remote_ssh "$(container_cp "$REMOTE_DIR/hsk_cek.cert" "$TAA_CONTAINER_WORKDIR/hsk_cek.cert")"
+  remote_ssh "$(container_cp "$REMOTE_DIR/hrk.cert" "$TAA_CONTAINER_WORKDIR/certs/hrk.cert")"
+  remote_ssh "$(container_cp "$REMOTE_DIR/hsk_cek.cert" "$TAA_CONTAINER_WORKDIR/certs/hsk_cek.cert")"
   remote_ssh "$(container_exec) sh -lc 'chmod +x $TAA_CONTAINER_WORKDIR/$BINARY_NAME'"
 
   step "verifying copied files inside container"
-  remote_ssh "$(container_exec) sh -lc 'ls -l $TAA_CONTAINER_WORKDIR/$BINARY_NAME $CONTAINER_TAA_CONFIG_PATH $TAA_CONTAINER_WORKDIR/hrk.cert $TAA_CONTAINER_WORKDIR/hsk_cek.cert 2>/dev/null'"
+  remote_ssh "$(container_exec) sh -lc 'ls -l $TAA_CONTAINER_WORKDIR/$BINARY_NAME $CONTAINER_TAA_CONFIG_PATH $TAA_CONTAINER_WORKDIR/certs/hrk.cert $TAA_CONTAINER_WORKDIR/certs/hsk_cek.cert 2>/dev/null'"
 
   step "checking attestation prerequisites inside container"
-  remote_ssh "$(container_exec) sh -lc 'test -f $TAA_CONTAINER_WORKDIR/hrk.cert && test -f $TAA_CONTAINER_WORKDIR/hsk_cek.cert'"
+  remote_ssh "$(container_exec) sh -lc 'test -f $TAA_CONTAINER_WORKDIR/certs/hrk.cert && test -f $TAA_CONTAINER_WORKDIR/certs/hsk_cek.cert'"
   if ! remote_ssh "$(container_exec) sh -lc 'test -e /dev/csv-guest'" 2>/dev/null; then
     warn "/dev/csv-guest not found in container — attestation will fail (expected in non-TEE Docker)"
   fi
@@ -2099,7 +2108,7 @@ if [[ "$DEPLOY_TAA" == true ]]; then
 
   if [[ "$DEBUG" == true ]]; then
     step "starting debug taa inside container"
-    remote_ssh "$(container_exec) sh -lc 'mkdir -p $TAA_CONTAINER_WORKDIR/models $TAA_CONTAINER_WORKDIR/data $TAA_CONTAINER_WORKDIR/results && cd $TAA_CONTAINER_WORKDIR && nohup $TAA_CONTAINER_WORKDIR/$BINARY_NAME > $TAA_LOG_FILE 2>&1 < /dev/null &'"
+    remote_ssh "$(container_exec) sh -lc 'mkdir -p $TAA_CONTAINER_WORKDIR/models $TAA_CONTAINER_WORKDIR/data $TAA_CONTAINER_WORKDIR/results $TAA_CONTAINER_WORKDIR/certs && cd $TAA_CONTAINER_WORKDIR && nohup $TAA_CONTAINER_WORKDIR/$BINARY_NAME > $TAA_LOG_FILE 2>&1 < /dev/null &'"
   else
     if [[ "${TAA_KEEP_MANUAL:-false}" == true ]]; then
       warn "TAA_KEEP_MANUAL is enabled; leaving taa manual mode paused"
