@@ -313,7 +313,7 @@ git commit -m "feat(audit): rewrite benchmark generator with orthogonal matrix a
 - Modify: `models/audit/tools/audit_benchmark_eval.py`
 - Test: `tests/test_audit_eval_three_track.py`
 
-- [ ] **Step 1: 编写三轨评测与指标计算单元测试**
+- [x] **Step 1: 编写三轨评测与指标计算单元测试**
 
 在 `tests/test_audit_eval_three_track.py` 中编写测试：
 1. 测试三种模式命令行参数解析：`pure-llm`, `pure-llm-checklist`, `static-llm`；
@@ -321,12 +321,12 @@ git commit -m "feat(audit): rewrite benchmark generator with orthogonal matrix a
 3. 测试 Finding 级关键攻击归因率（Attribution Precision）计算逻辑；
 4. 测试 Bootstrap 1,000 次重采样 95% 置信区间函数 `compute_bootstrap_ci(scores, n_bootstraps=1000)` 的数学收敛性。
 
-- [ ] **Step 2: 运行测试验证缺失的三轨模式与置信区间函数 (FAIL)**
+- [x] **Step 2: 运行测试验证缺失的三轨模式与置信区间函数 (FAIL)**
 
 运行: `python3 -m unittest tests/test_audit_eval_three_track.py -v`
 预期结果: FAIL
 
-- [ ] **Step 3: 升级 `audit_benchmark_eval.py` 评测流水线**
+- [x] **Step 3: 升级 `audit_benchmark_eval.py` 评测流水线**
 
 在 `audit_benchmark_eval.py` 中：
 1. 扩展 `--audit-mode` 参数，增加 `pure-llm-checklist` 支持；
@@ -335,12 +335,12 @@ git commit -m "feat(audit): rewrite benchmark generator with orthogonal matrix a
 4. 实现基于纯标准库（`random`, `math`）的 Bootstrap 1,000 次重采样算法，为 `Accuracy`, `F1`, `FPR`, `Recall` 自动计算 95% 置信区间；
 5. 在输出 JSON 中保存包含置信区间与旁路率的完整报表。
 
-- [ ] **Step 4: 运行评测套件单元测试 (PASS)**
+- [x] **Step 4: 运行评测套件单元测试 (PASS)**
 
 运行: `python3 -m unittest tests/test_audit_eval_three_track.py -v`
 预期结果: PASS
 
-- [ ] **Step 5: 提交评测套件代码**
+- [x] **Step 5: 提交评测套件代码**
 
 ```bash
 git add models/audit/tools/audit_benchmark_eval.py tests/test_audit_eval_three_track.py
