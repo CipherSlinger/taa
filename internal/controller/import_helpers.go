@@ -1,22 +1,16 @@
 package controller
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-	teecrypto "taa/pkg/crypto"
-	pkgerrors "taa/pkg/errors"
+	"taa/internal/resource"
 	"taa/pkg/utils"
 )
 
 func sm3HexOfFile(path string) (string, error) {
-	_, hex, err := teecrypto.HashFileSM3(path)
-	if err != nil {
-		return "", pkgerrors.Wrap(pkgerrors.CodeInternal, fmt.Sprintf("计算文件哈希失败: %s", path), err)
-	}
-	return hex, nil
+	return resource.HashFileSM3(path)
 }
 
 func dataDirForHash(root, hash string) string {
@@ -28,37 +22,7 @@ func resultDirForRequestTask(root, requestID, taskID string) string {
 }
 
 func ensureArchiveExtractedIntoDir(dst, archivePath string) (bool, error) {
-	if info, err := os.Stat(dst); err == nil {
-		if info.IsDir() {
-			return false, nil
-		}
-		return false, pkgerrors.New(pkgerrors.CodeConflict, fmt.Sprintf("target exists and is not a directory: %s", dst))
-	} else if !os.IsNotExist(err) {
-		return false, pkgerrors.Wrap(pkgerrors.CodeInternal, "stat destination failed", err)
-	}
-
-	parent := filepath.Dir(dst)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return false, pkgerrors.Wrap(pkgerrors.CodeInternal, fmt.Sprintf("create parent extraction dir: %s", parent), err)
-	}
-	base := filepath.Base(dst)
-	tmpDir, err := os.MkdirTemp(parent, base+".extract-*")
-	if err != nil {
-		return false, pkgerrors.Wrap(pkgerrors.CodeInternal, "create temp extraction dir", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	if err := extractArchiveFile(tmpDir, archivePath); err != nil {
-		return false, pkgerrors.Wrap(pkgerrors.CodeInternal, "extract archive failed", err)
-	}
-
-	if err := os.Rename(tmpDir, dst); err != nil {
-		if os.IsExist(err) {
-			return false, nil
-		}
-		return false, pkgerrors.Wrap(pkgerrors.CodeInternal, fmt.Sprintf("move extracted package into %s", dst), err)
-	}
-	return true, nil
+	return resource.EnsureArchiveExtractedIntoDir(dst, archivePath)
 }
 
 func (s *TAAState) resolveTrainingRecord(req importRequest, isModel bool) (ImportIndexRecord, error) {

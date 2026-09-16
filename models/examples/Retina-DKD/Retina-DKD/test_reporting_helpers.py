@@ -15,6 +15,7 @@ for _mod in [
     "torch", "torch.nn", "torch.optim", "torch.utils", "torch.utils.data",
     "torch.cuda", "numpy", "tensorboardX", "tqdm", "network",
     "data_pre_process", "data_pre_process.data_process",
+    "config", "config.train_config",
 ]:
     if _mod not in sys.modules:
         try:

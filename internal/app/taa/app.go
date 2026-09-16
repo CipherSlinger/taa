@@ -19,6 +19,7 @@ import (
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 	"taa/internal/controller"
+	"taa/internal/store"
 	teecrypto "taa/pkg/crypto"
 )
 
@@ -95,9 +96,9 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	}
 
 	// 派生 SealingKey 并初始化持久化密封状态存储
-	sealingKey := controller.DeriveSealingKey(keyPair.PrivateKey)
+	sealingKey := store.DeriveSealingKey(keyPair.PrivateKey)
 	statePath := filepath.Join(keysDir, "state.sealed")
-	stateStore, err := controller.NewStateStore(statePath, sealingKey)
+	stateStore, err := store.NewStateStore(statePath, sealingKey)
 	if err != nil {
 		return fmt.Errorf("initialize state store: %w", err)
 	}

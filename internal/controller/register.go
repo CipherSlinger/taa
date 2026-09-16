@@ -7,12 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"strings"
 
-	"taa/internal/attestation"
+	"taa/internal/platform"
 )
 
 const (
@@ -33,51 +32,11 @@ type registerRequest struct {
 // NoticeRegister makes one best-effort attempt to POST /v1/taa/register.
 // The request carries the attestation report and TAA public key.
 func NoticeRegister(ctx context.Context, platformAddr, dockerID, attestationFile, taaPublicKey string, timestamp int64) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if strings.TrimSpace(platformAddr) == "" {
-		return fmt.Errorf("PLATFORM_IP is required")
-	}
-	if strings.TrimSpace(dockerID) == "" {
-		return fmt.Errorf("DOCKER_ID is required")
-	}
-	if strings.TrimSpace(attestationFile) == "" {
-		return fmt.Errorf("attestation report file is required")
-	}
-	if strings.TrimSpace(taaPublicKey) == "" {
-		return fmt.Errorf("taaPublicKey is required")
-	}
-	if _, err := os.Stat(attestationFile); err != nil {
-		return fmt.Errorf("attestation report file is not accessible: %w", err)
-	}
-
-	url := platformURL(platformAddr, registerEndpoint)
-
-	// Extract report values for attestationValues field.
-	// If extraction fails, continue with an empty report so registration can still proceed.
-	reportValues, err := attestation.ExtractReportValues(attestationFile)
-	verifiedPass := true
-	if err != nil {
-		log.Printf("notice platform register: extract report values failed, continuing with empty report: %v", err)
-		reportValues = ""
-		verifiedPass = false
-	}
-
-	if err := postRegister(ctx, platformHTTPClient, url, dockerID, attestationFile, taaPublicKey, reportValues, verifiedPass, timestamp); err != nil {
-		return err
-	}
-	return nil
+	return platform.NoticeRegister(ctx, platformAddr, dockerID, attestationFile, taaPublicKey, timestamp)
 }
 
-
 func logRegisterRequestFailure(url, contentType string, payload []byte, statusCode int, responseBody string, sendErr error) {
-	if sendErr != nil {
-		log.Printf("platform register request failed before response: error=%v", sendErr)
-	} else {
-		log.Printf("platform register request rejected: status=%d response=%s", statusCode, responseBody)
-	}
-	log.Printf("platform register request dump:\nPOST %s\nContent-Type: %s\nContent-Length: %d\n\n%s", url, contentType, len(payload), string(payload))
+	platform.LogRequestFailure(url, contentType, payload, statusCode, responseBody, sendErr)
 }
 
 func postRegister(ctx context.Context, client *http.Client, url, dockerID, attestationFile, taaPublicKey, reportValues string, verifiedPass bool, timestamp int64) error {

@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,12 +8,12 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"taa/internal/platform"
+	"taa/internal/runtime"
 )
 
 const (
@@ -25,10 +24,7 @@ const (
 )
 
 // ModelLogEntry 表示模型日志上报中的单条日志。
-type ModelLogEntry struct {
-	Seq     uint64 `json:"seq"`
-	Message string `json:"message"`
-}
+type ModelLogEntry = platform.ModelLogEntry
 
 type modelLogRequest struct {
 	DockerID  string          `json:"dockerId"`
@@ -156,194 +152,15 @@ func sendReportingJSON(ctx context.Context, platformAddr, endpoint string, paylo
 	return nil
 }
 
-type progressSnapshot struct {
-	Percent   float64
-	Timestamp time.Time
-	Key       string
-}
-
-type logFileCursor struct {
-	Offset int64
-}
-
-type jsonlLogReader struct {
-	dir     string
-	files   map[string]logFileCursor
-	nextSeq uint64
-}
+type progressSnapshot = runtime.ProgressSnapshot
+type jsonlLogReader = runtime.JSONLLogReader
 
 func newJSONLLogReader(dir string) *jsonlLogReader {
-	return &jsonlLogReader{
-		dir:   dir,
-		files: make(map[string]logFileCursor),
-	}
-}
-
-// ReadNew 读取日志目录中已完整落盘且尚未消费的 JSONL 行。
-func (r *jsonlLogReader) ReadNew() ([]ModelLogEntry, error) {
-	entries, err := os.ReadDir(r.dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	paths := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || !isLogFile(entry.Name()) {
-			continue
-		}
-		paths = append(paths, filepath.Join(r.dir, entry.Name()))
-	}
-	sort.Strings(paths)
-
-	var result []ModelLogEntry
-	for _, path := range paths {
-		newEntries, err := r.readFile(path)
-		if err != nil {
-			return result, err
-		}
-		result = append(result, newEntries...)
-	}
-	return result, nil
-}
-
-func isLogFile(name string) bool {
-	ext := strings.ToLower(filepath.Ext(name))
-	return ext == ".jsonl" || ext == ".log"
-}
-
-func (r *jsonlLogReader) readFile(path string) ([]ModelLogEntry, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	cursor := r.files[path]
-	if info.Size() < cursor.Offset {
-		cursor.Offset = 0
-	}
-
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	if _, err := file.Seek(cursor.Offset, io.SeekStart); err != nil {
-		return nil, err
-	}
-
-	reader := bufio.NewReader(file)
-	var result []ModelLogEntry
-	for {
-		line, readErr := reader.ReadString('\n')
-		if readErr != nil && readErr != io.EOF {
-			return result, readErr
-		}
-		if readErr == io.EOF {
-			// 没有换行的尾部仍可能是模型正在写入的半行，留到下次读取。
-			break
-		}
-		cursor.Offset += int64(len(line))
-		line = strings.TrimSpace(strings.TrimSuffix(line, "\n"))
-		line = strings.TrimSuffix(line, "\r")
-		if line == "" {
-			continue
-		}
-		message := logMessageFromLine(line)
-		if message == "" {
-			continue
-		}
-		r.nextSeq++
-		result = append(result, ModelLogEntry{Seq: r.nextSeq, Message: message})
-	}
-	r.files[path] = cursor
-	return result, nil
-}
-
-func logMessageFromLine(line string) string {
-	var raw any
-	if err := json.Unmarshal([]byte(line), &raw); err == nil {
-		switch value := raw.(type) {
-		case string:
-			return strings.TrimSpace(value)
-		case map[string]any:
-			if message, ok := value["message"].(string); ok {
-				return strings.TrimSpace(message)
-			}
-		}
-	}
-	return strings.TrimSpace(line)
+	return runtime.NewJSONLLogReader(dir)
 }
 
 func readLatestProgress(dir string) (progressSnapshot, bool, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return progressSnapshot{}, false, nil
-		}
-		return progressSnapshot{}, false, err
-	}
-
-	type candidate struct {
-		path string
-		info os.FileInfo
-	}
-	candidates := make([]candidate, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || strings.ToLower(filepath.Ext(entry.Name())) != ".json" {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		candidates = append(candidates, candidate{path: filepath.Join(dir, entry.Name()), info: info})
-	}
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].info.ModTime().Equal(candidates[j].info.ModTime()) {
-			return candidates[i].path > candidates[j].path
-		}
-		return candidates[i].info.ModTime().After(candidates[j].info.ModTime())
-	})
-
-	for _, item := range candidates {
-		data, err := os.ReadFile(item.path)
-		if err != nil {
-			continue
-		}
-		var raw struct {
-			Percent    *float64 `json:"percent"`
-			Percentage *float64 `json:"percentage"`
-			Timestamp  string   `json:"timestamp"`
-		}
-		if err := json.Unmarshal(data, &raw); err != nil {
-			continue
-		}
-		percent := raw.Percent
-		if percent == nil {
-			percent = raw.Percentage
-		}
-		if percent == nil || math.IsNaN(*percent) || math.IsInf(*percent, 0) || *percent < 0 || *percent > 100 {
-			continue
-		}
-		timestamp := item.info.ModTime().UTC()
-		if strings.TrimSpace(raw.Timestamp) != "" {
-			parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(raw.Timestamp))
-			if err != nil {
-				continue
-			}
-			timestamp = parsed.UTC()
-		}
-		return progressSnapshot{
-			Percent:   *percent,
-			Timestamp: timestamp,
-			Key:       fmt.Sprintf("%.9f|%s", *percent, timestamp.Format(time.RFC3339Nano)),
-		}, true, nil
-	}
-	return progressSnapshot{}, false, nil
+	return runtime.ReadLatestProgress(dir)
 }
 
 type reportWatcher struct {
