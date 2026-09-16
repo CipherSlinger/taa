@@ -430,3 +430,108 @@ func TestLoadOrGenerateTAAKeyPair_KeyMismatch_Fails(t *testing.T) {
 		t.Fatalf("expected 'key mismatch' error, got: %v", err)
 	}
 }
+
+func TestPrepareAttestationReport(t *testing.T) {
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+
+	t.Run("fallback on non-TEE environment writes empty report and returns false", func(t *testing.T) {
+		tempDir := t.TempDir()
+		if err := os.Chdir(tempDir); err != nil {
+			t.Fatalf("chdir: %v", err)
+		}
+		defer func() { _ = os.Chdir(origDir) }()
+
+		ctx := context.Background()
+		userData := make([]byte, 64)
+
+		passed, err := prepareAttestationReport(ctx, userData, "", "")
+		if err != nil {
+			t.Fatalf("prepareAttestationReport() error = %v, want nil", err)
+		}
+		if passed {
+			t.Fatal("expected passed = false on fallback")
+		}
+
+		// Ensure empty attestation report file was written
+		data, err := os.ReadFile(fixedAttestationFile)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", fixedAttestationFile, err)
+		}
+		if len(data) != 0 {
+			t.Fatalf("expected empty report file, got %d bytes", len(data))
+		}
+	})
+
+	t.Run("returns false when report is empty", func(t *testing.T) {
+		tempDir := t.TempDir()
+		if err := os.Chdir(tempDir); err != nil {
+			t.Fatalf("chdir: %v", err)
+		}
+		defer func() { _ = os.Chdir(origDir) }()
+
+		ctx := context.Background()
+		userData := make([]byte, 64)
+
+		// Pre-create empty report file
+		if err := os.WriteFile(fixedAttestationFile, nil, 0o600); err != nil {
+			t.Fatalf("write empty report: %v", err)
+		}
+
+		passed, err := prepareAttestationReport(ctx, userData, "some/hrk.cert", "some/hsk.cert")
+		if err != nil {
+			t.Fatalf("prepareAttestationReport() error = %v, want nil", err)
+		}
+		if passed {
+			t.Fatal("expected passed = false for empty report")
+		}
+	})
+
+	t.Run("returns false when self-verification fails with nonexistent certs", func(t *testing.T) {
+		tempDir := t.TempDir()
+		if err := os.Chdir(tempDir); err != nil {
+			t.Fatalf("chdir: %v", err)
+		}
+		defer func() { _ = os.Chdir(origDir) }()
+
+		ctx := context.Background()
+		userData := make([]byte, 64)
+
+		// Even with dummy cert paths passed, self-verification fails gracefully
+		passed, err := prepareAttestationReport(ctx, userData, "/nonexistent/hrk.cert", "/nonexistent/hsk.cert")
+		if err != nil {
+			t.Fatalf("prepareAttestationReport() error = %v, want nil", err)
+		}
+		if passed {
+			t.Fatal("expected passed = false when cert verification fails")
+		}
+	})
+
+	t.Run("write failure on non-writable directory returns error", func(t *testing.T) {
+		tempDir := t.TempDir()
+		// Create a directory named fixedAttestationFile so os.WriteFile fails
+		if err := os.Mkdir(filepath.Join(tempDir, fixedAttestationFile), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.Chdir(tempDir); err != nil {
+			t.Fatalf("chdir: %v", err)
+		}
+		defer func() { _ = os.Chdir(origDir) }()
+
+		ctx := context.Background()
+		userData := make([]byte, 64)
+
+		passed, err := prepareAttestationReport(ctx, userData, "", "")
+		if err == nil {
+			t.Fatal("expected error when writing empty attestation report fails")
+		}
+		if passed {
+			t.Fatal("expected passed = false on write failure")
+		}
+		if !strings.Contains(err.Error(), "write empty attestation report") {
+			t.Fatalf("error = %v, want write empty attestation report error", err)
+		}
+	})
+}

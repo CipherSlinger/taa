@@ -103,6 +103,8 @@ type TAAState struct {
 	AttestationFile       string
 	PlatformIP            string
 	DockerID              string
+	HRKCertPath           string
+	HSKCekCertPath        string
 	SM2PrivateKey         *teecrypto.SM2PrivateKey // TAA 启动时生成的 SM2 私钥，用于解密资源信封
 	UserData              []byte                   // TAA 启动时生成的 64 字节 USERDATA，用于重新生成远程证明报告
 	ExportPublicKey       string                   // phase1 import 时保存的公钥，phase3 export 时使用
@@ -440,12 +442,14 @@ func (s *TAAState) getTAAPublicKeyPEM() string {
 	return string(pubPEM)
 }
 
-func NewTAAState(attestationFile, platformIP, dockerID string, sm2Key *teecrypto.SM2PrivateKey, userData []byte, sec SecurityConfig) *TAAState {
+func NewTAAState(attestationFile, platformIP, dockerID, hrkCertPath, hskCekCertPath string, sm2Key *teecrypto.SM2PrivateKey, userData []byte, sec SecurityConfig) *TAAState {
 	return &TAAState{
 		CurrentPhase:    1,
 		AttestationFile: attestationFile,
 		PlatformIP:      platformIP,
 		DockerID:        dockerID,
+		HRKCertPath:     hrkCertPath,
+		HSKCekCertPath:  hskCekCertPath,
 		SM2PrivateKey:   sm2Key,
 		UserData:        userData,
 		Security:        sec,

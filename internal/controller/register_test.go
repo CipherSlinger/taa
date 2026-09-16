@@ -189,7 +189,7 @@ func TestNoticeRegisterValidation(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := NoticeRegister(context.Background(), tc.platform, tc.dockerID, tc.file, tc.pubKey, 1234567890)
+			err := NoticeRegister(context.Background(), tc.platform, tc.dockerID, tc.file, tc.pubKey, 1234567890, true)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -231,7 +231,7 @@ func TestNoticeRegisterFallsBackWhenAttestationValuesExtractionFails(t *testing.
 	}))
 	defer server.Close()
 
-	if err := NoticeRegister(context.Background(), server.URL, "docker-1", attestationPath, "pub", 1234567890); err != nil {
+	if err := NoticeRegister(context.Background(), server.URL, "docker-1", attestationPath, "pub", 1234567890, true); err != nil {
 		t.Fatalf("NoticeRegister() error = %v", err)
 	}
 	if gotPayload.AttestationValues != "" {
@@ -245,6 +245,41 @@ func TestNoticeRegisterFallsBackWhenAttestationValuesExtractionFails(t *testing.
 	}
 }
 
+func TestNoticeRegisterPassesVerifiedPassFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+	attestationPath := filepath.Join(tmpDir, "attestation.report")
+	if err := os.WriteFile(attestationPath, make([]byte, 2548), 0o600); err != nil {
+		t.Fatalf("write attestation file: %v", err)
+	}
+
+	var gotPayload struct {
+		VerifiedPass bool `json:"verifiedPass"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotPayload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// 1. Pass verifiedPass = true with a validly sized report
+	if err := NoticeRegister(context.Background(), server.URL, "docker-1", attestationPath, "pub", 1234567890, true); err != nil {
+		t.Fatalf("NoticeRegister() error = %v", err)
+	}
+	if !gotPayload.VerifiedPass {
+		t.Fatal("expected verifiedPass to be true")
+	}
+
+	// 2. Pass verifiedPass = false
+	if err := NoticeRegister(context.Background(), server.URL, "docker-1", attestationPath, "pub", 1234567890, false); err != nil {
+		t.Fatalf("NoticeRegister() error = %v", err)
+	}
+	if gotPayload.VerifiedPass {
+		t.Fatal("expected verifiedPass to be false")
+	}
+}
+
 func TestNoticeRegisterReturnsErrorWhenPlatformUnavailable(t *testing.T) {
 	tmpDir := t.TempDir()
 	attestationPath := filepath.Join(tmpDir, "attestation.report")
@@ -252,7 +287,7 @@ func TestNoticeRegisterReturnsErrorWhenPlatformUnavailable(t *testing.T) {
 		t.Fatalf("write attestation file: %v", err)
 	}
 
-	err := NoticeRegister(context.Background(), "127.0.0.1:65535", "docker-1", attestationPath, "pub", 1234567890)
+	err := NoticeRegister(context.Background(), "127.0.0.1:65535", "docker-1", attestationPath, "pub", 1234567890, true)
 	if err == nil {
 		t.Fatal("expected NoticeRegister to return an error when platform is unavailable")
 	}

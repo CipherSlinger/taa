@@ -67,7 +67,7 @@ func setupTestState(t *testing.T) (*TAAState, string) {
 	logDir := filepath.Join(tmpDir, "log")
 	progressDir := filepath.Join(tmpDir, "progress")
 
-	state := NewTAAState(attestationPath, "127.0.0.1:65535", "test-docker-001", sm2Key, userData, SecurityConfig{
+	state := NewTAAState(attestationPath, "127.0.0.1:65535", "test-docker-001", "", "", sm2Key, userData, SecurityConfig{
 		ScanEnabled:      false,
 		ModelDir:         modelDir,
 		DataDir:          dataDir,
@@ -1082,6 +1082,43 @@ func TestGetAttestationHandler(t *testing.T) {
 		}
 		if got := sm2UserDataFromPublicKey(parsedPub); !bytes.Equal(got, state.UserData) {
 			t.Fatalf("userdata bytes = %x, want %x", got, state.UserData)
+		}
+		if verifiedPass, ok := result["verifiedPass"].(bool); !ok || verifiedPass {
+			t.Fatalf("expected verifiedPass=false with unconfigured cert paths, got %v", result["verifiedPass"])
+		}
+		if !strings.Contains(api.Msg, "自检验证失败") {
+			t.Fatalf("expected msg to contain '自检验证失败', got %q", api.Msg)
+		}
+	})
+
+	t.Run("reports verifiedPass false when certs fail self-verification", func(t *testing.T) {
+		state.HRKCertPath = "/nonexistent/hrk.cert"
+		state.HSKCekCertPath = "/nonexistent/hsk.cert"
+		defer func() {
+			state.HRKCertPath = ""
+			state.HSKCekCertPath = ""
+		}()
+
+		resp := postJSON(t, server.URL+"/v1/taa/getAttestation", map[string]any{
+			"requestId": "req-att-verify-fail",
+		})
+		if resp.StatusCode != 200 {
+			resp.Body.Close()
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+		api := decodeResponse(t, resp)
+		if api.Error != 0 {
+			t.Fatalf("expected error=0, got %d msg=%s", api.Error, api.Msg)
+		}
+		result, ok := api.Result.(map[string]any)
+		if !ok {
+			t.Fatalf("result is not a map: %T", api.Result)
+		}
+		if verifiedPass, ok := result["verifiedPass"].(bool); !ok || verifiedPass {
+			t.Fatalf("expected verifiedPass=false on invalid cert paths, got %v", result["verifiedPass"])
+		}
+		if !strings.Contains(api.Msg, "自检验证失败") {
+			t.Fatalf("expected msg to contain '自检验证失败', got %q", api.Msg)
 		}
 	})
 

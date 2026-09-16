@@ -31,8 +31,8 @@ type registerRequest struct {
 
 // NoticeRegister makes one best-effort attempt to POST /v1/taa/register.
 // The request carries the attestation report and TAA public key.
-func NoticeRegister(ctx context.Context, platformAddr, dockerID, attestationFile, taaPublicKey string, timestamp int64) error {
-	return platform.NoticeRegister(ctx, platformAddr, dockerID, attestationFile, taaPublicKey, timestamp)
+func NoticeRegister(ctx context.Context, platformAddr, dockerID, attestationFile, taaPublicKey string, timestamp int64, verifiedPass bool) error {
+	return platform.NoticeRegister(ctx, platformAddr, dockerID, attestationFile, taaPublicKey, timestamp, verifiedPass)
 }
 
 func logRegisterRequestFailure(url, contentType string, payload []byte, statusCode int, responseBody string, sendErr error) {

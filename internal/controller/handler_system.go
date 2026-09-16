@@ -176,7 +176,18 @@ func (s *TAAState) buildAttestationResult(ctx context.Context, attestationFile s
 		return nil, "", false, "获取报告失败: " + err.Error()
 	}
 
-	return reportData, formattedValues, true, "success"
+	verifiedPass := false
+	var verifyMsg string
+	if _, verifyErr := attestation.VerifyReport(reportData, s.HRKCertPath, s.HSKCekCertPath); verifyErr != nil {
+		log.Printf("get attestation self-verification failed: %v", verifyErr)
+		verifyMsg = "自检验证失败: " + verifyErr.Error()
+	} else {
+		log.Printf("get attestation self-verification passed")
+		verifiedPass = true
+		verifyMsg = "success"
+	}
+
+	return reportData, formattedValues, verifiedPass, verifyMsg
 }
 
 func (s *TAAState) getAttestationHandler(w http.ResponseWriter, r *http.Request) {

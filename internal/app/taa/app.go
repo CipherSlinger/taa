@@ -117,13 +117,14 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	}
 	logUserDataSummary(platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, userData)
 
-	// 4. 调用底层工具生成包含 UserData 的远程证明报告
-	if err := prepareAttestationReport(ctx, userData); err != nil {
+	// 4. Generate attestation report containing UserData and perform certificate self-verification
+	verifiedPass, err := prepareAttestationReport(ctx, userData, cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
+	if err != nil {
 		return err
 	}
 
 	// 5. 向管控平台注册本 TAA 实例，通知平台就绪并提交度量报告与公钥
-	if err := registerPlatform(ctx, platformIP, dockerID, keyPair.PublicKeyPEM, timestamp); err != nil {
+	if err := registerPlatform(ctx, platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, verifiedPass); err != nil {
 		log.Printf("WARNING: platform register failed, continuing startup: %v", err)
 	} else {
 		log.Printf("platform register completed")
@@ -142,6 +143,8 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		fixedAttestationFile,
 		platformIP,
 		dockerID,
+		cfg.AttestationHRKCertPath,
+		cfg.AttestationHSKCekCertPath,
 		keyPair.PrivateKey,
 		userData,
 		sec,
@@ -534,9 +537,9 @@ func logUserDataSummary(platformIP, dockerID, publicKeyPEM string, timestamp int
 // TEE 远程证明报告与管控平台注册
 // ============================================================================
 
-// prepareAttestationReport 调用底层 TEE 工具生成远程证明报告。
-// 若在非 TEE 环境或生成失败，写入空报告并记录警告，允许服务在降级模式下继续启动。
-func prepareAttestationReport(ctx context.Context, userData []byte) error {
+// prepareAttestationReport invokes underlying TEE tools to generate attestation report and performs certificate self-verification.
+// In non-TEE environments or upon generation failure, writes an empty report and logs a warning, allowing service to start in degraded mode (verifiedPass=false).
+func prepareAttestationReport(ctx context.Context, userData []byte, hrkCertPath, hskCekCertPath string) (bool, error) {
 	log.Printf("generating attestation report: output=%s", fixedAttestationFile)
 	if err := attestation.Generate(ctx, attestation.Config{
 		OutputPath: fixedAttestationFile,
@@ -544,19 +547,30 @@ func prepareAttestationReport(ctx context.Context, userData []byte) error {
 	}); err != nil {
 		log.Printf("WARNING: generating attestation report failed, continuing with empty report: %v", err)
 		if writeErr := os.WriteFile(fixedAttestationFile, nil, 0o600); writeErr != nil {
-			return fmt.Errorf("write empty attestation report: %w", writeErr)
+			return false, fmt.Errorf("write empty attestation report: %w", writeErr)
 		}
-	} else {
-		log.Printf("attestation report ready: %s", fixedAttestationFile)
+		return false, nil
 	}
-	return nil
+
+	reportBytes, err := os.ReadFile(fixedAttestationFile)
+	if err != nil || len(reportBytes) == 0 {
+		return false, nil
+	}
+
+	if _, verifyErr := attestation.VerifyReport(reportBytes, hrkCertPath, hskCekCertPath); verifyErr != nil {
+		log.Printf("WARNING: attestation self-verification failed: %v", verifyErr)
+		return false, nil
+	}
+
+	log.Printf("attestation report verified successfully: %s", fixedAttestationFile)
+	return true, nil
 }
 
-// registerPlatform 向管控平台发起注册请求，上报 DockerID、度量报告、TAA 公钥及时间戳
-func registerPlatform(ctx context.Context, platformIP, dockerID, publicKeyPEM string, timestamp int64) error {
-	log.Printf("notifying platform register: platform=%s dockerId=%s attestation=%s timestamp=%d",
-		platformIP, dockerID, fixedAttestationFile, timestamp)
-	return controller.NoticeRegister(ctx, platformIP, dockerID, fixedAttestationFile, publicKeyPEM, timestamp)
+// registerPlatform sends a registration request to the platform, reporting DockerID, attestation report, TAA public key, timestamp, and self-verification status.
+func registerPlatform(ctx context.Context, platformIP, dockerID, publicKeyPEM string, timestamp int64, verifiedPass bool) error {
+	log.Printf("notifying platform register: platform=%s dockerId=%s attestation=%s timestamp=%d verifiedPass=%v",
+		platformIP, dockerID, fixedAttestationFile, timestamp, verifiedPass)
+	return controller.NoticeRegister(ctx, platformIP, dockerID, fixedAttestationFile, publicKeyPEM, timestamp, verifiedPass)
 }
 
 // ============================================================================

@@ -26,14 +26,14 @@ type registerRequest struct {
 	Attestation       string `json:"attestation"`
 }
 
-// NoticeRegister 向管控平台注册本 TAA 实例并上报 TEE 远程证明报告与公钥
-func NoticeRegister(ctx context.Context, platformAddr, dockerID, attestationFile, taaPublicKey string, timestamp int64) error {
+// NoticeRegister registers this TAA instance to the control platform and reports TEE attestation report, public key, and self-verification status.
+func NoticeRegister(ctx context.Context, platformAddr, dockerID, attestationFile, taaPublicKey string, timestamp int64, verifiedPass bool) error {
 	client := NewClient(platformAddr, dockerID)
-	return client.NoticeRegister(ctx, attestationFile, taaPublicKey, timestamp)
+	return client.NoticeRegister(ctx, attestationFile, taaPublicKey, timestamp, verifiedPass)
 }
 
-// NoticeRegister 实例方法
-func (c *Client) NoticeRegister(ctx context.Context, attestationFile, taaPublicKey string, timestamp int64) error {
+// NoticeRegister sends registration request from Client instance.
+func (c *Client) NoticeRegister(ctx context.Context, attestationFile, taaPublicKey string, timestamp int64, verifiedPass bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -56,7 +56,6 @@ func (c *Client) NoticeRegister(ctx context.Context, attestationFile, taaPublicK
 	url := PlatformURL(c.PlatformAddr, RegisterEndpoint)
 
 	reportValues, err := attestation.ExtractReportValues(attestationFile)
-	verifiedPass := true
 	if err != nil {
 		log.Printf("notice platform register: extract report values failed, continuing with empty report: %v", err)
 		reportValues = ""

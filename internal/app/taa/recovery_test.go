@@ -61,6 +61,8 @@ func setupTestRecoveryState(t *testing.T) (*controller.TAAState, *controller.Sta
 		filepath.Join(tempDir, "attestation.report"),
 		"127.0.0.1:65535",
 		"docker-test-01",
+		"",
+		"",
 		keyPair.PrivateKey,
 		userData,
 		sec,
