@@ -1,0 +1,48 @@
+# Industrial Surface Defect Dataset Annotations
+# Classes: [scratch, dent, inclusion]
+# Bbox format: [x_min, y_min, x_max, y_max]
+
+categories:
+  - id: 1
+    name: scratch
+  - id: 2
+    name: dent
+  - id: 3
+    name: inclusion
+
+samples:
+  - filename: defect_01.png
+    width: 64
+    height: 64
+    objects:
+      - category: scratch
+        category_id: 1
+        bbox: [10, 10, 35, 35]
+  - filename: defect_02.png
+    width: 64
+    height: 64
+    objects:
+      - category: dent
+        category_id: 2
+        bbox: [25, 25, 37, 37]
+  - filename: defect_03.png
+    width: 64
+    height: 64
+    objects:
+      - category: scratch
+        category_id: 1
+        bbox: [18, 12, 42, 38]
+  - filename: defect_04.png
+    width: 64
+    height: 64
+    objects:
+      - category: inclusion
+        category_id: 3
+        bbox: [24, 24, 40, 40]
+  - filename: defect_05.png
+    width: 64
+    height: 64
+    objects:
+      - category: dent
+        category_id: 2
+        bbox: [32, 32, 46, 46]
