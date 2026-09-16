@@ -344,8 +344,10 @@ def check_sample_attribution(sample_row: dict[str, Any], sample_meta: dict[str, 
     if not paf:
         return False
 
-    target_file = Path(paf.get("file", "benchmark_variant.py")).name
+    target_file = Path(paf.get("file") or "benchmark_variant.py").name
     target_rule = paf.get("rule_id")
+    if not target_rule:
+        return False
 
     audit_mode = sample_row.get("audit_mode", "static-llm")
     report = sample_row.get("audit_report") or {}
@@ -353,7 +355,7 @@ def check_sample_attribution(sample_row: dict[str, Any], sample_meta: dict[str, 
 
     if audit_mode in ("pure-llm", "pure-llm-checklist"):
         for f_rep in file_reports:
-            file_name = Path(f_rep.get("file", f_rep.get("file_path", ""))).name
+            file_name = Path(f_rep.get("file") or f_rep.get("file_path") or "").name
             if file_name == target_file:
                 verdict = str(f_rep.get("verdict", "")).upper()
                 risk = str(f_rep.get("risk_level", "")).upper()
@@ -363,7 +365,7 @@ def check_sample_attribution(sample_row: dict[str, Any], sample_meta: dict[str, 
 
     # static-llm mode: check matching rule_id in target_file
     for f_rep in file_reports:
-        file_name = Path(f_rep.get("file", f_rep.get("file_path", ""))).name
+        file_name = Path(f_rep.get("file") or f_rep.get("file_path") or "").name
         if file_name == target_file:
             for finding in f_rep.get("findings", []):
                 if finding.get("rule_id") == target_rule:
@@ -869,10 +871,12 @@ def compute_bootstrap_ci(
 
     boot_estimates.sort()
     alpha = 1.0 - confidence_level
-    lower_idx = int((alpha / 2.0) * n_bootstraps)
-    upper_idx = int((1.0 - alpha / 2.0) * n_bootstraps)
+    lower_idx = int(round((alpha / 2.0) * n_bootstraps))
+    upper_idx = int(round((1.0 - alpha / 2.0) * n_bootstraps)) - 1
     lower_idx = max(0, min(lower_idx, n_bootstraps - 1))
     upper_idx = max(0, min(upper_idx, n_bootstraps - 1))
+    if upper_idx < lower_idx:
+        upper_idx = lower_idx
 
     ci_lower = boot_estimates[lower_idx]
     ci_upper = boot_estimates[upper_idx]
