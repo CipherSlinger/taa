@@ -15,6 +15,7 @@ test: deploy-test
 
 deploy-test:
 	@bash tests/deploy_ollama_preflight_test.sh
+	@bash tests/deploy_docker_transfer_test.sh
 
 run: taa
 	@if [ ! -f taa-config.json ]; then cp configs/taa-local.json taa-config.json; fi

@@ -1651,46 +1651,50 @@ deploy_docker_qwen() {
     elif [[ "$FORCE_QWEN_COPY" == false && "$has_base_runtime" == true && "$has_model" == false ]]; then
       step "incrementally copying model '$OLLAMA_MODEL' (${model_mb}MB) into container"
       docker exec -i "$LOCAL_DOCKER_CONTAINER" mkdir -p "$CONTAINER_OLLAMA_DIR"
+      local qwen_filelist="$LOCAL_RUN_DIR/docker_qwen_files_$$.txt"
+      ensure_parent_dir "$qwen_filelist"
+      resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "model_only" > "$qwen_filelist"
       spin_task "transferring model weights (${model_mb}MB) into container" bash -c '
         set -euo pipefail
-        resolve_ollama_model_artifacts "$1" "$2" "model_only" | \
-          tar -C "$1" -cf - -T - | \
-          docker exec -i "$3" tar -xf - -C "$4"
-      ' _ "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "$LOCAL_DOCKER_CONTAINER" "$CONTAINER_OLLAMA_DIR"
+        tar -C "$1" -cf - -T "$2" | docker exec -i "$3" tar -xf - -C "$4"
+      ' _ "$OLLAMA_LOCAL_DIR" "$qwen_filelist" "$LOCAL_DOCKER_CONTAINER" "$CONTAINER_OLLAMA_DIR"
+      rm -f "$qwen_filelist"
       info "incremental model transfer completed"
     else
       step "copying pruned ollama runtime and model '$OLLAMA_MODEL' (${model_mb}MB) into container"
       docker exec -i "$LOCAL_DOCKER_CONTAINER" mkdir -p "$CONTAINER_OLLAMA_DIR"
+      local qwen_filelist="$LOCAL_RUN_DIR/docker_qwen_files_$$.txt"
+      ensure_parent_dir "$qwen_filelist"
       if [[ "$FORCE_QWEN_COPY" == true ]]; then
         docker exec -i "$LOCAL_DOCKER_CONTAINER" rm -rf "$CONTAINER_OLLAMA_DIR"
         docker exec -i "$LOCAL_DOCKER_CONTAINER" mkdir -p "$CONTAINER_OLLAMA_DIR"
+        resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "full" > "$qwen_filelist"
         spin_task "transferring pruned ollama bundle into container" bash -c '
           set -euo pipefail
-          resolve_ollama_model_artifacts "$1" "$2" "full" | \
-            tar -C "$1" -cf - -T - | \
-            docker exec -i "$3" tar -xf - -C "$4"
-        ' _ "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "$LOCAL_DOCKER_CONTAINER" "$CONTAINER_OLLAMA_DIR"
+          tar -C "$1" -cf - -T "$2" | docker exec -i "$3" tar -xf - -C "$4"
+        ' _ "$OLLAMA_LOCAL_DIR" "$qwen_filelist" "$LOCAL_DOCKER_CONTAINER" "$CONTAINER_OLLAMA_DIR"
       elif [[ "$has_lib" == true ]]; then
         info "reusing existing lib directory in container, copying runtime binaries and model"
+        {
+          echo "ollama"
+          echo "start-ollama.sh"
+          for opt in "models/cache" "models/models/cache" "models/models/id_ed25519" "models/models/id_ed25519.pub"; do
+            [[ -e "$OLLAMA_LOCAL_DIR/$opt" ]] && echo "$opt"
+          done
+          resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "model_only"
+        } > "$qwen_filelist"
         spin_task "transferring runtime binaries and model weights" bash -c '
           set -euo pipefail
-          {
-            echo "ollama"
-            echo "start-ollama.sh"
-            for opt in "models/cache" "models/models/cache" "models/models/id_ed25519" "models/models/id_ed25519.pub"; do
-              [[ -e "$1/$opt" ]] && echo "$opt"
-            done
-            resolve_ollama_model_artifacts "$1" "$2" "model_only"
-          } | tar -C "$1" -cf - -T - | docker exec -i "$3" tar -xf - -C "$4"
-        ' _ "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "$LOCAL_DOCKER_CONTAINER" "$CONTAINER_OLLAMA_DIR"
+          tar -C "$1" -cf - -T "$2" | docker exec -i "$3" tar -xf - -C "$4"
+        ' _ "$OLLAMA_LOCAL_DIR" "$qwen_filelist" "$LOCAL_DOCKER_CONTAINER" "$CONTAINER_OLLAMA_DIR"
       else
+        resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "full" > "$qwen_filelist"
         spin_task "transferring full ollama bundle into container" bash -c '
           set -euo pipefail
-          resolve_ollama_model_artifacts "$1" "$2" "full" | \
-            tar -C "$1" -cf - -T - | \
-            docker exec -i "$3" tar -xf - -C "$4"
-        ' _ "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "$LOCAL_DOCKER_CONTAINER" "$CONTAINER_OLLAMA_DIR"
+          tar -C "$1" -cf - -T "$2" | docker exec -i "$3" tar -xf - -C "$4"
+        ' _ "$OLLAMA_LOCAL_DIR" "$qwen_filelist" "$LOCAL_DOCKER_CONTAINER" "$CONTAINER_OLLAMA_DIR"
       fi
+      rm -f "$qwen_filelist"
       info "ollama package transfer completed"
     fi
   else
