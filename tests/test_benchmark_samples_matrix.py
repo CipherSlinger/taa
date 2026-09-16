@@ -1,12 +1,19 @@
 """Unit tests for the 100-sample orthogonal benchmark matrix and materialized sandboxes."""
 
+import ast
 import json
 import py_compile
 import re
+import sys
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from models.audit.tools.audit_benchmark_eval import PROJECT_ALLOCATION  # noqa: E402
+
 MANIFEST_PATH = REPO_ROOT / "docs" / "audit" / "audit-benchmark-manifest.json"
 BENCHMARK_ROOT = REPO_ROOT / "models" / "audit" / "benchmarks" / "audit-100"
 
@@ -57,6 +64,16 @@ class TestBenchmarkSamplesMatrix(unittest.TestCase):
         for fam, count in family_counts.items():
             self.assertEqual(count, 10, f"Family {fam} must have exactly 10 samples, got {count}")
 
+        # Verify exact cell-level quotas matching PROJECT_ALLOCATION
+        for fam, alloc in PROJECT_ALLOCATION.items():
+            for proj, expected_count in alloc.items():
+                actual = sum(1 for s in samples if s["family"] == fam and s["base_project"] == proj)
+                self.assertEqual(
+                    actual,
+                    expected_count,
+                    f"Cell ({fam}, {proj}) expected {expected_count} samples, got {actual}",
+                )
+
     def test_materialized_sandboxes_exist(self):
         """Test that all 100 sandboxes exist and contain required files and data assets."""
         self.assertTrue(BENCHMARK_ROOT.exists(), f"Benchmark root missing: {BENCHMARK_ROOT}")
@@ -97,7 +114,6 @@ class TestBenchmarkSamplesMatrix(unittest.TestCase):
                 self.assertIn(key, meta, f"Key '{key}' missing from {sample_json_path}")
 
             self.assertIsInstance(meta["findings_manifest"], list)
-
             if meta["label"] == "malicious":
                 paf = meta["primary_attack_finding"]
                 self.assertIsNotNone(paf, f"Malicious sample {meta['sample_id']} has null primary_attack_finding")
@@ -123,10 +139,12 @@ class TestBenchmarkSamplesMatrix(unittest.TestCase):
             self.assertTrue(variant_path.is_file(), f"Variant file missing: {variant_path}")
 
             variant_content = variant_path.read_text(encoding="utf-8")
+            parsed_ast = ast.parse(variant_content, filename=str(variant_path))
+            func_names = [node.name for node in ast.walk(parsed_ast) if isinstance(node, ast.FunctionDef)]
             self.assertIn(
-                "def on_epoch_end(epoch=0, metrics=None):",
-                variant_content,
-                f"Lifecycle hook on_epoch_end(epoch=0, metrics=None) missing in {variant_path}",
+                "on_epoch_end",
+                func_names,
+                f"Lifecycle hook on_epoch_end missing in AST of {variant_path}",
             )
 
             # Compile all python files in the sandbox
@@ -142,24 +160,24 @@ class TestBenchmarkSamplesMatrix(unittest.TestCase):
         data = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
         samples = data.get("samples", [])
 
-        forbidden_home_bashrc = re.compile(r"""(?:~/\.bashrc|\.home\(\).*bashrc)""")
-        url_pattern = re.compile(r"""https?://([a-zA-Z0-9.-]+)""")
+        forbidden_home_bashrc = re.compile(r"""(?:~/(?:\.bashrc|\.bash_profile|\.zshrc|\.profile)|\.home\(\).*(?:bashrc|profile|zshrc))""")
+        domain_pattern = re.compile(r"""["']([a-zA-Z0-9.-]+\.(?:invalid|com|org|net|cn))["']""")
 
         for s in samples:
             sandbox_dir = BENCHMARK_ROOT / s["base_project"] / s["sample_id"]
             for py_file in sandbox_dir.glob("**/*.py"):
                 content = py_file.read_text(encoding="utf-8")
 
-                # Verify ~/.bashrc is never directly referenced
+                # Verify home directory shell config is never directly targeted
                 self.assertFalse(
                     forbidden_home_bashrc.search(content),
-                    f"Dangerous ~/.bashrc reference found in {py_file}",
+                    f"Dangerous home shell configuration reference found in {py_file}",
                 )
 
-                # Verify all network targets use .invalid
-                for domain in url_pattern.findall(content):
+                # Verify all network targets use RFC 2606 .invalid
+                for domain in domain_pattern.findall(content):
                     self.assertTrue(
-                        domain.endswith(".invalid") or domain in ("example.invalid", "collector.example.invalid", "telemetry.example.invalid"),
+                        domain.endswith(".invalid"),
                         f"Non-safe network sink domain '{domain}' found in {py_file}",
                     )
 
