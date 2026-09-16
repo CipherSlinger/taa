@@ -1,10 +1,6 @@
 package controller
 
 import (
-	"archive/tar"
-	"archive/zip"
-	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -13,17 +9,15 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
 	"taa/internal/codeaudit"
+	"taa/internal/resource"
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
-	filetree "taa/pkg/filetree"
 	"taa/pkg/utils"
 )
 
@@ -701,16 +695,12 @@ func (s *TAAState) reportImportFailure(req importRequest, phase int, isModel boo
 }
 
 func resourceURLHasEncSuffix(resourceURL string) bool {
-	path := resourceURL
-	if u, err := url.Parse(resourceURL); err == nil && u.Path != "" {
-		path = u.Path
-	}
-	return strings.HasSuffix(strings.ToLower(path), ".enc")
+	return resource.ResourceURLHasEncSuffix(resourceURL)
 }
 
 // isArchiveFile 检查文件是否为已知明文压缩包格式（ZIP / GZIP / TAR）。
 func isArchiveFile(filePath string) (bool, error) {
-	return filetree.IsArchiveFile(filePath)
+	return resource.IsArchiveFile(filePath)
 }
 
 // resolvePlaintextResource 决策并准备资源的明文文件路径。
@@ -781,291 +771,31 @@ func (s *TAAState) reportTrainingFailureFromResult(req importRequest, startedAt 
 }
 
 func extractArchiveToDir(dst, filePath string) error {
-	if strings.TrimSpace(dst) == "" {
-		return fmt.Errorf("MODEL_DIR is required")
-	}
-
-	parent := filepath.Dir(dst)
-	base := filepath.Base(dst)
-	tmpDir, err := os.MkdirTemp(parent, base+".extract-*")
-	if err != nil {
-		return fmt.Errorf("create temp extraction dir: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	if err := extractArchiveFile(tmpDir, filePath); err != nil {
-		return err
-	}
-
-	// 给所有 .sh 文件补可执行权限（兼容 Windows 打包的归档）
-	if err := chmodScripts(tmpDir); err != nil {
-		return fmt.Errorf("chmod scripts: %w", err)
-	}
-
-	if err := os.RemoveAll(dst); err != nil {
-		return fmt.Errorf("clear model dir: %w", err)
-	}
-	if err := os.Rename(tmpDir, dst); err != nil {
-		return fmt.Errorf("move extracted package into model dir: %w", err)
-	}
-	return nil
+	return resource.ExtractArchiveToDir(dst, filePath)
 }
 
-// extractArchiveFile 从磁盘文件解压，根据 magic bytes 自动检测格式。
-// tar/tar.gz 流式读取；zip 需要随机访问，加载到内存。
 func extractArchiveFile(dst, filePath string) error {
-	log.Printf("extractArchiveFile: dst=%s, filePath=%s", dst, filePath)
-
-	// 读取文件头部用于格式检测。
-	hdr := make([]byte, 512)
-	f, err := os.Open(filePath)
-	if err != nil {
-		return err
-	}
-	n, _ := f.Read(hdr)
-	f.Close()
-	hdr = hdr[:n]
-
-	log.Printf("extractArchiveFile: read %d bytes header, first 4 bytes: %x", n, hdr[:min(4, len(hdr))])
-
-	if n >= 2 {
-		// ZIP: starts with "PK" (0x50 0x4B)
-		if hdr[0] == 0x50 && hdr[1] == 0x4B {
-			log.Printf("extractArchiveFile: detected ZIP format")
-			data, err := os.ReadFile(filePath)
-			if err != nil {
-				return err
-			}
-			return extractZipArchive(dst, data)
-		}
-		// gzip: starts with 0x1F 0x8B — 流式读取
-		if hdr[0] == 0x1F && hdr[1] == 0x8B {
-			log.Printf("extractArchiveFile: detected gzip format, extracting...")
-			f, err := os.Open(filePath)
-			if err != nil {
-				return err
-			}
-			defer f.Close()
-			gz, err := gzip.NewReader(f)
-			if err != nil {
-				return err
-			}
-			defer gz.Close()
-			err = extractTarStream(dst, gz)
-			if err != nil {
-				return err
-			}
-			// Count extracted files
-			count := 0
-			filepath.Walk(dst, func(path string, info os.FileInfo, err error) error {
-				if err == nil && !info.IsDir() {
-					count++
-				}
-				return nil
-			})
-			log.Printf("extractArchiveFile: gzip extraction complete, %d files extracted to %s", count, dst)
-			return nil
-		}
-	}
-	// tar: check for "ustar" magic at offset 257 — 流式读取
-	if n >= 263 && string(hdr[257:262]) == "ustar" {
-		f, err := os.Open(filePath)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		return extractTarStream(dst, f)
-	}
-
-	// Fallback: 尝试 zip（需要内存）和流式 tar.gz/tar
-	// 先尝试 zip
-	if data, err := os.ReadFile(filePath); err == nil {
-		if err := extractZipArchive(dst, data); err == nil {
-			return nil
-		}
-	}
-	// 尝试流式 tar.gz
-	if f, err := os.Open(filePath); err == nil {
-		if gz, err := gzip.NewReader(f); err == nil {
-			err = extractTarStream(dst, gz)
-			gz.Close()
-			f.Close()
-			if err == nil {
-				return nil
-			}
-		} else {
-			f.Close()
-		}
-	}
-	// 尝试流式 tar
-	if f, err := os.Open(filePath); err == nil {
-		err = extractTarStream(dst, f)
-		f.Close()
-		if err == nil {
-			return nil
-		}
-	}
-	return fmt.Errorf("unsupported archive format or extract failed")
+	return resource.ExtractArchiveFile(dst, filePath)
 }
-
-const maxExtractBytes int64 = 2 << 30 // 2 GB
 
 func extractZipArchive(dst string, data []byte) error {
-	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return err
-	}
-	baseAbs, err := filepath.Abs(dst)
-	if err != nil {
-		return err
-	}
-	var totalExtractedBytes int64
-	for _, f := range r.File {
-		target, err := safeJoinWithBase(dst, baseAbs, f.Name)
-		if err != nil {
-			return err
-		}
-		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return err
-		}
-		remain := maxExtractBytes - totalExtractedBytes
-		if remain < 0 {
-			rc.Close()
-			_ = cleanDirContents(dst)
-			return fmt.Errorf("解压累计字节超过上限 %d bytes", maxExtractBytes)
-		}
-		written, err := writeExtractedFileWithLimit(target, rc, f.Mode(), remain)
-		rc.Close()
-		if err != nil {
-			_ = cleanDirContents(dst)
-			return err
-		}
-		totalExtractedBytes += written
-	}
-	return nil
+	return resource.ExtractZipArchive(dst, data)
 }
 
 func writeExtractedFileWithLimit(target string, src io.Reader, mode os.FileMode, maxBytes int64) (int64, error) {
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
-	if err != nil {
-		return 0, err
-	}
-	lr := io.LimitReader(src, maxBytes+1)
-	n, err := io.Copy(out, lr)
-	closeErr := out.Close()
-	if err != nil {
-		_ = os.Remove(target)
-		return n, err
-	}
-	if closeErr != nil {
-		_ = os.Remove(target)
-		return n, closeErr
-	}
-	if n > maxBytes {
-		_ = os.Remove(target)
-		return n, fmt.Errorf("解压数据超过配额上限 %d bytes", maxExtractBytes)
-	}
-	return n, nil
+	return resource.WriteExtractedFileWithLimit(target, src, mode, maxBytes)
 }
 
-// chmodScripts walks a directory and adds the executable bit (+x) to all .sh files.
-// This fixes archives created on Windows or without proper Unix permissions.
 func chmodScripts(root string) error {
-	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			return nil
-		}
-		if filepath.Ext(info.Name()) == ".sh" {
-			mode := info.Mode() | 0o111 // add execute bit for owner/group/other
-			if err := os.Chmod(path, mode); err != nil {
-				return fmt.Errorf("chmod %s: %w", path, err)
-			}
-			log.Printf("chmodScripts: added +x to %s (was %o, now %o)", path, info.Mode(), mode)
-		}
-		return nil
-	})
+	return resource.ChmodScripts(root)
 }
 
 func extractTarStream(dst string, src io.Reader) error {
-	baseAbs, err := filepath.Abs(dst)
-	if err != nil {
-		return err
-	}
-	var totalExtractedBytes int64
-	tr := tar.NewReader(src)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-
-		target, err := safeJoinWithBase(dst, baseAbs, hdr.Name)
-		if err != nil {
-			return err
-		}
-
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, hdr.FileInfo().Mode()); err != nil {
-				return err
-			}
-		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			remain := maxExtractBytes - totalExtractedBytes
-			if remain < 0 {
-				_ = cleanDirContents(dst)
-				return fmt.Errorf("解压累计字节超过上限 %d bytes", maxExtractBytes)
-			}
-			written, err := writeExtractedFileWithLimit(target, tr, hdr.FileInfo().Mode(), remain)
-			if err != nil {
-				_ = cleanDirContents(dst)
-				return err
-			}
-			totalExtractedBytes += written
-		case tar.TypeSymlink, tar.TypeLink:
-			return fmt.Errorf("unsupported archive entry type for %s", hdr.Name)
-		default:
-			// Ignore other entry types.
-		}
-	}
+	return resource.ExtractTarStream(dst, src)
 }
 
 func safeJoinWithBase(baseDir, baseAbs, name string) (string, error) {
-	normalized := strings.ReplaceAll(name, "\\", "/")
-	cleaned := filepath.Clean(filepath.FromSlash(normalized))
-	if cleaned == "." || cleaned == string(filepath.Separator) {
-		return baseDir, nil
-	}
-	if filepath.IsAbs(cleaned) {
-		return "", fmt.Errorf("archive entry has absolute path: %s", name)
-	}
-	full := filepath.Join(baseDir, cleaned)
-	fullAbs, err := filepath.Abs(full)
-	if err != nil {
-		return "", err
-	}
-	if fullAbs != baseAbs && !strings.HasPrefix(fullAbs, baseAbs+string(filepath.Separator)) {
-		return "", fmt.Errorf("archive entry escapes destination: %s", name)
-	}
-	return full, nil
+	return resource.SafeJoinWithBase(baseDir, baseAbs, name)
 }
 
 func (s *TAAState) buildAndSaveTrainingReport(taskID string, startedAt, finishedAt time.Time, status string, exitCode int, failureReason string, audit *codeaudit.AuditReport, includeAudit bool, resultDir string) ([]byte, error) {
@@ -1096,87 +826,7 @@ func (s *TAAState) buildAndSaveTrainingReport(taskID string, startedAt, finished
 }
 
 func buildDirectoryChecksum(dir, algorithm string) (map[string]any, error) {
-	if strings.TrimSpace(dir) == "" {
-		return map[string]any{"size": 0, "algorithm": algorithm, "value": "N/A"}, nil
-	}
-
-	info, err := os.Stat(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return map[string]any{"size": 0, "algorithm": algorithm, "value": "N/A"}, nil
-		}
-		return nil, fmt.Errorf("stat directory: %w", err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("path is not a directory: %s", dir)
-	}
-
-	h := teecrypto.NewSM3()
-	files := make([]string, 0)
-	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return nil
-		}
-		files = append(files, path)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	sort.Strings(files)
-
-	var totalSize int64
-	buf := make([]byte, 64*1024)
-	for _, fpath := range files {
-		rel, err := filepath.Rel(dir, fpath)
-		if err != nil {
-			return nil, fmt.Errorf("resolve relative path for %s: %w", fpath, err)
-		}
-		h.Write([]byte(filepath.ToSlash(rel)))
-		h.Write([]byte{0})
-
-		info, err := os.Lstat(fpath)
-		if err != nil {
-			return nil, fmt.Errorf("stat file %s: %w", fpath, err)
-		}
-		if !info.Mode().IsRegular() {
-			continue
-		}
-		totalSize += info.Size()
-
-		f, err := os.Open(fpath)
-		if err != nil {
-			return nil, fmt.Errorf("open file %s: %w", fpath, err)
-		}
-		for {
-			n, readErr := f.Read(buf)
-			if n > 0 {
-				if _, writeErr := h.Write(buf[:n]); writeErr != nil {
-					f.Close()
-					return nil, fmt.Errorf("hash file %s: %w", fpath, writeErr)
-				}
-			}
-			if readErr == io.EOF {
-				break
-			}
-			if readErr != nil {
-				f.Close()
-				return nil, fmt.Errorf("read file %s: %w", fpath, readErr)
-			}
-		}
-		if err := f.Close(); err != nil {
-			return nil, fmt.Errorf("close file %s: %w", fpath, err)
-		}
-	}
-
-	return map[string]any{
-		"size":      totalSize,
-		"algorithm": algorithm,
-		"value":     fmt.Sprintf("%x", h.Sum(nil)),
-	}, nil
+	return resource.BuildDirectoryChecksum(dir, algorithm)
 }
 
 func loadTrainingResult(path string) (map[string]any, error) {

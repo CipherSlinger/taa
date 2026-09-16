@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -22,6 +21,7 @@ import (
 
 	"taa/internal/attestation"
 	"taa/internal/codeaudit"
+	"taa/internal/resource"
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 	"taa/pkg/utils"
@@ -1439,128 +1439,7 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 
 // compressDirToZip 将目录压缩为 zip 格式的字节切片，并对软链接进行越界安全校验。
 func compressDirToZip(srcDir string) ([]byte, error) {
-	srcDir = filepath.Clean(srcDir)
-	log.Printf("compressDirToZip: 开始压缩目录: %s", srcDir)
-	info, err := os.Stat(srcDir)
-	if err != nil {
-		log.Printf("compressDirToZip: 目录不存在: %v", err)
-		return nil, fmt.Errorf("目录不存在: %w", err)
-	}
-	if !info.IsDir() {
-		log.Printf("compressDirToZip: 路径不是目录: %s", srcDir)
-		return nil, fmt.Errorf("路径不是目录: %s", srcDir)
-	}
-
-	evalSrcDir, err := filepath.EvalSymlinks(srcDir)
-	if err != nil {
-		evalSrcDir = srcDir
-	}
-	cleanSrcDir := filepath.Clean(evalSrcDir)
-
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-
-	baseDir := filepath.Dir(srcDir)
-	fileCount := 0
-	err = filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return fmt.Errorf("访问文件失败 %s: %w", path, err)
-		}
-
-		relPath, err := filepath.Rel(baseDir, path)
-		if err != nil {
-			return fmt.Errorf("计算相对路径失败 %s: %w", path, err)
-		}
-		// 统一使用 / 分隔符，兼容跨平台
-		relPath = filepath.ToSlash(relPath)
-
-		if info.Mode()&os.ModeSymlink != 0 {
-			evalPath, err := filepath.EvalSymlinks(path)
-			if err != nil {
-				return fmt.Errorf("解析物理路径失败 %s: %w", path, err)
-			}
-			cleanEval := filepath.Clean(evalPath)
-			if cleanEval != cleanSrcDir && !strings.HasPrefix(cleanEval, cleanSrcDir+string(filepath.Separator)) {
-				return fmt.Errorf("检测到非法越界软链接: %s -> %s", path, evalPath)
-			}
-
-			linkTarget, err := os.Readlink(path)
-			if err != nil {
-				return fmt.Errorf("读取软链接目标失败 %s: %w", path, err)
-			}
-			header, err := zip.FileInfoHeader(info)
-			if err != nil {
-				return fmt.Errorf("创建软链接 header 失败 %s: %w", path, err)
-			}
-			header.Name = relPath
-			header.Method = zip.Store
-			w, err := zw.CreateHeader(header)
-			if err != nil {
-				return fmt.Errorf("写入软链接 header 失败 %s: %w", path, err)
-			}
-			if _, err := io.WriteString(w, linkTarget); err != nil {
-				return fmt.Errorf("写入软链接内容失败 %s: %w", path, err)
-			}
-			fileCount++
-			log.Printf("compressDirToZip:   [软链接] %s -> %s", relPath, linkTarget)
-			return nil
-		}
-
-		header, err := zip.FileInfoHeader(info)
-		if err != nil {
-			return fmt.Errorf("创建 header 失败 %s: %w", path, err)
-		}
-
-		if info.IsDir() {
-			header.Name = strings.TrimSuffix(relPath, "/") + "/"
-			header.Method = zip.Store
-			if _, err := zw.CreateHeader(header); err != nil {
-				return fmt.Errorf("写入目录 header 失败 %s: %w", path, err)
-			}
-			log.Printf("compressDirToZip:   [目录] %s", header.Name)
-			return nil
-		}
-
-		header.Name = relPath
-		header.Method = zip.Deflate
-
-		w, err := zw.CreateHeader(header)
-		if err != nil {
-			return fmt.Errorf("写入文件 header 失败 %s: %w", path, err)
-		}
-
-		fileCount++
-		log.Printf("compressDirToZip:   [文件] %s (%d bytes)", relPath, info.Size())
-
-		if err := func() error {
-			f, err := os.Open(path)
-			if err != nil {
-				return fmt.Errorf("打开文件失败 %s: %w", path, err)
-			}
-			defer f.Close()
-
-			if _, err := io.Copy(w, f); err != nil {
-				return fmt.Errorf("复制文件内容失败 %s: %w", path, err)
-			}
-			return nil
-		}(); err != nil {
-			return err
-		}
-		return nil
-	})
-	if err != nil {
-		log.Printf("compressDirToZip: 遍历目录失败: %v", err)
-		return nil, err
-	}
-
-	log.Printf("compressDirToZip: 共压缩 %d 个文件", fileCount)
-
-	if err := zw.Close(); err != nil {
-		return nil, err
-	}
-	result := buf.Bytes()
-	log.Printf("compressDirToZip: 压缩完成，最终大小=%d bytes", len(result))
-	return result, nil
+	return resource.CompressDirToZip(srcDir)
 }
 
 func safeFilenamePart(value string) string {
