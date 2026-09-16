@@ -248,6 +248,16 @@ def main():
     seg_lesion_root = data_root / 'seg' / 'lesion'
     xlsx_path = data_root / 'risk_factor_5.xlsx'
 
+    log_dir = resolve_log_dir(args.log_dir, args.output_dir)
+    progress_dir = resolve_progress_dir(args.progress_dir, args.output_dir)
+    logger = ModelLogger(log_dir)
+    progress = ProgressTracker(progress_dir)
+
+    progress.update(0.0)
+    logger.log(f"[Init] Starting Retina-DKD training: basic_net={basic_model}, epochs={EPOCH}, batch_size={args.batch}, img_size={img_size}")
+    logger.log(f"[Init] Directories: data_root={data_root}, output_root={output_root}, log_dir={log_dir}, progress_dir={progress_dir}")
+    logger.log(f"[Init] Paths: class_root={cls_root}, seg_disk_root={seg_disk_root}, seg_lesion_root={seg_lesion_root}, xlsx_path={xlsx_path}")
+
     print(f'Data root: {data_root}')
     print(f'Output root: {output_root}')
     print(f'Class root: {cls_root}')
@@ -294,6 +304,8 @@ def main():
     except OSError:
         pass
     acc_file_path = acc_dir / f'acc_{model_name}_{dataset}.txt'
+    progress.update(2.0)
+    logger.log(f"[Init] KeNetMultFactorNew initialized successfully on device={device}. Dataset sizes: train={len(dr_dataset_train)}, test={len(dr_dataset_test)}")
     with open(str(acc_file_path), "w+", encoding='utf-8') as f:
         for epoch in range(epoc_begin, EPOCH):
             # if (epoch + 1) > (EPOCH - num_epochs_decay):
@@ -301,6 +313,11 @@ def main():
             #     for param_group in optimizer.param_groups:
             #         param_group['lr'] = new_lr
             #     print('Decay learning rate to lr: {}.'.format(new_lr))
+
+            current_percent = 2.0 + 93.0 * (epoch / max(EPOCH, 1))
+            progress.update(current_percent)
+            current_lr = optimizer.param_groups[0]['lr']
+            logger.log(f"[Train] Starting Epoch {epoch + 1}/{EPOCH} (lr={current_lr})")
 
             running_results = {'acc': 0.0, 'acc_loss': 0.0}
             print('Decay learning rate to lr: {}.'.format(optimizer.param_groups[0]['lr']))
@@ -344,6 +361,10 @@ def main():
                     writer.add_scalar('scalar/train_loss_per_iter', loss.item(), count_all)
                     writer.add_scalar('scalar/acc_batchwise', batch_acc, count_all)
 
+            epoch_loss = running_results['acc_loss'] / max(count, 1)
+            epoch_acc = running_results['acc'] / max(count, 1)
+            logger.log(f"[Train] Epoch {epoch + 1}/{EPOCH} finished - train_loss: {epoch_loss:.4f}, train_acc: {epoch_acc:.2f}%")
+
             """------------------Test--------------"""
 
             if epoch % 4 == 0:
@@ -384,6 +405,7 @@ def main():
                     Sen = (tp) / (tp + fn) if (tp + fn) > 0 else 0
                     Spec = (tn) / (tn + fp) if (tn + fp) > 0 else 0
                     print('Testset Acc=：%.1f%% | Sen=：%.1f%% | Spec=：%.1f%% ' % (Acc * 100, Sen * 100, Spec * 100))
+                    logger.log(f"[Eval] Epoch {epoch + 1}/{EPOCH} - Testset Acc: {Acc * 100:.1f}%, Sen: {Sen * 100:.1f}%, Spec: {Spec * 100:.1f}%")
 
                     if Acc > best_acc:
                         best_acc = Acc
@@ -447,6 +469,10 @@ def main():
         json.dump(training_result, f_out, indent=2, ensure_ascii=False)
         f_out.write('\n')
     print(f'Training result written to: {result_path}')
+
+    progress.update(100.0)
+    logger.log(f"[Done] Training finished successfully: duration={duration_seconds}s, final_acc={best_acc:.4f}, result saved to {result_path}")
+    logger.close()
 
 
 def remove_all_file(path):
