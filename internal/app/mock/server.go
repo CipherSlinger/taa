@@ -183,6 +183,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/taa/logs", taaLogsHandler(taaAddr))
 	mux.HandleFunc("/api/taa/status", taaStatusHandler(taaAddr))
 	mux.HandleFunc("/api/taa/getResourceInfo", taaGetResourceInfoHandler(taaAddr))
+	mux.HandleFunc("/api/taa/stopTraining", taaStopTrainingHandler(taaAddr))
 
 	// Serve uploaded files
 	mux.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(uploadDir))))
@@ -756,6 +757,8 @@ func requestComponentFromPath(path string) string {
 		return "taa-status"
 	case strings.HasPrefix(path, "/v1/taa/getResourceInfo") || strings.HasPrefix(path, "/api/taa/getResourceInfo"):
 		return "taa-resourceInfo"
+	case strings.HasPrefix(path, "/v1/taa/stopTraining") || strings.HasPrefix(path, "/api/taa/stopTraining"):
+		return "taa-stopTraining"
 	case strings.HasPrefix(path, "/api/upload") || strings.HasPrefix(path, "/api/uploads"):
 		return "uploads"
 	case strings.HasPrefix(path, "/taa/"):
@@ -1872,6 +1875,59 @@ func taaGetResourceInfoHandler(taaAddr string) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(status)
+		w.Write(respBody)
+	}
+}
+
+// taaStopTrainingHandler proxies stop training requests to TAA's /v1/taa/stopTraining endpoint.
+func taaStopTrainingHandler(taaAddr string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
+			return
+		}
+		if strings.TrimSpace(taaAddr) == "" {
+			writeEnvelope(w, http.StatusBadGateway, "未配置 TAA 目标地址（-taa-target 或 TAA_POD）", nil, http.StatusBadGateway)
+			return
+		}
+
+		reqID := fmt.Sprintf("req-stop-%d", time.Now().UnixNano())
+		logRequestWithID(requestLogs, reqID, "out", "taa-stopTraining", http.MethodPost, "/v1/taa/stopTraining", http.StatusOK, "", []byte("{}"))
+
+		targetURL := strings.TrimRight(taaAddr, "/") + "/v1/taa/stopTraining"
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, strings.NewReader("{}"))
+		if err != nil {
+			logRequestWithID(requestLogs, reqID, "in", "taa-stopTraining", http.MethodPost, "/v1/taa/stopTraining", http.StatusBadGateway, "创建请求失败: "+err.Error(), nil)
+			writeEnvelope(w, http.StatusBadGateway, "TAA 请求失败: "+err.Error(), nil, http.StatusBadGateway)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			logRequestWithID(requestLogs, reqID, "in", "taa-stopTraining", http.MethodPost, "/v1/taa/stopTraining", http.StatusBadGateway, "TAA 请求失败: "+err.Error(), nil)
+			writeEnvelope(w, http.StatusBadGateway, "TAA 请求失败: "+err.Error(), nil, http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			logRequestWithID(requestLogs, reqID, "in", "taa-stopTraining", http.MethodPost, "/v1/taa/stopTraining", http.StatusBadGateway, "读取 TAA 响应失败: "+err.Error(), nil)
+			writeEnvelope(w, http.StatusBadGateway, "读取 TAA 响应失败: "+err.Error(), nil, http.StatusBadGateway)
+			return
+		}
+
+		logRequestWithID(requestLogs, reqID, "in", "taa-stopTraining", http.MethodPost, "/v1/taa/stopTraining", resp.StatusCode, string(respBody), respBody)
+
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(resp.StatusCode)
 		w.Write(respBody)
 	}
 }

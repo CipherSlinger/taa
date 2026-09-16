@@ -1507,3 +1507,75 @@ func TestModelLogStatusAndReset(t *testing.T) {
 	}
 }
 
+func TestTAAStopTrainingProxyAndLogging(t *testing.T) {
+	var taaCalled bool
+	taaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/taa/stopTraining" && r.Method == http.MethodPost {
+			taaCalled = true
+			writeEnvelope(w, http.StatusOK, "训练任务已中止", nil, 0)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer taaServer.Close()
+
+	requestLogs.reset()
+
+	handler := taaStopTrainingHandler(taaServer.URL)
+
+	// 非 POST 方法返回 405 Method Not Allowed
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/taa/stopTraining", nil)
+	wGet := httptest.NewRecorder()
+	handler(wGet, reqGet)
+	if wGet.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET status = %d, want 405", wGet.Code)
+	}
+
+	// 正常 POST 请求
+	req := httptest.NewRequest(http.MethodPost, "/api/taa/stopTraining", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if !taaCalled {
+		t.Fatal("expected TAA /v1/taa/stopTraining to be called")
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Msg   string `json:"msg"`
+		Error int    `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Msg != "训练任务已中止" {
+		t.Fatalf("resp msg = %q, want '训练任务已中止'", resp.Msg)
+	}
+
+	// 验证 requestLogs 中记录了该次出站请求（path 为 /v1/taa/stopTraining，component 为 "taa-stopTraining"）
+	entries := requestLogs.list()
+	var foundOutbound bool
+	for _, entry := range entries {
+		if entry.Direction == "out" && entry.Path == "/v1/taa/stopTraining" && entry.Component == "taa-stopTraining" {
+			foundOutbound = true
+			break
+		}
+	}
+	if !foundOutbound {
+		t.Fatalf("requestLogs missing outbound request for /v1/taa/stopTraining: %+v", entries)
+	}
+
+	// 测试当未配置 TAA 地址（taaAddr 为空）时，返回 502 Bad Gateway
+	emptyHandler := taaStopTrainingHandler("")
+	reqEmpty := httptest.NewRequest(http.MethodPost, "/api/taa/stopTraining", strings.NewReader(`{}`))
+	reqEmpty.Header.Set("Content-Type", "application/json")
+	wEmpty := httptest.NewRecorder()
+	emptyHandler(wEmpty, reqEmpty)
+	if wEmpty.Code != http.StatusBadGateway {
+		t.Fatalf("empty taaAddr status = %d, want 502; body=%s", wEmpty.Code, wEmpty.Body.String())
+	}
+}
+
