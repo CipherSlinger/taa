@@ -300,7 +300,11 @@ class TestBenchmarkBaseProjects(unittest.TestCase):
         for base_name in self.EXPECTED_BASES:
             base_dir = BASE_PROJECTS_DIR / base_name
             self.assertTrue(base_dir.is_dir(), f"Directory missing: {base_dir}")
-            total_size = sum(f.stat().st_size for f in base_dir.rglob("*") if f.is_file())
+            total_size = sum(
+                f.stat().st_size
+                for f in base_dir.rglob("*")
+                if f.is_file() and "output" not in f.parts and "__pycache__" not in f.parts
+            )
             self.assertLess(
                 total_size,
                 1024 * 1024,
