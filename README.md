@@ -1,33 +1,39 @@
-# Trusted Application Agent
+# Trusted Application Agent (TAA)
 
-TAA（Trusted Application Agent）是运行在 Hygon CSV TEE 环境中的可信应用代理，也是本项目的**密态计算执行框架**：它把模型代码、测试数据、训练数据和结果都放到可信边界内完成处理，通过远程证明、国密加解密、代码审计和结果封装，保证“资源可下发、计算在密态、结果可回传”。
+**Trusted Application Agent (TAA)** is a confidential computing execution framework designed to run inside **Hygon CSV (China Secure Virtualization) TEE (Trusted Execution Environment)**. 
 
-## 一句话定位
+TAA serves as a secure execution enclave for model training and computation workflows: it isolates proprietary model algorithms, evaluation datasets, training corpora, and computation artifacts within a hardware-enforced trusted boundary. By orchestrating hardware remote attestation, GM/T national cryptography (SM2/SM3/SM4), multi-tier code security audits, and cryptographic envelope packaging, TAA establishes an end-to-end trusted computing loop: **"Hardware-Bound Identity, Ciphertext Delivery, In-Enclave Execution, and Verified Result Return"**.
 
-- **面向对象**：平台、模型提供方、训练执行环境
-- **核心目标**：在 TEE 内完成可信导入、审计、训练、导出和证明，同时保护数据提供方和模型提供方的机密性与权益
-- **安全基础**：CSV 远程证明 + SM2/SM3/SM4 国密算法 + 本地代码审计
-- **框架定位**：一套可落地的**密态计算闭环框架**
+---
 
-## 框架能力
+## Key Positioning
 
-TAA 以“证明身份、接收资源、审计执行、封装结果、回传状态”为主线，形成一个完整的密态计算链路：
+- **Target Audience**: Management Platforms, AI Model Providers, Data Providers, and Training Execution Clusters.
+- **Core Objective**: Execute secure resource ingress, code auditing, confidential training/debugging, artifact egress, and hardware attestation inside TEE while guaranteeing complete confidentiality and IP protection for both model and data providers.
+- **Security Primitives**: Hygon CSV Remote Attestation + SM2/SM3/SM4 Cryptographic Envelopes + Local Static Analysis & LLM-Assisted Code Auditing.
+- **Role**: A production-ready, closed-loop **Confidential Computing Execution Framework**.
+
+---
+
+## Architectural Workflow
+
+TAA coordinates the entire confidential computing lifecycle through the following sequence:
 
 ```mermaid
 flowchart LR
-    Platform[平台 / Platform]
-    Provider[模型提供方]
-    Mock[平台模拟器]
+    Platform[Management Platform]
+    Provider[Model Provider]
+    Mock[Platform Mock / Emulator]
 
-    subgraph TEE[CSV TEE 可信边界]
-        TAA[TAA 可信应用代理]
-        Attest[远程证明]
-        Crypto[SM2 / SM3 / SM4 国密加密]
-        Audit[代码审计]
-        LLM[LLM 语义验证]
-        Train[调试 / 训练执行]
-        Export[结果封装 / 导出]
-        Logs[状态 / 日志 / 证明接口]
+    subgraph TEE[Hygon CSV TEE Trusted Boundary]
+        TAA[TAA Daemon]
+        Attest[Remote Attestation Engine]
+        Crypto[SM2 / SM3 / SM4 Cryptography]
+        Audit[Static Code Audit]
+        LLM[Local LLM Semantic Verifier]
+        Train[Debug / Training Execution Engine]
+        Export[Result Packaging & Envelope Encryption]
+        Logs[Progress / Terminal Logs / Telemetry]
 
         TAA --> Attest
         TAA --> Crypto
@@ -38,11 +44,11 @@ flowchart LR
         TAA --> Logs
     end
 
-    Platform -->|注册 / 导入 / 导出 / 状态查询| TAA
-    Provider -->|加密资源包| Platform
-    Platform -->|下发资源| TAA
-    TAA -->|结果密文 / 证明报告 / 状态上报| Platform
-    Platform <-->|联调| Mock
+    Platform -->|Register / Ingress / Egress / Control| TAA
+    Provider -->|Encrypted Model & Data Packages| Platform
+    Platform -->|Dispatch Ciphertext Resources| TAA
+    TAA -->|Encrypted Results / Attestation / Telemetry| Platform
+    Platform <-->|Local Simulation & Debugging| Mock
 
     style TEE fill:#eef7ff,stroke:#4a78a8,stroke-width:1.5px
     style TAA fill:#dff1ff,stroke:#2b6cb0,stroke-width:1.5px
@@ -51,341 +57,308 @@ flowchart LR
     style Mock fill:#f1f5f9,stroke:#64748b,stroke-width:1.5px
 ```
 
-1. **启动即证明**：生成 SM2 密钥对，构造 USERDATA，通过纯 Go 原生通信（pkg/csvattest）生成远程证明报告。
-2. **注册即绑定**：将 TAA 公钥、证明报告和证明字段上报平台，完成容器身份与 TEE 硬件绑定。
-3. **资源密态流转**：平台通过 HTTP 下发加密资源，TAA 在 TEE 内下载、解密、解包和落盘。
-4. **审计后执行**：模型代码导入时执行静态扫描，并可启用本地 LLM 语义验证，降低误报。
-5. **结果密态导出**：训练结果支持明文或 SM2 信封加密导出，平台侧只拿到可控密文。
-6. **状态可观测**：提供 health、status、logs、getAttestation 等接口，便于平台追踪生命周期。
+1. **Hardware-Enforced Attestation**: On boot, TAA generates an ephemeral SM2 keypair, injects the public key into the CSV hardware `USERDATA` slot (`X || Y`), and retrieves a hardware-signed attestation report via direct `/dev/csv-guest` ioctl (`pkg/csvattest`).
+2. **Identity Registration & Binding**: TAA registers with the platform by submitting its SM2 public key, raw CSV attestation report, and certificate validation parameters, permanently tying the container workload to the genuine CSV hardware root of trust.
+3. **Ciphertext Ingress**: The platform delivers encrypted resource packages via HTTP. TAA decrypts, unpacks, and validates the resources strictly inside the TEE memory and local disk sandbox.
+4. **Pre-Execution Code Audit**: Prior to executing untrusted user code, TAA performs AST-level static security scanning and triggers local LLM (Ollama/Qwen) semantic verification to eliminate false positives and block malicious operations.
+5. **Real-time Progress & Terminal Log Reporting**: During training execution, TAA monitors intermediate progress files and streams chunked, deduplicated terminal execution logs (`train.jsonl`) back to the platform.
+6. **Task Interruption & Graceful Abortion**: TAA provides a dedicated stop interface (`/v1/taa/stopTraining`) that recursively terminates subprocess trees upon command.
+7. **Encrypted Egress**: Training output artifacts are validated for sensitive data leakage, zipped, and encrypted with SM2/SM4 digital envelopes before export, ensuring zero plaintext leakage to host or platform.
 
-## 目录结构
+---
+
+## Repository Structure
 
 ```text
 .
-├── cmd/                              # 可执行程序入口（Thin Entrypoint）
-│   ├── taa/                          # TAA 主服务入口 (main.go)
-│   └── platform-mock/                # 平台模拟器入口 (main.go)
-├── internal/                         # 内部私有代码
-│   ├── app/                          # 应用启动编排层
-│   │   ├── taa/                      # TAA 启动编排、注册与 HTTP 服务组装
-│   │   └── mock/                     # 平台模拟器服务与嵌入控制台
-│   ├── controller/                   # HTTP 路由、资源处理、结果上报、平台交互
-│   │   ├── route.go                  # 路由注册、状态管理、导入/导出/证明接口
-│   │   ├── register.go               # 启动注册平台
-│   │   ├── report.go                 # 训练/模型导入结果上报
-│   │   └── platform_client.go        # 平台地址与共享 HTTP 客户端
-│   ├── attestation/                  # 远程证明报告生成与字段提取
-│   └── codeaudit/                    # 代码安全审计：静态扫描 + LLM 验证
-├── crypto/                           # 国密加解密与证书/密钥工具
-├── attestation/                      # CSV 证明 helper 与相关二进制工具
-├── docs/                             # 设计与接口文档
-├── deploy/manifest/docker/Dockerfile # Docker 镜像构建文件
-├── Makefile                          # 构建、运行、镜像命令
-└── go.mod                            # Go 模块定义
+├── cmd/                              # Executable entry points (Thin Entrypoints)
+│   ├── taa/                          # TAA Enclave daemon entry point (main.go)
+│   └── platform-mock/                # Platform mock emulator CLI entry point (main.go)
+├── internal/                         # Private internal application logic
+│   ├── app/                          # Service bootstrapping & orchestration layer
+│   │   ├── taa/                      # TAA daemon startup, registration & HTTP assembly
+│   │   └── mock/                     # Platform mock server & embedded Web console
+│   ├── controller/                   # HTTP routing, resource management, reporting & platform dispatch
+│   │   ├── route.go                  # Route handlers, state machine, import/export/attestation APIs
+│   │   ├── register.go               # Startup platform registration
+│   │   ├── report.go                 # Execution completion reporting (reportRes)
+│   │   ├── model_reporting.go        # Granular reporting: model import, code audit, progress, logs
+│   │   └── platform_client.go        # Unified HTTP client for platform callbacks
+│   ├── attestation/                  # CSV attestation report parsing & field validation
+│   └── codeaudit/                    # Two-tier security audit: static AST rules + Ollama LLM verification
+├── pkg/                              # Reusable public packages
+│   ├── csvattest/                    # Pure-Go Hygon CSV guest ioctl driver (/dev/csv-guest)
+│   ├── crypto/                       # SM2, SM3, SM4-GCM envelope encryption & key utilities
+│   ├── logger/                       # Structured JSON & console logger
+│   └── utils/                        # File system, archive, and network helpers
+├── configs/                          # Deployment configuration templates
+│   ├── taa-local.json                # Bare-metal local host development template
+│   ├── taa-docker.json               # Local Docker container development template
+│   ├── taa-debug.json                # Remote Kubernetes debug Pod template
+│   └── taa-production.json           # Production Kubernetes Pod template (identity injected via env)
+├── deploy/                           # Container deployment manifests & Dockerfile
+│   └── manifest/docker/              # Base environment Dockerfiles & build assets
+├── models/                           # Bundled offline models & runtimes (e.g., Ollama / Qwen)
+├── docs/                             # Architecture specifications & API design documents
+├── deploy.sh                         # Unified multi-mode deployment, lifecycle & packaging script
+├── Makefile                          # Build, testing, and execution targets
+└── go.mod                            # Go module definition (Go 1.26+)
 ```
 
-## 核心架构
+---
 
-### 1. 可信边界
+## Core Security Architecture
 
-TAA 运行在 CSV TEE 中，可信边界内完成：
+### 1. Trusted Computing Boundary
 
-- SM2 密钥生成
-- attestation 生成与验证
-- 资源解密与解包
-- 模型代码审计
-- 训练执行与结果封装
-- 结果加密导出
+TAA isolates all sensitive operations inside the CSV TEE boundary:
 
-### 2. 密态计算链路
+- Ephemeral SM2 key generation & storage in memory.
+- Hardware remote attestation report generation and verification.
+- Decryption of model code, evaluation weights, and sensitive training data.
+- Code security scanning and local LLM semantic arbitration.
+- Subprocess execution, standard I/O redirection, and intermediate monitoring.
+- Result leakage inspection, archive packaging, and SM2/SM4 envelope re-encryption.
+
+### 2. GM/T National Cryptographic Envelope
+
+TAA strictly adopts Chinese National Standard Cryptography (GM/T):
 
 ```text
-平台 → TAA 注册
-     → 平台下发加密资源
-     → TAA 在 TEE 内解密/审计/执行
-     → TAA 生成结果并重新加密
-     → 平台接收结果与状态
+Plaintext Data  ──►  SM4-GCM Encryption  ──►  Ciphertext Payload
+                            ▲
+                 Random SM4 Data Key (128-bit)
+                            │
+                            ▼
+                    SM2 Public Key Encryption
+                            │
+                            ▼
+                       WrappedKey (129 Bytes)
+
+Final Envelope Format:  [ WrappedKey (129B) ] || [ SM4-GCM Ciphertext ]
 ```
 
-### 3. 安全控制点
+- **SM2**: Used for asymmetric identity authentication, key exchange, and envelope key encapsulation.
+- **SM3**: Cryptographic hash function used for digest calculation, model checksums, and attestation binding.
+- **SM4-GCM**: High-throughput authenticated symmetric encryption protecting datasets, model weights, and exported training results.
 
-| 控制点 | 作用 |
-| --- | --- |
-| 远程证明 | 证明 TAA 运行在预期 TEE 环境中 |
-| USERDATA 绑定 | 将 TAA 公钥与证明报告绑定 |
-| 国密信封加密 | 保证资源和结果在传输/导出时不可明文暴露 |
-| 代码审计 | 降低模型代码中的风险行为 |
-| LLM 语义验证 | 对可疑发现做二次确认，减少误报 |
-| 结果检查 | 导出前检查明文泄露风险 |
-| 结构化日志 | 便于平台和运维侧追踪阶段状态 |
+---
 
-## 主要功能
+## API Reference
 
-### 1. 启动注册
+All TAA APIs are exposed over HTTP `POST`.
 
-TAA 启动后会：
+### 1. TAA → Platform (Callbacks & Reporting)
 
-- 生成随机 SM2 公私钥对
-- 构造 USERDATA = `taaPublicKey.X || taaPublicKey.Y`
-- 通过纯 Go 原生通信（pkg/csvattest）生成远程证明报告
-- 主动向平台调用注册接口
+| Endpoint | Method | Description |
+| :--- | :---: | :--- |
+| `/v1/taa/register` | `POST` | Hardware attestation report & SM2 public key registration during bootstrap |
+| `/v1/taa/reportModelImport` | `POST` | Reports model download/import status, error messages, and SM3/SHA256 checksum |
+| `/v1/taa/reportAudit` | `POST` | Reports code security audit status, risk statistics (`high`/`medium`/`low`), and report URL |
+| `/v1/taa/reportProgress` | `POST` | Periodically reports training progress percentage, message, and timestamp |
+| `/v1/taa/modelLog` | `POST` | Streams incremental, deduplicated training terminal execution logs (`train.jsonl`) |
+| `/v1/taa/reportRes` | `POST` | Asynchronously reports final training/debugging results packaged as a zip archive |
 
-注册请求包含：
+### 2. Platform → TAA (Business & Control)
 
-- `dockerId`
-- `attestation`（Base64 编码的证明报告）
-- `taaPublicKey`
-- `attestationValues`
-- `timestamp`
-- `verifiedPass`
-- `authInfo = null`
+| Endpoint | Method | Description |
+| :--- | :---: | :--- |
+| `/v1/taa/importModel` | `POST` | Ingresses model code archive, triggers decompression and two-tier security audit |
+| `/v1/taa/import` | `POST` | Ingresses dataset/resource packages into sandbox directories |
+| `/v1/taa/switch` | `POST` | Transitions lifecycle phases (`Phase 1`: Debug, `Phase 2`: Test, `Phase 3`: Train) |
+| `/v1/taa/stopTraining` | `POST` | Forcibly interrupts the active training job and cleans up child process trees |
+| `/v1/taa/export` | `POST` | Exports computation results (supports plaintext or SM2 envelope encryption) |
+| `/v1/taa/getResourceInfo` | `POST` | Inspects metadata, file listings, and sizes of uploaded resource packages |
 
-### 2. 资源导入
+### 3. Observability & Diagnostics (Platform → TAA)
 
-支持导入模型资源、测试数据和训练数据：
+| Endpoint | Method | Description |
+| :--- | :---: | :--- |
+| `/v1/taa/health` | `POST` | Health & readiness probe (verifies memory state and attestation status) |
+| `/v1/taa/status` | `POST` | Comprehensive diagnostics: active phase, tasks, audit findings, and key fingerprints |
+| `/v1/taa/logs` | `POST` | Retrieves structured in-memory execution logs with level filtering |
+| `/v1/taa/getAttestation` | `POST` | Generates a fresh CSV attestation report for on-demand verification |
 
-- 下载资源到临时文件
-- 校验资源大小上限
-- 在 TEE 内解密封装密文
-- 解压归档文件
-- 根据阶段进入后续处理流程
+---
 
-### 3. 模型导入审计
+## Runtime Configuration
 
-当导入模型代码时，TAA 会执行：
+TAA reads its configuration from `taa-config.json` located in its working directory.
 
-- Python 静态扫描
-- 安全规则匹配
-- 可选 LLM 语义验证
-- 生成审计报告并上报平台
-
-这部分是本项目“密态计算框架”的重点：**代码不是直接执行，而是在可信环境中先审计、再执行**。
-
-### 4. 训练与结果上报
-
-资源处理完成后，TAA 会：
-
-- 执行调试/训练脚本
-- 生成训练结果报告
-- 通过 `/v1/taa/reportRes` 异步上报平台
-
-### 5. 结果导出
-
-导出结果时：
-
-- phase 1 / 2：可返回明文或按请求公钥加密
-- phase 3：必须使用阶段 1 保存的公钥进行加密导出
-- 响应使用 `Content-Disposition` 返回文件流
-- 加密格式为 `WrappedKey || Ciphertext`
-
-### 6. 证明与观测
-
-TAA 还提供：
-
-- `/v1/taa/getAttestation`：重新生成证明报告
-- `/v1/taa/health`：健康检查
-- `/v1/taa/status`：完整状态查询
-- `/v1/taa/logs`：结构化日志查询
-- `/v1/taa/switch`：阶段切换
-- `/v1/taa/getResourceInfo`：对资源包做信息分析
-
-## 接口总览
-
-> 说明：当前实现中这些接口均通过 `POST` 提供。
-
-| 接口 | 作用 |
-| --- | --- |
-| `/v1/taa/register` | 启动后向平台注册 |
-| `/v1/taa/reportRes` | 上报训练/调试结果 |
-| `/v1/taa/import` | 导入资源 |
-| `/v1/taa/importModel` | 导入模型资源 |
-| `/v1/taa/getResourceInfo` | 分析资源包信息 |
-| `/v1/taa/switch` | 切换阶段 |
-| `/v1/taa/export` | 导出结果 |
-| `/v1/taa/getAttestation` | 获取最新证明报告 |
-| `/v1/taa/logs` | 查询结构化日志 |
-| `/v1/taa/status` | 查询完整状态 |
-| `/v1/taa/health` | 健康检查 |
-
-## 运行配置
-
-TAA 从工作目录下的 `taa-config.json` 读取启动配置，不再通过命令行参数传入监听地址、资源目录或代码审计配置。
-
-示例配置：
+### Configuration Fields
 
 ```json
 {
   "addr": ":6001",
-  "platformIP": "127.0.0.1:8080",
-  "dockerID": "127.0.0.1",
+  "platformIP": "127.0.0.1:18080",
+  "dockerID": "taa-env-slim-v2",
   "contract": "",
   "securityScan": true,
-  "modelDir": "/opt/taa/models",
+  "modelDir": "/root/taa/models",
   "resultCheck": true,
-  "dataDir": "/opt/taa/data",
-  "resultDir": "/opt/taa/results",
+  "dataDir": "/root/taa/data",
+  "resultDir": "/root/taa/results",
+  "modelInputDir": "/opt/taa/input",
+  "modelOutputDir": "/opt/taa/output/result",
+  "modelLogDir": "/opt/taa/output/log",
+  "modelProgressDir": "/opt/taa/output/progress",
+  "keysDir": "/opt/taa/keys",
   "llm": {
     "enabled": true,
     "endpoint": "http://127.0.0.1:11434",
-    "model": "qwen2.5-coder:0.5b",
+    "model": "qwen2.5-coder:3b",
     "policy": "assist",
     "failClosed": true,
-    "dir": ""
+    "dir": "/root/taa/ollama-qwen"
   }
 }
 ```
 
-配置文件字段：
+| Field | Default | Description |
+| :--- | :--- | :--- |
+| `addr` | `:6001` | HTTP server listening address |
+| `platformIP` | Env `PLATFORM_IP` | Platform IP and port (`host:port`); reads environment in production |
+| `dockerID` | Env `DOCKER_ID` | Container / Pod identifier; reads environment in production |
+| `contract` | Env `CONTRACT` | Contract identifier (reserved optional) |
+| `securityScan` | `true` | Enables AST static security scan during model import |
+| `modelDir` | `/root/taa/models` | Unpacked model code directory |
+| `resultCheck` | `true` | Inspects exported files for unauthorized plaintext data leakage |
+| `modelInputDir` | `/opt/taa/input` | Read-only input dataset directory mounted for model training |
+| `modelOutputDir`| `/opt/taa/output/result` | Target output directory for model training checkpoints and artifacts |
+| `modelLogDir` | `/opt/taa/output/log` | Intermediate terminal log directory monitored by log watcher |
+| `modelProgressDir`| `/opt/taa/output/progress`| Intermediate progress directory (`progress.json`) monitored by watcher |
+| `keysDir` | `/opt/taa/keys` | Sensitive cryptographic key storage (restricted with `0700` permissions) |
+| `llm.enabled` | `true` | Enables local LLM semantic arbitration for code audit |
+| `llm.endpoint`| `http://127.0.0.1:11434`| Local Ollama service endpoint |
+| `llm.model` | `qwen2.5-coder:3b` | Target LLM model for code analysis |
+| `llm.policy` | `assist` | LLM arbitration mode (`assist`: dual confirmation, `enforce`: strict blocking) |
+| `llm.failClosed`| `true` | Fails code audit if the LLM inference service is unreachable |
+| `llm.dir` | `/root/taa/ollama-qwen` | Local filesystem path containing offline Ollama package and model weights |
 
-| 字段 | 默认值 | 说明 |
-| --- | --- | --- |
-| `addr` | `:6001` | HTTP 监听地址 |
-| `platformIP` | 环境变量 `PLATFORM_IP` | 平台地址；配置文件缺省时读取环境变量 |
-| `dockerID` | 环境变量 `DOCKER_ID` | 容器 ID；配置文件缺省时读取环境变量 |
-| `contract` | 环境变量 `CONTRACT` | 合约 ID；配置文件缺省时读取环境变量 |
-| `securityScan` | `true` | 启用模型代码安全扫描 |
-| `modelDir` | `/opt/taa/models` | 模型代码目录 |
-| `resultCheck` | `true` | 启用结果泄露检查 |
-| `dataDir` | `/opt/taa/data` | 数据目录 |
-| `resultDir` | `/opt/taa/results` | 结果目录 |
-| `llm.enabled` | `true` | 启用 LLM 语义验证 |
-| `llm.endpoint` | `http://127.0.0.1:11434` | LLM 服务地址 |
-| `llm.model` | `qwen2.5-coder:0.5b` | LLM 模型名 |
-| `llm.policy` | `assist` | LLM 策略 |
-| `llm.failClosed` | `true` | LLM 不可用时是否失败关闭 |
-| `llm.dir` | 空 | Ollama / Qwen 离线包目录；为空时尝试默认部署目录 |
+### Configuration Templates
 
-正式非 debug 部署生成的配置文件不写 `platformIP`、`dockerID`、`contract`，由运行环境注入 `PLATFORM_IP`、`DOCKER_ID`（`CONTRACT` 为可选预留）。
+- **`configs/taa-local.json`**: For bare-metal host development. Uses `.local/taa/...` relative/local directories.
+- **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths.
+- **`configs/taa-debug.json`**: For remote Kubernetes debug Pods (`/root/taadebug`).
+- **`configs/taa-production.json`**: For production Kubernetes Pods. Omits `platformIP`, `dockerID`, and `contract` so they are dynamically injected by the orchestration platform via environment variables.
 
-仓库提供三类配置模板：
+---
 
-- `configs/taa-local.json`：本地联调模板，包含本地平台地址和本地运行目录。
-- `configs/taa-debug.json`：debug 容器模板，包含平台地址、容器标识和 `/root/taadebug` 工作目录。
-- `configs/taa-production.json`：正式部署模板，不包含 `platformIP`、`dockerID`、`contract`，用于从环境变量读取运行身份。
+## Deployment & Operation (`deploy.sh`)
 
-## 本地运行
+`deploy.sh` provides unified, multi-mode lifecycle management and image packaging:
 
-### 1. 启动平台模拟器
+### 1. Three Mutually Exclusive Running Modes
 
-```sh
-make platform-mock
+```bash
+./deploy.sh [local|docker|remote] [start|stop|save] [components...] [options...]
 ```
 
-访问：
+- **`local`**: Bare-metal local host mode. Runs platform-mock, TAA daemon, and Ollama directly as host background processes without Docker. Ideal for rapid local code iteration.
+- **`docker`**: Local Docker container mode (replaces legacy `local-docker`). Runs TAA and Ollama inside a local Docker container (`taa-env-slim-v2`), while platform-mock runs on the host.
+- **`remote`**: Remote Kubernetes mode (default when omitted). Deploys to a remote TEE Kubernetes Pod via SSH and `kubectl`.
 
-```text
-http://127.0.0.1:8080
+### 2. Supported Actions
+
+- **`start`** (default): Builds binaries, prepares configs/certs, and starts target services.
+- **`stop`**: Gracefully stops target services in the chosen mode.
+- **`save`**: **Exclusively valid in `docker` mode** (`./deploy.sh docker save`). Packages the base image archive (`deploy/taa-env-slim-v2.tar.gz`) with production configuration (`configs/taa-production.json`) and pre-bundled LLM weights, tags it with a date stamp, and exports a deployable image archive.
+
+### 3. Component Selection
+
+Specify one or more components: `platform-mock`, `taa`, `qwen`. If omitted:
+- In `local` or `docker` mode: all three components are deployed.
+- In `remote` production mode (`DEBUG=false`): defaults to `taa` + `qwen` (omits `platform-mock` to avoid port 18080 conflict with host production agents).
+
+### 4. Common CLI Examples
+
+```bash
+# Docker Container Mode
+./deploy.sh docker start                      # Start all components in local Docker
+./deploy.sh docker start --model qwen3:8b     # Start with custom LLM audit model
+./deploy.sh docker taa                        # Deploy/update only TAA inside Docker
+./deploy.sh docker stop                       # Stop local Docker services
+./deploy.sh docker save                       # Export production Docker image archive
+./deploy.sh docker save --tag my-taa:v1 -o /tmp/taa.tar.gz
+
+# Local Bare-Metal Mode
+./deploy.sh local start                       # Start all components directly on host
+./deploy.sh local taa                         # Start only TAA on host
+./deploy.sh local stop                        # Stop all local host processes
+
+# Remote Kubernetes Mode
+./deploy.sh remote start                      # Deploy to remote Kubernetes Pod (or simply ./deploy.sh)
+./deploy.sh remote taa                        # Update TAA in remote Pod
+./deploy.sh remote stop                       # Stop remote services
 ```
 
-### 2. 启动 TAA
+---
 
-```sh
-cp configs/taa-local.json taa-config.json
-make run
-```
+## Local Platform Mock & Web Console
 
-也可以手动编译运行：
+TAA includes a full-featured management platform emulator with an embedded Web GUI console:
 
-```sh
-make taa
-./bin/taa
-```
+- **Source Code**: `cmd/platform-mock/main.go`, `internal/app/mock/index.html`
+- **Default Port**: `18080` (or `28080` when `DEBUG=true`)
+- **Web Console**: `http://127.0.0.1:18080`
 
-### 3. 部署场景配置
-
-`deploy.sh` 会按部署场景生成并打包 `taa-config.json`：
-
-- local：生成本地容器化测试配置，TAA 与 Qwen 运行在本地 Docker 容器（taa-env-slim-v2），platform-mock 运行在宿主机。
-- debug：生成 debug 容器配置，包含平台地址、容器标识和 debug 工作目录。
-- 正式非 debug：生成正式容器配置，但不包含 `platformIP`、`dockerID`、`contract`，这些字段从运行环境变量读取。
-
-## 密态计算流程
-
-```text
-1. 平台分发加密资源
-2. TAA 在 TEE 内下载并解密
-3. 模型代码进入审计流程
-4. 审计通过后执行训练/调试脚本
-5. 生成结果并在 TEE 内封装
-6. 平台通过导出接口获取结果密文
-```
-
-这套流程的关键不是“把代码跑起来”，而是：
-
-- **资源进来前先确认身份**
-- **资源进入后先验证完整性和风险**
-- **执行过程尽量留在 TEE 内**
-- **结果出去前再次加密**
-
-## 国密与加密格式
-
-### SM2 信封加密
-
-```text
-明文 → SM4-GCM 加密 → 密文
-         ↑
-   随机 SM4 数据密钥
-         │
-         └→ SM2 公钥加密 → WrappedKey
-
-输出格式：WrappedKey(129B) || Ciphertext
-```
-
-### 密钥关系
-
-- TAA 启动时随机生成 SM2 密钥对
-- 公钥用于平台注册和结果加密
-- 私钥用于资源解密
-- SM4 用于数据面加密，SM2 用于密钥封装
-
-## 本地平台模拟器
-
-平台模拟器入口与控制台资源：
-
-```text
-cmd/platform-mock/main.go
-internal/app/mock/index.html
-```
-
-构建单文件二进制：
-
-```sh
+```bash
+# Build standalone platform mock binary
 make platform-mock-build
+
+# Run in foreground
+./bin/platform-mock -addr 0.0.0.0:18080 -taa-target http://127.0.0.1:6001
+
+# Run in background via deploy.sh
+./deploy.sh docker platform-mock
 ```
 
-运行：
+### Web Console Capabilities
 
-```sh
-./bin/platform-mock -addr 0.0.0.0:8080
-```
+1. **Node Registration**: Live display of TAA hardware attestation, verification status, and SM2 public keys.
+2. **Model Ingress & Audit**: Interactive upload of model packages with instant audit results and severity breakdowns (`high`/`medium`/`low`).
+3. **Interactive Progress Bar**: Live progress tracking driven by TAA `/v1/taa/reportProgress` callbacks.
+4. **Streaming Terminal Logs**: Real-time log window displaying chunked stdout/stderr terminal logs received from TAA `/v1/taa/modelLog`.
+5. **Job Interruption**: One-click "Stop Training" trigger calling `/v1/taa/stopTraining`.
+6. **Result Verification**: Decrypt and inspect training outputs exported from TAA.
 
-后台运行：
+---
 
-```sh
-nohup ./bin/platform-mock -addr :8080 > platform-mock.log 2>&1 &
-```
+## Build & Development
 
-## 文档
+### Prerequisites
 
-- `docs/TAA设计文档.md`：整体架构与流程设计
-- `docs/taa接口设计文档.md`：接口定义与请求响应示例
+- **Go**: Version 1.26 or newer (`GOTOOLCHAIN=local` supported).
+- **Environment**: Linux x86_64 with Hygon CSV hardware support (for TEE attestation; non-TEE environments run in simulation mode with warning).
+- **Docker**: Required for `docker` mode and `docker save`.
 
-## 开发命令
+### Build Commands
 
-```sh
-go build ./...
+```bash
+# Build TAA enclave daemon
+make taa
+
+# Build platform mock emulator
+make platform-mock-build
+
+# Run all unit tests
 go test ./...
+
+# Format and vet code
+gofmt -w .
 go vet ./...
-gofmt -l .
 ```
 
-## 关键词
+---
 
-- TEE
-- CSV
-- 远程证明
-- SM2 / SM3 / SM4
-- 密态计算
-- 代码审计
-- 结果封装
-- 安全执行框架
+## Documentation
+
+- **Architecture Design**: `docs/TAA设计文档.md`
+- **API Specifications**: `docs/taa接口设计文档.md`
+- **Model Provider Integration Guide**: `docs/TAA模型提供方开发与接口对接规范.md`
+
+---
+
+## License & Security Notices
+
+TAA is designed for authorized, privacy-preserving computation and dual-use secure enclaves. All cryptographic algorithms follow GM/T national standards (SM2/SM3/SM4). Ensure proper key management and hardware attestation verification before running in production multi-tenant environments.
