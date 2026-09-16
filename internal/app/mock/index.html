@@ -1561,6 +1561,7 @@ function randomizeImportIds() {
 }
 
 const resultBodies = {};
+let lastHealthData = null;
 let lastRegisterData = null;
 let lastReportResData = null;
 let lastReportModelImportData = null;
@@ -1970,15 +1971,17 @@ function showResultRunning(elId, text) {
   }
 }
 
-function setHealthState(className, title, labelText, labelColor, detailText) {
+function setHealthState(className, title, labelText, labelColor) {
   const dot = document.getElementById('healthDot');
   const label = document.getElementById('healthLabel');
-  const detail = document.getElementById('healthDetailContent');
-  dot.className = className;
-  dot.title = title;
-  label.textContent = labelText;
-  label.style.color = labelColor || '';
-  detail.textContent = detailText;
+  if (dot) {
+    dot.className = className;
+    dot.title = title;
+  }
+  if (label) {
+    label.textContent = labelText;
+    label.style.color = labelColor || '';
+  }
 }
 
 function buildRuntimeConfig(commandsText, envText) {
@@ -2575,22 +2578,35 @@ async function uploadFile() {
 
 // ── 各接口测试 ─────────────────────────────────
 async function testHealth() {
-  setHealthState('dot', '检查中', '检查中...', '', '');
+  const btn = document.getElementById('healthResultBtn');
+  if (btn) btn.disabled = true;
+  setHealthState('dot', '检查中', '检查中...', '');
   try {
     const r = await postToTAA('/v1/taa/health', {}, 10000);
-    const ok = r.status === 200 && r.data.error === 0;
-    setHealthState('dot ' + (ok ? 'ok' : 'bad'), ok ? '连通正常' : '连通异常', ok ? '连通正常' : 'HTTP ' + r.status, ok ? 'var(--ok)' : 'var(--bad)', formatResp(r));
+    const ok = r.status === 200 && r.data && r.data.error === 0;
+    lastHealthData = r.data != null ? r.data : { status: r.status, raw: r };
+    setHealthState('dot ' + (ok ? 'ok' : 'bad'), ok ? '连通正常' : '连通异常', ok ? '连通正常' : 'HTTP ' + r.status, ok ? 'var(--ok)' : 'var(--bad)');
   } catch (e) {
     const msg = e.name === 'AbortError'
       ? '请求超时（10s）：TAA 服务响应过慢或不可达。\n请确认：\n1. TAA 服务地址是否正确\n2. TAA 服务是否已启动\n3. 浏览器能否直接访问该地址（K8s Pod 端口可能需要 NodePort 或 port-forward 暴露）'
       : '请求失败: ' + e.message + '\n\n可能原因：\n1. TAA 服务地址不正确或服务未启动\n2. 网络不通（防火墙、K8s Pod 网络隔离）\n3. TAA 未部署包含 CORS 支持的新版本\n4. 浏览器混合内容限制（HTTPS 页面访问 HTTP 地址）';
-    setHealthState('dot bad', '不可达', '不可达', 'var(--bad)', msg);
+    lastHealthData = {
+      error: -1,
+      msg: e.message || '网络请求异常',
+      detail: msg
+    };
+    setHealthState('dot bad', '不可达', '不可达', 'var(--bad)');
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
-function toggleHealthDetail() {
-  const el = document.getElementById('healthDetail');
-  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+function openHealthResultModal() {
+  if (!lastHealthData) {
+    openBodyModal('健康检查返回结果 (GET /v1/taa/health)', '暂未执行健康检查，请先点击【检查连通性】。');
+    return;
+  }
+  openBodyModal('健康检查返回结果 (GET /v1/taa/health)', JSON.stringify(lastHealthData, null, 2));
 }
 
 async function testImport() {
