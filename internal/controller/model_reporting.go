@@ -150,11 +150,8 @@ func sendReportingJSON(ctx context.Context, platformAddr, endpoint string, paylo
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&ack); err != nil {
 		return fmt.Errorf("decode platform acknowledgement: %w", err)
 	}
-	if ack.Error != 0 {
-		return fmt.Errorf("platform rejected report: error=%d msg=%s", ack.Error, ack.Msg)
-	}
-	if !ack.Result.Received {
-		return fmt.Errorf("platform acknowledgement received=false")
+	if ack.Error != 0 || !ack.Result.Received {
+		return fmt.Errorf("platform rejected report: error=%d msg=%s (received=%v)", ack.Error, ack.Msg, ack.Result.Received)
 	}
 	return nil
 }

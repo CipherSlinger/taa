@@ -1809,14 +1809,81 @@ func parseRuntimeConfig(raw string) (runtimeConfig, map[string]string, error) {
 	return cfg, env, nil
 }
 
-func newInOutReplacer(dataDir, outputDir string) *strings.Replacer {
+func isPathContinuationByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_' || b == '-' || b == '.'
+}
+
+func resolveRuntimeString(s string, dataDir, outputDir string) string {
+	if s == "" {
+		return ""
+	}
 	outputRoot := filepath.Dir(filepath.Clean(outputDir))
+	logDir := filepath.Join(outputRoot, "log")
+	progressDir := filepath.Join(outputRoot, "progress")
+
+	macroReplacer := strings.NewReplacer(
+		"<input>", dataDir,
+		"<output>", outputDir,
+		"<INPUT>", dataDir,
+		"<OUTPUT>", outputDir,
+		"<in>", dataDir,
+		"<out>", outputDir,
+		"<IN>", dataDir,
+		"<OUT>", outputDir,
+	)
+	s = macroReplacer.Replace(s)
+
+	type prefixTarget struct {
+		prefix string
+		target string
+	}
+	targets := []prefixTarget{
+		{prefix: "/opt/taa/output/log", target: logDir},
+		{prefix: "/opt/taa/output/progress", target: progressDir},
+		{prefix: "/opt/taa/output/result", target: outputDir},
+		{prefix: "/opt/taa/output", target: outputDir},
+		{prefix: "/opt/taa/input", target: dataDir},
+	}
+
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		matched := false
+		for _, item := range targets {
+			if strings.HasPrefix(s[i:], item.prefix) {
+				nextIdx := i + len(item.prefix)
+				if nextIdx == len(s) {
+					b.WriteString(item.target)
+					i = nextIdx
+					matched = true
+					break
+				}
+				nextByte := s[nextIdx]
+				if nextByte == '/' {
+					b.WriteString(item.target)
+					b.WriteByte('/')
+					i = nextIdx + 1
+					matched = true
+					break
+				}
+				if !isPathContinuationByte(nextByte) {
+					b.WriteString(item.target)
+					i = nextIdx
+					matched = true
+					break
+				}
+			}
+		}
+		if !matched {
+			b.WriteByte(s[i])
+			i++
+		}
+	}
+	return b.String()
+}
+
+func newInOutReplacer(dataDir, outputDir string) *strings.Replacer {
 	return strings.NewReplacer(
-		DefaultModelInputDir, dataDir,
-		DefaultModelLogDir, filepath.Join(outputRoot, "log"),
-		DefaultModelProgressDir, filepath.Join(outputRoot, "progress"),
-		DefaultModelOutputDir, outputDir,
-		"/opt/taa/output", outputRoot,
 		"<input>", dataDir,
 		"<output>", outputDir,
 		"<INPUT>", dataDir,
@@ -1829,10 +1896,9 @@ func newInOutReplacer(dataDir, outputDir string) *strings.Replacer {
 }
 
 func resolveRuntimeCommands(commands []string, dataDir, outputDir string) []string {
-	replacer := newInOutReplacer(dataDir, outputDir)
 	resolved := make([]string, len(commands))
 	for i, cmd := range commands {
-		resolved[i] = replacer.Replace(cmd)
+		resolved[i] = resolveRuntimeString(cmd, dataDir, outputDir)
 	}
 	return resolved
 }
@@ -1841,10 +1907,9 @@ func resolveRuntimeEnv(env map[string]string, dataDir, outputDir string) map[str
 	if len(env) == 0 {
 		return env
 	}
-	replacer := newInOutReplacer(dataDir, outputDir)
 	resolved := make(map[string]string, len(env))
 	for k, v := range env {
-		resolved[k] = replacer.Replace(v)
+		resolved[k] = resolveRuntimeString(v, dataDir, outputDir)
 	}
 	return resolved
 }

@@ -214,7 +214,7 @@ func TestReportWatcherSendsLogAndProgress(t *testing.T) {
 	watcher := newReportWatcher(context.Background(), state, "req-1", "task-1", 5*time.Millisecond)
 	watcher.platformAddr = server.URL
 	watcher.start()
-	if err := os.WriteFile(filepath.Join(logDir, "train.jsonl"), []byte(`{"message":"epoch=1"}\n`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(logDir, "train.jsonl"), []byte("{\"message\":\"epoch=1\"}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(progressDir, "progress.json"), []byte(`{"percent":25,"timestamp":"2026-09-15T00:00:00Z"}`), 0o644); err != nil {
