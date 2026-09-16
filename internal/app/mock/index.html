@@ -1280,6 +1280,8 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
             <p class="card-note">接收 TAA 训练完成后的回调结果与报告。</p>
           </div>
           <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <button id="stopTrainingBtn" class="danger" style="padding:6px 12px; font-size:13px;" onclick="testStopTraining()">🛑 中止训练</button>
+            <span id="stopTrainingStatusBox" style="display:none; font-size:12px; margin-left:8px;"><span id="stopTrainingStatusText"></span></span>
             <button id="reportResReportBtn" style="padding:6px 12px; font-size:13px;" onclick="openReportResReportModal()" disabled>查看报告</button>
             <button id="reportResBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportResBodyModal()" disabled>查看返回</button>
           </div>
@@ -1287,7 +1289,11 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
         <div class="sub-panel" style="flex:1; min-height:100px; display:flex; flex-direction:column; justify-content:space-between; gap:10px;">
           <div>
             <div class="status" style="font-size:14px; font-weight:650;"><span id="reportResDot" class="dot"></span><span id="reportResStatusText">等待训练结果上报</span><span class="muted" style="font-size:12px; font-weight:normal; margin-left:6px;">(/v1/taa/reportRes)</span></div>
-            <p id="reportResSummary" class="card-note" style="margin-top:6px; margin-bottom:4px;">完整返回体只在弹窗中展示。</p>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;"><span style="font-weight:600; font-size:13px;">训练进度: <span id="reportProgressPercent">0%</span></span><span id="reportProgressStatusText" class="muted" style="font-size:12px;">等待进度上报... (/v1/taa/reportProgress)</span><button id="resetProgressBtn" class="secondary" style="padding:2px 8px; font-size:11px;" onclick="resetReportProgress()">重置</button></div>
+            <div style="width:100%; height:8px; background:rgba(127,127,127,.2); border-radius:4px; overflow:hidden; margin-top:4px; margin-bottom:8px;">
+              <div id="reportProgressBar" style="width:0%; height:100%; background:var(--theme-accent, #2563eb); transition:width .3s ease;"></div>
+            </div>
+            <p id="reportResSummary" class="card-note" style="margin-top:6px; margin-bottom:4px;">完整返回体与具体报告只在弹窗中展示。</p>
             <p id="reportResBodySummary" class="muted" style="margin:0;font-size:12px;">-</p>
           </div>
           <div class="actions" style="margin:0;">
@@ -1357,6 +1363,7 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
           <option value="/v1/taa/import">/v1/taa/import（下发数据）</option>
           <option value="/v1/taa/switch">/v1/taa/switch（阶段切换）</option>
           <option value="/v1/taa/export">/v1/taa/export（导出结果）</option>
+          <option value="/v1/taa/stopTraining">/v1/taa/stopTraining（中止任务）</option>
           <option value="/v1/taa/getResourceInfo">/v1/taa/getResourceInfo（资源信息）</option>
           <option value="/v1/taa/getAttestation">/v1/taa/getAttestation（远程证明报告）</option>
           <option value="/v1/taa/health">/v1/taa/health（健康检查）</option>
@@ -1433,6 +1440,37 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
     </div>
   </section>
 
+  <!-- 模型终端日志 -->
+  <h2>模型终端日志</h2>
+  <section class="card" id="card-modelLog">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap;">
+      <div class="status" style="font-size:16px;">
+        <span id="modelLogStatusDot" class="dot"></span>
+        <span id="modelLogStatusText">等待日志上报...</span>
+        <span class="muted" style="font-size:12px;">(/v1/taa/modelLog)</span>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <span class="muted" id="modelLogCount" style="font-size:13px;">0 条日志</span>
+        <span class="muted" id="modelLogLastSeq" style="font-size:13px;">最新 seq: 0</span>
+        <button onclick="fetchModelLogs()" style="padding:6px 12px; font-size:13px;">刷新</button>
+        <button class="secondary" id="modelLogPauseBtn" onclick="toggleModelLogPause()" style="padding:6px 12px; font-size:13px;">暂停</button>
+        <button class="danger" onclick="clearModelLogs()" style="padding:6px 12px; font-size:13px;">清空</button>
+      </div>
+    </div>
+    <div class="terminal-shell">
+      <div class="terminal-bar">
+        <div class="terminal-dots">
+          <span class="t-dot red"></span>
+          <span class="t-dot yellow"></span>
+          <span class="t-dot green"></span>
+        </div>
+        <span class="terminal-title">model-stdout-stderr</span>
+        <span class="muted" style="font-size:11px;">stdout / stderr</span>
+      </div>
+      <div id="modelLogOutput" class="log-window" style="min-height:220px; max-height:450px; overflow-y:auto; font-size:13px; line-height:1.6; padding:14px; margin:0; font-family:monospace; white-space:pre-wrap;"></div>
+    </div>
+  </section>
+
 </main>
 <div id="bodyModal" class="modal-overlay" aria-hidden="true" onclick="if (event.target === this) closeBodyModal();">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="bodyModalTitle">
@@ -1443,6 +1481,7 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
         <button class="secondary" onclick="closeBodyModal()">关闭</button>
       </div>
     </div>
+    <div id="bodyModalBadge" style="display:none; margin:10px 14px 0; padding:10px 14px; border-radius:8px; font-size:13px; font-weight:600; background:rgba(127,127,127,.08); border:1px solid var(--line);"></div>
     <pre id="bodyModalContent" class="modal-body"></pre>
   </div>
 </div>
@@ -1569,6 +1608,13 @@ function formatModalBody(body) {
 }
 
 function openBodyModal(title, body) {
+  if (title !== '模型导入结果上报 body' && title !== '代码安全审计结果上报 body') {
+    const badge = document.getElementById('bodyModalBadge');
+    if (badge) {
+      badge.innerHTML = '';
+      badge.style.display = 'none';
+    }
+  }
   currentModalBody = formatModalBody(body);
   document.getElementById('bodyModalTitle').textContent = title;
   const contentEl = document.getElementById('bodyModalContent');
@@ -1587,6 +1633,11 @@ function closeBodyModal() {
   const modal = document.getElementById('bodyModal');
   modal.classList.remove('open');
   modal.setAttribute('aria-hidden', 'true');
+  const badge = document.getElementById('bodyModalBadge');
+  if (badge) {
+    badge.innerHTML = '';
+    badge.style.display = 'none';
+  }
 }
 
 async function copyText(text) {
@@ -2059,12 +2110,32 @@ function parseJSONMaybe(raw) {
   }
 }
 function buildReportModelImportBodyPreview(data) {
+  const badge = document.getElementById('bodyModalBadge');
+  if (badge) {
+    badge.innerHTML = '';
+    badge.style.display = 'none';
+  }
   if (!data) return {};
   const rawBody = parseJSONMaybe(data.rawBody);
   const body = rawBody && typeof rawBody === 'object' ? { ...rawBody } : { ...data };
   delete body.received;
   delete body.accepted;
   delete body.rawBody;
+  const checksum = (data && data.checksum) || body.checksum;
+  if (checksum && typeof checksum === 'object') {
+    body.checksum = checksum;
+    if (badge) {
+      const algo = checksum.algorithm || 'SM3';
+      const size = checksum.size != null ? checksum.size : '-';
+      const val = checksum.value || '';
+      badge.innerHTML = `<div style="display:flex; flex-direction:column; gap:4px;">` +
+        `<div style="font-weight:700; color:var(--ok);">✓ 模型完整性校验 (checksum)</div>` +
+        `<div style="font-size:12px; font-family:monospace; word-break:break-all;">算法: <b>${escapeHtml(algo)}</b> | 大小: <b>${escapeHtml(String(size))} bytes</b></div>` +
+        `<div style="font-size:11.5px; font-family:monospace; word-break:break-all; color:var(--muted);">哈希值: ${escapeHtml(val)}</div>` +
+        `</div>`;
+      badge.style.display = 'block';
+    }
+  }
   if (Object.prototype.hasOwnProperty.call(body, 'report')) {
     body.report = parseJSONMaybe(body.report);
   }
@@ -2074,6 +2145,11 @@ function setReportModelImportPending() {
   renderReportModelImport({ received: false, accepted: false });
 }
 function buildReportAuditBodyPreview(data) {
+  const badge = document.getElementById('bodyModalBadge');
+  if (badge) {
+    badge.innerHTML = '';
+    badge.style.display = 'none';
+  }
   if (!data) return {};
   const rawBody = parseJSONMaybe(data.rawBody);
   const body = rawBody && typeof rawBody === 'object' ? { ...rawBody } : { ...data };
@@ -2082,6 +2158,26 @@ function buildReportAuditBodyPreview(data) {
   delete body.rawBody;
   if (Object.prototype.hasOwnProperty.call(body, 'report')) {
     body.report = parseJSONMaybe(body.report);
+  }
+  const reportObj = (body.report && typeof body.report === 'object') ? body.report : {};
+  const stats = (data && data.statistics) || (reportObj.conclusion && reportObj.conclusion.statistics);
+  const riskLevel = (data && (data.riskLevel || data.risk_level)) || (reportObj.conclusion && reportObj.conclusion.risk_level);
+  if (stats && badge) {
+    const high = stats.high !== undefined ? stats.high : 0;
+    const med = stats.medium !== undefined ? stats.medium : 0;
+    const low = stats.low !== undefined ? stats.low : 0;
+    const rlUpper = escapeHtml(String(riskLevel || 'UNKNOWN').toUpperCase());
+    const rlColor = riskLevel === 'high' ? 'var(--bad)' : (riskLevel === 'medium' ? '#f59e0b' : 'var(--ok)');
+    badge.innerHTML = `<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">` +
+      `<span>风险等级: <strong style="color:${rlColor};">${rlUpper}</strong></span>` +
+      `<span style="color:var(--muted);">|</span>` +
+      `<span style="color:var(--bad); font-weight:600;">高危(high): ${escapeHtml(String(high))}</span>` +
+      `<span style="color:var(--muted);">|</span>` +
+      `<span style="color:#f59e0b; font-weight:600;">中危(medium): ${escapeHtml(String(med))}</span>` +
+      `<span style="color:var(--muted);">|</span>` +
+      `<span style="color:#059669; font-weight:600;">低危(low): ${escapeHtml(String(low))}</span>` +
+      `</div>`;
+    badge.style.display = 'block';
   }
   return body;
 }
@@ -2300,6 +2396,161 @@ async function refreshReportAuditStatus() {
 async function resetReportAuditStatus() {
   await fetch('/api/reportAudit/reset', { method: 'POST' }).catch(() => {});
   setReportAuditPending();
+}
+
+// ── 训练进度与中止训练 ─────────────────────────
+async function refreshReportProgress() {
+  try {
+    const res = await fetch('/api/reportProgress/status', { cache: 'no-store' });
+    const data = await res.json();
+    const result = responseResult(data);
+    const percentEl = document.getElementById('reportProgressPercent');
+    const barEl = document.getElementById('reportProgressBar');
+    const textEl = document.getElementById('reportProgressStatusText');
+    if (!result || !result.received) {
+      if (percentEl) percentEl.textContent = '0%';
+      if (barEl) barEl.style.width = '0%';
+      if (textEl) textEl.textContent = '等待进度上报... (/v1/taa/reportProgress)';
+      return;
+    }
+    const pctVal = typeof result.percent === 'number' ? result.percent : (typeof result.progress === 'number' ? result.progress : 0);
+    const clamped = Math.min(100, Math.max(0, pctVal));
+    const pctText = clamped % 1 === 0 ? clamped + '%' : clamped.toFixed(1) + '%';
+    if (percentEl) percentEl.textContent = pctText;
+    if (barEl) barEl.style.width = clamped + '%';
+    if (textEl) {
+      if (result.accepted) {
+        textEl.textContent = result.message ? result.message : `最新进度: ${pctText}`;
+      } else {
+        textEl.textContent = `上报错误: ${result.message || '校验失败'}`;
+      }
+    }
+  } catch (err) {
+    const textEl = document.getElementById('reportProgressStatusText');
+    if (textEl) textEl.textContent = '刷新进度失败: ' + err.message;
+  }
+}
+
+async function resetReportProgress() {
+  try {
+    await fetch('/api/reportProgress/reset', { method: 'POST' });
+    await refreshReportProgress();
+  } catch (err) {
+    const textEl = document.getElementById('reportProgressStatusText');
+    if (textEl) textEl.textContent = '重置进度失败: ' + err.message;
+  }
+}
+
+async function testStopTraining() {
+  const btn = document.getElementById('stopTrainingBtn');
+  const box = document.getElementById('stopTrainingStatusBox');
+  const textEl = document.getElementById('stopTrainingStatusText');
+  if (btn) btn.disabled = true;
+  if (box) {
+    box.style.display = 'inline-flex';
+    box.style.color = 'var(--text)';
+  }
+  if (textEl) textEl.textContent = '正在发送中止请求...';
+  try {
+    const res = await fetch('/api/taa/stopTraining', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const data = await res.json().catch(() => ({}));
+    const ok = res.status === 200 && data.error === 0;
+    if (box) {
+      box.style.display = 'inline-flex';
+      box.style.color = ok ? 'var(--ok)' : 'var(--bad)';
+    }
+    if (textEl) {
+      textEl.textContent = data.msg || (ok ? '训练任务已中止' : `中止失败 (HTTP ${res.status})`);
+    }
+  } catch (err) {
+    if (box) {
+      box.style.display = 'inline-flex';
+      box.style.color = 'var(--bad)';
+    }
+    if (textEl) textEl.textContent = '请求失败: ' + err.message;
+  } finally {
+    if (btn) btn.disabled = false;
+    await fetchRequestLogs();
+  }
+}
+
+// ── 模型终端日志 ─────────────────────────────
+let modelLogPaused = false;
+
+async function fetchModelLogs() {
+  if (modelLogPaused) return;
+  try {
+    const res = await fetch('/api/modelLog/status', { cache: 'no-store' });
+    const data = await res.json();
+    const result = responseResult(data);
+    if (!result) return;
+    const entries = Array.isArray(result.entries) ? result.entries : [];
+    const count = result.totalCount != null ? result.totalCount : entries.length;
+    const lastSeq = result.lastSeq != null ? result.lastSeq : (entries.length ? entries[entries.length - 1].seq : 0);
+
+    const countEl = document.getElementById('modelLogCount');
+    if (countEl) countEl.textContent = `${count} 条日志`;
+    const seqEl = document.getElementById('modelLogLastSeq');
+    if (seqEl) seqEl.textContent = `最新 seq: ${lastSeq}`;
+
+    const dot = document.getElementById('modelLogStatusDot');
+    const statusText = document.getElementById('modelLogStatusText');
+    if (entries.length > 0) {
+      if (dot) dot.className = 'dot ok';
+      if (statusText) statusText.textContent = '日志接收中';
+    } else {
+      if (dot) dot.className = 'dot';
+      if (statusText) statusText.textContent = '等待日志上报...';
+    }
+
+    const output = document.getElementById('modelLogOutput');
+    if (!output) return;
+
+    if (entries.length === 0) {
+      output.innerHTML = '<div style="color:#6b7280; text-align:center; padding:40px 0;">暂无模型终端日志上报。(/v1/taa/modelLog)</div>';
+      return;
+    }
+
+    output.innerHTML = entries.map(e => {
+      const seqStr = `<span style="color:#60a5fa; font-weight:600;">[seq=${e.seq}]</span>`;
+      return `${seqStr} ${escapeHtml(e.message)}`;
+    }).join('\n');
+
+    if (!modelLogPaused) {
+      output.scrollTop = output.scrollHeight;
+    }
+  } catch (e) {
+    // Silently ignore fetch errors on poll
+  }
+}
+
+function toggleModelLogPause() {
+  modelLogPaused = !modelLogPaused;
+  const btn = document.getElementById('modelLogPauseBtn');
+  if (btn) {
+    btn.textContent = modelLogPaused ? '继续' : '暂停';
+    btn.className = modelLogPaused ? 'success' : 'secondary';
+  }
+}
+
+async function clearModelLogs() {
+  try {
+    await fetch('/api/modelLog/reset', { method: 'POST' });
+  } catch {}
+  const output = document.getElementById('modelLogOutput');
+  if (output) output.innerHTML = '';
+  const countEl = document.getElementById('modelLogCount');
+  if (countEl) countEl.textContent = '0 条日志';
+  const seqEl = document.getElementById('modelLogLastSeq');
+  if (seqEl) seqEl.textContent = '最新 seq: 0';
+  const dot = document.getElementById('modelLogStatusDot');
+  if (dot) dot.className = 'dot';
+  const statusText = document.getElementById('modelLogStatusText');
+  if (statusText) statusText.textContent = '等待日志上报...';
 }
 
 // ── 文件上传 ─────────────────────────────────
@@ -3641,10 +3892,14 @@ setReportAuditPending();
 refreshReportAuditStatus();
 renderRequestLogs();
 fetchRequestLogs();
+refreshReportProgress();
+fetchModelLogs();
 setInterval(refreshStatus, 1000);
 setInterval(refreshReportResStatus, 1000);
 setInterval(refreshReportModelImportStatus, 1000);
 setInterval(refreshReportAuditStatus, 1000);
+setInterval(refreshReportProgress, 2000);
+setInterval(fetchModelLogs, 2000);
 setInterval(fetchRequestLogs, 2000);
 logTimer = setInterval(fetchLogs, 3000);
 fetchLogs();
