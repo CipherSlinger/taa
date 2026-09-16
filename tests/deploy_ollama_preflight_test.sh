@@ -26,7 +26,7 @@ output=$(OLLAMA_LOCAL_DIR="$pkg" \
   OLLAMA_PRUNE_SYNC=false \
   OLLAMA_READY_TIMEOUT=1 \
   OLLAMA_READY_INTERVAL=1 \
-  "$ROOT_DIR/deploy.sh" local qwen 2>&1)
+  "$ROOT_DIR/deploy.sh" docker qwen 2>&1)
 status=$?
 set -e
 

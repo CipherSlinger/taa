@@ -661,10 +661,9 @@ save_local_docker_image() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [local|docker|remote] [start|stop|save] [platform-mock] [taa] [qwen] [--model <name>]
+Usage: $(basename "$0") [docker|remote] [start|stop|save] [platform-mock] [taa] [qwen] [--model <name>]
 
 Running modes (mutually exclusive, default: remote):
-  local     Deploy and run directly on local host machine (bare-metal, no Docker container).
   docker    Deploy TAA and its dependencies into a local Docker container for testing, with platform-mock running locally on host.
   remote    Deploy remotely via Kubernetes Pod and SSH (default mode).
 
@@ -707,15 +706,6 @@ Examples:
   $(basename "$0") docker platform-mock
   $(basename "$0") docker taa qwen
 
-  # Local mode (bare-metal on host)
-  $(basename "$0") local start
-  $(basename "$0") local stop
-  $(basename "$0") local
-  $(basename "$0") local taa
-  $(basename "$0") local qwen
-  $(basename "$0") local platform-mock
-  $(basename "$0") local taa qwen
-
   # Remote mode (Kubernetes / SSH)
   $(basename "$0") remote start
   $(basename "$0") remote stop
@@ -736,17 +726,11 @@ Environment overrides:
   LOCAL_DOCKER_IMAGE=${LOCAL_DOCKER_IMAGE}
       本地 Docker 基础镜像名称（默认 taa-env:slim-v2）。
   LOCAL_DOCKER_NETWORK=${LOCAL_DOCKER_NETWORK}
-      本地 Docker 容器网络模式（默认 host）。��
+      本地 Docker 容器网络模式（默认 host）。
   FORCE_QWEN_COPY=${FORCE_QWEN_COPY}
       设为 true 时强制重新将 ollama/qwen 完整离线包拷贝进容器。
   OLLAMA_PRUNE_SYNC=${OLLAMA_PRUNE_SYNC}
       启用按需模型打包与增量同步（默认 true），仅拷贝/同步 OLLAMA_MODEL 指定模型与运行时依赖。
-
-  # Local mode (local)
-  LOCAL_RUNTIME_DIR=${LOCAL_RUNTIME_DIR}
-      本地裸机运行模式工作目录（默认 .local/taa）。
-  LOCAL_TAA_PORT=${LOCAL_TAA_PORT}
-      本地裸机 TAA 监听端口。
 
   # Kubernetes / Pod (Remote mode)
   TARGET_POD=${TARGET_POD}
@@ -787,14 +771,12 @@ Environment overrides:
       TAA 在目标容器内的工作目录。
   TAA_CONTAINER_ADDR=${TAA_CONTAINER_ADDR}
       写入 TAA 配置文件的容器内监听地址与端口。
-  TAA_LOCAL_CONFIG_TEMPLATE=${TAA_LOCAL_CONFIG_TEMPLATE}
-      local 场景 TAA 配置模板。
   TAA_DEBUG_CONFIG_TEMPLATE=${TAA_DEBUG_CONFIG_TEMPLATE}
       debug 场景 TAA 配置模板。
   TAA_PRODUCTION_CONFIG_TEMPLATE=${TAA_PRODUCTION_CONFIG_TEMPLATE}
       正式非 debug 场景 TAA 配置模板。
   CONTRACT=${CONTRACT}
-      debug/local 场景写入配置文件的合约 ID；正式非 debug 场景由运行环境注入（预留可选）。
+      debug 场景写入配置文件的合约 ID；正式非 debug 场景由运行环境注入（预留可选）。
   ATT_DIR=${ATT_DIR}
       本地 attestation 证书目录。
   TAA_KEEP_MANUAL=${TAA_KEEP_MANUAL:-false}
@@ -1276,14 +1258,11 @@ else
   while [[ $# -gt 0 ]]; do
     arg="$1"
     case "$arg" in
-      local)
-        DEPLOY_LOCAL=true
-        ;;
       docker)
         DEPLOY_DOCKER=true
         ;;
-      local-docker)
-        err "local-docker has been deprecated and replaced by 'docker'. Please use: $(basename "$0") docker ..."
+      local|local-docker)
+        err "'$arg' mode has been removed. Please use 'docker' for local container deployment or 'remote' for remote deployment."
         usage >&2
         exit 1
         ;;
@@ -1601,7 +1580,7 @@ if [[ "$DEPLOY_TAA" == true ]]; then
 fi
 
 
-deploy_local_platform_mock() {
+deploy_platform_mock() {
   step "preparing local platform-mock runtime directory"
   mkdir -p "$LOCAL_PLATFORM_STATE_DIR" "$LOCAL_PLATFORM_UPLOAD_DIR" "$LOCAL_RUN_DIR"
   info "runtime directories ready: $LOCAL_PLATFORM_STATE_DIR"
@@ -1795,76 +1774,6 @@ deploy_docker_taa() {
   fi
 }
 
-deploy_local_qwen() {
-  step "checking local ollama package: $OLLAMA_LOCAL_DIR"
-  require_dir "ollama package not found" "$OLLAMA_LOCAL_DIR"
-  require_file "ollama binary missing" "$OLLAMA_LOCAL_DIR/ollama"
-  require_file "start-ollama.sh missing" "$OLLAMA_LOCAL_DIR/start-ollama.sh"
-  require_dir "ollama lib directory missing" "$OLLAMA_LOCAL_DIR/lib/ollama"
-  require_dir "ollama models directory missing" "$OLLAMA_LOCAL_DIR/models/models"
-
-  chmod +x "$OLLAMA_LOCAL_DIR/ollama" "$OLLAMA_LOCAL_DIR/start-ollama.sh" 2>/dev/null || true
-
-  # 兼容向后软链接（若本地 /taatest 可写）
-  local hardcoded_path="/taatest/ollama-qwen2.5-coder-0.5b"
-  if [[ ! -e "$hardcoded_path" && -w / ]]; then
-    mkdir -p /taatest 2>/dev/null && ln -sfn "$OLLAMA_LOCAL_DIR" "$hardcoded_path" 2>/dev/null || true
-  fi
-
-  step "stopping old local ollama"
-  stop_pidfile "ollama" "$LOCAL_RUN_DIR/ollama.pid"
-  pkill -f "$OLLAMA_LOCAL_DIR/ollama" >/dev/null 2>&1 || true
-
-  step "starting local ollama on $OLLAMA_HOST"
-  start_local_background "ollama" "$LOCAL_RUN_DIR/ollama.pid" "$LOCAL_OLLAMA_LOG_FILE" \
-    sh -lc "cd '$OLLAMA_LOCAL_DIR' && exec env OLLAMA_HOST='$OLLAMA_HOST' OLLAMA_MODELS='$OLLAMA_LOCAL_DIR/models/models' OLLAMA_LIBRARY_PATH='$OLLAMA_LOCAL_DIR/lib/ollama' ./start-ollama.sh"
-  if ! wait_for_http_ready "ollama" GET "$LOCAL_OLLAMA_URL/api/tags" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL" "$LOCAL_OLLAMA_LOG_FILE"; then
-    echo -e "   ${YELLOW}↳${NC} ollama log (${LOCAL_OLLAMA_LOG_FILE}):"
-    tail -n 60 "$LOCAL_OLLAMA_LOG_FILE" 2>/dev/null || true
-    exit 1
-  fi
-}
-
-deploy_local_taa() {
-  step "preparing local runtime directories: $LOCAL_RUNTIME_DIR"
-  mkdir -p "$LOCAL_PLATFORM_STATE_DIR" "$LOCAL_PLATFORM_UPLOAD_DIR" "$LOCAL_RUNTIME_DIR/attestation" "$LOCAL_TAA_MODEL_DIR" "$LOCAL_TAA_DATA_DIR" "$LOCAL_TAA_RESULT_DIR" "$LOCAL_TAA_INPUT_DIR" "$LOCAL_TAA_OUTPUT_DIR" "$LOCAL_TAA_KEYS_DIR"
-  chmod 700 "$LOCAL_TAA_KEYS_DIR"
-  cp -f "$ATT_HRK_SOURCE" "$LOCAL_RUNTIME_DIR/hrk.cert"
-  cp -f "$ATT_HSK_SOURCE" "$LOCAL_RUNTIME_DIR/hsk_cek.cert"
-
-  step "checking attestation prerequisites"
-  if ! test -e /dev/csv-guest; then
-    warn "/dev/csv-guest not found — attestation will fail (expected in non-TEE local environment)"
-  else
-    info "attestation device /dev/csv-guest verified"
-  fi
-
-  TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
-  step "writing local taa config from $(basename "$TAA_CONFIG_TEMPLATE")"
-  ensure_parent_dir "$LOCAL_TAA_CONFIG_PATH"
-  write_taa_config "$LOCAL_TAA_CONFIG_PATH" "$TAA_CONFIG_TEMPLATE" \
-    "$LOCAL_TAA_BIND" "$LOCAL_PLATFORM_IP" "127.0.0.1" "$CONTRACT" \
-    "$LOCAL_TAA_MODEL_DIR" "$LOCAL_TAA_DATA_DIR" "$LOCAL_TAA_RESULT_DIR" \
-    "$OLLAMA_LOCAL_DIR" "$LOCAL_OLLAMA_URL" "$OLLAMA_MODEL" true \
-    "$LOCAL_TAA_INPUT_DIR" "$LOCAL_TAA_OUTPUT_DIR" "$LOCAL_TAA_KEYS_DIR"
-  info "config written: $LOCAL_TAA_CONFIG_PATH"
-
-  step "stopping old local taa"
-  stop_pidfile "taa" "$LOCAL_RUN_DIR/taa.pid"
-  pkill -f "$TAA_BINARY_PATH" >/dev/null 2>&1 || true
-
-  step "starting local taa"
-  start_local_background "taa" "$LOCAL_RUN_DIR/taa.pid" "$LOCAL_TAA_LOG_FILE" \
-    sh -lc "cd '$LOCAL_RUNTIME_DIR' && exec '$TAA_BINARY_PATH'"
-
-  step "waiting for taa service to become ready"
-  if ! wait_for_http_ready "taa" POST "$LOCAL_TAA_URL/v1/taa/health" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL" "$LOCAL_TAA_LOG_FILE"; then
-    echo -e "   ${YELLOW}↳${NC} taa log (${LOCAL_TAA_LOG_FILE}):"
-    tail -n 60 "$LOCAL_TAA_LOG_FILE" 2>/dev/null || true
-    exit 1
-  fi
-}
-
 if [[ "$DEPLOY_DOCKER" == true ]]; then
   require_command docker
   docker info >/dev/null 2>&1 || { err "docker daemon is not running or accessible"; exit 1; }
@@ -1876,7 +1785,7 @@ if [[ "$DEPLOY_DOCKER" == true ]]; then
 
   # 1. 启动本地 platform-mock（若包含 platform-mock）
   if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
-    deploy_local_platform_mock
+    deploy_platform_mock
   fi
 
   # 2. 部署 qwen / ollama 进本地容器
@@ -1914,52 +1823,6 @@ if [[ "$DEPLOY_DOCKER" == true ]]; then
     echo -e "    ${MUTED}↳ Keys dir   :${NC} ${LOCAL_DOCKER_CONTAINER}:${TAA_CONTAINER_WORKDIR}/keys"
     echo -e "    ${MUTED}↳ Platform   :${NC} ${LOCAL_PLATFORM_IP}"
     echo -e "    ${MUTED}↳ Attestation:${NC} ${ATT_REPORT_FILE}"
-    echo ""
-  fi
-  exit 0
-fi
-
-if [[ "$DEPLOY_LOCAL" == true ]]; then
-  # 1. 启动本地 platform-mock（若包含 platform-mock）
-  if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
-    deploy_local_platform_mock
-  fi
-
-  # 2. 本地裸机启动 qwen / ollama
-  if [[ "$DEPLOY_QWEN" == true ]]; then
-    deploy_local_qwen
-  fi
-
-  # 3. 本地裸机启动 taa
-  if [[ "$DEPLOY_TAA" == true ]]; then
-    deploy_local_taa
-  fi
-
-  banner "Deploy Complete (Local)" "All requested host services are running and verified healthy"
-  if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
-    echo -e "  ${BOLD}${CYAN}● Platform Mock${NC}  ${DIM}(API & Storage Emulator)${NC}"
-    echo -e "    ${MUTED}↳ Endpoint   :${NC} ${BOLD}${LOCAL_PLATFORM_URL}${NC}"
-    echo -e "    ${MUTED}↳ State dir  :${NC} ${LOCAL_PLATFORM_STATE_DIR}"
-    echo -e "    ${MUTED}↳ Upload dir :${NC} ${LOCAL_PLATFORM_UPLOAD_DIR}"
-    echo -e "    ${MUTED}↳ Log file   :${NC} ${LOCAL_PLATFORM_LOG_FILE}"
-    echo ""
-  fi
-  if [[ "$DEPLOY_QWEN" == true ]]; then
-    echo -e "  ${BOLD}${CYAN}● Ollama / Qwen Runtime${NC}  ${DIM}(Host Service)${NC}"
-    echo -e "    ${MUTED}↳ Endpoint   :${NC} ${BOLD}${LOCAL_OLLAMA_URL}${NC}"
-    echo -e "    ${MUTED}↳ Target LLM :${NC} ${PURPLE}${OLLAMA_MODEL}${NC}"
-    echo -e "    ${MUTED}↳ Path       :${NC} ${OLLAMA_LOCAL_DIR}"
-    echo -e "    ${MUTED}↳ Log file   :${NC} ${LOCAL_OLLAMA_LOG_FILE}"
-    echo ""
-  fi
-  if [[ "$DEPLOY_TAA" == true ]]; then
-    echo -e "  ${BOLD}${CYAN}● TAA Secure Enclave Daemon${NC}  ${DIM}(Host Daemon)${NC}"
-    echo -e "    ${MUTED}↳ Health API :${NC} ${BOLD}${LOCAL_TAA_URL}/v1/taa/health${NC}"
-    echo -e "    ${MUTED}↳ Workdir    :${NC} ${LOCAL_RUNTIME_DIR}"
-    echo -e "    ${MUTED}↳ Config     :${NC} ${LOCAL_TAA_CONFIG_PATH}"
-    echo -e "    ${MUTED}↳ Log file   :${NC} ${LOCAL_TAA_LOG_FILE}"
-    echo -e "    ${MUTED}↳ Keys dir   :${NC} ${LOCAL_TAA_KEYS_DIR}"
-    echo -e "    ${MUTED}↳ Platform   :${NC} ${LOCAL_PLATFORM_IP}"
     echo ""
   fi
   exit 0
