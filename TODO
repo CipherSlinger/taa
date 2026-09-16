@@ -1,13 +1,8 @@
-- 任务终止接口
-
-- 任务终端日志
-- 任务进度
-
-- 模型下发结果上报、审计结果上报接口拆分（/v1/taa/reportModelImport、/v1/taa/reportAudit）
-
+- [x] 任务终止接口
+- [x] 任务终端日志
+- [x] 任务进度
+- [x] 模型下发结果上报、审计结果上报接口拆分（/v1/taa/reportModelImport、/v1/taa/reportAudit）
 - [x] 高中低风险统计字段（statistics: high/medium/low）
-
-
 - [x] 模型下载上报增加 hash 字段（checksum）
 - [x] 结果返回使用zip包格式
 
