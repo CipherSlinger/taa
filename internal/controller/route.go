@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,12 +15,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"taa/internal/attestation"
 	"taa/internal/codeaudit"
 	"taa/internal/resource"
+	"taa/internal/runtime"
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 	"taa/pkg/utils"
@@ -508,10 +507,7 @@ func (r *importRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type runtimeConfig struct {
-	Commands []string `json:"commands"`
-	Env      string   `json:"env"`
-}
+type runtimeConfig = runtime.RuntimeConfig
 
 type exportRequest struct {
 	PublicKey *string `json:"publicKey"`
@@ -1673,235 +1669,36 @@ func runScript(script, outputDir string) (string, error) {
 }
 
 func parseRuntimeConfig(raw string) (runtimeConfig, map[string]string, error) {
-	if strings.TrimSpace(raw) == "" {
-		return runtimeConfig{}, nil, fmt.Errorf("runtimeConfig 不能为空")
-	}
-
-	var cfg runtimeConfig
-	var env map[string]string
-	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
-		if strings.Contains(err.Error(), "cannot unmarshal object into Go struct field runtimeConfig.env of type string") {
-			var objCfg struct {
-				Commands []string       `json:"commands"`
-				Env      map[string]any `json:"env"`
-			}
-			if errObj := json.Unmarshal([]byte(raw), &objCfg); errObj != nil {
-				return runtimeConfig{}, nil, fmt.Errorf("解析 runtimeConfig 失败: %w", errObj)
-			}
-			cfg.Commands = objCfg.Commands
-			if objCfg.Env != nil {
-				env = make(map[string]string, len(objCfg.Env))
-				for k, v := range objCfg.Env {
-					switch val := v.(type) {
-					case string:
-						env[k] = val
-					default:
-						b, err := json.Marshal(val)
-						if err == nil && !bytes.Equal(b, []byte("null")) {
-							env[k] = string(b)
-						} else {
-							env[k] = fmt.Sprintf("%v", val)
-						}
-					}
-				}
-				if envBytes, err := json.Marshal(env); err == nil {
-					cfg.Env = string(envBytes)
-				}
-			}
-		} else {
-			return runtimeConfig{}, nil, fmt.Errorf("解析 runtimeConfig 失败: %w", err)
-		}
-	}
-	if len(cfg.Commands) == 0 {
-		return runtimeConfig{}, nil, fmt.Errorf("runtimeConfig.commands 不能为空")
-	}
-	for i, command := range cfg.Commands {
-		if strings.TrimSpace(command) == "" {
-			return runtimeConfig{}, nil, fmt.Errorf("runtimeConfig.commands[%d] 不能为空", i)
-		}
-	}
-
-	if env == nil {
-		env = map[string]string{}
-		if strings.TrimSpace(cfg.Env) != "" {
-			if err := json.Unmarshal([]byte(cfg.Env), &env); err != nil {
-				return runtimeConfig{}, nil, fmt.Errorf("解析 runtimeConfig.env 失败: %w", err)
-			}
-		}
-	}
-	return cfg, env, nil
-}
-
-func isPathContinuationByte(b byte) bool {
-	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_' || b == '-' || b == '.'
+	return runtime.ParseRuntimeConfig(raw)
 }
 
 func resolveRuntimeString(s string, dataDir, outputDir string) string {
-	if s == "" {
-		return ""
-	}
-	outputRoot := filepath.Dir(filepath.Clean(outputDir))
-	logDir := filepath.Join(outputRoot, "log")
-	progressDir := filepath.Join(outputRoot, "progress")
-
-	macroReplacer := strings.NewReplacer(
-		"<input>", dataDir,
-		"<output>", outputDir,
-		"<INPUT>", dataDir,
-		"<OUTPUT>", outputDir,
-		"<in>", dataDir,
-		"<out>", outputDir,
-		"<IN>", dataDir,
-		"<OUT>", outputDir,
-	)
-	s = macroReplacer.Replace(s)
-
-	type prefixTarget struct {
-		prefix string
-		target string
-	}
-	targets := []prefixTarget{
-		{prefix: "/opt/taa/output/log", target: logDir},
-		{prefix: "/opt/taa/output/progress", target: progressDir},
-		{prefix: "/opt/taa/output/result", target: outputDir},
-		{prefix: "/opt/taa/output", target: outputDir},
-		{prefix: "/opt/taa/input", target: dataDir},
-	}
-
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); {
-		matched := false
-		for _, item := range targets {
-			if strings.HasPrefix(s[i:], item.prefix) {
-				nextIdx := i + len(item.prefix)
-				if nextIdx == len(s) {
-					b.WriteString(item.target)
-					i = nextIdx
-					matched = true
-					break
-				}
-				nextByte := s[nextIdx]
-				if nextByte == '/' {
-					b.WriteString(item.target)
-					b.WriteByte('/')
-					i = nextIdx + 1
-					matched = true
-					break
-				}
-				if !isPathContinuationByte(nextByte) {
-					b.WriteString(item.target)
-					i = nextIdx
-					matched = true
-					break
-				}
-			}
-		}
-		if !matched {
-			b.WriteByte(s[i])
-			i++
-		}
-	}
-	return b.String()
+	return runtime.ResolveRuntimeString(s, dataDir, outputDir)
 }
 
 func resolveRuntimeCommands(commands []string, dataDir, outputDir string) []string {
-	resolved := make([]string, len(commands))
-	for i, cmd := range commands {
-		resolved[i] = resolveRuntimeString(cmd, dataDir, outputDir)
-	}
-	return resolved
+	return runtime.ResolveRuntimeCommands(commands, dataDir, outputDir)
 }
 
 func resolveRuntimeEnv(env map[string]string, dataDir, outputDir string) map[string]string {
-	if len(env) == 0 {
-		return env
-	}
-	resolved := make(map[string]string, len(env))
-	for k, v := range env {
-		resolved[k] = resolveRuntimeString(v, dataDir, outputDir)
-	}
-	return resolved
+	return runtime.ResolveRuntimeEnv(env, dataDir, outputDir)
 }
 
 func runRuntimeConfig(cfg runtimeConfig, env map[string]string, modelDir, dataDir, outputDir, taskID, startedAt string) (string, error) {
-	return runRuntimeConfigWithControl(nil, cfg, env, modelDir, dataDir, outputDir, taskID, startedAt)
+	return runtime.RunRuntimeConfig(cfg, env, modelDir, dataDir, outputDir, taskID, startedAt)
 }
 
 func runRuntimeConfigWithControl(control *trainingControl, cfg runtimeConfig, env map[string]string, modelDir, dataDir, outputDir, taskID, startedAt string) (string, error) {
-	if control != nil && control.isCancelled() {
-		return "", context.Canceled
-	}
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return "", fmt.Errorf("create output dir: %w", err)
-	}
-	commandLine := strings.Join(resolveRuntimeCommands(cfg.Commands, dataDir, outputDir), " && ")
-	ctx := context.Background()
-	if control != nil {
-		ctx = control.ctx
-	}
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", commandLine)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Dir = modelDir
-	cmd.Env = mergedRuntimeEnv(resolveRuntimeEnv(env, dataDir, outputDir), map[string]string{
-		"TAA_TASK_ID": taskID, "TAA_STARTED_AT": startedAt, "TAA_DATA_DIR": dataDir,
-		"TAA_INPUT_DIR": dataDir, "TAA_MODEL_INPUT_DIR": dataDir,
-		"TAA_MODEL_OUTPUT_DIR": outputDir, "TAA_OUTPUT_DIR": outputDir,
-	})
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-	if control != nil {
-		if err := control.startCommand(cmd); err != nil {
-			return "", err
-		}
-		defer control.clearCommand(cmd)
-	} else if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("runtimeConfig command exited with error: %w", err)
-	}
-	err := cmd.Wait()
-	if control != nil && control.isCancelled() {
-		return output.String(), context.Canceled
-	}
-	if err != nil {
-		return output.String(), fmt.Errorf("runtimeConfig command exited with error: %w", err)
-	}
-	return output.String(), nil
+	return runtime.RunRuntimeConfigWithControl(control, cfg, env, modelDir, dataDir, outputDir, taskID, startedAt)
 }
 
 // KillProcessGroup 级联清理进程及其所属的整个进程组。
 func KillProcessGroup(cmd *exec.Cmd) error {
-	if cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 0 {
-		return nil
-	}
-	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	if errors.Is(err, syscall.ESRCH) {
-		return nil
-	}
-	return err
+	return runtime.KillProcessGroup(cmd)
 }
 
 func mergedRuntimeEnv(userEnv, systemEnv map[string]string) []string {
-	merged := map[string]string{}
-	for _, item := range os.Environ() {
-		key, value, ok := strings.Cut(item, "=")
-		if ok {
-			merged[key] = value
-		}
-	}
-	for key, value := range userEnv {
-		merged[key] = value
-	}
-	for key, value := range systemEnv {
-		merged[key] = value
-	}
-
-	keys := envKeys(merged)
-	out := make([]string, 0, len(keys))
-	for _, key := range keys {
-		out = append(out, key+"="+merged[key])
-	}
-	return out
+	return runtime.MergedRuntimeEnv(userEnv, systemEnv)
 }
 
 func envKeys(env map[string]string) []string {
