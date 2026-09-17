@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEBUG=${DEBUG:-false} # 调试模式，使用 platform-mock 测试，与正式目录不同，避免污染正式环境
-
 # ── ANSI Colors & Terminal Capability ────────────────────────
 if [[ -t 1 ]]; then
   IS_TTY=true
@@ -98,14 +96,8 @@ REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_HOST="${REMOTE_HOST:-172.16.10.178}"
 REMOTE_DIR="${REMOTE_DIR:-/root/taa}"
 
-# Platform: 平台的监听端口
-if [[ ${DEBUG} == false ]]; then
-  # Platform：远程平台模拟器的监听端口、绑定地址，以及 TAA 容器访问平台的地址。
-  PLATFORM_PORT="${PLATFORM_PORT:-18080}"
-else
-  # Platform Mock：远程平台模拟器的监听端口、绑定地址，以及 TAA 容器访问平台的地址。
-  PLATFORM_PORT="${PLATFORM_PORT:-28080}"
-fi
+# Platform：远程平台模拟器的监听端口、绑定地址，以及 TAA 容器访问平台的地址。
+PLATFORM_PORT="${PLATFORM_PORT:-18080}"
 PLATFORM_ADDR="${PLATFORM_ADDR:-0.0.0.0:${PLATFORM_PORT}}"
 REMOTE_PLATFORM_IP="${REMOTE_PLATFORM_IP:-${REMOTE_HOST}:${PLATFORM_PORT}}"
 
@@ -121,13 +113,8 @@ ATT_HRK_SOURCE="${ATT_HRK_SOURCE:-$CERT_DIR/hrk.cert}"
 ATT_HSK_SOURCE="${ATT_HSK_SOURCE:-$CERT_DIR/hsk_cek.cert}"
 
 # 远程容器目录：TAA 容器内的工作目录和证书路径，以及 attestation report 文件路径。
-if [[ ${DEBUG} == false ]]; then
-  CON_WORKDIR="${CON_WORKDIR:-/root/taa}"
-  CON_PORT="${CON_PORT:-6001}"
-else
-  CON_WORKDIR="${CON_WORKDIR:-/root/taadebug}"
-  CON_PORT="${CON_PORT:-9001}"
-fi
+CON_WORKDIR="${CON_WORKDIR:-/root/taa}"
+CON_PORT="${CON_PORT:-6001}"
 ATT_REPORT_FILE="${CON_WORKDIR}/attestation.report"
 K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
 
@@ -137,7 +124,6 @@ TAA_CONTAINER_ADDR="${TAA_CONTAINER_ADDR:-:${CON_PORT}}"
 # TAA 程序固定读取工作目录下的 taa-config.json，脚本侧文件名必须保持一致。
 TAA_CONFIG_FILE="taa-config.json"
 TAA_DOCKER_CONFIG_TEMPLATE="${TAA_DOCKER_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-docker.json}"
-TAA_DEBUG_CONFIG_TEMPLATE="${TAA_DEBUG_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-debug.json}"
 TAA_PRODUCTION_CONFIG_TEMPLATE="${TAA_PRODUCTION_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-production.json}"
 REMOTE_TAA_CONFIG_PATH="${REMOTE_TAA_CONFIG_PATH:-$REMOTE_DIR/$TAA_CONFIG_FILE}"
 CONTAINER_TAA_CONFIG_PATH="${CONTAINER_TAA_CONFIG_PATH:-$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE}"
@@ -170,11 +156,7 @@ SELECTED_COMPONENT=false
 STEP=0
 
 LOCAL_PLATFORM_STATE_DIR="${LOCAL_PLATFORM_STATE_DIR:-$PROJECT_DIR/.local/platform-mock}"
-if [[ "$DEBUG" == true ]]; then
-  LOCAL_PLATFORM_PORT="${LOCAL_PLATFORM_PORT:-28080}"
-else
-  LOCAL_PLATFORM_PORT="${LOCAL_PLATFORM_PORT:-18080}"
-fi
+LOCAL_PLATFORM_PORT="${LOCAL_PLATFORM_PORT:-18080}"
 LOCAL_PLATFORM_BIND="${LOCAL_PLATFORM_BIND:-0.0.0.0:${LOCAL_PLATFORM_PORT}}"
 LOCAL_PLATFORM_IP="${LOCAL_PLATFORM_IP:-127.0.0.1:${LOCAL_PLATFORM_PORT}}"
 LOCAL_PLATFORM_URL="${LOCAL_PLATFORM_URL:-http://127.0.0.1:${LOCAL_PLATFORM_PORT}}"
@@ -678,7 +660,7 @@ Options:
       Specify local Docker container name (docker mode).
 
 Component selection:
-  When no component names are given, target components are deployed by default (in remote production mode with DEBUG=false, platform-mock is omitted to avoid port 18080 conflict with ccs-node-agent).
+  When no component names are given, target components are deployed by default (in remote mode, platform-mock is omitted to avoid port 18080 conflict with ccs-node-agent).
   Provide one or more component names (platform-mock, taa, qwen) to deploy or operate on them separately.
 
 Examples:
@@ -762,12 +744,10 @@ Environment overrides:
       写入 TAA 配置文件的容器内监听地址与端口。
   TAA_DOCKER_CONFIG_TEMPLATE=${TAA_DOCKER_CONFIG_TEMPLATE}
       docker 场景 TAA 配置模板。
-  TAA_DEBUG_CONFIG_TEMPLATE=${TAA_DEBUG_CONFIG_TEMPLATE}
-      debug 场景 TAA 配置模板。
   TAA_PRODUCTION_CONFIG_TEMPLATE=${TAA_PRODUCTION_CONFIG_TEMPLATE}
-      正式非 debug 场景 TAA 配置模板。
+      正式远程场景 TAA 配置模板。
   CONTRACT=${CONTRACT}
-      debug 场景写入配置文件的合约 ID；正式非 debug 场景由运行环境注入（预留可选）。
+      写入配置文件的合约 ID（可选，正式场景通常由运行环境注入）。
   CERT_DIR=${CERT_DIR}
       本地 attestation 证书目录。
   TAA_KEEP_MANUAL=${TAA_KEEP_MANUAL:-false}
@@ -1003,8 +983,6 @@ ensure_go_compiler() {
 select_taa_config_template() {
   if [[ "$DEPLOY_DOCKER" == true ]]; then
     printf '%s' "$TAA_DOCKER_CONFIG_TEMPLATE"
-  elif [[ "$DEBUG" == true ]]; then
-    printf '%s' "$TAA_DEBUG_CONFIG_TEMPLATE"
   else
     printf '%s' "$TAA_PRODUCTION_CONFIG_TEMPLATE"
   fi
@@ -1409,7 +1387,7 @@ else
   fi
 
   if [[ "$SELECTED_COMPONENT" == false ]]; then
-    if [[ "$DEBUG" == false && "$DEPLOY_DOCKER" == false ]]; then
+    if [[ "$DEPLOY_DOCKER" == false ]]; then
       # 正式远程部署模式下，宿主机已有生产管控平台 (如 ccs-node-agent) 监听 18080，默认不部署 platform-mock
       DEPLOY_PLATFORM_MOCK=false
     else
@@ -1419,8 +1397,8 @@ else
     DEPLOY_QWEN=true
   fi
 
-  if [[ "$DEPLOY_PLATFORM_MOCK" == true && "$DEPLOY_DOCKER" == false && "$DEBUG" == false && "$PLATFORM_PORT" == "18080" ]]; then
-    warn "远程宿主机 18080 端口通常由生产平台 (如 ccs-node-agent) 占用；若需调试 platform-mock，建议设置 DEBUG=true (使用 28080 端口) 或指定 PLATFORM_PORT"
+  if [[ "$DEPLOY_PLATFORM_MOCK" == true && "$DEPLOY_DOCKER" == false && "$PLATFORM_PORT" == "18080" ]]; then
+    warn "远程宿主机 18080 端口通常由生产平台 (如 ccs-node-agent) 占用；若需部署 platform-mock，建议指定 PLATFORM_PORT"
   fi
 fi
 
@@ -1501,9 +1479,9 @@ if [[ "$ACTION" == "save" ]]; then
   exit 0
 fi
 
-# 用户可见的平台标签：DEBUG 模式显示 "platform-mock"，生产模式显示 "platform"
+# 用户可见的平台标签：docker 模式显示 "platform-mock"，远程模式显示 "platform"
 PLATFORM_LABEL="platform"
-if [[ "$DEBUG" == true || "$DEPLOY_DOCKER" == true ]]; then
+if [[ "$DEPLOY_DOCKER" == true ]]; then
   PLATFORM_LABEL="platform-mock"
 fi
 
@@ -2030,10 +2008,7 @@ fi
 if [[ "$DEPLOY_TAA" == true ]]; then
   TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
   step "writing remote taa config from $(basename "$TAA_CONFIG_TEMPLATE")"
-  INCLUDE_TAA_IDENTITY=true
-  if [[ "$DEBUG" == false ]]; then
-    INCLUDE_TAA_IDENTITY=false
-  fi
+  INCLUDE_TAA_IDENTITY=false
   write_taa_config "$REMOTE_TAA_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" "$TAA_CONTAINER_ADDR" "$REMOTE_PLATFORM_IP" "$REMOTE_DOCKER_ID" "$CONTRACT" "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" "$TAA_CONTAINER_WORKDIR/$OLLAMA_DIR_NAME" "http://127.0.0.1:11434" "$OLLAMA_MODEL" "$INCLUDE_TAA_IDENTITY" "" "" "$TAA_CONTAINER_WORKDIR/keys"
 
   step "uploading taa, config, and certificates to remote host"
@@ -2046,11 +2021,7 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   remote_ssh "mv '$REMOTE_DIR/$BINARY_NAME.new' '$REMOTE_DIR/$BINARY_NAME' && mv '$REMOTE_TAA_CONFIG_PATH.new' '$REMOTE_TAA_CONFIG_PATH' && mv '$REMOTE_DIR/hrk.cert.new' '$REMOTE_DIR/hrk.cert' && mv '$REMOTE_DIR/hsk_cek.cert.new' '$REMOTE_DIR/hsk_cek.cert' && chmod +x '$REMOTE_DIR/$BINARY_NAME'"
 
   step "pausing old taa inside container for update"
-  if [[ "$DEBUG" == true ]]; then
-    remote_ssh "$(container_exec) sh -lc 'pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
-  else
-    remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_CONTAINER_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
-  fi
+  remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_CONTAINER_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
   for _ in {1..30}; do
     if ! remote_ssh "$(container_exec) sh -lc 'pgrep -x taa >/dev/null 2>&1'"; then
       break
@@ -2075,24 +2046,17 @@ if [[ "$DEPLOY_TAA" == true ]]; then
     warn "/dev/csv-guest not found in container — attestation will fail (expected in non-TEE Docker)"
   fi
 
-  if [[ "$DEBUG" == false ]]; then
-    step "checking production identity env inside container"
-    remote_ssh "$(container_exec) sh -lc 'test -n \"\${PLATFORM_IP:-}\" && test -n \"\${DOCKER_ID:-}\" || { echo PLATFORM_IP and DOCKER_ID must be injected in production non-debug mode; exit 1; }'"
-  fi
+  step "checking production identity env inside container"
+  remote_ssh "$(container_exec) sh -lc 'test -n \"\${PLATFORM_IP:-}\" && test -n \"\${DOCKER_ID:-}\" || { echo PLATFORM_IP and DOCKER_ID must be injected in production mode; exit 1; }'"
 
-  if [[ "$DEBUG" == true ]]; then
-    step "starting debug taa inside container"
-    remote_ssh "$(container_exec) sh -lc 'mkdir -p $TAA_CONTAINER_WORKDIR/models $TAA_CONTAINER_WORKDIR/data $TAA_CONTAINER_WORKDIR/results $TAA_CONTAINER_WORKDIR/certs && cd $TAA_CONTAINER_WORKDIR && nohup $TAA_CONTAINER_WORKDIR/$BINARY_NAME > $TAA_LOG_FILE 2>&1 < /dev/null &'"
+  if [[ "${TAA_KEEP_MANUAL:-false}" == true ]]; then
+    warn "TAA_KEEP_MANUAL is enabled; leaving taa manual mode paused"
   else
-    if [[ "${TAA_KEEP_MANUAL:-false}" == true ]]; then
-      warn "TAA_KEEP_MANUAL is enabled; leaving taa manual mode paused"
-    else
-      step "restoring taa service inside container"
-      remote_ssh "$(container_exec) sh -lc 'rm -f \"$TAA_CONTAINER_WORKDIR/manual\"'"
-    fi
+    step "restoring taa service inside container"
+    remote_ssh "$(container_exec) sh -lc 'rm -f \"$TAA_CONTAINER_WORKDIR/manual\"'"
   fi
 
-  if [[ "$DEBUG" == true || "${TAA_KEEP_MANUAL:-false}" == false ]]; then
+  if [[ "${TAA_KEEP_MANUAL:-false}" == false ]]; then
     step "waiting for taa service to become ready"
     wait_for_remote_taa_ready
   fi

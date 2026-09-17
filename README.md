@@ -93,7 +93,6 @@ flowchart LR
 │   └── utils/                        # File system, archive, and network helpers
 ├── configs/                          # Deployment configuration templates
 │   ├── taa-docker.json               # Local Docker container development template
-│   ├── taa-debug.json                # Remote Kubernetes debug Pod template
 │   └── taa-production.json           # Production Kubernetes Pod template (identity injected via env)
 ├── deploy/                           # Container deployment manifests & Dockerfile
 │   └── manifest/docker/              # Base environment Dockerfiles & build assets
@@ -236,7 +235,6 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 ### Configuration Templates
 
 - **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths.
-- **`configs/taa-debug.json`**: For remote Kubernetes debug Pods (`/root/taadebug`).
 - **`configs/taa-production.json`**: For production Kubernetes Pods. Omits `platformIP`, `dockerID`, and `contract` so they are dynamically injected by the orchestration platform via environment variables.
 
 ---
@@ -264,7 +262,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 
 Specify one or more components: `platform-mock`, `taa`, `qwen`. If omitted:
 - In `docker` mode: all three components are deployed.
-- In `remote` production mode (`DEBUG=false`): defaults to `taa` + `qwen` (omits `platform-mock` to avoid port 18080 conflict with host production agents).
+- In `remote` mode: defaults to `taa` + `qwen` (omits `platform-mock` to avoid port 18080 conflict with host production agents).
 
 ### 4. Common CLI Examples
 
@@ -290,7 +288,7 @@ Specify one or more components: `platform-mock`, `taa`, `qwen`. If omitted:
 TAA includes a full-featured management platform emulator with an embedded Web GUI console:
 
 - **Source Code**: `cmd/platform-mock/main.go`, `internal/app/mock/index.html`
-- **Default Port**: `18080` (or `28080` when `DEBUG=true`)
+- **Default Port**: `18080`
 - **Web Console**: `http://127.0.0.1:18080`
 
 ```bash

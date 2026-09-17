@@ -190,9 +190,7 @@ func ensureQwenAvailable(ctx context.Context, endpoint, model, ollamaDir string)
 		// deploy.sh 通常部署到 $CON_WORKDIR/ollama-qwen
 		candidates := []string{
 			"/root/taa/ollama-qwen",
-			"/root/taadebug/ollama-qwen",
 			"/root/taa/ollama-qwen2.5-coder-0.5b",
-			"/root/taadebug/ollama-qwen2.5-coder-0.5b",
 		}
 		for _, c := range candidates {
 			if fi, err := os.Stat(c); err == nil && fi.IsDir() {
