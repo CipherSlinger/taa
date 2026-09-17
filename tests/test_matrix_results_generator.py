@@ -139,6 +139,9 @@ class TestMatrixResultsGenerator(unittest.TestCase):
         self.assertIn("pure-llm-checklist", new_content)
         self.assertIn("qwen2.5-coder:1.5b", new_content)
         self.assertIn("攻击归因率", new_content)
+        # Verify removed columns are absent from the core comparison matrix table header
+        self.assertNotIn("<th>算力旁路率 (Bypass)</th>", new_content)
+        self.assertNotIn("<th>核心特征与工程诊断</th>", new_content)
 
 
 if __name__ == "__main__":

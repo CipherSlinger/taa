@@ -4227,10 +4227,8 @@
                 <th>误报率 (FPR / 95% CI)</th>
                 <th>精确率 (Prec)</th>
                 <th>攻击归因率 (Attr Prec)</th>
-                <th>算力旁路率 (Bypass)</th>
                 <th>单样耗时 (进审样本)</th>
                 <th>混淆分布 (TP/FP/TN/FN)</th>
-                <th>核心特征与工程诊断</th>
               </tr>
             </thead>
             <tbody>
@@ -4243,10 +4241,8 @@
   <td><span class="val-highlight bad">54.0%</span><br><span style="font-size:10px; color:var(--muted);">[39.6%, 66.7%]</span></td>
   <td>59.7%</td>
   <td><span class="val-highlight good">62.5%</span><br><span style="font-size:10px; color:var(--muted);">[46.2%, 77.5%]</span></td>
-  <td><span class="val-highlight">0.0%</span></td>
   <td><span class="val-highlight">76.8s</span></td>
   <td><span class="mono">40 / 27 / 23 / 10</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">缺乏行级锚点与规则指引，0.5B 对合规配置与环境读取产生严重安全幻觉，误报 27 例 (FPR=54.0%)；关键攻击归因率仅 62.5%。</td>
 </tr>
 <tr>
   <td><span class="mode-badge checklist" data-mode="pure-llm-checklist">Track B: 规则清单 (Checklist)</span></td>
@@ -4255,10 +4251,8 @@
   <td><span class="val-highlight bad">46.0%</span><br><span style="font-size:10px; color:var(--muted);">[32.0%, 59.1%]</span></td>
   <td>65.1%</td>
   <td><span class="val-highlight good">74.4%</span><br><span style="font-size:10px; color:var(--muted);">[60.5%, 87.2%]</span></td>
-  <td><span class="val-highlight">0.0%</span></td>
   <td><span class="val-highlight">82.0s</span></td>
   <td><span class="mono">43 / 23 / 27 / 7</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">规则清单提示注入使漏报减少至 7 例，归因率提升至 74.4%，但因缺乏代码切片锚点，FPR 仍达 46.0%，无算力旁路。</td>
 </tr>
 <tr>
   <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Static-LLM)</span></td>
@@ -4267,10 +4261,8 @@
   <td><span class="val-highlight warn">30.0%</span><br><span style="font-size:10px; color:var(--muted);">[18.0%, 42.6%]</span></td>
   <td>74.6%</td>
   <td><span class="val-highlight good">88.6%</span><br><span style="font-size:10px; color:var(--muted);">[79.2%, 97.4%]</span></td>
-  <td><span class="val-highlight good">50.0%</span></td>
   <td><span class="val-highlight good">15.0s</span></td>
   <td><span class="mono">44 / 15 / 35 / 6</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">静态层以 50% 快速旁路剔除纯净样本；Finding 锚点切片引导模型纠偏误报，归因率 88.6%，进审单样仅 15.0s，F1 达 0.807。</td>
 </tr>
 <tr class="group-sep" style="background: color-mix(in srgb, var(--accent) 3%, transparent);">
   <td rowspan="3" style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);"><code>qwen2.5-coder:1.5b</code><br><span style="font-size: 11px; color: var(--muted); font-weight: normal;">986 MB · 推荐≥4GB</span><br><span style="font-size: 11px; color: var(--accent); font-weight: 700;">★ 生产高性价比推荐</span></td>
@@ -4281,10 +4273,8 @@
   <td><span class="val-highlight bad">42.0%</span><br><span style="font-size:10px; color:var(--muted);">[28.0%, 54.9%]</span></td>
   <td>67.2%</td>
   <td><span class="val-highlight good">72.1%</span><br><span style="font-size:10px; color:var(--muted);">[57.9%, 85.7%]</span></td>
-  <td><span class="val-highlight">0.0%</span></td>
   <td><span class="val-highlight">120.0s</span></td>
   <td><span class="mono">43 / 21 / 29 / 7</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">代码语义理解增强，但缺乏静态切片锚点时对数据加载与指标导出模块依然误杀频发 (FPR=42.0%)，归因率仅 72.1%。</td>
 </tr>
 <tr style="background: color-mix(in srgb, var(--accent) 3%, transparent);">
   <td><span class="mode-badge checklist" data-mode="pure-llm-checklist">Track B: 规则清单 (Checklist)</span></td>
@@ -4293,10 +4283,8 @@
   <td><span class="val-highlight warn">34.0%</span><br><span style="font-size:10px; color:var(--muted);">[20.9%, 46.2%]</span></td>
   <td>72.6%</td>
   <td><span class="val-highlight good">82.2%</span><br><span style="font-size:10px; color:var(--muted);">[70.8%, 92.3%]</span></td>
-  <td><span class="val-highlight">0.0%</span></td>
   <td><span class="val-highlight">128.0s</span></td>
   <td><span class="mono">45 / 17 / 33 / 5</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">清单指引将召回率提升至 90.0%，归因率提升至 82.2%，但全文件盲审耗时沉重，且良性特征重叠仍致 17 例误杀 (FPR=34.0%)。</td>
 </tr>
 <tr style="background: color-mix(in srgb, var(--accent) 3%, transparent);">
   <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Static-LLM)</span></td>
@@ -4305,10 +4293,8 @@
   <td><span class="val-highlight good">20.0%</span><br><span style="font-size:10px; color:var(--muted);">[10.0%, 32.1%]</span></td>
   <td>82.1%</td>
   <td><span class="val-highlight good">93.5%</span><br><span style="font-size:10px; color:var(--muted);">[86.1%, 100.0%]</span></td>
-  <td><span class="val-highlight good">50.0%</span></td>
   <td><span class="val-highlight good">22.4s</span></td>
   <td><span class="mono">46 / 10 / 40 / 4</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">【生产高性价比推荐/甜蜜点】体积 < 1GB，误杀压降至 10 例 (FPR 仅 20.0%)，归因率达 93.5%，召回率 92.0%，进审单样 22.4s。</td>
 </tr>
 <tr class="group-sep">
   <td rowspan="3" style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);"><code>qwen2.5-coder:3b</code><br><span style="font-size: 11px; color: var(--muted); font-weight: normal;">1900 MB · 推荐≥6GB</span></td>
@@ -4319,10 +4305,8 @@
   <td><span class="val-highlight warn">32.0%</span><br><span style="font-size:10px; color:var(--muted);">[19.2%, 44.6%]</span></td>
   <td>73.3%</td>
   <td><span class="val-highlight good">77.3%</span><br><span style="font-size:10px; color:var(--muted);">[63.4%, 89.1%]</span></td>
-  <td><span class="val-highlight">0.0%</span></td>
   <td><span class="val-highlight">165.0s</span></td>
   <td><span class="mono">44 / 16 / 34 / 6</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">专业代码能力提升，但纯盲审对跨文件隐蔽调用链把握不足，导致 6 例高阶载荷漏报，归因率 77.3%。</td>
 </tr>
 <tr>
   <td><span class="mode-badge checklist" data-mode="pure-llm-checklist">Track B: 规则清单 (Checklist)</span></td>
@@ -4331,10 +4315,8 @@
   <td><span class="val-highlight warn">24.0%</span><br><span style="font-size:10px; color:var(--muted);">[12.5%, 36.4%]</span></td>
   <td>79.3%</td>
   <td><span class="val-highlight good">87.0%</span><br><span style="font-size:10px; color:var(--muted);">[77.1%, 95.9%]</span></td>
-  <td><span class="val-highlight">0.0%</span></td>
   <td><span class="val-highlight">172.0s</span></td>
   <td><span class="mono">46 / 12 / 38 / 4</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">清单先验显著提升攻击线索识别，召回率 92.0%，归因率 87.0%，但缺乏切片聚焦仍致 12 例合规误判。</td>
 </tr>
 <tr>
   <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Static-LLM)</span></td>
@@ -4343,10 +4325,8 @@
   <td><span class="val-highlight good">14.0%</span><br><span style="font-size:10px; color:var(--muted);">[5.5%, 24.5%]</span></td>
   <td>87.0%</td>
   <td><span class="val-highlight good">95.7%</span><br><span style="font-size:10px; color:var(--muted);">[89.4%, 100.0%]</span></td>
-  <td><span class="val-highlight good">50.0%</span></td>
   <td><span class="val-highlight good">29.6s</span></td>
   <td><span class="mono">47 / 7 / 43 / 3</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">专业级代码审计水准。准确率达 90.0%，归因率 95.7%，召回率 94.0%，有效定位多层编码伪装与反弹通信。</td>
 </tr>
 <tr class="group-sep">
   <td rowspan="3" style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);"><code>qwen2.5-coder:7b</code><br><span style="font-size: 11px; color: var(--muted); font-weight: normal;">4700 MB · 推荐≥8GB</span></td>
@@ -4357,10 +4337,8 @@
   <td><span class="val-highlight warn">26.0%</span><br><span style="font-size:10px; color:var(--muted);">[14.3%, 38.8%]</span></td>
   <td>77.6%</td>
   <td><span class="val-highlight good">82.2%</span><br><span style="font-size:10px; color:var(--muted);">[70.8%, 92.3%]</span></td>
-  <td><span class="val-highlight">0.0%</span></td>
   <td><span class="val-highlight">380.0s</span></td>
   <td><span class="mono">45 / 13 / 37 / 5</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">长上下文注意力极强，但全文件盲审延迟沉重 (单样 > 6 分钟)，偶发合规误杀 13 例，归因率 82.2%。</td>
 </tr>
 <tr>
   <td><span class="mode-badge checklist" data-mode="pure-llm-checklist">Track B: 规则清单 (Checklist)</span></td>
@@ -4369,10 +4347,8 @@
   <td><span class="val-highlight good">18.0%</span><br><span style="font-size:10px; color:var(--muted);">[8.3%, 29.1%]</span></td>
   <td>83.9%</td>
   <td><span class="val-highlight good">91.5%</span><br><span style="font-size:10px; color:var(--muted);">[83.0%, 98.3%]</span></td>
-  <td><span class="val-highlight">0.0%</span></td>
   <td><span class="val-highlight">395.0s</span></td>
   <td><span class="mono">47 / 9 / 41 / 3</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">规则清单激活深层推理，召回率达 94.0%，归因率 91.5%，但单样近 400 秒无法支撑高吞吐生产流水线。</td>
 </tr>
 <tr>
   <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Static-LLM)</span></td>
@@ -4381,10 +4357,8 @@
   <td><span class="val-highlight good">10.0%</span><br><span style="font-size:10px; color:var(--muted);">[2.2%, 19.2%]</span></td>
   <td>90.6%</td>
   <td><span class="val-highlight good">97.9%</span><br><span style="font-size:10px; color:var(--muted);">[93.0%, 100.0%]</span></td>
-  <td><span class="val-highlight good">50.0%</span></td>
   <td><span class="val-highlight warn">65.0s</span></td>
   <td><span class="mono">48 / 5 / 45 / 2</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">企业级高阶安全审计精度。仅误报 5 例、漏报 2 例，归因率 97.9%，进审单样 65.0s，准确率 93.0%，F1 达 0.932。</td>
 </tr>
 <tr class="group-sep">
   <td rowspan="3" style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);"><code>qwen3:8b</code><br><span style="font-size: 11px; color: var(--muted); font-weight: normal;">5200 MB · 推荐≥10GB</span><br><span style="font-size: 11px; color: var(--ok); font-weight: 700;">👑 全矩阵综合精度天花板</span></td>
@@ -4395,10 +4369,8 @@
   <td><span class="val-highlight warn">22.0%</span><br><span style="font-size:10px; color:var(--muted);">[11.1%, 34.6%]</span></td>
   <td>80.7%</td>
   <td><span class="val-highlight good">84.8%</span><br><span style="font-size:10px; color:var(--muted);">[74.5%, 94.4%]</span></td>
-  <td><span class="val-highlight">0.0%</span></td>
   <td><span class="val-highlight">220.0s</span></td>
   <td><span class="mono">46 / 11 / 39 / 4</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">最新 Qwen3 架构逻辑推理最优，但端到端盲审在全量代码中仍有 11 例偶发误判，时延达 220s。</td>
 </tr>
 <tr>
   <td><span class="mode-badge checklist" data-mode="pure-llm-checklist">Track B: 规则清单 (Checklist)</span></td>
@@ -4407,10 +4379,8 @@
   <td><span class="val-highlight good">14.0%</span><br><span style="font-size:10px; color:var(--muted);">[5.5%, 24.5%]</span></td>
   <td>87.3%</td>
   <td><span class="val-highlight good">93.8%</span><br><span style="font-size:10px; color:var(--muted);">[86.3%, 100.0%]</span></td>
-  <td><span class="val-highlight">0.0%</span></td>
   <td><span class="val-highlight">235.0s</span></td>
   <td><span class="mono">48 / 7 / 43 / 2</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">综合逻辑能力卓越，检出率达 96.0%，归因率 93.8%，但在缺乏快速旁路下百样本耗时逾 6.5 小时。</td>
 </tr>
 <tr>
   <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Static-LLM)</span></td>
@@ -4419,10 +4389,8 @@
   <td><span class="val-highlight good">6.0%</span><br><span style="font-size:10px; color:var(--muted);">[0.0%, 13.7%]</span></td>
   <td>94.2%</td>
   <td><span class="val-highlight good">98.0%</span><br><span style="font-size:10px; color:var(--muted);">[93.0%, 100.0%]</span></td>
-  <td><span class="val-highlight good">50.0%</span></td>
   <td><span class="val-highlight warn">37.0s</span></td>
   <td><span class="mono">49 / 3 / 47 / 1</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">【全矩阵综合精度天花板】准确率 96.0%，召回率 98.0%，归因率 98.0%，误报极限压降至 3 例 (FPR 6.0%)，F1-Score 0.961。</td>
 </tr>
 <tr class="group-sep" style="background: color-mix(in srgb, var(--warn) 4%, transparent);">
   <td rowspan="3" style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);"><code>qwen3:14b</code><br><span style="font-size: 11px; color: var(--muted); font-weight: normal;">9000 MB · 推荐≥16GB</span><br><span style="font-size: 11px; color: var(--warn); font-weight: 700;">⚠️ 内存超限容灾压力测试</span></td>
@@ -4433,10 +4401,8 @@
   <td><span class="val-highlight bad">100.0%</span><br><span style="font-size:10px; color:var(--muted);">[100.0%, 100.0%]</span></td>
   <td>50.0%</td>
   <td><span class="val-highlight good">0.0%</span><br><span style="font-size:10px; color:var(--muted);">[0.0%, 0.0%]</span></td>
-  <td><span class="val-highlight">0.0%</span></td>
   <td><span class="val-highlight">240.0s</span></td>
   <td><span class="mono">50 / 50 / 0 / 0</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">【内存超限触发 Fail-Closed】权重 (9GB) 超出可用内存 (7.4GB)，推理超时崩溃。全量拦截，业务可用性清零，归因无效。</td>
 </tr>
 <tr style="background: color-mix(in srgb, var(--warn) 4%, transparent);">
   <td><span class="mode-badge checklist" data-mode="pure-llm-checklist">Track B: 规则清单 (Checklist)</span></td>
@@ -4445,10 +4411,8 @@
   <td><span class="val-highlight bad">100.0%</span><br><span style="font-size:10px; color:var(--muted);">[100.0%, 100.0%]</span></td>
   <td>50.0%</td>
   <td><span class="val-highlight good">0.0%</span><br><span style="font-size:10px; color:var(--muted);">[0.0%, 0.0%]</span></td>
-  <td><span class="val-highlight">0.0%</span></td>
   <td><span class="val-highlight">240.0s</span></td>
   <td><span class="mono">50 / 50 / 0 / 0</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">【内存超限触发 Fail-Closed】模型后端离线，清单注入无法生效，门禁全量兜底阻断，可用性清零。</td>
 </tr>
 <tr style="background: color-mix(in srgb, var(--warn) 4%, transparent);">
   <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Static-LLM)</span></td>
@@ -4457,10 +4421,8 @@
   <td><span class="val-highlight bad">44.0%</span><br><span style="font-size:10px; color:var(--muted);">[30.2%, 56.9%]</span></td>
   <td>69.4%</td>
   <td><span class="val-highlight good">88.0%</span><br><span style="font-size:10px; color:var(--muted);">[78.6%, 96.0%]</span></td>
-  <td><span class="val-highlight good">50.0%</span></td>
   <td><span class="val-highlight warn">56.0s</span></td>
   <td><span class="mono">50 / 22 / 28 / 0</span></td>
-  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">【容灾高可用验证】大模型因 OOM 宕机时，静态层依然无损放行 50% 纯净代码；可疑代码由静态规则与安全门禁兜底，保底准确率达 78.0%。</td>
 </tr>
             </tbody>
           </table>

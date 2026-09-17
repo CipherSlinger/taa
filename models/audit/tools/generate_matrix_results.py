@@ -603,14 +603,7 @@ def render_html_table_rows(runs: list[dict[str, Any]]) -> str:
             else:
                 sec_display = f'<span class="val-highlight">{sec_str}</span>'
 
-            bypass_str = f"{m['bypass_rate']*100:.1f}%"
-            if m['bypass_rate'] > 0:
-                bypass_display = f'<span class="val-highlight good">{bypass_str}</span>'
-            else:
-                bypass_display = f'<span class="val-highlight">{bypass_str}</span>'
-
             cm_str = f"<span class=\"mono\">{c['tp']} / {c['fp']} / {c['tn']} / {c['fn']}</span>"
-            notes = r["notes"]
 
             row_parts = []
             row_parts.append(f'<tr{tr_class}{row_style}>')
@@ -629,10 +622,8 @@ def render_html_table_rows(runs: list[dict[str, Any]]) -> str:
             row_parts.append(f'  <td><span class="val-highlight {fpr_cls}">{fpr_val}</span>{fpr_ci}</td>')
             row_parts.append(f'  <td>{m["precision"]*100:.1f}%</td>')
             row_parts.append(f'  <td><span class="val-highlight good">{attr_val}</span>{attr_ci}</td>')
-            row_parts.append(f'  <td>{bypass_display}</td>')
             row_parts.append(f'  <td>{sec_display}</td>')
             row_parts.append(f'  <td>{cm_str}</td>')
-            row_parts.append(f'  <td style="white-space: normal; min-width: 240px; font-size: 11.5px;">{notes}</td>')
             row_parts.append('</tr>')
             rows_html.append("\n".join(row_parts))
 
@@ -776,10 +767,8 @@ def update_html_report(html_path: Union[str, Path], runs: list[dict[str, Any]]) 
                 <th>误报率 (FPR / 95% CI)</th>
                 <th>精确率 (Prec)</th>
                 <th>攻击归因率 (Attr Prec)</th>
-                <th>算力旁路率 (Bypass)</th>
                 <th>单样耗时 (进审样本)</th>
                 <th>混淆分布 (TP/FP/TN/FN)</th>
-                <th>核心特征与工程诊断</th>
               </tr>
             </thead>
             <tbody>
