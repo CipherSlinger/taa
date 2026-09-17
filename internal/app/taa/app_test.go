@@ -16,6 +16,7 @@ import (
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 	teecrypto "taa/pkg/crypto"
+	"taa/teetls"
 )
 
 // TestDeriveUserDataAndKeyPair 校验国密 SM2 密钥生成与 UserData 派生逻辑：
@@ -91,9 +92,14 @@ func TestBuildSecurityConfig(t *testing.T) {
 		ModelLogDir:                "/opt/taa/models/log",
 		ModelProgressDir:           "/opt/taa/models/progress",
 		EnableLLM:                  true,
-		LLMTransport:               "http",
-		LLMEndpoint:                "127.0.0.1:11434",
-		LLMUDSPath:                 "/tmp/inference.sock",
+		LLMTransport:               "teetls",
+		LLMEndpoint:                "https://127.0.0.1:8443",
+		LLMAttestationMode:         "permissive",
+		LLMHRKCertPath:             "/path/hrk.cert",
+		LLMHSKCekCertPath:          "/path/hsk.cert",
+		LLMExpectedMeasurements:    []string{"measure-1"},
+		LLMRequireMutualAttest:     true,
+		LLMInsecureSkipVerify:      true,
 		LLMAuthToken:               "test-secret-token",
 		LLMTimeoutMs:               60000,
 		LLMAllowedHosts:            []string{"127.0.0.1", "localhost"},
@@ -141,7 +147,12 @@ func TestBuildSecurityConfig(t *testing.T) {
 		Enabled:                 cfg.EnableLLM,
 		Transport:               cfg.LLMTransport,
 		Endpoint:                cfg.LLMEndpoint,
-		UDSPath:                 cfg.LLMUDSPath,
+		AttestationMode:         cfg.LLMAttestationMode,
+		HRKCertPath:             cfg.LLMHRKCertPath,
+		HSKCekCertPath:          cfg.LLMHSKCekCertPath,
+		ExpectedMeasurements:    cfg.LLMExpectedMeasurements,
+		RequireMutualAttest:     cfg.LLMRequireMutualAttest,
+		InsecureSkipVerify:      cfg.LLMInsecureSkipVerify,
 		AuthToken:               cfg.LLMAuthToken,
 		Model:                   cfg.LLMModel,
 		Timeout:                 60 * time.Second,
@@ -161,8 +172,23 @@ func TestBuildSecurityConfig(t *testing.T) {
 	if sec.LLM.Endpoint != wantLLM.Endpoint {
 		t.Errorf("LLM.Endpoint = %q, want %q", sec.LLM.Endpoint, wantLLM.Endpoint)
 	}
-	if sec.LLM.UDSPath != wantLLM.UDSPath {
-		t.Errorf("LLM.UDSPath = %q, want %q", sec.LLM.UDSPath, wantLLM.UDSPath)
+	if sec.LLM.AttestationMode != wantLLM.AttestationMode {
+		t.Errorf("LLM.AttestationMode = %q, want %q", sec.LLM.AttestationMode, wantLLM.AttestationMode)
+	}
+	if sec.LLM.HRKCertPath != wantLLM.HRKCertPath {
+		t.Errorf("LLM.HRKCertPath = %q, want %q", sec.LLM.HRKCertPath, wantLLM.HRKCertPath)
+	}
+	if sec.LLM.HSKCekCertPath != wantLLM.HSKCekCertPath {
+		t.Errorf("LLM.HSKCekCertPath = %q, want %q", sec.LLM.HSKCekCertPath, wantLLM.HSKCekCertPath)
+	}
+	if len(sec.LLM.ExpectedMeasurements) != len(wantLLM.ExpectedMeasurements) || (len(wantLLM.ExpectedMeasurements) > 0 && sec.LLM.ExpectedMeasurements[0] != wantLLM.ExpectedMeasurements[0]) {
+		t.Errorf("LLM.ExpectedMeasurements = %v, want %v", sec.LLM.ExpectedMeasurements, wantLLM.ExpectedMeasurements)
+	}
+	if sec.LLM.RequireMutualAttest != wantLLM.RequireMutualAttest {
+		t.Errorf("LLM.RequireMutualAttest = %v, want %v", sec.LLM.RequireMutualAttest, wantLLM.RequireMutualAttest)
+	}
+	if sec.LLM.InsecureSkipVerify != wantLLM.InsecureSkipVerify {
+		t.Errorf("LLM.InsecureSkipVerify = %v, want %v", sec.LLM.InsecureSkipVerify, wantLLM.InsecureSkipVerify)
 	}
 	if sec.LLM.AuthToken != wantLLM.AuthToken {
 		t.Errorf("LLM.AuthToken = %q, want %q", sec.LLM.AuthToken, wantLLM.AuthToken)
@@ -211,15 +237,33 @@ func TestRunConfigNotFound(t *testing.T) {
 	}
 }
 
+func newTestTEETLSServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+	mockProv := teetls.NewMockEvidenceProvider()
+	listener, err := teetls.Listen("tcp", "127.0.0.1:0", &teetls.Config{
+		Mode:             teetls.ModeStrict,
+		EvidenceProvider: mockProv,
+	})
+	if err != nil {
+		t.Fatalf("failed to create teetls listener: %v", err)
+	}
+	server := httptest.NewUnstartedServer(handler)
+	server.Listener = listener
+	server.Start()
+	server.URL = "https://" + server.Listener.Addr().String()
+	return server
+}
+
 // TestProbeInferenceService_ContextCancelled verifies probeInferenceService immediately returns error on cancelled context.
 func TestProbeInferenceService_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	cfg := config.StartupConfig{
-		LLMTransport: "http",
-		LLMEndpoint:  "http://127.0.0.1:65534",
-		LLMTimeoutMs: 3000,
+		LLMTransport:          "teetls",
+		LLMEndpoint:           "https://127.0.0.1:65534",
+		LLMInsecureSkipVerify: true,
+		LLMTimeoutMs:          3000,
 	}
 
 	err := probeInferenceService(ctx, cfg)
@@ -230,7 +274,7 @@ func TestProbeInferenceService_ContextCancelled(t *testing.T) {
 
 // TestProbeInferenceService_HealthyEndpoint verifies probeInferenceService succeeds when endpoint health check passes.
 func TestProbeInferenceService_HealthyEndpoint(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestTEETLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
@@ -241,9 +285,10 @@ func TestProbeInferenceService_HealthyEndpoint(t *testing.T) {
 	defer server.Close()
 
 	cfg := config.StartupConfig{
-		LLMTransport: "http",
-		LLMEndpoint:  server.URL,
-		LLMTimeoutMs: 3000,
+		LLMTransport:          "teetls",
+		LLMEndpoint:           server.URL,
+		LLMInsecureSkipVerify: true,
+		LLMTimeoutMs:          3000,
 	}
 
 	err := probeInferenceService(context.Background(), cfg)
@@ -254,7 +299,7 @@ func TestProbeInferenceService_HealthyEndpoint(t *testing.T) {
 
 // TestProbeInferenceService_UnhealthyEndpoint verifies probeInferenceService errors when endpoint returns failure.
 func TestProbeInferenceService_UnhealthyEndpoint(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestTEETLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"status":"unhealthy"}`))
@@ -265,9 +310,10 @@ func TestProbeInferenceService_UnhealthyEndpoint(t *testing.T) {
 	defer server.Close()
 
 	cfg := config.StartupConfig{
-		LLMTransport: "http",
-		LLMEndpoint:  server.URL,
-		LLMTimeoutMs: 3000,
+		LLMTransport:          "teetls",
+		LLMEndpoint:           server.URL,
+		LLMInsecureSkipVerify: true,
+		LLMTimeoutMs:          3000,
 	}
 
 	err := probeInferenceService(context.Background(), cfg)
@@ -280,11 +326,12 @@ func TestProbeInferenceService_UnhealthyEndpoint(t *testing.T) {
 func TestRunWithConfig_LLMProbeFailClosed(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.StartupConfig{
-		EnableLLM:     true,
-		LLMFailClosed: true,
-		LLMTransport:  "http",
-		LLMEndpoint:   "http://127.0.0.1:65534",
-		LLMTimeoutMs:  100,
+		EnableLLM:             true,
+		LLMFailClosed:         true,
+		LLMTransport:          "teetls",
+		LLMEndpoint:           "https://127.0.0.1:65534",
+		LLMInsecureSkipVerify: true,
+		LLMTimeoutMs:          100,
 	}
 	err := RunWithConfig(ctx, cfg)
 	if err == nil {

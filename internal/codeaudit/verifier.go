@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"taa/internal/inference"
+	"taa/teellm"
 )
 
 // VerifyReport runs the LLM verifier on a static scan report.
@@ -45,17 +45,17 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 
 		f := &report.Findings[i]
 
-		req := &inference.RequestEnvelope{
-			ProtocolVersion: inference.CurrentProtocolVersion,
+		req := &teellm.RequestEnvelope{
+			ProtocolVersion: teellm.CurrentProtocolVersion,
 			RequestID:       fmt.Sprintf("verify-%d", time.Now().UnixNano()),
 			Timestamp:       time.Now().Unix(),
-			Action:          inference.ActionVerifyFinding,
-			FindingPayload: &inference.FindingPayload{
+			Action:          teellm.ActionVerifyFinding,
+			FindingPayload: &teellm.FindingPayload{
 				RuleID:      f.RuleID,
 				Category:    f.Category,
 				Severity:    f.Severity,
 				Description: f.Description,
-				Target: inference.CodeTarget{
+				Target: teellm.CodeTarget{
 					FilePath:      f.File,
 					Line:          f.Line,
 					CodeSnippet:   f.CodeSnippet,
@@ -63,18 +63,18 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 					ContextAfter:  f.ContextAfter,
 				},
 			},
-			Policy: inference.PolicyOptions{
+			Policy: teellm.PolicyOptions{
 				Mode: cfg.Policy,
 			},
 		}
 		if cfg.Model != "" {
-			req.ModelRef = &inference.ModelReference{Name: cfg.Model}
+			req.ModelRef = &teellm.ModelReference{Name: cfg.Model}
 		}
 
 		resp, err := client.VerifyFinding(ctx, req)
-		if err != nil || resp == nil || resp.Status != inference.StatusSuccess {
+		if err != nil || resp == nil || resp.Status != teellm.StatusSuccess {
 			f.LLMVerdict = "UNCERTAIN"
-			if errors.Is(err, inference.ErrCircuitOpen) {
+			if errors.Is(err, teellm.ErrCircuitOpen) {
 				f.LLMReason = "SERVICE_UNAVAILABLE: circuit breaker open"
 			} else if err != nil {
 				f.LLMReason = fmt.Sprintf("SERVICE_UNAVAILABLE: %v", err)
@@ -113,7 +113,7 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 			if cfg.FailClosed {
 				failedClosed := false
 				for _, f := range report.Findings {
-					if (f.Severity == SeverityHigh || f.Severity == SeverityMedium) && f.LLMVerdict != "BENIGN" {
+					if (f.Severity == SeverityHigh || f.Severity == SeverityMedium) && f.LLMVerdict != teellm.VerdictBenign {
 						failedClosed = true
 						break
 					}
@@ -144,7 +144,7 @@ func recalculatePassed(report *Report) {
 	for _, f := range report.Findings {
 		switch f.Severity {
 		case SeverityHigh:
-			if f.LLMVerdict == "BENIGN" {
+			if f.LLMVerdict == teellm.VerdictBenign {
 				// Downgraded: no longer blocks.
 				continue
 			}
@@ -174,7 +174,7 @@ func CheckImportWithLLM(ctx context.Context, dir string, cfg LLMConfig) (bool, *
 		return report.Passed, report, nil
 	}
 
-	if cfg.Endpoint == "" && cfg.UDSPath == "" {
+	if cfg.Endpoint == "" {
 		return report.Passed, report, nil
 	}
 

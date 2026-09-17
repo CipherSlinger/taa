@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"taa/internal/inference"
+	"taa/teellm"
+	"taa/teetls"
 )
 
 // ── parseDecision tests ──────────────────────────────────
@@ -50,12 +51,12 @@ type mockLLMClient struct {
 	fileCallCount int
 }
 
-func (m *mockLLMClient) VerifyFinding(_ context.Context, _ *inference.RequestEnvelope) (*inference.ResponseEnvelope, error) {
+func (m *mockLLMClient) VerifyFinding(_ context.Context, _ *teellm.RequestEnvelope) (*teellm.ResponseEnvelope, error) {
 	if m.callCount >= len(m.decisions) {
-		return &inference.ResponseEnvelope{
-			ProtocolVersion: inference.CurrentProtocolVersion,
-			Status:          inference.StatusSuccess,
-			Decision: &inference.DecisionResult{
+		return &teellm.ResponseEnvelope{
+			ProtocolVersion: teellm.CurrentProtocolVersion,
+			Status:          teellm.StatusSuccess,
+			Decision: &teellm.DecisionResult{
 				Verdict:     "UNCERTAIN",
 				Explanation: "no more mock decisions",
 			},
@@ -63,10 +64,10 @@ func (m *mockLLMClient) VerifyFinding(_ context.Context, _ *inference.RequestEnv
 	}
 	d := m.decisions[m.callCount]
 	m.callCount++
-	return &inference.ResponseEnvelope{
-		ProtocolVersion: inference.CurrentProtocolVersion,
-		Status:          inference.StatusSuccess,
-		Decision: &inference.DecisionResult{
+	return &teellm.ResponseEnvelope{
+		ProtocolVersion: teellm.CurrentProtocolVersion,
+		Status:          teellm.StatusSuccess,
+		Decision: &teellm.DecisionResult{
 			Verdict:     d.Verdict,
 			Explanation: d.Reason,
 			RiskLevel:   d.Risk,
@@ -98,14 +99,14 @@ type mockInferenceClient struct {
 	err     error
 }
 
-func (m *mockInferenceClient) VerifyFinding(ctx context.Context, req *inference.RequestEnvelope) (*inference.ResponseEnvelope, error) {
+func (m *mockInferenceClient) VerifyFinding(ctx context.Context, req *teellm.RequestEnvelope) (*teellm.ResponseEnvelope, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	return &inference.ResponseEnvelope{
-		ProtocolVersion: inference.CurrentProtocolVersion,
-		Status:          inference.StatusSuccess,
-		Decision: &inference.DecisionResult{
+	return &teellm.ResponseEnvelope{
+		ProtocolVersion: teellm.CurrentProtocolVersion,
+		Status:          teellm.StatusSuccess,
+		Decision: &teellm.DecisionResult{
 			Verdict:     m.verdict,
 			Confidence:  0.9,
 			RiskLevel:   "HIGH",
@@ -265,7 +266,7 @@ func TestVerifyReport_InferenceClient_Malicious(t *testing.T) {
 			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
 		},
 	}
-	client := &mockInferenceClient{verdict: inference.VerdictMalicious}
+	client := &mockInferenceClient{verdict: teellm.VerdictMalicious}
 	cfg := LLMConfig{Enabled: true, Policy: "gate", MaxFindings: 10}
 
 	res, err := VerifyReport(context.Background(), report, cfg, client)
@@ -275,8 +276,8 @@ func TestVerifyReport_InferenceClient_Malicious(t *testing.T) {
 	if res.Passed {
 		t.Fatal("expected report to not pass when verdict is MALICIOUS in gate mode")
 	}
-	if res.Findings[0].LLMVerdict != inference.VerdictMalicious {
-		t.Fatalf("verdict = %s, want %s", res.Findings[0].LLMVerdict, inference.VerdictMalicious)
+	if res.Findings[0].LLMVerdict != teellm.VerdictMalicious {
+		t.Fatalf("verdict = %s, want %s", res.Findings[0].LLMVerdict, teellm.VerdictMalicious)
 	}
 }
 
@@ -288,7 +289,7 @@ func TestVerifyReport_InferenceClient_BenignDowngrade(t *testing.T) {
 			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
 		},
 	}
-	client := &mockInferenceClient{verdict: inference.VerdictBenign}
+	client := &mockInferenceClient{verdict: teellm.VerdictBenign}
 	cfg := LLMConfig{Enabled: true, Policy: "gate", MaxFindings: 10}
 
 	res, err := VerifyReport(context.Background(), report, cfg, client)
@@ -301,8 +302,8 @@ func TestVerifyReport_InferenceClient_BenignDowngrade(t *testing.T) {
 	if res.HighCount != 0 {
 		t.Fatalf("HighCount = %d, want 0", res.HighCount)
 	}
-	if res.Findings[0].LLMVerdict != inference.VerdictBenign {
-		t.Fatalf("verdict = %s, want %s", res.Findings[0].LLMVerdict, inference.VerdictBenign)
+	if res.Findings[0].LLMVerdict != teellm.VerdictBenign {
+		t.Fatalf("verdict = %s, want %s", res.Findings[0].LLMVerdict, teellm.VerdictBenign)
 	}
 }
 
@@ -314,7 +315,7 @@ func TestVerifyReport_InferenceClient_CircuitOpen_GateFailClosed(t *testing.T) {
 			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
 		},
 	}
-	client := &mockInferenceClient{err: inference.ErrCircuitOpen}
+	client := &mockInferenceClient{err: teellm.ErrCircuitOpen}
 	cfg := LLMConfig{Enabled: true, Policy: "gate", FailClosed: true, MaxFindings: 10}
 
 	res, err := VerifyReport(context.Background(), report, cfg, client)
@@ -345,7 +346,7 @@ func TestVerifyReport_InferenceClient_GateFailOpen(t *testing.T) {
 			{File: "a.py", Line: 1, RuleID: "DYN_001", Severity: SeverityMedium, CodeSnippet: "eval(expr)"},
 		},
 	}
-	client := &mockInferenceClient{err: inference.ErrCircuitOpen}
+	client := &mockInferenceClient{err: teellm.ErrCircuitOpen}
 	// FailClosed: false -> fallback to static scan result
 	cfg := LLMConfig{Enabled: true, Policy: "gate", FailClosed: false, MaxFindings: 10}
 
@@ -391,10 +392,10 @@ func TestSynthesizeFileSummary_BenignExfilIgnored(t *testing.T) {
 
 type mockNilDecisionClient struct{}
 
-func (m *mockNilDecisionClient) VerifyFinding(_ context.Context, _ *inference.RequestEnvelope) (*inference.ResponseEnvelope, error) {
-	return &inference.ResponseEnvelope{
-		ProtocolVersion: inference.CurrentProtocolVersion,
-		Status:          inference.StatusSuccess,
+func (m *mockNilDecisionClient) VerifyFinding(_ context.Context, _ *teellm.RequestEnvelope) (*teellm.ResponseEnvelope, error) {
+	return &teellm.ResponseEnvelope{
+		ProtocolVersion: teellm.CurrentProtocolVersion,
+		Status:          teellm.StatusSuccess,
 		Decision:        nil,
 	}, nil
 }
@@ -431,16 +432,16 @@ func TestVerifyReport_NilDecisionTreatedAsFailure(t *testing.T) {
 }
 
 type mockCaptureEnvelopeClient struct {
-	capturedReq *inference.RequestEnvelope
+	capturedReq *teellm.RequestEnvelope
 }
 
-func (m *mockCaptureEnvelopeClient) VerifyFinding(_ context.Context, req *inference.RequestEnvelope) (*inference.ResponseEnvelope, error) {
+func (m *mockCaptureEnvelopeClient) VerifyFinding(_ context.Context, req *teellm.RequestEnvelope) (*teellm.ResponseEnvelope, error) {
 	m.capturedReq = req
-	return &inference.ResponseEnvelope{
-		ProtocolVersion: inference.CurrentProtocolVersion,
-		Status:          inference.StatusSuccess,
-		Decision: &inference.DecisionResult{
-			Verdict: inference.VerdictBenign,
+	return &teellm.ResponseEnvelope{
+		ProtocolVersion: teellm.CurrentProtocolVersion,
+		Status:          teellm.StatusSuccess,
+		Decision: &teellm.DecisionResult{
+			Verdict: teellm.VerdictBenign,
 		},
 	}, nil
 }
@@ -479,7 +480,7 @@ func TestVerifyReport_ContextCancelled(t *testing.T) {
 			{File: "b.py", Line: 2, RuleID: "CMD_001", Severity: SeverityHigh, CodeSnippet: "os.system(cmd)"},
 		},
 	}
-	client := &mockInferenceClient{verdict: inference.VerdictBenign}
+	client := &mockInferenceClient{verdict: teellm.VerdictBenign}
 	cfg := LLMConfig{Enabled: true, Policy: "gate", FailClosed: true, MaxFindings: 10}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -511,7 +512,7 @@ func TestVerifyReport_InferenceClient_CircuitOpen_AssistDegraded(t *testing.T) {
 			{File: "a.py", Line: 1, RuleID: "DYN_001", Severity: SeverityMedium, CodeSnippet: "eval(expr)"},
 		},
 	}
-	client := &mockInferenceClient{err: inference.ErrCircuitOpen}
+	client := &mockInferenceClient{err: teellm.ErrCircuitOpen}
 	cfg := LLMConfig{Enabled: true, Policy: "assist", MaxFindings: 10}
 
 	res, err := VerifyReport(context.Background(), report, cfg, client)
@@ -532,16 +533,32 @@ func TestVerifyReport_InferenceClient_CircuitOpen_AssistDegraded(t *testing.T) {
 	}
 }
 
+func newTestTEETLSServer(t *testing.T, handler http.Handler) *httptest.Server {
+	mockProv := teetls.NewMockEvidenceProvider()
+	listener, err := teetls.Listen("tcp", "127.0.0.1:0", &teetls.Config{
+		Mode:             teetls.ModeStrict,
+		EvidenceProvider: mockProv,
+	})
+	if err != nil {
+		t.Fatalf("failed to create teetls listener: %v", err)
+	}
+	server := httptest.NewUnstartedServer(handler)
+	server.Listener = listener
+	server.Start()
+	server.URL = "https://" + server.Listener.Addr().String()
+	return server
+}
+
 // ── OllamaClient adapter tests with httptest ─────────────
 
 func TestOllamaClientSuccess(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestTEETLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/verify" {
-			json.NewEncoder(w).Encode(inference.ResponseEnvelope{
-				ProtocolVersion: inference.CurrentProtocolVersion,
-				Status:          inference.StatusSuccess,
-				Decision: &inference.DecisionResult{
-					Verdict:     inference.VerdictBenign,
+			json.NewEncoder(w).Encode(teellm.ResponseEnvelope{
+				ProtocolVersion: teellm.CurrentProtocolVersion,
+				Status:          teellm.StatusSuccess,
+				Decision: &teellm.DecisionResult{
+					Verdict:     teellm.VerdictBenign,
 					Explanation: "safe code",
 				},
 			})
@@ -551,29 +568,32 @@ func TestOllamaClientSuccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewOllamaClient(server.URL, "test-model", 5*time.Second)
+	client, err := NewInferenceClient(LLMConfig{Endpoint: server.URL, Model: "test-model", Timeout: 5*time.Second, InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatalf("NewInferenceClient failed: %v", err)
+	}
 	if client == nil {
 		t.Fatal("client should not be nil")
 	}
 	defer client.Close()
 
-	req := &inference.RequestEnvelope{
-		ProtocolVersion: inference.CurrentProtocolVersion,
+	req := &teellm.RequestEnvelope{
+		ProtocolVersion: teellm.CurrentProtocolVersion,
 		RequestID:       "req-1",
 		Timestamp:       time.Now().Unix(),
-		Action:          inference.ActionVerifyFinding,
+		Action:          teellm.ActionVerifyFinding,
 	}
 	resp, err := client.VerifyFinding(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Decision == nil || resp.Decision.Verdict != inference.VerdictBenign {
+	if resp.Decision == nil || resp.Decision.Verdict != teellm.VerdictBenign {
 		t.Fatalf("verdict = %v, want BENIGN", resp.Decision)
 	}
 }
 
 func TestOllamaClientServerError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte("internal error"))
 	}))
@@ -585,11 +605,11 @@ func TestOllamaClientServerError(t *testing.T) {
 	}
 	defer client.Close()
 
-	req := &inference.RequestEnvelope{
-		ProtocolVersion: inference.CurrentProtocolVersion,
+	req := &teellm.RequestEnvelope{
+		ProtocolVersion: teellm.CurrentProtocolVersion,
 		RequestID:       "req-1",
 		Timestamp:       time.Now().Unix(),
-		Action:          inference.ActionVerifyFinding,
+		Action:          teellm.ActionVerifyFinding,
 	}
 	_, err := client.VerifyFinding(context.Background(), req)
 	if err == nil {
@@ -641,13 +661,13 @@ def report_metrics(acc, loss):
 `)
 
 	// Mock server that returns BENIGN
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestTEETLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/verify" {
-			json.NewEncoder(w).Encode(inference.ResponseEnvelope{
-				ProtocolVersion: inference.CurrentProtocolVersion,
-				Status:          inference.StatusSuccess,
-				Decision: &inference.DecisionResult{
-					Verdict:     inference.VerdictBenign,
+			json.NewEncoder(w).Encode(teellm.ResponseEnvelope{
+				ProtocolVersion: teellm.CurrentProtocolVersion,
+				Status:          teellm.StatusSuccess,
+				Decision: &teellm.DecisionResult{
+					Verdict:     teellm.VerdictBenign,
 					Explanation: "metrics reporting only",
 				},
 			})
@@ -665,6 +685,7 @@ def report_metrics(acc, loss):
 		MaxFindings: 10,
 		Policy:      "gate",
 		FailClosed:  true,
+		InsecureSkipVerify: true,
 	}
 
 	passed, report, err := CheckImportWithLLM(context.Background(), dir, cfg)

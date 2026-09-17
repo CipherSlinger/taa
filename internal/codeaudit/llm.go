@@ -5,7 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"taa/internal/inference"
+	"taa/teellm"
+	"taa/teetls"
 )
 
 // LLMConfig controls the local LLM verifier.
@@ -13,7 +14,6 @@ type LLMConfig struct {
 	Enabled                 bool
 	Transport               string
 	Endpoint                string
-	UDSPath                 string
 	AuthToken               string
 	Model                   string
 	Timeout                 time.Duration
@@ -23,14 +23,23 @@ type LLMConfig struct {
 	AllowedHosts            []string
 	CircuitBreakerThreshold int
 	CooldownSec             int
+
+	// TEE-TLS configuration
+	TEETLS               *teetls.Config
+	AttestationMode      string
+	HRKCertPath          string
+	HSKCekCertPath       string
+	ExpectedMeasurements []string
+	RequireMutualAttest  bool
+	InsecureSkipVerify   bool
 }
 
 // DefaultLLMConfig returns safe default configuration.
 func DefaultLLMConfig() LLMConfig {
 	return LLMConfig{
 		Enabled:                 true,
-		Transport:               "http",
-		Endpoint:                "http://127.0.0.1:11434",
+		Transport:               "teetls",
+		Endpoint:                "https://127.0.0.1:8443",
 		Model:                   "qwen2.5-coder:0.5b",
 		Timeout:                 30 * time.Second,
 		MaxFindings:             20,
@@ -38,6 +47,7 @@ func DefaultLLMConfig() LLMConfig {
 		FailClosed:              true,
 		CircuitBreakerThreshold: 3,
 		CooldownSec:             30,
+		AttestationMode:         "strict",
 	}
 }
 
@@ -49,7 +59,7 @@ type LLMDecision struct {
 }
 
 // LLMClient abstracts the standardized inference client interface.
-type LLMClient = inference.InferenceClient
+type LLMClient = teellm.Client
 
 // FileAnalyzer defines an optional interface for file-level analysis.
 type FileAnalyzer interface {
@@ -58,27 +68,45 @@ type FileAnalyzer interface {
 
 // NewInferenceClient constructs a standardized inference client based on LLMConfig.
 func NewInferenceClient(cfg LLMConfig) (LLMClient, error) {
-	return inference.NewClient(inference.Config{
-		Transport:               cfg.Transport,
-		Endpoint:                cfg.Endpoint,
-		UDSPath:                 cfg.UDSPath,
-		AuthToken:               cfg.AuthToken,
-		Timeout:                 cfg.Timeout,
-		AllowedHosts:            cfg.AllowedHosts,
-		CircuitBreakerThreshold: cfg.CircuitBreakerThreshold,
-		CooldownSec:             cfg.CooldownSec,
+	var teeTLSConfig *teetls.Config
+	if cfg.TEETLS != nil {
+		teeTLSConfig = cfg.TEETLS
+	} else if cfg.Transport == "teetls" || cfg.Transport == "https" || cfg.Transport == "" {
+		mode := teetls.ModeStrict
+		if cfg.AttestationMode == "permissive" {
+			mode = teetls.ModePermissive
+		}
+		teeTLSConfig = &teetls.Config{
+			Mode:                          mode,
+			InsecureSkipAttestationVerify: cfg.InsecureSkipVerify,
+			ExpectedMeasurements:          cfg.ExpectedMeasurements,
+			VerifyMutualAttestation:       cfg.RequireMutualAttest,
+		}
+		if cfg.HRKCertPath != "" || cfg.HSKCekCertPath != "" {
+			teeTLSConfig.EvidenceProvider = teetls.NewHygonHardwareProvider("", cfg.HRKCertPath, cfg.HSKCekCertPath)
+		}
+	}
+
+	return teellm.NewClient(teellm.Config{
+		Endpoint:                       cfg.Endpoint,
+		Timeout:                        cfg.Timeout,
+		AllowedHosts:                   cfg.AllowedHosts,
+		TEETLS:                         teeTLSConfig,
+		CircuitBreakerFailureThreshold: cfg.CircuitBreakerThreshold,
+		CircuitBreakerCooldown:         time.Duration(cfg.CooldownSec) * time.Second,
 	})
 }
 
-// NewOllamaClient provides backward compatibility, returning an InferenceClient via inference.NewClient.
+// NewOllamaClient provides backward compatibility, returning an LLMClient via NewInferenceClient.
 func NewOllamaClient(endpoint, model string, timeout time.Duration) LLMClient {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	client, err := inference.NewClient(inference.Config{
-		Transport: "http",
-		Endpoint:  endpoint,
-		Timeout:   timeout,
+	client, err := NewInferenceClient(LLMConfig{
+		Endpoint:           endpoint,
+		Model:              model,
+		Timeout:            timeout,
+		InsecureSkipVerify: true,
 	})
 	if err != nil {
 		return nil

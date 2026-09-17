@@ -16,9 +16,10 @@ import (
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 	"taa/internal/controller"
-	"taa/internal/inference"
 	"taa/internal/store"
 	teecrypto "taa/pkg/crypto"
+	"taa/teellm"
+	"taa/teetls"
 )
 
 // ============================================================================
@@ -174,7 +175,7 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 // ============================================================================
 
 // probeInferenceService checks the availability of the external inference service
-// without spawning any subprocess. It utilizes the standardized inference client adapter.
+// without spawning any subprocess. It utilizes the standardized TEE-LLM client.
 func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -185,15 +186,30 @@ func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error 
 		timeout = 3 * time.Second
 	}
 
-	client, err := inference.NewClient(inference.Config{
-		Transport:               cfg.LLMTransport,
-		Endpoint:                cfg.LLMEndpoint,
-		UDSPath:                 cfg.LLMUDSPath,
-		AuthToken:               cfg.LLMAuthToken,
-		Timeout:                 timeout,
-		AllowedHosts:            cfg.LLMAllowedHosts,
-		CircuitBreakerThreshold: cfg.LLMCircuitBreakerThreshold,
-		CooldownSec:             cfg.LLMCooldownSec,
+	var teeTLSConfig *teetls.Config
+	if cfg.LLMTransport == "teetls" || cfg.LLMTransport == "https" || cfg.LLMTransport == "" {
+		mode := teetls.ModeStrict
+		if cfg.LLMAttestationMode == "permissive" {
+			mode = teetls.ModePermissive
+		}
+		teeTLSConfig = &teetls.Config{
+			Mode:                          mode,
+			InsecureSkipAttestationVerify: cfg.LLMInsecureSkipVerify,
+			ExpectedMeasurements:          cfg.LLMExpectedMeasurements,
+			VerifyMutualAttestation:       cfg.LLMRequireMutualAttest,
+		}
+		if cfg.LLMHRKCertPath != "" || cfg.LLMHSKCekCertPath != "" {
+			teeTLSConfig.EvidenceProvider = teetls.NewHygonHardwareProvider("", cfg.LLMHRKCertPath, cfg.LLMHSKCekCertPath)
+		}
+	}
+
+	client, err := teellm.NewClient(teellm.Config{
+		Endpoint:                       cfg.LLMEndpoint,
+		Timeout:                        timeout,
+		AllowedHosts:                   cfg.LLMAllowedHosts,
+		TEETLS:                         teeTLSConfig,
+		CircuitBreakerFailureThreshold: cfg.LLMCircuitBreakerThreshold,
+		CircuitBreakerCooldown:         time.Duration(cfg.LLMCooldownSec) * time.Second,
 	})
 	if err != nil {
 		return fmt.Errorf("create inference client: %w", err)
@@ -207,8 +223,8 @@ func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error 
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	log.Printf("probing inference service readiness (transport=%s, endpoint=%s, uds=%s)",
-		cfg.LLMTransport, cfg.LLMEndpoint, cfg.LLMUDSPath)
+	log.Printf("probing inference service readiness (transport=%s, endpoint=%s, attestMode=%s)",
+		cfg.LLMTransport, cfg.LLMEndpoint, cfg.LLMAttestationMode)
 	if err := client.HealthCheck(probeCtx); err != nil {
 		return fmt.Errorf("health check failed: %w", err)
 	}
@@ -553,7 +569,12 @@ func buildSecurityConfig(cfg config.StartupConfig) controller.SecurityConfig {
 			Enabled:                 cfg.EnableLLM,
 			Transport:               cfg.LLMTransport,
 			Endpoint:                cfg.LLMEndpoint,
-			UDSPath:                 cfg.LLMUDSPath,
+			AttestationMode:         cfg.LLMAttestationMode,
+			HRKCertPath:             cfg.LLMHRKCertPath,
+			HSKCekCertPath:          cfg.LLMHSKCekCertPath,
+			ExpectedMeasurements:    cfg.LLMExpectedMeasurements,
+			RequireMutualAttest:     cfg.LLMRequireMutualAttest,
+			InsecureSkipVerify:      cfg.LLMInsecureSkipVerify,
 			AuthToken:               cfg.LLMAuthToken,
 			Model:                   cfg.LLMModel,
 			Timeout:                 timeout,
@@ -591,8 +612,8 @@ func logSecurityConfig(sec controller.SecurityConfig) {
 	if sec.ScanEnabled {
 		log.Printf("security scan enabled: model-dir=%s", sec.ModelDir)
 		if sec.LLM.Enabled {
-			log.Printf("  LLM verifier enabled: model=%s transport=%s endpoint=%s uds=%s policy=%s fail-closed=%v",
-				sec.LLM.Model, sec.LLM.Transport, sec.LLM.Endpoint, sec.LLM.UDSPath, sec.LLM.Policy, sec.LLM.FailClosed)
+			log.Printf("  LLM verifier enabled: model=%s transport=%s endpoint=%s attestMode=%s policy=%s fail-closed=%v",
+				sec.LLM.Model, sec.LLM.Transport, sec.LLM.Endpoint, sec.LLM.AttestationMode, sec.LLM.Policy, sec.LLM.FailClosed)
 		}
 	}
 	if sec.ResultCheck {

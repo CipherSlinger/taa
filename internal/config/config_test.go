@@ -121,7 +121,7 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if !cfg.EnableLLM {
 		t.Fatalf("EnableLLM = false, want default true")
 	}
-	if cfg.LLMEndpoint != "http://127.0.0.1:11434" {
+	if cfg.LLMEndpoint != "https://127.0.0.1:8443" {
 		t.Fatalf("LLMEndpoint = %q, want default", cfg.LLMEndpoint)
 	}
 	if cfg.LLMModel != "qwen2.5-coder:0.5b" {
@@ -243,7 +243,7 @@ func TestLoadStartupConfigDoesNotReadOtherRuntimeEnvironment(t *testing.T) {
 	if cfg.ModelDir != "/opt/taa/models" || cfg.DataDir != "/opt/taa/data" || cfg.ResultDir != "/opt/taa/results" || cfg.KeysDir != "/opt/taa/keys" {
 		t.Fatalf("directory runtime config unexpectedly read from environment: %+v", cfg)
 	}
-	if cfg.LLMEndpoint != "http://127.0.0.1:11434" || cfg.LLMModel != "qwen2.5-coder:0.5b" || cfg.LLMPolicy != "assist" || cfg.LLMDir != "" {
+	if cfg.LLMEndpoint != "https://127.0.0.1:8443" || cfg.LLMModel != "qwen2.5-coder:0.5b" || cfg.LLMPolicy != "assist" || cfg.LLMDir != "" {
 		t.Fatalf("LLM runtime config unexpectedly read from environment: %+v", cfg)
 	}
 }
@@ -344,9 +344,14 @@ func TestStartupConfig_InferenceOptions(t *testing.T) {
 	writeTestConfig(t, path, `{
 		"llm": {
 			"enabled": true,
-			"transport": "uds",
-			"udsPath": "/run/taa/ipc/inference.sock",
-			"endpoint": "http://127.0.0.1:11434",
+			"transport": "teetls",
+			"endpoint": "https://127.0.0.1:8443",
+			"attestationMode": "permissive",
+			"hrkCertPath": "/custom/hrk.cert",
+			"hskCekCertPath": "/custom/hsk_cek.cert",
+			"expectedMeasurements": ["deadbeef01234567"],
+			"requireMutualAttest": true,
+			"insecureSkipVerify": true,
 			"model": "qwen2.5-coder:3b",
 			"policy": "gate",
 			"failClosed": true,
@@ -363,11 +368,29 @@ func TestStartupConfig_InferenceOptions(t *testing.T) {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
-	if cfg.LLMTransport != "uds" {
-		t.Errorf("got transport %q, want 'uds'", cfg.LLMTransport)
+	if cfg.LLMTransport != "teetls" {
+		t.Errorf("got transport %q, want 'teetls'", cfg.LLMTransport)
 	}
-	if cfg.LLMUDSPath != "/run/taa/ipc/inference.sock" {
-		t.Errorf("got udsPath %q", cfg.LLMUDSPath)
+	if cfg.LLMEndpoint != "https://127.0.0.1:8443" {
+		t.Errorf("got endpoint %q, want 'https://127.0.0.1:8443'", cfg.LLMEndpoint)
+	}
+	if cfg.LLMAttestationMode != "permissive" {
+		t.Errorf("got attestationMode %q, want 'permissive'", cfg.LLMAttestationMode)
+	}
+	if cfg.LLMHRKCertPath != "/custom/hrk.cert" {
+		t.Errorf("got hrkCertPath %q, want '/custom/hrk.cert'", cfg.LLMHRKCertPath)
+	}
+	if cfg.LLMHSKCekCertPath != "/custom/hsk_cek.cert" {
+		t.Errorf("got hskCekCertPath %q, want '/custom/hsk_cek.cert'", cfg.LLMHSKCekCertPath)
+	}
+	if len(cfg.LLMExpectedMeasurements) != 1 || cfg.LLMExpectedMeasurements[0] != "deadbeef01234567" {
+		t.Errorf("got expectedMeasurements %v, want ['deadbeef01234567']", cfg.LLMExpectedMeasurements)
+	}
+	if !cfg.LLMRequireMutualAttest {
+		t.Errorf("got requireMutualAttest false, want true")
+	}
+	if !cfg.LLMInsecureSkipVerify {
+		t.Errorf("got insecureSkipVerify false, want true")
 	}
 	if cfg.LLMAuthToken != "secret-token" {
 		t.Errorf("got token %q", cfg.LLMAuthToken)
@@ -395,11 +418,26 @@ func TestStartupConfig_InferenceDefaults(t *testing.T) {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
-	if cfg.LLMTransport != "http" {
-		t.Errorf("got default transport %q, want 'http'", cfg.LLMTransport)
+	if cfg.LLMTransport != "teetls" {
+		t.Errorf("got default transport %q, want 'teetls'", cfg.LLMTransport)
 	}
-	if cfg.LLMUDSPath != "" {
-		t.Errorf("got default udsPath %q, want empty", cfg.LLMUDSPath)
+	if cfg.LLMEndpoint != "https://127.0.0.1:8443" {
+		t.Errorf("got default endpoint %q, want 'https://127.0.0.1:8443'", cfg.LLMEndpoint)
+	}
+	if cfg.LLMAttestationMode != "strict" {
+		t.Errorf("got default attestationMode %q, want 'strict'", cfg.LLMAttestationMode)
+	}
+	if cfg.LLMHRKCertPath == "" || cfg.LLMHSKCekCertPath == "" {
+		t.Errorf("got empty default cert paths: hrk=%q, hsk=%q", cfg.LLMHRKCertPath, cfg.LLMHSKCekCertPath)
+	}
+	if cfg.LLMExpectedMeasurements != nil {
+		t.Errorf("got default expectedMeasurements %v, want nil", cfg.LLMExpectedMeasurements)
+	}
+	if cfg.LLMRequireMutualAttest {
+		t.Errorf("got default requireMutualAttest true, want false")
+	}
+	if cfg.LLMInsecureSkipVerify {
+		t.Errorf("got default insecureSkipVerify true, want false")
 	}
 	if cfg.LLMAuthToken != "" {
 		t.Errorf("got default token %q, want empty", cfg.LLMAuthToken)
@@ -412,27 +450,6 @@ func TestStartupConfig_InferenceDefaults(t *testing.T) {
 	}
 	if cfg.LLMCooldownSec != 30 {
 		t.Errorf("got default cooldown %d, want 30", cfg.LLMCooldownSec)
-	}
-}
-
-func TestStartupConfig_InferenceUDSFallback(t *testing.T) {
-	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, `{
-		"llm": {
-			"udsPath": "/run/taa/ipc/inference.sock"
-		}
-	}`)
-
-	cfg, err := LoadStartupConfig(path)
-	if err != nil {
-		t.Fatalf("LoadStartupConfig() error = %v", err)
-	}
-
-	if cfg.LLMTransport != "uds" {
-		t.Errorf("got transport %q, want 'uds'", cfg.LLMTransport)
-	}
-	if cfg.LLMUDSPath != "/run/taa/ipc/inference.sock" {
-		t.Errorf("got udsPath %q", cfg.LLMUDSPath)
 	}
 }
 

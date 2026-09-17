@@ -30,11 +30,16 @@ type StartupConfig struct {
 	KeysDir                   string
 	AttestationHRKCertPath    string
 	AttestationHSKCekCertPath string
-	EnableLLM                 bool
-	LLMTransport              string
-	LLMEndpoint               string
-	LLMUDSPath                string
-	LLMAuthToken              string
+	EnableLLM                  bool
+	LLMTransport               string
+	LLMEndpoint                string
+	LLMAttestationMode         string
+	LLMHRKCertPath             string
+	LLMHSKCekCertPath          string
+	LLMExpectedMeasurements    []string
+	LLMRequireMutualAttest     bool
+	LLMInsecureSkipVerify      bool
+	LLMAuthToken               string
 	LLMTimeoutMs              int64
 	LLMAllowedHosts           []string
 	LLMCircuitBreakerThreshold int
@@ -75,7 +80,12 @@ type startupLLMConfigFile struct {
 	Enabled                 *bool    `json:"enabled"`
 	Transport               string   `json:"transport"`
 	Endpoint                string   `json:"endpoint"`
-	UDSPath                 string   `json:"udsPath"`
+	AttestationMode         string   `json:"attestationMode"`
+	HRKCertPath             string   `json:"hrkCertPath"`
+	HSKCekCertPath          string   `json:"hskCekCertPath"`
+	ExpectedMeasurements    []string `json:"expectedMeasurements"`
+	RequireMutualAttest     *bool    `json:"requireMutualAttest"`
+	InsecureSkipVerify      *bool    `json:"insecureSkipVerify"`
 	AuthToken               string   `json:"authToken"`
 	RequestTimeoutMs        int64    `json:"requestTimeoutMs"`
 	AllowedHosts            []string `json:"allowedHosts"`
@@ -133,10 +143,15 @@ func defaultStartupConfig() StartupConfig {
 		AttestationHRKCertPath:    hrkDefault,
 		AttestationHSKCekCertPath: hskDefault,
 		EnableLLM:                 true,
-		LLMTransport:              "http",
-		LLMEndpoint:               "http://127.0.0.1:11434",
-		LLMUDSPath:                "",
-		LLMAuthToken:              "",
+		LLMTransport:              "teetls",
+		LLMEndpoint:               "https://127.0.0.1:8443",
+		LLMAttestationMode:         "strict",
+		LLMHRKCertPath:             hrkDefault,
+		LLMHSKCekCertPath:          hskDefault,
+		LLMExpectedMeasurements:    nil,
+		LLMRequireMutualAttest:     false,
+		LLMInsecureSkipVerify:      false,
+		LLMAuthToken:               "",
 		LLMTimeoutMs:              30000,
 		LLMAllowedHosts:           nil,
 		LLMCircuitBreakerThreshold: 3,
@@ -206,14 +221,27 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if fileCfg.LLM.Transport != "" {
 		cfg.LLMTransport = strings.TrimSpace(fileCfg.LLM.Transport)
-	} else if fileCfg.LLM.UDSPath != "" || strings.HasPrefix(strings.ToLower(fileCfg.LLM.Endpoint), "unix://") {
-		cfg.LLMTransport = "uds"
 	}
 	if fileCfg.LLM.Endpoint != "" {
 		cfg.LLMEndpoint = fileCfg.LLM.Endpoint
 	}
-	if fileCfg.LLM.UDSPath != "" {
-		cfg.LLMUDSPath = strings.TrimSpace(fileCfg.LLM.UDSPath)
+	if trimmed := strings.TrimSpace(fileCfg.LLM.AttestationMode); trimmed != "" {
+		cfg.LLMAttestationMode = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.LLM.HRKCertPath); trimmed != "" {
+		cfg.LLMHRKCertPath = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.LLM.HSKCekCertPath); trimmed != "" {
+		cfg.LLMHSKCekCertPath = trimmed
+	}
+	if len(fileCfg.LLM.ExpectedMeasurements) > 0 {
+		cfg.LLMExpectedMeasurements = fileCfg.LLM.ExpectedMeasurements
+	}
+	if fileCfg.LLM.RequireMutualAttest != nil {
+		cfg.LLMRequireMutualAttest = *fileCfg.LLM.RequireMutualAttest
+	}
+	if fileCfg.LLM.InsecureSkipVerify != nil {
+		cfg.LLMInsecureSkipVerify = *fileCfg.LLM.InsecureSkipVerify
 	}
 	if fileCfg.LLM.AuthToken != "" {
 		cfg.LLMAuthToken = fileCfg.LLM.AuthToken
