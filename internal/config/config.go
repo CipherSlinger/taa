@@ -46,6 +46,7 @@ type startupConfigFile struct {
 	EnableSecurityScan *bool                        `json:"securityScan"`
 	ModelDir           string                       `json:"modelDir"`
 	EnableResultCheck  *bool                        `json:"resultCheck"`
+	MaxFileBytes       *int64                       `json:"maxFileBytes"`
 	MaxResultBytes     *int64                       `json:"maxResultBytes"`
 	DataDir            string                       `json:"dataDir"`
 	ResultDir          string                       `json:"resultDir"`
@@ -147,7 +148,9 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	if fileCfg.EnableResultCheck != nil {
 		cfg.EnableResultCheck = *fileCfg.EnableResultCheck
 	}
-	if fileCfg.MaxResultBytes != nil {
+	if fileCfg.MaxFileBytes != nil {
+		cfg.MaxResultBytes = *fileCfg.MaxFileBytes
+	} else if fileCfg.MaxResultBytes != nil {
 		cfg.MaxResultBytes = *fileCfg.MaxResultBytes
 	}
 	if fileCfg.DataDir != "" {

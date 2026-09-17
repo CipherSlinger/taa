@@ -193,7 +193,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
   "securityScan": true,
   "modelDir": "/root/taa/models",
   "resultCheck": true,
-  "maxResultBytes": 3221225472,
+  "maxFileBytes": 3221225472,
   "dataDir": "/root/taa/data",
   "resultDir": "/root/taa/results",
   "modelInputDir": "/opt/taa/input",
@@ -221,7 +221,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `securityScan` | `true` | Enables AST static security scan during model import |
 | `modelDir` | `/root/taa/models` | Unpacked model code directory |
 | `resultCheck` | `true` | Inspects exported files for unauthorized plaintext data leakage |
-| `maxResultBytes` | `3221225472` (3 GB) | Maximum file size threshold for export leakage inspection before triggering size anomaly warning |
+| `maxFileBytes` | `3221225472` (3 GB) | Maximum file size threshold for export leakage inspection before triggering size anomaly warning |
 | `modelInputDir` | `/opt/taa/input` | Read-only input dataset directory mounted for model training |
 | `modelOutputDir`| `/opt/taa/output/result` | Target output directory for model training checkpoints and artifacts |
 | `modelLogDir` | `/opt/taa/output/log` | Intermediate terminal log directory monitored by log watcher |

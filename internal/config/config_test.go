@@ -153,6 +153,21 @@ func TestLoadStartupConfigReadsKeysDir(t *testing.T) {
 	}
 }
 
+func TestLoadStartupConfigReadsMaxFileBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"maxFileBytes": 5368709120
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+	if cfg.MaxResultBytes != 5368709120 {
+		t.Fatalf("MaxResultBytes = %d, want 5368709120", cfg.MaxResultBytes)
+	}
+}
+
 func TestLoadStartupConfigReadsMaxResultBytes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{

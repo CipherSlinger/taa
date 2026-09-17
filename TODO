@@ -17,7 +17,7 @@
 - [x] **产物泄露检测大小限制支持配置文件动态读取（默认 3GB）**
   - **背景**：`internal/codeaudit/result_checker.go` 中目前硬编码了单结果文件/产物大小上限为 500MB（`MaxResultBytes: 500 * 1024 * 1024`），无法满足现代大模型微调权重文件（如 PyTorch Checkpoint、Safetensors 等数 GB 级别文件）的正常校验与导出需求。
   - **目标方案**：
-    - 在配置文件（`taa-config.json` 及配置映射结构体 `StartupConfig`）中新增 `maxResultBytes`（或 `maxExportFileBytes`）配置项；
+    - 在配置文件（`taa-config.json` 及配置映射结构体 `StartupConfig`）中新增 `maxFileBytes` 配置项；
     - 默认缺省值提升至 `3GB`（`3 * 1024 * 1024 * 1024` 字节）；
     - 初始化 `ResultChecker` 时由配置项动态注入限制阈值，支持依据实际业务负载灵活调控，避免因大文件超限产生非预期阻断。
   - **涉及模块**：`internal/config/config.go`、`internal/codeaudit/result_checker.go`、`configs/taa-docker.json`、`configs/taa-production.json`。
