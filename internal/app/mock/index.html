@@ -510,25 +510,6 @@
     .log-window::-webkit-scrollbar-thumb:hover {
       background: #475569;
     }
-    .log-method-badge {
-      display: inline-block;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 11px;
-      font-weight: 700;
-      padding: 1px 6px;
-      border-radius: 4px;
-      letter-spacing: 0.04em;
-    }
-    .log-method-post {
-      background: rgba(37, 99, 235, 0.2);
-      color: #60a5fa;
-      border: 1px solid rgba(37, 99, 235, 0.35);
-    }
-    .log-method-get {
-      background: rgba(16, 185, 129, 0.2);
-      color: #34d399;
-      border: 1px solid rgba(16, 185, 129, 0.35);
-    }
     .upload-history {
       margin-top: 14px;
       display: flex;
@@ -1412,7 +1393,13 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
 <div id="bodyModal" class="modal-overlay" aria-hidden="true" onclick="if (event.target === this) closeBodyModal();">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="bodyModalTitle">
     <div class="modal-head">
-      <h3 id="bodyModalTitle">返回 body</h3>
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <h3 id="bodyModalTitle">接口详情</h3>
+        <div id="modalTabsBar" class="phase-switch-bar" style="display:inline-flex; padding:2px; gap:2px;">
+          <button type="button" class="phase-switch-btn active" id="modalTabPrimary" onclick="switchModalTab('primary')">返回内容</button>
+          <button type="button" class="phase-switch-btn" id="modalTabSecondary" onclick="switchModalTab('secondary')">请求体</button>
+        </div>
+      </div>
       <div class="modal-actions">
         <button class="secondary" onclick="copyBodyModal(this)">复制</button>
         <button class="secondary" onclick="closeBodyModal()">关闭</button>
@@ -1522,6 +1509,9 @@ function randomizeImportIds() {
 }
 
 const resultBodies = {};
+const interactionStore = {};
+let currentModalInteractionKey = null;
+let currentModalActiveTab = 'primary';
 let lastHealthData = null;
 let lastRegisterData = null;
 let lastReportResData = null;
@@ -1544,7 +1534,154 @@ function formatModalBody(body) {
   return String(parsed != null ? parsed : body);
 }
 
+function recordInteraction(key, data) {
+  if (!interactionStore[key]) {
+    interactionStore[key] = {
+      title: '接口详情',
+      primaryLabel: '返回内容',
+      secondaryLabel: '请求体',
+      primaryContent: null,
+      secondaryContent: null,
+      badgeType: null,
+      badgeData: null,
+      badgeBuilder: null,
+    };
+  }
+  if (data && typeof data === 'object') {
+    Object.assign(interactionStore[key], data);
+  }
+  const modal = document.getElementById('bodyModal');
+  if (modal && modal.classList.contains('open') && currentModalInteractionKey === key) {
+    const item = interactionStore[key];
+    document.getElementById('bodyModalTitle').textContent = item.title || '接口详情';
+    const tabPrimary = document.getElementById('modalTabPrimary');
+    const tabSecondary = document.getElementById('modalTabSecondary');
+    if (tabPrimary) tabPrimary.textContent = item.primaryLabel || '返回内容';
+    if (tabSecondary) tabSecondary.textContent = item.secondaryLabel || '请求体';
+    renderInteractionBadge(item);
+    switchModalTab(currentModalActiveTab);
+  }
+}
+
+function renderInteractionBadge(item) {
+  const badge = document.getElementById('bodyModalBadge');
+  if (!badge) return;
+  badge.innerHTML = '';
+  badge.style.display = 'none';
+  if (!item) return;
+
+  if (typeof item.badgeBuilder === 'function') {
+    item.badgeBuilder(badge, item);
+    return;
+  }
+
+  const badgeType = item.badgeType;
+  if (!badgeType) return;
+
+  const data = item.badgeData != null ? item.badgeData : item.primaryContent;
+  const parsedData = (typeof data === 'string') ? parseJSONMaybe(data) : data;
+  if (!parsedData || typeof parsedData !== 'object') return;
+
+  if (badgeType === 'modelImport') {
+    const rawBody = parseJSONMaybe(parsedData.rawBody);
+    const body = rawBody && typeof rawBody === 'object' ? rawBody : parsedData;
+    const checksum = parsedData.checksum || body.checksum;
+    if (checksum && typeof checksum === 'object') {
+      const algo = checksum.algorithm || 'SM3';
+      const size = checksum.size != null ? checksum.size : '-';
+      const val = checksum.value || '';
+      badge.innerHTML = '<div style="display:flex; flex-direction:column; gap:4px;">' +
+        '<div style="font-weight:700; color:var(--ok);">✓ 模型完整性校验 (checksum)</div>' +
+        '<div style="font-size:12px; font-family:monospace; word-break:break-all;">算法: <b>' + escapeHtml(algo) + '</b> | 大小: <b>' + escapeHtml(String(size)) + ' bytes</b></div>' +
+        '<div style="font-size:11.5px; font-family:monospace; word-break:break-all; color:var(--muted);">哈希值: ' + escapeHtml(val) + '</div>' +
+        '</div>';
+      badge.style.display = 'block';
+    }
+  } else if (badgeType === 'audit') {
+    const rawBody = parseJSONMaybe(parsedData.rawBody);
+    const body = rawBody && typeof rawBody === 'object' ? rawBody : parsedData;
+    const reportObj = (body.report && typeof body.report === 'object') ? body.report : (parseJSONMaybe(body.report) || {});
+    const stats = parsedData.statistics || (reportObj.conclusion && reportObj.conclusion.statistics);
+    const riskLevel = parsedData.riskLevel || parsedData.risk_level || (reportObj.conclusion && reportObj.conclusion.risk_level);
+    if (stats) {
+      const high = stats.high !== undefined ? stats.high : 0;
+      const med = stats.medium !== undefined ? stats.medium : 0;
+      const low = stats.low !== undefined ? stats.low : 0;
+      const rlUpper = escapeHtml(String(riskLevel || 'UNKNOWN').toUpperCase());
+      const rlColor = riskLevel === 'high' ? 'var(--bad)' : (riskLevel === 'medium' ? '#f59e0b' : 'var(--ok)');
+      badge.innerHTML = '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' +
+        '<span>风险等级: <strong style="color:' + rlColor + ';">' + rlUpper + '</strong></span>' +
+        '<span style="color:var(--muted);">|</span>' +
+        '<span style="color:var(--bad); font-weight:600;">高危(high): ' + escapeHtml(String(high)) + '</span>' +
+        '<span style="color:var(--muted);">|</span>' +
+        '<span style="color:#f59e0b; font-weight:600;">中危(medium): ' + escapeHtml(String(med)) + '</span>' +
+        '<span style="color:var(--muted);">|</span>' +
+        '<span style="color:#059669; font-weight:600;">低危(low): ' + escapeHtml(String(low)) + '</span>' +
+        '</div>';
+      badge.style.display = 'block';
+    }
+  }
+}
+
+function switchModalTab(tabType) {
+  currentModalActiveTab = tabType || 'primary';
+  const tabPrimary = document.getElementById('modalTabPrimary');
+  const tabSecondary = document.getElementById('modalTabSecondary');
+  if (tabPrimary && tabSecondary) {
+    if (currentModalActiveTab === 'secondary') {
+      tabSecondary.classList.add('active');
+      tabPrimary.classList.remove('active');
+    } else {
+      tabPrimary.classList.add('active');
+      tabSecondary.classList.remove('active');
+    }
+  }
+
+  const item = currentModalInteractionKey ? (interactionStore[currentModalInteractionKey] || {}) : {};
+  const isSecondary = currentModalActiveTab === 'secondary';
+  const rawContent = isSecondary ? item.secondaryContent : item.primaryContent;
+  const defaultEmptyMsg = isSecondary ? '/* 尚未发送请求体 */' : '/* 暂无返回内容 */';
+  currentModalBody = formatModalBody(rawContent != null && rawContent !== '' ? rawContent : defaultEmptyMsg);
+
+  const contentEl = document.getElementById('bodyModalContent');
+  if (contentEl) {
+    const trimmed = currentModalBody.trim();
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      contentEl.innerHTML = highlightJSON(currentModalBody);
+    } else {
+      contentEl.textContent = currentModalBody;
+    }
+    contentEl.scrollTop = 0;
+  }
+}
+
+function openInteractionModal(key, preferredTab = 'primary') {
+  currentModalInteractionKey = key;
+  const item = interactionStore[key] || {};
+  document.getElementById('bodyModalTitle').textContent = item.title || '接口详情';
+
+  const tabPrimary = document.getElementById('modalTabPrimary');
+  const tabSecondary = document.getElementById('modalTabSecondary');
+  if (tabPrimary) tabPrimary.textContent = item.primaryLabel || '返回内容';
+  if (tabSecondary) tabSecondary.textContent = item.secondaryLabel || '请求体';
+
+  const tabsBar = document.getElementById('modalTabsBar');
+  if (tabsBar) tabsBar.style.display = 'inline-flex';
+
+  renderInteractionBadge(item);
+  switchModalTab(preferredTab);
+
+  const modal = document.getElementById('bodyModal');
+  modal.classList.add('open');
+  modal.setAttribute('aria-hidden', 'false');
+}
+
 function openBodyModal(title, body) {
+  currentModalInteractionKey = null;
+  const tabsBar = document.getElementById('modalTabsBar');
+  if (tabsBar) {
+    tabsBar.style.display = 'none';
+  }
   if (title !== '模型导入结果上报 body' && title !== '代码安全审计结果上报 body') {
     const badge = document.getElementById('bodyModalBadge');
     if (badge) {
@@ -1553,7 +1690,7 @@ function openBodyModal(title, body) {
     }
   }
   currentModalBody = formatModalBody(body);
-  document.getElementById('bodyModalTitle').textContent = title;
+  document.getElementById('bodyModalTitle').textContent = title || '返回 body';
   const contentEl = document.getElementById('bodyModalContent');
   const trimmed = currentModalBody.trim();
   if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
@@ -1561,6 +1698,7 @@ function openBodyModal(title, body) {
   } else {
     contentEl.textContent = currentModalBody;
   }
+  contentEl.scrollTop = 0;
   const modal = document.getElementById('bodyModal');
   modal.classList.add('open');
   modal.setAttribute('aria-hidden', 'false');
@@ -1570,6 +1708,7 @@ function closeBodyModal() {
   const modal = document.getElementById('bodyModal');
   modal.classList.remove('open');
   modal.setAttribute('aria-hidden', 'true');
+  currentModalInteractionKey = null;
   const badge = document.getElementById('bodyModalBadge');
   if (badge) {
     badge.innerHTML = '';
@@ -3286,7 +3425,7 @@ async function quickSwitchPhase(phase) {
   const dotEl = document.getElementById('phaseSwitchDot');
   const detailBtn = document.getElementById('phaseSwitchDetailBtn');
   const detailContent = document.getElementById('phaseSwitchDetailContent');
-  const buttons = document.querySelectorAll('.phase-switch-btn');
+  const buttons = document.querySelectorAll('.phase-switch-btn[data-phase]');
 
   buttons.forEach(btn => btn.disabled = true);
   if (dotEl) dotEl.className = 'dot';
