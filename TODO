@@ -1,24 +1,98 @@
-- [x] 任务终止接口
-- [x] 任务终端日志
-- [x] 任务进度
-- [x] 模型下发结果上报、审计结果上报接口拆分（/v1/taa/reportModelImport、/v1/taa/reportAudit）
-- [x] 高中低风险统计字段（statistics: high/medium/low）
-- [x] 模型下载上报增加 hash 字段（checksum）
-- [x] 结果返回使用zip包格式
+# TAA (Trusted Application Agent) 任务规划与演进路线 (Roadmap & TODO)
 
-- 返回结果中移除加入的json结果文件 修改为 接口约束
+> 本文档用于跟踪 TAA 机密计算框架的近期核心迭代、中长期架构演进规划以及已完成的历史里程碑。
 
-架构调整：
-taa / qwen 独立 + 通信协议
------------------------------------------------------------------------------------------
+---
 
-TAA 优化：
-- taa 重启敏感数据持久化处理：使用sealing key加密保存
-- 只支持python 正则匹配，修改为使用 semgrep 扫描
+## 📌 一、近期核心迭代 (High Priority / Next Sprint)
 
-代码审计：
-- qwen thinking 模式
-- Finding 级并发仲裁（Worker Pool）：
-   目前 Go 端是单协程 for 循环逐个验证，若改用 3~5 个 Worker 的并发协程池并发向 Ollama 发送切片推理，12 次请求耗时可直接除以并发度。
-- 同文件多 Finding 聚合送审（Batch Prompting）：
-   将同一个文件内命中的多处 Finding 合并为一个结构化 Prompt 一次性交由 LLM 判决，把 15 次 HTTP 往返骤降为 2~3 次。
+- [ ] **优化训练产物输出：移除结果目录中注入的 JSON 报告，改为纯接口契约约束**
+  - **背景**：目前 TAA 在任务执行完成后，会在用户训练结果目录（`ResultDir`）下主动生成并写入 `training_report.json`，且在导出压缩包时将其一并打包输出。这不仅对模型训练方的结果目录产生了非预期注入，而且当训练方程序自行校验或遍历目录文件时可能引起格式不兼容。
+  - **目标方案**：
+    - 移除结果产物目录中主动创建 `training_report.json` 文件的逻辑；
+    - 将结构化报告内容（状态码、任务退出码、资源开销、输出产物索引等）转为纯接口数据结构，通过 `/v1/taa/reportRes` 平台回调载荷与 `/v1/taa/export` 响应元数据对外提供；
+    - 确保导出的结果 Zip 包内仅包含模型训练自身生成的纯净产物。
+  - **涉及模块**：`internal/controller/import_processing.go`、`internal/controller/handler_export.go`、`internal/coordinator/flow_training.go`、API 契约文档。
+
+- [ ] **产物泄露检测大小限制支持配置文件动态读取（默认 3GB）**
+  - **背景**：`internal/codeaudit/result_checker.go` 中目前硬编码了单结果文件/产物大小上限为 500MB（`MaxResultBytes: 500 * 1024 * 1024`），无法满足现代大模型微调权重文件（如 PyTorch Checkpoint、Safetensors 等数 GB 级别文件）的正常校验与导出需求。
+  - **目标方案**：
+    - 在配置文件（`taa-config.json` 及配置映射结构体 `StartupConfig`）中新增 `maxResultBytes`（或 `maxExportFileBytes`）配置项；
+    - 默认缺省值提升至 `3GB`（`3 * 1024 * 1024 * 1024` 字节）；
+    - 初始化 `ResultChecker` 时由配置项动态注入限制阈值，支持依据实际业务负载灵活调控，避免因大文件超限产生非预期阻断。
+  - **涉及模块**：`internal/config/config.go`、`internal/codeaudit/result_checker.go`、`configs/taa-docker.json`、`configs/taa-production.json`。
+
+---
+
+## 🏗️ 二、架构调整与解耦 (Architecture & Decoupling)
+
+- [ ] **TAA 与 Qwen 推理引擎完全独立解耦 + 标准化通信协议**
+  - **背景**：当前 TAA 容器内兼具了 TEE 业务流管控与 Ollama/Qwen 推理子进程的双重职责（包括子进程常驻、日志重定向、就绪探测）。这种紧耦合导致计算资源配额无法精细划分，且外部大模型推理引擎的潜在异常可能波及 TAA 守护进程稳定性。
+  - **目标方案**：
+    - **服务边界拆分**：将推理服务（Ollama / Qwen / vLLM）与 TAA 拆分为独立的计算单元或独立容器，各自设定资源限制与调度策略；
+    - **通信契约标准化**：制定 TAA ↔ Qwen 间轻量、清晰的通信协议（支持 HTTP REST / gRPC / Unix Domain Socket），统一请求结构（代码切片、行号、上下文、静态规则命中、Prompt 规约）与判定响应模型；
+    - **弹性容错与熔断**：实现独立的健康探测、自动重试与故障降级通道，确保推理服务抖动时不阻塞 TAA 核心证明与调度链路。
+  - **涉及模块**：`cmd/taa`、`internal/app/taa`、`internal/codeaudit`、`deploy.sh`。
+
+---
+
+## 🛡️ 三、TAA 安全加固与硬件结合 (Security & Hardening)
+
+- [ ] **TAA 重启敏感数据持久化与安全密封（Sealing Key 加密保存）**
+  - **背景**：TAA 在生命周期中持有会话密钥、认证状态及运行上下文。当前状态存储虽已加密，但尚未与 Hygon CSV 硬件级安全密封（Sealing）机制深度融合。
+  - **目标方案**：
+    - 结合 Hygon CSV 硬件提供的安全派生机制（基于硬件根密钥与 TEE 实例度量值派生出专用 Sealing Key）；
+    - 本地敏感数据及状态文件持久化时，使用该 Sealing Key 进行加密落盘；
+    - 达成“仅在未被篡改的相同度量值飞地环境中方可解密恢复”，彻底免疫宿主机离线转储分析与非授权镜像替换攻击。
+  - **涉及模块**：`pkg/csvattest`、`internal/store`、`internal/runtime`。
+
+- [ ] **静态代码扫描引擎升级：由基础 Python 正则匹配演进为 Semgrep 语义分析**
+  - **背景**：当前静态代码安全检查主要依赖硬编码的 Python 正则规则与基础 AST 扫描，对于多语言环境（Python / C / Shell）、字符拆分混淆、跨函数传递及动态调用链追踪能力有限，容易引发误报或漏报。
+  - **目标方案**：
+    - 引入 Semgrep 静态分析框架，将正则模式重构为标准 Semgrep YAML 语义分析规则集；
+    - 引入基于污点分析（Taint Tracking）的数据流检测，精准拦截反弹 Shell、无文件内存加载、环境变量窃取、越权提权等高危特征；
+    - 继续沿用“静态粗筛 + LLM 语义细审”的双层漏斗机制，大幅提高静态初筛的高危命中精度。
+  - **涉及模块**：`internal/codeaudit/scanner.go`、`internal/codeaudit/rules.go`。
+
+---
+
+## 🧠 四、代码审计与 LLM 推理性能优化 (Audit & Inference Performance)
+
+- [ ] **引入 Qwen Thinking 深度思考模式 (Reasoning Chain)**
+  - **背景**：高水平攻击载荷常采用多层包装、混淆或间接执行手段进行防御对抗。普通直接生成模式下，小模型往往容易直接给出直觉结论，缺乏对攻击路径的推演过程。
+  - **目标方案**：
+    - 引入具备推理链思考能力的新一代模型（如 Qwen2.5-Coder / DeepSeek-R1 系列）；
+    - 优化 Prompt 结构与指令模板，要求模型在 `<think>` 区域内完成调用链路复盘与潜在危害论证，最终提炼标准化 JSON 仲裁结果；
+    - 大幅增强对对抗性样本判定的深度与可解释性。
+  - **涉及模块**：`internal/codeaudit/prompt.go`、`internal/codeaudit/verifier.go`。
+
+- [ ] **Finding 级并发仲裁协程池 (Worker Pool)**
+  - **背景**：目前 Go 端对于静态扫描命中的多个 Finding 采用单协程 `for` 循环逐一向本地 LLM 服务发起 HTTP 请求。若单批次命中 12 处 Finding，总耗时为线性叠加（例如 12 × 2s = 24s）。
+  - **目标方案**：
+    - 构建可配置容量的 Worker Pool 协程池（建议并发度 3~5）；
+    - 将待仲裁的 Finding 切片并发派发给各 Worker 异步发起推理；
+    - 推理总耗时直接除以并发度，将数十秒的模型导入阻断时间压降至数秒级别。
+  - **涉及模块**：`internal/codeaudit/verifier.go`。
+
+- [ ] **同文件多 Finding 聚合送审 (Batch Prompting)**
+  - **背景**：当同一个代码源文件内命中多处可疑位置时，逐条送审会导致重复传输该文件的上下文片段，引起大量冗余的 HTTP 往返与服务端 Prefill 开销（例如 15 处 Finding 产生 15 次往返）。
+  - **目标方案**：
+    - 按源文件维度对命中项进行聚合分组；
+    - 将同一文件内的多个 Finding 合并进一个包含全局上下文的结构化 Batch Prompt；
+    - 单次 HTTP 往返即可完成多点联动仲裁，将 15 次 HTTP 交互骤降至 2~3 次，显著削减推理资源消耗并加快审计收敛速度。
+  - **涉及模块**：`internal/codeaudit/verifier.go`、`internal/codeaudit/prompt.go`。
+
+---
+
+## ✅ 五、已完成核心里程碑 (Completed Milestones)
+
+- [x] **任务生命周期终止接口**：实现 `/v1/taa/stopTraining`，支持递归终止目标进程树并清理中间运行态
+- [x] **实时终端日志增量上报**：实现 `/v1/taa/modelLog`，支持训练标准输出与错误流增量去重并实时推送到平台
+- [x] **动态训练进度上报通道**：实现 `/v1/taa/reportProgress`，实时同步任务执行进度百分比与阶段说明
+- [x] **模型导入与审计结果上报解耦**：拆分为 `/v1/taa/reportModelImport` 与 `/v1/taa/reportAudit` 两个独立平台回调
+- [x] **代码审计风险分级标准化**：统计指标统一收敛为标准 `high` / `medium` / `low` 风险分布
+- [x] **模型包哈希校验和上报**：模型导入完成时自动计算并上报 SM3 / SHA256 校验和（`checksum` 结构）
+- [x] **训练结果产物加密打包**：支持 SM2/SM4 国密数字信封封装与 Zip 格式压缩归档
+- [x] **纯 Go CSV 硬件远程证明底层驱动**：直接通过 `/dev/csv-guest` ioctl 交互，消除对外部 C 库依赖
+- [x] **状态持久化与崩溃自愈机制**：实现冷启动崩溃自愈、孤儿进程清理与异常归档
+- [x] **部署模式收敛与精简**：彻底下线已过时的裸机 local 模式与 remote debug 模式，统一收敛为生产标准的 `docker` 与 `remote` 模式
