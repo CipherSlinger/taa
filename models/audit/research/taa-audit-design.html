@@ -3698,9 +3698,9 @@
             <h3 class="bm-banner-title">基准全景：4 大真实工业基座 / 10 细分对抗家族 / 100 样本完全正交平衡矩阵</h3>
           </div>
           <p class="bm-banner-text">
-            评测基准彻底淘汰伪数据模拟玩具脚本，选取开源社区 4 大工业级经典算法训练工程（<code>XGBoost-Finance</code> 真实表格金融风控、<code>Retina-ResNet</code> 真实医学影像视觉分类、<code>YOLOv8-Detection</code> 真实工业目标检测、<code>BERT-Sentiment</code> 真实 HuggingFace 文本情感微调）作为源码基座，严格派生出 100 个具备独立沙箱的代码样本。
+            评测基准选用开源社区 4 大工业级经典算法训练工程（<code>XGBoost-Finance</code> 真实表格金融风控、<code>Retina-ResNet</code> 真实医学影像视觉分类、<code>Detection-Industrial</code> 工业表面缺陷检测、<code>BERT-Sentiment</code> 真实 HuggingFace 文本情感微调）作为源码基座，严格派生出 100 个具备独立沙箱的代码样本。
             样本集按 <strong>50 个良性误报探针（Benign FP Probes）</strong> 与 <strong>50 个恶意攻击载荷（Malicious Attack Samples）</strong> 在 4 大基座中呈 <strong>1:1 严格正交对称分布（每个基座各含 12~13 个良性与 13~12 个恶意样本）</strong>，
-            彻底切断大模型利用“识别项目类型”盲猜标签的先验投机途径，用于精准对比<strong>“纯端到端 LLM 盲审”</strong>与<strong>“静态快速初筛 + LLM 定向语义仲裁”</strong>在实际算法工程代码中的综合对抗能力与工程 ROI。
+            实现领域分布与标签属性完全解耦，用于精准对比<strong>“纯端到端 LLM 盲审”</strong>与<strong>“静态快速初筛 + LLM 定向语义仲裁”</strong>在实际算法工程代码中的综合对抗能力与工程 ROI。
           </p>
         </div>
 
@@ -3724,7 +3724,7 @@
               <strong>审计逻辑：</strong>完全绕过静态正则与 AST 预处理，将样本文件（全量代码或前 80~200 行源码）直接拼入 Prompt，由大模型端到端理解代码并输出最终安全结论。
             </p>
             <p class="bm-goal-desc" style="color: var(--muted); font-size: 12px; line-height: 1.55;">
-              <strong>理论假设与工程缺陷：</strong><br>
+              <strong>理论假设与运行特性：</strong><br>
               1. <strong>无法进行快速旁路（Bypass Rate 0%）：</strong>必须对 100% 的代码样本进行高功耗大模型推理，GPU/CPU 算力消耗高企，批量扫描延迟达数秒乃至十几秒。<br>
               2. <strong>长上下文注意力涣散 (Lost in the Middle)：</strong>端到端大模型缺少精准的代码违规行号与模式引导，在长源码中难以准确定位隐蔽的反弹 Shell
               或多层混淆代码，导致<strong>漏报率（FNR）上升</strong>。<br>
@@ -3958,21 +3958,21 @@
         <!-- 4大真实工业基座与全正交架构 -->
         <div class="card" style="margin-top: 24px; padding: 20px;">
           <h3 style="margin-top:0; font-size: 15px; display: flex; align-items: center; gap: 8px;">
-            <span>🔬</span> 4 大真实工业基座与全正交架构：彻底消除领域混淆偏置 (Orthogonal Design)
+            <span>🔬</span> 4 大真实工业基座与全正交平衡架构设计 (Orthogonal Design)
           </h3>
           <p style="font-size: 13px; line-height: 1.6; color: var(--text); margin: 0 0 12px;">
-            在早期基准设计中，良性样本全部取自简单脚本，恶意样本全部取自深度学习工程，造成了严重的<strong>领域混淆偏置（Domain Confounding）</strong>与标签泄漏（模型仅凭识别代码属于哪种项目即可盲猜结论）。为此，Audit-100 全面淘汰伪数据模拟玩具，正式确立<strong>4 大开源经典生产工程基座</strong>，并构建 <strong>4 基座 × 25 样本 = 100 样本完全正交平衡矩阵</strong>：
+            Audit-100 评测体系确立<strong>4 大开源经典生产工程基座</strong>，构建 <strong>4 基座 × 25 样本 = 100 样本完全正交平衡矩阵</strong>。所有良性业务代码与恶意攻击载荷在各个工业基座间保持严格 50:50 均衡对称分布，确保评测全面聚焦于代码安全特征与真实攻击模式判定：
           </p>
           <div class="spec-grid" style="margin-top: 8px;">
             <div class="spec" style="background: var(--panel-2);">
               <div class="tag" style="color: var(--accent);">P1 · 真实表格机器学习 (25 样本: 13良/12恶)</div>
               <h4 style="margin: 4px 0 8px; font-size: 13.5px;">XGBoost-Finance 信用卡风控流水线</h4>
-              <p style="font-size: 12.5px; color: var(--muted); margin:0;">基于 Kaggle 真实脱敏信用卡交易数据，涵盖特征分箱、数据标准化清洗、5折交叉验证与 <code>joblib</code> 序列化，取代原无真实参考性的模拟脚本。</p>
+              <p style="font-size: 12.5px; color: var(--muted); margin:0;">基于 Kaggle 真实脱敏信用卡交易数据，涵盖特征分箱、数据标准化清洗、5折交叉验证与 <code>joblib</code> 序列化，提供完整严谨的表格学习工程结构。</p>
             </div>
             <div class="spec" style="background: var(--panel-2);">
               <div class="tag" style="color: var(--accent);">P2 · 真实计算机视觉 CNN (25 样本: 12良/13恶)</div>
               <h4 style="margin: 4px 0 8px; font-size: 13.5px;">Retina-ResNet 医疗医学影像分类</h4>
-              <p style="font-size: 12.5px; color: var(--muted); margin:0;">基于真实 ResNet-50 眼底血管影像诊断流水线，经<strong>白盒底噪清洗</strong>（移除原生 <code>os.system</code> 与 <code>eval</code>），提供纯净的真实深度学习分类基座。</p>
+              <p style="font-size: 12.5px; color: var(--muted); margin:0;">基于真实 ResNet-50 眼底血管影像诊断流水线，经<strong>白盒底噪清洗</strong>，提供严格 0-Finding 纯净的深度学习分类基座。</p>
             </div>
             <div class="spec" style="background: var(--panel-2);">
               <div class="tag" style="color: var(--accent);">P3 · 真实工业目标检测 (25 样本: 12良/13恶)</div>
@@ -4006,7 +4006,7 @@
                   <th style="padding: 6px; border: 1px solid var(--line); text-align: left;">对抗家族</th>
                   <th style="padding: 6px; border: 1px solid var(--line);">P1: XGBoost</th>
                   <th style="padding: 6px; border: 1px solid var(--line);">P2: Retina</th>
-                  <th style="padding: 6px; border: 1px solid var(--line);">P3: YOLOv8</th>
+                  <th style="padding: 6px; border: 1px solid var(--line);">P3: Detection</th>
                   <th style="padding: 6px; border: 1px solid var(--line);">P4: BERT</th>
                   <th style="padding: 6px; border: 1px solid var(--line);">家族合计</th>
                   <th style="padding: 6px; border: 1px solid var(--line);">预期结论</th>
@@ -4126,7 +4126,7 @@
             <span class="mode-badge static-llm" style="background: var(--line); color: var(--text); font-size: 11px;">v2 正交实测基准 · 三轨 18 组全矩阵实测</span>
           </div>
           <p style="font-size: 12.5px; color: var(--muted); margin: 0; line-height: 1.6;">
-            <strong>基准版本说明：</strong>本章节展示的 18 组对照数据属于 <strong>Audit-100 v2 全正交基准实测大盘</strong>（6 款 Qwen 本地模型 × 3 种评测方案）。v2 彻底消除了 v1 的域混淆与快捷学习偏置，基于 <strong>4 大真实工业微工程基座</strong>（金融风控、医学眼底、工业缺陷、情感分析）构建严格 50:50 良恶均衡的 100 个自包含测试沙箱；统合同步 Go 与 Python 13 条静态规则，引入 Finding 锚点动态切片与严格 Fail-Closed 安全门禁；并在国内代码安全评测中首次引入 <strong>关键攻击归因率 (Attribution Precision)</strong> 与 <strong>1,000 次 Bootstrap 95% 置信区间</strong>。
+            <strong>基准版本说明：</strong>本章节展示的 18 组对照数据属于 <strong>Audit-100 v2 全正交基准实测大盘</strong>（6 款 Qwen 本地模型 × 3 种评测方案）。基准体系基于 <strong>4 大真实工业微工程基座</strong>（金融风控、医学眼底、工业缺陷、情感分析）构建严格 50:50 良恶均衡的 100 个自包含测试沙箱，采用全正交平衡设计；统合同步 Go 与 Python 13 条静态规则，引入 Finding 锚点动态切片与严格 Fail-Closed 安全门禁；并在国内代码安全评测中首次引入 <strong>关键攻击归因率 (Attribution Precision)</strong> 与 <strong>1,000 次 Bootstrap 95% 置信区间</strong>。
           </p>
         </div>
 

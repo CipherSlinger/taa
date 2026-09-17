@@ -666,7 +666,7 @@ def update_html_report(html_path: Union[str, Path], runs: list[dict[str, Any]]) 
             <span class="mode-badge static-llm" style="background: var(--line); color: var(--text); font-size: 11px;">v2 正交实测基准 · 三轨 18 组全矩阵实测</span>
           </div>
           <p style="font-size: 12.5px; color: var(--muted); margin: 0; line-height: 1.6;">
-            <strong>基准版本说明：</strong>本章节展示的 18 组对照数据属于 <strong>Audit-100 v2 全正交基准实测大盘</strong>（6 款 Qwen 本地模型 × 3 种评测方案）。v2 彻底消除了 v1 的域混淆与快捷学习偏置，基于 <strong>4 大真实工业微工程基座</strong>（金融风控、医学眼底、工业缺陷、情感分析）构建严格 50:50 良恶均衡的 100 个自包含测试沙箱；统合同步 Go 与 Python 13 条静态规则，引入 Finding 锚点动态切片与严格 Fail-Closed 安全门禁；并在国内代码安全评测中首次引入 <strong>关键攻击归因率 (Attribution Precision)</strong> 与 <strong>1,000 次 Bootstrap 95% 置信区间</strong>。
+            <strong>基准版本说明：</strong>本章节展示的 18 组对照数据属于 <strong>Audit-100 v2 全正交基准实测大盘</strong>（6 款 Qwen 本地模型 × 3 种评测方案）。基准体系基于 <strong>4 大真实工业微工程基座</strong>（金融风控、医学眼底、工业缺陷、情感分析）构建严格 50:50 良恶均衡的 100 个自包含测试沙箱，采用全正交平衡设计；统合同步 Go 与 Python 13 条静态规则，引入 Finding 锚点动态切片与严格 Fail-Closed 安全门禁；并在国内代码安全评测中首次引入 <strong>关键攻击归因率 (Attribution Precision)</strong> 与 <strong>1,000 次 Bootstrap 95% 置信区间</strong>。
           </p>
         </div>
 
