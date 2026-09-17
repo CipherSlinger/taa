@@ -200,8 +200,8 @@ func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error 
 	}
 	defer client.Close()
 
-	probeTimeout := 3 * time.Second
-	if timeout < probeTimeout {
+	probeTimeout := 5 * time.Second
+	if cfg.LLMTimeoutMs > 0 {
 		probeTimeout = timeout
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)

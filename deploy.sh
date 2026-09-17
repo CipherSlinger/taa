@@ -129,8 +129,8 @@ REMOTE_TAA_CONFIG_PATH="${REMOTE_TAA_CONFIG_PATH:-$REMOTE_DIR/$TAA_CONFIG_FILE}"
 CONTAINER_TAA_CONFIG_PATH="${CONTAINER_TAA_CONFIG_PATH:-$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE}"
 CONTRACT="${CONTRACT:-}"
 TAA_LOG_FILE="${TAA_LOG_FILE:-$TAA_CONTAINER_WORKDIR/taa.log}"
-# Ollama / Qwen：本地离线包、远程缓存目录、容器内目录、服务监听和模型配置。
-# TAA 与推理引擎完全解耦，通过 taa-isp/v1 协议（UDS 或 HTTP REST）连接独立推理服务。
+# Ollama / Qwen: offline bundle, remote cache dir, container dir, host and model config.
+# TAA is decoupled from the inference engine, connecting via taa-isp/v1 protocol (UDS or HTTP REST).
 OLLAMA_LOCAL_DIR="${OLLAMA_LOCAL_DIR:-$PROJECT_DIR/models/audit/ollama-qwen}"
 OLLAMA_DIR_NAME="${OLLAMA_DIR_NAME:-$(basename "$OLLAMA_LOCAL_DIR")}"
 REMOTE_OLLAMA_DIR="${REMOTE_OLLAMA_DIR:-$REMOTE_DIR/$OLLAMA_DIR_NAME}"
