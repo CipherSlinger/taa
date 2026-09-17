@@ -1,8 +1,10 @@
 package inference_test
 
 import (
+	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -256,4 +258,243 @@ func TestCircuitBreaker_Concurrency(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestCircuitBreaker_HalfOpenSingleProbe(t *testing.T) {
+	cooldown := 30 * time.Millisecond
+	cb := inference.NewCircuitBreaker(1, cooldown)
+
+	// Trip breaker to OPEN
+	cb.RecordFailure()
+	if cb.Allow() {
+		t.Fatal("expected breaker to be OPEN")
+	}
+
+	// Wait for cooldown
+	time.Sleep(cooldown + 10*time.Millisecond)
+
+	// First call in half-open state should succeed as probe
+	if !cb.Allow() {
+		t.Fatal("expected first Allow() in half-open state to return true")
+	}
+
+	// Second sequential call while probe is active should be rejected
+	if cb.Allow() {
+		t.Fatal("expected second Allow() while probe is active to return false")
+	}
+}
+
+func TestCircuitBreaker_HalfOpenConcurrentProbes(t *testing.T) {
+	cooldown := 30 * time.Millisecond
+	cb := inference.NewCircuitBreaker(1, cooldown)
+
+	// Trip breaker to OPEN
+	cb.RecordFailure()
+	time.Sleep(cooldown + 10*time.Millisecond)
+
+	// Concurrently invoke Allow() from multiple goroutines
+	numGoroutines := 30
+	var wg sync.WaitGroup
+	var allowedCount atomic.Int32
+
+	start := make(chan struct{})
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if cb.Allow() {
+				allowedCount.Add(1)
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	if allowedCount.Load() != 1 {
+		t.Fatalf("expected exactly 1 probe to be allowed in half-open state, got %d", allowedCount.Load())
+	}
+}
+
+func TestCircuitBreaker_ProbeFailure(t *testing.T) {
+	cooldown := 30 * time.Millisecond
+	cb := inference.NewCircuitBreaker(1, cooldown)
+
+	cb.RecordFailure()
+	time.Sleep(cooldown + 10*time.Millisecond)
+
+	// Allow probe
+	if !cb.Allow() {
+		t.Fatal("expected probe to be allowed")
+	}
+
+	// Probe fails -> StateOpen and probeActive must be cleared
+	cb.RecordFailure()
+	if cb.State() != inference.StateOpen {
+		t.Fatalf("expected StateOpen after probe failure, got %v", cb.State())
+	}
+	if cb.Allow() {
+		t.Fatal("expected Allow() to return false immediately after probe failure")
+	}
+
+	// Wait for cooldown again -> probe should be permitted again
+	time.Sleep(cooldown + 10*time.Millisecond)
+	if !cb.Allow() {
+		t.Fatal("expected new probe to be allowed after second cooldown")
+	}
+}
+
+func TestCircuitBreaker_ProbeSuccess(t *testing.T) {
+	cooldown := 30 * time.Millisecond
+	cb := inference.NewCircuitBreaker(1, cooldown)
+
+	cb.RecordFailure()
+	time.Sleep(cooldown + 10*time.Millisecond)
+
+	if !cb.Allow() {
+		t.Fatal("expected probe to be allowed")
+	}
+	if cb.Allow() {
+		t.Fatal("expected second call while probe active to return false")
+	}
+
+	// Probe succeeds -> transitions to StateClosed, clears probeActive
+	cb.RecordSuccess()
+	if cb.State() != inference.StateClosed {
+		t.Fatalf("expected StateClosed after probe success, got %v", cb.State())
+	}
+
+	// In StateClosed, multiple calls to Allow() must all return true
+	for i := 0; i < 5; i++ {
+		if !cb.Allow() {
+			t.Fatalf("expected Allow() to return true in StateClosed on call %d", i+1)
+		}
+	}
+}
+
+func TestCircuitBreaker_RecordSuccess_ResetsFailCount(t *testing.T) {
+	cb := inference.NewCircuitBreaker(3, 100*time.Millisecond)
+
+	// 2 failures (threshold is 3, so breaker remains closed)
+	cb.RecordFailure()
+	cb.RecordFailure()
+	if cb.State() != inference.StateClosed {
+		t.Fatalf("expected StateClosed after 2 failures, got %v", cb.State())
+	}
+
+	// Reset via RecordSuccess in StateClosed
+	cb.RecordSuccess()
+	if cb.State() != inference.StateClosed {
+		t.Fatalf("expected StateClosed after RecordSuccess, got %v", cb.State())
+	}
+
+	// Another 2 failures; if failCount was reset, breaker remains closed (2 < 3)
+	cb.RecordFailure()
+	cb.RecordFailure()
+	if cb.State() != inference.StateClosed {
+		t.Fatalf("expected StateClosed because failCount was reset, got %v", cb.State())
+	}
+
+	// 3rd failure trips the breaker to StateOpen
+	cb.RecordFailure()
+	if cb.State() != inference.StateOpen {
+		t.Fatalf("expected StateOpen after 3rd failure post-reset, got %v", cb.State())
+	}
+}
+
+func TestExecuteWithRetryContext_PreCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	attempts := 0
+	op := func() error {
+		attempts++
+		return nil
+	}
+
+	err := inference.ExecuteWithRetryContext(ctx, op, 3, 10*time.Millisecond)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if attempts != 0 {
+		t.Fatalf("expected 0 attempts for pre-cancelled context, got %d", attempts)
+	}
+}
+
+func TestExecuteWithRetryContext_CancelledDuringSleep(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	attempts := 0
+	op := func() error {
+		attempts++
+		if attempts == 1 {
+			// Cancel context shortly after first failure
+			go func() {
+				time.Sleep(10 * time.Millisecond)
+				cancel()
+			}()
+			return inference.ErrRetryable
+		}
+		return nil
+	}
+
+	start := time.Now()
+	// baseDelay is set high (500ms), but cancellation should interrupt sleep promptly
+	err := inference.ExecuteWithRetryContext(ctx, op, 3, 500*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if elapsed >= 300*time.Millisecond {
+		t.Fatalf("expected cancellation to interrupt sleep quickly, but took %v", elapsed)
+	}
+	if attempts != 1 {
+		t.Fatalf("expected 1 attempt before cancel, got %d", attempts)
+	}
+}
+
+func TestExecuteWithRetryContext_ContextErrorFromOp(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts := 0
+	op := func() error {
+		attempts++
+		cancel()
+		return ctx.Err()
+	}
+
+	err := inference.ExecuteWithRetryContext(ctx, op, 3, 10*time.Millisecond)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("expected exactly 1 attempt when op returns ctx.Err(), got %d", attempts)
+	}
+}
+
+func TestExecuteWithRetryContext_SafeDefaultBaseDelay(t *testing.T) {
+	attempts := 0
+	op := func() error {
+		attempts++
+		if attempts < 2 {
+			return inference.ErrRetryable
+		}
+		return nil
+	}
+
+	// baseDelay <= 0 should safely default to 100ms
+	start := time.Now()
+	err := inference.ExecuteWithRetryContext(context.Background(), op, 2, 0)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+	if elapsed < 50*time.Millisecond {
+		t.Fatalf("expected non-zero sleep duration from safe default baseDelay, elapsed: %v", elapsed)
+	}
 }

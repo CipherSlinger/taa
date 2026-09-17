@@ -1,9 +1,10 @@
 package inference
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"sync"
 	"time"
 )
@@ -48,6 +49,7 @@ type CircuitBreaker struct {
 	threshold    int
 	cooldown     time.Duration
 	lastFailTime time.Time
+	probeActive  bool
 }
 
 // NewCircuitBreaker constructs a CircuitBreaker instance.
@@ -69,8 +71,8 @@ func NewCircuitBreaker(threshold int, cooldown time.Duration) *CircuitBreaker {
 
 // Allow reports whether a new request is permitted to proceed.
 // In StateClosed: returns true.
-// In StateOpen: transitions to StateHalfOpen and returns true if cooldown elapsed, else returns false.
-// In StateHalfOpen: returns true to allow a probe request.
+// In StateOpen: transitions to StateHalfOpen, activates probe, and returns true if cooldown elapsed; otherwise returns false.
+// In StateHalfOpen: allows only one active probe request at a time, returning false if a probe is already in flight.
 func (cb *CircuitBreaker) Allow() bool {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -82,11 +84,16 @@ func (cb *CircuitBreaker) Allow() bool {
 	case StateOpen:
 		if now.Sub(cb.lastFailTime) > cb.cooldown {
 			cb.state = StateHalfOpen
+			cb.probeActive = true
 			return true
 		}
 		return false
 	case StateHalfOpen:
-		return true
+		if !cb.probeActive {
+			cb.probeActive = true
+			return true
+		}
+		return false
 	default:
 		return true
 	}
@@ -99,6 +106,7 @@ func (cb *CircuitBreaker) RecordSuccess() {
 
 	cb.failCount = 0
 	cb.state = StateClosed
+	cb.probeActive = false
 }
 
 // RecordFailure increments failure counts and opens the circuit breaker if the threshold is reached or in StateHalfOpen.
@@ -106,6 +114,7 @@ func (cb *CircuitBreaker) RecordFailure() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
+	cb.probeActive = false
 	cb.failCount++
 	cb.lastFailTime = time.Now()
 	if cb.state == StateHalfOpen || cb.failCount >= cb.threshold {
@@ -125,23 +134,34 @@ func (cb *CircuitBreaker) State() State {
 	return cb.state
 }
 
-// ExecuteWithRetry executes an operation with exponential backoff and jitter for retryable errors.
-func ExecuteWithRetry(op func() error, maxRetries int, baseDelay time.Duration) error {
+// ExecuteWithRetryContext executes an operation with context cancellation awareness,
+// exponential backoff, and jitter for retryable errors.
+func ExecuteWithRetryContext(ctx context.Context, op func() error, maxRetries int, baseDelay time.Duration) error {
 	if maxRetries < 0 {
 		maxRetries = 0
+	}
+	if baseDelay <= 0 {
+		baseDelay = 100 * time.Millisecond
 	}
 
 	var err error
 	delay := baseDelay
+	if delay > 5*time.Second {
+		delay = 5 * time.Second
+	}
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		err = op()
 		if err == nil {
 			return nil
 		}
 
-		// Only retry on transient/retryable errors.
-		if !errors.Is(err, ErrRetryable) {
+		// Non-retryable or context error from op should abort retry loop immediately.
+		if !errors.Is(err, ErrRetryable) || (ctx != nil && errors.Is(err, ctx.Err())) {
 			return err
 		}
 
@@ -152,7 +172,22 @@ func ExecuteWithRetry(op func() error, maxRetries int, baseDelay time.Duration) 
 
 		// Apply jittered exponential backoff (0.8x to 1.2x delay).
 		jitter := float64(delay) * (0.8 + 0.4*rand.Float64())
-		time.Sleep(time.Duration(jitter))
+		sleepDuration := time.Duration(jitter)
+		if sleepDuration > 5*time.Second {
+			sleepDuration = 5 * time.Second
+		}
+
+		if ctx != nil {
+			timer := time.NewTimer(sleepDuration)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		} else {
+			time.Sleep(sleepDuration)
+		}
 
 		delay *= 2
 		if delay > 5*time.Second {
@@ -161,4 +196,9 @@ func ExecuteWithRetry(op func() error, maxRetries int, baseDelay time.Duration) 
 	}
 
 	return err
+}
+
+// ExecuteWithRetry executes an operation with exponential backoff and jitter for retryable errors.
+func ExecuteWithRetry(op func() error, maxRetries int, baseDelay time.Duration) error {
+	return ExecuteWithRetryContext(context.Background(), op, maxRetries, baseDelay)
 }
