@@ -12,54 +12,6 @@ import (
 	"taa/internal/inference"
 )
 
-const analysisPromptTemplate = `你是一个代码安全审计专家。请分析以下代码片段是否存在窃取数据、外传数据或其他恶意行为。
-
-## 代码片段
-文件: %s (第 %d 行)
-` + "```python" + `
-%s
->>> %s   ← 触发规则的代码
-%s
-` + "```" + `
-
-## 触发的规则
-规则ID: %s
-类别: %s
-严重度: %s
-规则说明: %s
-
-## 判定优先级与安全边界
-1. 恶意/可疑判定 (MALICIOUS 或 SUSPICIOUS)：
-   - 必须有上下文明确表明代码在窃取或外发凭据（密钥、令牌、密码、证书、私钥、敏感配置文件）；
-   - 或明确在通过未授权网络、隐写载荷、非法持久化通道外传真实的敏感原始数据/特征矩阵；
-   - 只有确凿恶意利用证据时才可判定为 MALICIOUS 或 SUSPICIOUS。
-
-2. 良性判定 (BENIGN)（严格消除训练与日志误报）：
-   - 日志与标准输出（如 EMB_003）：打印数据集名称/路径标识/类别标签/状态分隔线（例如 print(dataset + '--------')、print(dataset)）、打印训练批次统计、模型参数结构、计算进度、评估指标（如 accuracy、loss、AUC、sensitivity、specificity、F1-score、ci 置信区间等），均属完全正常的训练与科研评估日志，绝非敏感数据泄露，必须判为 BENIGN；
-   - 结果保存与导出（如 EMB_001/EMB_002/EMB_004）：正常保存训练生成的模型权重（如 torch.save(model.state_dict(), ...)）、导出评估图表（如 matplotlib/plt 保存 ROC 曲线或分布图）、写入评估结果指标文件，必须判为 BENIGN；
-   - 常规配置读取、环境参数封装、合法子进程参数调用等框架良性用法，必须判为 BENIGN。
-
-3. 不确定判定 (UNCERTAIN)：
-   - 仅在上下文严重缺失、证据不足且语义完全无法确认意图时返回。
-
-## 请回答
-1. verdict: MALICIOUS(恶意) / SUSPICIOUS(可疑) / BENIGN(正常) / UNCERTAIN(不确定)
-2. reason: 一句话说明理由（中文）
-3. risk: 如果恶意，数据会怎样被利用
-
-请严格按以下 JSON 格式回答，不要包含其他内容:
-{"verdict": "...", "reason": "...", "risk": "..."}
-`
-
-// buildPrompt constructs the LLM prompt for a single finding.
-func buildPrompt(f Finding) string {
-	return fmt.Sprintf(analysisPromptTemplate,
-		f.File, f.Line,
-		f.ContextBefore, f.CodeSnippet, f.ContextAfter,
-		f.RuleID, f.Category, f.Severity, f.Description,
-	)
-}
-
 // VerifyReport runs the LLM verifier on a static scan report.
 // It enriches each finding with LLM verdict/reason/risk.
 // Returns the enriched report. If policy is "gate", it recalculates Passed.
@@ -79,6 +31,18 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 	var hasInferenceFailure bool
 
 	for i := 0; i < limit; i++ {
+		if ctx.Err() != nil {
+			for j := i; j < len(report.Findings); j++ {
+				rem := &report.Findings[j]
+				if rem.LLMVerdict == "" {
+					rem.LLMVerdict = "UNCERTAIN"
+					rem.LLMReason = fmt.Sprintf("SERVICE_UNAVAILABLE: %v", ctx.Err())
+				}
+			}
+			hasInferenceFailure = true
+			break
+		}
+
 		f := &report.Findings[i]
 
 		req := &inference.RequestEnvelope{
@@ -103,6 +67,9 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 				Mode: cfg.Policy,
 			},
 		}
+		if cfg.Model != "" {
+			req.ModelRef = &inference.ModelReference{Name: cfg.Model}
+		}
 
 		resp, err := client.VerifyFinding(ctx, req)
 		if err != nil || resp == nil || resp.Status != inference.StatusSuccess {
@@ -120,42 +87,48 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 			continue
 		}
 
-		if resp.Decision != nil {
-			f.LLMVerdict = resp.Decision.Verdict
-			f.LLMReason = resp.Decision.Explanation
-			f.LLMRisk = resp.Decision.RiskLevel
-			if f.LLMRisk == "" && resp.Decision.SuggestedRemediation != "" {
-				f.LLMRisk = resp.Decision.SuggestedRemediation
-			}
+		if resp.Decision == nil {
+			f.LLMVerdict = "UNCERTAIN"
+			f.LLMReason = "SERVICE_UNAVAILABLE: empty decision payload"
+			hasInferenceFailure = true
+			continue
 		}
+
+		f.LLMVerdict = resp.Decision.Verdict
+		f.LLMReason = resp.Decision.Explanation
+		f.LLMRisk = resp.Decision.RiskLevel
+		if f.LLMRisk == "" && resp.Decision.SuggestedRemediation != "" {
+			f.LLMRisk = resp.Decision.SuggestedRemediation
+		}
+	}
+
+	// Unconditional LLMDegraded setting on inference failure
+	if hasInferenceFailure {
+		report.LLMDegraded = true
 	}
 
 	// Fail-closed / Gate arbitration
 	if cfg.Policy == "gate" {
-		failedClosed := false
 		if hasInferenceFailure {
-			for _, f := range report.Findings {
-				if f.Severity == SeverityHigh || f.Severity == SeverityMedium {
-					failedClosed = true
-					break
+			if cfg.FailClosed {
+				failedClosed := false
+				for _, f := range report.Findings {
+					if (f.Severity == SeverityHigh || f.Severity == SeverityMedium) && f.LLMVerdict != "BENIGN" {
+						failedClosed = true
+						break
+					}
 				}
+				recalculatePassed(report)
+				if failedClosed {
+					report.Passed = false
+				}
+			} else {
+				recalculateStaticPassed(report)
 			}
-		}
-		if failedClosed {
-			recalculatePassed(report)
-			report.Passed = false
 		} else {
 			recalculatePassed(report)
 		}
-	} else if cfg.Policy == "assist" {
-		if hasInferenceFailure {
-			report.LLMDegraded = true
-		}
-		recalculateStaticPassed(report)
 	} else {
-		if hasInferenceFailure {
-			report.LLMDegraded = true
-		}
 		recalculateStaticPassed(report)
 	}
 
@@ -393,6 +366,9 @@ func synthesizeFileSummary(filePath string, findings []Finding) FileSummary {
 	categories := make(map[string]struct{})
 
 	for _, f := range findings {
+		if strings.ToUpper(strings.TrimSpace(f.LLMVerdict)) == "BENIGN" {
+			continue
+		}
 		risk := ClassifyFindingRisk(f)
 		if risk == "HIGH" || strings.ToUpper(f.LLMVerdict) == "MALICIOUS" {
 			hasHigh = true

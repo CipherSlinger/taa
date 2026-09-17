@@ -315,11 +315,14 @@ func TestVerifyReport_InferenceClient_CircuitOpen_GateFailClosed(t *testing.T) {
 		},
 	}
 	client := &mockInferenceClient{err: inference.ErrCircuitOpen}
-	cfg := LLMConfig{Enabled: true, Policy: "gate", MaxFindings: 10}
+	cfg := LLMConfig{Enabled: true, Policy: "gate", FailClosed: true, MaxFindings: 10}
 
 	res, err := VerifyReport(context.Background(), report, cfg, client)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.LLMDegraded {
+		t.Fatal("expected LLMDegraded = true in gate mode on inference error")
 	}
 	if res.Passed {
 		t.Fatal("expected report to fail closed when circuit is open in gate mode")
@@ -329,6 +332,173 @@ func TestVerifyReport_InferenceClient_CircuitOpen_GateFailClosed(t *testing.T) {
 	}
 	if res.Findings[0].LLMReason != "SERVICE_UNAVAILABLE: circuit breaker open" {
 		t.Fatalf("reason = %s, want SERVICE_UNAVAILABLE: circuit breaker open", res.Findings[0].LLMReason)
+	}
+}
+
+func TestVerifyReport_InferenceClient_GateFailOpen(t *testing.T) {
+	// Medium-only finding: static scan passes.
+	report := &Report{
+		HighCount:   0,
+		MediumCount: 1,
+		Passed:      true,
+		Findings: []Finding{
+			{File: "a.py", Line: 1, RuleID: "DYN_001", Severity: SeverityMedium, CodeSnippet: "eval(expr)"},
+		},
+	}
+	client := &mockInferenceClient{err: inference.ErrCircuitOpen}
+	// FailClosed: false -> fallback to static scan result
+	cfg := LLMConfig{Enabled: true, Policy: "gate", FailClosed: false, MaxFindings: 10}
+
+	res, err := VerifyReport(context.Background(), report, cfg, client)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.LLMDegraded {
+		t.Fatal("expected LLMDegraded = true when inference fails in gate mode")
+	}
+	if !res.Passed {
+		t.Fatal("expected report to pass (fallback to static scan) when FailClosed=false and only medium findings exist")
+	}
+	if res.Findings[0].LLMVerdict != "UNCERTAIN" {
+		t.Fatalf("verdict = %s, want UNCERTAIN", res.Findings[0].LLMVerdict)
+	}
+}
+
+func TestSynthesizeFileSummary_BenignExfilIgnored(t *testing.T) {
+	findings := []Finding{
+		{
+			File:        "exfil.py",
+			Line:        10,
+			RuleID:      "EXF_001",
+			Category:    "数据外传风险",
+			Severity:    SeverityHigh,
+			LLMVerdict:  "BENIGN",
+			CodeSnippet: "requests.post(metric_server, data=acc)",
+		},
+	}
+
+	summary := synthesizeFileSummary("exfil.py", findings)
+	if summary.Exfiltration {
+		t.Fatal("expected Exfiltration = false when finding is BENIGN")
+	}
+	if summary.RiskLevel != "LOW" {
+		t.Fatalf("expected RiskLevel = LOW, got %s", summary.RiskLevel)
+	}
+	if summary.Chained {
+		t.Fatal("expected Chained = false when finding is BENIGN")
+	}
+}
+
+type mockNilDecisionClient struct{}
+
+func (m *mockNilDecisionClient) VerifyFinding(_ context.Context, _ *inference.RequestEnvelope) (*inference.ResponseEnvelope, error) {
+	return &inference.ResponseEnvelope{
+		ProtocolVersion: inference.CurrentProtocolVersion,
+		Status:          inference.StatusSuccess,
+		Decision:        nil,
+	}, nil
+}
+func (m *mockNilDecisionClient) HealthCheck(_ context.Context) error { return nil }
+func (m *mockNilDecisionClient) Close() error                        { return nil }
+
+func TestVerifyReport_NilDecisionTreatedAsFailure(t *testing.T) {
+	report := &Report{
+		HighCount: 1,
+		Passed:    false,
+		Findings: []Finding{
+			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
+		},
+	}
+	client := &mockNilDecisionClient{}
+	cfg := LLMConfig{Enabled: true, Policy: "gate", FailClosed: true, MaxFindings: 10}
+
+	res, err := VerifyReport(context.Background(), report, cfg, client)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.LLMDegraded {
+		t.Fatal("expected LLMDegraded = true on nil decision")
+	}
+	if res.Passed {
+		t.Fatal("expected report to fail closed on nil decision")
+	}
+	if res.Findings[0].LLMVerdict != "UNCERTAIN" {
+		t.Fatalf("verdict = %s, want UNCERTAIN", res.Findings[0].LLMVerdict)
+	}
+	if res.Findings[0].LLMReason != "SERVICE_UNAVAILABLE: empty decision payload" {
+		t.Fatalf("reason = %s, want SERVICE_UNAVAILABLE: empty decision payload", res.Findings[0].LLMReason)
+	}
+}
+
+type mockCaptureEnvelopeClient struct {
+	capturedReq *inference.RequestEnvelope
+}
+
+func (m *mockCaptureEnvelopeClient) VerifyFinding(_ context.Context, req *inference.RequestEnvelope) (*inference.ResponseEnvelope, error) {
+	m.capturedReq = req
+	return &inference.ResponseEnvelope{
+		ProtocolVersion: inference.CurrentProtocolVersion,
+		Status:          inference.StatusSuccess,
+		Decision: &inference.DecisionResult{
+			Verdict: inference.VerdictBenign,
+		},
+	}, nil
+}
+func (m *mockCaptureEnvelopeClient) HealthCheck(_ context.Context) error { return nil }
+func (m *mockCaptureEnvelopeClient) Close() error                        { return nil }
+
+func TestVerifyReport_ModelRefPopulated(t *testing.T) {
+	report := &Report{
+		HighCount: 1,
+		Passed:    false,
+		Findings: []Finding{
+			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
+		},
+	}
+	client := &mockCaptureEnvelopeClient{}
+	cfg := LLMConfig{Enabled: true, Policy: "gate", Model: "qwen2.5-coder:0.5b", MaxFindings: 10}
+
+	_, err := VerifyReport(context.Background(), report, cfg, client)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if client.capturedReq == nil || client.capturedReq.ModelRef == nil {
+		t.Fatal("expected ModelRef to be populated")
+	}
+	if client.capturedReq.ModelRef.Name != "qwen2.5-coder:0.5b" {
+		t.Fatalf("ModelRef.Name = %s, want qwen2.5-coder:0.5b", client.capturedReq.ModelRef.Name)
+	}
+}
+
+func TestVerifyReport_ContextCancelled(t *testing.T) {
+	report := &Report{
+		HighCount: 2,
+		Passed:    false,
+		Findings: []Finding{
+			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
+			{File: "b.py", Line: 2, RuleID: "CMD_001", Severity: SeverityHigh, CodeSnippet: "os.system(cmd)"},
+		},
+	}
+	client := &mockInferenceClient{verdict: inference.VerdictBenign}
+	cfg := LLMConfig{Enabled: true, Policy: "gate", FailClosed: true, MaxFindings: 10}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	res, err := VerifyReport(ctx, report, cfg, client)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.LLMDegraded {
+		t.Fatal("expected LLMDegraded = true when context is canceled")
+	}
+	for i, f := range res.Findings {
+		if f.LLMVerdict != "UNCERTAIN" {
+			t.Fatalf("finding[%d].LLMVerdict = %s, want UNCERTAIN", i, f.LLMVerdict)
+		}
+		if !containsStr(f.LLMReason, "context canceled") {
+			t.Fatalf("finding[%d].LLMReason = %s, want context canceled", i, f.LLMReason)
+		}
 	}
 }
 
