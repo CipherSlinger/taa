@@ -70,6 +70,7 @@ func TestConstants(t *testing.T) {
 }
 
 func TestRequestEnvelope_Serialization(t *testing.T) {
+	temp := float32(0.1)
 	req := inference.RequestEnvelope{
 		ProtocolVersion: inference.CurrentProtocolVersion,
 		RequestID:       "req-001",
@@ -77,11 +78,11 @@ func TestRequestEnvelope_Serialization(t *testing.T) {
 		Timestamp:       1789728000,
 		Nonce:           "abcdef1234567890",
 		DeadlineMs:      30000,
-		Auth: inference.AuthConfig{
+		Auth: &inference.AuthConfig{
 			AuthType: "token",
 			Token:    "secret-token",
 		},
-		ModelRef: inference.ModelReference{
+		ModelRef: &inference.ModelReference{
 			Name:             "qwen2.5:7b",
 			Tag:              "latest",
 			MinContextTokens: 4096,
@@ -104,7 +105,7 @@ func TestRequestEnvelope_Serialization(t *testing.T) {
 		Policy: inference.PolicyOptions{
 			Mode:                 inference.PolicyModeGate,
 			EnableReasoningChain: true,
-			Temperature:          0.1,
+			Temperature:          &temp,
 			MaxCompletionTokens:  1024,
 		},
 	}
@@ -193,12 +194,12 @@ func TestResponseEnvelope_Serialization(t *testing.T) {
 			SuggestedRemediation: "Use exec.Command with separated arguments",
 			ReasoningChain:       "Step 1: check input...",
 		},
-		Metrics: inference.Metrics{
+		Metrics: &inference.Metrics{
 			LatencyMs:        125,
 			PromptTokens:     350,
 			CompletionTokens: 80,
 		},
-		EngineInfo: inference.EngineInfo{
+		EngineInfo: &inference.EngineInfo{
 			Backend:     "ollama",
 			ModelLoaded: "qwen2.5:7b",
 			ModelDigest: "sha256:1234567890abcdef",
@@ -258,10 +259,110 @@ func TestResponseEnvelope_Serialization(t *testing.T) {
 	if parsed.Decision == nil || parsed.Decision.Verdict != inference.VerdictMalicious {
 		t.Errorf("got verdict %v, want %s", parsed.Decision, inference.VerdictMalicious)
 	}
-	if parsed.Metrics.LatencyMs != 125 {
-		t.Errorf("got latencyMs %d, want 125", parsed.Metrics.LatencyMs)
+	if parsed.Metrics == nil || parsed.Metrics.LatencyMs != 125 {
+		t.Errorf("got latencyMs %v, want 125", parsed.Metrics)
 	}
-	if parsed.EngineInfo.Backend != "ollama" {
-		t.Errorf("got backend %s, want ollama", parsed.EngineInfo.Backend)
+	if parsed.EngineInfo == nil || parsed.EngineInfo.Backend != "ollama" {
+		t.Errorf("got backend %v, want ollama", parsed.EngineInfo)
+	}
+}
+
+func TestRequestEnvelope_MinimalOmitted(t *testing.T) {
+	req := inference.RequestEnvelope{
+		ProtocolVersion: inference.CurrentProtocolVersion,
+		RequestID:       "req-health-001",
+		Timestamp:       1789728000,
+		Nonce:           "nonce123",
+		DeadlineMs:      5000,
+		Action:          inference.ActionHealthCheck,
+		Policy: inference.PolicyOptions{
+			Mode: inference.PolicyModeGate,
+		},
+	}
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal minimal request failed: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal minimal request failed: %v", err)
+	}
+
+	// Optional fields that should NOT be present in JSON
+	disallowedKeys := []string{"taskId", "auth", "modelRef", "findingPayload"}
+	for _, key := range disallowedKeys {
+		if _, ok := raw[key]; ok {
+			t.Errorf("expected key %s to be omitted, but found in JSON: %v", key, raw[key])
+		}
+	}
+
+	// Required fields that MUST be present
+	requiredKeys := []string{"protocolVersion", "requestId", "timestamp", "nonce", "deadlineMs", "action", "policy"}
+	for _, key := range requiredKeys {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("expected required key %s in JSON", key)
+		}
+	}
+}
+
+func TestResponseEnvelope_MinimalAndFailure(t *testing.T) {
+	resp := inference.ResponseEnvelope{
+		ProtocolVersion: inference.CurrentProtocolVersion,
+		RequestID:       "req-err-001",
+		Status:          inference.StatusServiceUnavailable,
+		ErrorMessage:    "circuit breaker OPEN: inference engine down",
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal error response failed: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal error response failed: %v", err)
+	}
+
+	// Optional fields that should NOT be present in failure response
+	disallowedKeys := []string{"decision", "metrics", "engineInfo"}
+	for _, key := range disallowedKeys {
+		if _, ok := raw[key]; ok {
+			t.Errorf("expected key %s to be omitted from error response, but found: %v", key, raw[key])
+		}
+	}
+
+	if raw["errorMessage"] != "circuit breaker OPEN: inference engine down" {
+		t.Errorf("unexpected errorMessage: %v", raw["errorMessage"])
+	}
+	if raw["status"] != inference.StatusServiceUnavailable {
+		t.Errorf("unexpected status: %v", raw["status"])
+	}
+}
+
+func TestPolicyOptions_ZeroTemperature(t *testing.T) {
+	zeroTemp := float32(0.0)
+	opts := inference.PolicyOptions{
+		Mode:        inference.PolicyModeGate,
+		Temperature: &zeroTemp,
+	}
+
+	data, err := json.Marshal(opts)
+	if err != nil {
+		t.Fatalf("marshal policy options failed: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal policy options failed: %v", err)
+	}
+
+	val, ok := raw["temperature"]
+	if !ok {
+		t.Fatalf("expected temperature to be serialized even when 0.0")
+	}
+	if val.(float64) != 0.0 {
+		t.Errorf("expected temperature 0.0, got %v", val)
 	}
 }

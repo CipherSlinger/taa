@@ -69,10 +69,10 @@ type FindingPayload struct {
 
 // PolicyOptions configures the runtime audit policy.
 type PolicyOptions struct {
-	Mode                 string  `json:"mode"`
-	EnableReasoningChain bool    `json:"enableReasoningChain,omitempty"`
-	Temperature          float32 `json:"temperature,omitempty"`
-	MaxCompletionTokens  int     `json:"maxCompletionTokens,omitempty"`
+	Mode                 string   `json:"mode"`
+	EnableReasoningChain bool     `json:"enableReasoningChain,omitempty"`
+	Temperature          *float32 `json:"temperature,omitempty"`
+	MaxCompletionTokens  int      `json:"maxCompletionTokens,omitempty"`
 }
 
 // RequestEnvelope is the standardized request structure for ISP.
@@ -83,8 +83,8 @@ type RequestEnvelope struct {
 	Timestamp       int64           `json:"timestamp"`
 	Nonce           string          `json:"nonce"`
 	DeadlineMs      int64           `json:"deadlineMs"`
-	Auth            AuthConfig      `json:"auth,omitempty"`
-	ModelRef        ModelReference  `json:"modelRef,omitempty"`
+	Auth            *AuthConfig     `json:"auth,omitempty"`
+	ModelRef        *ModelReference `json:"modelRef,omitempty"`
 	Action          string          `json:"action"`
 	FindingPayload  *FindingPayload `json:"findingPayload,omitempty"`
 	Policy          PolicyOptions   `json:"policy"`
@@ -122,6 +122,6 @@ type ResponseEnvelope struct {
 	Status          string          `json:"status"`
 	ErrorMessage    string          `json:"errorMessage,omitempty"`
 	Decision        *DecisionResult `json:"decision,omitempty"`
-	Metrics         Metrics         `json:"metrics,omitempty"`
-	EngineInfo      EngineInfo      `json:"engineInfo,omitempty"`
+	Metrics         *Metrics        `json:"metrics,omitempty"`
+	EngineInfo      *EngineInfo     `json:"engineInfo,omitempty"`
 }
