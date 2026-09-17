@@ -14,7 +14,7 @@
     - 确保导出的结果 Zip 包内仅包含模型训练自身生成的纯净产物。
   - **涉及模块**：`internal/controller/import_processing.go`、`internal/controller/handler_export.go`、`internal/coordinator/flow_training.go`、API 契约文档。
 
-- [ ] **产物泄露检测大小限制支持配置文件动态读取（默认 3GB）**
+- [x] **产物泄露检测大小限制支持配置文件动态读取（默认 3GB）**
   - **背景**：`internal/codeaudit/result_checker.go` 中目前硬编码了单结果文件/产物大小上限为 500MB（`MaxResultBytes: 500 * 1024 * 1024`），无法满足现代大模型微调权重文件（如 PyTorch Checkpoint、Safetensors 等数 GB 级别文件）的正常校验与导出需求。
   - **目标方案**：
     - 在配置文件（`taa-config.json` 及配置映射结构体 `StartupConfig`）中新增 `maxResultBytes`（或 `maxExportFileBytes`）配置项；

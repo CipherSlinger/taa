@@ -164,6 +164,31 @@ func TestResultCheckerNonExistentFile(t *testing.T) {
 	}
 }
 
+func TestDefaultResultCheckerMaxResultBytes(t *testing.T) {
+	checker := DefaultResultChecker()
+	if checker.MaxResultBytes != DefaultMaxResultBytes {
+		t.Fatalf("MaxResultBytes = %d, want %d (3GB)", checker.MaxResultBytes, DefaultMaxResultBytes)
+	}
+	if checker.MaxResultBytes != 3*1024*1024*1024 {
+		t.Fatalf("DefaultMaxResultBytes = %d, want 3221225472", checker.MaxResultBytes)
+	}
+}
+
+func TestNewResultChecker(t *testing.T) {
+	c1 := NewResultChecker("/tmp/data", 1024)
+	if c1.DataDir != "/tmp/data" || c1.MaxResultBytes != 1024 {
+		t.Fatalf("NewResultChecker got %+v", c1)
+	}
+	c2 := NewResultChecker("/tmp/data", 0)
+	if c2.MaxResultBytes != DefaultMaxResultBytes {
+		t.Fatalf("NewResultChecker with 0 max bytes should default to %d, got %d", DefaultMaxResultBytes, c2.MaxResultBytes)
+	}
+	c3 := NewResultChecker("/tmp/data", -10)
+	if c3.MaxResultBytes != DefaultMaxResultBytes {
+		t.Fatalf("NewResultChecker with negative max bytes should default to %d, got %d", DefaultMaxResultBytes, c3.MaxResultBytes)
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────
 
 func assertResultHasCheck(t *testing.T, report *ResultCheckReport, check string) {

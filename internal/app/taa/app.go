@@ -587,6 +587,7 @@ func buildSecurityConfig(cfg config.StartupConfig) controller.SecurityConfig {
 		ResultCheck:      cfg.EnableResultCheck,
 		DataDir:          cfg.DataDir,
 		ResultDir:        cfg.ResultDir,
+		MaxResultBytes:   cfg.MaxResultBytes,
 		ModelInputDir:    cfg.ModelInputDir,
 		ModelOutputDir:   cfg.ModelOutputDir,
 		ModelLogDir:      cfg.ModelLogDir,
@@ -632,6 +633,6 @@ func logSecurityConfig(sec controller.SecurityConfig) {
 		}
 	}
 	if sec.ResultCheck {
-		log.Printf("result check enabled: data-dir=%s result-dir=%s", sec.DataDir, sec.ResultDir)
+		log.Printf("result check enabled: data-dir=%s result-dir=%s max-bytes=%d", sec.DataDir, sec.ResultDir, sec.MaxResultBytes)
 	}
 }

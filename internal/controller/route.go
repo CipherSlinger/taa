@@ -35,6 +35,7 @@ type SecurityConfig struct {
 	DataDir          string              // 数据目录（type=2 测试数据，type=3 训练数据，用于数据指纹比对）
 	ResultCheck      bool                // 是否在 export 时检查明文数据泄露
 	ResultDir        string              // 训练结果目录（导出前检查）
+	MaxResultBytes   int64               // 导出产物单文件最大限制字节数（默认 3GB）
 	ModelInputDir    string              // 模型数据输入目录（缺省 /opt/taa/input）
 	ModelOutputDir   string              // 模型结果输出目录（缺省 /opt/taa/output/result）
 	ModelLogDir      string              // 模型日志目录（缺省 /opt/taa/output/log）

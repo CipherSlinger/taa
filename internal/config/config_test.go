@@ -94,6 +94,9 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if !cfg.EnableResultCheck {
 		t.Fatalf("EnableResultCheck = false, want default true")
 	}
+	if cfg.MaxResultBytes != DefaultMaxResultBytes {
+		t.Fatalf("MaxResultBytes = %d, want default %d", cfg.MaxResultBytes, DefaultMaxResultBytes)
+	}
 	if cfg.DataDir != "/opt/taa/data" {
 		t.Fatalf("DataDir = %q, want default", cfg.DataDir)
 	}
@@ -147,6 +150,21 @@ func TestLoadStartupConfigReadsKeysDir(t *testing.T) {
 	}
 	if cfg.KeysDir != ".local/taa/keys" {
 		t.Fatalf("KeysDir = %q, want file value", cfg.KeysDir)
+	}
+}
+
+func TestLoadStartupConfigReadsMaxResultBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"maxResultBytes": 5368709120
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+	if cfg.MaxResultBytes != 5368709120 {
+		t.Fatalf("MaxResultBytes = %d, want 5368709120", cfg.MaxResultBytes)
 	}
 }
 
@@ -268,19 +286,22 @@ func TestLoadStartupConfigAttestationTrimWhitespace(t *testing.T) {
 
 func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 	templates := []struct {
-		relPath    string
-		wantHRK    string
-		wantHSKCek string
+		relPath            string
+		wantHRK            string
+		wantHSKCek         string
+		wantMaxResultBytes int64
 	}{
 		{
-			relPath:    "../../configs/taa-production.json",
-			wantHRK:    "/root/taa/certs/hrk.cert",
-			wantHSKCek: "/root/taa/certs/hsk_cek.cert",
+			relPath:            "../../configs/taa-production.json",
+			wantHRK:            "/root/taa/certs/hrk.cert",
+			wantHSKCek:         "/root/taa/certs/hsk_cek.cert",
+			wantMaxResultBytes: 3221225472,
 		},
 		{
-			relPath:    "../../configs/taa-docker.json",
-			wantHRK:    "/root/taa/certs/hrk.cert",
-			wantHSKCek: "/root/taa/certs/hsk_cek.cert",
+			relPath:            "../../configs/taa-docker.json",
+			wantHRK:            "/root/taa/certs/hrk.cert",
+			wantHSKCek:         "/root/taa/certs/hsk_cek.cert",
+			wantMaxResultBytes: 3221225472,
 		},
 	}
 
@@ -295,6 +316,9 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			}
 			if cfg.AttestationHSKCekCertPath != tc.wantHSKCek {
 				t.Errorf("AttestationHSKCekCertPath = %q, want %q", cfg.AttestationHSKCekCertPath, tc.wantHSKCek)
+			}
+			if cfg.MaxResultBytes != tc.wantMaxResultBytes {
+				t.Errorf("MaxResultBytes = %d, want %d", cfg.MaxResultBytes, tc.wantMaxResultBytes)
 			}
 		})
 	}

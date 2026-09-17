@@ -217,11 +217,16 @@ func CheckImport(dir string) (bool, *Report, error) {
 // CheckExport inspects resultDir for plaintext data leakage against dataDir.
 // Returns (pass, report, error). A check error is treated as a rejection.
 func CheckExport(resultDir, dataDir string) (bool, *ResultCheckReport, error) {
+	return CheckExportWithLimit(resultDir, dataDir, DefaultMaxResultBytes)
+}
+
+// CheckExportWithLimit inspects resultDir for plaintext data leakage against dataDir with a custom size limit.
+// Returns (pass, report, error). A check error is treated as a rejection.
+func CheckExportWithLimit(resultDir, dataDir string, maxResultBytes int64) (bool, *ResultCheckReport, error) {
 	if resultDir == "" {
 		return true, nil, nil
 	}
-	checker := DefaultResultChecker()
-	checker.DataDir = dataDir
+	checker := NewResultChecker(dataDir, maxResultBytes)
 	report, err := checker.CheckDirectory(resultDir)
 	if err != nil {
 		return false, nil, err

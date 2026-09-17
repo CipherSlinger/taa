@@ -32,10 +32,25 @@ type ResultChecker struct {
 	MaxResultBytes int64
 }
 
+// DefaultMaxResultBytes is the default maximum size of an exported result file (3 GB).
+const DefaultMaxResultBytes int64 = 3 * 1024 * 1024 * 1024 // 3 GB
+
 // DefaultResultChecker returns a checker with sensible defaults.
 func DefaultResultChecker() *ResultChecker {
 	return &ResultChecker{
-		MaxResultBytes: 500 * 1024 * 1024, // 500 MB
+		MaxResultBytes: DefaultMaxResultBytes,
+	}
+}
+
+// NewResultChecker creates a ResultChecker with specified data directory and max result file size.
+// If maxResultBytes is <= 0, DefaultMaxResultBytes (3 GB) is used.
+func NewResultChecker(dataDir string, maxResultBytes int64) *ResultChecker {
+	if maxResultBytes <= 0 {
+		maxResultBytes = DefaultMaxResultBytes
+	}
+	return &ResultChecker{
+		DataDir:        dataDir,
+		MaxResultBytes: maxResultBytes,
 	}
 }
 

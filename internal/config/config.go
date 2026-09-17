@@ -7,7 +7,10 @@ import (
 	"strings"
 )
 
-const DefaultFileName = "taa-config.json"
+const (
+	DefaultFileName       = "taa-config.json"
+	DefaultMaxResultBytes = 3 * 1024 * 1024 * 1024 // 3 GB
+)
 
 type StartupConfig struct {
 	Addr                      string
@@ -17,6 +20,7 @@ type StartupConfig struct {
 	EnableSecurityScan        bool
 	ModelDir                  string
 	EnableResultCheck         bool
+	MaxResultBytes            int64
 	DataDir                   string
 	ResultDir                 string
 	ModelInputDir             string
@@ -42,6 +46,7 @@ type startupConfigFile struct {
 	EnableSecurityScan *bool                        `json:"securityScan"`
 	ModelDir           string                       `json:"modelDir"`
 	EnableResultCheck  *bool                        `json:"resultCheck"`
+	MaxResultBytes     *int64                       `json:"maxResultBytes"`
 	DataDir            string                       `json:"dataDir"`
 	ResultDir          string                       `json:"resultDir"`
 	ModelInputDir      string                       `json:"modelInputDir"`
@@ -102,6 +107,7 @@ func defaultStartupConfig() StartupConfig {
 		EnableSecurityScan:        true,
 		ModelDir:                  "/opt/taa/models",
 		EnableResultCheck:         true,
+		MaxResultBytes:            DefaultMaxResultBytes,
 		DataDir:                   "/opt/taa/data",
 		ResultDir:                 "/opt/taa/results",
 		ModelInputDir:             "/opt/taa/input",
@@ -140,6 +146,9 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if fileCfg.EnableResultCheck != nil {
 		cfg.EnableResultCheck = *fileCfg.EnableResultCheck
+	}
+	if fileCfg.MaxResultBytes != nil {
+		cfg.MaxResultBytes = *fileCfg.MaxResultBytes
 	}
 	if fileCfg.DataDir != "" {
 		cfg.DataDir = fileCfg.DataDir
