@@ -34,6 +34,7 @@ type Report struct {
 	HighCount   int       `json:"high_count"`
 	MediumCount int       `json:"medium_count"`
 	Passed      bool      `json:"passed"`
+	LLMDegraded bool      `json:"llm_degraded,omitempty"`
 	Findings    []Finding `json:"findings"`
 }
 

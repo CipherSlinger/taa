@@ -2,11 +2,14 @@ package codeaudit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"taa/internal/inference"
 )
 
 const analysisPromptTemplate = `你是一个代码安全审计专家。请分析以下代码片段是否存在窃取数据、外传数据或其他恶意行为。
@@ -73,26 +76,87 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 		limit = len(report.Findings)
 	}
 
+	var hasInferenceFailure bool
+
 	for i := 0; i < limit; i++ {
 		f := &report.Findings[i]
-		prompt := buildPrompt(*f)
 
-		decision, err := client.VerifyFinding(ctx, prompt)
-		if err != nil {
-			log.Printf("LLM verifier error for %s:%d [%s]: %v", f.File, f.Line, f.RuleID, err)
+		req := &inference.RequestEnvelope{
+			ProtocolVersion: inference.CurrentProtocolVersion,
+			RequestID:       fmt.Sprintf("verify-%d", time.Now().UnixNano()),
+			Timestamp:       time.Now().Unix(),
+			Action:          inference.ActionVerifyFinding,
+			FindingPayload: &inference.FindingPayload{
+				RuleID:      f.RuleID,
+				Category:    f.Category,
+				Severity:    f.Severity,
+				Description: f.Description,
+				Target: inference.CodeTarget{
+					FilePath:      f.File,
+					Line:          f.Line,
+					CodeSnippet:   f.CodeSnippet,
+					ContextBefore: f.ContextBefore,
+					ContextAfter:  f.ContextAfter,
+				},
+			},
+			Policy: inference.PolicyOptions{
+				Mode: cfg.Policy,
+			},
+		}
+
+		resp, err := client.VerifyFinding(ctx, req)
+		if err != nil || resp == nil || resp.Status != inference.StatusSuccess {
 			f.LLMVerdict = "UNCERTAIN"
-			f.LLMReason = fmt.Sprintf("LLM 调用失败: %v", err)
+			if errors.Is(err, inference.ErrCircuitOpen) {
+				f.LLMReason = "SERVICE_UNAVAILABLE: circuit breaker open"
+			} else if err != nil {
+				f.LLMReason = fmt.Sprintf("SERVICE_UNAVAILABLE: %v", err)
+			} else if resp != nil {
+				f.LLMReason = fmt.Sprintf("SERVICE_UNAVAILABLE: %s", resp.Status)
+			} else {
+				f.LLMReason = "SERVICE_UNAVAILABLE: nil response"
+			}
+			hasInferenceFailure = true
 			continue
 		}
 
-		f.LLMVerdict = decision.Verdict
-		f.LLMReason = decision.Reason
-		f.LLMRisk = decision.Risk
+		if resp.Decision != nil {
+			f.LLMVerdict = resp.Decision.Verdict
+			f.LLMReason = resp.Decision.Explanation
+			f.LLMRisk = resp.Decision.RiskLevel
+			if f.LLMRisk == "" && resp.Decision.SuggestedRemediation != "" {
+				f.LLMRisk = resp.Decision.SuggestedRemediation
+			}
+		}
 	}
 
-	// Recalculate pass/fail based on policy.
+	// Fail-closed / Gate arbitration
 	if cfg.Policy == "gate" {
-		recalculatePassed(report)
+		failedClosed := false
+		if hasInferenceFailure {
+			for _, f := range report.Findings {
+				if f.Severity == SeverityHigh || f.Severity == SeverityMedium {
+					failedClosed = true
+					break
+				}
+			}
+		}
+		if failedClosed {
+			recalculatePassed(report)
+			report.Passed = false
+		} else {
+			recalculatePassed(report)
+		}
+	} else if cfg.Policy == "assist" {
+		if hasInferenceFailure {
+			report.LLMDegraded = true
+		}
+		recalculateStaticPassed(report)
+	} else {
+		if hasInferenceFailure {
+			report.LLMDegraded = true
+		}
+		recalculateStaticPassed(report)
 	}
 
 	return report, nil
@@ -137,12 +201,19 @@ func CheckImportWithLLM(ctx context.Context, dir string, cfg LLMConfig) (bool, *
 		return report.Passed, report, nil
 	}
 
-	var client LLMClient
-	if cfg.Endpoint != "" {
-		client = NewOllamaClient(cfg.Endpoint, cfg.Model, cfg.Timeout)
-	} else {
+	if cfg.Endpoint == "" && cfg.UDSPath == "" {
 		return report.Passed, report, nil
 	}
+
+	client, err := NewInferenceClient(cfg)
+	if err != nil {
+		if cfg.FailClosed {
+			return false, report, fmt.Errorf("create inference client: %w", err)
+		}
+		log.Printf("create inference client failed (non-fatal): %v", err)
+		return report.Passed, report, nil
+	}
+	defer client.Close()
 
 	report, err = VerifyReport(ctx, report, cfg, client)
 	if err != nil {
@@ -255,8 +326,6 @@ func GenerateAuditReport(ctx context.Context, dir string, cfg LLMConfig, client 
 		// Enrich findings with suggestions (Go-side, not LLM).
 		for i := range fr.Findings {
 			fr.Findings[i].LLMRisk = firstNonEmpty(fr.Findings[i].LLMRisk, "")
-			// We don't have a Suggestion field on Finding yet, but the
-			// ruleSuggestionMap is available for consumers via SuggestionForRule.
 		}
 
 		if cfg.Enabled && client != nil {
@@ -277,29 +346,90 @@ func GenerateAuditReport(ctx context.Context, dir string, cfg LLMConfig, client 
 
 // analyzeFileWithLLM calls the LLM for a file-level security summary.
 func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, findings []Finding, lineCounts map[string]int) FileSummary {
-	maxLines := 80
-	code := ReadFileForAnalysis(filePath, maxLines)
-	lineCount := lineCounts[filePath]
-	if lineCount == 0 {
-		lineCount = CountFileLines(filePath)
+	if fa, ok := client.(FileAnalyzer); ok {
+		maxLines := 80
+		code := ReadFileForAnalysis(filePath, maxLines)
+		lineCount := lineCounts[filePath]
+		if lineCount == 0 {
+			lineCount = CountFileLines(filePath)
+		}
+		summary := BuildFindingsSummary(findings)
+
+		prompt := fmt.Sprintf(fileAnalysisPromptTemplate,
+			filepath.Base(filePath), lineCount,
+			len(findings), summary,
+			code,
+		)
+
+		result, err := fa.AnalyzeFile(ctx, prompt)
+		if err != nil {
+			log.Printf("LLM file analysis error for %s: %v", filepath.Base(filePath), err)
+			return FileSummary{
+				RiskLevel: "UNCERTAIN",
+				Summary:   fmt.Sprintf("LLM 分析失败: %v", err),
+			}
+		}
+		return result
 	}
-	summary := BuildFindingsSummary(findings)
 
-	prompt := fmt.Sprintf(fileAnalysisPromptTemplate,
-		filepath.Base(filePath), lineCount,
-		len(findings), summary,
-		code,
-	)
+	// Synthesize a FileSummary from findings when client does not implement FileAnalyzer.
+	return synthesizeFileSummary(filePath, findings)
+}
 
-	result, err := client.AnalyzeFile(ctx, prompt)
-	if err != nil {
-		log.Printf("LLM file analysis error for %s: %v", filepath.Base(filePath), err)
+// synthesizeFileSummary derives a FileSummary from finding severities and categories.
+func synthesizeFileSummary(filePath string, findings []Finding) FileSummary {
+	if len(findings) == 0 {
 		return FileSummary{
-			RiskLevel: "UNCERTAIN",
-			Summary:   fmt.Sprintf("LLM 分析失败: %v", err),
+			RiskLevel:    "LOW",
+			Summary:      "未发现安全风险",
+			Chained:      false,
+			Exfiltration: false,
 		}
 	}
-	return result
+
+	hasHigh := false
+	hasMedium := false
+	hasExfil := false
+	categories := make(map[string]struct{})
+
+	for _, f := range findings {
+		risk := ClassifyFindingRisk(f)
+		if risk == "HIGH" || strings.ToUpper(f.LLMVerdict) == "MALICIOUS" {
+			hasHigh = true
+		} else if risk == "MEDIUM" || strings.ToUpper(f.LLMVerdict) == "SUSPICIOUS" {
+			hasMedium = true
+		}
+		if f.RuleID == "EXF_001" || strings.Contains(f.Category, "外传") || strings.Contains(f.Category, "网络") {
+			hasExfil = true
+		}
+		categories[f.Category] = struct{}{}
+	}
+
+	riskLevel := "LOW"
+	if hasHigh {
+		riskLevel = "HIGH"
+	} else if hasMedium {
+		riskLevel = "MEDIUM"
+	}
+
+	chained := len(categories) > 1 && (hasHigh || hasMedium)
+
+	var summary string
+	switch riskLevel {
+	case "HIGH":
+		summary = fmt.Sprintf("发现 %d 处高危或恶意风险项，需重点关注", len(findings))
+	case "MEDIUM":
+		summary = fmt.Sprintf("发现 %d 处中危或可疑风险项，建议人工审查", len(findings))
+	default:
+		summary = fmt.Sprintf("共 %d 处低风险或良性提示项", len(findings))
+	}
+
+	return FileSummary{
+		RiskLevel:    riskLevel,
+		Summary:      summary,
+		Chained:      chained,
+		Exfiltration: hasExfil,
+	}
 }
 
 func firstNonEmpty(values ...string) string {
