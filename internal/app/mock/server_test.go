@@ -1682,4 +1682,32 @@ func TestHealthCheckIntegratedIntoRegistration(t *testing.T) {
 	}
 }
 
+func TestIndexHTMLModalTabsAndLegacySectionRemoval(t *testing.T) {
+	// Legacy standalone cards, polling functions, and inputs should be removed
+	unwantedSubstrings := []string{
+		"平台发往 TAA 的请求体记录",
+		`id="requestLogOutput"`,
+		`id="requestLogEndpointFilter"`,
+		"fetchRequestLogs",
+	}
+	for _, unwanted := range unwantedSubstrings {
+		if strings.Contains(indexHTML, unwanted) {
+			t.Errorf("indexHTML should not contain legacy element or function: %q", unwanted)
+		}
+	}
 
+	// New modal tab elements and interaction store should be present
+	requiredSubstrings := []string{
+		`id="modalTabsBar"`,
+		`id="modalTabPrimary"`,
+		`id="modalTabSecondary"`,
+		"switchModalTab(",
+		"openInteractionModal(",
+		"interactionStore",
+	}
+	for _, s := range requiredSubstrings {
+		if !strings.Contains(indexHTML, s) {
+			t.Errorf("indexHTML missing required element/function: %q", s)
+		}
+	}
+}
