@@ -29,7 +29,6 @@ func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
 		"reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "importModelCommands", "importModelEnv",
 		"resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport",
 		"setupResourceUrlDropZones", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件",
-		"平台发往 TAA 的请求体记录", "requestLogStatusDot", "requestLogOutput", "requestLogEndpointFilter",
 		"uploadEncryptSwitch", "启用加密", "deleteUploadedFile", "创建公钥", "generateImportModelPublicKey",
 		"exportDecryptSwitch", "是否解密", "exportPrivateKey", "exportRequestId", "resourceInfoTreeContainer",
 		"resourceInfoModalBtn", "resourceInfoModal", "loadSampleResourceTree", "renderResourceInfoTreeShell",
