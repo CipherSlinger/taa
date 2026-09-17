@@ -6,11 +6,8 @@ package taa
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,6 +16,7 @@ import (
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 	"taa/internal/controller"
+	"taa/internal/inference"
 	"taa/internal/store"
 	teecrypto "taa/pkg/crypto"
 )
@@ -66,18 +64,23 @@ func Run(ctx context.Context, configPath, addr string) error {
 	return RunWithConfig(ctx, cfg)
 }
 
-// RunWithConfig 编排 TAA 服务的完整生命周期与启动流程：
-//  1. 若启用了 LLM 代码审计，检查并按需在后台拉起 Qwen (Ollama) 服务
-//  2. 生成本实例专用的国密 SM2 密钥对
-//  3. 派生 64 字节 UserData 并将其与 TEE 报告绑定
-//  4. 生成底层 TEE 硬件远程证明报告 (Attestation Report)
-//  5. 向管控平台注册本 TAA 实例 (发送度量报告、公钥及元数据)
-//  6. 构建安全策略配置并确保模型/数据/结果目录已就绪
-//  7. 构建全局控制器状态并启动 HTTP 服务，支持通过 ctx 优雅停机
+// RunWithConfig orchestrates the complete lifecycle and startup flow of the TAA service:
+//  1. If LLM code audit is enabled, probe external inference service readiness
+//  2. Load or generate persistent SM2 key pair for this TAA instance
+//  3. Derive 64-byte UserData and bind it to the TEE attestation report
+//  4. Generate underlying TEE hardware remote attestation report
+//  5. Register this TAA instance with the platform
+//  6. Build security policy configuration and ensure directories are ready
+//  7. Construct global controller state and start HTTP service, supporting graceful shutdown via ctx
 func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
-	// 1. 若启用了 LLM 代码审计，检查并按需在后台拉起 Qwen (Ollama) 服务
+	// 1. If LLM code audit is enabled, probe inference service readiness.
 	if cfg.EnableLLM {
-		ensureQwenAvailable(ctx, cfg.LLMEndpoint, cfg.LLMModel, cfg.LLMDir)
+		if err := probeInferenceService(ctx, cfg); err != nil {
+			if cfg.LLMFailClosed {
+				return fmt.Errorf("probe inference service (fail-closed): %w", err)
+			}
+			log.Printf("WARNING: inference service probe failed (non-fatal): %v", err)
+		}
 	}
 
 	// 2. 加载或生成本 TAA 实例专用的国密 SM2 密钥对（优先从持久化目录加载，若不存在则生成并落盘）
@@ -167,100 +170,50 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 }
 
 // ============================================================================
-// 辅助服务检测与管理 (LLM / Ollama)
+// External Inference Service Readiness Probe
 // ============================================================================
 
-// ensureQwenAvailable 检查 Qwen (Ollama) 语义审计模型服务是否可用。
-// 若未就绪，则尝试定位并执行后台启动脚本，并在指定超时时间内轮询就绪状态。
-// 启动失败仅记录警告日志，降级为静态规则审计，不阻断 TAA 主流程启动。
-func ensureQwenAvailable(ctx context.Context, endpoint, model, ollamaDir string) {
-	log.Printf("checking qwen service: endpoint=%s model=%s", endpoint, model)
-
-	// 1. 检查是否已经就绪
-	if isOllamaReady(endpoint, model) {
-		log.Printf("qwen service already available")
-		return
+// probeInferenceService checks the availability of the external inference service
+// without spawning any subprocess. It utilizes the standardized inference client adapter.
+func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
-	// 2. 未就绪，尝试自动寻找目录并启动 ollama 服务
-	log.Printf("qwen service not available, attempting to start...")
-
-	if ollamaDir == "" {
-		// 默认路径：容器内 TAA 工作目录下的 ollama 离线包
-		// deploy.sh 通常部署到 $CON_WORKDIR/ollama-qwen
-		candidates := []string{
-			"/root/taa/ollama-qwen",
-			"/root/taa/ollama-qwen2.5-coder-0.5b",
-		}
-		for _, c := range candidates {
-			if fi, err := os.Stat(c); err == nil && fi.IsDir() {
-				ollamaDir = c
-				break
-			}
-		}
+	timeout := time.Duration(cfg.LLMTimeoutMs) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 3 * time.Second
 	}
 
-	if ollamaDir == "" {
-		log.Printf("WARNING: qwen 启动失败: 未找到 ollama 包目录 (在 %s 的 llm.dir 指定路径)", config.DefaultFileName)
-		log.Printf("WARNING: 代码审计将仅使用静态扫描，LLM 语义分析不可用")
-		return
-	}
-
-	startScript := ollamaDir + "/start-ollama.sh"
-	if _, err := os.Stat(startScript); err != nil {
-		log.Printf("WARNING: qwen 启动失败: 未找到启动脚本 %s", startScript)
-		return
-	}
-
-	// 启动 ollama 进程（后台运行）
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("cd %s && OLLAMA_HOST=%s nohup ./start-ollama.sh > /tmp/ollama.log 2>&1 &", ollamaDir, endpoint))
-	if err := cmd.Run(); err != nil {
-		log.Printf("WARNING: qwen 启动命令执行失败: %v", err)
-		log.Printf("WARNING: 代码审计将仅使用静态扫描，LLM 语义分析不可用")
-		return
-	}
-	log.Printf("ollama start command executed, waiting for readiness...")
-
-	// 3. 轮询等待就绪（最多 120 秒，每 2 秒重试一次）
-	const maxWait = 120 * time.Second
-	const interval = 2 * time.Second
-	deadline := time.Now().Add(maxWait)
-	for time.Now().Before(deadline) {
-		if isOllamaReady(endpoint, model) {
-			log.Printf("qwen service started successfully")
-			return
-		}
-		select {
-		case <-ctx.Done():
-			log.Printf("context cancelled while waiting for qwen service: %v", ctx.Err())
-			return
-		case <-time.After(interval):
-		}
-	}
-
-	log.Printf("WARNING: qwen 服务在 %v 内未就绪，代码审计将仅使用静态扫描", maxWait)
-	log.Printf("WARNING: ollama 日志: 请检查 /tmp/ollama.log")
-}
-
-// isOllamaReady 发送 HTTP 请求检查 Ollama 的 /api/tags 端点，确认服务正常运行且模型已加载
-func isOllamaReady(endpoint, model string) bool {
-	base := endpoint
-	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
-		base = "http://" + base
-	}
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(base + "/api/tags")
+	client, err := inference.NewClient(inference.Config{
+		Transport:               cfg.LLMTransport,
+		Endpoint:                cfg.LLMEndpoint,
+		UDSPath:                 cfg.LLMUDSPath,
+		AuthToken:               cfg.LLMAuthToken,
+		Timeout:                 timeout,
+		AllowedHosts:            cfg.LLMAllowedHosts,
+		CircuitBreakerThreshold: cfg.LLMCircuitBreakerThreshold,
+		CooldownSec:             cfg.LLMCooldownSec,
+	})
 	if err != nil {
-		return false
+		return fmt.Errorf("create inference client: %w", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return false
-	}
+	defer client.Close()
 
-	// 检查指定模型名是否存在于返回的模型列表中（若未指定 model 则只要服务连通即可）
-	body, _ := io.ReadAll(resp.Body)
-	return strings.Contains(string(body), model) || model == ""
+	probeTimeout := 3 * time.Second
+	if timeout < probeTimeout {
+		probeTimeout = timeout
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	log.Printf("probing inference service readiness (transport=%s, endpoint=%s, uds=%s)",
+		cfg.LLMTransport, cfg.LLMEndpoint, cfg.LLMUDSPath)
+	if err := client.HealthCheck(probeCtx); err != nil {
+		return fmt.Errorf("health check failed: %w", err)
+	}
+	log.Printf("inference service probe succeeded")
+	return nil
 }
 
 // ============================================================================
@@ -579,8 +532,12 @@ func registerPlatform(ctx context.Context, platformIP, dockerID, publicKeyPEM st
 // 安全扫描与代码审计环境初始化
 // ============================================================================
 
-// buildSecurityConfig 将全局启动配置转换为控制器使用的 SecurityConfig 结构体
+// buildSecurityConfig converts the startup configuration into the controller SecurityConfig.
 func buildSecurityConfig(cfg config.StartupConfig) controller.SecurityConfig {
+	timeout := time.Duration(cfg.LLMTimeoutMs) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
 	return controller.SecurityConfig{
 		ScanEnabled:      cfg.EnableSecurityScan,
 		ModelDir:         cfg.ModelDir,
@@ -593,13 +550,19 @@ func buildSecurityConfig(cfg config.StartupConfig) controller.SecurityConfig {
 		ModelLogDir:      cfg.ModelLogDir,
 		ModelProgressDir: cfg.ModelProgressDir,
 		LLM: codeaudit.LLMConfig{
-			Enabled:     cfg.EnableLLM,
-			Endpoint:    cfg.LLMEndpoint,
-			Model:       cfg.LLMModel,
-			Timeout:     120 * time.Second,
-			MaxFindings: 20,
-			Policy:      cfg.LLMPolicy,
-			FailClosed:  cfg.LLMFailClosed,
+			Enabled:                 cfg.EnableLLM,
+			Transport:               cfg.LLMTransport,
+			Endpoint:                cfg.LLMEndpoint,
+			UDSPath:                 cfg.LLMUDSPath,
+			AuthToken:               cfg.LLMAuthToken,
+			Model:                   cfg.LLMModel,
+			Timeout:                 timeout,
+			MaxFindings:             20,
+			Policy:                  cfg.LLMPolicy,
+			FailClosed:              cfg.LLMFailClosed,
+			AllowedHosts:            cfg.LLMAllowedHosts,
+			CircuitBreakerThreshold: cfg.LLMCircuitBreakerThreshold,
+			CooldownSec:             cfg.LLMCooldownSec,
 		},
 	}
 }
@@ -628,8 +591,8 @@ func logSecurityConfig(sec controller.SecurityConfig) {
 	if sec.ScanEnabled {
 		log.Printf("security scan enabled: model-dir=%s", sec.ModelDir)
 		if sec.LLM.Enabled {
-			log.Printf("  LLM verifier enabled: model=%s endpoint=%s policy=%s fail-closed=%v",
-				sec.LLM.Model, sec.LLM.Endpoint, sec.LLM.Policy, sec.LLM.FailClosed)
+			log.Printf("  LLM verifier enabled: model=%s transport=%s endpoint=%s uds=%s policy=%s fail-closed=%v",
+				sec.LLM.Model, sec.LLM.Transport, sec.LLM.Endpoint, sec.LLM.UDSPath, sec.LLM.Policy, sec.LLM.FailClosed)
 		}
 	}
 	if sec.ResultCheck {
