@@ -18,6 +18,7 @@ models/audit/benchmarks/
 
 sdk/
 *.tar.gz
+*.bak
 
 # Python
 __pycache__/
