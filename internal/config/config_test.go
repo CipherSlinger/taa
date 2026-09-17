@@ -339,6 +339,103 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 	}
 }
 
+func TestStartupConfig_InferenceOptions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"llm": {
+			"enabled": true,
+			"transport": "uds",
+			"udsPath": "/run/taa/ipc/inference.sock",
+			"endpoint": "http://127.0.0.1:11434",
+			"model": "qwen2.5-coder:3b",
+			"policy": "gate",
+			"failClosed": true,
+			"authToken": "secret-token",
+			"requestTimeoutMs": 15000,
+			"allowedHosts": ["127.0.0.1", "inference-host"],
+			"circuitBreakerThreshold": 5,
+			"cooldownSec": 45
+		}
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if cfg.LLMTransport != "uds" {
+		t.Errorf("got transport %q, want 'uds'", cfg.LLMTransport)
+	}
+	if cfg.LLMUDSPath != "/run/taa/ipc/inference.sock" {
+		t.Errorf("got udsPath %q", cfg.LLMUDSPath)
+	}
+	if cfg.LLMAuthToken != "secret-token" {
+		t.Errorf("got token %q", cfg.LLMAuthToken)
+	}
+	if cfg.LLMTimeoutMs != 15000 {
+		t.Errorf("got timeout %d, want 15000", cfg.LLMTimeoutMs)
+	}
+	if len(cfg.LLMAllowedHosts) != 2 || cfg.LLMAllowedHosts[0] != "127.0.0.1" || cfg.LLMAllowedHosts[1] != "inference-host" {
+		t.Errorf("got allowedHosts %v", cfg.LLMAllowedHosts)
+	}
+	if cfg.LLMCircuitBreakerThreshold != 5 {
+		t.Errorf("got threshold %d, want 5", cfg.LLMCircuitBreakerThreshold)
+	}
+	if cfg.LLMCooldownSec != 45 {
+		t.Errorf("got cooldown %d, want 45", cfg.LLMCooldownSec)
+	}
+}
+
+func TestStartupConfig_InferenceDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if cfg.LLMTransport != "http" {
+		t.Errorf("got default transport %q, want 'http'", cfg.LLMTransport)
+	}
+	if cfg.LLMUDSPath != "" {
+		t.Errorf("got default udsPath %q, want empty", cfg.LLMUDSPath)
+	}
+	if cfg.LLMAuthToken != "" {
+		t.Errorf("got default token %q, want empty", cfg.LLMAuthToken)
+	}
+	if cfg.LLMTimeoutMs != 30000 {
+		t.Errorf("got default timeout %d, want 30000", cfg.LLMTimeoutMs)
+	}
+	if cfg.LLMCircuitBreakerThreshold != 3 {
+		t.Errorf("got default threshold %d, want 3", cfg.LLMCircuitBreakerThreshold)
+	}
+	if cfg.LLMCooldownSec != 30 {
+		t.Errorf("got default cooldown %d, want 30", cfg.LLMCooldownSec)
+	}
+}
+
+func TestStartupConfig_InferenceUDSFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"llm": {
+			"udsPath": "/run/taa/ipc/inference.sock"
+		}
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if cfg.LLMTransport != "uds" {
+		t.Errorf("got transport %q, want 'uds'", cfg.LLMTransport)
+	}
+	if cfg.LLMUDSPath != "/run/taa/ipc/inference.sock" {
+		t.Errorf("got udsPath %q", cfg.LLMUDSPath)
+	}
+}
+
 func writeTestConfig(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
