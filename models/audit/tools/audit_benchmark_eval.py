@@ -34,9 +34,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from models.examples.code_security_analyzer import (  # noqa: E402
+    Finding,
     LLMSecurityAnalyzer,
     StaticScanner,
     generate_audit_report,
+    suggestion_for_rule,
 )
 
 BENCHMARK_NAME = "audit-100"
@@ -307,7 +309,54 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def load_module_scanner() -> StaticScanner:
+class SemgrepScannerAdapter:
+    """Adapts SemgrepRunner to produce List[Finding] with AST scope and taint traces."""
+
+    def __init__(self, rules_path: Optional[str] = None):
+        from models.audit.tools.semgrep_runner import SemgrepRunner
+        from models.audit.tools.ast_scope_slicer import ASTScopeSlicer
+        self.runner = SemgrepRunner(rules_path=rules_path)
+        self.slicer = ASTScopeSlicer()
+
+    def scan_directory(self, dirpath: str, extensions: tuple[str, ...] = (".py",)) -> List[Finding]:
+        scan_res = self.runner.scan_directory(dirpath, extensions=list(extensions))
+        findings: List[Finding] = []
+        for f_dict in scan_res.findings:
+            file_path = f_dict.get("file", "")
+            line = f_dict.get("line", 1)
+            ast_block = None
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    source_code = f.read()
+                ast_block = self.slicer.extract_enclosing_scope(source_code, line, language="python")
+            except Exception:
+                pass
+
+            rule_id = f_dict.get("rule_id", "UNKNOWN")
+            finding = Finding(
+                file=file_path,
+                line=line,
+                rule_id=rule_id,
+                category=f_dict.get("category", "General"),
+                severity=f_dict.get("severity", "HIGH"),
+                description=f_dict.get("description", ""),
+                code_snippet=f_dict.get("code_snippet", ""),
+                context_before="",
+                context_after="",
+                language="python",
+                taint_trace=f_dict.get("taint_trace"),
+                ast_enclosing_block=ast_block,
+                engine="semgrep",
+                suggestion=suggestion_for_rule(rule_id),
+            )
+            findings.append(finding)
+        return findings
+
+
+def load_module_scanner(engine: str = "regex"):
+    """Loads either the regex-based StaticScanner or the Semgrep-native scanner adapter."""
+    if engine == "semgrep":
+        return SemgrepScannerAdapter()
     return StaticScanner()
 
 
@@ -388,6 +437,7 @@ def analyse_sample(
     llm_model: str,
     extensions: tuple[str, ...],
     max_findings: int,
+    engine: str = "regex",
 ) -> dict[str, Any]:
     sample_out_dir = results_dir / sample.sample_id
     sample_out_dir.mkdir(parents=True, exist_ok=True)
@@ -625,7 +675,7 @@ def analyse_sample(
         return row
 
     # Two-stage static-llm mode: static rules scan followed by LLM semantic evaluation
-    scanner = load_module_scanner()
+    scanner = load_module_scanner(engine=engine)
     findings = scanner.scan_directory(str(sample_dir), extensions=extensions)
     bypass = (len(findings) == 0)
 
@@ -987,6 +1037,7 @@ def build_summary_report(
     llm_model: str,
     eval_duration_sec: float,
     notes: str,
+    engine: str = "regex",
 ) -> dict[str, Any]:
     counts = confusion_counts(results)
     metrics = metric_summary(results)
@@ -1007,6 +1058,7 @@ def build_summary_report(
         "run_time": utc_now_iso(),
         "benchmark_version": BENCHMARK_VERSION,
         "audit_mode": audit_mode,
+        "engine": engine,
         "llm_model": llm_model if llm_backend != "none" else "none",
         "auditor_version": f"{llm_backend}:{llm_model}" if llm_backend != "none" else "static-only",
         "rule_set_version": rule_set_version,
@@ -1161,6 +1213,12 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         default="static-llm",
         help="audit mode: pure-llm (direct LLM file audit), pure-llm-checklist (LLM with rule checklist prompt), or static-llm (two-stage static scan + LLM arbitration)",
     )
+    parser.add_argument(
+        "--engine",
+        choices=["regex", "semgrep"],
+        default="regex",
+        help="static scanner engine: regex (legacy regex patterns) or semgrep (Semgrep-native AST & taint)",
+    )
     parser.add_argument("--policy", choices=["assist", "gate"], default="gate", help="audit policy to use")
     parser.add_argument("--llm-backend", choices=["none", "ollama", "llamacpp"], default="none", help="LLM backend used for semantic verification")
     parser.add_argument("--llm-model", default="qwen2.5-coder:0.5b", help="LLM model name")
@@ -1201,6 +1259,7 @@ def main() -> int:
                 llm_model=args.llm_model,
                 extensions=extensions,
                 max_findings=args.max_findings,
+                engine=args.engine,
             )
         )
     eval_duration_sec = round(time.time() - started_eval, 2)
@@ -1214,6 +1273,7 @@ def main() -> int:
         llm_model=args.llm_model,
         eval_duration_sec=eval_duration_sec,
         notes=args.notes,
+        engine=args.engine,
     )
     write_results_bundle(args.results_dir, results, summary)
 
