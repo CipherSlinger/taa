@@ -328,6 +328,31 @@ class TestCodeSecurityAnalyzerV2(unittest.TestCase):
         c_strings = compute_conclusion({"high": "1", "uncertain": None})
         self.assertFalse(c_strings["passed"])
 
+    def test_semgrep_finding_contract_fields(self):
+        """
+        Verify that Finding supports multi-language, taint trace, ast scope,
+        and engine contract fields.
+        """
+        f = Finding(
+            file="train.py",
+            line=10,
+            rule_id="EXF_001",
+            category="Credential",
+            severity="CRITICAL",
+            description="exfil",
+            code_snippet="post()",
+            context_before="",
+            context_after="",
+            language="python",
+            taint_trace=[{"step": 1, "line": 10}],
+            ast_enclosing_block="def send(): pass",
+            engine="semgrep",
+        )
+        self.assertEqual(f.language, "python")
+        self.assertEqual(len(f.taint_trace), 1)
+        self.assertIn("def send", f.ast_enclosing_block)
+        self.assertEqual(f.engine, "semgrep")
+
         # file_summaries is invalid type
         c_invalid_summary = compute_conclusion({"high": 0, "total_findings": 0}, file_summaries=123)
         self.assertTrue(c_invalid_summary["passed"])
