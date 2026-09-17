@@ -1,0 +1,41 @@
+# Semgrep rules for Shell/Bash script security audit
+# Rule families align with TAA canonical 13-rule specification
+rules:
+  - id: taa-per-backdoor-shell
+    languages: [bash]
+    severity: ERROR
+    message: "Crontab or profile persistence modification detected in Shell script"
+    metadata:
+      category: persistence
+      rule_family: PER_001
+    pattern-either:
+      - pattern: crontab ...
+      - pattern: echo ... >> /etc/crontab
+      - pattern: echo ... >> ~/.bashrc
+      - pattern: echo ... >> ~/.profile
+
+  - id: taa-cmd-exec-shell
+    languages: [bash]
+    severity: ERROR
+    message: "Pipe to shell execution or dynamic eval detected in Shell script"
+    metadata:
+      category: execution
+      rule_family: CMD_001
+    pattern-either:
+      - pattern: curl ... | bash
+      - pattern: curl ... | sh
+      - pattern: wget ... | bash
+      - pattern: wget ... | sh
+      - pattern: eval ...
+
+  - id: taa-net-general-shell
+    languages: [bash]
+    severity: ERROR
+    message: "Outbound network download tool invocation in Shell script"
+    metadata:
+      category: network
+      rule_family: NET_001
+    pattern-either:
+      - pattern: curl ...
+      - pattern: wget ...
+      - pattern: nc ...

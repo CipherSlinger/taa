@@ -26,7 +26,7 @@ import json
 import time
 import argparse
 from dataclasses import dataclass, asdict, field
-from typing import List, Optional, Dict, Union
+from typing import List, Optional, Dict, Union, Any
 
 # ============================================================
 # 1. Suspicious pattern rule library (static extraction)
@@ -231,6 +231,10 @@ class Finding:
     code_snippet: str
     context_before: str
     context_after: str
+    language: str = "python"
+    taint_trace: Optional[List[Dict[str, Any]]] = None
+    ast_enclosing_block: Optional[str] = None
+    engine: str = "regex"
     llm_verdict: Optional[str] = None
     llm_reason: Optional[str] = None
     llm_risk: Optional[str] = None
@@ -514,12 +518,26 @@ class LLMSecurityAnalyzer:
 
     def analyze_finding(self, finding: Finding) -> Finding:
         """Perform LLM semantic judgment on a single finding."""
+        ctx_before = finding.context_before
+        snippet = finding.code_snippet
+        ctx_after = finding.context_after
+
+        if finding.ast_enclosing_block:
+            ctx_before = "# [AST Enclosing Scope]\n" + finding.ast_enclosing_block
+            if finding.taint_trace:
+                try:
+                    from models.audit.tools.ast_scope_slicer import ASTScopeSlicer
+                    slicer = ASTScopeSlicer()
+                    ctx_after = slicer.format_taint_trajectory(finding.taint_trace)
+                except ImportError:
+                    pass
+
         prompt = self.FINDING_PROMPT.format(
             file=finding.file,
             line=finding.line,
-            code_snippet=finding.code_snippet,
-            context_before=finding.context_before,
-            context_after=finding.context_after,
+            code_snippet=snippet,
+            context_before=ctx_before,
+            context_after=ctx_after,
             rule_id=finding.rule_id,
             category=finding.category,
             description=finding.description,
@@ -762,6 +780,9 @@ def compute_conclusion(
     high = _safe_int(stats.get("high"))
     medium = _safe_int(stats.get("medium"))
     total = _safe_int(stats.get("total_findings"))
+    scan_complete = stats.get("scan_complete", True)
+    parser_errors = _safe_int(stats.get("parser_errors", 0))
+    timed_out = bool(stats.get("timed_out", False))
 
     has_high_or_medium = (high > 0) or (medium > 0)
     has_uncertain = uncertain > 0
@@ -814,6 +835,14 @@ def compute_conclusion(
         passed = False
         verdict = "MALICIOUS"
         reason = "File-level attack chain detected"
+    elif not scan_complete or parser_errors > 0 or timed_out:
+        passed = False
+        verdict = "UNCERTAIN"
+        risk_level = "HIGH"
+        reason = (
+            f"Fail-Closed: Static scan incomplete or defect detected "
+            f"(complete={scan_complete}, parse_errors={parser_errors}, timeout={timed_out})"
+        )
     elif has_uncertain and has_high_or_medium:
         passed = False
         verdict = "UNCERTAIN"
