@@ -30,8 +30,20 @@ type StartupConfig struct {
 	KeysDir                   string
 	AttestationHRKCertPath    string
 	AttestationHSKCekCertPath string
-	EnableLLM                 bool
-	LLMEndpoint               string
+	EnableLLM                  bool
+	LLMTransport               string
+	LLMEndpoint                string
+	LLMAttestationMode         string
+	LLMHRKCertPath             string
+	LLMHSKCekCertPath          string
+	LLMExpectedMeasurements    []string
+	LLMRequireMutualAttest     bool
+	LLMInsecureSkipVerify      bool
+	LLMAuthToken               string
+	LLMTimeoutMs              int64
+	LLMAllowedHosts           []string
+	LLMCircuitBreakerThreshold int
+	LLMCooldownSec            int
 	LLMModel                  string
 	LLMPolicy                 string
 	LLMFailClosed             bool
@@ -65,12 +77,24 @@ type startupAttestationConfigFile struct {
 }
 
 type startupLLMConfigFile struct {
-	Enabled    *bool  `json:"enabled"`
-	Endpoint   string `json:"endpoint"`
-	Model      string `json:"model"`
-	Policy     string `json:"policy"`
-	FailClosed *bool  `json:"failClosed"`
-	Dir        string `json:"dir"`
+	Enabled                 *bool    `json:"enabled"`
+	Transport               string   `json:"transport"`
+	Endpoint                string   `json:"endpoint"`
+	AttestationMode         string   `json:"attestationMode"`
+	HRKCertPath             string   `json:"hrkCertPath"`
+	HSKCekCertPath          string   `json:"hskCekCertPath"`
+	ExpectedMeasurements    []string `json:"expectedMeasurements"`
+	RequireMutualAttest     *bool    `json:"requireMutualAttest"`
+	InsecureSkipVerify      *bool    `json:"insecureSkipVerify"`
+	AuthToken               string   `json:"authToken"`
+	RequestTimeoutMs        int64    `json:"requestTimeoutMs"`
+	AllowedHosts            []string `json:"allowedHosts"`
+	CircuitBreakerThreshold int      `json:"circuitBreakerThreshold"`
+	CooldownSec             int      `json:"cooldownSec"`
+	Model                   string   `json:"model"`
+	Policy                  string   `json:"policy"`
+	FailClosed              *bool    `json:"failClosed"`
+	Dir                     string   `json:"dir"`
 }
 
 func LoadStartupConfig(path string) (StartupConfig, error) {
@@ -119,7 +143,19 @@ func defaultStartupConfig() StartupConfig {
 		AttestationHRKCertPath:    hrkDefault,
 		AttestationHSKCekCertPath: hskDefault,
 		EnableLLM:                 true,
-		LLMEndpoint:               "http://127.0.0.1:11434",
+		LLMTransport:              "teetls",
+		LLMEndpoint:               "https://127.0.0.1:8443",
+		LLMAttestationMode:         "strict",
+		LLMHRKCertPath:             hrkDefault,
+		LLMHSKCekCertPath:          hskDefault,
+		LLMExpectedMeasurements:    nil,
+		LLMRequireMutualAttest:     false,
+		LLMInsecureSkipVerify:      false,
+		LLMAuthToken:               "",
+		LLMTimeoutMs:              30000,
+		LLMAllowedHosts:           nil,
+		LLMCircuitBreakerThreshold: 3,
+		LLMCooldownSec:            30,
 		LLMModel:                  "qwen2.5-coder:0.5b",
 		LLMPolicy:                 "assist",
 		LLMFailClosed:             true,
@@ -183,8 +219,44 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	if fileCfg.LLM.Enabled != nil {
 		cfg.EnableLLM = *fileCfg.LLM.Enabled
 	}
+	if fileCfg.LLM.Transport != "" {
+		cfg.LLMTransport = strings.TrimSpace(fileCfg.LLM.Transport)
+	}
 	if fileCfg.LLM.Endpoint != "" {
 		cfg.LLMEndpoint = fileCfg.LLM.Endpoint
+	}
+	if trimmed := strings.TrimSpace(fileCfg.LLM.AttestationMode); trimmed != "" {
+		cfg.LLMAttestationMode = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.LLM.HRKCertPath); trimmed != "" {
+		cfg.LLMHRKCertPath = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.LLM.HSKCekCertPath); trimmed != "" {
+		cfg.LLMHSKCekCertPath = trimmed
+	}
+	if len(fileCfg.LLM.ExpectedMeasurements) > 0 {
+		cfg.LLMExpectedMeasurements = fileCfg.LLM.ExpectedMeasurements
+	}
+	if fileCfg.LLM.RequireMutualAttest != nil {
+		cfg.LLMRequireMutualAttest = *fileCfg.LLM.RequireMutualAttest
+	}
+	if fileCfg.LLM.InsecureSkipVerify != nil {
+		cfg.LLMInsecureSkipVerify = *fileCfg.LLM.InsecureSkipVerify
+	}
+	if fileCfg.LLM.AuthToken != "" {
+		cfg.LLMAuthToken = fileCfg.LLM.AuthToken
+	}
+	if fileCfg.LLM.RequestTimeoutMs > 0 {
+		cfg.LLMTimeoutMs = fileCfg.LLM.RequestTimeoutMs
+	}
+	if len(fileCfg.LLM.AllowedHosts) > 0 {
+		cfg.LLMAllowedHosts = fileCfg.LLM.AllowedHosts
+	}
+	if fileCfg.LLM.CircuitBreakerThreshold > 0 {
+		cfg.LLMCircuitBreakerThreshold = fileCfg.LLM.CircuitBreakerThreshold
+	}
+	if fileCfg.LLM.CooldownSec > 0 {
+		cfg.LLMCooldownSec = fileCfg.LLM.CooldownSec
 	}
 	if fileCfg.LLM.Model != "" {
 		cfg.LLMModel = fileCfg.LLM.Model

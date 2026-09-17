@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 	teecrypto "taa/pkg/crypto"
+	"taa/teetls"
 )
 
 // TestDeriveUserDataAndKeyPair 校验国密 SM2 密钥生成与 UserData 派生逻辑：
@@ -75,24 +78,36 @@ func TestCheckKeyFileExists_DirectoryTargetFails(t *testing.T) {
 	}
 }
 
-// TestBuildSecurityConfig 校验启动配置到控制器 SecurityConfig 的字段映射是否正确
+// TestBuildSecurityConfig verifies mapping from StartupConfig to controller.SecurityConfig
 func TestBuildSecurityConfig(t *testing.T) {
 	cfg := config.StartupConfig{
-		EnableSecurityScan: true,
-		ModelDir:           "/opt/taa/models",
-		EnableResultCheck:  true,
-		MaxResultBytes:     3 * 1024 * 1024 * 1024,
-		DataDir:            "/opt/taa/data",
-		ResultDir:          "/opt/taa/results",
-		ModelInputDir:      "/opt/taa/models/input",
-		ModelOutputDir:     "/opt/taa/models/output",
-		ModelLogDir:        "/opt/taa/models/log",
-		ModelProgressDir:   "/opt/taa/models/progress",
-		EnableLLM:          true,
-		LLMEndpoint:        "127.0.0.1:11434",
-		LLMModel:           "qwen2.5-coder:0.5b",
-		LLMPolicy:          "strict",
-		LLMFailClosed:      true,
+		EnableSecurityScan:         true,
+		ModelDir:                   "/opt/taa/models",
+		EnableResultCheck:          true,
+		MaxResultBytes:             3 * 1024 * 1024 * 1024,
+		DataDir:                    "/opt/taa/data",
+		ResultDir:                  "/opt/taa/results",
+		ModelInputDir:              "/opt/taa/models/input",
+		ModelOutputDir:             "/opt/taa/models/output",
+		ModelLogDir:                "/opt/taa/models/log",
+		ModelProgressDir:           "/opt/taa/models/progress",
+		EnableLLM:                  true,
+		LLMTransport:               "teetls",
+		LLMEndpoint:                "https://127.0.0.1:8443",
+		LLMAttestationMode:         "permissive",
+		LLMHRKCertPath:             "/path/hrk.cert",
+		LLMHSKCekCertPath:          "/path/hsk.cert",
+		LLMExpectedMeasurements:    []string{"measure-1"},
+		LLMRequireMutualAttest:     true,
+		LLMInsecureSkipVerify:      true,
+		LLMAuthToken:               "test-secret-token",
+		LLMTimeoutMs:               60000,
+		LLMAllowedHosts:            []string{"127.0.0.1", "localhost"},
+		LLMCircuitBreakerThreshold: 5,
+		LLMCooldownSec:             45,
+		LLMModel:                   "qwen2.5-coder:0.5b",
+		LLMPolicy:                  "strict",
+		LLMFailClosed:              true,
 	}
 
 	sec := buildSecurityConfig(cfg)
@@ -129,19 +144,54 @@ func TestBuildSecurityConfig(t *testing.T) {
 	}
 
 	wantLLM := codeaudit.LLMConfig{
-		Enabled:     cfg.EnableLLM,
-		Endpoint:    cfg.LLMEndpoint,
-		Model:       cfg.LLMModel,
-		Timeout:     120 * time.Second,
-		MaxFindings: 20,
-		Policy:      cfg.LLMPolicy,
-		FailClosed:  cfg.LLMFailClosed,
+		Enabled:                 cfg.EnableLLM,
+		Transport:               cfg.LLMTransport,
+		Endpoint:                cfg.LLMEndpoint,
+		AttestationMode:         cfg.LLMAttestationMode,
+		HRKCertPath:             cfg.LLMHRKCertPath,
+		HSKCekCertPath:          cfg.LLMHSKCekCertPath,
+		ExpectedMeasurements:    cfg.LLMExpectedMeasurements,
+		RequireMutualAttest:     cfg.LLMRequireMutualAttest,
+		InsecureSkipVerify:      cfg.LLMInsecureSkipVerify,
+		AuthToken:               cfg.LLMAuthToken,
+		Model:                   cfg.LLMModel,
+		Timeout:                 60 * time.Second,
+		MaxFindings:             20,
+		Policy:                  cfg.LLMPolicy,
+		FailClosed:              cfg.LLMFailClosed,
+		AllowedHosts:            cfg.LLMAllowedHosts,
+		CircuitBreakerThreshold: cfg.LLMCircuitBreakerThreshold,
+		CooldownSec:             cfg.LLMCooldownSec,
 	}
 	if sec.LLM.Enabled != wantLLM.Enabled {
 		t.Errorf("LLM.Enabled = %v, want %v", sec.LLM.Enabled, wantLLM.Enabled)
 	}
+	if sec.LLM.Transport != wantLLM.Transport {
+		t.Errorf("LLM.Transport = %q, want %q", sec.LLM.Transport, wantLLM.Transport)
+	}
 	if sec.LLM.Endpoint != wantLLM.Endpoint {
 		t.Errorf("LLM.Endpoint = %q, want %q", sec.LLM.Endpoint, wantLLM.Endpoint)
+	}
+	if sec.LLM.AttestationMode != wantLLM.AttestationMode {
+		t.Errorf("LLM.AttestationMode = %q, want %q", sec.LLM.AttestationMode, wantLLM.AttestationMode)
+	}
+	if sec.LLM.HRKCertPath != wantLLM.HRKCertPath {
+		t.Errorf("LLM.HRKCertPath = %q, want %q", sec.LLM.HRKCertPath, wantLLM.HRKCertPath)
+	}
+	if sec.LLM.HSKCekCertPath != wantLLM.HSKCekCertPath {
+		t.Errorf("LLM.HSKCekCertPath = %q, want %q", sec.LLM.HSKCekCertPath, wantLLM.HSKCekCertPath)
+	}
+	if len(sec.LLM.ExpectedMeasurements) != len(wantLLM.ExpectedMeasurements) || (len(wantLLM.ExpectedMeasurements) > 0 && sec.LLM.ExpectedMeasurements[0] != wantLLM.ExpectedMeasurements[0]) {
+		t.Errorf("LLM.ExpectedMeasurements = %v, want %v", sec.LLM.ExpectedMeasurements, wantLLM.ExpectedMeasurements)
+	}
+	if sec.LLM.RequireMutualAttest != wantLLM.RequireMutualAttest {
+		t.Errorf("LLM.RequireMutualAttest = %v, want %v", sec.LLM.RequireMutualAttest, wantLLM.RequireMutualAttest)
+	}
+	if sec.LLM.InsecureSkipVerify != wantLLM.InsecureSkipVerify {
+		t.Errorf("LLM.InsecureSkipVerify = %v, want %v", sec.LLM.InsecureSkipVerify, wantLLM.InsecureSkipVerify)
+	}
+	if sec.LLM.AuthToken != wantLLM.AuthToken {
+		t.Errorf("LLM.AuthToken = %q, want %q", sec.LLM.AuthToken, wantLLM.AuthToken)
 	}
 	if sec.LLM.Model != wantLLM.Model {
 		t.Errorf("LLM.Model = %q, want %q", sec.LLM.Model, wantLLM.Model)
@@ -158,6 +208,21 @@ func TestBuildSecurityConfig(t *testing.T) {
 	if sec.LLM.FailClosed != wantLLM.FailClosed {
 		t.Errorf("LLM.FailClosed = %v, want %v", sec.LLM.FailClosed, wantLLM.FailClosed)
 	}
+	if len(sec.LLM.AllowedHosts) != len(wantLLM.AllowedHosts) {
+		t.Errorf("LLM.AllowedHosts len = %d, want %d", len(sec.LLM.AllowedHosts), len(wantLLM.AllowedHosts))
+	} else {
+		for i := range wantLLM.AllowedHosts {
+			if sec.LLM.AllowedHosts[i] != wantLLM.AllowedHosts[i] {
+				t.Errorf("LLM.AllowedHosts[%d] = %q, want %q", i, sec.LLM.AllowedHosts[i], wantLLM.AllowedHosts[i])
+			}
+		}
+	}
+	if sec.LLM.CircuitBreakerThreshold != wantLLM.CircuitBreakerThreshold {
+		t.Errorf("LLM.CircuitBreakerThreshold = %d, want %d", sec.LLM.CircuitBreakerThreshold, wantLLM.CircuitBreakerThreshold)
+	}
+	if sec.LLM.CooldownSec != wantLLM.CooldownSec {
+		t.Errorf("LLM.CooldownSec = %d, want %d", sec.LLM.CooldownSec, wantLLM.CooldownSec)
+	}
 }
 
 // TestRunConfigNotFound 校验配置文件不存在时 Run 返回错误
@@ -172,22 +237,108 @@ func TestRunConfigNotFound(t *testing.T) {
 	}
 }
 
-// TestEnsureQwenAvailableCancelledContext 校验上下文被取消时 ensureQwenAvailable 能够立即退出而非挂起
-func TestEnsureQwenAvailableCancelledContext(t *testing.T) {
+func newTestTEETLSServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+	mockProv := teetls.NewMockEvidenceProvider()
+	listener, err := teetls.Listen("tcp", "127.0.0.1:0", &teetls.Config{
+		Mode:             teetls.ModeStrict,
+		EvidenceProvider: mockProv,
+	})
+	if err != nil {
+		t.Fatalf("failed to create teetls listener: %v", err)
+	}
+	server := httptest.NewUnstartedServer(handler)
+	server.Listener = listener
+	server.Start()
+	server.URL = "https://" + server.Listener.Addr().String()
+	return server
+}
+
+// TestProbeInferenceService_ContextCancelled verifies probeInferenceService immediately returns error on cancelled context.
+func TestProbeInferenceService_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	done := make(chan struct{})
-	go func() {
-		ensureQwenAvailable(ctx, "http://127.0.0.1:65534", "test-model", t.TempDir())
-		close(done)
-	}()
+	cfg := config.StartupConfig{
+		LLMTransport:          "teetls",
+		LLMEndpoint:           "https://127.0.0.1:65534",
+		LLMInsecureSkipVerify: true,
+		LLMTimeoutMs:          3000,
+	}
 
-	select {
-	case <-done:
-		// 成功快速返回
-	case <-time.After(2 * time.Second):
-		t.Fatal("ensureQwenAvailable did not return promptly with cancelled context")
+	err := probeInferenceService(ctx, cfg)
+	if err == nil {
+		t.Fatal("expected error on cancelled context, got nil")
+	}
+}
+
+// TestProbeInferenceService_HealthyEndpoint verifies probeInferenceService succeeds when endpoint health check passes.
+func TestProbeInferenceService_HealthyEndpoint(t *testing.T) {
+	server := newTestTEETLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	cfg := config.StartupConfig{
+		LLMTransport:          "teetls",
+		LLMEndpoint:           server.URL,
+		LLMInsecureSkipVerify: true,
+		LLMTimeoutMs:          3000,
+	}
+
+	err := probeInferenceService(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("expected healthy probe to succeed, got error: %v", err)
+	}
+}
+
+// TestProbeInferenceService_UnhealthyEndpoint verifies probeInferenceService errors when endpoint returns failure.
+func TestProbeInferenceService_UnhealthyEndpoint(t *testing.T) {
+	server := newTestTEETLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"unhealthy"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	cfg := config.StartupConfig{
+		LLMTransport:          "teetls",
+		LLMEndpoint:           server.URL,
+		LLMInsecureSkipVerify: true,
+		LLMTimeoutMs:          3000,
+	}
+
+	err := probeInferenceService(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected probe error on unhealthy endpoint, got nil")
+	}
+}
+
+// TestRunWithConfig_LLMProbeFailClosed verifies RunWithConfig fails closed when probe fails and LLMFailClosed is true.
+func TestRunWithConfig_LLMProbeFailClosed(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.StartupConfig{
+		EnableLLM:             true,
+		LLMFailClosed:         true,
+		LLMTransport:          "teetls",
+		LLMEndpoint:           "https://127.0.0.1:65534",
+		LLMInsecureSkipVerify: true,
+		LLMTimeoutMs:          100,
+	}
+	err := RunWithConfig(ctx, cfg)
+	if err == nil {
+		t.Fatal("expected error on probe failure with fail-closed, got nil")
+	}
+	if !strings.Contains(err.Error(), "probe inference service (fail-closed)") {
+		t.Fatalf("expected fail-closed error, got: %v", err)
 	}
 }
 

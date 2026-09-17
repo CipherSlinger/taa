@@ -1,129 +1,121 @@
 package codeaudit
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
 	"time"
+
+	"taa/teellm"
+	"taa/teetls"
 )
 
 // LLMConfig controls the local LLM verifier.
 type LLMConfig struct {
-	Enabled     bool          // 是否启用 LLM 语义验证
-	Endpoint    string        // Ollama/llama.cpp 本地 HTTP 端点
-	Model       string        // 模型名，如 qwen2.5-coder:0.5b
-	Timeout     time.Duration // 单次推理超时
-	MaxFindings int           // 最多分析多少个 finding
-	Policy      string        // "assist"（仅标注，不改变阻断）或 "gate"（可降级放行）
-	FailClosed  bool          // LLM 不可用时是否阻断导入
+	Enabled                 bool
+	Transport               string
+	Endpoint                string
+	AuthToken               string
+	Model                   string
+	Timeout                 time.Duration
+	MaxFindings             int
+	Policy                  string
+	FailClosed              bool
+	AllowedHosts            []string
+	CircuitBreakerThreshold int
+	CooldownSec             int
+
+	// TEE-TLS configuration
+	TEETLS               *teetls.Config
+	AttestationMode      string
+	HRKCertPath          string
+	HSKCekCertPath       string
+	ExpectedMeasurements []string
+	RequireMutualAttest  bool
+	InsecureSkipVerify   bool
 }
 
-// DefaultLLMConfig returns a sensible default configuration.
+// DefaultLLMConfig returns safe default configuration.
 func DefaultLLMConfig() LLMConfig {
 	return LLMConfig{
-		Enabled:     true,
-		Endpoint:    "http://127.0.0.1:11434",
-		Model:       "qwen2.5-coder:0.5b",
-		Timeout:     120 * time.Second,
-		MaxFindings: 20,
-		Policy:      "assist",
-		FailClosed:  true,
+		Enabled:                 true,
+		Transport:               "teetls",
+		Endpoint:                "https://127.0.0.1:8443",
+		Model:                   "qwen2.5-coder:0.5b",
+		Timeout:                 30 * time.Second,
+		MaxFindings:             20,
+		Policy:                  "assist",
+		FailClosed:              true,
+		CircuitBreakerThreshold: 3,
+		CooldownSec:             30,
+		AttestationMode:         "strict",
 	}
 }
 
-// LLMDecision is the structured response from the LLM.
+// LLMDecision represents a structured decision for test mocks and legacy parsers.
 type LLMDecision struct {
 	Verdict string `json:"verdict"` // MALICIOUS / SUSPICIOUS / BENIGN / UNCERTAIN
 	Reason  string `json:"reason"`
 	Risk    string `json:"risk"`
 }
 
-// LLMClient abstracts the local LLM inference backend.
-type LLMClient interface {
-	VerifyFinding(ctx context.Context, prompt string) (LLMDecision, error)
+// LLMClient abstracts the standardized inference client interface.
+type LLMClient = teellm.Client
+
+// FileAnalyzer defines an optional interface for file-level analysis.
+type FileAnalyzer interface {
 	AnalyzeFile(ctx context.Context, prompt string) (FileSummary, error)
 }
 
-// OllamaClient talks to a local Ollama server via its REST API.
-type OllamaClient struct {
-	endpoint string
-	model    string
-	client   *http.Client
+// NewInferenceClient constructs a standardized inference client based on LLMConfig.
+func NewInferenceClient(cfg LLMConfig) (LLMClient, error) {
+	var teeTLSConfig *teetls.Config
+	if cfg.TEETLS != nil {
+		teeTLSConfig = cfg.TEETLS
+	} else if cfg.Transport == "teetls" || cfg.Transport == "https" || cfg.Transport == "" {
+		mode := teetls.ModeStrict
+		if cfg.AttestationMode == "permissive" {
+			mode = teetls.ModePermissive
+		}
+		teeTLSConfig = &teetls.Config{
+			Mode:                          mode,
+			InsecureSkipAttestationVerify: cfg.InsecureSkipVerify,
+			ExpectedMeasurements:          cfg.ExpectedMeasurements,
+			VerifyMutualAttestation:       cfg.RequireMutualAttest,
+		}
+		if cfg.HRKCertPath != "" || cfg.HSKCekCertPath != "" {
+			teeTLSConfig.EvidenceProvider = teetls.NewHygonHardwareProvider("", cfg.HRKCertPath, cfg.HSKCekCertPath)
+		}
+	}
+
+	return teellm.NewClient(teellm.Config{
+		Endpoint:                       cfg.Endpoint,
+		Timeout:                        cfg.Timeout,
+		AllowedHosts:                   cfg.AllowedHosts,
+		TEETLS:                         teeTLSConfig,
+		CircuitBreakerFailureThreshold: cfg.CircuitBreakerThreshold,
+		CircuitBreakerCooldown:         time.Duration(cfg.CooldownSec) * time.Second,
+	})
 }
 
-// NewOllamaClient creates a client for the given Ollama endpoint.
-func NewOllamaClient(endpoint, model string, timeout time.Duration) *OllamaClient {
+// NewOllamaClient provides backward compatibility, returning an LLMClient via NewInferenceClient.
+func NewOllamaClient(endpoint, model string, timeout time.Duration) LLMClient {
 	if timeout <= 0 {
-		timeout = 120 * time.Second
+		timeout = 30 * time.Second
 	}
-	return &OllamaClient{
-		endpoint: endpoint,
-		model:    model,
-		client:   &http.Client{Timeout: timeout},
-	}
-}
-
-// ollamaGenerateRequest is the request body for Ollama's /api/generate endpoint.
-type ollamaGenerateRequest struct {
-	Model   string         `json:"model"`
-	Prompt  string         `json:"prompt"`
-	Stream  bool           `json:"stream"`
-	Think   *bool          `json:"think,omitempty"`
-	Options map[string]any `json:"options,omitempty"`
-}
-
-// ollamaGenerateResponse is the response body from Ollama's /api/generate endpoint.
-type ollamaGenerateResponse struct {
-	Response string `json:"response"`
-}
-
-func (c *OllamaClient) VerifyFinding(ctx context.Context, prompt string) (LLMDecision, error) {
-	noThink := false
-	reqBody, err := json.Marshal(ollamaGenerateRequest{
-		Model:  c.model,
-		Prompt: prompt,
-		Stream: false,
-		Think:  &noThink,
-		Options: map[string]any{
-			"temperature": 0.1,
-			"num_predict": 160,
-		},
+	client, err := NewInferenceClient(LLMConfig{
+		Endpoint:           endpoint,
+		Model:              model,
+		Timeout:            timeout,
+		InsecureSkipVerify: true,
 	})
 	if err != nil {
-		return LLMDecision{}, fmt.Errorf("marshal request: %w", err)
+		return nil
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/api/generate", bytes.NewReader(reqBody))
-	if err != nil {
-		return LLMDecision{}, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return LLMDecision{}, fmt.Errorf("ollama request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return LLMDecision{}, fmt.Errorf("ollama returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var genResp ollamaGenerateResponse
-	if err := json.NewDecoder(resp.Body).Decode(&genResp); err != nil {
-		return LLMDecision{}, fmt.Errorf("decode response: %w", err)
-	}
-
-	return parseDecision(genResp.Response), nil
+	return client
 }
 
-// parseDecision extracts a JSON decision from the LLM's raw text response.
+// parseDecision extracts a JSON decision from raw text response.
 func parseDecision(raw string) LLMDecision {
-	// Find the first {...} block in the response.
 	start := -1
 	end := -1
 	depth := 0
@@ -145,15 +137,14 @@ func parseDecision(raw string) LLMDecision {
 		}
 	}
 	if start < 0 || end <= start {
-		return LLMDecision{Verdict: "UNCERTAIN", Reason: "无法解析模型输出"}
+		return LLMDecision{Verdict: "UNCERTAIN", Reason: "unable to parse model output"}
 	}
 
 	var decision LLMDecision
 	if err := json.Unmarshal([]byte(raw[start:end]), &decision); err != nil {
-		return LLMDecision{Verdict: "UNCERTAIN", Reason: "模型输出 JSON 解析失败"}
+		return LLMDecision{Verdict: "UNCERTAIN", Reason: "model output json parse error"}
 	}
 
-	// Normalize verdict.
 	switch decision.Verdict {
 	case "MALICIOUS", "SUSPICIOUS", "BENIGN", "UNCERTAIN":
 		// valid
@@ -163,52 +154,8 @@ func parseDecision(raw string) LLMDecision {
 	return decision
 }
 
-
-// AnalyzeFile runs a file-level analysis prompt and returns a FileSummary.
-func (c *OllamaClient) AnalyzeFile(ctx context.Context, prompt string) (FileSummary, error) {
-	noThink := false
-	reqBody, err := json.Marshal(ollamaGenerateRequest{
-		Model:  c.model,
-		Prompt: prompt,
-		Stream: false,
-		Think:  &noThink,
-		Options: map[string]any{
-			"temperature": 0.1,
-			"num_predict": 160,
-		},
-	})
-	if err != nil {
-		return FileSummary{}, fmt.Errorf("marshal request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/api/generate", bytes.NewReader(reqBody))
-	if err != nil {
-		return FileSummary{}, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return FileSummary{}, fmt.Errorf("ollama request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return FileSummary{}, fmt.Errorf("ollama returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var genResp ollamaGenerateResponse
-	if err := json.NewDecoder(resp.Body).Decode(&genResp); err != nil {
-		return FileSummary{}, fmt.Errorf("decode response: %w", err)
-	}
-
-	return parseFileSummary(genResp.Response), nil
-}
-
-// parseFileSummary extracts a FileSummary JSON from the LLM's raw text response.
+// parseFileSummary extracts a FileSummary JSON from raw text response.
 func parseFileSummary(raw string) FileSummary {
-	// Find the first {...} block in the response.
 	start := -1
 	end := -1
 	depth := 0
@@ -230,15 +177,14 @@ func parseFileSummary(raw string) FileSummary {
 		}
 	}
 	if start < 0 || end <= start {
-		return FileSummary{RiskLevel: "UNCERTAIN", Summary: "无法解析模型输出"}
+		return FileSummary{RiskLevel: "UNCERTAIN", Summary: "unable to parse model output"}
 	}
 
 	var summary FileSummary
 	if err := json.Unmarshal([]byte(raw[start:end]), &summary); err != nil {
-		return FileSummary{RiskLevel: "UNCERTAIN", Summary: "模型输出 JSON 解析失败"}
+		return FileSummary{RiskLevel: "UNCERTAIN", Summary: "model output json parse error"}
 	}
 
-	// Normalize risk_level.
 	switch summary.RiskLevel {
 	case "HIGH", "MEDIUM", "LOW", "UNCERTAIN":
 		// valid

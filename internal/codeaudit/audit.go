@@ -75,6 +75,7 @@ type AuditMetadata struct {
 	LLMEnabled     bool   `json:"llm_enabled"`
 	Policy         string `json:"policy"`
 	ScanDurationMs int64  `json:"scan_duration_ms"`
+	LLMDegraded    bool   `json:"llm_degraded,omitempty"`
 }
 
 // FileSummary is the LLM response for file-level analysis.
@@ -300,6 +301,7 @@ func AssembleAuditReport(
 			LLMEnabled:     cfg.Enabled,
 			Policy:         cfg.Policy,
 			ScanDurationMs: duration.Milliseconds(),
+			LLMDegraded:    scanReport != nil && scanReport.LLMDegraded,
 		},
 	}
 }

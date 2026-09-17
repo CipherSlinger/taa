@@ -129,7 +129,8 @@ REMOTE_TAA_CONFIG_PATH="${REMOTE_TAA_CONFIG_PATH:-$REMOTE_DIR/$TAA_CONFIG_FILE}"
 CONTAINER_TAA_CONFIG_PATH="${CONTAINER_TAA_CONFIG_PATH:-$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE}"
 CONTRACT="${CONTRACT:-}"
 TAA_LOG_FILE="${TAA_LOG_FILE:-$TAA_CONTAINER_WORKDIR/taa.log}"
-# Ollama / Qwen：本地离线包、远程缓存目录、容器内目录、服务监听和模型配置。
+# Ollama / Qwen: offline bundle, remote cache dir, container dir, host and model config.
+# TAA is decoupled from the inference engine, connecting via taa-isp/v1 protocol (UDS or HTTP REST).
 OLLAMA_LOCAL_DIR="${OLLAMA_LOCAL_DIR:-$PROJECT_DIR/models/audit/ollama-qwen}"
 OLLAMA_DIR_NAME="${OLLAMA_DIR_NAME:-$(basename "$OLLAMA_LOCAL_DIR")}"
 REMOTE_OLLAMA_DIR="${REMOTE_OLLAMA_DIR:-$REMOTE_DIR/$OLLAMA_DIR_NAME}"
@@ -1996,12 +1997,16 @@ if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
 fi
 
 if [[ "$DEPLOY_QWEN" == true ]]; then
-  step "stopping old ollama inside container (will be used by TAA at runtime)"
+  step "stopping old ollama inside container"
   remote_ssh "$(container_exec) sh -lc 'killall ollama >/dev/null 2>&1 || true; pkill -x ollama >/dev/null 2>&1 || true; killall llama-server >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true'"
 
   sync_ollama_to_remote
   copy_ollama_to_container
-  # ensureQwenAvailable() 会在 TAA 启动时自动拉起 ollama（包已先同步完成）
+  # Inference engine is decoupled from TAA daemon lifecycle.
+  # TAA connects to the decoupled inference gateway via taa-isp/v1 over UDS or HTTP REST.
+  # Start independent inference engine inside container rather than relying on embedded TAA subprocess spawn.
+  step "starting decoupled inference engine inside container"
+  remote_ssh "$(container_exec) sh -lc 'cd \"$CONTAINER_OLLAMA_DIR\" && exec env OLLAMA_HOST=\"$OLLAMA_HOST\" OLLAMA_MODELS=\"$CONTAINER_OLLAMA_DIR/models/models\" OLLAMA_LIBRARY_PATH=\"$CONTAINER_OLLAMA_DIR/lib/ollama\" nohup ./start-ollama.sh > \"$OLLAMA_LOG_FILE\" 2>&1 &'"
 fi
 
 

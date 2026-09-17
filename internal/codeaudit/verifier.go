@@ -2,60 +2,15 @@ package codeaudit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"taa/teellm"
 )
-
-const analysisPromptTemplate = `你是一个代码安全审计专家。请分析以下代码片段是否存在窃取数据、外传数据或其他恶意行为。
-
-## 代码片段
-文件: %s (第 %d 行)
-` + "```python" + `
-%s
->>> %s   ← 触发规则的代码
-%s
-` + "```" + `
-
-## 触发的规则
-规则ID: %s
-类别: %s
-严重度: %s
-规则说明: %s
-
-## 判定优先级与安全边界
-1. 恶意/可疑判定 (MALICIOUS 或 SUSPICIOUS)：
-   - 必须有上下文明确表明代码在窃取或外发凭据（密钥、令牌、密码、证书、私钥、敏感配置文件）；
-   - 或明确在通过未授权网络、隐写载荷、非法持久化通道外传真实的敏感原始数据/特征矩阵；
-   - 只有确凿恶意利用证据时才可判定为 MALICIOUS 或 SUSPICIOUS。
-
-2. 良性判定 (BENIGN)（严格消除训练与日志误报）：
-   - 日志与标准输出（如 EMB_003）：打印数据集名称/路径标识/类别标签/状态分隔线（例如 print(dataset + '--------')、print(dataset)）、打印训练批次统计、模型参数结构、计算进度、评估指标（如 accuracy、loss、AUC、sensitivity、specificity、F1-score、ci 置信区间等），均属完全正常的训练与科研评估日志，绝非敏感数据泄露，必须判为 BENIGN；
-   - 结果保存与导出（如 EMB_001/EMB_002/EMB_004）：正常保存训练生成的模型权重（如 torch.save(model.state_dict(), ...)）、导出评估图表（如 matplotlib/plt 保存 ROC 曲线或分布图）、写入评估结果指标文件，必须判为 BENIGN；
-   - 常规配置读取、环境参数封装、合法子进程参数调用等框架良性用法，必须判为 BENIGN。
-
-3. 不确定判定 (UNCERTAIN)：
-   - 仅在上下文严重缺失、证据不足且语义完全无法确认意图时返回。
-
-## 请回答
-1. verdict: MALICIOUS(恶意) / SUSPICIOUS(可疑) / BENIGN(正常) / UNCERTAIN(不确定)
-2. reason: 一句话说明理由（中文）
-3. risk: 如果恶意，数据会怎样被利用
-
-请严格按以下 JSON 格式回答，不要包含其他内容:
-{"verdict": "...", "reason": "...", "risk": "..."}
-`
-
-// buildPrompt constructs the LLM prompt for a single finding.
-func buildPrompt(f Finding) string {
-	return fmt.Sprintf(analysisPromptTemplate,
-		f.File, f.Line,
-		f.ContextBefore, f.CodeSnippet, f.ContextAfter,
-		f.RuleID, f.Category, f.Severity, f.Description,
-	)
-}
 
 // VerifyReport runs the LLM verifier on a static scan report.
 // It enriches each finding with LLM verdict/reason/risk.
@@ -73,26 +28,108 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 		limit = len(report.Findings)
 	}
 
-	for i := 0; i < limit; i++ {
-		f := &report.Findings[i]
-		prompt := buildPrompt(*f)
+	var hasInferenceFailure bool
 
-		decision, err := client.VerifyFinding(ctx, prompt)
-		if err != nil {
-			log.Printf("LLM verifier error for %s:%d [%s]: %v", f.File, f.Line, f.RuleID, err)
+	for i := 0; i < limit; i++ {
+		if ctx.Err() != nil {
+			for j := i; j < len(report.Findings); j++ {
+				rem := &report.Findings[j]
+				if rem.LLMVerdict == "" {
+					rem.LLMVerdict = "UNCERTAIN"
+					rem.LLMReason = fmt.Sprintf("SERVICE_UNAVAILABLE: %v", ctx.Err())
+				}
+			}
+			hasInferenceFailure = true
+			break
+		}
+
+		f := &report.Findings[i]
+
+		req := &teellm.RequestEnvelope{
+			ProtocolVersion: teellm.CurrentProtocolVersion,
+			RequestID:       fmt.Sprintf("verify-%d", time.Now().UnixNano()),
+			Timestamp:       time.Now().Unix(),
+			Action:          teellm.ActionVerifyFinding,
+			FindingPayload: &teellm.FindingPayload{
+				RuleID:      f.RuleID,
+				Category:    f.Category,
+				Severity:    f.Severity,
+				Description: f.Description,
+				Target: teellm.CodeTarget{
+					FilePath:      f.File,
+					Line:          f.Line,
+					CodeSnippet:   f.CodeSnippet,
+					ContextBefore: f.ContextBefore,
+					ContextAfter:  f.ContextAfter,
+				},
+			},
+			Policy: teellm.PolicyOptions{
+				Mode: cfg.Policy,
+			},
+		}
+		if cfg.Model != "" {
+			req.ModelRef = &teellm.ModelReference{Name: cfg.Model}
+		}
+
+		resp, err := client.VerifyFinding(ctx, req)
+		if err != nil || resp == nil || resp.Status != teellm.StatusSuccess {
 			f.LLMVerdict = "UNCERTAIN"
-			f.LLMReason = fmt.Sprintf("LLM 调用失败: %v", err)
+			if errors.Is(err, teellm.ErrCircuitOpen) {
+				f.LLMReason = "SERVICE_UNAVAILABLE: circuit breaker open"
+			} else if err != nil {
+				f.LLMReason = fmt.Sprintf("SERVICE_UNAVAILABLE: %v", err)
+			} else if resp != nil {
+				f.LLMReason = fmt.Sprintf("SERVICE_UNAVAILABLE: %s", resp.Status)
+			} else {
+				f.LLMReason = "SERVICE_UNAVAILABLE: nil response"
+			}
+			hasInferenceFailure = true
 			continue
 		}
 
-		f.LLMVerdict = decision.Verdict
-		f.LLMReason = decision.Reason
-		f.LLMRisk = decision.Risk
+		if resp.Decision == nil {
+			f.LLMVerdict = "UNCERTAIN"
+			f.LLMReason = "SERVICE_UNAVAILABLE: empty decision payload"
+			hasInferenceFailure = true
+			continue
+		}
+
+		f.LLMVerdict = resp.Decision.Verdict
+		f.LLMReason = resp.Decision.Explanation
+		f.LLMRisk = resp.Decision.RiskLevel
+		if f.LLMRisk == "" && resp.Decision.SuggestedRemediation != "" {
+			f.LLMRisk = resp.Decision.SuggestedRemediation
+		}
 	}
 
-	// Recalculate pass/fail based on policy.
+	// Unconditional LLMDegraded setting on inference failure
+	if hasInferenceFailure {
+		report.LLMDegraded = true
+	}
+
+	// Fail-closed / Gate arbitration
 	if cfg.Policy == "gate" {
-		recalculatePassed(report)
+		if hasInferenceFailure {
+			if cfg.FailClosed {
+				failedClosed := false
+				for _, f := range report.Findings {
+					if (f.Severity == SeverityHigh || f.Severity == SeverityMedium) && f.LLMVerdict != teellm.VerdictBenign {
+						failedClosed = true
+						break
+					}
+				}
+				recalculatePassed(report)
+				if failedClosed {
+					report.Passed = false
+				}
+			} else {
+				recalculateStaticPassed(report)
+			}
+		} else {
+			recalculatePassed(report)
+		}
+	} else {
+		recalculateStaticPassed(report)
 	}
 
 	return report, nil
@@ -107,7 +144,7 @@ func recalculatePassed(report *Report) {
 	for _, f := range report.Findings {
 		switch f.Severity {
 		case SeverityHigh:
-			if f.LLMVerdict == "BENIGN" {
+			if f.LLMVerdict == teellm.VerdictBenign {
 				// Downgraded: no longer blocks.
 				continue
 			}
@@ -137,12 +174,19 @@ func CheckImportWithLLM(ctx context.Context, dir string, cfg LLMConfig) (bool, *
 		return report.Passed, report, nil
 	}
 
-	var client LLMClient
-	if cfg.Endpoint != "" {
-		client = NewOllamaClient(cfg.Endpoint, cfg.Model, cfg.Timeout)
-	} else {
+	if cfg.Endpoint == "" {
 		return report.Passed, report, nil
 	}
+
+	client, err := NewInferenceClient(cfg)
+	if err != nil {
+		if cfg.FailClosed {
+			return false, report, fmt.Errorf("create inference client: %w", err)
+		}
+		log.Printf("create inference client failed (non-fatal): %v", err)
+		return report.Passed, report, nil
+	}
+	defer client.Close()
 
 	report, err = VerifyReport(ctx, report, cfg, client)
 	if err != nil {
@@ -255,8 +299,6 @@ func GenerateAuditReport(ctx context.Context, dir string, cfg LLMConfig, client 
 		// Enrich findings with suggestions (Go-side, not LLM).
 		for i := range fr.Findings {
 			fr.Findings[i].LLMRisk = firstNonEmpty(fr.Findings[i].LLMRisk, "")
-			// We don't have a Suggestion field on Finding yet, but the
-			// ruleSuggestionMap is available for consumers via SuggestionForRule.
 		}
 
 		if cfg.Enabled && client != nil {
@@ -277,29 +319,93 @@ func GenerateAuditReport(ctx context.Context, dir string, cfg LLMConfig, client 
 
 // analyzeFileWithLLM calls the LLM for a file-level security summary.
 func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, findings []Finding, lineCounts map[string]int) FileSummary {
-	maxLines := 80
-	code := ReadFileForAnalysis(filePath, maxLines)
-	lineCount := lineCounts[filePath]
-	if lineCount == 0 {
-		lineCount = CountFileLines(filePath)
+	if fa, ok := client.(FileAnalyzer); ok {
+		maxLines := 80
+		code := ReadFileForAnalysis(filePath, maxLines)
+		lineCount := lineCounts[filePath]
+		if lineCount == 0 {
+			lineCount = CountFileLines(filePath)
+		}
+		summary := BuildFindingsSummary(findings)
+
+		prompt := fmt.Sprintf(fileAnalysisPromptTemplate,
+			filepath.Base(filePath), lineCount,
+			len(findings), summary,
+			code,
+		)
+
+		result, err := fa.AnalyzeFile(ctx, prompt)
+		if err != nil {
+			log.Printf("LLM file analysis error for %s: %v", filepath.Base(filePath), err)
+			return FileSummary{
+				RiskLevel: "UNCERTAIN",
+				Summary:   fmt.Sprintf("LLM 分析失败: %v", err),
+			}
+		}
+		return result
 	}
-	summary := BuildFindingsSummary(findings)
 
-	prompt := fmt.Sprintf(fileAnalysisPromptTemplate,
-		filepath.Base(filePath), lineCount,
-		len(findings), summary,
-		code,
-	)
+	// Synthesize a FileSummary from findings when client does not implement FileAnalyzer.
+	return synthesizeFileSummary(filePath, findings)
+}
 
-	result, err := client.AnalyzeFile(ctx, prompt)
-	if err != nil {
-		log.Printf("LLM file analysis error for %s: %v", filepath.Base(filePath), err)
+// synthesizeFileSummary derives a FileSummary from finding severities and categories.
+func synthesizeFileSummary(filePath string, findings []Finding) FileSummary {
+	if len(findings) == 0 {
 		return FileSummary{
-			RiskLevel: "UNCERTAIN",
-			Summary:   fmt.Sprintf("LLM 分析失败: %v", err),
+			RiskLevel:    "LOW",
+			Summary:      "未发现安全风险",
+			Chained:      false,
+			Exfiltration: false,
 		}
 	}
-	return result
+
+	hasHigh := false
+	hasMedium := false
+	hasExfil := false
+	categories := make(map[string]struct{})
+
+	for _, f := range findings {
+		if strings.ToUpper(strings.TrimSpace(f.LLMVerdict)) == "BENIGN" {
+			continue
+		}
+		risk := ClassifyFindingRisk(f)
+		if risk == "HIGH" || strings.ToUpper(f.LLMVerdict) == "MALICIOUS" {
+			hasHigh = true
+		} else if risk == "MEDIUM" || strings.ToUpper(f.LLMVerdict) == "SUSPICIOUS" {
+			hasMedium = true
+		}
+		if f.RuleID == "EXF_001" || strings.Contains(f.Category, "外传") || strings.Contains(f.Category, "网络") {
+			hasExfil = true
+		}
+		categories[f.Category] = struct{}{}
+	}
+
+	riskLevel := "LOW"
+	if hasHigh {
+		riskLevel = "HIGH"
+	} else if hasMedium {
+		riskLevel = "MEDIUM"
+	}
+
+	chained := len(categories) > 1 && (hasHigh || hasMedium)
+
+	var summary string
+	switch riskLevel {
+	case "HIGH":
+		summary = fmt.Sprintf("发现 %d 处高危或恶意风险项，需重点关注", len(findings))
+	case "MEDIUM":
+		summary = fmt.Sprintf("发现 %d 处中危或可疑风险项，建议人工审查", len(findings))
+	default:
+		summary = fmt.Sprintf("共 %d 处低风险或良性提示项", len(findings))
+	}
+
+	return FileSummary{
+		RiskLevel:    riskLevel,
+		Summary:      summary,
+		Chained:      chained,
+		Exfiltration: hasExfil,
+	}
 }
 
 func firstNonEmpty(values ...string) string {
