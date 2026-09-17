@@ -122,6 +122,14 @@ func (cb *CircuitBreaker) RecordFailure() {
 	}
 }
 
+// ResetProbe releases an active probe lock without recording a failure or resetting the failure count.
+func (cb *CircuitBreaker) ResetProbe() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	cb.probeActive = false
+}
+
 // State returns the current operational state in a thread-safe manner.
 // If state is StateOpen and cooldown elapsed, it returns StateHalfOpen.
 func (cb *CircuitBreaker) State() State {

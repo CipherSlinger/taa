@@ -1,6 +1,7 @@
 package inference
 
 import (
+	"fmt"
 	"strings"
 	"time"
 )
@@ -29,9 +30,18 @@ func NewClient(cfg Config) (InferenceClient, error) {
 	}
 	cb := NewCircuitBreaker(threshold, cooldown)
 
+	endpoint := strings.TrimSpace(cfg.Endpoint)
 	transport := strings.ToLower(strings.TrimSpace(cfg.Transport))
-	if transport == "uds" || (transport == "" && cfg.UDSPath != "") {
-		return NewUDSAdapter(cfg.UDSPath, cfg.Timeout, cb)
+	if transport == "uds" || (transport == "" && cfg.UDSPath != "") || strings.HasPrefix(strings.ToLower(endpoint), "unix://") {
+		udsPath := cfg.UDSPath
+		if udsPath == "" && strings.HasPrefix(strings.ToLower(endpoint), "unix://") {
+			udsPath = endpoint[len("unix://"):]
+		}
+		return NewUDSAdapter(udsPath, cfg.Timeout, cb)
+	}
+
+	if transport != "" && transport != "http" && transport != "https" {
+		return nil, fmt.Errorf("unsupported transport protocol %q: must be http, https, or uds", cfg.Transport)
 	}
 
 	validator := NewEndpointValidator(cfg.AllowedHosts, false)

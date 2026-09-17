@@ -37,10 +37,11 @@ func NewHTTPAdapter(endpoint, token string, timeout time.Duration, cb *CircuitBr
 	if cb == nil {
 		cb = NewCircuitBreaker(3, 30*time.Second)
 	}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
 	return &HTTPAdapter{
 		endpoint:       endpoint,
 		authToken:      token,
-		client:         &http.Client{Timeout: timeout},
+		client:         &http.Client{Transport: tr, Timeout: timeout},
 		circuitBreaker: cb,
 		validator:      v,
 	}, nil
@@ -48,10 +49,6 @@ func NewHTTPAdapter(endpoint, token string, timeout time.Duration, cb *CircuitBr
 
 // VerifyFinding sends a structured finding verification request.
 func (a *HTTPAdapter) VerifyFinding(ctx context.Context, req *RequestEnvelope) (*ResponseEnvelope, error) {
-	if !a.circuitBreaker.Allow() {
-		return nil, ErrCircuitOpen
-	}
-
 	if req == nil {
 		return nil, errors.New("request envelope cannot be nil")
 	}
@@ -59,6 +56,10 @@ func (a *HTTPAdapter) VerifyFinding(ctx context.Context, req *RequestEnvelope) (
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	if !a.circuitBreaker.Allow() {
+		return nil, ErrCircuitOpen
 	}
 
 	var respEnv ResponseEnvelope
@@ -90,9 +91,13 @@ func (a *HTTPAdapter) VerifyFinding(ctx context.Context, req *RequestEnvelope) (
 			return fmt.Errorf("inference server returned HTTP %d", resp.StatusCode)
 		}
 
-		respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+		const maxBodySize = 1024 * 1024
+		respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
 		if err != nil {
 			return fmt.Errorf("read response body: %w", err)
+		}
+		if len(respBytes) > maxBodySize {
+			return fmt.Errorf("inference response exceeds maximum body size limit of %d bytes", maxBodySize)
 		}
 
 		var env ResponseEnvelope
@@ -104,7 +109,11 @@ func (a *HTTPAdapter) VerifyFinding(ctx context.Context, req *RequestEnvelope) (
 	}
 
 	if err := ExecuteWithRetryContext(ctx, retryOp, 2, 200*time.Millisecond); err != nil {
-		a.circuitBreaker.RecordFailure()
+		if errors.Is(err, ErrRetryable) || errors.Is(err, context.DeadlineExceeded) {
+			a.circuitBreaker.RecordFailure()
+		} else {
+			a.circuitBreaker.ResetProbe()
+		}
 		return nil, err
 	}
 

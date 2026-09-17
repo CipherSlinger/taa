@@ -498,3 +498,29 @@ func TestExecuteWithRetryContext_SafeDefaultBaseDelay(t *testing.T) {
 		t.Fatalf("expected non-zero sleep duration from safe default baseDelay, elapsed: %v", elapsed)
 	}
 }
+
+func TestCircuitBreaker_ResetProbe(t *testing.T) {
+	cooldown := 20 * time.Millisecond
+	cb := inference.NewCircuitBreaker(1, cooldown)
+
+	cb.RecordFailure()
+	time.Sleep(cooldown + 5*time.Millisecond)
+
+	// First Allow() acquires probe in StateHalfOpen
+	if !cb.Allow() {
+		t.Fatal("expected probe to be allowed in half-open")
+	}
+
+	// Concurrent probe rejected
+	if cb.Allow() {
+		t.Fatal("expected second probe to be rejected while first is active")
+	}
+
+	// Reset probe (e.g. caller canceled or non-service error)
+	cb.ResetProbe()
+
+	// New probe should be allowed immediately
+	if !cb.Allow() {
+		t.Fatal("expected probe to be allowed after ResetProbe")
+	}
+}

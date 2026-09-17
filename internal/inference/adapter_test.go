@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -240,6 +241,98 @@ func TestHTTPAdapter_VerifyFinding_NonRetryableStatus(t *testing.T) {
 	// 400 is not retryable, should only attempt once
 	if total := attempts.Load(); total != 1 {
 		t.Errorf("expected exactly 1 attempt for non-retryable 400, got %d", total)
+	}
+
+	// 400 should not trip the circuit breaker
+	if cb.State() != inference.StateClosed {
+		t.Errorf("expected circuit breaker to remain CLOSED after 400, got %s", cb.State())
+	}
+}
+
+func TestHTTPAdapter_VerifyFinding_NilRequestNoProbeLock(t *testing.T) {
+	cb := inference.NewCircuitBreaker(1, 10*time.Millisecond)
+	cb.RecordFailure() // transition to OPEN
+
+	time.Sleep(20 * time.Millisecond) // cooldown expires -> StateHalfOpen on next Allow()
+
+	adapter, err := inference.NewHTTPAdapter("http://127.0.0.1:11434", "", time.Second, cb, nil)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+	defer adapter.Close()
+
+	// Calling with nil request should fail validation before touching circuit breaker
+	_, err = adapter.VerifyFinding(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error on nil request, got nil")
+	}
+
+	// Circuit breaker probe slot must not have been consumed or locked
+	if !cb.Allow() {
+		t.Error("expected circuit breaker to still allow probe after nil request validation failure")
+	}
+}
+
+func TestHTTPAdapter_VerifyFinding_400DoesNotTripCircuitBreaker(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer ts.Close()
+
+	cb := inference.NewCircuitBreaker(2, 10*time.Second)
+	adapter, err := inference.NewHTTPAdapter(ts.URL, "", time.Second, cb, nil)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+	defer adapter.Close()
+
+	req := &inference.RequestEnvelope{
+		ProtocolVersion: inference.CurrentProtocolVersion,
+		RequestID:       "req-400-loop",
+		Action:          inference.ActionVerifyFinding,
+	}
+
+	// Send 5 requests returning 400 (threshold is 2)
+	for i := 0; i < 5; i++ {
+		_, err = adapter.VerifyFinding(context.Background(), req)
+		if err == nil {
+			t.Fatal("expected error on HTTP 400")
+		}
+	}
+
+	// Breaker should still be CLOSED
+	if cb.State() != inference.StateClosed {
+		t.Errorf("expected circuit breaker to remain CLOSED after multiple 400s, got %s", cb.State())
+	}
+}
+
+func TestHTTPAdapter_VerifyFinding_BodySizeExceeded(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		// Write 1MB + 100 bytes
+		largeBytes := make([]byte, 1024*1024+100)
+		_, _ = w.Write(largeBytes)
+	}))
+	defer ts.Close()
+
+	adapter, err := inference.NewHTTPAdapter(ts.URL, "", time.Second, nil, nil)
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+	defer adapter.Close()
+
+	req := &inference.RequestEnvelope{
+		ProtocolVersion: inference.CurrentProtocolVersion,
+		RequestID:       "req-large-body",
+		Action:          inference.ActionVerifyFinding,
+	}
+
+	_, err = adapter.VerifyFinding(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error for response body exceeding 1MB limit, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum body size limit") {
+		t.Errorf("expected body size limit error message, got: %v", err)
 	}
 }
 
@@ -531,6 +624,28 @@ func TestFactory_Routing(t *testing.T) {
 		_, err := inference.NewClient(cfg)
 		if err == nil {
 			t.Fatal("expected client creation to fail on relative UDS path")
+		}
+	})
+
+	t.Run("route_to_uds_via_unix_endpoint", func(t *testing.T) {
+		cfg := inference.Config{
+			Endpoint: "unix:///run/taa/ipc/test.sock",
+		}
+		client, err := inference.NewClient(cfg)
+		if err != nil {
+			t.Fatalf("expected client creation to succeed for unix:// endpoint: %v", err)
+		}
+		defer client.Close()
+	})
+
+	t.Run("unsupported_transport", func(t *testing.T) {
+		cfg := inference.Config{
+			Transport: "grpc",
+			Endpoint:  "http://localhost:8080",
+		}
+		_, err := inference.NewClient(cfg)
+		if err == nil {
+			t.Fatal("expected client creation to fail on unsupported transport")
 		}
 	})
 }
