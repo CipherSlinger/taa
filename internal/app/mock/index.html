@@ -1047,6 +1047,7 @@
       <div class="actions" style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
         <button onclick="testGetAttestation()">获取远程证明报告</button>
         <button id="saveReportBtn" class="success" onclick="saveAttestationReport()" disabled>保存报告文件</button>
+        <button type="button" class="secondary" id="attestationBodyBtn" style="padding:6px 12px; font-size:13px; display:none;" onclick="openInteractionModal('attestation', 'primary')">查看返回</button>
       </div>
       <p class="muted" style="margin:8px 0 0; font-size:12px;">最后刷新：<span id="lastRefresh">-</span></p>
     </div>
@@ -1067,7 +1068,7 @@
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <span id="phaseSwitchDot" class="dot ok" style="width:10px; height:10px;"></span>
       <span id="phaseSwitchText" class="muted" style="font-size:13px;">当前阶段: 1 调试</span>
-      <button type="button" class="secondary" id="phaseSwitchDetailBtn" style="padding:4px 10px; font-size:12px; display:none;" onclick="togglePhaseSwitchDetail()">查看返回</button>
+      <button type="button" class="secondary" id="phaseSwitchDetailBtn" style="padding:4px 10px; font-size:12px; display:none;" onclick="openInteractionModal('switch', 'primary')">查看返回</button>
     </div>
   </div>
   <input type="hidden" id="switchPhase" value="1">
@@ -1239,6 +1240,7 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
           <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
             <button id="stopTrainingBtn" class="danger" style="padding:6px 12px; font-size:13px;" onclick="testStopTraining()" title="中止训练 (/v1/taa/stopTraining)">🛑 中止训练</button>
             <span id="stopTrainingStatusBox" style="display:none; font-size:12px; margin-left:8px;"><span id="stopTrainingStatusText"></span></span>
+            <button type="button" class="secondary" id="stopTrainingBodyBtn" style="padding:6px 12px; font-size:13px; display:none;" onclick="openInteractionModal('stopTraining', 'primary')">查看返回</button>
             <button id="reportResReportBtn" style="padding:6px 12px; font-size:13px;" onclick="openReportResReportModal()" disabled>查看报告</button>
             <button id="reportResBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportResBodyModal()" disabled>查看返回</button>
           </div>
@@ -1972,6 +1974,16 @@ const RESULT_TITLES = {
   attestationResult: '/v1/taa/getAttestation 返回',
 };
 
+const RESULT_INTERACTION_KEYS = {
+  uploadResult: 'upload',
+  importResult: 'import',
+  importModelResult: 'importModel',
+  resourceInfoResult: 'resourceInfo',
+  switchResult: 'switch',
+  exportResult: 'export',
+  attestationResult: 'attestation',
+};
+
 const HEADER_RESULT_MAPPINGS = {
   uploadResult: {
     btnId: 'uploadBodyBtn',
@@ -2000,11 +2012,22 @@ const HEADER_RESULT_MAPPINGS = {
 };
 
 function openStoredResult(elId) {
+  const key = RESULT_INTERACTION_KEYS[elId];
+  if (key) {
+    openInteractionModal(key, 'primary');
+    return;
+  }
   openBodyModal(RESULT_TITLES[elId] || '返回 body', resultBodies[elId]);
 }
 
 function showResult(elId, ok, text) {
   resultBodies[elId] = text || '';
+  const key = RESULT_INTERACTION_KEYS[elId];
+  if (key) {
+    if (!interactionStore[key] || interactionStore[key].primaryContent == null) {
+      recordInteraction(key, { primaryContent: text || '' });
+    }
+  }
   const mapping = HEADER_RESULT_MAPPINGS[elId];
   if (mapping) {
     const box = document.getElementById(mapping.boxId);
@@ -2021,6 +2044,7 @@ function showResult(elId, ok, text) {
   }
   const el = document.getElementById(elId);
   if (el && !mapping) {
+    el.style.display = 'block';
     el.className = 'test-result ' + (ok ? 'pass' : 'fail');
     el.innerHTML = '';
     const row = document.createElement('div');
@@ -2045,6 +2069,10 @@ function showResult(elId, ok, text) {
 }
 
 function showResultRunning(elId, text) {
+  const key = RESULT_INTERACTION_KEYS[elId];
+  if (key && interactionStore[key]) {
+    interactionStore[key].primaryContent = null;
+  }
   const mapping = HEADER_RESULT_MAPPINGS[elId];
   if (mapping) {
     const box = document.getElementById(mapping.boxId);
@@ -2058,6 +2086,7 @@ function showResultRunning(elId, text) {
   }
   const el = document.getElementById(elId);
   if (el && !mapping) {
+    el.style.display = 'block';
     el.className = 'test-result running';
     el.innerHTML = '';
     const row = document.createElement('div');
@@ -2523,12 +2552,20 @@ async function testStopTraining() {
   const btn = document.getElementById('stopTrainingBtn');
   const box = document.getElementById('stopTrainingStatusBox');
   const textEl = document.getElementById('stopTrainingStatusText');
+  const bodyBtn = document.getElementById('stopTrainingBodyBtn');
   if (btn) btn.disabled = true;
   if (box) {
     box.style.display = 'inline-flex';
     box.style.color = 'var(--text)';
   }
   if (textEl) textEl.textContent = '正在发送中止请求...';
+  recordInteraction('stopTraining', {
+    title: '/v1/taa/stopTraining 中止训练详情',
+    primaryLabel: '返回内容',
+    secondaryLabel: '请求体',
+    primaryContent: null,
+    secondaryContent: '{}',
+  });
   try {
     const res = await fetch('/api/taa/stopTraining', {
       method: 'POST',
@@ -2544,12 +2581,16 @@ async function testStopTraining() {
     if (textEl) {
       textEl.textContent = data.msg || (ok ? '训练任务已中止' : `中止失败 (HTTP ${res.status})`);
     }
+    recordInteraction('stopTraining', { primaryContent: data });
+    if (bodyBtn) bodyBtn.style.display = 'inline-block';
   } catch (err) {
     if (box) {
       box.style.display = 'inline-flex';
       box.style.color = 'var(--bad)';
     }
     if (textEl) textEl.textContent = '请求失败: ' + err.message;
+    recordInteraction('stopTraining', { primaryContent: { error: -1, msg: err.message } });
+    if (bodyBtn) bodyBtn.style.display = 'inline-block';
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -2650,6 +2691,20 @@ async function uploadFile() {
     }
   }
 
+  const uploadMeta = {
+    fileName: file.name,
+    fileSize: file.size,
+    encrypted: isEncrypted,
+    publicKey: isEncrypted ? (lastRegisterData && lastRegisterData.taaPublicKey ? '(配置已指定公钥)' : '未提供公钥') : '不加密',
+  };
+  recordInteraction('upload', {
+    title: '文件上传详情 (/api/upload)',
+    primaryLabel: '返回内容',
+    secondaryLabel: '请求体',
+    primaryContent: null,
+    secondaryContent: uploadMeta,
+  });
+
   showResultRunning('uploadResult', isEncrypted ? '正在加密并上传文件...' : '正在上传文件...');
   try {
     const res = await fetch('/api/upload', {
@@ -2657,6 +2712,7 @@ async function uploadFile() {
       body: formData,
     });
     const data = await res.json();
+    recordInteraction('upload', { primaryContent: data });
     if (res.status === 200 && data.error === 0) {
       const uploaded = normalizeUploadedFile(data.result);
       if (uploaded) {
@@ -2670,6 +2726,7 @@ async function uploadFile() {
       showResult('uploadResult', false, `上传失败: ${data.msg}`);
     }
   } catch (e) {
+    recordInteraction('upload', { primaryContent: '上传失败: ' + e.message });
     showResult('uploadResult', false, '上传失败: ' + e.message);
   }
 }
@@ -2679,11 +2736,19 @@ async function testHealth() {
   const btn = document.getElementById('healthResultBtn');
   if (btn) btn.disabled = true;
   setHealthState('dot', '检查中', '检查中...', '');
+  recordInteraction('health', {
+    title: '健康检查 (GET /v1/taa/health)',
+    primaryLabel: '返回内容',
+    secondaryLabel: '请求体',
+    primaryContent: null,
+    secondaryContent: '{}',
+  });
   try {
     const r = await postToTAA('/v1/taa/health', {}, 10000);
     const ok = r.status === 200 && r.data && r.data.error === 0;
     lastHealthData = r.data != null ? r.data : { status: r.status, raw: r };
     setHealthState('dot ' + (ok ? 'ok' : 'bad'), ok ? '连通正常' : '连通异常', ok ? '连通正常' : 'HTTP ' + r.status, ok ? 'var(--ok)' : 'var(--bad)');
+    recordInteraction('health', { primaryContent: lastHealthData });
   } catch (e) {
     const msg = e.name === 'AbortError'
       ? '请求超时（10s）：TAA 服务响应过慢或不可达。\n请确认：\n1. TAA 服务地址是否正确\n2. TAA 服务是否已启动\n3. 浏览器能否直接访问该地址（K8s Pod 端口可能需要 NodePort 或 port-forward 暴露）'
@@ -2694,6 +2759,7 @@ async function testHealth() {
       detail: msg
     };
     setHealthState('dot bad', '不可达', '不可达', 'var(--bad)');
+    recordInteraction('health', { primaryContent: lastHealthData });
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -2701,23 +2767,38 @@ async function testHealth() {
 
 function openHealthResultModal() {
   if (!lastHealthData) {
-    openBodyModal('健康检查返回结果 (GET /v1/taa/health)', '暂未执行健康检查，请先点击【检查连通性】。');
-    return;
+    recordInteraction('health', {
+      title: '健康检查 (GET /v1/taa/health)',
+      primaryLabel: '返回内容',
+      secondaryLabel: '请求体',
+      primaryContent: '暂未执行健康检查，请先点击【检查连通性】。',
+      secondaryContent: '{}',
+    });
   }
-  openBodyModal('健康检查返回结果 (GET /v1/taa/health)', JSON.stringify(lastHealthData, null, 2));
+  openInteractionModal('health', 'primary');
 }
 
 async function testImport() {
   showResultRunning('importResult', '正在请求...');
+  const importBody = buildImportBody(
+    document.getElementById('importResourceUrl').value,
+    document.getElementById('importRequestId').value,
+    '',
+    document.getElementById('importTaskId').value.trim(),
+  );
+  recordInteraction('import', {
+    title: '/v1/taa/import 接口详情',
+    primaryLabel: '返回内容',
+    secondaryLabel: '请求体',
+    primaryContent: null,
+    secondaryContent: importBody,
+  });
   try {
-    const r = await postToTAA('/v1/taa/import', buildImportBody(
-      document.getElementById('importResourceUrl').value,
-      document.getElementById('importRequestId').value,
-      '',
-      document.getElementById('importTaskId').value.trim(),
-    ));
+    const r = await postToTAA('/v1/taa/import', importBody);
+    recordInteraction('import', { primaryContent: formatResp(r) });
     showResult('importResult', r.status === 200 && r.data.error === 0, formatResp(r));
   } catch (e) {
+    recordInteraction('import', { primaryContent: '请求失败: ' + e.message + '\n请确认 TAA 服务地址是否正确且服务已启动。' });
     showResult('importResult', false, '请求失败: ' + e.message + '\n请确认 TAA 服务地址是否正确且服务已启动。');
   }
 }
@@ -2774,15 +2855,25 @@ async function testImportModel() {
       document.getElementById('importModelCommands').value,
       document.getElementById('importModelEnv').value,
     );
-    const r = await postToTAA('/v1/taa/importModel', buildImportBody(
+    const importModelBody = buildImportBody(
       document.getElementById('importModelResourceUrl').value,
       document.getElementById('importModelRequestId').value,
       document.getElementById('importModelPublicKey').value.trim(),
       document.getElementById('importModelTaskId').value.trim(),
       runtimeConfig,
-    ));
+    );
+    recordInteraction('importModel', {
+      title: '/v1/taa/importModel 接口详情',
+      primaryLabel: '返回内容',
+      secondaryLabel: '请求体',
+      primaryContent: null,
+      secondaryContent: importModelBody,
+    });
+    const r = await postToTAA('/v1/taa/importModel', importModelBody);
+    recordInteraction('importModel', { primaryContent: formatResp(r) });
     showResult('importModelResult', r.status === 200 && r.data.error === 0, formatResp(r));
   } catch (e) {
+    recordInteraction('importModel', { primaryContent: '请求失败: ' + e.message + '\n请确认 TAA 服务地址是否正确且服务已启动。' });
     showResult('importModelResult', false, '请求失败: ' + e.message + '\n请确认 TAA 服务地址是否正确且服务已启动。');
   }
 }
@@ -3369,13 +3460,27 @@ function loadSampleResourceTree() {
   const container = document.getElementById('resourceInfoTreeContainer');
   if (container) container.style.display = 'block';
   refreshResourceInfoTreeViews();
+  recordInteraction('resourceInfo', {
+    title: '/v1/taa/getResourceInfo 资源信息详情',
+    primaryLabel: '返回内容',
+    secondaryLabel: '请求体',
+    primaryContent: sampleData,
+    secondaryContent: { resourceUrl: 'http://example.com/data.tar.gz' },
+  });
   showResult('resourceInfoResult', true, '已加载示例目录树数据（17 个文件，5 个结构化）');
 }
 
 async function testGetResourceInfo() {
   showResultRunning('resourceInfoResult', '正在请求并分析资源...');
+  const resourceUrl = document.getElementById('resourceInfoUrl').value.trim();
+  recordInteraction('resourceInfo', {
+    title: '/v1/taa/getResourceInfo 资源信息详情',
+    primaryLabel: '返回内容',
+    secondaryLabel: '请求体',
+    primaryContent: null,
+    secondaryContent: { resourceUrl },
+  });
   try {
-    const resourceUrl = document.getElementById('resourceInfoUrl').value.trim();
     const r = await postToTAA('/v1/taa/getResourceInfo', { resourceUrl }, RESOURCE_INFO_TIMEOUT_MS);
     const payload = responseResult(r.data);
     let rawText = '';
@@ -3389,6 +3494,8 @@ async function testGetResourceInfo() {
       reportObj = payload;
       rawText = JSON.stringify(payload, null, 2);
     }
+
+    recordInteraction('resourceInfo', { primaryContent: reportObj || rawText || payload });
 
     if (reportObj && (reportObj.tree || reportObj.name)) {
       resourceInfoReportData = reportObj;
@@ -3411,6 +3518,7 @@ async function testGetResourceInfo() {
     const msg = isAbortLikeError(e)
       ? '请求超时（120s）：资源信息分析较慢，请稍后重试或检查 TAA 是否仍在执行。'
       : '请求失败: ' + e.message + '\n请确认 TAA 服务地址是否正确且服务已启动。';
+    recordInteraction('resourceInfo', { primaryContent: msg });
     showResult('resourceInfoResult', false, msg);
   }
 }
@@ -3431,6 +3539,14 @@ async function quickSwitchPhase(phase) {
   if (dotEl) dotEl.className = 'dot';
   if (statusEl) statusEl.textContent = `正在切换至 ${phaseName}...`;
   showResultRunning('switchResult', `正在切换至 ${phaseName}...`);
+
+  recordInteraction('switch', {
+    title: '/v1/taa/switch 阶段切换详情',
+    primaryLabel: '返回内容',
+    secondaryLabel: '请求体',
+    primaryContent: null,
+    secondaryContent: { phase: Number(phase) },
+  });
 
   try {
     const r = await postToTAA('/v1/taa/switch', { phase: Number(phase) });
@@ -3454,24 +3570,26 @@ async function quickSwitchPhase(phase) {
       const msg = r.data?.msg || `HTTP ${r.status}`;
       if (statusEl) statusEl.textContent = `切换失败: ${msg}`;
     }
+    const respText = formatResp(r);
+    recordInteraction('switch', { primaryContent: respText });
     if (detailBtn) detailBtn.style.display = 'inline-block';
-    if (detailContent) detailContent.textContent = formatResp(r);
-    showResult('switchResult', ok, formatResp(r));
+    if (detailContent) detailContent.textContent = respText;
+    showResult('switchResult', ok, respText);
   } catch (e) {
     if (dotEl) dotEl.className = 'dot bad';
     if (statusEl) statusEl.textContent = `切换失败: ${e.message}`;
+    const errMsg = '请求失败: ' + e.message;
+    recordInteraction('switch', { primaryContent: errMsg });
     if (detailBtn) detailBtn.style.display = 'inline-block';
-    if (detailContent) detailContent.textContent = '请求失败: ' + e.message;
-    showResult('switchResult', false, '请求失败: ' + e.message);
+    if (detailContent) detailContent.textContent = errMsg;
+    showResult('switchResult', false, errMsg);
   } finally {
     buttons.forEach(btn => btn.disabled = false);
   }
 }
 
 function togglePhaseSwitchDetail() {
-  const el = document.getElementById('phaseSwitchDetail');
-  if (!el) return;
-  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  openInteractionModal('switch', 'primary');
 }
 
 async function testSwitch(phase) {
@@ -3490,6 +3608,15 @@ async function testExport() {
     if (requestId) body.requestId = requestId;
     if (pk) body.publicKey = pk;
     else body.publicKey = null;
+
+    recordInteraction('export', {
+      title: '/v1/taa/export 导出结果详情',
+      primaryLabel: '返回内容',
+      secondaryLabel: '请求体',
+      primaryContent: null,
+      secondaryContent: body,
+    });
+
     const r = await postToTAAFile('/v1/taa/export', body);
     if (r.status === 200 && r.blob) {
       const shouldDecrypt = Boolean(document.getElementById('exportDecryptSwitch') && document.getElementById('exportDecryptSwitch').checked);
@@ -3497,19 +3624,21 @@ async function testExport() {
         const isEncrypted = Boolean(r.encrypted || (r.filename && r.filename.toLowerCase().endsWith('.enc')));
         if (!isEncrypted) {
           downloadBlob(r.blob, r.filename);
-          showResult('exportResult', true,
-            'HTTP 200\n提示: 响应结果为明文（未加密，无需解密），已直接保存原文件\n' +
+          const plainText = 'HTTP 200\n提示: 响应结果为明文（未加密，无需解密），已直接保存原文件\n' +
             '保存文件名: ' + r.filename + '\n' +
             'taskId: ' + r.taskId + '\n' +
             'encrypted: ' + r.encrypted + '\n' +
-            '大小: ' + r.blob.size + ' bytes' + (r.contentLength ? ' (Content-Length: ' + r.contentLength + ')' : '')
-          );
+            '大小: ' + r.blob.size + ' bytes' + (r.contentLength ? ' (Content-Length: ' + r.contentLength + ')' : '');
+          recordInteraction('export', { primaryContent: plainText });
+          showResult('exportResult', true, plainText);
           return;
         }
 
         const privKey = (document.getElementById('exportPrivateKey') ? document.getElementById('exportPrivateKey').value : '').trim();
         if (!privKey) {
-          showResult('exportResult', false, '已开启解密开关且导出结果为加密数据，但未填写解密私钥 PEM，请先输入私钥或在上方“创建公钥”生成密钥对');
+          const noKeyMsg = '已开启解密开关且导出结果为加密数据，但未填写解密私钥 PEM，请先输入私钥或在上方“创建公钥”生成密钥对';
+          recordInteraction('export', { primaryContent: noKeyMsg });
+          showResult('exportResult', false, noKeyMsg);
           return;
         }
 
@@ -3525,7 +3654,9 @@ async function testExport() {
 
         if (!decRes.ok) {
           const errData = await decRes.json().catch(() => ({}));
-          showResult('exportResult', false, `解密失败: ${errData.msg || 'HTTP ' + decRes.status}`);
+          const decErrMsg = `解密失败: ${errData.msg || 'HTTP ' + decRes.status}`;
+          recordInteraction('export', { primaryContent: decErrMsg });
+          showResult('exportResult', false, decErrMsg);
           return;
         }
 
@@ -3538,30 +3669,34 @@ async function testExport() {
         }
 
         downloadBlob(decBlob, saveFilename);
-        showResult('exportResult', true,
-          'HTTP 200\n已成功解密并保存结果文件\n' +
+        const decSuccessText = 'HTTP 200\n已成功解密并保存结果文件\n' +
           '保存文件名: ' + saveFilename + '\n' +
           '原始文件名: ' + r.filename + '\n' +
           'taskId: ' + r.taskId + '\n' +
           '密文大小: ' + r.blob.size + ' bytes\n' +
-          '解密后大小: ' + decBlob.size + ' bytes'
-        );
+          '解密后大小: ' + decBlob.size + ' bytes';
+        recordInteraction('export', { primaryContent: decSuccessText });
+        showResult('exportResult', true, decSuccessText);
         return;
       }
 
       downloadBlob(r.blob, r.filename);
-      showResult('exportResult', true,
-        'HTTP 200\n已直接返回并保存原文件\n' +
+      const rawText = 'HTTP 200\n已直接返回并保存原文件\n' +
         'filename: ' + r.filename + '\n' +
         'taskId: ' + r.taskId + '\n' +
         'encrypted: ' + r.encrypted + '\n' +
-        'size: ' + r.blob.size + ' bytes' + (r.contentLength ? ' (Content-Length: ' + r.contentLength + ')' : '')
-      );
+        'size: ' + r.blob.size + ' bytes' + (r.contentLength ? ' (Content-Length: ' + r.contentLength + ')' : '');
+      recordInteraction('export', { primaryContent: rawText });
+      showResult('exportResult', true, rawText);
       return;
     }
-    showResult('exportResult', false, formatResp(r));
+    const respFailText = formatResp(r);
+    recordInteraction('export', { primaryContent: respFailText });
+    showResult('exportResult', false, respFailText);
   } catch (e) {
-    showResult('exportResult', false, '请求失败: ' + e.message);
+    const catchErr = '请求失败: ' + e.message;
+    recordInteraction('export', { primaryContent: catchErr });
+    showResult('exportResult', false, catchErr);
   }
 }
 
@@ -3586,8 +3721,15 @@ async function testGetAttestation() {
   document.getElementById('saveReportBtn').disabled = true;
   _lastAttestationBase64 = null;
   _lastAttestationValues = null;
+  const body = { requestId: document.getElementById('attestRequestId').value };
+  recordInteraction('attestation', {
+    title: '/v1/taa/getAttestation 远程证明详情',
+    primaryLabel: '返回内容',
+    secondaryLabel: '请求体',
+    primaryContent: null,
+    secondaryContent: body,
+  });
   try {
-    const body = { requestId: document.getElementById('attestRequestId').value };
     const res = await taaFetch('/v1/taa/getAttestation', body, 45000);
     const data = await res.json().catch(() => ({}));
     const payload = responseResult(data);
@@ -3597,7 +3739,7 @@ async function testGetAttestation() {
     let binaryLen = 0;
     try { binaryLen = atob(attB64).length; } catch {}
 
-    // 截断 Base64 显示避免页面卡顿
+    // Truncate Base64 display to avoid page freezing
     let display = { ...data, result: { ...payload } };
     if (attB64.length > 80) {
       display.result.attestation = attB64.slice(0, 80) + '...(' + attB64.length + ' chars, decoded=' + binaryLen + ' bytes)';
@@ -3615,9 +3757,12 @@ async function testGetAttestation() {
     lastRegisterModalTitle = '/v1/taa/getAttestation 返回 body';
     lastRegisterModalBody = displayText;
     document.getElementById('registerBodyBtn').disabled = false;
+    const attestBtn = document.getElementById('attestationBodyBtn');
+    if (attestBtn) attestBtn.style.display = 'inline-block';
     text('statusText', ok ? '已获取远程证明报告 (HTTP ' + res.status + ')' : '获取远程证明报告失败');
     if (dot) dot.className = 'dot ' + (ok ? 'ok' : 'bad');
     text('registerSummary', '远程证明报告已返回，点击右上角“查看返回”查看完整内容。');
+    recordInteraction('attestation', { primaryContent: displayText });
     showResult('attestationResult', ok, displayText);
   } catch (e) {
     let msg;
@@ -3631,9 +3776,12 @@ async function testGetAttestation() {
     lastRegisterModalTitle = '/v1/taa/getAttestation 请求失败';
     lastRegisterModalBody = msg;
     document.getElementById('registerBodyBtn').disabled = false;
+    const attestBtn = document.getElementById('attestationBodyBtn');
+    if (attestBtn) attestBtn.style.display = 'inline-block';
     text('statusText', '获取远程证明报告失败');
     if (dot) dot.className = 'dot bad';
     text('registerSummary', '获取远程证明报告失败，点击右上角“查看返回”查看具体错误。');
+    recordInteraction('attestation', { primaryContent: msg });
     showResult('attestationResult', false, msg);
   }
 }
