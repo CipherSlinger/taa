@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -19,8 +20,17 @@ func NewEndpointValidator(allowedHosts []string, blockPrivateIPs bool) *Endpoint
 	hostMap := make(map[string]struct{}, len(allowedHosts))
 	for _, h := range allowedHosts {
 		trimmed := strings.ToLower(strings.TrimSpace(h))
-		if trimmed != "" {
-			hostMap[trimmed] = struct{}{}
+		if trimmed == "" {
+			continue
+		}
+		host, _, err := net.SplitHostPort(trimmed)
+		if err != nil {
+			host = strings.Trim(trimmed, "[]")
+		} else {
+			host = strings.Trim(host, "[]")
+		}
+		if host != "" {
+			hostMap[host] = struct{}{}
 		}
 	}
 	return &EndpointValidator{
@@ -37,10 +47,10 @@ func (v *EndpointValidator) Validate(endpoint string) error {
 	}
 
 	// Support unix domain sockets directly.
-	if strings.HasPrefix(endpoint, "unix://") {
-		path := strings.TrimPrefix(endpoint, "unix://")
-		if path == "" {
-			return errors.New("unix socket path cannot be empty")
+	if strings.HasPrefix(strings.ToLower(endpoint), "unix://") {
+		path := strings.TrimSpace(endpoint[len("unix://"):])
+		if path == "" || path == "/" {
+			return errors.New("unix socket path cannot be empty or root")
 		}
 		return nil
 	}
@@ -55,14 +65,28 @@ func (v *EndpointValidator) Validate(endpoint string) error {
 		return fmt.Errorf("unsupported protocol scheme %q: only http, https, and unix are allowed", scheme)
 	}
 
-	hostname := strings.ToLower(parsed.Hostname())
+	hostname := strings.ToLower(strings.Trim(parsed.Hostname(), "[]"))
 	if hostname == "" {
 		return errors.New("endpoint host cannot be empty")
+	}
+
+	if portStr := parsed.Port(); portStr != "" {
+		port, err := strconv.Atoi(portStr)
+		if err != nil || port <= 0 || port > 65535 {
+			return fmt.Errorf("invalid port %q: must be between 1 and 65535", portStr)
+		}
 	}
 
 	// Block cloud metadata services and any-addresses unconditionally.
 	if hostname == "169.254.169.254" || hostname == "0.0.0.0" || hostname == "::" || hostname == "[::]" {
 		return fmt.Errorf("access to restricted address %q is forbidden", hostname)
+	}
+
+	ip := net.ParseIP(hostname)
+	if ip != nil {
+		if ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("access to restricted address %q is forbidden", hostname)
+		}
 	}
 
 	// Enforce allowed hosts whitelist if configured.
@@ -74,7 +98,6 @@ func (v *EndpointValidator) Validate(endpoint string) error {
 
 	// Optionally block private/internal IPs if strict external checking is required.
 	if v.blockPrivateIPs {
-		ip := net.ParseIP(hostname)
 		if ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
 			return fmt.Errorf("private and loopback IP %q is blocked by security policy", hostname)
 		}
