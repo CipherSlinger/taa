@@ -1687,6 +1687,7 @@ func TestIndexHTMLModalTabsAndLegacySectionRemoval(t *testing.T) {
 		"平台发往 TAA 的请求体记录",
 		`id="requestLogOutput"`,
 		`id="requestLogEndpointFilter"`,
+		`id="requestLogStatusDot"`,
 		"fetchRequestLogs",
 	}
 	for _, unwanted := range unwantedSubstrings {
@@ -1695,18 +1696,43 @@ func TestIndexHTMLModalTabsAndLegacySectionRemoval(t *testing.T) {
 		}
 	}
 
-	// New modal tab elements and interaction store should be present
+	// New modal tab elements and functions should be present
 	requiredSubstrings := []string{
 		`id="modalTabsBar"`,
 		`id="modalTabPrimary"`,
 		`id="modalTabSecondary"`,
+		`id="bodyModalBadge"`,
 		"switchModalTab(",
 		"openInteractionModal(",
+		"renderInteractionBadge(",
+		"recordInteraction(",
 		"interactionStore",
 	}
 	for _, s := range requiredSubstrings {
 		if !strings.Contains(indexHTML, s) {
 			t.Errorf("indexHTML missing required element/function: %q", s)
+		}
+	}
+
+	// Interaction keys should be recorded in index.html
+	requiredInteractionKeys := []string{
+		"recordInteraction('health'",
+		"recordInteraction('attestation'",
+		"recordInteraction('switch'",
+		"recordInteraction('resourceInfo'",
+		"recordInteraction('upload'",
+		"recordInteraction('importModel'",
+		"recordInteraction('import'",
+		"recordInteraction('export'",
+		"recordInteraction('stopTraining'",
+		"recordInteraction('register'",
+		"recordInteraction('reportModelImport'",
+		"recordInteraction('reportAudit'",
+		"recordInteraction('reportRes'",
+	}
+	for _, key := range requiredInteractionKeys {
+		if !strings.Contains(indexHTML, key) {
+			t.Errorf("indexHTML missing required interaction key: %q", key)
 		}
 	}
 }
