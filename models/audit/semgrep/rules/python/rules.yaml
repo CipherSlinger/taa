@@ -144,9 +144,19 @@ rules:
       category: persistence
       rule_family: PER_001
     pattern-either:
-      - pattern: open("/etc/cron" + $REST, "w", ...)
-      - pattern: open("/etc/systemd" + $REST, "w", ...)
-      - pattern: open(os.path.expanduser("~/.bashrc"), "w", ...)
+      - patterns:
+          - pattern: open($PATH, $MODE, ...)
+          - metavariable-regex:
+              metavariable: $PATH
+              regex: ".*(/etc/cron|/etc/systemd|/etc/profile|/etc/rc\\.local|\\.bashrc|\\.bash_profile|\\.zshrc).*"
+          - metavariable-regex:
+              metavariable: $MODE
+              regex: "['\"][wa\\+].*"
+      - patterns:
+          - pattern: open(os.path.expanduser($PATH), $MODE, ...)
+          - metavariable-regex:
+              metavariable: $MODE
+              regex: "['\"][wa\\+].*"
 
   - id: taa-emb-data-dump-python
     languages: [python]
