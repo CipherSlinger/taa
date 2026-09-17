@@ -780,6 +780,9 @@ def compute_conclusion(
     high = _safe_int(stats.get("high"))
     medium = _safe_int(stats.get("medium"))
     total = _safe_int(stats.get("total_findings"))
+    scan_complete = stats.get("scan_complete", True)
+    parser_errors = _safe_int(stats.get("parser_errors", 0))
+    timed_out = bool(stats.get("timed_out", False))
 
     has_high_or_medium = (high > 0) or (medium > 0)
     has_uncertain = uncertain > 0
@@ -832,6 +835,14 @@ def compute_conclusion(
         passed = False
         verdict = "MALICIOUS"
         reason = "File-level attack chain detected"
+    elif not scan_complete or parser_errors > 0 or timed_out:
+        passed = False
+        verdict = "UNCERTAIN"
+        risk_level = "HIGH"
+        reason = (
+            f"Fail-Closed: Static scan incomplete or defect detected "
+            f"(complete={scan_complete}, parse_errors={parser_errors}, timeout={timed_out})"
+        )
     elif has_uncertain and has_high_or_medium:
         passed = False
         verdict = "UNCERTAIN"
