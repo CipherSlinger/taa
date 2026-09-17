@@ -282,11 +282,6 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantHRK:    "/root/taa/certs/hrk.cert",
 			wantHSKCek: "/root/taa/certs/hsk_cek.cert",
 		},
-		{
-			relPath:    "../../configs/taa-local.json",
-			wantHRK:    "deploy/certs/hrk.cert",
-			wantHSKCek: "deploy/certs/hsk_cek.cert",
-		},
 	}
 
 	for _, tc := range templates {

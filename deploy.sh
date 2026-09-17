@@ -136,7 +136,6 @@ TAA_CONTAINER_WORKDIR="${TAA_CONTAINER_WORKDIR:-${CON_WORKDIR}}"
 TAA_CONTAINER_ADDR="${TAA_CONTAINER_ADDR:-:${CON_PORT}}"
 # TAA 程序固定读取工作目录下的 taa-config.json，脚本侧文件名必须保持一致。
 TAA_CONFIG_FILE="taa-config.json"
-TAA_LOCAL_CONFIG_TEMPLATE="${TAA_LOCAL_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-local.json}"
 TAA_DOCKER_CONFIG_TEMPLATE="${TAA_DOCKER_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-docker.json}"
 TAA_DEBUG_CONFIG_TEMPLATE="${TAA_DEBUG_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-debug.json}"
 TAA_PRODUCTION_CONFIG_TEMPLATE="${TAA_PRODUCTION_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-production.json}"
@@ -162,7 +161,6 @@ OLLAMA_READY_INTERVAL="${OLLAMA_READY_INTERVAL:-2}"
 # 远程 SSH 密码：通过 TARGET_PASSWORD 覆盖；置空时启动脚本会交互式询问。
 PASSWORD="${TARGET_PASSWORD:-Osrd@2026}"
 
-DEPLOY_LOCAL=false
 DEPLOY_DOCKER=false
 DEPLOY_REMOTE=false
 DEPLOY_PLATFORM_MOCK=false
@@ -182,22 +180,12 @@ LOCAL_PLATFORM_IP="${LOCAL_PLATFORM_IP:-127.0.0.1:${LOCAL_PLATFORM_PORT}}"
 LOCAL_PLATFORM_URL="${LOCAL_PLATFORM_URL:-http://127.0.0.1:${LOCAL_PLATFORM_PORT}}"
 LOCAL_PLATFORM_UPLOAD_DIR="${LOCAL_PLATFORM_UPLOAD_DIR:-$PROJECT_DIR/.local/upload}"
 LOCAL_RUN_DIR="${LOCAL_RUN_DIR:-$PROJECT_DIR/.local/run}"
-LOCAL_RUNTIME_DIR="${LOCAL_RUNTIME_DIR:-$PROJECT_DIR/.local/taa}"
-LOCAL_TAA_CONFIG_PATH="${LOCAL_TAA_CONFIG_PATH:-$LOCAL_RUNTIME_DIR/$TAA_CONFIG_FILE}"
-LOCAL_TAA_MODEL_DIR="${LOCAL_TAA_MODEL_DIR:-$LOCAL_RUNTIME_DIR/models}"
-LOCAL_TAA_DATA_DIR="${LOCAL_TAA_DATA_DIR:-$LOCAL_RUNTIME_DIR/data}"
-LOCAL_TAA_RESULT_DIR="${LOCAL_TAA_RESULT_DIR:-$LOCAL_RUNTIME_DIR/results}"
-LOCAL_TAA_INPUT_DIR="${LOCAL_TAA_INPUT_DIR:-$LOCAL_RUNTIME_DIR/input}"
-LOCAL_TAA_OUTPUT_DIR="${LOCAL_TAA_OUTPUT_DIR:-$LOCAL_RUNTIME_DIR/output}"
-LOCAL_TAA_KEYS_DIR="${LOCAL_TAA_KEYS_DIR:-$LOCAL_RUNTIME_DIR/keys}"
 REMOTE_TAA_CONFIG_SOURCE="${REMOTE_TAA_CONFIG_SOURCE:-$LOCAL_RUN_DIR/remote-$TAA_CONFIG_FILE}"
 LOCAL_DOCKER_CONFIG_SOURCE="${LOCAL_DOCKER_CONFIG_SOURCE:-$LOCAL_RUN_DIR/docker-$TAA_CONFIG_FILE}"
 LOCAL_TAA_PORT="${LOCAL_TAA_PORT:-$CON_PORT}"
 LOCAL_TAA_BIND="${LOCAL_TAA_BIND:-:${LOCAL_TAA_PORT}}"
 LOCAL_TAA_URL="${LOCAL_TAA_URL:-http://127.0.0.1:${LOCAL_TAA_PORT}}"
 LOCAL_PLATFORM_LOG_FILE="${LOCAL_PLATFORM_LOG_FILE:-$PROJECT_DIR/.local/logs/platform-mock.log}"
-LOCAL_TAA_LOG_FILE="${LOCAL_TAA_LOG_FILE:-$PROJECT_DIR/.local/logs/taa.log}"
-LOCAL_OLLAMA_LOG_FILE="${LOCAL_OLLAMA_LOG_FILE:-$PROJECT_DIR/.local/logs/ollama.log}"
 LOCAL_OLLAMA_URL="${LOCAL_OLLAMA_URL:-http://${OLLAMA_HOST}}"
 LOCAL_DOCKER_CONTAINER="${LOCAL_DOCKER_CONTAINER:-taa-env-slim-v2}"
 LOCAL_DOCKER_IMAGE_ARCHIVE="${LOCAL_DOCKER_IMAGE_ARCHIVE:-$PROJECT_DIR/deploy/taa-env-slim-v2.tar.gz}"
@@ -355,7 +343,7 @@ SSH_OPTS=(
 )
 
 ensure_remote_ssh() {
-  if [[ "$DEPLOY_LOCAL" == true || "$DEPLOY_DOCKER" == true ]]; then
+  if [[ "$DEPLOY_DOCKER" == true ]]; then
     return 0
   fi
   if [[ -z "$PASSWORD" ]]; then
@@ -374,7 +362,7 @@ remote_ssh() {
 }
 
 check_remote_connectivity() {
-  if [[ "$DEPLOY_LOCAL" == true || "$DEPLOY_DOCKER" == true ]]; then
+  if [[ "$DEPLOY_DOCKER" == true ]]; then
     return 0
   fi
   ensure_remote_ssh
@@ -387,7 +375,7 @@ check_remote_connectivity() {
 }
 
 check_remote_pod() {
-  if [[ "$DEPLOY_LOCAL" == true || "$DEPLOY_DOCKER" == true ]]; then
+  if [[ "$DEPLOY_DOCKER" == true ]]; then
     return 0
   fi
   if ! remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
@@ -772,6 +760,8 @@ Environment overrides:
       TAA 在目标容器内的工作目录。
   TAA_CONTAINER_ADDR=${TAA_CONTAINER_ADDR}
       写入 TAA 配置文件的容器内监听地址与端口。
+  TAA_DOCKER_CONFIG_TEMPLATE=${TAA_DOCKER_CONFIG_TEMPLATE}
+      docker 场景 TAA 配置模板。
   TAA_DEBUG_CONFIG_TEMPLATE=${TAA_DEBUG_CONFIG_TEMPLATE}
       debug 场景 TAA 配置模板。
   TAA_PRODUCTION_CONFIG_TEMPLATE=${TAA_PRODUCTION_CONFIG_TEMPLATE}
@@ -822,12 +812,6 @@ stop_pidfile() {
     fi
     rm -f "$pidfile"
   fi
-}
-
-stop_selected_local_processes() {
-  [[ "$DEPLOY_TAA" == true ]] && stop_pidfile "taa" "$LOCAL_RUN_DIR/taa.pid"
-  [[ "$DEPLOY_PLATFORM_MOCK" == true ]] && stop_pidfile "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid"
-  [[ "$DEPLOY_QWEN" == true ]] && stop_pidfile "ollama" "$LOCAL_RUN_DIR/ollama.pid"
 }
 
 start_local_background() {
@@ -1017,14 +1001,8 @@ ensure_go_compiler() {
 }
 
 select_taa_config_template() {
-  if [[ "$DEPLOY_LOCAL" == true ]]; then
-    printf '%s' "$TAA_LOCAL_CONFIG_TEMPLATE"
-  elif [[ "$DEPLOY_DOCKER" == true ]]; then
-    if [[ -f "$TAA_DOCKER_CONFIG_TEMPLATE" ]]; then
-      printf '%s' "$TAA_DOCKER_CONFIG_TEMPLATE"
-    else
-      printf '%s' "$TAA_LOCAL_CONFIG_TEMPLATE"
-    fi
+  if [[ "$DEPLOY_DOCKER" == true ]]; then
+    printf '%s' "$TAA_DOCKER_CONFIG_TEMPLATE"
   elif [[ "$DEBUG" == true ]]; then
     printf '%s' "$TAA_DEBUG_CONFIG_TEMPLATE"
   else
@@ -1412,12 +1390,11 @@ else
   ACTION="${ACTION:-start}"
 
   mode_count=0
-  [[ "$DEPLOY_LOCAL" == true ]] && ((mode_count++)) || true
   [[ "$DEPLOY_DOCKER" == true ]] && ((mode_count++)) || true
   [[ "$DEPLOY_REMOTE" == true ]] && ((mode_count++)) || true
 
   if (( mode_count > 1 )); then
-    err "cannot specify multiple deploy modes (local, docker, remote are mutually exclusive)"
+    err "cannot specify multiple deploy modes (docker and remote are mutually exclusive)"
     usage >&2
     exit 1
   fi
@@ -1432,7 +1409,7 @@ else
   fi
 
   if [[ "$SELECTED_COMPONENT" == false ]]; then
-    if [[ "$DEBUG" == false && "$DEPLOY_LOCAL" == false && "$DEPLOY_DOCKER" == false ]]; then
+    if [[ "$DEBUG" == false && "$DEPLOY_DOCKER" == false ]]; then
       # 正式远程部署模式下，宿主机已有生产管控平台 (如 ccs-node-agent) 监听 18080，默认不部署 platform-mock
       DEPLOY_PLATFORM_MOCK=false
     else
@@ -1442,7 +1419,7 @@ else
     DEPLOY_QWEN=true
   fi
 
-  if [[ "$DEPLOY_PLATFORM_MOCK" == true && "$DEPLOY_LOCAL" == false && "$DEPLOY_DOCKER" == false && "$DEBUG" == false && "$PLATFORM_PORT" == "18080" ]]; then
+  if [[ "$DEPLOY_PLATFORM_MOCK" == true && "$DEPLOY_DOCKER" == false && "$DEBUG" == false && "$PLATFORM_PORT" == "18080" ]]; then
     warn "远程宿主机 18080 端口通常由生产平台 (如 ccs-node-agent) 占用；若需调试 platform-mock，建议设置 DEBUG=true (使用 28080 端口) 或指定 PLATFORM_PORT"
   fi
 fi
@@ -1487,10 +1464,7 @@ wait_for_remote_taa_ready() {
 
 if [[ "$ACTION" == "stop" ]]; then
   banner "Stopping Services"
-  if [[ "$DEPLOY_LOCAL" == true ]]; then
-    step "stopping local host processes"
-    stop_selected_local_processes
-  elif [[ "$DEPLOY_DOCKER" == true ]]; then
+  if [[ "$DEPLOY_DOCKER" == true ]]; then
     step "stopping docker services"
     [[ "$DEPLOY_PLATFORM_MOCK" == true ]] && stop_pidfile "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid"
     if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -Eq "^${LOCAL_DOCKER_CONTAINER}\$"; then
@@ -1529,15 +1503,13 @@ fi
 
 # 用户可见的平台标签：DEBUG 模式显示 "platform-mock"，生产模式显示 "platform"
 PLATFORM_LABEL="platform"
-if [[ "$DEBUG" == true || "$DEPLOY_LOCAL" == true || "$DEPLOY_DOCKER" == true ]]; then
+if [[ "$DEBUG" == true || "$DEPLOY_DOCKER" == true ]]; then
   PLATFORM_LABEL="platform-mock"
 fi
 
-# 容器标识显示名：docker 模式显示本地容器名，local 模式显示 local host，k8s 模式显示 Pod 名。
+# 容器标识显示名：docker 模式显示本地容器名，k8s 模式显示 Pod 名。
 if [[ "$DEPLOY_DOCKER" == true ]]; then
   CONTAINER_LABEL="${LOCAL_DOCKER_CONTAINER}"
-elif [[ "$DEPLOY_LOCAL" == true ]]; then
-  CONTAINER_LABEL="local host"
 else
   CONTAINER_LABEL="${TARGET_POD}"
 fi
@@ -1550,8 +1522,6 @@ DEPLOY_COMPONENTS=""
 DEPLOY_TARGET_DESC="${REMOTE_USER}@${REMOTE_HOST}"
 if [[ "$DEPLOY_DOCKER" == true ]]; then
   DEPLOY_TARGET_DESC="local docker (${LOCAL_DOCKER_CONTAINER})"
-elif [[ "$DEPLOY_LOCAL" == true ]]; then
-  DEPLOY_TARGET_DESC="local host"
 fi
 OLLAMA_MODEL="$(resolve_target_ollama_model)"
 banner "Deploying: ${DEPLOY_COMPONENTS}→ ${DEPLOY_TARGET_DESC}" "Target model: ${OLLAMA_MODEL}"

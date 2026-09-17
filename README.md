@@ -92,7 +92,6 @@ flowchart LR
 │   ├── logger/                       # Structured JSON & console logger
 │   └── utils/                        # File system, archive, and network helpers
 ├── configs/                          # Deployment configuration templates
-│   ├── taa-local.json                # Bare-metal local host development template
 │   ├── taa-docker.json               # Local Docker container development template
 │   ├── taa-debug.json                # Remote Kubernetes debug Pod template
 │   └── taa-production.json           # Production Kubernetes Pod template (identity injected via env)
@@ -236,7 +235,6 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 
 ### Configuration Templates
 
-- **`configs/taa-local.json`**: For bare-metal host development. Uses `.local/taa/...` relative/local directories.
 - **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths.
 - **`configs/taa-debug.json`**: For remote Kubernetes debug Pods (`/root/taadebug`).
 - **`configs/taa-production.json`**: For production Kubernetes Pods. Omits `platformIP`, `dockerID`, and `contract` so they are dynamically injected by the orchestration platform via environment variables.
@@ -247,14 +245,13 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 
 `deploy.sh` provides unified, multi-mode lifecycle management and image packaging:
 
-### 1. Three Mutually Exclusive Running Modes
+### 1. Two Mutually Exclusive Running Modes
 
 ```bash
-./deploy.sh [local|docker|remote] [start|stop|save] [components...] [options...]
+./deploy.sh [docker|remote] [start|stop|save] [components...] [options...]
 ```
 
-- **`local`**: Bare-metal local host mode. Runs platform-mock, TAA daemon, and Ollama directly as host background processes without Docker. Ideal for rapid local code iteration.
-- **`docker`**: Local Docker container mode (replaces legacy `local-docker`). Runs TAA and Ollama inside a local Docker container (`taa-env-slim-v2`), while platform-mock runs on the host.
+- **`docker`**: Local Docker container mode. Runs TAA and Ollama inside a local Docker container (`taa-env-slim-v2`), while platform-mock runs on the host.
 - **`remote`**: Remote Kubernetes mode (default when omitted). Deploys to a remote TEE Kubernetes Pod via SSH and `kubectl`.
 
 ### 2. Supported Actions
@@ -266,7 +263,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 ### 3. Component Selection
 
 Specify one or more components: `platform-mock`, `taa`, `qwen`. If omitted:
-- In `local` or `docker` mode: all three components are deployed.
+- In `docker` mode: all three components are deployed.
 - In `remote` production mode (`DEBUG=false`): defaults to `taa` + `qwen` (omits `platform-mock` to avoid port 18080 conflict with host production agents).
 
 ### 4. Common CLI Examples
@@ -279,11 +276,6 @@ Specify one or more components: `platform-mock`, `taa`, `qwen`. If omitted:
 ./deploy.sh docker stop                       # Stop local Docker services
 ./deploy.sh docker save                       # Export production Docker image archive
 ./deploy.sh docker save --tag my-taa:v1 -o /tmp/taa.tar.gz
-
-# Local Bare-Metal Mode
-./deploy.sh local start                       # Start all components directly on host
-./deploy.sh local taa                         # Start only TAA on host
-./deploy.sh local stop                        # Stop all local host processes
 
 # Remote Kubernetes Mode
 ./deploy.sh remote start                      # Deploy to remote Kubernetes Pod (or simply ./deploy.sh)
