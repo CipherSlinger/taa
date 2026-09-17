@@ -145,6 +145,12 @@ OLLAMA_LOG_FILE="${OLLAMA_LOG_FILE:-/tmp/ollama.log}"
 OLLAMA_READY_TIMEOUT="${OLLAMA_READY_TIMEOUT:-120}"
 OLLAMA_READY_INTERVAL="${OLLAMA_READY_INTERVAL:-2}"
 
+TEELLM_SERVICE_BINARY_NAME="${TEELLM_SERVICE_BINARY_NAME:-teellm-service}"
+TEELLM_SERVICE_BINARY_PATH="${TEELLM_SERVICE_BINARY_PATH:-$PROJECT_DIR/bin/$TEELLM_SERVICE_BINARY_NAME}"
+TEELLM_PORT="${TEELLM_PORT:-8443}"
+LOCAL_TEELLM_URL="${LOCAL_TEELLM_URL:-https://127.0.0.1:${TEELLM_PORT}}"
+TEELLM_LOG_FILE="${TEELLM_LOG_FILE:-$TAA_CONTAINER_WORKDIR/teellm-service.log}"
+
 # 远程 SSH 密码：通过 TARGET_PASSWORD 覆盖；置空时启动脚本会交互式询问。
 PASSWORD="${TARGET_PASSWORD:-Osrd@2026}"
 
@@ -1451,7 +1457,7 @@ if [[ "$ACTION" == "stop" ]]; then
         docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall '$BINARY_NAME' >/dev/null 2>&1 || true" 2>/dev/null || true
       fi
       if [[ "$DEPLOY_QWEN" == true ]]; then
-        docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pkill -x ollama >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true" 2>/dev/null || true
+        docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pkill -x '$TEELLM_SERVICE_BINARY_NAME' >/dev/null 2>&1 || true; killall '$TEELLM_SERVICE_BINARY_NAME' >/dev/null 2>&1 || true; pkill -x ollama >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true" 2>/dev/null || true
       fi
     fi
   else
@@ -1511,6 +1517,11 @@ if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
   spin_task "building platform-mock from ./cmd/platform-mock" go build -o "$MOCK_BINARY_PATH" ./cmd/platform-mock
 fi
 if [[ "$DEPLOY_QWEN" == true ]]; then
+  ensure_go_compiler
+  ensure_parent_dir "$TEELLM_SERVICE_BINARY_PATH"
+  spin_task "building teellm-service from ./cmd/teellm-service" go build -o "$TEELLM_SERVICE_BINARY_PATH" ./cmd/teellm-service
+  require_file "build verification failed (teellm-service binary missing)" "$TEELLM_SERVICE_BINARY_PATH"
+
   require_dir "ollama package not found" "$OLLAMA_LOCAL_DIR"
   require_file "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/ollama"
   require_file "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/start-ollama.sh"
@@ -1684,6 +1695,44 @@ deploy_docker_qwen() {
     docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "tail -n 60 '$OLLAMA_LOG_FILE' 2>/dev/null || true"
     exit 1
   fi
+
+  step "deploying teellm-service daemon inside container"
+  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR/certs'" >/dev/null 2>&1 || true
+  if [[ -f "$ATT_HRK_SOURCE" && -f "$ATT_HSK_SOURCE" ]]; then
+    docker cp "$ATT_HRK_SOURCE" "$LOCAL_DOCKER_CONTAINER:$TAA_CONTAINER_WORKDIR/certs/hrk.cert" >/dev/null 2>&1 || true
+    docker cp "$ATT_HSK_SOURCE" "$LOCAL_DOCKER_CONTAINER:$TAA_CONTAINER_WORKDIR/certs/hsk_cek.cert" >/dev/null 2>&1 || true
+  fi
+  docker cp "$TEELLM_SERVICE_BINARY_PATH" "$LOCAL_DOCKER_CONTAINER:$TAA_CONTAINER_WORKDIR/$TEELLM_SERVICE_BINARY_NAME"
+  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "chmod +x '$TAA_CONTAINER_WORKDIR/$TEELLM_SERVICE_BINARY_NAME'"
+
+  step "stopping old teellm-service inside container"
+  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pkill -x '$TEELLM_SERVICE_BINARY_NAME' >/dev/null 2>&1 || true; killall '$TEELLM_SERVICE_BINARY_NAME' >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
+  for _ in {1..20}; do
+    if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pgrep -x '$TEELLM_SERVICE_BINARY_NAME' >/dev/null 2>&1"; then
+      break
+    fi
+    sleep 0.2
+  done
+
+  step "starting teellm-service inside container on :${TEELLM_PORT}"
+  docker exec -d "$LOCAL_DOCKER_CONTAINER" sh -lc "cd '$TAA_CONTAINER_WORKDIR' && exec nohup '$TAA_CONTAINER_WORKDIR/$TEELLM_SERVICE_BINARY_NAME' -addr ':${TEELLM_PORT}' -ollama-url 'http://127.0.0.1:11434' -model '$OLLAMA_MODEL' -hrk '$TAA_CONTAINER_WORKDIR/certs/hrk.cert' -hsk-cek '$TAA_CONTAINER_WORKDIR/certs/hsk_cek.cert' > '$TEELLM_LOG_FILE' 2>&1 &"
+
+  step "waiting for teellm-service to become ready"
+  local teellm_ready=false
+  for _ in {1..30}; do
+    if docker exec -i "$LOCAL_DOCKER_CONTAINER" "$TAA_CONTAINER_WORKDIR/$TEELLM_SERVICE_BINARY_NAME" -probe "https://127.0.0.1:${TEELLM_PORT}" >/dev/null 2>&1; then
+      teellm_ready=true
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$teellm_ready" != true ]]; then
+    err "teellm-service did not become ready on https://127.0.0.1:${TEELLM_PORT}"
+    echo -e "   ${YELLOW}↳${NC} teellm-service log (${TEELLM_LOG_FILE}):"
+    docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "tail -n 60 '$TEELLM_LOG_FILE' 2>/dev/null || true"
+    exit 1
+  fi
+  info "teellm-service ready and verified via TEE-TLS 1.3: https://127.0.0.1:${TEELLM_PORT}"
 }
 
 deploy_docker_taa() {
@@ -1711,7 +1760,7 @@ deploy_docker_taa() {
   TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
   step "writing taa config for docker from $(basename "$TAA_CONFIG_TEMPLATE")"
   ensure_parent_dir "$LOCAL_DOCKER_CONFIG_SOURCE"
-  write_taa_config "$LOCAL_DOCKER_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" "$TAA_CONTAINER_ADDR" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_CONTAINER" "$CONTRACT" "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" "$CONTAINER_OLLAMA_DIR" "$LOCAL_OLLAMA_URL" "$OLLAMA_MODEL" true "$LOCAL_DOCKER_INPUT_DIR" "$LOCAL_DOCKER_OUTPUT_DIR" "$TAA_CONTAINER_WORKDIR/keys"
+  write_taa_config "$LOCAL_DOCKER_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" "$TAA_CONTAINER_ADDR" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_CONTAINER" "$CONTRACT" "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" "$CONTAINER_OLLAMA_DIR" "$LOCAL_TEELLM_URL" "$OLLAMA_MODEL" true "$LOCAL_DOCKER_INPUT_DIR" "$LOCAL_DOCKER_OUTPUT_DIR" "$TAA_CONTAINER_WORKDIR/keys"
   docker cp "$LOCAL_DOCKER_CONFIG_SOURCE" "$LOCAL_DOCKER_CONTAINER:$CONTAINER_TAA_CONFIG_PATH" >/dev/null
   info "config written to container: $CONTAINER_TAA_CONFIG_PATH"
 
@@ -1776,6 +1825,9 @@ if [[ "$DEPLOY_DOCKER" == true ]]; then
     echo -e "    ${MUTED}↳ Endpoint   :${NC} ${BOLD}${LOCAL_OLLAMA_URL}${NC}"
     echo -e "    ${MUTED}↳ Target LLM :${NC} ${PURPLE}${OLLAMA_MODEL}${NC}"
     echo -e "    ${MUTED}↳ Path       :${NC} ${LOCAL_DOCKER_CONTAINER}:${CONTAINER_OLLAMA_DIR}"
+    echo -e "  ${BOLD}${CYAN}● TEE-LLM Inference Service${NC}  ${DIM}(RFC 8998 ShangMi TEE-TLS 1.3)${NC}"
+    echo -e "    ${MUTED}↳ Endpoint   :${NC} ${BOLD}${LOCAL_TEELLM_URL}${NC}"
+    echo -e "    ${MUTED}↳ Log file   :${NC} ${TEELLM_LOG_FILE}"
     echo ""
   fi
   if [[ "$DEPLOY_TAA" == true ]]; then
