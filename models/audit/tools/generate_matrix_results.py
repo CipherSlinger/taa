@@ -777,36 +777,6 @@ def update_html_report(html_path: Union[str, Path], runs: list[dict[str, Any]]) 
           </table>
         </div>
 
-        <!-- 评测矩阵关键量化收益汇总看板 -->
-        <div class="chart-card" style="margin-top: 20px;">
-          <div class="chart-title">
-            <h3>Audit-100 v2 三轨全矩阵量化收益看板 (0.5B ~ 8B 生产区间)</h3>
-            <div class="hint">对比 Track A (纯盲审)、Track B (规则清单) 与 Track C (动静协同) 在关键指标上的阶梯式跃升</div>
-          </div>
-          <div class="metric-pill-grid">
-            <div class="metric-pill-card">
-              <div class="metric-pill-name">全系平均准确率提升 <span class="metric-pill-delta up">▲ +12.6%</span></div>
-              <div class="metric-pill-val">76.0% → 88.6% (0.5B~8B)</div>
-            </div>
-            <div class="metric-pill-card">
-              <div class="metric-pill-name">全系平均误报率压降 <span class="metric-pill-delta down-good">▼ -19.4% (降低一半以上)</span></div>
-              <div class="metric-pill-val" style="color: var(--ok);">35.4% → 16.0%</div>
-            </div>
-            <div class="metric-pill-card">
-              <div class="metric-pill-name">关键攻击归因率跃升 <span class="metric-pill-delta up">▲ +19.0%</span></div>
-              <div class="metric-pill-val" style="color: var(--accent);">75.8% → 94.7% (高置信度)</div>
-            </div>
-            <div class="metric-pill-card">
-              <div class="metric-pill-name">算力推理节省率 <span class="metric-pill-delta up">▲ 50% 快速旁路</span></div>
-              <div class="metric-pill-val" style="color: var(--accent);">50/100 样本直接秒级放行</div>
-            </div>
-            <div class="metric-pill-card">
-              <div class="metric-pill-name">全矩阵峰值表现 <span class="metric-pill-delta up">Qwen3:8b 协同</span></div>
-              <div class="metric-pill-val">Acc: 96.0% / Rec: 98.0% / FPR: 6.0%</div>
-            </div>
-          </div>
-        </div>
-
         <h3 style="margin-top: 28px;">
           <span>🎯</span> 模型推荐与生产环境 ROI 选型决策体系 (Model Selection Matrix)
         </h3>

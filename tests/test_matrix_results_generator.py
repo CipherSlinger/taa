@@ -142,6 +142,8 @@ class TestMatrixResultsGenerator(unittest.TestCase):
         # Verify removed columns are absent from the core comparison matrix table header
         self.assertNotIn("<th>算力旁路率 (Bypass)</th>", new_content)
         self.assertNotIn("<th>核心特征与工程诊断</th>", new_content)
+        # Verify quantitative dashboard section is removed
+        self.assertNotIn("三轨全矩阵量化收益看板", new_content)
 
 
 if __name__ == "__main__":
