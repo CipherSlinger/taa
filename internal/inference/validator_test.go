@@ -78,6 +78,19 @@ func TestValidateEndpoint_Blocked(t *testing.T) {
 		}
 	})
 
+	t.Run("ScopedIPv6Addresses", func(t *testing.T) {
+		v := inference.NewEndpointValidator(nil, false)
+		scoped := []string{
+			"http://[fe80::1%25eth0]:11434",
+			"http://[fe80::1]:11434",
+		}
+		for _, ep := range scoped {
+			if err := v.Validate(ep); err == nil {
+				t.Errorf("expected scoped/link-local address %q to be blocked, but passed", ep)
+			}
+		}
+	})
+
 	t.Run("InvalidSchemesAndEndpoints", func(t *testing.T) {
 		v := inference.NewEndpointValidator([]string{"127.0.0.1", "localhost"}, false)
 
@@ -100,9 +113,13 @@ func TestValidateEndpoint_Blocked(t *testing.T) {
 		v := inference.NewEndpointValidator(nil, false)
 
 		blockedUnix := []string{
-			"unix://",    // Empty unix path
-			"unix://   ", // Whitespace only unix path
-			"unix:///",   // Root unix path
+			"unix://",               // Empty unix path
+			"unix://   ",            // Whitespace only unix path
+			"unix:///",              // Root unix path
+			"unix:////",             // Multiple leading slashes root path
+			"unix:///../",           // Root path traversal
+			"unix:///./",            // Root dot path
+			"unix://relative.sock",  // Relative unix path
 		}
 
 		for _, ep := range blockedUnix {
@@ -138,6 +155,18 @@ func TestValidateEndpoint_BlockPrivateIPs(t *testing.T) {
 		}
 		if err := v.Validate("http://10.0.0.1:11434"); err == nil {
 			t.Errorf("expected private IP 10.0.0.1 to be blocked when blockPrivateIPs=true")
+		}
+	})
+
+	t.Run("LocalhostLoopback", func(t *testing.T) {
+		v := inference.NewEndpointValidator([]string{"localhost"}, true)
+		if err := v.Validate("http://localhost:11434"); err == nil {
+			t.Errorf("expected localhost to be blocked when blockPrivateIPs=true")
+		}
+
+		vSub := inference.NewEndpointValidator([]string{"test.localhost"}, true)
+		if err := vSub.Validate("http://test.localhost:11434"); err == nil {
+			t.Errorf("expected .localhost domain to be blocked when blockPrivateIPs=true")
 		}
 	})
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -25,10 +26,9 @@ func NewEndpointValidator(allowedHosts []string, blockPrivateIPs bool) *Endpoint
 		}
 		host, _, err := net.SplitHostPort(trimmed)
 		if err != nil {
-			host = strings.Trim(trimmed, "[]")
-		} else {
-			host = strings.Trim(host, "[]")
+			host = trimmed
 		}
+		host = strings.Trim(host, "[]")
 		if host != "" {
 			hostMap[host] = struct{}{}
 		}
@@ -49,8 +49,9 @@ func (v *EndpointValidator) Validate(endpoint string) error {
 	// Support unix domain sockets directly.
 	if strings.HasPrefix(strings.ToLower(endpoint), "unix://") {
 		path := strings.TrimSpace(endpoint[len("unix://"):])
-		if path == "" || path == "/" {
-			return errors.New("unix socket path cannot be empty or root")
+		cleanPath := filepath.Clean(path)
+		if !filepath.IsAbs(cleanPath) || cleanPath == "/" || cleanPath == "." {
+			return errors.New("unix socket path must be a non-root absolute path")
 		}
 		return nil
 	}
@@ -78,11 +79,12 @@ func (v *EndpointValidator) Validate(endpoint string) error {
 	}
 
 	// Block cloud metadata services and any-addresses unconditionally.
-	if hostname == "169.254.169.254" || hostname == "0.0.0.0" || hostname == "::" || hostname == "[::]" {
+	if hostname == "169.254.169.254" || hostname == "0.0.0.0" || hostname == "::" {
 		return fmt.Errorf("access to restricted address %q is forbidden", hostname)
 	}
 
-	ip := net.ParseIP(hostname)
+	hostForIP := strings.Split(hostname, "%")[0]
+	ip := net.ParseIP(hostForIP)
 	if ip != nil {
 		if ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 			return fmt.Errorf("access to restricted address %q is forbidden", hostname)
@@ -98,6 +100,9 @@ func (v *EndpointValidator) Validate(endpoint string) error {
 
 	// Optionally block private/internal IPs if strict external checking is required.
 	if v.blockPrivateIPs {
+		if hostname == "localhost" || strings.HasSuffix(hostname, ".localhost") {
+			return fmt.Errorf("loopback host %q is blocked by security policy", hostname)
+		}
 		if ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
 			return fmt.Errorf("private and loopback IP %q is blocked by security policy", hostname)
 		}
