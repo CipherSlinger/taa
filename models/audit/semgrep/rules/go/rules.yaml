@@ -1,0 +1,65 @@
+# Semgrep rules for Go code security audit
+# Rule families align with TAA canonical 13-rule specification
+rules:
+  - id: taa-cmd-exec-go
+    languages: [go]
+    severity: ERROR
+    message: "Suspicious os/exec command execution detected in Go code"
+    metadata:
+      category: execution
+      rule_family: CMD_001
+    pattern-either:
+      - pattern: exec.Command(...)
+      - pattern: exec.CommandContext(...)
+
+  - id: taa-net-general-go
+    languages: [go]
+    severity: ERROR
+    message: "HTTP outbound call detected in Go code"
+    metadata:
+      category: network
+      rule_family: NET_001
+    pattern-either:
+      - pattern: http.Get(...)
+      - pattern: http.Post(...)
+      - pattern: http.PostForm(...)
+
+  - id: taa-net-socket-go
+    languages: [go]
+    severity: ERROR
+    message: "Low-level socket dial detected in Go code"
+    metadata:
+      category: network
+      rule_family: NET_002
+    pattern-either:
+      - pattern: net.Dial(...)
+      - pattern: net.DialTimeout(...)
+
+  - id: taa-env-secret-go
+    languages: [go]
+    severity: WARNING
+    message: "Environment variable secret access detected in Go code"
+    metadata:
+      category: credential
+      rule_family: ENV_001
+    pattern: os.Getenv(...)
+
+  - id: taa-dyn-eval-go
+    languages: [go]
+    severity: ERROR
+    message: "Dynamic plugin loading detected in Go code"
+    metadata:
+      category: dynamic
+      rule_family: DYN_001
+    pattern: plugin.Open(...)
+
+  - id: taa-fil-probe-go
+    languages: [go]
+    severity: ERROR
+    message: "Credential file probe detected in Go code"
+    metadata:
+      category: credential
+      rule_family: FIL_001
+    pattern-either:
+      - pattern: os.Open(...)
+      - pattern: os.ReadFile(...)

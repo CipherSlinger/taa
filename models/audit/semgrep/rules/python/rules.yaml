@@ -1,0 +1,197 @@
+# Semgrep rules for Python code security audit
+# Rule families strictly align with TAA canonical 13-rule specification
+rules:
+  - id: taa-cmd-exec-python
+    languages: [python]
+    severity: ERROR
+    message: "Suspicious subprocess execution detected in Python code"
+    metadata:
+      category: execution
+      rule_family: CMD_001
+    pattern-either:
+      - pattern: subprocess.Popen(...)
+      - pattern: subprocess.run(..., shell=True, ...)
+      - pattern: subprocess.call(..., shell=True, ...)
+      - pattern: subprocess.check_output(..., shell=True, ...)
+      - pattern: os.system(...)
+      - pattern: os.popen(...)
+
+  - id: taa-net-general-python
+    languages: [python]
+    severity: ERROR
+    message: "Suspicious external network request detected in Python code"
+    metadata:
+      category: network
+      rule_family: NET_001
+    pattern-either:
+      - pattern: requests.get(...)
+      - pattern: requests.post(...)
+      - pattern: requests.put(...)
+      - pattern: requests.delete(...)
+      - pattern: requests.patch(...)
+      - pattern: urllib.request.urlopen(...)
+      - pattern: aiohttp.ClientSession(...)
+
+  - id: taa-net-socket-python
+    languages: [python]
+    severity: ERROR
+    message: "Raw socket communication detected in Python code"
+    metadata:
+      category: network
+      rule_family: NET_002
+    pattern-either:
+      - pattern: socket.socket(...)
+      - pattern: socket.create_connection(...)
+
+  - id: taa-dyn-eval-python
+    languages: [python]
+    severity: ERROR
+    message: "Dynamic code evaluation or dangerous reflection detected in Python code"
+    metadata:
+      category: dynamic
+      rule_family: DYN_001
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+      - pattern: importlib.import_module(...)
+      - pattern: __import__(...)
+
+  - id: taa-fil-probe-python
+    languages: [python]
+    severity: ERROR
+    message: "Sensitive credential file access probe detected"
+    metadata:
+      category: credential
+      rule_family: FIL_001
+    pattern-either:
+      - pattern: open($PATH, ...)
+      - pattern: Path($PATH).read_text(...)
+      - pattern: Path($PATH).read_bytes(...)
+
+  - id: taa-env-secret-python
+    languages: [python]
+    severity: WARNING
+    message: "Sensitive environment variable access detected in Python code"
+    metadata:
+      category: credential
+      rule_family: ENV_001
+    pattern-either:
+      - pattern: os.environ.get($KEY, ...)
+      - pattern: os.environ[$KEY]
+      - pattern: os.getenv($KEY, ...)
+
+  - id: taa-obf-exec-python
+    languages: [python]
+    severity: ERROR
+    mode: taint
+    message: "Decoded or decompressed payload flows into dynamic execution sink"
+    metadata:
+      category: payload
+      rule_family: OBF_001
+    pattern-sources:
+      - pattern: base64.b64decode(...)
+      - pattern: base64.urlsafe_b64decode(...)
+      - pattern: zlib.decompress(...)
+      - pattern: gzip.decompress(...)
+    pattern-propagators:
+      - pattern: $OUT = $IN.decode(...)
+        from: $IN
+        to: $OUT
+    pattern-sinks:
+      - pattern: eval($SINK)
+      - pattern: exec($SINK)
+
+  - id: taa-secret-exfiltration-python
+    languages: [python]
+    severity: ERROR
+    mode: taint
+    message: "Sensitive credential flows from source to external network sink"
+    metadata:
+      category: credential
+      rule_family: EXF_001
+    pattern-sources:
+      - pattern: os.environ.get($KEY, ...)
+      - pattern: os.environ[$KEY]
+      - pattern: os.getenv($KEY, ...)
+      - pattern: open($PATH, ...).read()
+    pattern-propagators:
+      - pattern: $OUT = json.dumps($IN, ...)
+        from: $IN
+        to: $OUT
+      - pattern: $OUT = base64.b64encode($IN)
+        from: $IN
+        to: $OUT
+      - pattern: '$OUT = {"token": $IN, ...}'
+        from: $IN
+        to: $OUT
+      - pattern: '$OUT = {"key": $IN, ...}'
+        from: $IN
+        to: $OUT
+    pattern-sanitizers:
+      - pattern: hashlib.sha256(...)
+      - pattern: hmac.new(...)
+    pattern-sinks:
+      - pattern: requests.post($URL, json=$DATA, ...)
+      - pattern: requests.post($URL, data=$DATA, ...)
+      - pattern: requests.get($URL, params=$DATA, ...)
+      - pattern: socket.socket().sendall($DATA)
+
+  - id: taa-per-backdoor-python
+    languages: [python]
+    severity: ERROR
+    message: "Persistence backdoor or autorun script modification detected"
+    metadata:
+      category: persistence
+      rule_family: PER_001
+    pattern-either:
+      - pattern: open("/etc/cron" + $REST, "w", ...)
+      - pattern: open("/etc/systemd" + $REST, "w", ...)
+      - pattern: open(os.path.expanduser("~/.bashrc"), "w", ...)
+
+  - id: taa-emb-data-dump-python
+    languages: [python]
+    severity: ERROR
+    message: "Raw dataset or sensitive features serialized to output file"
+    metadata:
+      category: embedded
+      rule_family: EMB_001
+    pattern-either:
+      - patterns:
+          - pattern: torch.save($DATA, $PATH)
+          - pattern-not: torch.save($MODEL.state_dict(), $PATH)
+          - pattern-not: torch.save(..., "model.pt")
+
+  - id: taa-emb-copy-export-python
+    languages: [python]
+    severity: ERROR
+    message: "Sensitive data or models copied to export/result directory"
+    metadata:
+      category: embedded
+      rule_family: EMB_002
+    pattern-either:
+      - pattern: shutil.copy($SRC, $DST)
+      - pattern: shutil.copy2($SRC, $DST)
+      - pattern: shutil.copytree($SRC, $DST)
+
+  - id: taa-emb-log-dump-python
+    languages: [python]
+    severity: WARNING
+    message: "Raw sample data or sensitive features dumped to standard log/output"
+    metadata:
+      category: embedded
+      rule_family: EMB_003
+    pattern-either:
+      - pattern: logging.info(f"...{raw_data}...")
+      - pattern: print(raw_data)
+      - pattern: print(features)
+
+  - id: taa-emb-stego-weight-python
+    languages: [python]
+    severity: ERROR
+    message: "Encoded data or steganographic payload embedded into model weights"
+    metadata:
+      category: embedded
+      rule_family: EMB_004
+    pattern-either:
+      - pattern: struct.pack($FMT, ...)
+      - pattern: base64.b64encode($RAW)
