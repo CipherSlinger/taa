@@ -14,14 +14,6 @@
     - 确保导出的结果 Zip 包内仅包含模型训练自身生成的纯净产物。
   - **涉及模块**：`internal/controller/import_processing.go`、`internal/controller/handler_export.go`、`internal/coordinator/flow_training.go`、API 契约文档。
 
-- [x] **产物泄露检测大小限制支持配置文件动态读取（默认 3GB）**
-  - **背景**：`internal/codeaudit/result_checker.go` 中目前硬编码了单结果文件/产物大小上限为 500MB（`MaxResultBytes: 500 * 1024 * 1024`），无法满足现代大模型微调权重文件（如 PyTorch Checkpoint、Safetensors 等数 GB 级别文件）的正常校验与导出需求。
-  - **目标方案**：
-    - 在配置文件（`taa-config.json` 及配置映射结构体 `StartupConfig`）中新增 `maxFileBytes` 配置项；
-    - 默认缺省值提升至 `3GB`（`3 * 1024 * 1024 * 1024` 字节）；
-    - 初始化 `ResultChecker` 时由配置项动态注入限制阈值，支持依据实际业务负载灵活调控，避免因大文件超限产生非预期阻断。
-  - **涉及模块**：`internal/config/config.go`、`internal/codeaudit/result_checker.go`、`configs/taa-docker.json`、`configs/taa-production.json`。
-
 ---
 
 ## 🏗️ 二、架构调整与解耦 (Architecture & Decoupling)
@@ -84,7 +76,19 @@
 
 ---
 
-## ✅ 五、已完成核心里程碑 (Completed Milestones)
+## ✅ 五、已完成核心特性与里程碑 (Completed Milestones & Deliveries)
+
+### 1. 近期已完成交付特性 (Recently Completed Features)
+
+- [x] **产物泄露检测大小限制支持配置文件动态读取（默认 3GB）**
+  - **背景**：`internal/codeaudit/result_checker.go` 中原先硬编码了单结果文件/产物大小上限为 500MB，无法满足现代大模型微调权重文件（如 PyTorch Checkpoint、Safetensors 等数 GB 级别文件）的正常校验与导出需求。
+  - **交付方案**：
+    - 在配置文件（`taa-config.json` 及配置映射结构体 `StartupConfig`）中新增 `maxFileBytes` 配置项（兼容 `maxResultBytes` 别名）；
+    - 默认缺省值提升至 `3GB`（`3 * 1024 * 1024 * 1024` 字节 / `3221225472`）；
+    - 初始化 `ResultChecker` 时由配置项动态注入限制阈值，支持依据实际业务负载灵活调控，避免因大文件超限产生非预期阻断。
+  - **涉及模块**：`internal/config/config.go`、`internal/codeaudit/result_checker.go`、`configs/taa-docker.json`、`configs/taa-production.json`、`README.md`。
+
+### 2. 基础里程碑 (Foundational Milestones)
 
 - [x] **任务生命周期终止接口**：实现 `/v1/taa/stopTraining`，支持递归终止目标进程树并清理中间运行态
 - [x] **实时终端日志增量上报**：实现 `/v1/taa/modelLog`，支持训练标准输出与错误流增量去重并实时推送到平台
