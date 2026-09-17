@@ -4090,21 +4090,6 @@
           </div>
         </div>
 
-        <!-- CLI 一键执行复现指令 -->
-        <div class="codebox" style="margin-top: 16px;"><span style="color: var(--muted);"># 1. 自动化固化生成 100
-            个标准测试沙箱（幂等初始化）</span>
-          python3 tools/generate_benchmark_samples.py --clean
-
-          <span style="color: var(--muted);"># 2. 执行评测轨 A：纯端到端 LLM 模式 (Pure-LLM: 直接审全代码，无先验规则过滤，算力旁路率 0%)</span>
-          <span style="color: var(--muted);"># 可任意指定参数量级：qwen2.5-coder:0.5b / 1.5b / 3b / 7b / qwen3:8b / 14b</span>
-          python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --audit-mode pure-llm
-          --llm-backend ollama --llm-model qwen2.5-coder:0.5b
-
-          <span style="color: var(--muted);"># 3. 执行评测轨 B：动静两阶段协同模式 (Static-LLM: 静态正则初筛 + 50% 快速旁路 + 疑点 LLM 定向仲裁)</span>
-          <span style="color: var(--muted);"># 模型将获得行级上下文（7行）与静态规则元数据锚点，并启用 Fail-Closed 安全门禁</span>
-          python3 tools/audit_benchmark_eval.py --benchmark-root benchmarks/audit-100 --audit-mode static-llm
-          --llm-backend ollama --llm-model qwen2.5-coder:0.5b
-        </div>
 
         <div class="callout" style="margin-top: 16px;">
           <strong>为什么必须建立【纯 LLM】与【动静两阶段协同】的严格对比？</strong>
