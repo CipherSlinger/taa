@@ -801,7 +801,7 @@ components:
           description: 递增日志序号
         message:
           type: string
-          description: 格式化的运行日志内容（例如 "[INFO] [controller] message"）
+          description: 格式化的运行日志内容（例如 "[2026-09-18 18:00:00] [INFO] [controller] message"）
 
     ReportProgressRequest:
       type: object

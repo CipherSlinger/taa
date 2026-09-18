@@ -599,7 +599,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `seq` | `uint64` | 是 | 同一 `dockerId + requestId` 下递增的日志序号，用于排序和去重 |
-| `message` | `string` | 是 | 格式化后的 TAA 运行日志内容（格式为 `[LEVEL] [component] message`） |
+| `message` | `string` | 是 | 格式化后的 TAA 运行日志内容（格式为 `[timestamp] [LEVEL] [component] message`） |
 
 **请求示例**：
 
@@ -612,11 +612,11 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "entries": [
     {
       "seq": 1,
-      "message": "[INFO] [controller] TAA server starting on :6001"
+      "message": "[2026-09-18 18:00:00] [INFO] [controller] TAA server starting on :6001"
     },
     {
       "seq": 2,
-      "message": "[INFO] [register] register to platform completed"
+      "message": "[2026-09-18 18:00:01] [INFO] [register] register to platform completed"
     }
   ]
 }

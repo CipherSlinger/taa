@@ -1,7 +1,8 @@
 package logger
 
 import (
-	"strings"
+	"fmt"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -125,7 +126,22 @@ func TestStoreEntrySeqAndFormat(t *testing.T) {
 		t.Errorf("entry 1 seq = %d, want 2", entries[1].Seq)
 	}
 	formatted := entries[0].FormatMessage()
-	if !strings.Contains(formatted, "[INFO]") || !strings.Contains(formatted, "[system]") || !strings.Contains(formatted, "taa initialized") {
-		t.Errorf("unexpected formatted message: %s", formatted)
+	expected := fmt.Sprintf("[%s] [INFO] [system] taa initialized", entries[0].Timestamp.UTC().Format("2006-01-02 15:04:05"))
+	if formatted != expected {
+		t.Errorf("formatted message = %q, want %q", formatted, expected)
+	}
+}
+
+func TestEntryFormatMessageWithZeroTimestamp(t *testing.T) {
+	entry := Entry{
+		Level:     LevelInfo,
+		Component: "controller",
+		Message:   "TAA server starting on :6001",
+	}
+	formatted := entry.FormatMessage()
+	pattern := `^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[INFO\] \[controller\] TAA server starting on :6001$`
+	matched, err := regexp.MatchString(pattern, formatted)
+	if err != nil || !matched {
+		t.Errorf("formatted message %q does not match pattern %q", formatted, pattern)
 	}
 }

@@ -41,8 +41,13 @@ type Entry struct {
 	Message   string    `json:"message"`
 }
 
-// FormatMessage 将结构化日志转换为包含级别和组件的统一文本行。
+// FormatMessage formats the structured log entry into a unified text line with timestamp, level, and component.
 func (e Entry) FormatMessage() string {
+	ts := e.Timestamp
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+	tsStr := ts.UTC().Format("2006-01-02 15:04:05")
 	lvl := strings.ToUpper(string(e.Level))
 	if lvl == "" {
 		lvl = "INFO"
@@ -51,7 +56,7 @@ func (e Entry) FormatMessage() string {
 	if comp == "" {
 		comp = "system"
 	}
-	return fmt.Sprintf("[%s] [%s] %s", lvl, comp, e.Message)
+	return fmt.Sprintf("[%s] [%s] [%s] %s", tsStr, lvl, comp, e.Message)
 }
 
 // Store 是一个线程安全的有界内存日志缓冲区（达到上限时自动淘汰最旧日志）。
