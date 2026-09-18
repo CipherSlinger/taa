@@ -27,7 +27,7 @@ func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
 		t.Fatal("indexHTML should not contain resourceInfoTreeContainer")
 	}
 	for _, want := range []string{
-		"③ 训练结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult",
+		"② 下发数据 / 结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult",
 		"saveReportBtn", "reportResBodyBtn", "reportResReportBtn", "openReportResReportModal", "查看报告",
 		"reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "importModelCommands", "importModelEnv",
 		"resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport",
@@ -72,9 +72,9 @@ func TestIndexHandlerHeaders(t *testing.T) {
 
 func TestTrainingFlowCardTitlesAndTreeModalTriggers(t *testing.T) {
 	requiredTitles := []string{
-		"<h2>⓪ 资源信息获取</h2>",
+		"<h2>① 文件上传 / 资源信息</h2>",
 		"<h2>② 下发模型</h2>",
-		"<h2>② 下发数据</h2>",
+		"<h2>② 下发数据 / 结果上报</h2>",
 		"<h2>④ 导出结果</h2>",
 	}
 	for _, title := range requiredTitles {
@@ -85,6 +85,7 @@ func TestTrainingFlowCardTitlesAndTreeModalTriggers(t *testing.T) {
 
 	forbiddenTitles := []string{
 		"<h2>⓪ /v1/taa/getResourceInfo",
+		"<h2>① /v1/taa/getResourceInfo",
 		"<h2>② /v1/taa/importModel",
 		"<h2>② /v1/taa/import",
 		"<h2>④ /v1/taa/export",
@@ -105,8 +106,6 @@ func TestTrainingFlowCardTitlesAndTreeModalTriggers(t *testing.T) {
 
 func TestRequestIdAndTaskIdRandomizeButtons(t *testing.T) {
 	requiredTriggers := []string{
-		`randomizeField('importRequestId'`,
-		`randomizeField('importTaskId'`,
 		`randomizeImportModelIds()`,
 		`randomizeImportIds()`,
 	}
@@ -119,6 +118,8 @@ func TestRequestIdAndTaskIdRandomizeButtons(t *testing.T) {
 	forbiddenTriggers := []string{
 		`randomizeField('importModelRequestId'`,
 		`randomizeField('importModelTaskId'`,
+		`randomizeField('importRequestId'`,
+		`randomizeField('importTaskId'`,
 		`randomizeField('exportRequestId'`,
 		`randomizeField('exportTaskId'`,
 		`randomizeExportIds`,
@@ -1827,6 +1828,63 @@ func TestResourceInfoMergedUnderUploadColumn(t *testing.T) {
 	}
 	if resourceInfoIdx >= modelIdx {
 		t.Fatalf("card-resourceInfo (index %d) should be in the first column before card-importModel (index %d)", resourceInfoIdx, modelIdx)
+	}
+}
+
+func TestConsolidatedCardsAndRemovedHints(t *testing.T) {
+	if strings.Contains(indexHTML, `<div class="flow-col-stack">`) {
+		t.Fatal("indexHTML should no longer use flow-col-stack; cards should be single consolidated cards")
+	}
+
+	uploadIdx := strings.Index(indexHTML, `id="card-upload"`)
+	if uploadIdx == -1 {
+		t.Fatal("indexHTML missing id=\"card-upload\"")
+	}
+	modelIdx := strings.Index(indexHTML, `id="card-importModel"`)
+	if modelIdx == -1 {
+		t.Fatal("indexHTML missing id=\"card-importModel\"")
+	}
+	importIdx := strings.Index(indexHTML, `id="card-import"`)
+	if importIdx == -1 {
+		t.Fatal("indexHTML missing id=\"card-import\"")
+	}
+	exportIdx := strings.Index(indexHTML, `id="card-export"`)
+	if exportIdx == -1 {
+		t.Fatal("indexHTML missing id=\"card-export\"")
+	}
+
+	if !(uploadIdx < modelIdx && modelIdx < importIdx && importIdx < exportIdx) {
+		t.Fatalf("Cards should appear in order upload(%d) < importModel(%d) < import(%d) < export(%d)",
+			uploadIdx, modelIdx, importIdx, exportIdx)
+	}
+
+	resourceInfoIdx := strings.Index(indexHTML, `id="card-resourceInfo"`)
+	if resourceInfoIdx == -1 {
+		t.Fatal("indexHTML missing id=\"card-resourceInfo\" sub-section")
+	}
+	if !(uploadIdx < resourceInfoIdx && resourceInfoIdx < modelIdx) {
+		t.Fatalf("card-resourceInfo (%d) should be inside card-upload before card-importModel (%d)",
+			resourceInfoIdx, modelIdx)
+	}
+
+	// Verify removed notes
+	forbiddenNotes := []string{
+		"上传资源文件，服务器保存到本地并生成可访问的 URL。",
+		"传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理。",
+		"下发训练或推理任务所需的数据资源包。",
+	}
+	for _, note := range forbiddenNotes {
+		if strings.Contains(indexHTML, note) {
+			t.Fatalf("indexHTML should have removed note: %q", note)
+		}
+	}
+
+	// Verify removed per-field random buttons in import card
+	if strings.Contains(indexHTML, `randomizeField('importRequestId'`) {
+		t.Fatal("importRequestId should no longer have adjacent randomizeField button")
+	}
+	if strings.Contains(indexHTML, `randomizeField('importTaskId'`) {
+		t.Fatal("importTaskId should no longer have adjacent randomizeField button")
 	}
 }
 

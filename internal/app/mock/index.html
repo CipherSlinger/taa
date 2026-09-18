@@ -153,14 +153,6 @@
       border-color: var(--ok) !important;
       background: rgba(16, 185, 129, 0.1) !important;
     }
-    .flow-col-stack {
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
-    .flow-col-stack .card {
-      margin-bottom: 0;
-    }
     .card {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -1069,68 +1061,54 @@
 
   <!-- Training flow: four-column layout -->
   <div class="four-col-layout">
-    <!-- Column 1: File upload + Resource info retrieval (stacked vertically) -->
-    <div class="flow-col-stack">
-      <!-- File upload -->
-      <section class="card" id="card-upload" style="display:flex; flex-direction:column;">
-        <div class="card-head">
-          <div>
-            <h2>① 文件上传</h2>
-            <p class="card-note">上传资源文件，服务器保存到本地并生成可访问的 URL。</p>
-          </div>
-          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
-            <div id="uploadStatusBox" class="status" style="font-size:12px; display:none;">
-              <span id="uploadDot" class="dot"></span>
-              <span id="uploadStatusText"></span>
-            </div>
-            <button id="uploadBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('uploadResult')" disabled>查看返回</button>
-          </div>
+    <!-- Column 1: File upload / Resource info -->
+    <section class="card" id="card-upload" style="display:flex; flex-direction:column;">
+      <div class="card-head">
+        <div>
+          <h2>① 文件上传 / 资源信息</h2>
         </div>
-        <label for="uploadFile">选择文件</label>
-        <input id="uploadFile" type="file">
-        <div style="margin: 10px 0 6px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
-          <label class="switch-label" for="uploadEncryptSwitch">
-            <span class="switch-wrapper">
-              <input type="checkbox" id="uploadEncryptSwitch">
-              <span class="switch-slider"></span>
-            </span>
-            <span>启用加密</span>
-          </label>
-          <span class="muted" style="font-size: 12px;">自动使用 TAA 注册公钥加密并追加 .enc 后缀</span>
-        </div>
-        <div class="actions">
-          <button onclick="uploadFile()">上传文件</button>
-        </div>
-        <div id="uploadResult" style="display:none;"></div>
-        <div class="upload-history">
-          <div id="uploadClearBar" style="display:none; justify-content:flex-end; margin-bottom:4px;">
-            <span id="uploadedFilesCount" style="display:none;"></span>
-            <button type="button" class="danger" onclick="clearUploadedFiles()" style="padding:3px 8px; font-size:11.5px;">清空所有上传文件</button>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+          <div id="uploadStatusBox" class="status" style="font-size:12px; display:none;">
+            <span id="uploadDot" class="dot"></span>
+            <span id="uploadStatusText"></span>
           </div>
-          <div id="uploadedFilesList" style="display:flex; flex-direction:column; gap:6px;"></div>
+          <button id="uploadBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('uploadResult')" disabled>查看返回</button>
+          <button id="resourceInfoModalBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openResourceInfoModal()" disabled>查看目录树</button>
         </div>
-      </section>
-
-      <!-- Resource info retrieval -->
-      <section class="card drop-zone-card" id="card-resourceInfo" style="display:flex; flex-direction:column;">
-        <div class="card-head">
-          <div>
-            <h2>⓪ 资源信息获取</h2>
-            <p class="card-note">传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理。</p>
-          </div>
-          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-            <button id="resourceInfoModalBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openResourceInfoModal()" disabled>查看目录树</button>
-          </div>
+      </div>
+      <label for="uploadFile">选择文件</label>
+      <input id="uploadFile" type="file">
+      <div style="margin: 10px 0 6px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+        <label class="switch-label" for="uploadEncryptSwitch">
+          <span class="switch-wrapper">
+            <input type="checkbox" id="uploadEncryptSwitch">
+            <span class="switch-slider"></span>
+          </span>
+          <span>启用加密</span>
+        </label>
+        <span class="muted" style="font-size: 12px;">自动使用 TAA 注册公钥加密并追加 .enc 后缀</span>
+      </div>
+      <div class="actions">
+        <button onclick="uploadFile()">上传文件</button>
+      </div>
+      <div id="uploadResult" style="display:none;"></div>
+      <div class="upload-history">
+        <div id="uploadClearBar" style="display:none; justify-content:flex-end; margin-bottom:4px;">
+          <span id="uploadedFilesCount" style="display:none;"></span>
+          <button type="button" class="danger" onclick="clearUploadedFiles()" style="padding:3px 8px; font-size:11.5px;">清空所有上传文件</button>
         </div>
-        <label for="resourceInfoUrl">resourceUrl</label>
+        <div id="uploadedFilesList" style="display:flex; flex-direction:column; gap:6px;"></div>
+      </div>
+      <div id="card-resourceInfo" style="border-top: 1px dashed var(--line); margin-top: 14px; padding-top: 14px; display:flex; flex-direction:column;">
+        <label for="resourceInfoUrl">resourceUrl (目录树分析)</label>
         <input id="resourceInfoUrl" value="http://example.com/data.tar.gz">
         <div class="actions">
           <button onclick="testGetResourceInfo()">发送测试</button>
           <button type="button" class="secondary" onclick="loadSampleResourceTree()">加载示例树</button>
         </div>
         <div id="resourceInfoResult" class="test-result"></div>
-      </section>
-    </div>
+      </div>
+    </section>
 
     <!-- Column 2: Import model -->
     <section class="card" id="card-importModel" style="display:flex; flex-direction:column;">
@@ -1180,72 +1158,52 @@
       <div id="importModelResult" style="display:none;"></div>
     </section>
 
-    <!-- Column 3: Import data + Training result report (stacked vertically) -->
-    <div class="flow-col-stack">
-      <section class="card" id="card-import" style="display:flex; flex-direction:column;">
-        <div class="card-head">
-          <div>
-            <h2>② 下发数据</h2>
-            <p class="card-note">下发训练或推理任务所需的数据资源包。</p>
-          </div>
-          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
-            <div id="importStatusBox" class="status" style="font-size:12px; display:none;">
-              <span id="importDot" class="dot"></span>
-              <span id="importStatusText"></span>
-            </div>
-            <button id="importBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('importResult')" disabled>查看返回</button>
-          </div>
+    <!-- Column 3: Import data / Training result report -->
+    <section class="card drop-zone-card" id="card-import" style="display:flex; flex-direction:column;">
+      <div class="card-head">
+        <div>
+          <h2>② 下发数据 / 结果上报</h2>
         </div>
-        <label for="importResourceUrl">resourceUrl</label>
-        <input id="importResourceUrl" value="http://example.com/data.tar.gz">
-        <label for="importRequestId">requestId</label>
-        <div class="input-action-group">
-          <input id="importRequestId" value="req-mock-import-001">
-          <button type="button" class="secondary btn-field-random" onclick="randomizeField('importRequestId', 'req-data')" title="生成随机 requestId">随机生成</button>
-        </div>
-        <label for="importTaskId">taskId</label>
-        <div class="input-action-group">
-          <input id="importTaskId" value="">
-          <button type="button" class="secondary btn-field-random" onclick="randomizeField('importTaskId', 'task-data')" title="生成随机 taskId">随机生成</button>
-        </div>
-        <div class="actions">
-          <button onclick="testImport()">发送测试</button>
-          <button type="button" class="secondary" onclick="randomizeImportIds()" title="同时随机生成 requestId 与 taskId">随机 ID</button>
-        </div>
-        <div id="importResult" style="display:none;"></div>
-      </section>
-
-      <section class="card" id="card-reportRes" style="display:flex; flex-direction:column;">
-        <div class="card-head">
-          <div>
-            <h2>③ 训练结果上报</h2>
-            <p class="card-note">接收 TAA 训练完成后的回调结果与报告。</p>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+          <div id="importStatusBox" class="status" style="font-size:12px; display:none;">
+            <span id="importDot" class="dot"></span>
+            <span id="importStatusText"></span>
           </div>
-          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-            <button id="stopTrainingBtn" class="danger" style="padding:6px 12px; font-size:13px;" onclick="testStopTraining()" title="中止训练 (/v1/taa/stopTraining)">🛑 中止训练</button>
-            <span id="stopTrainingStatusBox" style="display:none; font-size:12px; margin-left:8px;"><span id="stopTrainingStatusText"></span></span>
-            <button type="button" class="secondary" id="stopTrainingBodyBtn" style="padding:6px 12px; font-size:13px; display:none;" onclick="openInteractionModal('stopTraining', 'primary')">查看返回</button>
-            <button id="reportResReportBtn" style="padding:6px 12px; font-size:13px;" onclick="openReportResReportModal()" disabled>查看报告</button>
-            <button id="reportResBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportResBodyModal()" disabled>查看返回</button>
-          </div>
+          <button id="importBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('importResult')" disabled>查看返回</button>
+          <button id="stopTrainingBtn" class="danger" style="padding:6px 12px; font-size:13px;" onclick="testStopTraining()" title="中止训练 (/v1/taa/stopTraining)">🛑 中止训练</button>
+          <span id="stopTrainingStatusBox" style="display:none; font-size:12px; margin-left:8px;"><span id="stopTrainingStatusText"></span></span>
+          <button type="button" class="secondary" id="stopTrainingBodyBtn" style="padding:6px 12px; font-size:13px; display:none;" onclick="openInteractionModal('stopTraining', 'primary')">查看返回</button>
+          <button id="reportResReportBtn" style="padding:6px 12px; font-size:13px;" onclick="openReportResReportModal()" disabled>查看报告</button>
+          <button id="reportResBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportResBodyModal()" disabled>查看返回</button>
         </div>
-        <div class="sub-panel" style="flex:1; min-height:100px; display:flex; flex-direction:column; justify-content:space-between; gap:10px;">
-          <div>
-            <div class="status" style="font-size:14px; font-weight:650;"><span id="reportResDot" class="dot"></span><span id="reportResStatusText">等待训练结果上报</span><span class="muted" style="font-size:12px; font-weight:normal; margin-left:6px;">(/v1/taa/reportRes)</span></div>
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;"><span style="font-weight:600; font-size:13px;">训练进度: <span id="reportProgressPercent">0%</span></span><span id="reportProgressStatusText" class="muted" style="font-size:12px;">等待进度上报... (/v1/taa/reportProgress)</span><button id="resetProgressBtn" class="secondary" style="padding:2px 8px; font-size:11px;" onclick="resetReportProgress()">重置</button></div>
-            <div style="width:100%; height:8px; background:rgba(127,127,127,.2); border-radius:4px; overflow:hidden; margin-top:4px; margin-bottom:8px;">
-              <div id="reportProgressBar" style="width:0%; height:100%; background:var(--theme-accent, #2563eb); transition:width .3s ease;"></div>
-            </div>
-            <p id="reportResSummary" class="card-note" style="margin-top:6px; margin-bottom:4px;">完整返回体与具体报告只在弹窗中展示。</p>
-            <p id="reportResBodySummary" class="muted" style="margin:0;font-size:12px;">-</p>
+      </div>
+      <label for="importResourceUrl">resourceUrl</label>
+      <input id="importResourceUrl" value="http://example.com/data.tar.gz">
+      <label for="importRequestId">requestId</label>
+      <input id="importRequestId" value="req-mock-import-001">
+      <label for="importTaskId">taskId</label>
+      <input id="importTaskId" value="">
+      <div class="actions">
+        <button onclick="testImport()">发送测试</button>
+        <button type="button" class="secondary" onclick="randomizeImportIds()" title="同时随机生成 requestId 与 taskId">随机 ID</button>
+      </div>
+      <div id="importResult" style="display:none;"></div>
+      <div id="card-reportRes" style="border-top: 1px dashed var(--line); margin-top: 14px; padding-top: 14px; display:flex; flex-direction:column; gap:10px;">
+        <div>
+          <div class="status" style="font-size:14px; font-weight:650;"><span id="reportResDot" class="dot"></span><span id="reportResStatusText">等待训练结果上报</span><span class="muted" style="font-size:12px; font-weight:normal; margin-left:6px;">(/v1/taa/reportRes)</span></div>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;"><span style="font-weight:600; font-size:13px;">训练进度: <span id="reportProgressPercent">0%</span></span><span id="reportProgressStatusText" class="muted" style="font-size:12px;">等待进度上报... (/v1/taa/reportProgress)</span><button id="resetProgressBtn" class="secondary" style="padding:2px 8px; font-size:11px;" onclick="resetReportProgress()">重置</button></div>
+          <div style="width:100%; height:8px; background:rgba(127,127,127,.2); border-radius:4px; overflow:hidden; margin-top:4px; margin-bottom:8px;">
+            <div id="reportProgressBar" style="width:0%; height:100%; background:var(--theme-accent, #2563eb); transition:width .3s ease;"></div>
           </div>
-          <div class="actions" style="margin:0;">
-            <button onclick="refreshReportResStatus()">刷新上报状态</button>
-            <button class="secondary" onclick="resetReportResStatus()">清空上报记录</button>
-          </div>
+          <p id="reportResSummary" class="card-note" style="margin-top:6px; margin-bottom:4px;">完整返回体与具体报告只在弹窗中展示。</p>
+          <p id="reportResBodySummary" class="muted" style="margin:0;font-size:12px;">-</p>
         </div>
-      </section>
-    </div>
+        <div class="actions" style="margin:0;">
+          <button onclick="refreshReportResStatus()">刷新上报状态</button>
+          <button class="secondary" onclick="resetReportResStatus()">清空上报记录</button>
+        </div>
+      </div>
+    </section>
 
     <!-- Column 4: Export result -->
     <section class="card" id="card-export" style="display:flex; flex-direction:column;">
@@ -1490,8 +1448,8 @@ function randomizeImportModelIds() {
 }
 
 function randomizeImportIds() {
-  randomizeField('importRequestId', 'req-data');
-  randomizeField('importTaskId', 'task-data');
+  randomizeField("importRequestId", "req-data");
+  randomizeField("importTaskId", "task-data");
 }
 
 const resultBodies = {};
