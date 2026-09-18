@@ -1084,11 +1084,11 @@
     <section class="card drop-zone-card" id="card-resourceInfo" style="display:flex; flex-direction:column;">
       <div class="card-head">
         <div>
-          <h2>⓪ /v1/taa/getResourceInfo — 资源信息获取</h2>
+          <h2>⓪ 资源信息获取</h2>
           <p class="card-note">传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理。</p>
         </div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <button id="resourceInfoModalBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openResourceInfoModal()" disabled>弹窗全屏查看</button>
+          <button id="resourceInfoModalBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openResourceInfoModal()" disabled>查看目录树</button>
         </div>
       </div>
       <label for="resourceInfoUrl">resourceUrl</label>
@@ -1098,7 +1098,6 @@
         <button type="button" class="secondary" onclick="loadSampleResourceTree()">加载示例树</button>
       </div>
       <div id="resourceInfoResult" class="test-result"></div>
-      <div id="resourceInfoTreeContainer" style="display:none; margin-top:14px;"></div>
     </section>
 
     <!-- 第 2 列：文件上传 -->
@@ -1145,7 +1144,7 @@
     <section class="card" id="card-importModel" style="display:flex; flex-direction:column;">
       <div class="card-head">
         <div>
-          <h2>② /v1/taa/importModel — 下发模型</h2>
+          <h2>② 下发模型</h2>
           <div class="status" style="margin-top:8px; font-size:13px; font-weight:600;">
             <span id="reportModelImportDot" class="dot"></span>
             <span id="reportModelImportStatusText">等待模型导入结果上报</span>
@@ -1201,7 +1200,7 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
       <section class="card" id="card-import" style="display:flex; flex-direction:column;">
         <div class="card-head">
           <div>
-            <h2>② /v1/taa/import — 下发数据</h2>
+            <h2>② 下发数据</h2>
             <p class="card-note">下发训练或推理任务所需的数据资源包。</p>
           </div>
           <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
@@ -1267,7 +1266,7 @@ python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
     <section class="card" id="card-export" style="display:flex; flex-direction:column;">
       <div class="card-head">
         <div>
-          <h2>④ /v1/taa/export — 导出结果</h2>
+          <h2>④ 导出结果</h2>
           <p class="card-note">向 TAA 发送导出请求，获取最终生成的模型或推理结果文件。</p>
         </div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
@@ -2050,17 +2049,39 @@ function showResult(elId, ok, text) {
     const state = document.createElement('span');
     state.className = 'result-state';
     state.textContent = ok ? '请求完成' : '请求失败';
+    row.appendChild(state);
+
+    const btnGroup = document.createElement('div');
+    btnGroup.style.display = 'flex';
+    btnGroup.style.gap = '6px';
+    btnGroup.style.alignItems = 'center';
+
+    if (elId === 'resourceInfoResult' && ok && resourceInfoReportData) {
+      const treeBtn = document.createElement('button');
+      treeBtn.type = 'button';
+      treeBtn.className = 'success result-body-btn';
+      treeBtn.textContent = '查看目录树';
+      treeBtn.onclick = () => openResourceInfoModal();
+      btnGroup.appendChild(treeBtn);
+    }
+
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'secondary result-body-btn';
     btn.textContent = '查看返回';
     btn.onclick = () => openStoredResult(elId);
     btn.disabled = !text;
-    row.appendChild(state);
-    row.appendChild(btn);
+    btnGroup.appendChild(btn);
+
+    row.appendChild(btnGroup);
+
     const note = document.createElement('div');
     note.className = 'result-note';
-    note.textContent = text ? '完整返回已收起到弹窗中。' : '暂无返回内容。';
+    if (elId === 'resourceInfoResult' && ok && resourceInfoReportData) {
+      note.textContent = '点击“查看目录树”弹窗浏览完整资源结构，点击“查看返回”查看原始数据。';
+    } else {
+      note.textContent = text ? '完整返回已收起到弹窗中。' : '暂无返回内容。';
+    }
     el.appendChild(row);
     el.appendChild(note);
   }
@@ -3305,10 +3326,6 @@ function renderResourceInfoTreeShell(targetEl, isModal = false) {
 }
 
 function refreshResourceInfoTreeViews() {
-  const container = document.getElementById('resourceInfoTreeContainer');
-  if (container && container.style.display !== 'none') {
-    renderResourceInfoTreeShell(container, false);
-  }
   if (isResourceInfoModalOpen) {
     const modalBody = document.getElementById('resourceInfoModalBody');
     if (modalBody) {
@@ -3458,8 +3475,6 @@ function loadSampleResourceTree() {
   resourceInfoSelectedNode = resourceInfoReportData.tree;
   const modalBtn = document.getElementById('resourceInfoModalBtn');
   if (modalBtn) modalBtn.disabled = false;
-  const container = document.getElementById('resourceInfoTreeContainer');
-  if (container) container.style.display = 'block';
   refreshResourceInfoTreeViews();
   recordInteraction('resourceInfo', {
     title: '/v1/taa/getResourceInfo 资源信息详情',
@@ -3473,6 +3488,8 @@ function loadSampleResourceTree() {
 
 async function testGetResourceInfo() {
   showResultRunning('resourceInfoResult', '正在请求并分析资源...');
+  const modalBtn = document.getElementById('resourceInfoModalBtn');
+  if (modalBtn) modalBtn.disabled = true;
   const resourceUrl = document.getElementById('resourceInfoUrl').value.trim();
   recordInteraction('resourceInfo', {
     title: '/v1/taa/getResourceInfo 资源信息详情',
@@ -3507,8 +3524,6 @@ async function testGetResourceInfo() {
       resourceInfoSelectedNode = rootNode;
       const modalBtn = document.getElementById('resourceInfoModalBtn');
       if (modalBtn) modalBtn.disabled = false;
-      const container = document.getElementById('resourceInfoTreeContainer');
-      if (container) container.style.display = 'block';
       refreshResourceInfoTreeViews();
       showResult('resourceInfoResult', true, 'HTTP ' + r.status + ' 资源解析成功（共 ' + (reportObj.total_files || 0) + ' 个文件）');
     } else {

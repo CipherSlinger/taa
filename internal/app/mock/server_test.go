@@ -23,6 +23,9 @@ func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
 	if strings.Contains(indexHTML, "③ 资源下载结果上报") {
 		t.Fatal("index should not show the resource download result report card")
 	}
+	if strings.Contains(indexHTML, "resourceInfoTreeContainer") {
+		t.Fatal("indexHTML should not contain resourceInfoTreeContainer")
+	}
 	for _, want := range []string{
 		"③ 训练结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult",
 		"saveReportBtn", "reportResBodyBtn", "reportResReportBtn", "openReportResReportModal", "查看报告",
@@ -30,7 +33,7 @@ func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
 		"resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport",
 		"setupResourceUrlDropZones", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件",
 		"uploadEncryptSwitch", "启用加密", "deleteUploadedFile", "创建公钥", "generateImportModelPublicKey",
-		"exportDecryptSwitch", "是否解密", "exportPrivateKey", "exportRequestId", "resourceInfoTreeContainer",
+		"exportDecryptSwitch", "是否解密", "exportPrivateKey", "exportRequestId",
 		"resourceInfoModalBtn", "resourceInfoModal", "loadSampleResourceTree", "renderResourceInfoTreeShell",
 		"randomizeField", "randomizeImportModelIds", "randomizeImportIds",
 		"reportProgressBar", "reportProgressPercent", "reportProgressStatusText", "resetProgressBtn",
@@ -41,6 +44,39 @@ func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
 		if !strings.Contains(indexHTML, want) {
 			t.Fatalf("index missing %q", want)
 		}
+	}
+}
+
+func TestTrainingFlowCardTitlesAndTreeModalTriggers(t *testing.T) {
+	requiredTitles := []string{
+		"<h2>⓪ 资源信息获取</h2>",
+		"<h2>② 下发模型</h2>",
+		"<h2>② 下发数据</h2>",
+		"<h2>④ 导出结果</h2>",
+	}
+	for _, title := range requiredTitles {
+		if !strings.Contains(indexHTML, title) {
+			t.Fatalf("indexHTML missing required simplified title: %q", title)
+		}
+	}
+
+	forbiddenTitles := []string{
+		"<h2>⓪ /v1/taa/getResourceInfo",
+		"<h2>② /v1/taa/importModel",
+		"<h2>② /v1/taa/import",
+		"<h2>④ /v1/taa/export",
+	}
+	for _, forbidden := range forbiddenTitles {
+		if strings.Contains(indexHTML, forbidden) {
+			t.Fatalf("indexHTML must not contain raw endpoint in h2: %q", forbidden)
+		}
+	}
+
+	if !strings.Contains(indexHTML, ">查看目录树</button>") {
+		t.Fatal("indexHTML should contain '>查看目录树</button>'")
+	}
+	if strings.Contains(indexHTML, ">弹窗全屏查看</button>") {
+		t.Fatal("indexHTML should not contain '>弹窗全屏查看</button>'")
 	}
 }
 
