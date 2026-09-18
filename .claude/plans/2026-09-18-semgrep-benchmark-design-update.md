@@ -144,17 +144,17 @@ git commit -m "docs(audit): refresh design document section 5 with semgrep bench
 **Files:**
 - Test: 全量单元测试套件
 
-- [ ] **Step 1: 运行所有相关单元测试**
+- [x] **Step 1: 运行所有相关单元测试**
 
 Run: `python3 -m unittest discover -s tests -p "test_*.py"`
 Expected: 全部测试通过，无失败或报错。
 
-- [ ] **Step 2: 验证设计文档中不再含有“正则”或“滑窗”等过时概念**
+- [x] **Step 2: 验证设计文档中不再含有“正则”或“滑窗”等过时概念**
 
 Run: `grep -n -E "正则|滑窗|7 行" models/audit/research/taa-audit-design.html || true`
 Expected: 仅在“传统缺陷对比卡片”中作为历史对比反例出现，不再作为系统架构或现行方案出现。
 
-- [ ] **Step 3: 检查最终 Git 状态**
+- [x] **Step 3: 检查最终 Git 状态**
 
 Run: `git status`
 Expected: 工作区干净（clean）。
