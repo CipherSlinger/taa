@@ -29,17 +29,17 @@ func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
 	for _, want := range []string{
 		"② 下发数据 / 结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult",
 		"saveReportBtn", "reportResBodyBtn", "reportResReportBtn", "openReportResReportModal", "查看报告",
-		"reportModelImportBodyBtn", "bodyModal", "importModelUsePublicKeySwitch", "importModelCommands", "importModelEnv",
-		"resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport",
+		"reportModelImportBodyBtn", "bodyModal", "importModelUsePublicKeySwitch", "importModelCommandsList", "importModelEnvList",
+		"resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo",
 		"setupResourceUrlDropZones", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件",
 		"uploadEncryptSwitch", "启用加密", "deleteUploadedFile", "创建公私钥", "generateGlobalKeyPair",
-		"exportDecryptSwitch", "是否解密", "exportRequestId",
+		"exportReportItem",
 		"resourceInfoModalBtn", "resourceInfoModal", "loadSampleResourceTree", "renderResourceInfoTreeShell",
 		"randomizeField", "randomizeImportModelIds", "randomizeImportIds",
-		"reportProgressBar", "reportProgressPercent", "reportProgressStatusText", "resetProgressBtn",
+		"reportProgressBar", "reportProgressPercent", "resetProgressBtn",
 		"stopTrainingBtn", "testStopTraining", "stopTrainingStatusBox", "stopTrainingStatusText",
 		"card-modelLog", "modelLogOutput", "modelLogCount", "modelLogLastSeq", "clearModelLogs", "fetchModelLogs",
-		"/v1/taa/stopTraining", "/v1/taa/modelLog", "/v1/taa/reportProgress",
+		"/v1/taa/stopTraining", "/v1/taa/modelLog",
 	} {
 		if !strings.Contains(indexHTML, want) {
 			t.Fatalf("index missing %q", want)
@@ -75,7 +75,6 @@ func TestTrainingFlowCardTitlesAndTreeModalTriggers(t *testing.T) {
 		"<h2>① 文件上传 / 资源信息</h2>",
 		"<h2>② 下发模型</h2>",
 		"<h2>② 下发数据 / 结果上报</h2>",
-		"<h2>④ 导出结果</h2>",
 	}
 	for _, title := range requiredTitles {
 		if !strings.Contains(indexHTML, title) {
@@ -89,6 +88,7 @@ func TestTrainingFlowCardTitlesAndTreeModalTriggers(t *testing.T) {
 		"<h2>② /v1/taa/importModel",
 		"<h2>② /v1/taa/import",
 		"<h2>④ /v1/taa/export",
+		"<h2>④ 导出结果</h2>",
 	}
 	for _, forbidden := range forbiddenTitles {
 		if strings.Contains(indexHTML, forbidden) {
@@ -141,22 +141,11 @@ func TestGenerateKeyDoesNotAutoFillExportPublicKey(t *testing.T) {
 	if !strings.Contains(indexHTML, "globalKeyPair.privateKey") {
 		t.Fatal("global key pair should store privateKey")
 	}
-
-	// Verify exportPublicKey is not automatically assigned
-	forbiddenSnippets := []string{
-		"exportPubKey.value = pubKey",
-		"exportPubKey.value =",
-		"document.getElementById('exportPublicKey').value = pubKey",
+	if !strings.Contains(indexHTML, "exportReportItem") {
+		t.Fatal("indexHTML should contain exportReportItem")
 	}
-	for _, snippet := range forbiddenSnippets {
-		if strings.Contains(indexHTML, snippet) {
-			t.Fatalf("exportPublicKey must not be auto-filled, found forbidden snippet: %q", snippet)
-		}
-	}
-
-	// Verify exportPublicKey placeholder indicates optional manual input
-	if !strings.Contains(indexHTML, `id="exportPublicKey" value="" placeholder="选填，留空=不传，需要验证时手动输入"`) {
-		t.Fatal("exportPublicKey placeholder should indicate optional manual input")
+	if strings.Contains(indexHTML, `id="exportPublicKey"`) {
+		t.Fatal("exportPublicKey should be removed along with standalone export card")
 	}
 }
 
@@ -1998,8 +1987,11 @@ func TestIndexHTMLModalTabsAndLegacySectionRemoval(t *testing.T) {
 }
 
 func TestResourceInfoMergedUnderUploadColumn(t *testing.T) {
-	if !strings.Contains(indexHTML, `<div class="four-col-layout">`) {
-		t.Fatal("indexHTML should use <div class=\"four-col-layout\"> for the main cards grid")
+	if strings.Contains(indexHTML, `<div class="four-col-layout">`) {
+		t.Fatal("indexHTML should no longer use four-col-layout for the main cards grid")
+	}
+	if !strings.Contains(indexHTML, `<div class="three-col-layout">`) {
+		t.Fatal("indexHTML should use <div class=\"three-col-layout\"> for the main cards grid")
 	}
 	if strings.Contains(indexHTML, `<div class="five-col-layout">`) {
 		t.Fatal("indexHTML should no longer use five-col-layout for the main cards grid")
@@ -2043,14 +2035,13 @@ func TestConsolidatedCardsAndRemovedHints(t *testing.T) {
 	if importIdx == -1 {
 		t.Fatal("indexHTML missing id=\"card-import\"")
 	}
-	exportIdx := strings.Index(indexHTML, `id="card-export"`)
-	if exportIdx == -1 {
-		t.Fatal("indexHTML missing id=\"card-export\"")
-	}
 
-	if !(uploadIdx < modelIdx && modelIdx < importIdx && importIdx < exportIdx) {
-		t.Fatalf("Cards should appear in order upload(%d) < importModel(%d) < import(%d) < export(%d)",
-			uploadIdx, modelIdx, importIdx, exportIdx)
+	if !(uploadIdx < modelIdx && modelIdx < importIdx) {
+		t.Fatalf("Cards should appear in order upload(%d) < importModel(%d) < import(%d)",
+			uploadIdx, modelIdx, importIdx)
+	}
+	if strings.Contains(indexHTML, `id="card-export"`) {
+		t.Fatal("indexHTML should have removed standalone card-export")
 	}
 
 	resourceInfoIdx := strings.Index(indexHTML, `id="card-resourceInfo"`)
@@ -2083,6 +2074,13 @@ func TestConsolidatedCardsAndRemovedHints(t *testing.T) {
 		"清空接收记录",
 		`id="importModelPublicKey"`,
 		`id="exportPrivateKey"`,
+		"以下各卡片模拟平台向 TAA 发送请求，用于验证各接口的连通性和参数校验",
+		`id="card-export"`,
+		`id="exportDecryptSwitch"`,
+		`id="exportPublicKey"`,
+		"等待进度上报... (/v1/taa/reportProgress)",
+		"已收到模型导入结果上报 (/v1/taa/reportModelImport)",
+		"已收到代码审计结果上报 (/v1/taa/reportAudit)",
 	}
 	for _, note := range forbiddenNotes {
 		if strings.Contains(indexHTML, note) {
@@ -2113,6 +2111,16 @@ func TestConsolidatedCardsAndRemovedHints(t *testing.T) {
 	}
 	if strings.Contains(indexHTML, `randomizeField('importTaskId'`) {
 		t.Fatal("importTaskId should no longer have adjacent randomizeField button")
+	}
+
+	if !strings.Contains(indexHTML, `id="importModelCommandsList"`) {
+		t.Fatal("indexHTML missing id=\"importModelCommandsList\"")
+	}
+	if !strings.Contains(indexHTML, `id="importModelEnvList"`) {
+		t.Fatal("indexHTML missing id=\"importModelEnvList\"")
+	}
+	if !strings.Contains(indexHTML, "exportReportItem") {
+		t.Fatal("indexHTML missing exportReportItem function")
 	}
 }
 

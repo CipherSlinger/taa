@@ -45,12 +45,6 @@
         --card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.3), 0 10px 24px -4px rgba(0, 0, 0, 0.35);
       }
     }
-    @media (max-width: 1400px) {
-      .four-col-layout { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
-    }
-    @media (max-width: 960px) {
-      .two-col-layout, .three-col-layout, .four-col-layout { grid-template-columns: 1fr !important; }
-    }
     @media (max-width: 720px) {
       main { width: 100% !important; padding: 18px 12px 48px !important; }
       .taa-addr-bar { flex-wrap: wrap !important; }
@@ -117,12 +111,21 @@
       gap: 16px;
       margin: 20px 0;
     }
-    .four-col-layout {
+    .three-col-layout {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 16px;
-      margin-bottom: 16px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
       align-items: start;
+    }
+    @media (max-width: 1200px) {
+      .three-col-layout {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+    @media (max-width: 768px) {
+      .three-col-layout {
+        grid-template-columns: 1fr;
+      }
     }
     .icon-btn-compact {
       width: 26px;
@@ -1061,10 +1064,9 @@
   <div id="phaseSwitchDetail" style="display:none; margin-bottom:12px;">
     <pre id="phaseSwitchDetailContent" style="background:rgba(127,127,127,.08); padding:12px; border-radius:10px; font-size:13px; max-height:200px; overflow:auto; white-space:pre-wrap; word-break:break-all; margin:0;"></pre>
   </div>
-  <p class="muted">以下各卡片模拟平台向 TAA 发送请求，用于验证各接口的连通性和参数校验。点击"发送测试"即可使用模拟数据调用 TAA 对应接口。</p>
 
-  <!-- Training flow: four-column layout -->
-  <div class="four-col-layout">
+  <!-- Training flow: three-column layout -->
+  <div class="three-col-layout">
     <!-- Column 1: File upload / Resource info -->
     <section class="card" id="card-upload" style="display:flex; flex-direction:column;">
       <div class="card-head">
@@ -1120,13 +1122,11 @@
           <h2>② 下发模型</h2>
           <div class="status" style="margin-top:8px; font-size:13px; font-weight:600;">
             <span id="reportModelImportDot" class="dot"></span>
-            <span id="reportModelImportStatusText">等待模型导入结果上报</span>
-            <span class="muted" style="font-size:12px; font-weight:normal;">(/v1/taa/reportModelImport)</span>
+            <span id="reportModelImportStatusText">模型导入结果上报</span>
           </div>
           <div class="status" style="margin-top:4px; font-size:13px; font-weight:600;">
             <span id="reportAuditDot" class="dot"></span>
-            <span id="reportAuditStatusText">等待代码审计结果上报</span>
-            <span class="muted" style="font-size:12px; font-weight:normal;">(/v1/taa/reportAudit)</span>
+            <span id="reportAuditStatusText">代码审计结果</span>
           </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
@@ -1154,10 +1154,20 @@
           <span>是否填入公钥</span>
         </label>
       </div>
-      <label for="importModelCommands">commands</label>
-      <textarea id="importModelCommands">python3 train_fusion.py -b TransMUF -g cpu -bc 16 -e 30 -d _dkd -s 128</textarea>
-      <label for="importModelEnv">env</label>
-      <textarea id="importModelEnv">{"CUDA_VISIBLE_DEVICES":"0"}</textarea>
+      <label>commands</label>
+      <div id="importModelCommandsList" style="display:flex; flex-direction:column; gap:6px;">
+        <div class="dynamic-input-row" style="display:flex; gap:6px; align-items:center;">
+          <input type="text" class="import-model-cmd-input" value="python3 train_fusion.py -b TransMUF -g cpu -bc 16 -e 30 -d _dkd -s 128" placeholder="单条命令，如 python3 train.py" style="flex:1; margin:0;">
+          <button type="button" class="icon-btn-compact" onclick="addModelCommandRow(this)" title="添加一行" style="padding:4px 8px; font-size:12px;">+</button>
+        </div>
+      </div>
+      <label style="margin-top:8px;">env (KEY=VALUE)</label>
+      <div id="importModelEnvList" style="display:flex; flex-direction:column; gap:6px;">
+        <div class="dynamic-input-row" style="display:flex; gap:6px; align-items:center;">
+          <input type="text" class="import-model-env-input" value="CUDA_VISIBLE_DEVICES=0" placeholder="KEY=VALUE" style="flex:1; margin:0;">
+          <button type="button" class="icon-btn-compact" onclick="addModelEnvRow(this)" title="添加一行" style="padding:4px 8px; font-size:12px;">+</button>
+        </div>
+      </div>
       <div class="actions">
         <button onclick="testImportModel()">发送测试</button>
         <button type="button" class="secondary" onclick="randomizeImportModelIds()" title="同时随机生成 requestId 与 taskId">随机 ID</button>
@@ -1177,9 +1187,6 @@
             <span id="importStatusText"></span>
           </div>
           <button id="importBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('importResult')" disabled>查看返回</button>
-          <button id="stopTrainingBtn" class="danger" style="padding:6px 12px; font-size:13px;" onclick="testStopTraining()" title="中止训练 (/v1/taa/stopTraining)">🛑 中止训练</button>
-          <span id="stopTrainingStatusBox" style="display:none; font-size:12px; margin-left:8px;"><span id="stopTrainingStatusText"></span></span>
-          <button type="button" class="secondary" id="stopTrainingBodyBtn" style="padding:6px 12px; font-size:13px; display:none;" onclick="openInteractionModal('stopTraining', 'primary')">查看返回</button>
           <button id="reportResReportBtn" style="padding:6px 12px; font-size:13px;" onclick="openReportResReportModal()" disabled>查看报告</button>
           <button id="reportResBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportResBodyModal()" disabled>查看返回</button>
         </div>
@@ -1198,7 +1205,15 @@
       <div id="card-reportRes" style="border-top: 1px dashed var(--line); margin-top: 14px; padding-top: 14px; display:flex; flex-direction:column; gap:10px;">
         <div>
           <div class="status" style="font-size:14px; font-weight:650;"><span id="reportResDot" class="dot"></span><span id="reportResStatusText">等待训练结果上报</span></div>
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;"><span style="font-weight:600; font-size:13px;">训练进度: <span id="reportProgressPercent">0%</span></span><span id="reportProgressStatusText" class="muted" style="font-size:12px;">等待进度上报... (/v1/taa/reportProgress)</span><button id="resetProgressBtn" class="secondary" style="padding:2px 8px; font-size:11px;" onclick="resetReportProgress()">重置</button></div>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+            <span style="font-weight:600; font-size:13px;">训练进度: <span id="reportProgressPercent">0%</span></span>
+            <div style="display:flex; gap:6px; align-items:center;">
+              <span id="stopTrainingStatusBox" style="display:none; font-size:12px; margin-right:4px;"><span id="stopTrainingStatusText"></span></span>
+              <button type="button" class="secondary" id="stopTrainingBodyBtn" style="padding:2px 8px; font-size:11px; display:none;" onclick="openInteractionModal('stopTraining', 'primary')">查看返回</button>
+              <button type="button" id="resetProgressBtn" class="secondary" style="padding:2px 8px; font-size:11px;" onclick="resetReportProgress()">重置</button>
+              <button type="button" id="stopTrainingBtn" class="danger" style="padding:2px 8px; font-size:11px;" onclick="testStopTraining()" title="中止训练 (/v1/taa/stopTraining)">🛑 中止训练</button>
+            </div>
+          </div>
           <div style="width:100%; height:8px; background:rgba(127,127,127,.2); border-radius:4px; overflow:hidden; margin-top:4px; margin-bottom:8px;">
             <div id="reportProgressBar" style="width:0%; height:100%; background:var(--theme-accent, #2563eb); transition:width .3s ease;"></div>
           </div>
@@ -1211,44 +1226,6 @@
           <button class="secondary" onclick="resetReportResStatus()">清空上报记录</button>
         </div>
       </div>
-    </section>
-
-    <!-- Column 4: Export result -->
-    <section class="card" id="card-export" style="display:flex; flex-direction:column;">
-      <div class="card-head">
-        <div>
-          <h2>④ 导出结果</h2>
-        </div>
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
-          <div id="exportStatusBox" class="status" style="font-size:12px; display:none;">
-            <span id="exportDot" class="dot"></span>
-            <span id="exportStatusText"></span>
-          </div>
-          <button id="exportBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('exportResult')" disabled>查看返回</button>
-        </div>
-      </div>
-      <label for="exportRequestId">requestId</label>
-      <input id="exportRequestId" value="" placeholder="requestId">
-      <label for="exportTaskId">taskId</label>
-      <input id="exportTaskId" value="task-mock-001">
-      <label for="exportPublicKey">publicKey</label>
-      <input id="exportPublicKey" value="" placeholder="选填，留空=不传，需要验证时手动输入">
-
-      <div style="margin: 10px 0 6px; display: flex; align-items: center; gap: 12px;">
-        <label class="switch-label" for="exportDecryptSwitch">
-          <span class="switch-wrapper">
-            <input type="checkbox" id="exportDecryptSwitch">
-            <span class="switch-slider"></span>
-          </span>
-          <span>是否解密</span>
-        </label>
-      </div>
-
-
-      <div class="actions">
-        <button onclick="testExport()">发送测试</button>
-      </div>
-      <div id="exportResult" style="display:none;"></div>
     </section>
   </div>
 
@@ -1951,7 +1928,6 @@ const RESULT_TITLES = {
   importModelResult: '/v1/taa/importModel 返回',
   resourceInfoResult: '/v1/taa/getResourceInfo 返回',
   switchResult: '/v1/taa/switch 返回',
-  exportResult: '/v1/taa/export 返回',
   attestationResult: '/v1/taa/getAttestation 返回',
 };
 
@@ -1961,7 +1937,6 @@ const RESULT_INTERACTION_KEYS = {
   importModelResult: 'importModel',
   resourceInfoResult: 'resourceInfo',
   switchResult: 'switch',
-  exportResult: 'export',
   attestationResult: 'attestation',
 };
 
@@ -1983,12 +1958,6 @@ const HEADER_RESULT_MAPPINGS = {
     boxId: 'importStatusBox',
     dotId: 'importDot',
     textId: 'importStatusText',
-  },
-  exportResult: {
-    btnId: 'exportBodyBtn',
-    boxId: 'exportStatusBox',
-    dotId: 'exportDot',
-    textId: 'exportStatusText',
   },
 };
 
@@ -2115,14 +2084,78 @@ function setHealthState(className, title, labelText, labelColor) {
   }
 }
 
-function buildRuntimeConfig(commandsText, envText) {
-  const commands = (commandsText || '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const env = (envText || '').trim();
-  if (!commands.length && !env) return '';
-  return JSON.stringify({ commands, env });
+function addModelCommandRow(btn) {
+  const container = document.getElementById('importModelCommandsList');
+  if (!container) return;
+  const row = document.createElement('div');
+  row.className = 'dynamic-input-row';
+  row.style.cssText = 'display:flex; gap:6px; align-items:center;';
+  row.innerHTML =
+    '<input type="text" class="import-model-cmd-input" placeholder="单条命令，如 python3 train.py" style="flex:1; margin:0;">' +
+    '<button type="button" class="icon-btn-compact" onclick="addModelCommandRow(this)" title="添加一行" style="padding:4px 8px; font-size:12px;">+</button>' +
+    '<button type="button" class="icon-btn-compact danger" onclick="removeModelRow(this)" title="删除此行" style="padding:4px 8px; font-size:12px;">-</button>';
+  container.appendChild(row);
+}
+
+function addModelEnvRow(btn) {
+  const container = document.getElementById('importModelEnvList');
+  if (!container) return;
+  const row = document.createElement('div');
+  row.className = 'dynamic-input-row';
+  row.style.cssText = 'display:flex; gap:6px; align-items:center;';
+  row.innerHTML =
+    '<input type="text" class="import-model-env-input" placeholder="KEY=VALUE" style="flex:1; margin:0;">' +
+    '<button type="button" class="icon-btn-compact" onclick="addModelEnvRow(this)" title="添加一行" style="padding:4px 8px; font-size:12px;">+</button>' +
+    '<button type="button" class="icon-btn-compact danger" onclick="removeModelRow(this)" title="删除此行" style="padding:4px 8px; font-size:12px;">-</button>';
+  container.appendChild(row);
+}
+
+function removeModelRow(btn) {
+  const row = btn?.closest('.dynamic-input-row');
+  const container = row?.parentElement;
+  if (row && container && container.querySelectorAll('.dynamic-input-row').length > 1) {
+    row.remove();
+  }
+}
+
+function collectModelCommands() {
+  const inputs = document.querySelectorAll('.import-model-cmd-input');
+  const cmds = [];
+  inputs.forEach((input) => {
+    const val = (input.value || '').trim();
+    if (val) cmds.push(val);
+  });
+  return cmds;
+}
+
+function collectModelEnv() {
+  const inputs = document.querySelectorAll('.import-model-env-input');
+  const envObj = {};
+  inputs.forEach((input) => {
+    const raw = (input.value || '').trim();
+    if (!raw) return;
+    if (raw.startsWith('{') && raw.endsWith('}')) {
+      const parsed = parseJSONMaybe(raw);
+      if (parsed && typeof parsed === 'object') {
+        Object.assign(envObj, parsed);
+        return;
+      }
+    }
+    const eqIdx = raw.indexOf('=');
+    if (eqIdx !== -1) {
+      const k = raw.slice(0, eqIdx).trim();
+      const v = raw.slice(eqIdx + 1).trim();
+      if (k) envObj[k] = v;
+    }
+  });
+  return Object.keys(envObj).length > 0 ? JSON.stringify(envObj) : '';
+}
+
+function buildRuntimeConfig(commands, env) {
+  const cmdList = Array.isArray(commands) ? commands : (commands || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const envStr = typeof env === 'string' ? env.trim() : (env ? JSON.stringify(env) : '');
+  if (!cmdList.length && !envStr) return '';
+  return JSON.stringify({ commands: cmdList, env: envStr });
 }
 
 function buildImportBody(resourceUrl, requestId, publicKey, taskId, runtimeConfig) {
@@ -2415,9 +2448,11 @@ function renderReportResHistory(history) {
         `<span class="upload-item-name" style="font-weight:600;">${taskId}</span>` +
         `<span class="muted" style="font-size:11px; flex-shrink:0;">${safeTimeStr}</span>` +
       `</div>` +
-      `<div style="display:flex; gap:6px; flex-shrink:0;">` +
-        `<button type="button" class="secondary" style="padding:2px 8px; font-size:11px;" onclick="openReportItemModal(${idx})">报告</button>` +
-        `<button type="button" class="secondary" style="padding:2px 8px; font-size:11px;" onclick="openReportItemPayloadModal(${idx})">返回</button>` +
+      `<div style="display:flex; gap:6px; flex-shrink:0; align-items:center;">` +
+        `<button type="button" class="secondary" style="padding:2px 8px; font-size:11px;" onclick="openReportItemModal(${idx})" title="查看报告">报告</button>` +
+        `<button type="button" class="secondary" style="padding:2px 8px; font-size:11px;" onclick="openReportItemPayloadModal(${idx})" title="查看返回">返回</button>` +
+        `<button type="button" class="secondary" style="padding:2px 8px; font-size:11px;" onclick="exportReportItem(${idx}, false, this)" title="直接导出结果文件">导出</button>` +
+        `<button type="button" class="secondary" style="padding:2px 8px; font-size:11px;" onclick="exportReportItem(${idx}, true, this)" title="导出并解密">导出并解密</button>` +
       `</div>` +
     `</div>`;
   }).join('');
@@ -2500,12 +2535,12 @@ function renderReportModelImport(data) {
   dot.className = 'dot';
   if (!data || !data.received) {
     dot.classList.add('bad');
-    text('reportModelImportStatusText', '等待模型导入结果上报');
+    text('reportModelImportStatusText', '模型导入结果上报');
     bodyBtn.disabled = true;
     return;
   }
   dot.classList.add(data.accepted ? 'ok' : 'bad');
-  text('reportModelImportStatusText', data.accepted ? '已收到模型导入结果上报' : '已收到上报，但参数校验失败');
+  text('reportModelImportStatusText', data.accepted ? '模型导入结果上报' : '模型导入结果校验失败');
   bodyBtn.disabled = false;
 }
 function openReportModelImportBodyModal() {
@@ -2540,12 +2575,12 @@ function renderReportAudit(data) {
   dot.className = 'dot';
   if (!data || !data.received) {
     dot.classList.add('bad');
-    text('reportAuditStatusText', '等待代码审计结果上报');
+    text('reportAuditStatusText', '代码审计结果');
     bodyBtn.disabled = true;
     return;
   }
   dot.classList.add(data.accepted ? 'ok' : 'bad');
-  text('reportAuditStatusText', data.accepted ? '已收到代码审计结果上报' : '已收到上报，但参数校验失败');
+  text('reportAuditStatusText', data.accepted ? '代码审计结果' : '代码审计结果校验失败');
   bodyBtn.disabled = false;
 }
 function openReportAuditBodyModal() {
@@ -2565,7 +2600,7 @@ async function resetReportAuditStatus() {
   setReportAuditPending();
 }
 
-// ── 训练进度与中止训练 ─────────────────────────
+// Training progress and stop training
 async function refreshReportProgress() {
   try {
     const res = await fetch('/api/reportProgress/status', { cache: 'no-store' });
@@ -2573,11 +2608,9 @@ async function refreshReportProgress() {
     const result = responseResult(data);
     const percentEl = document.getElementById('reportProgressPercent');
     const barEl = document.getElementById('reportProgressBar');
-    const textEl = document.getElementById('reportProgressStatusText');
     if (!result || !result.received) {
       if (percentEl) percentEl.textContent = '0%';
       if (barEl) barEl.style.width = '0%';
-      if (textEl) textEl.textContent = '等待进度上报... (/v1/taa/reportProgress)';
       return;
     }
     const pctVal = typeof result.percent === 'number' ? result.percent : (typeof result.progress === 'number' ? result.progress : 0);
@@ -2585,16 +2618,7 @@ async function refreshReportProgress() {
     const pctText = clamped % 1 === 0 ? clamped + '%' : clamped.toFixed(1) + '%';
     if (percentEl) percentEl.textContent = pctText;
     if (barEl) barEl.style.width = clamped + '%';
-    if (textEl) {
-      if (result.accepted) {
-        textEl.textContent = result.message ? result.message : `最新进度: ${pctText}`;
-      } else {
-        textEl.textContent = `上报错误: ${result.message || '校验失败'}`;
-      }
-    }
   } catch (err) {
-    const textEl = document.getElementById('reportProgressStatusText');
-    if (textEl) textEl.textContent = '刷新进度失败: ' + err.message;
   }
 }
 
@@ -2603,8 +2627,6 @@ async function resetReportProgress() {
     await fetch('/api/reportProgress/reset', { method: 'POST' });
     await refreshReportProgress();
   } catch (err) {
-    const textEl = document.getElementById('reportProgressStatusText');
-    if (textEl) textEl.textContent = '重置进度失败: ' + err.message;
   }
 }
 
@@ -2879,10 +2901,9 @@ async function testImportModel() {
   try {
     await fetch('/api/reportModelImport/reset', { method: 'POST' }).catch(() => {});
     await fetch('/api/reportAudit/reset', { method: 'POST' }).catch(() => {});
-    const runtimeConfig = buildRuntimeConfig(
-      document.getElementById('importModelCommands').value,
-      document.getElementById('importModelEnv').value,
-    );
+    const commands = collectModelCommands();
+    const env = collectModelEnv();
+    const runtimeConfig = buildRuntimeConfig(commands, env);
     const usePubKey = Boolean(document.getElementById('importModelUsePublicKeySwitch') && document.getElementById('importModelUsePublicKeySwitch').checked);
     const pubKey = usePubKey && globalKeyPair.publicKey ? globalKeyPair.publicKey.trim() : '';
     const importModelBody = buildImportBody(

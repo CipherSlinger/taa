@@ -1,7 +1,7 @@
 {
   "benchmark_name": "audit-100",
   "benchmark_version": "2026-08-30",
-  "benchmark_root": "/home/hjy/taa/models/audit/benchmarks/audit-100",
+  "benchmark_root": "models/audit/benchmarks/audit-100",
   "base_projects": [
     "p1_xgboost_finance",
     "p2_retina_resnet",
