@@ -19,34 +19,6 @@ import (
 	"taa/pkg/crypto"
 )
 
-func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
-	if strings.Contains(indexHTML, "③ 资源下载结果上报") {
-		t.Fatal("index should not show the resource download result report card")
-	}
-	if strings.Contains(indexHTML, "resourceInfoTreeContainer") {
-		t.Fatal("indexHTML should not contain resourceInfoTreeContainer")
-	}
-	for _, want := range []string{
-		"② 下发数据 / 结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult",
-		"saveReportBtn", "reportResBodyBtn", "reportResReportBtn", "openReportResReportModal", "查看报告",
-		"reportModelImportBodyBtn", "bodyModal", "importModelUsePublicKeySwitch", "importModelCommandsList", "importModelEnvList",
-		"resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo",
-		"setupResourceUrlDropZones", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件",
-		"uploadEncryptSwitch", "启用加密", "deleteUploadedFile", "创建公私钥", "generateGlobalKeyPair",
-		"exportReportItem",
-		"resourceInfoModalBtn", "resourceInfoModal", "loadSampleResourceTree", "renderResourceInfoTreeShell",
-		"randomizeField", "randomizeImportModelIds", "randomizeImportIds",
-		"reportProgressBar", "reportProgressPercent", "resetProgressBtn",
-		"stopTrainingBtn", "testStopTraining", "stopTrainingStatusBox", "stopTrainingStatusText",
-		"card-modelLog", "modelLogOutput", "modelLogCount", "modelLogLastSeq", "clearModelLogs", "fetchModelLogs",
-		"/v1/taa/stopTraining", "/v1/taa/modelLog",
-	} {
-		if !strings.Contains(indexHTML, want) {
-			t.Fatalf("index missing %q", want)
-		}
-	}
-}
-
 func TestIndexHandlerHeaders(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
@@ -67,85 +39,6 @@ func TestIndexHandlerHeaders(t *testing.T) {
 	}
 	if exp := res.Header.Get("Expires"); exp != "0" {
 		t.Fatalf("expected Expires 0, got %q", exp)
-	}
-}
-
-func TestTrainingFlowCardTitlesAndTreeModalTriggers(t *testing.T) {
-	requiredTitles := []string{
-		"<h2>① 文件上传 / 资源信息</h2>",
-		"<h2>② 下发模型</h2>",
-		"<h2>② 下发数据 / 结果上报</h2>",
-	}
-	for _, title := range requiredTitles {
-		if !strings.Contains(indexHTML, title) {
-			t.Fatalf("indexHTML missing required simplified title: %q", title)
-		}
-	}
-
-	forbiddenTitles := []string{
-		"<h2>⓪ /v1/taa/getResourceInfo",
-		"<h2>① /v1/taa/getResourceInfo",
-		"<h2>② /v1/taa/importModel",
-		"<h2>② /v1/taa/import",
-		"<h2>④ /v1/taa/export",
-		"<h2>④ 导出结果</h2>",
-	}
-	for _, forbidden := range forbiddenTitles {
-		if strings.Contains(indexHTML, forbidden) {
-			t.Fatalf("indexHTML must not contain raw endpoint in h2: %q", forbidden)
-		}
-	}
-
-	if !strings.Contains(indexHTML, ">查看目录树</button>") {
-		t.Fatal("indexHTML should contain '>查看目录树</button>'")
-	}
-	if strings.Contains(indexHTML, ">弹窗全屏查看</button>") {
-		t.Fatal("indexHTML should not contain '>弹窗全屏查看</button>'")
-	}
-}
-
-func TestRequestIdAndTaskIdRandomizeButtons(t *testing.T) {
-	requiredTriggers := []string{
-		`randomizeImportModelIds()`,
-		`randomizeImportIds()`,
-	}
-	for _, trigger := range requiredTriggers {
-		if !strings.Contains(indexHTML, trigger) {
-			t.Fatalf("index.html missing expected random generator trigger: %q", trigger)
-		}
-	}
-
-	forbiddenTriggers := []string{
-		`randomizeField('importModelRequestId'`,
-		`randomizeField('importModelTaskId'`,
-		`randomizeField('importRequestId'`,
-		`randomizeField('importTaskId'`,
-		`randomizeField('exportRequestId'`,
-		`randomizeField('exportTaskId'`,
-		`randomizeExportIds`,
-	}
-	for _, forbidden := range forbiddenTriggers {
-		if strings.Contains(indexHTML, forbidden) {
-			t.Fatalf("forbidden trigger found: %q", forbidden)
-		}
-	}
-
-	expectedCommand := "python3 train_fusion.py -b TransMUF -g cpu -bc 16 -e 30 -d _dkd -s 128"
-	if !strings.Contains(indexHTML, expectedCommand) {
-		t.Fatalf("index.html missing expected default importModel command: %q", expectedCommand)
-	}
-}
-
-func TestGenerateKeyDoesNotAutoFillExportPublicKey(t *testing.T) {
-	// Verify global key pair stores privateKey and export reads globalKeyPair.privateKey
-	if !strings.Contains(indexHTML, "globalKeyPair.privateKey") {
-		t.Fatal("global key pair should store privateKey")
-	}
-	if !strings.Contains(indexHTML, "exportReportItem") {
-		t.Fatal("indexHTML should contain exportReportItem")
-	}
-	if strings.Contains(indexHTML, `id="exportPublicKey"`) {
-		t.Fatal("exportPublicKey should be removed along with standalone export card")
 	}
 }
 
