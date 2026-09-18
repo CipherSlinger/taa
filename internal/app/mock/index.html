@@ -968,7 +968,6 @@
       </h1>
       <span id="taaProxyBadge" class="muted" style="font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"></span>
     </div>
-    <p class="muted" style="margin:0; font-size:13.5px;">用于本地联调 TAA 全部接口。上半部分模拟 <strong>平台接收</strong> TAA 主动上报的请求；下半部分模拟 <strong>平台下发</strong> 请求到 TAA，测试所有接口连通性。</p>
   </header>
 
   <!-- Top: Unified platform registration and service connection control panel -->
@@ -982,7 +981,6 @@
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
         <button id="registerBodyBtn" class="secondary" onclick="openRegisterBodyModal()" disabled>查看注册返回</button>
         <button class="secondary" onclick="refreshStatus()">刷新状态</button>
-        <button class="secondary" onclick="resetStatus()">清空接收记录</button>
       </div>
     </div>
 
@@ -1007,7 +1005,6 @@
 
     <!-- Row 3: Public key display and attestation operations -->
     <div class="card-compact" style="min-height:auto;">
-      <p id="registerSummary" class="card-note" style="margin:0 0 8px;">完整返回体仅在弹窗中展示。</p>
       <div id="registerPublicKeyBox" hidden style="margin-top:4px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
           <label for="registerPublicKey" style="margin:0; font-size:12.5px; font-weight:650;">TAA 注册公钥</label>
@@ -1030,7 +1027,6 @@
         <button id="saveReportBtn" class="success" onclick="saveAttestationReport()" disabled>保存报告文件</button>
         <button type="button" class="secondary" id="attestationBodyBtn" style="padding:6px 12px; font-size:13px; display:none;" onclick="openInteractionModal('attestation', 'primary')">查看返回</button>
       </div>
-      <p class="muted" style="margin:8px 0 0; font-size:12px;">最后刷新：<span id="lastRefresh">-</span></p>
     </div>
   </section>
 
@@ -1044,6 +1040,14 @@
         <button type="button" class="phase-switch-btn" data-phase="2" onclick="quickSwitchPhase(2)">2 测试</button>
         <button type="button" class="phase-switch-btn" data-phase="3" onclick="quickSwitchPhase(3)">3 训练</button>
         <button type="button" class="phase-switch-btn" data-phase="4" onclick="quickSwitchPhase(4)">4 推理</button>
+        <div id="globalKeyManagementBox" style="display:inline-flex; align-items:center; gap:6px; margin-left:10px; border-left:1px solid var(--line); padding-left:10px;">
+          <button type="button" id="createGlobalKeyPairBtn" class="secondary" style="padding:2px 10px; font-size:12px;" onclick="generateGlobalKeyPair(this)">创建公私钥</button>
+          <div id="globalKeyPairActiveGroup" style="display:none; align-items:center; gap:6px;">
+            <button type="button" class="secondary" id="globalPubKeyModalBtn" style="padding:2px 8px; font-size:12px;" onclick="openGlobalPublicKeyModal()" title="查看公钥">🔑 公钥</button>
+            <button type="button" class="secondary" id="globalPrivKeyModalBtn" style="padding:2px 8px; font-size:12px;" onclick="openGlobalPrivateKeyModal()" title="查看私钥">🔐 私钥</button>
+            <button type="button" class="icon-btn-compact" id="regenerateGlobalKeyPairBtn" style="padding:2px 6px; font-size:12px;" onclick="generateGlobalKeyPair(this)" title="重新生成公私钥">🔄</button>
+          </div>
+        </div>
       </div>
     </div>
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
@@ -1141,11 +1145,15 @@
       <input id="importModelRequestId" value="req-mock-importModel-001">
       <label for="importModelTaskId">taskId</label>
       <input id="importModelTaskId" value="">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; margin-bottom:4px;">
-        <label for="importModelPublicKey" style="margin:0;">publicKey</label>
-        <button type="button" class="secondary" style="padding:4px 10px; font-size:12px;" onclick="generateImportModelPublicKey(this)">创建公钥</button>
+      <div style="margin: 10px 0 6px; display: flex; align-items: center; gap: 12px;">
+        <label class="switch-label" for="importModelUsePublicKeySwitch">
+          <span class="switch-wrapper">
+            <input type="checkbox" id="importModelUsePublicKeySwitch" onchange="onImportModelUsePublicKeyToggle(this)">
+            <span class="switch-slider"></span>
+          </span>
+          <span>是否填入公钥</span>
+        </label>
       </div>
-      <textarea id="importModelPublicKey" placeholder="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"></textarea>
       <label for="importModelCommands">commands</label>
       <textarea id="importModelCommands">python3 train_fusion.py -b TransMUF -g cpu -bc 16 -e 30 -d _dkd -s 128</textarea>
       <label for="importModelEnv">env</label>
@@ -1236,8 +1244,6 @@
         </label>
       </div>
 
-      <label for="exportPrivateKey">解密私钥</label>
-      <textarea id="exportPrivateKey" rows="4" placeholder="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"></textarea>
 
       <div class="actions">
         <button onclick="testExport()">发送测试</button>
@@ -1463,6 +1469,10 @@ let lastReportAuditData = null;
 const RESOURCE_INFO_TIMEOUT_MS = 120000;
 let currentModalBody = '';
 let uploadedFiles = [];
+let globalKeyPair = {
+  publicKey: '',
+  privateKey: '',
+};
 
 function formatModalBody(body) {
   if (body == null || body === '') return '暂无内容';
@@ -1655,6 +1665,61 @@ function closeBodyModal() {
     badge.innerHTML = '';
     badge.style.display = 'none';
   }
+}
+
+// Global key pair management
+async function generateGlobalKeyPair(btn) {
+  const origText = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '生成中...';
+  }
+  try {
+    const res = await fetch('/api/crypto/generate-key', { method: 'POST' });
+    const data = await res.json();
+    if (res.status === 200 && data.error === 0 && data.result) {
+      globalKeyPair.publicKey = data.result.publicKey || '';
+      globalKeyPair.privateKey = data.result.privateKey || '';
+
+      const createBtn = document.getElementById('createGlobalKeyPairBtn');
+      const activeGroup = document.getElementById('globalKeyPairActiveGroup');
+      if (createBtn) createBtn.style.display = 'none';
+      if (activeGroup) activeGroup.style.display = 'inline-flex';
+
+      if (btn) {
+        btn.textContent = origText;
+        btn.disabled = false;
+      }
+    } else {
+      alert(`创建公私钥失败: ${data.msg || '未知错误'}`);
+      if (btn) {
+        btn.textContent = origText;
+        btn.disabled = false;
+      }
+    }
+  } catch (err) {
+    alert(`创建公私钥失败: ${err.message}`);
+    if (btn) {
+      btn.textContent = origText;
+      btn.disabled = false;
+    }
+  }
+}
+
+function openGlobalPublicKeyModal() {
+  if (!globalKeyPair.publicKey) {
+    alert('尚未生成公钥');
+    return;
+  }
+  openBodyModal('生成的公钥 (Public Key)', globalKeyPair.publicKey);
+}
+
+function openGlobalPrivateKeyModal() {
+  if (!globalKeyPair.privateKey) {
+    alert('尚未生成私钥');
+    return;
+  }
+  openBodyModal('生成的私钥 (Private Key)', globalKeyPair.privateKey);
 }
 
 async function copyText(text) {
@@ -2237,8 +2302,6 @@ function renderRegister(data) {
   const publicKeyField = document.getElementById('registerPublicKey');
   if (!data || !data.received) {
     text('statusText', '等待 TAA 注册请求');
-    text('registerSummary', '完整返回体仅在弹窗中展示。');
-    text('lastRefresh', '-');
     document.getElementById('registerBodyBtn').disabled = true;
     publicKeyBox.hidden = true;
     publicKeyField.value = '';
@@ -2246,7 +2309,6 @@ function renderRegister(data) {
   }
   dot.classList.add(data.accepted ? 'ok' : 'bad');
   text('statusText', data.accepted ? '已收到注册请求，并已返回 HTTP 200' : '已收到请求，但参数校验失败');
-  text('registerSummary', '完整返回体仅在弹窗中展示。');
   document.getElementById('registerBodyBtn').disabled = false;
   const publicKey = data.accepted ? String(data.taaPublicKey || '').trim() : '';
   if (publicKey) {
@@ -2298,11 +2360,9 @@ async function refreshStatus() {
     const res = await fetch('/api/register/status', { cache: 'no-store' });
     const data = await res.json();
     renderRegister(responseResult(data));
-    text('lastRefresh', new Date().toLocaleString());
   } catch (err) {
     text('statusText', '刷新状态失败');
     text('message', String(err));
-    text('lastRefresh', '刷新失败');
   }
 }
 async function resetStatus() {
@@ -2826,43 +2886,11 @@ async function testImport() {
   }
 }
 
-async function generateImportModelPublicKey(btn) {
-  const origText = btn ? btn.textContent : '';
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = '生成中...';
-  }
-  try {
-    const res = await fetch('/api/crypto/generate-key', { method: 'POST' });
-    const data = await res.json();
-    if (res.status === 200 && data.error === 0 && data.result) {
-      const pubKey = data.result.publicKey || '';
-      const privKey = data.result.privateKey || '';
-      document.getElementById('importModelPublicKey').value = pubKey;
-
-      const exportPrivKey = document.getElementById('exportPrivateKey');
-      if (exportPrivKey) {
-        exportPrivKey.value = privKey;
-      }
-      if (btn) {
-        btn.textContent = '已创建!';
-        setTimeout(() => {
-          btn.textContent = origText;
-          btn.disabled = false;
-        }, 1500);
-      }
-    } else {
-      alert(`创建公钥失败: ${data.msg || '未知错误'}`);
-      if (btn) {
-        btn.textContent = origText;
-        btn.disabled = false;
-      }
-    }
-  } catch (err) {
-    alert(`创建公钥失败: ${err.message}`);
-    if (btn) {
-      btn.textContent = origText;
-      btn.disabled = false;
+function onImportModelUsePublicKeyToggle(el) {
+  if (el && el.checked) {
+    if (!globalKeyPair.publicKey) {
+      alert('请先点击上方“创建公私钥”生成密钥对');
+      el.checked = false;
     }
   }
 }
@@ -2878,10 +2906,12 @@ async function testImportModel() {
       document.getElementById('importModelCommands').value,
       document.getElementById('importModelEnv').value,
     );
+    const usePubKey = Boolean(document.getElementById('importModelUsePublicKeySwitch') && document.getElementById('importModelUsePublicKeySwitch').checked);
+    const pubKey = usePubKey && globalKeyPair.publicKey ? globalKeyPair.publicKey.trim() : '';
     const importModelBody = buildImportBody(
       document.getElementById('importModelResourceUrl').value,
       document.getElementById('importModelRequestId').value,
-      document.getElementById('importModelPublicKey').value.trim(),
+      pubKey,
       document.getElementById('importModelTaskId').value.trim(),
       runtimeConfig,
     );
@@ -3654,9 +3684,9 @@ async function testExport() {
           return;
         }
 
-        const privKey = (document.getElementById('exportPrivateKey') ? document.getElementById('exportPrivateKey').value : '').trim();
+        const privKey = (globalKeyPair.privateKey || '').trim();
         if (!privKey) {
-          const noKeyMsg = '已开启解密开关且导出结果为加密数据，但未填写解密私钥 PEM，请先输入私钥或在上方“创建公钥”生成密钥对';
+          const noKeyMsg = '已开启解密开关且导出结果为加密数据，但未生成解密私钥，请先点击上方“创建公私钥”生成密钥对';
           recordInteraction('export', { primaryContent: noKeyMsg });
           showResult('exportResult', false, noKeyMsg);
           return;
@@ -3735,7 +3765,6 @@ async function testGetAttestation() {
   randomizeField('attestRequestId', 'req-attest');
   showResultRunning('attestationResult', '正在请求远程证明报告（helper 可能需要数秒）...');
   text('statusText', '正在获取远程证明报告...');
-  text('registerSummary', '正在请求远程证明报告，完整返回体可在弹窗中查看。');
   const dot = document.getElementById('dot');
   if (dot) dot.className = 'dot';
   document.getElementById('saveReportBtn').disabled = true;
@@ -3781,7 +3810,6 @@ async function testGetAttestation() {
     if (attestBtn) attestBtn.style.display = 'inline-block';
     text('statusText', ok ? '已获取远程证明报告 (HTTP ' + res.status + ')' : '获取远程证明报告失败');
     if (dot) dot.className = 'dot ' + (ok ? 'ok' : 'bad');
-    text('registerSummary', '远程证明报告已返回，点击右上角“查看返回”查看完整内容。');
     recordInteraction('attestation', { primaryContent: displayText });
     showResult('attestationResult', ok, displayText);
   } catch (e) {
@@ -3800,7 +3828,6 @@ async function testGetAttestation() {
     if (attestBtn) attestBtn.style.display = 'inline-block';
     text('statusText', '获取远程证明报告失败');
     if (dot) dot.className = 'dot bad';
-    text('registerSummary', '获取远程证明报告失败，点击右上角“查看返回”查看具体错误。');
     recordInteraction('attestation', { primaryContent: msg });
     showResult('attestationResult', false, msg);
   }
@@ -3828,7 +3855,7 @@ async function detectTAAProxy() {
     if (payload.taaTarget) {
       // 使用反向代理路径，浏览器通过 platform-mock 转发到 TAA Pod
       addrInput.value = location.origin + '/taa';
-      badge.textContent = '✓ 已自动连接 TAA Pod（通过反向代理）';
+      badge.textContent = '';
       badge.style.color = 'var(--ok)';
     } else {
       addrInput.value = 'http://127.0.0.1:6001';

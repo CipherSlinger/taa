@@ -29,11 +29,11 @@ func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
 	for _, want := range []string{
 		"② 下发数据 / 结果上报", "registerBodyBtn", "card-attestation", "attestRequestId", "attestationResult",
 		"saveReportBtn", "reportResBodyBtn", "reportResReportBtn", "openReportResReportModal", "查看报告",
-		"reportModelImportBodyBtn", "bodyModal", "importModelPublicKey", "importModelCommands", "importModelEnv",
+		"reportModelImportBodyBtn", "bodyModal", "importModelUsePublicKeySwitch", "importModelCommands", "importModelEnv",
 		"resourceInfoResult", "testGetResourceInfo", "/v1/taa/getResourceInfo", "/v1/taa/reportModelImport",
 		"setupResourceUrlDropZones", "uploadedFilesCount", "uploadedFilesList", "清空所有上传文件",
-		"uploadEncryptSwitch", "启用加密", "deleteUploadedFile", "创建公钥", "generateImportModelPublicKey",
-		"exportDecryptSwitch", "是否解密", "exportPrivateKey", "exportRequestId",
+		"uploadEncryptSwitch", "启用加密", "deleteUploadedFile", "创建公私钥", "generateGlobalKeyPair",
+		"exportDecryptSwitch", "是否解密", "exportRequestId",
 		"resourceInfoModalBtn", "resourceInfoModal", "loadSampleResourceTree", "renderResourceInfoTreeShell",
 		"randomizeField", "randomizeImportModelIds", "randomizeImportIds",
 		"reportProgressBar", "reportProgressPercent", "reportProgressStatusText", "resetProgressBtn",
@@ -137,12 +137,12 @@ func TestRequestIdAndTaskIdRandomizeButtons(t *testing.T) {
 }
 
 func TestGenerateKeyDoesNotAutoFillExportPublicKey(t *testing.T) {
-	// 验证私钥仍然会同步到导出结果的解密私钥输入框
-	if !strings.Contains(indexHTML, "exportPrivKey.value = privKey") {
-		t.Fatal("generateImportModelPublicKey should keep syncing privateKey to exportPrivateKey")
+	// Verify global key pair stores privateKey and export reads globalKeyPair.privateKey
+	if !strings.Contains(indexHTML, "globalKeyPair.privateKey") {
+		t.Fatal("global key pair should store privateKey")
 	}
 
-	// 验证不再自动将公钥赋值给 exportPublicKey
+	// Verify exportPublicKey is not automatically assigned
 	forbiddenSnippets := []string{
 		"exportPubKey.value = pubKey",
 		"exportPubKey.value =",
@@ -154,7 +154,7 @@ func TestGenerateKeyDoesNotAutoFillExportPublicKey(t *testing.T) {
 		}
 	}
 
-	// 验证 exportPublicKey 明确标注为选填/仅功能验证使用
+	// Verify exportPublicKey placeholder indicates optional manual input
 	if !strings.Contains(indexHTML, `id="exportPublicKey" value="" placeholder="选填，留空=不传，需要验证时手动输入"`) {
 		t.Fatal("exportPublicKey placeholder should indicate optional manual input")
 	}
@@ -1881,6 +1881,13 @@ func TestConsolidatedCardsAndRemovedHints(t *testing.T) {
 		"(/v1/taa/reportRes)",
 		"已收到训练结果上报，并已返回 HTTP 200",
 		"点击右上角“查看报告”查看美化后的具体报告，“查看返回”查看完整上报体。",
+		"用于本地联调 TAA 全部接口",
+		"✓ 已自动连接 TAA Pod（通过反向代理）",
+		"完整返回体仅在弹窗中展示",
+		"最后刷新：<span id=\"lastRefresh\">",
+		"清空接收记录",
+		`id="importModelPublicKey"`,
+		`id="exportPrivateKey"`,
 	}
 	for _, note := range forbiddenNotes {
 		if strings.Contains(indexHTML, note) {
@@ -1890,6 +1897,19 @@ func TestConsolidatedCardsAndRemovedHints(t *testing.T) {
 
 	if !strings.Contains(indexHTML, `id="reportResList"`) {
 		t.Fatal("indexHTML missing id=\"reportResList\" container")
+	}
+
+	if !strings.Contains(indexHTML, `id="createGlobalKeyPairBtn"`) {
+		t.Fatal("indexHTML missing id=\"createGlobalKeyPairBtn\"")
+	}
+	if !strings.Contains(indexHTML, `id="globalPubKeyModalBtn"`) {
+		t.Fatal("indexHTML missing id=\"globalPubKeyModalBtn\"")
+	}
+	if !strings.Contains(indexHTML, `id="globalPrivKeyModalBtn"`) {
+		t.Fatal("indexHTML missing id=\"globalPrivKeyModalBtn\"")
+	}
+	if !strings.Contains(indexHTML, `id="importModelUsePublicKeySwitch"`) {
+		t.Fatal("indexHTML missing id=\"importModelUsePublicKeySwitch\"")
 	}
 
 	// Verify removed per-field random buttons in import card
