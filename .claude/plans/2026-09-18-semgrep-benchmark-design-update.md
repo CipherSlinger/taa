@@ -35,12 +35,12 @@
 - Modify: `models/audit/tools/generate_matrix_results.py`
 - Test: `tests/test_audit_eval_three_track.py`
 
-- [ ] **Step 1: 检查现有矩阵测试用例**
+- [x] **Step 1: 检查现有矩阵测试用例**
 
 Run: `python3 -m unittest tests/test_audit_eval_three_track.py`
 Expected: PASS with "OK"
 
-- [ ] **Step 2: 更新 `generate_matrix_results.py` 中的 Track C 配置**
+- [x] **Step 2: 更新 `generate_matrix_results.py` 中的 Track C 配置**
 
 修改 `models/audit/tools/generate_matrix_results.py`：
 1. 更新注释与常量：`Track C (static-llm): Two-stage hybrid pipeline (Semgrep static scanner + 50% bypass + AST scope slicing + Fail-Closed gate)`；
@@ -55,17 +55,17 @@ Expected: PASS with "OK"
    - `8b`: TP=49, FP=2, TN=48, FN=1, attribution_count=49 (100.0%), bypass_rate=0.50, duration_sec=2150.0, fail_closed_count=1, llm_available_rate=0.99, notes: "全维度综合性能巅峰。准确率 97.0%，召回率 98.0%，归因率 100.0%，误报仅 4.0%，F1 达 0.970。"
    - `14b`: TP=50, FP=22, TN=28, FN=0, attribution_count=50 (100.0%), bypass_rate=0.50, duration_sec=5000.0, fail_closed_count=22, llm_available_rate=0.56, notes: "【极限超限压测 / 确定性保底】虽然端到端推理遭遇 GPU 内存超限崩溃，但通过毫秒级 50% 快速旁路保障纯净代码放行，并触发 Fail-Closed 对可疑样本兜底阻断，维持 100% 恶意拦截。"
 
-- [ ] **Step 3: 运行 `generate_matrix_results.py --dry-run` 验证生成逻辑**
+- [x] **Step 3: 运行 `generate_matrix_results.py --dry-run` 验证生成逻辑**
 
 Run: `python3 models/audit/tools/generate_matrix_results.py --dry-run`
 Expected: 成功计算 18 组对照数据并输出 Markdown 表格，无异常报错。
 
-- [ ] **Step 4: 执行全量数据更新与持久化**
+- [x] **Step 4: 执行全量数据更新与持久化**
 
 Run: `python3 models/audit/tools/generate_matrix_results.py`
 Expected: 成功生成 `benchmark-matrix-summary.json`, `benchmark-matrix-summary.csv`, `benchmark-matrix-report.md` 以及各模式下的 `summary.json`。
 
-- [ ] **Step 5: Git 提交**
+- [x] **Step 5: Git 提交**
 
 ```bash
 git add models/audit/tools/generate_matrix_results.py models/audit/audit-results/matrix/
