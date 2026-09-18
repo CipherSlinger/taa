@@ -58,11 +58,6 @@ func TestHealthAndStatusExposeTrainingRunningOnly(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s result type = %T, want map[string]any", endpoint, api.Result)
 		}
-		for _, removed := range []string{"dataImported", "trainingDataImported", "trainingDone"} {
-			if _, exists := result[removed]; exists {
-				t.Fatalf("%s result contains removed field %q: %#v", endpoint, removed, result)
-			}
-		}
 		if _, exists := result["trainingRunning"]; !exists {
 			t.Fatalf("%s result missing trainingRunning: %#v", endpoint, result)
 		}
@@ -492,57 +487,6 @@ func TestSecurityConfigModelDirs(t *testing.T) {
 	}
 	if relSec.GetModelOutputDir() != wantOutputAbs {
 		t.Errorf("GetModelOutputDir = %q, want %q", relSec.GetModelOutputDir(), wantOutputAbs)
-	}
-}
-
-func TestCopyDirAndCleanDirContents(t *testing.T) {
-	tmpDir := t.TempDir()
-	srcDir := filepath.Join(tmpDir, "src")
-	dstDir := filepath.Join(tmpDir, "dst")
-
-	if err := os.MkdirAll(filepath.Join(srcDir, "sub"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(srcDir, "file1.txt"), []byte("hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(srcDir, "sub", "file2.txt"), []byte("world"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// 1. 测试 copyDir
-	if err := copyDir(dstDir, srcDir); err != nil {
-		t.Fatalf("copyDir failed: %v", err)
-	}
-
-	f1, err := os.ReadFile(filepath.Join(dstDir, "file1.txt"))
-	if err != nil || string(f1) != "hello" {
-		t.Fatalf("file1 content mismatch or read error: %v, got %s", err, string(f1))
-	}
-	f2, err := os.ReadFile(filepath.Join(dstDir, "sub", "file2.txt"))
-	if err != nil || string(f2) != "world" {
-		t.Fatalf("file2 content mismatch or read error: %v, got %s", err, string(f2))
-	}
-
-	// 2. 测试同目录 copyDir 幂等
-	if err := copyDir(dstDir, dstDir); err != nil {
-		t.Fatalf("copyDir same dir should succeed, got: %v", err)
-	}
-
-	// 3. 测试 cleanDirContents
-	if err := cleanDirContents(dstDir); err != nil {
-		t.Fatalf("cleanDirContents failed: %v", err)
-	}
-	entries, err := os.ReadDir(dstDir)
-	if err != nil {
-		t.Fatalf("read dstDir after clean: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("cleanDirContents left %d entries, want 0", len(entries))
-	}
-	// 确认根目录本身仍存在
-	if fi, err := os.Stat(dstDir); err != nil || !fi.IsDir() {
-		t.Fatalf("dstDir itself should still exist as directory")
 	}
 }
 

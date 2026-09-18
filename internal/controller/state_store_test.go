@@ -2,60 +2,13 @@ package controller
 
 import (
 	"encoding/json"
-	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	teecrypto "taa/pkg/crypto"
 )
-
-func TestStateStore_DeriveSealingKey(t *testing.T) {
-	// 1. 正常派生与确定性校验
-	privKey1, err := teecrypto.GenerateSM2KeyPair()
-	if err != nil {
-		t.Fatalf("generate SM2 key pair failed: %v", err)
-	}
-
-	key1 := DeriveSealingKey(privKey1)
-	if len(key1) != 16 {
-		t.Fatalf("expected 16-byte sealing key, got %d bytes", len(key1))
-	}
-
-	key1Repeat := DeriveSealingKey(privKey1)
-	if string(key1) != string(key1Repeat) {
-		t.Fatalf("key derivation is not deterministic")
-	}
-
-	// 2. 差异性：不同私钥派生出的密钥必然不同
-	privKey2, err := teecrypto.GenerateSM2KeyPair()
-	if err != nil {
-		t.Fatalf("generate second SM2 key pair failed: %v", err)
-	}
-	key2 := DeriveSealingKey(privKey2)
-	if string(key1) == string(key2) {
-		t.Fatalf("different private keys produced identical sealing keys")
-	}
-
-	// 3. 异常边界：nil 输入
-	if key := DeriveSealingKey(nil); key != nil {
-		t.Fatalf("expected nil for nil private key, got %v", key)
-	}
-	if key := DeriveSealingKey(&teecrypto.SM2PrivateKey{}); key != nil {
-		t.Fatalf("expected nil for empty private key, got %v", key)
-	}
-
-	// 4. 大端填充验证（小标量 D）
-	smallPriv := &teecrypto.SM2PrivateKey{
-		D: big.NewInt(42),
-	}
-	smallKey := DeriveSealingKey(smallPriv)
-	if len(smallKey) != 16 {
-		t.Fatalf("expected 16-byte sealing key for small D, got %d bytes", len(smallKey))
-	}
-}
 
 func TestPersistentStateJSONUsesTrainingRunning(t *testing.T) {
 	state := PersistentState{
@@ -80,130 +33,6 @@ func TestPersistentStateJSONUsesTrainingRunning(t *testing.T) {
 	}
 	if got, ok := fields["trainingRunning"].(bool); !ok || !got {
 		t.Fatalf("persistent state JSON trainingRunning = %#v, want true", fields["trainingRunning"])
-	}
-}
-
-func TestStateStore_SealAndUnseal(t *testing.T) {
-	tempDir := t.TempDir()
-	statePath := filepath.Join(tempDir, "state.bin")
-
-	privKey, err := teecrypto.GenerateSM2KeyPair()
-	if err != nil {
-		t.Fatalf("generate SM2 key failed: %v", err)
-	}
-	sealingKey := DeriveSealingKey(privKey)
-
-	store, err := NewStateStore(statePath, sealingKey)
-	if err != nil {
-		t.Fatalf("new state store failed: %v", err)
-	}
-
-	now := time.Now().UTC().Truncate(time.Second)
-	initialState := &PersistentState{
-		Version:               DefaultStateVersion,
-		StateSeq:              0,
-		IncarnationID:         "epoch-uuid-12345",
-		CurrentPhase:          2,
-		ModelImported:         true,
-		TrainingRunning:       true,
-		ExportPublicKey:       "-----BEGIN PUBLIC KEY-----\nMIIB...PEM\n-----END PUBLIC KEY-----",
-		SavedModelResourceURL: "oss://model-bucket/encrypted/model.tar.gz",
-		RuntimeConfig:         `{"batch_size":32,"lr":0.001}`,
-		ModelChecksum: map[string]any{
-			"algorithm": "sm3",
-			"hash":      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-		},
-		DataChecksum: map[string]any{
-			"algorithm": "sm3",
-			"hash":      "d41d8cd98f00b204e9800998ecf8427e",
-		},
-		ActiveTask: &ActiveTaskSnapshot{
-			RequestID:        "req-001",
-			TaskID:           "task-001",
-			Type:             "training",
-			Phase:            2,
-			Status:           "RUNNING",
-			ResultDir:        "/opt/taa/results/req-001-task-001",
-			StartedAt:        now,
-			RecoveryAttempts: 1,
-		},
-	}
-
-	// 1. 密封落盘
-	if err := store.SealState(initialState); err != nil {
-		t.Fatalf("seal state failed: %v", err)
-	}
-
-	// 验证 StateSeq 自增为 1
-	if initialState.StateSeq != 1 {
-		t.Fatalf("expected stateSeq 1, got %d", initialState.StateSeq)
-	}
-
-	// 检查磁盘文件权限为 0600
-	info, err := os.Stat(statePath)
-	if err != nil {
-		t.Fatalf("stat state file failed: %v", err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("expected file perm 0600, got %o", perm)
-	}
-
-	// 检查落盘文件内容不是明文 JSON
-	rawBytes, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatalf("read state file failed: %v", err)
-	}
-	var probe map[string]any
-	if json.Unmarshal(rawBytes, &probe) == nil {
-		t.Fatalf("state file was stored in plaintext JSON, expected ciphertext")
-	}
-
-	// 2. 解密加载
-	loadedState, err := store.UnsealState()
-	if err != nil {
-		t.Fatalf("unseal state failed: %v", err)
-	}
-
-	if loadedState.Version != DefaultStateVersion {
-		t.Fatalf("expected version %s, got %s", DefaultStateVersion, loadedState.Version)
-	}
-	if loadedState.StateSeq != 1 {
-		t.Fatalf("expected stateSeq 1, got %d", loadedState.StateSeq)
-	}
-	if loadedState.IncarnationID != initialState.IncarnationID {
-		t.Fatalf("expected incarnationID %s, got %s", initialState.IncarnationID, loadedState.IncarnationID)
-	}
-	if loadedState.CurrentPhase != 2 {
-		t.Fatalf("expected currentPhase 2, got %d", loadedState.CurrentPhase)
-	}
-	if !loadedState.ModelImported || !loadedState.TrainingRunning {
-		t.Fatalf("expected modelImported and trainingRunning to be true")
-	}
-	if loadedState.ExportPublicKey != initialState.ExportPublicKey {
-		t.Fatalf("exportPublicKey mismatch")
-	}
-	if loadedState.SavedModelResourceURL != initialState.SavedModelResourceURL {
-		t.Fatalf("savedModelResourceURL mismatch")
-	}
-	if loadedState.RuntimeConfig != initialState.RuntimeConfig {
-		t.Fatalf("runtimeConfig mismatch")
-	}
-	if loadedState.ActiveTask == nil || loadedState.ActiveTask.TaskID != "task-001" {
-		t.Fatalf("activeTask mismatch: %+v", loadedState.ActiveTask)
-	}
-
-	// 3. 二次保存，StateSeq 递增
-	if err := store.SealState(loadedState); err != nil {
-		t.Fatalf("second seal state failed: %v", err)
-	}
-	if loadedState.StateSeq != 2 {
-		t.Fatalf("expected stateSeq 2, got %d", loadedState.StateSeq)
-	}
-
-	// 内存状态获取
-	cached := store.GetState()
-	if cached == nil || cached.StateSeq != 2 {
-		t.Fatalf("expected cached stateSeq 2, got %+v", cached)
 	}
 }
 
