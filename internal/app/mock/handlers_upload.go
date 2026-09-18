@@ -17,8 +17,9 @@ import (
 )
 
 func registerUploadDeleteRoutes(mux *http.ServeMux, uploadDir string) {
-	mux.HandleFunc("/api/upload/delete", uploadDeleteHandler(uploadDir))
-	mux.HandleFunc("/api/uploads/delete", uploadDeleteHandler(uploadDir))
+	deleteH := uploadDeleteHandler(uploadDir)
+	mux.HandleFunc("/api/upload/delete", deleteH)
+	mux.HandleFunc("/api/uploads/delete", deleteH)
 }
 
 func listUploadedFiles(uploadDir, addr string) ([]uploadedFileRecord, error) {
@@ -30,6 +31,7 @@ func listUploadedFiles(uploadDir, addr string) ([]uploadedFileRecord, error) {
 		return nil, err
 	}
 
+	baseURL := fmt.Sprintf("http://%s/files/", platformIP(addr))
 	files := make([]uploadedFileRecord, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -54,7 +56,7 @@ func listUploadedFiles(uploadDir, addr string) ([]uploadedFileRecord, error) {
 			Filename:     filename,
 			OriginalName: originalName,
 			Size:         info.Size(),
-			URL:          fmt.Sprintf("http://%s/files/%s", platformIP(addr), filename),
+			URL:          baseURL + filename,
 			UploadedAt:   uploadedAt,
 			Encrypted:    strings.HasSuffix(strings.ToLower(originalName), ".enc"),
 		})

@@ -66,9 +66,9 @@ func FormatISO8601(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
-// ParseISO8601 解析 ISO8601 / RFC3339 格式的时间字符串为 UTC 时间。
+// ParseISO8601 解析 ISO8601 / RFC3339 格式的时间字符串为 UTC 时间（支持秒与纳秒精度）。
 func ParseISO8601(s string) (time.Time, error) {
-	t, err := time.Parse(time.RFC3339, s)
+	t, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {
 		return time.Time{}, err
 	}

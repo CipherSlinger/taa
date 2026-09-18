@@ -2,11 +2,9 @@ package mock
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
-	"time"
 )
 
 func dashboardStatusHandler(registerStore *registerStateStore, modelImportStore, auditStore *reportStateStore, progressStore *progressStateStore, taaAddr string) http.HandlerFunc {
@@ -40,17 +38,25 @@ func registerStatusHandler(store *registerStateStore) http.HandlerFunc {
 	}
 }
 
-func registerResetHandler(store *registerStateStore) http.HandlerFunc {
+func resetHandler(resetFn func()) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
 			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
 			return
 		}
-		store.reset()
+		resetFn()
 		writeEnvelope(w, http.StatusOK, "reset", nil, 0)
 	}
+}
+
+func registerResetHandler(store *registerStateStore) http.HandlerFunc {
+	return resetHandler(store.reset)
 }
 
 func reportStateResult(state reportState) map[string]any {
@@ -111,16 +117,7 @@ func reportStatusHandler(store *reportStateStore) http.HandlerFunc {
 }
 
 func reportResetHandler(store *reportStateStore) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		setCORS(w)
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
-			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
-			return
-		}
-		store.reset()
-		writeEnvelope(w, http.StatusOK, "reset", nil, 0)
-	}
+	return resetHandler(store.reset)
 }
 
 func progressStatusHandler(store *progressStateStore) http.HandlerFunc {
@@ -140,16 +137,7 @@ func progressStatusHandler(store *progressStateStore) http.HandlerFunc {
 }
 
 func progressResetHandler(store *progressStateStore) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		setCORS(w)
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
-			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
-			return
-		}
-		store.reset()
-		writeEnvelope(w, http.StatusOK, "reset", nil, 0)
-	}
+	return resetHandler(store.reset)
 }
 
 func modelLogStatusHandler(store *modelLogStore) http.HandlerFunc {
@@ -164,16 +152,7 @@ func modelLogStatusHandler(store *modelLogStore) http.HandlerFunc {
 }
 
 func modelLogResetHandler(store *modelLogStore) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		setCORS(w)
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
-			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
-			return
-		}
-		store.reset()
-		writeEnvelope(w, http.StatusOK, "reset", nil, 0)
-	}
+	return resetHandler(store.reset)
 }
 
 func taaLogStatusHandler(store *taaLogStore) http.HandlerFunc {
@@ -188,16 +167,7 @@ func taaLogStatusHandler(store *taaLogStore) http.HandlerFunc {
 }
 
 func taaLogResetHandler(store *taaLogStore) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		setCORS(w)
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
-			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
-			return
-		}
-		store.reset()
-		writeEnvelope(w, http.StatusOK, "reset", nil, 0)
-	}
+	return resetHandler(store.reset)
 }
 
 func taaTargetHandler(taaAddr string) http.HandlerFunc {
@@ -228,18 +198,7 @@ func requestLogsStatusHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func requestLogsResetHandler(w http.ResponseWriter, r *http.Request) {
-	setCORS(w)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
-		return
-	}
-	requestLogs.reset()
-	writeEnvelope(w, http.StatusOK, "reset", nil, 0)
+	resetHandler(requestLogs.reset)(w, r)
 }
 
 func taaStatusHandler(taaAddr string) http.HandlerFunc {
@@ -313,37 +272,17 @@ func taaStopTrainingHandler(taaAddr string) http.HandlerFunc {
 			return
 		}
 
-		reqID := fmt.Sprintf("req-stop-%d", time.Now().UnixNano())
-		logRequestWithID(requestLogs, reqID, "out", "taa-stopTraining", http.MethodPost, "/v1/taa/stopTraining", http.StatusOK, "", []byte("{}"))
-
-		targetURL := strings.TrimRight(taaAddr, "/") + "/v1/taa/stopTraining"
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, strings.NewReader("{}"))
+		status, respBody, err := proxyJSONToTAA(r.Context(), taaAddr, "/v1/taa/stopTraining", []byte("{}"))
 		if err != nil {
-			logRequestWithID(requestLogs, reqID, "in", "taa-stopTraining", http.MethodPost, "/v1/taa/stopTraining", http.StatusBadGateway, "创建请求失败: "+err.Error(), nil)
-			writeEnvelope(w, http.StatusBadGateway, "TAA 请求失败: "+err.Error(), nil, http.StatusBadGateway)
+			if status == 0 {
+				status = http.StatusBadGateway
+			}
+			writeEnvelope(w, status, "TAA 请求失败: "+err.Error(), nil, status)
 			return
 		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			logRequestWithID(requestLogs, reqID, "in", "taa-stopTraining", http.MethodPost, "/v1/taa/stopTraining", http.StatusBadGateway, "TAA 请求失败: "+err.Error(), nil)
-			writeEnvelope(w, http.StatusBadGateway, "TAA 请求失败: "+err.Error(), nil, http.StatusBadGateway)
-			return
-		}
-		defer resp.Body.Close()
-
-		respBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			logRequestWithID(requestLogs, reqID, "in", "taa-stopTraining", http.MethodPost, "/v1/taa/stopTraining", http.StatusBadGateway, "读取 TAA 响应失败: "+err.Error(), nil)
-			writeEnvelope(w, http.StatusBadGateway, "读取 TAA 响应失败: "+err.Error(), nil, http.StatusBadGateway)
-			return
-		}
-
-		logRequestWithID(requestLogs, reqID, "in", "taa-stopTraining", http.MethodPost, "/v1/taa/stopTraining", resp.StatusCode, string(respBody), respBody)
 
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(resp.StatusCode)
+		w.WriteHeader(status)
 		w.Write(respBody)
 	}
 }

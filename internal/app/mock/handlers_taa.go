@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"taa/pkg/utils"
 )
 
 type reportRequest struct {
@@ -475,10 +477,7 @@ func parseProgressTimestamp(ts string) (time.Time, error) {
 	if ts == "" {
 		return time.Time{}, fmt.Errorf("timestamp 为空")
 	}
-	if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
-		return t, nil
-	}
-	return time.Parse(time.RFC3339, ts)
+	return utils.ParseISO8601(ts)
 }
 
 func reportProgressHandler(store *progressStateStore) http.HandlerFunc {

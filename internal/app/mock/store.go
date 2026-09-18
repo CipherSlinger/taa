@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"taa/pkg/utils"
 )
 
 type registerState struct {
@@ -23,7 +25,6 @@ type registerState struct {
 	AttestationValues  string `json:"attestationValues"`
 	Timestamp          string `json:"timestamp"`
 	VerifiedPass       bool   `json:"verifiedPass"`
-	AttestationName    string `json:"attestationName"`
 	AttestationSize    int64  `json:"attestationSize"`
 	ContentType        string `json:"contentType"`
 	StatusCode         int    `json:"statusCode"`
@@ -601,7 +602,6 @@ type requestLogEntry struct {
 
 type requestLogStore struct {
 	mu      sync.RWMutex
-	path    string
 	entries []requestLogEntry
 	max     int
 }
@@ -638,14 +638,6 @@ func (s *requestLogStore) list() []requestLogEntry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append([]requestLogEntry(nil), s.entries...)
-}
-
-func (s *requestLogStore) drain() []requestLogEntry {
-	s.mu.Lock()
-	entries := append([]requestLogEntry(nil), s.entries...)
-	s.entries = nil
-	s.mu.Unlock()
-	return entries
 }
 
 func (s *requestLogStore) reset() {
@@ -688,9 +680,5 @@ func loadJSONFile[T any](path string) (T, error) {
 }
 
 func saveJSONFile(path string, value any) error {
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	return utils.WriteJSONFile(path, value, 0o644)
 }

@@ -4,7 +4,13 @@ import (
 	"os"
 )
 
-const defaultTAAPort = "6001"
+const (
+	defaultAddr      = ":8080"
+	defaultStateDir  = "/root/taa"
+	defaultUploadDir = ".local/upload"
+	defaultTAAPod    = "simple-busybox"
+	defaultTAAPort   = "6001"
+)
 
 // Config carries the runtime configuration for the platform mock service.
 type Config struct {
@@ -32,13 +38,13 @@ type Config struct {
 
 func (c Config) withDefaults() Config {
 	if c.Addr == "" {
-		c.Addr = ":8080"
+		c.Addr = defaultAddr
 	}
 	if c.StateDir == "" {
-		c.StateDir = "/root/taa"
+		c.StateDir = defaultStateDir
 	}
 	if c.UploadDir == "" {
-		c.UploadDir = ".local/upload"
+		c.UploadDir = defaultUploadDir
 	}
 	if c.TAAPort == "" {
 		c.TAAPort = defaultTAAPort
@@ -60,11 +66,10 @@ func envOrDefault(key, fallback string) string {
 // UPLOAD_DIR, TAA_POD, TAA_NS, TAA_PORT).
 func DefaultConfig() Config {
 	return Config{
-		Addr:      ":8080",
-		StateDir:  envOrDefault("STATE_DIR", "/root/taa"),
-		UploadDir: envOrDefault("UPLOAD_DIR", ".local/upload"),
-		TAAPod:    envOrDefault("TAA_POD", "simple-busybox"),
+		StateDir:  envOrDefault("STATE_DIR", defaultStateDir),
+		UploadDir: envOrDefault("UPLOAD_DIR", defaultUploadDir),
+		TAAPod:    envOrDefault("TAA_POD", defaultTAAPod),
 		TAANS:     envOrDefault("TAA_NS", ""),
 		TAAPort:   envOrDefault("TAA_PORT", defaultTAAPort),
-	}
+	}.withDefaults()
 }

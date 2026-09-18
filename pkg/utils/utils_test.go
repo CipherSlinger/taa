@@ -59,6 +59,15 @@ func TestTimeParsing(t *testing.T) {
 	if !parsed.Equal(now) {
 		t.Fatalf("expected %v, got %v", now, parsed)
 	}
+
+	nanoStr := "2026-09-18T12:34:56.789123456Z"
+	parsedNano, err := ParseISO8601(nanoStr)
+	if err != nil {
+		t.Fatalf("ParseISO8601 nano failed: %v", err)
+	}
+	if parsedNano.Nanosecond() != 789123456 {
+		t.Fatalf("expected 789123456 ns, got %d", parsedNano.Nanosecond())
+	}
 }
 
 func TestCopyAndCleanDir(t *testing.T) {
