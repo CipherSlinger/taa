@@ -82,8 +82,6 @@ func TestTrainingFlowCardTitlesAndTreeModalTriggers(t *testing.T) {
 
 func TestRequestIdAndTaskIdRandomizeButtons(t *testing.T) {
 	requiredTriggers := []string{
-		`randomizeField('importModelRequestId'`,
-		`randomizeField('importModelTaskId'`,
 		`randomizeField('importRequestId'`,
 		`randomizeField('importTaskId'`,
 		`randomizeImportModelIds()`,
@@ -96,14 +94,21 @@ func TestRequestIdAndTaskIdRandomizeButtons(t *testing.T) {
 	}
 
 	forbiddenTriggers := []string{
+		`randomizeField('importModelRequestId'`,
+		`randomizeField('importModelTaskId'`,
 		`randomizeField('exportRequestId'`,
 		`randomizeField('exportTaskId'`,
 		`randomizeExportIds`,
 	}
 	for _, forbidden := range forbiddenTriggers {
 		if strings.Contains(indexHTML, forbidden) {
-			t.Fatalf("export interface must not have random generation buttons, found: %q", forbidden)
+			t.Fatalf("forbidden trigger found: %q", forbidden)
 		}
+	}
+
+	expectedCommand := "python3 train_fusion.py -b TransMUF -g cpu -bc 16 -e 30 -d _dkd -s 128"
+	if !strings.Contains(indexHTML, expectedCommand) {
+		t.Fatalf("index.html missing expected default importModel command: %q", expectedCommand)
 	}
 }
 

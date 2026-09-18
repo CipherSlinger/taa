@@ -1169,23 +1169,16 @@
       <label for="importModelResourceUrl">resourceUrl</label>
       <input id="importModelResourceUrl" value="http://example.com/model.tar.gz">
       <label for="importModelRequestId">requestId</label>
-      <div class="input-action-group">
-        <input id="importModelRequestId" value="req-mock-importModel-001">
-        <button type="button" class="secondary btn-field-random" onclick="randomizeField('importModelRequestId', 'req-model')" title="生成随机 requestId">随机生成</button>
-      </div>
+      <input id="importModelRequestId" value="req-mock-importModel-001">
       <label for="importModelTaskId">taskId</label>
-      <div class="input-action-group">
-        <input id="importModelTaskId" value="">
-        <button type="button" class="secondary btn-field-random" onclick="randomizeField('importModelTaskId', 'task-model')" title="生成随机 taskId">随机生成</button>
-      </div>
+      <input id="importModelTaskId" value="">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; margin-bottom:4px;">
         <label for="importModelPublicKey" style="margin:0;">publicKey</label>
         <button type="button" class="secondary" style="padding:4px 10px; font-size:12px;" onclick="generateImportModelPublicKey(this)">创建公钥</button>
       </div>
       <textarea id="importModelPublicKey" placeholder="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"></textarea>
       <label for="importModelCommands">commands</label>
-      <textarea id="importModelCommands">echo prepare runtimeConfig
-python3 train.py --input /opt/taa/input --output /opt/taa/output</textarea>
+      <textarea id="importModelCommands">python3 train_fusion.py -b TransMUF -g cpu -bc 16 -e 30 -d _dkd -s 128</textarea>
       <label for="importModelEnv">env</label>
       <textarea id="importModelEnv">{"CUDA_VISIBLE_DEVICES":"0"}</textarea>
       <div class="actions">
@@ -1500,8 +1493,8 @@ function randomizeField(id, prefix) {
 }
 
 function randomizeImportModelIds() {
-  randomizeField('importModelRequestId', 'req-model');
-  randomizeField('importModelTaskId', 'task-model');
+  randomizeField("importModelRequestId", "req-model");
+  randomizeField("importModelTaskId", "task-model");
 }
 
 function randomizeImportIds() {
