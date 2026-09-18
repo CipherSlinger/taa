@@ -7,7 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"taa/internal/app/mock"
+	mock "taa/tools/platform-mock/internal"
 )
 
 func main() {
