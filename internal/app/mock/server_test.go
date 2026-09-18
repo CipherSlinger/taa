@@ -1800,3 +1800,33 @@ func TestIndexHTMLModalTabsAndLegacySectionRemoval(t *testing.T) {
 		}
 	}
 }
+
+func TestResourceInfoMergedUnderUploadColumn(t *testing.T) {
+	if !strings.Contains(indexHTML, `<div class="four-col-layout">`) {
+		t.Fatal("indexHTML should use <div class=\"four-col-layout\"> for the main cards grid")
+	}
+	if strings.Contains(indexHTML, `<div class="five-col-layout">`) {
+		t.Fatal("indexHTML should no longer use five-col-layout for the main cards grid")
+	}
+
+	uploadIdx := strings.Index(indexHTML, `id="card-upload"`)
+	if uploadIdx == -1 {
+		t.Fatal("indexHTML missing id=\"card-upload\"")
+	}
+	resourceInfoIdx := strings.Index(indexHTML, `id="card-resourceInfo"`)
+	if resourceInfoIdx == -1 {
+		t.Fatal("indexHTML missing id=\"card-resourceInfo\"")
+	}
+	if uploadIdx >= resourceInfoIdx {
+		t.Fatalf("card-upload (index %d) should appear before card-resourceInfo (index %d)", uploadIdx, resourceInfoIdx)
+	}
+
+	modelIdx := strings.Index(indexHTML, `id="card-importModel"`)
+	if modelIdx == -1 {
+		t.Fatal("indexHTML missing id=\"card-importModel\"")
+	}
+	if resourceInfoIdx >= modelIdx {
+		t.Fatalf("card-resourceInfo (index %d) should be in the first column before card-importModel (index %d)", resourceInfoIdx, modelIdx)
+	}
+}
+

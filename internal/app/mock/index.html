@@ -46,16 +46,12 @@
       }
     }
     @media (max-width: 1400px) {
-      .five-col-layout { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
-    }
-    @media (max-width: 1060px) {
-      .five-col-layout { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+      .four-col-layout { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
     }
     @media (max-width: 960px) {
       .two-col-layout, .three-col-layout, .four-col-layout { grid-template-columns: 1fr !important; }
     }
     @media (max-width: 720px) {
-      .five-col-layout { grid-template-columns: 1fr !important; }
       main { width: 100% !important; padding: 18px 12px 48px !important; }
       .taa-addr-bar { flex-wrap: wrap !important; }
       .taa-addr-bar input { width: 100% !important; min-width: 0 !important; }
@@ -123,14 +119,7 @@
     }
     .four-col-layout {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 16px;
-      margin-bottom: 16px;
-      align-items: start;
-    }
-    .five-col-layout {
-      display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 16px;
       margin-bottom: 16px;
       align-items: start;
@@ -1078,69 +1067,72 @@
   </div>
   <p class="muted">以下各卡片模拟平台向 TAA 发送请求，用于验证各接口的连通性和参数校验。点击"发送测试"即可使用模拟数据调用 TAA 对应接口。</p>
 
-  <!-- 训练流程：五列横向流式布局 -->
-  <div class="five-col-layout">
-    <!-- 第 1 列：资源信息获取（挪到文件上传板块左侧） -->
-    <section class="card drop-zone-card" id="card-resourceInfo" style="display:flex; flex-direction:column;">
-      <div class="card-head">
-        <div>
-          <h2>⓪ 资源信息获取</h2>
-          <p class="card-note">传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理。</p>
-        </div>
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <button id="resourceInfoModalBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openResourceInfoModal()" disabled>查看目录树</button>
-        </div>
-      </div>
-      <label for="resourceInfoUrl">resourceUrl</label>
-      <input id="resourceInfoUrl" value="http://example.com/data.tar.gz">
-      <div class="actions">
-        <button onclick="testGetResourceInfo()">发送测试</button>
-        <button type="button" class="secondary" onclick="loadSampleResourceTree()">加载示例树</button>
-      </div>
-      <div id="resourceInfoResult" class="test-result"></div>
-    </section>
-
-    <!-- 第 2 列：文件上传 -->
-    <section class="card" id="card-upload" style="display:flex; flex-direction:column;">
-      <div class="card-head">
-        <div>
-          <h2>① 文件上传</h2>
-          <p class="card-note">上传资源文件，服务器保存到本地并生成可访问的 URL。</p>
-        </div>
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
-          <div id="uploadStatusBox" class="status" style="font-size:12px; display:none;">
-            <span id="uploadDot" class="dot"></span>
-            <span id="uploadStatusText"></span>
+  <!-- Training flow: four-column layout -->
+  <div class="four-col-layout">
+    <!-- Column 1: File upload + Resource info retrieval (stacked vertically) -->
+    <div class="flow-col-stack">
+      <!-- File upload -->
+      <section class="card" id="card-upload" style="display:flex; flex-direction:column;">
+        <div class="card-head">
+          <div>
+            <h2>① 文件上传</h2>
+            <p class="card-note">上传资源文件，服务器保存到本地并生成可访问的 URL。</p>
           </div>
-          <button id="uploadBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('uploadResult')" disabled>查看返回</button>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+            <div id="uploadStatusBox" class="status" style="font-size:12px; display:none;">
+              <span id="uploadDot" class="dot"></span>
+              <span id="uploadStatusText"></span>
+            </div>
+            <button id="uploadBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('uploadResult')" disabled>查看返回</button>
+          </div>
         </div>
-      </div>
-      <label for="uploadFile">选择文件</label>
-      <input id="uploadFile" type="file">
-      <div style="margin: 10px 0 6px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
-        <label class="switch-label" for="uploadEncryptSwitch">
-          <span class="switch-wrapper">
-            <input type="checkbox" id="uploadEncryptSwitch">
-            <span class="switch-slider"></span>
-          </span>
-          <span>启用加密</span>
-        </label>
-        <span class="muted" style="font-size: 12px;">自动使用 TAA 注册公钥加密并追加 .enc 后缀</span>
-      </div>
-      <div class="actions">
-        <button onclick="uploadFile()">上传文件</button>
-      </div>
-      <div id="uploadResult" style="display:none;"></div>
-      <div class="upload-history">
-        <div id="uploadClearBar" style="display:none; justify-content:flex-end; margin-bottom:4px;">
-          <span id="uploadedFilesCount" style="display:none;"></span>
-          <button type="button" class="danger" onclick="clearUploadedFiles()" style="padding:3px 8px; font-size:11.5px;">清空所有上传文件</button>
+        <label for="uploadFile">选择文件</label>
+        <input id="uploadFile" type="file">
+        <div style="margin: 10px 0 6px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <label class="switch-label" for="uploadEncryptSwitch">
+            <span class="switch-wrapper">
+              <input type="checkbox" id="uploadEncryptSwitch">
+              <span class="switch-slider"></span>
+            </span>
+            <span>启用加密</span>
+          </label>
+          <span class="muted" style="font-size: 12px;">自动使用 TAA 注册公钥加密并追加 .enc 后缀</span>
         </div>
-        <div id="uploadedFilesList" style="display:flex; flex-direction:column; gap:6px;"></div>
-      </div>
-    </section>
+        <div class="actions">
+          <button onclick="uploadFile()">上传文件</button>
+        </div>
+        <div id="uploadResult" style="display:none;"></div>
+        <div class="upload-history">
+          <div id="uploadClearBar" style="display:none; justify-content:flex-end; margin-bottom:4px;">
+            <span id="uploadedFilesCount" style="display:none;"></span>
+            <button type="button" class="danger" onclick="clearUploadedFiles()" style="padding:3px 8px; font-size:11.5px;">清空所有上传文件</button>
+          </div>
+          <div id="uploadedFilesList" style="display:flex; flex-direction:column; gap:6px;"></div>
+        </div>
+      </section>
 
-    <!-- 第 2 列：下发模型 -->
+      <!-- Resource info retrieval -->
+      <section class="card drop-zone-card" id="card-resourceInfo" style="display:flex; flex-direction:column;">
+        <div class="card-head">
+          <div>
+            <h2>⓪ 资源信息获取</h2>
+            <p class="card-note">传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理。</p>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <button id="resourceInfoModalBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openResourceInfoModal()" disabled>查看目录树</button>
+          </div>
+        </div>
+        <label for="resourceInfoUrl">resourceUrl</label>
+        <input id="resourceInfoUrl" value="http://example.com/data.tar.gz">
+        <div class="actions">
+          <button onclick="testGetResourceInfo()">发送测试</button>
+          <button type="button" class="secondary" onclick="loadSampleResourceTree()">加载示例树</button>
+        </div>
+        <div id="resourceInfoResult" class="test-result"></div>
+      </section>
+    </div>
+
+    <!-- Column 2: Import model -->
     <section class="card" id="card-importModel" style="display:flex; flex-direction:column;">
       <div class="card-head">
         <div>
@@ -1188,7 +1180,7 @@
       <div id="importModelResult" style="display:none;"></div>
     </section>
 
-    <!-- 第 3 列：下发数据 + 训练结果上报（垂直堆叠） -->
+    <!-- Column 3: Import data + Training result report (stacked vertically) -->
     <div class="flow-col-stack">
       <section class="card" id="card-import" style="display:flex; flex-direction:column;">
         <div class="card-head">
@@ -1255,7 +1247,7 @@
       </section>
     </div>
 
-    <!-- 第 4 列：导出结果 -->
+    <!-- Column 4: Export result -->
     <section class="card" id="card-export" style="display:flex; flex-direction:column;">
       <div class="card-head">
         <div>
