@@ -1789,3 +1789,28 @@ func TestTAAStopTrainingProxyAndLogging(t *testing.T) {
 	}
 }
 
+func TestTaaLogConsoleRendering(t *testing.T) {
+	data, err := os.ReadFile("index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(data)
+	required := []string{
+		`id="card-taaLog"`,
+		`id="taaLogStatusDot"`,
+		`id="taaLogCount"`,
+		`id="taaLogLastSeq"`,
+		`id="taaLogOutput"`,
+		`fetchTaaLogs()`,
+		`clearTaaLogs()`,
+		`/api/taaLog/status`,
+		`/api/taaLog/reset`,
+		`(/v1/taa/taaLog)`,
+	}
+	for _, s := range required {
+		if !strings.Contains(html, s) {
+			t.Errorf("index.html missing %q", s)
+		}
+	}
+}
+
