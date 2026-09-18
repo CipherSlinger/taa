@@ -1002,6 +1002,108 @@ async function resetReportAuditStatus() {
   setReportAuditPending();
 }
 
+// ── Visual Audit Security Dashboard ──
+function renderAuditDashboard(report) {
+  if (!report) return '<div class="muted" style="padding:14px; text-align:center;">暂无审计数据</div>';
+  let data = report;
+  if (typeof report === 'string') {
+    try {
+      data = JSON.parse(report);
+    } catch (e) {
+      return `<pre class="modal-body">${escapeHtml(report)}</pre>`;
+    }
+  }
+
+  const conclusion = data.conclusion || {};
+  const stats = conclusion.statistics || { high: 0, medium: 0, low: 0 };
+  const total = (stats.high || 0) + (stats.medium || 0) + (stats.low || 0);
+  const highPct = total > 0 ? ((stats.high || 0) / total) * 100 : 0;
+  const medPct = total > 0 ? ((stats.medium || 0) / total) * 100 : 0;
+  const lowPct = total > 0 ? ((stats.low || 0) / total) * 100 : 0;
+  const passed = conclusion.passed !== false;
+
+  let html = `
+    <div class="audit-dashboard">
+      <div class="audit-summary-card">
+        <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+          <div>
+            <span style="font-size:15px; font-weight:700; color:var(--text);">代码审计综合安全结论</span>
+            <div style="font-size:12px; color:var(--text-muted); margin-top:2px;">${escapeHtml(conclusion.summary || '静态分析与 LLM 协同审计完成')}</div>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span class="status-pill ${passed ? 'ok' : 'bad'}" style="font-size:12.5px; font-weight:700;">
+              ${passed ? '✓ 审计合规通过' : '✗ 存在阻断级风险'}
+            </span>
+            <span class="status-pill ${conclusion.risk_level === 'HIGH' ? 'bad' : (conclusion.risk_level === 'MEDIUM' ? 'running' : 'ok')}">
+              风险等级: ${escapeHtml(conclusion.risk_level || 'LOW')}
+            </span>
+          </div>
+        </div>
+        <div class="audit-risk-bar" title="高危: ${stats.high || 0}, 中危: ${stats.medium || 0}, 低危: ${stats.low || 0}">
+          <div class="seg-high" style="width: ${highPct}%;"></div>
+          <div class="seg-med" style="width: ${medPct}%;"></div>
+          <div class="seg-low" style="width: ${lowPct}%;"></div>
+        </div>
+        <div class="audit-stats-grid">
+          <div class="audit-stat-item"><span class="audit-stat-dot" style="background:#ef4444;"></span> 高危漏洞: ${stats.high || 0}</div>
+          <div class="audit-stat-item"><span class="audit-stat-dot" style="background:#f59e0b;"></span> 中危告警: ${stats.medium || 0}</div>
+          <div class="audit-stat-item"><span class="audit-stat-dot" style="background:#3b82f6;"></span> 低危关注: ${stats.low || 0}</div>
+          <div class="audit-stat-item" style="color:var(--text-muted);">共检出 ${total} 项规则命中</div>
+        </div>
+      </div>
+  `;
+
+  const fileReports = data.file_reports || [];
+  if (fileReports.length > 0) {
+    html += `<div style="font-size:13.5px; font-weight:650; margin:6px 0 2px; color:var(--text);">文件审计详情 (${fileReports.length} 个文件)</div>`;
+    fileReports.forEach((fr, idx) => {
+      const findings = fr.findings || [];
+      html += `
+        <div class="findings-group">
+          <div class="findings-header" onclick="toggleAccordion('findings-body-${idx}')">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+              <span>${escapeHtml(fr.file)}</span>
+            </div>
+            <span class="badge" style="background:var(--line);">${findings.length} 项发现</span>
+          </div>
+          <div id="findings-body-${idx}" class="findings-body" style="display:${idx === 0 ? 'flex' : 'none'};">
+      `;
+      findings.forEach(f => {
+        const vClass = (f.llm_verdict || '').toUpperCase() === 'CONFIRMED' ? 'confirmed' : ((f.llm_verdict || '').toUpperCase() === 'UNCERTAIN' ? 'uncertain' : 'benign');
+        html += `
+          <div class="finding-card">
+            <div class="finding-meta">
+              <div>
+                <strong style="color:var(--accent); font-size:12.5px;">Line ${f.line || '-'}</strong>
+                <span style="margin: 0 4px; color:var(--text-muted);">·</span>
+                <span style="font-weight:600; font-size:12.5px;">[${escapeHtml(f.rule_id || '')}] ${escapeHtml(f.category || '')}</span>
+              </div>
+              ${f.llm_verdict ? `<span class="verdict-badge ${vClass}">LLM: ${escapeHtml(f.llm_verdict)}</span>` : ''}
+            </div>
+            <div style="font-size:12px; color:var(--text); line-height:1.4;">${escapeHtml(f.description || '')}</div>
+            ${f.code_snippet ? `<div class="finding-snippet">${escapeHtml(f.code_snippet)}</div>` : ''}
+            ${f.llm_reason ? `<div style="font-size:11.5px; color:var(--text-muted); background:var(--panel-sub); padding:6px 8px; border-radius:4px; margin-top:4px;"><strong>协同分析:</strong> ${escapeHtml(f.llm_reason)}</div>` : ''}
+          </div>
+        `;
+      });
+      html += `</div></div>`;
+    });
+  }
+
+  html += `</div>`;
+  return html;
+}
+window.renderAuditDashboard = renderAuditDashboard;
+
+function toggleAccordion(id) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+  }
+}
+window.toggleAccordion = toggleAccordion;
+
 function renderReportProgress(result) {
   const percentEl = document.getElementById('reportProgressPercent');
   const barEl = document.getElementById('reportProgressBar');

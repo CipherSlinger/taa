@@ -432,6 +432,13 @@
         </div>
       </div>
       <div class="drawer-actions">
+        <button type="button" id="drawerViewModeBtn" class="secondary" onclick="toggleDrawerViewMode()" style="display:none;" title="切换可视化与原始数据">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+          </svg>
+          <span id="drawerViewModeText">原始 JSON</span>
+        </button>
         <button type="button" id="drawerCurlBtn" class="secondary" onclick="copyCurlCommand(this)" style="display:none;" title="生成并复制 cURL 命令">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="4 17 10 11 4 5"></polyline>
@@ -451,6 +458,7 @@
     </div>
     <div id="drawerBadge" style="display:none; margin:10px 14px 0; padding:10px 14px; border-radius:8px; font-size:13px; font-weight:600; background:rgba(127,127,127,.08); border:1px solid var(--line);"></div>
     <div class="drawer-content" style="flex:1; overflow:auto; padding:14px;">
+      <div id="drawerVisualContainer" style="display:none;"></div>
       <pre id="drawerCode" class="drawer-code-viewer modal-body" style="margin:0;"></pre>
     </div>
   </div>

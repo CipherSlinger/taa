@@ -64,6 +64,33 @@ function parseJSONRecursively(val) {
 let currentDrawerInteractionKey = null;
 let currentDrawerActiveTab = 'primary';
 let currentDrawerBody = '';
+let currentDrawerViewMode = 'visual';
+
+function getAuditReportFromInteraction(item, tabType) {
+  if (!item || tabType !== 'primary') return null;
+  const content = item.primaryContent != null ? item.primaryContent : item.respBody;
+  if (!content) return null;
+  if (typeof content === 'object') {
+    if (content.report) return content.report;
+    if (content.conclusion || content.file_reports) return content;
+  }
+  if (typeof content === 'string') {
+    try {
+      const parsed = JSON.parse(content);
+      if (parsed && typeof parsed === 'object') {
+        if (parsed.report) return parsed.report;
+        if (parsed.conclusion || parsed.file_reports) return parsed;
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+function toggleDrawerViewMode() {
+  currentDrawerViewMode = (currentDrawerViewMode === 'visual') ? 'json' : 'visual';
+  switchDrawerTab(currentDrawerActiveTab);
+}
+window.toggleDrawerViewMode = toggleDrawerViewMode;
 
 function formatModalBody(body) {
   if (body == null) return '';
@@ -121,15 +148,24 @@ function buildCurlCommand(item) {
 function openInteractionDrawer(key, preferredTab = 'primary') {
   currentDrawerInteractionKey = key;
   currentDrawerActiveTab = preferredTab;
+  currentDrawerViewMode = 'visual';
   const item = (typeof interactionStore !== 'undefined' && interactionStore[key]) ? interactionStore[key] : null;
 
   const drawer = document.getElementById('appDrawer');
   const titleEl = document.getElementById('drawerTitle') || document.getElementById('bodyModalTitle');
   const badgeEl = document.getElementById('drawerBadge') || document.getElementById('bodyModalBadge');
   const curlBtn = document.getElementById('drawerCurlBtn');
+  const primaryTabBtn = document.getElementById('drawerTabPrimary') || document.getElementById('modalTabPrimary');
+  const secondaryTabBtn = document.getElementById('drawerTabSecondary') || document.getElementById('modalTabSecondary');
 
   if (titleEl) {
     titleEl.textContent = item?.title || '接口交互详情';
+  }
+  if (primaryTabBtn) {
+    primaryTabBtn.textContent = (item && item.primaryLabel) ? item.primaryLabel : '返回内容';
+  }
+  if (secondaryTabBtn) {
+    secondaryTabBtn.textContent = (item && item.secondaryLabel) ? item.secondaryLabel : '请求体';
   }
   if (badgeEl) {
     if (item) {
@@ -175,6 +211,9 @@ function switchDrawerTab(tabType) {
   const primaryTabBtn = document.getElementById('drawerTabPrimary') || document.getElementById('modalTabPrimary');
   const secondaryTabBtn = document.getElementById('drawerTabSecondary') || document.getElementById('modalTabSecondary');
   const codeEl = document.getElementById('drawerCode') || document.getElementById('bodyModalContent');
+  const visualContainer = document.getElementById('drawerVisualContainer');
+  const viewModeBtn = document.getElementById('drawerViewModeBtn');
+  const viewModeText = document.getElementById('drawerViewModeText');
 
   if (primaryTabBtn && secondaryTabBtn) {
     if (tabType === 'primary') {
@@ -194,7 +233,7 @@ function switchDrawerTab(tabType) {
   if (!item) {
     content = defaultEmptyMsg;
   } else {
-    const rawVal = isSecondary ? item.reqBody : item.respBody;
+    const rawVal = isSecondary ? (item.secondaryContent != null ? item.secondaryContent : item.reqBody) : (item.primaryContent != null ? item.primaryContent : item.respBody);
     if (rawVal == null || rawVal === '') {
       content = defaultEmptyMsg;
     } else {
@@ -203,8 +242,29 @@ function switchDrawerTab(tabType) {
   }
 
   currentDrawerBody = content;
-  if (codeEl) {
-    codeEl.innerHTML = highlightJSON(content);
+
+  const auditReport = (currentDrawerInteractionKey === 'reportAudit' || getAuditReportFromInteraction(item, tabType)) && typeof renderAuditDashboard === 'function' ? getAuditReportFromInteraction(item, tabType) : null;
+
+  if (auditReport && viewModeBtn && visualContainer && codeEl) {
+    viewModeBtn.style.display = 'inline-flex';
+    if (currentDrawerViewMode === 'visual') {
+      if (viewModeText) viewModeText.textContent = '原始 JSON';
+      visualContainer.innerHTML = renderAuditDashboard(auditReport);
+      visualContainer.style.display = 'block';
+      codeEl.style.display = 'none';
+    } else {
+      if (viewModeText) viewModeText.textContent = '可视化视图';
+      visualContainer.style.display = 'none';
+      codeEl.style.display = 'block';
+      codeEl.innerHTML = highlightJSON(content);
+    }
+  } else {
+    if (viewModeBtn) viewModeBtn.style.display = 'none';
+    if (visualContainer) visualContainer.style.display = 'none';
+    if (codeEl) {
+      codeEl.style.display = 'block';
+      codeEl.innerHTML = highlightJSON(content);
+    }
   }
 }
 
