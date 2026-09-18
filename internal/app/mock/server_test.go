@@ -47,6 +47,29 @@ func TestIndexShowsTrainingReportAndResourceInfoModules(t *testing.T) {
 	}
 }
 
+func TestIndexHandlerHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	indexHandler(w, req)
+
+	res := w.Result()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", res.StatusCode)
+	}
+	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Fatalf("expected text/html Content-Type, got %q", ct)
+	}
+	if cc := res.Header.Get("Cache-Control"); cc != "no-cache, no-store, must-revalidate" {
+		t.Fatalf("expected Cache-Control no-cache, no-store, must-revalidate, got %q", cc)
+	}
+	if pragma := res.Header.Get("Pragma"); pragma != "no-cache" {
+		t.Fatalf("expected Pragma no-cache, got %q", pragma)
+	}
+	if exp := res.Header.Get("Expires"); exp != "0" {
+		t.Fatalf("expected Expires 0, got %q", exp)
+	}
+}
+
 func TestTrainingFlowCardTitlesAndTreeModalTriggers(t *testing.T) {
 	requiredTitles := []string{
 		"<h2>⓪ 资源信息获取</h2>",

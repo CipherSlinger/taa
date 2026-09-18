@@ -814,6 +814,15 @@ start_local_background() {
   nohup "$@" >"$logfile" 2>&1 < /dev/null &
   local pid=$!
   echo "$pid" >"$pidfile"
+  sleep 0.2
+  if ! kill -0 "$pid" 2>/dev/null; then
+    err "$name process died immediately after launch (pid $pid)"
+    if [[ -f "$logfile" ]]; then
+      echo -e "   ${YELLOW}↳${NC} ${name} log:" >&2
+      tail -n 20 "$logfile" >&2 || true
+    fi
+    exit 1
+  fi
   info "started $name (pid $pid)"
 }
 
@@ -1451,7 +1460,10 @@ if [[ "$ACTION" == "stop" ]]; then
   banner "Stopping Services"
   if [[ "$DEPLOY_DOCKER" == true ]]; then
     step "stopping docker services"
-    [[ "$DEPLOY_PLATFORM_MOCK" == true ]] && stop_pidfile "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid"
+    if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
+      stop_pidfile "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid"
+      pkill -f "$MOCK_BINARY_PATH" >/dev/null 2>&1 || true
+    fi
     if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -Eq "^${LOCAL_DOCKER_CONTAINER}\$"; then
       if [[ "$DEPLOY_TAA" == true ]]; then
         docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall '$BINARY_NAME' >/dev/null 2>&1 || true" 2>/dev/null || true
@@ -1558,6 +1570,16 @@ deploy_platform_mock() {
   step "preparing local platform-mock runtime directory"
   mkdir -p "$LOCAL_PLATFORM_STATE_DIR" "$LOCAL_PLATFORM_UPLOAD_DIR" "$LOCAL_RUN_DIR"
   info "runtime directories ready: $LOCAL_PLATFORM_STATE_DIR"
+
+  step "stopping previous local platform-mock"
+  stop_pidfile "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid"
+  pkill -f "$MOCK_BINARY_PATH" >/dev/null 2>&1 || true
+  for _ in {1..30}; do
+    if ! pgrep -f "$MOCK_BINARY_PATH" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.1
+  done
 
   step "starting local platform-mock on ${LOCAL_PLATFORM_BIND}"
   start_local_background "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid" "$LOCAL_PLATFORM_LOG_FILE" \
