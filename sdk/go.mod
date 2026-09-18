@@ -1,6 +1,6 @@
 module teecrypto
 
-go 1.26
+go 1.22
 
 require (
 	taa v0.0.0-00010101000000-000000000000
