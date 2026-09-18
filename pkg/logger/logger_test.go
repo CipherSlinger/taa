@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -105,5 +106,26 @@ func TestStoreConcurrency(t *testing.T) {
 	wg.Wait()
 	if store.Count() > 100 {
 		t.Fatalf("count exceeded max size: %d", store.Count())
+	}
+}
+
+func TestStoreEntrySeqAndFormat(t *testing.T) {
+	store := NewStore(10, WithStdout(false))
+	store.Info("system", "taa initialized")
+	store.Warn("import", "checksum missing")
+
+	entries := store.All()
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+	if entries[0].Seq != 1 {
+		t.Errorf("entry 0 seq = %d, want 1", entries[0].Seq)
+	}
+	if entries[1].Seq != 2 {
+		t.Errorf("entry 1 seq = %d, want 2", entries[1].Seq)
+	}
+	formatted := entries[0].FormatMessage()
+	if !strings.Contains(formatted, "[INFO]") || !strings.Contains(formatted, "[system]") || !strings.Contains(formatted, "taa initialized") {
+		t.Errorf("unexpected formatted message: %s", formatted)
 	}
 }

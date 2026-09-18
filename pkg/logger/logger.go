@@ -5,6 +5,7 @@ package logger
 import (
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
@@ -33,10 +34,24 @@ const (
 
 // Entry 代表单条结构化日志记录。
 type Entry struct {
+	Seq       uint64    `json:"seq"`
 	Timestamp time.Time `json:"timestamp"`
 	Level     Level     `json:"level"`
 	Component string    `json:"component"`
 	Message   string    `json:"message"`
+}
+
+// FormatMessage 将结构化日志转换为包含级别和组件的统一文本行。
+func (e Entry) FormatMessage() string {
+	lvl := strings.ToUpper(string(e.Level))
+	if lvl == "" {
+		lvl = "INFO"
+	}
+	comp := e.Component
+	if comp == "" {
+		comp = "system"
+	}
+	return fmt.Sprintf("[%s] [%s] %s", lvl, comp, e.Message)
 }
 
 // Store 是一个线程安全的有界内存日志缓冲区（达到上限时自动淘汰最旧日志）。
@@ -45,6 +60,7 @@ type Store struct {
 	entries []Entry
 	maxSize int
 	cursor  int // 下一次未读日志索引
+	nextSeq uint64
 	stdout  bool
 }
 
@@ -99,6 +115,9 @@ func (s *Store) Add(level Level, component, format string, args ...any) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	s.nextSeq++
+	entry.Seq = s.nextSeq
 
 	// 达到最大容量时淘汰较旧条目，并校准 cursor
 	if len(s.entries) >= s.maxSize {
