@@ -23,6 +23,53 @@
     </div>
   </header>
 
+  <!-- Lifecycle Pipeline Stepper -->
+  <nav class="pipeline-stepper" id="pipelineStepper" aria-label="训练全生命周期流水线">
+    <div class="stepper-step pending" id="stepNodeRegister" onclick="scrollToSection('card-attestation')">
+      <div class="stepper-icon">
+        <svg class="step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        <span class="step-num">1</span>
+      </div>
+      <div class="stepper-meta">
+        <span class="step-title">节点鉴权与证明</span>
+        <span class="step-desc" id="stepDescRegister">等待注册</span>
+      </div>
+    </div>
+    <div class="stepper-line" id="line1to2"></div>
+    <div class="stepper-step pending" id="stepNodeAudit" onclick="scrollToSection('card-importModel')">
+      <div class="stepper-icon">
+        <svg class="step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        <span class="step-num">2</span>
+      </div>
+      <div class="stepper-meta">
+        <span class="step-title">代码审计与下发</span>
+        <span class="step-desc" id="stepDescAudit">等待模型</span>
+      </div>
+    </div>
+    <div class="stepper-line" id="line2to3"></div>
+    <div class="stepper-step pending" id="stepNodeTraining" onclick="scrollToSection('card-import')">
+      <div class="stepper-icon">
+        <svg class="step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        <span class="step-num">3</span>
+      </div>
+      <div class="stepper-meta">
+        <span class="step-title">密态训练监控</span>
+        <span class="step-desc" id="stepDescTraining">等待启动</span>
+      </div>
+    </div>
+    <div class="stepper-line" id="line3to4"></div>
+    <div class="stepper-step pending" id="stepNodeExport" onclick="scrollToSection('reportResList')">
+      <div class="stepper-icon">
+        <svg class="step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        <span class="step-num">4</span>
+      </div>
+      <div class="stepper-meta">
+        <span class="step-title">产物与审计日志</span>
+        <span class="step-desc" id="stepDescExport">等待完成</span>
+      </div>
+    </div>
+  </nav>
+
   <!-- Top: Unified platform registration and service connection control panel -->
   <section class="card" id="card-attestation" style="display:flex; flex-direction:column; margin-bottom:24px;">
     <!-- Row 1: Platform registration status and global record operations -->

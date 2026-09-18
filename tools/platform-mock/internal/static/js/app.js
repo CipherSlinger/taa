@@ -1046,6 +1046,122 @@ async function resetReportProgress() {
   } catch (err) {}
 }
 
+// ── Lifecycle Pipeline Stage Stepper ──
+function scrollToSection(id) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    el.style.transition = 'box-shadow 0.3s ease';
+    el.style.boxShadow = '0 0 0 3px rgba(37, 99, 235, 0.4)';
+    setTimeout(() => {
+      el.style.boxShadow = '';
+    }, 1200);
+  }
+}
+window.scrollToSection = scrollToSection;
+
+function setStepStatus(stepEl, descEl, status, descText) {
+  if (!stepEl) return;
+  stepEl.classList.remove('pending', 'active', 'completed', 'failed');
+  stepEl.classList.add(status);
+  if (descEl && descText) descEl.textContent = descText;
+}
+
+function syncStepperState(res) {
+  if (!res) return;
+  const sReg = document.getElementById('stepNodeRegister');
+  const dReg = document.getElementById('stepDescRegister');
+  const l12 = document.getElementById('line1to2');
+  const sAud = document.getElementById('stepNodeAudit');
+  const dAud = document.getElementById('stepDescAudit');
+  const l23 = document.getElementById('line2to3');
+  const sTrn = document.getElementById('stepNodeTraining');
+  const dTrn = document.getElementById('stepDescTraining');
+  const l34 = document.getElementById('line3to4');
+  const sExp = document.getElementById('stepNodeExport');
+  const dExp = document.getElementById('stepDescExport');
+
+  const regOk = res.register && res.register.received;
+  const impOk = res.modelImport && res.modelImport.received;
+  const audOk = res.audit && res.audit.received;
+  const prg = res.progress || {};
+
+  // Step 1: Register
+  if (regOk) {
+    setStepStatus(sReg, dReg, 'completed', '已注册鉴权');
+    if (l12) l12.className = 'stepper-line completed';
+  } else {
+    setStepStatus(sReg, dReg, 'active', '等待注册请求');
+    if (l12) l12.className = 'stepper-line';
+  }
+
+  // Step 2: Audit & Import
+  if (impOk) {
+    let auditPassed = true;
+    let risk = 'LOW';
+    if (audOk && res.audit.report) {
+      try {
+        const parsed = typeof res.audit.report === 'string' ? JSON.parse(res.audit.report) : res.audit.report;
+        if (parsed.conclusion) {
+          auditPassed = parsed.conclusion.passed !== false;
+          risk = parsed.conclusion.risk_level || 'LOW';
+        }
+      } catch (e) {}
+    }
+    if (auditPassed) {
+      setStepStatus(sAud, dAud, 'completed', `审计通过 (${risk})`);
+      if (l23) l23.className = 'stepper-line completed';
+    } else {
+      setStepStatus(sAud, dAud, 'failed', `审计不通过 (${risk})`);
+      if (l23) l23.className = 'stepper-line';
+    }
+  } else if (regOk) {
+    setStepStatus(sAud, dAud, 'active', '准备下发模型');
+    if (l23) l23.className = 'stepper-line';
+  } else {
+    setStepStatus(sAud, dAud, 'pending', '等待模型下发');
+    if (l23) l23.className = 'stepper-line';
+  }
+
+  // Step 3: Training & Progress
+  if (prg.received) {
+    const pct = prg.percent || 0;
+    if (pct >= 100) {
+      setStepStatus(sTrn, dTrn, 'completed', '训练已完成 (100%)');
+      if (l34) l34.className = 'stepper-line completed';
+      setStepStatus(sExp, dExp, 'completed', '产物已就绪');
+    } else if (pct > 0) {
+      setStepStatus(sTrn, dTrn, 'active', `训练进行中 (${pct.toFixed(1)}%)`);
+      if (l34) l34.className = 'stepper-line active';
+      setStepStatus(sExp, dExp, 'pending', '产物生成中');
+    } else {
+      setStepStatus(sTrn, dTrn, 'active', '训练已启动');
+      if (l34) l34.className = 'stepper-line';
+      setStepStatus(sExp, dExp, 'pending', '等待导出');
+    }
+  } else if (impOk) {
+    setStepStatus(sTrn, dTrn, 'active', '准备启动训练');
+    if (l34) l34.className = 'stepper-line';
+    setStepStatus(sExp, dExp, 'pending', '等待导出');
+  } else {
+    setStepStatus(sTrn, dTrn, 'pending', '等待训练');
+    if (l34) l34.className = 'stepper-line';
+    setStepStatus(sExp, dExp, 'pending', '等待完成');
+  }
+}
+window.syncStepperState = syncStepperState;
+
+async function refreshDashboardStatus() {
+  try {
+    const res = await fetch('/api/dashboard/status', { cache: 'no-store' });
+    const data = await res.json();
+    if (data && data.error === 0 && data.result) {
+      syncStepperState(data.result);
+    }
+  } catch (_) {}
+}
+window.refreshDashboardStatus = refreshDashboardStatus;
+
 // ── TAA API Triggers ──
 async function testHealth() {
   const btn = document.getElementById('healthResultBtn');
@@ -1347,6 +1463,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setReportAuditPending();
   refreshReportAuditStatus();
   refreshReportProgress();
+  refreshDashboardStatus();
   fetchModelLogs();
   fetchTaaLogs();
 

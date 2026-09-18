@@ -153,6 +153,9 @@ const PollingManager = {
       const data = await resp.json();
       if (data && data.error === 0 && data.result) {
         const res = data.result;
+        if (typeof syncStepperState === 'function') {
+          syncStepperState(res);
+        }
         if (res.register && typeof renderRegister === 'function') {
           renderRegister(res.register);
         }
