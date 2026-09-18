@@ -19,7 +19,7 @@ import (
 	"taa/internal/store"
 	teecrypto "taa/pkg/crypto"
 	"taa/teellm"
-	"taa/teetls"
+	"github.com/CipherSlinger/teetls"
 )
 
 // ============================================================================

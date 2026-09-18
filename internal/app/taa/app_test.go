@@ -16,7 +16,7 @@ import (
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 	teecrypto "taa/pkg/crypto"
-	"taa/teetls"
+	"github.com/CipherSlinger/teetls"
 )
 
 // TestDeriveUserDataAndKeyPair 校验国密 SM2 密钥生成与 UserData 派生逻辑：

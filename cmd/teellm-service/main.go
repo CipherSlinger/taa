@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/CipherSlinger/teetls"
 	"taa/teellm"
-	"taa/teetls"
 )
 
 func runProbe(ctx context.Context, endpoint string) error {

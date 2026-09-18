@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/CipherSlinger/teetls"
 	"taa/teellm"
-	"taa/teetls"
 )
 
 // ── parseDecision tests ──────────────────────────────────

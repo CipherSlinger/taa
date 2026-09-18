@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/CipherSlinger/teetls"
 	"taa/internal/codeaudit"
 	"taa/teellm"
-	"taa/teetls"
 )
 
 func TestLLMAvailable(t *testing.T) {

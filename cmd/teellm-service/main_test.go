@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/CipherSlinger/teetls"
 	"taa/teellm"
-	"taa/teetls"
 )
 
 func TestProbeEndpoint(t *testing.T) {

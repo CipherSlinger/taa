@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/CipherSlinger/teetls"
 	"taa/teellm"
-	"taa/teetls"
 )
 
 // LLMConfig controls the local LLM verifier.
