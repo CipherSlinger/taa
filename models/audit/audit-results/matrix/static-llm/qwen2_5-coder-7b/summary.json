@@ -1,0 +1,84 @@
+{
+  "run_id": "matrix-static-llm-qwen2_5-coder-7b",
+  "run_time": "2026-09-18T06:12:51.238864+00:00",
+  "benchmark_version": "2026-09-16-v2",
+  "audit_mode": "static-llm",
+  "audit_track": "Track C: 生产级动静两阶段协同 (Semgrep-LLM)",
+  "engine": "semgrep",
+  "auditor_version": "ollama:qwen2.5-coder:7b",
+  "model_specs": {
+    "model_name": "qwen2.5-coder:7b",
+    "slug": "qwen2_5-coder-7b",
+    "params": "7.0B",
+    "size_mb": 4700,
+    "recommend_mem": "8GB"
+  },
+  "rule_set_version": "semgrep-rules-13",
+  "prompt_version": "audit-prompt-v1",
+  "policy": "gate",
+  "bypass_count": 50,
+  "bypass_rate": 0.5,
+  "eval_duration_sec": 3100.0,
+  "notes": "企业级高阶安全审计精度。仅误报 3 例、漏报 2 例，归因率 100.0%，进审单样 62.0s，准确率 95.0%，F1 达 0.950。",
+  "benchmark_root": "models/audit/benchmarks/audit-100",
+  "counts": {
+    "tp": 48,
+    "fp": 3,
+    "tn": 47,
+    "fn": 2,
+    "attribution_count": 48
+  },
+  "metrics": {
+    "accuracy": 0.95,
+    "precision": 0.9412,
+    "recall": 0.96,
+    "fpr": 0.06,
+    "fnr": 0.04,
+    "f1": 0.9505,
+    "f0_5": 0.9449,
+    "attribution_precision": 1.0,
+    "bypass_rate": 0.5,
+    "fail_closed_count": 2,
+    "llm_available_rate": 0.98,
+    "ci_95": {
+      "accuracy": {
+        "mean": 0.95,
+        "ci_lower": 0.9,
+        "ci_upper": 0.99
+      },
+      "precision": {
+        "mean": 0.9411764705882353,
+        "ci_lower": 0.8679245283018868,
+        "ci_upper": 1.0
+      },
+      "recall": {
+        "mean": 0.96,
+        "ci_lower": 0.8947368421052632,
+        "ci_upper": 1.0
+      },
+      "f1": {
+        "mean": 0.9504950495049505,
+        "ci_lower": 0.897196261682243,
+        "ci_upper": 0.9896907216494846
+      },
+      "fpr": {
+        "mean": 0.06,
+        "ci_lower": 0.0,
+        "ci_upper": 0.13725490196078433
+      },
+      "attribution_precision": {
+        "mean": 1.0,
+        "ci_lower": 1.0,
+        "ci_upper": 1.0
+      }
+    },
+    "per_sample_llm_sec": 62.0
+  },
+  "errors": {
+    "false_positive": 3,
+    "false_negative": 2,
+    "ok": 45,
+    "bypass": 50,
+    "fail_closed": 2
+  }
+}

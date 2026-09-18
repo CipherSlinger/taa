@@ -1,0 +1,84 @@
+{
+  "run_id": "matrix-pure-llm-qwen3-8b",
+  "run_time": "2026-09-18T06:12:51.875138+00:00",
+  "benchmark_version": "2026-09-16-v2",
+  "audit_mode": "pure-llm",
+  "audit_track": "Track A: 纯端到端 LLM 盲审 (Pure Raw)",
+  "engine": "none",
+  "auditor_version": "ollama:qwen3:8b",
+  "model_specs": {
+    "model_name": "qwen3:8b",
+    "slug": "qwen3-8b",
+    "params": "8.0B",
+    "size_mb": 5200,
+    "recommend_mem": "10GB"
+  },
+  "rule_set_version": "none (pure-llm)",
+  "prompt_version": "pure-llm-v1",
+  "policy": "gate",
+  "bypass_count": 0,
+  "bypass_rate": 0.0,
+  "eval_duration_sec": 22000.0,
+  "notes": "最新 Qwen3 架构逻辑推理最优，但端到端盲审在全量代码中仍有 11 例偶发误判，时延达 220s。",
+  "benchmark_root": "models/audit/benchmarks/audit-100",
+  "counts": {
+    "tp": 46,
+    "fp": 11,
+    "tn": 39,
+    "fn": 4,
+    "attribution_count": 39
+  },
+  "metrics": {
+    "accuracy": 0.85,
+    "precision": 0.807,
+    "recall": 0.92,
+    "fpr": 0.22,
+    "fnr": 0.08,
+    "f1": 0.8598,
+    "f0_5": 0.8273,
+    "attribution_precision": 0.8478,
+    "bypass_rate": 0.0,
+    "fail_closed_count": 0,
+    "llm_available_rate": 1.0,
+    "ci_95": {
+      "accuracy": {
+        "mean": 0.85,
+        "ci_lower": 0.77,
+        "ci_upper": 0.91
+      },
+      "precision": {
+        "mean": 0.8070175438596491,
+        "ci_lower": 0.6885245901639344,
+        "ci_upper": 0.9056603773584906
+      },
+      "recall": {
+        "mean": 0.92,
+        "ci_lower": 0.8301886792452831,
+        "ci_upper": 0.9811320754716981
+      },
+      "f1": {
+        "mean": 0.8598130841121495,
+        "ci_lower": 0.7766990291262136,
+        "ci_upper": 0.9217391304347826
+      },
+      "fpr": {
+        "mean": 0.22,
+        "ci_lower": 0.1111111111111111,
+        "ci_upper": 0.34615384615384615
+      },
+      "attribution_precision": {
+        "mean": 0.8478260869565217,
+        "ci_lower": 0.7454545454545455,
+        "ci_upper": 0.9444444444444444
+      }
+    },
+    "per_sample_llm_sec": 220.0
+  },
+  "errors": {
+    "false_positive": 11,
+    "false_negative": 4,
+    "ok": 85,
+    "bypass": 0,
+    "fail_closed": 0
+  }
+}

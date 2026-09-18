@@ -1,0 +1,84 @@
+{
+  "run_id": "matrix-static-llm-qwen2_5-coder-1_5b",
+  "run_time": "2026-09-18T06:12:47.407567+00:00",
+  "benchmark_version": "2026-09-16-v2",
+  "audit_mode": "static-llm",
+  "audit_track": "Track C: 生产级动静两阶段协同 (Semgrep-LLM)",
+  "engine": "semgrep",
+  "auditor_version": "ollama:qwen2.5-coder:1.5b",
+  "model_specs": {
+    "model_name": "qwen2.5-coder:1.5b",
+    "slug": "qwen2_5-coder-1_5b",
+    "params": "1.5B",
+    "size_mb": 986,
+    "recommend_mem": "4GB"
+  },
+  "rule_set_version": "semgrep-rules-13",
+  "prompt_version": "audit-prompt-v1",
+  "policy": "gate",
+  "bypass_count": 50,
+  "bypass_rate": 0.5,
+  "eval_duration_sec": 1050.0,
+  "notes": "【生产高性价比推荐/甜蜜点】体积 < 1GB，Semgrep 污点与 AST 切片使误杀压降至 8 例 (FPR 仅 16.0%)，归因率达 95.7%，召回率 92.0%，进审单样 21.0s。",
+  "benchmark_root": "models/audit/benchmarks/audit-100",
+  "counts": {
+    "tp": 46,
+    "fp": 8,
+    "tn": 42,
+    "fn": 4,
+    "attribution_count": 44
+  },
+  "metrics": {
+    "accuracy": 0.88,
+    "precision": 0.8519,
+    "recall": 0.92,
+    "fpr": 0.16,
+    "fnr": 0.08,
+    "f1": 0.8846,
+    "f0_5": 0.8647,
+    "attribution_precision": 0.9565,
+    "bypass_rate": 0.5,
+    "fail_closed_count": 4,
+    "llm_available_rate": 0.96,
+    "ci_95": {
+      "accuracy": {
+        "mean": 0.88,
+        "ci_lower": 0.8,
+        "ci_upper": 0.93
+      },
+      "precision": {
+        "mean": 0.8518518518518519,
+        "ci_lower": 0.7454545454545455,
+        "ci_upper": 0.9361702127659575
+      },
+      "recall": {
+        "mean": 0.92,
+        "ci_lower": 0.8301886792452831,
+        "ci_upper": 0.9811320754716981
+      },
+      "f1": {
+        "mean": 0.8846153846153846,
+        "ci_lower": 0.8080808080808081,
+        "ci_upper": 0.94017094017094
+      },
+      "fpr": {
+        "mean": 0.16,
+        "ci_lower": 0.06382978723404255,
+        "ci_upper": 0.26666666666666666
+      },
+      "attribution_precision": {
+        "mean": 0.9565217391304348,
+        "ci_lower": 0.8947368421052632,
+        "ci_upper": 1.0
+      }
+    },
+    "per_sample_llm_sec": 21.0
+  },
+  "errors": {
+    "false_positive": 8,
+    "false_negative": 4,
+    "ok": 38,
+    "bypass": 50,
+    "fail_closed": 4
+  }
+}

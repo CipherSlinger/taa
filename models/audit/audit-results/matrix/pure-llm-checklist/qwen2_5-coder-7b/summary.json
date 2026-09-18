@@ -1,0 +1,84 @@
+{
+  "run_id": "matrix-pure-llm-checklist-qwen2_5-coder-7b",
+  "run_time": "2026-09-18T06:12:50.603669+00:00",
+  "benchmark_version": "2026-09-16-v2",
+  "audit_mode": "pure-llm-checklist",
+  "audit_track": "Track B: 规则清单盲审 (Pure Checklist)",
+  "engine": "none",
+  "auditor_version": "ollama:qwen2.5-coder:7b",
+  "model_specs": {
+    "model_name": "qwen2.5-coder:7b",
+    "slug": "qwen2_5-coder-7b",
+    "params": "7.0B",
+    "size_mb": 4700,
+    "recommend_mem": "8GB"
+  },
+  "rule_set_version": "checklist-rules-13",
+  "prompt_version": "checklist-rules-v1",
+  "policy": "gate",
+  "bypass_count": 0,
+  "bypass_rate": 0.0,
+  "eval_duration_sec": 39500.0,
+  "notes": "规则清单激活深层推理，召回率达 94.0%，归因率 91.5%，但单样近 400 秒无法支撑高吞吐生产流水线。",
+  "benchmark_root": "models/audit/benchmarks/audit-100",
+  "counts": {
+    "tp": 47,
+    "fp": 9,
+    "tn": 41,
+    "fn": 3,
+    "attribution_count": 43
+  },
+  "metrics": {
+    "accuracy": 0.88,
+    "precision": 0.8393,
+    "recall": 0.94,
+    "fpr": 0.18,
+    "fnr": 0.06,
+    "f1": 0.8868,
+    "f0_5": 0.8577,
+    "attribution_precision": 0.9149,
+    "bypass_rate": 0.0,
+    "fail_closed_count": 0,
+    "llm_available_rate": 1.0,
+    "ci_95": {
+      "accuracy": {
+        "mean": 0.88,
+        "ci_lower": 0.8,
+        "ci_upper": 0.94
+      },
+      "precision": {
+        "mean": 0.8392857142857143,
+        "ci_lower": 0.7291666666666666,
+        "ci_upper": 0.9272727272727272
+      },
+      "recall": {
+        "mean": 0.94,
+        "ci_lower": 0.8653846153846154,
+        "ci_upper": 1.0
+      },
+      "f1": {
+        "mean": 0.8867924528301886,
+        "ci_lower": 0.8113207547169811,
+        "ci_upper": 0.9423076923076924
+      },
+      "fpr": {
+        "mean": 0.18,
+        "ci_lower": 0.08333333333333333,
+        "ci_upper": 0.2909090909090909
+      },
+      "attribution_precision": {
+        "mean": 0.9148936170212766,
+        "ci_lower": 0.8297872340425532,
+        "ci_upper": 0.9830508474576272
+      }
+    },
+    "per_sample_llm_sec": 395.0
+  },
+  "errors": {
+    "false_positive": 9,
+    "false_negative": 3,
+    "ok": 88,
+    "bypass": 0,
+    "fail_closed": 0
+  }
+}

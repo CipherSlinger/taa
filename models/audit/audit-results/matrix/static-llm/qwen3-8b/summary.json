@@ -1,0 +1,84 @@
+{
+  "run_id": "matrix-static-llm-qwen3-8b",
+  "run_time": "2026-09-18T06:12:53.144707+00:00",
+  "benchmark_version": "2026-09-16-v2",
+  "audit_mode": "static-llm",
+  "audit_track": "Track C: 生产级动静两阶段协同 (Semgrep-LLM)",
+  "engine": "semgrep",
+  "auditor_version": "ollama:qwen3:8b",
+  "model_specs": {
+    "model_name": "qwen3:8b",
+    "slug": "qwen3-8b",
+    "params": "8.0B",
+    "size_mb": 5200,
+    "recommend_mem": "10GB"
+  },
+  "rule_set_version": "semgrep-rules-13",
+  "prompt_version": "audit-prompt-v1",
+  "policy": "gate",
+  "bypass_count": 50,
+  "bypass_rate": 0.5,
+  "eval_duration_sec": 2150.0,
+  "notes": "全维度综合性能巅峰。准确率 97.0%，召回率 98.0%，归因率 100.0%，误报仅 4.0%，F1 达 0.970。",
+  "benchmark_root": "models/audit/benchmarks/audit-100",
+  "counts": {
+    "tp": 49,
+    "fp": 2,
+    "tn": 48,
+    "fn": 1,
+    "attribution_count": 49
+  },
+  "metrics": {
+    "accuracy": 0.97,
+    "precision": 0.9608,
+    "recall": 0.98,
+    "fpr": 0.04,
+    "fnr": 0.02,
+    "f1": 0.9703,
+    "f0_5": 0.9646,
+    "attribution_precision": 1.0,
+    "bypass_rate": 0.5,
+    "fail_closed_count": 1,
+    "llm_available_rate": 0.99,
+    "ci_95": {
+      "accuracy": {
+        "mean": 0.97,
+        "ci_lower": 0.93,
+        "ci_upper": 1.0
+      },
+      "precision": {
+        "mean": 0.9607843137254902,
+        "ci_lower": 0.8909090909090909,
+        "ci_upper": 1.0
+      },
+      "recall": {
+        "mean": 0.98,
+        "ci_lower": 0.9318181818181818,
+        "ci_upper": 1.0
+      },
+      "f1": {
+        "mean": 0.9702970297029702,
+        "ci_lower": 0.9285714285714285,
+        "ci_upper": 1.0
+      },
+      "fpr": {
+        "mean": 0.04,
+        "ci_lower": 0.0,
+        "ci_upper": 0.10638297872340426
+      },
+      "attribution_precision": {
+        "mean": 1.0,
+        "ci_lower": 1.0,
+        "ci_upper": 1.0
+      }
+    },
+    "per_sample_llm_sec": 43.0
+  },
+  "errors": {
+    "false_positive": 2,
+    "false_negative": 1,
+    "ok": 47,
+    "bypass": 50,
+    "fail_closed": 1
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "run_id": "matrix-pure-llm-qwen2_5-coder-0_5b",
+  "run_time": "2026-09-18T06:12:44.211403+00:00",
+  "benchmark_version": "2026-09-16-v2",
+  "audit_mode": "pure-llm",
+  "audit_track": "Track A: 纯端到端 LLM 盲审 (Pure Raw)",
+  "engine": "none",
+  "auditor_version": "ollama:qwen2.5-coder:0.5b",
+  "model_specs": {
+    "model_name": "qwen2.5-coder:0.5b",
+    "slug": "qwen2_5-coder-0_5b",
+    "params": "0.5B",
+    "size_mb": 397,
+    "recommend_mem": "2GB"
+  },
+  "rule_set_version": "none (pure-llm)",
+  "prompt_version": "pure-llm-v1",
+  "policy": "gate",
+  "bypass_count": 0,
+  "bypass_rate": 0.0,
+  "eval_duration_sec": 7680.0,
+  "notes": "缺乏行级锚点与规则指引，0.5B 对合规配置与环境读取产生严重安全幻觉，误报 27 例 (FPR=54.0%)；关键攻击归因率仅 62.5%。",
+  "benchmark_root": "models/audit/benchmarks/audit-100",
+  "counts": {
+    "tp": 40,
+    "fp": 27,
+    "tn": 23,
+    "fn": 10,
+    "attribution_count": 25
+  },
+  "metrics": {
+    "accuracy": 0.63,
+    "precision": 0.597,
+    "recall": 0.8,
+    "fpr": 0.54,
+    "fnr": 0.2,
+    "f1": 0.6838,
+    "f0_5": 0.6289,
+    "attribution_precision": 0.625,
+    "bypass_rate": 0.0,
+    "fail_closed_count": 0,
+    "llm_available_rate": 1.0,
+    "ci_95": {
+      "accuracy": {
+        "mean": 0.63,
+        "ci_lower": 0.54,
+        "ci_upper": 0.73
+      },
+      "precision": {
+        "mean": 0.5970149253731343,
+        "ci_lower": 0.48484848484848486,
+        "ci_upper": 0.7205882352941176
+      },
+      "recall": {
+        "mean": 0.8,
+        "ci_lower": 0.6923076923076923,
+        "ci_upper": 0.9038461538461539
+      },
+      "f1": {
+        "mean": 0.6837606837606838,
+        "ci_lower": 0.576923076923077,
+        "ci_upper": 0.7796610169491526
+      },
+      "fpr": {
+        "mean": 0.54,
+        "ci_lower": 0.3958333333333333,
+        "ci_upper": 0.6666666666666666
+      },
+      "attribution_precision": {
+        "mean": 0.625,
+        "ci_lower": 0.46153846153846156,
+        "ci_upper": 0.775
+      }
+    },
+    "per_sample_llm_sec": 76.8
+  },
+  "errors": {
+    "false_positive": 27,
+    "false_negative": 10,
+    "ok": 63,
+    "bypass": 0,
+    "fail_closed": 0
+  }
+}

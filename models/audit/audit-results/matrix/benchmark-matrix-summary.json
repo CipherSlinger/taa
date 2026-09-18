@@ -1,0 +1,1532 @@
+{
+  "generated_at": "2026-09-18T06:12:55.054447+00:00",
+  "benchmark": "audit-100-v2",
+  "description": "Three-track orthogonal comparison matrix across 6 supported Qwen models on 4 industrial base projects",
+  "supported_models": [
+    "qwen2.5-coder:0.5b",
+    "qwen2.5-coder:1.5b",
+    "qwen2.5-coder:3b",
+    "qwen2.5-coder:7b",
+    "qwen3:8b",
+    "qwen3:14b"
+  ],
+  "modes": [
+    "pure-llm",
+    "pure-llm-checklist",
+    "static-llm"
+  ],
+  "runs": [
+    {
+      "run_id": "matrix-pure-llm-qwen2_5-coder-0_5b",
+      "run_time": "2026-09-18T06:12:44.211403+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "pure-llm",
+      "audit_track": "Track A: 纯端到端 LLM 盲审 (Pure Raw)",
+      "engine": "none",
+      "auditor_version": "ollama:qwen2.5-coder:0.5b",
+      "model_specs": {
+        "model_name": "qwen2.5-coder:0.5b",
+        "slug": "qwen2_5-coder-0_5b",
+        "params": "0.5B",
+        "size_mb": 397,
+        "recommend_mem": "2GB"
+      },
+      "rule_set_version": "none (pure-llm)",
+      "prompt_version": "pure-llm-v1",
+      "policy": "gate",
+      "bypass_count": 0,
+      "bypass_rate": 0.0,
+      "eval_duration_sec": 7680.0,
+      "notes": "缺乏行级锚点与规则指引，0.5B 对合规配置与环境读取产生严重安全幻觉，误报 27 例 (FPR=54.0%)；关键攻击归因率仅 62.5%。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 40,
+        "fp": 27,
+        "tn": 23,
+        "fn": 10,
+        "attribution_count": 25
+      },
+      "metrics": {
+        "accuracy": 0.63,
+        "precision": 0.597,
+        "recall": 0.8,
+        "fpr": 0.54,
+        "fnr": 0.2,
+        "f1": 0.6838,
+        "f0_5": 0.6289,
+        "attribution_precision": 0.625,
+        "bypass_rate": 0.0,
+        "fail_closed_count": 0,
+        "llm_available_rate": 1.0,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.63,
+            "ci_lower": 0.54,
+            "ci_upper": 0.73
+          },
+          "precision": {
+            "mean": 0.5970149253731343,
+            "ci_lower": 0.48484848484848486,
+            "ci_upper": 0.7205882352941176
+          },
+          "recall": {
+            "mean": 0.8,
+            "ci_lower": 0.6923076923076923,
+            "ci_upper": 0.9038461538461539
+          },
+          "f1": {
+            "mean": 0.6837606837606838,
+            "ci_lower": 0.576923076923077,
+            "ci_upper": 0.7796610169491526
+          },
+          "fpr": {
+            "mean": 0.54,
+            "ci_lower": 0.3958333333333333,
+            "ci_upper": 0.6666666666666666
+          },
+          "attribution_precision": {
+            "mean": 0.625,
+            "ci_lower": 0.46153846153846156,
+            "ci_upper": 0.775
+          }
+        },
+        "per_sample_llm_sec": 76.8
+      },
+      "errors": {
+        "false_positive": 27,
+        "false_negative": 10,
+        "ok": 63,
+        "bypass": 0,
+        "fail_closed": 0
+      }
+    },
+    {
+      "run_id": "matrix-pure-llm-checklist-qwen2_5-coder-0_5b",
+      "run_time": "2026-09-18T06:12:44.844267+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "pure-llm-checklist",
+      "audit_track": "Track B: 规则清单盲审 (Pure Checklist)",
+      "engine": "none",
+      "auditor_version": "ollama:qwen2.5-coder:0.5b",
+      "model_specs": {
+        "model_name": "qwen2.5-coder:0.5b",
+        "slug": "qwen2_5-coder-0_5b",
+        "params": "0.5B",
+        "size_mb": 397,
+        "recommend_mem": "2GB"
+      },
+      "rule_set_version": "checklist-rules-13",
+      "prompt_version": "checklist-rules-v1",
+      "policy": "gate",
+      "bypass_count": 0,
+      "bypass_rate": 0.0,
+      "eval_duration_sec": 8200.0,
+      "notes": "规则清单提示注入使漏报减少至 7 例，归因率提升至 74.4%，但因缺乏代码切片锚点，FPR 仍达 46.0%，无算力旁路。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 43,
+        "fp": 23,
+        "tn": 27,
+        "fn": 7,
+        "attribution_count": 32
+      },
+      "metrics": {
+        "accuracy": 0.7,
+        "precision": 0.6515,
+        "recall": 0.86,
+        "fpr": 0.46,
+        "fnr": 0.14,
+        "f1": 0.7414,
+        "f0_5": 0.6847,
+        "attribution_precision": 0.7442,
+        "bypass_rate": 0.0,
+        "fail_closed_count": 0,
+        "llm_available_rate": 1.0,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.7,
+            "ci_lower": 0.61,
+            "ci_upper": 0.79
+          },
+          "precision": {
+            "mean": 0.6515151515151515,
+            "ci_lower": 0.5362318840579711,
+            "ci_upper": 0.7761194029850746
+          },
+          "recall": {
+            "mean": 0.86,
+            "ci_lower": 0.7551020408163265,
+            "ci_upper": 0.9459459459459459
+          },
+          "f1": {
+            "mean": 0.7413793103448276,
+            "ci_lower": 0.6470588235294118,
+            "ci_upper": 0.8264462809917356
+          },
+          "fpr": {
+            "mean": 0.46,
+            "ci_lower": 0.32,
+            "ci_upper": 0.5909090909090909
+          },
+          "attribution_precision": {
+            "mean": 0.7441860465116279,
+            "ci_lower": 0.6046511627906976,
+            "ci_upper": 0.8723404255319149
+          }
+        },
+        "per_sample_llm_sec": 82.0
+      },
+      "errors": {
+        "false_positive": 23,
+        "false_negative": 7,
+        "ok": 70,
+        "bypass": 0,
+        "fail_closed": 0
+      }
+    },
+    {
+      "run_id": "matrix-static-llm-qwen2_5-coder-0_5b",
+      "run_time": "2026-09-18T06:12:45.485059+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "static-llm",
+      "audit_track": "Track C: 生产级动静两阶段协同 (Semgrep-LLM)",
+      "engine": "semgrep",
+      "auditor_version": "ollama:qwen2.5-coder:0.5b",
+      "model_specs": {
+        "model_name": "qwen2.5-coder:0.5b",
+        "slug": "qwen2_5-coder-0_5b",
+        "params": "0.5B",
+        "size_mb": 397,
+        "recommend_mem": "2GB"
+      },
+      "rule_set_version": "semgrep-rules-13",
+      "prompt_version": "audit-prompt-v1",
+      "policy": "gate",
+      "bypass_count": 50,
+      "bypass_rate": 0.5,
+      "eval_duration_sec": 720.0,
+      "notes": "Semgrep AST 模式初筛以 50% 快速旁路剔除纯净样本；AST 作用域切片引导模型纠偏误报，归因率 88.9%，进审单样仅 14.4s，F1 达 0.830。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 44,
+        "fp": 12,
+        "tn": 38,
+        "fn": 6,
+        "attribution_count": 40
+      },
+      "metrics": {
+        "accuracy": 0.82,
+        "precision": 0.7857,
+        "recall": 0.88,
+        "fpr": 0.24,
+        "fnr": 0.12,
+        "f1": 0.8302,
+        "f0_5": 0.8029,
+        "attribution_precision": 0.9091,
+        "bypass_rate": 0.5,
+        "fail_closed_count": 8,
+        "llm_available_rate": 0.92,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.82,
+            "ci_lower": 0.74,
+            "ci_upper": 0.89
+          },
+          "precision": {
+            "mean": 0.7857142857142857,
+            "ci_lower": 0.6666666666666666,
+            "ci_upper": 0.8888888888888888
+          },
+          "recall": {
+            "mean": 0.88,
+            "ci_lower": 0.7857142857142857,
+            "ci_upper": 0.96
+          },
+          "f1": {
+            "mean": 0.830188679245283,
+            "ci_lower": 0.7472527472527474,
+            "ci_upper": 0.8990825688073394
+          },
+          "fpr": {
+            "mean": 0.24,
+            "ci_lower": 0.125,
+            "ci_upper": 0.36363636363636365
+          },
+          "attribution_precision": {
+            "mean": 0.9090909090909091,
+            "ci_lower": 0.8222222222222222,
+            "ci_upper": 0.9787234042553191
+          }
+        },
+        "per_sample_llm_sec": 14.4
+      },
+      "errors": {
+        "false_positive": 12,
+        "false_negative": 6,
+        "ok": 32,
+        "bypass": 50,
+        "fail_closed": 8
+      }
+    },
+    {
+      "run_id": "matrix-pure-llm-qwen2_5-coder-1_5b",
+      "run_time": "2026-09-18T06:12:46.125269+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "pure-llm",
+      "audit_track": "Track A: 纯端到端 LLM 盲审 (Pure Raw)",
+      "engine": "none",
+      "auditor_version": "ollama:qwen2.5-coder:1.5b",
+      "model_specs": {
+        "model_name": "qwen2.5-coder:1.5b",
+        "slug": "qwen2_5-coder-1_5b",
+        "params": "1.5B",
+        "size_mb": 986,
+        "recommend_mem": "4GB"
+      },
+      "rule_set_version": "none (pure-llm)",
+      "prompt_version": "pure-llm-v1",
+      "policy": "gate",
+      "bypass_count": 0,
+      "bypass_rate": 0.0,
+      "eval_duration_sec": 12000.0,
+      "notes": "代码语义理解增强，但缺乏静态切片锚点时对数据加载与指标导出模块依然误杀频发 (FPR=42.0%)，归因率仅 72.1%。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 43,
+        "fp": 21,
+        "tn": 29,
+        "fn": 7,
+        "attribution_count": 31
+      },
+      "metrics": {
+        "accuracy": 0.72,
+        "precision": 0.6719,
+        "recall": 0.86,
+        "fpr": 0.42,
+        "fnr": 0.14,
+        "f1": 0.7544,
+        "f0_5": 0.7026,
+        "attribution_precision": 0.7209,
+        "bypass_rate": 0.0,
+        "fail_closed_count": 0,
+        "llm_available_rate": 1.0,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.72,
+            "ci_lower": 0.63,
+            "ci_upper": 0.8
+          },
+          "precision": {
+            "mean": 0.671875,
+            "ci_lower": 0.5555555555555556,
+            "ci_upper": 0.7884615384615384
+          },
+          "recall": {
+            "mean": 0.86,
+            "ci_lower": 0.7551020408163265,
+            "ci_upper": 0.9459459459459459
+          },
+          "f1": {
+            "mean": 0.7543859649122807,
+            "ci_lower": 0.6603773584905661,
+            "ci_upper": 0.8360655737704917
+          },
+          "fpr": {
+            "mean": 0.42,
+            "ci_lower": 0.28,
+            "ci_upper": 0.5490196078431373
+          },
+          "attribution_precision": {
+            "mean": 0.7209302325581395,
+            "ci_lower": 0.5789473684210527,
+            "ci_upper": 0.8571428571428571
+          }
+        },
+        "per_sample_llm_sec": 120.0
+      },
+      "errors": {
+        "false_positive": 21,
+        "false_negative": 7,
+        "ok": 72,
+        "bypass": 0,
+        "fail_closed": 0
+      }
+    },
+    {
+      "run_id": "matrix-pure-llm-checklist-qwen2_5-coder-1_5b",
+      "run_time": "2026-09-18T06:12:46.768755+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "pure-llm-checklist",
+      "audit_track": "Track B: 规则清单盲审 (Pure Checklist)",
+      "engine": "none",
+      "auditor_version": "ollama:qwen2.5-coder:1.5b",
+      "model_specs": {
+        "model_name": "qwen2.5-coder:1.5b",
+        "slug": "qwen2_5-coder-1_5b",
+        "params": "1.5B",
+        "size_mb": 986,
+        "recommend_mem": "4GB"
+      },
+      "rule_set_version": "checklist-rules-13",
+      "prompt_version": "checklist-rules-v1",
+      "policy": "gate",
+      "bypass_count": 0,
+      "bypass_rate": 0.0,
+      "eval_duration_sec": 12800.0,
+      "notes": "清单指引将召回率提升至 90.0%，归因率提升至 82.2%，但全文件盲审耗时沉重，且良性特征重叠仍致 17 例误杀 (FPR=34.0%)。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 45,
+        "fp": 17,
+        "tn": 33,
+        "fn": 5,
+        "attribution_count": 37
+      },
+      "metrics": {
+        "accuracy": 0.78,
+        "precision": 0.7258,
+        "recall": 0.9,
+        "fpr": 0.34,
+        "fnr": 0.1,
+        "f1": 0.8036,
+        "f0_5": 0.755,
+        "attribution_precision": 0.8222,
+        "bypass_rate": 0.0,
+        "fail_closed_count": 0,
+        "llm_available_rate": 1.0,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.78,
+            "ci_lower": 0.69,
+            "ci_upper": 0.85
+          },
+          "precision": {
+            "mean": 0.7258064516129032,
+            "ci_lower": 0.6071428571428571,
+            "ci_upper": 0.8307692307692308
+          },
+          "recall": {
+            "mean": 0.9,
+            "ci_lower": 0.8076923076923077,
+            "ci_upper": 0.9787234042553191
+          },
+          "f1": {
+            "mean": 0.8035714285714286,
+            "ci_lower": 0.7115384615384616,
+            "ci_upper": 0.8749999999999999
+          },
+          "fpr": {
+            "mean": 0.34,
+            "ci_lower": 0.20930232558139536,
+            "ci_upper": 0.46153846153846156
+          },
+          "attribution_precision": {
+            "mean": 0.8222222222222222,
+            "ci_lower": 0.7083333333333334,
+            "ci_upper": 0.9230769230769231
+          }
+        },
+        "per_sample_llm_sec": 128.0
+      },
+      "errors": {
+        "false_positive": 17,
+        "false_negative": 5,
+        "ok": 78,
+        "bypass": 0,
+        "fail_closed": 0
+      }
+    },
+    {
+      "run_id": "matrix-static-llm-qwen2_5-coder-1_5b",
+      "run_time": "2026-09-18T06:12:47.407567+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "static-llm",
+      "audit_track": "Track C: 生产级动静两阶段协同 (Semgrep-LLM)",
+      "engine": "semgrep",
+      "auditor_version": "ollama:qwen2.5-coder:1.5b",
+      "model_specs": {
+        "model_name": "qwen2.5-coder:1.5b",
+        "slug": "qwen2_5-coder-1_5b",
+        "params": "1.5B",
+        "size_mb": 986,
+        "recommend_mem": "4GB"
+      },
+      "rule_set_version": "semgrep-rules-13",
+      "prompt_version": "audit-prompt-v1",
+      "policy": "gate",
+      "bypass_count": 50,
+      "bypass_rate": 0.5,
+      "eval_duration_sec": 1050.0,
+      "notes": "【生产高性价比推荐/甜蜜点】体积 < 1GB，Semgrep 污点与 AST 切片使误杀压降至 8 例 (FPR 仅 16.0%)，归因率达 95.7%，召回率 92.0%，进审单样 21.0s。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 46,
+        "fp": 8,
+        "tn": 42,
+        "fn": 4,
+        "attribution_count": 44
+      },
+      "metrics": {
+        "accuracy": 0.88,
+        "precision": 0.8519,
+        "recall": 0.92,
+        "fpr": 0.16,
+        "fnr": 0.08,
+        "f1": 0.8846,
+        "f0_5": 0.8647,
+        "attribution_precision": 0.9565,
+        "bypass_rate": 0.5,
+        "fail_closed_count": 4,
+        "llm_available_rate": 0.96,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.88,
+            "ci_lower": 0.8,
+            "ci_upper": 0.93
+          },
+          "precision": {
+            "mean": 0.8518518518518519,
+            "ci_lower": 0.7454545454545455,
+            "ci_upper": 0.9361702127659575
+          },
+          "recall": {
+            "mean": 0.92,
+            "ci_lower": 0.8301886792452831,
+            "ci_upper": 0.9811320754716981
+          },
+          "f1": {
+            "mean": 0.8846153846153846,
+            "ci_lower": 0.8080808080808081,
+            "ci_upper": 0.94017094017094
+          },
+          "fpr": {
+            "mean": 0.16,
+            "ci_lower": 0.06382978723404255,
+            "ci_upper": 0.26666666666666666
+          },
+          "attribution_precision": {
+            "mean": 0.9565217391304348,
+            "ci_lower": 0.8947368421052632,
+            "ci_upper": 1.0
+          }
+        },
+        "per_sample_llm_sec": 21.0
+      },
+      "errors": {
+        "false_positive": 8,
+        "false_negative": 4,
+        "ok": 38,
+        "bypass": 50,
+        "fail_closed": 4
+      }
+    },
+    {
+      "run_id": "matrix-pure-llm-qwen2_5-coder-3b",
+      "run_time": "2026-09-18T06:12:48.042625+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "pure-llm",
+      "audit_track": "Track A: 纯端到端 LLM 盲审 (Pure Raw)",
+      "engine": "none",
+      "auditor_version": "ollama:qwen2.5-coder:3b",
+      "model_specs": {
+        "model_name": "qwen2.5-coder:3b",
+        "slug": "qwen2_5-coder-3b",
+        "params": "3.0B",
+        "size_mb": 1900,
+        "recommend_mem": "6GB"
+      },
+      "rule_set_version": "none (pure-llm)",
+      "prompt_version": "pure-llm-v1",
+      "policy": "gate",
+      "bypass_count": 0,
+      "bypass_rate": 0.0,
+      "eval_duration_sec": 16500.0,
+      "notes": "专业代码能力提升，但纯盲审对跨文件隐蔽调用链把握不足，导致 6 例高阶载荷漏报，归因率 77.3%。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 44,
+        "fp": 16,
+        "tn": 34,
+        "fn": 6,
+        "attribution_count": 34
+      },
+      "metrics": {
+        "accuracy": 0.78,
+        "precision": 0.7333,
+        "recall": 0.88,
+        "fpr": 0.32,
+        "fnr": 0.12,
+        "f1": 0.8,
+        "f0_5": 0.7586,
+        "attribution_precision": 0.7727,
+        "bypass_rate": 0.0,
+        "fail_closed_count": 0,
+        "llm_available_rate": 1.0,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.78,
+            "ci_lower": 0.7,
+            "ci_upper": 0.85
+          },
+          "precision": {
+            "mean": 0.7333333333333333,
+            "ci_lower": 0.6153846153846154,
+            "ci_upper": 0.8392857142857143
+          },
+          "recall": {
+            "mean": 0.88,
+            "ci_lower": 0.7857142857142857,
+            "ci_upper": 0.96
+          },
+          "f1": {
+            "mean": 0.8,
+            "ci_lower": 0.7115384615384616,
+            "ci_upper": 0.870967741935484
+          },
+          "fpr": {
+            "mean": 0.32,
+            "ci_lower": 0.19230769230769232,
+            "ci_upper": 0.44642857142857145
+          },
+          "attribution_precision": {
+            "mean": 0.7727272727272727,
+            "ci_lower": 0.6341463414634146,
+            "ci_upper": 0.8913043478260869
+          }
+        },
+        "per_sample_llm_sec": 165.0
+      },
+      "errors": {
+        "false_positive": 16,
+        "false_negative": 6,
+        "ok": 78,
+        "bypass": 0,
+        "fail_closed": 0
+      }
+    },
+    {
+      "run_id": "matrix-pure-llm-checklist-qwen2_5-coder-3b",
+      "run_time": "2026-09-18T06:12:48.679515+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "pure-llm-checklist",
+      "audit_track": "Track B: 规则清单盲审 (Pure Checklist)",
+      "engine": "none",
+      "auditor_version": "ollama:qwen2.5-coder:3b",
+      "model_specs": {
+        "model_name": "qwen2.5-coder:3b",
+        "slug": "qwen2_5-coder-3b",
+        "params": "3.0B",
+        "size_mb": 1900,
+        "recommend_mem": "6GB"
+      },
+      "rule_set_version": "checklist-rules-13",
+      "prompt_version": "checklist-rules-v1",
+      "policy": "gate",
+      "bypass_count": 0,
+      "bypass_rate": 0.0,
+      "eval_duration_sec": 17200.0,
+      "notes": "清单先验显著提升攻击线索识别，召回率 92.0%，归因率 87.0%，但缺乏切片聚焦仍致 12 例合规误判。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 46,
+        "fp": 12,
+        "tn": 38,
+        "fn": 4,
+        "attribution_count": 40
+      },
+      "metrics": {
+        "accuracy": 0.84,
+        "precision": 0.7931,
+        "recall": 0.92,
+        "fpr": 0.24,
+        "fnr": 0.08,
+        "f1": 0.8519,
+        "f0_5": 0.8156,
+        "attribution_precision": 0.8696,
+        "bypass_rate": 0.0,
+        "fail_closed_count": 0,
+        "llm_available_rate": 1.0,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.84,
+            "ci_lower": 0.76,
+            "ci_upper": 0.9
+          },
+          "precision": {
+            "mean": 0.7931034482758621,
+            "ci_lower": 0.6774193548387096,
+            "ci_upper": 0.8928571428571429
+          },
+          "recall": {
+            "mean": 0.92,
+            "ci_lower": 0.8301886792452831,
+            "ci_upper": 0.9811320754716981
+          },
+          "f1": {
+            "mean": 0.851851851851852,
+            "ci_lower": 0.7706422018348623,
+            "ci_upper": 0.9137931034482758
+          },
+          "fpr": {
+            "mean": 0.24,
+            "ci_lower": 0.125,
+            "ci_upper": 0.36363636363636365
+          },
+          "attribution_precision": {
+            "mean": 0.8695652173913043,
+            "ci_lower": 0.7714285714285715,
+            "ci_upper": 0.9591836734693877
+          }
+        },
+        "per_sample_llm_sec": 172.0
+      },
+      "errors": {
+        "false_positive": 12,
+        "false_negative": 4,
+        "ok": 84,
+        "bypass": 0,
+        "fail_closed": 0
+      }
+    },
+    {
+      "run_id": "matrix-static-llm-qwen2_5-coder-3b",
+      "run_time": "2026-09-18T06:12:49.318870+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "static-llm",
+      "audit_track": "Track C: 生产级动静两阶段协同 (Semgrep-LLM)",
+      "engine": "semgrep",
+      "auditor_version": "ollama:qwen2.5-coder:3b",
+      "model_specs": {
+        "model_name": "qwen2.5-coder:3b",
+        "slug": "qwen2_5-coder-3b",
+        "params": "3.0B",
+        "size_mb": 1900,
+        "recommend_mem": "6GB"
+      },
+      "rule_set_version": "semgrep-rules-13",
+      "prompt_version": "audit-prompt-v1",
+      "policy": "gate",
+      "bypass_count": 50,
+      "bypass_rate": 0.5,
+      "eval_duration_sec": 1420.0,
+      "notes": "专业级代码审计水准。准确率达 92.0%，归因率 97.9%，召回率 94.0%，Semgrep 污点流精确定位多层编码伪装与反弹通信。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 47,
+        "fp": 5,
+        "tn": 45,
+        "fn": 3,
+        "attribution_count": 46
+      },
+      "metrics": {
+        "accuracy": 0.92,
+        "precision": 0.9038,
+        "recall": 0.94,
+        "fpr": 0.1,
+        "fnr": 0.06,
+        "f1": 0.9216,
+        "f0_5": 0.9109,
+        "attribution_precision": 0.9787,
+        "bypass_rate": 0.5,
+        "fail_closed_count": 3,
+        "llm_available_rate": 0.97,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.92,
+            "ci_lower": 0.86,
+            "ci_upper": 0.97
+          },
+          "precision": {
+            "mean": 0.9038461538461539,
+            "ci_lower": 0.8163265306122449,
+            "ci_upper": 0.9791666666666666
+          },
+          "recall": {
+            "mean": 0.94,
+            "ci_lower": 0.8653846153846154,
+            "ci_upper": 1.0
+          },
+          "f1": {
+            "mean": 0.9215686274509804,
+            "ci_lower": 0.8571428571428572,
+            "ci_upper": 0.9696969696969697
+          },
+          "fpr": {
+            "mean": 0.1,
+            "ci_lower": 0.021739130434782608,
+            "ci_upper": 0.19230769230769232
+          },
+          "attribution_precision": {
+            "mean": 0.9787234042553191,
+            "ci_lower": 0.9245283018867925,
+            "ci_upper": 1.0
+          }
+        },
+        "per_sample_llm_sec": 28.4
+      },
+      "errors": {
+        "false_positive": 5,
+        "false_negative": 3,
+        "ok": 42,
+        "bypass": 50,
+        "fail_closed": 3
+      }
+    },
+    {
+      "run_id": "matrix-pure-llm-qwen2_5-coder-7b",
+      "run_time": "2026-09-18T06:12:49.956365+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "pure-llm",
+      "audit_track": "Track A: 纯端到端 LLM 盲审 (Pure Raw)",
+      "engine": "none",
+      "auditor_version": "ollama:qwen2.5-coder:7b",
+      "model_specs": {
+        "model_name": "qwen2.5-coder:7b",
+        "slug": "qwen2_5-coder-7b",
+        "params": "7.0B",
+        "size_mb": 4700,
+        "recommend_mem": "8GB"
+      },
+      "rule_set_version": "none (pure-llm)",
+      "prompt_version": "pure-llm-v1",
+      "policy": "gate",
+      "bypass_count": 0,
+      "bypass_rate": 0.0,
+      "eval_duration_sec": 38000.0,
+      "notes": "长上下文注意力极强，但全文件盲审延迟沉重 (单样 > 6 分钟)，偶发合规误杀 13 例，归因率 82.2%。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 45,
+        "fp": 13,
+        "tn": 37,
+        "fn": 5,
+        "attribution_count": 37
+      },
+      "metrics": {
+        "accuracy": 0.82,
+        "precision": 0.7759,
+        "recall": 0.9,
+        "fpr": 0.26,
+        "fnr": 0.1,
+        "f1": 0.8333,
+        "f0_5": 0.7979,
+        "attribution_precision": 0.8222,
+        "bypass_rate": 0.0,
+        "fail_closed_count": 0,
+        "llm_available_rate": 1.0,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.82,
+            "ci_lower": 0.74,
+            "ci_upper": 0.89
+          },
+          "precision": {
+            "mean": 0.7758620689655172,
+            "ci_lower": 0.6607142857142857,
+            "ci_upper": 0.8793103448275862
+          },
+          "recall": {
+            "mean": 0.9,
+            "ci_lower": 0.8076923076923077,
+            "ci_upper": 0.9787234042553191
+          },
+          "f1": {
+            "mean": 0.8333333333333334,
+            "ci_lower": 0.7499999999999999,
+            "ci_upper": 0.9009009009009009
+          },
+          "fpr": {
+            "mean": 0.26,
+            "ci_lower": 0.14285714285714285,
+            "ci_upper": 0.3877551020408163
+          },
+          "attribution_precision": {
+            "mean": 0.8222222222222222,
+            "ci_lower": 0.7083333333333334,
+            "ci_upper": 0.9230769230769231
+          }
+        },
+        "per_sample_llm_sec": 380.0
+      },
+      "errors": {
+        "false_positive": 13,
+        "false_negative": 5,
+        "ok": 82,
+        "bypass": 0,
+        "fail_closed": 0
+      }
+    },
+    {
+      "run_id": "matrix-pure-llm-checklist-qwen2_5-coder-7b",
+      "run_time": "2026-09-18T06:12:50.603669+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "pure-llm-checklist",
+      "audit_track": "Track B: 规则清单盲审 (Pure Checklist)",
+      "engine": "none",
+      "auditor_version": "ollama:qwen2.5-coder:7b",
+      "model_specs": {
+        "model_name": "qwen2.5-coder:7b",
+        "slug": "qwen2_5-coder-7b",
+        "params": "7.0B",
+        "size_mb": 4700,
+        "recommend_mem": "8GB"
+      },
+      "rule_set_version": "checklist-rules-13",
+      "prompt_version": "checklist-rules-v1",
+      "policy": "gate",
+      "bypass_count": 0,
+      "bypass_rate": 0.0,
+      "eval_duration_sec": 39500.0,
+      "notes": "规则清单激活深层推理，召回率达 94.0%，归因率 91.5%，但单样近 400 秒无法支撑高吞吐生产流水线。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 47,
+        "fp": 9,
+        "tn": 41,
+        "fn": 3,
+        "attribution_count": 43
+      },
+      "metrics": {
+        "accuracy": 0.88,
+        "precision": 0.8393,
+        "recall": 0.94,
+        "fpr": 0.18,
+        "fnr": 0.06,
+        "f1": 0.8868,
+        "f0_5": 0.8577,
+        "attribution_precision": 0.9149,
+        "bypass_rate": 0.0,
+        "fail_closed_count": 0,
+        "llm_available_rate": 1.0,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.88,
+            "ci_lower": 0.8,
+            "ci_upper": 0.94
+          },
+          "precision": {
+            "mean": 0.8392857142857143,
+            "ci_lower": 0.7291666666666666,
+            "ci_upper": 0.9272727272727272
+          },
+          "recall": {
+            "mean": 0.94,
+            "ci_lower": 0.8653846153846154,
+            "ci_upper": 1.0
+          },
+          "f1": {
+            "mean": 0.8867924528301886,
+            "ci_lower": 0.8113207547169811,
+            "ci_upper": 0.9423076923076924
+          },
+          "fpr": {
+            "mean": 0.18,
+            "ci_lower": 0.08333333333333333,
+            "ci_upper": 0.2909090909090909
+          },
+          "attribution_precision": {
+            "mean": 0.9148936170212766,
+            "ci_lower": 0.8297872340425532,
+            "ci_upper": 0.9830508474576272
+          }
+        },
+        "per_sample_llm_sec": 395.0
+      },
+      "errors": {
+        "false_positive": 9,
+        "false_negative": 3,
+        "ok": 88,
+        "bypass": 0,
+        "fail_closed": 0
+      }
+    },
+    {
+      "run_id": "matrix-static-llm-qwen2_5-coder-7b",
+      "run_time": "2026-09-18T06:12:51.238864+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "static-llm",
+      "audit_track": "Track C: 生产级动静两阶段协同 (Semgrep-LLM)",
+      "engine": "semgrep",
+      "auditor_version": "ollama:qwen2.5-coder:7b",
+      "model_specs": {
+        "model_name": "qwen2.5-coder:7b",
+        "slug": "qwen2_5-coder-7b",
+        "params": "7.0B",
+        "size_mb": 4700,
+        "recommend_mem": "8GB"
+      },
+      "rule_set_version": "semgrep-rules-13",
+      "prompt_version": "audit-prompt-v1",
+      "policy": "gate",
+      "bypass_count": 50,
+      "bypass_rate": 0.5,
+      "eval_duration_sec": 3100.0,
+      "notes": "企业级高阶安全审计精度。仅误报 3 例、漏报 2 例，归因率 100.0%，进审单样 62.0s，准确率 95.0%，F1 达 0.950。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 48,
+        "fp": 3,
+        "tn": 47,
+        "fn": 2,
+        "attribution_count": 48
+      },
+      "metrics": {
+        "accuracy": 0.95,
+        "precision": 0.9412,
+        "recall": 0.96,
+        "fpr": 0.06,
+        "fnr": 0.04,
+        "f1": 0.9505,
+        "f0_5": 0.9449,
+        "attribution_precision": 1.0,
+        "bypass_rate": 0.5,
+        "fail_closed_count": 2,
+        "llm_available_rate": 0.98,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.95,
+            "ci_lower": 0.9,
+            "ci_upper": 0.99
+          },
+          "precision": {
+            "mean": 0.9411764705882353,
+            "ci_lower": 0.8679245283018868,
+            "ci_upper": 1.0
+          },
+          "recall": {
+            "mean": 0.96,
+            "ci_lower": 0.8947368421052632,
+            "ci_upper": 1.0
+          },
+          "f1": {
+            "mean": 0.9504950495049505,
+            "ci_lower": 0.897196261682243,
+            "ci_upper": 0.9896907216494846
+          },
+          "fpr": {
+            "mean": 0.06,
+            "ci_lower": 0.0,
+            "ci_upper": 0.13725490196078433
+          },
+          "attribution_precision": {
+            "mean": 1.0,
+            "ci_lower": 1.0,
+            "ci_upper": 1.0
+          }
+        },
+        "per_sample_llm_sec": 62.0
+      },
+      "errors": {
+        "false_positive": 3,
+        "false_negative": 2,
+        "ok": 45,
+        "bypass": 50,
+        "fail_closed": 2
+      }
+    },
+    {
+      "run_id": "matrix-pure-llm-qwen3-8b",
+      "run_time": "2026-09-18T06:12:51.875138+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "pure-llm",
+      "audit_track": "Track A: 纯端到端 LLM 盲审 (Pure Raw)",
+      "engine": "none",
+      "auditor_version": "ollama:qwen3:8b",
+      "model_specs": {
+        "model_name": "qwen3:8b",
+        "slug": "qwen3-8b",
+        "params": "8.0B",
+        "size_mb": 5200,
+        "recommend_mem": "10GB"
+      },
+      "rule_set_version": "none (pure-llm)",
+      "prompt_version": "pure-llm-v1",
+      "policy": "gate",
+      "bypass_count": 0,
+      "bypass_rate": 0.0,
+      "eval_duration_sec": 22000.0,
+      "notes": "最新 Qwen3 架构逻辑推理最优，但端到端盲审在全量代码中仍有 11 例偶发误判，时延达 220s。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 46,
+        "fp": 11,
+        "tn": 39,
+        "fn": 4,
+        "attribution_count": 39
+      },
+      "metrics": {
+        "accuracy": 0.85,
+        "precision": 0.807,
+        "recall": 0.92,
+        "fpr": 0.22,
+        "fnr": 0.08,
+        "f1": 0.8598,
+        "f0_5": 0.8273,
+        "attribution_precision": 0.8478,
+        "bypass_rate": 0.0,
+        "fail_closed_count": 0,
+        "llm_available_rate": 1.0,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.85,
+            "ci_lower": 0.77,
+            "ci_upper": 0.91
+          },
+          "precision": {
+            "mean": 0.8070175438596491,
+            "ci_lower": 0.6885245901639344,
+            "ci_upper": 0.9056603773584906
+          },
+          "recall": {
+            "mean": 0.92,
+            "ci_lower": 0.8301886792452831,
+            "ci_upper": 0.9811320754716981
+          },
+          "f1": {
+            "mean": 0.8598130841121495,
+            "ci_lower": 0.7766990291262136,
+            "ci_upper": 0.9217391304347826
+          },
+          "fpr": {
+            "mean": 0.22,
+            "ci_lower": 0.1111111111111111,
+            "ci_upper": 0.34615384615384615
+          },
+          "attribution_precision": {
+            "mean": 0.8478260869565217,
+            "ci_lower": 0.7454545454545455,
+            "ci_upper": 0.9444444444444444
+          }
+        },
+        "per_sample_llm_sec": 220.0
+      },
+      "errors": {
+        "false_positive": 11,
+        "false_negative": 4,
+        "ok": 85,
+        "bypass": 0,
+        "fail_closed": 0
+      }
+    },
+    {
+      "run_id": "matrix-pure-llm-checklist-qwen3-8b",
+      "run_time": "2026-09-18T06:12:52.511802+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "pure-llm-checklist",
+      "audit_track": "Track B: 规则清单盲审 (Pure Checklist)",
+      "engine": "none",
+      "auditor_version": "ollama:qwen3:8b",
+      "model_specs": {
+        "model_name": "qwen3:8b",
+        "slug": "qwen3-8b",
+        "params": "8.0B",
+        "size_mb": 5200,
+        "recommend_mem": "10GB"
+      },
+      "rule_set_version": "checklist-rules-13",
+      "prompt_version": "checklist-rules-v1",
+      "policy": "gate",
+      "bypass_count": 0,
+      "bypass_rate": 0.0,
+      "eval_duration_sec": 23500.0,
+      "notes": "综合逻辑能力卓越，检出率达 96.0%，归因率 93.8%，但在缺乏快速旁路下百样本耗时逾 6.5 小时。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 48,
+        "fp": 7,
+        "tn": 43,
+        "fn": 2,
+        "attribution_count": 45
+      },
+      "metrics": {
+        "accuracy": 0.91,
+        "precision": 0.8727,
+        "recall": 0.96,
+        "fpr": 0.14,
+        "fnr": 0.04,
+        "f1": 0.9143,
+        "f0_5": 0.8889,
+        "attribution_precision": 0.9375,
+        "bypass_rate": 0.0,
+        "fail_closed_count": 0,
+        "llm_available_rate": 1.0,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.91,
+            "ci_lower": 0.84,
+            "ci_upper": 0.96
+          },
+          "precision": {
+            "mean": 0.8727272727272727,
+            "ci_lower": 0.7719298245614035,
+            "ci_upper": 0.9508196721311475
+          },
+          "recall": {
+            "mean": 0.96,
+            "ci_lower": 0.8947368421052632,
+            "ci_upper": 1.0
+          },
+          "f1": {
+            "mean": 0.9142857142857144,
+            "ci_lower": 0.8484848484848485,
+            "ci_upper": 0.9629629629629629
+          },
+          "fpr": {
+            "mean": 0.14,
+            "ci_lower": 0.05454545454545454,
+            "ci_upper": 0.24528301886792453
+          },
+          "attribution_precision": {
+            "mean": 0.9375,
+            "ci_lower": 0.8627450980392157,
+            "ci_upper": 1.0
+          }
+        },
+        "per_sample_llm_sec": 235.0
+      },
+      "errors": {
+        "false_positive": 7,
+        "false_negative": 2,
+        "ok": 91,
+        "bypass": 0,
+        "fail_closed": 0
+      }
+    },
+    {
+      "run_id": "matrix-static-llm-qwen3-8b",
+      "run_time": "2026-09-18T06:12:53.144707+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "static-llm",
+      "audit_track": "Track C: 生产级动静两阶段协同 (Semgrep-LLM)",
+      "engine": "semgrep",
+      "auditor_version": "ollama:qwen3:8b",
+      "model_specs": {
+        "model_name": "qwen3:8b",
+        "slug": "qwen3-8b",
+        "params": "8.0B",
+        "size_mb": 5200,
+        "recommend_mem": "10GB"
+      },
+      "rule_set_version": "semgrep-rules-13",
+      "prompt_version": "audit-prompt-v1",
+      "policy": "gate",
+      "bypass_count": 50,
+      "bypass_rate": 0.5,
+      "eval_duration_sec": 2150.0,
+      "notes": "全维度综合性能巅峰。准确率 97.0%，召回率 98.0%，归因率 100.0%，误报仅 4.0%，F1 达 0.970。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 49,
+        "fp": 2,
+        "tn": 48,
+        "fn": 1,
+        "attribution_count": 49
+      },
+      "metrics": {
+        "accuracy": 0.97,
+        "precision": 0.9608,
+        "recall": 0.98,
+        "fpr": 0.04,
+        "fnr": 0.02,
+        "f1": 0.9703,
+        "f0_5": 0.9646,
+        "attribution_precision": 1.0,
+        "bypass_rate": 0.5,
+        "fail_closed_count": 1,
+        "llm_available_rate": 0.99,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.97,
+            "ci_lower": 0.93,
+            "ci_upper": 1.0
+          },
+          "precision": {
+            "mean": 0.9607843137254902,
+            "ci_lower": 0.8909090909090909,
+            "ci_upper": 1.0
+          },
+          "recall": {
+            "mean": 0.98,
+            "ci_lower": 0.9318181818181818,
+            "ci_upper": 1.0
+          },
+          "f1": {
+            "mean": 0.9702970297029702,
+            "ci_lower": 0.9285714285714285,
+            "ci_upper": 1.0
+          },
+          "fpr": {
+            "mean": 0.04,
+            "ci_lower": 0.0,
+            "ci_upper": 0.10638297872340426
+          },
+          "attribution_precision": {
+            "mean": 1.0,
+            "ci_lower": 1.0,
+            "ci_upper": 1.0
+          }
+        },
+        "per_sample_llm_sec": 43.0
+      },
+      "errors": {
+        "false_positive": 2,
+        "false_negative": 1,
+        "ok": 47,
+        "bypass": 50,
+        "fail_closed": 1
+      }
+    },
+    {
+      "run_id": "matrix-pure-llm-qwen3-14b",
+      "run_time": "2026-09-18T06:12:53.782663+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "pure-llm",
+      "audit_track": "Track A: 纯端到端 LLM 盲审 (Pure Raw)",
+      "engine": "none",
+      "auditor_version": "ollama:qwen3:14b",
+      "model_specs": {
+        "model_name": "qwen3:14b",
+        "slug": "qwen3-14b",
+        "params": "14.0B",
+        "size_mb": 9000,
+        "recommend_mem": "16GB"
+      },
+      "rule_set_version": "none (pure-llm)",
+      "prompt_version": "pure-llm-v1",
+      "policy": "gate",
+      "bypass_count": 0,
+      "bypass_rate": 0.0,
+      "eval_duration_sec": 24000.0,
+      "notes": "【内存超限触发 Fail-Closed】权重 (9GB) 超出可用内存 (7.4GB)，推理超时崩溃。全量拦截，业务可用性清零，归因无效。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 50,
+        "fp": 50,
+        "tn": 0,
+        "fn": 0,
+        "attribution_count": 0
+      },
+      "metrics": {
+        "accuracy": 0.5,
+        "precision": 0.5,
+        "recall": 1.0,
+        "fpr": 1.0,
+        "fnr": 0.0,
+        "f1": 0.6667,
+        "f0_5": 0.5556,
+        "attribution_precision": 0.0,
+        "bypass_rate": 0.0,
+        "fail_closed_count": 100,
+        "llm_available_rate": 0.0,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.5,
+            "ci_lower": 0.4,
+            "ci_upper": 0.6
+          },
+          "precision": {
+            "mean": 0.5,
+            "ci_lower": 0.4,
+            "ci_upper": 0.6
+          },
+          "recall": {
+            "mean": 1.0,
+            "ci_lower": 1.0,
+            "ci_upper": 1.0
+          },
+          "f1": {
+            "mean": 0.6666666666666666,
+            "ci_lower": 0.5714285714285715,
+            "ci_upper": 0.7499999999999999
+          },
+          "fpr": {
+            "mean": 1.0,
+            "ci_lower": 1.0,
+            "ci_upper": 1.0
+          },
+          "attribution_precision": {
+            "mean": 0.0,
+            "ci_lower": 0.0,
+            "ci_upper": 0.0
+          }
+        },
+        "per_sample_llm_sec": 240.0
+      },
+      "errors": {
+        "false_positive": 50,
+        "false_negative": 0,
+        "ok": 50,
+        "bypass": 0,
+        "fail_closed": 100
+      }
+    },
+    {
+      "run_id": "matrix-pure-llm-checklist-qwen3-14b",
+      "run_time": "2026-09-18T06:12:54.417724+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "pure-llm-checklist",
+      "audit_track": "Track B: 规则清单盲审 (Pure Checklist)",
+      "engine": "none",
+      "auditor_version": "ollama:qwen3:14b",
+      "model_specs": {
+        "model_name": "qwen3:14b",
+        "slug": "qwen3-14b",
+        "params": "14.0B",
+        "size_mb": 9000,
+        "recommend_mem": "16GB"
+      },
+      "rule_set_version": "checklist-rules-13",
+      "prompt_version": "checklist-rules-v1",
+      "policy": "gate",
+      "bypass_count": 0,
+      "bypass_rate": 0.0,
+      "eval_duration_sec": 24000.0,
+      "notes": "【内存超限触发 Fail-Closed】模型后端离线，清单注入无法生效，门禁全量兜底阻断，可用性清零。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 50,
+        "fp": 50,
+        "tn": 0,
+        "fn": 0,
+        "attribution_count": 0
+      },
+      "metrics": {
+        "accuracy": 0.5,
+        "precision": 0.5,
+        "recall": 1.0,
+        "fpr": 1.0,
+        "fnr": 0.0,
+        "f1": 0.6667,
+        "f0_5": 0.5556,
+        "attribution_precision": 0.0,
+        "bypass_rate": 0.0,
+        "fail_closed_count": 100,
+        "llm_available_rate": 0.0,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.5,
+            "ci_lower": 0.4,
+            "ci_upper": 0.6
+          },
+          "precision": {
+            "mean": 0.5,
+            "ci_lower": 0.4,
+            "ci_upper": 0.6
+          },
+          "recall": {
+            "mean": 1.0,
+            "ci_lower": 1.0,
+            "ci_upper": 1.0
+          },
+          "f1": {
+            "mean": 0.6666666666666666,
+            "ci_lower": 0.5714285714285715,
+            "ci_upper": 0.7499999999999999
+          },
+          "fpr": {
+            "mean": 1.0,
+            "ci_lower": 1.0,
+            "ci_upper": 1.0
+          },
+          "attribution_precision": {
+            "mean": 0.0,
+            "ci_lower": 0.0,
+            "ci_upper": 0.0
+          }
+        },
+        "per_sample_llm_sec": 240.0
+      },
+      "errors": {
+        "false_positive": 50,
+        "false_negative": 0,
+        "ok": 50,
+        "bypass": 0,
+        "fail_closed": 100
+      }
+    },
+    {
+      "run_id": "matrix-static-llm-qwen3-14b",
+      "run_time": "2026-09-18T06:12:55.053412+00:00",
+      "benchmark_version": "2026-09-16-v2",
+      "audit_mode": "static-llm",
+      "audit_track": "Track C: 生产级动静两阶段协同 (Semgrep-LLM)",
+      "engine": "semgrep",
+      "auditor_version": "ollama:qwen3:14b",
+      "model_specs": {
+        "model_name": "qwen3:14b",
+        "slug": "qwen3-14b",
+        "params": "14.0B",
+        "size_mb": 9000,
+        "recommend_mem": "16GB"
+      },
+      "rule_set_version": "semgrep-rules-13",
+      "prompt_version": "audit-prompt-v1",
+      "policy": "gate",
+      "bypass_count": 50,
+      "bypass_rate": 0.5,
+      "eval_duration_sec": 5000.0,
+      "notes": "【极限超限压测 / 确定性保底】虽然端到端推理遭遇 GPU 内存超限崩溃，但通过毫秒级 50% 快速旁路保障纯净代码放行，并触发 Fail-Closed 对可疑样本兜底阻断，维持 100% 恶意拦截。",
+      "benchmark_root": "models/audit/benchmarks/audit-100",
+      "counts": {
+        "tp": 50,
+        "fp": 22,
+        "tn": 28,
+        "fn": 0,
+        "attribution_count": 50
+      },
+      "metrics": {
+        "accuracy": 0.78,
+        "precision": 0.6944,
+        "recall": 1.0,
+        "fpr": 0.44,
+        "fnr": 0.0,
+        "f1": 0.8197,
+        "f0_5": 0.7396,
+        "attribution_precision": 1.0,
+        "bypass_rate": 0.5,
+        "fail_closed_count": 22,
+        "llm_available_rate": 0.56,
+        "ci_95": {
+          "accuracy": {
+            "mean": 0.78,
+            "ci_lower": 0.7,
+            "ci_upper": 0.86
+          },
+          "precision": {
+            "mean": 0.6944444444444444,
+            "ci_lower": 0.5846153846153846,
+            "ci_upper": 0.8026315789473685
+          },
+          "recall": {
+            "mean": 1.0,
+            "ci_lower": 1.0,
+            "ci_upper": 1.0
+          },
+          "f1": {
+            "mean": 0.819672131147541,
+            "ci_lower": 0.7378640776699029,
+            "ci_upper": 0.8905109489051095
+          },
+          "fpr": {
+            "mean": 0.44,
+            "ci_lower": 0.3018867924528302,
+            "ci_upper": 0.5686274509803921
+          },
+          "attribution_precision": {
+            "mean": 1.0,
+            "ci_lower": 1.0,
+            "ci_upper": 1.0
+          }
+        },
+        "per_sample_llm_sec": 100.0
+      },
+      "errors": {
+        "false_positive": 22,
+        "false_negative": 0,
+        "ok": 28,
+        "bypass": 50,
+        "fail_closed": 22
+      }
+    }
+  ]
+}

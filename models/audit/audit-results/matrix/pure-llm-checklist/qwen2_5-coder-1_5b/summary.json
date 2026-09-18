@@ -1,0 +1,84 @@
+{
+  "run_id": "matrix-pure-llm-checklist-qwen2_5-coder-1_5b",
+  "run_time": "2026-09-18T06:12:46.768755+00:00",
+  "benchmark_version": "2026-09-16-v2",
+  "audit_mode": "pure-llm-checklist",
+  "audit_track": "Track B: 规则清单盲审 (Pure Checklist)",
+  "engine": "none",
+  "auditor_version": "ollama:qwen2.5-coder:1.5b",
+  "model_specs": {
+    "model_name": "qwen2.5-coder:1.5b",
+    "slug": "qwen2_5-coder-1_5b",
+    "params": "1.5B",
+    "size_mb": 986,
+    "recommend_mem": "4GB"
+  },
+  "rule_set_version": "checklist-rules-13",
+  "prompt_version": "checklist-rules-v1",
+  "policy": "gate",
+  "bypass_count": 0,
+  "bypass_rate": 0.0,
+  "eval_duration_sec": 12800.0,
+  "notes": "清单指引将召回率提升至 90.0%，归因率提升至 82.2%，但全文件盲审耗时沉重，且良性特征重叠仍致 17 例误杀 (FPR=34.0%)。",
+  "benchmark_root": "models/audit/benchmarks/audit-100",
+  "counts": {
+    "tp": 45,
+    "fp": 17,
+    "tn": 33,
+    "fn": 5,
+    "attribution_count": 37
+  },
+  "metrics": {
+    "accuracy": 0.78,
+    "precision": 0.7258,
+    "recall": 0.9,
+    "fpr": 0.34,
+    "fnr": 0.1,
+    "f1": 0.8036,
+    "f0_5": 0.755,
+    "attribution_precision": 0.8222,
+    "bypass_rate": 0.0,
+    "fail_closed_count": 0,
+    "llm_available_rate": 1.0,
+    "ci_95": {
+      "accuracy": {
+        "mean": 0.78,
+        "ci_lower": 0.69,
+        "ci_upper": 0.85
+      },
+      "precision": {
+        "mean": 0.7258064516129032,
+        "ci_lower": 0.6071428571428571,
+        "ci_upper": 0.8307692307692308
+      },
+      "recall": {
+        "mean": 0.9,
+        "ci_lower": 0.8076923076923077,
+        "ci_upper": 0.9787234042553191
+      },
+      "f1": {
+        "mean": 0.8035714285714286,
+        "ci_lower": 0.7115384615384616,
+        "ci_upper": 0.8749999999999999
+      },
+      "fpr": {
+        "mean": 0.34,
+        "ci_lower": 0.20930232558139536,
+        "ci_upper": 0.46153846153846156
+      },
+      "attribution_precision": {
+        "mean": 0.8222222222222222,
+        "ci_lower": 0.7083333333333334,
+        "ci_upper": 0.9230769230769231
+      }
+    },
+    "per_sample_llm_sec": 128.0
+  },
+  "errors": {
+    "false_positive": 17,
+    "false_negative": 5,
+    "ok": 78,
+    "bypass": 0,
+    "fail_closed": 0
+  }
+}

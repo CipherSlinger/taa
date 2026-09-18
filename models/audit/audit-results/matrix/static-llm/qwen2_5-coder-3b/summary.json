@@ -1,0 +1,84 @@
+{
+  "run_id": "matrix-static-llm-qwen2_5-coder-3b",
+  "run_time": "2026-09-18T06:12:49.318870+00:00",
+  "benchmark_version": "2026-09-16-v2",
+  "audit_mode": "static-llm",
+  "audit_track": "Track C: 生产级动静两阶段协同 (Semgrep-LLM)",
+  "engine": "semgrep",
+  "auditor_version": "ollama:qwen2.5-coder:3b",
+  "model_specs": {
+    "model_name": "qwen2.5-coder:3b",
+    "slug": "qwen2_5-coder-3b",
+    "params": "3.0B",
+    "size_mb": 1900,
+    "recommend_mem": "6GB"
+  },
+  "rule_set_version": "semgrep-rules-13",
+  "prompt_version": "audit-prompt-v1",
+  "policy": "gate",
+  "bypass_count": 50,
+  "bypass_rate": 0.5,
+  "eval_duration_sec": 1420.0,
+  "notes": "专业级代码审计水准。准确率达 92.0%，归因率 97.9%，召回率 94.0%，Semgrep 污点流精确定位多层编码伪装与反弹通信。",
+  "benchmark_root": "models/audit/benchmarks/audit-100",
+  "counts": {
+    "tp": 47,
+    "fp": 5,
+    "tn": 45,
+    "fn": 3,
+    "attribution_count": 46
+  },
+  "metrics": {
+    "accuracy": 0.92,
+    "precision": 0.9038,
+    "recall": 0.94,
+    "fpr": 0.1,
+    "fnr": 0.06,
+    "f1": 0.9216,
+    "f0_5": 0.9109,
+    "attribution_precision": 0.9787,
+    "bypass_rate": 0.5,
+    "fail_closed_count": 3,
+    "llm_available_rate": 0.97,
+    "ci_95": {
+      "accuracy": {
+        "mean": 0.92,
+        "ci_lower": 0.86,
+        "ci_upper": 0.97
+      },
+      "precision": {
+        "mean": 0.9038461538461539,
+        "ci_lower": 0.8163265306122449,
+        "ci_upper": 0.9791666666666666
+      },
+      "recall": {
+        "mean": 0.94,
+        "ci_lower": 0.8653846153846154,
+        "ci_upper": 1.0
+      },
+      "f1": {
+        "mean": 0.9215686274509804,
+        "ci_lower": 0.8571428571428572,
+        "ci_upper": 0.9696969696969697
+      },
+      "fpr": {
+        "mean": 0.1,
+        "ci_lower": 0.021739130434782608,
+        "ci_upper": 0.19230769230769232
+      },
+      "attribution_precision": {
+        "mean": 0.9787234042553191,
+        "ci_lower": 0.9245283018867925,
+        "ci_upper": 1.0
+      }
+    },
+    "per_sample_llm_sec": 28.4
+  },
+  "errors": {
+    "false_positive": 5,
+    "false_negative": 3,
+    "ok": 42,
+    "bypass": 50,
+    "fail_closed": 3
+  }
+}

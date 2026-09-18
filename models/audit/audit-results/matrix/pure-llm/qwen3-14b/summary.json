@@ -1,0 +1,84 @@
+{
+  "run_id": "matrix-pure-llm-qwen3-14b",
+  "run_time": "2026-09-18T06:12:53.782663+00:00",
+  "benchmark_version": "2026-09-16-v2",
+  "audit_mode": "pure-llm",
+  "audit_track": "Track A: 纯端到端 LLM 盲审 (Pure Raw)",
+  "engine": "none",
+  "auditor_version": "ollama:qwen3:14b",
+  "model_specs": {
+    "model_name": "qwen3:14b",
+    "slug": "qwen3-14b",
+    "params": "14.0B",
+    "size_mb": 9000,
+    "recommend_mem": "16GB"
+  },
+  "rule_set_version": "none (pure-llm)",
+  "prompt_version": "pure-llm-v1",
+  "policy": "gate",
+  "bypass_count": 0,
+  "bypass_rate": 0.0,
+  "eval_duration_sec": 24000.0,
+  "notes": "【内存超限触发 Fail-Closed】权重 (9GB) 超出可用内存 (7.4GB)，推理超时崩溃。全量拦截，业务可用性清零，归因无效。",
+  "benchmark_root": "models/audit/benchmarks/audit-100",
+  "counts": {
+    "tp": 50,
+    "fp": 50,
+    "tn": 0,
+    "fn": 0,
+    "attribution_count": 0
+  },
+  "metrics": {
+    "accuracy": 0.5,
+    "precision": 0.5,
+    "recall": 1.0,
+    "fpr": 1.0,
+    "fnr": 0.0,
+    "f1": 0.6667,
+    "f0_5": 0.5556,
+    "attribution_precision": 0.0,
+    "bypass_rate": 0.0,
+    "fail_closed_count": 100,
+    "llm_available_rate": 0.0,
+    "ci_95": {
+      "accuracy": {
+        "mean": 0.5,
+        "ci_lower": 0.4,
+        "ci_upper": 0.6
+      },
+      "precision": {
+        "mean": 0.5,
+        "ci_lower": 0.4,
+        "ci_upper": 0.6
+      },
+      "recall": {
+        "mean": 1.0,
+        "ci_lower": 1.0,
+        "ci_upper": 1.0
+      },
+      "f1": {
+        "mean": 0.6666666666666666,
+        "ci_lower": 0.5714285714285715,
+        "ci_upper": 0.7499999999999999
+      },
+      "fpr": {
+        "mean": 1.0,
+        "ci_lower": 1.0,
+        "ci_upper": 1.0
+      },
+      "attribution_precision": {
+        "mean": 0.0,
+        "ci_lower": 0.0,
+        "ci_upper": 0.0
+      }
+    },
+    "per_sample_llm_sec": 240.0
+  },
+  "errors": {
+    "false_positive": 50,
+    "false_negative": 0,
+    "ok": 50,
+    "bypass": 0,
+    "fail_closed": 100
+  }
+}

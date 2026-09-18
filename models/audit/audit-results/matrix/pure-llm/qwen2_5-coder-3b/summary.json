@@ -1,0 +1,84 @@
+{
+  "run_id": "matrix-pure-llm-qwen2_5-coder-3b",
+  "run_time": "2026-09-18T06:12:48.042625+00:00",
+  "benchmark_version": "2026-09-16-v2",
+  "audit_mode": "pure-llm",
+  "audit_track": "Track A: 纯端到端 LLM 盲审 (Pure Raw)",
+  "engine": "none",
+  "auditor_version": "ollama:qwen2.5-coder:3b",
+  "model_specs": {
+    "model_name": "qwen2.5-coder:3b",
+    "slug": "qwen2_5-coder-3b",
+    "params": "3.0B",
+    "size_mb": 1900,
+    "recommend_mem": "6GB"
+  },
+  "rule_set_version": "none (pure-llm)",
+  "prompt_version": "pure-llm-v1",
+  "policy": "gate",
+  "bypass_count": 0,
+  "bypass_rate": 0.0,
+  "eval_duration_sec": 16500.0,
+  "notes": "专业代码能力提升，但纯盲审对跨文件隐蔽调用链把握不足，导致 6 例高阶载荷漏报，归因率 77.3%。",
+  "benchmark_root": "models/audit/benchmarks/audit-100",
+  "counts": {
+    "tp": 44,
+    "fp": 16,
+    "tn": 34,
+    "fn": 6,
+    "attribution_count": 34
+  },
+  "metrics": {
+    "accuracy": 0.78,
+    "precision": 0.7333,
+    "recall": 0.88,
+    "fpr": 0.32,
+    "fnr": 0.12,
+    "f1": 0.8,
+    "f0_5": 0.7586,
+    "attribution_precision": 0.7727,
+    "bypass_rate": 0.0,
+    "fail_closed_count": 0,
+    "llm_available_rate": 1.0,
+    "ci_95": {
+      "accuracy": {
+        "mean": 0.78,
+        "ci_lower": 0.7,
+        "ci_upper": 0.85
+      },
+      "precision": {
+        "mean": 0.7333333333333333,
+        "ci_lower": 0.6153846153846154,
+        "ci_upper": 0.8392857142857143
+      },
+      "recall": {
+        "mean": 0.88,
+        "ci_lower": 0.7857142857142857,
+        "ci_upper": 0.96
+      },
+      "f1": {
+        "mean": 0.8,
+        "ci_lower": 0.7115384615384616,
+        "ci_upper": 0.870967741935484
+      },
+      "fpr": {
+        "mean": 0.32,
+        "ci_lower": 0.19230769230769232,
+        "ci_upper": 0.44642857142857145
+      },
+      "attribution_precision": {
+        "mean": 0.7727272727272727,
+        "ci_lower": 0.6341463414634146,
+        "ci_upper": 0.8913043478260869
+      }
+    },
+    "per_sample_llm_sec": 165.0
+  },
+  "errors": {
+    "false_positive": 16,
+    "false_negative": 6,
+    "ok": 78,
+    "bypass": 0,
+    "fail_closed": 0
+  }
+}
