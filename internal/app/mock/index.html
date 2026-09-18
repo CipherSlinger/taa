@@ -3645,20 +3645,34 @@ async function testSwitch(phase) {
   return quickSwitchPhase(Number(p));
 }
 
-async function testExport() {
-  showResultRunning('exportResult', '正在请求...');
+async function exportReportItem(idx, shouldDecrypt, btn) {
+  const item = reportResHistory[idx];
+  if (!item) return;
+
+  const taskId = (item.taskId || '').trim();
+  const requestId = (item.requestId || '').trim();
+
+  if (shouldDecrypt) {
+    const privKey = (globalKeyPair.privateKey || '').trim();
+    if (!privKey) {
+      alert('已开启解密，但尚未生成解密私钥，请先点击上方“创建公私钥”生成密钥对');
+      return;
+    }
+  }
+
+  const origText = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = shouldDecrypt ? '解密中...' : '导出中...';
+  }
+
   try {
-    const pk = document.getElementById('exportPublicKey').value;
-    const taskId = document.getElementById('exportTaskId').value.trim();
-    const requestId = (document.getElementById('exportRequestId') ? document.getElementById('exportRequestId').value : '').trim();
     const body = {};
     if (taskId) body.taskId = taskId;
     if (requestId) body.requestId = requestId;
-    if (pk) body.publicKey = pk;
-    else body.publicKey = null;
 
     recordInteraction('export', {
-      title: '/v1/taa/export 导出结果详情',
+      title: `/v1/taa/export 导出结果详情 (${taskId || 'task'})`,
       primaryLabel: '返回内容',
       secondaryLabel: '请求体',
       primaryContent: null,
@@ -3667,32 +3681,19 @@ async function testExport() {
 
     const r = await postToTAAFile('/v1/taa/export', body);
     if (r.status === 200 && r.blob) {
-      const shouldDecrypt = Boolean(document.getElementById('exportDecryptSwitch') && document.getElementById('exportDecryptSwitch').checked);
+      const isEncrypted = Boolean(r.encrypted || (r.filename && r.filename.toLowerCase().endsWith('.enc')));
+
       if (shouldDecrypt) {
-        const isEncrypted = Boolean(r.encrypted || (r.filename && r.filename.toLowerCase().endsWith('.enc')));
         if (!isEncrypted) {
           downloadBlob(r.blob, r.filename);
-          const plainText = 'HTTP 200\n提示: 响应结果为明文（未加密，无需解密），已直接保存原文件\n' +
-            '保存文件名: ' + r.filename + '\n' +
-            'taskId: ' + r.taskId + '\n' +
-            'encrypted: ' + r.encrypted + '\n' +
-            '大小: ' + r.blob.size + ' bytes' + (r.contentLength ? ' (Content-Length: ' + r.contentLength + ')' : '');
+          const plainText = `HTTP 200\n提示: 响应结果为明文（未加密，无需解密），已直接保存原文件: ${r.filename}`;
           recordInteraction('export', { primaryContent: plainText });
-          showResult('exportResult', true, plainText);
+          alert(`提示: 响应结果为明文（无需解密），已保存原文件: ${r.filename}`);
           return;
         }
 
-        const privKey = (globalKeyPair.privateKey || '').trim();
-        if (!privKey) {
-          const noKeyMsg = '已开启解密开关且导出结果为加密数据，但未生成解密私钥，请先点击上方“创建公私钥”生成密钥对';
-          recordInteraction('export', { primaryContent: noKeyMsg });
-          showResult('exportResult', false, noKeyMsg);
-          return;
-        }
-
-        showResultRunning('exportResult', 'TAA 导出成功，正在解密数据...');
         const formData = new FormData();
-        formData.append('privateKey', privKey);
+        formData.append('privateKey', globalKeyPair.privateKey.trim());
         formData.append('file', r.blob, r.filename);
 
         const decRes = await fetch('/api/crypto/decrypt', {
@@ -3704,7 +3705,7 @@ async function testExport() {
           const errData = await decRes.json().catch(() => ({}));
           const decErrMsg = `解密失败: ${errData.msg || 'HTTP ' + decRes.status}`;
           recordInteraction('export', { primaryContent: decErrMsg });
-          showResult('exportResult', false, decErrMsg);
+          alert(decErrMsg);
           return;
         }
 
@@ -3717,34 +3718,26 @@ async function testExport() {
         }
 
         downloadBlob(decBlob, saveFilename);
-        const decSuccessText = 'HTTP 200\n已成功解密并保存结果文件\n' +
-          '保存文件名: ' + saveFilename + '\n' +
-          '原始文件名: ' + r.filename + '\n' +
-          'taskId: ' + r.taskId + '\n' +
-          '密文大小: ' + r.blob.size + ' bytes\n' +
-          '解密后大小: ' + decBlob.size + ' bytes';
+        const decSuccessText = `HTTP 200\n已成功解密并保存结果文件: ${saveFilename}`;
         recordInteraction('export', { primaryContent: decSuccessText });
-        showResult('exportResult', true, decSuccessText);
-        return;
+      } else {
+        downloadBlob(r.blob, r.filename);
+        const rawText = `HTTP 200\n已直接返回并保存原文件: ${r.filename}`;
+        recordInteraction('export', { primaryContent: rawText });
       }
-
-      downloadBlob(r.blob, r.filename);
-      const rawText = 'HTTP 200\n已直接返回并保存原文件\n' +
-        'filename: ' + r.filename + '\n' +
-        'taskId: ' + r.taskId + '\n' +
-        'encrypted: ' + r.encrypted + '\n' +
-        'size: ' + r.blob.size + ' bytes' + (r.contentLength ? ' (Content-Length: ' + r.contentLength + ')' : '');
-      recordInteraction('export', { primaryContent: rawText });
-      showResult('exportResult', true, rawText);
-      return;
+    } else {
+      const errMsg = `导出失败: ${(r.data && r.data.msg) || ('HTTP ' + r.status)}`;
+      recordInteraction('export', { primaryContent: errMsg });
+      alert(errMsg);
     }
-    const respFailText = formatResp(r);
-    recordInteraction('export', { primaryContent: respFailText });
-    showResult('exportResult', false, respFailText);
-  } catch (e) {
-    const catchErr = '请求失败: ' + e.message;
-    recordInteraction('export', { primaryContent: catchErr });
-    showResult('exportResult', false, catchErr);
+  } catch (err) {
+    recordInteraction('export', { primaryContent: '导出异常: ' + err.message });
+    alert(`导出异常: ${err.message}`);
+  } finally {
+    if (btn) {
+      btn.textContent = origText;
+      btn.disabled = false;
+    }
   }
 }
 
