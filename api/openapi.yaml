@@ -65,41 +65,6 @@ paths:
                   currentOp: "idle"
                 error: 0
 
-  /v1/taa/logs:
-    post:
-      summary: 日志查询
-      description: 按时间戳增量获取 TAA 实例在 TEE 内部记录的结构化运行日志。
-      tags:
-        - 运维与监控
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LogsRequest'
-            example:
-              since: "2026-09-02T10:00:00Z"
-      responses:
-        '200':
-          description: 成功返回日志列表
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/ApiResponse'
-                  - properties:
-                      result:
-                        type: array
-                        items:
-                          $ref: '#/components/schemas/LogEntry'
-              example:
-                msg: "success"
-                result:
-                  - timestamp: "2026-09-02T10:03:35Z"
-                    level: "INFO"
-                    message: "resource downloaded and decrypted successfully"
-                error: 0
-
   /v1/taa/getAttestation:
     post:
       summary: 获取远程证明报告
@@ -433,6 +398,31 @@ paths:
                   received: true
                 error: 0
 
+  /v1/taa/taaLog:
+    post:
+      summary: 上报 TAA 运行日志
+      description: TAA 在运行过程中向平台批量主动上报 TAA 自身的内部运行日志。
+      tags:
+        - 平台回调
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaaLogRequest'
+      responses:
+        '200':
+          description: 平台成功接收日志
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                msg: "success"
+                result:
+                  received: true
+                error: 0
+
   /v1/taa/reportProgress:
     post:
       summary: 上报任务进度
@@ -504,31 +494,6 @@ components:
           type: string
           description: 当前后台操作 (idle/downloading/decrypting/extracting/training/auditing 等)
           example: "idle"
-
-    # ── 日志模型 ────────────────────────────────────────────────────────────
-    LogsRequest:
-      type: object
-      properties:
-        since:
-          type: string
-          format: date-time
-          description: 仅获取此 ISO8601 时间戳之后的增量日志
-          example: "2026-09-02T10:00:00Z"
-
-    LogEntry:
-      type: object
-      properties:
-        timestamp:
-          type: string
-          format: date-time
-          description: 日志产生时间
-        level:
-          type: string
-          enum: [DEBUG, INFO, WARN, ERROR]
-          description: 日志级别
-        message:
-          type: string
-          description: 日志内容
 
     # ── 证明模型 ────────────────────────────────────────────────────────────
     GetAttestationRequest:
@@ -797,6 +762,46 @@ components:
         message:
           type: string
           description: 日志正文内容
+
+    TaaLogRequest:
+      type: object
+      required:
+        - dockerId
+        - requestId
+        - seqStart
+        - entries
+      properties:
+        dockerId:
+          type: string
+          description: 容器唯一标识
+        requestId:
+          type: string
+          description: 请求标识
+        taskId:
+          type: string
+          description: 任务唯一标识（可选）
+        seqStart:
+          type: integer
+          format: int64
+          description: 本批日志起始序号
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaaLogEntry'
+
+    TaaLogEntry:
+      type: object
+      required:
+        - seq
+        - message
+      properties:
+        seq:
+          type: integer
+          format: int64
+          description: 递增日志序号
+        message:
+          type: string
+          description: 格式化的运行日志内容（例如 "[INFO] [controller] message"）
 
     ReportProgressRequest:
       type: object
