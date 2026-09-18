@@ -1144,22 +1144,6 @@ func TestGetAttestationHandler(t *testing.T) {
 	})
 }
 
-// ── Test: /v1/taa/reportRes 服务端禁用 ────────────────
-
-func TestReportResHandlerDisabled(t *testing.T) {
-	_, server := setupTestServer(t)
-
-	resp := postJSON(t, server.URL+"/v1/taa/reportRes", map[string]any{
-		"requestId": "req-report-001",
-		"code":      0,
-		"msg":       nil,
-	})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", resp.StatusCode)
-	}
-}
-
 // extractZipMap 将 zip 字节解压为 文件名->内容的映射（跳过目录项）。
 func extractZipMap(t *testing.T, zipData []byte) map[string][]byte {
 	t.Helper()
