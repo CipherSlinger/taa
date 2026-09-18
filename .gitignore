@@ -1,4 +1,5 @@
 .claude/
+CLAUDE.md
 .local/
 
 # 编译产物
@@ -8,7 +9,6 @@ taa-config.json
 
 # 测试相关
 docs/audit/references/
-uploads/
 
 # 审计
 models/audit/audit-results/
