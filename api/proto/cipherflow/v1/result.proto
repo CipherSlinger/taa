@@ -104,7 +104,7 @@ message ArtifactManifest {
   map<string, string> file_checksums = 5;
 }
 
-// 完整的训练结果契约体（必须序列化保存在 /opt/taa/output/training_result.json）
+// 完整的训练结果契约体（必须序列化保存在 /opt/taa/output/result/training_result.json）
 message TrainingResult {
   // 任务元信息
   TrainingTaskSummary training_task = 1;

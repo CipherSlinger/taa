@@ -65,7 +65,7 @@ message TeeNodeEvalResult {
   // 执行阶段
   ExecutionPhase phase = 3;
 
-  // 训练结果汇总（对齐 /opt/taa/output/training_result.json）
+  // 训练结果汇总（对齐 /opt/taa/output/result/training_result.json）
   TrainingResult training_result = 4;
 
   // 最终保存的检查点元数据（若生成了检查点）

@@ -52,19 +52,19 @@ message OutputPathSpec {
   // 固定输出根路径，默认固定为 "/opt/taa/output"
   string root_dir = 1;
 
-  // 最终模型权重与格式化产物保存目录，如 "/opt/taa/output/weights"
+  // 最终模型权重与格式化产物保存目录，如 "/opt/taa/output/result/weights"
   string weights_dir = 2;
 
-  // 训练结果汇总文件固定路径，必须为 "/opt/taa/output/training_result.json"
+  // 训练结果汇总文件固定路径，必须为 "/opt/taa/output/result/training_result.json"
   string training_result_file = 3;
 
-  // 评测/测试结果表格固定路径，如 "/opt/taa/output/test_result.xlsx" 或 "predictions.csv"
+  // 评测/测试结果表格固定路径，如 "/opt/taa/output/result/test_result.xlsx" 或 "predictions.csv"
   string evaluation_result_file = 4;
 
-  // 训练过程日志与 TensorBoard 事件目录，如 "/opt/taa/output/logs"
+  // 训练过程日志与 TensorBoard 事件目录，固定为 "/opt/taa/output/log"
   string logs_dir = 5;
 
-  // 实时进度持久化文件（用于文件轮询模式上报进度），如 "/opt/taa/output/progress.json"
+  // 实时进度持久化文件（用于文件轮询模式上报进度），必须为 "/opt/taa/output/progress/progress.json"
   string progress_file = 6;
 
   // 自定义扩展输出产物槽位映射表 (artifact_name -> absolute_path)
@@ -72,11 +72,14 @@ message OutputPathSpec {
 
   // 访问权限，固定为 READ_WRITE
   PathAccessMode access_mode = 8;
+
+  // 模型主结果产物目录，固定为 "/opt/taa/output/result"
+  string result_dir = 9;
 }
 
 // 检查点持久化路径规范（用于故障崩溃自愈与断点续训）
 message CheckpointPathSpec {
-  // 检查点根目录，默认固定为 "/opt/taa/checkpoint" 或 "/opt/taa/output/checkpoints"
+  // 检查点根目录，默认固定为 "/opt/taa/checkpoint" 或 "/opt/taa/output/result/checkpoints"
   string root_dir = 1;
 
   // 最新检查点文件/目录路径，如 "/opt/taa/checkpoint/latest.pt"

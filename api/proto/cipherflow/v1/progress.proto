@@ -117,9 +117,9 @@ message ProgressReportAck {
 // 进度上报通道传输模式
 enum ProgressTransportMode {
   TRANSPORT_UNSPECIFIED = 0;
-  HTTP_POST = 1;     // 本地 HTTP POST 请求（如 http://127.0.0.1:6001/internal/progress）
+  HTTP_POST = 1;     // [Deprecated in TAA] 本地 HTTP 请求（TAA 采用基于文件的进度轮询机制）
   GRPC_STREAM = 2;   // 本地 gRPC 双向流或一元调用
-  FILE_FLUSH = 3;    // 本地持久化文件（写入 /opt/taa/output/progress.json）
+  FILE_FLUSH = 3;    // 本地持久化文件（写入 /opt/taa/output/progress/progress.json）
   STDOUT_STREAM = 4; // 标准输出格式化日志拦截（[CIPHERFLOW_PROGRESS] {"epoch": 1, ...}）
 }
 
@@ -137,7 +137,7 @@ message ProgressReporterConfig {
   // 按时间上报的间隔阈值（如每 5 秒上报一次）
   int32 interval_seconds = 4;
 
-  // 进度输出文件路径（仅在 FILE_FLUSH 模式下有效，默认 "/opt/taa/output/progress.json"）
+  // 进度输出文件路径（仅在 FILE_FLUSH 模式下有效，默认 "/opt/taa/output/progress/progress.json"）
   string file_path = 5;
 }
 
