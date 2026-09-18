@@ -1522,6 +1522,201 @@ func TestModelLogStatusAndReset(t *testing.T) {
 	}
 }
 
+func TestTaaLogDeduplicationAndRingBuffer(t *testing.T) {
+	store := newTaaLogStore(t.TempDir(), 5)
+	handler := taaLogHandler(store)
+
+	sendLogs := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/taa/taaLog", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler(w, req)
+		return w
+	}
+
+	// 1. 发送一批日志（seq 1..2）
+	w1 := sendLogs(`{
+		"dockerId": "docker-taa",
+		"requestId": "req-1",
+		"taskId": "task-1",
+		"seqStart": 1,
+		"entries": [
+			{"seq": 1, "message": "[INFO] [sys] msg 1"},
+			{"seq": 2, "message": "[INFO] [sys] msg 2"}
+		]
+	}`)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("batch 1 status = %d, want 200; body=%s", w1.Code, w1.Body.String())
+	}
+	st1 := store.get()
+	if st1.TotalCount != 2 || len(st1.Entries) != 2 {
+		t.Fatalf("state 1 count mismatch: total=%d entries=%d, want 2", st1.TotalCount, len(st1.Entries))
+	}
+	if st1.Entries[0].Seq != 1 || st1.Entries[1].Seq != 2 {
+		t.Fatalf("state 1 entries order mismatch: %+v", st1.Entries)
+	}
+	if st1.LastSeq != 2 {
+		t.Fatalf("state 1 lastSeq = %d, want 2", st1.LastSeq)
+	}
+
+	// 2. 发送重复日志（seq 2）以及新日志（seq 3）
+	w2 := sendLogs(`{
+		"dockerId": "docker-taa",
+		"requestId": "req-1",
+		"taskId": "task-1",
+		"seqStart": 2,
+		"entries": [
+			{"seq": 2, "message": "[INFO] [sys] msg 2 dup"},
+			{"seq": 3, "message": "[INFO] [sys] msg 3"}
+		]
+	}`)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("batch 2 status = %d, want 200; body=%s", w2.Code, w2.Body.String())
+	}
+	st2 := store.get()
+	if st2.TotalCount != 3 || len(st2.Entries) != 3 {
+		t.Fatalf("state 2 count mismatch: total=%d entries=%d, want 3", st2.TotalCount, len(st2.Entries))
+	}
+	if st2.Entries[0].Seq != 1 || st2.Entries[1].Seq != 2 || st2.Entries[2].Seq != 3 {
+		t.Fatalf("state 2 entries order mismatch: %+v", st2.Entries)
+	}
+	if st2.Entries[1].Message != "[INFO] [sys] msg 2" {
+		t.Fatalf("state 2 duplicate overwritten: %q", st2.Entries[1].Message)
+	}
+
+	// 3. 验证环形缓冲容量限制（容量 5，写入 8 条）
+	w3 := sendLogs(`{
+		"dockerId": "docker-taa",
+		"requestId": "req-1",
+		"seqStart": 4,
+		"entries": [
+			{"seq": 4, "message": "msg 4"},
+			{"seq": 5, "message": "msg 5"},
+			{"seq": 6, "message": "msg 6"},
+			{"seq": 7, "message": "msg 7"},
+			{"seq": 8, "message": "msg 8"}
+		]
+	}`)
+	if w3.Code != http.StatusOK {
+		t.Fatalf("batch 3 status = %d, want 200; body=%s", w3.Code, w3.Body.String())
+	}
+	st3 := store.get()
+	if st3.TotalCount != 8 {
+		t.Fatalf("state 3 totalCount = %d, want 8", st3.TotalCount)
+	}
+	if len(st3.Entries) != 5 {
+		t.Fatalf("state 3 entries len = %d, want capacity 5", len(st3.Entries))
+	}
+	expectedSeqs := []uint64{4, 5, 6, 7, 8}
+	for i, expected := range expectedSeqs {
+		if st3.Entries[i].Seq != expected {
+			t.Fatalf("entry %d seq = %d, want %d", i, st3.Entries[i].Seq, expected)
+		}
+	}
+}
+
+func TestTaaLogValidation(t *testing.T) {
+	store := newTaaLogStore(t.TempDir(), 2000)
+	handler := taaLogHandler(store)
+
+	send := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/taa/taaLog", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler(w, req)
+		return w
+	}
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "missing dockerId",
+			body: `{"requestId":"req-1","entries":[{"seq":1,"message":"hello"}]}`,
+		},
+		{
+			name: "missing requestId",
+			body: `{"dockerId":"docker-1","entries":[{"seq":1,"message":"hello"}]}`,
+		},
+		{
+			name: "entries is empty",
+			body: `{"dockerId":"docker-1","requestId":"req-1","entries":[]}`,
+		},
+		{
+			name: "entry message is empty",
+			body: `{"dockerId":"docker-1","requestId":"req-1","entries":[{"seq":1,"message":""}]}`,
+		},
+		{
+			name: "entry message is whitespace",
+			body: `{"dockerId":"docker-1","requestId":"req-1","entries":[{"seq":1,"message":"   "}]}`,
+		},
+	}
+
+	for _, tc := range cases {
+		w := send(tc.body)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("case %s status = %d, want 400; body=%s", tc.name, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestTaaLogStatusAndReset(t *testing.T) {
+	store := newTaaLogStore(t.TempDir(), 2000)
+	logHandler := taaLogHandler(store)
+	statusHandler := taaLogStatusHandler(store)
+	resetHandler := taaLogResetHandler(store)
+
+	reqLog := httptest.NewRequest(http.MethodPost, "/v1/taa/taaLog", strings.NewReader(`{
+		"dockerId": "docker-taa",
+		"requestId": "req-1",
+		"taskId": "task-1",
+		"seqStart": 1,
+		"entries": [
+			{"seq": 1, "message": "[INFO] [sys] started"}
+		]
+	}`))
+	reqLog.Header.Set("Content-Type", "application/json")
+	wLog := httptest.NewRecorder()
+	logHandler(wLog, reqLog)
+	if wLog.Code != http.StatusOK {
+		t.Fatalf("log status = %d, want 200; body=%s", wLog.Code, wLog.Body.String())
+	}
+
+	wStatus := httptest.NewRecorder()
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/taaLog/status", nil)
+	statusHandler(wStatus, reqStatus)
+	if wStatus.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", wStatus.Code)
+	}
+
+	var resp struct {
+		Msg    string      `json:"msg"`
+		Result taaLogState `json:"result"`
+	}
+	if err := json.NewDecoder(wStatus.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if resp.Result.DockerID != "docker-taa" || resp.Result.RequestID != "req-1" || resp.Result.TotalCount != 1 {
+		t.Fatalf("status result mismatch: %+v", resp.Result)
+	}
+	if len(resp.Result.Entries) != 1 || resp.Result.Entries[0].Message != "[INFO] [sys] started" {
+		t.Fatalf("status entries mismatch: %+v", resp.Result.Entries)
+	}
+
+	wReset := httptest.NewRecorder()
+	reqReset := httptest.NewRequest(http.MethodPost, "/api/taaLog/reset", nil)
+	resetHandler(wReset, reqReset)
+	if wReset.Code != http.StatusOK {
+		t.Fatalf("reset code = %d, want 200", wReset.Code)
+	}
+
+	stAfterReset := store.get()
+	if stAfterReset.TotalCount != 0 || len(stAfterReset.Entries) != 0 || stAfterReset.DockerID != "" {
+		t.Fatalf("store after reset = %+v, want empty", stAfterReset)
+	}
+}
+
 func TestTAAStopTrainingProxyAndLogging(t *testing.T) {
 	var taaCalled bool
 	taaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
