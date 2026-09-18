@@ -541,6 +541,7 @@ function showResultRunning(elId, text) {
 function setHealthState(className, title, labelText, labelColor) {
   const dot = document.getElementById('healthDot');
   const label = document.getElementById('healthLabel');
+  const pill = document.getElementById('healthPill');
   if (dot) {
     dot.className = className;
     dot.title = title;
@@ -548,6 +549,17 @@ function setHealthState(className, title, labelText, labelColor) {
   if (label) {
     label.textContent = labelText;
     label.style.color = labelColor || '';
+  }
+  if (pill) {
+    if (className.includes('ok')) {
+      pill.className = 'status-pill ok';
+    } else if (className.includes('bad')) {
+      pill.className = 'status-pill bad';
+    } else if (className.includes('running')) {
+      pill.className = 'status-pill running';
+    } else {
+      pill.className = 'status-pill pending';
+    }
   }
 }
 
@@ -649,10 +661,12 @@ function renderRegister(data) {
     endpoint: '/v1/taa/register',
   });
   const dot = document.getElementById('dot');
+  const pill = document.getElementById('registerPill');
   if (dot) dot.className = 'dot';
   const publicKeyBox = document.getElementById('registerPublicKeyBox');
   const publicKeyField = document.getElementById('registerPublicKey');
   if (!data || !data.received) {
+    if (pill) pill.className = 'status-pill pending';
     text('statusText', '等待 TAA 注册请求');
     const regBtn = document.getElementById('registerBodyBtn');
     if (regBtn) regBtn.disabled = true;
@@ -661,6 +675,7 @@ function renderRegister(data) {
     return;
   }
   if (dot) dot.className = 'dot ' + (data.accepted ? 'ok status-pill ok' : 'bad status-pill bad');
+  if (pill) pill.className = 'status-pill ' + (data.accepted ? 'ok' : 'bad');
   text('statusText', data.accepted ? '已收到注册请求，并已返回 HTTP 200' : '已收到请求，但参数校验失败');
   const regBtn = document.getElementById('registerBodyBtn');
   if (regBtn) regBtn.disabled = false;
@@ -888,14 +903,17 @@ function renderReportModelImport(data) {
   });
   const dot = document.getElementById('reportModelImportDot');
   const bodyBtn = document.getElementById('reportModelImportBodyBtn');
+  const pill = document.getElementById('reportModelImportPill');
   if (dot) dot.className = 'dot';
   if (!data || !data.received) {
     if (dot) dot.className = 'dot bad status-pill pending';
+    if (pill) pill.className = 'status-pill pending';
     text('reportModelImportStatusText', '模型导入结果上报');
     if (bodyBtn) bodyBtn.disabled = true;
     return;
   }
   if (dot) dot.className = 'dot ' + (data.accepted ? 'ok status-pill ok' : 'bad status-pill bad');
+  if (pill) pill.className = 'status-pill ' + (data.accepted ? 'ok' : 'bad');
   text('reportModelImportStatusText', data.accepted ? '模型导入结果上报' : '模型导入结果校验失败');
   if (bodyBtn) bodyBtn.disabled = false;
 }
@@ -950,14 +968,17 @@ function renderReportAudit(data) {
   });
   const dot = document.getElementById('reportAuditDot');
   const bodyBtn = document.getElementById('reportAuditBodyBtn');
+  const pill = document.getElementById('reportAuditPill');
   if (dot) dot.className = 'dot';
   if (!data || !data.received) {
     if (dot) dot.className = 'dot bad status-pill pending';
+    if (pill) pill.className = 'status-pill pending';
     text('reportAuditStatusText', '代码审计结果');
     if (bodyBtn) bodyBtn.disabled = true;
     return;
   }
   if (dot) dot.className = 'dot ' + (data.accepted ? 'ok status-pill ok' : 'bad status-pill bad');
+  if (pill) pill.className = 'status-pill ' + (data.accepted ? 'ok' : 'bad');
   text('reportAuditStatusText', data.accepted ? '代码审计结果' : '代码审计结果校验失败');
   if (bodyBtn) bodyBtn.disabled = false;
 }

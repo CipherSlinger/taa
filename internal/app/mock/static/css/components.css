@@ -482,14 +482,17 @@ label {
   margin-bottom: 8px;
 }
 
-.progress-fill {
+.progress-fill,
+.progress-bar-inner {
   width: 0%;
   height: 100%;
   background-color: var(--accent, #2563eb);
   transition: width 0.3s ease, background-color 0.3s ease;
 }
 
-.progress-fill.active {
+.progress-fill.active,
+.progress-bar-inner.active,
+.progress-bar-inner.shimmer {
   background-image: linear-gradient(
     45deg,
     rgba(255, 255, 255, 0.22) 25%,
@@ -504,7 +507,8 @@ label {
   animation: progressStripes 1s linear infinite;
 }
 
-.progress-fill.complete {
+.progress-fill.complete,
+.progress-bar-inner.complete {
   background-color: var(--ok, #10b981) !important;
   background-image: none !important;
 }
@@ -937,7 +941,8 @@ label {
   overflow: hidden;
 }
 
-.drawer.open .drawer-panel {
+.drawer.open .drawer-panel,
+.drawer-panel.open {
   transform: translateX(0);
 }
 

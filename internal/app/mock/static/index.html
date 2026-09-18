@@ -16,7 +16,10 @@
         TAA 平台模拟器
         <span class="header-badge">TEE Enclave Console</span>
       </h1>
-      <span id="taaProxyBadge" class="muted" style="font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"></span>
+      <span id="taaTargetPill" class="status-pill pending" style="display:none; font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">
+        <span class="pill-dot"></span>
+        <span id="taaProxyBadge"></span>
+      </span>
     </div>
   </header>
 
@@ -26,7 +29,10 @@
     <div class="card-head" style="margin-bottom:12px; padding-bottom:10px; flex-wrap:wrap; gap:12px;">
       <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
         <h2 style="margin:0;">平台注册</h2>
-        <div class="status" style="font-size:13.5px;"><span id="dot" class="dot status-pill pending"></span><span id="statusText">等待 TAA 注册请求</span></div>
+        <div id="registerPill" class="status-pill pending" style="font-size:13px;">
+          <span id="dot" class="dot pill-dot pending"></span>
+          <span id="statusText">等待 TAA 注册请求</span>
+        </div>
       </div>
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
         <button id="registerBodyBtn" class="secondary" onclick="openRegisterBodyModal()" disabled>查看注册返回</button>
@@ -43,8 +49,10 @@
       <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
         <div style="display:flex; align-items:center; gap:8px;">
           <span style="font-size:13px; font-weight:650;">环境状态</span>
-          <span id="healthDot" class="dot status-pill pending" title="未检查"></span>
-          <span id="healthLabel" class="muted" style="font-size:13px;">未检查</span>
+          <span id="healthPill" class="status-pill pending">
+            <span id="healthDot" class="dot pill-dot pending" title="未检查"></span>
+            <span id="healthLabel" style="font-size:12px;">未检查</span>
+          </span>
         </div>
         <div style="display:flex; align-items:center; gap:8px;">
           <button type="button" onclick="testHealth()" style="padding:6px 14px; font-size:13px;">检查连通性</button>
@@ -93,9 +101,24 @@
         <div id="globalKeyManagementBox" style="display:inline-flex; align-items:center; gap:6px; margin-left:10px; border-left:1px solid var(--line); padding-left:10px;">
           <button type="button" id="createGlobalKeyPairBtn" class="secondary" style="padding:2px 10px; font-size:12px;" onclick="generateGlobalKeyPair(this)">创建公私钥</button>
           <div id="globalKeyPairActiveGroup" style="display:none; align-items:center; gap:6px;">
-            <button type="button" class="secondary" id="globalPubKeyModalBtn" style="padding:2px 8px; font-size:12px;" onclick="openGlobalPublicKeyModal()" title="查看公钥">🔑 公钥</button>
-            <button type="button" class="secondary" id="globalPrivKeyModalBtn" style="padding:2px 8px; font-size:12px;" onclick="openGlobalPrivateKeyModal()" title="查看私钥">🔐 私钥</button>
-            <button type="button" class="icon-btn-compact" id="regenerateGlobalKeyPairBtn" style="padding:2px 6px; font-size:12px;" onclick="generateGlobalKeyPair(this)" title="重新生成公私钥">🔄</button>
+            <button type="button" class="secondary" id="globalPubKeyModalBtn" style="padding:2px 8px; font-size:12px;" onclick="openGlobalPublicKeyModal()" title="查看公钥">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px; vertical-align:-1px;">
+                <path d="M21 2l-2 2m-1.5 1.5L14 9l-1.5-1.5L11 9l-1.5-1.5L8 9a5.5 5.5 0 1 0 3 7.5L21 6.5V2z"></path>
+              </svg>公钥
+            </button>
+            <button type="button" class="secondary" id="globalPrivKeyModalBtn" style="padding:2px 8px; font-size:12px;" onclick="openGlobalPrivateKeyModal()" title="查看私钥">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px; vertical-align:-1px;">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+              </svg>私钥
+            </button>
+            <button type="button" class="icon-btn-compact" id="regenerateGlobalKeyPairBtn" style="padding:2px 6px; font-size:12px;" onclick="generateGlobalKeyPair(this)" title="重新生成公私钥">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="23 4 23 10 17 10"></polyline>
+                <polyline points="1 20 1 14 7 14"></polyline>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+              </svg>
+            </button>
           </div>
         </div>
       </div>
@@ -167,13 +190,17 @@
       <div class="card-head">
         <div>
           <h2>② 下发模型</h2>
-          <div class="status" style="margin-top:8px; font-size:13px; font-weight:600;">
-            <span id="reportModelImportDot" class="dot status-pill pending"></span>
-            <span id="reportModelImportStatusText">模型导入结果上报</span>
+          <div style="margin-top:8px;">
+            <span id="reportModelImportPill" class="status-pill pending">
+              <span id="reportModelImportDot" class="dot pill-dot pending"></span>
+              <span id="reportModelImportStatusText">模型导入结果上报</span>
+            </span>
           </div>
-          <div class="status" style="margin-top:4px; font-size:13px; font-weight:600;">
-            <span id="reportAuditDot" class="dot status-pill pending"></span>
-            <span id="reportAuditStatusText">代码审计结果</span>
+          <div style="margin-top:6px;">
+            <span id="reportAuditPill" class="status-pill pending">
+              <span id="reportAuditDot" class="dot pill-dot pending"></span>
+              <span id="reportAuditStatusText">代码审计结果</span>
+            </span>
           </div>
         </div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
@@ -258,7 +285,13 @@
               <span id="stopTrainingStatusBox" style="display:none; font-size:12px; margin-right:4px;"><span id="stopTrainingStatusText"></span></span>
               <button type="button" class="secondary" id="stopTrainingBodyBtn" style="padding:2px 8px; font-size:11px; display:none;" onclick="openInteractionModal('stopTraining', 'primary')">查看返回</button>
               <button type="button" id="resetProgressBtn" class="secondary" style="padding:2px 8px; font-size:11px;" onclick="resetReportProgress()">重置</button>
-              <button type="button" id="stopTrainingBtn" class="danger" style="padding:2px 8px; font-size:11px;" onclick="testStopTraining()" title="中止训练 (/v1/taa/stopTraining)">🛑 中止训练</button>
+              <button type="button" id="stopTrainingBtn" class="danger" style="padding:2px 8px; font-size:11px;" onclick="testStopTraining()" title="中止训练 (/v1/taa/stopTraining)">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px; vertical-align:-1px;">
+                  <polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 2"></polygon>
+                  <line x1="9" y1="9" x2="15" y2="15"></line>
+                  <line x1="15" y1="9" x2="9" y2="15"></line>
+                </svg>中止训练
+              </button>
             </div>
           </div>
           <div style="width:100%; height:8px; background:rgba(127,127,127,.2); border-radius:4px; overflow:hidden; margin-top:4px; margin-bottom:8px;">
@@ -340,23 +373,40 @@
 </main>
 
 <!-- Off-canvas Slide-over Drawer for Interface Inspection -->
-<div id="appDrawer" class="drawer-panel" aria-hidden="true">
-  <div class="drawer-header">
-    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-      <h3 id="drawerTitle" style="margin:0; font-size:16px;">接口交互详情</h3>
-      <div id="drawerTabsBar" class="phase-switch-bar" style="display:inline-flex; padding:2px; gap:2px;">
-        <button type="button" class="phase-switch-btn active" id="drawerTabPrimary" onclick="switchDrawerTab('primary')">返回内容</button>
-        <button type="button" class="phase-switch-btn" id="drawerTabSecondary" onclick="switchDrawerTab('secondary')">请求体</button>
+<div id="appDrawer" class="drawer" aria-hidden="true">
+  <div class="drawer-overlay" onclick="closeDrawer()"></div>
+  <div class="drawer-panel">
+    <div class="drawer-header">
+      <div class="drawer-title-group">
+        <h3 id="drawerTitle" class="drawer-title">接口交互详情</h3>
+        <div id="drawerTabsBar" class="phase-switch-bar" style="display:inline-flex; padding:2px; gap:2px;">
+          <button type="button" class="phase-switch-btn active" id="drawerTabPrimary" onclick="switchDrawerTab('primary')">返回内容</button>
+          <button type="button" class="phase-switch-btn" id="drawerTabSecondary" onclick="switchDrawerTab('secondary')">请求体</button>
+        </div>
+      </div>
+      <div class="drawer-actions">
+        <button type="button" id="drawerCurlBtn" class="secondary" onclick="copyCurlCommand(this)" style="display:none;" title="生成并复制 cURL 命令">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="4 17 10 11 4 5"></polyline>
+            <line x1="12" y1="19" x2="20" y2="19"></line>
+          </svg>
+          复制 cURL
+        </button>
+        <button type="button" class="secondary" onclick="copyBodyModal(this)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+          复制内容
+        </button>
+        <button type="button" class="secondary" onclick="closeDrawer()" title="关闭 (Esc)">关闭</button>
       </div>
     </div>
-    <div class="drawer-actions" style="display:flex; align-items:center; gap:8px;">
-      <button type="button" id="drawerCurlBtn" class="secondary" onclick="copyCurlCommand(this)" style="display:none;" title="生成并复制 cURL 命令">复制 cURL</button>
-      <button type="button" class="secondary" onclick="copyBodyModal(this)">复制内容</button>
-      <button type="button" class="secondary" onclick="closeDrawer()" title="关闭 (Esc)">关闭</button>
+    <div id="drawerBadge" style="display:none; margin:10px 14px 0; padding:10px 14px; border-radius:8px; font-size:13px; font-weight:600; background:rgba(127,127,127,.08); border:1px solid var(--line);"></div>
+    <div class="drawer-content" style="flex:1; overflow:auto; padding:14px;">
+      <pre id="drawerCode" class="drawer-code-viewer modal-body" style="margin:0;"></pre>
     </div>
   </div>
-  <div id="drawerBadge" style="display:none; margin:10px 14px 0; padding:10px 14px; border-radius:8px; font-size:13px; font-weight:600; background:rgba(127,127,127,.08); border:1px solid var(--line);"></div>
-  <pre id="drawerCode" class="modal-body" style="flex:1; margin:14px; border-radius:8px;"></pre>
 </div>
 
 <!-- Backward-compatible Modal Overlays -->
@@ -371,7 +421,13 @@
         </div>
       </div>
       <div class="modal-actions">
-        <button class="secondary" onclick="copyBodyModal(this)">复制</button>
+        <button class="secondary" onclick="copyBodyModal(this)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+          复制
+        </button>
         <button class="secondary" onclick="closeBodyModal()">关闭</button>
       </div>
     </div>
@@ -384,7 +440,12 @@
   <div class="modal" style="width:min(1280px, 96%); max-height:min(90vh, 950px); display:flex; flex-direction:column;" role="dialog" aria-modal="true" aria-labelledby="resourceInfoModalTitle">
     <div class="modal-head">
       <div style="display:flex; align-items:center; gap:8px;">
-        <span style="font-size:18px;">🌳</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent);">
+          <rect x="3" y="3" width="7" height="7"></rect>
+          <rect x="14" y="3" width="7" height="7"></rect>
+          <rect x="14" y="14" width="7" height="7"></rect>
+          <rect x="3" y="14" width="7" height="7"></rect>
+        </svg>
         <h3 id="resourceInfoModalTitle">资源信息目录树 (filetree)</h3>
       </div>
       <div class="modal-actions">
