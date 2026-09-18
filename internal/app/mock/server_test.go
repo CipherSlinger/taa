@@ -2229,3 +2229,70 @@ func TestDashboardAggregatedStatus(t *testing.T) {
 		t.Errorf("expected register.received=false initially")
 	}
 }
+
+func TestUIPolishStatusPillsAndDrawerComponents(t *testing.T) {
+	// 1. Verify CSS components
+	cssBytes, err := staticFS.ReadFile("static/css/components.css")
+	if err != nil {
+		t.Fatalf("failed to read static/css/components.css: %v", err)
+	}
+	css := string(cssBytes)
+
+	requiredCSSPatterns := []string{
+		".status-pill",
+		".status-pill.ok",
+		".status-pill.pending",
+		".status-pill.bad",
+		".status-pill.running",
+		"@keyframes progressStripes",
+		".progress-bar-inner.shimmer",
+		".drawer-panel",
+		".drawer.open",
+		".hl-key",
+		".hl-str",
+		".hl-num",
+		".hl-bool",
+		".hl-null",
+	}
+	for _, pat := range requiredCSSPatterns {
+		if !strings.Contains(css, pat) {
+			t.Errorf("components.css missing required pattern: %q", pat)
+		}
+	}
+
+	// 2. Verify index.html structure
+	htmlPatterns := []string{
+		`id="healthPill"`,
+		`id="healthDot"`,
+		`id="healthLabel"`,
+		`id="reportModelImportPill"`,
+		`id="reportAuditPill"`,
+		`id="reportProgressBar"`,
+		`id="appDrawer"`,
+		`id="drawerTitle"`,
+		`id="drawerCurlBtn"`,
+		`id="drawerCode"`,
+	}
+	for _, pat := range htmlPatterns {
+		if !strings.Contains(indexHTML, pat) {
+			t.Errorf("indexHTML missing required element: %q", pat)
+		}
+	}
+
+	// 3. Verify JavaScript functions in frontendBundle
+	jsPatterns := []string{
+		"highlightJSON(",
+		"buildCurlCommand(",
+		"openInteractionDrawer(",
+		"closeDrawer(",
+		"PollingManager",
+		"visibilitychange",
+		"pollFastTier",
+		"pollMediumTier",
+	}
+	for _, pat := range jsPatterns {
+		if !strings.Contains(frontendBundle, pat) {
+			t.Errorf("frontendBundle missing required JS token: %q", pat)
+		}
+	}
+}
