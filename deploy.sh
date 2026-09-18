@@ -1249,7 +1249,7 @@ if [[ "$ACTION" == "stop" ]]; then
     fi
     if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -Eq "^${LOCAL_DOCKER_CONTAINER}\$"; then
       if [[ "$DEPLOY_TAA" == true ]]; then
-        docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall '$BINARY_NAME' >/dev/null 2>&1 || true" 2>/dev/null || true
+        docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "touch '$TAA_CONTAINER_WORKDIR/manual'; pkill -f '[s]tart\.sh' >/dev/null 2>&1 || true; pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall '$BINARY_NAME' >/dev/null 2>&1 || true" 2>/dev/null || true
       fi
     fi
   else
@@ -1317,6 +1317,7 @@ if [[ "$DEPLOY_PLATFORM_MOCK" == true && ! -f "$MOCK_BINARY_PATH" ]]; then
 fi
 if [[ "$DEPLOY_TAA" == true ]]; then
   require_file "build verification failed (taa binary missing)" "$TAA_BINARY_PATH"
+  require_file "taa supervisor script missing" "$PROJECT_DIR/deploy/start.sh"
   require_file "certificate missing" "$ATT_HRK_SOURCE"
   require_file "certificate missing" "$ATT_HSK_SOURCE"
 fi
@@ -1384,13 +1385,20 @@ deploy_docker_taa() {
   step "stopping old taa and daemon wrapper inside container"
   stop_pidfile "taa" "$LOCAL_RUN_DIR/taa.pid"
   pkill -f "$TAA_BINARY_PATH" >/dev/null 2>&1 || true
-  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "touch '$TAA_CONTAINER_WORKDIR/manual'; pkill -f 'start.sh' >/dev/null 2>&1 || true; pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall '$BINARY_NAME' >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
+  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "touch '$TAA_CONTAINER_WORKDIR/manual'; pkill -f '[s]tart\.sh' >/dev/null 2>&1 || true; pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall '$BINARY_NAME' >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
+  local stopped=false
   for _ in {1..30}; do
-    if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pgrep -x '$BINARY_NAME' >/dev/null 2>&1"; then
+    if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pgrep -f '[s]tart\.sh' >/dev/null 2>&1 || pgrep -x '$BINARY_NAME' >/dev/null 2>&1"; then
+      stopped=true
       break
     fi
     sleep 0.2
   done
+  if [[ "$stopped" != true ]]; then
+    warn "taa or start.sh did not terminate gracefully; force-killing"
+    docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pkill -9 -f '[s]tart\.sh' >/dev/null 2>&1 || true; pkill -9 -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall -9 '$BINARY_NAME' >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
+    sleep 0.5
+  fi
   info "stopped previous taa daemon and instances"
 
   step "starting taa supervisor inside container"
