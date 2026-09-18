@@ -1078,7 +1078,7 @@
       </div>
       <label for="uploadFile">选择文件</label>
       <input id="uploadFile" type="file">
-      <div style="margin: 10px 0 6px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+      <div style="margin: 10px 0 6px; display: flex; align-items: center; gap: 12px;">
         <label class="switch-label" for="uploadEncryptSwitch">
           <span class="switch-wrapper">
             <input type="checkbox" id="uploadEncryptSwitch">
@@ -1086,7 +1086,6 @@
           </span>
           <span>启用加密</span>
         </label>
-        <span class="muted" style="font-size: 12px;">自动使用 TAA 注册公钥加密并追加 .enc 后缀</span>
       </div>
       <div class="actions">
         <button onclick="uploadFile()">上传文件</button>
@@ -1195,7 +1194,6 @@
           <div style="width:100%; height:8px; background:rgba(127,127,127,.2); border-radius:4px; overflow:hidden; margin-top:4px; margin-bottom:8px;">
             <div id="reportProgressBar" style="width:0%; height:100%; background:var(--theme-accent, #2563eb); transition:width .3s ease;"></div>
           </div>
-          <p id="reportResSummary" class="card-note" style="margin-top:6px; margin-bottom:4px;">完整返回体与具体报告只在弹窗中展示。</p>
           <p id="reportResBodySummary" class="muted" style="margin:0;font-size:12px;">-</p>
         </div>
         <div class="actions" style="margin:0;">
@@ -1210,7 +1208,6 @@
       <div class="card-head">
         <div>
           <h2>④ 导出结果</h2>
-          <p class="card-note">向 TAA 发送导出请求，获取最终生成的模型或推理结果文件。</p>
         </div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
           <div id="exportStatusBox" class="status" style="font-size:12px; display:none;">
@@ -1227,7 +1224,7 @@
       <label for="exportPublicKey">publicKey</label>
       <input id="exportPublicKey" value="" placeholder="选填，留空=不传，需要验证时手动输入">
 
-      <div style="margin: 10px 0 6px; display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+      <div style="margin: 10px 0 6px; display: flex; align-items: center; gap: 12px;">
         <label class="switch-label" for="exportDecryptSwitch">
           <span class="switch-wrapper">
             <input type="checkbox" id="exportDecryptSwitch">
@@ -1235,7 +1232,6 @@
           </span>
           <span>是否解密</span>
         </label>
-        <span class="muted" style="font-size: 12px;">开启后自动使用私钥解密下载数据</span>
       </div>
 
       <label for="exportPrivateKey">解密私钥</label>
@@ -1425,7 +1421,7 @@ function parseJSONRecursively(val) {
   return val;
 }
 
-function text(id, value) { document.getElementById(id).textContent = value || '-'; }
+function text(id, value) { const el = document.getElementById(id); if (el) el.textContent = value || '-'; }
 function area(id, value) { document.getElementById(id).value = value || ''; }
 function getTaaAddr() { return document.getElementById('taaAddr').value.replace(/\/+$/, ''); }
 function genId(prefix) { return prefix + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6); }
@@ -2338,7 +2334,6 @@ function renderReportRes(data) {
   const bodyBtn = document.getElementById('reportResBodyBtn');
   if (!data || !data.received) {
     text('reportResStatusText', '等待训练结果上报');
-    text('reportResSummary', '完整返回体与具体报告只在弹窗中展示。');
     text('reportResBodySummary', '暂无上报内容。');
     if (reportBtn) reportBtn.disabled = true;
     if (bodyBtn) bodyBtn.disabled = true;
@@ -2346,7 +2341,6 @@ function renderReportRes(data) {
   }
   if (dot) dot.classList.add(data.accepted ? 'ok' : 'bad');
   text('reportResStatusText', data.accepted ? '已收到训练结果上报，并已返回 HTTP 200' : '已收到上报，但参数校验失败');
-  text('reportResSummary', '完整返回体与具体报告只在弹窗中展示。');
   text('reportResBodySummary', '点击右上角“查看报告”查看美化后的具体报告，“查看返回”查看完整上报体。');
   if (reportBtn) reportBtn.disabled = false;
   if (bodyBtn) bodyBtn.disabled = false;
@@ -2382,7 +2376,6 @@ async function refreshReportResStatus() {
     renderReportRes({ ...responseResult(data), code: data.error, msg: data.msg });
   } catch (err) {
     text('reportResStatusText', '刷新上报状态失败');
-    text('reportResSummary', String(err));
   }
 }
 async function resetReportResStatus() {
@@ -2410,7 +2403,7 @@ function renderReportModelImport(data) {
     return;
   }
   dot.classList.add(data.accepted ? 'ok' : 'bad');
-  text('reportModelImportStatusText', data.accepted ? '已收到模型导入结果上报，并已返回 HTTP 200' : '已收到上报，但参数校验失败');
+  text('reportModelImportStatusText', data.accepted ? '已收到模型导入结果上报' : '已收到上报，但参数校验失败');
   bodyBtn.disabled = false;
 }
 function openReportModelImportBodyModal() {
@@ -2450,7 +2443,7 @@ function renderReportAudit(data) {
     return;
   }
   dot.classList.add(data.accepted ? 'ok' : 'bad');
-  text('reportAuditStatusText', data.accepted ? '已收到代码审计结果上报，并已返回 HTTP 200' : '已收到上报，但参数校验失败');
+  text('reportAuditStatusText', data.accepted ? '已收到代码审计结果上报' : '已收到上报，但参数校验失败');
   bodyBtn.disabled = false;
 }
 function openReportAuditBodyModal() {

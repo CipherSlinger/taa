@@ -1872,6 +1872,12 @@ func TestConsolidatedCardsAndRemovedHints(t *testing.T) {
 		"上传资源文件，服务器保存到本地并生成可访问的 URL。",
 		"传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，临时文件自动清理。",
 		"下发训练或推理任务所需的数据资源包。",
+		"自动使用 TAA 注册公钥加密并追加 .enc 后缀",
+		"完整返回体与具体报告只在弹窗中展示。",
+		"向 TAA 发送导出请求，获取最终生成的模型或推理结果文件。",
+		"开启后自动使用私钥解密下载数据",
+		"已收到模型导入结果上报，并已返回 HTTP 200",
+		"已收到代码审计结果上报，并已返回 HTTP 200",
 	}
 	for _, note := range forbiddenNotes {
 		if strings.Contains(indexHTML, note) {
