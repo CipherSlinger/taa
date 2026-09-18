@@ -87,9 +87,14 @@ func NewInferenceClient(cfg LLMConfig) (LLMClient, error) {
 		}
 	}
 
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
 	return teellm.NewClient(teellm.Config{
 		Endpoint:                       cfg.Endpoint,
-		Timeout:                        cfg.Timeout,
+		Timeout:                        timeout,
 		AllowedHosts:                   cfg.AllowedHosts,
 		TEETLS:                         teeTLSConfig,
 		CircuitBreakerFailureThreshold: cfg.CircuitBreakerThreshold,

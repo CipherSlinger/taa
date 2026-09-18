@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,8 @@ import (
 	"time"
 
 	"taa/internal/codeaudit"
+	"taa/teellm"
+	"taa/teetls"
 )
 
 func TestLLMAvailable(t *testing.T) {
@@ -39,6 +43,76 @@ func TestLLMAvailable(t *testing.T) {
 
 	if llmAvailable("", "qwen2.5-coder:0.5b") {
 		t.Fatal("llmAvailable = true, want false for empty endpoint")
+	}
+}
+
+type mockControllerLLMBackend struct {
+	healthy bool
+}
+
+func (m *mockControllerLLMBackend) HandleVerifyFinding(ctx context.Context, req *teellm.RequestEnvelope) (*teellm.ResponseEnvelope, error) {
+	return &teellm.ResponseEnvelope{
+		ProtocolVersion: teellm.CurrentProtocolVersion,
+		RequestID:       req.RequestID,
+		Status:          teellm.StatusSuccess,
+		Decision: &teellm.DecisionResult{
+			Verdict: teellm.VerdictBenign,
+		},
+	}, nil
+}
+
+func (m *mockControllerLLMBackend) HandleHealthCheck(ctx context.Context) error {
+	if !m.healthy {
+		return errors.New("backend unhealthy")
+	}
+	return nil
+}
+
+func TestIsLLMServiceAvailable_TEETLS(t *testing.T) {
+	mockProv := teetls.NewMockEvidenceProvider()
+	tlsCfg := &teetls.Config{
+		Mode:             teetls.ModePermissive,
+		EvidenceProvider: mockProv,
+	}
+
+	backend := &mockControllerLLMBackend{healthy: true}
+	server, err := teellm.NewServer(teellm.ServerConfig{
+		Addr:    "127.0.0.1:0",
+		TEETLS:  tlsCfg,
+		Backend: backend,
+	})
+	if err != nil {
+		t.Fatalf("failed to create teellm server: %v", err)
+	}
+	defer server.Close()
+
+	go func() {
+		_ = server.Start()
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	cfg := codeaudit.LLMConfig{
+		Enabled:            true,
+		Transport:          "teetls",
+		Endpoint:           "https://" + server.Addr(),
+		Model:              "qwen2.5-coder:3b",
+		InsecureSkipVerify: true,
+		AttestationMode:    "permissive",
+	}
+
+	client := newLLMClient(cfg)
+	if client == nil {
+		t.Fatal("expected newLLMClient to return non-nil client")
+	}
+
+	if !isLLMServiceAvailable(client, cfg.Endpoint, cfg.Model) {
+		t.Fatal("expected isLLMServiceAvailable = true for healthy TEE-TLS server")
+	}
+
+	// Now make backend unhealthy
+	backend.healthy = false
+	if isLLMServiceAvailable(client, cfg.Endpoint, cfg.Model) {
+		t.Fatal("expected isLLMServiceAvailable = false for unhealthy backend")
 	}
 }
 

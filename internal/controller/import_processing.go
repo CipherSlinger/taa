@@ -541,9 +541,11 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 	s.Logs.Add(LogInfo, "audit", "开始模型代码审计: dir=%s, llmEnabled=%v, policy=%s, failClosed=%v",
 		s.Security.ModelDir, cfg.Enabled, cfg.Policy, cfg.FailClosed)
 
+	llmClient := newLLMClient(cfg)
+
 	// fail-closed：LLM 启用且要求不可用时阻断时，先探测 LLM 可用性；
 	// 若不可用则直接判定失败，避免降级为纯静态扫描静默放行。
-	if cfg.Enabled && cfg.FailClosed && !llmAvailable(cfg.Endpoint, cfg.Model) {
+	if cfg.Enabled && cfg.FailClosed && !isLLMServiceAvailable(llmClient, cfg.Endpoint, cfg.Model) {
 		s.Logs.Add(LogError, "audit", "LLM 服务不可用，按 fail-closed 策略上报失败: endpoint=%s model=%s", cfg.Endpoint, cfg.Model)
 		if err := cleanDirContents(s.Security.ModelDir); err != nil {
 			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
@@ -553,7 +555,7 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 		return false
 	}
 
-	audit, err := codeaudit.GenerateAuditReport(context.Background(), s.Security.ModelDir, cfg, newLLMClient(cfg))
+	audit, err := codeaudit.GenerateAuditReport(context.Background(), s.Security.ModelDir, cfg, llmClient)
 	if err != nil {
 		s.Logs.Add(LogError, "audit", "模型代码审计失败: %v", err)
 		if err := cleanDirContents(s.Security.ModelDir); err != nil {
@@ -640,12 +642,29 @@ func (s *TAAState) reportAuditAsync(requestID, taskID string, code int, msg, rep
 	}()
 }
 
-// newLLMClient 根据配置创建 LLM 客户端；未启用或未配置端点时返回 nil（仅静态扫描）。
+// newLLMClient creates an inference client based on configuration; returns nil if disabled or endpoint is empty.
 func newLLMClient(cfg codeaudit.LLMConfig) codeaudit.LLMClient {
-	if cfg.Enabled && cfg.Endpoint != "" {
-		return codeaudit.NewOllamaClient(cfg.Endpoint, cfg.Model, cfg.Timeout)
+	if cfg.Enabled && strings.TrimSpace(cfg.Endpoint) != "" {
+		client, err := codeaudit.NewInferenceClient(cfg)
+		if err != nil {
+			log.Printf("newLLMClient: failed to construct inference client: %v", err)
+			return nil
+		}
+		return client
 	}
 	return nil
+}
+
+// isLLMServiceAvailable probes whether the inference service is healthy and reachable.
+// It prioritizes standard TEE-LLM client health checking (/healthz over TEE-TLS),
+// and falls back to legacy raw Ollama probe (/api/tags) if client creation failed but endpoint is HTTP.
+func isLLMServiceAvailable(client codeaudit.LLMClient, endpoint, model string) bool {
+	if client != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return client.HealthCheck(ctx) == nil
+	}
+	return llmAvailable(endpoint, model)
 }
 
 // auditReportJSON is implemented in codeaudit_projection.go.
