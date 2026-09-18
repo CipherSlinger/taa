@@ -533,10 +533,6 @@ type reportResPlatformRequest struct {
 	Msg       *string `json:"msg"`
 }
 
-type logsRequest struct {
-	Since *string `json:"since"` // optional ISO8601 timestamp
-}
-
 // ── 路由注册 ─────────────────────────────────────────────
 
 func RegisterRoutes(mux *http.ServeMux, state *TAAState) {
@@ -553,7 +549,6 @@ func RegisterRoutes(mux *http.ServeMux, state *TAAState) {
 		{"/v1/taa/switch", state.switchHandler},
 		{"/v1/taa/export", state.exportHandler},
 		{"/v1/taa/getAttestation", state.getAttestationHandler},
-		{"/v1/taa/logs", state.logsHandler},
 		{"/v1/taa/status", state.statusHandler},
 	}
 
@@ -646,35 +641,6 @@ func (s *TAAState) healthHandler(w http.ResponseWriter, r *http.Request) {
 		"modelImported":   modelImported,
 		"trainingRunning": trainingRunning,
 		"currentOp":       currentOp,
-	}, 0)
-}
-
-// ── Handler: /v1/taa/logs ────────────────────────────────
-
-func (s *TAAState) logsHandler(w http.ResponseWriter, r *http.Request) {
-	var req logsRequest
-	_ = json.NewDecoder(r.Body).Decode(&req) // ignore decode error — body may be empty
-
-	var entries []LogEntry
-	if req.Since != nil && *req.Since != "" {
-		t, err := time.Parse(time.RFC3339, *req.Since)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("since 时间格式错误: %v", err))
-			return
-		}
-		entries = s.Logs.Since(t)
-	} else {
-		entries = s.Logs.Drain()
-	}
-
-	s.mu.RLock()
-	currentOp := s.CurrentOp
-	s.mu.RUnlock()
-
-	writeEnvelope(w, http.StatusOK, "ok", map[string]any{
-		"logs":      entries,
-		"currentOp": currentOp,
-		"total":     len(entries),
 	}, 0)
 }
 
