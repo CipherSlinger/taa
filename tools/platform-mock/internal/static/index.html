@@ -374,14 +374,28 @@
       </div>
     </div>
     <div class="terminal-shell">
-      <div class="terminal-bar">
-        <div class="terminal-dots">
-          <span class="t-dot red"></span>
-          <span class="t-dot yellow"></span>
-          <span class="t-dot green"></span>
+      <div class="terminal-bar" style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <div class="terminal-dots">
+            <span class="t-dot red"></span>
+            <span class="t-dot yellow"></span>
+            <span class="t-dot green"></span>
+          </div>
+          <span class="terminal-title">taa-syslog</span>
+          <span class="muted" style="font-size:11px;">stdout / stderr</span>
         </div>
-        <span class="terminal-title">taa-syslog</span>
-        <span class="muted" style="font-size:11px;">stdout / stderr</span>
+        <div class="terminal-toolbar-left" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <div class="log-filter-group" role="group" aria-label="日志等级过滤">
+            <button type="button" class="log-filter-btn active" data-level="ALL" onclick="setLogFilter('ALL')">全部</button>
+            <button type="button" class="log-filter-btn" data-level="INFO" onclick="setLogFilter('INFO')">INFO</button>
+            <button type="button" class="log-filter-btn" data-level="WARN" onclick="setLogFilter('WARN')">WARN</button>
+            <button type="button" class="log-filter-btn" data-level="ERROR" onclick="setLogFilter('ERROR')">ERROR</button>
+          </div>
+          <div class="terminal-search-box" style="position:relative; display:inline-flex; align-items:center;">
+            <input id="terminalSearchInput" type="text" placeholder="搜索日志... (/)" oninput="handleLogSearch(this.value)" style="padding:3px 22px 3px 8px; font-size:12px; height:24px; border-radius:4px; border:1px solid var(--line); background:var(--bg); color:var(--text);">
+            <span id="searchMatchCount" style="position:absolute; right:6px; font-size:10.5px; color:var(--muted);"></span>
+          </div>
+        </div>
       </div>
       <div id="taaLogOutput" class="log-window" style="min-height:220px; max-height:450px; overflow-y:auto; font-size:13px; line-height:1.6; padding:14px; margin:0; font-family:monospace; white-space:pre-wrap;"></div>
     </div>

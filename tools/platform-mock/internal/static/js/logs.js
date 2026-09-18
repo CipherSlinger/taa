@@ -2,6 +2,97 @@
 
 let modelLogPaused = false;
 let taaLogPaused = false;
+let currentLogFilter = 'ALL';
+let currentSearchKeyword = '';
+let autoScrollLocked = true;
+
+function detectLogLevel(msg) {
+  if (!msg) return 'INFO';
+  const upper = String(msg).toUpperCase();
+  if (upper.includes('ERROR') || upper.includes('FATAL') || upper.includes('PANIC') || upper.includes('FAIL')) {
+    return 'ERROR';
+  }
+  if (upper.includes('WARN')) {
+    return 'WARN';
+  }
+  return 'INFO';
+}
+
+function highlightSearchMatches(safeHtml, keyword) {
+  if (!keyword) return safeHtml;
+  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const reg = new RegExp(`(${escaped})`, 'gi');
+  return safeHtml.replace(reg, '<mark class="hl-match">$1</mark>');
+}
+
+function renderTaaLogEntry(e) {
+  const lvl = detectLogLevel(e.message);
+  const safeMsg = escapeHtml(e.message);
+  const highlightedMsg = currentSearchKeyword ? highlightSearchMatches(safeMsg, currentSearchKeyword) : safeMsg;
+  const isMatch = !currentSearchKeyword || e.message.toLowerCase().includes(currentSearchKeyword.toLowerCase());
+  const isLvlMatch = (currentLogFilter === 'ALL' || lvl === currentLogFilter);
+  const displayStyle = (isMatch && isLvlMatch) ? '' : 'display:none;';
+
+  return `<div class="log-row" data-seq="${e.seq}" data-level="${lvl}" data-raw-text="${safeMsg}" style="${displayStyle}"><span class="log-seq" style="color:#60a5fa; font-weight:600; margin-right:6px;">[seq=${e.seq}]</span><span class="log-lvl ${lvl.toLowerCase()}">${lvl}</span><span class="log-msg">${highlightedMsg}</span></div>`;
+}
+
+function setLogFilter(level) {
+  currentLogFilter = level || 'ALL';
+  document.querySelectorAll('.log-filter-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.level === currentLogFilter);
+  });
+  applyLogFilteringAndHighlight();
+}
+window.setLogFilter = setLogFilter;
+
+function handleLogSearch(val) {
+  currentSearchKeyword = (val || '').trim();
+  applyLogFilteringAndHighlight();
+}
+window.handleLogSearch = handleLogSearch;
+
+function applyLogFilteringAndHighlight() {
+  const container = document.getElementById('taaLogOutput');
+  if (!container) return;
+  const rows = container.querySelectorAll('.log-row');
+  let matchCount = 0;
+
+  rows.forEach(row => {
+    const rawText = row.dataset.rawText || '';
+    const level = row.dataset.level || 'INFO';
+
+    const levelMatch = (currentLogFilter === 'ALL' || level === currentLogFilter);
+    let keywordMatch = true;
+
+    if (currentSearchKeyword) {
+      keywordMatch = rawText.toLowerCase().includes(currentSearchKeyword.toLowerCase());
+    }
+
+    if (levelMatch && keywordMatch) {
+      row.style.display = '';
+      if (currentSearchKeyword) {
+        matchCount++;
+        const msgSpan = row.querySelector('.log-msg');
+        if (msgSpan) {
+          msgSpan.innerHTML = highlightSearchMatches(rawText, currentSearchKeyword);
+        }
+      } else {
+        const msgSpan = row.querySelector('.log-msg');
+        if (msgSpan) {
+          msgSpan.innerHTML = rawText;
+        }
+      }
+    } else {
+      row.style.display = 'none';
+    }
+  });
+
+  const countBadge = document.getElementById('searchMatchCount');
+  if (countBadge) {
+    countBadge.textContent = currentSearchKeyword ? `${matchCount} 条` : '';
+  }
+}
+window.applyLogFilteringAndHighlight = applyLogFilteringAndHighlight;
 
 // ── Model Terminal Log ──
 async function fetchModelLogs() {
@@ -111,12 +202,13 @@ async function fetchTaaLogs() {
       return;
     }
 
-    output.innerHTML = entries.map(e => {
-      const seqStr = `<span style="color:#60a5fa; font-weight:600;">[seq=${e.seq}]</span>`;
-      return `${seqStr} ${escapeHtml(e.message)}`;
-    }).join('\n');
+    output.innerHTML = entries.map(renderTaaLogEntry).join('');
 
-    if (!taaLogPaused) {
+    if (currentSearchKeyword) {
+      applyLogFilteringAndHighlight();
+    }
+
+    if (!taaLogPaused && autoScrollLocked) {
       output.scrollTop = output.scrollHeight;
     }
   } catch (e) {
@@ -147,4 +239,26 @@ async function clearTaaLogs() {
   if (dot) dot.className = 'dot status-pill pending';
   const statusText = document.getElementById('taaLogStatusText');
   if (statusText) statusText.textContent = '等待日志上报...';
+  const countBadge = document.getElementById('searchMatchCount');
+  if (countBadge) countBadge.textContent = '';
 }
+
+document.addEventListener('DOMContentLoaded', () => {
+  const output = document.getElementById('taaLogOutput');
+  if (output) {
+    output.addEventListener('scroll', () => {
+      const atBottom = output.scrollHeight - output.scrollTop - output.clientHeight <= 40;
+      autoScrollLocked = atBottom;
+    });
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === '/' && document.activeElement && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+      const searchInput = document.getElementById('terminalSearchInput');
+      if (searchInput) {
+        e.preventDefault();
+        searchInput.focus();
+        searchInput.select();
+      }
+    }
+  });
+});
