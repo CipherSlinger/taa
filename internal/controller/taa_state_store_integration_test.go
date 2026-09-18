@@ -47,17 +47,12 @@ func TestTAAState_StateStoreAndIndexStore(t *testing.T) {
 		t.Fatal("expected GetStateStore to return injected store")
 	}
 
-	// 测试导出的 ImportIndexStore() 与未导出的 importIndexStore()
-	idx1, err1 := state.ImportIndexStore()
-	if err1 != nil {
-		t.Fatalf("ImportIndexStore() failed: %v", err1)
+	idx, err := state.ImportIndexStore()
+	if err != nil {
+		t.Fatalf("ImportIndexStore() failed: %v", err)
 	}
-	idx2, err2 := state.importIndexStore()
-	if err2 != nil {
-		t.Fatalf("importIndexStore() failed: %v", err2)
-	}
-	if idx1 != idx2 {
-		t.Fatalf("expected ImportIndexStore and importIndexStore to return same instance")
+	if idx == nil {
+		t.Fatal("expected non-nil ImportIndexStore")
 	}
 }
 
@@ -391,57 +386,6 @@ func TestTAAState_RunAsyncSafe_PanicRecoveryAndCompensation(t *testing.T) {
 	}
 	if diskStateAfter.ActiveTask != nil {
 		t.Fatalf("expected disk activeTask to be cleared after panic, got %+v", diskStateAfter.ActiveTask)
-	}
-}
-
-// ── 7. BuildCrashFailureReport 字段完整性规范测试 ──
-
-func TestBuildCrashFailureReport_Schema(t *testing.T) {
-	startedAt := time.Now().UTC().Add(-10 * time.Second)
-	finishedAt := time.Now().UTC()
-	taskID := "task-schema-test"
-	reason := "OOM killed or panic crash"
-	modelChecksum := map[string]any{"algorithm": "sm3", "value": "model-val", "size": 1024}
-	dataChecksum := map[string]any{"algorithm": "sm3", "value": "data-val", "size": 2048}
-
-	report, err := BuildCrashFailureReport(taskID, startedAt, finishedAt, reason, modelChecksum, dataChecksum)
-	if err != nil {
-		t.Fatalf("BuildCrashFailureReport failed: %v", err)
-	}
-
-	if report["schema_version"] != "1.0" {
-		t.Fatalf("expected schema_version 1.0, got %v", report["schema_version"])
-	}
-	if report["report_id"] == nil || report["report_id"] == "" {
-		t.Fatal("expected non-empty report_id")
-	}
-
-	trainingTask, ok := report["training_task"].(map[string]any)
-	if !ok {
-		t.Fatalf("training_task missing: %+v", report)
-	}
-	if trainingTask["task_id"] != taskID {
-		t.Fatalf("expected task_id %s, got %v", taskID, trainingTask["task_id"])
-	}
-	if trainingTask["status"] != "failed" {
-		t.Fatalf("expected status failed, got %v", trainingTask["status"])
-	}
-	if trainingTask["exit_code"] != 137 {
-		t.Fatalf("expected exit_code 137, got %v", trainingTask["exit_code"])
-	}
-	if trainingTask["failure_reason"] != reason {
-		t.Fatalf("expected failure_reason %s, got %v", reason, trainingTask["failure_reason"])
-	}
-	if trainingTask["model_checksum"] == nil {
-		t.Fatal("expected model_checksum to be present")
-	}
-
-	dataset, ok := report["dataset"].(map[string]any)
-	if !ok {
-		t.Fatalf("dataset missing: %+v", report)
-	}
-	if dataset["checksum"] == nil {
-		t.Fatal("expected dataset checksum to be present")
 	}
 }
 

@@ -2115,3 +2115,50 @@ func TestTaaLogConsoleRendering(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardAggregatedStatus(t *testing.T) {
+	stateDir := t.TempDir()
+	cfg := Config{
+		Addr:      "127.0.0.1:0",
+		StateDir:  stateDir,
+		TAATarget: "http://10.244.0.5:6001",
+	}
+	server := NewServer(cfg)
+	ts := httptest.NewServer(server.httpServer.Handler)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/dashboard/status")
+	if err != nil {
+		t.Fatalf("get /api/dashboard/status failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var data struct {
+		Error  int    `json:"error"`
+		Msg    string `json:"msg"`
+		Result struct {
+			Register    registerState `json:"register"`
+			ModelImport reportState   `json:"modelImport"`
+			Audit       reportState   `json:"audit"`
+			Progress    progressState `json:"progress"`
+			TAATarget   string        `json:"taaTarget"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		t.Fatalf("decode dashboard status: %v", err)
+	}
+
+	if data.Error != 0 {
+		t.Errorf("error = %d, want 0", data.Error)
+	}
+	if data.Result.TAATarget != "http://10.244.0.5:6001" {
+		t.Errorf("taaTarget = %q, want http://10.244.0.5:6001", data.Result.TAATarget)
+	}
+	if data.Result.Register.Received {
+		t.Errorf("expected register.received=false initially")
+	}
+}
