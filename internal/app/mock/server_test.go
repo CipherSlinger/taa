@@ -1878,11 +1878,18 @@ func TestConsolidatedCardsAndRemovedHints(t *testing.T) {
 		"开启后自动使用私钥解密下载数据",
 		"已收到模型导入结果上报，并已返回 HTTP 200",
 		"已收到代码审计结果上报，并已返回 HTTP 200",
+		"(/v1/taa/reportRes)",
+		"已收到训练结果上报，并已返回 HTTP 200",
+		"点击右上角“查看报告”查看美化后的具体报告，“查看返回”查看完整上报体。",
 	}
 	for _, note := range forbiddenNotes {
 		if strings.Contains(indexHTML, note) {
 			t.Fatalf("indexHTML should have removed note: %q", note)
 		}
+	}
+
+	if !strings.Contains(indexHTML, `id="reportResList"`) {
+		t.Fatal("indexHTML missing id=\"reportResList\" container")
 	}
 
 	// Verify removed per-field random buttons in import card
@@ -1894,3 +1901,76 @@ func TestConsolidatedCardsAndRemovedHints(t *testing.T) {
 	}
 }
 
+func TestReportResHistoryPersistenceAndReset(t *testing.T) {
+	tempFile := filepath.Join(t.TempDir(), "reportRes-state.json")
+	store := &reportStateStore{path: tempFile}
+	store.load()
+
+	handler := reportResHandler(store)
+
+	// Post report 1
+	body1 := strings.NewReader(`{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","code":0,"msg":null,"report":"{\"step\":1}"}`)
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/taa/reportRes", body1)
+	req1.Header.Set("Content-Type", "application/json")
+	w1 := httptest.NewRecorder()
+	handler(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("report 1 status = %d, want 200", w1.Code)
+	}
+
+	// Post report 2
+	body2 := strings.NewReader(`{"dockerId":"docker-1","requestId":"req-2","taskId":"task-2","code":0,"msg":null,"report":"{\"step\":2}"}`)
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/taa/reportRes", body2)
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	handler(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("report 2 status = %d, want 200", w2.Code)
+	}
+
+	// Verify history returned via status handler
+	statusW := httptest.NewRecorder()
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/reportRes/status", nil)
+	reportStatusHandler(store)(statusW, statusReq)
+	if statusW.Code != http.StatusOK {
+		t.Fatalf("status status = %d, want 200", statusW.Code)
+	}
+
+	var statusResp struct {
+		Result struct {
+			RequestID string        `json:"requestId"`
+			TaskID    string        `json:"taskId"`
+			History   []reportState `json:"history"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(statusW.Body).Decode(&statusResp); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+
+	if len(statusResp.Result.History) != 2 {
+		t.Fatalf("history length = %d, want 2", len(statusResp.Result.History))
+	}
+	if statusResp.Result.History[0].TaskID != "task-2" || statusResp.Result.History[1].TaskID != "task-1" {
+		t.Fatalf("history order incorrect: [0].taskId=%s, [1].taskId=%s",
+			statusResp.Result.History[0].TaskID, statusResp.Result.History[1].TaskID)
+	}
+
+	// Verify reload persistence
+	reloadedStore := &reportStateStore{path: tempFile}
+	reloadedStore.load()
+	if len(reloadedStore.getHistory()) != 2 {
+		t.Fatalf("reloaded history length = %d, want 2", len(reloadedStore.getHistory()))
+	}
+
+	// Test reset
+	resetW := httptest.NewRecorder()
+	resetReq := httptest.NewRequest(http.MethodPost, "/api/reportRes/reset", nil)
+	reportResetHandler(store)(resetW, resetReq)
+	if resetW.Code != http.StatusOK {
+		t.Fatalf("reset status = %d, want 200", resetW.Code)
+	}
+
+	if len(store.getHistory()) != 0 {
+		t.Fatalf("history after reset = %d, want 0", len(store.getHistory()))
+	}
+}

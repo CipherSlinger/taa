@@ -1189,12 +1189,14 @@
       <div id="importResult" style="display:none;"></div>
       <div id="card-reportRes" style="border-top: 1px dashed var(--line); margin-top: 14px; padding-top: 14px; display:flex; flex-direction:column; gap:10px;">
         <div>
-          <div class="status" style="font-size:14px; font-weight:650;"><span id="reportResDot" class="dot"></span><span id="reportResStatusText">等待训练结果上报</span><span class="muted" style="font-size:12px; font-weight:normal; margin-left:6px;">(/v1/taa/reportRes)</span></div>
+          <div class="status" style="font-size:14px; font-weight:650;"><span id="reportResDot" class="dot"></span><span id="reportResStatusText">等待训练结果上报</span></div>
           <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;"><span style="font-weight:600; font-size:13px;">训练进度: <span id="reportProgressPercent">0%</span></span><span id="reportProgressStatusText" class="muted" style="font-size:12px;">等待进度上报... (/v1/taa/reportProgress)</span><button id="resetProgressBtn" class="secondary" style="padding:2px 8px; font-size:11px;" onclick="resetReportProgress()">重置</button></div>
           <div style="width:100%; height:8px; background:rgba(127,127,127,.2); border-radius:4px; overflow:hidden; margin-top:4px; margin-bottom:8px;">
             <div id="reportProgressBar" style="width:0%; height:100%; background:var(--theme-accent, #2563eb); transition:width .3s ease;"></div>
           </div>
-          <p id="reportResBodySummary" class="muted" style="margin:0;font-size:12px;">-</p>
+          <div class="report-res-history" style="margin-top: 8px;">
+            <div id="reportResList" style="display:flex; flex-direction:column; gap:6px; max-height:160px; overflow-y:auto;"></div>
+          </div>
         </div>
         <div class="actions" style="margin:0;">
           <button onclick="refreshReportResStatus()">刷新上报状态</button>
@@ -1455,6 +1457,7 @@ let currentModalActiveTab = 'primary';
 let lastHealthData = null;
 let lastRegisterData = null;
 let lastReportResData = null;
+let reportResHistory = [];
 let lastReportModelImportData = null;
 let lastReportAuditData = null;
 const RESOURCE_INFO_TIMEOUT_MS = 120000;
@@ -2313,6 +2316,7 @@ function buildReportResBodyPreview(data) {
   delete body.received;
   delete body.accepted;
   delete body.rawBody;
+  delete body.history;
   if (Object.prototype.hasOwnProperty.call(body, 'report')) {
     body.report = parseJSONRecursively(body.report);
   }
@@ -2332,18 +2336,77 @@ function renderReportRes(data) {
   if (dot) dot.className = 'dot';
   const reportBtn = document.getElementById('reportResReportBtn');
   const bodyBtn = document.getElementById('reportResBodyBtn');
+  renderReportResHistory(data ? (data.history || (data.received ? [data] : [])) : []);
   if (!data || !data.received) {
     text('reportResStatusText', '等待训练结果上报');
-    text('reportResBodySummary', '暂无上报内容。');
     if (reportBtn) reportBtn.disabled = true;
     if (bodyBtn) bodyBtn.disabled = true;
     return;
   }
   if (dot) dot.classList.add(data.accepted ? 'ok' : 'bad');
-  text('reportResStatusText', data.accepted ? '已收到训练结果上报，并已返回 HTTP 200' : '已收到上报，但参数校验失败');
-  text('reportResBodySummary', '点击右上角“查看报告”查看美化后的具体报告，“查看返回”查看完整上报体。');
+  text('reportResStatusText', data.accepted ? '已收到训练结果上报' : '已收到上报，但参数校验失败');
   if (reportBtn) reportBtn.disabled = false;
   if (bodyBtn) bodyBtn.disabled = false;
+}
+
+function renderReportResHistory(history) {
+  reportResHistory = Array.isArray(history) ? history.slice() : [];
+  const listEl = document.getElementById('reportResList');
+  if (!listEl) return;
+  if (!reportResHistory.length) {
+    listEl.innerHTML = '<div class="upload-empty">暂无上报记录</div>';
+    return;
+  }
+  listEl.innerHTML = reportResHistory.map((item, idx) => {
+    const isOk = Boolean(item.accepted && item.code === 0);
+    const dotClass = isOk ? 'dot ok' : 'dot bad';
+    let timeStr = '-';
+    if (item.receivedAt) {
+      try {
+        const d = new Date(item.receivedAt);
+        timeStr = !isNaN(d.getTime()) ? d.toLocaleTimeString() : String(item.receivedAt);
+      } catch {
+        timeStr = String(item.receivedAt);
+      }
+    }
+    const safeTimeStr = escapeHtml(timeStr);
+    const taskId = escapeHtml(item.taskId || '未命名任务');
+    const reqId = escapeHtml(item.requestId || '-');
+    return `<div class="upload-item" style="cursor:default; padding:6px 10px;" title="requestId: ${reqId}">` +
+      `<div class="upload-item-main" style="gap:8px;">` +
+        `<span class="${dotClass}" style="margin:0; flex-shrink:0;"></span>` +
+        `<span class="upload-item-name" style="font-weight:600;">${taskId}</span>` +
+        `<span class="muted" style="font-size:11px; flex-shrink:0;">${safeTimeStr}</span>` +
+      `</div>` +
+      `<div style="display:flex; gap:6px; flex-shrink:0;">` +
+        `<button type="button" class="secondary" style="padding:2px 8px; font-size:11px;" onclick="openReportItemModal(${idx})">报告</button>` +
+        `<button type="button" class="secondary" style="padding:2px 8px; font-size:11px;" onclick="openReportItemPayloadModal(${idx})">返回</button>` +
+      `</div>` +
+    `</div>`;
+  }).join('');
+}
+
+function openReportItemModal(idx) {
+  const item = reportResHistory[idx];
+  if (!item) return;
+  let reportContent = item.report;
+  if ((reportContent == null || reportContent === '') && item.rawBody) {
+    const raw = parseJSONMaybe(item.rawBody);
+    if (raw && typeof raw === 'object' && raw.report != null) {
+      reportContent = raw.report;
+    }
+  }
+  if (reportContent == null || reportContent === '') {
+    openBodyModal(`训练结果报告 (${item.taskId || 'report'})`, '报告内容 (report 字段) 为空。');
+    return;
+  }
+  openBodyModal(`训练结果报告 (${item.taskId || 'report'})`, reportContent);
+}
+
+function openReportItemPayloadModal(idx) {
+  const item = reportResHistory[idx];
+  if (!item) return;
+  openBodyModal(`训练结果上报详情 (${item.taskId || 'payload'})`, item.rawBody || JSON.stringify(item, null, 2));
 }
 
 function openReportResReportModal() {
@@ -2379,6 +2442,8 @@ async function refreshReportResStatus() {
   }
 }
 async function resetReportResStatus() {
+  reportResHistory = [];
+  renderReportResHistory([]);
   await fetch('/api/reportRes/reset', { method: 'POST' });
   await refreshReportResStatus();
 }

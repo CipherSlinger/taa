@@ -362,10 +362,16 @@ func (s *registerStateStore) reset() {
 	}
 }
 
+type reportStoreData struct {
+	Current reportState   `json:"current"`
+	History []reportState `json:"history"`
+}
+
 type reportStateStore struct {
-	mu    sync.RWMutex
-	path  string
-	state reportState
+	mu      sync.RWMutex
+	path    string
+	state   reportState
+	history []reportState
 }
 
 func newReportStateStore(stateDir string, filename ...string) *reportStateStore {
@@ -379,14 +385,50 @@ func newReportStateStore(stateDir string, filename ...string) *reportStateStore 
 }
 
 func (s *reportStateStore) load() {
-	state, err := loadJSONFile[reportState](s.path)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			log.Printf("load report state failed: %v", err)
 		}
 		return
 	}
-	s.state = state
+	if len(data) == 0 {
+		return
+	}
+
+	var storeData reportStoreData
+	if err := json.Unmarshal(data, &storeData); err == nil && (storeData.Current.Received || len(storeData.History) > 0) {
+		s.state = storeData.Current
+		s.history = storeData.History
+		return
+	}
+
+	var legacy reportState
+	if err := json.Unmarshal(data, &legacy); err == nil && legacy.Received {
+		s.state = legacy
+		s.history = []reportState{legacy}
+		return
+	}
+}
+
+func (s *reportStateStore) saveLocked() {
+	if s.path == "" {
+		return
+	}
+	history := s.history
+	if history == nil {
+		history = []reportState{}
+	}
+	data := reportStoreData{
+		Current: s.state,
+		History: history,
+	}
+	if err := saveJSONFile(s.path, data); err != nil {
+		log.Printf("save report state failed: %v", err)
+	}
 }
 
 func (s *reportStateStore) get() reportState {
@@ -395,24 +437,34 @@ func (s *reportStateStore) get() reportState {
 	return s.state
 }
 
+func (s *reportStateStore) getHistory() []reportState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.history) == 0 {
+		return []reportState{}
+	}
+	h := make([]reportState, len(s.history))
+	copy(h, s.history)
+	return h
+}
+
 func (s *reportStateStore) set(state reportState) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.state = state
-	path := s.path
-	s.mu.Unlock()
-	if err := saveJSONFile(path, state); err != nil {
-		log.Printf("save report state failed: %v", err)
+	s.history = append([]reportState{state}, s.history...)
+	if len(s.history) > 500 {
+		s.history = s.history[:500]
 	}
+	s.saveLocked()
 }
 
 func (s *reportStateStore) reset() {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.state = reportState{}
-	path := s.path
-	s.mu.Unlock()
-	if err := saveJSONFile(path, reportState{}); err != nil {
-		log.Printf("save report state failed: %v", err)
-	}
+	s.history = nil
+	s.saveLocked()
 }
 
 type progressState struct {
@@ -1412,7 +1464,9 @@ func reportStatusHandler(store *reportStateStore) http.HandlerFunc {
 		setCORS(w)
 		state := store.get()
 		msg, errorCode := reportStateEnvelope(state)
-		writeEnvelope(w, http.StatusOK, msg, reportStateResult(state), errorCode)
+		res := reportStateResult(state)
+		res["history"] = store.getHistory()
+		writeEnvelope(w, http.StatusOK, msg, res, errorCode)
 	}
 }
 
