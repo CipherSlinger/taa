@@ -89,7 +89,8 @@ function formatModalBody(body) {
 function buildCurlCommand(item) {
   if (!item) return '';
   const method = (item.method || 'POST').toUpperCase();
-  const url = item.url || (getTaaAddr() + (item.endpoint || ''));
+  const baseTaa = (typeof getTaaAddr === 'function') ? getTaaAddr() : '';
+  const url = item.url || (baseTaa + (item.endpoint || ''));
   const lines = [`curl -X ${method} "${url}"`];
   lines.push('  -H "Content-Type: application/json"');
   if (item.reqHeaders && typeof item.reqHeaders === 'object') {
@@ -123,8 +124,8 @@ function openInteractionDrawer(key, preferredTab = 'primary') {
   const item = (typeof interactionStore !== 'undefined' && interactionStore[key]) ? interactionStore[key] : null;
 
   const drawer = document.getElementById('appDrawer');
-  const titleEl = document.getElementById('drawerTitle');
-  const badgeEl = document.getElementById('drawerBadge');
+  const titleEl = document.getElementById('drawerTitle') || document.getElementById('bodyModalTitle');
+  const badgeEl = document.getElementById('drawerBadge') || document.getElementById('bodyModalBadge');
   const curlBtn = document.getElementById('drawerCurlBtn');
 
   if (titleEl) {
@@ -139,7 +140,7 @@ function openInteractionDrawer(key, preferredTab = 'primary') {
     }
   }
   if (curlBtn) {
-    curlBtn.style.display = (item && item.endpoint) ? 'inline-flex' : 'none';
+    curlBtn.style.display = (item && (item.endpoint || item.url)) ? 'inline-flex' : 'none';
   }
 
   switchDrawerTab(preferredTab);
@@ -147,12 +148,12 @@ function openInteractionDrawer(key, preferredTab = 'primary') {
   if (drawer) {
     drawer.classList.add('open');
     drawer.setAttribute('aria-hidden', 'false');
-  }
-  // Also keep legacy modal compatibility
-  const legacyModal = document.getElementById('bodyModal');
-  if (legacyModal) {
-    legacyModal.classList.add('open');
-    legacyModal.setAttribute('aria-hidden', 'false');
+  } else {
+    const legacyModal = document.getElementById('bodyModal');
+    if (legacyModal) {
+      legacyModal.classList.add('open');
+      legacyModal.setAttribute('aria-hidden', 'false');
+    }
   }
 }
 
@@ -236,11 +237,12 @@ function openBodyModal(title, body) {
   if (drawer) {
     drawer.classList.add('open');
     drawer.setAttribute('aria-hidden', 'false');
-  }
-  const legacyModal = document.getElementById('bodyModal');
-  if (legacyModal) {
-    legacyModal.classList.add('open');
-    legacyModal.setAttribute('aria-hidden', 'false');
+  } else {
+    const legacyModal = document.getElementById('bodyModal');
+    if (legacyModal) {
+      legacyModal.classList.add('open');
+      legacyModal.setAttribute('aria-hidden', 'false');
+    }
   }
 }
 

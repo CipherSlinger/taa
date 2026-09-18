@@ -1009,7 +1009,7 @@ function renderReportProgress(result) {
     if (percentEl) percentEl.textContent = '0%';
     if (barEl) {
       barEl.style.width = '0%';
-      barEl.classList.remove('shimmer');
+      barEl.classList.remove('shimmer', 'active', 'complete');
     }
     return;
   }
@@ -1020,9 +1020,13 @@ function renderReportProgress(result) {
   if (barEl) {
     barEl.style.width = clamped + '%';
     if (clamped > 0 && clamped < 100) {
-      barEl.classList.add('shimmer');
+      barEl.classList.add('shimmer', 'active');
+      barEl.classList.remove('complete');
+    } else if (clamped >= 100) {
+      barEl.classList.remove('shimmer', 'active');
+      barEl.classList.add('complete');
     } else {
-      barEl.classList.remove('shimmer');
+      barEl.classList.remove('shimmer', 'active', 'complete');
     }
   }
 }
@@ -1292,27 +1296,40 @@ async function testSwitch(phase) {
 async function detectTAAProxy() {
   const addrInput = document.getElementById('taaAddr');
   const badge = document.getElementById('taaProxyBadge');
+  const pill = document.getElementById('taaTargetPill');
   try {
     const res = await fetch('/api/taa-target', { cache: 'no-store' });
     const data = await res.json();
     const payload = responseResult(data);
     if (payload.taaTarget) {
       addrInput.value = location.origin + '/taa';
+      if (pill) {
+        pill.className = 'status-pill ok';
+        pill.style.display = 'inline-flex';
+      }
       if (badge) {
-        badge.textContent = '';
+        badge.textContent = 'TAA 代理: ' + payload.taaTarget;
         badge.style.color = 'var(--ok)';
       }
     } else {
       addrInput.value = 'http://127.0.0.1:6001';
+      if (pill) {
+        pill.className = 'status-pill pending';
+        pill.style.display = 'inline-flex';
+      }
       if (badge) {
-        badge.textContent = '⚠ 未检测到 TAA Pod，请手动填写 TAA 地址';
+        badge.textContent = '未检测到 TAA Pod，请手动填写 TAA 地址';
         badge.style.color = 'var(--bad)';
       }
     }
   } catch {
     addrInput.value = 'http://127.0.0.1:6001';
+    if (pill) {
+      pill.className = 'status-pill bad';
+      pill.style.display = 'inline-flex';
+    }
     if (badge) {
-      badge.textContent = '⚠ 检测失败，请手动填写 TAA 地址';
+      badge.textContent = '检测失败，请手动填写 TAA 地址';
       badge.style.color = 'var(--bad)';
     }
   }
