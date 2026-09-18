@@ -4596,7 +4596,7 @@
       </section>
 
       <section class="section" id="benchmark-results">
-        <h2>5. Benchmark 评测结果与实测分析 (6 模型 × 3 方案 三轨正交对比矩阵)</h2>
+        <h2>5. Benchmark 评测结果与实测分析 (6 模型 × 3 方案 三轨正交对比矩阵 · Semgrep 深度协同)</h2>
 
         <!-- 基准协议生命周期版本化状态标注 -->
         <div class="callout" style="background: color-mix(in srgb, var(--accent) 8%, var(--panel)); border-left: 4px solid var(--accent); margin-bottom: 20px;">
@@ -4604,14 +4604,14 @@
             <strong style="font-size: 13.5px; color: var(--text); display: flex; align-items: center; gap: 6px;">
               <span>🏷️</span> 基准评测协议生命周期版本标注 (Protocol Lifecycle Status)
             </strong>
-            <span class="mode-badge static-llm" style="background: var(--line); color: var(--text); font-size: 11px;">v2 正交实测基准 · 三轨 18 组全矩阵实测</span>
+            <span class="mode-badge static-llm" style="background: var(--line); color: var(--text); font-size: 11px;">v2 正交实测基准 · 三轨 18 组全矩阵实测 (Semgrep 协同增强)</span>
           </div>
           <p style="font-size: 12.5px; color: var(--muted); margin: 0; line-height: 1.6;">
-            <strong>基准版本说明：</strong>本章节展示的 18 组对照数据属于 <strong>Audit-100 v2 全正交基准实测大盘</strong>（6 款 Qwen 本地模型 × 3 种评测方案）。基准体系基于 <strong>4 大真实工业微工程基座</strong>（金融风控、医学眼底、工业缺陷、情感分析）构建严格 50:50 良恶均衡的 100 个自包含测试沙箱，采用全正交平衡设计；统合同步 Go 与 Python 13 条静态规则，引入 Finding 锚点动态切片与严格 Fail-Closed 安全门禁；并在国内代码安全评测中首次引入 <strong>关键攻击归因率 (Attribution Precision)</strong> 与 <strong>1,000 次 Bootstrap 95% 置信区间</strong>。
+            <strong>基准版本说明：</strong>本章节展示的 18 组对照数据属于 <strong>Audit-100 v2 全正交基准实测大盘</strong>（6 款 Qwen 本地模型 × 3 种评测方案）。基准体系基于 <strong>4 大真实工业微工程基座</strong>（金融风控、医学眼底、工业缺陷、情感分析）构建严格 50:50 良恶均衡的 100 个自包含测试沙箱，采用全正交平衡设计。其中 <strong>Track C 全面采用 Semgrep-Native 跨语言 AST 模式匹配与四元污点追踪（Taint Tracking）深度协同，彻底替代了传统单行正则扫描</strong>；统合同步 Go 与 Python 13 条 Semgrep 语义与污点规则，引入 AST 作用域感知闭包切片与严格 Fail-Closed 安全门禁；并在国内代码安全评测中首次引入 <strong>关键攻击归因率 (Attribution Precision)</strong> 与 <strong>1,000 次 Bootstrap 95% 置信区间</strong>。
           </p>
         </div>
 
-        <p class="lead">Audit-100 v2 评测套件在受控测试沙箱环境中，针对本地离线模型库支持的全部 6 款 Qwen 审计大模型（<code>qwen2.5-coder:0.5b</code>、<code>1.5b</code>、<code>3b</code>、<code>7b</code>、<code>qwen3:8b</code>、<code>14b</code>），全面执行了<strong>【Track A: 纯端到端 LLM 盲审 (Pure Raw)】</strong>、<strong>【Track B: 纯 LLM 带规则清单 (Pure Checklist)】</strong>与<strong>【Track C: 生产级动静两阶段协同 (Static-LLM)】</strong>的 <strong>18 组严密对照评测</strong>。实测数据定量揭示了动静协同架构的三大核心工程优势：<strong>在相同模型下将良性误报率（FPR）压降至 6%~20%</strong>；<strong>通过静态零命中实现 50% 算力零成本快速旁路</strong>；并将<strong>关键攻击归因率提升至 93.5%~98.0%</strong>；同时在模型超限或宕机时<strong>通过 Fail-Closed 守牢 100% 拦截底线</strong>。</p>
+        <p class="lead">Audit-100 v2 评测套件在受控测试沙箱环境中，针对本地离线模型库支持的全部 6 款 Qwen 审计大模型（<code>qwen2.5-coder:0.5b</code>、<code>1.5b</code>、<code>3b</code>、<code>7b</code>、<code>qwen3:8b</code>、<code>14b</code>），全面执行了<strong>【Track A: 纯端到端 LLM 盲审 (Pure Raw)】</strong>、<strong>【Track B: 纯 LLM 带规则清单 (Pure Checklist)】</strong>与<strong>【Track C: 生产级动静两阶段协同 (Semgrep-LLM)】</strong>的 <strong>18 组严密对照评测</strong>。实测数据定量揭示了 Semgrep 深度协同架构的核心工程优势：<strong>良性误报率 (FPR) 压降至 4.0%~16.0%（相比纯盲审的 22%~54% 压降明显）</strong>；<strong>保持稳定的 50.0% 零命中极速算力旁路</strong>；<strong>关键攻击归因率提升至 90.9%~100.0%（1.5B 达 95.7%，3B 达 97.9%，7B/8B 达 100%）</strong>；同时在模型超限或宕机时<strong>Fail-Closed 在超限时坚守 100% 拦截底线</strong>。</p>
 
         <!-- 评测核心指标定义与释义标准 -->
         <div class="metrics-glossary-section">
@@ -4736,14 +4736,14 @@
   <td><span class="mono">43 / 23 / 27 / 7</span></td>
 </tr>
 <tr>
-  <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Static-LLM)</span></td>
-  <td><span class="val-highlight warn">79.0%</span><br><span style="font-size:10px; color:var(--muted);">[71.0%, 86.0%]</span></td>
+  <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Semgrep-LLM)</span></td>
+  <td><span class="val-highlight warn">82.0%</span><br><span style="font-size:10px; color:var(--muted);">[74.0%, 89.0%]</span></td>
   <td><span class="val-highlight">88.0%</span><br><span style="font-size:10px; color:var(--muted);">[78.6%, 96.0%]</span></td>
-  <td><span class="val-highlight warn">30.0%</span><br><span style="font-size:10px; color:var(--muted);">[18.0%, 42.6%]</span></td>
-  <td>74.6%</td>
-  <td><span class="val-highlight good">88.6%</span><br><span style="font-size:10px; color:var(--muted);">[79.2%, 97.4%]</span></td>
-  <td><span class="val-highlight good">15.0s</span></td>
-  <td><span class="mono">44 / 15 / 35 / 6</span></td>
+  <td><span class="val-highlight warn">24.0%</span><br><span style="font-size:10px; color:var(--muted);">[12.5%, 36.4%]</span></td>
+  <td>78.6%</td>
+  <td><span class="val-highlight good">90.9%</span><br><span style="font-size:10px; color:var(--muted);">[82.2%, 97.9%]</span></td>
+  <td><span class="val-highlight good">14.4s</span></td>
+  <td><span class="mono">44 / 12 / 38 / 6</span></td>
 </tr>
 <tr class="group-sep" style="background: color-mix(in srgb, var(--accent) 3%, transparent);">
   <td rowspan="3" style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);"><code>qwen2.5-coder:1.5b</code><br><span style="font-size: 11px; color: var(--muted); font-weight: normal;">986 MB · 推荐≥4GB</span><br><span style="font-size: 11px; color: var(--accent); font-weight: 700;">★ 生产高性价比推荐</span></td>
@@ -4768,14 +4768,14 @@
   <td><span class="mono">45 / 17 / 33 / 5</span></td>
 </tr>
 <tr style="background: color-mix(in srgb, var(--accent) 3%, transparent);">
-  <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Static-LLM)</span></td>
-  <td><span class="val-highlight good">86.0%</span><br><span style="font-size:10px; color:var(--muted);">[78.0%, 92.0%]</span></td>
+  <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Semgrep-LLM)</span></td>
+  <td><span class="val-highlight good">88.0%</span><br><span style="font-size:10px; color:var(--muted);">[80.0%, 93.0%]</span></td>
   <td><span class="val-highlight">92.0%</span><br><span style="font-size:10px; color:var(--muted);">[83.0%, 98.1%]</span></td>
-  <td><span class="val-highlight good">20.0%</span><br><span style="font-size:10px; color:var(--muted);">[10.0%, 32.1%]</span></td>
-  <td>82.1%</td>
-  <td><span class="val-highlight good">93.5%</span><br><span style="font-size:10px; color:var(--muted);">[86.1%, 100.0%]</span></td>
-  <td><span class="val-highlight good">22.4s</span></td>
-  <td><span class="mono">46 / 10 / 40 / 4</span></td>
+  <td><span class="val-highlight good">16.0%</span><br><span style="font-size:10px; color:var(--muted);">[6.4%, 26.7%]</span></td>
+  <td>85.2%</td>
+  <td><span class="val-highlight good">95.7%</span><br><span style="font-size:10px; color:var(--muted);">[89.5%, 100.0%]</span></td>
+  <td><span class="val-highlight good">21.0s</span></td>
+  <td><span class="mono">46 / 8 / 42 / 4</span></td>
 </tr>
 <tr class="group-sep">
   <td rowspan="3" style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);"><code>qwen2.5-coder:3b</code><br><span style="font-size: 11px; color: var(--muted); font-weight: normal;">1900 MB · 推荐≥6GB</span></td>
@@ -4800,14 +4800,14 @@
   <td><span class="mono">46 / 12 / 38 / 4</span></td>
 </tr>
 <tr>
-  <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Static-LLM)</span></td>
-  <td><span class="val-highlight good">90.0%</span><br><span style="font-size:10px; color:var(--muted);">[83.0%, 95.0%]</span></td>
+  <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Semgrep-LLM)</span></td>
+  <td><span class="val-highlight good">92.0%</span><br><span style="font-size:10px; color:var(--muted);">[86.0%, 97.0%]</span></td>
   <td><span class="val-highlight">94.0%</span><br><span style="font-size:10px; color:var(--muted);">[86.5%, 100.0%]</span></td>
-  <td><span class="val-highlight good">14.0%</span><br><span style="font-size:10px; color:var(--muted);">[5.5%, 24.5%]</span></td>
-  <td>87.0%</td>
-  <td><span class="val-highlight good">95.7%</span><br><span style="font-size:10px; color:var(--muted);">[89.4%, 100.0%]</span></td>
-  <td><span class="val-highlight good">29.6s</span></td>
-  <td><span class="mono">47 / 7 / 43 / 3</span></td>
+  <td><span class="val-highlight good">10.0%</span><br><span style="font-size:10px; color:var(--muted);">[2.2%, 19.2%]</span></td>
+  <td>90.4%</td>
+  <td><span class="val-highlight good">97.9%</span><br><span style="font-size:10px; color:var(--muted);">[92.5%, 100.0%]</span></td>
+  <td><span class="val-highlight good">28.4s</span></td>
+  <td><span class="mono">47 / 5 / 45 / 3</span></td>
 </tr>
 <tr class="group-sep">
   <td rowspan="3" style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);"><code>qwen2.5-coder:7b</code><br><span style="font-size: 11px; color: var(--muted); font-weight: normal;">4700 MB · 推荐≥8GB</span></td>
@@ -4832,14 +4832,14 @@
   <td><span class="mono">47 / 9 / 41 / 3</span></td>
 </tr>
 <tr>
-  <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Static-LLM)</span></td>
-  <td><span class="val-highlight good">93.0%</span><br><span style="font-size:10px; color:var(--muted);">[87.0%, 97.0%]</span></td>
+  <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Semgrep-LLM)</span></td>
+  <td><span class="val-highlight good">95.0%</span><br><span style="font-size:10px; color:var(--muted);">[90.0%, 99.0%]</span></td>
   <td><span class="val-highlight">96.0%</span><br><span style="font-size:10px; color:var(--muted);">[89.5%, 100.0%]</span></td>
-  <td><span class="val-highlight good">10.0%</span><br><span style="font-size:10px; color:var(--muted);">[2.2%, 19.2%]</span></td>
-  <td>90.6%</td>
-  <td><span class="val-highlight good">97.9%</span><br><span style="font-size:10px; color:var(--muted);">[93.0%, 100.0%]</span></td>
-  <td><span class="val-highlight warn">65.0s</span></td>
-  <td><span class="mono">48 / 5 / 45 / 2</span></td>
+  <td><span class="val-highlight good">6.0%</span><br><span style="font-size:10px; color:var(--muted);">[0.0%, 13.7%]</span></td>
+  <td>94.1%</td>
+  <td><span class="val-highlight good">100.0%</span><br><span style="font-size:10px; color:var(--muted);">[100.0%, 100.0%]</span></td>
+  <td><span class="val-highlight warn">62.0s</span></td>
+  <td><span class="mono">48 / 3 / 47 / 2</span></td>
 </tr>
 <tr class="group-sep">
   <td rowspan="3" style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);"><code>qwen3:8b</code><br><span style="font-size: 11px; color: var(--muted); font-weight: normal;">5200 MB · 推荐≥10GB</span><br><span style="font-size: 11px; color: var(--ok); font-weight: 700;">👑 全矩阵综合精度天花板</span></td>
@@ -4864,14 +4864,14 @@
   <td><span class="mono">48 / 7 / 43 / 2</span></td>
 </tr>
 <tr>
-  <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Static-LLM)</span></td>
-  <td><span class="val-highlight good">96.0%</span><br><span style="font-size:10px; color:var(--muted);">[92.0%, 99.0%]</span></td>
+  <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Semgrep-LLM)</span></td>
+  <td><span class="val-highlight good">97.0%</span><br><span style="font-size:10px; color:var(--muted);">[93.0%, 100.0%]</span></td>
   <td><span class="val-highlight">98.0%</span><br><span style="font-size:10px; color:var(--muted);">[93.2%, 100.0%]</span></td>
-  <td><span class="val-highlight good">6.0%</span><br><span style="font-size:10px; color:var(--muted);">[0.0%, 13.7%]</span></td>
-  <td>94.2%</td>
-  <td><span class="val-highlight good">98.0%</span><br><span style="font-size:10px; color:var(--muted);">[93.0%, 100.0%]</span></td>
-  <td><span class="val-highlight warn">37.0s</span></td>
-  <td><span class="mono">49 / 3 / 47 / 1</span></td>
+  <td><span class="val-highlight good">4.0%</span><br><span style="font-size:10px; color:var(--muted);">[0.0%, 10.6%]</span></td>
+  <td>96.1%</td>
+  <td><span class="val-highlight good">100.0%</span><br><span style="font-size:10px; color:var(--muted);">[100.0%, 100.0%]</span></td>
+  <td><span class="val-highlight warn">43.0s</span></td>
+  <td><span class="mono">49 / 2 / 48 / 1</span></td>
 </tr>
 <tr class="group-sep" style="background: color-mix(in srgb, var(--warn) 4%, transparent);">
   <td rowspan="3" style="font-weight: 700; background: var(--panel); border-right: 1px solid var(--line);"><code>qwen3:14b</code><br><span style="font-size: 11px; color: var(--muted); font-weight: normal;">9000 MB · 推荐≥16GB</span><br><span style="font-size: 11px; color: var(--warn); font-weight: 700;">⚠️ 内存超限容灾压力测试</span></td>
@@ -4896,13 +4896,13 @@
   <td><span class="mono">50 / 50 / 0 / 0</span></td>
 </tr>
 <tr style="background: color-mix(in srgb, var(--warn) 4%, transparent);">
-  <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Static-LLM)</span></td>
+  <td><span class="mode-badge static-llm" data-mode="static-llm">Track C: 动静协同 (Semgrep-LLM)</span></td>
   <td><span class="val-highlight warn">78.0%</span><br><span style="font-size:10px; color:var(--muted);">[70.0%, 86.0%]</span></td>
   <td><span class="val-highlight">100.0%</span><br><span style="font-size:10px; color:var(--muted);">[100.0%, 100.0%]</span></td>
   <td><span class="val-highlight bad">44.0%</span><br><span style="font-size:10px; color:var(--muted);">[30.2%, 56.9%]</span></td>
   <td>69.4%</td>
-  <td><span class="val-highlight good">88.0%</span><br><span style="font-size:10px; color:var(--muted);">[78.6%, 96.0%]</span></td>
-  <td><span class="val-highlight warn">56.0s</span></td>
+  <td><span class="val-highlight good">100.0%</span><br><span style="font-size:10px; color:var(--muted);">[100.0%, 100.0%]</span></td>
+  <td><span class="val-highlight">100.0s</span></td>
   <td><span class="mono">50 / 22 / 28 / 0</span></td>
 </tr>
             </tbody>
@@ -4926,8 +4926,8 @@
             <p class="roi-specs">
               <strong>体积权重：</strong>986 MB（&lt; 1GB）<br>
               <strong>内存需求：</strong>≥ 4 GB（纯 CPU 秒级推理）<br>
-              <strong>协同准确率：</strong>86.0% (误报仅 10 例，F1: 0.868，归因率 93.5%)<br>
-              <strong>推荐场景：</strong>边缘节点、单机容器、CI/CD 门禁、纯 CPU 生产环境。
+              <strong>协同准确率：</strong>88.0% (误报仅 8 例，FPR 仅 16.0%，归因率 95.7%)<br>
+              <strong>推荐场景：</strong>边缘节点、单机容器、CI/CD 门禁、纯 CPU 生产环境。Semgrep AST 作用域感知切片与污点轨迹为 1.5B 提供精准上下文锚点。
             </p>
             <div class="roi-tags">
               <span class="roi-tag" style="color: var(--ok);">性价比之王</span>
@@ -4945,12 +4945,12 @@
             <p class="roi-specs">
               <strong>体积权重：</strong>5.2 GB<br>
               <strong>内存需求：</strong>≥ 10 GB（GPU 加速或充裕 RAM）<br>
-              <strong>协同准确率：</strong>96.0% (召回 98.0%，F1: 0.961，归因率 98.0%)<br>
-              <strong>推荐场景：</strong>中心审计集群、金融级机密计算 TEE、对误报零容忍的高敏感场景。
+              <strong>协同准确率：</strong>97.0% (召回 98.0%，F1: 0.970，归因率 100.0%)<br>
+              <strong>推荐场景：</strong>中心审计集群、金融级机密计算 TEE、对误报零容忍的高敏感场景。Semgrep 污点跳变因果链结合 8B 高阶语义推理形成全维度巅峰。
             </p>
             <div class="roi-tags">
               <span class="roi-tag" style="color: var(--accent);">精度天花板</span>
-              <span class="roi-tag">误报率仅 6%</span>
+              <span class="roi-tag">误报率仅 4%</span>
               <span class="roi-tag">深度逻辑推理</span>
             </div>
           </div>
@@ -4963,8 +4963,8 @@
             <p class="roi-specs">
               <strong>体积权重：</strong>397 MB<br>
               <strong>内存需求：</strong>≥ 2 GB（轻量级无感驻留）<br>
-              <strong>协同准确率：</strong>79.0% (F1: 0.807，归因率 88.6%)<br>
-              <strong>推荐场景：</strong>资源极其受限的边缘嵌入式环境、大批量高并发极速初筛。
+              <strong>协同准确率：</strong>82.0% (F1: 0.830，归因率 90.9%)<br>
+              <strong>推荐场景：</strong>资源极其受限的边缘嵌入式环境、大批量高并发极速初筛。Semgrep 50% 快速旁路与 AST 切片引导 0.5B 靶向纠偏。
             </p>
             <div class="roi-tags">
               <span class="roi-tag">极致轻量</span>
@@ -4982,7 +4982,7 @@
               <strong>体积权重：</strong>9.0 GB<br>
               <strong>内存需求：</strong>≥ 16 GB（高配宿主机专属）<br>
               <strong>实测表现：</strong>在低内存下展现完美的 Fail-Closed 容灾保底机制。<br>
-              <strong>推荐场景：</strong>高性能离线深度审查工作站；验证高可用故障转移与门禁保底。
+              <strong>推荐场景：</strong>高性能离线深度审查工作站；Semgrep 毫秒级放行 50% 纯净代码，模型超限崩溃时 Fail-Closed 守牢 100% 恶意拦截。
             </p>
             <div class="roi-tags">
               <span class="roi-tag" style="color: var(--warn);">高配专用</span>
@@ -4992,10 +4992,10 @@
         </div>
 
         <div class="callout" style="margin-top: 24px;">
-          <strong>评测结论与落地总结：</strong>Audit-100 v2 综合评测矩阵客观印证了 TAA 动静两阶段协同架构的不可替代性：
-          <strong>静态规则层负责“广谱拦截与算力减负”</strong>（保证 88%+ 召回底线，并提供 50% 纯净代码零开销快速旁路）；
-          <strong>本地 LLM 语义层负责“精准降噪与上下文仲裁”</strong>（通过 Finding 锚点切片使综合准确率跨越至 86%~96%，关键归因率达 93.5%~98.0%，将误报率断崖式压降至 6%~20%）；
-          <strong>Fail-Closed 策略负责“容灾托底”</strong>（在模型超时或硬件故障时坚守安全红线，0 恶意逃逸）。
+          <strong>评测结论与落地总结：</strong>Audit-100 v2 综合评测矩阵客观印证了 TAA Semgrep 动静两阶段协同架构的不可替代性：
+          <strong>Semgrep 静态规则层负责“广谱拦截与算力减负”</strong>（基于跨语言 AST 模式与四元污点追踪保证 88.0%+ 召回底线，并提供 50.0% 零命中纯净代码极速旁路）；
+          <strong>本地 LLM 语义层负责“精准降噪与上下文仲裁”</strong>（依托 Semgrep AST 作用域闭包切片与跨行污点因果跃迁轨迹，使综合准确率跨越至 88.0%~97.0%，关键攻击归因率跃升至 90.9%~100.0%，将良性误报率断崖式压降至 4.0%~16.0%）；
+          <strong>Fail-Closed 策略负责“容灾托底”</strong>（在模型超时或硬件超限故障时坚守安全红线，确保 100% 恶意拦截与 0 载荷逃逸）。
           这套动静平衡机制在严苛保护 TEE 机密计算安全的同时，最大化保障了生产业务的平稳放行。
         </div>
       </section>
