@@ -1,0 +1,53 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f8fafc;
+  --panel: #ffffff;
+  --panel-sub: #f1f5f9;
+  --input-bg: #ffffff;
+  --text: #0f172a;
+  --muted: #64748b;
+  --ok: #10b981;
+  --bad: #f43f5e;
+  --line: #e2e8f0;
+  --line-sub: rgba(226, 232, 240, 0.8);
+  --code: #0f172a;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-active: #1e40af;
+  --ring: rgba(37, 99, 235, 0.16);
+  --card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 6px 18px -4px rgba(0, 0, 0, 0.05);
+  --card-radius: 14px;
+
+  /* Tree & Chips */
+  --tree-hover: rgba(37, 99, 235, 0.06);
+  --tree-sel: rgba(37, 99, 235, 0.14);
+  --chip-bg: rgba(127, 127, 127, 0.08);
+  --chip-border: rgba(127, 127, 127, 0.2);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #090d16;
+    --panel: #0f172a;
+    --panel-sub: #131d33;
+    --input-bg: #0b1220;
+    --text: #f1f5f9;
+    --muted: #94a3b8;
+    --ok: #10b981;
+    --bad: #f43f5e;
+    --line: #1e293b;
+    --line-sub: rgba(30, 41, 59, 0.8);
+    --code: #f8fafc;
+    --accent: #3b82f6;
+    --accent-hover: #60a5fa;
+    --accent-active: #2563eb;
+    --ring: rgba(59, 130, 246, 0.25);
+    --card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.3), 0 10px 24px -4px rgba(0, 0, 0, 0.35);
+
+    /* Dark Tree & Chips */
+    --tree-hover: rgba(59, 130, 246, 0.12);
+    --tree-sel: rgba(59, 130, 246, 0.25);
+    --chip-bg: rgba(255, 255, 255, 0.06);
+    --chip-border: rgba(255, 255, 255, 0.15);
+  }
+}

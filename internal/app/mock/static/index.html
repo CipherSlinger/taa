@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TAA 平台模拟器</title>
+  <link rel="stylesheet" href="/static/css/variables.css">
+  <link rel="stylesheet" href="/static/css/layout.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+</head>
+<body>
+<main>
+  <header style="margin-bottom: 22px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom: 6px;">
+      <h1>
+        TAA 平台模拟器
+        <span class="header-badge">TEE Enclave Console</span>
+      </h1>
+      <span id="taaProxyBadge" class="muted" style="font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"></span>
+    </div>
+  </header>
+
+  <!-- Top: Unified platform registration and service connection control panel -->
+  <section class="card" id="card-attestation" style="display:flex; flex-direction:column; margin-bottom:24px;">
+    <!-- Row 1: Platform registration status and global record operations -->
+    <div class="card-head" style="margin-bottom:12px; padding-bottom:10px; flex-wrap:wrap; gap:12px;">
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <h2 style="margin:0;">平台注册</h2>
+        <div class="status" style="font-size:13.5px;"><span id="dot" class="dot status-pill pending"></span><span id="statusText">等待 TAA 注册请求</span></div>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <button id="registerBodyBtn" class="secondary" onclick="openRegisterBodyModal()" disabled>查看注册返回</button>
+        <button class="secondary" onclick="refreshStatus()">刷新状态</button>
+      </div>
+    </div>
+
+    <!-- Row 2: TAA service address and health check toolbar -->
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; background:var(--panel-sub); border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin-bottom:12px; flex-wrap:wrap;">
+      <div style="display:flex; align-items:center; gap:10px; flex:1; min-width:280px;">
+        <label for="taaAddr" style="font-size:13px; font-weight:650; white-space:nowrap; margin:0;">TAA 服务地址</label>
+        <input id="taaAddr" value="" placeholder="自动检测中..." style="flex:1; min-width:180px; padding:6px 10px; font-size:13px; border-radius:6px; border:1px solid var(--line); background:var(--bg);">
+      </div>
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-size:13px; font-weight:650;">环境状态</span>
+          <span id="healthDot" class="dot status-pill pending" title="未检查"></span>
+          <span id="healthLabel" class="muted" style="font-size:13px;">未检查</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button type="button" onclick="testHealth()" style="padding:6px 14px; font-size:13px;">检查连通性</button>
+          <button type="button" id="healthResultBtn" class="secondary" onclick="openHealthResultModal()" style="padding:6px 12px; font-size:13px;" disabled>查看结果</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 3: Public key display and attestation operations -->
+    <div class="card-compact" style="min-height:auto;">
+      <div id="registerPublicKeyBox" hidden style="margin-top:4px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+          <label for="registerPublicKey" style="margin:0; font-size:12.5px; font-weight:650;">TAA 注册公钥</label>
+          <button type="button" id="copyPubKeyBtn" class="icon-btn-compact" onclick="copyRegisterPublicKey(this)" title="复制公钥" aria-label="复制公钥">
+            <svg class="copy-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            <svg class="check-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:none; color:var(--ok);">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          </button>
+        </div>
+        <textarea id="registerPublicKey" readonly style="min-height:80px; font-size:11.5px; font-family:ui-monospace,Menlo,monospace; line-height:1.45; cursor:text; background:rgba(37,99,235,.04); border-radius:8px; margin:0;" onclick="this.select();"></textarea>
+      </div>
+      <input type="hidden" id="attestRequestId" value="req-mock-attest-001">
+      <div id="attestationResult" class="test-result" style="display:none;"></div>
+      <div class="actions" style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
+        <button onclick="testGetAttestation()">获取远程证明报告</button>
+        <button id="saveReportBtn" class="success" onclick="saveAttestationReport()" disabled>保存报告文件</button>
+        <button type="button" class="secondary" id="attestationBodyBtn" style="padding:6px 12px; font-size:13px; display:none;" onclick="openInteractionModal('attestation', 'primary')">查看返回</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── 训练流程（平台 → TAA）接口测试 ─── -->
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; margin:24px 0 10px; flex-wrap:wrap;">
+    <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+      <h2 style="margin:0;">训练流程</h2>
+      <div class="phase-switch-bar">
+        <span style="padding:0 6px 0 8px; color:var(--muted); font-size:12px; font-weight:600;">阶段切换:</span>
+        <button type="button" class="phase-switch-btn active" data-phase="1" onclick="quickSwitchPhase(1)">1 调试</button>
+        <button type="button" class="phase-switch-btn" data-phase="2" onclick="quickSwitchPhase(2)">2 测试</button>
+        <button type="button" class="phase-switch-btn" data-phase="3" onclick="quickSwitchPhase(3)">3 训练</button>
+        <button type="button" class="phase-switch-btn" data-phase="4" onclick="quickSwitchPhase(4)">4 推理</button>
+        <div id="globalKeyManagementBox" style="display:inline-flex; align-items:center; gap:6px; margin-left:10px; border-left:1px solid var(--line); padding-left:10px;">
+          <button type="button" id="createGlobalKeyPairBtn" class="secondary" style="padding:2px 10px; font-size:12px;" onclick="generateGlobalKeyPair(this)">创建公私钥</button>
+          <div id="globalKeyPairActiveGroup" style="display:none; align-items:center; gap:6px;">
+            <button type="button" class="secondary" id="globalPubKeyModalBtn" style="padding:2px 8px; font-size:12px;" onclick="openGlobalPublicKeyModal()" title="查看公钥">🔑 公钥</button>
+            <button type="button" class="secondary" id="globalPrivKeyModalBtn" style="padding:2px 8px; font-size:12px;" onclick="openGlobalPrivateKeyModal()" title="查看私钥">🔐 私钥</button>
+            <button type="button" class="icon-btn-compact" id="regenerateGlobalKeyPairBtn" style="padding:2px 6px; font-size:12px;" onclick="generateGlobalKeyPair(this)" title="重新生成公私钥">🔄</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <span id="phaseSwitchDot" class="dot ok status-pill ok" style="width:10px; height:10px;"></span>
+      <span id="phaseSwitchText" class="muted" style="font-size:13px;">当前阶段: 1 调试</span>
+      <button type="button" class="secondary" id="phaseSwitchDetailBtn" style="padding:4px 10px; font-size:12px; display:none;" onclick="openInteractionModal('switch', 'primary')">查看返回</button>
+    </div>
+  </div>
+  <input type="hidden" id="switchPhase" value="1">
+  <div id="switchResult" class="test-result"></div>
+  <div id="phaseSwitchDetail" style="display:none; margin-bottom:12px;">
+    <pre id="phaseSwitchDetailContent" style="background:rgba(127,127,127,.08); padding:12px; border-radius:10px; font-size:13px; max-height:200px; overflow:auto; white-space:pre-wrap; word-break:break-all; margin:0;"></pre>
+  </div>
+
+  <!-- Training flow: three-column layout -->
+  <div class="three-col-layout">
+    <!-- Column 1: File upload / Resource info -->
+    <section class="card" id="card-upload" style="display:flex; flex-direction:column;">
+      <div class="card-head">
+        <div>
+          <h2>① 文件上传 / 资源信息</h2>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+          <div id="uploadStatusBox" class="status" style="font-size:12px; display:none;">
+            <span id="uploadDot" class="dot status-pill pending"></span>
+            <span id="uploadStatusText"></span>
+          </div>
+          <button id="uploadBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('uploadResult')" disabled>查看返回</button>
+          <button id="resourceInfoModalBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openResourceInfoModal()" disabled>查看目录树</button>
+        </div>
+      </div>
+      <label for="uploadFile">选择文件</label>
+      <input id="uploadFile" type="file">
+      <div style="margin: 10px 0 6px; display: flex; align-items: center; gap: 12px;">
+        <label class="switch-label" for="uploadEncryptSwitch">
+          <span class="switch-wrapper">
+            <input type="checkbox" id="uploadEncryptSwitch">
+            <span class="switch-slider"></span>
+          </span>
+          <span>启用加密</span>
+        </label>
+      </div>
+      <div class="actions">
+        <button onclick="uploadFile()">上传文件</button>
+      </div>
+      <div id="uploadResult" style="display:none;"></div>
+      <div class="upload-history">
+        <div id="uploadClearBar" style="display:none; justify-content:flex-end; margin-bottom:4px;">
+          <span id="uploadedFilesCount" style="display:none;"></span>
+          <button type="button" class="danger" onclick="clearUploadedFiles()" style="padding:3px 8px; font-size:11.5px;">清空所有上传文件</button>
+        </div>
+        <div id="uploadedFilesList" style="display:flex; flex-direction:column; gap:6px;"></div>
+      </div>
+      <div id="card-resourceInfo" style="border-top: 1px dashed var(--line); margin-top: 14px; padding-top: 14px; display:flex; flex-direction:column;">
+        <label for="resourceInfoUrl">resourceUrl (目录树分析)</label>
+        <input id="resourceInfoUrl" value="http://example.com/data.tar.gz">
+        <div class="actions">
+          <button onclick="testGetResourceInfo()">发送测试</button>
+          <button type="button" class="secondary" onclick="loadSampleResourceTree()">加载示例树</button>
+        </div>
+        <div id="resourceInfoResult" class="test-result"></div>
+      </div>
+    </section>
+
+    <!-- Column 2: Import model -->
+    <section class="card" id="card-importModel" style="display:flex; flex-direction:column;">
+      <div class="card-head">
+        <div>
+          <h2>② 下发模型</h2>
+          <div class="status" style="margin-top:8px; font-size:13px; font-weight:600;">
+            <span id="reportModelImportDot" class="dot status-pill pending"></span>
+            <span id="reportModelImportStatusText">模型导入结果上报</span>
+          </div>
+          <div class="status" style="margin-top:4px; font-size:13px; font-weight:600;">
+            <span id="reportAuditDot" class="dot status-pill pending"></span>
+            <span id="reportAuditStatusText">代码审计结果</span>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+          <div id="importModelStatusBox" class="status" style="font-size:12px; display:none;">
+            <span id="importModelDot" class="dot status-pill pending"></span>
+            <span id="importModelStatusText"></span>
+          </div>
+          <button id="importModelBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('importModelResult')" disabled>查看返回</button>
+          <button id="reportModelImportBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportModelImportBodyModal()" disabled title="查看模型导入回调上报返回体">导入上报</button>
+          <button id="reportAuditBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportAuditBodyModal()" disabled title="查看代码审计回调上报返回体">审计上报</button>
+        </div>
+      </div>
+      <label for="importModelResourceUrl">resourceUrl</label>
+      <input id="importModelResourceUrl" value="http://example.com/model.tar.gz">
+      <label for="importModelRequestId">requestId</label>
+      <input id="importModelRequestId" value="req-mock-importModel-001">
+      <label for="importModelTaskId">taskId</label>
+      <input id="importModelTaskId" value="">
+      <div style="margin: 10px 0 6px; display: flex; align-items: center; gap: 12px;">
+        <label class="switch-label" for="importModelUsePublicKeySwitch">
+          <span class="switch-wrapper">
+            <input type="checkbox" id="importModelUsePublicKeySwitch" onchange="onImportModelUsePublicKeyToggle(this)">
+            <span class="switch-slider"></span>
+          </span>
+          <span>是否填入公钥</span>
+        </label>
+      </div>
+      <label>commands</label>
+      <div id="importModelCommandsList" style="display:flex; flex-direction:column; gap:6px;">
+        <div class="dynamic-input-row" style="display:flex; gap:6px; align-items:center;">
+          <input type="text" class="import-model-cmd-input" value="python3 train_fusion.py -b TransMUF -g cpu -bc 16 -e 30 -d _dkd -s 128" placeholder="单条命令，如 python3 train.py" style="flex:1; margin:0;">
+          <button type="button" class="icon-btn-compact" onclick="addModelCommandRow(this)" title="添加一行" style="padding:4px 8px; font-size:12px;">+</button>
+        </div>
+      </div>
+      <label style="margin-top:8px;">env (KEY=VALUE)</label>
+      <div id="importModelEnvList" style="display:flex; flex-direction:column; gap:6px;">
+        <div class="dynamic-input-row" style="display:flex; gap:6px; align-items:center;">
+          <input type="text" class="import-model-env-input" value="CUDA_VISIBLE_DEVICES=0" placeholder="KEY=VALUE" style="flex:1; margin:0;">
+          <button type="button" class="icon-btn-compact" onclick="addModelEnvRow(this)" title="添加一行" style="padding:4px 8px; font-size:12px;">+</button>
+        </div>
+      </div>
+      <div class="actions">
+        <button onclick="testImportModel()">发送测试</button>
+        <button type="button" class="secondary" onclick="randomizeImportModelIds()" title="同时随机生成 requestId 与 taskId">随机 ID</button>
+      </div>
+      <div id="importModelResult" style="display:none;"></div>
+    </section>
+
+    <!-- Column 3: Import data / Training result report -->
+    <section class="card drop-zone-card" id="card-import" style="display:flex; flex-direction:column;">
+      <div class="card-head">
+        <div>
+          <h2>② 下发数据 / 结果上报</h2>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+          <div id="importStatusBox" class="status" style="font-size:12px; display:none;">
+            <span id="importDot" class="dot status-pill pending"></span>
+            <span id="importStatusText"></span>
+          </div>
+          <button id="importBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('importResult')" disabled>查看返回</button>
+          <button id="reportResReportBtn" style="padding:6px 12px; font-size:13px;" onclick="openReportResReportModal()" disabled>查看报告</button>
+          <button id="reportResBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportResBodyModal()" disabled>查看返回</button>
+        </div>
+      </div>
+      <label for="importResourceUrl">resourceUrl</label>
+      <input id="importResourceUrl" value="http://example.com/data.tar.gz">
+      <label for="importRequestId">requestId</label>
+      <input id="importRequestId" value="req-mock-import-001">
+      <label for="importTaskId">taskId</label>
+      <input id="importTaskId" value="">
+      <div class="actions">
+        <button onclick="testImport()">发送测试</button>
+        <button type="button" class="secondary" onclick="randomizeImportIds()" title="同时随机生成 requestId 与 taskId">随机 ID</button>
+      </div>
+      <div id="importResult" style="display:none;"></div>
+      <div id="card-reportRes" style="border-top: 1px dashed var(--line); margin-top: 14px; padding-top: 14px; display:flex; flex-direction:column; gap:10px;">
+        <div>
+          <div class="status" style="font-size:14px; font-weight:650;"><span id="reportResDot" class="dot status-pill pending"></span><span id="reportResStatusText">等待训练结果上报</span></div>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+            <span style="font-weight:600; font-size:13px;">训练进度: <span id="reportProgressPercent">0%</span></span>
+            <div style="display:flex; gap:6px; align-items:center;">
+              <span id="stopTrainingStatusBox" style="display:none; font-size:12px; margin-right:4px;"><span id="stopTrainingStatusText"></span></span>
+              <button type="button" class="secondary" id="stopTrainingBodyBtn" style="padding:2px 8px; font-size:11px; display:none;" onclick="openInteractionModal('stopTraining', 'primary')">查看返回</button>
+              <button type="button" id="resetProgressBtn" class="secondary" style="padding:2px 8px; font-size:11px;" onclick="resetReportProgress()">重置</button>
+              <button type="button" id="stopTrainingBtn" class="danger" style="padding:2px 8px; font-size:11px;" onclick="testStopTraining()" title="中止训练 (/v1/taa/stopTraining)">🛑 中止训练</button>
+            </div>
+          </div>
+          <div style="width:100%; height:8px; background:rgba(127,127,127,.2); border-radius:4px; overflow:hidden; margin-top:4px; margin-bottom:8px;">
+            <div id="reportProgressBar" class="progress-bar-inner shimmer" style="width:0%; height:100%; transition:width .3s ease;"></div>
+          </div>
+          <div class="report-res-history" style="margin-top: 8px;">
+            <div id="reportResList" style="display:flex; flex-direction:column; gap:6px; max-height:160px; overflow-y:auto;"></div>
+          </div>
+        </div>
+        <div class="actions" style="margin:0;">
+          <button onclick="refreshReportResStatus()">刷新上报状态</button>
+          <button class="secondary" onclick="resetReportResStatus()">清空上报记录</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- TAA 运行日志 -->
+  <h2>TAA 运行日志</h2>
+  <section class="card" id="card-taaLog">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap;">
+      <div class="status" style="font-size:16px;">
+        <span id="taaLogStatusDot" class="dot status-pill pending"></span>
+        <span id="taaLogStatusText">等待日志上报...</span>
+        <span class="muted" style="font-size:12px;">(/v1/taa/taaLog)</span>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <span class="muted" id="taaLogCount" style="font-size:13px;">0 条日志</span>
+        <span class="muted" id="taaLogLastSeq" style="font-size:13px;">最新 seq: 0</span>
+        <button onclick="fetchTaaLogs()" style="padding:6px 12px; font-size:13px;">刷新</button>
+        <button class="secondary" id="taaLogPauseBtn" onclick="toggleTaaLogPause()" style="padding:6px 12px; font-size:13px;">暂停</button>
+        <button class="danger" onclick="clearTaaLogs()" style="padding:6px 12px; font-size:13px;">清空</button>
+      </div>
+    </div>
+    <div class="terminal-shell">
+      <div class="terminal-bar">
+        <div class="terminal-dots">
+          <span class="t-dot red"></span>
+          <span class="t-dot yellow"></span>
+          <span class="t-dot green"></span>
+        </div>
+        <span class="terminal-title">taa-syslog</span>
+        <span class="muted" style="font-size:11px;">stdout / stderr</span>
+      </div>
+      <div id="taaLogOutput" class="log-window" style="min-height:220px; max-height:450px; overflow-y:auto; font-size:13px; line-height:1.6; padding:14px; margin:0; font-family:monospace; white-space:pre-wrap;"></div>
+    </div>
+  </section>
+
+  <!-- 模型终端日志 -->
+  <h2>模型终端日志</h2>
+  <section class="card" id="card-modelLog">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap;">
+      <div class="status" style="font-size:16px;">
+        <span id="modelLogStatusDot" class="dot status-pill pending"></span>
+        <span id="modelLogStatusText">等待日志上报...</span>
+        <span class="muted" style="font-size:12px;">(/v1/taa/modelLog)</span>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <span class="muted" id="modelLogCount" style="font-size:13px;">0 条日志</span>
+        <span class="muted" id="modelLogLastSeq" style="font-size:13px;">最新 seq: 0</span>
+        <button onclick="fetchModelLogs()" style="padding:6px 12px; font-size:13px;">刷新</button>
+        <button class="secondary" id="modelLogPauseBtn" onclick="toggleModelLogPause()" style="padding:6px 12px; font-size:13px;">暂停</button>
+        <button class="danger" onclick="clearModelLogs()" style="padding:6px 12px; font-size:13px;">清空</button>
+      </div>
+    </div>
+    <div class="terminal-shell">
+      <div class="terminal-bar">
+        <div class="terminal-dots">
+          <span class="t-dot red"></span>
+          <span class="t-dot yellow"></span>
+          <span class="t-dot green"></span>
+        </div>
+        <span class="terminal-title">model-stdout-stderr</span>
+        <span class="muted" style="font-size:11px;">stdout / stderr</span>
+      </div>
+      <div id="modelLogOutput" class="log-window" style="min-height:220px; max-height:450px; overflow-y:auto; font-size:13px; line-height:1.6; padding:14px; margin:0; font-family:monospace; white-space:pre-wrap;"></div>
+    </div>
+  </section>
+</main>
+
+<!-- Off-canvas Slide-over Drawer for Interface Inspection -->
+<div id="appDrawer" class="drawer-panel" aria-hidden="true">
+  <div class="drawer-header">
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <h3 id="drawerTitle" style="margin:0; font-size:16px;">接口交互详情</h3>
+      <div id="drawerTabsBar" class="phase-switch-bar" style="display:inline-flex; padding:2px; gap:2px;">
+        <button type="button" class="phase-switch-btn active" id="drawerTabPrimary" onclick="switchDrawerTab('primary')">返回内容</button>
+        <button type="button" class="phase-switch-btn" id="drawerTabSecondary" onclick="switchDrawerTab('secondary')">请求体</button>
+      </div>
+    </div>
+    <div class="drawer-actions" style="display:flex; align-items:center; gap:8px;">
+      <button type="button" id="drawerCurlBtn" class="secondary" onclick="copyCurlCommand(this)" style="display:none;" title="生成并复制 cURL 命令">复制 cURL</button>
+      <button type="button" class="secondary" onclick="copyBodyModal(this)">复制内容</button>
+      <button type="button" class="secondary" onclick="closeDrawer()" title="关闭 (Esc)">关闭</button>
+    </div>
+  </div>
+  <div id="drawerBadge" style="display:none; margin:10px 14px 0; padding:10px 14px; border-radius:8px; font-size:13px; font-weight:600; background:rgba(127,127,127,.08); border:1px solid var(--line);"></div>
+  <pre id="drawerCode" class="modal-body" style="flex:1; margin:14px; border-radius:8px;"></pre>
+</div>
+
+<!-- Backward-compatible Modal Overlays -->
+<div id="bodyModal" class="modal-overlay" aria-hidden="true" onclick="if (event.target === this) closeBodyModal();">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="bodyModalTitle">
+    <div class="modal-head">
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <h3 id="bodyModalTitle">接口详情</h3>
+        <div id="modalTabsBar" class="phase-switch-bar" style="display:inline-flex; padding:2px; gap:2px;">
+          <button type="button" class="phase-switch-btn active" id="modalTabPrimary" onclick="switchModalTab('primary')">返回内容</button>
+          <button type="button" class="phase-switch-btn" id="modalTabSecondary" onclick="switchModalTab('secondary')">请求体</button>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="secondary" onclick="copyBodyModal(this)">复制</button>
+        <button class="secondary" onclick="closeBodyModal()">关闭</button>
+      </div>
+    </div>
+    <div id="bodyModalBadge" style="display:none; margin:10px 14px 0; padding:10px 14px; border-radius:8px; font-size:13px; font-weight:600; background:rgba(127,127,127,.08); border:1px solid var(--line);"></div>
+    <pre id="bodyModalContent" class="modal-body"></pre>
+  </div>
+</div>
+
+<div id="resourceInfoModal" class="modal-overlay" aria-hidden="true" onclick="if (event.target === this) closeResourceInfoModal();">
+  <div class="modal" style="width:min(1280px, 96%); max-height:min(90vh, 950px); display:flex; flex-direction:column;" role="dialog" aria-modal="true" aria-labelledby="resourceInfoModalTitle">
+    <div class="modal-head">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span style="font-size:18px;">🌳</span>
+        <h3 id="resourceInfoModalTitle">资源信息目录树 (filetree)</h3>
+      </div>
+      <div class="modal-actions">
+        <button class="secondary" onclick="closeResourceInfoModal()">关闭</button>
+      </div>
+    </div>
+    <div id="resourceInfoModalBody" style="padding:14px; overflow:auto; flex:1; min-height:0; display:flex; flex-direction:column;"></div>
+  </div>
+</div>
+
+<script src="/static/js/drawer.js"></script>
+<script src="/static/js/api.js"></script>
+<script src="/static/js/crypto.js"></script>
+<script src="/static/js/tree.js"></script>
+<script src="/static/js/logs.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

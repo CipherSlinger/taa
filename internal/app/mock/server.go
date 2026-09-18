@@ -7,8 +7,9 @@ package mock
 
 import (
 	"context"
-	_ "embed"
+	"embed"
 	"encoding/json"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -20,8 +21,42 @@ import (
 	"time"
 )
 
-//go:embed index.html
-var indexHTML string
+//go:embed all:static
+var staticFS embed.FS
+
+var (
+	indexHTML      string
+	frontendBundle string
+)
+
+func init() {
+	b, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		panic("failed to read embedded static/index.html: " + err.Error())
+	}
+	indexHTML = string(b)
+
+	var sb strings.Builder
+	sb.WriteString(indexHTML)
+	sb.WriteString("\n")
+
+	jsFiles := []string{
+		"static/js/drawer.js",
+		"static/js/api.js",
+		"static/js/crypto.js",
+		"static/js/tree.js",
+		"static/js/logs.js",
+		"static/js/app.js",
+	}
+	for _, f := range jsFiles {
+		content, readErr := staticFS.ReadFile(f)
+		if readErr == nil {
+			sb.WriteString("\n/* " + f + " */\n")
+			sb.Write(content)
+		}
+	}
+	frontendBundle = sb.String()
+}
 
 // Server is the platform mock HTTP server.
 type Server struct {
@@ -74,6 +109,14 @@ func NewServer(cfg Config) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", indexHandler)
 	mux.HandleFunc("/index.html", indexHandler)
+
+	// Serve embedded static assets (/static/*)
+	staticSub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		log.Printf("failed to create static sub FS: %v", err)
+	} else {
+		mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
+	}
 	mux.HandleFunc("/v1/taa/register", registerHandler(registerStore, cfg.AllowEmptyAttestation))
 	mux.HandleFunc("/v1/taa/reportResourceRes", reportResourceResHandler(reportStore))
 	mux.HandleFunc("/v1/taa/reportRes", reportResHandler(reportResStore))

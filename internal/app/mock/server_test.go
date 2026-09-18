@@ -930,6 +930,77 @@ func TestIndexHandlerServesRootAndIndexHTML(t *testing.T) {
 	}
 }
 
+func TestStaticAssetsServing(t *testing.T) {
+	srv := NewServer(Config{
+		Addr:      "127.0.0.1:0",
+		StateDir:  t.TempDir(),
+		UploadDir: t.TempDir(),
+	})
+	ts := httptest.NewServer(srv.httpServer.Handler)
+	defer ts.Close()
+
+	cssFiles := []string{
+		"/static/css/variables.css",
+		"/static/css/layout.css",
+		"/static/css/components.css",
+	}
+	for _, file := range cssFiles {
+		resp, err := http.Get(ts.URL + file)
+		if err != nil {
+			t.Fatalf("failed to fetch %s: %v", file, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("fetch %s returned status %d, want 200", file, resp.StatusCode)
+		}
+		ct := resp.Header.Get("Content-Type")
+		if !strings.Contains(ct, "text/css") {
+			t.Errorf("%s content-type %q does not contain text/css", file, ct)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if len(body) == 0 {
+			t.Errorf("%s body is empty", file)
+		}
+	}
+
+	jsFiles := []string{
+		"/static/js/drawer.js",
+		"/static/js/api.js",
+		"/static/js/crypto.js",
+		"/static/js/tree.js",
+		"/static/js/logs.js",
+		"/static/js/app.js",
+	}
+	for _, file := range jsFiles {
+		resp, err := http.Get(ts.URL + file)
+		if err != nil {
+			t.Fatalf("failed to fetch %s: %v", file, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("fetch %s returned status %d, want 200", file, resp.StatusCode)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if len(body) == 0 {
+			t.Errorf("%s body is empty", file)
+		}
+	}
+
+	// Check /static/index.html
+	resp, err := http.Get(ts.URL + "/static/index.html")
+	if err != nil {
+		t.Fatalf("failed to fetch /static/index.html: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("fetch /static/index.html returned status %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "TAA 平台模拟器") {
+		t.Errorf("expected /static/index.html to contain 'TAA 平台模拟器'")
+	}
+}
+
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.UploadDir != ".local/upload" {
@@ -1801,8 +1872,8 @@ func TestHealthCheckIntegratedIntoRegistration(t *testing.T) {
 		`id="healthDetailContent"`,
 		"top-dashboard-grid",
 	} {
-		if strings.Contains(indexHTML, unwanted) {
-			t.Fatalf("indexHTML should not contain %q after integration", unwanted)
+		if strings.Contains(frontendBundle, unwanted) {
+			t.Fatalf("frontendBundle should not contain %q after integration", unwanted)
 		}
 	}
 
@@ -1817,8 +1888,8 @@ func TestHealthCheckIntegratedIntoRegistration(t *testing.T) {
 		"openHealthResultModal",
 		"lastHealthData",
 	} {
-		if !strings.Contains(indexHTML, want) {
-			t.Fatalf("indexHTML missing integrated element or function %q", want)
+		if !strings.Contains(frontendBundle, want) {
+			t.Fatalf("frontendBundle missing integrated element or function %q", want)
 		}
 	}
 }
@@ -1833,8 +1904,8 @@ func TestIndexHTMLModalTabsAndLegacySectionRemoval(t *testing.T) {
 		"fetchRequestLogs",
 	}
 	for _, unwanted := range unwantedSubstrings {
-		if strings.Contains(indexHTML, unwanted) {
-			t.Errorf("indexHTML should not contain legacy element or function: %q", unwanted)
+		if strings.Contains(frontendBundle, unwanted) {
+			t.Errorf("frontendBundle should not contain legacy element or function: %q", unwanted)
 		}
 	}
 
@@ -1851,12 +1922,12 @@ func TestIndexHTMLModalTabsAndLegacySectionRemoval(t *testing.T) {
 		"interactionStore",
 	}
 	for _, s := range requiredSubstrings {
-		if !strings.Contains(indexHTML, s) {
-			t.Errorf("indexHTML missing required element/function: %q", s)
+		if !strings.Contains(frontendBundle, s) {
+			t.Errorf("frontendBundle missing required element/function: %q", s)
 		}
 	}
 
-	// Interaction keys should be recorded in index.html
+	// Interaction keys should be recorded in frontendBundle
 	requiredInteractionKeys := []string{
 		"recordInteraction('health'",
 		"recordInteraction('attestation'",
@@ -1873,8 +1944,8 @@ func TestIndexHTMLModalTabsAndLegacySectionRemoval(t *testing.T) {
 		"recordInteraction('reportRes'",
 	}
 	for _, key := range requiredInteractionKeys {
-		if !strings.Contains(indexHTML, key) {
-			t.Errorf("indexHTML missing required interaction key: %q", key)
+		if !strings.Contains(frontendBundle, key) {
+			t.Errorf("frontendBundle missing required interaction key: %q", key)
 		}
 	}
 }
@@ -2012,8 +2083,8 @@ func TestConsolidatedCardsAndRemovedHints(t *testing.T) {
 	if !strings.Contains(indexHTML, `id="importModelEnvList"`) {
 		t.Fatal("indexHTML missing id=\"importModelEnvList\"")
 	}
-	if !strings.Contains(indexHTML, "exportReportItem") {
-		t.Fatal("indexHTML missing exportReportItem function")
+	if !strings.Contains(frontendBundle, "exportReportItem") {
+		t.Fatal("frontendBundle missing exportReportItem function")
 	}
 }
 
@@ -2092,11 +2163,7 @@ func TestReportResHistoryPersistenceAndReset(t *testing.T) {
 }
 
 func TestTaaLogConsoleRendering(t *testing.T) {
-	data, err := os.ReadFile("index.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	html := string(data)
+	html := frontendBundle
 	required := []string{
 		`id="card-taaLog"`,
 		`id="taaLogStatusDot"`,
@@ -2111,7 +2178,7 @@ func TestTaaLogConsoleRendering(t *testing.T) {
 	}
 	for _, s := range required {
 		if !strings.Contains(html, s) {
-			t.Errorf("index.html missing %q", s)
+			t.Errorf("frontendBundle missing %q", s)
 		}
 	}
 }
