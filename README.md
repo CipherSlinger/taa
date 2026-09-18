@@ -72,12 +72,10 @@ flowchart LR
 ```text
 .
 ├── cmd/                              # Executable entry points (Thin Entrypoints)
-│   ├── taa/                          # TAA Enclave daemon entry point (main.go)
-│   └── platform-mock/                # Platform mock emulator CLI entry point (main.go)
+│   └── taa/                          # TAA Enclave daemon entry point (main.go)
 ├── internal/                         # Private internal application logic
 │   ├── app/                          # Service bootstrapping & orchestration layer
-│   │   ├── taa/                      # TAA daemon startup, registration & HTTP assembly
-│   │   └── mock/                     # Platform mock server & embedded Web console
+│   │   └── taa/                      # TAA daemon startup, registration & HTTP assembly
 │   ├── controller/                   # HTTP routing, resource management, reporting & platform dispatch
 │   │   ├── route.go                  # Route handlers, state machine, import/export/attestation APIs
 │   │   ├── register.go               # Startup platform registration
@@ -91,6 +89,11 @@ flowchart LR
 │   ├── crypto/                       # SM2, SM3, SM4-GCM envelope encryption & key utilities
 │   ├── logger/                       # Structured JSON & console logger
 │   └── utils/                        # File system, archive, and network helpers
+├── tools/                            # Developer tools and auxiliary packages
+│   ├── platform-mock/                # Test management platform simulator & Web console
+│   │   ├── cmd/platform-mock/        # CLI entry point (main.go)
+│   │   └── internal/                 # Mock server logic, handlers, state store & UI assets
+│   └── sdk/                          # TEE cryptographic SDK & CLI tools (teecrypto)
 ├── configs/                          # Deployment configuration templates
 │   ├── taa-docker.json               # Local Docker container development template
 │   └── taa-production.json           # Production Kubernetes Pod template (identity injected via env)
@@ -289,13 +292,13 @@ Specify one or more components: `platform-mock`, `taa`, `qwen`. If omitted:
 
 TAA includes a full-featured management platform emulator with an embedded Web GUI console:
 
-- **Source Code**: `cmd/platform-mock/main.go`, `internal/app/mock/index.html`
+- **Source Code**: `tools/platform-mock/cmd/platform-mock/main.go`, `tools/platform-mock/internal/static/index.html`
 - **Default Port**: `18080`
 - **Web Console**: `http://127.0.0.1:18080`
 
 ```bash
 # Build standalone platform mock binary
-go build -o bin/platform-mock ./cmd/platform-mock
+go build -o bin/platform-mock ./tools/platform-mock/cmd/platform-mock
 
 # Run in foreground
 ./bin/platform-mock -addr 0.0.0.0:18080 -taa-target http://127.0.0.1:6001
@@ -330,7 +333,7 @@ go build -o bin/platform-mock ./cmd/platform-mock
 go build -o bin/taa ./cmd/taa
 
 # Build platform mock emulator
-go build -o bin/platform-mock ./cmd/platform-mock
+go build -o bin/platform-mock ./tools/platform-mock/cmd/platform-mock
 
 # Run all unit tests
 go test ./...
@@ -347,6 +350,8 @@ go vet ./...
 - **Architecture Design**: `docs/TAA设计文档.md`
 - **API Specifications**: `docs/taa接口设计文档.md`
 - **Model Provider Integration Guide**: `docs/TAA模型提供方开发与接口对接规范.md`
+- **Platform Mock Emulator**: `tools/platform-mock/README.md`
+- **TEE Crypto SDK**: `tools/sdk/README.md`
 
 ---
 

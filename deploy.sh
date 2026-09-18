@@ -129,27 +129,9 @@ REMOTE_TAA_CONFIG_PATH="${REMOTE_TAA_CONFIG_PATH:-$REMOTE_DIR/$TAA_CONFIG_FILE}"
 CONTAINER_TAA_CONFIG_PATH="${CONTAINER_TAA_CONFIG_PATH:-$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE}"
 CONTRACT="${CONTRACT:-}"
 TAA_LOG_FILE="${TAA_LOG_FILE:-$TAA_CONTAINER_WORKDIR/taa.log}"
-# Ollama / Qwen: offline bundle, remote cache dir, container dir, host and model config.
-# TAA is decoupled from the inference engine, connecting via taa-isp/v1 protocol (UDS or HTTP REST).
-OLLAMA_LOCAL_DIR="${OLLAMA_LOCAL_DIR:-$PROJECT_DIR/models/audit/ollama-qwen}"
-OLLAMA_DIR_NAME="${OLLAMA_DIR_NAME:-$(basename "$OLLAMA_LOCAL_DIR")}"
-REMOTE_OLLAMA_DIR="${REMOTE_OLLAMA_DIR:-$REMOTE_DIR/$OLLAMA_DIR_NAME}"
-REMOTE_OLLAMA_ARCHIVE="${REMOTE_OLLAMA_ARCHIVE:-$REMOTE_DIR/$OLLAMA_DIR_NAME.tar.gz}"
-CONTAINER_OLLAMA_DIR="${CONTAINER_OLLAMA_DIR:-$TAA_CONTAINER_WORKDIR/$OLLAMA_DIR_NAME}"
-CONTAINER_OLLAMA_ARCHIVE="${CONTAINER_OLLAMA_ARCHIVE:-$TAA_CONTAINER_WORKDIR/$OLLAMA_DIR_NAME.tar.gz}"
-OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
-ENV_OLLAMA_MODEL="${OLLAMA_MODEL:-}"
 CLI_MODEL=""
-OLLAMA_MODEL=""
-OLLAMA_LOG_FILE="${OLLAMA_LOG_FILE:-/tmp/ollama.log}"
-OLLAMA_READY_TIMEOUT="${OLLAMA_READY_TIMEOUT:-120}"
-OLLAMA_READY_INTERVAL="${OLLAMA_READY_INTERVAL:-2}"
-
-TEELLM_SERVICE_BINARY_NAME="${TEELLM_SERVICE_BINARY_NAME:-teellm-service}"
-TEELLM_SERVICE_BINARY_PATH="${TEELLM_SERVICE_BINARY_PATH:-$PROJECT_DIR/bin/$TEELLM_SERVICE_BINARY_NAME}"
-TEELLM_PORT="${TEELLM_PORT:-8443}"
-LOCAL_TEELLM_URL="${LOCAL_TEELLM_URL:-https://127.0.0.1:${TEELLM_PORT}}"
-TEELLM_LOG_FILE="${TEELLM_LOG_FILE:-$TAA_CONTAINER_WORKDIR/teellm-service.log}"
+READY_TIMEOUT="${READY_TIMEOUT:-120}"
+READY_INTERVAL="${READY_INTERVAL:-2}"
 
 # 远程 SSH 密码：通过 TARGET_PASSWORD 覆盖；置空时启动脚本会交互式询问。
 PASSWORD="${TARGET_PASSWORD:-Osrd@2026}"
@@ -158,7 +140,6 @@ DEPLOY_DOCKER=false
 DEPLOY_REMOTE=false
 DEPLOY_PLATFORM_MOCK=false
 DEPLOY_TAA=false
-DEPLOY_QWEN=false
 SELECTED_COMPONENT=false
 STEP=0
 
@@ -175,7 +156,6 @@ LOCAL_TAA_PORT="${LOCAL_TAA_PORT:-$CON_PORT}"
 LOCAL_TAA_BIND="${LOCAL_TAA_BIND:-:${LOCAL_TAA_PORT}}"
 LOCAL_TAA_URL="${LOCAL_TAA_URL:-http://127.0.0.1:${LOCAL_TAA_PORT}}"
 LOCAL_PLATFORM_LOG_FILE="${LOCAL_PLATFORM_LOG_FILE:-$PROJECT_DIR/.local/logs/platform-mock.log}"
-LOCAL_OLLAMA_URL="${LOCAL_OLLAMA_URL:-http://${OLLAMA_HOST}}"
 LOCAL_DOCKER_CONTAINER="${LOCAL_DOCKER_CONTAINER:-taa-env-slim-v2}"
 LOCAL_DOCKER_IMAGE_ARCHIVE="${LOCAL_DOCKER_IMAGE_ARCHIVE:-$PROJECT_DIR/deploy/taa-env-slim-v2.tar.gz}"
 LOCAL_DOCKER_IMAGE="${LOCAL_DOCKER_IMAGE:-taa-env:slim-v2}"
@@ -192,8 +172,6 @@ CUSTOM_SAVE_CONFIG=""
 LOCAL_DOCKER_NETWORK="${LOCAL_DOCKER_NETWORK:-host}"
 LOCAL_DOCKER_INPUT_DIR="${LOCAL_DOCKER_INPUT_DIR:-/opt/taa/input}"
 LOCAL_DOCKER_OUTPUT_DIR="${LOCAL_DOCKER_OUTPUT_DIR:-/opt/taa/output}"
-FORCE_QWEN_COPY="${FORCE_QWEN_COPY:-false}"
-OLLAMA_PRUNE_SYNC="${OLLAMA_PRUNE_SYNC:-true}"
 SAVE_CLEAN="${SAVE_CLEAN:-false}"
 
 banner() {
@@ -494,47 +472,18 @@ save_local_docker_image() {
   write_taa_config "$prod_config_source" "$prod_config_template" \
     ":6001" "" "" "" \
     "/root/taa/models" "/root/taa/data" "/root/taa/results" \
-    "/root/taa/ollama-qwen" "http://127.0.0.1:11434" "$target_model" \
+    "https://127.0.0.1:8443" "$target_model" \
     false "/opt/taa/input" "/opt/taa/output" "/opt/taa/keys"
   info "production config prepared for image (model: $target_model)"
-
-  local has_llm_enabled="false"
-  has_llm_enabled=$(python3 -c "import json, sys; print(str(bool((json.load(open(sys.argv[1])).get('llm') or {}).get('enabled', False))).lower())" "$prod_config_template" 2>/dev/null || echo "false")
-
-  local model_meta=""
-  local model_mb="0"
-  if [[ "$has_llm_enabled" == "true" ]]; then
-    step "verifying offline ollama bundle and model weights: $target_model"
-    require_dir "ollama package not found" "$OLLAMA_LOCAL_DIR"
-    require_file "ollama binary missing" "$OLLAMA_LOCAL_DIR/ollama"
-    require_file "start-ollama.sh missing" "$OLLAMA_LOCAL_DIR/start-ollama.sh"
-    require_dir "ollama lib directory missing" "$OLLAMA_LOCAL_DIR/lib/ollama"
-    require_dir "ollama models directory missing" "$OLLAMA_LOCAL_DIR/models/models"
-
-    model_meta="$(resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$target_model" "json")"
-    model_mb="$(python3 -c 'import sys, json; print(json.loads(sys.argv[1])["weight_mb"])' "$model_meta" 2>/dev/null || echo "0")"
-    info "target model '$target_model' weights verified (${model_mb}MB)"
-  fi
 
   step "creating ephemeral container to assemble image"
   local builder_container="taa-builder-prod-$$"
   TEMP_BUILDER_CONTAINER="$builder_container"
 
-  local target_model_slug=""
-  if [[ -n "$target_model" ]]; then
-    target_model_slug="ollama-${target_model//[:\/]/-}"
-  fi
-
-  spin_task "initializing container directories and symlinks" docker run --name "$builder_container" --entrypoint bash "$base_image" -c "
-    rm -f /root/taa/manual /root/taa/taa.log /tmp/ollama.log 2>/dev/null || true
-    mkdir -p /root/taa/models /root/taa/data /root/taa/results /root/taa/certs /root/taa/ollama-qwen /opt/taa/keys /opt/taa/input /opt/taa/output /taatest
+  spin_task "initializing container directories" docker run --name "$builder_container" --entrypoint bash "$base_image" -c "
+    rm -f /root/taa/manual /root/taa/taa.log 2>/dev/null || true
+    mkdir -p /root/taa/models /root/taa/data /root/taa/results /root/taa/certs /opt/taa/keys /opt/taa/input /opt/taa/output
     chmod 700 /opt/taa/keys
-    ln -sfn /root/taa/ollama-qwen /taatest/ollama-qwen2.5-coder-0.5b
-    ln -sfn /root/taa/ollama-qwen /root/taa/ollama-qwen2.5-coder-0.5b
-    if [[ -n "$target_model_slug" ]]; then
-      ln -sfn /root/taa/ollama-qwen "/root/taa/$target_model_slug"
-      ln -sfn /root/taa/ollama-qwen "/taatest/$target_model_slug"
-    fi
   "
 
   step "deploying taa binary, certificates, and production config"
@@ -546,28 +495,6 @@ save_local_docker_image() {
     docker cp "$5" "$2:/root/taa/taa-config.json"
   ' _ "$TAA_BINARY_PATH" "$builder_container" "$ATT_HRK_SOURCE" "$ATT_HSK_SOURCE" "$prod_config_source"
 
-  if [[ "$has_llm_enabled" == "true" ]]; then
-    step "deploying ollama runtime and model '$target_model' into container"
-    local tmp_filelist="$LOCAL_RUN_DIR/ollama_files_$$.txt"
-    ensure_parent_dir "$tmp_filelist"
-    TEMP_FILELIST="$tmp_filelist"
-    resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$target_model" "full" > "$tmp_filelist"
-    local file_count
-    file_count=$(wc -l < "$tmp_filelist")
-    if [[ "$file_count" -eq 0 ]]; then
-      err "failed to resolve any files for model '$target_model' in $OLLAMA_LOCAL_DIR"
-      exit 1
-    fi
-
-    spin_task "streaming ollama package and model weights (${model_mb}MB, $file_count items)" bash -c '
-      set -euo pipefail
-      tar -C "$1" --exclude="*cuda*" -cf - -T "$3" | docker cp - "$2:/root/taa/ollama-qwen"
-    ' _ "$OLLAMA_LOCAL_DIR" "$builder_container" "$tmp_filelist"
-    rm -f "$tmp_filelist"
-    TEMP_FILELIST=""
-    info "ollama bundle successfully injected into /root/taa/ollama-qwen"
-  fi
-
   step "committing container to production image: $target_image"
   local commit_msg="Production image packaged from base $(basename "$base_archive") with $(basename "$prod_config_template") at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   spin_task "committing image state ($target_image)" \
@@ -575,7 +502,7 @@ save_local_docker_image() {
       -c 'ENTRYPOINT ["bash", "/root/taa/start.sh"]' \
       -c 'CMD []' \
       -c 'WORKDIR /root/taa' \
-      -c 'EXPOSE 6001 11434' \
+      -c 'EXPOSE 6001' \
       -m "$commit_msg" \
       "$builder_container" "$target_image"
 
@@ -624,7 +551,7 @@ save_local_docker_image() {
   echo -e "    ${MUTED}↳ Base Archive     :${NC} ${BOLD}${base_archive}${NC}"
   echo -e "    ${MUTED}↳ Base Image       :${NC} ${base_image}"
   echo -e "    ${MUTED}↳ Config Applied   :${NC} ${BOLD}${prod_config_template}${NC}"
-  echo -e "    ${MUTED}↳ Target Model     :${NC} ${PURPLE}${target_model}${NC} ${DIM}(${model_mb} MB)${NC}"
+  echo -e "    ${MUTED}↳ Target Model     :${NC} ${PURPLE}${target_model}${NC}"
   echo -e "    ${MUTED}↳ Image Tag (Date) :${NC} ${BOLD}${GREEN}${target_image}${NC}"
   echo -e "    ${MUTED}↳ Image ID         :${NC} ${image_id}"
   echo -e "    ${MUTED}↳ Uncompressed     :${NC} ${image_size_mb} MB"
@@ -639,7 +566,7 @@ save_local_docker_image() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [docker|remote] [start|stop|save] [platform-mock] [taa] [qwen] [--model <name>]
+Usage: $(basename "$0") [docker|remote] [start|stop|save] [platform-mock] [taa] [--model <name>]
 
 Running modes (mutually exclusive, default: remote):
   docker    Deploy TAA and its dependencies into a local Docker container for testing, with platform-mock running locally on host.
@@ -668,47 +595,40 @@ Options:
 
 Component selection:
   When no component names are given, target components are deployed by default (in remote mode, platform-mock is omitted to avoid port 18080 conflict with ccs-node-agent).
-  Provide one or more component names (platform-mock, taa, qwen) to deploy or operate on them separately.
+  Provide one or more component names (platform-mock, taa) to deploy or operate on them separately.
+  Note: Qwen / Ollama / TEE-LLM inference service is managed independently via teellm/deploy.sh.
 
 Examples:
   # Docker mode (local Docker container)
   $(basename "$0") docker start
-  $(basename "$0") docker start --model qwen3:8b
+  $(basename "$0") docker start --model qwen2.5-coder:7b
   $(basename "$0") docker stop
   $(basename "$0") docker save
   $(basename "$0") docker save --tag taa-env:slim-v2-$(date +%Y%m%d)
   $(basename "$0") docker save -o /tmp/taa-env-production.tar.gz
   $(basename "$0") docker
   $(basename "$0") docker taa
-  $(basename "$0") docker qwen
   $(basename "$0") docker platform-mock
-  $(basename "$0") docker taa qwen
+  $(basename "$0") docker taa platform-mock
 
   # Remote mode (Kubernetes / SSH)
   $(basename "$0") remote start
   $(basename "$0") remote stop
   $(basename "$0") remote
   $(basename "$0") remote taa
-  $(basename "$0") remote qwen
   $(basename "$0") remote platform-mock
-  $(basename "$0") remote taa qwen
   $(basename "$0") taa
-  $(basename "$0") qwen
 
 Environment overrides:
   # Docker mode (docker)
   LOCAL_DOCKER_CONTAINER=${LOCAL_DOCKER_CONTAINER}
       本地 Docker 目标容器名称（默认 taa-env-slim-v2）。
   LOCAL_DOCKER_IMAGE_ARCHIVE=${LOCAL_DOCKER_IMAGE_ARCHIVE}
-      本地基础镜像归档文件路径（默认 deploy/taa-env-slim-v2.tar.gz）。
+      本地基础镜像归档文件��径（默认 deploy/taa-env-slim-v2.tar.gz）。
   LOCAL_DOCKER_IMAGE=${LOCAL_DOCKER_IMAGE}
       本地 Docker 基础镜像名称（默认 taa-env:slim-v2）。
   LOCAL_DOCKER_NETWORK=${LOCAL_DOCKER_NETWORK}
       本地 Docker 容器网络模式（默认 host）。
-  FORCE_QWEN_COPY=${FORCE_QWEN_COPY}
-      设为 true 时强制重新将 ollama/qwen 完整离线包拷贝进容器。
-  OLLAMA_PRUNE_SYNC=${OLLAMA_PRUNE_SYNC}
-      启用按需模型打包与增量同步（默认 true），仅拷贝/同步 OLLAMA_MODEL 指定模型与运行时依赖。
 
   # Kubernetes / Pod (Remote mode)
   TARGET_POD=${TARGET_POD}
@@ -759,18 +679,10 @@ Environment overrides:
       本地 attestation 证书目录。
   TAA_KEEP_MANUAL=${TAA_KEEP_MANUAL:-false}
       远程部署后是否保持容器 manual 挂起状态而不自启（默认 false）。
-
-  # Ollama / Qwen
-  OLLAMA_LOCAL_DIR=${OLLAMA_LOCAL_DIR}
-      本地 Ollama / Qwen 离线包目录。
-  OLLAMA_HOST=${OLLAMA_HOST}
-      Ollama 在容器内监听的地址与端口。
-  OLLAMA_MODEL=${OLLAMA_MODEL}
-      启动检查使用的 Qwen 模型名称（若未通过环境或参数指定，优先从当前部署模式对应的配置文件模板读取）。
-  OLLAMA_READY_TIMEOUT=${OLLAMA_READY_TIMEOUT}
-      等待 Ollama 就绪的最长时间（秒）。
-  OLLAMA_READY_INTERVAL=${OLLAMA_READY_INTERVAL}
-      Ollama 就绪检测轮询间隔（秒）。
+  READY_TIMEOUT=${READY_TIMEOUT}
+      等待服务就绪的最长时间（秒）。
+  READY_INTERVAL=${READY_INTERVAL}
+      服务就绪检测轮询间隔（秒）。
 EOF
 }
 
@@ -935,28 +847,6 @@ require_command() {
   command -v "$name" >/dev/null 2>&1 || { err "command '$name' is required but not installed or not in PATH"; exit 1; }
 }
 
-verify_ollama_binary() {
-  local binary="$1"
-  local output rc
-
-  chmod +x "$binary" 2>/dev/null || true
-  if command -v timeout >/dev/null 2>&1; then
-    output=$(timeout 10 "$binary" --version 2>&1) || rc=$?
-  else
-    output=$("$binary" --version 2>&1) || rc=$?
-  fi
-  rc=${rc:-0}
-
-  if [[ $rc -ne 0 ]]; then
-    err "ollama binary is invalid or incomplete: $binary"
-    if [[ -n "$output" ]]; then
-      detail "$output"
-    fi
-    detail "Please replace the offline Ollama package with a complete Linux x86_64 binary."
-    exit 1
-  fi
-}
-
 ensure_go_compiler() {
   # 优先检测本地已安装的高版本 Go 路径（例如 /usr/local/go/bin、/snap/bin）
   for candidate in /usr/local/go/bin /snap/bin; do
@@ -1021,7 +911,7 @@ PY
   fi
 }
 
-resolve_target_ollama_model() {
+resolve_target_model() {
   if [[ -n "$CLI_MODEL" ]]; then
     printf '%s' "$CLI_MODEL"
     return 0
@@ -1034,11 +924,7 @@ resolve_target_ollama_model() {
     printf '%s' "$model"
     return 0
   fi
-  if [[ -n "$ENV_OLLAMA_MODEL" ]]; then
-    printf '%s' "$ENV_OLLAMA_MODEL"
-    return 0
-  fi
-  printf '%s' "qwen2.5-coder:0.5b"
+  printf '%s' "qwen2.5-coder:3b"
 }
 
 write_taa_config() {
@@ -1051,18 +937,17 @@ write_taa_config() {
   local model_dir="$7"
   local data_dir="$8"
   local result_dir="$9"
-  local llm_dir="${10}"
-  local llm_endpoint="${11}"
-  local llm_model="${12}"
-  local include_identity="${13}"
-  local model_input_dir="${14:-}"
-  local model_output_dir="${15:-}"
-  local keys_dir="${16:-}"
+  local llm_endpoint="${10}"
+  local llm_model="${11}"
+  local include_identity="${12}"
+  local model_input_dir="${13:-}"
+  local model_output_dir="${14:-}"
+  local keys_dir="${15:-}"
 
   require_file "taa config template not found" "$template"
   require_command python3
   ensure_parent_dir "$path"
-  python3 - "$template" "$path" "$addr" "$platform_ip" "$docker_id" "$contract" "$model_dir" "$data_dir" "$result_dir" "$llm_dir" "$llm_endpoint" "$llm_model" "$include_identity" "$model_input_dir" "$model_output_dir" "$keys_dir" <<'PY'
+  python3 - "$template" "$path" "$addr" "$platform_ip" "$docker_id" "$contract" "$model_dir" "$data_dir" "$result_dir" "$llm_endpoint" "$llm_model" "$include_identity" "$model_input_dir" "$model_output_dir" "$keys_dir" <<'PY'
 import json
 import os
 import sys
@@ -1077,14 +962,13 @@ import sys
     model_dir,
     data_dir,
     result_dir,
-    llm_dir,
     llm_endpoint,
     llm_model,
     include_identity,
     model_input_dir,
     model_output_dir,
     keys_dir,
-) = sys.argv[1:17]
+) = sys.argv[1:16]
 
 with open(template, "r", encoding="utf-8") as f:
     cfg = json.load(f)
@@ -1109,9 +993,11 @@ else:
         cfg.pop(key, None)
 
 llm = cfg.setdefault("llm", {})
-llm["endpoint"] = llm_endpoint
-llm["model"] = llm_model
-llm["dir"] = llm_dir
+if llm_endpoint:
+    llm["endpoint"] = llm_endpoint
+if llm_model:
+    llm["model"] = llm_model
+llm.pop("dir", None)
 
 workdir = "/root/taa"
 if model_dir:
@@ -1126,107 +1012,6 @@ attestation["hskCekCertPath"] = f"{workdir}/certs/hsk_cek.cert"
 with open(path, "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2)
     f.write("\n")
-PY
-}
-
-resolve_ollama_model_artifacts() {
-  local dir="$1"
-  local model="$2"
-  local mode="${3:-full}"
-  local dest_prefix="${4:-}"
-  require_command python3
-  python3 - "$dir" "$model" "$mode" "$dest_prefix" <<'PY'
-import os, sys, json
-
-ollama_dir = sys.argv[1]
-model_name = sys.argv[2]
-mode = sys.argv[3] if len(sys.argv) > 3 else "full"
-dest_prefix = sys.argv[4] if len(sys.argv) > 4 else ""
-
-if ":" in model_name:
-    base_name, tag = model_name.split(":", 1)
-else:
-    base_name, tag = model_name, "latest"
-
-parts = base_name.split("/")
-if len(parts) == 1:
-    manifest_rel = os.path.join("models", "models", "manifests", "registry.ollama.ai", "library", parts[0], tag)
-elif len(parts) == 2:
-    manifest_rel = os.path.join("models", "models", "manifests", "registry.ollama.ai", parts[0], parts[1], tag)
-else:
-    manifest_rel = os.path.join("models", "models", "manifests", *parts, tag)
-
-manifest_full = os.path.join(ollama_dir, manifest_rel)
-if not os.path.isfile(manifest_full):
-    candidates = []
-    manifests_root = os.path.join(ollama_dir, "models", "models", "manifests")
-    if os.path.isdir(manifests_root):
-        for root, dirs, files in os.walk(manifests_root):
-            for f in files:
-                if f == tag and os.path.basename(root) == parts[-1]:
-                    candidates.append(os.path.relpath(os.path.join(root, f), ollama_dir))
-    if candidates:
-        manifest_rel = candidates[0]
-        manifest_full = os.path.join(ollama_dir, manifest_rel)
-    else:
-        sys.stderr.write(f"Error: model '{model_name}' manifest not found at {manifest_full}\n")
-        sys.exit(1)
-
-with open(manifest_full, "r", encoding="utf-8") as fp:
-    data = json.load(fp)
-
-blobs = []
-if "config" in data and "digest" in data["config"]:
-    blobs.append(data["config"]["digest"].replace(":", "-"))
-for layer in data.get("layers", []):
-    if "digest" in layer:
-        blobs.append(layer["digest"].replace(":", "-"))
-
-blobs = sorted(list(set(blobs)))
-blob_rel_paths = []
-weight_bytes = 0
-for b in blobs:
-    p = os.path.join("models", "models", "blobs", b)
-    full_p = os.path.join(ollama_dir, p)
-    if not os.path.isfile(full_p):
-        sys.stderr.write(f"Error: missing required blob for model '{model_name}': {full_p}\n")
-        sys.exit(1)
-    blob_rel_paths.append(p)
-    weight_bytes += os.path.getsize(full_p)
-
-base_items = ["ollama", "start-ollama.sh", "lib"]
-for opt in ["models/cache", "models/models/cache", "models/models/id_ed25519", "models/models/id_ed25519.pub"]:
-    if os.path.exists(os.path.join(ollama_dir, opt)):
-        base_items.append(opt)
-
-model_only_items = [manifest_rel] + blob_rel_paths
-full_items = base_items + model_only_items
-
-if mode == "json":
-    res = {
-        "manifest_rel": manifest_rel,
-        "blobs_rel": blob_rel_paths,
-        "weight_mb": round(weight_bytes / (1024 * 1024), 2),
-        "base_items": base_items,
-        "model_only_items": model_only_items,
-        "full_items": full_items
-    }
-    print(json.dumps(res))
-elif mode == "model_only":
-    for it in model_only_items:
-        print(it)
-elif mode == "base_only":
-    for it in base_items:
-        print(it)
-elif mode == "check_model_sh":
-    prefix = dest_prefix.rstrip("/") + "/" if dest_prefix else ""
-    tests = [f'test -s "{prefix}{manifest_rel}"']
-    for b in blob_rel_paths:
-        tests.append(f'test -s "{prefix}{b}"')
-    print(" && ".join(tests))
-else:
-    for it in full_items:
-        print(it)
 PY
 }
 
@@ -1353,8 +1138,8 @@ else
         SELECTED_COMPONENT=true
         ;;
       qwen)
-        DEPLOY_QWEN=true
-        SELECTED_COMPONENT=true
+        info "Qwen/Ollama/TEE-LLM is now independently managed by teellm submodule."
+        info "To deploy TEE-LLM, please execute: (cd teellm && ./deploy.sh [docker|remote])"
         ;;
       --model=*)
         CLI_MODEL="${arg#*=}"
@@ -1410,7 +1195,6 @@ else
       DEPLOY_PLATFORM_MOCK=true
     fi
     DEPLOY_TAA=true
-    DEPLOY_QWEN=true
   fi
 
   if [[ "$DEPLOY_PLATFORM_MOCK" == true && "$DEPLOY_DOCKER" == false && "$PLATFORM_PORT" == "18080" ]]; then
@@ -1423,7 +1207,7 @@ cd "$PROJECT_DIR"
 wait_for_remote_taa_ready() {
   local wait_start_ts
   wait_start_ts=$(date +%s)
-  local ready_attempts=$(( (OLLAMA_READY_TIMEOUT + OLLAMA_READY_INTERVAL - 1) / OLLAMA_READY_INTERVAL ))
+  local ready_attempts=$(( (READY_TIMEOUT + READY_INTERVAL - 1) / READY_INTERVAL ))
   local taa_ready=false
   cursor_hide
   local spin_len=${#SPIN_FRAMES[@]}
@@ -1438,10 +1222,10 @@ wait_for_remote_taa_ready() {
       now=$(date +%s)
       local elapsed=$((now - wait_start_ts))
       local frame="${SPIN_FRAMES[$i]}"
-      printf "\r   ${CYAN}%s${NC} waiting for remote taa service to become ready ${DIM}(%ds / %ds)...${NC}" "$frame" "$elapsed" "$OLLAMA_READY_TIMEOUT"
+      printf "\r   ${CYAN}%s${NC} waiting for remote taa service to become ready ${DIM}(%ds / %ds)...${NC}" "$frame" "$elapsed" "$READY_TIMEOUT"
       i=$(( (i + 1) % spin_len ))
     fi
-    sleep "$OLLAMA_READY_INTERVAL"
+    sleep "$READY_INTERVAL"
   done
   cursor_show
   printf "\r\033[K"
@@ -1450,7 +1234,7 @@ wait_for_remote_taa_ready() {
     info "remote taa ready: http://127.0.0.1:$CON_PORT/v1/taa/health ${DIM}(took ${total_elapsed}s)${NC}"
     return 0
   else
-    err "remote taa did not become ready within ${OLLAMA_READY_TIMEOUT}s"
+    err "remote taa did not become ready within ${READY_TIMEOUT}s"
     remote_ssh "$(container_exec) tail -n 50 $TAA_LOG_FILE || true"
     return 1
   fi
@@ -1468,9 +1252,6 @@ if [[ "$ACTION" == "stop" ]]; then
       if [[ "$DEPLOY_TAA" == true ]]; then
         docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall '$BINARY_NAME' >/dev/null 2>&1 || true" 2>/dev/null || true
       fi
-      if [[ "$DEPLOY_QWEN" == true ]]; then
-        docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pkill -x '$TEELLM_SERVICE_BINARY_NAME' >/dev/null 2>&1 || true; killall '$TEELLM_SERVICE_BINARY_NAME' >/dev/null 2>&1 || true; pkill -x ollama >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true" 2>/dev/null || true
-      fi
     fi
   else
     step "stopping remote processes"
@@ -1479,9 +1260,6 @@ if [[ "$ACTION" == "stop" ]]; then
     fi
     if [[ "$DEPLOY_TAA" == true ]]; then
       remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_CONTAINER_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
-    fi
-    if [[ "$DEPLOY_QWEN" == true ]]; then
-      remote_ssh "$(container_exec) sh -lc 'killall ollama >/dev/null 2>&1 || true; pkill -x ollama >/dev/null 2>&1 || true; killall llama-server >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true'"
     fi
   fi
   info "all target services stopped cleanly"
@@ -1515,38 +1293,17 @@ REMOTE_DOCKER_ID="${REMOTE_DOCKER_ID:-$CONTAINER_LABEL}"
 DEPLOY_COMPONENTS=""
 [[ "$DEPLOY_PLATFORM_MOCK" == true ]] && DEPLOY_COMPONENTS+="$PLATFORM_LABEL "
 [[ "$DEPLOY_TAA" == true ]] && DEPLOY_COMPONENTS+="taa "
-[[ "$DEPLOY_QWEN" == true ]] && DEPLOY_COMPONENTS+="qwen "
 DEPLOY_TARGET_DESC="${REMOTE_USER}@${REMOTE_HOST}"
 if [[ "$DEPLOY_DOCKER" == true ]]; then
   DEPLOY_TARGET_DESC="local docker (${LOCAL_DOCKER_CONTAINER})"
 fi
-OLLAMA_MODEL="$(resolve_target_ollama_model)"
-banner "Deploying: ${DEPLOY_COMPONENTS}→ ${DEPLOY_TARGET_DESC}" "Target model: ${OLLAMA_MODEL}"
+TARGET_MODEL="$(resolve_target_model)"
+banner "Deploying: ${DEPLOY_COMPONENTS}→ ${DEPLOY_TARGET_DESC}" "Target model: ${TARGET_MODEL}"
 
 if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
   ensure_go_compiler
   ensure_parent_dir "$MOCK_BINARY_PATH"
-  spin_task "building platform-mock from ./cmd/platform-mock" go build -o "$MOCK_BINARY_PATH" ./cmd/platform-mock
-fi
-if [[ "$DEPLOY_QWEN" == true ]]; then
-  ensure_go_compiler
-  ensure_parent_dir "$TEELLM_SERVICE_BINARY_PATH"
-  spin_task "building teellm-service from ./teellm/cmd/teellm-service" go build -o "$TEELLM_SERVICE_BINARY_PATH" ./teellm/cmd/teellm-service
-  require_file "build verification failed (teellm-service binary missing)" "$TEELLM_SERVICE_BINARY_PATH"
-
-  require_dir "ollama package not found" "$OLLAMA_LOCAL_DIR"
-  require_file "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/ollama"
-  require_file "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/start-ollama.sh"
-  require_dir "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/models/models"
-  require_dir "ollama package is incomplete" "$OLLAMA_LOCAL_DIR/lib/ollama"
-  verify_ollama_binary "$OLLAMA_LOCAL_DIR/ollama"
-  if [[ "$OLLAMA_PRUNE_SYNC" == true ]]; then
-    model_meta="$(resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "json")"
-    model_mb="$(python3 -c 'import sys, json; print(json.loads(sys.argv[1])["weight_mb"])' "$model_meta" 2>/dev/null || echo "unknown")"
-    info "ollama package: $OLLAMA_LOCAL_DIR (target model: $OLLAMA_MODEL, weights: ${model_mb}MB, prune sync: enabled)"
-  else
-    info "ollama package: $(du -sh "$OLLAMA_LOCAL_DIR" | awk '{print $1}') at $OLLAMA_LOCAL_DIR (full sync)"
-  fi
+  spin_task "building platform-mock from ./tools/platform-mock/cmd/platform-mock" go build -o "$MOCK_BINARY_PATH" ./tools/platform-mock/cmd/platform-mock
 fi
 
 if [[ "$DEPLOY_TAA" == true ]]; then
@@ -1584,7 +1341,7 @@ deploy_platform_mock() {
   step "starting local platform-mock on ${LOCAL_PLATFORM_BIND}"
   start_local_background "platform-mock" "$LOCAL_RUN_DIR/platform-mock.pid" "$LOCAL_PLATFORM_LOG_FILE" \
     "$MOCK_BINARY_PATH" -addr "$LOCAL_PLATFORM_BIND" -state-dir "$LOCAL_PLATFORM_STATE_DIR" -upload-dir "$LOCAL_PLATFORM_UPLOAD_DIR" -taa-target "$LOCAL_TAA_URL" -allow-empty-attestation
-  wait_for_http_ready "platform-mock" GET "$LOCAL_PLATFORM_URL/api/register/status" "$OLLAMA_READY_TIMEOUT" "$OLLAMA_READY_INTERVAL" "$LOCAL_PLATFORM_LOG_FILE"
+  wait_for_http_ready "platform-mock" GET "$LOCAL_PLATFORM_URL/api/register/status" "$READY_TIMEOUT" "$READY_INTERVAL" "$LOCAL_PLATFORM_LOG_FILE"
 }
 
 deploy_docker_qwen() {

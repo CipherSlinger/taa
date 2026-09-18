@@ -22,7 +22,6 @@
     "model": "qwen2.5-coder:3b",
     "policy": "assist",
     "failClosed": true,
-    "dir": "/root/taa/ollama-qwen",
     "attestationMode": "strict"
   }
 }

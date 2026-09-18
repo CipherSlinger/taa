@@ -28,7 +28,7 @@ cd gui-tauri && cargo xwin --target x86_64-pc-windows-msvc build --release
 
 ### 共享加密库
 
-仓库根目录 `taa/crypto` 是唯一的实现来源；SDK 通过 `replace taa => ..` 直接复用。
+仓库根目录 `taa/crypto` 是唯一的实现来源；SDK 通过 `replace taa => ../..` 直接复用。
 
 - `sm4.go` — SM4-GCM 对称加解密。`GenerateSM4Key`(16 字节随机密钥)、`Encrypt`、`Decrypt`。私有 `newGCM` 统一做密钥长度校验并构造 AEAD 实例。
 - `sm2.go` — SM2 椭圆曲线密钥生成、加解密、PEM 序列化。`GenerateSM2KeyPair`、`EncryptSM2`/`DecryptSM2`、`SealSM2`/`OpenSM2`(SM2 信封加密)、`SealSM2SM4GCM` / `OpenSM2SM4GCM`。
