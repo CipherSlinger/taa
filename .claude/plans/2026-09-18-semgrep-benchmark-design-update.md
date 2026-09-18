@@ -110,12 +110,12 @@ git commit -m "docs(audit): purge obsolete regex and sliding window descriptions
 **Files:**
 - Modify: `models/audit/research/taa-audit-design.html`
 
-- [ ] **Step 1: 执行自动 HTML 表格注入**
+- [x] **Step 1: 执行自动 HTML 表格注入**
 
 Run: `python3 models/audit/tools/generate_matrix_results.py --update-html`
 Expected: 自动将最新的 18 组全矩阵表格与 1,000 次 Bootstrap 95% 置信区间注入 `taa-audit-design.html` 的 Section 5。
 
-- [ ] **Step 2: 更新 Section 5 导言与指标分析文本**
+- [x] **Step 2: 更新 Section 5 导言与指标分析文本**
 
 1. 将章节副标题更新为 `(6 模型 × 3 方案 三轨正交对比矩阵 · Semgrep 深度协同)`；
 2. 更新导言文本，明确指出 Track C 是基于 **Semgrep-Native AST 语义切片与污点分析** 的协同架构；
@@ -125,12 +125,12 @@ Expected: 自动将最新的 18 组全矩阵表格与 1,000 次 Bootstrap 95% �
    - 关键攻击归因率突破至 95.7%~100.0%；
    - Fail-Closed 守牢 100% 恶意拦截底线。
 
-- [ ] **Step 3: 检查 HTML 语法与格式完整性**
+- [x] **Step 3: 检查 HTML 语法与格式完整性**
 
 Run: `git diff models/audit/research/taa-audit-design.html | head -n 40`
 Expected: 检查变更内容清晰准确，无标签破损。
 
-- [ ] **Step 4: Git 提交**
+- [x] **Step 4: Git 提交**
 
 ```bash
 git add models/audit/research/taa-audit-design.html
