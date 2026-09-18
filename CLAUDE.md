@@ -1,21 +1,21 @@
 # TAA Project Guidelines
 
-## 常用命令
-- 构建 TAA: `go build -o bin/taa ./cmd/taa`
-- 构建 Platform-Mock: `go build -o bin/platform-mock ./cmd/platform-mock`
-- 运行测试: `go test ./...`
+## Common Commands
+- Build TAA: `go build -o bin/taa ./cmd/taa`
+- Build Platform-Mock: `go build -o bin/platform-mock ./cmd/platform-mock`
+- Run tests: `go test ./...`
 
-## 编码与注释规范
-- **代码注释**：必须且仅使用英文注释。
+## Coding and Comment Guidelines
+- **Code comments**: Must use English comments only.
 
-## 规划与文档 (Plan & Spec)
-- 所有方案设计 (spec) 与实施计划 (plan) 统一保存在 `.claude/specs/` 和 `.claude/plans/` 目录下，严禁存入 `docs/`。
+## Planning and Documentation (Plan & Spec)
+- All solution designs (spec) and implementation plans (plan) must be saved uniformly in `.claude/specs/` and `.claude/plans/`, strictly forbidden to be stored in `docs/`.
 
-## Agent 与协作规范
-- **Subagent 限制**：并发 subagent 数量不得超过 2 个，严禁 subagent 嵌套调用。
-- **过程汇报**：工作过程中实时、清晰汇报正在进行的操作与阶段性总结。
+## Agent and Collaboration Guidelines
+- **Subagent limits**: Concurrent subagents must not exceed 2; nested subagent calls are strictly prohibited.
+- **Progress reporting**: Report ongoing operations and milestone summaries clearly and in real-time during the working process.
 
-## Git 提交规范
-- **自动提交**：功能开发或修改完成后，自动执行 Git 提交。
-- **提交语言与格式**：提交信息必须使用**英文**，遵循严格的 Conventional Commits 规范（如 `feat(scope): ...`, `docs(guide): ...`）。
-- **去除 AI 痕迹**：严禁出现任何 `Co-Authored-By`、`anthropic`、`Claude`、`AI` 或类似的署名及标识。
+## Git Commit Guidelines
+- **Automatic commit**: Automatically execute Git commits after completing feature development or modifications.
+- **Commit language and format**: Commit messages must be in **English** and strictly follow Conventional Commits conventions (e.g., `feat(scope): ...`, `docs(guide): ...`).
+- **Remove AI traces**: Strictly prohibit any `Co-Authored-By`, `anthropic`, `Claude`, `AI`, or similar signatures and identifiers.
