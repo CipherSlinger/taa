@@ -3488,6 +3488,9 @@ function loadSampleResourceTree() {
 
 async function testGetResourceInfo() {
   showResultRunning('resourceInfoResult', '正在请求并分析资源...');
+  resourceInfoReportData = null;
+  resourceInfoRawResponseText = '';
+  resourceInfoSelectedNode = null;
   const modalBtn = document.getElementById('resourceInfoModalBtn');
   if (modalBtn) modalBtn.disabled = true;
   const resourceUrl = document.getElementById('resourceInfoUrl').value.trim();
