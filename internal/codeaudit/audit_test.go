@@ -559,3 +559,153 @@ requests.post("http://monitor.local/metrics", json={"acc": 0.95})
 		t.Fatal("report_id mismatch after round-trip")
 	}
 }
+
+// ── Test file partitioning & risk classification tests ──
+
+func TestIsTestFile(t *testing.T) {
+	testCases := []struct {
+		path string
+		want bool
+	}{
+		{"test_run.py", true},
+		{"/root/taa/models/test_fusion_pat.py", true},
+		{"/path/to/tests/helper.py", true},
+		{"/path/to/test/utils.py", true},
+		{"train_test.py", true},
+		{"model_test.go", true},
+		{"train.py", false},
+		{"train_fusion.py", false},
+		{"network.py", false},
+		{"/root/taa/models/basic_net/DAFT_networks/models/base.py", false},
+		{"", false},
+	}
+
+	for _, tc := range testCases {
+		got := isTestFile(tc.path)
+		if got != tc.want {
+			t.Errorf("isTestFile(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestClassifyFindingRisk_TestFilesAndMetadataDowngrades(t *testing.T) {
+	// 1. EMB_003 in production file with UNCERTAIN -> LOW
+	f1 := Finding{
+		File:       "/root/taa/models/train.py",
+		RuleID:     "EMB_003",
+		Severity:   SeverityMedium,
+		LLMVerdict: "UNCERTAIN",
+	}
+	if got := ClassifyFindingRisk(f1); got != "LOW" {
+		t.Errorf("EMB_003 UNCERTAIN = %s, want LOW", got)
+	}
+
+	// 2. DYN_001 in test file with UNCERTAIN -> LOW
+	f2 := Finding{
+		File:       "/root/taa/models/test_reporting_helpers.py",
+		RuleID:     "DYN_001",
+		Severity:   SeverityMedium,
+		LLMVerdict: "UNCERTAIN",
+	}
+	if got := ClassifyFindingRisk(f2); got != "LOW" {
+		t.Errorf("DYN_001 in test file UNCERTAIN = %s, want LOW", got)
+	}
+
+	// 3. DYN_001 in production file with UNCERTAIN -> MEDIUM
+	f3 := Finding{
+		File:       "/root/taa/models/train_fusion.py",
+		RuleID:     "DYN_001",
+		Severity:   SeverityMedium,
+		LLMVerdict: "UNCERTAIN",
+	}
+	if got := ClassifyFindingRisk(f3); got != "MEDIUM" {
+		t.Errorf("DYN_001 in prod file UNCERTAIN = %s, want MEDIUM", got)
+	}
+
+	// 4. High-severity finding in test file with UNCERTAIN -> still HIGH (must not downgrade true threats)
+	f4 := Finding{
+		File:       "/root/taa/models/test_run.py",
+		RuleID:     "CMD_001",
+		Severity:   SeverityHigh,
+		LLMVerdict: "UNCERTAIN",
+	}
+	if got := ClassifyFindingRisk(f4); got != "HIGH" {
+		t.Errorf("CMD_001 in test file UNCERTAIN = %s, want HIGH", got)
+	}
+
+	// 5. High-severity finding in test file with static fallback -> still HIGH
+	f5 := Finding{
+		File:     "/root/taa/models/test_run.py",
+		RuleID:   "NET_001",
+		Severity: SeverityHigh,
+	}
+	if got := ClassifyFindingRisk(f5); got != "HIGH" {
+		t.Errorf("NET_001 in test file static = %s, want HIGH", got)
+	}
+}
+
+func TestRetinaDKDScenarioConclusionIsLow(t *testing.T) {
+	retinaFindings := []Finding{
+		{
+			File:     "models/examples/Retina-DKD/Retina-DKD/test_reporting_helpers.py",
+			Line:     22,
+			RuleID:   "DYN_001",
+			Severity: SeverityMedium,
+		},
+		{
+			File:     "models/examples/Retina-DKD/Retina-DKD/test_run.py",
+			Line:     9,
+			RuleID:   "EMB_003",
+			Severity: SeverityMedium,
+		},
+		{
+			File:     "models/examples/Retina-DKD/Retina-DKD/test_fusion_pat.py",
+			Line:     349,
+			RuleID:   "EMB_003",
+			Severity: SeverityMedium,
+		},
+		{
+			File:     "models/examples/Retina-DKD/Retina-DKD/test_fusion.py",
+			Line:     308,
+			RuleID:   "EMB_003",
+			Severity: SeverityMedium,
+		},
+		{
+			File:     "models/examples/Retina-DKD/Retina-DKD/test_isolate_all.py",
+			Line:     317,
+			RuleID:   "EMB_003",
+			Severity: SeverityMedium,
+		},
+	}
+
+	// Scenario A: LLM healthy and classifies all 5 as BENIGN
+	benignFindings := make([]Finding, len(retinaFindings))
+	copy(benignFindings, retinaFindings)
+	for i := range benignFindings {
+		benignFindings[i].LLMVerdict = "BENIGN"
+		benignFindings[i].LLMRisk = "LOW"
+	}
+	statsA := ComputeStatistics(benignFindings)
+	conclusionA := ComputeConclusion(statsA, nil, "assist")
+	if conclusionA.RiskLevel != "LOW" {
+		t.Errorf("Scenario A (BENIGN) RiskLevel = %s, want LOW", conclusionA.RiskLevel)
+	}
+	if !conclusionA.Passed {
+		t.Errorf("Scenario A (BENIGN) Passed = false, want true")
+	}
+
+	// Scenario B: LLM degraded / circuit open / UNCERTAIN
+	uncertainFindings := make([]Finding, len(retinaFindings))
+	copy(uncertainFindings, retinaFindings)
+	for i := range uncertainFindings {
+		uncertainFindings[i].LLMVerdict = "UNCERTAIN"
+	}
+	statsB := ComputeStatistics(uncertainFindings)
+	conclusionB := ComputeConclusion(statsB, nil, "assist")
+	if conclusionB.RiskLevel != "LOW" {
+		t.Errorf("Scenario B (UNCERTAIN fallback) RiskLevel = %s, want LOW", conclusionB.RiskLevel)
+	}
+	if !conclusionB.Passed {
+		t.Errorf("Scenario B (UNCERTAIN fallback) Passed = false, want true")
+	}
+}

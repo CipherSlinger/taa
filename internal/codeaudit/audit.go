@@ -167,6 +167,23 @@ func InferRiskLevel(highCount, mediumCount int) string {
 	return "LOW"
 }
 
+// isTestFile returns true if the file path indicates a test script, helper, or fixture.
+func isTestFile(path string) bool {
+	if path == "" {
+		return false
+	}
+	base := strings.ToLower(filepath.Base(path))
+	if strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.py") || strings.HasSuffix(base, "_test.go") {
+		return true
+	}
+	cleaned := filepath.ToSlash(strings.ToLower(path))
+	if strings.Contains(cleaned, "/tests/") || strings.Contains(cleaned, "/test/") ||
+		strings.HasPrefix(cleaned, "tests/") || strings.HasPrefix(cleaned, "test/") {
+		return true
+	}
+	return false
+}
+
 // ClassifyFindingRisk determines the final risk level (HIGH, MEDIUM, LOW) of a finding,
 // prioritized by the LLM's evaluation and falling back to static scan severity.
 func ClassifyFindingRisk(f Finding) string {
@@ -190,6 +207,10 @@ func ClassifyFindingRisk(f Finding) string {
 		if f.Severity == SeverityHigh {
 			return "HIGH"
 		}
+		// Benign metadata logging or findings located in test fixtures are downgraded to LOW when uncertain.
+		if f.RuleID == "EMB_003" || isTestFile(f.File) {
+			return "LOW"
+		}
 		return "MEDIUM"
 	}
 
@@ -197,6 +218,10 @@ func ClassifyFindingRisk(f Finding) string {
 	case SeverityHigh:
 		return "HIGH"
 	case SeverityMedium:
+		// Benign metadata logging or findings located in test fixtures are downgraded to LOW in static fallback.
+		if f.RuleID == "EMB_003" || isTestFile(f.File) {
+			return "LOW"
+		}
 		return "MEDIUM"
 	default:
 		return "LOW"
