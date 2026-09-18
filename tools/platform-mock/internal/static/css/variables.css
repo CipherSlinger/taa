@@ -23,6 +23,10 @@
   --tree-sel: rgba(37, 99, 235, 0.14);
   --chip-bg: rgba(127, 127, 127, 0.08);
   --chip-border: rgba(127, 127, 127, 0.2);
+
+  /* Toast & Stepper */
+  --toast-bg: var(--panel, #ffffff);
+  --toast-border: var(--line, #e2e8f0);
 }
 
 @media (prefers-color-scheme: dark) {

@@ -71,6 +71,13 @@ async function copyRegisterPublicKey(btnEl) {
   const area = document.getElementById('registerPublicKey');
   if (!area || !area.value) return;
   const ok = await copyText(area.value);
+  if (typeof showToast === 'function') {
+    if (ok) {
+      showToast({ type: 'success', title: '公钥已复制', message: 'TAA 注册公钥已复制到剪贴板' });
+    } else {
+      showToast({ type: 'error', title: '复制失败', message: '未能写入剪贴板' });
+    }
+  }
   if (btnEl) {
     const copySvg = btnEl.querySelector('.copy-icon');
     const checkSvg = btnEl.querySelector('.check-icon');

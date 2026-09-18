@@ -278,6 +278,13 @@ async function copyBodyModal(btn) {
       btn.textContent = originalText;
     }, 1500);
   }
+  if (typeof showToast === 'function') {
+    if (success) {
+      showToast({ type: 'success', title: '复制成功', message: '已复制到剪贴板' });
+    } else {
+      showToast({ type: 'error', title: '复制失败', message: '未能写入剪贴板' });
+    }
+  }
 }
 
 async function copyCurlCommand(btn) {
@@ -291,6 +298,13 @@ async function copyCurlCommand(btn) {
     setTimeout(() => {
       btn.textContent = originalText;
     }, 1500);
+  }
+  if (typeof showToast === 'function') {
+    if (success) {
+      showToast({ type: 'success', title: 'cURL 复制成功', message: '已复制 cURL 命令到剪贴板' });
+    } else {
+      showToast({ type: 'error', title: '复制失败', message: '未能写入剪贴板' });
+    }
   }
 }
 

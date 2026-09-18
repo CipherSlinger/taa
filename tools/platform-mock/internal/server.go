@@ -41,6 +41,7 @@ func init() {
 	sb.WriteString("\n")
 
 	jsFiles := []string{
+		"static/js/toast.js",
 		"static/js/drawer.js",
 		"static/js/api.js",
 		"static/js/crypto.js",
