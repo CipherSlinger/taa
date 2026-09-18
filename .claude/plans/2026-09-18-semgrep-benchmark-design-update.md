@@ -79,24 +79,24 @@ git commit -m "feat(audit): update benchmark matrix generator and persistence wi
 **Files:**
 - Modify: `models/audit/research/taa-audit-design.html`
 
-- [ ] **Step 1: 更新 Section 2 规范演进状态标注与核心描述**
+- [x] **Step 1: 更新 Section 2 规范演进状态标注与核心描述**
 
 将 Section 2 顶部的演进状态条由“演进目标态/当前工程基线”更新为 **“当前生产主力中枢 (Production Standard Core)”**：
 - 声明：TAA 生产环境已全面确立 Semgrep-Native 跨语言 AST 语义与污点分析为静态第一道防线，单行正则扫描器与固定物理滑窗已全面废黜。
 
-- [ ] **Step 2: 净化 Section 3 动静两阶段协同流程描述**
+- [x] **Step 2: 净化 Section 3 动静两阶段协同流程描述**
 
 - 将第 1 阶段统一表述为“Semgrep AST 语义与跨语言污点分析”；
 - 彻底移除“前后各 3 行（共 7 行）物理滑窗”的所有陈旧字样，替换为“AST 作用域感知闭包切片 (AST Enclosing Scope Slicing) + 跨行污点因果跃迁轨迹”。
 
-- [ ] **Step 3: 净化 Section 4 基准设计中的旧正则表述**
+- [x] **Step 3: 净化 Section 4 基准设计中的旧正则表述**
 
 - 检查并修改第 4022 行与 4042 行附近的方案 B 描述：
   - 将方案标题更新为 `⚡ 方案 C：Semgrep 深度语义与大模型协同体系 (Semgrep + LLM Synergistic Pipeline)`；
   - 将“Stage 1 采用高吞吐静态正则进行毫秒级宽召回初筛；仅对命中疑点的样本，将行级锚点（上下文 7 行）与规则特征元数据注入 LLM”替换为：
   - “Stage 1 采用 Semgrep AST 跨语言模式与四元污点追踪进行高保真静态初筛；对零命中代码直接毫秒级快速放行；仅对命中疑点的样本，提取包含完整函数闭包的 AST 作用域切片与 Source $\to$ Propagator $\to$ Sink 跨行污点轨迹元数据注入 LLM 做定向语义仲裁。”
 
-- [ ] **Step 4: Git 提交**
+- [x] **Step 4: Git 提交**
 
 ```bash
 git add models/audit/research/taa-audit-design.html
