@@ -16,7 +16,8 @@ models/audit/ollama-qwen/
 models/audit/ollama-qwen*/
 models/audit/benchmarks/
 
-sdk/
+tools/sdk/gui-tauri/src-tauri/target/
+tools/sdk/gui-tauri/src-tauri/bin/
 *.tar.gz
 *.bak
 
