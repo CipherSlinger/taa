@@ -2296,3 +2296,84 @@ func TestUIPolishStatusPillsAndDrawerComponents(t *testing.T) {
 		}
 	}
 }
+
+func TestAdvancedUIPolishVisualDashboardAndStepperComponents(t *testing.T) {
+	// 1. Verify static/js/toast.js exists and is readable in staticFS
+	toastBytes, err := staticFS.ReadFile("static/js/toast.js")
+	if err != nil {
+		t.Fatalf("failed to read static/js/toast.js: %v", err)
+	}
+	if len(toastBytes) == 0 {
+		t.Fatal("static/js/toast.js is empty")
+	}
+
+	// 2. Verify CSS components
+	cssBytes, err := staticFS.ReadFile("static/css/components.css")
+	if err != nil {
+		t.Fatalf("failed to read static/css/components.css: %v", err)
+	}
+	css := string(cssBytes)
+
+	requiredCSSPatterns := []string{
+		".pipeline-stepper",
+		".stepper-step",
+		".stepper-icon",
+		".stepper-line",
+		".toast-container",
+		".toast-item",
+		".audit-dashboard",
+		".audit-risk-bar",
+		".log-filter-group",
+		".log-filter-btn",
+		"mark.hl-match",
+	}
+	for _, pat := range requiredCSSPatterns {
+		if !strings.Contains(css, pat) {
+			t.Errorf("components.css missing required pattern: %q", pat)
+		}
+	}
+
+	// 3. Verify HTML structure elements
+	htmlPatterns := []string{
+		`id="pipelineStepper"`,
+		`id="stepNodeRegister"`,
+		`id="stepNodeAudit"`,
+		`id="stepNodeTraining"`,
+		`id="stepNodeExport"`,
+		`id="toastContainer"`,
+		`src="/static/js/toast.js"`,
+		`id="drawerViewModeBtn"`,
+		`id="drawerVisualContainer"`,
+		`class="log-filter-group"`,
+		`id="terminalSearchInput"`,
+		`id="searchMatchCount"`,
+	}
+	for _, pat := range htmlPatterns {
+		if !strings.Contains(indexHTML, pat) {
+			t.Errorf("indexHTML missing required pattern: %q", pat)
+		}
+	}
+
+	// 4. Verify JavaScript functions and tokens in frontendBundle
+	jsTokens := []string{
+		"showToast",
+		"Toast",
+		"pipelineStepper",
+		"syncStepperState",
+		"setStepStatus",
+		"renderAuditDashboard",
+		"toggleAccordion",
+		"getAuditReportFromInteraction",
+		"toggleDrawerViewMode",
+		"setLogFilter",
+		"handleLogSearch",
+		"applyLogFilteringAndHighlight",
+		"detectLogLevel",
+		"highlightSearchMatches",
+	}
+	for _, token := range jsTokens {
+		if !strings.Contains(frontendBundle, token) {
+			t.Errorf("frontendBundle missing required JS token: %q", token)
+		}
+	}
+}
