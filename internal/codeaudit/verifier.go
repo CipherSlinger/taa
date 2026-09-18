@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"taa/teellm"
+	"github.com/CipherSlinger/teellm"
 )
 
 // VerifyReport runs the LLM verifier on a static scan report.

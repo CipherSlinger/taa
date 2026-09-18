@@ -18,7 +18,7 @@ import (
 	"taa/internal/controller"
 	"taa/internal/store"
 	teecrypto "taa/pkg/crypto"
-	"taa/teellm"
+	"github.com/CipherSlinger/teellm"
 	"github.com/CipherSlinger/teetls"
 )
 

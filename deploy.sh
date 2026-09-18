@@ -1531,7 +1531,7 @@ fi
 if [[ "$DEPLOY_QWEN" == true ]]; then
   ensure_go_compiler
   ensure_parent_dir "$TEELLM_SERVICE_BINARY_PATH"
-  spin_task "building teellm-service from ./cmd/teellm-service" go build -o "$TEELLM_SERVICE_BINARY_PATH" ./cmd/teellm-service
+  spin_task "building teellm-service from ./teellm/cmd/teellm-service" go build -o "$TEELLM_SERVICE_BINARY_PATH" ./teellm/cmd/teellm-service
   require_file "build verification failed (teellm-service binary missing)" "$TEELLM_SERVICE_BINARY_PATH"
 
   require_dir "ollama package not found" "$OLLAMA_LOCAL_DIR"

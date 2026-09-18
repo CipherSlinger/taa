@@ -14,7 +14,7 @@ import (
 
 	"github.com/CipherSlinger/teetls"
 	"taa/internal/codeaudit"
-	"taa/teellm"
+	"github.com/CipherSlinger/teellm"
 )
 
 func TestLLMAvailable(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/CipherSlinger/teetls"
-	"taa/teellm"
+	"github.com/CipherSlinger/teellm"
 )
 
 // LLMConfig controls the local LLM verifier.
