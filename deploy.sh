@@ -1377,20 +1377,25 @@ deploy_docker_taa() {
   docker cp "$LOCAL_DOCKER_CONFIG_SOURCE" "$LOCAL_DOCKER_CONTAINER:$CONTAINER_TAA_CONFIG_PATH" >/dev/null
   info "config written to container: $CONTAINER_TAA_CONFIG_PATH"
 
-  step "stopping old taa inside container"
+  step "deploying taa daemon script into container"
+  docker cp "$PROJECT_DIR/deploy/start.sh" "$LOCAL_DOCKER_CONTAINER:$TAA_CONTAINER_WORKDIR/start.sh"
+  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "chmod +x '$TAA_CONTAINER_WORKDIR/start.sh'"
+
+  step "stopping old taa and daemon wrapper inside container"
   stop_pidfile "taa" "$LOCAL_RUN_DIR/taa.pid"
   pkill -f "$TAA_BINARY_PATH" >/dev/null 2>&1 || true
-  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall '$BINARY_NAME' >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
+  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "touch '$TAA_CONTAINER_WORKDIR/manual'; pkill -f 'start.sh' >/dev/null 2>&1 || true; pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall '$BINARY_NAME' >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
   for _ in {1..30}; do
     if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pgrep -x '$BINARY_NAME' >/dev/null 2>&1"; then
       break
     fi
     sleep 0.2
   done
-  info "stopped previous taa daemon"
+  info "stopped previous taa daemon and instances"
 
-  step "starting taa inside container"
-  docker exec -d "$LOCAL_DOCKER_CONTAINER" sh -lc "cd '$TAA_CONTAINER_WORKDIR' && nohup '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' > '$TAA_LOG_FILE' 2>&1 &"
+  step "starting taa supervisor inside container"
+  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "rm -f '$TAA_CONTAINER_WORKDIR/manual'"
+  docker exec -d "$LOCAL_DOCKER_CONTAINER" sh -lc "cd '$TAA_CONTAINER_WORKDIR' && nohup bash ./start.sh >/dev/null 2>&1 &"
 
   step "waiting for taa service to become ready"
   if ! wait_for_http_ready "taa" POST "$LOCAL_TAA_URL/v1/taa/health" "$READY_TIMEOUT" "$READY_INTERVAL"; then
