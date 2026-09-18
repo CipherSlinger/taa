@@ -167,6 +167,9 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		}
 	}
 
+	logWatcher := state.StartTaaLogWatcher(ctx)
+	defer logWatcher.Stop()
+
 	return startServer(ctx, cfg.Addr, state)
 }
 

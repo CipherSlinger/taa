@@ -1252,45 +1252,22 @@
     </section>
   </div>
 
-  <!-- TAA 实时日志 -->
-  <h2>TAA 实时日志</h2>
-  <section class="card">
-    <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap;">
+  <!-- TAA 运行日志 -->
+  <h2>TAA 运行日志</h2>
+  <section class="card" id="card-taaLog">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap;">
       <div class="status" style="font-size:16px;">
-        <span id="logStatusDot" class="dot"></span>
-        <span id="logStatusText">等待日志...</span>
+        <span id="taaLogStatusDot" class="dot"></span>
+        <span id="taaLogStatusText">等待日志上报...</span>
+        <span class="muted" style="font-size:12px;">(/v1/taa/taaLog)</span>
       </div>
-      <span class="muted" id="logOpBadge" style="font-size:13px; padding:2px 8px; border-radius:6px; background:rgba(127,127,127,.12);">idle</span>
-    </div>
-    <div style="display:flex; gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
-      <label style="margin:0; font-size:13px;">自动刷新</label>
-      <select id="logInterval" style="width:auto; padding:4px 8px;" onchange="updateLogInterval()">
-        <option value="1000">1秒</option>
-        <option value="3000" selected>3秒</option>
-        <option value="5000">5秒</option>
-        <option value="10000">10秒</option>
-      </select>
-      <label style="margin:0; font-size:13px;">级别过滤</label>
-      <select id="logLevelFilter" style="width:auto; padding:4px 8px;" onchange="filterLogs()">
-        <option value="">全部</option>
-        <option value="info">info</option>
-        <option value="warn">warn</option>
-        <option value="error">error</option>
-      </select>
-      <label style="margin:0; font-size:13px;">组件过滤</label>
-      <select id="logComponentFilter" style="width:auto; padding:4px 8px;" onchange="filterLogs()">
-        <option value="">全部</option>
-        <option value="import">import</option>
-        <option value="decrypt">decrypt</option>
-        <option value="extract">extract</option>
-        <option value="debug">debug</option>
-        <option value="audit">audit</option>
-        <option value="report">report</option>
-      </select>
-      <button onclick="fetchLogs()" style="padding:6px 12px; font-size:13px;">刷新</button>
-      <button class="secondary" id="logPauseBtn" onclick="toggleLogPause()" style="padding:6px 12px; font-size:13px;">暂停</button>
-      <button class="danger" onclick="clearLogs()" style="padding:6px 12px; font-size:13px;">清空</button>
-      <span class="muted" id="logCount" style="font-size:13px;">0 条日志</span>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <span class="muted" id="taaLogCount" style="font-size:13px;">0 条日志</span>
+        <span class="muted" id="taaLogLastSeq" style="font-size:13px;">最新 seq: 0</span>
+        <button onclick="fetchTaaLogs()" style="padding:6px 12px; font-size:13px;">刷新</button>
+        <button class="secondary" id="taaLogPauseBtn" onclick="toggleTaaLogPause()" style="padding:6px 12px; font-size:13px;">暂停</button>
+        <button class="danger" onclick="clearTaaLogs()" style="padding:6px 12px; font-size:13px;">清空</button>
+      </div>
     </div>
     <div class="terminal-shell">
       <div class="terminal-bar">
@@ -1299,10 +1276,10 @@
           <span class="t-dot yellow"></span>
           <span class="t-dot green"></span>
         </div>
-        <span class="terminal-title">taa-enclave-syslog</span>
-        <span class="muted" style="font-size:11px;">STDOUT / STDERR</span>
+        <span class="terminal-title">taa-syslog</span>
+        <span class="muted" style="font-size:11px;">stdout / stderr</span>
       </div>
-      <pre id="logOutput" class="log-window" style="min-height:300px; max-height:600px; overflow-y:auto; font-size:13px; line-height:1.6; padding:14px; margin:0; white-space:pre-wrap; word-break:break-all;"></pre>
+      <div id="taaLogOutput" class="log-window" style="min-height:220px; max-height:450px; overflow-y:auto; font-size:13px; line-height:1.6; padding:14px; margin:0; font-family:monospace; white-space:pre-wrap;"></div>
     </div>
   </section>
 
@@ -3869,114 +3846,79 @@ async function detectTAAProxy() {
   }
 }
 
-// ── TAA 实时日志 ─────────────────────────────
-let logPaused = false;
-let logTimer = null;
-let allLogs = []; // all fetched logs for filtering
+// ── TAA 运行日志 ─────────────────────────────
+let taaLogPaused = false;
 
-function logColor(level) {
-  switch (level) {
-    case 'error': return '#ef4444';
-    case 'warn':  return '#f59e0b';
-    default:      return '#22d3ee';
-  }
-}
-
-function logBadge(level) {
-  switch (level) {
-    case 'error': return '<span style="color:#f87171;font-weight:700;background:rgba(239,68,68,0.15);padding:1px 5px;border-radius:4px;border:1px solid rgba(239,68,68,0.3);font-size:11px;">ERROR</span>';
-    case 'warn':  return '<span style="color:#fbbf24;font-weight:700;background:rgba(245,158,11,0.15);padding:1px 5px;border-radius:4px;border:1px solid rgba(245,158,11,0.3);font-size:11px;">WARN</span>';
-    default:      return '<span style="color:#38bdf8;font-weight:700;background:rgba(14,165,233,0.15);padding:1px 5px;border-radius:4px;border:1px solid rgba(14,165,233,0.3);font-size:11px;">INFO</span>';
-  }
-}
-
-function formatLogTime(ts) {
-  if (!ts) return '--:--:--';
-  const d = new Date(ts);
-  return d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
-}
-
-function renderLogs() {
-  const levelFilter = document.getElementById('logLevelFilter').value;
-  const compFilter = document.getElementById('logComponentFilter').value;
-  const output = document.getElementById('logOutput');
-
-  const filtered = allLogs.filter(l => {
-    if (levelFilter && l.level !== levelFilter) return false;
-    if (compFilter && l.component !== compFilter) return false;
-    return true;
-  });
-
-  output.innerHTML = filtered.map(l =>
-    `<span style="color:#6b7280;">${formatLogTime(l.timestamp)}</span> ${logBadge(l.level)} <span style="color:#a78bfa;">[${l.component}]</span> ${escapeHtml(l.message)}`
-  ).join('\n');
-
-  document.getElementById('logCount').textContent = `${filtered.length} / ${allLogs.length} 条日志`;
-  output.scrollTop = output.scrollHeight;
-}
-
-async function fetchLogs() {
-  if (logPaused) return;
+async function fetchTaaLogs() {
+  if (taaLogPaused) return;
   try {
-    const res = await fetch('/api/taa/logs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{}',
-    });
+    const res = await fetch('/api/taaLog/status', { cache: 'no-store' });
     const data = await res.json();
     const result = responseResult(data);
     if (!result) return;
+    const entries = Array.isArray(result.entries) ? result.entries : [];
+    const count = result.totalCount != null ? result.totalCount : entries.length;
+    const lastSeq = result.lastSeq != null ? result.lastSeq : (entries.length ? entries[entries.length - 1].seq : 0);
 
-    if (result.logs && result.logs.length > 0) {
-      allLogs = allLogs.concat(result.logs);
-      // Keep max 5000 entries in memory
-      if (allLogs.length > 5000) allLogs = allLogs.slice(-5000);
-    }
+    const countEl = document.getElementById('taaLogCount');
+    if (countEl) countEl.textContent = `${count} 条日志`;
+    const seqEl = document.getElementById('taaLogLastSeq');
+    if (seqEl) seqEl.textContent = `最新 seq: ${lastSeq}`;
 
-    // Update status
-    const op = result.currentOp || 'idle';
-    const badge = document.getElementById('logOpBadge');
-    badge.textContent = op;
-    badge.style.background = op === 'idle' ? 'rgba(127,127,127,.12)' : 'rgba(37,99,235,.15)';
-    badge.style.color = op === 'idle' ? 'var(--muted)' : '#2563eb';
-
-    const dot = document.getElementById('logStatusDot');
-    const statusText = document.getElementById('logStatusText');
-    if (allLogs.length > 0) {
-      dot.className = 'dot ok';
-      statusText.textContent = '日志接收中';
+    const dot = document.getElementById('taaLogStatusDot');
+    const statusText = document.getElementById('taaLogStatusText');
+    if (entries.length > 0) {
+      if (dot) dot.className = 'dot ok';
+      if (statusText) statusText.textContent = '日志接收中';
     } else {
-      dot.className = 'dot';
-      statusText.textContent = '等待日志...';
+      if (dot) dot.className = 'dot';
+      if (statusText) statusText.textContent = '等待日志上报...';
     }
 
-    renderLogs();
+    const output = document.getElementById('taaLogOutput');
+    if (!output) return;
+
+    if (entries.length === 0) {
+      output.innerHTML = '<div style="color:#6b7280; text-align:center; padding:40px 0;">暂无 TAA 运行日志上报。(/v1/taa/taaLog)</div>';
+      return;
+    }
+
+    output.innerHTML = entries.map(e => {
+      const seqStr = `<span style="color:#60a5fa; font-weight:600;">[seq=${e.seq}]</span>`;
+      return `${seqStr} ${escapeHtml(e.message)}`;
+    }).join('\n');
+
+    if (!taaLogPaused) {
+      output.scrollTop = output.scrollHeight;
+    }
   } catch (e) {
-    // Silently ignore fetch errors — will retry on next interval
+    // Silently ignore fetch errors on poll
   }
 }
 
-function filterLogs() {
-  renderLogs();
+function toggleTaaLogPause() {
+  taaLogPaused = !taaLogPaused;
+  const btn = document.getElementById('taaLogPauseBtn');
+  if (btn) {
+    btn.textContent = taaLogPaused ? '继续' : '暂停';
+    btn.className = taaLogPaused ? 'success' : 'secondary';
+  }
 }
 
-function clearLogs() {
-  allLogs = [];
-  document.getElementById('logOutput').innerHTML = '';
-  document.getElementById('logCount').textContent = '0 条日志';
-}
-
-function toggleLogPause() {
-  logPaused = !logPaused;
-  const btn = document.getElementById('logPauseBtn');
-  btn.textContent = logPaused ? '继续' : '暂停';
-  btn.className = logPaused ? 'success' : 'secondary';
-}
-
-function updateLogInterval() {
-  if (logTimer) clearInterval(logTimer);
-  const ms = parseInt(document.getElementById('logInterval').value) || 3000;
-  logTimer = setInterval(fetchLogs, ms);
+async function clearTaaLogs() {
+  try {
+    await fetch('/api/taaLog/reset', { method: 'POST' });
+  } catch {}
+  const output = document.getElementById('taaLogOutput');
+  if (output) output.innerHTML = '';
+  const countEl = document.getElementById('taaLogCount');
+  if (countEl) countEl.textContent = '0 条日志';
+  const seqEl = document.getElementById('taaLogLastSeq');
+  if (seqEl) seqEl.textContent = '最新 seq: 0';
+  const dot = document.getElementById('taaLogStatusDot');
+  if (dot) dot.className = 'dot';
+  const statusText = document.getElementById('taaLogStatusText');
+  if (statusText) statusText.textContent = '等待日志上报...';
 }
 
 // ── 初始化 ─────────────────────────────────
@@ -3991,14 +3933,14 @@ setReportAuditPending();
 refreshReportAuditStatus();
 refreshReportProgress();
 fetchModelLogs();
+fetchTaaLogs();
 setInterval(refreshStatus, 1000);
 setInterval(refreshReportResStatus, 1000);
 setInterval(refreshReportModelImportStatus, 1000);
 setInterval(refreshReportAuditStatus, 1000);
 setInterval(refreshReportProgress, 2000);
 setInterval(fetchModelLogs, 2000);
-logTimer = setInterval(fetchLogs, 3000);
-fetchLogs();
+setInterval(fetchTaaLogs, 2000);
 </script>
 </body>
 </html>

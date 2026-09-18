@@ -154,6 +154,7 @@ All TAA APIs are exposed over HTTP `POST`.
 | `/v1/taa/reportAudit` | `POST` | Reports code security audit status, risk statistics (`high`/`medium`/`low`), and report URL |
 | `/v1/taa/reportProgress` | `POST` | Periodically reports training progress percentage, message, and timestamp |
 | `/v1/taa/modelLog` | `POST` | Streams incremental, deduplicated training terminal execution logs (`train.jsonl`) |
+| `/v1/taa/taaLog` | `POST` | Streams incremental, deduplicated TAA internal operational logs |
 | `/v1/taa/reportRes` | `POST` | Asynchronously reports final training/debugging results packaged as a zip archive |
 
 ### 2. Platform → TAA (Business & Control)
@@ -173,7 +174,6 @@ All TAA APIs are exposed over HTTP `POST`.
 | :--- | :---: | :--- |
 | `/v1/taa/health` | `POST` | Health & readiness probe (verifies memory state and attestation status) |
 | `/v1/taa/status` | `POST` | Comprehensive diagnostics: active phase, tasks, audit findings, and key fingerprints |
-| `/v1/taa/logs` | `POST` | Retrieves structured in-memory execution logs with level filtering |
 | `/v1/taa/getAttestation` | `POST` | Generates a fresh CSV attestation report for on-demand verification |
 
 ---
@@ -309,7 +309,7 @@ go build -o bin/platform-mock ./cmd/platform-mock
 1. **Node Registration**: Live display of TAA hardware attestation, verification status, and SM2 public keys.
 2. **Model Ingress & Audit**: Interactive upload of model packages with instant audit results and severity breakdowns (`high`/`medium`/`low`).
 3. **Interactive Progress Bar**: Live progress tracking driven by TAA `/v1/taa/reportProgress` callbacks.
-4. **Streaming Terminal Logs**: Real-time log window displaying chunked stdout/stderr terminal logs received from TAA `/v1/taa/modelLog`.
+4. **Streaming Terminal & TAA Logs**: Real-time log windows displaying chunked stdout/stderr terminal logs (`/v1/taa/modelLog`) and TAA internal operational logs (`/v1/taa/taaLog`).
 5. **Job Interruption**: One-click "Stop Training" trigger calling `/v1/taa/stopTraining`.
 6. **Result Verification**: Decrypt and inspect training outputs exported from TAA.
 

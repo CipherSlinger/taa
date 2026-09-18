@@ -16,7 +16,8 @@
   - [3.5 TAA 上报模型导入结果（/v1/taa/reportModelImport）](#35-taa-上报模型导入结果v1taareportmodelimport)
   - [3.6 TAA 上报代码安全审计结果（/v1/taa/reportAudit）](#36-taa-上报代码安全审计结果v1taareportaudit)
   - [3.7 TAA 上报任务终端日志（/v1/taa/modelLog）](#37-taa-上报任务终端日志v1taamodellog)
-  - [3.8 TAA 上报任务进度（/v1/taa/reportProgress）](#38-taa-上报任务进度v1taareportprogress)
+  - [3.8 TAA 上报运行日志（/v1/taa/taaLog）](#38-taa-上报运行日志v1taataalog)
+  - [3.9 TAA 上报任务进度（/v1/taa/reportProgress）](#39-taa-上报任务进度v1taareportprogress)
 - [4. 平台 → TAA](#4-平台--taa)
   - [4.1 资源信息获取（/v1/taa/getResourceInfo）](#41-资源信息获取v1taagetresourceinfo)
   - [4.2 下发资源数据（/v1/taa/import）](#42-下发资源数据v1taaimport)
@@ -27,7 +28,6 @@
 - [5. 调试接口](#5-调试接口)
   - [5.1 连通性检查（/v1/taa/health）](#51-连通性检查v1taahealth)
   - [5.2 查询 TAA 完整状态（/v1/taa/status）](#52-查询-taa-完整状态v1taastatus)
-  - [5.3 查询 TAA 结构化日志（/v1/taa/logs）](#53-查询-taa-结构化日志v1taalogs)
 
 ---
 
@@ -78,7 +78,8 @@ Agent 公共请求返回参数如下：
 | 3 | `/v1/taa/reportModelImport` | `POST` | TAA 上报模型导入与完整性校验结果 |
 | 4 | `/v1/taa/reportAudit` | `POST` | TAA 上报模型代码安全审计结果 |
 | 5 | `/v1/taa/modelLog` | `POST` | TAA 上报任务终端日志 |
-| 6 | `/v1/taa/reportProgress` | `POST` | TAA 上报任务数值进度 |
+| 6 | `/v1/taa/taaLog` | `POST` | TAA 上报内部运行日志 |
+| 7 | `/v1/taa/reportProgress` | `POST` | TAA 上报任务数值进度 |
 
 #### 2.1.2 平台 → TAA（业务与控制接口）
 
@@ -98,7 +99,6 @@ Agent 公共请求返回参数如下：
 | --- | --- | --- | --- |
 | 1 | `/v1/taa/health` | `POST` | 平台检查 TAA 连通性 |
 | 2 | `/v1/taa/status` | `POST` | 查询 TAA 完整状态信息 |
-| 3 | `/v1/taa/logs` | `POST` | 查询 TAA 结构化日志 |
 
 ---
 
@@ -578,7 +578,75 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-### 3.8 TAA 上报任务进度（/v1/taa/reportProgress）
+### 3.8 TAA 上报运行日志（/v1/taa/taaLog）
+
+**请求**：`POST http://{PLATFORM_IP}/v1/taa/taaLog`
+
+**请求内容类型**：`application/json`
+
+**参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `dockerId` | `string` | 是 | 取值为容器启动参数 `DOCKER_ID` |
+| `requestId` | `string` | 是 | 当前任务请求标识，无活跃任务时缺省为 `"system"` |
+| `taskId` | `string` | 否 | 平台任务 ID；无活跃任务或单任务模式下可缺省 |
+| `seqStart` | `uint64` | 是 | 本批日志的起始序号 |
+| `entries` | `array` | 是 | 日志条目数组，不应为空 |
+
+**`entries` 字段**：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `seq` | `uint64` | 是 | 同一 `dockerId + requestId` 下递增的日志序号，用于排序和去重 |
+| `message` | `string` | 是 | 格式化后的 TAA 运行日志内容（格式为 `[LEVEL] [component] message`） |
+
+**请求示例**：
+
+```jsonc
+{
+  "dockerId": "DOCKER_ID",
+  "requestId": "system",
+  "taskId": "",
+  "seqStart": 1,
+  "entries": [
+    {
+      "seq": 1,
+      "message": "[INFO] [controller] TAA server starting on :6001"
+    },
+    {
+      "seq": 2,
+      "message": "[INFO] [register] register to platform completed"
+    }
+  ]
+}
+```
+
+平台按 `dockerId + requestId + seq` 去重，允许 TAA 因网络失败重复发送同一日志。TAA 仅在平台返回 HTTP `200` 且公共返回格式中的 `error=0` 时确认本批日志已接收；网络错误、HTTP `408`、`429` 或 `5xx` 可按指数退避重试，参数错误等其他 `4xx` 不应自动重试。
+
+**响应内容类型**：`application/json`
+
+**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，业务字段放在 `result` 中。
+
+**响应结果字段**：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `received` | `bool` | 平台是否成功接收本次日志上报 |
+
+**成功响应示例**（200 OK）：
+
+```jsonc
+{
+  "msg": "success",
+  "result": {
+    "received": true
+  },
+  "error": 0
+}
+```
+
+### 3.9 TAA 上报任务进度（/v1/taa/reportProgress）
 
 TAA 在任务执行过程中通过该接口向平台上报当前任务的数值进度。
 
@@ -1207,76 +1275,6 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
     "trainingDone": false,
     "currentOp": "idle",
     "logCount": 5
-  },
-  "error": 0
-}
-```
-
-### 5.3 查询 TAA 结构化日志（/v1/taa/logs）
-
-该接口用于查询 TAA 运行过程中的结构化日志。
-
-**请求**：`POST /v1/taa/logs`
-
-**请求内容类型**：`application/json`
-
-**参数**：
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `since` | `string` | 否 | ISO8601 时间戳，仅返回该时间之后的日志。缺省时返回所有日志并清空日志缓冲区 |
-
-**请求示例**：
-
-```jsonc
-{
-  "since": "2026-09-03T10:00:00Z"
-}
-```
-
-**响应内容类型**：`application/json`
-
-**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，业务字段放在 `result` 中。
-
-**响应结果字段**：
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `logs` | `array` | 日志条目数组 |
-| `currentOp` | `string` | 当前操作状态 |
-| `total` | `number` | 日志条目数量 |
-
-**日志条目字段**：
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `timestamp` | `string` | ISO8601 时间戳 |
-| `level` | `string` | 日志级别：`info`、`warn`、`error` |
-| `component` | `string` | 组件名称 |
-| `message` | `string` | 日志消息 |
-
-**成功响应示例**（200 OK）：
-
-```jsonc
-{
-  "msg": "ok",
-  "result": {
-    "logs": [
-      {
-        "timestamp": "2026-09-03T10:00:01Z",
-        "level": "info",
-        "component": "register",
-        "message": "platform register completed"
-      },
-      {
-        "timestamp": "2026-09-03T10:00:02Z",
-        "level": "info",
-        "component": "server",
-        "message": "taa service listening on :6001"
-      }
-    ],
-    "currentOp": "idle",
-    "total": 2
   },
   "error": 0
 }
