@@ -40,16 +40,18 @@ type SecurityConfig struct {
 	MaxResultBytes   int64               // Backward-compatible alias for MaxFileBytes
 	ModelInputDir    string              // 模型数据输入目录（缺省 /opt/taa/input）
 	ModelOutputDir   string              // 模型结果输出目录（缺省 /opt/taa/output/result）
-	ModelLogDir      string              // 模型日志文件或目录路径（缺省 /opt/taa/output/log/train.jsonl）
-	ModelProgressDir string              // 模型进度文件或目录路径（缺省 /opt/taa/output/progress/progress.json）
-	LLM              codeaudit.LLMConfig // 本地 LLM 语义验证配置
+	ModelLogDir        string              // Model log file or directory path (default /opt/taa/output/log/train.jsonl)
+	ModelProgressDir   string              // Model progress file or directory path (default /opt/taa/output/progress/progress.json)
+	ModelCheckpointDir string              // Model checkpoint directory (default /opt/taa/checkpoint)
+	LLM                codeaudit.LLMConfig // 本地 LLM 语义验证配置
 }
 
 const (
-	DefaultModelInputDir    = "/opt/taa/input"
-	DefaultModelOutputDir   = "/opt/taa/output/result"
-	DefaultModelLogDir      = "/opt/taa/output/log/train.jsonl"
-	DefaultModelProgressDir = "/opt/taa/output/progress/progress.json"
+	DefaultModelInputDir      = "/opt/taa/input"
+	DefaultModelOutputDir     = "/opt/taa/output/result"
+	DefaultModelLogDir        = "/opt/taa/output/log/train.jsonl"
+	DefaultModelProgressDir   = "/opt/taa/output/progress/progress.json"
+	DefaultModelCheckpointDir = "/opt/taa/checkpoint"
 )
 
 func (sec SecurityConfig) GetMaxFileBytes() int64 {
@@ -99,6 +101,17 @@ func (sec SecurityConfig) GetModelProgressDir() string {
 	dir := DefaultModelProgressDir
 	if strings.TrimSpace(sec.ModelProgressDir) != "" {
 		dir = sec.ModelProgressDir
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(dir)
+}
+
+func (sec SecurityConfig) GetModelCheckpointDir() string {
+	dir := DefaultModelCheckpointDir
+	if strings.TrimSpace(sec.ModelCheckpointDir) != "" {
+		dir = sec.ModelCheckpointDir
 	}
 	if abs, err := filepath.Abs(dir); err == nil {
 		return filepath.Clean(abs)

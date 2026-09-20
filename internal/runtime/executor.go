@@ -34,18 +34,30 @@ func RunRuntimeConfigWithControl(control ProcessController, cfg RuntimeConfig, e
 		ctx = control.Ctx()
 	}
 
+	checkpointDir := "/opt/taa/checkpoint"
+	if v, ok := env["TAA_CHECKPOINT_DIR"]; ok && strings.TrimSpace(v) != "" {
+		checkpointDir = strings.TrimSpace(v)
+	} else if v, ok := env["TAA_MODEL_CHECKPOINT_DIR"]; ok && strings.TrimSpace(v) != "" {
+		checkpointDir = strings.TrimSpace(v)
+	} else if v, ok := env["CIPHERFLOW_CHECKPOINT_DIR"]; ok && strings.TrimSpace(v) != "" {
+		checkpointDir = strings.TrimSpace(v)
+	}
+
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", commandLine)
-	// 设置 Setpgid: true 确保创建独立的进程组，支持完整 SIGKILL 级联回收
+	// Set Setpgid: true to ensure an independent process group for full SIGKILL cascading cleanup
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = modelDir
 	cmd.Env = MergedRuntimeEnv(ResolveRuntimeEnv(env, dataDir, outputDir), map[string]string{
-		"TAA_TASK_ID":          taskID,
-		"TAA_STARTED_AT":       startedAt,
-		"TAA_DATA_DIR":         dataDir,
-		"TAA_INPUT_DIR":        dataDir,
-		"TAA_MODEL_INPUT_DIR":  dataDir,
-		"TAA_MODEL_OUTPUT_DIR": outputDir,
-		"TAA_OUTPUT_DIR":       outputDir,
+		"TAA_TASK_ID":               taskID,
+		"TAA_STARTED_AT":            startedAt,
+		"TAA_DATA_DIR":              dataDir,
+		"TAA_INPUT_DIR":             dataDir,
+		"TAA_MODEL_INPUT_DIR":       dataDir,
+		"TAA_MODEL_OUTPUT_DIR":      outputDir,
+		"TAA_OUTPUT_DIR":            outputDir,
+		"TAA_CHECKPOINT_DIR":        checkpointDir,
+		"TAA_MODEL_CHECKPOINT_DIR":  checkpointDir,
+		"CIPHERFLOW_CHECKPOINT_DIR": checkpointDir,
 	})
 
 	var output bytes.Buffer

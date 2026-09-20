@@ -66,17 +66,19 @@ func setupTestState(t *testing.T) (*TAAState, string) {
 	outputDir := filepath.Join(tmpDir, "output")
 	logDir := filepath.Join(tmpDir, "log")
 	progressDir := filepath.Join(tmpDir, "progress")
+	checkpointDir := filepath.Join(tmpDir, "checkpoint")
 
 	state := NewTAAState(attestationPath, "127.0.0.1:65535", "test-docker-001", "", "", sm2Key, userData, SecurityConfig{
-		ScanEnabled:      false,
-		ModelDir:         modelDir,
-		DataDir:          dataDir,
-		ResultCheck:      false,
-		ResultDir:        resultDir,
-		ModelInputDir:    inputDir,
-		ModelOutputDir:   outputDir,
-		ModelLogDir:      logDir,
-		ModelProgressDir: progressDir,
+		ScanEnabled:        false,
+		ModelDir:           modelDir,
+		DataDir:            dataDir,
+		ResultCheck:        false,
+		ResultDir:          resultDir,
+		ModelInputDir:      inputDir,
+		ModelOutputDir:     outputDir,
+		ModelLogDir:        logDir,
+		ModelProgressDir:   progressDir,
+		ModelCheckpointDir: checkpointDir,
 	})
 	return state, attestationPath
 }

@@ -133,6 +133,7 @@ func (c *Coordinator) runTrainingWithTelemetry(ctx context.Context, control *run
 	outputDir := c.security.GetModelOutputDir()
 	logDir := c.security.GetModelLogDir()
 	progressDir := c.security.GetModelProgressDir()
+	checkpointDir := c.security.GetModelCheckpointDir()
 
 	// 准备输入数据目录（拷贝）
 	_ = os.RemoveAll(inputDir)
@@ -142,13 +143,35 @@ func (c *Coordinator) runTrainingWithTelemetry(ctx context.Context, control *run
 		return err
 	}
 
-	// 准备输出与遥测目录
+	// Prepare output, telemetry, and checkpoint directories
 	_ = os.RemoveAll(outputDir)
 	_ = os.MkdirAll(outputDir, 0o755)
-	_ = os.RemoveAll(logDir)
-	_ = os.MkdirAll(logDir, 0o755)
-	_ = os.RemoveAll(progressDir)
-	_ = os.MkdirAll(progressDir, 0o755)
+	_ = os.MkdirAll(checkpointDir, 0o755)
+
+	if filepath.Ext(logDir) != "" {
+		_ = os.MkdirAll(filepath.Dir(logDir), 0o755)
+		_ = os.Remove(logDir)
+	} else {
+		_ = os.RemoveAll(logDir)
+		_ = os.MkdirAll(logDir, 0o755)
+	}
+
+	if filepath.Ext(progressDir) != "" {
+		_ = os.MkdirAll(filepath.Dir(progressDir), 0o755)
+		_ = os.Remove(progressDir)
+	} else {
+		_ = os.RemoveAll(progressDir)
+		_ = os.MkdirAll(progressDir, 0o755)
+	}
+
+	if env == nil {
+		env = make(map[string]string)
+	}
+	env["TAA_CHECKPOINT_DIR"] = checkpointDir
+	env["TAA_MODEL_CHECKPOINT_DIR"] = checkpointDir
+	env["CIPHERFLOW_CHECKPOINT_DIR"] = checkpointDir
+	env["TAA_LOG_DIR"] = logDir
+	env["TAA_PROGRESS_DIR"] = progressDir
 
 	// 启动后台遥测推送协程
 	telemetryCtx, cancelTelemetry := context.WithCancel(ctx)

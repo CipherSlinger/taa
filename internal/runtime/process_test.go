@@ -109,10 +109,13 @@ func TestRunRuntimeConfigExecution(t *testing.T) {
 		Commands: []string{
 			"echo 'hello from model' > <output>/result.txt",
 			"echo $CUSTOM_VAR >> <output>/result.txt",
+			"echo $TAA_CHECKPOINT_DIR >> <output>/result.txt",
+			"echo $CIPHERFLOW_CHECKPOINT_DIR >> <output>/result.txt",
 		},
 	}
 	env := map[string]string{
-		"CUSTOM_VAR": "custom_val_42",
+		"CUSTOM_VAR":         "custom_val_42",
+		"TAA_CHECKPOINT_DIR": "/opt/custom/checkpoint",
 	}
 
 	out, err := RunRuntimeConfig(cfg, env, modelDir, dataDir, outputDir, "task-test-run", "2026-09-16T00:00:00Z")
@@ -128,7 +131,7 @@ func TestRunRuntimeConfigExecution(t *testing.T) {
 	if !filepath.IsAbs(outputDir) {
 		t.Fatal("outputDir is not absolute")
 	}
-	if expected := "hello from model\ncustom_val_42\n"; content != expected {
+	if expected := "hello from model\ncustom_val_42\n/opt/custom/checkpoint\n/opt/custom/checkpoint\n"; content != expected {
 		t.Fatalf("unexpected content: %q, want %q", content, expected)
 	}
 }

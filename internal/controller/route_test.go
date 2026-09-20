@@ -456,12 +456,16 @@ func TestSecurityConfigModelDirs(t *testing.T) {
 	if emptySec.GetModelProgressDir() != DefaultModelProgressDir {
 		t.Errorf("GetModelProgressDir = %q, want %q", emptySec.GetModelProgressDir(), DefaultModelProgressDir)
 	}
+	if emptySec.GetModelCheckpointDir() != DefaultModelCheckpointDir {
+		t.Errorf("GetModelCheckpointDir = %q, want %q", emptySec.GetModelCheckpointDir(), DefaultModelCheckpointDir)
+	}
 
 	customSec := SecurityConfig{
-		ModelInputDir:    "/custom/input",
-		ModelOutputDir:   "/custom/output",
-		ModelLogDir:      "/custom/log",
-		ModelProgressDir: "/custom/progress",
+		ModelInputDir:      "/custom/input",
+		ModelOutputDir:     "/custom/output",
+		ModelLogDir:        "/custom/log",
+		ModelProgressDir:   "/custom/progress",
+		ModelCheckpointDir: "/custom/checkpoint",
 	}
 	if customSec.GetModelInputDir() != "/custom/input" {
 		t.Errorf("GetModelInputDir = %q, want /custom/input", customSec.GetModelInputDir())
@@ -475,18 +479,26 @@ func TestSecurityConfigModelDirs(t *testing.T) {
 	if customSec.GetModelProgressDir() != "/custom/progress" {
 		t.Errorf("GetModelProgressDir = %q, want /custom/progress", customSec.GetModelProgressDir())
 	}
+	if customSec.GetModelCheckpointDir() != "/custom/checkpoint" {
+		t.Errorf("GetModelCheckpointDir = %q, want /custom/checkpoint", customSec.GetModelCheckpointDir())
+	}
 
 	relSec := SecurityConfig{
-		ModelInputDir:  ".local/taa/input",
-		ModelOutputDir: ".local/taa/output",
+		ModelInputDir:      ".local/taa/input",
+		ModelOutputDir:     ".local/taa/output",
+		ModelCheckpointDir: ".local/taa/checkpoint",
 	}
 	wantInputAbs, _ := filepath.Abs(".local/taa/input")
 	wantOutputAbs, _ := filepath.Abs(".local/taa/output")
+	wantCheckpointAbs, _ := filepath.Abs(".local/taa/checkpoint")
 	if relSec.GetModelInputDir() != wantInputAbs {
 		t.Errorf("GetModelInputDir = %q, want %q", relSec.GetModelInputDir(), wantInputAbs)
 	}
 	if relSec.GetModelOutputDir() != wantOutputAbs {
 		t.Errorf("GetModelOutputDir = %q, want %q", relSec.GetModelOutputDir(), wantOutputAbs)
+	}
+	if relSec.GetModelCheckpointDir() != wantCheckpointAbs {
+		t.Errorf("GetModelCheckpointDir = %q, want %q", relSec.GetModelCheckpointDir(), wantCheckpointAbs)
 	}
 }
 

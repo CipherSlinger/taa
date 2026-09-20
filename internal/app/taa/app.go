@@ -571,11 +571,12 @@ func buildSecurityConfig(cfg config.StartupConfig) controller.SecurityConfig {
 		DataDir:          cfg.DataDir,
 		ResultDir:        cfg.ResultDir,
 		MaxFileBytes:     maxBytes,
-		MaxResultBytes:   maxBytes,
-		ModelInputDir:    cfg.ModelInputDir,
-		ModelOutputDir:   cfg.ModelOutputDir,
-		ModelLogDir:      cfg.ModelLogDir,
-		ModelProgressDir: cfg.ModelProgressDir,
+		MaxResultBytes:     maxBytes,
+		ModelInputDir:      cfg.ModelInputDir,
+		ModelOutputDir:     cfg.ModelOutputDir,
+		ModelLogDir:        cfg.ModelLogDir,
+		ModelProgressDir:   cfg.ModelProgressDir,
+		ModelCheckpointDir: cfg.ModelCheckpointDir,
 		LLM: codeaudit.LLMConfig{
 			Enabled:                 cfg.EnableLLM,
 			Transport:               cfg.LLMTransport,
@@ -607,6 +608,7 @@ func ensureSecurityDirectories(sec controller.SecurityConfig) error {
 		sec.ResultDir,
 		sec.GetModelInputDir(),
 		sec.GetModelOutputDir(),
+		sec.GetModelCheckpointDir(),
 	}
 	for _, p := range []string{sec.GetModelLogDir(), sec.GetModelProgressDir()} {
 		dir := p
@@ -625,7 +627,7 @@ func ensureSecurityDirectories(sec controller.SecurityConfig) error {
 
 // logSecurityConfig 打印安全扫描、大模型审计及结果检查策略的配置摘要
 func logSecurityConfig(sec controller.SecurityConfig) {
-	log.Printf("model staging directories: input=%s output=%s log=%s progress=%s", sec.GetModelInputDir(), sec.GetModelOutputDir(), sec.GetModelLogDir(), sec.GetModelProgressDir())
+	log.Printf("model staging directories: input=%s output=%s log=%s progress=%s checkpoint=%s", sec.GetModelInputDir(), sec.GetModelOutputDir(), sec.GetModelLogDir(), sec.GetModelProgressDir(), sec.GetModelCheckpointDir())
 	if sec.ScanEnabled {
 		log.Printf("security scan enabled: model-dir=%s", sec.ModelDir)
 		if sec.LLM.Enabled {

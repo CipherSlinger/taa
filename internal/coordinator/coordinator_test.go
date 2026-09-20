@@ -170,3 +170,33 @@ func TestCrashRecoveryCircuitBreaker(t *testing.T) {
 		t.Fatalf("expected ActiveTask to be cleared after circuit breaker, got %+v", unsealed.ActiveTask)
 	}
 }
+
+func TestCoordinatorSecurityConfigDirs(t *testing.T) {
+	var emptySec SecurityConfig
+	if emptySec.GetModelInputDir() != DefaultModelInputDir {
+		t.Errorf("GetModelInputDir = %q, want %q", emptySec.GetModelInputDir(), DefaultModelInputDir)
+	}
+	if emptySec.GetModelOutputDir() != DefaultModelOutputDir {
+		t.Errorf("GetModelOutputDir = %q, want %q", emptySec.GetModelOutputDir(), DefaultModelOutputDir)
+	}
+	if emptySec.GetModelLogDir() != DefaultModelLogDir {
+		t.Errorf("GetModelLogDir = %q, want %q", emptySec.GetModelLogDir(), DefaultModelLogDir)
+	}
+	if emptySec.GetModelProgressDir() != DefaultModelProgressDir {
+		t.Errorf("GetModelProgressDir = %q, want %q", emptySec.GetModelProgressDir(), DefaultModelProgressDir)
+	}
+	if emptySec.GetModelCheckpointDir() != DefaultModelCheckpointDir {
+		t.Errorf("GetModelCheckpointDir = %q, want %q", emptySec.GetModelCheckpointDir(), DefaultModelCheckpointDir)
+	}
+
+	customSec := SecurityConfig{
+		ModelInputDir:      "/custom/input",
+		ModelOutputDir:     "/custom/output",
+		ModelLogDir:        "/custom/log",
+		ModelProgressDir:   "/custom/progress",
+		ModelCheckpointDir: "/custom/checkpoint",
+	}
+	if customSec.GetModelCheckpointDir() != "/custom/checkpoint" {
+		t.Errorf("GetModelCheckpointDir = %q, want /custom/checkpoint", customSec.GetModelCheckpointDir())
+	}
+}

@@ -384,34 +384,67 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 		return
 	}
 
-	for name, dir := range map[string]string{
-		"模型输出": modelOutputDir,
-		"模型日志": s.Security.GetModelLogDir(),
-		"模型进度": s.Security.GetModelProgressDir(),
-	} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			if checkCancelled() {
-				s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
-				return
-			}
-			s.Logs.Add(LogError, "train", "创建%s目录失败: %v", name, err)
-			s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("创建%s目录失败: %v", name, err))
-			return
-		}
+	checkpointDir := s.Security.GetModelCheckpointDir()
+	if err := os.MkdirAll(checkpointDir, 0o755); err != nil {
 		if checkCancelled() {
 			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
 			return
 		}
-		if err := cleanDirContents(dir); err != nil {
+		s.Logs.Add(LogError, "train", "创建检查点目录失败: %v", err)
+		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("创建检查点目录失败: %v", err))
+		return
+	}
+
+	for name, target := range map[string]string{
+		"模型日志": s.Security.GetModelLogDir(),
+		"模型进度": s.Security.GetModelProgressDir(),
+	} {
+		if filepath.Ext(target) != "" {
+			parentDir := filepath.Dir(target)
+			if err := os.MkdirAll(parentDir, 0o755); err != nil {
+				if checkCancelled() {
+					s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+					return
+				}
+				s.Logs.Add(LogError, "train", "创建%s父目录失败: %v", name, err)
+				s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("创建%s父目录失败: %v", name, err))
+				return
+			}
+			_ = os.Remove(target)
+		} else {
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				if checkCancelled() {
+					s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+					return
+				}
+				s.Logs.Add(LogError, "train", "创建%s目录失败: %v", name, err)
+				s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("创建%s目录失败: %v", name, err))
+				return
+			}
 			if checkCancelled() {
 				s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
 				return
 			}
-			s.Logs.Add(LogError, "train", "清空%s目录失败: %v", name, err)
-			s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("清空%s目录失败: %v", name, err))
-			return
+			if err := cleanDirContents(target); err != nil {
+				if checkCancelled() {
+					s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
+					return
+				}
+				s.Logs.Add(LogError, "train", "清空%s目录失败: %v", name, err)
+				s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("清空%s目录失败: %v", name, err))
+				return
+			}
 		}
 	}
+
+	if env == nil {
+		env = make(map[string]string)
+	}
+	env["TAA_CHECKPOINT_DIR"] = checkpointDir
+	env["TAA_MODEL_CHECKPOINT_DIR"] = checkpointDir
+	env["CIPHERFLOW_CHECKPOINT_DIR"] = checkpointDir
+	env["TAA_LOG_DIR"] = s.Security.GetModelLogDir()
+	env["TAA_PROGRESS_DIR"] = s.Security.GetModelProgressDir()
 
 	watcher := s.startModelReportWatcher(context.Background(), trainReq.RequestID, trainReq.TaskID)
 	defer func() {
