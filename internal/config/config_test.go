@@ -118,6 +118,9 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if cfg.ModelProgressDir != "/opt/taa/output/progress/progress.json" {
 		t.Fatalf("ModelProgressDir = %q, want default", cfg.ModelProgressDir)
 	}
+	if cfg.ModelCheckpointDir != "/opt/taa/checkpoint" {
+		t.Fatalf("ModelCheckpointDir = %q, want default", cfg.ModelCheckpointDir)
+	}
 	if cfg.KeysDir != "/opt/taa/keys" {
 		t.Fatalf("KeysDir = %q, want default", cfg.KeysDir)
 	}
@@ -381,7 +384,8 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 		wantModelInputDir    string
 		wantModelOutputDir   string
 		wantModelLogDir      string
-		wantModelProgressDir string
+		wantModelProgressDir   string
+		wantModelCheckpointDir string
 		wantSecurityScan     bool
 		wantResultCheck      bool
 		wantPlatformIP       string
@@ -400,7 +404,8 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantModelInputDir:    "/opt/taa/input",
 			wantModelOutputDir:   "/opt/taa/output/result",
 			wantModelLogDir:      "/opt/taa/output/log/train.jsonl",
-			wantModelProgressDir: "/opt/taa/output/progress/progress.json",
+			wantModelProgressDir:   "/opt/taa/output/progress/progress.json",
+			wantModelCheckpointDir: "/opt/taa/checkpoint",
 			wantSecurityScan:     true,
 			wantResultCheck:      true,
 			wantPlatformIP:       "",
@@ -419,7 +424,8 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantModelInputDir:    "/opt/taa/input",
 			wantModelOutputDir:   "/opt/taa/output/result",
 			wantModelLogDir:      "/opt/taa/output/log/train.jsonl",
-			wantModelProgressDir: "/opt/taa/output/progress/progress.json",
+			wantModelProgressDir:   "/opt/taa/output/progress/progress.json",
+			wantModelCheckpointDir: "/opt/taa/checkpoint",
 			wantSecurityScan:     true,
 			wantResultCheck:      true,
 			wantPlatformIP:       "127.0.0.1:18080",
@@ -471,6 +477,9 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			}
 			if cfg.ModelProgressDir != tc.wantModelProgressDir {
 				t.Errorf("ModelProgressDir = %q, want %q", cfg.ModelProgressDir, tc.wantModelProgressDir)
+			}
+			if cfg.ModelCheckpointDir != tc.wantModelCheckpointDir {
+				t.Errorf("ModelCheckpointDir = %q, want %q", cfg.ModelCheckpointDir, tc.wantModelCheckpointDir)
 			}
 			if cfg.EnableSecurityScan != tc.wantSecurityScan {
 				t.Errorf("EnableSecurityScan = %v, want %v", cfg.EnableSecurityScan, tc.wantSecurityScan)
@@ -584,6 +593,7 @@ func TestLoadStartupConfigReadsModelSection(t *testing.T) {
 	writeTestConfig(t, path, `{
 		"model": {
 			"input": "/custom/input",
+			"checkpoint": "/custom/checkpoint",
 			"output": {
 				"result": "/custom/output/result",
 				"log": "/custom/output/log",
@@ -599,6 +609,9 @@ func TestLoadStartupConfigReadsModelSection(t *testing.T) {
 
 	if cfg.ModelInputDir != "/custom/input" {
 		t.Errorf("ModelInputDir = %q, want %q", cfg.ModelInputDir, "/custom/input")
+	}
+	if cfg.ModelCheckpointDir != "/custom/checkpoint" {
+		t.Errorf("ModelCheckpointDir = %q, want %q", cfg.ModelCheckpointDir, "/custom/checkpoint")
 	}
 	if cfg.ModelOutputDir != "/custom/output/result" {
 		t.Errorf("ModelOutputDir = %q, want %q", cfg.ModelOutputDir, "/custom/output/result")
@@ -617,6 +630,7 @@ func TestLoadStartupConfigModelTrimWhitespace(t *testing.T) {
 		"model": {
 			"dir": "  /trimmed/models  ",
 			"input": "  /trimmed/input  ",
+			"checkpoint": "  /trimmed/checkpoint  ",
 			"output": {
 				"result": "  /trimmed/output/result  ",
 				"log": "  /trimmed/output/log  ",
@@ -636,6 +650,9 @@ func TestLoadStartupConfigModelTrimWhitespace(t *testing.T) {
 	if cfg.ModelInputDir != "/trimmed/input" {
 		t.Errorf("ModelInputDir = %q, want /trimmed/input", cfg.ModelInputDir)
 	}
+	if cfg.ModelCheckpointDir != "/trimmed/checkpoint" {
+		t.Errorf("ModelCheckpointDir = %q, want /trimmed/checkpoint", cfg.ModelCheckpointDir)
+	}
 	if cfg.ModelOutputDir != "/trimmed/output/result" {
 		t.Errorf("ModelOutputDir = %q, want /trimmed/output/result", cfg.ModelOutputDir)
 	}
@@ -653,7 +670,8 @@ func TestLoadStartupConfigModelBackwardCompatibility(t *testing.T) {
 		"modelInputDir": "/legacy/input",
 		"modelOutputDir": "/legacy/output/result",
 		"modelLogDir": "/legacy/output/log",
-		"modelProgressDir": "/legacy/output/progress"
+		"modelProgressDir": "/legacy/output/progress",
+		"modelCheckpointDir": "/legacy/checkpoint"
 	}`)
 
 	cfg, err := LoadStartupConfig(path)
@@ -663,6 +681,9 @@ func TestLoadStartupConfigModelBackwardCompatibility(t *testing.T) {
 
 	if cfg.ModelInputDir != "/legacy/input" {
 		t.Errorf("ModelInputDir = %q, want /legacy/input", cfg.ModelInputDir)
+	}
+	if cfg.ModelCheckpointDir != "/legacy/checkpoint" {
+		t.Errorf("ModelCheckpointDir = %q, want /legacy/checkpoint", cfg.ModelCheckpointDir)
 	}
 	if cfg.ModelOutputDir != "/legacy/output/result" {
 		t.Errorf("ModelOutputDir = %q, want /legacy/output/result", cfg.ModelOutputDir)
@@ -682,8 +703,10 @@ func TestLoadStartupConfigModelOverridesLegacy(t *testing.T) {
 		"modelOutputDir": "/legacy/output/result",
 		"modelLogDir": "/legacy/output/log",
 		"modelProgressDir": "/legacy/output/progress",
+		"modelCheckpointDir": "/legacy/checkpoint",
 		"model": {
 			"input": "/modern/input",
+			"checkpoint": "/modern/checkpoint",
 			"output": {
 				"result": "/modern/output/result",
 				"log": "/modern/output/log",
@@ -699,6 +722,9 @@ func TestLoadStartupConfigModelOverridesLegacy(t *testing.T) {
 
 	if cfg.ModelInputDir != "/modern/input" {
 		t.Errorf("ModelInputDir = %q, want /modern/input", cfg.ModelInputDir)
+	}
+	if cfg.ModelCheckpointDir != "/modern/checkpoint" {
+		t.Errorf("ModelCheckpointDir = %q, want /modern/checkpoint", cfg.ModelCheckpointDir)
 	}
 	if cfg.ModelOutputDir != "/modern/output/result" {
 		t.Errorf("ModelOutputDir = %q, want /modern/output/result", cfg.ModelOutputDir)
