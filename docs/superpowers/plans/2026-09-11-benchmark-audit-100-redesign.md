@@ -12,7 +12,7 @@
 
 **Tech Stack:** Python 3.10+, AST, StaticRegex Scanner, Ollama Qwen Models REST API, HTML5/CSS3.
 
-**Spec:** `docs/audit/audit-benchmark-redesign-spec.md`
+**Spec:** `models/audit/audit-benchmark-redesign-spec.md`
 
 ## Global Constraints
 

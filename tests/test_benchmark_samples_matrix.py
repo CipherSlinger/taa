@@ -14,7 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from models.audit.tools.audit_benchmark_eval import PROJECT_ALLOCATION  # noqa: E402
 
-MANIFEST_PATH = REPO_ROOT / "docs" / "audit" / "audit-benchmark-manifest.json"
+MANIFEST_PATH = REPO_ROOT / "models" / "audit" / "audit-benchmark-manifest.json"
 BENCHMARK_ROOT = REPO_ROOT / "models" / "audit" / "benchmarks" / "audit-100"
 
 EXPECTED_BASE_PROJECTS = {

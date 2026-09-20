@@ -8,7 +8,6 @@ models/
 taa-config.json
 
 # 测试相关
-docs/audit/references/
 
 # 审计
 models/audit/audit-results/

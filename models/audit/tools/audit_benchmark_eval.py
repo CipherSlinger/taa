@@ -2,9 +2,9 @@
 """Run and export the 100-sample code-audit benchmark.
 
 This script is the executable companion to:
-- docs/audit/audit-benchmark-manifest.md
-- docs/audit/audit-evaluation-design.md
-- docs/audit/audit-evaluation-results-template.md
+- models/audit/audit-benchmark-manifest.md
+- models/audit/research/audit-evaluation-design.md
+- models/audit/research/audit-evaluation-results-template.md
 
 It serves two jobs:
 1. expand the family-level benchmark spec into a machine-readable 100-sample manifest;
@@ -44,7 +44,7 @@ from models.examples.code_security_analyzer import (  # noqa: E402
 BENCHMARK_NAME = "audit-100"
 BENCHMARK_VERSION = "2026-08-30"
 DEFAULT_BENCHMARK_ROOT = REPO_ROOT / "models" / "audit" / "benchmarks" / BENCHMARK_NAME
-DEFAULT_MANIFEST_OUT = REPO_ROOT / "docs" / "audit" / "audit-benchmark-manifest.json"
+DEFAULT_MANIFEST_OUT = REPO_ROOT / "models" / "audit" / "audit-benchmark-manifest.json"
 DEFAULT_RESULTS_DIR = REPO_ROOT / "models" / "audit" / "audit-results" / BENCHMARK_NAME
 DEFAULT_RULE_SET_VERSION = "default-rules-13"
 DEFAULT_PROMPT_VERSION = "audit-prompt-v1"

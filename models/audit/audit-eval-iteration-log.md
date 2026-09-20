@@ -78,8 +78,8 @@
 
 ### 观察
 - 已新增机器可读 benchmark 生成与评测脚本：`tools/audit_benchmark_eval.py`。
-- 脚本会把 `docs/audit/audit-benchmark-manifest.md` 扩展为 JSON manifest，并写出 100 样本的结构化清单。
-- 已生成 `docs/audit/audit-benchmark-manifest.json` 作为可执行 benchmark 的输入。
+- 脚本会把 `models/audit/audit-benchmark-manifest.md` 扩展为 JSON manifest，并写出 100 样本的结构化清单。
+- 已生成 `models/audit/audit-benchmark-manifest.json` 作为可执行 benchmark 的输入。
 - 已跑通一次静态 smoke test：`--llm-backend none`，单样本结果成功落盘到 `audit/audit-results/audit-100/`。
 
 ### 为什么这轮要记

@@ -41,7 +41,7 @@ from models.examples.code_security_analyzer import StaticScanner  # noqa: E402
 
 MODELS_ROOT = REPO_ROOT / "models" / "audit" / "benchmarks" / "base-projects"
 DEFAULT_BENCHMARK_ROOT = REPO_ROOT / "models" / "audit" / "benchmarks" / BENCHMARK_NAME
-DEFAULT_MANIFEST_OUT = REPO_ROOT / "docs" / "audit" / "audit-benchmark-manifest.json"
+DEFAULT_MANIFEST_OUT = REPO_ROOT / "models" / "audit" / "audit-benchmark-manifest.json"
 VARIANT_FILE_NAME = "benchmark_variant.py"
 
 # Micro-dataset assets in data/ must be preserved in sandboxes.
