@@ -51,25 +51,79 @@ type StartupConfig struct {
 }
 
 type startupConfigFile struct {
-	Addr               string                       `json:"addr"`
-	PlatformIP         string                       `json:"platformIP"`
-	DockerID           string                       `json:"dockerID"`
-	Contract           string                       `json:"contract"`
-	EnableSecurityScan *bool                        `json:"securityScan"`
-	ModelDir           string                       `json:"modelDir"`
-	EnableResultCheck  *bool                        `json:"resultCheck"`
-	MaxFileBytes       *int64                       `json:"maxFileBytes"`
-	MaxResultBytes     *int64                       `json:"maxResultBytes"`
-	DataDir            string                       `json:"dataDir"`
-	ResultDir          string                       `json:"resultDir"`
-	Model              startupModelConfigFile       `json:"model"`
-	ModelInputDir      string                       `json:"modelInputDir"`
-	ModelOutputDir     string                       `json:"modelOutputDir"`
-	ModelLogDir        string                       `json:"modelLogDir"`
-	ModelProgressDir   string                       `json:"modelProgressDir"`
-	KeysDir            string                       `json:"keysDir"`
-	Attestation        startupAttestationConfigFile `json:"attestation"`
-	LLM                startupLLMConfigFile         `json:"llm"`
+	Server      startupServerConfigFile      `json:"server"`
+	Platform    startupPlatformConfigFile    `json:"platform"`
+	Storage     startupStorageConfigFile     `json:"storage"`
+	Model       startupModelConfigFile       `json:"model"`
+	Security    startupSecurityConfigFile    `json:"security"`
+	Attestation startupAttestationConfigFile `json:"attestation"`
+	LLM         startupLLMConfigFile         `json:"llm"`
+
+	// Legacy flat fields for backward compatibility
+	Addr               string `json:"addr"`
+	PlatformIP         string `json:"platformIP"`
+	DockerID           string `json:"dockerID"`
+	Contract           string `json:"contract"`
+	EnableSecurityScan *bool  `json:"securityScan"`
+	ModelDir           string `json:"modelDir"`
+	EnableResultCheck  *bool  `json:"resultCheck"`
+	MaxFileBytes       *int64 `json:"maxFileBytes"`
+	MaxResultBytes     *int64 `json:"maxResultBytes"`
+	DataDir            string `json:"dataDir"`
+	ResultDir          string `json:"resultDir"`
+	ModelInputDir      string `json:"modelInputDir"`
+	ModelOutputDir     string `json:"modelOutputDir"`
+	ModelLogDir        string `json:"modelLogDir"`
+	ModelProgressDir   string `json:"modelProgressDir"`
+	KeysDir            string `json:"keysDir"`
+}
+
+type startupServerConfigFile struct {
+	Addr string `json:"addr"`
+}
+
+type startupPlatformConfigFile struct {
+	IP       string `json:"ip"`
+	Endpoint string `json:"endpoint"`
+	DockerID string `json:"dockerID"`
+	Contract string `json:"contract"`
+}
+
+type startupStorageConfigFile struct {
+	Model     string `json:"model"`
+	Data      string `json:"data"`
+	Result    string `json:"result"`
+	Keys      string `json:"keys"`
+	ModelDir  string `json:"modelDir"`
+	DataDir   string `json:"dataDir"`
+	ResultDir string `json:"resultDir"`
+	KeysDir   string `json:"keysDir"`
+}
+
+type startupSecurityConfigFile struct {
+	CodeScan    *bool                        `json:"codeScan"`
+	Scan        *bool                        `json:"scan"`
+	ResultCheck startupResultCheckConfigFile `json:"resultCheck"`
+}
+
+type startupResultCheckConfigFile struct {
+	Enabled      *bool  `json:"enabled"`
+	MaxFileBytes *int64 `json:"maxFileBytes"`
+}
+
+func (r *startupResultCheckConfigFile) UnmarshalJSON(data []byte) error {
+	var asBool bool
+	if err := json.Unmarshal(data, &asBool); err == nil {
+		r.Enabled = &asBool
+		return nil
+	}
+	type rawResultCheck startupResultCheckConfigFile
+	var raw rawResultCheck
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = startupResultCheckConfigFile(raw)
+	return nil
 }
 
 type startupModelConfigFile struct {
@@ -176,66 +230,132 @@ func defaultStartupConfig() StartupConfig {
 }
 
 func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
-	if fileCfg.Addr != "" {
-		cfg.Addr = fileCfg.Addr
+	if trimmed := strings.TrimSpace(fileCfg.Addr); trimmed != "" {
+		cfg.Addr = trimmed
 	}
-	if fileCfg.PlatformIP != "" {
-		cfg.PlatformIP = fileCfg.PlatformIP
+	if trimmed := strings.TrimSpace(fileCfg.Server.Addr); trimmed != "" {
+		cfg.Addr = trimmed
 	}
-	if fileCfg.DockerID != "" {
-		cfg.DockerID = fileCfg.DockerID
+
+	if trimmed := strings.TrimSpace(fileCfg.PlatformIP); trimmed != "" {
+		cfg.PlatformIP = trimmed
 	}
+	if trimmed := strings.TrimSpace(fileCfg.Platform.IP); trimmed != "" {
+		cfg.PlatformIP = trimmed
+	} else if trimmed := strings.TrimSpace(fileCfg.Platform.Endpoint); trimmed != "" {
+		cfg.PlatformIP = trimmed
+	}
+
+	if trimmed := strings.TrimSpace(fileCfg.DockerID); trimmed != "" {
+		cfg.DockerID = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.Platform.DockerID); trimmed != "" {
+		cfg.DockerID = trimmed
+	}
+
 	if fileCfg.Contract != "" {
 		cfg.Contract = fileCfg.Contract
 	}
+	if fileCfg.Platform.Contract != "" {
+		cfg.Contract = fileCfg.Platform.Contract
+	}
+
 	if fileCfg.EnableSecurityScan != nil {
 		cfg.EnableSecurityScan = *fileCfg.EnableSecurityScan
 	}
+	if fileCfg.Security.Scan != nil {
+		cfg.EnableSecurityScan = *fileCfg.Security.Scan
+	}
+	if fileCfg.Security.CodeScan != nil {
+		cfg.EnableSecurityScan = *fileCfg.Security.CodeScan
+	}
+
 	if trimmed := strings.TrimSpace(fileCfg.ModelDir); trimmed != "" {
 		cfg.ModelDir = trimmed
-	} else if trimmed := strings.TrimSpace(fileCfg.Model.Dir); trimmed != "" {
+	}
+	if trimmed := strings.TrimSpace(fileCfg.Model.Dir); trimmed != "" {
 		cfg.ModelDir = trimmed
 	}
+	if trimmed := strings.TrimSpace(fileCfg.Storage.ModelDir); trimmed != "" {
+		cfg.ModelDir = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.Storage.Model); trimmed != "" {
+		cfg.ModelDir = trimmed
+	}
+
 	if fileCfg.EnableResultCheck != nil {
 		cfg.EnableResultCheck = *fileCfg.EnableResultCheck
 	}
-	if fileCfg.MaxFileBytes != nil {
-		cfg.MaxResultBytes = *fileCfg.MaxFileBytes
-	} else if fileCfg.MaxResultBytes != nil {
+	if fileCfg.Security.ResultCheck.Enabled != nil {
+		cfg.EnableResultCheck = *fileCfg.Security.ResultCheck.Enabled
+	}
+
+	if fileCfg.MaxResultBytes != nil {
 		cfg.MaxResultBytes = *fileCfg.MaxResultBytes
 	}
-	if fileCfg.DataDir != "" {
-		cfg.DataDir = fileCfg.DataDir
+	if fileCfg.MaxFileBytes != nil {
+		cfg.MaxResultBytes = *fileCfg.MaxFileBytes
 	}
-	if fileCfg.ResultDir != "" {
-		cfg.ResultDir = fileCfg.ResultDir
+	if fileCfg.Security.ResultCheck.MaxFileBytes != nil {
+		cfg.MaxResultBytes = *fileCfg.Security.ResultCheck.MaxFileBytes
 	}
+
+	if trimmed := strings.TrimSpace(fileCfg.DataDir); trimmed != "" {
+		cfg.DataDir = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.Storage.DataDir); trimmed != "" {
+		cfg.DataDir = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.Storage.Data); trimmed != "" {
+		cfg.DataDir = trimmed
+	}
+
+	if trimmed := strings.TrimSpace(fileCfg.ResultDir); trimmed != "" {
+		cfg.ResultDir = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.Storage.ResultDir); trimmed != "" {
+		cfg.ResultDir = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.Storage.Result); trimmed != "" {
+		cfg.ResultDir = trimmed
+	}
+
+	if trimmed := strings.TrimSpace(fileCfg.KeysDir); trimmed != "" {
+		cfg.KeysDir = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.Storage.KeysDir); trimmed != "" {
+		cfg.KeysDir = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.Storage.Keys); trimmed != "" {
+		cfg.KeysDir = trimmed
+	}
+
 	if trimmed := strings.TrimSpace(fileCfg.ModelInputDir); trimmed != "" {
 		cfg.ModelInputDir = trimmed
 	}
 	if trimmed := strings.TrimSpace(fileCfg.Model.Input); trimmed != "" {
 		cfg.ModelInputDir = trimmed
 	}
+
 	if trimmed := strings.TrimSpace(fileCfg.ModelOutputDir); trimmed != "" {
 		cfg.ModelOutputDir = trimmed
 	}
 	if trimmed := strings.TrimSpace(fileCfg.Model.Output.Result); trimmed != "" {
 		cfg.ModelOutputDir = trimmed
 	}
+
 	if trimmed := strings.TrimSpace(fileCfg.ModelLogDir); trimmed != "" {
 		cfg.ModelLogDir = trimmed
 	}
 	if trimmed := strings.TrimSpace(fileCfg.Model.Output.Log); trimmed != "" {
 		cfg.ModelLogDir = trimmed
 	}
+
 	if trimmed := strings.TrimSpace(fileCfg.ModelProgressDir); trimmed != "" {
 		cfg.ModelProgressDir = trimmed
 	}
 	if trimmed := strings.TrimSpace(fileCfg.Model.Output.Progress); trimmed != "" {
 		cfg.ModelProgressDir = trimmed
-	}
-	if strings.TrimSpace(fileCfg.KeysDir) != "" {
-		cfg.KeysDir = strings.TrimSpace(fileCfg.KeysDir)
 	}
 	if trimmed := strings.TrimSpace(fileCfg.Attestation.HRKCertPath); trimmed != "" {
 		cfg.AttestationHRKCertPath = trimmed

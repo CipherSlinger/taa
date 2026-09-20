@@ -302,6 +302,11 @@ func TestLoadStartupConfigAttestationTrimWhitespace(t *testing.T) {
 func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 	templates := []struct {
 		relPath              string
+		wantAddr             string
+		wantModelDir         string
+		wantDataDir          string
+		wantResultDir        string
+		wantKeysDir          string
 		wantHRK              string
 		wantHSKCek           string
 		wantMaxResultBytes   int64
@@ -309,9 +314,18 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 		wantModelOutputDir   string
 		wantModelLogDir      string
 		wantModelProgressDir string
+		wantSecurityScan     bool
+		wantResultCheck      bool
+		wantPlatformIP       string
+		wantDockerID         string
 	}{
 		{
 			relPath:              "../../configs/taa-production.json",
+			wantAddr:             ":6001",
+			wantModelDir:         "/root/taa/models",
+			wantDataDir:          "/root/taa/data",
+			wantResultDir:        "/root/taa/results",
+			wantKeysDir:          "/opt/taa/keys",
 			wantHRK:              "/root/taa/certs/hrk.cert",
 			wantHSKCek:           "/root/taa/certs/hsk_cek.cert",
 			wantMaxResultBytes:   3221225472,
@@ -319,9 +333,18 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantModelOutputDir:   "/opt/taa/output/result",
 			wantModelLogDir:      "/opt/taa/output/log",
 			wantModelProgressDir: "/opt/taa/output/progress",
+			wantSecurityScan:     true,
+			wantResultCheck:      true,
+			wantPlatformIP:       "",
+			wantDockerID:         "",
 		},
 		{
 			relPath:              "../../configs/taa-docker.json",
+			wantAddr:             ":6001",
+			wantModelDir:         "/root/taa/models",
+			wantDataDir:          "/root/taa/data",
+			wantResultDir:        "/root/taa/results",
+			wantKeysDir:          "/opt/taa/keys",
 			wantHRK:              "/root/taa/certs/hrk.cert",
 			wantHSKCek:           "/root/taa/certs/hsk_cek.cert",
 			wantMaxResultBytes:   3221225472,
@@ -329,6 +352,10 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantModelOutputDir:   "/opt/taa/output/result",
 			wantModelLogDir:      "/opt/taa/output/log",
 			wantModelProgressDir: "/opt/taa/output/progress",
+			wantSecurityScan:     true,
+			wantResultCheck:      true,
+			wantPlatformIP:       "127.0.0.1:18080",
+			wantDockerID:         "taa-env-slim-v2",
 		},
 	}
 
@@ -337,6 +364,21 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			cfg, err := LoadStartupConfig(tc.relPath)
 			if err != nil {
 				t.Fatalf("LoadStartupConfig(%s) error = %v", tc.relPath, err)
+			}
+			if cfg.Addr != tc.wantAddr {
+				t.Errorf("Addr = %q, want %q", cfg.Addr, tc.wantAddr)
+			}
+			if cfg.ModelDir != tc.wantModelDir {
+				t.Errorf("ModelDir = %q, want %q", cfg.ModelDir, tc.wantModelDir)
+			}
+			if cfg.DataDir != tc.wantDataDir {
+				t.Errorf("DataDir = %q, want %q", cfg.DataDir, tc.wantDataDir)
+			}
+			if cfg.ResultDir != tc.wantResultDir {
+				t.Errorf("ResultDir = %q, want %q", cfg.ResultDir, tc.wantResultDir)
+			}
+			if cfg.KeysDir != tc.wantKeysDir {
+				t.Errorf("KeysDir = %q, want %q", cfg.KeysDir, tc.wantKeysDir)
 			}
 			if cfg.AttestationHRKCertPath != tc.wantHRK {
 				t.Errorf("AttestationHRKCertPath = %q, want %q", cfg.AttestationHRKCertPath, tc.wantHRK)
@@ -359,7 +401,107 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			if cfg.ModelProgressDir != tc.wantModelProgressDir {
 				t.Errorf("ModelProgressDir = %q, want %q", cfg.ModelProgressDir, tc.wantModelProgressDir)
 			}
+			if cfg.EnableSecurityScan != tc.wantSecurityScan {
+				t.Errorf("EnableSecurityScan = %v, want %v", cfg.EnableSecurityScan, tc.wantSecurityScan)
+			}
+			if cfg.EnableResultCheck != tc.wantResultCheck {
+				t.Errorf("EnableResultCheck = %v, want %v", cfg.EnableResultCheck, tc.wantResultCheck)
+			}
+			if tc.wantPlatformIP != "" && cfg.PlatformIP != tc.wantPlatformIP {
+				t.Errorf("PlatformIP = %q, want %q", cfg.PlatformIP, tc.wantPlatformIP)
+			}
+			if tc.wantDockerID != "" && cfg.DockerID != tc.wantDockerID {
+				t.Errorf("DockerID = %q, want %q", cfg.DockerID, tc.wantDockerID)
+			}
 		})
+	}
+}
+
+func TestLoadStartupConfig_ModularSections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"server": {
+			"addr": ":8088"
+		},
+		"platform": {
+			"ip": "platform.local:9090",
+			"dockerID": "pod-12345",
+			"contract": "contract-abc"
+		},
+		"storage": {
+			"model": "/data/storage/models",
+			"data": "/data/storage/datasets",
+			"result": "/data/storage/results",
+			"keys": "/data/storage/keys"
+		},
+		"security": {
+			"codeScan": false,
+			"resultCheck": {
+				"enabled": false,
+				"maxFileBytes": 1048576
+			}
+		}
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if cfg.Addr != ":8088" {
+		t.Errorf("Addr = %q, want :8088", cfg.Addr)
+	}
+	if cfg.PlatformIP != "platform.local:9090" {
+		t.Errorf("PlatformIP = %q, want platform.local:9090", cfg.PlatformIP)
+	}
+	if cfg.DockerID != "pod-12345" {
+		t.Errorf("DockerID = %q, want pod-12345", cfg.DockerID)
+	}
+	if cfg.Contract != "contract-abc" {
+		t.Errorf("Contract = %q, want contract-abc", cfg.Contract)
+	}
+	if cfg.ModelDir != "/data/storage/models" {
+		t.Errorf("ModelDir = %q, want /data/storage/models", cfg.ModelDir)
+	}
+	if cfg.DataDir != "/data/storage/datasets" {
+		t.Errorf("DataDir = %q, want /data/storage/datasets", cfg.DataDir)
+	}
+	if cfg.ResultDir != "/data/storage/results" {
+		t.Errorf("ResultDir = %q, want /data/storage/results", cfg.ResultDir)
+	}
+	if cfg.KeysDir != "/data/storage/keys" {
+		t.Errorf("KeysDir = %q, want /data/storage/keys", cfg.KeysDir)
+	}
+	if cfg.EnableSecurityScan {
+		t.Errorf("EnableSecurityScan = true, want false")
+	}
+	if cfg.EnableResultCheck {
+		t.Errorf("EnableResultCheck = true, want false")
+	}
+	if cfg.MaxResultBytes != 1048576 {
+		t.Errorf("MaxResultBytes = %d, want 1048576", cfg.MaxResultBytes)
+	}
+}
+
+func TestLoadStartupConfig_ResultCheckBooleanCompatibility(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"security": {
+			"codeScan": true,
+			"resultCheck": false
+		}
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if !cfg.EnableSecurityScan {
+		t.Errorf("EnableSecurityScan = false, want true")
+	}
+	if cfg.EnableResultCheck {
+		t.Errorf("EnableResultCheck = true, want false")
 	}
 }
 

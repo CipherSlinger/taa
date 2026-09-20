@@ -287,22 +287,26 @@ All TAA APIs are exposed over HTTP `POST`. For comprehensive request/response sc
 
 ## Runtime Configuration
 
-TAA reads its configuration from `taa-config.json` located in its working directory.
+TAA reads its configuration from `taa-config.json` located in its working directory. Configuration is organized into 7 cohesive functional domains (`server`, `platform`, `storage`, `model`, `security`, `attestation`, `llm`). For backward compatibility, legacy flat fields are also accepted as fallbacks.
 
 ### Configuration Fields
 
 ```json
 {
-  "addr": ":6001",
-  "platformIP": "127.0.0.1:18080",
-  "dockerID": "taa-env-slim-v2",
-  "contract": "",
-  "securityScan": true,
-  "modelDir": "/root/taa/models",
-  "resultCheck": true,
-  "maxFileBytes": 3221225472,
-  "dataDir": "/root/taa/data",
-  "resultDir": "/root/taa/results",
+  "server": {
+    "addr": ":6001"
+  },
+  "platform": {
+    "ip": "127.0.0.1:18080",
+    "dockerID": "taa-env-slim-v2",
+    "contract": ""
+  },
+  "storage": {
+    "model": "/root/taa/models",
+    "data": "/root/taa/data",
+    "result": "/root/taa/results",
+    "keys": "/opt/taa/keys"
+  },
   "model": {
     "input": "/opt/taa/input",
     "output": {
@@ -311,7 +315,13 @@ TAA reads its configuration from `taa-config.json` located in its working direct
       "progress": "/opt/taa/output/progress"
     }
   },
-  "keysDir": "/opt/taa/keys",
+  "security": {
+    "codeScan": true,
+    "resultCheck": {
+      "enabled": true,
+      "maxFileBytes": 3221225472
+    }
+  },
   "attestation": {
     "hrkCertPath": "/root/taa/certs/hrk.cert",
     "hskCekCertPath": "/root/taa/certs/hsk_cek.cert"
@@ -331,19 +341,21 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 
 | Field | Default | Description |
 | :--- | :--- | :--- |
-| `addr` | `:6001` | HTTP server listening address |
-| `platformIP` | Env `PLATFORM_IP` | Platform IP and port (`host:port`); dynamically injected via environment in production |
-| `dockerID` | Env `DOCKER_ID` | Container / Pod identifier; dynamically injected via environment in production |
-| `contract` | Env `CONTRACT` | Contract identifier (reserved optional) |
-| `securityScan` | `true` | Enables Semgrep AST static security scan during model import |
-| `modelDir` | `/root/taa/models` | Unpacked model code directory |
-| `resultCheck` | `true` | Inspects exported files for unauthorized plaintext data leakage |
-| `maxFileBytes` | `3221225472` (3 GB) | Maximum file size threshold for export leakage inspection before triggering size anomaly warning |
-| `model.input` | `/opt/taa/input` | Read-only input dataset directory mounted for model training |
+| `server.addr` | `:6001` | HTTP server listening address |
+| `platform.ip` | Env `PLATFORM_IP` | Platform IP and port (`host:port`); dynamically injected via environment in production |
+| `platform.dockerID` | Env `DOCKER_ID` | Container / Pod identifier; dynamically injected via environment in production |
+| `platform.contract` | Env `CONTRACT` | Contract identifier (reserved optional) |
+| `storage.model` | `/root/taa/models` | TAA platform-internal storage directory for imported model code |
+| `storage.data` | `/root/taa/data` | TAA platform-internal storage directory for imported datasets and resources |
+| `storage.result` | `/root/taa/results` | TAA platform-internal storage directory for final packaged computation results |
+| `storage.keys` | `/opt/taa/keys` | Sensitive cryptographic key storage (restricted with `0700` permissions) |
+| `model.input` | `/opt/taa/input` | Read-only input dataset directory mounted for model training sandbox runtime |
 | `model.output.result` | `/opt/taa/output/result` | Target output directory for model training checkpoints and artifacts |
 | `model.output.log` | `/opt/taa/output/log` | Intermediate terminal log directory monitored by log watcher (`modelLog`) |
 | `model.output.progress` | `/opt/taa/output/progress` | Intermediate progress directory (`progress.json`) monitored by progress watcher |
-| `keysDir` | `/opt/taa/keys` | Sensitive cryptographic key storage (restricted with `0700` permissions) |
+| `security.codeScan` | `true` | Master audit switch: enables Semgrep AST static security scan during model import |
+| `security.resultCheck.enabled` | `true` | Inspects exported files for unauthorized plaintext data leakage (accepts object or boolean) |
+| `security.resultCheck.maxFileBytes` | `3221225472` (3 GB) | Maximum file size threshold for export leakage inspection |
 | `attestation.hrkCertPath` | `/root/taa/certs/hrk.cert` | Hygon Root Key (HRK) certificate path for CSV attestation verification |
 | `attestation.hskCekCertPath` | `/root/taa/certs/hsk_cek.cert` | Hygon Sign Key (HSK) / Chip Endorsement Key (CEK) certificate path |
 | `llm.enabled` | `true` | Enables local LLM semantic arbitration for code security audits |
@@ -357,8 +369,8 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 
 ### Configuration Templates
 
-- **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths, with `attestationMode: "permissive"` and `insecureSkipVerify: true`.
-- **`configs/taa-production.json`**: For production Kubernetes Pods. Omits `platformIP`, `dockerID`, and `contract` so they are dynamically injected by the orchestration platform via environment variables, and enforces `attestationMode: "strict"`.
+- **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths, with explicit `platform` configuration, `attestationMode: "permissive"`, and `insecureSkipVerify: true`.
+- **`configs/taa-production.json`**: For production Kubernetes Pods. Omits `platform` so parameters are dynamically injected by the orchestration platform via environment variables, and enforces `attestationMode: "strict"`.
 
 ---
 

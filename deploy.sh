@@ -973,10 +973,23 @@ import sys
 with open(template, "r", encoding="utf-8") as f:
     cfg = json.load(f)
 
-cfg["addr"] = addr
-cfg["modelDir"] = model_dir
-cfg["dataDir"] = data_dir
-cfg["resultDir"] = result_dir
+server = cfg.setdefault("server", {})
+if addr:
+    server["addr"] = addr
+cfg.pop("addr", None)
+
+storage = cfg.setdefault("storage", {})
+if model_dir:
+    storage["model"] = model_dir
+if data_dir:
+    storage["data"] = data_dir
+if result_dir:
+    storage["result"] = result_dir
+if keys_dir:
+    storage["keys"] = keys_dir
+for key in ("modelDir", "dataDir", "resultDir", "keysDir"):
+    cfg.pop(key, None)
+
 if model_input_dir or model_output_dir:
     model = cfg.setdefault("model", {})
     if model_input_dir:
@@ -984,19 +997,23 @@ if model_input_dir or model_output_dir:
     if model_output_dir:
         output = model.setdefault("output", {})
         output["result"] = model_output_dir
-cfg.pop("modelInputDir", None)
-cfg.pop("modelOutputDir", None)
-cfg.pop("modelLogDir", None)
-cfg.pop("modelProgressDir", None)
-if keys_dir:
-    cfg["keysDir"] = keys_dir
+for key in ("modelInputDir", "modelOutputDir", "modelLogDir", "modelProgressDir"):
+    cfg.pop(key, None)
 
 if include_identity == "true":
-    cfg["platformIP"] = platform_ip
-    cfg["dockerID"] = docker_id
-    cfg["contract"] = contract
+    platform = cfg.setdefault("platform", {})
+    if platform_ip:
+        platform["ip"] = platform_ip
+    if docker_id:
+        platform["dockerID"] = docker_id
+    platform["contract"] = contract
 else:
-    for key in ("platformIP", "dockerID", "contract"):
+    cfg.pop("platform", None)
+for key in ("platformIP", "dockerID", "contract"):
+    cfg.pop(key, None)
+
+for key in ("securityScan", "resultCheck", "maxFileBytes", "maxResultBytes"):
+    if key in cfg and not isinstance(cfg[key], dict):
         cfg.pop(key, None)
 
 llm = cfg.setdefault("llm", {})
