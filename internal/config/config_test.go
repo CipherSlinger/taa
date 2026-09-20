@@ -301,22 +301,34 @@ func TestLoadStartupConfigAttestationTrimWhitespace(t *testing.T) {
 
 func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 	templates := []struct {
-		relPath            string
-		wantHRK            string
-		wantHSKCek         string
-		wantMaxResultBytes int64
+		relPath              string
+		wantHRK              string
+		wantHSKCek           string
+		wantMaxResultBytes   int64
+		wantModelInputDir    string
+		wantModelOutputDir   string
+		wantModelLogDir      string
+		wantModelProgressDir string
 	}{
 		{
-			relPath:            "../../configs/taa-production.json",
-			wantHRK:            "/root/taa/certs/hrk.cert",
-			wantHSKCek:         "/root/taa/certs/hsk_cek.cert",
-			wantMaxResultBytes: 3221225472,
+			relPath:              "../../configs/taa-production.json",
+			wantHRK:              "/root/taa/certs/hrk.cert",
+			wantHSKCek:           "/root/taa/certs/hsk_cek.cert",
+			wantMaxResultBytes:   3221225472,
+			wantModelInputDir:    "/opt/taa/input",
+			wantModelOutputDir:   "/opt/taa/output/result",
+			wantModelLogDir:      "/opt/taa/output/log",
+			wantModelProgressDir: "/opt/taa/output/progress",
 		},
 		{
-			relPath:            "../../configs/taa-docker.json",
-			wantHRK:            "/root/taa/certs/hrk.cert",
-			wantHSKCek:         "/root/taa/certs/hsk_cek.cert",
-			wantMaxResultBytes: 3221225472,
+			relPath:              "../../configs/taa-docker.json",
+			wantHRK:              "/root/taa/certs/hrk.cert",
+			wantHSKCek:           "/root/taa/certs/hsk_cek.cert",
+			wantMaxResultBytes:   3221225472,
+			wantModelInputDir:    "/opt/taa/input",
+			wantModelOutputDir:   "/opt/taa/output/result",
+			wantModelLogDir:      "/opt/taa/output/log",
+			wantModelProgressDir: "/opt/taa/output/progress",
 		},
 	}
 
@@ -335,7 +347,151 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			if cfg.MaxResultBytes != tc.wantMaxResultBytes {
 				t.Errorf("MaxResultBytes = %d, want %d", cfg.MaxResultBytes, tc.wantMaxResultBytes)
 			}
+			if cfg.ModelInputDir != tc.wantModelInputDir {
+				t.Errorf("ModelInputDir = %q, want %q", cfg.ModelInputDir, tc.wantModelInputDir)
+			}
+			if cfg.ModelOutputDir != tc.wantModelOutputDir {
+				t.Errorf("ModelOutputDir = %q, want %q", cfg.ModelOutputDir, tc.wantModelOutputDir)
+			}
+			if cfg.ModelLogDir != tc.wantModelLogDir {
+				t.Errorf("ModelLogDir = %q, want %q", cfg.ModelLogDir, tc.wantModelLogDir)
+			}
+			if cfg.ModelProgressDir != tc.wantModelProgressDir {
+				t.Errorf("ModelProgressDir = %q, want %q", cfg.ModelProgressDir, tc.wantModelProgressDir)
+			}
 		})
+	}
+}
+
+func TestLoadStartupConfigReadsModelSection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"model": {
+			"input": "/custom/input",
+			"output": {
+				"result": "/custom/output/result",
+				"log": "/custom/output/log",
+				"progress": "/custom/output/progress"
+			}
+		}
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if cfg.ModelInputDir != "/custom/input" {
+		t.Errorf("ModelInputDir = %q, want %q", cfg.ModelInputDir, "/custom/input")
+	}
+	if cfg.ModelOutputDir != "/custom/output/result" {
+		t.Errorf("ModelOutputDir = %q, want %q", cfg.ModelOutputDir, "/custom/output/result")
+	}
+	if cfg.ModelLogDir != "/custom/output/log" {
+		t.Errorf("ModelLogDir = %q, want %q", cfg.ModelLogDir, "/custom/output/log")
+	}
+	if cfg.ModelProgressDir != "/custom/output/progress" {
+		t.Errorf("ModelProgressDir = %q, want %q", cfg.ModelProgressDir, "/custom/output/progress")
+	}
+}
+
+func TestLoadStartupConfigModelTrimWhitespace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"model": {
+			"dir": "  /trimmed/models  ",
+			"input": "  /trimmed/input  ",
+			"output": {
+				"result": "  /trimmed/output/result  ",
+				"log": "  /trimmed/output/log  ",
+				"progress": "  /trimmed/output/progress  "
+			}
+		}
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if cfg.ModelDir != "/trimmed/models" {
+		t.Errorf("ModelDir = %q, want /trimmed/models", cfg.ModelDir)
+	}
+	if cfg.ModelInputDir != "/trimmed/input" {
+		t.Errorf("ModelInputDir = %q, want /trimmed/input", cfg.ModelInputDir)
+	}
+	if cfg.ModelOutputDir != "/trimmed/output/result" {
+		t.Errorf("ModelOutputDir = %q, want /trimmed/output/result", cfg.ModelOutputDir)
+	}
+	if cfg.ModelLogDir != "/trimmed/output/log" {
+		t.Errorf("ModelLogDir = %q, want /trimmed/output/log", cfg.ModelLogDir)
+	}
+	if cfg.ModelProgressDir != "/trimmed/output/progress" {
+		t.Errorf("ModelProgressDir = %q, want /trimmed/output/progress", cfg.ModelProgressDir)
+	}
+}
+
+func TestLoadStartupConfigModelBackwardCompatibility(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"modelInputDir": "/legacy/input",
+		"modelOutputDir": "/legacy/output/result",
+		"modelLogDir": "/legacy/output/log",
+		"modelProgressDir": "/legacy/output/progress"
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if cfg.ModelInputDir != "/legacy/input" {
+		t.Errorf("ModelInputDir = %q, want /legacy/input", cfg.ModelInputDir)
+	}
+	if cfg.ModelOutputDir != "/legacy/output/result" {
+		t.Errorf("ModelOutputDir = %q, want /legacy/output/result", cfg.ModelOutputDir)
+	}
+	if cfg.ModelLogDir != "/legacy/output/log" {
+		t.Errorf("ModelLogDir = %q, want /legacy/output/log", cfg.ModelLogDir)
+	}
+	if cfg.ModelProgressDir != "/legacy/output/progress" {
+		t.Errorf("ModelProgressDir = %q, want /legacy/output/progress", cfg.ModelProgressDir)
+	}
+}
+
+func TestLoadStartupConfigModelOverridesLegacy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"modelInputDir": "/legacy/input",
+		"modelOutputDir": "/legacy/output/result",
+		"modelLogDir": "/legacy/output/log",
+		"modelProgressDir": "/legacy/output/progress",
+		"model": {
+			"input": "/modern/input",
+			"output": {
+				"result": "/modern/output/result",
+				"log": "/modern/output/log",
+				"progress": "/modern/output/progress"
+			}
+		}
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if cfg.ModelInputDir != "/modern/input" {
+		t.Errorf("ModelInputDir = %q, want /modern/input", cfg.ModelInputDir)
+	}
+	if cfg.ModelOutputDir != "/modern/output/result" {
+		t.Errorf("ModelOutputDir = %q, want /modern/output/result", cfg.ModelOutputDir)
+	}
+	if cfg.ModelLogDir != "/modern/output/log" {
+		t.Errorf("ModelLogDir = %q, want /modern/output/log", cfg.ModelLogDir)
+	}
+	if cfg.ModelProgressDir != "/modern/output/progress" {
+		t.Errorf("ModelProgressDir = %q, want /modern/output/progress", cfg.ModelProgressDir)
 	}
 }
 

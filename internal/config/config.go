@@ -62,6 +62,7 @@ type startupConfigFile struct {
 	MaxResultBytes     *int64                       `json:"maxResultBytes"`
 	DataDir            string                       `json:"dataDir"`
 	ResultDir          string                       `json:"resultDir"`
+	Model              startupModelConfigFile       `json:"model"`
 	ModelInputDir      string                       `json:"modelInputDir"`
 	ModelOutputDir     string                       `json:"modelOutputDir"`
 	ModelLogDir        string                       `json:"modelLogDir"`
@@ -69,6 +70,18 @@ type startupConfigFile struct {
 	KeysDir            string                       `json:"keysDir"`
 	Attestation        startupAttestationConfigFile `json:"attestation"`
 	LLM                startupLLMConfigFile         `json:"llm"`
+}
+
+type startupModelConfigFile struct {
+	Dir    string                       `json:"dir"`
+	Input  string                       `json:"input"`
+	Output startupModelOutputConfigFile `json:"output"`
+}
+
+type startupModelOutputConfigFile struct {
+	Result   string `json:"result"`
+	Log      string `json:"log"`
+	Progress string `json:"progress"`
 }
 
 type startupAttestationConfigFile struct {
@@ -178,8 +191,10 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	if fileCfg.EnableSecurityScan != nil {
 		cfg.EnableSecurityScan = *fileCfg.EnableSecurityScan
 	}
-	if fileCfg.ModelDir != "" {
-		cfg.ModelDir = fileCfg.ModelDir
+	if trimmed := strings.TrimSpace(fileCfg.ModelDir); trimmed != "" {
+		cfg.ModelDir = trimmed
+	} else if trimmed := strings.TrimSpace(fileCfg.Model.Dir); trimmed != "" {
+		cfg.ModelDir = trimmed
 	}
 	if fileCfg.EnableResultCheck != nil {
 		cfg.EnableResultCheck = *fileCfg.EnableResultCheck
@@ -195,17 +210,29 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	if fileCfg.ResultDir != "" {
 		cfg.ResultDir = fileCfg.ResultDir
 	}
-	if fileCfg.ModelInputDir != "" {
-		cfg.ModelInputDir = fileCfg.ModelInputDir
+	if trimmed := strings.TrimSpace(fileCfg.ModelInputDir); trimmed != "" {
+		cfg.ModelInputDir = trimmed
 	}
-	if fileCfg.ModelOutputDir != "" {
-		cfg.ModelOutputDir = fileCfg.ModelOutputDir
+	if trimmed := strings.TrimSpace(fileCfg.Model.Input); trimmed != "" {
+		cfg.ModelInputDir = trimmed
 	}
-	if fileCfg.ModelLogDir != "" {
-		cfg.ModelLogDir = fileCfg.ModelLogDir
+	if trimmed := strings.TrimSpace(fileCfg.ModelOutputDir); trimmed != "" {
+		cfg.ModelOutputDir = trimmed
 	}
-	if fileCfg.ModelProgressDir != "" {
-		cfg.ModelProgressDir = fileCfg.ModelProgressDir
+	if trimmed := strings.TrimSpace(fileCfg.Model.Output.Result); trimmed != "" {
+		cfg.ModelOutputDir = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.ModelLogDir); trimmed != "" {
+		cfg.ModelLogDir = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.Model.Output.Log); trimmed != "" {
+		cfg.ModelLogDir = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.ModelProgressDir); trimmed != "" {
+		cfg.ModelProgressDir = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.Model.Output.Progress); trimmed != "" {
+		cfg.ModelProgressDir = trimmed
 	}
 	if strings.TrimSpace(fileCfg.KeysDir) != "" {
 		cfg.KeysDir = strings.TrimSpace(fileCfg.KeysDir)

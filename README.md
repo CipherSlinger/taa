@@ -303,10 +303,14 @@ TAA reads its configuration from `taa-config.json` located in its working direct
   "maxFileBytes": 3221225472,
   "dataDir": "/root/taa/data",
   "resultDir": "/root/taa/results",
-  "modelInputDir": "/opt/taa/input",
-  "modelOutputDir": "/opt/taa/output/result",
-  "modelLogDir": "/opt/taa/output/log",
-  "modelProgressDir": "/opt/taa/output/progress",
+  "model": {
+    "input": "/opt/taa/input",
+    "output": {
+      "result": "/opt/taa/output/result",
+      "log": "/opt/taa/output/log",
+      "progress": "/opt/taa/output/progress"
+    }
+  },
   "keysDir": "/opt/taa/keys",
   "attestation": {
     "hrkCertPath": "/root/taa/certs/hrk.cert",
@@ -335,10 +339,10 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `modelDir` | `/root/taa/models` | Unpacked model code directory |
 | `resultCheck` | `true` | Inspects exported files for unauthorized plaintext data leakage |
 | `maxFileBytes` | `3221225472` (3 GB) | Maximum file size threshold for export leakage inspection before triggering size anomaly warning |
-| `modelInputDir` | `/opt/taa/input` | Read-only input dataset directory mounted for model training |
-| `modelOutputDir`| `/opt/taa/output/result` | Target output directory for model training checkpoints and artifacts |
-| `modelLogDir` | `/opt/taa/output/log` | Intermediate terminal log directory monitored by log watcher (`modelLog`) |
-| `modelProgressDir`| `/opt/taa/output/progress`| Intermediate progress directory (`progress.json`) monitored by progress watcher |
+| `model.input` | `/opt/taa/input` | Read-only input dataset directory mounted for model training |
+| `model.output.result` | `/opt/taa/output/result` | Target output directory for model training checkpoints and artifacts |
+| `model.output.log` | `/opt/taa/output/log` | Intermediate terminal log directory monitored by log watcher (`modelLog`) |
+| `model.output.progress` | `/opt/taa/output/progress` | Intermediate progress directory (`progress.json`) monitored by progress watcher |
 | `keysDir` | `/opt/taa/keys` | Sensitive cryptographic key storage (restricted with `0700` permissions) |
 | `attestation.hrkCertPath` | `/root/taa/certs/hrk.cert` | Hygon Root Key (HRK) certificate path for CSV attestation verification |
 | `attestation.hskCekCertPath` | `/root/taa/certs/hsk_cek.cert` | Hygon Sign Key (HSK) / Chip Endorsement Key (CEK) certificate path |

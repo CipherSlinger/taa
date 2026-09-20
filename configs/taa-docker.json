@@ -9,10 +9,14 @@
   "maxFileBytes": 3221225472,
   "dataDir": "/root/taa/data",
   "resultDir": "/root/taa/results",
-  "modelInputDir": "/opt/taa/input",
-  "modelOutputDir": "/opt/taa/output/result",
-  "modelLogDir": "/opt/taa/output/log",
-  "modelProgressDir": "/opt/taa/output/progress",
+  "model": {
+    "input": "/opt/taa/input",
+    "output": {
+      "result": "/opt/taa/output/result",
+      "log": "/opt/taa/output/log",
+      "progress": "/opt/taa/output/progress"
+    }
+  },
   "keysDir": "/opt/taa/keys",
   "attestation": {
     "hrkCertPath": "/root/taa/certs/hrk.cert",

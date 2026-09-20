@@ -977,10 +977,17 @@ cfg["addr"] = addr
 cfg["modelDir"] = model_dir
 cfg["dataDir"] = data_dir
 cfg["resultDir"] = result_dir
-if model_input_dir:
-    cfg["modelInputDir"] = model_input_dir
-if model_output_dir:
-    cfg["modelOutputDir"] = model_output_dir
+if model_input_dir or model_output_dir:
+    model = cfg.setdefault("model", {})
+    if model_input_dir:
+        model["input"] = model_input_dir
+    if model_output_dir:
+        output = model.setdefault("output", {})
+        output["result"] = model_output_dir
+cfg.pop("modelInputDir", None)
+cfg.pop("modelOutputDir", None)
+cfg.pop("modelLogDir", None)
+cfg.pop("modelProgressDir", None)
 if keys_dir:
     cfg["keysDir"] = keys_dir
 
