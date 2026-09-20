@@ -20,51 +20,115 @@ TAA serves as a secure execution enclave for model training and computation work
 TAA coordinates the entire confidential computing lifecycle through the following sequence:
 
 ```mermaid
-flowchart LR
-    Platform[Management Platform]
-    Provider[Model Provider]
-    Mock[Platform Mock / Emulator]
-
-    subgraph TEE[Hygon CSV TEE Trusted Boundary]
-        TAA[TAA Daemon :6001]
-        Attest[Remote Attestation Engine]
-        Crypto[SM2 / SM3 / SM4-GCM Cryptography]
-        Audit[Static & Semgrep Code Audit]
-        Supervisor[Container Supervisor Daemon]
-        Train[Debug / Training Execution Engine]
-        Export[Result Packaging & Envelope Encryption]
-        Logs[Terminal Logs & TAA Operational Logs]
-
-        subgraph TEELLM[Decoupled TEE-LLM Service :8443]
-            LLMServer[teellm-service Daemon]
-            TEETLS[RFC 8998 TLS 1.3 ShangMi]
-            Ollama[Ollama / Qwen Inference Engine]
-            LLMServer --- TEETLS
-            LLMServer --- Ollama
-        end
-
-        TAA --> Attest
-        TAA --> Crypto
-        TAA --> Audit
-        Audit -->|TEE-TLS 1.3 Mutual Attestation| TEELLM
-        TAA --> Train
-        Train --> Export
-        TAA --> Logs
-        Supervisor -.->|Keep-Alive & Restart| TAA
+flowchart TB
+    %% =========================================================================
+    %% TOP: External Ecosystem & Control Plane
+    %% =========================================================================
+    subgraph ControlPlane["External Ecosystem & Management Plane (Host Environment)"]
+        direction LR
+        Provider["<b>Model & Data Providers</b><br/><sub>teecrypto SDK • SM4-GCM Sealed Package</sub>"]
+        Platform["<b>Management Platform / Platform-Mock (:18080)</b><br/><sub>Task Orchestration • Attestation Verification • Web Console</sub>"]
+        Provider -->|"1. Dispatch SM2/SM4 Envelopes"| Platform
     end
 
-    Platform -->|Register / Ingress / Egress / Control| TAA
-    Provider -->|Encrypted Model & Data Packages| Platform
-    Platform -->|Dispatch Ciphertext Resources| TAA
-    TAA -->|Encrypted Results / Attestation / Telemetry| Platform
-    Platform <-->|Local Simulation & Debugging| Mock
+    %% =========================================================================
+    %% CENTER: Hygon CSV TEE Enclave
+    %% =========================================================================
+    subgraph TEE["Hygon CSV TEE Trusted Execution Boundary (Hardware Enclave)"]
+        direction TB
 
-    style TEE fill:#eef7ff,stroke:#4a78a8,stroke-width:1.5px
-    style TAA fill:#dff1ff,stroke:#2b6cb0,stroke-width:1.5px
-    style TEELLM fill:#f0fdf4,stroke:#16a34a,stroke-width:1.5px
-    style Platform fill:#fff4d6,stroke:#c48a00,stroke-width:1.5px
-    style Provider fill:#fff4d6,stroke:#c48a00,stroke-width:1.5px
-    style Mock fill:#f1f5f9,stroke:#64748b,stroke-width:1.5px
+        %% Enclave Controller & Supervisor
+        subgraph EnclaveMgmt["Enclave Lifecycle & Supervisor"]
+            direction LR
+            Supervisor["<b>Container Supervisor</b><br/><code>deploy/start.sh</code> • Auto-Restart Daemon"]
+            TAA["<b>TAA Enclave Daemon (:6001)</b><br/><code>State Machine Coordinator • HTTP API Gateway</code>"]
+            Supervisor -.->|"Keep-Alive & Guard"| TAA
+        end
+
+        %% Phase 1: Attestation
+        subgraph Stage1["Phase 1: Hardware-Enforced Identity & Attestation"]
+            direction LR
+            S1["<b>Ephemeral Keypair & Cert Validation</b><br/><sub>In-Memory SM2 Key • HRK ➔ HSK ➔ CEK Chain</sub>"]
+            CSVDriver[("<b>Hygon CSV PSP</b><br/><code>/dev/csv-guest ioctl</code>")]
+            S1 <-->|"Inject USERDATA & Sign Report"| CSVDriver
+        end
+
+        %% Phase 2: Ingress
+        subgraph Stage2["Phase 2: Ciphertext Ingress & Decryption"]
+            direction LR
+            S2["<b>Envelope Decapsulation & Sandbox Ingress</b><br/><sub>SM2 Key Unwrap • SM4-GCM Decrypt • <code>/opt/taa/input</code></sub>"]
+        end
+
+        %% Phase 3: Audit
+        subgraph Stage3["Phase 3: Two-Tier Defense-in-Depth Code Security Audit"]
+            direction LR
+            S3["<b>Tier 1: Semgrep AST & Taint Engine</b><br/><sub>13 Security Rules (Command Injection, SSRF, File Escape, Eval)</sub>"]
+            TEELLM["<b>Tier 2: teellm-service (:8443)</b><br/><sub>Decoupled Qwen2.5-Coder • Semantic Intent Arbitration</sub>"]
+            S3 <-->|"RFC 8998 TLS 1.3 ShangMi<br/>(Mutual Hardware Attestation)"| TEELLM
+        end
+
+        %% Phase 4: Execution
+        subgraph Stage4["Phase 4: Sandboxed Execution & Dual Telemetry"]
+            direction LR
+            S4["<b>Subprocess Runtime Sandbox</b><br/><sub>Dedicated Process Group • Process Tree Termination<br/>Phase 1/2/3 Lifecycle (debug.sh / train.sh)</sub>"]
+        end
+
+        %% Phase 5: Egress
+        subgraph Stage5["Phase 5: Leakage Check & Encrypted Egress"]
+            direction LR
+            S5["<b>Result Inspection & Envelope Re-encryption</b><br/><sub>Plaintext Data Leakage Scan • SM4-GCM Sealed with Provider SM2 Key</sub>"]
+        end
+
+        %% Intra-Enclave Stage Pipeline
+        TAA ==>|"Bootstrap & Hardware Binding"| Stage1
+        Stage1 ==>|"Identity Established & Registered"| Stage2
+        Stage2 ==>|"Unpacked Code & Datasets"| Stage3
+        Stage3 ==>|"Security Gate Passed (Fail-Closed)"| Stage4
+        Stage4 ==>|"Computation Artifacts"| Stage5
+    end
+
+    %% =========================================================================
+    %% BOTTOM: Observability & Verified Delivery
+    %% =========================================================================
+    subgraph OutputPlane["Observability & Verified Delivery Plane (Host / Platform)"]
+        direction LR
+        Telemetry["<b>Dual Real-time Telemetry Streaming</b><br/><code>/v1/taa/modelLog</code> (Terminal) • <code>/v1/taa/taaLog</code> (Ops Logs)"]
+        ResultSink["<b>Verified Result Deliverable</b><br/><sub>Zero Plaintext Leakage • Cryptographic Envelope Delivered to Providers</sub>"]
+    end
+
+    %% Cross-Domain Flow
+    Platform ==>|"Pod Launch & Supervision"| Supervisor
+    Platform ==>|"Control APIs (/register, /import, /switch, /stopTraining)"| TAA
+    S4 -.->|"Live Stdout/Stderr & Progress"| Telemetry
+    S5 ==>|"Encrypted Artifact Package (/v1/taa/export)"| ResultSink
+
+    %% =========================================================================
+    %% Visual Styles (High-Contrast, Elegant Modern Theme)
+    %% =========================================================================
+    style ControlPlane fill:#f8fafc,stroke:#475569,stroke-width:1.5px,color:#0f172a
+    style TEE fill:#f8faff,stroke:#1d4ed8,stroke-width:2px,color:#1e3a8a
+    style OutputPlane fill:#f0fdf4,stroke:#15803d,stroke-width:1.5px,color:#14532d
+
+    style EnclaveMgmt fill:#ffffff,stroke:#93c5fd,stroke-width:1.2px,color:#1e40af
+    style Stage1 fill:#ffffff,stroke:#cbd5e1,stroke-width:1.2px,color:#1e293b
+    style Stage2 fill:#ffffff,stroke:#cbd5e1,stroke-width:1.2px,color:#1e293b
+    style Stage3 fill:#f0fdf4,stroke:#86efac,stroke-width:1.5px,color:#064e3b
+    style Stage4 fill:#ffffff,stroke:#cbd5e1,stroke-width:1.2px,color:#1e293b
+    style Stage5 fill:#ffffff,stroke:#cbd5e1,stroke-width:1.2px,color:#1e293b
+
+    classDef hostNode fill:#ffffff,stroke:#64748b,stroke-width:1.5px,color:#0f172a;
+    classDef taaNode fill:#eff6ff,stroke:#2563eb,stroke-width:1.5px,color:#1e40af;
+    classDef stepNode fill:#ffffff,stroke:#3b82f6,stroke-width:1.2px,color:#1e293b;
+    classDef pspNode fill:#faf5ff,stroke:#7c3aed,stroke-width:1.5px,color:#4c1d95;
+    classDef auditNode fill:#ecfdf5,stroke:#059669,stroke-width:1.5px,color:#064e3b;
+    classDef outNode fill:#ffffff,stroke:#16a34a,stroke-width:1.5px,color:#14532d;
+
+    class Provider,Platform hostNode;
+    class TAA,Supervisor taaNode;
+    class S1,S2,S4,S5 stepNode;
+    class CSVDriver pspNode;
+    class S3,TEELLM auditNode;
+    class Telemetry,ResultSink outNode;
 ```
 
 1. **Hardware-Enforced Attestation**: On boot, TAA generates an ephemeral SM2 keypair, injects the public key into the CSV hardware `USERDATA` slot (`X || Y`), and retrieves a hardware-signed attestation report via direct `/dev/csv-guest` ioctl (`pkg/csvattest`).
