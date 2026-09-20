@@ -61,6 +61,33 @@ func TestFlowExportDirectoryEnvelope(t *testing.T) {
 	}
 }
 
+func TestFlowExportDirectoryEnvelope_Limit(t *testing.T) {
+	tmpDir := t.TempDir()
+	sourceDir := filepath.Join(tmpDir, "result")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "model.bin"), []byte("sample model weights data exceeding limit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	privKey, err := teecrypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubKeyPEMBytes, err := teecrypto.MarshalSM2PublicKeyPEM(&privKey.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubKeyPEM := string(pubKeyPEMBytes)
+
+	// Very small limit: 10 bytes -> should fail on zip creation limit
+	_, err = ExportResultToEnvelopeWithLimit(sourceDir, pubKeyPEM, 10)
+	if err == nil {
+		t.Fatal("expected error for small limit, got nil")
+	}
+}
+
 func TestFlowTrainingExecution(t *testing.T) {
 	tmpDir := t.TempDir()
 	modelDir := filepath.Join(tmpDir, "model")

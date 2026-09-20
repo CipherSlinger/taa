@@ -557,13 +557,21 @@ func buildSecurityConfig(cfg config.StartupConfig) controller.SecurityConfig {
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
+	maxBytes := cfg.MaxFileBytes
+	if maxBytes <= 0 {
+		maxBytes = cfg.MaxResultBytes
+	}
+	if maxBytes <= 0 {
+		maxBytes = config.DefaultMaxFileBytes
+	}
 	return controller.SecurityConfig{
 		ScanEnabled:      cfg.EnableSecurityScan,
 		ModelDir:         cfg.ModelDir,
 		ResultCheck:      cfg.EnableResultCheck,
 		DataDir:          cfg.DataDir,
 		ResultDir:        cfg.ResultDir,
-		MaxResultBytes:   cfg.MaxResultBytes,
+		MaxFileBytes:     maxBytes,
+		MaxResultBytes:   maxBytes,
 		ModelInputDir:    cfg.ModelInputDir,
 		ModelOutputDir:   cfg.ModelOutputDir,
 		ModelLogDir:      cfg.ModelLogDir,
@@ -626,6 +634,6 @@ func logSecurityConfig(sec controller.SecurityConfig) {
 		}
 	}
 	if sec.ResultCheck {
-		log.Printf("result check enabled: data-dir=%s result-dir=%s max-bytes=%d", sec.DataDir, sec.ResultDir, sec.MaxResultBytes)
+		log.Printf("result check enabled: data-dir=%s result-dir=%s max-bytes=%d", sec.DataDir, sec.ResultDir, sec.GetMaxFileBytes())
 	}
 }

@@ -5,14 +5,16 @@ import (
 	"io"
 	"net/http"
 	"os"
+
+	pkgerrors "taa/pkg/errors"
 )
 
 const (
-	// DefaultMaxDownloadBytes 资源下载最大上限 (10 GB)
-	DefaultMaxDownloadBytes = 10 << 30
+	// DefaultMaxDownloadBytes is the default maximum download limit (3 GB).
+	DefaultMaxDownloadBytes int64 = 3 * 1024 * 1024 * 1024
 )
 
-// DownloadToTempFile 从指定 URL 下载资源并写入安全临时文件，支持大小限制与配额校验
+// DownloadToTempFile downloads resources from resourceURL to a temp file, enforcing size limits.
 func DownloadToTempFile(resourceURL string, maxBytes int64) (string, int64, error) {
 	if maxBytes <= 0 {
 		maxBytes = DefaultMaxDownloadBytes
@@ -28,7 +30,7 @@ func DownloadToTempFile(resourceURL string, maxBytes int64) (string, int64, erro
 		return "", 0, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	if resp.ContentLength > maxBytes {
-		return "", 0, fmt.Errorf("资源过大: %d bytes, 上限 %d bytes", resp.ContentLength, maxBytes)
+		return "", 0, pkgerrors.Errorf(pkgerrors.CodeInvalidArgument, "资源过大: %d bytes, 上限 %d bytes", resp.ContentLength, maxBytes)
 	}
 
 	f, err := os.CreateTemp("", "taa-download-*")
@@ -46,7 +48,7 @@ func DownloadToTempFile(resourceURL string, maxBytes int64) (string, int64, erro
 	}
 	if n > maxBytes {
 		_ = os.Remove(path)
-		return "", 0, fmt.Errorf("资源超过大小上限: %d bytes > %d bytes", n, maxBytes)
+		return "", 0, pkgerrors.Errorf(pkgerrors.CodeInvalidArgument, "资源超过大小上限: %d bytes > %d bytes", n, maxBytes)
 	}
 	return path, n, nil
 }

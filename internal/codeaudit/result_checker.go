@@ -21,36 +21,53 @@ type ResultCheckIssue struct {
 	Severity string `json:"severity"`
 }
 
+// DefaultMaxFileBytes is the default maximum size of an exported result file (3 GB).
+const DefaultMaxFileBytes int64 = 3 * 1024 * 1024 * 1024 // 3 GB
+
+// DefaultMaxResultBytes is a backward-compatible alias for DefaultMaxFileBytes.
+const DefaultMaxResultBytes int64 = DefaultMaxFileBytes
+
 // ResultChecker validates that exported training results do not contain
 // plaintext training data.
 type ResultChecker struct {
 	// DataDir is the directory containing training data files.
 	// If set, the checker computes fingerprints to detect data leakage.
 	DataDir string
-	// MaxResultBytes is the maximum expected size of a result file.
+	// MaxFileBytes is the maximum expected size of a result file.
 	// Results larger than this are flagged as suspicious.
+	MaxFileBytes int64
+	// MaxResultBytes is a backward-compatible alias for MaxFileBytes.
 	MaxResultBytes int64
 }
 
-// DefaultMaxResultBytes is the default maximum size of an exported result file (3 GB).
-const DefaultMaxResultBytes int64 = 3 * 1024 * 1024 * 1024 // 3 GB
+func (rc *ResultChecker) limit() int64 {
+	if rc.MaxFileBytes > 0 {
+		return rc.MaxFileBytes
+	}
+	if rc.MaxResultBytes > 0 {
+		return rc.MaxResultBytes
+	}
+	return DefaultMaxFileBytes
+}
 
 // DefaultResultChecker returns a checker with sensible defaults.
 func DefaultResultChecker() *ResultChecker {
 	return &ResultChecker{
+		MaxFileBytes:   DefaultMaxFileBytes,
 		MaxResultBytes: DefaultMaxResultBytes,
 	}
 }
 
 // NewResultChecker creates a ResultChecker with specified data directory and max result file size.
-// If maxResultBytes is <= 0, DefaultMaxResultBytes (3 GB) is used.
-func NewResultChecker(dataDir string, maxResultBytes int64) *ResultChecker {
-	if maxResultBytes <= 0 {
-		maxResultBytes = DefaultMaxResultBytes
+// If maxFileBytes is <= 0, DefaultMaxFileBytes (3 GB) is used.
+func NewResultChecker(dataDir string, maxFileBytes int64) *ResultChecker {
+	if maxFileBytes <= 0 {
+		maxFileBytes = DefaultMaxFileBytes
 	}
 	return &ResultChecker{
 		DataDir:        dataDir,
-		MaxResultBytes: maxResultBytes,
+		MaxFileBytes:   maxFileBytes,
+		MaxResultBytes: maxFileBytes,
 	}
 }
 
@@ -64,10 +81,11 @@ func (rc *ResultChecker) CheckFile(resultPath string) (*ResultCheckReport, error
 	var warnings []ResultCheckIssue
 
 	// ── Check 1: Size anomaly ──
-	if rc.MaxResultBytes > 0 && info.Size() > rc.MaxResultBytes {
+	maxBytes := rc.limit()
+	if maxBytes > 0 && info.Size() > maxBytes {
 		warnings = append(warnings, ResultCheckIssue{
 			Check:    "size_anomaly",
-			Detail:   fmt.Sprintf("结果文件 %d 字节，超过预期上限 %d 字节，可能嵌入了额外数据", info.Size(), rc.MaxResultBytes),
+			Detail:   fmt.Sprintf("结果文件 %d 字节，超过预期上限 %d 字节，可能嵌入了额外数据", info.Size(), maxBytes),
 			Severity: SeverityMedium,
 		})
 	}

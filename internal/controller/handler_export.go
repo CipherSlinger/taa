@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"taa/internal/codeaudit"
 	"taa/internal/resource"
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
@@ -81,6 +82,31 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 	s.Logs.Add(LogInfo, "export", "收到导出请求: requestId=%s, taskId=%s, hash=%s, resultDir=%s, recordPhase=%d, currentPhase=%d",
 		req.RequestID, req.TaskID, record.Hash, record.ResultDir, recordPhase, currentPhase)
 
+	maxBytes := s.Security.GetMaxFileBytes()
+	if s.Security.ResultCheck {
+		s.Logs.Add(LogInfo, "export", "执行导出前结果安全检查: resultDir=%s, maxFileBytes=%d", record.ResultDir, maxBytes)
+		checker := codeaudit.NewResultChecker(s.Security.DataDir, maxBytes)
+		report, checkErr := checker.CheckDirectory(record.ResultDir)
+		if checkErr != nil {
+			s.Logs.Add(LogError, "export", "结果安全检查失败: %v", checkErr)
+			writeErr(w, http.StatusInternalServerError, pkgerrors.Wrap(pkgerrors.CodeInternal, fmt.Sprintf("结果安全检查执行失败: %v", checkErr), checkErr))
+			return
+		}
+		if !report.Passed {
+			var details []string
+			for _, wItem := range report.Warnings {
+				if wItem.Severity == codeaudit.SeverityHigh {
+					details = append(details, fmt.Sprintf("[%s] %s", wItem.Check, wItem.Detail))
+				}
+			}
+			msg := fmt.Sprintf("导出结果安全检查未通过，存在高危数据泄露隐患: %s", strings.Join(details, "; "))
+			s.Logs.Add(LogError, "export", "%s", msg)
+			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, msg))
+			return
+		}
+		s.Logs.Add(LogInfo, "export", "结果安全检查通过 (warnings=%d)", len(report.Warnings))
+	}
+
 	// ── 确定公钥和是否加密 ──
 	var pubKeyPEM string
 	var encrypt bool
@@ -118,6 +144,12 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if int64(len(resultData)) > maxBytes {
+		s.Logs.Add(LogError, "export", "导出产物压缩后大小超限: %d bytes > %d bytes", len(resultData), maxBytes)
+		writeErr(w, http.StatusBadRequest, pkgerrors.Errorf(pkgerrors.CodeInvalidArgument, "导出产物大小超过限制: %d bytes, 上限 %d bytes", len(resultData), maxBytes))
+		return
+	}
+
 	filename := filepath.Base(record.ResultDir) + ".zip"
 
 	if encrypt {
@@ -131,6 +163,11 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.Logs.Add(LogError, "export", "加密失败: %v", err)
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("加密失败: %v", err))
+			return
+		}
+		if int64(len(sealed)) > maxBytes {
+			s.Logs.Add(LogError, "export", "导出加密产物大小超限: %d bytes > %d bytes", len(sealed), maxBytes)
+			writeErr(w, http.StatusBadRequest, pkgerrors.Errorf(pkgerrors.CodeInvalidArgument, "导出加密产物大小超过限制: %d bytes, 上限 %d bytes", len(sealed), maxBytes))
 			return
 		}
 		filename += ".enc"

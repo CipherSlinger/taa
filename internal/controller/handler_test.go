@@ -1419,3 +1419,140 @@ func TestWriteErrWithPkgErrors(t *testing.T) {
 		}
 	})
 }
+
+// ── Test: File download and export maxFileBytes quota enforcement ──
+
+func TestFileDownloadSizeLimit(t *testing.T) {
+	state, server := setupTestServer(t)
+	state.Security.MaxFileBytes = 1024
+
+	oversizedPayload := strings.Repeat("x", 2048)
+	resourceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(oversizedPayload)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(oversizedPayload))
+	}))
+	defer resourceServer.Close()
+
+	t.Run("import rejects download exceeding maxFileBytes", func(t *testing.T) {
+		resp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+			"resourceUrl": resourceServer.URL + "/data.bin",
+			"requestId":   "req-dl-limit-import",
+			"taskId":      "task-dl-limit-import",
+		})
+		api := decodeResponse(t, resp)
+		if resp.StatusCode != http.StatusBadRequest || api.Error != pkgerrors.CodeInvalidArgument {
+			t.Fatalf("expected 400 Bad Request, got status=%d error=%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		}
+		if !strings.Contains(api.Msg, "资源过大") && !strings.Contains(api.Msg, "资源超过大小上限") {
+			t.Fatalf("unexpected error message: %s", api.Msg)
+		}
+	})
+
+	t.Run("importModel rejects download exceeding maxFileBytes", func(t *testing.T) {
+		resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+			"resourceUrl": resourceServer.URL + "/model.bin",
+			"requestId":   "req-dl-limit-model",
+			"taskId":      "task-dl-limit-model",
+		})
+		api := decodeResponse(t, resp)
+		if resp.StatusCode != http.StatusBadRequest || api.Error != pkgerrors.CodeInvalidArgument {
+			t.Fatalf("expected 400 Bad Request, got status=%d error=%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		}
+		if !strings.Contains(api.Msg, "资源过大") && !strings.Contains(api.Msg, "资源超过大小上限") {
+			t.Fatalf("unexpected error message: %s", api.Msg)
+		}
+	})
+
+	t.Run("getResourceInfo rejects download exceeding maxFileBytes", func(t *testing.T) {
+		resp := postJSON(t, server.URL+"/v1/taa/getResourceInfo", map[string]any{
+			"resourceUrl": resourceServer.URL + "/resource.bin",
+		})
+		api := decodeResponse(t, resp)
+		if resp.StatusCode != http.StatusBadRequest || api.Error != pkgerrors.CodeInvalidArgument {
+			t.Fatalf("expected 400 Bad Request, got status=%d error=%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		}
+		if !strings.Contains(api.Msg, "资源过大") && !strings.Contains(api.Msg, "资源超过大小上限") {
+			t.Fatalf("unexpected error message: %s", api.Msg)
+		}
+	})
+}
+
+func TestExportFileSizeLimit(t *testing.T) {
+	state, server := setupTestServer(t)
+	sm2Key := state.SM2PrivateKey
+	sdkPub := &sm2Key.PublicKey
+	pubPEM, err := teecrypto.MarshalSM2PublicKeyPEM(sdkPub)
+	if err != nil {
+		t.Fatalf("marshal SM2 public key PEM: %v", err)
+	}
+
+	state.Security.MaxFileBytes = 200
+
+	t.Run("plaintext export exceeding maxFileBytes returns 400", func(t *testing.T) {
+		record := seedExportIndexRecord(t, state, "req-export-oversized-plain", "task-oversized-plain", "export-oversized-plain")
+		oversizedData := bytes.Repeat([]byte("A"), 1024)
+		if err := os.WriteFile(filepath.Join(record.ResultDir, "large.bin"), oversizedData, 0o644); err != nil {
+			t.Fatalf("write seeded large.bin: %v", err)
+		}
+
+		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+			"requestId": "req-export-oversized-plain",
+			"taskId":    "task-oversized-plain",
+		})
+		api := decodeResponse(t, resp)
+		if resp.StatusCode != http.StatusBadRequest || api.Error != pkgerrors.CodeInvalidArgument {
+			t.Fatalf("expected 400 Bad Request, got status=%d error=%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		}
+		if !strings.Contains(api.Msg, "导出产物大小超过限制") {
+			t.Fatalf("unexpected error message: %s", api.Msg)
+		}
+	})
+
+	t.Run("encrypted export exceeding maxFileBytes returns 400", func(t *testing.T) {
+		record := seedExportIndexRecord(t, state, "req-export-oversized-enc", "task-oversized-enc", "export-oversized-enc")
+		oversizedData := bytes.Repeat([]byte("B"), 1024)
+		if err := os.WriteFile(filepath.Join(record.ResultDir, "large.bin"), oversizedData, 0o644); err != nil {
+			t.Fatalf("write seeded large.bin: %v", err)
+		}
+
+		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+			"requestId": "req-export-oversized-enc",
+			"taskId":    "task-oversized-enc",
+			"publicKey": string(pubPEM),
+		})
+		api := decodeResponse(t, resp)
+		if resp.StatusCode != http.StatusBadRequest || api.Error != pkgerrors.CodeInvalidArgument {
+			t.Fatalf("expected 400 Bad Request, got status=%d error=%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		}
+		if !strings.Contains(api.Msg, "导出产物大小超过限制") && !strings.Contains(api.Msg, "导出加密产物大小超过限制") {
+			t.Fatalf("unexpected error message: %s", api.Msg)
+		}
+	})
+
+	t.Run("resultCheck detects data leakage and returns 400", func(t *testing.T) {
+		state.Security.MaxFileBytes = 3 * 1024 * 1024 * 1024
+		state.Security.ResultCheck = true
+		defer func() {
+			state.Security.ResultCheck = false
+		}()
+
+		record := seedExportIndexRecord(t, state, "req-export-leak", "task-leak", "export-leak")
+		leakContent := []byte("id,label,image\n1,cat,img1.jpg\n")
+		if err := os.WriteFile(filepath.Join(record.ResultDir, "leak.csv"), leakContent, 0o644); err != nil {
+			t.Fatalf("write seeded leak.csv: %v", err)
+		}
+
+		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+			"requestId": "req-export-leak",
+			"taskId":    "task-leak",
+		})
+		api := decodeResponse(t, resp)
+		if resp.StatusCode != http.StatusBadRequest || api.Error != pkgerrors.CodeInvalidArgument {
+			t.Fatalf("expected 400 Bad Request on result check failure, got status=%d error=%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		}
+		if !strings.Contains(api.Msg, "导出结果安全检查未通过") {
+			t.Fatalf("unexpected error message: %s", api.Msg)
+		}
+	})
+}

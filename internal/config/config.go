@@ -9,7 +9,8 @@ import (
 
 const (
 	DefaultFileName       = "taa-config.json"
-	DefaultMaxResultBytes = 3 * 1024 * 1024 * 1024 // 3 GB
+	DefaultMaxFileBytes   = 3 * 1024 * 1024 * 1024 // 3 GB
+	DefaultMaxResultBytes = DefaultMaxFileBytes
 )
 
 type StartupConfig struct {
@@ -20,6 +21,7 @@ type StartupConfig struct {
 	EnableSecurityScan        bool
 	ModelDir                  string
 	EnableResultCheck         bool
+	MaxFileBytes              int64
 	MaxResultBytes            int64
 	DataDir                   string
 	ResultDir                 string
@@ -101,9 +103,10 @@ type startupStorageConfigFile struct {
 }
 
 type startupSecurityConfigFile struct {
-	CodeScan    *bool                        `json:"codeScan"`
-	Scan        *bool                        `json:"scan"`
-	ResultCheck startupResultCheckConfigFile `json:"resultCheck"`
+	CodeScan     *bool                        `json:"codeScan"`
+	Scan         *bool                        `json:"scan"`
+	ResultCheck  startupResultCheckConfigFile `json:"resultCheck"`
+	MaxFileBytes *int64                       `json:"maxFileBytes"`
 }
 
 type startupResultCheckConfigFile struct {
@@ -199,6 +202,7 @@ func defaultStartupConfig() StartupConfig {
 		EnableSecurityScan:        true,
 		ModelDir:                  "/opt/taa/models",
 		EnableResultCheck:         true,
+		MaxFileBytes:              DefaultMaxFileBytes,
 		MaxResultBytes:            DefaultMaxResultBytes,
 		DataDir:                   "/opt/taa/data",
 		ResultDir:                 "/opt/taa/results",
@@ -291,14 +295,18 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 
 	if fileCfg.MaxResultBytes != nil {
-		cfg.MaxResultBytes = *fileCfg.MaxResultBytes
+		cfg.MaxFileBytes = *fileCfg.MaxResultBytes
 	}
 	if fileCfg.MaxFileBytes != nil {
-		cfg.MaxResultBytes = *fileCfg.MaxFileBytes
+		cfg.MaxFileBytes = *fileCfg.MaxFileBytes
+	}
+	if fileCfg.Security.MaxFileBytes != nil {
+		cfg.MaxFileBytes = *fileCfg.Security.MaxFileBytes
 	}
 	if fileCfg.Security.ResultCheck.MaxFileBytes != nil {
-		cfg.MaxResultBytes = *fileCfg.Security.ResultCheck.MaxFileBytes
+		cfg.MaxFileBytes = *fileCfg.Security.ResultCheck.MaxFileBytes
 	}
+	cfg.MaxResultBytes = cfg.MaxFileBytes
 
 	if trimmed := strings.TrimSpace(fileCfg.DataDir); trimmed != "" {
 		cfg.DataDir = trimmed

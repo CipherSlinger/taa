@@ -84,6 +84,7 @@ func TestBuildSecurityConfig(t *testing.T) {
 		EnableSecurityScan:         true,
 		ModelDir:                   "/opt/taa/models",
 		EnableResultCheck:          true,
+		MaxFileBytes:               3 * 1024 * 1024 * 1024,
 		MaxResultBytes:             3 * 1024 * 1024 * 1024,
 		DataDir:                    "/opt/taa/data",
 		ResultDir:                  "/opt/taa/results",
@@ -120,6 +121,9 @@ func TestBuildSecurityConfig(t *testing.T) {
 	}
 	if sec.ResultCheck != cfg.EnableResultCheck {
 		t.Errorf("ResultCheck = %v, want %v", sec.ResultCheck, cfg.EnableResultCheck)
+	}
+	if sec.MaxFileBytes != cfg.MaxFileBytes {
+		t.Errorf("MaxFileBytes = %d, want %d", sec.MaxFileBytes, cfg.MaxFileBytes)
 	}
 	if sec.MaxResultBytes != cfg.MaxResultBytes {
 		t.Errorf("MaxResultBytes = %d, want %d", sec.MaxResultBytes, cfg.MaxResultBytes)

@@ -130,12 +130,12 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 	msg := "资源已接收，下载处理中"
 	s.setCurrentOp("downloading")
 	s.Logs.Add(LogInfo, "import", "开始下载资源: %s", req.ResourceURL)
-	ciphertextPath, size, err := downloadToTempFile(req.ResourceURL)
+	ciphertextPath, size, err := s.downloadToTempFile(req.ResourceURL)
 	if err != nil {
 		store.Rollback(req.RequestID, req.TaskID)
 		release()
 		s.Logs.Add(LogError, "import", "下载资源失败: %v", err)
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("下载资源失败: %v", err))
+		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	s.Logs.Add(LogInfo, "import", "下载完成 (%d bytes) -> %s", size, ciphertextPath)
@@ -272,11 +272,11 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.Logs.Add(LogInfo, "importModel", "开始下载资源: %s", req.ResourceURL)
-	ciphertextPath, size, err := downloadToTempFile(req.ResourceURL)
+	ciphertextPath, size, err := s.downloadToTempFile(req.ResourceURL)
 	if err != nil {
 		release()
 		s.Logs.Add(LogError, "importModel", "下载资源失败: %v", err)
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("下载资源失败: %v", err))
+		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	s.Logs.Add(LogInfo, "importModel", "下载完成 (%d bytes) -> %s", size, ciphertextPath)

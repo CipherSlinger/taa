@@ -43,7 +43,7 @@ func (c *Coordinator) ExecuteExportFlow(params ExportParams) ([]byte, error) {
 		return nil, pkgerrors.New(pkgerrors.CodeNotFound, fmt.Sprintf("未找到对应任务的产物目录: %s", resultDir))
 	}
 
-	return ExportResultToEnvelope(resultDir, pubKeyPEM)
+	return ExportResultToEnvelopeWithLimit(resultDir, pubKeyPEM, c.security.GetMaxFileBytes())
 }
 
 func (c *Coordinator) resolveExportResultDir(requestID, taskID string) string {
@@ -68,8 +68,17 @@ func (c *Coordinator) resolveExportResultDir(requestID, taskID string) string {
 	return filepath.Join(c.security.ResultDir, fmt.Sprintf("%s_%s", requestID, taskID))
 }
 
-// ExportResultToEnvelope 将指定结果目录打包并使用 SM2 公钥执行信封加密
+// ExportResultToEnvelope packages and SM2-SM4 envelope encrypts the result directory with default limit.
 func ExportResultToEnvelope(resultDir string, pubKeyPEM string) ([]byte, error) {
+	return ExportResultToEnvelopeWithLimit(resultDir, pubKeyPEM, DefaultMaxFileBytes)
+}
+
+// ExportResultToEnvelopeWithLimit packages and SM2-SM4 envelope encrypts the result directory,
+// enforcing maxBytes on both zip and ciphertext outputs.
+func ExportResultToEnvelopeWithLimit(resultDir string, pubKeyPEM string, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxFileBytes
+	}
 	pubKey, err := teecrypto.ParseSM2PublicKeyPEM([]byte(pubKeyPEM))
 	if err != nil {
 		return nil, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("解析导出 SM2 公钥失败: %v", err), err)
@@ -79,10 +88,16 @@ func ExportResultToEnvelope(resultDir string, pubKeyPEM string) ([]byte, error) 
 	if err != nil {
 		return nil, pkgerrors.Wrap(pkgerrors.CodeInternal, fmt.Sprintf("压缩产物目录失败: %v", err), err)
 	}
+	if int64(len(zipData)) > maxBytes {
+		return nil, pkgerrors.Errorf(pkgerrors.CodeInvalidArgument, "导出产物大小超过限制: %d bytes, 上限 %d bytes", len(zipData), maxBytes)
+	}
 
 	envelopeData, err := teecrypto.SealSM2SM4GCM(pubKey, zipData)
 	if err != nil {
 		return nil, pkgerrors.Wrap(pkgerrors.CodeInternal, fmt.Sprintf("SM2-SM4 信封加密失败: %v", err), err)
+	}
+	if int64(len(envelopeData)) > maxBytes {
+		return nil, pkgerrors.Errorf(pkgerrors.CodeInvalidArgument, "导出加密产物大小超过限制: %d bytes, 上限 %d bytes", len(envelopeData), maxBytes)
 	}
 	return envelopeData, nil
 }

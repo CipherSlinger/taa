@@ -12,6 +12,8 @@ const (
 	DefaultModelOutputDir   = "/opt/taa/output/result"
 	DefaultModelLogDir      = "/opt/taa/output/log/train.jsonl"
 	DefaultModelProgressDir = "/opt/taa/output/progress/progress.json"
+	DefaultMaxFileBytes     = 3 * 1024 * 1024 * 1024 // 3 GB
+	DefaultMaxResultBytes   = DefaultMaxFileBytes
 )
 
 // SecurityConfig 保存启动时固化的安全配置与运行目录
@@ -21,12 +23,23 @@ type SecurityConfig struct {
 	DataDir          string              // 数据目录
 	ResultCheck      bool                // 是否在导出时检查明文数据泄露
 	ResultDir        string              // 训练结果目录（导出前检查）
-	MaxResultBytes   int64               // 导出产物单文件最大限制字节数（默认 3GB）
+	MaxFileBytes     int64               // Maximum file size limit in bytes (downloads and exports, default 3GB)
+	MaxResultBytes   int64               // Backward-compatible alias for MaxFileBytes
 	ModelInputDir    string              // 模型数据输入目录（缺省 /opt/taa/input）
 	ModelOutputDir   string              // 模型结果输出目录（缺省 /opt/taa/output/result）
 	ModelLogDir      string              // 模型日志文件或目录路径（缺省 /opt/taa/output/log/train.jsonl）
 	ModelProgressDir string              // 模型进度文件或目录路径（缺省 /opt/taa/output/progress/progress.json）
 	LLM              codeaudit.LLMConfig // 本地 LLM 语义验证配置
+}
+
+func (sec SecurityConfig) GetMaxFileBytes() int64 {
+	if sec.MaxFileBytes > 0 {
+		return sec.MaxFileBytes
+	}
+	if sec.MaxResultBytes > 0 {
+		return sec.MaxResultBytes
+	}
+	return DefaultMaxFileBytes
 }
 
 func (sec SecurityConfig) GetModelInputDir() string {

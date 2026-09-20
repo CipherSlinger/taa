@@ -355,7 +355,8 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `model.output.progress` | `/opt/taa/output/progress/progress.json` | Model progress file (or directory) monitored by progress watcher (`reportProgress`) |
 | `security.codeScan` | `true` | Master audit switch: enables Semgrep AST static security scan during model import |
 | `security.resultCheck.enabled` | `true` | Inspects exported files for unauthorized plaintext data leakage (accepts object or boolean) |
-| `security.resultCheck.maxFileBytes` | `3221225472` (3 GB) | Maximum file size threshold for export leakage inspection |
+| `security.resultCheck.maxFileBytes` | `3221225472` (3 GB) | Maximum file size limit enforced for both file downloads (`import`, `importModel`, `getResourceInfo`) and result exports (`export`), as well as anomaly inspection threshold |
+| `security.maxFileBytes` | `3221225472` (3 GB) | Top-level security alias for `maxFileBytes` |
 | `attestation.hrkCertPath` | `/root/taa/certs/hrk.cert` | Hygon Root Key (HRK) certificate path for CSV attestation verification |
 | `attestation.hskCekCertPath` | `/root/taa/certs/hsk_cek.cert` | Hygon Sign Key (HSK) / Chip Endorsement Key (CEK) certificate path |
 | `llm.enabled` | `true` | Enables local LLM semantic arbitration for code security audits |

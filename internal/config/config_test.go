@@ -94,6 +94,9 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if !cfg.EnableResultCheck {
 		t.Fatalf("EnableResultCheck = false, want default true")
 	}
+	if cfg.MaxFileBytes != DefaultMaxFileBytes {
+		t.Fatalf("MaxFileBytes = %d, want default %d", cfg.MaxFileBytes, DefaultMaxFileBytes)
+	}
 	if cfg.MaxResultBytes != DefaultMaxResultBytes {
 		t.Fatalf("MaxResultBytes = %d, want default %d", cfg.MaxResultBytes, DefaultMaxResultBytes)
 	}
@@ -163,6 +166,9 @@ func TestLoadStartupConfigReadsMaxFileBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
+	if cfg.MaxFileBytes != 5368709120 {
+		t.Fatalf("MaxFileBytes = %d, want 5368709120", cfg.MaxFileBytes)
+	}
 	if cfg.MaxResultBytes != 5368709120 {
 		t.Fatalf("MaxResultBytes = %d, want 5368709120", cfg.MaxResultBytes)
 	}
@@ -178,9 +184,71 @@ func TestLoadStartupConfigReadsMaxResultBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
+	if cfg.MaxFileBytes != 5368709120 {
+		t.Fatalf("MaxFileBytes = %d, want 5368709120", cfg.MaxFileBytes)
+	}
 	if cfg.MaxResultBytes != 5368709120 {
 		t.Fatalf("MaxResultBytes = %d, want 5368709120", cfg.MaxResultBytes)
 	}
+}
+
+func TestLoadStartupConfigMaxFileBytesPrecedence(t *testing.T) {
+	t.Run("resultCheck.maxFileBytes takes precedence over all", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{
+			"maxResultBytes": 100,
+			"maxFileBytes": 200,
+			"security": {
+				"maxFileBytes": 300,
+				"resultCheck": {
+					"maxFileBytes": 400
+				}
+			}
+		}`)
+
+		cfg, err := LoadStartupConfig(path)
+		if err != nil {
+			t.Fatalf("LoadStartupConfig() error = %v", err)
+		}
+		if cfg.MaxFileBytes != 400 || cfg.MaxResultBytes != 400 {
+			t.Fatalf("MaxFileBytes = %d, MaxResultBytes = %d, want 400", cfg.MaxFileBytes, cfg.MaxResultBytes)
+		}
+	})
+
+	t.Run("security.maxFileBytes takes precedence over root", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{
+			"maxResultBytes": 100,
+			"maxFileBytes": 200,
+			"security": {
+				"maxFileBytes": 300
+			}
+		}`)
+
+		cfg, err := LoadStartupConfig(path)
+		if err != nil {
+			t.Fatalf("LoadStartupConfig() error = %v", err)
+		}
+		if cfg.MaxFileBytes != 300 || cfg.MaxResultBytes != 300 {
+			t.Fatalf("MaxFileBytes = %d, MaxResultBytes = %d, want 300", cfg.MaxFileBytes, cfg.MaxResultBytes)
+		}
+	})
+
+	t.Run("root maxFileBytes takes precedence over legacy maxResultBytes", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{
+			"maxResultBytes": 100,
+			"maxFileBytes": 200
+		}`)
+
+		cfg, err := LoadStartupConfig(path)
+		if err != nil {
+			t.Fatalf("LoadStartupConfig() error = %v", err)
+		}
+		if cfg.MaxFileBytes != 200 || cfg.MaxResultBytes != 200 {
+			t.Fatalf("MaxFileBytes = %d, MaxResultBytes = %d, want 200", cfg.MaxFileBytes, cfg.MaxResultBytes)
+		}
+	})
 }
 
 func TestLoadStartupConfigIgnoresWhitespaceKeysDir(t *testing.T) {
@@ -386,6 +454,9 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			if cfg.AttestationHSKCekCertPath != tc.wantHSKCek {
 				t.Errorf("AttestationHSKCekCertPath = %q, want %q", cfg.AttestationHSKCekCertPath, tc.wantHSKCek)
 			}
+			if cfg.MaxFileBytes != tc.wantMaxResultBytes {
+				t.Errorf("MaxFileBytes = %d, want %d", cfg.MaxFileBytes, tc.wantMaxResultBytes)
+			}
 			if cfg.MaxResultBytes != tc.wantMaxResultBytes {
 				t.Errorf("MaxResultBytes = %d, want %d", cfg.MaxResultBytes, tc.wantMaxResultBytes)
 			}
@@ -477,6 +548,9 @@ func TestLoadStartupConfig_ModularSections(t *testing.T) {
 	}
 	if cfg.EnableResultCheck {
 		t.Errorf("EnableResultCheck = true, want false")
+	}
+	if cfg.MaxFileBytes != 1048576 {
+		t.Errorf("MaxFileBytes = %d, want 1048576", cfg.MaxFileBytes)
 	}
 	if cfg.MaxResultBytes != 1048576 {
 		t.Errorf("MaxResultBytes = %d, want 1048576", cfg.MaxResultBytes)

@@ -217,11 +217,11 @@ func (s *TAAState) resourceInfoHandler(w http.ResponseWriter, r *http.Request) {
 
 	s.setCurrentOp("downloading")
 	s.Logs.Add(LogInfo, "getResourceInfo", "开始下载资源: %s", req.ResourceURL)
-	ciphertextPath, size, err := downloadToTempFile(req.ResourceURL)
+	ciphertextPath, size, err := s.downloadToTempFile(req.ResourceURL)
 	if err != nil {
 		s.Logs.Add(LogError, "getResourceInfo", "下载资源失败: %v", err)
 		s.setCurrentOp("idle")
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("资源下载失败: %v", err))
+		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	s.Logs.Add(LogInfo, "getResourceInfo", "下载完成 (%d bytes) -> %s", size, ciphertextPath)
