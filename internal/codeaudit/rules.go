@@ -10,20 +10,35 @@ const (
 	SeverityMedium = "MEDIUM"
 )
 
+// TaintStep represents an inter-procedural taint propagation step in the CPG evidence chain.
+type TaintStep struct {
+	Step           int    `json:"step"`
+	Type           string `json:"type"`
+	File           string `json:"file"`
+	Line           int    `json:"line"`
+	Code           string `json:"code"`
+	EnclosingScope string `json:"enclosing_scope,omitempty"`
+	EdgeType       string `json:"edge_type,omitempty"`
+}
+
 // Finding represents a single security issue detected in source code.
 type Finding struct {
-	File          string `json:"file"`
-	Line          int    `json:"line"`
-	RuleID        string `json:"rule_id"`
-	Category      string `json:"category"`
-	Severity      string `json:"severity"`
-	Description   string `json:"description"`
-	CodeSnippet   string `json:"code_snippet"`
-	ContextBefore string `json:"context_before,omitempty"`
-	ContextAfter  string `json:"context_after,omitempty"`
-	LLMVerdict    string `json:"llm_verdict,omitempty"`
-	LLMReason     string `json:"llm_reason,omitempty"`
-	LLMRisk       string `json:"llm_risk,omitempty"`
+	File           string      `json:"file"`
+	Line           int         `json:"line"`
+	RuleID         string      `json:"rule_id"`
+	Category       string      `json:"category"`
+	Severity       string      `json:"severity"`
+	Description    string      `json:"description"`
+	CodeSnippet    string      `json:"code_snippet"`
+	ContextBefore  string      `json:"context_before,omitempty"`
+	ContextAfter   string      `json:"context_after,omitempty"`
+	LLMVerdict     string      `json:"llm_verdict,omitempty"`
+	LLMReason      string      `json:"llm_reason,omitempty"`
+	LLMRisk        string      `json:"llm_risk,omitempty"`
+	IsCrossFile    bool        `json:"is_cross_file,omitempty"`
+	IsMicroservice bool        `json:"is_microservice,omitempty"`
+	CPGEvidence    string      `json:"cpg_evidence,omitempty"`
+	TaintTrace     []TaintStep `json:"taint_trace,omitempty"`
 }
 
 // Report is the result of a security scan.

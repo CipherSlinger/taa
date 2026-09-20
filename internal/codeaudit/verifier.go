@@ -45,6 +45,11 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 
 		f := &report.Findings[i]
 
+		ctxAfter := f.ContextAfter
+		if f.CPGEvidence != "" {
+			ctxAfter = f.CPGEvidence
+		}
+
 		req := &teellm.RequestEnvelope{
 			ProtocolVersion: teellm.CurrentProtocolVersion,
 			RequestID:       fmt.Sprintf("verify-%d", time.Now().UnixNano()),
@@ -60,7 +65,7 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 					Line:          f.Line,
 					CodeSnippet:   f.CodeSnippet,
 					ContextBefore: f.ContextBefore,
-					ContextAfter:  f.ContextAfter,
+					ContextAfter:  ctxAfter,
 				},
 			},
 			Policy: teellm.PolicyOptions{

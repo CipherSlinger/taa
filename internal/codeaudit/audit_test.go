@@ -709,3 +709,33 @@ func TestRetinaDKDScenarioConclusionIsLow(t *testing.T) {
 		t.Errorf("Scenario B (UNCERTAIN fallback) Passed = false, want true")
 	}
 }
+
+func TestComputeStatistics_CrossFileAndMicroservice(t *testing.T) {
+	findings := []Finding{
+		{
+			File:        "services/worker/job.py",
+			RuleID:      "ENV_001",
+			Severity:    SeverityMedium,
+			IsCrossFile: true,
+			TaintTrace: []TaintStep{
+				{Step: 1, Type: "SOURCE", File: "job.py", Line: 4, Code: "os.getenv('KEY')"},
+			},
+		},
+		{
+			File:           "services/sidecar/app.py",
+			RuleID:         "CMD_001",
+			Severity:       SeverityHigh,
+			IsCrossFile:    true,
+			IsMicroservice: true,
+			CPGEvidence:    "[Deep Audit Inter-Procedural Taint Trajectory]\n  ├── [Step 1: SOURCE] (File: job.py, Line 4)\n  └── [Step 2: SINK] (File: app.py, Line 10)",
+		},
+	}
+
+	stats := ComputeStatistics(findings)
+	if stats.CrossFile != 2 {
+		t.Errorf("stats.CrossFile = %d, want 2", stats.CrossFile)
+	}
+	if stats.Microservice != 1 {
+		t.Errorf("stats.Microservice = %d, want 1", stats.Microservice)
+	}
+}

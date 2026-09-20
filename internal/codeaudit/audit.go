@@ -43,9 +43,11 @@ type AuditConclusion struct {
 
 // AuditStatistics holds aggregated finding counts classified into high, medium, and low risk by the LLM.
 type AuditStatistics struct {
-	High   int `json:"high"`
-	Medium int `json:"medium"`
-	Low    int `json:"low"`
+	High         int `json:"high"`
+	Medium       int `json:"medium"`
+	Low          int `json:"low"`
+	CrossFile    int `json:"cross_file,omitempty"`
+	Microservice int `json:"microservice,omitempty"`
 }
 
 // Total returns the total number of findings across all risk categories.
@@ -239,6 +241,12 @@ func ComputeStatistics(findings []Finding) AuditStatistics {
 			stats.Medium++
 		case "LOW":
 			stats.Low++
+		}
+		if f.IsCrossFile {
+			stats.CrossFile++
+		}
+		if f.IsMicroservice {
+			stats.Microservice++
 		}
 	}
 	return stats

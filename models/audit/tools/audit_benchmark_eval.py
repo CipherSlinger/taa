@@ -350,6 +350,82 @@ class SemgrepScannerAdapter:
                 suggestion=suggestion_for_rule(rule_id),
             )
             findings.append(finding)
+
+        # Cross-Repo CPG & Inter-Procedural Microservice Penetration Analysis
+        try:
+            from models.audit.tools.cpg import (
+                CPGBuilder,
+                MicroserviceBoundaryBridge,
+                InterProceduralTaintEngine,
+                CPGEvidenceSlicer,
+            )
+            builder = CPGBuilder(workspace_roots=[dirpath])
+            cpg = builder.build()
+            bridge = MicroserviceBoundaryBridge()
+            bridge.bridge_boundaries(cpg)
+            taint_engine = InterProceduralTaintEngine(cpg)
+            violations = taint_engine.analyze()
+            evidence_slicer = CPGEvidenceSlicer()
+
+            # Correlate and enrich Semgrep findings with CPG evidence
+            cpg_matched_violations = set()
+            for finding in findings:
+                for idx, v in enumerate(violations):
+                    is_file_match = finding.file and (
+                        finding.file == v.sink_node.file_path or finding.file.endswith(Path(v.sink_node.file_path).name)
+                    )
+                    is_line_match = abs(finding.line - v.sink_node.line) <= 2
+                    is_rule_match = finding.rule_id == v.rule_id or (
+                        finding.rule_id in ("NET_001", "FIL_001", "ENV_001") and v.rule_id == "EXF_001"
+                    )
+
+                    if is_file_match and (is_line_match or is_rule_match):
+                        cpg_matched_violations.add(idx)
+                        finding.is_cross_file = v.is_cross_file
+                        finding.is_microservice = v.is_microservice
+                        compressed = evidence_slicer.compress_trajectory(v)
+                        finding.taint_trace = compressed
+                        finding.context_before = evidence_slicer.extract_multi_file_context(v)
+                        finding.context_after = evidence_slicer.format_trajectory_block(compressed)
+                        finding.cpg_evidence = finding.context_after
+                        if v.severity == "CRITICAL":
+                            finding.severity = "CRITICAL"
+                        break
+
+            # Synthesize cross-file and microservice findings discovered by CPG
+            for idx, v in enumerate(violations):
+                if idx in cpg_matched_violations:
+                    continue
+                if not (v.is_cross_file or v.is_microservice):
+                    continue
+
+                compressed = evidence_slicer.compress_trajectory(v)
+                trajectory_block = evidence_slicer.format_trajectory_block(compressed)
+                multi_file_ctx = evidence_slicer.extract_multi_file_context(v)
+
+                cpg_finding = Finding(
+                    file=v.sink_node.file_path,
+                    line=v.sink_node.line,
+                    rule_id=v.rule_id,
+                    category="Inter-Procedural / Microservice",
+                    severity=v.severity,
+                    description=f"CPG Inter-Procedural Taint Violation: {v.source_node.symbol_name or 'source'} -> {v.sink_node.symbol_name or 'sink'}",
+                    code_snippet=v.sink_node.code_str,
+                    context_before=multi_file_ctx,
+                    context_after=trajectory_block,
+                    language="python",
+                    taint_trace=compressed,
+                    ast_enclosing_block=multi_file_ctx,
+                    engine="cpg",
+                    suggestion=suggestion_for_rule(v.rule_id),
+                    is_cross_file=v.is_cross_file,
+                    is_microservice=v.is_microservice,
+                    cpg_evidence=trajectory_block,
+                )
+                findings.append(cpg_finding)
+        except Exception:
+            pass
+
         return findings
 
 

@@ -2841,15 +2841,15 @@
             <line x1="1180" y1="255" x2="1210" y2="255" class="fw-line fw-line--warn"></line>
             <text x="1188" y="244" class="fw-small">输出</text>
 
-            <rect x="70" y="398" rx="16" ry="16" width="1260" height="108" class="fw-box fw-box--future"></rect>
-            <text x="94" y="426" class="fw-label">长远演进：全局与跨项目图检索 (Cross-Repo CPG & Inter-Procedural Call Graph)</text>
-            <text x="94" y="450" class="fw-title" style="font-size: 16px;">跨仓库代码属性图 (CPG) 与全项目过程间深度分析</text>
+            <rect x="70" y="398" rx="16" ry="16" width="1260" height="108" class="fw-box fw-box--accent" style="stroke-width: 2.2; stroke: var(--accent); fill: color-mix(in srgb, var(--accent) 8%, var(--panel));"></rect>
+            <text x="94" y="426" class="fw-label" style="font-weight: 700; color: var(--accent);">生产增强：跨仓库代码属性图 (CPG) 与全项目过程间深度分析 (已落地生产)</text>
+            <text x="94" y="450" class="fw-title" style="font-size: 16px;">跨仓库代码属性图 (CPG) 与全项目过程间深度分析引擎</text>
             <text x="94" y="472" class="fw-small">把跨文件 CPG、CFG、DFG、微服务调用链、数据流路径压缩为深度审计证据，注入 Semgrep 污点与 LLM 证据链</text>
             <text x="94" y="492" class="fw-small">在证据链上实现跨模块超长程污点传导与微服务边界穿透分析，消除审计死角</text>
 
-            <path d="M 620 398 C 620 370, 620 340, 620 296" class="fw-line fw-line--future"></path>
+            <path d="M 620 398 C 620 370, 620 340, 620 296" class="fw-line fw-line--accent"></path>
           </svg>
-          <figcaption>图 1：TAA 代码审计主流程采用“多语言源码树 → Semgrep AST 语义与污点扫描 → 语义感知证据链 → Prompt 模板 → LLM 验证”的现代化闭环架构；右侧卡片列出 qwen 可能输出的 verdict / risk_level；下方虚线带表示面向未来超大规模工程的跨项目全局代码属性图（CPG）检索增强扩展。</figcaption>
+          <figcaption>图 1：TAA 代码审计主流程采用“多语言源码树 → Semgrep AST 语义与污点扫描 + 跨仓库 CPG 过程间分析 → 语义感知证据链 → Prompt 模板 → LLM 验证”的现代化闭环架构；右侧卡片列出 qwen 可能输出的 verdict / risk_level；下方核心增强层展示跨仓库代码属性图（CPG）与微服务边界穿透分析引擎，消除跨文件与跨服务审计死角。</figcaption>
         </figure>
       </section>
 
@@ -3692,6 +3692,67 @@
             }
           })();
         </script>
+
+        <!-- 2.6 跨仓库代码属性图 (CPG) 与全项目过程间深度分析引擎 -->
+        <div style="margin-top: 36px; padding-top: 24px; border-top: 1px dashed var(--line);">
+          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 12px;">
+            <h3 style="margin: 0; font-size: 20px; font-weight: 800; display: flex; align-items: center; gap: 10px;">
+              <span style="display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 14px;">🕸️</span>
+              2.6 跨仓库代码属性图 (CPG) 与全项目过程间深度分析引擎
+            </h3>
+            <span class="badge ok" style="font-weight: 700;">★ 生产已就绪 · 零额外运行时依赖</span>
+          </div>
+          <p class="lead" style="margin-bottom: 16px;">针对传统单文件规则扫描在面对多模块拆分、跨文件函数传参/返回值引用以及微服务通信拓扑时的审计盲区，TAA 正式引入<strong>轻量纯 Python 原生的代码属性图 (Code Property Graph, CPG)</strong> 分析中枢。引擎融合 AST 语法层、CFG 控制流层、DFG 到达定值数据流层、调用图 (Call Graph) 与微服务 HTTP 通信边界，在内存中维护毫秒级图拓扑，消除长程跨模块隐蔽信道与跨微服务渗透盲点。</p>
+
+          <div class="spec-grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; margin-bottom: 20px;">
+            <div class="card" style="background: var(--panel);">
+              <h4>1. 多维图模型融合 (Multi-Layer CPG Fusion)</h4>
+              <ul>
+                <li><strong>AST 节点层：</strong>统一建模语句 (<code>AST_STMT</code>)、表达式、函数定义 (<code>AST_FUNC_DEF</code>)、形参、调用与赋值。</li>
+                <li><strong>CFG 控制流层：</strong>构建基本块顺序执行、条件分支 (<code>CFG_BRANCH_TRUE/FALSE</code>)、循环退出及异常流边。</li>
+                <li><strong>DFG 到达定值层：</strong>基于精确变量定义-使用分析构建 <code>DFG_DEF_USE</code> 边，穿透复杂嵌套表达式与字典存取。</li>
+                <li><strong>过程间调用层：</strong>将 Caller 实参通过 <code>CALL_ARG</code> 映射至 Callee 形参，将 Callee 返回值通过 <code>CALL_RET</code> 映射至 Caller 接收变量。</li>
+              </ul>
+            </div>
+
+            <div class="card" style="background: var(--panel);">
+              <h4>2. 符号解析与微服务穿透 (Resolver & Boundary Bridge)</h4>
+              <ul>
+                <li><strong>跨文件符号消歧 (SymbolResolver)：</strong>递归扫描工作区，精准解析绝对导入、相对导入 (<code>from ..pkg import utils</code>) 与类成员方法，生成 FQN。</li>
+                <li><strong>HTTP 客户端特征提取：</strong>识别 <code>requests</code>, <code>httpx</code>, <code>urllib</code> 等外联调用，抽取 URL 路径、请求方法与数据载荷。</li>
+                <li><strong>Web 服务端路由适配：</strong>识别 Flask, FastAPI, Django 路由修饰符与入参提取 (<code>request.get_json()</code>)。</li>
+                <li><strong>边界拓扑动态缝合：</strong>自动归一化端点路径，在分布式服务间合成 <code>MICROSERVICE_HTTP</code> 与 <code>MICROSERVICE_PAYLOAD</code> 跨边界边。</li>
+              </ul>
+            </div>
+
+            <div class="card" style="background: var(--panel);">
+              <h4>3. 不动点污点传播引擎 (Worklist Taint Engine)</h4>
+              <ul>
+                <li><strong>敏感源与汇聚点：</strong>精准捕获敏感环境变量 (<code>ENV_001</code>)、核心密钥凭据 (<code>FIL_001</code>) 及��始训练数据 (<code>RAW_DATA</code>)。</li>
+                <li><strong>有限跳步不动点算法：</strong>维护 <code>(node_id, source_id)</code> 访问集合阻断递归环路，设置 <code>max_hops=50</code> 保证确定性收敛。</li>
+                <li><strong>不可逆净化器识别：</strong>识别 <code>hashlib.sha256</code> 等安全单向哈希阻断误判，保留带 Salt 串接等真实泄露链路。</li>
+                <li><strong>漏洞规则自动升格：</strong>跨微服务或跨文件到达命令执行/网络外发时，自动归纳为 <code>CRITICAL</code> 级 <code>CMD_001</code> 或 <code>EXF_001</code>。</li>
+              </ul>
+            </div>
+
+            <div class="card" style="background: var(--panel);">
+              <h4>4. 程序依赖切片与证据压缩 (Evidence Slicer)</h4>
+              <ul>
+                <li><strong>因果路径剪枝：</strong>基于程序依赖图 (PDG) 剔除与污点传递无关的冗余局部变量赋值，保留因果主干。</li>
+                <li><strong>关键审计检查点：</strong>高亮 <code>SOURCE</code>、<code>INTER_PROC_CALL</code>、<code>MICROSERVICE_EGRESS/INGRESS</code> 与 <code>SINK</code>。</li>
+                <li><strong>树形证据生成：</strong>输出标准化 <code>[Deep Audit Inter-Procedural Taint Trajectory]</code> 与跨文件代码切片。</li>
+                <li><strong>Prompt 极简注入：</strong>将证据链严格压缩在 300 Token 以内，消除大上下文噪声，保障端侧小模型高信度仲裁。</li>
+              </ul>
+            </div>
+          </div>
+
+          <div style="background: color-mix(in srgb, var(--accent) 7%, var(--panel)); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: 10px; padding: 14px 18px; margin-bottom: 20px;">
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px; font-size: 13.5px;">双轨架构协同与审计死角消除闭环：</div>
+            <div style="font-size: 13px; color: var(--text); line-height: 1.6;">
+              在扫描阶段，<strong>SemgrepScannerAdapter</strong> 驱动底层 CPG 引擎与微服务桥接器；对于 Semgrep 已检出的单点缺陷，注入完整的跨文件 CPG 污点演进树；对于单文件内“看似良性”（如一端仅做 HTTP 转发、另一端仅接收 JSON 处理）的<strong>跨微服务隐蔽反弹攻击</strong>，CPG 自动合成新型 <code>engine="cpg"</code> 的全局审计证据，直送 Go 后端 <code>FindingPayload</code> 与 Python <code>LLMSecurityAnalyzer</code>，实现单文件扫描与全局拓扑的无缝协同。
+            </div>
+          </div>
+        </div>
 
         <div class="callout" style="margin-top: 24px;">
           <strong>设计判断：</strong>Semgrep 静态分析的职责不是“孤立代替人类做最终审判”，而是“以数学确定性捕获 AST 语法特征与污点传播拓扑，将高质量证据链提炼并送入 LLM”。通过 AST 别名消除、多语言纳管与跨行污点流追踪，将海量无害业务代码极速旁路（50%+ 零算力放行），同时向 LLM 递送包含 Source → Propagator → Sink 闭环的高信度证据，达成审计准确度与推理能耗的帕累托最优。
