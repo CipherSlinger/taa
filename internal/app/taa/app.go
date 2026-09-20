@@ -593,15 +593,21 @@ func buildSecurityConfig(cfg config.StartupConfig) controller.SecurityConfig {
 
 // ensureSecurityDirectories 确保模型目录、数据目录、结果目录以及模型输入输出目录在本地文件系统中存在
 func ensureSecurityDirectories(sec controller.SecurityConfig) error {
-	for _, dir := range []string{
+	dirs := []string{
 		sec.ModelDir,
 		sec.DataDir,
 		sec.ResultDir,
 		sec.GetModelInputDir(),
 		sec.GetModelOutputDir(),
-		sec.GetModelLogDir(),
-		sec.GetModelProgressDir(),
-	} {
+	}
+	for _, p := range []string{sec.GetModelLogDir(), sec.GetModelProgressDir()} {
+		dir := p
+		if filepath.Ext(p) != "" {
+			dir = filepath.Dir(p)
+		}
+		dirs = append(dirs, dir)
+	}
+	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("create directory %s: %w", dir, err)
 		}

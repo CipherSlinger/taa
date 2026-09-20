@@ -20,23 +20,31 @@ type LogFileCursor struct {
 	Offset int64
 }
 
-// JSONLLogReader 增量扫描并消费指定目录下的 .jsonl / .log 日志条目
+// JSONLLogReader 增量扫描并消费指定文件或目录下的日志条目
 type JSONLLogReader struct {
 	dir     string
 	files   map[string]LogFileCursor
 	nextSeq uint64
 }
 
-// NewJSONLLogReader 创建日志读取器
-func NewJSONLLogReader(dir string) *JSONLLogReader {
+// NewJSONLLogReader 创建日志读取器（target 可以是具体日志文件路径，也可以是日志目录）
+func NewJSONLLogReader(target string) *JSONLLogReader {
 	return &JSONLLogReader{
-		dir:   dir,
+		dir:   target,
 		files: make(map[string]LogFileCursor),
 	}
 }
 
-// ReadNew 读取日志目录中已完整落盘且尚未消费的日志行
+// ReadNew 读取日志文件或目录中已完整落盘且尚未消费的日志行
 func (r *JSONLLogReader) ReadNew() ([]platform.ModelLogEntry, error) {
+	info, err := os.Stat(r.dir)
+	if err == nil && !info.IsDir() {
+		return r.readFile(r.dir)
+	}
+	if err != nil && os.IsNotExist(err) && filepath.Ext(r.dir) != "" {
+		return nil, nil
+	}
+
 	entries, err := os.ReadDir(r.dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -160,9 +168,17 @@ type ProgressSnapshot struct {
 	Key       string
 }
 
-// ReadLatestProgress 扫描指定目录下的进度文件并提取最新合法进度值
-func ReadLatestProgress(dir string) (ProgressSnapshot, bool, error) {
-	entries, err := os.ReadDir(dir)
+// ReadLatestProgress 扫描指定目录或直接读取指定进度文件，并提取最新合法进度值
+func ReadLatestProgress(target string) (ProgressSnapshot, bool, error) {
+	info, err := os.Stat(target)
+	if err == nil && !info.IsDir() {
+		return readProgressFile(target, info.ModTime())
+	}
+	if err != nil && os.IsNotExist(err) && filepath.Ext(target) != "" {
+		return ProgressSnapshot{}, false, nil
+	}
+
+	entries, err := os.ReadDir(target)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return ProgressSnapshot{}, false, nil
@@ -179,11 +195,11 @@ func ReadLatestProgress(dir string) (ProgressSnapshot, bool, error) {
 		if entry.IsDir() || strings.ToLower(filepath.Ext(entry.Name())) != ".json" {
 			continue
 		}
-		info, err := entry.Info()
+		fInfo, err := entry.Info()
 		if err != nil {
 			continue
 		}
-		candidates = append(candidates, candidate{path: filepath.Join(dir, entry.Name()), info: info})
+		candidates = append(candidates, candidate{path: filepath.Join(target, entry.Name()), info: fInfo})
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].info.ModTime().Equal(candidates[j].info.ModTime()) {
@@ -193,38 +209,48 @@ func ReadLatestProgress(dir string) (ProgressSnapshot, bool, error) {
 	})
 
 	for _, item := range candidates {
-		data, err := os.ReadFile(item.path)
-		if err != nil {
+		snapshot, ok, err := readProgressFile(item.path, item.info.ModTime())
+		if err != nil || !ok {
 			continue
 		}
-		var raw struct {
-			Percent    *float64 `json:"percent"`
-			Percentage *float64 `json:"percentage"`
-			Timestamp  string   `json:"timestamp"`
-		}
-		if err := json.Unmarshal(data, &raw); err != nil {
-			continue
-		}
-		percent := raw.Percent
-		if percent == nil {
-			percent = raw.Percentage
-		}
-		if percent == nil || math.IsNaN(*percent) || math.IsInf(*percent, 0) || *percent < 0 || *percent > 100 {
-			continue
-		}
-		timestamp := item.info.ModTime().UTC()
-		if strings.TrimSpace(raw.Timestamp) != "" {
-			parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(raw.Timestamp))
-			if err != nil {
-				continue
-			}
-			timestamp = parsed.UTC()
-		}
-		return ProgressSnapshot{
-			Percent:   *percent,
-			Timestamp: timestamp,
-			Key:       fmt.Sprintf("%.9f|%s", *percent, timestamp.Format(time.RFC3339Nano)),
-		}, true, nil
+		return snapshot, true, nil
 	}
 	return ProgressSnapshot{}, false, nil
+}
+
+func readProgressFile(path string, modTime time.Time) (ProgressSnapshot, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ProgressSnapshot{}, false, nil
+		}
+		return ProgressSnapshot{}, false, err
+	}
+	var raw struct {
+		Percent    *float64 `json:"percent"`
+		Percentage *float64 `json:"percentage"`
+		Timestamp  string   `json:"timestamp"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return ProgressSnapshot{}, false, nil
+	}
+	percent := raw.Percent
+	if percent == nil {
+		percent = raw.Percentage
+	}
+	if percent == nil || math.IsNaN(*percent) || math.IsInf(*percent, 0) || *percent < 0 || *percent > 100 {
+		return ProgressSnapshot{}, false, nil
+	}
+	timestamp := modTime.UTC()
+	if strings.TrimSpace(raw.Timestamp) != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(raw.Timestamp))
+		if err == nil {
+			timestamp = parsed.UTC()
+		}
+	}
+	return ProgressSnapshot{
+		Percent:   *percent,
+		Timestamp: timestamp,
+		Key:       fmt.Sprintf("%.9f|%s", *percent, timestamp.Format(time.RFC3339Nano)),
+	}, true, nil
 }

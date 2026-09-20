@@ -10,8 +10,8 @@ import (
 const (
 	DefaultModelInputDir    = "/opt/taa/input"
 	DefaultModelOutputDir   = "/opt/taa/output/result"
-	DefaultModelLogDir      = "/opt/taa/output/log"
-	DefaultModelProgressDir = "/opt/taa/output/progress"
+	DefaultModelLogDir      = "/opt/taa/output/log/train.jsonl"
+	DefaultModelProgressDir = "/opt/taa/output/progress/progress.json"
 )
 
 // SecurityConfig 保存启动时固化的安全配置与运行目录
@@ -24,8 +24,8 @@ type SecurityConfig struct {
 	MaxResultBytes   int64               // 导出产物单文件最大限制字节数（默认 3GB）
 	ModelInputDir    string              // 模型数据输入目录（缺省 /opt/taa/input）
 	ModelOutputDir   string              // 模型结果输出目录（缺省 /opt/taa/output/result）
-	ModelLogDir      string              // 模型日志目录（缺省 /opt/taa/output/log）
-	ModelProgressDir string              // 模型进度目录（缺省 /opt/taa/output/progress）
+	ModelLogDir      string              // 模型日志文件或目录路径（缺省 /opt/taa/output/log/train.jsonl）
+	ModelProgressDir string              // 模型进度文件或目录路径（缺省 /opt/taa/output/progress/progress.json）
 	LLM              codeaudit.LLMConfig // 本地 LLM 语义验证配置
 }
 

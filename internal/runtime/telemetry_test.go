@@ -169,3 +169,52 @@ func TestReadLatestProgress(t *testing.T) {
 		t.Fatal("expected non-empty Key in snapshot")
 	}
 }
+
+func TestDirectFileTargeting(t *testing.T) {
+	tempDir := t.TempDir()
+	logFile := filepath.Join(tempDir, "custom.log")
+	progressFile := filepath.Join(tempDir, "custom_progress.json")
+
+	// Before files exist
+	logReader := NewJSONLLogReader(logFile)
+	entries, err := logReader.ReadNew()
+	if err != nil {
+		t.Fatalf("ReadNew before file exists failed: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries, got %d", len(entries))
+	}
+
+	snap, ok, err := ReadLatestProgress(progressFile)
+	if err != nil {
+		t.Fatalf("ReadLatestProgress before file exists failed: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected ok=false before file exists")
+	}
+
+	// Create files and write data
+	if err := os.WriteFile(logFile, []byte("epoch 1: custom log message\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(progressFile, []byte(`{"percent": 88.5, "timestamp": "2026-09-20T10:00:00Z"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read after files exist
+	entries, err = logReader.ReadNew()
+	if err != nil {
+		t.Fatalf("ReadNew failed: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Message != "epoch 1: custom log message" {
+		t.Fatalf("unexpected entries: %+v", entries)
+	}
+
+	snap, ok, err = ReadLatestProgress(progressFile)
+	if err != nil || !ok {
+		t.Fatalf("ReadLatestProgress failed: ok=%v, err=%v", ok, err)
+	}
+	if snap.Percent != 88.5 {
+		t.Fatalf("expected 88.5, got %f", snap.Percent)
+	}
+}

@@ -311,8 +311,8 @@ TAA reads its configuration from `taa-config.json` located in its working direct
     "input": "/opt/taa/input",
     "output": {
       "result": "/opt/taa/output/result",
-      "log": "/opt/taa/output/log",
-      "progress": "/opt/taa/output/progress"
+      "log": "/opt/taa/output/log/train.jsonl",
+      "progress": "/opt/taa/output/progress/progress.json"
     }
   },
   "security": {
@@ -351,8 +351,8 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `storage.keys` | `/opt/taa/keys` | Sensitive cryptographic key storage (restricted with `0700` permissions) |
 | `model.input` | `/opt/taa/input` | Read-only input dataset directory mounted for model training sandbox runtime |
 | `model.output.result` | `/opt/taa/output/result` | Target output directory for model training checkpoints and artifacts |
-| `model.output.log` | `/opt/taa/output/log` | Intermediate terminal log directory monitored by log watcher (`modelLog`) |
-| `model.output.progress` | `/opt/taa/output/progress` | Intermediate progress directory (`progress.json`) monitored by progress watcher |
+| `model.output.log` | `/opt/taa/output/log/train.jsonl` | Model execution log file (or directory) monitored by log watcher (`modelLog`) |
+| `model.output.progress` | `/opt/taa/output/progress/progress.json` | Model progress file (or directory) monitored by progress watcher (`reportProgress`) |
 | `security.codeScan` | `true` | Master audit switch: enables Semgrep AST static security scan during model import |
 | `security.resultCheck.enabled` | `true` | Inspects exported files for unauthorized plaintext data leakage (accepts object or boolean) |
 | `security.resultCheck.maxFileBytes` | `3221225472` (3 GB) | Maximum file size threshold for export leakage inspection |

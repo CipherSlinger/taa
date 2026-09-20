@@ -12,8 +12,8 @@
     "input": "/opt/taa/input",
     "output": {
       "result": "/opt/taa/output/result",
-      "log": "/opt/taa/output/log",
-      "progress": "/opt/taa/output/progress"
+      "log": "/opt/taa/output/log/train.jsonl",
+      "progress": "/opt/taa/output/progress/progress.json"
     }
   },
   "security": {
