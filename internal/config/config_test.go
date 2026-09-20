@@ -270,7 +270,7 @@ func TestLoadStartupConfigReadsLLMDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
 		"llm": {
-			"dir": "/opt/taa/ollama-qwen"
+			"dir": "/opt/taa/ollama"
 		}
 	}`)
 
@@ -278,7 +278,7 @@ func TestLoadStartupConfigReadsLLMDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
-	if cfg.LLMDir != "/opt/taa/ollama-qwen" {
+	if cfg.LLMDir != "/opt/taa/ollama" {
 		t.Fatalf("LLMDir = %q, want file value", cfg.LLMDir)
 	}
 }

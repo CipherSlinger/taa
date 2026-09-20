@@ -11,8 +11,6 @@ taa-config.json
 
 # 审计
 models/audit/audit-results/
-models/audit/ollama-qwen/
-models/audit/ollama-qwen*/
 models/audit/benchmarks/
 
 tools/sdk/gui-tauri/src-tauri/target/

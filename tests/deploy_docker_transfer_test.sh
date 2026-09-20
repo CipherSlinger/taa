@@ -51,7 +51,7 @@ output=$(PATH="$MOCK_BIN:$PATH" \
   FORCE_QWEN_COPY=true \
   OLLAMA_READY_TIMEOUT=1 \
   OLLAMA_READY_INTERVAL=1 \
-  "$ROOT_DIR/deploy.sh" docker qwen 2>&1)
+  "$ROOT_DIR/teellm/deploy.sh" docker start 2>&1)
 status=$?
 set -e
 

@@ -1,6 +1,6 @@
 # 支持的 Qwen 审计大模型清单
 
-本文档列出本地离线模型库（`models/audit/ollama-qwen`）已打包就绪的 Qwen 模型名称与配置模板，方便在配置文件、环境变量及部署脚本中快速复制粘贴使用。
+本文档列出独立子模块 TEE-LLM（`teellm/models/ollama/`）已就绪的离线模型名称、配置模板与管理方式。模型运行时已统一解耦至 `teellm` 模块，并支持基于 `teellm/configs/models.json` 的多模型预设配置与 CLI 管理工具。
 
 ---
 
@@ -33,7 +33,7 @@ qwen2.5-coder:7b
     "model": "qwen3:8b",
     "policy": "assist",
     "failClosed": true,
-    "dir": "/root/taa/ollama-qwen"
+    "dir": "/root/taa/ollama"
   }
 ```
 
@@ -45,7 +45,7 @@ qwen2.5-coder:7b
     "model": "qwen2.5-coder:1.5b",
     "policy": "assist",
     "failClosed": true,
-    "dir": "/root/taa/ollama-qwen"
+    "dir": "/root/taa/ollama"
   }
 ```
 
@@ -57,34 +57,31 @@ qwen2.5-coder:7b
     "model": "qwen2.5-coder:0.5b",
     "policy": "assist",
     "failClosed": true,
-    "dir": "/root/taa/ollama-qwen"
+    "dir": "/root/taa/ollama"
   }
 ```
 
 ---
 
-### 2.2 部署脚本指定模型命令
+### 2.2 模型管理与切换 CLI (teellm/deploy.sh)
 
-使用 `deploy.sh` 进行增量部署或同步指定模型到容器/远程节点：
+TEE-LLM 提供了原生的模型管理 CLI 命令：
 
 ```bash
-# 部署 1.5b 模型
-./deploy.sh --model qwen2.5-coder:1.5b
+# 进入 teellm 目录
+cd teellm
 
-# 部署 0.5b 模型
-./deploy.sh --model qwen2.5-coder:0.5b
+# 查看本地就绪模型与配置概览
+./deploy.sh models list
 
-# 部署 8b 模型
-./deploy.sh --model qwen3:8b
+# 查看指定模型的完整配置参数与磁盘 Blobs 校验状态
+./deploy.sh models info qwen2.5-coder:3b
 
-# 部署 3b 模型
-./deploy.sh --model qwen2.5-coder:3b
+# 切换活跃模型（自动原子更新 configs/models.json 与服务配置文件）
+./deploy.sh models switch qwen2.5-coder:3b
 
-# 部署 7b 模型
-./deploy.sh --model qwen2.5-coder:7b
-
-# 部署 14b 模型
-./deploy.sh --model qwen3:14b
+# 启动部署并指定目标模型
+./deploy.sh docker start --model qwen2.5-coder:3b
 ```
 
 ---
@@ -112,5 +109,9 @@ qwen2.5-coder:7b
 
 可通过以下命令在容器内确认或查看：
 ```bash
-docker exec taa-env-slim-v2 /root/taa/ollama-qwen/ollama list
+docker exec taa-env-slim-v2 /root/taa/ollama/ollama list
+```
+或在 `teellm` 目录下使用 CLI 工具查看：
+```bash
+./deploy.sh models list
 ```
