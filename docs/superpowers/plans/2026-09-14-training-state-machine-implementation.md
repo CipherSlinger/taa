@@ -567,8 +567,8 @@ git commit -m "fix(recovery): 恢复训练状态异常收尾"
 - Modify: `internal/controller/taa_state_store_integration_test.go`
 - Modify: `internal/controller/concurrency_test.go`
 - Modify: `internal/app/taa/recovery_test.go`
-- Modify: `docs/TAA状态持久化与崩溃自愈设计文档.md` if it names removed fields
-- Modify: `docs/taa接口设计文档.md` if it documents removed response keys
+- Modify: `docs/state-persistence-and-self-healing.md` if it names removed fields
+- Modify: `docs/api-design.md` if it documents removed response keys
 
 - [ ] **Step 1: Find all stale identifiers**
 
@@ -630,7 +630,7 @@ Expected: all selected packages pass with no stale identifier compilation errors
 - [ ] **Step 7: Commit regression and documentation updates**
 
 ```bash
-git add internal/controller internal/app/taa docs/TAA状态持久化与崩溃自愈设计文档.md docs/taa接口设计文档.md
+git add internal/controller internal/app/taa docs/state-persistence-and-self-healing.md docs/api-design.md
 git commit -m "test(controller): 完善训练状态重构回归覆盖"
 ```
 

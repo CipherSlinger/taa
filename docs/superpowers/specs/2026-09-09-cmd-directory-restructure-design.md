@@ -262,7 +262,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/app ./cmd/taa
    - 更新 `.gitignore` 确保不再误跟踪根目录临时可执行文件。
 4. **更新配置文件与文档**：
    - 更新 `Makefile` 与 `deploy/manifest/docker/Dockerfile`；
-   - 更新 `README.md` 与 `docs/TAA设计文档.md` 中的目录树与路径引用。
+   - 更新 `README.md` 与 `docs/architecture-design.md` 中的目录树与路径引用。
 
 ---
 

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go, stdlib filesystem APIs, `taa/crypto` SM3, existing controller tests, existing JSON file helpers.
 
-**Spec:** `docs/taa接口设计文档.md`
+**Spec:** `docs/api-design.md`
 
 ## Global Constraints
 
@@ -141,7 +141,7 @@ git commit -m "feat: 按哈希重构导入流程"
 **Files:**
 - Modify: `internal/controller/route.go:538-643`
 - Modify: `internal/controller/handler_test.go:668-1116`
-- Modify: `docs/taa接口设计文档.md:608-705`
+- Modify: `docs/api-design.md:608-705`
 
 **Interfaces:**
 - Consumes: `ImportIndexStore` lookup methods.
@@ -181,7 +181,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/controller/route.go internal/controller/handler_test.go docs/taa接口设计文档.md
+git add internal/controller/route.go internal/controller/handler_test.go docs/api-design.md
 git commit -m "feat: 改造导出索引查询"
 ```
 
@@ -189,8 +189,8 @@ git commit -m "feat: 改造导出索引查询"
 
 **Files:**
 - Modify: `internal/controller/handler_test.go`
-- Modify: `docs/taa接口设计文档.md`
-- Modify: `docs/TAA设计文档.md` if it still describes the old export path behavior
+- Modify: `docs/api-design.md`
+- Modify: `docs/architecture-design.md` if it still describes the old export path behavior
 
 **Interfaces:**
 - Consumes: final import/export behavior and the hash/result/index naming rules.
@@ -228,7 +228,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/controller/handler_test.go docs/taa接口设计文档.md docs/TAA设计文档.md
+git add internal/controller/handler_test.go docs/api-design.md docs/architecture-design.md
 git commit -m "docs: 更新哈希索引导入导出说明"
 ```
 

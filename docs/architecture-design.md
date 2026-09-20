@@ -553,6 +553,8 @@ tee/
 │   └── Retina-DKD/              视网膜疾病模型
 ├── ollama-qwen/                Ollama 离线包
 └── docs/                        文档
-    ├── taa接口设计文档.md
-    └── TAA设计文档.md            (本文件)
+    ├── api-design.md
+    ├── architecture-design.md   (本文件)
+    ├── model-provider-integration-guide.md
+    └── state-persistence-and-self-healing.md
 ```

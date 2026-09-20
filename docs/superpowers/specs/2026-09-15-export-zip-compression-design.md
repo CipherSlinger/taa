@@ -152,5 +152,5 @@ func compressDirToZip(srcDir string) ([]byte, error) {
    - `internal/controller/import_flow_new_test.go`:
      - 更新端到端导出测试，断言 zip 产物解压无误。
 3. **文档同步更新**:
-   - `docs/taa接口设计文档.md`
-   - `docs/TAA状态持久化与崩溃自愈设计文档.md`
+   - `docs/api-design.md`
+   - `docs/state-persistence-and-self-healing.md`

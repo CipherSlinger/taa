@@ -2,7 +2,7 @@
 
 ## 1. 背景与目标
 
-根据 `docs/taa接口设计文档.md` 规约，针对近期调整及新增的 5 个接口，调整 `platform-mock` 服务（位于 `internal/app/mock/`）及其嵌入式 Web 控制台（`index.html`），以全面支持本地开发、CI 测试及真实联调验证：
+根据 `docs/api-design.md` 规约，针对近期调整及新增的 5 个接口，调整 `platform-mock` 服务（位于 `internal/app/mock/`）及其嵌入式 Web 控制台（`index.html`），以全面支持本地开发、CI 测试及真实联调验证：
 
 1. **/v1/taa/reportModelImport（TAA → 平台，模型导入与校验结果）**：规约对齐（必填字段 `requestId`、`code` 校验；`code=0` 时强制校验 `checksum: {size, algorithm, value}`；状态回显包含 checksum）。
 2. **/v1/taa/reportAudit（TAA → 平台，代码安全审计结果）**：规约对齐（`code: 0/1/2` 校验；解析并展示重构后的 `statistics: {high, medium, low}` 三级风险归类统计）。

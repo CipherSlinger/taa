@@ -272,14 +272,14 @@ git commit -m "test(controller): 重构导出测试用例适配ZIP压缩格式"
 ### Task 4: 同步更新项目设计文档与接口规格
 
 **Files:**
-- Modify: `docs/taa接口设计文档.md`
-- Modify: `docs/TAA状态持久化与崩溃自愈设计文档.md`
+- Modify: `docs/api-design.md`
+- Modify: `docs/state-persistence-and-self-healing.md`
 
-- [ ] **Step 1: 更新 `docs/taa接口设计文档.md`**
+- [ ] **Step 1: 更新 `docs/api-design.md`**
 
 将 `/v1/taa/export` 章节中的响应头、返回示例和文件名从 `.tar.gz` / `.tar.gz.enc` 修改为 `.zip` / `.zip.enc`。
 
-- [ ] **Step 2: 更新 `docs/TAA状态持久化与崩溃自愈设计文档.md`**
+- [ ] **Step 2: 更新 `docs/state-persistence-and-self-healing.md`**
 
 将软链接越界防护描述中的 `compressDirToTarGz` 更新为 `compressDirToZip`。
 
@@ -293,7 +293,7 @@ git diff docs/
 - [ ] **Step 4: 提交文档更新**
 
 ```bash
-git add docs/taa接口设计文档.md docs/TAA状态持久化与崩溃自愈设计文档.md
+git add docs/api-design.md docs/state-persistence-and-self-healing.md
 git commit -m "docs(export): 同步更新接口设计与持久化文档中的ZIP导出说明"
 ```
 

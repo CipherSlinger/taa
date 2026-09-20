@@ -497,14 +497,14 @@ go vet ./...
 
 ## Documentation
 
-- **Architecture Design**: `docs/TAA设计文档.md`
-- **API Specifications (Markdown)**: `docs/taa接口设计文档.md`
+- **Architecture Design**: `docs/architecture-design.md`
+- **API Specifications (Markdown)**: `docs/api-design.md`
 - **OpenAPI 3.0.3 Specification**: `api/openapi.yaml`
-- **Model Provider Integration Guide**: `docs/TAA模型提供方开发与接口对接规范.md`
+- **Model Provider Integration Guide**: `docs/model-provider-integration-guide.md`
 - **Platform Mock Emulator**: `tools/platform-mock/README.md`
 - **TEE-LLM Inference Service**: `teellm/README.md`
 - **TEE Crypto SDK**: `tools/sdk/README.md`
-- **State Persistence & Self-Healing**: `docs/TAA状态持久化与崩溃自愈设计文档.md`
+- **State Persistence & Self-Healing**: `docs/state-persistence-and-self-healing.md`
 - **Project Changelog**: `CHANGELOG.md`
 
 ---

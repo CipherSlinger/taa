@@ -356,7 +356,7 @@ git commit -m "refactor(taa): 迁移 TAA 可执行入口至 cmd/taa 并清理根
 - Modify: `Makefile`
 - Modify: `deploy/manifest/docker/Dockerfile`
 - Modify: `README.md`
-- Modify: `docs/TAA设计文档.md`
+- Modify: `docs/architecture-design.md`
 
 - [ ] **Step 1: 更新 `Makefile` 目标路径**
 
@@ -383,7 +383,7 @@ platform-mock-build:
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/app ./cmd/taa
 ```
 
-- [ ] **Step 3: 更新 `README.md` 与 `docs/TAA设计文档.md` 目录树与文档引用**
+- [ ] **Step 3: 更新 `README.md` 与 `docs/architecture-design.md` 目录树与文档引用**
 
 更新文档中的目录树示意，说明 `cmd/` 作���可执行入口，`internal/app/` 作为启动编排层。
 
@@ -400,7 +400,7 @@ Expected:
 - [ ] **Step 5: 提交构建系统与文档调整**
 
 ```bash
-git add Makefile deploy/manifest/docker/Dockerfile README.md docs/TAA设计文档.md
+git add Makefile deploy/manifest/docker/Dockerfile README.md docs/architecture-design.md
 git commit -m "build: 适配 Makefile、Dockerfile 及架构文档至 cmd/ 目录结构"
 ```
 

@@ -20,8 +20,8 @@
 - Modify: `internal/app/taa/app.go` — 构建安全配置、创建三个输出子目录、日志配置摘要。
 - Modify: `internal/controller/import_processing.go` — 训练开始时清理 result/log/progress，启动 watcher，执行完 runtimeConfig 后停止 watcher 并最终 flush。
 - Modify: `internal/controller/route_test.go`、`internal/config/config_test.go`、`internal/app/taa/app_test.go` — 更新默认路径断言并补充替换规则断言。
-- Modify: `docs/TAA模型提供方开发与接口对接规范.md` — 将输出目录和文件轮询约定同步为 result/log/progress；保留 progress JSON 的字段定义。
-- Modify: `docs/taa接口设计文档.md`、`api/openapi.yaml` — 同步两个实际回调接口的请求模型、默认路径说明（若 OpenAPI 当前已包含对应回调模型，则只补齐字段和路径，不重复建模）。
+- Modify: `docs/model-provider-integration-guide.md` — 将输出目录和文件轮询约定同步为 result/log/progress；保留 progress JSON 的字段定义。
+- Modify: `docs/api-design.md`、`api/openapi.yaml` — 同步两个实际回调接口的请求模型、默认路径说明（若 OpenAPI 当前已包含对应回调模型，则只补齐字段和路径，不重复建模）。
 
 ### Task 1: 增加两个平台回调客户端
 
@@ -343,8 +343,8 @@ git add internal/controller/model_reporting.go internal/controller/import_proces
 ### Task 5: 同步协议文档并执行完整验证
 
 **Files:**
-- Modify: `docs/TAA模型提供方开发与接口对接规范.md`
-- Modify: `docs/taa接口设计文档.md`
+- Modify: `docs/model-provider-integration-guide.md`
+- Modify: `docs/api-design.md`
 - Modify: `api/openapi.yaml`
 - Modify: `README.md`（仅当其中仍明确写死旧 output 路径）
 
@@ -388,7 +388,7 @@ Expected: `go test`、`go vet` 返回 0；`gofmt -l` 无输出。若本机 Go �
 git diff --check
 git status --short
 git diff --stat
-git add docs/TAA模型提供方开发与接口对接规范.md docs/taa接口设计文档.md api/openapi.yaml README.md
+git add docs/model-provider-integration-guide.md docs/api-design.md api/openapi.yaml README.md
 git commit -m "docs(接口): 同步模型日志进度上报与输出目录"
 ```
 
