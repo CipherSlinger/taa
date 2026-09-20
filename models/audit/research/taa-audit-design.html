@@ -69,6 +69,8 @@
   body {
     margin: 0;
     padding: 0;
+    overflow-x: hidden;
+    max-width: 100%;
   }
 
   body {
@@ -102,8 +104,11 @@
 
   .page {
     max-width: var(--max);
+    width: 100%;
     margin: 0 auto;
     padding: 28px 32px 72px;
+    min-width: 0;
+    box-sizing: border-box;
   }
 
   .hero {
@@ -183,6 +188,10 @@
   .layout {
     margin-top: 22px;
     display: block;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
   }
 
   .section,
@@ -193,15 +202,27 @@
     border: 1px solid var(--line);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
   }
 
   .content {
     display: grid;
     gap: 18px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
   }
 
   .section {
     padding: clamp(20px, 3vw, 28px);
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
   }
 
   .section h2 {
@@ -364,6 +385,10 @@
     border-radius: 18px;
     background: var(--panel);
     box-shadow: var(--shadow);
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    -webkit-overflow-scrolling: touch;
   }
 
   table {
@@ -1319,7 +1344,31 @@
     background: var(--panel);
     box-shadow: 0 4px 18px rgba(0, 0, 0, 0.02);
     color: var(--text);
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
     overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+
+  figure.sequence-figure::-webkit-scrollbar {
+    height: 6px;
+  }
+
+  figure.sequence-figure::-webkit-scrollbar-track {
+    background: var(--panel-2);
+    border-radius: 3px;
+  }
+
+  figure.sequence-figure::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--line) 80%, var(--muted));
+    border-radius: 3px;
+  }
+
+  figure.sequence-figure::-webkit-scrollbar-thumb:hover {
+    background: var(--muted);
   }
 
   .sequence-header-badge {
@@ -1351,7 +1400,8 @@
   svg.sequence-svg {
     display: block;
     width: 100%;
-    min-width: 980px;
+    max-width: 100%;
+    min-width: 0;
     height: auto;
     color: var(--text);
   }
@@ -1745,6 +1795,15 @@
     display: grid;
     gap: 14px;
     margin-top: 14px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .spec-grid > * {
+    min-width: 0;
+    max-width: 100%;
   }
 
   .spec {
@@ -1789,11 +1848,38 @@
     background: var(--panel);
     box-shadow: var(--shadow);
     color: var(--text);
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+
+  figure.framework-figure::-webkit-scrollbar {
+    height: 6px;
+  }
+
+  figure.framework-figure::-webkit-scrollbar-track {
+    background: var(--panel-2);
+    border-radius: 3px;
+  }
+
+  figure.framework-figure::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--line) 80%, var(--muted));
+    border-radius: 3px;
+  }
+
+  figure.framework-figure::-webkit-scrollbar-thumb:hover {
+    background: var(--muted);
   }
 
   svg.framework-svg {
     display: block;
     width: 100%;
+    max-width: 100%;
+    min-width: 0;
     height: auto;
     color: var(--text);
   }
@@ -1929,6 +2015,17 @@
   @media (max-width: 860px) {
     .cm-grid-container {
       grid-template-columns: 1fr;
+    }
+
+    .spec-grid[style*="grid-template-columns"] {
+      grid-template-columns: 1fr !important;
+    }
+  }
+
+  @media (max-width: 768px) {
+    svg.framework-svg,
+    svg.sequence-svg {
+      min-width: 720px;
     }
   }
 
