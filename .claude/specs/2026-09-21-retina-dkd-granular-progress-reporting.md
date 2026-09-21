@@ -61,10 +61,12 @@ Features:
      - Training batches: span 95% of `epoch_span`
      - Epoch completion: span 5% of `epoch_span`
    - Batch-level reporting:
-     - Update progress on batch 1, batch N, and every `max(1, total_batches // 10)` batches.
-     - Log training step metrics to `logger.log` every `max(1, total_batches // 5)` batches.
+     - Update progress continuously across batches with fine precision (4 decimal places) and low-latency throttling (0.2s interval, 0.0001% delta).
+     - Force progress file write and terminal logging on key intra-epoch milestones: Batch 1, Quarter (25%), Midpoint (50%), Three-quarter (75%), and Batch N.
+     - Tag progress message with `(Midpoint)` and completion percentage.
+     - Log training step metrics to `logger.log` on midpoint and every `max(1, total_batches // 5)` batches.
    - Evaluation reporting:
-     - Report evaluation start, periodic batches, and evaluation summary metrics.
+     - Report evaluation start, periodic batches (including 50% midpoint), and evaluation summary metrics.
    - Checkpoint reporting:
      - Report checkpoint saving event.
 

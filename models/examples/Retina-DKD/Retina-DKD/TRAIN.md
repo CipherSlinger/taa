@@ -39,21 +39,21 @@ python train_fusion.py -b TransMUF -g cpu -bc 4 -e 150 -d _dkd -s 512 -nw 4
    - **初始化阶段 (0.0% - 2.0%)**：记录环境准备、模型初始化、损失函数/优化器配置、数据集与 DataLoader 创建。
    - **训练与评估阶段 (2.0% - 96.0%)**：
      - 每个 Epoch 根据总轮数均分进度区间。
-     - Epoch 内按训练 Batch 动态插值计算进度，并在 Batch 1、尾 Batch 及每 10% 进度处原子写入 `progress.json`。
-     - 每 20% Batch 在终端和 `train.log` 中同步输出 Step 级别的 loss 与 accuracy。
-     - 评估轮次（`epoch % 4 == 0`）动态细分 Evaluation 进度并汇报检查点保存事件。
+     - **Epoch 内平滑动态进度插值**：按训练 Batch 动态计算细粒度进度百分比（支持 4 位浮点小数精度），保证长轮次训练中每次 Batch 均平滑步进。
+     - **Epoch 中间关键里程碑上报**：在 Epoch 开始、25% 处、**50% 中点 (Midpoint)**、75% 处、尾 Batch 以及每 10% Batch 进度处强制落盘，并在控制台与 `train.log` 中同步输出中点与 Step 级别的 loss 与 accuracy。
+     - **评估阶段中点与全流程跟踪**：评估轮次（`epoch % 4 == 0`）动态细分 Evaluation 批次进度（含 50% 评估中点），并在完成时上报检查点权重保存事件。
    - **收尾阶段 (96.0% - 100.0%)**：记录评测指标汇总、`training_result.json` 生成以及任务成功完成。
 
 2. **`progress.json` 数据结构示例**：
 ```json
 {
-  "percent": 34.65,
+  "percent": 34.6525,
   "timestamp": "2026-09-21T07:15:32.123456Z",
   "stage": "train",
-  "message": "Epoch 3/150 [Batch 15/40] - loss: 0.3821, acc: 85.00%",
+  "message": "Epoch 3/150 (Midpoint) [Batch 20/40, 50.0%] - loss: 0.3821, acc: 85.00%",
   "epoch": 3,
   "total_epochs": 150,
-  "batch": 15,
+  "batch": 20,
   "total_batches": 40,
   "loss": 0.3821,
   "acc": 85.0
@@ -61,8 +61,8 @@ python train_fusion.py -b TransMUF -g cpu -bc 4 -e 150 -d _dkd -s 512 -nw 4
 ```
 
 3. **I/O 节流与单调性保障**：
-   - 默认通过 `min_interval_seconds=0.5` 与 `min_percent_delta=0.1` 防止高频 Batch 刷盘造成的 I/O 抖动。
-   - 关键状态变更与 Milestone 支持 `force=True` 强制落盘。
+   - 默认通过 `min_interval_seconds=0.2` 与 `min_percent_delta=0.0001` 在保障极端密集训练不刷爆磁盘的同时，让进度更新实时连贯。
+   - 关键状态变更与 Midpoint/Quarter Milestone 支持 `force=True` 强制落盘。
    - 进度百分比具备单调递增保障，防止网络抖动或异步轮询导致的进度回退。
 
 ---

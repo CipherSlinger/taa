@@ -131,7 +131,7 @@ class TestReportingHelpers(unittest.TestCase):
         prog_dir = self.temp_dir / "rich_prog"
         tracker = ProgressTracker(prog_dir)
         written = tracker.update(
-            percent=12.345,
+            percent=12.3456,
             stage="train",
             message="Epoch 1/10 [Batch 5/20] - loss: 0.4521, acc: 88.50%",
             epoch=1,
@@ -147,7 +147,7 @@ class TestReportingHelpers(unittest.TestCase):
         prog_file = prog_dir / "progress.json"
         self.assertTrue(prog_file.exists())
         data = json.loads(prog_file.read_text(encoding="utf-8"))
-        self.assertEqual(data["percent"], 12.35)
+        self.assertEqual(data["percent"], 12.3456)
         self.assertEqual(data["stage"], "train")
         self.assertEqual(data["message"], "Epoch 1/10 [Batch 5/20] - loss: 0.4521, acc: 88.50%")
         self.assertEqual(data["epoch"], 1)
@@ -227,7 +227,34 @@ class TestReportingHelpers(unittest.TestCase):
         self.assertEqual(data["total_batches"], 10)
         self.assertEqual(data["loss"], 0.3142)
         self.assertEqual(data["acc"], 92.5)
-        self.assertIn("Epoch 1/10 [Batch 5/10]", data["message"])
+        self.assertIn("Epoch 1/10 (Midpoint) [Batch 5/10, 50.0%]", data["message"])
+
+    def test_progress_tracker_smooth_intra_epoch_fraction(self):
+        prog_dir = self.temp_dir / "smooth_prog"
+        tracker = ProgressTracker(prog_dir, min_interval_seconds=0.0, min_percent_delta=0.0001, decimal_places=4)
+
+        # High epoch training scenario: epoch 1 of 800 epochs
+        total_epochs = 800
+        epoch_span = 94.0 / total_epochs  # 0.1175%
+        epoch_base = 2.0
+        total_batches = 20
+
+        percents = []
+        for b in range(1, total_batches + 1):
+            tracker.update_batch(
+                epoch_idx=1,
+                total_epochs=total_epochs,
+                batch_idx=b,
+                total_batches=total_batches,
+                epoch_base_pct=epoch_base,
+                epoch_span_pct=epoch_span,
+                train_ratio=0.85,
+            )
+            percents.append(tracker.last_percent)
+
+        # Verify percentages are strictly increasing and smooth
+        for i in range(1, len(percents)):
+            self.assertGreater(percents[i], percents[i - 1])
 
 
 if __name__ == "__main__":

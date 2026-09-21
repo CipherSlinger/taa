@@ -174,8 +174,9 @@ class ProgressTracker:
         self,
         progress_dir: Path | str,
         filename: str = "progress.json",
-        min_interval_seconds: float = 0.5,
-        min_percent_delta: float = 0.1,
+        min_interval_seconds: float = 0.2,
+        min_percent_delta: float = 0.0001,
+        decimal_places: int = 4,
     ):
         self.progress_dir = Path(progress_dir)
         self.progress_dir.mkdir(parents=True, exist_ok=True)
@@ -184,6 +185,7 @@ class ProgressTracker:
         self.tmp_path = self.progress_dir / f"{self.filename}.tmp"
         self.min_interval_seconds = max(0.0, float(min_interval_seconds))
         self.min_percent_delta = max(0.0, float(min_percent_delta))
+        self.decimal_places = max(0, int(decimal_places))
         self._last_percent: float = -1.0
         self._last_write_time: float = 0.0
         self._last_payload: dict | None = None
@@ -222,7 +224,7 @@ class ProgressTracker:
         **kwargs,
     ) -> bool:
         """Update progress percentage and optional metadata atomically. Returns True if written."""
-        clamped = max(0.0, min(100.0, round(float(percent), 2)))
+        clamped = max(0.0, min(100.0, round(float(percent), self.decimal_places)))
         # Enforce non-decreasing progress unless explicitly allowed
         if not allow_regression and self._last_percent >= 0.0:
             clamped = max(clamped, self._last_percent)
@@ -289,7 +291,9 @@ class ProgressTracker:
         """Calculate and report intra-epoch batch training progress."""
         batch_ratio = min(1.0, max(0.0, batch_idx / max(1, total_batches)))
         pct = epoch_base_pct + (epoch_span_pct * train_ratio * batch_ratio)
-        msg = f"Epoch {epoch_idx}/{total_epochs} [Batch {batch_idx}/{total_batches}]"
+        is_mid = (batch_idx == max(1, total_batches // 2))
+        tag = " (Midpoint)" if is_mid else ""
+        msg = f"Epoch {epoch_idx}/{total_epochs}{tag} [Batch {batch_idx}/{total_batches}, {batch_ratio * 100:.1f}%]"
         if loss is not None:
             msg += f" - loss: {loss:.4f}"
         if acc is not None:
@@ -463,6 +467,9 @@ def main():
             total_batches = len(loader_train)
             log_interval = max(1, total_batches // 5)
             progress_interval = max(1, total_batches // 10)
+            midpoint_batch = max(1, total_batches // 2)
+            quarter_batch = max(1, total_batches // 4)
+            three_quarter_batch = max(1, (total_batches * 3) // 4)
             count = 0
             """--------------------------------------Train---------------------------------------"""
             for packs in train_bar:
@@ -494,8 +501,15 @@ def main():
                 current_step_loss = running_results['acc_loss'] / count
                 current_step_acc = running_results['acc'] / count
 
-                # Update granular batch progress
-                force_prog = (count == 1 or count == total_batches or count % progress_interval == 0)
+                # Update granular batch progress with mid-epoch milestones
+                is_milestone = (
+                    count == 1
+                    or count == total_batches
+                    or count == midpoint_batch
+                    or count == quarter_batch
+                    or count == three_quarter_batch
+                    or count % progress_interval == 0
+                )
                 progress.update_batch(
                     epoch_idx=epoch + 1,
                     total_epochs=EPOCH,
@@ -506,11 +520,16 @@ def main():
                     train_ratio=train_ratio,
                     loss=current_step_loss,
                     acc=current_step_acc,
-                    force=force_prog,
+                    force=is_milestone,
                 )
 
-                # Periodic terminal and jsonl log
-                if count % log_interval == 0 or count == total_batches:
+                # Periodic terminal and jsonl log with explicit midpoint milestone
+                if count == midpoint_batch:
+                    logger.log(
+                        f"[Train] Epoch {epoch + 1}/{EPOCH} (Midpoint 50%) [Step {count}/{total_batches}] - "
+                        f"loss: {current_step_loss:.4f}, acc: {current_step_acc:.2f}%"
+                    )
+                elif count % log_interval == 0 or count == total_batches:
                     logger.log(
                         f"[Train] Epoch {epoch + 1}/{EPOCH} [Step {count}/{total_batches}] - "
                         f"loss: {current_step_loss:.4f}, acc: {current_step_acc:.2f}%"
@@ -549,6 +568,7 @@ def main():
             if epoch % 4 == 0:
                 test_bar = tqdm(loader_test)
                 total_test_batches = len(loader_test)
+                eval_midpoint = max(1, total_test_batches // 2)
                 logger.log(f"[Eval] Starting evaluation for Epoch {epoch + 1}/{EPOCH} ({total_test_batches} batches)")
                 progress.update(
                     train_end_pct,
@@ -558,7 +578,7 @@ def main():
                     total_epochs=EPOCH,
                     force=True,
                 )
-                test_progress_interval = max(1, total_test_batches // 5)
+                test_progress_interval = max(1, total_test_batches // 10)
                 print("Waiting Test!")
                 with torch.no_grad():
                     correct_all = 0
@@ -595,17 +615,26 @@ def main():
 
                         eval_ratio_done = test_count / max(1, total_test_batches)
                         eval_curr_pct = train_end_pct + (epoch_span * eval_ratio * eval_ratio_done)
-                        force_eval = (test_count == 1 or test_count == total_test_batches or test_count % test_progress_interval == 0)
+                        is_eval_milestone = (
+                            test_count == 1
+                            or test_count == total_test_batches
+                            or test_count == eval_midpoint
+                            or test_count % test_progress_interval == 0
+                        )
+                        is_eval_mid = (test_count == eval_midpoint)
+                        eval_tag = " (Midpoint)" if is_eval_mid else ""
                         progress.update(
                             eval_curr_pct,
                             stage="eval",
-                            message=f"Epoch {epoch + 1}/{EPOCH} [Eval {test_count}/{total_test_batches}]",
+                            message=f"Epoch {epoch + 1}/{EPOCH}{eval_tag} [Eval {test_count}/{total_test_batches}, {eval_ratio_done * 100:.1f}%]",
                             epoch=epoch + 1,
                             total_epochs=EPOCH,
                             batch=test_count,
                             total_batches=total_test_batches,
-                            force=force_eval,
+                            force=is_eval_milestone,
                         )
+                        if is_eval_mid:
+                            logger.log(f"[Eval] Epoch {epoch + 1}/{EPOCH} (Midpoint 50%) [Eval {test_count}/{total_test_batches}]")
 
                     Acc = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) > 0 else 0
                     Sen = (tp) / (tp + fn) if (tp + fn) > 0 else 0
