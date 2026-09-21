@@ -2480,4 +2480,27 @@ func TestUILayoutKeyModalAndSideBySideInputs(t *testing.T) {
 	if !(titleH2Idx < importPillIdx && importPillIdx < auditPillIdx) {
 		t.Fatalf("card-importModel title and status pills must be ordered side-by-side: h2(%d) < importPill(%d) < auditPill(%d)", titleH2Idx, importPillIdx, auditPillIdx)
 	}
+
+	// Verify card-pills-row enforces non-wrapping horizontal layout
+	if !strings.Contains(css, ".card-pills-row") {
+		t.Fatal("components.css missing required .card-pills-row class")
+	}
+	if !strings.Contains(modelSection, `class="card-pills-row"`) {
+		t.Fatal("card-importModel header missing class=\"card-pills-row\"")
+	}
+	pillsRowStart := strings.Index(modelSection, `class="card-pills-row"`)
+	if pillsRowStart == -1 || pillsRowStart > importPillIdx || pillsRowStart > auditPillIdx {
+		t.Fatal("status pills in card-importModel must be wrapped inside card-pills-row container")
+	}
+
+	// 6. Verify phase switch info alert is removed
+	if strings.Contains(indexHTML, `id="switchResult"`) {
+		t.Fatal("indexHTML should not contain id=\"switchResult\"")
+	}
+	if strings.Contains(frontendBundle, `showResultRunning('switchResult'`) {
+		t.Fatal("quickSwitchPhase should not invoke showResultRunning for switchResult")
+	}
+	if strings.Contains(frontendBundle, `showResult('switchResult'`) {
+		t.Fatal("quickSwitchPhase should not invoke showResult for switchResult")
+	}
 }

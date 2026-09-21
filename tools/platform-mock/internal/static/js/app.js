@@ -1477,7 +1477,6 @@ async function quickSwitchPhase(phase) {
   buttons.forEach(btn => btn.disabled = true);
   if (dotEl) dotEl.className = 'dot status-pill running';
   if (statusEl) statusEl.textContent = `正在切换至 ${phaseName}...`;
-  showResultRunning('switchResult', `正在切换至 ${phaseName}...`);
 
   const reqBody = { phase: Number(phase) };
   recordInteraction('switch', {
@@ -1516,7 +1515,6 @@ async function quickSwitchPhase(phase) {
     recordInteraction('switch', { primaryContent: respText, respBody: r.data, statusCode: r.status });
     if (detailBtn) detailBtn.style.display = 'inline-block';
     if (detailContent) detailContent.textContent = respText;
-    showResult('switchResult', ok, respText);
   } catch (e) {
     if (dotEl) dotEl.className = 'dot bad status-pill bad';
     if (statusEl) statusEl.textContent = `切换失败: ${e.message}`;
@@ -1524,7 +1522,6 @@ async function quickSwitchPhase(phase) {
     recordInteraction('switch', { primaryContent: errMsg, respBody: e.message, statusCode: 500 });
     if (detailBtn) detailBtn.style.display = 'inline-block';
     if (detailContent) detailContent.textContent = errMsg;
-    showResult('switchResult', false, errMsg);
   } finally {
     buttons.forEach(btn => btn.disabled = false);
   }
