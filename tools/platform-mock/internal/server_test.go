@@ -2458,4 +2458,26 @@ func TestUILayoutKeyModalAndSideBySideInputs(t *testing.T) {
 	if randImportBtnIdx > importReqIdIdx || randImportBtnIdx > importTaskIdIdx {
 		t.Fatal("randomize button in card-import must be positioned before (to the left of) requestId and taskId")
 	}
+
+	// 5. Verify model card title and status pills side-by-side layout
+	cssBytes, err := staticFS.ReadFile("static/css/components.css")
+	if err != nil {
+		t.Fatalf("failed to read static/css/components.css: %v", err)
+	}
+	css := string(cssBytes)
+	if !strings.Contains(css, ".card-title-group") {
+		t.Fatal("components.css missing required .card-title-group class")
+	}
+	if !strings.Contains(modelSection, `class="card-title-group"`) {
+		t.Fatal("card-importModel header missing class=\"card-title-group\"")
+	}
+	titleH2Idx := strings.Index(modelSection, `<h2>② 下发模型</h2>`)
+	importPillIdx := strings.Index(modelSection, `id="reportModelImportPill"`)
+	auditPillIdx := strings.Index(modelSection, `id="reportAuditPill"`)
+	if titleH2Idx == -1 || importPillIdx == -1 || auditPillIdx == -1 {
+		t.Fatalf("card-importModel title and pills missing: h2=%d importPill=%d auditPill=%d", titleH2Idx, importPillIdx, auditPillIdx)
+	}
+	if !(titleH2Idx < importPillIdx && importPillIdx < auditPillIdx) {
+		t.Fatalf("card-importModel title and status pills must be ordered side-by-side: h2(%d) < importPill(%d) < auditPill(%d)", titleH2Idx, importPillIdx, auditPillIdx)
+	}
 }

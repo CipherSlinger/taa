@@ -178,20 +178,16 @@
     <!-- Column 2: Import model -->
     <section class="card" id="card-importModel" style="display:flex; flex-direction:column;">
       <div class="card-head">
-        <div>
+        <div class="card-title-group">
           <h2>② 下发模型</h2>
-          <div style="margin-top:8px;">
-            <span id="reportModelImportPill" class="status-pill pending">
-              <span id="reportModelImportDot" class="dot pill-dot pending"></span>
-              <span id="reportModelImportStatusText">模型导入结果上报</span>
-            </span>
-          </div>
-          <div style="margin-top:6px;">
-            <span id="reportAuditPill" class="status-pill pending">
-              <span id="reportAuditDot" class="dot pill-dot pending"></span>
-              <span id="reportAuditStatusText">代码审计结果</span>
-            </span>
-          </div>
+          <span id="reportModelImportPill" class="status-pill pending">
+            <span id="reportModelImportDot" class="dot pill-dot pending"></span>
+            <span id="reportModelImportStatusText">模型导入结果上报</span>
+          </span>
+          <span id="reportAuditPill" class="status-pill pending">
+            <span id="reportAuditDot" class="dot pill-dot pending"></span>
+            <span id="reportAuditStatusText">代码审计结果</span>
+          </span>
         </div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
           <div id="importModelStatusBox" class="status" style="font-size:12px; display:none;">
