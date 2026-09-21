@@ -41,6 +41,23 @@ func TestReportModelLogPayload(t *testing.T) {
 	if got["seqStart"] != float64(1) {
 		t.Fatalf("seqStart = %#v", got["seqStart"])
 	}
+	rawEntries, ok := got["entries"].([]any)
+	if !ok || len(rawEntries) != 1 {
+		t.Fatalf("entries = %#v", got["entries"])
+	}
+	entryMap, ok := rawEntries[0].(map[string]any)
+	if !ok {
+		t.Fatalf("entry = %#v", rawEntries[0])
+	}
+	if entryMap["seq"] != float64(1) {
+		t.Fatalf("entry seq = %#v", entryMap["seq"])
+	}
+	if entryMap["message"] != "epoch=1" {
+		t.Fatalf("entry message = %#v", entryMap["message"])
+	}
+	if _, hasTimestamp := entryMap["timestamp"]; hasTimestamp {
+		t.Fatalf("entry timestamp should be omitted when empty, got %#v", entryMap["timestamp"])
+	}
 }
 
 func TestReportModelLogRejectsNonSuccessAck(t *testing.T) {

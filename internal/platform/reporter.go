@@ -16,13 +16,13 @@ const (
 	ReportProgressEndpoint    = "/v1/taa/reportProgress"
 )
 
-// ModelLogEntry 定义训练终端上报日志条目
+// ModelLogEntry represents an incremental terminal log entry.
 type ModelLogEntry struct {
-	Seq       uint64 `json:"seq,omitempty"`
-	Timestamp string `json:"timestamp"`
+	Seq       uint64 `json:"seq"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp,omitempty"`
 	Component string `json:"component,omitempty"`
 	Level     string `json:"level,omitempty"`
-	Message   string `json:"message"`
 }
 
 type reportResPayload struct {
@@ -55,7 +55,7 @@ type reportAuditPayload struct {
 type reportModelLogPayload struct {
 	DockerID  string          `json:"dockerId"`
 	RequestID string          `json:"requestId"`
-	TaskID    string          `json:"taskId"`
+	TaskID    string          `json:"taskId,omitempty"`
 	SeqStart  uint64          `json:"seqStart"`
 	Entries   []ModelLogEntry `json:"entries"`
 }
@@ -63,9 +63,33 @@ type reportModelLogPayload struct {
 type reportProgressPayload struct {
 	DockerID  string  `json:"dockerId"`
 	RequestID string  `json:"requestId"`
-	TaskID    string  `json:"taskId"`
+	TaskID    string  `json:"taskId,omitempty"`
 	Percent   float64 `json:"percent"`
 	Timestamp string  `json:"timestamp"`
+}
+
+// ValidateReportingParams validates platform reporting parameters where taskId is optional.
+func ValidateReportingParams(platformAddr, dockerID, requestID, taskID string) (string, string, string, string, error) {
+	cleanPlatformAddr := strings.TrimSpace(platformAddr)
+	if cleanPlatformAddr == "" {
+		return "", "", "", "", fmt.Errorf("PLATFORM_IP is required")
+	}
+
+	cleanDockerID := strings.TrimSpace(dockerID)
+	if cleanDockerID == "" {
+		return "", "", "", "", fmt.Errorf("DOCKER_ID is required")
+	}
+
+	cleanReqID := strings.TrimSpace(requestID)
+	cleanTaskID := strings.TrimSpace(taskID)
+	if cleanReqID == "" && cleanTaskID == "" {
+		return "", "", "", "", fmt.Errorf("requestId and taskId cannot both be empty")
+	}
+	if cleanReqID == "" {
+		cleanReqID = cleanTaskID
+	}
+
+	return cleanPlatformAddr, cleanDockerID, cleanReqID, cleanTaskID, nil
 }
 
 func ValidateAndNormalizePlatformParams(platformAddr, dockerID, requestID, taskID string) (string, string, string, string, error) {
@@ -201,9 +225,9 @@ func ReportTaskOutcome(ctx context.Context, platformAddr, dockerID, requestID, t
 	return ReportRes(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report)
 }
 
-// ReportModelLog 向上游平台推送模型训练终端分块日志
+// ReportModelLog reports model training terminal logs to the platform.
 func ReportModelLog(ctx context.Context, platformAddr, dockerID, requestID, taskID string, seqStart uint64, entries []ModelLogEntry) error {
-	addr, dID, reqID, tID, err := ValidateAndNormalizePlatformParams(platformAddr, dockerID, requestID, taskID)
+	addr, dID, reqID, tID, err := ValidateReportingParams(platformAddr, dockerID, requestID, taskID)
 	if err != nil {
 		return err
 	}
@@ -227,9 +251,9 @@ func ReportModelLog(ctx context.Context, platformAddr, dockerID, requestID, task
 	return SendPlatformJSON(ctx, defaultHTTPClient, url, data)
 }
 
-// ReportProgress 向上游平台推送训练百分比进度
+// ReportProgress reports training progress percentage to the platform.
 func ReportProgress(ctx context.Context, platformAddr, dockerID, requestID, taskID string, percent float64, timestamp time.Time) error {
-	addr, dID, reqID, tID, err := ValidateAndNormalizePlatformParams(platformAddr, dockerID, requestID, taskID)
+	addr, dID, reqID, tID, err := ValidateReportingParams(platformAddr, dockerID, requestID, taskID)
 	if err != nil {
 		return err
 	}
