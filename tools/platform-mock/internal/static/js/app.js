@@ -663,14 +663,14 @@ function renderRegister(data) {
   const dot = document.getElementById('dot');
   const pill = document.getElementById('registerPill');
   if (dot) dot.className = 'dot';
-  const publicKeyBox = document.getElementById('registerPublicKeyBox');
+  const pubKeyBtn = document.getElementById('taaPublicKeyBtn');
   const publicKeyField = document.getElementById('registerPublicKey');
   if (!data || !data.received) {
     if (pill) pill.className = 'status-pill pending';
     text('statusText', '等待 TAA 注册请求');
     const regBtn = document.getElementById('registerBodyBtn');
     if (regBtn) regBtn.disabled = true;
-    if (publicKeyBox) publicKeyBox.hidden = true;
+    if (pubKeyBtn) pubKeyBtn.disabled = true;
     if (publicKeyField) publicKeyField.value = '';
     return;
   }
@@ -681,13 +681,40 @@ function renderRegister(data) {
   if (regBtn) regBtn.disabled = false;
   const publicKey = data.accepted ? String(data.taaPublicKey || '').trim() : '';
   if (publicKey) {
-    if (publicKeyBox) publicKeyBox.hidden = false;
+    if (pubKeyBtn) pubKeyBtn.disabled = false;
     if (publicKeyField) publicKeyField.value = publicKey;
   } else {
-    if (publicKeyBox) publicKeyBox.hidden = true;
+    if (pubKeyBtn) pubKeyBtn.disabled = true;
     if (publicKeyField) publicKeyField.value = '';
   }
 }
+
+function openTaaPublicKeyModal() {
+  const modal = document.getElementById('taaPublicKeyModal');
+  if (!modal) return;
+  const pubKeyField = document.getElementById('registerPublicKey');
+  if (!pubKeyField || !pubKeyField.value) {
+    if (typeof showToast === 'function') {
+      showToast({ type: 'warning', title: '提示', message: '暂无 TAA 注册公钥' });
+    } else {
+      alert('暂无 TAA 注册公钥');
+    }
+    return;
+  }
+  modal.classList.add('open');
+  modal.setAttribute('aria-hidden', 'false');
+}
+
+function closeTaaPublicKeyModal() {
+  const modal = document.getElementById('taaPublicKeyModal');
+  if (modal) {
+    modal.classList.remove('open');
+    modal.setAttribute('aria-hidden', 'true');
+  }
+}
+
+window.openTaaPublicKeyModal = openTaaPublicKeyModal;
+window.closeTaaPublicKeyModal = closeTaaPublicKeyModal;
 
 function openRegisterBodyModal() {
   if (lastRegisterModalTitle && lastRegisterModalTitle.includes('/v1/taa/getAttestation')) {
@@ -1172,6 +1199,7 @@ function setStepStatus(stepEl, descEl, status, descText) {
 function syncStepperState(res) {
   if (!res) return;
   const sReg = document.getElementById('stepNodeRegister');
+  if (!sReg) return;
   const dReg = document.getElementById('stepDescRegister');
   const l12 = document.getElementById('line1to2');
   const sAud = document.getElementById('stepNodeAudit');

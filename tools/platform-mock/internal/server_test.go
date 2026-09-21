@@ -2325,6 +2325,10 @@ func TestAdvancedUIPolishVisualDashboardAndStepperComponents(t *testing.T) {
 		".audit-risk-bar",
 		".log-filter-group",
 		".log-filter-btn",
+		".id-input-row",
+		".btn-field-random",
+		".id-inputs-cols",
+		".id-input-col",
 		"mark.hl-match",
 	}
 	for _, pat := range requiredCSSPatterns {
@@ -2335,11 +2339,6 @@ func TestAdvancedUIPolishVisualDashboardAndStepperComponents(t *testing.T) {
 
 	// 3. Verify HTML structure elements
 	htmlPatterns := []string{
-		`id="pipelineStepper"`,
-		`id="stepNodeRegister"`,
-		`id="stepNodeAudit"`,
-		`id="stepNodeTraining"`,
-		`id="stepNodeExport"`,
 		`id="toastContainer"`,
 		`src="/static/js/toast.js"`,
 		`id="drawerViewModeBtn"`,
@@ -2347,6 +2346,9 @@ func TestAdvancedUIPolishVisualDashboardAndStepperComponents(t *testing.T) {
 		`class="log-filter-group"`,
 		`id="terminalSearchInput"`,
 		`id="searchMatchCount"`,
+		`id="taaPublicKeyBtn"`,
+		`id="taaPublicKeyModal"`,
+		`id="copyPubKeyBtn"`,
 	}
 	for _, pat := range htmlPatterns {
 		if !strings.Contains(indexHTML, pat) {
@@ -2354,11 +2356,20 @@ func TestAdvancedUIPolishVisualDashboardAndStepperComponents(t *testing.T) {
 		}
 	}
 
+	// Verify stepper and embedded public key box are removed
+	if strings.Contains(indexHTML, `id="pipelineStepper"`) {
+		t.Errorf("indexHTML should not contain id=\"pipelineStepper\" after removal")
+	}
+	if strings.Contains(indexHTML, `id="registerPublicKeyBox"`) {
+		t.Errorf("indexHTML should not contain id=\"registerPublicKeyBox\" on card after migration")
+	}
+
 	// 4. Verify JavaScript functions and tokens in frontendBundle
 	jsTokens := []string{
 		"showToast",
 		"Toast",
-		"pipelineStepper",
+		"openTaaPublicKeyModal",
+		"closeTaaPublicKeyModal",
 		"syncStepperState",
 		"setStepStatus",
 		"renderAuditDashboard",
@@ -2375,5 +2386,76 @@ func TestAdvancedUIPolishVisualDashboardAndStepperComponents(t *testing.T) {
 		if !strings.Contains(frontendBundle, token) {
 			t.Errorf("frontendBundle missing required JS token: %q", token)
 		}
+	}
+}
+
+func TestUILayoutKeyModalAndSideBySideInputs(t *testing.T) {
+	// 1. Verify flow stepper is removed
+	if strings.Contains(indexHTML, `id="pipelineStepper"`) {
+		t.Fatal("indexHTML should not contain id=\"pipelineStepper\"")
+	}
+
+	// 2. Verify TAA public key button and modal structure
+	if !strings.Contains(indexHTML, `id="taaPublicKeyBtn"`) {
+		t.Fatal("indexHTML missing id=\"taaPublicKeyBtn\"")
+	}
+	if !strings.Contains(indexHTML, `onclick="openTaaPublicKeyModal()"`) {
+		t.Fatal("indexHTML missing openTaaPublicKeyModal() trigger on button")
+	}
+	if !strings.Contains(indexHTML, `id="taaPublicKeyModal"`) {
+		t.Fatal("indexHTML missing id=\"taaPublicKeyModal\"")
+	}
+	if !strings.Contains(indexHTML, `id="copyPubKeyBtn"`) {
+		t.Fatal("indexHTML missing id=\"copyPubKeyBtn\" inside key modal")
+	}
+	if !strings.Contains(indexHTML, `id="registerPublicKey"`) {
+		t.Fatal("indexHTML missing id=\"registerPublicKey\" inside key modal")
+	}
+	if strings.Contains(indexHTML, `id="registerPublicKeyBox"`) {
+		t.Fatal("indexHTML should not have legacy registerPublicKeyBox inline in card-attestation")
+	}
+
+	// 3. Verify card-importModel has randomize button on the left of requestId and taskId
+	modelCardIdx := strings.Index(indexHTML, `id="card-importModel"`)
+	if modelCardIdx == -1 {
+		t.Fatal("indexHTML missing id=\"card-importModel\"")
+	}
+	modelSection := indexHTML[modelCardIdx:]
+	importCardIdx := strings.Index(modelSection, `id="card-import"`)
+	if importCardIdx != -1 {
+		modelSection = modelSection[:importCardIdx]
+	}
+
+	randModelBtnIdx := strings.Index(modelSection, `randomizeImportModelIds()`)
+	modelReqIdIdx := strings.Index(modelSection, `id="importModelRequestId"`)
+	modelTaskIdIdx := strings.Index(modelSection, `id="importModelTaskId"`)
+
+	if randModelBtnIdx == -1 || modelReqIdIdx == -1 || modelTaskIdIdx == -1 {
+		t.Fatalf("card-importModel elements missing: rand=%d req=%d task=%d", randModelBtnIdx, modelReqIdIdx, modelTaskIdIdx)
+	}
+	if randModelBtnIdx > modelReqIdIdx || randModelBtnIdx > modelTaskIdIdx {
+		t.Fatal("randomize button in card-importModel must be positioned before (to the left of) requestId and taskId")
+	}
+
+	// 4. Verify card-import has randomize button on the left of requestId and taskId
+	cardImportStartIdx := strings.Index(indexHTML, `id="card-import"`)
+	if cardImportStartIdx == -1 {
+		t.Fatal("indexHTML missing id=\"card-import\"")
+	}
+	importSection := indexHTML[cardImportStartIdx:]
+	cardLogIdx := strings.Index(importSection, `id="card-taaLog"`)
+	if cardLogIdx != -1 {
+		importSection = importSection[:cardLogIdx]
+	}
+
+	randImportBtnIdx := strings.Index(importSection, `randomizeImportIds()`)
+	importReqIdIdx := strings.Index(importSection, `id="importRequestId"`)
+	importTaskIdIdx := strings.Index(importSection, `id="importTaskId"`)
+
+	if randImportBtnIdx == -1 || importReqIdIdx == -1 || importTaskIdIdx == -1 {
+		t.Fatalf("card-import elements missing: rand=%d req=%d task=%d", randImportBtnIdx, importReqIdIdx, importTaskIdIdx)
+	}
+	if randImportBtnIdx > importReqIdIdx || randImportBtnIdx > importTaskIdIdx {
+		t.Fatal("randomize button in card-import must be positioned before (to the left of) requestId and taskId")
 	}
 }

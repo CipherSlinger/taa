@@ -368,9 +368,12 @@ async function copyCurlCommand(btn) {
   }
 }
 
-// Global keydown handler for Escape to close drawer
+// Global keydown handler for Escape to close drawer & modals
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     closeDrawer();
+    if (typeof closeTaaPublicKeyModal === 'function') {
+      closeTaaPublicKeyModal();
+    }
   }
 });

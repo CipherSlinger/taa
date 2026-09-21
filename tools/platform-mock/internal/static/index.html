@@ -23,53 +23,6 @@
     </div>
   </header>
 
-  <!-- Lifecycle Pipeline Stepper -->
-  <nav class="pipeline-stepper" id="pipelineStepper" aria-label="训练全生命周期流水线">
-    <div class="stepper-step pending" id="stepNodeRegister" onclick="scrollToSection('card-attestation')">
-      <div class="stepper-icon">
-        <svg class="step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
-        <span class="step-num">1</span>
-      </div>
-      <div class="stepper-meta">
-        <span class="step-title">节点鉴权与证明</span>
-        <span class="step-desc" id="stepDescRegister">等待注册</span>
-      </div>
-    </div>
-    <div class="stepper-line" id="line1to2"></div>
-    <div class="stepper-step pending" id="stepNodeAudit" onclick="scrollToSection('card-importModel')">
-      <div class="stepper-icon">
-        <svg class="step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
-        <span class="step-num">2</span>
-      </div>
-      <div class="stepper-meta">
-        <span class="step-title">代码审计与下发</span>
-        <span class="step-desc" id="stepDescAudit">等待模型</span>
-      </div>
-    </div>
-    <div class="stepper-line" id="line2to3"></div>
-    <div class="stepper-step pending" id="stepNodeTraining" onclick="scrollToSection('card-import')">
-      <div class="stepper-icon">
-        <svg class="step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
-        <span class="step-num">3</span>
-      </div>
-      <div class="stepper-meta">
-        <span class="step-title">密态训练监控</span>
-        <span class="step-desc" id="stepDescTraining">等待启动</span>
-      </div>
-    </div>
-    <div class="stepper-line" id="line3to4"></div>
-    <div class="stepper-step pending" id="stepNodeExport" onclick="scrollToSection('reportResList')">
-      <div class="stepper-icon">
-        <svg class="step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
-        <span class="step-num">4</span>
-      </div>
-      <div class="stepper-meta">
-        <span class="step-title">产物与审计日志</span>
-        <span class="step-desc" id="stepDescExport">等待完成</span>
-      </div>
-    </div>
-  </nav>
-
   <!-- Top: Unified platform registration and service connection control panel -->
   <section class="card" id="card-attestation" style="display:flex; flex-direction:column; margin-bottom:24px;">
     <!-- Row 1: Platform registration status and global record operations -->
@@ -82,6 +35,11 @@
         </div>
       </div>
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <button type="button" id="taaPublicKeyBtn" class="secondary" onclick="openTaaPublicKeyModal()" disabled title="查看 TAA 注册公钥">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px; vertical-align:-1px;">
+            <path d="M21 2l-2 2m-1.5 1.5L14 9l-1.5-1.5L11 9l-1.5-1.5L8 9a5.5 5.5 0 1 0 3 7.5L21 6.5V2z"></path>
+          </svg>公钥
+        </button>
         <button id="registerBodyBtn" class="secondary" onclick="openRegisterBodyModal()" disabled>查看注册返回</button>
         <button class="secondary" onclick="refreshStatus()">刷新状态</button>
       </div>
@@ -108,26 +66,11 @@
       </div>
     </div>
 
-    <!-- Row 3: Public key display and attestation operations -->
+    <!-- Row 3: Attestation operations -->
     <div class="card-compact" style="min-height:auto;">
-      <div id="registerPublicKeyBox" hidden style="margin-top:4px;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
-          <label for="registerPublicKey" style="margin:0; font-size:12.5px; font-weight:650;">TAA 注册公钥</label>
-          <button type="button" id="copyPubKeyBtn" class="icon-btn-compact" onclick="copyRegisterPublicKey(this)" title="复制公钥" aria-label="复制公钥">
-            <svg class="copy-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-            </svg>
-            <svg class="check-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:none; color:var(--ok);">
-              <polyline points="20 6 9 17 4 12"></polyline>
-            </svg>
-          </button>
-        </div>
-        <textarea id="registerPublicKey" readonly style="min-height:80px; font-size:11.5px; font-family:ui-monospace,Menlo,monospace; line-height:1.45; cursor:text; background:rgba(37,99,235,.04); border-radius:8px; margin:0;" onclick="this.select();"></textarea>
-      </div>
       <input type="hidden" id="attestRequestId" value="req-mock-attest-001">
       <div id="attestationResult" class="test-result" style="display:none;"></div>
-      <div class="actions" style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap;">
+      <div class="actions" style="margin-top:0; display:flex; gap:8px; flex-wrap:wrap;">
         <button onclick="testGetAttestation()">获取远程证明报告</button>
         <button id="saveReportBtn" class="success" onclick="saveAttestationReport()" disabled>保存报告文件</button>
         <button type="button" class="secondary" id="attestationBodyBtn" style="padding:6px 12px; font-size:13px; display:none;" onclick="openInteractionModal('attestation', 'primary')">查看返回</button>
@@ -262,10 +205,28 @@
       </div>
       <label for="importModelResourceUrl">resourceUrl</label>
       <input id="importModelResourceUrl" value="http://example.com/model.tar.gz">
-      <label for="importModelRequestId">requestId</label>
-      <input id="importModelRequestId" value="req-mock-importModel-001">
-      <label for="importModelTaskId">taskId</label>
-      <input id="importModelTaskId" value="">
+      <div class="id-input-row">
+        <button type="button" class="secondary btn-field-random" onclick="randomizeImportModelIds()" title="同时随机生成 requestId 与 taskId">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px; vertical-align:-1px;">
+            <polyline points="16 3 21 3 21 8"></polyline>
+            <line x1="4" y1="20" x2="21" y2="3"></line>
+            <polyline points="21 16 21 21 16 21"></polyline>
+            <line x1="15" y1="15" x2="21" y2="21"></line>
+            <line x1="4" y1="4" x2="9" y2="9"></line>
+          </svg>
+          随机 ID
+        </button>
+        <div class="id-inputs-cols">
+          <div class="id-input-col">
+            <label for="importModelRequestId">requestId</label>
+            <input id="importModelRequestId" value="req-mock-importModel-001">
+          </div>
+          <div class="id-input-col">
+            <label for="importModelTaskId">taskId</label>
+            <input id="importModelTaskId" value="" placeholder="可选">
+          </div>
+        </div>
+      </div>
       <div style="margin: 10px 0 6px; display: flex; align-items: center; gap: 12px;">
         <label class="switch-label" for="importModelUsePublicKeySwitch">
           <span class="switch-wrapper">
@@ -291,7 +252,6 @@
       </div>
       <div class="actions">
         <button onclick="testImportModel()">发送测试</button>
-        <button type="button" class="secondary" onclick="randomizeImportModelIds()" title="同时随机生成 requestId 与 taskId">随机 ID</button>
       </div>
       <div id="importModelResult" style="display:none;"></div>
     </section>
@@ -314,13 +274,30 @@
       </div>
       <label for="importResourceUrl">resourceUrl</label>
       <input id="importResourceUrl" value="http://example.com/data.tar.gz">
-      <label for="importRequestId">requestId</label>
-      <input id="importRequestId" value="req-mock-import-001">
-      <label for="importTaskId">taskId</label>
-      <input id="importTaskId" value="">
+      <div class="id-input-row">
+        <button type="button" class="secondary btn-field-random" onclick="randomizeImportIds()" title="同时随机生成 requestId 与 taskId">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px; vertical-align:-1px;">
+            <polyline points="16 3 21 3 21 8"></polyline>
+            <line x1="4" y1="20" x2="21" y2="3"></line>
+            <polyline points="21 16 21 21 16 21"></polyline>
+            <line x1="15" y1="15" x2="21" y2="21"></line>
+            <line x1="4" y1="4" x2="9" y2="9"></line>
+          </svg>
+          随机 ID
+        </button>
+        <div class="id-inputs-cols">
+          <div class="id-input-col">
+            <label for="importRequestId">requestId</label>
+            <input id="importRequestId" value="req-mock-import-001">
+          </div>
+          <div class="id-input-col">
+            <label for="importTaskId">taskId</label>
+            <input id="importTaskId" value="" placeholder="可选">
+          </div>
+        </div>
+      </div>
       <div class="actions">
         <button onclick="testImport()">发送测试</button>
-        <button type="button" class="secondary" onclick="randomizeImportIds()" title="同时随机生成 requestId 与 taskId">随机 ID</button>
       </div>
       <div id="importResult" style="display:none;"></div>
       <div id="card-reportRes" style="border-top: 1px dashed var(--line); margin-top: 14px; padding-top: 14px; display:flex; flex-direction:column; gap:10px;">
@@ -502,6 +479,35 @@
     </div>
     <div id="bodyModalBadge" style="display:none; margin:10px 14px 0; padding:10px 14px; border-radius:8px; font-size:13px; font-weight:600; background:rgba(127,127,127,.08); border:1px solid var(--line);"></div>
     <pre id="bodyModalContent" class="modal-body"></pre>
+  </div>
+</div>
+
+<div id="taaPublicKeyModal" class="modal-overlay" aria-hidden="true" onclick="if (event.target === this) closeTaaPublicKeyModal();">
+  <div class="modal" style="width:min(680px, 94%); display:flex; flex-direction:column;" role="dialog" aria-modal="true" aria-labelledby="taaPublicKeyModalTitle">
+    <div class="modal-head">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent);">
+          <path d="M21 2l-2 2m-1.5 1.5L14 9l-1.5-1.5L11 9l-1.5-1.5L8 9a5.5 5.5 0 1 0 3 7.5L21 6.5V2z"></path>
+        </svg>
+        <h3 id="taaPublicKeyModalTitle" style="margin:0;">TAA 注册公钥</h3>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="copyPubKeyBtn" class="secondary" onclick="copyRegisterPublicKey(this)" title="复制公钥" aria-label="复制公钥">
+          <svg class="copy-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+          <svg class="check-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:none; color:var(--ok);">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+          <span>复制公钥</span>
+        </button>
+        <button type="button" class="secondary" onclick="closeTaaPublicKeyModal()">关闭</button>
+      </div>
+    </div>
+    <div style="padding:14px 16px; overflow:auto;">
+      <textarea id="registerPublicKey" readonly style="min-height:140px; font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; line-height:1.45; cursor:text; background:rgba(37,99,235,.04); border-radius:8px; margin:0;" onclick="this.select();"></textarea>
+    </div>
   </div>
 </div>
 
