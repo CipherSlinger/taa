@@ -120,12 +120,114 @@ class TestReportingHelpers(unittest.TestCase):
         self.assertIn("timestamp", data)
         self.assertFalse((prog_dir / "progress.json.tmp").exists())
 
-        # 再次更新为 100.0 并验证
+        # Update to 100.0 and verify
         tracker.update(100.0)
         data2 = json.loads(prog_file.read_text(encoding="utf-8"))
         self.assertEqual(data2["percent"], 100.0)
         self.assertIn("timestamp", data2)
         self.assertFalse((prog_dir / "progress.json.tmp").exists())
+
+    def test_progress_tracker_rich_metadata_and_rfc3339nano_timestamp(self):
+        prog_dir = self.temp_dir / "rich_prog"
+        tracker = ProgressTracker(prog_dir)
+        written = tracker.update(
+            percent=12.345,
+            stage="train",
+            message="Epoch 1/10 [Batch 5/20] - loss: 0.4521, acc: 88.50%",
+            epoch=1,
+            total_epochs=10,
+            batch=5,
+            total_batches=20,
+            loss=0.452123,
+            acc=88.504,
+            force=True,
+        )
+        self.assertTrue(written)
+
+        prog_file = prog_dir / "progress.json"
+        self.assertTrue(prog_file.exists())
+        data = json.loads(prog_file.read_text(encoding="utf-8"))
+        self.assertEqual(data["percent"], 12.35)
+        self.assertEqual(data["stage"], "train")
+        self.assertEqual(data["message"], "Epoch 1/10 [Batch 5/20] - loss: 0.4521, acc: 88.50%")
+        self.assertEqual(data["epoch"], 1)
+        self.assertEqual(data["total_epochs"], 10)
+        self.assertEqual(data["batch"], 5)
+        self.assertEqual(data["total_batches"], 20)
+        self.assertEqual(data["loss"], 0.4521)
+        self.assertEqual(data["acc"], 88.5)
+
+        # Verify RFC3339Nano timestamp formatting
+        ts = data["timestamp"]
+        self.assertTrue(ts.endswith("Z"))
+        self.assertIn(".", ts)
+
+    def test_progress_tracker_monotonic_clamping(self):
+        prog_dir = self.temp_dir / "monotonic_prog"
+        tracker = ProgressTracker(prog_dir)
+
+        # First update
+        tracker.update(50.0, force=True)
+        self.assertEqual(tracker.last_percent, 50.0)
+
+        # Attempt to regress without force: should clamp to 50.0
+        tracker.update(40.0, force=True)
+        data = json.loads((prog_dir / "progress.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["percent"], 50.0)
+
+        # Over-100% clamps to 100.0
+        tracker.update(120.0, force=True)
+        data2 = json.loads((prog_dir / "progress.json").read_text(encoding="utf-8"))
+        self.assertEqual(data2["percent"], 100.0)
+
+    def test_progress_tracker_throttling(self):
+        prog_dir = self.temp_dir / "throttle_prog"
+        tracker = ProgressTracker(prog_dir, min_interval_seconds=10.0, min_percent_delta=1.0)
+
+        # First update always writes
+        w1 = tracker.update(10.0)
+        self.assertTrue(w1)
+
+        # Insignificant delta (< 1.0) and time (< 10s) should be throttled
+        w2 = tracker.update(10.2)
+        self.assertFalse(w2)
+
+        # Delta >= 1.0 should pass throttling
+        w3 = tracker.update(11.5)
+        self.assertTrue(w3)
+
+        # Force override should bypass throttling
+        w4 = tracker.update(11.6, force=True)
+        self.assertTrue(w4)
+
+    def test_progress_tracker_update_batch(self):
+        prog_dir = self.temp_dir / "batch_prog"
+        tracker = ProgressTracker(prog_dir)
+        written = tracker.update_batch(
+            epoch_idx=1,
+            total_epochs=10,
+            batch_idx=5,
+            total_batches=10,
+            epoch_base_pct=2.0,
+            epoch_span_pct=10.0,
+            train_ratio=0.8,
+            loss=0.31416,
+            acc=92.5,
+            force=True,
+        )
+        self.assertTrue(written)
+
+        data = json.loads((prog_dir / "progress.json").read_text(encoding="utf-8"))
+        # 2.0 + 10.0 * 0.8 * (5 / 10) = 2.0 + 4.0 = 6.0%
+        self.assertEqual(data["percent"], 6.0)
+        self.assertEqual(data["stage"], "train")
+        self.assertEqual(data["epoch"], 1)
+        self.assertEqual(data["total_epochs"], 10)
+        self.assertEqual(data["batch"], 5)
+        self.assertEqual(data["total_batches"], 10)
+        self.assertEqual(data["loss"], 0.3142)
+        self.assertEqual(data["acc"], 92.5)
+        self.assertIn("Epoch 1/10 [Batch 5/10]", data["message"])
 
 
 if __name__ == "__main__":

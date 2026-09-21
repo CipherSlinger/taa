@@ -29,7 +29,41 @@ python train_fusion.py -b TransMUF -g cpu -bc 4 -e 150 -d _dkd -s 512 -nw 4
 - 模型权重：`/opt/taa/output/model_fusion_TransMUF_dkd_win_num3_lr1_ep150bc_4lnum_1_Nopretrain_DKD/`
 - 任务结果：`/opt/taa/output/training_result.json`
 - 任务终端日志：`/opt/taa/output/log/train.log`（JSONL 单行格式，记录每行执行日志及 UTC 时间戳）
-- 任务进度：`/opt/taa/output/progress/progress.json`（原子写入的进度 JSON，包含 `percent` 进度百分比与 `timestamp` 时间戳）
+- 任务进度：`/opt/taa/output/progress/progress.json`（原子写入的进度 JSON，包含高精度时间戳、多阶段进度百分比与详细训练元数据）
+
+### 1.1 细粒度训练进度与状态上报机制
+
+`train_fusion.py` 实现了多阶段细粒度进度追踪与元数据写入，便于平台与终端实时直观地观测训练状态：
+
+1. **进度预算划分**：
+   - **初始化阶段 (0.0% - 2.0%)**：记录环境准备、模型初始化、损失函数/优化器配置、数据集与 DataLoader 创建。
+   - **训练与评估阶段 (2.0% - 96.0%)**：
+     - 每个 Epoch 根据总轮数均分进度区间。
+     - Epoch 内按训练 Batch 动态插值计算进度，并在 Batch 1、尾 Batch 及每 10% 进度处原子写入 `progress.json`。
+     - 每 20% Batch 在终端和 `train.log` 中同步输出 Step 级别的 loss 与 accuracy。
+     - 评估轮次（`epoch % 4 == 0`）动态细分 Evaluation 进度并汇报检查点保存事件。
+   - **收尾阶段 (96.0% - 100.0%)**：记录评测指标汇总、`training_result.json` 生成以及任务成功完成。
+
+2. **`progress.json` 数据结构示例**：
+```json
+{
+  "percent": 34.65,
+  "timestamp": "2026-09-21T07:15:32.123456Z",
+  "stage": "train",
+  "message": "Epoch 3/150 [Batch 15/40] - loss: 0.3821, acc: 85.00%",
+  "epoch": 3,
+  "total_epochs": 150,
+  "batch": 15,
+  "total_batches": 40,
+  "loss": 0.3821,
+  "acc": 85.0
+}
+```
+
+3. **I/O 节流与单调性保障**：
+   - 默认通过 `min_interval_seconds=0.5` 与 `min_percent_delta=0.1` 防止高频 Batch 刷盘造成的 I/O 抖动。
+   - 关键状态变更与 Milestone 支持 `force=True` 强制落盘。
+   - 进度百分比具备单调递增保障，防止网络抖动或异步轮询导致的进度回退。
 
 ---
 
