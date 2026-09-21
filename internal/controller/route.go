@@ -143,11 +143,16 @@ type TAAState struct {
 	LatestDataRecord      ImportIndexRecord        // 下发数据接口始终记录的最新数据索引
 	ModelChecksum         map[string]any           // 模型压缩包校验和 (size, algorithm, value)
 	DataChecksum          map[string]any           // 数据压缩包校验和 (size, algorithm, value)
-	CurrentOp             string                   // 当前操作: idle/downloading/decrypting/extracting/debugging/training/auditing/reporting
-	ActiveTaskID          string                   // 当前独占执行的任务 ID
-	ActiveRequestID       string                   // 当前独占执行的请求 ID
-	activeToken           int64                    // 当前独占令牌
-	activeTask            *ActiveTaskSnapshot      // 当前在飞任务快照
+	CurrentOp             string                   // Current operation: idle/downloading/decrypting/extracting/debugging/training/reporting
+	ActiveTaskID          string                   // Current active task ID for data/model transfer and training
+	ActiveRequestID       string                   // Current active request ID
+	activeToken           int64                    // Current active token
+	activeTask            *ActiveTaskSnapshot      // Snapshot of currently active task
+	CurrentAuditOp        string                   // Current audit operation: idle/auditing
+	AuditRunning          bool                     // Whether model code audit is actively running
+	ActiveAuditTaskID     string                   // Current active audit task ID
+	ActiveAuditRequestID  string                   // Current active audit request ID
+	auditMu               sync.Mutex               // Mutex guarding audit lifecycle
 	trainingControl       *trainingControl         // 当前训练任务的中止控制对象
 	stateStore            *StateStore              // 持久化密封存储
 	importIndex           *ImportIndexStore
@@ -481,6 +486,7 @@ func NewTAAState(attestationFile, platformIP, dockerID, hrkCertPath, hskCekCertP
 		Security:        sec,
 		Logs:            NewLogStore(1000),
 		CurrentOp:       "idle",
+		CurrentAuditOp:  "idle",
 	}
 }
 
@@ -491,6 +497,19 @@ func (s *TAAState) setCurrentOp(op string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.CurrentOp = op
+}
+
+// setCurrentAuditOp is a helper to update the audit operation status.
+func (s *TAAState) setCurrentAuditOp(op string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.CurrentAuditOp = op
+	s.AuditRunning = (op != "idle" && op != "")
+}
+
+// isAuditBusyLocked checks if model code audit is currently running (caller must hold s.mu RLock or Lock).
+func (s *TAAState) isAuditBusyLocked() bool {
+	return s.AuditRunning || s.CurrentAuditOp == "auditing"
 }
 
 // isTrainingBusyLocked 检查是否处于正在训练/执行阶段（调用方需持有 s.mu 读锁或写锁）。
@@ -528,7 +547,18 @@ func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel b
 			fmt.Sprintf("当前已有训练任务正在执行中 (taskId: %s, op: %s)，请等待完成后再提交", task, op))
 	}
 
-	// 2. 检查是否有其他任务正在处理（如正在下载、解密、审计等）
+	// 2. If requesting model import, ensure no previous model code audit is actively running.
+	// Data import and training are decoupled from model audit and can proceed concurrently.
+	if isModel && s.isAuditBusyLocked() {
+		auditTask := s.ActiveAuditTaskID
+		if auditTask == "" {
+			auditTask = "model_audit"
+		}
+		return nil, pkgerrors.New(pkgerrors.CodeConflict,
+			fmt.Sprintf("当前已有模型代码审计正在执行中 (taskId: %s, op: auditing)，请等待完成后再提交", auditTask))
+	}
+
+	// 3. 检查是否有其他任务正在处理（如正在下载、解密等）
 	if s.ActiveTaskID != "" || (s.CurrentOp != "" && s.CurrentOp != "idle") {
 		isSameTaskPair := false
 		if taskID != "" && s.ActiveTaskID == taskID {
@@ -639,6 +669,27 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 	panicMsg := fmt.Sprintf("%v", r)
 	s.Logs.Add(LogError, "panic", "%s 发生异常恢复: %v", name, r)
 	log.Printf("[PANIC RECOVERY] %s recovered from panic: %v", name, r)
+
+	// Isolate modelAudit panic so it does not clear active training tasks or snapshots.
+	if name == "modelAudit" {
+		s.auditMu.Lock()
+		s.mu.Lock()
+		taskID := s.ActiveAuditTaskID
+		requestID := s.ActiveAuditRequestID
+		platformIP := s.PlatformIP
+		dockerID := s.DockerID
+		s.ActiveAuditTaskID = ""
+		s.ActiveAuditRequestID = ""
+		s.CurrentAuditOp = "idle"
+		s.AuditRunning = false
+		s.mu.Unlock()
+		s.auditMu.Unlock()
+
+		if platformIP != "" && dockerID != "" && (taskID != "" || requestID != "") {
+			s.reportAuditAsync(requestID, taskID, 2, fmt.Sprintf("model audit panic: %s", panicMsg), "")
+		}
+		return
+	}
 
 	// 1. 读取当前在飞任务信息并清空内存在飞任务，落盘密封存储
 	s.mu.Lock()

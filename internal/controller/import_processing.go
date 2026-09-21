@@ -65,22 +65,21 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		}
 		s.Logs.Add(LogInfo, "extract", "解压成功")
 
-		// ── 阶段一：模型解封解密与解压完成，立马上报模型导入结果与 checksum ──
+		// ── Stage 1: Report model import result immediately upon decompression ──
 		checksum := map[string]any{
 			"size":      size,
 			"algorithm": "sm3",
 			"value":     hash,
 		}
 		s.reportModelImportAsync(req.RequestID, req.TaskID, 0, "模型导入成功", checksum)
-
-		// ── 阶段二：对解压后的模型代码执行安全审计并上报 reportAudit ──
-		if !s.auditAndReportModelImport(req) {
-			s.Logs.Add(LogError, "import", "模型安全审计未通过，终止导入流程并清除模型代码: taskId=%s", req.TaskID)
-			s.clearImportedState(true, phase)
-			s.setCurrentOp("idle")
-			return
-		}
 		s.saveModelSuccess(req.ResourceURL)
+
+		// ── Stage 2: Launch model security audit asynchronously in background ──
+		// Decouples auditing from task pipeline so data import and training are not blocked.
+		s.startModelAuditAsync(req, phase)
+		s.Logs.Add(LogInfo, "import", "阶段%d: 模型导入完成，安全审计已在后台异步启动，等待数据下发后执行训练: taskId=%s", phase, req.TaskID)
+		s.setCurrentOp("idle")
+		return
 	} else {
 		size, hash, err := teecrypto.HashFileSM3(plaintextPath)
 		if err != nil {
@@ -146,7 +145,7 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	// 1. 检查模型是否已就绪及是否在飞
 	s.mu.RLock()
 	modelImported := s.ModelImported
-	modelInProgress := (s.activeTask != nil && s.activeTask.Type == "model_import") || s.CurrentOp == "auditing"
+	modelInProgress := (s.activeTask != nil && s.activeTask.Type == "model_import")
 	isBusy := s.isTrainingBusyLocked()
 	runtimeConfigRaw := s.RuntimeConfig
 	s.mu.RUnlock()
@@ -157,7 +156,7 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		return
 	}
 	if modelInProgress {
-		s.Logs.Add(LogInfo, "import", "阶段%d: 数据导入完成，模型仍在导入审计中，等待模型就绪后执行训练", phase)
+		s.Logs.Add(LogInfo, "import", "阶段%d: 数据导入完成，模型仍在导入传输中，等待模型就绪后执行训练", phase)
 		s.setCurrentOp("idle")
 		return
 	}
@@ -559,6 +558,57 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 	s.Logs.Add(LogInfo, "import", "资源导入流程完成: taskId=%s", trainReq.TaskID)
 }
 
+// stopActiveTraining requests cancellation of any actively executing training process.
+func (s *TAAState) stopActiveTraining(reason string) {
+	s.mu.RLock()
+	control := s.trainingControl
+	isTraining := s.TrainingRunning && s.activeTask != nil && s.activeTask.Type == "training"
+	s.mu.RUnlock()
+
+	if control == nil || !isTraining {
+		return
+	}
+	s.Logs.Add(LogWarn, "train", "%s, cancelling active training task", reason)
+	cmd := control.requestStop()
+	if cmd != nil {
+		if err := KillProcessGroup(cmd); err != nil {
+			s.Logs.Add(LogWarn, "train", "warning cancelling training process group: %v", err)
+		}
+	}
+}
+
+// startModelAuditAsync launches the model security audit asynchronously in the background.
+// This decouples code auditing from the main task pipeline, allowing subsequent data
+// imports and training tasks to proceed concurrently without mutual exclusion conflicts.
+func (s *TAAState) startModelAuditAsync(req importRequest, phase int) {
+	s.auditMu.Lock()
+	s.mu.Lock()
+	s.ActiveAuditTaskID = req.TaskID
+	s.ActiveAuditRequestID = req.RequestID
+	s.CurrentAuditOp = "auditing"
+	s.AuditRunning = true
+	s.mu.Unlock()
+	s.auditMu.Unlock()
+
+	s.runAsyncSafe("modelAudit", func() {
+		s.auditMu.Lock()
+		defer s.auditMu.Unlock()
+		s.mu.Lock()
+		s.ActiveAuditTaskID = ""
+		s.ActiveAuditRequestID = ""
+		s.CurrentAuditOp = "idle"
+		s.AuditRunning = false
+		s.mu.Unlock()
+	}, func() {
+		passed := s.auditAndReportModelImport(req)
+		if !passed {
+			s.Logs.Add(LogError, "import", "模型安全审计未通过，清除模型状态: taskId=%s", req.TaskID)
+			s.clearImportedState(true, phase)
+			s.stopActiveTraining("模型安全审计未通过")
+		}
+	})
+}
+
 // auditAndReportModelImport 对解压后的模型代码执行安全审计（静态扫描 + 可选 LLM 语义验证），
 // 并将审计结果通过 /v1/taa/reportAudit 上报平台。返回是否审计通过。
 func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
@@ -570,7 +620,7 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 
 	cfg := s.Security.LLM
 	StepSeparator("Code Audit")
-	s.setCurrentOp("auditing")
+	s.setCurrentAuditOp("auditing")
 	s.Logs.Add(LogInfo, "audit", "开始模型代码审计: dir=%s, llmEnabled=%v, policy=%s, failClosed=%v",
 		s.Security.ModelDir, cfg.Enabled, cfg.Policy, cfg.FailClosed)
 
@@ -584,7 +634,7 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
 		}
 		s.reportAuditAsync(req.RequestID, req.TaskID, 2, "LLM 服务不可用，按 fail-closed 策略上报失败", "")
-		s.setCurrentOp("idle")
+		s.setCurrentAuditOp("idle")
 		return false
 	}
 
@@ -595,7 +645,7 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
 		}
 		s.reportAuditAsync(req.RequestID, req.TaskID, 2, fmt.Sprintf("代码审计失败: %v", err), "")
-		s.setCurrentOp("idle")
+		s.setCurrentAuditOp("idle")
 		return false
 	}
 	s.setLastAudit(audit)
@@ -613,7 +663,7 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 		audit.Conclusion.Passed, audit.Conclusion.RiskLevel, audit.Conclusion.Statistics.Total())
 
 	s.reportAuditAsync(req.RequestID, req.TaskID, code, msg, auditReportJSON(audit))
-	s.setCurrentOp("idle")
+	s.setCurrentAuditOp("idle")
 	return passed
 }
 

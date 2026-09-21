@@ -294,3 +294,148 @@ func TestConcurrency_RealHTTPConcurrentRequests(t *testing.T) {
 
 	waitForIdle(t, state)
 }
+
+// TestConcurrency_DataImportAllowedWhileAuditing verifies that when model code audit
+// is running in the background, incoming data import tasks are not blocked with 409 Conflict.
+func TestConcurrency_DataImportAllowedWhileAuditing(t *testing.T) {
+	state, server := setupTestServer(t)
+
+	// Simulate background model audit actively running
+	state.mu.Lock()
+	state.AuditRunning = true
+	state.CurrentAuditOp = "auditing"
+	state.ActiveAuditTaskID = "contract-model-import-task-01"
+	state.ActiveAuditRequestID = "contract-model-import-req-01"
+	state.ModelImported = true
+	state.mu.Unlock()
+
+	// 1. tryAcquireTask for data import (isModel = false) must succeed
+	release, err := state.tryAcquireTask("task-data-01", "req-data-01", "downloading", false)
+	if err != nil {
+		t.Fatalf("expected data import tryAcquireTask to succeed while auditing, got err: %v", err)
+	}
+	if release == nil {
+		t.Fatal("expected non-nil release func")
+	}
+
+	state.mu.RLock()
+	if state.ActiveTaskID != "task-data-01" || state.CurrentOp != "downloading" {
+		t.Fatalf("unexpected active task state: id=%s, op=%s", state.ActiveTaskID, state.CurrentOp)
+	}
+	// Audit status must remain intact
+	if !state.AuditRunning || state.CurrentAuditOp != "auditing" {
+		t.Fatalf("audit state was corrupted: running=%v, op=%s", state.AuditRunning, state.CurrentAuditOp)
+	}
+	state.mu.RUnlock()
+
+	release()
+
+	// 2. HTTP POST /v1/taa/import must also succeed without 409 Conflict
+	archiveServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/gzip")
+		_, _ = w.Write([]byte("mock-data-content"))
+	}))
+	defer archiveServer.Close()
+
+	resp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+		"resourceUrl": archiveServer.URL + "/data.tar.gz",
+		"requestId":   "req-data-concurrent",
+		"taskId":      "task-data-concurrent",
+	})
+	api := decodeResponse(t, resp)
+
+	if resp.StatusCode == http.StatusConflict || api.Error == http.StatusConflict {
+		t.Fatalf("expected HTTP request to not return 409 Conflict while auditing, got: %s", api.Msg)
+	}
+}
+
+// TestConcurrency_ModelImportRejectedWhileAuditing verifies that when model code audit
+// is running in the background, a second model import is rejected to prevent directory race conditions.
+func TestConcurrency_ModelImportRejectedWhileAuditing(t *testing.T) {
+	state, server := setupTestServer(t)
+
+	// Simulate background model audit actively running
+	state.mu.Lock()
+	state.AuditRunning = true
+	state.CurrentAuditOp = "auditing"
+	state.ActiveAuditTaskID = "contract-model-import-task-01"
+	state.ActiveAuditRequestID = "contract-model-import-req-01"
+	state.mu.Unlock()
+
+	// 1. Direct tryAcquireTask for another model import (isModel = true) must return 409 Conflict
+	release, err := state.tryAcquireTask("task-model-02", "req-model-02", "downloading", true)
+	if err == nil {
+		if release != nil {
+			release()
+		}
+		t.Fatal("expected conflict error for model import while audit is running, got nil")
+	}
+	code := pkgerrors.CodeOf(err, 0)
+	if code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict, got %d (err: %v)", code, err)
+	}
+	if !strings.Contains(err.Error(), "模型代码审计正在执行中") {
+		t.Fatalf("expected audit busy message, got: %v", err)
+	}
+
+	// 2. HTTP POST /v1/taa/importModel must return 409 Conflict
+	resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+		"resourceUrl": "http://127.0.0.1:9999/model2.tar.gz",
+		"requestId":   "req-model-02",
+		"taskId":      "task-model-02",
+	})
+	api := decodeResponse(t, resp)
+
+	if resp.StatusCode != http.StatusConflict || api.Error != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for concurrent model import, got status=%d, error=%d, msg=%s",
+			resp.StatusCode, api.Error, api.Msg)
+	}
+	if !strings.Contains(api.Msg, "模型代码审计正在执行中") {
+		t.Fatalf("expected audit busy error message, got: %s", api.Msg)
+	}
+}
+
+// TestConcurrency_AuditPanicDoesNotClearTrainingTask verifies that an unexpected panic
+// inside the asynchronous model audit goroutine does not clobber any running training task.
+func TestConcurrency_AuditPanicDoesNotClearTrainingTask(t *testing.T) {
+	state, _ := setupTestServer(t)
+
+	state.mu.Lock()
+	state.TrainingRunning = true
+	state.CurrentOp = "training"
+	state.ActiveTaskID = "task-training-active"
+	state.ActiveRequestID = "req-training-active"
+	state.activeTask = &ActiveTaskSnapshot{
+		TaskID:    "task-training-active",
+		RequestID: "req-training-active",
+		Type:      "training",
+		Status:    "RUNNING",
+	}
+	state.AuditRunning = true
+	state.CurrentAuditOp = "auditing"
+	state.ActiveAuditTaskID = "task-audit-panicking"
+	state.ActiveAuditRequestID = "req-audit-panicking"
+	state.mu.Unlock()
+
+	// Invoke panic handler for modelAudit
+	state.handleAsyncPanic("modelAudit", "simulated audit failure")
+
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+
+	// Audit state must be reset
+	if state.AuditRunning || state.CurrentAuditOp != "idle" || state.ActiveAuditTaskID != "" {
+		t.Fatalf("audit state was not cleared after panic: running=%v, op=%s, id=%s",
+			state.AuditRunning, state.CurrentAuditOp, state.ActiveAuditTaskID)
+	}
+
+	// Active training task must be preserved completely
+	if !state.TrainingRunning || state.CurrentOp != "training" || state.ActiveTaskID != "task-training-active" {
+		t.Fatalf("training task was corrupted by audit panic: trainingRunning=%v, currentOp=%s, activeTaskId=%s",
+			state.TrainingRunning, state.CurrentOp, state.ActiveTaskID)
+	}
+	if state.activeTask == nil || state.activeTask.TaskID != "task-training-active" {
+		t.Fatalf("activeTask snapshot was cleared by audit panic: %+v", state.activeTask)
+	}
+}
+

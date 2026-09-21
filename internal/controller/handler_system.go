@@ -41,6 +41,9 @@ func (s *TAAState) healthHandler(w http.ResponseWriter, r *http.Request) {
 	modelImported := s.ModelImported
 	trainingRunning := s.TrainingRunning
 	currentOp := s.CurrentOp
+	if currentOp == "idle" && s.AuditRunning {
+		currentOp = "auditing"
+	}
 	s.mu.RUnlock()
 
 	writeEnvelope(w, http.StatusOK, "ok", map[string]any{
@@ -60,6 +63,9 @@ func (s *TAAState) statusHandler(w http.ResponseWriter, r *http.Request) {
 	modelImported := s.ModelImported
 	trainingRunning := s.TrainingRunning
 	currentOp := s.CurrentOp
+	if currentOp == "idle" && s.AuditRunning {
+		currentOp = "auditing"
+	}
 	s.mu.RUnlock()
 
 	writeEnvelope(w, http.StatusOK, "ok", map[string]any{
@@ -89,8 +95,12 @@ func (s *TAAState) switchHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.isTrainingBusyLocked() || s.ActiveTaskID != "" || (s.CurrentOp != "" && s.CurrentOp != "idle") {
+	if s.isTrainingBusyLocked() || s.ActiveTaskID != "" || (s.CurrentOp != "" && s.CurrentOp != "idle") || s.isAuditBusyLocked() {
 		task, op := s.activeTaskInfoLocked()
+		if (op == "" || op == "idle") && s.isAuditBusyLocked() {
+			task = s.ActiveAuditTaskID
+			op = "auditing"
+		}
 		writeErr(w, http.StatusConflict, pkgerrors.New(pkgerrors.CodeConflict,
 			fmt.Sprintf("当前已有任务正在执行中 (taskId: %s, op: %s)，严禁切换运行阶段", task, op)))
 		return
