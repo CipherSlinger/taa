@@ -152,7 +152,6 @@ type TAAState struct {
 	AuditRunning          bool                     // Whether model code audit is actively running
 	ActiveAuditTaskID     string                   // Current active audit task ID
 	ActiveAuditRequestID  string                   // Current active audit request ID
-	auditMu               sync.Mutex               // Mutex guarding audit lifecycle
 	trainingControl       *trainingControl         // 当前训练任务的中止控制对象
 	stateStore            *StateStore              // 持久化密封存储
 	importIndex           *ImportIndexStore
@@ -512,6 +511,32 @@ func (s *TAAState) isAuditBusyLocked() bool {
 	return s.AuditRunning || s.CurrentAuditOp == "auditing"
 }
 
+// resetAuditStateLocked resets model audit fields to idle state (caller must hold s.mu Lock).
+func (s *TAAState) resetAuditStateLocked() {
+	s.ActiveAuditTaskID = ""
+	s.ActiveAuditRequestID = ""
+	s.CurrentAuditOp = "idle"
+	s.AuditRunning = false
+}
+
+// clearAuditState resets model audit fields under lock.
+func (s *TAAState) clearAuditState() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resetAuditStateLocked()
+}
+
+// effectiveOpLocked returns the user-facing operational status (caller must hold s.mu RLock or Lock).
+func (s *TAAState) effectiveOpLocked() string {
+	if (s.CurrentOp == "" || s.CurrentOp == "idle") && s.isAuditBusyLocked() {
+		return "auditing"
+	}
+	if s.CurrentOp != "" {
+		return s.CurrentOp
+	}
+	return "idle"
+}
+
 // isTrainingBusyLocked 检查是否处于正在训练/执行阶段（调用方需持有 s.mu 读锁或写锁）。
 func (s *TAAState) isTrainingBusyLocked() bool {
 	return s.TrainingRunning || s.CurrentOp == "staging" || s.CurrentOp == "training" || s.CurrentOp == "reporting"
@@ -519,10 +544,20 @@ func (s *TAAState) isTrainingBusyLocked() bool {
 
 // activeTaskInfoLocked 获取当前占用任务的信息描述（调用方需持有 s.mu 读锁或写锁）。
 func (s *TAAState) activeTaskInfoLocked() (string, string) {
-	task := s.ActiveTaskID
-	if task == "" {
-		task = s.ActiveRequestID
+	if s.ActiveTaskID != "" {
+		return s.ActiveTaskID, s.CurrentOp
 	}
+	if s.activeTask != nil {
+		return s.activeTask.TaskID, s.CurrentOp
+	}
+	if s.isAuditBusyLocked() {
+		task := s.ActiveAuditTaskID
+		if task == "" {
+			task = "model_audit"
+		}
+		return task, "auditing"
+	}
+	task := s.ActiveRequestID
 	if task == "" {
 		task = "unknown"
 	}
@@ -672,18 +707,13 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 
 	// Isolate modelAudit panic so it does not clear active training tasks or snapshots.
 	if name == "modelAudit" {
-		s.auditMu.Lock()
 		s.mu.Lock()
 		taskID := s.ActiveAuditTaskID
 		requestID := s.ActiveAuditRequestID
 		platformIP := s.PlatformIP
 		dockerID := s.DockerID
-		s.ActiveAuditTaskID = ""
-		s.ActiveAuditRequestID = ""
-		s.CurrentAuditOp = "idle"
-		s.AuditRunning = false
+		s.resetAuditStateLocked()
 		s.mu.Unlock()
-		s.auditMu.Unlock()
 
 		if platformIP != "" && dockerID != "" && (taskID != "" || requestID != "") {
 			s.reportAuditAsync(requestID, taskID, 2, fmt.Sprintf("model audit panic: %s", panicMsg), "")

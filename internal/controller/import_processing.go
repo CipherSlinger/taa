@@ -581,24 +581,15 @@ func (s *TAAState) stopActiveTraining(reason string) {
 // This decouples code auditing from the main task pipeline, allowing subsequent data
 // imports and training tasks to proceed concurrently without mutual exclusion conflicts.
 func (s *TAAState) startModelAuditAsync(req importRequest, phase int) {
-	s.auditMu.Lock()
 	s.mu.Lock()
 	s.ActiveAuditTaskID = req.TaskID
 	s.ActiveAuditRequestID = req.RequestID
 	s.CurrentAuditOp = "auditing"
 	s.AuditRunning = true
 	s.mu.Unlock()
-	s.auditMu.Unlock()
 
 	s.runAsyncSafe("modelAudit", func() {
-		s.auditMu.Lock()
-		defer s.auditMu.Unlock()
-		s.mu.Lock()
-		s.ActiveAuditTaskID = ""
-		s.ActiveAuditRequestID = ""
-		s.CurrentAuditOp = "idle"
-		s.AuditRunning = false
-		s.mu.Unlock()
+		s.clearAuditState()
 	}, func() {
 		passed := s.auditAndReportModelImport(req)
 		if !passed {
@@ -621,6 +612,7 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 	cfg := s.Security.LLM
 	StepSeparator("Code Audit")
 	s.setCurrentAuditOp("auditing")
+	defer s.setCurrentAuditOp("idle")
 	s.Logs.Add(LogInfo, "audit", "开始模型代码审计: dir=%s, llmEnabled=%v, policy=%s, failClosed=%v",
 		s.Security.ModelDir, cfg.Enabled, cfg.Policy, cfg.FailClosed)
 
@@ -634,7 +626,6 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
 		}
 		s.reportAuditAsync(req.RequestID, req.TaskID, 2, "LLM 服务不可用，按 fail-closed 策略上报失败", "")
-		s.setCurrentAuditOp("idle")
 		return false
 	}
 
@@ -645,7 +636,6 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
 		}
 		s.reportAuditAsync(req.RequestID, req.TaskID, 2, fmt.Sprintf("代码审计失败: %v", err), "")
-		s.setCurrentAuditOp("idle")
 		return false
 	}
 	s.setLastAudit(audit)
@@ -663,7 +653,6 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 		audit.Conclusion.Passed, audit.Conclusion.RiskLevel, audit.Conclusion.Statistics.Total())
 
 	s.reportAuditAsync(req.RequestID, req.TaskID, code, msg, auditReportJSON(audit))
-	s.setCurrentAuditOp("idle")
 	return passed
 }
 
