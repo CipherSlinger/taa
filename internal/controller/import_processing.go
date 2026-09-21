@@ -688,14 +688,21 @@ func newLLMClient(cfg codeaudit.LLMConfig) codeaudit.LLMClient {
 	return nil
 }
 
+const auditLLMHealthCheckTimeout = 30 * time.Second
+
 // isLLMServiceAvailable probes whether the inference service is healthy and reachable.
 // It prioritizes standard TEE-LLM client health checking (/healthz over TEE-TLS),
 // and falls back to legacy raw Ollama probe (/api/tags) if client creation failed but endpoint is HTTP.
 func isLLMServiceAvailable(client codeaudit.LLMClient, endpoint, model string) bool {
 	if client != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), auditLLMHealthCheckTimeout)
 		defer cancel()
-		return client.HealthCheck(ctx) == nil
+		if err := client.HealthCheck(ctx); err != nil {
+			log.Printf("isLLMServiceAvailable: health check failed: endpoint=%s model=%s timeout=%s error=%v",
+				endpoint, model, auditLLMHealthCheckTimeout, err)
+			return false
+		}
+		return true
 	}
 	return llmAvailable(endpoint, model)
 }

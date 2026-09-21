@@ -1,9 +1,11 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,9 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/CipherSlinger/teellm"
 	"github.com/CipherSlinger/teetls"
 	"taa/internal/codeaudit"
-	"github.com/CipherSlinger/teellm"
 )
 
 func TestLLMAvailable(t *testing.T) {
@@ -64,6 +66,56 @@ func TestLLMAvailable(t *testing.T) {
 
 	if llmAvailable("", "qwen2.5-coder:0.5b") {
 		t.Fatal("llmAvailable = true, want false for empty endpoint")
+	}
+}
+
+type healthCheckFailureLLMClient struct {
+	deadline time.Time
+	err      error
+}
+
+func (c *healthCheckFailureLLMClient) VerifyFinding(context.Context, *teellm.RequestEnvelope) (*teellm.ResponseEnvelope, error) {
+	return nil, nil
+}
+
+func (c *healthCheckFailureLLMClient) HealthCheck(ctx context.Context) error {
+	c.deadline, _ = ctx.Deadline()
+	return c.err
+}
+
+func (c *healthCheckFailureLLMClient) Close() error {
+	return nil
+}
+
+func TestIsLLMServiceAvailable_TimeoutAndErrorLog(t *testing.T) {
+	const endpoint = "https://127.0.0.1:8443"
+	const model = "qwen2.5-coder:3b"
+	sentinelErr := errors.New("TEE-TLS health check failed")
+	client := &healthCheckFailureLLMClient{err: sentinelErr}
+
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousOutput)
+
+	startedAt := time.Now()
+	if isLLMServiceAvailable(client, endpoint, model) {
+		t.Fatal("isLLMServiceAvailable = true, want false")
+	}
+
+	if client.deadline.IsZero() {
+		t.Fatal("HealthCheck context did not include a deadline")
+	}
+	deadlineDuration := client.deadline.Sub(startedAt)
+	if deadlineDuration < 29*time.Second || deadlineDuration > auditLLMHealthCheckTimeout+time.Second {
+		t.Fatalf("health-check deadline duration = %s, want approximately %s", deadlineDuration, auditLLMHealthCheckTimeout)
+	}
+
+	logText := logs.String()
+	for _, expected := range []string{endpoint, model, "timeout=30s", sentinelErr.Error()} {
+		if !strings.Contains(logText, expected) {
+			t.Errorf("health-check log missing %q: %s", expected, logText)
+		}
 	}
 }
 
