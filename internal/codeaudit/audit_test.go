@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -279,6 +280,51 @@ func TestAssembleAuditReport(t *testing.T) {
 	}
 	if audit.ScanMetadata.ScanDurationMs != 2000 {
 		t.Fatalf("scan_duration_ms = %d, want 2000", audit.ScanMetadata.ScanDurationMs)
+	}
+}
+
+func TestAssembleAuditReport_SummaryHonestyAndFailClosed(t *testing.T) {
+	// Case 1: Degraded LLM with low findings should NOT claim "大模型确认为正常"
+	scanReportDegraded := &Report{
+		FilesCount:  1,
+		Passed:      false,
+		LLMDegraded: true,
+		Findings: []Finding{
+			{File: "test_run.py", Line: 1, RuleID: "EMB_003", Severity: SeverityMedium, LLMVerdict: "UNCERTAIN"},
+		},
+	}
+	cfgFailClosed := LLMConfig{Model: "qwen2.5-coder:3b", Enabled: true, Policy: "assist", FailClosed: true}
+	auditDegraded := AssembleAuditReport("/test", scanReportDegraded, nil, map[string]int{"test_run.py": 10}, cfgFailClosed, 500*time.Millisecond)
+
+	if auditDegraded.Conclusion.Passed {
+		t.Fatal("expected audit to fail closed when scanReport.Passed is false")
+	}
+	if strings.Contains(auditDegraded.Conclusion.Summary, "大模型确认为正常") {
+		t.Fatalf("degraded audit must not claim LLM confirmed benign: %s", auditDegraded.Conclusion.Summary)
+	}
+	if !strings.Contains(auditDegraded.Conclusion.Summary, "大模型服务降级") {
+		t.Fatalf("degraded audit should state LLM degraded: %s", auditDegraded.Conclusion.Summary)
+	}
+	if !strings.Contains(auditDegraded.Conclusion.Summary, "fail-closed 阻断策略") {
+		t.Fatalf("fail-closed blocked audit should state fail-closed block: %s", auditDegraded.Conclusion.Summary)
+	}
+
+	// Case 2: Healthy LLM with actual BENIGN finding should honestly report "大模型确认为正常"
+	scanReportBenign := &Report{
+		FilesCount: 1,
+		Passed:     true,
+		Findings: []Finding{
+			{File: "test_run.py", Line: 1, RuleID: "EMB_003", Severity: SeverityMedium, LLMVerdict: "BENIGN"},
+		},
+	}
+	cfgHealthy := LLMConfig{Model: "qwen2.5-coder:3b", Enabled: true, Policy: "assist", FailClosed: true}
+	auditBenign := AssembleAuditReport("/test", scanReportBenign, nil, map[string]int{"test_run.py": 10}, cfgHealthy, 500*time.Millisecond)
+
+	if !auditBenign.Conclusion.Passed {
+		t.Fatal("expected benign audit to pass")
+	}
+	if !strings.Contains(auditBenign.Conclusion.Summary, "大模型确认为正常") {
+		t.Fatalf("healthy audit with benign verdict should confirm LLM benign: %s", auditBenign.Conclusion.Summary)
 	}
 }
 

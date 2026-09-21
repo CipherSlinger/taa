@@ -252,8 +252,24 @@ func ComputeStatistics(findings []Finding) AuditStatistics {
 	return stats
 }
 
+// ConclusionContext carries additional audit context for conclusion generation.
+type ConclusionContext struct {
+	LLMDegraded  bool
+	HasLLMBenign bool
+	ScanPassed   *bool
+	FailClosed   bool
+}
+
 // ComputeConclusion determines the audit conclusion from statistics and policy.
+// Retained for backward compatibility.
 func ComputeConclusion(stats AuditStatistics, fileReports []FileReport, policy string) AuditConclusion {
+	return ComputeConclusionContext(stats, fileReports, policy, ConclusionContext{
+		HasLLMBenign: true,
+	})
+}
+
+// ComputeConclusionContext determines the audit conclusion from statistics, policy, and scan context.
+func ComputeConclusionContext(stats AuditStatistics, fileReports []FileReport, policy string, ctx ConclusionContext) AuditConclusion {
 	riskLevel := "NONE"
 
 	if stats.High > 0 {
@@ -274,7 +290,11 @@ func ComputeConclusion(stats AuditStatistics, fileReports []FileReport, policy s
 		passed = stats.High == 0
 	}
 
-	summary := buildSummaryText(stats, riskLevel)
+	if ctx.ScanPassed != nil && !*ctx.ScanPassed {
+		passed = false
+	}
+
+	summary := buildSummaryTextExt(stats, riskLevel, passed, ctx.LLMDegraded, ctx.HasLLMBenign)
 	recommendation := buildRecommendation(fileReports)
 
 	return AuditConclusion{
@@ -308,7 +328,27 @@ func AssembleAuditReport(
 		return fileReports[i].FindingsCount > fileReports[j].FindingsCount
 	})
 
-	conclusion := ComputeConclusion(stats, fileReports, cfg.Policy)
+	var hasLLMBenign bool
+	var scanPassed *bool
+	var llmDegraded bool
+	if scanReport != nil {
+		sp := scanReport.Passed
+		scanPassed = &sp
+		llmDegraded = scanReport.LLMDegraded
+		for _, f := range scanReport.Findings {
+			if strings.EqualFold(strings.TrimSpace(f.LLMVerdict), "BENIGN") {
+				hasLLMBenign = true
+				break
+			}
+		}
+	}
+
+	conclusion := ComputeConclusionContext(stats, fileReports, cfg.Policy, ConclusionContext{
+		LLMDegraded:  llmDegraded,
+		HasLLMBenign: hasLLMBenign,
+		ScanPassed:   scanPassed,
+		FailClosed:   cfg.FailClosed,
+	})
 
 	totalLines := 0
 	for _, count := range fileLineCounts {
@@ -413,6 +453,11 @@ func CountFileLines(path string) int {
 // ── Internal helpers ──────────────────────────────────────
 
 func buildSummaryText(stats AuditStatistics, riskLevel string) string {
+	passed := riskLevel != "CRITICAL" && riskLevel != "HIGH"
+	return buildSummaryTextExt(stats, riskLevel, passed, false, true)
+}
+
+func buildSummaryTextExt(stats AuditStatistics, riskLevel string, passed bool, llmDegraded bool, hasLLMBenign bool) string {
 	if stats.Total() == 0 {
 		return "未发现安全问题，代码通过审计"
 	}
@@ -427,8 +472,12 @@ func buildSummaryText(stats AuditStatistics, riskLevel string) string {
 	if stats.Low > 0 {
 		if len(parts) > 0 {
 			parts = append(parts, fmt.Sprintf("%d 处低危/良性提示项", stats.Low))
-		} else {
+		} else if llmDegraded {
+			parts = append(parts, fmt.Sprintf("发现 %d 处低危/良性提示项（大模型服务降级，按规则评估）", stats.Low))
+		} else if hasLLMBenign {
 			parts = append(parts, fmt.Sprintf("发现 %d 处低危/良性提示项（大模型确认为正常）", stats.Low))
+		} else {
+			parts = append(parts, fmt.Sprintf("发现 %d 处低危/良性提示项", stats.Low))
 		}
 	}
 
@@ -438,7 +487,13 @@ func buildSummaryText(stats AuditStatistics, riskLevel string) string {
 
 	summary := "审计结论: " + strings.Join(parts, "，")
 
-	if riskLevel == "CRITICAL" || riskLevel == "HIGH" {
+	if !passed {
+		if riskLevel == "CRITICAL" || riskLevel == "HIGH" {
+			summary += "。存在数据泄露风险，建议阻断导入"
+		} else {
+			summary += "。触发 fail-closed 阻断策略，禁止导入"
+		}
+	} else if riskLevel == "CRITICAL" || riskLevel == "HIGH" {
 		summary += "。存在数据泄露风险，建议阻断导入"
 	} else if riskLevel == "LOW" || riskLevel == "NONE" {
 		summary += "。代码符合安全规范，准予导入"

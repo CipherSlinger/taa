@@ -702,8 +702,8 @@ func isLLMServiceAvailable(client codeaudit.LLMClient, endpoint, model string) b
 
 // auditReportJSON is implemented in codeaudit_projection.go.
 
-// llmAvailable 探测 Ollama 服务是否就绪且模型已加载。
-// 仅用于 fail-closed 预检，使用较短的超时避免长时间阻塞。
+// llmAvailable probes whether Ollama daemon is ready and the model can execute inference.
+// Used for fail-closed pre-check with a short timeout.
 func llmAvailable(endpoint, model string) bool {
 	if strings.TrimSpace(endpoint) == "" {
 		return false
@@ -722,7 +722,24 @@ func llmAvailable(endpoint, model string) bool {
 		return false
 	}
 	body, _ := io.ReadAll(resp.Body)
-	return strings.Contains(string(body), model) || model == ""
+	if model != "" && !strings.Contains(string(body), model) {
+		return false
+	}
+
+	// Active generate probe to verify tensor weights can be mapped and executed.
+	if model != "" {
+		probePayload := fmt.Sprintf(`{"model":%q,"prompt":"ping","stream":false,"options":{"num_predict":1}}`, model)
+		genResp, err := client.Post(strings.TrimRight(base, "/")+"/api/generate", "application/json", strings.NewReader(probePayload))
+		if err != nil {
+			return false
+		}
+		defer genResp.Body.Close()
+		if genResp.StatusCode != http.StatusOK {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (s *TAAState) reportImportFailure(req importRequest, phase int, isModel bool, startedAt time.Time, reason string) {

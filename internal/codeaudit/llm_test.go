@@ -533,6 +533,33 @@ func TestVerifyReport_InferenceClient_CircuitOpen_AssistDegraded(t *testing.T) {
 	}
 }
 
+func TestVerifyReport_InferenceClient_CircuitOpen_AssistFailClosed(t *testing.T) {
+	report := &Report{
+		HighCount:   0,
+		MediumCount: 1,
+		Passed:      true,
+		Findings: []Finding{
+			{File: "a.py", Line: 1, RuleID: "DYN_001", Severity: SeverityMedium, CodeSnippet: "eval(expr)"},
+		},
+	}
+	client := &mockInferenceClient{err: teellm.ErrCircuitOpen}
+	cfg := LLMConfig{Enabled: true, Policy: "assist", FailClosed: true, MaxFindings: 10}
+
+	res, err := VerifyReport(context.Background(), report, cfg, client)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.LLMDegraded {
+		t.Fatal("expected LLMDegraded = true in assist mode on inference error")
+	}
+	if res.Passed {
+		t.Fatal("expected Passed = false when FailClosed=true in assist mode and inference fails")
+	}
+	if res.Findings[0].LLMVerdict != "UNCERTAIN" {
+		t.Fatalf("verdict = %s, want UNCERTAIN", res.Findings[0].LLMVerdict)
+	}
+}
+
 func newTestTEETLSServer(t *testing.T, handler http.Handler) *httptest.Server {
 	mockProv := teetls.NewMockEvidenceProvider()
 	listener, err := teetls.Listen("tcp", "127.0.0.1:0", &teetls.Config{

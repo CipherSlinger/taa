@@ -19,10 +19,15 @@ import (
 
 func TestLLMAvailable(t *testing.T) {
 	ready := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/tags" {
-			t.Fatalf("path = %s, want /api/tags", r.URL.Path)
+		switch r.URL.Path {
+		case "/api/tags":
+			_, _ = w.Write([]byte(`{"models":[{"name":"qwen2.5-coder:0.5b"}]}`))
+		case "/api/generate":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"response":"pong"}`))
+		default:
+			t.Fatalf("unexpected path = %s", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"models":[{"name":"qwen2.5-coder:0.5b"}]}`))
 	}))
 	defer ready.Close()
 
@@ -31,6 +36,22 @@ func TestLLMAvailable(t *testing.T) {
 	}
 	if llmAvailable(ready.URL, "nonexistent-model") {
 		t.Fatal("llmAvailable = true, want false for missing model")
+	}
+
+	corruptModel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			_, _ = w.Write([]byte(`{"models":[{"name":"qwen2.5-coder:0.5b"}]}`))
+		case "/api/generate":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"tensor offset exceeds file size"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer corruptModel.Close()
+	if llmAvailable(corruptModel.URL, "qwen2.5-coder:0.5b") {
+		t.Fatal("llmAvailable = true, want false for corrupt model generate failure")
 	}
 
 	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

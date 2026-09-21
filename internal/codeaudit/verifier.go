@@ -135,6 +135,20 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 		}
 	} else {
 		recalculateStaticPassed(report)
+		if hasInferenceFailure && cfg.FailClosed {
+			// In assist mode with fail-closed enabled, if all findings failed inference (e.g. service down or circuit open),
+			// block the audit rather than silently passing via static fallback.
+			allFailed := len(report.Findings) > 0
+			for _, f := range report.Findings {
+				if f.LLMVerdict != "" && f.LLMVerdict != "UNCERTAIN" {
+					allFailed = false
+					break
+				}
+			}
+			if allFailed {
+				report.Passed = false
+			}
+		}
 	}
 
 	return report, nil
@@ -203,9 +217,11 @@ func CheckImportWithLLM(ctx context.Context, dir string, cfg LLMConfig) (bool, *
 	}
 
 	// In assist mode, LLM results are informational only.
-	// The static scan's original pass/fail is preserved.
+	// The static scan's original pass/fail is preserved, unless fail-closed has rejected the report.
 	if cfg.Policy == "assist" {
-		recalculateStaticPassed(report)
+		if !(cfg.FailClosed && report.LLMDegraded && !report.Passed) {
+			recalculateStaticPassed(report)
+		}
 	}
 
 	return report.Passed, report, nil
