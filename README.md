@@ -367,7 +367,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `llm.transport` | `teetls` | Transport protocol for TEE-LLM communication (`teetls` for RFC 8998 TLS 1.3 ShangMi, or `http`) |
 | `llm.endpoint` | `https://127.0.0.1:8443` | Decoupled TEE-LLM service endpoint |
 | `llm.model` | `qwen2.5-coder:3b` | Target LLM model for code analysis |
-| `llm.policy` | `assist` | LLM arbitration mode (`assist`: LLM results are informational and the static verdict stands; `gate`: strict blocking — HIGH findings block unless the LLM rules them benign, MEDIUM findings always block) |
+| `llm.policy` | `assist` | LLM arbitration mode (`assist`: LLM results are informational and the static verdict stands; `gate`: strict blocking — HIGH findings block unless the LLM rules them benign, MEDIUM findings always block). Values are normalized to lower case; any other value is rejected at startup |
 | `llm.failClosed` | `true` | Fails code audit if the LLM inference service is unreachable or encounters timeout |
 | `llm.insecureSkipVerify` | `false` | Skips TLS CA certificate verification (set to `true` only for local Docker testing) |
 | `llm.attestationMode` | `strict` | Hardware attestation verification policy for TEE-TLS (`strict` in production, `permissive` in local simulation) |

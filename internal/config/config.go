@@ -184,7 +184,26 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 	}
 
 	applyStartupConfigFile(&cfg, fileCfg)
+	if err := validateStartupConfig(cfg); err != nil {
+		return StartupConfig{}, err
+	}
 	return cfg, nil
+}
+
+// llmPolicies lists the arbitration modes understood by the audit code
+// (see codeaudit.LLMConfig.Policy). Any other value matches neither the gate
+// nor the assist branch, silently degrading a blocking gate to assist
+// behaviour, so it is rejected at load time instead.
+var llmPolicies = []string{"assist", "gate"}
+
+func validateStartupConfig(cfg StartupConfig) error {
+	for _, policy := range llmPolicies {
+		if cfg.LLMPolicy == policy {
+			return nil
+		}
+	}
+	return fmt.Errorf("unsupported llm policy %q in startup config: must be one of %s",
+		cfg.LLMPolicy, strings.Join(llmPolicies, ", "))
 }
 
 func defaultStartupConfig() StartupConfig {
@@ -427,7 +446,7 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 		cfg.LLMModel = fileCfg.LLM.Model
 	}
 	if fileCfg.LLM.Policy != "" {
-		cfg.LLMPolicy = fileCfg.LLM.Policy
+		cfg.LLMPolicy = strings.ToLower(strings.TrimSpace(fileCfg.LLM.Policy))
 	}
 	if fileCfg.LLM.FailClosed != nil {
 		cfg.LLMFailClosed = *fileCfg.LLM.FailClosed

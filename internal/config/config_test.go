@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -848,6 +850,49 @@ func TestStartupConfig_InferenceDefaults(t *testing.T) {
 	}
 	if cfg.LLMCooldownSec != 30 {
 		t.Errorf("got default cooldown %d, want 30", cfg.LLMCooldownSec)
+	}
+}
+
+// TestLoadStartupConfigRejectsUnknownLLMPolicy guards the audit gate against a
+// silently ineffective policy: an unrecognized value used to be stored verbatim
+// and then matched neither "gate" nor "assist" in the audit arbitration,
+// falling back to assist behaviour (HIGH-only blocking) without any signal.
+func TestLoadStartupConfigRejectsUnknownLLMPolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"llm": {
+			"policy": "enforce"
+		}
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err == nil {
+		t.Fatalf("LoadStartupConfig() error = nil, want rejection of unknown llm policy; got policy %q", cfg.LLMPolicy)
+	}
+	if !strings.Contains(err.Error(), "enforce") {
+		t.Fatalf("error %q should name the rejected value", err)
+	}
+}
+
+func TestLoadStartupConfigNormalizesLLMPolicy(t *testing.T) {
+	for _, policy := range []string{"assist", "gate", "GATE", " gate ", ""} {
+		t.Run("policy="+policy, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), DefaultFileName)
+			writeTestConfig(t, path, fmt.Sprintf(`{"llm":{"policy":%q}}`, policy))
+
+			cfg, err := LoadStartupConfig(path)
+			if err != nil {
+				t.Fatalf("LoadStartupConfig() error = %v, want nil for supported value", err)
+			}
+
+			want := strings.ToLower(strings.TrimSpace(policy))
+			if want == "" {
+				want = "assist"
+			}
+			if cfg.LLMPolicy != want {
+				t.Fatalf("LLMPolicy = %q, want %q", cfg.LLMPolicy, want)
+			}
+		})
 	}
 }
 
