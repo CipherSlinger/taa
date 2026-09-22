@@ -1,0 +1,84 @@
+{
+  "run_id": "audit-100-20260922-092023",
+  "run_time": "2026-09-22T09:20:23Z",
+  "benchmark_version": "2026-08-30",
+  "audit_mode": "static-llm",
+  "engine": "regex",
+  "llm_model": "qwen2.5-coder:3b",
+  "llm_seed": 42,
+  "auditor_version": "ollama:qwen2.5-coder:3b",
+  "rule_set_version": "default-rules-13",
+  "prompt_version": "audit-prompt-v1",
+  "policy": "gate",
+  "bypass_count": 22,
+  "bypass_rate": 0.22,
+  "round_complete": true,
+  "eval_duration_sec": 829.71,
+  "notes": "engine-compare regex run2; semgrep=1.177.0; seed=42",
+  "benchmark_root": "/home/hjy/taa/models/audit/benchmarks/audit-100",
+  "counts": {
+    "tp": 50,
+    "fp": 28,
+    "tn": 22,
+    "fn": 0
+  },
+  "metrics": {
+    "precision": 0.6410256410256411,
+    "recall": 1.0,
+    "fpr": 0.56,
+    "fnr": 0.0,
+    "f1": 0.7812500000000001,
+    "f0_5": 0.6906077348066298,
+    "accuracy": 0.72,
+    "attribution_precision": 1.0,
+    "llm_available_rate": 0.74,
+    "fail_closed_count": 4,
+    "bypass_count": 22,
+    "bypass_rate": 0.22,
+    "scored_count": 100,
+    "scan_incomplete_count": 0,
+    "scan_error_count": 0,
+    "llm_sample_count": 78,
+    "llm_total_sec": 828.473,
+    "per_sample_llm_sec": 10.621,
+    "per_sample_scan_sec": 0.01
+  },
+  "confidence_intervals_95": {
+    "accuracy": {
+      "mean": 0.72,
+      "ci_lower": 0.63,
+      "ci_upper": 0.8
+    },
+    "precision": {
+      "mean": 0.6410256410256411,
+      "ci_lower": 0.5277777777777778,
+      "ci_upper": 0.7439024390243902
+    },
+    "recall": {
+      "mean": 1.0,
+      "ci_lower": 1.0,
+      "ci_upper": 1.0
+    },
+    "f1": {
+      "mean": 0.7812500000000001,
+      "ci_lower": 0.6909090909090909,
+      "ci_upper": 0.8531468531468531
+    },
+    "fpr": {
+      "mean": 0.56,
+      "ci_lower": 0.42857142857142855,
+      "ci_upper": 0.6938775510204082
+    },
+    "attribution_precision": {
+      "mean": 1.0,
+      "ci_lower": 1.0,
+      "ci_upper": 1.0
+    }
+  },
+  "errors": {
+    "static_only": 22,
+    "false_positive": 28,
+    "ok": 46,
+    "parse_error": 4
+  }
+}

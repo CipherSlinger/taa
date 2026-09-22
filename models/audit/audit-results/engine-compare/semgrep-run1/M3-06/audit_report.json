@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-165328-7e15da80",
+  "audit_time": "2026-09-22T16:53:28",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/M3-06",
+    "files_scanned": 4,
+    "total_lines": 361,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: ENV_001: 使用配置文件替代环境变量读取"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 0,
+    "medium": 1,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/M3-06/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 0,
+      "medium_count": 1,
+      "risk_level": "MEDIUM",
+      "summary": "该代码存在敏感信息泄露的风险，特别是 AWS_SECRET_ACCESS_KEY，这可能被用于未经授权的访问。",
+      "has_exfiltration_pattern": false,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/M3-06/benchmark_variant.py",
+          "line": 10,
+          "rule_id": "ENV_001",
+          "category": "credential",
+          "severity": "MEDIUM",
+          "description": "Sensitive environment variable access detected in Python code",
+          "code_snippet": "return os.getenv(\"AWS_SECRET_ACCESS_KEY\", \"\")",
+          "context_before": "",
+          "context_after": "",
+          "language": "python",
+          "taint_trace": [],
+          "ast_enclosing_block": "def harvest_aws_secret_key() -> str:\n    return os.getenv(\"AWS_SECRET_ACCESS_KEY\", \"\")",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码中直接读取了环境变量 AWS_SECRET_ACCESS_KEY，这通常用于存储敏感信息，如 AWS 密钥。这种行为是恶意的，因为它允许未经授权的访问敏感数据。",
+          "llm_risk": "数据风险说明：直接读取 AWS 密钥可能会导致未经授权的访问和潜在的安全漏洞，包括数据泄露、身份盗用等。",
+          "suggestion": "使用配置文件替代环境变量读取",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4503
+  }
+}

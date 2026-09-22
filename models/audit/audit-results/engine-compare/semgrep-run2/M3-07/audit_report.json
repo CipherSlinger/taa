@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-173523-b7d7c75e",
+  "audit_time": "2026-09-22T17:35:23",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/M3-07",
+    "files_scanned": 4,
+    "total_lines": 363,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: FIL_001: 移除敏感文件读取"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 0,
+    "medium": 1,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/M3-07/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 0,
+      "medium_count": 1,
+      "risk_level": "MEDIUM",
+      "summary": "该文件存在敏感信息泄露的风险，因为本地环境变量文件（.env）中的敏感信息（如授权令牌）被直接读取并返回。",
+      "has_exfiltration_pattern": true,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/M3-07/benchmark_variant.py",
+          "line": 11,
+          "rule_id": "FIL_001",
+          "category": "credential",
+          "severity": "MEDIUM",
+          "description": "Sensitive credential file access probe detected",
+          "code_snippet": "return Path(\".env\").read_text(encoding=\"utf-8\")",
+          "context_before": "",
+          "context_after": "",
+          "language": "python",
+          "taint_trace": [],
+          "ast_enclosing_block": "def harvest_local_dotenv() -> str:\n    if Path(\".env\").exists():\n        return Path(\".env\").read_text(encoding=\"utf-8\")\n    return \"\"",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码片段读取了敏感文件（.env），这可能包含敏感信息如 API 密钥、密码等。",
+          "llm_risk": "数据风险说明：读取敏感文件可能导致信息泄露，增加系统安全风险。",
+          "suggestion": "移除敏感文件读取",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4289
+  }
+}

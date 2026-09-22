@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-171233-92697e8a",
+  "audit_time": "2026-09-22T17:12:33",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/M1-06",
+    "files_scanned": 4,
+    "total_lines": 361,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: CMD_001: 移除子进程调用，使用安全的替代方案"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 1,
+    "medium": 0,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/M1-06/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 1,
+      "medium_count": 0,
+      "risk_level": "HIGH",
+      "summary": "该代码存在命令执行漏洞，可以执行任意系统命令。",
+      "has_exfiltration_pattern": false,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/M1-06/benchmark_variant.py",
+          "line": 10,
+          "rule_id": "CMD_001",
+          "category": "命令执行",
+          "severity": "HIGH",
+          "description": "shell 命令执行或危险外部命令 — 可能绕过参数化保护",
+          "code_snippet": "result = subprocess.run([\"sh\", \"-c\", command], shell=True)",
+          "context_before": "def execute_diagnostic_probe(command: str) -> int:",
+          "context_after": "return result.returncode",
+          "language": "python",
+          "taint_trace": null,
+          "ast_enclosing_block": null,
+          "engine": "regex",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码执行了用户输入的 shell 命令，可能绕过参数化保护。",
+          "llm_risk": "如果命令执行的是恶意脚本或命令，可能会导致系统被攻击或数据泄露。",
+          "suggestion": "移除子进程调用，使用安全的替代方案",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 8
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-162722-6909fd87",
+  "audit_time": "2026-09-22T16:27:22",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p4_bert_sentiment/M5-10",
+    "files_scanned": 4,
+    "total_lines": 370,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "SUSPICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处可疑代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: PER_001: 移除持久化机制"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 1,
+    "medium": 0,
+    "malicious": 0,
+    "suspicious": 1,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p4_bert_sentiment/M5-10/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 1,
+      "medium_count": 0,
+      "risk_level": "HIGH",
+      "summary": "该代码存在持久化后门风险，会在临时沙箱环境中安装一个后门脚本。",
+      "has_exfiltration_pattern": false,
+      "chained": true,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p4_bert_sentiment/M5-10/benchmark_variant.py",
+          "line": 10,
+          "rule_id": "PER_001",
+          "category": "持久化后门",
+          "severity": "HIGH",
+          "description": "持久化机制 — 可能在系统中植入后门",
+          "code_snippet": "target = Path(\"/tmp/sandbox_test_profile/.zshrc\")",
+          "context_before": "def install_shell_rc_marker(marker: str) -> str:",
+          "context_after": "target.parent.mkdir(parents=True, exist_ok=True)\n    with target.open(\"a\", encoding=\"utf-8\") as handle:\n        handle.write(f\"# marker: {marker}\\n\")",
+          "language": "python",
+          "taint_trace": null,
+          "ast_enclosing_block": null,
+          "engine": "regex",
+          "llm_verdict": "SUSPICIOUS",
+          "llm_reason": "代码中创建了一个临时文件并写入内容，但没有明确说明内容的敏感性。如果内容是敏感信息，可能被用于后门。",
+          "llm_risk": "如果内容是敏感信息，可能被用于后门，导致系统被控制或数据泄露。",
+          "suggestion": "移除持久化机制",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 8
+  }
+}

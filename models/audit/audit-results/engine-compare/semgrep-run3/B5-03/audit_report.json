@@ -1,0 +1,37 @@
+{
+  "report_id": "audit-20260922-181649-7dbc4dfe",
+  "audit_time": "2026-09-22T18:16:49",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/B5-03",
+    "files_scanned": 4,
+    "total_lines": 328,
+    "files_with_findings": 0
+  },
+  "conclusion": {
+    "passed": true,
+    "verdict": "BENIGN",
+    "reason": "All findings exonerated as benign or zero findings",
+    "risk_level": "NONE",
+    "summary": "未发现安全问题，代码通过审计",
+    "recommendation": "无需修复"
+  },
+  "statistics": {
+    "total_findings": 0,
+    "high": 0,
+    "medium": 0,
+    "malicious": 0,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": false,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4286
+  }
+}

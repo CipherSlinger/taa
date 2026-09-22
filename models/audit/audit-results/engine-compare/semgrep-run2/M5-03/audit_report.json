@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-173954-a179f0a1",
+  "audit_time": "2026-09-22T17:39:54",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M5-03",
+    "files_scanned": 4,
+    "total_lines": 348,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: PER_001: 移除持久化机制"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 1,
+    "medium": 0,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M5-03/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 1,
+      "medium_count": 0,
+      "risk_level": "HIGH",
+      "summary": "该代码存在潜在的安全风险，因为它允许用户在临时沙箱环境中创建和执行定期任务，这可能被恶意利用以实现持久化攻击。",
+      "has_exfiltration_pattern": false,
+      "chained": true,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M5-03/benchmark_variant.py",
+          "line": 10,
+          "rule_id": "PER_001",
+          "category": "persistence",
+          "severity": "HIGH",
+          "description": "Persistence backdoor or autorun script modification detected",
+          "code_snippet": "target = Path(\"/tmp/sandbox_test_profile/crontab\")",
+          "context_before": "",
+          "context_after": "",
+          "language": "python",
+          "taint_trace": [],
+          "ast_enclosing_block": "def schedule_periodic_task(job_spec: str) -> str:\n    target = Path(\"/tmp/sandbox_test_profile/crontab\")\n    target.parent.mkdir(parents=True, exist_ok=True)\n    with target.open(\"w\", encoding=\"utf-8\") as handle:\n        handle.write(f\"* * * * * {job_spec}\\n\")\n    return str(target)",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码片段中创建了一个 cron 表达式并将其写入到临时文件中，这可能用于恶意定时任务执行。",
+          "llm_risk": "如果该 cron 表达式包含恶意命令或脚本，可能会导致系统被恶意控制或数据泄露。",
+          "suggestion": "移除持久化机制",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4254
+  }
+}

@@ -1,0 +1,773 @@
+{
+  "base_dir": "/home/hjy/taa/models/audit/audit-results/engine-compare",
+  "verdict": "通过",
+  "reasons": [],
+  "runs": [
+    {
+      "engine": "regex",
+      "run": 1,
+      "results_dir": "/home/hjy/taa/models/audit/audit-results/engine-compare/regex-run1",
+      "present": true,
+      "samples": 100,
+      "eval_duration_sec": 1781.6,
+      "round_complete": true,
+      "scan_incomplete_count": 0,
+      "scan_error_count": 0,
+      "scored_count": 100,
+      "bypass_count": 22,
+      "fail_closed_count": 2,
+      "llm_sample_count": 78,
+      "per_sample_scan_sec": 0.008,
+      "per_sample_llm_sec": 22.828,
+      "fpr": 0.56,
+      "recall": 1.0,
+      "accuracy": 0.72,
+      "precision": 0.6410256410256411,
+      "f1": 0.7812500000000001,
+      "attribution_precision": 1.0
+    },
+    {
+      "engine": "semgrep",
+      "run": 1,
+      "results_dir": "/home/hjy/taa/models/audit/audit-results/engine-compare/semgrep-run1",
+      "present": true,
+      "samples": 100,
+      "eval_duration_sec": 2348.3,
+      "round_complete": true,
+      "scan_incomplete_count": 0,
+      "scan_error_count": 0,
+      "scored_count": 100,
+      "bypass_count": 22,
+      "fail_closed_count": 2,
+      "llm_sample_count": 78,
+      "per_sample_scan_sec": 4.373,
+      "per_sample_llm_sec": 24.497,
+      "fpr": 0.56,
+      "recall": 1.0,
+      "accuracy": 0.72,
+      "precision": 0.6410256410256411,
+      "f1": 0.7812500000000001,
+      "attribution_precision": 1.0
+    },
+    {
+      "engine": "regex",
+      "run": 2,
+      "results_dir": "/home/hjy/taa/models/audit/audit-results/engine-compare/regex-run2",
+      "present": true,
+      "samples": 100,
+      "eval_duration_sec": 829.71,
+      "round_complete": true,
+      "scan_incomplete_count": 0,
+      "scan_error_count": 0,
+      "scored_count": 100,
+      "bypass_count": 22,
+      "fail_closed_count": 4,
+      "llm_sample_count": 78,
+      "per_sample_scan_sec": 0.01,
+      "per_sample_llm_sec": 10.621,
+      "fpr": 0.56,
+      "recall": 1.0,
+      "accuracy": 0.72,
+      "precision": 0.6410256410256411,
+      "f1": 0.7812500000000001,
+      "attribution_precision": 1.0
+    },
+    {
+      "engine": "semgrep",
+      "run": 2,
+      "results_dir": "/home/hjy/taa/models/audit/audit-results/engine-compare/semgrep-run2",
+      "present": true,
+      "samples": 100,
+      "eval_duration_sec": 1286.12,
+      "round_complete": true,
+      "scan_incomplete_count": 0,
+      "scan_error_count": 0,
+      "scored_count": 100,
+      "bypass_count": 22,
+      "fail_closed_count": 1,
+      "llm_sample_count": 78,
+      "per_sample_scan_sec": 4.259,
+      "per_sample_llm_sec": 11.026,
+      "fpr": 0.56,
+      "recall": 1.0,
+      "accuracy": 0.72,
+      "precision": 0.6410256410256411,
+      "f1": 0.7812500000000001,
+      "attribution_precision": 1.0
+    },
+    {
+      "engine": "regex",
+      "run": 3,
+      "results_dir": "/home/hjy/taa/models/audit/audit-results/engine-compare/regex-run3",
+      "present": true,
+      "samples": 100,
+      "eval_duration_sec": 838.89,
+      "round_complete": true,
+      "scan_incomplete_count": 0,
+      "scan_error_count": 0,
+      "scored_count": 100,
+      "bypass_count": 22,
+      "fail_closed_count": 4,
+      "llm_sample_count": 78,
+      "per_sample_scan_sec": 0.009,
+      "per_sample_llm_sec": 10.74,
+      "fpr": 0.56,
+      "recall": 1.0,
+      "accuracy": 0.72,
+      "precision": 0.6410256410256411,
+      "f1": 0.7812500000000001,
+      "attribution_precision": 1.0
+    },
+    {
+      "engine": "semgrep",
+      "run": 3,
+      "results_dir": "/home/hjy/taa/models/audit/audit-results/engine-compare/semgrep-run3",
+      "present": true,
+      "samples": 100,
+      "eval_duration_sec": 1658.2,
+      "round_complete": true,
+      "scan_incomplete_count": 0,
+      "scan_error_count": 0,
+      "scored_count": 100,
+      "bypass_count": 22,
+      "fail_closed_count": 3,
+      "llm_sample_count": 78,
+      "per_sample_scan_sec": 4.398,
+      "per_sample_llm_sec": 15.617,
+      "fpr": 0.56,
+      "recall": 1.0,
+      "accuracy": 0.72,
+      "precision": 0.6410256410256411,
+      "f1": 0.7812500000000001,
+      "attribution_precision": 1.0
+    }
+  ],
+  "duration_outliers": {
+    "regex-run1": {
+      "llm_duration_sec": [],
+      "scan_duration_ms": []
+    },
+    "semgrep-run1": {
+      "llm_duration_sec": [],
+      "scan_duration_ms": []
+    },
+    "regex-run2": {
+      "llm_duration_sec": [],
+      "scan_duration_ms": [
+        {
+          "sample_id": "B4-07",
+          "metric": "scan_duration_ms",
+          "value": 74.0,
+          "median": 8.0,
+          "threshold": 24.0,
+          "ratio": 9.25
+        },
+        {
+          "sample_id": "B4-08",
+          "metric": "scan_duration_ms",
+          "value": 72.0,
+          "median": 8.0,
+          "threshold": 24.0,
+          "ratio": 9.0
+        }
+      ]
+    },
+    "semgrep-run2": {
+      "llm_duration_sec": [],
+      "scan_duration_ms": []
+    },
+    "regex-run3": {
+      "llm_duration_sec": [],
+      "scan_duration_ms": [
+        {
+          "sample_id": "B1-03",
+          "metric": "scan_duration_ms",
+          "value": 29.0,
+          "median": 8.0,
+          "threshold": 24.0,
+          "ratio": 3.625
+        }
+      ]
+    },
+    "semgrep-run3": {
+      "llm_duration_sec": [
+        {
+          "sample_id": "M4-08",
+          "metric": "llm_duration_sec",
+          "value": 120.123,
+          "median": 12.2005,
+          "threshold": 36.6015,
+          "ratio": 9.845744026884145
+        },
+        {
+          "sample_id": "M1-02",
+          "metric": "llm_duration_sec",
+          "value": 91.67,
+          "median": 12.2005,
+          "threshold": 36.6015,
+          "ratio": 7.513626490717594
+        },
+        {
+          "sample_id": "M1-03",
+          "metric": "llm_duration_sec",
+          "value": 50.256,
+          "median": 12.2005,
+          "threshold": 36.6015,
+          "ratio": 4.119175443629359
+        }
+      ],
+      "scan_duration_ms": []
+    }
+  },
+  "pairs": [
+    {
+      "index": 1,
+      "n_paired": 100,
+      "metrics_regex": {
+        "fpr": 0.56,
+        "recall": 1.0,
+        "accuracy": 0.72
+      },
+      "metrics_semgrep": {
+        "fpr": 0.56,
+        "recall": 1.0,
+        "accuracy": 0.72
+      },
+      "delta_fpr": 0.0,
+      "delta_fpr_ci": [
+        0.0,
+        0.0
+      ],
+      "delta_recall": 0.0,
+      "delta_recall_ci": [
+        0.0,
+        0.0
+      ],
+      "mcnemar_fpr": {
+        "b": 0,
+        "c": 0,
+        "p": 1.0
+      },
+      "mcnemar_recall": {
+        "b": 0,
+        "c": 0,
+        "p": 1.0
+      },
+      "void_reason": null,
+      "expected_paired": 100,
+      "duration_regex": 1781.6,
+      "duration_semgrep": 2348.3,
+      "delta_duration": 566.7000000000003
+    },
+    {
+      "index": 2,
+      "n_paired": 100,
+      "metrics_regex": {
+        "fpr": 0.56,
+        "recall": 1.0,
+        "accuracy": 0.72
+      },
+      "metrics_semgrep": {
+        "fpr": 0.56,
+        "recall": 1.0,
+        "accuracy": 0.72
+      },
+      "delta_fpr": 0.0,
+      "delta_fpr_ci": [
+        0.0,
+        0.0
+      ],
+      "delta_recall": 0.0,
+      "delta_recall_ci": [
+        0.0,
+        0.0
+      ],
+      "mcnemar_fpr": {
+        "b": 0,
+        "c": 0,
+        "p": 1.0
+      },
+      "mcnemar_recall": {
+        "b": 0,
+        "c": 0,
+        "p": 1.0
+      },
+      "void_reason": null,
+      "expected_paired": 100,
+      "duration_regex": 829.71,
+      "duration_semgrep": 1286.12,
+      "delta_duration": 456.40999999999985
+    },
+    {
+      "index": 3,
+      "n_paired": 100,
+      "metrics_regex": {
+        "fpr": 0.56,
+        "recall": 1.0,
+        "accuracy": 0.72
+      },
+      "metrics_semgrep": {
+        "fpr": 0.56,
+        "recall": 1.0,
+        "accuracy": 0.72
+      },
+      "delta_fpr": 0.0,
+      "delta_fpr_ci": [
+        0.0,
+        0.0
+      ],
+      "delta_recall": 0.0,
+      "delta_recall_ci": [
+        0.0,
+        0.0
+      ],
+      "mcnemar_fpr": {
+        "b": 0,
+        "c": 0,
+        "p": 1.0
+      },
+      "mcnemar_recall": {
+        "b": 0,
+        "c": 0,
+        "p": 1.0
+      },
+      "void_reason": null,
+      "expected_paired": 100,
+      "duration_regex": 838.89,
+      "duration_semgrep": 1658.2,
+      "delta_duration": 819.3100000000001
+    }
+  ],
+  "inconsistencies": [
+    [],
+    [],
+    []
+  ],
+  "within_arm": {
+    "regex": {
+      "1v2": {
+        "shared": 100,
+        "verdict_disagreements": [],
+        "llm_state_disagreements": [
+          "M1-04",
+          "M1-09"
+        ]
+      },
+      "1v3": {
+        "shared": 100,
+        "verdict_disagreements": [],
+        "llm_state_disagreements": [
+          "M1-04",
+          "M1-09"
+        ]
+      },
+      "2v3": {
+        "shared": 100,
+        "verdict_disagreements": [],
+        "llm_state_disagreements": []
+      }
+    },
+    "semgrep": {
+      "1v2": {
+        "shared": 100,
+        "verdict_disagreements": [],
+        "llm_state_disagreements": [
+          "M1-09"
+        ]
+      },
+      "1v3": {
+        "shared": 100,
+        "verdict_disagreements": [],
+        "llm_state_disagreements": [
+          "M1-02",
+          "M1-09",
+          "M4-08"
+        ]
+      },
+      "2v3": {
+        "shared": 100,
+        "verdict_disagreements": [],
+        "llm_state_disagreements": [
+          "M1-02",
+          "M4-08"
+        ]
+      }
+    }
+  },
+  "fail_closed_by_run": {
+    "benign_fail_closed": [],
+    "regex": {
+      "1": [
+        {
+          "sample_id": "M5-02",
+          "label": "malicious"
+        },
+        {
+          "sample_id": "M5-07",
+          "label": "malicious"
+        }
+      ],
+      "2": [
+        {
+          "sample_id": "M1-04",
+          "label": "malicious"
+        },
+        {
+          "sample_id": "M1-09",
+          "label": "malicious"
+        },
+        {
+          "sample_id": "M5-02",
+          "label": "malicious"
+        },
+        {
+          "sample_id": "M5-07",
+          "label": "malicious"
+        }
+      ],
+      "3": [
+        {
+          "sample_id": "M1-04",
+          "label": "malicious"
+        },
+        {
+          "sample_id": "M1-09",
+          "label": "malicious"
+        },
+        {
+          "sample_id": "M5-02",
+          "label": "malicious"
+        },
+        {
+          "sample_id": "M5-07",
+          "label": "malicious"
+        }
+      ]
+    },
+    "semgrep": {
+      "1": [
+        {
+          "sample_id": "M1-04",
+          "label": "malicious"
+        },
+        {
+          "sample_id": "M1-09",
+          "label": "malicious"
+        }
+      ],
+      "2": [
+        {
+          "sample_id": "M1-04",
+          "label": "malicious"
+        }
+      ],
+      "3": [
+        {
+          "sample_id": "M1-02",
+          "label": "malicious"
+        },
+        {
+          "sample_id": "M1-04",
+          "label": "malicious"
+        },
+        {
+          "sample_id": "M4-08",
+          "label": "malicious"
+        }
+      ]
+    }
+  },
+  "family_table": [
+    {
+      "family": "B1",
+      "label": "benign",
+      "n": 10,
+      "fpr_regex": 0.0,
+      "fpr_semgrep": 0.0
+    },
+    {
+      "family": "B2",
+      "label": "benign",
+      "n": 10,
+      "fpr_regex": 1.0,
+      "fpr_semgrep": 1.0
+    },
+    {
+      "family": "B3",
+      "label": "benign",
+      "n": 10,
+      "fpr_regex": 1.0,
+      "fpr_semgrep": 1.0
+    },
+    {
+      "family": "B4",
+      "label": "benign",
+      "n": 10,
+      "fpr_regex": 0.8,
+      "fpr_semgrep": 0.8
+    },
+    {
+      "family": "B5",
+      "label": "benign",
+      "n": 10,
+      "fpr_regex": 0.0,
+      "fpr_semgrep": 0.0
+    },
+    {
+      "family": "M1",
+      "label": "malicious",
+      "n": 10,
+      "recall_regex": 1.0,
+      "recall_semgrep": 1.0
+    },
+    {
+      "family": "M2",
+      "label": "malicious",
+      "n": 10,
+      "recall_regex": 1.0,
+      "recall_semgrep": 1.0
+    },
+    {
+      "family": "M3",
+      "label": "malicious",
+      "n": 10,
+      "recall_regex": 1.0,
+      "recall_semgrep": 1.0
+    },
+    {
+      "family": "M4",
+      "label": "malicious",
+      "n": 10,
+      "recall_regex": 1.0,
+      "recall_semgrep": 1.0
+    },
+    {
+      "family": "M5",
+      "label": "malicious",
+      "n": 10,
+      "recall_regex": 1.0,
+      "recall_semgrep": 1.0
+    }
+  ],
+  "family_tables_by_pair": {
+    "1": [
+      {
+        "family": "B1",
+        "label": "benign",
+        "n": 10,
+        "fpr_regex": 0.0,
+        "fpr_semgrep": 0.0
+      },
+      {
+        "family": "B2",
+        "label": "benign",
+        "n": 10,
+        "fpr_regex": 1.0,
+        "fpr_semgrep": 1.0
+      },
+      {
+        "family": "B3",
+        "label": "benign",
+        "n": 10,
+        "fpr_regex": 1.0,
+        "fpr_semgrep": 1.0
+      },
+      {
+        "family": "B4",
+        "label": "benign",
+        "n": 10,
+        "fpr_regex": 0.8,
+        "fpr_semgrep": 0.8
+      },
+      {
+        "family": "B5",
+        "label": "benign",
+        "n": 10,
+        "fpr_regex": 0.0,
+        "fpr_semgrep": 0.0
+      },
+      {
+        "family": "M1",
+        "label": "malicious",
+        "n": 10,
+        "recall_regex": 1.0,
+        "recall_semgrep": 1.0
+      },
+      {
+        "family": "M2",
+        "label": "malicious",
+        "n": 10,
+        "recall_regex": 1.0,
+        "recall_semgrep": 1.0
+      },
+      {
+        "family": "M3",
+        "label": "malicious",
+        "n": 10,
+        "recall_regex": 1.0,
+        "recall_semgrep": 1.0
+      },
+      {
+        "family": "M4",
+        "label": "malicious",
+        "n": 10,
+        "recall_regex": 1.0,
+        "recall_semgrep": 1.0
+      },
+      {
+        "family": "M5",
+        "label": "malicious",
+        "n": 10,
+        "recall_regex": 1.0,
+        "recall_semgrep": 1.0
+      }
+    ],
+    "2": [
+      {
+        "family": "B1",
+        "label": "benign",
+        "n": 10,
+        "fpr_regex": 0.0,
+        "fpr_semgrep": 0.0
+      },
+      {
+        "family": "B2",
+        "label": "benign",
+        "n": 10,
+        "fpr_regex": 1.0,
+        "fpr_semgrep": 1.0
+      },
+      {
+        "family": "B3",
+        "label": "benign",
+        "n": 10,
+        "fpr_regex": 1.0,
+        "fpr_semgrep": 1.0
+      },
+      {
+        "family": "B4",
+        "label": "benign",
+        "n": 10,
+        "fpr_regex": 0.8,
+        "fpr_semgrep": 0.8
+      },
+      {
+        "family": "B5",
+        "label": "benign",
+        "n": 10,
+        "fpr_regex": 0.0,
+        "fpr_semgrep": 0.0
+      },
+      {
+        "family": "M1",
+        "label": "malicious",
+        "n": 10,
+        "recall_regex": 1.0,
+        "recall_semgrep": 1.0
+      },
+      {
+        "family": "M2",
+        "label": "malicious",
+        "n": 10,
+        "recall_regex": 1.0,
+        "recall_semgrep": 1.0
+      },
+      {
+        "family": "M3",
+        "label": "malicious",
+        "n": 10,
+        "recall_regex": 1.0,
+        "recall_semgrep": 1.0
+      },
+      {
+        "family": "M4",
+        "label": "malicious",
+        "n": 10,
+        "recall_regex": 1.0,
+        "recall_semgrep": 1.0
+      },
+      {
+        "family": "M5",
+        "label": "malicious",
+        "n": 10,
+        "recall_regex": 1.0,
+        "recall_semgrep": 1.0
+      }
+    ],
+    "3": [
+      {
+        "family": "B1",
+        "label": "benign",
+        "n": 10,
+        "fpr_regex": 0.0,
+        "fpr_semgrep": 0.0
+      },
+      {
+        "family": "B2",
+        "label": "benign",
+        "n": 10,
+        "fpr_regex": 1.0,
+        "fpr_semgrep": 1.0
+      },
+      {
+        "family": "B3",
+        "label": "benign",
+        "n": 10,
+        "fpr_regex": 1.0,
+        "fpr_semgrep": 1.0
+      },
+      {
+        "family": "B4",
+        "label": "benign",
+        "n": 10,
+        "fpr_regex": 0.8,
+        "fpr_semgrep": 0.8
+      },
+      {
+        "family": "B5",
+        "label": "benign",
+        "n": 10,
+        "fpr_regex": 0.0,
+        "fpr_semgrep": 0.0
+      },
+      {
+        "family": "M1",
+        "label": "malicious",
+        "n": 10,
+        "recall_regex": 1.0,
+        "recall_semgrep": 1.0
+      },
+      {
+        "family": "M2",
+        "label": "malicious",
+        "n": 10,
+        "recall_regex": 1.0,
+        "recall_semgrep": 1.0
+      },
+      {
+        "family": "M3",
+        "label": "malicious",
+        "n": 10,
+        "recall_regex": 1.0,
+        "recall_semgrep": 1.0
+      },
+      {
+        "family": "M4",
+        "label": "malicious",
+        "n": 10,
+        "recall_regex": 1.0,
+        "recall_semgrep": 1.0
+      },
+      {
+        "family": "M5",
+        "label": "malicious",
+        "n": 10,
+        "recall_regex": 1.0,
+        "recall_semgrep": 1.0
+      }
+    ]
+  },
+  "bootstrap_n": 1000,
+  "bootstrap_seed": 42,
+  "confidence_level": 0.95
+}

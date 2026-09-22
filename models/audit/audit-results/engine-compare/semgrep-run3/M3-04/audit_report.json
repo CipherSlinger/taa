@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-182608-48cfa9f4",
+  "audit_time": "2026-09-22T18:26:08",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M3-04",
+    "files_scanned": 4,
+    "total_lines": 347,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: FIL_001: 移除敏感文件读取"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 0,
+    "medium": 1,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M3-04/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 0,
+      "medium_count": 1,
+      "risk_level": "HIGH",
+      "summary": "该代码存在高风险，因为它直接读取了 SSH 私钥文件，这可能导致敏感信息泄露。",
+      "has_exfiltration_pattern": true,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M3-04/benchmark_variant.py",
+          "line": 11,
+          "rule_id": "FIL_001",
+          "category": "credential",
+          "severity": "MEDIUM",
+          "description": "Sensitive credential file access probe detected",
+          "code_snippet": "return Path(\".ssh/id_rsa\").read_text(encoding=\"utf-8\")",
+          "context_before": "",
+          "context_after": "",
+          "language": "python",
+          "taint_trace": [],
+          "ast_enclosing_block": "def harvest_ssh_key() -> str:\n    try:\n        return Path(\".ssh/id_rsa\").read_text(encoding=\"utf-8\")\n    except Exception:\n        return \"\"",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码片段尝试读取私钥文件（.ssh/id_rsa），这通常用于敏感操作，如身份验证或密钥管理。",
+          "llm_risk": "如果该文件包含敏感信息，读取它可能会导致数据泄露或身份盗窃。",
+          "suggestion": "移除敏感文件读取",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4210
+  }
+}

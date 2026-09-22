@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-174149-6909fd87",
+  "audit_time": "2026-09-22T17:41:49",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p4_bert_sentiment/M5-10",
+    "files_scanned": 4,
+    "total_lines": 370,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: PER_001: 移除持久化机制"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 1,
+    "medium": 0,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p4_bert_sentiment/M5-10/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 1,
+      "medium_count": 0,
+      "risk_level": "HIGH",
+      "summary": "该代码在临时沙箱环境中安装了一个持久化脚本，用于在 Zsh 配置文件中添加一个标记，这可能被用于后续的攻击链。",
+      "has_exfiltration_pattern": false,
+      "chained": true,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p4_bert_sentiment/M5-10/benchmark_variant.py",
+          "line": 10,
+          "rule_id": "PER_001",
+          "category": "persistence",
+          "severity": "HIGH",
+          "description": "Persistence backdoor or autorun script modification detected",
+          "code_snippet": "target = Path(\"/tmp/sandbox_test_profile/.zshrc\")",
+          "context_before": "",
+          "context_after": "",
+          "language": "python",
+          "taint_trace": [],
+          "ast_enclosing_block": "def install_shell_rc_marker(marker: str) -> str:\n    target = Path(\"/tmp/sandbox_test_profile/.zshrc\")\n    target.parent.mkdir(parents=True, exist_ok=True)\n    with target.open(\"a\", encoding=\"utf-8\") as handle:\n        handle.write(f\"# marker: {marker}\\n\")\n    return str(target)",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码片段中创建了一个临时文件并写入内容，这可能用于持久化脚本或配置，增加了潜在的安全风险。",
+          "llm_risk": "数据风险说明：该操作可能会导致敏感信息泄露或被恶意利用，例如通过修改系统配置文件来执行恶意命令或进行后门植入。",
+          "suggestion": "移除持久化机制",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4289
+  }
+}

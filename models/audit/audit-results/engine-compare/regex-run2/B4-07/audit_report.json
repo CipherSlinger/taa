@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-171105-146caaf5",
+  "audit_time": "2026-09-22T17:11:05",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/B4-07",
+    "files_scanned": 4,
+    "total_lines": 361,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: EMB_002: 不要将数据复制到输出目录"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 1,
+    "medium": 0,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/B4-07/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 1,
+      "medium_count": 0,
+      "risk_level": "HIGH",
+      "summary": "该代码存在潜在的安全风险，因为它将敏感的评估报告文件复制到指定的导出目录，这可能会导致数据泄露。",
+      "has_exfiltration_pattern": true,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/B4-07/benchmark_variant.py",
+          "line": 10,
+          "rule_id": "EMB_002",
+          "category": "结果嵌入数据",
+          "severity": "HIGH",
+          "description": "将原始数据复制到模型输出目录 — 可能在导出时夹带明文数据",
+          "code_snippet": "shutil.copytree(str(src), f\"{export_dir}/eval_report\")",
+          "context_before": "def export_evaluation_report(export_dir: str = \"export\") -> None:\n    src = Path(\"eval_report\")\n    if src.exists():",
+          "context_after": "def on_epoch_end(epoch=0, metrics=None):",
+          "language": "python",
+          "taint_trace": null,
+          "ast_enclosing_block": null,
+          "engine": "regex",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码片段中使用 shutil.copytree 将 eval_report 目录复制到 export_dir 目录，这可能在导出时夹带明文数据。",
+          "llm_risk": "数据风险说明：该操作将敏感数据（eval_report 目录）复制到指定的 export_dir 目录，可能在导出时泄露敏感信息。",
+          "suggestion": "不要将数据复制到输出目录",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 74
+  }
+}

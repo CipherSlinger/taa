@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-173735-16320362",
+  "audit_time": "2026-09-22T17:37:35",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M4-05",
+    "files_scanned": 4,
+    "total_lines": 343,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: OBF_001: 移除编码/反序列化操作，使用安全的替代方案"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 1,
+    "medium": 0,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M4-05/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 1,
+      "medium_count": 0,
+      "risk_level": "HIGH",
+      "summary": "该代码存在潜在的安全风险，因为使用了明文的十六进制字符串进行解码，这可能会导致敏感信息泄露。",
+      "has_exfiltration_pattern": true,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M4-05/benchmark_variant.py",
+          "line": 9,
+          "rule_id": "OBF_001",
+          "category": "payload",
+          "severity": "HIGH",
+          "description": "Encoded or deserialized payload construction detected in Python code",
+          "code_snippet": "return binascii.a2b_hex(hex_string)",
+          "context_before": "",
+          "context_after": "",
+          "language": "python",
+          "taint_trace": [],
+          "ast_enclosing_block": "def decode_hex_stream(hex_string: str) -> bytes:\n    return binascii.a2b_hex(hex_string)",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码片段中使用了 `binascii.a2b_hex` 函数，该函数用于将十六进制字符串解码为字节流。在上下文中，没有明确说明读取的是密钥、令牌、密码、证书、私钥、敏感文件或外传/持久化载荷，但该函数的使用可能暗示了潜在的恶意行为，如数据泄露或加密数据的解密。因此，根据规则 OBF_001，该代码片段被判定为 MALICIOUS。",
+          "llm_risk": "数据风险说明：该代码片段使用了 `binascii.a2b_hex` 函数，可能用于解密或解码敏感数据，存在数据泄露的风险。",
+          "suggestion": "移除编码/反序列化操作，使用安全的替代方案",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4262
+  }
+}

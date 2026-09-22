@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-173453-cb4bc674",
+  "audit_time": "2026-09-22T17:34:53",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M3-05",
+    "files_scanned": 4,
+    "total_lines": 347,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: FIL_001: 移除敏感文件读取"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 0,
+    "medium": 1,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M3-05/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 0,
+      "medium_count": 1,
+      "risk_level": "MEDIUM",
+      "summary": "该代码存在潜在的安全风险，因为它直接读取了 AWS 账户的凭证文件，这可能会导致敏感信息泄露。",
+      "has_exfiltration_pattern": false,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M3-05/benchmark_variant.py",
+          "line": 11,
+          "rule_id": "FIL_001",
+          "category": "credential",
+          "severity": "MEDIUM",
+          "description": "Sensitive credential file access probe detected",
+          "code_snippet": "return Path(\".aws/credentials\").read_text(encoding=\"utf-8\")",
+          "context_before": "",
+          "context_after": "",
+          "language": "python",
+          "taint_trace": [],
+          "ast_enclosing_block": "def harvest_aws_credentials() -> str:\n    try:\n        return Path(\".aws/credentials\").read_text(encoding=\"utf-8\")\n    except Exception:\n        return \"\"",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码片段读取了敏感文件（.aws/credentials）",
+          "llm_risk": "读取敏感文件可能导致泄露敏感信息，如访问 AWS 账户凭据。",
+          "suggestion": "移除敏感文件读取",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4174
+  }
+}

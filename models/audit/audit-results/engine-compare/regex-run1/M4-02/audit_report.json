@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-161917-a5ca891a",
+  "audit_time": "2026-09-22T16:19:17",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/M4-02",
+    "files_scanned": 4,
+    "total_lines": 328,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: OBF_001: 移除编码/反序列化操作，使用安全的替代方案"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 1,
+    "medium": 0,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/M4-02/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 1,
+      "medium_count": 0,
+      "risk_level": "HIGH",
+      "summary": "代码混淆可能隐藏潜在的恶意行为，增加安全风险。",
+      "has_exfiltration_pattern": false,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/M4-02/benchmark_variant.py",
+          "line": 9,
+          "rule_id": "OBF_001",
+          "category": "代码混淆",
+          "severity": "HIGH",
+          "description": "编码/反序列化 — 可能隐藏恶意载荷",
+          "code_snippet": "return base64.b64encode(raw).decode(\"utf-8\")",
+          "context_before": "def encode_hidden_payload(raw: bytes) -> str:",
+          "context_after": "def on_epoch_end(epoch=0, metrics=None):",
+          "language": "python",
+          "taint_trace": null,
+          "ast_enclosing_block": null,
+          "engine": "regex",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码片段中使用了 base64.b64encode 函数对原始数据进行编码，这可能用于隐藏恶意载荷。",
+          "llm_risk": "如果原始数据是敏感信息，如密钥、密码或证书，这种编码操作可能会导致数据泄露。",
+          "suggestion": "移除编码/反序列化操作，使用安全的替代方案",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 8
+  }
+}

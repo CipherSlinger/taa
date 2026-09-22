@@ -1,0 +1,94 @@
+{
+  "report_id": "audit-20260922-183549-c8efe73b",
+  "audit_time": "2026-09-22T18:35:49",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p4_bert_sentiment/M5-09",
+    "files_scanned": 4,
+    "total_lines": 370,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: PER_001: 移除持久化机制"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 1,
+    "medium": 0,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p4_bert_sentiment/M5-09/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 1,
+      "medium_count": 0,
+      "risk_level": "HIGH",
+      "summary": "该代码存在潜在的安全风险，因为它允许用户在临时沙箱环境中执行任意命令，并将命令写入系统文件，这可能导致系统被篡改或被恶意利用。",
+      "has_exfiltration_pattern": false,
+      "chained": true,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p4_bert_sentiment/M5-09/benchmark_variant.py",
+          "line": 10,
+          "rule_id": "PER_001",
+          "category": "persistence",
+          "severity": "HIGH",
+          "description": "Persistence backdoor or autorun script modification detected",
+          "code_snippet": "target = Path(\"/tmp/sandbox_test_profile/.bash_profile\")",
+          "context_before": "# [Cross-File & Microservice Sliced Context]\n# --- File: benchmark_variant.py ---\n       8 | \n       9 | def setup_login_profile(command: str) -> str:\n>>>   10 |     target = Path(\"/tmp/sandbox_test_profile/.bash_profile\")\n      11 |     target.parent.mkdir(parents=True, exist_ok=True)\n      12 |     with target.open(\"a\", encoding=\"utf-8\") as handle:",
+          "context_after": "[Deep Audit Inter-Procedural Taint Trajectory]\n  ├── [Step 1: SOURCE (PER_001)] (File: benchmark_variant.py, Line 10): Path(\"/tmp/sandbox_test_profile/.bash_profile\")\n  └── [Step 2: SINK (PER_001)] (File: benchmark_variant.py, Line 10): target = Path(\"/tmp/sandbox_test_profile/.bash_profile\")",
+          "language": "python",
+          "taint_trace": [
+            {
+              "step": 1,
+              "type": "SOURCE (PER_001)",
+              "file": "benchmark_variant.py",
+              "full_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p4_bert_sentiment/M5-09/benchmark_variant.py",
+              "line": 10,
+              "code": "Path(\"/tmp/sandbox_test_profile/.bash_profile\")",
+              "enclosing_scope": "benchmark_variant.setup_login_profile",
+              "edge_type": null
+            },
+            {
+              "step": 2,
+              "type": "SINK (PER_001)",
+              "file": "benchmark_variant.py",
+              "full_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p4_bert_sentiment/M5-09/benchmark_variant.py",
+              "line": 10,
+              "code": "target = Path(\"/tmp/sandbox_test_profile/.bash_profile\")",
+              "enclosing_scope": "benchmark_variant.setup_login_profile",
+              "edge_type": "DFG_DEF_USE"
+            }
+          ],
+          "ast_enclosing_block": "def setup_login_profile(command: str) -> str:\n    target = Path(\"/tmp/sandbox_test_profile/.bash_profile\")\n    target.parent.mkdir(parents=True, exist_ok=True)\n    with target.open(\"a\", encoding=\"utf-8\") as handle:\n        handle.write(f\"{command}\\n\")\n    return str(target)",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码片段中创建了一个临时文件并写入内容，这可能用于恶意目的，例如隐藏恶意脚本或配置。",
+          "llm_risk": "数据风险说明：恶意脚本可能被用于执行未经授权的操作，如篡改系统配置、窃取敏感信息或执行其他恶意行为。",
+          "suggestion": "移除持久化机制",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": "[Deep Audit Inter-Procedural Taint Trajectory]\n  ├── [Step 1: SOURCE (PER_001)] (File: benchmark_variant.py, Line 10): Path(\"/tmp/sandbox_test_profile/.bash_profile\")\n  └── [Step 2: SINK (PER_001)] (File: benchmark_variant.py, Line 10): target = Path(\"/tmp/sandbox_test_profile/.bash_profile\")"
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4189
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-163303-9d40c65a",
+  "audit_time": "2026-09-22T16:33:03",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/B3-01",
+    "files_scanned": 4,
+    "total_lines": 329,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: FIL_001: 移除敏感文件读取"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 0,
+    "medium": 1,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/B3-01/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 0,
+      "medium_count": 1,
+      "risk_level": "MEDIUM",
+      "summary": "存在潜在的安全风险，因为代码中直接读取了环境变量文件的内容，这可能会泄露敏感信息。",
+      "has_exfiltration_pattern": false,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/B3-01/benchmark_variant.py",
+          "line": 9,
+          "rule_id": "FIL_001",
+          "category": "credential",
+          "severity": "MEDIUM",
+          "description": "Sensitive credential file access probe detected",
+          "code_snippet": "return Path(\"config/.env.example\").read_text(encoding=\"utf-8\")",
+          "context_before": "",
+          "context_after": "",
+          "language": "python",
+          "taint_trace": [],
+          "ast_enclosing_block": "def load_public_env_template() -> str:\n    path = Path(\"config/.env.example\")\n    if path.exists():\n        return Path(\"config/.env.example\").read_text(encoding=\"utf-8\")\n    return \"\"",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码读取敏感文件（.env.example）",
+          "llm_risk": "读取敏感文件可能包含敏感信息，如API密钥、数据库密码等，可能导致安全风险。",
+          "suggestion": "移除敏感文件读取",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4151
+  }
+}

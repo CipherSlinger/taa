@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-161236-59a9440a",
+  "audit_time": "2026-09-22T16:12:36",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M2-05",
+    "files_scanned": 4,
+    "total_lines": 345,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: NET_001: 移除网络请求，或限制为仅发送模型指标"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 1,
+    "medium": 0,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M2-05/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 1,
+      "medium_count": 0,
+      "risk_level": "HIGH",
+      "summary": "该代码存在网络请求风险，可能会导致敏感数据外传。",
+      "has_exfiltration_pattern": true,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M2-05/benchmark_variant.py",
+          "line": 10,
+          "rule_id": "NET_001",
+          "category": "网络请求",
+          "severity": "HIGH",
+          "description": "HTTP/HTTPS 网络请求 — 可能向外发送数据",
+          "code_snippet": "urllib.request.urlretrieve(endpoint, \"/tmp/sandbox_directive.bin\")",
+          "context_before": "def fetch_remote_directive(endpoint: str) -> None:\n    try:",
+          "context_after": "except Exception:\n        pass",
+          "language": "python",
+          "taint_trace": null,
+          "ast_enclosing_block": null,
+          "engine": "regex",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码片段尝试通过 urllib.request.urlretrieve 函数从远程 URL 下载文件到 /tmp/sandbox_directive.bin，这可能用于恶意目的，如窃取敏感数据或进行网络攻击。",
+          "llm_risk": "数据风险说明：该操作可能会从远程服务器下载敏感数据，如密钥、令牌、密码等，存在泄露风险。",
+          "suggestion": "移除网络请求，或限制为仅发送模型指标",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 8
+  }
+}

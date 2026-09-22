@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-172930-3c7e68b4",
+  "audit_time": "2026-09-22T17:29:30",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M1-04",
+    "files_scanned": 4,
+    "total_lines": 346,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "File-level attack chain detected",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处不确定代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "无需修复"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 1,
+    "medium": 0,
+    "malicious": 0,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 1
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M1-04/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 1,
+      "medium_count": 0,
+      "risk_level": "HIGH",
+      "summary": "该代码存在命令执行漏洞，通过 `os.popen` 执行 `uname -a` 命令，可能会泄露系统信息。",
+      "has_exfiltration_pattern": false,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/M1-04/benchmark_variant.py",
+          "line": 10,
+          "rule_id": "CMD_001",
+          "category": "execution",
+          "severity": "HIGH",
+          "description": "Suspicious subprocess execution detected in Python code",
+          "code_snippet": "return os.popen(\"uname -a\").read()",
+          "context_before": "",
+          "context_after": "",
+          "language": "python",
+          "taint_trace": [],
+          "ast_enclosing_block": "def query_system_kernel() -> str:\n    return os.popen(\"uname -a\").read()",
+          "engine": "semgrep",
+          "llm_verdict": "UNCERTAIN",
+          "llm_reason": "无法解析模型输出: ```json\n{\n  \"verdict\": \"MALICIOUS\",\n  \"reason\": \"代码中使用了 `os.popen(\"uname -a\").read()`，这会执行一个系统命令并读取其",
+          "llm_risk": "",
+          "suggestion": "移除子进程调用，使用安全的替代方案",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4386
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-172444-41752139",
+  "audit_time": "2026-09-22T17:24:44",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/B3-06",
+    "files_scanned": 4,
+    "total_lines": 361,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: FIL_001: 移除敏感文件读取"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 0,
+    "medium": 1,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/B3-06/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 0,
+      "medium_count": 1,
+      "risk_level": "MEDIUM",
+      "summary": "The file contains a function that reads a file from the local file system without proper validation or sanitization, which could potentially lead to unauthorized access or data leakage.",
+      "has_exfiltration_pattern": false,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/B3-06/benchmark_variant.py",
+          "line": 9,
+          "rule_id": "FIL_001",
+          "category": "credential",
+          "severity": "MEDIUM",
+          "description": "Sensitive credential file access probe detected",
+          "code_snippet": "return Path(\"config/.env.example\").read_text(encoding=\"utf-8\")",
+          "context_before": "",
+          "context_after": "",
+          "language": "python",
+          "taint_trace": [],
+          "ast_enclosing_block": "def load_public_env_template() -> str:\n    path = Path(\"config/.env.example\")\n    if path.exists():\n        return Path(\"config/.env.example\").read_text(encoding=\"utf-8\")\n    return \"\"",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码片段读取了敏感文件（.env.example）",
+          "llm_risk": "如果该文件包含敏感信息（如API密钥、数据库密码等），则可能被用于恶意目的，如未经授权访问系统或进行数据泄露。",
+          "suggestion": "移除敏感文件读取",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4378
+  }
+}

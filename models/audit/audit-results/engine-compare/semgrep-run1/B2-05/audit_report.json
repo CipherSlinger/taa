@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-163026-ea79357f",
+  "audit_time": "2026-09-22T16:30:26",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/B2-05",
+    "files_scanned": 4,
+    "total_lines": 341,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: EMB_003: 避免在日志中打印原始数据"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 0,
+    "medium": 1,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/B2-05/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 0,
+      "medium_count": 1,
+      "risk_level": "MEDIUM",
+      "summary": "该代码存在潜在的安全风险，因为它在生命周期钩子 `on_epoch_end` 中直接打印了样本索引，这可能会泄露敏感信息。",
+      "has_exfiltration_pattern": false,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p2_retina_resnet/B2-05/benchmark_variant.py",
+          "line": 7,
+          "rule_id": "EMB_003",
+          "category": "embedded",
+          "severity": "MEDIUM",
+          "description": "Raw sample data or sensitive features dumped to standard log/output",
+          "code_snippet": "print(samples)",
+          "context_before": "",
+          "context_after": "",
+          "language": "python",
+          "taint_trace": [],
+          "ast_enclosing_block": "def print_samples_preview(epoch: int) -> None:\n    samples = [f\"sample_{i}\" for i in range(3)]\n    print(samples)",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码中直接打印了敏感数据（样本名称）到标准输出，这可能泄露敏感信息。",
+          "llm_risk": "数据泄露风险",
+          "suggestion": "避免在日志中打印原始数据",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4505
+  }
+}

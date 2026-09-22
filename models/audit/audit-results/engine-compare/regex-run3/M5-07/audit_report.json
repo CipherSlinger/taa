@@ -1,0 +1,95 @@
+{
+  "report_id": "audit-20260922-180759-7dc36f5c",
+  "audit_time": "2026-09-22T18:07:59",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/M5-07",
+    "files_scanned": 4,
+    "total_lines": 365,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码，发现 1 处不确定代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: PER_001: 移除持久化机制"
+  },
+  "statistics": {
+    "total_findings": 2,
+    "high": 2,
+    "medium": 0,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 1
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/M5-07/benchmark_variant.py",
+      "findings_count": 2,
+      "high_count": 2,
+      "medium_count": 0,
+      "risk_level": "HIGH",
+      "summary": "该文件存在持久化后门和命令执行风险，构成攻击链。",
+      "has_exfiltration_pattern": false,
+      "chained": true,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/M5-07/benchmark_variant.py",
+          "line": 11,
+          "rule_id": "PER_001",
+          "category": "持久化后门",
+          "severity": "HIGH",
+          "description": "持久化机制 — 可能在系统中植入后门",
+          "code_snippet": "target = Path(\"/tmp/sandbox_test_profile/.bashrc\")",
+          "context_before": "def chain_persist_and_execute(order: str) -> None:",
+          "context_after": "target.parent.mkdir(parents=True, exist_ok=True)\n    target.write_text(f\"echo {order}\\n\", encoding=\"utf-8\")\n    subprocess.run([\"sh\", \"-c\", f\"cat {target}\"], shell=True)",
+          "language": "python",
+          "taint_trace": null,
+          "ast_enclosing_block": null,
+          "engine": "regex",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码中创建了一个临时文件并写入用户输入，这可能用于植入后门。",
+          "llm_risk": "如果该文件被恶意修改或执行，可能会导致系统被控制或数据泄露。",
+          "suggestion": "移除持久化机制",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        },
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/M5-07/benchmark_variant.py",
+          "line": 14,
+          "rule_id": "CMD_001",
+          "category": "命令执行",
+          "severity": "HIGH",
+          "description": "shell 命令执行或危险外部命令 — 可能绕过参数化保护",
+          "code_snippet": "subprocess.run([\"sh\", \"-c\", f\"cat {target}\"], shell=True)",
+          "context_before": "target = Path(\"/tmp/sandbox_test_profile/.bashrc\")\n    target.parent.mkdir(parents=True, exist_ok=True)\n    target.write_text(f\"echo {order}\\n\", encoding=\"utf-8\")",
+          "context_after": "def on_epoch_end(epoch=0, metrics=None):",
+          "language": "python",
+          "taint_trace": null,
+          "ast_enclosing_block": null,
+          "engine": "regex",
+          "llm_verdict": "UNCERTAIN",
+          "llm_reason": "无法解析模型输出: ```json\n{\n  \"verdict\": \"MALICIOUS\",\n  \"reason\": \"代码片段中执行了 `subprocess.run([\"sh\", \"-c\", f\"cat {target",
+          "llm_risk": "",
+          "suggestion": "移除子进程调用，使用安全的替代方案",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 9
+  }
+}

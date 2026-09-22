@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-173755-3a58c330",
+  "audit_time": "2026-09-22T17:37:55",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/M4-06",
+    "files_scanned": 4,
+    "total_lines": 360,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: OBF_001: 移除编码/反序列化操作，使用安全的替代方案"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 1,
+    "medium": 0,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/M4-06/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 1,
+      "medium_count": 0,
+      "risk_level": "HIGH",
+      "summary": "该代码存在高风险，因为使用了 base64 编码的隐藏 payload，并且没有对解码后的 payload 进行任何验证或处理，这可能导致潜在的安全漏洞。",
+      "has_exfiltration_pattern": false,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p3_detection_industrial/M4-06/benchmark_variant.py",
+          "line": 9,
+          "rule_id": "OBF_001",
+          "category": "payload",
+          "severity": "HIGH",
+          "description": "Encoded or deserialized payload construction detected in Python code",
+          "code_snippet": "return base64.b64decode(encoded.encode(\"utf-8\"))",
+          "context_before": "",
+          "context_after": "",
+          "language": "python",
+          "taint_trace": [],
+          "ast_enclosing_block": "def decode_hidden_payload(encoded: str) -> bytes:\n    return base64.b64decode(encoded.encode(\"utf-8\"))",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码片段中使用了 base64.b64decode 函数对编码字符串进行解码，这通常用于处理加密数据或敏感信息。在上下文中，没有明确说明解码后的数据是密钥、令牌、密码、证书、私钥、敏感文件或外传/持久化载荷，但解码操作本身是恶意的。",
+          "llm_risk": "数据风险说明：解码后的数据可能包含敏感信息，如果被恶意利用，可能导致数据泄露、身份盗窃或其他安全问题。",
+          "suggestion": "移除编码/反序列化操作，使用安全的替代方案",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4375
+  }
+}

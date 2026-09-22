@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-164722-482697b5",
+  "audit_time": "2026-09-22T16:47:22",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/M2-03",
+    "files_scanned": 4,
+    "total_lines": 336,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: NET_002: 移除原始 Socket 连接"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 1,
+    "medium": 0,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/M2-03/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 1,
+      "medium_count": 0,
+      "risk_level": "HIGH",
+      "summary": "该代码存在网络数据外传的风险，通过 socket 发送敏感数据到外部服务器。",
+      "has_exfiltration_pattern": true,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/M2-03/benchmark_variant.py",
+          "line": 11,
+          "rule_id": "NET_002",
+          "category": "network",
+          "severity": "HIGH",
+          "description": "Raw socket communication detected in Python code",
+          "code_snippet": "sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)",
+          "context_before": "",
+          "context_after": "",
+          "language": "python",
+          "taint_trace": [],
+          "ast_enclosing_block": "def stream_via_socket(host: str, port: int, payload: bytes) -> None:\n    try:\n        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n        sock.settimeout(5)\n        sock.connect((host, port))\n        sock.sendall(payload)\n        sock.close()\n    except Exception:\n        pass",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码片段中使用了 raw socket 通信，用于连接和发送数据，这通常用于网络攻击或恶意行为。",
+          "llm_risk": "数据风险说明：通过 raw socket 通信，攻击者可以进行数据窃取、拒绝服务攻击或进行其他恶意活动。",
+          "suggestion": "移除原始 Socket 连接",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4435
+  }
+}

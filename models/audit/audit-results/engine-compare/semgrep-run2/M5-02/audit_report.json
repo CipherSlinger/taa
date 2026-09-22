@@ -1,0 +1,137 @@
+{
+  "report_id": "audit-20260922-173939-184b918f",
+  "audit_time": "2026-09-22T17:39:39",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/M5-02",
+    "files_scanned": 4,
+    "total_lines": 333,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 2 处恶意代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: CMD_001: 移除子进程调用，使用安全的替代方案; PER_001: 移除持久化机制"
+  },
+  "statistics": {
+    "total_findings": 2,
+    "high": 2,
+    "medium": 0,
+    "malicious": 2,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/M5-02/benchmark_variant.py",
+      "findings_count": 2,
+      "high_count": 2,
+      "medium_count": 0,
+      "risk_level": "HIGH",
+      "summary": "该代码存在潜在的安全风险，因为它允许用户在临时目录中写入一个脚本并执行它，这可能被用于持久化恶意代码。",
+      "has_exfiltration_pattern": false,
+      "chained": true,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/M5-02/benchmark_variant.py",
+          "line": 11,
+          "rule_id": "PER_001",
+          "category": "persistence",
+          "severity": "HIGH",
+          "description": "Persistence backdoor or autorun script modification detected",
+          "code_snippet": "target = Path(\"/tmp/sandbox_test_profile/.bashrc\")",
+          "context_before": "# [Cross-File & Microservice Sliced Context]\n# --- File: benchmark_variant.py ---\n       9 | \n      10 | def chain_persist_and_execute(order: str) -> None:\n>>>   11 |     target = Path(\"/tmp/sandbox_test_profile/.bashrc\")\n      12 |     target.parent.mkdir(parents=True, exist_ok=True)\n      13 |     target.write_text(f\"echo {order}\\n\", encoding=\"utf-8\")",
+          "context_after": "[Deep Audit Inter-Procedural Taint Trajectory]\n  ├── [Step 1: SOURCE (PER_001)] (File: benchmark_variant.py, Line 11): Path(\"/tmp/sandbox_test_profile/.bashrc\")\n  └── [Step 2: SINK (PER_001)] (File: benchmark_variant.py, Line 11): target = Path(\"/tmp/sandbox_test_profile/.bashrc\")",
+          "language": "python",
+          "taint_trace": [
+            {
+              "step": 1,
+              "type": "SOURCE (PER_001)",
+              "file": "benchmark_variant.py",
+              "full_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/M5-02/benchmark_variant.py",
+              "line": 11,
+              "code": "Path(\"/tmp/sandbox_test_profile/.bashrc\")",
+              "enclosing_scope": "benchmark_variant.chain_persist_and_execute",
+              "edge_type": null
+            },
+            {
+              "step": 2,
+              "type": "SINK (PER_001)",
+              "file": "benchmark_variant.py",
+              "full_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/M5-02/benchmark_variant.py",
+              "line": 11,
+              "code": "target = Path(\"/tmp/sandbox_test_profile/.bashrc\")",
+              "enclosing_scope": "benchmark_variant.chain_persist_and_execute",
+              "edge_type": "DFG_DEF_USE"
+            }
+          ],
+          "ast_enclosing_block": "def chain_persist_and_execute(order: str) -> None:\n    target = Path(\"/tmp/sandbox_test_profile/.bashrc\")\n    target.parent.mkdir(parents=True, exist_ok=True)\n    target.write_text(f\"echo {order}\\n\", encoding=\"utf-8\")\n    subprocess.run([\"sh\", \"-c\", f\"cat {target}\"], shell=True)",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码中直接写入用户输入到系统配置文件中，存在潜在的安全风险。",
+          "llm_risk": "如果攻击者能够控制输入，可以篡改系统配置，导致系统行为异常或被控制。",
+          "suggestion": "移除持久化机制",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": "[Deep Audit Inter-Procedural Taint Trajectory]\n  ├── [Step 1: SOURCE (PER_001)] (File: benchmark_variant.py, Line 11): Path(\"/tmp/sandbox_test_profile/.bashrc\")\n  └── [Step 2: SINK (PER_001)] (File: benchmark_variant.py, Line 11): target = Path(\"/tmp/sandbox_test_profile/.bashrc\")"
+        },
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/M5-02/benchmark_variant.py",
+          "line": 14,
+          "rule_id": "CMD_001",
+          "category": "execution",
+          "severity": "HIGH",
+          "description": "Suspicious subprocess execution detected in Python code",
+          "code_snippet": "subprocess.run([\"sh\", \"-c\", f\"cat {target}\"], shell=True)",
+          "context_before": "# [Cross-File & Microservice Sliced Context]\n# --- File: benchmark_variant.py ---\n       9 | \n      10 | def chain_persist_and_execute(order: str) -> None:\n>>>   11 |     target = Path(\"/tmp/sandbox_test_profile/.bashrc\")\n      12 |     target.parent.mkdir(parents=True, exist_ok=True)\n      13 |     target.write_text(f\"echo {order}\\n\", encoding=\"utf-8\")\n>>>   14 |     subprocess.run([\"sh\", \"-c\", f\"cat {target}\"], shell=True)\n      15 | \n      16 | ",
+          "context_after": "[Deep Audit Inter-Procedural Taint Trajectory]\n  ├── [Step 1: SOURCE (CMD_001)] (File: benchmark_variant.py, Line 11): target = Path(\"/tmp/sandbox_test_profile/.bashrc\")\n  └── [Step 2: SINK (CMD_001)] (File: benchmark_variant.py, Line 14): subprocess.run([\"sh\", \"-c\", f\"cat {target}\"], shell=True)",
+          "language": "python",
+          "taint_trace": [
+            {
+              "step": 1,
+              "type": "SOURCE (CMD_001)",
+              "file": "benchmark_variant.py",
+              "full_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/M5-02/benchmark_variant.py",
+              "line": 11,
+              "code": "target = Path(\"/tmp/sandbox_test_profile/.bashrc\")",
+              "enclosing_scope": "benchmark_variant.chain_persist_and_execute",
+              "edge_type": null
+            },
+            {
+              "step": 2,
+              "type": "SINK (CMD_001)",
+              "file": "benchmark_variant.py",
+              "full_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p1_xgboost_finance/M5-02/benchmark_variant.py",
+              "line": 14,
+              "code": "subprocess.run([\"sh\", \"-c\", f\"cat {target}\"], shell=True)",
+              "enclosing_scope": "benchmark_variant.chain_persist_and_execute",
+              "edge_type": "DFG_DEF_USE"
+            }
+          ],
+          "ast_enclosing_block": "def chain_persist_and_execute(order: str) -> None:\n    target = Path(\"/tmp/sandbox_test_profile/.bashrc\")\n    target.parent.mkdir(parents=True, exist_ok=True)\n    target.write_text(f\"echo {order}\\n\", encoding=\"utf-8\")\n    subprocess.run([\"sh\", \"-c\", f\"cat {target}\"], shell=True)",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码中使用了subprocess.run()函数执行了cat命令，读取了敏感文件/tmp/sandbox_test_profile/.bashrc，这可能用于执行恶意命令或泄露敏感信息。",
+          "llm_risk": "数据风险说明：该代码片段可能用于执行恶意命令，泄露敏感信息，对系统安全构成威胁。",
+          "suggestion": "移除子进程调用，使用安全的替代方案",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": "[Deep Audit Inter-Procedural Taint Trajectory]\n  ├── [Step 1: SOURCE (CMD_001)] (File: benchmark_variant.py, Line 11): target = Path(\"/tmp/sandbox_test_profile/.bashrc\")\n  └── [Step 2: SINK (CMD_001)] (File: benchmark_variant.py, Line 14): subprocess.run([\"sh\", \"-c\", f\"cat {target}\"], shell=True)"
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4206
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "report_id": "audit-20260922-182205-b5e4aebf",
+  "audit_time": "2026-09-22T18:22:05",
+  "target": {
+    "directory": "/home/hjy/taa/models/audit/benchmarks/audit-100/p4_bert_sentiment/M1-09",
+    "files_scanned": 4,
+    "total_lines": 368,
+    "files_with_findings": 1
+  },
+  "conclusion": {
+    "passed": false,
+    "verdict": "MALICIOUS",
+    "reason": "Confirmed attack finding present",
+    "risk_level": "CRITICAL",
+    "summary": "审计结论: 发现 1 处恶意代码，检测到文件级复合攻击链。存在数据泄露风险，建议阻断导入",
+    "recommendation": "建议修复: CMD_001: 移除子进程调用，使用安全的替代方案"
+  },
+  "statistics": {
+    "total_findings": 1,
+    "high": 1,
+    "medium": 0,
+    "malicious": 1,
+    "suspicious": 0,
+    "benign": 0,
+    "uncertain": 0
+  },
+  "file_reports": [
+    {
+      "file": "benchmark_variant.py",
+      "file_path": "/home/hjy/taa/models/audit/benchmarks/audit-100/p4_bert_sentiment/M1-09/benchmark_variant.py",
+      "findings_count": 1,
+      "high_count": 1,
+      "medium_count": 0,
+      "risk_level": "HIGH",
+      "summary": "该代码存在命令执行漏洞，通过 `os.popen` 执行 `uname -a` 命令，可能会泄露系统信息。",
+      "has_exfiltration_pattern": false,
+      "chained": false,
+      "findings": [
+        {
+          "file": "/home/hjy/taa/models/audit/benchmarks/audit-100/p4_bert_sentiment/M1-09/benchmark_variant.py",
+          "line": 10,
+          "rule_id": "CMD_001",
+          "category": "execution",
+          "severity": "HIGH",
+          "description": "Suspicious subprocess execution detected in Python code",
+          "code_snippet": "return os.popen(\"uname -a\").read()",
+          "context_before": "",
+          "context_after": "",
+          "language": "python",
+          "taint_trace": [],
+          "ast_enclosing_block": "def query_system_kernel() -> str:\n    return os.popen(\"uname -a\").read()",
+          "engine": "semgrep",
+          "llm_verdict": "MALICIOUS",
+          "llm_reason": "代码中使用了 `os.popen` 来执行系统命令 `uname -a`，这通常用于获取系统信息，但没有明确说明读取的是敏感信息。然而，`uname -a` 命令可能会泄露系统信息，包括内核版本、硬件信息等，这可能被恶意利用。",
+          "llm_risk": "数据风险说明：泄露系统信息，可能被恶意利用获取系统权限或进行其他攻击行为。",
+          "suggestion": "移除子进程调用，使用安全的替代方案",
+          "is_cross_file": false,
+          "is_microservice": false,
+          "cpg_evidence": null
+        }
+      ]
+    }
+  ],
+  "scan_metadata": {
+    "scanner_version": "1.0.0",
+    "rules_count": 13,
+    "llm_model": "qwen2.5-coder:3b",
+    "llm_enabled": true,
+    "llm_seed": 42,
+    "policy": "gate",
+    "scan_duration_ms": 4172
+  }
+}
