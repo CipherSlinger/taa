@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Package a deployable TAA + TEE-LLM image from the local development container.
 #
-# Deploys both components into the container, guarantees exactly one supervisor pair
-# with both daemons autostarting, applies production hygiene, then commits and exports
-# a date+time stamped image archive.
+# Deploys both components into the container, verifies the flock singleton guard leaves
+# exactly one supervisor pair with both daemons autostarting, applies production hygiene,
+# then commits and exports a date+time stamped image archive.
 #
 # Usage: ./deploy-docker.sh [options]
 set -euo pipefail
@@ -75,7 +75,8 @@ OLLAMA_READY_TIMEOUT="${OLLAMA_READY_TIMEOUT:-120}"
 OLLAMA_READY_INTERVAL="${OLLAMA_READY_INTERVAL:-2}"
 # Cold weights are large; loading them can take far longer than a probe timeout.
 WARMUP_TIMEOUT="${WARMUP_TIMEOUT:-300}"
-# How long ollama keeps the warmed weights resident: must outlive the whole packaging run.
+# How long ollama keeps the warmed weights resident: must outlive the whole packaging run,
+# since step 1 is the only place that loads them.
 MODEL_KEEP_ALIVE="${MODEL_KEEP_ALIVE:-30m}"
 
 usage() {
@@ -246,66 +247,32 @@ info "running: ./deploy.sh docker taa --model $LLM_MODEL"
 ( cd "$PROJECT_DIR" && ./deploy.sh docker taa --model "$LLM_MODEL" )
 info "TAA deployed"
 
-# ── 4. Consolidate supervisors ───────────────────────────────
-# Step 3 started `start.sh`, which also launches `start-teellm.sh`, racing the
-# supervisor step 2 already started. Collapse everything down to one supervisor pair.
-step "consolidating supervisors into a single autostart pair"
+# ── 4. Verify the supervisor partition ───────────────────────
+# Neither deploy script touches the other's supervisor: step 2 left one start-teellm.sh,
+# step 3 stopped the old start.sh and left a fresh one, and the flock guard in both
+# wrappers refuses the duplicate that step 3's start.sh tries to launch. There is nothing
+# left to consolidate -- but the guarantee still has to be checked, because a container
+# carrying a pre-guard ./start.sh would end up with two supervisors respawning each
+# other's daemons. Nothing is killed here, so the warmed weights from step 1 stay resident
+# and teellm-service's 5s probe below does not have to pay for a cold load.
+step "verifying exactly one supervisor pair"
 container_running || die "container $CONTAINER_NAME is not running"
 
-# Everything the two deploy scripts may leave running: their supervisors and those
-# supervisors' daemons. The bracket in `[s]tart` keeps pkill/pgrep from matching the
-# shell that is running the pattern itself.
-SUPERVISOR_PATTERN='[s]tart\.sh|[s]tart-teellm\.sh'
-DAEMON_PATTERN='taa|teellm-service|ollama|llama-server'
-
-# $1: signal number, or empty for the default SIGTERM. The dash is required -- `pkill 9 -f x`
-# would parse 9 as a pattern, not as a signal.
-kill_services() {
-  local flag="${1:+-$1}"
-  docker exec -i "$CONTAINER_NAME" sh -lc "
-    pkill $flag -f '$SUPERVISOR_PATTERN' >/dev/null 2>&1 || true
-    pkill $flag -x '$DAEMON_PATTERN'    >/dev/null 2>&1 || true
-  " >/dev/null 2>&1 || true
+# The bracket keeps pgrep from matching the shell running the pattern itself. `-f` matches
+# the full command line, which is empty for a zombie, so an unreaped child cannot be
+# counted as a live duplicate.
+supervisor_count() {
+  docker exec -i "$CONTAINER_NAME" sh -lc "pgrep -f '$1' 2>/dev/null | wc -l"
 }
 
-services_alive() {
-  docker exec -i "$CONTAINER_NAME" sh -lc \
-    "pgrep -f '$SUPERVISOR_PATTERN' >/dev/null 2>&1 || pgrep -x '$DAEMON_PATTERN' >/dev/null 2>&1"
-}
-
-docker exec -i "$CONTAINER_NAME" sh -lc \
-  "touch '$CONTAINER_WORKDIR/manual' '$CONTAINER_WORKDIR/manual-teellm'" >/dev/null 2>&1 || true
-kill_services
-
-stopped=false
-for _ in {1..40}; do
-  if ! services_alive; then
-    stopped=true; break
-  fi
-  sleep 0.5
-done
-if [[ "$stopped" != true ]]; then
-  warn "services did not terminate gracefully; force-killing"
-  kill_services 9
-  sleep 1
+taa_supervisors="$(supervisor_count '[s]tart\.sh')"
+teellm_supervisors="$(supervisor_count '[s]tart-teellm\.sh')"
+if (( taa_supervisors != 1 || teellm_supervisors != 1 )); then
+  err "expected one start.sh and one start-teellm.sh supervisor, found $taa_supervisors and $teellm_supervisors"
+  docker exec -i "$CONTAINER_NAME" sh -lc "ps -eo pid,ppid,stat,args | grep -E '[s]tart(-teellm)?\.sh' || true"
+  exit 1
 fi
-info "all previous supervisors and daemons stopped"
-
-docker exec -i "$CONTAINER_NAME" sh -lc "rm -f '$CONTAINER_WORKDIR/manual' '$CONTAINER_WORKDIR/manual-teellm'"
-docker exec -d "$CONTAINER_NAME" sh -lc "cd '$CONTAINER_WORKDIR' && nohup bash ./start.sh >/dev/null 2>&1 &"
-info "single start.sh supervisor launched (brings up TAA and TEE-LLM)"
-
-# Killing ollama above dropped the warmed weights, so they must be loaded again before
-# the 5s probe below runs -- otherwise the probe timeout aborts the load and livelocks
-# exactly as described in step 1.
-step "re-warming model after the supervisor restart"
-if ! wait_for_ollama; then
-  warn "ollama did not come back within ${OLLAMA_READY_TIMEOUT}s; probing anyway"
-elif warm_model; then
-  info "model $LLM_MODEL resident again"
-else
-  warn "model re-warm failed; probing anyway"
-fi
+info "one start.sh supervisor and one start-teellm.sh supervisor"
 
 step "waiting for both daemons to become ready"
 teellm_ready=false
