@@ -92,7 +92,9 @@ Options:
   --archive <path>     Override the exported archive path (default: $ARCHIVE_PATH)
   --keep-platform      Keep the platform block in taa-config.json (test image, not production)
   --no-clean           Skip runtime trace cleanup (logs, results, keys, pause flags)
-  --reset-container    Remove the container first so it is recreated from the base image
+  --reset-container    Recreate the container from the base image before deploying.
+                       Discards the deployed ollama runtime and weights; teellm/deploy.sh
+                       re-syncs them from teellm/models/ollama, which is slow.
   -h, --help           Show this help
 
 Environment overrides:
@@ -180,6 +182,28 @@ fi
 # so the 30 retries in teellm/deploy.sh can never converge and its readiness gate fails
 # on a container whose ollama was recently restarted. Load the weights here instead,
 # and hold them resident for the rest of the run.
+warm_payload="{\"model\":\"${LLM_MODEL}\",\"prompt\":\"ping\",\"stream\":false,\"keep_alive\":\"${MODEL_KEEP_ALIVE}\",\"options\":{\"num_predict\":1}}"
+
+# Load the weights into ollama and hold them resident. Non-zero if the model is absent.
+warm_model() {
+  docker exec -i "$CONTAINER_NAME" curl -fsS -m "$WARMUP_TIMEOUT" -X POST \
+    "http://${OLLAMA_HOST}/api/generate" -H 'Content-Type: application/json' \
+    -d "$warm_payload" >/dev/null 2>&1
+}
+
+# Poll ollama's cheap catalog endpoint until the daemon answers at all.
+wait_for_ollama() {
+  local tries=$(( (OLLAMA_READY_TIMEOUT + OLLAMA_READY_INTERVAL - 1) / OLLAMA_READY_INTERVAL ))
+  local i
+  for ((i = 0; i < tries; i++)); do
+    if docker exec -i "$CONTAINER_NAME" curl -fsS -m 5 "http://${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$OLLAMA_READY_INTERVAL"
+  done
+  return 1
+}
+
 step "warming model $LLM_MODEL in ollama"
 container_running || die "container $CONTAINER_NAME is not running"
 
@@ -188,15 +212,7 @@ if docker exec -i "$CONTAINER_NAME" curl -fsS -m 5 "http://${OLLAMA_HOST}/api/ta
 else
   info "ollama daemon not running; starting it as teellm/deploy.sh would"
   docker exec -d "$CONTAINER_NAME" sh -lc "cd '$CONTAINER_OLLAMA_DIR' && exec env OLLAMA_HOST='$OLLAMA_HOST' OLLAMA_MODELS='$CONTAINER_OLLAMA_DIR/models/models' OLLAMA_LIBRARY_PATH='$CONTAINER_OLLAMA_DIR/lib/ollama' ./start-ollama.sh > '$OLLAMA_LOG_FILE' 2>&1"
-  ollama_ready=false
-  for _ in $(seq 1 $(( (OLLAMA_READY_TIMEOUT + OLLAMA_READY_INTERVAL - 1) / OLLAMA_READY_INTERVAL ))); do
-    if docker exec -i "$CONTAINER_NAME" curl -fsS -m 5 "http://${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then
-      ollama_ready=true
-      break
-    fi
-    sleep "$OLLAMA_READY_INTERVAL"
-  done
-  if [[ "$ollama_ready" != true ]]; then
+  if ! wait_for_ollama; then
     err "ollama daemon did not become ready within ${OLLAMA_READY_TIMEOUT}s"
     docker exec -i "$CONTAINER_NAME" sh -lc "tail -n 30 '$OLLAMA_LOG_FILE' 2>/dev/null || true"
     exit 1
@@ -204,10 +220,7 @@ else
   info "ollama daemon ready on http://${OLLAMA_HOST}"
 fi
 
-warm_payload="{\"model\":\"${LLM_MODEL}\",\"prompt\":\"ping\",\"stream\":false,\"keep_alive\":\"${MODEL_KEEP_ALIVE}\",\"options\":{\"num_predict\":1}}"
-if docker exec -i "$CONTAINER_NAME" curl -fsS -m "$WARMUP_TIMEOUT" -X POST \
-  "http://${OLLAMA_HOST}/api/generate" -H 'Content-Type: application/json' \
-  -d "$warm_payload" >/dev/null 2>&1; then
+if warm_model; then
   info "model $LLM_MODEL loaded and held resident for ${MODEL_KEEP_ALIVE}"
 else
   warn "model warm-up failed (missing weights?); teellm/deploy.sh will report the cause"
@@ -266,6 +279,18 @@ info "all previous supervisors and daemons stopped"
 docker exec -i "$CONTAINER_NAME" sh -lc "rm -f '$CONTAINER_WORKDIR/manual' '$CONTAINER_WORKDIR/manual-teellm'"
 docker exec -d "$CONTAINER_NAME" sh -lc "cd '$CONTAINER_WORKDIR' && nohup bash ./start.sh >/dev/null 2>&1 &"
 info "single start.sh supervisor launched (brings up TAA and TEE-LLM)"
+
+# Killing ollama above dropped the warmed weights, so they must be loaded again before
+# the 5s probe below runs -- otherwise the probe timeout aborts the load and livelocks
+# exactly as described in step 1.
+step "re-warming model after the supervisor restart"
+if ! wait_for_ollama; then
+  warn "ollama did not come back within ${OLLAMA_READY_TIMEOUT}s; probing anyway"
+elif warm_model; then
+  info "model $LLM_MODEL resident again"
+else
+  warn "model re-warm failed; probing anyway"
+fi
 
 step "waiting for both daemons to become ready"
 teellm_ready=false
@@ -386,6 +411,8 @@ info "image committed: $IMAGE_TAG (id: $image_id, size: ${image_size_mb}MB)"
 step "exporting image archive: $ARCHIVE_PATH"
 mkdir -p "$(dirname "$ARCHIVE_PATH")"
 tmp_archive="${ARCHIVE_PATH}.tmp.$$"
+TMP_ARCHIVE="$tmp_archive"
+trap 'rm -f "${TMP_ARCHIVE:-}"' EXIT
 compressor="gzip"
 command -v pigz >/dev/null 2>&1 && compressor="pigz"
 
@@ -399,6 +426,7 @@ else
   docker save -o "$tmp_archive" "$IMAGE_TAG"
 fi
 mv -f "$tmp_archive" "$ARCHIVE_PATH"
+TMP_ARCHIVE=""
 archive_size="$(du -h "$ARCHIVE_PATH" | cut -f1)"
 info "archive exported with $compressor: $ARCHIVE_PATH ($archive_size)"
 
