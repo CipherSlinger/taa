@@ -179,8 +179,14 @@ self.assertEqual(res.findings[0]["code_snippet"], "os.system('id')")
 ## 阶段 5：时延预算与 6 次正式运行
 
 1. `--limit 5` 实测 `per_sample_llm_sec`，据此给出总时长预估后**再**开跑；禁止凭历史数值估算（历史数值来源不可信）。
+   - **偏离（已记录）**：`--limit 5` 无法测出该值。语料清单是 `FAMILY_SPECS` × `PROJECT_ALLOCATION` 生成的**固定网格**（非文件系统发现），`--limit N` 永远先走完 B1-01…B5-10 这 50 个良性样本；`--limit 5` 取到的是 B1-01…B1-05，它们**全部绕过仲裁**（`llm_invoked=false`），`per_sample_llm_sec` 因而无定义、只能读出 0。`--limit 3`/`--limit 5` 均属**vacuous**，不是"小样本估计"，是"估不出"。
+   - **替代做法**：先把分母与分子的口径补齐（见阶段 3.5 的计时插桩），再按**两段式**分别测量——`--llm-backend none` 量静态扫描成本（全 100 样本），`--llm-backend ollama` 量 LLM 成本（取实际进入仲裁的样本）。这正是阶段 3.5 插桩要解决的问题：只有整轮 `eval_duration_sec` 时，两项成本无法分离。
+   - **实测预算**：由阶段 5 的 6 次正式运行自身给出（每轮 100 样本、逐样本记录 `scan_duration_ms`/`llm_invoked`/`llm_duration_sec`），不再另设试跑——正式运行就是最完整的预算测量。
 2. 6 次运行严格串行，按 spec §4.2 的命令模板；每轮前后复核 ollama 存活与模型 digest（`f72c60cabf62…`）。
+   - **实施方式**：6 轮由**单个串行驱动脚本**跑完（`/tmp/run-six.sh`），顺序即模块里的 `RUN_ORDER`（regex1 → semgrep1 → regex2 → semgrep2 → regex3 → semgrep3），每轮结束自动 `git checkout --` 清单并在非零退出时中止。**串行由构造保证**，而非靠人守着不并发。
 3. **运行期间不得并行**任何重内存任务（含 semgrep 全量扫描、完整测试套件）。
+   - **已发生一次违规（我造成的）**：第一版 `regex-run1` 跑到 22/100 时，我并发启动了完整测试套件（`unittest discover`），其中 `test_engine_rule_parity.py` 会对 59 条 fixture 调 semgrep——正是 spec §9.7 记录的「与容器内 ollama 并发 → OOM」组合。发现后立即停止测试套件，**该轮作废并重跑**。核对：容器 `RestartCount=0`、启动时间未变、已落下样本的 finding **全部带 `llm_verdict`**（无 fail-closed），即未实际造成故障，但作废的理由是**我不该制造那个组合**，而不是「这次运气好」。
+   - **无法排除的干扰（须在报告披露）**：本轮运行窗口内，**用户本人**在同一仓库/主机上工作（`dcc57aa` 于 16:00:02 提交 `deploy.sh` 的容器存活判定修复，涉及 docker 操作）。我无法要求其停工，因此不据此反复作废，改为**用可测量证据处理**：逐样本 `scan_duration_ms`/`llm_duration_sec` 已落盘，跑完按离群点判定是否受扰，并把离群样本**逐条披露**；时序本就是次要证据（`eval_duration_sec` 只披露、不参与 §5.3 判定）。若离群分析显示实质受扰，则该轮作废、改在安静窗口重跑。
 4. 每轮结束后 `git checkout -- models/audit/audit-benchmark-manifest.json`（评测器会把 `benchmark_root` 改写成绝对路径，污染已跟踪文件）。
 
 ---
