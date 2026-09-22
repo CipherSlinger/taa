@@ -5,7 +5,9 @@ A dropped scan result and a clean scan both produce an empty finding list. Treat
 them alike turns an infrastructure failure into a passing verdict, which is the
 failure mode that would flatter whichever engine was more likely to fail.
 """
+import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -218,6 +220,121 @@ class TestIncompleteScansStayOutOfTheScore(unittest.TestCase):
             engine="semgrep",
         )
         self.assertTrue(summary["round_complete"])
+
+
+class SlowScanner:
+    """A scanner whose scan takes measurable time, so the timing can be asserted."""
+
+    def __init__(self, delay: float, findings):
+        self.delay = delay
+        self.findings = list(findings)
+
+    def scan_directory(self, dirpath, extensions=(".py",)):
+        time.sleep(self.delay)
+        return ev.ScanOutcome(findings=self.findings, scan_complete=True)
+
+
+class StubAnalyzer:
+    """Stands in for the LLM analyzer: the cost being measured is the call, not the model."""
+
+    PURE_LLM_FILE_PROMPT = ""
+
+    def __init__(self, delay: float):
+        self.delay = delay
+
+    def analyze_finding(self, finding):
+        time.sleep(self.delay)
+
+    def analyze_file(self, file_path, findings):
+        time.sleep(self.delay)
+        return {}
+
+
+class TestEvaluatorTimingAccounting(unittest.TestCase):
+    """The evaluator has to time the work it is budgeting for.
+
+    The run budget is decided before hours of paired runs are committed, and the
+    two costs behave differently: the scan is a fixed per-sample cost the engine
+    choice sets, the LLM call is the one that dominates. A single whole-run
+    duration cannot separate them, and `scan_metadata.scan_duration_ms` was
+    being written as a literal 0 while the standalone analyzer CLI measured it -
+    the same defect as an engine name nobody claimed, in a field the report
+    bundle carries.
+    """
+
+    def _analyse(self, scanner, llm_backend="ollama", analyzer=None):
+        """Returns the sample row and its audit report, read before the temp dir goes."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            sample_dir = root / "p1_xgboost_finance" / "X-01"
+            sample_dir.mkdir(parents=True)
+            (sample_dir / "train.py").write_text("import os\nos.system('id')\n", encoding="utf-8")
+            kwargs = dict(
+                sample=make_sample(),
+                sample_dir=sample_dir,
+                results_dir=root / "results",
+                audit_mode="static-llm",
+                policy="gate",
+                llm_backend=llm_backend,
+                llm_model="qwen2.5-coder:3b",
+                extensions=(".py",),
+                max_findings=50,
+                engine="semgrep",
+            )
+            with patch.object(ev, "load_module_scanner", return_value=scanner):
+                if analyzer is None:
+                    row = ev.analyse_sample(**kwargs)
+                else:
+                    with patch.object(ev, "build_analyzer", return_value=analyzer):
+                        row = ev.analyse_sample(**kwargs)
+            report = json.loads(Path(row["report_path"]).read_text(encoding="utf-8"))
+            return row, report
+
+    @staticmethod
+    def _finding():
+        return ev.Finding(
+            file="train.py", line=2, rule_id="CMD_001", category="command",
+            severity="HIGH", description="", code_snippet="", context_before="",
+            context_after="", engine="semgrep",
+        )
+
+    def test_the_scan_time_reaches_the_report(self):
+        _, report = self._analyse(SlowScanner(0.05, [self._finding()]), llm_backend="none")
+        self.assertGreaterEqual(
+            report["scan_metadata"]["scan_duration_ms"], 50,
+            "the report states a scan duration that does not reflect the scan",
+        )
+
+    def test_the_llm_time_is_recorded_on_the_row(self):
+        row, _ = self._analyse(SlowScanner(0.0, [self._finding()]), analyzer=StubAnalyzer(0.05))
+        self.assertTrue(row["llm_invoked"])
+        self.assertGreaterEqual(row["llm_duration_sec"], 0.05)
+
+    def test_a_sample_that_never_reached_the_llm_records_no_llm_time(self):
+        """Zero samples in the denominator must not look like an infinitely fast LLM."""
+        row, _ = self._analyse(SlowScanner(0.0, []), analyzer=StubAnalyzer(0.05))
+        self.assertFalse(row["llm_invoked"])
+        self.assertEqual(row["llm_duration_sec"], 0.0)
+
+    def test_the_summary_divides_llm_time_by_the_samples_that_used_it(self):
+        rows = [
+            {"label": "benign", "predicted_label": "benign", "scan_complete": True,
+             "llm_invoked": True, "llm_duration_sec": 4.0},
+            {"label": "malicious", "predicted_label": "malicious", "scan_complete": True,
+             "llm_invoked": True, "llm_duration_sec": 6.0},
+            {"label": "benign", "predicted_label": "benign", "scan_complete": True,
+             "llm_invoked": False, "llm_duration_sec": 0.0},
+        ]
+        metrics = ev.metric_summary(rows)
+        self.assertEqual(metrics["llm_sample_count"], 2)
+        self.assertEqual(metrics["per_sample_llm_sec"], 5.0)
+
+    def test_the_summary_reports_no_llm_time_when_nothing_was_arbitrated(self):
+        rows = [{"label": "benign", "predicted_label": "benign", "scan_complete": True,
+                 "llm_invoked": False, "llm_duration_sec": 0.0}]
+        metrics = ev.metric_summary(rows)
+        self.assertEqual(metrics["llm_sample_count"], 0)
+        self.assertEqual(metrics["per_sample_llm_sec"], 0.0)
 
 
 class TestScannerAdapterInterface(unittest.TestCase):

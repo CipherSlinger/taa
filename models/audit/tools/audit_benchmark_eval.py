@@ -664,6 +664,7 @@ def analyse_sample(
             analyzer.PURE_LLM_FILE_PROMPT = CHECKLIST_RULES_PROMPT + "\n\n" + LLMSecurityAnalyzer.PURE_LLM_FILE_PROMPT
 
         file_results: list[dict[str, Any]] = []
+        llm_started = time.monotonic()
         for py_file in py_files:
             if analyzer is not None:
                 f_res = analyzer.audit_file_pure_llm(str(py_file))
@@ -678,6 +679,12 @@ def analyse_sample(
                     "exfiltration": False,
                 }
             file_results.append(f_res)
+
+        # Timing the LLM path separately from the static scan: the run budget
+        # before a long paired comparison needs to know which of the two costs
+        # the engine choice is actually moving.
+        llm_invoked = analyzer is not None and bool(py_files)
+        llm_duration_sec = round(time.monotonic() - llm_started, 3) if llm_invoked else 0.0
 
         finished_at = utc_now_iso()
 
@@ -837,6 +844,8 @@ def analyse_sample(
             "files_scanned": len(py_files),
             "total_findings": 0,
             "llm_available": (llm_state == "ok"),
+            "llm_invoked": llm_invoked,
+            "llm_duration_sec": llm_duration_sec,
             "fail_closed": fail_closed,
             "started_at": started_at,
             "finished_at": finished_at,
@@ -848,7 +857,9 @@ def analyse_sample(
 
     # Two-stage static-llm mode: static rules scan followed by LLM semantic evaluation
     scanner = load_module_scanner(engine=engine)
+    scan_started = time.monotonic()
     outcome = scanner.scan_directory(str(sample_dir), extensions=extensions)
+    scan_duration_ms = int((time.monotonic() - scan_started) * 1000)
     findings = outcome.findings
     # An unfinished scan yields no findings for the same reason a broken clock is
     # right twice a day. Only a completed scan with no findings counts as a bypass.
@@ -856,12 +867,17 @@ def analyse_sample(
 
     file_summaries: Dict[str, Any] = {}
     analyzer = None
+    llm_invoked = False
+    llm_duration_sec = 0.0
     if llm_backend != "none" and findings:
+        llm_started = time.monotonic()
         analyzer = build_analyzer(llm_model, llm_backend, llm_seed)
         for finding in findings[:max_findings]:
             analyzer.analyze_finding(finding)
         for file_path, file_findings in group_findings_by_file(findings).items():
             file_summaries[file_path] = analyzer.analyze_file(file_path, file_findings)
+        llm_duration_sec = round(time.monotonic() - llm_started, 3)
+        llm_invoked = True
 
     finished_at = utc_now_iso()
     report = generate_audit_report(
@@ -872,7 +888,7 @@ def analyse_sample(
         policy=policy,
         llm_model=llm_model,
         llm_enabled=(llm_backend != "none" and not bypass),
-        scan_duration_ms=0,
+        scan_duration_ms=scan_duration_ms,
     )
 
     matched_rules = sorted({finding.rule_id for finding in findings})
@@ -917,10 +933,13 @@ def analyse_sample(
         "ast_error_count": outcome.ast_error_count,
         "cpg_error": outcome.cpg_error,
         "incomplete": not outcome.scan_complete,
+        "scan_duration_ms": scan_duration_ms,
         "matched_rules": matched_rules,
         "reason": report["conclusion"]["summary"],
         "error_type": error_type,
         "llm_state": llm_state,
+        "llm_invoked": llm_invoked,
+        "llm_duration_sec": llm_duration_sec,
         "expected_rules": list(sample.expected_rules),
         "expected_severity": sample.expected_severity,
         "expected_final": sample.expected_final,
@@ -1080,6 +1099,16 @@ def metric_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     bypass_rate = safe_div(bypass_count, len(results))
     scan_incomplete_count = sum(1 for row in results if not row.get("scan_complete", True))
     scan_error_count = sum(1 for row in results if row.get("scan_error"))
+    # Divided by the samples that actually waited on the model, not by the corpus:
+    # most samples bypass arbitration, so a corpus-wide mean would report a
+    # per-sample cost that no sample ever incurred.
+    llm_sample_count = sum(1 for row in results if row.get("llm_invoked", False))
+    llm_total_sec = sum(float(row.get("llm_duration_sec", 0.0)) for row in results)
+    per_sample_llm_sec = safe_div(llm_total_sec, llm_sample_count)
+    per_sample_scan_sec = safe_div(
+        sum(float(row.get("scan_duration_ms", 0)) for row in results) / 1000.0,
+        len(scored),
+    )
 
     return {
         "precision": precision,
@@ -1097,6 +1126,10 @@ def metric_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         "scored_count": len(scored),
         "scan_incomplete_count": scan_incomplete_count,
         "scan_error_count": scan_error_count,
+        "llm_sample_count": llm_sample_count,
+        "llm_total_sec": round(llm_total_sec, 3),
+        "per_sample_llm_sec": round(per_sample_llm_sec, 3),
+        "per_sample_scan_sec": round(per_sample_scan_sec, 3),
     }
 
 
