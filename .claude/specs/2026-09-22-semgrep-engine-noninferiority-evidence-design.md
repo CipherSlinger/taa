@@ -141,9 +141,12 @@ F5 定位的 `FIL_001` 缺陷，实施时发现**不止一个**：把规则与�
 |---|---|---|---|
 | 1 | 无敏感路径谓词：`pattern: open($PATH, ...)` 匹配**任何** `open()` | **过宽**：凭据读取语义完全丢失 | `cpg-eval` 100/100 全拦；本机阴性对照 `open(csv_path, ...)` 实测命中 1 次 |
 | 2 | 缺 `Path.home().joinpath(...)` 形态（基线 pattern 3） | **漏报**：基线能抓的形态本规则抓不到 | RED 实测：`Path.home().joinpath('.aws/credentials').read_text()` → `[]` |
-| 3 | `severity: ERROR`→映射 HIGH，基线为 `SeverityMedium`（`rules.go:137`）；`DYN_001` 同病（基线 `rules.go:124` 亦为 MEDIUM） | **仲裁路径偏移**：`gate` 策略下 MEDIUM 恒拦、HIGH 可被 LLM 开脱 | RED 实测：修复前 `{severity}` = `{'HIGH'}` |
+| 3 | `severity: ERROR`→映射 HIGH，基线为 `SeverityMedium`（`rules.go:137`）；`DYN_001` 同病（基线 `rules.go:124` 亦为 MEDIUM） | **拦截路径偏移**：生产 `gate` 语义下 MEDIUM 从不拦截，HIGH 必须被 LLM 判 BENIGN 才放行 | RED 实测：修复前 `{severity}` = `{'HIGH'}` |
 
-第 3 条不是无害差异：severity 决定的是 LLM 能否推翻静态判定。若 semgrep 臂把 MEDIUM 抬成 HIGH，等于给该臂单独开了一条 regex 臂没有的「豁免通道」，会把「引擎差异」与「仲裁路径差异」混在一起——这正是 §9.1 已登记的混淆，不能在其上再叠一层。
+第 3 条不是无害差异，其机制已核到代码：`internal/codeaudit/verifier.go:160-178` 的 `recalculatePassed` 只对 HIGH 计数并令 `report.Passed = highCount == 0`——**MEDIUM 被计数但不参与 `Passed`**，而 HIGH 只要 `LLMVerdict != VerdictBenign` 就计入 `highCount` 从而拦截。因此把基线的 MEDIUM 规则移植成 HIGH，等于**给该臂新增了一条 regex 臂没有的拦截路径**，会让 semgrep 臂在基线条目上系统性地更严——这既污染 `ΔFPR`，也把「引擎差异」与「仲裁路径差异」混在一起（§9.1 已登记的混淆叠加）。
+
+> **勘误（2026-09-22，本次核对代码时发现）**：本节初稿把该机制写成「MEDIUM 恒拦、HIGH 可被 LLM 开脱」，方向说反了。已按 `verifier.go` 更正为上表与上段。同时发现**评测镜像与生产语义在此不一致**，见 §9.8。
+> 既有的 `tests/test_semgrep_rule_fixtures.py::test_medium_rules_keep_baseline_severity` 注释中同一处反了的表述，也已一并更正（该测试断言本身正确，无需改动）。
 
 **修复**：三条分支逐条对应基线三条正则（各带自己的 `metavariable-regex` 谓词）；`severity: ERROR → WARNING`（WARNING 映射 MEDIUM）；`DYN_001` 同步改 `WARNING`。
 
@@ -241,6 +244,7 @@ python3 models/audit/tools/audit_benchmark_eval.py \
 4. **全量规则集行为一致性审计（新增，P0 教训）**：对 audit-100 的 100 个样本，逐文件比对两臂触发的 `rule_id` 集合，差异清单必须为空，或每一条差异都被逐项解释并登记进报告。
    - 理由：P0 表明「按 YAML 逐条读规则」既不可靠也不完整——同一条规则同时存在过宽与漏报两种反向失真，且都只在**行为**上显现。semgrep 臂全量 100 样本约 424s，相对 6 次正式运行（数小时）是可忽略的前置成本，而它能拦住「矩阵跑完才发现第三条规则缺陷」这一数小时量级的返工。
    - 本项为**新增门槛**，与 §5.3 的通过条件相互独立：它判的是「两臂是否可比」，不是「哪一臂更好」。
+   - **已固化为可复跑用例**：`tests/test_engine_rule_parity_corpus.py`（`TAA_CORPUS_PARITY=1` 开启）。实测已通过两轮：第一轮 75/100 差异 → 修 `EMB_001`（§11.6）→ 第二轮 **100/100 归零**。该项**判的是规则集是否可比**，因此必须**在每次改规则后重跑**，而不是只跑一次。
 
 ### 4.4 运行时长预算
 
@@ -302,13 +306,16 @@ python3 models/audit/tools/audit_benchmark_eval.py \
 ## 7. 实施顺序
 
 1. ~~P0（规则语义镜像）~~ **已完成**（`models/audit/semgrep/rules/python/rules.yaml`，见 §3 P0）。
-2. P1 → P2 → P3（每项独立 RED/GREEN 循环，独立提交）。
-3. 冒烟门槛（4.3）四项全过（含第 4 项全量规则集行为一致性审计）。
-4. `--limit 5` 实测时延 → 确认总时长预算。
-5. 6 次正式运行（串行）。
-6. 生成报告，按 5.3 给出 PASS/FAIL。
+2. ~~P0-bis（规则集对齐）~~ **已完成**（同上文件；由 §4.3 第 4 项审计触发，两轮，见 §11.5 与 §11.6）。
+3. ~~P1~~（`code_snippet` 改为按行切片，`58de1e8`）、~~P2~~（扫描状态进入样本行，`8eb7fe7`）**已完成并各自提交**。
+4. ~~P3~~（LLM 采样固定种子）**已完成**（`--llm-seed` 默认 42，分析与评测两侧 CLI 打通并写入运行元数据；温度保持 0.1）。
+5. ~~P4~~（`engine`/`rule_set_version` 去除 mode 名推断，加 `provenance`，见 §13.1）**已完成**。
+6. **冒烟门槛（4.3）四项全过**：第 4 项已在第二轮达到 **100/100 归零**（§11.6）；第 1–3 项在 P1–P3 的 GREEN 中已各自验证，开跑前按 §4.3 用 `--limit 3` 再复核一次。
+7. `--limit 5` 实测时延 → 确认总时长预算。
+8. 6 次正式运行（串行）。
+9. 生成报告，按 5.3 给出 PASS/FAIL。
 
-提交规范：遵循 Conventional Commits，英文；scope 建议 `audit-bench`。P0 已独立提交，P1–P3 各自独立提交，报告与原始数据一并提交。**提交信息中不得包含任何 AI 署名。**
+提交规范：遵循 Conventional Commits，英文；scope 建议 `audit-bench`。P0/P1/P2 已独立提交，P3、P0-bis（含第二轮）、P4 各自独立提交，报告与原始数据一并提交。**提交信息中不得包含任何 AI 署名。**
 
 ---
 
@@ -330,6 +337,13 @@ python3 models/audit/tools/audit_benchmark_eval.py \
 5. **规则集差异不可避免**：两臂规则并非逐条等价（F5 即为一例）。报告须列出两臂各自触发的规则集合差异，避免把「规则差异」误读为「引擎差异」。
 6. **BE 单机环境**：所有运行在同一台机器串行完成，未覆盖并发、资源受限或部署镜像（未安装 semgrep）等生产形态。
 7. **本机资源争用可致 LLM 宿主被杀（实测，非推测）**：承载 ollama 的容器 `taa-env-slim-v2` 曾因并行跑 semgrep 全量扫描而被 OOM 杀死（`Exited (137)`）。**危险之处在于它与 F3 合谋**：容器死亡时 LLM 不可达，而 F3 的 fail-open 会把「无法裁决」呈现为「无命中 → 通过」，即**一次环境事故会伪装成一个更好的评测结果**。P2 因此不只是「证据完整性」修复，而是本实验防止「基础设施故障被计入指标」的必要条件。运行期间的防护见 §4.1。
+8. **评测镜像对 HIGH/MEDIUM 不敏感，而生产 `gate` 对它敏感（本次核对代码时发现）**：
+   - 生产（`internal/codeaudit/verifier.go:160-178`）：`report.Passed = highCount == 0`，**MEDIUM 从不单独拦截**，HIGH 必须被 LLM 判 BENIGN 才不拦截。
+   - 评测镜像（`models/examples/code_security_analyzer.py:837-864`）：`has_high_or_medium and not has_llm_verdict → SUSPICIOUS`，即 MEDIUM 与 HIGH 在「无裁决」时**同样拦截**；有裁决时二者**同样可被 BENIGN 开脱**。
+   - 后果：**本评测无法分辨「一条规则能否拦截」这一生产语义**——而这正是 severity 在生产中的唯一作用。因此：
+     1. 报告的 PASS **不覆盖 severity 敏感的行为**；P0 的 severity 镜像（§3）是为了让两臂的规则元数据一致，其生产后果不属本轮证据范围。
+     2. 若样本集里出现「MEDIUM 规则命中真实攻击」的情形，两臂在评测中都会拦截，而生产里两臂都不会拦截——这会**高估**两臂的召回。当前语料中 M1–M5 的主攻击规则均为 HIGH（`rules.go` 中仅 `FIL_001`/`DYN_001`/`ENV_001`/`EMB_003` 为 MEDIUM），故该风险的暴露面限于这四条规则，报告中须逐条核对。
+     3. 修复评测镜像使其与生产 `gate` 语义一致，属**评测资产**改动且会改变历史可比性，须单独立项、对两臂同时施加并重新测量（见 §12.4）。
 
 ---
 
@@ -346,30 +360,95 @@ python3 models/audit/tools/audit_benchmark_eval.py \
 
 ---
 
-## 11. 两臂规则集差异登记（§5.2「不一致样本清单」与 §9.5 的输入）
+## 11. 两臂规则集差异登记（§4.3 第 4 项审计的实测产出）
 
-本节只登记**已知**差异；全量行为审计（§4.3 第 4 项）可能追加条目。
+**2026-09-22 全量行为审计实测结果：100 个样本中 44 个文件存在两臂 `rule_id` 集合差异，涉及 7 条规则。差异不是空的。**
 
-| 规则 | 基线（`internal/codeaudit/rules.go` + Python 镜像） | semgrep 规则 | 性质 |
+`FIL_001`（P0 修复的对象）**已不在差异清单中**——P0 的逐条镜像使它在 100 个样本上与 regex 完全一致，可作为「镜像法有效」的正面验证。
+
+### 11.1 差异清单
+
+| 规则 | 方向 | 样本数 | 实测根因 |
 |---|---|---|---|
-| `FIL_001` | 三条正则，均要求敏感路径字面量；MEDIUM | P0 后逐条镜像，MEDIUM | 已对齐 |
-| `FIL_001` 的 `/etc/shadow` | 不覆盖（谓词无 `shadow`） | 不覆盖 | **共享缺口，非差异**（见 §12） |
-| `DYN_001` | MEDIUM | P0 后 MEDIUM | 已对齐 |
-| 其余 11 条 | — | 逐条按基线 severity 对齐（实测 13/13 一致） | 已对齐 |
+| `CMD_001` | **semgrep 漏报** | 2（M1-02, M1-07） | semgrep 要求 `shell=True`；基线另有「列表形式且首元素为 `bash`/`sh`/…」分支。M1-02 实际代码为 `subprocess.check_output(["bash", "-c", "whoami"])`。基线还覆盖 `os.exec*`、`commands.getoutput`，semgrep 完全没有。 |
+| `NET_001` | **semgrep 漏报** | 4（M2-04, 05, 09, 10） | 基线含 `httpx\.(get\|post\|put\|delete)`，semgrep 的 `NET_001` 无 `httpx`。M2-04 为 `httpx.post("https://collector.example.invalid/report", ...)`。基线还覆盖 `urllib.request.urlretrieve`、`http.client.HTTPSConnection`、`httplib2`，semgrep 均无。 |
+| `OBF_001` | **semgrep 漏报（结构性）** | 8（M4-01/03/04/05/06/08, M4-02/07） | **两臂规则形态根本不同**：基线是「用了 `base64.b64decode`/`pickle.loads`/`marshal`/`codecs.decode`/`binascii` 任一即报」；semgrep 把它写成了 **taint 规则**（source=解码 API，sink=`eval`/`exec`）。因此「解码后**外传**而非执行」的样本对 taint 规则完全不可见——M4-01 正是 `return base64.b64decode(encoded.encode("utf-8"))`，其 ground truth 同时标注 `OBF_001` 与 `EXF_001`。 |
+| `PER_001` | **semgrep 漏报** | 10（M5-01…M5-06 等） | M5-01 为 `target = Path("/tmp/.../.bashrc")` 后 `target.open("a")`：基线匹配**路径构造行**，semgrep 要求**同一次调用**上同时满足路径谓词与模式谓词（`open($PATH, $MODE)`），两者不重合。 |
+| `EMB_003` | regex 独有 | 12（全为良性：B2-*, B4-04） | semgrep 的 `EMB_003` 是三条**字面**模式（`print(raw_data)`、`print(features)`、`logging.info(f"...{raw_data}...")`），本质是「匹配变量名」；基线是宽正则。**良性侧方向对 semgrep 有利（regex 误报）。** |
+| `EMB_002` | 双向 | 4（良性） | semgrep 独有于 B4-03/B4-08，regex 独有于 B4-05/B4-10，均为写入/拷贝形态差异；两侧皆良性。 |
+| `EMB_004` | semgrep 独有 | 2（M4-02, M4-07） | semgrep 报 `struct.pack`/`b64encode`，regex 在同一样本上报 `OBF_001`。**同一攻击的规则归属不同，不是检出差异。** |
 
-**已知的规则集非等价性**：基线是**行级正则**（`re.search` 逐行），semgrep 是 **AST 模式**。因此即使规则逐条镜像，两者仍会在「跨行书写」的代码上分叉——例如 `subprocess\n.run(...)` 拆行时基线逐行匹配失败，而 AST 仍能匹配。**这是「引擎差异」与「规则集差异」无法完全分离的根本来源，必须在报告中显式披露，不得归因给任一方。**
+### 11.2 对判定的影响（为什么必须在矩阵之前修）
+
+- 上述四条**漏报规则全部落在恶意样本上**，且 `M1-02`/`M2-04`/`M4-01`/`M5-01` 的 ground truth `primary_attack_finding` **恰好就是被漏掉的那条规则**。`attribution_precision` 的定义要求主攻击规则被触发，因此这是**归因精度的系统性损失**，不只是 recall。
+- 若直接开跑矩阵，几乎必然得到 `Δrecall < 0` 的 FAIL，而其根因是**规则集差异而非引擎差异**——即 §9.1/§9.5 早已登记的那个混淆，正是本审计要拦下的东西。
+- 因此按 §8「若 FAIL 且根因是规则语义缺陷：先修规则、重跑」的预案，**把规则对齐提前到矩阵之前执行**（记为 P0-bis），并以「全量审计差异归零」作为它的验收门槛。
+
+### 11.3 已知的规则集非等价性（无法通过镜像消除）
+
+基线是**行级正则**（`re.search` 逐行），semgrep 是 **AST 模式**。即使逐条镜像，两者仍会在跨行书写、括号嵌套、别名导入等情况下分叉。**这是「引擎差异」与「规则集差异」无法完全分离的根本来源，必须在报告中显式披露，不得归因给任一方。** §4.3 第 4 项的审计正是用来量化这一残余差异的工具。
+
+### 11.4 `OBF_001` 镜像的代价（须披露）
+
+忠实镜像基线意味着把 `OBF_001` 从 taint 规则**退化为搜索规则**（匹配解码 API 的使用），因为基线的语义就是「使用即报」。这会丢失 taint 版本的真实优势（只报「解码后进入执行」的高置信组合、对良性 base64 使用更宽容）。
+
+本规范选择镜像，理由是**判定的是引擎而非规则质量**；在非劣性成立之前引入规则改进，会使结论无法归因。**taint 版 `OBF_001` 是更好的规则，应作为非劣性结论产出之后的独立改进项，且必须对两臂同时施加、重新测量。**
+
+### 11.5 P0-bis：规则集对齐（已完成）
+
+§11.2 的结论是「必须在矩阵之前修」。实际执行时，审计暴露的差异比 §11.1 的语料清单更广——语料只覆盖了「语料里恰好出现的写法」，因此新增了一个**差分一致性测试**来把「两臂规则语义等价」变成可执行断言：
+
+- `tests/test_engine_rule_parity.py`：50 个夹具，期望值**由 regex 臂自身算出**（不手写），逐文件比对两臂的 `rule_id` 集合。因为 `StaticScanner` 是「每行首条命中优先」而 semgrep 报出全部命中，比对前把 semgrep 结果按 `SUSPICIOUS_PATTERNS` 顺序折叠成同样的形态——那是扫描器外壳的差异，不是规则集的差异；但**基线完全没有报出的构造仍是差异**，这正是该测试要抓的。
+- **RED 实测：30/50 夹具不一致**，且失败原因全部是规则语义（无拼写类失败）。它比语料审计多抓出 `cmd_os_exec`、`cmd_check_call_shell`、`cmd_plain_popen`（semgrep 过报）、`net_http_client`、`net_httplib2`、`emb_rename_*`、`per_crontab`、`per_etc_initd`、`per_etc_systemd`、`per_systemctl_enable`、`emb_stdout_write_*` 等语料中未出现的缺口。
+- **修复**：7 条规则逐条对齐（CMD_001 / NET_001 / OBF_001 / PER_001 / EMB_002 / EMB_003 / EMB_004）。其中 PER_001 与 EMB_004 的部分分支改用 `pattern-regex`——**因为基线本身就是纯文本正则**，用 AST 模式表达反而会引入基线没有的约束（PER_001 原先要求 `open($PATH, $MODE)` 且模式为写，而基线只搜文本）。
+- **GREEN 实测**：50/50 夹具一致；规则数仍为 python 13，`semgrep` 解析 `parser_errors=0`。
+- **两处既有夹具断言被改写**（`tests/test_semgrep_rule_fixtures.py`）：`test_per_001_persistence` 与 `test_emb_004_stego` 原先断言的是**旧 semgrep 规则独有的行为**（`/etc/cron.d/`、`struct.pack`），基线并不覆盖。按 P0 对 `/etc/shadow` 的同一原则，夹具改为两臂共享的构造，缺口登记进 §12.3——**不在受测臂单方面加强检测**。
+
+### 11.6 P0-bis 第二轮：语料审计抓出的 `EMB_001` 过报
+
+§7 第 5 步要求 P0-bis 之后**重跑** §4.3 第 4 项。重跑结果**仍未归零**：100 个样本中 75 个仍有差异，且全部是同一条构造——
+
+```
+train.py:99   torch.save(saved_weights, checkpoint_file)
+train.py:105  torch.save(detector_state, checkpoint_file)
+```
+
+semgrep 报 `EMB_001`，regex 不报。**`EMB_001` 是 HIGH**，按 §9.8 的生产 `gate` 语义，HIGH 会被 LLM 判 `BENIGN` 才放行——75 个样本（其中大多数是良性）带上了一条基线没有的 HIGH 命中。
+
+**根因**：`taa-emb-data-dump-python` 被移植成 `pattern: torch.save($DATA, $PATH)` 加两条否定模式（排除 `state_dict()` 与 `model.pt`）。而基线的谓词是**对载荷参数的名称清单**：`(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train)\b`。丢掉名称清单后，该规则对**任何** checkpoint 写入都命中。基线另外四条分支（`np.save`、`np.savez`、`shutil.copy`、`shutil.copytree`）在 semgrep 侧**完全不存在**。
+
+**为什么夹具测试没抓到**：`EMB_001` 当时只有一个夹具，且是**否定**夹具（`torch.save(model.state_dict(), 'model.pt')`）——没有肯定夹具，也没有「首个实参不是数据名」的否定夹具。这是「夹具测试与语料审计不可互相替代」的具体证据：夹具测试对**有人枚举到的构造**精确，语料审计覆盖**基准真正打分的样本**。两者都必须保留。
+
+**RED**：补 9 个 `EMB_001` 夹具后 **4/59 不一致**——`np.save`/`np.savez` 为 regex 独有，`saved_weights`/`detector_state` 为 semgrep 独有，与语料审计完全对应。
+
+**修复**：`EMB_001` 改写为基线五条模式的 `pattern-regex` 镜像。用 `[^)\n]` 而非 `[^)]`：Python `re` 的 `.` 本就不跨行，但 `[^)]` **会跨行**，那样 semgrep 的匹配边界就比基线的逐行 `re.search` 宽（同理适用于 §11.5 的 `EMB_001` 各分支）。
+
+**GREEN**：夹具 **59/59** 一致；语料审计 **100/100 样本、差异归零**。
+
+**两处门槛都补了「空集通过」防护**：两个空命中列表天然相等，因此若扫描器根本没跑起来，比对会静默通过。现在两个测试都断言**对照臂确实有命中**（夹具测试要求过半夹具被基线命中，语料测试要求两臂全语料命中数 > 0）。
+
+**§4.3 第 4 项的审计已固化为可复跑的用例**：`tests/test_engine_rule_parity_corpus.py`，用 `TAA_CORPUS_PARITY=1` 显式开启（全语料 semgrep 扫描耗时数十秒且需 semgrep 可用，不适合进默认套件）。此前的审计是一次性脚本，产物只存在于对话记录里——**证据应当可复跑，而不是可引用**。
 
 ---
 
 ## 12. 后续事项（不在本轮范围）
 
 1. **`/etc/shadow` 等敏感路径的规则覆盖缺口（两臂共享）**：基线谓词仅含 `\.ssh|\.env|password|credential|\.aws|\.kube|id_rsa|authorized_keys`，不覆盖 `/etc/shadow`、`/etc/passwd`、`.netrc`、`.docker/config.json` 等凭据目标。这是**规则质量**问题而非**引擎**问题，对两臂同等成立，因此应在两臂上**同时**修订（同一改动、同一轮重新测量），而不是在 semgrep 臂单方面加强。建议单独立项。
-2. **行级正则 vs AST 的结构性差异**（见 §11 末）：若要分离二者贡献，走 §8 的 CPG 消融预案。
+2. **行级正则 vs AST 的结构性差异**（见 §11.3）：若要分离二者贡献，走 §8 的 CPG 消融预案。
+3. **P0-bis 期间新发现的共享规则缺口（两臂共享，均为「基线正则写窄了」）**：
+   - `PER_001` 的 `crontab` 是**裸词**，不覆盖 `/etc/cron.d/`、`/etc/cron.d`、`/etc/cron.daily/`（只有 `/etc/crontab` 含该子串）。旧 semgrep 规则用 `/etc/cron` 前缀覆盖了这些，本次对齐**按其基线语义**取消了该覆盖。
+   - `EMB_004` 的五条模式均不含 `struct.pack`，旧 semgrep 规则单列了它。
+   - `EMB_001` 的 `shutil.copy`/`shutil.copytree` 两条模式以 `\b` 收尾，因此 `shutil.copy(dataset_path, ...)` **不匹配**——`dataset` 后的 `_` 是词字符，`\b` 不成立。四条命名的兄弟分支（`torch.save`、`np.save`、`np.savez`）有同样的问题。两臂在这一构造上**一致地漏报**，故不属差异清单，但意味着这两条模式在实践中几乎只在实参恰好是裸词（`shutil.copy(data, …)`）时才生效。夹具 `emb_shutil_copy_dataset_path.py` 已把该行为钉住，防止有人只在 semgrep 臂「顺手修好」。
+   - 以上与 §12.1 同类：**对两臂同等成立**，须同时修订。取消 semgrep 臂的额外覆盖是本轮的**有意决定**——若保留，受测臂就携带了一项对照组没有的检测能力，PASS 将无法归因。
+4. **评测镜像的 `gate` 语义与生产不一致**（见 §9.8）：镜像对 HIGH/MEDIUM 一视同仁，生产则只让 HIGH 拦截。修复它属评测资产改动、会改变历史可比性，须单独立项并对两臂同时施加后重新测量。
 
 ---
 
-## 13. 待确认事项（写实施计划前需你拍板）
+## 13. 处置决定（原「待确认事项」，已定）
 
-1. **P4 的处置方式**：(a) 加 `provenance` 字段并把 `engine` 改为必填显式入参；或 (b) 标记 `generate_matrix_results.py` 为 deprecated。本文档倾向 (a)。
-2. **P2 中 `incomplete` 样本的处置**：本文档定为「不计入 bypass、不参与指标、且该轮作废重跑」（§5.3 第 3 条）。若你更倾向「把该样本从**两臂同一对**中一并剔除后继续」（保持配对有效、避免整轮重跑的时间成本），请指出，我会据此改写判定条款。
-3. **是否同意把 P1–P3 分三次提交**（便于单独回滚），还是合并为一次「评测链路证据完整性修复」提交。
+1. **P4 的处置方式**：采纳 **(a)** —— 加 `provenance` 字段并把 `engine` 改为必填显式入参。理由：`generate_matrix_results.py` 的 `tp/fp/tn/fn` 全部来自硬编码 `MODELS_SPEC`，它写出的 `summary.json` 与真实评测产物同形同址，而 `engine`/`rule_set_version` 原先由 **mode 名称**推断（`engine = "semgrep" if mode_name == "static-llm" else "none"`），于是「没人声称过 semgrep」也能落成 `engine: "semgrep"`。(b) 只是标注弃用，不阻止引用，挡不住这个风险。
+   - 实施：`PROVENANCE = "hand-authored-spec"` 写入每条 run 与主汇总（含落盘的 per-run `summary.json`——**被引用的是它**）；`generate_matrix(track_declarations, …)` 的首个参数**必填无默认值**，缺省即 `TypeError`；声明必须覆盖三个 mode 且各自给出 `engine` 与 `rule_set_version`，否则 `ValueError`；CLI 新增**必填可重复**的 `--track MODE:ENGINE:RULE_SET_VERSION`，`main` 不再自行填值。
+   - `rule_set_version` 一并去除推断：它是断言「这些数字出自 13 条 semgrep 规则」的字段，只修 `engine` 会把同一个机制留在隔壁一列。
+   - 该字段原本**只写不读**（生成器内部无任何消费者），即它的唯一作用就是被引用——这正是需要防的地方。
+2. **P2 中 `incomplete` 样本的处置**：维持本文档原定 —— 「不计入 bypass、不参与指标、且该轮作废重跑」（§5.3 第 3 条）。剔除后继续会让配对样本集随失败次数缩水，而判定要求的是「**每一对**都满足非劣」，缩水的样本集支撑不了该主张。
+3. **P1–P3 的提交粒度**：**分次提交**，便于单独回滚。（P1 `58de1e8`、P2 `8eb7fe7` 已按此办理；P3 与 P0-bis 各自独立。）
