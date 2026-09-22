@@ -234,6 +234,47 @@ class TestVerdict(unittest.TestCase):
         self.assertEqual(ec.decide(outcomes)[0], "通过")
 
 
+class TestPairTableRow(unittest.TestCase):
+    """The pair table must not print a measurement a void pair never made.
+
+    A void pair carries no comparison, but its deltas are stored as zeros because
+    the dataclass needs numbers. Printing those zeros puts `+0.0000` and
+    `p = 1.0000` under a pair that measured nothing, which reads as the strongest
+    possible evidence of no difference - the opposite of "insufficient evidence".
+    """
+
+    def _pair(self, void_reason=None, n_paired=100):
+        return {
+            "index": 1, "n_paired": n_paired, "expected_paired": 100,
+            "delta_fpr": 0.0, "delta_recall": 0.0, "delta_duration": 0.0,
+            "mcnemar_fpr": {"b": 0, "c": 0, "p": 1.0},
+            "mcnemar_recall": {"b": 0, "c": 0, "p": 1.0},
+            "void_reason": void_reason,
+        }
+
+    def test_the_header_and_the_row_have_the_same_number_of_columns(self):
+        self.assertEqual(len(ec.PAIR_COLUMNS), len(ec._pair_row(self._pair())))
+
+    def test_a_live_pair_prints_its_measured_deltas(self):
+        cells = ec._pair_row(self._pair())
+        self.assertEqual(cells[1], "+0.0000")
+        self.assertEqual(cells[3], "+0.0000")
+        self.assertEqual(cells[5], "100")
+
+    def test_a_void_pair_prints_no_delta(self):
+        cells = ec._pair_row(self._pair(void_reason="no sample was scored by both arms", n_paired=0))
+        self.assertEqual(cells[1], "-", "a void pair printed a dFPR it never computed")
+        self.assertEqual(cells[2], "-")
+        self.assertEqual(cells[3], "-")
+        self.assertEqual(cells[4], "-")
+        self.assertEqual(cells[6], "-")
+
+    def test_a_void_pair_still_states_how_many_samples_it_paired(self):
+        """Zero paired is a measurement; a zero delta is not."""
+        cells = ec._pair_row(self._pair(void_reason="no sample was scored by both arms", n_paired=0))
+        self.assertEqual(cells[5], "0")
+
+
 class TestAnalyseAllRuns(unittest.TestCase):
     """The six run directories in, one analysis out.
 

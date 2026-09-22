@@ -57,6 +57,11 @@ RUN_ORDER: Tuple[Tuple[str, int], ...] = (
     ("regex", 3), ("semgrep", 3),
 )
 
+# The pair table's columns and their widths, named once so the header and the
+# rows cannot drift apart and shift a measurement under the wrong heading.
+PAIR_COLUMNS: Tuple[str, ...] = ("pair", "dFPR", "p(McNemar)", "drecall", "p(McNemar)", "n", "dsec")
+PAIR_COLUMN_WIDTHS: Tuple[int, ...] = (8, 8, 11, 8, 11, 4, 8)
+
 Row = Dict[str, Any]
 
 
@@ -509,15 +514,35 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"{_fmt(entry['per_sample_scan_sec']):>8} {_fmt(entry['per_sample_llm_sec']):>8} "
             f"{str(entry['llm_sample_count']):>6} {entry['eval_duration_sec']:>8.1f}"
         )
-    print(f"{'pair':>8} {'dFPR':>8} {'p(McNemar)':>11} {'drecall':>8} {'p(McNemar)':>11} {'n':>4} {'dsec':>8}")
+    print("".join(f"{name:>{width}}" for name, width in zip(PAIR_COLUMNS, PAIR_COLUMN_WIDTHS)))
     for pair in analysis["pairs"]:
-        print(
-            f"{pair['index']:>8} {pair['delta_fpr']:>+8.4f} {pair['mcnemar_fpr']['p']:>11.4f} "
-            f"{pair['delta_recall']:>+8.4f} {pair['mcnemar_recall']['p']:>11.4f} "
-            f"{pair['n_paired']:>4} {pair['delta_duration']:>+8.1f}"
-        )
+        print("".join(
+            f"{cell:>{width}}" for cell, width in zip(_pair_row(pair), PAIR_COLUMN_WIDTHS)
+        ))
     print(f"analysis written to: {out}")
     return 0 if analysis["verdict"] == "通过" else 1
+
+
+def _pair_row(pair: Row) -> List[str]:
+    """One pair-table row, with a void pair's unmeasured columns left blank.
+
+    A void pair's deltas are stored as zeros because the dataclass needs numbers,
+    and printing those zeros would present a pair that compared nothing as a
+    perfect tie - the strongest reading of no difference, when the table is
+    supposed to say the opposite. The sample count stays numeric: having paired
+    no samples is a measurement, not a missing one.
+    """
+    if pair.get("void_reason"):
+        return [str(pair["index"]), "-", "-", "-", "-", str(pair["n_paired"]), "-"]
+    return [
+        str(pair["index"]),
+        f"{pair['delta_fpr']:+.4f}",
+        f"{pair['mcnemar_fpr']['p']:.4f}",
+        f"{pair['delta_recall']:+.4f}",
+        f"{pair['mcnemar_recall']['p']:.4f}",
+        str(pair["n_paired"]),
+        f"{pair['delta_duration']:+.1f}",
+    ]
 
 
 def _fmt(value: Optional[float]) -> str:
