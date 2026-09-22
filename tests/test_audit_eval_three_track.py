@@ -380,9 +380,10 @@ class TestAuditEvalThreeTrack(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             sample = Path(td) / "sample.py"
             sample.write_text("import os\ndef run_cmd():\n    os.system('id')\n", encoding="utf-8")
-            findings = adapter.scan_directory(td, extensions=(".py",))
-            self.assertEqual(len(findings), 1)
-            f = findings[0]
+            outcome = adapter.scan_directory(td, extensions=(".py",))
+            self.assertTrue(outcome.scan_complete)
+            self.assertEqual(len(outcome.findings), 1)
+            f = outcome.findings[0]
             self.assertEqual(f.rule_id, "CMD_001")
             self.assertEqual(f.engine, "semgrep")
             self.assertIsNotNone(f.ast_enclosing_block)

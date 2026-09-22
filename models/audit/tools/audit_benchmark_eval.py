@@ -24,7 +24,7 @@ import os
 import random
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
@@ -309,6 +309,46 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+@dataclass
+class ScanOutcome:
+    """Findings together with the honest status of the scan that produced them.
+
+    An engine that crashes, times out, is not installed, or fails to parse its
+    own rules returns no findings -- exactly like an engine that found nothing.
+    Carrying the status alongside the findings is what keeps those two cases
+    apart, so that a broken scan cannot be scored as a clean one.
+    """
+
+    findings: List[Finding] = field(default_factory=list)
+    scan_complete: bool = True
+    timed_out: bool = False
+    parser_errors: int = 0
+    error_message: Optional[str] = None
+    # Findings whose code_snippet could not be recovered from the source file.
+    slice_error_count: int = 0
+    # Findings whose AST enclosing block could not be extracted.
+    ast_error_count: int = 0
+    # Set when the auxiliary CPG pass failed and contributed no findings.
+    cpg_error: Optional[str] = None
+
+
+class RegexScannerAdapter:
+    """Presents StaticScanner through the same ScanOutcome interface as Semgrep.
+
+    The regex scanner walks lines it has already read in-process, so it has no
+    partial state to report: a returned list is always a finished scan.
+    """
+
+    def __init__(self, rules_path: Optional[str] = None):
+        self.scanner = StaticScanner()
+
+    def scan_directory(self, dirpath: str, extensions: tuple[str, ...] = (".py",)) -> ScanOutcome:
+        findings: List[Finding] = []
+        for path in discover_sample_py_files(Path(dirpath), extensions):
+            findings.extend(self.scanner.scan_file(str(path)))
+        return ScanOutcome(findings=findings, scan_complete=True)
+
+
 class SemgrepScannerAdapter:
     """Adapts SemgrepRunner to produce List[Finding] with AST scope and taint traces."""
 
@@ -318,9 +358,11 @@ class SemgrepScannerAdapter:
         self.runner = SemgrepRunner(rules_path=rules_path)
         self.slicer = ASTScopeSlicer()
 
-    def scan_directory(self, dirpath: str, extensions: tuple[str, ...] = (".py",)) -> List[Finding]:
+    def scan_directory(self, dirpath: str, extensions: tuple[str, ...] = (".py",)) -> ScanOutcome:
         scan_res = self.runner.scan_directory(dirpath, extensions=list(extensions))
         findings: List[Finding] = []
+        slice_error_count = 0
+        ast_error_count = 0
         for f_dict in scan_res.findings:
             file_path = f_dict.get("file", "")
             line = f_dict.get("line", 1)
@@ -329,8 +371,13 @@ class SemgrepScannerAdapter:
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     source_code = f.read()
                 ast_block = self.slicer.extract_enclosing_scope(source_code, line, language="python")
-            except Exception:
-                pass
+            except Exception as exc:
+                # The AST block is prompt context: losing it silently degrades the
+                # adjudication input, so the count has to reach the sample row.
+                ast_error_count += 1
+                ast_block = None
+            if f_dict.get("slice_error"):
+                slice_error_count += 1
 
             rule_id = f_dict.get("rule_id", "UNKNOWN")
             finding = Finding(
@@ -423,17 +470,34 @@ class SemgrepScannerAdapter:
                     cpg_evidence=trajectory_block,
                 )
                 findings.append(cpg_finding)
-        except Exception:
-            pass
+        except Exception as exc:
+            # CPG contributes findings of its own; swallowing this made a failed
+            # pass look like a pass that found nothing.
+            cpg_error = f"{type(exc).__name__}: {exc}"
+        else:
+            cpg_error = None
 
-        return findings
+        return ScanOutcome(
+            findings=findings,
+            scan_complete=scan_res.scan_complete,
+            timed_out=scan_res.timed_out,
+            parser_errors=scan_res.parser_errors,
+            error_message=scan_res.error_message,
+            slice_error_count=slice_error_count,
+            ast_error_count=ast_error_count,
+            cpg_error=cpg_error,
+        )
 
 
 def load_module_scanner(engine: str = "regex"):
-    """Loads either the regex-based StaticScanner or the Semgrep-native scanner adapter."""
+    """Loads either the regex-based StaticScanner or the Semgrep-native scanner adapter.
+
+    Both are returned through the same ScanOutcome interface so that callers do
+    not have to remember which engine reports scan status and which does not.
+    """
     if engine == "semgrep":
         return SemgrepScannerAdapter()
-    return StaticScanner()
+    return RegexScannerAdapter()
 
 
 def discover_sample_py_files(sample_dir: Path, extensions: tuple[str, ...] = (".py",)) -> list[Path]:
@@ -752,8 +816,11 @@ def analyse_sample(
 
     # Two-stage static-llm mode: static rules scan followed by LLM semantic evaluation
     scanner = load_module_scanner(engine=engine)
-    findings = scanner.scan_directory(str(sample_dir), extensions=extensions)
-    bypass = (len(findings) == 0)
+    outcome = scanner.scan_directory(str(sample_dir), extensions=extensions)
+    findings = outcome.findings
+    # An unfinished scan yields no findings for the same reason a broken clock is
+    # right twice a day. Only a completed scan with no findings counts as a bypass.
+    bypass = (len(findings) == 0) and outcome.scan_complete
 
     file_summaries: Dict[str, Any] = {}
     analyzer = None
@@ -810,6 +877,14 @@ def analyse_sample(
         "blocked": blocked,
         "audit_mode": audit_mode,
         "bypass": bypass,
+        "scan_complete": outcome.scan_complete,
+        "scan_timed_out": outcome.timed_out,
+        "scan_parser_errors": outcome.parser_errors,
+        "scan_error": outcome.error_message,
+        "slice_error_count": outcome.slice_error_count,
+        "ast_error_count": outcome.ast_error_count,
+        "cpg_error": outcome.cpg_error,
+        "incomplete": not outcome.scan_complete,
         "matched_rules": matched_rules,
         "reason": report["conclusion"]["summary"],
         "error_type": error_type,
@@ -945,6 +1020,8 @@ def metric_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     fail_closed_count = sum(1 for row in results if row.get("fail_closed", False))
     bypass_count = sum(1 for row in results if row.get("bypass", False))
     bypass_rate = safe_div(bypass_count, len(results))
+    scan_incomplete_count = sum(1 for row in results if not row.get("scan_complete", True))
+    scan_error_count = sum(1 for row in results if row.get("scan_error"))
 
     return {
         "precision": precision,
@@ -959,6 +1036,8 @@ def metric_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         "fail_closed_count": fail_closed_count,
         "bypass_count": bypass_count,
         "bypass_rate": bypass_rate,
+        "scan_incomplete_count": scan_incomplete_count,
+        "scan_error_count": scan_error_count,
     }
 
 
