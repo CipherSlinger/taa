@@ -2,7 +2,7 @@
 
 **Trusted Application Agent (TAA)** is a confidential computing execution framework designed to run inside **Hygon CSV (China Secure Virtualization) TEE (Trusted Execution Environment)**. 
 
-TAA serves as a secure execution enclave for model training and computation workflows: it isolates proprietary model algorithms, evaluation datasets, training corpora, and computation artifacts within a hardware-enforced trusted boundary. By orchestrating hardware remote attestation, GM/T national cryptography (SM2/SM3/SM4), RFC 8998 TEE-TLS 1.3 ShangMi secure channels, two-tier defense-in-depth code security audits (Semgrep taint analysis & AST scope slicing + decoupled TEE-LLM semantic arbitration), and cryptographic digital envelopes, TAA establishes an end-to-end trusted computing loop: **"Hardware-Bound Identity, Ciphertext Delivery, In-Enclave Execution, and Verified Result Return"**.
+TAA serves as a secure execution enclave for model training and computation workflows: it isolates proprietary model algorithms, evaluation datasets, training corpora, and computation artifacts within a hardware-enforced trusted boundary. By orchestrating hardware remote attestation, GM/T national cryptography (SM2/SM3/SM4), RFC 8998 TEE-TLS 1.3 ShangMi secure channels, two-tier defense-in-depth code security audits (rule-based static scanning + decoupled TEE-LLM semantic arbitration), and cryptographic digital envelopes, TAA establishes an end-to-end trusted computing loop: **"Hardware-Bound Identity, Ciphertext Delivery, In-Enclave Execution, and Verified Result Return"**.
 
 ---
 
@@ -10,7 +10,7 @@ TAA serves as a secure execution enclave for model training and computation work
 
 - **Target Audience**: Management Platforms, AI Model Providers, Data Providers, and Training Execution Clusters.
 - **Core Objective**: Execute secure resource ingress, deep code auditing, confidential training/debugging, artifact egress, and hardware attestation inside TEE while guaranteeing complete confidentiality and IP protection for both model and data providers.
-- **Security Primitives**: Hygon CSV Remote Attestation + SM2/SM3/SM4-GCM Cryptographic Envelopes + RFC 8998 TEE-TLS 1.3 ShangMi Channels + Two-Tier Defense-in-Depth Code Audit (Semgrep Taint Analysis & AST Scope Slicing + Decoupled TEE-LLM Semantic Arbitration).
+- **Security Primitives**: Hygon CSV Remote Attestation + SM2/SM3/SM4-GCM Cryptographic Envelopes + RFC 8998 TEE-TLS 1.3 ShangMi Channels + Two-Tier Defense-in-Depth Code Audit (Static Rule Scanning + Decoupled TEE-LLM Semantic Arbitration).
 - **Role**: A production-ready, closed-loop **Confidential Computing Execution Framework**.
 
 ---
@@ -62,7 +62,7 @@ flowchart TB
         %% Phase 3: Audit
         subgraph Stage3["Phase 3: Two-Tier Defense-in-Depth Code Security Audit"]
             direction LR
-            S3["<b>Tier 1: Semgrep AST & Taint Engine</b><br/><sub>13 Security Rules (Command Injection, SSRF, File Escape, Eval)</sub>"]
+            S3["<b>Tier 1: Static Rule Engine</b><br/><sub>13 Built-in Rules (Command Execution, Network Egress, Credential Access, Eval)</sub>"]
             TEELLM["<b>Tier 2: teellm-service (:8443)</b><br/><sub>Decoupled Qwen2.5-Coder • Semantic Intent Arbitration</sub>"]
             S3 <-->|"RFC 8998 TLS 1.3 ShangMi<br/>(Mutual Hardware Attestation)"| TEELLM
         end
@@ -134,7 +134,7 @@ flowchart TB
 1. **Hardware-Enforced Attestation**: On boot, TAA generates an ephemeral SM2 keypair, injects the public key into the CSV hardware `USERDATA` slot (`X || Y`), and retrieves a hardware-signed attestation report via direct `/dev/csv-guest` ioctl (`pkg/csvattest`).
 2. **Identity Registration & Binding**: TAA registers with the platform by submitting its SM2 public key, raw CSV attestation report, and certificate validation parameters (`/v1/taa/register`), permanently tying the container workload to the genuine CSV hardware root of trust.
 3. **Ciphertext Ingress**: The platform delivers encrypted resource packages via HTTP (`/v1/taa/import`, `/v1/taa/importModel`). TAA decrypts, unpacks, and validates the resources strictly inside the TEE memory and local disk sandbox.
-4. **Two-Tier Pre-Execution Code Audit**: Prior to executing untrusted user code, TAA performs AST-level static security scanning and 13 canonical Semgrep taint analysis rules (covering command injection, SSRF, arbitrary file writes, and dynamic evaluation), followed by semantic verification against a decoupled local LLM (`teellm-service`) over RFC 8998 TEE-TLS 1.3 to eliminate false positives and block malicious operations.
+4. **Two-Tier Pre-Execution Code Audit**: Prior to executing untrusted user code, TAA performs rule-based static security scanning with 13 built-in pattern rules (covering command execution, network egress, sensitive file and environment access, obfuscation, and dynamic evaluation) over Python source, followed by semantic verification against a decoupled local LLM (`teellm-service`) over RFC 8998 TEE-TLS 1.3 to eliminate false positives and block malicious operations. Both a scan error and any HIGH-severity finding reject the import (fail-closed).
 5. **Real-time Progress & Dual-Log Telemetry**: During training execution, TAA monitors intermediate progress snapshots (`/v1/taa/reportProgress`), streams chunked deduplicated terminal execution logs (`/v1/taa/modelLog`), and actively reports internal operational logs (`/v1/taa/taaLog`).
 6. **Task Interruption & Graceful Abortion**: TAA provides a dedicated stop interface (`/v1/taa/stopTraining`) that recursively terminates subprocess process trees upon command.
 7. **Encrypted Egress**: Training output artifacts are inspected for sensitive data leakage, zipped, and encrypted with SM2/SM4-GCM digital envelopes before export, ensuring zero plaintext leakage to host or platform.
@@ -151,7 +151,7 @@ flowchart TB
 │   ├── app/taa/                      # TAA daemon startup, registration & HTTP assembly
 │   ├── controller/                   # HTTP routing, state machine, import/export/attestation APIs
 │   ├── attestation/                  # CSV attestation report parsing & certificate chain validation
-│   ├── codeaudit/                    # Two-tier security audit: Semgrep taint engine + TEE-LLM client
+│   ├── codeaudit/                    # Two-tier security audit: static rule scanner + TEE-LLM client
 │   ├── coordinator/                  # Phase state machine and execution coordinator
 │   ├── runtime/                      # Subprocess execution sandbox, process groups & output reader
 │   ├── resource/                     # Resource package decompression, verification & file tree
@@ -206,7 +206,7 @@ TAA isolates all sensitive operations inside the CSV TEE boundary:
 - Ephemeral SM2 key generation & storage in memory.
 - Hardware remote attestation report generation and verification via `/dev/csv-guest`.
 - Decryption of model code, evaluation weights, and sensitive training data.
-- Two-tier code security scanning: Semgrep taint analysis + AST scope slicing + local LLM semantic arbitration.
+- Two-tier code security scanning: rule-based static analysis + local LLM semantic arbitration.
 - Subprocess execution, standard I/O redirection, and intermediate monitoring.
 - Result leakage inspection, archive packaging, and SM2/SM4-GCM envelope re-encryption.
 
@@ -237,14 +237,18 @@ Final Envelope Format:  [ WrappedKey (129B) ] || [ SM4-GCM Ciphertext ]
 
 Untrusted model code undergoes rigorous two-tier verification before execution:
 
-1. **Tier 1: Semgrep AST & Deep Taint Analysis**:
-   - 13 canonical security rules covering Python, Go, and Shell scripts.
-   - Detects OS command injection (`subprocess`, `os.system`), path traversal, arbitrary file writes, SSRF/unauthorized network egress, and dynamic code execution (`eval`, `exec`).
-   - Extracts precise AST scope contexts and taint propagation trajectories.
+1. **Tier 1: Built-in Static Rule Scanner (`internal/codeaudit`)**:
+   - 13 built-in pattern rules scanning Python source files (`.py`).
+   - Detects command execution (`os.system`, `os.popen`, `subprocess`), network egress (`requests`, `urllib`, raw sockets), sensitive file and environment variable access, obfuscation/deserialization (`base64`, `pickle`, `marshal`), dynamic code execution (`eval`, `exec`, `__import__`), persistence mechanisms (`crontab`, `systemctl`), and result-embedded plaintext data (writing raw datasets into output artifacts or logs).
+   - Each finding carries the matched line plus a physical ±3 line context window, which is what gets forwarded to Tier 2.
+   - Detection is line-oriented text matching: alias re-binding (`import socket as s`), string-split obfuscation, and cross-function/cross-file data flow are currently out of scope.
+   - Fail-closed: a scan error or any HIGH-severity finding rejects the import and the extracted code is wiped.
 2. **Tier 2: Decoupled TEE-LLM Semantic Arbitration**:
-   - Forwards flagged AST contexts and taint evidence to the local `teellm-service` (Qwen2.5-Coder) over TEE-TLS 1.3.
+   - Forwards flagged code snippets and their context windows to the local `teellm-service` (Qwen2.5-Coder) over TEE-TLS 1.3.
    - LLM analyzes whether flagged snippets represent malicious intent or benign ML operations (e.g., standard PyTorch checkpoint saving).
    - Features circuit breaker protection, jittered exponential backoff retries, and strict fail-closed security gates.
+
+> **Roadmap — not part of the runtime audit path yet**: migrating Tier 1 from regex matching to a Semgrep AST + inter-procedural taint engine is tracked in `TODO` (静态代码扫描引擎升级). The Semgrep and CPG engines already exist in the offline audit benchmark harness (`models/audit/`, 22 rules across Python/Go/Shell, selectable via `audit_benchmark_eval.py --engine regex|semgrep`); they are evaluation tooling and are not wired into the TAA runtime audit path. Target architecture: `.claude/specs/2026-09-17-semgrep-audit-engine-design.md`.
 
 ---
 
@@ -353,7 +357,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `model.output.result` | `/opt/taa/output/result` | Target output directory for model training checkpoints and artifacts |
 | `model.output.log` | `/opt/taa/output/log/train.jsonl` | Model execution log file (or directory) monitored by log watcher (`modelLog`) |
 | `model.output.progress` | `/opt/taa/output/progress/progress.json` | Model progress file (or directory) monitored by progress watcher (`reportProgress`) |
-| `security.codeScan` | `true` | Master audit switch: enables Semgrep AST static security scan during model import |
+| `security.codeScan` | `true` | Master audit switch: enables the static rule-based security scan during model import |
 | `security.resultCheck.enabled` | `true` | Inspects exported files for unauthorized plaintext data leakage (accepts object or boolean) |
 | `security.resultCheck.maxFileBytes` | `3221225472` (3 GB) | Maximum file size limit enforced for both file downloads (`import`, `importModel`, `getResourceInfo`) and result exports (`export`), as well as anomaly inspection threshold |
 | `security.maxFileBytes` | `3221225472` (3 GB) | Top-level security alias for `maxFileBytes` |
@@ -363,7 +367,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `llm.transport` | `teetls` | Transport protocol for TEE-LLM communication (`teetls` for RFC 8998 TLS 1.3 ShangMi, or `http`) |
 | `llm.endpoint` | `https://127.0.0.1:8443` | Decoupled TEE-LLM service endpoint |
 | `llm.model` | `qwen2.5-coder:3b` | Target LLM model for code analysis |
-| `llm.policy` | `assist` | LLM arbitration mode (`assist`: dual confirmation, `enforce`: strict blocking) |
+| `llm.policy` | `assist` | LLM arbitration mode (`assist`: LLM results are informational and the static verdict stands; `gate`: strict blocking — HIGH findings block unless the LLM rules them benign, MEDIUM findings always block) |
 | `llm.failClosed` | `true` | Fails code audit if the LLM inference service is unreachable or encounters timeout |
 | `llm.insecureSkipVerify` | `false` | Skips TLS CA certificate verification (set to `true` only for local Docker testing) |
 | `llm.attestationMode` | `strict` | Hardware attestation verification policy for TEE-TLS (`strict` in production, `permissive` in local simulation) |
@@ -454,7 +458,7 @@ go build -o bin/platform-mock ./tools/platform-mock/cmd/platform-mock
 
 1. **Lifecycle Pipeline Stepper**: Visual step progress bar across the entire pipeline (`Register` ➔ `Ingress` ➔ `Audit` ➔ `Switch` ➔ `Train` ➔ `Export`) with live auto-synchronization.
 2. **Node Registration & Attestation**: Live display of TAA hardware attestation, certificate verification status, and SM2 public keys.
-3. **Visual Audit Dashboard**: Interactive findings accordion featuring risk severity badges (`HIGH`/`MEDIUM`/`LOW`), AST code scope snippets, and taint trajectory details.
+3. **Visual Audit Dashboard**: Report-level risk verdict pill and high/medium/low statistics bar, plus an interactive findings accordion showing line numbers, rule identifiers, matched code snippets, LLM verdict badges, and the LLM's arbitration reasoning.
 4. **Live Dual-Log Streaming**: Independent, real-time views for training terminal logs (`/v1/taa/modelLog`) and TAA operational logs (`/v1/taa/taaLog`), equipped with level filters, instant search, smart auto-scroll, and pause/resume.
 5. **Payload Inspector Modal**: Tabbed inspection of inbound callback and outbound request JSON payloads.
 6. **Global Stacked Toast Notifications**: Real-time micro-interactions and asynchronous alert feedback.
@@ -527,12 +531,12 @@ For a full historical record of changes, see [CHANGELOG.md](CHANGELOG.md).
   - **Active Operational Logging**: Implemented `/v1/taa/taaLog` proactive streaming with monotonic sequence IDs and ring-buffer deduplication.
   - **TEE-TLS Protocol Decoupling**: Extracted `teetls` into a dedicated repository supporting RFC 8998 TLS 1.3 ShangMi with Hygon CSV hardware attestation evidence X.509 extensions.
   - **Platform-Mock Modularization**: Decomposed mock platform into modular API handlers, separated config/state stores, and embedded static web assets via `embed.FS`.
-  - **Semgrep Benchmark Suite**: Automated matrix evaluation for static vs. LLM vs. hybrid code security auditing.
+  - **Audit Benchmark Suite**: Automated matrix evaluation for static vs. LLM vs. hybrid code security auditing, including the offline Semgrep AST/taint and CPG inter-procedural engines.
 
-- **2026-09-17: RFC 8998 ShangMi Channel & Semgrep Deep Taint Engine**
+- **2026-09-17: RFC 8998 ShangMi Channel & Offline Semgrep Taint Engine**
   - **Confidential TEE-TLS 1.3**: Implemented TLS 1.3 ShangMi cipher suites (`TLS_SM4_GCM_SM3`) with SM2 certificates cryptographically bound to Hygon CSV hardware attestation reports.
   - **Decoupled TEE-LLM Service**: Introduced standalone `teellm-service` over TEE-TLS 1.3 with circuit breakers, exponential jitter retries, and strict SSRF defenses.
-  - **Semgrep Deep Semantic & Taint Engine**: Integrated 13 canonical AST and taint analysis rules across Python, Go, and Shell with fail-closed security gates.
+  - **Semgrep Deep Semantic & Taint Engine (offline benchmark harness only)**: Added 22 AST and taint analysis rules across Python, Go, and Shell under `models/audit/` with fail-closed scan gates in the evaluation runner. The TAA runtime audit path still uses the built-in static rule scanner.
   - **Dynamic Export Thresholds**: Supported configurable `maxFileBytes` (default 3 GB) for export leakage inspection.
 
 - **2026-09-16: Certificate Self-Verification & Three-Track Benchmark**
