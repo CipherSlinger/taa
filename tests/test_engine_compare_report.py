@@ -275,6 +275,86 @@ class TestPairTableRow(unittest.TestCase):
         self.assertEqual(cells[5], "0")
 
 
+class TestWithinArmDisagreement(unittest.TestCase):
+    """Whether an arm's three replicates actually agree with each other.
+
+    Spec 5.3 pairs the runs by index and demands every pair pass, which absorbs
+    replicate noise into the verdict but does not expose it. A sample the arm gets
+    right in two runs and wrong in one is a fact the paired rule cannot state, and
+    the report has to state it: otherwise a PASS reads as though the arm were
+    stable when it was merely paired against a replicate that agreed.
+    """
+
+    def _runs(self, *specs):
+        """`specs` are (index, {sample_id: (predicted, llm_state)}) pairs."""
+        return {
+            index: {
+                sample_id: {
+                    "sample_id": sample_id,
+                    "label": "benign" if sample_id.startswith("B") else "malicious",
+                    "predicted_label": predicted,
+                    "llm_state": state,
+                    "scan_complete": True,
+                }
+                for sample_id, (predicted, state) in rows.items()
+            }
+            for index, rows in specs
+        }
+
+    def test_replicates_that_agree_report_no_disagreement(self):
+        rows = {"B1-01": ("benign", "ok"), "M1-01": ("malicious", "ok")}
+        result = ec.within_arm_disagreement(self._runs((1, rows), (2, rows), (3, rows)))
+        for key in ("1v2", "1v3", "2v3"):
+            self.assertEqual(result[key]["verdict_disagreements"], [])
+            self.assertEqual(result[key]["llm_state_disagreements"], [])
+            self.assertEqual(result[key]["shared"], 2)
+
+    def test_a_sample_judged_differently_in_one_run_is_listed(self):
+        base = {"B1-01": ("benign", "ok"), "M1-01": ("malicious", "ok")}
+        flipped = {"B1-01": ("malicious", "ok"), "M1-01": ("malicious", "ok")}
+        result = ec.within_arm_disagreement(self._runs((1, base), (2, flipped), (3, base)))
+        self.assertEqual(result["1v2"]["verdict_disagreements"], ["B1-01"])
+        self.assertEqual(result["1v3"]["verdict_disagreements"], [])
+
+    def test_a_changed_llm_state_is_listed_even_when_the_verdict_holds(self):
+        """The measured case: a parse failure on a malicious sample keeps the verdict.
+
+        Fail-closed leaves the static finding standing, so the sample is still
+        called malicious and the metrics do not move - but the LLM did not decide
+        it, and a report that only compared verdicts would call the run identical.
+        """
+        base = {"M1-01": ("malicious", "ok")}
+        failed = {"M1-01": ("malicious", "parse_error")}
+        result = ec.within_arm_disagreement(self._runs((1, base), (2, failed)))
+        self.assertEqual(result["1v2"]["verdict_disagreements"], [])
+        self.assertEqual(result["1v2"]["llm_state_disagreements"], ["M1-01"])
+
+    def test_one_run_present_is_not_a_crash_and_compares_nothing(self):
+        result = ec.within_arm_disagreement(self._runs((1, {"B1-01": ("benign", "ok")})))
+        self.assertEqual(result, {})
+
+    def test_a_sample_missing_from_one_replicate_is_not_counted_as_shared(self):
+        """Only samples both runs actually scored can be said to agree."""
+        result = ec.within_arm_disagreement(self._runs(
+            (1, {"B1-01": ("benign", "ok"), "M1-01": ("malicious", "ok")}),
+            (2, {"B1-01": ("benign", "ok")}),
+        ))
+        self.assertEqual(result["1v2"]["shared"], 1)
+
+    def test_an_unscored_sample_is_not_reported_as_a_verdict_disagreement(self):
+        """The rule `_pair_up` already applies, kept consistent here.
+
+        A scan that did not complete carries no verdict, so a run where the
+        scanner fell over would otherwise look like a run that judged the sample
+        differently - an infrastructure failure read as a detection difference.
+        """
+        runs = self._runs((1, {"M1-01": ("malicious", "ok")}), (2, {"M1-01": ("benign", "ok")}))
+        runs[2]["M1-01"]["scan_complete"] = False
+        result = ec.within_arm_disagreement(runs)
+        self.assertEqual(result["1v2"]["verdict_disagreements"], [])
+        self.assertEqual(result["1v2"]["shared"], 0)
+
+
 class TestAnalyseAllRuns(unittest.TestCase):
     """The six run directories in, one analysis out.
 
@@ -384,6 +464,21 @@ class TestAnalyseAllRuns(unittest.TestCase):
         self.assertEqual(analysis["verdict"], "未通过")
         self.assertEqual([e["sample_id"] for e in analysis["inconsistencies"][1]], ["M1-01"])
         self.assertEqual(analysis["inconsistencies"][0], [])
+
+    def test_the_analysis_carries_each_arm_s_replicate_agreement(self):
+        """Enough time was spent building it that it has to reach the report.
+
+        The report is written from this dict, so a measurement that stays local to
+        its own function is one the report cannot cite.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            self._all_six(td)
+            analysis = ec.analyse_all(td)
+        self.assertIn("within_arm", analysis)
+        self.assertEqual(sorted(analysis["within_arm"]), ["regex", "semgrep"])
+        for engine in ("regex", "semgrep"):
+            self.assertEqual(sorted(analysis["within_arm"][engine]), ["1v2", "1v3", "2v3"])
+            self.assertEqual(analysis["within_arm"][engine]["1v2"]["verdict_disagreements"], [])
 
     def test_it_records_whether_the_host_was_shared_while_each_run_was_collected(self):
         """The idle-host assumption is disclosed as a measurement, per run.

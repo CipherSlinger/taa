@@ -24,6 +24,7 @@ paired difference, not the difference of two independently estimated rates.
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import statistics
@@ -319,6 +320,42 @@ def inconsistent_samples(regex_rows: Iterable[Row], semgrep_rows: Iterable[Row])
     return entries
 
 
+def within_arm_disagreement(runs: Dict[int, Dict[str, Row]]) -> Dict[str, Any]:
+    """Samples one arm judged differently in different runs of itself.
+
+    The three runs of an arm are replicates. Spec 5.3 pairs them by index and
+    requires every pair to pass, which absorbs replicate noise into the verdict
+    without exposing it - so a sample the arm gets right in two runs and wrong in
+    one leaves no trace in a verdict that happened to compare an agreeing pair.
+    Listing the samples is what keeps that instability readable next to a PASS.
+
+    `llm_state` is compared alongside the verdict because the verdict hides a
+    measured difference: a fail-closed sample keeps its static finding, so a
+    parse failure on a malicious sample yields the same "malicious" as a real
+    arbitration while the LLM never decided it. Two runs would look identical.
+    """
+    indices = sorted(index for index, rows in runs.items() if rows)
+    comparisons: Dict[str, Any] = {}
+    for first, second in itertools.combinations(indices, 2):
+        left, right = runs[first], runs[second]
+        shared = sorted(
+            sample_id for sample_id in set(left) & set(right)
+            if _scored(left[sample_id]) and _scored(right[sample_id])
+        )
+        comparisons[f"{first}v{second}"] = {
+            "shared": len(shared),
+            "verdict_disagreements": [
+                sample_id for sample_id in shared
+                if predicted_malicious(left[sample_id]) != predicted_malicious(right[sample_id])
+            ],
+            "llm_state_disagreements": [
+                sample_id for sample_id in shared
+                if left[sample_id].get("llm_state") != right[sample_id].get("llm_state")
+            ],
+        }
+    return comparisons
+
+
 def family_table(regex_rows: Iterable[Row], semgrep_rows: Iterable[Row]) -> List[Dict[str, Any]]:
     """Per-family FPR/recall for both arms.
 
@@ -475,6 +512,10 @@ def analyse_all(base_dir: Path, out_path: Optional[Path] = None) -> Dict[str, An
         },
         "pairs": [_outcome_dict(outcome) for outcome in pairs],
         "inconsistencies": inconsistencies,
+        "within_arm": {
+            engine: within_arm_disagreement(rows_by_engine[engine])
+            for engine in ("regex", "semgrep")
+        },
         "family_table": family_tables[0] if family_tables else [],
         "family_tables_by_pair": {str(i + 1): table for i, table in enumerate(family_tables)},
         "bootstrap_n": BOOTSTRAP_N,
