@@ -146,7 +146,6 @@ banner "Packaging TAA + TEE-LLM Docker Image" "Model: $LLM_MODEL | Container: $C
 step "preflight checks"
 require_command() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 require_command docker
-require_command python3
 docker info >/dev/null 2>&1 || die "docker daemon is not running or accessible"
 
 [[ -f "$PROJECT_DIR/deploy.sh" ]] || die "deploy.sh not found in $PROJECT_DIR"
@@ -156,10 +155,12 @@ docker info >/dev/null 2>&1 || die "docker daemon is not running or accessible"
 
 # The packaged image only autostarts both daemons if the TAA supervisor launches the
 # TEE-LLM one. Fail loudly rather than shipping an image that FATAL-loops on :8443.
-if ! grep -q 'start-teellm\.sh' "$PROJECT_DIR/deploy/start.sh"; then
+# Match an uncommented launch line only: a commented-out invocation would otherwise
+# satisfy this check while shipping an image whose TEE-LLM never autostarts.
+if ! grep -Eq '^[^#]*start-teellm\.sh' "$PROJECT_DIR/deploy/start.sh"; then
   die "deploy/start.sh does not launch start-teellm.sh; TAA would fail-closed on :${TEELLM_PORT}"
 fi
-info "preflight passed (docker, python3, scripts, dual-autostart supervisor)"
+info "preflight passed (docker, scripts, dual-autostart supervisor)"
 
 container_running() { docker ps --format '{{.Names}}' | grep -Eq "^${CONTAINER_NAME}\$"; }
 
@@ -182,6 +183,11 @@ fi
 # so the 30 retries in teellm/deploy.sh can never converge and its readiness gate fails
 # on a container whose ollama was recently restarted. Load the weights here instead,
 # and hold them resident for the rest of the run.
+#
+# Must mirror the options teellm-service's own health check sends (ollama_backend.go,
+# HandleHealthCheck): ollama reloads a runner whose options differ, so if that payload ever
+# gains options this warm-up stops preventing the cold load and the livelock described above
+# comes back.
 warm_payload="{\"model\":\"${LLM_MODEL}\",\"prompt\":\"ping\",\"stream\":false,\"keep_alive\":\"${MODEL_KEEP_ALIVE}\",\"options\":{\"num_predict\":1}}"
 
 # Load the weights into ollama and hold them resident. Non-zero if the model is absent.
@@ -191,11 +197,12 @@ warm_model() {
     -d "$warm_payload" >/dev/null 2>&1
 }
 
-# Poll ollama's cheap catalog endpoint until the daemon answers at all.
+# Poll ollama's cheap catalog endpoint until the daemon answers at all. The deadline is
+# wall-clock, so OLLAMA_READY_TIMEOUT means what it says instead of being multiplied by
+# the probe time on top of the interval.
 wait_for_ollama() {
-  local tries=$(( (OLLAMA_READY_TIMEOUT + OLLAMA_READY_INTERVAL - 1) / OLLAMA_READY_INTERVAL ))
-  local i
-  for ((i = 0; i < tries; i++)); do
+  local deadline=$(( SECONDS + OLLAMA_READY_TIMEOUT ))
+  while (( SECONDS < deadline )); do
     if docker exec -i "$CONTAINER_NAME" curl -fsS -m 5 "http://${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then
       return 0
     fi
@@ -228,8 +235,9 @@ fi
 
 # ── 2. TEE-LLM first: TAA's fail-closed probe needs :8443 already up ──
 step "deploying TEE-LLM (model: $LLM_MODEL)"
-info "running: (cd teellm && ./deploy.sh docker --model $LLM_MODEL --container $CONTAINER_NAME)"
-( cd "$PROJECT_DIR/teellm" && ./deploy.sh docker --model "$LLM_MODEL" --container "$CONTAINER_NAME" )
+info "running: (cd teellm && ./deploy.sh docker --model $LLM_MODEL --container $CONTAINER_NAME --config $TEELLM_CONFIG_TEMPLATE)"
+( cd "$PROJECT_DIR/teellm" && ./deploy.sh docker --model "$LLM_MODEL" --container "$CONTAINER_NAME" \
+    --config "$TEELLM_CONFIG_TEMPLATE" )
 info "TEE-LLM deployed"
 
 # ── 3. TAA ───────────────────────────────────────────────────
@@ -244,34 +252,41 @@ info "TAA deployed"
 step "consolidating supervisors into a single autostart pair"
 container_running || die "container $CONTAINER_NAME is not running"
 
-docker exec -i "$CONTAINER_NAME" sh -lc "
-  touch '$CONTAINER_WORKDIR/manual' '$CONTAINER_WORKDIR/manual-teellm'
-  pkill -f '[s]tart\.sh'          >/dev/null 2>&1 || true
-  pkill -f '[s]tart-teellm\.sh'   >/dev/null 2>&1 || true
-  pkill -x teellm-service         >/dev/null 2>&1 || true
-  pkill -x taa                    >/dev/null 2>&1 || true
-  pkill -x ollama                 >/dev/null 2>&1 || true
-  pkill -x llama-server           >/dev/null 2>&1 || true
-" >/dev/null 2>&1 || true
+# Everything the two deploy scripts may leave running: their supervisors and those
+# supervisors' daemons. The bracket in `[s]tart` keeps pkill/pgrep from matching the
+# shell that is running the pattern itself.
+SUPERVISOR_PATTERN='[s]tart\.sh|[s]tart-teellm\.sh'
+DAEMON_PATTERN='taa|teellm-service|ollama|llama-server'
+
+# $1: signal number, or empty for the default SIGTERM. The dash is required -- `pkill 9 -f x`
+# would parse 9 as a pattern, not as a signal.
+kill_services() {
+  local flag="${1:+-$1}"
+  docker exec -i "$CONTAINER_NAME" sh -lc "
+    pkill $flag -f '$SUPERVISOR_PATTERN' >/dev/null 2>&1 || true
+    pkill $flag -x '$DAEMON_PATTERN'    >/dev/null 2>&1 || true
+  " >/dev/null 2>&1 || true
+}
+
+services_alive() {
+  docker exec -i "$CONTAINER_NAME" sh -lc \
+    "pgrep -f '$SUPERVISOR_PATTERN' >/dev/null 2>&1 || pgrep -x '$DAEMON_PATTERN' >/dev/null 2>&1"
+}
+
+docker exec -i "$CONTAINER_NAME" sh -lc \
+  "touch '$CONTAINER_WORKDIR/manual' '$CONTAINER_WORKDIR/manual-teellm'" >/dev/null 2>&1 || true
+kill_services
 
 stopped=false
 for _ in {1..40}; do
-  if ! docker exec -i "$CONTAINER_NAME" sh -lc \
-    "pgrep -f '[s]tart\.sh' >/dev/null 2>&1 || pgrep -f '[s]tart-teellm\.sh' >/dev/null 2>&1 || pgrep -x taa >/dev/null 2>&1 || pgrep -x teellm-service >/dev/null 2>&1 || pgrep -x ollama >/dev/null 2>&1"; then
+  if ! services_alive; then
     stopped=true; break
   fi
   sleep 0.5
 done
 if [[ "$stopped" != true ]]; then
   warn "services did not terminate gracefully; force-killing"
-  docker exec -i "$CONTAINER_NAME" sh -lc "
-    pkill -9 -f '[s]tart\.sh'         >/dev/null 2>&1 || true
-    pkill -9 -f '[s]tart-teellm\.sh'  >/dev/null 2>&1 || true
-    pkill -9 -x teellm-service        >/dev/null 2>&1 || true
-    pkill -9 -x taa                   >/dev/null 2>&1 || true
-    pkill -9 -x ollama                >/dev/null 2>&1 || true
-    pkill -9 -x llama-server          >/dev/null 2>&1 || true
-  " >/dev/null 2>&1 || true
+  kill_services 9
   sleep 1
 fi
 info "all previous supervisors and daemons stopped"
@@ -295,15 +310,17 @@ fi
 step "waiting for both daemons to become ready"
 teellm_ready=false
 taa_ready=false
-attempts=$(( (READY_TIMEOUT + READY_INTERVAL - 1) / READY_INTERVAL ))
-for ((i = 1; i <= attempts; i++)); do
+# Wall-clock deadline: every iteration also pays for a probe (the teellm one is capped at
+# 5s inside teellm-service), so counting iterations would overshoot READY_TIMEOUT badly.
+ready_deadline=$(( SECONDS + READY_TIMEOUT ))
+while (( SECONDS < ready_deadline )); do
   if [[ "$teellm_ready" != true ]] && \
      docker exec -i "$CONTAINER_NAME" "$CONTAINER_WORKDIR/teellm-service" -probe "https://127.0.0.1:${TEELLM_PORT}" >/dev/null 2>&1; then
     teellm_ready=true
     info "teellm-service ready via TEE-TLS 1.3: https://127.0.0.1:${TEELLM_PORT}"
   fi
   if [[ "$taa_ready" != true ]] && \
-     docker exec -i "$CONTAINER_NAME" curl -fsS -X POST "http://127.0.0.1:${TAA_PORT}/v1/taa/health" >/dev/null 2>&1; then
+     docker exec -i "$CONTAINER_NAME" curl -fsS -m 5 -X POST "http://127.0.0.1:${TAA_PORT}/v1/taa/health" >/dev/null 2>&1; then
     taa_ready=true
     info "taa ready: http://127.0.0.1:${TAA_PORT}/v1/taa/health"
   fi
@@ -402,33 +419,36 @@ if ! docker commit \
   docker start "$CONTAINER_NAME" >/dev/null 2>&1 || true
   die "docker commit failed"
 fi
-image_id=$(docker image inspect --format '{{.Id}}' "$IMAGE_TAG" | cut -d: -f2 | cut -c1-12)
-image_size=$(docker image inspect --format '{{.Size}}' "$IMAGE_TAG")
+# One inspect for both fields; a failing substitution still aborts under `set -e`.
+inspect_out=$(docker image inspect --format '{{.Id}} {{.Size}}' "$IMAGE_TAG")
+image_id="${inspect_out%% *}"    # sha256:<hex>
+image_id="${image_id#sha256:}"
+image_id="${image_id:0:12}"
+image_size="${inspect_out##* }"
 image_size_mb=$(awk -v b="$image_size" 'BEGIN { printf "%.2f", b / 1048576 }')
 info "image committed: $IMAGE_TAG (id: $image_id, size: ${image_size_mb}MB)"
 
 # ── 7. Export ────────────────────────────────────────────────
 step "exporting image archive: $ARCHIVE_PATH"
 mkdir -p "$(dirname "$ARCHIVE_PATH")"
-tmp_archive="${ARCHIVE_PATH}.tmp.$$"
-TMP_ARCHIVE="$tmp_archive"
+TMP_ARCHIVE="${ARCHIVE_PATH}.tmp.$$"
 trap 'rm -f "${TMP_ARCHIVE:-}"' EXIT
 compressor="gzip"
 command -v pigz >/dev/null 2>&1 && compressor="pigz"
 
+# `compressor` already holds the command name, so the two paths differ only by whether it
+# is piped at all -- and only the piped one is actually compressed.
 if [[ "$ARCHIVE_PATH" == *.tar.gz || "$ARCHIVE_PATH" == *.tgz ]]; then
-  if [[ "$compressor" == "pigz" ]]; then
-    docker save "$IMAGE_TAG" | pigz -c > "$tmp_archive"
-  else
-    docker save "$IMAGE_TAG" | gzip -c > "$tmp_archive"
-  fi
+  docker save "$IMAGE_TAG" | "$compressor" -c > "$TMP_ARCHIVE"
+  note="compressed with $compressor"
 else
-  docker save -o "$tmp_archive" "$IMAGE_TAG"
+  docker save -o "$TMP_ARCHIVE" "$IMAGE_TAG"
+  note="uncompressed (docker save -o)"
 fi
-mv -f "$tmp_archive" "$ARCHIVE_PATH"
+mv -f "$TMP_ARCHIVE" "$ARCHIVE_PATH"
 TMP_ARCHIVE=""
 archive_size="$(du -h "$ARCHIVE_PATH" | cut -f1)"
-info "archive exported with $compressor: $ARCHIVE_PATH ($archive_size)"
+info "archive exported, $note: $ARCHIVE_PATH ($archive_size)"
 
 # ── 8. Restore dev container ─────────────────────────────────
 # `docker stop` in step 6 killed every daemon the deploys had started. The container's
