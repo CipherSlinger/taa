@@ -181,7 +181,7 @@ self.assertEqual(res.findings[0]["code_snippet"], "os.system('id')")
 1. `--limit 5` 实测 `per_sample_llm_sec`，据此给出总时长预估后**再**开跑；禁止凭历史数值估算（历史数值来源不可信）。
    - **偏离（已记录）**：`--limit 5` 无法测出该值。语料清单是 `FAMILY_SPECS` × `PROJECT_ALLOCATION` 生成的**固定网格**（非文件系统发现），`--limit N` 永远先走完 B1-01…B5-10 这 50 个良性样本；`--limit 5` 取到的是 B1-01…B1-05，它们**全部绕过仲裁**（`llm_invoked=false`），`per_sample_llm_sec` 因而无定义、只能读出 0。`--limit 3`/`--limit 5` 均属**vacuous**，不是"小样本估计"，是"估不出"。
    - **替代做法**：先把分母与分子的口径补齐（见阶段 3.5 的计时插桩），再按**两段式**分别测量——`--llm-backend none` 量静态扫描成本（全 100 样本），`--llm-backend ollama` 量 LLM 成本（取实际进入仲裁的样本）。这正是阶段 3.5 插桩要解决的问题：只有整轮 `eval_duration_sec` 时，两项成本无法分离。
-   - **实测预算**：由阶段 5 的 6 次正式运行自身给出（每轮 100 样本、逐样本记录 `scan_duration_ms`/`llm_invoked`/`llm_duration_sec`），不再另设试跑——正式运行就是最完整的预算测量。
+   - **实测预算（6 轮跑完后回填，spec §4.4 已同步）**：扫描 0.009 → 4.343 s/样本（≈483×），整轮均值 1150.1 → 1764.2 s，即 **+614.1 s/轮（+53%）≈ +10.2 分钟/100 样本**。原估算「7–8 分钟」偏低约 30%。LLM 成本两臂等价（10.6–24.5 s/样本）。单轮耗时**不是稳定预算值**（同引擎相差近一倍），预算应取区间上限。
 2. 6 次运行严格串行，按 spec §4.2 的命令模板；每轮前后复核 ollama 存活与模型 digest（`f72c60cabf62…`）。
    - **实施方式**：6 轮由**单个串行驱动脚本**跑完（`/tmp/run-six.sh`），顺序即模块里的 `RUN_ORDER`（regex1 → semgrep1 → regex2 → semgrep2 → regex3 → semgrep3），每轮结束自动 `git checkout --` 清单并在非零退出时中止。**串行由构造保证**，而非靠人守着不并发。
    - **驱动被会话结束杀死（作废 regex-run3 并重跑）**：`run-six.sh` 于 17:41:50 在 `regex-run3` 扫到 91/100 时随会话终止（日志尾 `[killed]`）。该轮**没有**写出 `summary.json`/`sample-results.jsonl`，即无任何判定可用，故整轮作废：清除半成品目录、恢复清单、复核容器（`restarts=0`、`StartedAt` 未变、digest 未变、真实 `generate` 探针通过），再用 `/tmp/run-two.sh` 只补第 5、6 轮。
@@ -195,11 +195,19 @@ self.assertEqual(res.findings[0]["code_snippet"], "os.system('id')")
 
 ---
 
-## 阶段 6：报告
+## 阶段 6：报告（已完成）
 
 产出 `models/audit/audit-results/engine-compare/REPORT.md`（结构见 spec §6）。注意 `models/` 在 `.gitignore` 中，报告与原始数据提交时**必须** `git add -f`，否则会静默漏提交。
 
 结论只允许三种措辞：**通过** / **未通过（附根因）** / **证据不足（附缺失项）**。按 spec §5.3 的 0 容差规则判定；任一条件不满足即不得进入生产接入。
+
+**结果：判定「通过」**（三对 ΔFPR = Δrecall = +0.0000，零 discordance；六轮 `incomplete` = 0）。spec §6 的七项已全部落盘，每个数字均由 `engine_compare_report.py` 从 6 轮产物派生，并按 spec §6.7 逐条披露限制。
+
+**编写报告时抓出并修正的三处**（记此以备复核）：
+
+1. **§7.9 的离群归因原本是错的**：我把 `semgrep-run3` 的两个 `llm_duration_sec` 离群者（M4-08 120.1 s、M1-02 91.7 s）解释为「解析失败表现为调用异常长」。实测 `llm_state` 是 **`llm_unavailable`**、`llm_reason` 为 `ollama 调用失败: timed out`——是 60 s 超时，不是解析失败。该轮真正的解析失败样本 M1-04 耗时 16.2 s，**低于离群阈值**，离群检测器标不出这一通道。
+2. **§7.6 漏报了一次真实的 LLM 不可用**：容器 `RestartCount=0` 使我在上一段得出「本轮未发生该事故」。这个检查**太弱**——容器存活而推理停摆是可能的，`semgrep-run3` 就发生了 2 次。已改写为「LLM 不可用确实发生，只是没到容器死亡那一步」，并登记 spec §9.10 第 11 条（第二条通道）。
+3. **§5 的分母写错**：原文「六轮 168 次仲裁」把良性仲裁数当成了全部仲裁数。实测六轮共 **468** 次仲裁（168 良性 + 300 恶意），**开脱数在所有 468 次上均为 0**——比原文更强。
 
 ---
 
