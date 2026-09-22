@@ -238,9 +238,9 @@ python3 models/audit/tools/audit_benchmark_eval.py \
 
 先跑 3 个样本（`--limit 3`）逐项确认，全部通过才启动正式矩阵：
 
-1. semgrep 臂每个 finding 的 `code_snippet` 与源文件对应行逐字相等（P1 生效）。
-2. 人为制造失败（例如临时改坏规则 YAML 或指向不存在的可执行文件），确认样本行出现 `scan_complete=false` 且被汇总计数捕获（P2 生效）。
-3. 同一命令连续跑两次，同一模型的裁决结果一致（P3 生效）。
+1. semgrep 臂每个 finding 的 `code_snippet` 与源文件对应行逐字相等（P1 生效）。**实测通过**：语料审计逐条比对 80 个 semgrep 命中的 `code_snippet` 与源文件对应行，80/80 逐字相等、0 处不符（`rule-parity-audit.json` 的 `semgrep_snippets_verified` / `semgrep_snippet_mismatches`）。该项断言 `snippet_checked > 0`，避免「0 条被检查、0 条不符」的空集通过。
+2. 人为制造失败（例如临时改坏规则 YAML 或指向不存在的可执行文件），确认样本行出现 `scan_complete=false` 且被汇总计数捕获（P2 生效）。**第一次实测未通过**：样本行正确，但汇总仍把 4 个未扫样本记成 `tn=4` / `accuracy=1.0`。按 §8 回到 RED/GREEN 循环修 `confusion_counts`（§11.7），重跑后 `round_complete=False`、`counts` 全零、`scored_count: 0`。
+3. 同一命令连续跑两次，同一模型的裁决结果一致（P3 生效）。**实测通过**：`static-llm + semgrep + ollama(qwen2.5-coder:3b) + --llm-seed 42`、`--limit 12`（10 个良性 B1 全部 bypass，2 个 B2 陷阱样本实际进入 LLM 仲裁），两轮在 `predicted_label`/`predicted_risk`/`blocked`/`bypass`/`llm_state`/`scan_complete`/`matched_rules`/`error_type` 上**逐字段零差异**；两轮均 `round_complete=True`。单轮耗时 101.8s / 73.8s（仅作量级参考，§4.4 禁止据此估算正式矩阵时长）。
 4. **全量规则集行为一致性审计（新增，P0 教训）**：对 audit-100 的 100 个样本，逐文件比对两臂触发的 `rule_id` 集合，差异清单必须为空，或每一条差异都被逐项解释并登记进报告。
    - 理由：P0 表明「按 YAML 逐条读规则」既不可靠也不完整——同一条规则同时存在过宽与漏报两种反向失真，且都只在**行为**上显现。semgrep 臂全量 100 样本约 424s，相对 6 次正式运行（数小时）是可忽略的前置成本，而它能拦住「矩阵跑完才发现第三条规则缺陷」这一数小时量级的返工。
    - 本项为**新增门槛**，与 §5.3 的通过条件相互独立：它判的是「两臂是否可比」，不是「哪一臂更好」。
@@ -428,6 +428,39 @@ semgrep 报 `EMB_001`，regex 不报。**`EMB_001` 是 HIGH**，按 §9.8 的生
 **两处门槛都补了「空集通过」防护**：两个空命中列表天然相等，因此若扫描器根本没跑起来，比对会静默通过。现在两个测试都断言**对照臂确实有命中**（夹具测试要求过半夹具被基线命中，语料测试要求两臂全语料命中数 > 0）。
 
 **§4.3 第 4 项的审计已固化为可复跑的用例**：`tests/test_engine_rule_parity_corpus.py`，用 `TAA_CORPUS_PARITY=1` 显式开启（全语料 semgrep 扫描耗时数十秒且需 semgrep 可用，不适合进默认套件）。此前的审计是一次性脚本，产物只存在于对话记录里——**证据应当可复跑，而不是可引用**。
+
+### 11.7 P2-bis：冒烟门槛第 2 项抓出的 `confusion_counts` 失效开放
+
+§4.3 第 2 项要求「人为制造失败，确认样本行出现 `scan_complete=false` **且被汇总计数捕获**」。实测时样本行**是对的**（4 行全部 `scan_complete=False`、`bypass=False`、`scan_error` 记录到 semgrep 不在 PATH），但汇总暴露了一个 P2 没修完的缺口：
+
+```
+counts: {'tp': 0, 'fp': 0, 'tn': 4, 'fn': 0}
+accuracy: 1.0
+scan_incomplete_count: 4   scan_error_count: 4
+```
+
+**四个样本一个都没扫，却被记成 4 个真阴性、accuracy 1.0。** 根因：`confusion_counts`（`audit_benchmark_eval.py`）无条件遍历 `results`，而 §5.3 第 3 条明确要求「`incomplete` 归零之前，该轮结果**不得进入判定与指标计算**」。**这是代码与 §5.3 的分歧**，与 §9.8 同类：spec 早已写下正确语义，实现没有兑现。
+
+**为什么这个缺口必须在开矩阵前修**：它**只对受测臂有利，且方向恰好落在判定轴上**。
+
+- semgrep 臂是两臂中**唯一可能 incomplete** 的一臂（regex 臂是同步纯内存正则，`scan_complete` 恒为 True，见 `RegexScannerAdapter`）。
+- 「扫不动 → 空命中 → 记 TN」**降低 FPR**。而 `ΔFPR ≤ 0` 正是通过条件之一：扫描器挂掉会**把人推向 PASS**。
+- 同一时刻 recall 因 FN 上升而**变差**，但 `scan_incomplete_count` 只是个并列计数、不拦任何数字，报告里没有任何一处会因此中断。
+
+因此它属于 §9「防故障伪装成好结果」这一类失效，而不是一个统计口径瑕疵。
+
+**修复**：`confusion_counts` 只对 `scored_rows()`（`scan_complete` 为真）计数，未扫样本**不落入任何格子**，而非默认成某个格子（`scan_is_scored`/`scored_rows` 两个单点函数）。bootstrap 区间走的是同一函数，因此一并被修正。
+
+**丢弃行不能是静默的**（否则会变成另一种误报——96 个样本的混淆矩阵与 100 个样本的读起来完全一样）：
+
+- `metric_summary` 增 `scored_count`，与 `scan_incomplete_count` 并列；
+- `build_summary_report` 增 `round_complete`（任一 `scan_complete=false` 即为 False）；
+- `final-report.md` 在 `round_complete=False` 时**首屏**给出作废横幅（含 `x / N` 未完成数）；
+- `confusion-matrix.json` 在作废轮次落**全零**，而非「扣掉失败样本后的结果」。
+
+**RED**：新增 `TestIncompleteScansStayOutOfTheScore` 7 条，6 条红且原因正确（3 条断言未扫样本不占格子、1 条断言 `scored_count`、2 条断言 `round_complete`）。第 7 条 `test_a_scanned_row_is_still_scored` 是**反向守卫**：排除必须键在 `scan_complete` 上，而不是「有没有 label」之类的近似条件。
+
+**GREEN**：15/15 通过；同一条注入失败的命令重跑，`round_complete=False`、`counts` 全零、`scored_count: 0`、`final-report.md` 首屏为作废横幅。
 
 ---
 

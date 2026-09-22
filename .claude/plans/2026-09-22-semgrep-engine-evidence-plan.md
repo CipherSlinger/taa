@@ -21,6 +21,18 @@ curl -s http://127.0.0.1:11434/api/tags | grep -o 'qwen2.5-coder:3b'      # 必�
 
 任一项不满足则先恢复（`docker start taa-env-slim-v2`，再按 `deploy-docker.sh:221` 的方式在容器内起 `start-ollama.sh`），**不得**在 LLM 不可用时开始任何评测。
 
+### 实测教训（2026-09-22，本轮）
+
+P0-bis 第二轮期间跑全量语料审计（100 样本 semgrep）**把容器打成了 `Exited (137)`** —— 与 P0 期间观察到的现象一致，只是这次是被本流程自己触发的。9.9GB 单机上「全量 semgrep 扫描」与「ollama 常驻」不能共存。
+
+因此：
+
+- **语料审计必须在任何 LLM 工作之前单独跑完**，不得与评测、甚至不得与 `--limit` 试跑并行。它是**前置门槛**，不是可以后台挂着的旁路任务。
+- 审计结束后**必须复核容器状态**（`docker ps -a | grep taa-env-slim-v2` 须为 `Up`）再开始计时或评测。
+- 恢复步骤：`docker start taa-env-slim-v2`，再 `docker exec -d taa-env-slim-v2 sh -lc "cd /root/taa/ollama && exec env OLLAMA_HOST=127.0.0.1:11434 OLLAMA_MODELS=/root/taa/ollama/models/models OLLAMA_LIBRARY_PATH=/root/taa/ollama/lib/ollama ./start-ollama.sh > /tmp/ollama.log 2>&1"`，随后轮询 `/api/tags` 至就绪。
+- 恢复后须确认模型 digest 仍为 `f72c60cabf62…`，并做一次真实 `generate` 探针（仅 `/api/tags` 命中不算就绪）。
+- **`Exited (137)` 会在 fail-open 下伪装成「扫描干净」**——这正是 P2 修掉的失效模式。因此每轮正式运行前后都要记录容器状态，不能只看评测器输出。
+
 ---
 
 ## 阶段 1：P1 —— `code_snippet` 从源文件按行切片
@@ -137,16 +149,30 @@ self.assertEqual(res.findings[0]["code_snippet"], "os.system('id')")
 
 ---
 
+## 阶段 3.7：P2-bis —— 未扫样本不得进入混淆矩阵（由阶段 4 第 2 项触发，已完成）
+
+阶段 4 第 2 项**没有通过**：样本行的 `scan_complete=false` 是对的，但汇总把 4 个未扫样本记成 `tn=4`、`accuracy=1.0`。§5.3 第 3 条早已写明「`incomplete` 归零之前该轮结果不得进入指标计算」——**代码没有兑现 spec**，与 §9.8 同类。
+
+**为什么必须修**：semgrep 是唯一可能 incomplete 的一臂；「扫不动 → 空命中 → 记 TN」**降低 FPR**，而 `ΔFPR ≤ 0` 恰是通过条件之一，等于扫描器挂掉会把人推向 PASS。
+
+**改动**：`confusion_counts` 只对 `scored_rows()` 计数（`scan_is_scored`/`scored_rows` 单点函数），未扫样本不落任何格子；`metric_summary` 增 `scored_count`；`build_summary_report` 增 `round_complete`；`final-report.md` 在作废轮次首屏给横幅；`confusion-matrix.json` 落全零。bootstrap 区间走同一函数，一并修正。
+
+**RED**：`TestIncompleteScansStayOutOfTheScore` 7 条，6 红原因正确。**GREEN**：15/15；同一条注入失败的命令重跑，`round_complete=False`、`counts` 全零、`scored_count: 0`。
+
+**提交**：`fix(audit-bench): keep unscanned samples out of the confusion matrix`
+
+---
+
 ## 阶段 4：冒烟门槛（4 项全过才可开矩阵）
 
-1. semgrep 臂每个 finding 的 `code_snippet` 与源文件对应行逐字相等（P1）。
-2. 人为制造失败（临时改坏规则 YAML / 指向不存在的可执行文件）→ 样本行出现 `scan_complete=false` 且被汇总计数捕获（P2）。
-3. 同一命令连跑两次，同一模型裁决一致（P3）。
+1. semgrep 臂每个 finding 的 `code_snippet` 与源文件对应行逐字相等（P1）。**已过**：80/80 逐字相等（语料审计）。
+2. 人为制造失败（临时改坏规则 YAML / 指向不存在的可执行文件）→ 样本行出现 `scan_complete=false` 且被汇总计数捕获（P2）。**首轮未过 → 阶段 3.7 修复 → 重跑已过**（`round_complete=False`、`counts` 全零）。
+3. 同一命令连跑两次，同一模型裁决一致（P3）。**已过**：`--limit 12`（2 个 B2 样本实际进 LLM）两轮逐字段零差异。
 4. **全量规则集行为一致性审计**：对 audit-100 的 100 个样本逐文件比对两臂触发的 `rule_id` 集合，差异必须为空或逐条解释并登记进报告。
 
 第 4 项的审计脚本：复用 P0 期间已验证的做法（`StaticScanner.scan_file` vs `SemgrepRunner.scan_directory`，按文件比 `rule_id` 集合）。**仅登记差异，不在本阶段顺手改规则**——改规则要回到 P0 式的 RED/GREEN 循环并重跑本门槛。
 
-**第一次执行结果：第 4 项未通过**（44/100 文件 `rule_id` 集合不一致，7 条规则），已按上述规则回到 RED/GREEN 循环（阶段 3.5），修完后**必须重跑本项并确认差异清单归零**才可开矩阵。第 1–3 项的验收已在阶段 1–3 的 GREEN 中完成，但重跑第 4 项时会一并复核。
+**第一次执行结果：第 4 项未通过**（44/100 文件 `rule_id` 集合不一致，7 条规则），已按上述规则回到 RED/GREEN 循环（阶段 3.5），修完后**必须重跑本项并确认差异清单归零**才可开矩阵。第 1–3 项的验收已在阶段 1–3 的 GREEN 中完成，但重跑第 4 项时会一并复核；**第 2 项在复核时暴露出 §11.7 的汇总缺口**，故第 1–3 项已在阶段 3.5/3.7 后各自重跑并记录实测结果。
 
 ---
 
