@@ -16,6 +16,11 @@
 
 ### F1. 仓库中不存在任何可信的引擎对比数据
 
+先说清楚**已经存在什么**（避免误读为「benchmark 从未跑过」）：
+
+- `audit-results/audit-100-*`（20 个目录：`ollama`、`ollama-tuned`、`ollama-hardened`、`static-difficulty*` 等）是**由评测器实际跑出的真实运行**，构成 regex/LLM 轨道的调参与难度消融历史。它们**没有 `engine` 字段**（该字段是后加的），即全部是 regex 臂；它们是可用的 regex 侧基线素材。
+- 缺的不是「benchmark」，而是**可信的 semgrep 臂**：如下三条所述，semgrep 侧没有任何一次有效测量。
+
 - `models/audit/tools/generate_matrix_results.py:356-376` 将 `engine` 与 `rule_set_version` 由 **mode 名称**直接指派：
   ```python
   rule_ver = "semgrep-rules-13" if mode_name == "static-llm" else rule_ver
@@ -23,14 +28,18 @@
   ```
   而 `tp/fp/tn/fn` 等全部指标来自文件内硬编码字面量 `MODELS_SPEC`（`generate_matrix_results.py:37` 起）。因此 `audit-results/matrix/static-llm/*/summary.json` 中「Semgrep-LLM 准确率 92%」**不是测量结果**。
 - `models/audit/tools/run_benchmark_matrix.py` 调用评测器时**从不传 `--engine`**（`run_benchmark_matrix.py:61-84`），即矩阵运行实际走的都是默认 `--engine regex`。
-- 现存真实引擎产物只有两个，且均已退化、不可用：
+- 现存**真实**（由评测器实际跑出、非手写）的 semgrep 标注产物只有两个，均不可用：
 
-  | 产物 | engine 标注 | llm | 100 样本耗时 | recall | fpr |
+  | 产物 | 实际样本数 | engine 标注 | llm | 耗时 | 结果 |
   |---|---|---|---|---|---|
-  | `audit-results/audit-100/` | semgrep | none | 8.4s | 0.0000 | 1.0000 |
-  | `audit-results/cpg-eval/` | semgrep | none | 424.5s | 1.0000 | 1.0000 |
+  | `audit-results/cpg-eval/` | **100**（50/50） | semgrep | none | 424.5s（4.2s/样本） | **100/100 全部判 malicious**：tp=50, fp=50, tn=0, fn=0 → recall 1.0, fpr 1.0；bypass=0 |
+  | `audit-results/audit-100/` | **2**（全 benign） | semgrep | none | 8.36s | fp=2, tn=0 → fpr 1.0；无 malicious 样本，recall 无意义 |
 
-  8.4s / 100 样本（0.084s/样本）远低于 semgrep 单次进程启动开销（实测约 5s/样本），说明该轮 semgrep 并未真正完成扫描，而其退化指标（recall 0 / fpr 1）与标注的 `engine=semgrep` 无法互相支持。
+  两点的含义截然不同，必须分开看：
+  - `cpg-eval` 是**唯一一次真实的 100 样本 semgrep 全量运行**，其结果是**该臂在本数据集上区分度为零**（每个样本都被拦），根因即 F5 的 `FIL_001` 过宽匹配——4 个基座工程都要加载数据，`open()` 无处不在。它同时证明了「4.2s/样本」是 semgrep 的真实单样本开销量级（本机实测单次 `semgrep scan` 约 6.8s）。
+  - `audit-results/audit-100/` 只是**一个 2 样本冒烟运行**，目录名（`audit-100`）与其内容（2 个样本）不符，其 `fpr=1.0 / recall=0.0` 是「2 个良性样本全被 `FIL_001` 拦截、且无恶意样本」的算术产物，**不构成任何指标**。
+- 两个产物都是 `llm=none`，即 **semgrep 臂从未与 LLM 组合运行过一次**。
+- 另一个识别陷阱：semgrep 规则通过 `metadata.rule_family` 复用了与正则完全相同的规则 ID（`CMD_001`/`FIL_001`/`EMB_001`…），因此样本行里的 `matched_rules` **无法用来判断是哪一臂跑出来的**——这也是 P4 要求 `engine` 必须来自真实运行记录的原因之一。
 
 ### F2. Semgrep 臂的 `code_snippet` 证据是伪造字符串（关键）
 
@@ -97,6 +106,7 @@
   | B1-02 | 0 findings → passed（TN） | `FIL_001`×2 → blocked（FP） |
 
   样本 B1-01 `dataset.py:33` 的真实内容为 `with open(csv_path, "r", encoding="utf-8") as f:` —— 良性 CSV 加载。
+- 该根因不是假想：`audit-results/cpg-eval/` 那次真实的 100 样本 semgrep 运行里，**100 个样本全部被拦**（tp=50, fp=50），正是这条规则把「任何文件读取」都判成 HIGH 的后果。换言之，semgrep 臂当前的失败不是统计意义上的劣化，而是**功能性失效**。
 
 **在 F2–F4 修复之前进行的任何 semgrep 臂评测，其结果都不能作为接入决策依据。**
 
@@ -207,8 +217,8 @@ python3 models/audit/tools/audit_benchmark_eval.py \
 
 ### 4.4 运行时长预算
 
-- 实测（本机）：regex 2 样本 ≈ 0.2s；semgrep 2 样本 ≈ 10s（≈5s/样本，主要为进程启动与规则加载）。
-- 因此 semgrep 臂相对 regex 臂有约 8 分钟/100 样本的固定额外开销。
+- 实测（本机）：regex 2 样本 ≈ 0.2s；semgrep 单次 `semgrep scan` 调用 ≈ 6.8s（单样本目录）；`audit-results/cpg-eval/` 的 100 样本全量 semgrep 运行为 424.5s ≈ 4.2s/样本（含评分与报告生成）。
+- 因此 semgrep 臂相对 regex 臂有约 7–8 分钟/100 样本的固定额外开销。
 - LLM 单样本时延**不作估算**：历史数值来源不可信（见 F1）。正式矩阵前用 `--limit 5` 实测一次 `per_sample_llm_sec`，据此给出总时长预估后再开跑。
 - 量级参考：仅非 bypass 样本进审（约半数），`3b` 模型下 6 次运行预计数小时量级；串行执行期间不要并行跑其它 ollama 任务。
 
