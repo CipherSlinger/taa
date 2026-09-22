@@ -990,9 +990,34 @@ def infer_predicted_verdict(report: dict[str, Any], llm_state: str) -> str:
     return "SUSPICIOUS"
 
 
+def scan_is_scored(row: dict[str, Any]) -> bool:
+    """Whether this sample's scan finished, and so whether it may be scored.
+
+    A scan that never finished produces an empty finding list, which is the same
+    input a genuinely clean scan produces. Scoring that as "nothing found"
+    credits the engine for an infrastructure failure, and because the judgement
+    is on FPR and recall, the credit lands on exactly the number being compared -
+    a crashed scan lowers FPR. An unscanned sample carries no verdict to compare
+    against its label, so it is neither a true nor a false anything.
+    """
+    return bool(row.get("scan_complete", True))
+
+
+def scored_rows(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The subset of a run that the metrics may be computed over."""
+    return [row for row in results if scan_is_scored(row)]
+
+
 def confusion_counts(results: list[dict[str, Any]]) -> dict[str, int]:
+    """Confusion counts over the samples that were actually scanned.
+
+    Unscanned rows are dropped rather than assigned a cell. The returned counts
+    therefore describe `scored_rows(results)`, not `results` - callers that report
+    them have to state the denominator, which is what `scored_count` and
+    `round_complete` are for.
+    """
     tp = fp = tn = fn = 0
-    for row in results:
+    for row in scored_rows(results):
         truth = row.get("label") == "malicious"
         pred_val = row.get("predicted_label")
         if pred_val is None:
@@ -1035,7 +1060,8 @@ def compute_attribution_precision(results: list[dict[str, Any]]) -> float:
 
 
 def metric_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
-    counts = confusion_counts(results)
+    scored = scored_rows(results)
+    counts = confusion_counts(scored)
     tp = counts["tp"]
     fp = counts["fp"]
     tn = counts["tn"]
@@ -1068,6 +1094,7 @@ def metric_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         "fail_closed_count": fail_closed_count,
         "bypass_count": bypass_count,
         "bypass_rate": bypass_rate,
+        "scored_count": len(scored),
         "scan_incomplete_count": scan_incomplete_count,
         "scan_error_count": scan_error_count,
     }
@@ -1231,6 +1258,11 @@ def build_summary_report(
     metrics = metric_summary(results)
     bypass_count = metrics["bypass_count"]
     bypass_rate = metrics["bypass_rate"]
+    # Spec 5.3: a round with an unfinished scan is void and has to be re-run, not
+    # reported with the failures dropped. The metrics above are computed over the
+    # scanned subset so a reader can still see where the round stood, and this flag
+    # is what stops that subset from being quoted as the round's result.
+    round_complete = metrics["scan_incomplete_count"] == 0
     rule_set_version = DEFAULT_RULE_SET_VERSION if audit_mode in ("static-llm", "pure-llm-checklist") else "none (pure-llm)"
     if audit_mode == "static-llm":
         prompt_version = DEFAULT_PROMPT_VERSION
@@ -1239,7 +1271,7 @@ def build_summary_report(
     else:
         prompt_version = "pure-llm-v1"
 
-    ci_95 = compute_all_bootstrap_ci(results)
+    ci_95 = compute_all_bootstrap_ci(scored_rows(results))
 
     return {
         "run_id": f"{BENCHMARK_NAME}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
@@ -1255,6 +1287,7 @@ def build_summary_report(
         "policy": policy,
         "bypass_count": bypass_count,
         "bypass_rate": bypass_rate,
+        "round_complete": round_complete,
         "eval_duration_sec": eval_duration_sec,
         "notes": notes,
         "benchmark_root": str(benchmark_root),
@@ -1331,6 +1364,14 @@ def write_markdown(path: Path, results: list[dict[str, Any]], summary: dict[str,
     lines = [
         f"# {BENCHMARK_NAME} 评测结果",
         "",
+    ]
+    if not summary.get("round_complete", True):
+        lines.extend([
+            f"> **本轮作废**：{metric['scan_incomplete_count']} / {len(results)} 个样本未能完成扫描。",
+            "> 下列指标只覆盖已扫描的子集，**不得**作为本轮的评测结果引用；需整轮重跑（spec §5.3）。",
+            "",
+        ])
+    lines.extend([
         f"- 运行时间: {summary['run_time']}",
         f"- 审计模式: {summary.get('audit_mode', 'static-llm')}",
         f"- LLM 模型: {summary.get('llm_model', 'none')}",
@@ -1344,6 +1385,8 @@ def write_markdown(path: Path, results: list[dict[str, Any]], summary: dict[str,
         "",
         "## 指标",
         "",
+        f"- scored_count: {metric.get('scored_count', 0)} / {len(results)}",
+        f"- scan_incomplete_count: {metric.get('scan_incomplete_count', 0)}",
         f"- precision: {metric['precision']:.4f}",
         f"- recall: {metric['recall']:.4f}",
         f"- fpr: {metric['fpr']:.4f}",
@@ -1366,7 +1409,7 @@ def write_markdown(path: Path, results: list[dict[str, Any]], summary: dict[str,
         "",
         "## 错误分类",
         "",
-    ]
+    ])
     for key in sorted(errors):
         lines.append(f"- {key}: {errors[key]}")
 

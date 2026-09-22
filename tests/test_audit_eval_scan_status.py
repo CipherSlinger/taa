@@ -112,6 +112,114 @@ class TestScanStatusPropagation(unittest.TestCase):
         self.assertEqual(metrics["scan_error_count"], 1)
 
 
+class TestIncompleteScansStayOutOfTheScore(unittest.TestCase):
+    """A scan that never ran must not be scored as a verdict either way.
+
+    Counting incomplete rows is not enough on its own: the smoke gate found a
+    run where all four samples failed to scan and the confusion matrix still
+    reported tn=4 with accuracy 1.0. Under the fail-open reading a crashed
+    scanner is indistinguishable from a clean corpus, and because the judgement
+    is on FPR and recall, that failure mode moves both of the numbers being
+    compared - it can manufacture a pass on FPR while nothing points at the
+    cause.
+    """
+
+    @staticmethod
+    def _row(label, predicted, scan_complete=True, **extra):
+        row = {
+            "label": label,
+            "predicted_label": predicted,
+            "blocked": predicted == "malicious",
+            "scan_complete": scan_complete,
+            "scan_error": None if scan_complete else "Semgrep executable 'semgrep' not found in PATH",
+        }
+        row.update(extra)
+        return row
+
+    def test_an_unscanned_benign_sample_is_not_a_true_negative(self):
+        rows = [self._row("benign", "benign", scan_complete=False)]
+        self.assertEqual(ev.confusion_counts(rows), {"tp": 0, "fp": 0, "tn": 0, "fn": 0})
+
+    def test_an_unscanned_malicious_sample_is_not_a_false_negative(self):
+        rows = [self._row("malicious", "benign", scan_complete=False)]
+        self.assertEqual(ev.confusion_counts(rows), {"tp": 0, "fp": 0, "tn": 0, "fn": 0})
+
+    def test_a_failed_scan_does_not_make_the_accuracy_look_perfect(self):
+        rows = [
+            self._row("benign", "benign"),
+            self._row("malicious", "malicious"),
+            self._row("benign", "benign", scan_complete=False),
+            self._row("malicious", "benign", scan_complete=False),
+        ]
+        counts = ev.confusion_counts(rows)
+        self.assertEqual(counts, {"tp": 1, "fp": 0, "tn": 1, "fn": 0})
+
+        metrics = ev.metric_summary(rows)
+        # One of each, not four of four.
+        self.assertEqual(metrics["accuracy"], 1.0)
+        self.assertEqual(metrics["scan_incomplete_count"], 2)
+
+    def test_a_scanned_row_is_still_scored(self):
+        """The exclusion must key on scan_complete, not on the presence of a label."""
+        rows = [self._row("benign", "benign"), self._row("malicious", "benign")]
+        self.assertEqual(ev.confusion_counts(rows), {"tp": 0, "fp": 0, "tn": 1, "fn": 1})
+
+    def test_the_metrics_say_how_many_samples_they_rest_on(self):
+        """Dropping rows silently would be its own kind of misreporting.
+
+        A confusion matrix over 96 of 100 samples reads exactly like one over the
+        whole corpus unless the denominator is stated next to it.
+        """
+        rows = [
+            self._row("benign", "benign"),
+            self._row("malicious", "malicious"),
+            self._row("benign", "benign", scan_complete=False),
+            self._row("malicious", "malicious", scan_complete=False),
+        ]
+        metrics = ev.metric_summary(rows)
+        self.assertEqual(metrics["scored_count"], 2)
+        self.assertEqual(metrics["scan_incomplete_count"], 2)
+
+    def test_the_summary_marks_a_round_it_cannot_score(self):
+        """Spec 5.3 makes an incomplete round void, so the summary has to say so.
+
+        The counts and the metrics are both machinery a reader trusts to describe
+        the run; the flag is what tells them this run does not describe anything.
+        """
+        rows = [
+            self._row("benign", "benign"),
+            self._row("malicious", "benign", scan_complete=False),
+        ]
+        summary = ev.build_summary_report(
+            results=rows,
+            benchmark_root=Path("/tmp/corpus"),
+            audit_mode="static-llm",
+            policy="gate",
+            llm_backend="ollama",
+            llm_model="qwen2.5-coder:3b",
+            eval_duration_sec=1.0,
+            notes="injected failure",
+            engine="semgrep",
+        )
+        self.assertFalse(summary["round_complete"])
+        self.assertEqual(summary["metrics"]["scan_incomplete_count"], 1)
+
+    def test_a_fully_scanned_round_is_marked_complete(self):
+        rows = [self._row("benign", "benign"), self._row("malicious", "malicious")]
+        summary = ev.build_summary_report(
+            results=rows,
+            benchmark_root=Path("/tmp/corpus"),
+            audit_mode="static-llm",
+            policy="gate",
+            llm_backend="ollama",
+            llm_model="qwen2.5-coder:3b",
+            eval_duration_sec=1.0,
+            notes="",
+            engine="semgrep",
+        )
+        self.assertTrue(summary["round_complete"])
+
+
 class TestScannerAdapterInterface(unittest.TestCase):
     def test_regex_adapter_reports_a_completed_scan(self):
         """The in-process regex pass has no partial state, so it is always complete."""
