@@ -42,5 +42,41 @@ class TestSemgrepRuleSchema(unittest.TestCase):
         missing = expected_families - found_families
         self.assertEqual(missing, set(), f"Missing rule families: {missing}")
 
+    def test_python_rule_severity_matches_baseline(self):
+        """Every Python rule must carry the same severity as its baseline mirror.
+
+        The two arms are only comparable if a rule difference cannot show up as
+        an engine difference. Severity is part of that: under the gate policy a
+        MEDIUM finding always blocks while a HIGH one can be exonerated by the
+        LLM, so a mismatched severity silently changes which findings the
+        arbitration even sees.
+        """
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from models.examples.code_security_analyzer import SUSPICIOUS_PATTERNS
+
+        baseline = {rule["id"]: rule["severity"] for rule in SUSPICIOUS_PATTERNS}
+        # Semgrep severities map to the harness vocabulary via this table.
+        mapped = {"ERROR": "HIGH", "WARNING": "MEDIUM", "INFO": "LOW"}
+
+        compared = set()
+        for yf in sorted((self.rules_dir / "python").rglob("*.yaml")):
+            with open(yf, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            for rule in data.get("rules", []):
+                family = (rule.get("metadata") or {}).get("rule_family")
+                if family not in baseline:
+                    continue
+                compared.add(family)
+                actual = mapped.get(str(rule.get("severity", "")).upper())
+                self.assertEqual(
+                    actual, baseline[family],
+                    f"{family}: semgrep severity {rule.get('severity')} maps to "
+                    f"{actual}, baseline is {baseline[family]}",
+                )
+
+        missing = set(baseline) - compared
+        self.assertEqual(missing, set(), f"no Python semgrep rule covers {sorted(missing)}")
+
 if __name__ == "__main__":
     unittest.main()

@@ -45,7 +45,7 @@ rules:
 
   - id: taa-dyn-eval-python
     languages: [python]
-    severity: ERROR
+    severity: WARNING
     message: "Dynamic code evaluation or dangerous reflection detected in Python code"
     metadata:
       category: dynamic
@@ -58,15 +58,39 @@ rules:
 
   - id: taa-fil-probe-python
     languages: [python]
-    severity: ERROR
+    severity: WARNING
     message: "Sensitive credential file access probe detected"
     metadata:
       category: credential
       rule_family: FIL_001
-    pattern-either:
-      - pattern: open($PATH, ...)
-      - pattern: Path($PATH).read_text(...)
-      - pattern: Path($PATH).read_bytes(...)
+    # Each branch mirrors one pattern of the baseline rule in
+    # internal/codeaudit/rules.go so that a rule-set difference cannot be
+    # mistaken for an engine difference. A bare open($PATH, ...) is
+    # deliberately not a finding: the baseline requires a sensitive path
+    # literal, and without that predicate every file read matches.
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern: open($PATH, ...)
+              - metavariable-regex:
+                  metavariable: $PATH
+                  regex: (?i)['"].*(\.ssh|\.env|password|credential|\.aws|\.kube|id_rsa|authorized_keys)
+          - patterns:
+              - pattern-either:
+                  - pattern: Path($PATH).read_text(...)
+                  - pattern: Path($PATH).read_bytes(...)
+                  - pattern: Path($PATH).open(...)
+              - metavariable-regex:
+                  metavariable: $PATH
+                  regex: (?i)['"].*(\.ssh|\.env|password|credential|\.aws|\.kube)
+          - patterns:
+              - pattern-either:
+                  - pattern: Path.home().joinpath($PATH).read_text(...)
+                  - pattern: Path.home().joinpath($PATH).read_bytes(...)
+                  - pattern: Path.home().joinpath($PATH).open(...)
+              - metavariable-regex:
+                  metavariable: $PATH
+                  regex: (?i).*(\.ssh|\.env|password|credential|\.aws|\.kube|id_rsa|authorized_keys)
 
   - id: taa-env-secret-python
     languages: [python]

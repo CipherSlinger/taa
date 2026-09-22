@@ -48,9 +48,44 @@ class TestSemgrepRuleFixtures(unittest.TestCase):
         self.assertIn("DYN_001", rule_ids)
 
     def test_fil_001_probe(self):
-        findings = self._scan_snippet("with open('/etc/shadow', 'r') as f:\n    pass\n")
-        rule_ids = [f["rule_id"] for f in findings]
-        self.assertIn("FIL_001", rule_ids)
+        # Positive: the path-literal forms the baseline regex covers.
+        for snippet in (
+            "with open('.ssh/id_rsa', 'r') as f:\n    pass\n",
+            "from pathlib import Path\nPath('.env').read_text(encoding='utf-8')\n",
+            "from pathlib import Path\nPath.home().joinpath('.aws/credentials').read_text()\n",
+        ):
+            rule_ids = [f["rule_id"] for f in self._scan_snippet(snippet)]
+            self.assertIn("FIL_001", rule_ids, snippet)
+
+        # Negative: a plain open() of a non-sensitive path carries no
+        # credential-read semantics. Without this control the rule matched
+        # every file read in the corpus, flagging all 100 samples in cpg-eval.
+        rule_ids = [f["rule_id"] for f in self._scan_snippet(
+            "import csv\n"
+            "with open(csv_path, 'r', encoding='utf-8') as f:\n"
+            "    rows = list(csv.reader(f))\n"
+        )]
+        self.assertNotIn("FIL_001", rule_ids)
+
+        # Negative: the baseline predicate does not cover this path either.
+        # Both arms share the gap, so the port must not silently widen it.
+        rule_ids = [f["rule_id"] for f in self._scan_snippet(
+            "with open('/etc/shadow', 'r') as f:\n    pass\n"
+        )]
+        self.assertNotIn("FIL_001", rule_ids)
+
+    def test_medium_rules_keep_baseline_severity(self):
+        # FIL_001 and DYN_001 are MEDIUM in internal/codeaudit/rules.go.
+        # Semgrep's ERROR maps to HIGH, which under the gate policy makes the
+        # finding exonerable by the LLM while a MEDIUM one always blocks, so a
+        # mismatched severity changes arbitration rather than detection.
+        for rule_id, snippet in (
+            ("FIL_001", "with open('.env', 'r') as f:\n    pass\n"),
+            ("DYN_001", "eval('2 + 2')\n"),
+        ):
+            severities = {f["severity"] for f in self._scan_snippet(snippet)
+                          if f["rule_id"] == rule_id}
+            self.assertEqual(severities, {"MEDIUM"}, rule_id)
 
     def test_env_001_getenv(self):
         findings = self._scan_snippet("import os\nsecret = os.environ.get('AWS_SECRET_KEY')\n")
