@@ -8,13 +8,38 @@ rules:
     metadata:
       category: execution
       rule_family: CMD_001
+    # The baseline rule (internal/codeaudit/rules.go, CMD_001) has seven
+    # patterns. An earlier port kept only the shell=True form, which missed
+    # every list-form invocation - including the primary attack of samples
+    # M1-02/M1-07 (subprocess.check_output(["bash", "-c", "whoami"])).
+    # A bare subprocess.Popen(cmd_list) is deliberately not a finding: the
+    # baseline only flags it when shell=True or a shell binary leads the list.
     pattern-either:
-      - pattern: subprocess.Popen(...)
-      - pattern: subprocess.run(..., shell=True, ...)
-      - pattern: subprocess.call(..., shell=True, ...)
-      - pattern: subprocess.check_output(..., shell=True, ...)
       - pattern: os.system(...)
       - pattern: os.popen(...)
+      - patterns:
+          - pattern: os.$FUNC(...)
+          - metavariable-regex:
+              metavariable: $FUNC
+              regex: "^exec[a-z]*$"
+      - pattern: commands.getoutput(...)
+      - pattern: subprocess.$FUNC(..., shell=True, ...)
+      - patterns:
+          - pattern: subprocess.$FUNC($CMD, ...)
+          - metavariable-regex:
+              metavariable: $FUNC
+              regex: "^(run|call|Popen|check_output|check_call)$"
+          - metavariable-regex:
+              metavariable: $CMD
+              regex: "^\\[\\s*['\"](?:bash|sh|zsh|fish|echo|curl|wget|rm|cmd\\.exe|powershell|pwsh)['\"]"
+      - patterns:
+          - pattern: subprocess.$FUNC($CMD, ...)
+          - metavariable-regex:
+              metavariable: $FUNC
+              regex: "^(run|call|Popen|check_output|check_call)$"
+          - metavariable-regex:
+              metavariable: $CMD
+              regex: "^['\"](?:bash|sh|zsh|fish|echo|curl|wget|rm|cmd\\.exe|powershell|pwsh)['\"]"
 
   - id: taa-net-general-python
     languages: [python]
@@ -23,14 +48,30 @@ rules:
     metadata:
       category: network
       rule_family: NET_001
+    # Mirrors the six baseline patterns. The earlier port covered only the
+    # requests/urllib/aiohttp forms, so httpx.post (the primary attack of
+    # M2-04/05/09/10) and the http.client / httplib2 / urlretrieve forms were
+    # invisible to this arm.
     pattern-either:
-      - pattern: requests.get(...)
-      - pattern: requests.post(...)
-      - pattern: requests.put(...)
-      - pattern: requests.delete(...)
-      - pattern: requests.patch(...)
+      - patterns:
+          - pattern: requests.$METHOD(...)
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: "^(get|post|put|delete|patch|head)$"
       - pattern: urllib.request.urlopen(...)
+      - pattern: urllib.request.urlretrieve(...)
+      - patterns:
+          - pattern: http.client.$CLASS(...)
+          - metavariable-regex:
+              metavariable: $CLASS
+              regex: "^HTTPS?Connection$"
+      - patterns:
+          - pattern: httpx.$METHOD(...)
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: "^(get|post|put|delete)$"
       - pattern: aiohttp.ClientSession(...)
+      - pattern: httplib2.Http(...)
 
   - id: taa-net-socket-python
     languages: [python]
@@ -107,23 +148,34 @@ rules:
   - id: taa-obf-exec-python
     languages: [python]
     severity: ERROR
-    mode: taint
-    message: "Decoded or decompressed payload flows into dynamic execution sink"
+    message: "Encoded or deserialized payload construction detected in Python code"
     metadata:
       category: payload
       rule_family: OBF_001
-    pattern-sources:
+    # Mirrors the six baseline patterns (internal/codeaudit/rules.go, OBF_001),
+    # which flag *use* of a decode/deserialization API regardless of what
+    # happens to the result. An earlier port expressed this as a taint rule
+    # (decode sink -> eval/exec sink), which is a strictly narrower condition:
+    # a payload that is decoded and then exfiltrated rather than executed
+    # (sample M4-01: return base64.b64decode(...)) was invisible to it, as were
+    # pickle/marshal/codecs/binascii, which the taint version never listed.
+    # The taint form is the better rule and is registered as a follow-up in
+    # .claude/specs/2026-09-22-...-design.md 11.4; it is not used here because
+    # the arms must differ in engine, not in rule quality.
+    pattern-either:
       - pattern: base64.b64decode(...)
-      - pattern: base64.urlsafe_b64decode(...)
+      - pattern: base64.b64encode(...)
+      - pattern: pickle.load(...)
+      - pattern: pickle.loads(...)
+      - pattern: marshal.load(...)
+      - pattern: marshal.loads(...)
       - pattern: zlib.decompress(...)
-      - pattern: gzip.decompress(...)
-    pattern-propagators:
-      - pattern: $OUT = $IN.decode(...)
-        from: $IN
-        to: $OUT
-    pattern-sinks:
-      - pattern: eval($SINK)
-      - pattern: exec($SINK)
+      - pattern: codecs.decode(...)
+      - patterns:
+          - pattern: binascii.$FUNC(...)
+          - metavariable-regex:
+              metavariable: $FUNC
+              regex: "^(a2b|b2a)"
 
   - id: taa-secret-exfiltration-python
     languages: [python]
@@ -167,20 +219,18 @@ rules:
     metadata:
       category: persistence
       rule_family: PER_001
+    # The baseline is a plain text search for the persistence target - it does
+    # not require the literal to be an argument to open(). An earlier port
+    # required open($PATH, $MODE) with a write mode, so a path built on one
+    # line and opened on the next (sample M5-01: target =
+    # Path(".../.bashrc") then target.open("a")) matched nothing. pattern-regex
+    # is the faithful mirror here precisely because the baseline is a regex.
     pattern-either:
-      - patterns:
-          - pattern: open($PATH, $MODE, ...)
-          - metavariable-regex:
-              metavariable: $PATH
-              regex: ".*(/etc/cron|/etc/systemd|/etc/profile|/etc/rc\\.local|\\.bashrc|\\.bash_profile|\\.zshrc).*"
-          - metavariable-regex:
-              metavariable: $MODE
-              regex: "['\"][wa\\+].*"
-      - patterns:
-          - pattern: open(os.path.expanduser($PATH), $MODE, ...)
-          - metavariable-regex:
-              metavariable: $MODE
-              regex: "['\"][wa\\+].*"
+      - pattern-regex: crontab
+      - pattern-regex: \.bashrc|\.bash_profile|\.zshrc
+      - pattern-regex: systemctl\s+(enable|start)
+      - pattern-regex: /etc/init\.d
+      - pattern-regex: /etc/systemd
 
   - id: taa-emb-data-dump-python
     languages: [python]
@@ -189,11 +239,21 @@ rules:
     metadata:
       category: embedded
       rule_family: EMB_001
+    # Mirrors the baseline's five patterns, which all key off the *payload*
+    # argument naming a dataset. An earlier port wrote the first branch as
+    # torch.save($DATA, $PATH) with only state_dict()/model.pt exclusions, which
+    # reports every checkpoint write: the corpus audit found it flagging
+    # torch.save(saved_weights, checkpoint_file) on train.py:99/105 - a HIGH
+    # finding on 75 samples, most of them benign - while the np.save, np.savez,
+    # shutil.copy and shutil.copytree branches were absent entirely.
+    # pattern-regex (not AST) because the baseline is a line-level text match:
+    # [^)\n] keeps these line-bounded the way re.search per line is.
     pattern-either:
-      - patterns:
-          - pattern: torch.save($DATA, $PATH)
-          - pattern-not: torch.save($MODEL.state_dict(), $PATH)
-          - pattern-not: torch.save(..., "model.pt")
+      - pattern-regex: torch\.save\s*\(\s*(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train)\b
+      - pattern-regex: np\.save\s*\(\s*['"][^'"]*['"]\s*,\s*(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train)\b
+      - pattern-regex: np\.savez\s*\(\s*['"][^'"]*['"]\s*,[^)\n]*(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train)\s*=
+      - pattern-regex: shutil\.copy\s*\([^)\n]*(?:data|dataset|train|test|image)\b
+      - pattern-regex: shutil\.copytree\s*\([^)\n]*(?:data|dataset|train|test|image)\b
 
   - id: taa-emb-copy-export-python
     languages: [python]
@@ -202,10 +262,21 @@ rules:
     metadata:
       category: embedded
       rule_family: EMB_002
+    # Mirrors the five baseline patterns. The earlier port was
+    # pattern: shutil.copy($SRC, $DST) with no destination predicate at all,
+    # which flagged every shutil.copy in the corpus (B4-03/B4-08 copy into
+    # reports/, which the baseline does not flag) while still missing
+    # shutil.move into output/ (B4-05/B4-10, which it does).
     pattern-either:
-      - pattern: shutil.copy($SRC, $DST)
-      - pattern: shutil.copy2($SRC, $DST)
-      - pattern: shutil.copytree($SRC, $DST)
+      - patterns:
+          - pattern: shutil.$FUNC($SRC, $DST, ...)
+          - metavariable-regex:
+              metavariable: $FUNC
+              regex: "^(copy|copytree|move)$"
+          - metavariable-regex:
+              metavariable: $DST
+              regex: "(?i).*(output|export|result).*"
+      - pattern-regex: os\.rename\s*\(.*data.*(output|result)
 
   - id: taa-emb-log-dump-python
     languages: [python]
@@ -214,10 +285,32 @@ rules:
     metadata:
       category: embedded
       rule_family: EMB_003
+    # Mirrors the three baseline patterns. The earlier port listed two literal
+    # argument names (print(raw_data), print(features)), which is the same
+    # heuristic the baseline encodes as a name list but with almost none of its
+    # coverage: the B2 family (trap_type debug_logging_fp) prints `batch`, and
+    # the baseline flags it. The metavariable predicates below are anchored the
+    # way the baseline regex is - it matches the first argument, not a
+    # substring anywhere in the call.
     pattern-either:
-      - pattern: logging.info(f"...{raw_data}...")
-      - pattern: print(raw_data)
-      - pattern: print(features)
+      - patterns:
+          - pattern: print($ARG)
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
+      - patterns:
+          - pattern: logging.$LEVEL($ARG)
+          - metavariable-regex:
+              metavariable: $LEVEL
+              regex: "^(info|debug|warning)$"
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
+      - patterns:
+          - pattern: sys.stdout.write($ARG)
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
 
   - id: taa-emb-stego-weight-python
     languages: [python]
@@ -226,6 +319,17 @@ rules:
     metadata:
       category: embedded
       rule_family: EMB_004
+    # Mirrors the five baseline patterns. The earlier port matched
+    # struct.pack(...) and base64.b64encode($RAW), neither of which the
+    # baseline flags: struct.pack appears nowhere in its predicate, and
+    # b64encode alone is OBF_001's concern, not this rule's.
     pattern-either:
-      - pattern: struct.pack($FMT, ...)
-      - pattern: base64.b64encode($RAW)
+      - pattern-regex: (state_dict|weights|params).*(hidden|secret|payload|stego|embed|hide)(_?data)?
+      - pattern-regex: base64.*save|save.*base64
+      - pattern-regex: encode.*state_dict|state_dict.*encode
+      - pattern-regex: zlib.*save|save.*zlib
+      - patterns:
+          - pattern: pickle.dump($ARG, ...)
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "^(data|dataset|images|samples)"

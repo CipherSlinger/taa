@@ -76,9 +76,11 @@ class TestSemgrepRuleFixtures(unittest.TestCase):
 
     def test_medium_rules_keep_baseline_severity(self):
         # FIL_001 and DYN_001 are MEDIUM in internal/codeaudit/rules.go.
-        # Semgrep's ERROR maps to HIGH, which under the gate policy makes the
-        # finding exonerable by the LLM while a MEDIUM one always blocks, so a
-        # mismatched severity changes arbitration rather than detection.
+        # Severity is not cosmetic: under the production gate policy
+        # (internal/codeaudit/verifier.go:160-178) a HIGH finding blocks unless
+        # the LLM returns BENIGN, while a MEDIUM one is counted but never
+        # blocks. Semgrep's ERROR maps to HIGH, so a rule ported without this
+        # correction becomes able to block where the baseline rule cannot.
         for rule_id, snippet in (
             ("FIL_001", "with open('.env', 'r') as f:\n    pass\n"),
             ("DYN_001", "eval('2 + 2')\n"),
@@ -115,7 +117,17 @@ class TestSemgrepRuleFixtures(unittest.TestCase):
         self.assertIn("EXF_001", rule_ids)
 
     def test_per_001_persistence(self):
-        findings = self._scan_snippet("with open('/etc/cron.d/backdoor', 'w') as f:\n    f.write('* * * * * root /bin/sh')\n")
+        # The construct must be one the baseline regex covers, so that the
+        # fixture documents the shared rule set. The baseline predicate is
+        # `crontab | .bashrc|.bash_profile|.zshrc | systemctl (enable|start) |
+        # /etc/init.d | /etc/systemd`; it does not cover /etc/cron.d, which the
+        # earlier Semgrep rule did cover and this port therefore dropped (see
+        # spec 12.3 - a gap shared by both arms must not be fixed in the
+        # treatment arm alone).
+        findings = self._scan_snippet(
+            "with open('/etc/systemd/system/backdoor.service', 'w') as f:\n"
+            "    f.write('[Service]')\n"
+        )
         rule_ids = [f["rule_id"] for f in findings]
         self.assertIn("PER_001", rule_ids)
 
@@ -141,7 +153,13 @@ class TestSemgrepRuleFixtures(unittest.TestCase):
         self.assertIn("EMB_003", rule_ids)
 
     def test_emb_004_stego(self):
-        findings = self._scan_snippet("import struct\npacked = struct.pack('<I', 12345)\n")
+        # Baseline EMB_004 does not list struct.pack, which the earlier Semgrep
+        # rule did; the fixture is written against the shared predicate instead
+        # (see spec 12.3).
+        findings = self._scan_snippet(
+            "import torch\n"
+            "state_dict = {k: embed_secret(v) for k, v in state_dict.items()}\n"
+        )
         rule_ids = [f["rule_id"] for f in findings]
         self.assertIn("EMB_004", rule_ids)
 
