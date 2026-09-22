@@ -8,6 +8,7 @@ set -u
 cd /root/taa || exit 1
 LOG=/root/taa/taa.log
 TEELLM_LOG=/root/taa/teellm-service.log
+LOCK=/root/taa/.start.lock
 TAAPID=""
 TEEPID=""
 
@@ -22,6 +23,28 @@ cleanup() {
 }
 trap cleanup SIGTERM SIGINT
 
+# Singleton guard: only one supervisor may own taa and the TEE-LLM wrapper. Two of them --
+# one started by each deploy script -- race for :6001 and :8443 and interleave the same log
+# files. flock is used instead of a pidfile because the lock is kernel state released when
+# this process dies, so a stale lock can never wedge the container's ENTRYPOINT. Every child
+# below closes the lock fd, so an orphaned daemon cannot keep the lock after the supervisor
+# itself is gone.
+exec 9>"$LOCK"
+if command -v flock >/dev/null 2>&1; then
+  flock -n 9
+  lock_rc=$?
+  if [ "$lock_rc" -eq 1 ]; then
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): another start.sh already holds the singleton lock, exiting" >> "$LOG"
+    exit 0
+  elif [ "$lock_rc" -ne 0 ]; then
+    # An unusable lock (e.g. flock rc=65, bad fd) must never be read as "someone else owns
+    # it": that would let the container's ENTRYPOINT exit instantly and kill the container.
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): warning: singleton lock unusable (flock rc=${lock_rc}), continuing unguarded" >> "$LOG"
+  fi
+else
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): warning: flock not found, singleton guard disabled" >> "$LOG"
+fi
+
 [ -f get-attestation.bak ] && [ ! -f get-attestation ] && mv get-attestation.bak get-attestation
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): taa autostart wrapper started" >> "$LOG"
 
@@ -29,7 +52,7 @@ echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): taa autostart wrapper started" >> "$LOG"
 # retry loop tolerates the gateway not being ready on the very first probe.
 if [ -x ./start-teellm.sh ]; then
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): starting teellm autostart wrapper" >> "$LOG"
-  nohup ./start-teellm.sh >> "$TEELLM_LOG" 2>&1 &
+  nohup ./start-teellm.sh >> "$TEELLM_LOG" 2>&1 9>&- &
   TEEPID=$!
 else
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): ./start-teellm.sh not found, teellm autostart skipped" >> "$LOG"
@@ -46,7 +69,7 @@ while true; do
     sleep 30
     continue
   fi
-  ./taa >> "$LOG" 2>&1 &
+  ./taa >> "$LOG" 2>&1 9>&- &
   TAAPID=$!
   wait "$TAAPID"
   EXIT_CODE=$?
