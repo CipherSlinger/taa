@@ -1411,8 +1411,13 @@ deploy_docker_taa() {
   pkill -f "$TAA_BINARY_PATH" >/dev/null 2>&1 || true
   docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "touch '$TAA_CONTAINER_WORKDIR/manual'; pkill -f '[s]tart\.sh' >/dev/null 2>&1 || true; pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall '$BINARY_NAME' >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
   local stopped=false
+  # The bracket keeps pgrep from matching the shell running the pattern itself. The daemon
+  # is checked through ps instead of `pgrep -x`: a zombie keeps its comm (only its cmdline
+  # is emptied), and this container's PID 1 is an idle `tail -f /dev/null` that never reaps
+  # an orphan, so one dead taa would keep this loop reporting "still running" until the
+  # timeout and then "force-kill" a process that is already gone.
   for _ in {1..30}; do
-    if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pgrep -f '[s]tart\.sh' >/dev/null 2>&1 || pgrep -x '$BINARY_NAME' >/dev/null 2>&1"; then
+    if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pgrep -f '[s]tart\.sh' >/dev/null 2>&1 || ps -eo stat=,comm= | awk -v n='$BINARY_NAME' '\$1 !~ /^Z/ && \$2 == n { f=1 } END { exit !f }'"; then
       stopped=true
       break
     fi
