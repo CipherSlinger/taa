@@ -133,6 +133,28 @@
 
 以下修复全部位于评测工具链（`models/audit/tools/**`、`models/examples/code_security_analyzer.py` 的评测侧），不触及生产审计链路。全部须按 TDD 执行（RED → 验证 RED 原因正确 → GREEN → 验证 GREEN → REFACTOR），测试落 `tests/`，运行方式 `python3 -m unittest discover -s tests -p "test_*.py"`。
 
+### P0（阻断级，已完成）`FIL_001` / `DYN_001` 规则按基线逐条镜像
+
+F5 定位的 `FIL_001` 缺陷，实施时发现**不止一个**：把规则与基线（`internal/codeaudit/rules.go`）逐条对照后，共三处移植失真，且方向相反（既过宽又漏报）。
+
+| # | 缺陷 | 后果 | 证据 |
+|---|---|---|---|
+| 1 | 无敏感路径谓词：`pattern: open($PATH, ...)` 匹配**任何** `open()` | **过宽**：凭据读取语义完全丢失 | `cpg-eval` 100/100 全拦；本机阴性对照 `open(csv_path, ...)` 实测命中 1 次 |
+| 2 | 缺 `Path.home().joinpath(...)` 形态（基线 pattern 3） | **漏报**：基线能抓的形态本规则抓不到 | RED 实测：`Path.home().joinpath('.aws/credentials').read_text()` → `[]` |
+| 3 | `severity: ERROR`→映射 HIGH，基线为 `SeverityMedium`（`rules.go:137`）；`DYN_001` 同病（基线 `rules.go:124` 亦为 MEDIUM） | **仲裁路径偏移**：`gate` 策略下 MEDIUM 恒拦、HIGH 可被 LLM 开脱 | RED 实测：修复前 `{severity}` = `{'HIGH'}` |
+
+第 3 条不是无害差异：severity 决定的是 LLM 能否推翻静态判定。若 semgrep 臂把 MEDIUM 抬成 HIGH，等于给该臂单独开了一条 regex 臂没有的「豁免通道」，会把「引擎差异」与「仲裁路径差异」混在一起——这正是 §9.1 已登记的混淆，不能在其上再叠一层。
+
+**修复**：三条分支逐条对应基线三条正则（各带自己的 `metavariable-regex` 谓词）；`severity: ERROR → WARNING`（WARNING 映射 MEDIUM）；`DYN_001` 同步改 `WARNING`。
+
+**与基线一致地保留 `/etc/shadow` 盲区（已决）**：基线谓词是 `\.ssh|\.env|password|credential|\.aws|\.kube|id_rsa|authorized_keys`，**不含** `shadow`；`FIL_001` 原本的测试夹具用 `open('/etc/shadow')` 作正例，那是对当时过宽规则的「测试后补」，不是基线语义。本规范选择**忠实镜像基线**（`/etc/shadow` 不报），并把该断言写成测试固定下来：两臂共享同一缺口 → 判定的是引擎而非规则质量。这是一个**真实的规则质量缺口**（`/etc/shadow` 是凭据窃取的经典目标），但它对两臂同等成立，属「规则集质量问题」而非「引擎非劣性问题」，故单列为后续独立事项（见 §12.1），不在本轮处理臂里单方面加强检测——否则即为在受测处理中夹带规则改进。
+
+**语料影响（实测，非推断）**：恶意侧 `M3`（secret_theft）家族共 7 个样本读取敏感路径，形态为 `Path(".env").read_text()`、`Path(".ssh/id_rsa").read_text()`、`Path(".aws/credentials").read_text()`，**全部落在谓词内** → 修复不损失任何 M3 召回；良性侧 `open(csv_path, ...)` 类数据加载不再命中。
+
+**RED/GREEN**：`tests/test_semgrep_rule_fixtures.py::test_fil_001_probe` 改为 3 正例（`open('.ssh/id_rsa')`、`Path('.env').read_text()`、`Path.home().joinpath('.aws/credentials').read_text()`）+ 2 反例（良性 `open(csv_path, ...)`、`open('/etc/shadow')`）；新增 `test_medium_rules_keep_baseline_severity`。修复前二者分别因「正例漏报」与「severity=HIGH」而红，修复后 16/16 全绿。
+
+**冒烟**：`--engine semgrep --audit-mode static-llm --llm-backend none --limit 2` → `fp` 由 **2 → 0**，`tn=2`（对照 F5 表中修复前的 `FIL_001`×2 误报）。
+
 ### P1（阻断级）`code_snippet` 改为从源文件按行切片，不再信任 `extra.lines`
 
 - 改动点：`models/audit/tools/semgrep_runner.py:100`。
@@ -176,6 +198,8 @@
 - **设计**：配对设计（paired by sample）。同一批 100 个样本、同一 LLM、同一策略，唯一变化的因子是 `--engine`（`regex` vs `semgrep`）。
 - **重复**：每臂 3 次独立运行；第 *i* 次 regex 运行与第 *i* 次 semgrep 运行构成一对（P1/P2/P3），共 3 对。
 - **串行执行**：6 次运行严格串行，避免本地 ollama 争用导致的时间与超时噪声（超时是 F3 的诱因之一）。
+- **运行期间不得并发其它重内存任务（新增，实测教训）**：本机为 BE 单机（内存 9.9GB）。实施 P0 期间，并行运行 semgrep 全量扫描与本机 LLM 宿主容器，导致承载 ollama 的容器 `taa-env-slim-v2` 被 OOM 杀死（`Exited (137)`，实测）。该故障在矩阵中途发生时，其表现**恰好是 F3 的 fail-open**：LLM 不可达 → 静态判定兜底或裁决失败 → 被记成「无命中/通过」，而非报错。因此矩阵运行期间：（a）不得并行跑 semgrep 全量审计、也不得并行跑测试套件；（b）每次运行前后校验 ollama 存活与模型 digest 一致；（c）若发现 ollama 重启（digest 变化或日志中断），该轮按 §5.3 第 3 条的 `incomplete` 处置——作废重跑，不得计入判定。
+- **运行前预检**：记录 `http://127.0.0.1:11434/api/tags` 返回的模型 digest（本轮实测 `qwen2.5-coder:3b` → `f72c60cabf62…`），并在每轮结束后复核；digest 变化即视为环境漂移。
 - **固定量**（两臂完全一致）：`--audit-mode static-llm`、`--policy gate`、`--llm-backend ollama`、`--llm-model qwen2.5-coder:3b`、`--max-findings 50`、`--extensions .py`、`--llm-seed 42`。
   - 模型选择依据：本机 `http://127.0.0.1:11434/api/tags` 仅安装 `qwen2.5-coder:3b`；历史基线用的 `0.5b` 已不在本机，且生产配置亦为 `3b`，故两臂必须在 `3b` 上重新测量，不与历史数值混用。
 - **运行环境记录**（写入报告）：`semgrep --version`、semgrep 可执行文件路径与其 SHA256、`ollama` 模型 digest、`git rev-parse HEAD`、评测器脚本的 dirty 状态。
@@ -214,6 +238,9 @@ python3 models/audit/tools/audit_benchmark_eval.py \
 1. semgrep 臂每个 finding 的 `code_snippet` 与源文件对应行逐字相等（P1 生效）。
 2. 人为制造失败（例如临时改坏规则 YAML 或指向不存在的可执行文件），确认样本行出现 `scan_complete=false` 且被汇总计数捕获（P2 生效）。
 3. 同一命令连续跑两次，同一模型的裁决结果一致（P3 生效）。
+4. **全量规则集行为一致性审计（新增，P0 教训）**：对 audit-100 的 100 个样本，逐文件比对两臂触发的 `rule_id` 集合，差异清单必须为空，或每一条差异都被逐项解释并登记进报告。
+   - 理由：P0 表明「按 YAML 逐条读规则」既不可靠也不完整——同一条规则同时存在过宽与漏报两种反向失真，且都只在**行为**上显现。semgrep 臂全量 100 样本约 424s，相对 6 次正式运行（数小时）是可忽略的前置成本，而它能拦住「矩阵跑完才发现第三条规则缺陷」这一数小时量级的返工。
+   - 本项为**新增门槛**，与 §5.3 的通过条件相互独立：它判的是「两臂是否可比」，不是「哪一臂更好」。
 
 ### 4.4 运行时长预算
 
@@ -274,13 +301,14 @@ python3 models/audit/tools/audit_benchmark_eval.py \
 
 ## 7. 实施顺序
 
-1. P1 → P2 → P3（每项独立 RED/GREEN 循环，独立提交）。
-2. 冒烟门槛（4.3）三项全过。
-3. `--limit 5` 实测时延 → 确认总时长预算。
-4. 6 次正式运行（串行）。
-5. 生成报告，按 5.3 给出 PASS/FAIL。
+1. ~~P0（规则语义镜像）~~ **已完成**（`models/audit/semgrep/rules/python/rules.yaml`，见 §3 P0）。
+2. P1 → P2 → P3（每项独立 RED/GREEN 循环，独立提交）。
+3. 冒烟门槛（4.3）四项全过（含第 4 项全量规则集行为一致性审计）。
+4. `--limit 5` 实测时延 → 确认总时长预算。
+5. 6 次正式运行（串行）。
+6. 生成报告，按 5.3 给出 PASS/FAIL。
 
-提交规范：遵循 Conventional Commits，英文；scope 建议 `audit-bench`。P1–P3 各自独立提交，报告与原始数据一并提交。**提交信息中不得包含任何 AI 署名。**
+提交规范：遵循 Conventional Commits，英文；scope 建议 `audit-bench`。P0 已独立提交，P1–P3 各自独立提交，报告与原始数据一并提交。**提交信息中不得包含任何 AI 署名。**
 
 ---
 
@@ -301,19 +329,46 @@ python3 models/audit/tools/audit_benchmark_eval.py \
 4. **模型与提示固定**：结论仅对 `qwen2.5-coder:3b` + `audit-prompt-v1` 成立，不外推到其它模型或提示。
 5. **规则集差异不可避免**：两臂规则并非逐条等价（F5 即为一例）。报告须列出两臂各自触发的规则集合差异，避免把「规则差异」误读为「引擎差异」。
 6. **BE 单机环境**：所有运行在同一台机器串行完成，未覆盖并发、资源受限或部署镜像（未安装 semgrep）等生产形态。
+7. **本机资源争用可致 LLM 宿主被杀（实测，非推测）**：承载 ollama 的容器 `taa-env-slim-v2` 曾因并行跑 semgrep 全量扫描而被 OOM 杀死（`Exited (137)`）。**危险之处在于它与 F3 合谋**：容器死亡时 LLM 不可达，而 F3 的 fail-open 会把「无法裁决」呈现为「无命中 → 通过」，即**一次环境事故会伪装成一个更好的评测结果**。P2 因此不只是「证据完整性」修复，而是本实验防止「基础设施故障被计入指标」的必要条件。运行期间的防护见 §4.1。
 
 ---
 
 ## 10. 交付物清单
 
-- 前置修复的代码与测试（P1、P2、P3；P4 待确认）及各自提交。
+- 前置修复的代码与测试（P0、P1、P2、P3；P4 待确认）及各自提交。
 - `models/audit/audit-results/engine-compare/{regex,semgrep}-run{1,2,3}/` 原始产物（含逐样本行、`audit_report.json`、summary）。
 - `models/audit/audit-results/engine-compare/REPORT.md`（第 6 节结构）。
 - 本规范的实现计划：`.claude/plans/`（由 writing-plans 产出）。
 
+**落盘注意（实测）**：`models/` 与 `models/audit/audit-results/` 都在 `.gitignore` 中，`models/audit/semgrep/rules/*/rules.yaml` 是既有的 **force-tracked** 文件（同 `.claude/specs/`）。因此 `REPORT.md` 与原始产物提交时必须 `git add -f`，否则会静默漏提交——这正是 P4 关注的「证据与结论脱钩」的另一条现实路径。
+
+**另一条卫生问题（本轮发现，未修）**：每次运行评测器都会把 `models/audit/audit-benchmark-manifest.json` 的 `benchmark_root` 从相对路径改写成**绝对路径**（`/home/hjy/taa/...`），使每次运行都污染一个已跟踪文件。6 次正式运行会重复 6 次。属独立小缺陷，本轮不做（不属 P0–P4），但运行后须 `git checkout --` 该文件，且不要把它误提交。
+
 ---
 
-## 11. 待确认事项（写实施计划前需你拍板）
+## 11. 两臂规则集差异登记（§5.2「不一致样本清单」与 §9.5 的输入）
+
+本节只登记**已知**差异；全量行为审计（§4.3 第 4 项）可能追加条目。
+
+| 规则 | 基线（`internal/codeaudit/rules.go` + Python 镜像） | semgrep 规则 | 性质 |
+|---|---|---|---|
+| `FIL_001` | 三条正则，均要求敏感路径字面量；MEDIUM | P0 后逐条镜像，MEDIUM | 已对齐 |
+| `FIL_001` 的 `/etc/shadow` | 不覆盖（谓词无 `shadow`） | 不覆盖 | **共享缺口，非差异**（见 §12） |
+| `DYN_001` | MEDIUM | P0 后 MEDIUM | 已对齐 |
+| 其余 11 条 | — | 逐条按基线 severity 对齐（实测 13/13 一致） | 已对齐 |
+
+**已知的规则集非等价性**：基线是**行级正则**（`re.search` 逐行），semgrep 是 **AST 模式**。因此即使规则逐条镜像，两者仍会在「跨行书写」的代码上分叉——例如 `subprocess\n.run(...)` 拆行时基线逐行匹配失败，而 AST 仍能匹配。**这是「引擎差异」与「规则集差异」无法完全分离的根本来源，必须在报告中显式披露，不得归因给任一方。**
+
+---
+
+## 12. 后续事项（不在本轮范围）
+
+1. **`/etc/shadow` 等敏感路径的规则覆盖缺口（两臂共享）**：基线谓词仅含 `\.ssh|\.env|password|credential|\.aws|\.kube|id_rsa|authorized_keys`，不覆盖 `/etc/shadow`、`/etc/passwd`、`.netrc`、`.docker/config.json` 等凭据目标。这是**规则质量**问题而非**引擎**问题，对两臂同等成立，因此应在两臂上**同时**修订（同一改动、同一轮重新测量），而不是在 semgrep 臂单方面加强。建议单独立项。
+2. **行级正则 vs AST 的结构性差异**（见 §11 末）：若要分离二者贡献，走 §8 的 CPG 消融预案。
+
+---
+
+## 13. 待确认事项（写实施计划前需你拍板）
 
 1. **P4 的处置方式**：(a) 加 `provenance` 字段并把 `engine` 改为必填显式入参；或 (b) 标记 `generate_matrix_results.py` 为 deprecated。本文档倾向 (a)。
 2. **P2 中 `incomplete` 样本的处置**：本文档定为「不计入 bypass、不参与指标、且该轮作废重跑」（§5.3 第 3 条）。若你更倾向「把该样本从**两臂同一对**中一并剔除后继续」（保持配对有效、避免整轮重跑的时间成本），请指出，我会据此改写判定条款。
