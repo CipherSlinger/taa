@@ -1,0 +1,310 @@
+# Semgrep 引擎非劣性离线证据规范 (Semgrep Engine Non-Inferiority Evidence Spec)
+
+- **Date**: 2026-09-22
+- **Specification Path**: `.claude/specs/2026-09-22-semgrep-engine-noninferiority-evidence-design.md`
+- **Upstream design**: `.claude/specs/2026-09-17-semgrep-audit-engine-design.md` (Target Architecture)
+- **Scope**: 离线证据补全（evaluation-only），**零生产代码改动**
+- **Lifecycle Status**: Evidence Gate（先证据、后接入）
+
+---
+
+## 1. 背景与问题陈述
+
+`.claude/specs/2026-09-17-semgrep-audit-engine-design.md` §1.2 把 Semgrep-Native 引擎定义为**目标态（Target Architecture）**，把正则引擎定义为**现状基线**，并声明「多语言 Semgrep 规则实测与全矩阵验证作为本规范落地后的直接承接工程」。本规范就是这个承接工程：**在动生产代码之前，先取得可信的、可复现的「Semgrep 相对 regex 非劣」离线证据**。
+
+本次调查中，以下事实已被逐条复现确认，构成本规范的问题起点。
+
+### F1. 仓库中不存在任何可信的引擎对比数据
+
+- `models/audit/tools/generate_matrix_results.py:356-376` 将 `engine` 与 `rule_set_version` 由 **mode 名称**直接指派：
+  ```python
+  rule_ver = "semgrep-rules-13" if mode_name == "static-llm" else rule_ver
+  engine   = "semgrep"          if mode_name == "static-llm" else "none"
+  ```
+  而 `tp/fp/tn/fn` 等全部指标来自文件内硬编码字面量 `MODELS_SPEC`（`generate_matrix_results.py:37` 起）。因此 `audit-results/matrix/static-llm/*/summary.json` 中「Semgrep-LLM 准确率 92%」**不是测量结果**。
+- `models/audit/tools/run_benchmark_matrix.py` 调用评测器时**从不传 `--engine`**（`run_benchmark_matrix.py:61-84`），即矩阵运行实际走的都是默认 `--engine regex`。
+- 现存真实引擎产物只有两个，且均已退化、不可用：
+
+  | 产物 | engine 标注 | llm | 100 样本耗时 | recall | fpr |
+  |---|---|---|---|---|---|
+  | `audit-results/audit-100/` | semgrep | none | 8.4s | 0.0000 | 1.0000 |
+  | `audit-results/cpg-eval/` | semgrep | none | 424.5s | 1.0000 | 1.0000 |
+
+  8.4s / 100 样本（0.084s/样本）远低于 semgrep 单次进程启动开销（实测约 5s/样本），说明该轮 semgrep 并未真正完成扫描，而其退化指标（recall 0 / fpr 1）与标注的 `engine=semgrep` 无法互相支持。
+
+### F2. Semgrep 臂的 `code_snippet` 证据是伪造字符串（关键）
+
+- Semgrep 自 1.100/1.101 起，在**未登录** Semgrep AppSec Platform 的社区版（CE）运行中，JSON 输出的 `extra` 字段 `lines`、`fingerprint`、`metavars`、`is_ignored` **不再返回真实内容**，而是返回字面量字符串 `"requires login"`（上游 issue `semgrep/semgrep#10734`；该字段门控已写入官方 JSON/SARIF 字段文档，下游 DefectDojo `#11480`、GitLab `!184050` 均已针对该常量做兼容）。行号字段 `start.line` / `end.line` / `start.col` 在 CE 中**仍然正确**。
+- 本机复现（semgrep 1.177.0，`/home/hjy/.local/bin/semgrep`，二进制 SHA256 与 wheel `RECORD` 一致）：
+
+  ```bash
+  # 仓库自带规则 + 真实样本
+  semgrep scan --config models/audit/semgrep/rules --json --quiet \
+    --disable-version-check --no-git-ignore --include "*.py" \
+    models/audit/benchmarks/audit-100/p1_xgboost_finance/B1-01
+  # → dataset.py:33 与 model.py:118 均返回 "lines":"requires login"（两处行号不同、内容相同）
+
+  # 手写单规则同样复现（排除「仓库规则写法」因素）
+  # → "lines":"requires login"
+
+  # 同一匹配用 SARIF 输出则内容正确（证明 semgrep-core 本身无误，仅 JSON 路径被门控）
+  semgrep scan --config <same> --sarif --quiet ... /tmp/mini/x.py
+  # → snippet: '    with open(p, "r") as f:'
+  ```
+
+- `models/audit/tools/semgrep_runner.py:100` 将该字段直接映射为证据：
+  ```python
+  "code_snippet": extra.get("lines", "").strip(),
+  ```
+- 而 `code_snippet` 正是大模型仲裁的输入：`models/examples/code_security_analyzer.py:452` 的 prompt 模板中
+  ```
+  >>> {code_snippet}   ← 触发规则的代码
+  ```
+  **结论：至今为止任何「semgrep + LLM」组合的结论，都是在用伪造的 `code_snippet` 进行仲裁，其结果不具备证据效力。** 这也解释了为何该组合从未被真正验证过。
+
+### F3. 扫描失败与「扫描干净」不可区分（fail-open 静默）
+
+- `SemgrepScannerAdapter.scan_directory`（`audit_benchmark_eval.py:321`）只返回 `List[Finding]`，**丢弃**了 `SemgrepScanResult` 的 `scan_complete` / `timed_out` / `parser_errors` / `error_message`。
+- `analyse_sample`（`audit_benchmark_eval.py:755-756`）据此计算 `bypass = (len(findings) == 0)`：semgrep 未安装、超时、崩溃、规则解析失败，与「真的没有命中」得到完全相同的空列表。
+- 另有静默异常吞噬点：`audit_benchmark_eval.py:332`（AST 作用域切片）、`:426`（CPG 构建与污点引擎）、`:528`（`sample.json` 解析）均为 `except Exception: pass`。
+
+### F4. 两臂喂给 LLM 的上下文形态不同（对比公平性）
+
+| | regex 臂（`StaticScanner`） | semgrep 臂（`SemgrepScannerAdapter`） |
+|---|---|---|
+| `code_snippet` | 真实命中行 `line.strip()`（`code_security_analyzer.py:299`） | `extra.lines` → **`"requires login"`** |
+| `context_before` | 物理 ±3 行窗口（`i-3 .. i+3`，`code_security_analyzer.py:287-289`） | `""` |
+| `ast_enclosing_block` | 无 | AST 作用域切片（真实、可用） |
+
+`code_security_analyzer.py:524-531` 的 prompt 组装逻辑为「`context_before` 非空则用之，否则回退到 `ast_enclosing_block`」。因此 semgrep 臂实际以「伪造命中行 + 真实函数体外壳」进审，与 regex 臂的「真实命中行 + ±N 行窗口」不是同一形态的输入。
+
+### F5. 已定位一个确定性误报根因：`FIL_001` 规则语义在移植中丢失
+
+- Semgrep 规则 (`models/audit/semgrep/rules/python/rules.yaml:67-69`)：
+  ```yaml
+  pattern-either:
+    - pattern: open($PATH, ...)
+    - pattern: Path($PATH).read_text(...)
+    - pattern: Path($PATH).read_bytes(...)
+  ```
+  **无敏感路径谓词**，且 `severity: ERROR` → 映射为 HIGH。
+- Go 正则基线 (`internal/codeaudit/rules.go:135-143`) 要求路径字面量命中 `\.ssh|\.env|password|credential|\.aws|\.kube|id_rsa|authorized_keys`。
+- 后果：**任何** `open()` 调用（含良性数据集加载）都被判为 HIGH 敏感凭据读取。实测（`--audit-mode static-llm --llm-backend none`，2 样本）：
+
+  | 样本 | regex | semgrep |
+  |---|---|---|
+  | B1-01 | 0 findings → passed（TN） | `FIL_001`×2 → blocked（FP） |
+  | B1-02 | 0 findings → passed（TN） | `FIL_001`×2 → blocked（FP） |
+
+  样本 B1-01 `dataset.py:33` 的真实内容为 `with open(csv_path, "r", encoding="utf-8") as f:` —— 良性 CSV 加载。
+
+**在 F2–F4 修复之前进行的任何 semgrep 臂评测，其结果都不能作为接入决策依据。**
+
+---
+
+## 2. 目标与非目标
+
+### 2.1 目标
+
+1. 修复评测链路中使证据失效的缺陷（第 3 节 P1–P3），使 semgrep 臂能产出**真实、可追溯**的证据。
+2. 在 audit-100（Python）上，以**配对（paired）非劣性判定**产出 regex 臂与 semgrep 臂的对比报告。
+3. 报告必须能直接支撑「是否将 Tier 1 迁移到 Semgrep」这一决策，并对结论给出可反驳的限制条件。
+
+### 2.2 非目标（本轮明确不做）
+
+- **不改动生产代码**：`internal/codeaudit/**`、`internal/controller/**`、`cmd/**` 一行不改；不引入 Go 侧适配器；不在部署镜像中安装 semgrep。
+- 不扩展多语言：只跑 Python，只用 `audit-100`（50 benign / 50 malicious，families B1–B5 / M1–M5，4 个基座工程）。
+- 不做 CPG 消融（除非触发第 8 节的预案）。
+- 不重写 `generate_matrix_results.py` 的策展矩阵（仅做第 3 节 P4 的防复发标注）。
+
+---
+
+## 3. 前置修复（Prerequisites）
+
+以下修复全部位于评测工具链（`models/audit/tools/**`、`models/examples/code_security_analyzer.py` 的评测侧），不触及生产审计链路。全部须按 TDD 执行（RED → 验证 RED 原因正确 → GREEN → 验证 GREEN → REFACTOR），测试落 `tests/`，运行方式 `python3 -m unittest discover -s tests -p "test_*.py"`。
+
+### P1（阻断级）`code_snippet` 改为从源文件按行切片，不再信任 `extra.lines`
+
+- 改动点：`models/audit/tools/semgrep_runner.py:100`。
+- 做法：按匹配的 `start.line` / `end.line`（CE 中正确）从目标文件读取真实命中行；`extra.lines` 若等于 `"requires login"` 或为空，一律走文件切片路径。
+- **RED 测试**：在既有 `tests/test_semgrep_runner.py::TestSemgrepRunner.test_real_semgrep_scan_directory`（该测试当前只断言 `rule_id`/`scan_complete`/`passed`，从不校验 `code_snippet`，因此该缺陷一路绿灯通过）中新增断言：
+  ```python
+  self.assertEqual(res.findings[0]["code_snippet"], "os.system('id')")
+  ```
+  该断言在修复前必须失败，且失败原因是 `'requires login' != "os.system('id')"`。
+- 验收：RED 确认后实现，GREEN 后 `tests/test_semgrep_runner.py` 全通过。
+
+### P2（阻断级）扫描状态必须进入样本结果
+
+- 改动点：`SemgrepScannerAdapter.scan_directory`（返回诚实结果对象而非裸列表）、`analyse_sample`（把 `scan_complete` / `timed_out` / `parser_errors` / `error_message` 写入样本行），并把 `audit_benchmark_eval.py:332`、`:426`、`:528` 的 `except Exception: pass` 改为「记录到样本行 + 计入汇总计数」。
+- 新增样本级字段（至少）：`scan_complete: bool`、`scan_timed_out: bool`、`scan_parser_errors: int`、`scan_error: str | None`、`slice_error: str | None`。
+- 新增汇总字段：`scan_incomplete_count`、`scan_error_count`。
+- **判定影响（关键）**：`scan_complete == False` 的样本**不得**计入 `bypass`，也不得按「无命中 → 通过」处理。它们在指标中单列为 `incomplete`，并在报告中显式披露数量与样本清单。
+- **RED 测试**：模拟 `SemgrepScanResult(scan_complete=False, timed_out=True)` 与 `is_available() == False` 两种注入，断言样本行的 `scan_complete is False`、`scan_timed_out is True`（或 `scan_error` 含 "not found"），且汇总计数正确。
+
+### P3 LLM 采样固定种子
+
+- 现状：`code_security_analyzer.py:695` 为 `{"temperature": 0.1, "num_predict": N}`，**无 `seed`**，同一输入多次运行不可复现。
+- 改动：新增 `--llm-seed`（默认 `42`）并透传到 ollama `options.seed`；该值写入 summary，作为运行元数据的一部分。温度维持 `0.1` 不变（改变温度会改变被测量的处理本身）。
+- 理由：本设计要求「每臂 3 次」并逐对判定，固定种子使每一对比较接近确定性，把「引擎差异」与「采样噪声」分离；对两臂同等施加，不引入偏向。
+- **RED 测试**：断言 `--llm-seed` 被解析并出现在传给 ollama 的 payload 中（mock HTTP 层），且 summary 记录了该值。
+
+### P4 防止 `engine` 标注再次与事实脱钩（防复发，低成本）
+
+- 现状：`generate_matrix_results.py:356-376` 由 mode 名硬编码 `engine`/`rule_set_version`，这正是 README/CHANGELOG 出现夸大表述的机制性原因（已在 commit `dfac8b7` 修正文档）。
+- 最小改动（择一，实施前确认）：
+  - **(a)** 该生成器产出的 JSON 增加 `"provenance": "hand-authored-spec"` 字段，并把 `engine` 改为必填显式入参（无默认值），使「未指定」无法隐式落成 `semgrep`；
+  - **(b)** 将该生成器标记为 deprecated，矩阵结论统一改由本规范的实测产物产出。
+- 本文档倾向 **(a)**：改动最小、不删除既有能力，但彻底消除「静默冒名」的可能。**此项须在写实施计划时由你确认。**
+
+---
+
+## 4. 评测协议
+
+### 4.1 试验设计
+
+- **设计**：配对设计（paired by sample）。同一批 100 个样本、同一 LLM、同一策略，唯一变化的因子是 `--engine`（`regex` vs `semgrep`）。
+- **重复**：每臂 3 次独立运行；第 *i* 次 regex 运行与第 *i* 次 semgrep 运行构成一对（P1/P2/P3），共 3 对。
+- **串行执行**：6 次运行严格串行，避免本地 ollama 争用导致的时间与超时噪声（超时是 F3 的诱因之一）。
+- **固定量**（两臂完全一致）：`--audit-mode static-llm`、`--policy gate`、`--llm-backend ollama`、`--llm-model qwen2.5-coder:3b`、`--max-findings 50`、`--extensions .py`、`--llm-seed 42`。
+  - 模型选择依据：本机 `http://127.0.0.1:11434/api/tags` 仅安装 `qwen2.5-coder:3b`；历史基线用的 `0.5b` 已不在本机，且生产配置亦为 `3b`，故两臂必须在 `3b` 上重新测量，不与历史数值混用。
+- **运行环境记录**（写入报告）：`semgrep --version`、semgrep 可执行文件路径与其 SHA256、`ollama` 模型 digest、`git rev-parse HEAD`、评测器脚本的 dirty 状态。
+
+### 4.2 运行矩阵
+
+| # | engine | run | 结果目录 |
+|---|---|---|---|
+| 1 | regex | r1 | `models/audit/audit-results/engine-compare/regex-run1` |
+| 2 | semgrep | r1 | `models/audit/audit-results/engine-compare/semgrep-run1` |
+| 3 | regex | r2 | `models/audit/audit-results/engine-compare/regex-run2` |
+| 4 | semgrep | r2 | `models/audit/audit-results/engine-compare/semgrep-run2` |
+| 5 | regex | r3 | `models/audit/audit-results/engine-compare/regex-run3` |
+| 6 | semgrep | r3 | `models/audit/audit-results/engine-compare/semgrep-run3` |
+
+命令模板（在仓库根执行）：
+
+```bash
+python3 models/audit/tools/audit_benchmark_eval.py \
+  --audit-mode static-llm \
+  --engine <regex|semgrep> \
+  --policy gate \
+  --llm-backend ollama \
+  --llm-model qwen2.5-coder:3b \
+  --llm-seed 42 \
+  --max-findings 50 \
+  --extensions .py \
+  --results-dir models/audit/audit-results/engine-compare/<engine>-run<N> \
+  --notes "engine-compare <engine> run<N>; semgrep=<version>; seed=42"
+```
+
+### 4.3 冒烟门槛（6 次正式运行之前）
+
+先跑 3 个样本（`--limit 3`）逐项确认，全部通过才启动正式矩阵：
+
+1. semgrep 臂每个 finding 的 `code_snippet` 与源文件对应行逐字相等（P1 生效）。
+2. 人为制造失败（例如临时改坏规则 YAML 或指向不存在的可执行文件），确认样本行出现 `scan_complete=false` 且被汇总计数捕获（P2 生效）。
+3. 同一命令连续跑两次，同一模型的裁决结果一致（P3 生效）。
+
+### 4.4 运行时长预算
+
+- 实测（本机）：regex 2 样本 ≈ 0.2s；semgrep 2 样本 ≈ 10s（≈5s/样本，主要为进程启动与规则加载）。
+- 因此 semgrep 臂相对 regex 臂有约 8 分钟/100 样本的固定额外开销。
+- LLM 单样本时延**不作估算**：历史数值来源不可信（见 F1）。正式矩阵前用 `--limit 5` 实测一次 `per_sample_llm_sec`，据此给出总时长预估后再开跑。
+- 量级参考：仅非 bypass 样本进审（约半数），`3b` 模型下 6 次运行预计数小时量级；串行执行期间不要并行跑其它 ollama 任务。
+
+---
+
+## 5. 统计判定方法
+
+### 5.1 每臂指标
+
+- 主指标：`FPR`（benign 被判 malicious 的比例）、`recall`（malicious 被判 malicious 的比例）。
+- 次指标：`accuracy`、`precision`、`F1`、`attribution_precision`、`bypass_rate`、`fail_closed_count`、`incomplete`（P2 新增）。
+- 每个指标给出点估计与 95% bootstrap 置信区间（复用评测器既有 `compute_all_bootstrap_ci`，`n_bootstraps=1000`，`seed=42`）。3 次运行先给出逐次结果，再给出跨次汇总（报告须同时呈现，禁止只报最好一次）。
+
+### 5.2 配对判定（核心）
+
+对每一对运行 *i*（i = 1,2,3），在**同一样本集**上做逐样本配对比较：
+
+- `ΔFPR_i = FPR_semgrep,i − FPR_regex,i`
+- `Δrecall_i = recall_semgrep,i − recall_regex,i`
+- `Δ` 的置信区间用**配对 bootstrap**（对样本下标重采样，`n_bootstraps=1000`，`seed=42`），而非两独立区间相减。
+- 配对显著性检验：对 `FPR` 与 `recall` 各做 **McNemar 检验**（b/c 为两臂判定不一致的样本数），报告 p 值。
+- **不一致样本清单**：逐对列出 `Δ` 的贡献者——`regex 通过 / semgrep 拦截`、`regex 拦截 / semgrep 通过` 两类样本的 ID、family、`trap_type`、两臂触发的规则集合。**（规则集合是 F5 类根因的唯一可行动线索。）**
+
+### 5.3 判定规则（0 容差，非劣才算过）
+
+**通过条件（全部满足）**：
+
+1. 对 i = 1,2,3 的**每一对**：`ΔFPR_i ≤ 0`；
+2. 对 i = 1,2,3 的**每一对**：`Δrecall_i ≥ 0`；
+3. 6 次运行的 `incomplete`（`scan_complete == false`）计数均为 0。若某一轮出现 `incomplete > 0`：**该轮作废**，先定位失败原因（P2 已使失败可见），修复后重跑该轮；在 `incomplete` 归零之前，该轮结果不得进入判定与指标计算。`incomplete` 样本一律不计入 `bypass`、不按「无命中 → 通过」处理。
+
+即：semgrep 臂在**任何**一次配对运行中，误报不得比 regex 更高、召回不得比 regex 更低。**任一条件不满足 → 判定为「未通过非劣性」，不得进入生产接入。**
+
+同时报告（不影响通过与否，但必须披露）：McNemar p 值、Δ 的 95% 配对 bootstrap 区间、运行时长差异。
+
+---
+
+## 6. 报告内容与落盘
+
+产出单一报告：`models/audit/audit-results/engine-compare/REPORT.md`（数据落同名目录 JSON），必须包含：
+
+1. **运行环境**：`git rev-parse HEAD` + dirty 状态、semgrep 版本/路径/SHA256、ollama 模型 digest、评测器参数全量。
+2. **逐臂逐次结果表**：6 行 × (FPR, recall, accuracy, precision, F1, attribution_precision, bypass_rate, fail_closed_count, incomplete, 时长)。
+3. **配对判定表**：3 行 × (ΔFPR, 其配对 bootstrap 95% CI, McNemar p, Δrecall, 其 CI, McNemar p)。
+4. **不一致样本清单**（见 5.2 末）。
+5. **按 family 归因表**：B1–B5 / M1–M5 各自的 FPR/recall 在两臂上的差异，用于判断差异是集中在特定陷阱类型还是普遍存在。
+6. **结论行**：明确写 `PASS`（满足 5.3 全部三条）或 `FAIL`，并在 `FAIL` 时给出**已定位的根因**与**未定位的差异清单**（后者是下一轮的唯一输入）。
+7. **限制与威胁**（第 9 节内容直接引用）。
+
+报告结论只能有三种措辞：**通过**、**未通过（附根因）**、**证据不足（附缺失项）**。禁止出现无数据支撑的定性表述。
+
+---
+
+## 7. 实施顺序
+
+1. P1 → P2 → P3（每项独立 RED/GREEN 循环，独立提交）。
+2. 冒烟门槛（4.3）三项全过。
+3. `--limit 5` 实测时延 → 确认总时长预算。
+4. 6 次正式运行（串行）。
+5. 生成报告，按 5.3 给出 PASS/FAIL。
+
+提交规范：遵循 Conventional Commits，英文；scope 建议 `audit-bench`。P1–P3 各自独立提交，报告与原始数据一并提交。**提交信息中不得包含任何 AI 署名。**
+
+---
+
+## 8. 判定后的预案（预注册）
+
+- **若 PASS**：产出「非劣」证据，作为后续「Go 侧接入 Semgrep」独立 spec 的前置输入；本轮不写生产代码。
+- **若 FAIL 且根因是规则语义缺陷**（如 F5 的 `FIL_001`）：先修规则、重跑同样的 6 次矩阵（同一判定规则），修规则属于评测资产而非生产代码，仍在授权范围内。**禁止以「把 semgrep 规则调松到与 regex 等价」为手段达成 PASS 而不记录该变更**——规则集差异必须在报告中显式列出。
+- **若 FAIL 且根因指向 AST/污点带来的上下文形态差异（F4）**：此时才启用 **CPG 消融**预案——增加两臂：`semgrep（不使用 AST 作用域切片）`与`semnapi（不使用 CPG）`，以分离「引擎」与「上下文形态」的贡献。此预案**只在触发时执行**，不在本轮范围。
+- **若证据不足**（如 `incomplete` 非零无法消除）：结论写「证据不足」，列出缺失项，不给出推荐。
+
+---
+
+## 9. 有效性与威胁（须在报告中披露）
+
+1. **上下文形态混淆（F4）**：本设计把「引擎」与「上下文形态」捆绑为同一处理（semgrep 臂用 AST 作用域、regex 臂用 ±N 行窗口）。理由是该捆绑与目标态架构（2026-09-17 spec §3）一致；但因此**判定的 PASS 只支持「regex→semgrep 整包替换」这一决策，不支持「纯换引擎」的因果结论**。若需要后者，走第 8 节 CPG 消融预案。
+2. **代理指标**：离线 regex 臂是 Python 侧 `StaticScanner`，是 Go 生产扫描器（`internal/codeaudit`）的**镜像实现**而非其自身。两处规则 ID 一致（13 条），但实现语言不同，结论对生产 Go 引擎是**代理性**的。此外生产侧 `MaxFindings=200` 静默截断与 `SkipDirs` 未排除依赖目录等差异（详见 `internal/codeaudit/scanner.go`）不在本评测覆盖范围内，不能由本报告的 PASS 推断为已解决。
+3. **样本量与统计功效**：n=100（50/50），`ΔFPR` 的最小可分辨步长为 0.02。因此本设计采用「0 容差」而非任何置信区间下界判据；由此得到的是**保守**结论——通过即非劣，未通过未必代表实质劣化。
+4. **模型与提示固定**：结论仅对 `qwen2.5-coder:3b` + `audit-prompt-v1` 成立，不外推到其它模型或提示。
+5. **规则集差异不可避免**：两臂规则并非逐条等价（F5 即为一例）。报告须列出两臂各自触发的规则集合差异，避免把「规则差异」误读为「引擎差异」。
+6. **BE 单机环境**：所有运行在同一台机器串行完成，未覆盖并发、资源受限或部署镜像（未安装 semgrep）等生产形态。
+
+---
+
+## 10. 交付物清单
+
+- 前置修复的代码与测试（P1、P2、P3；P4 待确认）及各自提交。
+- `models/audit/audit-results/engine-compare/{regex,semgrep}-run{1,2,3}/` 原始产物（含逐样本行、`audit_report.json`、summary）。
+- `models/audit/audit-results/engine-compare/REPORT.md`（第 6 节结构）。
+- 本规范的实现计划：`.claude/plans/`（由 writing-plans 产出）。
+
+---
+
+## 11. 待确认事项（写实施计划前需你拍板）
+
+1. **P4 的处置方式**：(a) 加 `provenance` 字段并把 `engine` 改为必填显式入参；或 (b) 标记 `generate_matrix_results.py` 为 deprecated。本文档倾向 (a)。
+2. **P2 中 `incomplete` 样本的处置**：本文档定为「不计入 bypass、不参与指标、且该轮作废重跑」（§5.3 第 3 条）。若你更倾向「把该样本从**两臂同一对**中一并剔除后继续」（保持配对有效、避免整轮重跑的时间成本），请指出，我会据此改写判定条款。
+3. **是否同意把 P1–P3 分三次提交**（便于单独回滚），还是合并为一次「评测链路证据完整性修复」提交。
