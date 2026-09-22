@@ -355,6 +355,63 @@ class TestWithinArmDisagreement(unittest.TestCase):
         self.assertEqual(result["1v2"]["shared"], 0)
 
 
+class TestFailClosedByRun(unittest.TestCase):
+    """Which samples fail-closed, per run, and whether any of them was benign.
+
+    The report's strongest claim about the parse-failure channel is that no
+    measured FPR is contaminated by it, and that claim is only as good as the
+    evidence behind it: "benign fail-closed is zero across all runs" has to be
+    re-derivable from the collected rows, not asserted from a reading of them.
+    """
+
+    def _run(self, entries):
+        return {
+            sample_id: {
+                "sample_id": sample_id,
+                "label": label,
+                "fail_closed": fail_closed,
+                "scan_complete": True,
+            }
+            for sample_id, label, fail_closed in entries
+        }
+
+    def test_a_run_with_no_fail_closed_sample_reports_none(self):
+        runs = {1: self._run([("B1-01", "benign", False), ("M1-01", "malicious", False)])}
+        record = ec.fail_closed_by_run({"regex": runs})
+        self.assertEqual(record["regex"]["1"], [])
+        self.assertEqual(record["benign_fail_closed"], [])
+
+    def test_a_benign_fail_closed_sample_is_named_as_contaminating(self):
+        runs = {1: self._run([("B1-01", "benign", True), ("M1-01", "malicious", True)])}
+        record = ec.fail_closed_by_run({"regex": runs})
+        self.assertEqual(
+            [entry["sample_id"] for entry in record["regex"]["1"]], ["B1-01", "M1-01"]
+        )
+        self.assertEqual(record["benign_fail_closed"], ["regex-run1:B1-01"])
+
+    def test_the_contamination_list_spans_every_engine_and_run(self):
+        runs = {
+            "regex": {1: self._run([("B2-02", "benign", True)])},
+            "semgrep": {2: self._run([("B3-03", "benign", True)])},
+        }
+        record = ec.fail_closed_by_run(runs)
+        self.assertEqual(
+            record["benign_fail_closed"], ["regex-run1:B2-02", "semgrep-run2:B3-03"]
+        )
+
+    def test_a_missing_run_is_reported_as_absent_not_as_clean(self):
+        """An empty list must never be what an uncollected run looks like.
+
+        Reading "no fail-closed samples" off a run that was never collected is
+        the same empty-set pass the corpus parity audit guards against, so the
+        key is present and None rather than absent.
+        """
+        record = ec.fail_closed_by_run({"regex": {1: self._run([("B1-01", "benign", False)])}})
+        self.assertIn("2", record["regex"])
+        self.assertIsNone(record["regex"]["2"])
+        self.assertIsNone(record["regex"]["3"])
+
+
 class TestAnalyseAllRuns(unittest.TestCase):
     """The six run directories in, one analysis out.
 
@@ -479,6 +536,19 @@ class TestAnalyseAllRuns(unittest.TestCase):
         for engine in ("regex", "semgrep"):
             self.assertEqual(sorted(analysis["within_arm"][engine]), ["1v2", "1v3", "2v3"])
             self.assertEqual(analysis["within_arm"][engine]["1v2"]["verdict_disagreements"], [])
+
+    def test_the_analysis_carries_the_fail_closed_samples_per_run(self):
+        """The report's no-contamination claim has to come from this dict."""
+        with tempfile.TemporaryDirectory() as td:
+            rows = [row("B1-01", "benign", "benign"), row("M1-01", "malicious", "malicious")]
+            rows[0]["fail_closed"] = True
+            self._all_six(td, rows=rows)
+            analysis = ec.analyse_all(td)
+        self.assertIn("fail_closed_by_run", analysis)
+        self.assertEqual(
+            analysis["fail_closed_by_run"]["benign_fail_closed"],
+            [f"{engine}-run{index}:B1-01" for engine in ("regex", "semgrep") for index in (1, 2, 3)],
+        )
 
     def test_it_records_whether_the_host_was_shared_while_each_run_was_collected(self):
         """The idle-host assumption is disclosed as a measurement, per run.

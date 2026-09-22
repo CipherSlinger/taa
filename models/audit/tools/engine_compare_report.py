@@ -356,6 +356,43 @@ def within_arm_disagreement(runs: Dict[int, Dict[str, Row]]) -> Dict[str, Any]:
     return comparisons
 
 
+def fail_closed_by_run(rows_by_engine: Dict[str, Dict[int, Dict[str, Row]]]) -> Dict[str, Any]:
+    """The samples each run failed closed on, and which of them were benign.
+
+    Fail-closed is harmless on a malicious sample - the static finding stands and
+    the sample still counts as a true positive, which is why recall does not move
+    when it happens. On a benign sample it is not harmless: UNCERTAIN is not
+    BENIGN, so the finding is never exonerated and the sample is charged as a
+    false positive for a reason that has nothing to do with the engine. The
+    report's claim that no measured FPR is contaminated by that mechanism is this
+    list being empty of benign samples, so the list is computed rather than read.
+
+    A run that was never collected maps to None, not to an empty list: "this run
+    failed closed on nothing" and "this run does not exist" are different
+    statements and only one of them is evidence.
+    """
+    record: Dict[str, Any] = {"benign_fail_closed": []}
+    for engine in ("regex", "semgrep"):
+        per_run: Dict[str, Optional[List[Dict[str, Any]]]] = {}
+        for index in (1, 2, 3):
+            rows = rows_by_engine.get(engine, {}).get(index)
+            if not rows:
+                per_run[str(index)] = None
+                continue
+            entries = [
+                {"sample_id": row["sample_id"], "label": row.get("label")}
+                for row in rows.values() if row.get("fail_closed")
+            ]
+            entries.sort(key=lambda entry: entry["sample_id"])
+            per_run[str(index)] = entries
+            record["benign_fail_closed"].extend(
+                f"{engine}-run{index}:{entry['sample_id']}"
+                for entry in entries if entry["label"] == "benign"
+            )
+        record[engine] = per_run
+    return record
+
+
 def family_table(regex_rows: Iterable[Row], semgrep_rows: Iterable[Row]) -> List[Dict[str, Any]]:
     """Per-family FPR/recall for both arms.
 
@@ -516,6 +553,7 @@ def analyse_all(base_dir: Path, out_path: Optional[Path] = None) -> Dict[str, An
             engine: within_arm_disagreement(rows_by_engine[engine])
             for engine in ("regex", "semgrep")
         },
+        "fail_closed_by_run": fail_closed_by_run(rows_by_engine),
         "family_table": family_tables[0] if family_tables else [],
         "family_tables_by_pair": {str(i + 1): table for i, table in enumerate(family_tables)},
         "bootstrap_n": BOOTSTRAP_N,
