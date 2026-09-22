@@ -93,6 +93,67 @@ class TestSemgrepRunner(unittest.TestCase):
         self.assertGreater(len(f["taint_trace"]), 0)
         self.assertEqual(f["taint_trace"][0]["line"], 12)
 
+    def test_parse_output_rejects_requires_login_placeholder(self):
+        """Semgrep CE puts the literal string "requires login" in extra.lines.
+
+        That field is mapped to code_snippet and fed to the LLM as "the code
+        that triggered the rule", so the runner has to read the real line out of
+        the file rather than forward the placeholder.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "sample.py"
+            target.write_text("import os\nprint('hello')\nos.system('id')\n", encoding="utf-8")
+            mock_output = {
+                "results": [
+                    {
+                        "check_id": "taa-cmd-exec-python",
+                        "path": str(target),
+                        "start": {"line": 3, "col": 1},
+                        "end": {"line": 3, "col": 15},
+                        "extra": {
+                            "lines": "requires login",
+                            "message": "Command execution detected",
+                            "severity": "ERROR",
+                            "metadata": {"rule_family": "CMD_001", "category": "command"},
+                        },
+                    }
+                ],
+                "errors": [],
+            }
+            res = self.runner.parse_output(mock_output, exit_code=0)
+            self.assertEqual(len(res.findings), 1)
+            self.assertEqual(res.findings[0]["code_snippet"], "os.system('id')")
+
+    def test_parse_output_reports_slice_failure(self):
+        """An unrecoverable snippet must be reported, not silently left empty.
+
+        An empty code_snippet reads exactly like "the match had no code", so the
+        reason has to survive to the caller (and, via the sample row, to the
+        report) instead of being swallowed.
+        """
+        mock_output = {
+            "results": [
+                {
+                    "check_id": "taa-cmd-exec-python",
+                    "path": "/nonexistent/does-not-exist/sample.py",
+                    "start": {"line": 3, "col": 1},
+                    "end": {"line": 3, "col": 15},
+                    "extra": {
+                        "lines": "requires login",
+                        "message": "Command execution detected",
+                        "severity": "ERROR",
+                        "metadata": {"rule_family": "CMD_001", "category": "command"},
+                    },
+                }
+            ],
+            "errors": [],
+        }
+        res = self.runner.parse_output(mock_output, exit_code=0)
+        self.assertEqual(len(res.findings), 1)
+        self.assertEqual(res.findings[0]["code_snippet"], "")
+        self.assertIn("cannot read", res.findings[0]["slice_error"])
+
     def test_real_semgrep_scan_directory(self):
         import tempfile
         if not self.runner.is_available():
@@ -105,6 +166,11 @@ class TestSemgrepRunner(unittest.TestCase):
             self.assertFalse(res.passed)
             self.assertEqual(len(res.findings), 1)
             self.assertEqual(res.findings[0]["rule_id"], "CMD_001")
+            # The snippet must be the real source line. Semgrep CE returns the
+            # literal string "requires login" in extra.lines, and that string is
+            # what the LLM was being asked to adjudicate, so the runner has to
+            # slice the file by line number instead of trusting the field.
+            self.assertEqual(res.findings[0]["code_snippet"], "os.system('id')")
 
 if __name__ == "__main__":
     unittest.main()

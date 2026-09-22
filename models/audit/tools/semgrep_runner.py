@@ -29,6 +29,12 @@ class SemgrepRunner:
         "CRITICAL": "CRITICAL"
     }
 
+    # Semgrep CE replaces extra.lines (and fingerprint/metavars/is_ignored) with
+    # this literal string unless the CLI is logged in to the AppSec Platform.
+    # The field maps to code_snippet, which is handed to the LLM as "the code
+    # that triggered the rule", so it must never be forwarded as evidence.
+    SNIPPET_PLACEHOLDER = "requires login"
+
     def __init__(self, executable: str = "semgrep", rules_path: Optional[str] = None):
         self.executable = executable
         if rules_path:
@@ -46,12 +52,16 @@ class SemgrepRunner:
             return True
         return False
 
-    def parse_output(self, raw_data: Dict[str, Any], exit_code: int = 0) -> SemgrepScanResult:
+    def parse_output(self, raw_data: Dict[str, Any], exit_code: int = 0,
+                     scan_root: Optional[str] = None) -> SemgrepScanResult:
         """Parses Semgrep raw JSON output into structured findings and scan metadata."""
         findings = []
         raw_results = raw_data.get("results", [])
         raw_errors = raw_data.get("errors", [])
         parser_errors = len(raw_errors)
+        # Line cache scoped to this parse: one scan usually hits a file several
+        # times, and re-reading it per match would dominate the parse cost.
+        source_cache: Dict[str, List[str]] = {}
 
         for match in raw_results:
             extra = match.get("extra", {})
@@ -87,6 +97,10 @@ class SemgrepRunner:
                 })
                 step_counter += 1
 
+            code_snippet, slice_error = self._resolve_snippet(
+                match, extra, source_cache, scan_root=scan_root
+            )
+
             finding = {
                 "file": match.get("path", ""),
                 "line": match.get("start", {}).get("line", 0),
@@ -97,7 +111,8 @@ class SemgrepRunner:
                 "category": metadata.get("category", "General"),
                 "severity": severity,
                 "description": extra.get("message", ""),
-                "code_snippet": extra.get("lines", "").strip(),
+                "code_snippet": code_snippet,
+                "slice_error": slice_error,
                 "taint_trace": taint_trace,
                 "engine": "semgrep"
             }
@@ -115,6 +130,50 @@ class SemgrepRunner:
             timed_out=False,
             exit_code=exit_code
         )
+
+    def _resolve_snippet(self, match: Dict[str, Any], extra: Dict[str, Any],
+                         cache: Dict[str, List[str]],
+                         scan_root: Optional[str] = None) -> tuple:
+        """Returns (code_snippet, slice_error) for one Semgrep match.
+
+        Semgrep's own line text is used when it is real, since it reflects what
+        the engine actually matched. Otherwise the line range is sliced out of
+        the file: start.line and end.line stay correct in the community edition
+        even though extra.lines does not.
+        """
+        raw_lines = extra.get("lines")
+        if isinstance(raw_lines, str):
+            text = raw_lines.strip()
+            if text and text != self.SNIPPET_PLACEHOLDER:
+                return text, None
+
+        path = match.get("path", "")
+        start = match.get("start", {}).get("line", 0) or 0
+        end = match.get("end", {}).get("line", 0) or start
+
+        # Semgrep echoes the path it was given, but a relative one is only
+        # meaningful against the scan root.
+        if path and scan_root and not os.path.isabs(path):
+            joined = os.path.join(str(scan_root), path)
+            if os.path.exists(joined):
+                path = joined
+
+        if not path:
+            return "", "match carries no file path"
+        if start < 1:
+            return "", f"match carries no usable start line in {path}"
+
+        if path not in cache:
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    cache[path] = f.readlines()
+            except OSError as exc:
+                return "", f"cannot read {path}: {exc}"
+
+        snippet = "".join(cache[path][start - 1:max(end, start)]).strip()
+        if not snippet:
+            return "", f"line range {start}-{end} yields no text in {path}"
+        return snippet, None
 
     def scan_directory(self, target_dir: str, timeout: int = 120, extensions: Optional[List[str]] = None) -> SemgrepScanResult:
         """Executes Semgrep scan against target directory with timeout protection."""
@@ -158,7 +217,8 @@ class SemgrepRunner:
                     exit_code=proc.returncode,
                     error_message=f"Failed to parse Semgrep JSON output: {proc.stderr}"
                 )
-            return self.parse_output(raw_data, exit_code=proc.returncode)
+            return self.parse_output(raw_data, exit_code=proc.returncode,
+                                     scan_root=str(target_dir))
 
         except subprocess.TimeoutExpired:
             return SemgrepScanResult(
