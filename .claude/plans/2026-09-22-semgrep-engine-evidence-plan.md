@@ -184,9 +184,13 @@ self.assertEqual(res.findings[0]["code_snippet"], "os.system('id')")
    - **实测预算**：由阶段 5 的 6 次正式运行自身给出（每轮 100 样本、逐样本记录 `scan_duration_ms`/`llm_invoked`/`llm_duration_sec`），不再另设试跑——正式运行就是最完整的预算测量。
 2. 6 次运行严格串行，按 spec §4.2 的命令模板；每轮前后复核 ollama 存活与模型 digest（`f72c60cabf62…`）。
    - **实施方式**：6 轮由**单个串行驱动脚本**跑完（`/tmp/run-six.sh`），顺序即模块里的 `RUN_ORDER`（regex1 → semgrep1 → regex2 → semgrep2 → regex3 → semgrep3），每轮结束自动 `git checkout --` 清单并在非零退出时中止。**串行由构造保证**，而非靠人守着不并发。
+   - **驱动被会话结束杀死（作废 regex-run3 并重跑）**：`run-six.sh` 于 17:41:50 在 `regex-run3` 扫到 91/100 时随会话终止（日志尾 `[killed]`）。该轮**没有**写出 `summary.json`/`sample-results.jsonl`，即无任何判定可用，故整轮作废：清除半成品目录、恢复清单、复核容器（`restarts=0`、`StartedAt` 未变、digest 未变、真实 `generate` 探针通过），再用 `/tmp/run-two.sh` 只补第 5、6 轮。
+   - **两处构造性修正**：(1) 新驱动用 `setsid nohup` **脱离会话**，会话结束不再能杀死它（上一次死于这个，不是死于工作本身）；(2) 重跑前**抹掉**半成品目录，避免中断残留与新产物混在一起。副作用须披露：**pair 3 的采集窗口晚于 pair 1/2**（17:54 起 vs 15:57 起）。
 3. **运行期间不得并行**任何重内存任务（含 semgrep 全量扫描、完整测试套件）。
    - **已发生一次违规（我造成的）**：第一版 `regex-run1` 跑到 22/100 时，我并发启动了完整测试套件（`unittest discover`），其中 `test_engine_rule_parity.py` 会对 59 条 fixture 调 semgrep——正是 spec §9.7 记录的「与容器内 ollama 并发 → OOM」组合。发现后立即停止测试套件，**该轮作废并重跑**。核对：容器 `RestartCount=0`、启动时间未变、已落下样本的 finding **全部带 `llm_verdict`**（无 fail-closed），即未实际造成故障，但作废的理由是**我不该制造那个组合**，而不是「这次运气好」。
    - **无法排除的干扰（须在报告披露）**：本轮运行窗口内，**用户本人**在同一仓库/主机上工作（`dcc57aa` 于 16:00:02 提交 `deploy.sh` 的容器存活判定修复，涉及 docker 操作）。我无法要求其停工，因此不据此反复作废，改为**用可测量证据处理**：逐样本 `scan_duration_ms`/`llm_duration_sec` 已落盘，跑完按离群点判定是否受扰，并把离群样本**逐条披露**；时序本就是次要证据（`eval_duration_sec` 只披露、不参与 §5.3 判定）。若离群分析显示实质受扰，则该轮作废、改在安静窗口重跑。
+   - **已量到的运行间离散（须在报告披露）**：同引擎同工作量下 `eval_duration_sec` 相差近一倍（regex-run1 1781.6s vs regex-run2 829.7s；`per_sample_llm_sec` 22.828 vs 10.621）。这坐实了「时序只披露、不参与判定」的设计；单轮耗时**不是**稳定预算值。
+   - **`fail_closed_count` 逐轮漂移（须在报告披露）**：regex-run1=2、semgrep-run1=2、**regex-run2=4**、semgrep-run2=1。即 `--llm-seed 42` **不能**让 LLM 回复的解析结果稳定复现。四轮的 FPR/recall 仍完全相同（0.5600/1.0000），说明这些解析失败在该语料上全部落在恶意样本（fail-closed → 命中保留 → TP），未触及指标；但这是**该语料上的事实，不是保证**，须逐样本披露失败集合，并说明「三轮不是逐字节重复，而是同一分布的三个抽样」。
 4. 每轮结束后 `git checkout -- models/audit/audit-benchmark-manifest.json`（评测器会把 `benchmark_root` 改写成绝对路径，污染已跟踪文件）。
 
 ---
