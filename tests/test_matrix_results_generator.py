@@ -14,6 +14,72 @@ if str(REPO_ROOT) not in sys.path:
 
 import models.audit.tools.generate_matrix_results as gmr
 
+# The matrix generator's counts are hand-authored (MODELS_SPEC), not measured.
+# It used to derive `engine` and `rule_set_version` from the audit mode name, so
+# an unstated engine fell back to "semgrep" for the static-llm track; the
+# resulting summary.json has the same shape and location as a real evaluator run
+# and was cited as a Semgrep measurement. The rule IDs cannot stand in for the
+# engine either - the Semgrep rules reuse the baseline's rule_family IDs, so
+# matched_rules does not say which arm produced a row.
+DECLARATIONS = {
+    "pure-llm": {"engine": "none", "rule_set_version": "n/a"},
+    "pure-llm-checklist": {"engine": "none", "rule_set_version": "checklist-rules-v1"},
+    "static-llm": {"engine": "regex", "rule_set_version": "regex-rules-13"},
+}
+
+
+class TestMatrixProvenance(unittest.TestCase):
+    """The matrix must say what produced its numbers, and not imply an engine nobody named."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.results_dir = Path(self.temp_dir) / "matrix"
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_the_declaration_is_required(self):
+        """Omitting it must raise, not silently fall back to engine="semgrep"."""
+        with self.assertRaises(TypeError):
+            gmr.generate_matrix(results_dir=self.results_dir, dry_run=True)
+
+    def test_engine_and_rule_set_come_from_the_declaration(self):
+        runs, _ = gmr.generate_matrix(DECLARATIONS, results_dir=self.results_dir, dry_run=True)
+        by_mode = {r["audit_mode"]: r for r in runs}
+        self.assertEqual(by_mode["static-llm"]["engine"], "regex")
+        self.assertEqual(by_mode["static-llm"]["rule_set_version"], "regex-rules-13")
+        self.assertEqual(by_mode["pure-llm"]["engine"], "none")
+
+    def test_a_declaration_missing_a_track_is_rejected(self):
+        partial = {"static-llm": {"engine": "regex", "rule_set_version": "regex-rules-13"}}
+        with self.assertRaises(ValueError):
+            gmr.generate_matrix(partial, results_dir=self.results_dir, dry_run=True)
+
+    def test_every_row_is_marked_hand_authored(self):
+        runs, _ = gmr.generate_matrix(DECLARATIONS, results_dir=self.results_dir, dry_run=False)
+        for run in runs:
+            self.assertEqual(run["provenance"], "hand-authored-spec")
+
+        master = json.loads(
+            (self.results_dir / "benchmark-matrix-summary.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(master["provenance"], "hand-authored-spec")
+        for run in master["runs"]:
+            self.assertEqual(run["provenance"], "hand-authored-spec")
+
+        # The per-run artifact is what gets cited, so it carries the mark too.
+        per_run = self.results_dir / "static-llm" / "qwen2_5-coder-3b" / "summary.json"
+        self.assertEqual(
+            json.loads(per_run.read_text(encoding="utf-8"))["provenance"], "hand-authored-spec"
+        )
+
+    def test_cli_refuses_to_run_without_a_declaration(self):
+        parser = gmr.build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args([])
+        args = parser.parse_args(["--track", "static-llm:regex:regex-rules-13"])
+        self.assertEqual(args.track, ["static-llm:regex:regex-rules-13"])
+
 
 class TestMatrixResultsGenerator(unittest.TestCase):
     """Test suite for generate_matrix_results CLI, matrix calculations, and HTML updater."""
@@ -28,11 +94,13 @@ class TestMatrixResultsGenerator(unittest.TestCase):
     def test_cli_argument_parsing(self):
         """Test argument parser supports --dry-run, --update-html, and directory options."""
         parser = gmr.build_parser()
-        args = parser.parse_args(["--dry-run"])
+        args = parser.parse_args(["--dry-run", "--track", "pure-llm:none:n/a"])
         self.assertTrue(args.dry_run)
         self.assertFalse(args.update_html)
 
-        args = parser.parse_args(["--update-html", "--results-dir", str(self.results_dir)])
+        args = parser.parse_args(
+            ["--update-html", "--results-dir", str(self.results_dir), "--track", "pure-llm:none:n/a"]
+        )
         self.assertTrue(args.update_html)
         self.assertEqual(args.results_dir, str(self.results_dir))
 
@@ -62,7 +130,7 @@ class TestMatrixResultsGenerator(unittest.TestCase):
 
     def test_generate_matrix_runs_and_writes_files(self):
         """Verify generate_matrix writes all json, csv, and md report files with 95% CIs."""
-        runs, summary = gmr.generate_matrix(results_dir=self.results_dir, dry_run=False)
+        runs, summary = gmr.generate_matrix(DECLARATIONS, results_dir=self.results_dir, dry_run=False)
         self.assertEqual(len(runs), 18, "Must generate 6 models * 3 tracks = 18 runs")
 
         # Check master json
@@ -128,7 +196,7 @@ class TestMatrixResultsGenerator(unittest.TestCase):
 </html>"""
         mock_html.write_text(original_content, encoding="utf-8")
 
-        runs, _ = gmr.generate_matrix(results_dir=self.results_dir, dry_run=True)
+        runs, _ = gmr.generate_matrix(DECLARATIONS, results_dir=self.results_dir, dry_run=True)
         updated = gmr.update_html_report(mock_html, runs)
         self.assertTrue(updated)
 

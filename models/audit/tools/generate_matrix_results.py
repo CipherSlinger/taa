@@ -241,6 +241,24 @@ MODELS_SPEC: List[Dict[str, Any]] = [
     },
 ]
 
+# Every count in MODELS_SPEC above is hand-authored, so this generator must not
+# be readable as a measurement. It previously derived `engine` and
+# `rule_set_version` from the audit mode name, which silently turned an unstated
+# engine into "semgrep" for the static-llm track - and the per-run summary.json
+# it writes has the same shape and location as a real evaluator run. The rule
+# IDs cannot stand in for the engine either: the Semgrep rules reuse the
+# baseline's rule_family IDs, so matched_rules does not say which arm ran.
+PROVENANCE = "hand-authored-spec"
+
+# (spec key in MODELS_SPEC, audit mode name, track description, prompt version).
+# The engine and rule-set version are deliberately absent: they are supplied per
+# mode by the caller's track declaration, not inferred from the mode name.
+MODES_CONFIG: List[Tuple[str, str, str, str]] = [
+    ("pure_llm", "pure-llm", "Track A: 纯端到端 LLM 盲审 (Pure Raw)", "pure-llm-v1"),
+    ("pure_llm_checklist", "pure-llm-checklist", "Track B: 规则清单盲审 (Pure Checklist)", "checklist-rules-v1"),
+    ("static_llm", "static-llm", "Track C: 生产级动静两阶段协同 (Semgrep-LLM)", "audit-prompt-v1"),
+]
+
 
 def synthesize_samples_for_metrics(
     tp: int,
@@ -317,28 +335,66 @@ def calc_metrics(
     }
 
 
+def validate_track_declarations(track_declarations: Dict[str, Dict[str, str]]) -> None:
+    """Reject a declaration that does not name an engine for every audit track.
+
+    A partial declaration is the failure this guards against: whatever is left
+    unstated would have to be filled in from somewhere else, which is exactly how
+    `engine` used to become "semgrep" without anyone claiming it.
+    """
+    expected = {mode_name for _, mode_name, _, _ in MODES_CONFIG}
+    declared = set(track_declarations)
+
+    missing = sorted(expected - declared)
+    if missing:
+        raise ValueError(f"track declaration is missing: {', '.join(missing)}")
+    unknown = sorted(declared - expected)
+    if unknown:
+        raise ValueError(f"track declaration names unknown modes: {', '.join(unknown)}")
+
+    for mode_name in sorted(declared):
+        declaration = track_declarations[mode_name] or {}
+        for field in ("engine", "rule_set_version"):
+            if not declaration.get(field):
+                raise ValueError(f"track {mode_name} declares no {field}")
+
+
+def parse_track_flag(raw_tracks: List[str]) -> Dict[str, Dict[str, str]]:
+    """Parse repeated `--track MODE:ENGINE:RULE_SET_VERSION` flags."""
+    declarations: Dict[str, Dict[str, str]] = {}
+    for raw in raw_tracks:
+        parts = raw.split(":")
+        if len(parts) != 3 or not all(part.strip() for part in parts):
+            raise SystemExit(f"--track expects MODE:ENGINE:RULE_SET_VERSION, got: {raw!r}")
+        mode_name, engine, rule_set_version = (part.strip() for part in parts)
+        declarations[mode_name] = {"engine": engine, "rule_set_version": rule_set_version}
+    return declarations
+
+
 def generate_matrix(
+    track_declarations: Dict[str, Dict[str, str]],
     results_dir: Optional[Union[str, Path]] = None,
     dry_run: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Generate the full 18-run evaluation matrix and persist summary files."""
+    """Generate the full 18-run evaluation matrix and persist summary files.
+
+    `track_declarations` maps each audit mode to the engine and rule-set version
+    that produced its numbers. It is required and has no default on purpose: these
+    numbers are hand-authored, and the caller - not the mode name - has to say so.
+    """
+    validate_track_declarations(track_declarations)
+
     base_dir = Path(results_dir) if results_dir is not None else RESULTS_BASE_DIR
     if not dry_run:
         base_dir.mkdir(parents=True, exist_ok=True)
 
     runs: List[Dict[str, Any]] = []
 
-    modes_config = [
-        ("pure_llm", "pure-llm", "Track A: 纯端到端 LLM 盲审 (Pure Raw)", "none (pure-llm)", "pure-llm-v1"),
-        ("pure_llm_checklist", "pure-llm-checklist", "Track B: 规则清单盲审 (Pure Checklist)", "checklist-rules-13", "checklist-rules-v1"),
-        ("static_llm", "static-llm", "Track C: 生产级动静两阶段协同 (Semgrep-LLM)", "semgrep-rules-13", "audit-prompt-v1"),
-    ]
-
     for spec in MODELS_SPEC:
         model_name = spec["model"]
         slug = spec["slug"]
 
-        for mode_key, mode_name, mode_desc, rule_ver, prompt_ver in modes_config:
+        for mode_key, mode_name, mode_desc, prompt_ver in MODES_CONFIG:
             mode_data = spec[mode_key]
             tp = mode_data["tp"]
             fp = mode_data["fp"]
@@ -352,8 +408,8 @@ def generate_matrix(
             llm_samples = 100 - mode_data["bypass_count"]
             per_sample_llm_sec = round(dur / llm_samples, 1) if llm_samples > 0 else 0.0
 
-            rule_ver = "semgrep-rules-13" if mode_name == "static-llm" else rule_ver
-            engine = "semgrep" if mode_name == "static-llm" else "none"
+            engine = track_declarations[mode_name]["engine"]
+            rule_ver = track_declarations[mode_name]["rule_set_version"]
 
             metrics = calc_metrics(tp, fp, tn, fn, attr_count, bypass_rate, fail_closed, llm_avail)
             metrics["per_sample_llm_sec"] = per_sample_llm_sec
@@ -362,6 +418,7 @@ def generate_matrix(
                 "run_id": f"matrix-{mode_name}-{slug}",
                 "run_time": datetime.now(timezone.utc).isoformat(),
                 "benchmark_version": "2026-09-16-v2",
+                "provenance": PROVENANCE,
                 "audit_mode": mode_name,
                 "audit_track": mode_desc,
                 "engine": engine,
@@ -416,6 +473,7 @@ def generate_matrix(
     matrix_summary = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "benchmark": "audit-100-v2",
+        "provenance": PROVENANCE,
         "description": "Three-track orthogonal comparison matrix across 6 supported Qwen models on 4 industrial base projects",
         "supported_models": [s["model"] for s in MODELS_SPEC],
         "modes": ["pure-llm", "pure-llm-checklist", "static-llm"],
@@ -901,6 +959,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Update Section 5 of the design HTML file with the latest benchmark matrix results",
     )
+    parser.add_argument(
+        "--track",
+        action="append",
+        required=True,
+        metavar="MODE:ENGINE:RULE_SET_VERSION",
+        help=(
+            "Required, repeat once per audit mode (pure-llm, pure-llm-checklist, static-llm). "
+            "States which engine and rule-set version produced that track's numbers. "
+            "These counts are hand-authored, so no value is assumed on your behalf."
+        ),
+    )
     return parser
 
 
@@ -915,7 +984,9 @@ def main() -> None:
     print("Audit-100 v2 Benchmark Matrix Generator (6 Models × 3 Tracks)")
     print("=" * 70)
 
-    runs, summary = generate_matrix(results_dir=results_dir, dry_run=args.dry_run)
+    runs, summary = generate_matrix(
+        parse_track_flag(args.track), results_dir=results_dir, dry_run=args.dry_run
+    )
 
     print(f"[INFO] Evaluated {len(runs)} benchmark runs across {len(MODELS_SPEC)} models and 3 tracks:")
     for r in runs:
