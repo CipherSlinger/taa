@@ -141,6 +141,11 @@ class PairOutcome:
     def is_void(self) -> bool:
         return self.void_reason is not None
 
+    @property
+    def delta_duration(self) -> float:
+        """Seconds the Semgrep arm cost over the regex arm, within this pair."""
+        return self.duration_semgrep - self.duration_regex
+
 
 def _pair_up(regex_rows: Dict[str, Row], semgrep_rows: Dict[str, Row]) -> Tuple[List[Tuple[Row, Row]], List[str]]:
     """The pairs that carry a verdict, plus the reasons the rest do not."""
@@ -200,8 +205,20 @@ def _discordance(pairs: Sequence[Tuple[Row, Row]], label: str) -> Dict[str, Any]
     return {"b": b, "c": c, "p": exact_mcnemar(b, c)}
 
 
-def pair_runs(index: int, regex_rows: Iterable[Row], semgrep_rows: Iterable[Row]) -> PairOutcome:
-    """Pair one regex run against one Semgrep run and judge the pair."""
+def pair_runs(
+    index: int,
+    regex_rows: Iterable[Row],
+    semgrep_rows: Iterable[Row],
+    duration_regex: float = 0.0,
+    duration_semgrep: float = 0.0,
+) -> PairOutcome:
+    """Pair one regex run against one Semgrep run and judge the pair.
+
+    The durations are passed in rather than read off the rows: they are whole-run
+    facts from the summaries, and a pair's runtime difference is disclosed next to
+    its verdict because non-inferior detection at several times the cost is a
+    different decision from non-inferior at the same cost.
+    """
     regex_by_id = {row["sample_id"]: row for row in regex_rows}
     semgrep_by_id = {row["sample_id"]: row for row in semgrep_rows}
     expected = max(len(regex_by_id), len(semgrep_by_id))
@@ -219,6 +236,7 @@ def pair_runs(index: int, regex_rows: Iterable[Row], semgrep_rows: Iterable[Row]
             mcnemar_fpr={"b": 0, "c": 0, "p": 1.0},
             mcnemar_recall={"b": 0, "c": 0, "p": 1.0},
             void_reason="; ".join(problems), expected_paired=expected,
+            duration_regex=duration_regex, duration_semgrep=duration_semgrep,
         )
 
     delta_fpr, delta_recall = _delta(pairs)
@@ -242,7 +260,18 @@ def pair_runs(index: int, regex_rows: Iterable[Row], semgrep_rows: Iterable[Row]
         mcnemar_fpr=_discordance(pairs, "benign"),
         mcnemar_recall=_discordance(pairs, "malicious"),
         expected_paired=expected,
+        duration_regex=duration_regex, duration_semgrep=duration_semgrep,
     )
+
+
+def _outcome_dict(outcome: PairOutcome) -> Dict[str, Any]:
+    """One pair as JSON, carrying the runtime difference as well as the rates.
+
+    `asdict` drops properties, and the difference is computed in one place on the
+    dataclass rather than recomputed by every reader of the file - a reader that
+    recomputed it could disagree with the report citing it.
+    """
+    return {**asdict(outcome), "delta_duration": outcome.delta_duration}
 
 
 def _arm_metrics(rows: Sequence[Row]) -> Dict[str, float]:
@@ -346,8 +375,13 @@ def analyse_all(base_dir: Path, out_path: Optional[Path] = None) -> Dict[str, An
             "eval_duration_sec": summary.get("eval_duration_sec", 0.0),
             "round_complete": summary.get("round_complete"),
             "scan_incomplete_count": metrics.get("scan_incomplete_count"),
+            "scan_error_count": metrics.get("scan_error_count"),
+            "scored_count": metrics.get("scored_count"),
             "bypass_count": metrics.get("bypass_count"),
             "fail_closed_count": metrics.get("fail_closed_count"),
+            "llm_sample_count": metrics.get("llm_sample_count"),
+            "per_sample_scan_sec": metrics.get("per_sample_scan_sec"),
+            "per_sample_llm_sec": metrics.get("per_sample_llm_sec"),
             "fpr": metrics.get("fpr"),
             "recall": metrics.get("recall"),
             "accuracy": metrics.get("accuracy"),
@@ -359,10 +393,15 @@ def analyse_all(base_dir: Path, out_path: Optional[Path] = None) -> Dict[str, An
     pairs: List[PairOutcome] = []
     inconsistencies: List[List[Dict[str, Any]]] = []
     family_tables: List[List[Dict[str, Any]]] = []
+    durations = {(entry["engine"], entry["run"]): entry["eval_duration_sec"] for entry in runs_meta}
     for index in (1, 2, 3):
         regex_rows = rows_by_engine["regex"].get(index, {})
         semgrep_rows = rows_by_engine["semgrep"].get(index, {})
-        pairs.append(pair_runs(index, regex_rows.values(), semgrep_rows.values()))
+        pairs.append(pair_runs(
+            index, regex_rows.values(), semgrep_rows.values(),
+            duration_regex=durations.get(("regex", index), 0.0),
+            duration_semgrep=durations.get(("semgrep", index), 0.0),
+        ))
         inconsistencies.append(inconsistent_samples(regex_rows.values(), semgrep_rows.values()))
         family_tables.append(family_table(regex_rows.values(), semgrep_rows.values()))
 
@@ -372,7 +411,7 @@ def analyse_all(base_dir: Path, out_path: Optional[Path] = None) -> Dict[str, An
         "verdict": verdict,
         "reasons": reasons,
         "runs": runs_meta,
-        "pairs": [asdict(outcome) for outcome in pairs],
+        "pairs": [_outcome_dict(outcome) for outcome in pairs],
         "inconsistencies": inconsistencies,
         "family_table": family_tables[0] if family_tables else [],
         "family_tables_by_pair": {str(i + 1): table for i, table in enumerate(family_tables)},
@@ -405,17 +444,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"verdict: {analysis['verdict']}")
     for reason in analysis["reasons"]:
         print(f"  - {reason}")
-    print(f"{'engine':>8} {'run':>3} {'n':>4} {'FPR':>7} {'recall':>7} {'sec':>8}")
+    print(f"{'engine':>8} {'run':>3} {'n':>4} {'FPR':>7} {'recall':>7} {'scan s':>8} {'LLM s':>8} {'n_llm':>6} {'sec':>8}")
     for entry in analysis["runs"]:
         print(
             f"{entry['engine']:>8} {entry['run']:>3} {entry['samples']:>4} "
-            f"{_fmt(entry['fpr']):>7} {_fmt(entry['recall']):>7} {entry['eval_duration_sec']:>8.1f}"
+            f"{_fmt(entry['fpr']):>7} {_fmt(entry['recall']):>7} "
+            f"{_fmt(entry['per_sample_scan_sec']):>8} {_fmt(entry['per_sample_llm_sec']):>8} "
+            f"{str(entry['llm_sample_count']):>6} {entry['eval_duration_sec']:>8.1f}"
         )
-    print(f"{'pair':>8} {'dFPR':>8} {'p(McNemar)':>11} {'drecall':>8} {'p(McNemar)':>11} {'n':>4}")
+    print(f"{'pair':>8} {'dFPR':>8} {'p(McNemar)':>11} {'drecall':>8} {'p(McNemar)':>11} {'n':>4} {'dsec':>8}")
     for pair in analysis["pairs"]:
         print(
             f"{pair['index']:>8} {pair['delta_fpr']:>+8.4f} {pair['mcnemar_fpr']['p']:>11.4f} "
-            f"{pair['delta_recall']:>+8.4f} {pair['mcnemar_recall']['p']:>11.4f} {pair['n_paired']:>4}"
+            f"{pair['delta_recall']:>+8.4f} {pair['mcnemar_recall']['p']:>11.4f} "
+            f"{pair['n_paired']:>4} {pair['delta_duration']:>+8.1f}"
         )
     print(f"analysis written to: {out}")
     return 0 if analysis["verdict"] == "通过" else 1

@@ -253,15 +253,24 @@ class TestAnalyseAllRuns(unittest.TestCase):
             "engine": engine, "eval_duration_sec": duration,
             "metrics": {"fpr": 0.0, "recall": 1.0, "accuracy": 1.0, "precision": 1.0,
                         "f1": 1.0, "attribution_precision": 1.0, "bypass_rate": 0.22,
-                        "fail_closed_count": 0, "scan_incomplete_count": 0},
+                        "bypass_count": 22, "fail_closed_count": 0,
+                        "scan_incomplete_count": 0, "scan_error_count": 0,
+                        "scored_count": len(rows), "llm_sample_count": 78,
+                        "per_sample_scan_sec": 0.007, "per_sample_llm_sec": 24.287},
         }), encoding="utf-8")
         return run_dir
 
-    def _all_six(self, base, rows=None):
+    def _all_six(self, base, rows=None, regex_duration=10.0, semgrep_duration=42.0):
+        """Six runs with the two arms at deliberately different durations.
+
+        Equal durations could not tell a correctly wired difference from one that
+        silently fell back to its default, which is exactly the failure mode the
+        runtime-disclosure assertions exist to catch.
+        """
         rows = rows or [row("B1-01", "benign", "benign"), row("M1-01", "malicious", "malicious")]
-        for engine in ("regex", "semgrep"):
+        for engine, duration in (("regex", regex_duration), ("semgrep", semgrep_duration)):
             for index in (1, 2, 3):
-                self._write_run(base, engine, index, rows)
+                self._write_run(base, engine, index, rows, duration=duration)
 
     def test_identical_arms_across_six_runs_pass(self):
         with tempfile.TemporaryDirectory() as td:
@@ -270,6 +279,39 @@ class TestAnalyseAllRuns(unittest.TestCase):
         self.assertEqual(analysis["verdict"], "通过")
         self.assertEqual(len(analysis["runs"]), 6)
         self.assertEqual(len(analysis["pairs"]), 3)
+
+    def test_the_per_run_table_carries_the_cost_split(self):
+        """The two costs behave differently, so the run table carries them apart.
+
+        Spec 5.1 budgets the round from the scan cost and the LLM cost separately:
+        the scan is the fixed per-sample cost the engine choice sets, the LLM is
+        the one that dominates. A whole-run duration cannot separate them, and
+        `--limit 5` cannot measure the LLM half at all, since the first five
+        samples of the corpus bypass arbitration.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            self._all_six(td)
+            analysis = ec.analyse_all(td)
+        entry = analysis["runs"][0]
+        self.assertEqual(entry["per_sample_scan_sec"], 0.007)
+        self.assertEqual(entry["per_sample_llm_sec"], 24.287)
+        self.assertEqual(entry["llm_sample_count"], 78)
+        self.assertEqual(entry["scan_error_count"], 0)
+
+    def test_a_pair_carries_each_arm_s_runtime_and_the_difference(self):
+        """The runtime difference is disclosed beside the verdict, not buried.
+
+        Non-inferior detection at several times the cost is a different decision
+        from non-inferior at the same cost, so the difference has to be a number
+        in the analysis rather than something a reader recomputes by hand.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            self._all_six(td)
+            analysis = ec.analyse_all(td)
+        pair = analysis["pairs"][0]
+        self.assertEqual(pair["duration_regex"], 10.0)
+        self.assertEqual(pair["duration_semgrep"], 42.0)
+        self.assertEqual(pair["delta_duration"], 32.0)
 
     def test_the_per_run_table_carries_the_summary_numbers(self):
         with tempfile.TemporaryDirectory() as td:
