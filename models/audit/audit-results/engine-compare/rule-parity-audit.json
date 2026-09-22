@@ -1,0 +1,10 @@
+{
+  "corpus_root": "models/audit/benchmarks/audit-100",
+  "samples_scanned": 100,
+  "samples_with_a_divergence": 0,
+  "regex_findings": 80,
+  "semgrep_findings": 80,
+  "semgrep_snippets_verified": 80,
+  "semgrep_snippet_mismatches": 0,
+  "divergences": []
+}

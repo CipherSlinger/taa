@@ -1,0 +1,1237 @@
+{
+  "corpus_root": "models/audit/benchmarks/audit-100",
+  "blocking_severities": [
+    "CRITICAL",
+    "HIGH"
+  ],
+  "samples_scanned": 100,
+  "malicious_non_blocking": [
+    "M3-01",
+    "M3-02",
+    "M3-03",
+    "M3-04",
+    "M3-05",
+    "M3-06",
+    "M3-07",
+    "M3-08",
+    "M3-09",
+    "M3-10"
+  ],
+  "benign_non_blocking": [
+    "B2-01",
+    "B2-02",
+    "B3-01",
+    "B3-02",
+    "B3-03",
+    "B2-03",
+    "B2-04",
+    "B2-05",
+    "B3-04",
+    "B3-05",
+    "B4-04",
+    "B2-06",
+    "B2-07",
+    "B3-06",
+    "B3-07",
+    "B3-08",
+    "B2-08",
+    "B2-09",
+    "B2-10",
+    "B3-09",
+    "B3-10",
+    "B4-09"
+  ],
+  "malicious_not_flagged": [],
+  "benign_not_flagged": [
+    "B1-01",
+    "B1-02",
+    "B1-03",
+    "B5-01",
+    "B5-02",
+    "B5-03",
+    "B1-04",
+    "B1-05",
+    "B4-03",
+    "B5-04",
+    "B5-05",
+    "B1-06",
+    "B1-07",
+    "B1-08",
+    "B5-06",
+    "B5-07",
+    "B1-09",
+    "B1-10",
+    "B4-08",
+    "B5-08",
+    "B5-09",
+    "B5-10"
+  ],
+  "buckets_by_family": {
+    "B1": {
+      "blocking": 0,
+      "non_blocking": 0,
+      "not_flagged": 10
+    },
+    "B2": {
+      "blocking": 0,
+      "non_blocking": 10,
+      "not_flagged": 0
+    },
+    "B3": {
+      "blocking": 0,
+      "non_blocking": 10,
+      "not_flagged": 0
+    },
+    "B4": {
+      "blocking": 6,
+      "non_blocking": 2,
+      "not_flagged": 2
+    },
+    "B5": {
+      "blocking": 0,
+      "non_blocking": 0,
+      "not_flagged": 10
+    },
+    "M1": {
+      "blocking": 10,
+      "non_blocking": 0,
+      "not_flagged": 0
+    },
+    "M2": {
+      "blocking": 10,
+      "non_blocking": 0,
+      "not_flagged": 0
+    },
+    "M3": {
+      "blocking": 0,
+      "non_blocking": 10,
+      "not_flagged": 0
+    },
+    "M4": {
+      "blocking": 10,
+      "non_blocking": 0,
+      "not_flagged": 0
+    },
+    "M5": {
+      "blocking": 10,
+      "non_blocking": 0,
+      "not_flagged": 0
+    }
+  },
+  "per_sample": [
+    {
+      "sample_id": "B1-01",
+      "family": "B1",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B1-02",
+      "family": "B1",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B1-03",
+      "family": "B1",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B2-01",
+      "family": "B2",
+      "label": "benign",
+      "rules": [
+        "EMB_003"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B2-02",
+      "family": "B2",
+      "label": "benign",
+      "rules": [
+        "EMB_003"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B3-01",
+      "family": "B3",
+      "label": "benign",
+      "rules": [
+        "FIL_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B3-02",
+      "family": "B3",
+      "label": "benign",
+      "rules": [
+        "ENV_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B3-03",
+      "family": "B3",
+      "label": "benign",
+      "rules": [
+        "FIL_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B4-01",
+      "family": "B4",
+      "label": "benign",
+      "rules": [
+        "EMB_002"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "B4-02",
+      "family": "B4",
+      "label": "benign",
+      "rules": [
+        "EMB_002"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "B5-01",
+      "family": "B5",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B5-02",
+      "family": "B5",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B5-03",
+      "family": "B5",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "M1-01",
+      "family": "M1",
+      "label": "malicious",
+      "rules": [
+        "CMD_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M1-02",
+      "family": "M1",
+      "label": "malicious",
+      "rules": [
+        "CMD_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M2-01",
+      "family": "M2",
+      "label": "malicious",
+      "rules": [
+        "NET_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M2-02",
+      "family": "M2",
+      "label": "malicious",
+      "rules": [
+        "NET_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M2-03",
+      "family": "M2",
+      "label": "malicious",
+      "rules": [
+        "NET_002"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M3-01",
+      "family": "M3",
+      "label": "malicious",
+      "rules": [
+        "ENV_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "M3-02",
+      "family": "M3",
+      "label": "malicious",
+      "rules": [
+        "FIL_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "M4-01",
+      "family": "M4",
+      "label": "malicious",
+      "rules": [
+        "OBF_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M4-02",
+      "family": "M4",
+      "label": "malicious",
+      "rules": [
+        "OBF_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M4-03",
+      "family": "M4",
+      "label": "malicious",
+      "rules": [
+        "OBF_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M5-01",
+      "family": "M5",
+      "label": "malicious",
+      "rules": [
+        "PER_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M5-02",
+      "family": "M5",
+      "label": "malicious",
+      "rules": [
+        "CMD_001",
+        "PER_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "B1-04",
+      "family": "B1",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B1-05",
+      "family": "B1",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B2-03",
+      "family": "B2",
+      "label": "benign",
+      "rules": [
+        "EMB_003"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B2-04",
+      "family": "B2",
+      "label": "benign",
+      "rules": [
+        "EMB_003"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B2-05",
+      "family": "B2",
+      "label": "benign",
+      "rules": [
+        "EMB_003"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B3-04",
+      "family": "B3",
+      "label": "benign",
+      "rules": [
+        "ENV_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B3-05",
+      "family": "B3",
+      "label": "benign",
+      "rules": [
+        "FIL_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B4-03",
+      "family": "B4",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B4-04",
+      "family": "B4",
+      "label": "benign",
+      "rules": [
+        "EMB_003"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B4-05",
+      "family": "B4",
+      "label": "benign",
+      "rules": [
+        "EMB_002"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "B5-04",
+      "family": "B5",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B5-05",
+      "family": "B5",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "M1-03",
+      "family": "M1",
+      "label": "malicious",
+      "rules": [
+        "CMD_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M1-04",
+      "family": "M1",
+      "label": "malicious",
+      "rules": [
+        "CMD_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M1-05",
+      "family": "M1",
+      "label": "malicious",
+      "rules": [
+        "CMD_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M2-04",
+      "family": "M2",
+      "label": "malicious",
+      "rules": [
+        "NET_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M2-05",
+      "family": "M2",
+      "label": "malicious",
+      "rules": [
+        "NET_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M3-03",
+      "family": "M3",
+      "label": "malicious",
+      "rules": [
+        "ENV_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "M3-04",
+      "family": "M3",
+      "label": "malicious",
+      "rules": [
+        "FIL_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "M3-05",
+      "family": "M3",
+      "label": "malicious",
+      "rules": [
+        "FIL_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "M4-04",
+      "family": "M4",
+      "label": "malicious",
+      "rules": [
+        "OBF_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M4-05",
+      "family": "M4",
+      "label": "malicious",
+      "rules": [
+        "OBF_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M5-03",
+      "family": "M5",
+      "label": "malicious",
+      "rules": [
+        "PER_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M5-04",
+      "family": "M5",
+      "label": "malicious",
+      "rules": [
+        "PER_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M5-05",
+      "family": "M5",
+      "label": "malicious",
+      "rules": [
+        "PER_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "B1-06",
+      "family": "B1",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B1-07",
+      "family": "B1",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B1-08",
+      "family": "B1",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B2-06",
+      "family": "B2",
+      "label": "benign",
+      "rules": [
+        "EMB_003"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B2-07",
+      "family": "B2",
+      "label": "benign",
+      "rules": [
+        "EMB_003"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B3-06",
+      "family": "B3",
+      "label": "benign",
+      "rules": [
+        "FIL_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B3-07",
+      "family": "B3",
+      "label": "benign",
+      "rules": [
+        "ENV_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B3-08",
+      "family": "B3",
+      "label": "benign",
+      "rules": [
+        "FIL_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B4-06",
+      "family": "B4",
+      "label": "benign",
+      "rules": [
+        "EMB_002"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "B4-07",
+      "family": "B4",
+      "label": "benign",
+      "rules": [
+        "EMB_002"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "B5-06",
+      "family": "B5",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B5-07",
+      "family": "B5",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "M1-06",
+      "family": "M1",
+      "label": "malicious",
+      "rules": [
+        "CMD_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M1-07",
+      "family": "M1",
+      "label": "malicious",
+      "rules": [
+        "CMD_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M2-06",
+      "family": "M2",
+      "label": "malicious",
+      "rules": [
+        "NET_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M2-07",
+      "family": "M2",
+      "label": "malicious",
+      "rules": [
+        "NET_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M2-08",
+      "family": "M2",
+      "label": "malicious",
+      "rules": [
+        "NET_002"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M3-06",
+      "family": "M3",
+      "label": "malicious",
+      "rules": [
+        "ENV_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "M3-07",
+      "family": "M3",
+      "label": "malicious",
+      "rules": [
+        "FIL_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "M4-06",
+      "family": "M4",
+      "label": "malicious",
+      "rules": [
+        "OBF_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M4-07",
+      "family": "M4",
+      "label": "malicious",
+      "rules": [
+        "OBF_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M4-08",
+      "family": "M4",
+      "label": "malicious",
+      "rules": [
+        "OBF_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M5-06",
+      "family": "M5",
+      "label": "malicious",
+      "rules": [
+        "PER_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M5-07",
+      "family": "M5",
+      "label": "malicious",
+      "rules": [
+        "CMD_001",
+        "PER_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M5-08",
+      "family": "M5",
+      "label": "malicious",
+      "rules": [
+        "PER_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "B1-09",
+      "family": "B1",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B1-10",
+      "family": "B1",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B2-08",
+      "family": "B2",
+      "label": "benign",
+      "rules": [
+        "EMB_003"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B2-09",
+      "family": "B2",
+      "label": "benign",
+      "rules": [
+        "EMB_003"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B2-10",
+      "family": "B2",
+      "label": "benign",
+      "rules": [
+        "EMB_003"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B3-09",
+      "family": "B3",
+      "label": "benign",
+      "rules": [
+        "ENV_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B3-10",
+      "family": "B3",
+      "label": "benign",
+      "rules": [
+        "FIL_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B4-08",
+      "family": "B4",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B4-09",
+      "family": "B4",
+      "label": "benign",
+      "rules": [
+        "EMB_003"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "B4-10",
+      "family": "B4",
+      "label": "benign",
+      "rules": [
+        "EMB_002"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "B5-08",
+      "family": "B5",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B5-09",
+      "family": "B5",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "B5-10",
+      "family": "B5",
+      "label": "benign",
+      "rules": [],
+      "severities": [],
+      "bucket": "not_flagged"
+    },
+    {
+      "sample_id": "M1-08",
+      "family": "M1",
+      "label": "malicious",
+      "rules": [
+        "CMD_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M1-09",
+      "family": "M1",
+      "label": "malicious",
+      "rules": [
+        "CMD_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M1-10",
+      "family": "M1",
+      "label": "malicious",
+      "rules": [
+        "CMD_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M2-09",
+      "family": "M2",
+      "label": "malicious",
+      "rules": [
+        "NET_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M2-10",
+      "family": "M2",
+      "label": "malicious",
+      "rules": [
+        "NET_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M3-08",
+      "family": "M3",
+      "label": "malicious",
+      "rules": [
+        "ENV_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "M3-09",
+      "family": "M3",
+      "label": "malicious",
+      "rules": [
+        "FIL_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "M3-10",
+      "family": "M3",
+      "label": "malicious",
+      "rules": [
+        "FIL_001"
+      ],
+      "severities": [
+        "MEDIUM"
+      ],
+      "bucket": "non_blocking"
+    },
+    {
+      "sample_id": "M4-09",
+      "family": "M4",
+      "label": "malicious",
+      "rules": [
+        "OBF_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M4-10",
+      "family": "M4",
+      "label": "malicious",
+      "rules": [
+        "OBF_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M5-09",
+      "family": "M5",
+      "label": "malicious",
+      "rules": [
+        "PER_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    },
+    {
+      "sample_id": "M5-10",
+      "family": "M5",
+      "label": "malicious",
+      "rules": [
+        "PER_001"
+      ],
+      "severities": [
+        "HIGH"
+      ],
+      "bucket": "blocking"
+    }
+  ]
+}
