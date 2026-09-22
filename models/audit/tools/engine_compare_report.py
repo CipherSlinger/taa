@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import math
+import statistics
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -345,6 +346,55 @@ def family_table(regex_rows: Iterable[Row], semgrep_rows: Iterable[Row]) -> List
     return table
 
 
+def _metric_values(rows: Iterable[Row], metric: str) -> List[float]:
+    """The samples a timing metric actually applies to.
+
+    A zero duration means the work never happened - most of the corpus bypasses
+    arbitration, so their `llm_duration_sec` is 0 - and including those would drag
+    the median towards nothing and make every sample that did reach the model look
+    like an incident.
+    """
+    return [float(row[metric]) for row in rows if float(row.get(metric) or 0.0) > 0.0]
+
+
+def duration_outliers(
+    rows: Iterable[Row],
+    metric: str,
+    deviation_k: float = 6.0,
+    min_ratio: float = 3.0,
+) -> List[Dict[str, Any]]:
+    """Samples whose measured duration stands far out from the run's own median.
+
+    The round assumes serial runs on an otherwise idle host, and that assumption
+    is not one I can enforce, so sharing is measured rather than assumed away: a
+    shared host shows up as a few samples taking far longer, never as a uniform
+    slowdown. Both a robust deviation test and a ratio floor are required, since
+    in a quiet run the median absolute deviation collapses and a deviation test
+    alone would report rounding noise as an incident.
+    """
+    rows = list(rows)
+    values = _metric_values(rows, metric)
+    if not values:
+        return []
+    median = statistics.median(values)
+    mad = statistics.median([abs(value - median) for value in values])
+    threshold = max(median + deviation_k * mad, median * min_ratio)
+
+    flagged = []
+    for row in rows:
+        value = float(row.get(metric) or 0.0)
+        if value > threshold:
+            flagged.append({
+                "sample_id": row.get("sample_id"),
+                "metric": metric,
+                "value": value,
+                "median": median,
+                "threshold": threshold,
+                "ratio": safe_div(value, median),
+            })
+    return sorted(flagged, key=lambda entry: -entry["value"])
+
+
 def analyse_all(base_dir: Path, out_path: Optional[Path] = None) -> Dict[str, Any]:
     """The six run directories in, the whole stage-6 analysis out.
 
@@ -411,6 +461,13 @@ def analyse_all(base_dir: Path, out_path: Optional[Path] = None) -> Dict[str, An
         "verdict": verdict,
         "reasons": reasons,
         "runs": runs_meta,
+        "duration_outliers": {
+            f"{engine}-run{index}": {
+                metric: duration_outliers(rows_by_engine[engine].get(index, {}).values(), metric)
+                for metric in ("llm_duration_sec", "scan_duration_ms")
+            }
+            for engine, index in RUN_ORDER
+        },
         "pairs": [_outcome_dict(outcome) for outcome in pairs],
         "inconsistencies": inconsistencies,
         "family_table": family_tables[0] if family_tables else [],

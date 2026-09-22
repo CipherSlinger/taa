@@ -344,6 +344,25 @@ class TestAnalyseAllRuns(unittest.TestCase):
         self.assertEqual([e["sample_id"] for e in analysis["inconsistencies"][1]], ["M1-01"])
         self.assertEqual(analysis["inconsistencies"][0], [])
 
+    def test_it_records_whether_the_host_was_shared_while_each_run_was_collected(self):
+        """The idle-host assumption is disclosed as a measurement, per run.
+
+        The runs are serial by construction but the host was not exclusively mine,
+        and a shared host is not something the collection can rule out. Reporting
+        the outliers keeps the assumption auditable instead of asserted.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            self._all_six(td)
+            # Make one sample of semgrep run 2 stand far out from its run's median.
+            rows = [dict(row(f"B1-{i:02d}", "benign", "benign"), llm_duration_sec=20.0 + i)
+                    for i in range(1, 11)]
+            rows.append(dict(row("M1-01", "malicious", "malicious"), llm_duration_sec=300.0))
+            self._write_run(td, "semgrep", 2, rows)
+            analysis = ec.analyse_all(td)
+        outliers = analysis["duration_outliers"]["semgrep-run2"]["llm_duration_sec"]
+        self.assertEqual([entry["sample_id"] for entry in outliers], ["M1-01"])
+        self.assertEqual(analysis["duration_outliers"]["semgrep-run1"]["llm_duration_sec"], [])
+
     def test_it_writes_the_analysis_to_disk(self):
         """The numbers the report cites have to be re-derivable, not transcribed."""
         with tempfile.TemporaryDirectory() as td:
@@ -353,6 +372,65 @@ class TestAnalyseAllRuns(unittest.TestCase):
             written = json.loads(out.read_text(encoding="utf-8"))
         self.assertEqual(written["verdict"], "通过")
         self.assertIn("family_table", written)
+
+
+class TestDurationOutliers(unittest.TestCase):
+    """Detecting whether the host was shared while a run was collected.
+
+    The round assumes serial runs on an otherwise idle host, and that assumption
+    is not something I can enforce - the run window turned out not to be
+    exclusive. A shared host shows up as a few samples taking far longer, never
+    as a uniform slowdown, so the evidence is the outliers themselves. They are
+    reported rather than acted on: the verdict does not depend on the timings.
+    """
+
+    def _row(self, sample_id, llm_sec=None, scan_ms=None):
+        entry = row(sample_id, "benign", "benign")
+        if llm_sec is not None:
+            entry["llm_duration_sec"] = llm_sec
+        if scan_ms is not None:
+            entry["scan_duration_ms"] = scan_ms
+        return entry
+
+    def test_a_tight_run_has_no_outliers(self):
+        rows = [self._row(f"B1-{i:02d}", llm_sec=20.0 + i * 0.1) for i in range(1, 11)]
+        self.assertEqual(ec.duration_outliers(rows, "llm_duration_sec"), [])
+
+    def test_one_slow_sample_is_named(self):
+        rows = [self._row(f"B1-{i:02d}", llm_sec=20.0 + i * 0.1) for i in range(1, 11)]
+        rows.append(self._row("M1-01", llm_sec=240.0))
+        flagged = ec.duration_outliers(rows, "llm_duration_sec")
+        self.assertEqual([entry["sample_id"] for entry in flagged], ["M1-01"])
+        self.assertGreater(flagged[0]["ratio"], 10.0)
+
+    def test_a_sample_that_never_reached_the_model_is_not_a_fast_sample(self):
+        """A zero duration means the model was never called, not that it was instant.
+
+        Most of the corpus bypasses arbitration, so counting those zeros would drag
+        the median to nearly nothing and make every sample that did reach the model
+        look like an outlier. The metric has to skip the samples it does not apply
+        to rather than treat them as measurements of zero.
+        """
+        rows = [self._row(f"B1-{i:02d}", llm_sec=0.0) for i in range(1, 51)]
+        rows += [self._row(f"M1-{i:02d}", llm_sec=24.0 + i) for i in range(1, 11)]
+        flagged = ec.duration_outliers(rows, "llm_duration_sec")
+        self.assertEqual(flagged, [], "the arbitration samples are not outliers of each other")
+        self.assertEqual(ec._metric_values(rows, "llm_duration_sec"), [25.0 + i for i in range(10)])
+
+    def test_a_metric_no_row_carries_yields_nothing(self):
+        rows = [self._row("B1-01", scan_ms=7)]
+        self.assertEqual(ec.duration_outliers(rows, "llm_duration_sec"), [])
+
+    def test_an_outlier_needs_both_a_large_deviation_and_a_large_ratio(self):
+        """A nearly identical run cannot turn rounding noise into an incident.
+
+        With a flat run the median absolute deviation collapses, so a pure
+        deviation test would flag whichever sample happened to differ by a
+        millisecond. The ratio floor is what keeps a quiet run quiet.
+        """
+        rows = [self._row(f"B1-{i:02d}", scan_ms=7) for i in range(1, 11)]
+        rows.append(self._row("M1-01", scan_ms=8))
+        self.assertEqual(ec.duration_outliers(rows, "scan_duration_ms"), [])
 
 
 if __name__ == "__main__":
