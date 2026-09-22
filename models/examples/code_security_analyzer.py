@@ -515,9 +515,14 @@ class LLMSecurityAnalyzer:
 }}
 """
 
-    def __init__(self, model_name="qwen2.5-coder:0.5b", backend="ollama"):
+    def __init__(self, model_name="qwen2.5-coder:0.5b", backend="ollama", llm_seed=42):
         self.model_name = model_name
         self.backend = backend
+        # Sampling seed. The benchmark compares engines pairwise over three
+        # repetitions, so an unpinned seed folds model sampling noise into a
+        # comparison that is meant to isolate the engine. Temperature stays at
+        # 0.1: changing it would change the treatment, not the measurement.
+        self.llm_seed = llm_seed
 
     def analyze_finding(self, finding: Finding) -> Finding:
         """Perform LLM semantic judgment on a single finding."""
@@ -692,7 +697,7 @@ class LLMSecurityAnalyzer:
                 "model": self.model_name,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"temperature": 0.1, "num_predict": num_predict},
+                "options": {"temperature": 0.1, "num_predict": num_predict, "seed": self.llm_seed},
             }).encode()
             req = urllib.request.Request(
                 "http://localhost:11434/api/generate",
@@ -716,7 +721,7 @@ class LLMSecurityAnalyzer:
             if not hasattr(self, '_llm'):
                 model_path = os.environ.get("LLM_MODEL_PATH", "models/qwen2.5-coder-1.5b-q4_k_m.gguf")
                 self._llm = Llama(model_path=model_path, n_ctx=2048, verbose=False)
-            output = self._llm(prompt, max_tokens=num_predict, temperature=0.1)
+            output = self._llm(prompt, max_tokens=num_predict, temperature=0.1, seed=self.llm_seed)
             text = output["choices"][0]["text"]
             parsed = extract_json_response(text)
             if parsed:
@@ -907,6 +912,7 @@ def generate_audit_report(
     llm_model: str = "qwen2.5-coder:0.5b",
     llm_enabled: bool = True,
     scan_duration_ms: int = 0,
+    llm_seed: int = 42,
 ) -> dict:
     """Generate structured audit report (aligned with Go AuditReport structure)."""
     # Group findings by file
@@ -1011,6 +1017,7 @@ def generate_audit_report(
             "rules_count": len(SUSPICIOUS_PATTERNS),
             "llm_model": llm_model,
             "llm_enabled": llm_enabled,
+            "llm_seed": llm_seed,
             "policy": policy,
             "scan_duration_ms": scan_duration_ms,
         },
@@ -1096,7 +1103,7 @@ def print_audit_report(report: dict):
 # 5. CLI Entrypoint
 # ============================================================
 
-def main():
+def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="源码安全分析器 — 静态规则 + 小模型语义判断 + 结构化审计报告")
     parser.add_argument("source_dir", help="要扫描的源码目录")
     parser.add_argument("--model", default="qwen2.5-coder:0.5b", help="ollama 模型名 (默认: qwen2.5-coder:0.5b)")
@@ -1107,7 +1114,13 @@ def main():
     parser.add_argument("--max-findings", type=int, default=50, help="最多用 LLM 分析的发现数 (防止太慢)")
     parser.add_argument("--policy", default="gate", choices=["gate", "assist"],
                         help="审计策略: gate(可降级放行) 或 assist(仅标注)")
-    args = parser.parse_args()
+    parser.add_argument("--llm-seed", type=int, default=42,
+                        help="LLM 采样种子 (固定后同一输入可复现)")
+    return parser.parse_args(args)
+
+
+def main():
+    args = parse_args()
 
     if not os.path.isdir(args.source_dir):
         print(f"错误: 目录不存在: {args.source_dir}")
@@ -1129,6 +1142,7 @@ def main():
             args.output, policy=args.policy,
             llm_model=args.model, llm_enabled=(args.backend != "none"),
             scan_duration_ms=int((time.time() - start_time) * 1000),
+            llm_seed=args.llm_seed,
         )
         print_audit_report(report)
         sys.exit(0)
@@ -1136,7 +1150,7 @@ def main():
     # Step 2: Finding-level LLM analysis
     file_summaries: Dict[str, FileSummary] = {}
     if args.backend != "none":
-        analyzer = LLMSecurityAnalyzer(model_name=args.model, backend=args.backend)
+        analyzer = LLMSecurityAnalyzer(model_name=args.model, backend=args.backend, llm_seed=args.llm_seed)
         to_analyze = findings[:args.max_findings]
         print(f"[2/4] LLM Finding 分析 ({args.model}): {len(to_analyze)} 个")
         for i, f in enumerate(to_analyze):
@@ -1164,6 +1178,7 @@ def main():
         args.output, policy=args.policy,
         llm_model=args.model, llm_enabled=(args.backend != "none"),
         scan_duration_ms=int((time.time() - start_time) * 1000),
+        llm_seed=args.llm_seed,
     )
     print_audit_report(report)
 

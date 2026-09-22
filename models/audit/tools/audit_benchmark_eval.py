@@ -567,6 +567,37 @@ def check_sample_attribution(sample_row: dict[str, Any], sample_meta: dict[str, 
     return False
 
 
+def build_analyzer(llm_model: str, llm_backend: str, llm_seed: int):
+    """Construct the LLM analyzer with the run's fixed sampling seed.
+
+    Centralised so that a seed cannot be parsed by the CLI and then dropped on
+    the way to the backend, which would leave the runs unpinned while the
+    summary still claimed a seed.
+    """
+    if llm_backend == "none":
+        return None
+    return LLMSecurityAnalyzer(
+        model_name=llm_model, backend=llm_backend, llm_seed=llm_seed
+    )
+
+
+def run_metadata(args) -> dict[str, Any]:
+    """Run metadata carried into the summary.
+
+    Single source for the fields that describe *how* a run was performed, so a
+    new one cannot be added to the CLI without also reaching the summary.
+    """
+    return {
+        "audit_mode": args.audit_mode,
+        "policy": args.policy,
+        "llm_backend": args.llm_backend,
+        "llm_model": args.llm_model,
+        "llm_seed": args.llm_seed,
+        "engine": args.engine,
+        "notes": args.notes,
+    }
+
+
 def analyse_sample(
     sample: SampleSpec,
     sample_dir: Path,
@@ -578,6 +609,7 @@ def analyse_sample(
     extensions: tuple[str, ...],
     max_findings: int,
     engine: str = "regex",
+    llm_seed: int = 42,
 ) -> dict[str, Any]:
     sample_out_dir = results_dir / sample.sample_id
     sample_out_dir.mkdir(parents=True, exist_ok=True)
@@ -627,7 +659,7 @@ def analyse_sample(
 
     if audit_mode in ("pure-llm", "pure-llm-checklist"):
         py_files = discover_sample_py_files(sample_dir, extensions=extensions)
-        analyzer = LLMSecurityAnalyzer(model_name=llm_model, backend=llm_backend) if llm_backend != "none" else None
+        analyzer = build_analyzer(llm_model, llm_backend, llm_seed)
         if analyzer is not None and audit_mode == "pure-llm-checklist":
             analyzer.PURE_LLM_FILE_PROMPT = CHECKLIST_RULES_PROMPT + "\n\n" + LLMSecurityAnalyzer.PURE_LLM_FILE_PROMPT
 
@@ -825,7 +857,7 @@ def analyse_sample(
     file_summaries: Dict[str, Any] = {}
     analyzer = None
     if llm_backend != "none" and findings:
-        analyzer = LLMSecurityAnalyzer(model_name=llm_model, backend=llm_backend)
+        analyzer = build_analyzer(llm_model, llm_backend, llm_seed)
         for finding in findings[:max_findings]:
             analyzer.analyze_finding(finding)
         for file_path, file_findings in group_findings_by_file(findings).items():
@@ -1193,6 +1225,7 @@ def build_summary_report(
     eval_duration_sec: float,
     notes: str,
     engine: str = "regex",
+    llm_seed: int = 42,
 ) -> dict[str, Any]:
     counts = confusion_counts(results)
     metrics = metric_summary(results)
@@ -1215,6 +1248,7 @@ def build_summary_report(
         "audit_mode": audit_mode,
         "engine": engine,
         "llm_model": llm_model if llm_backend != "none" else "none",
+        "llm_seed": llm_seed if llm_backend != "none" else None,
         "auditor_version": f"{llm_backend}:{llm_model}" if llm_backend != "none" else "static-only",
         "rule_set_version": rule_set_version,
         "prompt_version": prompt_version,
@@ -1377,6 +1411,7 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--policy", choices=["assist", "gate"], default="gate", help="audit policy to use")
     parser.add_argument("--llm-backend", choices=["none", "ollama", "llamacpp"], default="none", help="LLM backend used for semantic verification")
     parser.add_argument("--llm-model", default="qwen2.5-coder:0.5b", help="LLM model name")
+    parser.add_argument("--llm-seed", type=int, default=42, help="LLM sampling seed recorded in the summary")
     parser.add_argument("--extensions", default=".py", help="comma-separated list of source extensions to scan")
     parser.add_argument("--max-findings", type=int, default=50, help="max findings to send to the LLM per sample")
     parser.add_argument("--limit", type=int, default=0, help="limit the number of samples to evaluate")
@@ -1415,6 +1450,7 @@ def main() -> int:
                 extensions=extensions,
                 max_findings=args.max_findings,
                 engine=args.engine,
+                llm_seed=args.llm_seed,
             )
         )
     eval_duration_sec = round(time.time() - started_eval, 2)
@@ -1422,13 +1458,8 @@ def main() -> int:
     summary = build_summary_report(
         results=results,
         benchmark_root=args.benchmark_root,
-        audit_mode=args.audit_mode,
-        policy=args.policy,
-        llm_backend=args.llm_backend,
-        llm_model=args.llm_model,
         eval_duration_sec=eval_duration_sec,
-        notes=args.notes,
-        engine=args.engine,
+        **run_metadata(args),
     )
     write_results_bundle(args.results_dir, results, summary)
 
