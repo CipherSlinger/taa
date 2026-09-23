@@ -240,7 +240,12 @@ func TestGenerateReportID(t *testing.T) {
 func TestAssembleAuditReport(t *testing.T) {
 	scanReport := &Report{
 		FilesCount: 3,
-		HighCount:  1,
+		// A completed scan that dropped nothing, which is what these fixtures
+		// model. The completeness fields are not optional detail: the pass
+		// decision withholds a pass from a report that cannot prove it looked,
+		// and ScanComplete's zero value means "did not complete".
+		ScanComplete: true,
+		HighCount:    1,
 		Findings: []Finding{
 			{File: "/a/train.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, LLMVerdict: "MALICIOUS"},
 		},
@@ -286,9 +291,10 @@ func TestAssembleAuditReport(t *testing.T) {
 func TestAssembleAuditReport_SummaryHonestyAndFailClosed(t *testing.T) {
 	// Case 1: Degraded LLM with low findings should NOT claim "大模型确认为正常"
 	scanReportDegraded := &Report{
-		FilesCount:  1,
-		Passed:      false,
-		LLMDegraded: true,
+		FilesCount:   1,
+		ScanComplete: true,
+		Passed:       false,
+		LLMDegraded:  true,
 		Findings: []Finding{
 			{File: "test_run.py", Line: 1, RuleID: "EMB_003", Severity: SeverityMedium, LLMVerdict: "UNCERTAIN"},
 		},
@@ -311,8 +317,9 @@ func TestAssembleAuditReport_SummaryHonestyAndFailClosed(t *testing.T) {
 
 	// Case 2: Healthy LLM with actual BENIGN finding should honestly report "大模型确认为正常"
 	scanReportBenign := &Report{
-		FilesCount: 1,
-		Passed:     true,
+		FilesCount:   1,
+		ScanComplete: true,
+		Passed:       true,
 		Findings: []Finding{
 			{File: "test_run.py", Line: 1, RuleID: "EMB_003", Severity: SeverityMedium, LLMVerdict: "BENIGN"},
 		},

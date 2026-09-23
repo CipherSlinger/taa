@@ -220,7 +220,9 @@ func CheckImport(dir string) (bool, *Report, error) {
 	if err != nil {
 		return false, nil, err
 	}
-	return report.Passed, report, nil
+	// A pass here means the scan looked and found nothing that blocks, so it is
+	// withheld unless the scan can prove it looked.
+	return report.Passed && report.ProvesCleanScan(), report, nil
 }
 
 // CheckExport inspects resultDir for plaintext data leakage against dataDir.

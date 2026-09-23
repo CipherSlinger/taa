@@ -97,6 +97,36 @@ type Rule struct {
 	Patterns    []*regexp.Regexp
 }
 
+// ProvesCleanScan reports whether this report is evidence of absence: the scan
+// ran to completion, examined the files it was given, and dropped nothing.
+//
+// This is the precondition for reading an empty finding list as a pass, and it
+// is deliberately a different question from Passed. Passed answers "did the scan
+// find anything that blocks"; this answers "did the scan look". A report can be
+// Passed and still prove nothing: a scan that hit the finding cap reports Passed
+// on the findings it kept, while the input it never reached is absent from the
+// report and therefore invisible to whoever reads it.
+//
+// Every field it reads is a distinct way for a scan to have not looked, and each
+// has to be able to withhold the pass on its own — an engine that did not
+// finish, findings dropped at the cap, files that failed to parse, files skipped
+// by extension, and a subprocess that failed. The last two are configuration
+// rather than failure for the regex engine, which is why it leaves them at zero:
+// a zero here means nothing was skipped, not that skipping is unsupported.
+//
+// A nil report proves nothing, which is what a caller that never got a report
+// should conclude.
+func (r *Report) ProvesCleanScan() bool {
+	if r == nil {
+		return false
+	}
+	return r.ScanComplete &&
+		!r.Truncated &&
+		r.ParserErrors == 0 &&
+		r.UnsupportedExts == 0 &&
+		r.ProcessExitCode == 0
+}
+
 // DefaultRules returns the built-in set of security rules for Python code.
 func DefaultRules() []Rule {
 	return []Rule{

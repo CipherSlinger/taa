@@ -118,12 +118,21 @@ func TestProductionGateSemantics(t *testing.T) {
 
 			stats := ComputeStatistics(all)
 
-			// Reproduce Report.Passed exactly as the verifier leaves it. The
-			// fail-closed branches can only set it to false, so these two are
-			// the most permissive values for each policy.
-			reportGate := &Report{Findings: all}
+			// Reproduce Report.Passed exactly as the verifier leaves it, for the
+			// scan these runs actually were: one that completed and dropped
+			// nothing. The fail-closed branches can only set it to false, so
+			// these two are the most permissive values for each policy.
+			//
+			// The completeness fields are set explicitly rather than left at
+			// their zero values, and that is load-bearing rather than tidiness.
+			// The zero value of ScanComplete means "did not complete", and the
+			// pass decision withholds a pass on exactly that, so a report literal
+			// that leaves the field unset is the least permissive value, not the
+			// most: it blocks every sample and would misreport the production
+			// decision as a total denial of service.
+			reportGate := &Report{Findings: all, ScanComplete: true}
 			recalculateGatePassed(reportGate)
-			reportAssist := &Report{Findings: all}
+			reportAssist := &Report{Findings: all, ScanComplete: true}
 			recalculateStaticPassed(reportAssist)
 
 			ctx := ConclusionContext{HasLLMBenign: true}

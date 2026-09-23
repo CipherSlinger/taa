@@ -346,7 +346,12 @@ func AssembleAuditReport(
 	var scanPassed *bool
 	var llmDegraded bool
 	if scanReport != nil {
-		sp := scanReport.Passed
+		// ScanPassed is the channel that forces failure under both policies, so
+		// it carries the completeness precondition as well as the finding-based
+		// decision. Without it a scan that dropped findings, or never finished,
+		// would reach ComputeConclusionContext as a pass and the only trace of
+		// the unexamined input would be a metadata field nobody reads.
+		sp := scanReport.Passed && scanReport.ProvesCleanScan()
 		scanPassed = &sp
 		llmDegraded = scanReport.LLMDegraded
 		for _, f := range scanReport.Findings {

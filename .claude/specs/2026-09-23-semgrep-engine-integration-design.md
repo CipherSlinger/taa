@@ -499,9 +499,26 @@ semgrep 未安装 / 非零退出 / 超时 / 解析错误 / 命中数截断
 
 目标态 §8.1 把四条前置条件挂在「**50%+ 极速旁路放行**」上——即「零 finding 才能旁路 LLM」。生产确实有这个旁路（`verifier.go:306` 的 `len(scanReport.Findings) > 0`，零 finding 时不调 LLM），但**它从未被描述成一条契约，也没有任何前置条件**。
 
-**本规范把 §8.1 的四条前置条件落到这个已有的旁路上**，而不新造一条旁路。即：只有 `ScanComplete && ParserErrors == 0 && UnsupportedExts == 0 && ProcessExitCode == 0` 时，才允许「零 finding → 直接放行」；否则一律 `passed = false`。
+**本规范把 §8.1 的四条前置条件落到这个已有的旁路上**，而不新造一条旁路。即：只有 `ScanComplete && !Truncated && ParserErrors == 0 && UnsupportedExts == 0 && ProcessExitCode == 0` 时，才允许「零 finding → 直接放行」；否则一律 `passed = false`。
 
-### 8.3 `UNCERTAIN` 的方向性（沿用证据侧结论）
+> **与 §8.1 的字面差异及调和（2026-09-23 实现后补）**：§8.1 把「命中数截断」列为五类失败之一并写成 `ScanComplete = false`，而本条的四项前置条件不含 `Truncated`。两者不该靠改 `ScanComplete` 来统一——`ScanComplete` 回答「引擎是否跑完」，截断回答「丢弃了什么」，是两个事实，让前者谎报后者会让报告在事后无法区分「没跑完」和「跑完了但丢东西」。故实现为一个统一谓词 `Report.ProvesCleanScan()`，五项各自独立**且**关系，任一为假即不成立；`ScanComplete` 保持其本义。两处字面差异由此消解，谓词定义见 `rules.go`。
+
+### 8.3 **实现该契约时实测到的陷阱**：`ScanComplete` 的零值会让「最宽松的 fixture」变成「阻断一切」（2026-09-23）
+
+**现象**：谓词折叠进 `recomputeReportPassed` 与 `AssembleAuditReport` 后，门控套件的 `final` 两臂 **FPR 从 0.52/0.56 跳到 1.0000、recall 1.0000**——即全部样本被阻断；`production-gate-semantics.json` 被改写。
+
+**根因**：`gate_semantics_production_test.go` 刻意用裸字面量 `&Report{Findings: all}` 作为「**每个策略下最宽松的取值**」，其注释给出的理由是「fail-closed 分支只能把它置 false」。该理由**依赖零值无害**——而 `ScanComplete` 的零值是 false，其含义恰是「未完成」，于是最宽松的 fixture 变成了最严苛的：所有样本被判定阻断，且报告仍写着「未发现安全问题」，读起来像一个合理的结论。
+
+**这不是测试笔误，是接入前就该预见的性质**：任何一个「零值即失败」的安全字段，都会把所有**绕过引擎 stamp 的构造路径**变成 100% 阻断。已在生产侧核实**当前不存在**这样的路径（`DefaultEngine()` 是唯一构造点，`engine.go:90`，两个引擎都 stamp；`NewScanner`/`NewDefaultScanner` 在非测试代码中无调用）。但该性质必须显式守住，故新增：
+
+- `TestEveryEngineProvesACleanScanForANormalScan`：两个引擎对一次正常扫描的产出都必须 `ProvesCleanScan()`。故意移除任一引擎的 `stamp` 会精确报出 `ScanComplete=false ...`。**这是新增引擎或新增构造路径时的第一道警报。**
+- 反向的 `TestRecomputeReportPassedWithholdsPassForAnIncompleteScan` 与 `TestProvesCleanScanRequiresEveryCompletenessField`，防止「永远失败」也能满足上述断言。
+
+**判据留痕**：修复后门控两臂数值**逐字回到** `regex-run1 final: gate FPR=0.5600 recall=1.0000 | assist FPR=0.5200 recall=1.0000`，且 `production-gate-semantics.json` 与已提交版本**字节相同**。这同时证明了**该前置条件对「完整扫描」是判定中性的**——即它不改变任何既有结论，只在扫描不完整时生效。语料平价亦仍为 100/100 零分歧。
+
+**连带修正的 fixture**：4 个测试文件中的裸 `Report` 字面量（`gate_semantics_production_test.go`、`gate_semantics_test.go`、`audit_test.go`、`llm_test.go`）补上 `ScanComplete: true` 并注明理由。**断言语义一处未改**，只补全了 fixture 对「这是引擎盖章过的完整扫描」的建模。
+
+### 8.4 `UNCERTAIN` 的方向性（沿用证据侧结论）
 
 证据报告 §7.7：`UNCERTAIN ≠ BENIGN`，所以 fail-closed 后静态命中**保留**，从不被开脱。生产侧同一性质由 `verifier.go:121` 与 `:143` 保证（只有 `VerdictBenign` 才算开脱）。**接入不得改变这一点**——semgrep 的 `dataflow_trace` 只增强证据，不改变裁决语义。
 
@@ -556,7 +573,7 @@ semgrep 未安装 / 非零退出 / 超时 / 解析错误 / 命中数截断
 | **B** | `StaticEngine` 抽象 + `regexEngine` 包装（§6.1） | 行为**零变化**，全测试绿 | 低，纯重构 |
 | **C** | `Report`/`Finding` 字段扩展 + `MaxFindings` 截断标志（§3.5、§6.2） | 截断不再静默 | 中，触及判定输入 |
 | **D** | `semgrepEngine` 实现（§6.4）：exec、解析、`metadata.rule_family` 映射、**上下文构造与 regex 臂等价**（§6.4 新增要求） | **本地**可跑（宿主已有 semgrep 1.177.0，无需容器）；含「两臂上下文逐字节相同」的测试 | 中 |
-| **E** | fail-closed 管线（§8）：**把 D 已能检出的失败接到判定上** | 注入式测试 | **高，这是安全属性** |
+| **E** | fail-closed 管线（§8）：**把 D 已能检出的失败接到判定上** | 统一谓词 `ProvesCleanScan()` + 两个判定点（`AssembleAuditReport`、`recomputeReportPassed`、`CheckImport`、`CheckImportWithLLM`）接线；`failclosed_test.go` 七例；四类适配器级失败已在阶段 D 覆盖 | **高，这是安全属性**；实测踩到零值陷阱（§8.3），fixture 建模已连带修正 |
 | **F** | 配置项 + fail-fast（§6.5） | 未识别引擎名报错 | 低 |
 | **G** | **容器部署与功能验证**：`deploy-docker.sh` 装 taa + semgrep + 规则文件，容器内跑通；顺带做同容器并发压测（为 D4 取证） | 容器内可跑 semgrep，审计链路端到端可用 | 中 |
 | **H** | 留出集非劣验证（§9）：**在 `assist` 下判定**，并比对两臂 Prompt 等价性 | 通过才允许切默认引擎 | — |

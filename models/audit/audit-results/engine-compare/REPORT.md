@@ -544,6 +544,21 @@ find models/audit/benchmarks/audit-100 -type d \( -name venv -o -name .venv -o -
 
 **但这条限定不能外推**：危险是真实的而非理论的。模型导入目录携带 `venv/*.py` 十分常见，那种输入下目录 target 会让 semgrep 扫出 regex 臂从未读过的 finding，两臂的文件集与 `files_scanned` 都不再可比。生产适配器因此改为**传显式文件列表**（walk 的结果），文件集由 walk 决定、与 semgrep 的忽略规则无关，并增加了一项完整性判据：`paths.scanned` 必须覆盖全部传入 target，否则扫描以 error 失败（spec §6.4）。
 
+### 7.17 fail-closed 前置条件落地后，本报告的产物**重新推导并逐字节相同**（2026-09-23）
+
+阶段 E 把「扫描完整性」折进了放行判定：`Report.ProvesCleanScan()`（`rules.go`）要求 `ScanComplete && !Truncated && ParserErrors == 0 && UnsupportedExts == 0 && ProcessExitCode == 0`，并折入 `recomputeReportPassed` 与 `AssembleAuditReport`。**这条改动动的是消费证据的代码**，而 `production-gate-semantics.json` 正是用生产函数在该证据上重算出来的，因此必须重新推导：若该前置条件会改变**完整扫描**上的任何结论，该产物就会变。
+
+**首次重推导被大幅改写**（`final` 两臂 FPR 由 0.5200/0.5600 跳到 1.0000）——根因**不是**数据，而是推导脚本的 fixture 建模：`gate_semantics_production_test.go` 用裸字面量 `&Report{Findings: all}` 表示「每策略下最宽松的取值」，而 `ScanComplete` 的零值是 false、含义恰为「未完成」，于是最宽松的 fixture 变成了最严苛的。修正 fixture（补 `ScanComplete: true`，**断言语义一处未改**）后重推导：
+
+```
+regex-run1..3  final: gate FPR=0.5600 recall=1.0000 | assist FPR=0.5200 recall=1.0000
+semgrep-run1..3 final: gate FPR=0.5600 recall=1.0000 | assist FPR=0.5600 recall=1.0000
+```
+
+`production-gate-semantics.json` 与已提交版本**逐字节相同**（`git status -- models/` 为空；md5 `55f6bd8ef0ddb4e445abff2f439e5386`），语料平价重跑亦仍为 `samples=100 identical=100 divergent=0`。
+
+**这条留痕的用途**：它证明该前置条件对完整扫描是**判定中性**的——本报告 §2/§3/§7.5/§7.13 的每一个数字都不因接入而改变；前置条件只在扫描**不完整**时生效，而那是本报告从未出现过的输入。**同时它也是一次警告**：一个「零值即失败」的安全字段会让所有绕过引擎 stamp 的构造路径变成 100% 阻断，而报告仍写着「未发现安全问题」。该陷阱的完整经过与守卫测试见接入规范 §8.3。
+
 ---
 
 ## 8. 采集过程的偏离（须披露）
@@ -572,7 +587,7 @@ find models/audit/benchmarks/audit-100 -type d \( -name venv -o -name .venv -o -
 | §2 逐轮指标与 CI | 各轮 `summary.json` | `regex-run{1..3}/`、`semgrep-run{1..3}/` |
 | §2 混淆矩阵的独立复核 | 从各轮 `sample-results.jsonl` 重算 | 同上 |
 | §7.5 门禁语义 | `TAA_CORPUS_PARITY` 无关；直接 `python3 -m unittest tests.test_corpus_gate_semantics` | `gate-semantics-audit.json` |
-| **§7.5 生产门禁数值、§7.13 终判** | `TAA_PRODUCTION_GATE=1 go test ./internal/codeaudit/ -run TestProductionGateSemantics -v`（调用**真实**的生产函数，不是镜像） | `production-gate-semantics.json` |
+| **§7.5 生产门禁数值、§7.13 终判、§7.17 重推导** | `TAA_PRODUCTION_GATE=1 go test ./internal/codeaudit/ -run TestProductionGateSemantics -v`（调用**真实**的生产函数，不是镜像） | `production-gate-semantics.json` |
 | **§7.13 两臂裁决多重集比对** | 见 §7.13 内联脚本 | 无（读各轮 `audit_report.json`） |
 | §7.3 规则对等 | `python3 -m unittest tests.test_engine_rule_parity` | `rule-parity-audit.json` |
 | §7.7 失败集合与污染判定 | `paired-analysis.json` 的 `fail_closed_by_run` | 同上 |

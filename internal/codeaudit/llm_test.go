@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CipherSlinger/teetls"
 	"github.com/CipherSlinger/teellm"
+	"github.com/CipherSlinger/teetls"
 )
 
 // ── parseDecision tests ──────────────────────────────────
@@ -116,15 +116,21 @@ func (m *mockInferenceClient) VerifyFinding(ctx context.Context, req *teellm.Req
 }
 
 func (m *mockInferenceClient) HealthCheck(ctx context.Context) error { return m.err }
-func (m *mockInferenceClient) Close() error                           { return nil }
+func (m *mockInferenceClient) Close() error                          { return nil }
 
 // ── VerifyReport tests ───────────────────────────────────
 
 func TestVerifyReportAssistPolicy(t *testing.T) {
+	// ScanComplete models the engine having stamped a completed scan. The
+	// completeness fields are not optional detail: VerifyReport's recalculation
+	// withholds a pass from a report that cannot prove it looked, and the
+	// field's zero value means "did not complete", so a bare literal would
+	// decide every one of these fixtures as blocked.
 	report := &Report{
-		HighCount:   2,
-		MediumCount: 0,
-		Passed:      false,
+		ScanComplete: true,
+		HighCount:    2,
+		MediumCount:  0,
+		Passed:       false,
 		Findings: []Finding{
 			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
 			{File: "a.py", Line: 5, RuleID: "CMD_001", Severity: SeverityHigh, CodeSnippet: "subprocess.run(cmd)"},
@@ -158,9 +164,10 @@ func TestVerifyReportAssistPolicy(t *testing.T) {
 
 func TestVerifyReportGatePolicyDowngradesBenign(t *testing.T) {
 	report := &Report{
-		HighCount:   2,
-		MediumCount: 0,
-		Passed:      false,
+		ScanComplete: true,
+		HighCount:    2,
+		MediumCount:  0,
+		Passed:       false,
 		Findings: []Finding{
 			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
 			{File: "a.py", Line: 5, RuleID: "CMD_001", Severity: SeverityHigh, CodeSnippet: "subprocess.run(cmd)"},
@@ -191,9 +198,10 @@ func TestVerifyReportGatePolicyDowngradesBenign(t *testing.T) {
 
 func TestVerifyReportGatePolicyBlocksMalicious(t *testing.T) {
 	report := &Report{
-		HighCount:   1,
-		MediumCount: 0,
-		Passed:      false,
+		ScanComplete: true,
+		HighCount:    1,
+		MediumCount:  0,
+		Passed:       false,
 		Findings: []Finding{
 			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url, data=raw_data)"},
 		},
@@ -220,7 +228,7 @@ func TestVerifyReportGatePolicyBlocksMalicious(t *testing.T) {
 }
 
 func TestVerifyReportDisabled(t *testing.T) {
-	report := &Report{Passed: false, HighCount: 1, Findings: []Finding{{Severity: SeverityHigh}}}
+	report := &Report{ScanComplete: true, Passed: false, HighCount: 1, Findings: []Finding{{Severity: SeverityHigh}}}
 	cfg := LLMConfig{Enabled: false}
 	result, err := VerifyReport(context.Background(), report, cfg, nil)
 	if err != nil {
@@ -236,7 +244,7 @@ func TestVerifyReportMaxFindingsCap(t *testing.T) {
 	for i := range findings {
 		findings[i] = Finding{File: "x.py", Line: i + 1, Severity: SeverityHigh}
 	}
-	report := &Report{HighCount: 10, Passed: false, Findings: findings}
+	report := &Report{ScanComplete: true, HighCount: 10, Passed: false, Findings: findings}
 
 	mock := &mockLLMClient{
 		decisions: make([]LLMDecision, 10),
@@ -260,8 +268,9 @@ func TestVerifyReportMaxFindingsCap(t *testing.T) {
 
 func TestVerifyReport_InferenceClient_Malicious(t *testing.T) {
 	report := &Report{
-		HighCount: 1,
-		Passed:    false,
+		ScanComplete: true,
+		HighCount:    1,
+		Passed:       false,
 		Findings: []Finding{
 			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
 		},
@@ -283,8 +292,9 @@ func TestVerifyReport_InferenceClient_Malicious(t *testing.T) {
 
 func TestVerifyReport_InferenceClient_BenignDowngrade(t *testing.T) {
 	report := &Report{
-		HighCount: 1,
-		Passed:    false,
+		ScanComplete: true,
+		HighCount:    1,
+		Passed:       false,
 		Findings: []Finding{
 			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
 		},
@@ -309,8 +319,9 @@ func TestVerifyReport_InferenceClient_BenignDowngrade(t *testing.T) {
 
 func TestVerifyReport_InferenceClient_CircuitOpen_GateFailClosed(t *testing.T) {
 	report := &Report{
-		HighCount: 1,
-		Passed:    false,
+		ScanComplete: true,
+		HighCount:    1,
+		Passed:       false,
 		Findings: []Finding{
 			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
 		},
@@ -339,9 +350,10 @@ func TestVerifyReport_InferenceClient_CircuitOpen_GateFailClosed(t *testing.T) {
 func TestVerifyReport_InferenceClient_GateFailOpen(t *testing.T) {
 	// Medium-only finding: static scan passes.
 	report := &Report{
-		HighCount:   0,
-		MediumCount: 1,
-		Passed:      true,
+		ScanComplete: true,
+		HighCount:    0,
+		MediumCount:  1,
+		Passed:       true,
 		Findings: []Finding{
 			{File: "a.py", Line: 1, RuleID: "DYN_001", Severity: SeverityMedium, CodeSnippet: "eval(expr)"},
 		},
@@ -404,8 +416,9 @@ func (m *mockNilDecisionClient) Close() error                        { return ni
 
 func TestVerifyReport_NilDecisionTreatedAsFailure(t *testing.T) {
 	report := &Report{
-		HighCount: 1,
-		Passed:    false,
+		ScanComplete: true,
+		HighCount:    1,
+		Passed:       false,
 		Findings: []Finding{
 			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
 		},
@@ -450,8 +463,9 @@ func (m *mockCaptureEnvelopeClient) Close() error                        { retur
 
 func TestVerifyReport_ModelRefPopulated(t *testing.T) {
 	report := &Report{
-		HighCount: 1,
-		Passed:    false,
+		ScanComplete: true,
+		HighCount:    1,
+		Passed:       false,
 		Findings: []Finding{
 			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
 		},
@@ -473,8 +487,9 @@ func TestVerifyReport_ModelRefPopulated(t *testing.T) {
 
 func TestVerifyReport_ContextCancelled(t *testing.T) {
 	report := &Report{
-		HighCount: 2,
-		Passed:    false,
+		ScanComplete: true,
+		HighCount:    2,
+		Passed:       false,
 		Findings: []Finding{
 			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
 			{File: "b.py", Line: 2, RuleID: "CMD_001", Severity: SeverityHigh, CodeSnippet: "os.system(cmd)"},
@@ -505,9 +520,10 @@ func TestVerifyReport_ContextCancelled(t *testing.T) {
 
 func TestVerifyReport_InferenceClient_CircuitOpen_AssistDegraded(t *testing.T) {
 	report := &Report{
-		HighCount:   0,
-		MediumCount: 1,
-		Passed:      true,
+		ScanComplete: true,
+		HighCount:    0,
+		MediumCount:  1,
+		Passed:       true,
 		Findings: []Finding{
 			{File: "a.py", Line: 1, RuleID: "DYN_001", Severity: SeverityMedium, CodeSnippet: "eval(expr)"},
 		},
@@ -535,9 +551,10 @@ func TestVerifyReport_InferenceClient_CircuitOpen_AssistDegraded(t *testing.T) {
 
 func TestVerifyReport_InferenceClient_CircuitOpen_AssistFailClosed(t *testing.T) {
 	report := &Report{
-		HighCount:   0,
-		MediumCount: 1,
-		Passed:      true,
+		ScanComplete: true,
+		HighCount:    0,
+		MediumCount:  1,
+		Passed:       true,
 		Findings: []Finding{
 			{File: "a.py", Line: 1, RuleID: "DYN_001", Severity: SeverityMedium, CodeSnippet: "eval(expr)"},
 		},
@@ -595,7 +612,7 @@ func TestOllamaClientSuccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewInferenceClient(LLMConfig{Endpoint: server.URL, Model: "test-model", Timeout: 5*time.Second, InsecureSkipVerify: true})
+	client, err := NewInferenceClient(LLMConfig{Endpoint: server.URL, Model: "test-model", Timeout: 5 * time.Second, InsecureSkipVerify: true})
 	if err != nil {
 		t.Fatalf("NewInferenceClient failed: %v", err)
 	}
@@ -705,13 +722,13 @@ def report_metrics(acc, loss):
 	defer server.Close()
 
 	cfg := LLMConfig{
-		Enabled:     true,
-		Endpoint:    server.URL,
-		Model:       "test-model",
-		Timeout:     5 * time.Second,
-		MaxFindings: 10,
-		Policy:      "gate",
-		FailClosed:  true,
+		Enabled:            true,
+		Endpoint:           server.URL,
+		Model:              "test-model",
+		Timeout:            5 * time.Second,
+		MaxFindings:        10,
+		Policy:             "gate",
+		FailClosed:         true,
 		InsecureSkipVerify: true,
 	}
 
@@ -732,6 +749,7 @@ def report_metrics(acc, loss):
 
 func TestSummarizeLLMVerdicts(t *testing.T) {
 	report := &Report{
+		ScanComplete: true,
 		Findings: []Finding{
 			{LLMVerdict: "BENIGN"},
 			{LLMVerdict: "BENIGN"},

@@ -31,7 +31,11 @@ import (
 // production actually consumes (import_processing.go:645 takes
 // Conclusion.Passed), which also ANDs in Report.Passed via ScanPassed.
 func productionDecision(findings []Finding, policy string) (conclusionOnly, reportPassed, final bool) {
-	report := &Report{Findings: findings}
+	// ScanComplete models the engine having stamped a completed scan. It is not
+	// optional detail: the pass decision withholds a pass from a report that
+	// cannot prove it looked, and the field's zero value means "did not
+	// complete", so a bare literal would decide every sample as blocked.
+	report := &Report{Findings: findings, ScanComplete: true}
 	if policy == "gate" {
 		recalculateGatePassed(report)
 	} else {

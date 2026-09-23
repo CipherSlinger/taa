@@ -178,7 +178,13 @@ func recomputeReportPassed(report *Report, honorExoneration bool) {
 	}
 	report.HighCount = highCount
 	report.MediumCount = mediumCount
-	report.Passed = highCount == 0
+	// The completeness precondition is folded in here rather than at the call
+	// sites or in the scanner, because this is the one function both policies
+	// recompute through. Put anywhere else it would be a rule that a later
+	// recalculation could drop: recalculateStaticPassed recomputes Passed from
+	// the findings alone, so a check applied before it would be overwritten by
+	// the same code that is supposed to preserve it.
+	report.Passed = highCount == 0 && report.ProvesCleanScan()
 }
 
 // recalculateGatePassed recomputes Report.Passed for the gate policy, honoring
@@ -215,6 +221,15 @@ func CheckImportWithLLM(ctx context.Context, dir string, cfg LLMConfig) (bool, *
 	report, err := DefaultEngine().ScanDirectory(dir)
 	if err != nil {
 		return false, nil, err
+	}
+
+	// A report that cannot prove both that its scan ran to completion and that
+	// it dropped nothing is not evidence of absence, so it must not pass on any
+	// of the paths below. The folds inside recomputeReportPassed carry the same
+	// precondition, so the recalculations further down cannot restore a pass
+	// this clears.
+	if !report.ProvesCleanScan() {
+		report.Passed = false
 	}
 
 	if !cfg.Enabled || len(report.Findings) == 0 {
