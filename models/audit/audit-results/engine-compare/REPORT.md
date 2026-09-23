@@ -418,7 +418,50 @@ for i in (1,2,3):
 PY
 ```
 
-> **教训（与 §7.5 的第三次勘误同源）**：本轮把「判定」定义为**评测器在 `--policy gate` 下的判定**，而没有回头确认**生产默认跑的是哪个策略**。测量仪器选错时，Δ = 0 是仪器读数，不是被测对象的性质。**下一轮起，「用哪个策略判定」必须与「生产默认策略」一致。**
+> **教训（与 §7.5 的第三次勘误同源）**：本轮把「判定」定义为**评测器在 `--policy gate` 下的判定**，而没有回头确认**生产默认跑的是哪个策略**。测量仪器选错时，Δ = 0 是仪器读数，不是被测对象的性质。**下一轮起，「用哪个策略判定」必须与生产默认策略一致。**
+
+### 7.14 `assist` 下的误报按**通道**分解：Tier 1 自身的误报两臂完全相同，ΔFPR 全部来自 Tier 2（2026-09-23 补测）
+
+§7.13 定位了差异**在哪两个样本上**，本节回答差异**走哪条通道**，并顺带得到一个与 semgrep 无关的结论。
+
+生产默认策略 `assist` 的判定是 `final = 分类统计检查 && Report.Passed`（§7.5）。据此把 50 个良性样本被拦的原因切成两个**互斥**桶——先看静态 severity 有没有 HIGH，没有再看有没有 `MALICIOUS` 裁决：
+
+| 通道 | regex | semgrep | Δ |
+|---|---|---|---|
+| Tier 1 静态 `HIGH` 落在良性样本 | **6** (`B4-01/02/05/06/07/10`) | **6（同一批样本）** | **0** |
+| Tier 2 升级（静态无 HIGH，因 `MALICIOUS` 裁决被拦） | 20 | 22 (多 `B3-04`, `B3-09`) | **+2** |
+| 合计被拦 / FPR | 26 / **0.52** | 28 / **0.56** | +0.04 |
+
+三对 run 的静态 HIGH 集合**逐样本相同**，`B3-04`/`B3-09` 是 semgrep 侧**唯一**的净增项，反方向为空。合计值与 `production-gate-semantics.json` 的 `final_assist_fpr` 一致，故本节分解的正是生产消费的那个 `final` 值，而非仅 `conclusion`。
+
+**结论一（关于 semgrep）：ΔFPR 不是 Tier 1 的检出质量差异。** 两个引擎在良性样本上产生的静态 HIGH 误报**逐样本一致**，差值为 0；+0.04 全部经由「上下文形态 → LLM 裁决 → 升级」这条链路。这与 §7.13 的根因分析互相印证：**换引擎本身没有让 Tier 1 更爱误报，是它喂给 LLM 的上下文变了。**
+
+**结论二（与 semgrep 无关，且更重要）：本轮的误报主体是 Tier 2，不是 Tier 1。** regex 臂 26 例误报中 20 例（77%）、semgrep 臂 28 例中 22 例（79%）的静态命中里**根本没有 HIGH**，是 `assist` 的升级规则把一个 MEDIUM/LOW 命中提成了阻断。Tier 1 自身的误报率是 **0.12**（两臂相同），Tier 2 升级通道是 **0.40 / 0.44**。
+
+> **即：即使把 Tier 1 换成完美的零误报扫描器，生产默认策略下的 FPR 也只从 0.52 降到 ≈0.40。** 想把 FPR 压下去，主要杠杆是 Tier 2 的升级规则（或 `assist` 对 `MALICIOUS` 的处理），不是 Tier 1 的引擎选择。
+
+这条对本轮结论的性质有影响，须一并读：**本次「非劣」判定的是一个对 FPR 贡献约 23%（0.12/0.52）的通道**，而占大头的通道两臂本就共用、不受引擎替换影响。这不削弱 PASS 的有效性（判定的是接入这个动作的因果后果），但决定了**接入 semgrep 不应被期待降低整体误报**——它当前的净效应是把 FPR 从 0.52 推到 0.56。
+
+**复跑**：
+
+```bash
+python3 - <<'PY'
+import json,glob,os
+def split(run):
+    hi=set(); esc=set()
+    for p in sorted(glob.glob(f"{run}/*/audit_report.json")):
+        sid=os.path.basename(os.path.dirname(p))
+        if not sid.startswith("B"): continue
+        fs=[f for fr in json.load(open(p)).get("file_reports",[]) for f in fr.get("findings",[])]
+        if any(f.get("severity")=="HIGH" for f in fs): hi.add(sid)          # bucket 1, exclusive
+        elif any((f.get("llm_verdict") or "").upper()=="MALICIOUS" for f in fs): esc.add(sid)  # bucket 2
+    return hi,esc
+for i in (1,2,3):
+    r=split(f"regex-run{i}"); s=split(f"semgrep-run{i}")
+    print(f"pair {i}: static-HIGH 6={sorted(r[0])} identical={r[0]==s[0]}"
+          f"  escalation {len(r[1])} vs {len(s[1])}  semgrep-only={sorted(s[1]-r[1])}")
+PY
+```
 
 ---
 
