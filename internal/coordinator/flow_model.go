@@ -84,7 +84,7 @@ func (c *Coordinator) ExecuteModelImportFlow(ctx context.Context, params ModelIm
 		if c.security.LLM.Enabled && c.security.LLM.Endpoint != "" {
 			llmClient = codeaudit.NewOllamaClient(c.security.LLM.Endpoint, c.security.LLM.Model, c.security.LLM.Timeout)
 		}
-		auditReport, scanErr := codeaudit.GenerateAuditReport(ctx, c.security.ModelDir, c.security.LLM, llmClient)
+		auditReport, scanErr := codeaudit.GenerateAuditReport(ctx, c.security.ModelDir, c.security.Engine, c.security.LLM, llmClient)
 		if scanErr != nil {
 			c.reportAuditFailure(params.RequestID, params.TaskID, scanErr.Error())
 			_ = os.RemoveAll(c.security.ModelDir)

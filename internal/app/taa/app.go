@@ -12,14 +12,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CipherSlinger/teellm"
+	"github.com/CipherSlinger/teetls"
 	"taa/internal/attestation"
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 	"taa/internal/controller"
 	"taa/internal/store"
 	teecrypto "taa/pkg/crypto"
-	"github.com/CipherSlinger/teellm"
-	"github.com/CipherSlinger/teetls"
 )
 
 // ============================================================================
@@ -136,7 +136,10 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	logGeneratedTAAKeyPair(keyPair)
 
 	// 6. 构建安全策略配置并确保模型/数据/结果目录已就绪
-	sec := buildSecurityConfig(cfg)
+	sec, err := buildSecurityConfig(cfg)
+	if err != nil {
+		return err
+	}
 	if err := ensureSecurityDirectories(sec); err != nil {
 		return err
 	}
@@ -552,7 +555,22 @@ func registerPlatform(ctx context.Context, platformIP, dockerID, publicKeyPEM st
 // ============================================================================
 
 // buildSecurityConfig converts the startup configuration into the controller SecurityConfig.
-func buildSecurityConfig(cfg config.StartupConfig) controller.SecurityConfig {
+//
+// It returns an error because the Tier 1 engine is resolved here, at startup,
+// rather than on the import path. The configuration layer has already rejected
+// an unknown engine name; this resolves the name into the engine itself, so a
+// selection that cannot be honoured (a name the selector does not know, or a
+// Semgrep rules file that is not there) stops the process instead of silently
+// scanning with the wrong engine or blocking every import with a scan failure.
+func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, error) {
+	engine, err := codeaudit.NewEngine(codeaudit.EngineConfig{
+		Name:             cfg.CodeScanEngine,
+		SemgrepRulesPath: cfg.SemgrepRulesPath,
+	})
+	if err != nil {
+		return controller.SecurityConfig{}, fmt.Errorf("resolve code scan engine: %w", err)
+	}
+
 	timeout := time.Duration(cfg.LLMTimeoutMs) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 120 * time.Second
@@ -565,12 +583,13 @@ func buildSecurityConfig(cfg config.StartupConfig) controller.SecurityConfig {
 		maxBytes = config.DefaultMaxFileBytes
 	}
 	return controller.SecurityConfig{
-		ScanEnabled:      cfg.EnableSecurityScan,
-		ModelDir:         cfg.ModelDir,
-		ResultCheck:      cfg.EnableResultCheck,
-		DataDir:          cfg.DataDir,
-		ResultDir:        cfg.ResultDir,
-		MaxFileBytes:     maxBytes,
+		ScanEnabled:        cfg.EnableSecurityScan,
+		Engine:             engine,
+		ModelDir:           cfg.ModelDir,
+		ResultCheck:        cfg.EnableResultCheck,
+		DataDir:            cfg.DataDir,
+		ResultDir:          cfg.ResultDir,
+		MaxFileBytes:       maxBytes,
 		MaxResultBytes:     maxBytes,
 		ModelInputDir:      cfg.ModelInputDir,
 		ModelOutputDir:     cfg.ModelOutputDir,
@@ -597,7 +616,7 @@ func buildSecurityConfig(cfg config.StartupConfig) controller.SecurityConfig {
 			CircuitBreakerThreshold: cfg.LLMCircuitBreakerThreshold,
 			CooldownSec:             cfg.LLMCooldownSec,
 		},
-	}
+	}, nil
 }
 
 // ensureSecurityDirectories 确保模型目录、数据目录、结果目录以及模型输入输出目录在本地文件系统中存在

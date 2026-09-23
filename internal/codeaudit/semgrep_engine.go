@@ -25,8 +25,10 @@ const DefaultSemgrepTimeout = 5 * time.Minute
 
 // DefaultSemgrepRulesPath is where the rules live relative to the repository
 // root, which is the working directory of a `go run`/`go test` invocation. A
-// deployment sets the path explicitly through Cfg.SemgrepRules; this default
-// exists so that the local path works without configuration.
+// deployment sets the path explicitly through EngineConfig.SemgrepRulesPath;
+// this default exists so that the local path works without configuration, and
+// NewEngine checks it so an unset path in a directory that has no rules fails at
+// startup rather than on every import.
 const DefaultSemgrepRulesPath = "models/audit/semgrep/rules/python/rules.yaml"
 
 // semgrepEngine is the Tier 1 engine that matches with the Semgrep CLI instead

@@ -668,7 +668,7 @@ func TestCheckImportWithLLMDisabled(t *testing.T) {
 	writeTestFile(t, dir, "clean.py", "import torch\nmodel = torch.nn.Linear(10, 2)\n")
 
 	cfg := LLMConfig{Enabled: false}
-	passed, report, err := CheckImportWithLLM(context.Background(), dir, cfg)
+	passed, report, err := CheckImportWithLLM(context.Background(), dir, DefaultEngine(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -681,7 +681,7 @@ func TestCheckImportWithLLMDisabled(t *testing.T) {
 }
 
 func TestCheckImportWithLLMEmptyDir(t *testing.T) {
-	passed, report, err := CheckImportWithLLM(context.Background(), "", LLMConfig{Enabled: true})
+	passed, report, err := CheckImportWithLLM(context.Background(), "", DefaultEngine(), LLMConfig{Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -732,7 +732,7 @@ def report_metrics(acc, loss):
 		InsecureSkipVerify: true,
 	}
 
-	passed, report, err := CheckImportWithLLM(context.Background(), dir, cfg)
+	passed, report, err := CheckImportWithLLM(context.Background(), dir, DefaultEngine(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

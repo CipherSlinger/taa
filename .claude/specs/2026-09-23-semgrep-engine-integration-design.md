@@ -397,6 +397,25 @@ var staticEngines = []string{"regex", "semgrep"}
 
 **刻意不设默认值偏移**：接入完成前默认仍为 `regex`；切换默认引擎是 §9 留出集通过**之后**的独立动作。
 
+#### 6.5.1 实现（2026-09-23）
+
+配置键（`security` 段，与既有 `security.codeScan`/`security.scan` 同级）：
+
+| 键 | 取值 | 默认 | 语义 |
+|---|---|---|---|
+| `security.codeScanEngine` | `regex` / `semgrep` | `regex` | Tier 1 引擎。**未识别值在 `LoadStartupConfig` 报错**（与 `llm.policy` 同一模式，含大小写与空白归一化） |
+| `security.semgrepRulesPath` | 路径 | 空 | semgrep 的 `--config`。**空 = 用 `codeaudit.DefaultSemgrepRulesPath`**，该字面量只在 codeaudit 里写一次 |
+
+`internal/config` 不 import `internal/codeaudit`（保持 config 为叶子包），故引擎名白名单在 config 内重复一份并注明来源——与既有 `llmPolicies` 注释同一处理。
+
+**解析点在启动期，不在导入路径**：`buildSecurityConfig` 调用 `codeaudit.NewEngine(EngineConfig{...})`，把名字解析成引擎对象存进 `controller.SecurityConfig.Engine`；解析失败**直接终止启动**（`buildSecurityConfig` 因此改为返回 `(SecurityConfig, error)`）。理由：`codeScanEngine: semgrep` 配错时的两种表现都不是「扫描失败」而是「看起来像扫描器正常工作」——回退到 regex 时报告诚实地写着 `regex`（没人看），规则文件缺失时每次导入都被阻断并**物理删除模型代码**（与真检出恶意模型不可区分）。放到启动期，两者都变成一条能读的启动错误。
+
+**`NewEngine` 因此校验规则路径存在**（`os.Stat`，接受文件或目录）。这是对 §6.5 原文的**扩展**：原文只要求校验名字。理由同上——`semgrepRulesPath` 是本次新增的部署输入，若不在这里校验就无人校验。**未校验 semgrep 可执行文件是否存在**：那是镜像构建问题，由阶段 G 的容器内复跑（§9.2 要求 10）覆盖。
+
+**不静默回退**：`NewEngine` 对未识别名字（含空串）返回 error 而非 regex；`GenerateAuditReport`/`CheckImport`/`CheckImportWithLLM` 显式拒绝 `nil` 引擎（fail-closed，不 panic）。三者均新增 `engine StaticEngine` 形参——引擎选择只有一条路径，`DefaultEngine()` 仍返回 regex 基线，并有测试钉住「默认与选择器一致」。
+
+> ⚠️ **阶段 G 必须注意**：`deploy-docker.sh` 的清理步骤执行 `rm -rf "$CONTAINER_WORKDIR/models"/*`。若把规则文件放进 `/root/taa/models/audit/semgrep/...`（即 `DefaultSemgrepRulesPath` 在容器内的落点），它会被清理步骤删掉，随后每次导入都因规则缺失而阻断。阶段 G 须把规则放在**该清理不会触及的路径**并显式设置 `security.semgrepRulesPath`，或确认清理步骤不覆盖它。这正是上面「启动期校验」要挡住的形态。
+
 ---
 
 ## 7. 严重度映射（本规范的核心，不许只写规则映射）
@@ -574,8 +593,8 @@ semgrep 未安装 / 非零退出 / 超时 / 解析错误 / 命中数截断
 | **C** | `Report`/`Finding` 字段扩展 + `MaxFindings` 截断标志（§3.5、§6.2） | 截断不再静默 | 中，触及判定输入 |
 | **D** | `semgrepEngine` 实现（§6.4）：exec、解析、`metadata.rule_family` 映射、**上下文构造与 regex 臂等价**（§6.4 新增要求） | **本地**可跑（宿主已有 semgrep 1.177.0，无需容器）；含「两臂上下文逐字节相同」的测试 | 中 |
 | **E** | fail-closed 管线（§8）：**把 D 已能检出的失败接到判定上** | 统一谓词 `ProvesCleanScan()` + 两个判定点（`AssembleAuditReport`、`recomputeReportPassed`、`CheckImport`、`CheckImportWithLLM`）接线；`failclosed_test.go` 七例；四类适配器级失败已在阶段 D 覆盖 | **高，这是安全属性**；实测踩到零值陷阱（§8.3），fixture 建模已连带修正 |
-| **F** | 配置项 + fail-fast（§6.5） | 未识别引擎名报错 | 低 |
-| **G** | **容器部署与功能验证**：`deploy-docker.sh` 装 taa + semgrep + 规则文件，容器内跑通；顺带做同容器并发压测（为 D4 取证） | 容器内可跑 semgrep，审计链路端到端可用 | 中 |
+| **F** | 配置项 + fail-fast（§6.5） | `security.codeScanEngine` + `security.semgrepRulesPath`；未识别名字在 load 期报错；引擎在启动期解析进 `SecurityConfig.Engine`，解析失败终止启动；`NewEngine` 为唯一「名字→引擎」路径 | 低 |
+| **G** | **容器部署与功能验证**：`deploy-docker.sh` 装 taa + semgrep + 规则文件，容器内跑通；顺带做同容器并发压测（为 D4 取证） | 容器内可跑 semgrep，审计链路端到端可用；**规则文件路径须避开 `deploy-docker.sh` 对 `models/*` 的清理**（§6.5.1 警告） | 中 |
 | **H** | 留出集非劣验证（§9）：**在 `assist` 下判定**，并比对两臂 Prompt 等价性 | 通过才允许切默认引擎 | — |
 
 **阶段 G 与阶段 H 是两件事，不得混同**：

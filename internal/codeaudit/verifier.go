@@ -213,12 +213,15 @@ func recalculateStaticPassed(report *Report) {
 
 // CheckImportWithLLM is the high-level gate function that combines
 // static scanning with optional LLM verification.
-func CheckImportWithLLM(ctx context.Context, dir string, cfg LLMConfig) (bool, *Report, error) {
+func CheckImportWithLLM(ctx context.Context, dir string, engine StaticEngine, cfg LLMConfig) (bool, *Report, error) {
 	if dir == "" {
 		return true, nil, nil
 	}
+	if engine == nil {
+		return false, nil, fmt.Errorf("static engine is not configured")
+	}
 
-	report, err := DefaultEngine().ScanDirectory(dir)
+	report, err := engine.ScanDirectory(dir)
 	if err != nil {
 		return false, nil, err
 	}
@@ -314,15 +317,22 @@ const fileAnalysisPromptTemplate = `你是一个严谨的代码安全审计专�
 
 // GenerateAuditReport is the high-level entry point that performs a full
 // security audit: static scan → finding-level LLM → file-level LLM → aggregate.
-func GenerateAuditReport(ctx context.Context, dir string, cfg LLMConfig, client LLMClient) (*AuditReport, error) {
+func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, cfg LLMConfig, client LLMClient) (*AuditReport, error) {
 	startTime := time.Now()
 
 	if dir == "" {
 		return nil, fmt.Errorf("audit directory is empty")
 	}
+	// A nil engine is a configuration error, not a scan that finds nothing. Left
+	// to the call below it would be a nil interface dereference, which a
+	// fail-closed control should never do: it turns a missing configuration into
+	// a crash instead of a rejection.
+	if engine == nil {
+		return nil, fmt.Errorf("static engine is not configured")
+	}
 
 	// Phase 1: Static scan with line counts.
-	scanReport, lineCounts, err := DefaultEngine().ScanDirectoryWithLines(dir)
+	scanReport, lineCounts, err := engine.ScanDirectoryWithLines(dir)
 	if err != nil {
 		return nil, fmt.Errorf("static scan: %w", err)
 	}

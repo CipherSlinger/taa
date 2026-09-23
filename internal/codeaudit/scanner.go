@@ -212,11 +212,14 @@ func (s *Scanner) buildReport(dir string, filesCount int, findings []Finding, tr
 
 // CheckImport scans model code in dir. Returns (pass, report, error).
 // A scan error is treated as a rejection — fail closed.
-func CheckImport(dir string) (bool, *Report, error) {
+func CheckImport(dir string, engine StaticEngine) (bool, *Report, error) {
 	if dir == "" {
 		return true, nil, nil
 	}
-	report, err := DefaultEngine().ScanDirectory(dir)
+	if engine == nil {
+		return false, nil, fmt.Errorf("static engine is not configured")
+	}
+	report, err := engine.ScanDirectory(dir)
 	if err != nil {
 		return false, nil, err
 	}

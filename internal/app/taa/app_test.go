@@ -80,8 +80,13 @@ func TestCheckKeyFileExists_DirectoryTargetFails(t *testing.T) {
 
 // TestBuildSecurityConfig verifies mapping from StartupConfig to controller.SecurityConfig
 func TestBuildSecurityConfig(t *testing.T) {
+	// CodeScanEngine is set explicitly because an unset engine name is rejected
+	// rather than treated as the baseline: a caller that bypassed the config
+	// loader must not get a scan with an engine nobody chose. The loader's own
+	// default is "regex" and is asserted in the config package.
 	cfg := config.StartupConfig{
 		EnableSecurityScan:         true,
+		CodeScanEngine:             "regex",
 		ModelDir:                   "/opt/taa/models",
 		EnableResultCheck:          true,
 		MaxFileBytes:               3 * 1024 * 1024 * 1024,
@@ -112,7 +117,10 @@ func TestBuildSecurityConfig(t *testing.T) {
 		LLMFailClosed:              true,
 	}
 
-	sec := buildSecurityConfig(cfg)
+	sec, err := buildSecurityConfig(cfg)
+	if err != nil {
+		t.Fatalf("buildSecurityConfig() error = %v", err)
+	}
 
 	if sec.ScanEnabled != cfg.EnableSecurityScan {
 		t.Errorf("ScanEnabled = %v, want %v", sec.ScanEnabled, cfg.EnableSecurityScan)
@@ -230,6 +238,80 @@ func TestBuildSecurityConfig(t *testing.T) {
 	}
 	if sec.LLM.CooldownSec != wantLLM.CooldownSec {
 		t.Errorf("LLM.CooldownSec = %d, want %d", sec.LLM.CooldownSec, wantLLM.CooldownSec)
+	}
+}
+
+// TestBuildSecurityConfigResolvesTheConfiguredEngine pins that the engine named
+// in the startup configuration is the one the controller will scan with. The
+// whole point of resolving here rather than on the import path is that the
+// selection is visible in the running configuration; if this mapping broke, the
+// deployment would run whatever the selector's default is and nothing else would
+// notice.
+func TestBuildSecurityConfigResolvesTheConfiguredEngine(t *testing.T) {
+	semgrepRules := filepath.Join(t.TempDir(), "rules.yaml")
+	if err := os.WriteFile(semgrepRules, []byte("rules: []\n"), 0o644); err != nil {
+		t.Fatalf("write rules fixture: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		engine   string
+		rules    string
+		wantName string
+	}{
+		{"regex", "regex", "", "regex"},
+		{"semgrep", "semgrep", semgrepRules, "semgrep"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sec, err := buildSecurityConfig(config.StartupConfig{
+				CodeScanEngine:   tc.engine,
+				SemgrepRulesPath: tc.rules,
+			})
+			if err != nil {
+				t.Fatalf("buildSecurityConfig() error = %v", err)
+			}
+			if sec.Engine == nil {
+				t.Fatal("SecurityConfig.Engine = nil; the controller would have no engine to scan with")
+			}
+			if got := sec.Engine.Name(); got != tc.wantName {
+				t.Errorf("SecurityConfig.Engine.Name() = %q, want %q", got, tc.wantName)
+			}
+		})
+	}
+}
+
+// TestBuildSecurityConfigFailsFastOnAnUnusableEngine pins that a Tier 1 engine
+// that cannot be honoured stops the process instead of starting and failing
+// every import.
+//
+// Both cases below are configuration mistakes with consequences that look like
+// the scanner working: an unknown name would silently scan with another engine,
+// and a missing rules file fails every scan, which the import path reports as a
+// failed audit and deletes the model code for. Neither is diagnosable from the
+// audit result, so both have to be refused here.
+func TestBuildSecurityConfigFailsFastOnAnUnusableEngine(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent-rules.yaml")
+
+	for _, tc := range []struct {
+		name   string
+		engine string
+		rules  string
+	}{
+		{"unknown engine name", "enforce", ""},
+		{"unset engine name", "", ""},
+		{"semgrep without rules", "semgrep", missing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sec, err := buildSecurityConfig(config.StartupConfig{
+				CodeScanEngine:   tc.engine,
+				SemgrepRulesPath: tc.rules,
+			})
+			if err == nil {
+				t.Fatalf("buildSecurityConfig() accepted %q and returned engine %v; "+
+					"the process must not start with an engine it cannot honour",
+					tc.engine, sec.Engine)
+			}
+		})
 	}
 }
 

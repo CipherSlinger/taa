@@ -14,25 +14,33 @@ const (
 )
 
 type StartupConfig struct {
-	Addr                      string
-	PlatformIP                string
-	DockerID                  string
-	Contract                  string
-	EnableSecurityScan        bool
-	ModelDir                  string
-	EnableResultCheck         bool
-	MaxFileBytes              int64
-	MaxResultBytes            int64
-	DataDir                   string
-	ResultDir                 string
-	ModelInputDir             string
-	ModelOutputDir            string
-	ModelLogDir               string
-	ModelProgressDir          string
-	ModelCheckpointDir        string
-	KeysDir                   string
-	AttestationHRKCertPath    string
-	AttestationHSKCekCertPath string
+	Addr               string
+	PlatformIP         string
+	DockerID           string
+	Contract           string
+	EnableSecurityScan bool
+	// CodeScanEngine selects the Tier 1 static engine ("regex" or "semgrep").
+	// The default stays "regex" until the holdout evidence passes (spec §6.5).
+	CodeScanEngine string
+	// SemgrepRulesPath is the rules file or directory for the semgrep engine,
+	// passed through as --config. Empty means the engine's own default, which is
+	// relative to the repository root and therefore useless in a container: a
+	// deployment that selects semgrep is expected to set this.
+	SemgrepRulesPath           string
+	ModelDir                   string
+	EnableResultCheck          bool
+	MaxFileBytes               int64
+	MaxResultBytes             int64
+	DataDir                    string
+	ResultDir                  string
+	ModelInputDir              string
+	ModelOutputDir             string
+	ModelLogDir                string
+	ModelProgressDir           string
+	ModelCheckpointDir         string
+	KeysDir                    string
+	AttestationHRKCertPath     string
+	AttestationHSKCekCertPath  string
 	EnableLLM                  bool
 	LLMTransport               string
 	LLMEndpoint                string
@@ -43,14 +51,14 @@ type StartupConfig struct {
 	LLMRequireMutualAttest     bool
 	LLMInsecureSkipVerify      bool
 	LLMAuthToken               string
-	LLMTimeoutMs              int64
-	LLMAllowedHosts           []string
+	LLMTimeoutMs               int64
+	LLMAllowedHosts            []string
 	LLMCircuitBreakerThreshold int
-	LLMCooldownSec            int
-	LLMModel                  string
-	LLMPolicy                 string
-	LLMFailClosed             bool
-	LLMDir                    string
+	LLMCooldownSec             int
+	LLMModel                   string
+	LLMPolicy                  string
+	LLMFailClosed              bool
+	LLMDir                     string
 }
 
 type startupConfigFile struct {
@@ -105,10 +113,12 @@ type startupStorageConfigFile struct {
 }
 
 type startupSecurityConfigFile struct {
-	CodeScan     *bool                        `json:"codeScan"`
-	Scan         *bool                        `json:"scan"`
-	ResultCheck  startupResultCheckConfigFile `json:"resultCheck"`
-	MaxFileBytes *int64                       `json:"maxFileBytes"`
+	CodeScan         *bool                        `json:"codeScan"`
+	Scan             *bool                        `json:"scan"`
+	CodeScanEngine   string                       `json:"codeScanEngine"`
+	SemgrepRulesPath string                       `json:"semgrepRulesPath"`
+	ResultCheck      startupResultCheckConfigFile `json:"resultCheck"`
+	MaxFileBytes     *int64                       `json:"maxFileBytes"`
 }
 
 type startupResultCheckConfigFile struct {
@@ -196,7 +206,32 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 // behaviour, so it is rejected at load time instead.
 var llmPolicies = []string{"assist", "gate"}
 
+// staticEngines lists the Tier 1 engines understood by the audit code (see
+// codeaudit.NewEngine). The list is repeated here rather than imported, because
+// the config package deliberately does not depend on the audit package. An
+// unrecognized name matches no branch in the engine selector, so it is rejected
+// at load time instead of silently scanning with the regex baseline while the
+// deployment believes otherwise.
+var staticEngines = []string{"regex", "semgrep"}
+
 func validateStartupConfig(cfg StartupConfig) error {
+	if err := validateCodeScanEngine(cfg); err != nil {
+		return err
+	}
+	return validateLLMPolicy(cfg)
+}
+
+func validateCodeScanEngine(cfg StartupConfig) error {
+	for _, engine := range staticEngines {
+		if cfg.CodeScanEngine == engine {
+			return nil
+		}
+	}
+	return fmt.Errorf("unsupported code scan engine %q in startup config: must be one of %s",
+		cfg.CodeScanEngine, strings.Join(staticEngines, ", "))
+}
+
+func validateLLMPolicy(cfg StartupConfig) error {
 	for _, policy := range llmPolicies {
 		if cfg.LLMPolicy == policy {
 			return nil
@@ -217,28 +252,29 @@ func defaultStartupConfig() StartupConfig {
 	}
 
 	return StartupConfig{
-		Addr:                      ":6001",
-		PlatformIP:                os.Getenv("PLATFORM_IP"),
-		DockerID:                  os.Getenv("DOCKER_ID"),
-		Contract:                  os.Getenv("CONTRACT"),
-		EnableSecurityScan:        true,
-		ModelDir:                  "/opt/taa/models",
-		EnableResultCheck:         true,
-		MaxFileBytes:              DefaultMaxFileBytes,
-		MaxResultBytes:            DefaultMaxResultBytes,
-		DataDir:                   "/opt/taa/data",
-		ResultDir:                 "/opt/taa/results",
-		ModelInputDir:             "/opt/taa/input",
-		ModelOutputDir:            "/opt/taa/output/result",
-		ModelLogDir:               "/opt/taa/output/log/train.jsonl",
-		ModelProgressDir:          "/opt/taa/output/progress/progress.json",
-		ModelCheckpointDir:        "/opt/taa/checkpoint",
-		KeysDir:                   "/opt/taa/keys",
-		AttestationHRKCertPath:    hrkDefault,
-		AttestationHSKCekCertPath: hskDefault,
-		EnableLLM:                 true,
-		LLMTransport:              "teetls",
-		LLMEndpoint:               "https://127.0.0.1:8443",
+		Addr:                       ":6001",
+		PlatformIP:                 os.Getenv("PLATFORM_IP"),
+		DockerID:                   os.Getenv("DOCKER_ID"),
+		Contract:                   os.Getenv("CONTRACT"),
+		EnableSecurityScan:         true,
+		CodeScanEngine:             "regex",
+		ModelDir:                   "/opt/taa/models",
+		EnableResultCheck:          true,
+		MaxFileBytes:               DefaultMaxFileBytes,
+		MaxResultBytes:             DefaultMaxResultBytes,
+		DataDir:                    "/opt/taa/data",
+		ResultDir:                  "/opt/taa/results",
+		ModelInputDir:              "/opt/taa/input",
+		ModelOutputDir:             "/opt/taa/output/result",
+		ModelLogDir:                "/opt/taa/output/log/train.jsonl",
+		ModelProgressDir:           "/opt/taa/output/progress/progress.json",
+		ModelCheckpointDir:         "/opt/taa/checkpoint",
+		KeysDir:                    "/opt/taa/keys",
+		AttestationHRKCertPath:     hrkDefault,
+		AttestationHSKCekCertPath:  hskDefault,
+		EnableLLM:                  true,
+		LLMTransport:               "teetls",
+		LLMEndpoint:                "https://127.0.0.1:8443",
 		LLMAttestationMode:         "strict",
 		LLMHRKCertPath:             hrkDefault,
 		LLMHSKCekCertPath:          hskDefault,
@@ -246,13 +282,13 @@ func defaultStartupConfig() StartupConfig {
 		LLMRequireMutualAttest:     false,
 		LLMInsecureSkipVerify:      false,
 		LLMAuthToken:               "",
-		LLMTimeoutMs:              30000,
-		LLMAllowedHosts:           nil,
+		LLMTimeoutMs:               30000,
+		LLMAllowedHosts:            nil,
 		LLMCircuitBreakerThreshold: 3,
-		LLMCooldownSec:            30,
-		LLMModel:                  "qwen2.5-coder:0.5b",
-		LLMPolicy:                 "assist",
-		LLMFailClosed:             true,
+		LLMCooldownSec:             30,
+		LLMModel:                   "qwen2.5-coder:0.5b",
+		LLMPolicy:                  "assist",
+		LLMFailClosed:              true,
 	}
 }
 
@@ -295,6 +331,13 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if fileCfg.Security.CodeScan != nil {
 		cfg.EnableSecurityScan = *fileCfg.Security.CodeScan
+	}
+
+	if trimmed := strings.ToLower(strings.TrimSpace(fileCfg.Security.CodeScanEngine)); trimmed != "" {
+		cfg.CodeScanEngine = trimmed
+	}
+	if trimmed := strings.TrimSpace(fileCfg.Security.SemgrepRulesPath); trimmed != "" {
+		cfg.SemgrepRulesPath = trimmed
 	}
 
 	if trimmed := strings.TrimSpace(fileCfg.ModelDir); trimmed != "" {

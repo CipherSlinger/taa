@@ -629,7 +629,7 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 		return false
 	}
 
-	audit, err := codeaudit.GenerateAuditReport(context.Background(), s.Security.ModelDir, cfg, llmClient)
+	audit, err := codeaudit.GenerateAuditReport(context.Background(), s.Security.ModelDir, s.Security.Engine, cfg, llmClient)
 	if err != nil {
 		s.Logs.Add(LogError, "audit", "模型代码审计失败: %v", err)
 		if err := cleanDirContents(s.Security.ModelDir); err != nil {

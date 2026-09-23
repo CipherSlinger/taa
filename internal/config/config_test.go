@@ -896,6 +896,99 @@ func TestLoadStartupConfigNormalizesLLMPolicy(t *testing.T) {
 	}
 }
 
+// TestLoadStartupConfigRejectsUnknownCodeScanEngine is the same guard as the
+// policy one above, for the Tier 1 engine. An unrecognized engine name must not
+// be stored verbatim: the scan would then run the regex baseline while the
+// deployment believes it enabled Semgrep, and the audit report's engine field
+// would honestly say "regex" — a field nobody reads.
+func TestLoadStartupConfigRejectsUnknownCodeScanEngine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"security": {
+			"codeScanEngine": "semgrep-cli"
+		}
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err == nil {
+		t.Fatalf("LoadStartupConfig() error = nil, want rejection of unknown engine; got engine %q", cfg.CodeScanEngine)
+	}
+	if !strings.Contains(err.Error(), "semgrep-cli") {
+		t.Fatalf("error %q should name the rejected value", err)
+	}
+	// The error has to say what is accepted, or the operator has to read the
+	// source to fix the config.
+	for _, want := range []string{"regex", "semgrep"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should list the accepted engine %q", err, want)
+		}
+	}
+}
+
+func TestLoadStartupConfigNormalizesCodeScanEngine(t *testing.T) {
+	for _, engine := range []string{"regex", "semgrep", "SEMGREP", " semgrep ", ""} {
+		t.Run("engine="+engine, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), DefaultFileName)
+			writeTestConfig(t, path, fmt.Sprintf(`{"security":{"codeScanEngine":%q}}`, engine))
+
+			cfg, err := LoadStartupConfig(path)
+			if err != nil {
+				t.Fatalf("LoadStartupConfig() error = %v, want nil for supported value", err)
+			}
+
+			want := strings.ToLower(strings.TrimSpace(engine))
+			if want == "" {
+				// Default, and the default must stay regex until the holdout
+				// evidence passes (spec §6.5): an unset engine is not a licence
+				// to switch the production engine.
+				want = "regex"
+			}
+			if cfg.CodeScanEngine != want {
+				t.Fatalf("CodeScanEngine = %q, want %q", cfg.CodeScanEngine, want)
+			}
+		})
+	}
+}
+
+// TestLoadStartupConfigReadsSemgrepRulesPath pins that the rules location is
+// deployment-settable. The adapter's built-in default is relative to the
+// repository root, which is not where a container runs, so a deployment that
+// selects Semgrep has to be able to say where the rules are.
+func TestLoadStartupConfigReadsSemgrepRulesPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"security": {
+			"codeScanEngine": "semgrep",
+			"semgrepRulesPath": "/opt/taa/semgrep/rules.yaml"
+		}
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+	if cfg.SemgrepRulesPath != "/opt/taa/semgrep/rules.yaml" {
+		t.Fatalf("SemgrepRulesPath = %q, want the configured path", cfg.SemgrepRulesPath)
+	}
+}
+
+// TestLoadStartupConfigLeavesSemgrepRulesPathUnset guards the default against
+// being written down twice. The path default lives in the codeaudit package
+// next to the engine that uses it; repeating the literal here would let the two
+// drift, and the config layer has no way to notice.
+func TestLoadStartupConfigLeavesSemgrepRulesPathUnset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{"security":{"codeScanEngine":"regex"}}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+	if cfg.SemgrepRulesPath != "" {
+		t.Fatalf("SemgrepRulesPath = %q, want empty so the engine's own default applies", cfg.SemgrepRulesPath)
+	}
+}
+
 func writeTestConfig(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

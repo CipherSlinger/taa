@@ -1,5 +1,11 @@
 package codeaudit
 
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
 // Engine identity strings. They are written into Report.Engine and Name()
 // returns them, so that a report can prove which engine produced it rather than
 // leaving the reader to infer it from a mode name.
@@ -79,13 +85,66 @@ func (e regexEngine) stamp(report *Report) *Report {
 // Name reports the regex engine identity.
 func (e regexEngine) Name() string { return EngineNameRegex }
 
+// EngineConfig selects the Tier 1 engine and configures the engine selected.
+type EngineConfig struct {
+	// Name is one of the EngineName* constants.
+	Name string
+	// SemgrepRulesPath is the --config argument for the semgrep engine: a rules
+	// file or a directory of them. Empty means DefaultSemgrepRulesPath. It is
+	// ignored by the regex engine, which carries its rules in the binary.
+	SemgrepRulesPath string
+}
+
+// engineNames lists the engines NewEngine accepts, for the rejection message.
+var engineNames = []string{EngineNameRegex, EngineNameSemgrep}
+
+// NewEngine resolves an engine selection into the engine itself.
+//
+// This is the only place a name becomes an engine. An unrecognized name is an
+// error rather than a fallback to the regex baseline: a deployment that asked
+// for an engine it did not get would otherwise scan with something other than
+// what it configured, and the only trace would be a report field nobody reads.
+//
+// The rules path is checked here, where the deployment is configured, rather
+// than left to the first scan. A missing rules file does not degrade the scan,
+// it fails every import and has the model code deleted, which from the
+// operator's side is indistinguishable from the scanner working and finding
+// something. Failing at construction turns that into a startup error.
+func NewEngine(cfg EngineConfig) (StaticEngine, error) {
+	switch cfg.Name {
+	case EngineNameRegex:
+		return regexEngine{scanner: DefaultScanner()}, nil
+
+	case EngineNameSemgrep:
+		rulesPath := cfg.SemgrepRulesPath
+		if rulesPath == "" {
+			rulesPath = DefaultSemgrepRulesPath
+		}
+		// Stat rather than open: --config takes a file or a directory, and the
+		// existence of the path is the whole question. Semgrep reports an
+		// unreadable config the same way it reports a broken one, on stderr,
+		// where the adapter turns it into a failed scan.
+		if _, err := os.Stat(rulesPath); err != nil {
+			return nil, fmt.Errorf("semgrep rules %s: %w", rulesPath, err)
+		}
+		return NewSemgrepEngine(DefaultScanner(), rulesPath), nil
+
+	default:
+		return nil, fmt.Errorf("unsupported static engine %q: must be one of %s",
+			cfg.Name, strings.Join(engineNames, ", "))
+	}
+}
+
 // DefaultEngine returns the Tier 1 engine production uses.
 //
-// This is the single selection point for the engine. It currently returns the
-// regex baseline unconditionally. When the Semgrep adapter lands it is chosen
-// here, and this function is the only place that has to change — but the
-// default stays regex until the holdout evidence passes, so this returning the
-// regex engine is a decision, not a placeholder.
+// This is the single selection point for the engine, and it returns the regex
+// baseline. That is a decision, not a placeholder: the Semgrep adapter is
+// reachable through NewEngine and through the codeScanEngine configuration item,
+// and the default moves only after the holdout evidence passes under the assist
+// policy. It is written as the literal rather than as NewEngine(...) because the
+// baseline engine's construction has no failure mode, and routing it through the
+// error-returning selector would mean either an impossible error to discard or a
+// panic on a path that cannot fail. A test pins that the two agree.
 func DefaultEngine() StaticEngine {
 	return regexEngine{scanner: DefaultScanner()}
 }
