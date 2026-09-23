@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ── The selector ──────────────────────────────────────────
@@ -220,6 +221,60 @@ func TestGenerateAuditReportUsesTheEngineItWasGiven(t *testing.T) {
 					audit.Target.FilesScanned)
 			}
 		})
+	}
+}
+
+// TestNewEngineCarriesTheConfiguredScanTimeout pins that the deadline a
+// deployment configures is the deadline the engine enforces, and that an unset
+// deadline resolves to the adapter's default rather than to no deadline.
+//
+// The two directions matter equally. A configuration that is silently ignored
+// leaves a deployment believing it shortened a scan it did not, and a zero that
+// reached the engine as "no deadline" would let one wedged CLI hang the import
+// path indefinitely, which is the failure the deadline exists to bound.
+func TestNewEngineCarriesTheConfiguredScanTimeout(t *testing.T) {
+	semgrepCLI(t)
+
+	for _, tc := range []struct {
+		name  string
+		given time.Duration
+		want  time.Duration
+	}{
+		{"configured", 42 * time.Second, 42 * time.Second},
+		{"unset falls back to the default", 0, DefaultSemgrepTimeout},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, err := NewEngine(EngineConfig{
+				Name:             EngineNameSemgrep,
+				SemgrepRulesPath: repoSemgrepRules(t),
+				SemgrepTimeout:   tc.given,
+			})
+			if err != nil {
+				t.Fatalf("NewEngine: %v", err)
+			}
+			concrete, ok := engine.(*semgrepEngine)
+			if !ok {
+				t.Fatalf("NewEngine(semgrep) returned %T, want *semgrepEngine", engine)
+			}
+			if concrete.timeout != tc.want {
+				t.Errorf("timeout = %v, want %v", concrete.timeout, tc.want)
+			}
+		})
+	}
+}
+
+// TestNewEngineIgnoresAScanTimeoutForTheRegexEngine pins that the semgrep-only
+// knobs do not leak into the baseline engine. The regex engine is an in-memory
+// match with no subprocess, so a deadline is meaningless for it; accepting one
+// silently would suggest the regex arm is bounded by it too, and the two arms
+// would then be documented as comparable on a dimension where only one is.
+func TestNewEngineIgnoresAScanTimeoutForTheRegexEngine(t *testing.T) {
+	engine, err := NewEngine(EngineConfig{Name: EngineNameRegex, SemgrepTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewEngine(regex) with a scan timeout error = %v, want it ignored", err)
+	}
+	if engine.Name() != EngineNameRegex {
+		t.Fatalf("Name() = %q, want %q", engine.Name(), EngineNameRegex)
 	}
 }
 

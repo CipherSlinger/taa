@@ -205,7 +205,7 @@ func TestEveryEngineProvesACleanScanForANormalScan(t *testing.T) {
 
 	t.Run("semgrep", func(t *testing.T) {
 		semgrepCLI(t)
-		engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), repoSemgrepRules(t))
+		engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), repoSemgrepRules(t), SemgrepLimits{})
 		report, err := engine.ScanDirectory(dir)
 		if err != nil {
 			t.Fatalf("scan: %v", err)

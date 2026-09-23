@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 const (
@@ -26,7 +27,13 @@ type StartupConfig struct {
 	// passed through as --config. Empty means the engine's own default, which is
 	// relative to the repository root and therefore useless in a container: a
 	// deployment that selects semgrep is expected to set this.
-	SemgrepRulesPath           string
+	SemgrepRulesPath string
+	// SemgrepTimeout bounds one semgrep scan. It is not a scan budget but a
+	// safety net: an import waits on this scan, and the adapter turns an expired
+	// deadline into a failed scan, which the audit fails closed on. Zero means
+	// the adapter's own default (codeaudit.DefaultSemgrepTimeout), which is where
+	// the enforced number lives; a negative value is rejected at load time.
+	SemgrepTimeout             time.Duration
 	ModelDir                   string
 	EnableResultCheck          bool
 	MaxFileBytes               int64
@@ -113,12 +120,16 @@ type startupStorageConfigFile struct {
 }
 
 type startupSecurityConfigFile struct {
-	CodeScan         *bool                        `json:"codeScan"`
-	Scan             *bool                        `json:"scan"`
-	CodeScanEngine   string                       `json:"codeScanEngine"`
-	SemgrepRulesPath string                       `json:"semgrepRulesPath"`
-	ResultCheck      startupResultCheckConfigFile `json:"resultCheck"`
-	MaxFileBytes     *int64                       `json:"maxFileBytes"`
+	CodeScan         *bool  `json:"codeScan"`
+	Scan             *bool  `json:"scan"`
+	CodeScanEngine   string `json:"codeScanEngine"`
+	SemgrepRulesPath string `json:"semgrepRulesPath"`
+	// SemgrepTimeoutSeconds is a whole-scan deadline in seconds. Absent or zero
+	// means the adapter's default; zero is not read as "no deadline", because an
+	// unbounded scan is a hung import rather than a faster one.
+	SemgrepTimeoutSeconds int                          `json:"semgrepTimeoutSeconds"`
+	ResultCheck           startupResultCheckConfigFile `json:"resultCheck"`
+	MaxFileBytes          *int64                       `json:"maxFileBytes"`
 }
 
 type startupResultCheckConfigFile struct {
@@ -218,7 +229,23 @@ func validateStartupConfig(cfg StartupConfig) error {
 	if err := validateCodeScanEngine(cfg); err != nil {
 		return err
 	}
+	if err := validateSemgrepTimeout(cfg); err != nil {
+		return err
+	}
 	return validateLLMPolicy(cfg)
+}
+
+// validateSemgrepTimeout rejects a deadline the adapter cannot honour. A
+// negative duration is not a shorter scan: the deadline is already expired when
+// the scan starts, so every import fails closed and its model code is deleted,
+// and the cause is a line of configuration nothing re-reads. The failure belongs
+// on the configuration, where an operator sees it at startup.
+func validateSemgrepTimeout(cfg StartupConfig) error {
+	if cfg.SemgrepTimeout < 0 {
+		return fmt.Errorf("semgrepTimeoutSeconds in startup config must not be negative: got %d",
+			int64(cfg.SemgrepTimeout/time.Second))
+	}
+	return nil
 }
 
 func validateCodeScanEngine(cfg StartupConfig) error {
@@ -338,6 +365,9 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if trimmed := strings.TrimSpace(fileCfg.Security.SemgrepRulesPath); trimmed != "" {
 		cfg.SemgrepRulesPath = trimmed
+	}
+	if seconds := fileCfg.Security.SemgrepTimeoutSeconds; seconds != 0 {
+		cfg.SemgrepTimeout = time.Duration(seconds) * time.Second
 	}
 
 	if trimmed := strings.TrimSpace(fileCfg.ModelDir); trimmed != "" {

@@ -566,6 +566,7 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 	engine, err := codeaudit.NewEngine(codeaudit.EngineConfig{
 		Name:             cfg.CodeScanEngine,
 		SemgrepRulesPath: cfg.SemgrepRulesPath,
+		SemgrepTimeout:   cfg.SemgrepTimeout,
 	})
 	if err != nil {
 		return controller.SecurityConfig{}, fmt.Errorf("resolve code scan engine: %w", err)

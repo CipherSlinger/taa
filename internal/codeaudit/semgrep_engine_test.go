@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -82,7 +83,7 @@ func semgrepTestEngine(t *testing.T, stub *stubSemgrep) (*semgrepEngine, string)
 	rulesDir := t.TempDir()
 	rulesPath := writeTestFile(t, rulesDir, "rules.yaml", "rules: []\n")
 
-	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), rulesPath)
+	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), rulesPath, SemgrepLimits{})
 	engine.execFn = stub.exec
 	return engine, target
 }
@@ -310,7 +311,7 @@ func TestSemgrepEngineTreatsUnscannedTargetAsIncomplete(t *testing.T) {
 	rulesDir := t.TempDir()
 	rulesPath := writeTestFile(t, rulesDir, "rules.yaml", "rules: []\n")
 
-	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), rulesPath)
+	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), rulesPath, SemgrepLimits{})
 	engine.execFn = stub.exec
 
 	// paths.scanned omits two.py, so half the input was never read.
@@ -392,6 +393,65 @@ func TestSemgrepEngineMarksCleanScanComplete(t *testing.T) {
 
 // ── Argument vector ───────────────────────────────────────
 
+// TestSemgrepEngineBoundsMemoryWithTheMeasuredCap pins the --max-memory
+// argument, which is a fail-closed control rather than a performance tuning.
+//
+// Measured on 1.177.0 against a 412-file corpus, a cap below what a rule run
+// needs does not fail the scan: semgrep exits 0, still lists every target under
+// paths.scanned, and drops findings — 80 became 69 with 134 entries in the
+// errors array at a 20 MiB cap. The errors array is the only signal, which is
+// why the adapter checks it. Without a cap the same pressure becomes an OOM that
+// takes the daemon down with it, so the cap converts a container-wide failure
+// into a rejected import.
+//
+// The floor below is the measured peak of a full scan (~165 MiB RSS); a cap at
+// or under it would false-trigger on ordinary code and block every import.
+func TestSemgrepEngineBoundsMemoryWithTheMeasuredCap(t *testing.T) {
+	const measuredPeakMB = 165
+
+	if DefaultSemgrepMaxMemoryMB <= measuredPeakMB {
+		t.Errorf("DefaultSemgrepMaxMemoryMB = %d, which is not above the measured peak of %d MiB; "+
+			"a cap this tight would abort rule runs on ordinary code and fail every import closed",
+			DefaultSemgrepMaxMemoryMB, measuredPeakMB)
+	}
+
+	stub := &stubSemgrep{}
+	engine, target := semgrepTestEngine(t, stub)
+	stub.stdout = semgrepPayload([]string{target}, "", "")
+	if _, err := engine.ScanDirectory(filepath.Dir(target)); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	args := stub.calls[0].args
+	if !containsArg(args, "--max-memory") {
+		t.Fatalf("args %v do not bound memory; a scan with no cap can take the daemon down", args)
+	}
+	want := strconv.Itoa(DefaultSemgrepMaxMemoryMB)
+	for i, a := range args {
+		if a == "--max-memory" && (i+1 >= len(args) || args[i+1] != want) {
+			t.Errorf("--max-memory value in %v is not %s", args, want)
+		}
+	}
+}
+
+// TestSemgrepEngineScanTargetsSurviveTheNewFlags guards the test helper and the
+// argument contract together: every flag that takes a separate value has to be
+// known to targetsOf, or its value is counted as a file to scan and the
+// completeness check compares against a target list semgrep never received.
+func TestSemgrepEngineScanTargetsSurviveTheNewFlags(t *testing.T) {
+	stub := &stubSemgrep{}
+	engine, target := semgrepTestEngine(t, stub)
+	stub.stdout = semgrepPayload([]string{target}, "", "")
+	if _, err := engine.ScanDirectory(filepath.Dir(target)); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	targets := targetsOf(stub.calls[0].args)
+	if len(targets) != 1 || targets[0] != target {
+		t.Fatalf("targets = %v, want exactly [%s]; a flag value is being read as a file", targets, target)
+	}
+}
+
 // TestSemgrepEnginePassesTheEvidencedCommandContract pins the flags, so that a
 // change to the invocation is a test failure rather than a silent difference
 // between the engine the evidence describes and the one production runs.
@@ -445,7 +505,7 @@ func TestSemgrepEngineOrdersFindingsDeterministically(t *testing.T) {
 	rulesDir := t.TempDir()
 	rulesPath := writeTestFile(t, rulesDir, "rules.yaml", "rules: []\n")
 
-	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), rulesPath)
+	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), rulesPath, SemgrepLimits{})
 	engine.execFn = stub.exec
 
 	cmd := func(path string) string {
@@ -534,7 +594,7 @@ func TestSemgrepEngineContextsMatchTheRegexArm(t *testing.T) {
 		t.Fatalf("regex scan: %v", err)
 	}
 
-	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), repoSemgrepRules(t))
+	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), repoSemgrepRules(t), SemgrepLimits{})
 	semgrepReport, err := engine.ScanDirectory(dir)
 	if err != nil {
 		t.Fatalf("semgrep scan: %v", err)
@@ -593,7 +653,7 @@ func TestSemgrepEngineSkipsCommentLinesLikeTheRegexArm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("regex scan: %v", err)
 	}
-	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), repoSemgrepRules(t))
+	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), repoSemgrepRules(t), SemgrepLimits{})
 	semgrepReport, err := engine.ScanDirectory(dir)
 	if err != nil {
 		t.Fatalf("semgrep scan: %v", err)
@@ -629,7 +689,7 @@ func TestSemgrepEngineAgreesWithTheRegexArmOnTheFileSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("regex scan: %v", err)
 	}
-	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), repoSemgrepRules(t))
+	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), repoSemgrepRules(t), SemgrepLimits{})
 	// The real CLI is wrapped in a recorder so the test can see what it was
 	// asked to scan. Asserting only on the findings would leave the reason this
 	// works invisible: a directory target fails the completeness check before
@@ -675,7 +735,7 @@ func TestSemgrepEngineReportsARealVersion(t *testing.T) {
 
 	dir := t.TempDir()
 	writeTestFile(t, dir, "train.py", "x = 1\n")
-	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), repoSemgrepRules(t))
+	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), repoSemgrepRules(t), SemgrepLimits{})
 
 	report, err := engine.ScanDirectory(dir)
 	if err != nil {
@@ -696,7 +756,7 @@ func TestSemgrepEngineReportsARealVersion(t *testing.T) {
 // deadline. Without one a hung CLI blocks the import path indefinitely, and the
 // fail-closed design assumes the scan returns.
 func TestSemgrepEngineDefaultHasATimeout(t *testing.T) {
-	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), repoSemgrepRules(t))
+	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), repoSemgrepRules(t), SemgrepLimits{})
 	if engine.timeout <= 0 {
 		t.Errorf("timeout = %v; a scan with no deadline can hang the import path", engine.timeout)
 	}
@@ -723,6 +783,7 @@ func containsArg(args []string, want string) bool {
 func targetsOf(args []string) []string {
 	valueOfFlag := map[string]bool{
 		"--config": true, "--include": true, "--exclude": true, "--json-output": true,
+		"--max-memory": true,
 	}
 	var targets []string
 	for i := 1; i < len(args); i++ {

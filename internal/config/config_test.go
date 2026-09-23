@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadStartupConfigFallsBackToIdentityEnvironment(t *testing.T) {
@@ -986,6 +987,71 @@ func TestLoadStartupConfigLeavesSemgrepRulesPathUnset(t *testing.T) {
 	}
 	if cfg.SemgrepRulesPath != "" {
 		t.Fatalf("SemgrepRulesPath = %q, want empty so the engine's own default applies", cfg.SemgrepRulesPath)
+	}
+}
+
+// TestLoadStartupConfigLeavesTheSemgrepTimeoutAtZeroForTheEngineToResolve
+// pins where the default lives. Zero is not "no timeout": it is "not
+// configured", and the adapter turns it into its own default. Writing the
+// seconds into the config layer as well would put the same number in two
+// places, and the one that is actually enforced is the adapter's.
+func TestLoadStartupConfigLeavesTheSemgrepTimeoutAtZeroForTheEngineToResolve(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{"security":{"codeScanEngine":"semgrep"}}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+	if cfg.SemgrepTimeout != 0 {
+		t.Fatalf("SemgrepTimeout = %v, want 0 so the engine's own default applies", cfg.SemgrepTimeout)
+	}
+}
+
+func TestLoadStartupConfigReadsTheSemgrepTimeout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"security": {
+			"codeScanEngine": "semgrep",
+			"semgrepTimeoutSeconds": 45
+		}
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+	if cfg.SemgrepTimeout != 45*time.Second {
+		t.Fatalf("SemgrepTimeout = %v, want 45s", cfg.SemgrepTimeout)
+	}
+}
+
+// TestLoadStartupConfigRejectsANonPositiveSemgrepTimeout pins that a deadline
+// the daemon cannot honour fails where it is written.
+//
+// A negative deadline is not a shorter scan: it is a scan that is already
+// expired, so every import would fail closed with the model code deleted, and
+// the configuration that caused it would be the one line nobody re-reads. The
+// failure has to land on the operator's config, not on every import.
+func TestLoadStartupConfigRejectsANonPositiveSemgrepTimeout(t *testing.T) {
+	for _, seconds := range []string{"-1", "-300"} {
+		t.Run("seconds="+seconds, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), DefaultFileName)
+			writeTestConfig(t, path, fmt.Sprintf(`{
+				"security": {
+					"codeScanEngine": "semgrep",
+					"semgrepTimeoutSeconds": %s
+				}
+			}`, seconds))
+
+			cfg, err := LoadStartupConfig(path)
+			if err == nil {
+				t.Fatalf("LoadStartupConfig() error = nil, want rejection; got timeout %v", cfg.SemgrepTimeout)
+			}
+			if !strings.Contains(err.Error(), "semgrepTimeoutSeconds") {
+				t.Fatalf("error %q should name the offending key", err)
+			}
+		})
 	}
 }
 

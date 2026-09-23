@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // Engine identity strings. They are written into Report.Engine and Name()
@@ -93,6 +94,11 @@ type EngineConfig struct {
 	// file or a directory of them. Empty means DefaultSemgrepRulesPath. It is
 	// ignored by the regex engine, which carries its rules in the binary.
 	SemgrepRulesPath string
+	// SemgrepTimeout bounds one semgrep scan. Zero means DefaultSemgrepTimeout.
+	// Like the rules path it is a semgrep-only setting, and the regex engine
+	// ignores it: a deadline for an in-memory match would suggest the baseline
+	// arm is bounded by it too, which is a comparison the evidence does not make.
+	SemgrepTimeout time.Duration
 }
 
 // engineNames lists the engines NewEngine accepts, for the rejection message.
@@ -127,7 +133,7 @@ func NewEngine(cfg EngineConfig) (StaticEngine, error) {
 		if _, err := os.Stat(rulesPath); err != nil {
 			return nil, fmt.Errorf("semgrep rules %s: %w", rulesPath, err)
 		}
-		return NewSemgrepEngine(DefaultScanner(), rulesPath), nil
+		return NewSemgrepEngine(DefaultScanner(), rulesPath, SemgrepLimits{Timeout: cfg.SemgrepTimeout}), nil
 
 	default:
 		return nil, fmt.Errorf("unsupported static engine %q: must be one of %s",

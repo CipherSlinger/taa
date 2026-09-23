@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,6 +23,22 @@ const defaultSemgrepBin = "semgrep"
 // the deadline is what keeps a wedged CLI from hanging the import path; when it
 // expires the scan fails and the import is rejected.
 const DefaultSemgrepTimeout = 5 * time.Minute
+
+// DefaultSemgrepMaxMemoryMB caps the memory one rule run may use, passed to
+// semgrep as --max-memory.
+//
+// It is a fail-closed control, not a tuning knob. Measured on 1.177.0, a cap
+// below what a rule run needs does not fail the scan: semgrep exits 0, still
+// lists every target as scanned, and drops findings silently — 80 became 69
+// with 134 entries in errors at a 20 MiB cap. The errors array is what catches
+// that, and without any cap the same pressure is an OOM that takes the daemon
+// down with it instead of rejecting one import.
+//
+// The value is set from measurement rather than from the container's size: a
+// full 412-file scan peaked at ~165 MiB RSS, so 1 GiB is a wide margin above
+// ordinary code while still bounding a pathological file, and it sits far below
+// the 9.703 GiB memory domain semgrep shares with the rest of the container.
+const DefaultSemgrepMaxMemoryMB = 1024
 
 // DefaultSemgrepRulesPath is where the rules live relative to the repository
 // root, which is the working directory of a `go run`/`go test` invocation. A
@@ -64,6 +81,10 @@ type semgrepEngine struct {
 	rulesPath string
 	bin       string
 	timeout   time.Duration
+	// maxMemoryMB is the --max-memory argument. Zero would mean unlimited to
+	// semgrep, so it is never left at zero: NewSemgrepEngine resolves the zero
+	// value to DefaultSemgrepMaxMemoryMB.
+	maxMemoryMB int
 
 	// execFn is the process boundary. Production leaves it at runSemgrepCLI;
 	// the tests replace it to pin the adapter's own logic without depending on
@@ -71,14 +92,35 @@ type semgrepEngine struct {
 	execFn func(ctx context.Context, bin string, args []string) ([]byte, int, error)
 }
 
+// SemgrepLimits bounds one scan's resources. The zero value means the defaults,
+// which is what a caller that has nothing to say about limits should pass.
+type SemgrepLimits struct {
+	// Timeout is the whole-scan deadline. Zero means DefaultSemgrepTimeout.
+	Timeout time.Duration
+	// MaxMemoryMB caps memory for a single file's rule run. Zero means
+	// DefaultSemgrepMaxMemoryMB; there is no value that disables the cap,
+	// because an unbounded scan under memory pressure fails the container
+	// rather than the import.
+	MaxMemoryMB int
+}
+
 // NewSemgrepEngine builds the adapter over the given policy and rules file.
-func NewSemgrepEngine(scanner *Scanner, rulesPath string) *semgrepEngine {
+func NewSemgrepEngine(scanner *Scanner, rulesPath string, limits SemgrepLimits) *semgrepEngine {
+	timeout := limits.Timeout
+	if timeout <= 0 {
+		timeout = DefaultSemgrepTimeout
+	}
+	maxMemoryMB := limits.MaxMemoryMB
+	if maxMemoryMB <= 0 {
+		maxMemoryMB = DefaultSemgrepMaxMemoryMB
+	}
 	return &semgrepEngine{
-		scanner:   scanner,
-		rulesPath: rulesPath,
-		bin:       defaultSemgrepBin,
-		timeout:   DefaultSemgrepTimeout,
-		execFn:    runSemgrepCLI,
+		scanner:     scanner,
+		rulesPath:   rulesPath,
+		bin:         defaultSemgrepBin,
+		timeout:     timeout,
+		maxMemoryMB: maxMemoryMB,
+		execFn:      runSemgrepCLI,
 	}
 }
 
@@ -286,6 +328,10 @@ func (e *semgrepEngine) semgrepArgs(targets []string) []string {
 		// scanned depend on the checkout rather than on the walk, so the same
 		// code could scan differently in two environments.
 		"--no-git-ignore",
+		// Bounds one rule run. A run that exceeds it lands in the errors array,
+		// which fails the scan; an unbounded run that exceeds the container's
+		// memory takes every other process in the domain with it.
+		"--max-memory", strconv.Itoa(e.maxMemoryMB),
 	}
 	return append(args, targets...)
 }
