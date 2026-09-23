@@ -94,6 +94,8 @@ McNemar 的 b、c 均为 0（不一致样本数为 0，见 §4），故 p = 1.0 
 
 这比 `Δ = 0` 更强：Δ 为 0 也可能由方向相反的两组不一致样本相抵而成。**本轮的 Δ=0 不是相抵，是零 discordance。** 因此不存在需要按 `trap_type` 与规则集合做根因归因的样本。
 
+> ⚠️ **适用范围（2026-09-23 补，见 §7.13）**：上面这个「逐样本完全相同」是**在本轮实测所用策略（`gate`）下**成立的。**它不能外推到生产默认策略 `assist`**——在 `assist` 下，同样这 100 个样本上两臂的判定**不一致**（三对均为 `ΔFPR = +0.04`，同向）。原因不是本节的比较有错，而是 `gate` 这个测量仪器对两臂真正的差异**结构性失明**。**本节结论必须连同 §7.13 一起引用，单独引用即为超范围。**
+
 ---
 
 ## 5. 按 family 归因表（spec §6.5）
@@ -138,6 +140,7 @@ McNemar 的 b、c 均为 0（不一致样本数为 0，见 §4），故 p = 1.0 
 - ❌ **不等于**「semgrep 检测能力优于或等于 regex」——两臂在本语料上的规则差异已被 P0-bis **先行消除**，本轮不产出检测能力比较
 - ❌ **不等于**「semgrep 可安全替换生产 regex」——本语料是**拟合集**（§7.2）
 - ❌ **不覆盖** severity 敏感的生产语义（§7.5）
+- ❌ **不可外推到生产默认策略 `assist`**——PASS 是 `gate` 下的读数，而 `gate` 对裁决盲；`assist` 下三对 `ΔFPR = +0.04` 同向（**§7.13，本报告最重要的限制**）
 - ⚠️ **代价是实打实的**：每轮 +614 s（+53%），全部在扫描层
 
 ---
@@ -194,29 +197,54 @@ if ctx.ScanPassed != nil && !*ctx.ScanPassed { passed = false }
 | B2 / B3 | 0 | 10 / 10 | 0 |
 | B4 | 6 | 2 | 2 |
 
-**M3 与绝对 recall 的解释**：M3 全族 10 个样本的命中只有 MEDIUM（`ENV_001`/`FIL_001`，即其 `expected_severity="MEDIUM"` 所声明者）——**语料的有意设计**，非缺陷。后果取决于策略：
+**M3 与绝对 recall 的解释**：M3 全族 10 个样本的命中只有 MEDIUM（`ENV_001`/`FIL_001`，即其 `expected_severity="MEDIUM"` 所声明者）——**语料的有意设计**，非缺陷。
 
-| 策略 | M3（10 个 MEDIUM-only 恶意样本） | 含义 |
-|---|---|---|
-| 评测镜像（本轮，`gate`） | **拦截** → 计 TP | severity-blind |
-| 生产 `gate` | **拦截**（`Medium == 0` 不成立） | 与镜像一致 |
-| 生产 `assist`（**默认**） | **不拦截** → 实为 FN | 镜像高估 |
+> ⚠️ **本节此处的初版结论已被实测推翻（第三次修正）**。初版称「生产 `assist` 不拦截 M3，故绝对 recall 高估上限 0.20」。**实测：M3 在 `assist` 下 10/10 全部拦截**，六个轮次无一例外，逐个样本 `classified_high == 1`。原因是 `ClassifyFindingRisk`（`audit.go:191-231`）**让 LLM 裁决覆盖静态严重度**：M3 的 MEDIUM 静态命中被 LLM 判为 `MALICIOUS` → 分类为 **HIGH** → `assist`（只拦 HIGH）照样拦。**「高估 0.20」不存在。**
 
-即**只有在生产默认的 `assist` 下**，本节报告的绝对 recall（1.0）才高估「生产可拦截率」，高估上限 **0.20**（10/50）。若生产改用 `gate`，M3 会被拦截，**该高估不成立**。
+**生产实测（权威口径）**：`internal/codeaudit.TestProductionGateSemantics` 直接调用真实的 `ComputeStatistics` / `ComputeConclusionContext` / `recalculatePassed` / `recalculateStaticPassed` 从六轮的 `audit_report.json` 重新派生，产物 `production-gate-semantics.json`。复跑：`TAA_PRODUCTION_GATE=1 go test ./internal/codeaudit/ -run TestProductionGateSemantics -v`。
 
-**良性侧同理且方向相反**：28 个被镜像拦截的良性样本中，20 个（B2/B3 全族）只有 MEDIUM、2 个（B4）只有 MEDIUM、6 个（B4）有 HIGH。故：
+终判 = `Conclusion.Passed && Report.Passed`（后者只能把结论压成 `false`，不能抬成 `true`）：
 
-| 策略 | 被拦截的良性样本 | FPR |
-|---|---|---|
-| 评测镜像（本轮） | 28 | 0.56 |
-| 生产 `gate` | ≈26（20 + 2 + 6，减去可能被 LLM 开脱者；实测开脱为 0） | ≈0.52 |
-| 生产 `assist`（默认） | 6（仅 B4 带 HIGH 者） | 0.12 |
+| 轮次 | `gate` FPR | `gate` recall | `assist` FPR | `assist` recall |
+|---|---|---|---|---|
+| regex-run1 | 0.5600 | 1.0000 | **0.5200** | **1.0000** |
+| regex-run2 | 0.5600 | 1.0000 | **0.5200** | **1.0000** |
+| regex-run3 | 0.5600 | 1.0000 | **0.5200** | **1.0000** |
+| semgrep-run1 | 0.5600 | 1.0000 | **0.5600** | **1.0000** |
+| semgrep-run2 | 0.5600 | 1.0000 | **0.5600** | **1.0000** |
+| semgrep-run3 | 0.5600 | 1.0000 | **0.5600** | **1.0000** |
 
-即**镜像的 FPR 高于两种生产策略**，可以读作上界；但它对 `assist` 的高估远大于对 `gate` 的高估。
+逐 family 良性拦截数（六轮各自稳定）：
 
-**对判定的影响：无。** 上述差异在两种策略下都**等量作用在两臂上**（规则集已对齐、finding 集合相同），只改变**绝对值**的解释，不改变两臂之差。
+| family | n | `gate` 拦（两臂相同） | `assist` 拦 regex | `assist` 拦 semgrep |
+|---|---|---|---|---|
+| B1 / B5 | 10 / 10 | 0 / 0 | 0 / 0 | 0 / 0 |
+| B2 | 10 | 10 | 10 | 10 |
+| **B3** | 10 | 10 | **8** | **10** |
+| B4 | 10 | 8 | 8 | 8 |
+| **合计** | 50 | **28** | **26** | **28** |
 
-- ⚠️ 两处勘误记录：我最初在 spec §9.8 按规则清单**推断**"M1–M5 主攻击规则均为 HIGH"，**该推断是错的**（上表是实测修正）；随后在报告初稿里**又把生产策略认成 `gate`、把消费方引成 `Report.Passed`**，也是错的（本节是第二次修正）。**两次都是"按代码注释与直觉推断"而非"读生产实际消费的那一行"**——这也是接入 spec 不能只写规则映射、必须写清 severity 语义的原因。
+**另有一处由实测发现的、此前未被记录的生产行为：第二道门在救漏报。** 终判是 `Conclusion.Passed && Report.Passed`，而 `Report.Passed` 由 `recalculateStaticPassed`（`verifier.go:232-246`）按**原始静态严重度**计算。于是当 LLM 把一个**静态 HIGH** 降级为 `SUSPICIOUS`（分类成 MEDIUM）时：
+
+- `conclusion`（`assist`，只拦分类后的 HIGH）**放行** → 该轮 `conclusion` 单独召回只有 **0.94–0.98**；
+- `report`（原始静态 HIGH 计数）**拦截** → 终判召回回到 **1.0000**。
+
+实测被它救回的样本（六轮合计 15 例，均为恶意）：
+
+| 轮次 | `conclusion` 会放行、被 `Report.Passed` 拦回 |
+|---|---|
+| regex-run1 | `M5-10` |
+| regex-run2 / run3 | `M5-05`, `M5-10` |
+| semgrep-run1 | `M1-01`, `M1-06` |
+| semgrep-run2 / run3 | `M1-01`, `M1-06`, `M5-05` |
+
+**读法**：`assist` 下**单独看 `conclusion` 是不安全的**——它会把「LLM 降级了静态 HIGH」当成放行。生产实际是靠 `Report.Passed` 这个**第二道、按原始静态严重度**的门兜住的。这条性质在本报告初稿里没有出现（初稿只看了 `conclusion`），也不在任何既有 spec 里；**接入 spec 处理 `verifier.go`/`audit.go` 三处 `Passed` 语义分歧时必须把它一并保住**——把两处统一到 `audit.go` 的 `assist` 语义而不补回静态兜底，会让上表 15 个样本变成真实漏报。
+
+**三处初版数字全部与实测不符**：生产 `gate` 不是 ≈0.52 而是 **0.5600**（与评测镜像逐位相同）；生产 `assist` 不是 0.12（6 个）而是 **0.52 / 0.56**（26 / 28 个）；M3 不是「`assist` 下不拦」而是**全拦**。
+
+**对判定的影响：分策略，且这是本轮最重要的发现（见 §7.13）。** `gate` 下两臂仍然逐样本相同（Δ = 0），**本轮 PASS 作为「`gate` 下的非劣」成立**；但 `assist` 下两臂**不同**（ΔFPR = +0.04，三对同向）。
+
+- ⚠️ **三处勘误记录，根因相同**：① spec §9.8 按规则清单**推断**「M1–M5 主攻击规则均为 HIGH」——错；② 报告初稿把生产策略认成 `gate`、把消费方引成 `Report.Passed`——错；③ 本节初版按 `Finding.Severity` 直接推门禁结果，**没有读真正计算它的 `ComputeStatistics` → `ClassifyFindingRisk`**，因而漏掉了「LLM 裁决覆盖静态严重度」这条通路——错。**三次都是「按注释与直觉推断」而非「读生产实际执行的那一行」。** 故第 ③ 次的纠正方式不再靠推理：改为**调用真实 Go 函数**并把产物落盘（`production-gate-semantics.json`），使数字可复跑而非可引用。
 
 ### 7.6 LLM 不可用是本机真实发生的失效（实测，非推测）
 
@@ -330,6 +358,70 @@ n=100（50/50），`ΔFPR` 的最小可分辨步长为 0.02。本设计因此采
 
 ---
 
+### 7.13 `gate` 对裁决是盲的：本轮的 ΔFPR = 0 **不可外推**到生产默认的 `assist`（2026-09-23 补测）
+
+**本节是本报告最重要的限制，且它是在报告发布后才被测出的。** §4 的「两臂判定逐样本完全相同」、§6 的 PASS，都**只在本轮实测所用策略 `gate` 下成立**。
+
+**机制：`gate` 拦不拦与 LLM 裁决无关。** `gate` 的条件是 `stats.High == 0 && stats.Medium == 0`，而 `ClassifyFindingRisk` 把 `MALICIOUS`→HIGH、`SUSPICIOUS`→MEDIUM、`UNCERTAIN`→（静态 HIGH 则 HIGH）——**六轮里 `BENIGN` 出现 0 次**，所以 `gate` 下「有任何命中就拦」，裁决在 `MALICIOUS`/`SUSPICIOUS`/`UNCERTAIN` 之间怎么翻，结果都一样。**`gate` 因此对两臂真正的差异结构性失明。** `assist` 只拦分类后的 HIGH，裁决一翻，门禁就翻。
+
+**两臂真正不同的地方在裁决，不在 finding 集合。** 逐样本比对 `(rule_id, severity, llm_verdict)` 多重集（`gate` 看不到这一层）：
+
+| pair | 多重集不一致的样本数 | 其中良性样本 |
+|---|---|---|
+| 1 | 9 | `B3-04`, `B3-09` |
+| 2 | 8 | `B3-04`, `B3-09` |
+| 3 | 10 | `B3-04`, `B3-09` |
+
+其余不一致样本全为恶意（`M1-01/04/06/09`、`M5-02/07/10` 等），方向混杂，故 `gate` 与 `assist` 下 recall 都不受影响。**良性侧则是单向的**：`B3-04`、`B3-09` 在**三轮 regex 均为 `SUSPICIOUS`、三轮 semgrep 均为 `MALICIOUS`**（6/6 稳定，无逐轮漂移）。于是：
+
+> **在 `assist` 下，三对均为 `ΔFPR = +0.04`（regex 0.52 / semgrep 0.56），方向一致、无相抵。按 spec §5.3 的 0 容差（`ΔFPR ≤ 0`），在生产默认策略下这是 FAIL。**
+
+**翻转的根因：上下文形态，而非规则。** 同一 `ENV_001`、同一行、`code_snippet` 逐字节相同（`return os.environ.get("SESSION_TIMEOUT", "3600")`），不同的是喂给 LLM 的上下文：
+
+| 字段 | regex 臂 | semgrep 臂 |
+|---|---|---|
+| `context_before` | `def get_public_session_timeout() -> str:` | **`''`** |
+| `context_after` | `def on_epoch_end(epoch=0, metrics=None):` | **`''`** |
+| `ast_enclosing_block` | `None` | `def get_public_session_timeout() -> str:\n    return os.environ.get(...)` |
+
+`code_security_analyzer.py:529-536` 在 `ast_enclosing_block` 非空时**用它替换** `ctx_before`（`elif finding.ast_enclosing_block: ctx_before = "# [AST Enclosing Scope]\n" + ...`）。因此两臂的 Prompt **内容确实不同**：regex 臂让模型看见函数名 `get_public_session_timeout`（良性语义）与下一个函数，semgrep 臂只给 AST 作用域块。模型在前者判 `SUSPICIOUS`、在后者判 `MALICIOUS`。
+
+**这与 §7.1 是同一件事的更锋利版本**：§7.1 已声明 PASS 只支持「整包替换」、不支持「纯换引擎」的因果结论。现在可以补上它的**代价**——这个包（含上下文形态）的差异**不是不可见的**，它在 `assist` 下就是可见的判定差异。§7.1 说的是「无法归因」，本节说的是「有后果」。
+
+**须读成什么：**
+
+- ✅ PASS 作为「**`gate` 策略下**非劣」的证据成立，且是实测的。
+- ❌ **PASS 不可外推到生产默认策略 `assist`**——在那里同为 100 个样本、同样两臂，ΔFPR = +0.04，三对同向。
+- ❌ 因此 **§4 的「逐样本完全相同」必须连同本节引用**；单独引用即为超范围陈述。
+- ⚠️ 该翻转是**引擎捆绑的上下文形态**造成的，故它对「Go 侧接入」是**直接可迁移的**：生产 Go 的 semgrep 引擎若按目标态把 AST 作用域灌进 `CPGEvidence`（`rules.go:40`，被 `verifier.go:48-51` 用于覆盖 `ContextAfter`），就会复现同一形态差，从而在生产默认策略下复现同一 ΔFPR。**接入 spec 的留出集必须在 `assist` 下判定，并须专门比对两臂的上下文构造。**
+
+**复跑**：
+
+```bash
+TAA_PRODUCTION_GATE=1 go test ./internal/codeaudit/ -run TestProductionGateSemantics -v   # 门禁数值
+python3 - <<'PY'   # (rule, severity, verdict) 多重集比对；见本节两表
+import json,glob,os
+from collections import Counter
+def load(run):
+    out={}
+    for p in sorted(glob.glob(f"{run}/*/audit_report.json")):
+        d=json.load(open(p)); fs=[]
+        for fr in d.get("file_reports",[]):
+            for f in fr.get("findings",[]):
+                fs.append((f.get("rule_id"),f.get("severity"),f.get("llm_verdict") or "<none>"))
+        out[os.path.basename(os.path.dirname(p))]=fs
+    return out
+for i in (1,2,3):
+    R,S=load(f"regex-run{i}"),load(f"semgrep-run{i}")
+    diff=[s for s in R if Counter(R[s])!=Counter(S[s])]
+    print(f"pair {i}: {len(diff)} 个样本多重集不一致 {diff}")
+PY
+```
+
+> **教训（与 §7.5 的第三次勘误同源）**：本轮把「判定」定义为**评测器在 `--policy gate` 下的判定**，而没有回头确认**生产默认跑的是哪个策略**。测量仪器选错时，Δ = 0 是仪器读数，不是被测对象的性质。**下一轮起，「用哪个策略判定」必须与「生产默认策略」一致。**
+
+---
+
 ## 8. 采集过程的偏离（须披露）
 
 ### 8.1 作废并重跑 regex-run1（我造成的）
@@ -356,6 +448,8 @@ n=100（50/50），`ΔFPR` 的最小可分辨步长为 0.02。本设计因此采
 | §2 逐轮指标与 CI | 各轮 `summary.json` | `regex-run{1..3}/`、`semgrep-run{1..3}/` |
 | §2 混淆矩阵的独立复核 | 从各轮 `sample-results.jsonl` 重算 | 同上 |
 | §7.5 门禁语义 | `TAA_CORPUS_PARITY` 无关；直接 `python3 -m unittest tests.test_corpus_gate_semantics` | `gate-semantics-audit.json` |
+| **§7.5 生产门禁数值、§7.13 终判** | `TAA_PRODUCTION_GATE=1 go test ./internal/codeaudit/ -run TestProductionGateSemantics -v`（调用**真实**的生产函数，不是镜像） | `production-gate-semantics.json` |
+| **§7.13 两臂裁决多重集比对** | 见 §7.13 内联脚本 | 无（读各轮 `audit_report.json`） |
 | §7.3 规则对等 | `python3 -m unittest tests.test_engine_rule_parity` | `rule-parity-audit.json` |
 | §7.7 失败集合与污染判定 | `paired-analysis.json` 的 `fail_closed_by_run` | 同上 |
 
