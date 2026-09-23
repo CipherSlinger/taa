@@ -524,10 +524,14 @@ class LLMSecurityAnalyzer:
         # 0.1: changing it would change the treatment, not the measurement.
         self.llm_seed = llm_seed
 
-    def analyze_finding(self, finding: Finding) -> Finding:
-        """Perform LLM semantic judgment on a single finding."""
+    def finding_prompt_slots(self, finding: Finding) -> dict:
+        """The values the finding prompt is rendered from.
+
+        Kept separate from build_finding_prompt so that a comparison between two
+        engines' prompts can name which value differed instead of only reporting
+        that the rendered text did.
+        """
         ctx_before = finding.context_before
-        snippet = finding.code_snippet
         ctx_after = finding.context_after
 
         if finding.cpg_evidence:
@@ -545,16 +549,24 @@ class LLMSecurityAnalyzer:
                 except ImportError:
                     pass
 
-        prompt = self.FINDING_PROMPT.format(
-            file=finding.file,
-            line=finding.line,
-            code_snippet=snippet,
-            context_before=ctx_before,
-            context_after=ctx_after,
-            rule_id=finding.rule_id,
-            category=finding.category,
-            description=finding.description,
-        )
+        return {
+            "file": finding.file,
+            "line": finding.line,
+            "code_snippet": finding.code_snippet,
+            "context_before": ctx_before,
+            "context_after": ctx_after,
+            "rule_id": finding.rule_id,
+            "category": finding.category,
+            "description": finding.description,
+        }
+
+    def build_finding_prompt(self, finding: Finding) -> str:
+        """The exact prompt sent to the model for one finding."""
+        return self.FINDING_PROMPT.format(**self.finding_prompt_slots(finding))
+
+    def analyze_finding(self, finding: Finding) -> Finding:
+        """Perform LLM semantic judgment on a single finding."""
+        prompt = self.build_finding_prompt(finding)
 
         if self.backend == "ollama":
             result = self._call_ollama(prompt, num_predict=200)
@@ -568,13 +580,13 @@ class LLMSecurityAnalyzer:
         finding.llm_risk = result.get("risk", "")
         return finding
 
-    def analyze_file(self, file_path: str, findings: List[Finding], max_lines: int = 400) -> FileSummary:
-        """Perform overall security analysis on a single file."""
+    def file_prompt_slots(self, file_path: str, findings: List[Finding], max_lines: int = 400) -> Optional[dict]:
+        """The values the file prompt is rendered from, or None if the file cannot be read."""
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 lines = f.readlines()
         except Exception:
-            return FileSummary(risk_level="UNCERTAIN", summary="无法读取文件")
+            return None
 
         if len(lines) > max_lines:
             full_code = extract_finding_centered_context(lines, findings, max_lines=max_lines)
@@ -584,19 +596,33 @@ class LLMSecurityAnalyzer:
         # Build findings summary
         seen = set()
         parts = []
-        for f in findings:
-            if f.rule_id not in seen:
-                seen.add(f.rule_id)
-                parts.append(f"{f.rule_id}({f.category},{f.severity})")
-        findings_summary = ", ".join(parts) if parts else "无"
+        for finding in findings:
+            if finding.rule_id not in seen:
+                seen.add(finding.rule_id)
+                parts.append(f"{finding.rule_id}({finding.category},{finding.severity})")
 
-        prompt = self.FILE_ANALYSIS_PROMPT.format(
-            file=os.path.basename(file_path),
-            line_count=len(lines),
-            findings_count=len(findings),
-            findings_summary=findings_summary,
-            full_code=full_code,
-        )
+        return {
+            "file": os.path.basename(file_path),
+            "line_count": len(lines),
+            "findings_count": len(findings),
+            "findings_summary": ", ".join(parts) if parts else "无",
+            "full_code": full_code,
+        }
+
+    def build_file_prompt(self, file_path: str, findings: List[Finding], max_lines: int = 400) -> Optional[str]:
+        """The exact prompt sent to the model for one file, or None if it cannot be read."""
+        slots = self.file_prompt_slots(file_path, findings, max_lines)
+        if slots is None:
+            return None
+        return self.FILE_ANALYSIS_PROMPT.format(**slots)
+
+    def analyze_file(self, file_path: str, findings: List[Finding], max_lines: int = 400) -> FileSummary:
+        """Perform overall security analysis on a single file."""
+        slots = self.file_prompt_slots(file_path, findings, max_lines)
+        if slots is None:
+            return FileSummary(risk_level="UNCERTAIN", summary="无法读取文件")
+
+        prompt = self.FILE_ANALYSIS_PROMPT.format(**slots)
 
         if self.backend == "ollama":
             result = self._call_ollama(prompt, num_predict=300)
