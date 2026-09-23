@@ -349,13 +349,22 @@ python3 models/audit/tools/audit_benchmark_eval.py \
 5. **规则集差异不可避免**：两臂规则并非逐条等价（F5 即为一例）。报告须列出两臂各自触发的规则集合差异，避免把「规则差异」误读为「引擎差异」。
 6. **BE 单机环境**：所有运行在同一台机器串行完成，未覆盖并发、资源受限或部署镜像（未安装 semgrep）等生产形态。
 7. **本机资源争用可致 LLM 宿主被杀（实测，非推测）**：承载 ollama 的容器 `taa-env-slim-v2` 曾因并行跑 semgrep 全量扫描而被 OOM 杀死（`Exited (137)`）。**危险之处在于它与 F3 合谋**：容器死亡时 LLM 不可达，而 F3 的 fail-open 会把「无法裁决」呈现为「无命中 → 通过」，即**一次环境事故会伪装成一个更好的评测结果**。P2 因此不只是「证据完整性」修复，而是本实验防止「基础设施故障被计入指标」的必要条件。运行期间的防护见 §4.1。
-8. **评测镜像对 HIGH/MEDIUM 不敏感，而生产 `gate` 对它敏感（本次核对代码时发现）**：
-   - 生产（`internal/codeaudit/verifier.go:160-178`）：`report.Passed = highCount == 0`，**MEDIUM 从不单独拦截**，HIGH 必须被 LLM 判 BENIGN 才不拦截。
-   - 评测镜像（`models/examples/code_security_analyzer.py:837-864`）：`has_high_or_medium and not has_llm_verdict → SUSPICIOUS`，即 MEDIUM 与 HIGH 在「无裁决」时**同样拦截**；有裁决时二者**同样可被 BENIGN 开脱**。
+8. **评测镜像对 HIGH/MEDIUM 不敏感，而生产语义对它敏感（本次核对代码时发现）**：
+
+   > **勘误二（2026-09-23，编写接入 spec 时复核代码发现）**：本条初稿把生产消费的 `Passed` 写成 `verifier.go:160-178` 的 `report.Passed`（`highCount == 0`，MEDIUM 不拦截）。**错**——生产消费的是 `audit.go:283-295` 的 `AuditReport.Conclusion.Passed`，其 `gate` 分支为 `High == 0 && Medium == 0`，**MEDIUM 也拦截**；`High == 0`（MEDIUM 不拦截）是 **`assist`** 分支的行为，而生产**默认策略就是 `assist`**。下方第 2 点与 M3 结论按此重写。
+
+   - **生产实际消费的判定**（`internal/controller/import_processing.go:645` 取 `audit.Conclusion.Passed`，定义在 `internal/codeaudit/audit.go:283-295`）：
+     ```go
+     case "gate":   passed = stats.High == 0 && stats.Medium == 0   // MEDIUM 也拦截
+     default:       passed = stats.High == 0                        // assist：只拦 HIGH
+     ```
+     拦截门槛**取决于 `llm.policy`**，生产默认 `assist`（`config.go:254`），本轮评测跑的是 `--policy gate`。
+   - **生产内部存在一处不一致（须记录并在接入 spec 处理）**：`internal/codeaudit/verifier.go:160-178`（`recalculatePassed`，注释自称 gate 分支）写 `report.Passed = highCount == 0`，即 MEDIUM 不拦截，**与 `audit.go` 的 gate 语义相反**。因生产消费 `audit.go` 的值，该分歧目前被遮蔽，但同一个 `"gate"` 在同一个包内有两种含义，属潜在缺陷。
+   - 评测镜像（`models/audit/tools/audit_benchmark_eval.py:718-755`）把 `gate`/`assist` 实现为两个分支：`gate` 分支**不看 severity**（有非 `BENIGN` 裁决或 `llm_unavailable`/`parse_error` 即拦截），`assist` 分支看 severity（拦 `CRITICAL`/`HIGH`）。本轮跑前者，故镜像在 `gate` 下 severity-blind。
    - 后果：**本评测无法分辨「一条规则能否拦截」这一生产语义**——而这正是 severity 在生产中的唯一作用。因此：
      1. 报告的 PASS **不覆盖 severity 敏感的行为**；P0 的 severity 镜像（§3）是为了让两臂的规则元数据一致，其生产后果不属本轮证据范围。
-     2. 若样本集里出现「MEDIUM 规则命中真实攻击」的情形，两臂在评测中都会拦截，而生产里两臂都不会拦截——这会**高估**两臂的召回。~~当前语料中 M1–M5 的主攻击规则均为 HIGH（`rules.go` 中仅 `FIL_001`/`DYN_001`/`ENV_001`/`EMB_003` 为 MEDIUM），故该风险的暴露面限于这四条规则~~ **——该论断已被实测推翻，见下。**
-     3. 修复评测镜像使其与生产 `gate` 语义一致，属**评测资产**改动且会改变历史可比性，须单独立项、对两臂同时施加并重新测量（见 §12.4）。
+     2. 若样本集里出现「MEDIUM 规则命中真实攻击」的情形，两臂在评测中都会拦截，而**生产 `assist` 下两臂都不会拦截**——这会**高估**两臂的召回（`gate` 下不会，见下）。~~当前语料中 M1–M5 的主攻击规则均为 HIGH（`rules.go` 中仅 `FIL_001`/`DYN_001`/`ENV_001`/`EMB_003` 为 MEDIUM），故该风险的暴露面限于这四条规则~~ **——该论断已被实测推翻，见下。**
+     3. 修复评测镜像使其与生产语义一致，属**评测资产**改动且会改变历史可比性，须单独立项、对两臂同时施加并重新测量（见 §12.4）。
 
    **实测（`tests/test_corpus_gate_semantics.py`，固化为可复跑用例，产出 `gate-semantics-audit.json`）**：上文按规则清单**推断**「主攻击规则均为 HIGH」是**错的**。逐样本按「最强命中 severity 是否达到 `gate` 的拦截门槛」分桶：
 
@@ -367,8 +376,8 @@ python3 models/audit/tools/audit_benchmark_eval.py \
    | B2 / B3 | 0 | 10 / 10 | 0 |
    | B4 | 6 | 2 | 2 |
 
-   - **M3 全族 10 个样本的命中只有 MEDIUM**（`ENV_001`/`FIL_001`，即 M3 的 `expected_severity="MEDIUM"` 所声明者）——**这是语料的有意设计**（secret_theft 家族），不是缺陷。后果：M3 在评测里被镜像记成真阳性，而**生产 `gate` 下 `highCount == 0`，无论 LLM 怎么判都不会拦截**。M3 占恶意样本 10/50，因此**本轮报告的绝对 recall 不是「生产可拦截率」**，高估上限为 0.20。
-   - **良性侧同向更宽**：22 个良性样本的命中同样全是 MEDIUM（B2/B3 全族、B4 两个），生产不会误拦而镜像会计入 FPR——即**镜像的 FPR 是生产 FPR 的上界**。两向都等量作用在两臂上（规则集相同），**故不改变两臂之差**，而改变**绝对值**的解释。
+   - **M3 全族 10 个样本的命中只有 MEDIUM**（`ENV_001`/`FIL_001`，即 M3 的 `expected_severity="MEDIUM"` 所声明者）——**这是语料的有意设计**（secret_theft 家族），不是缺陷。后果**取决于策略**：M3 在评测镜像（`gate`）与生产 `gate` 下**都会被拦截**（计 TP）；只有在**生产默认的 `assist`** 下才不拦截（实为 FN）。因此**只有在 `assist` 下**，本轮报告的绝对 recall 才高估「生产可拦截率」，高估上限 0.20（10/50）。**若生产用 `gate`，该高估不成立。**
+   - **良性侧同理**：28 个被镜像拦截的良性样本中，20 个（B2/B3 全族）只有 MEDIUM、2 个（B4）只有 MEDIUM、6 个（B4）有 HIGH。故被拦截的良性样本数：镜像 28（FPR 0.56）> 生产 `gate` ≈26（≈0.52）> 生产 `assist` 6（0.12）。**镜像的 FPR 高于两种生产策略，可读作上界**，但它对 `assist` 的高估远大于对 `gate` 的高估。两向都等量作用在两臂上（规则集相同），**故不改变两臂之差**，只改变**绝对值**的解释。
    - 另一个副产品（对判定有用）：**`malicious_not_flagged = 0`**，50 个恶意样本**全部**被静态臂命中。因此静态臂 recall = 1.0，任何 recall < 1.0 都来自 **LLM 把恶意样本开脱为 BENIGN**，而不是静态漏报。`benign_not_flagged = 22` 与运行里 22 个 bypass 独立吻合，两者互为交叉校验。
 
 
@@ -554,7 +563,7 @@ scan_incomplete_count: 4   scan_error_count: 4
    - `EMB_004` 的五条模式均不含 `struct.pack`，旧 semgrep 规则单列了它。
    - `EMB_001` 的 `shutil.copy`/`shutil.copytree` 两条模式以 `\b` 收尾，因此 `shutil.copy(dataset_path, ...)` **不匹配**——`dataset` 后的 `_` 是词字符，`\b` 不成立。四条命名的兄弟分支（`torch.save`、`np.save`、`np.savez`）有同样的问题。两臂在这一构造上**一致地漏报**，故不属差异清单，但意味着这两条模式在实践中几乎只在实参恰好是裸词（`shutil.copy(data, …)`）时才生效。夹具 `emb_shutil_copy_dataset_path.py` 已把该行为钉住，防止有人只在 semgrep 臂「顺手修好」。
    - 以上与 §12.1 同类：**对两臂同等成立**，须同时修订。取消 semgrep 臂的额外覆盖是本轮的**有意决定**——若保留，受测臂就携带了一项对照组没有的检测能力，PASS 将无法归因。
-4. **评测镜像的 `gate` 语义与生产不一致**（见 §9.8）：镜像对 HIGH/MEDIUM 一视同仁，生产则只让 HIGH 拦截。修复它属评测资产改动、会改变历史可比性，须单独立项并对两臂同时施加后重新测量。
+4. **评测镜像的 `gate` 语义与生产不一致**（见 §9.8）：镜像的 `gate` 分支对 HIGH/MEDIUM 一视同仁（severity-blind），生产 `gate` 则要求 `High == 0 && Medium == 0`——**两者效果接近但机制不同**；而生产**默认策略是 `assist`**（只拦 HIGH），此时差异很大（FPR 0.56 对 0.12）。修复它属评测资产改动、会改变历史可比性，须单独立项并对两臂同时施加后重新测量。
 5. **留出集（held-out set）**（见 §9.9，本轮最重要缺口）：本轮的非劣性主张只在「规则对齐所依据的语料」上成立，而规则移植的漏报恰恰只在**未参与对齐的构造**上暴露。需要一份**不参与任何规则调整**的样本集——在规则冻结之后生成、且生成后不对规则做任何修改——才能把结论从「无退化」推进到「可替换」。这是把 NULL 结果（Δ=0）变成有意义主张的唯一途径，也是本轮**不应**声称已完成的下一步。
 6. **LLM 不可用制造 FP 的通道（本轮采集期间实测发现，见 §9.10 第 10、11 条）**：两条通道后果相同、判据不同——**解析失败**（含双引号的 `code_snippet` 原样写进 JSON 字符串值而不转义 → JSON 非法）与 **调用超时**（`urlopen(..., timeout=60)` 撞上限）。两者都以 `UNCERTAIN` 收尾、都由 fail-closed 保留静态命中。恶意样本上无害（仍是 TP），但**良性样本上会凭空造出 FP**，而这不是引擎差异。两臂暴露相同（finding 集合已对齐），故为噪声非偏倚；但噪声可朝任一方向推动 ΔFPR，**足以造出假 FAIL**。
    - 修复属评测资产改动（如容错解析 / 转义修复 / 超时与重试策略），按 §12.4 的同一规则：须**同时**施加于两臂并**重新测量全部 6 轮**，不能只修一侧或只补跑个别轮次。建议单独立项。**两条通道须一并处理**——只修 JSON 转义会让超时通道继续敞开。

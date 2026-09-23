@@ -160,10 +160,29 @@ semgrep 臂用 AST 作用域、regex 臂用 ±N 行窗口，二者与"引擎"捆
 
 离线 regex 臂是 Python 侧 `StaticScanner`，是 Go 生产扫描器（`internal/codeaudit`）的**镜像实现**。两处规则 ID 一致（13 条），但实现语言不同，结论对生产 Go 引擎是**代理性**的。生产侧 `MaxFindings=200` 静默截断与 `SkipDirs` 未排除依赖目录等差异不在本评测覆盖范围内。
 
-### 7.5 评测镜像对 HIGH/MEDIUM 不敏感，而生产 `gate` 对它敏感
+### 7.5 评测镜像对 HIGH/MEDIUM 不敏感，而生产语义对它敏感
 
-- 生产（`internal/codeaudit/verifier.go:160-178`）：`report.Passed = highCount == 0`，**MEDIUM 从不单独拦截**。
-- 评测镜像：MEDIUM 与 HIGH 在"无裁决"时**同样拦截**，有裁决时**同样可被 BENIGN 开脱**。
+> ⚠️ **本节曾写错，以下是核实后的版本。** 初稿称"生产 `gate` 下 MEDIUM 从不单独拦截"，引用 `verifier.go:160-178`。**两处都错**：生产消费的不是 `Report.Passed`，而是 `AuditReport.Conclusion.Passed`；且该函数在 `gate` 下 **MEDIUM 也拦截**。详见下。
+
+**生产实际消费哪一个**：`import_processing.go:645` 取 `audit.Conclusion.Passed`，其定义在 `audit.go:283-295`：
+
+```go
+switch policy {
+case "gate":
+    // Gate mode: block on High and Medium risk findings. Low (benign) findings pass.
+    passed = stats.High == 0 && stats.Medium == 0        // MEDIUM 也拦截
+default:
+    // Assist mode (default): block on High risk findings.
+    passed = stats.High == 0                             // 只拦 HIGH
+}
+if ctx.ScanPassed != nil && !*ctx.ScanPassed { passed = false }
+```
+
+因此 severity 的拦截门槛**取决于 `llm.policy`**，而**生产默认是 `assist`**（`config.go:254`），不是 `gate`。本轮评测用的是 `--policy gate`。
+
+**另有一处生产内部不一致须记录**：`verifier.go:160-178`（`recalculatePassed`，注释自称是 gate 分支）写的是 `report.Passed = highCount == 0`，即 MEDIUM 不拦截——**与 `audit.go` 的 gate 语义相反**。因为生产消费 `audit.go` 的值，该分歧目前被遮蔽；但同一个 `"gate"` 在同一个包里有两种含义，属潜在缺陷，接入 spec 必须处理（见该 spec 的 severity 映射一节）。
+
+**评测镜像**（`audit_benchmark_eval.py:718-755`）则把 `gate`/`assist` 实现为两个分支：`gate` 分支**不看 severity**，只要有非 `BENIGN` 裁决（或 `llm_unavailable`/`parse_error`）就拦截；`assist` 分支看 severity，拦 `CRITICAL`/`HIGH`。本轮跑的是前者，故镜像在 `gate` 下是 severity-blind 的。
 
 实测（`gate-semantics-audit.json`，固化为可复跑用例 `tests/test_corpus_gate_semantics.py`）：
 
@@ -175,10 +194,29 @@ semgrep 臂用 AST 作用域、regex 臂用 ±N 行窗口，二者与"引擎"捆
 | B2 / B3 | 0 | 10 / 10 | 0 |
 | B4 | 6 | 2 | 2 |
 
-- **M3 全族 10 个样本的命中只有 MEDIUM**（`ENV_001`/`FIL_001`，即其 `expected_severity="MEDIUM"` 所声明者）——**语料的有意设计**。后果：M3 在评测里被记为真阳性，而**生产 `gate` 下 `highCount == 0`，无论 LLM 怎么判都不会拦截**。M3 占恶意样本 10/50，故**本轮报告的绝对 recall 不是「生产可拦截率」**，高估上限 **0.20**。
-- 良性侧同向更宽：22 个良性样本的命中也全是 MEDIUM（B2/B3 全族、B4 两个），生产不会误拦而镜像计入 FPR——即**镜像的 FPR 是生产 FPR 的上界**。
-- 两向都等量作用在两臂上（规则集相同），**故不改变两臂之差**，只改变**绝对值**的解释。
-- ⚠️ 我最初在 spec §9.8.2 按规则清单**推断**"M1–M5 主攻击规则均为 HIGH"，**该推断是错的**，上表是实测修正。
+**M3 与绝对 recall 的解释**：M3 全族 10 个样本的命中只有 MEDIUM（`ENV_001`/`FIL_001`，即其 `expected_severity="MEDIUM"` 所声明者）——**语料的有意设计**，非缺陷。后果取决于策略：
+
+| 策略 | M3（10 个 MEDIUM-only 恶意样本） | 含义 |
+|---|---|---|
+| 评测镜像（本轮，`gate`） | **拦截** → 计 TP | severity-blind |
+| 生产 `gate` | **拦截**（`Medium == 0` 不成立） | 与镜像一致 |
+| 生产 `assist`（**默认**） | **不拦截** → 实为 FN | 镜像高估 |
+
+即**只有在生产默认的 `assist` 下**，本节报告的绝对 recall（1.0）才高估「生产可拦截率」，高估上限 **0.20**（10/50）。若生产改用 `gate`，M3 会被拦截，**该高估不成立**。
+
+**良性侧同理且方向相反**：28 个被镜像拦截的良性样本中，20 个（B2/B3 全族）只有 MEDIUM、2 个（B4）只有 MEDIUM、6 个（B4）有 HIGH。故：
+
+| 策略 | 被拦截的良性样本 | FPR |
+|---|---|---|
+| 评测镜像（本轮） | 28 | 0.56 |
+| 生产 `gate` | ≈26（20 + 2 + 6，减去可能被 LLM 开脱者；实测开脱为 0） | ≈0.52 |
+| 生产 `assist`（默认） | 6（仅 B4 带 HIGH 者） | 0.12 |
+
+即**镜像的 FPR 高于两种生产策略**，可以读作上界；但它对 `assist` 的高估远大于对 `gate` 的高估。
+
+**对判定的影响：无。** 上述差异在两种策略下都**等量作用在两臂上**（规则集已对齐、finding 集合相同），只改变**绝对值**的解释，不改变两臂之差。
+
+- ⚠️ 两处勘误记录：我最初在 spec §9.8 按规则清单**推断**"M1–M5 主攻击规则均为 HIGH"，**该推断是错的**（上表是实测修正）；随后在报告初稿里**又把生产策略认成 `gate`、把消费方引成 `Report.Passed`**，也是错的（本节是第二次修正）。**两次都是"按代码注释与直觉推断"而非"读生产实际消费的那一行"**——这也是接入 spec 不能只写规则映射、必须写清 severity 语义的原因。
 
 ### 7.6 LLM 不可用是本机真实发生的失效（实测，非推测）
 
