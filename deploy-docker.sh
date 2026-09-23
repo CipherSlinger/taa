@@ -55,6 +55,25 @@ ARCHIVE_PATH="${ARCHIVE_PATH:-${OUTPUT_DIR%/}/taa-env-${IMAGE_TAG_PREFIX}-${TAG_
 # teellm/configs/teellm-production.json to package strict attestation instead.
 TEELLM_CONFIG_TEMPLATE="${TEELLM_CONFIG_TEMPLATE:-$PROJECT_DIR/teellm/configs/teellm-docker.json}"
 
+# Tier 1 static scan engine baked into the image: regex or semgrep. The default stays the
+# regex baseline, so packaging without an explicit choice does not move the engine
+# production runs; semgrep is opt-in here until the holdout evidence passes under the
+# assist policy.
+SCAN_ENGINE="${SCAN_ENGINE:-regex}"
+# Rules the semgrep engine loads. Closed over all three rule directories so an image can
+# be re-pointed at another language without repackaging.
+SEMGREP_RULES_SOURCE="${SEMGREP_RULES_SOURCE:-$PROJECT_DIR/models/audit/semgrep/rules}"
+# Where the adapter reads its rules once the image runs. Deliberately not under models/ or
+# /tmp, both of which the cleanup step empties: a rules file that disappears between the
+# deploy and the commit produces an image whose every model import fails closed.
+CONTAINER_SEMGREP_DIR="${CONTAINER_SEMGREP_DIR:-/opt/taa/semgrep}"
+# Pinned so the image carries a CLI version that was measured rather than whatever pip
+# resolved on packaging day. The resolved dependency tree is recorded next to it.
+SEMGREP_VERSION="${SEMGREP_VERSION:-1.177.0}"
+# The template deploy.sh turns into the container's taa-config.json. Passed through
+# explicitly rather than exported, so it reaches only the one invocation that needs it.
+TAA_TEMPLATE="${TAA_DOCKER_CONFIG_TEMPLATE:-$PROJECT_DIR/configs/taa-docker.json}"
+
 # Production hygiene switches.
 INCLUDE_PLATFORM="${INCLUDE_PLATFORM:-false}"
 CLEAN_RUNTIME="${CLEAN_RUNTIME:-true}"
@@ -92,6 +111,7 @@ Options:
   --tag <tag>          Override the committed image tag (default: $IMAGE_TAG)
   --archive <path>     Override the exported archive path (default: $ARCHIVE_PATH)
   --keep-platform      Keep the platform block in taa-config.json (test image, not production)
+  --scan-engine <e>    Tier 1 static engine baked into the image: regex (default) or semgrep
   --no-clean           Skip runtime trace cleanup (logs, results, keys, pause flags)
   --reset-container    Recreate the container from the base image before deploying.
                        Discards the deployed ollama runtime and weights; teellm/deploy.sh
@@ -103,12 +123,14 @@ Environment overrides:
   IMAGE_REPO, IMAGE_TAG_PREFIX, TAG_STAMP, TEELLM_CONFIG_TEMPLATE,
   INCLUDE_PLATFORM, CLEAN_RUNTIME, RESET_CONTAINER, READY_TIMEOUT,
   CONTAINER_OLLAMA_DIR, OLLAMA_HOST, OLLAMA_READY_TIMEOUT, WARMUP_TIMEOUT,
-  MODEL_KEEP_ALIVE
+  MODEL_KEEP_ALIVE, SCAN_ENGINE, SEMGREP_RULES_SOURCE, CONTAINER_SEMGREP_DIR,
+  SEMGREP_VERSION
 
 Examples:
   $(basename "$0")
   $(basename "$0") --model qwen2.5-coder:7b
   $(basename "$0") --model qwen2.5-coder:3b --tag taa-env:slim-v2-release-1
+  $(basename "$0") --scan-engine semgrep
   TEELLM_CONFIG_TEMPLATE=teellm/configs/teellm-production.json $(basename "$0")
 EOF
 }
@@ -135,24 +157,57 @@ while [[ $# -gt 0 ]]; do
     --keep-platform)   INCLUDE_PLATFORM=true ;;
     --no-clean)        CLEAN_RUNTIME=false ;;
     --reset-container) RESET_CONTAINER=true ;;
+    --scan-engine=*)   SCAN_ENGINE="${arg#*=}" ;;
+    --scan-engine)
+      shift; [[ $# -eq 0 || "$1" == -* ]] && die "--scan-engine requires an engine name"
+      SCAN_ENGINE="$1" ;;
     -h|--help|help)    usage; exit 0 ;;
     *) err "unknown argument: $arg"; usage >&2; exit 1 ;;
   esac
   shift
 done
 
+# Rejected here, where the operator sees it, and not left to the daemon: an unrecognized
+# name is refused by the config loader at container start, which in the packaged image is
+# after the daemons are down. Same whitelist as internal/config's staticEngines.
+case "$SCAN_ENGINE" in
+  regex|semgrep) ;;
+  *) die "--scan-engine must be regex or semgrep, got: $SCAN_ENGINE" ;;
+esac
+
 # ── Preflight ────────────────────────────────────────────────
-banner "Packaging TAA + TEE-LLM Docker Image" "Model: $LLM_MODEL | Container: $CONTAINER_NAME"
+banner "Packaging TAA + TEE-LLM Docker Image" "Model: $LLM_MODEL | Container: $CONTAINER_NAME | Tier 1 engine: $SCAN_ENGINE"
 
 step "preflight checks"
 require_command() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 require_command docker
+# The engine reaches the daemon through a config template derived on the host, because
+# write_taa_config copies the security block verbatim and a config patched into the
+# container afterwards would need a second daemon restart to take effect.
+require_command python3
 docker info >/dev/null 2>&1 || die "docker daemon is not running or accessible"
 
 [[ -f "$PROJECT_DIR/deploy.sh" ]] || die "deploy.sh not found in $PROJECT_DIR"
 [[ -x "$PROJECT_DIR/teellm/deploy.sh" ]] || die "teellm/deploy.sh not found or not executable"
 [[ -f "$PROJECT_DIR/deploy/start.sh" ]] || die "deploy/start.sh not found"
 [[ -f "$TEELLM_CONFIG_TEMPLATE" ]] || die "teellm config template not found: $TEELLM_CONFIG_TEMPLATE"
+[[ -f "$TAA_TEMPLATE" ]] || die "taa config template not found: $TAA_TEMPLATE"
+
+# Checked before any container work, so a bad rules path costs nothing but this line. The
+# engine is resolved from the config at startup and every scan then reads the rules, so a
+# missing directory is not a degraded scan: it fails every import and has the model code
+# deleted, indistinguishable from the scanner doing its job.
+if [[ "$SCAN_ENGINE" == "semgrep" ]]; then
+  [[ -d "$SEMGREP_RULES_SOURCE" ]] || die "semgrep rules not found: $SEMGREP_RULES_SOURCE"
+  [[ -f "$SEMGREP_RULES_SOURCE/python/rules.yaml" ]] || die "semgrep python rules not found: $SEMGREP_RULES_SOURCE/python/rules.yaml"
+fi
+
+# One trap for every temporary path this run creates. Step 8 installs the archive path
+# into TMP_ARCHIVE long after this point, which is why the expansion is deferred.
+TMP_ARCHIVE=""
+TMP_TAA_TEMPLATE=""
+TMP_PIP_LOG=""
+trap 'rm -f "${TMP_ARCHIVE:-}" "${TMP_TAA_TEMPLATE:-}" "${TMP_PIP_LOG:-}"' EXIT
 
 # The packaged image only autostarts both daemons if the TAA supervisor launches the
 # TEE-LLM one. Fail loudly rather than shipping an image that FATAL-loops on :8443.
@@ -241,16 +296,92 @@ info "running: (cd teellm && ./deploy.sh docker --model $LLM_MODEL --container $
     --config "$TEELLM_CONFIG_TEMPLATE" )
 info "TEE-LLM deployed"
 
-# ── 3. TAA ───────────────────────────────────────────────────
+# ── 3. Tier 1 static scan engine ─────────────────────────────
+# Everything the semgrep arm needs is put in place before TAA is deployed, so the daemon
+# boots once with the engine already resolved from its config. Nothing here is at risk
+# from step 6's cleanup: site-packages and /opt/taa/semgrep are outside the paths it
+# empties, and the rules deliberately do not live under models/ or /tmp.
+if [[ "$SCAN_ENGINE" == "semgrep" ]]; then
+  step "installing semgrep $SEMGREP_VERSION (Tier 1 engine)"
+  container_running || die "container $CONTAINER_NAME is not running"
+
+  # --break-system-packages: the base image's python is externally managed and ships no
+  # ensurepip, so a venv cannot bootstrap itself here -- and a venv would additionally
+  # have to be re-entered by the daemon, which shells out to `semgrep` from PATH.
+  TMP_PIP_LOG="$(mktemp)"
+  if ! docker exec -i "$CONTAINER_NAME" pip3 install --quiet --no-cache-dir \
+       --break-system-packages "semgrep==${SEMGREP_VERSION}" >"$TMP_PIP_LOG" 2>&1; then
+    tail -n 15 "$TMP_PIP_LOG" >&2
+    die "pip3 install semgrep==${SEMGREP_VERSION} failed in $CONTAINER_NAME"
+  fi
+
+  # Read back from the CLI rather than trusting the pin: an existing install that pip
+  # declined to change is the one way this step can succeed without the engine arriving.
+  installed_version="$(docker exec -i "$CONTAINER_NAME" semgrep --version 2>/dev/null | tail -n 1 | tr -d '\r')"
+  [[ "$installed_version" == "$SEMGREP_VERSION" ]] || \
+    die "semgrep in $CONTAINER_NAME reports version '$installed_version', expected $SEMGREP_VERSION"
+  info "semgrep $installed_version installed"
+
+  step "installing semgrep rules into $CONTAINER_SEMGREP_DIR"
+  # Remove first: `docker cp` of a directory into an existing one nests it instead of
+  # replacing it, which would leave a previous run's rules reachable at a second path.
+  docker exec -i "$CONTAINER_NAME" bash -c \
+    "rm -rf '$CONTAINER_SEMGREP_DIR/rules' && mkdir -p '$CONTAINER_SEMGREP_DIR'"
+  docker cp "$SEMGREP_RULES_SOURCE" "$CONTAINER_NAME:$CONTAINER_SEMGREP_DIR/rules" >/dev/null
+
+  # The python rules are the file the adapter is pointed at; the other languages are
+  # carried so the path can be re-pointed without repackaging.
+  container_rules="$CONTAINER_SEMGREP_DIR/rules/python/rules.yaml"
+  docker exec -i "$CONTAINER_NAME" bash -c "test -f '$container_rules'" >/dev/null 2>&1 || \
+    die "rules did not land in the container: $container_rules"
+  info "rules installed: $container_rules"
+
+  # The version and the rule digests are what tie this image to the scans the holdout
+  # evidence was gathered with. The freeze file is the tree that actually ran: pinning
+  # semgrep does not pin what it pulls in.
+  docker exec -i "$CONTAINER_NAME" bash -c "
+    set -eu
+    cd '$CONTAINER_SEMGREP_DIR'
+    {
+      printf 'engine semgrep\nversion %s\n' '$installed_version'
+      find rules -type f -name '*.yaml' -exec sha256sum {} + | LC_ALL=C sort -k2
+    } > MANIFEST
+    pip3 freeze > pip-freeze.txt
+  " >/dev/null
+  info "recorded $CONTAINER_SEMGREP_DIR/MANIFEST and pip-freeze.txt"
+
+  step "deriving the TAA config template for the semgrep engine"
+  # Derived on the host and handed to deploy.sh as its template: write_taa_config copies
+  # the security block verbatim, and a config patched into the container after the daemon
+  # started would need a second restart to be read. The tracked templates keep no engine
+  # key, so the engine production runs is not moved by packaging.
+  TMP_TAA_TEMPLATE="$(mktemp)"
+  python3 - "$TAA_TEMPLATE" "$TMP_TAA_TEMPLATE" "$container_rules" <<'PY'
+import json, sys
+src, dst, rules = sys.argv[1:4]
+with open(src, "r", encoding="utf-8") as f:
+    cfg = json.load(f)
+security = cfg.setdefault("security", {})
+security["codeScanEngine"] = "semgrep"
+security["semgrepRulesPath"] = rules
+with open(dst, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+PY
+  TAA_TEMPLATE="$TMP_TAA_TEMPLATE"
+  info "derived template sets codeScanEngine=semgrep and semgrepRulesPath=$container_rules"
+fi
+
+# ── 4. TAA ───────────────────────────────────────────────────
 step "deploying TAA (model: $LLM_MODEL)"
 info "running: ./deploy.sh docker taa --model $LLM_MODEL"
-( cd "$PROJECT_DIR" && ./deploy.sh docker taa --model "$LLM_MODEL" )
+( cd "$PROJECT_DIR" && TAA_DOCKER_CONFIG_TEMPLATE="$TAA_TEMPLATE" ./deploy.sh docker taa --model "$LLM_MODEL" )
 info "TAA deployed"
 
-# ── 4. Verify the supervisor partition ───────────────────────
+# ── 5. Verify the supervisor partition ───────────────────────
 # Neither deploy script touches the other's supervisor: step 2 left one start-teellm.sh,
-# step 3 stopped the old start.sh and left a fresh one, and the flock guard in both
-# wrappers refuses the duplicate that step 3's start.sh tries to launch. There is nothing
+# step 4 stopped the old start.sh and left a fresh one, and the flock guard in both
+# wrappers refuses the duplicate that step 4's start.sh tries to launch. There is nothing
 # left to consolidate -- but the guarantee still has to be checked, because a container
 # carrying a pre-guard ./start.sh would end up with two supervisors respawning each
 # other's daemons. Nothing is killed here, so the warmed weights from step 1 stay resident
@@ -306,7 +437,7 @@ if [[ "$teellm_ready" != true || "$taa_ready" != true ]]; then
   exit 1
 fi
 
-# ── 5. Production hygiene ────────────────────────────────────
+# ── 6. Production hygiene ────────────────────────────────────
 step "applying production configuration"
 if [[ "$INCLUDE_PLATFORM" == true ]]; then
   warn "keeping platform block: resulting image is a local test image, not production"
@@ -371,7 +502,7 @@ docker exec -i "$CONTAINER_NAME" bash -c "
 " >/dev/null 2>&1 || true
 info "runtime directories recreated with 700 permissions on keys dirs"
 
-# ── 6. Commit ────────────────────────────────────────────────
+# ── 7. Commit ────────────────────────────────────────────────
 step "committing container to image: $IMAGE_TAG"
 docker stop "$CONTAINER_NAME" >/dev/null
 commit_msg="Packaged from ${CONTAINER_NAME} with model ${LLM_MODEL} at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -395,7 +526,7 @@ image_size="${inspect_out##* }"
 image_size_mb=$(awk -v b="$image_size" 'BEGIN { printf "%.2f", b / 1048576 }')
 info "image committed: $IMAGE_TAG (id: $image_id, size: ${image_size_mb}MB)"
 
-# ── 7. Export ────────────────────────────────────────────────
+# ── 8. Export ────────────────────────────────────────────────
 step "exporting image archive: $ARCHIVE_PATH"
 mkdir -p "$(dirname "$ARCHIVE_PATH")"
 TMP_ARCHIVE="${ARCHIVE_PATH}.tmp.$$"
@@ -417,8 +548,8 @@ TMP_ARCHIVE=""
 archive_size="$(du -h "$ARCHIVE_PATH" | cut -f1)"
 info "archive exported, $note: $ARCHIVE_PATH ($archive_size)"
 
-# ── 8. Restore dev container ─────────────────────────────────
-# `docker stop` in step 6 killed every daemon the deploys had started. The container's
+# ── 9. Restore dev container ─────────────────────────────────
+# `docker stop` in step 7 killed every daemon the deploys had started. The container's
 # own entrypoint is an idle `tail -f /dev/null`, so `docker start` alone would hand back
 # a development environment with no taa and no teellm-service.
 step "restarting development container"
