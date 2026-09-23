@@ -207,7 +207,7 @@ func CheckImport(dir string) (bool, *Report, error) {
 	if dir == "" {
 		return true, nil, nil
 	}
-	report, err := DefaultScanner().ScanDirectory(dir)
+	report, err := DefaultEngine().ScanDirectory(dir)
 	if err != nil {
 		return false, nil, err
 	}

@@ -212,7 +212,7 @@ func CheckImportWithLLM(ctx context.Context, dir string, cfg LLMConfig) (bool, *
 		return true, nil, nil
 	}
 
-	report, err := DefaultScanner().ScanDirectory(dir)
+	report, err := DefaultEngine().ScanDirectory(dir)
 	if err != nil {
 		return false, nil, err
 	}
@@ -307,7 +307,7 @@ func GenerateAuditReport(ctx context.Context, dir string, cfg LLMConfig, client 
 	}
 
 	// Phase 1: Static scan with line counts.
-	scanReport, lineCounts, err := DefaultScanner().ScanDirectoryWithLines(dir)
+	scanReport, lineCounts, err := DefaultEngine().ScanDirectoryWithLines(dir)
 	if err != nil {
 		return nil, fmt.Errorf("static scan: %w", err)
 	}
