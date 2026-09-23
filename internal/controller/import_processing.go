@@ -613,8 +613,8 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 	StepSeparator("Code Audit")
 	s.setCurrentAuditOp("auditing")
 	defer s.setCurrentAuditOp("idle")
-	s.Logs.Add(LogInfo, "audit", "开始模型代码审计: dir=%s, llmEnabled=%v, policy=%s, failClosed=%v",
-		s.Security.ModelDir, cfg.Enabled, cfg.Policy, cfg.FailClosed)
+	s.Logs.Add(LogInfo, "audit", "开始模型代码审计: engine=%s, dir=%s, llmEnabled=%v, policy=%s, failClosed=%v",
+		engineName(s.Security.Engine), s.Security.ModelDir, cfg.Enabled, cfg.Policy, cfg.FailClosed)
 
 	llmClient := newLLMClient(cfg)
 
@@ -654,6 +654,21 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 
 	s.reportAuditAsync(req.RequestID, req.TaskID, code, msg, auditReportJSON(audit))
 	return passed
+}
+
+// engineName reports the configured Tier 1 engine for a log line, tolerating the
+// unset case.
+//
+// The audit-start line is written before the audit's own nil-engine check, so an
+// unguarded Name() call here would panic inside the audit path instead of failing
+// the import: a misconfigured deployment would take down the request that was
+// supposed to be rejected. Nil is named rather than omitted so the operator sees
+// which configuration is missing.
+func engineName(engine codeaudit.StaticEngine) string {
+	if engine == nil {
+		return "unset"
+	}
+	return engine.Name()
 }
 
 // resolveModelChecksum 获取模型压缩包 SM3 校验和，若未缓存则回退扫描模型目录计算 SM3 校验和。

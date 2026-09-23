@@ -427,3 +427,74 @@ func TestAuditAndReportModelImportFallbackDirectoryChecksum(t *testing.T) {
 		t.Fatal("timed out waiting for reportModelImport")
 	}
 }
+
+// namedEngine is a StaticEngine whose name the test chooses while the scanning
+// stays the real baseline engine's. The assertion below is about where the logged
+// name comes from, not about which engine scans better: a double that answers
+// "semgrep" to Name() separates "the log prints the configured engine" from "the
+// log prints a constant" without making this test depend on a semgrep binary. It
+// does not pretend to scan the way semgrep does, and nothing here reads a finding
+// it produced.
+type namedEngine struct {
+	codeaudit.StaticEngine
+	name string
+}
+
+func (e namedEngine) Name() string { return e.name }
+
+// TestAuditStartLogNamesTheEngine pins that the audit-start line says which Tier 1
+// engine is about to scan. That line is what an operator reads to attribute a
+// blocked import, and "the audit ran" stopped being enough once two engines
+// became selectable: a report that proves which engine produced it is only useful
+// if the log the operator is looking at names the same one.
+//
+// The second case is the one that keeps the line honest. A state can be built
+// without an engine, and the log is written before the audit's own nil check, so
+// an unguarded Name() call would turn a configuration error into a panic inside
+// the audit path — the failure the fail-closed design exists to avoid.
+func TestAuditStartLogNamesTheEngine(t *testing.T) {
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer platform.Close()
+
+	for _, tc := range []struct {
+		name   string
+		engine codeaudit.StaticEngine
+		want   string
+	}{
+		{"the configured engine", namedEngine{StaticEngine: codeaudit.DefaultEngine(), name: "semgrep"}, "engine=semgrep"},
+		{"no engine configured", nil, "engine=unset"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, _ := setupTestState(t)
+			modelDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(modelDir, "train.py"), []byte("import torch\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			state.Security.ScanEnabled = true
+			state.Security.Engine = tc.engine
+			state.Security.ModelDir = modelDir
+			state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
+			state.PlatformIP = platform.URL
+			state.DockerID = "docker-test"
+
+			state.auditAndReportModelImport(importRequest{RequestID: "req-1", TaskID: "task-1"})
+
+			var startLine string
+			for _, entry := range state.Logs.All() {
+				if strings.Contains(entry.Message, "开始模型代码审计") {
+					startLine = entry.Message
+					break
+				}
+			}
+			if startLine == "" {
+				t.Fatalf("no audit-start line among %d log entries", len(state.Logs.All()))
+			}
+			if !strings.Contains(startLine, tc.want) {
+				t.Errorf("audit-start line = %q, want it to contain %q", startLine, tc.want)
+			}
+		})
+	}
+}
