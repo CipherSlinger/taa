@@ -40,14 +40,40 @@ type regexEngine struct {
 	scanner *Scanner
 }
 
-// ScanDirectory delegates to the wrapped scanner.
+// ScanDirectory delegates to the wrapped scanner and stamps the engine
+// identity onto the result.
 func (e regexEngine) ScanDirectory(dir string) (*Report, error) {
-	return e.scanner.ScanDirectory(dir)
+	report, err := e.scanner.ScanDirectory(dir)
+	return e.stamp(report), err
 }
 
-// ScanDirectoryWithLines delegates to the wrapped scanner.
+// ScanDirectoryWithLines delegates to the wrapped scanner and stamps the engine
+// identity onto the result.
 func (e regexEngine) ScanDirectoryWithLines(dir string) (*Report, map[string]int, error) {
-	return e.scanner.ScanDirectoryWithLines(dir)
+	report, lineCounts, err := e.scanner.ScanDirectoryWithLines(dir)
+	return e.stamp(report), lineCounts, err
+}
+
+// stamp records what the regex engine knows about its own scan.
+//
+// ScanComplete is set explicitly rather than left to the zero value. The regex
+// engine always completes: it is a synchronous in-memory match over lines it
+// has already read, with no parser and no subprocess, so there is no partial
+// state for it to be in. Leaving the field alone would report every regex scan
+// as incomplete, and the fail-closed path keys on exactly this field.
+//
+// The remaining completeness fields stay at their zero values because they
+// describe failure modes this engine does not have: it has no parser to fail,
+// no subprocess to exit, and its extension filtering is configuration rather
+// than a file it could not handle. Truncated is set by the scanner, which is
+// the only code that knows whether the walk stopped at the finding cap.
+func (e regexEngine) stamp(report *Report) *Report {
+	if report == nil {
+		return nil
+	}
+	report.Engine = EngineNameRegex
+	report.ScanComplete = true
+	return report
 }
 
 // Name reports the regex engine identity.

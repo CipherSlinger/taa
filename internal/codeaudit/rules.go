@@ -39,6 +39,14 @@ type Finding struct {
 	IsMicroservice bool        `json:"is_microservice,omitempty"`
 	CPGEvidence    string      `json:"cpg_evidence,omitempty"`
 	TaintTrace     []TaintStep `json:"taint_trace,omitempty"`
+	// EngineRuleID is the engine's own identifier for the rule that fired, as
+	// opposed to RuleID, which stays the TAA rule id so downstream consumers
+	// need not know which engine produced the finding. For the regex engine the
+	// two are the same identifier and this field is left empty; it exists for
+	// engines whose native ids differ.
+	EngineRuleID string `json:"engine_rule_id,omitempty"`
+	// RuleFamily is the TAA rule id an engine's native rule maps back to.
+	RuleFamily string `json:"rule_family,omitempty"`
 }
 
 // Report is the result of a security scan.
@@ -51,6 +59,33 @@ type Report struct {
 	Passed      bool      `json:"passed"`
 	LLMDegraded bool      `json:"llm_degraded,omitempty"`
 	Findings    []Finding `json:"findings"`
+
+	// Engine identifies which Tier 1 engine produced this report, so that a
+	// report can prove its own provenance instead of a reader inferring it from
+	// a mode name.
+	Engine string `json:"engine"`
+	// EngineVersion is the engine binary's own version where it has one. The
+	// regex engine is compiled in and leaves this empty.
+	EngineVersion string `json:"engine_version,omitempty"`
+	// ScanComplete reports whether the scan ran to completion. Every field
+	// below narrows what "complete" means; together they are the precondition
+	// for treating Passed as a decision rather than as an absence of evidence.
+	//
+	// The zero value is false, and false reads as "did not complete", so every
+	// engine must set it explicitly in both directions.
+	ScanComplete bool `json:"scan_complete"`
+	// ParserErrors counts files the engine failed to parse. A file it could not
+	// read is a file it did not scan.
+	ParserErrors int `json:"parser_errors"`
+	// Truncated reports that the finding cap was reached and the walk stopped
+	// early, so findings exist that this report does not contain.
+	Truncated bool `json:"truncated"`
+	// UnsupportedExts counts files skipped because their extension is not
+	// scanned. For the regex engine this is configuration, not failure.
+	UnsupportedExts int `json:"unsupported_extensions"`
+	// ProcessExitCode is the engine subprocess's exit status, -1 when there is
+	// no subprocess.
+	ProcessExitCode int `json:"process_exit_code"`
 }
 
 // Rule defines a single security check pattern.

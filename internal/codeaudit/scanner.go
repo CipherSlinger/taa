@@ -71,6 +71,7 @@ func (s *Scanner) ScanDirectory(dir string) (*Report, error) {
 
 	var findings []Finding
 	filesCount := 0
+	truncated := false
 
 	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -95,6 +96,7 @@ func (s *Scanner) ScanDirectory(dir string) (*Report, error) {
 
 		if len(findings) >= s.config.MaxFindings {
 			findings = findings[:s.config.MaxFindings]
+			truncated = true
 			return filepath.SkipAll
 		}
 		return nil
@@ -103,7 +105,7 @@ func (s *Scanner) ScanDirectory(dir string) (*Report, error) {
 		return nil, fmt.Errorf("walk directory: %w", err)
 	}
 
-	return s.buildReport(dir, filesCount, findings), nil
+	return s.buildReport(dir, filesCount, findings, truncated), nil
 }
 
 // ScanFile scans a single file and returns any findings.
@@ -173,7 +175,13 @@ func (s *Scanner) matchRule(rule Rule, line string) bool {
 	return false
 }
 
-func (s *Scanner) buildReport(dir string, filesCount int, findings []Finding) *Report {
+// buildReport assembles the report for a completed walk. truncated records
+// whether the finding cap was reached and the walk stopped early, so that what
+// the report does not contain is visible from the report. It is recorded where
+// truncation happens rather than inferred later from len(findings): with the
+// current ">=" cap check the two would agree, but that agreement is a
+// coincidence of this comparison, not a property the report should rest on.
+func (s *Scanner) buildReport(dir string, filesCount int, findings []Finding, truncated bool) *Report {
 	highCount := 0
 	mediumCount := 0
 	for _, f := range findings {
@@ -192,6 +200,7 @@ func (s *Scanner) buildReport(dir string, filesCount int, findings []Finding) *R
 		MediumCount: mediumCount,
 		Passed:      highCount == 0,
 		Findings:    findings,
+		Truncated:   truncated,
 	}
 }
 
@@ -248,6 +257,7 @@ func (s *Scanner) ScanDirectoryWithLines(dir string) (*Report, map[string]int, e
 	var findings []Finding
 	filesCount := 0
 	lineCounts := make(map[string]int)
+	truncated := false
 
 	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -279,6 +289,7 @@ func (s *Scanner) ScanDirectoryWithLines(dir string) (*Report, map[string]int, e
 
 		if len(findings) >= s.config.MaxFindings {
 			findings = findings[:s.config.MaxFindings]
+			truncated = true
 			return filepath.SkipAll
 		}
 		return nil
@@ -287,7 +298,7 @@ func (s *Scanner) ScanDirectoryWithLines(dir string) (*Report, map[string]int, e
 		return nil, nil, fmt.Errorf("walk directory: %w", err)
 	}
 
-	return s.buildReport(dir, filesCount, findings), lineCounts, nil
+	return s.buildReport(dir, filesCount, findings, truncated), lineCounts, nil
 }
 
 // scanLines scans pre-read lines for findings. Extracted from ScanFile for reuse.

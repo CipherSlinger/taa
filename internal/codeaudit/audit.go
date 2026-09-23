@@ -78,6 +78,20 @@ type AuditMetadata struct {
 	Policy         string `json:"policy"`
 	ScanDurationMs int64  `json:"scan_duration_ms"`
 	LLMDegraded    bool   `json:"llm_degraded,omitempty"`
+
+	// Provenance and completeness of the Tier 1 scan. These are copied from the
+	// scan report so that the report leaving the process states which engine
+	// produced it and whether that scan ran to completion. A passed audit of a
+	// truncated or incomplete scan is not the same claim as a passed audit of a
+	// complete one, and without these fields the two are indistinguishable to
+	// a reader.
+	Engine          string `json:"engine"`
+	EngineVersion   string `json:"engine_version,omitempty"`
+	ScanComplete    bool   `json:"scan_complete"`
+	ParserErrors    int    `json:"parser_errors"`
+	Truncated       bool   `json:"truncated"`
+	UnsupportedExts int    `json:"unsupported_extensions"`
+	ProcessExitCode int    `json:"process_exit_code"`
 }
 
 // FileSummary is the LLM response for file-level analysis.
@@ -355,6 +369,28 @@ func AssembleAuditReport(
 		totalLines += count
 	}
 
+	// Provenance and completeness travel with the report, so that a reader can
+	// tell a complete scan from a partial one without treating the absence of
+	// evidence as evidence of absence.
+	var (
+		engine          string
+		engineVersion   string
+		scanComplete    bool
+		parserErrors    int
+		truncated       bool
+		unsupportedExts int
+		processExitCode int
+	)
+	if scanReport != nil {
+		engine = scanReport.Engine
+		engineVersion = scanReport.EngineVersion
+		scanComplete = scanReport.ScanComplete
+		parserErrors = scanReport.ParserErrors
+		truncated = scanReport.Truncated
+		unsupportedExts = scanReport.UnsupportedExts
+		processExitCode = scanReport.ProcessExitCode
+	}
+
 	return &AuditReport{
 		ReportID:  GenerateReportID(),
 		AuditTime: time.Now().Format(time.RFC3339),
@@ -375,6 +411,14 @@ func AssembleAuditReport(
 			Policy:         cfg.Policy,
 			ScanDurationMs: duration.Milliseconds(),
 			LLMDegraded:    scanReport != nil && scanReport.LLMDegraded,
+
+			Engine:          engine,
+			EngineVersion:   engineVersion,
+			ScanComplete:    scanComplete,
+			ParserErrors:    parserErrors,
+			Truncated:       truncated,
+			UnsupportedExts: unsupportedExts,
+			ProcessExitCode: processExitCode,
 		},
 	}
 }
