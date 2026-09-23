@@ -184,6 +184,23 @@ func ClassifyFindingRisk(f Finding) string {
 
 后果：**第 200 条之后的 HIGH 命中会被丢掉，`passed` 可能因此为 `true`。** 这是当前 regex 引擎里一条真实存在的**静默放行**通道，且目标态架构 §8.1 要求的 `scan_complete == true` 前置条件在生产里**根本没有对应字段**。
 
+### 3.6 已修复的缺陷：`ENV_001` 大小写，以及「证据臂 == 生产引擎」这一前提的实测（2026-09-23）
+
+**本规范 §3.2.2 与证据报告的全部数值，都依赖一个此前未检验的前提**：证据的 "regex 臂"（Python `models/examples/code_security_analyzer.py`）与生产 Tier 1（Go `internal/codeaudit`）是同一个扫描器。两份规则表各自维护，可以漂移。
+
+实测（`TAA_CORPUS_PARITY=1 go test ./internal/codeaudit/ -run TestGoEngineMatchesBenchmarkRegexArm`，用生产 Go 引擎重扫语料并与 regex 臂产物逐样本比对）：**修复前 92/100 一致，8 处分歧**，全部为同一条规则的同一方向——`ENV_001/MEDIUM` 在 Python 有、Go 没有。
+
+**根因**：Go 的 `ENV_001` 三条模式未加 `(?i)`（Python 版有，且 `tests/test_code_security_analyzer_v2.py:81` 专门守着）。备选词全为小写，**大写变量名一个都不匹配**。后果分两侧，且都是「唯一 finding 就是它」的样本：
+
+- `B3-02/04/07/09`（良性）：Go 产出 **0** finding → 修复前生产误报**低于**基线；
+- `M3-01/03/06/08`（**恶意**）：Go 产出 **0** finding → 修复前生产**漏报**。`M3` 家族的恶意行为就是大写密钥读取（`os.getenv("AWS_SECRET_ACCESS_KEY", "")`）。
+
+**已修复**（TDD，先 RED 再加 `(?i)`），修复后**100/100 一致（含行号）**。这是一条**先于 semgrep、与 semgrep 无关**的生产缺陷，且它使生产静态输出与证据基线**逐字节等价**——从此 §3.2.2 的数字是**实测可迁移**的，不再是「两份表应该一致」的假设。
+
+**对 D1 的直接影响**：`semgrepEngine` 的规则集必须以**修复后**的 Go 规则为准对齐，否则同样的漂移会以相反方向重演。§9.2 据此新增一条前置要求。
+
+**顺带测出（潜在，非本轮成因）**：semgrep 侧 `taa-env-secret-python`（`rules.yaml:136`）**不按 key 名过滤**，任何环境变量访问都命中，比两个 regex 臂都宽。实测其在本语料上的后果为**良性 0/50、恶意 0/50**——语料里每个 env 访问的 key 都含密钥词，过宽从未真正触发。**它是一条真实的规则等价性缺口，但不是 ΔFPR 的成因**；§7.13/§7.14 的归因（上下文形态）不受影响。D1 实施时须决定是收窄该规则还是接受它（收窄会影响 ENV_001 的召回边界）。
+
 > 接入 spec 必须顺带修掉它：`Report` 增加 `Truncated bool`，截断即视为 `scan_complete = false`。
 
 ### 3.6 规则集现状
@@ -490,6 +507,7 @@ semgrep 未安装 / 非零退出 / 超时 / 解析错误 / 命中数截断
 | 6 | **两臂同测**（regex 与 semgrep），3 轮配对 | 单臂无法归因 |
 | 7 | **【新增，硬性】在 `assist` 下判定**（生产默认策略），并**同时**报告 `gate` 下的数值 | 见 §3.2.2：主基准用 `gate` 判定，而 `gate` 对裁决失明；同一份数据在 `assist` 下给出**相反**结论（ΔFPR 0 → +0.04）。**用 `gate` 判定即为测量仪器选错** |
 | 8 | **【新增，硬性】逐样本比对两臂送给 LLM 的 Prompt 内容等价性**（`context_before`/`context_after`/`cpg_evidence`/`ast_enclosing_block` → `ContextBefore`/`ContextAfter`/`CPGEvidence`） | 主基准里两臂唯一的实质差异就在这里（`B3-04`/`B3-09`，见 §3.2.2）。若留出集只比判定、不比 Prompt，同一个成因会**再次**以「判定差异」的形式出现而无从归因 |
+| 9 | **【新增，硬性】先证明「regex 臂 == 生产 Go 引擎」**：留出集上跑 `TAA_CORPUS_PARITY` 式的逐样本 `(rule_id, severity, line)` 比对，两臂**零分歧**方可开始判定 | §3.6 实测：主基准的这个前提**修复前不成立**（92/100）。两份规则表各自维护、会漂移；不先证等价，`ΔFPR` 比较的可能是两个不同的基线。**须在留出集上重做一次**，不能沿用主基准的结论 |
 
 ### 9.3 留出集必须额外覆盖的两项（`audit-100` 没覆盖）
 

@@ -463,6 +463,68 @@ for i in (1,2,3):
 PY
 ```
 
+### 7.15 证据的 regex 臂**是否就是生产 Tier 1**：实测发现 8/100 不一致，根因是 `ENV_001` 大小写，已修复（2026-09-23 补测）
+
+**本报告全部结论都建立在一个此前未被检验的前提上**：证据里的 "regex 臂" 是 Python 扫描器（`models/examples/code_security_analyzer.py`），而生产 Tier 1 是 Go 的 `internal/codeaudit`。两者各有一份规则表、各自维护。"非劣" 只有在两者是**同一个扫描器**时才可迁移，而这是执行问题，不是阅读问题。
+
+新增门控测试 `TestGoEngineMatchesBenchmarkRegexArm`（`TAA_CORPUS_PARITY=1`）用**生产 Go 引擎**重扫同一份 100 样本语料，与 regex 臂自己的产物逐样本比对 `(rule_id, severity)` 多重集，行号另行比对：
+
+| | 样本数 | 结论 |
+|---|---|---|
+| 首次测量（修复前） | 92/100 一致，**8 处分歧** | ❌ 不可迁移 |
+| 修复后 | **100/100 一致**，含行号 | ✅ 可迁移 |
+
+**8 处分歧全部是同一条规则、同一方向：`ENV_001/MEDIUM` 在 Python 有、在 Go 没有。** 无其他规则分歧、行号零差异、`files_scanned` 全同。根因是 Go 的 `ENV_001` 三条模式**未加 `(?i)`**，而 Python 版有（`tests/test_code_security_analyzer_v2.py:81` 专门断言 `AWS_SECRET`/`API_KEY` 命中）；模式里的备选词全是小写（`secret|token|api_key|...`），**大写变量名因此一个都不匹配**。
+
+后果按样本标签分两侧，且都是单 finding 样本（唯一的 finding 就是这条）：
+
+| 样本 | 标签 | 修复前 Go 的 finding 数 | 后果 |
+|---|---|---|---|
+| `B3-02/04/07/09` | 良性 | **0** | 生产下放行 → 误报**低于**实测基线 |
+| `M3-01/03/06/08` | **恶意** | **0** | 生产下**无从阻断 → 漏报** |
+
+`M3` 家族的恶意行为**就是**大写密钥读取（`sample.json`: "Steal secrets or tokens from environment variables"；代码 `os.getenv("AWS_SECRET_ACCESS_KEY", "")`）。所以这不是"少报一个提示"，而是**生产 Tier 1 完全看不见语料里一整个恶意家族**。这是一条**先于 semgrep、与 semgrep 无关**的生产缺陷。修复前/后的含义：
+
+| | `assist` FPR | `assist` recall |
+|---|---|---|
+| 修复前（生产现状） | 0.44（放行上述 4 例良性） | **0.92**（漏上述 4 例恶意） |
+| 修复后（对齐证据基线） | 0.52 | **1.0000** |
+
+**修复**：给 `rules.go` 的 `ENV_001` 三条模式加 `(?i)`，与 Python 逐字符对齐。TDD：先写 `TestEnv001DetectsUppercaseSecretNames`（5 个大写用例 + 1 个小写对照 + **3 个反向用例**），确认 5 个失败、其余通过，再加 `(?i)`。反向用例是必要的——`(?i)` 不得把规则放大成"任意环境变量访问"（那是 semgrep 侧的行为，见下），`os.environ.get("PATH")` 仍须**不**命中。
+
+**顺带测出一处 semgrep 侧的规则保真度缺口（潜在，本语料零后果）**：`taa-env-secret-python`（`rules.yaml:136`）用 `pattern: os.environ.get($KEY, ...)` 等形式，**完全不按 key 名过滤**，任何环境变量访问都命中；而两个 regex 臂都要求 key 含密钥词。这**理论上**会让 semgrep 报出 regex 从不报的 finding。实测该后果：
+
+> **良性 0/50、恶意 0/50** —— 语料里每个环境变量访问的 key 名都含密钥词，故过宽在本语料上**从未真正触发**。它是一条真实的规则等价性缺口，但**不是**本次 ΔFPR 的成因；§7.13/§7.14 对差异的归因（上下文形态）不受影响。
+
+**须读成什么：**
+
+- ✅ **本报告的全部数值现在可迁移到生产 Tier 1**——前提由实测建立（100/100，含行号），不再依赖"两份规则表应该一致"的假设。
+- ✅ `ENV_001` 的大小写缺陷是**独立的、已修复的**生产缺陷；修复使生产 Go 的静态输出在语料上与证据基线**逐字节等价**。
+- ⚠️ **生产 LLM 在新可见 finding 上的裁决仍未测**：修复让 8 个样本的 finding 从 0 变为 1，其裁决行为在产物里有记录（就是同一 finding 集合），但生产容器里的 LLM 是否复现属 §9 留出集与 stage H 的范围。
+- ❌ 不可把本报告的 FPR/recall 当作**修复前生产系统**的指标：修复前是 0.44/0.92，方向与直觉相反（误报更低、漏报更高）。
+
+**复跑**：
+
+```bash
+# 等价性测量（须先有语料与产物）
+TAA_CORPUS_PARITY=1 go test ./internal/codeaudit/ -run TestGoEngineMatchesBenchmarkRegexArm -v
+# 规则本身的回归
+go test ./internal/codeaudit/ -run TestEnv001DetectsUppercaseSecretNames -v
+# semgrep 侧过宽在本语料上的后果
+python3 - <<'PY'
+import json,glob,os
+src="models/audit/audit-results/engine-compare/regex-run1"
+env=lambda sid,arm:[f["rule_id"] for fr in json.load(open(
+    f"models/audit/audit-results/engine-compare/{arm}-run1/{sid}/audit_report.json"
+)).get("file_reports",[]) for f in fr.get("findings",[])]
+ids=sorted(os.path.basename(p.rstrip("/")) for p in glob.glob(src+"/*/"))
+for lab,pre in (("benign","B"),("malicious","M")):
+    sel=[s for s in ids if s.startswith(pre)]
+    n=[s for s in sel if "ENV_001" in env(s,"semgrep") and "ENV_001" not in env(s,"regex")]
+    print(f"{lab}: semgrep-only ENV_001 = {len(n)}/{len(sel)}")
+PY
+```
+
 ---
 
 ## 8. 采集过程的偏离（须披露）
