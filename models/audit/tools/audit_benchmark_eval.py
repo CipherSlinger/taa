@@ -872,9 +872,13 @@ def analyse_sample(
     if llm_backend != "none" and findings:
         llm_started = time.monotonic()
         analyzer = build_analyzer(llm_model, llm_backend, llm_seed)
-        for finding in findings[:max_findings]:
+        # Deduplicate before the cap, and feed the same view to both prompt
+        # levels. The report below still receives the full finding list, so the
+        # counts it states remain the counts that were actually found.
+        arbitrated = dedupe_findings_for_llm(findings)
+        for finding in arbitrated[:max_findings]:
             analyzer.analyze_finding(finding)
-        for file_path, file_findings in group_findings_by_file(findings).items():
+        for file_path, file_findings in group_findings_by_file(arbitrated).items():
             file_summaries[file_path] = analyzer.analyze_file(file_path, file_findings)
         llm_duration_sec = round(time.monotonic() - llm_started, 3)
         llm_invoked = True
@@ -964,6 +968,32 @@ def group_findings_by_file(findings: Iterable[Any]) -> dict[str, list[Any]]:
     for finding in findings:
         groups.setdefault(finding.file, []).append(finding)
     return groups
+
+
+def dedupe_findings_for_llm(findings: Iterable[Any]) -> list[Any]:
+    """Collapse hits that ask the LLM the same question.
+
+    A finding is identified by file, rule and line: the same rule matching three
+    times on one line is one construct in one place, and there is nothing for a
+    second arbitration to decide. This matters for the engine comparison because
+    the two engines report differently - semgrep returns every match, the regex
+    baseline returns only the first matching rule per line - so duplicates left
+    in the list turn reporting density into arbitration budget. Under the cap
+    that budget is scarce, and a duplicate that spends a slot is a distinct hit
+    that never reaches the LLM and is therefore never cleared.
+
+    The first occurrence wins and the input order is preserved, so the capped
+    prefix stays the same set of hits it was before.
+    """
+    seen: set[tuple[str, str, int]] = set()
+    deduped: list[Any] = []
+    for finding in findings:
+        key = (finding.file, finding.rule_id, finding.line)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(finding)
+    return deduped
 
 
 def classify_llm_state(findings: Iterable[Any], llm_backend: str) -> str:
