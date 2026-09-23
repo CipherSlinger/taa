@@ -525,6 +525,25 @@ for lab,pre in (("benign","B"),("malicious","M")):
 PY
 ```
 
+### 7.16 评测 semgrep 臂用的是**目录** target，而生产必须用**显式文件列表**——已核实对本报告无影响（2026-09-23）
+
+阶段 D（`semgrepEngine` 接入）实测发现：semgrep 的目录 target **会进入 `venv/` 与 `__pycache__/`**，而 regex 臂按 `Config.SkipDirs` 跳过它们（`--no-git-ignore` 关掉的是 `.gitignore`，不是 `SkipDirs`）。评测侧 `semgrep_runner.py:187-202` 传的正是目录 target，因此需要核实本报告的 semgrep 臂是否扫了 regex 臂没扫的文件。
+
+**核实结论：没有，本报告无需重做。**
+
+```bash
+# 语料 audit-100 下 regex 臂会跳过的目录
+find models/audit/benchmarks/audit-100 -type d \( -name venv -o -name .venv -o -name __pycache__ -o -name node_modules \)
+# → 10 处，全部是 __pycache__
+# 其中是否有 .py（runner 传的是 --include '*.py'）
+find models/audit/benchmarks/audit-100 -type d \( -name venv -o -name .venv -o -name __pycache__ -o -name node_modules \) -exec find {} -name '*.py' \;
+# → 空：__pycache__ 里只有 .pyc（如 benchmark_variant.cpython-312.pyc）
+```
+
+10 处跳过目录全部是 `__pycache__`，只含 `.pyc`，而 runner 传了 `--include '*.py'`，故 semgrep 臂看到的文件集与 regex 臂相同。**两臂的 `files_scanned` 因此可比，§2/§3 的判定不受影响。**
+
+**但这条限定不能外推**：危险是真实的而非理论的。模型导入目录携带 `venv/*.py` 十分常见，那种输入下目录 target 会让 semgrep 扫出 regex 臂从未读过的 finding，两臂的文件集与 `files_scanned` 都不再可比。生产适配器因此改为**传显式文件列表**（walk 的结果），文件集由 walk 决定、与 semgrep 的忽略规则无关，并增加了一项完整性判据：`paths.scanned` 必须覆盖全部传入 target，否则扫描以 error 失败（spec §6.4）。
+
 ---
 
 ## 8. 采集过程的偏离（须披露）

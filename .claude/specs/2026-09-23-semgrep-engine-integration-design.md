@@ -203,7 +203,7 @@ func ClassifyFindingRisk(f Finding) string {
 
 > 接入 spec 必须顺带修掉它：`Report` 增加 `Truncated bool`，截断即视为 `scan_complete = false`。
 
-### 3.6 规则集现状
+### 3.7 规则集现状
 
 生产 Go：**13 条**，`rules.go:69-221`，`Severity` 只有 HIGH/MEDIUM 两个常量（`rules.go:9-10`）。
 
@@ -349,12 +349,32 @@ RuleFamily   string `json:"rule_family,omitempty"`    // 回指的 TAA 规则 ID
 - Go 侧不内嵌规则：`exec` semgrep 时 `--config <RulesDir>`，`RulesDir` 随镜像部署。
 - 规则文件来源是仓库里已 force-track 的 `models/audit/semgrep/rules/`；镜像内落点须在 §11 的实施项中固定，并**与评测侧 `semgrep_runner.py` 指向同一份内容**（否则评测证据与生产规则不再对应）。
 - 本轮**只启用 `python/rules.yaml`**：生产 `DefaultConfig().Extensions = []string{".py"}`。`go/`、`shell/` 三份规则存在但不是本次范围（§13）。
-- 命令形状复用评测侧契约（`semgrep_runner.py:187-202`）：
+- 命令形状复用评测侧契约（`semgrep_runner.py:187-202`），但**目标形式必须偏离**（2026-09-23 实测，见下）：
   ```
   semgrep scan --config <RULES> --json --quiet --disable-version-check --no-git-ignore \
-          --include '*.<ext>' … <target_dir>
+          <file1> <file2> …            # 显式文件列表，不是 <target_dir>
   ```
   注意 `--no-git-ignore`：生产必须扫到被 `.gitignore` 排除的文件（那正是攻击者会放东西的地方）。
+
+- **【偏离，硬性】传显式文件列表而非目录。** §6.4 初稿沿用评测侧的 `--include '*.<ext>' <target_dir>`，实测不可用：目录 target 下 semgrep **会进入 `venv/` 与 `__pycache__/`**（`--no-git-ignore` 关掉的是 `.gitignore`，不是 `SkipDirs`），而 regex 臂按 `Config.SkipDirs` 跳过它们。用目录就等于两臂扫的不是同一批文件，§6.4 的上下文等价与 §9 的非劣判定都失去前提。
+  因此 `semgrepEngine` 自己走一遍 `walkTargets`，把结果**显式作为 target 传入**；文件集由 walk 决定，与 semgrep 的忽略规则无关。实测（`TestSemgrepEngineAgreesWithTheRegexArmOnTheFileSet`）：两臂 `FilesCount` 相同，`venv/`、`__pycache__/`、`.txt` 中的 finding 为零。
+  > walk 的**策略**与 regex 臂共用同一份 `Config`（`SkipDirs`/`Extensions` 是配置的唯一来源，加一个跳过目录两臂同时生效），**机制**则刻意不复用：regex 臂的 walk 在命中 `MaxFindings` 时提前 `SkipAll`，而「扫了哪些文件取决于已发现多少 finding」的基线不该被任何测量引用。
+  **对已有证据的影响：已核，为零。** 评测侧 `semgrep_runner.py` 传的是目录 target，故曾需确认它是否扫了 regex 臂跳过的目录。实测 `audit-100` 下的 `__pycache__`（共 10 处，如 `p4_bert_sentiment/B2-08/__pycache__`）**只含 `.pyc`**，而 runner 传了 `--include '*.py'`，因此评测 semgrep 臂与 regex 臂扫的是同一批 `.py`。**结论：证据无需重做**；但危险是真实的而非理论的——模型导入目录里带 `venv/*.py` 完全正常，那正是显式 target 要挡的情形。
+  另注：`--config` 传目录时 semgrep 会把 `check_id` 前缀成规则文件的点分路径（实测 `models.audit.semgrep.rules.python.taa-env-secret-python`），落点一变标识就变，故 `Finding.EngineRuleID` 取**末段**（`taa-env-secret-python`），与 §6.3 的例子一致。
+
+- **【新增，硬性】完整性必须在报告产生之前成立。** 实测（semgrep 1.177.0）：**传一个不存在的 target，semgrep 返回 `results: []`、`errors: [SemgrepError]`，退出码 0**；正常命中与零命中**退出码都是 0**；被扫文件有语法错误时 `errors` 仍为空。结论是退出码不能作为完整性信号，而只读 `results` 的实现会把「从未读过」报告成「干净」。三项判据缺一不可：
+  1. `errors` 非空 → 失败（这是唯一能捕获「目标不可读导致空结果」的信号）；
+  2. `paths.scanned` 必须覆盖**全部**传入 target → 否则失败（正因为 target 是显式传入的，这个集合是已知的，「看了没有」才能区别于「没看」）；
+  3. 退出码非 0、输出无法解析、进程起不来 → 失败。
+  失败一律以 **error 返回，不返回报告**（`ScanDirectory` 返回 `nil, err`）：一份存在的报告迟早会被下游读成判定。故 `semgrepEngine` 返回的每一份报告 `ScanComplete` 都是 true——`false` 那条路已经变成 error 了。这与 regex 臂（恒为 `true`）在字面上一致，但含义更强：它是**判据通过**的结果，不是零值。
+  已由测试守住：`TestSemgrepEngineTreatsErrorsAsIncomplete`、`…TreatsUnscannedTargetAsIncomplete`、`…RejectsNonZeroExit`、`…RejectsUnparseableOutput`、`…RejectsUnrunnableProcess`，反向由 `…MarksCleanScanComplete` 守住（防止「永远失败」也能满足上述断言）。
+
+- **【新增，硬性】严重度、`Category`、`Description` 一律取自生产规则表**，键为 semgrep 规则的 `metadata.rule_family`，**不读** semgrep 的 `extra.severity`。§7.1 已指出 ERROR/WARNING→HIGH/MEDIUM 在现行 13 条上是巧合；巧合意味着在本语料上**读错源也看不出来**，所以测试用**注入的规则表**制造分歧来钉（`TestSemgrepEngineReadsSeverityFromTheProductionRuleTable`：表里把 `ENV_001` 标成 HIGH，而载荷里 semgrep 说 WARNING，读错源即失败）。同理 `RuleFamily` 未知或缺失必须 fail-fast（`TestSemgrepEngineRejectsUnknownRuleFamily`、`…RejectsMissingRuleFamily`），且**一次报出全部**未映射项，而不是每次运行报一条。
+
+- **【新增】注释行的等价是「机制巧合」，须有测试守住。** regex 臂跳过 trim 后以 `#` 开头的行；semgrep 得到同样结果走的是另一条路——13 条规则**全是 AST 级 `pattern`**，注释不在 AST 里。两条路今天结果一致，但若将来有规则改用 `pattern-regex`，`semgrepEngine` 就会开始报出 regex 臂不报的注释代码。`TestSemgrepEngineSkipsCommentLinesLikeTheRegexArm` 就是为此存在；**不为此加冗余的注释过滤**，因为那会掩盖真正的分歧信号。
+
+- **【新增】finding 排序后再截断。** semgrep 不承诺 `results` 的顺序，而 `MaxFindings` 保留的是前 N 条——顺序不稳会让截断扫描每次留下不同的集合，报告之间不再可比。`semgrepEngine` 按 `(File, Line, RuleID)` 稳定排序后再截断（`TestSemgrepEngineOrdersFindingsDeterministically`，载荷刻意逆序）。
+  另注：截断后 `Passed` 由 `buildReport` 从**截断后的集合**算出，与 regex 臂同样有「截断即静默放行」的问题（§3.5）。两臂语义保持相同，不在适配器里单方面修——该由 §8 的 fail-closed 管线在**两臂之上**统一处理，否则两臂分叉。
 
 - **【新增，硬性】上下文构造必须与 regex 臂等价。** `Finding.ContextBefore`/`ContextAfter`（生产侧对应 `GoFinding` 的同名字段，经 `teellm.FindingPayload` 送达 LLM）的取值方式，是本项目**唯一已实测出「引擎更换导致判定变化」的通路**（§3.2.2：`B3-04`/`B3-09` 的裁决因上下文形态从 `SUSPICIOUS` 翻为 `MALICIOUS`）。
   **实施要求**：
@@ -508,6 +528,7 @@ semgrep 未安装 / 非零退出 / 超时 / 解析错误 / 命中数截断
 | 7 | **【新增，硬性】在 `assist` 下判定**（生产默认策略），并**同时**报告 `gate` 下的数值 | 见 §3.2.2：主基准用 `gate` 判定，而 `gate` 对裁决失明；同一份数据在 `assist` 下给出**相反**结论（ΔFPR 0 → +0.04）。**用 `gate` 判定即为测量仪器选错** |
 | 8 | **【新增，硬性】逐样本比对两臂送给 LLM 的 Prompt 内容等价性**（`context_before`/`context_after`/`cpg_evidence`/`ast_enclosing_block` → `ContextBefore`/`ContextAfter`/`CPGEvidence`） | 主基准里两臂唯一的实质差异就在这里（`B3-04`/`B3-09`，见 §3.2.2）。若留出集只比判定、不比 Prompt，同一个成因会**再次**以「判定差异」的形式出现而无从归因 |
 | 9 | **【新增，硬性】先证明「regex 臂 == 生产 Go 引擎」**：留出集上跑 `TAA_CORPUS_PARITY` 式的逐样本 `(rule_id, severity, line)` 比对，两臂**零分歧**方可开始判定 | §3.6 实测：主基准的这个前提**修复前不成立**（92/100）。两份规则表各自维护、会漂移；不先证等价，`ΔFPR` 比较的可能是两个不同的基线。**须在留出集上重做一次**，不能沿用主基准的结论 |
+| 10 | **【阶段 D 已完成，2026-09-23】适配器的判据须在留出集/容器上复现**：`errors` 非空、`paths.scanned` 未覆盖全部 target、退出码非 0、输出不可解析——四项在宿主上已用桩测守住（§6.4），但**真实 CLI 行为只在本机 1.177.0 上验过**。阶段 G 须在镜像内对同一版本复跑集成测试（`go test -run Semgrep`），并把版本号记入部署产物 | 若镜像内的 semgrep 版本与宿主不同，`errors`/`paths.scanned` 的填充行为可能不同，而这两个字段是 fail-closed 的唯一依据（§8）。「宿主上过了」不等于「容器里过了」——本项目的证据纪律要求这条边界显式记录 |
 
 ### 9.3 留出集必须额外覆盖的两项（`audit-100` 没覆盖）
 
@@ -535,7 +556,7 @@ semgrep 未安装 / 非零退出 / 超时 / 解析错误 / 命中数截断
 | **B** | `StaticEngine` 抽象 + `regexEngine` 包装（§6.1） | 行为**零变化**，全测试绿 | 低，纯重构 |
 | **C** | `Report`/`Finding` 字段扩展 + `MaxFindings` 截断标志（§3.5、§6.2） | 截断不再静默 | 中，触及判定输入 |
 | **D** | `semgrepEngine` 实现（§6.4）：exec、解析、`metadata.rule_family` 映射、**上下文构造与 regex 臂等价**（§6.4 新增要求） | **本地**可跑（宿主已有 semgrep 1.177.0，无需容器）；含「两臂上下文逐字节相同」的测试 | 中 |
-| **E** | fail-closed 管线（§8）：五类失败 → `ScanComplete=false` | 注入式测试 | **高，这是安全属性** |
+| **E** | fail-closed 管线（§8）：**把 D 已能检出的失败接到判定上** | 注入式测试 | **高，这是安全属性** |
 | **F** | 配置项 + fail-fast（§6.5） | 未识别引擎名报错 | 低 |
 | **G** | **容器部署与功能验证**：`deploy-docker.sh` 装 taa + semgrep + 规则文件，容器内跑通；顺带做同容器并发压测（为 D4 取证） | 容器内可跑 semgrep，审计链路端到端可用 | 中 |
 | **H** | 留出集非劣验证（§9）：**在 `assist` 下判定**，并比对两臂 Prompt 等价性 | 通过才允许切默认引擎 | — |
@@ -548,6 +569,9 @@ semgrep 未安装 / 非零退出 / 超时 / 解析错误 / 命中数截断
 **阶段 D 在本地测**是这次顺序安排的关键好处：宿主已有 semgrep 1.177.0，接口与解析逻辑可以完全不依赖容器先跑通并测透，容器只用来验证部署与真实环境集成。
 
 **阶段 E 的 RED 必须是「注入失败 → 断言阻断」而非「断言计数」**：本项目的先例是 P2 的 fail-open 守卫测试（「构造 `findings == []` 且 `scan_complete is False`，断言不计为 TN」）。同类测试在 Go 侧必须有**五条**（未安装、非零退出、超时、解析错误、截断）。
+
+> **阶段 D 落地后对本条的修订（2026-09-23）**：五类失败中**前四类已在适配器内检出**——`semgrepEngine` 对「进程起不来 / 退出码非 0 / 输出不可解析 / `errors` 非空或 `paths.scanned` 未覆盖全部 target」一律返回 error 且**不返回报告**（§6.4，桩测已覆盖）。第五类（截断）仍**未**接到判定上：`buildReport` 在两臂都从截断后的集合算 `Passed`（§3.5）。
+> 因此**阶段 E 的范围收窄为「接线 + 截断」**：验证 `GenerateAuditReport`/`CheckImport` 在适配器返回 error 时确实阻断（含 HTTP 层的响应），并把截断接到 fail-closed 上——**且必须在两臂之上统一处理**，否则两臂分叉。原「五条注入测试」的要求不变，只是前四条的注入点从管线移到了适配器的 `execFn`，测试已存在于 `semgrep_engine_test.go`。
 
 **阶段 G 须顺带压测同容器并发**：在容器内制造「semgrep 扫描与 LLM 调用同时受载」，观测 LLM 是否被饿死（判据是逐样本 `llm_state` 与调用耗时，**不是**容器存活——见证据报告 §7.6）。**该压测的用途已由 D4 改变**：不再用于裁决「是否接受风险」（D4 已从拓扑上关闭，§5.0），而是为「**正式部署必须分离 LLM**」取得直接证据。
 
