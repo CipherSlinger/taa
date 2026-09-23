@@ -309,6 +309,128 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+CORPUS_LIST_BENCHMARK_NAME = "corpus-list"
+
+# Fields a declared corpus entry must carry. `family` is among them because it is
+# the key the report aggregates rows by - inferring it from the path or the
+# project would invent a grouping nobody chose.
+CORPUS_LIST_REQUIRED_FIELDS = ("sample_id", "base_project", "family", "label", "relative_path")
+CORPUS_LIST_LABELS = ("benign", "malicious")
+
+# A sample taken from an external corpus has no family spec behind it. These are
+# the values that say so; their fields are descriptive only, but a plausible
+# value would read as a claim about how the sample was built.
+CORPUS_LIST_DEFAULTS: dict[str, Any] = {
+    "transformation": "external",
+    "expected_rules": (),
+    "expected_severity": "UNSPECIFIED",
+    "expected_final": "UNSPECIFIED",
+    "trap_type": "none",
+    "notes": "",
+}
+
+
+def load_corpus_list(path: Path) -> list[SampleSpec]:
+    """Read a declared sample list, which is the run plan for a corpus.
+
+    The evaluator otherwise derives its samples from the family tables, which
+    makes a corpus impossible to introduce without editing code. This is the
+    data path: an ordered list of samples, each naming where it lives relative
+    to the benchmark root.
+
+    The validation is deliberately strict about the two fields nothing
+    downstream can catch. Rows are scored on `label == "malicious"` with
+    everything else counting as benign, so an unrecognised label does not fail a
+    run, it moves a sample between the two columns the comparison is decided on.
+    Rows are indexed by `sample_id` when the two arms are paired, so a repeated
+    id silently collapses two samples into one pair.
+    """
+    path = Path(path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"corpus list {path} is not valid JSON: {exc}") from exc
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("samples"), list):
+        raise ValueError(f"corpus list {path} must be a JSON object with a 'samples' list")
+
+    samples: list[SampleSpec] = []
+    seen_ids: set[str] = set()
+    for index, entry in enumerate(payload["samples"]):
+        where = f"{path} sample #{index + 1}"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{where} must be an object")
+
+        for field in CORPUS_LIST_REQUIRED_FIELDS:
+            value = entry.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{where} needs a non-empty '{field}'")
+
+        label = entry["label"]
+        if label not in CORPUS_LIST_LABELS:
+            raise ValueError(
+                f"{where} has label {label!r}; every label other than "
+                f"{CORPUS_LIST_LABELS[1]!r} is scored as {CORPUS_LIST_LABELS[0]!r}, "
+                f"so only {' or '.join(repr(item) for item in CORPUS_LIST_LABELS)} is accepted"
+            )
+
+        sample_id = entry["sample_id"]
+        if sample_id in seen_ids:
+            raise ValueError(
+                f"{where} repeats sample_id {sample_id!r}; rows are indexed by it "
+                f"and a repeat drops a sample from the pairing"
+            )
+        seen_ids.add(sample_id)
+
+        raw_rules = entry.get("expected_rules", ())
+        if raw_rules is None:
+            raw_rules = ()
+        if isinstance(raw_rules, str) or not isinstance(raw_rules, (list, tuple)):
+            raise ValueError(f"{where} has an 'expected_rules' that is not a list")
+
+        fields: dict[str, Any] = dict(CORPUS_LIST_DEFAULTS)
+        fields.update(entry)
+        fields["expected_rules"] = tuple(raw_rules)
+        try:
+            samples.append(SampleSpec(**fields))
+        except TypeError as exc:
+            raise ValueError(f"{where} has an unrecognised field: {exc}") from exc
+
+    return samples
+
+
+def build_corpus_manifest(samples: list[SampleSpec], benchmark_root: Path, corpus_list: Path) -> dict[str, Any]:
+    """The manifest for a declared corpus.
+
+    Shape-compatible with build_manifest so one reader still works, but it
+    describes the list and not the family tables: there are no family specs
+    behind these samples, so no family-level transformation or expectation is
+    stated and the benchmark is not named after the synthetic corpus.
+    """
+    family_rows: list[dict[str, Any]] = []
+    for family in sorted({sample.family for sample in samples}):
+        for label in CORPUS_LIST_LABELS:
+            count = sum(1 for s in samples if s.family == family and s.label == label)
+            if count:
+                family_rows.append({"family": family, "label": label, "count": count})
+
+    return {
+        "benchmark_name": CORPUS_LIST_BENCHMARK_NAME,
+        "benchmark_root": str(benchmark_root),
+        "corpus_list": str(corpus_list),
+        "rule_set_version": DEFAULT_RULE_SET_VERSION,
+        "prompt_version": DEFAULT_PROMPT_VERSION,
+        "totals": {
+            "samples": len(samples),
+            "benign": sum(1 for sample in samples if sample.label == "benign"),
+            "malicious": sum(1 for sample in samples if sample.label == "malicious"),
+        },
+        "base_projects": sorted({sample.base_project for sample in samples}),
+        "families": family_rows,
+        "samples": [asdict(sample) for sample in samples],
+    }
+
+
 @dataclass
 class ScanOutcome:
     """Findings together with the honest status of the scan that produced them.
@@ -595,6 +717,7 @@ def run_metadata(args) -> dict[str, Any]:
         "llm_seed": args.llm_seed,
         "engine": args.engine,
         "notes": args.notes,
+        "corpus_list": str(args.corpus_list) if args.corpus_list else None,
     }
 
 
@@ -1316,6 +1439,8 @@ def build_summary_report(
     notes: str,
     engine: str = "regex",
     llm_seed: int = 42,
+    benchmark_name: str = BENCHMARK_NAME,
+    corpus_list: str | None = None,
 ) -> dict[str, Any]:
     counts = confusion_counts(results)
     metrics = metric_summary(results)
@@ -1337,9 +1462,13 @@ def build_summary_report(
     ci_95 = compute_all_bootstrap_ci(scored_rows(results))
 
     return {
-        "run_id": f"{BENCHMARK_NAME}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
+        "run_id": f"{benchmark_name}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
         "run_time": utc_now_iso(),
-        "benchmark_version": BENCHMARK_VERSION,
+        # A declared corpus is not the synthetic benchmark, and saying otherwise
+        # would put a provenance the run never had into the bundle that carries
+        # the conclusion.
+        "benchmark_version": BENCHMARK_VERSION if benchmark_name == BENCHMARK_NAME else None,
+        "corpus_list": corpus_list,
         "audit_mode": audit_mode,
         "engine": engine,
         "llm_model": llm_model if llm_backend != "none" else "none",
@@ -1500,6 +1629,7 @@ def write_markdown(path: Path, results: list[dict[str, Any]], summary: dict[str,
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run and export the code-audit benchmark")
     parser.add_argument("--benchmark-root", type=Path, default=DEFAULT_BENCHMARK_ROOT, help="root directory containing benchmark sample folders")
+    parser.add_argument("--corpus-list", type=Path, default=None, help="JSON file declaring the samples to run; replaces the family-spec sample list")
     parser.add_argument("--manifest-out", type=Path, default=DEFAULT_MANIFEST_OUT, help="write the normalized benchmark manifest to this file")
     parser.add_argument("--results-dir", type=Path, default=DEFAULT_RESULTS_DIR, help="directory for benchmark output artifacts")
     parser.add_argument(
@@ -1528,14 +1658,18 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    manifest = build_manifest(args.benchmark_root)
+    if args.corpus_list:
+        samples = load_corpus_list(args.corpus_list)
+        manifest = build_corpus_manifest(samples, args.benchmark_root, args.corpus_list)
+    else:
+        manifest = build_manifest(args.benchmark_root)
+        samples = [SampleSpec(**sample) for sample in manifest["samples"]]
     write_json(args.manifest_out, manifest)
 
     if args.dump_manifest:
         print(f"manifest written to: {args.manifest_out}")
         return 0
 
-    samples = [SampleSpec(**sample) for sample in manifest["samples"]]
     if args.limit and args.limit > 0:
         samples = samples[: args.limit]
 
@@ -1565,6 +1699,7 @@ def main() -> int:
         results=results,
         benchmark_root=args.benchmark_root,
         eval_duration_sec=eval_duration_sec,
+        benchmark_name=CORPUS_LIST_BENCHMARK_NAME if args.corpus_list else BENCHMARK_NAME,
         **run_metadata(args),
     )
     write_results_bundle(args.results_dir, results, summary)
