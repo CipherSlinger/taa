@@ -3,7 +3,7 @@
 - 关联规范：`.claude/specs/2026-09-23-semgrep-engine-integration-design.md` §9（证据门槛）、§10 阶段表 H 行
 - 关联证据：`.claude/specs/2026-09-22-semgrep-engine-noninferiority-evidence-design.md`（主基准，拟合集）
 - 前置阶段：A–G 已完成并提交（`1c71cd7` 为最后一次）
-- 状态：**已定稿**——四项待定项已由你于 2026-09-23 拍板（见 §13），§12 的来源与预登记规则已冻结。下一步为 **H0 评测工装修复**（§6）
+- 状态：**H0 已全部落地并提交**（§6.7 列明提交号）；下一步为 **H1 建集**（§7）。四项待定项已由你于 2026-09-23 拍板（见 §13），§12 的来源与预登记规则已冻结
 
 ---
 
@@ -96,7 +96,7 @@
 | 6 | 两臂同测、3 轮配对 | §2；见 §9 运行协议 |
 | 7 | **`assist` 下判定** | §2 |
 | 8 | **两臂 Prompt 逐样本等价性** | **今日无任何工具**，且已存在**活的不等价**（见 §6.5）。须先建捕获与比对工具，再判定 |
-| 9 | **先证「regex 臂 == 生产 Go 引擎」** | Go 侧 parity 测试**写死了 `audit-100` 与两级 glob**（`internal/codeaudit/corpus_parity_test.go:29-32`），须先参数化；留出集上**零分歧**方可判定 |
+| 9 | **先证「regex 臂 == 生产 Go 引擎」** | **已参数化（`0bb357c`）**：`TAA_PARITY_CORPUS_ROOT` / `TAA_PARITY_RESULTS_DIR` 可选，默认值不变（100/100 一致、证据 JSON 的 sha256 前后完全相同）；两级 glob 换为可识别 `<root>/<id>/` 与 `<root>/<project>/<id>/` 两种布局的遍历；报告改写在其结果目录旁（默认解析回原路径），留出集运行不再覆盖主基准证据。留出集上**零分歧**方可判定。**调用命令见 §6.7**——`-run Parity` 匹配不到任何测试（静默 PASS），必须用全名 |
 | 10 | 适配器判据在容器内复现 | **已由阶段 G 关闭**（§10.1 G-1） |
 
 ## 6. H0 —— 评测工装的前置修复（侦察已证，必须先做）
@@ -150,6 +150,38 @@
 
 语料清单通道可用、截断口径选定并冻结、可解析性预登记规则定稿、不对称登记、Prompt 捕获工具就绪；以上各自带测试（评测侧已有 `tests/test_benchmark_samples_matrix.py`、`tests/test_engine_rule_parity_corpus.py` 可挂），单独提交，**不与留出集数据混在一次提交里**。
 
+### 6.7 H0 出口状态（五条全部落地）
+
+| 条 | 交付 | 提交 |
+|---|---|---|
+| 6.1 语料清单通道 | `--corpus-list`（JSON：`sample_id`/`base_project`/`family`/`label`/`relative_path`），替换 `FAMILY_SPECS` 展开而非叠加；拒绝未知 `label`（非 `malicious` 一律按良性计分）与重复 `sample_id`（配对按它建索引，重复即静默塌缩一对）；summary 的 `run_id`/`benchmark_version` 随语料走，不再自称 `audit-100` | `b35f76e` |
+| 6.2 截断口径 | `dedupe_findings_for_llm()`：送 LLM 前按 `(file, rule_id, line)` 去重再截断，两级 prompt 同视图；报告仍拿全量 findings（条数不说谎） | `9edfda5` |
+| 6.3 可解析性 | 预登记规则已定稿（§12.2 规则 4），落地在建集脚本（H1） | — |
+| 6.4 两臂不对称 | 已在 §6.4 登记为已知判定偏差，报告须单列一节 | — |
+| 6.5 Prompt 捕获 | `models/audit/tools/prompt_equivalence.py`：捕获（自带 `backend="none"` 分析器，**不会调用 LLM**）+ 逐样本比对，区分「命中集不同」（即引擎差，非违规）与「同一命中不同 prompt」（confound，违规并指名差异字段） | `9cd8697` |
+
+配套：生产分析器开出 `build_finding_prompt` / `build_file_prompt` 接缝（行为保持，`6d16ee5`），使「被发送的 prompt」可被观测而无需复制一份构造逻辑。
+
+**留出集上的调用命令（要求 9）**：
+
+```bash
+python3 models/audit/tools/audit_benchmark_eval.py \
+  --benchmark-root <CORPUS_ROOT> --corpus-list <CORPUS_LIST.json> \
+  --manifest-out <SCRATCH>/manifest.json --results-dir <RESULTS_DIR> \
+  --engine regex --llm-backend none
+TAA_CORPUS_PARITY=1 TAA_PARITY_CORPUS_ROOT=<CORPUS_ROOT> \
+  TAA_PARITY_RESULTS_DIR=<RESULTS_DIR> \
+  go test ./internal/codeaudit/ -v -run TestGoEngineMatchesBenchmarkRegexArm
+```
+
+> `-run Parity` **匹配不到任何测试**（Go 打印 `[no tests to run]` 并以 0 退出，看起来像通过却什么都没验证）。测试函数名是 `TestGoEngineMatchesBenchmarkRegexArm`，不得简写；改名会改动证据 JSON 的 `source` 字段，故不改名，只登记命令。
+> 非 audit-100 布局**必须**给 `--corpus-list`：只给 `--benchmark-root` 时 harness 仍按 `FAMILY_SPECS` 合成样本并硬编码 `relative_path`，单层语料会生成错 `sample_id` 的工件。
+
+### 6.8 H0 期间新发现的两处收窄（H1 必须处理，写进报告）
+
+1. **两侧「跳过目录」集合不同**：Go 的 `DefaultConfig().SkipDirs` 含 `node_modules`/`venv`/`.venv`/`.idea`/`.vscode`/`.git`/`__pycache__`，而 Python 的 `discover_sample_py_files` **只排除点目录与 `__pycache__`**。含 `.py` 的 `venv/` 或 `node_modules/` 会让两侧读到的文件集合不同 → `files_scanned` 不匹配 → 看起来像引擎分歧。**对单文件样本（§3 的样本单元）不触发**；对 H2.5 的整目录 scale 子测量需注意。
+2. **静态条数上限是单边的**：Go 静态侧 `MaxFindings = 200` 会**截断扫描**（`scanner.go:97-98,295-296`，并置 `Truncated`），而 Python 正则臂**完全无上限**（`RegexScannerAdapter`/`StaticScanner` 均不截断；`--max-findings` 只管送 LLM 的那部分）。任一留出集样本的静态命中数 ≥200，parity 就会出现 `only_in_python` 分歧，**成因与规则漂移无关**。§3 已实测真实第三方代码命中密度高，故这是 H1.4 的**必查项**（见 §12.2 规则 6）。
+
 ## 7. 阶段拆分（H1 建集与前置证明 → H2 判定运行）
 
 ### H1 —— 建集与前置证明（**不产生任何判定结论**）
@@ -193,6 +225,8 @@
 2. 单文件样本**不覆盖**整目录扫描的截断路径——由 H2.5 单独测量，两者结论不得互相替代。
 3. 外部语料的标注最初是给**上游规则**的，映射表由我们写（属**翻译**，不改上游构造与标注）；与语料一同提交、冻结。
 4. 每条样本的出处与 license 记入 `provenance.json`；许可条款在回填项 A 确认后写入。
+5. **同一命中、两臂给的 `category` 与 `description` 不同**（H0 期间由捕获工具实测，2026-09-23，此前记录未含此轴）：同一 `CMD_001` 同一行，regex 臂送 `category='命令执行'`、`description='shell 命令执行或危险外部命令 — 可能绕过参数化保护'`，semgrep 臂送 `category='execution'`、`description='Suspicious subprocess execution detected in Python code'`。即两臂**用不同措辞向模型描述同一条规则**，加之 §6.5 的上下文差异，构成要求 8 的违规。**本轮不修**（修它等于改判定输入，会使已有证据失效），H2.3 逐条归因并在报告中写明。
+6. 两侧跳过目录集合不同、静态条数上限单边（§6.8）——前者对单文件样本不触发，后者由 §12.2 规则 6 在建集时排除。
 
 ## 12. 来源与预登记规则（已定，冻结）
 
@@ -214,6 +248,9 @@
 3. **恶意臂**：semgrep-rules 的 `# ruleid:` 窗口 + DataDog 的恶意包（逐文件为样本，包级标签直接继承）。
 4. **可解析性（H0.3 落地处）**：建集时对每个候选文件跑一次 semgrep，`errors` 非空者**排除并计数**，写入报告；该判定**不看**命中结果。
 5. **规模**：良性（含近失）≥50、恶意 ≥50；**不足不降门槛**，按族写明「证据不足」。
+6. **静态命中数上限（H0 期间新发现，2026-09-23 追加）**：要求 9 的 parity 在任一留出集样本的静态命中数 ≥200 时会因**单边截断**（Go 截断、Python 不截断，§6.8-2）产生与规则无关的分歧。故 H1.4 时对每个候选样本记录其在**去重前**的静态命中数：`< 200` 者进入语料；`≥ 200` 者**排除并计数**，并在报告中写明（**不得静默丢弃**）。与规则 4 同理：该判定**不看**命中结果与判定结论，只看条数。
+
+> 规则 6 是 §7 H1.4 已要求的「触顶则按预登记规则处理并写明」的具体化，在任何留出集数据产生**之前**写定。备选口径（**未被采用，登记备查**）：(b) 在 parity 比较中给 Python 臂镜像同一上限——会改动比较语义因而不可比；(c) 仅作收窄声明——会让「零分歧」的覆盖面小于语料本身。
 
 ### 12.3 「上游类别 → 我方族」映射表
 
