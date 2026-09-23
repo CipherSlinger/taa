@@ -147,10 +147,16 @@ func DefaultRules() []Rule {
 			Category:    "环境变量",
 			Severity:    SeverityMedium,
 			Description: "读取敏感环境变量 — 可能获取密钥/Token",
+			// Case-insensitive to match the Python scanner these rules were
+			// ported from (models/examples/code_security_analyzer.py), whose
+			// ENV_001 patterns carry (?i). Without it the lower-case
+			// alternation below matches nothing in an upper-case name, so
+			// os.getenv("AWS_SECRET_ACCESS_KEY") produced no finding at all —
+			// the whole secret-theft family of the audit corpus was invisible.
 			Patterns: compilePatterns(
-				`os\.environ\s*[.\[]\s*['\"](?:[^'\"]*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab)[^'\"]*)['\"]`,
-				`os\.environ\.get\s*\(\s*['\"](?:[^'\"]*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab)[^'\"]*)['\"]`,
-				`os\.getenv\s*\(\s*['\"](?:[^'\"]*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab)[^'\"]*)['\"]`,
+				`(?i)os\.environ\s*[.\[]\s*['\"](?:[^'\"]*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab)[^'\"]*)['\"]`,
+				`(?i)os\.environ\.get\s*\(\s*['\"](?:[^'\"]*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab)[^'\"]*)['\"]`,
+				`(?i)os\.getenv\s*\(\s*['\"](?:[^'\"]*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab)[^'\"]*)['\"]`,
 			),
 		},
 		{
