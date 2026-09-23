@@ -123,7 +123,7 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 						break
 					}
 				}
-				recalculatePassed(report)
+				recalculateGatePassed(report)
 				if failedClosed {
 					report.Passed = false
 				}
@@ -131,7 +131,7 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 				recalculateStaticPassed(report)
 			}
 		} else {
-			recalculatePassed(report)
+			recalculateGatePassed(report)
 		}
 	} else {
 		recalculateStaticPassed(report)
@@ -154,17 +154,21 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 	return report, nil
 }
 
-// recalculatePassed re-evaluates Report.Passed when LLM gate policy is active.
-// A HIGH finding is considered "downgraded" if LLM verdict is BENIGN.
-// All other verdicts (MALICIOUS, SUSPICIOUS, UNCERTAIN) still block.
-func recalculatePassed(report *Report) {
+// recomputeReportPassed is the single implementation behind both report-level
+// pass decisions. honorExoneration is the only difference between them, and it
+// is a real difference rather than two spellings of one rule:
+//
+//   - honorExoneration true: a static HIGH whose LLM verdict is BENIGN stops
+//     blocking. Every other verdict, UNCERTAIN included, leaves it blocking.
+//   - honorExoneration false: verdicts are ignored, so any static HIGH blocks.
+func recomputeReportPassed(report *Report, honorExoneration bool) {
 	highCount := 0
 	mediumCount := 0
 	for _, f := range report.Findings {
 		switch f.Severity {
 		case SeverityHigh:
-			if f.LLMVerdict == teellm.VerdictBenign {
-				// Downgraded: no longer blocks.
+			if honorExoneration && f.LLMVerdict == teellm.VerdictBenign {
+				// Exonerated: no longer blocks.
 				continue
 			}
 			highCount++
@@ -175,6 +179,30 @@ func recalculatePassed(report *Report) {
 	report.HighCount = highCount
 	report.MediumCount = mediumCount
 	report.Passed = highCount == 0
+}
+
+// recalculateGatePassed recomputes Report.Passed for the gate policy, honoring
+// LLM exoneration. MEDIUM never blocks this value.
+//
+// It is deliberately not the whole gate decision. AssembleAuditReport copies it
+// into ConclusionContext.ScanPassed, and ComputeConclusionContext ANDs it with
+// the policy check over the classified statistics (audit.go), which does block
+// on MEDIUM. That check is keyed on the classified severity and this one on the
+// static severity, so the same word "gate" names two different tests on
+// purpose: the AND of them is the decision.
+func recalculateGatePassed(report *Report) {
+	recomputeReportPassed(report, true)
+}
+
+// recalculateStaticPassed recomputes Report.Passed from the static severities
+// alone, ignoring every LLM verdict. This is the assist-mode value and it is
+// load-bearing rather than vestigial: it is the only thing that blocks a static
+// HIGH the LLM downgraded to SUSPICIOUS or BENIGN. Dropping it in favor of the
+// classified check would turn those samples into misses; see
+// gate_semantics_test.go and models/audit/audit-results/engine-compare/REPORT.md
+// section 7.5.
+func recalculateStaticPassed(report *Report) {
+	recomputeReportPassed(report, false)
 }
 
 // CheckImportWithLLM is the high-level gate function that combines
@@ -225,24 +253,6 @@ func CheckImportWithLLM(ctx context.Context, dir string, cfg LLMConfig) (bool, *
 	}
 
 	return report.Passed, report, nil
-}
-
-// recalculateStaticPassed restores the static-scan-only pass decision,
-// ignoring LLM verdicts. Used in "assist" mode.
-func recalculateStaticPassed(report *Report) {
-	highCount := 0
-	mediumCount := 0
-	for _, f := range report.Findings {
-		switch f.Severity {
-		case SeverityHigh:
-			highCount++
-		case SeverityMedium:
-			mediumCount++
-		}
-	}
-	report.HighCount = highCount
-	report.MediumCount = mediumCount
-	report.Passed = highCount == 0
 }
 
 // SummarizeLLMVerdicts returns a human-readable summary of LLM results.

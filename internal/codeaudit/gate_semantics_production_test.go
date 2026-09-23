@@ -58,19 +58,19 @@ func TestProductionGateSemantics(t *testing.T) {
 		ReportAssist bool `json:"report_passed_assist"`
 	}
 	type runSummary struct {
-		Run           string                    `json:"run"`
-		Samples       int                       `json:"samples"`
-		GateFPR       float64                   `json:"gate_fpr"`
-		GateRecall    float64                   `json:"gate_recall"`
-		AssistFPR     float64                   `json:"assist_fpr"`
-		AssistRecall  float64                   `json:"assist_recall"`
-		FinalGateFPR  float64                   `json:"final_gate_fpr"`
-		FinalGateRec  float64                   `json:"final_gate_recall"`
-		FinalAssistFP float64                   `json:"final_assist_fpr"`
-		FinalAssistRe float64                   `json:"final_assist_recall"`
-		SamplesDetail []sampleOutcome           `json:"samples_detail"`
-		MissedAssist  []string                  `json:"missed_malicious_under_assist"`
-		FalseAssist   []string                  `json:"blocked_benign_under_assist"`
+		Run           string          `json:"run"`
+		Samples       int             `json:"samples"`
+		GateFPR       float64         `json:"gate_fpr"`
+		GateRecall    float64         `json:"gate_recall"`
+		AssistFPR     float64         `json:"assist_fpr"`
+		AssistRecall  float64         `json:"assist_recall"`
+		FinalGateFPR  float64         `json:"final_gate_fpr"`
+		FinalGateRec  float64         `json:"final_gate_recall"`
+		FinalAssistFP float64         `json:"final_assist_fpr"`
+		FinalAssistRe float64         `json:"final_assist_recall"`
+		SamplesDetail []sampleOutcome `json:"samples_detail"`
+		MissedAssist  []string        `json:"missed_malicious_under_assist"`
+		FalseAssist   []string        `json:"blocked_benign_under_assist"`
 		// RescuedAssist lists malicious samples whose conclusion under assist
 		// would have let them through but whose Report.Passed is false, so the
 		// second gate blocks them. They are the reason the conclusion alone
@@ -122,7 +122,7 @@ func TestProductionGateSemantics(t *testing.T) {
 			// fail-closed branches can only set it to false, so these two are
 			// the most permissive values for each policy.
 			reportGate := &Report{Findings: all}
-			recalculatePassed(reportGate)
+			recalculateGatePassed(reportGate)
 			reportAssist := &Report{Findings: all}
 			recalculateStaticPassed(reportAssist)
 
