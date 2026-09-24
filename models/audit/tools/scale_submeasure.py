@@ -31,8 +31,10 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -305,30 +307,40 @@ def run_measured(argv: Sequence[str], interval: float = SAMPLE_INTERVAL_SECONDS,
     """
     started = time.monotonic()
     deadline = None if timeout_seconds is None else started + timeout_seconds
-    proc = subprocess.Popen(list(argv), stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, env=env)
-    sample = Sample()
-    aborted_at_kb: Optional[int] = None
-    timed_out = False
-    while proc.poll() is None:
-        anon, current = read_cgroup()
-        available = read_available_kb()
-        sample.observe(anon, current, sum_tree_rss_kb(proc.pid, read_proc_table()),
-                       available)
-        if should_abort(available, abort_below_kb):
-            aborted_at_kb = available
-            _terminate(proc)
-            break
-        if deadline is not None and time.monotonic() >= deadline:
-            timed_out = True
-            _terminate(proc)
-            break
-        time.sleep(interval)
-    # One last reading: a scan that finished inside one interval would otherwise
-    # report an empty sample set and look weightless.
-    anon, current = read_cgroup()
-    sample.observe(anon, current, 0, read_available_kb())
-    stdout, stderr = proc.communicate()
+    with tempfile.TemporaryDirectory() as tmp:
+        out_path, err_path = Path(tmp, "stdout"), Path(tmp, "stderr")
+        # Output goes to files, not pipes. With `stdout=PIPE` the child blocks
+        # once it has written a pipe buffer's worth (64 KiB) and nothing has read
+        # it, and a Semgrep scan of a real tree produces far more JSON than that:
+        # the run would then sit at 100% forever while the poll loop watched a
+        # process that was never going to exit.
+        with out_path.open("wb") as out_handle, err_path.open("wb") as err_handle:
+            proc = subprocess.Popen(list(argv), stdout=out_handle, stderr=err_handle,
+                                    env=env, start_new_session=True)
+            sample = Sample()
+            aborted_at_kb: Optional[int] = None
+            timed_out = False
+            while proc.poll() is None:
+                anon, current = read_cgroup()
+                available = read_available_kb()
+                sample.observe(anon, current,
+                               sum_tree_rss_kb(proc.pid, read_proc_table()), available)
+                if should_abort(available, abort_below_kb):
+                    aborted_at_kb = available
+                    _terminate(proc)
+                    break
+                if deadline is not None and time.monotonic() >= deadline:
+                    timed_out = True
+                    _terminate(proc)
+                    break
+                time.sleep(interval)
+            # One last reading: a scan that finished inside one interval would
+            # otherwise report an empty sample set and look weightless.
+            anon, current = read_cgroup()
+            sample.observe(anon, current, 0, read_available_kb())
+            proc.wait(timeout=30)
+        stdout = out_path.read_text(errors="replace")
+        stderr = err_path.read_text(errors="replace")
     result: Dict[str, object] = {
         "argv": list(argv),
         "exit_code": proc.returncode,
@@ -348,19 +360,125 @@ def run_measured(argv: Sequence[str], interval: float = SAMPLE_INTERVAL_SECONDS,
     return result
 
 
-def _terminate(proc: subprocess.Popen) -> None:
-    """Stop a child, escalating to a kill if it does not go quietly.
+def run_burst(level: int, argv_factory, interval: float = SAMPLE_INTERVAL_SECONDS,
+              timeout_seconds: Optional[float] = None,
+              abort_below_kb: Optional[int] = None,
+              summarize: Optional[object] = None,
+              env: Optional[Dict[str, str]] = None) -> Dict[str, object]:
+    """Run `level` copies of one command at once and sample the whole set.
 
-    Semgrep's workers are a process tree, so a terminate that only reaches the
-    parent can leave `semgrep-core` children holding the CPU the next level
-    needs, which would make the next reading measure the previous run.
+    This is the shape the load test applies (`semgrep_press_test.sh` runs
+    `level` concurrent scans), and it is **not** the sum of `level` single-run
+    readings: the peak that decides a container limit is the peak of the set,
+    which no single-run sweep can show. `argv_factory(i)` returns the argument
+    vector for run `i`, because the load test gives each run its own output file.
+
+    The per-scan summaries are reported as a list, not aggregated. Every run
+    scans the same corpus, so a sum over them would be a multiple of one scan's
+    finding count - a number with no interpretation, and one that would read as
+    if the corpus contained that many findings.
+
+    `timeout_seconds` bounds the whole burst; the first run past it stops all of
+    them, since a set that is still running is not a set whose peak has been
+    reached.
     """
-    proc.terminate()
+    started = time.monotonic()
+    deadline = None if timeout_seconds is None else started + timeout_seconds
+    procs: List[subprocess.Popen] = []
+    handles: List[object] = []
+    paths: List[Tuple[Path, Path]] = []
+    summaries: List[Dict[str, object]] = []
+    aborted_at_kb: Optional[int] = None
+    timed_out = False
+    tmp = tempfile.TemporaryDirectory()
     try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=10)
+        for i in range(level):
+            out_path = Path(tmp.name, f"stdout-{i}")
+            err_path = Path(tmp.name, f"stderr-{i}")
+            paths.append((out_path, err_path))
+            # File-backed output for the same reason as `run_measured`: a pipe
+            # would stall a scan that writes more than a pipe buffer.
+            out_handle = out_path.open("wb")
+            err_handle = err_path.open("wb")
+            handles.extend([out_handle, err_handle])
+            procs.append(subprocess.Popen(list(argv_factory(i)), stdout=out_handle,
+                                          stderr=err_handle, env=env,
+                                          start_new_session=True))
+        sample = Sample()
+        while any(proc.poll() is None for proc in procs):
+            anon, current = read_cgroup()
+            available = read_available_kb()
+            table = read_proc_table()
+            # Every run's tree counts, not just the first: the peak of a burst is
+            # the sum over the set, which is the quantity a limit must cover.
+            tree_kb = sum(sum_tree_rss_kb(proc.pid, table) for proc in procs
+                          if proc.poll() is None)
+            sample.observe(anon, current, tree_kb, available)
+            if should_abort(available, abort_below_kb):
+                aborted_at_kb = available
+                for proc in procs:
+                    _terminate(proc)
+                break
+            if deadline is not None and time.monotonic() >= deadline:
+                timed_out = True
+                for proc in procs:
+                    _terminate(proc)
+                break
+            time.sleep(interval)
+        # One last reading, so a burst that finishes inside one interval is not
+        # reported as weightless.
+        anon, current = read_cgroup()
+        sample.observe(anon, current, 0, read_available_kb())
+        for proc in procs:
+            proc.wait(timeout=30)
+    finally:
+        for handle in handles:
+            try:
+                handle.close()
+            except Exception:      # noqa: BLE001 - a failed close must not mask the reading
+                pass
+        if summarize is not None:
+            for out_path, _ in paths:
+                summaries.append(summarize(out_path.read_text(errors="replace")))
+        tmp.cleanup()
+    return {
+        "level": level,
+        "seconds": round(time.monotonic() - started, 2),
+        "timed_out": timed_out,
+        "timeout_seconds": timeout_seconds,
+        "aborted": aborted_at_kb is not None,
+        "aborted_at_available_mib": (
+            None if aborted_at_kb is None else round(aborted_at_kb / 1024, 1)
+        ),
+        "memory": sample.as_dict(),
+        "exit_codes": [proc.returncode for proc in procs],
+        "summaries": summaries,
+    }
+
+
+def _terminate(proc: subprocess.Popen) -> None:
+    """Stop a child *and its descendants*, escalating to a kill if needed.
+
+    The child is started in its own session, so its process group is its own and
+    signalling that group cannot reach anything of ours. Signalling the parent
+    alone is not enough: Semgrep's work happens in `semgrep-core` and
+    `pysemgrep` descendants, and if they survive a killed run then the next level
+    of a sweep measures the leftovers of the previous one.
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=10)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 # The engines the plan compares, and how each is invoked on a directory. Kept
@@ -457,6 +575,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         help="Terminate a run in flight once MemAvailable drops below this")
     parser.add_argument("--timeout-seconds", type=float, default=120.0,
                         help="Per-run bound, matching SemgrepRunner's default of 120 s")
+    parser.add_argument("--burst-levels", type=int, nargs="*", default=[],
+                        help="Concurrent-scan levels to burst, matching the load "
+                             "test's LEVELS. Needs --semgrep-target and --rules.")
     args = parser.parse_args(argv)
 
     abort_below_kb = args.abort_below_mb * 1024
@@ -500,6 +621,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     f"MemAvailable fell to {floor} MiB, below the "
                     f"{args.available_floor_mb} MiB floor")})
                 break
+
+    for level in args.burst_levels:
+        if not (args.semgrep_target and args.rules):
+            raise SystemExit("--burst-levels needs --semgrep-target and --rules")
+        result = run_burst(
+            level,
+            lambda i: semgrep_argv(args.semgrep_target, args.rules, args.jobs[-1],
+                                   args.max_memory_mb),
+            interval=args.interval, abort_below_kb=abort_below_kb,
+            summarize=summarize_semgrep_json, timeout_seconds=timeout_seconds,
+        )
+        result["label"] = (f"burst level={level} jobs={args.jobs[-1]} "
+                           f"max-memory={args.max_memory_mb}MB")
+        record(result)
+        floor = result["memory"].get("min_available_mib")
+        if result["timed_out"] or result["aborted"]:
+            record({"label": "burst sweep stopped", "at_level": level, "reason": (
+                "the burst did not complete inside its bound, so the higher "
+                "concurrency levels were not attempted")})
+            break
+        if floor is not None and floor < args.available_floor_mb:
+            record({"label": "burst sweep stopped", "at_level": level, "reason": (
+                f"MemAvailable fell to {floor} MiB, below the "
+                f"{args.available_floor_mb} MiB floor")})
+            break
 
     for engine in args.engines:
         if not args.python_target:

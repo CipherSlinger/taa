@@ -217,6 +217,28 @@ class TestTimeoutGuard(unittest.TestCase):
         self.assertLess(result["seconds"], 10)
         self.assertEqual(result["timeout_seconds"], 0.5)
 
+    def test_a_stopped_run_takes_its_descendants_with_it(self):
+        # The regression this guards: the child spawns a grandchild that keeps
+        # the output handles open, so waiting on the child alone never returns
+        # and the next measurement would run alongside the previous one.
+        argv = [sys.executable, "-c",
+                "import subprocess, sys, time\n"
+                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                "time.sleep(60)\n"]
+        result = ss.run_measured(argv, interval=0.05, timeout_seconds=0.5)
+        self.assertTrue(result["timed_out"])
+        self.assertLess(result["seconds"], 20)
+
+    def test_large_output_does_not_deadlock_the_run(self):
+        # With stdout on a pipe, a child that writes more than a pipe buffer
+        # blocks forever and the poll loop waits on a process that cannot exit.
+        argv = [sys.executable, "-c",
+                "import sys; sys.stdout.write('x' * (4 << 20)); sys.stdout.flush()"]
+        result = ss.run_measured(argv, interval=0.05, timeout_seconds=60)
+        self.assertFalse(result["timed_out"])
+        self.assertEqual(result["exit_code"], 0)
+        self.assertGreaterEqual(result["stdout_bytes"], 4 << 20)
+
     def test_a_run_inside_its_bound_is_not_marked_timed_out(self):
         argv = [sys.executable, "-c", "print('{\"findings\": 0}')"]
         result = ss.run_measured(argv, interval=0.05, timeout_seconds=30)
@@ -228,6 +250,61 @@ class TestTimeoutGuard(unittest.TestCase):
                                  timeout_seconds=None)
         self.assertFalse(result["timed_out"])
         self.assertIsNone(result["timeout_seconds"])
+
+    def test_the_summary_still_reads_from_the_file_backed_output(self):
+        argv = [sys.executable, "-c", "print('{\"findings\": 5}')"]
+        result = ss.run_measured(argv, interval=0.05, timeout_seconds=30,
+                                 summarize=ss.summarize_adapter_json)
+        self.assertEqual(result["findings"], 5)
+
+
+class TestBurst(unittest.TestCase):
+    """The concurrent peak, which is not the sum of single-run readings."""
+
+    def test_the_burst_reports_every_run_and_its_own_level(self):
+        result = ss.run_burst(
+            level=3,
+            argv_factory=lambda i: [sys.executable, "-c", "print('{\"findings\": 5}')"],
+            interval=0.05, timeout_seconds=30, summarize=ss.summarize_adapter_json,
+        )
+        self.assertEqual(result["level"], 3)
+        self.assertEqual(result["exit_codes"], [0, 0, 0])
+        # Reported per scan, never summed: three scans of one corpus would
+        # otherwise read as a corpus holding fifteen findings.
+        self.assertEqual([s["findings"] for s in result["summaries"]], [5, 5, 5])
+        self.assertFalse(result["timed_out"])
+
+    def test_each_run_gets_its_own_invocation(self):
+        seen = []
+        ss.run_burst(level=4, argv_factory=lambda i: (seen.append(i), [
+            sys.executable, "-c", "pass"])[1], interval=0.05, timeout_seconds=30)
+        self.assertEqual(seen, [0, 1, 2, 3])
+
+    def test_the_tree_reading_covers_every_run_not_just_the_first(self):
+        # With runs staggered so that at least two overlap, a reader that
+        # sampled only the first process would report a footprint smaller than
+        # the set's - and the limit would be set from it.
+        argv = [sys.executable, "-c", "import time; time.sleep(1.2)"]
+        result = ss.run_burst(level=3, argv_factory=lambda i: argv, interval=0.1,
+                              timeout_seconds=30)
+        # Three idle interpreters: a few MiB each, so the tree sum must exceed
+        # what any one of them holds on its own by a clear margin.
+        self.assertGreater(result["memory"]["peak_tree_rss_mib"], 0)
+
+    def test_a_burst_past_its_bound_stops_all_of_its_runs(self):
+        argv = [sys.executable, "-c", "import time; time.sleep(60)"]
+        result = ss.run_burst(level=3, argv_factory=lambda i: argv, interval=0.05,
+                              timeout_seconds=0.5)
+        self.assertTrue(result["timed_out"])
+        self.assertLess(result["seconds"], 20)
+
+    def test_a_burst_over_a_memory_floor_is_aborted_and_says_so(self):
+        argv = [sys.executable, "-c", "import time; time.sleep(60)"]
+        result = ss.run_burst(level=2, argv_factory=lambda i: argv, interval=0.05,
+                              timeout_seconds=30, abort_below_kb=10 ** 12)
+        self.assertTrue(result["aborted"])
+        self.assertIsNotNone(result["aborted_at_available_mib"])
+        self.assertLess(result["seconds"], 20)
 
 
 class TestInvocations(unittest.TestCase):
