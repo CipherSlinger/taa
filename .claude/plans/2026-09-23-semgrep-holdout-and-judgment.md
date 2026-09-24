@@ -3,7 +3,7 @@
 - 关联规范：`.claude/specs/2026-09-23-semgrep-engine-integration-design.md` §9（证据门槛）、§10 阶段表 H 行
 - 关联证据：`.claude/specs/2026-09-22-semgrep-engine-noninferiority-evidence-design.md`（主基准，拟合集）
 - 前置阶段：A–G 已完成并提交（`1c71cd7` 为最后一次）
-- 状态：**H1.1–H1.4 全部完成；语料已落盘为 311 条，要求 9 的 Go 等价性在留出集上零分歧通过。卡口在 H2 开跑前**（H2 需先做容器内存的重新规划，宿主 9.7 GiB）：**该规划已于 2026-09-24 实测标定并写入 §9.1**（五项参数已定：第 4 项落点经更正为「两处调用点各加 `--jobs 4`」，第 5 项定为 **`--memory 7g`**；原「OOM 按构造可达」的归因经实测**部分撤回**）。**H2.5 的规模实测已完成，读数见 §17**（单扫描 168→221 MiB 匿名、并发 burst level 12 达 1.72 GiB、`tests/` 被静默丢扫、`--jobs` 语义无关性已证、一次仪器故障与一处假结论的撤回）。恶意臂与近失臂口径均已收紧并裁定（四源状态与实测体量见 §12.1）。过程中处理**七处**预登记缺陷：DataDog 臂构成（§13 决策 6）、**证伪并修订规则 3 的「整包皆恶意」前提**（§12.2 规则 3 修订稿、§13 决策 7）、CodeQL 近失口径（§13 决策 8，**两次收紧**：27 处标记 → 14/15 文件 → **5 个纯否定文件**）、退化样本与重复的机械口径（§12.2 规则 8，新追加）、**超长单行的提示体量上限**（§12.2 规则 9、§13 决策 9：剔除 5 条并计数，实测代价是 5 条真阳性）、**参照集的证据资格**（空文件哈希不作证据、自指不构成复制；§12.2 新增）、以及**撤回**一处曾据错误实测作出的窗口修订（§12.2 规则 7、§13 决策 5）。计数与归因更正见 §14（窗口的自指测量）与 §15（CodeQL 文件数连错两次、恶意臂副本归因连错两次——第二次的「19 个 `boltons` 副本」实为 19 个 0 字节文件）。恶意臂**参照集已就位**（`dd/vendor-references.json`，确认来源为 `aiogram` 与 `scrapper_boilerplate`）。**H1.2/H1.3/H1.4 的实测读数见 §12.5**；两处**产品/工装缺陷**已登记未修（§11.9 提示体量无界、§11.11 `attribution_precision` 恒为 0）。下一步为 **H2 判定运行**
+- 状态：**H1.1–H1.4 全部完成；语料已落盘为 311 条，要求 9 的 Go 等价性在留出集上零分歧通过。卡口在 H2 开跑前**（H2 需先做容器内存的重新规划，宿主 9.7 GiB）：**该规划已于 2026-09-24 实测标定并写入 §9.1**（五项参数已定：第 4 项落点经更正为「两处调用点各加 `--jobs 4`」，第 5 项定为 **`--memory 7g`**；原「OOM 按构造可达」的归因经实测**部分撤回**）。**H2.5 的规模实测已完成，读数见 §17**（单扫描 168→221 MiB 匿名、并发 burst level 12 达 1.72 GiB、`tests/` 被静默丢扫、`--jobs` 语义无关性已证、一次仪器故障与一处假结论的撤回）。恶意臂与近失臂口径均已收紧并裁定（四源状态与实测体量见 §12.1）。过程中处理**七处**预登记缺陷：DataDog 臂构成（§13 决策 6）、**证伪并修订规则 3 的「整包皆恶意」前提**（§12.2 规则 3 修订稿、§13 决策 7）、CodeQL 近失口径（§13 决策 8，**两次收紧**：27 处标记 → 14/15 文件 → **5 个纯否定文件**）、退化样本与重复的机械口径（§12.2 规则 8，新追加）、**超长单行的提示体量上限**（§12.2 规则 9、§13 决策 9：剔除 5 条并计数，实测代价是 5 条真阳性）、**参照集的证据资格**（空文件哈希不作证据、自指不构成复制；§12.2 新增）、以及**撤回**一处曾据错误实测作出的窗口修订（§12.2 规则 7、§13 决策 5）。计数与归因更正见 §14（窗口的自指测量）与 §15（CodeQL 文件数连错两次、恶意臂副本归因连错两次——第二次的「19 个 `boltons` 副本」实为 19 个 0 字节文件）。恶意臂**参照集已就位**（`dd/vendor-references.json`，确认来源为 `aiogram` 与 `scrapper_boilerplate`）。**H1.2/H1.3/H1.4 的实测读数见 §12.5**；两处**产品/工装缺陷**已登记未修（§11.9 提示体量无界、§11.11 `attribution_precision` 恒为 0）。下一步为 **H2 判定运行**——**H2.1 主判定已于 2026-09-24T06:47:46Z 在容器内开跑**（`/root/taa/verify/h2-assist/`，6 轮严格交替、全程受载、`policy=assist`、311 样本、对齐规则 `c06ffd2c`、`--memory 7g` 已生效），驱动 `models/audit/tools/h2_loaded_rounds.sh`；**H2.2 的 `gate` 不再重跑，改由 H2.1 产物精确重打分导出**（你于 2026-09-24 裁定「gate 能免跑就免跑」，机制、三处必写事项与验证要求见 §7 H2.2，工具 `models/audit/tools/gate_rescore.py`）；**H2.3 必须排在 H2.1 之后串行**（其唯一真实负载是 semgrep，非 LLM）。
 
 ---
 
@@ -211,9 +211,9 @@ TAA_CORPUS_PARITY=1 TAA_PARITY_CORPUS_ROOT=<CORPUS_ROOT> \
 ### H2 —— 判定运行（协议先定死，再开跑）
 
 1. **H2.1 主判定**：`assist` 下 3 轮配对（3×regex + 3×semgrep）。
-2. **H2.2 并列报告**：`gate` 下同规模重跑（不作通过依据）。
-3. **H2.3 Prompt 等价性逐样本比对**（要求 8）：逐条归因差异。
-4. **H2.4 并发受载条件**（§9.3 第 1 条）：H2.1 期间**持续施加 semgrep 扫描负载**，复用已入库的 `models/audit/tools/semgrep_press_test.sh`（带单实例守卫与 `llama_pid`/RSS 逐样本记录）。**这是两次实测失效的场景，主基准的串行 6 轮矩阵没覆盖它。**
+2. **H2.2 并列报告**：`gate` 下同规模**不重跑**——由 H2.1 产物**精确重打分**导出（2026-09-24 你裁定「gate 能免跑就免跑」）。依据：`static-llm` 路径上 `gate`/`assist` 出自同一个 `compute_conclusion(stats, file_summaries, policy)`，两者**只差 policy 一个字符串**（`code_security_analyzer.py:898-899`），而该函数的全部输入都能从 `audit_report.json` 还原（`statistics` 七项逐字落盘、键集相同；`file_summaries` 的 `chained`/`exfiltration`/`risk_level` 来自 `file_reports[]` 的 `chained`/`has_exfiltration_pattern`/`risk_level`）。工具：`models/audit/tools/gate_rescore.py`，其 `--validate` 必须在**真实产物上逐样本复现 `assist`** 之后才允许导出 `gate`。**三处必须照此写报告**：(a) 重打分**调用**生产 `compute_conclusion` 而非转写其分支，否则「精确」就变成关于转写的断言而非关于生产代码的事实；(b) `llm_enabled == False` 时 `file_reports[].risk_level` 来自 `infer_risk_level()`（`code_security_analyzer.py:971-974`，即「仅静态扫描，未进行语义分析」的占位级），**不得**喂进 chain 判定，否则把未做语义分析的高危误判成 `CRITICAL`；(c) 精确性依赖「`generate_audit_report` 从不把 `scan_complete`/`parser_errors`/`timed_out` 写进 `stats`」这一**隐含不变式**，重打分须**断言并拒跑**（`compute_conclusion` 以 `.get(default)` 读三者，故此路径的 fail-closed 分支恒不触发），而该不变式一旦被破坏，偏离方向是**放宽门禁**（默认 `True`/`0`/`False`）。附注：重打分**不是**在复读 `assist` 的标签——无 LLM 时单个 MEDIUM finding 即 assist 过、gate 不过（合成样本已证分支是活的）；而 `static-llm` 的 gate **不**因 `llm_unavailable`/`parse_error` fail-close（`compute_conclusion` 里没有 `llm_state`，只有 pure-llm 分支读它，`audit_benchmark_eval.py:841`）。
+3. **H2.3 Prompt 等价性逐样本比对**（要求 8）：逐条归因差异。**前置条件（2026-09-24 实测）：必须排在 H2.1 之后串行跑**——`prompt_equivalence.py` 已证**从不调用 LLM**（capture 用 `backend="none"`，唯一 HTTP 出口 `_call_ollama`（`code_security_analyzer.py:718-741`）只在 `backend == "ollama"` 分支内，结构性不可达），但它会调 `load_module_scanner(engine=semgrep)`，那是**真实 semgrep 子进程扫描** ⇒ 与 H2.1 并发会叠加 semgrep 负载（`be-host-memory-ceiling`）。
+4. **H2.4 并发受载条件**（§9.3 第 1 条）：**已作为 H2.1 的运行条件落地**——H2.1 的 6 轮全程由 `models/audit/tools/h2_loaded_rounds.sh` 施加持续 press 负载（复用已入库的 `semgrep_press_test.sh`，带单实例守卫与 `llama_pid`/RSS 逐样本记录；驱动在开测前校验负载**真的起来了**，否则拒跑）。**这是两次实测失效的场景，主基准的串行 6 轮矩阵没覆盖它。**
 5. **H2.5 scale 子测量**（§9.3 第 2 条）：对真实包整目录两臂各扫一次，量时长/内存/`Truncated`/`MaxFindings`，**与单文件 Δ 判定分开报告**。
 6. **H2.6 判定**：按 §2 口径，0 容差。
 
@@ -226,7 +226,7 @@ TAA_CORPUS_PARITY=1 TAA_PARITY_CORPUS_ROOT=<CORPUS_ROOT> \
 
 - 逐样本成本 = 静态扫描 + 逐 finding 的 LLM 调用（评测侧上限 `--max-findings`；生产 `LLMConfig.MaxFindings = 20`，`internal/codeaudit/llm.go:45`）。
 - Ollama 调用硬超时 60 s 且**无重试**（`code_security_analyzer.py:707`），失败变 `UNCERTAIN`——`gate` 下阻断、`assist` 下只在高/中危时阻断，两策略反应不同（`audit_benchmark_eval.py:717-742`）。H2.4 的并发受载正是要把这条压出来（阶段 G 实测同域并发把延迟抬高约 30 倍）。
-- H2 合计 6 轮 × 2 策略 = 12 轮全量，其中 6 轮并发受载。**先跑 H2.5 估时**，再决定 H2.1/H2.2 分批。
+- H2 合计 **6 轮全量，全部并发受载**（H2.1 = 3×regex + 3×semgrep，`assist`），第 *i* 轮配对即第 *i* 次 regex ↔ 第 *i* 次 semgrep；`gate` **不产生运行**，由 H2.2 的重打分导出（§7 H2.2）。**先跑 H2.5 估时**，再决定 H2.1 是否分批（结论：**不分批**，§17.9）。
 
 ### 9.1 H2 前的容器内存重新规划（2026-09-24 实测标定，**开跑前必须落地**）
 
@@ -621,6 +621,7 @@ def from_import_test1(url):
 
 - **容器内已部署的规则是旧的**：`/opt/taa/semgrep/...` 与 `/root/taa/verify/...` 的 md5 为 `34519c59`（对齐**前**），而评测用的 `/root/taa/holdout/...` 为 `c06ffd2c`（对齐**后**）。`deploy-docker.sh:65` 从仓库存放这些规则，故以 `--scan-engine semgrep` 重跑一次即刷新。
 - **press 脚本的 `RULES` 默认指向旧副本**（`semgrep_press_test.sh:33`，`/opt/taa/semgrep/rules/python/rules.yaml`）⇒ H2.4 若不显式覆盖，测的会是**另一套规则**，与 H2.1 不可比。
+- **消费者不止 press 脚本：容器内正在运行的 TAA 服务本身就在用旧规则（2026-09-24 实测）**。`/root/taa/taa-config.json` 的 `security` 块实测为 `{"codeScanEngine": "semgrep", "semgrepRulesPath": "/opt/taa/semgrep/rules/python/rules.yaml"}`，读取链 `internal/config/config.go:126`、`:366-367` → `internal/app/taa/app.go:568` → `internal/codeaudit/engine.go:125-127`（作为 `--config`）；生产者是 `deploy-docker.sh:69`（默认目录）、`:334`、`:365-366`（同时置 `codeScanEngine=semgrep`）；另有容器内 `verify/press.sh:15`、`verify/press2.sh:28` 两个副本；`internal/config/config_test.go:963`、`:971` 仅为测试字面量、无运行时依赖。**故部署态服务与 H2 基准加载的不是同一套 python 规则，两者结论不可互推**——而 §17.5 第 1 条原先只把这一漂移记到 press 脚本那一个出口上。漂移范围已收紧为**只有 python 规则**：go 规则两边同为 `46522d30`、shell 规则同为 `ae2cc633`；容器内 `/opt/taa/semgrep/MANIFEST` 的 sha256（`ff0c7cb8…`）与容器文件自洽 ⇒ 是安装时取自对齐**前**的源（部署于 Sep 23 02:16），**不是**安装损坏。
 - **评测路径本身也没钉并发**：`semgrep_runner.py:187-195` 既不钉 `--jobs` 也不钉 `--max-memory`，只以 `timeout=120` 兜整个扫描——即 §9.1 根因 1 的形状**出现在判据自己的路径上**，不止 press 脚本。（好消息：它用 `subprocess.run(capture_output=True)`，内部走 `communicate()` 会排空管道，**没有**下面 17.7 那个死锁。）
 
 ### 17.6 `--jobs` 的语义无关性：**已在判据自己的语料上证明**
@@ -652,6 +653,13 @@ regex 臂在**一个 516 KB 的库**上就产出 **141 条 finding** = 生产 Go
 
 ### 17.9 H2.5 出口
 
-- §9.1 第 4 项落点已更正并登记（两处调用点各加 `--jobs 4`，语义无关性已证）；第 5 项已定为 **`--memory 7g`（`--memory-swap 7g`）**。
-- H2.1/H2.2 是否分批：**不分批**——最坏实测 `MemAvailable` 最低 3609 MiB，仍高于 §9.1 的 1024 MiB abort 地板与 3072 MiB 升级地板，无内存理由分批。
-- 阻塞 H2.4 的两项：press 脚本 `RULES` 必须指向对齐副本；旧部署副本需以 `--scan-engine semgrep` 重跑刷新（§17.5）。
+- §9.1 第 4 项落点已更正并登记（两处调用点各加 `--jobs 4`，语义无关性已证）；第 5 项已定为 **`--memory 7g`（`--memory-swap 7g`）**。**两项均已于 2026-09-24 落地**：第 5 项经 `docker update` 生效（实测 `Memory=MemorySwap=7516192768`，`RestartCount=0`、`StartedAt` 未变 ⇒ 未重启容器）。
+- H2.1 是否分批：**不分批**——最坏实测 `MemAvailable` 最低 3609 MiB，仍高于 §9.1 的 1024 MiB abort 地板与 3072 MiB 升级地板，无内存理由分批。
+- 原先「阻塞 H2.4 的两项」其一已闭合：H2.1 的驱动以**绝对路径**显式传入对齐副本（实测容器内 md5 = `c06ffd2c…`，与宿主一致），故 press 负载与判据同用一套规则；旧部署副本的刷新**仍待做**，且**不得在 H2.1 期间做**（`deploy-docker.sh` 会重建/重启容器）。刷新范围按 §17.5 新增第 2 条连带部署态服务。
+- **容器无 bind mount ⇒ 宿主编译不等于容器生效（本轮第二次咬人，登记为操作纪律）**：容器 `taa-env-slim-v2` 的 `Mounts` 为空，全部投放靠 `docker cp`。本轮先因容器内 `scale_submeasure.py` 落后于宿主（缺 `--burst-levels`）失败一次，又因**漏投 `semgrep_press_test.sh`** 使 H2.1 首启失败一次（驱动守卫正确拒跑：「press load produced no start banner; refusing to continue」，未产出无负载的矩阵）。**规程**：每次投放后以 md5 对宿主逐一核验（本轮 5 个工具全部一致），驱动以绝对路径传参、不依赖 CWD。
+
+### 17.10 上游建议（登记，本轮不改）
+
+重打分的「精确」目前依赖一条**隐含不变式**：`generate_audit_report` 从不把 `scan_complete`/`parser_errors`/`timed_out` 写进 `stats`——这正是 `compute_conclusion` 的 fail-closed 分支在 `static-llm` 路径上恒不触发的原因，也是重打分能**精确**而非**近似**的支点。**上游最小修法**：让 `generate_audit_report` 把这三项（内存中已算好，见 `audit_benchmark_eval.py:1055-1057` 的 `outcome.scan_complete`/`timed_out`/`parser_errors`）原样写入 report，把不变式**显式化**。
+
+**本轮不做的理由**：改落盘格式会让 H2.1 的 run1 与 run6 不同构（同一矩阵内两套产物 schema，配对无从谈起）。替代做法是让重打分**断言并拒跑**——这比改格式更保守：不变式若被破坏，重打分**响亮失败**，而不是静默按放宽方向偏离。
