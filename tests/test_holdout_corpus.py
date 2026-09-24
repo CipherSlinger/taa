@@ -518,5 +518,56 @@ class TestWindowsToSamples(unittest.TestCase):
         self.assertEqual([spec.family for spec in specs], ["CMD_001", "CMD_001"])
 
 
+class TestTreeDigest(unittest.TestCase):
+    """A content fingerprint, because a tarball checkout cannot verify its own revision.
+
+    The upstream revision string is a claim nothing local can check: the
+    directory in hand says nothing about which commit it came from. This is
+    what a reader with the same checkout can reproduce.
+    """
+
+    def test_it_counts_the_files_it_covers(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text("x = 1\n", encoding="utf-8")
+            (root / "sub").mkdir()
+            (root / "sub" / "b.py").write_text("y = 2\n", encoding="utf-8")
+            (root / "notes.txt").write_text("ignored\n", encoding="utf-8")
+
+            digest, count = hc.tree_digest(root)
+
+            self.assertEqual(count, 2)
+            self.assertEqual(len(digest), 64)
+
+    def test_the_same_bytes_give_the_same_digest(self):
+        with tempfile.TemporaryDirectory() as td:
+            first = Path(td) / "one"
+            second = Path(td) / "two"
+            for root in (first, second):
+                root.mkdir()
+                (root / "a.py").write_text("x = 1\n", encoding="utf-8")
+            self.assertEqual(hc.tree_digest(first), hc.tree_digest(second))
+
+    def test_changed_content_changes_the_digest(self):
+        """Otherwise the fingerprint would not notice a drifted checkout."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text("x = 1\n", encoding="utf-8")
+            before, _ = hc.tree_digest(root)
+            (root / "a.py").write_text("x = 2\n", encoding="utf-8")
+            after, _ = hc.tree_digest(root)
+            self.assertNotEqual(before, after)
+
+    def test_renaming_a_file_changes_the_digest(self):
+        """The path is part of what a sample's provenance claims."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "a.py").write_text("x = 1\n", encoding="utf-8")
+            before, _ = hc.tree_digest(root)
+            (root / "a.py").rename(root / "b.py")
+            after, _ = hc.tree_digest(root)
+            self.assertNotEqual(before, after)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -513,6 +513,28 @@ def parses(text: str) -> bool:
         return False
 
 
+def tree_digest(root: Path) -> tuple[str, int]:
+    """A content fingerprint of a checkout, and the number of files in it.
+
+    A tarball checkout has no `.git`, so a revision string is a claim nothing
+    local can check: the directory in hand says nothing about which commit it
+    came from. This is the anchor that can be checked - it is computed from the
+    bytes on disk, so a reader who has the same checkout can reproduce it, and
+    a checkout that drifted will not match even if the revision string is
+    unchanged.
+    """
+    root = Path(root)
+    digest = hashlib.sha256()
+    files = sorted(source_files(root))
+    for path in files:
+        relpath = path.relative_to(root).as_posix()
+        digest.update(relpath.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(sha256_bytes(path.read_bytes()).encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest(), len(files)
+
+
 # Every drop this arm can make. The full set is stated up front and every key
 # is reported even at zero: a report that reads a missing key as "no drops"
 # cannot tell a clean build from one that never counted.
