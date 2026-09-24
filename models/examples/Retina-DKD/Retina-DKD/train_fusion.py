@@ -92,10 +92,12 @@ if not pretrain:
 
 
 def resolve_data_root(data_root_text: str | None) -> Path:
-    if data_root_text and data_root_text != '/opt/taa/input':
-        target = data_root_text
-    else:
-        target = os.environ.get('TAA_DATA_DIR') or os.environ.get('TAA_INPUT_DIR') or data_root_text or '/opt/taa/input'
+    """Resolve the input root: --data-root when given, /opt/taa/input otherwise.
+
+    No environment variable participates here on purpose: the two roots are
+    either passed explicitly or fall back to the platform's fixed paths.
+    """
+    target = data_root_text if data_root_text else '/opt/taa/input'
     path = Path(target).expanduser().resolve(strict=False)
     if (path / 'data').is_dir() and not (path / f'cls{args.dataset}').is_dir() and not (path / 'risk_factor_5.xlsx').is_file():
         return path / 'data'
@@ -103,10 +105,8 @@ def resolve_data_root(data_root_text: str | None) -> Path:
 
 
 def resolve_output_dir(output_dir_text: str | None) -> Path:
-    if output_dir_text and output_dir_text != '/opt/taa/output':
-        target = output_dir_text
-    else:
-        target = os.environ.get('TAA_OUTPUT_DIR') or os.environ.get('TAA_MODEL_OUTPUT_DIR') or output_dir_text or '/opt/taa/output'
+    """Resolve the output root: --output-dir when given, /opt/taa/output otherwise."""
+    target = output_dir_text if output_dir_text else '/opt/taa/output'
     return Path(target).expanduser().resolve(strict=False)
 
 
