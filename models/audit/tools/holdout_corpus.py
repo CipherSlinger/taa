@@ -46,6 +46,7 @@ import sys
 import tarfile
 import textwrap
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional, Sequence
 
@@ -294,6 +295,185 @@ def find_package_root(extracted: Path) -> Path:
             continue
         break
     return current
+
+
+# ------------------------------------------------------------------ assembly
+#
+# What the evaluator requires of a corpus, read off its own loader rather than
+# assumed. Three facts drive this section:
+#
+# * A corpus list entry is parsed into the evaluator's SampleSpec, which rejects
+#   any field it does not declare. An unrecognised key raises; it is not
+#   ignored. So an entry carries the required fields and nothing else, and the
+#   descriptive values an external corpus gets stay the evaluator's defaults -
+#   a second copy here would be a second thing to drift.
+# * The sample directory is resolved as `<benchmark_root>/<relative_path>`, and
+#   the parity proof's traversal recognises `<root>/<id>/` and
+#   `<root>/<project>/<id>/`. Two levels is therefore the layout that is found.
+# * Attribution compares only the basename of `primary_attack_finding.file` and
+#   the `rule_id`; the line number is not read. One file per sample keeps the
+#   basename unambiguous.
+
+# The five fields a corpus list entry must carry.
+CORPUS_LIST_FIELDS = ("sample_id", "base_project", "family", "label", "relative_path")
+
+# One file per sample directory, so a finding's basename identifies its sample.
+SAMPLE_FILENAME = "sample.py"
+
+# Families reported for samples whose upstream source states no rule family.
+# They are not our rule families and must not be read as if they were: a
+# trojanised package carries no annotation saying which of our rules sees it,
+# and inventing one would put samples under rules that may never look at them.
+FAMILY_PYPI = "PYPI-BENIGN"
+FAMILY_CODEQL = "CODEQL-NEARMISS"
+FAMILY_DATADOG = "DATADOG-MALICIOUS"
+FAMILY_SEMGREP_RULES = "SEMGREP-RULES"  # only when the window maps to no family
+
+
+@dataclass(frozen=True)
+class Sample:
+    """One sample: a single file, its label, and where it came from.
+
+    The corpus is a list of these and nothing else. Everything a reader would
+    need to check the sample - the upstream path, revision, hash, and the
+    annotation that set the label - travels in `provenance`, so the corpus can
+    be audited without re-running the retrieval.
+    """
+
+    sample_id: str
+    base_project: str
+    family: str
+    label: str
+    text: str
+    provenance: dict[str, Any] = field(default_factory=dict)
+    primary_attack_finding: Optional[dict[str, Any]] = None
+
+    @property
+    def relative_path(self) -> str:
+        return f"{self.base_project}/{self.sample_id}"
+
+    def corpus_list_entry(self) -> dict[str, str]:
+        return {
+            "sample_id": self.sample_id,
+            "base_project": self.base_project,
+            "family": self.family,
+            "label": self.label,
+            "relative_path": self.relative_path,
+        }
+
+    def sample_metadata(self) -> dict[str, Any]:
+        """The sample's own record, read by the evaluator for attribution only.
+
+        `expected_final` is deliberately absent. It is not read from here - the
+        evaluator scores on a corpus list entry's `label`, and for a declared
+        corpus it defaults the expectation to `UNSPECIFIED` - so a value here
+        would be a claim nothing reads, differing from what the run reports.
+        """
+        return {
+            "sample_id": self.sample_id,
+            "base_project": self.base_project,
+            "family": self.family,
+            "label": self.label,
+            "primary_attack_finding": self.primary_attack_finding,
+            "source": self.provenance,
+        }
+
+
+def write_corpus(root: Path, samples: Sequence[Sample]) -> dict[str, Any]:
+    """Write the corpus, and return the counts a report has to state.
+
+    Idempotent: the corpus is rebuilt from the recipe, so every sample directory
+    is written fresh rather than merged into whatever was there. Two things are
+    refused rather than written, because both would look like a healthy corpus:
+    a repeated `sample_id`, which the evaluator indexes pairs by, so a repeat
+    silently drops a pair; and an empty sample, which scores as a file with
+    nothing in it rather than as the retrieval failure it is.
+    """
+    root = Path(root)
+    seen: set[str] = set()
+    for sample in samples:
+        if sample.sample_id in seen:
+            raise ValueError(f"duplicate sample_id {sample.sample_id!r}; pairs are indexed by it")
+        seen.add(sample.sample_id)
+        if not sample.text.strip():
+            raise ValueError(f"sample {sample.sample_id!r} is empty; that is a retrieval failure, not a sample")
+
+        sample_dir = root / sample.relative_path
+        sample_dir.mkdir(parents=True, exist_ok=True)
+        (sample_dir / SAMPLE_FILENAME).write_text(sample.text, encoding="utf-8")
+        (sample_dir / "sample.json").write_text(
+            json.dumps(sample.sample_metadata(), indent=2, sort_keys=False) + "\n",
+            encoding="utf-8",
+        )
+
+    counts = corpus_counts(samples)
+    (root / "corpus-list.json").write_text(
+        json.dumps(corpus_list_payload(samples), indent=2) + "\n", encoding="utf-8"
+    )
+    return counts
+
+
+def corpus_list_payload(samples: Sequence[Sample]) -> dict[str, Any]:
+    """The run plan: an ordered list of samples and where each one lives."""
+    return {"samples": [sample.corpus_list_entry() for sample in samples]}
+
+
+def corpus_counts(samples: Sequence[Sample]) -> dict[str, Any]:
+    """Counts by label, by family, and by source, for the report's tables.
+
+    A per-family count is what requirement 4 is checked against, so it is
+    reported for every family including the ones with no samples: a family that
+    is absent from the table cannot be told apart from one that was never
+    measured, and those call for different sentences in the report.
+    """
+    by_label: dict[str, int] = {label: 0 for label in LABEL_BY_KIND.values()}
+    by_family: dict[str, dict[str, int]] = {}
+    by_source: dict[str, int] = {}
+    for sample in samples:
+        by_label[sample.label] = by_label.get(sample.label, 0) + 1
+        by_family.setdefault(sample.family, {})[sample.label] = (
+            by_family.setdefault(sample.family, {}).get(sample.label, 0) + 1
+        )
+        source = str(sample.provenance.get("source", "unknown"))
+        by_source[source] = by_source.get(source, 0) + 1
+    return {
+        "total": len(samples),
+        "by_label": by_label,
+        "by_family": {family: by_family[family] for family in sorted(by_family)},
+        "by_source": {source: by_source[source] for source in sorted(by_source)},
+    }
+
+
+def provenance_payload(
+    sources: Sequence[dict[str, Any]],
+    samples: Sequence[Sample],
+    drops: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """What a reader needs to check the corpus without rebuilding it.
+
+    The per-sample records are the upstream facts only - path, revision, hash,
+    annotation. They are what makes a label checkable: the label came from an
+    upstream annotation, and this is the annotation.
+    """
+    return {
+        "built_at": utc_now(),
+        "sources": list(sources),
+        "counts": corpus_counts(samples),
+        "drops": dict(drops or {}),
+        "samples": [
+            {
+                "sample_id": sample.sample_id,
+                "family": sample.family,
+                "label": sample.label,
+                **sample.provenance,
+            }
+            for sample in samples
+        ],
+    }
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 if __name__ == "__main__":

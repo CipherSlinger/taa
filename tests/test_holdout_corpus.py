@@ -18,8 +18,12 @@ Three things are worth stating because they are easy to get backwards:
   window is dropped and counted rather than resolved by preference.
 """
 import ast
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
+from models.audit.tools import audit_benchmark_eval as ev
 from models.audit.tools import holdout_corpus as hc
 
 
@@ -256,6 +260,141 @@ class TestBenignExclusions(unittest.TestCase):
                      "pkg/testing/x.py"):
             with self.subTest(path=path):
                 self.assertFalse(hc.is_benign_excluded(path))
+
+
+def sample(sample_id="s-001", family=hc.FAMILY_PYPI, label="benign", **overrides):
+    fields = dict(
+        sample_id=sample_id, base_project="attrs-26.1.0", family=family, label=label,
+        text="import os\n\n\ndef f():\n    return 1\n",
+        provenance={"source": "pypi-sdist", "path": "attrs-26.1.0/src/attr/_make.py"},
+    )
+    fields.update(overrides)
+    return hc.Sample(**fields)
+
+
+class TestSampleContract(unittest.TestCase):
+    """The shape the evaluator requires, read off its loader rather than assumed.
+
+    These pin the two facts that are silent when wrong: an entry with a field the
+    evaluator does not declare raises instead of being ignored, and the sample
+    directory is resolved as `<root>/<relative_path>` with the parity proof's
+    traversal only recognising one and two level layouts.
+    """
+
+    def test_a_corpus_list_entry_carries_only_declared_fields(self):
+        entry = sample().corpus_list_entry()
+        self.assertEqual(set(entry), set(hc.CORPUS_LIST_FIELDS))
+
+    def test_the_relative_path_is_two_levels(self):
+        """One level would not be found by the parity proof's traversal."""
+        self.assertEqual(sample().relative_path, "attrs-26.1.0/s-001")
+
+    def test_the_metadata_names_the_file_attribution_is_matched_on(self):
+        """Attribution compares a basename and a rule id; the line is not read."""
+        meta = sample(
+            family="CMD_001", label="malicious",
+            primary_attack_finding={"file": hc.SAMPLE_FILENAME, "rule_id": "CMD_001", "line": 3},
+        ).sample_metadata()
+        self.assertEqual(meta["primary_attack_finding"]["rule_id"], "CMD_001")
+        self.assertEqual(meta["label"], "malicious")
+        self.assertIn("source", meta)
+
+    def test_the_metadata_states_no_expected_final(self):
+        """Nothing reads it from here, and the run reports its own value.
+
+        The evaluator scores on a corpus list entry's label and defaults the
+        expectation to UNSPECIFIED for a declared corpus, so a value here would
+        be a claim nothing reads that contradicts the report.
+        """
+        self.assertNotIn("expected_final", sample().sample_metadata())
+
+
+class TestWriteCorpus(unittest.TestCase):
+    def test_it_writes_one_file_and_one_record_per_sample(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            hc.write_corpus(root, [sample()])
+
+            sample_dir = root / "attrs-26.1.0" / "s-001"
+            self.assertEqual(sorted(p.name for p in sample_dir.iterdir()),
+                             ["sample.json", hc.SAMPLE_FILENAME])
+            self.assertIn("def f()", (sample_dir / hc.SAMPLE_FILENAME).read_text())
+
+    def test_it_writes_the_corpus_list_the_evaluator_reads(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            hc.write_corpus(root, [sample(), sample(sample_id="s-002", label="malicious")])
+
+            payload = json.loads((root / "corpus-list.json").read_text())
+            self.assertEqual([row["sample_id"] for row in payload["samples"]], ["s-001", "s-002"])
+            self.assertEqual(payload["samples"][1]["relative_path"], "attrs-26.1.0/s-002")
+
+    def test_the_written_corpus_list_is_accepted_by_the_evaluator(self):
+        """The contract is the evaluator's, so the evaluator is what checks it.
+
+        Reading the loader and copying its field list is not the same as the
+        loader accepting what this module writes.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            hc.write_corpus(root, [sample(), sample(sample_id="s-002", label="malicious",
+                                                    family="CMD_001")])
+            specs = ev.load_corpus_list(root / "corpus-list.json")
+
+        self.assertEqual([spec.sample_id for spec in specs], ["s-001", "s-002"])
+        self.assertEqual(specs[1].label, "malicious")
+        self.assertEqual(specs[0].relative_path, "attrs-26.1.0/s-001")
+
+    def test_a_repeated_sample_id_is_refused(self):
+        """The evaluator indexes pairs by it, so a repeat drops a pair silently."""
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(ValueError) as caught:
+                hc.write_corpus(Path(td), [sample(), sample()])
+        self.assertIn("duplicate sample_id", str(caught.exception))
+
+    def test_an_empty_sample_is_refused(self):
+        """An empty file scores as a file with nothing in it, not as a failure."""
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(ValueError) as caught:
+                hc.write_corpus(Path(td), [sample(text="\n\n")])
+        self.assertIn("empty", str(caught.exception))
+
+
+class TestCorpusCounts(unittest.TestCase):
+    def test_it_counts_by_label_family_and_source(self):
+        counts = hc.corpus_counts([
+            sample(),
+            sample(sample_id="s-002", family="CMD_001", label="malicious",
+                   provenance={"source": "semgrep-rules"}),
+            sample(sample_id="s-003", family="CMD_001", label="malicious",
+                   provenance={"source": "semgrep-rules"}),
+        ])
+        self.assertEqual(counts["total"], 3)
+        self.assertEqual(counts["by_label"], {"malicious": 2, "benign": 1})
+        self.assertEqual(counts["by_family"]["CMD_001"], {"malicious": 2})
+        self.assertEqual(counts["by_source"], {"pypi-sdist": 1, "semgrep-rules": 2})
+
+    def test_a_family_with_no_samples_is_simply_absent(self):
+        """The report distinguishes 'no samples' from 'not measured', so it needs
+        the per-family table to be exactly what was built, not padded."""
+        counts = hc.corpus_counts([sample()])
+        self.assertNotIn("NET_002", counts["by_family"])
+        self.assertEqual(counts["by_label"], {"malicious": 0, "benign": 1})
+
+
+class TestProvenance(unittest.TestCase):
+    def test_it_carries_the_upstream_record_for_every_sample(self):
+        payload = hc.provenance_payload(
+            sources=[{"name": "pypi-sdist", "revision": "pinned versions"}],
+            samples=[sample()],
+            drops={"dropped_outside": 758, "dropped_mixed": 51},
+        )
+        self.assertEqual(payload["sources"][0]["name"], "pypi-sdist")
+        self.assertEqual(payload["drops"]["dropped_outside"], 758)
+        row = payload["samples"][0]
+        self.assertEqual(row["sample_id"], "s-001")
+        self.assertEqual(row["path"], "attrs-26.1.0/src/attr/_make.py")
+        self.assertTrue(payload["built_at"].endswith("Z"))
 
 
 if __name__ == "__main__":
