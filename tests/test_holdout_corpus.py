@@ -397,5 +397,126 @@ class TestProvenance(unittest.TestCase):
         self.assertTrue(payload["built_at"].endswith("Z"))
 
 
+TREE_FILE = """\
+import subprocess
+
+def handler(cmd):
+    # ruleid: dangerous-subprocess-use-audit
+    subprocess.call(cmd, shell=True)
+
+def other(cmd):
+    # ok: dangerous-os-exec-audit
+    subprocess.call(["/bin/echo", cmd])
+"""
+
+UNMAPPED_FILE = """\
+def f(x):
+    # ruleid: insecure-hash-algorithm-md5
+    return md5(x)
+"""
+
+
+class TestWindowsToSamples(unittest.TestCase):
+    """The walk turns a checkout into samples, in path order, outcome-blind.
+
+    Nothing here consults an engine: the selection is the file order and the
+    upstream annotation, so the same revision yields the same corpus.
+    """
+
+    def _tree(self, tmp, files):
+        root = Path(tmp)
+        for relpath, text in files.items():
+            path = root / relpath
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        return root
+
+    def test_each_labelled_window_becomes_one_sample(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._tree(td, {"python/audit/x.py": TREE_FILE})
+            samples, _ = hc.samples_from_windows(root, revision="abc123")
+
+        self.assertEqual([s.label for s in samples], ["malicious", "benign"])
+        self.assertEqual([s.family for s in samples], ["CMD_001", "CMD_001"])
+        self.assertEqual([s.sample_id for s in samples], ["sr-0001", "sr-0002"])
+        self.assertTrue(all(s.base_project == "semgrep-rules" for s in samples))
+
+    def test_the_sample_carries_the_ground_truth_it_was_labelled_by(self):
+        """The line is the fragment's numbering, not the upstream file's.
+
+        The sample is a file of its own, so a line number carried over from the
+        file it was cut out of would point past the sample's end.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = self._tree(td, {"python/audit/x.py": TREE_FILE})
+            samples, _ = hc.samples_from_windows(root, revision="abc123")
+
+        first = samples[0]
+        self.assertEqual(first.primary_attack_finding,
+                         {"file": hc.SAMPLE_FILENAME, "rule_id": "CMD_001", "line": 3})
+        self.assertEqual(first.text.splitlines()[2], "    subprocess.call(cmd, shell=True)")
+        self.assertIn("# ruleid: dangerous-subprocess-use-audit", first.text)
+        self.assertEqual(first.provenance["annotation"], "# ruleid: dangerous-subprocess-use-audit")
+        self.assertEqual(first.provenance["annotation_line"], 4)
+        self.assertEqual(first.provenance["revision"], "abc123")
+        self.assertEqual(first.provenance["path"], "python/audit/x.py")
+        self.assertIn("modification", first.provenance)
+
+    def test_a_benign_sample_claims_no_attack_finding(self):
+        """There is no finding to attribute; claiming one would invent ground truth."""
+        with tempfile.TemporaryDirectory() as td:
+            root = self._tree(td, {"python/audit/x.py": TREE_FILE})
+            samples, _ = hc.samples_from_windows(root, revision="abc123")
+
+        self.assertIsNone(samples[1].primary_attack_finding)
+
+    def test_an_unmapped_annotation_is_excluded_and_counted(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._tree(td, {"python/audit/x.py": UNMAPPED_FILE})
+            samples, drops = hc.samples_from_windows(root, revision="abc123")
+
+        self.assertEqual(samples, [])
+        self.assertEqual(drops["unmapped"], 1)
+        self.assertEqual(drops["annotations"], 1)
+
+    def test_the_walk_is_in_path_order_so_a_revision_is_reproducible(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._tree(td, {
+                "python/b.py": TREE_FILE.replace("def handler", "def handler_b"),
+                "python/a.py": TREE_FILE.replace("def handler", "def handler_a"),
+            })
+            samples, _ = hc.samples_from_windows(root, revision="abc123")
+
+        self.assertEqual([s.provenance["path"] for s in samples],
+                         ["python/a.py", "python/a.py", "python/b.py", "python/b.py"])
+
+    def test_the_drops_are_reported_for_every_annotation(self):
+        """A build that discards quietly reads as better covered than it is."""
+        with tempfile.TemporaryDirectory() as td:
+            root = self._tree(td, {
+                "python/a.py": TREE_FILE,
+                "python/b.py": "# ruleid: eval-detected\nvalue = 1\n",
+            })
+            _, drops = hc.samples_from_windows(root, revision="abc123")
+
+        self.assertEqual(drops["annotations"], 3)
+        self.assertEqual(drops["dropped_outside"], 1)
+        self.assertEqual(drops["unmapped"], 0)
+
+    def test_the_samples_it_returns_are_accepted_by_the_writer(self):
+        """The two halves meet: what the walk builds is what the corpus takes."""
+        with tempfile.TemporaryDirectory() as td:
+            root = self._tree(td, {"python/audit/x.py": TREE_FILE})
+            samples, _ = hc.samples_from_windows(root, revision="abc123")
+            out = Path(td) / "corpus"
+            counts = hc.write_corpus(out, samples)
+
+            self.assertEqual(counts["by_label"], {"malicious": 1, "benign": 1})
+            self.assertEqual(counts["by_family"], {"CMD_001": {"malicious": 1, "benign": 1}})
+            specs = ev.load_corpus_list(out / "corpus-list.json")
+
+        self.assertEqual([spec.family for spec in specs], ["CMD_001", "CMD_001"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import collections
 import hashlib
 import json
 import re
@@ -132,11 +133,21 @@ class Window:
     end: int
     kind: str
     annotated_rule: str
+    annotated_line: int
     family: Optional[str]
 
     @property
     def label(self) -> str:
         return LABEL_BY_KIND[self.kind]
+
+    def labelled_line(self) -> int:
+        """The line the annotation labels, as a line of the extracted fragment.
+
+        An annotation labels the statement below it, and the fragment starts at
+        the window's first line, so the labelled line is the annotation's own
+        line shifted into the fragment's numbering.
+        """
+        return self.annotated_line - self.start + 2
 
 
 @dataclass(frozen=True)
@@ -225,7 +236,7 @@ def extract_file(text: str) -> FileExtraction:
         return FileExtraction(annotations=len(annotations), unparseable=True)
 
     spans = scope_spans(tree)
-    spans_by_window: dict[tuple[int, int], list[tuple[str, str]]] = {}
+    spans_by_window: dict[tuple[int, int], list[tuple[int, str, str]]] = {}
     outside = 0
     for lineno, kind, rule in annotations:
         span = enclosing_scope(spans, lineno + 1)
@@ -233,7 +244,7 @@ def extract_file(text: str) -> FileExtraction:
             outside += 1
             continue
         window = (min(span[0], lineno), span[1])
-        spans_by_window.setdefault(window, []).append((kind, rule))
+        spans_by_window.setdefault(window, []).append((lineno, kind, rule))
 
     annotations_by_line = [(lineno, kind) for lineno, kind, _ in annotations]
     windows: list[Window] = []
@@ -243,9 +254,9 @@ def extract_file(text: str) -> FileExtraction:
         if len(kinds_in_window) != 1:
             mixed += 1
             continue
-        kind, rule = members[0]
-        windows.append(Window(start=start, end=end, kind=kind,
-                              annotated_rule=rule, family=family_of(rule)))
+        lineno, kind, rule = members[0]
+        windows.append(Window(start=start, end=end, kind=kind, annotated_rule=rule,
+                              annotated_line=lineno, family=family_of(rule)))
 
     return FileExtraction(windows=tuple(windows), annotations=len(annotations),
                           dropped_outside=outside, dropped_mixed=mixed)
@@ -474,6 +485,120 @@ def provenance_payload(
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+# ------------------------------------------------- upstream annotation arm
+#
+# The one arm whose ground truth is per-line and comes from the same upstream
+# file the sample is cut out of. The selection is a walk in path order over the
+# checkout at a recorded revision: nothing here looks at what an engine reports.
+
+SEMGREP_RULES_SOURCE = "semgrep-rules"
+SEMGREP_RULES_PROJECT = "semgrep-rules"
+
+# Upstream files are modified by construction - a fragment is not the file it
+# came from - and the source licence requires modified copies to be marked.
+SEMGREP_RULES_MODIFICATION = (
+    "mechanical window extraction: the sample is the enclosing def/class of the "
+    "annotated statement, dedented, with the annotation kept; nothing else changed"
+)
+
+
+def parses(text: str) -> bool:
+    """Whether a fragment is a Python file at all."""
+    try:
+        ast.parse(text)
+        return True
+    except SyntaxError:
+        return False
+
+
+# Every drop this arm can make. The full set is stated up front and every key
+# is reported even at zero: a report that reads a missing key as "no drops"
+# cannot tell a clean build from one that never counted.
+SEMGREP_RULES_DROP_KEYS = (
+    "annotations",
+    "dropped_outside",
+    "dropped_mixed",
+    "unmapped",
+    "fragment_unparseable",
+    "unparseable_files",
+)
+
+
+def samples_from_windows(
+    root: Path,
+    *,
+    revision: str,
+    prefix: str = "sr",
+) -> tuple[list[Sample], dict[str, Any]]:
+    """Turn every annotated window under a checkout into samples.
+
+    A window whose upstream rule names none of our families is excluded and
+    counted, not labelled with a guess: the annotation was written for an
+    upstream rule, and a wrong family would file the sample under a rule that
+    never sees it. A fragment that does not parse is excluded too - the
+    evaluator drops a sample whose tree has parse errors, so admitting one here
+    would turn a build-time fact into a round that cannot be completed.
+
+    Nothing in the selection reads an engine's output. The order is path order,
+    so the same revision yields the same samples.
+    """
+    root = Path(root)
+    samples: list[Sample] = []
+    drops: dict[str, Any] = {key: 0 for key in SEMGREP_RULES_DROP_KEYS}
+    index = 0
+
+    for path in source_files(root):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        extraction = extract_file(text)
+        drops["annotations"] += extraction.annotations
+        drops["dropped_outside"] += extraction.dropped_outside
+        drops["dropped_mixed"] += extraction.dropped_mixed
+        if extraction.unparseable:
+            drops["unparseable_files"] += 1
+        if not extraction.windows:
+            continue
+
+        relpath = path.relative_to(root).as_posix()
+        lines = text.splitlines()
+        file_digest = sha256_text(text)
+        for window in extraction.windows:
+            if window.family is None:
+                drops["unmapped"] += 1
+                continue
+            fragment = window_fragment(lines, window)
+            if not parses(fragment):
+                drops["fragment_unparseable"] += 1
+                continue
+            index += 1
+            samples.append(
+                Sample(
+                    sample_id=f"{prefix}-{index:04d}",
+                    base_project=SEMGREP_RULES_PROJECT,
+                    family=window.family,
+                    label=window.label,
+                    text=fragment,
+                    provenance={
+                        "source": SEMGREP_RULES_SOURCE,
+                        "revision": revision,
+                        "path": relpath,
+                        "file_sha256": file_digest,
+                        "window": [window.start, window.end],
+                        "annotation": f"# {window.kind}: {window.annotated_rule}",
+                        "annotation_line": window.annotated_line,
+                        "upstream_rule": window.annotated_rule,
+                        "modification": SEMGREP_RULES_MODIFICATION,
+                    },
+                    primary_attack_finding=(
+                        {"file": SAMPLE_FILENAME, "rule_id": window.family,
+                         "line": window.labelled_line()}
+                        if window.label == "malicious" else None
+                    ),
+                )
+            )
+
+    return samples, dict(drops)
 
 
 if __name__ == "__main__":
