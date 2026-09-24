@@ -140,10 +140,38 @@ rules:
     metadata:
       category: credential
       rule_family: ENV_001
+    # The baseline rule (internal/codeaudit/rules.go, ENV_001) constrains the
+    # environment variable's *name* to a sensitive-keyword alternation, and this
+    # port did not. The consequence was measurable rather than theoretical: over
+    # the 311-sample holdout the baseline fired this rule zero times while this
+    # rule fired 47, on names such as SPHINX_BUILD, READTHEDOCS, PAGER, TERM,
+    # LESS, XDG_CONFIG_HOME, RUAMEL_DEBUG and TEMP. Ten benign samples were
+    # flagged by this arm and by nothing on the baseline. That is a difference in
+    # rule quality, and the arms are meant to differ in engine only.
+    #
+    # $KEY is written quoted so that it binds a string literal: the baseline
+    # requires a quote after os.environ[/get(, so a variable
+    # (os.environ[secret_key]) is not a finding there and must not be one here.
+    # The regex allows any prefix and suffix because the keywords are fixed but
+    # their position in the name is not (AWS_SECRET_ACCESS_KEY, SECRET_TOKEN,
+    # MY_API_KEY), and it is written that way rather than relying on the
+    # engine's anchoring, which is not the same in every Semgrep version.
     pattern-either:
-      - pattern: os.environ.get($KEY, ...)
-      - pattern: os.environ[$KEY]
-      - pattern: os.getenv($KEY, ...)
+      - patterns:
+          - pattern: os.environ.get("$KEY", ...)
+          - metavariable-regex:
+              metavariable: $KEY
+              regex: "(?i).*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab).*"
+      - patterns:
+          - pattern: os.environ["$KEY"]
+          - metavariable-regex:
+              metavariable: $KEY
+              regex: "(?i).*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab).*"
+      - patterns:
+          - pattern: os.getenv("$KEY", ...)
+          - metavariable-regex:
+              metavariable: $KEY
+              regex: "(?i).*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab).*"
 
   - id: taa-obf-exec-python
     languages: [python]
