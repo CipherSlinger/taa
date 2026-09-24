@@ -23,6 +23,7 @@ but would still put real payload bytes into a test run; the shapes the loaders
 read are what matters here, so the fixtures below carry throwaway Python.
 """
 import ast
+import contextlib
 import io
 import json
 import tarfile
@@ -627,6 +628,93 @@ class TestPreRegisteredScreen(unittest.TestCase):
         self.assertEqual(rows[0]["rule"], "unparseable")
 
 
+class TestLongLineExclusion(unittest.TestCase):
+    """Rule 9: the prompt's context window is bounded by lines, not by bytes.
+
+    The bound exists because the tier assembles a finding's prompt from fifteen
+    lines either side of it, so one enormous line inflates the prompt without
+    bound. Like the parse rule and the static cap, this reads the sample's bytes
+    and never a scan result.
+    """
+
+    def test_a_sample_over_the_bound_is_excluded_and_counted(self):
+        samples = [sample(sample_id="s-small"), sample(sample_id="s-huge", text="x" * 100_001)]
+
+        kept, dropped = hc.drop_long_lines(samples)
+
+        self.assertEqual([s.sample_id for s in kept], ["s-small"])
+        self.assertEqual([row["sample_id"] for row in dropped], ["s-huge"])
+        self.assertEqual(dropped[0]["max_line_bytes"], 100_001)
+        self.assertEqual(dropped[0]["limit"], hc.MAX_SAMPLE_LINE_BYTES)
+
+    def test_a_sample_exactly_on_the_bound_is_kept(self):
+        """`>` and not `>=`: unlike the static cap, nothing downstream is inclusive."""
+        kept, dropped = hc.drop_long_lines([sample(sample_id="s-edge", text="x" * 100_000)])
+
+        self.assertEqual([s.sample_id for s in kept], ["s-edge"])
+        self.assertEqual(dropped, [])
+
+    def test_one_byte_over_the_bound_is_excluded(self):
+        kept, dropped = hc.drop_long_lines([sample(sample_id="s-edge", text="x" * 100_001)])
+
+        self.assertEqual(kept, [])
+        self.assertEqual([row["sample_id"] for row in dropped], ["s-edge"])
+
+    def test_the_length_is_measured_in_bytes_not_characters(self):
+        """A multi-byte line is larger than its length, and the prompt is bytes."""
+        text = "一" * 40_000  # 40,000 characters, 120,000 bytes
+
+        _, dropped = hc.drop_long_lines([sample(sample_id="s-cjk", text=text)])
+
+        self.assertEqual(dropped[0]["max_line_bytes"], 120_000)
+
+    def test_the_longest_line_is_the_one_that_counts_not_the_file(self):
+        """A large file of short lines is not the hazard the rule addresses."""
+        text = "x = 1\n" * 30_000  # 180,000 bytes, longest line 5
+
+        kept, dropped = hc.drop_long_lines([sample(sample_id="s-long", text=text)])
+
+        self.assertEqual([s.sample_id for s in kept], ["s-long"])
+        self.assertEqual(dropped, [])
+
+    def test_the_record_carries_the_size_of_the_file_it_came_from(self):
+        """A reader checking the exclusion has both numbers to check it against."""
+        _, dropped = hc.drop_long_lines([sample(sample_id="s-huge", text="x" * 100_001)])
+
+        self.assertEqual(dropped[0]["sample_bytes"], 100_001)
+        self.assertEqual(dropped[0]["source"], "pypi-sdist")
+
+    def test_the_exclusion_reads_no_scan_result(self):
+        """Rule 9 is outcome-blind: it is decided before anything is run."""
+        row = sample(sample_id="s-huge", text="x" * 100_001)
+        row.provenance["findings"] = 0
+        row.provenance["final_verdict"] = "PASS"
+
+        _, dropped = hc.drop_long_lines([row])
+
+        self.assertEqual(len(dropped), 1)
+        self.assertNotIn("findings", dropped[0])
+        self.assertNotIn("final_verdict", dropped[0])
+
+    def test_the_provenance_block_states_the_criterion_it_applied(self):
+        _, dropped = hc.drop_long_lines([sample(sample_id="s-huge", text="x" * 100_001)])
+
+        block = hc.long_line_exclusion(dropped)
+
+        self.assertEqual(block["limit_bytes"], hc.MAX_SAMPLE_LINE_BYTES)
+        self.assertEqual(block["count"], 1)
+        self.assertEqual([row["sample_id"] for row in block["samples"]], ["s-huge"])
+        self.assertIn("UTF-8", block["criterion"])
+
+    def test_an_exclusion_that_removed_nothing_says_so(self):
+        """An absent block cannot be told apart from a rule that never ran."""
+        block = hc.long_line_exclusion([])
+
+        self.assertEqual(block["count"], 0)
+        self.assertEqual(block["samples"], [])
+        self.assertEqual(block["limit_bytes"], hc.MAX_SAMPLE_LINE_BYTES)
+
+
 # ----------------------------------------------------------- manifest loading
 #
 # The three manifest-backed arms. Every fixture here is synthetic and holds
@@ -717,8 +805,17 @@ def cq_entry(path, text, *, label_lines=None, **overrides):
     return fields
 
 
+def reference_at(root):
+    """Where the build looks for the vendor reference by default.
+
+    It belongs to the malicious arm's retrieval directory, not to the sources
+    root: only that arm is screened against released libraries.
+    """
+    return Path(root) / hc.DD_DIRNAME / hc.VENDOR_REFERENCE_FILENAME
+
+
 def write_reference(root, references):
-    return write_file(root, hc.VENDOR_REFERENCE_FILENAME,
+    return write_file(Path(root) / hc.DD_DIRNAME, hc.VENDOR_REFERENCE_FILENAME,
                       json.dumps({"references": references}))
 
 
@@ -842,6 +939,93 @@ class TestVendorReference(unittest.TestCase):
             with self.assertRaises(ValueError) as caught:
                 hc.load_vendor_reference(path)
         self.assertIn("not valid JSON", str(caught.exception))
+
+    def test_an_absent_reference_file_is_refused(self):
+        """It is not a file-not-found: nothing is vendored, and that is the defect."""
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(ValueError) as caught:
+                hc.load_vendor_reference(Path(td) / hc.VENDOR_REFERENCE_FILENAME)
+        self.assertIn("does not exist", str(caught.exception))
+
+    def test_the_empty_file_digest_is_not_vendoring_evidence(self):
+        """`sha256("")` matches every project that ships an empty file.
+
+        The malicious arm carries 19 empty files across 13 packages, so a
+        reference listing this digest matches all of them at once and claims a
+        library the arm does not vendor at all. Measured on the first real
+        reference artifact, one row was read as 19 matches for exactly this
+        reason, which is why the digest is removed and the removal counted.
+        """
+        self.assertEqual(hc.EMPTY_SHA256, hc.sha256_bytes(b""))
+        with tempfile.TemporaryDirectory() as td:
+            path = write_reference(td, [
+                {"dist": "attrs", "version": "26.1.0", "url": "u", "sdist_sha256": HEX64,
+                 "file_sha256": ["1" * 64, hc.EMPTY_SHA256], "matched_entries": 20},
+            ])
+            reference, record = hc.read_vendor_reference(path)
+
+        self.assertEqual(list(reference), ["1" * 64])
+        self.assertEqual(record["empty_digest_screen"]["digest"], hc.EMPTY_SHA256)
+        self.assertEqual(record["empty_digest_screen"]["removed"], 1)
+        self.assertEqual(record["empty_digest_screen"]["references"],
+                         [{"dist": "attrs", "version": "26.1.0", "removed": 1}])
+
+    def test_a_screen_that_removed_nothing_says_so(self):
+        """A zero is a count here too: 'screened nothing' has to be visible."""
+        with tempfile.TemporaryDirectory() as td:
+            path = write_reference(td, [
+                {"dist": "attrs", "version": "26.1.0", "url": "u", "sdist_sha256": HEX64,
+                 "file_sha256": ["1" * 64], "matched_entries": 1},
+            ])
+            _, record = hc.read_vendor_reference(path)
+
+        self.assertEqual(record["empty_digest_screen"]["removed"], 0)
+        self.assertEqual(record["empty_digest_screen"]["references"], [])
+
+    def test_a_reference_left_with_no_hashes_after_the_screen_is_refused(self):
+        """A row that can match nothing reads as a distribution that was cleared."""
+        with tempfile.TemporaryDirectory() as td:
+            path = write_reference(td, [
+                {"dist": "attrs", "version": "26.1.0", "url": "u", "sdist_sha256": HEX64,
+                 "file_sha256": [hc.EMPTY_SHA256], "matched_entries": 19},
+            ])
+            with self.assertRaises(ValueError) as caught:
+                hc.load_vendor_reference(path)
+
+        message = str(caught.exception)
+        self.assertIn("attrs==26.1.0", message)
+        self.assertIn(hc.EMPTY_SHA256, message)
+
+    def test_a_hash_repeated_inside_one_reference_is_refused(self):
+        """It would count one file as two matches for the same distribution."""
+        with tempfile.TemporaryDirectory() as td:
+            path = write_reference(td, [
+                {"dist": "attrs", "version": "26.1.0", "url": "u", "sdist_sha256": HEX64,
+                 "file_sha256": ["1" * 64, "1" * 64], "matched_entries": 2},
+            ])
+            with self.assertRaises(ValueError) as caught:
+                hc.load_vendor_reference(path)
+
+        message = str(caught.exception)
+        self.assertIn("attrs==26.1.0", message)
+        self.assertIn("1" * 64, message)
+
+    def test_a_hash_two_references_share_names_both_and_the_hash(self):
+        """A double-counted hash makes the reported distribution meaningless."""
+        with tempfile.TemporaryDirectory() as td:
+            path = write_reference(td, [
+                {"dist": "attrs", "version": "26.1.0", "url": "u", "sdist_sha256": HEX64,
+                 "file_sha256": ["1" * 64], "matched_entries": 1},
+                {"dist": "click", "version": "8.4.2", "url": "u", "sdist_sha256": "b" * 64,
+                 "file_sha256": ["1" * 64], "matched_entries": 1},
+            ])
+            with self.assertRaises(ValueError) as caught:
+                hc.load_vendor_reference(path)
+
+        message = str(caught.exception)
+        self.assertIn("attrs==26.1.0", message)
+        self.assertIn("click==8.4.2", message)
+        self.assertIn("1" * 64, message)
 
 
 class TestDropVendored(unittest.TestCase):
@@ -1758,6 +1942,688 @@ class TestBuildHoldout(unittest.TestCase):
                 hc.load_manifest(path)
 
         self.assertIn("entries", str(caught.exception))
+
+    def test_an_absent_vendor_reference_stops_the_build(self):
+        """Defaulting it to empty would restore every released library copy."""
+        with tempfile.TemporaryDirectory() as td:
+            root = self._sources(td)
+            reference_at(root).unlink()
+            with self.assertRaises(ValueError) as caught:
+                hc.build_holdout(root)
+
+        self.assertIn("vendor reference", str(caught.exception))
+
+    def test_the_reference_report_measures_its_own_matches(self):
+        """The file's `matched_entries` is not authoritative: it was wrong once.
+
+        A row declared 19 matches for a library the arm does not vendor at all,
+        because the empty file's digest sat in its set. The count a report is
+        read against is the one measured against the arm manifest, and where the
+        two disagree both are carried so the disagreement is visible.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = self._sources(td)
+            path = reference_at(root)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["references"][0]["matched_entries"] = 19
+            write_file(path.parent, hc.VENDOR_REFERENCE_FILENAME, json.dumps(payload))
+
+            _, report = hc.build_holdout(root)
+
+        row = report["vendor_reference"]["references"][0]
+        self.assertEqual(row["matched_entries"], 1)
+        self.assertEqual(row["declared_matched_entries"], 19)
+        self.assertEqual(row["declared_vs_measured"]["declared"], 19)
+        self.assertEqual(row["declared_vs_measured"]["measured"], 1)
+
+    def test_a_reference_that_agrees_carries_one_count(self):
+        with tempfile.TemporaryDirectory() as td:
+            _, report = hc.build_holdout(self._sources(td))
+
+        row = report["vendor_reference"]["references"][0]
+        self.assertEqual(row["matched_entries"], 1)
+        self.assertEqual(row["declared_matched_entries"], 1)
+        self.assertNotIn("declared_vs_measured", row)
+
+
+# ----------------------------------------------------- the checkout anchors
+
+
+class TestCheckoutVerification(unittest.TestCase):
+    """Three anchors, and a build that stops at the first one that disagrees.
+
+    A tarball hash, a digest over the bytes on disk, and the upstream default
+    branch's HEAD. None substitutes for another: the tarball says which download
+    was unpacked, the digest says what is on disk now, and only the API can say
+    whether the checkout is current. Section 14 records why the checkout cannot
+    answer the last one itself - it is a codeload extraction with no `.git`, so
+    `git log` inside it walks up and reports the parent repository's HEAD.
+    """
+
+    def _fixture(self, tmp):
+        root = Path(tmp)
+        rules = root / "checkout"
+        write_file(rules, "python/audit/x.py", TREE_FILE)
+        tarball = write_file(root, hc.SEMGREP_RULES_TARBALL_FILENAME, b"the retrieval's download\n")
+        return {
+            "rules": rules,
+            "tarball": tarball,
+            "revision": "a" * 40,
+            "tarball_sha256": hc.sha256_bytes(tarball.read_bytes()),
+            "tree_digest": hc.tree_digest(rules)[0],
+        }
+
+    def _verify(self, fixture, **overrides):
+        fields = {
+            "recorded_revision": fixture["revision"],
+            "recorded_tarball_sha256": fixture["tarball_sha256"],
+            "tarball": fixture["tarball"],
+            "recorded_tree_digest": fixture["tree_digest"],
+            "head_lookup": lambda: fixture["revision"],
+        }
+        fields.update(overrides)
+        return hc.verify_semgrep_rules_checkout(fixture["rules"], **fields)
+
+    def test_all_three_checks_are_recorded_with_what_they_observed(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            verified = self._verify(fixture)
+
+        self.assertEqual(sorted(verified), ["revision", "root", "tarball", "tarball_sha256",
+                                            "tree_digest"])
+        self.assertEqual(verified["tarball_sha256"]["observed"], fixture["tarball_sha256"])
+        self.assertEqual(verified["tarball_sha256"]["recorded"], fixture["tarball_sha256"])
+        self.assertEqual(verified["tree_digest"]["observed"], fixture["tree_digest"])
+        self.assertEqual(verified["tree_digest"]["files"], 1)
+        self.assertEqual(verified["revision"]["observed"], fixture["revision"])
+        self.assertEqual(verified["revision"]["endpoint"], hc.SEMGREP_RULES_HEAD_URL)
+
+    def test_the_record_carries_no_timestamp_so_provenance_stays_byte_identical(self):
+        """A clock in here would make two runs over the same inputs differ."""
+        with tempfile.TemporaryDirectory() as td:
+            verified = self._verify(self._fixture(td))
+
+        self.assertNotIn("checked_at", verified)
+        self.assertNotIn("built_at", verified)
+
+    def test_a_tarball_that_is_not_the_recorded_one_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            with self.assertRaises(ValueError) as caught:
+                self._verify(fixture, recorded_tarball_sha256="b" * 64)
+
+        message = str(caught.exception)
+        self.assertIn("tarball check failed", message)
+        self.assertIn(fixture["tarball_sha256"], message)
+        self.assertIn("b" * 64, message)
+
+    def test_a_checkout_that_drifted_is_refused(self):
+        """A file added, removed or edited must not pass on the revision alone."""
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            write_file(fixture["rules"], "python/audit/added.py", "x = 1\n")
+            drifted, files = hc.tree_digest(fixture["rules"])
+            with self.assertRaises(ValueError) as caught:
+                self._verify(fixture)
+
+        message = str(caught.exception)
+        self.assertIn("tree check failed", message)
+        self.assertIn(fixture["tree_digest"], message)
+        self.assertIn(drifted, message)
+        self.assertIn(str(files), message)
+
+    def test_a_stale_checkout_is_refused_by_the_upstream_head(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            with self.assertRaises(ValueError) as caught:
+                self._verify(fixture, head_lookup=lambda: "c" * 40)
+
+        message = str(caught.exception)
+        self.assertIn("revision check failed", message)
+        self.assertIn("c" * 40, message)
+        self.assertIn(fixture["revision"], message)
+        self.assertIn(hc.SEMGREP_RULES_HEAD_URL, message)
+
+    def test_a_missing_tarball_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            with self.assertRaises(ValueError) as caught:
+                self._verify(fixture, tarball=fixture["rules"] / "absent.tgz")
+
+        self.assertIn("tarball check failed", str(caught.exception))
+
+    def test_the_network_is_never_asked_about_a_checkout_that_already_failed(self):
+        """Local anchors first: a wrong checkout is refused without a request."""
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            calls = []
+
+            def lookup():
+                calls.append(1)
+                return fixture["revision"]
+
+            with self.assertRaises(ValueError):
+                self._verify(fixture, recorded_tarball_sha256="b" * 64, head_lookup=lookup)
+
+        self.assertEqual(calls, [])
+
+
+# --------------------------------------------------------- the build driver
+#
+# The driver over the four arms: it verifies the checkout, assembles the arms,
+# writes one corpus and two reports, and is idempotent. Every fixture here is
+# synthetic - a handful of bytes of Python - and nothing in this section reads
+# the real retrieval, whose malicious arm holds real malware.
+
+
+def without_built_at(text):
+    """A report's text with the one time-varying field made constant.
+
+    Idempotency is a claim about every other value in the document, and
+    `built_at` is deliberately not one of them: the build reports when it ran,
+    so two runs over the same inputs are compared everywhere else.
+    """
+    payload = json.loads(text)
+    if "built_at" in payload:
+        payload["built_at"] = "<built_at>"
+    return json.dumps(payload, indent=2, sort_keys=False)
+
+
+def make_sources_root(root):
+    """A synthetic sources root: one reference, two manifests, an sdist, CodeQL files.
+
+    The shapes the four arms read and nothing more. The one file the reference
+    names is a released copy, so the malicious arm has a drop to report beside
+    its sample rather than a clean count that hides the screen.
+    """
+    root = Path(root)
+    runner = "import subprocess\n"
+    released = "value = 1\n"
+    write_file(root, "dd/extracted/pkg/1.0.0/pkg/subprocess_runner.py", runner)
+    write_file(root, "dd/extracted/pkg/1.0.0/pkg/released.py", released)
+
+    member = "attrs-26.1.0/src/attr/_make.py"
+    member_text = "def f():\n    return 1\n"
+    archive = make_sdist(root / hc.SDIST_DIRNAME / "attrs-26.1.0.tar.gz",
+                         {member: member_text.encode("utf-8")})
+    archive_bytes = archive.read_bytes()
+    codeql_text = "x = 1  # $ result=OK\n"
+    write_file(root / hc.CODEQL_DIRNAME, "CWE-001/x.py", codeql_text)
+
+    write_reference(root, [
+        {"dist": "attrs", "version": "26.1.0", "url": "https://example.invalid/attrs",
+         "sdist_sha256": hc.sha256_bytes(archive_bytes),
+         "file_sha256": [hc.sha256_text(released)], "matched_entries": 1},
+    ])
+    write_file(root, hc.MALICIOUS_MANIFEST_FILENAME, json.dumps({
+        "retrieved_at": "2026-09-24",
+        "source": "DataDog/malicious-software-packages-dataset",
+        "revision": "0" * 40,
+        "category": "samples/pypi/malicious_intent",
+        "entries": [
+            dd_entry("pkg/subprocess_runner.py", runner),
+            dd_entry("pkg/released.py", released),
+        ],
+    }))
+    write_file(root, hc.BENIGN_MANIFEST_FILENAME, json.dumps({
+        "retrieved_at": "2026-09-24",
+        "semgrep_version": "1.177.0",
+        "codeql": {"repo": "github/codeql", "ref": "0" * 40, "subtree": "python/ql/test"},
+        "entries": [
+            sdist_entry(member, "attrs-26.1.0.tar.gz", archive_bytes, member_text),
+            cq_entry("CWE-001/x.py", codeql_text, labels=["result=OK"]),
+        ],
+    }))
+    return root
+
+
+class TestMergeArms(unittest.TestCase):
+    """The arms meet here: one order, and a refusal that names both arms.
+
+    The evaluator pairs the arms by `sample_id`, so a repeated id does not fail
+    a run - it collapses two samples into one pair and drops another. The corpus
+    list is an ordered run plan, so the order has to be a property of the samples
+    rather than of the order the arms happened to be built in.
+    """
+
+    def test_the_corpus_is_sorted_by_sample_id(self):
+        merged = hc.merge_arms({
+            "second": [sample(sample_id="b-0002"), sample(sample_id="b-0001")],
+            "first": [sample(sample_id="a-0001")],
+        })
+        self.assertEqual([one.sample_id for one in merged], ["a-0001", "b-0001", "b-0002"])
+
+    def test_an_id_two_arms_share_names_both_arms(self):
+        with self.assertRaises(ValueError) as caught:
+            hc.merge_arms({
+                hc.SEMGREP_RULES_SOURCE: [sample(sample_id="s-0001")],
+                hc.MALICIOUS_SOURCE: [sample(sample_id="s-0001")],
+            })
+
+        message = str(caught.exception)
+        self.assertIn("s-0001", message)
+        self.assertIn(hc.SEMGREP_RULES_SOURCE, message)
+        self.assertIn(hc.MALICIOUS_SOURCE, message)
+
+    def test_an_empty_arm_is_not_a_failure(self):
+        merged = hc.merge_arms({hc.SEMGREP_RULES_SOURCE: [], hc.CODEQL_SOURCE: [sample()]})
+        self.assertEqual(len(merged), 1)
+
+
+class TestRequirement4Floor(unittest.TestCase):
+    """The floor is a verdict, not a stop: a shortfall is written up, not raised.
+
+    The plan fixes the thresholds and says a shortfall is reported as
+    insufficient evidence rather than met by lowering the threshold, so refusing
+    to finish would leave no corpus and nowhere to write the gap up.
+    """
+
+    def _samples(self, *, malicious=0, benign=0, near_miss=0):
+        samples = []
+        for index in range(malicious):
+            samples.append(sample(sample_id=f"dd-{index:04d}", label="malicious",
+                                  family=hc.FAMILY_DATADOG,
+                                  provenance={"source": hc.MALICIOUS_SOURCE}))
+        for index in range(benign):
+            samples.append(sample(sample_id=f"pypi-{index:04d}",
+                                  provenance={"source": hc.SDIST_SOURCE}))
+        for index in range(near_miss):
+            samples.append(sample(sample_id=f"cq-{index:04d}", family=hc.FAMILY_CODEQL,
+                                  provenance={"source": hc.CODEQL_SOURCE}))
+        return samples
+
+    def test_the_floor_is_fifty_per_side(self):
+        self.assertEqual(hc.REQUIREMENT_4_FLOOR, 50)
+
+    def test_the_near_miss_arm_counts_on_the_benign_side(self):
+        verdict = hc.requirement_4_floor(self._samples(malicious=50, benign=30, near_miss=20))
+
+        self.assertTrue(verdict["met"])
+        self.assertEqual(verdict["shortfalls"], [])
+        self.assertEqual(verdict["verdicts"]["benign"]["count"], 30)
+        self.assertFalse(verdict["verdicts"]["benign"]["meets_floor"])
+        self.assertEqual(verdict["verdicts"]["benign_side"]["count"], 50)
+        self.assertTrue(verdict["verdicts"]["benign_side"]["meets_floor"])
+
+    def test_a_shortfall_is_named_and_not_raised(self):
+        verdict = hc.requirement_4_floor(self._samples(malicious=10, benign=50, near_miss=0))
+
+        self.assertFalse(verdict["met"])
+        self.assertEqual(verdict["shortfalls"], ["malicious"])
+        self.assertEqual(verdict["verdicts"]["malicious"]["count"], 10)
+
+    def test_both_sides_are_named_when_both_are_short(self):
+        verdict = hc.requirement_4_floor(self._samples(malicious=1, benign=1, near_miss=1))
+        self.assertEqual(verdict["shortfalls"], ["malicious", "benign_side"])
+
+
+class TestBuildHoldoutCorpus(unittest.TestCase):
+    """The whole build: verify, assemble four arms, write a corpus and two reports.
+
+    The corpus list is the evaluator's run plan, so it is checked by the
+    evaluator's own loader rather than by reading the writer and copying its
+    field list. Every input is synthetic.
+    """
+
+    PROVENANCE_KEYS = ("built_at", "sources", "counts", "arm_counts", "drops",
+                       "vendor_reference", "codeql_selection", "semgrep_rules_checkout",
+                       "family_map", "long_line_exclusion", "samples")
+    REPORT_KEYS = ("built_at", "counts", "arm_counts", "requirement_4", "long_line_exclusion")
+    DOCUMENTS = ("corpus-list.json", hc.PROVENANCE_FILENAME, hc.CORPUS_REPORT_FILENAME)
+
+    def _fixture(self, tmp):
+        root = Path(tmp)
+        sources = make_sources_root(root / "sources")
+        rules = root / "checkout"
+        write_file(rules, "python/audit/x.py", TREE_FILE)
+        tarball = write_file(root, hc.SEMGREP_RULES_TARBALL_FILENAME, b"the retrieval's download\n")
+        return {
+            "sources": sources,
+            "corpus": root / "corpus",
+            "rules": rules,
+            "tarball": tarball,
+            "revision": "a" * 40,
+            "tarball_sha256": hc.sha256_bytes(tarball.read_bytes()),
+            "tree_digest": hc.tree_digest(rules)[0],
+        }
+
+    def _build(self, fixture, **overrides):
+        fields = {
+            "reference_path": reference_at(fixture["sources"]),
+            "semgrep_rules_root": fixture["rules"],
+            "revision": fixture["revision"],
+            "semgrep_rules_tarball": fixture["tarball"],
+            "recorded_tarball_sha256": fixture["tarball_sha256"],
+            "recorded_tree_digest": fixture["tree_digest"],
+            "head_lookup": lambda: fixture["revision"],
+        }
+        fields.update(overrides)
+        return hc.build_holdout_corpus(fixture["sources"], fixture["corpus"], **fields)
+
+    def _documents(self, fixture):
+        corpus = fixture["corpus"]
+        return {name: (corpus / name).read_text(encoding="utf-8") for name in self.DOCUMENTS}
+
+    def test_the_four_arms_are_merged_in_sample_id_order(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            summary = self._build(fixture)
+            specs = ev.load_corpus_list(fixture["corpus"] / "corpus-list.json")
+
+        self.assertEqual([spec.sample_id for spec in specs],
+                         ["cq-0001", "dd-0001", "pypi-0001", "sr-0001", "sr-0002"])
+        self.assertEqual([spec.label for spec in specs],
+                         ["benign", "malicious", "benign", "malicious", "benign"])
+        self.assertEqual(list(summary["arm_counts"]), list(hc.ARM_ORDER))
+        self.assertEqual(summary["counts"]["total"], 5)
+        self.assertEqual(summary["counts"]["by_label"], {"malicious": 2, "benign": 3})
+        self.assertEqual(summary["arm_counts"][hc.SEMGREP_RULES_SOURCE]["samples"], 2)
+
+    def test_every_drop_key_is_reported_even_at_zero(self):
+        """A missing key reads as "no drops", which is not a measurement."""
+        with tempfile.TemporaryDirectory() as td:
+            summary = self._build(self._fixture(td))
+
+        drops = summary["drops"]
+        long_line = set(hc.LONG_LINE_DROP_KEYS)
+        self.assertEqual(set(drops), set(hc.ARM_ORDER))
+        self.assertEqual(set(drops[hc.SEMGREP_RULES_SOURCE]),
+                         set(hc.SEMGREP_RULES_DROP_KEYS) | long_line)
+        self.assertEqual(set(drops[hc.MALICIOUS_SOURCE]),
+                         set(hc.MALICIOUS_DROP_KEYS) | long_line)
+        self.assertEqual(set(drops[hc.SDIST_SOURCE]), set(hc.SDIST_DROP_KEYS) | long_line)
+        self.assertEqual(set(drops[hc.CODEQL_SOURCE]),
+                         set(hc.CODEQL_DROP_KEYS) | long_line | {"selection"})
+        self.assertEqual(drops[hc.MALICIOUS_SOURCE]["vendored"], 1)
+
+    def test_every_arm_reports_the_rule_nine_count_even_at_zero(self):
+        """The rule is applied to the merged corpus, so every arm carries its own count."""
+        with tempfile.TemporaryDirectory() as td:
+            drops = self._build(self._fixture(td))["drops"]
+
+        for name in hc.ARM_ORDER:
+            self.assertEqual(drops[name]["long_line"], 0, name)
+            self.assertGreater(drops[name]["long_line_max_bytes"], 0, name)
+
+    def test_the_two_reports_carry_the_sections_a_reader_checks(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            self._build(fixture)
+            documents = self._documents(fixture)
+
+        provenance = json.loads(documents[hc.PROVENANCE_FILENAME])
+        report = json.loads(documents[hc.CORPUS_REPORT_FILENAME])
+        self.assertEqual(tuple(provenance), self.PROVENANCE_KEYS)
+        self.assertEqual(tuple(report), self.REPORT_KEYS)
+        self.assertEqual(report["built_at"], provenance["built_at"])
+        self.assertEqual(report["arm_counts"], provenance["arm_counts"])
+        self.assertEqual(provenance["counts"]["by_source"],
+                         {hc.SEMGREP_RULES_SOURCE: 2, hc.MALICIOUS_SOURCE: 1,
+                          hc.SDIST_SOURCE: 1, hc.CODEQL_SOURCE: 1})
+
+    def test_the_checkout_verification_and_the_reference_travel_with_the_corpus(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            self._build(fixture)
+            provenance = json.loads(
+                (fixture["corpus"] / hc.PROVENANCE_FILENAME).read_text(encoding="utf-8"))
+
+        verified = provenance["semgrep_rules_checkout"]
+        self.assertEqual(verified["revision"]["observed"], fixture["revision"])
+        self.assertEqual(verified["tree_digest"]["observed"], fixture["tree_digest"])
+        self.assertEqual(verified["tarball_sha256"]["observed"], fixture["tarball_sha256"])
+
+        names = [source["name"] for source in provenance["sources"]]
+        self.assertEqual(names, [hc.MALICIOUS_SOURCE, hc.SDIST_SOURCE, hc.CODEQL_SOURCE,
+                                 hc.SEMGREP_RULES_SOURCE])
+        rules = provenance["sources"][-1]
+        self.assertEqual(rules["url"], hc.SEMGREP_RULES_URL)
+        self.assertEqual(rules["license"], hc.SOURCE_LICENSES[hc.SEMGREP_RULES_SOURCE])
+        self.assertEqual(rules["revision"], fixture["revision"])
+        self.assertEqual(rules["sha256"], fixture["tarball_sha256"])
+        self.assertEqual(rules["files"], 1)
+        self.assertEqual(rules["modification"], hc.SEMGREP_RULES_MODIFICATION)
+
+        reference = provenance["vendor_reference"]
+        self.assertEqual(reference["reference_count"], 1)
+        self.assertEqual(reference["empty_digest_screen"]["removed"], 0)
+        self.assertEqual(provenance["codeql_selection"]["selected"], 1)
+        self.assertEqual(provenance["family_map"]["lexemes"],
+                         [list(pair) for pair in hc.FAMILY_LEXEMES])
+
+    def test_two_builds_over_the_same_inputs_write_the_same_bytes(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            self._build(fixture)
+            first = self._documents(fixture)
+
+            stale = fixture["corpus"] / "pypi" / "pypi-9999"
+            stale.mkdir(parents=True)
+            (stale / hc.SAMPLE_FILENAME).write_text("x = 1\n", encoding="utf-8")
+
+            second = self._build(fixture)
+
+            self.assertEqual(second["removed"], ["codeql", "ddpypi", "pypi", "semgrep-rules"])
+            self.assertFalse(stale.exists())
+            after = self._documents(fixture)
+
+        for documents in (first, after):
+            self.assertEqual(len(json.loads(documents["corpus-list.json"])["samples"]), 5)
+            self.assertIn("built_at", json.loads(documents[hc.PROVENANCE_FILENAME]))
+        self.assertEqual(first["corpus-list.json"], after["corpus-list.json"])
+        for name in (hc.PROVENANCE_FILENAME, hc.CORPUS_REPORT_FILENAME):
+            self.assertEqual(without_built_at(first[name]), without_built_at(after[name]))
+
+    def test_a_floor_shortfall_is_reported_and_not_raised(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            summary = self._build(fixture)
+            report = json.loads(
+                (fixture["corpus"] / hc.CORPUS_REPORT_FILENAME).read_text(encoding="utf-8"))
+            written = (fixture["corpus"] / "corpus-list.json").is_file()
+
+        floor = summary["requirement_4"]
+        self.assertFalse(floor["met"])
+        self.assertEqual(floor["shortfalls"], ["malicious", "benign_side"])
+        self.assertTrue(all(verdict["count"] > 0 for verdict in floor["verdicts"].values()))
+        self.assertEqual(report["requirement_4"], floor)
+        self.assertTrue(written)
+
+    def test_an_absent_reference_stops_the_build_before_anything_is_written(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            reference_at(fixture["sources"]).unlink()
+            with self.assertRaises(ValueError) as caught:
+                self._build(fixture)
+
+            self.assertIn("vendor reference", str(caught.exception))
+            self.assertFalse(fixture["corpus"].exists())
+
+    def test_a_checkout_that_fails_verification_stops_the_build(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            with self.assertRaises(ValueError) as caught:
+                self._build(fixture, head_lookup=lambda: "c" * 40)
+
+            self.assertIn("revision check failed", str(caught.exception))
+            self.assertFalse(fixture["corpus"].exists())
+
+    def test_the_summary_names_the_arms_the_drops_and_the_floor(self):
+        with tempfile.TemporaryDirectory() as td:
+            summary = self._build(self._fixture(td))
+
+        text = hc.format_summary(summary)
+        for name in hc.ARM_ORDER:
+            self.assertIn(name, text)
+        self.assertIn("vendored=1", text)
+        self.assertIn("requirement 4 floor (>=50 per side): NOT MET", text)
+        self.assertIn("shortfall: malicious", text)
+        self.assertIn("semgrep-rules checkout verified", text)
+
+    def _add_oversized_sample(self, fixture, relpath="pkg/huge.py"):
+        """Put one sample with an oversized line into the malicious arm's manifest.
+
+        Returns the body it wrote, so a test can assert the measured length
+        against the bytes it actually put there rather than a number worked out
+        by hand - the arms renumber their samples, so the id it ends up with is
+        read back from the build instead of predicted.
+        """
+        text = "payload = '" + "A" * 100_001 + "'\n"
+        write_file(fixture["sources"], f"dd/extracted/pkg/1.0.0/{relpath}", text)
+        manifest = fixture["sources"] / hc.MALICIOUS_MANIFEST_FILENAME
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+        document["entries"].append(dd_entry(relpath, text))
+        manifest.write_text(json.dumps(document), encoding="utf-8")
+        return text
+
+    def test_an_oversized_sample_is_excluded_from_the_corpus_it_is_written_from(self):
+        """The rule runs on the merged corpus, so every count describes what is written."""
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            self._add_oversized_sample(fixture)
+            summary = self._build(fixture)
+            specs = ev.load_corpus_list(fixture["corpus"] / "corpus-list.json")
+
+        excluded = summary["long_line_exclusion"]["samples"]
+        self.assertEqual(len(excluded), 1)
+        ids = [spec.sample_id for spec in specs]
+        self.assertNotIn(excluded[0]["sample_id"], ids)
+        self.assertEqual(len(ids), summary["counts"]["total"])
+        self.assertEqual(summary["drops"][hc.MALICIOUS_SOURCE]["long_line"], 1)
+        self.assertEqual(summary["arm_counts"][hc.MALICIOUS_SOURCE]["samples"], 1)
+        self.assertEqual(summary["counts"]["by_source"][hc.MALICIOUS_SOURCE], 1)
+
+    def test_the_other_arms_report_rule_nine_at_zero_when_it_fires_elsewhere(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            self._add_oversized_sample(fixture)
+            drops = self._build(fixture)["drops"]
+
+        for name in hc.ARM_ORDER:
+            if name == hc.MALICIOUS_SOURCE:
+                continue
+            self.assertEqual(drops[name]["long_line"], 0, name)
+
+    def test_the_exclusion_reaches_both_reports(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            text = self._add_oversized_sample(fixture)
+            summary = self._build(fixture)
+            documents = self._documents(fixture)
+
+        dropped_id = summary["long_line_exclusion"]["samples"][0]["sample_id"]
+        provenance = json.loads(documents[hc.PROVENANCE_FILENAME])["long_line_exclusion"]
+        report = json.loads(documents[hc.CORPUS_REPORT_FILENAME])["long_line_exclusion"]
+        self.assertEqual(provenance["limit_bytes"], hc.MAX_SAMPLE_LINE_BYTES)
+        self.assertEqual(provenance["count"], 1)
+        self.assertEqual(provenance["samples"][0]["sample_id"], dropped_id)
+        self.assertEqual(provenance["samples"][0]["max_line_bytes"],
+                         len(text.strip().encode("utf-8")))
+        self.assertEqual(report["count"], 1)
+        self.assertEqual(report["sample_ids"], [dropped_id])
+
+    def test_the_rule_nine_count_survives_a_rebuild_byte_for_byte(self):
+        """It is a property of the sources, not of the order the arms were built in."""
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            self._add_oversized_sample(fixture)
+            self._build(fixture)
+            first = self._documents(fixture)
+            self._build(fixture)
+            second = self._documents(fixture)
+
+        for name in (hc.PROVENANCE_FILENAME, hc.CORPUS_REPORT_FILENAME):
+            self.assertEqual(without_built_at(first[name]), without_built_at(second[name]))
+
+
+class TestCommandLine(unittest.TestCase):
+    """The driver's command line: 0 when the corpus is written, non-zero when not.
+
+    A verification that could not be completed is a failure and exits non-zero,
+    because the corpus is either the one its provenance describes or it is not
+    written at all. The requirement-4 floor is not a failure: it is a verdict
+    the reports carry.
+    """
+
+    def _fixture(self, tmp):
+        root = Path(tmp)
+        sources = make_sources_root(root / "sources")
+        rules = root / "checkout"
+        write_file(rules, "python/audit/x.py", TREE_FILE)
+        tarball = write_file(root, hc.SEMGREP_RULES_TARBALL_FILENAME, b"the retrieval's download\n")
+        return {
+            "sources": sources,
+            "corpus": root / "corpus",
+            "rules": rules,
+            "tarball": tarball,
+            "revision": "a" * 40,
+            "tarball_sha256": hc.sha256_bytes(tarball.read_bytes()),
+            "tree_digest": hc.tree_digest(rules)[0],
+        }
+
+    def _argv(self, fixture, **overrides):
+        fields = {
+            "--sources-root": fixture["sources"],
+            "--corpus-root": fixture["corpus"],
+            "--reference": reference_at(fixture["sources"]),
+            "--semgrep-rules-root": fixture["rules"],
+            "--semgrep-rules-tarball": fixture["tarball"],
+            "--revision": fixture["revision"],
+            "--semgrep-rules-tarball-sha256": fixture["tarball_sha256"],
+            "--semgrep-rules-tree-digest": fixture["tree_digest"],
+        }
+        fields.update(overrides)
+        # The revision check would otherwise ask GitHub about a synthetic
+        # checkout; the call is stubbed here so the driver runs offline.
+        return [str(part) for pair in fields.items() for part in pair]
+
+    def _run(self, argv, upstream_head):
+        # The head lookup is the one thing the command line does not expose, and
+        # a test must not reach the network, so it is replaced for the duration.
+        original = hc.fetch_semgrep_rules_head
+        hc.fetch_semgrep_rules_head = lambda url=hc.SEMGREP_RULES_HEAD_URL: upstream_head
+        try:
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = hc.main(argv)
+        finally:
+            hc.fetch_semgrep_rules_head = original
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_a_build_that_verifies_exits_zero_and_prints_the_summary(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            code, out, err = self._run(self._argv(fixture), fixture["revision"])
+
+            self.assertEqual(code, 0)
+            self.assertEqual(err, "")
+            self.assertIn("requirement 4 floor", out)
+            self.assertIn(hc.MALICIOUS_SOURCE, out)
+            self.assertTrue((fixture["corpus"] / hc.PROVENANCE_FILENAME).is_file())
+
+    def test_a_checkout_that_fails_verification_exits_non_zero(self):
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            code, _, err = self._run(
+                self._argv(fixture, **{"--semgrep-rules-tarball-sha256": "b" * 64}),
+                fixture["revision"])
+
+            self.assertNotEqual(code, 0)
+            self.assertIn("tarball check failed", err)
+            self.assertIn("b" * 64, err)
+            self.assertFalse(fixture["corpus"].exists())
+
+    def test_the_revision_check_fails_closed_against_the_upstream_head(self):
+        """A checkout that is intact but stale is refused, not labelled."""
+        with tempfile.TemporaryDirectory() as td:
+            fixture = self._fixture(td)
+            code, _, err = self._run(self._argv(fixture), "c" * 40)
+
+            self.assertNotEqual(code, 0)
+            self.assertIn("revision check failed", err)
+            self.assertIn("c" * 40, err)
+            self.assertIn(fixture["revision"], err)
+            self.assertFalse(fixture["corpus"].exists())
 
 
 if __name__ == "__main__":

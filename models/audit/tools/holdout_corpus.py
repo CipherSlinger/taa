@@ -46,6 +46,7 @@ import subprocess
 import sys
 import tarfile
 import textwrap
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -459,18 +460,38 @@ def provenance_payload(
     sources: Sequence[dict[str, Any]],
     samples: Sequence[Sample],
     drops: Optional[dict[str, Any]] = None,
+    *,
+    verification: Optional[dict[str, Any]] = None,
+    vendor_reference: Optional[dict[str, Any]] = None,
+    arm_counts: Optional[Mapping[str, Any]] = None,
+    selection: Optional[dict[str, Any]] = None,
+    family_map: Optional[dict[str, Any]] = None,
+    long_line: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """What a reader needs to check the corpus without rebuilding it.
 
     The per-sample records are the upstream facts only - path, revision, hash,
     annotation. They are what makes a label checkable: the label came from an
     upstream annotation, and this is the annotation.
+
+    The sections the build adds are written even when the caller passes nothing,
+    as empty objects: a key that is absent cannot be told apart from a section
+    whose measurement was never taken, and every one of these is a measurement -
+    the checkout's verification, the reference set the malicious arm was
+    screened against, the CodeQL selection's taxonomy, the counts per arm, the
+    long-line exclusion, and the annotation-to-family table that was used.
     """
     return {
         "built_at": utc_now(),
         "sources": list(sources),
         "counts": corpus_counts(samples),
+        "arm_counts": dict(arm_counts or {}),
         "drops": dict(drops or {}),
+        "vendor_reference": dict(vendor_reference or {}),
+        "codeql_selection": dict(selection or {}),
+        "semgrep_rules_checkout": dict(verification or {}),
+        "family_map": dict(family_map or {}),
+        "long_line_exclusion": dict(long_line or {}),
         "samples": [
             {
                 "sample_id": sample.sample_id,
@@ -500,6 +521,92 @@ def utc_now() -> str:
 # breaks the parity proof for a reason unrelated to rule drift. The Python arm
 # has no such cap.
 MAX_STATIC_FINDINGS = 200
+
+# Rule 9 (plan section 12.2). The Tier 2 prompt is assembled per finding out of
+# a context window bounded by *lines* - fifteen either side - and not by bytes,
+# so one enormous line makes the prompt arbitrarily large: the largest sample in
+# this corpus carries a single 22,608,571-byte line, which puts 22,608,716 bytes
+# into the prompt for one finding, of which only 43 are the matched snippet. The
+# bound below excludes it. It is outcome-blind like the parse rule and the
+# static cap: it reads the sample's bytes and never a scan result or a verdict.
+#
+# The value is not knife-edge. On the built corpus it selects exactly five
+# samples, with max lines of 22,608,571 / 624,660 / 613,852 / 198,052 / 188,904
+# bytes, and the next largest max line in the whole corpus is 42,869 - a 4.6x
+# gap. Apart from those five, the largest prompt payload any sample can assemble
+# is 1,127 bytes, so any bound of 4 KB or more leaves the other 311 samples
+# byte-identical.
+MAX_SAMPLE_LINE_BYTES = 100_000
+
+# Rule 9 is applied to the merged corpus, not inside any arm, so its counts are
+# added to every arm's table by the build rather than by the arm's own loader.
+# The longest line each arm brought is reported alongside the count, at zero for
+# arms that lost nothing: how close an arm came to the bound is a measurement,
+# and "0 dropped" alone does not distinguish an arm that was never near it from
+# one that was one byte away.
+LONG_LINE_DROP_KEYS = (
+    "long_line",
+    "long_line_max_bytes",
+)
+
+
+def sample_max_line(sample: Sample) -> int:
+    """The longest line of a sample, in the bytes it contributes to a prompt.
+
+    Bytes rather than characters because the bound is about what is sent to the
+    model, and a line of multi-byte characters is larger than its length.
+    """
+    return max((len(line.encode("utf-8")) for line in sample.text.split("\n")), default=0)
+
+
+def drop_long_lines(
+    samples: Sequence[Sample],
+    limit: int = MAX_SAMPLE_LINE_BYTES,
+) -> tuple[list[Sample], list[dict[str, Any]]]:
+    """Split off samples carrying a line longer than the prompt budget allows.
+
+    Excluded rather than truncated, and returned rather than dropped: cutting
+    the line would change what the model is shown, and that is a prompt
+    construction decision affecting both arms and production, not a corpus
+    decision. A silently shortened sample would also make the prompt the model
+    sees unlike the prompt the tier builds in production, which is the property
+    the holdout exists to predict.
+    """
+    kept: list[Sample] = []
+    dropped: list[dict[str, Any]] = []
+    for sample in samples:
+        longest = sample_max_line(sample)
+        if longest > limit:
+            dropped.append({
+                "sample_id": sample.sample_id,
+                "source": str(sample.provenance.get("source", "unknown")),
+                "max_line_bytes": longest,
+                "sample_bytes": len(sample.text.encode("utf-8")),
+                "limit": limit,
+            })
+            continue
+        kept.append(sample)
+    return kept, dropped
+
+
+def long_line_exclusion(dropped: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """The rule-9 exclusion as provenance, so the corpus can be checked without it.
+
+    The records carry the measured length of the offending line and the size of
+    the file it sat in, because both are checkable against the upstream source:
+    a reader who doubts the exclusion can fetch `dd-0060` and measure its longest
+    line without rerunning the build. The criterion itself is written out rather
+    than named, since a rule number means nothing to a reader in two years.
+    """
+    return {
+        "limit_bytes": MAX_SAMPLE_LINE_BYTES,
+        "criterion": (
+            "excluded when any single line of the sample exceeds limit_bytes, "
+            "measured in UTF-8 bytes, before any scan"
+        ),
+        "count": len(dropped),
+        "samples": [dict(row) for row in dropped],
+    }
 
 
 def over_static_cap(
@@ -540,10 +647,6 @@ def unparseable_samples(samples: Sequence[Sample]) -> list[dict[str, Any]]:
             for sample in samples if not parses(sample.text)]
 
 
-if __name__ == "__main__":
-    raise SystemExit(0)
-
-
 # ------------------------------------------------------ manifest-backed arms
 #
 # Three of the four arms arrive as manifests written by the retrieval step
@@ -579,6 +682,7 @@ if __name__ == "__main__":
 MALICIOUS_MANIFEST_FILENAME = "malicious-manifest.json"
 BENIGN_MANIFEST_FILENAME = "benign-manifest.json"
 VENDOR_REFERENCE_FILENAME = "vendor-references.json"
+DD_DIRNAME = "dd"
 SDIST_DIRNAME = "sdist"
 CODEQL_DIRNAME = "codeql"
 
@@ -621,9 +725,33 @@ VENDOR_REFERENCE_KEYS = ("dist", "version", "url", "sdist_sha256", "file_sha256"
 
 HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
+# The empty file's digest. It is evidence of nothing: it belongs to every empty
+# file in every project, so a reference that lists it matches all of them at
+# once. The malicious arm carries 19 empty files across 13 packages, and every
+# PyPI project that ships an empty `__init__.py` hashes to this value - measured
+# on the first real reference artifact, where a single row was read as 19
+# matches for a library the arm does not vendor at all. The digest is removed
+# from every reference's set before the screen reads it, and the removal is
+# counted and reported rather than done quietly.
+EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
-def load_vendor_reference(path: Path) -> dict[str, str]:
-    """Map every vendored file's sha256 to the distribution that ships it.
+# What provenance says a reference set was built from, when the reference carries
+# no note of its own (plan section 12.2 rule 3, the revised malicious arm): the
+# candidate names are resolved on PyPI and only a candidate that matches an entry
+# already in the arm is kept, so a generic word that is also a real project
+# cannot remove anything by accident.
+VENDOR_REFERENCE_NOTE = (
+    "candidate distribution names resolved on PyPI, every sdist's .py hashes collected, "
+    "and only a candidate matching an entry already in the arm kept as a reference"
+)
+
+
+def read_vendor_reference(path: Path) -> tuple[dict[str, str], dict[str, Any]]:
+    """The vendored-file map, and the record of how the file was read.
+
+    `load_vendor_reference` is this function's map; the record is what
+    provenance carries - every reference with the coordinates that make it
+    checkable, and what reading the file removed from it.
 
     The malicious arm is trojanised packages, and a trojanised package is
     usually a genuine one plus a payload: measured on this manifest, 118 of the
@@ -638,12 +766,24 @@ def load_vendor_reference(path: Path) -> dict[str, str]:
     would otherwise read as "nothing is vendored", which silently restores
     exactly the files it exists to remove. An ambiguous hash - one two
     distributions both claim - raises for the same reason: the build cannot pick
-    one of them without inventing a fact.
+    one of them without inventing a fact, and a hash in two references counts
+    one file against two distributions. A hash repeated inside one reference
+    raises for the same reason one step down: it would count one file as two
+    matches. The empty file's digest is removed rather than honoured (see
+    EMPTY_SHA256), and a reference left with no hashes at all raises, because a
+    row that can match nothing reads as a distribution that was consulted and
+    cleared when it was never evidence of anything.
     """
     path = Path(path)
+    if not path.is_file():
+        raise ValueError(
+            f"vendor reference {path} does not exist; without it nothing is recognised as "
+            "vendored and the malicious arm silently keeps every released library copy"
+        )
+    raw = path.read_bytes()
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+        payload = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ValueError(f"vendor reference {path} is not valid JSON: {exc}") from exc
 
     if not isinstance(payload, dict) or "references" not in payload:
@@ -655,6 +795,9 @@ def load_vendor_reference(path: Path) -> dict[str, str]:
         )
 
     mapping: dict[str, str] = {}
+    records: list[dict[str, Any]] = []
+    screened: list[dict[str, Any]] = []
+    screened_total = 0
     for index, reference in enumerate(references):
         where = f"{path} reference #{index + 1}"
         if not isinstance(reference, dict):
@@ -672,15 +815,124 @@ def load_vendor_reference(path: Path) -> dict[str, str]:
                     f"{where} ({origin}) carries a hash that is not 64 lowercase hex "
                     f"characters: {digest!r}"
                 )
-        for digest in digests:
+        if len(set(digests)) != len(digests):
+            repeated = sorted({digest for digest in digests if digests.count(digest) > 1})
+            raise ValueError(
+                f"{where} ({origin}) lists the same hash more than once: {repeated}; "
+                "a repeated hash would count one file as two matches"
+            )
+        kept = [digest for digest in digests if digest != EMPTY_SHA256]
+        removed = len(digests) - len(kept)
+        if removed:
+            screened_total += removed
+            screened.append({"dist": reference["dist"], "version": reference["version"],
+                             "removed": removed})
+        if not kept:
+            raise ValueError(
+                f"{where} ({origin}) has no file hashes left once the empty file's digest "
+                f"({EMPTY_SHA256}) is removed; a reference that can match nothing is a row "
+                "that reads as evidence and carries none"
+            )
+        for digest in kept:
             if digest in mapping:
                 raise ValueError(
                     f"{where} ({origin}) claims hash {digest}, which {mapping[digest]} already "
                     "claims; an ambiguous vendored reference is a build error, not a silent pick"
                 )
             mapping[digest] = origin
+        records.append({
+            "dist": reference["dist"],
+            "version": reference["version"],
+            "url": reference["url"],
+            "sdist_sha256": reference["sdist_sha256"],
+            "matched_entries": reference["matched_entries"],
+            "note": reference.get("note") or VENDOR_REFERENCE_NOTE,
+            "file_sha256": kept,
+        })
 
-    return mapping
+    record: dict[str, Any] = {
+        "path": str(path),
+        "sha256": sha256_bytes(raw),
+        "references": records,
+        "reference_count": len(records),
+        "empty_digest_screen": {
+            "digest": EMPTY_SHA256,
+            "removed": screened_total,
+            "references": screened,
+        },
+    }
+    return mapping, record
+
+
+def load_vendor_reference(path: Path) -> dict[str, str]:
+    """Map every vendored file's sha256 to the distribution that ships it.
+
+    The map is `read_vendor_reference`'s first value; that function is where the
+    validation and the empty-file screen live, and this is the shape the arm's
+    screen reads. Every defect raises, for the reasons stated there.
+    """
+    return read_vendor_reference(path)[0]
+
+
+def vendor_reference_payload(
+    record: Mapping[str, Any],
+    entries: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """The reference set as provenance carries it, with every match recomputed.
+
+    The reference file states its own `matched_entries`, and that number was
+    measured wrong once: a row declared 19 matches for a library the arm does
+    not vendor, because the empty file's digest sat in its set and the arm
+    carries 19 empty files. The count a report is read against is therefore the
+    one measured here against the arm's manifest, and where the file's own
+    number disagrees both are carried under `declared_vs_measured` - a reader
+    has to see the discrepancy rather than have either number resolved for them
+    silently.
+
+    The unit is the manifest entry, not the sample: this counts before the arm's
+    own exclusions, so the number is comparable with the declared one. Counting
+    over the raw manifest is safe only because the empty file's digest is no
+    longer in any reference's set, which is what stops the empty entries from
+    matching.
+
+    The hash lists themselves are not carried - a few hundred distributions'
+    worth of hashes would bury the numbers a reader checks - only how many each
+    reference was left with.
+    """
+    manifest_digests = [entry.get("sha256") for entry in entries]
+    references: list[dict[str, Any]] = []
+    for reference in record.get("references", []):
+        hashes = set(reference.get("file_sha256", ()))
+        measured = sum(1 for digest in manifest_digests if digest in hashes)
+        declared = reference.get("matched_entries")
+        row: dict[str, Any] = {
+            "dist": reference.get("dist"),
+            "version": reference.get("version"),
+            "url": reference.get("url"),
+            "sdist_sha256": reference.get("sdist_sha256"),
+            "matched_entries": measured,
+            "declared_matched_entries": declared,
+            "file_sha256_count": len(hashes),
+            "note": reference.get("note"),
+        }
+        if declared != measured:
+            row["declared_vs_measured"] = {
+                "declared": declared,
+                "measured": measured,
+                "note": "the reference file's own count disagrees with the count this build "
+                        "measured against the arm manifest; the measured one is authoritative",
+            }
+        references.append(row)
+    return {
+        "path": record.get("path"),
+        "sha256": record.get("sha256"),
+        "reference_count": len(references),
+        "references": references,
+        "empty_digest_screen": record.get("empty_digest_screen"),
+        "note": "the empty file's digest is removed from every reference before the screen "
+                "runs: it matches every project that ships an empty file, so it is not "
+                "evidence that anything is vendored",
+    }
 
 
 def drop_vendored(
@@ -1466,7 +1718,11 @@ def manifest_entries(
     return [entry for entry in entries if entry.get("arm") == arm]
 
 
-def build_holdout(sources_root: Path) -> tuple[list[Sample], dict[str, Any]]:
+def build_holdout(
+    sources_root: Path,
+    *,
+    reference_path: Optional[Path] = None,
+) -> tuple[list[Sample], dict[str, Any]]:
     """Build the three manifest-backed arms, in a fixed order, with one report.
 
     The order is fixed - malicious, sdist, CodeQL - because the corpus list is
@@ -1475,12 +1731,22 @@ def build_holdout(sources_root: Path) -> tuple[list[Sample], dict[str, Any]]:
     on a different machine from the same bytes, which would make the corpus
     unreproducible in exactly the way the plan forbids.
 
+    The vendor reference is read through `read_vendor_reference` from
+    `reference_path`, which defaults to the retrieval's own location. It is read
+    before any arm is built, and an absent one raises: an absent reference
+    screens nothing, which silently restores every released library copy into
+    the malicious arm - precisely the defect the screen exists to fix.
+
     The annotation arm is not built here. Its samples are cut out of a checkout
     by `samples_from_windows`, not read out of a manifest, and the two are
     assembled together by the caller so that each arm's report stays its own.
     """
     sources_root = Path(sources_root)
-    reference = load_vendor_reference(sources_root / VENDOR_REFERENCE_FILENAME)
+    reference_path = (
+        Path(reference_path) if reference_path is not None
+        else sources_root / DD_DIRNAME / VENDOR_REFERENCE_FILENAME
+    )
+    reference, reference_record = read_vendor_reference(reference_path)
     malicious_manifest = load_manifest(sources_root / MALICIOUS_MANIFEST_FILENAME)
     benign_manifest = load_manifest(sources_root / BENIGN_MANIFEST_FILENAME)
 
@@ -1524,6 +1790,9 @@ def build_holdout(sources_root: Path) -> tuple[list[Sample], dict[str, Any]]:
         # own report and `drops` is what `provenance_payload` takes.
         "arms": arms,
         "drops": arms,
+        # The reference set the malicious arm was screened against, with each
+        # match count measured here rather than taken from the file.
+        "vendor_reference": vendor_reference_payload(reference_record, malicious_entries),
         "sources": [
             {
                 "name": MALICIOUS_SOURCE,
@@ -1555,10 +1824,6 @@ def build_holdout(sources_root: Path) -> tuple[list[Sample], dict[str, Any]]:
             },
         ],
     }
-
-
-if __name__ == "__main__":
-    raise SystemExit(0)
 
 
 # ------------------------------------------------- upstream annotation arm
@@ -1697,5 +1962,608 @@ def samples_from_windows(
     return samples, dict(drops)
 
 
+# ----------------------------------------------------------- the build driver
+#
+# What turns the four arms into one corpus, and what a reader checks first.
+# Nothing here runs a sample: the malicious arm's files are opened for their
+# bytes by the loaders above and are never executed, imported or byte-compiled,
+# and this section only hashes, orders, counts and writes.
+
+# The recorded facts of the semgrep-rules retrieval (plan section 12.1). The
+# revision is the plan's recorded HEAD, and the two digests are the fingerprints
+# of the retrieval itself - which is what a checkout with no history can
+# actually be checked against. Section 14 records the trap this exists for: the
+# directory is a codeload extraction with no `.git`, so `git log` inside it
+# walks up to the parent repository and reports *that* repository's HEAD.
+SEMGREP_RULES_URL = "https://codeload.github.com/semgrep/semgrep-rules/tar.gz/refs/heads/develop"
+SEMGREP_RULES_REVISION = "a84ff9cc2453ca91d581380de4b8b3f272f6f4be"
+SEMGREP_RULES_HEAD_URL = "https://api.github.com/repos/semgrep/semgrep-rules/commits/develop"
+SEMGREP_RULES_CHECKOUT_DIRNAME = "semgrep-rules-develop"
+SEMGREP_RULES_TARBALL_FILENAME = "sr.tgz"
+SEMGREP_RULES_TARBALL_SHA256 = "a08f4fb36d9ffb286ad584044eca1c3ed1bedbdd70bfdb701ca0384c7a26964d"
+SEMGREP_RULES_TREE_DIGEST = "d6a87432ca329d9d7a90482daa54cda334faa1ba62cd0fb55097a3c8201ce102"
+SEMGREP_RULES_HEAD_TIMEOUT = 30
+
+# Where the retrieval put the sources and where the corpus belongs. The corpus
+# is not committed (plan section 12.4); the build is reproducible from this file
+# plus `provenance.json`.
+HOLDOUT_SOURCES_ROOT = REPO_ROOT / "models" / "audit" / "holdout-sources"
+HOLDOUT_CORPUS_ROOT = REPO_ROOT / "models" / "audit" / "benchmarks" / "audit-holdout"
+
+# The two records the build writes beside the corpus.
+PROVENANCE_FILENAME = "provenance.json"
+CORPUS_REPORT_FILENAME = "corpus-report.json"
+
+# Requirement 4's floor (plan section 12.2 rule 5): at least 50 malicious and at
+# least 50 benign, the near-miss arm counted on the benign side.
+REQUIREMENT_4_FLOOR = 50
+
+# The four arms, in the order the report states them. The corpus itself is
+# written in `sample_id` order, so this is the report's order, not the corpus's.
+ARM_ORDER = (SEMGREP_RULES_SOURCE, MALICIOUS_SOURCE, SDIST_SOURCE, CODEQL_SOURCE)
+
+# Where each source came from and under what terms (plan sections 11.4 and
+# 12.1). One URL per source is what a re-retrieval starts from; the per-sample
+# provenance carries the URL of the individual download or file.
+SOURCE_URLS = {
+    SEMGREP_RULES_SOURCE: SEMGREP_RULES_URL,
+    MALICIOUS_SOURCE: "https://github.com/DataDog/malicious-software-packages-dataset",
+    SDIST_SOURCE: "https://pypi.org/pypi/",
+    CODEQL_SOURCE: "https://github.com/github/codeql",
+}
+
+# The licence each arm's source is under, as the plan's retrieval table records
+# it (section 12.1). The corpus is not committed (section 12.4), which is what
+# keeps the semgrep-rules terms satisfied.
+SOURCE_LICENSES = {
+    SEMGREP_RULES_SOURCE: "Semgrep Rules License v1.0 (internal use only; no redistribution, no service)",
+    MALICIOUS_SOURCE: "Apache-2.0",
+    SDIST_SOURCE: "each package's own, as its sdist metadata states",
+    CODEQL_SOURCE: "MIT",
+}
+
+
+def fetch_semgrep_rules_head(url: str = SEMGREP_RULES_HEAD_URL) -> str:
+    """The upstream default branch's HEAD, from GitHub's API.
+
+    The checkout cannot answer this itself: it is a tarball extraction with no
+    `.git`, so `git log` inside it reports the parent repository's HEAD -
+    measured, and one of the two recording traps this build exists to avoid. The
+    API is the only party that can say which commit the default branch is at.
+    The call is injectable so the build can be tested, and re-run, offline.
+    """
+    request = urllib.request.Request(url, headers={"User-Agent": "taa-holdout-corpus-build"})
+    with urllib.request.urlopen(request, timeout=SEMGREP_RULES_HEAD_TIMEOUT) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    revision = payload.get("sha") if isinstance(payload, dict) else None
+    if not isinstance(revision, str) or not revision:
+        raise ValueError(f"{url} named no commit: {str(payload)[:200]}")
+    return revision
+
+
+def verify_semgrep_rules_checkout(
+    root: Path,
+    *,
+    recorded_revision: str,
+    recorded_tarball_sha256: str,
+    tarball: Path,
+    recorded_tree_digest: str,
+    head_lookup: Optional[Callable[[], str]] = None,
+) -> dict[str, Any]:
+    """Verify the checkout against all three anchors the retrieval recorded.
+
+    Three checks, because no one of them can stand in for the others. The
+    tarball's hash covers the download the checkout was unpacked from; the tree
+    digest covers the bytes actually on disk in path order, so a checkout that
+    drifted - a file added, removed, renamed or edited - does not match even
+    though both still describe "a semgrep-rules checkout"; and the upstream HEAD
+    says which commit the default branch is at now, which is the only thing that
+    can tell an intact but stale checkout from a current one.
+
+    The checks run cheapest first, so a checkout that is wrong is refused
+    locally without asking GitHub about it. Any mismatch raises, naming the
+    check and both values: a build that carried on would label samples with a
+    revision nobody could check, and the label on a sample is the whole of its
+    ground truth.
+    """
+    root = Path(root)
+    tarball = Path(tarball)
+
+    if not tarball.is_file():
+        raise ValueError(
+            f"semgrep-rules tarball check failed: {tarball} is not a file; it is the "
+            "download the checkout is verified against"
+        )
+    observed_tarball_sha256 = sha256_bytes(tarball.read_bytes())
+    if observed_tarball_sha256 != recorded_tarball_sha256:
+        raise ValueError(
+            f"semgrep-rules tarball check failed: {tarball} hashes to "
+            f"{observed_tarball_sha256}, the recorded tarball sha256 is {recorded_tarball_sha256}"
+        )
+
+    if not root.is_dir():
+        raise ValueError(
+            f"semgrep-rules tree check failed: {root} is not a directory; it is the "
+            "checkout the windows are cut out of"
+        )
+    observed_tree_digest, files = tree_digest(root)
+    if observed_tree_digest != recorded_tree_digest:
+        raise ValueError(
+            f"semgrep-rules tree check failed: {root} digests to {observed_tree_digest} over "
+            f"{files} files, the recorded tree digest is {recorded_tree_digest}"
+        )
+
+    observed_revision = (head_lookup or fetch_semgrep_rules_head)()
+    if observed_revision != recorded_revision:
+        raise ValueError(
+            f"semgrep-rules revision check failed: {SEMGREP_RULES_HEAD_URL} reports "
+            f"{observed_revision}, the recorded revision is {recorded_revision}"
+        )
+
+    return {
+        "root": str(root),
+        "tarball": str(tarball),
+        "tarball_sha256": {"recorded": recorded_tarball_sha256, "observed": observed_tarball_sha256},
+        "tree_digest": {"recorded": recorded_tree_digest, "observed": observed_tree_digest,
+                        "files": files},
+        "revision": {"recorded": recorded_revision, "observed": observed_revision,
+                     "endpoint": SEMGREP_RULES_HEAD_URL},
+    }
+
+
+def samples_by_source(samples: Sequence[Sample]) -> dict[str, list[Sample]]:
+    """Group samples by the source their own provenance names, in input order."""
+    grouped: dict[str, list[Sample]] = {}
+    for sample in samples:
+        source = str(sample.provenance.get("source", "unknown"))
+        grouped.setdefault(source, []).append(sample)
+    return grouped
+
+
+def merge_arms(arms: Mapping[str, Sequence[Sample]]) -> list[Sample]:
+    """Every arm in one corpus, in a deterministic order that refuses a repeat.
+
+    The corpus list is an ordered run plan and the evaluator pairs the two arms
+    by `sample_id`, so a repeated id does not fail a run - it silently collapses
+    two samples into one pair and drops another. The check is here as well as in
+    `write_corpus` because this is where the arms meet: a collision is a
+    difference between two arms, and the message can then say which two, which
+    is the fact a reader needs in order to find it.
+
+    The order is the sorted `sample_id` and nothing else. The arms' id prefixes
+    keep them in blocks, and the sort makes the list a property of the samples
+    rather than of the order the arms happened to be built in.
+    """
+    merged: list[Sample] = []
+    origin: dict[str, str] = {}
+    for arm, samples in arms.items():
+        for sample in samples:
+            if sample.sample_id in origin:
+                raise ValueError(
+                    f"duplicate sample_id {sample.sample_id!r} in arm {origin[sample.sample_id]!r} "
+                    f"and arm {arm!r}; the evaluator pairs the arms by it, so a repeat drops a pair"
+                )
+            origin[sample.sample_id] = arm
+            merged.append(sample)
+    return sorted(merged, key=lambda sample: sample.sample_id)
+
+
+def clear_sample_dirs(root: Path) -> list[str]:
+    """Remove the sample trees a previous build wrote, and name what it removed.
+
+    The corpus is rebuilt from its recipe, so a second build must not merge into
+    the first: an arm that shrank would leave directories behind that the new
+    corpus list does not name, and a walk over the corpus directory would still
+    find samples that no report counts. Only directories are removed - every
+    sample lives in one, and the reports are files that get overwritten.
+    """
+    root = Path(root)
+    if not root.is_dir():
+        return []
+    removed: list[str] = []
+    for entry in sorted(root.iterdir()):
+        if entry.is_dir():
+            shutil.rmtree(entry)
+            removed.append(entry.name)
+    return removed
+
+
+def arm_sample_counts(arms: Mapping[str, Sequence[Sample]]) -> dict[str, Any]:
+    """Per arm: how many samples, and how the two labels split."""
+    return {
+        arm: {
+            "samples": len(samples),
+            "malicious": sum(1 for sample in samples if sample.label == LABEL_BY_KIND["ruleid"]),
+            "benign": sum(1 for sample in samples if sample.label != LABEL_BY_KIND["ruleid"]),
+        }
+        for arm, samples in arms.items()
+    }
+
+
+def requirement_4_floor(samples: Sequence[Sample]) -> dict[str, Any]:
+    """Requirement 4's floor, as a verdict that is reported and never raised.
+
+    The plan fixes two thresholds - at least 50 malicious samples and at least
+    50 benign, with the near-miss arm counted on the benign side - and says a
+    shortfall is written up as insufficient evidence rather than met by lowering
+    the threshold. So this returns a verdict and does not raise: a build that
+    refused to finish would leave no corpus and no provenance to write the
+    shortfall up in, which is less than a corpus with a stated gap.
+
+    `shortfalls` names only the two sides the requirement counts. A sub-arm may
+    be below the floor on its own - the CodeQL near-miss files are five, and are
+    not meant to carry the side by themselves - and that is a fact about the
+    arm's composition rather than a failed requirement, so it is visible in the
+    per-arm verdicts and absent from the shortfalls.
+    """
+    malicious = 0
+    benign = 0
+    near_miss = 0
+    for sample in samples:
+        if sample.label == LABEL_BY_KIND["ruleid"]:
+            malicious += 1
+        elif str(sample.provenance.get("source", "")) == SDIST_SOURCE:
+            benign += 1
+        else:
+            # Everything benign that is not the sdist arm: the two upstream
+            # sources of explicit negatives. A source this build does not know
+            # would land here too, which keeps it on the benign side rather than
+            # letting it disappear from the table.
+            near_miss += 1
+    benign_side = benign + near_miss
+    verdicts: dict[str, Any] = {
+        "malicious": {
+            "count": malicious,
+            "meets_floor": malicious >= REQUIREMENT_4_FLOOR,
+            "basis": "every malicious-labelled sample: the ruleid windows and the non-vendored DataDog files",
+        },
+        "benign": {
+            "count": benign,
+            "meets_floor": benign >= REQUIREMENT_4_FLOOR,
+            "basis": "the PyPI sdist arm",
+        },
+        "near_miss": {
+            "count": near_miss,
+            "meets_floor": near_miss >= REQUIREMENT_4_FLOOR,
+            "basis": "the ok windows and the CodeQL negative-only files",
+        },
+        "benign_side": {
+            "count": benign_side,
+            "meets_floor": benign_side >= REQUIREMENT_4_FLOOR,
+            "basis": "the benign arm together with the near-miss arm, which is the side requirement 4 counts",
+        },
+    }
+    shortfalls = [name for name in ("malicious", "benign_side") if not verdicts[name]["meets_floor"]]
+    return {
+        "floor": REQUIREMENT_4_FLOOR,
+        "met": not shortfalls,
+        "verdicts": verdicts,
+        "shortfalls": shortfalls,
+    }
+
+
+def family_map_snapshot() -> dict[str, Any]:
+    """The annotation-to-family table this build used, frozen into the record.
+
+    The table is ours, not upstream's: the annotations were written for upstream
+    rules and this is the translation (plan section 11.3). Carrying it with the
+    corpus is what lets a reader re-derive every family attribution without
+    re-running the build, and the digest over the pairs is what notices a later
+    edit to the table. The order is part of the fact - the first lexeme found in
+    an upstream rule id wins - so the pairs are carried as an ordered list.
+    """
+    pairs = [[lexeme, family] for lexeme, family in FAMILY_LEXEMES]
+    return {
+        "lexemes": pairs,
+        "sha256": sha256_text(json.dumps(pairs, separators=(",", ":"))),
+        "order": "first lexeme found in the upstream rule id wins",
+    }
+
+
+def source_records(
+    report_sources: Sequence[Mapping[str, Any]],
+    sources_root: Path,
+    *,
+    checkout: Mapping[str, Any],
+    semgrep_rules_samples: int,
+) -> list[dict[str, Any]]:
+    """Every source with the URL, revision and hashes a reader needs to re-fetch it.
+
+    The build's own report says what each arm read and how much of it; this adds
+    the coordinates provenance is for. `sha256` is the hash of the artifact the
+    arm was built from, which only the semgrep-rules tarball has: the other
+    three arms are manifests of per-file downloads, there is no single archive,
+    and each sample's own provenance carries the URL and hash of its own file.
+    The manifest's own sha256 is carried too, so a reader can tell whether the
+    manifest in hand is the one this corpus was built against.
+    """
+    records: list[dict[str, Any]] = []
+    for source in report_sources:
+        record = dict(source)
+        name = str(record.get("name"))
+        record["url"] = SOURCE_URLS.get(name)
+        record["license"] = SOURCE_LICENSES.get(name)
+        # One arm is pinned to a commit and another to a dependency set; both are
+        # what make it reproducible, so both are carried under `revision`.
+        if not record.get("revision"):
+            record["revision"] = record.get("ref") or record.get("semgrep_version")
+        record["sha256"] = None
+        manifest = record.get("manifest")
+        record["manifest_sha256"] = (
+            sha256_bytes((Path(sources_root) / str(manifest)).read_bytes()) if manifest else None
+        )
+        records.append(record)
+    records.append({
+        "name": SEMGREP_RULES_SOURCE,
+        "url": SEMGREP_RULES_URL,
+        "license": SOURCE_LICENSES[SEMGREP_RULES_SOURCE],
+        "revision": checkout["revision"]["observed"],
+        "sha256": checkout["tarball_sha256"]["observed"],
+        "tarball": checkout["tarball"],
+        "tree_digest": checkout["tree_digest"]["observed"],
+        "files": checkout["tree_digest"]["files"],
+        "manifest": None,
+        "manifest_sha256": None,
+        "selected": semgrep_rules_samples,
+        "modification": SEMGREP_RULES_MODIFICATION,
+    })
+    return records
+
+
+def build_holdout_corpus(
+    sources_root: Path,
+    corpus_root: Path,
+    *,
+    reference_path: Path,
+    semgrep_rules_root: Path,
+    revision: str,
+    semgrep_rules_tarball: Path,
+    recorded_tarball_sha256: str,
+    recorded_tree_digest: str,
+    head_lookup: Optional[Callable[[], str]] = None,
+) -> dict[str, Any]:
+    """Build the whole corpus, and fail before writing anything unverifiable.
+
+    The order is the point. The checkout is verified first, because a sample's
+    revision is the only record of which upstream code it came from and a
+    revision that cannot be checked is a label nobody can audit. Then the arms
+    are built - the windows out of the verified checkout, the three
+    manifest-backed arms out of the sources root - with the vendor reference
+    refused rather than defaulted when it is absent, since an absent reference
+    silently restores every released library copy into the malicious arm. Only
+    then is anything written: the corpus, `provenance.json` and
+    `corpus-report.json`.
+
+    Idempotent. The sample directories of a previous build are removed first,
+    and every value in the two reports is measured from the inputs rather than
+    from the clock or the filesystem's order, so two runs over the same inputs
+    differ only in `built_at`.
+    """
+    sources_root = Path(sources_root)
+    corpus_root = Path(corpus_root)
+    semgrep_rules_root = Path(semgrep_rules_root)
+
+    checkout = verify_semgrep_rules_checkout(
+        semgrep_rules_root,
+        recorded_revision=revision,
+        recorded_tarball_sha256=recorded_tarball_sha256,
+        tarball=semgrep_rules_tarball,
+        recorded_tree_digest=recorded_tree_digest,
+        head_lookup=head_lookup,
+    )
+
+    windows, window_drops = samples_from_windows(semgrep_rules_root, revision=revision)
+    manifest_samples, holdout_report = build_holdout(sources_root, reference_path=reference_path)
+
+    grouped = samples_by_source([*windows, *manifest_samples])
+    unknown = sorted(set(grouped) - set(ARM_ORDER))
+    if unknown:
+        raise ValueError(f"samples carry source(s) this build does not know: {unknown}")
+    # Every arm is present in the tables even when it built nothing: an arm that
+    # is absent cannot be told apart from one that was never measured.
+    arms_before_filter = {name: grouped.get(name, []) for name in ARM_ORDER}
+    drops = {name: dict(table) for name, table in
+             {SEMGREP_RULES_SOURCE: window_drops, **holdout_report["drops"]}.items()}
+    samples = merge_arms(arms_before_filter)
+
+    # Rule 9, applied once to the merged list so that no arm can be built
+    # without passing through it. The arms are then rebuilt from what survived,
+    # because every count below - the per-arm tables, the floor, the written
+    # corpus - has to describe the corpus that is written rather than the one
+    # the arms produced.
+    samples, long_line_dropped = drop_long_lines(samples)
+    filtered = samples_by_source(samples)
+    arms = {name: filtered.get(name, []) for name in ARM_ORDER}
+    for name in ARM_ORDER:
+        drops[name]["long_line"] = sum(1 for row in long_line_dropped if row["source"] == name)
+        # The longest line the arm brought to the filter, kept even for arms
+        # that lost nothing, so a reader can see how close an arm came to the
+        # bound instead of having to trust that it did not.
+        drops[name]["long_line_max_bytes"] = max(
+            (sample_max_line(sample) for sample in arms_before_filter[name]), default=0
+        )
+
+    removed = clear_sample_dirs(corpus_root)
+    counts = write_corpus(corpus_root, samples)
+    corpus_root.mkdir(parents=True, exist_ok=True)
+
+    provenance = provenance_payload(
+        source_records(holdout_report["sources"], sources_root, checkout=checkout,
+                       semgrep_rules_samples=len(windows)),
+        samples,
+        drops,
+        verification=checkout,
+        vendor_reference=holdout_report["vendor_reference"],
+        arm_counts=arm_sample_counts(arms),
+        selection=holdout_report["drops"][CODEQL_SOURCE]["selection"],
+        family_map=family_map_snapshot(),
+        long_line=long_line_exclusion(long_line_dropped),
+    )
+    floor = requirement_4_floor(samples)
+    report = {
+        "built_at": provenance["built_at"],
+        "counts": counts,
+        "arm_counts": provenance["arm_counts"],
+        "requirement_4": floor,
+        "long_line_exclusion": {
+            "limit_bytes": provenance["long_line_exclusion"]["limit_bytes"],
+            "count": provenance["long_line_exclusion"]["count"],
+            "sample_ids": [row["sample_id"] for row in provenance["long_line_exclusion"]["samples"]],
+        },
+    }
+    (corpus_root / PROVENANCE_FILENAME).write_text(
+        json.dumps(provenance, indent=2, sort_keys=False) + "\n", encoding="utf-8"
+    )
+    (corpus_root / CORPUS_REPORT_FILENAME).write_text(
+        json.dumps(report, indent=2, sort_keys=False) + "\n", encoding="utf-8"
+    )
+
+    return {
+        "corpus_root": str(corpus_root),
+        "counts": counts,
+        "arm_counts": provenance["arm_counts"],
+        "drops": drops,
+        "requirement_4": floor,
+        "removed": removed,
+        "checkout": checkout,
+        "sources": provenance["sources"],
+        "long_line_exclusion": provenance["long_line_exclusion"],
+    }
+
+
+def format_summary(summary: Mapping[str, Any]) -> str:
+    """The build's counts, drop tables and floor verdict, as plain text.
+
+    Plain ASCII in fixed columns: this is read in a terminal and pasted into a
+    report, and both are worse for anything cleverer.
+    """
+    counts = summary["counts"]
+    by_label = ", ".join(f"{label}={counts['by_label'][label]}" for label in sorted(counts["by_label"]))
+    lines = [
+        f"corpus: {summary['corpus_root']}",
+        f"samples: {counts['total']} ({by_label})",
+        "",
+        f"{'arm':<20}{'samples':>8}{'malicious':>11}{'benign':>8}",
+    ]
+    for name, arm in summary["arm_counts"].items():
+        lines.append(f"{name:<20}{arm['samples']:>8}{arm['malicious']:>11}{arm['benign']:>8}")
+
+    lines.append("")
+    lines.append("drops")
+    for name, table in summary["drops"].items():
+        counts_text = "  ".join(
+            f"{key}={table[key]}" for key in sorted(table) if isinstance(table[key], int)
+        )
+        lines.append(f"  {name}: {counts_text}")
+    selection = summary["drops"].get(CODEQL_SOURCE) or {}
+    selection = selection.get("selection") if isinstance(selection, Mapping) else None
+    if isinstance(selection, Mapping):
+        classes = "  ".join(f"{name}={count}" for name, count in selection["classification"].items())
+        lines.append(f"  {CODEQL_SOURCE} selection: {classes}")
+
+    floor = summary["requirement_4"]
+    lines.append("")
+    lines.append(
+        f"requirement 4 floor (>={floor['floor']} per side): {'met' if floor['met'] else 'NOT MET'}"
+    )
+    for name, verdict in floor["verdicts"].items():
+        mark = "ok" if verdict["meets_floor"] else "below floor"
+        lines.append(f"  {name:<12}{verdict['count']:>6}  {mark}")
+    for name in floor["shortfalls"]:
+        lines.append(f"  shortfall: {name} is below {floor['floor']}, reported and not raised")
+
+    checkout = summary.get("checkout") or {}
+    if checkout:
+        lines.append(
+            "semgrep-rules checkout verified: tarball sha256 "
+            f"{checkout['tarball_sha256']['observed']}, tree digest over "
+            f"{checkout['tree_digest']['files']} files, upstream HEAD "
+            f"{checkout['revision']['observed']}"
+        )
+    if summary.get("removed"):
+        lines.append(f"cleared stale sample dirs: {', '.join(summary['removed'])}")
+
+    exclusion = summary.get("long_line_exclusion") or {}
+    if exclusion:
+        # Printed with the ids rather than the count alone: a count says the rule
+        # fired, the ids say which samples a reader would have to fetch to
+        # disagree with it.
+        ids = ", ".join(row["sample_id"] for row in exclusion.get("samples", []))
+        lines.append(
+            f"long-line exclusion (>{exclusion['limit_bytes']} B): {exclusion['count']}"
+            + (f" - {ids}" if ids else "")
+        )
+    return "\n".join(lines)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """The driver's command line, with the recorded facts as its defaults.
+
+    The digests default to what the retrieval recorded, so a rebuild of the
+    corpus the plan describes is one command; each one can be overridden, which
+    is what makes a checkout from another retrieval checkable against its own
+    record rather than against this one's.
+    """
+    parser = argparse.ArgumentParser(
+        prog="holdout_corpus",
+        description="Build the stage-H holdout corpus, verifying its sources first.",
+    )
+    parser.add_argument("--sources-root", type=Path, default=HOLDOUT_SOURCES_ROOT,
+                        help=f"the retrieved sources (default: {HOLDOUT_SOURCES_ROOT})")
+    parser.add_argument("--corpus-root", type=Path, default=HOLDOUT_CORPUS_ROOT,
+                        help=f"where the corpus is written (default: {HOLDOUT_CORPUS_ROOT})")
+    parser.add_argument("--reference", type=Path, default=None,
+                        help="the vendor reference "
+                             f"(default: <sources-root>/{DD_DIRNAME}/{VENDOR_REFERENCE_FILENAME})")
+    parser.add_argument("--semgrep-rules-root", type=Path, default=None,
+                        help="the semgrep-rules checkout "
+                             f"(default: <sources-root>/{SEMGREP_RULES_CHECKOUT_DIRNAME})")
+    parser.add_argument("--semgrep-rules-tarball", type=Path, default=None,
+                        help="the tarball the checkout was unpacked from "
+                             f"(default: <sources-root>/{SEMGREP_RULES_TARBALL_FILENAME})")
+    parser.add_argument("--revision", default=SEMGREP_RULES_REVISION,
+                        help="the recorded upstream revision (default: the plan's recorded HEAD)")
+    parser.add_argument("--semgrep-rules-tarball-sha256", default=SEMGREP_RULES_TARBALL_SHA256,
+                        help="the recorded tarball hash (default: the retrieval's)")
+    parser.add_argument("--semgrep-rules-tree-digest", default=SEMGREP_RULES_TREE_DIGEST,
+                        help="the recorded tree digest (default: the retrieval's)")
+    return parser
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Build from the command line: 0 when the corpus is written, 2 when it is not.
+
+    A failure is any verification the build could not complete - a tarball, a
+    tree digest or a revision that does not match its record, an absent vendor
+    reference, a manifest that does not describe what is on disk. It is printed
+    with the values that disagree and exits non-zero: the corpus is either the
+    one its provenance describes or it is not written at all.
+
+    The requirement-4 floor is not a failure here. It is a verdict the reports
+    carry, and a shortfall still exits 0, because the plan asks for it to be
+    written up as insufficient evidence rather than for the build to refuse.
+    """
+    args = build_parser().parse_args(argv)
+    reference = args.reference or args.sources_root / DD_DIRNAME / VENDOR_REFERENCE_FILENAME
+    semgrep_rules_root = args.semgrep_rules_root or args.sources_root / SEMGREP_RULES_CHECKOUT_DIRNAME
+    tarball = args.semgrep_rules_tarball or args.sources_root / SEMGREP_RULES_TARBALL_FILENAME
+    try:
+        summary = build_holdout_corpus(
+            args.sources_root,
+            args.corpus_root,
+            reference_path=reference,
+            semgrep_rules_root=semgrep_rules_root,
+            revision=args.revision,
+            semgrep_rules_tarball=tarball,
+            recorded_tarball_sha256=args.semgrep_rules_tarball_sha256,
+            recorded_tree_digest=args.semgrep_rules_tree_digest,
+        )
+    except (ValueError, OSError) as exc:
+        print(f"holdout build failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print(format_summary(summary))
+    return 0
+
+
 if __name__ == "__main__":
-    raise SystemExit(0)
+    raise SystemExit(main())
