@@ -231,7 +231,7 @@ TAA_CORPUS_PARITY=1 TAA_PARITY_CORPUS_ROOT=<CORPUS_ROOT> \
 ## 10. 明确不做
 
 - 不在本轮修 `DYN_001`/`FIL_001`/`EXF_001` 的严重度（§7.3）。
-- 不在本轮收窄 `taa-env-secret-python`（§3.6：真实缺口，两臂同等）。
+- ~~不在本轮收窄 `taa-env-secret-python`（§3.6：真实缺口，两臂同等）。~~ **该条前提已于 2026-09-24 被实测证伪（§16）**：regex 臂在全部 311 个样本上触发 `ENV_001` **0 次**，semgrep 臂 **47 次**——一侧有「敏感词名」约束、另一侧对键名无任何约束，是**两套不同的规则**，不是「两臂同等」的缺口。**是否收窄待裁定**；处置口径见 §8。
 - 不把留出集结论外推到「任意真实模型代码」之外（报告措辞照 §2.3）。
 
 ## 11. 已知收窄（写进报告，不藏）
@@ -247,6 +247,8 @@ TAA_CORPUS_PARITY=1 TAA_PARITY_CORPUS_ROOT=<CORPUS_ROOT> \
 9. **提示体量可被样本无限放大（2026-09-24 实测发现的产品缺陷，本轮不修）**：`finding_prompt_slots` 把 `code_snippet`（来自 `line.strip()`）与 `context_before`/`context_after` 原样拼进提示，**三者都没有字节上限**；上下文窗口只按行数（两侧各 15 行）设限，故一个超长单行能让提示体量无界——实测 `dd-0060` 的 22,608,571 字节单行使**单条 finding** 的提示载荷达 22,608,716 字节（`code_snippet` 仅 43 字节，其余全在 `context_before`）。这是一条**内存/可用性向量**：恶意文件可以撑爆 TEE-LLM 侧内存，而 `_call_ollama` 的 `timeout=60` 只保证超时后降级为 `UNCERTAIN`，**不阻止 ollama 在超时前尝试吃下这 22 MB**。本轮由 §12.2 规则 9 在建集时绕开（剔除 5 条），**生产侧未修**；修复方案（给三个字段加字节上限并加显式截断标记）列为 H 之后的任务，因其会改动冻结的提示构造。报告须写明该缺陷存在且未修。
 10. **semgrep-rules 臂的样本集中度**：156 条样本只来自 **28 个上游文件**，`NET_001` 一家占 90/156（58%）。**样本数高估了语料多样性**（§12.5），报告须写明。
 11. **`attribution_precision` 在无 LLM 的轮次里恒为 0，且这是工装缺陷而非测量结果（2026-09-24 H1.4 实测发现，本轮不修）**：`check_sample_attribution`（`audit_benchmark_eval.py:636`）在 static-llm 模式下对「未被 LLM 复核」的 finding 有一条**按严重度兜底**的判据（`:51-53`，`if not verdict or verdict == "UNCERTAIN"` → `severity in ("HIGH","MEDIUM")` 即算归因成功）。但上一行写的是 `str(finding.get("llm_verdict", "")).upper()`：当键**存在且值为 null**（`--llm-backend none` 下每条 finding 都是这个状态）时，`str(None).upper()` 得到**真值字符串 `"NONE"`**，既不是 `""` 也不是 `"UNCERTAIN"` → 兜底分支**永不可达** → 函数落到末尾 `return False`。手工核对反例：`sr-0005` 满足文档所述全部条件（`label=malicious`、`blocked=True`、目标是 `sample.py` 的 `CMD_001`、该 finding 在该文件内 severity=`HIGH`、`llm_verdict=None`），逐条手工判定均为真，函数仍返回 `False`。故 regex 臂 `attribution_precision = 0.0` **是缺陷产物**：真实可达上限为 **23/66**（95 条带目标规则的恶意样本中 23 条的规则实际命中，其中 66 条被阻断）。**影响范围**：该指标不在 §2 的判定判据（`ΔFPR`/`Δrecall`）内，故**不影响 H2 判定**；但**报告不得把它当测量值引用**，H2 若引用须注明此缺陷。修复是一行（`finding.get("llm_verdict") or ""`），**本轮不修**——H2 的 LLM 会写入真实 `llm_verdict`，届时受影响面收窄到「LLM 未复核且高/中危」的 finding，改工装会让 H1 与 H2 的测量仪器不同，须先登记再动（同 §11.9 的处置）。
+
+12. **两臂在 13 条规则里有 5 条不同，且这不是「引擎之差」而是「规则的差」（2026-09-24 实测，§16）**：`ENV_001` 是**规则不同**（semgrep 侧对键名无约束，regex 侧要求敏感词名）——这是**端口缺陷**，须在对齐循环里处置；`NET_001`/`CMD_001`/`OBF_001` 是**引擎能力**（semgrep 解析 import，故 `from X import y` / `import X as z` 之下仍能命中，regex 的限定名模式不能）——这正是本比较要测的东西，**不得**为对齐而抹掉。另有 2 处方向相反的差异实测**参考臂为错**：`pypi-0080:1591` 的 regex `DYN_001` 命中**文档字符串散文**里的 `eval()`（按 AST 匹配的 semgrep 正确忽略），`sr-0149:3` 的 regex `OBF_001` 因**无锚子串**匹配到 `_pickle.loads`（按上游 `# ruleid: avoid-pickle` 标注它是真阳性，故此处漏的是 semgrep）。报告不得把「两臂命中数之差」一律当作 semgrep 更强或更弱——**须按方向逐条写明**。
 
 ## 12. 来源与预登记规则（已定，冻结）
 
@@ -422,3 +424,53 @@ TAA_CORPUS_PARITY=1 TAA_PARITY_CORPUS_ROOT=<CORPUS_ROOT> \
 **机制（比数字更要紧）**：该记录里的逐版本 `matched_entries` 是**首次命中归属**，生成时按「排序分」认领。空摘要给 `scrapper_boilerplate==0.2.12` 凭空加了 +19 分，使它抢在 `0.2.8`（14 条真实命中）之前认领，于是同一个并集 14 被报成「0.2.12 命中 9 + 0.2.8 命中 5」。**9 与 5 都是真的，但它们相加才是并集**——把这种字段读成「每个版本各贡献几条」必然出错。故 §12.2 参照集证据资格新增一条：多版本参照一律按并集判定，逐版本数字只能读作归属；`provenance.json` 里的各参照命中数由建集时**重算**，声明值只作对照。
 
 **与 §14 的共性**：本条与 §14 同属「统计口径与结论层级不匹配」——§14 是自指测量，本条是**命中数被当成了命中证据**。共同纪律有两条：**凡用于改变预登记规则或写入报告的测量，都必须由带测试的模块产出，并写明该测量的适用范围**；以及**记数的同时必须记性质**——空/非空、自指/他指、单一版本/全版本，任一未记，「19 个副本」这类读数就会在下游被当成实据。
+
+## 16. 规则级归因实测（2026-09-24）：两臂不是同一套规则，§10 的前提被证伪
+
+**工装**：`models/audit/tools/arm_rule_divergence.py`（配套 18 条测试 `tests/test_arm_rule_divergence.py`）。读两臂各自的 `sample-results.jsonl`，逐行按 `report_path` 打开该样本的报告取 `(rule_id, file, line)`；**不重扫**——重扫测的是另一次运行，读数就不再描述判据所据的那份证据。它把「一臂有、另一臂没有」的 finding 分成两类：
+
+- **shape**：该位置另一臂**也报了**（只是规则不同，或同一规则报了不同的次数）。这是**工装形态**之差（regex 每行只留首条匹配、semgrep 每条匹配都报），`tests/test_engine_rule_parity_corpus.py` 正是为消掉它而写。
+- **coverage**：该位置另一臂**什么都没报**。这才是规则或引擎之差。
+
+**判据读数**（311 样本，两臂同集，`--llm-backend none`；由管线自己的 `confusion_counts` 按各行自带的 `blocked` 计算，不由本工具重算）：
+
+| 臂 | TP | FP | TN | FN | recall | FPR |
+|---|---|---|---|---|---|---|
+| regex | 49 | 17 | 137 | 108 | 0.3121 | 0.1104 |
+| semgrep | 54 | 28 | 126 | 103 | 0.3439 | 0.1818 |
+
+`ΔFPR = +0.0714`、`Δrecall = +0.0318` → **不通过**（0 容差、逐对）。
+
+**逐规则（semgrep − regex）**：
+
+| rule | regex | semgrep | delta | sg_cov | sg_shape | rx_cov | rx_shape | 备注 |
+|---|---|---|---|---|---|---|---|---|
+| CMD_001 | 67 | 76 | +9 | 9 | 0 | 0 | 0 | |
+| DYN_001 | 19 | 20 | +1 | 0 | 2 | 1 | 0 | |
+| ENV_001 | **0** | **47** | +47 | 47 | 0 | 0 | 0 | **参考臂从不触发此规则** |
+| NET_001 | 21 | 46 | +25 | 25 | 0 | 0 | 0 | |
+| NET_002 | 8 | 8 | 0 | 0 | 0 | 0 | 0 | |
+| OBF_001 | 11 | 26 | +15 | 16 | 0 | 1 | 0 | |
+
+不变量 `(sg_cov + sg_shape) − (rx_cov + rx_shape) = delta` 在每一行成立，并由测试守住。
+
+**一、shape 在本语料上几乎不存在（全语料仅 2 条，都在 `DYN_001`）。** 这条先说，因为它排除了一个真实的混淆源：§3 与 `test_engine_rule_parity_corpus.py` 都警告过「semgrep 每条匹配都报、regex 每行只报首条」会让命中数不可比。实测该效应在本语料上可忽略，故下面的 coverage 差**不是工装形态造成的**。
+
+**二、`ENV_001` 不是「两臂同等的缺口」，而是两套不同的规则。** regex/Go 侧（`internal/codeaudit/rules.go:222-224`、`code_security_analyzer.py:119-121`）要求环境变量**名**匹配敏感词交替（`secret|token|api[_-]?key|access[_-]?key|…`）；semgrep 侧 `taa-env-secret-python`（`models/audit/semgrep/rules/python/rules.yaml`）的 `os.environ[$KEY]` / `os.environ.get($KEY, ...)` / `os.getenv($KEY, ...)` **对 `$KEY` 无任何约束**。后果：**regex 臂在全部 311 个样本上一次都没触发 `ENV_001`，semgrep 臂触发 47 次**（47 条全为 coverage，0 条 shape）。触发到的键名实测包括 `SPHINX_BUILD`、`READTHEDOCS`、`READTHEDOCS_CANONICAL_URL`、`READTHEDOCS_VERSION`、`PAGER`、`TERM`、`LESS`、`GLOM_CLI_DEBUG`、`MCP_CONFORMANCE_CONTEXT`、`MCP_CONFORMANCE_SCENARIO`、`XDG_CONFIG_HOME`、`RUAMEL_DEBUG`、`YAMLDEBUG`、`DVDEBUG`、`PYDISTBASE`、`LOCALAPPDATA`、`APPDATA`、`TEMP`、`envvar` —— 无一在敏感词交替内。故 **§10「真实缺口，两臂同等」被证伪**：一侧有该约束、另一侧没有，谈不上「同等」。
+
+**三、其余四条规则的差是引擎能力，且其中两处是参考臂错、semgrep 对。**
+- `NET_001 +25` / `CMD_001 +9` / `OBF_001 +16`（均 coverage）源自 semgrep **解析 import**：`from urllib.request import urlopen`、`import subprocess as sbprc`、`import base64 as b64`、`from requests import get` 之下调用点是裸名或别名，regex 的**限定名**模式必然看不见。实测出现这类 import 的正是发生分歧的那 5 个样本（dd-0055/0056/0057、sr-0155、sr-0156）。这是**引擎能力**，正是本比较要测的东西。
+- `DYN_001` 的 `rx_cov 1`：`pypi-0080:1591` 在**文档字符串的散文**里命中 `(unless you are familiar with how eval() and exec() work)` —— regex 按文本匹配故命中，semgrep 按 AST 解析故正确忽略。**这是参考臂的假阳性。**
+- `OBF_001` 的 `rx_cov 1`：`sr-0149:3` 的 `_pickle.loads(exploit_code)`，regex 的 `pickle\.loads?\s*\(` 是**无锚子串**匹配故命中 `_pickle.`；semgrep 的 import 感知模式看不见 `_pickle`。而该行上游标注为 `# ruleid: avoid-pickle`——**按上游标注者自己的判据它是真阳性**（该 fixture 就是为 `avoid-pickle` 写的正例，用 `_pickle` 规避），故这里**漏的是 semgrep**。两处 `rx_cov` 一为参考臂多报、一为参考臂真检而 semgrep 漏，方向相反。
+
+**18 个翻面样本的分解**（判据的 Δ 全部由它们产生）：
+
+- 良性 11 个转为 semgrep-only（= 新增 FP）：`pypi-0001/0002/0005/0015/0029/0037/0040/0071/0073/0081`（**10 个，且全部只有 `ENV_001` 一条**）+ `sr-0155`（`NET_001`，import 能力）。
+- 恶意 6 个转为 semgrep-only（= 新增 TP）：`dd-0011`、`dd-0029`、`sr-0034`、`sr-0035`、`sr-0036`、`sr-0156`。
+- 恶意 1 个转为 regex-only（= 丢失 TP）：`sr-0149`（上述 `_pickle`）。
+
+对账：`ΔFP = 11`、`ΔTP = 6 − 1 = 5`，与判据表一致。
+
+**四、把 `ENV_001` 从两臂同时拿掉的**近似**读数**：semgrep 侧 `FP 28→18`、`TP 54→53`（`dd-0011` 只靠 `ENV_001` 翻面），故 `ΔFPR` 由 `+0.0714` 降到约 `+0.0065`（**恰好剩一个样本 `sr-0155`**）、`Δrecall` 约 `+0.0255`。**此数必须标注为近似**：它由「有 finding 即算阻断」近似 `blocked` 得到，而本工装**刻意不提供**「删规则后重算判据」的功能——`blocked` 取决于规则严重度与策略，从过滤后的 finding 列表重算等于重实现一遍策略，那正是 §14 禁止的那类测量。真实读数须由**对齐后实跑一次**得出（regex 臂 ~4 s、semgrep 臂 ~20 min，代价可接受）。**注意此近似仍不影响第一条结论的方向**：`ENV_001` 独占 11 个新增 FP 中的 10 个，这一点由实测的翻面分解直接给出，与近似无关。
+
+**教训（§15 同族的第五次，新变体：仪器不合格而数值侥幸正确）**：本条结论最初的版本出自 `/tmp` 里的一次性脚本，它用「有 finding 即算阻断」近似判据，并用**集合**（而非多重集）匹配 finding。集合匹配会把「一臂同一位置报两次、另一臂报一次」吸收掉——实测 `DYN_001` 报出 `delta +1` 却同时报 `sg_cov 0 / rx_cov 1`，这两个数**自相矛盾**（多重集下应为 `sg_shape 2 / rx_cov 1`，才对得上），矛盾本身就是缺陷的指纹。这次数**值**最终与管线自己的 `confusion_counts` 逐字一致，但**仪器**不合格；§14 已写死「凡用于改变预登记规则的测量，必须由带测试的模块产出」。故本次先补工装（含上面那条不变量测试），再由它出数——**与前四次不同的是，这次错的不是读数而是读数的来源，而它与正确读数长得一模一样**。
