@@ -49,7 +49,7 @@ import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional, Sequence
+from typing import Any, Callable, Iterable, Iterator, Optional, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
@@ -485,6 +485,63 @@ def provenance_payload(
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+# ------------------------------------------------- the pre-registered screen
+#
+# Two exclusions decided before any holdout data existed (plan section 12.2
+# rules 4 and 6). Both look at the build, never at a verdict: rule 4 reads
+# whether a file parses, rule 6 counts findings without looking at what they
+# are or how the run concluded.
+
+# Mirrors internal/codeaudit/scanner.go:23. The Go engine truncates its static
+# findings here, and the comparison is `>=`, so a sample with exactly this many
+# findings is already marked truncated - which makes ProvesCleanScan false and
+# breaks the parity proof for a reason unrelated to rule drift. The Python arm
+# has no such cap.
+MAX_STATIC_FINDINGS = 200
+
+
+def over_static_cap(
+    samples: Sequence[Sample],
+    finding_count: Callable[[Sample], int],
+    cap: int = MAX_STATIC_FINDINGS,
+) -> tuple[list[Sample], list[dict[str, Any]]]:
+    """Split samples by the static-findings cap, counting what it removes.
+
+    'At or above' rather than 'above': the Go engine's check is `>=`, so the
+    two are the same case and a sample sitting exactly on the cap is already
+    truncated. Excluded samples are returned with their counts rather than
+    dropped, because a corpus that quietly loses its densest samples reads as
+    cleaner than it is - and the count is the evidence that the rule was
+    applied rather than the samples never being built.
+    """
+    kept: list[Sample] = []
+    excluded: list[dict[str, Any]] = []
+    for sample in samples:
+        count = finding_count(sample)
+        if count >= cap:
+            excluded.append({"sample_id": sample.sample_id, "rule": "static-cap",
+                             "findings": count, "cap": cap})
+            continue
+        kept.append(sample)
+    return kept, excluded
+
+
+def unparseable_samples(samples: Sequence[Sample]) -> list[dict[str, Any]]:
+    """Rule 4's exclusion, as a check over built samples.
+
+    The evaluator discards any sample whose tree has parse errors, and the Go
+    engine fails its scan on the same condition, so an unparseable sample would
+    consume a run and then report nothing. The arms that read whole upstream
+    files need this; the annotation arm applies it when it cuts fragments.
+    """
+    return [{"sample_id": sample.sample_id, "rule": "unparseable", "detail": "sample does not parse"}
+            for sample in samples if not parses(sample.text)]
+
+
+if __name__ == "__main__":
+    raise SystemExit(0)
 
 
 # ------------------------------------------------- upstream annotation arm

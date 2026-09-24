@@ -569,5 +569,56 @@ class TestTreeDigest(unittest.TestCase):
             self.assertNotEqual(before, after)
 
 
+class TestPreRegisteredScreen(unittest.TestCase):
+    """The two exclusions decided before any holdout data existed.
+
+    Both look at the build, never at a verdict: whether a file parses, and how
+    many findings it drew - not what they were or how the run concluded.
+    """
+
+    def test_a_sample_on_the_cap_is_excluded_not_just_one_above_it(self):
+        """The Go check is `>=`, so sitting exactly on the cap is already truncated."""
+        samples = [sample(sample_id=f"s-{n:03d}") for n in (199, 200, 201)]
+        counts = {"s-199": 199, "s-200": 200, "s-201": 201}
+        kept, excluded = hc.over_static_cap(samples, lambda s: counts[s.sample_id])
+
+        self.assertEqual([s.sample_id for s in kept], ["s-199"])
+        self.assertEqual([row["sample_id"] for row in excluded], ["s-200", "s-201"])
+        self.assertEqual(excluded[0]["rule"], "static-cap")
+        self.assertEqual(excluded[0]["cap"], hc.MAX_STATIC_FINDINGS)
+
+    def test_the_cap_mirrors_the_engine_it_protects_the_proof_from(self):
+        """It is the Go engine's number; a drifted copy would let divergences through."""
+        self.assertEqual(hc.MAX_STATIC_FINDINGS, 200)
+
+    def test_the_exclusions_are_returned_with_their_counts(self):
+        """Dropped quietly, the corpus reads as cleaner than it is."""
+        samples = [sample(sample_id="s-1"), sample(sample_id="s-2")]
+        _, excluded = hc.over_static_cap(samples, lambda s: 500 if s.sample_id == "s-2" else 3)
+
+        self.assertEqual(excluded, [{"sample_id": "s-2", "rule": "static-cap",
+                                     "findings": 500, "cap": 200}])
+
+    def test_it_reads_only_the_count(self):
+        """A rule that peeked at findings would be selecting samples by outcome."""
+        seen = []
+
+        def counter(s):
+            seen.append(s.sample_id)
+            return 0
+
+        hc.over_static_cap([sample(sample_id="s-1")], counter)
+        self.assertEqual(seen, ["s-1"])
+
+    def test_an_unparseable_sample_is_reported_by_rule_four(self):
+        good = sample(sample_id="s-good")
+        bad = sample(sample_id="s-bad", text="def f(:\n    pass\n")
+
+        rows = hc.unparseable_samples([good, bad])
+
+        self.assertEqual([row["sample_id"] for row in rows], ["s-bad"])
+        self.assertEqual(rows[0]["rule"], "unparseable")
+
+
 if __name__ == "__main__":
     unittest.main()
