@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Watch the H2.1 holdout matrix while it runs, from the host.
+#
+# Three things are watched, because they fail in different ways and two of them
+# fail silently:
+#
+# 1. The driver log, for the terminal signals -- each run's exit code, the end of
+#    the matrix, and the refusals the driver itself raises. A run that exits
+#    non-zero stops the matrix (see h2_loaded_rounds.sh), so this is the coarse
+#    "is it still making progress" channel.
+#
+# 2. The UNCERTAIN rate in the artifacts being written. This one matters more than
+#    it looks, and it points the opposite way from what an earlier version of this
+#    script claimed. An UNCERTAIN verdict on a HIGH or MEDIUM finding lifts the
+#    sample's risk level to HIGH, and under the assist policy that blocks the
+#    sample (code_security_analyzer.py:855-875). So a failed call is recorded as
+#    MORE malicious than the truth, not less: in this corpus, which holds no
+#    LOW-severity findings at all, it can only manufacture false positives and can
+#    never hide a malicious sample. Counting UNCERTAIN verdicts as they are
+#    produced is still the only signal that distinguishes "the LLM arbitrated and
+#    found nothing" from "the LLM never answered".
+#
+# 3. The runner's liveness and the cgroup's memory. A request in flight when the
+#    container OOM-kills llama-server gets a connection failure, not a timeout, and
+#    the killed server cannot write its own 500 line -- so the artifact and the log
+#    both stay quiet about it. The runner's ABSENCE is therefore its own alert, not
+#    something to be inferred from a changed pid: between the kill and ollama
+#    serve's respawn there is no pid to compare against. The respawn is reported
+#    separately, because the first calls after it pay a ~29 s model load on top of
+#    their decode and land close to the 60 s cap.
+#
+# Emits a line only when something changes, so that silence means "unchanged", and
+# a heartbeat every 30 polls so that silence cannot be confused with a dead watch.
+#
+# Run it on the HOST (it reaches into the container with docker exec), not inside.
+set -uo pipefail
+
+CONTAINER=${CONTAINER:-taa-env-slim-v2}
+OUT=${OUT:-/root/taa/verify/h2-assist-unloaded}
+LOG=${LOG:-$OUT-driver.log}
+
+prev_unc=-1
+prev_oom=-1
+prev_pid=""
+prev_present=-1
+
+( docker exec "$CONTAINER" tail -F -n +1 "$LOG" 2>/dev/null \
+  | grep --line-buffered -E "^[a-z]+ run [0-9]+: exit=|matrix done|refusing|could not warm|Traceback" ) &
+
+poll=0
+while true; do
+  poll=$((poll + 1))
+  # `tr` merges the readings onto one line. Without it the python count keeps its
+  # trailing newline, `read` takes only the first line, and the oom/pid/run-count
+  # fields come back empty -- which reads as "no OOM, no respawn" for the whole run.
+  # That is the failure mode of a watch: it reports silence as health.
+  read -r unc oom pid nrun memc memmax < <(docker exec "$CONTAINER" sh -c "
+    python3 -c \"
+import glob, json
+n = 0
+for p in glob.glob('$OUT/*-run*/*/audit_report.json'):
+    try:
+        if json.load(open(p)).get('conclusion', {}).get('verdict') == 'UNCERTAIN':
+            n += 1
+    except Exception:
+        pass
+print(n)
+\" 2>/dev/null || echo -1
+    awk '/^oom_kill /{printf \"%s \", \$2}' /sys/fs/cgroup/memory.events
+    ps -eo pid,args | awk '/llama-server/ && !/awk/{printf \"%s \", \$1; exit}'
+    ls -d $OUT/*-run*/ 2>/dev/null | wc -l
+    awk '{printf \"%d \", \$1/1048576}' /sys/fs/cgroup/memory.current
+    awk '{printf \"%d \", \$1/1048576}' /sys/fs/cgroup/memory.max
+  " 2>/dev/null | tr '\n' ' ')
+
+  if [ -z "${unc:-}" ]; then
+    echo "ALERT $(date -u +%H:%M:%SZ) container unreachable"
+  else
+    if [ "$prev_unc" -ge 0 ] && [ "$unc" -gt "$prev_unc" ]; then
+      echo "UNCERTAIN +$((unc - prev_unc)) (now $unc) $(date -u +%H:%M:%SZ) -- an LLM call did not arbitrate; on a HIGH/MEDIUM finding that blocks the sample (a false positive), it cannot hide one"
+    fi
+    prev_unc=$unc
+    if [ "$prev_oom" -ge 0 ] && [ "${oom:-0}" != "$prev_oom" ]; then
+      echo "ALERT $(date -u +%H:%M:%SZ) cgroup oom_kill $prev_oom -> $oom"
+    fi
+    prev_oom=${oom:-0}
+    pid_now="${pid:-}"
+    if [ -z "$pid_now" ]; then
+      if [ "$prev_present" = "1" ]; then
+        echo "ALERT $(date -u +%H:%M:%SZ) llama-server GONE (was $prev_pid): OOM kill or crash; every LLM call in this window fails"
+      fi
+      prev_present=0
+    else
+      if [ "$prev_present" = "1" ] && [ "$pid_now" != "$prev_pid" ]; then
+        echo "ALERT $(date -u +%H:%M:%SZ) llama-server pid $prev_pid -> $pid_now: killed and respawned between polls"
+      elif [ "$prev_present" = "0" ]; then
+        echo "ALERT $(date -u +%H:%M:%SZ) llama-server respawned (now $pid_now): the first calls pay a model load"
+      fi
+      prev_present=1
+      prev_pid="$pid_now"
+    fi
+  fi
+
+  if [ $((poll % 30)) -eq 0 ]; then
+    echo "HEARTBEAT $(date -u +%H:%M:%SZ) runs=$nrun uncertain_total=$prev_unc oom_kill=$prev_oom llama_pid=$prev_pid mem=${memc:-?}/${memmax:-?}MiB"
+  fi
+  sleep 60
+done
