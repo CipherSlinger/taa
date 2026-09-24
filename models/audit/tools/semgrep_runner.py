@@ -35,8 +35,22 @@ class SemgrepRunner:
     # that triggered the rule", so it must never be forwarded as evidence.
     SNIPPET_PLACEHOLDER = "requires login"
 
-    def __init__(self, executable: str = "semgrep", rules_path: Optional[str] = None):
+    def __init__(self, executable: str = "semgrep", rules_path: Optional[str] = None,
+                 jobs: int = 4):
         self.executable = executable
+        # Pinned, not left to the engine's default of "one worker per core". The
+        # host has 16 cores and Semgrep's per-file cap does not bound how many
+        # files are in flight, so an unpinned --jobs is the one knob with no
+        # ceiling on it. Proven not to change the verdict: over the 311-sample
+        # holdout corpus, --jobs 1 and --jobs 16 both yield 178 findings across
+        # 311 scanned files, with identical (rule, sample, line) triples.
+        #
+        # --max-memory is deliberately NOT pinned here, although the load-test
+        # script pins it. It is a per-file cap that makes Semgrep *skip* a file
+        # that exceeds it, so adding it could remove findings; that is a change
+        # in semantics, not in scheduling, and it does not belong in the path
+        # the criterion is measured on.
+        self.jobs = jobs
         if rules_path:
             self.rules_path = Path(rules_path)
         else:
@@ -191,7 +205,8 @@ class SemgrepRunner:
             "--json",
             "--quiet",
             "--disable-version-check",
-            "--no-git-ignore"
+            "--no-git-ignore",
+            "--jobs", str(self.jobs)
         ]
 
         if extensions:

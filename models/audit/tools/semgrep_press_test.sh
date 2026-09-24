@@ -111,7 +111,7 @@ start_loader() {
       for i in $(seq 1 "$level"); do
         (
           semgrep scan --config "$RULES" --json --quiet --disable-version-check \
-            --no-git-ignore --max-memory 1024 "$CORPUS" \
+            --no-git-ignore --max-memory 1024 --jobs 4 "$CORPUS" \
             > "$OUT/scan-$level-r$round-$i.json" 2> "$OUT/scan-$level-r$round-$i.err"
           echo "$?" > "$OUT/scan-$level-r$round-$i.exit"
         ) &

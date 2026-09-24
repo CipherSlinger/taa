@@ -52,6 +52,29 @@ class TestSemgrepRunner(unittest.TestCase):
             self.assertTrue(res.timed_out)
             self.assertFalse(res.passed)
 
+    def test_the_scan_pins_its_worker_count(self):
+        # The host has 16 cores and Semgrep's per-file cap does not bound how
+        # many files are in flight, so an unpinned --jobs is the one knob with
+        # no ceiling on it. The pin is what keeps a concurrent load test from
+        # deciding the verdict through the 60 s LLM timeout, so dropping it
+        # silently would be a silent change to how the criterion is measured.
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout='{"results": [], "errors": []}',
+                                              returncode=0, stderr="")
+            self.runner.scan_directory("/tmp/fake_dir")
+            argv = mock_run.call_args[0][0]
+            self.assertIn("--jobs", argv)
+            self.assertEqual(argv[argv.index("--jobs") + 1], str(self.runner.jobs))
+
+    def test_the_scan_does_not_pin_a_per_file_memory_cap(self):
+        # --max-memory makes Semgrep skip a file that exceeds it, so pinning it
+        # would be a change in semantics rather than in scheduling.
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout='{"results": [], "errors": []}',
+                                              returncode=0, stderr="")
+            self.runner.scan_directory("/tmp/fake_dir")
+            self.assertNotIn("--max-memory", mock_run.call_args[0][0])
+
     def test_parse_taint_dataflow_trace(self):
         mock_output = {
             "results": [
