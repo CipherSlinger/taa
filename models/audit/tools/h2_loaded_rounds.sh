@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
-# H2.1: the three paired rounds of the holdout judgement, under sustained Semgrep
-# press load (spec 9.3 item 1: "scanning and the LLM loaded at the same time").
+# H2.1: the three paired rounds of the holdout judgement.
+#
+# Two modes, and which one carries the criterion is pre-registered rather than
+# chosen after seeing a result (plan section 17.11):
+#
+#   LOAD=0 -- the primary judgement. The LLM arbitrates with the machine otherwise
+#     idle, which is the only condition the criterion can be read in. An
+#     audit-shaped call (300 generated tokens) takes about 32 s of the 60 s cap that
+#     llm.requestTimeoutMs imposes; co-located semgrep load drops decode below
+#     3.3 tok/s and past 90 s, which makes the call fail and, under the assist
+#     policy, silently turn the finding benign. A loaded matrix would therefore
+#     measure contention between the engines' finding volumes and the timeout rate,
+#     and its error would run toward passing.
+#
+#   LOAD=1 -- the co-location viability reading for spec 9.3 item 1 ("scanning and
+#     the LLM loaded at the same time"). It answers "can these two share a host",
+#     not "is semgrep non-inferior"; on this machine the answer is no.
 #
 # Run it *inside* the TAA container, as root of the staged tree, because semgrep,
 # the rules, the corpus and the ollama runner all live there.
@@ -76,11 +91,36 @@ if [[ "$LOAD" == "1" ]]; then
   }
 fi
 
+# Warm the model before the first measured call. A cold call pays a ~29 s model load
+# on top of its decode (~32 s for 300 tokens), which lands it right at the 60 s cap
+# and would make the first sample of a round fail for a reason that has nothing to do
+# with the engines. Warming first takes that out of the measurement; it schedules
+# nothing and changes no verdict, so it is an instrument parameter, not a semantic one.
+warm_model() {
+  local i
+  for i in 1 2 3; do
+    if curl -sf -m 120 -o /dev/null -X POST "http://127.0.0.1:11434/api/generate" \
+        -H 'Content-Type: application/json' \
+        -d "{\"model\":\"$MODEL\",\"prompt\":\"Reply with the single word ready.\",\"stream\":false,\"keep_alive\":\"30m\",\"options\":{\"num_predict\":4,\"temperature\":0.1,\"seed\":42}}"; then
+      echo "model warmed (attempt $i)"
+      return 0
+    fi
+    echo "warm-up attempt $i failed" >&2
+  done
+  # Without a warm runner the first calls of every round are measured against a
+  # model-load penalty, so the round would be scored on an instrument artifact.
+  echo "could not warm the model; refusing to measure against a cold runner" >&2
+  return 1
+}
+
 echo "===== H2.1 matrix start: $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
 echo "policy=$POLICY model=$MODEL seed=$SEED rules=$RULES"
+echo "load=$LOAD ($([[ "$LOAD" == "1" ]] && echo 'co-location viability reading' || echo 'primary judgement, idle machine'))"
 echo "corpus=$CORPUS_ROOT"
 echo "samples=$(python3 -c "import json;print(len(json.load(open('$CORPUS_LIST'))['samples']))")"
 echo "output=$OUT"
+
+warm_model || exit 1
 
 for entry in "regex 1" "semgrep 1" "regex 2" "semgrep 2" "regex 3" "semgrep 3"; do
   set -- $entry
