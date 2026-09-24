@@ -195,6 +195,18 @@ rules:
       - pattern: base64.b64encode(...)
       - pattern: pickle.load(...)
       - pattern: pickle.loads(...)
+      # The C implementation that pickle itself delegates to. The baseline's
+      # pattern is `pickle\.loads?\s*\(`, an unanchored substring match, so it
+      # catches `_pickle.loads(` as a side effect of matching `pickle.loads(`
+      # inside it - which an import-aware port does not. Upstream labels such a
+      # line a true positive (semgrep-rules, `# ruleid: avoid-pickle`, written
+      # with `_pickle` deliberately), so the miss is the port's and the fix is
+      # coverage, not leniency. Listed explicitly rather than by loosening the
+      # module to a regex, so that `_pickle` is caught deliberately instead of
+      # replicating the baseline's "any name ending in pickle" behaviour, which
+      # is an artifact of substring matching rather than a detection intent.
+      - pattern: _pickle.load(...)
+      - pattern: _pickle.loads(...)
       - pattern: marshal.load(...)
       - pattern: marshal.loads(...)
       - pattern: zlib.decompress(...)
