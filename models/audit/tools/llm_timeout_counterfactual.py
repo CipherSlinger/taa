@@ -3,38 +3,60 @@
 
 Why this exists
 ---------------
-The holdout matrix reads its verdicts from a model call that the evaluation caps
-at 60 s (`code_security_analyzer.py:733`, ``urlopen(req, timeout=60)``) and never
-retries. When that cap is hit the finding is recorded as ``UNCERTAIN``, and under
-the ``assist`` policy ``UNCERTAIN`` is read as ``LOW``, i.e. benign
-(`audit_benchmark_eval.py:877-878`). So a failed call does not announce itself:
-it removes a finding from the comparison.
+The holdout matrix reads its verdicts from model calls the evaluation caps at 60 s
+(`code_security_analyzer.py:733`, ``urlopen(req, timeout=60)``) and at 200-300
+generated tokens, and it never retries. A call can therefore fail in two ways,
+and the evaluation files them under two different states
+(`audit_benchmark_eval.py:820-823`):
 
-On this host that is not hypothetical. Measured on the unloaded matrix
-(plan section 17.12): server-reported prefill runs at 42-52 tok/s, the static
-scan's file-level prompt is budgeted in *lines* (``max_lines=400``) while its
-cost is in *tokens*, and 400 dense lines is roughly 2800-4000 tokens. The
-resulting ~2800-token cliff sits exactly on the 60 s cap, so a sample whose
-window fills the line budget times out during prefill and never decodes.
+* ``llm_unavailable`` -- the call raised, most often the 60 s timeout;
+* ``parse_error`` -- the call returned, but the generation was cut off by
+  ``num_predict`` before the JSON closed, so nothing could be parsed.
 
-A failed call biases both columns of the comparison, in opposite directions:
+Either way the finding is recorded as ``UNCERTAIN``, and the sample-level
+conclusion is then decided by ``compute_conclusion``
+(`code_security_analyzer.py:855-875`):
 
-* on a malicious sample it drops a true positive, which **lowers recall**;
-* on a benign sample it drops a would-be false positive, which **improves FPR**.
+    elif suspicious > 0 or (has_uncertain and has_high_or_medium):
+        risk_level = "HIGH"
+    ...
+    elif has_uncertain and has_high_or_medium:
+        passed = False
+        reason = "Fail-Closed: LLM uncertain on high/medium finding"
+    ...
+    if policy_str == "assist":
+        passed = risk_level not in ("CRITICAL", "HIGH")
 
-The two arms decide different numbers of findings, so they do not time out
-equally often, and the bias therefore does not cancel in ``ΔFPR`` / ``Δrecall``.
-The 0-tolerance criterion cannot absorb it, so its size has to be measured
-rather than argued.
+So a failure is not silently benign. An ``UNCERTAIN`` verdict on a HIGH or MEDIUM
+finding drives the risk level to HIGH, and under ``assist`` that blocks the
+sample. The failure direction is therefore **toward malicious**:
+
+* on a benign sample it fabricates a **false positive**, inflating FPR;
+* on a malicious sample it changes nothing, since the sample was blocked anyway;
+* only a failure on a LOW-severity finding could move a sample toward benign, and
+  this corpus contains no LOW-severity findings at all (measured: 113 HIGH and 20
+  MEDIUM across the first round's arbitrated findings, zero LOW).
+
+The defect therefore **only inflates FPR, in this corpus, and never costs
+recall**. It is not neutral for the comparison: the two arms decide different
+numbers of findings, so they do not fail equally often, and the arm that fails
+less often is measured with the cleaner FPR. The recorded comparison is
+consequently lenient toward whichever arm fails less. A 0-tolerance criterion
+cannot absorb that, so its size has to be measured rather than argued.
 
 What this tool does
 -------------------
 It re-runs the affected samples through the **production** pipeline
-(``audit_benchmark_eval.analyse_sample``) with one parameter changed: the HTTP
-timeout handed to the model call. Everything else -- the scan, the dedup and cap,
-the prompts, the arbitration, the policy, the conclusion -- is the production
-code path, so the counterfactual label comes from the same function that produced
-the recorded one instead of from a transcription of it.
+(``audit_benchmark_eval.analyse_sample``) with the calls allowed to finish: a
+longer HTTP timeout, and a floor under ``num_predict``. Everything else -- the
+scan, the dedup and cap, the prompts, the arbitration, the policy, the conclusion
+-- is the production code path, so the counterfactual label comes from the same
+function that produced the recorded one instead of from a transcription of it.
+
+Both knobs are inert unless a call was actually cut short: the timeout only
+matters to a call that would have exceeded it, and a raised ``num_predict`` only
+matters to a generation that had not yet stopped on its own. That is what makes
+this a counterfactual about the failure rather than about the pipeline.
 
 Pre-registered rule (fixed before any counterfactual is run)
 ------------------------------------------------------------
@@ -42,18 +64,19 @@ A failed call is **material** for a sample iff the counterfactual
 ``predicted_label`` differs from the recorded one. Nothing else counts: not a
 changed verdict on an individual finding, not a changed risk level, not a
 changed ``llm_state``. Material changes are reported split by direction
-(see ``classify_transition``), because a repaired false negative and a newly
-introduced false positive are different findings about the criterion and must not
+(see ``classify_transition``), because a repaired false positive and a newly
+introduced false negative are different findings about the criterion and must not
 be summed into one "changed" number.
 
 The patch, stated plainly
 -------------------------
-The timeout is a literal inside ``_call_ollama``, so this tool replaces
-``urllib.request.urlopen`` for the duration of the replay with a wrapper that
-forces the longer timeout. That wrapper is the ONLY difference between the
-counterfactual and the production path, it is announced on stdout, and its value
-is recorded in the output. The replay writes to its own ``--out-dir``; the source
-runs are opened read-only.
+The timeout is a literal inside ``_call_ollama`` and the generation cap is an
+argument to it, so this tool replaces ``urllib.request.urlopen`` with a wrapper
+that forces the longer timeout and replaces ``LLMSecurityAnalyzer._call_ollama``
+with a wrapper that raises ``num_predict`` to the floor. Those wrappers are the
+ONLY difference from the production path, they are announced on stdout, and their
+values are recorded in the output. The replay writes to its own ``--out-dir``;
+the source runs are opened read-only.
 """
 from __future__ import annotations
 
@@ -71,13 +94,19 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from models.audit.tools import audit_benchmark_eval as ev  # noqa: E402
+from models.examples.code_security_analyzer import LLMSecurityAnalyzer  # noqa: E402
 
 TOOL_PATH = Path(__file__).resolve()
 
-# The markers the evaluation itself uses to recognise a failed call
-# (`audit_benchmark_eval.py:820-823`). Kept in one place so a future edit to
-# either side is visible as a mismatch rather than as silently fewer samples.
-FAILURE_MARKERS: Tuple[str, ...] = ("调用失败", "call failed", "未配置推理后端")
+# The markers the evaluation itself uses to recognise a failed call, in two
+# families that need different repairs. The evaluation names them at two levels
+# with slightly different spellings (`audit_benchmark_eval.py:820-822` for the
+# static-llm sample state, `:1134-1136` for the finding-level state), so these are
+# the unions. Keeping both in one place means a change on either side shows up here
+# as a mismatch to reconcile, rather than as silently fewer affected samples.
+CALL_FAILURE_MARKERS: Tuple[str, ...] = ("调用失败", "call failed", "未配置推理后端")
+PARSE_FAILURE_MARKERS: Tuple[str, ...] = ("无法解析", "解析失败", "parse error", "decode response")
+FAILURE_MARKERS: Tuple[str, ...] = CALL_FAILURE_MARKERS + PARSE_FAILURE_MARKERS
 
 # The recorded run plans the source matrix uses, and the audit mode the holdout
 # runs were taken under. A run whose metadata disagrees is refused: replaying it
@@ -87,6 +116,11 @@ DEFAULT_EXTENSIONS = ".py"
 DEFAULT_MAX_FINDINGS = 50
 # `pure-llm`/`pure-llm-checklist` populate `rules_count`; `static-llm` reports 0.
 STATIC_LLM_RULES_COUNT = 0
+# The production caps are 200 tokens for a finding and 300 for a file summary.
+# 800 leaves room for a verdict object to close even when the model rambles first,
+# and stays inside the replay's own timeout: at the measured 7.6-11.4 tok/s decode
+# it is at most about 105 s against a 300 s cap.
+DEFAULT_MIN_NUM_PREDICT = 800
 
 MATERIAL_RULE = (
     "a failed call is material iff the counterfactual predicted_label differs "
@@ -106,15 +140,28 @@ def tool_digest() -> str:
 def failure_kind(reason: str) -> Optional[str]:
     """Classify one failure reason, or None when the call did not fail.
 
-    ``timeout`` is separated from ``other`` because the counterfactual's single
-    changed parameter can only repair a timeout. A failure that is not a timeout
-    tells us something else: it will fail again in the replay, which is itself
-    worth knowing rather than being averaged into the same bucket.
+    Three kinds, because they need different repairs and only one of them is a
+    timeout:
+
+    * ``unparseable`` -- the call returned, but the generation was cut off by
+      ``num_predict`` before the JSON closed, so ``extract_json_response`` had
+      nothing to parse. More time cannot repair this; only more tokens can.
+    * ``timeout`` -- the call raised the 60 s HTTP cap. More tokens cannot repair
+      this; only more time can.
+    * ``other`` -- a call failure that is neither. It will fail again in the
+      replay, which is worth knowing on its own rather than averaging into either
+      bucket.
     """
     text = reason or ""
     if not any(marker in text for marker in FAILURE_MARKERS):
         return None
-    if "timed out" in text or "timeout" in text.lower():
+    # Checked before the timeout wording, and the two are disjoint in practice: a
+    # timed-out call raises before there is any text to parse, while a truncated
+    # generation returns successfully. When both could match, the parse signature
+    # is the more specific one.
+    if any(marker in text for marker in PARSE_FAILURE_MARKERS):
+        return "unparseable"
+    if "timed out" in text.lower() or "timeout" in text.lower():
         return "timeout"
     return "other"
 
@@ -214,24 +261,38 @@ def assert_output_dir_free(out_dir: Path) -> None:
 
 
 @contextmanager
-def patched_llm_timeout(seconds: int) -> Iterator[None]:
-    """Force ``timeout=seconds`` on every ``urllib.request.urlopen`` call.
+def patched_call_budget(seconds: int, min_num_predict: int) -> Iterator[None]:
+    """Let a truncated or slow call finish: floor the token cap, raise the timeout.
 
-    ``_call_ollama`` imports ``urllib.request`` inside the function body, so it
-    resolves ``urlopen`` at call time through the module object and sees this
-    patched attribute. The original is restored on exit even if the body raises.
+    Two knobs because there are two ways a call is cut short and neither knob can
+    repair the other's failure -- more time does not help a generation that had
+    already stopped, and more tokens do not help a call that never returned.
+
+    ``_call_ollama`` imports ``urllib.request`` inside its own body, so it resolves
+    ``urlopen`` at call time through the module object and sees the patched
+    attribute. It receives ``num_predict`` as an argument, so the cap is raised by
+    wrapping the method; ``max`` rather than assignment so an already-larger budget
+    is left alone.
+
+    Both originals are restored on exit, including when the body raises.
     """
-    original = urllib.request.urlopen
+    original_urlopen = urllib.request.urlopen
+    original_call = LLMSecurityAnalyzer._call_ollama
 
-    def wrapper(req: Any, *args: Any, **kwargs: Any) -> Any:
+    def urlopen_wrapper(req: Any, *args: Any, **kwargs: Any) -> Any:
         kwargs["timeout"] = seconds
-        return original(req, *args, **kwargs)
+        return original_urlopen(req, *args, **kwargs)
 
-    urllib.request.urlopen = wrapper  # type: ignore[assignment]
+    def call_wrapper(self: Any, prompt: str, num_predict: int = 200) -> Any:
+        return original_call(self, prompt, max(num_predict, min_num_predict))
+
+    urllib.request.urlopen = urlopen_wrapper  # type: ignore[assignment]
+    LLMSecurityAnalyzer._call_ollama = call_wrapper  # type: ignore[assignment]
     try:
         yield
     finally:
-        urllib.request.urlopen = original  # type: ignore[assignment]
+        urllib.request.urlopen = original_urlopen  # type: ignore[assignment]
+        LLMSecurityAnalyzer._call_ollama = original_call  # type: ignore[assignment]
 
 
 def sample_specs(corpus_list: Path) -> Dict[str, ev.SampleSpec]:
@@ -300,6 +361,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         default=REPO_ROOT / "models/audit/benchmarks/audit-holdout/corpus-list.json")
     parser.add_argument("--timeout", type=int, default=300,
                         help="the HTTP timeout the replay uses instead of the production 60 s")
+    parser.add_argument("--min-num-predict", type=int, default=DEFAULT_MIN_NUM_PREDICT,
+                        help="floor under num_predict, so a generation truncated by the "
+                             "production 200/300-token cap gets room to close its JSON")
     parser.add_argument("--max-findings", type=int, default=DEFAULT_MAX_FINDINGS)
     parser.add_argument("--runs", default=None,
                         help="comma-separated run dirs to cover; default is all of them")
@@ -344,10 +408,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     specs = sample_specs(args.corpus_list)
 
     print(f"replaying with HTTP timeout {args.timeout} s instead of the production 60 s")
-    print("this wrapper is the ONLY difference from the production path")
+    print(f"replaying with num_predict floored at {args.min_num_predict} "
+          f"(production: 200 for a finding, 300 for a file summary)")
+    print("these two wrappers are the ONLY difference from the production path")
 
     rows: List[Dict[str, Any]] = []
-    with patched_llm_timeout(args.timeout):
+    with patched_call_budget(args.timeout, args.min_num_predict):
         for key in sorted(affected):
             run_name, sample_id = key.split("/", 1)
             spec = specs.get(sample_id)
@@ -401,6 +467,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "source_base_dir": str(args.base_dir),
         "patched_http_timeout_sec": args.timeout,
         "production_http_timeout_sec": 60,
+        "patched_min_num_predict": args.min_num_predict,
+        "production_num_predict": {"finding": 200, "file": 300},
         "material_rule": MATERIAL_RULE,
         "affected_samples": len(rows),
         "material_samples": sum(1 for row in rows if row["material"]),

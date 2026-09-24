@@ -1,12 +1,21 @@
 # tests/test_llm_timeout_counterfactual.py
 """The timeout counterfactual measures a bias, so its own accounting must not bias it.
 
-The tool exists to size a defect that moves both columns of the comparison in
-opposite directions: a failed call drops a true positive (lowering recall) and
-also drops a would-be false positive (improving FPR). Four properties decide
-whether its answer can be trusted, and each has a test here that fails if it
-stops holding:
+The tool exists to size a defect with a direction that had to be corrected once
+already. A failed call is not silently benign: an UNCERTAIN verdict on a HIGH or
+MEDIUM finding drives the risk level to HIGH, and under `assist` that blocks the
+sample (`code_security_analyzer.py:855-875`). In this corpus -- which contains no
+LOW-severity findings at all -- the defect therefore only inflates FPR and never
+costs recall, and it is not symmetric between the arms.
 
+Five properties decide whether the tool's answer can be trusted, and each has a
+test here that fails if it stops holding:
+
+* both ways a call can fail are found. A call can raise the 60 s timeout
+  (`llm_unavailable`) or return a generation that `num_predict` cut off before the
+  JSON closed (`parse_error`). Counting only the first undercounts the affected
+  samples, and the replay has to repair both, because neither repair fixes the
+  other's failure.
 * both levels of failure are found. A file-level failure lives on the file summary
   and a finding-level failure on the finding, and the policy reads the file
   summary. Counting only findings undercounts the affected samples, which is the
@@ -42,9 +51,26 @@ class FailureDiscoveryTest(unittest.TestCase):
     def test_timeout_is_classified_as_timeout(self):
         self.assertEqual(cf.failure_kind("ollama 调用失败: timed out"), "timeout")
 
+    def test_truncated_generation_is_classified_as_unparseable(self):
+        # The production wording, verbatim from `_call_ollama`'s parse branch.
+        self.assertEqual(
+            cf.failure_kind("无法解析模型输出: {\"verdict\": \"MALICIO"),
+            "unparseable",
+        )
+
+    def test_the_finding_level_parse_marker_is_recognised_too(self):
+        # `classify_llm_state` accepts "decode response", which the sample-level
+        # check does not. Missing it would drop a whole marker family.
+        self.assertEqual(cf.failure_kind("decode response failed"), "unparseable")
+
+    def test_unparseable_is_never_filed_as_a_timeout(self):
+        # The two need opposite repairs, so conflating them would make the replay
+        # claim to have tested a repair it did not apply.
+        self.assertNotEqual(cf.failure_kind("无法解析: <html>"), "timeout")
+
     def test_other_call_failure_is_not_a_timeout(self):
-        # Only a timeout can be repaired by the one parameter this tool changes,
-        # so it must not be filed under the same name.
+        # Only time and tokens can repair the two known families, so a failure
+        # that is neither must not be filed under the same name.
         self.assertEqual(cf.failure_kind("ollama 调用失败: connection refused"), "other")
 
     def test_success_is_not_a_failure(self):
@@ -62,6 +88,14 @@ class FailureDiscoveryTest(unittest.TestCase):
         # be missed by a finding-only scan.
         failures = cf.find_failed_calls(report_with(file_reason="ollama 调用失败: timed out"))
         self.assertEqual([f["level"] for f in failures], ["file"])
+
+    def test_an_unparseable_generation_is_found_at_both_levels(self):
+        failures = cf.find_failed_calls(
+            report_with(finding_reason="无法解析模型输出: {",
+                        file_reason="无法解析: {")
+        )
+        self.assertEqual(sorted(f["level"] for f in failures), ["file", "finding"])
+        self.assertEqual({f["kind"] for f in failures}, {"unparseable"})
 
     def test_both_levels_are_counted_separately(self):
         failures = cf.find_failed_calls(
@@ -157,7 +191,13 @@ class AffectedSampleTest(unittest.TestCase):
             self.assertEqual(cf.affected_samples(base), {})
 
 
-class TimeoutPatchTest(unittest.TestCase):
+class CallBudgetPatchTest(unittest.TestCase):
+    def setUp(self):
+        self.original_call = cf.LLMSecurityAnalyzer._call_ollama
+
+    def tearDown(self):
+        cf.LLMSecurityAnalyzer._call_ollama = self.original_call  # type: ignore[assignment]
+
     def test_the_patch_forces_the_longer_timeout_and_is_restored(self):
         # The production call passes timeout=60 explicitly, so a wrapper that only
         # supplies a default would leave the cap in place and measure nothing.
@@ -177,7 +217,7 @@ class TimeoutPatchTest(unittest.TestCase):
 
         urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
         try:
-            with cf.patched_llm_timeout(300):
+            with cf.patched_call_budget(300, 800):
                 urllib.request.urlopen("http://x", timeout=60)
         finally:
             urllib.request.urlopen = original  # type: ignore[assignment]
@@ -185,10 +225,46 @@ class TimeoutPatchTest(unittest.TestCase):
         self.assertEqual(seen["timeout"], 300)
         self.assertIs(urllib.request.urlopen, original)
 
-    def test_the_patch_is_restored_even_when_the_body_raises(self):
+    def test_the_patch_raises_a_truncating_cap(self):
+        # 200 is the production finding cap and is what truncates the JSON. A
+        # timeout-only replay would leave it in place and fail the same way.
+        seen = {}
+
+        def fake_call(self, prompt, num_predict=200):
+            seen["num_predict"] = num_predict
+            return {"verdict": "BENIGN"}
+
+        cf.LLMSecurityAnalyzer._call_ollama = fake_call  # type: ignore[assignment]
+        with cf.patched_call_budget(300, 800):
+            cf.LLMSecurityAnalyzer()._call_ollama("prompt", 200)
+
+        self.assertEqual(seen["num_predict"], 800)
+
+    def test_the_patch_does_not_lower_an_already_larger_cap(self):
+        # The file-level call already asks for 300, and a floor must be a floor:
+        # lowering it would change the prompt's budget in the other direction.
+        seen = {}
+
+        def fake_call(self, prompt, num_predict=200):
+            seen["num_predict"] = num_predict
+            return {"verdict": "BENIGN"}
+
+        cf.LLMSecurityAnalyzer._call_ollama = fake_call  # type: ignore[assignment]
+        with cf.patched_call_budget(300, 800):
+            cf.LLMSecurityAnalyzer()._call_ollama("prompt", 1200)
+
+        self.assertEqual(seen["num_predict"], 1200)
+
+    def test_the_cap_patch_is_restored_even_when_the_body_raises(self):
+        with self.assertRaises(RuntimeError):
+            with cf.patched_call_budget(300, 800):
+                raise RuntimeError("boom")
+        self.assertIs(cf.LLMSecurityAnalyzer._call_ollama, self.original_call)
+
+    def test_the_timeout_patch_is_restored_even_when_the_body_raises(self):
         original = urllib.request.urlopen
         with self.assertRaises(RuntimeError):
-            with cf.patched_llm_timeout(300):
+            with cf.patched_call_budget(300, 800):
                 raise RuntimeError("boom")
         self.assertIs(urllib.request.urlopen, original)
 
