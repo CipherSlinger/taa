@@ -141,7 +141,10 @@ print(samples, findings)
     # `current` alone invites a wrong reading: it is anon (real pressure) plus
     # file (reclaimable page cache), and a large file share is not proximity to
     # the limit. Reported decomposed so the anon figure is the one read.
-    echo "HEARTBEAT $(date -u +%H:%M:%SZ) runs=$nrun failed_samples=$prev_unc failed_findings=$prev_uncf oom_kill=$prev_oom llama_pid=$prev_pid mem_anon=${anonm:-?}MiB mem_file=${filem:-?}MiB mem_current=${memc:-?}MiB mem_max=${memmax:-?}MiB"
+    # `all_runs` is in the label because these two counts span every run directory
+    # under $OUT, not the run in flight. The alert above is a per-poll delta and is
+    # unaffected; the heartbeat's totals are not per-run and must not be read as such.
+    echo "HEARTBEAT $(date -u +%H:%M:%SZ) runs=$nrun failed_samples_all_runs=$prev_unc failed_findings_all_runs=$prev_uncf oom_kill=$prev_oom llama_pid=$prev_pid mem_anon=${anonm:-?}MiB mem_file=${filem:-?}MiB mem_current=${memc:-?}MiB mem_max=${memmax:-?}MiB"
   fi
   sleep "$POLL_INTERVAL"
 done

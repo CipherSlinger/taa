@@ -153,7 +153,7 @@ class FieldAlignmentTest(WatchTestBase):
         # figure, so this asserted pair comes back as "runs=2154
         # uncertain_total=3" and the four memory labels are all off by one.
         log = self.watch("none")
-        self.assertIn("runs=3 failed_samples=0 failed_findings=0", log)
+        self.assertIn("runs=3 failed_samples_all_runs=0 failed_findings_all_runs=0", log)
         self.assertIn(
             "mem_anon=2154MiB mem_file=1954MiB mem_current=4133MiB mem_max=7168MiB",
             log,
@@ -163,7 +163,7 @@ class FieldAlignmentTest(WatchTestBase):
         # The negative control for the test above: the alignment must not depend
         # on which branch the runner happens to be in.
         log = self.watch("402")
-        self.assertIn("runs=3 failed_samples=0 failed_findings=0", log)
+        self.assertIn("runs=3 failed_samples_all_runs=0 failed_findings_all_runs=0", log)
         self.assertIn("llama_pid=402", log)
 
 
@@ -178,7 +178,7 @@ class FailedArbitrationCountTest(WatchTestBase):
     def test_a_failed_call_is_counted_even_though_the_verdict_is_malicious(self):
         # The shape a real failure takes: the UNCERTAIN is lifted to CRITICAL and
         # the verdict reads MALICIOUS, so the verdict carries no trace of it.
-        # Against the old verdict-based count this asserts "failed_samples=0" and
+        # Against the old verdict-based count this asserts "failed_samples_all_runs=0" and
         # fails, which is the point of the fixture.
         self.sample(
             "regex-run2", "dd-0019",
@@ -186,7 +186,7 @@ class FailedArbitrationCountTest(WatchTestBase):
              "statistics": {"uncertain": 2}},
         )
         log = self.watch("402")
-        self.assertIn("failed_samples=1 failed_findings=2", log)
+        self.assertIn("failed_samples_all_runs=1 failed_findings_all_runs=2", log)
 
     def test_an_uncertain_verdict_alone_is_not_a_failed_call(self):
         # The other direction, so the fix cannot be "count either signal": a
@@ -197,7 +197,7 @@ class FailedArbitrationCountTest(WatchTestBase):
              "statistics": {"uncertain": 0}},
         )
         log = self.watch("402")
-        self.assertIn("failed_samples=0 failed_findings=0", log)
+        self.assertIn("failed_samples_all_runs=0 failed_findings_all_runs=0", log)
 
 
 class RunnerLivenessTest(WatchTestBase):
