@@ -2105,3 +2105,23 @@ plan 第 289 行（2026-09-23，H0 捕获工具实测）：**同一 `CMD_001` �
 1. **不得**把「fail-closed 分支」当单数使用；凡出现处须写明是**扫描完备性支**（恒不触发）还是**仲裁结果支**（活）。
 2. **不得**引用第 253 行的 OOM 归因；引用「按构造可达」须带第 251 行的软化；OOM 成因写作**未归因**。
 3. **不得**把 `attribution_precision` 当测量值；且必须写明本判定的层是 **Python harness `assist`**，生产层（Go `verifier.go`）下的留出集读数**未取得**。
+
+## 43. 报告落点、以及一次被交叉验证拦下的工具误读（2026-09-28）
+
+### A. 报告落点：`models/audit/audit-results/holdout/engine-compare/REPORT.md`（新建，不覆盖）
+
+现场勘定：
+
+- spec（S23:8、S22:306/444）把**拟合集**的证据报告定为 `models/audit/audit-results/engine-compare/REPORT.md`，并写「产出**单一报告**」——那是 S22 那次研究的口径。
+- 但 `models/audit/audit-results/` 下**已有** `holdout/engine-compare/`（含 H1 期的 `regex-run1`、`corpus-parity-go-vs-python-regex.json`）⇒ 留出集研究**有自己的**按语料分立的落点。
+- **决定**：H2 报告写 **`models/audit/audit-results/holdout/engine-compare/REPORT.md`**（**新建**）。**理由**：覆盖拟合集的 `REPORT.md` 会毁掉其中 §7.5 的**生产层**读数（而 §42 B 正要求报告引用它）。这是「新建而非覆盖」，可逆、低风险；如你要求「单一报告」，改为在拟合集报告里**新增一节**即可，同样不必删任何东西。
+
+**提交口径（已现场核实，与 spec 的说法一致）**：`.gitignore:7` 是 `models/`（第 13 行 `models/audit/audit-results/` 是冗余重申）⇒ **`models/` 整棵树被忽略**，故新报告与产物的提交**必须 `git add -f`**。实测：`git ls-files models/audit/audit-results/holdout/` **返回空** ⇒ 留出集侧产物目前**一份都没被跟踪**（拟合集侧已跟踪）。
+
+### B. 一次被交叉验证拦下的工具误读（本形状第六次）
+
+我先对**已存在**的 `engine-compare/REPORT.md` 跑 `git check-ignore -v`，得到**空输出**，据此险些登记「`REPORT.md` 未被忽略、spec 那条『必须 `-f`』是错的」。
+
+真相：**`git check-ignore` 对已被跟踪的文件一律不报规则**，与忽略规则无关——它回答的是「这个路径**会**被忽略吗」，而一个已跟踪的路径**永远不会**。我用一个**新**路径（`holdout/REPORT.md`）交叉验证，它立刻报出 `.gitignore:7:models/`，才没写错。
+
+**这是同一形状的第六次**：把一个工具的输出当成了它**并不表示**的东西。前五次为 §30 C（共现当因果）、§39（只比 `HH:MM:SS` 不比日期）、§31（把「相邻」当「相关」）、§41 B（`ps` 的 `%CPU` 对僵尸是冻结的终身平均）、以及更早的 `grep -v grep`。**新增规矩：对「是否被忽略」这类判定，凡结论为「否」，必须再用一个确信应当命中的对照路径复核。**
