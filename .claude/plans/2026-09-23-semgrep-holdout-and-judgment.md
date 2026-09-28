@@ -1948,3 +1948,45 @@ python3 models/audit/tools/engine_compare_report.py \
 1. **运行健康的判据**：我一度据「55→57 用了 11 分钟」怀疑变慢，**该怀疑撤回**——`run2` 在同一段用了同样长的时间。慢的原因是语料前段为体量最大的 `dd-*` 包（每样本约 20 次调用）。
 2. **对 §35 的支持**：`run2` 与 `run3` 同日同节奏 ⇒ §35 的跨日漂移**只存在于 pair 1 与 pair 2/3 之间**，pair 2/3 内部无此漂移。这与 §21 F「机器未退化」方向一致。
 3. **一次我自己的查询故障**：我查「近 15 分钟」时只比对 `HH:MM:SS` 而未比日期，而 `ollama.log` **跨 4 天**，于是扫进了 09-24 的行（含 §17.11 那次受载中止矩阵的 500），得出「47 个 500」的假警。加日期过滤后实测为 **41 次请求、全部 200**、单次 13–18 s。**这是同一形状错误的第四次**：把「我看到的」当成了「当下发生的」——空结果先怀疑过滤器，**带时间窗的查询先确认时间轴**。
+
+## 40. 收尾序列的 H2.3 / H2.6 定义，及 §32 B 与要求 8 是同一件事（2026-09-28）
+
+从 spec §10 的阶段 H 行与 plan §7 取出定义，使收尾序列完整可执行。
+
+### A. 两条的定义
+
+- **H2.3 = 要求 8 的 Prompt 等价性逐样本比对**（plan 第 215 行）。工具 `prompt_equivalence.py`，产出**逐条归因**。
+  - **它从不调用 LLM**：capture 用 `backend="none"`，唯一 HTTP 出口 `_call_ollama`（`code_security_analyzer.py:718-741`）只在 `backend == "ollama"` 分支内，结构性不可达。
+  - **但它会起真实 semgrep 子进程**（`load_module_scanner(engine=semgrep)`）⇒ **必须在 H2.1 之后串行**（与 H2.1 并发会叠加 semgrep 负载，即 `be-host-memory-ceiling` 那条）。
+- **H2.6 = 判定，按 §2 口径、0 容差**（plan 第 218 行）。配套口径（第 1163 行）：报告里的**未仲裁率必须与 `statistics.uncertain` 一致**，**不是**与 verdict 分布一致（即 §23 的口径）。
+
+### B. 要求 8 的违规已**预先登记**，且本轮不修
+
+plan 第 289 行（2026-09-23，H0 捕获工具实测）：**同一 `CMD_001` 同一行**，两臂送出的字段不同——
+
+| 字段 | regex 臂 | semgrep 臂 |
+| --- | --- | --- |
+| `category` | `命令执行` | `execution` |
+| `description` | `shell 命令执行或危险外部命令 — 可能绕过参数化保护` | `Suspicious subprocess execution detected in Python code` |
+
+即**两臂用不同措辞向模型描述同一条规则**；加上 §6.5 的上下文差异，构成要求 8 的违规。计划明写：**本轮不修**（修它等于改判定输入，会使已有证据失效），H2.3 逐条归因并**在报告中写明**。这与 §22「不刷规则」一致。
+
+### C. §32 B 与 H2.3 是同一件事（一处已完成的采样）
+
+§32 B 对 `dd-0007@CMD_001@228` 做的字段比对，**正是 H2.3 的对象**，且实测到的差异字段与第 289 行登记的完全同类：`category`、`description`、`context_before`、`context_after`、`ast_enclosing_block`、`taint_trace`、`engine` 皆不同。
+
+⇒ 两点结论：
+
+1. **H2.3 不必从零开始**：§32 B 已给出「差异存在于哪些字段」的实测清单，H2.3 的工作量是把它**逐样本铺开**并**归因**。
+2. **要求 8 的违规有实测后果，不只是形式问题**：`dd-0019` 只在 regex 侧失败、`dd-0018` 只在 semgrep 侧失败（§34 B）——**同一条规则、同一行、同一个模型，仅因两臂措辞不同就得到不同的解析结果**。这是要求 8 违规的**可测量代价**，报告须把这两件事连起来写。
+
+### D. 修正后的完整收尾序列（容器内、串行）
+
+1. `gate_rescore.py --base-dir …/h2-assist-unloaded --validate`（只读）
+2. `gate_rescore.py … --out-dir …/h2-gate-unloaded`
+3. `engine_compare_report.py --base-dir …/h2-assist-unloaded --out …`（**预期 exit 1**）
+4. `engine_compare_report.py --base-dir …/h2-gate-unloaded --out …`（**预期 exit 1**）
+5. 反事实重放的 **`Δrecall` 侧**（§30）
+6. **H2.3** `prompt_equivalence.py`（起 semgrep，串行）
+7. **H2.6** 判定（0 容差）
+8. **报告，然后停**（§22）
