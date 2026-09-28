@@ -28,16 +28,25 @@
 #    wave of failures, which is the one event this branch exists to make loud.
 #
 # 3. The runner's liveness and the cgroup's memory. A request in flight when the
-#    container OOM-kills llama-server gets a connection failure, not a timeout, and
-#    the killed server cannot write its own 500 line -- so the artifact and the log
-#    both stay quiet about it. The runner's ABSENCE is therefore its own alert, not
-#    something to be inferred from a changed pid: between the kill and ollama
-#    serve's respawn there is no pid to compare against. The respawn is reported
-#    separately, because the first calls after it pay a ~29 s model load on top of
-#    their decode and land close to the 60 s cap. The heartbeat reports the
-#    cgroup's memory decomposed into anon and file rather than as current/max,
-#    because `current` includes reclaimable page cache; the anon figure is the
-#    one that means pressure.
+#    container OOM-kills llama-server comes back as an HTTP Error 500, not a
+#    connection failure and not a timeout: ollama itself survives and answers for
+#    the dead runner. Measured 2026-09-28 (plan section 25), where the one oom_kill
+#    and the one 500 across four rounds are the same event. That makes the three
+#    failure modes separable after the fact -- timed out, HTTP 500, unparseable --
+#    which is why the report has to carry the oom_kill count next to the failure
+#    counts rather than a single "not arbitrated" total.
+#
+#    The runner's ABSENCE is its own signal, because between the kill and ollama
+#    serve's respawn there is no pid to compare against -- but absence has two
+#    causes and only one of them is a fault. ollama unloads an idle model when its
+#    keep_alive window lapses, and stretches of samples that need no LLM call make
+#    that routine here. The discriminator is the oom_kill counter this probe
+#    already reads, so the branch below reports a kill and an unload separately
+#    rather than calling both of them "OOM kill or crash". In both cases the next
+#    call pays a model load on top of its decode and lands closer to the 60 s cap.
+#    The heartbeat reports the cgroup's memory decomposed into anon and file
+#    rather than as current/max, because `current` includes reclaimable page
+#    cache; the anon figure is the one that means pressure.
 #
 # Emits a line only when something changes, so that silence means "unchanged", and
 # a heartbeat every 30 polls so that silence cannot be confused with a dead watch.
@@ -117,13 +126,32 @@ print(samples, findings)
     fi
     prev_unc=$fsamp
     prev_uncf=$ffind
+    # Whether the cgroup killed something in this poll. Computed before prev_oom is
+    # advanced, because the liveness branch below needs the answer and prev_oom is
+    # overwritten on the next line.
+    oom_moved=0
     if [ "$prev_oom" -ge 0 ] && [ "${oom:-0}" != "$prev_oom" ]; then
+      oom_moved=1
       echo "ALERT $(date -u +%H:%M:%SZ) cgroup oom_kill $prev_oom -> $oom"
     fi
     prev_oom=${oom:-0}
     if [ -z "$pid_now" ]; then
       if [ "$prev_present" = "1" ]; then
-        echo "ALERT $(date -u +%H:%M:%SZ) llama-server GONE (was $prev_pid): OOM kill or crash; every LLM call in this window fails"
+        # A missing runner is not by itself a kill. ollama unloads an idle model once
+        # its keep_alive window lapses (five minutes by default), and this matrix has
+        # long stretches of samples that need no LLM call at all, so an unload is a
+        # routine event here rather than a fault. Measured on 2026-09-28: the runner
+        # disappeared around 05:01:51 with oom_kill unchanged at 1, and the next call
+        # reloaded it ("llama-server started in 5.79 seconds") and returned 200. Read
+        # as a kill, that would have put an OOM in the report that never happened and,
+        # worse, asserted that calls in the window had failed when the one that
+        # followed it succeeded. The discriminator is the counter the watch already
+        # reads, so the two cases are separated rather than guessed at.
+        if [ "$oom_moved" = "1" ]; then
+          echo "ALERT $(date -u +%H:%M:%SZ) llama-server GONE (was $prev_pid) after an OOM kill: the request in flight fails, and the rest resume on the respawn"
+        else
+          echo "INFO $(date -u +%H:%M:%SZ) llama-server unloaded while idle (was $prev_pid, oom_kill unchanged at ${oom:-0}): not a fault; the next call reloads it and pays the model load"
+        fi
       fi
       prev_present=0
     else

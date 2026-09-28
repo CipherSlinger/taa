@@ -29,6 +29,17 @@ Two such branches were found by reading it and are pinned here:
   failures -- the event this branch exists to make loud -- would have been mostly
   invisible. `FailedArbitrationCountTest` pins both directions.
 
+* The runner-liveness branch treated every disappearance as a kill. Measured on
+  2026-09-28: the runner vanished at ~05:01:51 with `oom_kill` unchanged at 1,
+  because ollama unloads an idle model once keep_alive lapses, and this matrix has
+  long stretches of samples needing no LLM call. The next call reloaded it
+  ("llama-server started in 5.79 seconds") and returned 200 -- so the old alert
+  asserted that calls in the window had failed when the call that followed it
+  succeeded. The branch now reads the `oom_kill` counter the probe already
+  collects and reports a kill and an unload separately.
+  `RunnerDisappearanceTest` pins both, because a fix that reports everything as an
+  unload would be worse than the bug: the OOM path is the one that matters.
+
 The watch drives `docker exec`, `ps` and the cgroup files, so the test supplies
 all three: a fake docker that runs the probe locally instead of in the
 container, a fake ps whose runner line follows a scripted sequence, and a
@@ -66,6 +77,19 @@ case "$1" in
   sh)
     shift       # sh
     shift       # -c
+    # Advance the scripted oom_kill counter when the scenario set one, so a test
+    # can make it move between polls the way a real kill does. The probe itself
+    # only reads the file, so a fixture that never changes can express "no kill"
+    # but not "a kill happened between these two polls" -- and that difference is
+    # exactly what the liveness branch now branches on.
+    if [ -n "${FAKE_OOM_SEQUENCE:-}" ]; then
+      n=$(cat "$FAKE_OOM_COUNTER" 2>/dev/null || echo 0)
+      n=$((n + 1))
+      echo "$n" > "$FAKE_OOM_COUNTER"
+      v=$(echo "$FAKE_OOM_SEQUENCE" | cut -d, -f"$n")
+      [ -z "$v" ] && v=$(echo "$FAKE_OOM_SEQUENCE" | awk -F, '{print $NF}')
+      echo "oom_kill $v" > "$CGROUP/memory.events"
+    fi
     exec sh -c "$1"
     ;;
 esac
@@ -124,12 +148,20 @@ class WatchTestBase(unittest.TestCase):
         self.env["POLL_INTERVAL"] = "0.5"
         self.env["HEARTBEAT_EVERY"] = "1"
         self.env["FAKE_PS_COUNTER"] = str(root / "ps-counter")
+        self.env["FAKE_OOM_COUNTER"] = str(root / "oom-counter")
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def watch(self, ps_sequence, seconds=5):
+    def watch(self, ps_sequence, seconds=5, oom_sequence=None):
         self.env["FAKE_PS_SEQUENCE"] = ps_sequence
+        # Unset rather than left over: a scenario with no scripted kills must keep
+        # the fixture's constant oom_kill, or the "unload" test would silently be
+        # measuring the "kill" path.
+        if oom_sequence is None:
+            self.env.pop("FAKE_OOM_SEQUENCE", None)
+        else:
+            self.env["FAKE_OOM_SEQUENCE"] = oom_sequence
         # `timeout` is expected to kill it: the watch loops until interrupted.
         done = subprocess.run(
             ["timeout", str(seconds), "bash", str(WATCH)],
@@ -200,14 +232,37 @@ class FailedArbitrationCountTest(WatchTestBase):
         self.assertIn("failed_samples_all_runs=0 failed_findings_all_runs=0", log)
 
 
-class RunnerLivenessTest(WatchTestBase):
-    def test_the_gone_alert_fires_when_the_runner_disappears(self):
-        log = self.watch("402,402,none")
-        self.assertIn("llama-server GONE", log)
+class RunnerDisappearanceTest(WatchTestBase):
+    """Absence has two causes, and only one of them is the fault being watched for.
 
-    def test_no_gone_alert_while_the_runner_stays_up(self):
+    Both scenarios put the disappearance and the (absent or present) counter move
+    in the same poll, because that is the only alignment in which the branch can
+    tell them apart -- a kill in one poll and a disappearance in the next is a
+    sequence the watch never has to name.
+    """
+
+    def test_an_unload_with_no_kill_is_not_reported_as_one(self):
+        # The regression: ollama unloads an idle model once keep_alive lapses, and
+        # most samples here need no LLM call, so this is routine. The old branch
+        # called it "OOM kill or crash" and asserted that calls in the window had
+        # failed -- while the call that followed it reloaded the runner and
+        # returned 200 on 2026-09-28.
+        log = self.watch("402,none")
+        self.assertIn("unloaded while idle", log)
+        self.assertNotIn("GONE", log)
+
+    def test_a_kill_in_the_same_poll_is_reported_as_one(self):
+        # The other direction, and the one that matters: a disappearance that comes
+        # with a moving oom_kill counter is the event this branch exists for.
+        # Against a fix that reported every disappearance as an unload, this fails.
+        log = self.watch("402,none", oom_sequence="0,1")
+        self.assertIn("llama-server GONE", log)
+        self.assertIn("after an OOM kill", log)
+
+    def test_no_alert_while_the_runner_stays_up(self):
         log = self.watch("402")
         self.assertNotIn("GONE", log)
+        self.assertNotIn("unloaded", log)
 
 
 if __name__ == "__main__":
