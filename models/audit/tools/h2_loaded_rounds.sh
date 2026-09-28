@@ -49,6 +49,14 @@ PRESS_LEVELS=${PRESS_LEVELS:-"0 4 8 12"}
 PRESS_PROBES=${PRESS_PROBES:-10}
 LOAD=${LOAD:-1}
 
+# RESUME=1 keeps the runs that already finished and re-runs only the rest. It exists
+# because the matrix takes hours and a machine can go down in the middle of it (it
+# did: run 2 was cut off by a host reboot four days in). Without it, recovering means
+# re-running everything and throwing away the runs already measured. What counts as
+# "finished" is decided by the run's own artifacts, below -- never by the log, and
+# never by the directory merely existing.
+RESUME=${RESUME:-0}
+
 mkdir -p "$OUT"
 STOP="$OUT/.stop-load"
 
@@ -116,9 +124,40 @@ warm_model() {
 echo "===== H2.1 matrix start: $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
 echo "policy=$POLICY model=$MODEL seed=$SEED rules=$RULES"
 echo "load=$LOAD ($([[ "$LOAD" == "1" ]] && echo 'co-location viability reading' || echo 'primary judgement, idle machine'))"
+# Read once, and used for both the banner and the completeness test below: the two
+# must agree on how many samples a run is supposed to have, or "complete" would be
+# measured against a different number than the one printed.
+EXPECTED=$(python3 -c "import json;print(len(json.load(open('$CORPUS_LIST'))['samples']))")
+
 echo "corpus=$CORPUS_ROOT"
-echo "samples=$(python3 -c "import json;print(len(json.load(open('$CORPUS_LIST'))['samples']))")"
+echo "samples=$EXPECTED"
 echo "output=$OUT"
+
+# Printing a run's matrix is done in two places (a run that just finished, and a run
+# kept by RESUME), and it must read the same file the same way in both: the matrix is
+# the pipeline's own count, not a recomputation, so it is read, never derived.
+report_confusion() {
+  python3 -c "
+import json
+try:
+    c = json.load(open('$1/confusion-matrix.json'))
+    print('  tp=%(tp)s fp=%(fp)s tn=%(tn)s fn=%(fn)s' % c)
+except Exception as e:
+    print('  confusion matrix unreadable:', e)
+"
+}
+
+# A run counts as finished only when its own artifacts say so: the confusion matrix
+# exists (the driver writes it after the last sample is scored) AND every sample has a
+# report. The conjunction is the point -- a killed run can leave either one behind,
+# and trusting a partial run would score a matrix that measured fewer samples than the
+# corpus with nothing anywhere reporting an error.
+run_is_complete() {
+  local dir=$1 got
+  [[ -f "$dir/confusion-matrix.json" ]] || return 1
+  got=$(find "$dir" -name audit_report.json 2>/dev/null | wc -l)
+  [[ "$got" -eq "$EXPECTED" ]]
+}
 
 warm_model || exit 1
 
@@ -126,6 +165,11 @@ for entry in "regex 1" "semgrep 1" "regex 2" "semgrep 2" "regex 3" "semgrep 3"; 
   set -- $entry
   engine=$1; index=$2
   run_dir="$OUT/$engine-run$index"
+  if [[ "$RESUME" == "1" ]] && run_is_complete "$run_dir"; then
+    echo "----- $engine run $index (already complete, kept) -----"
+    report_confusion "$run_dir"
+    continue
+  fi
   rm -rf "$run_dir"
   started=$(date +%s)
   echo "----- $engine run $index -----"
@@ -150,14 +194,7 @@ for entry in "regex 1" "semgrep 1" "regex 2" "semgrep 2" "regex 3" "semgrep 3"; 
     tail -30 "$OUT/$engine-run$index.log" >&2
     break
   fi
-  python3 -c "
-import json
-try:
-    c = json.load(open('$run_dir/confusion-matrix.json'))
-    print('  tp=%(tp)s fp=%(fp)s tn=%(tn)s fn=%(fn)s' % c)
-except Exception as e:
-    print('  confusion matrix unreadable:', e)
-"
+  report_confusion "$run_dir"
 done
 
 if [[ "$LOAD" == "1" ]]; then
