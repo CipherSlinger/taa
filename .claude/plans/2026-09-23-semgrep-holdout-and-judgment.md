@@ -1093,7 +1093,15 @@ D2 说「级联超时的偏置不利于发现多的一臂」。这是**机制推
 
 **B. 三项直接后果**
 
-1. `deploy-docker.sh --scan-engine semgrep`（刷新容器内陈旧规则）**不执行**。这一条须记明：该步骤**不依赖非劣性、本可独立做**，你仍没选它，故这是**有意的不做**，不是被谁挡住。
+1. `deploy-docker.sh --scan-engine semgrep`（刷新容器内陈旧规则）**不执行**。这一条须记明：该步骤**不依赖非劣性、本可独立做**，你仍没选它，故这是**有意的不做**，不是被谁挡住。**「陈旧」已实测坐实**，三处副本的哈希如下：
+
+   | 位置 | md5 | mtime (UTC) |
+   |---|---|---|
+   | `/opt/taa/semgrep/rules/python/rules.yaml`（**已部署，TAA 读这份**） | `34519c59…` | 2026-09-22 06:51:15 |
+   | `/root/taa/verify/models/audit/semgrep/rules/python/rules.yaml`（工作副本） | `34519c59…` | 2026-09-23 02:29:10 |
+   | `/root/taa/holdout/…/rules/python/rules.yaml`（**判据在用**） | `c06ffd2c…` | 2026-09-24 04:28:53 |
+
+   即已部署规则**早于 §18 A 的两次规则改动**——它是 09-22 的版本，而判据跑的是 09-24 的版本。故报告须写明：**本论证据链的读数与容器当前默认部署所依据的规则不是同一份**。
 2. `internal/config/config.go:287` 的 `CodeScanEngine` **保持 `regex`**，且此后是**有意的保持**，不再只是「按 spec 第 548 行暂时未切」。
 3. 接入链（本地代码接入 semgrep → `docker.sh docker` 部署 TAA+semgrep 到容器测试 → D4 拓扑：semgrep 与 LLM 同容器、真实部署时 taa+semgrep 绑定而 LLM 单独）**整条停在报告**。
 
