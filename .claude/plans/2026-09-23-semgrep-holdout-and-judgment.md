@@ -1217,4 +1217,19 @@ H2.1 矩阵照跑完（§18 F 的预登记：无论选哪条，当前矩阵都�
 2. `llm_duration_sec` 是**样本级和**；任何把它当成单次调用延迟的读数都是错的（本计划自己错过两次）。
 3. 单次调用上限 60 s、无重试，单次生成 ≤ 约 30 s ⇒ **超时现象的本质是单槽排队自持**，属**同容器部署**的风险，串行矩阵下只表现为一次性延迟（§21 F）。
 
+**G. 收尾命令序列（接口已核对，2026-09-28）**
+
+```
+# 1. 免跑派生 gate（只读校验，不写入源轮；你的「gate 能免跑就免跑」）
+gate_rescore.py --base-dir /root/taa/verify/h2-assist-unloaded --validate
+# 2. 产出 gate 基（--out-dir 必须不同于 --base-dir，源轮只读）
+gate_rescore.py --base-dir /root/taa/verify/h2-assist-unloaded \
+                --out-dir  /root/taa/verify/h2-gate-unloaded
+# 3. 两基读数（主判定 assist + 并列 gate）
+engine_compare_report.py --base-dir /root/taa/verify/h2-assist-unloaded
+engine_compare_report.py --base-dir /root/taa/verify/h2-gate-unloaded
+```
+
+**闸门（实测）**：`engine_compare_report.py:661` 在 `len(outcomes) < EXPECTED_PAIRS` 时**直接返回「证据不足」**，附 `only N of 3 pairs were analysed`。**只有 2 对时不给判据结论**——故「先 2 对就停」这条路走不通，矩阵必须跑满 3 对；pair 级读数（如 §21 G）只能手工算，不能替代工具的结论。常量：`RUN_ORDER` 6 项（严格交替）、`EXPECTED_PAIRS = 3`、`BOOTSTRAP_N = 1000`、`BOOTSTRAP_SEED = 42`。
+
 
