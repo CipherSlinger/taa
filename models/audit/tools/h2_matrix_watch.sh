@@ -15,8 +15,12 @@
 #    truth, not less: an UNCERTAIN verdict on a HIGH or MEDIUM finding lifts the
 #    sample's risk level to HIGH, and under the assist policy that blocks the sample
 #    (code_security_analyzer.py:855-875). In this corpus, which holds no LOW-severity
-#    findings at all, a failed call can only manufacture false positives and can
-#    never hide a malicious sample.
+#    findings at all, that direction is the whole story: a failure can never hide a
+#    malicious sample. What it does instead depends on the sample's true label --
+#    a false positive on a benign sample, and a true positive on a malicious one
+#    (both measured; plan sections 21 G and 28 B). The two move the criterion's
+#    deltas in opposite directions, which is why the report has to split failure
+#    counts by true label rather than report one total.
 #
 #    The field it reads is `statistics.uncertain`, not `conclusion.verdict`. That is
 #    a correction: the verdict is what the failure was *lifted into*, so most failures
@@ -122,7 +126,7 @@ print(samples, findings)
     echo "ALERT $(date -u +%H:%M:%SZ) container unreachable"
   else
     if [ "$prev_unc" -ge 0 ] && [ "$fsamp" -gt "$prev_unc" ]; then
-      echo "FAILED-ARBITRATION +$((fsamp - prev_unc)) sample(s) (now $fsamp samples / $ffind findings) $(date -u +%H:%M:%SZ) -- an LLM call did not arbitrate; on a HIGH/MEDIUM finding that blocks the sample (a false positive), it cannot hide one"
+      echo "FAILED-ARBITRATION +$((fsamp - prev_unc)) sample(s) (now $fsamp samples / $ffind findings) $(date -u +%H:%M:%SZ) -- an LLM call did not arbitrate; that blocks the sample, so it is a false positive if the sample is benign and a true positive if it is malicious, and it can never hide a malicious one"
     fi
     prev_unc=$fsamp
     prev_uncf=$ffind

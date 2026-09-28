@@ -1457,3 +1457,17 @@ GONE 分支把「runner 不在」一律当成击杀，理由是「击杀到重�
 ### D. 与 §21 G / §24 H-4 的关系
 
 §21 G 说「失败掩盖 semgrep 劣势」——那是**扣失败致 FP 后 `ΔFPR` 变大**（run 1 `+3/154`、run 2 `+2/154`，都大于实测的 `+1/154`）。本条补上的是**另一侧**：失败在恶意样本上会**抬高 semgrep 的 recall**，故它同时也**夸大**了 `Δrecall`。两个方向的结论一致且更强：**实测的 `ΔFPR` 与 `Δrecall` 都是失败机制下的保守读数**，扣掉失败后 semgrep 在 FPR 侧更差、在 recall 侧更好。判据是「`ΔFPR ≤ 0` 且 `Δrecall ≥ 0`」，故扣掉失败**只让 FPR 侧更不合格**，结论方向不变。
+
+### E. 顺带修掉仪器自己那句不准确的断言（2026-09-28）
+
+§28 C 的更正不只适用于计划文本——**监视器的告警句里写着同一个错误**，而那句话是运行期间我实际读到的输出：
+
+> 旧：`… an LLM call did not arbitrate; on a HIGH/MEDIUM finding that blocks the sample (a false positive), it cannot hide one`
+
+`(a false positive)` 无条件断言，按 §28 C 只在样本真标签为 benign 时成立。改为：
+
+> 新：`… an LLM call did not arbitrate; that blocks the sample, so it is a false positive if the sample is benign and a true positive if it is malicious, and it can never hide a malicious one`
+
+**「它藏不住恶意样本」这半句仍然成立**（失败只把样本推向 malicious），所以保留；被更正的只有「一定是假阳性」。头部注释第 2 条里同样的说法（「can only manufacture false positives」）一并改掉。
+
+测试上有一处值得记：原先那条告警**无法被测试触发**——它会读的报告在测试里是**预先写好**的，于是计数从第一轮起就是 1、永不上升，而告警只在**上升**时触发。故给假 docker 加了一个始终递增的探针计数器，并支持「报告在第 N 轮之后才出现」，这样计数可以在运行中真的上升。「预先写好」这个写法会让告警文本永远处于未测状态，措辞漂移因此不会被发现——这正是它漂移了一次的原因。新测试 `test_the_alert_qualifies_a_blocked_sample_by_its_true_label` 钉住两个方向，变异检查：换回旧措辞 ⇒ 精确失败该项。共 **9/9 通过**。

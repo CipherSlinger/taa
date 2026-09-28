@@ -77,18 +77,26 @@ case "$1" in
   sh)
     shift       # sh
     shift       # -c
-    # Advance the scripted oom_kill counter when the scenario set one, so a test
-    # can make it move between polls the way a real kill does. The probe itself
-    # only reads the file, so a fixture that never changes can express "no kill"
-    # but not "a kill happened between these two polls" -- and that difference is
-    # exactly what the liveness branch now branches on.
+    # One counter per probe, always advanced. The probe is the only thing that runs
+    # exactly once per poll, so scenarios key their scripted values off it.
+    n=$(cat "$FAKE_PROBE_COUNTER" 2>/dev/null || echo 0)
+    n=$((n + 1))
+    echo "$n" > "$FAKE_PROBE_COUNTER"
+    # A scripted oom_kill, so a test can express "a kill happened between these two
+    # polls" -- a fixture that never changes can only express "no kill", and that
+    # difference is what the liveness branch branches on.
     if [ -n "${FAKE_OOM_SEQUENCE:-}" ]; then
-      n=$(cat "$FAKE_OOM_COUNTER" 2>/dev/null || echo 0)
-      n=$((n + 1))
-      echo "$n" > "$FAKE_OOM_COUNTER"
       v=$(echo "$FAKE_OOM_SEQUENCE" | cut -d, -f"$n")
       [ -z "$v" ] && v=$(echo "$FAKE_OOM_SEQUENCE" | awk -F, '{print $NF}')
       echo "oom_kill $v" > "$CGROUP/memory.events"
+    fi
+    # A report that appears only after the first poll, so the failure count can be
+    # made to *rise* mid-run -- which is the only condition that fires the alert.
+    # Pre-writing it instead leaves the count flat from poll one and the alert text
+    # untested, which is how a wording drift gets through.
+    if [ -n "${FAKE_REPORT_AFTER:-}" ] && [ "$n" -gt "$FAKE_REPORT_AFTER" ]; then
+      mkdir -p "$FAKE_REPORT_DIR"
+      printf '%s' "$FAKE_REPORT_JSON" > "$FAKE_REPORT_DIR/audit_report.json"
     fi
     exec sh -c "$1"
     ;;
@@ -148,7 +156,7 @@ class WatchTestBase(unittest.TestCase):
         self.env["POLL_INTERVAL"] = "0.5"
         self.env["HEARTBEAT_EVERY"] = "1"
         self.env["FAKE_PS_COUNTER"] = str(root / "ps-counter")
-        self.env["FAKE_OOM_COUNTER"] = str(root / "oom-counter")
+        self.env["FAKE_PROBE_COUNTER"] = str(root / "probe-counter")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -219,6 +227,23 @@ class FailedArbitrationCountTest(WatchTestBase):
         )
         log = self.watch("402")
         self.assertIn("failed_samples_all_runs=1 failed_findings_all_runs=2", log)
+
+    def test_the_alert_qualifies_a_blocked_sample_by_its_true_label(self):
+        # The alert used to call every blocked sample a false positive, which holds
+        # only for a benign one: on a malicious sample the same lift is a true
+        # positive, measured on dd-0029 (plan section 28 B). The count beside that
+        # sentence was right, so the qualification is pinned rather than left to the
+        # comment -- a wording drift here would misstate the direction of the
+        # criterion's deltas.
+        self.env["FAKE_REPORT_AFTER"] = "1"
+        self.env["FAKE_REPORT_DIR"] = str(self.out / "regex-run2" / "dd-0019")
+        self.env["FAKE_REPORT_JSON"] = json.dumps(
+            {"conclusion": {"verdict": "MALICIOUS"}, "statistics": {"uncertain": 2}}
+        )
+        log = self.watch("402")
+        self.assertIn("FAILED-ARBITRATION", log)
+        self.assertIn("false positive if the sample is benign", log)
+        self.assertIn("true positive if it is malicious", log)
 
     def test_an_uncertain_verdict_alone_is_not_a_failed_call(self):
         # The other direction, so the fix cannot be "count either signal": a
