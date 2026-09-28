@@ -26,8 +26,31 @@
 #   CSV2_HOST_PASS  password for the host           (omit to use ssh keys)
 #   CSV2_GUEST_PASS password inside the guest       (default root)
 #
-# Example:
+# Any number of independent instances can be created by overriding the identity
+# of the VM. Each instance needs its own name, MAC, QMP port and VNC display:
+#   CSV2_VM_NAME    instance name                   (default csv2-8c16g)
+#   CSV2_VM_MAC     guest NIC MAC                   (default 52:54:00:12:34:56)
+#   CSV2_VM_IP      guest IP; leave unset to auto-discover after boot
+#   CSV2_QMP_PORT   host QMP port                   (default 2223)
+#   CSV2_VNC_DISPLAY host VNC display               (default 9)
+#   CSV2_VM_VCPUS / CSV2_VM_MEM_MB                  (default 8 / 16384)
+#   CSV2_DISK       overlay path                    (default <images>/<name>-overlay.qcow2)
+#
+# Every later command must be given the same overrides, or it will address the
+# default instance instead. The guest is addressed by the LAN DHCP server, so an
+# instance without CSV2_VM_IP is discovered after boot: first from the bridge
+# neighbour table, then by reading `hostname -I` over the serial console.
+#
+# Examples:
 #   CSV2_HOST_PASS='...' ./tools/csv2-vm/csv2-vm.sh up
+#   CSV2_HOST_PASS='...' ./tools/csv2-vm/csv2-vm.sh verify
+#
+#   # A second, independent instance alongside the first.
+#   export CSV2_VM_NAME=csv2-fresh CSV2_VM_MAC=52:54:00:12:34:57
+#   export CSV2_QMP_PORT=2224 CSV2_VNC_DISPLAY=10
+#   CSV2_HOST_PASS='...' ./tools/csv2-vm/csv2-vm.sh up
+#   CSV2_HOST_PASS='...' ./tools/csv2-vm/csv2-vm.sh verify
+#   CSV2_HOST_PASS='...' ./tools/csv2-vm/csv2-vm.sh down
 #
 set -euo pipefail
 
@@ -39,16 +62,18 @@ CSV2_GUEST_PASS="${CSV2_GUEST_PASS:-root}"
 
 # Guest identity. The MAC is fixed so the LAN bridge hands out the same lease,
 # which keeps the guest reachable at a stable address across reboots.
-VM_NAME=csv2-8c16g
-VM_IP=172.16.10.171
-VM_MAC=52:54:00:12:34:56
-VM_VCPUS=8
-VM_MEM_MB=16384
+VM_NAME="${CSV2_VM_NAME:-csv2-8c16g}"
+VM_MAC="${CSV2_VM_MAC:-52:54:00:12:34:56}"
+# Empty means "discover after boot" - a freshly created instance has no known
+# address until the LAN DHCP server has answered.
+VM_IP="${CSV2_VM_IP:-}"
+VM_VCPUS="${CSV2_VM_VCPUS:-8}"
+VM_MEM_MB="${CSV2_VM_MEM_MB:-16384}"
 
 HOST_DISK_DIR=/data/var/lib/libvirt/images
-HOST_DISK="$HOST_DISK_DIR/$VM_NAME-overlay.qcow2"
+HOST_DISK="${CSV2_DISK:-$HOST_DISK_DIR/$VM_NAME-overlay.qcow2}"
 # Read-only devkit base image shipped by Hygon; only ever used as a backing file.
-HOST_BASE_DISK=/opt/hygon/csv/vm.qcow2
+HOST_BASE_DISK="${CSV2_BASE_DISK:-/opt/hygon/csv/vm.qcow2}"
 # OVMF build with confidential-guest support; must match the firmware the guest
 # was installed against.
 HOST_OVMF=/opt/hygon/csv/OVMF_CODE.fd
@@ -58,7 +83,8 @@ HOST_BRIDGE=br0
 HOST_PIDFILE="/run/$VM_NAME.pid"
 HOST_SERIAL="/run/$VM_NAME.serial"
 HOST_CONSOLE_LOG="/var/log/$VM_NAME-console.log"
-HOST_QMP_PORT=2223
+HOST_QMP_PORT="${CSV2_QMP_PORT:-2223}"
+HOST_VNC_DISPLAY="${CSV2_VNC_DISPLAY:-9}"
 
 # policy=0x5 decodes as NODBG(0x1) | ES(0x4). The ES bit is what makes this CSV2
 # rather than CSV1: guest register state is encrypted, not just memory.
@@ -101,11 +127,67 @@ EOF
 
 vm_pid() { host "cat '$HOST_PIDFILE' 2>/dev/null || true"; }
 
+# /dev/csv-guest is provided by the csv-guest module and is NOT loaded by default.
+# Without it TAA's attestation path finds no device and silently degrades to
+# simulation mode, so load it before anything that needs the device.
+ensure_csv_guest_device() {
+    guest_script <<'GUEST'
+if [ -c /dev/csv-guest ]; then
+    echo "  /dev/csv-guest present"
+else
+    modprobe csv-guest
+    echo "  modprobe csv-guest done"
+fi
+ls -la /dev/csv-guest
+GUEST
+}
+
 vm_running() {
     local pid
     pid=$(vm_pid)
     [ -n "$pid" ] || return 1
     host "[ -d /proc/$pid ]" 2>/dev/null
+}
+
+# Read the guest address from inside the guest over the serial console. The guest
+# is addressed by an external DHCP server, so when the host has never exchanged
+# traffic with it this is the only way to learn the lease.
+discover_ip_via_console() {
+    local out
+    out=$(host "{ sleep 3; printf '\n'; sleep 2; printf 'root\n'; sleep 4; printf '${CSV2_GUEST_PASS}\n'; sleep 5; printf 'hostname -I\n'; sleep 3; } | timeout 45 socat - UNIX-CONNECT:${HOST_SERIAL} 2>&1" 2>/dev/null \
+        | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g')
+    # Take the last IPv4 in the stream: the login banner may print one earlier,
+    # and the `hostname -I` answer is what we actually asked for.
+    printf '%s\n' "$out" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | grep -v '^127\.' | tail -1
+}
+
+# Resolve the guest address. A freshly created instance is addressed by the LAN
+# DHCP server, so its address is unknown until the guest boots.
+resolve_guest_ip() {
+    if [ -n "$VM_IP" ]; then
+        return 0
+    fi
+
+    local mac_lc ip i
+    mac_lc=$(printf '%s' "$VM_MAC" | tr 'A-Z' 'a-z')
+
+    # Fast path: the bridge neighbour table. It only holds an entry once the host
+    # has exchanged traffic with the guest, so this often misses on a fresh boot.
+    for i in $(seq 1 6); do
+        ip=$(host "ip neigh show dev $HOST_BRIDGE | grep -i '$mac_lc' | awk '{print \$1}' | head -1" 2>/dev/null | tr -d '\r' | head -1)
+        if [ -n "$ip" ]; then
+            VM_IP="$ip"
+            return 0
+        fi
+        sleep 5
+    done
+
+    ip=$(discover_ip_via_console)
+    if [ -n "$ip" ]; then
+        VM_IP="$ip"
+        return 0
+    fi
+    return 1
 }
 
 # ------------------------------- commands ------------------------------------
@@ -155,11 +237,23 @@ else
     echo "  FAIL firmware $HOST_OVMF missing"; fail=1
 fi
 
-# Do not take an address that something else already answers on.
-if ping -c 1 -W 2 $VM_IP >/dev/null 2>&1; then
-    echo "  FAIL $VM_IP already responds (address collision)"; fail=1
+# A fixed MAC is the instance's identity, so make sure nothing else already uses it.
+if ip neigh show dev $HOST_BRIDGE 2>/dev/null | grep -qi "$VM_MAC"; then
+    echo "  WARN MAC $VM_MAC already present on $HOST_BRIDGE (reusing an instance?)"
 else
-    echo "  ok   $VM_IP is free"
+    echo "  ok   MAC $VM_MAC not in use"
+fi
+
+# Do not take an address that something else already answers on. Skipped when the
+# address is left to DHCP, since it is not known until the guest boots.
+if [ -n "$VM_IP" ]; then
+    if ping -c 1 -W 2 $VM_IP >/dev/null 2>&1; then
+        echo "  FAIL $VM_IP already responds (address collision)"; fail=1
+    else
+        echo "  ok   $VM_IP is free"
+    fi
+else
+    echo "  --   guest IP left to DHCP, will be discovered after boot"
 fi
 
 exit \$fail
@@ -194,7 +288,7 @@ $HOST_QEMU -name $VM_NAME \\
     -hda "$HOST_DISK" \\
     -drive if=pflash,format=raw,unit=0,file=$HOST_OVMF,readonly=on \\
     -qmp tcp:127.0.0.1:$HOST_QMP_PORT,server,nowait \\
-    -vnc 127.0.0.1:9 \\
+    -vnc 127.0.0.1:$HOST_VNC_DISPLAY \\
     -object sev-guest,id=sev0,policy=$VM_POLICY,cbitpos=$VM_CBITPOS,reduced-phys-bits=$VM_REDUCED_PHYS_BITS \\
     -machine memory-encryption=sev0 \\
     -netdev bridge,br=$HOST_BRIDGE,id=net0 \\
@@ -211,11 +305,20 @@ EOF
     fi
     echo "  started, pid $(vm_pid)"
 
+    if [ -z "$VM_IP" ]; then
+        echo "==> discovering guest address (MAC $VM_MAC)"
+        if ! resolve_guest_ip; then
+            echo "  no neighbour entry for $VM_MAC on $HOST_BRIDGE; check $HOST_CONSOLE_LOG" >&2
+            return 1
+        fi
+    fi
+    echo "  guest address: $VM_IP"
+
     echo "==> waiting for guest ssh"
     local i
     for i in $(seq 1 36); do
         if host "timeout 3 bash -c 'echo > /dev/tcp/$VM_IP/22'" 2>/dev/null; then
-            echo "  guest reachable at $VM_IP (after ~$((i * 10))s)"
+            echo "  guest reachable (after ~$((i * 10))s)"
             break
         fi
         sleep 10
@@ -225,22 +328,13 @@ EOF
         return 1
     fi
 
-    # /dev/csv-guest is provided by the csv-guest module and is NOT loaded by
-    # default. Without it TAA's attestation path finds no device and degrades to
-    # simulation mode, so load it as part of bring-up.
     echo "==> loading csv-guest module in guest"
-    guest_script <<'GUEST'
-set -e
-if [ -c /dev/csv-guest ]; then
-    echo "  /dev/csv-guest already present"
-else
-    modprobe csv-guest
-    echo "  modprobe csv-guest done"
-fi
-ls -la /dev/csv-guest
-GUEST
+    ensure_csv_guest_device
 
     echo "==> done"
+    echo "  name  $VM_NAME"
+    echo "  guest $VM_IP (mac $VM_MAC)"
+    echo "  stop  $(basename "$0") down   [with CSV2_VM_NAME=$VM_NAME]"
 }
 
 cmd_status() {
@@ -248,6 +342,9 @@ cmd_status() {
         echo "$VM_NAME is not running"
         return 1
     fi
+
+    # An instance that was not pinned to an address still needs discovery.
+    resolve_guest_ip 2>/dev/null || true
 
     host_script <<EOF
 set -u
@@ -284,10 +381,12 @@ else:
 print('vcpus       %d' % len(cmd('query-cpus-fast')))
 PY
 
-if ping -c 1 -W 2 $VM_IP >/dev/null 2>&1; then
+if [ -n "$VM_IP" ] && ping -c 1 -W 2 $VM_IP >/dev/null 2>&1; then
     echo "network     $VM_IP reachable (mac $VM_MAC)"
-else
+elif [ -n "$VM_IP" ]; then
     echo "network     $VM_IP unreachable"
+else
+    echo "network     address not discovered yet (mac $VM_MAC)"
 fi
 echo "console     $HOST_CONSOLE_LOG"
 EOF
@@ -295,6 +394,9 @@ EOF
 
 cmd_verify() {
     vm_running || { echo "$VM_NAME is not running" >&2; return 1; }
+    resolve_guest_ip || { echo "could not discover the guest address for $VM_MAC" >&2; return 1; }
+    # Do not assume a previous `up` left the module loaded; a reboot clears it.
+    ensure_csv_guest_device
 
     host_script <<EOF
 set -e
@@ -316,6 +418,7 @@ EOF
 
 cmd_ssh() {
     vm_running || { echo "$VM_NAME is not running" >&2; return 1; }
+    resolve_guest_ip || { echo "could not discover the guest address for $VM_MAC" >&2; return 1; }
     host env SSHPASS="$CSV2_GUEST_PASS" "sshpass -e ssh -o StrictHostKeyChecking=accept-new root@$VM_IP"
 }
 
