@@ -27,7 +27,10 @@
 #    something to be inferred from a changed pid: between the kill and ollama
 #    serve's respawn there is no pid to compare against. The respawn is reported
 #    separately, because the first calls after it pay a ~29 s model load on top of
-#    their decode and land close to the 60 s cap.
+#    their decode and land close to the 60 s cap. The heartbeat reports the
+#    cgroup's memory decomposed into anon and file rather than as current/max,
+#    because `current` includes reclaimable page cache; the anon figure is the
+#    one that means pressure.
 #
 # Emits a line only when something changes, so that silence means "unchanged", and
 # a heartbeat every 30 polls so that silence cannot be confused with a dead watch.
@@ -38,6 +41,14 @@ set -uo pipefail
 CONTAINER=${CONTAINER:-taa-env-slim-v2}
 OUT=${OUT:-/root/taa/verify/h2-assist-unloaded}
 LOG=${LOG:-$OUT-driver.log}
+# The cgroup path is a *container* path, expanded here and sent in with the rest of
+# the probe. It is a parameter only so the field-alignment test can point it at a
+# fixture directory instead of depending on the host's cgroup layout.
+CGROUP=${CGROUP:-/sys/fs/cgroup}
+# Poll and heartbeat cadence are parameters for the same reason: a test that had to
+# wait 30 minutes for the first heartbeat could not exist.
+POLL_INTERVAL=${POLL_INTERVAL:-60}
+HEARTBEAT_EVERY=${HEARTBEAT_EVERY:-30}
 
 prev_unc=-1
 prev_oom=-1
@@ -54,7 +65,7 @@ while true; do
   # trailing newline, `read` takes only the first line, and the oom/pid/run-count
   # fields come back empty -- which reads as "no OOM, no respawn" for the whole run.
   # That is the failure mode of a watch: it reports silence as health.
-  read -r unc oom pid nrun memc memmax < <(docker exec "$CONTAINER" sh -c "
+  read -r unc oom pid nrun anonm filem memc memmax < <(docker exec "$CONTAINER" sh -c "
     python3 -c \"
 import glob, json
 n = 0
@@ -66,12 +77,22 @@ for p in glob.glob('$OUT/*-run*/*/audit_report.json'):
         pass
 print(n)
 \" 2>/dev/null || echo -1
-    awk '/^oom_kill /{printf \"%s \", \$2}' /sys/fs/cgroup/memory.events
-    ps -eo pid,args | awk '/llama-server/ && !/awk/{printf \"%s \", \$1; exit}'
+    awk '/^oom_kill /{printf \"%s \", \$2}' $CGROUP/memory.events
+    ps -eo pid,args | awk '/llama-server/ && !/awk/{printf \"%s \", \$1; found=1; exit} END{if (!found) printf \"none \"}'
     ls -d $OUT/*-run*/ 2>/dev/null | wc -l
-    awk '{printf \"%d \", \$1/1048576}' /sys/fs/cgroup/memory.current
-    awk '{printf \"%d \", \$1/1048576}' /sys/fs/cgroup/memory.max
+    awk '/^anon /{printf \"%d \", \$2/1048576}' $CGROUP/memory.stat
+    awk '/^file /{printf \"%d \", \$2/1048576}' $CGROUP/memory.stat
+    awk '{printf \"%d \", \$1/1048576}' $CGROUP/memory.current
+    awk '{printf \"%d \", \$1/1048576}' $CGROUP/memory.max
   " 2>/dev/null | tr '\n' ' ')
+
+  # The pid field is always emitted, as the literal "none" when the runner is
+  # absent. It was previously skipped when absent, which shifted every later
+  # field one place left: the run count landed in `pid`, so `pid_now` was a
+  # number, the GONE alert below never fired, and the watch reported an OOM
+  # kill as health. A watch must not have a silent branch.
+  pid_now="${pid:-}"
+  [ "$pid_now" = "none" ] && pid_now=""
 
   if [ -z "${unc:-}" ]; then
     echo "ALERT $(date -u +%H:%M:%SZ) container unreachable"
@@ -84,7 +105,6 @@ print(n)
       echo "ALERT $(date -u +%H:%M:%SZ) cgroup oom_kill $prev_oom -> $oom"
     fi
     prev_oom=${oom:-0}
-    pid_now="${pid:-}"
     if [ -z "$pid_now" ]; then
       if [ "$prev_present" = "1" ]; then
         echo "ALERT $(date -u +%H:%M:%SZ) llama-server GONE (was $prev_pid): OOM kill or crash; every LLM call in this window fails"
@@ -101,8 +121,11 @@ print(n)
     fi
   fi
 
-  if [ $((poll % 30)) -eq 0 ]; then
-    echo "HEARTBEAT $(date -u +%H:%M:%SZ) runs=$nrun uncertain_total=$prev_unc oom_kill=$prev_oom llama_pid=$prev_pid mem=${memc:-?}/${memmax:-?}MiB"
+  if [ $((poll % HEARTBEAT_EVERY)) -eq 0 ]; then
+    # `current` alone invites a wrong reading: it is anon (real pressure) plus
+    # file (reclaimable page cache), and a large file share is not proximity to
+    # the limit. Reported decomposed so the anon figure is the one read.
+    echo "HEARTBEAT $(date -u +%H:%M:%SZ) runs=$nrun uncertain_total=$prev_unc oom_kill=$prev_oom llama_pid=$prev_pid mem_anon=${anonm:-?}MiB mem_file=${filem:-?}MiB mem_current=${memc:-?}MiB mem_max=${memmax:-?}MiB"
   fi
-  sleep 60
+  sleep "$POLL_INTERVAL"
 done
