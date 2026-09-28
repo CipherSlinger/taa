@@ -1863,3 +1863,68 @@ tp=55  fp=18  tn=136  fn=102
 ### D. 这一预测本身检验什么
 
 它检验的是 §34 D 的定位：**只有边缘样本给判据带来方差**。若 pair 3 与 pair 1 逐位相同，则该定位得到最强的支持——三轮里唯一的矩阵差异恰好由唯一一个边缘样本解释。
+
+## 38. 收尾命令序列的核验：三处会真出问题的偏差，并更正 §26 的机制引用（2026-09-28）
+
+对 §24 G 记录的收尾序列做了一次**只读**核验（读源码，未执行）。**旗标名全部正确、无一被拒或误解析**，但有**三处行为性偏差**会在跑的时候咬人。
+
+### A. `engine_compare_report.py` 不给 `--out` 会**改动被测基目录**
+
+`engine_compare_report.py:582`（**已自核**）：
+
+```python
+out = Path(args.out) if args.out else base / "paired-analysis.json"
+```
+
+⇒ 省略 `--out` 时，`paired-analysis.json` 被写进 `--base-dir` **本身**（`:563-568` mkdir + write_text）。虽不碰 `regex-run*/` 内的样本产物，但**被测基目录被改动**，与第 1 步强调的「不写入源轮」不一致。**故收尾命令必须显式给 `--out`，且指向基目录之外。**
+
+### B. 退出码**就是判定**，不得串接
+
+`engine_compare_report.py:602`（**已自核**）：
+
+```python
+return 0 if analysis["verdict"] == "通过" else 1
+```
+
+本轮预期判定为 **`未通过`** ⇒ **exit 1 是正常输出，不是故障**。**不得**用 `&&` 或 `set -e` 串接两次调用，否则第二条（`h2-gate-unloaded` 基）根本不会执行。
+
+### C. `--base-dir` **非必填**，漏给会安静地对旧基出报告
+
+`engine_compare_report.py:576` 默认值为 `REPO_ROOT/models/audit/audit-results/engine-compare`（**拟合集**旧基）。拼错或漏给**不报错**，而是对旧基出一份**看起来完全正常**的报告；基目录不存在同样不报错（`:491` 缺 jsonl ⇒ `rows = {}` ⇒ 六轮全「缺失」⇒ 最后报「证据不足」）。**故跑前须核对基目录下六个 run 目录确实存在，并看输出表的 `n` 列（0 = 没读到）。**
+
+### D. `gate_rescore.py` 的约束
+
+- `--base-dir` **必填**；`--validate` **零写入**（纯只读），且**不要求**输入是 `assist`（用 `summary.json` 自记的 policy 复现）。
+- `--out-dir`（即 `materialise`）**要求源为 `assist`**：逐轮断言 `summary["policy"] == "assist"` ⇒ **gate 基不能再作为它的源**。
+- `out_dir == base_dir` 被守卫挡下；但 `shutil.rmtree(target)` 无确认 ⇒ **`--out-dir` 不得指向已存在同名 run 目录的位置**。计划给的 `/root/taa/verify/h2-gate-unloaded` 是干净的兄弟目录，安全。
+- `--validate` 与 `--out-dir` **同时给时 `--out-dir` 被静默忽略**。
+- **前置条件**：`h2-assist-unloaded` 下每个 `regex-run*/semgrep-run*` 必须都有 `summary.json`，否则以 **exit 2** 停在「interrupted matrix」诊断（这正是 §19 那处 fail-open 修复的守卫）。
+- `--corpus-root`：`materialise` 在「gate 新阻断了一个样本」时会去读该样本的 `sample.json`，而 **`gate` 严格强于 `assist`** ⇒ 这条路径**必然被走到**。`sample_path` 由 `audit_benchmark_eval.py:771/965/1074` 写成 `str(sample_dir)`，即**容器内**绝对路径（语料在 `/root/taa/holdout/...`）⇒ **本序列必须在容器内执行**，容器内可解析故**不需要** `--corpus-root`。（宿主上 `/root/taa/verify` 是 `Permission denied`，`--base-dir` 在宿主上根本不存在。）
+
+### E. 更正 §26 的机制引用（结论不变）
+
+§26 用 `decide()` 里 `len(outcomes) < EXPECTED_PAIRS` 这一闸门解释「缺一轮会怎样」。**该分支在命令行路径下不可达**：`analyse_all` 恒构造 3 对（`:526-535`，`for index in (1, 2, 3)`）。
+
+一轮缺失的真实处理链是 **void**：`:491` 缺 `sample-results.jsonl` ⇒ `rows = {}` ⇒ 「no sample was scored by both arms」⇒ 造出带 `void_reason` 的 void 对 ⇒ 归入 `voids` ⇒ 返回「证据不足」。**「必须跑满 3 对」的结论成立，但机制是 void 而非对数**。另：void 是**一票否决整对**（两臂样本集不等、或任一臂 `scan_complete=False` 即 void）。
+
+§26 的**主要结论不受影响**：判定顺序仍是「先失败、再 void、最后才看对数」，故 pair 1 的 `ΔFPR` 失败**已经终局**，pair 2/3 是确认而非翻盘。
+
+### F. 修正后的收尾序列（容器内执行）
+
+```bash
+python3 models/audit/tools/gate_rescore.py \
+    --base-dir /root/taa/verify/h2-assist-unloaded --validate
+
+python3 models/audit/tools/gate_rescore.py \
+    --base-dir /root/taa/verify/h2-assist-unloaded \
+    --out-dir  /root/taa/verify/h2-gate-unloaded
+
+python3 models/audit/tools/engine_compare_report.py \
+    --base-dir /root/taa/verify/h2-assist-unloaded \
+    --out /root/taa/verify/h2-assist-unloaded.paired-analysis.json
+python3 models/audit/tools/engine_compare_report.py \
+    --base-dir /root/taa/verify/h2-gate-unloaded \
+    --out /root/taa/verify/h2-gate-unloaded.paired-analysis.json
+```
+
+⚠️ 第三条与第四条**预期 exit 1**（判定为 `未通过`）；**不要串接**。四条**串行**执行（bootstrap 与压测互相争核；且此刻无载矩阵仍在测）。
