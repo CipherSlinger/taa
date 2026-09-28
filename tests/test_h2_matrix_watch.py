@@ -21,12 +21,21 @@ Two such branches were found by reading it and are pinned here:
   misleading in the direction of alarm. It is now decomposed, and the test pins
   the four labels so a future edit cannot quietly drop back to one number.
 
+* The failed-arbitration count read `conclusion.verdict == "UNCERTAIN"`. That is
+  what a failure is lifted *into*, not what it leaves behind: measured on the two
+  complete runs, `statistics.uncertain > 0` marks exactly the samples whose
+  llm_state is llm_unavailable or parse_error (8 of 8 and 6 of 6, identical by
+  sample id), while the verdict marks 1 and 2 of those same failures. A wave of
+  failures -- the event this branch exists to make loud -- would have been mostly
+  invisible. `FailedArbitrationCountTest` pins both directions.
+
 The watch drives `docker exec`, `ps` and the cgroup files, so the test supplies
 all three: a fake docker that runs the probe locally instead of in the
 container, a fake ps whose runner line follows a scripted sequence, and a
 fixture cgroup directory. The cadence and the cgroup path are parameters on the
 script for this reason -- a test cannot wait thirty minutes for a heartbeat.
 """
+import json
 import os
 import stat
 import subprocess
@@ -144,7 +153,7 @@ class FieldAlignmentTest(WatchTestBase):
         # figure, so this asserted pair comes back as "runs=2154
         # uncertain_total=3" and the four memory labels are all off by one.
         log = self.watch("none")
-        self.assertIn("runs=3 uncertain_total=0", log)
+        self.assertIn("runs=3 failed_samples=0 failed_findings=0", log)
         self.assertIn(
             "mem_anon=2154MiB mem_file=1954MiB mem_current=4133MiB mem_max=7168MiB",
             log,
@@ -154,8 +163,41 @@ class FieldAlignmentTest(WatchTestBase):
         # The negative control for the test above: the alignment must not depend
         # on which branch the runner happens to be in.
         log = self.watch("402")
-        self.assertIn("runs=3 uncertain_total=0", log)
+        self.assertIn("runs=3 failed_samples=0 failed_findings=0", log)
         self.assertIn("llama_pid=402", log)
+
+
+class FailedArbitrationCountTest(WatchTestBase):
+    """The count must come from statistics.uncertain, not from the verdict."""
+
+    def sample(self, run, sample_id, report):
+        d = self.out / run / sample_id
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "audit_report.json").write_text(json.dumps(report))
+
+    def test_a_failed_call_is_counted_even_though_the_verdict_is_malicious(self):
+        # The shape a real failure takes: the UNCERTAIN is lifted to CRITICAL and
+        # the verdict reads MALICIOUS, so the verdict carries no trace of it.
+        # Against the old verdict-based count this asserts "failed_samples=0" and
+        # fails, which is the point of the fixture.
+        self.sample(
+            "regex-run2", "dd-0019",
+            {"conclusion": {"verdict": "MALICIOUS"},
+             "statistics": {"uncertain": 2}},
+        )
+        log = self.watch("402")
+        self.assertIn("failed_samples=1 failed_findings=2", log)
+
+    def test_an_uncertain_verdict_alone_is_not_a_failed_call(self):
+        # The other direction, so the fix cannot be "count either signal": a
+        # sample reported UNCERTAIN with no failed finding is not a failure.
+        self.sample(
+            "regex-run2", "cq-0001",
+            {"conclusion": {"verdict": "UNCERTAIN"},
+             "statistics": {"uncertain": 0}},
+        )
+        log = self.watch("402")
+        self.assertIn("failed_samples=0 failed_findings=0", log)
 
 
 class RunnerLivenessTest(WatchTestBase):
