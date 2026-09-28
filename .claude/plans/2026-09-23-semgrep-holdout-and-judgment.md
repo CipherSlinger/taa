@@ -1232,4 +1232,39 @@ engine_compare_report.py --base-dir /root/taa/verify/h2-gate-unloaded
 
 **闸门（实测）**：`engine_compare_report.py:661` 在 `len(outcomes) < EXPECTED_PAIRS` 时**直接返回「证据不足」**，附 `only N of 3 pairs were analysed`。**只有 2 对时不给判据结论**——故「先 2 对就停」这条路走不通，矩阵必须跑满 3 对；pair 级读数（如 §21 G）只能手工算，不能替代工具的结论。常量：`RUN_ORDER` 6 项（严格交替）、`EXPECTED_PAIRS = 3`、`BOOTSTRAP_N = 1000`、`BOOTSTRAP_SEED = 42`。
 
+**H. 失败集**不**按样本复现；§24 A 的说法据此收窄（2026-09-28，`semgrep-run2` 进行中）**
+
+**H-1 我先前推断错了。** 我在 §24 A 之后据「semgrep-run2 先出的 2 条失败与 run 1 的失败集重合」推断「失败按样本 ID 复现，是语料+种子的性质」。**该推断被实测推翻**：
+
+| 样本 | `semgrep-run1` | `semgrep-run2` |
+|---|---|---|
+| `dd-0007` | 失败 | 失败 |
+| `dd-0008` | **失败** | 未失败（`uncertain=0`，verdict 仍 `MALICIOUS`） |
+| `dd-0009` | **失败** | 未失败 |
+| `dd-0018`、`dd-0020` | 失败 | 失败 |
+| `dd-0021` | **未失败** | **失败** |
+
+`regex` 侧同样是**部分重合**：两轮共享 4 个 ID（`dd-0019`、`dd-0020`、`sr-0012`、`sr-0039`），run 1 独有 4 个（`dd-0056`、`dd-0057`、`pypi-0057`、`sr-0142`），run 2 独有 1 个（`dd-0063`）。
+
+**⇒ 失败是时序驱动的，不是内容驱动的**：一次调用是否贴到 60 s 上限，取决于机器时序（排队、争用），不取决于样本内容。这与 §21 D 的排队自持机制一致。
+
+**H-2 §24 A 必须收窄。** 混淆矩阵逐位相同**不能**作为「LLM 判定确定」的证据——它与**不同的失败集**共存。正确的说法是：**verdict 层面的稳定，在失败集变动之下仍然成立**。
+
+**H-3 但该稳定是稳健的，且原因已实测。** 把失败状态不同的样本逐个查过，**两轮 `predicted_label` 全部相同**：
+
+| 样本 | label | run1 `llm_state` | run2 `llm_state` | 两轮预测 |
+|---|---|---|---|---|
+| `pypi-0057` | benign | `llm_unavailable` | **`ok`** | malicious / malicious |
+| `sr-0012` | benign | `parse_error` | `parse_error` | malicious / malicious |
+| `sr-0142` | malicious | `llm_unavailable` | **`ok`** | malicious / malicious |
+| `dd-0063` | malicious | `ok` | **`parse_error`** | malicious / malicious |
+
+即**变动的那几次失败都是 verdict 中性的**：要么落在恶意样本上（失败⇒阻断⇒与被判恶意同路），要么该样本即便 LLM 正常作答也被判恶意（`pypi-0057`）。**矩阵相同因此是稳健的，不是巧合。**
+
+**H-4 报告须据此写的三条**
+
+1. **不得**把两轮 `regex` 的同一混淆矩阵写成「LLM 判定可复现」；应写成「**verdict 在失败集变动下保持不变**」，并给出 H-3 的四个样本为证。
+2. **任一单轮的失败率是该轮机器时序窗口的性质，不是该臂的性质**——**不得跨对比较失败率**（§24 E 那张表只能逐对读）。
+3. **§21 G 的 `+3/154` 是 run 1 专属的量**：它扣掉的是 run 1 的 2 条失败致 FP；run 2 只有 1 条（`sr-0012`），按其口径应为 **+2/154**。故「失败掩盖劣势」的**方向**成立且稳健（两种口径都大于实测的 +1/154），但**幅度不是点值**，报告须写成区间或注明所用轮次。
+
 
