@@ -290,5 +290,46 @@ class RunnerDisappearanceTest(WatchTestBase):
         self.assertNotIn("unloaded", log)
 
 
+class RunnerReplacementTest(WatchTestBase):
+    """A replacement is an absence that the poll interval hid, so it needs the
+    same discriminator the absence branch uses -- and it did not have one.
+
+    Which of the two branches observes an event is only a matter of how the gap
+    lines up with the poll, so a cause the absence branch refuses to guess at
+    must not be guessed at here. Both scenarios below assert the same pair of
+    facts as `RunnerDisappearanceTest`, for that reason.
+    """
+
+    def test_a_pid_change_without_a_kill_is_not_reported_as_one(self):
+        # The regression: every pid change was called "killed and respawned".
+        # Measured 2026-09-28 07:17:25, a runner replaced with oom_kill unchanged
+        # at 2 and 5m36s of silence before it -- an idle unload. Against the old
+        # wording this asserts "killed and respawned between polls" and fails,
+        # which is what makes it a test of the fix rather than of the file.
+        log = self.watch("402,999")
+        self.assertIn("replaced while idle", log)
+        self.assertNotIn("killed", log)
+
+    def test_a_pid_change_with_a_kill_is_reported_as_one(self):
+        # The other direction, because a fix that reported every replacement as
+        # an unload would lose the event that matters most.
+        log = self.watch("402,999", oom_sequence="0,1")
+        self.assertIn("killed", log)
+        self.assertNotIn("replaced while idle", log)
+
+    def test_a_reload_after_an_unload_is_not_an_alert(self):
+        # The severity of the recovery must follow the disappearance it recovers
+        # from: an unload reported as INFO followed by a reload reported as an
+        # ALERT re-introduces the fault through the back door.
+        log = self.watch("402,none,999")
+        self.assertIn("reloaded", log)
+        self.assertNotIn("ALERT", log)
+
+    def test_a_reload_after_a_kill_is_an_alert(self):
+        log = self.watch("402,none,999", oom_sequence="0,1")
+        self.assertIn("ALERT", log)
+        self.assertIn("after the kill", log)
+
+
 if __name__ == "__main__":
     unittest.main()

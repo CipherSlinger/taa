@@ -52,6 +52,16 @@
 #    rather than as current/max, because `current` includes reclaimable page
 #    cache; the anon figure is the one that means pressure.
 #
+#    A REPLACEMENT -- the pid differs but a runner was present at both polls -- is
+#    the same event as an absence, seen when the gap is shorter than the poll
+#    interval, and it needs the same discriminator. It did not have one: every
+#    replacement was reported as "killed and respawned". Measured 2026-09-28
+#    07:17:25, the runner was replaced with `oom_kill` unchanged at 2, having last
+#    answered a request at 07:11:49 -- five and a half minutes of silence, which is
+#    the keep_alive window, not a kill. Fixing the absence branch and leaving this
+#    one asserting a cause it had not measured would have fixed nothing in
+#    general, since which branch sees an event is only a matter of poll timing.
+#
 # Emits a line only when something changes, so that silence means "unchanged", and
 # a heartbeat every 30 polls so that silence cannot be confused with a dead watch.
 #
@@ -75,6 +85,10 @@ prev_uncf=-1
 prev_oom=-1
 prev_pid=""
 prev_present=-1
+# Whether the last disappearance was a kill (oom_kill moved) or an unload. Only
+# the disappearance branch can tell, and the branch that reports the *reload* is
+# a different iteration, so the answer has to be carried across polls.
+gone_was_kill=0
 
 ( docker exec "$CONTAINER" tail -F -n +1 "$LOG" 2>/dev/null \
   | grep --line-buffered -E "^[a-z]+ run [0-9]+: exit=|matrix done|refusing|could not warm|Traceback" ) &
@@ -152,17 +166,42 @@ print(samples, findings)
         # followed it succeeded. The discriminator is the counter the watch already
         # reads, so the two cases are separated rather than guessed at.
         if [ "$oom_moved" = "1" ]; then
+          gone_was_kill=1
           echo "ALERT $(date -u +%H:%M:%SZ) llama-server GONE (was $prev_pid) after an OOM kill: the request in flight fails, and the rest resume on the respawn"
         else
+          gone_was_kill=0
           echo "INFO $(date -u +%H:%M:%SZ) llama-server unloaded while idle (was $prev_pid, oom_kill unchanged at ${oom:-0}): not a fault; the next call reloads it and pays the model load"
         fi
       fi
       prev_present=0
     else
+      # A pid change is a *replacement*, and a replacement has two causes -- the
+      # same two the disappearance branch above separates. This branch used to
+      # call every one of them "killed and respawned", which is the identical
+      # over-claim the branch above was fixed for, left behind in the adjacent
+      # branch: the two branches split the same event by poll timing (an absence
+      # shorter than the poll interval shows up here as a pid change), so fixing
+      # one and not the other fixes nothing in general. Measured 2026-09-28: the
+      # runner was replaced at 07:17:25 with `oom_kill` unchanged at 2, having
+      # last answered a request at 07:11:49 -- an idle unload at the five-minute
+      # keep_alive, not a kill. The counter is already read; it is the
+      # discriminator here too.
       if [ "$prev_present" = "1" ] && [ "$pid_now" != "$prev_pid" ]; then
-        echo "ALERT $(date -u +%H:%M:%SZ) llama-server pid $prev_pid -> $pid_now: killed and respawned between polls"
+        if [ "$oom_moved" = "1" ]; then
+          echo "ALERT $(date -u +%H:%M:%SZ) llama-server pid $prev_pid -> $pid_now killed (oom_kill ${prev_oom} -> $oom) and respawned between polls"
+        else
+          echo "INFO $(date -u +%H:%M:%SZ) llama-server pid $prev_pid -> $pid_now replaced while idle (oom_kill unchanged at ${oom:-0}): an unload and reload, not a fault; the call that triggered it pays a model load"
+        fi
       elif [ "$prev_present" = "0" ]; then
-        echo "ALERT $(date -u +%H:%M:%SZ) llama-server respawned (now $pid_now): the first calls pay a model load"
+        # Severity follows the disappearance it recovers from, not the mere fact
+        # of a runner being present: an unload reported as INFO must not be
+        # followed by a respawn reported as an ALERT, or the gap it describes
+        # reads as a fault again through the back door.
+        if [ "$gone_was_kill" = "1" ]; then
+          echo "ALERT $(date -u +%H:%M:%SZ) llama-server respawned (now $pid_now) after the kill: the first calls pay a model load"
+        else
+          echo "INFO $(date -u +%H:%M:%SZ) llama-server reloaded (now $pid_now) after an idle unload: not a fault; the call that triggered it pays a model load"
+        fi
       fi
       prev_present=1
       prev_pid="$pid_now"
