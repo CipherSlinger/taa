@@ -114,8 +114,17 @@ FAILURE_MARKERS: Tuple[str, ...] = CALL_FAILURE_MARKERS + PARSE_FAILURE_MARKERS
 DEFAULT_AUDIT_MODE = "static-llm"
 DEFAULT_EXTENSIONS = ".py"
 DEFAULT_MAX_FINDINGS = 50
-# `pure-llm`/`pure-llm-checklist` populate `rules_count`; `static-llm` reports 0.
-STATIC_LLM_RULES_COUNT = 0
+# The property that separates `static-llm` from a mode with no model in it is
+# whether the model was enabled for the sample, and that is what the guard
+# reads. It used to read `rules_count == 0` instead, on the belief that
+# `static-llm` reports no rules -- measured on the 2026-09-28 matrix, every
+# sample of both arms records 13, for the samples the model adjudicated and for
+# the ones it never saw, so the check could not separate anything and refused
+# every affected sample. `audit_mode` is not recorded in the artifacts at all,
+# which is why a proxy was reached for. `llm_enabled` does separate them:
+# `regex-run1/cq-0001` (no findings, never adjudicated) records False and
+# `regex-run1/dd-0019` records True, with `rules_count` 13 for both.
+STATIC_LLM_LLM_ENABLED = True
 # The production caps are 200 tokens for a finding and 300 for a file summary.
 # 800 leaves room for a verdict object to close even when the model rambles first,
 # and stays inside the replay's own timeout: at the measured 7.6-11.4 tok/s decode
@@ -372,6 +381,22 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def assert_static_llm_run(key: str, recorded: Dict[str, Any]) -> None:
+    """Refuse a sample whose recorded run was not the mode the replay mirrors.
+
+    The replay hardcodes `DEFAULT_AUDIT_MODE`, so a source run taken under a
+    different mode would yield a counterfactual of the wrong pipeline. The
+    artifacts do not record `audit_mode`, so the check reads the property that
+    actually separates the modes: whether the model was enabled for the sample.
+    """
+    if recorded["llm_enabled"] is not STATIC_LLM_LLM_ENABLED:
+        raise CounterfactualError(
+            f"{key}: llm_enabled={recorded['llm_enabled']!r} does not look like a "
+            f"{DEFAULT_AUDIT_MODE} run; replaying under another mode would "
+            "produce a counterfactual of a different pipeline"
+        )
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     affected = affected_samples(args.base_dir)
@@ -421,12 +446,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 raise CounterfactualError(f"{sample_id} is not in {args.corpus_list}")
             engine = run_name.split("-")[0]
             recorded = recorded_decision(args.base_dir / run_name, sample_id)
-            if recorded["rules_count"] != STATIC_LLM_RULES_COUNT:
-                raise CounterfactualError(
-                    f"{key}: rules_count={recorded['rules_count']} does not look like a "
-                    f"{DEFAULT_AUDIT_MODE} run; replaying under another mode would "
-                    "produce a counterfactual of a different pipeline"
-                )
+            assert_static_llm_run(key, recorded)
             row = replay_one(
                 spec=spec,
                 benchmark_root=args.benchmark_root,
@@ -451,6 +471,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "transition": (classify_transition(spec.label, recorded["predicted_label"], counterfactual)
                                if material else None),
                 "failed_calls": affected[key],
+                # Recorded, not checked: `rules_count` is 13 for every sample of
+                # both arms whether or not the model was used, so it cannot carry
+                # the guard above. Kept in the row so a reader can see the value
+                # the guard used to be written against rather than take the
+                # corrected check on trust.
+                "recorded_rules_count": recorded["rules_count"],
+                "recorded_llm_enabled": recorded["llm_enabled"],
             })
             flag = "MATERIAL" if material else "unchanged"
             print(f"  {key:<28} label={spec.label:<9} {recorded['predicted_label']:<9} -> "

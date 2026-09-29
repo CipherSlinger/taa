@@ -163,6 +163,38 @@ class GuardTest(unittest.TestCase):
             cf.assert_output_dir_free(Path(tmp) / "replay")
 
 
+class StaticLlmGuardTest(unittest.TestCase):
+    """The mode guard must read a field that separates the modes.
+
+    It read `rules_count == 0`, on the belief that a `static-llm` run reports no
+    rules. Measured on the 2026-09-28 matrix, both arms record 13 for every one
+    of their 311 samples -- for the samples the model adjudicated and for the
+    ones it never saw -- so the check separated nothing and refused every
+    affected sample, which is every sample the replay exists to explain. The
+    artifacts carry no `audit_mode` at all, which is why a proxy was used;
+    `llm_enabled` is the property that is actually recorded per sample and does
+    separate them (`regex-run1/cq-0001` False, `regex-run1/dd-0019` True, both
+    with `rules_count` 13).
+    """
+
+    def test_a_run_where_the_model_was_used_is_allowed(self):
+        cf.assert_static_llm_run("regex-run1/dd-0019",
+                                 {"llm_enabled": True, "rules_count": 13})
+
+    def test_a_run_where_the_model_was_disabled_is_refused(self):
+        with self.assertRaises(cf.CounterfactualError):
+            cf.assert_static_llm_run("regex-run1/cq-0001",
+                                     {"llm_enabled": False, "rules_count": 13})
+
+    def test_rules_count_does_not_decide_it(self):
+        # The regression, in both directions, so the fix cannot be "accept 13".
+        # Against the old guard the first assertion raises, because 13 != 0.
+        cf.assert_static_llm_run("x/y", {"llm_enabled": True, "rules_count": 13})
+        cf.assert_static_llm_run("x/y", {"llm_enabled": True, "rules_count": 0})
+        with self.assertRaises(cf.CounterfactualError):
+            cf.assert_static_llm_run("x/y", {"llm_enabled": False, "rules_count": 0})
+
+
 class AffectedSampleTest(unittest.TestCase):
     def test_affected_samples_are_indexed_by_run_and_sample(self):
         with tempfile.TemporaryDirectory() as tmp:
