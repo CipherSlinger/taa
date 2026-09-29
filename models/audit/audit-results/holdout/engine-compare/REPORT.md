@@ -665,6 +665,8 @@ pair 2: scan_complete is False on 1 sample(s): dd-0029
 
 **两臂差别落在同一条样本上**：semgrep 三臂的被阻断良性集 = regex 第 2/3 轮的集合 **∪ {`sr-0155`}**；第 1 轮 regex 另缺 `pypi-0057`（故第 1 对为 `2/154`）。即第 2/3 对的 `ΔFPR = 1/154 = +0.0065` **由 `sr-0155` 单独决定——与判定层的决定样本相同（§6.1）**。生产层**独立复现了判定层的决定样本与结论**。
 
+**该读数的构造前提（须与数字并读）**：`TestProductionGateSemantics` **不读产物中现成的 `conclusion` / `Report.Passed`**，而是用产物里的 `file_reports[].findings[]` **重新驱动**生产函数；其中 `Report{ScanComplete: true}` 与 `ConclusionContext{HasLLMBenign: true}` 是**构造**的，不是从产物读出的（测试内注释：fail-closed 分支只能把它压到 `false`，故这是各策略下**最宽松**的取值）。因此本读数是**该完成态与上下文下的条件读数**，**构造项对 `ΔFPR` 的影响方向未由本构造确立**。可稳健陈述的是：**在该构造下三对 `ΔFPR` 均为正，且决定样本与判定层相同**。§7.5 的拟合集读数用的是**同一构造**，故两处可并列比较。
+
 **`compute_conclusion` 内部有两个不同的 fail-closed 分支**，凡出现「fail-closed 分支」**不得当单数使用**：
 
 - **A 扫描完备性支**（`code_security_analyzer.py:877`，键 `scan_complete`/`parser_errors`/`timed_out`）——**恒不触发**。引用此句时**须写明**指的是 `audit_report.json` 的 `statistics`；`sample-results.jsonl` 的同名字段**另有一个且本轮假过一次**（`semgrep-run2/dd-0029`）——**一个名字、两个产物、两种命运**。
@@ -750,7 +752,9 @@ pair 2: scan_complete is False on 1 sample(s): dd-0029
 - 未把 `attribution_precision = 0` 读作测量结果。
 - **未引用**规范 §9.1 第 253 行的「16 × 1024 MiB 界」OOM 归因。
 - 未把「Go 生产 gate 与 harness 语义不同」当作本计划的新发现。
-- 未把「判定在 `assist` 下做出」读成「判定在**生产** `assist` 下做出」。
+- 未把判定层的读数**当作**生产层读数：凡生产层陈述**一律来自** `production-gate-semantics-holdout.json` 的**独立测量**（§15），而非由判定层推断。
+- 未把首次生产层读数 `assist_fpr = 0.0000` 写成任何结论——该值是 `0/0` 护栏值，已登记为**无效并撤回**（§15）。
+- 未声称生产层与判定层**语义等价**：两层仍有 **§15 表列**的两处已登记语义差；只声称**在该构造下留出集上二者同判未通过**。
 - 未把 §17.10 的「新被阻断的样本都是未归因的」写成「全部未归因」。
 - 未写「09-28 的超时全部可归因于 OOM 击杀」。
 - 未把超时读成**纯**机器状态的函数。
