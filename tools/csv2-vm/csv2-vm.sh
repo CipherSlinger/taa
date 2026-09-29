@@ -10,7 +10,31 @@
 # Recorded from a verified bring-up on 2026-09-28 against host root@172.16.10.178.
 # See also the host-side originals: /home/wj/csv2-8c16g.sh (and its -status.sh).
 #
+# Files and capabilities a CSV2 guest needs (see `deps` to check them):
+#
+#   host side - must exist before `up`
+#     $CSV2_BASE_DISK          guest base image, used read-only as the backing file.
+#                              Supplies the guest kernel, the CSV2-patched kernel
+#                              modules (csv-guest.ko) and a preinstalled OS, so a
+#                              new instance is a COW overlay rather than an install.
+#     $HOST_OVMF               OVMF built with confidential-guest support. Must match
+#                              the firmware the base image was installed against.
+#     /dev/sev                 PSP device. Memory encryption is impossible without it.
+#     /etc/qemu/bridge.conf    must allow the bridge, or QEMU refuses to attach it.
+#     <bridge>                 LAN uplink; also where the guest's DHCP lease comes from.
+#
+#   guest side - already inside the base image, nothing to stage
+#     /lib/modules/$(uname -r)/kernel/drivers/virt/coco/csv-guest/csv-guest.ko.xz
+#                              provides /dev/csv-guest, the attestation interface.
+#                              Not loaded by default; `up` and `verify` modprobe it.
+#
+#   verification only - optional, needed by `verify` alone
+#     $SMOKE_BIN               TAA attestation smoke test, copied into the guest.
+#     $CERT_DIR/hrk.cert, $CERT_DIR/hsk_cek.cert
+#                              Hygon root and endorsement certs, for chain checking.
+#
 # Usage:
+#   ./tools/csv2-vm/csv2-vm.sh deps     list the required files and whether they exist
 #   ./tools/csv2-vm/csv2-vm.sh up       create (if needed) and boot the VM
 #   ./tools/csv2-vm/csv2-vm.sh status   read-only status + CSV2 encryption check
 #   ./tools/csv2-vm/csv2-vm.sh verify   run the TAA CSV attestation smoke test in the guest
@@ -191,6 +215,63 @@ resolve_guest_ip() {
 }
 
 # ------------------------------- commands ------------------------------------
+
+cmd_deps() {
+    host_script <<EOF
+set -u
+fail=0
+
+row() { # <path> <role> <required|optional>
+    local p="\$1" role="\$2" req="\$3" status
+    if [ -e "\$p" ]; then
+        if [ -f "\$p" ]; then status="ok (\$(du -h "\$p" 2>/dev/null | cut -f1))"; else status="ok"; fi
+    elif [ "\$req" = required ]; then
+        status="MISSING"; fail=1
+    else
+        status="absent"
+    fi
+    printf "  %-56s  %-36s  %s\n" "\$p" "\$role" "\$status"
+}
+
+echo "host side - required before 'up':"
+row "$HOST_BASE_DISK" "guest base image (backing, read-only)" required
+row "$HOST_OVMF" "confidential-guest firmware (pflash)" required
+row /dev/sev "PSP device; memory encryption" required
+row /etc/qemu/bridge.conf "allow-list for QEMU bridge attach" required
+
+if ip link show $HOST_BRIDGE >/dev/null 2>&1; then
+    if grep -qE "^[[:space:]]*allow[[:space:]]+$HOST_BRIDGE\$" /etc/qemu/bridge.conf 2>/dev/null; then
+        printf "  %-56s  %-36s  %s\n" "$HOST_BRIDGE" "LAN uplink + guest DHCP lease" "ok (allowed)"
+    else
+        printf "  %-56s  %-36s  %s\n" "$HOST_BRIDGE" "LAN uplink + guest DHCP lease" "NOT ALLOWED"; fail=1
+    fi
+else
+    printf "  %-56s  %-36s  %s\n" "$HOST_BRIDGE" "LAN uplink + guest DHCP lease" "MISSING"; fail=1
+fi
+
+echo
+echo "instance disk - created by 'up' if absent:"
+row "$HOST_DISK" "writable overlay for this instance" optional
+
+echo
+echo "guest side - already inside the base image, nothing to stage:"
+printf "  %-56s  %-36s  %s\n" "csv-guest.ko.xz" "provides /dev/csv-guest" "in base image"
+
+echo
+echo "verification only - needed by 'verify', not by 'up':"
+row "$SMOKE_BIN" "attestation smoke test" optional
+row "$CERT_DIR/hrk.cert" "Hygon root key (HRK) cert" optional
+row "$CERT_DIR/hsk_cek.cert" "Hygon endorsement (HSK/CEK) cert" optional
+
+echo
+if [ "\$fail" = 0 ]; then
+    echo "result: required host files present"
+else
+    echo "result: required host files MISSING" >&2
+fi
+exit \$fail
+EOF
+}
 
 preflight() {
     echo "==> preflight"
@@ -491,13 +572,16 @@ EOF
 # ------------------------------- entrypoint ----------------------------------
 
 case "${1:-}" in
+    deps)   shift; cmd_deps "$@" ;;
     up)     shift; cmd_up "$@" ;;
     status) shift; cmd_status "$@" ;;
     verify) shift; cmd_verify "$@" ;;
     ssh)    shift; cmd_ssh "$@" ;;
     down)   shift; cmd_down "$@" ;;
     *)
-        sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+        # Print the header comment block: leading comment lines only, stopping at
+        # the first line of code.
+        awk 'NR > 1 { if ($0 ~ /^#/) { sub(/^# ?/, ""); print; next } exit }' "$0"
         exit 1
         ;;
 esac
