@@ -2205,3 +2205,179 @@ plan 第 289 行（2026-09-23，H0 捕获工具实测）：**同一 `CMD_001` �
 ⇒ **` tp` 不变**。§37 的预注册**完好**，且其点名反驳现在多了一层保护：`tp` 若偏离 55，**不能**归因于 `dd-0056` 这条新失败（它与 §31 C 的 `dd-0003` 同属**verdict 中性**）。
 
 > 登记理由：这是**在 run3 收尾前**完成的，属预注册的正当补充而非事后解释——若等到读数出来再补，就变成对结果的迁就。
+
+## 45. 07:17:25 的 runner 更替**不是击杀**，测量中性；监视器替换分支的过度断言与修复（2026-09-29）
+
+### A. 事件与死因
+
+监视器报 `ALERT 07:18:13Z llama-server pid 15398 -> 26844: killed and respawned between polls`。逐项查证：
+
+- `oom_kill` **全程未动（恒为 2）** ⇒ **不是 OOM 击杀**。
+- `ollama.log`（llama-server 段**无时间戳**，故只有 `ollama` 自己的 logfmt 行可定时）：`time=2026-09-28T07:17:25.702Z level=INFO source=llama_server.go:434 msg="starting llama-server"`，6.79 s 后 `started in 6.79 seconds`。
+- 旧 runner 最后服务的一次请求是 `[GIN] 2026/09/28 - 07:11:49 | 200 | 6.26s | POST "/api/generate"`。此后**无任何请求**，直到 07:17:25。
+- 07:11:49 → 07:17:25 是 **5 分 36 秒**的静默，与 ollama 的 `keep_alive` 窗口（默认 5 分钟）吻合；新进程起来时 `sched.go:618 msg="system memory" free="6.7 GiB"`（旧 runner 已退出）。
+
+⇒ **空闲卸载 + 下次请求触发重载**，与 §41 B 记录的 05:02:22 同属一类。**不是崩溃，不是击杀。**
+
+### B. 测量中性（三条独立证据）
+
+1. **零新增失败记录**：事件前后失败记录总计**逐位不变**（`semgrep-run3` 仍 `{unparseable 5, timeout 1}`，全局仍 `26/11/1`），而 pid 更替点（~07:17:25）正好跨在 `sr-0129`(07:17:21) 与 `sr-0130`(07:17:52) 之间。
+2. **判定未变**：跨该点的样本与 `semgrep-run1` 同一样本标签一致（`within_arm` 的 `verdict_disagreements` 在 pair 1v3 为**空**，见 §46 C）。
+3. **无 OOM**：`oom_kill` 计数器不动。
+
+⇒ 与 §41 C 的孤儿僵尸同属**测量中性**，可如实登记为「发生了一次 runner 更替，未影响读数」。
+
+### C. 监视器的过度断言：修在了一个分支，漏了相邻分支
+
+监视器的**消失**分支早已按 `oom_kill` 计数器区分「击杀」与「空闲卸载」。但**pid 变化**分支（runner 在两次轮询之间被替换）无条件输出 `killed and respawned`——**同一事件的两种观察角度**：消失时长于轮询间隔则走前者，短于则走后者。**修了一个分支而未修另一个，等于没修**，因为走哪个分支只取决于轮询时机。
+
+**已修复**（`h2_matrix_watch.sh`，提交 `3f550a8`）：
+
+- 替换分支改用同一个 `oom_moved` 判别，措辞分别为 `killed (oom_kill N -> M) and respawned`（ALERT）与 `replaced while idle ... an unload and reload, not a fault`（INFO）。
+- 新增 `gone_was_kill` 状态，使**恢复行的严重级别跟随它所恢复的那次消失**——否则「INFO 卸载」后面跟一个「ALERT 重生」，等于把故障从后门放回来。
+- `tests/test_h2_matrix_watch.py` 新增 `RunnerReplacementTest` 四项，**变异检验**：把旧措辞还原到副本后 **3 项失败**，第 4 项（击杀方向）两版皆过——它不是修复的测试，而是防止矫枉过正的对照。
+
+> 这是本项目**第三次**发现「修了一个分支、漏了同源的相邻分支」：§23 的 `statistics.uncertain` vs verdict、§30 的双仪器口径、此处。**规矩：修一处判别逻辑时，必须问「还有哪些分支能观察到同一事件」。**
+
+## 46. 矩阵收尾：§37 的预注册**逐位命中**，判据三对全 FAIL，`gate` 与 `assist` 逐位相同（2026-09-29）
+
+### A. `semgrep-run3` 读数与 §37 预注册的核对
+
+`semgrep-run3` = `tp=55 fp=18 tn=136 fn=102`——与 §37 的预注册**逐位相同**，也与 `semgrep-run1` 逐位相同。§37 点名的三个反驳**一个都没有发生**：
+
+| §37 点名反驳 | 结果 |
+| --- | --- |
+| `tp=54` ⇒ 抬升机制不完整 | 未发生（`tp=55`） |
+| `fp≠18` ⇒ `sr-0155` 的标记不稳、§33 B 须弱化 | 未发生（`fp=18`） |
+| 出现第三种偏离 ⇒ 重审 regex 三轮稳定性 | 未发生 |
+
+且 §44 E 的补充成立：`dd-0056` 的新失败确实**没有**动 `tp`。
+
+六轮全表（`assist`，`n=311`）：
+
+| 轮 | tp | fp | tn | fn | FPR | recall |
+| --- | --- | --- | --- | --- | --- | --- |
+| `regex-run1/2/3` | 49 | 17 | 137 | 108 | 0.1104 | 0.3121 |
+| `semgrep-run1` | 55 | 18 | 136 | 102 | 0.1169 | 0.3503 |
+| `semgrep-run2` | 54 | 18 | 136 | 102 | 0.1169 | 0.3462 |
+| `semgrep-run3` | 55 | 18 | 136 | 102 | 0.1169 | 0.3503 |
+
+### B. 判据结论（§2 口径，`Δ = semgrep − regex`，`ΔFPR ≤ 0` 且 `Δrecall ≥ 0`，逐对、容差 0）
+
+`engine_compare_report.py` 的判定：**`verdict: 未通过`**。
+
+| 对 | n | ΔFPR | ΔFPR 自助 CI | Δrecall | Δrecall 自助 CI | McNemar(FPR) | McNemar(recall) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 311 | **+0.006494** | [0.0, 0.021739] | +0.038217 | [0.012422, 0.071429] | b=1 c=0 p=1.0 | b=0 c=6 p=0.03125 |
+| 2 | 310 | **作废**（`void_reason`，见 §47） | — | — | — | — | — |
+| 3 | 311 | **+0.006494** | [0.0, 0.021739] | +0.038217 | [0.012422, 0.071429] | b=1 c=0 p=1.0 | b=0 c=6 p=0.03125 |
+
+**报告须同时写两件事，且不得用后者软化前者**：
+
+- 判据**未通过**：`ΔFPR = +0.0065 > 0`，逐对如此，**容差为 0**。
+- FPR 侧的差异**只有一个不一致样本**（McNemar `b=1, c=0, p=1.0`，自助 CI 下界恰为 0），统计上不可分辨。这是两个不同的陈述，都真。
+
+§26 3 的规则在此适用：**在 FAIL 的情形下，2 对即可给出结论**（§24 G 的「只有 2 对不给结论」针对的是非 FAIL 的情形）；但 §26 4 要求**显式披露偏离**——本轮须披露 pair 2 作废及其原因（§47）。
+
+### C. 臂内三轮稳定性：`verdict_disagreements` **全为空**
+
+`within_arm` 实测：regex 的 1v2/1v3/2v3、semgrep 的 1v2/1v3/2v3，**六组比较的 `verdict_disagreements` 全部为空**；变化的只有 `llm_state`（regex 各对 5/7/4 个样本；semgrep 各对 4/3/3 个）。
+
+⇒ §24 H-2 的「三轮 regex 判恶意集合不变」由推理升为**实测**，且**semgrep 侧同样成立**。但**仍不得**写成「LLM 判定可复现」——§24 H-2 已禁止：稳定的是**判定**，而 `llm_state` 在变。
+
+### D. `gate` 并列读数：**六轮「newly blocked」全为 0** ⇒ 两策略在本语料逐位同判
+
+`gate_rescore.py --validate`：**1866/1866 逐样本复现，0 处不符**（`--validate` 只复算不写盘）。随后 `--out-dir /root/taa/verify/h2-gate-unloaded` 导出 `gate` 侧六个运行，每轮 `newly blocked by gate=0`。
+
+⇒ **`gate` 的混淆矩阵与 `assist` 逐位相同**，三对读数与判据结论**完全一致**。故 §2 要求的「并列报告 `gate`」在这里不是「另一个数」，而是「另一个策略给出同一个数」——报告须这样写，并指出这**不是**「两策略等价」的一般结论（§17.10 的差集在本语料为空是偶然）。
+
+### E. 其余须入报告的读数
+
+- 臂内 FPR/recall 与 §46 A 表一致；`precision` regex 0.7424 / semgrep 0.7534；`f1` 0.4395 / 0.4783。
+- **良性侧 fail-closed 共 3 次**：`regex-run1:pypi-0057`、`regex-run1:sr-0012`、`regex-run2:sr-0012`（2 个不同样本）。这是 FPR 侧与失败调用直接相关的部分，须与 §17.12 D 的「1 例假阳性」并列说明口径（样本数 vs 次数）。
+- FPR 侧唯一不一致样本是 **`sr-0155`（良性）**，方向 `semgrep_passed_only`，`semgrep_rules=['NET_001']`——正是 §33 B 点名者。
+- 耗时：regex 3559.4 / 2951.0 / 2624.7 s；semgrep 5503.1 / 5348.6 / 5466.4 s；`Δsec` +1943.7 / +2397.6 / +2841.8。
+- `duration_outliers`：`regex-run1/dd-0056` 的 `llm_duration_sec = 431.4`（中位 37.7，比 11.4 倍）、`dd-0057` 260.5、`dd-0055` 203.4、`sr-0039` 117.0。
+- `attribution_precision` regex 0.4694——§11.11 已裁定此指标是**工装缺陷**，**报告不得当测量值引用**。
+
+## 47. 扫描层超时：`dd-0029@semgrep-run2` 被 120 s 上限截断 ⇒ **pair 2 作废**；及 §42 A 的一处限定（2026-09-29）
+
+### A. 事实
+
+`engine_compare_report.py` 在 pair 2 上剔除 `dd-0029`（`n=310`、`void_reason`），原因是一个**全新类别**的失败，与 §35/§44 统计的那些**不在同一域**：
+
+```
+semgrep-run2/dd-0029:
+  scan_complete=false  scan_timed_out=true
+  scan_error="Semgrep scan timed out after 120 seconds"
+  scan_duration_ms=157175   matched_rules=[]   total_findings=0
+  llm_state="static_only"   llm_invoked=false
+  started_at 04:02:56Z  finished_at 04:05:33Z
+```
+
+即 **Semgrep 扫描器自身**（不是 LLM 调用）撞上评测侧 **per-sample 120 s** 上限 ⇒ 零发现 ⇒ `benign` ⇒ 假阴性。判类来源：`semgrep_runner.py:136` `scan_complete = (exit_code in (0,1)) and parser_errors == 0`，而这里走的是 `:240-243` 的 `timed_out=True` 分支。
+
+**六轮全面清查**（`scan_complete`/`scan_timed_out`/`scan_parser_errors`/`scan_error`/`slice_error_count`/`ast_error_count`/`cpg_error`）：**异常恰好一处**，就是它。regex 臂**结构上不可能**产生（`RegexScannerAdapter.scan_directory` 无子进程，`Outcome(scan_complete=True)` 恒真）。
+
+### B. 后果：**pair 2 无判据读数**
+
+工具据此把 pair 2 标为 `void`（指标全空、Δ 全 0），故判据**只由 pair 1 与 pair 3 承载**——两者皆 FAIL ⇒ 结论仍为**未通过**，且 §26 3 允许在 FAIL 情形下以 2 对定论。报告须按 §26 4 **显式披露**该偏离：**三对已跑满，但第 2 对因扫描层超时作废**。
+
+同时须区分两个口径：**未配对**（每臂各轮）读数 `n=311` **包含** `dd-0029`（它作为 FN 计入 `semgrep-run2` 的混淆矩阵）；**配对** Δ 才剔除它（`n=310`）。二者不可混用。
+
+### C. **§42 A 的一处限定**：`scan_complete` 这个名字存在于**两个产物**里
+
+§42 A 判定 `compute_conclusion` 的**扫描完备性支**（`code_security_analyzer.py:877`，读 `statistics` 的 `scan_complete`/`parser_errors`/`timed_out`）**恒不触发**。**该判定成立**——四次抽查 `audit_report.json` 的 `statistics` 键，三个键**全部 absent**。
+
+**但**第三层 harness 在 **`sample-results.jsonl`** 里写了一个**独立的**同名字段（`_scored(row)` 读它，`engine_compare_report.py:83`），而它**确实为假过一次**。
+
+⇒ **须补的限定**：凡引用「扫描完备性支恒不触发」时，必须写明它指的是 **`audit_report.json` 的 `statistics`**；`sample-results.jsonl` 的 `scan_complete` 是**另一个字段**，且本轮有一处为假。**一个名字、两个产物、两种命运**——这是 §42 A 原文没有覆盖的。
+
+### D. 与 §35/§44 的关系：**超时有三个域，不可合并**
+
+至此确认三个互不相同的超时域：
+
+| 域 | 载体 | 上限 | 本轮计数 |
+| --- | --- | --- | --- |
+| LLM 调用超时 | `llm_reason`/`reason` 文本含 timeout | 生产 60 s | **11 条记录 / 8 个样本**（§44 C/D） |
+| LLM 生成截断 | 同上，parse 签名优先 | `num_predict` 200/300 | **26 条记录** |
+| **扫描器超时** | `scan_timed_out` / `scan_error` | 评测侧 **120 s** | **1 次**（本节） |
+
+报告须**分列**，且不得把三者相加成一个「未仲裁率」——§25 与清单第 25 项已就评测侧 120 s 与生产 300 s 的口径差提出要求，此处是它的**实测落点**。
+
+## 48. 反事实重放被自身守卫挡住：硬编码 `rules_count == 0` 与实测恒为 13（2026-09-29）
+
+### A. 缺陷
+
+收尾序列第 4 步（反事实重放，Δrecall 侧）**在第一个样本上就中止**：
+
+```
+CounterfactualError: regex-run1/dd-0019:
+  rules_count=13 does not look like a static-llm run;
+  replaying under another mode would produce a counterfactual of a different pipeline
+```
+
+根因（`llm_timeout_counterfactual.py:118`）：`STATIC_LLM_RULES_COUNT = 0`，注释称「`static-llm` 报 0」。**实测两臂全部 311 个样本 `rules_count` 恒为 13**（`regex-run1` 与 `semgrep-run1` 的分布均为 `{13: 311}`）。该代理**不判别任何东西**，因而拒绝了**每一个**受影响样本——即重放存在的全部理由。
+
+作者退而用代理的原因也已查明：**`scan_metadata.audit_mode` 在产物里根本没有记录**（恒为 `None`），故没有直接字段可查。
+
+### B. 替代判据的经验证据（同一对样本上，一个字段分得开、另一个分不开）
+
+| 样本 | 是否经 LLM 仲裁 | `llm_enabled` | `rules_count` |
+| --- | --- | --- | --- |
+| `regex-run1/dd-0019` | 是（有失败调用） | **True** | 13 |
+| `regex-run1/cq-0001` | 否（零发现，旁路） | **False** | 13 |
+
+且 `llm_enabled` 与工具自己的聚合数吻合：`regex-run1` 为 `False 245 / True 66`，恰等于 `bypass_count 245` / `llm_sample_count 66`。**32/32 受影响样本 `llm_enabled is True`。**
+
+⇒ 守卫的**意图**（确认被重放的是 static-llm 运行）正确，选的**代理**坏且无测试（`tests/test_llm_timeout_counterfactual.py` 覆盖失败判类、转移判类、运行中矩阵/已用输出守卫、`affected_samples` 索引与补丁行为，**无一项覆盖本守卫**）。
+
+### C. 处置（**你于 2026-09-29 裁定：「修守卫并跑」**）
+
+修复（提交 `1246cd1`）：
+
+- 判据改为 `llm_enabled is not True` 即拒，并**移入具名函数 `assert_static_llm_run`**，使它能像旁边两个守卫一样被测试。
+- **不静默接受** `rules_count`：把实测的 `recorded_rules_count` 与 `recorded_llm_enabled` 写进每一条结果行，使「守卫原本依据的值」可见。
+- 新增 `StaticLlmGuardTest` 三项，**变异检验**：还原旧代理后 **2 项失败**，第 3 项（模型被关闭须拒）两版皆过——它钉的是旧检查**碰巧做对**的那个方向。
+
+**如实登记的边界**：这是一次**为解除测量阻塞而修改测量工具守卫**的动作，故须在报告中写明其理由与证据（A、B 两节），使读者能自行判断这次修改没有把结论朝某个方向推。修改**不放宽**任何东西：被拒集合从「全部」变为「`llm_enabled` 非 True 者」，而在本轮语料中后者为空——即修复后**恰好**放行那 32 个受影响样本，别的什么都放不过。
