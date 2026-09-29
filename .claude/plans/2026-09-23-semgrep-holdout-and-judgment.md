@@ -2640,3 +2640,32 @@ CounterfactualError: regex-run1/dd-0019:
 
 故 `direction` 描述的是**规则级**差异（「该规则只有 semgrep 命中」），**不是**该样本上的对错方向：`sr-0155` 与 `dd-0029` 在判定上方向相反，却带同一个 `direction`。**报告不得用 `direction` 区分 FPR 侧与 recall 侧的判别样本**；分侧须按 §49 A 由真值与预测自行归并。
 
+## §53 `family_table.label` 是**族的名义标签**，不是逐样本真值 —— 一个会造成方向误判的读法陷阱
+
+`family_table` 的 malicious 边合计 `58+62+3+90+5 = 218`、benign 边 `5+88 = 93`；而 `sample-results.jsonl` 的逐样本 `label` 为 **malicious 157 / benign 154**。两者看似矛盾，**实不为矛盾**：
+
+| 族 | malicious | benign |
+| --- | --- | --- |
+| `CMD_001` | 43 | **15** |
+| `NET_001` | 45 | **45** |
+| `OBF_001` | 4 | **1** |
+| `DYN_001` / `DATADOG-MALICIOUS` | 3 / 62 | 0 |
+| `PYPI-BENIGN` / `CODEQL-NEARMISS` | 0 | 88 / 5 |
+
+即 `CMD_001`、`NET_001`、`OBF_001` **同时含两种标签**；`family_table` 每族只给一个 `label`，是**族的名义标签**，**不是逐样本真值**。
+
+**逐样本 `label` 才是判据所用的真值**，并有一致性佐证：FPR 分母 `FP+TN = 17+137 = 154`，**恰等于 benign 总数 154**。
+
+### 由此产生的读法陷阱（报告的判据方向会被读反）
+
+本报告要点的两个样本，其真值与族的**名义**标签相反：
+
+| 样本 | 族 | 族的名义标签 | **真值** | 角色 |
+| --- | --- | --- | --- | --- |
+| `sr-0012` | `CMD_001` | malicious | **benign** | FPR 侧 / 受影响 |
+| `sr-0155` | `NET_001` | malicious | **benign** | **唯一 FPR 侧判别样本** |
+
+若按 `family_table` 的 `label` 读，`sr-0155` 会被当成「semgrep 多找到一个恶意样本」，于是 `ΔFPR > 0` 会被读成**增益**——方向完全反转，判据从「未通过」被读成「通过」。
+
+**故报告必须写明**：①`family_table.label` 是族级名义标签；②判据方向一律以逐样本 `label` 为准；③`sr-0012`/`sr-0155` 二者真值为 benign 而族名为 malicious，正是最易被读反的两处。
+

@@ -1,7 +1,7 @@
 # H2 最终报告要求清单（只读整理）
 
 来源文件：
-- **P** = `.claude/plans/2026-09-23-semgrep-holdout-and-judgment.md`（§1–§52）
+- **P** = `.claude/plans/2026-09-23-semgrep-holdout-and-judgment.md`（§1–§53）
 - **S23** = `.claude/specs/2026-09-23-semgrep-engine-integration-design.md`
 - **S22** = `.claude/specs/2026-09-22-semgrep-engine-noninferiority-evidence-design.md`
 
@@ -144,6 +144,9 @@
 - [ ] `delta_fpr_ci = [0.0, 0.021739]`（**下界恰为 0**，含 0）与 `delta_recall_ci = [0.012422, 0.071429]`（**下界不含 0**）须并列报出，并注明 `bootstrap_n=1000`、`bootstrap_seed=42`、`confidence_level=0.95` —— P §52 C —— 「两句必须并写、互不削弱」
 - [ ] recall 增益的**机制通道**须报出：semgrep 每轮多送 **7** 个样本进 LLM 仲裁（`llm_sample_count` 73 vs 66，`bypass_count` 238 vs 245），而净增 TP 为 6 —— P §52 E —— 「可归因通道，不是随机波动」
 - [ ] 扫描开销须报出：`per_sample_scan_sec` regex **0.00** vs semgrep **4.02–5.25**；`per_sample_llm_sec` regex 39.75–53.90 vs semgrep 51.65–57.76 —— P §52 E —— 「扫描开销」
+
+- [ ] `family_table.label` 须注明是**族级名义标签**（`CMD_001` 43/15、`NET_001` 45/45、`OBF_001` 4/1 皆混含两种标签），判据方向一律以**逐样本 `label`** 为准；一致性佐证：FPR 分母 `17+137 = 154` 恰等于 benign 总数 —— P §53 —— 「不是逐样本真值」
+- [ ] `sr-0012`（族 `CMD_001` 名为 malicious、真值 **benign**）与 `sr-0155`（族 `NET_001` 名为 malicious、真值 **benign**）须点名，因按族名读会把 `sr-0155` 读成「semgrep 多找到一个恶意样本」，使 `ΔFPR > 0` 被读成增益、判据方向整体反转 —— P §53 —— 「方向完全反转」
 
 ## B. 不得声称（被撤回/被证伪的陈述、禁止的归因）
 
