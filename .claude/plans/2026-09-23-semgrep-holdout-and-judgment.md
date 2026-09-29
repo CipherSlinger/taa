@@ -2370,6 +2370,33 @@ CounterfactualError: regex-run1/dd-0019:
 
 且 `llm_enabled` 与工具自己的聚合数吻合：`regex-run1` 为 `False 245 / True 66`，恰等于 `bypass_count 245` / `llm_sample_count 66`。**32/32 受影响样本 `llm_enabled is True`。**
 
+### C. 判据选择理由的第二次修正（不是「没有直接字段」，是「直接字段在每样本上恒定」）
+
+上节把原因写成「没有直接字段可查」，**对 `audit_report.json` 成立，对全部产物不成立**。实测：
+
+| 产物 | 字段 | 取值 |
+| --- | --- | --- |
+| `*-run*/sample-results.jsonl` | `audit_mode` | **`'static-llm'`，1866/1866 行** |
+| `*-run*/*/audit_report.json` | `scan_metadata.audit_mode` | **键不存在**（`.get()` 返回 `None`） |
+| `*-run*/*/audit_report.json` | `scan_metadata.llm_enabled` | `False 245 / True 66`（`regex-run1`，**逐样本**） |
+
+即：**同一个名字 `audit_mode` 又是「一个名字、两个产物、两种命运」**——harness 产物里有且恒为同一个值，分析器产物里根本没有（与 §47 C 的 `scan_complete` 同一族，这是该族第 **8** 次出现）。
+
+这个区分不是措辞问题，它**加强了修复的理由**，也纠正了 §48 B 的说法：
+
+- 走 `audit_mode` **不能**做逐样本守卫。它是**运行级常量**：311/311 都是 `static-llm`，在样本维度上零方差，加进去只会重现与 `rules_count` 完全相同的「拒绝一切」或「接受一切」。
+- 重放真正需要的前提是「**该样本确实走到过 LLM**」，而不是「该运行的模式是 static-llm」。`llm_enabled` 恰是这一条：它对 245 个零发现旁路样本为 `False`，对 66 个真正仲裁过的为 `True`，且 32/32 受影响样本为 `True`（受影响蕴含调用过）。
+- 故修复**不是「退而求其次的代理」**，而是**换到语义更强、且在样本维度上有方差的那个字段**。§48 B 的表述应据此读：`llm_enabled` 不只是「分得开」，它是「重放所需的那条前提本身」。
+
+### D. 待办：工具注释与测试 docstring 的限定语（**重放跑完后**才动，不得在跑期间改）
+
+两处文字把「产物里没有」写宽了，需限定到 `scan_metadata`：
+
+- `models/audit/tools/llm_timeout_counterfactual.py`（约 123 行）：`audit_mode` is not recorded in the artifacts at all
+- `tests/test_llm_timeout_counterfactual.py`：`StaticLlmGuardTest` docstring 的 The artifacts carry no `audit_mode` at all
+
+**为何必须等**：该文件运行期间必须字节冻结——它是本次重放的产出者，`--out-dir` 里每个样本行都记着它的 sha256。改动会使 host 与容器副本不一致，破坏 §44 A 的「产出者同一性」纪律。跑完后一次性执行：改 host → `diff` 证明**只动注释与 docstring、不动任何代码行** → 复制进容器 → 记录新 hash 与旧 hash 并附 diff 证据。
+
 ⇒ 守卫的**意图**（确认被重放的是 static-llm 运行）正确，选的**代理**坏且无测试（`tests/test_llm_timeout_counterfactual.py` 覆盖失败判类、转移判类、运行中矩阵/已用输出守卫、`affected_samples` 索引与补丁行为，**无一项覆盖本守卫**）。
 
 ### C. 处置（**你于 2026-09-29 裁定：「修守卫并跑」**）
