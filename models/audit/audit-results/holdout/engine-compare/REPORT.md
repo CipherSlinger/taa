@@ -117,7 +117,7 @@ pair 2: scan_complete is False on 1 sample(s): dd-0029
 **本报告未能定位的差异**（如实列出，不掩饰）：
 
 1. **`pair 2` 作废的深层成因**：`semgrep-run2` 的 `dd-0029` 在**扫描层**超时（`scan_complete=False`）。评测侧 per-sample 超时为 120 s、生产为 300 s。超时**为何**恰好落在该样本该轮，**未归因**。
-2. **`dd-0019`/`dd-0018` 的臂专属不可解析复现**（`dd-0019` regex 3/3 失败、semgrep 3/3 成功；`dd-0018` 反之）：两臂在**措辞**（要求 8 违规）、**上下文完整性**（片段 vs 完整模块）、**命中集**三处同时不同，**三者的贡献不可分**。H2.3 是为此设计的仪器，见 §10。
+2. **`dd-0019`/`dd-0018` 的臂专属不可解析复现**（`dd-0019` regex 3/3 失败、semgrep 3/3 成功；`dd-0018` 反之）。**H2.3 已排除其中一项**（§10）：这两条 `compared_hits = 2` 且 `arm_specific` **为空** ⇒ **两臂命中集完全相同，引擎差异的贡献为 0**；其违规同时带 `category`/`description`（措辞）与 `context_before`/`context_after`（上下文），故**归因到「措辞」还是「上下文」仍未定位**——H2.3 **缩小而未消除**该条。
 3. **`dd-0007` 的 1/3 与 5/6 不对称**：regex 仅 run3 失败、semgrep 三轮全失败，**未归因**。
 4. **`oom_kill` 与失败落点的对应**：见 §8，`HTTP Error 500` 数是击杀致失败的**计数下界**。
 
@@ -456,7 +456,61 @@ pair 2: scan_complete is False on 1 sample(s): dd-0029
 
 ## 10. H2.3 两臂 Prompt 等价性比对
 
-（本节待 H2.3 完成后填入。）
+**产物**：容器内 `/root/taa/verify/h2-prompt-equivalence/prompt-equivalence.json`（266184 B）；工具 `models/audit/tools/prompt_equivalence.py`；`max_findings = 50`；`engines = (regex, semgrep)`。
+**运行窗口**：`START 2026-09-29T03:36:27Z` → `END 2026-09-29T03:56:46Z`，`EXIT=0`。（首次尝试**被宿主重启杀死、无产物**，本读数为**受控重跑**，见 §14.1。）
+
+**它测什么**：对每条样本、每个引擎，**捕获该引擎实际会送出的每一个 prompt**（逐 finding 的与逐文件的），命中的选取用评测器**自己的**去重、上限与分组，故描述的是**真会发生的仲裁输入**，不是重建。
+
+**头条总数**：`samples 311`、`comparable 311`、`not_comparable 0`、`equivalent 245`、`violations 185`、`arm_specific_hits 52`。
+
+### 10.1 `equivalent = 245` **不得**直接读作「两臂问了同样的问题」
+
+**实测**：`equivalent == (violations == 0)` 在 **311/311** 上成立；而 `violations == 0` 有**两种截然不同的成因**，`equivalent` 把它们合成了一个数：
+
+| 桶 | 样本数 | `compared_hits` | 含义 |
+| --- | --- | --- | --- |
+| 两臂**都零命中** | **238** | 0 | 无可比对项；`equivalent` 名副其实 |
+| 两臂**命中集分离**（有 arm-specific、交集为空） | **7** | 0 | 无可比对项；**`equivalent` 是误标**——这是最彻底的引擎差异 |
+| 两臂**命中集相交** | **66** | ≥1 | **66 条全部有违规** ⇒ `equivalent = False` |
+
+`238 + 7 + 66 = 311`，且 `245 = 238 + 7`。
+
+**这 7 条误标样本恰是判定层的那 7 条**：`dd-0029`、`sr-0034`、`sr-0035`、`sr-0036`、`sr-0150`、`sr-0155`、`sr-0156`——已核验**与矩阵三对 `inconsistencies` 的并集逐元素相同**。即**决定 `ΔFPR = +0.0065` 的样本，在 H2.3 的头条读数里被算作「等价」**（§6.1）。这与 §15 的 `assist_fpr = 0.0000` 属**同一族**：**空交集 / 空分母产出的有利退化值**。凡引用 `245` **必须**拆写为 `238 + 7`。
+
+### 10.2 两类差异**分开**报（要求 8 的口径）
+
+**A. 引擎差异（命中集不同）——被测量的对象，不是缺陷。**
+
+- **13 条**样本有 arm-specific 命中，合计 **52** 个命中：其中 7 条**交集为空**（上表），6 条**部分相交**（`dd-0055`/`dd-0056`/`dd-0057` 各 11 个 semgrep-only；`pypi-0080` 1 个 **regex-only**；`sr-0133` 3 个；`sr-0134` 1 个）。
+- **`pypi-0080` 方向相反**：regex 命中（`DYN_001:1591`）而 semgrep 未命中。**不得**把 arm-specific 一律读成「semgrep 更强或更弱」。
+
+**B. Prompt 混淆（同一个命中、问了不同的问题）——要求 8 的违规。**
+
+- **逐命中 1:1**：相交命中总数 **125**，finding 级违规 **125** 条 ⇒ **每一个相交命中都产出且仅产出一条违规，无一例外**。即**全语料没有任何一次相交命中，两臂送出相同的 prompt**。
+- **逐样本**：`compared_hits > 0 ⇒ violations > 0` 为 **66/66**。
+- 违规合计 **185** 条 = **125** finding 级 + **60** file 级。`differing_slots` 组合只有三种：
+
+| 组合 | 条数 | 级别 |
+| --- | --- | --- |
+| `category, context_after, context_before, description` | 112 | finding |
+| `category, context_before, description` | 13 | finding |
+| `findings_summary` | 60 | file |
+
+**这不是同义反复**：这些槽位取自**各引擎自己填的 `Finding` 字段**（`finding_prompt_slots`，`code_security_analyzer.py:527-561`：`category`/`description`/`context_before`/`context_after`/`cpg_evidence`/`ast_enclosing_block`/`taint_trace`），**不是**按文件行重读的。**没有任何机制强制它们不同**；它们不同，是因为**两臂适配器各自填这些字段**。故 125/125 是**实测**，不是构造必然。
+
+**这就是 GAP-2 的全量读数**（§18.3 原先只在 `sample-results.jsonl` 上量到 `dd-0019`/`dd-0018` 两条）：要求 8 的违规**不是偶发，而是在每一次命中相交时都发生**。
+
+**GAP-2 的两条原始样本已把引擎差异排除**：`dd-0019` 与 `dd-0018` 均为 `compared_hits = 2`、`arm_specific` **为空**（`findings` 两臂皆 2）⇒ **两臂命中集完全相同**，其 `parse_error` 的不对称**不可能**由命中集差异解释；其违规同时带 `category`/`description` 与 `context_before`/`context_after`，故**这两条可定位到「prompt 输入不同」，但不能进一步归因到措辞还是上下文**。§4「本报告未能定位的差异」第 2 条据此**收窄**。
+
+### 10.3 本节不得声称
+
+- 不得把 `245` 写成「245 条等价」——须拆为 `238 + 7`，并写明 7 条是**空交集误标**。
+- 不得由本节推断「两臂问的是同一个问题」——**恰恰相反**：相交命中 **125/125** 都不同。
+- 不得由本节推断 `ΔFPR` 的成因：本节**只量 prompt 输入的差异**；差异是否改变**标签**由 §9 的反事实重放与 §2 的配对读数回答。**「输入不同」不等于「标签因此不同」。**
+- 不得把 `arm_specific_hits = 52`（命中数）与 `violations = 185`（记录数）并列比较。
+- 不得把 7 条空交集样本的 `equivalent = True` 当作「引擎一致」或「两臂等价」。
+
+**范围限制**：(a) **未触发上限**——实测最大命中 regex 7 / semgrep 18，上限 50，故无截断；(b) file 级违规 **60 条 < 66 条**相交样本，因 `build_file_prompt` 在文件不可读时返回 `None`（`code_security_analyzer.py:583-584`）并被跳过——**那 6 条不是「文件级等价」，是未生成**。
 
 ---
 
