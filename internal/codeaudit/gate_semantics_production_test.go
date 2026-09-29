@@ -31,10 +31,74 @@ func TestProductionGateSemantics(t *testing.T) {
 		t.Skip("set TAA_PRODUCTION_GATE=1 to derive production gate semantics from the run artifacts")
 	}
 
+	// The run trees default to the fitting-set results, which is where this test
+	// has always read them. The holdout matrix is written inside the benchmark
+	// container and has no host path, so the input has to be overridable to
+	// derive a holdout reading at all.
+	//
+	// Re-pointing the input REQUIRES an explicit output. The test writes its
+	// result into the tree it derives from, so an input override alone would
+	// drop production-gate-semantics.json into a measured matrix and add a file
+	// to the artifacts a report cites. That is the same hazard gate_rescore.py
+	// guards with a mandatory --out, and it is refused here rather than
+	// documented, because the failure is silent and the tree is expensive to
+	// rebuild.
 	runsRoot := filepath.Join("..", "..", "models", "audit", "audit-results", "engine-compare")
-	runDirs, err := filepath.Glob(filepath.Join(runsRoot, "*-run*"))
+	if v := os.Getenv("TAA_PRODUCTION_GATE_RUNS"); v != "" {
+		runsRoot = v
+	}
+	outPath := filepath.Join(runsRoot, "production-gate-semantics.json")
+	if v := os.Getenv("TAA_PRODUCTION_GATE_OUT"); v != "" {
+		outPath = v
+	} else if os.Getenv("TAA_PRODUCTION_GATE_RUNS") != "" {
+		t.Fatalf("TAA_PRODUCTION_GATE_RUNS is set but TAA_PRODUCTION_GATE_OUT is not: "+
+			"the result would be written into the tree under measurement (%s); "+
+			"point TAA_PRODUCTION_GATE_OUT outside it", runsRoot)
+	}
+	// Ground-truth labels come from a corpus list when one is supplied. The
+	// fitting set marks a benign sample by a B-prefixed directory name, and the
+	// holdout uses cq-/dd-/pypi-/sr- identifiers that never match that test, so
+	// re-pointing the runs alone labels every holdout sample malicious. The
+	// benign denominator then collapses to zero, ratio() returns its zero guard,
+	// and the FPR reads 0.0000 out of 0/0 instead of out of a measurement -- a
+	// silent failure that presents as a pass. The labels are therefore required
+	// as soon as the runs are overridden.
+	labels := map[string]string{}
+	if v := os.Getenv("TAA_PRODUCTION_GATE_LABELS"); v != "" {
+		raw, err := os.ReadFile(v)
+		if err != nil {
+			t.Fatalf("read labels %s: %v", v, err)
+		}
+		var doc struct {
+			Samples []struct {
+				SampleID string `json:"sample_id"`
+				Label    string `json:"label"`
+			} `json:"samples"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("parse labels %s: %v", v, err)
+		}
+		for _, s := range doc.Samples {
+			labels[s.SampleID] = s.Label
+		}
+	} else if os.Getenv("TAA_PRODUCTION_GATE_RUNS") != "" {
+		t.Fatalf("TAA_PRODUCTION_GATE_RUNS is set but TAA_PRODUCTION_GATE_LABELS is not: " +
+			"the fitting-set B-prefix convention does not describe another corpus, " +
+			"so every sample would be labelled malicious and FPR would be 0/0")
+	}
+
+	// The pattern also matches the manifests and the logs written beside the run
+	// directories, so its matches are narrowed to directories. A file match is a
+	// zero-sample run, which the zero-denominator guard below rejects.
+	matched, err := filepath.Glob(filepath.Join(runsRoot, "*-run*"))
 	if err != nil {
 		t.Fatalf("glob runs: %v", err)
+	}
+	var runDirs []string
+	for _, m := range matched {
+		if fi, err := os.Stat(m); err == nil && fi.IsDir() {
+			runDirs = append(runDirs, m)
+		}
 	}
 	if len(runDirs) == 0 {
 		t.Fatalf("no run directories under %s", runsRoot)
@@ -140,9 +204,19 @@ func TestProductionGateSemantics(t *testing.T) {
 			conclAssist := ComputeConclusionContext(stats, fileReports, "assist", ctx)
 
 			sampleID := filepath.Base(filepath.Dir(rp))
-			label := "malicious"
-			if strings.HasPrefix(sampleID, "B") {
-				label = "benign"
+			label, labelled := labels[sampleID]
+			if !labelled {
+				if len(labels) > 0 {
+					t.Fatalf("%s: sample %s is absent from the supplied corpus list; "+
+						"falling back to the name convention here would mix two label sources",
+						filepath.Base(runDir), sampleID)
+				}
+				// No corpus list, so fall back to the fitting-set convention: a
+				// B-prefixed directory names a benign sample.
+				label = "malicious"
+				if strings.HasPrefix(sampleID, "B") {
+					label = "benign"
+				}
 			}
 
 			// Final production verdict: the conclusion, forced false by the
@@ -213,6 +287,15 @@ func TestProductionGateSemantics(t *testing.T) {
 			}
 		}
 
+		// A run with an empty benign or malicious set cannot produce a rate:
+		// ratio() returns its zero guard, and the summary would report 0.0000 for
+		// a quantity that was never measured. Refuse to emit that.
+		if bTotal == 0 || mTotal == 0 {
+			t.Fatalf("%s: %d benign and %d malicious labelled samples; an empty set "+
+				"makes FPR or recall a 0/0 zero-guard rather than a measurement",
+				rs.Run, bTotal, mTotal)
+		}
+
 		ratio := func(num, den int) float64 {
 			if den == 0 {
 				return 0
@@ -256,7 +339,7 @@ func TestProductionGateSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	dest := filepath.Join(runsRoot, "production-gate-semantics.json")
+	dest := outPath
 	if err := os.WriteFile(dest, blob, 0o644); err != nil {
 		t.Fatalf("write %s: %v", dest, err)
 	}
