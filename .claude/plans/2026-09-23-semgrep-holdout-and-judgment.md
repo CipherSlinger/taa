@@ -2669,3 +2669,74 @@ CounterfactualError: regex-run1/dd-0019:
 
 **故报告必须写明**：①`family_table.label` 是族级名义标签；②判据方向一律以逐样本 `label` 为准；③`sr-0012`/`sr-0155` 二者真值为 benign 而族名为 malicious，正是最易被读反的两处。
 
+
+## §54 反事实重放**已完成**：`material_samples = 0`，且受影响集按「已评估 / 空判」二分后落在**判据决定侧之外**
+
+产物：`/root/taa/verify/h2-counterfactual/counterfactual-summary.json`（`tool_sha256` = `f9ca4e84fd58f1579e8762125556c5e2542577e7b94a64c90d5233d85cf01436`；`source_base_dir = /root/taa/verify/h2-assist-unloaded`，即**无载矩阵**这一个基）。修补旋钮：`patched_http_timeout_sec 300`（生产 60）、`patched_min_num_predict 800`（生产为 file/finding 各自的值）。判据 `material_rule` **照预登记原文**未改：*a failed call is material iff the counterfactual predicted_label differs from the recorded predicted_label*。
+
+### A. 主读数
+
+| 量 | 值 |
+| --- | --- |
+| `affected_samples` | **32** |
+| **`material_samples`** | **0** |
+| `transitions` | `{}`（空） |
+| 逐行 `material` | 全 `false`；逐行 `transition` 全 `null` |
+
+即：**修补失败调用没有改变任何一个样本的 `predicted_label`，任何一轮、任何一臂都没有。**
+
+### B. 32 行必须二分，**不得合并为「未变」**（§50 A 同一纪律）
+
+`uncertain`（来自**重放自己的报告**，不是被重放的原报告）为 0 者才是「已评估且未变」；`uncertain > 0` 者是**修补后仍然失败** ⇒ 该行的反事实**空判（not evaluated）**，不是「测过且无变化」。
+
+| 状态 | 行数 | 其中 malicious | 其中 benign |
+| --- | --- | --- | --- |
+| **已评估，未变**（`uncertain=0`） | **14** | 11 | **3** |
+| **空判**（`uncertain=1` ×17、`uncertain=2` ×1） | **18** | **18** | **0** |
+
+**决定侧与空判侧恰好不相交**：18 行空判**全部是 malicious**，benign 行**无一行空判**。
+
+### C. 由此得到的判定结论（这是本节的要点）
+
+判据失败在 **`ΔFPR = +1/154 > 0`** 一侧。而 benign 侧的受影响样本**共 3 个，全部被成功修补、全部未变**：
+
+| 行 | 真值 | recorded | counterfactual | 失败种类 |
+| --- | --- | --- | --- | --- |
+| `regex-run1/pypi-0057` | benign | malicious | malicious | `timeout` |
+| `regex-run1/sr-0012` | benign | malicious | malicious | `unparseable` |
+| `regex-run2/sr-0012` | benign | malicious | malicious | `unparseable` |
+
+这三行**正是** §52 E 由另一条路径得到的 `benign_fail_closed` 三项（`regex-run1:pypi-0057`、`regex-run1:sr-0012`、`regex-run2:sr-0012`），两条独立路径**逐项吻合**。
+
+⇒ **FPR 侧的受影响集被穷尽评估**：每一个曾有失败调用的 benign 样本都被修补且标签未变。**故修补既不能新增也不能移除任何假阳性，`ΔFPR = +1/154` 在反事实下不变。**§49 E 的结构上界由此**由测量证实**，不再是论证。
+
+同时：18 行空判**全为 malicious 且 `recorded = counterfactual = malicious`**（本就都是 TP），空判区**不可能藏着一个被修复的假阳性**——即判据失败**不因反事实的空判区而动摇**。
+
+**保留（写进报告）**：recall 侧只被**部分**评估（32 行中 18 行空判），故「修补后 `Δrecall` 仍为 `+6/157`」这一句**只在已评估的 14 行上成立**；空判区对 recall 的影响**未测**。这不改变判定（判定已在 FPR 侧失败），但报告**不得**把 recall 侧写成「已完整检验」。
+
+### D. 空判集的形状：**5 个样本、臂专属、3/3 复现**（GAP-2 代价的可靠复现）
+
+18 行空判只来自 **5 个不同样本**：`dd-0007`、`dd-0018`、`dd-0019`、`dd-0020`、`dd-0029`。按 6 轮逐轮读其 `uncertain`：
+
+| 样本 | regex1 | regex2 | regex3 | semgrep1 | semgrep2 | semgrep3 | 读法 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `dd-0019` | 1 | 1 | 1 | clean | clean | clean | **regex 专属 3/3** |
+| `dd-0018` | clean | clean | clean | 1 | 1 | 1 | **semgrep 专属 3/3** |
+| `dd-0020` | 1 | 1 | 1 | 1 | 1 | 1 | 两臂皆失败 6/6 |
+| `dd-0007` | clean | clean | 1 | 1 | 1 | 1 | semgrep 3/3 + regex 1/3 |
+| `dd-0029` | clean | clean | clean | 2 | clean | 2 | semgrep 2/6 |
+
+**`dd-0019` 与 `dd-0018` 的对侧是 `clean`，6 轮无一例外。** §34 B 由**单对**观测到的「`dd-0019` 只在 regex 侧失败、`dd-0018` 只在 semgrep 侧失败」，在**三对上 3/3 复现**，且对侧臂**从未**出现同一样本的失败。
+
+**不得据此推断机制**（§51 纪律）：可观测的是 *同一样本、同一模型，在 regex 臂 3/3 不可解析、在 semgrep 臂 3/3 可解析*。两臂的提示体**不止措辞之差**（GAP-2 的 `category`/`description` 措辞差 **+** §11.8 的片段/完整上下文不对称 **+** 两引擎命中集不同，§6.5）。**是哪一项造成的，本表不能判定**——这正是 H2.3 要分开的两类差异，也是 H2.3 的**优先靶样本**即此 5 个。
+
+### E. 由重放副产的、生产相关的观测
+
+- 空判集的失败种类**一律是 `unparseable`**（20 条记录，无一条 `timeout`）⇒ 在 `timeout=300 s`、`num_predict=800` 下这些调用**仍然**返回不可解析的生成。**「调大 `num_predict` 即可修复」不成立**——至少对这 5 个样本不成立。
+- **其原因是不可考的**，不得推断：`无法解析模型输出: {text[:100]}` 把消息**钳到恰好 110 字符**（§50 B），截断与非法 JSON 在该消息上不可分。故只能写「仍以不可解析标记失败」，**不得**写「仍被截断」。
+- 受影响集中唯一的 `other` 种类记录是 `semgrep-run2/dd-0055` 的 `['timeout','other']`，且该行最终 `uncertain=0`（已评估）。仅登记，不解读。
+- 空判率的臂间不对称：regex `7/16`、semgrep `11/16`。仅登记。
+
+### F. 收尾序列进度
+
+步骤 1–4 完成（`gate_rescore --validate` → `--out-dir` → 两基 `engine_compare_report.py` → **反事实 `Δrecall` 侧，本节**）。下一步 H2.3（步骤 5），其后 H2.6、报告。**本轮不刷规则、不切 `CodeScanEngine`、不部署**（§22）。
