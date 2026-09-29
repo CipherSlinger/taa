@@ -2740,3 +2740,68 @@ CounterfactualError: regex-run1/dd-0019:
 ### F. 收尾序列进度
 
 步骤 1–4 完成（`gate_rescore --validate` → `--out-dir` → 两基 `engine_compare_report.py` → **反事实 `Δrecall` 侧，本节**）。下一步 H2.3（步骤 5），其后 H2.6、报告。**本轮不刷规则、不切 `CodeScanEngine`、不部署**（§22）。
+
+## §55 两臂之差**恰好是 7 个样本**，且全部源自**静态扫描层** —— §52 E 的「`llm_sample_count` 是可归因通道」**被证伪，因果方向相反**
+
+由 `h2-assist-unloaded` 的 `regex-run1` 与 `semgrep-run1` 逐样本对读（各 311 行，共享 311），以下**三个互相独立的读法给出同一组 7 个样本 ID，且反向一律为 0**：
+
+| 读法 | 结果 | 反向 |
+| --- | --- | --- |
+| `bypass` 两臂不同 | **7** | 0 |
+| regex `total_findings = 0` 且 semgrep `> 0` | **7** | 0 |
+| `predicted_label` 两臂不同 | **7** | 0 |
+
+7 个样本：`dd-0029`、`sr-0034`、`sr-0035`、`sr-0036`、`sr-0150`、`sr-0155`、`sr-0156`。
+
+### A. 逐样本的完整链条（两臂同一条链，只在第一环分岔）
+
+| 样本 | 真值 | regex 发现数 | regex `bypass` | regex 调 LLM | regex 标签 | semgrep 发现数 | semgrep `bypass` | semgrep 调 LLM | semgrep 标签 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `dd-0029` | malicious | **0** | True | **False** | benign | 7（3 规则） | False | True | malicious |
+| `sr-0034` | malicious | **0** | True | **False** | benign | 1（1 规则） | False | True | malicious |
+| `sr-0035` | malicious | **0** | True | **False** | benign | 1 | False | True | malicious |
+| `sr-0036` | malicious | **0** | True | **False** | benign | 1 | False | True | malicious |
+| `sr-0150` | malicious | **0** | True | **False** | benign | 1 | False | True | malicious |
+| `sr-0156` | malicious | **0** | True | **False** | benign | 1 | False | True | malicious |
+| **`sr-0155`** | **benign** | **0** | True | **False** | benign | 2（1 规则） | False | True | **malicious** |
+
+链条：**regex 发现 0 条 ⇒ `bypass=True` ⇒ 根本不调 LLM ⇒ 静态标签 benign**；**semgrep 发现 1–7 条 ⇒ `bypass=False` ⇒ 调 LLM（确认）⇒ 标签 malicious**。**分岔在静态扫描层，不在 LLM 层。**
+
+### B. 判据的两个 Δ **出自同一组 7 个样本**，且判据失败只由**其中 1 个**决定
+
+- 6 个 malicious（`dd-0029`/`sr-0034`/`sr-0035`/`sr-0036`/`sr-0150`/`sr-0156`）⇒ **`Δrecall = +6/157`**（唯一对 semgrep 有利的一侧）
+- 1 个 benign（**`sr-0155`**，即 §53 的「唯一 FPR 侧判别样本」）⇒ **`ΔFPR = +1/154`**（判据失败的一侧）
+
+**故：两臂在 311 条上的全部分歧就是这 7 条；`Δrecall` 与 `ΔFPR` 不是两个独立现象，而是同一组 7 条按真值方向的二分。**在容差 0、逐对成立的规则下，**判据的失败由 `sr-0155` 这一个样本决定**。
+
+### C. §52 E 的归因被证伪（作者本轮第 4 次「由已观测的不变量推断未观测的机制」）
+
+§52 E 曾把 `llm_sample_count` **66 vs 73** 写成「召回增益的可归因通道」。实测：**该差值恰好是这 7 个样本**（7 = 73 − 66），而这 7 个样本里 **regex 一条发现都没有、`bypass=True`、`llm_invoked=False`**。
+
+⇒ **两个数字的顺序被读反了**：不是「semgrep 多调了 7 次 LLM 因而召回更高」，而是「**semgrep 多发现了 7 个样本的静态命中，因而那 7 个样本不被旁路、才多调了 7 次 LLM**」。`llm_sample_count` 之差是**结果**，不是**通道**；真正的通道是**静态发现数**。
+
+报告须写 **静态层**为可归因通道；`llm_sample_count` 只能作为**伴随读数**出现，**不得**写成增益来源。
+
+### D. regex 侧那 6 个漏报是**真漏报**，不是扫描失败
+
+6 个样本在 regex 侧的 `scan_complete=True`、`scan_error=None`、`scan_timed_out=False`、`files_scanned=1`、`scan_parser_errors=0`、`ast_error_count=0`，耗时 0–1 ms（对照：regex 真检出的 `dd-0003`/`dd-0005`/`dd-0007` 为 2–5 ms、`total_findings` 4/1/1）。⇒ **扫描确实跑完且确实无命中**，故 `Δrecall = +6` 是真实的检测力之差。
+
+### E. 副产发现：一个**未登记的**留出集产物，及其**不能被用来**得出的结论
+
+`models/audit/audit-results/holdout/engine-compare/`（宿主，2026-09-24）已存在一次**未被本计划登记**的留出集运行（`grep "static-only"` 命中 **0**）：
+
+- `regex-run1/summary.json`：`run_id corpus-list-20260924-032250`、`auditor_version static-only`、**`llm_model "none"`**、`llm_sample_count 0`、`policy gate`、`rule_set_version default-rules-13`、`bypass_count 245`、`counts tp49/fp17/tn137/fn108`。
+- `corpus-parity-go-vs-python-regex.json`（**晚该运行 1 分钟**）：`identical 311`、`divergent 0`、`source internal/codeaudit.TestGoEngineMatchesBenchmarkRegexArm` ⇒ **该运行是「要求 9」（Go 引擎 ≡ Python regex 臂）的取样夹具**，其 LLM 是**故意关掉**的（比扫描引擎不能带 LLM）。计划第 6 行「要求 9 的 Go 等价性在留出集上零分歧通过」即此产物。
+
+**实测**：该静态运行与 H2 `regex-run1` 在 311 条上，`total_findings`/`matched_rules`/`files_scanned`/`scan_complete`/`bypass`/`label` **全部逐样本相同（差异 0）**，`predicted_label` 差异 **0**；仅 LLM 派生字段不同（`predicted_verdict` 64、`predicted_risk` 66、`llm_state` 66、`fail_closed` 8）。
+
+**但作者曾据此写下的「regex 臂的 LLM 通道对标签惰性」这一断言已被作者自己撤回**，因为它**无法把政策与 LLM 分开**：该运行是 `policy=gate` 且**无 LLM**，H2 是 `assist` 且**有 LLM**，两者共变。反证：`pypi-0057` 在 09-24 为 risk `MEDIUM`、标签 malicious，而在 `assist` 下 `MEDIUM` 本应 `passed=True`；即**在无 LLM 的世界里两种政策会分歧**（`gate` 的差集条件 `has_high_or_medium and not has_llm_verdict` 恰好成立）。故该对比**不能**用来隔离 LLM 的作用。
+
+**可用的部分**：`gate` 与 `assist` 在 **H2 内部**（同一 LLM 运行）逐样本相同 —— 复测 `predicted_label`/`blocked`/`bypass`/`predicted_risk` 均 **311/311 无差异**（与 §52 D 的 gate 对齐一致）；且该 09-24 产物可作为「regex 的旁路结构由静态决定」的**旁证**，报告须连同**政策共变**这一限制一并写明。
+
+### F. 报告不得声称
+
+1. **不得**把 `llm_sample_count` 写成召回增益的来源（§55 C）。
+2. **不得**把 `Δrecall` 与 `ΔFPR` 写成两个独立现象（§55 B：同一组 7 条）。
+3. **不得**用 09-24 那次运行隔离 LLM 的作用（§55 E：政策共变）。
+4. **不得**把 `sr-0155` 的族名义标签当恶意（§53：真值 benign）——它正是判据失败的那 1 个样本。
