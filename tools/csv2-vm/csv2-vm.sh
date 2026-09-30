@@ -17,26 +17,40 @@
 #                              Supplies the guest kernel, the CSV2-patched kernel
 #                              modules (csv-guest.ko) and a preinstalled OS, so a
 #                              new instance is a COW overlay rather than an install.
-#     $HOST_OVMF               OVMF built with confidential-guest support. Must match
-#                              the firmware the base image was installed against.
+#     $HOST_OVMF               OVMF built with confidential-guest support, and with a
+#                              populated kernel-hashes region. A build that only
+#                              advertises the region's GUID is refused by QEMU;
+#                              `up` checks this before launching.
 #     /dev/sev                 PSP device. Memory encryption is impossible without it.
 #     /etc/qemu/bridge.conf    must allow the bridge, or QEMU refuses to attach it.
 #     <bridge>                 LAN uplink; also where the guest's DHCP lease comes from.
+#
+#   host side - extracted from the base image by `up`, for measured boot
+#     $HOST_KERNEL             the guest's own kernel and its matching initramfs,
+#     $HOST_INITRD             copied out of /boot inside the base image. QEMU
+#                              hashes them into the launch measurement, so they
+#                              must exist as real host files. Re-extract them
+#                              after the base image is replaced.
 #
 #   guest side - already inside the base image, nothing to stage
 #     /lib/modules/$(uname -r)/kernel/drivers/virt/coco/csv-guest/csv-guest.ko.xz
 #                              provides /dev/csv-guest, the attestation interface.
 #                              Not loaded by default; `up` and `verify` modprobe it.
 #
-#   verification only - optional, needed by `verify` alone
+#   verification only - optional, needed by `verify` and `measure`
 #     $SMOKE_BIN               TAA attestation smoke test, copied into the guest.
 #     $CERT_DIR/hrk.cert, $CERT_DIR/hsk_cek.cert
 #                              Hygon root and endorsement certs, for chain checking.
+#     $MEASURE_TOOL            recomputes the launch measurement from host files.
+#     $GET_ATTESTATION_BIN     fetches the report the running guest actually gets.
 #
 # Usage:
 #   ./tools/csv2-vm/csv2-vm.sh deps     list the required files and whether they exist
 #   ./tools/csv2-vm/csv2-vm.sh up       create (if needed) and boot the VM
 #   ./tools/csv2-vm/csv2-vm.sh status   read-only status + CSV2 encryption check
+#   ./tools/csv2-vm/csv2-vm.sh measure  the launch measurement this configuration
+#                                       should produce, next to the one the guest
+#                                       actually reports
 #   ./tools/csv2-vm/csv2-vm.sh verify   run the TAA CSV attestation smoke test in the guest
 #   ./tools/csv2-vm/csv2-vm.sh ssh      open a shell in the guest
 #   ./tools/csv2-vm/csv2-vm.sh down     stop the VM and clean runtime files
@@ -44,6 +58,20 @@
 #                                       also delete the overlay disk (DESTRUCTIVE:
 #                                       discards all guest state; the read-only base
 #                                       image is left alone so it can be recreated)
+#
+# Measured boot. The VM is launched with -kernel/-initrd/-append and
+# kernel-hashes=on, so the PSP measures more than the firmware: QEMU builds a
+# hash table into a reserved area of the firmware covering exactly three values -
+# the kernel, the initramfs and the command line. The launch measurement becomes
+#
+#   MEASUREMENT = SM3( OVMF || table{ cmdline, initrd, kernel } )
+#
+# Without -kernel there is nothing to hash and the measurement degrades to
+# SM3(OVMF) alone. That pins the firmware and nothing else: the kernel, the
+# initramfs and the whole root filesystem stay unmeasured, so anything loaded
+# from the disk can be replaced without moving the measurement. `measure` prints
+# the expected value for the current configuration and, when the VM is up, the
+# value the guest actually reports.
 #
 # Credentials come from the environment, never from this file:
 #   CSV2_HOST       ssh target of the KVM host      (default root@172.16.10.178)
@@ -98,11 +126,33 @@ HOST_DISK_DIR=/data/var/lib/libvirt/images
 HOST_DISK="${CSV2_DISK:-$HOST_DISK_DIR/$VM_NAME-overlay.qcow2}"
 # Read-only devkit base image shipped by Hygon; only ever used as a backing file.
 HOST_BASE_DISK="${CSV2_BASE_DISK:-/opt/hygon/csv/vm.qcow2}"
-# OVMF build with confidential-guest support; must match the firmware the guest
-# was installed against.
-HOST_OVMF=/opt/hygon/csv/OVMF_CODE.fd
+# Firmware to boot. Must be built with confidential-guest support AND, because
+# this script always asks for kernel-hashes, must carry a populated hashes-table
+# region: OVMF advertises one under SEV_HASH_TABLE_RV_GUID, but the plain build
+# ships it empty (base=0x0 size=0x0) and QEMU refuses to launch. OVMFCSV.fd is
+# the firmware the Kata sandbox VMs use and is populated (base=0x80c000
+# size=0xc00). `up` verifies this rather than trusting the path.
+HOST_OVMF="${CSV2_OVMF:-/opt/kata/share/ovmf/OVMFCSV.fd}"
 HOST_QEMU=/usr/bin/qemu-system-x86_64
 HOST_BRIDGE=br0
+
+# Measured boot. The guest kernel and initramfs are copied out of the base image
+# because QEMU hashes them from the host side, not from inside the guest.
+# KERNEL_VERSION must name a kernel that is actually present in the base image;
+# `up` lists what is available if it does not.
+HOST_BOOT_DIR="${CSV2_BOOT_DIR:-$HOST_DISK_DIR/csv2-boot}"
+KERNEL_VERSION="${CSV2_KERNEL_VERSION:-6.6.0-111.0.0.103.oe2403.x86_64}"
+HOST_KERNEL="${CSV2_KERNEL:-$HOST_BOOT_DIR/vmlinuz-$KERNEL_VERSION}"
+HOST_INITRD="${CSV2_INITRD:-$HOST_BOOT_DIR/initramfs-$KERNEL_VERSION.img}"
+# Byte-identical to the base image's own grub entry, so a direct kernel boot
+# behaves like the firmware's boot path. root= is a filesystem UUID, and an
+# overlay inherits the UUID of the image it was created from.
+VM_APPEND="${CSV2_APPEND:-root=UUID=1f4c3ba2-226d-4365-8d1f-30d80117c355 console=tty1 console=ttyS0 rootfstype=ext4 rd.shell rd.debug quiet oops=panic softlockup_panic=1 nmi_watchdog=1 rd.shell=0 selinux=0 crashkernel=256M panic=3}"
+
+# Tools that only `measure` needs: the digest calculator shipped with the Hygon
+# CoCo package, and a guest-side report reader.
+MEASURE_TOOL="${CSV2_MEASURE_TOOL:-/opt/hygon/csv/confidential-containers/scripts/csv-measure.py}"
+GET_ATTESTATION_BIN="${CSV2_GET_ATTESTATION:-/opt/hygon/csv/attestation/get-attestation}"
 
 HOST_PIDFILE="/run/$VM_NAME.pid"
 HOST_SERIAL="/run/$VM_NAME.serial"
@@ -164,6 +214,55 @@ else
 fi
 ls -la /dev/csv-guest
 GUEST
+}
+
+# QEMU measures the kernel and initramfs it is handed, so both have to be files
+# on the host. The guest's own pair lives inside the base image; copy it out once
+# and reuse it. These are inputs to the measurement, so re-extract them whenever
+# the base image changes.
+ensure_boot_images() {
+    host_script <<EOF
+set -e
+# Kernel hashes need somewhere in the firmware to be written. The region is
+# advertised by a GUID entry; a build that carries the GUID but no geometry is
+# unusable, and QEMU only says so after the guest would have started.
+[ -f "$HOST_OVMF" ] || { echo "  firmware $HOST_OVMF is missing" >&2; exit 1; }
+python3 - "$HOST_OVMF" <<'PY'
+import struct, sys
+raw = open(sys.argv[1], 'rb').read()
+guid = (bytes.fromhex('1f375572') + bytes.fromhex('3b3a') + bytes.fromhex('044b')
+        + bytes.fromhex('927b') + bytes.fromhex('1da6efa8d454'))
+off = raw.find(guid)
+if off < 0:
+    raise SystemExit('  firmware has no hashes-table GUID; it cannot measure a kernel')
+base, size = struct.unpack_from('<II', raw, off + 16)
+if not base or not size:
+    raise SystemExit(
+        '  firmware hashes-table region is empty (base=0x%x size=0x%x)\n'
+        '  set CSV2_OVMF to a CSV build that populates it, e.g.\n'
+        '  /opt/kata/share/ovmf/OVMFCSV.fd' % (base, size))
+print('  firmware reserves 0x%x bytes at 0x%x for kernel hashes' % (size, base))
+PY
+
+if [ -f "$HOST_KERNEL" ] && [ -f "$HOST_INITRD" ]; then
+    echo "  reusing extracted kernel and initramfs in $HOST_BOOT_DIR"
+    exit 0
+fi
+
+if ! guestfish --ro -a "$HOST_BASE_DISK" -i exists "/boot/vmlinuz-$KERNEL_VERSION" >/dev/null 2>&1; then
+    echo "  kernel $KERNEL_VERSION is not in $HOST_BASE_DISK" >&2
+    echo "  kernels available there:" >&2
+    guestfish --ro -a "$HOST_BASE_DISK" -i ls /boot 2>/dev/null \\
+        | grep '^vmlinuz-' | sed 's/^vmlinuz-/    /' >&2
+    echo "  set CSV2_KERNEL_VERSION to one of them" >&2
+    exit 1
+fi
+
+mkdir -p "$HOST_BOOT_DIR"
+guestfish --ro -a "$HOST_BASE_DISK" -i copy-out "/boot/vmlinuz-$KERNEL_VERSION" "$HOST_BOOT_DIR/" >/dev/null
+guestfish --ro -a "$HOST_BASE_DISK" -i copy-out "/boot/initramfs-$KERNEL_VERSION.img" "$HOST_BOOT_DIR/" >/dev/null
+echo "  extracted $KERNEL_VERSION from $HOST_BASE_DISK"
+EOF
 }
 
 vm_running() {
@@ -254,14 +353,21 @@ echo "instance disk - created by 'up' if absent:"
 row "$HOST_DISK" "writable overlay for this instance" optional
 
 echo
+echo "measured boot - extracted from the base image by 'up' if absent:"
+row "$HOST_KERNEL" "guest kernel; hashed into the launch measurement" optional
+row "$HOST_INITRD" "guest initramfs; hashed into the launch measurement" optional
+
+echo
 echo "guest side - already inside the base image, nothing to stage:"
 printf "  %-56s  %-36s  %s\n" "csv-guest.ko.xz" "provides /dev/csv-guest" "in base image"
 
 echo
-echo "verification only - needed by 'verify', not by 'up':"
+echo "verification only - needed by 'verify' and 'measure', not by 'up':"
 row "$SMOKE_BIN" "attestation smoke test" optional
 row "$CERT_DIR/hrk.cert" "Hygon root key (HRK) cert" optional
 row "$CERT_DIR/hsk_cek.cert" "Hygon endorsement (HSK/CEK) cert" optional
+row "$MEASURE_TOOL" "computes the expected launch measurement" optional
+row "$GET_ATTESTATION_BIN" "fetches the report the guest actually gets" optional
 
 echo
 if [ "\$fail" = 0 ]; then
@@ -361,16 +467,22 @@ else
 fi
 EOF
 
+    echo "==> measured-boot images"
+    ensure_boot_images
+
     echo "==> launching $VM_NAME (policy=$VM_POLICY -> CSV2, ${VM_VCPUS} vCPU, ${VM_MEM_MB}MB)"
     host_script <<EOF
 set -e
 $HOST_QEMU -name $VM_NAME \\
     --enable-kvm -cpu host -smp $VM_VCPUS -m $VM_MEM_MB \\
+    -kernel "$HOST_KERNEL" \\
+    -initrd "$HOST_INITRD" \\
+    -append "$VM_APPEND" \\
     -hda "$HOST_DISK" \\
     -drive if=pflash,format=raw,unit=0,file=$HOST_OVMF,readonly=on \\
     -qmp tcp:127.0.0.1:$HOST_QMP_PORT,server,nowait \\
     -vnc 127.0.0.1:$HOST_VNC_DISPLAY \\
-    -object sev-guest,id=sev0,policy=$VM_POLICY,cbitpos=$VM_CBITPOS,reduced-phys-bits=$VM_REDUCED_PHYS_BITS \\
+    -object sev-guest,id=sev0,policy=$VM_POLICY,cbitpos=$VM_CBITPOS,reduced-phys-bits=$VM_REDUCED_PHYS_BITS,kernel-hashes=on \\
     -machine memory-encryption=sev0 \\
     -netdev bridge,br=$HOST_BRIDGE,id=net0 \\
     -device virtio-net-pci,netdev=net0,mac=$VM_MAC,romfile= \\
@@ -415,7 +527,9 @@ EOF
     echo "==> done"
     echo "  name  $VM_NAME"
     echo "  guest $VM_IP (mac $VM_MAC)"
+    echo "  boot  measured: OVMF + cmdline/initrd/kernel hash table"
     echo "  stop  $(basename "$0") down   [with CSV2_VM_NAME=$VM_NAME]"
+    echo "  check $(basename "$0") measure [with CSV2_VM_NAME=$VM_NAME]"
 }
 
 cmd_status() {
@@ -483,18 +597,120 @@ cmd_verify() {
 set -e
 [ -x "$SMOKE_BIN" ] || { echo "smoke binary not found: $SMOKE_BIN" >&2; exit 1; }
 export SSHPASS="$CSV2_GUEST_PASS"
-sshpass -e scp -o StrictHostKeyChecking=accept-new "$SMOKE_BIN" root@$VM_IP:/root/ >/dev/null
+# stdin is closed on both hops: this block arrives on the host as `bash -s`, so
+# a command that reads stdin would consume the rest of the script.
+sshpass -e scp -o StrictHostKeyChecking=accept-new "$SMOKE_BIN" root@$VM_IP:/root/ </dev/null >/dev/null
 # Chain verification needs the Hygon HRK/HSK-CEK certs alongside the binary.
 if [ -f "$CERT_DIR/hrk.cert" ] && [ -f "$CERT_DIR/hsk_cek.cert" ]; then
     sshpass -e scp -o StrictHostKeyChecking=accept-new \\
-        "$CERT_DIR/hrk.cert" "$CERT_DIR/hsk_cek.cert" root@$VM_IP:/root/ >/dev/null
+        "$CERT_DIR/hrk.cert" "$CERT_DIR/hsk_cek.cert" root@$VM_IP:/root/ </dev/null >/dev/null
     echo "certs: copied from $CERT_DIR"
 else
     echo "certs: not found under $CERT_DIR, report signature only" >&2
 fi
-sshpass -e ssh -o StrictHostKeyChecking=accept-new root@$VM_IP \\
+sshpass -e ssh -n -o StrictHostKeyChecking=accept-new root@$VM_IP \\
     '/root/$(basename $SMOKE_BIN) -verify-chain -out /root/smoke-chain.json; echo "EXIT=\$?"; cat /root/smoke-chain.json'
 EOF
+}
+
+# The launch measurement is a pure function of host-side files, so it can be
+# computed without booting anything. Comparing that value against the one a
+# running guest actually reports is what ties the report to this exact firmware,
+# command line, initramfs and kernel - and nothing else.
+cmd_measure() {
+    local expected_b64 expected_hex
+    if ! expected_b64=$(host_script <<EOF
+set -e
+[ -f "$MEASURE_TOOL" ] || { echo "measure tool not found: $MEASURE_TOOL" >&2; exit 1; }
+[ -f "$HOST_KERNEL" ] || {
+    echo "kernel not extracted yet: $HOST_KERNEL" >&2
+    echo "run '$(basename "$0") up' once to copy it out of $HOST_BASE_DISK" >&2
+    exit 1
+}
+[ -f "$HOST_INITRD" ] || {
+    echo "initramfs not extracted yet: $HOST_INITRD" >&2
+    echo "run '$(basename "$0") up' once to copy it out of $HOST_BASE_DISK" >&2
+    exit 1
+}
+
+# The tool hashes the command line from a file that holds the string plus the
+# trailing newline QEMU records before hashing it, so reproduce that exactly.
+cmdline=\$(mktemp)
+trap 'rm -f "\$cmdline"' EXIT
+printf '%s\n' "$VM_APPEND" > "\$cmdline"
+
+# Run it through python3 rather than executing it: its shebang names a platform
+# interpreter that is not installed on every host.
+python3 "$MEASURE_TOOL" --ovmf "$HOST_OVMF" --kernel "$HOST_KERNEL" --initrd "$HOST_INITRD" --cmdline "\$cmdline"
+EOF
+); then
+        return 1
+    fi
+    expected_hex=$(printf '%s' "$expected_b64" \
+        | python3 -c 'import base64,sys; print(base64.b64decode(sys.stdin.read().strip()).hex())')
+
+    echo "==> launch measurement of $VM_NAME"
+    echo
+    echo "expected  $expected_hex"
+    echo "  inputs  OVMF     $HOST_OVMF"
+    echo "          kernel   $HOST_KERNEL"
+    echo "          initrd   $HOST_INITRD"
+    echo "          cmdline  $VM_APPEND"
+
+    if ! vm_running; then
+        echo
+        echo "instance is not running, so there is no report to compare against" >&2
+        return 1
+    fi
+    resolve_guest_ip || { echo "could not discover the guest address for $VM_MAC" >&2; return 1; }
+    ensure_csv_guest_device
+
+    local report_out actual_hex actual_policy
+    if ! report_out=$(host_script <<EOF
+set -e
+[ -x "$GET_ATTESTATION_BIN" ] || { echo "attestation tool not found: $GET_ATTESTATION_BIN" >&2; exit 1; }
+export SSHPASS="$CSV2_GUEST_PASS"
+# get-attestation writes ./report.cert beside itself, so run it from /root and
+# pull the report back whole rather than trying to decode it over the wire.
+# Both commands get their stdin explicitly closed: this block arrives on the
+# host as `bash -s`, and anything reading stdin would otherwise swallow the
+# rest of the script.
+sshpass -e scp -o StrictHostKeyChecking=accept-new "$GET_ATTESTATION_BIN" root@$VM_IP:/root/ </dev/null >/dev/null
+sshpass -e ssh -n -o StrictHostKeyChecking=accept-new root@$VM_IP \\
+    'cd /root && ./$(basename "$GET_ATTESTATION_BIN") >/dev/null && cat report.cert' > /tmp/$VM_NAME.report
+
+# The report masks its hash blocks and several scalar fields with ANonce, one
+# 32-bit word at a time. Reading them raw yields plausible-looking garbage.
+python3 - <<'PY'
+import struct
+raw = open('/tmp/$VM_NAME.report', 'rb').read()
+if len(raw) < 0x9f4:
+    raise SystemExit('report is %d bytes, want 0x9f4' % len(raw))
+anonce = struct.unpack_from('<I', raw, 0x0bc)[0]
+words = struct.unpack_from('<8I', raw, 0x090)
+print(struct.pack('<8I', *[w ^ anonce for w in words]).hex())
+print(struct.unpack_from('<I', raw, 0x0b0)[0] ^ anonce)
+PY
+EOF
+); then
+        return 1
+    fi
+    actual_hex=$(printf '%s\n' "$report_out" | sed -n '1p')
+    actual_policy=$(printf '%s\n' "$report_out" | sed -n '2p')
+
+    echo
+    echo "actual    $actual_hex"
+    [ -n "$actual_policy" ] && printf "  policy  0x%x\n" "$actual_policy"
+    echo
+
+    if [ "$actual_hex" = "$expected_hex" ]; then
+        echo "MATCH - the report is bound to exactly these firmware, cmdline, initramfs and kernel files"
+        return 0
+    fi
+    echo "MISMATCH - the running guest was not launched from the files listed above" >&2
+    echo "  the report is bound to whatever the VM was booted with; change the" >&2
+    echo "  kernel/initramfs/cmdline, then 'down' and 'up' to boot the new ones" >&2
+    return 1
 }
 
 cmd_ssh() {
@@ -576,6 +792,7 @@ case "${1:-}" in
     up)     shift; cmd_up "$@" ;;
     status) shift; cmd_status "$@" ;;
     verify) shift; cmd_verify "$@" ;;
+    measure) shift; cmd_measure "$@" ;;
     ssh)    shift; cmd_ssh "$@" ;;
     down)   shift; cmd_down "$@" ;;
     *)
