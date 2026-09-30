@@ -140,6 +140,9 @@ func (s *Scanner) ScanFile(path string) ([]Finding, error) {
 			}
 		}
 	}
+
+	// Only a file that produced a finding pays for a parse.
+	applyScopeContext(findings, string(content), lines)
 	return findings, nil
 }
 
@@ -331,5 +334,8 @@ func (s *Scanner) scanLines(path string, lines []string) []Finding {
 			}
 		}
 	}
+
+	// Only a file that produced a finding pays for a parse.
+	applyScopeContext(findings, strings.Join(lines, "\n"), lines)
 	return findings
 }

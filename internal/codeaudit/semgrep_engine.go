@@ -472,6 +472,7 @@ func (e *semgrepEngine) buildFindings(output *semgrepOutput, targets []string) (
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
 		lines := strings.Split(string(content), "\n")
+		first := len(findings)
 
 		for _, res := range byFile[key] {
 			rule := byID[res.Extra.Metadata.RuleFamily]
@@ -504,6 +505,12 @@ func (e *semgrepEngine) buildFindings(output *semgrepOutput, targets []string) (
 				RuleFamily:    res.Extra.Metadata.RuleFamily,
 			})
 		}
+
+		// The whole file is in hand here, so the enclosing scope of each finding
+		// in it is resolved from one parse. This is the same replacement the
+		// regex engine's ScanFile applies, from the same helper, so a line both
+		// engines flag still carries identical context.
+		applyScopeContext(findings[first:], string(content), lines)
 	}
 	return findings, nil
 }
