@@ -20,7 +20,7 @@
   "security": {
     "codeScan": true,
     "codeScanEngine": "semgrep",
-    "semgrepRulesPath": "/opt/taa/semgrep/rules/python/rules.yaml",
+    "semgrepRulesPath": "/opt/taa/semgrep/rules",
     "resultCheck": {
       "enabled": true,
       "maxFileBytes": 3221225472
