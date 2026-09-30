@@ -779,6 +779,8 @@ def rewrite_corpus_labels(corpus_list: Path, benchmark_root: Path, variant: str,
     changed = []
     for s in doc["samples"]:
         r = by_id[s["sample_id"]]
+        if "legacy_label" not in s:
+            s["legacy_label"] = s["label"]
         if r["label"] != s["label"]:
             changed.append({"sample_id": s["sample_id"], "was": s["label"], "now": r["label"]})
         s["label"] = r["label"]

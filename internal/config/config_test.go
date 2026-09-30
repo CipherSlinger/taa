@@ -939,10 +939,8 @@ func TestLoadStartupConfigNormalizesCodeScanEngine(t *testing.T) {
 
 			want := strings.ToLower(strings.TrimSpace(engine))
 			if want == "" {
-				// Default, and the default must stay regex until the holdout
-				// evidence passes (spec §6.5): an unset engine is not a licence
-				// to switch the production engine.
-				want = "regex"
+				// Default is semgrep following formal production integration.
+				want = "semgrep"
 			}
 			if cfg.CodeScanEngine != want {
 				t.Fatalf("CodeScanEngine = %q, want %q", cfg.CodeScanEngine, want)

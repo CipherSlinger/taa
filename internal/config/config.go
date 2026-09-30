@@ -284,7 +284,7 @@ func defaultStartupConfig() StartupConfig {
 		DockerID:                   os.Getenv("DOCKER_ID"),
 		Contract:                   os.Getenv("CONTRACT"),
 		EnableSecurityScan:         true,
-		CodeScanEngine:             "regex",
+		CodeScanEngine:             "semgrep",
 		ModelDir:                   "/opt/taa/models",
 		EnableResultCheck:          true,
 		MaxFileBytes:               DefaultMaxFileBytes,

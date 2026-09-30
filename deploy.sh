@@ -88,7 +88,7 @@ trap cleanup_display EXIT INT TERM
 
 # Kubernetes 目标：默认部署到 osr 命名空间下的指定 TAA Pod。
 TARGET_NAMESPACE="${TARGET_NAMESPACE:-osr}"
-TARGET_POD="${TARGET_POD:-taa-env-slim-v2-20260916-b2038037072e1052-54f554445c-n2pnv}"
+TARGET_POD="${TARGET_POD:-taa-env-slim-v2-20260916-506ca9a0790167bf-768d54479-m8b9z}"
 
 # 项目与远程宿主机：本地源码目录、SSH 登录信息和远程工作目录。
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
