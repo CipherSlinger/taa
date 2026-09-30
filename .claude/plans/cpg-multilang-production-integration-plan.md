@@ -418,19 +418,19 @@ git commit -m "feat(codeaudit): integrate CPG engine and evidence fusion into pr
 - Modify: 容器内 `/opt/taa/semgrep/rules/` 与 `/root/taa/bin/taa`
 - Modify: `models/audit/research/taa-audit-design.html`（更新架构状态）
 
-- [ ] **Step 1: 更新配置文件规则路径支持目录化**
+- [x] **Step 1: 更新配置文件规则路径支持目录化**
 
 将 `configs/taa-production.json` 与 `configs/taa-docker.json` 中的 `semgrepRulesPath` 配置项设置为目录：
 ```json
 "semgrepRulesPath": "/opt/taa/semgrep/rules"
 ```
 
-- [ ] **Step 2: 编译生产二进制 `bin/taa`**
+- [x] **Step 2: 编译生产二进制 `bin/taa`**
 
 运行：`go build -o bin/taa ./cmd/taa`
 预期：编译成功，零 Cgo 警告。
 
-- [ ] **Step 3: 将多语言规则与新二进制同步入运行容器**
+- [x] **Step 3: 将多语言规则与新二进制同步入运行容器**
 
 ```bash
 docker exec taa-env-slim-v2 mkdir -p /opt/taa/semgrep/rules
@@ -439,19 +439,35 @@ docker cp bin/taa taa-env-slim-v2:/root/taa/bin/taa
 docker cp configs/taa-docker.json taa-env-slim-v2:/root/taa/configs/taa-docker.json
 ```
 
-- [ ] **Step 4: 容器内端到端联调测试 (E2E Verification)**
+- [x] **Step 4: 容器内端到端联调测试 (E2E Verification)**
 
 1. 重启容器内 TAA 服务；
 2. 注入纯净测试包 `pkg-clean.zip`，验证零告警快速旁路放行（Platform Mock 收到 `code=0`）；
 3. 注入跨微服务恶意测试包，验证 CPG 证据成功生成、微服务缺陷合成、LLM 判定拦截，Platform Mock 收到 `code=1` 阻断，`/root/taa/models` 自动抹除。
 
-- [ ] **Step 5: 同步更新设计文档 `models/audit/research/taa-audit-design.html`**
+- [x] **Step 5: 同步更新设计文档 `models/audit/research/taa-audit-design.html`**
 
 将文档中各层状态勋章由“离线原型”全部升级为“★ 生产已就绪 · 全量纯 Go 原生接入”。
 
-- [ ] **Step 6: 提交交付代码与文档**
+- [x] **Step 6: 提交交付代码与文档**
 
 ```bash
 git add configs/ models/audit/research/taa-audit-design.html
 git commit -m "docs(audit): finalize production CPG engine and multi-language rules delivery"
 ```
+
+**Task 7 完成记录（2026-09-30）：**
+
+- Step 1–3 已完成：配置目录化（`05a0212`）、`bin/taa` 重新编译、规则/二进制/配置同步入 `taa-env-slim-v2`（配置为单键外科式更新，保留部署实值；部署前已备份至 `/root/taa/backup-20260930T082822Z`）。
+- Step 4 已完成，判据落地在 `tests/cpg_container_e2e_test.sh`（容器内执行，退出码即结论），实测：
+
+  | 用例 | 审计读数 | 平台上报 |
+  | :--- | :--- | :--- |
+  | 纯净包 | `passed=true, totalFindings=0`（快速旁路，未建图） | `code=0` |
+  | 跨微服务包 | `passed=false, totalFindings=5` | `code=1` + 模型目录抹除 |
+
+  跨服务报告中 4 条路径 Finding 携带 4 步 `taint_trace`，轨迹第 3 步为 `MICROSERVICE_PAYLOAD` 越界边，合成 Finding 锚定在 sink（`service_b/server.py:11`）且 `engine=cpg`，LLM 判定 `MALICIOUS`。测试包为自撰合成样本，未取用语料库任何真实样本，且从不被 import / 执行。
+- Step 5 已完成：`taa-audit-design.html` §2.6 的「离线原型 · 生产未接入」勋章与分层核查块改写为生产接入实况，并补充按需触发判据与评测中立性边界（仅 `CrossFile || AcrossMicroservice` 回注，单文件流不重写上下文）。
+- Step 6 已完成：交付提交 `8385525`。
+
+**遗留（不属本计划范围，报告须继续携带）：** `scan_complete` 未持久化因而不可观测；`AttributionPrecision` 恒为 0；提示体量无界。
