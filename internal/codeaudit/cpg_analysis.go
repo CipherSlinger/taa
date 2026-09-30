@@ -63,12 +63,16 @@ func enrichFindingsWithCPG(dir string, targets []string, findings []Finding) []F
 		return findings
 	}
 
-	bridge := cpg.NewMicroserviceBoundaryBridge()
-	bridge.BridgeBoundaries(graph)
-
+	// Both of these run on a graph that has already been built, and both only
+	// add edges, so the ceiling can be applied before either one. Checking it
+	// here rather than after skips the work on a graph whose traversal is going
+	// to be skipped anyway.
 	if graph.CountNodes() > cpgMaxNodes {
 		return findings
 	}
+
+	bridge := cpg.NewMicroserviceBoundaryBridge()
+	bridge.BridgeBoundaries(graph)
 
 	violations := cpg.NewInterProceduralTaintEngine().FindViolations(graph)
 	if len(violations) == 0 {
@@ -152,7 +156,6 @@ func synthesizeCrossServiceFinding(v *cpg.TaintViolation, trajectory string, tra
 		Severity:       SeverityHigh,
 		Description:    "A sensitive value read in one service reaches a command execution sink in another",
 		CodeSnippet:    sink.Code,
-		ContextAfter:   trajectory,
 		IsCrossFile:    true,
 		IsMicroservice: true,
 		CPGEvidence:    trajectory,

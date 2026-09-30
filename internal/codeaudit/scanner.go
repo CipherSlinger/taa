@@ -142,7 +142,7 @@ func (s *Scanner) ScanFile(path string) ([]Finding, error) {
 	}
 
 	// Only a file that produced a finding pays for a parse.
-	applyScopeContext(findings, string(content), lines)
+	applyScopeContext(findings, string(content))
 	return findings, nil
 }
 
@@ -292,7 +292,7 @@ func (s *Scanner) ScanDirectoryWithLines(dir string) (*Report, map[string]int, e
 		lineCounts[path] = len(lines)
 
 		// Scan for findings.
-		fileFindings := s.scanLines(path, lines)
+		fileFindings := s.scanLines(path, string(content), lines)
 		findings = append(findings, fileFindings...)
 
 		if len(findings) >= s.config.MaxFindings {
@@ -310,7 +310,10 @@ func (s *Scanner) ScanDirectoryWithLines(dir string) (*Report, map[string]int, e
 }
 
 // scanLines scans pre-read lines for findings. Extracted from ScanFile for reuse.
-func (s *Scanner) scanLines(path string, lines []string) []Finding {
+// source is the file the lines were split from; the scanner needs the lines for
+// line numbering and the text for the AST parse, and splitting it here would
+// redo work the caller has already done.
+func (s *Scanner) scanLines(path, source string, lines []string) []Finding {
 	var findings []Finding
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -336,6 +339,6 @@ func (s *Scanner) scanLines(path string, lines []string) []Finding {
 	}
 
 	// Only a file that produced a finding pays for a parse.
-	applyScopeContext(findings, strings.Join(lines, "\n"), lines)
+	applyScopeContext(findings, source)
 	return findings
 }

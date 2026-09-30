@@ -64,18 +64,17 @@ func (s *CPGEvidenceSlicer) FormatTrajectory(v *TaintViolation, g *CodePropertyG
 	if v == nil || len(v.Steps) == 0 {
 		return ""
 	}
-	slicer := s
-	if slicer == nil {
-		slicer = NewCPGEvidenceSlicer()
+	if s == nil {
+		s = NewCPGEvidenceSlicer()
 	}
 
-	steps := slicer.pruneTrajectory(v, g)
-	text := slicer.renderTrajectory(v, steps, slicer.maxCode)
+	steps := s.pruneTrajectory(v, g)
+	text := s.renderTrajectory(v, steps, s.maxCode)
 	// The trajectory still does not fit: shorten every code excerpt until it
 	// does.
-	for cap := slicer.maxCode; len(text) > slicer.maxChars && cap > 8; {
+	for cap := s.maxCode; len(text) > s.maxChars && cap > 8; {
 		cap /= 2
-		text = slicer.renderTrajectory(v, steps, cap)
+		text = s.renderTrajectory(v, steps, cap)
 	}
 	return text
 }

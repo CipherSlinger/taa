@@ -42,7 +42,7 @@ const semanticContextMaxSpan = 40
 // rather than paid for nothing. A finding whose scope resolution fails for any
 // other reason - a syntax error, module-level code, an unusable region - also
 // keeps the physical window.
-func applyScopeContext(findings []Finding, source string, lines []string) {
+func applyScopeContext(findings []Finding, source string) {
 	if len(findings) == 0 || !isPythonSource(findings[0].File) {
 		return
 	}
@@ -50,7 +50,7 @@ func applyScopeContext(findings []Finding, source string, lines []string) {
 	scope := cpg.NewFileScopeExtractor(context.Background(), source)
 
 	for i := range findings {
-		before, after := scopeContext(scope, lines, findings[i].Line)
+		before, after := scopeContext(scope, findings[i].Line)
 		if before == "" && after == "" {
 			// A scope that yields nothing on either side - a one-line
 			// definition, or a region the extractor could not resolve - leaves
@@ -69,17 +69,19 @@ func applyScopeContext(findings []Finding, source string, lines []string) {
 // The split is taken from the same scope resolution the CPG engine uses, so the
 // text the LLM reads and the text the taint trajectory is built from describe
 // the same region.
-func scopeContext(scope *cpg.FileScopeExtractor, lines []string, targetLine int) (before, after string) {
-	physicalBefore := contextWindow(lines, targetLine-4, targetLine-1)
-	physicalAfter := contextWindow(lines, targetLine, targetLine+3)
-
+//
+// Both sides are empty when the scope cannot be resolved. Empty means "no
+// semantic slice", and the caller leaves the physical window it already built in
+// place; this function deliberately does not reconstruct that window, so its
+// geometry is defined once, where the window is built, and not again here.
+func scopeContext(scope *cpg.FileScopeExtractor, targetLine int) (before, after string) {
 	if scope == nil {
-		return physicalBefore, physicalAfter
+		return "", ""
 	}
 
 	snippet, startLine, fallback := scope.EnclosingScope(targetLine)
 	if fallback || snippet == "" {
-		return physicalBefore, physicalAfter
+		return "", ""
 	}
 
 	scopeLines := strings.Split(snippet, "\n")
@@ -88,7 +90,7 @@ func scopeContext(scope *cpg.FileScopeExtractor, lines []string, targetLine int)
 		// The resolved region does not contain the flagged line, which cannot
 		// happen for a region derived from it. Treated as a failed resolution
 		// rather than trusted, because indexing either side on it would panic.
-		return physicalBefore, physicalAfter
+		return "", ""
 	}
 
 	return semanticSide(scopeLines[:offset], true), semanticSide(scopeLines[offset+1:], false)

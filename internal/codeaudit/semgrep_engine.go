@@ -469,8 +469,8 @@ func (e *semgrepEngine) buildFindings(output *semgrepOutput, targets []string) (
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
 		lines := strings.Split(string(content), "\n")
-		first := len(findings)
 
+		fileFindings := make([]Finding, 0, len(byFile[key]))
 		for _, res := range byFile[key] {
 			rule := byID[res.Extra.Metadata.RuleFamily]
 
@@ -484,7 +484,7 @@ func (e *semgrepEngine) buildFindings(output *semgrepOutput, targets []string) (
 			}
 			i := res.Start.Line - 1
 
-			findings = append(findings, Finding{
+			fileFindings = append(fileFindings, Finding{
 				File:   path,
 				Line:   res.Start.Line,
 				RuleID: rule.ID,
@@ -507,7 +507,8 @@ func (e *semgrepEngine) buildFindings(output *semgrepOutput, targets []string) (
 		// in it is resolved from one parse. This is the same replacement the
 		// regex engine's ScanFile applies, from the same helper, so a line both
 		// engines flag still carries identical context.
-		applyScopeContext(findings[first:], string(content), lines)
+		applyScopeContext(fileFindings, string(content))
+		findings = append(findings, fileFindings...)
 	}
 	return findings, nil
 }

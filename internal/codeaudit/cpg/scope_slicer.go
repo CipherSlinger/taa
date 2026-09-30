@@ -26,23 +26,16 @@ func NewASTScopeSlicer() *ASTScopeSlicer {
 // targetLine (1-based). It never returns an error: on parse failure, a missing
 // enclosing scope, or an out-of-range target line it falls back to the physical
 // window and reports fallback=true.
+//
+// It delegates to FileScopeExtractor so that there is one implementation of the
+// resolve-then-fallback contract. Callers that ask about several lines of the
+// same file should build a FileScopeExtractor directly and pay the parse once.
 func (s *ASTScopeSlicer) ExtractEnclosingScope(ctx context.Context, sourceCode string, targetLine int) (snippet string, startLine int, fallback bool) {
-	window := s.scopeSlicerWindow()
-	lines := scopeSlicerSplitLines(sourceCode)
-
-	// Only a 1-based in-range target line can be resolved against the AST.
-	if targetLine >= 1 {
-		if module, err := ExtractASTSource(ctx, sourceCode); err == nil && module != nil {
-			node := scopeSlicerFindInnermost(module, targetLine)
-			if node != nil {
-				if snippet, startLine, ok := scopeSlicerNodeRegion(lines, node); ok {
-					return snippet, startLine, false
-				}
-			}
-		}
+	extractor := NewFileScopeExtractor(ctx, sourceCode)
+	if s != nil && s.FallbackWindow > 0 {
+		extractor.fallbackWindow = s.FallbackWindow
 	}
-
-	return scopeSlicerFallbackWindow(lines, targetLine, window)
+	return extractor.EnclosingScope(targetLine)
 }
 
 // ExtractEnclosingScopeFromFile reads filePath and applies ExtractEnclosingScope.
@@ -54,15 +47,6 @@ func (s *ASTScopeSlicer) ExtractEnclosingScopeFromFile(ctx context.Context, file
 		return "", 1, true
 	}
 	return s.ExtractEnclosingScope(ctx, string(data), targetLine)
-}
-
-// scopeSlicerWindow resolves the effective physical window, treating a
-// non-positive configured value (including a nil receiver) as the default.
-func (s *ASTScopeSlicer) scopeSlicerWindow() int {
-	if s == nil || s.FallbackWindow <= 0 {
-		return DefaultScopeFallbackWindow
-	}
-	return s.FallbackWindow
 }
 
 // scopeSlicerSplitLines splits source into lines, dropping the single trailing
@@ -93,8 +77,12 @@ func scopeSlicerFindInnermost(module *ASTModule, targetLine int) *ASTNode {
 			if node.EndLineno <= 0 || node.Lineno < 1 {
 				return true
 			}
+			// Line ranges nest, so a scope that does not contain the target
+			// cannot contain a descendant that does. Pruning here turns the
+			// search into a descent of one branch instead of a walk of the
+			// whole module, which matters because it runs once per finding.
 			if targetLine < node.Lineno || targetLine > node.EndLineno {
-				return true
+				return false
 			}
 			if best == nil || scopeSlicerIsMoreSpecific(node, best) {
 				best = node

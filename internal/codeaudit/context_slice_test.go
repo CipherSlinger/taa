@@ -25,10 +25,9 @@ def deploy(payload):
 // os.environ read on line 5 is outside the context of the subprocess call on
 // line 9 and the LLM is asked to judge a sink whose input it cannot see.
 func TestApplyScopeContext_ShowsTheSourceFromTheSink(t *testing.T) {
-	lines := strings.Split(scopeContextSample, "\n")
 	findings := []Finding{{File: "deploy.py", Line: 9, RuleID: "CMD_001"}}
 
-	applyScopeContext(findings, scopeContextSample, lines)
+	applyScopeContext(findings, scopeContextSample)
 
 	before := findings[0].ContextBefore
 	if !strings.Contains(before, `os.environ["API_KEY"]`) {
@@ -58,7 +57,7 @@ func TestApplyScopeContext_KeepsThePhysicalWindowForNonPython(t *testing.T) {
 		ContextAfter:  physicalAfter,
 	}}
 
-	applyScopeContext(findings, source, lines)
+	applyScopeContext(findings, source)
 
 	if findings[0].ContextBefore != physicalBefore || findings[0].ContextAfter != physicalAfter {
 		t.Errorf("context was rewritten for a non-Python file: before %q, after %q",
@@ -67,15 +66,25 @@ func TestApplyScopeContext_KeepsThePhysicalWindowForNonPython(t *testing.T) {
 }
 
 // TestApplyScopeContext_DegradesOnSyntaxError pins the fallback for a Python file
-// that does not parse.
+// that does not parse. The seeded window stands, which is the contract every
+// degradation path shares: an unresolved scope yields no slice and the caller's
+// window is left alone rather than reconstructed here.
 func TestApplyScopeContext_DegradesOnSyntaxError(t *testing.T) {
 	source := "def broken(:\n    pass\n    pass\n    pass\n    pass\n"
 	lines := strings.Split(source, "\n")
-	findings := []Finding{{File: "broken.py", Line: 5, RuleID: "CMD_001"}}
+	physicalBefore := contextWindow(lines, 1, 4)
+	physicalAfter := contextWindow(lines, 5, 8)
+	findings := []Finding{{
+		File:          "broken.py",
+		Line:          5,
+		RuleID:        "CMD_001",
+		ContextBefore: physicalBefore,
+		ContextAfter:  physicalAfter,
+	}}
 
-	applyScopeContext(findings, source, lines)
+	applyScopeContext(findings, source)
 
-	if findings[0].ContextBefore != contextWindow(lines, 1, 4) {
+	if findings[0].ContextBefore != physicalBefore || findings[0].ContextAfter != physicalAfter {
 		t.Errorf("ContextBefore = %q, want the physical window", findings[0].ContextBefore)
 	}
 }
@@ -86,11 +95,19 @@ func TestApplyScopeContext_DegradesOnSyntaxError(t *testing.T) {
 func TestApplyScopeContext_ModuleLevelKeepsThePhysicalWindow(t *testing.T) {
 	source := "import os\n\nkey = os.environ[\"K\"]\nvalue = key\nother = 1\nos.system(value)\n"
 	lines := strings.Split(source, "\n")
-	findings := []Finding{{File: "top.py", Line: 6, RuleID: "CMD_001"}}
+	physicalBefore := contextWindow(lines, 2, 5)
+	physicalAfter := contextWindow(lines, 6, 9)
+	findings := []Finding{{
+		File:          "top.py",
+		Line:          6,
+		RuleID:        "CMD_001",
+		ContextBefore: physicalBefore,
+		ContextAfter:  physicalAfter,
+	}}
 
-	applyScopeContext(findings, source, lines)
+	applyScopeContext(findings, source)
 
-	if findings[0].ContextBefore != contextWindow(lines, 2, 5) {
+	if findings[0].ContextBefore != physicalBefore || findings[0].ContextAfter != physicalAfter {
 		t.Errorf("ContextBefore = %q, want the physical window", findings[0].ContextBefore)
 	}
 }
@@ -103,7 +120,7 @@ func TestApplyScopeContext_NoFindingsDoesNoWork(t *testing.T) {
 	// have to fail, and a failure here is silent either way. The assertion is
 	// therefore that an empty slice is accepted and left empty.
 	var findings []Finding
-	applyScopeContext(findings, "def broken(:\n", []string{"def broken(:"})
+	applyScopeContext(findings, "def broken(:\n")
 	if len(findings) != 0 {
 		t.Fatalf("applyScopeContext invented findings")
 	}
@@ -139,5 +156,38 @@ func TestScanFile_ContextReachesTheEnclosingScope(t *testing.T) {
 	}
 	if !checked {
 		t.Fatalf("no finding was reported at line 9; findings: %+v", findings)
+	}
+}
+
+// TestScanFile_DegradedFileKeepsThePhysicalWindow is the other half of the
+// contract: scopeContext only ever withholds a slice, so if the scan path did
+// not build the physical window itself a module-level finding would reach the
+// LLM with no context at all.
+func TestScanFile_DegradedFileKeepsThePhysicalWindow(t *testing.T) {
+	// Module-level statements, so every finding is outside any enclosing scope
+	// and the semantic split declines all of them.
+	const moduleLevel = "import os\n\nkey = os.environ[\"API_KEY\"]\nvalue = key\nos.system(value)\n"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "top.py")
+	if err := os.WriteFile(path, []byte(moduleLevel), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := DefaultScanner().ScanFile(path)
+	if err != nil {
+		t.Fatalf("ScanFile: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatalf("the sample must produce at least one finding for this test to mean anything")
+	}
+
+	lines := strings.Split(moduleLevel, "\n")
+	for _, f := range findings {
+		want := contextWindow(lines, f.Line-4, f.Line-1)
+		if f.ContextBefore != want {
+			t.Errorf("finding at line %d has ContextBefore:\n%q\nwant the physical window:\n%q",
+				f.Line, f.ContextBefore, want)
+		}
 	}
 }

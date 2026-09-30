@@ -109,15 +109,20 @@ var taintSanitizerCallNames = map[string]bool{
 	"hmac.new":       true,
 }
 
-// taintTraversalEdges lists the only edge types the worklist follows.
-var taintTraversalEdges = map[EdgeType]bool{
-	DFG_DEF_USE:           true,
-	CALL_ARG:              true,
-	CALL_RET:              true,
-	CALL:                  true,
-	MICROSERVICE_PAYLOAD:  true,
-	MICROSERVICE_HTTP:     true,
-	MICROSERVICE_RESPONSE: true,
+// taintTraversalEdges is the single inventory of the edges the worklist
+// follows, mapped to the evidence step type each renders as.
+//
+// One table rather than a set plus a classifier: an edge type cannot be
+// traversable without also being classifiable, so adding an edge means adding
+// one line here instead of editing two lists and hoping they agree.
+var taintTraversalEdges = map[EdgeType]string{
+	DFG_DEF_USE:           taintStepDFGPropagation,
+	CALL_ARG:              taintStepInterProcCall,
+	CALL_RET:              taintStepInterProcCall,
+	CALL:                  taintStepInterProcCall,
+	MICROSERVICE_PAYLOAD:  taintStepMicroIngress,
+	MICROSERVICE_HTTP:     taintStepMicroIngress,
+	MICROSERVICE_RESPONSE: taintStepMicroIngress,
 }
 
 // TaintStep mirrors the production evidence schema field for field: one hop of
@@ -192,25 +197,34 @@ func (e *InterProceduralTaintEngine) FindViolations(g *CodePropertyGraph) []*Tai
 	visited := make(map[string]bool)
 	queue := make([]taintWorkItem, 0, len(sources))
 	for _, source := range sources {
-		family := taintSourceFamily(source)
-		if family == "" {
-			continue
-		}
-		key := taintVisitKey(source.NodeID, source.NodeID)
+		key := taintVisitKey(source.node.NodeID, source.node.NodeID)
 		if visited[key] {
 			continue
 		}
 		visited[key] = true
 		queue = append(queue, taintWorkItem{
-			nodeID:   source.NodeID,
-			sourceID: source.NodeID,
-			family:   family,
-			steps:    []TaintStep{taintSourceStep(source)},
+			nodeID:   source.node.NodeID,
+			sourceID: source.node.NodeID,
+			family:   source.family,
+			steps:    []TaintStep{taintSourceStep(source.node)},
 		})
 	}
 
 	found := make(map[string]bool)
 	var violations []*TaintViolation
+
+	// Whether a node sanitises depends only on the node, and the graph does not
+	// change during the traversal, so each node's answer is computed once
+	// instead of once per work item that reaches it.
+	sanitized := make(map[*CPGNode]bool)
+	isSanitizer := func(node *CPGNode) bool {
+		if cached, ok := sanitized[node]; ok {
+			return cached
+		}
+		result := taintIsSanitizer(node)
+		sanitized[node] = result
+		return result
+	}
 
 	for head := 0; head < len(queue); head++ {
 		item := queue[head]
@@ -229,7 +243,7 @@ func (e *InterProceduralTaintEngine) FindViolations(g *CodePropertyGraph) []*Tai
 			}
 		}
 
-		if item.hops >= maxHops || taintIsSanitizer(node) {
+		if item.hops >= maxHops || isSanitizer(node) {
 			continue
 		}
 
@@ -259,7 +273,10 @@ func (e *InterProceduralTaintEngine) FindViolations(g *CodePropertyGraph) []*Tai
 		}
 
 		for _, edge := range g.GetSuccessors(item.nodeID) {
-			if edge == nil || !taintTraversalEdges[edge.EdgeType] {
+			if edge == nil {
+				continue
+			}
+			if _, ok := taintTraversalEdges[edge.EdgeType]; !ok {
 				continue
 			}
 			target, ok := g.GetNode(edge.TargetID)
@@ -297,20 +314,29 @@ func (e *InterProceduralTaintEngine) FindViolations(g *CodePropertyGraph) []*Tai
 // Sources
 // ---------------------------------------------------------------------------
 
+// taintSource is a source node together with the family it was classified as.
+// The family is decided once, where the node is found, rather than recomputed
+// by every caller that needs it.
+type taintSource struct {
+	node   *CPGNode
+	family string
+}
+
 // taintCollectSources returns every source node of the graph ordered by node ID
 // so that the worklist is deterministic regardless of map iteration order.
-func taintCollectSources(g *CodePropertyGraph) []*CPGNode {
-	var sources []*CPGNode
+func taintCollectSources(g *CodePropertyGraph) []taintSource {
+	var sources []taintSource
 	for _, node := range g.GetAllNodes() {
 		if node == nil {
 			continue
 		}
-		if taintSourceFamily(node) == "" {
+		family := taintSourceFamily(node)
+		if family == "" {
 			continue
 		}
-		sources = append(sources, node)
+		sources = append(sources, taintSource{node: node, family: family})
 	}
-	sort.Slice(sources, func(i, j int) bool { return sources[i].NodeID < sources[j].NodeID })
+	sort.Slice(sources, func(i, j int) bool { return sources[i].node.NodeID < sources[j].node.NodeID })
 	return sources
 }
 
@@ -528,19 +554,14 @@ func taintTraversalStep(item taintWorkItem, from *CPGNode, edge *CPGEdge, target
 // type. A boundary edge leaving the file of the current node is an egress, one
 // staying inside it an ingress.
 func taintTraversalStepType(edgeType EdgeType, from, target *CPGNode) string {
-	switch edgeType {
-	case DFG_DEF_USE:
+	stepType, ok := taintTraversalEdges[edgeType]
+	if !ok {
 		return taintStepDFGPropagation
-	case CALL, CALL_ARG, CALL_RET:
-		return taintStepInterProcCall
 	}
-	if taintIsBoundaryEdge(edgeType) {
-		if target != nil && from != nil && target.FilePath != from.FilePath {
-			return taintStepMicroEgress
-		}
-		return taintStepMicroIngress
+	if stepType == taintStepMicroIngress && target != nil && from != nil && target.FilePath != from.FilePath {
+		return taintStepMicroEgress
 	}
-	return taintStepDFGPropagation
+	return stepType
 }
 
 // taintNewViolation assembles the evidence of a source to sink path. The last
@@ -548,9 +569,6 @@ func taintTraversalStepType(edgeType EdgeType, from, target *CPGNode) string {
 func taintNewViolation(item taintWorkItem, sink *CPGNode, sinkFamily string) *TaintViolation {
 	steps := make([]TaintStep, len(item.steps))
 	copy(steps, item.steps)
-	if len(steps) == 0 {
-		steps = append(steps, taintSourceStep(sink))
-	}
 	steps[len(steps)-1].Type = taintStepSink
 
 	violation := &TaintViolation{

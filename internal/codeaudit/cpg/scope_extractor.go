@@ -2,7 +2,6 @@ package cpg
 
 import (
 	"context"
-	"strings"
 )
 
 // FileScopeExtractor answers enclosing-scope queries for many lines of one file
@@ -37,14 +36,6 @@ func NewFileScopeExtractor(ctx context.Context, sourceCode string) *FileScopeExt
 	return e
 }
 
-// LineCount reports how many lines the extracted file has.
-func (e *FileScopeExtractor) LineCount() int {
-	if e == nil {
-		return 0
-	}
-	return len(e.lines)
-}
-
 // EnclosingScope returns the source text of the innermost
 // FunctionDef / AsyncFunctionDef / ClassDef whose body contains targetLine
 // (1-based), and the 1-based line number the snippet starts at. When the file
@@ -65,13 +56,4 @@ func (e *FileScopeExtractor) EnclosingScope(targetLine int) (snippet string, sta
 	}
 
 	return scopeSlicerFallbackWindow(e.lines, targetLine, e.fallbackWindow)
-}
-
-// LineAt returns the 1-based line targetLine without its trailing newline
-// characters. It reports ok=false when the line does not exist.
-func (e *FileScopeExtractor) LineAt(targetLine int) (string, bool) {
-	if e == nil || targetLine < 1 || targetLine > len(e.lines) {
-		return "", false
-	}
-	return strings.TrimRight(e.lines[targetLine-1], "\r"), true
 }

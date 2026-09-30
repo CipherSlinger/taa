@@ -87,18 +87,3 @@ func TestFileScopeExtractor_UnparsableSourceFallsBack(t *testing.T) {
 		t.Fatalf("unparsable source must take the fallback path")
 	}
 }
-
-// TestFileScopeExtractor_LineAtBounds checks the accessor's range handling.
-func TestFileScopeExtractor_LineAtBounds(t *testing.T) {
-	extractor := NewFileScopeExtractor(context.Background(), "a\nb\nc\n")
-
-	if got, ok := extractor.LineAt(2); !ok || got != "b" {
-		t.Errorf("LineAt(2) = (%q, %v), want (\"b\", true)", got, ok)
-	}
-	if _, ok := extractor.LineAt(0); ok {
-		t.Errorf("LineAt(0) must report ok=false")
-	}
-	if _, ok := extractor.LineAt(4); ok {
-		t.Errorf("LineAt(4) is past the last line and must report ok=false")
-	}
-}

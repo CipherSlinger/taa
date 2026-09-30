@@ -2,14 +2,18 @@
 # Stage H (CPG multi-language integration) functional verification, run inside
 # the container.
 #
-# Five checks, in increasing order of what they prove:
-#   1. a clean package produces no findings, which is what keeps it on the fast
-#      path - the graph pass is guarded by an empty finding list
-#   2. a cross-service package takes the slow path and says so in its report
-#   3. the report carries the whole boundary-crossing chain, not one end of it
-#   4. the synthesized system-level finding is present, and only the graph
-#      engine could have produced it
-#   5. it reaches the gate: the platform is told code=1, and the model is wiped
+# Two phases:
+#   1. a clean package produces no findings and passes, which is what keeps it
+#      on the fast path - the graph pass is guarded by an empty finding list
+#   2. a cross-service package takes the slow path and blocks. The report must
+#      carry the whole boundary-crossing chain rather than one end of it, the
+#      synthesized system-level finding must be present and attributed to the
+#      graph engine, and the block must reach the platform as code=1 with the
+#      model wiped
+#
+# Every verdict goes through check(), including the ones computed in Python:
+# the Python step prints "ok|label|detail" lines and bash owns the verdict, so
+# there is one place that decides pass or fail.
 #
 # The malicious package here is synthetic and self-authored. Nothing from the
 # audit corpora is copied into it, and it is never imported, executed, or
@@ -34,14 +38,37 @@ check() {
   fi
 }
 
+# check_stream turns the ok|label|detail lines a Python step prints into check()
+# calls. It reads from process substitution rather than a pipe: a pipeline would
+# run the loop in a subshell and the FAILED it sets would not survive.
+check_stream() {
+  while IFS='|' read -r ok label detail; do
+    [ -n "$label" ] && check "$label" "$ok" "$detail"
+  done
+}
+
 log_from() { tail -c +"$1" "$LOG" 2>/dev/null; }
 
+# wait_for <pattern> <log offset> follows the log from the offset rather than
+# re-reading it on every poll, and gives up after five minutes.
+#
+# The lines are read one at a time instead of piped into grep -m1. Under
+# pipefail the pipe form reports the opposite of the truth: grep exits the
+# moment it matches, tail takes SIGPIPE, and the pipeline's status becomes
+# tail's 141 even though the pattern was found.
+#
+# A timeout is a failure, not a note. The daemon logging the outcome is part of
+# what this script asserts, and a wait that quietly gives up would let the
+# checks that follow report on a run that never finished.
 wait_for() {
-  for _ in $(seq 1 150); do
-    log_from "$2" | grep -q "$1" && return 0
-    sleep 2
-  done
-  echo "  !! timed out waiting for: $1"
+  local pattern="$1" offset="$2" line
+  while IFS= read -r line; do
+    case "$line" in
+      *"$pattern"*) return 0 ;;
+    esac
+  done < <(timeout 300 tail -c +"$offset" -f "$LOG" 2>/dev/null)
+  echo "  !! timed out waiting for: $pattern"
+  FAILED=1
   return 1
 }
 
@@ -58,13 +85,14 @@ for e in ((d.get("result") or {}).get("history") or []):
         break' "$1"
 }
 
+# audit_code <taskId> reads the platform's code field out of the same report.
 audit_code() {
-  curl -fsS "$MOCK/api/reportAudit/status" 2>/dev/null | python3 -c '
+  audit_report "$1" | python3 -c '
 import sys, json
-d = json.load(sys.stdin)
-for e in ((d.get("result") or {}).get("history") or []):
-    if e.get("taskId") == sys.argv[1]:
-        print(e.get("code")); break' "$1"
+try:
+    print(json.load(sys.stdin).get("code"))
+except Exception:
+    pass'
 }
 
 echo "===================== setup ====================="
@@ -143,7 +171,7 @@ curl -fsS -X POST "$MOCK/api/reportModelImport/reset" >/dev/null 2>&1
 OFFSET=$(( $(wc -c < "$LOG") + 1 ))
 curl -fsS -X POST "$TAA" -H 'Content-Type: application/json' \
   -d "{\"resourceUrl\":\"http://127.0.0.1:${PORT}/pkg-cpg-clean.zip\",\"requestId\":\"h-clean\",\"taskId\":\"h-task-clean\",\"runtimeConfig\":\"{\\\"commands\\\":[\\\"python3 train.py\\\"]}\"}" >/dev/null
-wait_for "审计完成" "$OFFSET" || true
+wait_for "审计完成" "$OFFSET"
 sleep 2
 log_from "$OFFSET" | grep "审计完成" | sed 's/^/  log: /'
 
@@ -162,18 +190,18 @@ check "clean package passed the gate" \
       "$([ "$(audit_code h-task-clean)" = "0" ] && echo 1 || echo 0)"
 
 echo ""
-echo "===================== 2-5. cross-service package: block ====================="
+echo "===================== 2. cross-service package: block ====================="
 curl -fsS -X POST "$MOCK/api/reportAudit/reset" >/dev/null 2>&1
 curl -fsS -X POST "$MOCK/api/reportModelImport/reset" >/dev/null 2>&1
 OFFSET=$(( $(wc -c < "$LOG") + 1 ))
 curl -fsS -X POST "$TAA" -H 'Content-Type: application/json' \
   -d "{\"resourceUrl\":\"http://127.0.0.1:${PORT}/pkg-cpg-cross.zip\",\"requestId\":\"h-cross\",\"taskId\":\"h-task-cross\",\"runtimeConfig\":\"{\\\"commands\\\":[\\\"python3 train.py\\\"]}\"}" >/dev/null
-wait_for "模型安全审计未通过" "$OFFSET" || true
+wait_for "模型安全审计未通过" "$OFFSET"
 sleep 3
 echo "  --- daemon log ---"
 log_from "$OFFSET" | grep "审计\|清除模型状态" | sed 's/^/  /'
 
-audit_report h-task-cross | python3 -c '
+check_stream < <(audit_report h-task-cross | python3 -c '
 import sys, json
 d = json.load(sys.stdin)
 rep = d.get("report") or {}
@@ -183,42 +211,39 @@ synth = [f for f in findings if f.get("rule_id") == "taa-cross-service-rce"]
 enriched = [f for f in findings if f.get("cpg_evidence")]
 
 def check(label, ok, detail=""):
-    print("  %s  %s  %s" % ("PASS" if ok else "FAIL", label, "" if ok else detail))
-    return 0 if ok else 1
+    print("%d|%s|%s" % (1 if ok else 0, label, "" if ok else detail))
 
-bad = 0
-bad += check("the platform was told code=1", d.get("code") == 1, "code=%s" % d.get("code"))
-bad += check("the report marks the flow as crossing a service",
-             (stats.get("microservice") or 0) > 0, "microservice=%s" % stats.get("microservice"))
-bad += check("the report marks the flow as crossing a file",
-             (stats.get("cross_file") or 0) > 0, "cross_file=%s" % stats.get("cross_file"))
-bad += check("Tier 1 findings on the path carry the trajectory",
-             len(enriched) > 0, "enriched=%d" % len(enriched))
-bad += check("exactly one system-level finding was synthesized",
-             len(synth) == 1, "synthesized=%d" % len(synth))
+check("the platform was told code=1", d.get("code") == 1, "code=%s" % d.get("code"))
+check("the report marks the flow as crossing a service",
+      (stats.get("microservice") or 0) > 0, "microservice=%s" % stats.get("microservice"))
+check("the report marks the flow as crossing a file",
+      (stats.get("cross_file") or 0) > 0, "cross_file=%s" % stats.get("cross_file"))
+check("Tier 1 findings on the path carry the trajectory",
+      len(enriched) > 0, "enriched=%d" % len(enriched))
+check("exactly one system-level finding was synthesized",
+      len(synth) == 1, "synthesized=%d" % len(synth))
 
 if synth:
     s = synth[0]
     ev = s.get("cpg_evidence") or ""
     trace = s.get("taint_trace") or []
     edges = [t.get("edge_type") or t.get("type") for t in trace]
-    bad += check("the synthesized finding is attributed to the graph engine",
-                 s.get("engine") == "cpg", "engine=%s" % s.get("engine"))
-    bad += check("it is anchored at the sink, not at the source",
-                 "server.py" in (s.get("file") or ""), "file=%s" % s.get("file"))
-    bad += check("the trajectory names both services",
-                 "service_a" in ev and "service_b" in ev, "")
-    bad += check("the trajectory crosses the microservice boundary",
-                 any(e and "MICROSERVICE" in e for e in edges), "edges=%s" % edges)
-    bad += check("the trajectory ends at a command-execution sink",
-                 "CMD_001" in ev and "SINK" in ev, "")
-    print("  --- evidence as the model sees it ---")
+    check("the synthesized finding is attributed to the graph engine",
+          s.get("engine") == "cpg", "engine=%s" % s.get("engine"))
+    check("it is anchored at the sink, not at the source",
+          "server.py" in (s.get("file") or ""), "file=%s" % s.get("file"))
+    check("the trajectory names both services",
+          "service_a" in ev and "service_b" in ev, "")
+    check("the trajectory crosses the microservice boundary",
+          any(e and "MICROSERVICE" in e for e in edges), "edges=%s" % edges)
+    check("the trajectory ends at a command-execution sink",
+          "CMD_001" in ev and "SINK" in ev, "")
+    # stderr, so the evidence stays out of the check stream.
+    print("  --- evidence as the model sees it ---", file=sys.stderr)
     for ln in ev.splitlines():
-        print("  " + ln)
-    print("  --- llm verdict: %s" % s.get("llm_verdict"))
-
-raise SystemExit(1 if bad else 0)
-' || FAILED=1
+        print("  " + ln, file=sys.stderr)
+    print("  --- llm verdict: %s" % s.get("llm_verdict"), file=sys.stderr)
+')
 
 echo "  --- model state after the block ---"
 REMAIN=$(ls -A "$MODELS" 2>/dev/null | wc -l)
