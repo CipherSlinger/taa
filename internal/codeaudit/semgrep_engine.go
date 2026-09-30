@@ -104,8 +104,11 @@ type SemgrepLimits struct {
 	MaxMemoryMB int
 }
 
-// NewSemgrepEngine builds the adapter over the given policy and rules file.
+// NewSemgrepEngine builds the adapter over the given policy and rules file or directory.
 func NewSemgrepEngine(scanner *Scanner, rulesPath string, limits SemgrepLimits) *semgrepEngine {
+	if scanner == nil {
+		scanner = DefaultScanner()
+	}
 	timeout := limits.Timeout
 	if timeout <= 0 {
 		timeout = DefaultSemgrepTimeout
@@ -196,7 +199,7 @@ func (e *semgrepEngine) scan(dir string, withLineCounts bool) (*Report, map[stri
 		return nil, nil, fmt.Errorf("%s is not a directory", dir)
 	}
 
-	targets, err := e.walkTargets(dir)
+	targets, err := e.walkSourceFiles(dir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -269,27 +272,22 @@ func (e *semgrepEngine) stamp(report *Report) *Report {
 	return report
 }
 
-// walkTargets returns the files to scan, in walk order.
-//
-// This repeats the walk the regex scanner performs rather than sharing it. The
-// shared part is the policy — SkipDirs and Extensions come from the same Config,
-// so a directory added there is skipped by both engines — while the walk itself
-// is left alone because the regex scanner's walk stops early at the finding cap,
-// and a scan that covers a different set of files depending on how many findings
-// it has found is not a baseline anything should be measured against.
-func (e *semgrepEngine) walkTargets(dir string) ([]string, error) {
+// walkSourceFiles returns the files to scan, in walk order.
+// It includes multi-language source files (.py, .go, .c, .cpp, .cu, .h, .hpp, .java, .sh)
+// as well as any extension configured on the scanner.
+func (e *semgrepEngine) walkSourceFiles(dir string) ([]string, error) {
 	var targets []string
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
 		if info.IsDir() {
-			if e.scanner.config.SkipDirs[info.Name()] {
+			if e.scanner != nil && e.scanner.config.SkipDirs != nil && e.scanner.config.SkipDirs[info.Name()] {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !e.scanner.hasMatchingExtension(path) {
+		if !e.isSourceFile(path) {
 			return nil
 		}
 		targets = append(targets, path)
@@ -299,6 +297,24 @@ func (e *semgrepEngine) walkTargets(dir string) ([]string, error) {
 		return nil, fmt.Errorf("walk directory: %w", err)
 	}
 	return targets, nil
+}
+
+// walkTargets is kept as an alias to walkSourceFiles for backward compatibility.
+func (e *semgrepEngine) walkTargets(dir string) ([]string, error) {
+	return e.walkSourceFiles(dir)
+}
+
+// isSourceFile checks if a file matches supported multi-language extensions or scanner extensions.
+func (e *semgrepEngine) isSourceFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".py", ".go", ".c", ".cpp", ".cu", ".h", ".hpp", ".java", ".sh":
+		return true
+	}
+	if e.scanner != nil && e.scanner.hasMatchingExtension(path) {
+		return true
+	}
+	return false
 }
 
 // countLines reads each target to report its line count. A file that cannot be

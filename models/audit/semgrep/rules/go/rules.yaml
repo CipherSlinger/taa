@@ -23,6 +23,8 @@ rules:
       - pattern: http.Get(...)
       - pattern: http.Post(...)
       - pattern: http.PostForm(...)
+      - pattern: http.DefaultClient.Do(...)
+      - pattern: $CLIENT.Do(...)
 
   - id: taa-net-socket-go
     languages: [go]

@@ -1,0 +1,13 @@
+# Semgrep rules for Java code security audit
+# Rule families align with TAA canonical 13-rule specification
+rules:
+  - id: taa-cmd-exec-java
+    languages: [java]
+    severity: ERROR
+    message: "Process execution detected in Java"
+    metadata:
+      category: execution
+      rule_family: CMD_001
+    pattern-either:
+      - pattern: Runtime.getRuntime().exec(...)
+      - pattern: new ProcessBuilder(...)

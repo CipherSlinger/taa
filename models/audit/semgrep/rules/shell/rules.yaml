@@ -2,7 +2,7 @@
 # Rule families align with TAA canonical 13-rule specification
 rules:
   - id: taa-per-backdoor-shell
-    languages: [bash]
+    languages: [bash, sh]
     severity: ERROR
     message: "Crontab or profile persistence modification detected in Shell script"
     metadata:
@@ -15,21 +15,23 @@ rules:
       - pattern: echo ... >> ~/.profile
 
   - id: taa-cmd-exec-shell
-    languages: [bash]
+    languages: [bash, sh]
     severity: ERROR
-    message: "Pipe to shell execution or dynamic eval detected in Shell script"
+    message: "Dynamic shell script execution detected"
     metadata:
       category: execution
       rule_family: CMD_001
     pattern-either:
+      - pattern: eval ...
+      - pattern: bash -c ...
+      - pattern: sh -c ...
       - pattern: curl ... | bash
       - pattern: curl ... | sh
       - pattern: wget ... | bash
       - pattern: wget ... | sh
-      - pattern: eval ...
 
   - id: taa-net-general-shell
-    languages: [bash]
+    languages: [bash, sh]
     severity: ERROR
     message: "Outbound network download tool invocation in Shell script"
     metadata:

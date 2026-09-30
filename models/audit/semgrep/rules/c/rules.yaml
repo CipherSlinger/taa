@@ -1,0 +1,14 @@
+# Semgrep rules for C/C++ code security audit
+# Rule families align with TAA canonical 13-rule specification
+rules:
+  - id: taa-cmd-exec-c
+    languages: [c, cpp]
+    severity: ERROR
+    message: "System command execution in C/C++"
+    metadata:
+      category: execution
+      rule_family: CMD_001
+    pattern-either:
+      - pattern: system(...)
+      - pattern: popen(...)
+      - pattern: execve(...)
