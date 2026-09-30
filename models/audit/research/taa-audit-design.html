@@ -3997,22 +3997,29 @@
               <span style="display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 14px;">🕸️</span>
               2.6 跨仓库代码属性图 (CPG) 与全项目过程间深度分析引擎
             </h3>
-            <span class="badge warn" style="font-weight: 700;">🔬 离线评测原型库已实现 · 生产代码未在线接入</span>
+            <span class="badge ok" style="font-weight: 700;">✅ 六层图引擎已接入生产热路径 · 容器联调通过</span>
           </div>
 
           <!-- 生产代码实现边界核查与分层定位说明 -->
-          <div style="margin: 14px 0 18px 0; padding: 14px 18px; background: color-mix(in srgb, var(--warn) 10%, var(--panel)); border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line)); border-radius: 10px; font-size: 12.8px; line-height: 1.6;">
-            <div style="font-weight: 800; color: var(--warn); margin-bottom: 6px; font-size: 13.5px; display: flex; align-items: center; gap: 6px;">
-              <span>⚠️</span> 生产代码接入实况与架构分层边界核验 (Production Code Verification)
+          <div style="margin: 14px 0 18px 0; padding: 14px 18px; background: color-mix(in srgb, var(--ok) 10%, var(--panel)); border: 1px solid color-mix(in srgb, var(--ok) 40%, var(--line)); border-radius: 10px; font-size: 12.8px; line-height: 1.6;">
+            <div style="font-weight: 800; color: var(--ok); margin-bottom: 6px; font-size: 13.5px; display: flex; align-items: center; gap: 6px;">
+              <span>✅</span> 生产代码接入实况 (Production Code Verification)
             </div>
             <div>
-              经核查生产代码库（<code>cmd/taa</code> 与 <code>internal/codeaudit/</code>），CPG 各层与生产运行时的集成状态如下：
+              经核查生产代码库（<code>cmd/taa</code>、<code>internal/codeaudit/</code> 与 <code>internal/codeaudit/cpg/</code>），CPG 各层已全部由 Go 原生实现并接入生产守护进程热路径：
               <ul style="margin: 6px 0 0 18px; padding: 0;">
-                <li><strong>生产代码现状：</strong>生产守护进程（Go）直接调度原生 <code>semgrep</code> CLI 引擎完成 Tier 1 静态检测，代码上下文采用基于行号的物理滑窗（<code>extractContext</code>）向 TEE-LLM 提供代码切片。Go 侧数据结构 <code>Finding</code> 已完备定义了 <code>CPGEvidence</code> 与 <code>TaintTrace</code> 字段契约并在 <code>verifier.go</code> 预留注入插槽，但生产守护进程热路径尚未在线调用 Python CPG 引擎。</li>
-                <li><strong>Layer 3: 过程间 CFG / DFG（未在生产代码接入）：</strong>实现在离线 Python 库 <code>models/audit/tools/cpg/builder.py</code>，用于 Benchmark 测试集构造控制流与到达定值数据流；生产 Go 运行时守护进程未调用此模块。</li>
-                <li><strong>Layer 5: Worklist 污点引擎（未在生产代码接入）：</strong>实现在离线 Python 库 <code>models/audit/tools/cpg/taint_engine.py</code>，通过有限跳步不动点图搜索追踪污点扩散；生产运行时依赖 Semgrep CLI 内部规则执行匹配，未在 Go 运行时调用 Python Worklist 污点引擎。</li>
-                <li><strong>Layer 6: 因果依赖切片（未在生产代码接入）：</strong>实现在离线 Python 库 <code>models/audit/tools/cpg/slicer.py</code> 与 <code>ast_scope_slicer.py</code> 中；生产 Go 守护进程尚未在线生成 <code>[Deep Audit Inter-Procedural Taint Trajectory]</code> 因果切片树。</li>
+                <li><strong>接入方式（按需触发）：</strong>图分析<strong>不是</strong>无条件执行。Tier 1 引擎（Semgrep / 正则）返回 <strong>0 条 Finding 时立即返回</strong>，零告警样本走毫秒级快速旁路，不承担任何图构建开销；仅当 <strong>Finding &gt; 0</strong> 时才构建 CPG、执行边界桥接、跑污点不动点并回注证据。这一判据即产品架构图所述“50% 零告警算力快速旁路”的落地形式。</li>
+                <li><strong>Layer 1–2: AST 统一建模与跨文件符号解析（已接入）：</strong><code>internal/codeaudit/cpg/ast_bridge.go</code> 以 Python 标准库 <code>ast</code> 做 JSON dump（5 秒超时、进程隔离、<strong>零 CGO</strong>）作为唯一桥接点，其余全部为 Go 原生；<code>resolver.go</code> 完成跨文件 import / 别名 / <code>from … import …</code> 的 FQN 解析。</li>
+                <li><strong>Layer 3: 过程间 CFG / DFG / Call Graph（已接入）：</strong><code>builder.go</code> 构建 <code>AST_STMT</code>/<code>AST_FUNC_DEF</code>、<code>CFG_BRANCH_*</code>、<code>DFG_DEF_USE</code> 与 <code>CALL_ARG</code>/<code>CALL_RET</code> 过程间边。</li>
+                <li><strong>Layer 4: 微服务边界穿透（已接入）：</strong><code>microservice.go</code> 提取 HTTP 客户端调用与 Flask/FastAPI 服务端路由并做拓扑匹配，生成 <code>MICROSERVICE_HTTP</code>/<code>MICROSERVICE_PAYLOAD</code>/<code>MICROSERVICE_RESPONSE</code> 跨服务边。</li>
+                <li><strong>Layer 5: Worklist 污点引擎（已接入）：</strong><code>taint_engine.go</code> 以 <code>(node_id, source_id)</code> 访问集与 <code>MaxHops=50</code> 做有限跳步不动点求解，内置 sanitizer 熔断。</li>
+                <li><strong>Layer 6: 因果依赖切片（已接入）：</strong><code>slicer.go</code> 将过程间轨迹压缩为 &lt;300 Token 的 <code>[Deep Audit Inter-Procedural Taint Trajectory]</code>；<code>scope_slicer.go</code>/<code>scope_extractor.go</code> 以 AST 闭包切片替代行号物理滑窗（不可解析时回退物理窗口）。</li>
+                <li><strong>跨服务缺陷合成（已接入）：</strong><code>internal/codeaudit/cpg_analysis.go</code> 对跨文件/跨微服务污点流合成 <code>rule_id = taa-cross-service-rce</code>、<code>engine = cpg</code> 的系统级 Finding，并以 <code>HIGH</code> 级别进入门禁。该结论<strong>两个 Tier 1 引擎都无法产生</strong>：单看任一文件，其一端只是普通的 <code>requests.post</code>，另一端只是普通的 <code>os.system</code>，缺陷只存在于两者的连接处。</li>
+                <li><strong>评测中立性边界（重要）：</strong>证据回注<strong>仅对 <code>CrossFile || AcrossMicroservice</code> 的污点流生效</strong>。单文件内 source→sink 的流不重写其上下文——否则 Tier 2 提示词将依赖“是哪个引擎产出的”，而这正是 Semgrep 非劣性测量必须保持无关的唯一变量。故既有基准语料（单文件形态）的读数不受本层接入影响。</li>
               </ul>
+              <div style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed color-mix(in srgb, var(--ok) 30%, var(--line));">
+                <strong>容器联调实测（<code>tests/cpg_container_e2e_test.sh</code>）：</strong>纯净包 → <code>passed=true, totalFindings=0</code>，走快速旁路，平台收到 <code>code=0</code>；跨微服务包 → 图引擎合成 <code>taa-cross-service-rce</code> 一条，4 条路径 Finding 携带 4 步 <code>taint_trace</code>，轨迹显式标出 <code>MICROSERVICE_PAYLOAD</code> 越界边，LLM 判定 <code>MALICIOUS</code>，<code>passed=false</code>，平台收到 <code>code=1</code>，<code>/root/taa/models</code> 自动抹除。
+              </div>
             </div>
           </div>
 
@@ -4061,9 +4068,9 @@
           </div>
 
           <div style="background: color-mix(in srgb, var(--accent) 7%, var(--panel)); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: 10px; padding: 14px 18px; margin-bottom: 20px;">
-            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px; font-size: 13.5px;">双轨架构协同设计（评测框架验证与生产演进目标）：</div>
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px; font-size: 13.5px;">双轨架构协同设计（评测框架与生产运行时同源）：</div>
             <div style="font-size: 13px; color: var(--text); line-height: 1.6;">
-              在离线评测与基准测试套件（<code>models/audit/tools/audit_benchmark_eval.py</code>）中，<strong>SemgrepScannerAdapter</strong> 驱动底层 CPG 引擎与微服务桥接器，能够对检出的单点缺陷自动注入跨文件 CPG 污点演进树，并对跨微服务反弹后门合成新型 <code>engine="cpg"</code> 的全局审计证据；而在当前生产 Go 守护进程中，该能力以 <code>CPGEvidence</code> 协议契约插槽形式就绪，未来将随着 Python CPG 服务化或 Go 原生化常驻后无缝热插拔启用。
+              离线评测套件（<code>models/audit/tools/audit_benchmark_eval.py</code>）与生产守护进程<strong>现已共用同一套 CPG 语义</strong>：生产侧的图引擎、微服务桥接器与证据切片器均为 Go 原生实现（<code>internal/codeaudit/cpg/</code>），经 <code>internal/codeaudit/cpg_analysis.go</code> 接入 Tier 1 之后的按需分析路径。两侧对检出的单点缺陷自动注入跨文件 CPG 污点演进树，并对跨微服务反弹后门合成 <code>engine="cpg"</code> 的全局审计证据（<code>rule_id = taa-cross-service-rce</code>）。唯一的桥接点是 Python 标准库 <code>ast</code> 的 JSON dump，因其进程隔离且零 CGO，图算法与遍历逻辑 100% 位于 Go 侧。
             </div>
           </div>
         </div>
