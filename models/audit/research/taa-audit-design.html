@@ -3107,6 +3107,55 @@
           <span style="background: var(--accent); color: #fff; font-weight: 800; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;">生产主力架构</span>
           <span><strong>生产基线中枢：</strong>Semgrep-Native 跨语言 AST 语义与污点分析核心（已全面投产） · <strong>架构地位：</strong>第一道静态代码审计防线 · <strong>状态确认：</strong>Tree-sitter AST 跨语言解析、污点传播追踪与 AST 作用域切片已全面接入。</span>
         </div>
+
+        <!-- 2.1 生产正式工程接入与全链路联调实测 -->
+        <div style="margin: 16px 0 20px 0; background: var(--panel-2); border: 1.5px solid color-mix(in srgb, var(--accent) 50%, var(--line)); border-radius: 12px; padding: 18px 22px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="background: var(--ok); color: #fff; font-weight: 800; padding: 2px 8px; border-radius: 4px; font-size: 11px;">工程交付达成</span>
+              <h3 style="margin: 0; font-size: 16px; font-weight: 800;">2.1 生产正式工程接入与全链路联调实测 (2026-09-30 交付)</h3>
+            </div>
+            <span class="badge ok" style="font-weight: 700;">★ 生产默认引擎全面切换为 Semgrep · 容器联调通过</span>
+          </div>
+          <p style="font-size: 13px; line-height: 1.6; margin: 0 0 12px 0;">
+            依照生产落地决策，系统已跳过离线扫描层快速诊断，直接完成 Semgrep 引擎对生产运行时守护进程的完整接入、容器同步部署与真实沙箱端到端联调。实测指标与联调记录均已固化入库：
+          </p>
+          <div class="spec-grid" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-bottom: 14px;">
+            <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;">
+              <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px;">⚙️ 运行时配置与默认值切换</div>
+              <ul style="margin: 0; padding-left: 16px; line-height: 1.55;">
+                <li><code>internal/config/config.go</code>：默认 <code>CodeScanEngine</code> 由 <code>"regex"</code> 升级为 <code>"semgrep"</code>。</li>
+                <li><code>configs/taa-production.json</code> &amp; <code>taa-docker.json</code>：固化 <code>codeScanEngine: "semgrep"</code> 与规则路径 <code>/opt/taa/semgrep/rules/python/rules.yaml</code>。</li>
+                <li>Go 全套单元测试与启动配置正规化测试验证全绿。</li>
+              </ul>
+            </div>
+            <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;">
+              <div style="font-weight: 700; color: var(--warn); margin-bottom: 6px;">🛡️ 容器规则同步与资源约束</div>
+              <ul style="margin: 0; padding-left: 16px; line-height: 1.55;">
+                <li>容器内规则哈希与宿主机严格对齐校验：<code>6589b59bb0596474bb8fc0eda429800559430ec1c3fc4f7a5b63c46d05a6cc5e</code>。</li>
+                <li>Semgrep CLI 注入 <code>--max-memory 1024</code>（1GB 内存上限）与 5 分钟超时，防御容器 OOM 宕机。</li>
+                <li>结合 <code>errors</code> 与 <code>paths.scanned</code> 完整性校验，杜绝静默失败逃逸。</li>
+              </ul>
+            </div>
+          </div>
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;">
+            <div style="font-weight: 700; color: var(--ok); margin-bottom: 6px;">🧪 生产容器内端到端（E2E）联调实测记录 (taa-env-slim-v2 ↔ Platform Mock)</div>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; margin-top: 8px;">
+              <div style="padding: 10px; background: color-mix(in srgb, var(--ok) 8%, var(--panel)); border-radius: 6px; border-left: 3px solid var(--ok);">
+                <div style="font-weight: 700; color: var(--ok);">1. 纯净模型导入 (task-clean-01)</div>
+                <div style="color: var(--muted); font-size: 11.5px; margin-top: 4px;">
+                  Semgrep 扫描耗时 &lt;1s，检出 0 findings → Tier 2 直接放行 (<code>passed=true, risk=NONE</code>) → Platform Mock 接收成功上报并回执 HTTP 200 (<code>code=0</code>)。模型正常就绪。
+                </div>
+              </div>
+              <div style="padding: 10px; background: color-mix(in srgb, var(--danger) 8%, var(--panel)); border-radius: 6px; border-left: 3px solid var(--danger);">
+                <div style="font-weight: 700; color: var(--danger);">2. 恶意模型阻断 (task-bad-01)</div>
+                <div style="color: var(--muted); font-size: 11.5px; margin-top: 4px;">
+                  Semgrep 命中 <code>ENV_001</code> 与 <code>CMD_001</code> → LLM Assist 确信裁决 <code>MALICIOUS</code> (chained=true) → 审计判定 <code>passed=false, risk=CRITICAL</code> → Platform Mock 接收阻断上报 (<code>code=1</code>, HTTP 200) → TAA 触发安全机制清空 <code>/root/taa/models</code>，恶意代码完全抹除。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
         <p class="lead">TAA 全面确立 <strong>Semgrep</strong> 作为第一道静态语义与数据流分析核心防线，已全面取代传统单行扫描器投入生产运行。基于 <strong>Tree-sitter AST 跨语言语法树解析</strong>、<strong>符号表别名归一化</strong> 与 <strong>过程间污点传播追踪（Taint Tracking）</strong>，原生多语言能力打破单一 Python 局限，将传统的“物理滑窗”升维为“AST 作用域感知闭包切片 (AST Enclosing Scope Slicing) + 跨行污点因果链 (Source → Propagator → Sink)”。</p>
 
         <div class="spec-grid">
@@ -3948,9 +3997,26 @@
               <span style="display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 14px;">🕸️</span>
               2.6 跨仓库代码属性图 (CPG) 与全项目过程间深度分析引擎
             </h3>
-            <span class="badge ok" style="font-weight: 700;">★ 生产已就绪 · 零额外运行时依赖</span>
+            <span class="badge warn" style="font-weight: 700;">🔬 离线评测原型库已实现 · 生产代码未在线接入</span>
           </div>
-          <p class="lead" style="margin-bottom: 16px;">针对传统单文件规则扫描在面对多模块拆分、跨文件函数传参/返回值引用以及微服务通信拓扑时的审计盲区，TAA 正式引入<strong>轻量纯 Python 原生的代码属性图 (Code Property Graph, CPG)</strong> 分析中枢。引擎融合 AST 语法层、CFG 控制流层、DFG 到达定值数据流层、调用图 (Call Graph) 与微服务 HTTP 通信边界，在内存中维护毫秒级图拓扑，消除长程跨模块隐蔽信道与跨微服务渗透盲点。</p>
+
+          <!-- 生产代码实现边界核查与分层定位说明 -->
+          <div style="margin: 14px 0 18px 0; padding: 14px 18px; background: color-mix(in srgb, var(--warn) 10%, var(--panel)); border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line)); border-radius: 10px; font-size: 12.8px; line-height: 1.6;">
+            <div style="font-weight: 800; color: var(--warn); margin-bottom: 6px; font-size: 13.5px; display: flex; align-items: center; gap: 6px;">
+              <span>⚠️</span> 生产代码接入实况与架构分层边界核验 (Production Code Verification)
+            </div>
+            <div>
+              经核查生产代码库（<code>cmd/taa</code> 与 <code>internal/codeaudit/</code>），CPG 各层与生产运行时的集成状态如下：
+              <ul style="margin: 6px 0 0 18px; padding: 0;">
+                <li><strong>生产代码现状：</strong>生产守护进程（Go）直接调度原生 <code>semgrep</code> CLI 引擎完成 Tier 1 静态检测，代码上下文采用基于行号的物理滑窗（<code>extractContext</code>）向 TEE-LLM 提供代码切片。Go 侧数据结构 <code>Finding</code> 已完备定义了 <code>CPGEvidence</code> 与 <code>TaintTrace</code> 字段契约并在 <code>verifier.go</code> 预留注入插槽，但生产守护进程热路径尚未在线调用 Python CPG 引擎。</li>
+                <li><strong>Layer 3: 过程间 CFG / DFG（未在生产代码接入）：</strong>实现在离线 Python 库 <code>models/audit/tools/cpg/builder.py</code>，用于 Benchmark 测试集构造控制流与到达定值数据流；生产 Go 运行时守护进程未调用此模块。</li>
+                <li><strong>Layer 5: Worklist 污点引擎（未在生产代码接入）：</strong>实现在离线 Python 库 <code>models/audit/tools/cpg/taint_engine.py</code>，通过有限跳步不动点图搜索追踪污点扩散；生产运行时依赖 Semgrep CLI 内部规则执行匹配，未在 Go 运行时调用 Python Worklist 污点引擎。</li>
+                <li><strong>Layer 6: 因果依赖切片（未在生产代码接入）：</strong>实现在离线 Python 库 <code>models/audit/tools/cpg/slicer.py</code> 与 <code>ast_scope_slicer.py</code> 中；生产 Go 守护进程尚未在线生成 <code>[Deep Audit Inter-Procedural Taint Trajectory]</code> 因果切片树。</li>
+              </ul>
+            </div>
+          </div>
+
+          <p class="lead" style="margin-bottom: 16px;">针对传统单文件规则扫描在面对多模块拆分、跨文件函数传参/返回值引用以及微服务通信拓扑时的审计盲区，TAA 设计并构建了<strong>轻量纯 Python 原生的代码属性图 (Code Property Graph, CPG)</strong> 分析中枢原型。引擎融合 AST 语法层、CFG 控制流层、DFG 到达定值数据流层、调用图 (Call Graph) 与微服务 HTTP 通信边界，在内存中维护毫秒级图拓扑，消除长程跨模块隐蔽信道与跨微服务渗透盲点。</p>
 
           <div class="spec-grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; margin-bottom: 20px;">
             <div class="card" style="background: var(--panel);">
@@ -3995,9 +4061,9 @@
           </div>
 
           <div style="background: color-mix(in srgb, var(--accent) 7%, var(--panel)); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: 10px; padding: 14px 18px; margin-bottom: 20px;">
-            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px; font-size: 13.5px;">双轨架构协同与审计死角消除闭环：</div>
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px; font-size: 13.5px;">双轨架构协同设计（评测框架验证与生产演进目标）：</div>
             <div style="font-size: 13px; color: var(--text); line-height: 1.6;">
-              在扫描阶段，<strong>SemgrepScannerAdapter</strong> 驱动底层 CPG 引擎与微服务桥接器；对于 Semgrep 已检出的单点缺陷，注入完整的跨文件 CPG 污点演进树；对于单文件内“看似良性”（如一端仅做 HTTP 转发、另一端仅接收 JSON 处理）的<strong>跨微服务隐蔽反弹攻击</strong>，CPG 自动合成新型 <code>engine="cpg"</code> 的全局审计证据，直送 Go 后端 <code>FindingPayload</code> 与 Python <code>LLMSecurityAnalyzer</code>，实现单文件扫描与全局拓扑的无缝协同。
+              在离线评测与基准测试套件（<code>models/audit/tools/audit_benchmark_eval.py</code>）中，<strong>SemgrepScannerAdapter</strong> 驱动底层 CPG 引擎与微服务桥接器，能够对检出的单点缺陷自动注入跨文件 CPG 污点演进树，并对跨微服务反弹后门合成新型 <code>engine="cpg"</code> 的全局审计证据；而在当前生产 Go 守护进程中，该能力以 <code>CPGEvidence</code> 协议契约插槽形式就绪，未来将随着 Python CPG 服务化或 Go 原生化常驻后无缝热插拔启用。
             </div>
           </div>
         </div>
