@@ -47,6 +47,13 @@ type Finding struct {
 	EngineRuleID string `json:"engine_rule_id,omitempty"`
 	// RuleFamily is the TAA rule id an engine's native rule maps back to.
 	RuleFamily string `json:"rule_family,omitempty"`
+	// Engine names the engine a finding was synthesized by, for findings that no
+	// Tier 1 matcher produced. Tier 1 findings leave it empty: their provenance
+	// is the report's own Engine field, and repeating it per finding would say
+	// nothing a reader does not already have. It is set only where the finding
+	// originates below Tier 1, so that the graph engine's output is not
+	// indistinguishable from a pattern match once both sit in one list.
+	Engine string `json:"engine,omitempty"`
 }
 
 // Report is the result of a security scan.

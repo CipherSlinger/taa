@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -226,18 +225,16 @@ func (e *semgrepEngine) scan(dir string, withLineCounts bool) (*Report, map[stri
 		return nil, nil, err
 	}
 
+	// The graph pass runs only because something was found, and only reports on
+	// flows that cross a file or a service boundary. It is deliberately before
+	// the sort and the cap, so that what the cap keeps does not depend on
+	// whether the graph ran.
+	findings = enrichFindingsWithCPG(dir, targets, findings)
+
 	// Sort before capping, not after: the cap keeps the first N findings, so an
 	// order that varies between runs would make a truncated scan keep a
 	// different set each time and the reports stop being comparable.
-	sort.SliceStable(findings, func(i, j int) bool {
-		if findings[i].File != findings[j].File {
-			return findings[i].File < findings[j].File
-		}
-		if findings[i].Line != findings[j].Line {
-			return findings[i].Line < findings[j].Line
-		}
-		return findings[i].RuleID < findings[j].RuleID
-	})
+	sortFindings(findings)
 
 	truncated := false
 	if len(findings) > e.scanner.config.MaxFindings {
