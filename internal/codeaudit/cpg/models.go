@@ -73,6 +73,11 @@ type CPGNode struct {
 	ScopeID        string                 `json:"scope_id,omitempty"`
 	SymbolName     string                 `json:"symbol_name,omitempty"`
 	Attributes     map[string]interface{} `json:"attributes,omitempty"`
+
+	// AST holds the raw syntax tree node this CPG node was derived from.
+	// It is intentionally excluded from JSON serialization because it is an
+	// in-memory analysis aid, not report evidence.
+	AST *ASTNode `json:"-"`
 }
 
 // CPGEdge represents a directed connection between two nodes in the Code Property Graph.
