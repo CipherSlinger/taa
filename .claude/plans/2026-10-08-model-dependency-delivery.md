@@ -4048,6 +4048,113 @@ git commit -m "feat(deps): expose deps checksum in training report and status"
 
 ---
 
+### Task 10 闭环记录（2026-10-08，规范审查 APPROVED + 质量审查两轮后 APPROVED）
+
+**提交链**（本任务共 3 个提交，另加 3 个计划侧预审提交）：
+
+| 提交 | 内容 |
+| :--- | :--- |
+| `4b9856a` | `feat(deps): expose deps checksum in training report and status` —— 实现，7 个文件 |
+| `ecae4e7` | `test(deps): pin the deps checksum delivery path and its absence when unset` —— 审查后补测试 |
+| `4061788` | `docs(deps): note the deliberate nil deps checksum in the coordinator path` —— 审查后补注释 |
+
+计划侧：`7e846de`（重测锚点）、`17d0360`（修正实参个数、标记过期断言）、`db8e294`（订正
+`encoding/json` 的过期结论）。
+
+**审查链四棒**：
+
+1. **规范审查**（对象 `4b9856a`）→ **APPROVED**，附 **1 项非阻断覆盖缺口**。
+2. **质量审查**（对象 `4b9856a`）→ **CHANGES REQUESTED**，findings 为 I-1 / I-2 / M-3 / M-4 / M-5。
+   它同时明确判定：**生产代码本身正确、无需改动**，要求的全部是测试增量——因为"这个特性可以被
+   整个删掉而全套测试全绿"。（注：报告里的 M1–M7 是它的**变异编号**，与 finding 编号 M-3/M-4/M-5 无关。）
+3. **修复** → `ecae4e7` + `4061788`。
+4. **复评** → **APPROVED**：五条 finding 全部**实质**修复（每条都能用变异重新打红），两项偏离
+   建议的判断被判定"正确、其中一项比原建议更好"，未引入新问题。
+
+#### 本轮最有价值的一条：I-1（投递链路的零覆盖）
+
+`internal/controller/import_processing.go:979` 的 `s.getDepsChecksum()` 是**唯一真实的取数点**。
+改动前 `grep -rn deps_checksum --include=*.go .` 全仓只命中 `report.go:91` 与 `report_test.go`——
+两个新测试各自只盖住链路的一端（runtime 报告构造器、controller status handler），
+**没有任何测试跨越 `buildAndSaveTrainingReport` → `s.getDepsChecksum()` → 报告** 这个边界。
+变异 M6（该实参改 `nil`）使 `internal/controller`（整包 19.4s）、`internal/coordinator`、
+`internal/runtime` **全部 PASS**——即"训练报告带上依赖 checksum"这件事，Task 10 存在的唯一理由，
+可以被一行改动静默关掉；M7 把该实参与 `trainingResult` 对调，`go vet` 干净、整包照样 PASS。
+
+这是本项目至今**唯一一条由审查环独立发现、而控制方自己漏掉的承重缺陷**（我在预审与自测中分别
+核过构造器与 handler 各有覆盖，但没有核两者之间的接线）。修复：新增
+`TestBuildAndSaveTrainingReportIncludesDepsChecksum`（`import_processing_report_test.go`），
+驱动真实的 `buildAndSaveTrainingReport`，按**值**断言 `value`/`algorithm`/`size`。
+
+#### 规范审查与质量审查独立命中的同一个缺口（§12 的否定半边）
+
+两位审查者**各自独立**发现：`report.go:90` 的 `if depsChecksum != nil` 守卫
+（"未导入依赖时报告不出现 `deps_checksum` 键"）**无测试固定**——删掉守卫（nil 时写出
+`"deps_checksum":null`）后 `internal/runtime`／`internal/controller`／`internal/coordinator`
+三包全绿。规范审查者用变异 3（`f7dbb7ce…`，删块留赋值）证明，质量审查者用 M2 证明，
+控制方亦独立复现过。这是**规范侧的覆盖缺口**（计划 Step 1 只要求"存在性"测试，实现者完整照做），
+不是实现偏离。修复：`report_test.go` 补一条否定断言。
+
+#### 修复后的鉴别力证据（四个变异，控制方与复评者各自独立复现，blob 逐字一致）
+
+| 变异 | 变异后 blob | 结果 |
+| :--- | :--- | :--- |
+| M6′ `import_processing.go:979` 的 `s.getDepsChecksum()` → `nil` | `77e6dd5534cb8be17d12401bcf9e52817c4de2b6` | FAIL，`deps_checksum missing or not an object: <nil>` |
+| M7′ 同处与 `trainingResult` 转置 | `a8ff8edd65bf7d66d79cfea27e11b5e1a19512d3` | FAIL，`deps_checksum.value = <nil>`（`go vet` rc=0） |
+| M2′ `report.go:90` 守卫 → 无条件赋值 | `5369c19771d51ae4f43f7c970a4d5f813745c60d` | FAIL，`deps_checksum must be absent when no deps are imported` |
+| M1′ `report.go:91` 值 → `{"value":"bogus"}` | `91c96a39311c3ba26eae9f16367c5b0c0f1308e1` | FAIL，`deps_checksum.value = bogus, want deps-hash` |
+| M4c′ `handler_system.go` 的 `depsImported` → `deps_imported` | `ce7c59df6b535dab7d37190c7bf7b6c4ba45cb27` | FAIL，`depsImported = <nil>, want true` |
+| M4d′ 同处的 `depsHash` → `deps_hash` | `437a77fb04bc6dd4bbdf073fb73bebf98c423c67` | FAIL，`depsHash = <nil>, want cafebabe` |
+
+六个变异：`git log --all --find-object=<blob>` 均为空；每次还原后的 blob 均等于其 `HEAD:<file>`。
+
+**一条值得留存的方法论教训：变异 blob 是"字节形式"的指纹，不是"语义"的指纹。** 同一个守卫变异，
+控制方测得 `5369c197…`（`if depsChecksum != nil {` → `if true {`），规范审查者测得 `f7dbb7ce…`
+（删块、留单行赋值）——语义等价、字节不同，故 blob 不同。复评者为此在不改动工作区的前提下**离线
+枚举了七种字节级改法**才确认两者同源。**因此"blob 交叉核对"只在双方产生逐字节相同编辑时才成立；
+不一致时必须先去核对编辑形式，不能直接判为有一方造假。**
+
+#### 两项偏离审查建议的判断（均被复评判定为正确，其一更优）
+
+1. **未扩展既有的 `TestBuildAndSaveTrainingReportDoesNotScanDataset`，而是新增同级用例。**
+   该用例的断言全部围绕 `data_structure`，名字即其关注点；且该文件在 `:718-723` 明写了
+   "一个不变量只在一个地方断言"的原则。复评者原话是"扩展**或**新增"，判定实现者选了更对的那一半。
+2. **跳过 `saveDepsSuccess`，直接给 `TAAState` 字面量写 `DepsChecksum`。** 这条路径
+   （`buildAndSaveTrainingReport` → `getDepsChecksum`）**只**读 `s.DepsChecksum`，故只设这一个字段
+   是路径真实依赖的最小忠实状态；且它**更严**——`DepsImported` 保持 false，将来若有人把该路径改成
+   以 `DepsImported` 为前置条件，该测试会红，而用 `saveDepsSuccess` 就不会。
+
+#### 接受并记录、不予修复
+
+- **`runtime.BuildTrainingReport` 的 11 参数签名**（继承既有债务：签名上本来就有四个相邻的
+  `map[string]any`）。M7′ 证明相邻参数可被静默对调——但这是**改动前就存在的属性**，
+  重构一个已获批准的接口超出本任务范围。
+- **协调器路径的裸 `nil`**（`flow_training.go:219`）：该路径无依赖状态
+  （`grep -rn "DepsChecksum\|DepsHash" internal/coordinator/*.go` 零命中），报告永不携带
+  `deps_checksum`。属计划内已知遗留，已补四行英文注释，防止后来者"顺手修好"并把错的东西接上去。
+- **另两处裸 `nil`**（`report.go:42` 的委托、以及两处测试调用点）经审查者**明确裁决不算 finding**。
+
+#### 过程与证据质量
+
+- **修复由全新 subagent 执行，而非原实现者**——这是对技能建议（同一 subagent 修复）的**有意偏离**：
+  原实现者的上下文已含 11 步全过程与两次 OOM 排查，复用它会把 findings 混进已被证明有效的实现上下文。
+  偏离的风险（修复者不了解实现取舍）由复评的两项裁定检查覆盖，两项均判定正确。
+- 质量审查第一轮曾把 M4b 的 blob 写成 `437a77fb…` 并加"与 M4d 同 blob"脚注——实为编译失败
+  （`depsHash declared and not used`），命令根本没打印 blob。审查者在复评中**自行更正**，结论不受影响。
+- 规范审查者记录了本计划正文对 spec §12 的失真引文，见「范围外发现」第 10 条。
+
+#### 环境事实
+
+- **Step 10 的字面命令在本检出被 OOM 杀掉**：`go test ./internal/... ./pkg/... -count=1` →
+  `Killed`、EXIT=137（**不是测试失败**）。加 `-p 1` 串行后 17 个包全绿。正文与本计划「收尾检查」
+  已按此改写。
+- **共享检出**：实现者与两位审查者均报告只动本任务文件；四个他人脏文件
+  （`internal/app/taa/app.go`、`app_test.go`、`internal/codeaudit/llm.go`、`llm_test.go`）与
+  `teellm` 子模块全程未碰，收尾 `git status --porcelain` 与开工快照一致。
+- 全部变异均在**单条命令内**以 `trap … EXIT` + 内容守卫执行并还原；`/tmp` 无 `.bak` 或探针残留。
+
+---
+
 ## Task 11: 同步 `api/proto/taa.proto`（设计稿一致性）
 
 **Files:**
@@ -4136,7 +4243,16 @@ git commit -m "docs(proto): mirror importDeps and reportDeps in the design proto
 
 ## 收尾检查（全部 Task 完成后）
 
-- [ ] `go build ./...` 与 `go test ./... -count=1` 全绿。
+- [ ] 构建与测试全绿。**本条的字面命令在本检出不可用**，照抄会得到假的失败信号（见下方范围外发现 3）：
+      - `go build ./...` 被 `models/audit/holdout-sources/semgrep-rules-develop/` 打挂；
+      - `go test ./...` 同理；而 `go test ./internal/... ./pkg/...`（不带串行标志）实测被 **OOM 杀掉**
+        （`Killed`，exit 137 —— 2026-10-08 Task 10 实测，BE 宿主内存上限）。
+
+      实际应跑：
+      ```bash
+      go build -o bin/taa ./cmd/taa && go build -o bin/platform-mock ./tools/platform-mock/cmd/platform-mock
+      go test ./internal/... ./pkg/... -p 1 -count=1
+      ```
 - [ ] 通读 `internal/controller/deps_import.go`，确认 Task 5 的占位与 Task 6/8 的最小实现
       **没有残留**（`processImportedDeps` 只有一份、`runDepsAudit` 只有一份）。
 - [ ] 确认 `deps_state.go`/`deps_import.go`/`deps_audit.go`/`deps_env.go` 四个文件的职责边界：
@@ -4155,11 +4271,23 @@ git commit -m "docs(proto): mirror importDeps and reportDeps in the design proto
    fallback`、`microservice boundary bridge and cross-service edges`。四者与本特性毫无关系，是**同一检出里
    另一个参与者**的在制品。收尾时提请确认归属，**在此之前不清理**。
    教训：共享检出里"看起来像自己遗留"的分支，删之前必须先 `git log --oneline HEAD..<ref>`。
-2. **`tools/csv2-vm/csv2-vm.sh` 由另一参与者编辑中**，而本分支上夹着它的提交
-   （`ee95877`/`8f88284`/`8f9f85a`/`11c6903`）。收尾时需分离或确认，不能默认它们属于本特性。
+2. **`tools/csv2-vm/csv2-vm.sh` 由另一参与者编辑中，而本分支上夹着它的提交**
+   （`ee95877`/`8f88284`/`8f9f85a`/`11c6903`）。2026-10-08 实测：`git rev-list --count master..HEAD` = **83**，
+   其中 `git diff --stat master..HEAD` 显示 `tools/csv2-vm/csv2-vm.sh` 累计 **+714 行**。
+   收尾时需分离或确认，**不能默认它们属于本特性**。
+   **同一参与者还在 Task 10 进行中把模块内的新改动加了进来**：`internal/app/taa/app.go`、
+   `app_test.go`、`internal/codeaudit/llm.go`、`llm_test.go` 四个文件于 2026-10-08 16:30 前后出现未提交改动
+   （内容是把 LLM 判定上限 `MaxFindings: 20` 改为 `0`，即不再截断 finding 尾巴，连带改 `DefaultLLMConfig`
+   与两处测试）。四者与本特性无交集，但 `internal/codeaudit` 是依赖审计路径的**依赖包**，故：
+   任何"全量测试通过"的结论都必须注明**建立在他们在途代码之上**；窄范围回归
+   （`runtime`/`controller`/`coordinator`）不受影响。**始终用显式 pathspec，绝不让它们进提交。**
 3. **`go build ./...` / `go test ./...` 在本检出不可用**：`models/audit/holdout-sources/semgrep-rules-develop/`
    没有 `go.mod`，该目录下有个无限定符的包。因此 CLAUDE.md 那条字面命令无法满足，实际以窄路径
    （`./internal/...` 逐包）覆盖。**这是既有环境问题，不是本次改动引入。**
+   **另有一条独立的限制（2026-10-08 Task 10 实测）**：把窄路径写宽成 `go test ./internal/... ./pkg/...`
+   而**不加串行标志**时，`codeaudit`（约 50s）等重包并发会把进程 **OOM 杀掉**（`Killed`，exit 137）。
+   这不是测试失败，但会被误读成失败。**加 `-p 1` 串行后全绿。** 故收尾与各 Task 的"全量验证"
+   一律用 `-p 1`；日常回归则优先用受影响包的窄目标（毫秒到数十秒级）。
 4. **`internal/coordinator/flow_training.go` 也调用 `runtime.BuildTrainingReport`**，但
    `internal/coordinator` 是未被任何入口接线的死包。Task 10 改报告序列化时不会波及它，仅作风险登记。
 5. **platform-mock 完全没有 spec §11 第 2 期的内容**：无 `/v1/taa/reportDeps` 路由、无存储、无看板；
@@ -4181,6 +4309,23 @@ git commit -m "docs(proto): mirror importDeps and reportDeps in the design proto
 9. **三个文件在本分支之前就未过 `gofmt`**：`internal/controller/attestation_format.go`、
    `report_model_import_test.go`、`report_res_test.go`。已核实它们在 HEAD 上即未格式化，且本分支
    从未改过它们（`git diff master --name-only` 为空）。属既有问题，不按任务零敲碎打地修。
+10. **本计划正文有一处对 spec §12 的失真引文（2026-10-08 发现）。** 计划 `:3822`（Task 10 的
+    「经核实为正确」段）写道：「正是 §12『未导入依赖时训练环境**与报告**与改动前一致』所要求的」，
+    而 spec `:355` 的原文是「未导入依赖时**训练环境**与改动前逐字节一致（回归保护）」——
+    **"与报告"三字是计划加的**，spec 那条讲的是 Task 9 的环境注入（已由 `dd88dec` 闭合）。
+    后果有两个，都要说清：
+    - Task 10 的 `if depsChecksum != nil` 守卫**仍然是正确决定**（给从未导入依赖的会话凭空加一个
+      线上可见的 `"deps_checksum":null` 是对外部载荷的无谓改动），但它的依据是**设计判断**，
+      不是 §12 的字面要求。记录时**照实写**，不要沿用那处引文——否则会把一个计划自定的保证
+      追认成规格要求。
+    - 该守卫当时**无任何测试**（拆掉后 `runtime`/`controller`/`coordinator` 三包全绿），
+      已由 Task 10 的质量审查抓到并补齐；**这一条是"计划文本失真导致后续读者误判依据"的
+      实例，值得留档**：预审环能抓"代码与注释互相否证"，但抓不到"计划引文与 spec 不符"。
+11. **既有的中文注释不止 `internal/platform/reporter.go` 一处（第 7 条的补充数据点）。**
+    2026-10-08 在 HEAD 上实测：`internal/codeaudit/llm_test.go` 有 **8 行**非 ASCII 注释，
+    而 `internal/codeaudit/llm.go` 为 **0 行**（该文件是全英文的）。之所以单独记一笔，是因为
+    `llm_test.go` 正是另一位参与者当前正在改的文件之一——**不要因为"顺手清理注释语言"而碰它**，
+    它与第 7 条同属留待仓库级一次性清理的范畴。
 
 ---
 
