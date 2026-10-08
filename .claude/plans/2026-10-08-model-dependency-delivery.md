@@ -1841,6 +1841,15 @@ fail-**open**。Task 6 自己的测试看不见它：`setupTestState` 用 `ScanE
 
 两条都断言"**恰好剩下什么**"，而不是"没有报错"——后者在删掉条件清位的变异下依然通过，属无效断言。
 
+**修法本身被实现者纠正过一次，记录在此**：我给的失败安装器桩是裸 `return errors.New("pip exploded")`，
+**不创建 target**。这样"删掉安装失败分支的目录删除"这个变异**杀不死** `…KeepsWorkingBinding`——桩没往盘上
+落任何东西，就没有可删的目录，`assertDepsRootContainsOnly` 照样成立。实现者拒绝照抄，改为"先
+`os.MkdirAll(target)` 再返回错误"，并指出这不是为测试扭曲语义：`runtime.InstallWheelhouse` 的文档注释
+逐字写着 "On failure target may be left partially populated. Cleanup belongs to the caller"
+（`internal/runtime/deps.go:35-36`），且它在跑 pip 前确实先 `os.MkdirAll(target, 0o755)`（`:54`）。
+**已独立复核，实现者是对的**：失败后 target 里有半成品才是真实契约，也正是"清理必须由流水线拥有"
+的理由。这是我第二次在测试设计上被实现者驳回（第一次是 I/J），两次都是"桩比现实更干净"导致的假判别力。
+
 **不修、仅记录的一项**：`:159` 的安装前 `os.RemoveAll(depsDir)` 在"标记被人工删除且该目录正是当前绑定者"
 时会删掉活目录。修 (M) 已保证此后的失败路径清位、状态不再撒谎，故不再为此增设"安装到临时目录再改名"
 的重型改造——那是 §14 之外的新机制，收益与复杂度不成比例。此判断在此明写，避免后续审查重复提出。
@@ -2835,6 +2844,20 @@ Step 1 的用例与 Step 3 的实现块。
 "**不需要 `setLastAudit`**"；`clearAuditState` 本身是正确的收尾——模型路径同样以它收尾
 （`import_processing.go:597-598` 的 `runAsyncSafe` 清理回调）。
 
+**(Q) 删除 Task 8 里两条 `TestRollbackDepsImport*` 单元用例，并订正它们的立论。**
+
+初稿把它们放在 Task 8，理由是"Task 6 的 `runDepsAudit` 桩恒返回 true，所以失败分支在 Task 6 不可达"。
+**该理由在 (L) 之后已不成立**，且这两个场景现在由 Task 6 的流水线用例端到端覆盖：
+
+| 初稿的 Task 8 用例 | 现在的覆盖者（Task 6，`ae24045`） |
+| :--- | :--- |
+| `TestRollbackDepsImportKeepsAnUnrelatedBinding` | `TestProcessImportedDepsInstallFailureKeepsWorkingBinding` + `…KeepsBindingWhenNewAuditFails` |
+| `TestRollbackDepsImportClearsTheBindingItOwns` | `TestProcessImportedDepsInstallFailureClearsBindingWhenItsDirectoryIsGone` |
+
+两者都**经真实调用点**到达同一段代码，且已各有变异判死（删掉 `:165` 的 `rollbackDepsImport`
+⇒ 两个用例同时 FAIL）。在同一份计划里留第二份同义断言，只多一个"改了这里忘了改那里"的位置，
+故删除；Step 1 留一段注释说明该不变量归 Task 6 的流水线用例所有，Step 2/Step 5 的 `-run` 同步收窄。
+
 ---
 
 ## Task 8: 依赖审计（fail-closed，scope=deps）
@@ -2908,72 +2931,23 @@ func TestRunDepsAuditRemovesDirOnFailure(t *testing.T) {
 	}
 }
 
-// rollbackDepsImport lives in deps_import.go (Task 6), but its failure branch is
-// unreachable there — Task 6's runDepsAudit stub always returns true — so the unit tests
-// for it land here, where a failing audit can actually be produced.
-
-func TestRollbackDepsImportKeepsAnUnrelatedBinding(t *testing.T) {
-	state, _ := setupTestState(t)
-	state.Security.DepsDir = t.TempDir()
-
-	// A dependency set that is already imported, audited and in effect.
-	prevDir := filepath.Join(state.Security.GetDepsDir(), "prevhash")
-	if err := os.MkdirAll(prevDir, 0o755); err != nil {
-		t.Fatalf("seed prev dir: %v", err)
-	}
-	state.saveDepsSuccess("prevhash", map[string]any{"size": int64(1), "algorithm": "sm3", "value": "prevhash"})
-
-	// A different set whose audit was rejected.
-	failedDir := filepath.Join(state.Security.GetDepsDir(), "failedhash")
-	if err := os.MkdirAll(failedDir, 0o755); err != nil {
-		t.Fatalf("seed failed dir: %v", err)
-	}
-	state.rollbackDepsImport(failedDir)
-
-	if !state.DepsImported || state.DepsHash != "prevhash" {
-		t.Fatalf("a rejected newcomer unseated the working binding: imported=%v hash=%q",
-			state.DepsImported, state.DepsHash)
-	}
-	if _, err := os.Stat(prevDir); err != nil {
-		t.Fatalf("the working deps dir was removed: %v", err)
-	}
-	if _, err := os.Stat(failedDir); !os.IsNotExist(err) {
-		t.Fatalf("the rejected deps dir survived the rollback: %v", err)
-	}
-}
-
-func TestRollbackDepsImportClearsTheBindingItOwns(t *testing.T) {
-	state, _ := setupTestState(t)
-	state.Security.DepsDir = t.TempDir()
-
-	ownDir := filepath.Join(state.Security.GetDepsDir(), "ownhash")
-	if err := os.MkdirAll(ownDir, 0o755); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	state.saveDepsSuccess("ownhash", map[string]any{"size": int64(1), "algorithm": "sm3", "value": "ownhash"})
-
-	// Rolling back the very set that is bound (reachable when a human deletes the audit
-	// marker of an imported set and the same archive is delivered again).
-	state.rollbackDepsImport(ownDir)
-
-	if state.DepsImported || state.DepsHash != "" {
-		t.Fatalf("binding survived the rollback of its own set: imported=%v hash=%q",
-			state.DepsImported, state.DepsHash)
-	}
-}
+// rollbackDepsImport's own two branches are NOT unit-tested here: Task 6's pipeline tests reach
+// both through real call sites -- TestProcessImportedDepsInstallFailureKeepsWorkingBinding (a
+// non-bound directory is removed, the working binding is kept) and
+// TestProcessImportedDepsInstallFailureClearsBindingWhenItsDirectoryIsGone (the bound directory
+// is removed, so the binding is cleared). Asserting the same invariant a second time at the unit
+// level would only add another place to forget to update.
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
 
 ```bash
-go test ./internal/controller/ -run 'TestRunDepsAuditRemovesDirOnFailure|TestRollbackDepsImport' -v
+go test ./internal/controller/ -run 'TestRunDepsAuditRemovesDirOnFailure' -v
 ```
 
 期望：**运行时失败，不是编译失败**——包能编译，因为 `state.runDepsAudit` 已由 Task 6 的 fail-closed 桩提供。
-`TestRunDepsAuditRemovesDirOnFailure` 应当报 `deps dir still present after a failed audit`：桩既不跑真引擎、
-也不清除目录。这条失败信息本身就是判别力的证据——它证明用例测的是"审计失败 ⇒ 目录被清"，
-而不是别的什么东西。两个 `TestRollbackDepsImport*` 此时应当 PASS，它们只调用 Task 6 已实现的
-`rollbackDepsImport`。
+应当报 `deps dir still present after a failed audit`：桩既不跑真引擎、也不清除目录。这条失败信息本身就是
+判别力的证据——它证明用例测的是"审计失败 ⇒ 目录被清"，而不是别的什么东西。
 
 - [ ] **Step 3: 实现依赖审计**
 
@@ -3084,7 +3058,7 @@ func (s *TAAState) reportAuditScopedAsync(requestID, taskID string, code int, ms
 - [ ] **Step 5: 运行测试确认通过**
 
 ```bash
-go test ./internal/controller/ -run 'TestDepsAudit|TestProcessImportedDeps|TestAudit' -v
+go test ./internal/controller/ -run 'TestRunDepsAuditRemovesDirOnFailure|TestProcessImportedDeps|TestAudit' -v
 ```
 
 期望：新增测试 PASS，既有审计测试保持 PASS。
