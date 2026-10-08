@@ -379,8 +379,10 @@ func TestProcessImportedDepsInstallFailureClearsBindingWhenItsDirectoryIsGone(t 
 func TestProcessImportedDepsReportsFailureCodeToPlatform(t *testing.T) {
 	state, _ := setupTestState(t)
 	state.Security.ScanEnabled = true
-	// Keep the audit on the rule engine. Enabling the LLM probe branch (cfg.Enabled &&
-	// cfg.FailClosed in runDepsAudit) would drag a network dependency into this test.
+	// Keep the audit on the rule engine. runDepsAudit is still the Task 6 fail-closed stub, so
+	// there is no LLM probe branch to reach yet; Task 8 adds it (cfg.Enabled && cfg.FailClosed),
+	// and disabling the LLM here keeps that branch from dragging a network dependency into this
+	// test once it exists.
 	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
 
 	origInstall := depsInstallFunc
@@ -395,11 +397,13 @@ func TestProcessImportedDepsReportsFailureCodeToPlatform(t *testing.T) {
 
 	got := make(chan map[string]any, 1)
 	platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Capture only the terminal dependency-import callback this test asserts on. The
-		// dependency audit posts its own report (scope=deps) to this same platform address from
-		// a separate goroutine, and it may arrive first; if it took the single channel slot the
-		// path assertion below would fail spuriously. Any other path is answered normally and
-		// dropped, and is never decoded or captured.
+		// Capture only the terminal dependency-import callback this test asserts on. Today the
+		// dependency audit posts nothing of its own: runDepsAudit is still the Task 6 stub, so
+		// reportDepsEndpoint receives no second request. Task 8 gives that audit its own report
+		// (scope=deps) to this same platform address from a separate goroutine, which may then
+		// arrive first; if it took the single channel slot the path assertion below would fail
+		// spuriously. Any other path is answered normally and dropped, and is never decoded or
+		// captured.
 		if r.URL.Path != reportDepsEndpoint {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"msg":"ok","result":{"received":true},"error":0}`))

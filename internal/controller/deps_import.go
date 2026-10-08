@@ -287,7 +287,8 @@ func (s *TAAState) reportDepsFailure(req depsImportRequest, reason string) {
 	s.reportDepsAsync(req.RequestID, req.TaskID, 1, reason)
 }
 
-// reportDepsAsync 异步向平台上报依赖包导入结果。上报失败只记日志，不影响流水线结论。
+// reportDepsAsync reports the dependency import result to the platform asynchronously. A failed
+// report is only logged; it does not change the pipeline's own outcome.
 func (s *TAAState) reportDepsAsync(requestID, taskID string, code int, msg string, checksum ...map[string]any) {
 	s.mu.RLock()
 	platformIP, dockerID := s.PlatformIP, s.DockerID
@@ -302,6 +303,9 @@ func (s *TAAState) reportDepsAsync(requestID, taskID string, code int, msg strin
 		if err := ReportDeps(context.Background(), platformIP, dockerID, requestID, taskID, code, msg, cs); err != nil {
 			s.Logs.Add(LogWarn, "importDeps", "上报依赖包导入结果失败: requestId=%s taskId=%s code=%d err=%v",
 				requestID, taskID, code, err)
+		} else {
+			s.Logs.Add(LogInfo, "importDeps", "上报依赖包导入结果成功: requestId=%s taskId=%s code=%d",
+				requestID, taskID, code)
 		}
 	}()
 }

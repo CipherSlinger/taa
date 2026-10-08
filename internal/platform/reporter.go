@@ -198,7 +198,7 @@ func ReportModelImport(ctx context.Context, platformAddr, dockerID, requestID, t
 	return SendPlatformJSON(ctx, defaultHTTPClient, url, data)
 }
 
-// ReportDeps 向上游平台发送依赖包导入完成状态上报
+// ReportDeps reports dependency package import completion to the platform.
 func ReportDeps(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg string, checksum ...map[string]any) error {
 	addr, dID, reqID, tID, err := ValidateAndNormalizePlatformParams(platformAddr, dockerID, requestID, taskID)
 	if err != nil {
@@ -237,8 +237,9 @@ func ReportDeps(ctx context.Context, platformAddr, dockerID, requestID, taskID s
 	return SendPlatformJSON(ctx, defaultHTTPClient, url, data)
 }
 
-// ReportAuditScoped 与 ReportAudit 相同，但额外携带 scope 以区分模型审计与依赖审计。
-// 空 scope 表示模型审计，保持与旧版平台的兼容。
+// ReportAuditScoped is ReportAudit with an extra scope field that distinguishes the model audit
+// from the dependency audit. An empty scope means model audit and stays wire-compatible with
+// older platform versions.
 func ReportAuditScoped(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report, scope string) error {
 	addr, dID, reqID, tID, err := ValidateAndNormalizePlatformParams(platformAddr, dockerID, requestID, taskID)
 	if err != nil {
@@ -269,7 +270,7 @@ func ReportAuditScoped(ctx context.Context, platformAddr, dockerID, requestID, t
 	return SendPlatformJSON(ctx, defaultHTTPClient, url, data)
 }
 
-// ReportAudit 向上游平台发送模型代码审计结果上报
+// ReportAudit reports the model code audit result to the platform.
 func ReportAudit(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report string) error {
 	return ReportAuditScoped(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report, "")
 }

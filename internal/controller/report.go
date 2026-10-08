@@ -33,12 +33,13 @@ func ReportModelImport(ctx context.Context, platformAddr, dockerID, requestID, t
 	return platform.ReportModelImport(ctx, platformAddr, dockerID, requestID, taskID, code, msg, checksum...)
 }
 
-// ReportDeps 上报依赖包导入结果。
+// ReportDeps notifies the platform of the dependency package import result.
 func ReportDeps(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg string, checksum ...map[string]any) error {
 	return platform.ReportDeps(ctx, platformAddr, dockerID, requestID, taskID, code, msg, checksum...)
 }
 
-// ReportAuditScoped 上报带 scope 的审计结果（"deps" 表示依赖包审计）。
+// ReportAuditScoped notifies the platform of an audit result with a scope ("deps" marks a
+// dependency audit).
 func ReportAuditScoped(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report, scope string) error {
 	return platform.ReportAuditScoped(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report, scope)
 }
