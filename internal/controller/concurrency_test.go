@@ -439,3 +439,43 @@ func TestConcurrency_AuditPanicDoesNotClearTrainingTask(t *testing.T) {
 	}
 }
 
+func TestTryAcquireDepsTaskRejectedWhileAuditing(t *testing.T) {
+	state, _ := setupTestState(t)
+
+	state.mu.Lock()
+	state.AuditRunning = true
+	state.mu.Unlock()
+
+	if _, err := state.tryAcquireTaskTyped("task-deps-1", "req-deps-1", "deps_importing", "deps_import"); err == nil {
+		t.Fatal("expected deps import to be rejected while a model audit is running")
+	}
+}
+
+func TestTryAcquireDepsTaskBlocksModelImport(t *testing.T) {
+	state, _ := setupTestState(t)
+
+	release, err := state.tryAcquireTaskTyped("task-deps-2", "req-deps-2", "deps_importing", "deps_import")
+	if err != nil {
+		t.Fatalf("deps acquire failed: %v", err)
+	}
+	defer release()
+
+	if _, err := state.tryAcquireTask("task-model-2", "req-model-2", "downloading", true); err == nil {
+		t.Fatal("expected model import to be rejected while a deps import is in flight")
+	}
+}
+
+func TestDepsImportStillAllowsDataImportPairingRules(t *testing.T) {
+	state, _ := setupTestState(t)
+
+	// Data import stays decoupled from audits, exactly as before this change.
+	state.mu.Lock()
+	state.AuditRunning = true
+	state.mu.Unlock()
+
+	release, err := state.tryAcquireTaskTyped("task-data-9", "req-data-9", "downloading", "data_import")
+	if err != nil {
+		t.Fatalf("data import should not be blocked by an audit: %v", err)
+	}
+	release()
+}

@@ -610,37 +610,54 @@ func (s *TAAState) activeTaskInfoLocked() (string, string) {
 // isModel: true 表示模型导入流程，false 表示数据导入/训练流程
 // initialOp: 初始操作标识（如 "downloading" 或 "staging"）
 func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel bool) (func(), error) {
+	taskType := "data_import"
+	if isModel {
+		taskType = "model_import"
+	}
+	return s.tryAcquireTaskTyped(taskID, requestID, initialOp, taskType)
+}
+
+// isModelDataPair reports whether an in-flight task type and a requested task type form the
+// single pairing the pipeline allows: a model import and a data import sharing one taskID.
+// Dependency imports pair with nothing — they hold the audit slot, and the audit is exclusive.
+func isModelDataPair(current, requested string) bool {
+	return (current == "model_import" && requested == "data_import") ||
+		(current == "data_import" && requested == "model_import")
+}
+
+// tryAcquireTaskTyped is the typed implementation behind tryAcquireTask.
+// taskType is one of model_import / data_import / deps_import. An initialOp of
+// "staging" or "training" is always promoted to a training task.
+func (s *TAAState) tryAcquireTaskTyped(taskID, requestID, initialOp, taskType string) (func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 1. 若当前处于训练执行阶段，全局绝对互斥，禁止任何新任务下发
+	// 1. While training is executing, refuse every new task unconditionally.
 	if s.isTrainingBusyLocked() {
 		task, op := s.activeTaskInfoLocked()
 		return nil, pkgerrors.New(pkgerrors.CodeConflict,
 			fmt.Sprintf("当前已有训练任务正在执行中 (taskId: %s, op: %s)，请等待完成后再提交", task, op))
 	}
 
-	// 2. If requesting model import, ensure no previous model code audit is actively running.
-	// Data import and training are decoupled from model audit and can proceed concurrently.
-	if isModel && s.isAuditBusyLocked() {
-		auditTask := s.ActiveAuditTaskID
-		if auditTask == "" {
-			auditTask = "model_audit"
+	// 2. Model and dependency imports both drive the shared audit subsystem, so each must
+	// refuse to start while an audit is already in flight. Data import and training stay
+	// decoupled from auditing and may proceed concurrently.
+	if taskType == "model_import" || taskType == "deps_import" {
+		if s.isAuditBusyLocked() {
+			auditTask := s.ActiveAuditTaskID
+			if auditTask == "" {
+				auditTask = "model_audit"
+			}
+			return nil, pkgerrors.New(pkgerrors.CodeConflict,
+				fmt.Sprintf("当前已有模型代码审计正在执行中 (taskId: %s, op: auditing)，请等待完成后再提交", auditTask))
 		}
-		return nil, pkgerrors.New(pkgerrors.CodeConflict,
-			fmt.Sprintf("当前已有模型代码审计正在执行中 (taskId: %s, op: auditing)，请等待完成后再提交", auditTask))
 	}
 
-	// 3. 检查是否有其他任务正在处理（如正在下载、解密等）
+	// 3. Refuse if another task is mid-flight (downloading, decrypting, ...).
 	if s.ActiveTaskID != "" || (s.CurrentOp != "" && s.CurrentOp != "idle") {
 		isSameTaskPair := false
-		if taskID != "" && s.ActiveTaskID == taskID {
-			if s.activeTask != nil {
-				currentIsModel := (s.activeTask.Type == "model_import")
-				if currentIsModel != isModel {
-					isSameTaskPair = true
-				}
-			}
+		if taskID != "" && s.ActiveTaskID == taskID && s.activeTask != nil {
+			isSameTaskPair = isModelDataPair(s.activeTask.Type, taskType)
 		}
 
 		if !isSameTaskPair {
@@ -656,10 +673,7 @@ func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel b
 	s.ActiveRequestID = requestID
 	s.CurrentOp = initialOp
 
-	taskType := "data_import"
-	if isModel {
-		taskType = "model_import"
-	} else if initialOp == "staging" || initialOp == "training" {
+	if initialOp == "staging" || initialOp == "training" {
 		taskType = "training"
 		s.TrainingRunning = true
 	}
