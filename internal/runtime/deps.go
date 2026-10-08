@@ -69,14 +69,22 @@ func InstallWheelhouse(ctx context.Context, wheelhouse, target string) error {
 	}
 
 	cmd := exec.CommandContext(ctx, pipBinary, args...)
+	// PIP_NO_INDEX / PIP_DISABLE_PIP_VERSION_CHECK are set here as well as on the command line.
+	// The flags below are what actually take effect -- pip resolves command line over environment
+	// -- so these two entries are belt-and-braces and nothing may be made to depend on them:
+	// append() leaves a duplicate key when the host environment already exports one, and libc's
+	// getenv returns the FIRST match while Go's returns the LAST, so pip and this process would
+	// disagree about the value.
 	cmd.Env = append(os.Environ(),
 		"PIP_NO_INDEX=1",
 		"PIP_DISABLE_PIP_VERSION_CHECK=1",
 	)
 	// CommandContext kills only the direct child. With Stdout set to a bytes.Buffer, Wait also
 	// waits for the output pipe to reach EOF, so a grandchild that inherited that pipe would
-	// keep Wait blocked without bound. WaitDelay bounds that wait; once it expires, Wait
-	// returns with ErrWaitDelay instead of hanging a shutdown indefinitely.
+	// keep Wait blocked without bound. WaitDelay bounds that wait: once it expires, Wait stops
+	// waiting and force-closes the pipes. It does NOT necessarily return ErrWaitDelay -- that
+	// sentinel is substituted only when the child exited zero, while a child that already failed
+	// yields its ExitError. That is why the check below tests ctx.Err() instead.
 	cmd.WaitDelay = pipWaitDelay
 	var output bytes.Buffer
 	cmd.Stdout = &output
