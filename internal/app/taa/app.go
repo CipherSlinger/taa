@@ -587,6 +587,7 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 		ScanEnabled:        cfg.EnableSecurityScan,
 		Engine:             engine,
 		ModelDir:           cfg.ModelDir,
+		DepsDir:            cfg.DepsDir,
 		ResultCheck:        cfg.EnableResultCheck,
 		DataDir:            cfg.DataDir,
 		ResultDir:          cfg.ResultDir,
@@ -629,6 +630,7 @@ func ensureSecurityDirectories(sec controller.SecurityConfig) error {
 		sec.GetModelInputDir(),
 		sec.GetModelOutputDir(),
 		sec.GetModelCheckpointDir(),
+		sec.GetDepsDir(),
 	}
 	for _, p := range []string{sec.GetModelLogDir(), sec.GetModelProgressDir()} {
 		dir := p

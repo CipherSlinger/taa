@@ -76,6 +76,7 @@ func setupTestState(t *testing.T) (*TAAState, string) {
 		// configuration the audit refuses, so the fixture supplies the baseline.
 		Engine:             codeaudit.DefaultEngine(),
 		ModelDir:           modelDir,
+		DepsDir:            t.TempDir(),
 		DataDir:            dataDir,
 		ResultCheck:        false,
 		ResultDir:          resultDir,

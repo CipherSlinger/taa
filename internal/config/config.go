@@ -33,8 +33,13 @@ type StartupConfig struct {
 	// deadline into a failed scan, which the audit fails closed on. Zero means
 	// the adapter's own default (codeaudit.DefaultSemgrepTimeout), which is where
 	// the enforced number lives; a negative value is rejected at load time.
-	SemgrepTimeout             time.Duration
-	ModelDir                   string
+	SemgrepTimeout time.Duration
+	ModelDir       string
+	// DepsDir is the content-addressed root for imported offline Python
+	// dependencies. It is a sibling of ModelDir, never a child: a model import
+	// replaces ModelDir wholesale, so anything stored inside it would be
+	// destroyed by the next delivery.
+	DepsDir                    string
 	EnableResultCheck          bool
 	MaxFileBytes               int64
 	MaxResultBytes             int64
@@ -114,6 +119,7 @@ type startupStorageConfigFile struct {
 	Result    string `json:"result"`
 	Keys      string `json:"keys"`
 	ModelDir  string `json:"modelDir"`
+	DepsDir   string `json:"depsDir"`
 	DataDir   string `json:"dataDir"`
 	ResultDir string `json:"resultDir"`
 	KeysDir   string `json:"keysDir"`
@@ -286,6 +292,7 @@ func defaultStartupConfig() StartupConfig {
 		EnableSecurityScan:         true,
 		CodeScanEngine:             "semgrep",
 		ModelDir:                   "/opt/taa/models",
+		DepsDir:                    "/opt/taa/model-deps",
 		EnableResultCheck:          true,
 		MaxFileBytes:               DefaultMaxFileBytes,
 		MaxResultBytes:             DefaultMaxResultBytes,
@@ -381,6 +388,10 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if trimmed := strings.TrimSpace(fileCfg.Storage.Model); trimmed != "" {
 		cfg.ModelDir = trimmed
+	}
+
+	if trimmed := strings.TrimSpace(fileCfg.Storage.DepsDir); trimmed != "" {
+		cfg.DepsDir = trimmed
 	}
 
 	if fileCfg.EnableResultCheck != nil {

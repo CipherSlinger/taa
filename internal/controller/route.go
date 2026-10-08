@@ -34,6 +34,7 @@ type SecurityConfig struct {
 	ScanEnabled        bool                   // 是否在 import type=1 时执行源码安全扫描
 	Engine             codeaudit.StaticEngine // Tier 1 静态扫描引擎（启动时由 codeScanEngine 配置解析）
 	ModelDir           string                 // 模型代码存放目录（扫描目标，type=1）
+	DepsDir            string                 // Content-addressed root for imported dependency packages (default /opt/taa/model-deps)
 	DataDir            string                 // 数据目录（type=2 测试数据，type=3 训练数据，用于数据指纹比对）
 	ResultCheck        bool                   // 是否在 export 时检查明文数据泄露
 	ResultDir          string                 // 训练结果目录（导出前检查）
@@ -53,6 +54,7 @@ const (
 	DefaultModelLogDir        = "/opt/taa/output/log/train.jsonl"
 	DefaultModelProgressDir   = "/opt/taa/output/progress/progress.json"
 	DefaultModelCheckpointDir = "/opt/taa/checkpoint"
+	DefaultDepsDir            = "/opt/taa/model-deps"
 )
 
 func (sec SecurityConfig) GetMaxFileBytes() int64 {
@@ -113,6 +115,17 @@ func (sec SecurityConfig) GetModelCheckpointDir() string {
 	dir := DefaultModelCheckpointDir
 	if strings.TrimSpace(sec.ModelCheckpointDir) != "" {
 		dir = sec.ModelCheckpointDir
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(dir)
+}
+
+func (sec SecurityConfig) GetDepsDir() string {
+	dir := DefaultDepsDir
+	if strings.TrimSpace(sec.DepsDir) != "" {
+		dir = sec.DepsDir
 	}
 	if abs, err := filepath.Abs(dir); err == nil {
 		return filepath.Clean(abs)
