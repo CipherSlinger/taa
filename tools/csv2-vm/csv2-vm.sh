@@ -186,23 +186,29 @@ VM_REDUCED_PHYS_BITS=5
 # on the device has to establish its trust separately.
 #
 # The guest still boots the base image's kernel, so this only reaches devices
-# that kernel can already drive. The Hygon DCU is not one of them, for two
-# separate reasons, and neither is fixable from here:
+# that kernel can already drive. A device with no driver there still enumerates:
+# the Hygon DCU (1d94:6211) comes up as 0000:00:04.0 with its BARs assigned and
+# its 64G window mapped, but nothing binds it and no /dev node appears, because
+# its driver stack (hycu, hycu-sched, hykcl, hyttm, hydrm-buddy,
+# hydrm-ttm-helper, hy-extra, hsw) is built for kernel 6.6.0-hycu-confidential-
+# csv+ and the base image's 6.6.0-111.0.0.103 refuses its vermagic. That is the
+# whole of the problem: passthrough itself works, the guest just cannot use it.
 #
-#   - Its driver stack (hycu, hycu-sched, hykcl, hyttm, hydrm-buddy,
-#     hydrm-ttm-helper, hy-extra, hsw) is built for kernel 6.6.0-hycu-
-#     confidential-csv+. hycu.ko matches 1d94:6211, so it would bind, but its
-#     vermagic is that other kernel and the base image's 6.6.0-111.0.0.103
-#     refuses to load it.
-#   - Handing 1d94:6211 to this QEMU makes the VMM die: the kernel logs
-#     "vfio-pci 0000:c3:00.0: Invalid PCI ROM data signature: expecting
-#     0x52494350, got 0x0000aa55" and QEMU segfaults moments later, in glibc,
-#     on a thread it spawned itself. The guest never reaches the point of
-#     printing anything, so the launch just looks like a silent failure.
+# Two smaller things the DCU does bring along:
 #
-# The DCU works in the kata-qemu-hygon-dcu-csv2 runtime, which pairs the Hygon
-# QEMU build with that kernel and root filesystem. Use it for the DCU, and this
-# option for devices the guest already has drivers for.
+#   - Its 128K expansion ROM is invalid (starts with 0xaa55, no PCIR), so QEMU
+#     warns "Cannot read device rom" and "Device option ROM contents are
+#     probably invalid", and the guest cannot claim the ROM BAR. The warning is
+#     not fatal - the guest boots normally either way. Add rombar=0 to the
+#     -device to silence it, at the cost of never getting a ROM for any guest
+#     that could use one.
+#   - Boot takes roughly 60s instead of ~20s, which is longer than the IP
+#     discovery window below, so `up` may report no neighbour entry even though
+#     the guest did come up. Read the console log or the serial socket then.
+#
+# To actually use a DCU, use the kata-qemu-hygon-dcu-csv2 runtime, which pairs
+# the Hygon QEMU build with that kernel and root filesystem. This option is for
+# devices the guest already has drivers for.
 VFIO_DEVICES="$(printf '%s' "${CSV2_VFIO_DEVICES:-}" | tr ',' ' ')"
 
 # Attestation smoke test, run inside the guest (host paths).
