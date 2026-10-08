@@ -187,6 +187,14 @@ func TestProcessImportedDepsSkipsWhenAlreadyAudited(t *testing.T) {
 func TestProcessImportedDepsRejectsArchiveWithoutWheel(t *testing.T) {
 	state, _ := setupTestState(t)
 
+	// The installer is stubbed to succeed so that ValidateWheelhouse is the only thing left
+	// that can reject this archive. With the real installer a wheel-less wheelhouse also fails
+	// at pip (no candidates under --no-index), and that independent failure would keep this
+	// test green even if the content check were deleted -- it would then assert nothing.
+	origInstall := depsInstallFunc
+	t.Cleanup(func() { depsInstallFunc = origInstall })
+	depsInstallFunc = func(wheelhouse, target string) error { return os.MkdirAll(target, 0o755) }
+
 	archive := buildTestArchive(t, map[string]string{"requirements.txt": "torch\n"})
 	req := depsImportRequest{ResourceURL: "http://x/bad.tar.gz", RequestID: "req-b", TaskID: "task-b"}
 
@@ -199,7 +207,15 @@ func TestProcessImportedDepsRejectsArchiveWithoutWheel(t *testing.T) {
 }
 
 // TestProcessImportedDepsRejectsZipSlip verifies that a malicious archive's `../` entry is
-// rejected and that nothing is written outside depsDir.
+// rejected and that nothing is written outside the wheelhouse.
+//
+// The traversal is deliberately only ONE level deep. That still leaves the unpack directory
+// (whose parent is the deps root, see processImportedDeps), it just leaves it into a path the
+// test can still observe. A deeper traversal such as "../../../../../../../../pwned" escapes
+// all the way to "/pwned", where it is refused by the kernel (EACCES for a non-root runner)
+// instead of by the guard under test: the extraction fails, the pipeline fails closed, and the
+// test passes even with the guard deleted -- it would prove nothing. Keep the depth shallow:
+// the escape target has to stay inside the test's own tree for the test to be discriminating.
 func TestProcessImportedDepsRejectsZipSlip(t *testing.T) {
 	state, _ := setupTestState(t)
 	state.Security.ScanEnabled = false
@@ -208,11 +224,13 @@ func TestProcessImportedDepsRejectsZipSlip(t *testing.T) {
 	t.Cleanup(func() { depsInstallFunc = origInstall })
 	depsInstallFunc = func(wheelhouse, target string) error { return os.MkdirAll(target, 0o755) }
 
-	outside := filepath.Join(t.TempDir(), "pwned")
+	// The escape target lives in the deps root, one level above the temp unpack dir, so a
+	// guard that lets it through leaves a file the assertions below can see.
+	escaped := filepath.Join(state.Security.GetDepsDir(), "pwned")
 	archive := buildTestArchive(t, map[string]string{
-		"requirements.txt":                                  "torch\n",
-		"a-1.0-py3-none-any.whl":                            "x",
-		"../../../../../../../../" + filepath.Base(outside): "pwned",
+		"requirements.txt":             "torch\n",
+		"a-1.0-py3-none-any.whl":       "x",
+		"../" + filepath.Base(escaped): "pwned",
 	})
 
 	req := depsImportRequest{ResourceURL: "http://x/evil.tar.gz", RequestID: "req-z", TaskID: "task-z"}
@@ -221,8 +239,8 @@ func TestProcessImportedDepsRejectsZipSlip(t *testing.T) {
 	if state.DepsImported {
 		t.Fatal("DepsImported = true for an archive with a path-traversal entry")
 	}
-	if _, err := os.Stat(outside); !os.IsNotExist(err) {
-		t.Fatalf("zip-slip escaped the wheelhouse: %s exists", outside)
+	if _, err := os.Stat(escaped); !os.IsNotExist(err) {
+		t.Fatalf("zip-slip escaped the wheelhouse: %s exists", escaped)
 	}
 	assertDepsRootEmpty(t, state)
 }
