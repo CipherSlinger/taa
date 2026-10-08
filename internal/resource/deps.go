@@ -26,8 +26,14 @@ func ValidateWheelhouse(dir string) error {
 		return fmt.Errorf("wheelhouse is not a directory: %s", dir)
 	}
 
-	if _, err := os.Stat(filepath.Join(dir, "requirements.txt")); err != nil {
+	// A directory named requirements.txt satisfies a bare os.Stat but makes pip fail with
+	// "[Errno 21] Is a directory", so require a regular file here.
+	reqInfo, err := os.Stat(filepath.Join(dir, "requirements.txt"))
+	if err != nil {
 		return fmt.Errorf("依赖包缺少 requirements.txt: %w", err)
+	}
+	if !reqInfo.Mode().IsRegular() {
+		return fmt.Errorf("依赖包内的 requirements.txt 不是普通文件")
 	}
 
 	entries, err := os.ReadDir(dir)
@@ -38,7 +44,9 @@ func ValidateWheelhouse(dir string) error {
 		if entry.IsDir() {
 			continue
 		}
-		if strings.EqualFold(filepath.Ext(entry.Name()), ".whl") {
+		// pip parses wheel filenames case-sensitively, so a ".WHL" file is invisible to it.
+		// An EqualFold match here would accept an archive pip cannot install.
+		if filepath.Ext(entry.Name()) == ".whl" {
 			return nil
 		}
 	}
