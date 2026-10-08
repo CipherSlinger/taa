@@ -1685,6 +1685,11 @@ git commit -m "feat(deps): add importDeps handler and route"
 | `resource.ExtractArchiveToDir(dst, filePath string) error` | `internal/resource/archive.go:41` | **参数序一致**（`dst` 在前） |
 | `saveDepsSuccess` / `clearDepsState` / `currentDepsDir` / `depsDirForHash` | `internal/controller/deps_state.go:11/23/54/65` | 均已由 Task 2 落地 |
 | `runtime.InstallWheelhouse(ctx, wheelhouse, target)` | `internal/runtime/deps.go:37` | **带 ctx**，故 Step 3 的钩子必须包一层 `context.Background()`——Step 3 已如此写 |
+| `setupTestState(t) (*TAAState, string)` | `handler_test.go:26` | 一致（`state, _ :=` 正确） |
+| 测试用的 deps 根目录 | `handler_test.go:78` 的 `DepsDir: t.TempDir()` | **每个测试一个独立临时目录**，不会写到 `/opt/taa/model-deps` |
+| 生产的 deps 根目录创建 | `app.go:631`（`ensureSecurityDirectories` 已含 `sec.GetDepsDir()`） | 已覆盖，`os.MkdirTemp(root, ...)` 的父目录必然存在 |
+| `ExtractArchiveToDir` 的失败清理 | `archive.go:48-52`（`defer os.RemoveAll(tmpDir)`） | 失败路径不留残余 ⇒ `assertDepsRootEmpty` 不会假失败 |
+| `buildTestArchive` 的确定性 | 计划内 `sort.Strings(names)`（`:1858`）+ 手写 `tar.Header`（无 ModTime/Uid/Gid） | **同一 files 映射两次调用产出同字节**，幂等用例的 hash 才可比 |
 
 **本轮唯一的发现：`deps_installing` 是第二个新的 op 取值，spec §5 未列——已补入 spec。**
 
@@ -1895,8 +1900,13 @@ func assertDepsRootEmpty(t *testing.T, state *TAAState) {
 }
 ```
 
-`deps_import_test.go` 的 import 块需要补：`"archive/tar"`、`"compress/gzip"`、`"encoding/json"`、
-`"os"`、`"path/filepath"`、`"sort"`。
+`deps_import_test.go` 的 import 块**只补这五个**：`"archive/tar"`、`"compress/gzip"`、`"os"`、
+`"path/filepath"`、`"sort"`。
+
+**不要加 `"encoding/json"`**（初稿列了它，但本任务的三个用例一个都不解析 JSON——Task 5 的响应
+解码复用同包 `decodeResponse`，测试也不断言上报内容）。Go 的未使用 import 是编译错误，
+加了会直接编译不过。Task 8/10 若往本文件追加解析 JSON 的用例，各自再补。
+`"net/http"`、`"net/http/httptest"`、`"testing"`、`"time"` 是 Task 5 已引入且仍在用的，**保持不动**。
 
 `depsAuditMarker` 常量在 Task 6 Step 4 定义，本步骤先按名字引用。
 
