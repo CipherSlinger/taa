@@ -64,6 +64,7 @@
 | `internal/resource/deps.go` | `ValidateWheelhouse`：校验归档内 `requirements.txt` 与 `*.whl` |
 | `internal/runtime/deps.go` | `InstallWheelhouse`：执行离线 `pip3 --target` |
 | `internal/controller/deps_import_test.go` | handler 校验、流水线、幂等、回滚测试 |
+| `internal/controller/concurrency_test.go` | 追加 `tryAcquireTaskTyped` 的三条并发测试（既有文件） |
 | `internal/controller/deps_env_test.go` | 注入纯函数测试 |
 | `internal/resource/deps_test.go` | wheelhouse 校验测试 |
 | `internal/runtime/deps_test.go` | 安装器测试（pip 缺失时 skip） |
@@ -593,20 +594,14 @@ git commit -m "feat(deps): persist dependency import state"
 
 **Files:**
 - Modify: `internal/controller/route.go:575-642`
-- Test: `internal/controller/deps_import_test.go`（本任务只放并发测试）
+- Test: `internal/controller/concurrency_test.go`（该文件已是 `tryAcquireTask` 相关测试的归属地）
 
 - [ ] **Step 1: 写失败测试**
 
-创建 `internal/controller/deps_import_test.go`（后续任务会继续追加）：
+**追加到既有的 `internal/controller/concurrency_test.go`**，不要新建文件——该文件已经放着
+`tryAcquireTask` 的并发测试，本任务测的是同一个函数的类型化重写，理应同处：
 
 ```go
-package controller
-
-import (
-	"net/http"
-	"testing"
-)
-
 func TestTryAcquireDepsTaskRejectedWhileAuditing(t *testing.T) {
 	state, _ := setupTestState(t)
 
@@ -647,11 +642,10 @@ func TestDepsImportStillAllowsDataImportPairingRules(t *testing.T) {
 	}
 	release()
 }
-
-var _ = http.StatusOK
 ```
 
-最后一行 `var _ = http.StatusOK` 只为占位；一旦本文件后续任务用到 `net/http` 就删掉它。
+不需要新增 import：`concurrency_test.go` 已有它所需的包。**不要**为未使用的包写
+`var _ = pkg.Something` 之类的占位——那是本计划明令禁止的写法。
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -770,7 +764,7 @@ go test ./internal/controller/ -run 'TestConcurren|TestStateStore' -v
 - [ ] **Step 5: 提交**
 
 ```bash
-git add internal/controller/route.go internal/controller/deps_import_test.go
+git add internal/controller/route.go internal/controller/concurrency_test.go
 git commit -m "refactor(controller): add typed task acquisition for deps imports"
 ```
 
