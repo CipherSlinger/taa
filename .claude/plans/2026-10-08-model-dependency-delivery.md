@@ -23,6 +23,12 @@
 2. **`tryAcquireTask` 的第三类任务**：不把第四个参数 `isModel bool` 改成 `taskType string`
    （会波及 2 处生产代码 + 9 处测试调用）。改为抽出 `tryAcquireTaskTyped`，原签名保留为薄封装。
 
+**范围外追加（执行期由审查发现，已补入计划）**：
+- **Task 1 Step 10–11**：新增 `validateDepsDirPlacement`，在启动时拒绝「`depsDir` 落在 `modelDir`
+  之内」的配置。原始 spec 与计划都未包含此项——它是 Task 1 代码质量审查发现的缺口：spec §2.3 把
+  「同级」当作承重前提（a/b/c/d 四类冲突全靠它规避），却不设任何防线，一次手滑即静默触发。
+  属于**超出已批准 spec 的功能追加**，在此显式记录以便回溯。
+
 **已知遗留（不在本计划范围）**：
 - `reportRes` 的 `deps_checksum` 在 `internal/coordinator/flow_training.go:219` 这条备用执行路径上传
   `nil`——该路径没有依赖概念。理由与影响记在 Task 10。
@@ -249,6 +255,104 @@ go build ./... && go test ./internal/config/ ./internal/app/... ./internal/contr
 ```bash
 git add internal/config/config.go internal/config/config_test.go internal/controller/route.go internal/app/taa/app.go internal/controller/handler_test.go
 git commit -m "feat(deps): add configurable depsDir to storage config"
+```
+
+- [ ] **Step 10: 校验 `depsDir` 不落在 `modelDir` 之内（代码质量审查追加）**
+
+**此步骤不在原始 spec 中**，是 Task 1 代码质量审查发现的缺口。spec §2.3 把「与 `ModelDir` 同级」
+当作承重前提（该节的 a/b/c/d 四类冲突全靠它规避），但 spec 与计划原本**没有任何地方校验它**。
+一次可理解的手滑（`"storage":{"depsDir":"/opt/taa/models/deps"}`）就会静默触发四类冲突，
+且要到下一次模型下发才暴露——属于「代价高、隐患静默」类问题，与既有的
+`validateSemgrepTimeout` 同类，因此同样在启动时拒绝。
+
+追加测试到 `internal/config/config_test.go`：
+
+```go
+func TestValidateDepsDirPlacement(t *testing.T) {
+	cases := []struct {
+		name     string
+		modelDir string
+		depsDir  string
+		wantErr  bool
+	}{
+		{"sibling", "/opt/taa/models", "/opt/taa/model-deps", false},
+		{"nested", "/opt/taa/models", "/opt/taa/models/deps", true},
+		{"identical", "/opt/taa/models", "/opt/taa/models", true},
+		{"nested two levels", "/opt/taa/models", "/opt/taa/models/a/b", true},
+		{"deps is the parent of model", "/opt/taa/models", "/opt/taa", false},
+		{"empty deps", "/opt/taa/models", "", false},
+		{"empty model", "", "/opt/taa/model-deps", false},
+		{"trailing separator", "/opt/taa/models/", "/opt/taa/models/deps", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateDepsDirPlacement(tc.modelDir, tc.depsDir)
+			if tc.wantErr && err == nil {
+				t.Fatalf("validateDepsDirPlacement(%q, %q) = nil, want error", tc.modelDir, tc.depsDir)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validateDepsDirPlacement(%q, %q) = %v, want nil", tc.modelDir, tc.depsDir, err)
+			}
+		})
+	}
+}
+```
+
+实现：在 `internal/config/config.go` 中，于 `validateStartupConfig` 内已有校验之后调用，
+并把辅助函数放在 `validateSemgrepTimeout` 附近：
+
+```go
+	if err := validateDepsDirPlacement(cfg.ModelDir, cfg.DepsDir); err != nil {
+		return err
+	}
+```
+
+```go
+// validateDepsDirPlacement rejects a depsDir nested inside modelDir.
+//
+// The dependency design rests on these two directories being siblings: a model import
+// replaces modelDir wholesale (resource.ExtractArchiveToDir does RemoveAll + rename), the
+// model audit scans the whole of modelDir, and a failed audit wipes it via cleanDirContents.
+// A depsDir nested inside modelDir would therefore be destroyed by the next model delivery
+// and would perturb the model's content checksum in the meantime. Because that failure only
+// surfaces on the next delivery, it is rejected at startup instead.
+func validateDepsDirPlacement(modelDir, depsDir string) error {
+	if strings.TrimSpace(modelDir) == "" || strings.TrimSpace(depsDir) == "" {
+		return nil
+	}
+	modelAbs, err := filepath.Abs(modelDir)
+	if err != nil {
+		return nil // an unresolvable modelDir is reported by the directory checks
+	}
+	depsAbs, err := filepath.Abs(depsDir)
+	if err != nil {
+		return nil
+	}
+	rel, err := filepath.Rel(modelAbs, depsAbs)
+	if err != nil {
+		return nil
+	}
+	if rel == "." || rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("storage.depsDir (%s) must not be inside storage.modelDir (%s): a model import replaces that directory wholesale and would destroy the installed dependencies", depsAbs, modelAbs)
+	}
+	return nil
+}
+```
+
+`rel` 的判定要读准：`Rel` 返回 `".."` 或 `"../x"` 表示 `depsDir` 在 `modelDir` **之外**（放行）；
+返回 `"."` 表示两者相同、返回其它值表示 `depsDir` 在 `modelDir` **之内**（拒绝）。
+
+- [ ] **Step 11: 运行测试并提交**
+
+```bash
+go test ./internal/config/ -run TestValidateDepsDirPlacement -v
+go build -o bin/taa ./cmd/taa && go test ./internal/config/ ./internal/app/... ./internal/controller/ -count=1
+```
+
+```bash
+git add internal/config/config.go internal/config/config_test.go
+git commit -m "fix(config): reject a depsDir nested inside modelDir"
 ```
 
 ---
