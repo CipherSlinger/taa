@@ -1405,6 +1405,29 @@ directory": false` 后才改用守卫自身的消息。
 
 `git add` 仅限 `internal/runtime/deps.go`、`internal/runtime/deps_test.go` 两个文件。
 
+#### Task 4 复审结论（已闭环，Task 4 可结）
+
+**复审：APPROVE。** 7 项全部修复正确、无回归。复审在 `/tmp` 副本上做变异，仓库一字节未动
+（`git status --porcelain -- internal/` 为空）。门禁：`go test ./internal/resource/ ./internal/runtime/
+-count=1 -v` PASS（0 FAIL / 0 SKIP）、`-race -count=5` 通过、`go vet` clean、
+`go build ./cmd/... ./internal/... ./pkg/...` clean。
+
+**复审独立复现并确认了我的断言指令是错的**（详见上文）：删掉 `!info.IsDir()` 守卫后
+`ValidateWheelhouse(<普通文件>)` 返回 `依赖包缺少 requirements.txt: stat <file>/requirements.txt:
+not a directory`，故 `Contains(err, "not a directory")` 为 **true**（变异体照样通过、无判别力），
+而 `Contains(err, "wheelhouse is not a directory")` 为 **false**（有判别力）。实现者的偏离是对的。
+
+**三条 Minor，均判断为"登记不修"，理由如下（是判断，不是遗漏）：**
+
+| # | 内容 | 处理与理由 |
+| :--- | :--- | :--- |
+| 1 | `deps.go` 注释称 WaitDelay 到期后 Wait "returns with ErrWaitDelay"，与同处测试注释及 Go 语义矛盾——`ErrWaitDelay` 仅在子进程**以 0 退出**时代入（`$GOROOT/src/os/exec/exec.go`：`if goroutineErr := c.awaitGoroutines(timer); err == nil { err = goroutineErr }`） | **已修**（注释行）。理由：这条注释会引导后人写出 `errors.Is(err, exec.ErrWaitDelay)`，正是测试注释明确警告的那个假失败 |
+| 2 | 新测试每次运行遗留一个孤儿 `sleep 8` 进程 | **不修。** 复审建议改 `sleep 2`，但那会**摧毁判别力**：变异后耗时 2s 落在 5s 上界之内，测试反而转 PASS。当前"失败侧 8s vs 5s = 1.6×"是必需的；孤儿进程空闲，约 8s 后自然退出 |
+| 3 | `Contains(recordedEnv, "PIP_NO_INDEX=1")` 在已导出该变量的宿主机上会**真空通过** | **不修，但已把根因写进代码注释。** 根因是 `append(os.Environ(), ...)` 的重复键：libc `getenv` 取**首个**匹配、Go `syscall.Getenv` 取**最后一个**，两者会看到不同的值。**该隐患不是活的缺陷**——`--no-index`（`deps.go:63`）与 `--disable-pip-version-check`（`:65`）都是命令行 flag，而 pip 的优先级是**命令行 > 环境变量**，故那两条环境变量只是冗余保险。已加注释，禁止后人把它们变成承重构件 |
+
+**顺带核实（不要顺手改）**：`gofmt -l internal/resource` 会报出 `archive.go` 与 `envelope.go`，
+二者**本次未被触碰**（由无关提交 `3cb9b27` 引入），不在本计划范围内。
+
 ---
 
 ## Task 5: `importDeps` handler 与路由
