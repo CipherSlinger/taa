@@ -2582,6 +2582,27 @@ git commit -m "fix(deps): route the dependency panic path to reportDeps"
 
 ---
 
+### Task 8/10 编码前预审发现（已直接改入正文，实现者无需再判断）
+
+对 Task 8 的实现块逐行核对既有代码后，发现并修正 1 处**编译级**缺陷，另有 3 处经核实为**正确**、
+记录在此以免后来者"顺手改坏"：
+
+| # | 级别 | 结论 | 依据 |
+| :--- | :--- | :--- | :--- |
+| E | 编译 | `deps_audit.go` 的 import 块只写了 `"context"` 与 `"os"`，函数体却调用 `codeaudit.GenerateAuditReport` ⇒ `undefined: codeaudit`，直接编译失败。**已补** `"taa/internal/codeaudit"` | `import_processing.go:16` 用的就是这个**无别名**路径；同包内 `newLLMClient`/`isLLMServiceAvailable` 亦同文件 |
+| — | 核实正确 | 实现块**没有**调用 `setLastAudit`，这是对的：`setLastAudit` 承载 `/v1/taa/status` 里**模型**审计的结果，依赖审计若调用它会把模型审计结果覆盖掉。`clearAuditState`（`route.go:561-565`）同样不适用于本路径 | `auditAndReportModelImport`（`import_processing.go:606-658`）是唯一调用方 |
+| — | 核实正确 | `cfg := s.Security.LLM`、`newLLMClient(cfg)`、`GenerateAuditReport(context.Background(), dir, s.Security.Engine, cfg, llmClient)`、`auditReportJSON(audit)` 四个符号的签名/字段全部与实现块用法吻合 | `verifier.go:320`、`import_processing.go:735`/`:760`、`codeaudit_projection.go:49` |
+| — | 核实正确 | 失败路径用 `os.RemoveAll(depsDir)` 而非 `cleanDirContents`，是**有意**的：依赖目录是内容寻址的**叶子**，整体删除正是"不留半成品"的语义；`cleanDirContents` 用于模型目录那种"要保留目录本身"的场景 | 与 §6「`rm -rf depsDir/<sm3>`（不留半成品目录）」一致 |
+
+> 补充（Task 9 编码前预审）：Task 9 Step 7 原写 `-run '...|TestExecuteTraining'`，但
+> `TestExecuteTraining` **在本仓库不存在**（已 grep 确认），`-run` 匹配零个用例时仍退出 0，
+> 会制造"回归通过"的假象。已改为 `-run` 两条新用例 + 整个 `internal/controller` 包全量测试。
+> 另核实：`setupTestState`（`handler_test.go:26`）已设 `DepsDir: t.TempDir()`，且
+> `currentDepsDir()`（`deps_state.go:54`）在 `DepsImported=false` 时返回 `""`，
+> 故 Step 6 的回归用例成立。
+
+---
+
 ## Task 8: 依赖审计（fail-closed，scope=deps）
 
 **Files:**
@@ -2693,6 +2714,8 @@ package controller
 import (
 	"context"
 	"os"
+
+	"taa/internal/codeaudit"
 )
 
 // depsAuditFunc 是依赖审计的可替换钩子，签名返回 (passed, summary)。
@@ -2975,10 +2998,12 @@ func TestTrainingEnvUnchangedWithoutDeps(t *testing.T) {
 - [ ] **Step 7: 运行测试与训练相关回归**
 
 ```bash
-go test ./internal/controller/ -run 'TestApplyDepsEnv|TestTrainingEnvUnchangedWithoutDeps|TestExecuteTraining' -v
+go test ./internal/controller/ -run 'TestApplyDepsEnv|TestTrainingEnvUnchangedWithoutDeps' -v
+go test ./internal/controller/
 ```
 
-期望：全部 PASS。
+期望：前者四个新用例 + 回归用例 PASS；后者整个 controller 包 PASS（这是训练路径的真实回归——
+`TestExecuteTraining` **在本仓库不存在**，按该名字 `-run` 会静默匹配零个用例并退出 0，制造假覆盖）。
 
 - [ ] **Step 8: 提交**
 
@@ -3271,3 +3296,27 @@ git commit -m "docs(proto): mirror importDeps and reportDeps in the design proto
       状态、流水线、审计、环境注入，互不越界。
 - [ ] 确认所有新增注释为**英文**（CLAUDE.md 硬性要求）；既有中文注释保持原样。
 - [ ] grep 一次 `Co-Authored-By`、`Claude`、`anthropic`，确认提交历史里没有出现（CLAUDE.md 硬性禁止）。
+
+---
+
+### Task 11 闭环记录（2026-10-08，合并式 spec+质量 单遍审查 APPROVE，零发现）
+
+审查对象 `9a445f6`（`api/proto/taa.proto`，28 行新增、0 删除、单文件）。合并两阶段审查的理由：
+文档型改动无运行期行为，二次全量过关无收益。
+
+逐项判定（全部通过）：spec 覆盖（§8 的 `ImportDeps`/`ReportDeps`/`scope`、§5 的 `DepsImported`/
+`DepsHash` 全部落位，**且无 spec 之外的多余内容**）；protobuf 卫生（diff 为 0 删除 ⇒ 不存在字段
+重编号/改类型这一唯一能破坏 wire 契约的途径；逐消息字段号唯一性脚本扫描无重复；`Checksum`/
+`ReportResult` 均未被重定义）；与 HTTP 现实一致（`ImportDepsRequest` 三字段刻意不含
+`runtime_config`/`publicKey`，符合 §4.1）；注释语言（新增行经 `grep -P '[^\x00-\x7F]'` 确认
+**零非 ASCII**）；提交卫生（单文件、trailers 为空、英文 Conventional Commits、无任何工具署名）；
+惰性（无 Go 文件引用 `taa.proto`、全仓无 `*.pb.go`）；遗漏项无。
+
+审查者的两条独立断言值得留存，因为它们排除了后续任务的两个真实风险：
+
+1. **`reportRes` 的 `deps_checksum` 不需要动 proto** —— 它位于不透明的 `report` JSON 串内
+   （`ReportResRequest:197` 的注释即"训练结果报告 JSON 串"）。Task 10 只改 Go 侧序列化即可。
+2. **本仓库无 gRPC server，proto 纯属设计稿** —— 无 `protoc` 构建接线，改它不会影响
+   `go build`/`go test`。Task 11 因此不产生回归面。
+
+审查者另确认全程只读，未触碰 `deps_import.go`/`deps_import_test.go`/`tools/csv2-vm/csv2-vm.sh`。
