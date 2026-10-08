@@ -2241,9 +2241,10 @@ Task 5 的代码质量审查提出：`deps_import.go` 传给 `runAsyncSafe` 的�
 ## Task 7: `reportDeps` 平台回调
 
 **Files:**
-- Modify: `internal/platform/reporter.go:11-17`、`:46-53`、`:191+`
+- Modify: `internal/platform/reporter.go:11-17`、`:46-53`、`:191+`（含 `ReportTaskOutcome` 的分流分支）
 - Modify: `internal/controller/report.go`
 - Modify: `internal/controller/deps_import.go`（`reportDepsAsync`）
+- Modify: `internal/controller/route.go:798-804`（名字兜底补 `deps` 判定）
 - Test: `internal/platform/reporter_test.go`
 
 - [ ] **Step 1: 写失败测试**
@@ -2467,6 +2468,68 @@ go test ./internal/platform/ ./internal/controller/ -run 'TestReportDeps|TestRep
 ```bash
 git add internal/platform/reporter.go internal/platform/reporter_test.go internal/controller/report.go internal/controller/deps_import.go
 git commit -m "feat(deps): report dependency import results and scoped audits"
+```
+
+- [ ] **Step 8: 修 panic 路径的终态回调**
+
+依据见本任务前的「Task 6/7 编码前补充」：流水线 panic 时 `handleAsyncPanic` 会调
+`ReportTaskOutcome(..., "deps_import", ...)`，而该方法只特判 `model_import`，其余一律落
+`ReportRes` ⇒ 平台侧的 `importDeps` 任务永远收不到 `reportDeps`，表现为**挂起**而非失败。
+
+测试（追加到 `internal/platform/reporter_test.go`）：
+
+```go
+func TestReportTaskOutcomeDispatchesDepsToReportDeps(t *testing.T) {
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"msg":"ok","result":{"received":true},"error":0}`))
+	}))
+	defer server.Close()
+
+	if err := ReportTaskOutcome(context.Background(), server.URL, "docker-1", "req-1", "task-1", "deps_import", 1, "依赖包导入失败", ""); err != nil {
+		t.Fatalf("ReportTaskOutcome: %v", err)
+	}
+	if path != ReportDepsEndpoint {
+		t.Fatalf("path = %q, want %q -- a deps task must not be reported through the training-result callback", path, ReportDepsEndpoint)
+	}
+}
+```
+
+`ReportTaskOutcome`（`internal/platform/reporter.go:221-226`）在 `model_import` 分支之后增加：
+
+```go
+	if taskType == "deps_import" {
+		return ReportDeps(ctx, platformAddr, dockerID, requestID, taskID, code, msg, checksum...)
+	}
+```
+
+**不要改 `handleAsyncPanic`**——`route.go:844` 的注释写明"通过 ReportTaskOutcome 自动分流"，
+这里就是既定扩展点。
+
+`internal/controller/route.go:798-804` 的名字兜底另补一条 `deps` 判定（当前不可达：异步体执行时
+快照必已由 `tryAcquireTaskTyped` 建立；但兜底分支存在的意义正是快照意外缺失）：
+
+```go
+		switch {
+		case strings.Contains(strings.ToLower(name), "model"):
+			taskType = "model_import"
+		case strings.Contains(strings.ToLower(name), "deps"):
+			taskType = "deps_import"
+		default:
+			taskType = "data_import"
+		}
+```
+
+**变体验证（必做）**：删掉新增的 `deps_import` 分支后，`TestReportTaskOutcomeDispatchesDepsToReportDeps`
+必须 **FAIL**（实测会打到 `reportRes` 的路径）。只断言"没有返回错误"的写法在该变异下仍然通过，
+属于无效断言。还原后：
+
+```bash
+go test ./internal/platform/ -run 'TestReportTaskOutcome' -v
+git add internal/platform/reporter.go internal/platform/reporter_test.go internal/controller/route.go
+git commit -m "fix(deps): route the dependency panic path to reportDeps"
 ```
 
 ---
