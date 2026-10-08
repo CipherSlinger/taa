@@ -502,6 +502,41 @@ func TestSecurityConfigModelDirs(t *testing.T) {
 	}
 }
 
+func TestSecurityConfigDepsDir(t *testing.T) {
+	wantDefaultAbs, err := filepath.Abs(DefaultDepsDir)
+	if err != nil {
+		t.Fatalf("filepath.Abs(%q): %v", DefaultDepsDir, err)
+	}
+	wantRelAbs, err := filepath.Abs("rel/deps")
+	if err != nil {
+		t.Fatalf("filepath.Abs(%q): %v", "rel/deps", err)
+	}
+
+	cases := []struct {
+		name    string
+		depsDir string
+		want    string
+	}{
+		{"empty falls back to the default", "", wantDefaultAbs},
+		{"custom absolute path is returned cleaned", "/custom/deps", "/custom/deps"},
+		{"relative path is made absolute", "rel/deps", wantRelAbs},
+		{"trailing separator is cleaned", "/opt/taa/deps/", "/opt/taa/deps"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sec := SecurityConfig{DepsDir: tc.depsDir}
+			got := sec.GetDepsDir()
+			if !filepath.IsAbs(got) {
+				t.Fatalf("GetDepsDir would not be absolute, got %s", got)
+			}
+			if got != tc.want {
+				t.Errorf("GetDepsDir = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseRuntimeConfig_EnvString(t *testing.T) {
 	raw := `{"commands": ["echo 1", "python3 train.py"], "env": "{\"CUDA_VISIBLE_DEVICES\":\"0\"}"}`
 	cfg, env, err := parseRuntimeConfig(raw)
