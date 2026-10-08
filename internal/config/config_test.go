@@ -1089,6 +1089,36 @@ func TestLoadStartupConfigDepsDirDefault(t *testing.T) {
 	}
 }
 
+func TestValidateDepsDirPlacement(t *testing.T) {
+	cases := []struct {
+		name     string
+		modelDir string
+		depsDir  string
+		wantErr  bool
+	}{
+		{"sibling", "/opt/taa/models", "/opt/taa/model-deps", false},
+		{"nested", "/opt/taa/models", "/opt/taa/models/deps", true},
+		{"identical", "/opt/taa/models", "/opt/taa/models", true},
+		{"nested two levels", "/opt/taa/models", "/opt/taa/models/a/b", true},
+		{"deps is the parent of model", "/opt/taa/models", "/opt/taa", false},
+		{"empty deps", "/opt/taa/models", "", false},
+		{"empty model", "", "/opt/taa/model-deps", false},
+		{"trailing separator", "/opt/taa/models/", "/opt/taa/models/deps", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateDepsDirPlacement(tc.modelDir, tc.depsDir)
+			if tc.wantErr && err == nil {
+				t.Fatalf("validateDepsDirPlacement(%q, %q) = nil, want error", tc.modelDir, tc.depsDir)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validateDepsDirPlacement(%q, %q) = %v, want nil", tc.modelDir, tc.depsDir, err)
+			}
+		})
+	}
+}
+
 func writeTestConfig(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

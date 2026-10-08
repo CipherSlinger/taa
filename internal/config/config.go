@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -238,6 +239,9 @@ func validateStartupConfig(cfg StartupConfig) error {
 	if err := validateSemgrepTimeout(cfg); err != nil {
 		return err
 	}
+	if err := validateDepsDirPlacement(cfg.ModelDir, cfg.DepsDir); err != nil {
+		return err
+	}
 	return validateLLMPolicy(cfg)
 }
 
@@ -250,6 +254,38 @@ func validateSemgrepTimeout(cfg StartupConfig) error {
 	if cfg.SemgrepTimeout < 0 {
 		return fmt.Errorf("semgrepTimeoutSeconds in startup config must not be negative: got %d",
 			int64(cfg.SemgrepTimeout/time.Second))
+	}
+	return nil
+}
+
+// validateDepsDirPlacement rejects a depsDir nested inside modelDir.
+//
+// The dependency design rests on these two directories being siblings: a model import
+// replaces modelDir wholesale (resource.ExtractArchiveToDir does RemoveAll + rename), the
+// model audit scans the whole of modelDir, and a failed audit wipes it via cleanDirContents.
+// A depsDir nested inside modelDir would therefore be destroyed by the next model delivery
+// and would perturb the model's content checksum in the meantime. Because that failure only
+// surfaces on the next delivery, it is rejected at startup instead.
+func validateDepsDirPlacement(modelDir, depsDir string) error {
+	if strings.TrimSpace(modelDir) == "" || strings.TrimSpace(depsDir) == "" {
+		return nil
+	}
+	modelAbs, err := filepath.Abs(modelDir)
+	if err != nil {
+		return nil // an unresolvable modelDir is reported by the directory checks
+	}
+	depsAbs, err := filepath.Abs(depsDir)
+	if err != nil {
+		return nil
+	}
+	rel, err := filepath.Rel(modelAbs, depsAbs)
+	if err != nil {
+		return nil
+	}
+	// filepath.Rel yields "." for identical paths and a ".."-prefixed path when depsDir
+	// lies outside modelDir; any other result means depsDir is nested inside modelDir.
+	if rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+		return fmt.Errorf("storage.depsDir (%s) must not be inside storage.modelDir (%s): a model import replaces that directory wholesale and would destroy the installed dependencies", depsAbs, modelAbs)
 	}
 	return nil
 }
