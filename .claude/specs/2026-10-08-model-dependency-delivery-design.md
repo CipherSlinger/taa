@@ -121,8 +121,15 @@ TAA 系统变量目前注入 `TAA_TASK_ID`/`TAA_DATA_DIR`/`TAA_MODEL_OUTPUT_DIR`
 - 解密沿用 `resolvePlaintextResource`（`import_processing.go:867`）的 `.enc` 自动判定 +
   明文压缩包头探测 + SM2/SM4-GCM 解密，与模型/数据完全一致。
 
-这里必须区分的原因：响应体在下载**之前**就已写出（与 `importModel` 的下载分支同构），
-归档内容的校验只能发生在异步流水线内，其结果通过 `reportDeps` 的 `code`/`msg` 回传平台。
+这里必须区分的原因：**下载是同步的，下载之后的处理是异步的**。`modelImportHandler`
+（`handler_task.go:263-295`）的真实顺序是 `tryAcquireTask` → `downloadToTempFile`（失败即
+500）→ 写 200 → `runAsyncSafe`，因此下载失败可以返回 5xx（本方案的 handler 与它逐字同构）；
+但**下载之后**的解包与归档内容校验发生在 200 已写出之后，无法再返回 4xx，其结果只能通过
+`reportDeps` 的 `code`/`msg` 回传平台。
+
+> 订正记录（2026-10-08）：本节初稿写的是"响应体在下载**之前**就已写出"，方向说反了。结论
+> （内容校验只能经 `reportDeps` 异步上报）不变，但照初稿理解会得出"下载失败也走 `reportDeps`"
+> 的错误时序模型。已按 `importModel` 的真实实现改正。
 
 响应沿用 `writeEnvelope`：`{"msg":"依赖包已接收，处理中","result":null,"error":0}`，异步处理。
 

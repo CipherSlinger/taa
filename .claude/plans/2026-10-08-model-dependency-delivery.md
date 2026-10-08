@@ -12,6 +12,23 @@
 
 ---
 
+## 全局约束（适用于本计划全部 Task）
+
+**注释语言（CLAUDE.md 硬性要求）：** 本计划各 Task 的 Go 代码块中，**中文注释只用于表达意图，
+不代表要落库的文本**。仓库既有代码大量使用中文行注释（`internal/` 下 129 个 Go 文件中有 61 个含中文
+行注释），因此 CLAUDE.md 的「Code comments: Must use English comments only」是对**新增代码**的
+前瞻性约束。判据是「**这段代码是否在本次被重写**」：
+
+- 本次**新增或重写**的行、函数与 doc comment ⇒ 一律英文。
+  已落地证据：`internal/controller/deps_state.go` 与 `deps_state_test.go` 的中文行注释数均为 0。
+- 本次**原样保留的既有行**（例如 `tryAcquireTask` 的既有中文 doc comment）⇒ 不翻译、不顺手改动。
+- 计划代码块中出现中文注释且属于前一类时，实现时**必须译为英文**，不要逐字照抄。
+  受影响范围：Task 5/6/7/8/9 的代码块（Task 2/3 已按英文落地，其代码块中的中文为历史残留）。
+
+派发实现者时必须重申此条；审查者也以此条为准。
+
+---
+
 ## 与原 spec 的实现级差异与已知遗留
 
 1. **`PYTHONPATH` 注入位置**：spec §7 写的是"在 `MergedRuntimeEnv` 合并之后前置拼接"，因此需要给
@@ -799,10 +816,14 @@ func (s *TAAState) tryAcquireTaskTyped(taskID, requestID, initialOp, taskType st
 拦截，根本走不到第 3 步。所以在可达状态下 `Type` 只可能是 `model_import` 或 `data_import`，
 `isModelDataPair` 与原式同值。
 
-**注释语言（CLAUDE.md 硬要求）：** 新函数 `tryAcquireTaskTyped` 内的**全部**注释用英文
-（上面代码块已改好）。`tryAcquireTask` 原有的中文文档注释属于"原样保留的既有行"，**不要翻译**
-——那是与本次改动无关的 churn；`route.go` 里其余既有中文注释同理一律不碰。除本任务新增/新写的
-注释外，不要顺手改任何既有注释的语言。
+**注释语言（CLAUDE.md 硬要求）：** 分界线是"**这段代码是否在本次被重写**"，不是"这行字是否
+曾经存在"。`tryAcquireTaskTyped` 是**新函数**，其内部全部注释用英文——包括从原 `tryAcquireTask`
+迁移过来的步骤 1/2/3 标记（上面代码块已给出译文）。而包装函数 `tryAcquireTask` 的**中文文档
+注释**（`// tryAcquireTask 尝试原子抢占...`）与 `route.go` 其余既有中文注释一样**原样保留、
+不翻译**：它们描述的是未被重写的函数与无关代码，改动属无关 churn。中文错误串同理一律不改写。
+
+（初稿此处只写了"不要顺手改任何既有注释的语言"，与代码块里给出的步骤 1/3 译文自相矛盾；
+spec 审查抓到了这一点，措辞已按上述分界线订正。）
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -820,6 +841,40 @@ go test ./internal/controller/ -run 'TestConcurren|TestStateStore' -v
 git add internal/controller/route.go internal/controller/concurrency_test.go
 git commit -m "refactor(controller): add typed task acquisition for deps imports"
 ```
+
+---
+
+### Task 3 审查追加（编码后按审查结论补充）
+
+**两条等价性主张经独立重推后成立，但其中一条的理由需要加固。**
+
+- Claim 1（`else if` → 无条件 `if`）：审查者列出全部 12 个 `tryAcquireTask` 调用点，
+  确认 `isModel=true` 从不与 `staging`/`training` 共存。成立。
+- Claim 2（`isModelDataPair` 取代 `currentIsModel != isModel`）：**原式与新式确实存在语义差异**
+  ——原式把 `Type == "training"` 当"非模型"，故 `(在飞 training, 请求 model_import)` 下原式会配对、
+  新式会拒绝。仅凭"在飞训练任务会让 `isTrainingBusyLocked()` 为真"这一直觉不足以定论；真正的
+  不变式是 **`activeTask.Type == "training"` ⟹ `TrainingRunning == true`**，它在锁内始终成立，
+  并由 `sealStateLocked` / `RestoreFromPersistentState` 在同一把锁下原子地落到持久态。审查者逐一
+  核对 5 个 `TrainingRunning = false` 的写入点（`ResetActiveTask`、`release`、`handleAsyncPanic`、
+  `finishTrainingControl`、`resetRecoveryTaskState`），**每一处都在同一临界区把 `activeTask` 置
+  nil**。因此该差异是**不可达代码上的差异，不是可达回归**。反向亦无差异：不存在"新式配对、原式
+  不配对"的可达组合。
+
+**Important 覆盖缺口（计划缺口，实现忠实照做）：** 计划原给的
+`TestTryAcquireDepsTaskBlocksModelImport` 用的是**不同** taskID，于是在第 3 步的
+`s.ActiveTaskID == taskID` 处直接短路，**根本没进入 `isModelDataPair`**——把 `isModelDataPair`
+改成"deps 与 model 配对"它照样通过。也就是说本任务的核心性质"**deps 不与任何任务配对**"当时
+**零覆盖**。已补 `TestDepsImportPairsWithNothing`（三个**同 taskID** 子用例：deps↔model、
+deps↔data、model→deps 反向），并做变异校验（把 `isModelDataPair` 临时改为 `current != requested`
+后三个子用例必须全部转红）。原测试只是**名字不副实**，行为本身有效（它证明 deps 会占住全局槽位
+并拒绝无关 taskID 的请求），故仅重命名为 `TestDepsTaskHoldsTheSlotAgainstOtherTaskIDs`。
+
+**给 Task 6 的已知隐患（既有 flake，非本次引入）：**
+`internal/controller/concurrency_test.go` 的 `TestConcurrency_DataImportAllowedWhileAuditing` 会
+间歇性报 `TempDir RemoveAll cleanup: ... directory not empty`，根因是它在异步 import 协程尚未
+结束时即返回。Task 5/6 的 handler 与流水线测试会大量经 `runAsyncSafe` 派发异步工作，**极易踩到
+同一形态**：测试必须在断言前等待异步完成（或让 handler 提供可等待的完成信号），否则会得到
+随机失败的绿色套件。隔离运行与满载运行均通过，故属竞态而非确定性缺陷。
 
 ---
 
@@ -1207,13 +1262,21 @@ git commit -m "feat(deps): add wheelhouse validation and offline pip install"
 **Files:**
 - Create: `internal/controller/deps_import.go`（本任务只放请求体与 handler）
 - Modify: `internal/controller/router.go:9-22`
-- Test: `internal/controller/deps_import_test.go`（追加）
+- Test: `internal/controller/deps_import_test.go`（**新建**；Task 6/8/10 再往这个文件追加）
 
 - [ ] **Step 1: 写失败测试**
 
-追加到 `internal/controller/deps_import_test.go`：
+**新建 `internal/controller/deps_import_test.go`**（不是"追加"——该文件尚不存在；`postJSON` 与
+`setupTestServer` 都在同包的 `handler_test.go` 里，直接用，不要重定义）：
 
 ```go
+package controller
+
+import (
+	"net/http"
+	"testing"
+)
+
 func TestImportDepsRejectsEmptyResourceURL(t *testing.T) {
 	_, server := setupTestServer(t)
 
@@ -1256,8 +1319,9 @@ func TestImportDepsRejectsNonPost(t *testing.T) {
 }
 ```
 
-`postJSON` 若 `internal/controller` 测试中已有等价辅助函数（例如 `handler_test.go` 里的
-同名函数），复用它，不要重复定义。
+**已核实的既有辅助函数**（都在同包 `internal/controller/handler_test.go`）：`postJSON(t, url,
+body)` 在 `:146`；`setupTestServer(t)` 在 `:105`，其内部走 `RegisterRoutes(mux, state)` —— 所以
+只要 Step 4 把路由注册进 `router.go`，这三个测试就会打到真实路由，不需要任何额外接线。
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -1283,9 +1347,10 @@ import (
 	pkgerrors "taa/pkg/errors"
 )
 
-// depsImportRequest 是 /v1/taa/importDeps 的请求体。
-// 刻意不复用 importRequest：其 publicKey 与 runtimeConfig 对依赖包没有意义，
-// 接受它们只会制造「传了但不生效」的歧义。
+// depsImportRequest is the request body for /v1/taa/importDeps.
+// It deliberately does not reuse importRequest: that type's publicKey and runtimeConfig mean
+// nothing for a dependency archive, and accepting them would only create the ambiguity of
+// fields that are accepted but silently ignored.
 type depsImportRequest struct {
 	ResourceURL string `json:"resourceUrl"`
 	RequestID   string `json:"requestId"`
@@ -1304,8 +1369,9 @@ func (s *TAAState) depsImportHandler(w http.ResponseWriter, r *http.Request) {
 	req.RequestID = strings.TrimSpace(req.RequestID)
 	req.TaskID = strings.TrimSpace(req.TaskID)
 
-	// resourceUrl 必须显式给出：依赖是内容寻址的，允许为空复用会让「当前生效的是哪一套依赖」
-	// 不可推断。
+	// resourceUrl is mandatory: dependencies are content-addressed, and letting an empty value
+	// mean "reuse the current set" would make it impossible to infer which dependency set is
+	// actually in effect.
 	if req.ResourceURL == "" {
 		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "resourceUrl 不能为空"))
 		return
@@ -1352,14 +1418,31 @@ func (s *TAAState) depsImportHandler(w http.ResponseWriter, r *http.Request) {
 走到 `tryAcquireTaskTyped` 与下载之前，因此不依赖流水线内容。Task 6 Step 4 会用完整实现替换整个函数体：
 
 ```go
-// processImportedDeps 的最小版本。完整流水线见 Task 6。
+// processImportedDeps is a minimal stand-in for the full dependency pipeline that Task 6 adds.
+// It only has to remove the temporary ciphertext: by the time it runs the handler has already
+// written its response, and releasing the task restores currentOp (runAsyncSafe does
+// `defer release()`, verified at route.go:740-745), so an explicit op reset here would be
+// redundant.
 func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphertextPath string) {
 	defer os.Remove(ciphertextPath)
-	s.setCurrentOp("idle")
 }
 ```
 
 `deps_import.go` 的 import 块需含 `"os"`。
+
+**⚠️ spec §4.1 有一处事实性错误，本任务按 `importModel` 的真实行为实现（已核实）。**
+spec 原文写"响应体在下载**之前**就已写出（与 `importModel` 的下载分支同构）"——把方向说反了。
+`modelImportHandler`（`handler_task.go:263-295`）的真实顺序是：
+
+```
+tryAcquireTask → downloadToTempFile（失败即 release() + 500）→ writeEnvelope(200) → runAsyncSafe
+```
+
+即**下载本身是同步的**，下载失败确实会返回 5xx；只有**下载之后**的解包与内容校验才发生在 200
+已写出之后，因而无法再返回 4xx。本任务照此实现（下载失败返回 500），与 `importModel` 逐字同构。
+
+spec 的那句话已同步订正。结论（内容校验只能异步）不变，但理由必须说对：若照 spec 原文理解，
+会得出"下载失败也走 `reportDeps`"的错误时序模型，进而把同步错误处理写成异步上报。
 
 - [ ] **Step 4: 注册路由**
 
