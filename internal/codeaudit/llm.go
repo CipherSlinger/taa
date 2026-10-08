@@ -42,7 +42,7 @@ func DefaultLLMConfig() LLMConfig {
 		Endpoint:                "https://127.0.0.1:8443",
 		Model:                   "qwen2.5-coder:0.5b",
 		Timeout:                 30 * time.Second,
-		MaxFindings:             20,
+		MaxFindings:             0,
 		Policy:                  "assist",
 		FailClosed:              true,
 		CircuitBreakerThreshold: 3,

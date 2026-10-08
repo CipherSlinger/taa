@@ -176,7 +176,7 @@ func TestBuildSecurityConfig(t *testing.T) {
 		AuthToken:               cfg.LLMAuthToken,
 		Model:                   cfg.LLMModel,
 		Timeout:                 60 * time.Second,
-		MaxFindings:             20,
+		MaxFindings:             0,
 		Policy:                  cfg.LLMPolicy,
 		FailClosed:              cfg.LLMFailClosed,
 		AllowedHosts:            cfg.LLMAllowedHosts,

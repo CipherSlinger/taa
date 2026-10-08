@@ -240,27 +240,51 @@ func TestVerifyReportDisabled(t *testing.T) {
 }
 
 func TestVerifyReportMaxFindingsCap(t *testing.T) {
-	findings := make([]Finding, 10)
-	for i := range findings {
-		findings[i] = Finding{File: "x.py", Line: i + 1, Severity: SeverityHigh}
+	// A cap of 0 (or anything negative) means "no cap": VerifyReport turns a
+	// non-positive limit into len(report.Findings). That is what makes removing
+	// the production cap a one-value change rather than a signature change, so
+	// the boundary is pinned here rather than left to the reader of verifier.go.
+	cases := []struct {
+		name        string
+		maxFindings int
+		wantCalls   int
+	}{
+		{"explicit cap still applies", 3, 3},
+		{"zero verifies every finding", 0, 10},
+		{"negative verifies every finding", -1, 10},
 	}
-	report := &Report{ScanComplete: true, HighCount: 10, Passed: false, Findings: findings}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := make([]Finding, 10)
+			for i := range findings {
+				findings[i] = Finding{File: "x.py", Line: i + 1, Severity: SeverityHigh}
+			}
+			report := &Report{ScanComplete: true, HighCount: 10, Passed: false, Findings: findings}
 
-	mock := &mockLLMClient{
-		decisions: make([]LLMDecision, 10),
-	}
-	for i := range mock.decisions {
-		mock.decisions[i] = LLMDecision{Verdict: "BENIGN", Reason: "ok"}
-	}
+			mock := &mockLLMClient{decisions: make([]LLMDecision, 10)}
+			for i := range mock.decisions {
+				mock.decisions[i] = LLMDecision{Verdict: "BENIGN", Reason: "ok"}
+			}
 
-	cfg := LLMConfig{Enabled: true, Policy: "gate", MaxFindings: 3}
-	_, err := VerifyReport(context.Background(), report, cfg, mock)
-	if err != nil {
-		t.Fatal(err)
-	}
+			cfg := LLMConfig{Enabled: true, Policy: "gate", MaxFindings: tc.maxFindings}
+			if _, err := VerifyReport(context.Background(), report, cfg, mock); err != nil {
+				t.Fatal(err)
+			}
 
-	if mock.callCount != 3 {
-		t.Fatalf("expected 3 LLM calls (MaxFindings=3), got %d", mock.callCount)
+			if mock.callCount != tc.wantCalls {
+				t.Fatalf("MaxFindings=%d: got %d LLM calls, want %d", tc.maxFindings, mock.callCount, tc.wantCalls)
+			}
+			// An uncapped run must leave real verdicts on the tail. A capped run
+			// leaves the empty string there, which is exactly the state the old
+			// production value of 20 produced for findings 21 and beyond.
+			if tc.wantCalls == len(findings) {
+				for i, f := range report.Findings {
+					if f.LLMVerdict == "" {
+						t.Errorf("finding %d left unverified: LLMVerdict is empty", i)
+					}
+				}
+			}
+		})
 	}
 }
 

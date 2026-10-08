@@ -611,7 +611,11 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 			AuthToken:               cfg.LLMAuthToken,
 			Model:                   cfg.LLMModel,
 			Timeout:                 timeout,
-			MaxFindings:             20,
+			// 0 means no cap: every finding the static scanner reports gets a verdict.
+			// The old value of 20 left the tail of a large scan reported but never
+			// adjudicated. The scanner's own cap (ScannerConfig.MaxFindings, 200) is
+			// the real ceiling on how many calls this can produce.
+			MaxFindings:             0,
 			Policy:                  cfg.LLMPolicy,
 			FailClosed:              cfg.LLMFailClosed,
 			AllowedHosts:            cfg.LLMAllowedHosts,
