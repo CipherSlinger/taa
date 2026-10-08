@@ -19,6 +19,8 @@ import (
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 	"taa/pkg/utils"
+
+	"github.com/CipherSlinger/teellm"
 )
 
 func (s *TAAState) processImportedResource(req importRequest, phase int, isModel bool, ciphertextPath string) {
@@ -742,7 +744,15 @@ func newLLMClient(cfg codeaudit.LLMConfig) codeaudit.LLMClient {
 	return nil
 }
 
-const auditLLMHealthCheckTimeout = 30 * time.Second
+// auditLLMHealthCheckTimeout bounds the fail-closed readiness probe that runs
+// before an audit.
+//
+// It tracks the client's own health budget rather than an ordinary request
+// timeout, because the probe is not a ping: a cold inference service loads the
+// model before answering /healthz. Cutting the probe off mid-load does not just
+// fail the attempt, it cancels the load, so a short budget makes the gate
+// unwinnable on a cold start rather than merely slow.
+const auditLLMHealthCheckTimeout = teellm.DefaultHealthCheckTimeout
 
 // isLLMServiceAvailable probes whether the inference service is healthy and reachable.
 // It prioritizes standard TEE-LLM client health checking (/healthz over TEE-TLS),
@@ -764,7 +774,15 @@ func isLLMServiceAvailable(client codeaudit.LLMClient, endpoint, model string) b
 // auditReportJSON is implemented in codeaudit_projection.go.
 
 // llmAvailable probes whether Ollama daemon is ready and the model can execute inference.
-// Used for fail-closed pre-check with a short timeout.
+// It is the legacy fallback used when the TEE-LLM client could not be built, so it
+// talks to the daemon over plain HTTP.
+//
+// The two calls it makes are not the same kind of call and do not share a budget.
+// Listing tags is a cheap inventory read that a short timeout keeps honest; the
+// generate probe makes the daemon load the model, which on a cold daemon takes
+// seconds, and cutting it off cancels the load it was waiting on. One timeout for
+// both is wrong in both directions - too short to survive a cold load, too long to
+// be a sensible ping budget.
 func llmAvailable(endpoint, model string) bool {
 	if strings.TrimSpace(endpoint) == "" {
 		return false
@@ -773,8 +791,10 @@ func llmAvailable(endpoint, model string) bool {
 	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
 		base = "http://" + base
 	}
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(strings.TrimRight(base, "/") + "/api/tags")
+	base = strings.TrimRight(base, "/")
+
+	tagsClient := &http.Client{Timeout: 3 * time.Second}
+	resp, err := tagsClient.Get(base + "/api/tags")
 	if err != nil {
 		return false
 	}
@@ -789,8 +809,9 @@ func llmAvailable(endpoint, model string) bool {
 
 	// Active generate probe to verify tensor weights can be mapped and executed.
 	if model != "" {
+		probeClient := &http.Client{Timeout: auditLLMHealthCheckTimeout}
 		probePayload := fmt.Sprintf(`{"model":%q,"prompt":"ping","stream":false,"options":{"num_predict":1}}`, model)
-		genResp, err := client.Post(strings.TrimRight(base, "/")+"/api/generate", "application/json", strings.NewReader(probePayload))
+		genResp, err := probeClient.Post(base+"/api/generate", "application/json", strings.NewReader(probePayload))
 		if err != nil {
 			return false
 		}

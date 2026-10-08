@@ -69,6 +69,35 @@ func TestLLMAvailable(t *testing.T) {
 	}
 }
 
+// TestLLMAvailableSurvivesAColdModelLoad pins the property both readiness probes
+// need: the generate probe is not a ping, it makes the daemon load the model, so
+// a daemon that answers tags at once but generate in seconds is a healthy daemon.
+// Budgeting the probe like a ping reports the opposite - and because the cutoff
+// cancels the load it was waiting on, retrying does not recover.
+func TestLLMAvailableSurvivesAColdModelLoad(t *testing.T) {
+	const coldLoad = 5 * time.Second
+
+	cold := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			_, _ = w.Write([]byte(`{"models":[{"name":"qwen2.5-coder:0.5b"}]}`))
+		case "/api/generate":
+			select {
+			case <-time.After(coldLoad):
+				_, _ = w.Write([]byte(`{"response":"pong"}`))
+			case <-r.Context().Done():
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer cold.Close()
+
+	if !llmAvailable(cold.URL, "qwen2.5-coder:0.5b") {
+		t.Fatalf("llmAvailable = false for a daemon whose model takes %s to load", coldLoad)
+	}
+}
+
 type healthCheckFailureLLMClient struct {
 	deadline time.Time
 	err      error
@@ -107,12 +136,20 @@ func TestIsLLMServiceAvailable_TimeoutAndErrorLog(t *testing.T) {
 		t.Fatal("HealthCheck context did not include a deadline")
 	}
 	deadlineDuration := client.deadline.Sub(startedAt)
-	if deadlineDuration < 29*time.Second || deadlineDuration > auditLLMHealthCheckTimeout+time.Second {
+	// The budget is the client's health budget, not an ordinary request timeout:
+	// the probe has to outlast a cold model load. Asserted against the constant
+	// rather than a literal so the two cannot drift apart.
+	if deadlineDuration < auditLLMHealthCheckTimeout-time.Second || deadlineDuration > auditLLMHealthCheckTimeout+time.Second {
 		t.Fatalf("health-check deadline duration = %s, want approximately %s", deadlineDuration, auditLLMHealthCheckTimeout)
+	}
+	// Budgeting the probe like an ordinary request is the defect this guards:
+	// it cuts a cold model load off mid-load, and the cutoff cancels the load.
+	if auditLLMHealthCheckTimeout <= 30*time.Second {
+		t.Fatalf("health-check budget = %s, budgeted like an ordinary request", auditLLMHealthCheckTimeout)
 	}
 
 	logText := logs.String()
-	for _, expected := range []string{endpoint, model, "timeout=30s", sentinelErr.Error()} {
+	for _, expected := range []string{endpoint, model, "timeout=" + auditLLMHealthCheckTimeout.String(), sentinelErr.Error()} {
 		if !strings.Contains(logText, expected) {
 			t.Errorf("health-check log missing %q: %s", expected, logText)
 		}
