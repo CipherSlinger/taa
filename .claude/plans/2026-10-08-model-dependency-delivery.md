@@ -3018,6 +3018,70 @@ Task 7 本身用 `httptest` 自建服务端，**不依赖 mock**，因此上述�
 
 ---
 
+### Task 7 闭环记录（2026-10-08，规范审查 + 质量审查两轮后 APPROVE）
+
+**交付**：五个提交，`1e8450d..54e45e4`。
+
+| 提交 | 内容 |
+| :--- | :--- |
+| `b3eee6e` | feat：`ReportDeps` 平台回调、`ReportAuditScoped` 的 `scope`、`ReportTaskOutcome` 分流、`route.go` 任务类型推断认 `deps` |
+| `61db832` | fix：依赖 panic 路径改走 `reportDeps` |
+| `b537974` | test：流水线用例的 httptest 按路径过滤（**预防性**，理由见下） |
+| `b783484` | test：钉住"未带 scope 的审计载荷字节不变" + scoped 用例断言 endpoint |
+| `54e45e4` | fix：依赖上报成功路径补日志、七条注释转英文、两条注释时态订正 |
+
+**规范审查（APPROVED，零返工）**：Steps 1–8 全 PASS；`reportDepsPayload` 与 `reportModelImportPayload`
+逐字段比对"无一处无谓分歧"；`route.go` 的 switch 对既有 model/data 行为逐字符等价；两次变异由审查者
+**独立重跑并逐字复现**。它另确认实现者先前指出的**四处任务文本错误**判断全部正确（`reportDepsEndpoint`
+并不预先存在、Step 5 行锚点漂移约 37 行、`"context"` 早已 import、Step 8 的分支落在了 feat 提交里）。
+**这是本计划第二次"计划写错、实现者按真实代码纠正"**（前一次是 Task 6），说明编码前预审这一环是值的。
+
+**质量审查（APPROVED，1 Important + 6 Minor）**：五项变异。`A`/`B`/`E` 证明三条承重路径真实存在
+且被有效断言；`D` 证明 `route.go` 的 `deps` 分支**黑盒测不到**（该分支只在快照 `Type == ""` 时执行，
+而异步体运行时快照必已由 `tryAcquireTaskTyped` 建立）——非疏漏，登记备查以免后人以为它被钉住了；
+`C` 是唯一有实质发现的一项：**去掉 `,omitempty` 后两个包全绿**，即 I1。
+
+**已修**：
+
+- **I1**：「旧审计载荷字节不变」是本任务对**外部系统**做的兼容承诺，却无任何测试保护。补否定断言
+  （`!bytes.Contains(rawBody, []byte(\`"scope"\`))`，沿用 `report_model_import_test.go:141` 钉 `checksum`
+  的同一手法），并以同一个变异证明它现在**会**失败。
+- **M5**：上报**成功**路径在 TAA 日志环里静默。该回调存在的全部意义就是"平台是否知道结果"，成功无痕
+  等于"根本没发出去"与"已送达"在日志上无法区分。补 `LogInfo`，与两个 sibling（成功失败双记）对齐。
+- **M3**：两条注释把 Task 8 尚不存在的代码写成现在时（断言"审计会上报"、引用 `runDepsAudit` 里并不存在
+  的 LLM 分支）。这与 Task 6 抓出的那个缺陷**同类**（注释与相邻代码互相否证），故按缺陷处理。
+- **M2**：七条中文注释转英文。
+- **M6a**：`TestReportAuditScopedCarriesScope` 不校验 `r.URL.Path`，把 scoped 审计发到错误端点的变异
+  仍会通过。补断言。
+
+**记录不修**：**M4**（`reportDepsAsync` 的私有变参 `checksum ...map[string]any` 隐藏"只有第 0 个算数"
+这条会静默丢弃的规则，但按今天的调用方不可达，且签名系计划正文明确给出、规范审查已核过与
+`reportModelImportAsync` 同形——为一条无可达影响的风格偏好去偏离已验收的签名，churn 不划算）；
+**M6b**（`ReportDeps` 的 `code==0 && msg==""` 默认文案零覆盖，实践中是死代码）。
+
+**M2 的边界**：`internal/platform/reporter.go` 在本分支**之前**就有 5 条中文注释（来自 `master` 的
+`6437adb`/`574dd77`），该文件以中文注释为主。我仍把 Task 7 新增的 4 条转为英文，依据是 CLAUDE.md 的
+"English comments only" 无例外且我对每个 subagent 都如此要求；代价是该文件仍余既有中文注释，文件内
+不再统一。若要更强的统一，应做一次**仓库级一次性清理**，而不是按任务零敲碎打——留待收尾时提请决策。
+
+**`b537974` 是预防性修复，不是缺陷修复**。规范审查发现：`TestProcessImportedDepsReportsFailureCodeToPlatform`
+的 httptest 用容量 1 通道 + 非阻塞发送（先到先得），而 Task 8 落地后 `auditAndReportDeps` 会从自己的
+goroutine 先发出 `scope=deps` 的审计上报到**同一**地址；审计上报先到时用例会以 "path = reportAudit,
+want reportDeps" 失败——**假失败，不会假通过**（只有终态回调才产生 `code=1`），但足以把 Task 8 的
+实现者引向错误方向、或诱使其削弱断言。修法是把路径过滤放进服务端 handler。
+**交底 Task 8**：若该用例以 path 不符失败，那是别处出了问题，**不得削弱它**。
+
+**process record（自报失准，被独立复现抓住）**：修复方报告称它在一个 flake 的 "clean pre-Task-7 commit
+`61db832`" 上复现——但 `61db832` 是 Task 7 **三个提交里的第二个**，根本不是基线。质量审查者独立复现
+并纠正：真基线是 `1e8450d`（100 轮 7 失败），HEAD 上 60 轮 2 失败；机制在 `concurrency_test.go` 自身
+（该用例 POST 后不调 `waitForIdle` 就返回，后台 goroutine 撞 `t.TempDir()` 的 `RemoveAll`），与本范围
+diff 无交集。**结论正确、证据错误**——这类偏差只有独立复现能抓，已记入记忆。
+
+**§9 交接 Task 8**：spec §9 末段要求"已知盲区需在实现与交付中明示"（wheel 内 `.so`/`.pyd` 二进制不在
+静态扫描范围；完整性只有 SM3、无签名验签）。**此前无任何 Task 覆盖这一条**，归 Task 8 的 `deps_audit.go`。
+
+---
+
 ### Task 8/10 编码前预审发现（已直接改入正文，实现者无需再判断）
 
 对 Task 8 的实现块逐行核对既有代码后，发现并修正 1 处**编译级**缺陷，另有 3 处经核实为**正确**、
@@ -3961,6 +4025,34 @@ git commit -m "docs(proto): mirror importDeps and reportDeps in the design proto
       状态、流水线、审计、环境注入，互不越界。
 - [ ] 确认所有新增注释为**英文**（CLAUDE.md 硬性要求）；既有中文注释保持原样。
 - [ ] grep 一次 `Co-Authored-By`、`Claude`、`anthropic`，确认提交历史里没有出现（CLAUDE.md 硬性禁止）。
+
+### 范围外发现（不属于任何 Task，**上交前必须逐条决策**）
+
+这些是执行过程中撞见的、不归任何 Task 管的事。写在这里是因为漏掉它们会在分支收尾时变成事故。
+
+1. **`.claude/worktrees/` 下的四个残留工作树是他人资产，不得删除。**
+   `agent-a0f57188…`/`a20bdd73…`/`a3e21919…`/`aca925fc…`，各自停在一条 `worktree-agent-*` 分支上，
+   各有一个**不可达本分支**的提交：`feat(cpg): worklist taint engine and causal evidence slicer`、
+   `intra-procedural CFG/DFG and cross-file symbol resolver`、`AST scope-aware closure slicer with window
+   fallback`、`microservice boundary bridge and cross-service edges`。四者与本特性毫无关系，是**同一检出里
+   另一个参与者**的在制品。收尾时提请确认归属，**在此之前不清理**。
+   教训：共享检出里"看起来像自己遗留"的分支，删之前必须先 `git log --oneline HEAD..<ref>`。
+2. **`tools/csv2-vm/csv2-vm.sh` 由另一参与者编辑中**，而本分支上夹着它的提交
+   （`ee95877`/`8f88284`/`8f9f85a`/`11c6903`）。收尾时需分离或确认，不能默认它们属于本特性。
+3. **`go build ./...` / `go test ./...` 在本检出不可用**：`models/audit/holdout-sources/semgrep-rules-develop/`
+   没有 `go.mod`，该目录下有个无限定符的包。因此 CLAUDE.md 那条字面命令无法满足，实际以窄路径
+   （`./internal/...` 逐包）覆盖。**这是既有环境问题，不是本次改动引入。**
+4. **`internal/coordinator/flow_training.go` 也调用 `runtime.BuildTrainingReport`**，但
+   `internal/coordinator` 是未被任何入口接线的死包。Task 10 改报告序列化时不会波及它，仅作风险登记。
+5. **platform-mock 完全没有 spec §11 第 2 期的内容**：无 `/v1/taa/reportDeps` 路由、无存储、无看板；
+   `proxy.go` 的前缀表里没有 `reportDeps`；`reportRequest` 没有 `scope` 字段。后果要说透：
+   **依赖导入的终态在 mock 上当前不可观测**——未知路径落到 `indexHandler` 返回 404，而
+   `SendPlatformJSON` 只接受 200，于是 TAA 只记一条 WARN 就继续，`/api/dashboard/status` 与
+   `/api/reportAudit/status` 都不显示任何东西。需要另开一份计划覆盖第 2 期与第 3 期。
+6. **`importDeps` 在默认配置下必然失败，这是设计而非缺陷**（fail-closed，Task 6 的桩拒绝一切）。
+   **不得**以回退该桩的方式"修复"。Task 8 落地真审计后此局面才解除。
+7. **代码注释语言的仓库级清理**：`internal/platform/reporter.go` 等文件在本分支之前就有中文注释
+   （Task 7 闭环记录里记了边界）。是否做一次性的全仓清理，留待收尾时决定，不要按任务零敲碎打。
 
 ---
 
