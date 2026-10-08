@@ -3654,15 +3654,17 @@ state.RuntimeConfig = `{"commands":["env > envdump.txt"],"env":{"PYTHONPATH":"/p
 > **编码前预审发现（2026-10-08，已直接改入正文，实现者无需再判断）**：
 >
 > 1. **`BuildTrainingReport` 还有一个调用方被漏掉了**：`internal/controller/import_processing_report_test.go:54`
->    直接调用该函数（传 10 个实参）。签名一改它就编译不过。已加入 Files 与 Step 11 的 `git add`
+>    调用的是 controller 侧的包装 `buildTrainingReport`（传 **11** 个实参），其参数表里也有 `dataChecksum`，
+>    签名一改它就编译不过。已加入 Files 与 Step 11 的 `git add`
 >    ——漏掉的话不只是构建失败，`git add` 的显式 pathspec 也会把修复后的该文件留在工作区，
 >    产出一个「编译不过的历史提交」。
 >    另核实：**非测试调用方只有一个**（`import_processing.go` 的 `buildAndSaveTrainingReport` 内；
 >    预审测得 `:969`，2026-10-08 二次实测为 `:979`）。Step 4 点名的 `reportTrainingFailureFromResult`
 >    并不直接调用它，故 Step 4 的实际改动面就是这一处 + 委托函数。
-> 2. **Step 6 的测试要 `encoding/json`，而 `deps_import_test.go` 里没有这个 import。**
+> 2. ~~**Step 6 的测试要 `encoding/json`，而 `deps_import_test.go` 里没有这个 import。**
 >    Task 6 给该文件加的 import 恰恰**不含** `encoding/json`（它加的是 `archive/tar`、`compress/gzip`、
->    `os`、`path/filepath`、`sort`）。必须补 `"encoding/json"`，否则该测试编译失败。
+>    `os`、`path/filepath`、`sort`）。必须补 `"encoding/json"`，否则该测试编译失败。~~
+>    **⚠️ 本条已过期，已被下方 (BB) 订正——`encoding/json` 现已由 Task 7 加入该文件，不要再补。**
 > 3. **Step 5/Step 10 原写 `go build ./...` 与 `go test ./...`，在本检出必然失败**，且与本任务无关
 >    （见文件头「已知遗留」：`models/audit/holdout-sources/semgrep-rules-develop/` 无自己的 `go.mod`）。
 >    照原文执行会得到一个假的「任务失败」信号。已改为窄范围命令。
