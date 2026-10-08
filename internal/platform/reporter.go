@@ -11,6 +11,7 @@ import (
 const (
 	ReportModelImportEndpoint = "/v1/taa/reportModelImport"
 	ReportAuditEndpoint       = "/v1/taa/reportAudit"
+	ReportDepsEndpoint        = "/v1/taa/reportDeps"
 	ReportResEndpoint         = "/v1/taa/reportRes"
 	ModelLogEndpoint          = "/v1/taa/modelLog"
 	ReportProgressEndpoint    = "/v1/taa/reportProgress"
@@ -43,6 +44,15 @@ type reportModelImportPayload struct {
 	Checksum  map[string]any `json:"checksum,omitempty"`
 }
 
+type reportDepsPayload struct {
+	DockerID  string         `json:"dockerId"`
+	RequestID string         `json:"requestId"`
+	TaskID    string         `json:"taskId"`
+	Code      int            `json:"code"`
+	Msg       *string        `json:"msg"`
+	Checksum  map[string]any `json:"checksum,omitempty"`
+}
+
 type reportAuditPayload struct {
 	DockerID  string  `json:"dockerId"`
 	RequestID string  `json:"requestId"`
@@ -50,6 +60,7 @@ type reportAuditPayload struct {
 	Code      int     `json:"code"`
 	Msg       *string `json:"msg"`
 	Report    string  `json:"report,omitempty"`
+	Scope     string  `json:"scope,omitempty"`
 }
 
 type reportModelLogPayload struct {
@@ -187,8 +198,48 @@ func ReportModelImport(ctx context.Context, platformAddr, dockerID, requestID, t
 	return SendPlatformJSON(ctx, defaultHTTPClient, url, data)
 }
 
-// ReportAudit 向上游平台发送模型代码审计结果上报
-func ReportAudit(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report string) error {
+// ReportDeps 向上游平台发送依赖包导入完成状态上报
+func ReportDeps(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg string, checksum ...map[string]any) error {
+	addr, dID, reqID, tID, err := ValidateAndNormalizePlatformParams(platformAddr, dockerID, requestID, taskID)
+	if err != nil {
+		return err
+	}
+
+	if code == 0 && strings.TrimSpace(msg) == "" {
+		msg = "依赖包导入成功"
+	}
+
+	var cs map[string]any
+	if len(checksum) > 0 {
+		cs = checksum[0]
+	}
+
+	var msgPtr *string
+	if strings.TrimSpace(msg) != "" {
+		msgVal := msg
+		msgPtr = &msgVal
+	}
+
+	payload := reportDepsPayload{
+		DockerID:  dID,
+		RequestID: reqID,
+		TaskID:    tID,
+		Code:      code,
+		Msg:       msgPtr,
+		Checksum:  cs,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal reportDeps payload: %w", err)
+	}
+
+	url := PlatformURL(addr, ReportDepsEndpoint)
+	return SendPlatformJSON(ctx, defaultHTTPClient, url, data)
+}
+
+// ReportAuditScoped 与 ReportAudit 相同，但额外携带 scope 以区分模型审计与依赖审计。
+// 空 scope 表示模型审计，保持与旧版平台的兼容。
+func ReportAuditScoped(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report, scope string) error {
 	addr, dID, reqID, tID, err := ValidateAndNormalizePlatformParams(platformAddr, dockerID, requestID, taskID)
 	if err != nil {
 		return err
@@ -207,6 +258,7 @@ func ReportAudit(ctx context.Context, platformAddr, dockerID, requestID, taskID 
 		Code:      code,
 		Msg:       msgPtr,
 		Report:    report,
+		Scope:     scope,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -217,10 +269,18 @@ func ReportAudit(ctx context.Context, platformAddr, dockerID, requestID, taskID 
 	return SendPlatformJSON(ctx, defaultHTTPClient, url, data)
 }
 
+// ReportAudit 向上游平台发送模型代码审计结果上报
+func ReportAudit(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report string) error {
+	return ReportAuditScoped(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report, "")
+}
+
 // ReportTaskOutcome 统一任务结果上报分发器
 func ReportTaskOutcome(ctx context.Context, platformAddr, dockerID, requestID, taskID, taskType string, code int, msg, report string, checksum ...map[string]any) error {
 	if taskType == "model_import" {
 		return ReportModelImport(ctx, platformAddr, dockerID, requestID, taskID, code, msg, checksum...)
+	}
+	if taskType == "deps_import" {
+		return ReportDeps(ctx, platformAddr, dockerID, requestID, taskID, code, msg, checksum...)
 	}
 	return ReportRes(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report)
 }

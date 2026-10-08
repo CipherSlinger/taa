@@ -9,6 +9,7 @@ import (
 const (
 	reportModelImportEndpoint = platform.ReportModelImportEndpoint
 	reportAuditEndpoint       = platform.ReportAuditEndpoint
+	reportDepsEndpoint        = platform.ReportDepsEndpoint
 	reportResEndpoint         = platform.ReportResEndpoint
 )
 
@@ -30,6 +31,16 @@ func ReportRes(ctx context.Context, platformAddr, dockerID, requestID, taskID st
 // ReportModelImport notifies the platform of the model import and archive checksum result.
 func ReportModelImport(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg string, checksum ...map[string]any) error {
 	return platform.ReportModelImport(ctx, platformAddr, dockerID, requestID, taskID, code, msg, checksum...)
+}
+
+// ReportDeps 上报依赖包导入结果。
+func ReportDeps(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg string, checksum ...map[string]any) error {
+	return platform.ReportDeps(ctx, platformAddr, dockerID, requestID, taskID, code, msg, checksum...)
+}
+
+// ReportAuditScoped 上报带 scope 的审计结果（"deps" 表示依赖包审计）。
+func ReportAuditScoped(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report, scope string) error {
+	return platform.ReportAuditScoped(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report, scope)
 }
 
 // ReportAudit notifies the platform of the code security audit result.

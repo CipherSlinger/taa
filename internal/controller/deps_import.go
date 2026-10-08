@@ -287,11 +287,23 @@ func (s *TAAState) reportDepsFailure(req depsImportRequest, reason string) {
 	s.reportDepsAsync(req.RequestID, req.TaskID, 1, reason)
 }
 
-// reportDepsAsync reports a dependency import result to the platform.
-// This stub only logs; Task 7 replaces it with the real platform callback.
+// reportDepsAsync 异步向平台上报依赖包导入结果。上报失败只记日志，不影响流水线结论。
 func (s *TAAState) reportDepsAsync(requestID, taskID string, code int, msg string, checksum ...map[string]any) {
-	s.Logs.Add(LogInfo, "importDeps", "deps import report: request=%s task=%s code=%d msg=%s",
-		requestID, taskID, code, msg)
+	s.mu.RLock()
+	platformIP, dockerID := s.PlatformIP, s.DockerID
+	s.mu.RUnlock()
+
+	var cs map[string]any
+	if len(checksum) > 0 {
+		cs = checksum[0]
+	}
+
+	go func() {
+		if err := ReportDeps(context.Background(), platformIP, dockerID, requestID, taskID, code, msg, cs); err != nil {
+			s.Logs.Add(LogWarn, "importDeps", "上报依赖包导入结果失败: requestId=%s taskId=%s code=%d err=%v",
+				requestID, taskID, code, err)
+		}
+	}()
 }
 
 // auditAndReportDeps runs the fail-closed audit over the installed dependency directory.

