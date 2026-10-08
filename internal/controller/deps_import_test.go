@@ -395,6 +395,16 @@ func TestProcessImportedDepsReportsFailureCodeToPlatform(t *testing.T) {
 
 	got := make(chan map[string]any, 1)
 	platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Capture only the terminal dependency-import callback this test asserts on. The
+		// dependency audit posts its own report (scope=deps) to this same platform address from
+		// a separate goroutine, and it may arrive first; if it took the single channel slot the
+		// path assertion below would fail spuriously. Any other path is answered normally and
+		// dropped, and is never decoded or captured.
+		if r.URL.Path != reportDepsEndpoint {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"msg":"ok","result":{"received":true},"error":0}`))
+			return
+		}
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		body["__path"] = r.URL.Path
