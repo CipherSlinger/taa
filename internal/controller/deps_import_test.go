@@ -715,6 +715,29 @@ func TestRunDepsAuditEngineErrorFailsClosed(t *testing.T) {
 	}
 }
 
+// TestStatusReportsDepsState pins the two dependency fields of the /v1/taa/status envelope:
+// after a successful dependency import the response must report depsImported=true and the
+// content-address depsHash, so a caller can tell whether the training environment will receive a
+// dependency layer. Mutating either JSON key name drops that field and fails this test.
+func TestStatusReportsDepsState(t *testing.T) {
+	state, server := setupTestServer(t)
+	state.saveDepsSuccess("cafebabe", map[string]any{"size": int64(5), "algorithm": "sm3", "value": "cafebabe"})
+
+	resp := postJSON(t, server.URL+"/v1/taa/status", map[string]any{})
+	api := decodeResponse(t, resp)
+
+	result, ok := api.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result is not an object: %#v", api.Result)
+	}
+	if result["depsImported"] != true {
+		t.Fatalf("depsImported = %v, want true", result["depsImported"])
+	}
+	if result["depsHash"] != "cafebabe" {
+		t.Fatalf("depsHash = %v, want cafebabe", result["depsHash"])
+	}
+}
+
 // rollbackDepsImport's own two branches are NOT unit-tested here: Task 6's pipeline tests reach
 // both through real call sites -- TestProcessImportedDepsInstallFailureKeepsWorkingBinding (a
 // non-bound directory is removed, the working binding is kept) and
@@ -806,26 +829,5 @@ func assertDepsRootContainsOnly(t *testing.T, state *TAAState, wantName string) 
 	}
 	if len(names) != 1 || names[0] != wantName {
 		t.Fatalf("deps root holds %v, want exactly [%s]", names, wantName)
-	}
-}
-
-func TestStatusReportsDepsState(t *testing.T) {
-	state, server := setupTestServer(t)
-	state.saveDepsSuccess("cafebabe", map[string]any{"size": int64(5), "algorithm": "sm3", "value": "cafebabe"})
-
-	resp := postJSON(t, server.URL+"/v1/taa/status", map[string]any{})
-	defer resp.Body.Close()
-
-	var body struct {
-		Result map[string]any `json:"result"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if body.Result["depsImported"] != true {
-		t.Fatalf("depsImported = %v, want true", body.Result["depsImported"])
-	}
-	if body.Result["depsHash"] != "cafebabe" {
-		t.Fatalf("depsHash = %v, want cafebabe", body.Result["depsHash"])
 	}
 }

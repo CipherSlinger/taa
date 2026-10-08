@@ -211,3 +211,60 @@ func TestBuildAndSaveTrainingReportDoesNotScanDataset(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildAndSaveTrainingReportIncludesDepsChecksum pins the delivery path of the dependency
+// checksum. buildAndSaveTrainingReport is the only place a real dependency checksum reaches a
+// report: it must read the session's imported dependency checksum and land it under
+// training_task.deps_checksum.
+//
+// The assertion is on the value, not on the key's presence, because the two arguments either
+// side of it are also map[string]any: a dropped argument (nil) removes the key, while a
+// transposed argument leaves an object behind whose contents are wrong. Only comparing the value
+// catches both.
+func TestBuildAndSaveTrainingReportIncludesDepsChecksum(t *testing.T) {
+	resultDir := t.TempDir()
+	modelDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(modelDir, "model.bin"), []byte("test-model"), 0o644); err != nil {
+		t.Fatalf("write model file: %v", err)
+	}
+
+	// A hand-built literal: stateStore is nil, so sealStateLocked is a no-op and nothing touches
+	// disk. Only the fields this path reads are set.
+	state := &TAAState{
+		Security: SecurityConfig{
+			ModelDir: modelDir,
+		},
+		DepsChecksum: map[string]any{"size": int64(42), "algorithm": "sm3", "value": "deps-hash"},
+	}
+
+	startedAt := time.Now().Add(-10 * time.Second)
+	finishedAt := time.Now()
+
+	data, err := state.buildAndSaveTrainingReport("task-deps", startedAt, finishedAt, "succeeded", 0, "", nil, false, resultDir)
+	if err != nil {
+		t.Fatalf("buildAndSaveTrainingReport: %v", err)
+	}
+
+	var report map[string]any
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+
+	trainingTask, ok := report["training_task"].(map[string]any)
+	if !ok {
+		t.Fatalf("training_task missing: %#v", report)
+	}
+	depsChecksum, ok := trainingTask["deps_checksum"].(map[string]any)
+	if !ok {
+		t.Fatalf("training_task.deps_checksum missing or not an object: %#v", trainingTask["deps_checksum"])
+	}
+	if depsChecksum["value"] != "deps-hash" {
+		t.Fatalf("deps_checksum.value = %v, want deps-hash", depsChecksum["value"])
+	}
+	if depsChecksum["algorithm"] != "sm3" {
+		t.Fatalf("deps_checksum.algorithm = %v, want sm3", depsChecksum["algorithm"])
+	}
+	if depsChecksum["size"] != float64(42) {
+		t.Fatalf("deps_checksum.size = %v, want 42", depsChecksum["size"])
+	}
+}

@@ -76,6 +76,11 @@ func TestBuildTrainingReport(t *testing.T) {
 	if trainingTask["status"] != "succeeded" || trainingTask["exit_code"] != 0 {
 		t.Fatalf("unexpected status/exit_code: %v, %v", trainingTask["status"], trainingTask["exit_code"])
 	}
+	// This call passes nil for the dependency checksum, and the report for a session that never
+	// imported dependencies must not grow a deps_checksum key at all.
+	if _, exists := trainingTask["deps_checksum"]; exists {
+		t.Fatal("deps_checksum must be absent when no deps are imported")
+	}
 
 	metrics, ok := trainingTask["metrics"].(map[string]any)
 	if !ok || metrics["loss"] != 0.05 {
@@ -142,7 +147,16 @@ func TestBuildTrainingReportIncludesDepsChecksum(t *testing.T) {
 	if !ok {
 		t.Fatalf("training_task missing: %#v", report)
 	}
-	if task["deps_checksum"] == nil {
-		t.Fatalf("deps_checksum missing from training_task: %#v", task)
+	got, ok := task["deps_checksum"].(map[string]any)
+	if !ok {
+		t.Fatalf("deps_checksum missing or not an object: %#v", task["deps_checksum"])
+	}
+	// Compare the value, not just its presence: a hardcoded placeholder or the wrong map would
+	// still satisfy an existence check while delivering nothing useful to the platform.
+	if got["value"] != "deps-hash" {
+		t.Fatalf("deps_checksum.value = %v, want deps-hash", got["value"])
+	}
+	if got["algorithm"] != "sm3" {
+		t.Fatalf("deps_checksum.algorithm = %v, want sm3", got["algorithm"])
 	}
 }
