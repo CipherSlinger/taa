@@ -292,7 +292,13 @@ downloadToTempFile                    resource.DownloadToTempFile（沿用限流
 - **依赖审计**复用 `/v1/taa/reportAudit`，在该接口新增可选字段 `scope`（`model` | `deps`，
   缺省 `model`，向后兼容），平台侧据此区分两类报告，不必新开审计回调。
 - **新增平台回调 `POST /v1/taa/reportDeps`**：`requestId`/`taskId`/`code`/`msg`/`checksum`，
-  形状对齐 `reportModelImport`（`internal/controller/model_reporting.go`）。
+  形状对齐 `reportModelImport`（`internal/controller/import_processing.go:698` 的
+  `reportModelImportAsync`，及其下游 `internal/platform/reporter.go:152` 的 `ReportModelImport`）。
+
+  > 订正记录（2026-10-08，Task 7 编码前预审）：初稿把落点写成
+  > `internal/controller/model_reporting.go`，**该文件里没有这个函数**——它装的是
+  > `ReportModelLog` / `ReportProgress` / `reportWatcher`。实测位置是 `import_processing.go:698`。
+  > 实现者照初稿去找会找不到，故此处按实测改写（Task 7 的计划正文里已有同一条订正）。
 - **`reportRes` 的 `training_task` 增加 `deps_checksum`**，与既有 `model_checksum`/
   `data_checksum` 并列，保证"这一轮跑在哪套依赖上"可追溯。
 - `api/proto/taa.proto` 同步补 `ImportDeps` / `ReportDeps` 消息与服务方法，保持设计稿一致
