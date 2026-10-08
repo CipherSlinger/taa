@@ -196,6 +196,8 @@ func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphert
 	s.Logs.Add(LogInfo, "importDeps", "阶段%d: 依赖包导入完成: hash=%s, taskId=%s", phase, hash, req.TaskID)
 }
 
+// depsAuditMarker is the sentinel file written into a dependency directory once its audit has
+// passed. Trust depends on its content (depsAuditMarkerVersion), not merely on its presence.
 const depsAuditMarker = ".taa_audit_ok"
 
 // depsAuditMarkerVersion is the trust content of the audit marker. Bump it whenever the audit
@@ -252,13 +254,16 @@ func writeAuditMarker(depsDir string) error {
 //
 // The comparison and the clearing are two separate lock acquisitions, so in general they could
 // be interleaved by a concurrent writer. They are safe here because tryAcquireTaskTyped
-// single-flights dependency imports: only the pipeline writes this state, and no second
-// deps_import can be admitted while one is in flight.
+// single-flights dependency imports: the pipeline is the only runtime writer of this state,
+// and no second deps_import can be admitted while one is in flight (the startup restore,
+// app.go, runs before the server accepts requests).
 //
-// runDepsAudit also removes the directory on every path that returns false (deps_audit.go),
-// so the removal here is normally a no-op. It is kept so that this pipeline's own
-// "no half-built directory survives a failure" guarantee does not hinge on a side effect
-// of a function whose job is to audit.
+// Today, runDepsAudit is the Task 6 stub and removes nothing, so the removal here is the
+// pipeline's only one. Once Task 8 replaces the stub with the real audit, which will also
+// remove the directory on every path that returns false (deps_audit.go), the removal here
+// becomes a redundant second net kept so that this pipeline's own "no half-built directory
+// survives a failure" guarantee does not hinge on a side effect of a function whose job is
+// to audit.
 func (s *TAAState) rollbackDepsImport(depsDir string) {
 	_ = os.RemoveAll(depsDir)
 	// currentDepsDir() already encodes "imported && hash non-empty", and depsDirForHash
