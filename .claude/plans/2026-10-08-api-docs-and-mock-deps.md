@@ -97,3 +97,43 @@ TAA 侧新增/扩展的对外面：
 两任务文件足迹完全不相交（`docs/api-design.md` vs `tools/platform-mock/**`），Task 1 不跑测试，
 故可并行；上限 2，正好两个。**为避免共享 git index 竞态，两个实现者都不执行任何 git 命令**，
 由控制方在两侧完成后按显式路径分两次提交。
+
+---
+
+## 收尾：终审发现与处置（2026-10-08）
+
+终审判定「需要修改」。全部结论都经**实测或逐字读码**复核，无一条采信推演。
+
+### 一条 Important（超出本计划范围，经用户裁定后修）
+
+审查者推断（**自称未实测**）：全新实例上 `training_task.deps_checksum` 会输出 `{}`。
+用临时探针实测证实：`RESULT: training_task.deps_checksum present=true value=map[string]interface {}{}`。
+
+根因：`internal/store/sealed_state.go:156-164` 把 `ModelChecksum` / `DataChecksum` / `DepsChecksum`
+都初始化为**非 nil 空 map**，而 `internal/runtime/report.go` 只判 `!= nil`，该守卫在全新实例上永不命中。
+
+为何只有依赖这一路会真正暴露：model / data 的 `{}` 分支在真实训练里不可达（训练必有模型与数据），
+而**依赖本来就是可选的**，于是「没导依赖 → 报 `{}`」是常态路径，违背 spec 的
+「未导入依赖的训练会话，报告应与改动前逐字节一致」。
+
+处置（用户裁定「改代码」）：`report.go` 改用 `len(depsChecksum) > 0`，与该函数上方 metrics 的写法一致；
+新增 `TestBuildTrainingReportOmitsEmptyDepsChecksum` 覆盖冷启动形态。变异回 `!= nil` 后该用例
+以预期断言失败（`got map[string]interface {}{}`），证明它有判别力；未动 model / data 的既有行为。
+
+### 四条 Minor（均在本计划范围内，已修）
+
+| 项 | 复核结论 | 处置 |
+|---|---|---|
+| §4.7 的 409 示例 `msg` 是杜撰 | 实测 `route.go:639/652/666` 三种真实文案，无一条与文档相符 | 改用真实模板，并列出三种形态，注明只按 `error=409` 判定 |
+| §3.10「两条回调」窄化成只讲 `code=1` | 实测 `deps_audit.go` 两条 `code=2` 路径均 `return false`，调用方随即发 `reportDeps(code=1)` | 扩写为「审计未通过**或审计无法完成**」 |
+| 回调中 `taskId` 恒非空 | 实测 `reporter.go:124-127` 用 `requestId` 回填空 `taskId` | 参数表补注 |
+| `TestDashboardAggregatedStatus` 的 `Deps.Received` 断言空转 | 实测：删掉 dashboard 的 `"deps"` 键，类型化解码仍得零值 `false`，断言照过 | 增补 raw key 存在性断言；按行号变异键名验证其判别力 |
+
+> 复核过程中一度用 `sed` 按空格模式变异，**未匹配成功**，测试「原样通过」——
+> 这类假阴性什么也证明不了。改为按行号精确变异后重做，才得到可信结论。
+
+### 仍未决（不在本计划范围）
+
+§5.1 / §5.2 的既有 doc/code 不一致：文档列了 `dataImported` / `trainingDataImported` / `trainingDone`，
+而 `handler_system.go` 实际返回 `trainingRunning`。已核实为**改动前既有**（HEAD 上即如此，本分支未触碰），
+但无法判定文档与代码哪一侧是权威，故未擅自修改。
