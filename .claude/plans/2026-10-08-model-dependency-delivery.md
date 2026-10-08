@@ -3531,6 +3531,36 @@ state.RuntimeConfig = `{"commands":["env > envdump.txt"],"env":{"PYTHONPATH":"/p
 
 ---
 
+### Task 9 闭环记录（2026-10-08，K 项闭合 + 质量审查 APPROVE）
+
+审查对象：`6b97b76`（纯函数 + 注入接线）、`399d3b0`（K 项补测）、`1583361`（质量审查收尾）。
+
+**K 的闭合靠两次变异，两次都还原并留痕**（这是本任务唯一的承重证据，故逐字记录）：
+
+| 变异 | 预期 | 实测 |
+| :--- | :--- | :--- |
+| 删 `import_processing.go:188`（整行） | 新增的正向用例必挂 | `TestTrainingSubprocessEnvCarriesDepsDir` **FAIL** @ `deps_env_test.go:180`，`TAA_DEPS_DIR = ""`；负向对照与四个纯函数用例**全过** |
+| `deps_env.go` 的「前置」改为「覆盖」 | 两处断言均可判别 | 纯函数用例 `:16` 与子进程用例 `:183` **双 FAIL**，消息指明 "platform value preserved, not overwritten" |
+
+第一行同时复现了 K 的**前提**：四个纯函数用例 + 一个回归用例在删掉 `:188` 后照过——证明 K 是真实缺口而非重述。
+两次变异后的 blob 均与 HEAD 相等（`b5697d0…` / `0b8cbab…`），`git log --all --find-object` 为空。
+
+**质量审查** APPROVED，无 Critical / Important，3 条 Minor 已全部落地（`1583361`，纯注释 + 一个 no-op 删除 + 断言形状）：
+
+1. `deps_env.go` 的 doc 补上**尾冒号规则**——它是本文件唯一带安全含义的决策（尾随空条目会让 Python 把 cwd 加进 `sys.path`，spec §7），此前只活在一句测试失败信息里。
+2. 删掉 `deps_env_test.go` 里 no-op 的 `os.MkdirAll(GetDepsDir())`（夹具已建该目录），改为在 `runTrainingWithDeps` 的 doc 里写明**依赖目录刻意不落盘**——注入是纯字符串操作，本用例断言的是子进程环境形状而非磁盘可导入性。
+3. 正向断言改用 `v, ok :=` 并在消息里带 `present=%v`，使失败能区分「键缺失」与「值为空」。
+
+**经论证不改（记录理由）**：
+
+- `import_processing.go:189` 的 `len(cfg.Commands) == 0` 是**既有死代码**（`runtime/config.go:58-60` 已对空 commands 报错），与本任务无关，不动——只作为读者可能在此处停顿的提示。
+- `unsetAmbientEnv` 只 unset `TAA_DEPS_DIR` 而不 unset `PYTHONPATH`：**正确**。`MergedRuntimeEnv` 以 `os.Environ()` 打底、`userEnv` 后写覆盖，故宿主 `PYTHONPATH` 必被 `runtimeConfig.env` 的值确定性覆盖，不存在假通过口；而 `TAA_DEPS_DIR` 若不 unset，宿主残留值会经 `os.Environ()` 漏进 dump，把负向断言变成假通过——helper 防的正是这一处。
+- 纯函数用例与子进程用例的语义重叠**不合并**：前者毫秒级失败且能指认是 trim / 尾冒号 / 不变量哪一条错了，后者只在接线层面说话，合并必然失去一侧。
+
+**承重前提已复核**：注入路径全仓唯一——`executeTraining` 只有 `import_processing.go:217` 一个调用点，`runRuntimeConfigWithControl` 在 controller 内只有 `:475` 一个；`handler_task.go:235` 的 `parseRuntimeConfig` 丢弃 env（`cfg, _, err`），只做校验不触发训练，不构成漏注入旁路。
+
+---
+
 ## Task 10: `deps_checksum` 进训练报告，`status` 暴露依赖状态
 
 **Files:**
