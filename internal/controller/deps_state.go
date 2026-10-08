@@ -60,8 +60,8 @@ func (s *TAAState) currentDepsDir() string {
 	return filepath.Join(s.Security.GetDepsDir(), s.DepsHash)
 }
 
-// depsDirForHash returns the content-addressed directory for any hash, including
-// historical versions that are not currently active (also used to address historical versions for rollback and cleanup).
+// depsDirForHash returns the content-addressed directory for any hash, including historical
+// versions that are not currently active, so rollback and cleanup can still address them.
 func (s *TAAState) depsDirForHash(hash string) string {
 	return filepath.Join(s.Security.GetDepsDir(), hash)
 }
