@@ -129,11 +129,13 @@ func TestImportDepsSuccessReleasesTaskSlot(t *testing.T) {
 // decrypted plaintext archive is validated, "installed" into DEPS_DIR/<sm3>, the state fields
 // are set, and the audit marker reaches disk.
 //
-// Security.ScanEnabled=false makes auditAndReportDeps take the existing short-circuit and pass,
-// so no audit hook has to be substituted -- the same technique the model-import tests use.
+// Security.ScanEnabled=true makes the pipeline run the real audit (the fixture's regex baseline
+// engine, no LLM) over the stub's empty target directory, which passes it. That is deliberate:
+// the marker is only ever earned by an audit that ran and passed, so asserting it here would be
+// vacuous with scanning off.
 func TestProcessImportedDepsInstallsAndRecords(t *testing.T) {
 	state, _ := setupTestState(t)
-	state.Security.ScanEnabled = false
+	state.Security.ScanEnabled = true
 
 	origInstall := depsInstallFunc
 	t.Cleanup(func() { depsInstallFunc = origInstall })
@@ -162,8 +164,13 @@ func TestProcessImportedDepsInstallsAndRecords(t *testing.T) {
 
 // TestProcessImportedDepsSkipsWhenAlreadyAudited verifies idempotency: when the same hash is
 // already marked, the installer must not be called again.
+//
+// Scanning is on so the first run earns the marker through the real audit rather than through
+// the skip path, which no longer writes one. The reuse this test asserts is therefore the reuse
+// the idempotence check is meant to grant: an audited directory, not merely a present one.
 func TestProcessImportedDepsSkipsWhenAlreadyAudited(t *testing.T) {
 	state, _ := setupTestState(t)
+	state.Security.ScanEnabled = true
 
 	origInstall := depsInstallFunc
 	t.Cleanup(func() { depsInstallFunc = origInstall })
@@ -183,6 +190,53 @@ func TestProcessImportedDepsSkipsWhenAlreadyAudited(t *testing.T) {
 
 	if calls != 1 {
 		t.Fatalf("installer called %d times, want 1 (second run must reuse the audited dir)", calls)
+	}
+}
+
+// TestProcessImportedDepsScanDisabledWritesNoMarker is the regression test for what the audit
+// marker means: it is written if and only if an audit actually ran and passed. With scanning off
+// the pipeline skips the audit, so the dependency set must leave no marker behind.
+//
+// The consequence it guards is not merely a stale file. The directory is content-addressed and
+// permanent and the idempotence check believes a matching marker forever, so a marker minted by
+// a skip would keep a never-audited set reported as audited even after the operator turns
+// scanning back on. The re-delivery below is that scenario's observable half: with the same
+// archive, and therefore the same directory, only a marker could make the second run reuse it,
+// so it must reach the installer again.
+func TestProcessImportedDepsScanDisabledWritesNoMarker(t *testing.T) {
+	state, _ := setupTestState(t)
+	state.Security.ScanEnabled = false
+
+	origInstall := depsInstallFunc
+	t.Cleanup(func() { depsInstallFunc = origInstall })
+
+	calls := 0
+	depsInstallFunc = func(wheelhouse, target string) error {
+		calls++
+		return os.MkdirAll(target, 0o755)
+	}
+
+	req := depsImportRequest{ResourceURL: "http://x/deps.tar.gz", RequestID: "req-s", TaskID: "task-s"}
+	state.processImportedDeps(req, 1, buildTestDepsArchive(t))
+
+	if !state.DepsImported {
+		t.Fatal("DepsImported = false after a successful scan-disabled pipeline run")
+	}
+	if auditMarkerExists(state.currentDepsDir()) {
+		t.Fatalf("a skipped audit left an audit marker in %s: the set would be reported as audited forever",
+			state.currentDepsDir())
+	}
+
+	// Turn scanning back on and re-deliver the same content. The hash is unchanged, so only a
+	// marker could short-circuit this run.
+	state.Security.ScanEnabled = true
+	state.processImportedDeps(req, 1, buildTestDepsArchive(t))
+
+	if calls != 2 {
+		t.Fatalf("installer called %d times, want 2: a set that was never audited must not be reused", calls)
+	}
+	if !auditMarkerExists(state.currentDepsDir()) {
+		t.Fatal("the re-delivered set passed a real audit but carries no marker")
 	}
 }
 
@@ -252,9 +306,12 @@ func TestProcessImportedDepsRejectsZipSlip(t *testing.T) {
 // TestProcessImportedDepsInstallFailureKeepsWorkingBinding covers the failure semantics spec 6
 // correction 2 stresses most: a newcomer whose install fails must not unseat the dependency set
 // that is already bound and working.
+//
+// Scanning is on, and the stub installs an empty target, so the first import passes the real
+// audit and earns its marker: only then does "the bound directory kept its marker" say anything.
 func TestProcessImportedDepsInstallFailureKeepsWorkingBinding(t *testing.T) {
 	state, _ := setupTestState(t)
-	state.Security.ScanEnabled = false
+	state.Security.ScanEnabled = true
 
 	origInstall := depsInstallFunc
 	t.Cleanup(func() { depsInstallFunc = origInstall })
@@ -345,9 +402,13 @@ func TestProcessImportedDepsKeepsBindingWhenNewAuditFails(t *testing.T) {
 // directory that is currently bound, destroys it, and then fails to rebuild it. The binding
 // must not survive its own directory -- a bit pointing at a missing directory is the same
 // silent degradation with the two halves swapped.
+//
+// Scanning is on so the first import earns a real marker for the pipeline to remove: with
+// scanning off the directory would never carry one, the removal below would fail, and the
+// idempotence check would miss for a reason other than the one this test is about.
 func TestProcessImportedDepsInstallFailureClearsBindingWhenItsDirectoryIsGone(t *testing.T) {
 	state, _ := setupTestState(t)
-	state.Security.ScanEnabled = false
+	state.Security.ScanEnabled = true
 
 	origInstall := depsInstallFunc
 	t.Cleanup(func() { depsInstallFunc = origInstall })
@@ -485,12 +546,13 @@ func TestAuditMarkerVersionGate(t *testing.T) {
 // dependency directory that carries a marker whose content is not the current policy's must be
 // rebuilt rather than reused.
 //
-// Security.ScanEnabled=false is deliberate here: it lets the pipeline reach the marker write
-// (see auditAndReportDeps), which is what gives the test a real marker to overwrite with a
-// foreign one.
+// Security.ScanEnabled=true is what gives the test a real marker to overwrite: the first run
+// passes the audit and writes one, and the overwrite below replaces it with a foreign string.
+// With scanning off no marker would exist in the first place, the directory would be rebuilt
+// for that reason instead, and the test would pass without ever exercising the version gate.
 func TestProcessImportedDepsReauditsForeignMarkerDir(t *testing.T) {
 	state, _ := setupTestState(t)
-	state.Security.ScanEnabled = false
+	state.Security.ScanEnabled = true
 
 	origInstall := depsInstallFunc
 	t.Cleanup(func() { depsInstallFunc = origInstall })

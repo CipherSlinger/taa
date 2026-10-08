@@ -176,18 +176,26 @@ func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphert
 	}
 	s.Logs.Add(LogInfo, "importDeps", "依赖包安装完成: %s", depsDir)
 
-	if !s.auditAndReportDeps(req, depsDir) {
+	passed, audited := s.auditAndReportDeps(req, depsDir)
+	if !passed {
 		s.rollbackDepsImport(depsDir)
 		s.setCurrentOp("idle")
 		s.reportDepsFailure(req, "依赖包审计未通过")
 		return
 	}
 
-	if err := writeAuditMarker(depsDir); err != nil {
-		s.rollbackDepsImport(depsDir)
-		s.setCurrentOp("idle")
-		s.reportDepsFailure(req, fmt.Sprintf("写入审计标记失败: %v", err))
-		return
+	// The marker means "an audit ran and passed" (spec 6), so it is written only when one did.
+	// The dependency directory is content-addressed and permanent, and the idempotency check
+	// above believes a matching marker forever: a marker minted by the ScanEnabled=false skip
+	// would keep a never-audited set reported as audited even after scanning is turned back on,
+	// which is exactly the invariant the marker's own comment states.
+	if audited {
+		if err := writeAuditMarker(depsDir); err != nil {
+			s.rollbackDepsImport(depsDir)
+			s.setCurrentOp("idle")
+			s.reportDepsFailure(req, fmt.Sprintf("写入审计标记失败: %v", err))
+			return
+		}
 	}
 
 	s.saveDepsSuccess(hash, checksum)
@@ -206,13 +214,13 @@ const depsAuditMarker = ".taa_audit_ok"
 //
 // Existence alone is not enough to trust a marker. Anything that writes one under a weaker
 // policy would otherwise be believed forever, and the directory it guards is content-addressed
-// and permanent. That is not hypothetical: this pipeline writes the same marker on the
-// ScanEnabled=false short-circuit as it does after a real audit, and the fail-open stub this
-// branch used to carry wrote a genuine marker for a set that was never audited at all.
-// Versioning is what makes those markers distinguishable, and it is the only handle that lets
-// a future policy change invalidate the markers already on disk. It does not provide
-// tamper-resistance -- anyone who can write into DEPS_DIR can forge the string -- which would
-// take a signature; this is the right starting point before that.
+// and permanent. That is why the pipeline writes this marker only after a real audit has passed
+// and writes none on the ScanEnabled=false short-circuit: there is no such thing as a marker
+// minted by a skip, so a set that was never audited cannot be reused as if it had been. What
+// the version buys is the only handle that lets a future engine, policy or rule-set change
+// invalidate the markers already on disk. It does not provide tamper-resistance -- anyone who
+// can write into DEPS_DIR can forge the string -- which would take a signature; this is the
+// right starting point before that.
 const depsAuditMarkerVersion = "taa-deps-audit-v1\n"
 
 func auditMarkerExists(depsDir string) bool {
@@ -314,10 +322,14 @@ func (s *TAAState) reportDepsAsync(requestID, taskID string, code int, msg strin
 // It reports the audit result itself, with scope "deps" (see deps_audit.go). The import
 // pipeline's own terminal reportDeps callback is NOT its job: that one belongs to
 // processImportedDeps, which must still fire code=1 when this returns false.
-func (s *TAAState) auditAndReportDeps(req depsImportRequest, depsDir string) bool {
+//
+// It returns whether the pipeline may continue and whether an audit actually ran: false for the
+// second value means the scan-disabled short-circuit skipped the audit, so the caller must not
+// treat the dependency set as audited (see the marker write in processImportedDeps).
+func (s *TAAState) auditAndReportDeps(req depsImportRequest, depsDir string) (passed bool, audited bool) {
 	if !s.Security.ScanEnabled {
 		s.Logs.Add(LogInfo, "audit", "安全扫描未启用，跳过依赖包审计")
-		return true
+		return true, false
 	}
-	return s.runDepsAudit(req, depsDir)
+	return s.runDepsAudit(req, depsDir), true
 }
