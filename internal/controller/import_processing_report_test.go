@@ -60,6 +60,7 @@ func TestBuildTrainingReportAddsModelChecksumAndKeepsTrainingMetrics(t *testing.
 		"",
 		map[string]any{"algorithm": "sm3", "value": "model-digest"},
 		map[string]any{"algorithm": "sm3", "value": "data-archive-digest", "size": int64(934)},
+		nil,
 		trainingResult,
 		audit,
 		true,

@@ -54,7 +54,7 @@ func TestBuildTrainingReport(t *testing.T) {
 		"decision": "APPROVED",
 	}
 
-	report, err := BuildTrainingReport("task-001", startedAt, finishedAt, "succeeded", 0, "", modelChecksum, dataChecksum, trainingResult, codeauditSection)
+	report, err := BuildTrainingReport("task-001", startedAt, finishedAt, "succeeded", 0, "", modelChecksum, dataChecksum, nil, trainingResult, codeauditSection)
 	if err != nil {
 		t.Fatalf("BuildTrainingReport failed: %v", err)
 	}
@@ -123,5 +123,26 @@ func TestBuildCrashFailureReport(t *testing.T) {
 	dataChecksum := dataset["checksum"].(map[string]any)
 	if dataChecksum["value"] != "N/A" {
 		t.Fatalf("expected N/A for default dataChecksum, got %v", dataChecksum)
+	}
+}
+
+func TestBuildTrainingReportIncludesDepsChecksum(t *testing.T) {
+	startedAt := time.Date(2026, 10, 8, 1, 0, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(3 * time.Minute)
+
+	depsChecksum := map[string]any{"size": int64(42), "algorithm": "sm3", "value": "deps-hash"}
+
+	report, err := BuildTrainingReport("task-deps", startedAt, finishedAt, "succeeded", 0, "",
+		nil, nil, depsChecksum, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildTrainingReport: %v", err)
+	}
+
+	task, ok := report["training_task"].(map[string]any)
+	if !ok {
+		t.Fatalf("training_task missing: %#v", report)
+	}
+	if task["deps_checksum"] == nil {
+		t.Fatalf("deps_checksum missing from training_task: %#v", task)
 	}
 }

@@ -808,3 +808,24 @@ func assertDepsRootContainsOnly(t *testing.T, state *TAAState, wantName string) 
 		t.Fatalf("deps root holds %v, want exactly [%s]", names, wantName)
 	}
 }
+
+func TestStatusReportsDepsState(t *testing.T) {
+	state, server := setupTestServer(t)
+	state.saveDepsSuccess("cafebabe", map[string]any{"size": int64(5), "algorithm": "sm3", "value": "cafebabe"})
+
+	resp := postJSON(t, server.URL+"/v1/taa/status", map[string]any{})
+	defer resp.Body.Close()
+
+	var body struct {
+		Result map[string]any `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Result["depsImported"] != true {
+		t.Fatalf("depsImported = %v, want true", body.Result["depsImported"])
+	}
+	if body.Result["depsHash"] != "cafebabe" {
+		t.Fatalf("depsHash = %v, want cafebabe", body.Result["depsHash"])
+	}
+}

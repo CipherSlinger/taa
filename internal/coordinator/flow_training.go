@@ -216,7 +216,7 @@ func (c *Coordinator) runTrainingWithTelemetry(ctx context.Context, control *run
 		auditSection = projectAuditToMap(lastAudit)
 	}
 
-	report, _ := runtime.BuildTrainingReport(record.TaskID, startedAt, finishedAt, status, exitCode, failureReason, c.phaseState.ModelChecksum(), c.phaseState.DataChecksum(), trainResult, auditSection)
+	report, _ := runtime.BuildTrainingReport(record.TaskID, startedAt, finishedAt, status, exitCode, failureReason, c.phaseState.ModelChecksum(), c.phaseState.DataChecksum(), nil, trainResult, auditSection)
 	_ = utils.WriteJSONFile(filepath.Join(record.ResultDir, "training_report.json"), report, 0o644)
 
 	// 上报结果到管控平台

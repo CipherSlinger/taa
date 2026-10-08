@@ -976,7 +976,7 @@ func (s *TAAState) buildAndSaveTrainingReport(taskID string, startedAt, finished
 
 	dataChecksum := s.getDataChecksum()
 
-	report, err := buildTrainingReport(taskID, startedAt, finishedAt, status, exitCode, failureReason, modelChecksum, dataChecksum, trainingResult, audit, includeAudit)
+	report, err := buildTrainingReport(taskID, startedAt, finishedAt, status, exitCode, failureReason, modelChecksum, dataChecksum, s.getDepsChecksum(), trainingResult, audit, includeAudit)
 	if err != nil {
 		return nil, err
 	}
@@ -1013,12 +1013,12 @@ func BuildCrashFailureReport(taskID string, startedAt, finishedAt time.Time, fai
 	return runtime.BuildCrashFailureReport(taskID, startedAt, finishedAt, failureReason, modelChecksum, dataChecksum)
 }
 
-func buildTrainingReport(taskID string, startedAt, finishedAt time.Time, status string, exitCode int, failureReason string, modelChecksum map[string]any, dataChecksum map[string]any, trainingResult map[string]any, audit *codeaudit.AuditReport, includeAudit bool) (map[string]any, error) {
+func buildTrainingReport(taskID string, startedAt, finishedAt time.Time, status string, exitCode int, failureReason string, modelChecksum map[string]any, dataChecksum map[string]any, depsChecksum map[string]any, trainingResult map[string]any, audit *codeaudit.AuditReport, includeAudit bool) (map[string]any, error) {
 	var auditSection map[string]any
 	if includeAudit && audit != nil {
 		auditSection = projectCodeAuditSection(audit)
 	}
-	return runtime.BuildTrainingReport(taskID, startedAt, finishedAt, status, exitCode, failureReason, modelChecksum, dataChecksum, trainingResult, auditSection)
+	return runtime.BuildTrainingReport(taskID, startedAt, finishedAt, status, exitCode, failureReason, modelChecksum, dataChecksum, depsChecksum, trainingResult, auditSection)
 }
 
 func cleanDatasetField(src map[string]any) map[string]any {
