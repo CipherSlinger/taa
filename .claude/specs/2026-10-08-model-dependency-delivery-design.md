@@ -36,10 +36,10 @@
 
 ### 2.2 训练执行方式
 
-`internal/runtime/executor.go`：把 `commands` 用 ` && ` 拼成一行交给 `/bin/sh -c`（`:44`），
+`internal/runtime/executor.go`：把 `commands` 用 ` && ` 拼成一行交给 `/bin/sh -c`（`:31`），
 `cwd` 设为模型目录（`:49`），环境变量经 `MergedRuntimeEnv` 合并（`:95-114`），
 覆盖顺序为 **进程环境 → `runtimeConfig.env` → TAA 系统变量**，即系统变量最后写入、优先生效。
-TAA 系统变量目前注入 `TAA_TASK_ID`/`TAA_DATA_DIR`/`TAA_MODEL_OUTPUT_DIR`/`TAA_CHECKPOINT_DIR` 等（`:50-77`）。
+TAA 系统变量目前注入 `TAA_TASK_ID`/`TAA_DATA_DIR`/`TAA_MODEL_OUTPUT_DIR`/`TAA_CHECKPOINT_DIR` 等（`:50-62`）。
 
 ### 2.3 模型目录是"整体重建"的
 
@@ -215,18 +215,36 @@ downloadToTempFile                    resource.DownloadToTempFile（沿用限流
 
 ## 7. 训练时生效
 
-在 `internal/runtime/executor.go` 的 `RunRuntimeConfigWithControl` 中注入：
+注入落点在 **controller**，不在 `executor.go`。
 
-- `TAA_DEPS_DIR=<depsDir>/<hash>` 加入 `systemEnv`（`:50-77` 那组 TAA 系统变量）。
-- **`PYTHONPATH` 必须单独处理。** `MergedRuntimeEnv`（`:95-114`）的覆盖顺序使
-  `systemEnv` 最后写入；若把 `PYTHONPATH` 放进 `systemEnv`，平台在 `runtimeConfig.env`
-  里设置的 `PYTHONPATH` 会被**静默覆盖**。做法是在合并**之后**前置拼接：
+- `TAA_DEPS_DIR=<depsDir>/<hash>` 与前置的 `PYTHONPATH` 都由 `internal/controller/deps_env.go`
+  的纯函数 `applyDepsEnv(env, depsDir) map[string]string` 写进 `runtimeConfig` 派生出的那份
+  env，在 `executeTraining` 中于 `parseRuntimeConfig` 之后、`runRuntimeConfigWithControl`
+  之前调用（`import_processing.go`）。该份 env 随后作为 `MergedRuntimeEnv` 的 `userEnv` 参与合并。
+- **`PYTHONPATH` 必须单独处理，且必须前置而非覆盖。** `MergedRuntimeEnv`（`:95-114`）的覆盖
+  顺序为 **进程环境 → `userEnv` → `systemEnv`**，最后写入者胜；若把 `PYTHONPATH` 放进
+  `systemEnv`，平台在 `runtimeConfig.env` 里设置的 `PYTHONPATH` 会被**静默覆盖**。前置拼接得到
+  `PYTHONPATH=<depsDir>/<hash>:<runtimeConfig.env 里的 PYTHONPATH>`；没有平台值时**不得留尾冒号**
+  （`PYTHONPATH=<depsDir>` 即可），尾随空条目在 Python 里等价于把当前工作目录加入搜索路径。
 
-```
-PYTHONPATH=<depsDir>/<hash>:<合并后的原 PYTHONPATH>
-```
+仅当 `DepsImported == true` 时注入，否则 `applyDepsEnv` 原样返回一份副本——这是「未导入依赖时
+训练环境逐字节不变」的落点。
 
-仅当 `DepsImported == true` 时注入，否则完全不改动环境。
+> 订正记录（2026-10-08，Task 9 编码前预审）：
+>
+> 1. 本节初稿写"在 `internal/runtime/executor.go` 的 `RunRuntimeConfigWithControl` 中注入"，
+>    并把 `TAA_DEPS_DIR` 归到 `systemEnv`。**实际落点在 controller。** 两种落点的最终环境
+>    **等价**——`systemEnv` 不含这两个键，故 `userEnv` 的写入不会被覆盖；而 `runtimeConfig.env`
+>    里的同名值会被 `applyDepsEnv` 覆盖，权威性不变。选 controller 侧的理由：纯函数、可直接
+>    单测、不必改动 `executor.go` 的签名，也不必让 `internal/runtime` 反向依赖 controller 状态。
+>    本节措辞已按实际改动。
+> 2. 初稿公式写作"`<合并后的原 PYTHONPATH>`"，会被读成"要读进程环境里的 `PYTHONPATH`"。实际取的
+>    是 **`runtimeConfig.env` 里那份**。二者在本仓库当前**等价**（全仓库无任何位置设置
+>    `PYTHONPATH`，已 grep 核实），但语义必须说清：`runtimeConfig.env` 覆盖进程环境是
+>    `MergedRuntimeEnv` 的**既有**契约，本次不改变它，只在其之上加一个前缀。
+> 3. 前置拼接走的是 **map**（`out["PYTHONPATH"] = depsDir + ":" + existing`），不是往
+>    `[]string` 追加第二条 `PYTHONPATH=`。这一点必须守住：glibc 的 `getenv` 取**首个**匹配而
+>    Go 的 `syscall.Getenv` 取**最后一个**，一旦出现重复键，Python 与 Go 会看到不同的值。
 
 ## 8. 审计、上报与协议同步
 
