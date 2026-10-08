@@ -259,10 +259,11 @@ func writeAuditMarker(depsDir string) error {
 // app.go, runs before the server accepts requests).
 //
 // runDepsAudit removes the directory itself on every path that returns false (deps_audit.go),
-// so the os.RemoveAll below is a redundant second net. It is kept deliberately: this
-// pipeline's own "no half-built directory survives a failure" guarantee must not hinge on a
-// side effect of a function whose job is to audit, and the state decision above all must be
-// made here rather than there.
+// so on the audit-failure path the os.RemoveAll below is a redundant second net -- and on the
+// other failure paths that route here (the pre-install cleanup, the install failure and the
+// marker write) it is the only one. It is kept deliberately: this pipeline's own "no half-built
+// directory survives a failure" guarantee must not hinge on a side effect of a function whose
+// job is to audit, and the state decision in particular belongs here, not there.
 func (s *TAAState) rollbackDepsImport(depsDir string) {
 	_ = os.RemoveAll(depsDir)
 	// currentDepsDir() already encodes "imported && hash non-empty", and depsDirForHash

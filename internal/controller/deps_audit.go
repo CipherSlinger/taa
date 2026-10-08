@@ -20,8 +20,9 @@ import (
 // Known blind spots -- a passing audit is not the same as a trusted dependency set:
 //
 //  1. The scan reads the unpacked wheel *contents*. The engine skips compiled artifacts by
-//     extension (internal/codeaudit/rules.go), so supply-chain risk carried inside a .so or
-//     .pyd binary is outside what this audit can see.
+//     extension (internal/codeaudit/scanner.go, hasMatchingExtension; the semgrep engine applies
+//     the same check in internal/codeaudit/semgrep_engine.go), so supply-chain risk carried
+//     inside a .so or .pyd binary is outside what this audit can see.
 //  2. Integrity is SM3 content addressing only. There is no publisher signature and no
 //     signature verification; the trust model is the same one the platform side already
 //     assumes.
