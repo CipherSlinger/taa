@@ -484,6 +484,16 @@ func (e *semgrepEngine) buildFindings(output *semgrepOutput, targets []string) (
 			}
 			i := res.Start.Line - 1
 
+			// A commented-out call is not code, and the regex arm never reports
+			// one: its scan loop skips a line before matching any rule. The
+			// pattern-regex families have no such notion and match inside a
+			// comment, so the predicate is applied here instead, from the same
+			// helper the other arm uses. Skipping it once covers every family
+			// rather than being written into each text rule.
+			if isCommentLine(lines[i]) {
+				continue
+			}
+
 			fileFindings = append(fileFindings, Finding{
 				File:   path,
 				Line:   res.Start.Line,

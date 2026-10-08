@@ -118,10 +118,10 @@ func (s *Scanner) ScanFile(path string) ([]Finding, error) {
 
 	var findings []Finding
 	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") {
+		if isCommentLine(line) {
 			continue
 		}
+		trimmed := strings.TrimSpace(line)
 
 		for _, rule := range s.rules {
 			if s.matchRule(rule, line) {
@@ -309,6 +309,21 @@ func (s *Scanner) ScanDirectoryWithLines(dir string) (*Report, map[string]int, e
 	return s.buildReport(dir, filesCount, findings, truncated), lineCounts, nil
 }
 
+// isCommentLine reports whether a line's first non-space character is '#'. It is
+// the predicate both engines apply before attributing a finding to a line: a
+// commented-out call is not code, and a report that names one is reporting
+// something nobody can act on.
+//
+// It is shared rather than written twice because the two arms disagree about
+// comments by construction. The regex arm matches line by line and can simply
+// skip; the semgrep rules are pattern-regex, which has no notion of a comment and
+// matches inside one. Without the same predicate on both sides, a text rule
+// reports commented-out calls the regex arm never reports - a false positive that
+// belongs to neither arm's rules but to the difference between the two engines.
+func isCommentLine(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), "#")
+}
+
 // scanLines scans pre-read lines for findings. Extracted from ScanFile for reuse.
 // source is the file the lines were split from; the scanner needs the lines for
 // line numbering and the text for the AST parse, and splitting it here would
@@ -317,7 +332,7 @@ func (s *Scanner) scanLines(path, source string, lines []string) []Finding {
 	var findings []Finding
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") {
+		if isCommentLine(line) {
 			continue
 		}
 		for _, rule := range s.rules {

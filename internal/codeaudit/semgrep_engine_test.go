@@ -634,37 +634,124 @@ func TestSemgrepEngineContextsMatchTheRegexArm(t *testing.T) {
 // TestSemgrepEngineSkipsCommentLinesLikeTheRegexArm pins that commented-out code
 // is reported by neither engine.
 //
-// The regex arm skips a line whose trimmed form starts with '#'. Semgrep gets
-// the same result by a different route — all thirteen rules are AST patterns and
-// comments are not in the AST. The routes agree today, and this test is what
-// notices if a future rule uses pattern-regex and stops agreeing.
+// The regex arm skips a line whose trimmed form starts with '#', so it cannot
+// report one. The semgrep arm only reaches the same answer through the predicate
+// buildFindings applies: the rules are not all AST patterns, and the fifteen
+// pattern-regex entries among PER_001, EMB_001, EMB_002 and EMB_004 have no notion
+// of a comment and match inside one. That is not hypothetical - the semgrep arm
+// was the only arm to report a commented-out shutil.copy in a training script,
+// which is the false positive this fixture is the reproduction of.
+//
+// The live half of the fixture is what keeps the skip from being too broad: the
+// same constructs uncommented still have to be reported by both arms.
 func TestSemgrepEngineSkipsCommentLinesLikeTheRegexArm(t *testing.T) {
 	semgrepCLI(t)
 
+	// One line per text-rule family, alongside the AST constructs the fixture
+	// carried before. Each is a construction the live control is expected to
+	// produce findings for.
+	live := []string{
+		"import subprocess",
+		"import shutil",
+		"subprocess.run(cmd, shell=True)",
+		"os.system('rm -rf /')",
+		"shutil.copy(data, backup_dir)",
+		"torch.save(train_data, out_path)",
+		"crontab_entry = '* * * * * root /bin/sh'",
+		"os.rename('data.csv', 'result.csv')",
+		"save_base64_blob = encode(payload)",
+	}
+	commented := make([]string, 0, len(live))
+	for _, line := range live {
+		commented = append(commented, "# "+line)
+	}
+
 	dir := t.TempDir()
-	writeTestFile(t, dir, "train.py", strings.Join([]string{
+	writeTestFile(t, dir, "commented/train.py", strings.Join(commented, "\n")+"\n")
+	writeTestFile(t, dir, "live/train.py", strings.Join(live, "\n")+"\n")
+
+	regexEngine := DefaultEngine()
+	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), repoSemgrepRules(t), SemgrepLimits{})
+
+	scan := func(name string) ([]Finding, []Finding) {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		regexReport, err := regexEngine.ScanDirectory(path)
+		if err != nil {
+			t.Fatalf("regex scan %s: %v", name, err)
+		}
+		semgrepReport, err := engine.ScanDirectory(path)
+		if err != nil {
+			t.Fatalf("semgrep scan %s: %v", name, err)
+		}
+		return regexReport.Findings, semgrepReport.Findings
+	}
+
+	regexFindings, semgrepFindings := scan("commented")
+	if len(regexFindings) != 0 {
+		t.Fatalf("regex arm reported %d findings on a file whose only matches are comments", len(regexFindings))
+	}
+	if len(semgrepFindings) != 0 {
+		t.Errorf("semgrep arm reported %d findings on a file whose only matches are comments: %+v",
+			len(semgrepFindings), semgrepFindings)
+	}
+
+	regexFindings, semgrepFindings = scan("live")
+	if len(regexFindings) < len(live)/2 {
+		t.Errorf("the control file only produced %d regex findings, so the fixture no longer "+
+			"exercises the families it names: %+v", len(regexFindings), regexFindings)
+	}
+	semgrepLines := make(map[int]bool, len(semgrepFindings))
+	for _, f := range semgrepFindings {
+		semgrepLines[f.Line] = true
+	}
+	for _, f := range regexFindings {
+		if !semgrepLines[f.Line] {
+			t.Errorf("line %d is reported by the regex arm alone, so the skip is not the only "+
+				"difference between the arms: %+v", f.Line, f)
+		}
+	}
+}
+
+// TestSemgrepEngineDropsACommentFindingEvenIfARuleReportsIt pins the adapter's
+// own half of the comment predicate.
+//
+// The rules carry the prefix that keeps pattern-regex off commented-out lines,
+// and the CLI test above is what verifies they do. This is the other layer: a
+// text rule added or edited without that prefix would put the divergence back,
+// and the predicate is applied here as well so it cannot reach a report. Neither
+// layer is redundant - the rules are what the evidence harness measures, the
+// adapter is what ships - and each has its own test rather than one test that
+// passes whichever layer happens to be working.
+func TestSemgrepEngineDropsACommentFindingEvenIfARuleReportsIt(t *testing.T) {
+	stub := &stubSemgrep{}
+	scanDir := t.TempDir()
+	target := writeTestFile(t, scanDir, "train.py", strings.Join([]string{
 		"import subprocess",
 		"# subprocess.run(cmd, shell=True)",
-		"#os.system('rm -rf /')",
-		"a = 1",
+		"subprocess.run(cmd, shell=True)",
 	}, "\n")+"\n")
+	rulesDir := t.TempDir()
+	rulesPath := writeTestFile(t, rulesDir, "rules.yaml", "rules: []\n")
 
-	regexReport, err := DefaultEngine().ScanDirectory(dir)
-	if err != nil {
-		t.Fatalf("regex scan: %v", err)
-	}
-	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), repoSemgrepRules(t), SemgrepLimits{})
-	semgrepReport, err := engine.ScanDirectory(dir)
-	if err != nil {
-		t.Fatalf("semgrep scan: %v", err)
-	}
+	engine := NewSemgrepEngine(NewScanner(DefaultRules(), DefaultConfig()), rulesPath, SemgrepLimits{})
+	engine.execFn = stub.exec
 
-	if len(regexReport.Findings) != 0 {
-		t.Fatalf("regex arm reported %d findings on a file whose only matches are comments", len(regexReport.Findings))
+	// The same construction twice, once commented out and once live. Only the
+	// live line may survive, so an adapter that dropped both would fail here.
+	stub.stdout = semgrepPayload([]string{target},
+		semgrepResultJSON(target, "taa-cmd-exec-python", "CMD_001", "ERROR", 2)+","+
+			semgrepResultJSON(target, "taa-cmd-exec-python", "CMD_001", "ERROR", 3), "")
+
+	report, err := engine.ScanDirectory(scanDir)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
 	}
-	if len(semgrepReport.Findings) != 0 {
-		t.Errorf("semgrep arm reported %d findings on a file whose only matches are comments: %+v",
-			len(semgrepReport.Findings), semgrepReport.Findings)
+	if len(report.Findings) != 1 {
+		t.Fatalf("len(Findings) = %d, want 1 (the live line only): %+v", len(report.Findings), report.Findings)
+	}
+	if got := report.Findings[0].Line; got != 3 {
+		t.Errorf("the surviving finding is on line %d, want 3 - the adapter kept the commented-out line", got)
 	}
 }
 

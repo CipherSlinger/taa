@@ -265,12 +265,21 @@ rules:
     # line and opened on the next (sample M5-01: target =
     # Path(".../.bashrc") then target.open("a")) matched nothing. pattern-regex
     # is the faithful mirror here precisely because the baseline is a regex.
+    #
+    # ^(?![ \t]*#)[^\n]* is part of that mirror, not an addition to it. The
+    # baseline's scan loop skips a line whose first non-space character is '#'
+    # before matching anything, so a commented-out target is not a finding
+    # there. A regex has no notion of a comment and matches inside one, which is
+    # how the semgrep arm came to report a commented-out shutil.copy in a
+    # training script that the regex arm never reported. Every pattern-regex in
+    # this file carries the prefix for the same reason; the ones in the AST
+    # branches do not need it, since a comment is not in the AST.
     pattern-either:
-      - pattern-regex: crontab
-      - pattern-regex: \.bashrc|\.bash_profile|\.zshrc
-      - pattern-regex: systemctl\s+(enable|start)
-      - pattern-regex: /etc/init\.d
-      - pattern-regex: /etc/systemd
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:crontab)
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:\.bashrc|\.bash_profile|\.zshrc)
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:systemctl\s+(enable|start))
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:/etc/init\.d)
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:/etc/systemd)
 
   - id: taa-emb-data-dump-python
     languages: [python]
@@ -287,13 +296,15 @@ rules:
     # finding on 75 samples, most of them benign - while the np.save, np.savez,
     # shutil.copy and shutil.copytree branches were absent entirely.
     # pattern-regex (not AST) because the baseline is a line-level text match:
-    # [^)\n] keeps these line-bounded the way re.search per line is.
+    # [^)\n] keeps these line-bounded the way re.search per line is, and the
+    # comment prefix keeps them off commented-out calls the way the scan loop's
+    # '#' skip does. See the note on taa-per-backdoor-python.
     pattern-either:
-      - pattern-regex: torch\.save\s*\(\s*(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train)\b
-      - pattern-regex: np\.save\s*\(\s*['"][^'"]*['"]\s*,\s*(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train)\b
-      - pattern-regex: np\.savez\s*\(\s*['"][^'"]*['"]\s*,[^)\n]*(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train)\s*=
-      - pattern-regex: shutil\.copy\s*\([^)\n]*(?:data|dataset|train|test|image)\b
-      - pattern-regex: shutil\.copytree\s*\([^)\n]*(?:data|dataset|train|test|image)\b
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:torch\.save\s*\(\s*(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train)\b)
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:np\.save\s*\(\s*['"][^'"]*['"]\s*,\s*(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train)\b)
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:np\.savez\s*\(\s*['"][^'"]*['"]\s*,[^)\n]*(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train)\s*=)
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:shutil\.copy\s*\([^)\n]*(?:data|dataset|train|test|image)\b)
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:shutil\.copytree\s*\([^)\n]*(?:data|dataset|train|test|image)\b)
 
   - id: taa-emb-copy-export-python
     languages: [python]
@@ -316,7 +327,7 @@ rules:
           - metavariable-regex:
               metavariable: $DST
               regex: "(?i).*(output|export|result).*"
-      - pattern-regex: os\.rename\s*\(.*data.*(output|result)
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:os\.rename\s*\(.*data.*(output|result))
 
   - id: taa-emb-log-dump-python
     languages: [python]
@@ -364,10 +375,10 @@ rules:
     # baseline flags: struct.pack appears nowhere in its predicate, and
     # b64encode alone is OBF_001's concern, not this rule's.
     pattern-either:
-      - pattern-regex: (state_dict|weights|params).*(hidden|secret|payload|stego|embed|hide)(_?data)?
-      - pattern-regex: base64.*save|save.*base64
-      - pattern-regex: encode.*state_dict|state_dict.*encode
-      - pattern-regex: zlib.*save|save.*zlib
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:(state_dict|weights|params).*(hidden|secret|payload|stego|embed|hide)(_?data)?)
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:base64.*save|save.*base64)
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:encode.*state_dict|state_dict.*encode)
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:zlib.*save|save.*zlib)
       - patterns:
           - pattern: pickle.dump($ARG, ...)
           - metavariable-regex:

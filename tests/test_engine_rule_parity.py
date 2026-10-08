@@ -110,6 +110,17 @@ FIXTURES = {
     "emb_torch_save_state_dict.py": "import torch\ntorch.save(model.state_dict(), 'model.pt')\n",
     "emb_struct_pack.py": "import struct\npacked = struct.pack('<I', 12345)\n",
     "none_arithmetic.py": "x = 1 + 2\n",
+    # A commented-out call is not code, and the baseline's scan loop skips any
+    # line whose first non-space character is '#', so neither arm may report one.
+    # The text-rule families are the ones this can fail on: pattern-regex has no
+    # notion of a comment, while an AST pattern is nowhere near one. Each fixture
+    # is the commented form of a construct already listed above uncommented, so
+    # the pair differs only in the '#' - a fix that skips too much fails the
+    # uncommented one.
+    "emb_commented_shutil_copy.py": "# shutil.copy(data, backup_dir)\n",
+    "emb_commented_torch_save.py": "# torch.save(train_data, out_path)\n",
+    "per_commented_crontab.py": "# crontab_entry = '* * * * * root /bin/sh'\n",
+    "emb_commented_rename_result.py": "# os.rename('data.csv', 'result.csv')\n",
 }
 
 
