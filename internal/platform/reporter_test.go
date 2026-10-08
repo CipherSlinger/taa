@@ -46,3 +46,24 @@ func TestReportAuditScopedCarriesScope(t *testing.T) {
 		t.Fatalf("scope = %v, want deps", got["scope"])
 	}
 }
+
+// TestReportTaskOutcomeDispatchesDepsToReportDeps pins the dispatch branch: a deps_import task
+// must reach reportDeps, not reportRes. Asserting "no error" would pass under a mutation that
+// deletes the branch (reportRes also returns nil), so the assertion is on the URL the request
+// actually arrives at.
+func TestReportTaskOutcomeDispatchesDepsToReportDeps(t *testing.T) {
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"msg":"ok","result":{"received":true},"error":0}`))
+	}))
+	defer server.Close()
+
+	if err := ReportTaskOutcome(context.Background(), server.URL, "docker-1", "req-1", "task-1", "deps_import", 1, "依赖包导入失败", ""); err != nil {
+		t.Fatalf("ReportTaskOutcome: %v", err)
+	}
+	if path != ReportDepsEndpoint {
+		t.Fatalf("path = %q, want %q -- a deps task must not be reported through the training-result callback", path, ReportDepsEndpoint)
+	}
+}

@@ -796,9 +796,12 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 		resultDir = snapshot.ResultDir
 	}
 	if taskType == "" {
-		if strings.Contains(strings.ToLower(name), "model") {
+		switch {
+		case strings.Contains(strings.ToLower(name), "model"):
 			taskType = "model_import"
-		} else {
+		case strings.Contains(strings.ToLower(name), "deps"):
+			taskType = "deps_import"
+		default:
 			taskType = "data_import"
 		}
 	}
