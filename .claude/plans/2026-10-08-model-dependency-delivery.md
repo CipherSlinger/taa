@@ -2116,6 +2116,77 @@ git commit -m "feat(deps): add dependency import pipeline with idempotent reuse"
 
 ---
 
+### Task 6/7 编码前补充（Task 5 代码质量审查发现，2026-10-08）
+
+Task 5 的代码质量审查提出：`deps_import.go` 传给 `runAsyncSafe` 的名字是 `"processImportedDeps"`，
+而 `handleAsyncPanic` 按名字分类，故 panic 时会被标成 `data_import`。**该结论经核对不成立**，
+但顺着它查出了一条真实缺陷，记在这里由 **Task 7** 一并修复（Task 5 不必回改）。
+
+**核对结果（三处已实测）**
+
+| 位置 | 事实 |
+| :--- | :--- |
+| `route.go:681-688` | `tryAcquireTaskTyped` 的第 4 个参数写入 `activeTask.Type`；Task 5 传的是 `"deps_import"` |
+| `route.go:798-804` | 名字兜底 `strings.Contains(lower(name), "model")` **只在 `snapshot.Type` 为空时才执行** |
+| `reporter.go:221-226` | `ReportTaskOutcome` 只特判 `"model_import"`，**其余一律 `ReportRes`** |
+
+所以 panic 时序是：`snapshot.Type == "deps_import"` ⇒ `taskType` 非空 ⇒ 名字兜底**不执行**（**没有误标**）
+⇒ `ReportTaskOutcome(..., "deps_import", ...)` ⇒ 落到 **`ReportRes`**。
+
+**真实缺陷**：平台派发的是 `importDeps` 任务，它的终态契约是 `reportDeps`；而 panic 路径发出的
+是 `res` 形状的载荷，`reportDeps` **永不发出** ⇒ 平台侧的 `importDeps` 任务拿不到终态，表现为
+**挂起**而非失败——与 Task 6/8 预审 Finding A 同一类缺陷，只是触发点从"审计失败"换成"流水线 panic"。
+
+附带事实（**不必处理**）：`handleAsyncPanic` 还会往 `resultDir` 写一份 `training_report.json`
+（内含 `model_checksum`/`data_checksum`），对依赖导入无意义但无害；且它调用 `ReportTaskOutcome`
+时**不传 checksum**（`route.go:843-846` 只有 6 个实参），所以 `ReportDeps` 在 panic 路径上收到的是
+空 checksum，语义正确。
+
+**可达性**：Task 5 不可达（占位体只有 `os.Remove`，不会 panic）；Task 6 写入真实流水线后可达
+（文件 I/O、pip、审计）。
+
+**修复（Task 7 追加，三处均为数行改动）**
+
+1. `internal/platform/reporter.go` 新增
+   `ReportDeps(ctx, platformAddr, dockerID, requestID, taskID string, code int, msg string, checksum ...map[string]any) error`，
+   形状对齐 `ReportModelImport`（签名不妨带 `report string`——依赖导入没有训练报告可传）。
+2. `ReportTaskOutcome` 增加分流分支。`route.go:844` 的注释写的就是"通过 ReportTaskOutcome 自动分流"，
+   **这里是既定扩展点，不要去改 `handleAsyncPanic`**：
+
+```go
+	if taskType == "model_import" {
+		return ReportModelImport(ctx, platformAddr, dockerID, requestID, taskID, code, msg, checksum...)
+	}
+	if taskType == "deps_import" {
+		return ReportDeps(ctx, platformAddr, dockerID, requestID, taskID, code, msg, checksum...)
+	}
+	return ReportRes(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report)
+```
+
+3. 顺手堵住 `taskType == ""` 的名字兜底（`route.go:798-804`）。当前不可达——异步体执行时快照必定
+   已由 `tryAcquireTaskTyped` 建立——但**兜底分支存在的意义正是"快照意外缺失"**，留一个会把
+   依赖任务导去 `ReportRes` 的洞与它的存在理由冲突：
+
+```go
+	if taskType == "" {
+		switch {
+		case strings.Contains(strings.ToLower(name), "model"):
+			taskType = "model_import"
+		case strings.Contains(strings.ToLower(name), "deps"):
+			taskType = "deps_import"
+		default:
+			taskType = "data_import"
+		}
+	}
+```
+
+**测试（Task 7 追加）**：`TestReportTaskOutcomeDispatchesDepsToReportDeps`——断言
+`ReportTaskOutcome(..., "deps_import", ...)` 打到 `reportDeps` 的 URL 而非 `reportRes` 的 URL。
+判别力必须靠**变异**确认：删掉新增的 `deps_import` 分支后该用例必须 FAIL；只断言"没有报错"
+的写法在该变异下仍然通过，属于无效断言。
+
+---
+
 ## Task 7: `reportDeps` 平台回调
 
 **Files:**
