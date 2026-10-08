@@ -42,6 +42,7 @@
     "model": "qwen2.5-coder:3b",
     "policy": "assist",
     "failClosed": true,
+    "requestTimeoutMs": 120000,
     "insecureSkipVerify": true,
     "attestationMode": "permissive"
   }

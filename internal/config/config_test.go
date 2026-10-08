@@ -375,64 +375,70 @@ func TestLoadStartupConfigAttestationTrimWhitespace(t *testing.T) {
 
 func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 	templates := []struct {
-		relPath              string
-		wantAddr             string
-		wantModelDir         string
-		wantDataDir          string
-		wantResultDir        string
-		wantKeysDir          string
-		wantHRK              string
-		wantHSKCek           string
-		wantMaxResultBytes   int64
-		wantModelInputDir    string
-		wantModelOutputDir   string
-		wantModelLogDir      string
+		relPath                string
+		wantAddr               string
+		wantModelDir           string
+		wantDataDir            string
+		wantResultDir          string
+		wantKeysDir            string
+		wantHRK                string
+		wantHSKCek             string
+		wantMaxResultBytes     int64
+		wantModelInputDir      string
+		wantModelOutputDir     string
+		wantModelLogDir        string
 		wantModelProgressDir   string
 		wantModelCheckpointDir string
-		wantSecurityScan     bool
-		wantResultCheck      bool
-		wantPlatformIP       string
-		wantDockerID         string
+		wantSecurityScan       bool
+		wantResultCheck        bool
+		wantPlatformIP         string
+		wantDockerID           string
+		// wantLLMTimeoutMs pins the per-request inference budget a template sets.
+		// Zero means "not asserted". The docker template needs a budget that
+		// covers a cold model load on CPU-only inference; see
+		// .claude/specs/2026-10-08-llm-timeout-layering-design.md.
+		wantLLMTimeoutMs int64
 	}{
 		{
-			relPath:              "../../configs/taa-production.json",
-			wantAddr:             ":6001",
-			wantModelDir:         "/root/taa/models",
-			wantDataDir:          "/root/taa/data",
-			wantResultDir:        "/root/taa/results",
-			wantKeysDir:          "/opt/taa/keys",
-			wantHRK:              "/root/taa/certs/hrk.cert",
-			wantHSKCek:           "/root/taa/certs/hsk_cek.cert",
-			wantMaxResultBytes:   3221225472,
-			wantModelInputDir:    "/opt/taa/input",
-			wantModelOutputDir:   "/opt/taa/output/result",
-			wantModelLogDir:      "/opt/taa/output/log/train.jsonl",
+			relPath:                "../../configs/taa-production.json",
+			wantAddr:               ":6001",
+			wantModelDir:           "/root/taa/models",
+			wantDataDir:            "/root/taa/data",
+			wantResultDir:          "/root/taa/results",
+			wantKeysDir:            "/opt/taa/keys",
+			wantHRK:                "/root/taa/certs/hrk.cert",
+			wantHSKCek:             "/root/taa/certs/hsk_cek.cert",
+			wantMaxResultBytes:     3221225472,
+			wantModelInputDir:      "/opt/taa/input",
+			wantModelOutputDir:     "/opt/taa/output/result",
+			wantModelLogDir:        "/opt/taa/output/log/train.jsonl",
 			wantModelProgressDir:   "/opt/taa/output/progress/progress.json",
 			wantModelCheckpointDir: "/opt/taa/checkpoint",
-			wantSecurityScan:     true,
-			wantResultCheck:      true,
-			wantPlatformIP:       "",
-			wantDockerID:         "",
+			wantSecurityScan:       true,
+			wantResultCheck:        true,
+			wantPlatformIP:         "",
+			wantDockerID:           "",
 		},
 		{
-			relPath:              "../../configs/taa-docker.json",
-			wantAddr:             ":6001",
-			wantModelDir:         "/root/taa/models",
-			wantDataDir:          "/root/taa/data",
-			wantResultDir:        "/root/taa/results",
-			wantKeysDir:          "/opt/taa/keys",
-			wantHRK:              "/root/taa/certs/hrk.cert",
-			wantHSKCek:           "/root/taa/certs/hsk_cek.cert",
-			wantMaxResultBytes:   3221225472,
-			wantModelInputDir:    "/opt/taa/input",
-			wantModelOutputDir:   "/opt/taa/output/result",
-			wantModelLogDir:      "/opt/taa/output/log/train.jsonl",
+			relPath:                "../../configs/taa-docker.json",
+			wantAddr:               ":6001",
+			wantModelDir:           "/root/taa/models",
+			wantDataDir:            "/root/taa/data",
+			wantResultDir:          "/root/taa/results",
+			wantKeysDir:            "/opt/taa/keys",
+			wantHRK:                "/root/taa/certs/hrk.cert",
+			wantHSKCek:             "/root/taa/certs/hsk_cek.cert",
+			wantMaxResultBytes:     3221225472,
+			wantModelInputDir:      "/opt/taa/input",
+			wantModelOutputDir:     "/opt/taa/output/result",
+			wantModelLogDir:        "/opt/taa/output/log/train.jsonl",
 			wantModelProgressDir:   "/opt/taa/output/progress/progress.json",
 			wantModelCheckpointDir: "/opt/taa/checkpoint",
-			wantSecurityScan:     true,
-			wantResultCheck:      true,
-			wantPlatformIP:       "127.0.0.1:18080",
-			wantDockerID:         "taa-env-slim-v2",
+			wantSecurityScan:       true,
+			wantResultCheck:        true,
+			wantPlatformIP:         "127.0.0.1:18080",
+			wantDockerID:           "taa-env-slim-v2",
+			wantLLMTimeoutMs:       120000,
 		},
 	}
 
@@ -495,6 +501,9 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			}
 			if tc.wantDockerID != "" && cfg.DockerID != tc.wantDockerID {
 				t.Errorf("DockerID = %q, want %q", cfg.DockerID, tc.wantDockerID)
+			}
+			if tc.wantLLMTimeoutMs != 0 && cfg.LLMTimeoutMs != tc.wantLLMTimeoutMs {
+				t.Errorf("LLMTimeoutMs = %d, want %d", cfg.LLMTimeoutMs, tc.wantLLMTimeoutMs)
 			}
 		})
 	}
