@@ -751,7 +751,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | --- | --- | --- | --- |
 | `dockerId` | `string` | 是 | 取值为容器启动参数 `DOCKER_ID` |
 | `requestId` | `string` | 是 | 与 `/v1/taa/importDeps` 请求中的 `requestId` 一致，用于绑定同一轮依赖包导入 |
-| `taskId` | `string` | 否 | 与 `/v1/taa/importDeps` 请求中的 `taskId` 一致 |
+| `taskId` | `string` | 否 | 与 `/v1/taa/importDeps` 请求中的 `taskId` 一致。本回调中该字段**始终非空**：导入请求未提供 `taskId` 时，TAA 以 `requestId` 回填后再上报 |
 | `code` | `number` | 是 | `0` 表示依赖包导入成功，`1` 表示解密/解压/安装/审计等导入流程失败 |
 | `msg` | `string` | 否 | 成功时固定为 `"依赖包导入成功"`，失败时为具体失败原因 |
 | `checksum` | `object` | 否 | 依赖包完整性校验，**仅成功时出现**（失败时不带该键）；包含 `size`（`number`）、`algorithm`（固定为 `"sm3"`）、`value`（SM3 十六进制字符串） |
@@ -799,7 +799,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | `依赖包审计未通过` | 依赖包安全审计检出风险 |
 | `写入审计标记失败: <err>` | 写入审计通过标记失败 |
 
-> **审计失败会发出两条回调**：依赖包审计未通过时，TAA 会先以 `scope="deps"`、`code=1` 调用 [`/v1/taa/reportAudit`](#36-taa-上报代码安全审计结果v1taareportaudit)，随后再以 `code=1` 调用本接口。平台两处都需要接收。
+> **审计未通过或审计无法完成时都会发出两条回调**：无论依赖包审计判定为未通过（`reportAudit` 的 `code=1`），还是审计执行失败、或按 Fail-Closed 策略判定 LLM 不可用（`reportAudit` 的 `code=2`），TAA 都会先以 `scope="deps"` 调用 [`/v1/taa/reportAudit`](#36-taa-上报代码安全审计结果v1taareportaudit)，随后再以 `code=1` 调用本接口。平台两处都需要接收。
 
 **响应内容类型**：`application/json`
 
@@ -1374,11 +1374,16 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
 ```jsonc
 {
-  "msg": "当前已有任务正在执行中，拒绝并发的依赖导入",
+  "msg": "当前已有任务正在执行中 (taskId: task-001, op: deps_importing)，请等待完成后再提交",
   "result": null,
   "error": 409
 }
 ```
+
+> **`msg` 有三种形态**，取决于当前占用任务槽的是什么，平台不应依赖其具体文本，只按 `error=409` 判定：
+> 占用方为训练任务时是 `当前已有训练任务正在执行中 (taskId: <任务ID>, op: <阶段>)，请等待完成后再提交`；
+> 占用方为模型代码审计时是 `当前已有模型代码审计正在执行中 (taskId: <任务ID>, op: auditing)，请等待完成后再提交`；
+> 其余情况（例如另一轮依赖导入）是 `当前已有任务正在执行中 (taskId: <任务ID>, op: <阶段>)，请等待完成后再提交`。
 
 **下载失败响应示例**（500 Internal Server Error）：
 
