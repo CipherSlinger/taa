@@ -87,7 +87,10 @@ func BuildTrainingReport(taskID string, startedAt, finishedAt time.Time, status 
 		dataset["checksum"] = dataChecksum
 	}
 
-	if depsChecksum != nil {
+	// A freshly initialized dependency state carries a non-nil but empty map, so testing against
+	// nil alone would emit "deps_checksum": {} for every session that never imported dependencies
+	// and break byte-for-byte compatibility with reports produced before the feature existed.
+	if len(depsChecksum) > 0 {
 		trainingTask["deps_checksum"] = depsChecksum
 	}
 

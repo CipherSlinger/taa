@@ -160,3 +160,26 @@ func TestBuildTrainingReportIncludesDepsChecksum(t *testing.T) {
 		t.Fatalf("deps_checksum.algorithm = %v, want sm3", got["algorithm"])
 	}
 }
+
+// TestBuildTrainingReportOmitsEmptyDepsChecksum covers the shape the dependency state actually has
+// on a cold start: a freshly initialized state holds a non-nil but empty checksum map. Checking
+// only for nil would let that empty map through as "deps_checksum": {}, which a session that never
+// imported dependencies must never report.
+func TestBuildTrainingReportOmitsEmptyDepsChecksum(t *testing.T) {
+	startedAt := time.Date(2026, 10, 8, 1, 0, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(time.Minute)
+
+	report, err := BuildTrainingReport("task-cold", startedAt, finishedAt, "succeeded", 0, "",
+		nil, nil, map[string]any{}, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildTrainingReport: %v", err)
+	}
+
+	task, ok := report["training_task"].(map[string]any)
+	if !ok {
+		t.Fatalf("training_task missing: %#v", report)
+	}
+	if got, exists := task["deps_checksum"]; exists {
+		t.Fatalf("deps_checksum must be absent for an empty checksum map, got %#v", got)
+	}
+}
