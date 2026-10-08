@@ -2444,6 +2444,7 @@ Task 5 的代码质量审查提出：`deps_import.go` 传给 `runAsyncSafe` 的�
 - Modify: `internal/controller/deps_import.go`（`reportDepsAsync`）
 - Modify: `internal/controller/route.go:798-804`（名字兜底补 `deps` 判定）
 - Test: `internal/platform/reporter_test.go`（**新建**，见 Step 1 的包名说明）
+- Test: `internal/controller/deps_import_test.go`（**追加**，见 Step 1b；必须在 `package controller` 里）
 
 - [ ] **Step 1: 写失败测试**
 
@@ -2498,10 +2499,41 @@ func TestReportAuditScopedCarriesScope(t *testing.T) {
 }
 ```
 
+- [ ] **Step 1b: 补一条流水线到平台的贯通用例（§12 的第三个分句）**
+
+§12 的 fail-closed 回滚条目写的是三段：`DepsImported=false`、目录被清、**`reportDeps` 收到 `code=1`**。
+前两段由 Task 6 的用例覆盖，**第三段此前无任何 Task 覆盖**：Task 6 的 `reportDepsAsync` 是只记日志的桩，
+而本 Step 1 的两条用例只单测 platform 层函数，谁都没有把"流水线失败"与"平台真的收到 code=1"接起来。
+这条正是 §12 要的端到端断言，且**只有在本任务 Step 5 把桩换成真回调之后才可能通过**——所以按 TDD
+写在这里。
+
+**位置：`internal/controller/deps_import_test.go`，`package controller`。** 不能放进 Step 1 新建的
+`internal/platform/reporter_test.go`——后者是内部测试包但属于 **platform** 包，访问不到 `TAAState`
+与 `processImportedDeps`。
+
+**不要自己发明归档构造与任务槽位的写法**：直接复用 Task 6 在该文件里已经建好的流水线脚手架
+（同文件里的 `TestProcessImportedDeps*` 用例展示了如何造合法 wheelhouse 归档、替换
+`depsInstallFunc`、以及驱动 `processImportedDeps`）。读完那几条用例再动手。
+
+要求：
+
+- `state.Security.ScanEnabled = true`。这是**被迫**的：Task 6 的 fail-closed 桩无条件返回 false，
+  只有扫描开启时流水线才会走"审计未通过 ⇒ 回滚 ⇒ 失败上报"这条路；Task 6 自己的用例把
+  `ScanEnabled` 置 false 是为了让流水线**成功**，目的相反，不要照抄。
+- 用一个 `httptest` 平台接管 `state.PlatformIP`/`state.DockerID`，断言收到的请求
+  **路径等于 `reportDepsEndpoint`**（`report.go` 里已有该常量；不要写字符串字面量）**且 `code` 字段为 1**。
+- 用带超时的 `select` 等待，超时即 `t.Fatal`——不要用无超时的 channel 接收，否则回调没发出时
+  用例会挂到整体超时，表现为"卡住"而不是"失败"。
+- 同时断言 `state.currentDepsDir() == ""`，把 §12 的前两段与第三段钉在同一个用例里。
+
+**判死要求**：把 Step 5 的 `reportDepsAsync` 换回只记日志的桩，或用例里不断言 `code`，本用例必须 FAIL。
+只断言"没有返回错误"的写法无效。
+
 - [ ] **Step 2: 运行测试确认失败**
 
 ```bash
 go test ./internal/platform/ -run 'TestReportDeps|TestReportAuditScoped' -v
+go test ./internal/controller/ -run 'TestProcessImportedDepsReportsFailureCodeToPlatform' -v
 ```
 
 期望：编译失败 `ReportDeps undefined`。
@@ -2679,7 +2711,7 @@ go test ./internal/platform/ ./internal/controller/ -run 'TestReportDeps|TestRep
 - [ ] **Step 7: 提交**
 
 ```bash
-git add internal/platform/reporter.go internal/platform/reporter_test.go internal/controller/report.go internal/controller/deps_import.go
+git add internal/platform/reporter.go internal/platform/reporter_test.go internal/controller/report.go internal/controller/deps_import.go internal/controller/deps_import_test.go
 git commit -m "feat(deps): report dependency import results and scoped audits"
 ```
 
@@ -2847,6 +2879,20 @@ spec 第二期已确认推迟，但 mock 侧的具体缺口现在就能点清，
   无法在 `/api/dashboard/status` 或 `/api/reportAudit/status` 里区分模型审计与依赖审计。
 
 Task 7 本身用 `httptest` 自建服务端，**不依赖 mock**，因此上述三项不阻塞 Task 7，全部归第二期计划。
+
+**(S2) 第三期（文档）的具体待办**，同属 §11，登记在此以免随本计划一起丢失：
+
+| 依据 | 待办 |
+| :--- | :--- |
+| §11 第 3 期 | `docs/api-design.md` 新增 4.6（`importDeps`）与 4.7（`reportDeps`）两节 |
+| §11 第 3 期 | `models/examples/install_deps.sh` 的角色降级并改写为"镜像基线依赖"说明 |
+| §13 风险 4 | 文档中明确 **`PYTHONPATH` 前置的优先级语义**：依赖目录内的包优先于系统 site-packages，可能引入 numpy 一类的版本/ABI 冲突 |
+| §13 风险 5 | 文档中写明时序约束：平台必须先 `importDeps` 后 `import`；依赖晚于数据下发时，本轮训练会以缺依赖失败 |
+| §10 | 运维说明：`depsDir` 指向外部卷；清理是**人工动作**（自动清理会破坏复用与按 hash 回滚） |
+| 本计划 (R2) | `recovery.go:222-224`/`:353-355` 对 `deps_import` 复用训练口吻的崩溃文案，措辞不准确 |
+
+> **注意**：第三期要改的 `docs/api-design.md` 是**既有项目文档**，不受 CLAUDE.md"spec/plan 一律不得放进
+> `docs/`"那条约束的管辖——那条约束管的是 spec 与 plan 的存放位置，不是禁止修改既有 API 文档。
 
 ---
 
