@@ -7,6 +7,7 @@ import (
 
 // saveDepsSuccess records a successful dependency import: sets the flag, records the
 // content-address hash and checksum, and seals the state to disk.
+// It takes ownership of checksum; the caller must not mutate it afterwards.
 func (s *TAAState) saveDepsSuccess(hash string, checksum map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -60,7 +61,7 @@ func (s *TAAState) currentDepsDir() string {
 }
 
 // depsDirForHash returns the content-addressed directory for any hash, including
-// historical versions that are not currently active (used by auditing and cleanup).
+// historical versions that are not currently active (also used to address historical versions for rollback and cleanup).
 func (s *TAAState) depsDirForHash(hash string) string {
 	return filepath.Join(s.Security.GetDepsDir(), hash)
 }

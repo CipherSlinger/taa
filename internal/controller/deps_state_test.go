@@ -42,6 +42,9 @@ func TestClearDepsStateResetsEverything(t *testing.T) {
 	if got := state.currentDepsDir(); got != "" {
 		t.Fatalf("currentDepsDir = %q after clear, want empty", got)
 	}
+	if got := state.getDepsChecksum(); got != nil {
+		t.Fatalf("checksum = %v after clear, want nil", got)
+	}
 }
 
 func TestRestoreFromPersistentStateCarriesDeps(t *testing.T) {
@@ -108,5 +111,23 @@ func TestDepsStateSurvivesSealedRoundTrip(t *testing.T) {
 	}
 	if diskState.DepsImported || diskState.DepsHash != "" {
 		t.Fatalf("disk kept deps state after clear: imported=%v hash=%q", diskState.DepsImported, diskState.DepsHash)
+	}
+	if diskState.DepsChecksum != nil {
+		t.Fatalf("checksum = %v after rollback, want nil", diskState.DepsChecksum)
+	}
+}
+
+func TestCurrentDepsDirRejectsBlankHash(t *testing.T) {
+	state, _ := setupTestState(t)
+
+	state.DepsImported = true
+	state.DepsHash = "   "
+	if got := state.currentDepsDir(); got != "" {
+		t.Fatalf("currentDepsDir = %q for whitespace-only hash, want empty", got)
+	}
+
+	state.DepsHash = ""
+	if got := state.currentDepsDir(); got != "" {
+		t.Fatalf("currentDepsDir = %q for empty hash, want empty", got)
 	}
 }
