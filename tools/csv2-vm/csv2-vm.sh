@@ -108,7 +108,8 @@
 #   CSV2_VM_MAC     guest NIC MAC                   (default 52:54:00:12:34:56)
 #   CSV2_VM_IP      guest IP; leave unset to auto-discover after boot
 #   CSV2_QMP_PORT   host QMP port                   (default 2223)
-#   CSV2_VNC_DISPLAY host VNC display               (default 9)
+#   CSV2_VNC_DISPLAY host VNC display, empty to disable (default 9; not every
+#                    QEMU build has VNC, and `up` says so if this one does not)
 #   CSV2_VM_VCPUS / CSV2_VM_MEM_MB                  (default 8 / 16384)
 #   CSV2_DISK       overlay path                    (default <images>/<name>-overlay.qcow2)
 #
@@ -136,7 +137,16 @@
 # DCU mode also changes the disk bus and the root= argument (see the note above
 # VM_APPEND), so an overlay built for one mode cannot be booted in the other. The
 # overlay name is mode-specific and `up` checks the backing chain rather than
-# trusting the name.
+# trusting the name. Its QEMU is built without VNC, so a DCU guest has no VNC
+# console - log in over ssh, or read the serial log at $HOST_CONSOLE_LOG.
+#
+# A DCU guest boots to `degraded`, with four units failed. All four come from
+# running the kata kernel over the base image and none of them matter here:
+# boot.mount (the vfat ESP that kernel cannot mount; nofail keeps it non-fatal),
+# kdump.service (crashkernel is on the cmdline but this kernel ships no initramfs
+# for it), NetworkManager-wait-online and systemd-sysctl (the base image's sysctl
+# settings the kata kernel does not carry). ssh, /dev/csv-guest and the DCU driver
+# are all unaffected - do not go chasing the exit status.
 #
 # Every later command must be given the same overrides, or it will address the
 # default instance instead. The guest is addressed by the LAN DHCP server, so an
@@ -1041,6 +1051,25 @@ EOF
 
     echo "==> launching $VM_NAME (policy=$VM_POLICY -> CSV2, ${VM_VCPUS} vCPU, ${VM_MEM_MB}MB)"
     [ -n "$vfio_args" ] && echo "    passthrough:$vfio_args"
+
+    # VNC is not in every QEMU build: the Hygon kata build that DCU mode uses is
+    # compiled without it and rejects -vnc as an invalid option, which fails the
+    # launch outright. Ask the binary rather than assume, so a build that has VNC
+    # keeps it and one that does not still starts.
+    #
+    # The answer is read out of the captured help text instead of being piped into
+    # `grep -q`: grep -q exits at the first match, the writer then takes SIGPIPE,
+    # and under pipefail that makes the pipeline fail - so every build, VNC or not,
+    # would look like it had none. An empty CSV2_VNC_DISPLAY turns VNC off.
+    local vnc_args="" qemu_help
+    if [ -n "$HOST_VNC_DISPLAY" ]; then
+        qemu_help=$($HOST_QEMU -help 2>&1 || true)
+        case "$qemu_help" in
+            *"-vnc "*) vnc_args="-vnc 127.0.0.1:$HOST_VNC_DISPLAY" ;;
+            *) echo "    NOTE $HOST_QEMU was built without VNC; starting without -vnc" >&2 ;;
+        esac
+    fi
+
     host_script <<EOF
 set -e
 $HOST_QEMU -name $VM_NAME \\
@@ -1051,7 +1080,7 @@ $HOST_QEMU -name $VM_NAME \\
     $disk_args \\
     -drive if=pflash,format=raw,unit=0,file=$HOST_OVMF,readonly=on \\
     -qmp tcp:127.0.0.1:$HOST_QMP_PORT,server,nowait \\
-    -vnc 127.0.0.1:$HOST_VNC_DISPLAY \\
+    $vnc_args \\
     -object sev-guest,id=sev0,policy=$VM_POLICY,cbitpos=$VM_CBITPOS,reduced-phys-bits=$VM_REDUCED_PHYS_BITS,kernel-hashes=on \\
     $machine_args \\
     -netdev bridge,br=$HOST_BRIDGE,id=net0$([ "$CSV2_DCU_ON" = 1 ] && printf ',helper=/usr/libexec/qemu-bridge-helper') \\
