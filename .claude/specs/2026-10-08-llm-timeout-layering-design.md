@@ -38,26 +38,40 @@
 
 ```
 TAA ──(120s, llm.requestTimeoutMs)──> teellm ──(100s, backend.timeoutSeconds)──> ollama
-                                        teellm server read/write = 120s
 ```
 
 | 层 | 旧 | 新 | 理由 |
 | :--- | ---: | ---: | :--- |
 | TAA → teellm | 30s（缺省） | **120s** | 冷加载 ~15s + 推理 19–25s，实测失败点在 30–35s，120s 约 5× 余量 |
 | teellm → ollama | 60s | **100s** | 须能容纳一次慢推理 |
-| teellm server | 60s | **120s** | 须大于上一行，否则响应写不完就被截断 |
+| teellm server | 60s | 120s | **不生效**，该键从未被读取，见 §4.1 |
 
-**内层必须严格小于外层**，这不是随意取整：
+**内层必须严格小于外层**（外层 = TAA 的 `http.Client.Timeout`），这不是随意取整：
 
 - 若内层 ≥ 外层，外层 deadline 先到 → TAA 取消请求 → `ctx.Err() != nil` → client 走 `ResetProbe()`，**不计失败**（`teellm/client.go:197-199`）→ 熔断永不打开 → 每条 finding 各烧 4×120s，5 条约 40 分钟后仍以失败收场（且全程挂住）。
 - 内层 100s < 外层 120s 时，后端真挂会在 100s 处以 transparent 503 返回，被计为一次失败，熔断按既有语义在 3 次后打开，约 7 分钟得出结论。
 
 120s 这个数不是新发明的量级：`internal/app/taa/app.go:575-578` 在 LLM 超时缺省时的兜底值就是 120s。
 
+### 4.1 更正（同日复核）：teellm server 的两个超时键是死配置
+
+`teellm/configs/teellm-docker.json` 的 `readTimeoutSeconds` / `writeTimeoutSeconds` 由 60 改为 120 **不产生任何运行时效果**。代码依据（逐条读过，非推断）：
+
+- `teellm/server.go:22-26` 的 `ServerConfig` 只有 `Addr / TEETLS / Backend` 三个字段，**没有承载超时的入口**；
+- `teellm/server.go:64-66` 构造的是 `&http.Server{Handler: mux}`，Go 中 `WriteTimeout` 零值即**不设写截止**；
+- `cmd/teellm-service/main.go:21-22` 声明、`:56-57` 给默认值，此后全仓无引用（`cfg.Server` 只在 `:93` 覆盖 addr、`:238` 取 `Addr` 传给 `NewServer`）；
+- 请求路径上没有中间件、没有 `TimeoutHandler`、没有 `SetWriteDeadline`；`teetls/` 里的 `SetDeadline` 是 TLS 握手与连接关闭用的，`main.go:166` 的 `WithTimeout` 是启动探针。
+
+因此 `c37a037`（teellm 侧为 `d067ac0`）提交信息里「后端 60s 与响应写 60s 相等，跑得久的调用会被响应写截止砍掉，调用方被告知的是连接中断而不是慢推理」这一句**不成立**——该路径上不存在服务端写截止，**那个失败模式不可能发生**。真正的外层边界是 TAA 侧的客户端超时 120s（`llm.requestTimeoutMs` → `http.Client.Timeout`），内层 100s 严格小于它；§7.2 端到端实测的四次 500 恰好落在 `1m40s`、外层 120s 未轮到，正是这条分层在起作用。**分层结论不变，只是机制不是原来写的那个。**
+
+第三行之所以**保留** 60→120 而不改回 60，是取不对称风险：两个值在本树中同样无效，但若某个部署里的二进制确实读它，`120 ≥ 100` 是安全方向，`60 < 100` 会把响应截断（正是上面那个失败模式）。
+
+后续（本次不做，另起改动）：要么把这两个键经 `ServerConfig` 接进 `http.Server`（行为变更，需补测试），要么连同 `cmd/teellm-service/main.go:21-22,56-57` 的字段与默认值、以及两套模板里的键一并删除。**留在原地不动是最差选项**——它把死旋钮伪装成承重构件。同一处 `maxResponseBytes`（`main.go:23`）同样无人读取（请求体上限用的是包内常量 `MaxResponsePayloadBytes`），`teellm-production.json` 带着这三个死键。
+
 ## 5. 落点与生效路径
 
 - `configs/taa-docker.json` → `llm.requestTimeoutMs: 120000`
-- `teellm/configs/teellm-docker.json` → `backend.timeoutSeconds: 100`、`server.read/writeTimeoutSeconds: 120`
+- `teellm/configs/teellm-docker.json` → `backend.timeoutSeconds: 100`（**本次唯一生效项**）、`server.read/writeTimeoutSeconds: 120`（**无效**，见 §4.1）
 - `internal/config/config_test.go` 新增 `wantLLMTimeoutMs` 断言，防止模板取值静默回退
 - 生效需重新部署：模板由 `deploy.sh` 的 `write_taa_config` 逐字写入容器（`teellm/deploy.sh docker --config teellm/configs/teellm-docker.json` 写 teellm 侧）
 
@@ -67,6 +81,8 @@ TAA ──(120s, llm.requestTimeoutMs)──> teellm ──(100s, backend.timeou
 2. **超时重试对预算问题无效**：需要 35s 的调用重试 4 次仍是 35s，只是多烧 3 倍时间。可考虑对超时类错误不重试。
 3. **模型驻留**：teellm 的 `/api/generate` 未带 `keep_alive`，用 daemon 默认 5m；部署预热设的 30m 会过期，空闲 >5 分钟后的首次审查要付 ~15s 冷加载。120s 预算已覆盖它，但这是本可省掉的开销。
 4. `configs/taa-production.json` / `teellm/configs/teellm-production.json` 仍是 60s/60s，未同步（生产是否同一套 CPU-only 推理待定）。
+5. **teellm 的 `read/writeTimeoutSeconds` 与 `maxResponseBytes` 是死配置**（见 §4.1）：两套模板都带，`main.go` 也声明并给默认值，但无人读取。处理方式（接线 or 连同字段删除）留给另一次改动；**留原地不动是最差选项**。
+6. **跨仓不变量的断言没有落地**：`TestLoadStartupConfigTemplateFiles` 钉的是字面量 `120000`，不是 `TAA 预算 > teellm 后端预算` 这条**关系**——把 teellm 模板的后端预算改成 200（即反了），该测试照样通过，恰好漏掉唯一会致命的回归。没在代码里断言的理由：没有任何单一仓库同时持有两份模板（父仓持有子模块，但 `internal/config` 目前对 `teellm/` 零引用，加一条跨仓读会让该包在未初始化子模块的检出上失败，把一个新的失败模式引入一个干净包）。更深的落点是 teellm 的 `loadServiceConfig`（`cmd/teellm-service/main.go:43-79`，当前**不做任何校验**），但那要等 §4.1 的键真正接线之后才存在可校验的内层边界。
 
 ## 7. 验证结果与一个比超时更重要的发现（2026-10-08 补）
 
@@ -122,4 +138,5 @@ TAA ──(120s, llm.requestTimeoutMs)──> teellm ──(100s, backend.timeou
 6. **裁定（2026-10-08）**：审计与训练**将拆分到不同容器**，本仓暂不做互斥或绑核改动，上述 §7.4.3 的并行风险留待该拆分处理。
 7. **拆容器不足以解决本条**：本节的「竞争者」本来就是宿主上的另一个进程，容器边界不隔离 CPU。拆分只有在给 LLM 容器**绑核或设 CPU 配额**（`--cpuset-cpus` / `cpu.max`）时才真正消除该竞争；否则训练容器一启动，推理仍会崩约 36 倍。拆分方案须写明这一点。
 8. **尚未实测的一环**：§7.4.3 那条「训练与审计并行导致假阻断」的链路没有端到端复现——本文所有端到端运行用的都是 `runtimeConfig.commands = ["true"]`，等于把训练从流水线里拿掉了，所以才能一路通过。要坐实该链路，需在模型导入后立即下发一个吃 CPU 的训练替身命令。生产模板的同步问题见 §6.4。
+9. **`c37a037` 提交信息的归因已被本文后续证据取代**：它把那次阻断归因为「余量只有 8s，一条慢 finding 就够」，而 §7.2/7.3 实测的主因是 CPU 竞争者下的线程自旋崩塌（吞吐 9.37→0.25 tok/s），**任何按请求的超时都覆盖不了**。两者不矛盾——`c37a037` 写于 11:57，§7 的证据录于 14:31——是信息滞后。历史提交信息不改写（同仓另有会话持有未提交改动），故在此更正：**该改动覆盖冷加载与温和抖动，不覆盖 §7.2 那种崩塌**；照提交信息走会把下一次 fail-closed 误诊成「预算又不够了」。§4.1 对机制的那处更正同理。
 
