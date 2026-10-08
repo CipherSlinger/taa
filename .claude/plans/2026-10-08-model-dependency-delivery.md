@@ -4243,7 +4243,7 @@ git commit -m "docs(proto): mirror importDeps and reportDeps in the design proto
 
 ## 收尾检查（全部 Task 完成后）
 
-- [ ] 构建与测试全绿。**本条的字面命令在本检出不可用**，照抄会得到假的失败信号（见下方范围外发现 3）：
+- [x] 构建与测试全绿。**本条的字面命令在本检出不可用**，照抄会得到假的失败信号（见下方范围外发现 3）：
       - `go build ./...` 被 `models/audit/holdout-sources/semgrep-rules-develop/` 打挂；
       - `go test ./...` 同理；而 `go test ./internal/... ./pkg/...`（不带串行标志）实测被 **OOM 杀掉**
         （`Killed`，exit 137 —— 2026-10-08 Task 10 实测，BE 宿主内存上限）。
@@ -4253,12 +4253,19 @@ git commit -m "docs(proto): mirror importDeps and reportDeps in the design proto
       go build -o bin/taa ./cmd/taa && go build -o bin/platform-mock ./tools/platform-mock/cmd/platform-mock
       go test ./internal/... ./pkg/... -p 1 -count=1
       ```
-- [ ] 通读 `internal/controller/deps_import.go`，确认 Task 5 的占位与 Task 6/8 的最小实现
+- [x] 通读 `internal/controller/deps_import.go`，确认 Task 5 的占位与 Task 6/8 的最小实现
       **没有残留**（`processImportedDeps` 只有一份、`runDepsAudit` 只有一份）。
-- [ ] 确认 `deps_state.go`/`deps_import.go`/`deps_audit.go`/`deps_env.go` 四个文件的职责边界：
+- [x] 确认 `deps_state.go`/`deps_import.go`/`deps_audit.go`/`deps_env.go` 四个文件的职责边界：
       状态、流水线、审计、环境注入，互不越界。
-- [ ] 确认所有新增注释为**英文**（CLAUDE.md 硬性要求）；既有中文注释保持原样。
-- [ ] grep 一次 `Co-Authored-By`、`Claude`、`anthropic`，确认提交历史里没有出现（CLAUDE.md 硬性禁止）。
+- [x] 确认所有新增注释为**英文**（CLAUDE.md 硬性要求）；既有中文注释保持原样。
+- [x] grep 一次 `Co-Authored-By`、`Claude`、`anthropic`，确认提交历史里没有出现（CLAUDE.md 硬性禁止）。
+      **裁定（2026-10-08）**：`Co-Authored-By` 与 `anthropic` **零命中**；`Claude` **命中一条**：
+      `8642045 docs(deps): add global comment-language rule and fix spec 4.1 sequence`，其正文为
+      "Record the **CLAUDE.md** English-comment rule as a plan-wide constraint with an…" ——
+      这是**引用仓库里真实存在的那份指令文件的名字**（计划文档本身也引用了它 10 次），不是工具署名。
+      **不予改写历史**：那要跨 40 多个提交 rebase，其中还夹着他人提交，在共享检出里风险远大于收益；
+      且严格照字面读会把"描述项目自身规则"也一并禁掉，显然不是这条规则的本意。**提请人工确认**。
+      另核：提交作者身份为 `huangjy <jianye.huang@osr-tech.com>`，即本人，无异常。
 
 ### 范围外发现（不属于任何 Task，**上交前必须逐条决策**）
 
@@ -4306,9 +4313,25 @@ git commit -m "docs(proto): mirror importDeps and reportDeps in the design proto
    （仍钉在 `d067ac0`）。**不是本分支所为**：`git log master..HEAD -- teellm` 为空，本分支从未动过
    它的 gitlink。与第 2 条同型——同一检出里有另一参与者正在工作。收尾时**不得**把它带进提交；
    这也是"永远用显式 pathspec、禁用 `git add -A`"那条规矩的又一理由。
-9. **三个文件在本分支之前就未过 `gofmt`**：`internal/controller/attestation_format.go`、
-   `report_model_import_test.go`、`report_res_test.go`。已核实它们在 HEAD 上即未格式化，且本分支
-   从未改过它们（`git diff master --name-only` 为空）。属既有问题，不按任务零敲碎打地修。
+9. **`gofmt` 漂移是全仓既有的，不是本分支造成的；本分支唯一引入的一处来自他人提交。**
+   2026-10-08 在 HEAD 上实测（`git ls-files '*.go' | grep -v '^teellm/' | xargs gofmt -l`，Go 1.22.2）：
+   **194 个已跟踪 Go 文件里有 19 个未过 `gofmt`**。逐文件按 `master` / `7ddd6e6^` / `HEAD`
+   三版归因，结论三条：
+   - **17 个在 `master` 上就已经 DIRTY**，且本分支从未改过它们（`git log master..HEAD -- <file>` 为空）：
+     `internal/controller/{attestation_format.go,report_model_import_test.go,report_res_test.go}`、
+     `internal/app/taa/app_test.go`、`internal/codeaudit/{audit.go,llm.go,result_checker.go}`、
+     `internal/platform/client_test.go`、`internal/resource/{archive.go,envelope.go}`、
+     `pkg/crypto/crypto_test.go`、`pkg/errors/errors.go`、`tools/platform-mock/internal/server.go`、
+     `tools/sdk/…`（4 个）。属既有问题，不按任务零敲碎打地修。
+     另已用 `gofmt -d` 逐条确认：漂移是**真实的两类**（struct tag 对齐、文件尾多余空行），
+     **不是** Go 1.19 文档注释改版造成的假阳性——否则这条结论毫无意义。
+   - **只有 1 个是本分支引入的**：`internal/app/taa/app.go`（`master` clean、`7ddd6e6^` clean、
+     `HEAD` DIRTY）。它是**另一位参与者的 `7ddd6e6`** 带进来的，不是本特性——本特性的 `90610b9`
+     也改过该文件，但交出时是干净的。
+   - **本特性自己的文件（`deps_*.go`、`runtime/report*.go`、`controller/handler_system.go` 等）
+     零漂移。** 任何仓库级 `gofmt` 门禁都会因上述 19 个文件而红，收尾时需知这不是本次改动所致。
+   **修订记录**：本条原写"三个文件"，是只扫了 `internal/controller` 一个目录的**欠计**；最终审查的
+   Finding 7 补成四个（加了 `app_test.go`），仍是欠计。以本条的实测归因为准。
 10. **本计划正文有一处对 spec §12 的失真引文（2026-10-08 发现）。** 计划 `:3822`（Task 10 的
     「经核实为正确」段）写道：「正是 §12『未导入依赖时训练环境**与报告**与改动前一致』所要求的」，
     而 spec `:355` 的原文是「未导入依赖时**训练环境**与改动前逐字节一致（回归保护）」——
@@ -4326,6 +4349,20 @@ git commit -m "docs(proto): mirror importDeps and reportDeps in the design proto
     而 `internal/codeaudit/llm.go` 为 **0 行**（该文件是全英文的）。之所以单独记一笔，是因为
     `llm_test.go` 正是另一位参与者当前正在改的文件之一——**不要因为"顺手清理注释语言"而碰它**，
     它与第 7 条同属留待仓库级一次性清理的范畴。
+12. **第 2 条与第 8 条已于 2026-10-08 16:51:30 部分过期——那批在途改动已被其作者入库。**
+    另一位参与者把他们此前一直未提交的工作**自行提交**为
+    `7ddd6e6 feat(codeaudit): verify every reported finding instead of the first 20`，
+    含四个 Go 文件（`internal/app/taa/app.go`、`app_test.go`、`internal/codeaudit/llm.go`、
+    `llm_test.go`）**与 `teellm` 子模块指针**（`d067ac0` → `fe0e9d8`）。此后顶层与子模块内部
+    工作区**均为干净**（`git status --porcelain` 空）。
+    两点后果，照实写明：
+    - 第 2 条"绝不让它们进提交"的告诫对这**四个 Go 文件**已失效——它们已由作者入库；
+      第 8 条关于 `teellm` 子模块 gitlink 未动的描述同样失效。
+    - **结论不变**：本条特性任何"全量测试通过"的说法仍须注明**建立在 `7ddd6e6` 之上**，
+      因为它改了 `internal/codeaudit/llm.go` 的 `MaxFindings`（20 → 0），而依赖审计正是
+      经 `GenerateAuditReport` 走 `internal/codeaudit`。
+    分支现领先 master **88** 个提交，其中**属于他人**的是 `7ddd6e6`、`ee95877`、`8f88284`
+    （后两者为本分支上的 `tools/csv2-vm/csv2-vm.sh`，+714 行）。收尾若涉及合并，须先分离。
 
 ---
 
@@ -4350,3 +4387,119 @@ git commit -m "docs(proto): mirror importDeps and reportDeps in the design proto
    `go build`/`go test`。Task 11 因此不产生回归面。
 
 审查者另确认全程只读，未触碰 `deps_import.go`/`deps_import_test.go`/`tools/csv2-vm/csv2-vm.sh`。
+
+---
+
+### 全量审查闭环记录（2026-10-08，最终整体审查 → Finding 1 修复 → 两阶段复评，全部闭合）
+
+#### 1. 最终整体审查：裁定 **Ship it.**
+
+审查对象 `5f924d3`（`deb5b0bbdf099769df44c0f25edcfdbc56ad7550...HEAD`，34 文件）。这是每条 Task 各自审完之后、**单任务审查在结构上做不到的那一层**：跨模块一致性、spec 整体覆盖、端到端接线。
+
+- **零 Critical；1 条 Important**（即 Finding 1，见下节）；6 条 Minor。
+- **spec 覆盖表逐条落位**：§4.1（路由经 `postOnly`、独立请求结构不含 `publicKey`/`runtimeConfig`、`resourceUrl` 必填且空值不表示"复用"、requestId/taskId 非全空且措辞与 `handler_task.go:89,93` 一致、经 `tryAcquireTaskTyped` 取 `deps_importing`、下载限额 `GetMaxFileBytes()`、`resolvePlaintextResource` 解密、内容校验在 goroutine 内而 200 先写）、§4.2（`pip3 install --no-index --find-links --target -r`）、§5（三字段 + camelCase status + sealed 持久化 + `currentOp` 四态 + 无依赖不注入）、§6（流水线顺序、标记、失败 `rm depsDir/<sm3>` + `code=1` + `scope=deps`、不掀掉在用绑定、wheelhouse 临时目录落在 deps 根下）、§7（`applyDepsEnv` 前置 PYTHONPATH 且不产生尾冒号）、§8（`scope` 可选取值默认 model、新回调 `reportDeps`、`deps_checksum` snake_case）、§9（zip-slip 经 `SafeJoinWithBase`、非 root `--target`、零网络 `--no-index`）、§10（`depsDir` 默认 `/opt/taa/model-deps` + 同级不变量，后者属额外加固而非 spec 要求）、§12（参数矩阵与各条回归判据）。
+- **两类缺口均为已登记的延后项**：§11 第 2 期（platform-mock **无任何依赖端点**）与第 3 期（`docs/api-design.md`、`install_deps.sh`）。前者使 **§12 最后一条"端到端经由 platform-mock"判据在本仓库不可能满足** —— 上交时必须如实这么写，不要含糊成"测试全绿"。
+- **12 条跨模块接缝逐一读通**（生产者 + 全部消费者），其中 6 条做了变异验证，**每条都被既有测试接住**：
+
+| 接缝 | 变异 | 接住它的测试 | 还原 blob |
+| :--- | :--- | :--- | :--- |
+| 训练环境注入（`applyDepsEnv` ← `currentDepsDir`） | `import_processing.go:188` 传 `""` | `TestTrainingSubprocessEnvCarriesDepsDir`（真子进程 dump `env`） | `022a412…` ✓ |
+| PYTHONPATH 前置而非覆盖 | `deps_env.go` 改成覆盖 | `TestApplyDepsEnvPreservesPlatformPythonPath` | — |
+| `deps_checksum` 进 `reportRes` | `import_processing.go:979` 传 `nil` | `TestBuildAndSaveTrainingReportIncludesDepsChecksum`；并实测线上报文体内 `"deps_checksum":{"value":"cafebabe",…}` | — |
+| sealed 持久化 + 重启 | `route.go:315` 改 `""` | `TestDepsStateSurvivesSealedRoundTrip` | — |
+| 回滚语义"不掀掉在用的绑定" | `deps_import.go:274` 改无条件清除 | `TestProcessImportedDepsInstallFailureKeepsWorkingBinding` | — |
+| 审计失败仍要发终态 `reportDeps` | 摘掉该分支的 `reportDepsFailure` | `TestProcessImportedDepsReportsFailureCodeToPlatform` | — |
+
+- 审查者另确认两条**刻意的**分裂不是缺陷：`statusHandler` 用 camelCase、训练报告用 snake_case，仓库内无消费者会混淆（唯一消费者是外部平台）；`deps` 与模型/数据**刻意不配对**（`isModelDataPair` 排除 deps），与在飞审计互斥（`TestTryAcquireDepsTaskRejectedWhileAuditing`、`TestDepsImportPairsWithNothing`）。`tryAcquireTaskTyped` 的 `isSameTaskPair` 重构也逐状态追过，对**所有可达状态**保持行为不变。
+- **审查者未能验证（照实记）**：`go test ./internal/app/taa/` 当时不可信（他人四个脏文件在飞）故**未跑、也未报告其结果**；`go test ./...` 本检出不可能；整体全绿当时**部分建立在他人脏的 `codeaudit/llm.go` 之上**；**真实的 `pip3 --target` 安装与真实 wheelhouse 从未被跑过**（安装器只对桩与假 `pipBinary` 测过），故 §12 最后一条"训练进程真能 import 到目标包"**未被证实**，且在无 mock 的情况下无法证实。
+
+#### 2. Important（Finding 1）：审计标记的 fail-open
+
+**场景（四步，端到端）**：
+
+1. 部署以 `security.enableSecurityScan = false` 运行（可被运维设置；默认 `true`）。
+2. `importDeps` 下发归档 H → 安装成功，`auditAndReportDeps`（`:317-323`）在 `!ScanEnabled` 上**短路返回 `true` 而根本没跑审计**，`writeAuditMarker`（`:186`）却写出 `taa-deps-audit-v1`，随即 `saveDepsSuccess(H)`、`reportDeps code=0`。
+3. 运维重新打开扫描，再次下发同一个 H。
+4. `auditMarkerExists`（`:218-228`）按内容匹配 → `:120-127` **复用目录并报 `code=0`，审计永不发生**。平台被告知在用的是一套已审计的依赖，而静态引擎从未见过它。
+
+**为什么在模型路径上不成立**：模型审计有同样的 `ScanEnabled=false` 短路（`import_processing.go:613-616`），但它**什么都不持久化** —— 关扫描导入的模型下次导入会被重新审计。**新标记把一次瞬时跳过变成了内容寻址的永久信任**，正是 §3 决策 5「同策略 fail-closed」要排除的那种偏离。
+
+**原注释为什么没防住**：`deps_import.go:206-214` **承认**标记会在短路上被写，但把"版本号"当作缓解 —— 而 `ScanEnabled` 是布尔量、不是版本，版本号**覆盖不了它**。这条值得留档：**注释里写下了缺陷，却写下了一个不成立的缓解理由。**
+
+**审查者给的两个修法**：(a) 在 `!ScanEnabled` 路径上不写标记（保持"已绑定但无标记"，此后再导入会重审）；(b) 把扫描开关折进 `depsAuditMarkerVersion`。
+
+**两半场景都真实**（审查者给的证据）：`deps_import_test.go:134-161` 证明 `ScanEnabled=false` 下确实写了标记；`:165-187` 证明匹配的标记确实导致"不安装、不审计"的复用。**即当时的测试把这个 bug 的每一半都钉住了 —— 测试是绿的，绿的正是缺陷本身。** 这是"测试通过不等于行为正确"的一个干净实例。
+
+#### 3. 决策与修复 `a178b69`
+
+用户裁定**现在修**。选修法 (a)，理由是 (b) 把"扫描关"编码进版本字符串等于给一个配置开关伪造一个假版本，且会让**已经落在盘上的、由跳过产生的标记永远无法失效** —— 它恰恰是本次要根除的那种永久信任。(a) 把不变式压成一句话：**有标记 ⟺ 有审计跑过并通过。**
+
+只动三处：`auditAndReportDeps` 增加第二个返回值 `audited`（`:329-335`）、标记写入以 `audited` 为条件（`:192`）、`depsAuditMarkerVersion` 的文档注释删去"版本号能区分跳过所写的标记"这一**不实**说法。
+
+**鉴别力证据（控制方独立复现，与复评者的 blob 逐字一致）**：
+
+| 变异 | blob | 结果 |
+| :--- | :--- | :--- |
+| `if audited {` → `if audited \|\| true {`（重新引入调用方漏门） | `db5dc3c6812889258885b83d9f277613510ad038` | FAIL `deps_import_test.go:226` |
+| `if audited {` → `if audited && false {`（反向） | `741b0ff0348e0b051124bba228ac81933ac25c16` | FAIL ×5（`:161`/`:192`/`:239`/`:349`/`:424`） |
+| 版本闸门 `return len(content) >= 0` | `c8cdef589aa424e9a49c1aa0359503e03a5804b2` | FAIL `TestAuditMarkerVersionGate` + `ReauditsForeignMarkerDir` |
+| 被调方撒谎：`return true, false` → `return true, true` | `fedd8afd6c942dadb013f26bd7b5372423d37033` | FAIL `:226` |
+
+最后一行是关键：**它证明回归测试不只钉住"调用方忘了看第二个返回值"，也钉住"被调方谎报自己审计过"** —— 未来有人保留两值签名却让第二个值失真，同样会被抓住。
+
+**已知陷阱（我踩过一次，值得留档）**：先试的变异形式是 `if audited {` → `if true {`，结果 `FAIL [build failed]`（`audited` 变成未使用变量）——**这证明不了任何事**。必须改成变异值/条件（`|| true`）才能得到真失败。同一陷阱 Task 10 的复评者也踩过。
+
+#### 4. 修复的两阶段复评
+
+**规范审查（opus）：APPROVED**，一条非阻断 nit。
+判定要点：修后标记**当且仅当**真跑过审计才写，与 spec `:221`「审计通过后」逐字吻合；`ScanEnabled=false` 下的行为与模型路径**对齐**（跳过 ⇒ 不留持久审计声明；重开扫描 ⇒ 审计真跑），**修复没有制造新的不对称，而是消除了原有的那一处**；唯一代价是关扫描重下发会重做 GB 级解包/安装 —— 那是遵守 `:221` 的直接代价，且在默认配置（`ScanEnabled=true`）下为零。
+测试改动经逐行核对：**删掉的行只有注释与五处 `state.Security.ScanEnabled = false`，无任何断言被删改**。
+
+**质量审查（opus）：APPROVED**，四条发现（两条 Minor 注释失实、一条 Minor 性能取舍、一条 taste）。它另确认：二值契约**只有一个调用点且处理一致**；`passed=true,audited=false` 是唯一含 `false` 的可达组合、`false,true` 不可达；`-race` 干净；五条被翻转的测试**确实在真审计**（日志实测 `依赖包审计完成: passed=true, riskLevel=NONE, totalFindings=0`）。
+
+#### 5. 复评发现全部收口（两个追加提交）
+
+**`e11653b test(deps): correct the rationale comment on the foreign-marker reaudit test`**
+规范审查的 nit：fixer 在 `deps_import_test.go:549-552` 写下"关扫描时该测试会变成空测试"，**这句话是假的**。我没有采信审查者自述，自己实测裁定：
+
+| 情形 | 操作 | 结果 |
+| :--- | :--- | :--- |
+| A | 只把该测试的 `ScanEnabled` 翻成 `false`（生产代码不动） | `ok` —— 测试照样通过 |
+| B | A + 抽掉版本闸门 | `FAIL … :579 installer called 1 times, want 2` —— **仍然判别版本闸门** |
+
+我变异出的生产 blob `c8cdef589aa424e9a49c1aa0359503e03a5804b2` 与规范审查者的 M3b **逐字节相同**。故注释改写为真话：关扫描下测试仍能判别闸门，真正失去的是**它自己的主题**（两趟都没审计，谈不上 reaudit）。
+
+**`0e27677 docs(deps): correct three comments that contradict the marker gate`**
+收口质量审查的 Finding 1 与 Finding 4：
+- `deps_import.go:88-95` 的流水线步骤表仍把"写审计标记"列为无条件步骤 —— 那正是上一个提交删掉的行为，照它读关扫描路径会期望一枚不存在的标记。
+- 质量审查把 `sealed_state.go:34` / `route.go:160` 的字段注释「installed and audited」记为"既有问题、不在本次两个文件内"。**我核后不同意"既有"这一定性**：`git log master..HEAD` 显示这两行是本特性自己的 `edb0cb7` 引入的，而 `deps_state.go:14` 的 `saveDepsSuccess` 在关扫描时同样置真 —— 注释后半句是假陈述。三处一并订正，并在新注释里指明**审计状态的真身在目录的标记上，不在这面旗上**。
+
+两个提交均为**纯注释**（`git diff -U0` 逐行确认）、`gofmt` 干净、`controller`/`store`/`runtime` 三包 `-p 1` 全绿。
+
+#### 6. 接受、不修（记录在案）
+
+- **质量审查 Finding 2（性能取舍）**：关扫描的部署里，幂等短路**永不触发**（没标记可命中），同一归档 N 次下发就要 N 次完整安装 —— 正是标记本要省掉的 GB 级开销。审查者自己也判定"不是缺陷，是 spec 要求的直接后果"。接受。若将来这个代价变痛，补救办法是另立一枚**与信任无关**的"已安装"标记，让短路回来而不复活 fail-open —— 记在这里，不在本分支做。
+- **质量审查 Finding 3（命名）**：`(passed, audited)` 里的 `audited` 语义上接近 `passed`，审查者建议 `auditRan`。判为 taste：定义处有文档、**只有这一个包内私有调用点**、两个方向的误用都被测试钉死。为一个已复评通过的生产签名做纯改名会再次作废两轮审查的证据，收益不成比例。**不改。**
+- 最终审查的 Finding 2（崩溃路径不发 `deps_checksum`）、Finding 3（流水线中途 panic 会留下半成品目录，属磁盘泄漏而非正确性：状态在 `:193` 才置、下次同 hash 导入在 `:157` 会清掉）、Finding 4（`tryAcquireTaskTyped` 的提升变成无条件，**无任何生产调用方命中**，纯潜在）、Finding 5（`logSecurityConfig` 不打印 `depsDir`，而 §10 恰恰叮嘱运维把它指到外部卷）——**全部记录、不在本分支修**。
+- 最终审查 Finding 6（三行新增注释含非 ASCII，`deps_import.go:44`、`deps_import_test.go:748`、`route.go:622`，两处是仓库既有的 `// ──` 分隔符风格、一处是长破折号，**无中文**）——不构成 CLAUDE.md 违规，接受。
+
+#### 7. 他人提交 `7ddd6e6` 插入本分支
+
+修复完成前，另一位参与者把他们此前一直在途的工作自行入库为 `7ddd6e6 feat(codeaudit): verify every reported finding instead of the first 20`（四个 Go 文件 + `teellm` 子模块指针 `d067ac0` → `fe0e9d8`），此后顶层与子模块工作区均干净。后果已在「范围外发现」第 12 条写明，此处只补一句**与本条闭环直接相关**的：**本记录里所有"全绿"结论都建立在 `7ddd6e6` 之上**，因为它改了 `internal/codeaudit/llm.go` 的 `MaxFindings`（20 → 0），而依赖审计正是经 `GenerateAuditReport` 走 `internal/codeaudit`。所幸依赖审计的测试**一律显式设 `LLMConfig{Enabled:false}`**（`handler_test.go` 不设 `LLM`），走的是基线正则引擎，故 `MaxFindings` 动不到它们的断言 —— 规范审查者与质量审查者各自独立核实了这一点。
+
+#### 8. 最终全量验证（2026-10-08，HEAD `0e27677`）
+
+```bash
+go build -o bin/taa ./cmd/taa && go build -o bin/platform-mock ./tools/platform-mock/cmd/platform-mock
+go test ./internal/... ./pkg/... -p 1 -count=1
+```
+
+**两个二进制构建成功；17 个包 17 个 `ok`、0 个 `FAIL`、无 OOM。** `internal/codeaudit` 50.9s、`internal/controller` 22.2s、`internal/app/taa` 1.9s（最终审查当时因他人在途脏文件而**拒跑**的那个包，此时他人在制品已入库，跑通）。
+
+**必须与结论一同上交的两条限制**（不是本次改动引入，但决定结论的有效边界）：
+1. `go test ./...` 在本检出**不可能**（`models/audit/holdout-sources/semgrep-rules-develop/` 无自己的 `go.mod`）；不加 `-p 1` 的宽路径变体在本机会被 **OOM 杀掉**（exit 137，非测试失败）。
+2. 上述全绿**不含端到端判据**：platform-mock 无依赖端点，真实 `pip3 --target` 安装与真实 wheelhouse 从未跑过，故 §12 最后一条判据**未被证实**。
+
+#### 9. 一条方法论留档
+
+本次全量审查里**最有价值的一条（Finding 1）之所以能被发现，是因为审查者去读了"测试为什么是绿的"而不是"测试绿不绿"** —— 缺陷的每一半都已被测试钉住，测试因此长期为绿。可复用的判据：**当你发现某段代码的注释在为一个可疑行为提供缓解理由时，去验证那个缓解理由本身是否成立**（本例中"版本号能区分跳过所写的标记"就是假的）。
