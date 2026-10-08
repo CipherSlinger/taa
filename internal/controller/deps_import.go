@@ -12,8 +12,7 @@ import (
 
 // depsImportRequest is the request body for /v1/taa/importDeps.
 // It deliberately does not reuse importRequest: that type's publicKey and runtimeConfig mean
-// nothing for a dependency archive, and accepting them would only create the ambiguity of
-// fields that are accepted but silently ignored.
+// nothing for a dependency archive and would be dead weight on the type.
 type depsImportRequest struct {
 	ResourceURL string `json:"resourceUrl"`
 	RequestID   string `json:"requestId"`
