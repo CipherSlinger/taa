@@ -123,13 +123,14 @@ func unsetAmbientEnv(t *testing.T, key string) {
 //
 // It returns the environment the subprocess actually observed, plus the state, so callers
 // can derive the expected deps directory from the fixture.
+//
+// The <depsRoot>/<hash> directory is deliberately NOT created: the injection is pure string
+// work (currentDepsDir only joins paths, applyDepsEnv only formats strings), so this test
+// asserts the shape of the child environment, not on-disk importability.
 func runTrainingWithDeps(t *testing.T, importedHash string) (map[string]string, *TAAState) {
 	t.Helper()
 
 	state, _ := setupTestState(t)
-	if err := os.MkdirAll(state.Security.GetDepsDir(), 0o755); err != nil {
-		t.Fatalf("create deps dir: %v", err)
-	}
 	if importedHash != "" {
 		state.saveDepsSuccess(importedHash, map[string]any{"size": int64(5), "algorithm": "sm3", "value": importedHash})
 	}
@@ -176,11 +177,12 @@ func TestTrainingSubprocessEnvCarriesDepsDir(t *testing.T) {
 	got, state := runTrainingWithDeps(t, "cafebabe")
 
 	wantDepsDir := filepath.Join(state.Security.GetDepsDir(), "cafebabe")
-	if got["TAA_DEPS_DIR"] != wantDepsDir {
-		t.Fatalf("subprocess TAA_DEPS_DIR = %q, want %q", got["TAA_DEPS_DIR"], wantDepsDir)
+	if v, ok := got["TAA_DEPS_DIR"]; !ok || v != wantDepsDir {
+		t.Fatalf("subprocess TAA_DEPS_DIR = %q (present=%v), want %q", v, ok, wantDepsDir)
 	}
-	if want := wantDepsDir + ":/platform/lib"; got["PYTHONPATH"] != want {
-		t.Fatalf("subprocess PYTHONPATH = %q, want %q (platform value preserved, not overwritten)", got["PYTHONPATH"], want)
+	wantPythonPath := wantDepsDir + ":/platform/lib"
+	if v, ok := got["PYTHONPATH"]; !ok || v != wantPythonPath {
+		t.Fatalf("subprocess PYTHONPATH = %q (present=%v), want %q (platform value preserved, not overwritten)", v, ok, wantPythonPath)
 	}
 }
 
