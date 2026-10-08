@@ -216,6 +216,10 @@ func (c *Coordinator) runTrainingWithTelemetry(ctx context.Context, control *run
 		auditSection = projectAuditToMap(lastAudit)
 	}
 
+	// The deps checksum argument is deliberately nil: unlike the two accessors either side of it,
+	// this path has no dependency state (the coordinator knows only about models and data), so its
+	// reports must not carry deps_checksum. Do not substitute a neighbouring accessor here -- that
+	// would mislabel a model or dataset digest as the dependency layer.
 	report, _ := runtime.BuildTrainingReport(record.TaskID, startedAt, finishedAt, status, exitCode, failureReason, c.phaseState.ModelChecksum(), c.phaseState.DataChecksum(), nil, trainResult, auditSection)
 	_ = utils.WriteJSONFile(filepath.Join(record.ResultDir, "training_report.json"), report, 0o644)
 
