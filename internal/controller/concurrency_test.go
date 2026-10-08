@@ -451,7 +451,7 @@ func TestTryAcquireDepsTaskRejectedWhileAuditing(t *testing.T) {
 	}
 }
 
-func TestTryAcquireDepsTaskBlocksModelImport(t *testing.T) {
+func TestDepsTaskHoldsTheSlotAgainstOtherTaskIDs(t *testing.T) {
 	state, _ := setupTestState(t)
 
 	release, err := state.tryAcquireTaskTyped("task-deps-2", "req-deps-2", "deps_importing", "deps_import")
@@ -463,6 +463,55 @@ func TestTryAcquireDepsTaskBlocksModelImport(t *testing.T) {
 	if _, err := state.tryAcquireTask("task-model-2", "req-model-2", "downloading", true); err == nil {
 		t.Fatal("expected model import to be rejected while a deps import is in flight")
 	}
+}
+
+// A dependency import pairs with nothing. A model import and a data import may share one
+// taskID -- that is the single pairing the pipeline allows -- but a deps import must not, in
+// either direction. Each case deliberately reuses the in-flight taskID: with a different
+// taskID the request would be refused for being a different task, which proves nothing about
+// pairing, so the pairing rule would never be reached.
+func TestDepsImportPairsWithNothing(t *testing.T) {
+	t.Run("model import cannot share a deps task", func(t *testing.T) {
+		state, _ := setupTestState(t)
+
+		release, err := state.tryAcquireTaskTyped("task-pair-model", "req-pair-a", "deps_importing", "deps_import")
+		if err != nil {
+			t.Fatalf("deps acquire failed: %v", err)
+		}
+		defer release()
+
+		if _, err := state.tryAcquireTask("task-pair-model", "req-pair-b", "downloading", true); err == nil {
+			t.Fatal("expected a model import sharing the deps taskID to be rejected")
+		}
+	})
+
+	t.Run("data import cannot share a deps task", func(t *testing.T) {
+		state, _ := setupTestState(t)
+
+		release, err := state.tryAcquireTaskTyped("task-pair-data", "req-pair-c", "deps_importing", "deps_import")
+		if err != nil {
+			t.Fatalf("deps acquire failed: %v", err)
+		}
+		defer release()
+
+		if _, err := state.tryAcquireTask("task-pair-data", "req-pair-d", "downloading", false); err == nil {
+			t.Fatal("expected a data import sharing the deps taskID to be rejected")
+		}
+	})
+
+	t.Run("deps import cannot share a model task", func(t *testing.T) {
+		state, _ := setupTestState(t)
+
+		release, err := state.tryAcquireTask("task-pair-rev", "req-pair-e", "downloading", true)
+		if err != nil {
+			t.Fatalf("model acquire failed: %v", err)
+		}
+		defer release()
+
+		if _, err := state.tryAcquireTaskTyped("task-pair-rev", "req-pair-f", "deps_importing", "deps_import"); err == nil {
+			t.Fatal("expected a deps import sharing the model taskID to be rejected")
+		}
+	})
 }
 
 func TestDepsImportStillAllowsDataImportPairingRules(t *testing.T) {
