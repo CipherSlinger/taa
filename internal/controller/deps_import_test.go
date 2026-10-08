@@ -3,6 +3,7 @@ package controller
 import (
 	"archive/tar"
 	"compress/gzip"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -245,6 +246,118 @@ func TestProcessImportedDepsRejectsZipSlip(t *testing.T) {
 	assertDepsRootEmpty(t, state)
 }
 
+// TestProcessImportedDepsInstallFailureKeepsWorkingBinding covers the failure semantics spec 6
+// correction 2 stresses most: a newcomer whose install fails must not unseat the dependency set
+// that is already bound and working.
+func TestProcessImportedDepsInstallFailureKeepsWorkingBinding(t *testing.T) {
+	state, _ := setupTestState(t)
+	state.Security.ScanEnabled = false
+
+	origInstall := depsInstallFunc
+	t.Cleanup(func() { depsInstallFunc = origInstall })
+
+	depsInstallFunc = func(wheelhouse, target string) error { return os.MkdirAll(target, 0o755) }
+	state.processImportedDeps(depsImportRequest{ResourceURL: "http://x/a.tar.gz", RequestID: "req-a", TaskID: "task-a"}, 1, buildTestDepsArchive(t))
+	if !state.DepsImported {
+		t.Fatal("first import did not bind; the rest of this test would be vacuous")
+	}
+	boundHash, boundDir := state.DepsHash, state.currentDepsDir()
+
+	// The stub mirrors the real installer's documented contract -- it creates the target
+	// before running pip, so a failure leaves the target partially populated -- which is
+	// exactly why the pipeline, not pip, has to own the cleanup.
+	depsInstallFunc = func(wheelhouse, target string) error {
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return err
+		}
+		return errors.New("pip exploded")
+	}
+	// The second archive must differ byte-for-byte from the first: an identical one hashes to
+	// the same SM3 and therefore the same directory, and the idempotence check would short
+	// circuit before the install branch this test exists to cover.
+	other := buildTestArchive(t, map[string]string{
+		"requirements.txt":            "torch\n",
+		"second-1.0-py3-none-any.whl": "y",
+	})
+	state.processImportedDeps(depsImportRequest{ResourceURL: "http://x/b.tar.gz", RequestID: "req-b", TaskID: "task-b"}, 1, other)
+
+	if !state.DepsImported || state.DepsHash != boundHash {
+		t.Fatalf("binding changed after a failed newcomer: DepsImported=%v DepsHash=%q want %q",
+			state.DepsImported, state.DepsHash, boundHash)
+	}
+	if _, err := os.Stat(filepath.Join(boundDir, depsAuditMarker)); err != nil {
+		t.Fatalf("bound directory lost its audit marker: %v", err)
+	}
+	assertDepsRootContainsOnly(t, state, filepath.Base(boundDir))
+}
+
+// TestProcessImportedDepsKeepsBindingWhenNewAuditFails is the same requirement on the audit
+// path. The audit stub refuses every set, so the second import cannot rebind -- and that is
+// what makes this test pin the fail-closed stub down.
+func TestProcessImportedDepsKeepsBindingWhenNewAuditFails(t *testing.T) {
+	state, _ := setupTestState(t)
+	state.Security.ScanEnabled = false
+
+	origInstall := depsInstallFunc
+	t.Cleanup(func() { depsInstallFunc = origInstall })
+
+	depsInstallFunc = func(wheelhouse, target string) error { return os.MkdirAll(target, 0o755) }
+	state.processImportedDeps(depsImportRequest{ResourceURL: "http://x/a.tar.gz", RequestID: "req-a2", TaskID: "task-a2"}, 1, buildTestDepsArchive(t))
+	if !state.DepsImported {
+		t.Fatal("first import did not bind; the rest of this test would be vacuous")
+	}
+	boundHash, boundDir := state.DepsHash, state.currentDepsDir()
+
+	state.Security.ScanEnabled = true
+	other := buildTestArchive(t, map[string]string{
+		"requirements.txt":           "torch\n",
+		"third-1.0-py3-none-any.whl": "z",
+	})
+	state.processImportedDeps(depsImportRequest{ResourceURL: "http://x/c.tar.gz", RequestID: "req-c", TaskID: "task-c"}, 1, other)
+
+	if !state.DepsImported || state.DepsHash != boundHash {
+		t.Fatalf("a failed audit unseated the working binding: DepsImported=%v DepsHash=%q want %q",
+			state.DepsImported, state.DepsHash, boundHash)
+	}
+	assertDepsRootContainsOnly(t, state, filepath.Base(boundDir))
+}
+
+// TestProcessImportedDepsInstallFailureClearsBindingWhenItsDirectoryIsGone covers the mirror
+// case. Deleting the marker makes the idempotence check miss, so the pipeline re-runs over the
+// directory that is currently bound, destroys it, and then fails to rebuild it. The binding
+// must not survive its own directory -- a bit pointing at a missing directory is the same
+// silent degradation with the two halves swapped.
+func TestProcessImportedDepsInstallFailureClearsBindingWhenItsDirectoryIsGone(t *testing.T) {
+	state, _ := setupTestState(t)
+	state.Security.ScanEnabled = false
+
+	origInstall := depsInstallFunc
+	t.Cleanup(func() { depsInstallFunc = origInstall })
+
+	depsInstallFunc = func(wheelhouse, target string) error { return os.MkdirAll(target, 0o755) }
+	req := depsImportRequest{ResourceURL: "http://x/a.tar.gz", RequestID: "req-d", TaskID: "task-d"}
+	state.processImportedDeps(req, 1, buildTestDepsArchive(t))
+	if !state.DepsImported {
+		t.Fatal("first import did not bind; the rest of this test would be vacuous")
+	}
+
+	if err := os.Remove(filepath.Join(state.currentDepsDir(), depsAuditMarker)); err != nil {
+		t.Fatalf("remove audit marker: %v", err)
+	}
+	depsInstallFunc = func(wheelhouse, target string) error {
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return err
+		}
+		return errors.New("pip exploded")
+	}
+	state.processImportedDeps(req, 1, buildTestDepsArchive(t))
+
+	if state.DepsImported || state.DepsHash != "" {
+		t.Fatalf("binding outlived its directory: DepsImported=%v DepsHash=%q", state.DepsImported, state.DepsHash)
+	}
+	assertDepsRootEmpty(t, state)
+}
+
 // ── test helpers ─────────────────────────────────────────
 
 // buildTestDepsArchive builds a minimal valid dependency package: requirements.txt plus one
@@ -311,5 +424,23 @@ func assertDepsRootEmpty(t *testing.T, state *TAAState) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("deps root is not empty, %d leftover entries: %v", len(entries), entries)
+	}
+}
+
+// assertDepsRootContainsOnly fails unless the deps root holds exactly one entry with the
+// given base name. Asserting what remains -- rather than that nothing errored -- is what
+// makes the "a failing newcomer must not unseat the working set" tests discriminating.
+func assertDepsRootContainsOnly(t *testing.T, state *TAAState, wantName string) {
+	t.Helper()
+	entries, err := os.ReadDir(state.Security.GetDepsDir())
+	if err != nil {
+		t.Fatalf("read deps root: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if len(names) != 1 || names[0] != wantName {
+		t.Fatalf("deps root holds %v, want exactly [%s]", names, wantName)
 	}
 }

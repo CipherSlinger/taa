@@ -162,7 +162,7 @@ func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphert
 		return
 	}
 	if err := depsInstallFunc(wheelhouse, depsDir); err != nil {
-		_ = os.RemoveAll(depsDir)
+		s.rollbackDepsImport(depsDir)
 		s.setCurrentOp("idle")
 		s.reportDepsFailure(req, fmt.Sprintf("安装依赖包失败: %v", err))
 		return
@@ -177,7 +177,7 @@ func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphert
 	}
 
 	if err := writeAuditMarker(depsDir); err != nil {
-		_ = os.RemoveAll(depsDir)
+		s.rollbackDepsImport(depsDir)
 		s.setCurrentOp("idle")
 		s.reportDepsFailure(req, fmt.Sprintf("写入审计标记失败: %v", err))
 		return
@@ -202,14 +202,26 @@ func writeAuditMarker(depsDir string) error {
 	return os.WriteFile(filepath.Join(depsDir, depsAuditMarker), []byte("audited\n"), 0o644)
 }
 
-// rollbackDepsImport discards the directory of a dependency set whose audit failed, and
-// clears the binding only when that very set is the one currently in effect.
+// rollbackDepsImport discards the directory of a dependency import that failed, and clears the
+// binding only when that very set is the one currently in effect.
 //
-// A rejected newcomer must not unseat a dependency set that is already working. The binding
-// is overwritten on success only (see saveDepsSuccess), so a failed import leaves the
-// previous set active and training keeps running on it; the alternative -- clearing
-// unconditionally -- would silently degrade a working configuration to "no dependencies"
-// and surface later as an unrelated ImportError during training.
+// The invariant it enforces, together with saveDepsSuccess, is that the binding never outlives
+// the directory it points at. Both halves of that invariant are reachable, and each has its own
+// silent degradation:
+//
+//   - A rejected newcomer must not unseat a dependency set that is already working. The binding
+//     is overwritten on success only (see saveDepsSuccess), so a failed import leaves the
+//     previous set active and training keeps running on it; clearing unconditionally would
+//     degrade a working configuration to "no dependencies" and surface later as an unrelated
+//     ImportError during training.
+//   - Conversely, the binding must not outlive its own directory. Re-importing a set whose
+//     audit marker was deleted by hand makes the idempotence check miss, so the pipeline clears
+//     the directory in use, and if the rebuild then fails, a binding left behind would point at
+//     a directory that no longer exists -- training would inject a stale TAA_DEPS_DIR and fail
+//     with the same ImportError, with the two halves swapped.
+//
+// That is why every failure path in processImportedDeps routes through here rather than calling
+// os.RemoveAll directly: the removal and the state decision must not be separable.
 //
 // runDepsAudit also removes the directory on every path that returns false (deps_audit.go),
 // so the removal here is normally a no-op. It is kept so that this pipeline's own
@@ -257,9 +269,20 @@ func (s *TAAState) auditAndReportDeps(req depsImportRequest, depsDir string) boo
 	return s.runDepsAudit(req, depsDir)
 }
 
-// runDepsAudit runs the fail-closed dependency audit. This minimal version keeps the package
-// compiling and passing when security scanning is enabled; Task 8 replaces it with the real
-// audit, which also owns removing the directory on every path that returns false.
+// runDepsAudit runs the fail-closed dependency audit.
+//
+// This placeholder refuses every dependency set. It originally returned true so that tests
+// could drive the pipeline with scanning enabled, but that is fail-OPEN, not fail-closed:
+// security scanning defaults to on (config.EnableSecurityScan), the /v1/taa/importDeps route is
+// mounted, so an unaudited set would pass, a real audit marker would be written at the end of
+// processImportedDeps, and code=0 would be reported. The idempotence check only tests whether
+// that marker exists, so Task 8's real audit would then be short-circuited by the marker for
+// good. Refusing is the only honest answer while no audit exists (spec 3, decision 5: same
+// engine, same policy, fail-closed).
+//
+// Task 8 replaces this with the real audit, which also owns removing the directory on every
+// path that returns false.
 func (s *TAAState) runDepsAudit(req depsImportRequest, depsDir string) bool {
-	return true
+	s.Logs.Add(LogError, "audit", "依赖包审计尚未实现，按 fail-closed 拒绝")
+	return false
 }
