@@ -117,7 +117,7 @@
 | `internal/runtime/report.go:46,42` | `BuildTrainingReport` 增加 `depsChecksum` 参数 |
 | `internal/app/taa/app.go:565-650` | `buildSecurityConfig` 透传 `DepsDir`，`ensureSecurityDirectories` 建目录 |
 | `internal/controller/handler_test.go` | `setupTestState` 夹具补 `DepsDir: t.TempDir()` |
-| `api/proto/taa.proto:31-59,74-81,224-231` | 补 `ImportDeps`/`ReportDeps` rpc 与消息、`ReportAuditRequest.scope`、`StatusData` 状态位 |
+| `api/proto/taa.proto:31-59,74-81,225-232` | 补 `ImportDeps`/`ReportDeps` rpc 与消息、`ReportAuditRequest.scope`、`StatusData` 状态位 |
 | `.claude/specs/...` | 不改；本计划与 spec 的差异记录在下方「与原 spec 的两处实现级差异」 |
 
 ---
