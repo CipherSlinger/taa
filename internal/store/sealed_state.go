@@ -31,6 +31,9 @@ type PersistentState struct {
 	RuntimeConfig         string              `json:"runtimeConfig"`         // 密态存储
 	ModelChecksum         map[string]any      `json:"modelChecksum"`
 	DataChecksum          map[string]any      `json:"dataChecksum"`
+	DepsImported          bool                `json:"depsImported"` // dependency package installed and audited
+	DepsHash              string              `json:"depsHash"`     // SM3 of the active dependency package
+	DepsChecksum          map[string]any      `json:"depsChecksum"`
 	ActiveTask            *ActiveTaskSnapshot `json:"activeTask,omitempty"` // 在飞任务快照
 	UpdatedAt             time.Time           `json:"updatedAt"`
 }
@@ -158,6 +161,7 @@ func NewCleanPersistentState() *PersistentState {
 		CurrentPhase:  1,
 		ModelChecksum: make(map[string]any),
 		DataChecksum:  make(map[string]any),
+		DepsChecksum:  make(map[string]any),
 		UpdatedAt:     time.Now().UTC(),
 	}
 }

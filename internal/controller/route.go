@@ -157,6 +157,9 @@ type TAAState struct {
 	LatestDataRecord      ImportIndexRecord        // 下发数据接口始终记录的最新数据索引
 	ModelChecksum         map[string]any           // 模型压缩包校验和 (size, algorithm, value)
 	DataChecksum          map[string]any           // 数据压缩包校验和 (size, algorithm, value)
+	DepsImported          bool                     // dependency package installed and audited
+	DepsHash              string                   // SM3 content-address key of the active dependency package
+	DepsChecksum          map[string]any           // dependency package checksum (size, algorithm, value)
 	CurrentOp             string                   // Current operation: idle/downloading/decrypting/extracting/debugging/training/reporting
 	ActiveTaskID          string                   // Current active task ID for data/model transfer and training
 	ActiveRequestID       string                   // Current active request ID
@@ -246,6 +249,16 @@ func (s *TAAState) RestoreFromPersistentState(p *PersistentState) {
 			s.DataChecksum[k] = v
 		}
 	}
+	s.DepsImported = p.DepsImported
+	s.DepsHash = p.DepsHash
+	if p.DepsChecksum != nil {
+		s.DepsChecksum = make(map[string]any, len(p.DepsChecksum))
+		for k, v := range p.DepsChecksum {
+			s.DepsChecksum[k] = v
+		}
+	} else {
+		s.DepsChecksum = nil
+	}
 	if p.ActiveTask != nil {
 		taskCopy := *p.ActiveTask
 		s.activeTask = &taskCopy
@@ -297,6 +310,17 @@ func (s *TAAState) sealStateLocked() error {
 		}
 	} else {
 		state.DataChecksum = nil
+	}
+
+	state.DepsImported = s.DepsImported
+	state.DepsHash = s.DepsHash
+	if s.DepsChecksum != nil {
+		state.DepsChecksum = make(map[string]any, len(s.DepsChecksum))
+		for k, v := range s.DepsChecksum {
+			state.DepsChecksum[k] = v
+		}
+	} else {
+		state.DepsChecksum = nil
 	}
 
 	if s.activeTask != nil {
