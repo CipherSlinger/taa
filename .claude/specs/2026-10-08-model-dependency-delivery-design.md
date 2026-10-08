@@ -245,8 +245,9 @@ downloadToTempFile                    resource.DownloadToTempFile（沿用限流
 
 - `TAA_DEPS_DIR=<depsDir>/<hash>` 与前置的 `PYTHONPATH` 都由 `internal/controller/deps_env.go`
   的纯函数 `applyDepsEnv(env, depsDir) map[string]string` 写进 `runtimeConfig` 派生出的那份
-  env，在 `executeTraining` 中于 `parseRuntimeConfig` 之后、`runRuntimeConfigWithControl`
-  之前调用（`import_processing.go`）。该份 env 随后作为 `MergedRuntimeEnv` 的 `userEnv` 参与合并。
+  env，在 `processImportedResource` 中于 `parseRuntimeConfig` 之后调用
+  （`import_processing.go:188`），该份 env 随后在 `:217` 作为实参交给 `executeTraining`，
+  再经 `runRuntimeConfigWithControl` 到达子进程。作为 `MergedRuntimeEnv` 的 `userEnv` 参与合并。
 - **`PYTHONPATH` 必须单独处理，且必须前置而非覆盖。** `MergedRuntimeEnv`（`:95-114`）的覆盖
   顺序为 **进程环境 → `userEnv` → `systemEnv`**，最后写入者胜；若把 `PYTHONPATH` 放进
   `systemEnv`，平台在 `runtimeConfig.env` 里设置的 `PYTHONPATH` 会被**静默覆盖**。前置拼接得到
@@ -271,6 +272,20 @@ downloadToTempFile                    resource.DownloadToTempFile（沿用限流
 > 3. 前置拼接走的是 **map**（`out["PYTHONPATH"] = depsDir + ":" + existing`），不是往
 >    `[]string` 追加第二条 `PYTHONPATH=`。这一点必须守住：glibc 的 `getenv` 取**首个**匹配而
 >    Go 的 `syscall.Getenv` 取**最后一个**，一旦出现重复键，Python 与 Go 会看到不同的值。
+>
+> 订正记录（2026-10-08，Task 9 交付后核实）：上条把落点函数写成 `executeTraining`，**不准确**。
+> 注入点在 `processImportedResource`（`import_processing.go:26`）内的 `:188`，即 `parseRuntimeConfig`
+> 之后紧邻处；`executeTraining`（`:297`）是它的**下游**，在 `:217` 收到这份 env 作为形参。
+>
+> 这不改变任何语义（env 在 `:188` 之后到 `:475` 的 `runRuntimeConfigWithControl` 之间**从未被重新赋值**，
+> `executeTraining` 只在 `:448-452` 原地改写 map 的键、不替换 map 本身），但函数名必须说对：
+> phase 2/3 的实现者只读本 spec，照着 `executeTraining` 去找落点会找不到。
+>
+> 同时核实了"注入确实落在唯一的训练路径上"这一**承重前提**：路由表
+> （`internal/controller/router.go:8-27`）**没有** `/v1/taa/train`，训练由 `/v1/taa/importModel`
+> 触发；`executeTraining` 在整个生产代码里**只有 `import_processing.go:217` 一个调用点**，
+> 其余调用全在 `stop_training_test.go`（传 `nil` env，不受影响）。因此不存在"另一条绕过注入
+> 的训练路径"。
 
 ## 8. 审计、上报与协议同步
 
