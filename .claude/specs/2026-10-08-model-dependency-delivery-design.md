@@ -12,7 +12,7 @@
 
 1. **不是平台能力**：换一个模型就要改脚本、重做镜像；与"平台下发资源、TAA 机密执行"的
    产品语义不符。
-2. **接口层不可知**：TAA 不知道"当前模型需要哪些依赖"，`StatusData` 里没有任何相关状态位，
+2. **接口层不可知**：TAA 不知道"当前模型需要哪些依赖"，`/v1/taa/status` 的响应里没有任何相关状态位，
    失败只能等到训练阶段以 `ImportError` 暴露。
 3. **不可追溯**：`reportModelImport` / `reportRes` 只上报模型与数据的 SM3，无法回答
    "这一轮训练到底跑在哪套依赖上"。
@@ -169,7 +169,19 @@ pip3 install --no-index --no-cache-dir \
 绑定是**单例**：新依赖导入成功即覆盖 `DepsHash`。旧版本目录按内容寻址保留在
 `depsDir/<old-sm3>`，可人工回滚。
 
-`StatusData` 增加 `deps_imported` 与 `deps_hash`；`current_op` 增加取值 `deps_importing`。
+`/v1/taa/status` 的响应新增 `depsImported` 与 `depsHash`；`CurrentOp` 增加取值 `deps_importing`
+（该响应里的键名是 `currentOp`）。
+
+> 订正记录（2026-10-08，Task 10 编码前预审）：
+>
+> 1. 本节初稿写的是 "`StatusData` 增加 `deps_imported` 与 `deps_hash`"，两处都不准确：**代码里并没有
+>    `StatusData` 这个类型**，`/v1/taa/status` 的响应是 `statusHandler` 里的内联 `map[string]any`；
+>    且该响应的键名是 **camelCase**（同一对象里已有 `modelImported`/`trainingRunning`/`currentOp`），
+>    持久化状态（`internal/store/sealed_state.go` 的 `json:"depsImported"`）同样是 camelCase。
+>    **以 camelCase 为准。**
+> 2. **但训练报告不受该约定管辖**：`reportRes` 的 `training_task` 里那个字段必须是 snake_case 的
+>    `deps_checksum`，与同处的 `model_checksum`/`data_checksum` 对齐（平台 Schema 1.0 的既有约定）。
+>    两个接口命名约定不同，**不要互相套用**；phase 2 的 platform-mock 需按各自约定分别解析。
 
 ## 6. 处理流水线
 

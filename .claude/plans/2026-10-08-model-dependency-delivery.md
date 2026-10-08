@@ -2735,6 +2735,18 @@ git commit -m "feat(deps): inject TAA_DEPS_DIR and prepend PYTHONPATH for traini
 - Modify: `internal/controller/import_processing.go:1006-1012`
 - Modify: `internal/controller/handler_system.go:57-73`
 - Modify: `internal/coordinator/flow_training.go:219`
+
+> **行号锚点已核实（2026-10-08 预审）**：以上四处行号均已逐条实测命中（`flow_training.go:219` 正是
+> `runtime.BuildTrainingReport(...)` 调用行；`import_processing.go:1011` 正是 `buildTrainingReport`
+> 里的委托调用行；`handler_system.go:57-73` 正是整个 `statusHandler`）。
+>
+> **但 Task 9 会在 `import_processing.go:178` 附近插入 1–2 行**，因此 `:1006-1012` 届时会下移。
+> 定位 `buildTrainingReport` 时**按符号名找，不要按行号**。其余三处不受 Task 9 影响。
+>
+> **命名约定（两处不同，不要统一）**：`status` 响应新增 **camelCase** 的 `depsImported` / `depsHash`
+> （与同一对象里既有的 `modelImported`/`trainingRunning`/`currentOp` 对齐）；训练报告里则是
+> **snake_case** 的 `deps_checksum`（与同处的 `model_checksum`/`data_checksum` 对齐，平台 Schema 1.0
+> 的既有约定）。spec §5 初稿把前者误写成 snake_case，已订正。
 - Test: `internal/runtime/report_test.go`、`internal/controller/handler_test.go` 风格的状态测试
 
 - [ ] **Step 1: 写失败测试**
