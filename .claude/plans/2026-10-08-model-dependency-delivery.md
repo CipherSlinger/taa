@@ -2969,9 +2969,11 @@ func TestRollbackDepsImportClearsTheBindingItOwns(t *testing.T) {
 go test ./internal/controller/ -run 'TestRunDepsAuditRemovesDirOnFailure|TestRollbackDepsImport' -v
 ```
 
-期望：编译失败 `depsAuditFunc undefined`。（两个 `TestRollbackDepsImport*` 用例此时应当**编译并通过**——
-它们只调用 Task 6 已实现的 `rollbackDepsImport`，不依赖 `depsAuditFunc`；整包因
-`TestRunDepsAuditRemovesDirOnFailure` 的编译错误而构建失败，属预期。）
+期望：**运行时失败，不是编译失败**——包能编译，因为 `state.runDepsAudit` 已由 Task 6 的 fail-closed 桩提供。
+`TestRunDepsAuditRemovesDirOnFailure` 应当报 `deps dir still present after a failed audit`：桩既不跑真引擎、
+也不清除目录。这条失败信息本身就是判别力的证据——它证明用例测的是"审计失败 ⇒ 目录被清"，
+而不是别的什么东西。两个 `TestRollbackDepsImport*` 此时应当 PASS，它们只调用 Task 6 已实现的
+`rollbackDepsImport`。
 
 - [ ] **Step 3: 实现依赖审计**
 
