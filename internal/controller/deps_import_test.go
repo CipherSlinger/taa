@@ -358,6 +358,65 @@ func TestProcessImportedDepsInstallFailureClearsBindingWhenItsDirectoryIsGone(t 
 	assertDepsRootEmpty(t, state)
 }
 
+// TestAuditMarkerVersionGate pins the content of the audit marker: only the current policy
+// version is trusted, so a marker written by another policy (or by hand) cannot short-circuit
+// the pipeline.
+func TestAuditMarkerVersionGate(t *testing.T) {
+	dir := t.TempDir()
+	if auditMarkerExists(dir) {
+		t.Fatal("absent marker must not be trusted")
+	}
+	if err := os.WriteFile(filepath.Join(dir, depsAuditMarker), []byte("audited\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if auditMarkerExists(dir) {
+		t.Fatal("foreign-content marker must not be trusted")
+	}
+	if err := writeAuditMarker(dir); err != nil {
+		t.Fatal(err)
+	}
+	if !auditMarkerExists(dir) {
+		t.Fatal("fresh marker must be trusted")
+	}
+}
+
+// TestProcessImportedDepsReauditsForeignMarkerDir verifies the version gate end to end: a
+// dependency directory that carries a marker whose content is not the current policy's must be
+// rebuilt rather than reused.
+//
+// Security.ScanEnabled=false is deliberate here: it lets the pipeline reach the marker write
+// (see auditAndReportDeps), which is what gives the test a real marker to overwrite with a
+// foreign one.
+func TestProcessImportedDepsReauditsForeignMarkerDir(t *testing.T) {
+	state, _ := setupTestState(t)
+	state.Security.ScanEnabled = false
+
+	origInstall := depsInstallFunc
+	t.Cleanup(func() { depsInstallFunc = origInstall })
+
+	calls := 0
+	depsInstallFunc = func(wheelhouse, target string) error {
+		calls++
+		return os.MkdirAll(target, 0o755)
+	}
+
+	req := depsImportRequest{ResourceURL: "http://x/a.tar.gz", RequestID: "req-f", TaskID: "task-f"}
+	state.processImportedDeps(req, 1, buildTestDepsArchive(t))
+	if calls != 1 {
+		t.Fatalf("setup: installer calls=%d, want 1", calls)
+	}
+	if err := os.WriteFile(filepath.Join(state.currentDepsDir(), depsAuditMarker), []byte("audited\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The archive must be rebuilt: processImportedDeps removes the ciphertext path it is given,
+	// so reusing the same file would fail before reaching the installer.
+	state.processImportedDeps(req, 1, buildTestDepsArchive(t))
+
+	if calls != 2 {
+		t.Fatalf("installer called %d times, want 2: a foreign marker must not short-circuit", calls)
+	}
+}
+
 // ── test helpers ─────────────────────────────────────────
 
 // buildTestDepsArchive builds a minimal valid dependency package: requirements.txt plus one

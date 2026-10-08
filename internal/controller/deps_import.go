@@ -154,9 +154,16 @@ func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphert
 		return
 	}
 
-	// Clear any leftover directory of the same name before installing, so the removal on the
-	// failure paths below is idempotent.
+	// Clear any leftover directory of the same name before installing: pip --target merges into
+	// a populated target instead of replacing it, so a half-built leftover from an earlier failed
+	// attempt -- or a bound directory whose marker was removed by hand -- would otherwise be
+	// merged into this attempt's result and bound as if its content were this set's. (The
+	// failure-path removals below do not depend on this call; os.RemoveAll is already idempotent
+	// on a missing path.)
 	if err := os.RemoveAll(depsDir); err != nil {
+		// RemoveAll failing may have partially destroyed a directory that is currently bound
+		// (see rollbackDepsImport), so this branch must make the state decision too.
+		s.rollbackDepsImport(depsDir)
 		s.setCurrentOp("idle")
 		s.reportDepsFailure(req, fmt.Sprintf("清理依赖目录失败: %v", err))
 		return
@@ -171,8 +178,8 @@ func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphert
 
 	if !s.auditAndReportDeps(req, depsDir) {
 		s.rollbackDepsImport(depsDir)
-		s.reportDepsFailure(req, "依赖包审计未通过")
 		s.setCurrentOp("idle")
+		s.reportDepsFailure(req, "依赖包审计未通过")
 		return
 	}
 
@@ -189,17 +196,37 @@ func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphert
 	s.Logs.Add(LogInfo, "importDeps", "阶段%d: 依赖包导入完成: hash=%s, taskId=%s", phase, hash, req.TaskID)
 }
 
-// depsAuditMarker is the sentinel file written into a dependency directory once its audit has
-// passed. It is a regular file rather than a directory so its presence is unambiguous.
 const depsAuditMarker = ".taa_audit_ok"
+
+// depsAuditMarkerVersion is the trust content of the audit marker. Bump it whenever the audit
+// engine, policy, or rule set changes: auditMarkerExists compares content, so an existing
+// dependency directory carrying a marker from any other policy is re-audited instead of reused.
+//
+// Existence alone is not enough to trust a marker. Anything that writes one under a weaker
+// policy would otherwise be believed forever, and the directory it guards is content-addressed
+// and permanent. That is not hypothetical: this pipeline writes the same marker on the
+// ScanEnabled=false short-circuit as it does after a real audit, and the fail-open stub this
+// branch used to carry wrote a genuine marker for a set that was never audited at all.
+// Versioning is what makes those markers distinguishable, and it is the only handle that lets
+// a future policy change invalidate the markers already on disk. It does not provide
+// tamper-resistance -- anyone who can write into DEPS_DIR can forge the string -- which would
+// take a signature; this is the right starting point before that.
+const depsAuditMarkerVersion = "taa-deps-audit-v1\n"
 
 func auditMarkerExists(depsDir string) bool {
 	info, err := os.Stat(filepath.Join(depsDir, depsAuditMarker))
-	return err == nil && !info.IsDir()
+	if err != nil || info.IsDir() {
+		return false
+	}
+	content, err := os.ReadFile(filepath.Join(depsDir, depsAuditMarker))
+	if err != nil {
+		return false
+	}
+	return string(content) == depsAuditMarkerVersion
 }
 
 func writeAuditMarker(depsDir string) error {
-	return os.WriteFile(filepath.Join(depsDir, depsAuditMarker), []byte("audited\n"), 0o644)
+	return os.WriteFile(filepath.Join(depsDir, depsAuditMarker), []byte(depsAuditMarkerVersion), 0o644)
 }
 
 // rollbackDepsImport discards the directory of a dependency import that failed, and clears the
@@ -222,6 +249,11 @@ func writeAuditMarker(depsDir string) error {
 //
 // That is why every failure path in processImportedDeps routes through here rather than calling
 // os.RemoveAll directly: the removal and the state decision must not be separable.
+//
+// The comparison and the clearing are two separate lock acquisitions, so in general they could
+// be interleaved by a concurrent writer. They are safe here because tryAcquireTaskTyped
+// single-flights dependency imports: only the pipeline writes this state, and no second
+// deps_import can be admitted while one is in flight.
 //
 // runDepsAudit also removes the directory on every path that returns false (deps_audit.go),
 // so the removal here is normally a no-op. It is kept so that this pipeline's own
