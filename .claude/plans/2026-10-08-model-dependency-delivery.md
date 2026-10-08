@@ -590,6 +590,33 @@ git commit -m "feat(deps): persist dependency import state"
 
 ---
 
+### Task 2 审查追加（编码后按审查结论补充）
+
+计划原本只列了 3 条测试。代码质量审查发现**唯一谓词的第二半分支零覆盖**：全部测试的
+`DepsHash` 取值非空白，从未构造 `DepsImported == true && TrimSpace(DepsHash) == ""`。若日后
+有人把谓词化简为 `s.DepsHash != ""`，**全套测试仍然通过**，而空白 hash 会被当作有效值——
+训练子进程会拿到 `TAA_DEPS_DIR=<depsDir>/   ` 与前置的垃圾 `PYTHONPATH`，Python 静默忽略不
+存在的路径，训练可能"看起来装了依赖"实则跑在系统包上。补 `TestCurrentDepsDirRejectsBlankHash`，
+并做变异校验（删掉 `TrimSpace` 半句后该测试必须转红，否则等于没测）。
+
+另有两条一并修正：`TestClearDepsStateResetsEverything` 漏断言 `DepsChecksum`（恰好是
+`clearDepsState` 唯一未被覆盖的字段，删掉那行测试照样过）；`depsDirForHash` 的注释把用途写成
+"auditing and cleanup"，与它在 Task 6 的实际用途（安装目标目录 + 失败路径 `RemoveAll`）不符。
+
+审查**明确否决**的两项改动，记录在此以免后续重复提出：
+
+- 为 `saveDepsSuccess` 加防御性 map 拷贝——会使 Deps 与既有的 Model/Data 赋值约定不一致，
+  且别名暴露是**既有代码库级模式**（同样的暴露存在于 `setModelChecksum`、`setDataChecksum`，
+  以及 `internal/coordinator/phase_state.go`）。仅补文档写明所有权契约，不改行为。
+- 提取共享 map-clone helper 消除 6 处同形拷贝块——须连带改动既有的 ModelChecksum/DataChecksum
+  站点才能避免混搭风格，属本分支一贯回滚的无关 churn；待出现第 4 个字段时另开提交。
+
+审查同时确认了 `sealStateLocked` 的拷贝是**必要的而非形式主义**：`SealState` 会把 `&state`
+存进 store 的缓存，不拷贝则 `state.DepsChecksum` 与 `s.DepsChecksum` 别名共享，之后任何一次
+in-place 写入都会污染 store 的缓存态。
+
+---
+
 ## Task 3: `tryAcquireTaskTyped` 与任务类型扩展
 
 **Files:**
@@ -841,6 +868,29 @@ func TestValidateWheelhouseRequiresRequirementsAndWheel(t *testing.T) {
 			t.Fatal("expected error when no .whl is present")
 		}
 	})
+
+	// The three guard branches below are cheap to cover and are exactly the shape of thing
+	// that silently loses its guard later: each one is a single line in the implementation,
+	// so nothing else would fail if it were deleted.
+	t.Run("blank dir", func(t *testing.T) {
+		if err := ValidateWheelhouse("   "); err == nil {
+			t.Fatal("expected error for a blank wheelhouse dir")
+		}
+	})
+
+	t.Run("missing dir", func(t *testing.T) {
+		if err := ValidateWheelhouse(filepath.Join(t.TempDir(), "does-not-exist")); err == nil {
+			t.Fatal("expected error for a nonexistent wheelhouse dir")
+		}
+	})
+
+	t.Run("path is a file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "not-a-dir")
+		writeFile(t, path, "x")
+		if err := ValidateWheelhouse(path); err == nil {
+			t.Fatal("expected error when the wheelhouse path is a file")
+		}
+	})
 }
 
 func writeFile(t *testing.T, path, content string) {
@@ -851,7 +901,8 @@ func writeFile(t *testing.T, path, content string) {
 }
 ```
 
-若 `internal/resource` 中已存在同名的 `writeFile` 测试辅助函数，复用既有的，不要重复定义。
+**已核实无冲突：** `grep -rn "func writeFile" internal/resource/` 返回空，且 `internal/resource`
+与 `internal/runtime` 的测试文件里目前**都没有**小写顶层辅助函数。所以 `writeFile` 可直接定义。
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -875,9 +926,13 @@ import (
 	"strings"
 )
 
-// ValidateWheelhouse 校验解包后的依赖归档结构：必须含 requirements.txt，
-// 且至少有一个 .whl。缺失即判定依赖包不合法——离线安装无法补全依赖闭包，
-// 因此这里宁可早失败，也不要拖到训练阶段才以 ImportError 暴露。
+// ValidateWheelhouse checks the unpacked layout of a dependency archive: it must contain
+// requirements.txt and at least one .whl. A missing piece rejects the package outright --
+// an offline install cannot complete a partial dependency closure, so failing here beats
+// surfacing an ImportError at training time.
+//
+// The scan is deliberately flat (non-recursive): the platform contract is a flat wheelhouse
+// with requirements.txt at the archive root, and pip's --find-links is not recursive either.
 func ValidateWheelhouse(dir string) error {
 	if strings.TrimSpace(dir) == "" {
 		return fmt.Errorf("wheelhouse dir is required")
@@ -928,8 +983,8 @@ package runtime
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -949,37 +1004,84 @@ func TestInstallWheelhouseRejectsEmptyArgs(t *testing.T) {
 	}
 }
 
-// TestInstallWheelhouseOfflineEndToEnd 只在 pip3 可用时运行：把 pip 自己下载的
-// wheel 当作 wheelhouse 装进 target，验证 --no-index 路径真的能落地文件。
-func TestInstallWheelhouseOfflineEndToEnd(t *testing.T) {
-	if _, err := exec.LookPath(pipBinary); err != nil {
-		t.Skipf("%s not available: %v", pipBinary, err)
+// stubPip writes a fake pip3 that runs the given shell body, and points the package-level
+// pipBinary at it for the rest of the test. This is what keeps the installer tests hermetic:
+// they must not depend on a real pip, on network access, or on the machine's Python.
+func stubPip(t *testing.T, body string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pip3-stub")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
 	}
+	original := pipBinary
+	pipBinary = path
+	t.Cleanup(func() { pipBinary = original })
+}
 
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+func TestInstallWheelhousePassesOfflineFlags(t *testing.T) {
+	argsFile := filepath.Join(t.TempDir(), "args.txt")
+	t.Setenv("STUB_ARGS_FILE", argsFile)
+	stubPip(t, `printf '%s\n' "$@" > "$STUB_ARGS_FILE"`)
 
-	// Use a wheel that ships inside any Python install: download nothing, instead let pip
-	// resolve from a wheelhouse we build with `pip download` from the local cache.
-	// If the environment has no network and no cache this test skips rather than fails.
 	wh := t.TempDir()
 	if err := os.WriteFile(filepath.Join(wh, "requirements.txt"), []byte("wheel\n"), 0o644); err != nil {
 		t.Fatalf("write requirements: %v", err)
 	}
-	dl := exec.Command(pipBinary, "download", "wheel", "--dest", wh, "--no-deps", "-q")
-	if out, err := dl.CombinedOutput(); err != nil {
-		t.Skipf("pip download unavailable (offline environment): %v: %s", err, out)
-	}
-
 	target := filepath.Join(t.TempDir(), "target")
+
 	if err := InstallWheelhouse(context.Background(), wh, target); err != nil {
 		t.Fatalf("InstallWheelhouse: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(target, "wheel")); err != nil {
-		t.Fatalf("expected installed package 'wheel' in target: %v", err)
+
+	recorded, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("stub did not record args: %v", err)
+	}
+	args := string(recorded)
+
+	// --no-index is precisely what makes the install zero-network. Drop it and an incomplete
+	// closure silently resolves from an index instead of failing fast, which is the one
+	// property this whole path exists to guarantee -- so pin every load-bearing flag.
+	for _, want := range []string{
+		"install", "--no-index", "--find-links", wh, "--target", target,
+		"-r", filepath.Join(wh, "requirements.txt"),
+	} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("pip args missing %q; got:\n%s", want, args)
+		}
+	}
+}
+
+func TestInstallWheelhouseSurfacesPipFailureTail(t *testing.T) {
+	stubPip(t, "echo \"ERROR: No matching distribution found for torch\" >&2\nexit 1")
+
+	wh := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wh, "requirements.txt"), []byte("torch\n"), 0o644); err != nil {
+		t.Fatalf("write requirements: %v", err)
+	}
+
+	err := InstallWheelhouse(context.Background(), wh, filepath.Join(t.TempDir(), "target"))
+	if err == nil {
+		t.Fatal("expected error when pip exits non-zero")
+	}
+	// pip explains itself on its last lines; tailLines exists to carry exactly that through,
+	// because the operator only ever sees this error string.
+	if !strings.Contains(err.Error(), "No matching distribution found for torch") {
+		t.Fatalf("error does not carry pip's reason: %v", err)
 	}
 }
 ```
+
+**为什么不用"真实 pip + 真实下载"的端到端测试：** 那种测试在离线环境只能 `t.Skipf` 跳过，
+而离线恰恰是常态——于是它对"离线安装真能工作"提供**零覆盖**，却让人以为覆盖了。本项目已经
+吃过这个亏（见 `.claude/specs/2026-10-08-llm-timeout-layering-design.md` §7.4 第 5 条：验证
+脚本静默丢弃样本，使"全部 200"在残缺列表上通过）。桩测试恒可运行，并额外钉死了 `--no-index`
+这类"丢了也不报错、但会让整个 fail-closed 语义失效"的参数。
+
+**桩方案的执行前提已核实：** 桩脚本落在 `t.TempDir()`（即 `$TMPDIR`，本机为 `/tmp`）下，
+需要该挂载点可执行。实测本机 `/tmp` 无独立挂载、继承根分区选项，`chmod 755` 后可直接执行；
+若将来 CI 把 `/tmp` 挂成 `noexec`，这三个测试会以"permission denied"明确失败（不会静默跳过），
+届时把 `TMPDIR` 指向可执行目录即可。
 
 - [ ] **Step 6: 运行测试确认失败**
 
@@ -1006,14 +1108,20 @@ import (
 	"strings"
 )
 
-// pipBinary is a variable so tests can substitute a stub without needing a real pip.
+// pipBinary is a package-level variable so tests can point it at a stub. The installer tests
+// stay hermetic through it: they must not need a real pip or a network.
 var pipBinary = "pip3"
 
-// InstallWheelhouse 以非 root、零网络方式把离线 wheelhouse 安装到 target 目录。
+// InstallWheelhouse installs an offline wheelhouse into target as a non-root, zero-network
+// operation.
 //
-// 使用 --target 而非手工解压 wheel 的原因：需要正确的 .dist-info 元数据（torch 系生态会
-// 在运行期查询 importlib.metadata），并正确处理 wheel 的 *.data/ 布局。
-// --no-index 强制零网络：依赖闭包不完整时立即失败，而不是拖到训练阶段。
+// --target is used rather than unpacking the wheels by hand because the .dist-info metadata
+// has to be correct (the torch ecosystem queries importlib.metadata at runtime) and the wheel
+// *.data/ layout has to be placed per spec. --no-index makes the install zero-network: an
+// incomplete closure fails here instead of surfacing as an ImportError mid-training.
+//
+// On failure target may be left partially populated. Cleanup belongs to the caller -- the
+// import pipeline removes depsDir/<hash> wholesale so no half-installed set survives.
 func InstallWheelhouse(ctx context.Context, wheelhouse, target string) error {
 	if strings.TrimSpace(wheelhouse) == "" {
 		return fmt.Errorf("wheelhouse dir is required")
@@ -1057,7 +1165,8 @@ func InstallWheelhouse(ctx context.Context, wheelhouse, target string) error {
 	return nil
 }
 
-// tailLines 截取输出末尾若干行：pip 的失败原因总在最后，而成功路径的输出可能很长。
+// tailLines keeps only the last few lines of command output: pip states its reason at the
+// end, while a long successful run can produce far more than is worth carrying into an error.
 func tailLines(s string, max int) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	if len(lines) > max {
@@ -1073,7 +1182,16 @@ func tailLines(s string, max int) string {
 go test ./internal/runtime/ -run TestInstallWheelhouse -v
 ```
 
-期望：前两个用例 PASS，`OfflineEndToEnd` 在无网环境 SKIP（这是设计内的降级，不是失败）。
+期望：**全部 PASS，且没有任何 SKIP。** 若出现 SKIP，说明有人把测试改回了依赖真实 pip 或网络的
+形态——那正是本节要避免的失败模式（离线环境必然跳过 ⇒ 对"离线安装真能工作"零覆盖，却看起来
+是绿的）。
+
+**注释语言（CLAUDE.md 硬要求）：** 本任务新增/改写的**注释**一律英文（上面代码块已改好）。
+但**用户可见的错误字符串保持中文**——`依赖包缺少 requirements.txt`、`依赖包内未找到任何 .whl
+文件` 这类报错会经 `reportDeps` 原样回给平台运维，与本仓库既有惯例一致
+（`internal/resource/downloader.go:38`「创建临时文件失败」、`archive.go:230`「解压累计字节超过
+上限」均为中文），而包裹技术错误的英文形式（`archive.go:43` "target destination dir is
+required"）同样保留。**不要翻译任何既有字符串，也不要为了统一而改动无关文件。**
 
 - [ ] **Step 9: 提交**
 
