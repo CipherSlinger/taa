@@ -679,14 +679,14 @@ func isModelDataPair(current, requested string) bool {
 		(current == "data_import" && requested == "model_import")
 }
 
-// tryAcquireTaskTyped 是 tryAcquireTask 的类型化实现。
-// taskType 取值：model_import / data_import / deps_import；
-// initialOp 为 "staging" 或 "training" 时一律升级为 training 任务。
+// tryAcquireTaskTyped is the typed implementation behind tryAcquireTask.
+// taskType is one of model_import / data_import / deps_import. An initialOp of
+// "staging" or "training" is always promoted to a training task.
 func (s *TAAState) tryAcquireTaskTyped(taskID, requestID, initialOp, taskType string) (func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 1. 若当前处于训练执行阶段，全局绝对互斥，禁止任何新任务下发
+	// 1. While training is executing, refuse every new task unconditionally.
 	if s.isTrainingBusyLocked() {
 		task, op := s.activeTaskInfoLocked()
 		return nil, pkgerrors.New(pkgerrors.CodeConflict,
@@ -707,7 +707,7 @@ func (s *TAAState) tryAcquireTaskTyped(taskID, requestID, initialOp, taskType st
 		}
 	}
 
-	// 3. 检查是否有其他任务正在处理（如正在下载、解密等）
+	// 3. Refuse if another task is mid-flight (downloading, decrypting, ...).
 	if s.ActiveTaskID != "" || (s.CurrentOp != "" && s.CurrentOp != "idle") {
 		isSameTaskPair := false
 		if taskID != "" && s.ActiveTaskID == taskID && s.activeTask != nil {
@@ -750,6 +750,32 @@ func (s *TAAState) tryAcquireTaskTyped(taskID, requestID, initialOp, taskType st
 
 这段整体被上面 Step 3 的 `if initialOp == "staging" || initialOp == "training"` 取代，务必删除，
 不要两处并存。
+
+**已核实：这个"else-if → 无条件 if"的改写逐字等价，不是回归。** 全部调用点为：
+
+| 调用点 | initialOp | isModel |
+| :--- | :--- | :--- |
+| `handler_task.go:97`（数据导入） | `"downloading"` | `false` |
+| `handler_task.go:257`（模型导入） | `"downloading"` | `true` |
+| `taa_state_store_integration_test.go:106` / `:435` | `"downloading"` | `true` |
+| `taa_state_store_integration_test.go:313` | `"training"` | `false` |
+| `concurrency_test.go:223` | `"staging"` | `false` |
+| `concurrency_test.go:152/168/194/313/366` | `"downloading"` | 混合 |
+
+即 **`isModel=true` 从不与 `"staging"`/`"training"` 同时出现**，原 `else if` 因此永远只在
+`isModel == false` 时求值——无条件化后行为不变。
+
+同理，Step 3 用 `isModelDataPair(s.activeTask.Type, taskType)` 取代原来的
+`currentIsModel != isModel` 也是等价的：原式把 `Type == "training"` 视作"非模型"，从而允许
+一个模型导入与在飞训练任务配对；但在飞训练任务必然使 `isTrainingBusyLocked()` 为真（它覆盖
+`TrainingRunning` 与 `CurrentOp` 为 `staging`/`training`/`reporting` 三种取值），第 1 步就已
+拦截，根本走不到第 3 步。所以在可达状态下 `Type` 只可能是 `model_import` 或 `data_import`，
+`isModelDataPair` 与原式同值。
+
+**注释语言（CLAUDE.md 硬要求）：** 新函数 `tryAcquireTaskTyped` 内的**全部**注释用英文
+（上面代码块已改好）。`tryAcquireTask` 原有的中文文档注释属于"原样保留的既有行"，**不要翻译**
+——那是与本次改动无关的 churn；`route.go` 里其余既有中文注释同理一律不碰。除本任务新增/新写的
+注释外，不要顺手改任何既有注释的语言。
 
 - [ ] **Step 4: 运行测试确认通过**
 
