@@ -76,6 +76,15 @@
   导入的既有取值）与 `deps_installing`（安装阶段），使 `status` 在长耗时的安装期间可区分于下载。
   这是对 spec 的**增量**，不改变 `deps_importing` 的语义。
   **spec §5 已同步补齐这三个取值**（2026-10-08）——否则 phase 2/3 只读 spec 的实现者会漏掉两个。
+- **`go build ./...` 在本 checkout 本来就失败**（2026-10-08，Task 11 实现期发现并由我复核）：
+  失败点全部在 `models/audit/holdout-sources/semgrep-rules-develop/...` 下 18 个目录，是 semgrep
+  规则夹具（内含故意不可编译的 Go 与缺失的第三方模块，如 `github.com/anthropics/anthropic-sdk-go`）。
+  证据：该路径**未被本分支任何提交碰过**（`git log master..HEAD -- models/audit/holdout-sources`
+  为空）、**未入库**（`git ls-files` 为空，是本地文件）、且仓库根有 `go.work`，`./...` 会扫到它。
+  **因此全部任务的验证命令一律用窄范围**：`go build ./cmd/... ./internal/... ./pkg/...`，
+  测试用 `go test ./internal/... ./pkg/...`；**不要用 `go build ./...` / `go test ./...`**，
+  否则会把环境既有的失败误判成本次改动引入的回归。
+  （CLAUDE.md 里写的 `go test ./...` 在此 checkout 上不成立，属环境问题，不在本计划范围。）
 
 ---
 
@@ -1648,6 +1657,34 @@ git commit -m "feat(deps): add importDeps handler and route"
 
 ---
 
+### Task 5 闭环记录（2026-10-08，复审 APPROVE）
+
+**Task 5 已结**。实现 `f98837c`，修复 `3c4a9b9`（仅 `deps_import.go` 三行注释 + `deps_import_test.go`
+新增 70 行）。复审为**独立复核**，未采信实现者结论：
+
+| 变异 | 复审者自行复现的结果 |
+| :--- | :--- |
+| 删失败分支 `release()`（`deps_import.go:63`） | **FAIL** `deps_import_test.go:89`，2.01s |
+| 删 `s.runAsyncSafe(...)`（`:72-74`） | **FAIL** `deps_import_test.go:116`，2.01s |
+| 改消息串（`:70`） | **FAIL** `deps_import_test.go:111` |
+
+三条 Minor 全部解决：1(a)/1(b) 经上述变异证明有判别力；抖动陷阱规避到位（`waitForDepsSlotRelease`
+只轮询两个状态字段，且下载临时文件落在 `os.TempDir()` 而非 `t.TempDir()`，结构上不可能触发
+`concurrency_test.go` 那类 `TempDir RemoveAll: directory not empty`）；Minor 3 的新措辞经核实**为真**
+（全 `internal/` 下 `grep DisallowUnknownFields` 为空，故旧理由"被接受却静默忽略的字段"确属松垮）。
+
+**驳回一条非阻断 Minor（记录在案，不修）**：复审者用变异 D 证明——把 `tryAcquireTaskTyped` 及其
+错误分支换成 `release := func(){}`（槽位永不获取），两个新测试**仍然全绿**。根因是 `NewTAAState`
+的默认值本就是 `CurrentOp: "idle"`（`route.go:525`）+ `ActiveTaskID` 零值，恰好等于 helper 的
+"已释放"谓词，所以"从未获取"与"获取后释放"不可区分。
+
+**不修的理由**：`tryAcquireTaskTyped` 的**获取**语义已由 Task 3 的单测覆盖（本计划 `:667`/`:675`
+两处断言 `task-deps-1`/`task-deps-2` 的获取与冲突）；handler 层**独有**的风险是"每条退出路径都要
+释放"，这已被变异 A/B 钉住。补齐获取侧属于镀金——若将来有人删掉 `tryAcquireTaskTyped` 调用，
+Task 3 的单测会以编译/断言失败报警，不会静默通过。
+
+---
+
 ### Task 6/8 编码前预审发现（已直接改入正文，实现者无需再判断）
 
 在 Task 4 审查期间对 Task 6 的 `processImportedDeps` 做定点审查，发现 4 个缺陷，均已修正：
@@ -3147,7 +3184,11 @@ spec §8 末条要求 proto 设计稿与实际 HTTP 接口保持一致。该文�
 
 - [ ] **Step 1: 新增两个 rpc**
 
-`service TaaService` 中（`:34` 的 `ImportModel` 之后、`:56` 的 `ReportModelImport` 之后）各插一行：
+`service TAAService` 中（`:34` 的 `ImportModel` 之后、`:58` 的 `ReportModelImport` 之后）各插一行：
+
+> 订正（2026-10-08，Task 11 实现期）：此处初稿写作 `TaaService`，**文件里实际是 `TAAService`**
+> （`api/proto/taa.proto:17`）。同文件另有 `service PlatformCallbackService`（`:50`），
+> 两个 rpc 属于前者。`ReportModelImport` 的锚点实测也是 `:58`（初稿写 `:56`）。
 
 ```proto
   rpc ImportDeps(ImportDepsRequest) returns (ApiResponse);
