@@ -29,6 +29,17 @@
   「同级」当作承重前提（a/b/c/d 四类冲突全靠它规避），却不设任何防线，一次手滑即静默触发。
   属于**超出已批准 spec 的功能追加**，在此显式记录以便回溯。
 
+**执行期事实修正（由 subagent 审查核实，供后续 Task 参考）**：
+- `cleanDirContents` **定义**在 `internal/controller/import_helpers.go:75`（不是 `import_processing.go`）；
+  `import_processing.go` 里的是调用点。
+- `setupTestState(t)` 的既有签名是 `func setupTestState(t *testing.T) (*TAAState, string)`——
+  第二个返回值是任务 ID 之类的字符串；调用处一律写作 `state, _ := setupTestState(t)`。
+- 配置加载顺序（已核实）：`applyStartupConfigFile`（`config.go:214`）**先于**
+  `validateStartupConfig`（`config.go:215`），因此校验看到的是文件覆盖后的值。
+- `go build ./...` 在本仓库**必然失败**，原因限于 `models/audit/holdout-sources/semgrep-rules-develop/`
+  下故意写坏的 Go 样例（约 40 个错误），与本特性无关，**不要去修**。构建请用
+  `go build -o bin/taa ./cmd/taa` 或 `go build ./cmd/... ./internal/... ./pkg/...`。
+
 **已知遗留（不在本计划范围）**：
 - `reportRes` 的 `deps_checksum` 在 `internal/coordinator/flow_training.go:219` 这条备用执行路径上传
   `nil`——该路径没有依赖概念。理由与影响记在 Task 10。
