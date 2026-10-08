@@ -2245,11 +2245,19 @@ Task 5 的代码质量审查提出：`deps_import.go` 传给 `runAsyncSafe` 的�
 - Modify: `internal/controller/report.go`
 - Modify: `internal/controller/deps_import.go`（`reportDepsAsync`）
 - Modify: `internal/controller/route.go:798-804`（名字兜底补 `deps` 判定）
-- Test: `internal/platform/reporter_test.go`
+- Test: `internal/platform/reporter_test.go`（**新建**，见 Step 1 的包名说明）
 
 - [ ] **Step 1: 写失败测试**
 
-追加到 `internal/platform/reporter_test.go`（若文件名不同，用该目录下既有的 reporter 测试文件）：
+**新建 `internal/platform/reporter_test.go`**（2026-10-08 实测：该目录下**没有** `reporter_test.go`，
+只有 `client_test.go`，所以是"新建"而非"追加"）：
+
+- **包名必须是 `package platform`（内部测试包）**，不能照抄 `client_test.go` 的
+  `package platform_test`。下面的代码用的是不带限定的 `ReportDepsEndpoint` / `ReportDeps`；
+  若写成外部测试包，会报 `undefined: ReportDepsEndpoint`。Go 允许同目录下两个测试包并存，
+  所以新建内部测试包不会与 `client_test.go` 冲突，也**不要**去改 `client_test.go`。
+- **import 块**：`"context"`、`"encoding/json"`、`"net/http"`、`"net/http/httptest"`、`"testing"`。
+  同样**不要** import `"taa/internal/platform"`（内部测试包引用自己不需要前缀）。
 
 ```go
 func TestReportDepsPostsChecksum(t *testing.T) {
@@ -2476,7 +2484,7 @@ git commit -m "feat(deps): report dependency import results and scoped audits"
 `ReportTaskOutcome(..., "deps_import", ...)`，而该方法只特判 `model_import`，其余一律落
 `ReportRes` ⇒ 平台侧的 `importDeps` 任务永远收不到 `reportDeps`，表现为**挂起**而非失败。
 
-测试（追加到 `internal/platform/reporter_test.go`）：
+测试（追加到 Step 1 新建的 `internal/platform/reporter_test.go`，同为内部测试包 `package platform`）：
 
 ```go
 func TestReportTaskOutcomeDispatchesDepsToReportDeps(t *testing.T) {
