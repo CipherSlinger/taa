@@ -2849,7 +2849,8 @@ LLM 依赖的前提下验证 fail-closed 的清除行为。
 与 spec §6「不留半成品目录」一致。
 
 `internal/controller/import_processing.go` 中新增 `reportAuditScopedAsync`：把既有
-`reportAuditAsync`（`:718`）的实现体抽出为带 scope 的版本，原函数委托：
+`reportAuditAsync`（预审时测得 `:722`；**Task 9 已在 `:188` 插入 1 行，此数已下移，按符号名定位**）
+的实现体抽出为带 scope 的版本，原函数委托：
 
 ```go
 func (s *TAAState) reportAuditAsync(requestID, taskID string, code int, msg, report string) {
