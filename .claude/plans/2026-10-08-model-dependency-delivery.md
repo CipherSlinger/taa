@@ -3112,6 +3112,44 @@ git commit -m "feat(deps): inject TAA_DEPS_DIR and prepend PYTHONPATH for traini
 
 ---
 
+### Task 9 规范审查发现（2026-10-08，已改入正文，实现者无需再判断）
+
+审查结论是**合规**（spec §7 五条要求逐条吻合，无功能性超建；三个独立变异——尾冒号守卫、前置改覆盖、
+删空值早返回——全部被现有用例抓住，测试非空覆盖）。
+
+但审查者点出一处**本计划相对 spec 的欠规格**，已判定为必修：
+
+| # | 级别 | 缺陷 | 依据 |
+| :--- | :--- | :--- | :--- |
+| K | 覆盖 | **spec §12 的「训练注入：子进程环境含 `TAA_DEPS_DIR` 与前置的 `PYTHONPATH`，且平台在 `runtimeConfig.env` 中给出的 `PYTHONPATH` 被保留而非覆盖」这条断言不存在。** 把 `import_processing.go:188` 整行删掉，Step 6/7 的 5 个用例**全部照过** —— 本任务唯一的功能性接线没有任何自动化保护，CI 抓不到"注入被删/写错位置/结果半路被丢弃" | Step 6/7 只要求了纯函数回归用例；实现者照做，不是漏做 |
+
+**补法（Step 6 之后新增一个用例，仍放 `deps_env_test.go`）**：走**真实**的
+`processImportedResource`，不要直接调 `executeTraining`（那测的是测试自己的接线，不是 `:188`）。
+到 `:188` 的前置条件（已逐行核实）：
+
+```go
+state, _ := setupTestState(t)   // fixture 已给 ModelDir/DepsDir/ResultCheck:false
+state.ModelImported = true      // 否则 :158 的 if !modelImported 提前 return
+state.saveDepsSuccess("cafebabe", map[string]any{"size": int64(5), "algorithm": "sm3", "value": "cafebabe"})
+state.RuntimeConfig = `{"commands":["env > envdump.txt"],"env":{"PYTHONPATH":"/platform/lib"}}`
+```
+
+- `isModel` 必须为 **false**：`:140-144` 的 `if isModel` 会提前 return，`:188` 在**数据下发触发训练**
+  那条分支里（`:146` 起）。
+- 归档用**明文**小 tar.gz，直接复用同包已提交的 `buildTestArchive`（`map[string]string{"data.txt": "x"}`）。
+- 命令经 `/bin/sh -c` 执行、cwd 为 `ModelDir`（`executor.go:49`），故 `envdump.txt` 落在
+  `state.Security.ModelDir` 下，读它断言：dump 含 `TAA_DEPS_DIR=<depsRoot>/cafebabe`；
+  `PYTHONPATH` 行等于 `<depsRoot>/cafebabe:/platform/lib`（**这条才证明平台值被保留而非覆盖**）。
+- 再加一条**负向对照**：同样配置但不导入依赖，dump 里**不得**出现 `TAA_DEPS_DIR`——直接对应
+  §12 的"未导入依赖时训练环境逐字节一致"。
+
+**变异要求**：删掉 `:188` 后该用例必须 FAIL。
+
+**若该路径需要实现者无法在不碰其它文件的前提下构造的 fixture，就停下来报告阻塞点**，
+不得绕开 `:188` 写一个假接线用例——那比没有更糟。
+
+---
+
 ## Task 10: `deps_checksum` 进训练报告，`status` 暴露依赖状态
 
 **Files:**
