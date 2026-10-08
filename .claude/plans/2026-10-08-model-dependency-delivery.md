@@ -3696,6 +3696,22 @@ state.RuntimeConfig = `{"commands":["env > envdump.txt"],"env":{"PYTHONPATH":"/p
 `git add` 一个**没被修改过**的文件不会报错，所以这个疏漏不会自我暴露，只会留下一个
 "该包编译不过"的历史提交。已把两个测试文件补进 Files 块，并在 Step 3/Step 4 各给出逐字的补参指令。
 
+**(BB) 订正预审发现 2：`encoding/json` 现在已在 `deps_import_test.go` 里，`codeaudit` 也是——不要再补。**
+
+预审发现 2 写在 Task 6 之后、Task 7 之前，当时该文件的 import 块确实不含 `encoding/json`
+（实测为 `archive/tar, compress/gzip, errors, net/http, net/http/httptest, os, path/filepath, sort,
+testing, time`）。**Task 7 已经把它加进去了**（`b3eee6e`：该文件新加的 httptest 处理器要用
+`json.NewDecoder`），同时加进的还有 `taa/internal/codeaudit`。当前 HEAD 的 import 块实测为：
+
+```
+archive/tar, compress/gzip, encoding/json, errors, net/http, net/http/httptest,
+os, path/filepath, sort, testing, time, taa/internal/codeaudit
+```
+
+**因此 Step 6 不需要补任何 import，照原指令补会得到重复 import 的编译失败。**
+这与 Task 7 那条"`context` 早已 import、再加就重复导入"是同一型缺陷。结论要一般化：
+**本计划的预审结论会随后续 Task 落地而过期；凡"某文件缺某符号"的断言，实现者一律以工作区实测为准。**
+
 经核实为正确、记录在此以免被"顺手改坏"：
 
 - **`s.getDepsChecksum()` 已存在**（`deps_state.go:36`），自己取 `RLock`、返回**副本**，且在
