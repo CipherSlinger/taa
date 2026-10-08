@@ -75,6 +75,7 @@
 - spec §5 只要求 `current_op` 新增 `deps_importing`；本计划的流水线另外用了 `decrypting`（沿用模型
   导入的既有取值）与 `deps_installing`（安装阶段），使 `status` 在长耗时的安装期间可区分于下载。
   这是对 spec 的**增量**，不改变 `deps_importing` 的语义。
+  **spec §5 已同步补齐这三个取值**（2026-10-08）——否则 phase 2/3 只读 spec 的实现者会漏掉两个。
 
 ---
 
@@ -1668,6 +1669,46 @@ git commit -m "feat(deps): add importDeps handler and route"
 `rollbackDepsImport` 中的 `os.RemoveAll` 是幂等的二次保险，目的是不让流水线自己的不变式依赖
 别处的副作用。**审计报告**走 `reportAuditScopedAsync`（`scope=deps`），**任务终态**走 `reportDeps`
 ——两者都要发，缺一即平台侧观测不完整。
+
+---
+
+### Task 6 编码前预审·第二轮（2026-10-08，逐符号核对）
+
+对 Step 3/Step 4 用到的每一个外部符号做了实测核对，**结论：全部存在且签名一致，实现者可直接照抄**。
+
+| 符号 | 实测位置 | 与计划是否一致 |
+| :--- | :--- | :--- |
+| `setCurrentOp(op string)` | `route.go:533` | 一致（仅 `mu.Lock` 后赋值，无副作用） |
+| `HashFileSM3(path) (size int64, hex string, err error)` | `pkg/crypto/sm3.go:39` | **返回序一致**（`size, hash, err` 正是此序） |
+| `teecrypto "taa/pkg/crypto"` | `attestation_format.go:8` 等 | 别名即仓库惯例 |
+| `resource.ValidateWheelhouse(dir string) error` | `internal/resource/deps.go:17` | 一致（**注意它在 `resource` 包，不在 `runtime`**） |
+| `resource.ExtractArchiveToDir(dst, filePath string) error` | `internal/resource/archive.go:41` | **参数序一致**（`dst` 在前） |
+| `saveDepsSuccess` / `clearDepsState` / `currentDepsDir` / `depsDirForHash` | `internal/controller/deps_state.go:11/23/54/65` | 均已由 Task 2 落地 |
+| `runtime.InstallWheelhouse(ctx, wheelhouse, target)` | `internal/runtime/deps.go:37` | **带 ctx**，故 Step 3 的钩子必须包一层 `context.Background()`——Step 3 已如此写 |
+
+**本轮唯一的发现：`deps_installing` 是第二个新的 op 取值，spec §5 未列——已补入 spec。**
+
+Step 4 写了 `s.setCurrentOp("deps_installing")`。实测全仓既有 op 取值集合为
+`{analyzing, decrypting, downloading, idle, reporting, staging, training}`，因此依赖导入期间
+`status` 会依次报出 `deps_importing`（Task 5 经 `tryAcquireTaskTyped` 的 `initialOp` 写入）
+→ `decrypting` → `deps_installing` → `idle`，其中后两个都是计划对 spec 的**增量**。
+计划第 75-77 行已把该增量记为"已知遗留"，且理由成立（安装阶段是 GB 级 wheel 的长耗时环节，
+运营方需要区分"在下/解密"与"在安装"）——**取值保持不变**。
+
+需要补的不是实现而是 spec：spec §5 原文只列了 `deps_importing` 一个取值，而 phase 2
+（platform-mock）与 phase 3（文档）的实现者**只读 spec**，会漏掉 `decrypting` 复用与
+`deps_installing`。**已改入 spec §5。**
+
+顺带核实的**安全性结论**（说明该取值不会引入功能缺陷）：现有分支对 op 取值不敏感——四处判定
+（`route.go:569`/`:580`/`:657`、`handler_system.go:92`）里只有 `:580` 的 `isTrainingBusyLocked`
+枚举了具体值，而 `deps_installing` 不在其中，恰好符合"依赖导入不算训练忙"的预期；
+并发保护由 `route.go:657` 的 `CurrentOp != "idle"` 承担，该判定与取值无关。
+**若将来有人往 `isTrainingBusyLocked` 的枚举里加值，必须同时判断依赖导入是否应当算忙。**
+
+**另一条给实现者的提醒（不必改计划）**：`depsInstallFunc` 是本包的包级变量，
+因此 **`internal/controller` 的测试不得使用 `t.Parallel()`**——两个并行测试会争抢同一个钩子，
+一个会跑成另一个的桩。这与 Task 4 给 `internal/runtime` 的 `pipBinary`/`pipWaitDelay` 记的是
+同一类陷阱，只是换了包。Task 6 的三个用例本身没有 `t.Parallel()`，保持现状即可。
 
 ---
 

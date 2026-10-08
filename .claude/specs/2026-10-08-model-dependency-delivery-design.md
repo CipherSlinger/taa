@@ -169,8 +169,22 @@ pip3 install --no-index --no-cache-dir \
 绑定是**单例**：新依赖导入成功即覆盖 `DepsHash`。旧版本目录按内容寻址保留在
 `depsDir/<old-sm3>`，可人工回滚。
 
-`/v1/taa/status` 的响应新增 `depsImported` 与 `depsHash`；`CurrentOp` 增加取值 `deps_importing`
-（该响应里的键名是 `currentOp`）。
+`/v1/taa/status` 的响应新增 `depsImported` 与 `depsHash`；`CurrentOp`（该响应里的键名是
+`currentOp`）在依赖导入期间会依次取值 `deps_importing` → `decrypting` → `deps_installing` → `idle`。
+
+> 订正记录（2026-10-08，Task 6 编码前预审）：
+>
+> 本节初稿只写了"`CurrentOp` 增加取值 `deps_importing`"，把另外两个漏掉了，而 phase 2/3
+> 的实现者只读 spec。三个取值的分工是：
+>
+> - `deps_importing`：整个依赖导入任务在飞期间的取值，由 `tryAcquireTaskTyped` 的 `initialOp` 写入；
+> - `decrypting`：**复用既有取值**，与模型导入一致，不是新增；
+> - `deps_installing`：安装阶段。它是**新增**取值，理由是安装是 GB 级 wheel 的长耗时环节，
+>   运营方需要把"在下/解密"与"在安装"区分开。
+>
+> 平台侧若不认识这些取值，应当忽略而非拒绝——`currentOp` 是自由字符串，仓库内没有任何
+> 按取值分支的逻辑（已核实：`route.go:580` 的 `isTrainingBusyLocked` 是唯一枚举具体值的地方，
+> 且依赖导入不在其中，即"依赖导入不算训练忙"，并发保护由 `CurrentOp != "idle"` 承担）。
 
 > 订正记录（2026-10-08，Task 10 编码前预审）：
 >
