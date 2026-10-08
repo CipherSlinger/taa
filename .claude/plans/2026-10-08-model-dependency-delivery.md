@@ -2476,9 +2476,15 @@ func ReportAuditScoped(ctx context.Context, platformAddr, dockerID, requestID, t
 
 - [ ] **Step 5: 实现 `reportDepsAsync`**
 
-在 `internal/controller/deps_import.go` 中，仿照 `model_reporting.go` 的
-`reportModelImportAsync` 形状实现（先起一个 `import_model_report` 风格的日志标签
-`"importDeps"`）：
+**⚠️ 不要新增函数：`deps_import.go` 里已经有一个 `reportDepsAsync` 桩**（Task 6 落的，位于
+`:243`，正文只有一条 `LogInfo`，注释写着 "Task 7 replaces it with the real platform callback"）。
+本步骤是**替换它的函数体**（连同注释），不是再写一份——写第二份是 `redeclared in this block`
+编译错误。`reportDepsSuccess`/`reportDepsFailure`（`:231`/`:236`）已经在调用它，替换后自动生效，
+无需改动那两个。
+
+形状参照 **`internal/controller/import_processing.go:698` 的 `reportModelImportAsync`**（注意：
+它在 `import_processing.go`，**不在** `model_reporting.go`——后者放的是 `ReportModelLog`/
+`ReportProgress` 与 `reportWatcher`）。日志标签沿用 `"importDeps"`。
 
 ```go
 // reportDepsAsync 异步向平台上报依赖包导入结果。上报失败只记日志，不影响流水线结论。
@@ -2556,10 +2562,24 @@ func TestReportTaskOutcomeDispatchesDepsToReportDeps(t *testing.T) {
 **不要改 `handleAsyncPanic`**——`route.go:844` 的注释写明"通过 ReportTaskOutcome 自动分流"，
 这里就是既定扩展点。
 
-`internal/controller/route.go:798-804` 的名字兜底另补一条 `deps` 判定（当前不可达：异步体执行时
-快照必已由 `tryAcquireTaskTyped` 建立；但兜底分支存在的意义正是快照意外缺失）：
+`internal/controller/route.go:798-804` 的名字兜底另补一条 `deps` 判定。**注意该处实际是
+`if taskType == ""` 里嵌一个 `if/else`，不是 `switch`**——下面的 `switch` 替换的是**内层**的
+`if/else`，外层 `if taskType == ""` 的守卫必须原样保留。现在的形状是：
 
 ```go
+	if taskType == "" {
+		if strings.Contains(strings.ToLower(name), "model") {
+			taskType = "model_import"
+		} else {
+			taskType = "data_import"
+		}
+	}
+```
+
+改成：
+
+```go
+	if taskType == "" {
 		switch {
 		case strings.Contains(strings.ToLower(name), "model"):
 			taskType = "model_import"
@@ -2568,7 +2588,12 @@ func TestReportTaskOutcomeDispatchesDepsToReportDeps(t *testing.T) {
 		default:
 			taskType = "data_import"
 		}
+	}
 ```
+
+当前该分支不可达：异步体执行时快照必已由 `tryAcquireTaskTyped` 建立（`snapshot.Type` 即
+`"deps_import"`，见 `route.go:681-688`），因此 `taskType` 非空。但兜底分支存在的意义正是
+快照意外缺失，所以仍要补——**并且不要**因此就以为补它是多余的而跳过。）
 
 **变体验证（必做）**：删掉新增的 `deps_import` 分支后，`TestReportTaskOutcomeDispatchesDepsToReportDeps`
 必须 **FAIL**（实测会打到 `reportRes` 的路径）。只断言"没有返回错误"的写法在该变异下仍然通过，
@@ -2579,6 +2604,38 @@ go test ./internal/platform/ -run 'TestReportTaskOutcome' -v
 git add internal/platform/reporter.go internal/platform/reporter_test.go internal/controller/route.go
 git commit -m "fix(deps): route the dependency panic path to reportDeps"
 ```
+
+---
+
+### Task 7 编码前预审发现（已直接改入正文，实现者无需再判断）
+
+对 Task 7 的每个行号锚点与每个被调用的符号逐条实测后，修正 2 处会直接导致返工的缺陷，并记录
+数条"经核实为正确"的事实：
+
+| # | 级别 | 结论 | 依据 |
+| :--- | :--- | :--- | :--- |
+| F | 返工 | Step 5 原写"在 `deps_import.go` 中仿照…实现 `reportDepsAsync`"，但该函数**已经存在**——Task 6 在 `:243` 落了一个只记日志的桩，注释明写 "Task 7 replaces it with the real platform callback"。照原文再写一份即 `redeclared in this block` | `deps_import.go:243`（Task 6 进行中的工作区） |
+| G | 返工 | Step 5 把模板指成 `model_reporting.go` 的 `reportModelImportAsync`，**该文件里没有这个函数**。真实位置是 `import_processing.go:698`；`model_reporting.go` 装的是 `ReportModelLog`/`ReportProgress`/`reportWatcher` | `grep -n "^func" internal/controller/model_reporting.go` 无匹配 |
+| H | 返工 | `route.go:798-804` 的名字兜底是 `if taskType == ""` 里嵌的 `if/else`，**不是 `switch`**。原文只给了 `switch` 片段，未说明外层守卫要保留，照抄会把 `if taskType == ""` 一起删掉，使兜底变成无条件覆盖 `snapshot.Type` | `route.go:798-804` 实测 |
+
+经核实为正确、记录在此以免被"顺手改坏"：
+
+- `ReportDeps` 用到的四个 platform 层符号全部存在：`ValidateAndNormalizePlatformParams`（`reporter.go:95`）、
+  `PlatformURL`（`client.go:38`）、`SendPlatformJSON`（`client.go:58`）、`defaultHTTPClient`（`client.go:19`）。
+- 端点常量块是 `reporter.go:11-17`（`ReportModelImportEndpoint`/`ReportAuditEndpoint`/`ReportResEndpoint`/
+  `ModelLogEndpoint`/`ReportProgressEndpoint`），`reportAuditPayload` 在 `:46-52`，
+  `ReportModelImport` 在 `:152`、`ReportAudit` 在 `:191`、`ReportTaskOutcome` 在 `:221` —— 与 Files 块一致。
+- `internal/platform/reporter_test.go` **确实不存在**（该目录只有 `client_test.go`），且后者是
+  `package platform_test`。因此 Step 1 要求新建 `package platform` 的内部测试包是**必需**的，
+  不是风格偏好：代码里用的是不加限定的 `ReportDepsEndpoint`/`ReportDeps`。同目录两个测试包并存合法，
+  不要去改 `client_test.go`。
+- Step 6 的 `-run 'TestProcessImportedDeps'` 会命中真实用例（`TestProcessImportedDepsInstallsAndRecords`
+  等，由 Task 6 建立），不是空匹配。
+- `internal/controller/report.go:31` 的 `ReportModelImport` 包装函数位置与 Step 4 一致。
+
+> 记一条与 Task 6 的**职责边界**：`reportDepsAsync` 是**任务终态**通道；依赖审计报告走
+> `reportAuditScopedAsync`（`scope=deps`）。两者都要发——只发后者，平台侧 `importDeps` 任务永远
+> 等不到 `code`，表现为挂起。
 
 ---
 
