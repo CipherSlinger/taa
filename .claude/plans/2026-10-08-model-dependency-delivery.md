@@ -2634,10 +2634,11 @@ func ReportAuditScoped(ctx context.Context, platformAddr, dockerID, requestID, t
 
 - [ ] **Step 5: 实现 `reportDepsAsync`**
 
-**⚠️ 不要新增函数：`deps_import.go` 里已经有一个 `reportDepsAsync` 桩**（Task 6 落的，位于
-`:243`，正文只有一条 `LogInfo`，注释写着 "Task 7 replaces it with the real platform callback"）。
+**⚠️ 不要新增函数：`deps_import.go` 里已经有一个 `reportDepsAsync` 桩**（Task 6 落的，现位于
+`:255`——Task 6 的 `ae24045` 扩充 `rollbackDepsImport` 注释后由 `:243` 下移，**按符号名定位**，
+正文只有一条 `LogInfo`，注释写着 "Task 7 replaces it with the real platform callback"）。
 本步骤是**替换它的函数体**（连同注释），不是再写一份——写第二份是 `redeclared in this block`
-编译错误。`reportDepsSuccess`/`reportDepsFailure`（`:231`/`:236`）已经在调用它，替换后自动生效，
+编译错误。`reportDepsSuccess`/`reportDepsFailure`（现 `:243`/`:248`）已经在调用它，替换后自动生效，
 无需改动那两个。
 
 形状参照 **`internal/controller/import_processing.go:698` 的 `reportModelImportAsync`**（注意：
@@ -2794,6 +2795,58 @@ git commit -m "fix(deps): route the dependency panic path to reportDeps"
 > 记一条与 Task 6 的**职责边界**：`reportDepsAsync` 是**任务终态**通道；依赖审计报告走
 > `reportAuditScopedAsync`（`scope=deps`）。两者都要发——只发后者，平台侧 `importDeps` 任务永远
 > 等不到 `code`，表现为挂起。
+
+---
+
+### Task 7 编码前预审·第二轮（2026-10-08，逐符号核对）
+
+**(R) Step 8 的实际收益比正文写的更大——它同时修好了崩溃恢复路径，正文只提了 panic 路径。**
+
+正文的依据是 `handleAsyncPanic` → `ReportTaskOutcome`。实测该分发器**有两个调用方家族**：
+
+| 调用方 | 位置 | 传的 taskType |
+| :--- | :--- | :--- |
+| panic 路径 | `route.go:846` | 同文件算出的 `taskType`（`route.go:795` 取自 `snapshot.Type`） |
+| 崩溃恢复·快同步 | `recovery.go:225` | `activeTask.Type` |
+| 崩溃恢复·后台补偿 | `recovery.go:364` | `taskType`（由 `activeTask.Type` 透传） |
+
+三处最终都落到 `platform.ReportTaskOutcome`（`reporter.go:221`）**同一个** `if taskType == "model_import"` 特判。
+`controller.ReportTaskOutcome`（`report.go:41`）只是转发、**没有任何分流逻辑**（已逐行读过 `:41-43`），
+所以 Step 8 加在 platform 层是唯一且正确的位置，不需要在 controller 层重复一遍。
+
+后果：没有这条 `deps_import` 分支时，**TAA 在依赖导入期间崩溃重启**，恢复流程也会把 `deps_import`
+当成训练任务走 `ReportRes`，平台侧 `importDeps` 同样表现为挂起。Step 8 一并修掉，无需额外改动。
+
+**(R2) 留一条低优先级、明确不扩本次范围的观察**：`recovery.go:222-224`（快同步）与 `:353-355`
+（后台补偿）对用户可见的 `msg` 只特判了 `model_import`，`deps_import` 会落到训练口吻的
+"TAA 异常崩溃重启，训练执行已被安全终止，请重新下发"。文案不准确但不影响分流正确性
+（`code=1` 与目标端点都对），且属于恢复文案范畴——**不在 Task 7 范围内，此处仅记录**，
+不修改 `recovery.go`。
+
+**(S) 第二期（platform-mock）的具体待办，Task 7 不受影响，先行登记以免丢失。**
+
+`reportRequest` 这个解码结构体在本仓库有**三份独立定义**，互不共享：
+
+| # | 位置 | 用途 | Task 7 是否需要动 |
+| :--- | :--- | :--- | :--- |
+| 1 | `internal/controller/report.go:15` | 控制器侧;**仅被测试当解码目标**用 | 否 |
+| 2 | `tools/platform-mock/internal/handlers_taa.go:17` | mock 平台解码上报体 | 否（见下） |
+| 3 | 测试内的匿名结构体 | Task 8 用例自带 | 否 |
+
+关键点：**Task 8 的用例不要用 `reportRequest` 解码**——它没有 `Scope` 字段，解出来恒为空，
+`scope` 断言会永远失败（或更糟：写成 `== ""` 就永远通过）。Step 1 给的写法自带匿名
+`struct{ Code int; Scope string }`，这是**必需的**，不是风格选择。
+
+spec 第二期已确认推迟，但 mock 侧的具体缺口现在就能点清，免得第二期重新勘察：
+
+- `tools/platform-mock/internal/server.go` 只注册了 `/v1/taa/reportResourceRes`、`reportRes`、
+  `reportModelImport`、`reportAudit` 四条（`:122-125`），**没有 `/v1/taa/reportDeps`**；
+- `tools/platform-mock/internal/proxy.go:53-60` 的按前缀分流表里同样**没有 `reportDeps`**，
+  不补这一条，代理会把它归错类；
+- mock 的 `reportRequest`（`handlers_taa.go:17`）**没有 `scope` 字段**，收下依赖审计上报后
+  无法在 `/api/dashboard/status` 或 `/api/reportAudit/status` 里区分模型审计与依赖审计。
+
+Task 7 本身用 `httptest` 自建服务端，**不依赖 mock**，因此上述三项不阻塞 Task 7，全部归第二期计划。
 
 ---
 
@@ -3302,6 +3355,8 @@ state.RuntimeConfig = `{"commands":["env > envdump.txt"],"env":{"PYTHONPATH":"/p
 - Modify: `internal/controller/import_processing.go:1006-1012`
 - Modify: `internal/controller/handler_system.go:57-73`
 - Modify: `internal/coordinator/flow_training.go:219`
+- Modify: `internal/runtime/report_test.go`（**既有** `TestBuildTrainingReport:57` 的 10 参调用要补 1 个 `nil`，见 Step 3）
+- Modify: `internal/controller/import_processing_report_test.go`（既有 `:54` 的 11 参调用要补 1 个 `nil`，见 Step 4）
 
 > **行号锚点已核实（2026-10-08 预审）**：以上四处行号均已逐条实测命中（`flow_training.go:219` 正是
 > `runtime.BuildTrainingReport(...)` 调用行；`import_processing.go:1011` 正是 `buildTrainingReport`
@@ -3330,6 +3385,66 @@ state.RuntimeConfig = `{"commands":["env > envdump.txt"],"env":{"PYTHONPATH":"/p
 > 3. **Step 5/Step 10 原写 `go build ./...` 与 `go test ./...`，在本检出必然失败**，且与本任务无关
 >    （见文件头「已知遗留」：`models/audit/holdout-sources/semgrep-rules-develop/` 无自己的 `go.mod`）。
 >    照原文执行会得到一个假的「任务失败」信号。已改为窄范围命令。
+
+---
+
+### Task 10 编码前预审·第二轮（2026-10-08，逐符号核对）
+
+**(Y) 漏掉的调用方：`internal/runtime/report_test.go:57`——危害是"假失败"，不是"少改一行"。**
+
+签名变更的全部调用方（实测枚举，大小写不敏感地 grep 过 `[Bb]uildTrainingReport(`）：
+
+| # | 调用点 | 实参 | 计划是否覆盖 |
+| :--- | :--- | :--- | :--- |
+| 1 | `internal/runtime/report.go:42`（`BuildCrashFailureReport` 内） | 10 | ✅ Step 3 |
+| 2 | `internal/runtime/report_test.go:57`（**既有** `TestBuildTrainingReport`） | 10 | ❌ **原先完全没写** |
+| 3 | `internal/coordinator/flow_training.go:219` | 10 | ✅ Step 3 |
+| 4 | `internal/controller/import_processing.go:1015`（委托 `buildTrainingReport` 内） | 10 | ✅ Step 3 |
+| 5 | `internal/controller/import_processing.go:973`（`buildAndSaveTrainingReport` 内） | 11 | ✅ Step 4 |
+| 6 | `internal/controller/import_processing_report_test.go:54`（**既有**用例） | 11 | ⚠️ 见 (AA) |
+
+第 2 条是**同一测试包**里的既有调用。不补 `nil` 则 `go test ./internal/runtime/` 编译失败，
+而 Step 5/Step 10 期望"全部 PASS"——实现者会看到一个与本任务无关的编译错误，最坏情况下
+去怀疑自己的签名改法。已写入 Step 3。
+
+**(Z) Step 4 自称两处调用点，其中 `reportTrainingFailureFromResult` 并不是调用方。**
+
+`reportTrainingFailureFromResult`（`:913`）调用的是 `buildAndSaveTrainingReport`（`:917`），
+**从不直接调用 `buildTrainingReport`**。这与本任务上方预审发现 1 的结论直接矛盾——发现写对了，
+正文没跟着改。已订正 Step 4，只留 `:973` 一处，并写明 `reportTrainingFailureFromResult` 一行不用改。
+
+**(AA) 发现 1 声称"已加入 Files"，但 Files 块里并没有那个文件，Step 4 也没给补 `nil` 的指令。**
+
+原文只在 Step 11 的 `git add` 里列了 `internal/controller/import_processing_report_test.go`。
+`git add` 一个**没被修改过**的文件不会报错，所以这个疏漏不会自我暴露，只会留下一个
+"该包编译不过"的历史提交。已把两个测试文件补进 Files 块，并在 Step 3/Step 4 各给出逐字的补参指令。
+
+经核实为正确、记录在此以免被"顺手改坏"：
+
+- **`s.getDepsChecksum()` 已存在**（`deps_state.go:36`），自己取 `RLock`、返回**副本**，且在
+  `DepsChecksum == nil` 时返回 `nil`。后一点是承重的：`BuildTrainingReport` 里
+  `if depsChecksum != nil` 守卫因此使**未导入依赖时报告里不出现 `deps_checksum` 键**，
+  正是 §12「未导入依赖时训练环境与报告与改动前一致」所要求的。Step 4 直接用它，不要另写取数逻辑。
+- **Step 8 读的是裸字段而不是 `getDepsChecksum()`/`currentDepsDir()`，这是对的。**
+  `statusHandler` 在 `s.mu.RLock()` 内取数（`handler_system.go:58-63`），而 `getDepsChecksum`
+  与 `currentDepsDir` **自己会再取一次锁**（`deps_state.go:37`、`:55`）；在持有读锁时调用它们，
+  一旦有写者在等待即可能自锁。Step 8 给的写法在同一把读锁内读 `s.DepsImported`/`s.DepsHash`
+  裸字段，正确且与原 handler 风格一致，**不要"顺手"改成调 those helper**。
+- Step 8 的替换块与 `handler_system.go:57-73` 的**现状逐字吻合**（现状为
+  `phase/modelImported/trainingRunning/currentOp` 五项 + `logCount`），新增两项插在
+  `modelImported` 之后，键名 camelCase 与既有键对齐。
+- `runtime/report.go` 的 `dataChecksum` 分支在 `:86-87`（计划写 `:86-88`，含闭合花括号，一致）；
+  `BuildTrainingReport` 声明在 `:46`；`BuildCrashFailureReport` **声明**在 `:32`、其
+  `return BuildTrainingReport(...)` 在 `:42`——Files 块写的 `:42` 指的是这一行，正确。
+- controller 侧还有一个**同名包装** `BuildCrashFailureReport`（`import_processing.go:1006`），
+  它转发给 `runtime.BuildCrashFailureReport`，**签名不变**（本任务只改 `BuildTrainingReport`），
+  故无需改动，计划也没要求改——正确。
+- Step 6 的两个测试助手都存在：`setupTestServer`（`handler_test.go:105`）、`postJSON`
+  （`handler_test.go:146`）；`saveDepsSuccess(hash string, checksum map[string]any)`
+  （`deps_state.go:11`）与 Step 6 的调用形式一致。
+- 预审发现 2 属实：`deps_import_test.go` 的 import 块实测为
+  `archive/tar, compress/gzip, errors, net/http, net/http/httptest, os, path/filepath, sort, testing, time`
+  ——**确实没有 `encoding/json`**，Step 6 必须补。
 - Test: `internal/runtime/report_test.go`、`internal/controller/handler_test.go` 风格的状态测试
 
 - [ ] **Step 1: 写失败测试**
@@ -3386,6 +3501,18 @@ go test ./internal/runtime/ -run TestBuildTrainingReportIncludesDepsChecksum -v
 	return BuildTrainingReport(taskID, startedAt, finishedAt, "failed", 137, failureReason, modelChecksum, dataChecksum, nil, nil, nil)
 ```
 
+- `internal/runtime/report_test.go:57` 的**既有**用例 `TestBuildTrainingReport` 传的是 **10 个实参**
+  （`modelChecksum, dataChecksum, trainingResult, codeauditSection` 四个 map 收尾），签名加参后
+  **同一测试包即编译失败**。在 `dataChecksum` 之后补一个 `nil`（该用例不涉及依赖，补 `nil` 不会
+  改变它任何既有断言——`if depsChecksum != nil` 守卫保证 `deps_checksum` 键不出现）：
+
+```go
+	report, err := BuildTrainingReport("task-001", startedAt, finishedAt, "succeeded", 0, "", modelChecksum, dataChecksum, nil, trainingResult, codeauditSection)
+```
+
+  漏掉这一处的后果不是"少改一行"，而是 Step 5/Step 10 的 `go test ./internal/runtime/` 直接编译失败，
+  表现为一个**与本任务无关的假失败**。
+
 - `internal/coordinator/flow_training.go:219` 同步插入 `nil`：
 
 ```go
@@ -3400,9 +3527,32 @@ go test ./internal/runtime/ -run TestBuildTrainingReportIncludesDepsChecksum -v
 
 - [ ] **Step 4: 训练路径传入真实 checksum**
 
-`internal/controller/import_processing.go` 的 `buildAndSaveTrainingReport`（`:952`）与
-`reportTrainingFailureFromResult`（`:909`）调用 `buildTrainingReport` 时，在
-`dataChecksum` 位置之后插入 `s.getDepsChecksum()`。
+**只有一处真实调用点。** `internal/controller/import_processing.go` 的 `buildAndSaveTrainingReport`
+（函数声明在 `:956`，按符号名定位）内部 `:973` 的那次 `buildTrainingReport(...)` 调用，在
+`dataChecksum` 之后插入 `s.getDepsChecksum()`：
+
+```go
+	report, err := buildTrainingReport(taskID, startedAt, finishedAt, status, exitCode, failureReason, modelChecksum, dataChecksum, s.getDepsChecksum(), trainingResult, audit, includeAudit)
+```
+
+> **不要把 `reportTrainingFailureFromResult` 算作调用方。** 它在 `:913`，调用的是
+> `buildAndSaveTrainingReport`（`:917`），**从不直接调用 `buildTrainingReport`**；它经由前者自动
+> 获得依赖 checksum，本身一行都不用改。本步原写"`buildAndSaveTrainingReport` 与
+> `reportTrainingFailureFromResult` 两处"，与本任务上方预审发现 1 的结论**自相矛盾**，已订正。
+
+**同步修既有测试调用。** `internal/controller/import_processing_report_test.go:54` 的
+`buildTrainingReport(...)` 传 **11 个实参**：`:61` 是 model map、`:62` 是 data map、`:63` 起是
+`trainingResult, audit, true`。在 `:62` 的 `dataChecksum` 字面量之后补一个 `nil`：
+
+```go
+		map[string]any{"algorithm": "sm3", "value": "data-archive-digest", "size": int64(934)},
+		nil,
+		trainingResult,
+```
+
+不补则 `internal/controller` 测试包编译失败，Step 5/Step 10 同样得到一个假失败。该用例的既有断言
+（`dataset.checksum` 的 algorithm/value/size 三连、`data_structure` 的两处否定断言）全部不受影响——
+补的是 `depsChecksum=nil`，`if depsChecksum != nil` 守卫使它不进报告。
 
 - [ ] **Step 5: 运行测试确认通过**
 
