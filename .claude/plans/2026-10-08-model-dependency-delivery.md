@@ -876,6 +876,24 @@ deps↔data、model→deps 反向），并做变异校验（把 `isModelDataPair
 同一形态**：测试必须在断言前等待异步完成（或让 handler 提供可等待的完成信号），否则会得到
 随机失败的绿色套件。隔离运行与满载运行均通过，故属竞态而非确定性缺陷。
 
+**修复与复审结论（已闭环，Task 3 可结）：**
+
+修复分两次提交——`3959224 test(controller): pin deps pairing exclusion with same-taskID cases`
+（重命名 + 新增 `TestDepsImportPairsWithNothing`）、`ff9bfbd docs(deps): tighten depsDirForHash
+comment wording`（仅注释措辞，无代码变更）。复审独立重跑，未采信实现者自述：
+
+- **重命名确为纯重命名**：diff 中该函数体内无一 `-` 行，只有函数名一行为改动，其余全是新增。
+- **三个子用例确实抵达 `isModelDataPair`**：守卫 1（`isTrainingBusyLocked`）因 `initialOp` 为
+  `deps_importing`/`downloading` 恒为 false；守卫 2（`isAuditBusyLocked`）因 `NewTAAState` 初始化
+  `CurrentAuditOp: "idle"` 且本路径不触碰审计字段亦恒为 false；三例均用**同 taskID**，故不触发
+  `s.ActiveTaskID == taskID` 短路，全部命中 `route.go:660`。测试非空转。
+- **变异校验（两项都做了）**：变异 A `return current != requested` ⇒ 三子用例全红；变异 B（更隐蔽）
+  `return current != requested && (current == "model_import" || requested == "model_import")`
+  ⇒ 2/3 转红（`data_import` 那例子在变异 B 下本就应返回 false，属预期），测试整体 FAIL。
+  两项变异均以 `git diff --stat` + `git status --short` 为空证明字节级还原。
+- **无回归**：`go test ./internal/controller/ -count=1` ⇒ `ok taa/internal/controller 24.400s`，
+  已知 flake 未触发。
+
 ---
 
 ## Task 4: 依赖包校验与离线安装
@@ -1814,8 +1832,7 @@ func writeAuditMarker(depsDir string) error {
 }
 ```
 
-`reportDepsSuccess` / `reportDepsFailure` 在本任务内先直接调用 Task 7 会实现的
-`s.reportDepsAsync`：
+`reportDepsSuccess` / `reportDepsFailure` 是本任务内的两个薄封装：
 
 ```go
 func (s *TAAState) reportDepsSuccess(req depsImportRequest, checksum map[string]any) {
@@ -1827,6 +1844,21 @@ func (s *TAAState) reportDepsFailure(req depsImportRequest, reason string) {
 	s.reportDepsAsync(req.RequestID, req.TaskID, 1, reason)
 }
 ```
+
+它们调用的 `reportDepsAsync` 正式实现属于 **Task 7**，但**本任务必须先把桩补上，否则本包编译不过**
+（Task 7 的文件清单写的正是 "Modify: `deps_import.go`（`reportDepsAsync`）"，即它假定该函数已存在；
+两者必须一致，二选一都会漏。此处取"Task 6 建桩、Task 7 替换"）。桩只记日志、不发网络请求：
+
+```go
+// reportDepsAsync reports a dependency import result to the platform.
+// This stub only logs; Task 7 replaces it with the real platform callback.
+func (s *TAAState) reportDepsAsync(requestID, taskID string, code int, msg string, checksum ...map[string]any) {
+	s.Logs.Add(LogInfo, "importDeps", "deps import report: request=%s task=%s code=%d msg=%s",
+		requestID, taskID, code, msg)
+}
+```
+
+本任务的测试不断言上报内容（见 Step 1 的三个用例），因此该桩不会被测试误判为"上报成功"。
 
 `auditAndReportDeps` 由 Task 8 实现；本任务先给出**最小可用版本**，使包可编译且
 `Security.ScanEnabled=false` 时短路放行：
@@ -1874,7 +1906,7 @@ git commit -m "feat(deps): add dependency import pipeline with idempotent reuse"
 追加到 `internal/platform/reporter_test.go`（若文件名不同，用该目录下既有的 reporter 测试文件）：
 
 ```go
-func TestReportDepsPostsScopedPayload(t *testing.T) {
+func TestReportDepsPostsChecksum(t *testing.T) {
 	var got map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != ReportDepsEndpoint {
