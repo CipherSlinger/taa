@@ -88,6 +88,10 @@
 #   CSV2_VM_VCPUS / CSV2_VM_MEM_MB                  (default 8 / 16384)
 #   CSV2_DISK       overlay path                    (default <images>/<name>-overlay.qcow2)
 #
+# A guest can also be given host PCI devices by VFIO passthrough. This is off
+# unless asked for, and the device is not part of the launch measurement:
+#   CSV2_VFIO_DEVICES  host addresses, space or comma separated (e.g. "c3:00.0")
+#
 # Every later command must be given the same overrides, or it will address the
 # default instance instead. The guest is addressed by the LAN DHCP server, so an
 # instance without CSV2_VM_IP is discovered after boot: first from the bridge
@@ -166,6 +170,40 @@ HOST_VNC_DISPLAY="${CSV2_VNC_DISPLAY:-9}"
 VM_POLICY=0x5
 VM_CBITPOS=47
 VM_REDUCED_PHYS_BITS=5
+
+# Host PCI devices to hand to the guest by VFIO passthrough, as host addresses
+# separated by spaces or commas (e.g. "c3:00.0"). Empty means none, which is the
+# default: a plain CSV2 guest has no passthrough.
+#
+# Each device must already be bound to vfio-pci, and every device sharing its
+# IOMMU group must be listed too - the group is the unit the IOMMU can isolate,
+# so passing one member through without the others would let the guest reach
+# memory belonging to the rest. `up` verifies both.
+#
+# Note that a passed-through device is NOT covered by the launch measurement:
+# MEASUREMENT hashes the firmware, command line, initramfs and kernel only, so a
+# device can be added or swapped without the report changing. Anything relying
+# on the device has to establish its trust separately.
+#
+# The guest still boots the base image's kernel, so this only reaches devices
+# that kernel can already drive. The Hygon DCU is not one of them, for two
+# separate reasons, and neither is fixable from here:
+#
+#   - Its driver stack (hycu, hycu-sched, hykcl, hyttm, hydrm-buddy,
+#     hydrm-ttm-helper, hy-extra, hsw) is built for kernel 6.6.0-hycu-
+#     confidential-csv+. hycu.ko matches 1d94:6211, so it would bind, but its
+#     vermagic is that other kernel and the base image's 6.6.0-111.0.0.103
+#     refuses to load it.
+#   - Handing 1d94:6211 to this QEMU makes the VMM die: the kernel logs
+#     "vfio-pci 0000:c3:00.0: Invalid PCI ROM data signature: expecting
+#     0x52494350, got 0x0000aa55" and QEMU segfaults moments later, in glibc,
+#     on a thread it spawned itself. The guest never reaches the point of
+#     printing anything, so the launch just looks like a silent failure.
+#
+# The DCU works in the kata-qemu-hygon-dcu-csv2 runtime, which pairs the Hygon
+# QEMU build with that kernel and root filesystem. Use it for the DCU, and this
+# option for devices the guest already has drivers for.
+VFIO_DEVICES="$(printf '%s' "${CSV2_VFIO_DEVICES:-}" | tr ',' ' ')"
 
 # Attestation smoke test, run inside the guest (host paths).
 SMOKE_BIN="${CSV2_SMOKE_BIN:-/root/taa/csv-go-smoke}"
@@ -443,6 +481,29 @@ else
     echo "  --   guest IP left to DHCP, will be discovered after boot"
 fi
 
+# Passthrough devices. QEMU's own error for these does not name the device, and
+# a group member left unlisted is a silent isolation hole, so check both here.
+for d in $VFIO_DEVICES; do
+    p=/sys/bus/pci/devices/0000:\$d
+    [ -e "\$p" ] || p=/sys/bus/pci/devices/\$d
+    if [ ! -e "\$p" ]; then
+        echo "  FAIL passthrough device \$d does not exist"; fail=1; continue
+    fi
+    drv=\$(basename "\$(readlink -f \$p/driver 2>/dev/null)" 2>/dev/null)
+    if [ "\$drv" != vfio-pci ]; then
+        echo "  FAIL \$d is bound to \${drv:-no driver}, not vfio-pci"
+        echo "       bind it first:  echo 0000:\$d > /sys/bus/pci/drivers/vfio-pci/bind"
+        fail=1; continue
+    fi
+    grp=\$(basename "\$(readlink -f \$p/iommu_group 2>/dev/null)")
+    siblings=\$(ls /sys/kernel/iommu_groups/\$grp/devices 2>/dev/null | wc -l)
+    if [ "\$siblings" != 1 ]; then
+        echo "  WARN \$d shares IOMMU group \$grp with \$((siblings - 1)) other device(s);"
+        echo "       every member has to be passed through together or not at all"
+    fi
+    echo "  ok   \$d bound to vfio-pci (iommu group \$grp)"
+done
+
 exit \$fail
 EOF
 }
@@ -470,7 +531,15 @@ EOF
     echo "==> measured-boot images"
     ensure_boot_images
 
+    # Built here rather than inline so an empty list contributes no argument at
+    # all; the continuation line it lands on then collapses to nothing.
+    local vfio_args="" d
+    for d in $VFIO_DEVICES; do
+        vfio_args="$vfio_args -device vfio-pci,host=$d"
+    done
+
     echo "==> launching $VM_NAME (policy=$VM_POLICY -> CSV2, ${VM_VCPUS} vCPU, ${VM_MEM_MB}MB)"
+    [ -n "$vfio_args" ] && echo "    passthrough:$vfio_args"
     host_script <<EOF
 set -e
 $HOST_QEMU -name $VM_NAME \\
@@ -486,6 +555,7 @@ $HOST_QEMU -name $VM_NAME \\
     -machine memory-encryption=sev0 \\
     -netdev bridge,br=$HOST_BRIDGE,id=net0 \\
     -device virtio-net-pci,netdev=net0,mac=$VM_MAC,romfile= \\
+    $vfio_args \\
     -chardev socket,id=ser0,path=$HOST_SERIAL,server=on,wait=off,logfile=$HOST_CONSOLE_LOG \\
     -serial chardev:ser0 \\
     -daemonize -pidfile $HOST_PIDFILE
