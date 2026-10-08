@@ -13,7 +13,16 @@ import (
 
 // pipBinary is a package-level variable so tests can point it at a stub. The installer tests
 // stay hermetic through it: they must not need a real pip or a network.
+//
+// pipWaitDelay is a package-level variable for the same reason: tests need a wait bound small
+// enough to observe. Because both are package-level, tests in this package must not call
+// t.Parallel: two parallel tests would race on them and one would end up running the other's
+// stub or the other's delay.
 var pipBinary = "pip3"
+
+// pipWaitDelay bounds how long Wait may block on the output pipe after pip exits. It is a
+// package-level variable so tests can shrink it.
+var pipWaitDelay = 30 * time.Second
 
 // InstallWheelhouse installs an offline wheelhouse into target as a non-root, zero-network
 // operation.
@@ -68,7 +77,7 @@ func InstallWheelhouse(ctx context.Context, wheelhouse, target string) error {
 	// waits for the output pipe to reach EOF, so a grandchild that inherited that pipe would
 	// keep Wait blocked without bound. WaitDelay bounds that wait; once it expires, Wait
 	// returns with ErrWaitDelay instead of hanging a shutdown indefinitely.
-	cmd.WaitDelay = 30 * time.Second
+	cmd.WaitDelay = pipWaitDelay
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output

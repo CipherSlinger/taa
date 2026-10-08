@@ -58,7 +58,8 @@ func TestInstallWheelhouseRejectsEmptyArgs(t *testing.T) {
 // they must not depend on a real pip, on network access, or on the machine's Python.
 //
 // pipBinary is a package-level variable, so tests in this package must not call t.Parallel:
-// two parallel tests would race on it and one would end up running the other's stub.
+// two parallel tests would race on it and one would end up running the other's stub. The same
+// holds for pipWaitDelay, which a test shrinks to observe the wait bound.
 func stubPip(t *testing.T, body string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "pip3-stub")
@@ -96,6 +97,44 @@ func TestInstallWheelhouseReportsCancellation(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("a cancelled install must unwrap to context.Canceled; got: %v", err)
+	}
+}
+
+// WaitDelay is the only thing between a leaked grandchild that inherited the output pipe and
+// an unbounded hang in Wait, so it is pinned here rather than trusted. The stub exits at once
+// while backgrounding a sleep that keeps the inherited stdout/stderr write-end open: the exact
+// shape of the leak the bound exists for.
+//
+// The contract is two-way: with WaitDelay in place the call returns in roughly pipWaitDelay;
+// without it, Wait blocks until the grandchild exits (about 8s), which the 5s bound catches.
+// The assertion is the wall-clock bound, not errors.Is(err, exec.ErrWaitDelay): the timer starts
+// when Wait observes the child has exited, and for a child that already exited non-zero Wait
+// returns the *ExitError rather than the sentinel, so asserting on the sentinel would fail
+// spuriously.
+func TestInstallWheelhouseBoundsWaitOnLeakedGrandchild(t *testing.T) {
+	// Non-interactive sh does not wait for background jobs, so sh exits immediately with status
+	// 1 while "sleep 8" keeps the inherited output pipe write-end open.
+	stubPip(t, "sleep 8 &\nexit 1")
+
+	original := pipWaitDelay
+	pipWaitDelay = 300 * time.Millisecond
+	defer func() { pipWaitDelay = original }()
+
+	wh := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wh, "requirements.txt"), []byte("torch\n"), 0o644); err != nil {
+		t.Fatalf("write requirements: %v", err)
+	}
+
+	start := time.Now()
+	err := InstallWheelhouse(context.Background(), wh, filepath.Join(t.TempDir(), "target"))
+	elapsed := time.Since(start)
+	t.Logf("install returned in %s with pipWaitDelay=%s", elapsed, pipWaitDelay)
+
+	if err == nil {
+		t.Fatal("expected an error when pip exits non-zero")
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("install took %s; WaitDelay did not bound the wait on the leaked output pipe", elapsed)
 	}
 }
 
