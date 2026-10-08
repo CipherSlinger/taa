@@ -1790,6 +1790,63 @@ Task 6 的实现者按计划要求的「变异判别力」自证时，发现有�
 
 ---
 
+### Task 6 规范审查发现（2026-10-08，已直接改入正文）
+
+**符合性判定：YES。** 审查者独立重跑了全部四个变异（未采信实现者的自证），确认每个都能杀掉对应用例；
+并逐条核验了流水线顺序、幂等检查落在解包之前、内容校验位于 200 已写出之后、临时 wheelhouse 落在
+依赖卷而非根分区、以及 zip-slip 守卫的归属。判定不是"看着像"，四处都给了行号与运行输出。
+以下只记需要动代码的部分。
+
+**(L) fail-open：`runDepsAudit` 桩无条件返回 `true`，且在默认配置下会写出一枚永久骗过 Task 8 的标记。**
+
+事实链（逐项已实测）：
+
+| 位置 | 事实 |
+| :--- | :--- |
+| `internal/config/config.go:328` | `EnableSecurityScan` 默认 **true** |
+| `internal/app/taa/app.go:587` | `ScanEnabled: cfg.EnableSecurityScan`，默认即 true |
+| `internal/controller/router.go:17` | `/v1/taa/importDeps` **已挂载**，handler 是活的 |
+| `internal/controller/deps_import.go:263` | `runDepsAudit` 桩 `return true`，注释自称"让扫描开启时也通过" |
+| `internal/controller/deps_import.go:179` | 审计通过 ⇒ `writeAuditMarker` 落盘 |
+| `internal/controller/deps_import.go:122` | 幂等检查只看标记**存在性** ⇒ Task 8 的真审计此后被永久短路 |
+
+即：默认配置下，Task 6 到 Task 8 之间任何一个 `importDeps` 都会**零审计地报 `code=0` 成功**，
+并留下一枚让真审计再也跑不起来的标记。这与 §3 决策 5「同引擎、同策略、**fail-closed**」相反，是
+fail-**open**。Task 6 自己的测试看不见它：`setupTestState` 用 `ScanEnabled: false`
+（`handler_test.go:73`），桩的那条分支从未被执行。
+
+**修法：桩返回 `false`。** fail-closed 的含义就是"无法审计 ⇒ 拒绝"，不是"无法审计 ⇒ 放行"；
+改后桩也不再写出任何标记，"永久标记"问题随之消失。Task 8 落地真审计时替换此桩。
+
+**(M) "绑定不先于其目录消失"这条不变量此前只在审计路径上成立。**
+
+`:165`（安装失败）与 `:180`（写标记失败）用的是裸 `_ = os.RemoveAll(depsDir)`，不带
+`rollbackDepsImport` 的条件清位。后果：若当前**正在生效**的那套依赖其标记被人工删除后又被重下，
+流水线会在 `:159` 删掉**活的**目录，随后若安装或写标记失败，就留下 `DepsImported=true` 而目录已不存在
+——训练注入 `TAA_DEPS_DIR` 后以 `ImportError` 失败。这是 §6 订正 2 要防的"静默退化"的**镜像**
+（那边是"位留目录走"，这边是"目录走位留"）。修法：这两处同样改调 `s.rollbackDepsImport(depsDir)`，
+把不变量统一为**"绑定永远不会比它指向的目录活得更久"**——被删的是绑定者就清位，不是绑定者就不动。
+
+**(N) §12 的两条失败语义在 Task 6 完全没有测试。**
+
+审查者指出"没有任何测试驱动安装失败"，故 `:164-169` 分支零覆盖；`rollbackDepsImport` 的条件清位
+在 Task 6 也不可达（桩让审计永不失败）。而 §12 明确要求"闭包缺失时立即失败且不留半成品目录"，
+§6 订正 2 更把"失败的后来者不得掀掉在用的那套"列为本方案最强调的失败语义。修 (L) 之后两者**都变得可测**：
+
+- `TestProcessImportedDepsInstallFailureKeepsWorkingBinding`：先成功导入 A（`ScanEnabled=false`），
+  再让 `depsInstallFunc` 对 B 返回错误 ⇒ 断言 `DepsImported` 仍为 true、`DepsHash` 仍是 A、
+  A 的目录与其标记完好、B 的目录不存在、deps 根下**恰好只剩 A**。
+- `TestProcessImportedDepsKeepsBindingWhenNewAuditFails`：先成功导入 A，再置 `ScanEnabled=true`
+  导入 B ⇒ 桩返回 false ⇒ 审计失败 ⇒ 断言与上条同形。
+
+两条都断言"**恰好剩下什么**"，而不是"没有报错"——后者在删掉条件清位的变异下依然通过，属无效断言。
+
+**不修、仅记录的一项**：`:159` 的安装前 `os.RemoveAll(depsDir)` 在"标记被人工删除且该目录正是当前绑定者"
+时会删掉活目录。修 (M) 已保证此后的失败路径清位、状态不再撒谎，故不再为此增设"安装到临时目录再改名"
+的重型改造——那是 §14 之外的新机制，收益与复杂度不成比例。此判断在此明写，避免后续审查重复提出。
+
+---
+
 ### 并发编排的一处失误与由此确立的规则（2026-10-08）
 
 **事实**：Task 6 的规范审查者按我的授权去变异 `SafeJoinWithBase`（删除越界判定）以判定 zip-slip
@@ -2126,7 +2183,9 @@ func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphert
 		return
 	}
 	if err := depsInstallFunc(wheelhouse, depsDir); err != nil {
-		_ = os.RemoveAll(depsDir)
+		// Same helper as the audit-failure path: it removes the directory and clears the
+		// binding when -- and only when -- this directory is the one currently in effect.
+		s.rollbackDepsImport(depsDir)
 		s.setCurrentOp("idle")
 		s.reportDepsFailure(req, fmt.Sprintf("安装依赖包失败: %v", err))
 		return
@@ -2141,7 +2200,8 @@ func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphert
 	}
 
 	if err := writeAuditMarker(depsDir); err != nil {
-		_ = os.RemoveAll(depsDir)
+		// Same reasoning as the install-failure branch above.
+		s.rollbackDepsImport(depsDir)
 		s.setCurrentOp("idle")
 		s.reportDepsFailure(req, fmt.Sprintf("写入审计标记失败: %v", err))
 		return
@@ -2188,7 +2248,7 @@ func writeAuditMarker(depsDir string) error {
 	return os.WriteFile(filepath.Join(depsDir, depsAuditMarker), []byte("audited\n"), 0o644)
 }
 
-// rollbackDepsImport discards the directory of a dependency set whose audit failed, and
+// rollbackDepsImport discards the directory of a dependency set that failed to import, and
 // clears the binding only when that very set is the one currently in effect.
 //
 // A rejected newcomer must not unseat a dependency set that is already working. The binding
@@ -2196,6 +2256,14 @@ func writeAuditMarker(depsDir string) error {
 // previous set active and training keeps running on it; the alternative — clearing
 // unconditionally — would silently degrade a working configuration to "no dependencies"
 // and surface later as an unrelated ImportError during training.
+//
+// The mirror case is why the clear is conditional rather than absent: when the directory
+// just removed IS the bound one (a re-import whose audit marker was deleted by hand, so the
+// idempotence check did not catch it), keeping the bit would leave a binding pointing at a
+// directory that no longer exists -- the same silent degradation with the two halves swapped.
+// The invariant is therefore: a binding never outlives the directory it points at.
+// Every failure branch that removes a dependency directory routes through here, so the
+// invariant holds uniformly rather than on the audit path alone.
 //
 // runDepsAudit also removes the directory on every path that returns false (deps_audit.go),
 // so the removal here is normally a no-op. It is kept so that this pipeline's own
@@ -2259,7 +2327,10 @@ func (s *TAAState) auditAndReportDeps(req depsImportRequest, depsDir string) boo
 }
 ```
 
-`runDepsAudit` 由 Task 8 实现，本任务给一个返回 `true` 的最小版本。
+`runDepsAudit` 由 Task 8 实现，本任务给一个返回 **`false`** 的最小版本。
+**fail-closed 的含义是"无法审计即拒绝"**：返回 `true` 会让默认配置（`EnableSecurityScan` 默认 true）
+下的依赖导入零审计地报 `code=0` 成功，并写出一枚永久骗过 Task 8 真审计的 `.taa_audit_ok` 标记。
+桩体内加一行日志说明"真审计属 Task 8、此处按 fail-closed 拒绝"。详见上文 (L)。
 
 - [ ] **Step 5: 运行测试确认通过**
 
