@@ -132,8 +132,24 @@ TAA 侧新增/扩展的对外面：
 > 复核过程中一度用 `sed` 按空格模式变异，**未匹配成功**，测试「原样通过」——
 > 这类假阴性什么也证明不了。改为按行号精确变异后重做，才得到可信结论。
 
-### 仍未决（不在本计划范围）
+### §5.1 / §5.2 既有 doc/code 不一致（已决，2026-10-08）
 
-§5.1 / §5.2 的既有 doc/code 不一致：文档列了 `dataImported` / `trainingDataImported` / `trainingDone`，
-而 `handler_system.go` 实际返回 `trainingRunning`。已核实为**改动前既有**（HEAD 上即如此，本分支未触碰），
-但无法判定文档与代码哪一侧是权威，故未擅自修改。
+文档列了 `dataImported` / `trainingDataImported` / `trainingDone`，而 `handler_system.go` 实际返回
+`trainingRunning`。已核实为**改动前既有**（HEAD 上即如此，本分支未触碰）。
+
+用户裁定**以代码为准**（代码是最新的）。归因也支持这一裁定：
+`docs/superpowers/specs/2026-09-14-training-state-machine-design.md:195` 明确写着
+「`/health` 和 `/status` 不返回 `dataImported`、`trainingDone`，返回 `trainingRunning`」——
+即那次状态机重构改了 spec 与实现，**唯独漏改了 `docs/api-design.md`**。
+
+已按代码重写两节的字段表与示例，并用脚本比对「从 handler 提取的键」与「从文档表格提取的键」，
+两节均**逐字一致**。`currentOp` 的取值清单也重新核定：文档原写的 `decrypting` 等确实存在，
+但漏了 `analyzing` / `deps_importing` / `deps_installing` / `staging` / `reporting` / `auditing`；
+另核实 `extracting` **只存在于 coordinator**，`status` 读不到，故未列入。
+
+### 新发现的同类残留（未处理，待定）
+
+`docs/state-persistence-and-self-healing.md:60-76` 的 `PersistentState` 结构定义已过期：
+声明 `Version` 固定为 `"1.3"`（代码是 `DefaultStateVersion = "1.4"`），且仍含已删除的
+`DataImported` / `TrainingDataImported`，并缺 `DepsChecksum` / `DepsImported` / `DepsHash` / `TrainingRunning`。
+该文件性质是**设计文档**（非接口契约），是否同步需另行判断，未擅自改。
