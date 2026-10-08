@@ -3379,6 +3379,88 @@ git commit -m "feat(deps): audit dependency packages fail-closed with deps scope
 
 ---
 
+### Task 8 闭环记录（2026-10-08，规范审查 + 质量审查后 APPROVE）
+
+**交付**：四个提交，`6eb3268..c3198d7`。
+
+| 提交 | 内容 |
+| :--- | :--- |
+| `6eb3268` | feat：`runDepsAudit` 落 `deps_audit.go`，fail-closed 三分支 + `scope=deps` 上报；删 Task 6 的最小桩 |
+| `ce90307` | fix：抽取出的 `reportAuditScopedAsync` 其日志前缀仍写着 `reportAuditAsync`（见下） |
+| `5aea31c` | test：补 LLM 不可用 / 引擎报错两条分支的覆盖，并以四条变异证明判别力 |
+| `c3198d7` | docs：订正注释指针（`rules.go` → `scanner.go`）与 `rollbackDepsImport` 的措辞 |
+
+**规范审查（APPROVED，零返工）**：Steps 1–6 全 PASS；无漏做、无功能性多做；三条变异由审查者独立重跑复现。
+回归 `controller 17.964s` / `runtime 0.459s` / `platform 0.016s`。
+
+**质量审查（APPROVE，1 Important + 4 Minor）**：回归 `controller 21.443s` / `runtime 0.483s` / `platform 0.037s`。
+
+**I-1（Important）是本任务唯一的实质缺陷，且由我独立复现**：`deps_audit.go` 的两条 fail-closed 分支
+（LLM 不可用 `:54-58`、引擎报错 `:62-66`）**此前无任何测试**——把 `:55` 的 `os.RemoveAll` 中和之后，
+整个 `internal/controller` 仍 `ok 19.542s`。模型侧的孪生分支是**有**覆盖的
+（`TestAuditAndReportModelImportFailClosed`），所以这是**不对称**，不是本仓的既有惯例。
+
+**已修（`5aea31c`）**：新增 `TestRunDepsAuditLLMUnavailableFailsClosed` 与
+`TestRunDepsAuditEngineErrorFailsClosed`，两条各自断言「返回 false + 目录已删 + 线上载荷
+`code==2 && scope=="deps"`」。判别力以**四条变异**证明，**四条均由我独立复现**，blob 哈希、失败信息、
+行号与实现者所报**逐字相同**：
+
+| 变异 | 期望 | 实测 |
+| :--- | :--- | :--- |
+| `:56` `os.RemoveAll(depsDir)` → `os.RemoveAll("")` | A 用例挂 | **FAIL** @ `deps_import_test.go:665` |
+| `:57` `"deps"` → `""` | A 用例挂 | **FAIL** @ `:674` |
+| `:64` `os.RemoveAll(depsDir)` → `os.RemoveAll("")` | B 用例挂 | **FAIL** @ `:702` |
+| `:65` `"deps"` → `""` | B 用例挂 | **FAIL** @ `:711` |
+
+四个变异后的 blob（`f8f97fc2…` / `52afa4e7…` / `160607c6…` / `dd4ce91c…`）`git log --all --find-object`
+全部为空；每条变异都在带 `trap … EXIT` 的单条命令内完成，还原后与 HEAD 逐字节相同。基线（无变异）
+两条新用例 PASS。
+
+**种子用「不命中任何规则」的内容是承重的设计选择**（已写入 `seedCleanDepsDir` 的 doc）：若种子文件命中
+规则，则变异掉分支条件后，普通审计失败路径仍会删目录并报 `code=1`，「目录已删」这条断言就会**为错误的
+理由成立**；干净内容下，「目录已删 + `code==2`」只有分支真的跑了才同时成立。
+
+**A 用例实际走过的子路径（实现者自陈，我复核确认）**：httptest 给的是 `http://` 裸地址，
+`newLLMClient` 因 "strictly https is required" 直接返回 nil（`import_processing.go:746-751`），于是走
+`isLLMServiceAvailable` 的 `client == nil` 回退 → `llmAvailable`（`:770-782`），**不是** TEE-TLS
+`HealthCheck`。该子路径**已被覆盖**：`audit_model_import_test.go:110` 的 `healthCheckFailureLLMClient`
+正是同一共享函数的控制器侧测试。故**判定不在依赖侧重复搭桩**——那会变成第二次测试
+`isLLMServiceAvailable` 而非 `runDepsAudit`，残留缺口为零。模型侧孪生用例同样是 http httptest，保持对称。
+
+**`ce90307`**：Task 8 把 `reportAuditAsync` 的函数体抽成 `reportAuditScopedAsync` 时，新函数的日志行沿用了
+旧前缀，于是审计上报的日志全部署名成另一个函数；`scope=%q` 也随之补上。
+
+**三处注释订正（`c3198d7`），经我逐条核实为真**：
+
+- **M-1 是一处真实的错误指针**：原注释把「按扩展名跳过 `.so`/`.pyd`」指向
+  `internal/codeaudit/rules.go`，但该文件里既无该函数也无相关逻辑（只有 `Report.UnsupportedExts`
+  字段声明与 `ProvesCleanScan` 的读取）；真实落点是 `scanner.go:162` 的 `hasMatchingExtension`
+  （调用点 `scanner.go:86`/`:280`、`semgrep_engine.go:311`）。已改为同时点名两个引擎。
+- **M-2**：`rollbackDepsImport` 尾注的 `above all` 是花园小径；且 "redundant second net" 只对**审计失败**
+  一条路成立——该函数四个调用点中只有 `:180` 那条前面 `runDepsAudit` 删过目录，另外三条
+  （预安装清理 `:166`、安装失败 `:172`、写标记失败 `:187`）它就是**唯一**的网。已按实测的调用点限定范围。
+- **M-3**：`TestRunDepsAuditRemovesDirOnFailure` 里的 `state.Security.ScanEnabled = true` 是**死赋值**
+  ——门禁在调用方 `auditAndReportDeps`，而该用例直接调 `runDepsAudit`。已删并写明理由。
+  **该用例的断言区逐字节未动**：我与 `17d0360` 做过整函数 diff，唯一差异就是这处死赋值。
+
+**实现者的三处偏离，经裁决均为正确**：(1) 对 `TestProcessImportedDepsKeepsBindingWhenNewAuditFails`
+的改动是**增强**——我自行 diff 确认只动了注释、LLM 配置与安装桩，断言逐字节未变，且第二次导入换用了
+不同归档，审计因此真实执行；(2) 三处注释订正准确；(3) `reportAuditAsync:` 日志前缀确系 Task 8 引入的缺陷。
+
+**记录不修**：**M-4**（两条新用例沿用容量 1 的阻塞式 `received <- rr`）——与模型侧既有写法一致，且每条
+分支只上报一次，不会阻塞；改成 `select/default` 反而会把「未来多上报一次」这类回归静默吞掉。质量审查者
+自陈的两点不确定（门禁分层位置、panic 补偿走通用分支）经我判定均为设计内/既有。注释插入位置的一处
+取舍（新用例落在既有说明注释之前）**保持原样**：该注释的指代对象在正文里点了名，不依赖紧贴位置。
+
+**质量审查的一处证据偏差（不影响结论）**：它把 nil-engine 守卫记为 `verifier.go:324-329`，实测在
+`:330-332`（`:323-325` 是 `dir == ""` 检查）。守卫确实存在，`GenerateAuditReport` 对 nil engine 返回
+error 而非解引用——实现者的 B 用例正是打在 `:62-66` 那条分支上。
+
+**§9 交接闭合**：Task 7 留下的 §9 要求（已知盲区须在实现中明示）已在 `deps_audit.go:20-31` 三条列明——
+扩展名跳过（M-1 已修正指针）、完整性仅 SM3 无签名验签、「审计通过」≠「可信」。
+
+---
+
 ## Task 9: 训练环境注入 `TAA_DEPS_DIR` 与前置 `PYTHONPATH`
 
 **Files:**
