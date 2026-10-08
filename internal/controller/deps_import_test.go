@@ -525,7 +525,8 @@ func TestProcessImportedDepsReauditsForeignMarkerDir(t *testing.T) {
 // binding: that is rollbackDepsImport's job and is covered by the pipeline tests.
 func TestRunDepsAuditRemovesDirOnFailure(t *testing.T) {
 	state, _ := setupTestState(t)
-	state.Security.ScanEnabled = true
+	// No ScanEnabled here: the scanning gate lives in the caller, auditAndReportDeps
+	// (deps_import.go), and this test calls runDepsAudit directly, which never reads it.
 	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
 
 	received := make(chan struct {
@@ -575,6 +576,142 @@ func TestRunDepsAuditRemovesDirOnFailure(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for the scope=deps audit report")
+	}
+}
+
+// auditReportCapture is the projection the two branch tests below assert on: the audit report's
+// code and scope. Those two fields are what tell a fail-closed rejection (code=2, scope=deps)
+// apart from an ordinary audit verdict, so both are read from the wire rather than from state.
+type auditReportCapture struct {
+	Code  int    `json:"code"`
+	Scope string `json:"scope"`
+}
+
+// captureAuditReport points state at a platform stub that captures the code and scope of every
+// /v1/taa/reportAudit request and returns the channel they arrive on. Any other path is answered
+// normally and dropped, so the scope=deps report the caller asserts on holds the single channel
+// slot. PlatformIP and DockerID are written under the lock because reportAuditScopedAsync reads
+// them under the same lock.
+func captureAuditReport(t *testing.T, state *TAAState) <-chan auditReportCapture {
+	t.Helper()
+	received := make(chan auditReportCapture, 1)
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != reportAuditEndpoint {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		var rr auditReportCapture
+		_ = json.NewDecoder(r.Body).Decode(&rr)
+		received <- rr
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(platform.Close)
+
+	state.mu.Lock()
+	state.PlatformIP, state.DockerID = platform.URL, "docker-test"
+	state.mu.Unlock()
+	return received
+}
+
+// seedCleanDepsDir creates DEPS_DIR/<name> holding one source file that matches no rule of the
+// baseline engine, and returns the directory path.
+//
+// The content is deliberately inert. A rule-matching file would weaken both branch tests below:
+// a mutation that stopped the branch under test from rejecting the set would still let the
+// ordinary audit-failure path delete the directory, so the "directory removed" assertion would
+// hold for the wrong reason instead of pinning that branch. With clean content, removal plus
+// code=2 are observable only if the branch under test actually ran.
+func seedCleanDepsDir(t *testing.T, state *TAAState, name string) string {
+	t.Helper()
+	depsDir := filepath.Join(state.Security.GetDepsDir(), name)
+	if err := os.MkdirAll(depsDir, 0o755); err != nil {
+		t.Fatalf("seed dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(depsDir, "pkg.py"), []byte("import os\n"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	return depsDir
+}
+
+// TestRunDepsAuditLLMUnavailableFailsClosed pins the LLM-unavailable branch of runDepsAudit
+// (deps_audit.go): with the LLM enabled and fail-closed, an unreachable service must reject the
+// dependency set outright rather than silently degrading to a static-only scan that lets it
+// through, and the rejection must carry code=2 with scope=deps.
+//
+// The branch is decided before GenerateAuditReport is reached, so the engine is left at the
+// fixture default on purpose: it cannot influence this outcome, and setting it would only suggest
+// it could.
+func TestRunDepsAuditLLMUnavailableFailsClosed(t *testing.T) {
+	state, _ := setupTestState(t)
+
+	// A server closed before use refuses connections immediately, so the fail-closed health probe
+	// returns without waiting out its budget.
+	llmDown := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	llmDown.Close()
+	state.Security.LLM = codeaudit.LLMConfig{
+		Enabled:    true,
+		FailClosed: true,
+		Endpoint:   llmDown.URL,
+		Model:      "qwen2.5-coder:0.5b",
+	}
+
+	depsDir := seedCleanDepsDir(t, state, "llm-unavailable")
+	received := captureAuditReport(t, state)
+
+	if passed := state.runDepsAudit(depsImportRequest{RequestID: "req-llm", TaskID: "task-llm"}, depsDir); passed {
+		t.Fatal("runDepsAudit returned true while the LLM was unavailable and fail-closed")
+	}
+	if _, err := os.Stat(depsDir); !os.IsNotExist(err) {
+		t.Fatalf("deps dir still present after a fail-closed LLM unavailability: %v", err)
+	}
+
+	select {
+	case rr := <-received:
+		if rr.Code != 2 {
+			t.Fatalf("code = %d, want 2 (LLM unavailable, fail-closed)", rr.Code)
+		}
+		if rr.Scope != "deps" {
+			t.Fatalf("scope = %q, want \"deps\"", rr.Scope)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the scope=deps audit report (LLM-unavailable branch)")
+	}
+}
+
+// TestRunDepsAuditEngineErrorFailsClosed pins the engine-error branch of runDepsAudit
+// (deps_audit.go): a nil engine is a configuration the audit refuses, and that refusal must be
+// cleaned up and reported exactly like an LLM failure -- code=2 with scope=deps.
+//
+// GenerateAuditReport returns "static engine is not configured" for a nil engine rather than
+// dereferencing it (internal/codeaudit/verifier.go), so this reaches the error branch instead of
+// panicking.
+func TestRunDepsAuditEngineErrorFailsClosed(t *testing.T) {
+	state, _ := setupTestState(t)
+	// Keep the LLM out of the way: with it disabled the engine is the only thing left that can
+	// fail, which is what makes this test drive the engine-error branch rather than the one above.
+	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
+	state.Security.Engine = nil
+
+	depsDir := seedCleanDepsDir(t, state, "engine-missing")
+	received := captureAuditReport(t, state)
+
+	if passed := state.runDepsAudit(depsImportRequest{RequestID: "req-eng", TaskID: "task-eng"}, depsDir); passed {
+		t.Fatal("runDepsAudit returned true with no static engine configured")
+	}
+	if _, err := os.Stat(depsDir); !os.IsNotExist(err) {
+		t.Fatalf("deps dir still present after a missing-engine audit failure: %v", err)
+	}
+
+	select {
+	case rr := <-received:
+		if rr.Code != 2 {
+			t.Fatalf("code = %d, want 2 (engine error, fail-closed)", rr.Code)
+		}
+		if rr.Scope != "deps" {
+			t.Fatalf("scope = %q, want \"deps\"", rr.Scope)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the scope=deps audit report (engine-error branch)")
 	}
 }
 
