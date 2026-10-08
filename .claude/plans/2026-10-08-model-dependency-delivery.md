@@ -1502,7 +1502,12 @@ body)` 在 `:146`；`setupTestServer(t)` 在 `:105`，其内部走 `RegisterRout
 go test ./internal/controller/ -run TestImportDeps -v
 ```
 
-期望：前两个用例 404（路由未注册），第三个 200 而非 405。
+期望：三个用例**全部 FAIL**——前两个 `status = 404, want 400`，第三个 `status = 404, want 405`。
+
+> **订正（2026-10-08，Task 5 实现期发现）**：此处初稿写"第三个 200 而非 405"，**预测值是错的**。
+> 路由表只注册显式路径（`mux.HandleFunc(route.path, ...)`），全仓无 `/` catch-all，因此未注册路径在
+> `http.ServeMux` 下对**任何方法**都只返回 404——"200" 在机制上不可达。这不影响该用例的判别力
+> （它断言的是 405，注册前失败、注册后通过），但照初稿执行的人会以为测错了。
 
 - [ ] **Step 3: 实现请求体与 handler**
 
