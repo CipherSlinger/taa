@@ -1319,6 +1319,92 @@ SKIP + FAIL 计数为 0。
 **给 Task 6 的提醒：** 在上述修复落地前，若有人误删这些守卫，CI 不会报警。接线时如发现守卫位置
 变动，请一并确认对应测试是否仍有判别力。
 
+### Task 4 代码质量审查追加
+
+**总评：可交付，无 Critical。** 审查者在 `/tmp` 下用**字节级副本 + 真实 pip 24.0** 做了实测，
+仓库文件一字节未动（`git status --porcelain -- internal/` 为空）。1 条 Important + 5 条 Minor。
+
+**Important：取消语义。** `internal/runtime/deps.go` 的 `cmd.Run()` 错误处理有两个独立问题：
+
+1. 中途取消**无法与真实失败区分**——`errors.Is(err, context.Canceled)` 为 **false**，因为 `%w`
+   包裹的是 `*exec.ExitError`（"signal: killed"）而非 `ctx.Err()`。一次主动取消（停机/任务取消）
+   会被当成真实的依赖安装失败上报给平台。
+2. 取消延迟**不受 `ctx` 约束**——`cmd.Stdout` 为 `bytes.Buffer` 时 Go 起 goroutine 拷贝管道，
+   `Wait` 必须等到管道 EOF；`exec.CommandContext` 只杀直接子进程，任何继承该管道的孙进程都会
+   让 `Wait` 一直挂住。实测：单进程 0.3s vs `sh -c 'sleep 30'` **30.0s**。
+
+修法：`cmd.WaitDelay = 30 * time.Second`（`go.mod` 为 1.22）+ 返回前先查 `ctx.Err()`。仓库内已有
+先例：`internal/codeaudit/semgrep_engine.go:558-560`。
+
+> **给 Task 6 的说明**：Task 6 的 `depsInstallFunc` 绑的是
+> `runtime.InstallWheelhouse(context.Background(), ...)`，因此**取消路径当前不可达**，上述问题
+> 是导出 API 的契约缺陷而非现实故障。修复后错误变得可辨识；将来若接入取消，务必传入可取消的
+> `ctx`，否则新加的判定分支永远不生效。
+
+**新发现的 Minor（比已知 4 条更典型）：** `tailLines` 的截断**完全没有测试**——把调用换成裸
+`output.String()`（彻底废掉截断），现有全部测试仍然通过。另有 `limit` 参数名遮蔽 Go 1.21 内置
+`max`（合法但别扭）、`limit <= 0` 时 `lines[len-limit:]` 会 panic（当前调用点传常量 40，不可达）、
+以及截断时无任何标记（运维无法区分"pip 只输出了 40 行"与"被砍到 40 行"）。
+
+**已知 4 条 Minor：审查者逐条独立复现，全部同意并有最小修法**（详见上表）；第 4 条被评为"最不值钱"，
+建议只补真正独立的那条防线（`PIP_NO_INDEX=1`）而非为冗余参数写测试。
+
+**经核实、确认不是问题的行为（供 Task 6 参考，不必再查）**：带尾斜杠的 `wheelhouse`、符号链接目录、
+已有的非空 `target`（pip 会合并，但 target 是内容寻址的 `depsDir/<sm3>`，同 hash ⇒ 同归档 ⇒
+合并收敛且无害）、相对路径 `wheelhouse`（子进程未设 `cmd.Dir`，继承父进程 cwd，与先前的 `os.Stat`
+解析一致）、以及用 `fmt.Errorf` 而非本包邻居的 `pkgerrors`（调用方走 `err.Error()`，不消费错误码）。
+
+**处理方式：** 以上 Important 与全部 Minor **合并为一次修复派发**，不逐条返工。
+
+### Task 4 修复落地记录与第二次派发（`df9b8aa`）
+
+六项全部落地，13 次针对性变异全部被测试捕获，变异前后四文件 sha256 逐字节还原（提交后
+`git status --short` 中这四文件全为 clean）。门禁：`go test ./internal/resource/ ./internal/runtime/
+-count=1` PASS（61 用例，SKIP=0，FAIL=0），`-race -count=5` 通过，`gofmt -l` 无输出，`go vet` clean。
+提交只含四个文件，message 单行、无正文、无署名。
+
+**审查指令被实现者纠正一处（是我的错，不是它的）：** 我要求用 `"not a directory"` 去钉
+`!info.IsDir()` 守卫，实测该片段**没有判别力**——守卫删掉后下游 `os.Stat("<file>/requirements.txt")`
+以 ENOTDIR 失败，Linux 上该错误的文本恰是 `not a directory`，断言照样通过。实现者实测拿到
+`DECOY-MATCH contains "not a directory": true` / `GUARD-MATCH contains "wheelhouse is not a
+directory": false` 后才改用守卫自身的消息。
+**教训：钉用户可见错误时，断言必须用该守卫独有的措辞**，不能用可能与下游错误文本撞车的通用措辞。
+后续 Task 8/9/10 中若要给守卫写断言，一律照此办理。
+
+**未覆盖行为（如实登记，不掩盖）：** `cmd.WaitDelay` 本身**没有被行为钉住**——换成
+`_ = time.Second`（保留 `time` 被使用以便编译）后 `TestInstallWheelhouseReportsCancellation`
+仍然 PASS。原因是该用例的桩是 `exec sleep 30`：`exec` 让 sleep 顶替了 shell，杀掉直接子进程即
+关闭管道，`WaitDelay` 根本不被触发。
+
+#### 第二次派发：把 `WaitDelay` 钉住
+
+理由：`WaitDelay` 是本次为"孙进程持有管道 ⇒ `Wait` 无界挂起"专门新增的防线。在 TEE 内，一次
+挂起表现为**停机卡死**而不是失败——属于必须可观测的行为。"加了防线但测试观测不到"正是本项目
+两次审查都在拒的东西，因此不接受只登记不处理。
+
+做法（`internal/runtime/deps.go` + `deps_test.go`）：
+
+1. 把常量提成包级可注入变量，与既有的 `pipBinary` 同款：`var pipWaitDelay = 30 * time.Second`，
+   并在 `pipBinary` 那段"测试不得用 `t.Parallel`"的注释里把 `pipWaitDelay` 一并列上
+   （现在包级可变量有两个，注释要覆盖到）。
+2. 桩改为**直接子进程立即退出、但留下一个继承 stdout/stderr 管道的孙进程**：
+
+   ```sh
+   #!/bin/sh
+   sleep 8 &
+   exit 1
+   ```
+
+   非交互 `sh` 不会等待后台作业，因此 `sh` 立刻退出而 `sleep 8` 继续持有管道写端。
+3. 用例把 `pipWaitDelay` 临时压到 `300 * time.Millisecond`（用例结束还原），断言
+   `cmd.Run()` **在 5s 内返回且 err != nil**。断言必须用**时长上界**，不能断言
+   `errors.Is(err, exec.ErrWaitDelay)`——Go 在该进程已以非零码退出时返回的是 `*ExitError`，
+   不是 `ErrWaitDelay`，按哨兵错误断言会假失败。
+4. **验收要求：必须给出双向实测证据**——钉住时实测耗时，以及把 `cmd.WaitDelay = pipWaitDelay`
+   改成 `_ = pipWaitDelay` 后的实测耗时（预期约 8s，被 5s 上界判 FAIL）。只报"测试通过"不算完成。
+
+`git add` 仅限 `internal/runtime/deps.go`、`internal/runtime/deps_test.go` 两个文件。
+
 ---
 
 ## Task 5: `importDeps` handler 与路由
