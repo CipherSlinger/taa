@@ -26,6 +26,12 @@
 | 熔断 | 阈值 3、冷却 30s | `internal/codeaudit/llm.go:48`、`teellm/circuit_breaker.go:115` |
 | 重试前不复查熔断 | `AllowRequest()` 只在 `VerifyFinding` 入口调用一次 | `teellm/client.go:138` |
 
+> **2026-10-08 更新（不改历史数字）**：上表「`prompt eval` ~17.4s / 890 token」是**旧模板**的真实测量，
+> 予以保留。该模板已改（`teellm` `70af0b0`）：评分标准整块前置以形成可缓存前缀，实测
+> `cached n_tokens` 62 → 553，prompt eval 中位 15.5s → 8.9s，单次 verify 中位 19.65s → 13.24s，
+> 5 条命中的审计 99.3s → 71.0s。**生成段（~4.6s）不受影响**，故本节的超时取值结论照旧成立——
+> 缓存只压缩 prompt eval，不改变单条延迟的量级。
+
 ## 3. 因果链
 
 1. 30s 是 `http.Client.Timeout`（客户端内部超时），外层 ctx 无 deadline → `ctx.Err()` 为 nil → 走 `RecordFailure()` + `ErrRetryable` → **重试**（`client.go:156-163`）。
