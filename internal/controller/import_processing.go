@@ -182,6 +182,10 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		s.reportImportFailure(req, phase, false, startedAt, err.Error())
 		return
 	}
+	// Make the imported dependency directory importable by the training subprocess: env is
+	// handed to executeTraining and from there to runRuntimeConfigWithControl. currentDepsDir
+	// is empty when no dependency package is active, so env is unchanged in that case.
+	env = applyDepsEnv(env, s.currentDepsDir())
 	if len(cfg.Commands) == 0 {
 		s.Logs.Add(LogError, "train", "runtimeConfig.commands 不能为空")
 		s.setCurrentOp("idle")
