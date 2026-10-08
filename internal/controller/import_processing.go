@@ -720,6 +720,12 @@ func (s *TAAState) reportModelImportAsync(requestID, taskID string, code int, ms
 
 // reportAuditAsync 异步将模型代码安全审计结果上报平台。
 func (s *TAAState) reportAuditAsync(requestID, taskID string, code int, msg, report string) {
+	s.reportAuditScopedAsync(requestID, taskID, code, msg, report, "")
+}
+
+// reportAuditScopedAsync uploads an audit result asynchronously. An empty scope means the
+// model code audit; "deps" means the dependency package audit.
+func (s *TAAState) reportAuditScopedAsync(requestID, taskID string, code int, msg, report, scope string) {
 	s.mu.RLock()
 	platformIP, dockerID := s.PlatformIP, s.DockerID
 	s.mu.RUnlock()
@@ -727,7 +733,7 @@ func (s *TAAState) reportAuditAsync(requestID, taskID string, code int, msg, rep
 	log.Printf("reportAuditAsync: scheduling audit report upload, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, reportLen=%d",
 		platformIP, dockerID, requestID, taskID, code, len(report))
 	go func() {
-		if err := ReportAudit(context.Background(), platformIP, dockerID, requestID, taskID, code, msg, report); err != nil {
+		if err := ReportAuditScoped(context.Background(), platformIP, dockerID, requestID, taskID, code, msg, report, scope); err != nil {
 			log.Printf("reportAuditAsync: report audit result failed: requestID=%s taskID=%s, err=%v", requestID, taskID, err)
 		} else {
 			log.Printf("reportAuditAsync: report audit result succeeded: requestID=%s taskID=%s", requestID, taskID)

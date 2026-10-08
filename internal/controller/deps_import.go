@@ -258,12 +258,11 @@ func writeAuditMarker(depsDir string) error {
 // and no second deps_import can be admitted while one is in flight (the startup restore,
 // app.go, runs before the server accepts requests).
 //
-// Today, runDepsAudit is the Task 6 stub and removes nothing, so the removal here is the
-// pipeline's only one. Once Task 8 replaces the stub with the real audit, which will also
-// remove the directory on every path that returns false (deps_audit.go), the removal here
-// becomes a redundant second net kept so that this pipeline's own "no half-built directory
-// survives a failure" guarantee does not hinge on a side effect of a function whose job is
-// to audit.
+// runDepsAudit removes the directory itself on every path that returns false (deps_audit.go),
+// so the os.RemoveAll below is a redundant second net. It is kept deliberately: this
+// pipeline's own "no half-built directory survives a failure" guarantee must not hinge on a
+// side effect of a function whose job is to audit, and the state decision above all must be
+// made here rather than there.
 func (s *TAAState) rollbackDepsImport(depsDir string) {
 	_ = os.RemoveAll(depsDir)
 	// currentDepsDir() already encodes "imported && hash non-empty", and depsDirForHash
@@ -320,22 +319,4 @@ func (s *TAAState) auditAndReportDeps(req depsImportRequest, depsDir string) boo
 		return true
 	}
 	return s.runDepsAudit(req, depsDir)
-}
-
-// runDepsAudit runs the fail-closed dependency audit.
-//
-// This placeholder refuses every dependency set. It originally returned true so that tests
-// could drive the pipeline with scanning enabled, but that is fail-OPEN, not fail-closed:
-// security scanning defaults to on (config.EnableSecurityScan), the /v1/taa/importDeps route is
-// mounted, so an unaudited set would pass, a real audit marker would be written at the end of
-// processImportedDeps, and code=0 would be reported. The idempotence check only tests whether
-// that marker exists, so Task 8's real audit would then be short-circuited by the marker for
-// good. Refusing is the only honest answer while no audit exists (spec 3, decision 5: same
-// engine, same policy, fail-closed).
-//
-// Task 8 replaces this with the real audit, which also owns removing the directory on every
-// path that returns false.
-func (s *TAAState) runDepsAudit(req depsImportRequest, depsDir string) bool {
-	s.Logs.Add(LogError, "audit", "依赖包审计尚未实现，按 fail-closed 拒绝")
-	return false
 }

