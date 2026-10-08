@@ -1,14 +1,25 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"taa/internal/resource"
+	"taa/internal/runtime"
+	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 )
+
+// depsInstallFunc is the swappable installer hook. Production binds it to
+// runtime.InstallWheelhouse; tests substitute a stub so CI never shells out to pip.
+var depsInstallFunc = func(wheelhouse, target string) error {
+	return runtime.InstallWheelhouse(context.Background(), wheelhouse, target)
+}
 
 // depsImportRequest is the request body for /v1/taa/importDeps.
 // It deliberately does not reuse importRequest: that type's publicKey and runtimeConfig mean
@@ -74,11 +85,181 @@ func (s *TAAState) depsImportHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// processImportedDeps is a minimal stand-in for the full dependency pipeline that Task 6 adds.
-// It only has to remove the temporary ciphertext: by the time it runs the handler has already
-// written its response, and releasing the task restores currentOp (runAsyncSafe does
-// `defer release()`, verified at route.go:740-745), so an explicit op reset here would be
-// redundant.
+// processImportedDeps is the asynchronous dependency import pipeline:
+//
+//	decrypt -> SM3 content addressing -> idempotency check -> unpack into a temporary wheelhouse
+//	-> package layout validation -> offline install into DEPS_DIR/<sm3> -> fail-closed audit
+//	-> write the audit marker -> set state -> report
+//
+// Every failure path rolls back: it clears the state and removes DEPS_DIR/<sm3>, never leaving
+// a half-built directory behind.
 func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphertextPath string) {
 	defer os.Remove(ciphertextPath)
+
+	s.setCurrentOp("decrypting")
+	plaintextPath, isDecrypted, err := s.resolvePlaintextResource(req.ResourceURL, ciphertextPath, "importDeps")
+	if err != nil {
+		s.setCurrentOp("idle")
+		s.reportDepsFailure(req, fmt.Sprintf("解密依赖包失败: %v", err))
+		return
+	}
+	if isDecrypted {
+		defer os.Remove(plaintextPath)
+	}
+
+	size, hash, err := teecrypto.HashFileSM3(plaintextPath)
+	if err != nil {
+		s.setCurrentOp("idle")
+		s.reportDepsFailure(req, fmt.Sprintf("计算依赖包哈希失败: %v", err))
+		return
+	}
+	checksum := map[string]any{"size": size, "algorithm": "sm3", "value": hash}
+	depsDir := s.depsDirForHash(hash)
+	s.Logs.Add(LogInfo, "importDeps", "依赖包 SM3=%s (%d bytes) -> %s", hash, size, depsDir)
+
+	// Idempotency: a directory with the same hash that already passed the audit is reused
+	// as-is, without unpacking or installing again.
+	if auditMarkerExists(depsDir) {
+		s.Logs.Add(LogInfo, "importDeps", "依赖包 %s 已审计通过，复用现有目录", hash)
+		s.saveDepsSuccess(hash, checksum)
+		s.reportDepsSuccess(req, checksum)
+		s.setCurrentOp("idle")
+		return
+	}
+
+	s.setCurrentOp("deps_installing")
+
+	// Unpack into a temporary wheelhouse: extracting the outer archive needs zip-slip
+	// protection against a base directory of its own, so it must not write into the
+	// content-addressed directory; expanding the wheels themselves is pip's job.
+	// The temp dir sits under the deps root rather than the system temp dir because a
+	// wheelhouse can be gigabytes and the container's root partition cannot hold it
+	// (spec 2.5); the deps root is the volume sized for exactly this.
+	wheelhouse, err := os.MkdirTemp(s.Security.GetDepsDir(), "taa-deps-wh-*")
+	if err != nil {
+		s.setCurrentOp("idle")
+		s.reportDepsFailure(req, fmt.Sprintf("创建临时依赖目录失败: %v", err))
+		return
+	}
+	defer os.RemoveAll(wheelhouse)
+
+	if err := resource.ExtractArchiveToDir(wheelhouse, plaintextPath); err != nil {
+		s.setCurrentOp("idle")
+		s.reportDepsFailure(req, fmt.Sprintf("解压依赖包失败: %v", err))
+		return
+	}
+	if err := resource.ValidateWheelhouse(wheelhouse); err != nil {
+		s.setCurrentOp("idle")
+		s.reportDepsFailure(req, err.Error())
+		return
+	}
+
+	// Clear any leftover directory of the same name before installing, so the removal on the
+	// failure paths below is idempotent.
+	if err := os.RemoveAll(depsDir); err != nil {
+		s.setCurrentOp("idle")
+		s.reportDepsFailure(req, fmt.Sprintf("清理依赖目录失败: %v", err))
+		return
+	}
+	if err := depsInstallFunc(wheelhouse, depsDir); err != nil {
+		_ = os.RemoveAll(depsDir)
+		s.setCurrentOp("idle")
+		s.reportDepsFailure(req, fmt.Sprintf("安装依赖包失败: %v", err))
+		return
+	}
+	s.Logs.Add(LogInfo, "importDeps", "依赖包安装完成: %s", depsDir)
+
+	if !s.auditAndReportDeps(req, depsDir) {
+		s.rollbackDepsImport(depsDir)
+		s.reportDepsFailure(req, "依赖包审计未通过")
+		s.setCurrentOp("idle")
+		return
+	}
+
+	if err := writeAuditMarker(depsDir); err != nil {
+		_ = os.RemoveAll(depsDir)
+		s.setCurrentOp("idle")
+		s.reportDepsFailure(req, fmt.Sprintf("写入审计标记失败: %v", err))
+		return
+	}
+
+	s.saveDepsSuccess(hash, checksum)
+	s.reportDepsSuccess(req, checksum)
+	s.setCurrentOp("idle")
+	s.Logs.Add(LogInfo, "importDeps", "阶段%d: 依赖包导入完成: hash=%s, taskId=%s", phase, hash, req.TaskID)
+}
+
+// depsAuditMarker is the sentinel file written into a dependency directory once its audit has
+// passed. It is a regular file rather than a directory so its presence is unambiguous.
+const depsAuditMarker = ".taa_audit_ok"
+
+func auditMarkerExists(depsDir string) bool {
+	info, err := os.Stat(filepath.Join(depsDir, depsAuditMarker))
+	return err == nil && !info.IsDir()
+}
+
+func writeAuditMarker(depsDir string) error {
+	return os.WriteFile(filepath.Join(depsDir, depsAuditMarker), []byte("audited\n"), 0o644)
+}
+
+// rollbackDepsImport discards the directory of a dependency set whose audit failed, and
+// clears the binding only when that very set is the one currently in effect.
+//
+// A rejected newcomer must not unseat a dependency set that is already working. The binding
+// is overwritten on success only (see saveDepsSuccess), so a failed import leaves the
+// previous set active and training keeps running on it; the alternative -- clearing
+// unconditionally -- would silently degrade a working configuration to "no dependencies"
+// and surface later as an unrelated ImportError during training.
+//
+// runDepsAudit also removes the directory on every path that returns false (deps_audit.go),
+// so the removal here is normally a no-op. It is kept so that this pipeline's own
+// "no half-built directory survives a failure" guarantee does not hinge on a side effect
+// of a function whose job is to audit.
+func (s *TAAState) rollbackDepsImport(depsDir string) {
+	_ = os.RemoveAll(depsDir)
+	// currentDepsDir() already encodes "imported && hash non-empty", and depsDirForHash
+	// builds its result the same way, so equality means this failed set is the bound one.
+	// (The marker is written before saveDepsSuccess, so normally the audit path is only
+	// reached for a set that is not yet bound; the guard also covers a re-import whose
+	// marker was deleted by hand.)
+	if s.currentDepsDir() == depsDir {
+		s.clearDepsState()
+	}
+}
+
+// reportDepsSuccess reports a successful dependency import to the platform.
+func (s *TAAState) reportDepsSuccess(req depsImportRequest, checksum map[string]any) {
+	s.reportDepsAsync(req.RequestID, req.TaskID, 0, "依赖包导入成功", checksum)
+}
+
+// reportDepsFailure logs and reports a failed dependency import to the platform.
+func (s *TAAState) reportDepsFailure(req depsImportRequest, reason string) {
+	s.Logs.Add(LogError, "importDeps", "依赖包导入失败: %s", reason)
+	s.reportDepsAsync(req.RequestID, req.TaskID, 1, reason)
+}
+
+// reportDepsAsync reports a dependency import result to the platform.
+// This stub only logs; Task 7 replaces it with the real platform callback.
+func (s *TAAState) reportDepsAsync(requestID, taskID string, code int, msg string, checksum ...map[string]any) {
+	s.Logs.Add(LogInfo, "importDeps", "deps import report: request=%s task=%s code=%d msg=%s",
+		requestID, taskID, code, msg)
+}
+
+// auditAndReportDeps runs the fail-closed audit over the installed dependency directory.
+// It reports the audit result itself, with scope "deps" (see deps_audit.go). The import
+// pipeline's own terminal reportDeps callback is NOT its job: that one belongs to
+// processImportedDeps, which must still fire code=1 when this returns false.
+func (s *TAAState) auditAndReportDeps(req depsImportRequest, depsDir string) bool {
+	if !s.Security.ScanEnabled {
+		s.Logs.Add(LogInfo, "audit", "安全扫描未启用，跳过依赖包审计")
+		return true
+	}
+	return s.runDepsAudit(req, depsDir)
+}
+
+// runDepsAudit runs the fail-closed dependency audit. This minimal version keeps the package
+// compiling and passing when security scanning is enabled; Task 8 replaces it with the real
+// audit, which also owns removing the directory on every path that returns false.
+func (s *TAAState) runDepsAudit(req depsImportRequest, depsDir string) bool {
+	return true
 }

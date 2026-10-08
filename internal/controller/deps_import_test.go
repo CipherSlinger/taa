@@ -1,8 +1,13 @@
 package controller
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 )
@@ -114,4 +119,179 @@ func TestImportDepsSuccessReleasesTaskSlot(t *testing.T) {
 	// The envelope is written before runAsyncSafe launches the goroutine, so the slot may
 	// still be held here; poll rather than assert immediately.
 	waitForDepsSlotRelease(t, state)
+}
+
+// TestProcessImportedDepsInstallsAndRecords drives the pipeline against a stub installer: the
+// decrypted plaintext archive is validated, "installed" into DEPS_DIR/<sm3>, the state fields
+// are set, and the audit marker reaches disk.
+//
+// Security.ScanEnabled=false makes auditAndReportDeps take the existing short-circuit and pass,
+// so no audit hook has to be substituted -- the same technique the model-import tests use.
+func TestProcessImportedDepsInstallsAndRecords(t *testing.T) {
+	state, _ := setupTestState(t)
+	state.Security.ScanEnabled = false
+
+	origInstall := depsInstallFunc
+	t.Cleanup(func() { depsInstallFunc = origInstall })
+
+	var installedTarget string
+	depsInstallFunc = func(wheelhouse, target string) error {
+		installedTarget = target
+		return os.MkdirAll(target, 0o755)
+	}
+
+	archive := buildTestDepsArchive(t)
+
+	req := depsImportRequest{ResourceURL: "http://x/deps.tar.gz", RequestID: "req-d", TaskID: "task-d"}
+	state.processImportedDeps(req, 1, archive)
+
+	if !state.DepsImported {
+		t.Fatal("DepsImported = false after a successful pipeline run")
+	}
+	if installedTarget != state.currentDepsDir() {
+		t.Fatalf("install target = %q, want %q", installedTarget, state.currentDepsDir())
+	}
+	if _, err := os.Stat(filepath.Join(installedTarget, depsAuditMarker)); err != nil {
+		t.Fatalf("audit marker missing: %v", err)
+	}
+}
+
+// TestProcessImportedDepsSkipsWhenAlreadyAudited verifies idempotency: when the same hash is
+// already marked, the installer must not be called again.
+func TestProcessImportedDepsSkipsWhenAlreadyAudited(t *testing.T) {
+	state, _ := setupTestState(t)
+
+	origInstall := depsInstallFunc
+	t.Cleanup(func() { depsInstallFunc = origInstall })
+
+	calls := 0
+	depsInstallFunc = func(wheelhouse, target string) error {
+		calls++
+		return os.MkdirAll(target, 0o755)
+	}
+
+	archive := buildTestDepsArchive(t)
+	req := depsImportRequest{ResourceURL: "http://x/deps.tar.gz", RequestID: "req-i", TaskID: "task-i"}
+
+	state.processImportedDeps(req, 1, buildTestDepsArchive(t))
+	state.clearDepsState()
+	state.processImportedDeps(req, 1, archive)
+
+	if calls != 1 {
+		t.Fatalf("installer called %d times, want 1 (second run must reuse the audited dir)", calls)
+	}
+}
+
+// TestProcessImportedDepsRejectsArchiveWithoutWheel verifies that archive content validation
+// happens inside the asynchronous pipeline.
+func TestProcessImportedDepsRejectsArchiveWithoutWheel(t *testing.T) {
+	state, _ := setupTestState(t)
+
+	archive := buildTestArchive(t, map[string]string{"requirements.txt": "torch\n"})
+	req := depsImportRequest{ResourceURL: "http://x/bad.tar.gz", RequestID: "req-b", TaskID: "task-b"}
+
+	state.processImportedDeps(req, 1, archive)
+
+	if state.DepsImported {
+		t.Fatal("DepsImported = true for an archive without any .whl")
+	}
+	assertDepsRootEmpty(t, state)
+}
+
+// TestProcessImportedDepsRejectsZipSlip verifies that a malicious archive's `../` entry is
+// rejected and that nothing is written outside depsDir.
+func TestProcessImportedDepsRejectsZipSlip(t *testing.T) {
+	state, _ := setupTestState(t)
+	state.Security.ScanEnabled = false
+
+	origInstall := depsInstallFunc
+	t.Cleanup(func() { depsInstallFunc = origInstall })
+	depsInstallFunc = func(wheelhouse, target string) error { return os.MkdirAll(target, 0o755) }
+
+	outside := filepath.Join(t.TempDir(), "pwned")
+	archive := buildTestArchive(t, map[string]string{
+		"requirements.txt":                                  "torch\n",
+		"a-1.0-py3-none-any.whl":                            "x",
+		"../../../../../../../../" + filepath.Base(outside): "pwned",
+	})
+
+	req := depsImportRequest{ResourceURL: "http://x/evil.tar.gz", RequestID: "req-z", TaskID: "task-z"}
+	state.processImportedDeps(req, 1, archive)
+
+	if state.DepsImported {
+		t.Fatal("DepsImported = true for an archive with a path-traversal entry")
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("zip-slip escaped the wheelhouse: %s exists", outside)
+	}
+	assertDepsRootEmpty(t, state)
+}
+
+// ── test helpers ─────────────────────────────────────────
+
+// buildTestDepsArchive builds a minimal valid dependency package: requirements.txt plus one
+// empty .whl.
+func buildTestDepsArchive(t *testing.T) string {
+	t.Helper()
+	return buildTestArchive(t, map[string]string{
+		"requirements.txt":                    "torchvision==0.28.0\n",
+		"torchvision-0.28.0-py3-none-any.whl": "not-a-real-wheel\n",
+	})
+}
+
+// buildTestArchive packs name->content into a tar.gz on disk and returns the file path.
+func buildTestArchive(t *testing.T, files map[string]string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "deps.tar.gz")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+	defer f.Close()
+
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names) // stable write order, so failures reproduce
+
+	for _, name := range names {
+		content := files[name]
+		hdr := &tar.Header{
+			Name:     name,
+			Mode:     0o644,
+			Size:     int64(len(content)),
+			Typeflag: tar.TypeReg,
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("write header %s: %v", name, err)
+		}
+		if _, err := tw.Write([]byte(content)); err != nil {
+			t.Fatalf("write body %s: %v", name, err)
+		}
+	}
+
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gzip: %v", err)
+	}
+	return path
+}
+
+// assertDepsRootEmpty asserts that no leftover directory remains under the content-addressed root.
+func assertDepsRootEmpty(t *testing.T, state *TAAState) {
+	t.Helper()
+	entries, err := os.ReadDir(state.Security.GetDepsDir())
+	if err != nil {
+		t.Fatalf("read deps root: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("deps root is not empty, %d leftover entries: %v", len(entries), entries)
+	}
 }
