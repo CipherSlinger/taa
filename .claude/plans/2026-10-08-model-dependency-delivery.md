@@ -1696,7 +1696,7 @@ Task 3 的单测会以编译/断言失败报警，不会静默通过。
 | :--- | :--- | :--- | :--- |
 | A | 功能 | 审计失败路径只经 `runDepsAudit` 发 `reportAudit`（`scope=deps`），**从不发 `reportDeps`** ⇒ 平台侧 `importDeps` 任务永远收不到终态，表现为**挂起**而非失败。Task 6 的桩注释写「Task 8 补全上报」，但 Task 8 的改动范围不含 `auditAndReportDeps`，该上报从未被补上 | 失败分支增加 `s.reportDepsFailure(req, "依赖包审计未通过")`；桩注释改为明确的责任划分 |
 | B | 功能 | 失败分支**无条件** `clearDepsState()`，会把**已生效的旧依赖绑定**一并清掉，违反 spec §5「新依赖导入**成功**即覆盖 `DepsHash`」，使 TAA 静默退化为"无依赖"，在下一轮训练里以毫不相干的 `ImportError` 暴露 | 抽出 `rollbackDepsImport`：只删目录，**仅当** `currentDepsDir() == depsDir`（失败者正是当前绑定者）才清位 |
-| C | 测试 | `TestDepsAuditFailureRemovesDirAndClearsState` 名字里的 "ClearsState" **无任何断言**；且它测的是 `runDepsAudit`，而清位逻辑在 `processImportedDeps` | 重命名为 `TestRunDepsAuditRemovesDirOnFailure`；新增 `TestRollbackDepsImportKeepsAnUnrelatedBinding` 与 `TestRollbackDepsImportClearsTheBindingItOwns` 为 B 建立覆盖 |
+| C | 测试 | `TestDepsAuditFailureRemovesDirAndClearsState` 名字里的 "ClearsState" **无任何断言**；且它测的是 `runDepsAudit`，而清位逻辑在 `processImportedDeps` | 重命名为 `TestRunDepsAuditRemovesDirOnFailure`；新增 `TestRollbackDepsImportKeepsAnUnrelatedBinding` 与 `TestRollbackDepsImportClearsTheBindingItOwns` 为 B 建立覆盖（**这两条后被 (Q) 取代并删除**，场景改由 Task 6 的流水线用例覆盖） |
 | D | 磁盘 | `os.MkdirTemp("", ...)` 把可能 GB 级的 wheelhouse 解到根分区（本项目实测根分区约 28G、镜像已占约 25G），会直接 ENOSPC | 父目录改为 `s.Security.GetDepsDir()`，即那个为依赖准备、容量匹配的卷 |
 
 **B 的可达性说明（决定测试怎么写）**：审计路径只在 `.taa_audit_ok` 缺失时才会到达，而绑定的建立
@@ -1704,8 +1704,15 @@ Task 3 的单测会以编译/断言失败报警，不会静默通过。
 它只在"人工删掉某个已导入集合的审计标记、同一归档再次下发"时发生。
 `TestRollbackDepsImportClearsTheBindingItOwns` 覆盖的正是这条路径，不要因为它"看起来不可能"而删掉。
 
+> **作废（2026-10-08，见下文 Task 8 预审第二轮 (Q)）**：上表 C 行新拟的两条 `TestRollbackDepsImport*`
+> 已从 Task 8 删除。Task 6 的流水线用例后来端到端覆盖了同样两个场景（`ae24045`），且各自被变异判死。
+> 上面那句"不要删掉"的告诫针对的是**该场景必须有覆盖**，而不是"必须由这两个函数提供覆盖"——
+> 覆盖仍在，只是移到了真实调用点上。另：本段下方的"钩子判定失败"一栏也已随 (P) 删除审计钩子而作废，
+> 见 (P)。
+
 **职责边界（Task 6 与 Task 8 的实现者共同遵守）**：目录的 fail-closed 删除由 `runDepsAudit` 在
-**每一条**返回 `false` 的路径上完成（三条：钩子判定失败、LLM 不可用、审计执行出错）；
+**每一条**返回 `false` 的路径上完成（三条：LLM 不可用、审计执行出错、结论未通过——初稿列的"钩子判定失败"
+已随 (P) 删除审计钩子而去掉）；
 `rollbackDepsImport` 中的 `os.RemoveAll` 是幂等的二次保险，目的是不让流水线自己的不变式依赖
 别处的副作用。**审计报告**走 `reportAuditScopedAsync`（`scope=deps`），**任务终态**走 `reportDeps`
 ——两者都要发，缺一即平台侧观测不完整。
