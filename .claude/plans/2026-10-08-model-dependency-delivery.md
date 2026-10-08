@@ -56,6 +56,16 @@
 - `go build ./...` 在本仓库**必然失败**，原因限于 `models/audit/holdout-sources/semgrep-rules-develop/`
   下故意写坏的 Go 样例（约 40 个错误），与本特性无关，**不要去修**。构建请用
   `go build -o bin/taa ./cmd/taa` 或 `go build ./cmd/... ./internal/... ./pkg/...`。
+- `internal/platform/reporter.go` 有**两套**并行的上报 API：**包级函数**（`ReportRes` /
+  `ReportModelImport` / `ReportAudit` / `ReportTaskOutcome` / `ReportModelLog` / `ReportProgress`，
+  `:122-280`）与 **`(*Client)` 方法**（`:282-302`，被 `internal/coordinator` 经
+  `c.platformClient.*` 调用）。`internal/controller/report.go` 包装的是**包级函数**那一套。
+  因此 Task 7 只需新增包级 `ReportDeps` 与 `ReportAuditScoped` 及其 controller 包装，
+  **不要**补 `(*Client).ReportDeps` ——依赖导入是 controller-only 路径（Task 5/6），不经
+  coordinator，补上即无人调用的死代码。（若将来把依赖流程搬进 coordinator，才需要补，届时另说。）
+- Task 7 引用的行号已核实准确：常量块 `:11-16`（+`)` 至 `:17`）、`reportAuditPayload` `:46-53`、
+  `ReportAudit` `:191`；文件共 304 行。`ReportDeps` 的签名与 `:152` 的 `ReportModelImport`
+  逐字同构（`checksum ...map[string]any`），已确认一致。
 
 **已知遗留（不在本计划范围）**：
 - `reportRes` 的 `deps_checksum` 在 `internal/coordinator/flow_training.go:219` 这条备用执行路径上传
@@ -1272,6 +1282,42 @@ required"）同样保留。**不要翻译任何既有字符串，也不要为了
 git add internal/resource/deps.go internal/resource/deps_test.go internal/runtime/deps.go internal/runtime/deps_test.go
 git commit -m "feat(deps): add wheelhouse validation and offline pip install"
 ```
+
+---
+
+### Task 4 spec 审查追加（编码后按审查结论补充）
+
+**结论：✅ 合规**（提交 `2ced5ed`）。最硬的证据：审查者把本 Task 的四个代码块按行号抽出，与仓库
+文件做 `diff -u`，**四个文件 0 行差异**——实现与 spec 逐字一致。无 Critical / Important，无 Missing，
+无 Extra（`git show --name-only` 仅四个文件；全仓 grep `ValidateWheelhouse|InstallWheelhouse|
+pipBinary|tailLines` 在这四个文件之外零命中，确认"未接线"符合本 Task 的定位）。
+
+变异校验（审查者独立执行，每次以 `git diff --stat` 为空证明字节级还原）：
+
+- 从参数向量中删掉 `--no-index` ⇒ `TestInstallWheelhousePassesOfflineFlags` FAIL，离线保证被真正钉住。
+- 失败时返回 `fmt.Errorf("...: %w", err)`（包住但丢失尾输出）**以及**裸 `return err` ⇒ 两种写法都被
+  `TestInstallWheelhouseSurfacesPipFailureTail` 捕获，失败信息正是"只剩 exit status 1"。
+- 让 `*.whl` 扫描直接 `return nil` ⇒ `missing_wheel` 子用例 FAIL。
+
+密闭性是**经验性证明**而非读代码推断：把 `pipBinary` 临时指向"被调用就 touch 标记文件"的脚本，运行
+两个不依赖 stub 的用例后标记文件**不存在** ⇒ 它们从不 exec 外部进程，自然不触网。`-v` 全量输出中
+SKIP + FAIL 计数为 0。
+
+**已知 4 条 Minor，属同一缺陷类：守卫存在但无判别力。** 审查者明确标注这是 spec 自带测试的设计属性，
+不是实现偏离：
+
+| # | 位置 | 现象 |
+| :--- | :--- | :--- |
+| 1 | `internal/runtime/deps_test.go:18-25` | 删掉 `internal/runtime/deps.go:28-33` 的空参守卫，测试仍 PASS（下游 `requirements.txt` 的 `Stat` 兜底报错） |
+| 2 | `internal/resource/deps_test.go:38-42`（`blank_dir`） | 删掉 `internal/resource/deps.go:18-20` 的空白守卫仍 PASS（`os.Stat("   ")` 兜底） |
+| 3 | `internal/resource/deps_test.go:50-56`（`path_is_a_file`） | 删掉 `internal/resource/deps.go:25-27` 的 `!info.IsDir()` 仍 PASS |
+| 4 | `internal/runtime/deps.go:48-49` | `--no-cache-dir`、`--disable-pip-version-check` 两个参数无任何测试钉住 |
+
+这三条与 Task 3 修掉的"空转测试"同型：测试断言了**行为**，却没钉住**那一行守卫**。处理方式：与
+代码质量审查的发现**合并为一次修复派发**，不单独返工。
+
+**给 Task 6 的提醒：** 在上述修复落地前，若有人误删这些守卫，CI 不会报警。接线时如发现守卫位置
+变动，请一并确认对应测试是否仍有判别力。
 
 ---
 
