@@ -1757,6 +1757,29 @@ Step 4 写了 `s.setCurrentOp("deps_installing")`。实测全仓既有 op 取值
 
 ---
 
+### Task 6 交付期发现（实现者自证，2026-10-08，已直接改入正文）
+
+Task 6 的实现者按计划要求的「变异判别力」自证时，发现有两个用例在**计划规定的变异方式下杀不死**，
+经核实**根因在计划给的测试设计本身**，不在实现。两处均已改入正文：
+
+| # | 用例 | 计划原文的缺陷 | 修正 |
+| :--- | :--- | :--- | :--- |
+| I | `TestProcessImportedDepsRejectsArchiveWithoutWheel` | **没有替换 `depsInstallFunc`**。于是绕过 `ValidateWheelhouse` 后跑的是真 `runtime.InstallWheelhouse`，pip 在 `--no-index` 下无候选必然失败（`exit status 1`），失败分支照样清目录、状态照样为 false ⇒ 该用例有**两个独立的失败原因**，绿是"两个都对"撑出来的：绕过内容校验它照样绿 | 补上 `depsInstallFunc` 的**成功**桩（与同文件其它用例一致），使内容校验成为唯一可能的失败源 |
+| J | `TestProcessImportedDepsRejectsZipSlip` | 恶意条目用了 **8 层 `..`**，从 `<depsRoot>/taa-deps-wh-*.extract-*` 上溯后落在 **`/pwned`**，跑出了用例能观测的范围；且非 root 写 `/` 被 EACCES 拒绝，解压**仍**报错 ⇒ 该用例**无法区分「守卫拒绝」与「操作系统拒绝」**，而 §9 把 zip-slip 称为"本方案最关键的一条" | 深度降到 `../pwned`，落回 `<depsRoot>/pwned`——测试自己可写、可观测的位置，`assertDepsRootEmpty` 与 `os.Stat(outside)` **两条断言同时承重** |
+
+**由此得出的一条方法论**（记于此以免后续任务重犯）：**「变体验证」本身也要被验证。**
+给安全/校验类用例规定变异时，必须同时确认**该变异确实能把用例判死**——否则"我做了变异验证"
+只是一句无法证伪的话。Task 6 的实现者在这里做得对：变异杀不死时**照实报告并给出替代变异**
+（它补的 2b 把 `depsInstallFunc` 改成直接成功、4b 把守卫从「拒绝」降级为「净化」，两者都能判死），
+而不是换一个更弱的断言把表格填满。
+
+**另一条留给 Task 7/8 的注意**：Task 6 按计划把最小桩写在了 `deps_import.go`
+（`reportDepsAsync` 桩、`auditAndReportDeps` 最小版、返回 `true` 的 `runDepsAudit`；行号随 Task 9
+的插入略有漂移，**按符号名定位**）。Task 7 Step 5 **替换** `reportDepsAsync`、Task 8 Step 4
+**删除** `runDepsAudit`——两处都是替换/删除，**不是新增**，重复定义会直接编译失败。
+
+---
+
 ## Task 6: 依赖流水线（幂等、安装、状态流转、上报）
 
 **Files:**
@@ -1828,8 +1851,18 @@ func TestProcessImportedDepsSkipsWhenAlreadyAudited(t *testing.T) {
 }
 
 // TestProcessImportedDepsRejectsArchiveWithoutWheel 验证归档内容校验发生在异步流水线内。
+//
+// The installer is stubbed out to SUCCEED on purpose. Without the stub the real
+// runtime.InstallWheelhouse runs, fails on its own (pip has no candidate under --no-index),
+// and the test's two assertions would hold for that unrelated reason -- it would pass even
+// with ValidateWheelhouse bypassed. Stubbing makes the content check the only thing that can
+// fail, which is what the assertions are meant to measure.
 func TestProcessImportedDepsRejectsArchiveWithoutWheel(t *testing.T) {
 	state, _ := setupTestState(t)
+
+	origInstall := depsInstallFunc
+	t.Cleanup(func() { depsInstallFunc = origInstall })
+	depsInstallFunc = func(wheelhouse, target string) error { return os.MkdirAll(target, 0o755) }
 
 	archive := buildTestArchive(t, map[string]string{"requirements.txt": "torch\n"})
 	req := depsImportRequest{ResourceURL: "http://x/bad.tar.gz", RequestID: "req-b", TaskID: "task-b"}
@@ -1844,6 +1877,13 @@ func TestProcessImportedDepsRejectsArchiveWithoutWheel(t *testing.T) {
 
 // TestProcessImportedDepsRejectsZipSlip 验证恶意归档的 `../` 条目被拒，且没有写出
 // 任何内容到 depsDir 之外。
+//
+// The traversal depth is deliberately SHALLOW. The extraction base is a direct child of the
+// deps root (<depsRoot>/taa-deps-wh-*.extract-*), so "../pwned" resolves to <depsRoot>/pwned
+// -- a writable location the test can actually observe, caught by both assertions below.
+// A deeper traversal (e.g. eight "..") escapes past the deps root to /pwned, where a
+// non-root write fails with EACCES: extraction then errors for an unrelated reason and the
+// test can no longer tell the guard rejecting the entry from the OS refusing the write.
 func TestProcessImportedDepsRejectsZipSlip(t *testing.T) {
 	state, _ := setupTestState(t)
 	state.Security.ScanEnabled = false
@@ -1852,11 +1892,11 @@ func TestProcessImportedDepsRejectsZipSlip(t *testing.T) {
 	t.Cleanup(func() { depsInstallFunc = origInstall })
 	depsInstallFunc = func(wheelhouse, target string) error { return os.MkdirAll(target, 0o755) }
 
-	outside := filepath.Join(t.TempDir(), "pwned")
+	outside := filepath.Join(state.Security.GetDepsDir(), "pwned")
 	archive := buildTestArchive(t, map[string]string{
-		"requirements.txt":                         "torch\n",
-		"a-1.0-py3-none-any.whl":                   "x",
-		"../../../../../../../../" + filepath.Base(outside): "pwned",
+		"requirements.txt":       "torch\n",
+		"a-1.0-py3-none-any.whl": "x",
+		"../" + filepath.Base(outside): "pwned",
 	})
 
 	req := depsImportRequest{ResourceURL: "http://x/evil.tar.gz", RequestID: "req-z", TaskID: "task-z"}
@@ -1866,7 +1906,7 @@ func TestProcessImportedDepsRejectsZipSlip(t *testing.T) {
 		t.Fatal("DepsImported = true for an archive with a path-traversal entry")
 	}
 	if _, err := os.Stat(outside); !os.IsNotExist(err) {
-		t.Fatalf("zip-slip escaped the wheelhouse: %s exists", outside)
+		t.Fatalf("zip-slip escaped the extraction dir: %s exists", outside)
 	}
 	assertDepsRootEmpty(t, state)
 }
