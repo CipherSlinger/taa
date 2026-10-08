@@ -2204,6 +2204,11 @@ func TestDashboardAggregatedStatus(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read dashboard status body: %v", err)
+	}
+
 	var data struct {
 		Error  int    `json:"error"`
 		Msg    string `json:"msg"`
@@ -2216,8 +2221,21 @@ func TestDashboardAggregatedStatus(t *testing.T) {
 			TAATarget   string        `json:"taaTarget"`
 		} `json:"result"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	if err := json.Unmarshal(body, &data); err != nil {
 		t.Fatalf("decode dashboard status: %v", err)
+	}
+
+	// Decoding into the typed struct above cannot distinguish a present-but-zero "deps" object from
+	// an absent one, so the Received check below would still pass if the field were dropped from the
+	// dashboard entirely. Assert the raw key exists as well.
+	var keys struct {
+		Result map[string]json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(body, &keys); err != nil {
+		t.Fatalf("decode dashboard status keys: %v", err)
+	}
+	if _, ok := keys.Result["deps"]; !ok {
+		t.Errorf(`dashboard status result is missing the "deps" key`)
 	}
 
 	if data.Error != 0 {
