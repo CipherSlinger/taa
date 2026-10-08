@@ -546,10 +546,12 @@ func TestAuditMarkerVersionGate(t *testing.T) {
 // dependency directory that carries a marker whose content is not the current policy's must be
 // rebuilt rather than reused.
 //
-// Security.ScanEnabled=true is what gives the test a real marker to overwrite: the first run
-// passes the audit and writes one, and the overwrite below replaces it with a foreign string.
-// With scanning off no marker would exist in the first place, the directory would be rebuilt
-// for that reason instead, and the test would pass without ever exercising the version gate.
+// Security.ScanEnabled=true is what lets this test live up to its name: the first run passes a
+// real audit and earns a real marker, and the second run really does re-audit the rebuilt
+// directory. With scanning off the pipeline writes no marker at all, so the foreign string below
+// would be the only marker that ever existed and neither pass would audit anything -- the version
+// gate would still be exercised (the planted marker is foreign, and it is the content comparison
+// that makes the second run miss), but the test would no longer be re-auditing anything.
 func TestProcessImportedDepsReauditsForeignMarkerDir(t *testing.T) {
 	state, _ := setupTestState(t)
 	state.Security.ScanEnabled = true
