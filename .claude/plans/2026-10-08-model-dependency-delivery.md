@@ -77,10 +77,13 @@
   这是对 spec 的**增量**，不改变 `deps_importing` 的语义。
   **spec §5 已同步补齐这三个取值**（2026-10-08）——否则 phase 2/3 只读 spec 的实现者会漏掉两个。
 - **`go build ./...` 在本 checkout 本来就失败**（2026-10-08，Task 11 实现期发现并由我复核）：
-  失败点全部在 `models/audit/holdout-sources/semgrep-rules-develop/...` 下 18 个目录，是 semgrep
-  规则夹具（内含故意不可编译的 Go 与缺失的第三方模块，如 `github.com/anthropics/anthropic-sdk-go`）。
-  证据：该路径**未被本分支任何提交碰过**（`git log master..HEAD -- models/audit/holdout-sources`
-  为空）、**未入库**（`git ls-files` 为空，是本地文件）、且仓库根有 `go.work`，`./...` 会扫到它。
+  失败点全部在 `models/audit/holdout-sources/semgrep-rules-develop/...` 下，是 semgrep 规则夹具
+  （内含故意不可编译的 Go 与缺失的第三方模块，如 `github.com/anthropics/anthropic-sdk-go`）。
+  **机制（已核实，勿归因给 go.work）**：该目录**没有自己的 `go.mod`**（`find models/audit/holdout-sources
+  -name go.mod` 为空），因此它属于**根模块**，`./...` 会像扫 `internal/` 一样扫到它。`go.work`
+  只 `use` 了 `.`、`./teellm`、`./teellm/teetls`、`./tools/sdk`，与此无关。
+  该路径**未被本分支任何提交碰过**（`git log master..HEAD -- models/audit/holdout-sources` 为空）
+  且**未入库**（`git ls-files` 为空，是本地文件）。
   **因此全部任务的验证命令一律用窄范围**：`go build ./cmd/... ./internal/... ./pkg/...`，
   测试用 `go test ./internal/... ./pkg/...`；**不要用 `go build ./...` / `go test ./...`**，
   否则会把环境既有的失败误判成本次改动引入的回归。
