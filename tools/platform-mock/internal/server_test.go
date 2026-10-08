@@ -2211,6 +2211,7 @@ func TestDashboardAggregatedStatus(t *testing.T) {
 			Register    registerState `json:"register"`
 			ModelImport reportState   `json:"modelImport"`
 			Audit       reportState   `json:"audit"`
+			Deps        reportState   `json:"deps"`
 			Progress    progressState `json:"progress"`
 			TAATarget   string        `json:"taaTarget"`
 		} `json:"result"`
@@ -2227,6 +2228,9 @@ func TestDashboardAggregatedStatus(t *testing.T) {
 	}
 	if data.Result.Register.Received {
 		t.Errorf("expected register.received=false initially")
+	}
+	if data.Result.Deps.Received {
+		t.Errorf("expected deps.received=false initially")
 	}
 }
 
@@ -2502,5 +2506,413 @@ func TestUILayoutKeyModalAndSideBySideInputs(t *testing.T) {
 	}
 	if strings.Contains(frontendBundle, `showResult('switchResult'`) {
 		t.Fatal("quickSwitchPhase should not invoke showResult for switchResult")
+	}
+}
+
+// ── Model dependency package delivery (/v1/taa/importDeps + /v1/taa/reportDeps) ──
+
+func TestReportDepsHandlerAcceptsAndExposesChecksum(t *testing.T) {
+	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportDeps-state.json")}
+	handler := reportDepsHandler(store)
+
+	body := `{"dockerId":"docker-1","requestId":"req-deps-1","taskId":"task-deps-1","code":0,"msg":"","checksum":{"size":1048576,"algorithm":"sm3","value":"deadbeef"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportDeps", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	var accept struct {
+		Error  int `json:"error"`
+		Result struct {
+			Received bool `json:"received"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&accept); err != nil {
+		t.Fatalf("decode accept response: %v", err)
+	}
+	if accept.Error != 0 || !accept.Result.Received {
+		t.Fatalf("accept response = %+v, want error=0 received=true", accept)
+	}
+
+	// Read the state back through the /api/reportDeps/status handler.
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/reportDeps/status", nil)
+	statusW := httptest.NewRecorder()
+	reportStatusHandler(store)(statusW, statusReq)
+	if statusW.Code != http.StatusOK {
+		t.Fatalf("status handler code = %d, want 200; body=%s", statusW.Code, statusW.Body.String())
+	}
+
+	var status struct {
+		Error  int `json:"error"`
+		Result struct {
+			Received  bool           `json:"received"`
+			Accepted  bool           `json:"accepted"`
+			DockerID  string         `json:"dockerId"`
+			RequestID string         `json:"requestId"`
+			TaskID    string         `json:"taskId"`
+			Code      int            `json:"code"`
+			Checksum  map[string]any `json:"checksum"`
+			RawBody   string         `json:"rawBody"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(statusW.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if !status.Result.Received || !status.Result.Accepted {
+		t.Fatalf("status result = %+v, want received/accepted true", status.Result)
+	}
+	if status.Result.DockerID != "docker-1" || status.Result.RequestID != "req-deps-1" || status.Result.TaskID != "task-deps-1" || status.Result.Code != 0 {
+		t.Fatalf("status ids = %+v", status.Result)
+	}
+	if status.Result.Checksum == nil || status.Result.Checksum["algorithm"] != "sm3" || status.Result.Checksum["value"] != "deadbeef" {
+		t.Fatalf("status checksum = %+v", status.Result.Checksum)
+	}
+	switch s := status.Result.Checksum["size"].(type) {
+	case float64:
+		if int64(s) != 1048576 {
+			t.Fatalf("checksum size = %v, want 1048576", s)
+		}
+	case int:
+		if s != 1048576 {
+			t.Fatalf("checksum size = %v, want 1048576", s)
+		}
+	case int64:
+		if s != 1048576 {
+			t.Fatalf("checksum size = %v, want 1048576", s)
+		}
+	default:
+		t.Fatalf("unexpected type for size: %T (%v)", status.Result.Checksum["size"], status.Result.Checksum["size"])
+	}
+	if !json.Valid([]byte(status.Result.RawBody)) {
+		t.Fatalf("raw body is not JSON: %q", status.Result.RawBody)
+	}
+	if status.Result.RawBody != body {
+		t.Fatalf("rawBody = %q, want the original request body", status.Result.RawBody)
+	}
+}
+
+func TestReportDepsValidationRejectsBadPayloads(t *testing.T) {
+	handler := reportDepsHandler(&reportStateStore{path: filepath.Join(t.TempDir(), "reportDeps-state.json")})
+
+	cases := []struct {
+		name    string
+		body    string
+		wantMsg string
+	}{
+		{
+			name:    "missing dockerId",
+			body:    `{"requestId":"req-1","code":1}`,
+			wantMsg: "缺少 dockerId",
+		},
+		{
+			name:    "missing requestId",
+			body:    `{"dockerId":"docker-1","code":1}`,
+			wantMsg: "缺少 requestId",
+		},
+		{
+			name:    "code out of range",
+			body:    `{"dockerId":"docker-1","requestId":"req-1","code":2}`,
+			wantMsg: "code 必须为 0(导入成功) 或 1(导入失败)",
+		},
+		{
+			name:    "code 0 without checksum",
+			body:    `{"dockerId":"docker-1","requestId":"req-1","code":0}`,
+			wantMsg: "checksum 不能为空",
+		},
+		{
+			name:    "code 0 with checksum missing value",
+			body:    `{"dockerId":"docker-1","requestId":"req-1","code":0,"checksum":{"size":1024,"algorithm":"sm3"}}`,
+			wantMsg: "checksum 不能为空",
+		},
+		{
+			name:    "code 0 with non-positive size",
+			body:    `{"dockerId":"docker-1","requestId":"req-1","code":0,"checksum":{"size":0,"algorithm":"sm3","value":"abcd"}}`,
+			wantMsg: "checksum 不能为空",
+		},
+		{
+			name:    "code 0 with empty algorithm",
+			body:    `{"dockerId":"docker-1","requestId":"req-1","code":0,"checksum":{"size":1024,"algorithm":"  ","value":"abcd"}}`,
+			wantMsg: "checksum 不能为空",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportDeps", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			handler(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), tc.wantMsg) {
+				t.Fatalf("body = %s, want to contain %q", w.Body.String(), tc.wantMsg)
+			}
+		})
+	}
+
+	// code=1 (failure) does not require a checksum and must be accepted.
+	req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportDeps", strings.NewReader(`{"dockerId":"docker-1","requestId":"req-1","code":1,"msg":"download failed"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code=1 status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestReportDepsStatusReset(t *testing.T) {
+	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportDeps-state.json")}
+	handler := reportDepsHandler(store)
+
+	body := `{"dockerId":"docker-1","requestId":"req-1","code":0,"checksum":{"size":1024,"algorithm":"sm3","value":"abcd"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportDeps", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if !store.get().Received {
+		t.Fatal("store should have received a report before reset")
+	}
+
+	resetReq := httptest.NewRequest(http.MethodPost, "/api/reportDeps/reset", nil)
+	resetW := httptest.NewRecorder()
+	reportResetHandler(store)(resetW, resetReq)
+	if resetW.Code != http.StatusOK {
+		t.Fatalf("reset status = %d, want 200; body=%s", resetW.Code, resetW.Body.String())
+	}
+	if store.get().Received {
+		t.Fatal("store should be empty after reset")
+	}
+}
+
+func TestReportAuditScopeHandling(t *testing.T) {
+	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportAudit-state.json")}
+	handler := reportAuditHandler(store)
+
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler(w, req)
+		return w
+	}
+	readScope := func() string {
+		statusReq := httptest.NewRequest(http.MethodGet, "/api/reportAudit/status", nil)
+		statusW := httptest.NewRecorder()
+		reportStatusHandler(store)(statusW, statusReq)
+		var status struct {
+			Result struct {
+				Scope string `json:"scope"`
+			} `json:"result"`
+		}
+		if err := json.NewDecoder(statusW.Body).Decode(&status); err != nil {
+			t.Fatalf("decode audit status: %v", err)
+		}
+		return status.Result.Scope
+	}
+
+	// 1. scope="deps" is accepted and echoed back.
+	if w := post(`{"dockerId":"docker-1","requestId":"req-1","code":0,"scope":"deps"}`); w.Code != http.StatusOK {
+		t.Fatalf("scope=deps status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if got := readScope(); got != "deps" {
+		t.Fatalf("scope = %q, want deps", got)
+	}
+
+	// 2. Missing scope defaults to model-code audit (empty string), preserving back-compat.
+	if w := post(`{"dockerId":"docker-1","requestId":"req-1","code":0}`); w.Code != http.StatusOK {
+		t.Fatalf("no scope status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if got := readScope(); got != "" {
+		t.Fatalf("scope = %q, want empty for model-code audit", got)
+	}
+
+	// 3. Any other scope value is rejected.
+	if w := post(`{"dockerId":"docker-1","requestId":"req-1","code":0,"scope":"model"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("scope=model status = %d, want 400; body=%s", w.Code, w.Body.String())
+	} else if !strings.Contains(w.Body.String(), "scope 仅支持 deps") {
+		t.Fatalf("body = %s, want scope validation message", w.Body.String())
+	}
+}
+
+func TestTAAImportDepsProxy(t *testing.T) {
+	var (
+		gotMethod string
+		gotPath   string
+		gotBody   string
+	)
+	rawTAA := []byte(`{"msg":"依赖包导入冲突: 同一任务正在导入","result":null,"error":409}`)
+	taa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write(rawTAA)
+	}))
+	defer taa.Close()
+
+	handler := taaImportDepsHandler(taa.URL)
+
+	// Non-POST is rejected with 405 before any proxy call happens.
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/taa/importDeps", nil)
+	wGet := httptest.NewRecorder()
+	handler(wGet, reqGet)
+	if wGet.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET status = %d, want 405", wGet.Code)
+	}
+
+	sentBody := `{"resourceUrl":"http://example.com/deps.tar.gz","requestId":"req-deps-1","taskId":"task-deps-1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/taa/importDeps", strings.NewReader(sentBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if gotMethod != http.MethodPost {
+		t.Fatalf("TAA method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/v1/taa/importDeps" {
+		t.Fatalf("TAA path = %q, want /v1/taa/importDeps", gotPath)
+	}
+	if gotBody != sentBody {
+		t.Fatalf("TAA body = %q, want the exact body sent by the console (%q)", gotBody, sentBody)
+	}
+	// The TAA status code and response body are passed through verbatim.
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 passthrough; body=%s", w.Code, w.Body.String())
+	}
+	if w.Body.String() != string(rawTAA) {
+		t.Fatalf("body = %q, want exact passthrough %q", w.Body.String(), string(rawTAA))
+	}
+
+	// An unconfigured TAA target yields 502 Bad Gateway.
+	emptyHandler := taaImportDepsHandler("")
+	reqEmpty := httptest.NewRequest(http.MethodPost, "/api/taa/importDeps", strings.NewReader(sentBody))
+	wEmpty := httptest.NewRecorder()
+	emptyHandler(wEmpty, reqEmpty)
+	if wEmpty.Code != http.StatusBadGateway {
+		t.Fatalf("empty taaAddr status = %d, want 502; body=%s", wEmpty.Code, wEmpty.Body.String())
+	}
+}
+
+func TestServerReportDepsAndImportDepsRoutes(t *testing.T) {
+	var taaBody string
+	taa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/taa/importDeps" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		taaBody = string(b)
+		writeEnvelope(w, http.StatusOK, "依赖包已接收，处理中", nil, 0)
+	}))
+	defer taa.Close()
+
+	cfg := Config{
+		Addr:      "127.0.0.1:0",
+		StateDir:  t.TempDir(),
+		TAATarget: taa.URL,
+	}
+	ts := httptest.NewServer(NewServer(cfg).httpServer.Handler)
+	defer ts.Close()
+
+	// The mock's own reportDeps route stores the callback state.
+	reportBody := `{"dockerId":"docker-1","requestId":"req-1","code":0,"checksum":{"size":1024,"algorithm":"sm3","value":"abcd"}}`
+	resp, err := http.Post(ts.URL+"/v1/taa/reportDeps", "application/json", strings.NewReader(reportBody))
+	if err != nil {
+		t.Fatalf("post reportDeps: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("reportDeps status = %d, want 200", resp.StatusCode)
+	}
+
+	statusResp, err := http.Get(ts.URL + "/api/reportDeps/status")
+	if err != nil {
+		t.Fatalf("get reportDeps status: %v", err)
+	}
+	defer statusResp.Body.Close()
+	var status struct {
+		Result struct {
+			Received bool `json:"received"`
+			Accepted bool `json:"accepted"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(statusResp.Body).Decode(&status); err != nil {
+		t.Fatalf("decode reportDeps status: %v", err)
+	}
+	if !status.Result.Received || !status.Result.Accepted {
+		t.Fatalf("reportDeps status = %+v, want received/accepted", status.Result)
+	}
+
+	// The console's importDeps route forwards the body to the configured TAA.
+	sentBody := `{"resourceUrl":"http://example.com/deps.tar.gz","requestId":"req-1","taskId":""}`
+	importResp, err := http.Post(ts.URL+"/api/taa/importDeps", "application/json", strings.NewReader(sentBody))
+	if err != nil {
+		t.Fatalf("post importDeps: %v", err)
+	}
+	defer importResp.Body.Close()
+	if importResp.StatusCode != http.StatusOK {
+		t.Fatalf("importDeps status = %d, want 200; body read failed", importResp.StatusCode)
+	}
+	if taaBody != sentBody {
+		t.Fatalf("TAA body = %q, want %q", taaBody, sentBody)
+	}
+
+	// Reset clears the stored reportDeps state.
+	resetResp, err := http.Post(ts.URL+"/api/reportDeps/reset", "application/json", nil)
+	if err != nil {
+		t.Fatalf("post reportDeps reset: %v", err)
+	}
+	resetResp.Body.Close()
+	if resetResp.StatusCode != http.StatusOK {
+		t.Fatalf("reset status = %d, want 200", resetResp.StatusCode)
+	}
+	afterResp, err := http.Get(ts.URL + "/api/reportDeps/status")
+	if err != nil {
+		t.Fatalf("get reportDeps status after reset: %v", err)
+	}
+	defer afterResp.Body.Close()
+	if err := json.NewDecoder(afterResp.Body).Decode(&status); err != nil {
+		t.Fatalf("decode reportDeps status after reset: %v", err)
+	}
+	if status.Result.Received {
+		t.Fatalf("reportDeps status after reset = %+v, want empty", status.Result)
+	}
+}
+
+func TestImportDepsConsoleCardAndBundle(t *testing.T) {
+	for _, want := range []string{
+		`id="card-importDeps"`,
+		`id="importDepsResourceUrl"`,
+		`value="http://example.com/deps.tar.gz"`,
+		`id="importDepsRequestId"`,
+		`id="importDepsTaskId"`,
+		`onclick="testImportDeps()"`,
+		`id="importDepsBodyBtn"`,
+		`id="importDepsDot"`,
+		`id="importDepsStatusText"`,
+	} {
+		if !strings.Contains(indexHTML, want) {
+			t.Errorf("indexHTML missing %q", want)
+		}
+	}
+
+	for _, want := range []string{
+		"testImportDeps",
+		"/api/taa/importDeps",
+		"randomizeImportDepsIds",
+		"recordInteraction('importDeps'",
+		"importDepsResult",
+	} {
+		if !strings.Contains(frontendBundle, want) {
+			t.Errorf("frontendBundle missing %q", want)
+		}
 	}
 }

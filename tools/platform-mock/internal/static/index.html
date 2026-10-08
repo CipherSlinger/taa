@@ -327,6 +327,50 @@
     </section>
   </div>
 
+  <!-- Model dependency package delivery -->
+  <section class="card" id="card-importDeps" style="display:flex; flex-direction:column; margin-top:14px;">
+    <div class="card-head">
+      <div>
+        <h2>模型依赖下发</h2>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+        <div id="importDepsStatusBox" class="status" style="font-size:12px; display:none;">
+          <span id="importDepsDot" class="dot status-pill pending"></span>
+          <span id="importDepsStatusText"></span>
+        </div>
+        <button id="importDepsBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('importDepsResult')" disabled>查看返回</button>
+      </div>
+    </div>
+    <label for="importDepsResourceUrl">resourceUrl</label>
+    <input id="importDepsResourceUrl" value="http://example.com/deps.tar.gz">
+    <div class="id-input-row">
+      <button type="button" class="secondary btn-field-random" onclick="randomizeImportDepsIds()" title="同时随机生成 requestId 与 taskId">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px; vertical-align:-1px;">
+          <polyline points="16 3 21 3 21 8"></polyline>
+          <line x1="4" y1="20" x2="21" y2="3"></line>
+          <polyline points="21 16 21 21 16 21"></polyline>
+          <line x1="15" y1="15" x2="21" y2="21"></line>
+          <line x1="4" y1="4" x2="9" y2="9"></line>
+        </svg>
+        随机 ID
+      </button>
+      <div class="id-inputs-cols">
+        <div class="id-input-col">
+          <label for="importDepsRequestId">requestId</label>
+          <input id="importDepsRequestId" value="req-mock-importDeps-001">
+        </div>
+        <div class="id-input-col">
+          <label for="importDepsTaskId">taskId</label>
+          <input id="importDepsTaskId" value="" placeholder="可选">
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <button onclick="testImportDeps()">发送测试</button>
+    </div>
+    <div id="importDepsResult" style="display:none;"></div>
+  </section>
+
   <!-- TAA 运行日志 -->
   <h2>TAA 运行日志</h2>
   <section class="card" id="card-taaLog">

@@ -58,6 +58,8 @@ func requestComponentFromPath(path string) string {
 		return "reportModelImport"
 	case strings.HasPrefix(path, "/v1/taa/reportAudit"):
 		return "reportAudit"
+	case strings.HasPrefix(path, "/v1/taa/reportDeps") || strings.HasPrefix(path, "/api/reportDeps"):
+		return "reportDeps"
 	case strings.HasPrefix(path, "/v1/taa/reportProgress") || strings.HasPrefix(path, "/api/reportProgress"):
 		return "reportProgress"
 	case strings.HasPrefix(path, "/v1/taa/modelLog") || strings.HasPrefix(path, "/api/modelLog"):
@@ -70,6 +72,8 @@ func requestComponentFromPath(path string) string {
 		return "taa-resourceInfo"
 	case strings.HasPrefix(path, "/v1/taa/stopTraining") || strings.HasPrefix(path, "/api/taa/stopTraining"):
 		return "taa-stopTraining"
+	case strings.HasPrefix(path, "/v1/taa/importDeps") || strings.HasPrefix(path, "/api/taa/importDeps"):
+		return "taa-importDeps"
 	case strings.HasPrefix(path, "/api/upload") || strings.HasPrefix(path, "/api/uploads"):
 		return "uploads"
 	case strings.HasPrefix(path, "/taa/"):

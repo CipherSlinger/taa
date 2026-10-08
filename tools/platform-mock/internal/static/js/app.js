@@ -52,6 +52,11 @@ function randomizeImportIds() {
   randomizeField('importTaskId', 'task-data');
 }
 
+function randomizeImportDepsIds() {
+  randomizeField('importDepsRequestId', 'req-deps');
+  randomizeField('importDepsTaskId', 'task-deps');
+}
+
 // ── File Upload Formatting & Drag-and-Drop ──
 function formatUploadSize(size) {
   const value = Number(size) || 0;
@@ -126,6 +131,7 @@ function setupResourceUrlDropZones() {
     { cardId: 'card-importModel', inputId: 'importModelResourceUrl' },
     { cardId: 'card-import', inputId: 'importResourceUrl' },
     { cardId: 'card-resourceInfo', inputId: 'resourceInfoUrl' },
+    { cardId: 'card-importDeps', inputId: 'importDepsResourceUrl' },
   ];
 
   dropTargets.forEach(({ cardId, inputId }) => {
@@ -319,6 +325,7 @@ const RESULT_TITLES = {
   uploadResult: '文件上传返回',
   importResult: '/v1/taa/import 返回',
   importModelResult: '/v1/taa/importModel 返回',
+  importDepsResult: '/v1/taa/importDeps 返回',
   resourceInfoResult: '/v1/taa/getResourceInfo 返回',
   switchResult: '/v1/taa/switch 返回',
   attestationResult: '/v1/taa/getAttestation 返回',
@@ -328,6 +335,7 @@ const RESULT_INTERACTION_KEYS = {
   uploadResult: 'upload',
   importResult: 'import',
   importModelResult: 'importModel',
+  importDepsResult: 'importDeps',
   resourceInfoResult: 'resourceInfo',
   switchResult: 'switch',
   attestationResult: 'attestation',
@@ -345,6 +353,12 @@ const HEADER_RESULT_MAPPINGS = {
     boxId: 'importModelStatusBox',
     dotId: 'importModelDot',
     textId: 'importModelStatusText',
+  },
+  importDepsResult: {
+    btnId: 'importDepsBodyBtn',
+    boxId: 'importDepsStatusBox',
+    dotId: 'importDepsDot',
+    textId: 'importDepsStatusText',
   },
   importResult: {
     btnId: 'importBodyBtn',
@@ -1462,6 +1476,40 @@ async function testStopTraining() {
     if (bodyBtn) bodyBtn.style.display = 'inline-block';
   } finally {
     if (btn) btn.disabled = false;
+  }
+}
+
+async function testImportDeps() {
+  showResultRunning('importDepsResult', '正在请求...');
+  const requestId = (document.getElementById('importDepsRequestId') || {}).value || '';
+  const taskId = ((document.getElementById('importDepsTaskId') || {}).value || '').trim();
+  const depsBody = {
+    resourceUrl: (document.getElementById('importDepsResourceUrl') || {}).value || '',
+    requestId,
+    taskId,
+  };
+  recordInteraction('importDeps', {
+    title: '/v1/taa/importDeps 依赖包下发详情',
+    primaryLabel: '返回内容',
+    secondaryLabel: '请求体',
+    primaryContent: null,
+    secondaryContent: depsBody,
+    endpoint: '/api/taa/importDeps',
+    reqBody: depsBody,
+  });
+  try {
+    const res = await fetch('/api/taa/importDeps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(depsBody),
+    });
+    const data = await res.json().catch(() => ({}));
+    const ok = res.status === 200 && data.error === 0;
+    recordInteraction('importDeps', { primaryContent: data, respBody: data, statusCode: res.status });
+    showResult('importDepsResult', ok, JSON.stringify(data, null, 2));
+  } catch (e) {
+    recordInteraction('importDeps', { primaryContent: '请求失败: ' + e.message, respBody: e.message, statusCode: 500 });
+    showResult('importDepsResult', false, '请求失败: ' + e.message + '\n请确认 TAA 服务地址是否正确且服务已启动。');
   }
 }
 

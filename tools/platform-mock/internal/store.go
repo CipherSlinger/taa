@@ -117,6 +117,7 @@ type reportState struct {
 	Code        int            `json:"code"`
 	Msg         string         `json:"msg"`
 	Report      string         `json:"report"`
+	Scope       string         `json:"scope,omitempty"`
 	Checksum    map[string]any `json:"checksum,omitempty"`
 	ContentType string         `json:"contentType"`
 	StatusCode  int            `json:"statusCode"`

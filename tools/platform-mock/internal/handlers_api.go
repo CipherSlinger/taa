@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func dashboardStatusHandler(registerStore *registerStateStore, modelImportStore, auditStore *reportStateStore, progressStore *progressStateStore, taaAddr string) http.HandlerFunc {
+func dashboardStatusHandler(registerStore *registerStateStore, modelImportStore, auditStore, depsStore *reportStateStore, progressStore *progressStateStore, taaAddr string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -23,6 +23,7 @@ func dashboardStatusHandler(registerStore *registerStateStore, modelImportStore,
 			"register":    registerStore.get(),
 			"modelImport": reportStateResult(modelImportStore.get()),
 			"audit":       reportStateResult(auditStore.get()),
+			"deps":        reportStateResult(depsStore.get()),
 			"progress":    progressStore.get(),
 			"taaTarget":   taaAddr,
 		}
@@ -71,6 +72,7 @@ func reportStateResult(state reportState) map[string]any {
 		"msg":         state.Msg,
 		"checksum":    state.Checksum,
 		"report":      state.Report,
+		"scope":       state.Scope,
 		"contentType": state.ContentType,
 		"statusCode":  state.StatusCode,
 		"message":     state.Message,
@@ -240,6 +242,45 @@ func taaGetResourceInfoHandler(taaAddr string) http.HandlerFunc {
 		}
 
 		status, respBody, err := proxyJSONToTAA(r.Context(), taaAddr, "/v1/taa/getResourceInfo", body)
+		if err != nil {
+			if status == 0 {
+				status = http.StatusBadGateway
+			}
+			writeEnvelope(w, status, "TAA 请求失败: "+err.Error(), nil, status)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(status)
+		w.Write(respBody)
+	}
+}
+
+// taaImportDepsHandler proxies dependency package import requests to TAA's /v1/taa/importDeps endpoint.
+func taaImportDepsHandler(taaAddr string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
+			return
+		}
+		if strings.TrimSpace(taaAddr) == "" {
+			writeEnvelope(w, http.StatusBadGateway, "未配置 TAA 目标地址（-taa-target 或 TAA_POD）", nil, http.StatusBadGateway)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeEnvelope(w, http.StatusBadRequest, "读取请求体失败: "+err.Error(), nil, http.StatusBadRequest)
+			return
+		}
+
+		status, respBody, err := proxyJSONToTAA(r.Context(), taaAddr, "/v1/taa/importDeps", body)
 		if err != nil {
 			if status == 0 {
 				status = http.StatusBadGateway

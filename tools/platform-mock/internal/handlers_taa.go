@@ -21,6 +21,7 @@ type reportRequest struct {
 	Code      int            `json:"code"`
 	Msg       *string        `json:"msg"`
 	Report    string         `json:"report"`
+	Scope     string         `json:"scope,omitempty"`
 	Checksum  map[string]any `json:"checksum,omitempty"`
 }
 
@@ -275,7 +276,11 @@ func reportResHandler(store *reportStateStore) http.HandlerFunc {
 	}
 }
 
-func isValidModelChecksum(cs map[string]any) bool {
+// isValidChecksum reports whether cs is a well-formed checksum object:
+// a non-empty map carrying a non-empty "algorithm", a non-empty "value",
+// and a positive "size". It is shared by the model-import and dependency
+// report handlers, whose checksum payloads have an identical shape.
+func isValidChecksum(cs map[string]any) bool {
 	if cs == nil || len(cs) == 0 {
 		return false
 	}
@@ -371,7 +376,7 @@ func reportModelImportHandler(store *reportStateStore) http.HandlerFunc {
 		} else if strings.TrimSpace(state.RequestID) == "" {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "缺少 requestId"
-		} else if state.Code == 0 && !isValidModelChecksum(state.Checksum) {
+		} else if state.Code == 0 && !isValidChecksum(state.Checksum) {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "导入成功时 checksum 不能为空且必须包含 size、algorithm 与 value"
 		} else {
@@ -394,8 +399,8 @@ func reportModelImportHandler(store *reportStateStore) http.HandlerFunc {
 	}
 }
 
-// reportAuditHandler handles POST /v1/taa/reportAudit — TAA 上报模型代码安全审计结果
-func reportAuditHandler(store *reportStateStore) http.HandlerFunc {
+// reportDepsHandler handles POST /v1/taa/reportDeps — TAA 上报模型依赖包导入结果
+func reportDepsHandler(store *reportStateStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -449,9 +454,94 @@ func reportAuditHandler(store *reportStateStore) http.HandlerFunc {
 		} else if strings.TrimSpace(state.RequestID) == "" {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "缺少 requestId"
+		} else if state.Code != 0 && state.Code != 1 {
+			state.StatusCode = http.StatusBadRequest
+			state.Message = "code 必须为 0(导入成功) 或 1(导入失败)"
+		} else if state.Code == 0 && !isValidChecksum(state.Checksum) {
+			state.StatusCode = http.StatusBadRequest
+			state.Message = "导入成功时 checksum 不能为空且必须包含 size、algorithm 与 value"
+		} else {
+			state.Accepted = true
+			state.StatusCode = http.StatusOK
+			state.Message = "平台已收到依赖包导入结果上报，并返回 HTTP 200"
+		}
+
+		store.set(state)
+		if !state.Accepted {
+			log.Printf("reportDeps rejected: status=%d dockerId=%q requestId=%q message=%s", state.StatusCode, state.DockerID, state.RequestID, state.Message)
+			writeEnvelope(w, state.StatusCode, state.Message, reportStateResult(state), state.StatusCode)
+			return
+		}
+
+		log.Printf("reportDeps accepted: dockerId=%s requestId=%s taskId=%s code=%d", state.DockerID, state.RequestID, state.TaskID, state.Code)
+		writeEnvelope(w, http.StatusOK, "success", map[string]any{
+			"received": true,
+		}, 0)
+	}
+}
+
+// reportAuditHandler handles POST /v1/taa/reportAudit — TAA 上报模型代码安全审计结果
+func reportAuditHandler(store *reportStateStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setCORS(w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeEnvelope(w, http.StatusMethodNotAllowed, "仅支持 POST 方法", nil, http.StatusMethodNotAllowed)
+			return
+		}
+
+		state := reportState{
+			Received:   true,
+			ReceivedAt: time.Now().Format(time.RFC3339),
+		}
+
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			state.StatusCode = http.StatusBadRequest
+			state.Message = "读取请求体失败: " + err.Error()
+			store.set(state)
+			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
+			return
+		}
+		state.RawBody = string(bodyBytes)
+		state.ContentType = r.Header.Get("Content-Type")
+
+		var req reportRequest
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
+			state.StatusCode = http.StatusBadRequest
+			state.Message = "解析 JSON 失败: " + err.Error()
+			store.set(state)
+			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
+			return
+		}
+
+		state.DockerID = req.DockerID
+		state.RequestID = req.RequestID
+		state.TaskID = req.TaskID
+		state.Code = req.Code
+		state.Report = req.Report
+		state.Scope = strings.TrimSpace(req.Scope)
+		state.Checksum = req.Checksum
+		if req.Msg != nil {
+			state.Msg = *req.Msg
+		}
+
+		if strings.TrimSpace(state.DockerID) == "" {
+			state.StatusCode = http.StatusBadRequest
+			state.Message = "缺少 dockerId"
+		} else if strings.TrimSpace(state.RequestID) == "" {
+			state.StatusCode = http.StatusBadRequest
+			state.Message = "缺少 requestId"
 		} else if state.Code != 0 && state.Code != 1 && state.Code != 2 {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "code 必须为 0(通过)、1(未通过) 或 2(LLM不可用)"
+		} else if state.Scope != "" && state.Scope != "deps" {
+			state.StatusCode = http.StatusBadRequest
+			state.Message = "scope 仅支持 deps(依赖包审计) 或空字符串(模型代码审计)"
 		} else {
 			state.Accepted = true
 			state.StatusCode = http.StatusOK

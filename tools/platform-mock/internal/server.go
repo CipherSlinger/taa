@@ -93,6 +93,7 @@ func NewServer(cfg Config) *Server {
 	reportResStore := newReportStateStore(cfg.StateDir, "reportRes-state.json")
 	reportModelImportStore := newReportStateStore(cfg.StateDir, "reportModelImport-state.json")
 	reportAuditStore := newReportStateStore(cfg.StateDir, "reportAudit-state.json")
+	reportDepsStore := newReportStateStore(cfg.StateDir, "reportDeps-state.json")
 	progressStore := newProgressStateStore(cfg.StateDir)
 	modelLogStore := newModelLogStore(cfg.StateDir, 2000)
 	taaLogStore := newTaaLogStore(cfg.StateDir, 2000)
@@ -123,10 +124,11 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/v1/taa/reportRes", reportResHandler(reportResStore))
 	mux.HandleFunc("/v1/taa/reportModelImport", reportModelImportHandler(reportModelImportStore))
 	mux.HandleFunc("/v1/taa/reportAudit", reportAuditHandler(reportAuditStore))
+	mux.HandleFunc("/v1/taa/reportDeps", reportDepsHandler(reportDepsStore))
 	mux.HandleFunc("/v1/taa/reportProgress", reportProgressHandler(progressStore))
 	mux.HandleFunc("/v1/taa/modelLog", modelLogHandler(modelLogStore))
 	mux.HandleFunc("/v1/taa/taaLog", taaLogHandler(taaLogStore))
-	mux.HandleFunc("/api/dashboard/status", dashboardStatusHandler(registerStore, reportModelImportStore, reportAuditStore, progressStore, taaAddr))
+	mux.HandleFunc("/api/dashboard/status", dashboardStatusHandler(registerStore, reportModelImportStore, reportAuditStore, reportDepsStore, progressStore, taaAddr))
 	mux.HandleFunc("/api/register/status", registerStatusHandler(registerStore))
 	mux.HandleFunc("/api/register/reset", registerResetHandler(registerStore))
 	mux.HandleFunc("/api/reportResourceRes/status", reportStatusHandler(reportStore))
@@ -137,6 +139,8 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/reportModelImport/reset", reportResetHandler(reportModelImportStore))
 	mux.HandleFunc("/api/reportAudit/status", reportStatusHandler(reportAuditStore))
 	mux.HandleFunc("/api/reportAudit/reset", reportResetHandler(reportAuditStore))
+	mux.HandleFunc("/api/reportDeps/status", reportStatusHandler(reportDepsStore))
+	mux.HandleFunc("/api/reportDeps/reset", reportResetHandler(reportDepsStore))
 	mux.HandleFunc("/api/reportProgress/status", progressStatusHandler(progressStore))
 	mux.HandleFunc("/api/reportProgress/reset", progressResetHandler(progressStore))
 	mux.HandleFunc("/api/modelLog/status", modelLogStatusHandler(modelLogStore))
@@ -155,6 +159,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/taa/status", taaStatusHandler(taaAddr))
 	mux.HandleFunc("/api/taa/getResourceInfo", taaGetResourceInfoHandler(taaAddr))
 	mux.HandleFunc("/api/taa/stopTraining", taaStopTrainingHandler(taaAddr))
+	mux.HandleFunc("/api/taa/importDeps", taaImportDepsHandler(taaAddr))
 
 	// Serve uploaded files
 	mux.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(uploadDir))))
@@ -334,4 +339,3 @@ func dedupe(values []string) []string {
 	}
 	return out
 }
-
