@@ -122,7 +122,7 @@
 | `internal/controller/router.go:9-22` | 注册 `/v1/taa/importDeps` |
 | `internal/controller/import_processing.go:178` 后 | 训练前调用 `applyDepsEnv` |
 | `internal/controller/import_processing.go:718` 附近 | `reportAuditAsync` 增加 scope 变体 |
-| `internal/controller/import_processing.go:1006-1012` | 训练报告带上依赖 checksum |
+| `internal/controller/import_processing.go:1016-1022` | 训练报告带上依赖 checksum（规划时测为 `:1006-1012`，Task 9 插入行后下移） |
 | `internal/controller/handler_system.go:57-73` | `status` 回 `depsImported` / `depsHash` |
 | `internal/controller/report.go` | `ReportDeps`、`ReportAuditScoped` 封装 |
 | `internal/platform/reporter.go:11-53,191+` | `ReportDepsEndpoint`、`reportDepsPayload`、`ReportDeps`、`ReportAuditScoped`、`reportAuditPayload.Scope` |
@@ -3629,18 +3629,22 @@ state.RuntimeConfig = `{"commands":["env > envdump.txt"],"env":{"PYTHONPATH":"/p
 
 **Files:**
 - Modify: `internal/runtime/report.go:42,46,81-88`
-- Modify: `internal/controller/import_processing.go:1006-1012`
+- Modify: `internal/controller/import_processing.go:1016-1022`
 - Modify: `internal/controller/handler_system.go:57-73`
 - Modify: `internal/coordinator/flow_training.go:219`
 - Modify: `internal/runtime/report_test.go`（**既有** `TestBuildTrainingReport:57` 的 10 参调用要补 1 个 `nil`，见 Step 3）
 - Modify: `internal/controller/import_processing_report_test.go`（既有 `:54` 的 11 参调用要补 1 个 `nil`，见 Step 4）
 
-> **行号锚点已核实（2026-10-08 预审）**：以上四处行号均已逐条实测命中（`flow_training.go:219` 正是
-> `runtime.BuildTrainingReport(...)` 调用行；`import_processing.go:1011` 正是 `buildTrainingReport`
-> 里的委托调用行；`handler_system.go:57-73` 正是整个 `statusHandler`）。
+> **行号锚点（2026-10-08 二次实测，Task 8/9 落地后重测）**：`flow_training.go:219` 正是
+> `runtime.BuildTrainingReport(...)` 调用行；`handler_system.go:57-73` 正是整个 `statusHandler`；
+> `runtime/report.go:42`（`BuildCrashFailureReport` 的委托）、`:46`（声明）、`:86-88`（`dataChecksum`
+> 分支，Step 3 要在其后插入）三处亦逐条命中。
 >
-> **但 Task 9 会在 `import_processing.go:178` 附近插入 1–2 行**，因此 `:1006-1012` 届时会下移。
-> 定位 `buildTrainingReport` 时**按符号名找，不要按行号**。其余三处不受 Task 9 影响。
+> **`import_processing.go` 的三处行号已随 Task 9/8 落地而整体下移**（预审数字测于本分支早期，此后
+> Task 9 在该文件插入了行）：`buildAndSaveTrainingReport` 声明 `:956` → **`:962`**；其内部那次真实
+> `buildTrainingReport(...)` 调用 `:973` → **`:979`**；委托函数 `buildTrainingReport` 本体
+> `:1006-1012` → **`:1016-1022`**（其内部 `runtime.BuildTrainingReport` 调用行 `:1011` → **`:1021`**）。
+> 定位时**一律按符号名找，不要按行号**；参数个数不变（真实调用 11 个、其余 10 个），已实测复核。
 >
 > **命名约定（两处不同，不要统一）**：`status` 响应新增 **camelCase** 的 `depsImported` / `depsHash`
 > （与同一对象里既有的 `modelImported`/`trainingRunning`/`currentOp` 对齐）；训练报告里则是
@@ -3653,9 +3657,9 @@ state.RuntimeConfig = `{"commands":["env > envdump.txt"],"env":{"PYTHONPATH":"/p
 >    直接调用该函数（传 10 个实参）。签名一改它就编译不过。已加入 Files 与 Step 11 的 `git add`
 >    ——漏掉的话不只是构建失败，`git add` 的显式 pathspec 也会把修复后的该文件留在工作区，
 >    产出一个「编译不过的历史提交」。
->    另核实：**非测试调用方只有一个**（`import_processing.go` 的 `buildAndSaveTrainingReport` 内，
->    即预审时测得的 `:969`）。Step 4 点名的 `reportTrainingFailureFromResult` 并不直接调用它，
->    故 Step 4 的实际改动面就是这一处 + 委托函数。
+>    另核实：**非测试调用方只有一个**（`import_processing.go` 的 `buildAndSaveTrainingReport` 内；
+>    预审测得 `:969`，2026-10-08 二次实测为 `:979`）。Step 4 点名的 `reportTrainingFailureFromResult`
+>    并不直接调用它，故 Step 4 的实际改动面就是这一处 + 委托函数。
 > 2. **Step 6 的测试要 `encoding/json`，而 `deps_import_test.go` 里没有这个 import。**
 >    Task 6 给该文件加的 import 恰恰**不含** `encoding/json`（它加的是 `archive/tar`、`compress/gzip`、
 >    `os`、`path/filepath`、`sort`）。必须补 `"encoding/json"`，否则该测试编译失败。
@@ -3676,8 +3680,8 @@ state.RuntimeConfig = `{"commands":["env > envdump.txt"],"env":{"PYTHONPATH":"/p
 | 1 | `internal/runtime/report.go:42`（`BuildCrashFailureReport` 内） | 10 | ✅ Step 3 |
 | 2 | `internal/runtime/report_test.go:57`（**既有** `TestBuildTrainingReport`） | 10 | ❌ **原先完全没写** |
 | 3 | `internal/coordinator/flow_training.go:219` | 10 | ✅ Step 3 |
-| 4 | `internal/controller/import_processing.go:1015`（委托 `buildTrainingReport` 内） | 10 | ✅ Step 3 |
-| 5 | `internal/controller/import_processing.go:973`（`buildAndSaveTrainingReport` 内） | 11 | ✅ Step 4 |
+| 4 | `internal/controller/import_processing.go:1021`（委托 `buildTrainingReport` 内） | 10 | ✅ Step 3 |
+| 5 | `internal/controller/import_processing.go:979`（`buildAndSaveTrainingReport` 内） | 11 | ✅ Step 4 |
 | 6 | `internal/controller/import_processing_report_test.go:54`（**既有**用例） | 11 | ⚠️ 见 (AA) |
 
 第 2 条是**同一测试包**里的既有调用。不补 `nil` 则 `go test ./internal/runtime/` 编译失败，
@@ -3686,9 +3690,9 @@ state.RuntimeConfig = `{"commands":["env > envdump.txt"],"env":{"PYTHONPATH":"/p
 
 **(Z) Step 4 自称两处调用点，其中 `reportTrainingFailureFromResult` 并不是调用方。**
 
-`reportTrainingFailureFromResult`（`:913`）调用的是 `buildAndSaveTrainingReport`（`:917`），
+`reportTrainingFailureFromResult`（`:919`）调用的是 `buildAndSaveTrainingReport`（`:923`），
 **从不直接调用 `buildTrainingReport`**。这与本任务上方预审发现 1 的结论直接矛盾——发现写对了，
-正文没跟着改。已订正 Step 4，只留 `:973` 一处，并写明 `reportTrainingFailureFromResult` 一行不用改。
+正文没跟着改。已订正 Step 4，只留 `:979` 一处，并写明 `reportTrainingFailureFromResult` 一行不用改。
 
 **(AA) 发现 1 声称"已加入 Files"，但 Files 块里并没有那个文件，Step 4 也没给补 `nil` 的指令。**
 
@@ -3711,6 +3715,20 @@ os, path/filepath, sort, testing, time, taa/internal/codeaudit
 **因此 Step 6 不需要补任何 import，照原指令补会得到重复 import 的编译失败。**
 这与 Task 7 那条"`context` 早已 import、再加就重复导入"是同一型缺陷。结论要一般化：
 **本计划的预审结论会随后续 Task 落地而过期；凡"某文件缺某符号"的断言，实现者一律以工作区实测为准。**
+
+**(CC) 本节的 `import_processing.go` 行号已整体过期（2026-10-08 二次实测，Task 8/9 落地之后）。**
+
+本节表格里的 `:1015`/`:973` 与 (Z) 的 `:913`/`:917` 都测于本分支早期。此后 Task 9 在该文件插入了行，
+Task 8 又把 `reportAuditAsync` 的函数体抽成 `reportAuditScopedAsync`（见 `ce90307`）。当前实测：
+`buildAndSaveTrainingReport` 声明 `:962`、其内部真实调用 `:979`、委托函数 `buildTrainingReport`
+本体 `:1016-1022`（其内部委托调用行 `:1021`）、`reportTrainingFailureFromResult` `:919`
+（其调用 `buildAndSaveTrainingReport` 在 `:923`）。**六处调用点的参数个数不变**（真实调用 11 个、
+其余 10 个），已逐条复核；正文行号已就地订正。
+
+这是 (BB) 那条一般化结论的又一例：**预审里的行号会过期，实现者一律按符号名定位。**
+另核实：`runtime/report.go:42`/`:46`/`:86-88`、`handler_system.go:57-73`、`flow_training.go:219`、
+`internal/runtime/report_test.go:57`、`internal/controller/import_processing_report_test.go:54`
+六处**仍然逐字吻合**，无需改动。
 
 经核实为正确、记录在此以免被"顺手改坏"：
 
@@ -3815,21 +3833,21 @@ go test ./internal/runtime/ -run TestBuildTrainingReportIncludesDepsChecksum -v
 该执行路径没有依赖概念，因此传 `nil`——其结果是该路径的报告不含 `deps_checksum`，
 属于本计划内的已知遗留，已在文件头「已知遗留」一节记录。
 
-- `internal/controller/import_processing.go:1011` 的委托函数 `buildTrainingReport`
+- `internal/controller/import_processing.go:1021` 的委托函数 `buildTrainingReport`
   参数表同样插入 `depsChecksum map[string]any,` 并透传。
 
 - [ ] **Step 4: 训练路径传入真实 checksum**
 
 **只有一处真实调用点。** `internal/controller/import_processing.go` 的 `buildAndSaveTrainingReport`
-（函数声明在 `:956`，按符号名定位）内部 `:973` 的那次 `buildTrainingReport(...)` 调用，在
+（函数声明在 `:962`，按符号名定位）内部 `:979` 的那次 `buildTrainingReport(...)` 调用，在
 `dataChecksum` 之后插入 `s.getDepsChecksum()`：
 
 ```go
 	report, err := buildTrainingReport(taskID, startedAt, finishedAt, status, exitCode, failureReason, modelChecksum, dataChecksum, s.getDepsChecksum(), trainingResult, audit, includeAudit)
 ```
 
-> **不要把 `reportTrainingFailureFromResult` 算作调用方。** 它在 `:913`，调用的是
-> `buildAndSaveTrainingReport`（`:917`），**从不直接调用 `buildTrainingReport`**；它经由前者自动
+> **不要把 `reportTrainingFailureFromResult` 算作调用方。** 它在 `:919`，调用的是
+> `buildAndSaveTrainingReport`（`:923`），**从不直接调用 `buildTrainingReport`**；它经由前者自动
 > 获得依赖 checksum，本身一行都不用改。本步原写"`buildAndSaveTrainingReport` 与
 > `reportTrainingFailureFromResult` 两处"，与本任务上方预审发现 1 的结论**自相矛盾**，已订正。
 
@@ -4065,10 +4083,20 @@ git commit -m "docs(proto): mirror importDeps and reportDeps in the design proto
    **依赖导入的终态在 mock 上当前不可观测**——未知路径落到 `indexHandler` 返回 404，而
    `SendPlatformJSON` 只接受 200，于是 TAA 只记一条 WARN 就继续，`/api/dashboard/status` 与
    `/api/reportAudit/status` 都不显示任何东西。需要另开一份计划覆盖第 2 期与第 3 期。
-6. **`importDeps` 在默认配置下必然失败，这是设计而非缺陷**（fail-closed，Task 6 的桩拒绝一切）。
-   **不得**以回退该桩的方式"修复"。Task 8 落地真审计后此局面才解除。
+6. **`importDeps` 曾在默认配置下必然失败，那是设计而非缺陷**（fail-closed，Task 6 的桩拒绝一切）。
+   **不得**以回退该桩的方式"修复"——这条决定记录依然有效（`ae24045` 把它改成 fail-closed 是为了让
+   失败分支在 Task 6 期间可达）。Task 8（`6eb3268`）落地真审计后此局面**已解除**：现在依内容判定，
+   干净代码通过、命中规则才拒绝。
 7. **代码注释语言的仓库级清理**：`internal/platform/reporter.go` 等文件在本分支之前就有中文注释
    （Task 7 闭环记录里记了边界）。是否做一次性的全仓清理，留待收尾时决定，不要按任务零敲碎打。
+8. **`teellm` 子模块内有他人未提交的改动**（2026-10-08 16:17 实测）：顶层 `git status` 显示 ` M teellm`，
+   实为子模块内部的 `ollama_backend.go` 与 `ollama_backend_test.go` 被修改，而子模块 HEAD 未动
+   （仍钉在 `d067ac0`）。**不是本分支所为**：`git log master..HEAD -- teellm` 为空，本分支从未动过
+   它的 gitlink。与第 2 条同型——同一检出里有另一参与者正在工作。收尾时**不得**把它带进提交；
+   这也是"永远用显式 pathspec、禁用 `git add -A`"那条规矩的又一理由。
+9. **三个文件在本分支之前就未过 `gofmt`**：`internal/controller/attestation_format.go`、
+   `report_model_import_test.go`、`report_res_test.go`。已核实它们在 HEAD 上即未格式化，且本分支
+   从未改过它们（`git diff master --name-only` 为空）。属既有问题，不按任务零敲碎打地修。
 
 ---
 
