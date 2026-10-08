@@ -1778,6 +1778,16 @@ Task 6 的实现者按计划要求的「变异判别力」自证时，发现有�
 的插入略有漂移，**按符号名定位**）。Task 7 Step 5 **替换** `reportDepsAsync`、Task 8 Step 4
 **删除** `runDepsAudit`——两处都是替换/删除，**不是新增**，重复定义会直接编译失败。
 
+**zip-slip 守卫的精确位置（勘误，供 Task 8/文档沿用）**：守卫不在 `ExtractArchiveToDir` 里。
+`ExtractArchiveToDir`（`internal/resource/archive.go:41-69`）只是"解到兄弟临时目录 → `os.RemoveAll(dst)`
+→ `os.Rename`"的包装；真正的越界判定在 **`SafeJoinWithBase`（`archive.go:318`，判定在 `:332-334`）**，
+由两条解包路径调用（zip 在 `:209`、tar 在 `:260`），并在 `import_processing.go:953` 被再导出。
+本计划前文"防护在 `ExtractArchiveFile` 内完成"的措辞不准确——防护是**经由**它到达的，守卫本身在
+`SafeJoinWithBase`。这个区别有实操后果：**要判定 zip-slip 用例的判别力，变异点必须是
+`SafeJoinWithBase`，变异 `ExtractArchiveToDir` 打不到它**。另注：`SafeJoinWithBase` 本身已有
+直接单测（`internal/resource/archive_test.go:33`，覆盖 `../` 与绝对路径），Task 6 的用例覆盖的是
+**流水线对其的使用**，两者不重复。
+
 ---
 
 ## Task 6: 依赖流水线（幂等、安装、状态流转、上报）
