@@ -1426,11 +1426,13 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `phase` | `number` | 当前阶段：`1` 调试，`2` 测试，`3` 正式训练，`4` 推理 |
-| `phaseName` | `string` | 阶段名称 |
+| `phaseName` | `string` | 阶段名称：`调试`、`测试`、`正式训练`、`推理`；阶段值越界时为 `未知(<阶段值>)` |
 | `modelImported` | `bool` | 模型是否已导入 |
-| `dataImported` | `bool` | 数据是否已导入 |
-| `trainingDone` | `bool` | 训练是否已完成 |
-| `currentOp` | `string` | 当前操作状态：`idle`、`downloading`、`decrypting`、`training` 等 |
+| `trainingRunning` | `bool` | 训练是否正在执行 |
+| `currentOp` | `string` | 当前操作状态，取值见下方 |
+
+> **`currentOp` 取值**：`idle`（空闲）、`downloading`（下载资源）、`decrypting`（解密资源）、`analyzing`（分析中）、`deps_importing`（依赖导入占位）、`deps_installing`（离线安装依赖）、`staging`（训练前置）、`training`（训练执行）、`reporting`（结果上报）、`auditing`（模型代码审计进行中）。
+> 该字段用于观测，其取值集合会随版本增减，平台不应据此做分支判断。
 
 **成功响应示例**（200 OK）：
 
@@ -1441,8 +1443,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
     "phase": 1,
     "phaseName": "调试",
     "modelImported": false,
-    "dataImported": false,
-    "trainingDone": false,
+    "trainingRunning": false,
     "currentOp": "idle"
   },
   "error": 0
@@ -1452,7 +1453,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 **使用场景**：
 - 在调用其他接口前，先确认 TAA 服务是否正常运行
 - 检查 TAA 当前所处的阶段状态
-- 查看资源导入和训练完成状态
+- 查看模型导入状态与训练是否正在执行
 
 ### 5.2 查询 TAA 完整状态（/v1/taa/status）
 
@@ -1479,14 +1480,12 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `phase` | `number` | 当前阶段：`1` 调试，`2` 测试，`3` 正式训练，`4` 推理 |
-| `phaseName` | `string` | 阶段名称 |
+| `phaseName` | `string` | 阶段名称：`调试`、`测试`、`正式训练`、`推理`；阶段值越界时为 `未知(<阶段值>)` |
 | `modelImported` | `bool` | 模型是否已导入 |
-| `dataImported` | `bool` | 数据是否已导入 |
 | `depsImported` | `bool` | 当前是否有已安装并绑定的依赖集 |
 | `depsHash` | `string` | 当前生效依赖集的 SM3 哈希，无则为空串 |
-| `trainingDataImported` | `bool` | 训练数据是否已导入 |
-| `trainingDone` | `bool` | 训练是否已完成 |
-| `currentOp` | `string` | 当前操作状态 |
+| `trainingRunning` | `bool` | 训练是否正在执行 |
+| `currentOp` | `string` | 当前操作状态，取值同 [5.1](#51-连通性检查v1taahealth) |
 | `logCount` | `number` | 日志缓冲区中的日志数量 |
 
 > **语义边界**：`depsImported=true` 只表示"有一套依赖集已安装并绑定"，**不代表该依赖集通过了审计**。例如在关闭安全扫描（跳过依赖审计）的情况下导入的依赖集，该值为 `true`，但其依赖目录内并没有审计标记。依赖集是否已审计通过，以依赖目录内的标记文件为准。
@@ -1500,11 +1499,9 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
     "phase": 1,
     "phaseName": "调试",
     "modelImported": true,
-    "dataImported": false,
     "depsImported": false,
     "depsHash": "",
-    "trainingDataImported": false,
-    "trainingDone": false,
+    "trainingRunning": false,
     "currentOp": "idle",
     "logCount": 5
   },
