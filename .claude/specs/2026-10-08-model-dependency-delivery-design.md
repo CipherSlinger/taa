@@ -197,6 +197,22 @@ downloadToTempFile                    resource.DownloadToTempFile（沿用限流
 失败路径：`DepsImported=false`、`rm -rf depsDir/<sm3>`（不留半成品目录）、
 经 `reportDeps` 上报 `code=1`，并在审计失败时经 `reportAudit`（`scope=deps`）上报报告。
 
+> 订正记录（2026-10-08，编码前预审发现）：
+>
+> 1. **两个回调都必须发。** 初稿的措辞容易被读成"审计失败只发 `reportAudit`"。实际上
+>    `reportAudit`（`scope=deps`）承载的是**审计报告**，而 `reportDeps` 才是 `importDeps`
+>    这个任务的**终态**。只发前者，平台侧的 `importDeps` 任务将永远等不到 `code`，
+>    表现为挂起而非失败。实现上两者分工明确：审计回调在 `runDepsAudit` 内发，
+>    终态回调在 `processImportedDeps` 的失败分支发。计划初稿只落了前者，已补。
+> 2. **`DepsImported=false` 只适用于"首次导入失败"。** 本节与 §5「新依赖导入**成功**即覆盖
+>    `DepsHash`」存在张力：若此前已有一套**审计通过、正在生效**的依赖，而新下发的一套审计
+>    未通过，把状态位一并清掉会让 TAA 静默退化为"无依赖"，并在下一轮训练里以毫不相干的
+>    `ImportError` 暴露。正确语义是：旧绑定不动（§5 优先），只删失败者的目录。
+>    计划初稿在此处无条件 `clearDepsState()`，已改为"仅当失败集合正是当前绑定者才清位"。
+> 3. **临时 wheelhouse 的落盘位置。** §6 只说了解包到"临时 wheelhouse"，未指定父目录。
+>    落在系统临时目录会踩 §2.5 的磁盘约束（GB 级 wheelhouse 写入约 28G 的根分区）。
+>    实现改为父目录取 `depsDir` 根，仍满足"独立临时目录 + 以自身为 base 做 zip-slip 校验"。
+
 ## 7. 训练时生效
 
 在 `internal/runtime/executor.go` 的 `RunRuntimeConfigWithControl` 中注入：

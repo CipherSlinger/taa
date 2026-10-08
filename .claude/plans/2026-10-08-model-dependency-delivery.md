@@ -1533,6 +1533,30 @@ git commit -m "feat(deps): add importDeps handler and route"
 
 ---
 
+### Task 6/8 编码前预审发现（已直接改入正文，实现者无需再判断）
+
+在 Task 4 审查期间对 Task 6 的 `processImportedDeps` 做定点审查，发现 4 个缺陷，均已修正：
+
+| # | 级别 | 缺陷 | 修正 |
+| :--- | :--- | :--- | :--- |
+| A | 功能 | 审计失败路径只经 `runDepsAudit` 发 `reportAudit`（`scope=deps`），**从不发 `reportDeps`** ⇒ 平台侧 `importDeps` 任务永远收不到终态，表现为**挂起**而非失败。Task 6 的桩注释写「Task 8 补全上报」，但 Task 8 的改动范围不含 `auditAndReportDeps`，该上报从未被补上 | 失败分支增加 `s.reportDepsFailure(req, "依赖包审计未通过")`；桩注释改为明确的责任划分 |
+| B | 功能 | 失败分支**无条件** `clearDepsState()`，会把**已生效的旧依赖绑定**一并清掉，违反 spec §5「新依赖导入**成功**即覆盖 `DepsHash`」，使 TAA 静默退化为"无依赖"，在下一轮训练里以毫不相干的 `ImportError` 暴露 | 抽出 `rollbackDepsImport`：只删目录，**仅当** `currentDepsDir() == depsDir`（失败者正是当前绑定者）才清位 |
+| C | 测试 | `TestDepsAuditFailureRemovesDirAndClearsState` 名字里的 "ClearsState" **无任何断言**；且它测的是 `runDepsAudit`，而清位逻辑在 `processImportedDeps` | 重命名为 `TestRunDepsAuditRemovesDirOnFailure`；新增 `TestRollbackDepsImportKeepsAnUnrelatedBinding` 与 `TestRollbackDepsImportClearsTheBindingItOwns` 为 B 建立覆盖 |
+| D | 磁盘 | `os.MkdirTemp("", ...)` 把可能 GB 级的 wheelhouse 解到根分区（本项目实测根分区约 28G、镜像已占约 25G），会直接 ENOSPC | 父目录改为 `s.Security.GetDepsDir()`，即那个为依赖准备、容量匹配的卷 |
+
+**B 的可达性说明（决定测试怎么写）**：审计路径只在 `.taa_audit_ok` 缺失时才会到达，而绑定的建立
+顺序是 `writeAuditMarker` → `saveDepsSuccess`，因此"失败者恰好是当前绑定者"在常规流程下**不可达**；
+它只在"人工删掉某个已导入集合的审计标记、同一归档再次下发"时发生。
+`TestRollbackDepsImportClearsTheBindingItOwns` 覆盖的正是这条路径，不要因为它"看起来不可能"而删掉。
+
+**职责边界（Task 6 与 Task 8 的实现者共同遵守）**：目录的 fail-closed 删除由 `runDepsAudit` 在
+**每一条**返回 `false` 的路径上完成（三条：钩子判定失败、LLM 不可用、审计执行出错）；
+`rollbackDepsImport` 中的 `os.RemoveAll` 是幂等的二次保险，目的是不让流水线自己的不变式依赖
+别处的副作用。**审计报告**走 `reportAuditScopedAsync`（`scope=deps`），**任务终态**走 `reportDeps`
+——两者都要发，缺一即平台侧观测不完整。
+
+---
+
 ## Task 6: 依赖流水线（幂等、安装、状态流转、上报）
 
 **Files:**
@@ -1794,9 +1818,13 @@ func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphert
 
 	s.setCurrentOp("deps_installing")
 
-	// 解包到临时 wheelhouse：外层归档的解包需要 zip-slip 防护，因此不能直接写进
-	// 内容寻址目录；wheel 自身的展开交给 pip。
-	wheelhouse, err := os.MkdirTemp("", "taa-deps-wh-*")
+	// Unpack into a temporary wheelhouse: extracting the outer archive needs zip-slip
+	// protection against a base directory of its own, so it must not write into the
+	// content-addressed directory; expanding the wheels themselves is pip's job.
+	// The temp dir sits under the deps root rather than the system temp dir because a
+	// wheelhouse can be gigabytes and the container's root partition cannot hold it
+	// (spec 2.5); the deps root is the volume sized for exactly this.
+	wheelhouse, err := os.MkdirTemp(s.Security.GetDepsDir(), "taa-deps-wh-*")
 	if err != nil {
 		s.setCurrentOp("idle")
 		s.reportDepsFailure(req, fmt.Sprintf("创建临时依赖目录失败: %v", err))
@@ -1830,8 +1858,8 @@ func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphert
 	s.Logs.Add(LogInfo, "importDeps", "依赖包安装完成: %s", depsDir)
 
 	if !s.auditAndReportDeps(req, depsDir) {
-		_ = os.RemoveAll(depsDir)
-		s.clearDepsState()
+		s.rollbackDepsImport(depsDir)
+		s.reportDepsFailure(req, "依赖包审计未通过")
 		s.setCurrentOp("idle")
 		return
 	}
@@ -1861,7 +1889,14 @@ func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphert
 `dst` 的兄弟临时目录再 `os.Rename`（`internal/resource/archive.go:41-66`），路径穿越防护
 在 `ExtractArchiveFile` 内完成。因此 `wheelhouse` 必须是**独立的临时目录**，
 不能直接传内容寻址目录——否则外层归档里的 `../` 会以 `depsDir` 为 base 计算，
-保护范围与预期不符。这正是 Step 4 用 `os.MkdirTemp` 而非 `depsDir` 的原因。
+保护范围与预期不符。这正是 Step 4 用 `os.MkdirTemp` 而非内容寻址目录 `depsDir/<hash>` 的原因。
+
+**但临时目录的父目录要选对**：初稿写的是 `os.MkdirTemp("", "taa-deps-wh-*")`，即落在系统临时目录。
+本项目的实测约束是容器根分区约 28G、镜像已占约 25G（spec §2.5），而 torch 系 wheelhouse 动辄 GB 级——
+解包到根分区会直接 ENOSPC（若 `/tmp` 是 tmpfs 则更糟：吃内存）。改为
+`os.MkdirTemp(s.Security.GetDepsDir(), "taa-deps-wh-*")`：仍是**独立临时目录**（zip-slip 的 base 语义
+不变），但落在为依赖准备的那个卷上。前缀 `taa-deps-wh-` 不会与内容寻址目录的 hash 名混淆；
+进程崩溃时可能残留，属已知代价（自动清扫是 YAGNI，spec §14 已明确不做自动清理）。
 
 同文件新增三个小辅助：
 
@@ -1875,6 +1910,31 @@ func auditMarkerExists(depsDir string) bool {
 
 func writeAuditMarker(depsDir string) error {
 	return os.WriteFile(filepath.Join(depsDir, depsAuditMarker), []byte("audited\n"), 0o644)
+}
+
+// rollbackDepsImport discards the directory of a dependency set whose audit failed, and
+// clears the binding only when that very set is the one currently in effect.
+//
+// A rejected newcomer must not unseat a dependency set that is already working. The binding
+// is overwritten on success only (see saveDepsSuccess), so a failed import leaves the
+// previous set active and training keeps running on it; the alternative — clearing
+// unconditionally — would silently degrade a working configuration to "no dependencies"
+// and surface later as an unrelated ImportError during training.
+//
+// runDepsAudit also removes the directory on every path that returns false (deps_audit.go),
+// so the removal here is normally a no-op. It is kept so that this pipeline's own
+// "no half-built directory survives a failure" guarantee does not hinge on a side effect
+// of a function whose job is to audit.
+func (s *TAAState) rollbackDepsImport(depsDir string) {
+	_ = os.RemoveAll(depsDir)
+	// currentDepsDir() already encodes "imported && hash non-empty", and depsDirForHash
+	// builds its result the same way, so equality means this failed set is the bound one.
+	// (The marker is written before saveDepsSuccess, so normally the audit path is only
+	// reached for a set that is not yet bound; the guard also covers a re-import whose
+	// marker was deleted by hand.)
+	if s.currentDepsDir() == depsDir {
+		s.clearDepsState()
+	}
 }
 ```
 
@@ -1910,7 +1970,10 @@ func (s *TAAState) reportDepsAsync(requestID, taskID string, code int, msg strin
 `Security.ScanEnabled=false` 时短路放行：
 
 ```go
-// auditAndReportDeps 对安装后的依赖目录执行 fail-closed 审计（Task 8 补全上报与 scope）。
+// auditAndReportDeps runs the fail-closed audit over the installed dependency directory.
+// It reports the audit result itself, with scope "deps" (see deps_audit.go). The import
+// pipeline's own terminal reportDeps callback is NOT its job: that one belongs to
+// processImportedDeps, which must still fire code=1 when this returns false.
 func (s *TAAState) auditAndReportDeps(req depsImportRequest, depsDir string) bool {
 	if !s.Security.ScanEnabled {
 		s.Logs.Add(LogInfo, "audit", "安全扫描未启用，跳过依赖包审计")
@@ -2184,9 +2247,10 @@ git commit -m "feat(deps): report dependency import results and scoped audits"
 追加到 `internal/controller/deps_import_test.go`：
 
 ```go
-// TestDepsAuditFailureRemovesDirAndClearsState 验证 fail-closed：审计未通过时不留下
-// 任何依赖目录，且状态位被回滚。
-func TestDepsAuditFailureRemovesDirAndClearsState(t *testing.T) {
+// TestRunDepsAuditRemovesDirOnFailure pins the fail-closed cleanup: a rejected dependency
+// set must not survive on disk. It deliberately asserts nothing about state — the binding
+// is cleared by rollbackDepsImport, not by the audit, and is covered separately below.
+func TestRunDepsAuditRemovesDirOnFailure(t *testing.T) {
 	state, _ := setupTestState(t)
 	state.Security.ScanEnabled = true
 
@@ -2206,15 +2270,71 @@ func TestDepsAuditFailureRemovesDirAndClearsState(t *testing.T) {
 		t.Fatalf("deps dir still present after a failed audit: %v", err)
 	}
 }
+
+// rollbackDepsImport lives in deps_import.go (Task 6), but its failure branch is
+// unreachable there — Task 6's runDepsAudit stub always returns true — so the unit tests
+// for it land here, where a failing audit can actually be produced.
+
+func TestRollbackDepsImportKeepsAnUnrelatedBinding(t *testing.T) {
+	state, _ := setupTestState(t)
+	state.Security.DepsDir = t.TempDir()
+
+	// A dependency set that is already imported, audited and in effect.
+	prevDir := filepath.Join(state.Security.GetDepsDir(), "prevhash")
+	if err := os.MkdirAll(prevDir, 0o755); err != nil {
+		t.Fatalf("seed prev dir: %v", err)
+	}
+	state.saveDepsSuccess("prevhash", map[string]any{"size": int64(1), "algorithm": "sm3", "value": "prevhash"})
+
+	// A different set whose audit was rejected.
+	failedDir := filepath.Join(state.Security.GetDepsDir(), "failedhash")
+	if err := os.MkdirAll(failedDir, 0o755); err != nil {
+		t.Fatalf("seed failed dir: %v", err)
+	}
+	state.rollbackDepsImport(failedDir)
+
+	if !state.DepsImported || state.DepsHash != "prevhash" {
+		t.Fatalf("a rejected newcomer unseated the working binding: imported=%v hash=%q",
+			state.DepsImported, state.DepsHash)
+	}
+	if _, err := os.Stat(prevDir); err != nil {
+		t.Fatalf("the working deps dir was removed: %v", err)
+	}
+	if _, err := os.Stat(failedDir); !os.IsNotExist(err) {
+		t.Fatalf("the rejected deps dir survived the rollback: %v", err)
+	}
+}
+
+func TestRollbackDepsImportClearsTheBindingItOwns(t *testing.T) {
+	state, _ := setupTestState(t)
+	state.Security.DepsDir = t.TempDir()
+
+	ownDir := filepath.Join(state.Security.GetDepsDir(), "ownhash")
+	if err := os.MkdirAll(ownDir, 0o755); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	state.saveDepsSuccess("ownhash", map[string]any{"size": int64(1), "algorithm": "sm3", "value": "ownhash"})
+
+	// Rolling back the very set that is bound (reachable when a human deletes the audit
+	// marker of an imported set and the same archive is delivered again).
+	state.rollbackDepsImport(ownDir)
+
+	if state.DepsImported || state.DepsHash != "" {
+		t.Fatalf("binding survived the rollback of its own set: imported=%v hash=%q",
+			state.DepsImported, state.DepsHash)
+	}
+}
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
 
 ```bash
-go test ./internal/controller/ -run TestDepsAuditFailureRemovesDirAndClearsState -v
+go test ./internal/controller/ -run 'TestRunDepsAuditRemovesDirOnFailure|TestRollbackDepsImport' -v
 ```
 
-期望：编译失败 `depsAuditFunc undefined`。
+期望：编译失败 `depsAuditFunc undefined`。（两个 `TestRollbackDepsImport*` 用例此时应当**编译并通过**——
+它们只调用 Task 6 已实现的 `rollbackDepsImport`，不依赖 `depsAuditFunc`；整包因
+`TestRunDepsAuditRemovesDirOnFailure` 的编译错误而构建失败，属预期。）
 
 - [ ] **Step 3: 实现依赖审计**
 
@@ -2293,7 +2413,7 @@ func (s *TAAState) runDepsAudit(req depsImportRequest, depsDir string) bool {
 ```
 
 `depsAuditFunc` 只在单测中赋值，生产路径下为 `nil`，因此上面的判断在生产中恒不成立。
-它存在的唯一理由是让 `TestDepsAuditFailureRemovesDirAndClearsState` 能在不引入 Semgrep 与
+它存在的唯一理由是让 `TestRunDepsAuditRemovesDirOnFailure` 能在不引入 Semgrep 与
 LLM 依赖的前提下验证 fail-closed 的清除行为。
 
 **清理语义的差异（有意为之）**：模型审计失败时调用 `cleanDirContents(dir)`——只清空内容、
