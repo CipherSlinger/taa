@@ -89,7 +89,7 @@ func (s *TAAState) depsImportHandler(w http.ResponseWriter, r *http.Request) {
 //
 //	decrypt -> SM3 content addressing -> idempotency check -> unpack into a temporary wheelhouse
 //	-> package layout validation -> offline install into DEPS_DIR/<sm3> -> fail-closed audit
-//	-> write the audit marker -> set state -> report
+//	-> write the audit marker, but only when an audit ran -> set state -> report
 //
 // Every failure path rolls back: it clears the state and removes DEPS_DIR/<sm3>, never leaving
 // a half-built directory behind.

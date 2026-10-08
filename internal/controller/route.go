@@ -157,7 +157,7 @@ type TAAState struct {
 	LatestDataRecord      ImportIndexRecord        // 下发数据接口始终记录的最新数据索引
 	ModelChecksum         map[string]any           // 模型压缩包校验和 (size, algorithm, value)
 	DataChecksum          map[string]any           // 数据压缩包校验和 (size, algorithm, value)
-	DepsImported          bool                     // dependency package installed and audited
+	DepsImported          bool                     // the active dependency set is installed and bound; audit status is the directory's marker
 	DepsHash              string                   // SM3 content-address key of the active dependency package
 	DepsChecksum          map[string]any           // dependency package checksum (size, algorithm, value)
 	CurrentOp             string                   // Current operation: idle/downloading/decrypting/extracting/debugging/training/reporting
