@@ -3068,7 +3068,7 @@ git commit -m "feat(deps): expose deps checksum in training report and status"
 ## Task 11: 同步 `api/proto/taa.proto`（设计稿一致性）
 
 **Files:**
-- Modify: `api/proto/taa.proto:31-34`、`:56-59`、`:74-81`、`:224-231`
+- Modify: `api/proto/taa.proto:31-34`、`:56-59`、`:74-81`、`:225-232`
 
 spec §8 末条要求 proto 设计稿与实际 HTTP 接口保持一致。该文件**没有 gRPC 实现**
 （`cmd/` 下只有 `main.go`），因此本任务只改文档、不加代码、不加测试——它的价值是让
@@ -3118,7 +3118,7 @@ message ReportDepsResponse {
 
 - [ ] **Step 3: 补 `scope` 与状态位**
 
-`message ReportAuditRequest`（`:224-231`）末尾新增：
+`message ReportAuditRequest`（`:225-232`，计划初稿写 `:224-231`，实测差一行）末尾新增：
 
 ```proto
   string scope = 7; // "model"（缺省）| "deps"
