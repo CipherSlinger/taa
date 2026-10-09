@@ -6,7 +6,28 @@ let currentLogFilter = 'ALL';
 let currentSearchKeyword = '';
 let autoScrollLocked = true;
 
+// TAA log lines arrive pre-formatted by the daemon: the level lives inside the
+// text as "[YYYY-MM-DD HH:MM:SS] [LEVEL] [component] message", and /v1/taa/taaLog
+// carries no separate level field. This pattern recovers that token.
+const TAA_LOG_PREFIX = /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\s*\[(DEBUG|INFO|WARN|ERROR)\]/;
+
+// parseStructuredLevel returns the level the daemon stamped into the line, or
+// null when the line carries no such prefix.
+function parseStructuredLevel(msg) {
+  const m = TAA_LOG_PREFIX.exec(String(msg || ''));
+  return m ? m[1] : null;
+}
+
+// detectLogLevel resolves the severity of a log line.
+//
+// The daemon's own token is authoritative and is always preferred. Scanning the
+// text for keywords is only a fallback for lines that carry no token: it reads
+// the message body, not the level, so it reports the audit-start line
+// ("failClosed=true" contains "FAIL") as an error and the export line
+// ("warnings=" contains "WARN") as a warning.
 function detectLogLevel(msg) {
+  const structured = parseStructuredLevel(msg);
+  if (structured) return structured;
   if (!msg) return 'INFO';
   const upper = String(msg).toUpperCase();
   if (upper.includes('ERROR') || upper.includes('FATAL') || upper.includes('PANIC') || upper.includes('FAIL')) {
