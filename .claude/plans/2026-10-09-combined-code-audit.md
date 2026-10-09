@@ -326,6 +326,42 @@ TriggerClean = !implicated
 Task 7 因此只剩：**新增测试 1~6、验收判据 1~7、变异证明、全包复验**。下表的处置列留作
 核对清单——Task 7 要逐条确认 Task 5 的改法与其一致，不一致就修。
 
+**Task 5 交付后的实测复核（2026-10-09，Task 7 因此进一步收窄）：** 已完成覆盖不重复做。
+逐条核过 `combined_audit_test.go`（733 行）与 Task 4 的两条新测试后，确认下列判据**已有测试钉住**：
+
+| 判据 | 已覆盖它的测试 | 层次 |
+|---|---|---|
+| 触发方干净/另一侧脏（两个方向） | `TestCombinedAuditTriggerCleanTruthTable` 的两行 | 执行器 |
+| **截断时可见 findings 全在另一侧仍判触发方被牵连** | 同表 `truncated scan whose visible findings are all on the other side` | 执行器 |
+| scope 取值 + `roots` 投影 + 单次上报 + `LastAudit` + 审计态清空 | `TestCombinedAuditReportsOnceWithScopeAndRoots`（两个触发方向） | 执行器 |
+| `ScanEnabled=false` 短路：不上报、不清除、`TriggerClean=true` | `TestCombinedAuditScanDisabledShortCircuits` | 执行器 |
+| 依赖触发审计**候选目录**而非已绑定目录 | `TestCombinedAuditDepsTriggerAuditsTheCandidateNotTheBinding` | 执行器 |
+| 模型触发 + 依赖侧脏 → 模型文件留存、`code=1`、依赖根是出问题那个 | `TestAuditAndReportModelImportClearsOnlyTheTriggeringSide`（Task 4） | 模型侧端到端 |
+| `code=2` → 模型被清 | `TestAuditAndReportModelImportExecutionFailureClearsTheModel`（Task 4） | 模型侧端到端 |
+| 依赖侧 findings → 回滚 + `reportDeps code=1` + 目录消失 | `TestProcessImportedDepsReportsFailureCodeToPlatform`（既有） | 依赖侧端到端 |
+
+**因此 Task 7 的真正缺口只有四条**，全部在**依赖触发的端到端**这一侧（执行器层已很完整，
+缺的是「经过 `processImportedDeps` + 平台回调」这一层的对称验证）：
+
+1. **依赖触发、模型侧脏** —— 本次改动最核心的新语义，**目前没有任何测试**：`reportAudit`
+   `code=1`/`scope="deps"` 且 `roots` 指向模型根、`reportDeps` **`code=0`**、`DepsImported=true`
+   且绑定更新到新集合、**模型目录与依赖目录都原封不动**。
+2. **依赖触发、依赖侧脏** —— 与 1 对称：`reportDeps code=1`、依赖目录被删、**模型目录原样**。
+   既有的 `ReportsFailureCodeToPlatform` 只断言了依赖侧的回滚与 `reportDeps code=1`，
+   没断言「模型目录未被触碰」，也没断言 `reportAudit` 的那条回调是 `code=1`/`scope="deps"`。
+3. **模型侧 findings 全在依赖侧时训练不被中止** —— `startModelAuditAsync` 的
+   `if !TriggerClean { clearImportedState; stopActiveTraining }` 分支**无任何测试直达**
+   （全仓 `grep startModelAuditAsync\|stopActiveTraining` 在 `*_test.go` 里零命中）。
+   需要顺 `TestPhase1ModelAuditFailureAbortsTraining`（`import_flow_new_test.go:155`）那条路径
+   找到可达层次，补一条反向断言。
+4. **训练报告的 `codeaudit` 一节来自合并审计** —— `LastAudit` 被写入已有断言，但它到
+   `BuildTrainingReport`（`internal/runtime/report.go:105-106`）的连接需要一条端到端断言；
+   若 `import_processing_report_test.go` 已有等价覆盖，则只需在报告里登记"已覆盖"并指出是哪条。
+
+判据 1/2/5/7（下发模型 → 一次 `scope=""` 上报；再下发干净依赖 → 一次 `scope="deps"` 且两个根
+都 passed；依赖侧脏 → 依赖目录被删而模型原样；`ScanEnabled=false` 不留任何标记）**均已覆盖**，
+Task 7 只需在自己的报告里给出「判据 → 测试名」的映射，不要重写。
+
 **需要改写或删除的既有测试（已点名）：**
 
 | 测试 | 位置 | 处置 |
