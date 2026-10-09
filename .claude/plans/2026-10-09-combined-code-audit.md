@@ -283,6 +283,9 @@ TriggerClean = !implicated
   真实（合并审计总是包含模型根，只要模型生效），只有在「先下发依赖、模型尚未导入」时才不准。
   不改，但**不能**据此认为 §3.6 的 scope 语义与这条冲突——scope 说的是触发源，
   这条说的是占用中的审计槽叫什么，两者不矛盾。
+- **`internal/controller/concurrency_test.go:377` / `:393`** 断言 409 文案里含
+  `模型代码审计正在执行中`。它是 `route.go:652` 的镜像，**随那条文案一起保持不动**。
+  Task 5 只改 `route.go` 的注释，**不得**触碰这个字符串，否则这两条测试会红。
 
 ---
 
@@ -305,6 +308,15 @@ TriggerClean = !implicated
 - `:272` `ReportAudit` 的文档注释原文：「ReportAudit reports **the model code audit** result to the platform.」——改为「a combined audit triggered by a model delivery」。
 
 **只改注释，不改行为**。两个函数的签名与 `scope` 取值一律不动：`TestReportAuditScopedCarriesScope` / `TestReportAuditOmitsScopeWhenUnscoped`（`reporter_test.go:36` / `:60`）钉的是线上取值，那两处**必须保持不动**，Task 7 的表格里已登记。改完后跑 `go test ./internal/platform/... -count=1` 与 `go test ./tools/platform-mock/internal/... -count=1` 一起（同属 Task 6b 的测试窗口）。
+
+**`docs/state-persistence-and-self-healing.md:306-311` 的规约 10 已被本次改动证伪（2026-10-09 补查，原计划漏点）。** 原文的触发条件是「当 `auditAndReportModelImport` 检测到源码存在高危风险（`audit.Conclusion.Passed == false`）或在 `failClosed=true` 下 LLM 服务不可用时 → 立即物理清空 `<modelDir>`」。改动后这个条件**两头都不对**：
+
+- 模型触发、但 findings 全在依赖侧 → `Passed == false` 却**不清空**（依赖侧被牵连，模型侧干净）；
+- 依赖触发、findings 全在模型侧 → 报告 `code=1`，但**模型目录原样保留**，训练照旧可用。
+
+必须改写为「触发方为模型**且模型侧被牵连**时清空并中止」，并显式写明依赖触发不产生跨侧清除（这是本次唯一一处安全姿态放宽，spec 里已登记，文档必须同步，否则下一个人会按规约 10 去"修好"这个"回归"）。**该文件只改规约 10 这一段**；`:60-76` 的 `PersistentState` 结构体陈旧是既有的独立问题，不在本次范围。
+
+**platform-mock 的断言不必改**（已核 `server_test.go:2754-2757`）：它只断言 `strings.Contains(body, "scope 仅支持 deps")`，即**前缀**，不含括号里的解释文字，所以改文案不会让它变红。要改的是它上方 `:2745` / `:2750` 两处把空 scope 解释成 "model-code audit" 的**注释**。**不要**为了"钉住新文案"把断言收紧成整串匹配——那会让一条安全的断言变成措辞脆性，且它现在仍具判别力（`"model"` 这种非法取值照样 400）。
 
 ---
 
