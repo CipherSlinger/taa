@@ -162,7 +162,7 @@ func (s *TAAState) runCombinedAudit(req codeAuditRequest, triggerDir string) com
 - 三条 `cleanDirContents(s.Security.ModelDir)`（`:631`、`:641`、`:654`）收窄为**只在触发方被牵连时**执行。`code=2` 两条路径仍是触发方被牵连，照旧清。
 - `s.setLastAudit(audit)` 从「每次审计完成都写」改为**写入合并审计的报告**（两条触发路径都写，理由见下）。
 - `startModelAuditAsync` 的 `if !passed { clearImportedState; stopActiveTraining }` 现在按 `TriggerClean` 决策——findings 全在依赖侧时不再清模型、不再停训练。
-- **`LastAudit` 语义变化（需在代码注释里写明）：** `route.go:155` 与 `deps_audit.go:15-18` 现在都断言「`LastAudit` 只装模型审计结论，依赖审计不得覆盖」。改动后合并审计**永远包含模型根**（只要模型生效），因此两条触发路径都写 `LastAudit` 才是正确的。这会改变训练报告里 `codeaudit` 一节的内容，需要一条测试钉住。
+- **`LastAudit` 语义变化（需在代码注释里写明）：** `route.go:155`、`deps_audit.go:15-18` **与 `import_processing.go:727-728`** 三处都断言「`LastAudit` 只装模型审计结论，依赖审计不得覆盖」或「空 scope = 模型代码审计，`deps` = 依赖包审计」。第三处是 2026-10-09 补查出来的（原计划漏点），原文为「An empty scope means the model code audit; "deps" means the dependency package audit」——改动后 scope 表示**触发源**而非审计对象，三处**全部为假**，必须一起改写。改动后合并审计**永远包含模型根**（只要模型生效），因此两条触发路径都写 `LastAudit` 才是正确的。这会改变训练报告里 `codeaudit` 一节的内容，需要一条测试钉住。
 
 ---
 
@@ -261,7 +261,8 @@ go test ./tools/platform-mock/internal/... -count=1
 
 - 并发 subagent 上限 2，禁止嵌套。Task 1+2（`internal/codeaudit/**`）与 Task 6a（`docs/api-design.md`）文件足迹不相交且只有前者跑测试，可并行。Task 3/4/5 都改 `internal/controller/**`，**必须串行**。Task 7 单独一段跑测试。
 - **任何两个会执行 `go test` 的 agent 不得并发。** 因此 Task 6 拆两半：**6a** 只改 `docs/api-design.md`（不跑测试，可与 Task 1+2 并行）；**6b** 改 platform-mock 的 `scope` 拒绝文案与其测试（跑 `go test ./tools/platform-mock/...`，必须单独占一个测试窗口）。
-- **投影层是本次的一处隐藏依赖面**（2026-10-09 补）：`report` 字段不是整份 `AuditReport`，而是两份**各自重复实现**的投影——`projectCodeAuditSection`（`internal/controller/codeaudit_projection.go:21`）与 `projectAuditToMap`（`internal/coordinator/flow_training.go:286`），两者都只挑 `conclusion` 与 `file_reports`。分根结论若只挂在 `AuditTarget` 下就**到不了平台**，§3.3 的 `code=1` 消歧随之落空。**两份都要扩为 `{conclusion, file_reports, roots}`**：controller 那份随 Task 3，coordinator 那份随 Task 4（它喂训练报告的 `codeaudit` 段）。两份的重复本身是既有事实，不在本次收拾。
+- **投影层是本次的一处隐藏依赖面**（2026-10-09 补）：`report` 字段不是整份 `AuditReport`，而是 `projectCodeAuditSection`（`internal/controller/codeaudit_projection.go:21`）的**投影**，它只挑 `conclusion` 与 `file_reports`。分根结论若只挂在 `AuditTarget` 下就**到不了平台**，§3.3 的 `code=1` 消歧随之落空。该投影要扩为 `{conclusion, file_reports, roots}`，**一处覆盖两条消费方**：它同时喂 `reportAudit` 的 `report`（via `auditReportJSON`）与训练报告的 `codeaudit` 段（`import_processing.go:1019` → `internal/runtime/report.go:106`）。随 Task 3。
+- **`internal/coordinator` 是死代码，一律不碰**（2026-10-09 实测）：模块名 `taa`，`cmd/taa/main.go` 只 import `taa/internal/app/taa`，全仓 `grep -rn 'taa/internal/coordinator'` **零命中**。该包内含一套**平行的**模型导入+审计实现（`flow_model.go:87-115`：单根 `GenerateAuditReport`、失败 `os.RemoveAll(ModelDir)`、无 scope 的 `ReportAudit`、整份 `json.Marshal` 上线），以及 `projectAuditToMap`（`flow_training.go:286`）——`projectCodeAuditSection` 的逐字副本。它靠自己的测试维持全绿，**看起来像活的**。原计划「coordinator 那份投影随 Task 4」作废：改死代码是纯维护负担，且「两份拷贝保持一致」不是本次的目标。已记入记忆 `coordinator-package-is-dead-code`。
 - 本检出与其它参与者共享：`tools/csv2-vm/csv2-vm.sh` 与 `teellm/`（子模块）一律不碰；`git add` 只用显式路径，禁止 `git add .` / `-A` / `-u`。
 - 提交信息用英文、Conventional Commits，**不得出现任何 AI 署名**。
 
@@ -271,5 +272,5 @@ go test ./tools/platform-mock/internal/... -count=1
 
 1. **CPG 与另一个参与者的 `feat(cpg)` 未合并分支冲突。** `internal/codeaudit/cpg*` 是他们的在制品。缓解：Task 2 选改动面最小的方案；开工前用 `git reflog show <branch>` 与 `ps -eo pid,lstart,etimes,cmd | grep claude` 复查对方是否仍在写。
 2. **合并扫描抬高截断/超时概率，而截断在 fail-closed 下等于整体拒收。** 阈值按用户决定不动，因此这是既定代价；但必须有一条测试证明「单根超限仍能被 `Truncated` 正确标记」，避免把新增的多根路径做成静默吞掉截断。
-3. **`LastAudit` 语义变化会改变训练报告里 `codeaudit` 一节的内容。** 这是有意的（合并审计永远包含模型根），但 `deps_audit.go:15-18` 与 `route.go:155` 的注释都还写着相反的话，必须同步改写，否则下一个人会按旧注释判断。
+3. **`LastAudit` 语义变化会改变训练报告里 `codeaudit` 一节的内容。** 这是有意的（合并审计永远包含模型根），但有**三处**注释（`deps_audit.go:15-18`、`route.go:155`、`import_processing.go:727-728`）还写着相反的话，必须同步改写，否则下一个人会按旧注释判断。
 4. **模型侧问题不再阻止训练**（见「不变量」第 1 条）。这是「不跨侧清除」的既定后果，但它是本次改动里唯一一处**安全姿态实际放宽**的地方，需要在 spec 里显式登记，供日后决定是否补一个显式闸门。
