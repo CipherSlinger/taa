@@ -9,7 +9,6 @@ import (
 const (
 	reportModelImportEndpoint = platform.ReportModelImportEndpoint
 	reportAuditEndpoint       = platform.ReportAuditEndpoint
-	reportDepsEndpoint        = platform.ReportDepsEndpoint
 	reportResEndpoint         = platform.ReportResEndpoint
 )
 
@@ -31,17 +30,6 @@ func ReportRes(ctx context.Context, platformAddr, dockerID, requestID, taskID st
 // ReportModelImport notifies the platform of the model import and archive checksum result.
 func ReportModelImport(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg string, checksum ...map[string]any) error {
 	return platform.ReportModelImport(ctx, platformAddr, dockerID, requestID, taskID, code, msg, checksum...)
-}
-
-// ReportDeps notifies the platform of the dependency package import result.
-func ReportDeps(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg string, checksum ...map[string]any) error {
-	return platform.ReportDeps(ctx, platformAddr, dockerID, requestID, taskID, code, msg, checksum...)
-}
-
-// ReportAuditScoped notifies the platform of an audit result with a scope ("deps" marks a
-// dependency audit).
-func ReportAuditScoped(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report, scope string) error {
-	return platform.ReportAuditScoped(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report, scope)
 }
 
 // ReportAudit notifies the platform of the code security audit result.

@@ -54,7 +54,7 @@ func TestBuildTrainingReport(t *testing.T) {
 		"decision": "APPROVED",
 	}
 
-	report, err := BuildTrainingReport("task-001", startedAt, finishedAt, "succeeded", 0, "", modelChecksum, dataChecksum, nil, trainingResult, codeauditSection)
+	report, err := BuildTrainingReport("task-001", startedAt, finishedAt, "succeeded", 0, "", modelChecksum, dataChecksum, trainingResult, codeauditSection)
 	if err != nil {
 		t.Fatalf("BuildTrainingReport failed: %v", err)
 	}
@@ -75,11 +75,6 @@ func TestBuildTrainingReport(t *testing.T) {
 	}
 	if trainingTask["status"] != "succeeded" || trainingTask["exit_code"] != 0 {
 		t.Fatalf("unexpected status/exit_code: %v, %v", trainingTask["status"], trainingTask["exit_code"])
-	}
-	// This call passes nil for the dependency checksum, and the report for a session that never
-	// imported dependencies must not grow a deps_checksum key at all.
-	if _, exists := trainingTask["deps_checksum"]; exists {
-		t.Fatal("deps_checksum must be absent when no deps are imported")
 	}
 
 	metrics, ok := trainingTask["metrics"].(map[string]any)
@@ -128,58 +123,5 @@ func TestBuildCrashFailureReport(t *testing.T) {
 	dataChecksum := dataset["checksum"].(map[string]any)
 	if dataChecksum["value"] != "N/A" {
 		t.Fatalf("expected N/A for default dataChecksum, got %v", dataChecksum)
-	}
-}
-
-func TestBuildTrainingReportIncludesDepsChecksum(t *testing.T) {
-	startedAt := time.Date(2026, 10, 8, 1, 0, 0, 0, time.UTC)
-	finishedAt := startedAt.Add(3 * time.Minute)
-
-	depsChecksum := map[string]any{"size": int64(42), "algorithm": "sm3", "value": "deps-hash"}
-
-	report, err := BuildTrainingReport("task-deps", startedAt, finishedAt, "succeeded", 0, "",
-		nil, nil, depsChecksum, nil, nil)
-	if err != nil {
-		t.Fatalf("BuildTrainingReport: %v", err)
-	}
-
-	task, ok := report["training_task"].(map[string]any)
-	if !ok {
-		t.Fatalf("training_task missing: %#v", report)
-	}
-	got, ok := task["deps_checksum"].(map[string]any)
-	if !ok {
-		t.Fatalf("deps_checksum missing or not an object: %#v", task["deps_checksum"])
-	}
-	// Compare the value, not just its presence: a hardcoded placeholder or the wrong map would
-	// still satisfy an existence check while delivering nothing useful to the platform.
-	if got["value"] != "deps-hash" {
-		t.Fatalf("deps_checksum.value = %v, want deps-hash", got["value"])
-	}
-	if got["algorithm"] != "sm3" {
-		t.Fatalf("deps_checksum.algorithm = %v, want sm3", got["algorithm"])
-	}
-}
-
-// TestBuildTrainingReportOmitsEmptyDepsChecksum covers the shape the dependency state actually has
-// on a cold start: a freshly initialized state holds a non-nil but empty checksum map. Checking
-// only for nil would let that empty map through as "deps_checksum": {}, which a session that never
-// imported dependencies must never report.
-func TestBuildTrainingReportOmitsEmptyDepsChecksum(t *testing.T) {
-	startedAt := time.Date(2026, 10, 8, 1, 0, 0, 0, time.UTC)
-	finishedAt := startedAt.Add(time.Minute)
-
-	report, err := BuildTrainingReport("task-cold", startedAt, finishedAt, "succeeded", 0, "",
-		nil, nil, map[string]any{}, nil, nil)
-	if err != nil {
-		t.Fatalf("BuildTrainingReport: %v", err)
-	}
-
-	task, ok := report["training_task"].(map[string]any)
-	if !ok {
-		t.Fatalf("training_task missing: %#v", report)
-	}
-	if got, exists := task["deps_checksum"]; exists {
-		t.Fatalf("deps_checksum must be absent for an empty checksum map, got %#v", got)
 	}
 }

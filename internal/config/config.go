@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -34,13 +33,8 @@ type StartupConfig struct {
 	// deadline into a failed scan, which the audit fails closed on. Zero means
 	// the adapter's own default (codeaudit.DefaultSemgrepTimeout), which is where
 	// the enforced number lives; a negative value is rejected at load time.
-	SemgrepTimeout time.Duration
-	ModelDir       string
-	// DepsDir is the content-addressed root for imported offline Python
-	// dependencies. It is a sibling of ModelDir, never a child: a model import
-	// replaces ModelDir wholesale, so anything stored inside it would be
-	// destroyed by the next delivery.
-	DepsDir                    string
+	SemgrepTimeout             time.Duration
+	ModelDir                   string
 	EnableResultCheck          bool
 	MaxFileBytes               int64
 	MaxResultBytes             int64
@@ -127,7 +121,6 @@ type startupStorageConfigFile struct {
 	Result    string `json:"result"`
 	Keys      string `json:"keys"`
 	ModelDir  string `json:"modelDir"`
-	DepsDir   string `json:"depsDir"`
 	DataDir   string `json:"dataDir"`
 	ResultDir string `json:"resultDir"`
 	KeysDir   string `json:"keysDir"`
@@ -247,9 +240,6 @@ func validateStartupConfig(cfg StartupConfig) error {
 	if err := validateSemgrepTimeout(cfg); err != nil {
 		return err
 	}
-	if err := validateDepsDirPlacement(cfg.ModelDir, cfg.DepsDir); err != nil {
-		return err
-	}
 	if err := validateLLMTemperature(cfg); err != nil {
 		return err
 	}
@@ -292,38 +282,6 @@ func validateSemgrepTimeout(cfg StartupConfig) error {
 	return nil
 }
 
-// validateDepsDirPlacement rejects a depsDir nested inside modelDir.
-//
-// The dependency design rests on these two directories being siblings: a model import
-// replaces modelDir wholesale (resource.ExtractArchiveToDir does RemoveAll + rename), the
-// model audit scans the whole of modelDir, and a failed audit wipes it via cleanDirContents.
-// A depsDir nested inside modelDir would therefore be destroyed by the next model delivery
-// and would perturb the model's content checksum in the meantime. Because that failure only
-// surfaces on the next delivery, it is rejected at startup instead.
-func validateDepsDirPlacement(modelDir, depsDir string) error {
-	if strings.TrimSpace(modelDir) == "" || strings.TrimSpace(depsDir) == "" {
-		return nil
-	}
-	modelAbs, err := filepath.Abs(modelDir)
-	if err != nil {
-		return nil // an unresolvable modelDir is reported by the directory checks
-	}
-	depsAbs, err := filepath.Abs(depsDir)
-	if err != nil {
-		return nil
-	}
-	rel, err := filepath.Rel(modelAbs, depsAbs)
-	if err != nil {
-		return nil
-	}
-	// filepath.Rel yields "." for identical paths and a ".."-prefixed path when depsDir
-	// lies outside modelDir; any other result means depsDir is nested inside modelDir.
-	if rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
-		return fmt.Errorf("storage.depsDir (%s) must not be inside storage.modelDir (%s): a model import replaces that directory wholesale and would destroy the installed dependencies", depsAbs, modelAbs)
-	}
-	return nil
-}
-
 func validateCodeScanEngine(cfg StartupConfig) error {
 	for _, engine := range staticEngines {
 		if cfg.CodeScanEngine == engine {
@@ -362,7 +320,6 @@ func defaultStartupConfig() StartupConfig {
 		EnableSecurityScan:         true,
 		CodeScanEngine:             "semgrep",
 		ModelDir:                   "/opt/taa/models",
-		DepsDir:                    "/opt/taa/model-deps",
 		EnableResultCheck:          true,
 		MaxFileBytes:               DefaultMaxFileBytes,
 		MaxResultBytes:             DefaultMaxResultBytes,
@@ -458,10 +415,6 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if trimmed := strings.TrimSpace(fileCfg.Storage.Model); trimmed != "" {
 		cfg.ModelDir = trimmed
-	}
-
-	if trimmed := strings.TrimSpace(fileCfg.Storage.DepsDir); trimmed != "" {
-		cfg.DepsDir = trimmed
 	}
 
 	if fileCfg.EnableResultCheck != nil {

@@ -22,8 +22,8 @@ const (
 //
 // Two implementations are expected: regexEngine, wrapping the existing Scanner,
 // and a Semgrep CLI adapter. Callers must not depend on anything beyond these
-// methods — in particular, nothing may type-assert back to *Scanner, or the
-// abstraction stops being a boundary.
+// three methods — in particular, nothing may type-assert back to *Scanner, or
+// the abstraction stops being a boundary.
 type StaticEngine interface {
 	// ScanDirectory walks dir and returns a report whose Passed field is keyed
 	// on the static severities alone.
@@ -32,21 +32,6 @@ type StaticEngine interface {
 	// ScanDirectoryWithLines is ScanDirectory plus a per-file line count, which
 	// the file-level LLM prompt needs.
 	ScanDirectoryWithLines(dir string) (*Report, map[string]int, error)
-
-	// ScanDirectoriesWithLines is ScanDirectoryWithLines for a scan whose input
-	// is more than one root. The roots are walked in the order given and one
-	// report is assembled from all of them: the first root is the primary root
-	// and is what ScannedDir and the audit target name.
-	//
-	// It is a method of its own rather than a variadic form of
-	// ScanDirectoryWithLines because a variadic parameter has to be last, and
-	// callers pass the engine and configuration after the directories. It is
-	// not an optional interface reached by a type assertion either: an assertion
-	// that failed would need a fallback, and the only fallback available is to
-	// scan the first root alone — silently degrading a multi-root scan to a
-	// single-root one with no trace in the report, which is the exact failure
-	// mode this package's completeness fields exist to prevent.
-	ScanDirectoriesWithLines(dirs []string) (*Report, map[string]int, error)
 
 	// Name reports the engine identity, for Report.Engine.
 	Name() string
@@ -73,13 +58,6 @@ func (e regexEngine) ScanDirectory(dir string) (*Report, error) {
 // identity onto the result.
 func (e regexEngine) ScanDirectoryWithLines(dir string) (*Report, map[string]int, error) {
 	report, lineCounts, err := e.scanner.ScanDirectoryWithLines(dir)
-	return e.stamp(report), lineCounts, err
-}
-
-// ScanDirectoriesWithLines delegates to the wrapped scanner and stamps the
-// engine identity onto the merged result.
-func (e regexEngine) ScanDirectoriesWithLines(dirs []string) (*Report, map[string]int, error) {
-	report, lineCounts, err := e.scanner.ScanDirectoriesWithLines(dirs)
 	return e.stamp(report), lineCounts, err
 }
 

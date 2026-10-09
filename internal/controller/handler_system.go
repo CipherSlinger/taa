@@ -58,8 +58,6 @@ func (s *TAAState) statusHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	phase := s.CurrentPhase
 	modelImported := s.ModelImported
-	depsImported := s.DepsImported
-	depsHash := s.DepsHash
 	trainingRunning := s.TrainingRunning
 	currentOp := s.effectiveOpLocked()
 	s.mu.RUnlock()
@@ -68,8 +66,6 @@ func (s *TAAState) statusHandler(w http.ResponseWriter, r *http.Request) {
 		"phase":           phase,
 		"phaseName":       phaseName(phase),
 		"modelImported":   modelImported,
-		"depsImported":    depsImported,
-		"depsHash":        depsHash,
 		"trainingRunning": trainingRunning,
 		"currentOp":       currentOp,
 		"logCount":        s.Logs.Count(),

@@ -34,7 +34,6 @@ type SecurityConfig struct {
 	ScanEnabled        bool                   // 是否在 import type=1 时执行源码安全扫描
 	Engine             codeaudit.StaticEngine // Tier 1 静态扫描引擎（启动时由 codeScanEngine 配置解析）
 	ModelDir           string                 // 模型代码存放目录（扫描目标，type=1）
-	DepsDir            string                 // Content-addressed root for imported dependency packages (default /opt/taa/model-deps)
 	DataDir            string                 // 数据目录（type=2 测试数据，type=3 训练数据，用于数据指纹比对）
 	ResultCheck        bool                   // 是否在 export 时检查明文数据泄露
 	ResultDir          string                 // 训练结果目录（导出前检查）
@@ -54,7 +53,6 @@ const (
 	DefaultModelLogDir        = "/opt/taa/output/log/train.jsonl"
 	DefaultModelProgressDir   = "/opt/taa/output/progress/progress.json"
 	DefaultModelCheckpointDir = "/opt/taa/checkpoint"
-	DefaultDepsDir            = "/opt/taa/model-deps"
 )
 
 func (sec SecurityConfig) GetMaxFileBytes() int64 {
@@ -122,17 +120,6 @@ func (sec SecurityConfig) GetModelCheckpointDir() string {
 	return filepath.Clean(dir)
 }
 
-func (sec SecurityConfig) GetDepsDir() string {
-	dir := DefaultDepsDir
-	if strings.TrimSpace(sec.DepsDir) != "" {
-		dir = sec.DepsDir
-	}
-	if abs, err := filepath.Abs(dir); err == nil {
-		return filepath.Clean(abs)
-	}
-	return filepath.Clean(dir)
-}
-
 type TAAState struct {
 	mu                    sync.RWMutex
 	attestMu              sync.Mutex
@@ -152,21 +139,18 @@ type TAAState struct {
 	RuntimeConfig         string                   // importModel 保存的运行配置，训练时按该配置执行命令
 	Security              SecurityConfig           // immutable after startup — no mutex needed
 	Logs                  *LogStore                // 结构化日志存储
-	LastAudit             *codeaudit.AuditReport   // latest combined audit report, from whichever side triggered it; formatted into the training report
+	LastAudit             *codeaudit.AuditReport   // 最近一次模型代码审计结果，用于训练报告输出
 	CurrentDataRecord     ImportIndexRecord        // 当前绑定的数据导入记录
 	LatestDataRecord      ImportIndexRecord        // 下发数据接口始终记录的最新数据索引
 	ModelChecksum         map[string]any           // 模型压缩包校验和 (size, algorithm, value)
 	DataChecksum          map[string]any           // 数据压缩包校验和 (size, algorithm, value)
-	DepsImported          bool                     // the active dependency set is installed and bound; the audit status comes from the last combined audit, not from any on-disk marker
-	DepsHash              string                   // SM3 content-address key of the active dependency package
-	DepsChecksum          map[string]any           // dependency package checksum (size, algorithm, value)
 	CurrentOp             string                   // Current operation: idle/downloading/decrypting/extracting/debugging/training/reporting
 	ActiveTaskID          string                   // Current active task ID for data/model transfer and training
 	ActiveRequestID       string                   // Current active request ID
 	activeToken           int64                    // Current active token
 	activeTask            *ActiveTaskSnapshot      // Snapshot of currently active task
 	CurrentAuditOp        string                   // Current audit operation: idle/auditing
-	AuditRunning          bool                     // Whether a code audit (combined, either trigger) is actively running
+	AuditRunning          bool                     // Whether model code audit is actively running
 	ActiveAuditTaskID     string                   // Current active audit task ID
 	ActiveAuditRequestID  string                   // Current active audit request ID
 	trainingControl       *trainingControl         // 当前训练任务的中止控制对象
@@ -249,16 +233,6 @@ func (s *TAAState) RestoreFromPersistentState(p *PersistentState) {
 			s.DataChecksum[k] = v
 		}
 	}
-	s.DepsImported = p.DepsImported
-	s.DepsHash = p.DepsHash
-	if p.DepsChecksum != nil {
-		s.DepsChecksum = make(map[string]any, len(p.DepsChecksum))
-		for k, v := range p.DepsChecksum {
-			s.DepsChecksum[k] = v
-		}
-	} else {
-		s.DepsChecksum = nil
-	}
 	if p.ActiveTask != nil {
 		taskCopy := *p.ActiveTask
 		s.activeTask = &taskCopy
@@ -310,17 +284,6 @@ func (s *TAAState) sealStateLocked() error {
 		}
 	} else {
 		state.DataChecksum = nil
-	}
-
-	state.DepsImported = s.DepsImported
-	state.DepsHash = s.DepsHash
-	if s.DepsChecksum != nil {
-		state.DepsChecksum = make(map[string]any, len(s.DepsChecksum))
-		for k, v := range s.DepsChecksum {
-			state.DepsChecksum[k] = v
-		}
-	} else {
-		state.DepsChecksum = nil
 	}
 
 	if s.activeTask != nil {
@@ -544,12 +507,12 @@ func (s *TAAState) setCurrentAuditOp(op string) {
 	s.AuditRunning = (op != "idle" && op != "")
 }
 
-// isAuditBusyLocked checks if a code audit is currently running (caller must hold s.mu RLock or Lock).
+// isAuditBusyLocked checks if model code audit is currently running (caller must hold s.mu RLock or Lock).
 func (s *TAAState) isAuditBusyLocked() bool {
 	return s.AuditRunning || s.CurrentAuditOp == "auditing"
 }
 
-// resetAuditStateLocked resets code audit fields to idle state (caller must hold s.mu Lock).
+// resetAuditStateLocked resets model audit fields to idle state (caller must hold s.mu Lock).
 func (s *TAAState) resetAuditStateLocked() {
 	s.ActiveAuditTaskID = ""
 	s.ActiveAuditRequestID = ""
@@ -557,7 +520,7 @@ func (s *TAAState) resetAuditStateLocked() {
 	s.AuditRunning = false
 }
 
-// clearAuditState resets code audit fields under lock.
+// clearAuditState resets model audit fields under lock.
 func (s *TAAState) clearAuditState() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -610,54 +573,37 @@ func (s *TAAState) activeTaskInfoLocked() (string, string) {
 // isModel: true 表示模型导入流程，false 表示数据导入/训练流程
 // initialOp: 初始操作标识（如 "downloading" 或 "staging"）
 func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel bool) (func(), error) {
-	taskType := "data_import"
-	if isModel {
-		taskType = "model_import"
-	}
-	return s.tryAcquireTaskTyped(taskID, requestID, initialOp, taskType)
-}
-
-// isModelDataPair reports whether an in-flight task type and a requested task type form the
-// single pairing the pipeline allows: a model import and a data import sharing one taskID.
-// Dependency imports pair with nothing — they hold the audit slot, and the audit is exclusive.
-func isModelDataPair(current, requested string) bool {
-	return (current == "model_import" && requested == "data_import") ||
-		(current == "data_import" && requested == "model_import")
-}
-
-// tryAcquireTaskTyped is the typed implementation behind tryAcquireTask.
-// taskType is one of model_import / data_import / deps_import. An initialOp of
-// "staging" or "training" is always promoted to a training task.
-func (s *TAAState) tryAcquireTaskTyped(taskID, requestID, initialOp, taskType string) (func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 1. While training is executing, refuse every new task unconditionally.
+	// 1. 若当前处于训练执行阶段，全局绝对互斥，禁止任何新任务下发
 	if s.isTrainingBusyLocked() {
 		task, op := s.activeTaskInfoLocked()
 		return nil, pkgerrors.New(pkgerrors.CodeConflict,
 			fmt.Sprintf("当前已有训练任务正在执行中 (taskId: %s, op: %s)，请等待完成后再提交", task, op))
 	}
 
-	// 2. Model and dependency imports both drive the shared audit subsystem, so each must
-	// refuse to start while an audit is already in flight. Data import and training stay
-	// decoupled from auditing and may proceed concurrently.
-	if taskType == "model_import" || taskType == "deps_import" {
-		if s.isAuditBusyLocked() {
-			auditTask := s.ActiveAuditTaskID
-			if auditTask == "" {
-				auditTask = "model_audit"
-			}
-			return nil, pkgerrors.New(pkgerrors.CodeConflict,
-				fmt.Sprintf("当前已有模型代码审计正在执行中 (taskId: %s, op: auditing)，请等待完成后再提交", auditTask))
+	// 2. If requesting model import, ensure no previous model code audit is actively running.
+	// Data import and training are decoupled from model audit and can proceed concurrently.
+	if isModel && s.isAuditBusyLocked() {
+		auditTask := s.ActiveAuditTaskID
+		if auditTask == "" {
+			auditTask = "model_audit"
 		}
+		return nil, pkgerrors.New(pkgerrors.CodeConflict,
+			fmt.Sprintf("当前已有模型代码审计正在执行中 (taskId: %s, op: auditing)，请等待完成后再提交", auditTask))
 	}
 
-	// 3. Refuse if another task is mid-flight (downloading, decrypting, ...).
+	// 3. 检查是否有其他任务正在处理（如正在下载、解密等）
 	if s.ActiveTaskID != "" || (s.CurrentOp != "" && s.CurrentOp != "idle") {
 		isSameTaskPair := false
-		if taskID != "" && s.ActiveTaskID == taskID && s.activeTask != nil {
-			isSameTaskPair = isModelDataPair(s.activeTask.Type, taskType)
+		if taskID != "" && s.ActiveTaskID == taskID {
+			if s.activeTask != nil {
+				currentIsModel := (s.activeTask.Type == "model_import")
+				if currentIsModel != isModel {
+					isSameTaskPair = true
+				}
+			}
 		}
 
 		if !isSameTaskPair {
@@ -673,7 +619,10 @@ func (s *TAAState) tryAcquireTaskTyped(taskID, requestID, initialOp, taskType st
 	s.ActiveRequestID = requestID
 	s.CurrentOp = initialOp
 
-	if initialOp == "staging" || initialOp == "training" {
+	taskType := "data_import"
+	if isModel {
+		taskType = "model_import"
+	} else if initialOp == "staging" || initialOp == "training" {
 		taskType = "training"
 		s.TrainingRunning = true
 	}
@@ -796,12 +745,9 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 		resultDir = snapshot.ResultDir
 	}
 	if taskType == "" {
-		switch {
-		case strings.Contains(strings.ToLower(name), "model"):
+		if strings.Contains(strings.ToLower(name), "model") {
 			taskType = "model_import"
-		case strings.Contains(strings.ToLower(name), "deps"):
-			taskType = "deps_import"
-		default:
+		} else {
 			taskType = "data_import"
 		}
 	}

@@ -319,30 +319,10 @@ const fileAnalysisPromptTemplate = `你是一个严谨的代码安全审计专�
 // GenerateAuditReport is the high-level entry point that performs a full
 // security audit: static scan → finding-level LLM → file-level LLM → aggregate.
 func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, cfg LLMConfig, client LLMClient) (*AuditReport, error) {
-	return GenerateAuditReportForDirs(ctx, []string{dir}, engine, cfg, client)
-}
-
-// GenerateAuditReportForDirs is GenerateAuditReport for an audit whose input is
-// more than one root: the code a request delivered plus the other side as
-// currently in effect. The whole pipeline — one static scan, one finding-level
-// LLM pass, one file-level pass, one report — covers every root together, which
-// is the point of the merged audit rather than an implementation detail: a
-// dependency that only looks dangerous next to the caller that imports it is
-// invisible when the two are audited separately.
-//
-// The first root is the primary root and is what AuditTarget.Directory names.
-// Every root is validated before anything runs: an empty list, or an empty
-// element in it, is the same caller error one empty directory has always been.
-func GenerateAuditReportForDirs(ctx context.Context, dirs []string, engine StaticEngine, cfg LLMConfig, client LLMClient) (*AuditReport, error) {
 	startTime := time.Now()
 
-	if len(dirs) == 0 {
+	if dir == "" {
 		return nil, fmt.Errorf("audit directory is empty")
-	}
-	for _, dir := range dirs {
-		if dir == "" {
-			return nil, fmt.Errorf("audit directory is empty")
-		}
 	}
 	// A nil engine is a configuration error, not a scan that finds nothing. Left
 	// to the call below it would be a nil interface dereference, which a
@@ -353,7 +333,7 @@ func GenerateAuditReportForDirs(ctx context.Context, dirs []string, engine Stati
 	}
 
 	// Phase 1: Static scan with line counts.
-	scanReport, lineCounts, err := engine.ScanDirectoriesWithLines(dirs)
+	scanReport, lineCounts, err := engine.ScanDirectoryWithLines(dir)
 	if err != nil {
 		return nil, fmt.Errorf("static scan: %w", err)
 	}
@@ -390,7 +370,7 @@ func GenerateAuditReportForDirs(ctx context.Context, dirs []string, engine Stati
 	}
 
 	// Phase 4: Assemble the full audit report (Go-side aggregation).
-	audit := AssembleAuditReport(dirs[0], scanReport, fileReports, lineCounts, cfg, time.Since(startTime))
+	audit := AssembleAuditReport(dir, scanReport, fileReports, lineCounts, cfg, time.Since(startTime))
 	return audit, nil
 }
 

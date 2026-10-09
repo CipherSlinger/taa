@@ -178,34 +178,27 @@ type semgrepError struct {
 // therefore establishes completeness before it reports anything, and
 // Report.ScanComplete is true on every report it does return.
 func (e *semgrepEngine) ScanDirectory(dir string) (*Report, error) {
-	report, _, err := e.scanRoots([]string{dir}, false)
+	report, _, err := e.scan(dir, false)
 	return report, err
 }
 
 // ScanDirectoryWithLines is ScanDirectory plus a per-file line count, which the
-// file-level LLM prompt needs. Both entry points go through scanRoots, so neither
+// file-level LLM prompt needs. Both entry points go through scan, so neither
 // can drift from the other's completeness checks.
 func (e *semgrepEngine) ScanDirectoryWithLines(dir string) (*Report, map[string]int, error) {
-	return e.scanRoots([]string{dir}, true)
+	return e.scan(dir, true)
 }
 
-// ScanDirectoriesWithLines matches the files of every root in one semgrep run.
-//
-// The roots are walked into a single target list rather than scanned one run per
-// root. That keeps the completeness check meaningful over the whole input: the
-// check compares the walked targets against the paths semgrep says it read, so a
-// union target list makes "it read every file it was given" a statement about
-// every root. The CPG pass stays on the primary root — see enrichFindingsWithCPG.
-func (e *semgrepEngine) ScanDirectoriesWithLines(dirs []string) (*Report, map[string]int, error) {
-	return e.scanRoots(dirs, true)
-}
-
-func (e *semgrepEngine) scanRoots(dirs []string, withLineCounts bool) (*Report, map[string]int, error) {
-	if len(dirs) == 0 {
-		return nil, nil, fmt.Errorf("scan directories: no directories given")
+func (e *semgrepEngine) scan(dir string, withLineCounts bool) (*Report, map[string]int, error) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("scan directory: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, nil, fmt.Errorf("%s is not a directory", dir)
 	}
 
-	targets, err := e.walkSourceFilesMulti(dirs)
+	targets, err := e.walkSourceFiles(dir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -219,7 +212,7 @@ func (e *semgrepEngine) scanRoots(dirs []string, withLineCounts bool) (*Report, 
 	// input the scan could have missed, and semgrep is not invoked at all
 	// because an empty target list would make it scan its own default root.
 	if len(targets) == 0 {
-		return e.stamp(withRoots(e.scanner.buildReport(dirs[0], 0, nil, false), dirs)), lineCounts, nil
+		return e.stamp(e.scanner.buildReport(dir, 0, nil, false)), lineCounts, nil
 	}
 
 	output, err := e.run(targets)
@@ -236,14 +229,7 @@ func (e *semgrepEngine) scanRoots(dirs []string, withLineCounts bool) (*Report, 
 	// flows that cross a file or a service boundary. It is deliberately before
 	// the sort and the cap, so that what the cap keeps does not depend on
 	// whether the graph ran.
-	//
-	// It is given the primary root alone, not the whole root list: the symbol
-	// index is built from one root and a second root's files resolve to an empty
-	// module name inside it, so folding the dependencies in would add files
-	// whose module identity is blank without adding the cross-root resolution
-	// that would justify it. The limitation is recorded in the design; crossing
-	// it needs resolver and builder changes that belong to the CPG work.
-	findings = enrichFindingsWithCPG(dirs[0], targets, findings)
+	findings = enrichFindingsWithCPG(dir, targets, findings)
 
 	// Sort before capping, not after: the cap keeps the first N findings, so an
 	// order that varies between runs would make a truncated scan keep a
@@ -261,11 +247,11 @@ func (e *semgrepEngine) scanRoots(dirs []string, withLineCounts bool) (*Report, 
 	// both arms; a report that blocked on one engine's severities and not the
 	// other's would make the two arms incomparable for reasons that have nothing
 	// to do with matching.
-	report := e.scanner.buildReport(dirs[0], len(targets), findings, truncated)
+	report := e.scanner.buildReport(dir, len(targets), findings, truncated)
 	report.EngineVersion = output.Version
 	report.ParserErrors = len(output.Errors)
 	report.ProcessExitCode = 0
-	return e.stamp(withRoots(report, dirs)), lineCounts, nil
+	return e.stamp(report), lineCounts, nil
 }
 
 // stamp records what the adapter knows about its own scan.
@@ -287,69 +273,25 @@ func (e *semgrepEngine) stamp(report *Report) *Report {
 // It includes multi-language source files (.py, .go, .c, .cpp, .cu, .h, .hpp, .java, .sh)
 // as well as any extension configured on the scanner.
 func (e *semgrepEngine) walkSourceFiles(dir string) ([]string, error) {
-	return e.walkSourceFilesMulti([]string{dir})
-}
-
-// walkSourceFilesMulti returns the files of every root, in walk order, as one
-// list for a single semgrep run.
-//
-// Every root is stat-checked before any walk, so a root that does not exist is
-// an error rather than a root that silently contributes nothing. The check is up
-// front rather than at the root in turn because the walk order is the caller's,
-// and a scan that failed on the third root after reading the first two would
-// still be a scan that was given an input it did not cover.
-//
-// A file already listed is skipped, keyed on its normalized path. The same file
-// reached through two roots would otherwise be scanned twice, and the second
-// copy would land in the finding list again: the completeness check compares
-// sets, so it would not notice a duplicate target, only a missing one.
-func (e *semgrepEngine) walkSourceFilesMulti(dirs []string) ([]string, error) {
-	for _, dir := range dirs {
-		info, err := os.Stat(dir)
-		if err != nil {
-			return nil, fmt.Errorf("scan directory: %w", err)
-		}
-		if !info.IsDir() {
-			return nil, fmt.Errorf("%s is not a directory", dir)
-		}
-	}
-
 	var targets []string
-	accepted := make([]string, 0, len(dirs))
-	seen := make(map[string]bool)
-
-	for _, dir := range dirs {
-		// A root nested inside one already walked is covered by that walk.
-		if _, covered := NewScanRoots(accepted).RootOf(dir); covered {
-			continue
-		}
-
-		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return nil
-			}
-			if info.IsDir() {
-				if e.scanner != nil && e.scanner.config.SkipDirs != nil && e.scanner.config.SkipDirs[info.Name()] {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if !e.isSourceFile(path) {
-				return nil
-			}
-			key := cleanAbs(path)
-			if seen[key] {
-				return nil
-			}
-			seen[key] = true
-			targets = append(targets, path)
-			return nil
-		})
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil, fmt.Errorf("walk directory: %w", err)
+			return nil
 		}
-
-		accepted = append(accepted, dir)
+		if info.IsDir() {
+			if e.scanner != nil && e.scanner.config.SkipDirs != nil && e.scanner.config.SkipDirs[info.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !e.isSourceFile(path) {
+			return nil
+		}
+		targets = append(targets, path)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk directory: %w", err)
 	}
 	return targets, nil
 }

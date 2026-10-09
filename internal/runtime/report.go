@@ -39,11 +39,11 @@ func BuildCrashFailureReport(taskID string, startedAt, finishedAt time.Time, fai
 	if strings.TrimSpace(failureReason) == "" {
 		failureReason = "TAA 异常崩溃重启，执行已被安全终止 (Process Interrupted by Crash)"
 	}
-	return BuildTrainingReport(taskID, startedAt, finishedAt, "failed", 137, failureReason, modelChecksum, dataChecksum, nil, nil, nil)
+	return BuildTrainingReport(taskID, startedAt, finishedAt, "failed", 137, failureReason, modelChecksum, dataChecksum, nil, nil)
 }
 
 // BuildTrainingReport 聚合各维度指标构造标准 Schema 1.0 训练报告数据结构
-func BuildTrainingReport(taskID string, startedAt, finishedAt time.Time, status string, exitCode int, failureReason string, modelChecksum map[string]any, dataChecksum map[string]any, depsChecksum map[string]any, trainingResult map[string]any, codeauditSection map[string]any) (map[string]any, error) {
+func BuildTrainingReport(taskID string, startedAt, finishedAt time.Time, status string, exitCode int, failureReason string, modelChecksum map[string]any, dataChecksum map[string]any, trainingResult map[string]any, codeauditSection map[string]any) (map[string]any, error) {
 	taskID = strings.TrimSpace(taskID)
 	if taskID == "" {
 		taskID = "task-" + finishedAt.UTC().Format("20060102-150405")
@@ -85,13 +85,6 @@ func BuildTrainingReport(taskID string, startedAt, finishedAt time.Time, status 
 	dataset := CleanDatasetField(ObjectField(trainingResult, "dataset"))
 	if dataChecksum != nil {
 		dataset["checksum"] = dataChecksum
-	}
-
-	// A freshly initialized dependency state carries a non-nil but empty map, so testing against
-	// nil alone would emit "deps_checksum": {} for every session that never imported dependencies
-	// and break byte-for-byte compatibility with reports produced before the feature existed.
-	if len(depsChecksum) > 0 {
-		trainingTask["deps_checksum"] = depsChecksum
 	}
 
 	report := map[string]any{

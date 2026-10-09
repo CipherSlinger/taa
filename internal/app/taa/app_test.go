@@ -88,7 +88,6 @@ func TestBuildSecurityConfig(t *testing.T) {
 		EnableSecurityScan:         true,
 		CodeScanEngine:             "regex",
 		ModelDir:                   "/opt/taa/models",
-		DepsDir:                    "/opt/taa/model-deps",
 		EnableResultCheck:          true,
 		MaxFileBytes:               3 * 1024 * 1024 * 1024,
 		MaxResultBytes:             3 * 1024 * 1024 * 1024,
@@ -158,9 +157,6 @@ func TestBuildSecurityConfig(t *testing.T) {
 	}
 	if sec.ModelCheckpointDir != cfg.ModelCheckpointDir {
 		t.Errorf("ModelCheckpointDir = %q, want %q", sec.ModelCheckpointDir, cfg.ModelCheckpointDir)
-	}
-	if sec.DepsDir != cfg.DepsDir {
-		t.Errorf("DepsDir = %q, want %q", sec.DepsDir, cfg.DepsDir)
 	}
 
 	wantLLM := codeaudit.LLMConfig{
@@ -268,7 +264,6 @@ func TestBuildSecurityConfigPassesThroughTemperature(t *testing.T) {
 			cfg := config.StartupConfig{
 				CodeScanEngine: "regex",
 				ModelDir:       "/opt/taa/models",
-				DepsDir:        "/opt/taa/model-deps",
 				LLMTemperature: tc.given,
 			}
 

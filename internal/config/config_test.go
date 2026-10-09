@@ -1100,63 +1100,6 @@ func TestLoadStartupConfigRejectsANonPositiveSemgrepTimeout(t *testing.T) {
 	}
 }
 
-func TestLoadStartupConfigDepsDirPrecedence(t *testing.T) {
-	// storage.depsDir wins over the built-in default.
-	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, `{"storage":{"depsDir":"/tmp/custom-deps"}}`)
-
-	cfg, err := LoadStartupConfig(path)
-	if err != nil {
-		t.Fatalf("LoadStartupConfig: %v", err)
-	}
-	if cfg.DepsDir != "/tmp/custom-deps" {
-		t.Fatalf("DepsDir = %q, want /tmp/custom-deps", cfg.DepsDir)
-	}
-}
-
-func TestLoadStartupConfigDepsDirDefault(t *testing.T) {
-	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, `{}`)
-
-	cfg, err := LoadStartupConfig(path)
-	if err != nil {
-		t.Fatalf("LoadStartupConfig: %v", err)
-	}
-	if cfg.DepsDir != "/opt/taa/model-deps" {
-		t.Fatalf("DepsDir = %q, want /opt/taa/model-deps", cfg.DepsDir)
-	}
-}
-
-func TestValidateDepsDirPlacement(t *testing.T) {
-	cases := []struct {
-		name     string
-		modelDir string
-		depsDir  string
-		wantErr  bool
-	}{
-		{"sibling", "/opt/taa/models", "/opt/taa/model-deps", false},
-		{"nested", "/opt/taa/models", "/opt/taa/models/deps", true},
-		{"identical", "/opt/taa/models", "/opt/taa/models", true},
-		{"nested two levels", "/opt/taa/models", "/opt/taa/models/a/b", true},
-		{"deps is the parent of model", "/opt/taa/models", "/opt/taa", false},
-		{"empty deps", "/opt/taa/models", "", false},
-		{"empty model", "", "/opt/taa/model-deps", false},
-		{"trailing separator", "/opt/taa/models/", "/opt/taa/models/deps", true},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateDepsDirPlacement(tc.modelDir, tc.depsDir)
-			if tc.wantErr && err == nil {
-				t.Fatalf("validateDepsDirPlacement(%q, %q) = nil, want error", tc.modelDir, tc.depsDir)
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("validateDepsDirPlacement(%q, %q) = %v, want nil", tc.modelDir, tc.depsDir, err)
-			}
-		})
-	}
-}
-
 func writeTestConfig(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
