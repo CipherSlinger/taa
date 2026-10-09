@@ -792,3 +792,51 @@ func TestComputeStatistics_CrossFileAndMicroservice(t *testing.T) {
 		t.Errorf("stats.Microservice = %d, want 1", stats.Microservice)
 	}
 }
+
+// TestFileReportOrderIsTotalAndRunIndependent pins the ordering of the report
+// that leaves the process.
+//
+// The reports handed to AssembleAuditReport come from a map iteration in
+// GenerateAuditReport, so their arrival order is already arbitrary. A comparator
+// that leaves ties unresolved therefore makes the order arbitrary too: two audits
+// of the same code can emit file_reports in different orders, and a report whose
+// bytes depend on Go's map seed is not comparable between runs. Everything that
+// reads these reports downstream — diffing two audits, hashing one, eyeballing
+// whether a change moved anything — depends on this being a total order.
+//
+// The three inputs below are deliberately tied on both fields the comparator
+// looks at first (risk level and finding count), so the only thing left to
+// separate them is the path.
+func TestFileReportOrderIsTotalAndRunIndependent(t *testing.T) {
+	// AssembleAuditReport sorts in place, so every call gets its own copy.
+	newTied := func() []FileReport {
+		return []FileReport{
+			{FilePath: "/w/a.py", File: "a.py", RiskLevel: "MEDIUM", FindingsCount: 2},
+			{FilePath: "/w/b.py", File: "b.py", RiskLevel: "MEDIUM", FindingsCount: 2},
+			{FilePath: "/w/c.py", File: "c.py", RiskLevel: "MEDIUM", FindingsCount: 2},
+		}
+	}
+	paths := func(reports []FileReport) string {
+		got := make([]string, 0, len(reports))
+		for _, fr := range reports {
+			got = append(got, fr.FilePath)
+		}
+		return strings.Join(got, ",")
+	}
+
+	const want = "/w/a.py,/w/b.py,/w/c.py"
+	scanReport := &Report{FilesCount: 3, ScanComplete: true, Passed: true}
+
+	// Each permutation is a different way the map could have handed the files over.
+	for _, order := range [][3]int{{0, 1, 2}, {2, 1, 0}, {1, 2, 0}, {2, 0, 1}} {
+		in := newTied()
+		shuffled := []FileReport{in[order[0]], in[order[1]], in[order[2]]}
+
+		audit := AssembleAuditReport("/w", scanReport, shuffled, nil, LLMConfig{Policy: "assist"}, 0)
+
+		if got := paths(audit.FileReports); got != want {
+			t.Errorf("input order %v produced file_reports %s; want %s — tied reports must be ordered by "+
+				"path so the output does not depend on map iteration order", order, got, want)
+		}
+	}
+}

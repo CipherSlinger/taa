@@ -333,14 +333,7 @@ func AssembleAuditReport(
 ) *AuditReport {
 	stats := ComputeStatistics(scanReport.Findings)
 
-	// Sort file reports: HIGH risk first, then by findings count.
-	sort.Slice(fileReports, func(i, j int) bool {
-		ri, rj := riskOrder(fileReports[i].RiskLevel), riskOrder(fileReports[j].RiskLevel)
-		if ri != rj {
-			return ri < rj // lower order = higher risk, comes first
-		}
-		return fileReports[i].FindingsCount > fileReports[j].FindingsCount
-	})
+	sortFileReports(fileReports)
 
 	var hasLLMBenign bool
 	var scanPassed *bool
@@ -574,6 +567,31 @@ func buildRecommendation(fileReports []FileReport) string {
 	sort.Strings(suggestions)
 
 	return "建议修复: " + strings.Join(suggestions, "; ")
+}
+
+// sortFileReports orders the file reports for the report that leaves the process:
+// highest risk first, then most findings, then path.
+//
+// The order has to be total, not merely plausible. The reports arrive from a map
+// iteration in GenerateAuditReport, so a comparator that leaves ties unresolved
+// hands the run's ordering back to the map seed, and two audits of the same code
+// emit file_reports in different orders. Anyone diffing, hashing or eyeballing two
+// reports is then reading noise.
+//
+// The final key is FilePath rather than File: File is a base name, and two files
+// in different directories — src/model.py and tests/model.py — would collide on
+// it, leaving exactly the tie this key exists to break.
+func sortFileReports(fileReports []FileReport) {
+	sort.Slice(fileReports, func(i, j int) bool {
+		ri, rj := riskOrder(fileReports[i].RiskLevel), riskOrder(fileReports[j].RiskLevel)
+		if ri != rj {
+			return ri < rj // lower order = higher risk, comes first
+		}
+		if fileReports[i].FindingsCount != fileReports[j].FindingsCount {
+			return fileReports[i].FindingsCount > fileReports[j].FindingsCount
+		}
+		return fileReports[i].FilePath < fileReports[j].FilePath
+	})
 }
 
 func riskOrder(level string) int {

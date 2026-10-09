@@ -338,8 +338,36 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 		return nil, fmt.Errorf("static scan: %w", err)
 	}
 
+	// Whether the LLM has anything to do here, and whether it can actually do it,
+	// are decided once and reused by all three places below. Written out longhand,
+	// the degrade decision and the two phase guards are three spellings of one
+	// condition, and a later edit to any one of them silently breaks the pairing
+	// the rest of this function depends on: marking a run degraded that in fact
+	// ran the LLM, or skipping a phase while reporting a full one.
+	llmWanted := cfg.Enabled && len(scanReport.Findings) > 0
+	llmActive := llmWanted && client != nil
+
+	// A deployment that asked for the LLM and got no client has produced a
+	// static-only verdict while the report says otherwise. Both phases below are
+	// skipped, so nothing downstream can tell this apart from an audit the LLM
+	// actually adjudicated — and under fail-closed, skipping the adjudication is
+	// the silent allow the policy exists to prevent.
+	//
+	// llmWanted rather than llmActive is the point: with no findings the LLM would
+	// not have been called even if it were reachable — VerifyReport returns early on
+	// an empty finding list, and Phase 3 only visits files that produced findings —
+	// so calling such a run degraded would be a false statement, and failing it
+	// closed a rejection of a package the static scan examined completely.
+	if llmWanted && !llmActive {
+		if cfg.FailClosed {
+			return nil, fmt.Errorf("llm enabled with fail-closed but no inference client: %d finding(s) would go unadjudicated",
+				len(scanReport.Findings))
+		}
+		scanReport.LLMDegraded = true
+	}
+
 	// Phase 2: Finding-level LLM verification (reuse existing VerifyReport).
-	if cfg.Enabled && client != nil && len(scanReport.Findings) > 0 {
+	if llmActive {
 		scanReport, err = VerifyReport(ctx, scanReport, cfg, client)
 		if err != nil {
 			log.Printf("LLM finding verification failed (non-fatal): %v", err)
@@ -353,12 +381,7 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	for filePath, findings := range fileGroups {
 		fr := BuildFileReport(filePath, findings)
 
-		// Enrich findings with suggestions (Go-side, not LLM).
-		for i := range fr.Findings {
-			fr.Findings[i].LLMRisk = firstNonEmpty(fr.Findings[i].LLMRisk, "")
-		}
-
-		if cfg.Enabled && client != nil {
+		if llmActive {
 			summary := analyzeFileWithLLM(ctx, client, filePath, findings, lineCounts)
 			fr.RiskLevel = summary.RiskLevel
 			fr.Summary = summary.Summary
@@ -463,13 +486,4 @@ func synthesizeFileSummary(filePath string, findings []Finding) FileSummary {
 		Chained:      chained,
 		Exfiltration: hasExfil,
 	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
