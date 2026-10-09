@@ -245,6 +245,50 @@ func TestBuildSecurityConfig(t *testing.T) {
 	}
 }
 
+// TestBuildSecurityConfigPassesThroughTemperature pins the translation of the
+// sampling temperature from the startup configuration into the audit config.
+//
+// The unset case is the one that matters for the default deployment: nil has to
+// stay nil all the way to the verify request, because nil is what leaves the
+// inference service on its own deterministic default. Turning it into an
+// explicit zero here would produce the same verdicts today but would silently
+// stop tracking that default.
+func TestBuildSecurityConfigPassesThroughTemperature(t *testing.T) {
+	temp := func(v float32) *float32 { return &v }
+
+	for _, tc := range []struct {
+		name  string
+		given *float32
+	}{
+		{"unset stays unset", nil},
+		{"explicit zero survives", temp(0)},
+		{"non-zero passes through", temp(0.3)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.StartupConfig{
+				CodeScanEngine: "regex",
+				ModelDir:       "/opt/taa/models",
+				DepsDir:        "/opt/taa/model-deps",
+				LLMTemperature: tc.given,
+			}
+
+			sec, err := buildSecurityConfig(cfg)
+			if err != nil {
+				t.Fatalf("buildSecurityConfig() error = %v", err)
+			}
+
+			switch {
+			case tc.given == nil && sec.LLM.Temperature != nil:
+				t.Errorf("LLM.Temperature = %v, want nil", *sec.LLM.Temperature)
+			case tc.given != nil && sec.LLM.Temperature == nil:
+				t.Errorf("LLM.Temperature = nil, want %v", *tc.given)
+			case tc.given != nil && *sec.LLM.Temperature != *tc.given:
+				t.Errorf("LLM.Temperature = %v, want %v", *sec.LLM.Temperature, *tc.given)
+			}
+		})
+	}
+}
+
 // TestBuildSecurityConfigResolvesTheConfiguredEngine pins that the engine named
 // in the startup configuration is the one the controller will scan with. The
 // whole point of resolving here rather than on the import path is that the

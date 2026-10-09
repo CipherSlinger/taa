@@ -369,6 +369,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `llm.model` | `qwen2.5-coder:3b` | Target LLM model for code analysis |
 | `llm.policy` | `assist` | LLM arbitration mode (`assist`: LLM results are informational and the static verdict stands; `gate`: strict blocking — HIGH findings block unless the LLM rules them benign, MEDIUM findings always block). Values are normalized to lower case; any other value is rejected at startup |
 | `llm.failClosed` | `true` | Fails code audit if the LLM inference service is unreachable or encounters timeout |
+| `llm.temperature` | unset | Sampling temperature sent with each verify request, in `[0, 2]`. Unset leaves the choice to the inference service, which decodes deterministically so the same finding always yields the same verdict. Setting anything other than `0` re-enables sampling: identical findings may then be judged differently, and a single `MALICIOUS` verdict under `assist` + `failClosed` blocks the import. A non-zero value is therefore logged as a startup warning. Out-of-range values are rejected at startup |
 | `llm.insecureSkipVerify` | `false` | Skips TLS CA certificate verification (set to `true` only for local Docker testing) |
 | `llm.attestationMode` | `strict` | Hardware attestation verification policy for TEE-TLS (`strict` in production, `permissive` in local simulation) |
 

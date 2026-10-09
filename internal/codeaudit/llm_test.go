@@ -509,6 +509,56 @@ func TestVerifyReport_ModelRefPopulated(t *testing.T) {
 	}
 }
 
+// TestVerifyReport_PolicyTemperature pins the wire form of the sampling
+// temperature, in both states.
+//
+// The unset case is the default deployment and the load-bearing one: nil must
+// stay nil so the field is omitted from the request body entirely, leaving the
+// inference service on its own deterministic default. If this ever started
+// sending an explicit value, the default would become two places that have to
+// agree instead of one.
+func TestVerifyReport_PolicyTemperature(t *testing.T) {
+	temp := func(v float32) *float32 { return &v }
+
+	for _, tc := range []struct {
+		name  string
+		given *float32
+	}{
+		{"unset leaves the policy temperature nil", nil},
+		{"explicit zero is carried, not dropped", temp(0)},
+		{"non-zero is carried", temp(0.3)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report := &Report{
+				ScanComplete: true,
+				HighCount:    1,
+				Findings: []Finding{
+					{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
+				},
+			}
+			client := &mockCaptureEnvelopeClient{}
+			cfg := LLMConfig{Enabled: true, Policy: "assist", MaxFindings: 10, Temperature: tc.given}
+
+			if _, err := VerifyReport(context.Background(), report, cfg, client); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if client.capturedReq == nil {
+				t.Fatal("expected the request to be captured")
+			}
+
+			got := client.capturedReq.Policy.Temperature
+			switch {
+			case tc.given == nil && got != nil:
+				t.Fatalf("Policy.Temperature = %v, want nil", *got)
+			case tc.given != nil && got == nil:
+				t.Fatalf("Policy.Temperature = nil, want %v", *tc.given)
+			case tc.given != nil && *got != *tc.given:
+				t.Fatalf("Policy.Temperature = %v, want %v", *got, *tc.given)
+			}
+		})
+	}
+}
+
 func TestVerifyReport_ContextCancelled(t *testing.T) {
 	report := &Report{
 		ScanComplete: true,

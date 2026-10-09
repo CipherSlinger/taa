@@ -583,6 +583,16 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 	if maxBytes <= 0 {
 		maxBytes = config.DefaultMaxFileBytes
 	}
+	// The audit is reproducible only while the inference service decodes
+	// deterministically, which it does unless a temperature is sent. Warn rather
+	// than reject: a non-zero temperature is a deliberate choice, but its symptom
+	// - a benign import blocked by one unlucky MALICIOUS verdict - appears
+	// elsewhere and long afterwards, so the cause belongs in the startup log.
+	if cfg.LLMTemperature != nil && *cfg.LLMTemperature != 0 {
+		log.Printf("WARNING: llm.temperature=%v overrides the inference service's deterministic decoding; "+
+			"identical findings may now yield different verdicts, which fail-closed can turn into a blocked import",
+			*cfg.LLMTemperature)
+	}
 	return controller.SecurityConfig{
 		ScanEnabled:        cfg.EnableSecurityScan,
 		Engine:             engine,
@@ -617,6 +627,7 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 			// the real ceiling on how many calls this can produce.
 			MaxFindings:             0,
 			Policy:                  cfg.LLMPolicy,
+			Temperature:             cfg.LLMTemperature,
 			FailClosed:              cfg.LLMFailClosed,
 			AllowedHosts:            cfg.LLMAllowedHosts,
 			CircuitBreakerThreshold: cfg.LLMCircuitBreakerThreshold,

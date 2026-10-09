@@ -72,6 +72,13 @@ type StartupConfig struct {
 	LLMPolicy                  string
 	LLMFailClosed              bool
 	LLMDir                     string
+
+	// LLMTemperature overrides the sampling temperature the audit requests
+	// from the inference service. nil means "not configured": the service
+	// applies its own default, which is 0 (deterministic decoding). A non-nil
+	// value is sent as-is and re-enables sampling, so identical findings may
+	// then yield different verdicts.
+	LLMTemperature *float32
 }
 
 type startupConfigFile struct {
@@ -194,6 +201,7 @@ type startupLLMConfigFile struct {
 	CooldownSec             int      `json:"cooldownSec"`
 	Model                   string   `json:"model"`
 	Policy                  string   `json:"policy"`
+	Temperature             *float32 `json:"temperature"`
 	FailClosed              *bool    `json:"failClosed"`
 	Dir                     string   `json:"dir"`
 }
@@ -242,7 +250,33 @@ func validateStartupConfig(cfg StartupConfig) error {
 	if err := validateDepsDirPlacement(cfg.ModelDir, cfg.DepsDir); err != nil {
 		return err
 	}
+	if err := validateLLMTemperature(cfg); err != nil {
+		return err
+	}
 	return validateLLMPolicy(cfg)
+}
+
+// validateLLMTemperature rejects a sampling temperature outside [0, 2].
+//
+// Sampling and audit integrity pull against each other: the audit needs the same
+// finding to yield the same verdict, because under assist + failClosed a single
+// MALICIOUS verdict blocks the import of code that never changed. Any temperature
+// above zero re-enables sampling, and the higher it goes the more the verdict is
+// a draw rather than a reading - at 2 the distribution is already nearly flat, so
+// the model is close to picking a verdict at random. That is never what an audit
+// deployment means to ask for, so it is rejected at startup, where an operator
+// sees it, rather than surfacing later as an import blocked for no visible reason.
+//
+// A negative temperature is rejected for the same class of reason: it is not a
+// sharper setting, it is not something the inference service can honour.
+func validateLLMTemperature(cfg StartupConfig) error {
+	if cfg.LLMTemperature == nil {
+		return nil
+	}
+	if t := *cfg.LLMTemperature; t < 0 || t > 2 {
+		return fmt.Errorf("llm temperature in startup config must be within [0, 2]: got %v", t)
+	}
+	return nil
 }
 
 // validateSemgrepTimeout rejects a deadline the adapter cannot honour. A
@@ -567,6 +601,13 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if fileCfg.LLM.Policy != "" {
 		cfg.LLMPolicy = strings.ToLower(strings.TrimSpace(fileCfg.LLM.Policy))
+	}
+	// nil-guard rather than the "> 0" guard the neighbouring LLM numerics use.
+	// nil means "not configured"; zero is a real sampling value here (greedy
+	// decoding, which is what the audit wants), so a "> 0" guard would make it
+	// impossible to state zero explicitly.
+	if fileCfg.LLM.Temperature != nil {
+		cfg.LLMTemperature = fileCfg.LLM.Temperature
 	}
 	if fileCfg.LLM.FailClosed != nil {
 		cfg.LLMFailClosed = *fileCfg.LLM.FailClosed

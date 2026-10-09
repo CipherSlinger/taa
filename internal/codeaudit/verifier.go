@@ -69,7 +69,8 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 				},
 			},
 			Policy: teellm.PolicyOptions{
-				Mode: cfg.Policy,
+				Mode:        cfg.Policy,
+				Temperature: cfg.Temperature,
 			},
 		}
 		if cfg.Model != "" {

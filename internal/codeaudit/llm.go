@@ -24,6 +24,14 @@ type LLMConfig struct {
 	CircuitBreakerThreshold int
 	CooldownSec             int
 
+	// Temperature is the sampling temperature sent in the verify request.
+	// nil leaves the choice to the inference service, which decodes
+	// deterministically (temperature 0) so that the same finding yields the
+	// same verdict. A non-nil value overrides that and re-enables sampling:
+	// identical findings may then be judged differently, and under assist +
+	// failClosed a single MALICIOUS draw blocks the import.
+	Temperature *float32
+
 	// TEE-TLS configuration
 	TEETLS               *teetls.Config
 	AttestationMode      string

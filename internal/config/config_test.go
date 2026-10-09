@@ -764,6 +764,7 @@ func TestStartupConfig_InferenceOptions(t *testing.T) {
 			"insecureSkipVerify": true,
 			"model": "qwen2.5-coder:3b",
 			"policy": "gate",
+			"temperature": 0.3,
 			"failClosed": true,
 			"authToken": "secret-token",
 			"requestTimeoutMs": 15000,
@@ -817,6 +818,12 @@ func TestStartupConfig_InferenceOptions(t *testing.T) {
 	if cfg.LLMCooldownSec != 45 {
 		t.Errorf("got cooldown %d, want 45", cfg.LLMCooldownSec)
 	}
+	if cfg.LLMTemperature == nil {
+		t.Fatalf("got nil temperature, want 0.3")
+	}
+	if *cfg.LLMTemperature != 0.3 {
+		t.Errorf("got temperature %v, want 0.3", *cfg.LLMTemperature)
+	}
 }
 
 func TestStartupConfig_InferenceDefaults(t *testing.T) {
@@ -860,6 +867,37 @@ func TestStartupConfig_InferenceDefaults(t *testing.T) {
 	}
 	if cfg.LLMCooldownSec != 30 {
 		t.Errorf("got default cooldown %d, want 30", cfg.LLMCooldownSec)
+	}
+	if cfg.LLMTemperature != nil {
+		t.Errorf("got default temperature %v, want nil (unset, leaving the choice to the inference service)", *cfg.LLMTemperature)
+	}
+}
+
+// TestLoadStartupConfigExplicitZeroTemperature pins the nil-vs-zero distinction
+// for the sampling temperature.
+//
+// Every other numeric field in the llm section is guarded with "> 0", because
+// zero there means "unset, use the default". For temperature that reading is
+// wrong: zero is the value the audit actually wants (deterministic decoding),
+// so it has to be expressible. A "> 0" guard would silently turn an explicit 0
+// into "unspecified", which happens to reach the same result today only because
+// the service default is also 0 - the configuration would be lying about what it
+// asked for, and would start meaning something different the day that default
+// changes.
+func TestLoadStartupConfigExplicitZeroTemperature(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{"llm": {"temperature": 0}}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if cfg.LLMTemperature == nil {
+		t.Fatalf("got nil temperature, want an explicit 0")
+	}
+	if *cfg.LLMTemperature != 0 {
+		t.Errorf("got temperature %v, want 0", *cfg.LLMTemperature)
 	}
 }
 
@@ -1123,5 +1161,49 @@ func writeTestConfig(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
+	}
+}
+
+func TestValidateLLMTemperature(t *testing.T) {
+	temp := func(v float32) *float32 { return &v }
+
+	cases := []struct {
+		name    string
+		temp    *float32
+		wantErr bool
+	}{
+		{"unset", nil, false},
+		{"zero is greedy decoding, not unset", temp(0), false},
+		{"low", temp(0.1), false},
+		{"upper bound inclusive", temp(2), false},
+		{"above upper bound", temp(2.1), true},
+		{"negative", temp(-0.1), true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := "nil"
+			if tc.temp != nil {
+				got = fmt.Sprintf("%v", *tc.temp)
+			}
+			err := validateLLMTemperature(StartupConfig{LLMTemperature: tc.temp})
+			if tc.wantErr && err == nil {
+				t.Fatalf("validateLLMTemperature(%s) = nil, want error", got)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validateLLMTemperature(%s) = %v, want nil", got, err)
+			}
+		})
+	}
+}
+
+// TestLoadStartupConfigRejectsOutOfRangeLLMTemperature checks the validator is
+// actually on the load path, not merely correct in isolation.
+func TestLoadStartupConfigRejectsOutOfRangeLLMTemperature(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{"llm": {"temperature": 3}}`)
+
+	if _, err := LoadStartupConfig(path); err == nil {
+		t.Fatalf("LoadStartupConfig() = nil error, want rejection of temperature 3")
 	}
 }
