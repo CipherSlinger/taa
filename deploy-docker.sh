@@ -55,13 +55,16 @@ ARCHIVE_PATH="${ARCHIVE_PATH:-${OUTPUT_DIR%/}/taa-env-${IMAGE_TAG_PREFIX}-${TAG_
 # teellm/configs/teellm-production.json to package strict attestation instead.
 TEELLM_CONFIG_TEMPLATE="${TEELLM_CONFIG_TEMPLATE:-$PROJECT_DIR/teellm/configs/teellm-docker.json}"
 
-# Tier 1 static scan engine baked into the image: regex or semgrep. The default stays the
-# regex baseline, so packaging without an explicit choice does not move the engine
-# production runs; semgrep is opt-in here until the holdout evidence passes under the
-# assist policy.
-SCAN_ENGINE="${SCAN_ENGINE:-regex}"
-# Rules the semgrep engine loads. Closed over all three rule directories so an image can
-# be re-pointed at another language without repackaging.
+# Tier 1 static scan engine baked into the image: semgrep or regex. The default follows the
+# engine both tracked templates and the code's own startup default select, so packaging
+# without an explicit choice produces the image production actually runs. regex stays
+# available for a deliberately non-production baseline image; step 3b writes whichever
+# engine was chosen into the config, so an image never names an engine it does not carry.
+SCAN_ENGINE="${SCAN_ENGINE:-semgrep}"
+# Rules the semgrep engine loads. Every language pack is carried, and the image points at
+# the directory holding them rather than at one pack: semgrep picks a rule set by the
+# target file's language, so an image pointed at a single pack scans the other languages
+# with rules that cannot match them and reports that as a clean scan.
 SEMGREP_RULES_SOURCE="${SEMGREP_RULES_SOURCE:-$PROJECT_DIR/models/audit/semgrep/rules}"
 # Where the adapter reads its rules once the image runs. Deliberately not under models/ or
 # /tmp, both of which the cleanup step empties: a rules file that disappears between the
@@ -111,7 +114,9 @@ Options:
   --tag <tag>          Override the committed image tag (default: $IMAGE_TAG)
   --archive <path>     Override the exported archive path (default: $ARCHIVE_PATH)
   --keep-platform      Keep the platform block in taa-config.json (test image, not production)
-  --scan-engine <e>    Tier 1 static engine baked into the image: regex (default) or semgrep
+  --scan-engine <e>    Tier 1 static engine baked into the image: semgrep (default) or regex.
+                       regex packages the baseline engine instead, which is a local test
+                       image rather than the configuration production runs.
   --no-clean           Skip runtime trace cleanup (logs, results, keys, pause flags)
   --reset-container    Recreate the container from the base image before deploying.
                        Discards the deployed ollama runtime and weights; teellm/deploy.sh
@@ -130,7 +135,7 @@ Examples:
   $(basename "$0")
   $(basename "$0") --model qwen2.5-coder:7b
   $(basename "$0") --model qwen2.5-coder:3b --tag taa-env:slim-v2-release-1
-  $(basename "$0") --scan-engine semgrep
+  $(basename "$0") --scan-engine regex
   TEELLM_CONFIG_TEMPLATE=teellm/configs/teellm-production.json $(basename "$0")
 EOF
 }
@@ -199,6 +204,8 @@ docker info >/dev/null 2>&1 || die "docker daemon is not running or accessible"
 # deleted, indistinguishable from the scanner doing its job.
 if [[ "$SCAN_ENGINE" == "semgrep" ]]; then
   [[ -d "$SEMGREP_RULES_SOURCE" ]] || die "semgrep rules not found: $SEMGREP_RULES_SOURCE"
+  # The directory is the check that matters; python is read as a canary that it holds the
+  # rules tree and not, say, an empty mount point.
   [[ -f "$SEMGREP_RULES_SOURCE/python/rules.yaml" ]] || die "semgrep python rules not found: $SEMGREP_RULES_SOURCE/python/rules.yaml"
 fi
 
@@ -329,12 +336,13 @@ if [[ "$SCAN_ENGINE" == "semgrep" ]]; then
     "rm -rf '$CONTAINER_SEMGREP_DIR/rules' && mkdir -p '$CONTAINER_SEMGREP_DIR'"
   docker cp "$SEMGREP_RULES_SOURCE" "$CONTAINER_NAME:$CONTAINER_SEMGREP_DIR/rules" >/dev/null
 
-  # The python rules are the file the adapter is pointed at; the other languages are
-  # carried so the path can be re-pointed without repackaging.
-  container_rules="$CONTAINER_SEMGREP_DIR/rules/python/rules.yaml"
-  docker exec -i "$CONTAINER_NAME" bash -c "test -f '$container_rules'" >/dev/null 2>&1 || \
-    die "rules did not land in the container: $container_rules"
-  info "rules installed: $container_rules"
+  # The directory is what the adapter is pointed at, not one pack inside it: the packs are
+  # selected by the target file's language at scan time, so an image pointed at python
+  # alone would still walk a model's Go/C/C++/Java/shell sources and match none of them.
+  container_rules_dir="$CONTAINER_SEMGREP_DIR/rules"
+  docker exec -i "$CONTAINER_NAME" bash -c "test -d '$container_rules_dir'" >/dev/null 2>&1 || \
+    die "rules did not land in the container: $container_rules_dir"
+  info "rules installed: $container_rules_dir"
 
   # The version and the rule digests are what tie this image to the scans the holdout
   # evidence was gathered with. The freeze file is the tree that actually ran: pinning
@@ -349,27 +357,35 @@ if [[ "$SCAN_ENGINE" == "semgrep" ]]; then
     pip3 freeze > pip-freeze.txt
   " >/dev/null
   info "recorded $CONTAINER_SEMGREP_DIR/MANIFEST and pip-freeze.txt"
+fi
 
-  step "deriving the TAA config template for the semgrep engine"
-  # Derived on the host and handed to deploy.sh as its template: write_taa_config copies
-  # the security block verbatim, and a config patched into the container after the daemon
-  # started would need a second restart to be read. The tracked templates keep no engine
-  # key, so the engine production runs is not moved by packaging.
-  TMP_TAA_TEMPLATE="$(mktemp)"
-  python3 - "$TAA_TEMPLATE" "$TMP_TAA_TEMPLATE" "$container_rules" <<'PY'
+# ── 3b. Deriving the TAA config template ─────────────────────
+# Both arms derive, because the config the image boots with has to name the engine the
+# image carries. write_taa_config copies the security block verbatim, so the engine key
+# reaches the daemon from whichever template deploy.sh is handed -- and a deployment that
+# names an engine it does not carry fails there, at startup: buildSecurityConfig resolves
+# the engine and a missing rules path is an error rather than a degraded scan. Deriving it
+# here is also why python3 is a hard requirement of the run.
+step "deriving the TAA config template for the $SCAN_ENGINE engine"
+TMP_TAA_TEMPLATE="$(mktemp)"
+python3 - "$TAA_TEMPLATE" "$TMP_TAA_TEMPLATE" "$SCAN_ENGINE" "$CONTAINER_SEMGREP_DIR/rules" <<'PY'
 import json, sys
-src, dst, rules = sys.argv[1:4]
+src, dst, engine, rules = sys.argv[1:5]
 with open(src, "r", encoding="utf-8") as f:
     cfg = json.load(f)
 security = cfg.setdefault("security", {})
-security["codeScanEngine"] = "semgrep"
-security["semgrepRulesPath"] = rules
+security["codeScanEngine"] = engine
+if engine == "semgrep":
+    security["semgrepRulesPath"] = rules
 with open(dst, "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2)
     f.write("\n")
 PY
-  TAA_TEMPLATE="$TMP_TAA_TEMPLATE"
-  info "derived template sets codeScanEngine=semgrep and semgrepRulesPath=$container_rules"
+TAA_TEMPLATE="$TMP_TAA_TEMPLATE"
+if [[ "$SCAN_ENGINE" == "semgrep" ]]; then
+  info "derived template sets codeScanEngine=semgrep and semgrepRulesPath=$CONTAINER_SEMGREP_DIR/rules"
+else
+  warn "derived template sets codeScanEngine=regex: this image runs the baseline, not the semgrep engine the tracked templates and the code default select"
 fi
 
 # ── 4. TAA ───────────────────────────────────────────────────
@@ -477,6 +493,12 @@ info "model catalog activeModel set to $LLM_MODEL"
 
 step "container cleanup"
 if [[ "$CLEAN_RUNTIME" == true ]]; then
+  # The dependency store is deliberately not on this list. Its path comes from the
+  # template's storage.depsDir (unset there, so /opt/taa/model-deps), and clearing it is a
+  # manual operator action: it is content-addressed for reuse and per-hash rollback, which
+  # automatic cleaning would destroy. The cost is that a container which has imported a
+  # dependency package, or still holds the taa-deps-wh-* wheelhouse a crashed import can
+  # leave behind, commits those bytes into the image.
   docker exec -i "$CONTAINER_NAME" bash -c "
     set -u
     rm -f '$CONTAINER_WORKDIR'/*.log
