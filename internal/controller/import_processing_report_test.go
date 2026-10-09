@@ -140,6 +140,113 @@ func TestBuildTrainingReportAddsModelChecksumAndKeepsTrainingMetrics(t *testing.
 	}
 }
 
+// TestBuildTrainingReportCarriesAuditRoots covers the projectCodeAuditSection consumer that
+// had no coverage at all: the training report's `codeaudit` section. Its sibling test builds
+// an audit with no Roots and asserts the section omits `target`, so nothing there would fail
+// if the projection dropped `roots` -- and a merged audit's code=1 no longer says which side
+// failed, which makes the per-root breakdown the only field that does.
+//
+// `roots` and `target` are different fields with different fates: the projection keeps the
+// former and drops the latter. This pins the kept one without weakening the sibling's
+// assertion about the dropped one.
+func TestBuildTrainingReportCarriesAuditRoots(t *testing.T) {
+	startedAt := mustParseReportTime(t, "2026-09-02T10:03:35Z")
+	finishedAt := mustParseReportTime(t, "2026-09-02T10:03:43Z")
+
+	audit := &codeaudit.AuditReport{
+		Conclusion: codeaudit.AuditConclusion{
+			Passed:    false,
+			RiskLevel: "HIGH",
+			Summary:   "依赖侧存在命令执行",
+		},
+		Target: codeaudit.AuditTarget{Directory: "models/examples", FilesScanned: 3},
+		Roots: []codeaudit.RootReport{
+			{Directory: "models/examples", FilesScanned: 3, FindingsCount: 0, Passed: true},
+			{Directory: "deps/abc123", FilesScanned: 7, FindingsCount: 2, Passed: false},
+		},
+	}
+
+	report, err := buildTrainingReport(
+		"task-roots",
+		startedAt,
+		finishedAt,
+		"succeeded",
+		0,
+		"",
+		map[string]any{"algorithm": "sm3", "value": "model-digest"},
+		nil,
+		nil,
+		map[string]any{"training_task": map[string]any{"task_id": "task-roots"}},
+		audit,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("buildTrainingReport: %v", err)
+	}
+
+	codeauditSection, ok := report["codeaudit"].(map[string]any)
+	if !ok {
+		t.Fatalf("report missing codeaudit: %v", report)
+	}
+	if _, ok := codeauditSection["target"]; ok {
+		t.Fatalf("codeaudit should not include target: %v", codeauditSection)
+	}
+
+	rootsAny, ok := codeauditSection["roots"]
+	if !ok {
+		t.Fatalf("codeaudit has no roots key: the per-root verdicts never reach the training report: %v", codeauditSection)
+	}
+	roots, ok := rootsAny.([]codeaudit.RootReport)
+	if !ok {
+		t.Fatalf("codeaudit roots type = %T, want []codeaudit.RootReport", rootsAny)
+	}
+	if len(roots) != 2 {
+		t.Fatalf("codeaudit roots = %+v, want the model root and the dependency root", roots)
+	}
+	if roots[0].Directory != "models/examples" || roots[0].FilesScanned != 3 || roots[0].FindingsCount != 0 || !roots[0].Passed {
+		t.Errorf("model root = %+v, want the passing model root", roots[0])
+	}
+	if roots[1].Directory != "deps/abc123" || roots[1].FilesScanned != 7 || roots[1].FindingsCount != 2 || roots[1].Passed {
+		t.Errorf("dependency root = %+v, want the failing dependency root", roots[1])
+	}
+
+	// The report is consumed as JSON, so the wire keys are the contract: the typed assertions
+	// above pin the values, this one pins the names they travel under.
+	rawRoots, err := json.Marshal(rootsAny)
+	if err != nil {
+		t.Fatalf("marshal roots: %v", err)
+	}
+	var wireRoots []map[string]any
+	if err := json.Unmarshal(rawRoots, &wireRoots); err != nil {
+		t.Fatalf("unmarshal roots: %v", err)
+	}
+	if len(wireRoots) != 2 {
+		t.Fatalf("wire roots = %+v, want two", wireRoots)
+	}
+	for i, want := range []struct {
+		dir      string
+		files    float64
+		findings float64
+		passed   bool
+	}{
+		{"models/examples", 3, 0, true},
+		{"deps/abc123", 7, 2, false},
+	} {
+		if wireRoots[i]["directory"] != want.dir {
+			t.Errorf("root %d directory = %v, want %q", i, wireRoots[i]["directory"], want.dir)
+		}
+		if wireRoots[i]["files_scanned"] != want.files {
+			t.Errorf("root %d files_scanned = %v, want %v", i, wireRoots[i]["files_scanned"], want.files)
+		}
+		if wireRoots[i]["findings_count"] != want.findings {
+			t.Errorf("root %d findings_count = %v, want %v", i, wireRoots[i]["findings_count"], want.findings)
+		}
+		if wireRoots[i]["passed"] != want.passed {
+			t.Errorf("root %d passed = %v, want %v", i, wireRoots[i]["passed"], want.passed)
+		}
+	}
+}
+
 func TestBuildDirectoryChecksumSkipsSymlinkedDirectories(t *testing.T) {
 	dir := t.TempDir()
 

@@ -546,6 +546,200 @@ func TestProcessImportedDepsReportsFailureCodeToPlatform(t *testing.T) {
 	}
 }
 
+// TestProcessImportedDepsModelSideFindingsDoNotRollBackTheDelivery is the dependency-trigger
+// half of the change's core new semantic: a dependency delivery whose combined audit fails
+// only on the MODEL side. The audit as a whole fails, so reportAudit carries code=1 under the
+// dependency scope and the failing root is the model's -- yet the platform still receives
+// reportDeps code=0, because the delivery itself succeeded. This is the divergence the design
+// intends: it clears the side that was delivered only when that side is the one implicated,
+// and here it is not.
+//
+// Neither directory is removed. The model is not this pipeline's to clear, and the delivered
+// dependency set must survive so saveDepsSuccess can bind it -- the point of the whole change,
+// which nothing asserted through this pipeline before.
+//
+// TestAuditAndReportModelImportClearsOnlyTheTriggeringSide covers the mirror direction (model
+// trigger, dependency side dirty); this test keeps the pair symmetric.
+func TestProcessImportedDepsModelSideFindingsDoNotRollBackTheDelivery(t *testing.T) {
+	state, _ := setupTestState(t)
+	state.Security.ScanEnabled = true
+	// Keep the audit on the rule engine: an enabled-and-fail-closed LLM would make the audit
+	// probe a service this test does not stand up.
+	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
+	state.Security.Engine = codeaudit.DefaultEngine()
+
+	// The model side is the "other side": its rule-matching file is the only reason the
+	// combined audit fails. updateImportState(isModel, imported, phase) is what puts the model
+	// root in effect for a dependency trigger.
+	modelFile := writePythonFile(t, state.Security.ModelDir, "train.py", ruleMatchingPython)
+	state.updateImportState(true, true, 1)
+
+	origInstall := depsInstallFunc
+	t.Cleanup(func() { depsInstallFunc = origInstall })
+	var installedTarget string
+	// The installer writes a source file that matches no rule, so the dependency root passes.
+	depsInstallFunc = func(wheelhouse, target string) error {
+		installedTarget = target
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(target, "pkg.py"), []byte(benignPython), 0o644)
+	}
+
+	// Both callbacks land on state.PlatformIP, so one server routes both paths: reportAudit
+	// for the combined audit and reportDeps for the delivery's own outcome.
+	auditCh, depsCh := captureAuditAndDepsReports(t, state)
+
+	req := depsImportRequest{ResourceURL: "http://x/deps.tar.gz", RequestID: "req-model-dirty", TaskID: "task-model-dirty"}
+	state.processImportedDeps(req, 1, buildTestDepsArchive(t))
+
+	// The combined audit failed, under the dependency scope, and the root that failed is the
+	// model's while the delivered root passed.
+	rr := waitForCombinedAuditReport(t, auditCh)
+	if rr.Code != 1 {
+		t.Fatalf("reportAudit code = %d, want 1 (the combined audit as a whole failed)", rr.Code)
+	}
+	if rr.Scope != "deps" {
+		t.Fatalf("reportAudit scope = %q, want \"deps\" for a dependency-triggered audit", rr.Scope)
+	}
+	roots := projectedRoots(t, rr)
+	if len(roots) != 2 {
+		t.Fatalf("projected roots = %+v, want the model root and the delivered dependency root", roots)
+	}
+	if roots[0].Directory != state.Security.ModelDir {
+		t.Fatalf("first root = %q, want the model directory %q", roots[0].Directory, state.Security.ModelDir)
+	}
+	if roots[0].Passed {
+		t.Errorf("the model root passed = true while it holds the rule-matching file")
+	}
+	if !roots[1].Passed {
+		t.Errorf("the delivered dependency root passed = false though its file matches no rule")
+	}
+	// One audit, one report: waiting is the assertion.
+	requireNoCombinedAuditReport(t, auditCh)
+
+	// The delivery succeeded despite the failed audit: reportDeps code=0.
+	select {
+	case body := <-depsCh:
+		if code, ok := body["code"].(float64); !ok || int(code) != 0 {
+			t.Fatalf("reportDeps code = %v, want 0 (the delivery succeeded)", body["code"])
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the reportDeps callback: the platform never learned the delivery succeeded")
+	}
+
+	if !state.DepsImported {
+		t.Fatal("DepsImported = false though the delivery succeeded")
+	}
+	// The binding names the set this delivery installed, i.e. DepsHash is the new hash.
+	if state.currentDepsDir() != installedTarget {
+		t.Fatalf("currentDepsDir() = %q, want the delivered directory %q (DepsHash = %q)",
+			state.currentDepsDir(), installedTarget, state.DepsHash)
+	}
+
+	// Neither directory was removed -- the point of the whole change.
+	if _, err := os.Stat(modelFile); err != nil {
+		t.Fatalf("the model file was removed though the model side is not this pipeline's to clear: %v", err)
+	}
+	if !dirExists(installedTarget) {
+		t.Fatalf("the delivered dependency directory %s was removed", installedTarget)
+	}
+	if _, err := os.Stat(filepath.Join(installedTarget, "pkg.py")); err != nil {
+		t.Fatalf("the installed dependency file is missing from %s: %v", installedTarget, err)
+	}
+}
+
+// TestProcessImportedDepsDependencySideFindingsRollBackOnlyTheDelivery is the mirror of the
+// test above: the combined audit fails on the DELIVERED dependency root while the model code
+// is clean. The delivery is rolled back (reportDeps code=1, directory gone, binding cleared)
+// and the model directory is left exactly as it was -- this pipeline clears only its own side.
+//
+// TestProcessImportedDepsReportsFailureCodeToPlatform already pins the rollback and the
+// reportDeps code=1 for a failing dependency audit, but it imports no model, so its audit has
+// one root and it asserts nothing about the model directory or the reportAudit callback. This
+// test adds the two-root case and the missing assertions rather than restating that one.
+func TestProcessImportedDepsDependencySideFindingsRollBackOnlyTheDelivery(t *testing.T) {
+	state, _ := setupTestState(t)
+	state.Security.ScanEnabled = true
+	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
+	state.Security.Engine = codeaudit.DefaultEngine()
+
+	// The model side is clean: it must survive the rollback of the other side untouched.
+	modelFile := writePythonFile(t, state.Security.ModelDir, "train.py", benignPython)
+	state.updateImportState(true, true, 1)
+
+	origInstall := depsInstallFunc
+	t.Cleanup(func() { depsInstallFunc = origInstall })
+	var installedTarget string
+	// The installer writes the file the rule engine matches, so the delivered root fails.
+	depsInstallFunc = func(wheelhouse, target string) error {
+		installedTarget = target
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(target, "pkg.py"), []byte(ruleMatchingPython), 0o644)
+	}
+
+	auditCh, depsCh := captureAuditAndDepsReports(t, state)
+
+	req := depsImportRequest{ResourceURL: "http://x/deps.tar.gz", RequestID: "req-deps-dirty", TaskID: "task-deps-dirty"}
+	state.processImportedDeps(req, 1, buildTestDepsArchive(t))
+
+	// The reportAudit callback names the failing side: code=1, scope=deps, the dependency root
+	// the one that failed.
+	rr := waitForCombinedAuditReport(t, auditCh)
+	if rr.Code != 1 {
+		t.Fatalf("reportAudit code = %d, want 1", rr.Code)
+	}
+	if rr.Scope != "deps" {
+		t.Fatalf("reportAudit scope = %q, want \"deps\"", rr.Scope)
+	}
+	roots := projectedRoots(t, rr)
+	if len(roots) != 2 {
+		t.Fatalf("projected roots = %+v, want the model root and the delivered dependency root", roots)
+	}
+	if roots[0].Directory != state.Security.ModelDir {
+		t.Fatalf("first root = %q, want the model directory %q", roots[0].Directory, state.Security.ModelDir)
+	}
+	if !roots[0].Passed {
+		t.Errorf("the model root passed = false though its file matches no rule")
+	}
+	if roots[1].Directory != installedTarget {
+		t.Fatalf("second root = %q, want the delivered dependency directory %q", roots[1].Directory, installedTarget)
+	}
+	if roots[1].Passed {
+		t.Errorf("the delivered dependency root passed = true while it holds the rule-matching file")
+	}
+	requireNoCombinedAuditReport(t, auditCh)
+
+	// reportDeps code=1: the delivery failed and the platform is told.
+	select {
+	case body := <-depsCh:
+		if code, ok := body["code"].(float64); !ok || int(code) != 1 {
+			t.Fatalf("reportDeps code = %v, want 1", body["code"])
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the reportDeps callback: the platform never learned the import failed")
+	}
+
+	// The other side is untouched: clearing it is not this pipeline's to do.
+	if _, err := os.Stat(modelFile); err != nil {
+		t.Fatalf("the model file was removed by a dependency-side rollback: %v", err)
+	}
+
+	// This pipeline's own side is rolled back.
+	if state.DepsImported {
+		t.Fatal("DepsImported = true after a rejected dependency set")
+	}
+	if dir := state.currentDepsDir(); dir != "" {
+		t.Fatalf("currentDepsDir() = %q, want empty after rollback", dir)
+	}
+	if _, err := os.Stat(installedTarget); !os.IsNotExist(err) {
+		t.Fatalf("the rejected dependency directory %s still exists (stat err = %v)", installedTarget, err)
+	}
+	requireAuditStateCleared(t, state)
+}
+
 // TestRunCombinedAuditDepsTriggerFlagsTheCandidateAndRemovesNothing pins the executor's half of
 // the dependency contract: a HIGH finding under the delivered directory leaves TriggerClean false
 // and the audit as a whole failed, and the executor itself removes nothing -- clearing the
@@ -729,6 +923,40 @@ func TestStatusReportsDepsState(t *testing.T) {
 // level would only add another place to forget to update.
 
 // ── test helpers ─────────────────────────────────────────
+
+// captureAuditAndDepsReports points state at one platform stub that routes both callbacks a
+// dependency delivery can produce: reportAudit (the combined audit) and reportDeps (the
+// delivery's own outcome). Both are addressed to state.PlatformIP, so a test that needs both
+// -- the divergence between them is the whole point of the dependency trigger -- cannot use
+// two servers, and captureCombinedAuditReports alone would drop the reportDeps side.
+//
+// It returns the two channels; every other path is answered with an OK envelope and dropped,
+// the same way TestProcessImportedDepsReportsFailureCodeToPlatform routes its stub.
+func captureAuditAndDepsReports(t *testing.T, state *TAAState) (<-chan combinedAuditCapture, <-chan map[string]any) {
+	t.Helper()
+	auditCh := make(chan combinedAuditCapture, 4)
+	depsCh := make(chan map[string]any, 4)
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case reportAuditEndpoint:
+			var rr combinedAuditCapture
+			_ = json.NewDecoder(r.Body).Decode(&rr)
+			auditCh <- rr
+		case reportDepsEndpoint:
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			depsCh <- body
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"msg":"ok","result":{"received":true},"error":0}`))
+	}))
+	t.Cleanup(platform.Close)
+
+	state.mu.Lock()
+	state.PlatformIP, state.DockerID = platform.URL, "docker-test"
+	state.mu.Unlock()
+	return auditCh, depsCh
+}
 
 // buildTestDepsArchive builds a minimal valid dependency package: requirements.txt plus one
 // empty .whl.

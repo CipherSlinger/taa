@@ -326,15 +326,16 @@ result = {"dataset": {"total_samples": 1, "splits": {"train": 1, "test": 0}}, "m
 				t.Fatal("timed out waiting for reportAudit")
 			}
 
-			// 验证 ModelImported 为 false
-			state.mu.RLock()
-			modelImported := state.ModelImported
-			state.mu.RUnlock()
-			if modelImported {
-				t.Fatalf("expected ModelImported=false after audit failure")
-			}
+			// ModelImported is false. The clearing happens in startModelAuditAsync's gate, which
+			// runs inside the same async closure that emits the reportAudit callback above --
+			// and that callback is emitted before the gate, so reading the flag here would race
+			// it. Wait for the gate's effect instead: poll until ModelImported reaches the
+			// expected value.
+			waitForModelImported(t, state, false)
 
-			// 验证 ModelDir 内容已被物理清空
+			// ModelDir's contents have been physically cleared. cleanDirContents runs inside
+			// auditAndReportModelImport before the gate, so it has completed by the time
+			// ModelImported has flipped.
 			entries, _ := os.ReadDir(state.Security.ModelDir)
 			if len(entries) != 0 {
 				t.Fatalf("expected ModelDir to be cleaned, found %d entries", len(entries))
@@ -357,6 +358,170 @@ result = {"dataset": {"total_samples": 1, "splits": {"train": 1, "test": 0}}, "m
 			}
 		})
 	}
+}
+
+// TestStartModelAuditDependencySideFindingsKeepTheModelAndTraining is the negative half of
+// TestPhase1ModelAuditFailureAbortsTraining. When a model trigger's combined audit fails only
+// on the bound dependency side, the gate in startModelAuditAsync
+// (`if !triggerClean { clearImportedState; stopActiveTraining }`) must NOT fire: the model
+// stays imported, its delivered code stays on disk, and an active training task keeps running.
+//
+// The positive test reaches the gate through /v1/taa/importModel; this one drives
+// startModelAuditAsync directly because that is where the gate lives. The HTTP path cannot be
+// used for the negative: its fixture cannot bind a dependency set, so it has no way to put the
+// only finding on the other side. An assertion one layer down -- runCombinedAudit returning
+// TriggerClean=true -- would prove nothing about the caller, because the regression this guards
+// is the caller reading the audit's own verdict (always false here) instead of TriggerClean.
+//
+// The audit is deliberately two-root: the model's code is benign and the bound dependency
+// directory holds the rule-matching file, so the audit as a whole fails (code=1) while the
+// model side is unimplicated.
+func TestStartModelAuditDependencySideFindingsKeepTheModelAndTraining(t *testing.T) {
+	state, _ := setupTestState(t)
+	state.Security.ScanEnabled = true
+	// Keep the audit on the rule engine: an enabled-and-fail-closed LLM would make the audit
+	// probe a service this test does not stand up.
+	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
+	state.Security.Engine = codeaudit.DefaultEngine()
+
+	modelFile := writePythonFile(t, state.Security.ModelDir, "train.py", benignPython)
+	state.updateImportState(true, true, 1)
+	// The only findings of the combined audit sit under this bound dependency set.
+	bindDepsDir(t, state, "boundset", ruleMatchingPython)
+
+	// An active training task, so "the gate did not fire" has something to observe:
+	// stopActiveTraining only acts while TrainingRunning with a training-typed snapshot, and
+	// its requestStop cancels the control's context.
+	state.mu.Lock()
+	state.TrainingRunning = true
+	state.CurrentOp = "training"
+	state.activeTask = &ActiveTaskSnapshot{TaskID: "task-active-training", Type: "training"}
+	control := newTrainingControl()
+	state.trainingControl = control
+	state.mu.Unlock()
+
+	received := captureCombinedAuditReports(t, state)
+
+	state.startModelAuditAsync(importRequest{RequestID: "req-neg", TaskID: "task-neg"}, 1)
+
+	// The audit ran and failed as a whole, with the failing root the dependency side's.
+	rr := waitForCombinedAuditReport(t, received)
+	if rr.Code != 1 {
+		t.Fatalf("reportAudit code = %d, want 1: the combined audit fails on the dependency root", rr.Code)
+	}
+	if rr.Scope != "" {
+		t.Fatalf("scope = %q, want \"\" for a model-triggered audit", rr.Scope)
+	}
+	roots := projectedRoots(t, rr)
+	if len(roots) != 2 {
+		t.Fatalf("projected roots = %+v, want the model root and the bound dependency root", roots)
+	}
+	if !roots[0].Passed {
+		t.Errorf("the model root passed = false though its code is benign")
+	}
+	if roots[1].Passed {
+		t.Errorf("the dependency root passed = true while it holds the rule-matching file")
+	}
+
+	// The gate runs inside the same async closure, after the audit, and it has no completion
+	// signal of its own: wait out the settling window described on the helper before reading
+	// what the gate did (or did not do).
+	waitForModelAuditSettled(t, state)
+
+	state.mu.RLock()
+	modelImported := state.ModelImported
+	trainingRunning := state.TrainingRunning
+	task := state.activeTask
+	state.mu.RUnlock()
+
+	// The gate's two effects are asserted separately, most-specific first: the training
+	// cancellation stopActiveTraining performs, then the model rollback clearImportedState
+	// performs. A caller that read the audit's own verdict instead of TriggerClean would trip
+	// both.
+	if !trainingRunning {
+		t.Fatal("TrainingRunning = false: the caller stopped training over a finding that sits on the dependency side")
+	}
+	if task == nil || task.Type != "training" {
+		t.Fatalf("the active training snapshot was cleared by the caller: %+v", task)
+	}
+	if err := control.Ctx().Err(); err != nil {
+		t.Fatalf("the training control was cancelled though the model side is unimplicated: %v", err)
+	}
+	if !modelImported {
+		t.Fatal("ModelImported = false: the caller cleared the model over a finding that sits on the dependency side")
+	}
+	if _, err := os.Stat(modelFile); err != nil {
+		t.Fatalf("the delivered model file was cleared though the model side is unimplicated: %v", err)
+	}
+}
+
+// waitForModelImported polls until state.ModelImported reaches want, failing after the
+// deadline. The flag is flipped by the async model-audit gate (startModelAuditAsync), which
+// runs inside the same closure that emits the reportAudit callback -- after it. Reading the
+// flag straight after the callback is therefore a race the positive test lost intermittently;
+// this waits for the gate's effect without weakening what is asserted.
+func waitForModelImported(t *testing.T, state *TAAState, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		state.mu.RLock()
+		got := state.ModelImported
+		state.mu.RUnlock()
+		if got == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	state.mu.RLock()
+	got := state.ModelImported
+	state.mu.RUnlock()
+	t.Fatalf("ModelImported = %v after waiting, want %v", got, want)
+}
+
+// modelAuditSettlingWindow bounds how long an assertion about the model-audit gate waits
+// after the audit bookkeeping has gone idle. See waitForModelAuditSettled for why that state
+// is not the closure's join point.
+//
+// What is left to run between the two moments is only the gate itself: at most one log line,
+// and when it fires clearImportedState plus stopActiveTraining (which calls KillProcessGroup,
+// a no-op in these fixtures because the training control here owns no process). 500ms is
+// orders of magnitude more than that, and it is a ceiling rather than a delay: the wait ends
+// as soon as the flag is observed, and the sleep only covers the unobservable remainder.
+const modelAuditSettlingWindow = 500 * time.Millisecond
+
+// waitForModelAuditSettled waits until the model-audit closure has both returned from
+// runCombinedAudit and had time to run its TriggerClean gate. It exists for tests that assert
+// the gate did NOT fire, i.e. an assertion about something that never becomes visible.
+//
+// AuditRunning going false is NOT that point, despite it being the obvious candidate.
+// runCombinedAudit defers clearAuditState (combined_audit.go), and the release startModelAudit
+// passes to runAsyncSafe calls the very same clearAuditState afterwards
+// (import_processing.go); resetAuditStateLocked writes the same four fields on both paths, so
+// while the closure stands before its gate -- `if !triggerClean {` -- the state already looks
+// fully idle. No field of TAAState and no log line distinguishes "runCombinedAudit has
+// returned" from "the closure has ended", and runAsyncSafe exposes no WaitGroup to join on
+// (route.go). This helper therefore cannot be a join: it polls the idle flag, then sleeps
+// modelAuditSettlingWindow so the gate's own instructions run before the caller's assertions
+// do. The negative assertions this waits for are consequently timing-bounded, not
+// synchronization-backed; the gate's firing was measured to be immediate under mutation, which
+// is what makes the window ample rather than merely hopeful.
+//
+// If the audit never goes idle the sleep is skipped and requireAuditStateCleared reports why,
+// so a stuck audit reads as a failure instead of as a slow one.
+func waitForModelAuditSettled(t *testing.T, state *TAAState) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		state.mu.RLock()
+		running := state.AuditRunning
+		state.mu.RUnlock()
+		if !running {
+			time.Sleep(modelAuditSettlingWindow)
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	requireAuditStateCleared(t, state)
 }
 
 type phase1FlowCase struct {
