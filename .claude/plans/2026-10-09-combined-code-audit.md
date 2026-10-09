@@ -49,7 +49,17 @@
 - 触发方 = 模型 → `cleanDirContents(Security.ModelDir)`（保持既有做法：清空内容、保留目录）
 - 触发方 = 依赖 → `rollbackDepsImport(candidateDir)`（删目录并在必要时清绑定）
 
-判据：`code == 2`（整体没跑成，无从区分哪一侧有问题），**或** 报告里存在归属于触发方那个根的 finding。若 findings 全在另一侧：报告与 `code` 如实反映失败，但**不删任何东西、本次导入判成功**。
+**分工（2026-10-09 踩过一次，务必照办）：执行器不做任何物理清除**，它只返回 `TriggerClean`；
+清除由**各自的调用方**执行，判据就是 `!TriggerClean`。两条链路原本都自己删——
+模型侧在三条路径上各调一次 `cleanDirContents`，依赖侧在 `runDepsAudit` 里三条路径各调一次
+`os.RemoveAll`——这些都要**收窄为调用方的一处 `!TriggerClean` 闸门**，而**不是删除**。
+
+Task 4 的首版把模型侧的清除当「已由执行器覆盖」直接删掉，结果被拒的模型代码留在磁盘上、
+两条既有安全测试（`TestAuditFailureCleanDirAndAbort`、`TestPhase1ModelAuditFailureAbortsTraining`）
+反转成断言「文件仍在」——那是一个 fail-open，且**变异测试替它背了书**：新测试断言的是错的契约，
+于是「把清除加回来」这个变异看起来像是被正确杀掉了。写测试前先确认契约来自 spec §3.5，而不是来自上一句 brief。
+
+判据：`code == 2`（整体没跑成，无从区分哪一侧有问题），**或** 报告里存在归属于触发方那个根的 finding，**或** 扫描被截断（见 Task 3 的 `TriggerClean` 算法）。若 findings 全在另一侧且扫描完整：报告与 `code` 如实反映失败，但**不删任何东西、本次导入判成功**。
 
 ### 6. 幂等短路取消，审计标记机制删除
 
@@ -234,6 +244,12 @@ TriggerClean = !implicated
 - 删除 `deps_import.go:207-240`（两个常量 + `auditMarkerExists` + `writeAuditMarker`）与 `:186-199` 的写入分支。`processImportedDeps` 顶部的流水线注释（`:88-95`）与 `rollbackDepsImport` 的长注释（`:242-274`）里凡是提到 marker 的句子一并改写——**注释与代码不符在本仓库已被证明会误导后续判断**。
 - `auditAndReportDeps`（`:329-335`）与 `runDepsAudit`（`deps_audit.go:39-79`）合并进 Task 3 的执行器；`deps_audit.go` 只剩它对三个盲区的说明（`:20-31`）与对「无测试钩子」的说明（`:33-38`），迁到新文件的函数注释上。
 - 失败路径：依赖侧被牵连时 `rollbackDepsImport(depsDir)` 照旧（`:181`），只有在依赖侧被牵连时才走。
+  **注意这与 `runDepsAudit` 现在做的事不同**：后者自己 `os.RemoveAll(depsDir)`，共三处
+  （LLM 不可用、引擎出错、`!Passed`）。执行器一处都不删，所以这三处全部消失，
+  由 `processImportedDeps` 的 `!result.TriggerClean` 单闸门经 `rollbackDepsImport` 接管——
+  与 Task 4 在模型侧犯的错是同一个形状，别重犯。
+  `rollbackDepsImport` 的长注释里「runDepsAudit removes the directory itself on every path that
+  returns false ... it is kept deliberately」那一段随之**整段为假**，必须重写，不能留着。
 
 ---
 
