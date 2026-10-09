@@ -270,7 +270,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 0,
   "msg": null,
-  "report": "{\"generated_at\":\"2026-09-02T10:03:43Z\",\"report_id\":\"train-report-20260902-100343-ae53fa14\",\"dataset\":{\"total_samples\":12500,\"splits\":{\"train\":10000,\"test\":1000},\"checksum\":{\"size\":540672,\"algorithm\":\"sm3\",\"value\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}},\"training_task\":{\"task_id\":\"task-20260825-001\",\"status\":\"succeeded\",\"exit_code\":0,\"failure_reason\":null,\"started_at\":\"2026-09-02T10:03:35Z\",\"finished_at\":\"2026-09-02T10:03:43Z\",\"duration_seconds\":8,\"model_checksum\":{\"size\":581632,\"algorithm\":\"sm3\",\"value\":\"a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd\"},\"metrics\":{\"final_accuracy\":0.9087,\"final_loss\":0.2145,\"epochs\":[{\"epoch\":1,\"accuracy\":0.5231,\"loss\":1.2345},{\"epoch\":2,\"accuracy\":0.6789,\"loss\":0.9876}]}},\"codeaudit\":{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"\u672a\u53d1\u73b0\u5b89\u5168\u95ee\u9898\uff0c\u4ee3\u7801\u901a\u8fc7\u5ba1\u8ba1\",\"recommendation\":\"\u65e0\u9700\u4fee\u590d\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null}}"
+  "report": "{\"generated_at\":\"2026-09-02T10:03:43Z\",\"report_id\":\"train-report-20260902-100343-ae53fa14\",\"dataset\":{\"total_samples\":12500,\"splits\":{\"train\":10000,\"test\":1000},\"checksum\":{\"size\":540672,\"algorithm\":\"sm3\",\"value\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}},\"training_task\":{\"task_id\":\"task-20260825-001\",\"status\":\"succeeded\",\"exit_code\":0,\"failure_reason\":null,\"started_at\":\"2026-09-02T10:03:35Z\",\"finished_at\":\"2026-09-02T10:03:43Z\",\"duration_seconds\":8,\"model_checksum\":{\"size\":581632,\"algorithm\":\"sm3\",\"value\":\"a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd\"},\"metrics\":{\"final_accuracy\":0.9087,\"final_loss\":0.2145,\"epochs\":[{\"epoch\":1,\"accuracy\":0.5231,\"loss\":1.2345},{\"epoch\":2,\"accuracy\":0.6789,\"loss\":0.9876}]}},\"codeaudit\":{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"\u672a\u53d1\u73b0\u5b89\u5168\u95ee\u9898\uff0c\u4ee3\u7801\u901a\u8fc7\u5ba1\u8ba1\",\"recommendation\":\"\u65e0\u9700\u4fee\u590d\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null,\"roots\":[{\"directory\":\"/opt/taa/models/model-001\",\"files_scanned\":12,\"findings_count\":0,\"passed\":true}]}}"
 }
 ```
 
@@ -356,7 +356,15 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
         "low": 0                                          // 大模型归类为低危/良性的数量
       }
     },
-    "file_reports": null                                   // 按文件聚合的 findings 明细；null 表示无 findings，存在 findings 时为数组
+    "file_reports": null,                                  // 按文件聚合的 findings 明细；null 表示无 findings，存在 findings 时为数组
+    "roots": [                                             // 本次合并审计的分根结论；始终出现，元素顺序即审计根顺序（模型根在前）
+      {
+        "directory": "/opt/taa/models/model-001",          // 该根的绝对路径
+        "files_scanned": 12,                               // 该根扫描的文件数
+        "findings_count": 0,                               // 归属该根的 findings 数
+        "passed": true                                     // 该根是否被计入本次审计的失败：true 表示本次审计整体通过，或该根无 finding 且扫描跑到完成；详见 3.6 节
+      }
+    ]
   }
 }
 ```
@@ -443,7 +451,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 **请求内容类型**：`application/json`
 
-**触发时机**：TAA 完成模型解压后，对模型代码执行安全审计（静态扫描规则分析 + LLM 语义审查）。审计流程完成后，调用此接口上报审计结论与明细报告。
+**触发时机**：TAA **完成模型解压**或**完成依赖包安装**后，都会触发一次**合并审计**——对「完整模型代码 + 当前生效的依赖集」执行安全审计（静态扫描规则分析 + LLM 语义审查）。也就是说，无论下发的是模型还是依赖，被审计的永远是同样这两个根，而不再是各扫各的目录。审计流程完成后，调用此接口上报审计结论与明细报告；`scope` 只表示本次由哪一侧触发。
 
 **参数**：
 
@@ -455,18 +463,21 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 | `code` | `number` | 是 | 审计状态码：<br>• `0`：代码审计通过<br>• `1`：**代码审计未通过**（发现恶意/高危违规代码）<br>• `2`：**LLM 服务不可用**（模型探测失败或服务离线，按 Fail-Closed 策略拦截） |
 | `msg` | `string` | 否 | 审计结论摘要或异常说明 |
 | `report` | `string` | 否 | 代码审计报告 JSON 字符串，格式与训练结果报告中的 `codeaudit` 字段完全一致。当 LLM 服务不可用时可为空字符串 |
-| `scope` | `string` | 否 | 审计对象：缺省或空串表示**模型代码审计**，`"deps"` 表示**依赖包审计**。空串等价于模型审计是刻意设计，用于与老版本平台保持线格式兼容 |
+| `scope` | `string` | 否 | 本次审计的**触发源**：缺省或空串表示由模型侧触发（`/v1/taa/importModel` 解压完成后），`"deps"` 表示由依赖侧触发（`/v1/taa/importDeps` 安装完成后）。两个取值均保持不变；空串等价于模型侧触发是刻意设计，用于与老版本平台保持线格式兼容 |
+
+> **`code` 是本次合并审计的整体结论，不是「本次导入是否成功」**：`code` 描述的是「完整模型代码 + 当前生效的依赖集」这一整体审计的结果，与「触发方那一侧的导入是否成功」是两个问题。审计只会回滚**触发方**那一侧，且仅在触发方被牵连时才回滚，因此 `code=1` 完全可以与一次成功导入并存——例如依赖侧触发时发现的 findings 全部落在模型代码侧，此时 TAA 不删除任何目录，本次依赖导入仍判成功，而 `code` 仍为 `1`。平台判读 `code` 时须结合 `report.roots`，不要把它当作触发方导入成败的信号。
 
 **`scope` 字段说明**：
 
 | 取值 | 含义 |
 | --- | --- |
-| 缺省 / `""` | 模型代码审计 |
-| `"deps"` | 依赖包审计，由 `/v1/taa/importDeps` 的异步流水线在依赖包安装完成后触发 |
+| 缺省 / `""` | 由模型侧触发（`/v1/taa/importModel` 解压完成后） |
+| `"deps"` | 由依赖侧触发（`/v1/taa/importDeps` 的异步流水线在依赖包安装完成后） |
 
-- 字段缺失或为空串时均按模型代码审计处理，此时上报体会省略该字段，从而与不支持该字段的老版本平台保持线格式兼容。
-- 依赖审计的 `code` 语义与模型审计一致：`0` 审计通过，`1` **审计未通过**（检出风险），`2` 审计执行失败或按 Fail-Closed 策略判定 LLM 服务不可用。
-- `scope="deps"` 时，`report` 字段格式与模型审计完全一致。
+- `scope` 只表示**是谁触发了这次审计**，不再表示「审计了什么」。两条路径的审计范围完全相同——都是「完整模型代码 + 当前生效的依赖集」——`report` 结构与 `code` 语义也完全相同，`scope` 只剩溯源作用。平台不应据此推断被审计的目录或 findings 的归属；归属由 `report.roots` 给出。
+- 字段缺失或为空串时均按模型侧触发处理，此时上报体会省略该字段，从而与不支持该字段的老版本平台保持线格式兼容。
+- 两条路径的 `code` 语义一致：`0` 审计通过，`1` **审计未通过**（检出风险），`2` 审计执行失败或按 Fail-Closed 策略判定 LLM 服务不可用。
+- `scope="deps"` 时，`report` 字段格式与模型侧触发时完全一致。
 
 **请求示例（审计通过）**：
 
@@ -477,7 +488,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 0,
   "msg": null,
-  "report": "{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"未发现安全问题，代码通过审计\",\"recommendation\":\"无需修复\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null}"
+  "report": "{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"未发现安全问题，代码通过审计\",\"recommendation\":\"无需修复\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null,\"roots\":[{\"directory\":\"/opt/taa/models/model-001\",\"files_scanned\":12,\"findings_count\":0,\"passed\":true}]}"
 }
 ```
 
@@ -490,7 +501,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 1,
   "msg": "代码安全审计未通过: 发现反弹 Shell 风险",
-  "report": "{\"conclusion\":{\"passed\":false,\"risk_level\":\"CRITICAL\",\"summary\":\"发现高危后门代码\",\"recommendation\":\"请清理非法网络外联指令\",\"statistics\":{\"high\":1,\"medium\":0,\"low\":0}},\"file_reports\":[{\"filename\":\"train.py\",\"findings\":[{\"rule_id\":\"SEC-PY-003\",\"line\":42,\"severity\":\"HIGH\",\"description\":\"可疑网络反弹 Shell 代码\",\"llm_verdict\":\"MALICIOUS\"}]}]}"
+  "report": "{\"conclusion\":{\"passed\":false,\"risk_level\":\"CRITICAL\",\"summary\":\"发现高危后门代码\",\"recommendation\":\"请清理非法网络外联指令\",\"statistics\":{\"high\":1,\"medium\":0,\"low\":0}},\"file_reports\":[{\"filename\":\"train.py\",\"findings\":[{\"rule_id\":\"SEC-PY-003\",\"line\":42,\"severity\":\"HIGH\",\"description\":\"可疑网络反弹 Shell 代码\",\"llm_verdict\":\"MALICIOUS\"}]}],\"roots\":[{\"directory\":\"/opt/taa/models/model-001\",\"files_scanned\":12,\"findings_count\":1,\"passed\":false}]}"
 }
 ```
 
@@ -507,7 +518,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-**请求示例（依赖包审计：`scope="deps"`）**：
+**请求示例（依赖侧触发：`scope="deps"`）**：
 
 ```jsonc
 {
@@ -515,13 +526,21 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "requestId": "request-001",
   "taskId": "task-001",
   "code": 0,
-  "msg": "未发现安全问题，依赖包通过审计",
-  "report": "{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"未发现安全问题，依赖包通过审计\",\"recommendation\":\"无需修复\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null}",
+  "msg": "未发现安全问题，代码通过审计",
+  "report": "{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"未发现安全问题，代码通过审计\",\"recommendation\":\"无需修复\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null,\"roots\":[{\"directory\":\"/opt/taa/models/model-001\",\"files_scanned\":12,\"findings_count\":0,\"passed\":true},{\"directory\":\"/opt/taa/model-deps/d92e1c0f4b6a\",\"files_scanned\":2048,\"findings_count\":0,\"passed\":true}]}",
   "scope": "deps"
 }
 ```
 
-**`report` 字段内容格式**：与训练结果报告中的 `codeaudit` 字段完全一致，详见 [3.4 节 `report` 字段内容示例](#34-taa-上报训练完成结果) 中的 `codeaudit` 部分。
+**`report` 字段内容格式**：与训练结果报告中的 `codeaudit` 字段完全一致，详见 [3.4 节 `report` 字段内容示例](#34-taa-上报训练完成结果) 中的 `codeaudit` 部分。在此基础上，报告对象新增一个**始终出现**的顶层键 `roots`：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `roots` | `array` | 逐根给出本次合并审计的分项结论。每个元素含 `directory`（`string`，该根的绝对路径）、`files_scanned`（`number`，该根扫描的文件数）、`findings_count`（`number`，归属该根的 findings 数）、`passed`（`bool`，该根是否**被计入了本次审计的失败**） |
+
+- `roots` 无条件填充（只覆盖一个根时也填充），元素顺序即审计根顺序（模型根在前）；它在整份报告与训练报告的 `codeaudit` 对象里都是顶层键，位置一致。
+- **`passed` 的含义是「该根未导致本次审计失败」，不是「该根没有任何 finding」**。取值规则：`passed` 为 `true`，当且仅当**本次审计整体通过**，或者**该根下没有任何 finding 且本可发现 finding 的那次扫描跑到完成**。因此一个根可以带 findings 而 `passed` 仍为 `true`——只要这些 findings 都在阻断阈值之下、整体审计判为通过。
+- 反过来，**`findings_count` 为 `0` 而 `passed` 为 `false` 的根，是「扫描无法给出结论」的根**：可见范围内没有 finding，但本可发现 finding 的那次扫描没有跑到完成（例如被截断）。这种根不得被当作干净——「可见范围内没扫出问题」与「这次真的干净」不是同一个结论。
 
 **响应内容类型**：`application/json`
 
@@ -797,9 +816,10 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | `清理依赖目录失败: <err>` | 安装前清理同名目标目录失败 |
 | `安装依赖包失败: <err>` | 离线安装依赖包失败 |
 | `依赖包审计未通过` | 依赖包安全审计检出风险 |
-| `写入审计标记失败: <err>` | 写入审计通过标记失败 |
 
 > **审计未通过或审计无法完成时都会发出两条回调**：无论依赖包审计判定为未通过（`reportAudit` 的 `code=1`），还是审计执行失败、或按 Fail-Closed 策略判定 LLM 不可用（`reportAudit` 的 `code=2`），TAA 都会先以 `scope="deps"` 调用 [`/v1/taa/reportAudit`](#36-taa-上报代码安全审计结果v1taareportaudit)，随后再以 `code=1` 调用本接口。平台两处都需要接收。
+>
+> **两个 `code` 并非始终一致**：`reportAudit` 的 `code` 是**合并审计**的结论，本接口的 `code` 是**依赖导入本身**的成败，二者是两个问题。当 findings 全部落在**模型代码侧**时，合并审计未通过（`reportAudit` 的 `code=1`），但依赖导入并未被牵连——TAA 不删除依赖目录、模型目录也原样保留——本接口以 `code=0` 上报成功。这种「`reportAudit code=1` / `reportDeps code=0`」的分歧是刻意设计，平台不应把两者当作同一个信号。
 
 **响应内容类型**：`application/json`
 
@@ -1342,13 +1362,13 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
 **异步处理流水线**：
 
-解密 → SM3 内容寻址 → 幂等检查 → 解包到临时 wheelhouse → 包布局校验 → 离线安装到 `DEPS_DIR/<sm3>` → Fail-Closed 安全审计 → 写审计标记 → 置状态 → 上报。其中任一环节失败，TAA 都会回滚（清除状态并删除 `DEPS_DIR/<sm3>`），不会留下半成品目录。
+解密 → SM3 内容寻址 → 解包到临时 wheelhouse → 包布局校验 → 离线安装到 `DEPS_DIR/<sm3>` → Fail-Closed 安全审计 → 置状态 → 上报。其中任一环节失败，TAA 都会回滚（清除状态并删除 `DEPS_DIR/<sm3>`），不会留下半成品目录。
 
-**幂等规则**：
+**重复下发规则**：
 
 - 目标目录 `<depsDir>/<sm3>` 按内容寻址且永久保留。
-- 当该目录内存在审计标记 `.taa_audit_ok` 且其**内容**与当前标记版本一致时，视为该依赖集已审计通过，直接复用，不重新解包、不重装、不重审。
-- 审计标记只在真正跑过审计并通过时才写入。
+- **每一次下发都会重新解包、重新安装、重新审计**，不因目标目录已存在或依赖内容未变而复用上一次的结果：审计结论取决于「这套依赖是与哪份模型代码一起扫的」，只按依赖侧内容寻址无法复用（同一套依赖在不同模型代码下的结论可能不同）。因此旧的「同哈希即跳过安装与审计」短路已取消。
+- 目录内不再写入任何审计通过标记文件，每次下发都重新走一遍完整流水线。
 
 **错误响应**：
 
@@ -1488,7 +1508,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 | `currentOp` | `string` | 当前操作状态，取值同 [5.1](#51-连通性检查v1taahealth) |
 | `logCount` | `number` | 日志缓冲区中的日志数量 |
 
-> **语义边界**：`depsImported=true` 只表示"有一套依赖集已安装并绑定"，**不代表该依赖集通过了审计**。例如在关闭安全扫描（跳过依赖审计）的情况下导入的依赖集，该值为 `true`，但其依赖目录内并没有审计标记。依赖集是否已审计通过，以依赖目录内的标记文件为准。
+> **语义边界**：`depsImported=true` 只表示"有一套依赖集已安装并绑定"，**不代表该依赖集通过了审计**。依赖集一旦安装并绑定即生效（`depsHash` 指向它），而它的审计结论来自**最近一次合并审计**——该结论取决于这套依赖是与**哪份模型代码**一起扫的，因此「这套依赖通过了审计」并不是该目录的一项持久属性，也无法由目录自身判定。这正是 TAA 不再写任何审计标记文件的原因：被跳过的审计（关闭安全扫描）不会留下标记，被跳过的依赖集同样处于「已生效、但没有对应审计结论」的状态。
 
 **成功响应示例**（200 OK）：
 
