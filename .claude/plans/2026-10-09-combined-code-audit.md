@@ -354,9 +354,20 @@ Task 7 因此只剩：**新增测试 1~6、验收判据 1~7、变异证明、全
    （全仓 `grep startModelAuditAsync\|stopActiveTraining` 在 `*_test.go` 里零命中）。
    需要顺 `TestPhase1ModelAuditFailureAbortsTraining`（`import_flow_new_test.go:155`）那条路径
    找到可达层次，补一条反向断言。
-4. **训练报告的 `codeaudit` 一节来自合并审计** —— `LastAudit` 被写入已有断言，但它到
-   `BuildTrainingReport`（`internal/runtime/report.go:105-106`）的连接需要一条端到端断言；
-   若 `import_processing_report_test.go` 已有等价覆盖，则只需在报告里登记"已覆盖"并指出是哪条。
+4. **训练报告的 `codeaudit` 一节来自合并审计，且 `roots` 确实到达该节** —— 实测后这条收窄成一个
+   **具体且真实**的缺口：`import_processing_report_test.go:54` 直接调 `buildTrainingReport(...)`
+   并传一份 `*codeaudit.AuditReport`，其中 `Target.Directory` 有值而 `Directories` 没设；它断言
+   `codeaudit` 段**不含** `target`（`:113`）、不含 `report_id`/`statistics`/`scan_metadata`
+   （`:110-121`），但**全仓 `grep roots` 在 `import_processing_report_test.go` /
+   `report_res_test.go` / `internal/runtime/report_test.go` 里零命中** —— 也就是说：
+
+   > **没有任何测试断言 `roots` 到达训练报告。**
+
+   `roots` 是 Task 3（`b118e09`）专为「让平台看出 `code=1` 是哪个根出的问题」加进投影的。它在
+   `reportAudit` 那条消费方被 `TestCombinedAuditReportsOnceWithScopeAndRoots` 用
+   `projectedRoots` 钉住了，`LastAudit` 被两条触发路径都写了也被钉住了，但
+   `projectCodeAuditSection` 的**两个消费方只覆盖了一个**：训练报告那条如果哪天丢了 `roots`，
+   不会有任何测试变红。补一条断言 `codeaudit["roots"]` 存在且形状正确即可。
 
 判据 1/2/5/7（下发模型 → 一次 `scope=""` 上报；再下发干净依赖 → 一次 `scope="deps"` 且两个根
 都 passed；依赖侧脏 → 依赖目录被删而模型原样；`ScanEnabled=false` 不留任何标记）**均已覆盖**，
