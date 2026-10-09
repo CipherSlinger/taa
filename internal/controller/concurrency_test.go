@@ -395,10 +395,22 @@ func TestConcurrency_ModelImportRejectedWhileAuditing(t *testing.T) {
 	}
 }
 
-// TestConcurrency_AuditPanicDoesNotClearTrainingTask verifies that an unexpected panic
-// inside the asynchronous model audit goroutine does not clobber any running training task.
-func TestConcurrency_AuditPanicDoesNotClearTrainingTask(t *testing.T) {
+// TestConcurrency_AuditPanicRollsBackModelButKeepsTrainingTask covers an audit
+// panic while a training task is running.
+//
+// Two things have to hold at once, and they pull in opposite directions. The
+// model the abandoned audit was judging must be rolled back: no verdict is
+// coming, so leaving it marked imported is a pass nobody granted. The concurrent
+// training task's own state must survive untouched: the panic belongs to the
+// audit, and unwinding it is not a licence to corrupt an unrelated task's
+// snapshot or active-task identity.
+//
+// Cancelling the training process is deliberate rather than a violation of that
+// isolation — the model being trained is the one just found un-adjudicated.
+func TestConcurrency_AuditPanicRollsBackModelButKeepsTrainingTask(t *testing.T) {
 	state, _ := setupTestServer(t)
+
+	control := newTrainingControl()
 
 	state.mu.Lock()
 	state.TrainingRunning = true
@@ -411,10 +423,19 @@ func TestConcurrency_AuditPanicDoesNotClearTrainingTask(t *testing.T) {
 		Type:      "training",
 		Status:    "RUNNING",
 	}
+	state.trainingControl = control
 	state.AuditRunning = true
 	state.CurrentAuditOp = "auditing"
 	state.ActiveAuditTaskID = "task-audit-panicking"
 	state.ActiveAuditRequestID = "req-audit-panicking"
+	state.ModelImported = true
+	state.SavedModelResourceURL = "https://example.test/model.tar.gz"
+	state.pendingAudit = &AuditPendingSnapshot{
+		RequestID: "req-audit-panicking",
+		TaskID:    "task-audit-panicking",
+		Phase:     1,
+		StartedAt: time.Now().UTC(),
+	}
 	state.mu.Unlock()
 
 	// Invoke panic handler for modelAudit
@@ -437,5 +458,19 @@ func TestConcurrency_AuditPanicDoesNotClearTrainingTask(t *testing.T) {
 	if state.activeTask == nil || state.activeTask.TaskID != "task-training-active" {
 		t.Fatalf("activeTask snapshot was cleared by audit panic: %+v", state.activeTask)
 	}
-}
 
+	// The un-adjudicated model itself must not survive the panic
+	if state.ModelImported {
+		t.Error("ModelImported stayed true after the audit panicked; the model keeps its imported status " +
+			"although no verdict will ever arrive")
+	}
+	if state.SavedModelResourceURL != "" {
+		t.Errorf("SavedModelResourceURL was kept after the audit panicked: %q", state.SavedModelResourceURL)
+	}
+	if state.pendingAudit != nil {
+		t.Errorf("the pending audit marker survived the panic: %+v", state.pendingAudit)
+	}
+	if !control.IsCancelled() {
+		t.Error("training was left running against a model whose audit was abandoned")
+	}
+}

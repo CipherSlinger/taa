@@ -24,7 +24,7 @@ type PersistentState struct {
 	StateSeq              uint64              `json:"stateSeq"`              // 单调递增版本序列号
 	IncarnationID         string              `json:"incarnationId"`         // 冷启动纪元 UUID
 	CurrentPhase          int                 `json:"currentPhase"`          // 当前阶段 1~4
-	ModelImported         bool                `json:"modelImported"`         // 模型已解密且通过审计
+	ModelImported         bool                `json:"modelImported"`         // 模型已解密落盘；是否审计见 AuditPending
 	TrainingRunning       bool                `json:"trainingRunning"`       // 是否存在正在执行的训练任务
 	ExportPublicKey       string              `json:"exportPublicKey"`       // Phase 1 保存的公钥 PEM
 	SavedModelResourceURL string              `json:"savedModelResourceURL"` // 密态存储
@@ -33,6 +33,29 @@ type PersistentState struct {
 	DataChecksum          map[string]any      `json:"dataChecksum"`
 	ActiveTask            *ActiveTaskSnapshot `json:"activeTask,omitempty"` // 在飞任务快照
 	UpdatedAt             time.Time           `json:"updatedAt"`
+
+	// AuditPending records that a security audit is in flight for the model that
+	// ModelImported describes. Its only purpose is to survive a crash: the audit
+	// runs in a background goroutine that outlives the import task, so if the
+	// process dies mid-audit nothing else on disk says the model never got a
+	// verdict. Startup reads this and quarantines the model rather than letting a
+	// never-audited package look imported-and-fine.
+	//
+	// It is deliberately not implied by ModelImported: ModelImported=true with a
+	// nil AuditPending means no audit was owed (scanning disabled) or the audit
+	// concluded. It is written only while scanning is enabled.
+	AuditPending *AuditPendingSnapshot `json:"auditPending,omitempty"`
+}
+
+// AuditPendingSnapshot identifies the security audit that was in flight when the
+// process last sealed its state. The task/request IDs are carried so that the
+// startup reconciliation can report the abandoned audit to the platform under
+// the same identifiers the audit itself would have used.
+type AuditPendingSnapshot struct {
+	RequestID string    `json:"requestId"`
+	TaskID    string    `json:"taskId"`
+	Phase     int       `json:"phase"`
+	StartedAt time.Time `json:"startedAt"`
 }
 
 // ActiveTaskSnapshot 在飞任务快照

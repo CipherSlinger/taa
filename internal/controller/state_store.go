@@ -16,6 +16,9 @@ type PersistentState = store.PersistentState
 // ActiveTaskSnapshot 在飞任务快照
 type ActiveTaskSnapshot = store.ActiveTaskSnapshot
 
+// AuditPendingSnapshot 在飞安全审计快照，用于跨重启识别被遗弃的审计
+type AuditPendingSnapshot = store.AuditPendingSnapshot
+
 // StateStore 管理持久化状态文件的密封存储与内存缓存
 type StateStore = store.StateStore
 

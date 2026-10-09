@@ -534,3 +534,178 @@ func TestRecovery_DualTrackDrain(t *testing.T) {
 		}
 	})
 }
+
+// TestRecovery_AbandonedAuditQuarantine covers the crash that
+// reconcileCrashRecovery cannot see.
+//
+// An audit runs in a goroutine that outlives the import task, so a crash
+// mid-audit leaves ActiveTask nil while ModelImported stays true and the model's
+// code sits on disk un-adjudicated. Nothing else the daemon persists records
+// that an audit was owed — AuditPending is that record, and this is the startup
+// path that consumes it.
+//
+// It is the activeTask==nil half of TestRecovery_ModelImportQuarantine.
+func TestRecovery_AbandonedAuditQuarantine(t *testing.T) {
+	state, store, _ := setupTestRecoveryState(t)
+
+	unAudited := filepath.Join(state.Security.ModelDir, "backdoor.py")
+	if err := os.WriteFile(unAudited, []byte("import os; os.system('malicious')"), 0o644); err != nil {
+		t.Fatalf("write un-adjudicated model file: %v", err)
+	}
+
+	reports := make(chan map[string]any, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/taa/reportAudit" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			reports <- body
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	state.PlatformIP = server.Listener.Addr().String()
+	state.DockerID = "docker-audit-crash-01"
+
+	pState := &controller.PersistentState{
+		Version:               controller.DefaultStateVersion,
+		StateSeq:              1,
+		ModelImported:         true,
+		SavedModelResourceURL: "https://test.s3.com/model.tar.gz",
+		AuditPending: &controller.AuditPendingSnapshot{
+			RequestID: "req-audit-crash-01",
+			TaskID:    "task-audit-crash-01",
+			Phase:     1,
+			StartedAt: time.Now().UTC(),
+		},
+		IncarnationID: "test-epoch-audit",
+		UpdatedAt:     time.Now().UTC(),
+	}
+	if err := store.SealState(pState); err != nil {
+		t.Fatalf("seal state: %v", err)
+	}
+	state.RestoreFromPersistentState(pState)
+
+	// Precondition: the fixture must not route through reconcileCrashRecovery.
+	if state.GetActiveTask() != nil {
+		t.Fatalf("fixture is wrong: an active task would take the other recovery path")
+	}
+	pending := state.PendingAudit()
+	if pending == nil {
+		t.Fatalf("restoring the sealed state lost the pending audit marker")
+	}
+
+	if err := reconcileAbandonedAudit(context.Background(), state, pending); err != nil {
+		t.Fatalf("reconcileAbandonedAudit failed: %v", err)
+	}
+
+	entries, err := os.ReadDir(state.Security.ModelDir)
+	if err != nil {
+		t.Fatalf("read modelDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("un-adjudicated model code survived the restart: %d entries remain", len(entries))
+	}
+
+	persisted, err := store.UnsealState()
+	if err != nil {
+		t.Fatalf("unseal state: %v", err)
+	}
+	if persisted.ModelImported {
+		t.Error("the model came back as imported although its audit never reached a verdict")
+	}
+	if persisted.SavedModelResourceURL != "" {
+		t.Errorf("the resource URL of an un-adjudicated model was kept: %q", persisted.SavedModelResourceURL)
+	}
+	if persisted.AuditPending != nil {
+		t.Errorf("the pending marker survived reconciliation, so every restart would quarantine again: %+v",
+			persisted.AuditPending)
+	}
+
+	var first map[string]any
+	select {
+	case first = <-reports:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no audit report reached the platform for the abandoned audit")
+	}
+	if first["code"] != float64(2) {
+		t.Errorf("audit report code = %v, want 2", first["code"])
+	}
+	if first["taskId"] != "task-audit-crash-01" {
+		t.Errorf("the report did not carry the persisted audit task id: %v", first["taskId"])
+	}
+	select {
+	case extra := <-reports:
+		t.Errorf("more than one audit report was sent: %+v", extra)
+	default:
+	}
+}
+
+// TestRecovery_NoPendingAudit_LeavesModelUntouched guards the other direction:
+// a model with no audit outstanding must survive startup completely intact.
+//
+// Deployments that do not scan seal ModelImported=true and never write a marker,
+// as do deployments whose audit has already concluded. Were the reconciliation
+// keyed on ModelImported instead of on the marker, every restart would wipe a
+// perfectly good model directory and report an audit that never happened.
+func TestRecovery_NoPendingAudit_LeavesModelUntouched(t *testing.T) {
+	state, store, _ := setupTestRecoveryState(t)
+
+	modelFile := filepath.Join(state.Security.ModelDir, "train.py")
+	if err := os.WriteFile(modelFile, []byte("import torch\nmodel = torch.nn.Linear(2, 2)\n"), 0o644); err != nil {
+		t.Fatalf("write model file: %v", err)
+	}
+
+	reports := make(chan map[string]any, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/taa/reportAudit" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			reports <- body
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	state.PlatformIP = server.Listener.Addr().String()
+	state.DockerID = "docker-audit-none-01"
+
+	pState := &controller.PersistentState{
+		Version:               controller.DefaultStateVersion,
+		StateSeq:              1,
+		ModelImported:         true,
+		SavedModelResourceURL: "https://test.s3.com/model.tar.gz",
+		AuditPending:          nil,
+		IncarnationID:         "test-epoch-no-audit",
+		UpdatedAt:             time.Now().UTC(),
+	}
+	if err := store.SealState(pState); err != nil {
+		t.Fatalf("seal state: %v", err)
+	}
+	state.RestoreFromPersistentState(pState)
+
+	if err := reconcileAbandonedAudit(context.Background(), state, state.PendingAudit()); err != nil {
+		t.Fatalf("reconcileAbandonedAudit with no pending audit failed: %v", err)
+	}
+
+	if _, err := os.Stat(modelFile); err != nil {
+		t.Errorf("the model was disturbed although no audit was outstanding: %v", err)
+	}
+
+	persisted, err := store.UnsealState()
+	if err != nil {
+		t.Fatalf("unseal state: %v", err)
+	}
+	if !persisted.ModelImported {
+		t.Error("a model with no audit outstanding was marked not imported")
+	}
+	if persisted.SavedModelResourceURL == "" {
+		t.Error("a model with no audit outstanding lost its resource URL")
+	}
+
+	select {
+	case body := <-reports:
+		t.Errorf("an audit was reported although none was outstanding: %+v", body)
+	default:
+	}
+}

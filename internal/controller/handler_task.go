@@ -274,6 +274,14 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	s.Logs.Add(LogInfo, "importModel", "开始下载资源: %s", req.ResourceURL)
 	ciphertextPath, size, err := s.downloadToTempFile(req.ResourceURL)
 	if err != nil {
+		// ModelImported was sealed before the download, so a failure here has to
+		// undo it explicitly. Relying on release() alone left the flag set with no
+		// model on disk and no audit ever launched — and release() clears
+		// activeTask, the one thing crash recovery keys on, so nothing downstream
+		// would have corrected it either. The other failure paths in
+		// processImportedResource all go through reportImportFailure for the same
+		// reason.
+		s.clearImportedState(true, phase)
 		release()
 		s.Logs.Add(LogError, "importModel", "下载资源失败: %v", err)
 		writeErr(w, http.StatusInternalServerError, err)

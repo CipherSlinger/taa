@@ -242,6 +242,64 @@ func reconcileCrashRecovery(ctx context.Context, state *controller.TAAState, sto
 	return nil
 }
 
+// reconcileAbandonedAudit handles a model audit that was in flight when the
+// process died. It is the crash-side counterpart of the rollback that
+// controller.handleAsyncPanic performs for a panicking audit: an audit that will
+// never produce a verdict must not leave the model looking imported.
+//
+// reconcileCrashRecovery cannot cover this case. It keys on activeTask, and by
+// the time the audit runs the model import task has already been released, so
+// activeTask is nil and nothing else the daemon persisted recorded that an audit
+// was ever owed. AuditPending is that record, written in the same seal as
+// ModelImported precisely so the two can never disagree across a crash; this
+// function is what consumes it.
+//
+// The caller passes the in-memory pending value rather than the one it read from
+// the store, so that a model_import crash — which reconcileCrashRecovery already
+// rolls back, clearing the marker — is not quarantined and reported twice.
+func reconcileAbandonedAudit(ctx context.Context, state *controller.TAAState, pending *controller.AuditPendingSnapshot) error {
+	if state == nil || pending == nil {
+		return nil
+	}
+
+	log.Printf("[RECOVERY AUDIT] abandoned model audit detected: requestId=%s, taskId=%s, phase=%d, startedAt=%s",
+		pending.RequestID, pending.TaskID, pending.Phase, utils.FormatISO8601(pending.StartedAt))
+	if state.Logs != nil {
+		state.Logs.Add(controller.LogWarn, "recovery",
+			"检测到被遗弃的模型代码审计 (taskId: %s)，审计未出裁决，强制隔离模型并复位导入状态", pending.TaskID)
+	}
+
+	// 规约 1 安全隔离：审计不会再给出结论，盘上的模型代码等同于未审计代码。
+	// utils.CleanDir 与 reconcileCrashRecovery 用的是同一个工具。
+	if modelDir := state.Security.ModelDir; modelDir != "" {
+		log.Printf("[RECOVERY AUDIT] cleaning un-adjudicated model directory: %s", modelDir)
+		if err := utils.CleanDir(modelDir); err != nil {
+			log.Printf("WARNING: clean model dir %s failed: %v", modelDir, err)
+		}
+	}
+
+	// 复位导入状态并落盘。这一步同时清掉 pendingAudit，因此下一次重启不会再隔离、
+	// 也不会再补报同一个被遗弃的审计。
+	state.UpdateImportState(true, false, pending.Phase)
+
+	// 规约 7 补报：用持久化下来的审计 task/request id 告知平台该次审计未完成。
+	platformIP := state.PlatformIP
+	dockerID := state.DockerID
+	if platformIP == "" || dockerID == "" || (pending.RequestID == "" && pending.TaskID == "") {
+		return nil
+	}
+
+	msg := "TAA 异常崩溃重启，模型代码审计中断未出裁决，模型已隔离，请重新下发模型"
+	reportCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := controller.ReportAudit(reportCtx, platformIP, dockerID, pending.RequestID, pending.TaskID, 2, msg, ""); err != nil {
+		log.Printf("WARNING: report abandoned audit failed: requestId=%s taskId=%s, err=%v", pending.RequestID, pending.TaskID, err)
+		return err
+	}
+	log.Printf("[RECOVERY AUDIT] abandoned audit reported to platform: taskId=%s", pending.TaskID)
+	return nil
+}
+
 func resetRecoveryTaskState(state *controller.TAAState, store *controller.StateStore) {
 	if state != nil {
 		state.ResetActiveTask()

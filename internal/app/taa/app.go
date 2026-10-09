@@ -168,6 +168,13 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 				log.Printf("WARNING: reconcile crash recovery failed: %v", err)
 			}
 		}
+		// An audit outlives the import task that started it, so its crash leaves no
+		// activeTask behind for the block above to find. The pending value comes from
+		// the restored state rather than from pState, so a model_import crash that
+		// reconcileCrashRecovery just rolled back is not reconciled twice.
+		if err := reconcileAbandonedAudit(ctx, state, state.PendingAudit()); err != nil {
+			log.Printf("WARNING: reconcile abandoned audit failed: %v", err)
+		}
 	}
 
 	logWatcher := state.StartTaaLogWatcher(ctx)

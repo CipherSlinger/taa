@@ -74,11 +74,16 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 			"value":     hash,
 		}
 		s.reportModelImportAsync(req.RequestID, req.TaskID, 0, "模型导入成功", checksum)
-		s.saveModelSuccess(req.ResourceURL)
 
-		// ── Stage 2: Launch model security audit asynchronously in background ──
+		// ── Stage 2: Record the model and the audit owed for it, then launch it ──
+		// The model is recorded as imported and the audit as outstanding in one
+		// sealed write: the audit runs in a goroutine that outlives this task, so
+		// the on-disk marker is the only thing that can tell a later restart the
+		// model never got a verdict.
+		s.beginModelImportAndAudit(req, phase)
+
 		// Decouples auditing from task pipeline so data import and training are not blocked.
-		s.startModelAuditAsync(req, phase)
+		s.launchModelAudit(req, phase)
 		s.Logs.Add(LogInfo, "import", "阶段%d: 模型导入完成，安全审计已在后台异步启动，等待数据下发后执行训练: taskId=%s", phase, req.TaskID)
 		s.setCurrentOp("idle")
 		return
@@ -579,17 +584,14 @@ func (s *TAAState) stopActiveTraining(reason string) {
 	}
 }
 
-// startModelAuditAsync launches the model security audit asynchronously in the background.
+// launchModelAudit starts the model security audit asynchronously in the background.
 // This decouples code auditing from the main task pipeline, allowing subsequent data
 // imports and training tasks to proceed concurrently without mutual exclusion conflicts.
-func (s *TAAState) startModelAuditAsync(req importRequest, phase int) {
-	s.mu.Lock()
-	s.ActiveAuditTaskID = req.TaskID
-	s.ActiveAuditRequestID = req.RequestID
-	s.CurrentAuditOp = "auditing"
-	s.AuditRunning = true
-	s.mu.Unlock()
-
+//
+// The audit's in-memory and durable markers are set by beginModelImportAndAudit,
+// which must have sealed before this is called: launched first, a failing audit
+// would clear the model only for the import path to re-seal it as imported.
+func (s *TAAState) launchModelAudit(req importRequest, phase int) {
 	s.runAsyncSafe("modelAudit", func() {
 		s.clearAuditState()
 	}, func() {
@@ -605,6 +607,12 @@ func (s *TAAState) startModelAuditAsync(req importRequest, phase int) {
 // auditAndReportModelImport 对解压后的模型代码执行安全审计（静态扫描 + 可选 LLM 语义验证），
 // 并将审计结果通过 /v1/taa/reportAudit 上报平台。返回是否审计通过。
 func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
+	// Cleared as soon as a verdict exists, not when the goroutine unwinds. The
+	// unwind happens after the platform report, so a crash in between would leave
+	// a pending marker for a model that had in fact been adjudicated — and the
+	// next restart would quarantine it.
+	defer s.concludeAuditPending()
+
 	s.setLastAudit(nil)
 	if !s.Security.ScanEnabled {
 		s.Logs.Add(LogInfo, "audit", "安全扫描未启用，跳过模型代码审计")
