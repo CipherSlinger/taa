@@ -134,6 +134,14 @@
 #                      The kata runtime uses 7 / 47 / 1; reduced-phys-bits is the
 #                      first thing to try if the guest's DCU DMA misbehaves.
 #
+# Rebinding the DCU to vfio-pci is a two-step - unbind it from whatever holds it,
+# then bind it to vfio-pci - and never a remove + rescan. Re-enumeration re-runs the
+# vendor module's probe (hycu_pci_fixup_header), whose hydcu_check_change_speed path
+# deadlocks: the probe never returns, the device lock is held for good, and only a
+# host reboot clears it. /home/wj/dcu/README.md ships dcu-bind-vfio.service, which
+# binds at boot that way for exactly this reason. `up` refuses to start rather than
+# help anyone into the deadlock, and says so.
+#
 # DCU mode also changes the disk bus and the root= argument (see the note above
 # VM_APPEND), so an overlay built for one mode cannot be booted in the other. The
 # overlay name is mode-specific and `up` checks the backing chain rather than
@@ -387,6 +395,12 @@ else
 fi
 
 # Run a script on the KVM host; stdin is forwarded.
+#
+# The body is an *unquoted* heredoc, so the local shell expands it on the way out:
+# every $ and backtick the remote side should see has to be escaped. A bare pair of
+# backticks in a comment is a command substitution here, not punctuation - and one
+# wrapping `bash -s` does not merely fail, it reads the very stdin the body was
+# going to travel on. That is why the comments below escape theirs.
 host_script() { "${SSH[@]}" bash -s; }
 # Run a command on the KVM host.
 host() { "${SSH[@]}" "$@"; }
@@ -920,7 +934,7 @@ fi
 
 # DCU mode boots a different kernel from a different root filesystem with a
 # different QEMU, so check all three here rather than failing halfway through a
-# launch. The disk images are built by `up`, so they are not checked for existence.
+# launch. The disk images are built by \`up\`, so they are not checked for existence.
 if [ "$CSV2_DCU_ON" = 1 ]; then
     if [ -f "$KATA_KERNEL" ]; then
         echo "  ok   kata kernel $KATA_KERNEL"
@@ -963,7 +977,22 @@ for d in $VFIO_DEVICES; do
     drv=\$(basename "\$(readlink -f \$p/driver 2>/dev/null)" 2>/dev/null)
     if [ "\$drv" != vfio-pci ]; then
         echo "  FAIL \$d is bound to \${drv:-no driver}, not vfio-pci"
-        echo "       bind it first:  echo 0000:\$d > /sys/bus/pci/drivers/vfio-pci/bind"
+        # Rebinding is unbind + new_id + bind, never remove + rescan: re-enumeration
+        # re-runs the vendor module's probe (hycu_pci_fixup_header), which deadlocks
+        # and holds the device lock until the host is rebooted - see the DCU section
+        # in the header. The ids come from uevent rather than vendor/device because on
+        # a wedged card those two are config-space reads that block on that same lock,
+        # so reading them here could hang this check instead of reporting it.
+        ids=\$(sed -n 's/^PCI_ID=//p' "\$p/uevent" 2>/dev/null | tr 'A-Z' 'a-z')
+        ids=\${ids:-vendor:device}
+        echo "       to rebind it:  unbind, add the id, bind -"
+        echo "         echo 0000:\$d > \$p/driver/unbind"
+        echo "         echo 0x\${ids%%:*} 0x\${ids#*:} > /sys/bus/pci/drivers/vfio-pci/new_id"
+        echo "         echo 0000:\$d > /sys/bus/pci/drivers/vfio-pci/bind"
+        echo "       do NOT use remove + rescan - it deadlocks the vendor module's probe"
+        echo "       and only a host reboot brings the card back. If the unbind above"
+        echo "       hangs, that deadlock is already in place; the kernel log will be"
+        echo "       repeating 'blocked for more than N seconds'."
         fail=1; continue
     fi
     grp=\$(basename "\$(readlink -f \$p/iommu_group 2>/dev/null)")
@@ -1213,7 +1242,7 @@ cmd_verify() {
 set -e
 [ -x "$SMOKE_BIN" ] || { echo "smoke binary not found: $SMOKE_BIN" >&2; exit 1; }
 export SSHPASS="$CSV2_GUEST_PASS"
-# stdin is closed on both hops: this block arrives on the host as `bash -s`, so
+# stdin is closed on both hops: this block arrives on the host as \`bash -s\`, so
 # a command that reads stdin would consume the rest of the script.
 sshpass -e scp -o StrictHostKeyChecking=accept-new "$SMOKE_BIN" root@$VM_IP:/root/ </dev/null >/dev/null
 # Chain verification needs the Hygon HRK/HSK-CEK certs alongside the binary.
@@ -1307,7 +1336,7 @@ export SSHPASS="$CSV2_GUEST_PASS"
 # get-attestation writes ./report.cert beside itself, so run it from /root and
 # pull the report back whole rather than trying to decode it over the wire.
 # Both commands get their stdin explicitly closed: this block arrives on the
-# host as `bash -s`, and anything reading stdin would otherwise swallow the
+# host as \`bash -s\`, and anything reading stdin would otherwise swallow the
 # rest of the script.
 sshpass -e scp -o StrictHostKeyChecking=accept-new "$GET_ATTESTATION_BIN" root@$VM_IP:/root/ </dev/null >/dev/null
 sshpass -e ssh -n -o StrictHostKeyChecking=accept-new root@$VM_IP \\
