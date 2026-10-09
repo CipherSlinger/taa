@@ -541,7 +541,7 @@ func reportAuditHandler(store *reportStateStore) http.HandlerFunc {
 			state.Message = "code 必须为 0(通过)、1(未通过) 或 2(LLM不可用)"
 		} else if state.Scope != "" && state.Scope != "deps" {
 			state.StatusCode = http.StatusBadRequest
-			state.Message = "scope 仅支持 deps(依赖包审计) 或空字符串(模型代码审计)"
+			state.Message = "scope 仅支持 deps(依赖下发触发) 或空字符串(模型下发触发)"
 		} else {
 			state.Accepted = true
 			state.StatusCode = http.StatusOK

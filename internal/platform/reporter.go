@@ -237,9 +237,11 @@ func ReportDeps(ctx context.Context, platformAddr, dockerID, requestID, taskID s
 	return SendPlatformJSON(ctx, defaultHTTPClient, url, data)
 }
 
-// ReportAuditScoped is ReportAudit with an extra scope field that distinguishes the model audit
-// from the dependency audit. An empty scope means model audit and stays wire-compatible with
-// older platform versions.
+// ReportAuditScoped is ReportAudit with an extra scope field naming which delivery triggered the
+// audit: "deps" for a dependency delivery and empty for a model delivery. It does not describe
+// what was audited -- both triggers audit the model code and the currently bound dependency set
+// together -- only which side asked for it. An empty scope stays wire-compatible with older
+// platform versions that predate dependency delivery.
 func ReportAuditScoped(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report, scope string) error {
 	addr, dID, reqID, tID, err := ValidateAndNormalizePlatformParams(platformAddr, dockerID, requestID, taskID)
 	if err != nil {
@@ -270,7 +272,8 @@ func ReportAuditScoped(ctx context.Context, platformAddr, dockerID, requestID, t
 	return SendPlatformJSON(ctx, defaultHTTPClient, url, data)
 }
 
-// ReportAudit reports the model code audit result to the platform.
+// ReportAudit reports an audit result with no scope, the value used when a model delivery
+// triggered the audit. See ReportAuditScoped for what the scope means.
 func ReportAudit(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report string) error {
 	return ReportAuditScoped(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report, "")
 }

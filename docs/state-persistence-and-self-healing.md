@@ -14,7 +14,7 @@ TAA（Trusted Application Attestation）运行于 Hygon CSV TEE 物理隔离环�
 6. **自愈二次崩溃与幽灵失败（Recovery Loop & Ghost Failure）**：磁盘写满（`ENOSPC`）会导致自愈写入失败报告再度崩溃；而异步补偿若跨越 HTTP 端口开放，会导致新调度的重试任务被旧补偿包误杀。
 
 ### 1.2 核心设计目标
-- **零安全死角（Zero Un-audited Execution）**：未通过审计的模型在崩溃后必须被物理清除，绝对禁止任何未通过审计的代码被复用。
+- **零安全死角（Zero Un-audited Execution）**：未通过审计（指模型侧被牵连，见 规约 10）的模型在崩溃后必须被物理清除，绝对禁止任何未通过审计的代码被复用。
 - **全状态生命周期强互斥**：运行中严格禁止任何阶段切换，彻底杜绝并发踩踏。
 - **TEE 硬件级密封存储（Sealed Storage）**：高敏状态通过 SM4-GCM 密态落盘，具备防篡改与机密性保证。
 - **自愈熔断与双轨投递（Circuit Breaker & Dual-Track Drain）**：前置极速同步补偿（< 2s） + 离线后台重试，解耦 K8s 存活探针，配备二次崩溃熔断保护。
@@ -303,11 +303,17 @@ flowchart TD
 - 当 TAA 接收到 SIGTERM 优雅停机信号或在自愈流程清理孤儿时，通过负 PGID（`syscall.Kill(-pgid, syscall.SIGKILL)`）向整个进程树广播杀灭信号；
 - 确保包含 PyTorch DDP / Torchrun 多卡分布式训练、Python multiprocessing 及 Shell 管道在内的所有后代孤儿进程被物理消灭，彻底回收 GPU 显存并释放显卡硬件锁。
 
-#### 规约 10：模型代码审计失败即刻熔断与物理清除（Audit Failure Immediate Abort & Quarantine）
-- 当 `auditAndReportModelImport` 检测到源码存在高危风险（`audit.Conclusion.Passed == false`）或在 `failClosed=true` 下 LLM 服务不可用时：
+#### 规约 10：模型下发触发且模型侧被牵连时的即刻熔断与物理清除（Model-Triggered Implicated Audit Abort & Quarantine）
+- 自合并代码审计落地（由 `.claude/specs/2026-10-09-combined-code-audit-design.md` 注册）后，模型下发与依赖下发触发的是**同一次**覆盖「完整模型代码 + 当前绑定依赖集」的审计：`reportAudit` 的 `scope` 只表示**触发方**（空字符串为模型下发触发，`"deps"` 为依赖下发触发），不再表示审计对象。
+- 仅当**本次审计由模型下发触发**且**模型侧被牵连**（即 `TriggerClean == false`：要么审计跑完但 `implicated = !audit.Conclusion.Passed && (!ScanProvedClean || 模型根 findings > 0)`，要么审计根本没跑成而 `code=2`——在 `failClosed=true` 下 LLM 服务不可用，或引擎执行出错）时：
   - **立即物理清空 `<modelDir>`（`cleanDirContents`）**，销毁所有已解压代码；
   - 严禁将 `ModelImported` 置为 `true`；
   - **立即终止当前导入链路并返回**，绝对禁止在 Phase 1 或 Phase 2/3 中继续流转至训练执行。
+- **合并审计绝不跨侧清除**（这是合并审计的**既定行为**，不是缺陷）：
+  - 模型下发触发的审计若 `Passed == false`，但全部高危 findings 都落在**依赖**侧，则**不清空 `<modelDir>`**；
+  - 依赖下发触发的审计若在**模型代码**中发现问题，只上报 `code=1`，**保留 `<modelDir>` 且训练环境照常可用**；
+  - 一旦发生清除，永远只清**触发方自己的那一侧**：触发方为模型则 `cleanDirContents(Security.ModelDir)`，触发方为依赖则 `rollbackDepsImport(候选目录)`。
+- 若要收紧这一姿态，应当**另开一个显式闸门**（例如「最近一次合并审计未通过则拒绝 startTraining」），而不是修改本规约的清除规则。
 
 #### 规约 11：异步协程 Panic 统一捕获与平台兜底补偿（Async Goroutine Panic Recovery & Compensation）
 - 在 `runAsyncSafe` 捕获到未处理的 `recover()` 时：
@@ -358,7 +364,7 @@ flowchart TD
 | **恶意修改 `state.sealed` 注入伪造公钥** | SM4-GCM Tag 认证失败，若私钥未变则判定遭篡改，直接以 `exit 1` 拒绝启动并报警 | **Fail-Closed**：防止攻击者伪造 `ExportPublicKey` 窃取导出模型 |
 | **宿主机快照回滚与重放攻击（Rollback Attack）** | 引入单调递增 `StateSeq uint64` 与冷启动 `IncarnationID`，单调校验状态时序 | **状态防回滚**：杜绝非信任宿主机通过还原旧虚拟磁盘快照重放会话 |
 | **审计中途崩溃后利用空 URL 绕过检测** | 自愈逻辑强行清空 `<modelDir>`，`hasSavedModel()` 强校验持久化标记 | **代码安全兜底**：绝不允许任何未通过审计的代码被沙箱拉起执行 |
-| **代码审计未通过仍被触发执行** | 审计失败（`Passed==false`）即刻阻断流程，清空代码目录，禁止置位 `ModelImported` | **带毒代码零执行**：杜绝高危漏洞/后门模型在后续数据到达时被拉起训练 |
+| **代码审计未通过仍被触发执行** | 仅当**模型下发触发**且**模型侧被牵连**（`TriggerClean == false`，即扫描未证明完整、模型根有 findings、`failClosed` 下 LLM 不可用、或引擎执行出错）时即刻阻断流程、清空代码目录、禁止置位 `ModelImported` | **带毒代码零执行**：杜绝高危漏洞/后门模型在后续数据到达时被拉起训练 |
 | **任务执行途中下发强切 Phase 指令** | `switchHandler` 拦截并发状态，严格返回 `409 Conflict` | **状态单调性**：消灭双进程并发读写输出目录造成的产物污染 |
 | **跨阶段权限降级明文导出漏洞** | `ImportIndexRecord` 持久化绑定 `Phase`，`exportHandler` 强制根据 `record.Phase` 断言加密 | **防产物降级外泄**：彻底消除 Phase 3 正式训练模型在切回 Phase 1 后被明文带出的漏洞 |
 | **导出打包软链接穿透窃取宿主私钥** | 遍历产物时调用 `filepath.EvalSymlinks` 解析真实物理路径，脱离 `srcDir` 坚决拒绝打包 | **TEE 根凭证保护**：阻断恶意脚本通过软链接窃取 `/opt/taa/keys/private.pem` |
@@ -395,7 +401,7 @@ flowchart TD
    - `runAsyncSafe` 强化 Panic 兜底，自动向平台补偿投递致命错误上报。
 4. **解压安全、审计熔断与进程树生命周期管控 (`internal/controller/import_processing.go`)**：
    - `extractTarStream` / `extractZipArchive` 注入 `maxExtractBytes` 解压配额限制；
-   - `auditAndReportModelImport` 改造为带状态熔断，审计失败立即执行物理清库（`cleanDirContents`）并阻断后续执行；
+   - `auditAndReportModelImport` 返回合并审计的 `TriggerClean`，仅在模型侧被牵连（`TriggerClean == false`）时物理清库（`cleanDirContents(s.Security.ModelDir)`）并阻断后续执行；
    - `runRuntimeConfig` 显式设置独立进程组（`Setpgid: true`）并提供 `syscall.Kill(-pgid, syscall.SIGKILL)` 级联杀树机制。
 5. **自愈与熔断流水线 (`internal/app/taa/app.go`)**：
    - 在 `startServer` 前组装 `reconcileCrashRecovery` 链；

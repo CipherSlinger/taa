@@ -2742,12 +2742,12 @@ func TestReportAuditScopeHandling(t *testing.T) {
 		t.Fatalf("scope = %q, want deps", got)
 	}
 
-	// 2. Missing scope defaults to model-code audit (empty string), preserving back-compat.
+	// 2. Missing scope defaults to the model-delivery trigger (empty string), preserving back-compat.
 	if w := post(`{"dockerId":"docker-1","requestId":"req-1","code":0}`); w.Code != http.StatusOK {
 		t.Fatalf("no scope status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 	if got := readScope(); got != "" {
-		t.Fatalf("scope = %q, want empty for model-code audit", got)
+		t.Fatalf("scope = %q, want empty for the model-delivery trigger", got)
 	}
 
 	// 3. Any other scope value is rejected.
