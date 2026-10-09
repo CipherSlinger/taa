@@ -134,13 +134,13 @@
 #                      The kata runtime uses 7 / 47 / 1; reduced-phys-bits is the
 #                      first thing to try if the guest's DCU DMA misbehaves.
 #
-# Rebinding the DCU to vfio-pci is a two-step - unbind it from whatever holds it,
-# then bind it to vfio-pci - and never a remove + rescan. Re-enumeration re-runs the
-# vendor module's probe (hycu_pci_fixup_header), whose hydcu_check_change_speed path
-# deadlocks: the probe never returns, the device lock is held for good, and only a
-# host reboot clears it. /home/wj/dcu/README.md ships dcu-bind-vfio.service, which
-# binds at boot that way for exactly this reason. `up` refuses to start rather than
-# help anyone into the deadlock, and says so.
+# The DCU's binding to vfio-pci is made once, at boot, by the unit that ships with
+# the vendor kit (/home/wj/dcu/README.md, dcu-bind-vfio.service). Do not move it by
+# hand. `rmmod` and `unbind` are not safe here: the vendor module's probe
+# (hycu_pci_fixup_header) deadlocks on re-enumeration, and once it has, even unbind
+# blocks on the device lock. `remove` + `rescan` is what re-runs that probe in the
+# first place, and it wedges the card until the host is rebooted. When the card is
+# not on vfio-pci, `up` refuses to start and names the recovered paths instead.
 #
 # DCU mode also changes the disk bus and the root= argument (see the note above
 # VM_APPEND), so an overlay built for one mode cannot be booted in the other. The
@@ -977,22 +977,19 @@ for d in $VFIO_DEVICES; do
     drv=\$(basename "\$(readlink -f \$p/driver 2>/dev/null)" 2>/dev/null)
     if [ "\$drv" != vfio-pci ]; then
         echo "  FAIL \$d is bound to \${drv:-no driver}, not vfio-pci"
-        # Rebinding is unbind + new_id + bind, never remove + rescan: re-enumeration
-        # re-runs the vendor module's probe (hycu_pci_fixup_header), which deadlocks
-        # and holds the device lock until the host is rebooted - see the DCU section
-        # in the header. The ids come from uevent rather than vendor/device because on
-        # a wedged card those two are config-space reads that block on that same lock,
-        # so reading them here could hang this check instead of reporting it.
-        ids=\$(sed -n 's/^PCI_ID=//p' "\$p/uevent" 2>/dev/null | tr 'A-Z' 'a-z')
-        ids=\${ids:-vendor:device}
-        echo "       to rebind it:  unbind, add the id, bind -"
-        echo "         echo 0000:\$d > \$p/driver/unbind"
-        echo "         echo 0x\${ids%%:*} 0x\${ids#*:} > /sys/bus/pci/drivers/vfio-pci/new_id"
-        echo "         echo 0000:\$d > /sys/bus/pci/drivers/vfio-pci/bind"
-        echo "       do NOT use remove + rescan - it deadlocks the vendor module's probe"
-        echo "       and only a host reboot brings the card back. If the unbind above"
-        echo "       hangs, that deadlock is already in place; the kernel log will be"
-        echo "       repeating 'blocked for more than N seconds'."
+        # No sysfs recipes here, deliberately. This card punishes improvisation: once
+        # the vendor module's probe (hycu_pci_fixup_header) has deadlocked on the
+        # device lock, unbind and rmmod block behind it too, and remove + rescan is
+        # what triggers that deadlock - it wedges the card until the host is rebooted.
+        # See the DCU section in the header. Name the two recovered paths, and leave
+        # anything beyond them to the vendor.
+        echo "       the card has to be on vfio-pci before a guest can be given it, and"
+        echo "       moving it there by hand is not safe - unbind and rmmod can block on"
+        echo "       the device lock, and remove + rescan deadlocks the vendor module's"
+        echo "       probe until the host is rebooted. Recovery, in order:"
+        echo "         systemctl start dcu-bind-vfio.service   # then re-run this command"
+        echo "         reboot                                  # if it is already wedged"
+        echo "       Beyond those two, leave it to the vendor."
         fail=1; continue
     fi
     grp=\$(basename "\$(readlink -f \$p/iommu_group 2>/dev/null)")
