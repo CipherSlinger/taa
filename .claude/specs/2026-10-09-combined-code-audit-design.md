@@ -120,12 +120,35 @@ type RootReport struct {
     Directory     string `json:"directory"`
     FilesScanned  int    `json:"files_scanned"`
     FindingsCount int    `json:"findings_count"`
-    // Passed is true only when nothing points at this root: no finding under it,
-    // and the scan that would have found one ran to completion. A root is not
-    // passed because the scan that would have cleared it was truncated.
+    // Passed reports whether this root contributed to a failure: it is true when
+    // the audit as a whole passed, or when this root has no finding and the scan
+    // that would have found one ran to completion. It does not mean "finding-free"
+    // -- a root whose findings were all below the blocking threshold is not a
+    // cause of failure, and saying otherwise would put passed=false next to code=0
+    // and leave a reader unable to tell whether anything was actually wrong.
     Passed bool `json:"passed"`
 }
 ```
+
+`Passed` 的完整定义（`AssembleAuditReport` 里一行）：
+
+```
+RootReport.Passed = Conclusion.Passed || (ScanProvedClean && FindingsCount == 0)
+```
+
+`ScanProvedClean == false` 必须让**每一个**根 `passed=false`：一次没跑完的扫描无法为任何根
+背书，包括那些恰好可见 findings 为零的根。这正是 §3.5 要堵的同一个 fail-open，
+报告若在截断扫描的证据上宣称某个根干净，就是在替扫描说它没资格说的话。
+
+于是判据表：
+
+| 情形 | `Conclusion.Passed` | `ScanProvedClean` | 该根 findings | `root.passed` |
+| :--- | :--- | :--- | :--- | :--- |
+| 干净交付 | true | true | 0 | true |
+| 仅有低于阈值的 finding | true | true | >0 | true |
+| 截断 | false | false | 任意 | **false** |
+| HIGH 只在另一根 | false | true | 0 | true |
+| HIGH 在本根 | false | true | >0 | false |
 
 `AuditMetadata` 同时新增一个字段，把**组装后的**扫描可信度带出来：
 
@@ -138,8 +161,13 @@ type RootReport struct {
 ScanProvedClean bool `json:"scan_proved_clean"`
 ```
 
-§3.5 的判据依赖它，而 `ProvesCleanScan()` 的六个输入里只有五个被拷进 `AuditMetadata`
+§3.5 的回滚判据依赖它，而 `ProvesCleanScan()` 的六个输入里只有五个被拷进 `AuditMetadata`
 （`Report.Passed` 未拷），所以调用方**无法**从既有字段重建这个裁决——必须显式带出。
+
+**它是 TAA 内部字段，不上线。** 投影仍是 `{conclusion, file_reports, roots}`：
+平台侧的读者不需要它，因为 `roots[].passed` 已经把它的效果表达了——某个根
+`findings_count == 0` 却 `passed == false`，就是「扫描无法为该根下结论」的线上表现。
+把内部字段写进接口契约，会让下一个人去信任一个他其实收不到的字段。
 
 `roots` 放在 `AuditReport` 顶层而**不是** `AuditTarget` 下面，是因为上报平台的 `report`
 字段不是整份 `AuditReport`，而是两份各自重复实现的**投影**：
