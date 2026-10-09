@@ -1,0 +1,254 @@
+# 合并代码审计：模型代码 + 当前依赖集，一次审计、一次上报
+
+## Context
+
+**为什么改。** 今天 TAA 有两条彼此独立的审计链路：
+
+- `importModel` 解压后，后台异步审计 `Security.ModelDir`，以 `scope=""` 上报 `reportAudit`
+- `importDeps` 安装完成后，在流水线内同步审计 `<depsDir>/<sm3>`，以 `scope="deps"` 上报 `reportAudit`
+
+两条链路各扫各的目录、各出一份报告。于是「模型代码 + 它实际加载的依赖」作为一个整体从未被审计过：跨二者的数据流（模型代码 import 了依赖里的某个模块，污点从依赖流入模型代码）不在任何一次扫描的视野里。用户要求：**无论下发模型还是下发依赖，都重新触发一次覆盖「完整模型代码 + 所有依赖」的合并审计，然后重新上报一次 `reportAudit`。**
+
+**要达成的结果。** 一次静态扫描 + 一次 LLM 审查覆盖两个根；一份 `AuditReport`；一次 `/v1/taa/reportAudit` 回调。
+
+**与既有 spec 的关系。** `.claude/specs/2026-10-08-model-dependency-delivery-design.md:61-62` 明确写着「把依赖放在 `ModelDir` **同级**的内容寻址目录，a/b/c/d 四者同时消失：**无需改审计范围**」。本次改动**推翻该前提**，因此必须另开一份 spec（见 Task 0），不能只改 plan。
+
+---
+
+## 语义契约（本次改动后的事实，后续所有实现与文档都以它为准）
+
+### 1. 审计范围 = 触发方交付的代码 ∪ 当前生效的另一侧
+
+| 触发 | 审计根（按序） |
+|---|---|
+| `importModel` | `Security.ModelDir`（本次刚解压的） ＋ 当前绑定依赖目录（若已绑定且目录存在） |
+| `importDeps` | `<depsDir>/<本次 sm3>`（本次刚安装的候选目录） ＋ `Security.ModelDir`（若模型已导入且目录存在） |
+
+- **「所有依赖」＝仅当前生效的那一套**，即 `filepath.Join(GetDepsDir(), DepsHash)`。磁盘上历史遗留的 `<depsDir>/<旧 sm3>` 目录（`deps_import.go:63-64` 承认其永久存在、无 GC）**不在范围内**。
+- 一个根只在「生效」时才进入审计：模型根要求 `ModelImported`，依赖根要求目录 `os.Stat` 成功。这是为了保住「先下发依赖、后下发模型」这条既有可用路径——把一个不存在的目录交给 `GenerateAuditReport` 会让 `filepath.Walk` 报错，进而 `code=2`，在 fail-closed 下等于把合法的依赖下发拒掉。
+- 模型根恒排在前面（`AuditTarget.Directory` 取它），依赖根在后。
+
+### 2. `scope` 的取值不变，语义变了
+
+`""` / `"deps"` 两个线上取值**一个都不动**（platform-mock 的校验 `handlers_taa.go:542-544`、`docs/api-design.md:458` 都不用改），但它现在的含义从「审计了什么」变成「**是谁触发的**」。两条路径审计的范围已经完全相同，`scope` 只剩溯源作用。
+
+### 3. `code` = 合并审计的整体结论
+
+`0` 通过 / `1` 未通过 / `2` 执行失败或按 fail-closed 判定 LLM 不可用。`code` 描述的是**这一次合并审计**，不是触发方那一侧的局部结论。因此会出现 `code=1` 而 TAA 什么都没清除、任务仍然成功的情形——这一情形由新增的**分根结论**（见 §4）消歧。
+
+### 4. 报告新增分根结论
+
+`AuditReport.Target` 增加 `directories []string`（本次实际覆盖了哪几个根），并新增一个按根的分项列表，每项含 `directory` / `files_scanned` / `findings_count` / `passed`。这样 `code=1` 的报文里，平台能直接看出**是哪个根出的问题**，不必靠 `file_reports[].file_path` 的前缀自行推断。
+
+这是**新增字段，不改既有字段的含义**：`report` 字段在 `reportAudit` 里是不透明字符串，在训练报告里是 `codeaudit` 对象，两者都只增键。既有消费者（platform-mock 原样落盘并回显）不受影响。
+
+### 5. 回滚：只回滚触发方那一侧，且只在触发方被牵连时
+
+合并审计跑完后，**唯一会发生的清除是触发方自己的那一个根**：
+
+- 触发方 = 模型 → `cleanDirContents(Security.ModelDir)`（保持既有做法：清空内容、保留目录）
+- 触发方 = 依赖 → `rollbackDepsImport(candidateDir)`（删目录并在必要时清绑定）
+
+判据：`code == 2`（整体没跑成，无从区分哪一侧有问题），**或** 报告里存在归属于触发方那个根的 finding。若 findings 全在另一侧：报告与 `code` 如实反映失败，但**不删任何东西、本次导入判成功**。
+
+### 6. 幂等短路取消，审计标记机制删除
+
+- 删掉 `deps_import.go:120-128` 的 `auditMarkerExists` 短路：每次下发依赖都重新解包、重新安装、重新审计。
+- 删掉 `.taa_audit_ok` 整套机制（`depsAuditMarker` / `depsAuditMarkerVersion` / `auditMarkerExists` / `writeAuditMarker`，`deps_import.go:207-240`）。理由：审计结论现在取决于「与哪份模型代码一起扫」，一个只记录了依赖侧 hash 的标记已经**不成立**（`deps_import.go:219-224` 的注释自己就承认版本号是唯一的失效手柄，而它与模型无关）；短路取消后 `auditMarkerExists` 没有调用方，`writeAuditMarker` 写的文件没人读。磁盘上已存在的 `.taa_audit_ok` 文件**不做迁移**——无人读，无害。
+- 模型侧本来就没有标记，每次都重审，不变。
+
+### 7. 资源闸门不动
+
+`MaxFindings = 200`（`scanner.go:23`）与 `DefaultSemgrepTimeout = 5min`（`semgrep_engine.go:24`）保持原值。**已知代价**：合并后输入约为原先的两倍，越限截断的概率上升，而截断会让 `Report.ProvesCleanScan()` 返回 false（`rules.go:126`）→ `AssembleAuditReport` 把 `scanPassed=false`（`audit.go:354`）→ 在 fail-closed 下**整份报告阻断**。这是用户明确接受的取舍，实现时不得顺手调大。
+
+---
+
+## 不变量与已接受的代价（实现时不要"顺手修好"）
+
+1. **非触发方的 findings 不产生任何动作**，包括模型侧的问题不会阻止训练启动。若一次依赖下发触发的合并审计发现模型代码有问题，模型照旧留在原地、照旧可训练，改动只是把结论写进报告并上报 `code=1`。这是「不跨侧清除」的直接推论，属于本次改动的既定语义，不是缺陷。若日后要收紧，应当另开一个显式闸门（例如「最近一次合并审计未通过则拒绝 startTraining」），不在本次范围。
+2. **重复下发同一依赖集会被重复审计。** 结合记忆 `teellm-audit-blocks-benign-code-nondeterministically`（未改动的良性代码约每 10 条误判 1 条 MALICIOUS 并 fail-closed 阻断），取消幂等意味着**同一份依赖重投有可观测概率被自己拒掉**。这是「每次都重审」的既定代价。
+3. **合并扫描不改变 fail-closed 姿态**：仍然 fail-closed，`ScanEnabled=false` 仍然整段跳过审计（`deps_import.go:330-333`、`import_processing.go:613-616`），且跳过时仍然不写任何标记。
+
+---
+
+## Task 0：新 spec（`.claude/specs/`）
+
+**Files:** Create `.claude/specs/2026-10-09-combined-code-audit-design.md`
+
+内容即上文「Context + 语义契约 + 不变量」，另需显式登记两件事：
+
+1. 对 `.claude/specs/2026-10-08-model-dependency-delivery-design.md:61-62` 的推翻，并说明 §2.4（`codeaudit` 无路径排除能力）为什么在本次方案下不再是约束（本次不往 `ModelDir` 里塞依赖，仍然同级，只是**审计时同时看两个根**）。
+2. `scope` 语义漂移的订正（该 spec `:292` 写的是 `model` | `deps`，实现与文档实际是 `""` | `deps`），一并记录。
+
+`.claude/` 在 `.gitignore` 里，提交需 `git add -f`。
+
+---
+
+## Task 1：`internal/codeaudit` 支持多根扫描
+
+**Files:** Modify `internal/codeaudit/engine.go`、`scanner.go`、`semgrep_engine.go`、`verifier.go`、`audit.go`
+
+**要点（具体签名以 Plan agent 的结论为准，下列为已确定的部分）：**
+
+- `StaticEngine`（`engine.go:27-38`）**新增**一个方法而非改动既有三个方法的签名：
+  `ScanDirectoriesWithLines(dirs []string) (*Report, map[string]int, error)`
+  既有的 `ScanDirectory` / `ScanDirectoryWithLines` 保留并委托给新方法（单元素切片）。这样 `internal/coordinator/flow_model.go:87` 与 `verifier.go:320` 的既有调用点不动。`StaticEngine` 的实现者只有 `regexEngine` 与 `semgrepEngine`；测试替身 `namedEngine`（`internal/controller/audit_model_import_test.go:475-480`）内嵌真引擎，自动继承新方法。
+- `Scanner` 新增 `ScanDirectoriesWithLines(dirs []string)`：对每个根各 walk 一次，findings 与 lineCounts 取并集。`report_fields_test.go` 的 `truncatingScanner` 是 `*Scanner`，不受接口变化影响。
+- `semgrepEngine`：每个根各 walk 一次，把 target 拼进**同一个**切片，仍只发起**一次** semgrep 调用（`semgrepArgs` 本来就是 `append(args, targets...)`，`semgrep_engine.go:349`）。完成度校验（`semgrep_engine.go:385-398`）按 `cleanAbs` 集合比对，对任意 target 并集成立——**实现前先写一个测试证明这一点**，不要只靠推断。
+- `verifier.go` 新增 `GenerateAuditReportForDirs(ctx, dirs []string, engine, cfg, client)`；`GenerateAuditReport(ctx, dir, ...)` 变成它的单元素封装。`dir == ""` / `engine == nil` 两个前置检查保持在封装层。
+
+**验收：** `go test ./internal/codeaudit/... -count=1` 全绿；新增用例覆盖「两个根各有一个命中文件，一次调用同时报出」与「其中一个根为空目录」。
+
+---
+
+## Task 2：多根元数据与 finding 归属
+
+**Files:** Modify `internal/codeaudit/audit.go`（+ 若 CPG 需要，`cpg_analysis.go`）
+
+- `AuditTarget`（`audit.go:28`）新增 `Directories []string \`json:"directories,omitempty"\``；`Directory` 保持 = 主根（模型根），不改含义、不删字段。
+- 新增按根分项结构与生成函数，挂在 `AuditReport` 上（§4）。`AssembleAuditReport` 增加一个接收根列表的参数——**注意**它在 `audit.go:326` 是导出函数，改签名要同步 `verifier.go:372` 与 `audit_test.go`。
+- 新增归属helper：`ReportHasFindingsUnder(report *AuditReport, root string) bool`。实现必须处理三件事并在测试里逐个钉住：相对根 vs 绝对根（统一 `filepath.Abs` + `filepath.Clean`）、两个根互为前缀、以及一个文件不属于任何根。`filepath.Rel` 的 `..` 判定优于 `strings.HasPrefix`（后者会把 `/a/modelX` 误判为 `/a/model` 下的文件）。
+- **CPG 符号解析（本次改动里最不确定的一块）：** `enrichFindingsWithCPG(dir, targets, findings)`（`semgrep_engine.go:232`）与 `NewSymbolResolver(dir)`（`cpg_analysis.go:169-172`）目前都以单一 root 建符号索引。
+
+  依赖根必须以「**模块搜索路径**」的身份进入解析，而不是被当成第二个独立工程——因为模型代码 `import numpy` 时，`numpy` 实际来自 `<depsDir>/<sm3>/numpy`，正是训练运行时通过 `PYTHONPATH` 注入的那一条（`deps_env.go:19-36`）。**首选**：给 `NewSymbolResolver` 增加一个可选的附加搜索根参数，让模型根作主根、依赖根作搜索路径。
+
+  **如果**该改动无法在 `cpg/resolver.go` 里做到最小化（**该文件同时被本检出里另一个参与者的未合并 `feat(cpg)` 分支改动**），则退化为：每个根各建一个 resolver、各自 enrich、findings 取并集，`cpg/resolver.go` **一行不动**。此时保真度损失是**跨根数据流（模型代码 → 依赖模块）检测不到**——而那恰恰是选择「真·单次审计」而非「两次扫描」的理由，因此退化方案**必须**在 Task 0 的 spec 里显式登记为已知盲区，不得静默降级。
+
+  实现者必须先读 `cpg/resolver.go` 再定，选定后把结论与理由写进 spec；**不允许在没有读过该文件的情况下按首选方案动手**。
+
+---
+
+## Task 3：controller 侧的合并审计执行器
+
+**Files:** Create `internal/controller/combined_audit.go`；Modify `internal/controller/deps_audit.go`
+
+一个文件、两个函数，两条链路共用：
+
+```go
+// combinedAuditRoots returns the roots a combined audit covers for the given trigger:
+// the code this request delivered, plus the other side as currently in effect. A root
+// enters only when it is in effect -- the model root needs ModelImported, the
+// dependency root needs its directory to exist -- because handing a missing directory
+// to the audit fails the walk and, under fail-closed, rejects a legitimate delivery.
+func (s *TAAState) combinedAuditRoots(triggerSide, triggerDir string) []string
+
+// combinedAuditResult is the outcome of one combined audit.
+type combinedAuditResult struct {
+    Passed       bool // the audit as a whole passed
+    TriggerClean bool // no finding and no execution failure attributable to the triggering root
+    Executed     bool // false when the ScanEnabled=false short-circuit skipped the audit
+    Report       *codeaudit.AuditReport
+    Summary      string
+}
+
+// runCombinedAudit audits every root combinedAuditRoots returns, reports the result
+// exactly once under the given scope, and reports back which side came out clean.
+// It owns the audit-state bookkeeping (ActiveAuditTaskID / CurrentAuditOp /
+// AuditRunning / clearAuditState) so both callers behave identically.
+func (s *TAAState) runCombinedAudit(req codeAuditRequest, triggerDir string) combinedAuditResult
+```
+
+内部必须与既有的两处逐条对齐，**不得遗漏**：`ScanEnabled=false` 短路返回 `Executed=false`；fail-closed 下先 `isLLMServiceAvailable` 探测，不可用即 `code=2`；`GenerateAuditReportForDirs` 出错即 `code=2`；成功则 `code` 由 `audit.Conclusion.Passed` 决定；上报走 `reportAuditScopedAsync`（`import_processing.go:728`），`report` 用 `auditReportJSON`（`codeaudit_projection.go:49`）。
+
+`TriggerClean` 的算法：`code==2` → false；否则 `!ReportHasFindingsUnder(report, triggerDir)`。
+
+---
+
+## Task 4：改接模型链路
+
+**Files:** Modify `internal/controller/import_processing.go`（`auditAndReportModelImport` :611、`startModelAuditAsync` :589）
+
+- `auditAndReportModelImport` 改为调用 `runCombinedAudit(req, s.Security.ModelDir)`，返回 `result.TriggerClean`（即「模型侧是否干净」）。
+- 三条 `cleanDirContents(s.Security.ModelDir)`（`:631`、`:641`、`:654`）收窄为**只在触发方被牵连时**执行。`code=2` 两条路径仍是触发方被牵连，照旧清。
+- `s.setLastAudit(audit)` 从「每次审计完成都写」改为**写入合并审计的报告**（两条触发路径都写，理由见下）。
+- `startModelAuditAsync` 的 `if !passed { clearImportedState; stopActiveTraining }` 现在按 `TriggerClean` 决策——findings 全在依赖侧时不再清模型、不再停训练。
+- **`LastAudit` 语义变化（需在代码注释里写明）：** `route.go:155` 与 `deps_audit.go:15-18` 现在都断言「`LastAudit` 只装模型审计结论，依赖审计不得覆盖」。改动后合并审计**永远包含模型根**（只要模型生效），因此两条触发路径都写 `LastAudit` 才是正确的。这会改变训练报告里 `codeaudit` 一节的内容，需要一条测试钉住。
+
+---
+
+## Task 5：改接依赖链路，删除幂等短路与标记机制
+
+**Files:** Modify `internal/controller/deps_import.go`、`internal/controller/deps_state.go`（如需）
+
+- 删除 `deps_import.go:120-128` 的幂等短路。
+- 删除 `deps_import.go:207-240`（两个常量 + `auditMarkerExists` + `writeAuditMarker`）与 `:186-199` 的写入分支。`processImportedDeps` 顶部的流水线注释（`:88-95`）与 `rollbackDepsImport` 的长注释（`:242-274`）里凡是提到 marker 的句子一并改写——**注释与代码不符在本仓库已被证明会误导后续判断**。
+- `auditAndReportDeps`（`:329-335`）与 `runDepsAudit`（`deps_audit.go:39-79`）合并进 Task 3 的执行器；`deps_audit.go` 只剩它对三个盲区的说明（`:20-31`）与对「无测试钩子」的说明（`:33-38`），迁到新文件的函数注释上。
+- 失败路径：依赖侧被牵连时 `rollbackDepsImport(depsDir)` 照旧（`:181`），只有在依赖侧被牵连时才走。
+
+---
+
+## Task 6：文档
+
+**Files:** Modify `docs/api-design.md`
+
+- §3.6：`scope` 字段说明表（`:462-465`）改写为「触发源」语义；`:446` 的触发时机改为「模型解压后 / 依赖安装完成后**都**触发一次覆盖模型代码与当前依赖集的合并审计」；`:469`「`scope="deps"` 时 report 格式与模型审计完全一致」改为「两条路径的 report 结构完全相同，仅 `scope` 不同」；`:524` 补一句 report 新增分根字段。
+- §3.6 的 `code` 说明处补上 §3 的消歧：`code` 是合并审计的整体结论，与「本次导入是否成功」不是同一件事。
+- §3.10 的「两条回调」说明（`:802`）**保持不变**——审计失败仍先发 `reportAudit(scope="deps")` 再发 `reportDeps(code=1)`。但需补一句：当 findings 全在模型侧时，两者的 code 会不一致（`reportAudit code=1` / `reportDeps code=0`），这是有意设计。
+- §4.7：依赖下发的幂等性描述（若文档提及 `.taa_audit_ok` 或重复下发复用）改为「每次下发都重新解包、安装并审计」。
+
+**platform-mock 无需功能性改动**（已逐字核过 `tools/platform-mock/internal/handlers_taa.go:483-563`）：`report` 被当作不透明字符串原样落盘（`state.RawBody` / `state.Report`），校验只有 `code ∈ {0,1,2}` 与 `scope ∈ {"", "deps"}`，两者取值集合都没变。唯一值得顺手改的是拒绝文案 `"scope 仅支持 deps(依赖包审计) 或空字符串(模型代码审计)"`（`:542-544`）——它把 scope 描述成「审计对象」，改动后应描述成「触发源」。改文案要连带更新 `TestReportAuditScopeHandling`（`server_test.go:2711`）里钉住该文案的断言。
+
+---
+
+## Task 7：测试与验证
+
+**需要改写或删除的既有测试（已点名）：**
+
+| 测试 | 位置 | 处置 |
+|---|---|---|
+| `TestProcessImportedDepsSkipsWhenAlreadyAudited` | `deps_import_test.go:171` | 语义反转：改为断言同 hash 二次下发**仍然**重新安装并重新审计 |
+| `TestProcessImportedDepsScanDisabledWritesNoMarker` | `:206` | 断言点从「不写 marker」改为「跳过审计且不产生任何清除」 |
+| `TestAuditMarkerVersionGate` | `:526` | 删除（机制已删） |
+| `TestProcessImportedDepsReauditsForeignMarkerDir` | `:555` | 删除（机制已删） |
+| `TestRunDepsAuditRemovesDirOnFailure` / `LLMUnavailableFailsClosed` / `EngineErrorFailsClosed` | `:590` / `:708` / `:752` | 改驱动新的执行器；`scope=="deps"` 断言保留 |
+| `TestProcessImportedDepsKeepsBindingWhenNewAuditFails` | `:361` | 保留，并在其基础上补一条「模型侧 findings 不影响依赖绑定」 |
+| `TestAuditFailureCleanDirAndAbort` | `security_hardening_test.go:319` | 保留；确认失败仍清 `ModelDir` |
+| `TestPhase1ModelAuditFailureAbortsTraining` | `import_flow_new_test.go:155` | 保留；补一条「findings 仅在依赖侧时训练不被中止」 |
+| `audit_model_import_test.go` 的 `:229/:275/:325` | — | fixture 只写 `ModelDir`；补一个依赖目录的 fixture，覆盖合并路径 |
+| `TestReportAuditScopedCarriesScope` / `TestReportAuditOmitsScopeWhenUnscoped` | `internal/platform/reporter_test.go:36` / `:60` | **不动**——线上取值没变 |
+
+**新增测试（每条都要先在变异下证明有判别力）：**
+
+1. `internal/codeaudit`：多根扫描一次报出两个根各自的命中；单根调用与既有行为逐字节一致。
+2. `internal/codeaudit`：`ReportHasFindingsUnder` 的前缀陷阱用例（`/a/model` vs `/a/modelX`）。
+3. `internal/controller`：**触发方干净、另一侧脏** → `reportAudit code=1` 且 `reportDeps code=0`，且**没有任何目录被删**（这是本次最核心的新语义，必须有端到端断言）。
+4. `internal/controller`：触发方脏 → 只清触发方那一侧，另一侧原样。
+5. `internal/controller`：`code=2` → 触发方被清；另一侧不被清。
+6. `internal/controller`：模型报告 `codeaudit` 一节现在来自合并审计。
+
+**变异纪律（本项目已有两次踩坑记录）：** 变异**值或条件**，不要删行使变量变成未使用（那会得到 `FAIL [build failed]`，什么也证明不了）；变异后确认失败的是**预期的那个断言**。
+
+**跑测试的方式：** `go test ./...` 与 `go build ./...` 在本仓库**不可用**——`models/audit/holdout-sources/semgrep-rules-develop/` 有 248 个伪装成 `.go` 的 semgrep YAML 且无 `go.mod`。一律按包跑：
+
+```
+go build -o bin/taa ./cmd/taa
+go test ./internal/codeaudit/... -count=1
+go test ./internal/controller/... -count=1 -p 1
+go test ./internal/platform/... -count=1
+go test ./tools/platform-mock/internal/... -count=1
+```
+
+**端到端验证（`bin/taa` 起真进程 + platform-mock 作对端）：**
+
+1. 只下发模型（无依赖）→ 期望一次 `reportAudit(scope="", code=0)`，`report.directories == [modelDir]`。
+2. 再下发一套干净依赖 → 期望一次 `reportAudit(scope="deps", code=0)`，`report.directories` 含两个根，且两个根的分项 `passed` 均为 true。
+3. 重投**同一个**依赖包 → 期望 install 与 audit **再次发生**（对照 2 的日志行数），`code` 仍为 0。这一条直接证明幂等短路确实没了。
+4. 构造 findinds 只在模型侧的用例（在 `ModelDir` 放一个命中规则的文件，依赖保持干净），下发依赖 → 期望 `reportAudit(scope="deps", code=1)` 且分根结论指向模型根，`reportDeps(code=0)`，**模型与依赖目录都没有被删**。
+
+---
+
+## 并发与提交
+
+- 并发 subagent 上限 2，禁止嵌套。Task 1+2（`internal/codeaudit/**`）与 Task 6（`docs/api-design.md`）文件足迹不相交且只有前者跑测试，可并行。Task 3/4/5 都改 `internal/controller/**`，**必须串行**。Task 7 单独一段跑测试。
+- **任何两个会执行 `go test` 的 agent 不得并发。**
+- 本检出与其它参与者共享：`tools/csv2-vm/csv2-vm.sh` 与 `teellm/`（子模块）一律不碰；`git add` 只用显式路径，禁止 `git add .` / `-A` / `-u`。
+- 提交信息用英文、Conventional Commits，**不得出现任何 AI 署名**。
+
+---
+
+## 风险（按严重度）
+
+1. **CPG 与另一个参与者的 `feat(cpg)` 未合并分支冲突。** `internal/codeaudit/cpg*` 是他们的在制品。缓解：Task 2 选改动面最小的方案；开工前用 `git reflog show <branch>` 与 `ps -eo pid,lstart,etimes,cmd | grep claude` 复查对方是否仍在写。
+2. **合并扫描抬高截断/超时概率，而截断在 fail-closed 下等于整体拒收。** 阈值按用户决定不动，因此这是既定代价；但必须有一条测试证明「单根超限仍能被 `Truncated` 正确标记」，避免把新增的多根路径做成静默吞掉截断。
+3. **`LastAudit` 语义变化会改变训练报告里 `codeaudit` 一节的内容。** 这是有意的（合并审计永远包含模型根），但 `deps_audit.go:15-18` 与 `route.go:155` 的注释都还写着相反的话，必须同步改写，否则下一个人会按旧注释判断。
+4. **模型侧问题不再阻止训练**（见「不变量」第 1 条）。这是「不跨侧清除」的既定后果，但它是本次改动里唯一一处**安全姿态实际放宽**的地方，需要在 spec 里显式登记，供日后决定是否补一个显式闸门。
