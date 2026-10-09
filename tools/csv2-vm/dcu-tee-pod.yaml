@@ -1,0 +1,163 @@
+# ============================================================================
+#  机密容器（CSV2 / TEE）+ 海光 DCU  ——  Pod 模板
+# ----------------------------------------------------------------------------
+#  ⚠️ 这是【模板】，不是能直接 apply 的 yaml。
+#     里面只有 2 个占位符需要替换，别的地方都已经写死了：
+#
+#        __INITDATA_B64__    gzip+base64 的 initdata（让 guest 信任本地 registry 的 CA）
+#        __SSH_PASSWORD__    容器内 root 的密码
+#
+#     渲染并创建（在 hygon-master 上跑）：
+#
+#        cd /home/wj/dcu
+#        INITDATA_B64="$(gzip -c \
+#            /root/test/deployment/tools/build-and-install/test-hygon-coco/initdata.v1.toml \
+#            | base64 -w0)"
+#        sed -e "s|__INITDATA_B64__|${INITDATA_B64}|g" \
+#            -e "s|__SSH_PASSWORD__|Dcu@Tee2026|g" \
+#            dcu-tee-test-pod-template.yaml > /tmp/dcu-tee-test-pod.yaml
+#        kubectl apply -f /tmp/dcu-tee-test-pod.yaml
+#
+#     渲染后 /tmp/dcu-tee-test-pod.yaml 就是一份普通 yaml，
+#     可以直接交给别人 apply，不需要任何脚本。
+#
+# ----------------------------------------------------------------------------
+#  写死的几项（要改就直接改这里）：
+#    pod 名          dcu-tee-test
+#    镜像            172.16.10.178:31313/vllm:ubuntu-dtk
+#    runtimeClass    kata-qemu-hygon-dcu-csv2   ← 本机不支持 csv3，改了会卡死
+#    SSH NodePort    32222
+# ============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dcu-tee-test
+  labels:
+    app: dcu-tee-test
+    purpose: dcu-tee-test
+  annotations:
+    # 决定 guest 内核 + 建加密 VM。必须带 dcu 且是 csv2
+    io.containerd.cri.runtime-handler: kata-qemu-hygon-dcu-csv2
+    # kernel_params 是「追加」不是「替换」，不会覆盖配置文件里的默认值。
+    # image_pull_timeout 给到 1 小时：镜像 25.6GB，guest 拉取很慢
+    io.katacontainers.config.hypervisor.kernel_params: 'agent.cdh_api_timeout=1200 agent.image_pull_timeout=3600'
+    # 必须：guest 拉镜像要验 TLS，宿主信任自签证书 ≠ guest 信任。
+    # 不加会直接 StartError
+    io.katacontainers.config.runtime.cc_init_data: __INITDATA_B64__
+    # 下面这条其实不生效 —— 该 runtime 的 containerd 配置里
+    # pod_annotations = ["io.katacontainers.*"]，压根不往 kata 传。
+    # 真正干活的是资源请求 hygon.cn/k100_ai 走 CRI 的 CDIDevices 字段。
+    # 按厂商文档带着，无害，但别指望它。
+    cdi.k8s.io/hycu: "hygon.cn/k100_ai=h0"
+spec:
+  runtimeClassName: kata-qemu-hygon-dcu-csv2
+  # Never：容器退出就停在 Failed，方便看出问题，不会无限重启刷屏。
+  restartPolicy: Never
+  # ⚠️ DNS：这个 pod 必须绕开集群 DNS，否则所有域名都解析不了。
+  #
+  # 原因（2026-09-30 实测，kata 机密 VM 的通病，不是本 pod 特有）：
+  #   pod 的 resolv.conf 默认指向 CoreDNS 的 ClusterIP 10.96.0.10。
+  #   从 kata guest 发过去的查询，宿主机 DNAT 做了（10.96.0.10 → 10.244.0.93），
+  #   但**回包的源地址没有还原**，仍然是 10.244.0.93。
+  #   glibc（getent / curl / wget / pip 都走它）会校验「回包必须来自我查询的地址」，
+  #   对不上就丢弃 → 20 秒后报 "Temporary failure in name resolution"。
+  #   （用裸 UDP socket 发同样的查询、不校验源地址，能正常收到答复
+  #     —— 证明网络是通的，是 NAT 没还原。）
+  #   对照：10.96.0.1:443（API）是通的，因为它的 endpoint 是宿主自己的 IP，
+  #   回包走宿主协议栈，conntrack 能正常还原。只有 DNAT 到「同节点 Pod IP」才坏。
+  #
+  # 不改的后果：容器里 wget / pip / apt / git clone 用域名全部失败。
+  #   用 IP 直连是通的（本地 registry 就走 IP，所以拉镜像没问题）。
+  #
+  # 代价：集群内域名（*.svc.cluster.local）解析不了 —— DCU 测试用不到。
+  #   将来宿主侧 conntrack 那个问题修好了，这段可以删掉。
+  dnsPolicy: None
+  dnsConfig:
+    nameservers:
+      - 223.5.5.5          # 实测从 pod 可达，且回包源地址正确
+      - 114.114.114.114
+    options:
+      # 默认 ndots:5 会让 download.sourcefind.cn 先被拼成
+      # ...default.svc.cluster.local / ...svc.cluster.local / ...cluster.local
+      # 白查 4 次才查原名，改 1 直接用原名
+      - name: ndots
+        value: "1"
+  containers:
+    - name: dcu
+      image: 172.16.10.178:31313/vllm:ubuntu-dtk
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/bash", "-c"]
+      args:
+        - |
+          set -e
+
+          # ---- 1. 让非交互式 shell 也能拿到 DTK 环境 --------------------
+          # /etc/bash.bashrc 末尾虽然有 source /opt/dtk-26.04/env.sh，
+          # 但文件开头有 [ -z "$PS1" ] && return，只有交互式 shell 生效。
+          # 这里补一个 profile.d，让 ssh 登录 / bash -lc 都能用。
+          if [ -f /opt/dtk-26.04/env.sh ]; then
+            printf '%s\n' '. /opt/dtk-26.04/env.sh' > /etc/profile.d/00-dtk-env.sh
+          fi
+
+          # ---- 2. 起 sshd -------------------------------------------------
+          mkdir -p /run/sshd
+          # 厂商镜像里其实自带 host key（2026-09-30 实测，ssh-keygen -A 会跳过），
+          # 这行是保险：自建镜像没带 host key 时，不生成 sshd 起不来。
+          # 附带效果：本 pod 的 host key 在重建后保持不变，指纹稳定。
+          ssh-keygen -A
+
+          echo "root:${SSH_PASSWORD}" | chpasswd
+
+          sed -i -E 's/^#?[[:space:]]*PermitRootLogin[[:space:]].*/PermitRootLogin yes/'       /etc/ssh/sshd_config
+          sed -i -E 's/^#?[[:space:]]*PasswordAuthentication[[:space:]].*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          grep -qE '^[[:space:]]*PermitRootLogin'        /etc/ssh/sshd_config || echo 'PermitRootLogin yes'        >> /etc/ssh/sshd_config
+          grep -qE '^[[:space:]]*PasswordAuthentication' /etc/ssh/sshd_config || echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config
+
+          # ---- 3. 启动横幅（日志里能看到 DCU 到底直通进来没有）-----------
+          echo "================================================"
+          echo " DCU-TEE-TEST  $(date -Is)"
+          echo "--- DCU 设备节点 ---"
+          ls -l /dev/kfd /dev/mkfd /dev/dri/ 2>&1 || true
+          echo "--- DTK ---"
+          ls -ld /opt/dtk /opt/dtk-26.04 2>&1 || true
+          echo "--- hy-smi ---"
+          bash -lc 'hy-smi' 2>&1 | head -20 || echo "  hy-smi 跑失败，见 README 的排查一节"
+          echo "================================================"
+
+          exec /usr/sbin/sshd -D -e
+      env:
+        - name: SSH_PASSWORD
+          value: "__SSH_PASSWORD__"
+      ports:
+        - name: ssh
+          containerPort: 22
+          protocol: TCP
+      resources:
+        requests:
+          # 这两行 triggers CDI → kata 把 DCU 以 vfio 直通进 guest
+          hygon.cn/k100_ai: "1"
+          memory: "50Gi"
+          cpu: "8"
+        limits:
+          hygon.cn/k100_ai: "1"
+          # ⚠️ kata 用「limits」算 VM 大小：VM = default_memory(8Gi) + 50Gi = 58GiB
+          # ⚠️ CSV2 加密内存 100% 实占，宿主这 58GiB 一启动就被钉死，不是按需分配
+          memory: "50Gi"
+          cpu: "8"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dcu-tee-test-ssh
+  labels:
+    app: dcu-tee-test
+spec:
+  type: NodePort
+  selector:
+    app: dcu-tee-test
+  ports:
+    - name: ssh
+      protocol: TCP
+      port: 22
+      targetPort: 22
+      nodePort: 32222

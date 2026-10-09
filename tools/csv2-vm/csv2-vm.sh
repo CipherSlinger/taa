@@ -77,6 +77,10 @@
 #                                       image is left alone so it can be recreated)
 #   ./tools/csv2-vm/csv2-vm.sh dcu-base rebuild the shared DCU base image from the
 #                                       current kata assets (DCU mode only)
+#   ./tools/csv2-vm/csv2-vm.sh pod-up   create the DCU test pod on the cluster
+#   ./tools/csv2-vm/csv2-vm.sh pod-status
+#                                       read-only status of that pod
+#   ./tools/csv2-vm/csv2-vm.sh pod-down delete it, and the NodePort Service with it
 #
 # Measured boot. The VM is launched with -kernel/-initrd/-append and
 # kernel-hashes=on, so the PSP measures more than the firmware: QEMU builds a
@@ -160,6 +164,53 @@
 # default instance instead. The guest is addressed by the LAN DHCP server, so an
 # instance without CSV2_VM_IP is discovered after boot: first from the bridge
 # neighbour table, then by reading `hostname -I` over the serial console.
+#
+# The DCU test pod. There are two ways to get a TEE with the DCU in it, and they are
+# different routes, not two settings of one:
+#
+#   up (+ CSV2_DCU=1)  this script builds the VM itself, with QEMU, and passes the
+#                      DCU in by VFIO. The guest is one this script controls.
+#   pod-up             Kubernetes does it: the pod names the vendor's kata CoCo
+#                      runtime, which builds an encrypted VM and hands the DCU to
+#                      it. `pod-*` never touches QEMU, libvirt or the disk images
+#                      above; it needs a cluster on the host instead.
+#
+# Both routes want the card on vfio-pci, so the paragraph above applies to each.
+# The pod route is the one that has actually been measured working end to end, and
+# `dcu-tee-test` is a shared test pod - other sessions may be using it, and there is
+# one DCU on the host, so `pod-up` while it exists fails rather than replacing it.
+#
+# What the pod is, is written in the template that ships next to this script:
+#   tools/csv2-vm/dcu-tee-pod.yaml
+# Pod name, image, runtimeClass and NodePort are read back out of that file rather
+# than listed here, so the checks and the applied object cannot disagree. It is the
+# vendor's template, vendored so the pod can be reproduced from this repository; the
+# only things this script supplies are the two the file has placeholders for - the
+# initdata blob and the pod's ssh password.
+#
+#   CSV2_POD_TEMPLATE   the file above, if you keep your own copy
+#   CSV2_POD_NAMESPACE  namespace for the pod and its Service (default default)
+#   CSV2_POD_PASSWORD   password for root inside the pod. No default on purpose:
+#                       this repository is committed to automatically, so a literal
+#                       would land in its history, and the pod's NodePort is
+#                       reachable from the whole LAN. Unset, `pod-up` generates one
+#                       and prints it in the summary.
+#   CSV2_POD_REGISTRY   registry the guest pulls from (default <host>:31313). It is
+#                       a NodePort Service on the cluster, not a daemon on the host,
+#                       so nothing listens on that port in `ss` output.
+#   CSV2_POD_IMAGE_UPSTREAM
+#                       tag `pod-up` pushes to that registry when it lacks
+#                       vllm:ubuntu-dtk (default the harbor.sourcefind.cn one).
+#                       `--skip-push` makes a missing image an error instead.
+#   CSV2_POD_INITDATA   the CoCo initdata file on the host, which is what carries the
+#                       registry's CA into the guest.
+#   CSV2_POD_PULL_TIMEOUT
+#                       seconds to wait for Ready (default 2400). The image is
+#                       25.6GB and the guest pulls it itself.
+#
+# `pod-up` tags and pushes the 25.6GB image when the registry does not have it, which
+# takes minutes and is the only step with a side effect beyond the cluster. `pod-up
+# --dry-run` stops after rendering, and prints the file it rendered.
 #
 # Examples:
 #   CSV2_HOST_PASS='...' ./tools/csv2-vm/csv2-vm.sh up
@@ -381,6 +432,22 @@ VM_REDUCED_PHYS_BITS="${CSV2_REDUCED_PHYS_BITS:-5}"
 # Attestation smoke test, run inside the guest (host paths).
 SMOKE_BIN="${CSV2_SMOKE_BIN:-/root/taa/csv-go-smoke}"
 CERT_DIR="${CSV2_CERT_DIR:-/root/taa}"
+
+# The DCU test pod - see the header. None of this is used by the QEMU commands.
+POD_FILE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+POD_TEMPLATE="${CSV2_POD_TEMPLATE:-$POD_FILE_DIR/dcu-tee-pod.yaml}"
+POD_NAMESPACE="${CSV2_POD_NAMESPACE:-default}"
+
+# No default: see the header. The pod's sshd gets this and nothing else does.
+POD_PASSWORD="${CSV2_POD_PASSWORD:-}"
+
+# The registry is derived from the host rather than written twice, but the template
+# names it too, and `pod-up` refuses if the two disagree - pushing one tag while the
+# guest pulls another is a failure that looks like a pull timeout.
+POD_REGISTRY="${CSV2_POD_REGISTRY:-${CSV2_HOST#*@}:31313}"
+POD_IMAGE_UPSTREAM="${CSV2_POD_IMAGE_UPSTREAM:-harbor.sourcefind.cn:5443/dcu/admin/base/vllm:0.9.2-ubuntu22.04-dtk26.04-0130-py3.10-20260202}"
+POD_INITDATA="${CSV2_POD_INITDATA:-/root/test/deployment/tools/build-and-install/test-hygon-coco/initdata.v1.toml}"
+POD_PULL_TIMEOUT="${CSV2_POD_PULL_TIMEOUT:-2400}"
 
 # ------------------------------- ssh plumbing --------------------------------
 
@@ -1466,6 +1533,566 @@ cmd_dcu_base() {
     ensure_dcu_base force
 }
 
+# ---------------------------- the DCU test pod -------------------------------
+#
+# Three commands that drive a cluster over ssh. They share nothing with the QEMU
+# commands above: no disks, no measurement, no libvirt. What the pod is, is the
+# vendored template next to this script, and these commands never restate it - they
+# read the fields they need out of that file, so the object that gets checked for and
+# the object that gets applied cannot drift apart. That is the vendor's own design,
+# kept because the failure it prevents is silent.
+#
+# Values reach the host through `host env`, which hands them to ssh as command-line
+# words - so the remote shell parses them a second time, and anything with a space, a
+# quote or a `$` in it would be split or expanded before the script ever ran. The two
+# values that can hold arbitrary text are therefore base64-encoded; the rest are
+# constrained to a charset that cannot be anything else, and are refused loudly rather
+# than mangled quietly.
+
+# Read one field out of the pod template. First match wins, and that matters: the
+# template has a `name:` for the Pod and another for its Service.
+#
+# awk rather than the `sed -n ... | head -1` this was ported from. With pipefail set,
+# a reader that exits early can hand the writer a SIGPIPE, which turns the whole
+# substitution into a failure rather than a value. awk stops reading its own file, so
+# there is no pipe to break. Same trap as the two documented under `pod-up`.
+pod_field() {
+    awk -v pattern="$1" '
+        $0 ~ pattern {
+            sub(pattern, "")
+            gsub(/^[ \t]+|[ \t]+$/, "")
+            print
+            exit
+        }' "$POD_TEMPLATE"
+}
+
+# Collect the template's fields plus the two values that are not written down in it.
+# Sets globals, the way resolve_guest_ip does.
+pod_facts() {
+    [ -f "$POD_TEMPLATE" ] \
+        || { echo "pod template $POD_TEMPLATE is missing" >&2; return 1; }
+
+    POD_NAME="$(pod_field '^  name:')"
+    POD_NODE_PORT="$(pod_field '^[ \t]*nodePort:' | tr -dc '0-9')"
+    POD_RUNTIMECLASS="$(pod_field '^[ \t]*runtimeClassName:')"
+    POD_IMAGE="$(pod_field '^[ \t]*image:')"
+
+    [ -n "$POD_NAME" ]         || { echo "no metadata.name in $POD_TEMPLATE" >&2; return 1; }
+    [ -n "$POD_NODE_PORT" ]    || { echo "no nodePort in $POD_TEMPLATE" >&2; return 1; }
+    [ -n "$POD_RUNTIMECLASS" ] || { echo "no runtimeClassName in $POD_TEMPLATE" >&2; return 1; }
+    [ -n "$POD_IMAGE" ]        || { echo "no container image in $POD_TEMPLATE" >&2; return 1; }
+
+    # The template names the image the guest will pull; this script decides which one
+    # it pushes. If they disagree the push succeeds, the pull times out, and nothing
+    # in between says why.
+    POD_IMAGE_LOCAL="$POD_REGISTRY/vllm:ubuntu-dtk"
+    if [ "$POD_IMAGE" != "$POD_IMAGE_LOCAL" ]; then
+        echo "the template and this script name different images:" >&2
+        echo "  template: $POD_IMAGE" >&2
+        echo "  script:   $POD_IMAGE_LOCAL   (CSV2_POD_REGISTRY=$POD_REGISTRY)" >&2
+        return 1
+    fi
+
+    POD_SERVICE="${POD_NAME}-ssh"
+
+    # See the note above: these travel as bare command-line words.
+    case "$POD_NAMESPACE$POD_REGISTRY$POD_INITDATA$POD_IMAGE_UPSTREAM" in
+        *[!A-Za-z0-9._:@/+-]*)
+            echo "these must not contain spaces, quotes or shell metacharacters:" >&2
+            echo "  CSV2_POD_NAMESPACE=$POD_NAMESPACE" >&2
+            echo "  CSV2_POD_REGISTRY=$POD_REGISTRY" >&2
+            echo "  CSV2_POD_INITDATA=$POD_INITDATA" >&2
+            echo "  CSV2_POD_IMAGE_UPSTREAM=$POD_IMAGE_UPSTREAM" >&2
+            return 1 ;;
+    esac
+}
+
+cmd_pod_up() {
+    local dry_run=0 skip_push=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dry-run)   dry_run=1; shift ;;
+            --skip-push) skip_push=1; shift ;;
+            *) echo "pod-up: unknown argument $1" >&2; return 1 ;;
+        esac
+    done
+
+    pod_facts || return 1
+
+    # The pod's sshd password, and the only credential this script invents. The
+    # template's two placeholders are substituted with sed, which reads & \ and | in
+    # the replacement, so those three are refused rather than escaped.
+    local pw="$POD_PASSWORD"
+    if [ -z "$pw" ]; then
+        # /dev/urandom read straight, then converted: no pipeline whose reader leaves
+        # early, so pipefail has nothing to trip over. Hex cannot contain a character
+        # sed would read.
+        pw="$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    fi
+    case "$pw" in
+        *'&'*|*'\'*|*'|'*)
+            echo "CSV2_POD_PASSWORD must not contain & \\ or | - sed substitutes it" >&2
+            return 1 ;;
+    esac
+    [ "${#pw}" -ge 8 ] || echo "  note: that password is under 8 characters"
+
+    echo "==> DCU test pod $POD_NAMESPACE/$POD_NAME"
+
+    host env \
+        CSV2POD_TEMPLATE_B64="$(base64 -w0 < "$POD_TEMPLATE")" \
+        CSV2POD_PASSWORD_B64="$(printf '%s' "$pw" | base64 -w0)" \
+        CSV2POD_NAMESPACE="$POD_NAMESPACE" \
+        CSV2POD_POD_NAME="$POD_NAME" \
+        CSV2POD_NODE_PORT="$POD_NODE_PORT" \
+        CSV2POD_RUNTIMECLASS="$POD_RUNTIMECLASS" \
+        CSV2POD_IMAGE_LOCAL="$POD_IMAGE_LOCAL" \
+        CSV2POD_IMAGE_UPSTREAM="$POD_IMAGE_UPSTREAM" \
+        CSV2POD_REGISTRY="$POD_REGISTRY" \
+        CSV2POD_INITDATA="$POD_INITDATA" \
+        CSV2POD_PULL_TIMEOUT="$POD_PULL_TIMEOUT" \
+        CSV2POD_DRY_RUN="$dry_run" \
+        CSV2POD_SKIP_PUSH="$skip_push" \
+        CSV2POD_SELF="$(basename "$0")" \
+        bash -s <<'POD_UP'
+set -euo pipefail
+
+NS="$CSV2POD_NAMESPACE"
+POD="$CSV2POD_POD_NAME"
+PW="$(printf '%s' "$CSV2POD_PASSWORD_B64" | base64 -d)"
+TPL=/tmp/csv2-pod.template.yaml
+RENDERED=/tmp/csv2-pod.rendered.yaml
+
+say() { echo "  $*"; }
+bad() { echo "  FAIL $*" >&2; exit 1; }
+
+echo "==> pod preflight"
+command -v kubectl >/dev/null || bad "no kubectl on the host"
+command -v docker  >/dev/null || bad "no docker on the host"
+kubectl version >/dev/null 2>&1 || bad "cannot reach the cluster (kubectl version)"
+
+kubectl get runtimeclass "$CSV2POD_RUNTIMECLASS" >/dev/null 2>&1 \
+    || bad "runtimeclass $CSV2POD_RUNTIMECLASS does not exist"
+
+# Refuse rather than replace. This pod is shared, there is one DCU on the host, and
+# deleting somebody else's work to make room is not this script's call to make.
+if kubectl -n "$NS" get pod "$POD" >/dev/null 2>&1; then
+    bad "'$NS/$POD' already exists; delete it first with: $CSV2POD_SELF pod-down"
+fi
+
+# Written like the registry probe below and for the same reason: `... | grep -q` lets
+# grep exit on the match, SIGPIPEs the writer, and pipefail then reports the port as
+# free. Collecting the list first leaves nothing upstream to kill.
+used_ports="$(kubectl get svc -A -o jsonpath='{range .items[*]}{.spec.ports[*].nodePort}{"\n"}{end}' 2>/dev/null || true)"
+if grep -qx "$CSV2POD_NODE_PORT" <<< "$used_ports"; then
+    bad "nodePort $CSV2POD_NODE_PORT is already taken; it is fixed in the template"
+fi
+
+# Informational only: the DCU is advertised by a device plugin, and a stale
+# advertisement outlives the card. One card, so a second DCU pod just stays Pending.
+dcu_used="$(kubectl get pods -A -o json 2>/dev/null \
+            | grep -o '"hygon\.cn/k100_ai":[^,}]*' | sort -u || true)"
+if [ -n "$dcu_used" ]; then
+    say "WARN something already claims hygon.cn/k100_ai:"
+    printf '         %s\n' $dcu_used
+    say "WARN one DCU on this host - unless it frees up, this pod stays Pending"
+fi
+
+echo "==> image"
+# The guest pulls the image itself, so having it in the host's docker is not enough.
+# It has to be in a registry the guest can reach.
+registry_has_image() {
+    local out
+    # Not `curl ... | grep -q`: grep -q exits on the first match, curl takes SIGPIPE,
+    # and pipefail reads the pipeline as a failure.
+    out="$(curl -sk --max-time 10 "https://$CSV2POD_REGISTRY/v2/vllm/tags/list" 2>/dev/null || true)"
+    grep -q 'ubuntu-dtk' <<< "$out"
+}
+
+if registry_has_image; then
+    say "the registry already has vllm:ubuntu-dtk"
+elif [ "$CSV2POD_DRY_RUN" = 1 ]; then
+    say "WARN dry run: the registry has no vllm:ubuntu-dtk, and a dry run pushes nothing"
+elif [ "$CSV2POD_SKIP_PUSH" = 1 ]; then
+    bad "the registry has no vllm:ubuntu-dtk and --skip-push was given"
+else
+    docker image inspect "$CSV2POD_IMAGE_UPSTREAM" >/dev/null 2>&1 \
+        || bad "the host has no $CSV2POD_IMAGE_UPSTREAM, and this script does not download.
+         save it where there is network, then: gunzip -c vllm-dtk.tar.gz | docker load"
+    say "tagging and pushing; 25.6GB, this takes minutes"
+    docker tag  "$CSV2POD_IMAGE_UPSTREAM" "$CSV2POD_IMAGE_LOCAL"
+    docker push "$CSV2POD_IMAGE_LOCAL" \
+        || bad "the push failed; check the registry and whether its CA is trusted at
+         /etc/docker/certs.d/$CSV2POD_REGISTRY/ca.crt"
+    registry_has_image \
+        || bad "the push reported success, but the registry still does not list the tag"
+fi
+
+echo "==> render"
+[ -f "$CSV2POD_INITDATA" ] || bad "initdata $CSV2POD_INITDATA is missing"
+# The guest verifies TLS when it pulls. The host trusting the registry's self-signed
+# certificate does not make the guest trust it; this blob is what does, by way of the
+# CoCo initdata.
+INITDATA_B64="$(gzip -c "$CSV2POD_INITDATA" | base64 -w0)"
+[ -n "$INITDATA_B64" ] || bad "could not build the initdata blob"
+say "initdata ${#INITDATA_B64} chars (2008 expected)"
+
+printf '%s' "$CSV2POD_TEMPLATE_B64" | base64 -d > "$TPL"
+[ -s "$TPL" ] || bad "the template came through empty"
+
+sed -e "s|__INITDATA_B64__|${INITDATA_B64}|g" \
+    -e "s|__SSH_PASSWORD__|${PW}|g" \
+    "$TPL" > "$RENDERED"
+
+# The class has to include digits. `__[A-Z_]` misses __INITDATA_B64__, which is the
+# one most likely to survive unreplaced, since its value is computed here rather than
+# written anywhere.
+leftover="$(grep -oE '__[A-Z0-9_]+__' "$RENDERED" | sort -u | tr '\n' ' ' || true)"
+[ -z "$leftover" ] || bad "unreplaced placeholders after rendering: $leftover"
+say "rendered $RENDERED"
+
+if [ "$CSV2POD_DRY_RUN" = 1 ]; then
+    say "dry run: nothing applied"
+    say "apply by hand with: kubectl -n $NS apply -f $RENDERED"
+    exit 0
+fi
+
+echo "==> apply"
+kubectl -n "$NS" apply -f "$RENDERED" || bad "apply failed"
+
+echo "==> waiting for Ready, up to ${CSV2POD_PULL_TIMEOUT}s"
+say "the guest pulls its own 25.6GB image, so this is slow"
+start=$(date +%s)
+last_msg=""
+while :; do
+    now=$(date +%s); elapsed=$((now - start))
+
+    phase=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.status.phase}' 2>/dev/null || echo "?")
+    reason=$(kubectl -n "$NS" get pod "$POD" \
+                -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || true)
+    msg="${phase}${reason:+ / $reason}"
+
+    # On change only: this can run for forty minutes.
+    if [ "$msg" != "$last_msg" ]; then
+        printf '  [%4ds] %s\n' "$elapsed" "$msg"
+        last_msg="$msg"
+    fi
+
+    case "$phase" in
+        Running)
+            ready=$(kubectl -n "$NS" get pod "$POD" \
+                        -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || echo false)
+            if [ "$ready" = "true" ]; then
+                printf '  [%4ds] Running / Ready\n' "$elapsed"
+                break
+            fi
+            ;;
+        Failed|Succeeded)
+            echo "  FAIL the pod went to $phase:" >&2
+            kubectl -n "$NS" logs "$POD" --tail=80 >&2 || true
+            exit 1
+            ;;
+    esac
+
+    if [ "$elapsed" -ge "$CSV2POD_PULL_TIMEOUT" ]; then
+        echo "  FAIL still $msg after ${CSV2POD_PULL_TIMEOUT}s:" >&2
+        kubectl -n "$NS" describe pod "$POD" 2>&1 | tail -40 >&2 || true
+        exit 1
+    fi
+    sleep 10
+done
+
+echo "==> verify"
+# The kata runtime builds its own QEMU, and that is where the card shows up as passed
+# through. `ls /dev/dri/` inside is the other half of the check.
+qemu_cmds="$(pgrep -af qemu-system-x86_64 2>/dev/null || true)"
+if grep -q 'vfio-pci,host=0000:c3:00.0' <<< "$qemu_cmds"; then
+    say "ok    DCU passed through: $(grep -o 'vfio-pci,host=[^ ]*' <<< "$qemu_cmds" | sort -u | tr '\n' ' ')"
+else
+    say "WARN no vfio-pci device on any QEMU command line; look inside with ls /dev/dri/"
+fi
+
+if timeout 5 bash -c "echo > /dev/tcp/127.0.0.1/$CSV2POD_NODE_PORT" 2>/dev/null; then
+    say "ok    nodePort $CSV2POD_NODE_PORT answers"
+else
+    say "WARN nodePort $CSV2POD_NODE_PORT does not answer. Check that sshd started:"
+    say "        kubectl -n $NS logs $POD --tail=30"
+    say "      or use the fallback that needs no CNI:"
+    say "        kubectl -n $NS port-forward pod/$POD 2222:22"
+fi
+
+echo
+echo "================= pod ready =================="
+echo "  pod      : $NS/$POD"
+echo "  nodePort : $CSV2POD_NODE_PORT"
+echo "  password : $PW"
+echo
+echo "  ssh -o StrictHostKeyChecking=no -p $CSV2POD_NODE_PORT root@${CSV2POD_REGISTRY%%:*}"
+echo
+echo "  inside, the DCU should answer:  hy-smi ; ls /dev/dri/ ; rocminfo"
+echo "  if they are missing, load the DTK environment first: bash -lc 'hy-smi'"
+echo
+echo "  delete it with: $CSV2POD_SELF pod-down"
+echo "=============================================="
+POD_UP
+}
+
+cmd_pod_status() {
+    pod_facts || return 1
+
+    echo "==> DCU test pod $POD_NAMESPACE/$POD_NAME"
+    host env \
+        CSV2POD_NAMESPACE="$POD_NAMESPACE" \
+        CSV2POD_POD_NAME="$POD_NAME" \
+        CSV2POD_NODE_PORT="$POD_NODE_PORT" \
+        CSV2POD_SERVICE="$POD_SERVICE" \
+        bash -s <<'POD_STATUS'
+set -uo pipefail
+NS="$CSV2POD_NAMESPACE"; POD="$CSV2POD_POD_NAME"
+
+command -v kubectl >/dev/null || { echo "  no kubectl on the host" >&2; exit 1; }
+
+if kubectl -n "$NS" get pod "$POD" >/dev/null 2>&1; then
+    phase=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.status.phase}' 2>/dev/null || echo "?")
+    ready=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || echo "?")
+    reason=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || true)
+    node=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.spec.nodeName}' 2>/dev/null || true)
+    printf '  pod      : %s/%s  %s  ready=%s%s\n' "$NS" "$POD" "$phase" "$ready" "${reason:+  ($reason)}"
+    printf '  node     : %s\n' "${node:-?}"
+else
+    echo "  pod      : $NS/$POD does not exist"
+fi
+
+if kubectl -n "$NS" get svc "$CSV2POD_SERVICE" >/dev/null 2>&1; then
+    echo "  service  : $CSV2POD_SERVICE  (nodePort $CSV2POD_NODE_PORT)"
+else
+    echo "  service  : $CSV2POD_SERVICE does not exist"
+fi
+
+# A stale advertisement outlives the card, so this is what the node believes, not
+# necessarily what is true.
+dcu_lines="$(kubectl describe nodes 2>/dev/null | grep -E 'hygon\.cn/k100_ai' | sed -n '1,4p' || true)"
+if [ -n "$dcu_lines" ]; then
+    echo "  DCU      : the node advertises"
+    printf '%s\n' "$dcu_lines" | sed 's/^/             /'
+else
+    echo "  DCU      : the node advertises no hygon.cn/k100_ai at all"
+fi
+
+qemu_cmds="$(pgrep -af qemu-system-x86_64 2>/dev/null || true)"
+if grep -q 'vfio-pci,host=0000:c3:00.0' <<< "$qemu_cmds"; then
+    echo "  vfio     : the DCU is passed through to a running VM"
+else
+    echo "  vfio     : no QEMU has the DCU"
+fi
+
+qemu_now="$(pgrep -cf qemu-system-x86_64 2>/dev/null || true)"
+echo "  QEMU     : ${qemu_now:-0} process(es) on the host"
+POD_STATUS
+}
+
+cmd_pod_down() {
+    local keep_service=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --keep-service) keep_service=1; shift ;;
+            *) echo "pod-down: unknown argument $1" >&2; return 1 ;;
+        esac
+    done
+
+    pod_facts || return 1
+
+    echo "==> deleting DCU test pod $POD_NAMESPACE/$POD_NAME"
+    host env \
+        CSV2POD_NAMESPACE="$POD_NAMESPACE" \
+        CSV2POD_POD_NAME="$POD_NAME" \
+        CSV2POD_NODE_PORT="$POD_NODE_PORT" \
+        CSV2POD_SERVICE="$POD_SERVICE" \
+        CSV2POD_SELF="$(basename "$0")" \
+        CSV2POD_KEEP_SERVICE="$keep_service" \
+        bash -s <<'POD_DOWN'
+set -uo pipefail
+# Deliberately no -e: a cleanup that stops at the first failure leaves a half-deleted
+# pod. The exit status is set explicitly at the end instead.
+
+NS="$CSV2POD_NAMESPACE"; POD="$CSV2POD_POD_NAME"; SVC="$CSV2POD_SERVICE"
+NODE_PORT="$CSV2POD_NODE_PORT"
+failed=0
+
+command -v kubectl >/dev/null || { echo "  FAIL no kubectl on the host" >&2; exit 1; }
+
+echo "==> recording the sandbox id"
+# Worth doing while the pod is still there. Afterwards this id is the only way to tell
+# which kata shim and QEMU processes this pod left behind - the choice is between
+# knowing, and guessing at other people's processes.
+find_sandbox_id() {
+    # NS and POD have to be exported. Written as `NS=x crictl ... | python3 ...` the
+    # assignment would apply to crictl alone, python would raise KeyError on
+    # os.environ, and the function would swallow it into an empty answer.
+    export NS POD
+    crictl pods -o json 2>/dev/null | python3 -c '
+import json, sys, os
+ns, name = os.environ["NS"], os.environ["POD"]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for it in data.get("items", []):
+    lbl = it.get("labels") or {}
+    if (lbl.get("io.kubernetes.pod.namespace") == ns
+            and lbl.get("io.kubernetes.pod.name") == name):
+        # The id is on the item itself. metadata holds only attempt/name/namespace/uid,
+        # so reading it from there returns empty without raising.
+        print(it.get("id", ""))
+        break
+'
+}
+
+SANDBOX_ID="$(find_sandbox_id)"
+if [ -n "$SANDBOX_ID" ]; then
+    echo "  sandbox ${SANDBOX_ID:0:16}..."
+else
+    echo "  no sandbox id - the pod never started, or is already gone"
+fi
+
+echo "==> deleting the pod"
+if kubectl -n "$NS" get pod "$POD" >/dev/null 2>&1; then
+    kubectl -n "$NS" delete pod "$POD" --timeout=90s >/dev/null 2>&1
+    if kubectl -n "$NS" get pod "$POD" >/dev/null 2>&1; then
+        echo "  graceful delete did not finish (usual for kata), forcing"
+        kubectl -n "$NS" delete pod "$POD" --grace-period=0 --force >/dev/null 2>&1
+        sleep 3
+        if kubectl -n "$NS" get pod "$POD" >/dev/null 2>&1; then
+            echo "  FAIL the pod object is still there; look at it by hand:" >&2
+            echo "         kubectl -n $NS get pod $POD -o yaml | tail -30" >&2
+            failed=1
+        else
+            echo "  forced delete done"
+        fi
+    else
+        echo "  deleted"
+    fi
+else
+    echo "  $NS/$POD does not exist, nothing to delete"
+fi
+
+echo "==> deleting the Service"
+if [ "$CSV2POD_KEEP_SERVICE" = 1 ]; then
+    echo "  --keep-service: keeping $SVC"
+elif kubectl -n "$NS" get svc "$SVC" >/dev/null 2>&1; then
+    if kubectl -n "$NS" delete svc "$SVC" >/dev/null 2>&1; then
+        echo "  deleted $SVC, nodePort released"
+    else
+        echo "  WARN could not delete $SVC"
+    fi
+else
+    echo "  $SVC does not exist, nothing to delete"
+fi
+
+echo "==> leftover processes"
+# This host's recurring trouble: a kata shim that will not exit leaves its QEMU
+# behind, and the next pod then trips over "object with key already exists".
+#
+# Only processes tied to this pod's sandbox are killed. With no sandbox id nothing is
+# killed at all - the alternative is guessing, and guessing means somebody else's pod.
+killed=0
+if [ -n "$SANDBOX_ID" ]; then
+    short_id="${SANDBOX_ID:0:16}"
+    for pid in $(pgrep -f containerd-shim-kata 2>/dev/null || true); do
+        # The 2>/dev/null has to wrap the whole group, not tr: a pid pgrep just named
+        # can be gone by now, and that message comes from the shell's own input
+        # redirection, before tr is ever started.
+        cmd=$( { tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null )
+        case "$cmd" in
+            *"$SANDBOX_ID"*|*"$short_id"*)
+                echo "  killing leftover kata shim pid=$pid"
+                kill -9 "$pid" 2>/dev/null && killed=$((killed + 1))
+                ;;
+        esac
+    done
+    for pid in $(pgrep -f qemu-system-x86_64 2>/dev/null || true); do
+        # The 2>/dev/null has to wrap the whole group, not tr: a pid pgrep just named
+        # can be gone by now, and that message comes from the shell's own input
+        # redirection, before tr is ever started.
+        cmd=$( { tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null )
+        case "$cmd" in
+            *"$SANDBOX_ID"*|*"$short_id"*)
+                echo "  killing leftover QEMU pid=$pid"
+                kill -9 "$pid" 2>/dev/null && killed=$((killed + 1))
+                ;;
+        esac
+    done
+else
+    echo "  no sandbox id, so nothing is killed here (that would risk other pods)"
+fi
+
+# Report orphans that belong to nobody, without touching them. The comparison has to
+# use the full 64-character id: `crictl pods -q` returns 12 characters, which never
+# matches what is carved out of a command line, and every live process would then be
+# reported as an orphan.
+live_sandboxes="$(crictl pods -o json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    for it in json.load(sys.stdin).get("items", []):
+        print(it.get("id", ""))
+except Exception:
+    pass
+' 2>/dev/null || true)"
+orphans=0
+for pid in $(pgrep -f containerd-shim-kata 2>/dev/null || true); do
+    # Grouped so the 2>/dev/null also covers a pid that vanished between pgrep and
+    # this read: that message comes from the shell's own input redirection.
+    cmd=$( { tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null )
+    # `sed -n 1p` rather than `head -1`: head would exit early and SIGPIPE grep.
+    sb="$(printf '%s' "$cmd" | grep -oE '[0-9a-f]{64}' | sed -n '1p' || true)"
+    [ -n "$sb" ] || continue
+    if ! grep -q "$sb" <<< "$live_sandboxes"; then
+        orphans=$((orphans + 1))
+        [ "$orphans" = 1 ] && echo "  WARN other orphaned kata shims, not this pod's - left alone:"
+        printf '         pid=%s sandbox=%s...\n' "$pid" "${sb:0:16}"
+    fi
+done
+
+if [ "$killed" = 0 ] && [ "$orphans" = 0 ]; then
+    echo "  none"
+fi
+
+echo "==> verify"
+if kubectl -n "$NS" get pod "$POD" >/dev/null 2>&1; then
+    echo "  FAIL the pod is still there"
+    failed=1
+else
+    echo "  ok    the pod is gone"
+fi
+
+# A bare pod has no controller, so nothing brings it back - unless somebody left one.
+controllers="$(kubectl -n "$NS" get deploy,rs,sts,ds,job,cronjob -o name 2>/dev/null | grep -i "$POD" || true)"
+if [ -n "$controllers" ]; then
+    echo "  WARN something could recreate it:"
+    printf '         %s\n' $controllers
+else
+    echo "  ok    nothing owns it, so it will not come back on its own"
+fi
+
+if [ "$CSV2POD_KEEP_SERVICE" = 0 ]; then
+    used_ports="$(kubectl get svc -A -o jsonpath='{range .items[*]}{.spec.ports[*].nodePort}{"\n"}{end}' 2>/dev/null || true)"
+    if grep -qx "$NODE_PORT" <<< "$used_ports"; then
+        echo "  WARN nodePort $NODE_PORT is still taken (by some other Service)"
+    fi
+fi
+
+qemu_now="$(pgrep -cf qemu-system-x86_64 2>/dev/null || true)"
+echo "  QEMU  : ${qemu_now:-0} process(es) left on the host"
+
+echo
+echo "================= pod deleted ================="
+echo "  $NS/$POD is gone, and nothing will rebuild it."
+echo "  recreate it with: $CSV2POD_SELF pod-up"
+echo "==============================================="
+
+exit "$failed"
+POD_DOWN
+}
+
 # ------------------------------- entrypoint ----------------------------------
 
 case "${1:-}" in
@@ -1477,6 +2104,9 @@ case "${1:-}" in
     ssh)      shift; cmd_ssh "$@" ;;
     down)     shift; cmd_down "$@" ;;
     dcu-base) shift; cmd_dcu_base "$@" ;;
+    pod-up)   shift; cmd_pod_up "$@" ;;
+    pod-status) shift; cmd_pod_status "$@" ;;
+    pod-down) shift; cmd_pod_down "$@" ;;
     *)
         # Print the header comment block: leading comment lines only, stopping at
         # the first line of code.
