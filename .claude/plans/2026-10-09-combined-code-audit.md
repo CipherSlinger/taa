@@ -250,10 +250,25 @@ TriggerClean = !implicated
   与 Task 4 在模型侧犯的错是同一个形状，别重犯。
   `rollbackDepsImport` 的长注释里「runDepsAudit removes the directory itself on every path that
   returns false ... it is kept deliberately」那一段随之**整段为假**，必须重写，不能留着。
-- **顺手收掉 `route.go` 两处把审计槽称作「模型代码审计」的注释**（`:169` 的 `AuditRunning`
-  字段注释、`:547` 的 `isAuditBusyLocked` 函数注释）。改动后两条触发路径都会置 `AuditRunning`
-  且 `CurrentAuditOp = "auditing"`，所以它们说的是「审计」而不是「模型审计」。**只改注释**，
-  不改 `:652` 那条**用户可见**的 409 文案——见下方「登记：刻意不改」。
+- **顺手收掉 `route.go` 把审计槽称作「模型代码审计」的注释**：`:169` 的 `AuditRunning`
+  字段注释、`:547` 的 `isAuditBusyLocked` 函数注释，以及同类的 `:554` `resetAuditStateLocked`
+  与 `:558` `clearAuditState`（四处都写「model audit fields」，四处同为一类假话，不能只改两处）。
+  改动后两条触发路径都会置 `AuditRunning` 且 `CurrentAuditOp = "auditing"`，所以它们说的是
+  「审计」而不是「模型审计」。**只改注释**，不改 `:652` 那条**用户可见**的 409 文案——见下方
+  「登记：刻意不改」。
+- **`route.go:160` `DepsImported` 的字段注释也必须改**（2026-10-09 补查，原计划漏点）：原文写
+  「the active dependency set is installed and bound; **audit status is the directory's marker**」。
+  标记机制本次删除，后半句随之**整句为假**，且它正好是本任务读代码时最容易误导人的一句
+  （会让人以为绑定后仍要读 `.taa_audit_ok` 判断是否已审计）。改为「审计状态取自最近一次合并审计」。
+
+**Task 5 与 Task 7 的分界修正（2026-10-09，实测）：** 原计划把「被产出改动逼出来的既有测试
+调整」也划给 Task 7，但删除 `runDepsAudit` / `auditMarkerExists` / `writeAuditMarker` 会让
+`deps_import_test.go` **当场编译不过**，坏树不能作为 Task 5 的交付。因此分界改为：
+
+- **Task 5 = 产出改动 + 被它逼出来的既有测试调整**（改断言点、改驱动对象、删死机制测试），
+  目标是**交付时 `internal/controller` 全绿**。
+- **Task 7 = 只加新测试**（新增断言 1~6、验收判据 1~7、变异证明），不再重复 Task 5 已做的
+  既有测试改写。
 
 ---
 
@@ -294,6 +309,10 @@ TriggerClean = !implicated
 ---
 
 ## Task 7：测试与验证
+
+**范围修正：** 下表「需要改写或删除的既有测试」**已随 Task 5 落地**（不删就编译不过）。
+Task 7 因此只剩：**新增测试 1~6、验收判据 1~7、变异证明、全包复验**。下表的处置列留作
+核对清单——Task 7 要逐条确认 Task 5 的改法与其一致，不一致就修。
 
 **需要改写或删除的既有测试（已点名）：**
 
