@@ -110,24 +110,85 @@ TAA 今天的代码审计是**两条彼此独立的链路**：
 
 ### 3.4 报告新增分根结论
 
-`AuditReport.Target` 增加 `directories []string`（本次实际覆盖了哪几个根），
-并新增按根的分项列表，每项含 `directory` / `files_scanned` / `findings_count` / `passed`。
-这样 `code=1` 的报文里，平台能直接看出**是哪个根出的问题**，不必靠
-`file_reports[].file_path` 的前缀自行推断。
+`AuditReport` 顶层新增 `roots`，每项含 `directory` / `files_scanned` / `findings_count` / `passed`：
+
+```go
+// RootReport is the audit result for one root. A merged report has to let a reader tell
+// which root a failure came from without inferring it from the file paths inside
+// file_reports, which is exactly the inference that gets a two-root report misread.
+type RootReport struct {
+    Directory     string `json:"directory"`
+    FilesScanned  int    `json:"files_scanned"`
+    FindingsCount int    `json:"findings_count"`
+    // Passed is true only when nothing points at this root: no finding under it,
+    // and the scan that would have found one ran to completion. A root is not
+    // passed because the scan that would have cleared it was truncated.
+    Passed bool `json:"passed"`
+}
+```
+
+`AuditMetadata` 同时新增一个字段，把**组装后的**扫描可信度带出来：
+
+```go
+// ScanProvedClean is ProvesCleanScan()'s verdict, assembled here so that a reader
+// need not re-derive it from the five fields above. It is separate from
+// Conclusion.Passed because the two answer different questions: Passed is the
+// policy verdict on the findings, this is whether the scan that produced them
+// finished. A caller deciding what to do about a failure needs both.
+ScanProvedClean bool `json:"scan_proved_clean"`
+```
+
+§3.5 的判据依赖它，而 `ProvesCleanScan()` 的六个输入里只有五个被拷进 `AuditMetadata`
+（`Report.Passed` 未拷），所以调用方**无法**从既有字段重建这个裁决——必须显式带出。
+
+`roots` 放在 `AuditReport` 顶层而**不是** `AuditTarget` 下面，是因为上报平台的 `report`
+字段不是整份 `AuditReport`，而是两份各自重复实现的**投影**：
+`projectCodeAuditSection`（`internal/controller/codeaudit_projection.go:21-33`）与
+`projectAuditToMap`（`internal/coordinator/flow_training.go:286-300`），两者都只挑
+`conclusion` 与 `file_reports` 两个键。分根结论若挂在 `target` 下，**根本到不了平台**——
+而 §3.3 的 `code=1` 消歧恰恰要靠在平台上看得见它。因此**两份投影都要**扩为
+`{conclusion, file_reports, roots}`，`roots` 在整份报告与投影里都是顶层键，位置一致。
+
+分根结论**无条件填充**（单根也填），理由与 §3.1 同一立场：报告必须能自证它扫了什么。
+不采用「仅多根时填充」的省字节方案——「键不存在」会被读成「没有这个能力」还是
+「只有一个根」，取决于读者的版本，而本仓库对这类隐式信号的立场是明确的
+（`AuditMetadata` 既有的那段注释就是为此写的）。
 
 这是**纯新增**：`report` 字段在 `reportAudit` 里是不透明字符串，在训练报告里是
 `codeaudit` 对象，两者都只增键；既有字段的含义一个都不改。
 
-### 3.5 回滚：只回滚触发方那一侧，且只在触发方被牵连时
+### 3.5 回滚：只回滚触发方那一侧，且只在触发方**被牵连**时
 
 合并审计跑完后，**唯一会发生的清除是触发方自己的那一个根**：
 
 - 触发方 = 模型 → `cleanDirContents(Security.ModelDir)`
 - 触发方 = 依赖 → `rollbackDepsImport(候选目录)`
 
-判据：`code == 2`（整体没跑成，无从区分哪一侧有问题），**或**报告里存在归属于触发方
-那个根的 finding。若 findings 全在另一侧：报告与 `code` 如实反映失败，但**不删任何东西、
-本次导入判成功**。
+判据不是「有没有归属于触发方的 finding」——那会漏掉**截断**。`Conclusion.Passed`
+除了 `stats.High == 0`（assist 默认策略）之外，还被 `scanPassed = Passed && ProvesCleanScan()`
+**强制置假**（`audit.go:307-309`、`:353-355`）。截断时 `ProvesCleanScan()` 为 false，
+但被截断保留的 findings 完全可能**恰好全在另一侧**，于是触发方看起来"干净"。
+若只看归属，一次截断的扫描就会放行——而今天截断是**两侧都清**的。这是必须堵死的 fail-open。
+
+因此引入 `scan_proved_clean`（见 §3.4）后，判据是：
+
+```
+implicated = !report.Conclusion.Passed && ( !report.ScanMetadata.ScanProvedClean
+                                          || findingsUnder(triggerRoot) > 0 )
+TriggerClean = !implicated
+```
+
+逐例核对：
+
+| 情形 | `Passed` | `ScanProvedClean` | 触发方有 finding | 结果 |
+| :--- | :--- | :--- | :--- | :--- |
+| 通过 | true | true | 可能（仅 LOW） | 不清除（**LOW 不触发清除**） |
+| 截断 | false | false | 任意 | **清除触发方**（与今天一致） |
+| 另一侧脏 | false | true | 否 | **不清除**，导入判成功，`code=1` |
+| 触发方脏 | false | true | 是 | 清除触发方 |
+| 执行失败 `code=2` | 无报告 | — | — | 清除触发方 |
+
+「`code == 2` 清、`code == 0` 不清」两条与既有行为一致；新增的只有第三行。
 
 ### 3.6 幂等短路取消，审计标记机制删除
 
@@ -207,38 +268,81 @@ spec 是错的。platform-mock 会**拒绝** `scope="model"`（`server_test.go:2
 2. fail-closed 静态扫描对 wheel 内的 `.so`/`.pyd` 二进制仍然无效
    （引擎按扩展名跳过），二进制层面的供应链风险未被覆盖；完整性上只有 SM3，无签名验签。
    本方案不改变这一点。
-3. **跨根数据流能否真正检测到，取决于 CPG 符号解析的改造**（见 §7）。
+3. **跨根数据流只能部分检测**——见 §7.3/§7.4：普通跨根调用（唯一同名定义）能检测到，
+   需要 import 消歧的同名函数不能。这是 `cpg/` 零改动的代价，已登记、不静默。
 4. 模型侧 findings 不阻止训练（§5.1）。
 
-## 7. CPG 符号解析的改造要求
+## 7. CPG 符号解析：结论（已读码定案，2026-10-09）
 
-`enrichFindingsWithCPG(dir, targets, findings)`（`semgrep_engine.go:232`）与
-`NewSymbolResolver(dir)`（`cpg_analysis.go:169-172`）目前都以单一 root 建符号索引。
+**结论：采用退化方案，`internal/codeaudit/cpg/` 零改动。**
+`enrichFindingsWithCPG` 的实参取 `dirs[0]`（模型根），函数签名与实现均不动。
 
-依赖根必须以「**模块搜索路径**」的身份进入解析，而不是被当成第二个独立工程——
-因为模型代码 `import numpy` 时，`numpy` 实际来自 `<depsDir>/<sm3>/numpy`，
-正是训练运行时通过 `PYTHONPATH` 注入的那一条（`deps_env.go:19-36`）。
+### 7.1 为什么首选方案不成立（不是"因为文件被占用"才退让）
 
-- **首选**：给 `NewSymbolResolver` 增加一个可选的附加搜索根，模型根作主根、依赖根作搜索路径。
-- **退化**：若该改动无法在 `cpg/resolver.go` 里做到最小化（该文件同时被本检出里另一个
-  参与者的未合并 `feat(cpg)` 分支改动），则每个根各建一个 resolver、各自 enrich、
-  findings 取并集，`cpg/resolver.go` 一行不动。此时保真度损失是
-  **跨根数据流（模型代码 → 依赖模块）检测不到**——而那恰恰是选择「真·单次审计」
-  而非「两次扫描取合取」的理由。因此退化方案**必须**回写进本节作为已知盲区，
-  不得静默降级。
+初版把「模块搜索路径」当首选，理由是 `deps_env.go:19-36` 把依赖目录前插进 `PYTHONPATH`。
+读码后该理由**不充分**：`SymbolResolver.workspaceRoot` 不只用来建索引，它还**决定每个文件的
+module 名**——`builder.go:177` 用 `resolverModulePath(b.resolver.workspaceRoot, filePath)`
+产出 `s.module`，`builder.go:609` 再用它算 `fqn: resolver.FQN(s.module, def.SymbolName)`；
+而 `resolverPackageParts(root, file)`（`resolver.go:150-172`）在文件**不位于 root 之下**时
+返回 `false`，于是 module 名是**空串**。
 
-实现者必须先读 `internal/codeaudit/cpg/resolver.go` 再定，并把选定结论与理由回写本节。
+推论：**即使把两个根的符号表合并进一个 resolver，第二个根下的文件 module 名依然是 `""`，
+import-aware FQN 那一级匹配照样失效。** 要真修，必须给 `SymbolResolver` 加 `roots []string`
+并改 `cpg/resolver.go` **与** `cpg/builder.go` 两个文件——远不是"最小化改动"。
+
+### 7.2 冲突面（第二个独立理由）
+
+`git worktree list` 显示四个并发 agent 正在同时写 `internal/codeaudit/cpg/`，
+其中 `worktree-agent-a20bdd…` 的提交面正是 `cpg/builder.go` + `cpg/resolver.go`——
+与上述"真修"所需改动的两个文件**完全重叠**。退化方案在 `cpg/` 下改动 **0 行**。
+
+### 7.3 退化后的实际保真度（精确陈述，不含糊）
+
+两个根的文件**都**在 `targets` 里，都被 AST 解析、都进图、都能被 taint 遍历：
+
+- **同文件内**的流：无损。
+- **跨文件调用边**按三级解析（`builder.go` 的 `matchCallee`）：同文件无损；
+  「唯一同名定义」兜底**无损**（这是绝大多数跨根调用的实际命中路径）；
+  只有 **import-aware FQN** 一级对依赖根失效（module 名退化为 `""`，候选 fqn 退化为裸名）。
+- **微服务桥不受影响**：`NewMicroserviceBoundaryBridge` / taint 引擎走的是**文件路径**
+  （`CrossFile` / `AcrossMicroservice` 由路径与 HTTP 边界判定），与 resolver 无关。
+- **失败模式仍是优雅的**：建图出错时 `enrichFindingsWithCPG` 原样返回 findings
+  （`cpg_analysis.go:66-72` 已写明「The graph is an enrichment, not a gate」）。
+
+### 7.4 因此新增的已知盲区（登记，不得静默降级）
+
+**当两个根（或两文件）里存在同名函数、且调用方需要靠 import 消歧时，这条边会丢失，
+污点流可能在此处断掉。** 这是本方案为「真·单次扫描」付出的代价，也是 §6 第一条
+「跨根数据流能否真正检测到取决于 CPG 改造」的最终答案：**部分能，部分不能**。
+普通跨根调用（唯一同名）能检测到；需要 import 消歧的同名函数不能。
+若要补齐，需要 `cpg/resolver.go` + `cpg/builder.go` 的多根改造，
+必须在 `feat(cpg)` 系列合并之后单独立项。
+
+### 7.5 归属判定不得使用 `FileReport.File`
+
+`FileReport.File` 是 `filepath.Base(filePath)`（`audit.go:160`），合并后 `__init__.py`
+一类的 basename 在两个根下**必然重名**。归属一律用绝对路径：
+`FileReport.FilePath` 或 `Finding.File`（后者在 `scanner.go:129/:341`、
+`semgrep_engine.go:498` 处都取自 walk 路径，是绝对路径）。
+
+### 7.6 `scope` 不得由 finding 的归属反推
+
+`scope` 由**触发方**决定（哪个 handler 调用了审计）。默认路径下
+`/opt/taa/model-deps/…` 在字典序上排在 `/opt/taa/models/…` 之前，且依赖树文件数远多于
+模型代码——若按 finding 归属反推 scope，同一次审计会同时产生两种 scope 且不确定。
 
 ## 8. 验收判据
 
 1. 只下发模型（无依赖）→ 一次 `reportAudit(scope="", code=0)`，
-   `report.directories == [modelDir]`。
+   `report.roots == [{directory: modelDir, passed: true}]`。
 2. 再下发一套干净依赖 → 一次 `reportAudit(scope="deps", code=0)`，
-   `report.directories` 含两个根，两处分项 `passed` 均为 true。
+   `report.roots` 含两个根，两处分项 `passed` 均为 true。
 3. 重投**同一个**依赖包 → install 与 audit **再次发生**（对照 2 的日志），`code` 仍为 0。
    这一条直接证明幂等短路确实没了。
-4. findings 只在模型侧时下发依赖 → `reportAudit(scope="deps", code=1)` 且分根结论指向
-   模型根，`reportDeps(code=0)`，**模型与依赖目录都没有被删**。
+4. findings 只在模型侧时下发依赖 → `reportAudit(scope="deps", code=1)` 且 `roots` 里只有
+   模型根 `passed=false`，`reportDeps(code=0)`，**模型与依赖目录都没有被删**。
 5. findings 在依赖侧时下发依赖 → `reportAudit(code=1)` + `reportDeps(code=1)`，
    依赖目录被删、绑定按既有规则处理，**模型目录原样**。
-6. `ScanEnabled=false` → 跳过审计，`reportAudit` 不发出，依赖正常绑定，不留任何标记文件。
+6. **截断（`Truncated=true`）触发时，即使可见 findings 全在另一侧，触发方仍被清除**——
+   这一条钉住 §3.5 的 fail-open 堵漏，是本次最容易被漏掉的行为。
+7. `ScanEnabled=false` → 跳过审计，`reportAudit` 不发出，依赖正常绑定，不留任何标记文件。
