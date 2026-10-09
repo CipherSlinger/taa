@@ -157,7 +157,7 @@ type TAAState struct {
 	LatestDataRecord      ImportIndexRecord        // 下发数据接口始终记录的最新数据索引
 	ModelChecksum         map[string]any           // 模型压缩包校验和 (size, algorithm, value)
 	DataChecksum          map[string]any           // 数据压缩包校验和 (size, algorithm, value)
-	DepsImported          bool                     // the active dependency set is installed and bound; audit status is the directory's marker
+	DepsImported          bool                     // the active dependency set is installed and bound; the audit status comes from the last combined audit, not from any on-disk marker
 	DepsHash              string                   // SM3 content-address key of the active dependency package
 	DepsChecksum          map[string]any           // dependency package checksum (size, algorithm, value)
 	CurrentOp             string                   // Current operation: idle/downloading/decrypting/extracting/debugging/training/reporting
@@ -166,7 +166,7 @@ type TAAState struct {
 	activeToken           int64                    // Current active token
 	activeTask            *ActiveTaskSnapshot      // Snapshot of currently active task
 	CurrentAuditOp        string                   // Current audit operation: idle/auditing
-	AuditRunning          bool                     // Whether model code audit is actively running
+	AuditRunning          bool                     // Whether a code audit (combined, either trigger) is actively running
 	ActiveAuditTaskID     string                   // Current active audit task ID
 	ActiveAuditRequestID  string                   // Current active audit request ID
 	trainingControl       *trainingControl         // 当前训练任务的中止控制对象
@@ -544,12 +544,12 @@ func (s *TAAState) setCurrentAuditOp(op string) {
 	s.AuditRunning = (op != "idle" && op != "")
 }
 
-// isAuditBusyLocked checks if model code audit is currently running (caller must hold s.mu RLock or Lock).
+// isAuditBusyLocked checks if a code audit is currently running (caller must hold s.mu RLock or Lock).
 func (s *TAAState) isAuditBusyLocked() bool {
 	return s.AuditRunning || s.CurrentAuditOp == "auditing"
 }
 
-// resetAuditStateLocked resets model audit fields to idle state (caller must hold s.mu Lock).
+// resetAuditStateLocked resets code audit fields to idle state (caller must hold s.mu Lock).
 func (s *TAAState) resetAuditStateLocked() {
 	s.ActiveAuditTaskID = ""
 	s.ActiveAuditRequestID = ""
@@ -557,7 +557,7 @@ func (s *TAAState) resetAuditStateLocked() {
 	s.AuditRunning = false
 }
 
-// clearAuditState resets model audit fields under lock.
+// clearAuditState resets code audit fields under lock.
 func (s *TAAState) clearAuditState() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

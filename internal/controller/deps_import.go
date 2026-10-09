@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"taa/internal/resource"
@@ -87,12 +86,19 @@ func (s *TAAState) depsImportHandler(w http.ResponseWriter, r *http.Request) {
 
 // processImportedDeps is the asynchronous dependency import pipeline:
 //
-//	decrypt -> SM3 content addressing -> idempotency check -> unpack into a temporary wheelhouse
-//	-> package layout validation -> offline install into DEPS_DIR/<sm3> -> fail-closed audit
-//	-> write the audit marker, but only when an audit ran -> set state -> report
+//	decrypt -> SM3 content addressing -> unpack into a temporary wheelhouse -> package layout
+//	validation -> offline install into DEPS_DIR/<sm3> -> combined fail-closed audit over this
+//	set and the model code -> roll back this side only when it came out implicated -> set state
+//	-> report
 //
-// Every failure path rolls back: it clears the state and removes DEPS_DIR/<sm3>, never leaving
-// a half-built directory behind.
+// This pipeline is deliberately NOT idempotent: re-delivering the same archive re-unpacks,
+// re-installs and re-audits it. The audit verdict now depends on which model code the set was
+// scanned together with, and a content address captures only the set itself, so no stored
+// artifact -- a marker keyed on the hash in particular -- can stand in for a verdict.
+//
+// A failure path rolls back only when the combined audit implicated this side. A failing audit
+// whose findings all sit on the model side still reports code=1, but it is not a failure of
+// this pipeline: the binding is left in place and the delivery stays successful.
 func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphertextPath string) {
 	defer os.Remove(ciphertextPath)
 
@@ -117,15 +123,10 @@ func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphert
 	depsDir := s.depsDirForHash(hash)
 	s.Logs.Add(LogInfo, "importDeps", "依赖包 SM3=%s (%d bytes) -> %s", hash, size, depsDir)
 
-	// Idempotency: a directory with the same hash that already passed the audit is reused
-	// as-is, without unpacking or installing again.
-	if auditMarkerExists(depsDir) {
-		s.Logs.Add(LogInfo, "importDeps", "依赖包 %s 已审计通过，复用现有目录", hash)
-		s.saveDepsSuccess(hash, checksum)
-		s.reportDepsSuccess(req, checksum)
-		s.setCurrentOp("idle")
-		return
-	}
+	// No idempotency short-circuit here. A stored marker could only record this side's hash,
+	// but the audit verdict also depends on which model code the set is scanned with, and that
+	// is not captured by the content address. Every delivery re-unpacks, re-installs and
+	// re-audits (see the pipeline comment above).
 
 	s.setCurrentOp("deps_installing")
 
@@ -156,10 +157,10 @@ func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphert
 
 	// Clear any leftover directory of the same name before installing: pip --target merges into
 	// a populated target instead of replacing it, so a half-built leftover from an earlier failed
-	// attempt -- or a bound directory whose marker was removed by hand -- would otherwise be
-	// merged into this attempt's result and bound as if its content were this set's. (The
-	// failure-path removals below do not depend on this call; os.RemoveAll is already idempotent
-	// on a missing path.)
+	// attempt -- or the currently bound directory itself, since this pipeline clears and rebuilds
+	// every delivery -- would otherwise be merged into this attempt's result and bound as if its
+	// content were this set's. (The failure-path removals below do not depend on this call;
+	// os.RemoveAll is already idempotent on a missing path.)
 	if err := os.RemoveAll(depsDir); err != nil {
 		// RemoveAll failing may have partially destroyed a directory that is currently bound
 		// (see rollbackDepsImport), so this branch must make the state decision too.
@@ -176,67 +177,25 @@ func (s *TAAState) processImportedDeps(req depsImportRequest, phase int, ciphert
 	}
 	s.Logs.Add(LogInfo, "importDeps", "依赖包安装完成: %s", depsDir)
 
-	passed, audited := s.auditAndReportDeps(req, depsDir)
-	if !passed {
+	// One combined audit over the delivered set and the model code it will run against.
+	// Only this side is this pipeline's to remove: findings on the model side leave this
+	// delivery successful and are reported, not acted on (see combined_audit.go).
+	result := s.runCombinedAudit(
+		codeAuditRequest{RequestID: req.RequestID, TaskID: req.TaskID},
+		codeAuditTriggerDeps, depsDir)
+	if !result.TriggerClean {
+		// "依赖包审计未通过" is the pre-existing user-visible string and was already the generic
+		// bucket for both "the audit failed" and "the audit could not run". Do not narrow it.
 		s.rollbackDepsImport(depsDir)
 		s.setCurrentOp("idle")
 		s.reportDepsFailure(req, "依赖包审计未通过")
 		return
 	}
 
-	// The marker means "an audit ran and passed" (spec 6), so it is written only when one did.
-	// The dependency directory is content-addressed and permanent, and the idempotency check
-	// above believes a matching marker forever: a marker minted by the ScanEnabled=false skip
-	// would keep a never-audited set reported as audited even after scanning is turned back on,
-	// which is exactly the invariant the marker's own comment states.
-	if audited {
-		if err := writeAuditMarker(depsDir); err != nil {
-			s.rollbackDepsImport(depsDir)
-			s.setCurrentOp("idle")
-			s.reportDepsFailure(req, fmt.Sprintf("写入审计标记失败: %v", err))
-			return
-		}
-	}
-
 	s.saveDepsSuccess(hash, checksum)
 	s.reportDepsSuccess(req, checksum)
 	s.setCurrentOp("idle")
 	s.Logs.Add(LogInfo, "importDeps", "阶段%d: 依赖包导入完成: hash=%s, taskId=%s", phase, hash, req.TaskID)
-}
-
-// depsAuditMarker is the sentinel file written into a dependency directory once its audit has
-// passed. Trust depends on its content (depsAuditMarkerVersion), not merely on its presence.
-const depsAuditMarker = ".taa_audit_ok"
-
-// depsAuditMarkerVersion is the trust content of the audit marker. Bump it whenever the audit
-// engine, policy, or rule set changes: auditMarkerExists compares content, so an existing
-// dependency directory carrying a marker from any other policy is re-audited instead of reused.
-//
-// Existence alone is not enough to trust a marker. Anything that writes one under a weaker
-// policy would otherwise be believed forever, and the directory it guards is content-addressed
-// and permanent. That is why the pipeline writes this marker only after a real audit has passed
-// and writes none on the ScanEnabled=false short-circuit: there is no such thing as a marker
-// minted by a skip, so a set that was never audited cannot be reused as if it had been. What
-// the version buys is the only handle that lets a future engine, policy or rule-set change
-// invalidate the markers already on disk. It does not provide tamper-resistance -- anyone who
-// can write into DEPS_DIR can forge the string -- which would take a signature; this is the
-// right starting point before that.
-const depsAuditMarkerVersion = "taa-deps-audit-v1\n"
-
-func auditMarkerExists(depsDir string) bool {
-	info, err := os.Stat(filepath.Join(depsDir, depsAuditMarker))
-	if err != nil || info.IsDir() {
-		return false
-	}
-	content, err := os.ReadFile(filepath.Join(depsDir, depsAuditMarker))
-	if err != nil {
-		return false
-	}
-	return string(content) == depsAuditMarkerVersion
-}
-
-func writeAuditMarker(depsDir string) error {
-	return os.WriteFile(filepath.Join(depsDir, depsAuditMarker), []byte(depsAuditMarkerVersion), 0o644)
 }
 
 // rollbackDepsImport discards the directory of a dependency import that failed, and clears the
@@ -251,11 +210,12 @@ func writeAuditMarker(depsDir string) error {
 //     previous set active and training keeps running on it; clearing unconditionally would
 //     degrade a working configuration to "no dependencies" and surface later as an unrelated
 //     ImportError during training.
-//   - Conversely, the binding must not outlive its own directory. Re-importing a set whose
-//     audit marker was deleted by hand makes the idempotence check miss, so the pipeline clears
-//     the directory in use, and if the rebuild then fails, a binding left behind would point at
-//     a directory that no longer exists -- training would inject a stale TAA_DEPS_DIR and fail
-//     with the same ImportError, with the two halves swapped.
+//   - Conversely, the binding must not outlive its own directory. This pipeline is not
+//     idempotent (see processImportedDeps): re-delivering an already-bound set clears the
+//     directory in use and rebuilds it every time, so a rebuild that fails must clear the
+//     binding too -- a binding left behind would point at a directory that no longer exists,
+//     training would inject a stale TAA_DEPS_DIR and fail with that same ImportError, with the
+//     two halves swapped.
 //
 // That is why every failure path in processImportedDeps routes through here rather than calling
 // os.RemoveAll directly: the removal and the state decision must not be separable.
@@ -266,19 +226,18 @@ func writeAuditMarker(depsDir string) error {
 // and no second deps_import can be admitted while one is in flight (the startup restore,
 // app.go, runs before the server accepts requests).
 //
-// runDepsAudit removes the directory itself on every path that returns false (deps_audit.go),
-// so on the audit-failure path the os.RemoveAll below is a redundant second net -- and on the
-// other failure paths that route here (the pre-install cleanup, the install failure and the
-// marker write) it is the only one. It is kept deliberately: this pipeline's own "no half-built
-// directory survives a failure" guarantee must not hinge on a side effect of a function whose
-// job is to audit, and the state decision in particular belongs here, not there.
+// Every removal this pipeline performs happens here, and the state decision with it. The
+// combined audit (combined_audit.go) physically removes nothing -- it only reports -- so
+// nothing else can clean up the delivered side; this function is the single place that owns
+// both the removal and the decision, precisely because the audit no longer deletes anything.
 func (s *TAAState) rollbackDepsImport(depsDir string) {
 	_ = os.RemoveAll(depsDir)
 	// currentDepsDir() already encodes "imported && hash non-empty", and depsDirForHash
 	// builds its result the same way, so equality means this failed set is the bound one.
-	// (The marker is written before saveDepsSuccess, so normally the audit path is only
-	// reached for a set that is not yet bound; the guard also covers a re-import whose
-	// marker was deleted by hand.)
+	// (saveDepsSuccess is what binds a set and it runs only after a clean audit, so the
+	// audit path normally reaches here for a set that is not yet bound; the guard also
+	// covers a re-delivery of the set that is currently bound, which the pipeline clears
+	// and rebuilds on every delivery.)
 	if s.currentDepsDir() == depsDir {
 		s.clearDepsState()
 	}
@@ -316,20 +275,4 @@ func (s *TAAState) reportDepsAsync(requestID, taskID string, code int, msg strin
 				requestID, taskID, code)
 		}
 	}()
-}
-
-// auditAndReportDeps runs the fail-closed audit over the installed dependency directory.
-// It reports the audit result itself, with scope "deps" (see deps_audit.go). The import
-// pipeline's own terminal reportDeps callback is NOT its job: that one belongs to
-// processImportedDeps, which must still fire code=1 when this returns false.
-//
-// It returns whether the pipeline may continue and whether an audit actually ran: false for the
-// second value means the scan-disabled short-circuit skipped the audit, so the caller must not
-// treat the dependency set as audited (see the marker write in processImportedDeps).
-func (s *TAAState) auditAndReportDeps(req depsImportRequest, depsDir string) (passed bool, audited bool) {
-	if !s.Security.ScanEnabled {
-		s.Logs.Add(LogInfo, "audit", "安全扫描未启用，跳过依赖包审计")
-		return true, false
-	}
-	return s.runDepsAudit(req, depsDir), true
 }

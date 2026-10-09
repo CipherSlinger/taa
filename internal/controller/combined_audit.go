@@ -146,6 +146,27 @@ func (s *TAAState) combinedAuditRoots(triggerSide, triggerDir string) []string {
 // leave one set on a path it did not anticipate, and a stuck AuditRunning is not a
 // cosmetic leak: isAuditBusyLocked reads it, and the next model or dependency
 // delivery would be refused for good.
+//
+// Known blind spots -- a passing audit is not the same as a trusted delivery, and
+// they apply to the combined root set as a whole:
+//
+//  1. The scan reads source file contents. The engine skips compiled artifacts by
+//     extension (internal/codeaudit/scanner.go, hasMatchingExtension; the semgrep engine
+//     applies the same check in internal/codeaudit/semgrep_engine.go), so supply-chain
+//     risk carried inside a .so or .pyd binary is outside what this audit can see.
+//  2. Integrity is SM3 content addressing only. There is no publisher signature and no
+//     signature verification; the trust model is the same one the platform side already
+//     assumes.
+//  3. Therefore "audit passed" means "no rule of this static policy matched", not "these
+//     dependencies are safe" -- nor "this model code is safe". The mitigations (an audit
+//     allowlist, signature verification) are left to a later spec.
+//
+// There is deliberately no test hook here, for either trigger. The model path has none
+// either: its tests hand the real engine a rule-matching train.py and assert on the
+// report (audit_model_import_test.go), and the dependency path is tested the same way
+// (deps_import_test.go). One assertion therefore covers the engine call, the
+// auditReportJSON projection and the scope report together; a hook would skip exactly
+// those three and leave only the side's rollback covered.
 func (s *TAAState) runCombinedAudit(req codeAuditRequest, triggerSide, triggerDir string) combinedAuditResult {
 	s.mu.Lock()
 	s.ActiveAuditTaskID = req.TaskID
