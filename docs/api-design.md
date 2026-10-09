@@ -21,10 +21,10 @@
 - [4. 平台 → TAA](#4-平台--taa)
   - [4.1 资源信息获取（/v1/taa/getResourceInfo）](#41-资源信息获取v1taagetresourceinfo)
   - [4.2 下发资源数据（/v1/taa/import）](#42-下发资源数据v1taaimport)
-  - [4.3 通知 TAA 阶段切换（/v1/taa/switch）](#43-通知-taa-阶段切换v1taaswitch)
-  - [4.4 请求 TAA 导出结果（/v1/taa/export）](#44-请求-taa-导出结果v1taaexport)
-  - [4.5 下发模型资源（/v1/taa/importModel）](#45-下发模型资源v1taaimportmodel)
-  - [4.6 中止当前训练任务（/v1/taa/stopTraining）](#46-中止当前训练任务v1taastoptraining)
+  - [4.3 下发模型资源（/v1/taa/importModel）](#43-下发模型资源v1taaimportmodel)
+  - [4.4 中止当前训练任务（/v1/taa/stopTraining）](#44-中止当前训练任务v1taastoptraining)
+  - [4.5 通知 TAA 阶段切换（/v1/taa/switch）](#45-通知-taa-阶段切换v1taaswitch)
+  - [4.6 请求 TAA 导出结果（/v1/taa/export）](#46-请求-taa-导出结果v1taaexport)
 - [5. 调试接口](#5-调试接口)
   - [5.1 连通性检查（/v1/taa/health）](#51-连通性检查v1taahealth)
   - [5.2 查询 TAA 完整状态（/v1/taa/status）](#52-查询-taa-完整状态v1taastatus)
@@ -857,7 +857,150 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 ```
 
 
-### 4.3 通知 TAA 阶段切换（/v1/taa/switch）
+### 4.3 下发模型资源（/v1/taa/importModel）
+
+该接口**专门用于平台向 TAA 下发模型资源**（模型代码 + 训练代码 + 数据），复用 `/v1/taa/import` 的资源接收与处理流程，区别在于：固定处理模型导入场景，**移除 `type` 字段**。
+
+**请求**：`POST /v1/taa/importModel`
+
+**请求内容类型**：`application/json`
+
+**参数**：
+
+ | 参数 | 类型 | 必填 | 说明 |
+ | --- | --- | --- | --- |
+ | `resourceUrl` | `string` | 否* | 资源下载地址。与 `publicKey` 规则一致：若之前未传输过且请求中为空，则报错（400）；若之前已传输并保存过，则允许为空。当为空时，直接复用已保存模型，使用 `runtimeConfig` 中的 `commands` 对最新数据索引对应的数据执行训练 |
+ | `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空 |
+ | `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空 |
+ | `publicKey` | `string` | 否 | SM2 公钥 PEM。TAA 在 phase=1 时校验并保存该公��，用于后续 phase=3 结果加密导出 |
+ | `runtimeConfig` | `string` | 否* | 运行配置 JSON 字符串。包含顺序执行的命令列表和环境变量。当 `resourceUrl` 为空时必填且 `commands` 不能为空；缺省时按默认训练流程执行 |
+
+**`runtimeConfig` 字段格式**：
+
+`runtimeConfig` 的值是一个 JSON 字符串，字符串解析后的内容结构如下：
+
+| 子字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `commands` | `array[string]` | 否* | 按顺序执行的命令列表。数组顺序即执行顺序，任一命令失败则停止后续执行。当 `resourceUrl` 为空复用模型时必填且至少包含一条命令 |
+| `env` | `string` | 否 | 运行时环境变量 JSON 字符串。字符串内容应为 JSON 对象，解析后得到键值对并注入到每条命令的执行环境中 |
+
+**执行规则**：
+
+- `commands` 按数组顺序执行。
+- 前一条命令成功后，才执行下一条命令。
+- 任一条命令失败时，立即停止后续执行，并将失败结果上报平台。
+- `env` 为空、缺省或为空字符串时，不额外注入环境变量。
+- `env` 字符串解析后的环境变量对该次导入模型的执行过程生效。
+- `runtimeConfig` 为空、缺省或为空字符串时，TAA 按默认模型导入流程执行，不额外注入命令和环境变量。
+- **resourceUrl 复用与最新数据训练**：当 `resourceUrl` 为空且之前已传输/保存过模型时，TAA 直接跳过模型下载与审计，从数据索引记录中获取最新导入的数据（Latest Data Record），根据 `runtimeConfig` 中的 `commands` 与环境变量对该数据直接执行训练。训练完成后通过 `/v1/taa/reportRes` 异步上报结果，并支持平台后续按 `taskId`/`requestId` 调用 `/v1/taa/export` 导出该轮训练产物。若之前未保存过模型或未找到已导入数据，则返回 400 错误。
+
+**请求示例**：
+
+```jsonc
+{
+  "resourceUrl": "xx",
+  "requestId": "xx",
+  "taskId": "xxx",
+  "publicKey": "xx",
+  "runtimeConfig": {
+    "commands": [
+      "python preprocess.py",
+      "python train.py --epochs 20 --batch-size 64",
+      "python export_model.py"
+    ],
+    "env": "{\"CUDA_VISIBLE_DEVICES\":\"0\",\"OMP_NUM_THREADS\":\"4\"}"
+  }
+}
+```
+
+**响应内容类型**：`application/json`
+
+**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，该接口成功时 `result` 为 `null`。
+
+**成功响应示例**（200 OK，仅资源接收，未触发训练模拟）：
+
+```jsonc
+{
+  "msg": "资源已接收，下载处理中",
+  "result": null,
+  "error": 0
+}
+```
+
+**成功响应示例**（200 OK，触发训练模拟并异步上报训练结果）：
+
+```jsonc
+{
+  "msg": "模型已接收，训练结果将通过 reportRes 上报",
+  "result": null,
+  "error": 0
+}
+```
+
+**验证失败响应示例**（400 Bad Request，`resourceUrl` 为空）：
+
+```jsonc
+{
+  "msg": "resourceUrl 不能为空",
+  "result": null,
+  "error": 400
+}
+```
+
+**下载失败响应示例**（500 Internal Server Error）：
+
+```jsonc
+{
+  "msg": "下载资源失败: HTTP 404",
+  "result": null,
+  "error": 500
+}
+```
+
+> **加密格式说明**：与 `/v1/taa/import` 相同。
+
+### 4.4 中止当前训练任务（/v1/taa/stopTraining）
+
+该接口用于平台请求 TAA 中止当前正在执行的训练任务。TAA 当前为单任务模式，请求不需要传入 `taskId` 或 `requestId`，接口始终针对当前训练任务处理。
+
+**请求**：`POST /v1/taa/stopTraining`
+
+**请求内容类型**：`application/json`
+
+**请求示例**：
+
+```jsonc
+{}
+```
+
+**处理规则**：
+
+- 接口采用同步处理方式，TAA 等待训练进程及其子进程退出，并完成训练任务状态清理后返回。
+- 当前存在训练任务时，成功中止后返回 HTTP `200`，公共返回格式中的 `error=0`。
+- 当前不存在训练任务时，仍返回 HTTP `200`，公共返回格式中的 `error=0`，仅通过 `msg` 提示不存在训练任务；该场景按幂等成功处理。
+- 该接口不区分或处理其他非训练任务，也不调用 `modelLog`、`reportProgress` 或 `/v1/taa/reportRes`。
+
+**成功响应示例（当前存在训练任务并已中止）**：
+
+```jsonc
+{
+  "msg": "训练任务已中止",
+  "result": null,
+  "error": 0
+}
+```
+
+**成功响应示例（当前不存在训练任务）**：
+
+```jsonc
+{
+  "msg": "不存在训练任务",
+  "result": null,
+  "error": 0
+}
+```
+
+### 4.5 通知 TAA 阶段切换（/v1/taa/switch）
 
 **请求**：`POST /v1/taa/switch`
 
@@ -891,7 +1034,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 }
 ```
 
-### 4.4 请求 TAA 导出结果（/v1/taa/export）
+### 4.6 请求 TAA 导出结果（/v1/taa/export）
 
 该接口用于请求导出 TAA 当前阶段产生的结果目录压缩包。考虑到结果文件可能较大，成功时接口直接返回二进制文件流。
 
@@ -1025,149 +1168,6 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
   "msg": "阶段 3 需要先通过阶段 1 导入公钥",
   "result": null,
   "error": 400
-}
-```
-
-### 4.5 下发模型资源（/v1/taa/importModel）
-
-该接口**专门用于平台向 TAA 下发模型资源**（模型代码 + 训练代码 + 数据），复用 `/v1/taa/import` 的资源接收与处理流程，区别在于：固定处理模型导入场景，**移除 `type` 字段**。
-
-**请求**：`POST /v1/taa/importModel`
-
-**请求内容类型**：`application/json`
-
-**参数**：
-
- | 参数 | 类型 | 必填 | 说明 |
- | --- | --- | --- | --- |
- | `resourceUrl` | `string` | 否* | 资源下载地址。与 `publicKey` 规则一致：若之前未传输过且请求中为空，则报错（400）；若之前已传输并保存过，则允许为空。当为空时，直接复用已保存模型，使用 `runtimeConfig` 中的 `commands` 对最新数据索引对应的数据执行训练 |
- | `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空 |
- | `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空 |
- | `publicKey` | `string` | 否 | SM2 公钥 PEM。TAA 在 phase=1 时校验并保存该公��，用于后续 phase=3 结果加密导出 |
- | `runtimeConfig` | `string` | 否* | 运行配置 JSON 字符串。包含顺序执行的命令列表和环境变量。当 `resourceUrl` 为空时必填且 `commands` 不能为空；缺省时按默认训练流程执行 |
-
-**`runtimeConfig` 字段格式**：
-
-`runtimeConfig` 的值是一个 JSON 字符串，字符串解析后的内容结构如下：
-
-| 子字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `commands` | `array[string]` | 否* | 按顺序执行的命令列表。数组顺序即执行顺序，任一命令失败则停止后续执行。当 `resourceUrl` 为空复用模型时必填且至少包含一条命令 |
-| `env` | `string` | 否 | 运行时环境变量 JSON 字符串。字符串内容应为 JSON 对象，解析后得到键值对并注入到每条命令的执行环境中 |
-
-**执行规则**：
-
-- `commands` 按数组顺序执行。
-- 前一条命令成功后，才执行下一条命令。
-- 任一条命令失败时，立即停止后续执行，并将失败结果上报平台。
-- `env` 为空、缺省或为空字符串时，不额外注入环境变量。
-- `env` 字符串解析后的环境变量对该次导入模型的执行过程生效。
-- `runtimeConfig` 为空、缺省或为空字符串时，TAA 按默认模型导入流程执行，不额外注入命令和环境变量。
-- **resourceUrl 复用与最新数据训练**：当 `resourceUrl` 为空且之前已传输/保存过模型时，TAA 直接跳过模型下载与审计，从数据索引记录中获取最新导入的数据（Latest Data Record），根据 `runtimeConfig` 中的 `commands` 与环境变量对该数据直接执行训练。训练完成后通过 `/v1/taa/reportRes` 异步上报结果，并支持平台后续按 `taskId`/`requestId` 调用 `/v1/taa/export` 导出该轮训练产物。若之前未保存过模型或未找到已导入数据，则返回 400 错误。
-
-**请求示例**：
-
-```jsonc
-{
-  "resourceUrl": "xx",
-  "requestId": "xx",
-  "taskId": "xxx",
-  "publicKey": "xx",
-  "runtimeConfig": {
-    "commands": [
-      "python preprocess.py",
-      "python train.py --epochs 20 --batch-size 64",
-      "python export_model.py"
-    ],
-    "env": "{\"CUDA_VISIBLE_DEVICES\":\"0\",\"OMP_NUM_THREADS\":\"4\"}"
-  }
-}
-```
-
-**响应内容类型**：`application/json`
-
-**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，该接口成功时 `result` 为 `null`。
-
-**成功响应示例**（200 OK，仅资源接收，未触发训练模拟）：
-
-```jsonc
-{
-  "msg": "资源已接收，下载处理中",
-  "result": null,
-  "error": 0
-}
-```
-
-**成功响应示例**（200 OK，触发训练模拟并异步上报训练结果）：
-
-```jsonc
-{
-  "msg": "模型已接收，训练结果将通过 reportRes 上报",
-  "result": null,
-  "error": 0
-}
-```
-
-**验证失败响应示例**（400 Bad Request，`resourceUrl` 为空）：
-
-```jsonc
-{
-  "msg": "resourceUrl 不能为空",
-  "result": null,
-  "error": 400
-}
-```
-
-**下载失败响应示例**（500 Internal Server Error）：
-
-```jsonc
-{
-  "msg": "下载资源失败: HTTP 404",
-  "result": null,
-  "error": 500
-}
-```
-
-> **加密格式说明**：与 `/v1/taa/import` 相同。
-
-### 4.6 中止当前训练任务（/v1/taa/stopTraining）
-
-该接口用于平台请求 TAA 中止当前正在执行的训练任务。TAA 当前为单任务模式，请求不需要传入 `taskId` 或 `requestId`，接口始终针对当前训练任务处理。
-
-**请求**：`POST /v1/taa/stopTraining`
-
-**请求内容类型**：`application/json`
-
-**请求示例**：
-
-```jsonc
-{}
-```
-
-**处理规则**：
-
-- 接口采用同步处理方式，TAA 等待训练进程及其子进程退出，并完成训练任务状态清理后返回。
-- 当前存在训练任务时，成功中止后返回 HTTP `200`，公共返回格式中的 `error=0`。
-- 当前不存在训练任务时，仍返回 HTTP `200`，公共返回格式中的 `error=0`，仅通过 `msg` 提示不存在训练任务；该场景按幂等成功处理。
-- 该接口不区分或处理其他非训练任务，也不调用 `modelLog`、`reportProgress` 或 `/v1/taa/reportRes`。
-
-**成功响应示例（当前存在训练任务并已中止）**：
-
-```jsonc
-{
-  "msg": "训练任务已中止",
-  "result": null,
-  "error": 0
-}
-```
-
-**成功响应示例（当前不存在训练任务）**：
-
-```jsonc
-{
-  "msg": "不存在训练任务",
-  "result": null,
-  "error": 0
 }
 ```
 
