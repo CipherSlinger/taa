@@ -228,19 +228,40 @@ go test ./internal/platform/... -count=1
 go test ./tools/platform-mock/internal/... -count=1
 ```
 
-**端到端验证（`bin/taa` 起真进程 + platform-mock 作对端）：**
+**验证层订正（2026-10-09，实测）：** 本仓库**不存在**端到端脚手架——无 `scripts/`、
+无 Makefile 目标、全仓没有任何启动 `bin/taa` 的脚本。原计划写的「起真进程 + platform-mock
+作对端」无从执行，且即使搭起来也不可靠：审计要 `ScanEnabled=true` 加活的 LLM 端点，
+而记忆 `be-host-inference-cpu-collapse` 记录任一 CPU 竞争者就让 llama-server 慢 36 倍。
 
-1. 只下发模型（无依赖）→ 期望一次 `reportAudit(scope="", code=0)`，`report.directories == [modelDir]`。
-2. 再下发一套干净依赖 → 期望一次 `reportAudit(scope="deps", code=0)`，`report.directories` 含两个根，且两个根的分项 `passed` 均为 true。
-3. 重投**同一个**依赖包 → 期望 install 与 audit **再次发生**（对照 2 的日志行数），`code` 仍为 0。这一条直接证明幂等短路确实没了。
-4. 构造 findinds 只在模型侧的用例（在 `ModelDir` 放一个命中规则的文件，依赖保持干净），下发依赖 → 期望 `reportAudit(scope="deps", code=1)` 且分根结论指向模型根，`reportDeps(code=0)`，**模型与依赖目录都没有被删**。
+因此判据落在 `internal/controller` 里既有的一层：`deps_import_test.go`、`audit_model_import_test.go`、
+`handler_test.go` 等已用 `httptest.NewServer` 驱动真 router、真 handler、真流水线，
+配桩引擎与桩 LLM client（`ScanEnabled:false` 的 `setupTestState` 之外另有一套）。
+`reportAudit` 的 `scope` / `code` 断言本来就在这一层。
+
+1. 只下发模型（无依赖）→ 一次 `reportAudit(scope="", code=0)`，
+   `report.roots == [{directory: modelDir, passed: true}]`。
+2. 再下发一套干净依赖 → 一次 `reportAudit(scope="deps", code=0)`，
+   `report.roots` 含两个根，两处分项 `passed` 均为 true。
+3. 重投**同一个**依赖包 → install 与 audit **再次发生**（对照 2 的日志行数），`code` 仍为 0。
+   这一条直接证明幂等短路确实没了。
+4. findings 只在模型侧时下发依赖 → `reportAudit(scope="deps", code=1)` 且 `roots` 里只有
+   模型根 `passed=false`，`reportDeps(code=0)`，**模型与依赖目录都没有被删**。
+5. findings 在依赖侧时下发依赖 → `reportAudit(code=1)` + `reportDeps(code=1)`，依赖目录被删，
+   **模型目录原样**。
+6. **截断触发时，即使可见 findings 全在另一侧，触发方仍被清除。** 这一条钉住 spec §3.5
+   堵掉的 fail-open：只按 finding 归属回滚会让一次截断的扫描放行。它必须有一条独立断言，
+   否则这个洞会在「改完看起来都对」的状态下留在库里。
+7. `ScanEnabled=false` → 跳过审计，`reportAudit` 不发出，依赖正常绑定，不留任何标记文件。
+
+真进程冒烟测试仍可做，但它是**加分项**，不作为判据——判据以第 1~7 条为准。
 
 ---
 
 ## 并发与提交
 
-- 并发 subagent 上限 2，禁止嵌套。Task 1+2（`internal/codeaudit/**`）与 Task 6（`docs/api-design.md`）文件足迹不相交且只有前者跑测试，可并行。Task 3/4/5 都改 `internal/controller/**`，**必须串行**。Task 7 单独一段跑测试。
-- **任何两个会执行 `go test` 的 agent 不得并发。**
+- 并发 subagent 上限 2，禁止嵌套。Task 1+2（`internal/codeaudit/**`）与 Task 6a（`docs/api-design.md`）文件足迹不相交且只有前者跑测试，可并行。Task 3/4/5 都改 `internal/controller/**`，**必须串行**。Task 7 单独一段跑测试。
+- **任何两个会执行 `go test` 的 agent 不得并发。** 因此 Task 6 拆两半：**6a** 只改 `docs/api-design.md`（不跑测试，可与 Task 1+2 并行）；**6b** 改 platform-mock 的 `scope` 拒绝文案与其测试（跑 `go test ./tools/platform-mock/...`，必须单独占一个测试窗口）。
+- **投影层是本次的一处隐藏依赖面**（2026-10-09 补）：`report` 字段不是整份 `AuditReport`，而是两份**各自重复实现**的投影——`projectCodeAuditSection`（`internal/controller/codeaudit_projection.go:21`）与 `projectAuditToMap`（`internal/coordinator/flow_training.go:286`），两者都只挑 `conclusion` 与 `file_reports`。分根结论若只挂在 `AuditTarget` 下就**到不了平台**，§3.3 的 `code=1` 消歧随之落空。**两份都要扩为 `{conclusion, file_reports, roots}`**：controller 那份随 Task 3，coordinator 那份随 Task 4（它喂训练报告的 `codeaudit` 段）。两份的重复本身是既有事实，不在本次收拾。
 - 本检出与其它参与者共享：`tools/csv2-vm/csv2-vm.sh` 与 `teellm/`（子模块）一律不碰；`git add` 只用显式路径，禁止 `git add .` / `-A` / `-u`。
 - 提交信息用英文、Conventional Commits，**不得出现任何 AI 署名**。
 
