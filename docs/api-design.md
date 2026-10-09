@@ -18,7 +18,6 @@
   - [3.7 TAA 上报任务终端日志（/v1/taa/modelLog）](#37-taa-上报任务终端日志v1taamodellog)
   - [3.8 TAA 上报运行日志（/v1/taa/taaLog）](#38-taa-上报运行日志v1taataalog)
   - [3.9 TAA 上报任务进度（/v1/taa/reportProgress）](#39-taa-上报任务进度v1taareportprogress)
-  - [3.10 TAA 上报依赖包导入结果（/v1/taa/reportDeps）](#310-taa-上报依赖包导入结果v1taareportdeps)
 - [4. 平台 → TAA](#4-平台--taa)
   - [4.1 资源信息获取（/v1/taa/getResourceInfo）](#41-资源信息获取v1taagetresourceinfo)
   - [4.2 下发资源数据（/v1/taa/import）](#42-下发资源数据v1taaimport)
@@ -26,7 +25,6 @@
   - [4.4 请求 TAA 导出结果（/v1/taa/export）](#44-请求-taa-导出结果v1taaexport)
   - [4.5 下发模型资源（/v1/taa/importModel）](#45-下发模型资源v1taaimportmodel)
   - [4.6 中止当前训练任务（/v1/taa/stopTraining）](#46-中止当前训练任务v1taastoptraining)
-  - [4.7 下发依赖包资源（/v1/taa/importDeps）](#47-下发依赖包资源v1taaimportdeps)
 - [5. 调试接口](#5-调试接口)
   - [5.1 连通性检查（/v1/taa/health）](#51-连通性检查v1taahealth)
   - [5.2 查询 TAA 完整状态（/v1/taa/status）](#52-查询-taa-完整状态v1taastatus)
@@ -82,7 +80,6 @@ Agent 公共请求返回参数如下：
 | 5 | `/v1/taa/modelLog` | `POST` | TAA 上报任务终端日志 |
 | 6 | `/v1/taa/taaLog` | `POST` | TAA 上报内部运行日志 |
 | 7 | `/v1/taa/reportProgress` | `POST` | TAA 上报任务数值进度 |
-| 8 | `/v1/taa/reportDeps` | `POST` | TAA 上报依赖包导入与完整性校验结果 |
 
 #### 2.1.2 平台 → TAA（业务与控制接口）
 
@@ -95,7 +92,6 @@ Agent 公共请求返回参数如下：
 | 5 | `/v1/taa/switch` | `POST` | 平台通知 TAA 切换运行阶段 |
 | 6 | `/v1/taa/export` | `POST` | 平台请求 TAA 导出当前阶段结果目录压缩包，成功时直接返回文件流 |
 | 7 | `/v1/taa/stopTraining` | `POST` | 平台同步请求 TAA 中止当前训练任务 |
-| 8 | `/v1/taa/importDeps` | `POST` | 平台下发依赖包资源 |
 
 #### 2.1.3 调试接口（平台 → TAA）
 
@@ -270,7 +266,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 0,
   "msg": null,
-  "report": "{\"generated_at\":\"2026-09-02T10:03:43Z\",\"report_id\":\"train-report-20260902-100343-ae53fa14\",\"dataset\":{\"total_samples\":12500,\"splits\":{\"train\":10000,\"test\":1000},\"checksum\":{\"size\":540672,\"algorithm\":\"sm3\",\"value\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}},\"training_task\":{\"task_id\":\"task-20260825-001\",\"status\":\"succeeded\",\"exit_code\":0,\"failure_reason\":null,\"started_at\":\"2026-09-02T10:03:35Z\",\"finished_at\":\"2026-09-02T10:03:43Z\",\"duration_seconds\":8,\"model_checksum\":{\"size\":581632,\"algorithm\":\"sm3\",\"value\":\"a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd\"},\"metrics\":{\"final_accuracy\":0.9087,\"final_loss\":0.2145,\"epochs\":[{\"epoch\":1,\"accuracy\":0.5231,\"loss\":1.2345},{\"epoch\":2,\"accuracy\":0.6789,\"loss\":0.9876}]}},\"codeaudit\":{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"\u672a\u53d1\u73b0\u5b89\u5168\u95ee\u9898\uff0c\u4ee3\u7801\u901a\u8fc7\u5ba1\u8ba1\",\"recommendation\":\"\u65e0\u9700\u4fee\u590d\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null,\"roots\":[{\"directory\":\"/opt/taa/models/model-001\",\"files_scanned\":12,\"findings_count\":0,\"passed\":true}]}}"
+  "report": "{\"generated_at\":\"2026-09-02T10:03:43Z\",\"report_id\":\"train-report-20260902-100343-ae53fa14\",\"dataset\":{\"total_samples\":12500,\"splits\":{\"train\":10000,\"test\":1000},\"checksum\":{\"size\":540672,\"algorithm\":\"sm3\",\"value\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}},\"training_task\":{\"task_id\":\"task-20260825-001\",\"status\":\"succeeded\",\"exit_code\":0,\"failure_reason\":null,\"started_at\":\"2026-09-02T10:03:35Z\",\"finished_at\":\"2026-09-02T10:03:43Z\",\"duration_seconds\":8,\"model_checksum\":{\"size\":581632,\"algorithm\":\"sm3\",\"value\":\"a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd\"},\"metrics\":{\"final_accuracy\":0.9087,\"final_loss\":0.2145,\"epochs\":[{\"epoch\":1,\"accuracy\":0.5231,\"loss\":1.2345},{\"epoch\":2,\"accuracy\":0.6789,\"loss\":0.9876}]}},\"codeaudit\":{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"\u672a\u53d1\u73b0\u5b89\u5168\u95ee\u9898\uff0c\u4ee3\u7801\u901a\u8fc7\u5ba1\u8ba1\",\"recommendation\":\"\u65e0\u9700\u4fee\u590d\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null}}"
 }
 ```
 
@@ -327,11 +323,6 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
       "algorithm": "sm3",                                // 哈希算法，固定为 sm3
       "value": "a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd"  // 压缩包 SM3 哈希值
     },
-    "deps_checksum": {                                    // 当前生效依赖集完整性校验；未导入依赖时该键不出现（不是 null）
-      "size": 1048576,                                    // 依赖包原始大小（字节）
-      "algorithm": "sm3",                                // 哈希算法，固定为 sm3
-      "value": "d92e1c0f4b6a8e2d3c5f7a9b0e1d2c3b4a5f60718293a4b5c6d7e8f90a1b2c3d"  // 依赖包 SM3 哈希值
-    },
     "metrics": {                                          // 训练指标（TAA 填写）
       "final_accuracy": 0.9087,                           // 最终验证集准确率
       "final_loss": 0.2145,                                // 最终验证集损失
@@ -356,15 +347,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
         "low": 0                                          // 大模型归类为低危/良性的数量
       }
     },
-    "file_reports": null,                                  // 按文件聚合的 findings 明细；null 表示无 findings，存在 findings 时为数组
-    "roots": [                                             // 本次合并审计的分根结论；始终出现，元素顺序即审计根顺序（模型根在前）
-      {
-        "directory": "/opt/taa/models/model-001",          // 该根的绝对路径
-        "files_scanned": 12,                               // 该根扫描的文件数
-        "findings_count": 0,                               // 归属该根的 findings 数
-        "passed": true                                     // 该根是否被计入本次审计的失败：true 表示本次审计整体通过，或该根无 finding 且扫描跑到完成；详见 3.6 节
-      }
-    ]
+    "file_reports": null                                   // 按文件聚合的 findings 明细；null 表示无 findings，存在 findings 时为数组
   }
 }
 ```
@@ -451,7 +434,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 **请求内容类型**：`application/json`
 
-**触发时机**：TAA **完成模型解压**或**完成依赖包安装**后，都会触发一次**合并审计**——对「完整模型代码 + 当前生效的依赖集」执行安全审计（静态扫描规则分析 + LLM 语义审查）。也就是说，无论下发的是模型还是依赖，被审计的永远是同样这两个根，而不再是各扫各的目录。审计流程完成后，调用此接口上报审计结论与明细报告；`scope` 只表示本次由哪一侧触发。
+**触发时机**：TAA 完成模型解压后，对模型代码执行安全审计（静态扫描规则分析 + LLM 语义审查）。审计流程完成后，调用此接口上报审计结论与明细报告。
 
 **参数**：
 
@@ -463,21 +446,6 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 | `code` | `number` | 是 | 审计状态码：<br>• `0`：代码审计通过<br>• `1`：**代码审计未通过**（发现恶意/高危违规代码）<br>• `2`：**LLM 服务不可用**（模型探测失败或服务离线，按 Fail-Closed 策略拦截） |
 | `msg` | `string` | 否 | 审计结论摘要或异常说明 |
 | `report` | `string` | 否 | 代码审计报告 JSON 字符串，格式与训练结果报告中的 `codeaudit` 字段完全一致。当 LLM 服务不可用时可为空字符串 |
-| `scope` | `string` | 否 | 本次审计的**触发源**：缺省或空串表示由模型侧触发（`/v1/taa/importModel` 解压完成后），`"deps"` 表示由依赖侧触发（`/v1/taa/importDeps` 安装完成后）。两个取值均保持不变；空串等价于模型侧触发是刻意设计，用于与老版本平台保持线格式兼容 |
-
-> **`code` 是本次合并审计的整体结论，不是「本次导入是否成功」**：`code` 描述的是「完整模型代码 + 当前生效的依赖集」这一整体审计的结果，与「触发方那一侧的导入是否成功」是两个问题。审计只会回滚**触发方**那一侧，且仅在触发方被牵连时才回滚，因此 `code=1` 完全可以与一次成功导入并存——例如依赖侧触发时发现的 findings 全部落在模型代码侧，此时 TAA 不删除任何目录，本次依赖导入仍判成功，而 `code` 仍为 `1`。平台判读 `code` 时须结合 `report.roots`，不要把它当作触发方导入成败的信号。
-
-**`scope` 字段说明**：
-
-| 取值 | 含义 |
-| --- | --- |
-| 缺省 / `""` | 由模型侧触发（`/v1/taa/importModel` 解压完成后） |
-| `"deps"` | 由依赖侧触发（`/v1/taa/importDeps` 的异步流水线在依赖包安装完成后） |
-
-- `scope` 只表示**是谁触发了这次审计**，不再表示「审计了什么」。两条路径的审计范围完全相同——都是「完整模型代码 + 当前生效的依赖集」——`report` 结构与 `code` 语义也完全相同，`scope` 只剩溯源作用。平台不应据此推断被审计的目录或 findings 的归属；归属由 `report.roots` 给出。
-- 字段缺失或为空串时均按模型侧触发处理，此时上报体会省略该字段，从而与不支持该字段的老版本平台保持线格式兼容。
-- 两条路径的 `code` 语义一致：`0` 审计通过，`1` **审计未通过**（检出风险），`2` 审计执行失败或按 Fail-Closed 策略判定 LLM 服务不可用。
-- `scope="deps"` 时，`report` 字段格式与模型侧触发时完全一致。
 
 **请求示例（审计通过）**：
 
@@ -488,7 +456,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 0,
   "msg": null,
-  "report": "{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"未发现安全问题，代码通过审计\",\"recommendation\":\"无需修复\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null,\"roots\":[{\"directory\":\"/opt/taa/models/model-001\",\"files_scanned\":12,\"findings_count\":0,\"passed\":true}]}"
+  "report": "{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"未发现安全问题，代码通过审计\",\"recommendation\":\"无需修复\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null}"
 }
 ```
 
@@ -501,7 +469,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 1,
   "msg": "代码安全审计未通过: 发现反弹 Shell 风险",
-  "report": "{\"conclusion\":{\"passed\":false,\"risk_level\":\"CRITICAL\",\"summary\":\"发现高危后门代码\",\"recommendation\":\"请清理非法网络外联指令\",\"statistics\":{\"high\":1,\"medium\":0,\"low\":0}},\"file_reports\":[{\"filename\":\"train.py\",\"findings\":[{\"rule_id\":\"SEC-PY-003\",\"line\":42,\"severity\":\"HIGH\",\"description\":\"可疑网络反弹 Shell 代码\",\"llm_verdict\":\"MALICIOUS\"}]}],\"roots\":[{\"directory\":\"/opt/taa/models/model-001\",\"files_scanned\":12,\"findings_count\":1,\"passed\":false}]}"
+  "report": "{\"conclusion\":{\"passed\":false,\"risk_level\":\"CRITICAL\",\"summary\":\"发现高危后门代码\",\"recommendation\":\"请清理非法网络外联指令\",\"statistics\":{\"high\":1,\"medium\":0,\"low\":0}},\"file_reports\":[{\"filename\":\"train.py\",\"findings\":[{\"rule_id\":\"SEC-PY-003\",\"line\":42,\"severity\":\"HIGH\",\"description\":\"可疑网络反弹 Shell 代码\",\"llm_verdict\":\"MALICIOUS\"}]}]}"
 }
 ```
 
@@ -518,29 +486,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-**请求示例（依赖侧触发：`scope="deps"`）**：
-
-```jsonc
-{
-  "dockerId": "DOCKER_ID",
-  "requestId": "request-001",
-  "taskId": "task-001",
-  "code": 0,
-  "msg": "未发现安全问题，代码通过审计",
-  "report": "{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"未发现安全问题，代码通过审计\",\"recommendation\":\"无需修复\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null,\"roots\":[{\"directory\":\"/opt/taa/models/model-001\",\"files_scanned\":12,\"findings_count\":0,\"passed\":true},{\"directory\":\"/opt/taa/model-deps/d92e1c0f4b6a\",\"files_scanned\":2048,\"findings_count\":0,\"passed\":true}]}",
-  "scope": "deps"
-}
-```
-
-**`report` 字段内容格式**：与训练结果报告中的 `codeaudit` 字段完全一致，详见 [3.4 节 `report` 字段内容示例](#34-taa-上报训练完成结果) 中的 `codeaudit` 部分。在此基础上，报告对象新增一个**始终出现**的顶层键 `roots`：
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `roots` | `array` | 逐根给出本次合并审计的分项结论。每个元素含 `directory`（`string`，该根的绝对路径）、`files_scanned`（`number`，该根扫描的文件数）、`findings_count`（`number`，归属该根的 findings 数）、`passed`（`bool`，该根是否**被计入了本次审计的失败**） |
-
-- `roots` 无条件填充（只覆盖一个根时也填充），元素顺序即审计根顺序（模型根在前）；它在整份报告与训练报告的 `codeaudit` 对象里都是顶层键，位置一致。
-- **`passed` 的含义是「该根未导致本次审计失败」，不是「该根没有任何 finding」**。取值规则：`passed` 为 `true`，当且仅当**本次审计整体通过**，或者**该根下没有任何 finding 且本可发现 finding 的那次扫描跑到完成**。因此一个根可以带 findings 而 `passed` 仍为 `true`——只要这些 findings 都在阻断阈值之下、整体审计判为通过。
-- 反过来，**`findings_count` 为 `0` 而 `passed` 为 `false` 的根，是「扫描无法给出结论」的根**：可见范围内没有 finding，但本可发现 finding 的那次扫描没有跑到完成（例如被截断）。这种根不得被当作干净——「可见范围内没扫出问题」与「这次真的干净」不是同一个结论。
+**`report` 字段内容格式**：与训练结果报告中的 `codeaudit` 字段完全一致，详见 [3.4 节 `report` 字段内容示例](#34-taa-上报训练完成结果) 中的 `codeaudit` 部分。
 
 **响应内容类型**：`application/json`
 
@@ -743,93 +689,6 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `received` | `bool` | 平台是否成功接收本次进度上报 |
-
-**成功响应示例**（200 OK）：
-
-```jsonc
-{
-  "msg": "success",
-  "result": {
-    "received": true
-  },
-  "error": 0
-}
-```
-
-### 3.10 TAA 上报依赖包导入结果（/v1/taa/reportDeps）
-
-**请求**：`POST /v1/taa/reportDeps`
-
-**请求内容类型**：`application/json`
-
-**触发时机**：TAA 接收 `/v1/taa/importDeps` 请求后立即下载资源并异步处理。在依赖包解密、计算 SM3、解包、离线安装到目标目录并完成 Fail-Closed 安全审计后，调用此接口向平台上报依赖包导入与完整性校验结果。该接口是 TAA → 平台的回调接口，需由平台侧实现。
-
-**参数**：
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `dockerId` | `string` | 是 | 取值为容器启动参数 `DOCKER_ID` |
-| `requestId` | `string` | 是 | 与 `/v1/taa/importDeps` 请求中的 `requestId` 一致，用于绑定同一轮依赖包导入 |
-| `taskId` | `string` | 否 | 与 `/v1/taa/importDeps` 请求中的 `taskId` 一致。本回调中该字段**始终非空**：导入请求未提供 `taskId` 时，TAA 以 `requestId` 回填后再上报 |
-| `code` | `number` | 是 | `0` 表示依赖包导入成功，`1` 表示解密/解压/安装/审计等导入流程失败 |
-| `msg` | `string` | 否 | 成功时固定为 `"依赖包导入成功"`，失败时为具体失败原因 |
-| `checksum` | `object` | 否 | 依赖包完整性校验，**仅成功时出现**（失败时不带该键）；包含 `size`（`number`）、`algorithm`（固定为 `"sm3"`）、`value`（SM3 十六进制字符串） |
-
-**请求示例（成功）**：
-
-```jsonc
-{
-  "dockerId": "DOCKER_ID",
-  "requestId": "request-001",
-  "taskId": "task-001",
-  "code": 0,
-  "msg": "依赖包导入成功",
-  "checksum": {
-    "size": 1048576,
-    "algorithm": "sm3",
-    "value": "d92e1c0f4b6a8e2d3c5f7a9b0e1d2c3b4a5f60718293a4b5c6d7e8f90a1b2c3d"
-  }
-}
-```
-
-**请求示例（失败）**：
-
-```jsonc
-{
-  "dockerId": "DOCKER_ID",
-  "requestId": "request-001",
-  "taskId": "task-001",
-  "code": 1,
-  "msg": "解密依赖包失败: SM2 私钥解封对称密钥错误"
-}
-```
-
-**`code=1` 时 `msg` 的取值**（即失败原因，逐一列出）：
-
-| `msg` | 说明 |
-| --- | --- |
-| `解密依赖包失败: <err>` | 依赖包解密失败 |
-| `计算依赖包哈希失败: <err>` | 计算依赖包 SM3 内容摘要失败 |
-| `创建临时依赖目录失败: <err>` | 创建临时 wheelhouse 目录失败 |
-| `解压依赖包失败: <err>` | 解包依赖包失败 |
-| 包布局校验错误文本 | 依赖包布局不合法，例如缺少 `.whl`、包含路径穿越条目 |
-| `清理依赖目录失败: <err>` | 安装前清理同名目标目录失败 |
-| `安装依赖包失败: <err>` | 离线安装依赖包失败 |
-| `依赖包审计未通过` | 依赖包安全审计检出风险 |
-
-> **审计未通过或审计无法完成时都会发出两条回调**：无论依赖包审计判定为未通过（`reportAudit` 的 `code=1`），还是审计执行失败、或按 Fail-Closed 策略判定 LLM 不可用（`reportAudit` 的 `code=2`），TAA 都会先以 `scope="deps"` 调用 [`/v1/taa/reportAudit`](#36-taa-上报代码安全审计结果v1taareportaudit)，随后再以 `code=1` 调用本接口。平台两处都需要接收。
->
-> **两个 `code` 并非始终一致**：`reportAudit` 的 `code` 是**合并审计**的结论，本接口的 `code` 是**依赖导入本身**的成败，二者是两个问题。当 findings 全部落在**模型代码侧**时，合并审计未通过（`reportAudit` 的 `code=1`），但依赖导入并未被牵连——TAA 不删除依赖目录、模型目录也原样保留——本接口以 `code=0` 上报成功。这种「`reportAudit code=1` / `reportDeps code=0`」的分歧是刻意设计，平台不应把两者当作同一个信号。
-
-**响应内容类型**：`application/json`
-
-**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，业务字段放在 `result` 中。
-
-**响应结果字段**：
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `received` | `bool` | 平台是否成功接收依赖包导入结果上报 |
 
 **成功响应示例**（200 OK）：
 
@@ -1312,111 +1171,6 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 }
 ```
 
-### 4.7 下发依赖包资源（/v1/taa/importDeps）
-
-该接口用于平台向 TAA 下发一组离线依赖包（wheelhouse）。与 `/v1/taa/import`、`/v1/taa/importModel` 不同，该接口**不涉及 `publicKey` 与 `runtimeConfig`**，请求体恰好只有 `resourceUrl`、`requestId`、`taskId` 三个字段。
-
-**请求**：`POST /v1/taa/importDeps`
-
-**请求内容类型**：`application/json`
-
-**参数**：
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `resourceUrl` | `string` | 是 | 依赖包下载地址 |
-| `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空 |
-| `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空 |
-
-三个字段均先去掉首尾空白（TrimSpace）再判空。
-
-**请求示例**：
-
-```jsonc
-{
-  "resourceUrl": "https://example.com/deps/wheelhouse.tar.gz.enc",
-  "requestId": "request-001",
-  "taskId": "task-001"
-}
-```
-
-**同步处理阶段**：
-
-- 解析请求 → 校验参数 → 并发占用 → 下载资源到临时文件，随即返回 HTTP `200`。
-- 内容合法性（依赖包内是否包含 `.whl`、是否含路径穿越条目）**不在同步阶段校验**，由随后的异步流水线处理。
-- **HTTP `200` 只表示"已接收"，不代表导入成功；导入终态只能通过 [`/v1/taa/reportDeps`](#310-taa-上报依赖包导入结果v1taareportdeps) 回调获知。**
-
-**响应内容类型**：`application/json`
-
-**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，该接口成功时 `result` 为 `null`。
-
-**成功响应示例**（200 OK）：
-
-```jsonc
-{
-  "msg": "依赖包已接收，处理中",
-  "result": null,
-  "error": 0
-}
-```
-
-**异步处理流水线**：
-
-解密 → SM3 内容寻址 → 解包到临时 wheelhouse → 包布局校验 → 离线安装到 `DEPS_DIR/<sm3>` → Fail-Closed 安全审计 → 置状态 → 上报。其中任一环节失败，TAA 都会回滚（清除状态并删除 `DEPS_DIR/<sm3>`），不会留下半成品目录。
-
-**重复下发规则**：
-
-- 目标目录 `<depsDir>/<sm3>` 按内容寻址且永久保留。
-- **每一次下发都会重新解包、重新安装、重新审计**，不因目标目录已存在或依赖内容未变而复用上一次的结果：审计结论取决于「这套依赖是与哪份模型代码一起扫的」，只按依赖侧内容寻址无法复用（同一套依赖在不同模型代码下的结论可能不同）。因此旧的「同哈希即跳过安装与审计」短路已取消。
-- 目录内不再写入任何审计通过标记文件，每次下发都重新走一遍完整流水线。
-
-**错误响应**：
-
-| HTTP / `error` | 条件 | `msg` |
-| --- | --- | --- |
-| 400 | 请求体非法 JSON | `请求解析失败: <err>` |
-| 400 | `resourceUrl` 为空 | `resourceUrl 不能为空` |
-| 400 | `requestId` 与 `taskId` 同时为空 | `requestId 和 taskId 不能同时为空` |
-| 409 | 并发冲突（已有在飞的依赖导入，或与在飞审计互斥） | 冲突描述 |
-| 500 | 下载失败（网络错误 / 超出大小上限） | 下载层错误信息 |
-
-**验证失败响应示例**（400 Bad Request，`resourceUrl` 为空）：
-
-```jsonc
-{
-  "msg": "resourceUrl 不能为空",
-  "result": null,
-  "error": 400
-}
-```
-
-**并发冲突响应示例**（409 Conflict）：
-
-```jsonc
-{
-  "msg": "当前已有任务正在执行中 (taskId: task-001, op: deps_importing)，请等待完成后再提交",
-  "result": null,
-  "error": 409
-}
-```
-
-> **`msg` 有三种形态**，取决于当前占用任务槽的是什么，平台不应依赖其具体文本，只按 `error=409` 判定：
-> 占用方为训练任务时是 `当前已有训练任务正在执行中 (taskId: <任务ID>, op: <阶段>)，请等待完成后再提交`；
-> 占用方为模型代码审计时是 `当前已有模型代码审计正在执行中 (taskId: <任务ID>, op: auditing)，请等待完成后再提交`；
-> 其余情况（例如另一轮依赖导入）是 `当前已有任务正在执行中 (taskId: <任务ID>, op: <阶段>)，请等待完成后再提交`。
-
-**下载失败响应示例**（500 Internal Server Error）：
-
-```jsonc
-{
-  "msg": "下载资源失败: HTTP 404",
-  "result": null,
-  "error": 500
-}
-```
-
-> **加密格式说明**：与 `/v1/taa/import`、`/v1/taa/importModel` 相同。依赖包使用 TAA 实例自身的 SM2 私钥解密，与请求字段无关。
-
 ---
 
 ## 5. 调试接口
@@ -1446,13 +1200,11 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `phase` | `number` | 当前阶段：`1` 调试，`2` 测试，`3` 正式训练，`4` 推理 |
-| `phaseName` | `string` | 阶段名称：`调试`、`测试`、`正式训练`、`推理`；阶段值越界时为 `未知(<阶段值>)` |
+| `phaseName` | `string` | 阶段名称 |
 | `modelImported` | `bool` | 模型是否已导入 |
-| `trainingRunning` | `bool` | 训练是否正在执行 |
-| `currentOp` | `string` | 当前操作状态，取值见下方 |
-
-> **`currentOp` 取值**：`idle`（空闲）、`downloading`（下载资源）、`decrypting`（解密资源）、`analyzing`（分析中）、`deps_importing`（依赖导入占位）、`deps_installing`（离线安装依赖）、`staging`（训练前置）、`training`（训练执行）、`reporting`（结果上报）、`auditing`（模型代码审计进行中）。
-> 该字段用于观测，其取值集合会随版本增减，平台不应据此做分支判断。
+| `dataImported` | `bool` | 数据是否已导入 |
+| `trainingDone` | `bool` | 训练是否已完成 |
+| `currentOp` | `string` | 当前操作状态：`idle`、`downloading`、`decrypting`、`training` 等 |
 
 **成功响应示例**（200 OK）：
 
@@ -1463,7 +1215,8 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
     "phase": 1,
     "phaseName": "调试",
     "modelImported": false,
-    "trainingRunning": false,
+    "dataImported": false,
+    "trainingDone": false,
     "currentOp": "idle"
   },
   "error": 0
@@ -1473,7 +1226,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 **使用场景**：
 - 在调用其他接口前，先确认 TAA 服务是否正常运行
 - 检查 TAA 当前所处的阶段状态
-- 查看模型导入状态与训练是否正在执行
+- 查看资源导入和训练完成状态
 
 ### 5.2 查询 TAA 完整状态（/v1/taa/status）
 
@@ -1500,15 +1253,13 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `phase` | `number` | 当前阶段：`1` 调试，`2` 测试，`3` 正式训练，`4` 推理 |
-| `phaseName` | `string` | 阶段名称：`调试`、`测试`、`正式训练`、`推理`；阶段值越界时为 `未知(<阶段值>)` |
+| `phaseName` | `string` | 阶段名称 |
 | `modelImported` | `bool` | 模型是否已导入 |
-| `depsImported` | `bool` | 当前是否有已安装并绑定的依赖集 |
-| `depsHash` | `string` | 当前生效依赖集的 SM3 哈希，无则为空串 |
-| `trainingRunning` | `bool` | 训练是否正在执行 |
-| `currentOp` | `string` | 当前操作状态，取值同 [5.1](#51-连通性检查v1taahealth) |
+| `dataImported` | `bool` | 数据是否已导入 |
+| `trainingDataImported` | `bool` | 训练数据是否已导入 |
+| `trainingDone` | `bool` | 训练是否已完成 |
+| `currentOp` | `string` | 当前操作状态 |
 | `logCount` | `number` | 日志缓冲区中的日志数量 |
-
-> **语义边界**：`depsImported=true` 只表示"有一套依赖集已安装并绑定"，**不代表该依赖集通过了审计**。依赖集一旦安装并绑定即生效（`depsHash` 指向它），而它的审计结论来自**最近一次合并审计**——该结论取决于这套依赖是与**哪份模型代码**一起扫的，因此「这套依赖通过了审计」并不是该目录的一项持久属性，也无法由目录自身判定。这正是 TAA 不再写任何审计标记文件的原因：被跳过的审计（关闭安全扫描）不会留下标记，被跳过的依赖集同样处于「已生效、但没有对应审计结论」的状态。
 
 **成功响应示例**（200 OK）：
 
@@ -1519,9 +1270,9 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
     "phase": 1,
     "phaseName": "调试",
     "modelImported": true,
-    "depsImported": false,
-    "depsHash": "",
-    "trainingRunning": false,
+    "dataImported": false,
+    "trainingDataImported": false,
+    "trainingDone": false,
     "currentOp": "idle",
     "logCount": 5
   },
