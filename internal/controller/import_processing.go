@@ -597,69 +597,46 @@ func (s *TAAState) startModelAuditAsync(req importRequest, phase int) {
 	s.runAsyncSafe("modelAudit", func() {
 		s.clearAuditState()
 	}, func() {
-		passed := s.auditAndReportModelImport(req)
-		if !passed {
-			s.Logs.Add(LogError, "import", "模型安全审计未通过，清除模型状态: taskId=%s", req.TaskID)
+		triggerClean := s.auditAndReportModelImport(req)
+		if !triggerClean {
+			s.Logs.Add(LogError, "import", "合并审计判定模型侧不清白，清除模型状态: taskId=%s", req.TaskID)
 			s.clearImportedState(true, phase)
-			s.stopActiveTraining("模型安全审计未通过")
+			s.stopActiveTraining("合并审计判定模型侧不清白")
 		}
 	})
 }
 
-// auditAndReportModelImport 对解压后的模型代码执行安全审计（静态扫描 + 可选 LLM 语义验证），
-// 并将审计结果通过 /v1/taa/reportAudit 上报平台。返回是否审计通过。
+// auditAndReportModelImport is the model-side adapter to the combined audit. It files
+// /v1/taa/importModel's delivery through runCombinedAudit, which audits the model code
+// together with every dependency in effect and reports the result once under the model
+// scope, and returns whether the model side came out unimplicated.
+//
+// The bool is TriggerClean, not "the audit passed": an audit whose only findings sit
+// under the dependency root still fails and is reported as code=1, yet the model is left
+// in place. A caller that acted on the audit's own verdict here would roll back a model
+// the combined audit never implicated.
+//
+// When the model side does come out implicated the delivered code is physically cleared,
+// the directory kept. The gate is TriggerClean alone, and it folds in all three of the
+// ways a model trigger can be implicated -- an LLM-unavailable probe, an engine error and
+// a failing scan -- because the executor reports each of them back as TriggerClean ==
+// false. It is not Executed that decides this: on the ScanEnabled=false skip TriggerClean
+// is true and nothing is cleared, and on code=2 it is false so the delivered side goes. A
+// rejected model must not stay on disk.
 func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
+	// Reset LastAudit before the executor runs. The executor writes it only on the
+	// success path; on the ScanEnabled=false skip it writes nothing, so without this a
+	// previous import's report would linger into a later training report.
 	s.setLastAudit(nil)
-	if !s.Security.ScanEnabled {
-		s.Logs.Add(LogInfo, "audit", "安全扫描未启用，跳过模型代码审计")
-		return true
-	}
-
-	cfg := s.Security.LLM
-	StepSeparator("Code Audit")
-	s.setCurrentAuditOp("auditing")
-	defer s.setCurrentAuditOp("idle")
-	s.Logs.Add(LogInfo, "audit", "开始模型代码审计: engine=%s, dir=%s, llmEnabled=%v, policy=%s, failClosed=%v",
-		engineName(s.Security.Engine), s.Security.ModelDir, cfg.Enabled, cfg.Policy, cfg.FailClosed)
-
-	llmClient := newLLMClient(cfg)
-
-	// fail-closed：LLM 启用且要求不可用时阻断时，先探测 LLM 可用性；
-	// 若不可用则直接判定失败，避免降级为纯静态扫描静默放行。
-	if cfg.Enabled && cfg.FailClosed && !isLLMServiceAvailable(llmClient, cfg.Endpoint, cfg.Model) {
-		s.Logs.Add(LogError, "audit", "LLM 服务不可用，按 fail-closed 策略上报失败: endpoint=%s model=%s", cfg.Endpoint, cfg.Model)
-		if err := cleanDirContents(s.Security.ModelDir); err != nil {
-			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
-		}
-		s.reportAuditAsync(req.RequestID, req.TaskID, 2, "LLM 服务不可用，按 fail-closed 策略上报失败", "")
-		return false
-	}
-
-	audit, err := codeaudit.GenerateAuditReport(context.Background(), s.Security.ModelDir, s.Security.Engine, cfg, llmClient)
-	if err != nil {
-		s.Logs.Add(LogError, "audit", "模型代码审计失败: %v", err)
-		if err := cleanDirContents(s.Security.ModelDir); err != nil {
-			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
-		}
-		s.reportAuditAsync(req.RequestID, req.TaskID, 2, fmt.Sprintf("代码审计失败: %v", err), "")
-		return false
-	}
-	s.setLastAudit(audit)
-
-	code := 0
-	msg := audit.Conclusion.Summary
-	passed := audit.Conclusion.Passed
-	if !passed {
-		code = 1
+	result := s.runCombinedAudit(
+		codeAuditRequest{RequestID: req.RequestID, TaskID: req.TaskID},
+		codeAuditTriggerModel, s.Security.ModelDir)
+	if !result.TriggerClean {
 		if err := cleanDirContents(s.Security.ModelDir); err != nil {
 			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
 		}
 	}
-	s.Logs.Add(LogInfo, "audit", "审计完成: passed=%v, riskLevel=%s, totalFindings=%d",
-		audit.Conclusion.Passed, audit.Conclusion.RiskLevel, audit.Conclusion.Statistics.Total())
-
-	s.reportAuditAsync(req.RequestID, req.TaskID, code, msg, auditReportJSON(audit))
-	return passed
+	return result.TriggerClean
 }
 
 // engineName reports the configured Tier 1 engine for a log line, tolerating the
@@ -718,13 +695,15 @@ func (s *TAAState) reportModelImportAsync(requestID, taskID string, code int, ms
 	}()
 }
 
-// reportAuditAsync 异步将模型代码安全审计结果上报平台。
+// reportAuditAsync asynchronously uploads the audit report for a model-side trigger.
 func (s *TAAState) reportAuditAsync(requestID, taskID string, code int, msg, report string) {
 	s.reportAuditScopedAsync(requestID, taskID, code, msg, report, "")
 }
 
-// reportAuditScopedAsync uploads an audit result asynchronously. An empty scope means the
-// model code audit; "deps" means the dependency package audit.
+// reportAuditScopedAsync uploads an audit result asynchronously. scope names the side that
+// triggered the audit -- "" for a model trigger and "deps" for a dependency trigger -- not
+// the audited directory: both triggers audit the same combined root set, so the scope says
+// who asked, not what was scanned. Both values are unchanged on the wire.
 func (s *TAAState) reportAuditScopedAsync(requestID, taskID string, code int, msg, report, scope string) {
 	s.mu.RLock()
 	platformIP, dockerID := s.PlatformIP, s.DockerID

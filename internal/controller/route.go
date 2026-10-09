@@ -152,7 +152,7 @@ type TAAState struct {
 	RuntimeConfig         string                   // importModel 保存的运行配置，训练时按该配置执行命令
 	Security              SecurityConfig           // immutable after startup — no mutex needed
 	Logs                  *LogStore                // 结构化日志存储
-	LastAudit             *codeaudit.AuditReport   // 最近一次模型代码审计结果，用于训练报告输出
+	LastAudit             *codeaudit.AuditReport   // latest combined audit report, from whichever side triggered it; formatted into the training report
 	CurrentDataRecord     ImportIndexRecord        // 当前绑定的数据导入记录
 	LatestDataRecord      ImportIndexRecord        // 下发数据接口始终记录的最新数据索引
 	ModelChecksum         map[string]any           // 模型压缩包校验和 (size, algorithm, value)
