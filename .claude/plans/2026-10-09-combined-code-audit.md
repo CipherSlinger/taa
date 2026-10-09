@@ -168,15 +168,49 @@ type combinedAuditResult struct {
 }
 
 // runCombinedAudit audits every root combinedAuditRoots returns, reports the result
-// exactly once under the given scope, and reports back which side came out clean.
-// It owns the audit-state bookkeeping (ActiveAuditTaskID / CurrentAuditOp /
-// AuditRunning / clearAuditState) so both callers behave identically.
-func (s *TAAState) runCombinedAudit(req codeAuditRequest, triggerDir string) combinedAuditResult
+// exactly once under the scope for the triggering side, and reports back which side
+// came out clean. It owns the audit-state bookkeeping (ActiveAuditTaskID /
+// ActiveAuditRequestID / CurrentAuditOp / AuditRunning / clearAuditState) so both
+// callers behave identically.
+func (s *TAAState) runCombinedAudit(req codeAuditRequest, triggerSide, triggerDir string) combinedAuditResult
 ```
+
+`codeAuditRequest{RequestID, TaskID}` 是**新类型**（仓库里原先没有），定义在 `combined_audit.go`：
+两条流水线的请求结构体在这两个字段上拼法相同，执行器用自有类型取参，才不会因为任一条
+流水线的请求结构体长出新字段而被牵连改动。
 
 内部必须与既有的两处逐条对齐，**不得遗漏**：`ScanEnabled=false` 短路返回 `Executed=false`；fail-closed 下先 `isLLMServiceAvailable` 探测，不可用即 `code=2`；`GenerateAuditReportForDirs` 出错即 `code=2`；成功则 `code` 由 `audit.Conclusion.Passed` 决定；上报走 `reportAuditScopedAsync`（`import_processing.go:728`），`report` 用 `auditReportJSON`（`codeaudit_projection.go:49`）。
 
-`TriggerClean` 的算法：`code==2` → false；否则 `!ReportHasFindingsUnder(report, triggerDir)`。
+### `TriggerClean` 的算法（**本节原先写错，2026-10-09 订正**）
+
+**原先写的是**「`code==2` → false；否则 `!ReportHasFindingsUnder(report, triggerDir)`」——
+**这是一个 fail-open，已被实现者依据 spec §3.5 挡下**。它漏掉的情形是：一次**截断**的扫描，
+其保留下来的 findings 恰好全在另一侧。此时 `!ReportHasFindingsUnder` 为 true → 触发方被判干净
+→ 一次没跑完的扫描放行了本次交付，而今天截断是**两侧都清**的。spec §3.5 与 §8.6 早就写明了
+正确的判据，是计划正文这一行抄漏了 `ScanProvedClean`。**Task 4/5 不得回退到这个版本。**
+
+正确判据（`combined_audit.go` 已实现，与 spec §3.5 逐字一致）：
+
+```
+implicated = !report.Conclusion.Passed &&
+             ( !report.ScanMetadata.ScanProvedClean
+               || codeaudit.ReportHasFindingsUnder(report, triggerDir) )
+TriggerClean = !implicated
+```
+
+`ScanEnabled=false`（没跑）与 `code==2`（跑砸了）都表现为「没有报告」，但前者**不得清除**、
+后者**必须清除**——单个布尔量区分不了，由 `Executed` 拆开：
+
+| 情形 | `Executed` | `TriggerClean` | 调用方 |
+| :--- | :--- | :--- | :--- |
+| `ScanEnabled=false` | false | **true** | 不清除、不发出（跳过不等于通过，但没跑过的审计不牵连任何根） |
+| LLM 不可用 / 执行出错 | true | **false** | 清除触发方、`code=2`、`report=""` |
+| 审计通过 | true | true | 不清除 |
+| 触发方脏，或扫描被截断 | true | **false** | 清除触发方 |
+| 只有另一侧脏 | true | true | **不清除**，导入判成功，`code=1` |
+
+调用方唯一可据以行动的字段是 `TriggerClean`（`Executed` 只用来区分「跳过」与「跑砸了」，
+两者的 `TriggerClean` 已经不同）。
 
 ---
 
@@ -184,7 +218,7 @@ func (s *TAAState) runCombinedAudit(req codeAuditRequest, triggerDir string) com
 
 **Files:** Modify `internal/controller/import_processing.go`（`auditAndReportModelImport` :611、`startModelAuditAsync` :589）
 
-- `auditAndReportModelImport` 改为调用 `runCombinedAudit(req, s.Security.ModelDir)`，返回 `result.TriggerClean`（即「模型侧是否干净」）。
+- `auditAndReportModelImport` 改为调用 `runCombinedAudit(codeAuditRequest{...}, codeAuditTriggerModel, s.Security.ModelDir)`，返回 `result.TriggerClean`（即「模型侧是否干净」）。
 - 三条 `cleanDirContents(s.Security.ModelDir)`（`:631`、`:641`、`:654`）收窄为**只在触发方被牵连时**执行。`code=2` 两条路径仍是触发方被牵连，照旧清。
 - `s.setLastAudit(audit)` 从「每次审计完成都写」改为**写入合并审计的报告**（两条触发路径都写，理由见下）。
 - `startModelAuditAsync` 的 `if !passed { clearImportedState; stopActiveTraining }` 现在按 `TriggerClean` 决策——findings 全在依赖侧时不再清模型、不再停训练。
