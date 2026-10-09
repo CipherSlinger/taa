@@ -250,12 +250,32 @@ TriggerClean = !implicated
   与 Task 4 在模型侧犯的错是同一个形状，别重犯。
   `rollbackDepsImport` 的长注释里「runDepsAudit removes the directory itself on every path that
   returns false ... it is kept deliberately」那一段随之**整段为假**，必须重写，不能留着。
+- **顺手收掉 `route.go` 两处把审计槽称作「模型代码审计」的注释**（`:169` 的 `AuditRunning`
+  字段注释、`:547` 的 `isAuditBusyLocked` 函数注释）。改动后两条触发路径都会置 `AuditRunning`
+  且 `CurrentAuditOp = "auditing"`，所以它们说的是「审计」而不是「模型审计」。**只改注释**，
+  不改 `:652` 那条**用户可见**的 409 文案——见下方「登记：刻意不改」。
+
+---
+
+## 登记：刻意不改（2026-10-09）
+
+- **`route.go:652` 的 409 文案**「当前已有模型代码审计正在执行中」及其在
+  `docs/api-design.md:1405` 的镜像。这条不精确是**改动前就有的**：`route.go:643-644`
+  的注释自己就写着 model/deps 两条导入「drive the shared audit subsystem」，
+  所以依赖触发的审计本来也会落到这条文案上。改一个**用户可见且已被平台/文档引用**的
+  接口字符串有兼容成本，收益只是措辞，不值得。**登记于此，不修。**
+- 同理 `docs/api-design.md:1454` 把 `auditing` 记作「模型代码审计进行中」。改动后**更接近**
+  真实（合并审计总是包含模型根，只要模型生效），只有在「先下发依赖、模型尚未导入」时才不准。
+  不改，但**不能**据此认为 §3.6 的 scope 语义与这条冲突——scope 说的是触发源，
+  这条说的是占用中的审计槽叫什么，两者不矛盾。
 
 ---
 
 ## Task 6：文档
 
-**Files:** Modify `docs/api-design.md`
+**6a 已完成**（`docs/api-design.md`，见 git log）。**本节余下的是 6b**，文件足迹：
+
+**Files:** Modify `internal/platform/reporter.go`（仅注释）、`tools/platform-mock/internal/handlers_taa.go`（`scope` 拒绝文案）、`tools/platform-mock/internal/server_test.go`（钉文案的断言）
 
 - §3.6：`scope` 字段说明表（`:462-465`）改写为「触发源」语义；`:446` 的触发时机改为「模型解压后 / 依赖安装完成后**都**触发一次覆盖模型代码与当前依赖集的合并审计」；`:469`「`scope="deps"` 时 report 格式与模型审计完全一致」改为「两条路径的 report 结构完全相同，仅 `scope` 不同」；`:524` 补一句 report 新增分根字段。
 - §3.6 的 `code` 说明处补上 §3 的消歧：`code` 是合并审计的整体结论，与「本次导入是否成功」不是同一件事。
@@ -263,6 +283,13 @@ TriggerClean = !implicated
 - §4.7：依赖下发的幂等性描述（若文档提及 `.taa_audit_ok` 或重复下发复用）改为「每次下发都重新解包、安装并审计」。
 
 **platform-mock 无需功能性改动**（已逐字核过 `tools/platform-mock/internal/handlers_taa.go:483-563`）：`report` 被当作不透明字符串原样落盘（`state.RawBody` / `state.Report`），校验只有 `code ∈ {0,1,2}` 与 `scope ∈ {"", "deps"}`，两者取值集合都没变。唯一值得顺手改的是拒绝文案 `"scope 仅支持 deps(依赖包审计) 或空字符串(模型代码审计)"`（`:542-544`）——它把 scope 描述成「审计对象」，改动后应描述成「触发源」。改文案要连带更新 `TestReportAuditScopeHandling`（`server_test.go:2711`）里钉住该文案的断言。
+
+**`internal/platform/reporter.go` 的两处 scope 定义（2026-10-09 补查，原计划漏点）**——这里是 scope 在**上线报文里唯一被定义**的地方，任务 6a 改 `docs/` 却漏了它，改完之后「代码注释说旧语义、文档说新语义」：
+
+- `:240-242` `ReportAuditScoped` 的文档注释原文：「an extra scope field that **distinguishes the model audit from the dependency audit**. An empty scope means model audit and stays wire-compatible with older platform versions.」——两句都为假（不再区分审计对象；空 scope 现在表示**模型侧触发**，而非「模型审计」）。改写为「触发源」语义，并点明线上取值未变、只是含义变了。
+- `:272` `ReportAudit` 的文档注释原文：「ReportAudit reports **the model code audit** result to the platform.」——改为「a combined audit triggered by a model delivery」。
+
+**只改注释，不改行为**。两个函数的签名与 `scope` 取值一律不动：`TestReportAuditScopedCarriesScope` / `TestReportAuditOmitsScopeWhenUnscoped`（`reporter_test.go:36` / `:60`）钉的是线上取值，那两处**必须保持不动**，Task 7 的表格里已登记。改完后跑 `go test ./internal/platform/... -count=1` 与 `go test ./tools/platform-mock/internal/... -count=1` 一起（同属 Task 6b 的测试窗口）。
 
 ---
 
