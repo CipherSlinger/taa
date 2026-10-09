@@ -207,6 +207,24 @@ func (s *Scanner) buildReport(dir string, filesCount int, findings []Finding, tr
 	}
 }
 
+// withRoots records the full root list on a merged scan's report, and is the one
+// place Directories is written. Both engines call it on their multi-root paths,
+// so the field cannot be filled on one arm and forgotten on the other.
+//
+// It fills only when there is more than one root. A single-root report must stay
+// byte-identical to one produced before multi-root existed: the parity tests
+// compare whole reports, and an extra empty-or-singleton field would be a
+// difference that has nothing to do with the scan.
+func withRoots(r *Report, dirs []string) *Report {
+	if r == nil || len(dirs) <= 1 {
+		return r
+	}
+	roots := make([]string, len(dirs))
+	copy(roots, dirs)
+	r.Directories = roots
+	return r
+}
+
 // ── High-level gate functions ────────────────────────────
 //
 // These are the single entry points for the TAA HTTP layer.
@@ -254,12 +272,37 @@ func CheckExportWithLimit(resultDir, dataDir string, maxResultBytes int64) (bool
 // ScanDirectoryWithLines is like ScanDirectory but also returns per-file line counts.
 // The lineCounts map is keyed by absolute file path.
 func (s *Scanner) ScanDirectoryWithLines(dir string) (*Report, map[string]int, error) {
-	info, err := os.Stat(dir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("scan directory: %w", err)
+	return s.ScanDirectoriesWithLines([]string{dir})
+}
+
+// ScanDirectoriesWithLines is ScanDirectoryWithLines for a scan whose input is
+// more than one root. It walks the roots in the order given and returns one
+// report assembled from all of them: the findings and the line counts are the
+// union, ScannedDir is the first root, and the full list lands in
+// Report.Directories.
+//
+// Every root is stat-checked before any walk. A missing root is an error rather
+// than a skipped root: a scan that quietly ignored an input it was handed would
+// report a pass it did not earn, and the report cannot show what it never
+// looked at.
+//
+// There is one finding budget across all roots, not one per root. Dividing it
+// per root would raise the effective ceiling, which the scanner does not get to
+// decide — the cap is a configured policy. The walk stops at the first file that
+// brings the accumulated count to the cap and does not touch the roots after it.
+func (s *Scanner) ScanDirectoriesWithLines(dirs []string) (*Report, map[string]int, error) {
+	if len(dirs) == 0 {
+		return nil, nil, fmt.Errorf("scan directories: no directories given")
 	}
-	if !info.IsDir() {
-		return nil, nil, fmt.Errorf("%s is not a directory", dir)
+
+	for _, dir := range dirs {
+		info, err := os.Stat(dir)
+		if err != nil {
+			return nil, nil, fmt.Errorf("scan directory: %w", err)
+		}
+		if !info.IsDir() {
+			return nil, nil, fmt.Errorf("%s is not a directory", dir)
+		}
 	}
 
 	var findings []Finding
@@ -267,47 +310,71 @@ func (s *Scanner) ScanDirectoryWithLines(dir string) (*Report, map[string]int, e
 	lineCounts := make(map[string]int)
 	truncated := false
 
-	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
+	// A root nested inside one already walked would have its files counted twice,
+	// and a path already counted is skipped for the same reason. The roots are
+	// given, not discovered, so a nested pair is a caller's input error that the
+	// report should absorb rather than duplicate.
+	accepted := make([]string, 0, len(dirs))
+	seen := make(map[string]bool)
+
+	for _, dir := range dirs {
+		if _, covered := NewScanRoots(accepted).RootOf(dir); covered {
+			continue
 		}
-		if info.IsDir() {
-			if s.config.SkipDirs[info.Name()] {
-				return filepath.SkipDir
+
+		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil
+			}
+			if info.IsDir() {
+				if s.config.SkipDirs[info.Name()] {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !s.hasMatchingExtension(path) {
+				return nil
+			}
+			key := cleanAbs(path)
+			if seen[key] {
+				return nil
+			}
+			seen[key] = true
+
+			filesCount++
+
+			// Count lines.
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil
+			}
+			lines := strings.Split(string(content), "\n")
+			lineCounts[path] = len(lines)
+
+			// Scan for findings.
+			fileFindings := s.scanLines(path, string(content), lines)
+			findings = append(findings, fileFindings...)
+
+			if len(findings) >= s.config.MaxFindings {
+				findings = findings[:s.config.MaxFindings]
+				truncated = true
+				return filepath.SkipAll
 			}
 			return nil
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("walk directory: %w", err)
 		}
-		if !s.hasMatchingExtension(path) {
-			return nil
+		if truncated {
+			break
 		}
 
-		filesCount++
-
-		// Count lines.
-		content, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return nil
-		}
-		lines := strings.Split(string(content), "\n")
-		lineCounts[path] = len(lines)
-
-		// Scan for findings.
-		fileFindings := s.scanLines(path, string(content), lines)
-		findings = append(findings, fileFindings...)
-
-		if len(findings) >= s.config.MaxFindings {
-			findings = findings[:s.config.MaxFindings]
-			truncated = true
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("walk directory: %w", err)
+		accepted = append(accepted, dir)
 	}
 
-	return s.buildReport(dir, filesCount, findings, truncated), lineCounts, nil
+	return withRoots(s.buildReport(dirs[0], filesCount, findings, truncated), dirs), lineCounts, nil
 }
+
 
 // isCommentLine reports whether a line's first non-space character is '#'. It is
 // the predicate both engines apply before attributing a finding to a line: a

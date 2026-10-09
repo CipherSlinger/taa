@@ -22,6 +22,36 @@ type AuditReport struct {
 	Statistics   AuditStatistics `json:"statistics"`
 	FileReports  []FileReport    `json:"file_reports"`
 	ScanMetadata AuditMetadata   `json:"scan_metadata"`
+	// Roots is the per-root breakdown of the audit, always populated — a
+	// single-root audit carries one entry. It sits at the report top level
+	// rather than under Target because the platform-facing projections of this
+	// report select a few top-level keys, and a verdict nested below one of them
+	// would not reach the platform that has to disambiguate a failure.
+	Roots []RootReport `json:"roots"`
+}
+
+// RootReport is the audit result for one root. A merged report has to let a
+// reader tell which root a failure came from without inferring it from the file
+// paths inside file_reports, which is the inference that gets a two-root report
+// misread.
+type RootReport struct {
+	Directory     string `json:"directory"`
+	FilesScanned  int    `json:"files_scanned"`
+	FindingsCount int    `json:"findings_count"`
+	// Passed mirrors the audit's own policy verdict for this root: it is the
+	// overall conclusion when the overall conclusion passed, and otherwise true
+	// only for a root that carries no finding and whose scan ran to completion.
+	//
+	// It is not simply "no finding under this root". Conclusion.Passed is keyed
+	// on the blocking severity, so a root carrying only LOW findings does not
+	// fail the audit; a verdict that called that root failed would put
+	// passed:false next to a passing code and leave a reader unable to tell
+	// whether anything was actually wrong — which defeats the reason the
+	// breakdown exists. The scan-completeness term keeps the other direction
+	// honest: a truncated scan cannot clear any root, including one whose
+	// visible findings happen to be zero, because the finding that would have
+	// failed it may be the one that was dropped.
+	Passed bool `json:"passed"`
 }
 
 // AuditTarget describes what was audited.
@@ -92,6 +122,24 @@ type AuditMetadata struct {
 	Truncated       bool   `json:"truncated"`
 	UnsupportedExts int    `json:"unsupported_extensions"`
 	ProcessExitCode int    `json:"process_exit_code"`
+
+	// ScanProvedClean is ProvesCleanScan()'s verdict, assembled here so that a
+	// reader need not re-derive it from the five fields above. It is separate
+	// from Conclusion.Passed because the two answer different questions: Passed
+	// is the policy verdict on the findings, this is whether the scan that
+	// produced them finished. A caller deciding what to do about a failure needs
+	// both.
+	//
+	// It is the completeness verdict alone, not Passed AND the completeness
+	// verdict. Folding Passed in would make a scan that finished but found
+	// something on one root read as "did not prove a clean scan", which is the
+	// distinction the rollback rule turns on: a side that carries no finding of
+	// its own must not be rolled back because the other side does. What this
+	// withholds is clearing anything on the evidence of a scan that was
+	// truncated or otherwise incomplete — there, the findings the scan kept can
+	// all fall on the side that is not being judged, so that side looks clean
+	// while the input it did not reach is invisible.
+	ScanProvedClean bool `json:"scan_proved_clean"`
 }
 
 // FileSummary is the LLM response for file-level analysis.
@@ -344,6 +392,7 @@ func AssembleAuditReport(
 
 	var hasLLMBenign bool
 	var scanPassed *bool
+	var scanProvedClean bool
 	var llmDegraded bool
 	if scanReport != nil {
 		// ScanPassed is the channel that forces failure under both policies, so
@@ -353,6 +402,9 @@ func AssembleAuditReport(
 		// the unexamined input would be a metadata field nobody reads.
 		sp := scanReport.Passed && scanReport.ProvesCleanScan()
 		scanPassed = &sp
+		// ScanProvedClean is the completeness verdict alone: whether the scan
+		// looked, not whether what it found blocks. See the field's comment.
+		scanProvedClean = scanReport.ProvesCleanScan()
 		llmDegraded = scanReport.LLMDegraded
 		for _, f := range scanReport.Findings {
 			if strings.EqualFold(strings.TrimSpace(f.LLMVerdict), "BENIGN") {
@@ -405,9 +457,10 @@ func AssembleAuditReport(
 			TotalLines:        totalLines,
 			FilesWithFindings: len(fileReports),
 		},
-		Conclusion: conclusion,
-		Statistics: stats,
+		Conclusion:  conclusion,
+		Statistics:  stats,
 		FileReports: fileReports,
+		Roots:       buildRootReports(reportRoots(dir, scanReport), scanReport, fileLineCounts, conclusion.Passed, scanProvedClean),
 		ScanMetadata: AuditMetadata{
 			ScannerVersion: "1.0.0",
 			RulesCount:     len(DefaultRules()),
@@ -424,8 +477,67 @@ func AssembleAuditReport(
 			Truncated:       truncated,
 			UnsupportedExts: unsupportedExts,
 			ProcessExitCode: processExitCode,
+			ScanProvedClean: scanProvedClean,
 		},
 	}
+}
+
+// reportRoots is the root list a report's per-root breakdown is built from: the
+// scan's own list when it was a merged scan, and the single audit directory
+// otherwise. The single-root fallback is why a caller that passed one directory
+// still gets one RootReport rather than an empty list — the breakdown is always
+// populated so that "no roots" can never be read as "this report cannot say what
+// it covered".
+func reportRoots(dir string, scanReport *Report) []string {
+	if scanReport != nil && len(scanReport.Directories) > 0 {
+		return scanReport.Directories
+	}
+	return []string{dir}
+}
+
+// buildRootReports attributes the scan's files and findings to each root.
+//
+// The attribution runs through ScanRoots so that the longest-match and
+// separator rules are the same ones ReportHasFindingsUnder uses; two different
+// answers to "is this finding under that root" would make the breakdown and the
+// rollback decision disagree about the same report.
+//
+// A root's Passed is the audit's own policy verdict when that verdict passed,
+// and otherwise a per-root check: no finding under the root and a scan that ran
+// to completion. Both terms earn their place. Conclusion.Passed is keyed on the
+// blocking severity, so under the default assist policy a root carrying only LOW
+// findings does not fail the audit, and the breakdown has to say so rather than
+// report passed:false beside a passing code. The completeness term is what keeps
+// a root from being cleared by a scan that did not finish: a truncated scan
+// drops findings, and the finding that would have failed a root may be exactly
+// the one that was dropped, so no root can be declared passed on its evidence.
+func buildRootReports(roots []string, scanReport *Report, lineCounts map[string]int, conclusionPassed, scanProvedClean bool) []RootReport {
+	var findings []Finding
+	if scanReport != nil {
+		findings = scanReport.Findings
+	}
+
+	sr := NewScanRoots(roots)
+	reports := make([]RootReport, 0, len(roots))
+	for _, root := range roots {
+		rr := RootReport{Directory: root}
+		cleanRoot := cleanAbs(root)
+
+		for path := range lineCounts {
+			if got, ok := sr.RootOf(path); ok && got == cleanRoot {
+				rr.FilesScanned++
+			}
+		}
+		for _, f := range findings {
+			if got, ok := sr.RootOf(f.File); ok && got == cleanRoot {
+				rr.FindingsCount++
+			}
+		}
+
+		rr.Passed = conclusionPassed || (scanProvedClean && rr.FindingsCount == 0)
+		reports = append(reports, rr)
+	}
+	return reports
 }
 
 // ── Helper functions ──────────────────────────────────────

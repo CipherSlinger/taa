@@ -67,6 +67,15 @@ type Report struct {
 	LLMDegraded bool      `json:"llm_degraded,omitempty"`
 	Findings    []Finding `json:"findings"`
 
+	// Directories is the full root list of a merged scan, in scan order. It is
+	// left empty for a single-root scan so that a report from one directory is
+	// byte-identical to one produced before multi-root existed.
+	//
+	// ScannedDir keeps meaning the primary root — dirs[0] — rather than the whole
+	// list, because every existing reader of a single-root report keys on it.
+	Directories []string `json:"directories,omitempty"`
+
+
 	// Engine identifies which Tier 1 engine produced this report, so that a
 	// report can prove its own provenance instead of a reader inferring it from
 	// a mode name.
