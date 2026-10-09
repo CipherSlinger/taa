@@ -118,6 +118,32 @@
 
 ---
 
+## Task 1/2 的审查后发现（2026-10-09，两阶段审查的第一阶段）
+
+对 `401ab6c` 的 spec 合规审查在三个文件里**未发现功能性缺陷**，两条承重语义
+（`ScanProvedClean` 不折叠 `Passed`、`RootReport.Passed` 的三元式）经独立核实无误。
+但它报了两条 low，都已由我复核为真：
+
+1. **缺一个「根存在但为空」的用例**（对得上 Task 1 的验收条款，属于漏做）。`multiroot_test.go`
+   的每个用例里每个根都至少写了一个文件。行为本身正确——空根 `FilesScanned=0`，
+   `passed` 由审计总判决定（`ScanProvedClean && FindingsCount == 0` 对空根恒成立）——
+   但没有测试钉住它。**要补**，与 Task 7 同段跑测试。
+2. **重复根会在报告里产生重复的 `RootReport`**（低危，当前不可达）。`withRoots`
+   （`scanner.go:218-226`）对 `len(dirs) > 1` 原样写入不去重，`reportRoots`（`audit.go:491`）
+   原样返回，`buildRootReports` 逐项产出，于是 `["/m","/m"]` 得到两条同根分项、各自计数相同；
+   而 walk 侧（`scanner.go:321-323` 的 `p == root` 分支）已把第二次跳过。生产调用方传的是
+   `config.validateDepsDirPlacement` 强制互为兄弟的 `ModelDir` 与 `<depsDir>/<sm3>`，
+   到不了这里。**决定：不修**（无调用方需要，spec 未要求，符合本仓库「不顺手修好」的纪律），
+   仅登记在此，供日后 `GenerateAuditReportForDirs` 出现新调用方时参考。若届时确实要修，
+   落点应是 `withRoots`——它是 `Report.Directories` 的唯一写入点。
+
+另有一条**不是缺陷的对称性差异**，一并记下免得被当成 bug 重查：regex 引擎的 cap 用
+`filepath.SkipAll` **提前停 walk**（`scanner.go:358-362`），semgrep 引擎则在**走完全部根之后**
+才对 findings 切片（`semgrep_engine.go:253-257`）——semgrep 已经把结果跑出来了，提前停没有意义。
+两者都正确置 `Truncated`，都 fail-closed，行为一致。
+
+---
+
 ## Task 3：controller 侧的合并审计执行器
 
 **Files:** Create `internal/controller/combined_audit.go`；Modify `internal/controller/deps_audit.go`
@@ -210,6 +236,8 @@ func (s *TAAState) runCombinedAudit(req codeAuditRequest, triggerDir string) com
 **新增测试（每条都要先在变异下证明有判别力）：**
 
 1. `internal/codeaudit`：多根扫描一次报出两个根各自的命中；单根调用与既有行为逐字节一致。
+   补一条 **「根存在但不含任何源文件」**——`FilesScanned == 0` 且 `passed` 随审计总判
+   （Task 1 审查发现的漏做项，见上）。
 2. `internal/codeaudit`：`ReportHasFindingsUnder` 的前缀陷阱用例（`/a/model` vs `/a/modelX`）。
 3. `internal/controller`：**触发方干净、另一侧脏** → `reportAudit code=1` 且 `reportDeps code=0`，且**没有任何目录被删**（这是本次最核心的新语义，必须有端到端断言）。
 4. `internal/controller`：触发方脏 → 只清触发方那一侧，另一侧原样。
