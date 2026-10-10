@@ -294,8 +294,37 @@ info "$label ${DIM}(took ${total_elapsed}s)${NC}"   # ← 颜色码在参数里
 `/taatest/ollama-qwen2.5-coder-0.5b` 与 `$CON_WORKDIR/ollama-qwen2.5-coder-0.5b`
 这两个**旧路径**指向当前的 `CONTAINER_OLLAMA_DIR`。注释已改正，并点明与 §4 无关。
 
-> 关于这对软链接的来历：它们在子模块的**第一个提交**（`6a1d925`，2026-09-19）就存在，
-> 提交说明里没有解释。全仓库检索 `taatest` 只有三处命中——`deploy/manifest/docker/Dockerfile.base`
-> 建了这个目录、`docs/architecture-design.md` §10.3 把它记为容器内布局、以及 `teellm/deploy.sh`
-> 自己。**当前代码里没有任何东西去读这两个旧路径**，所以它们目前是出于兼容考虑的冗余。
-> 保留（外部手工脚本可能仍在用）而非删除，属于待定项。
+> **关于这对软链接的来历**（2026-10-10 追到了源头）：它们在子模块的第一个提交
+> （`6a1d925`，2026-09-19）就存在，但**不是那时发明的**——父仓库 `e476172`
+> （2026-09-10，"合并整合 qwen 模型目录为 ollama-qwen"）引入了它们，提交说明写的是
+> "保留旧路径软链接向后兼容"，代码注释写得更具体：
+>
+> ```
+> # The ollama binary expects /taatest/ollama-qwen2.5-coder-0.5b/lib/glibc/ld-linux-x86-64.so.2
+> ```
+>
+> 即当时 bundle 里的 `ollama` 是通过**绝对路径**指向自带 glibc 加载器启动的，
+> 目录一改名这条绝对路径就断，所以要在旧名字上留一个软链接。
+>
+> **这个理由今天已经不成立**，实测：
+>
+> | 检查 | 结果 |
+> | :--- | :--- |
+> | 当前 bundle 的 `start-ollama.sh` | 用 `$(dirname -- "$0")` 自解析，**无绝对路径** |
+> | bundle 里的 `lib/glibc/` | **不存在**（那个加载器本身已不在包里） |
+> | `ollama` 的 `PT_INTERP` | 系统的 `/lib64/ld-linux-x86-64.so.2` |
+> | `llama-server` 的 `PT_INTERP` | 系统的 `/lib64/ld-linux-x86-64.so.2`（`RUNPATH=$ORIGIN`，见 §4） |
+> | 两个二进制里 `taatest` 字符串 | **各 0 命中** |
+> | 容器内 `/root /etc /usr/local /opt` 引用这两个路径的文件 | **0 命中** |
+> | 仓库内 `taatest` | 只有 `Dockerfile.base` 建目录、`docs/architecture-design.md` §10.3、脚本自己 |
+>
+> 所以它**现在是纯路径别名**，没有加载器含义（§4 那个才是真加载器问题，两者无关）。
+>
+> **唯一还在真干活的地方是旧名字，不是软链接**：`copy_ollama_to_remote_pod`
+> （`:1922-1928`）与 `sync_ollama_to_remote`（`:1873-1875`）把
+> `ollama-qwen2.5-coder-0.5b` 当作**迁移来源**——远端 pod/宿主若还留着该名字的**真目录**，
+> 就就地迁移或复用 `lib/`，省掉几 GB 传输。注意那里的判据是
+> `test -d … && ! test -L …`，**本脚本自己建的软链接故意不算数**，不会被误当成旧安装。
+>
+> 结论：保留。它此刻是冗余的，但 **bundle 不在版本控制里**（`teellm/.gitignore:7`），
+> 换一份 bundle 就可能重新需要它——用一个软链接买这个保险很便宜。删除属于待定项。
