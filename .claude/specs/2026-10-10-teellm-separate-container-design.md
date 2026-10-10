@@ -112,34 +112,58 @@ healthz 503
 **根因**：本地 bundle `teellm/models/ollama/lib/ollama/` 里**只有带版本号的文件**
 （`libllama-common.so.0.1.2`、`libllama.so.0.1.2`、`libmtmd.so.0.1.2`、
 `libggml.so.0.20.2`、`libggml-base.so.0.20.2`），**没有 soname 形式的符号链接**。
-而 `llama-server` 的 `DT_NEEDED` 记的是 soname（`libllama-common.so.0`），且**没有 RUNPATH**，
-所以动态加载器只能靠精确文件名或 `ld.so.cache` 命中。两者都没有 → 127。
+而 `llama-server` 的 `DT_NEEDED` 记的是 soname（`libllama-common.so.0`），
+它带的 `RUNPATH` 是 **`$ORIGIN`**，即加载器会去**二进制自己所在的目录**找这些名字——
+目录里没有 → 未命中。
+
+> ⚠️ **勘误**：本节初稿写的是「没有 RUNPATH」，那是错的。在容器里跑 `readelf` 失败（镜像内无此工具）
+> 被 `|| echo` 吞成了「无 RUNPATH」。用宿主的 `readelf` 复核，`llama-server` 确实有
+> `RUNPATH = $ORIGIN`。**这改变了修复方式**：不必动 `ld.so.cache`，只要在二进制旁边补出
+> soname 名字即可。
 
 ### 4.2 容器 1 当初为什么"是好的"
 
-**纯属巧合。** 容器 1 的 `ld.so.cache`（mtime Sep 21 01:56）指向的是**另一个目录**
-`/root/taa/ollama-qwen/lib/ollama`，那个目录里恰好有符号链接。
-**仓库里没有任何脚本会跑 `ldconfig`**，所以这份 cache 是历史遗物，不可复现。
+**纯属巧合，而且是双重侥幸。** 容器 1 跑 ollama 时 `OLLAMA_LIBRARY_PATH` 指向
+`/root/taa/ollama/lib/ollama`（**没有**链接），所以 `$ORIGIN` 那一跳必然未命中；
+但加载器随后落到 `ld.so.cache`，而那份 cache（mtime Sep 21 01:56）指向的是**另一个目录**
+`/root/taa/ollama-qwen/lib/ollama`，那里的链接是同一时刻手工建的。
+**仓库里没有任何脚本会跑 `ldconfig`**，所以这份 cache 是历史遗物，不可复现——
+两个目录、一次手工 `ln -s`，缺任何一个容器 1 都跑不起来。
 
-### 4.3 处置
+### 4.3 处置：`teellm/deploy.sh` 自己补链接
 
-容器 2 内补齐 6 个符号链接 + 一条 `ld.so.conf.d` 条目 + `ldconfig`：
+**只补符号链接就够，不需要 `ldconfig`。** 实测：容器 2 撤掉 `/etc/ld.so.conf.d/ollama.conf`
+并重跑 `ldconfig` 后，`ld.so.cache` 里 libllama 条目数为 **0**，仅靠 6 个符号链接，
+`$ORIGIN` 那一跳即命中，healthz 返回 `OK`。（`ldconfig` 那条路一开始也做了，事后证明多余。）
 
-```sh
-ln -sf libllama-common.so.0.1.2 libllama-common.so.0
-ln -sf libllama.so.0.1.2        libllama.so.0
-ln -sf libmtmd.so.0.1.2         libmtmd.so.0
-ln -sf libggml.so.0.20.2        libggml.so.0
-ln -sf libggml-base.so.0.20.2   libggml-base.so.0
-ln -sf libgomp.so.1.0.0         libgomp.so.1
-echo /root/taa/ollama/lib/ollama > /etc/ld.so.conf.d/ollama.conf && ldconfig
-```
+已实现为 `teellm/deploy.sh` 里的 `ollama_soname_fix_script()`，在**本地容器路径**
+（`deploy_docker`）与**远端 pod 路径**（`deploy_remote`）各调用一次，位置都在 ollama 文件落地
+之后、守护进程启动之前。要点：
 
-同时**在本地 bundle 源目录补了同样 6 个符号链接**，让后续全新部署不再踩这个坑。
+| 设计 | 理由 |
+| :--- | :--- |
+| **按版本号推导**，不写死 `0.1.2` | 从目录里实际存在的 `libNAME.so.X.Y.Z` 推出 `libNAME.so.X`。写死版本号会在 bundle 升级后变成悬空链接 |
+| 只处理 `lib*.so.*` | `libllama-server-impl.so` / `libggml-cpu-*.so` 这类本就无版本号的文件天然不匹配 |
+| 已是 soname 的文件跳过 | `libbaz.so.7` 这类不会被再包一层 |
+| 幂等 | 已存在的链接不动，第二次运行报告 `0` |
+| 报告新建条数 | 正常运行静默；只有真的补了才打印，便于发现 bundle 又退化了 |
 
-> ⚠️ **但 bundle 的修复没有进 git**：`teellm/.gitignore:7` 忽略了 `models/ollama/lib/`。
-> 也就是说**下一次全新克隆仍然会踩到 127**，需要 `teellm/deploy.sh` 自己补链接才能根治。
-> 这一条记在 §6。
+**验证**（在容器 2 上真做了一遍复现—修复—幂等）：
+
+| 步 | 动作 | 结果 |
+| :--- | :--- | :--- |
+| 1 | 删 6 个链接 + 撤 `ld.so.conf.d` 条目 + `ldconfig` | cache 里 libllama **0** 条 |
+| 2 | 探测 | **`503`**（缺陷复现） |
+| 3 | 跑脚本里的真实函数 | 报告 **6** |
+| 4 | 探测 | **`OK`** |
+| 5 | 再跑一次 | 报告 **0**（幂等） |
+
+远端路径的字符串拼接另用本地 stub 验过：`libfoo.so.1.2.3 → libfoo.so.1`、
+`libbar.so.4.5.6 → libbar.so.4`、已是 soname 的 `libbaz.so.7` 被跳过、报告 `2`。
+
+本地 bundle 源目录 `teellm/models/ollama/lib/ollama/` 也补了同样 6 个链接，
+但**那份在 gitignore 里**（`teellm/.gitignore:7` 忽略 `models/ollama/lib/`），所以
+**真正承重的是脚本里的自动补齐，不是 bundle**——这正是要把它做进 `deploy.sh` 的理由。
 
 ---
 
@@ -186,9 +210,9 @@ healthz**，而 healthz 内部会真发一次 `POST /api/generate`（`num_predic
 
 **未决**
 
-1. **`models/ollama/lib/` 被 gitignore，soname 链接不在版本控制里**（§4.3）。
-   根治应当由 `teellm/deploy.sh` 在部署后自动补链接 + `ldconfig`，而不是靠手工或靠 bundle——
-   否则下一个全新环境必然重演 127。**这是本次唯一有复发风险的遗留。**
+1. ~~**`models/ollama/lib/` 被 gitignore，soname 链接不在版本控制里**~~
+   **已解决**：改由 `teellm/deploy.sh` 的 `ollama_soname_fix_script()` 在部署时自动补齐
+   （§4.3），bundle 是否带链接、是否被 gitignore 都不再重要。**复发风险已消除。**
 2. **`TAA_LLM_ENDPOINT` 需要在调用 `deploy.sh` 时显式给出**，仓库里没有持久化
    `10.0.0.2`。这是有意的（容器 IP 是运行期变量），但意味着文档/编排层要负责传递它。
 3. **本轮未做真实审计请求的端到端**（TAA 收到扫描任务 → 调 LLM verifier → 返回）。
