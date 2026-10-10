@@ -433,11 +433,11 @@ TAA_DEBUG_MODE=true ./deploy.sh taa
 ### 9.1 SM2 信封加密
 
 ```
-明文 → AES-256-GCM 加密 → 密文
-              ↑
-        随机 AES 数据密钥
-              │
-              └→ SM2 公钥加密 → WrappedKey (113 bytes)
+明文 → SM4-GCM 加密 → 密文
+            ↑
+        随机 SM4 数据密钥
+            │
+            └→ SM2 公钥加密 → WrappedKey (113 bytes)
 
 输出格式: WrappedKey(113B) || Ciphertext(可变长)
 ```
@@ -445,7 +445,7 @@ TAA_DEBUG_MODE=true ./deploy.sh taa
 ### 9.2 密钥关系
 
 - **TAA SM2 密钥对**：启动时随机生成，公钥注册到平台
-- **AES 数据密钥**：每次加密随机生成，用 TAA SM2 公钥包装
+- **SM4 数据密钥**：每次加密随机生成，用 TAA SM2 公钥包装
 - **平台 SM2 密钥对**：导出时由平台提供公钥，TAA 用于加密结果
 
 ## 10. 部署

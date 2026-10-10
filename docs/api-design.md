@@ -1118,7 +1118,7 @@ X-TAA-Encrypted: false
 HTTP/1.1 200 OK
 Content-Type: application/octet-stream
 Content-Disposition: attachment; filename="result-train-req-export-002.zip.enc"
-Content-Length: 10485918
+Content-Length: 10485901
 X-TAA-Task-Id: task-001
 X-TAA-Encrypted: true
 

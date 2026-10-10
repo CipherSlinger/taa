@@ -165,8 +165,9 @@ func decodeResponse(t *testing.T, resp *http.Response) apiResponse {
 	return api
 }
 
-// sealForTAA 用 TAA 的 SM2 公钥对明文做信封加密，返回拼接后的资源数据：
-// WrappedKey(129B) || Ciphertext(可变长)
+// sealForTAA envelope-encrypts plaintext with TAA's SM2 public key and returns
+// the concatenated resource data:
+// WrappedKey(113B) || Ciphertext(variable length)
 func sealForTAA(t *testing.T, priv *teecrypto.SM2PrivateKey, plaintext []byte) []byte {
 	t.Helper()
 	sealed, err := teecrypto.SealSM2SM4GCM(&priv.PublicKey, plaintext)
