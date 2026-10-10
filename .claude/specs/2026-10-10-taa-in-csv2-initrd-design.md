@@ -1,6 +1,6 @@
 # 把 TAA 放进 Kata CSV2 initrd，使 MEASUREMENT 覆盖 TAA（2026-10-10，v2）
 
-- **状态**：**已实现**（`deploy/guest-build/` 与 `configs/taa-initrd.json` 已落地，本地合成 base 端到端与负例实测通过，详见 §5.4）；**§0 的宿主判定实验与真机 build/deploy/launch 尚未执行**（需要 172.16.10.178 的凭据），v1 那条 `init=` 到底有没有生效过也仍待该实验回答
+- **状态**：**已实现并在真机验证通过**（2026-10-10）。`deploy/guest-build/` 与 `configs/taa-initrd.json` 已落地；本地合成 base 端到端与负例实测见 §5.4；宿主 §0 的三个问题已由真机只读实验回答（§0）；真机 `fetch-base → build → deploy → launch` 已跑通，§5.1 的 8 条判据**全部实测通过**（§5.5）。路线 A（`kata-qemu-csv2`，不涉及 DCU）到此完成，路线 B 未开始
 - **日期**：2026-10-10（v2 修订同日）
 - **宿主**：`root@172.16.10.178`（`hygon-master`），kata CSV2 机密容器
 - **目标路线**：**先路线 A**（`kata-qemu-csv2`，**不涉及 DCU**），完成后再做路线 B
@@ -10,38 +10,39 @@
 
 ---
 
-## 0. 先决条件：宿主上一条判定实验
+## 0. 先决条件：宿主判定实验（**2026-10-10 已执行，三个问题均有答案**）
 
 v1 §3.1 自己写着 initrd **根级存在 `init -> /sbin/init`**；而内核 `kernel_init()` 的顺序是
 **先试 `rdinit=`（默认 `/init`），成功了就不再理会 `init=`**（见 §3.2）。两者不能同时成立：
 要么 v1 的事实有误，要么 v1 §4.1 的 `init=/usr/local/bin/taa-init` 从来没生效过。
 
-**这不阻塞实现**——`rdinit=` 在两种情况下都优先，§4 一律用 `rdinit=`。但答案决定了
-"v1 那套注入为何从未把 TAA 拉起来"的解释，也决定 §7 里要不要清理历史结论。
+**结论：v1 §3.1 是对的。** 真机读数如下（只读，未改动宿主；脚本已入库为
+`deploy/guest-build/host-precheck.sh` 与 `host-precheck2.sh`）：
 
-**一次 ssh 问完，不要连打**（该账号有 faillock，失败几次即锁）：
+| # | 问题 | 实测答案 |
+| :--- | :--- | :--- |
+| 1 | 真实 base 是否有根级 `init` | **有**：`lrwxrwxrwx init -> /sbin/init`；`sbin -> usr/sbin`，实体是 19,024,912 B 的 `usr/sbin/init` |
+| 2 | base 的 size / sha256 / 条目数 | 57,258,203 B / `a19d387cfd1822d8aedcd47f443fc691d6460adabdabcf46cfbe6e28ec842287` / **4682 条**，`gzip -t` 通过 —— 三项与 §4.9 预期**完全一致** |
+| 3 | 出厂 `kernel_params` | `cgroup_no_v1=all systemd.unified_cgroup_hierarchy=1`（**本来就没有 `init=`**） |
+
+由此得到两条对历史结论的更正：
+
+- **`init=` 在 CSV2 guest 里是死配置**（`/init` 存在 ⇒ 内核走 `ramdisk_execute_command` 成功后就
+  不再看 `execute_command`）。v1 那套注入即使被部署过，也**不会**把 TAA 拉起来。§7 第 8 条据此关闭。
+- 但 v1 也**从未被部署过**：`/opt/kata/share/kata-containers/taa-csv-20260901/`、
+  `/etc/kata-containers/configuration-qemu-csv2-taa.toml`、containerd 里的 `kata-qemu-csv2-taa`、
+  以及对应 RuntimeClass **全都不存在**。所以历史上"TAA 已在 kata csv2 里跑起来"的说法，
+  失败原因是**注入方式错了**（这一条确定），而不是"部署过但没生效"。
+
+**一条只读的复核命令**（该账号有 faillock，失败几次即锁，**不要连打**）：
 
 ```bash
-ssh root@172.16.10.178 'bash -s' <<'EOS'
-set -u
-B=/opt/kata/share/kata-containers/kata-containers-initrd-confidential-csv.img
-C=/opt/kata/share/defaults/kata-containers/configuration-qemu-csv2.toml
-echo "== base initrd =="; ls -l "$B"; sha256sum "$B"
-gzip -t "$B" && echo "gzip: OK" || echo "gzip: BROKEN"
-echo -n "entries: "; gzip -dc "$B" | cpio -t 2>/dev/null | wc -l
-echo "== root-level init =="; gzip -dc "$B" | cpio -tv 2>/dev/null | grep -E ' (init|rdinit)( ->|$)'
-echo "== kata config =="; grep -nE '^[[:space:]]*(kernel|initrd|image|firmware|kernel_params)[[:space:]]*=' "$C"
-echo "== measure tool =="; ls -l /opt/hygon/csv/confidential-containers/scripts/csv-measure.py
-EOS
+ssh root@172.16.10.178 'bash -s' < deploy/guest-build/host-precheck.sh
+ssh root@172.16.10.178 'bash -s' < deploy/guest-build/host-precheck2.sh
 ```
 
-要回答的三件事：
-
-| # | 问题 | 影响 |
-| :--- | :--- | :--- |
-| 1 | 真实 base initrd 的 `init` 条目是否存在、是不是 `-> /sbin/init` 的符号链接 | 解释 v1 的空转；`rdinit=` 的取值不受影响 |
-| 2 | 真实 base 的 size / sha256 / 条目数（预期 57,258,203 B / `a19d387c…` / 4682） | §4.9 `fetch-base` 的期望值 |
-| 3 | `configuration-qemu-csv2.toml` 的 `kernel_params` 现值 | §4.6 的补丁落点 |
+第二个脚本还回答了"当前谁在跑"：2 个 `kata-qemu-csv2` VM（`osr/taa-env-slim-v2-*`）+
+1 个与 containerd 无关的 libvirt 常驻 `csv2-8c16g`。`launch` 会重启 containerd，执行前须先看它。
 
 ---
 
@@ -401,16 +402,20 @@ v2 的三条通道，按可靠性排序：
 | 2 | **度量确实覆盖 initrd（最强）** | 宿主 `csv-measure.py` 对**同一条 cmdline + taa 版 initrd** 算出的 MEASUREMENT，必须与 guest 内 `getAttestation` 取回报告**解掩码后**的 MEASUREMENT **逐位相同**。预测值 == 实测值，同时证明"initrd 进度量"与"报告的度量字段不是垃圾" |
 | 3 | 变量隔离对照 | 固定 cmdline，只换 initrd（base ↔ taa）→ 必须不同；固定 initrd，只换 cmdline → 也必须不同。否则 §2 的混淆项会把 cmdline 的效应记到 initrd 头上 |
 | 4 | QEMU 真的用了新 initrd | pod 起来后宿主 `ps -eo args=` 里 `-initrd` 指向 taa 版路径 |
-| 5 | TAA 真的在跑 | 容器内 `wget -qO- localhost:6001/v1/taa/health`（kata 的 pod netns 即 guest netns）有应答 |
+| 5 | TAA 真的在跑 | 容器内 `curl -s -X POST localhost:6001/v1/taa/health`（kata 的 pod netns 即 guest netns）有应答。**必须是 POST**：`/v1/taa/*` 全部经 `postOnly` 包装（`internal/controller/router.go`），GET 得到 405；容器内只有 `curl`，没有 `wget`（v2 初稿写成 `wget -qO-` 是错的，真机执行时更正） |
 | 6 | **证明是真的** | `POST /v1/taa/getAttestation` 返回非空报告；且 pod Ready 与 `TAA_REQUIRE_ATTESTATION=1` 同时成立（即 §4.4 第 5 步的闸门放行） |
 | 7 | 回归 | 原 `kata-qemu-csv2` handler 与其配置文件零改动；新 handler `kata-qemu-csv2-taa`、新配置文件 `configuration-qemu-csv2-taa.toml`。逐层证据见 §5.3 |
 | 8 | 不撞共享 pod | 测试 pod 名 `test-kata-csv2-taa`（默认值），与共享的 `dcu-tee-test` 无交集 |
 
 第 2 条取代了 v1 的"两者必须不同"：v1 那条会因为**错误的原因通过**（cmdline 也变了）。
 
-宿主判据工具的两个坑（实测）：`csv-measure.py` 的 shebang 指向本机不存在的
-`/usr/libexec/platform-python`，必须 `python3 <脚本>` 调用；`--cmdline` 收的是**文件**
-（内容为命令串 + 末尾换行，脚本会去掉末字节再补 `\0`）。
+宿主判据工具的四个坑（真机实测）：
+
+- `csv-measure.py` 的 shebang 指向本机不存在的 `/usr/libexec/platform-python`，必须 `python3 <脚本>` 调用；
+- `--cmdline` 收的是**文件**（内容为命令串 + 末尾换行，脚本会去掉末字节再补 `\0`）；基准必须是 QEMU 实际收到的
+  那条 `-append`，不是 kata 配置里 `kernel_params` 的字面值；
+- **输出是 base64，不是 hex**。拿 hex 正则去比对会得到"三个预测全空"，看起来像三条判据全挂；
+- `--smp` 必填，且 `--vcpumodel host` 会去读 `lscpu`——两者都要与真机 pod 的 QEMU 参数一致，否则预测的是另一台机器。
 
 ### 5.2 证明链的失败模式对照
 
@@ -470,7 +475,41 @@ v2 的三条通道，按可靠性排序：
 第 5 条的 8 个负例是本轮唯一能证明"构建期自检真的会拦"的方式——因为它们全部在**写产物之前**
 退出，所以顺带证明了"失败不覆盖上一次可用输出"这条性质。
 
-仍未经本机验证、必须到真机才能回答的：§0 的三个问题、§5.1 第 2–8 条、以及 §7 第 1/3/4 条风险。
+### 5.5 真机验证记录（2026-10-10，172.16.10.178）
+
+`fetch-base → build → deploy → launch` 全流程实跑，§5.1 八条判据逐条落地：
+
+| # | 判据 | 实测结果 |
+| :--- | :--- | :--- |
+| 1 | 构建完整性 | base `a19d387c…` **4682** 条 → 候选 **4690** 条（+8，§4.2 的 6 文件 + 2 目录），`gzip -t` 通过，manifest 无重复 |
+| 2 | **度量覆盖 initrd（逐位相同）** | 宿主预测 `8408bf9603b006c9b36b8819bb086ecb03c58625b23be99b7a39ab0da318a56d` == guest 报告解掩码后的 MEASUREMENT，**逐位相同** |
+| 3 | 变量隔离对照 | 固定 cmdline 换 initrd（base）：`b8ad1d1168b5e1367c3acebc39adfdd4b8559a8845db6e9818c9c2f2d54a8d26`；固定 initrd 去掉 `rdinit=`：`edef46ae5de3acba91a42d7432d6adf86273ab869ed894b6d6dc52b94aeabf83` —— 两个对照都与判据 2 的值**不同** |
+| 4 | QEMU 真的用了新 initrd | 宿主 `ps -eo args=`：`verified QEMU is using: /opt/kata/share/kata-containers/taa-csv-20260901/initramfs.img` |
+| 5 | TAA 真的在跑 | `POST /v1/taa/health` → 200，body `ok` |
+| 6 | 证明是真的 | `getAttestation` 返回 `verifiedPass: true`、报告 2548 B、chipId `SRYUY22080405`；**且** pod 在 `TAA_REQUIRE_ATTESTATION=1` 下达到 `1/1 Running`（42 s），即 §4.4 第 5 步的闸门确实放行 |
+| 7 | 回归 | 原 handler 块逐字节未变、kata 配置 sha256 `30d722ca01e476affccf633a2e3eb4ce3b33b2aa3f0fe6d81d657470a9c8781d`、base initrd `a19d387c…` 均未改动 |
+| 8 | 不撞共享 pod | 测试 pod 名与共享 pod 无交集 |
+
+**一条意外的强证据**：首次 `launch` 失败时 pod 停在 `StartError`（exitCode 128），报错来自
+**guest 内的 CDH 镜像拉取**（`[CDH] … tls`）。这条错误本身不可伪造地证明了链路已经走到很远：
+CDH 与 attestation-agent 是**我们的 initrd 带进去的**（§4.2 清单），所以"guest 从新 initrd 启动 →
+wrapper 执行 → `TAA_REQUIRE_ATTESTATION=1` 的闸门通过 → kata-agent 起来 → 才开始拉容器镜像"这一段
+在执行失败之前就已经成立。
+
+**真机新发现的环境前提（不在 v2 设计里，但不满足就跑不通）**：CoCo pod 的 `cc_init_data`
+注解不能省。CDH 在 guest 内拉镜像，注册表 CA 必须经
+`io.katacontainers.config.runtime.cc_init_data`（gzip+base64 的 TOML bundle，内含 `cdh.toml` 的
+`[image] extra_root_certificates`）投递，否则 CDH 报 TLS 错误、pod 落在 `StartError`。
+
+**注解不能整份照抄**：`io.containerd.cri.runtime-handler: kata-qemu-csv2` 会把 runtime 劫持回原
+handler，空的 `io.katacontainers.config.hypervisor.kernel_params` 会**覆盖并抹掉**我们的 `rdinit=`
+——两者都会让验证静默失效。为此 `build-initrd.sh` 新增 `TEST_POD_ANNOTATIONS`，只注入 `cc_init_data` 一个键。
+
+**爆炸半径实测**：重启 containerd 时在跑的两个 `osr/taa-env-slim-v2-*` pod 未受影响（QEMU 7067/7068
+存活），journal 只清掉一个过期 shim。另外 `build-initrd.sh` 现在会先 `cmp` 配置：**配置没变就跳过重启**，
+把这一步的动效降到零（本次 launch 走的就是这条路径，输出 `containerd 配置未变化，跳过重启`）。
+
+至此 §5.4 末尾列的"仍待真机回答"三项（§0 三问、§5.1 第 2–8 条、§7 第 1/3/4 条风险）**全部关闭**。
 
 ---
 
@@ -488,10 +527,9 @@ v2 的三条通道，按可靠性排序：
 
 ## 7. 风险与未决
 
-1. **`/proc/misc` 与 `/sys/class/misc/csv-guest/dev` 在 wrapper 阶段是否可读**——先挂
-   `/proc`、`/sys` 就是为了这个。若两者都读不到，报告会降级，而 §4.4 第 5 步的闸门会让
-   pod 不 Ready（**这是有意的**）。退路：写死 `10, 256`（§3.5 实测值，同内核下稳定，
-   换内核可能变）。
+1. ~~**`/proc/misc` 与 `/sys/class/misc/csv-guest/dev` 在 wrapper 阶段是否可读**~~ ——
+   **已关闭（2026-10-10 真机）**：`/proc/misc` 这条路走通了，wrapper 拿到了 csv-guest 的次设备号并
+   `mknod` 出 `/dev/csv-guest`，闸门放行。写死 `10, 256` 的退路**没有用上**，不必启用。
 2. **静态二进制体积**实测 18.9 MB，initrd 55 → 约 74 MB，且 initramfs 常驻 guest 内存。
    QEMU 与 pod 启动时间会受影响。需要时可加 `-trimpath -ldflags="-s -w"`（约 −7 MB），
    本轮不做。
@@ -509,11 +547,19 @@ v2 的三条通道，按可靠性排序：
    扫描能力的等价性属于另一条线（见 semgrep 相关 spec）。
 7. **历史里的假产物仍可被 checkout 出来**（`out/` 从 git 移除后，旧提交里那份 = base 的复制品
    还在）——在 `build-initrd.sh` 文件头点名，避免后来者把它当成真的构建产物。
-8. **v1 那套 `init=` 是否曾经生效过**——§0 的实验给答案。若确认 `/init` 存在，则历史上任何
-   声称"TAA 已在 kata csv2 里跑起来"的结论都需要重新取证。
+8. ~~**v1 那套 `init=` 是否曾经生效过**~~ —— **已关闭（2026-10-10 真机）**：`/init` 存在（§0），
+   所以 `init=` 是死配置，v1 那套注入**不可能**把 TAA 拉起来。且真机上 v1 的产物（bundle / kata 配置 /
+   handler / RuntimeClass）**从未被安装过**，"部署过但没生效"这一分支也不存在。历史上任何声称
+   "TAA 已在 kata csv2 里跑起来"的结论都需要重新取证。
 9. **构建不可 bit 复现**（§4.5 末）——newc 记录 inode 与 mtime，两次构建的 initrd 字节不同、
    度量也就不同。判据 2 不受影响（比的是同一个产物文件），但"同一份输入 ⇒ 同一份度量"这种
    说法在本流程里**不成立**，写文档时不要这么写。要复现需自行归一化 ino/mtime，本轮不做。
+10. **CoCo pod 必须带 `cc_init_data` 注解**（真机新发现，§5.5）——否则 guest 内的 CDH 没有注册表 CA，
+    镜像拉取 TLS 失败、pod 停在 `StartError`。这条与 initrd 注入无关，是**该宿主上所有 CoCo pod 的
+    共同前提**，但很容易在"只照抄镜像和 command"时漏掉。
+11. **被测 initrd 的度量依赖 cmdline 与 QEMU 参数**——宿主预测必须与 pod 实际收到的 `-append`、
+    `-smp`、`-cpu` 一致才可能逐位相同（§5.1 工具坑）。换节点/换机型时预测值会变，别把
+    `8408bf96…` 当成"TAA 版 initrd 的固定度量"。
 
 ---
 

@@ -30,6 +30,17 @@ export TEST_NODE_NAME=<kubectl get nodes 里显示的节点名>
 export TEST_POD_NAME=test-kata-csv2-taa
 export TEST_IMAGE=busybox:latest
 
+# 测试 Pod 的注解，必须是 JSON 对象。在这台宿主上 **不能省**：CoCo 的 CDH 在 guest 内拉镜像，
+# 注册表 CA 只能经 cc_init_data 注解投递，缺了就会 TLS 失败、Pod 停在 StartError。
+# 从宿主上任何一个跑得通的 CoCo Pod 取出来复用：
+#   kubectl -n <ns> get pod <pod> -o jsonpath='{.metadata.annotations.io\.katacontainers\.config\.runtime\.cc_init_data}'
+export TEST_POD_ANNOTATIONS='{"io.katacontainers.config.runtime.cc_init_data":"<从上面那条命令取到的 base64>"}'
+
+# 注意：**不要**把原 Pod 的注解整份照抄。其中
+#   io.containerd.cri.runtime-handler            -> 会把 runtime 劫持回原 handler，测试 pod 不走我们的
+#   io.katacontainers.config.hypervisor.kernel_params -> 空值会覆盖掉 kata 配置里的 rdinit=，TAA 不再启动
+# 两者都会让验证静默失效（Pod 照样 Ready，但根本不是被测路径）。
+
 # build-initrd.sh 的输入
 export TAA_PLATFORM_IP=<平台IP:端口>
 export TAA_DOCKER_ID=<docker_id>
@@ -172,6 +183,7 @@ REMOTE_USER="${REMOTE_USER}" \
 REMOTE_HOST="${REMOTE_HOST}" \
 TEST_NODE_NAME="${TEST_NODE_NAME}" \
 RUNTIME_HANDLER="${RUNTIME_HANDLER}" \
+TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS}" \
 ./build-initrd.sh launch
 ```
 
@@ -181,12 +193,16 @@ RUNTIME_HANDLER="${RUNTIME_HANDLER}" \
    - `/etc/kata-containers/configuration-qemu-csv2-taa.toml`
 2. 在 `containerd` 中新增 runtime handler：
    - `kata-qemu-csv2-taa`
-3. 重启 `containerd`
+3. 重启 `containerd`——**只有在配置真的变了才重启**（先 `cmp` 一次，未变化就打印
+   `containerd 配置未变化，跳过重启`）。这决定了 `launch` 对已在跑的 Pod 有没有动效
 4. 视配置可选重启 `kubelet`
 5. 创建 Kubernetes `RuntimeClass`
-6. 创建测试 Pod
-7. 等待 Pod Ready
+6. 创建测试 Pod（带 `TEST_POD_ANNOTATIONS`）
+7. 等待 Pod Ready；超时会打印 Pod 状态与 `Events:` 再退出
 8. 校验 QEMU 是否使用了新的 initrd
+
+`TEST_IMAGE` 建议用宿主上**已有**的镜像（如 `172.16.10.178:31313/taa-env:slim-v2-20260916`）：
+`busybox:latest` 拉不动时会一直等到 180s 超时。
 
 如果你想一次性执行全部步骤：
 
@@ -221,6 +237,14 @@ kubectl get runtimeclass kata-qemu-csv2-taa
 # 测试 Pod
 kubectl get pod test-kata-csv2-taa -o wide
 kubectl describe pod test-kata-csv2-taa
+
+# TAA 是否真的在跑：/v1/taa/* 全部是 POST-only（GET 得到 405），容器里只有 curl
+kubectl exec test-kata-csv2-taa -- curl -s -X POST localhost:6001/v1/taa/health
+
+# 取证明（attestationValues 里已解掩码的 digest 就是报告的 MEASUREMENT）
+kubectl exec test-kata-csv2-taa -- \
+  curl -s -X POST localhost:6001/v1/taa/getAttestation \
+  -H 'Content-Type: application/json' -d '{"requestId":"probe"}'
 ```
 
 ---
@@ -235,6 +259,7 @@ kubectl describe pod test-kata-csv2-taa
 - `REMOTE_KATA_CONFIG=/etc/kata-containers/configuration-qemu-csv2-taa.toml`
 - `RUNTIME_HANDLER=kata-qemu-csv2-taa`
 - `TEST_POD_NAME=test-kata-csv2-taa`
+- `TEST_IMAGE`、`TEST_POD_ANNOTATIONS='{}'`（该宿主上需填 `cc_init_data`，见 §0）
 - `TAA_REQUIRED=1`、`TAA_REQUIRE_ATTESTATION=1`（证明闸门）
 - 本地输入覆盖（主要给测试用）：`BASE_INITRD`、`INITRD_OUT`、`TAA_SRC`、`TAA_INIT_SRC`、`TAA_CONFIG_SRC`
 
@@ -257,5 +282,8 @@ kubectl describe pod test-kata-csv2-taa
 - base 资产**不入库**（`base/*.img`、`base/*.container`、`base/*.fd`、`out/` 已在 `.gitignore` 里）：
   宿主机是权威，入库的副本只会静默过期——历史上那份 `out/kata-containers-initrd-taa-csv.initrd`
   与 base 逐字节相同，就是复制品而非构建产物。用 `./build-initrd.sh fetch-base` 取。
+- 宿主上做度量预测时注意 `csv-measure.py` 的四个坑：必须 `python3 <脚本>` 调用（shebang 指向
+  不存在的 `/usr/libexec/platform-python`）；`--cmdline` 收**文件**；**输出是 base64 不是 hex**；
+  `--smp` 必填且 `--vcpumodel host` 与真机 QEMU 参数绑定。真机记录见 spec 的 §5.5。
 - 注入的 TAA 必须是静态链接的：`CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa`。
 - wrapper（`taa-init.sh`）的判定逻辑有单测：`./test-taa-init.sh`，改动后先跑它。
