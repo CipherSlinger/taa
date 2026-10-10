@@ -123,7 +123,7 @@ SKIP_REMOTE_BASE_CHECK="${SKIP_REMOTE_BASE_CHECK:-0}"
 # 因此本地反复调试是安全的；只有显式指定 deploy、launch 或 all 时才会触碰远程服务器。
 usage() {
   cat <<EOF
-Usage: $0 [build|fetch-base|deploy|launch|all]
+Usage: $0 [build|fetch-base|deploy|launch|all|print-config]
 
 Commands:
   build       Build $INITRD_OUT from $BASE_INITRD and inject TAA + init wrapper.
@@ -131,6 +131,9 @@ Commands:
   deploy      Upload the built initrd to $REMOTE and install the remote Kata guest bundle.
   launch      Configure Kata/containerd RuntimeClass on $REMOTE and create a test Pod.
   all         Run build, deploy, then launch.
+  print-config  Print the resolved remote/test settings as sourceable KEY=value
+                lines. Internal interface for deploy-taa-vm.sh, so that the
+                defaults above have exactly one definition.
 
 Environment overrides:
   REMOTE_USER=$REMOTE_USER
@@ -1139,6 +1142,18 @@ case "$cmd" in
     build_initrd
     deploy_remote
     launch_remote
+    ;;
+  print-config)
+    # Machine-readable dump of the resolved settings, so a driver script does not
+    # have to duplicate (and drift from) the defaults defined above. %q quoting
+    # makes the output safe to `eval` even when a value contains spaces.
+    for key in REMOTE_USER REMOTE_HOST REMOTE_BUNDLE_DIR REMOTE_BASE_INITRD_SRC \
+               REMOTE_KATA_CONFIG_SRC REMOTE_KATA_CONFIG KATA_HYPERVISOR_SECTION \
+               RUNTIME_HANDLER RUNTIME_TYPE RUNTIME_PATH SNAPSHOTTER \
+               TEST_NODE_NAME TEST_POD_NAME TEST_IMAGE TEST_POD_ANNOTATIONS \
+               OUT_DIR INITRD_OUT BASE_INITRD; do
+      printf '%s=%q\n' "$key" "${!key}"
+    done
     ;;
   -h|--help|help)
     usage
