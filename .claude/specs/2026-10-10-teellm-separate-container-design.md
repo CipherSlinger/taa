@@ -326,5 +326,28 @@ info "$label ${DIM}(took ${total_elapsed}s)${NC}"   # ← 颜色码在参数里
 > 就就地迁移或复用 `lib/`，省掉几 GB 传输。注意那里的判据是
 > `test -d … && ! test -L …`，**本脚本自己建的软链接故意不算数**，不会被误当成旧安装。
 >
-> 结论：保留。它此刻是冗余的，但 **bundle 不在版本控制里**（`teellm/.gitignore:7`），
-> 换一份 bundle 就可能重新需要它——用一个软链接买这个保险很便宜。删除属于待定项。
+> **处置：已全部移除。** 上表既然证明没有任何东西再依赖它，就没有理由继续留着——
+> "bundle 不在版本控制里、换一份可能又需要"这个保险的说法，与"没人读它"的事实相比不值一提。
+>
+> 删掉的是**四处创建点**：`deploy_docker` 与 `copy_ollama_to_remote_pod` 里各一对，
+> 外加远端迁移动作里 `mv` 之后那句 `ln -s`（它重建的正是要删的别名，不删就是半拉子）。
+> `local hardcoded_path` 随之消失；`copy_ollama_to_remote_pod` 的
+> `legacy_container_path` 保留——它现在**只**表示"旧安装可能在哪儿"，是迁移来源，与别名无关，
+> 并补了注释说明。远端迁移里 `! test -L` 的判据也保留，用来跳过老脚本留在 pod 上的别名。
+>
+> 验证（本地 docker 路径，真跑）：
+>
+> | 步 | 动作 | 结果 |
+> | :--- | :--- | :--- |
+> | 1 | 手工删掉容器里**已存在**的两个别名 | `/taatest/` 空、`/root/taa/` 下只剩 `ollama` |
+> | 2 | `./teellm/deploy.sh docker start` | 步骤从 12 步变 **11 步**，`creating compatibility symlink` 不再出现 |
+> | 3 | 部署自带探针（TEE-TLS 握手 + `/healthz`，后者真发一次 `/api/generate`） | **通过**，17s（冷） |
+> | 4 | 部署后再看 | 两个别名**没有被重建** |
+> | 5 | `./deploy.sh docker start taa` | `✓ taa ready`；TAA 侧 `connectivity probe succeeded (took 213ms)` |
+>
+> 第 3、5 条是承重证据：没有别名时 **ollama → llama-server → 推理**这条链照样通。
+>
+> **未一并处理**：`deploy/manifest/docker/Dockerfile.base:36` 仍然 `mkdir -p /taatest`，
+> 于是容器里留下一个空目录；`docs/architecture-design.md` §10.3 也仍把 `/taatest/` 记作容器布局
+> （实际早已是 `/root/taa`）。两者都不影响运行，删 Dockerfile 那行需要重建并重新分发基础镜像，
+> 单独处理。
