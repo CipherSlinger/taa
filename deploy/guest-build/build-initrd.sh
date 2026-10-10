@@ -112,7 +112,14 @@ SNAPSHOTTER="${SNAPSHOTTER:-nydus}"
 RESTART_KUBELET="${RESTART_KUBELET:-0}"
 TEST_NODE_NAME="${TEST_NODE_NAME:-}"
 TEST_POD_NAME="${TEST_POD_NAME:-test-kata-csv2-taa}"
-TEST_IMAGE="${TEST_IMAGE:-busybox:latest}"
+# The image is pulled by CDH *inside* the guest, which has no route to Docker
+# Hub -- measured on 2026-10-10: busybox:latest failed with "error sending
+# request for url (https://index.docker.io/...)" after the 180s wait. So the
+# default is an image from the registry on the host itself (the same one the
+# CoCo Pods already running here pull successfully). It also has to carry curl,
+# because `deploy-taa-vm.sh verify` probes TAA from inside the Pod and busybox
+# does not ship it.
+TEST_IMAGE="${TEST_IMAGE:-172.16.10.178:31313/taa-env:slim-v2-20260916}"
 # A CoCo guest pulls the container image itself through CDH, and it trusts the
 # registry only if the Pod carries the init-data that configures it (on this
 # host cc_init_data embeds a cdh.toml with extra_root_certificates). Without it

@@ -56,6 +56,15 @@ check "print-config: default handler" "kata-qemu-csv2-taa" "$RUNTIME_HANDLER"
 # on the host first, which is exactly the failure this default avoids.
 check "print-config: default remote user is root" "root" "$REMOTE_USER"
 
+# The guest pulls the image itself and has no route to Docker Hub (measured),
+# so the default must name a registry on the host. Assert that property rather
+# than the literal image, which is free to change.
+case "$TEST_IMAGE" in
+  "$REMOTE_HOST":*) echo "ok   print-config: default test image is served by the host itself ($TEST_IMAGE)" ;;
+  *) echo "FAIL print-config: default test image is not host-local: $TEST_IMAGE" >&2
+     failures=$((failures + 1)) ;;
+esac
+
 # ── 1b. the test identity the driver supplies ────────────────────────────────
 #
 # `up` is meant to run with no environment set, so the platform address has to

@@ -269,8 +269,8 @@ preflight() {
       check_remote_sudo
       ensure_pod_annotations
       if [[ "$TEST_IMAGE" == "busybox:latest" ]]; then
-        echo "note: TEST_IMAGE 仍是 busybox:latest；镜像由 guest 内的 CDH 拉取，拉不动会白等 180s" >&2
-        echo "note: 这台宿主可直接用 172.16.10.178:31313/taa-env:slim-v2-20260916" >&2
+        echo "note: 这台宿主的 guest 拉不到 Docker Hub（实测 CDH 报 error sending request for index.docker.io）" >&2
+        echo "note: 本地 registry 里有 172.16.10.178:31313/taa-env:slim-v2-20260916（verify 需要镜像里有 curl）" >&2
       fi
       ;;
   esac

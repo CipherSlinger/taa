@@ -457,9 +457,13 @@ v2 的三条通道，按可靠性排序：
 - 脚本带回滚（`:807-813`：起不来就还原备份配置再启一次），但**回滚重启若也失败，
   containerd 会停在那里**。这是本流程风险最高的一步，执行前应确认无人在用集群。
 
-**其它两个小项**（不影响隔离性）：测试 pod 用 `nodeName` 固定调度（`:874`），`TEST_IMAGE`
-默认 `busybox:latest`（`:58`）——该 tag 拉不下来会卡在 `:886` 的 180s 等待；用宿主上已有的
-镜像覆盖 `TEST_IMAGE` 即可。测试 pod 名默认 `test-kata-csv2-taa`，与 `dcu-tee-test` 不重名。
+**其它两个小项**（不影响隔离性）：测试 pod 用 `nodeName` 固定调度（`:874`）。`TEST_IMAGE`
+默认 `busybox:latest` 已**改为宿主本地 registry 的镜像**——2026-10-10 实测：guest 内的 CDH
+**没有到 Docker Hub 的路由**，`busybox:latest` 拉取失败（`error sending request for url
+(https://index.docker.io/v2/...)`），Pod 停在 `StartError`。现默认
+`172.16.10.178:31313/taa-env:slim-v2-20260916`，即宿主上已在跑的 CoCo Pod 拉得通的那个镜像；
+选它还有一个原因：`deploy-taa-vm.sh verify` 在 Pod 内执行 `curl` 探 TAA，busybox 不带 curl。
+测试 pod 名默认 `test-kata-csv2-taa`，与 `dcu-tee-test` 不重名。
 
 ---
 

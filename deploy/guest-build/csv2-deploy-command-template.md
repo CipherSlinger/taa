@@ -34,7 +34,10 @@ export SNAPSHOTTER=nydus
 # Kubernetes
 export TEST_NODE_NAME=<kubectl get nodes 里显示的节点名>
 export TEST_POD_NAME=test-kata-csv2-taa
-export TEST_IMAGE=busybox:latest
+# 默认已是宿主本地 registry 的镜像。**别改成 Docker Hub 上的 tag**：guest 内的 CDH
+# 没有到外网的路由，实测 busybox:latest 报 error sending request for index.docker.io，
+# Pod 停在 StartError。另外 verify 步骤要在 Pod 内执行 curl，busybox 不带 curl。
+export TEST_IMAGE=172.16.10.178:31313/taa-env:slim-v2-20260916
 
 # 测试 Pod 的注解，必须是 JSON 对象。在这台宿主上 **不能省**：CoCo 的 CDH 在 guest 内拉镜像，
 # 注册表 CA 只能经 cc_init_data 注解投递，缺了就会 TLS 失败、Pod 停在 StartError。
@@ -214,8 +217,9 @@ TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS}" \
 7. 等待 Pod Ready；超时会打印 Pod 状态与 `Events:` 再退出
 8. 校验 QEMU 是否使用了新的 initrd
 
-`TEST_IMAGE` 建议用宿主上**已有**的镜像（如 `172.16.10.178:31313/taa-env:slim-v2-20260916`）：
-`busybox:latest` 拉不动时会一直等到 180s 超时。
+`TEST_IMAGE` 默认就是宿主上**已有**的镜像 `172.16.10.178:31313/taa-env:slim-v2-20260916`
+（本地 registry，guest 拉得通，且带 curl 供 verify 使用）。改成 Docker Hub 上的 tag 会等满
+180s 后 `StartError`：guest 内没有到外网的路由。
 
 如果你想一次性执行全部步骤：
 
@@ -272,7 +276,8 @@ kubectl exec test-kata-csv2-taa -- \
 - `REMOTE_KATA_CONFIG=/etc/kata-containers/configuration-qemu-csv2-taa.toml`
 - `RUNTIME_HANDLER=kata-qemu-csv2-taa`
 - `TEST_POD_NAME=test-kata-csv2-taa`
-- `TEST_IMAGE`、`TEST_POD_ANNOTATIONS='{}'`（该宿主上需填 `cc_init_data`，见 §0）
+- `TEST_IMAGE=172.16.10.178:31313/taa-env:slim-v2-20260916`（宿主本地 registry；guest 无外网）
+- `TEST_POD_ANNOTATIONS='{}'`（该宿主上需填 `cc_init_data`，见 §0）
 - `TAA_REQUIRED=1`、`TAA_REQUIRE_ATTESTATION=1`（证明闸门）
 - `TAA_PLATFORM_IP`、`TAA_DOCKER_ID`：平台注册身份，必须成对。由**驱动**给默认值
   （`${REMOTE_HOST}:${PLATFORM_PORT}` / `kata-csv2-taa-test-0001`），直接调
