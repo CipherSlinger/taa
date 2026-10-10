@@ -216,17 +216,20 @@ banner() {
   echo -e "${CYAN}╰──────────────────────────────────────────────────────────────────╯${NC}"
 }
 
+# Messages may carry color codes of their own (e.g. a dimmed "(took 3s)" suffix). printf
+# expands backslash escapes only in the format string, so passing such a message through %s
+# prints the escapes literally. Route the message through %b to have them interpreted.
 step() {
   STEP=$((STEP + 1))
   CURRENT_STEP_NAME="$1"
   LAST_FAILED_TASK=""
-  printf "  ${PURPLE}◆${NC} ${CYAN}[%02d]${NC} ${BOLD}%s${NC}\n" "$STEP" "$1"
+  printf "  ${PURPLE}◆${NC} ${CYAN}[%02d]${NC} ${BOLD}%b${NC}\n" "$STEP" "$1"
 }
 
-info()    { printf "   ${GREEN}✓${NC} %s\n" "$1"; }
-warn()    { printf "   ${YELLOW}⚠${NC} %s\n" "$1"; }
-err()     { printf "   ${RED}✗${NC} %s\n" "$1" >&2; }
-detail()  { printf "     ${MUTED}↳ %s${NC}\n" "$1"; }
+info()    { printf "   ${GREEN}✓${NC} %b\n" "$1"; }
+warn()    { printf "   ${YELLOW}⚠${NC} %b\n" "$1"; }
+err()     { printf "   ${RED}✗${NC} %b\n" "$1" >&2; }
+detail()  { printf "     ${MUTED}↳ %b${NC}\n" "$1"; }
 
 spin_task() {
   local label="$1"
