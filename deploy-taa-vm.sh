@@ -261,6 +261,7 @@ preflight() {
           echo "hint: 二者都给，或显式设置 ALLOW_MISSING_TAA_ENV=1 放弃平台注册" >&2
           exit 1
         fi
+        check_initrd_identity
       fi
       ;;
   esac
@@ -276,6 +277,49 @@ preflight() {
       fi
       ;;
   esac
+}
+
+# ── Registration identity baked into the initrd ──────────────────────────────
+#
+# taa-init reads /etc/default/taa.env from inside the guest, where nothing about
+# this shell's environment can still reach it, so the platform address is fixed at
+# build time. A build made with different values deploys and boots perfectly --
+# Ready pod, verified attestation -- and then registers somewhere else entirely,
+# which is invisible from this side: the only symptom is a platform that never
+# hears from TAA. `build` and `deploy` are separate commands, so the values that
+# built the initrd are not necessarily the ones this invocation carries; compare
+# them before publishing, where the rebuild hint can still be given.
+check_initrd_identity() {
+  if [[ ! -f "$INITRD_OUT" ]]; then
+    echo "error: 本地 initrd 不存在: $INITRD_OUT（先跑 $0 build）" >&2
+    exit 1
+  fi
+
+  local tmp baked_platform baked_docker_id
+  tmp="$(mktemp -d)"
+  # cpio streams the whole archive; the pipeline status is irrelevant here because
+  # the file either came out or it did not, and that is what is checked next.
+  gzip -dc "$INITRD_OUT" 2>/dev/null | (cd "$tmp" && cpio -idm --quiet etc/default/taa.env 2>/dev/null) || true
+
+  if [[ ! -f "$tmp/etc/default/taa.env" ]]; then
+    rm -rf "$tmp"
+    echo "error: 已构建的 initrd 里没有 etc/default/taa.env，无法核对注册身份" >&2
+    echo "hint: 重新构建：TAA_PLATFORM_IP=$TAA_PLATFORM_IP TAA_DOCKER_ID=$TAA_DOCKER_ID $0 build" >&2
+    exit 1
+  fi
+
+  baked_platform="$(sed -n 's/^export PLATFORM_IP=//p' "$tmp/etc/default/taa.env" | head -n 1)"
+  baked_docker_id="$(sed -n 's/^export DOCKER_ID=//p' "$tmp/etc/default/taa.env" | head -n 1)"
+  rm -rf "$tmp"
+
+  if [[ "$baked_platform" != "$TAA_PLATFORM_IP" || "$baked_docker_id" != "$TAA_DOCKER_ID" ]]; then
+    echo "error: initrd 里烘焙的注册身份与本次调用不一致" >&2
+    echo "       initrd: PLATFORM_IP=$baked_platform DOCKER_ID=$baked_docker_id" >&2
+    echo "       本次:   PLATFORM_IP=$TAA_PLATFORM_IP DOCKER_ID=$TAA_DOCKER_ID" >&2
+    echo "hint: guest 内的 TAA 只认 initrd 里这份，发布出去它就会注册到旧地址且没有任何本地症状；" >&2
+    echo "      重新构建：TAA_PLATFORM_IP=$TAA_PLATFORM_IP TAA_DOCKER_ID=$TAA_DOCKER_ID $0 build" >&2
+    exit 1
+  fi
 }
 
 # ── verify ───────────────────────────────────────────────────────────────────
