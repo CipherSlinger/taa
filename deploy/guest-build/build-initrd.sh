@@ -109,6 +109,14 @@ RESTART_KUBELET="${RESTART_KUBELET:-0}"
 TEST_NODE_NAME="${TEST_NODE_NAME:-}"
 TEST_POD_NAME="${TEST_POD_NAME:-test-kata-csv2-taa}"
 TEST_IMAGE="${TEST_IMAGE:-busybox:latest}"
+# A CoCo guest pulls the container image itself through CDH, and it trusts the
+# registry only if the Pod carries the init-data that configures it (on this
+# host cc_init_data embeds a cdh.toml with extra_root_certificates). Without it
+# CDH fails the pull with a TLS error and the Pod lands in StartError -- which
+# looks like an initrd failure but is not one. Copy the JSON annotations of a
+# working Pod when the test image lives behind a private registry:
+#   TEST_POD_ANNOTATIONS="$(kubectl get pod <working> -o jsonpath='{.metadata.annotations}')"
+TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS:-{\}}"
 SKIP_REMOTE_BASE_CHECK="${SKIP_REMOTE_BASE_CHECK:-0}"
 
 # 打印支持的子命令和主要环境变量覆盖项。脚本默认执行 build，
@@ -142,6 +150,7 @@ Environment overrides:
   TEST_NODE_NAME=$TEST_NODE_NAME
   TEST_POD_NAME=$TEST_POD_NAME
   TEST_IMAGE=$TEST_IMAGE
+  TEST_POD_ANNOTATIONS=$TEST_POD_ANNOTATIONS
   TAA_ADDR=$TAA_ADDR
   TAA_PLATFORM_IP=$TAA_PLATFORM_IP
   TAA_DOCKER_ID=$TAA_DOCKER_ID
@@ -642,7 +651,7 @@ launch_remote() {
   require_cmd ssh
 
   echo "生成 Kata 配置并写入 $REMOTE"
-  remote_args="$(printf '%q ' "$REMOTE_BUNDLE_DIR" "$REMOTE_KATA_CONFIG_SRC" "$REMOTE_KATA_CONFIG" "$KATA_HYPERVISOR_SECTION" "$RUNTIME_HANDLER" "$RUNTIME_TYPE" "$RUNTIME_PATH" "$SNAPSHOTTER" "$RESTART_KUBELET" "$TEST_NODE_NAME" "$TEST_POD_NAME" "$TEST_IMAGE")"
+  remote_args="$(printf '%q ' "$REMOTE_BUNDLE_DIR" "$REMOTE_KATA_CONFIG_SRC" "$REMOTE_KATA_CONFIG" "$KATA_HYPERVISOR_SECTION" "$RUNTIME_HANDLER" "$RUNTIME_TYPE" "$RUNTIME_PATH" "$SNAPSHOTTER" "$RESTART_KUBELET" "$TEST_NODE_NAME" "$TEST_POD_NAME" "$TEST_IMAGE" "$TEST_POD_ANNOTATIONS")"
   ssh "$REMOTE" "bash -s -- $remote_args" <<'REMOTE_LAUNCH'
 set -euo pipefail
 bundle_dir="$1"
@@ -657,11 +666,12 @@ restart_kubelet="$9"
 test_node_name="${10}"
 test_pod_name="${11}"
 test_image="${12}"
+test_pod_annotations="${13}"
 containerd_config="/etc/containerd/config.toml"
 
 # 修改 Kata 或 containerd 配置前，先校验主机依赖和 bundle 路径。
 # containerd 配置要求是 TOML version 2，与远程 CSV 服务器上观察到的配置格式一致。
-for cmd in kubectl sudo grep ps python3 containerd hostname; do
+for cmd in kubectl sudo grep ps python3 containerd hostname cmp; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "error: $cmd is not installed or not in PATH" >&2
     exit 1
@@ -679,6 +689,13 @@ if [[ ! "$test_pod_name" =~ $k8s_name_re ]]; then
 fi
 if [[ "$test_image" == *$'\n'* || "$test_image" == *$'\r'* ]]; then
   echo "error: TEST_IMAGE must not contain newlines" >&2
+  exit 1
+fi
+# Validate the annotation JSON before any host config is touched, so a typo
+# cannot leave the runtime configured but the Pod uncreatable.
+if ! printf '%s' "$test_pod_annotations" |
+     python3 -c 'import json, sys; sys.exit(0 if isinstance(json.load(sys.stdin), dict) else 1)' 2>/dev/null; then
+  echo "error: TEST_POD_ANNOTATIONS must be a JSON object" >&2
   exit 1
 fi
 
@@ -999,35 +1016,43 @@ rollback_containerd() {
   fi
 }
 
-echo "重启 containerd"
+containerd_backup=""
+if sudo cmp -s "$tmp_containerd_config" "$containerd_config"; then
+  # The runtimes map is only read when containerd starts, so an unchanged config
+  # needs no restart -- and skipping it keeps the CRI up for the Pods that are
+  # already running on this host.
+  echo "containerd 配置未变化，跳过重启"
+else
+  echo "重启 containerd"
 
-# 重启 containerd；只有需要时才重启 kubelet。
-containerd_backup="$(mktemp /tmp/containerd-config.backup.XXXXXX.toml)"
-sudo cp -a "$containerd_config" "$containerd_backup"
-sudo install -o root -g root -m 0644 "$tmp_containerd_config" "$containerd_config"
-if ! sudo systemctl restart containerd; then
-  sudo journalctl -u containerd -n 50 --no-pager >&2 || true
-  rollback_containerd
-  echo "error: containerd restart failed; original config restored" >&2
-  exit 1
-fi
-if ! sudo systemctl is-active --quiet containerd; then
-  sudo journalctl -u containerd -n 50 --no-pager >&2 || true
-  rollback_containerd
-  echo "error: containerd is not active after restart; original config restored" >&2
-  exit 1
-fi
-if [[ "$restart_kubelet" == "1" ]]; then
-  echo "可选重启 kubelet"
-  sudo systemctl restart kubelet
-  if ! sudo systemctl is-active --quiet kubelet; then
-    sudo journalctl -u kubelet -n 50 --no-pager >&2 || true
-    echo "error: kubelet is not active after restart" >&2
+  # 重启 containerd；只有需要时才重启 kubelet。
+  containerd_backup="$(mktemp /tmp/containerd-config.backup.XXXXXX.toml)"
+  sudo cp -a "$containerd_config" "$containerd_backup"
+  sudo install -o root -g root -m 0644 "$tmp_containerd_config" "$containerd_config"
+  if ! sudo systemctl restart containerd; then
+    sudo journalctl -u containerd -n 50 --no-pager >&2 || true
+    rollback_containerd
+    echo "error: containerd restart failed; original config restored" >&2
     exit 1
   fi
+  if ! sudo systemctl is-active --quiet containerd; then
+    sudo journalctl -u containerd -n 50 --no-pager >&2 || true
+    rollback_containerd
+    echo "error: containerd is not active after restart; original config restored" >&2
+    exit 1
+  fi
+  if [[ "$restart_kubelet" == "1" ]]; then
+    echo "可选重启 kubelet"
+    sudo systemctl restart kubelet
+    if ! sudo systemctl is-active --quiet kubelet; then
+      sudo journalctl -u kubelet -n 50 --no-pager >&2 || true
+      echo "error: kubelet is not active after restart" >&2
+      exit 1
+    fi
+  fi
+  sudo rm -f "$containerd_backup"
+  containerd_backup=""
 fi
-sudo rm -f "$containerd_backup"
-containerd_backup=""
 
 echo "创建 RuntimeClass"
 
@@ -1047,14 +1072,18 @@ PY
 echo "创建测试 Pod"
 
 kubectl delete pod "$test_pod_name" --ignore-not-found --wait=true
-python3 - "$runtime_handler" "$test_pod_name" "$test_node_name" "$test_image" <<'PY' | kubectl apply -f -
+python3 - "$runtime_handler" "$test_pod_name" "$test_node_name" "$test_image" "$test_pod_annotations" <<'PY' | kubectl apply -f -
 import json
 import sys
-handler, pod_name, node_name, image = sys.argv[1:]
+handler, pod_name, node_name, image, annotations_json = sys.argv[1:]
+annotations = json.loads(annotations_json)
+metadata = {"name": pod_name}
+if annotations:
+    metadata["annotations"] = annotations
 print(json.dumps({
     "apiVersion": "v1",
     "kind": "Pod",
-    "metadata": {"name": pod_name},
+    "metadata": metadata,
     "spec": {
         "runtimeClassName": handler,
         "nodeName": node_name,
@@ -1070,7 +1099,14 @@ PY
 
 echo "等待测试 Pod Ready"
 
-kubectl wait --for=condition=Ready "pod/$test_pod_name" --timeout=180s
+# Print why it never became Ready: a bare wait timeout sends the reader back to
+# the host for the status the script already has in hand.
+if ! kubectl wait --for=condition=Ready "pod/$test_pod_name" --timeout=180s; then
+  echo "error: test Pod did not become Ready within 180s; status and events follow" >&2
+  kubectl get pod "$test_pod_name" -o wide >&2 || true
+  kubectl describe pod "$test_pod_name" 2>&1 | sed -n '/Events:/,$p' >&2 || true
+  exit 1
+fi
 kubectl get pod "$test_pod_name" -o wide
 
 # 最后的主机级校验：Pod Ready 只能证明 Kubernetes 接受了 RuntimeClass。
