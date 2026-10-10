@@ -263,7 +263,7 @@ All TAA APIs are exposed over HTTP `POST`. For comprehensive request/response sc
 | `/v1/taa/reportModelImport` | `POST` | Reports model download/import status, error messages, and SM3 checksum |
 | `/v1/taa/reportAudit` | `POST` | Reports code security audit status, risk statistics (`high`/`medium`/`low`), and report URL |
 | `/v1/taa/reportProgress` | `POST` | Periodically reports training progress percentage, message, and timestamp |
-| `/v1/taa/modelLog` | `POST` | Streams incremental, deduplicated training terminal execution logs (`train.jsonl`) |
+| `/v1/taa/modelLog` | `POST` | Streams incremental, deduplicated training terminal execution logs written by the model under `/opt/taa/output/log` |
 | `/v1/taa/taaLog` | `POST` | Streams incremental, deduplicated TAA internal operational logs with monotonic sequence IDs |
 | `/v1/taa/reportRes` | `POST` | Asynchronously reports final training/debugging results packaged as a zip archive |
 
@@ -314,7 +314,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
     "input": "/opt/taa/input",
     "output": {
       "result": "/opt/taa/output/result",
-      "log": "/opt/taa/output/log/train.jsonl",
+      "log": "/opt/taa/output/log",
       "progress": "/opt/taa/output/progress/progress.json"
     }
   },
@@ -354,7 +354,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `storage.keys` | `/opt/taa/keys` | Sensitive cryptographic key storage (restricted with `0700` permissions) |
 | `model.input` | `/opt/taa/input` | Read-only input dataset directory mounted for model training sandbox runtime |
 | `model.output.result` | `/opt/taa/output/result` | Target output directory for model training checkpoints and artifacts |
-| `model.output.log` | `/opt/taa/output/log/train.jsonl` | Model execution log file (or directory) monitored by log watcher (`modelLog`) |
+| `model.output.log` | `/opt/taa/output/log` | Model execution log directory (or file) monitored by log watcher (`modelLog`); every `*.log`/`*.jsonl` file in it is streamed |
 | `model.output.progress` | `/opt/taa/output/progress/progress.json` | Model progress file (or directory) monitored by progress watcher (`reportProgress`) |
 | `security.codeScan` | `true` | Master audit switch: enables the static rule-based security scan during model import |
 | `security.resultCheck.enabled` | `true` | Inspects exported files for unauthorized plaintext data leakage (accepts object or boolean) |

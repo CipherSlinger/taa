@@ -327,7 +327,7 @@ func defaultStartupConfig() StartupConfig {
 		ResultDir:                  "/opt/taa/results",
 		ModelInputDir:              "/opt/taa/input",
 		ModelOutputDir:             "/opt/taa/output/result",
-		ModelLogDir:                "/opt/taa/output/log/train.jsonl",
+		ModelLogDir:                "/opt/taa/output/log",
 		ModelProgressDir:           "/opt/taa/output/progress/progress.json",
 		ModelCheckpointDir:         "/opt/taa/checkpoint",
 		KeysDir:                    "/opt/taa/keys",

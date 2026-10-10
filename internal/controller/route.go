@@ -41,7 +41,7 @@ type SecurityConfig struct {
 	MaxResultBytes     int64                  // Backward-compatible alias for MaxFileBytes
 	ModelInputDir      string                 // 模型数据输入目录（缺省 /opt/taa/input）
 	ModelOutputDir     string                 // 模型结果输出目录（缺省 /opt/taa/output/result）
-	ModelLogDir        string                 // Model log file or directory path (default /opt/taa/output/log/train.jsonl)
+	ModelLogDir        string                 // Model log file or directory path (default /opt/taa/output/log)
 	ModelProgressDir   string                 // Model progress file or directory path (default /opt/taa/output/progress/progress.json)
 	ModelCheckpointDir string                 // Model checkpoint directory (default /opt/taa/checkpoint)
 	LLM                codeaudit.LLMConfig    // 本地 LLM 语义验证配置
@@ -50,7 +50,7 @@ type SecurityConfig struct {
 const (
 	DefaultModelInputDir      = "/opt/taa/input"
 	DefaultModelOutputDir     = "/opt/taa/output/result"
-	DefaultModelLogDir        = "/opt/taa/output/log/train.jsonl"
+	DefaultModelLogDir        = "/opt/taa/output/log"
 	DefaultModelProgressDir   = "/opt/taa/output/progress/progress.json"
 	DefaultModelCheckpointDir = "/opt/taa/checkpoint"
 )

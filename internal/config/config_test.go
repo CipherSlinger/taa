@@ -115,7 +115,7 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if cfg.ModelOutputDir != "/opt/taa/output/result" {
 		t.Fatalf("ModelOutputDir = %q, want default", cfg.ModelOutputDir)
 	}
-	if cfg.ModelLogDir != "/opt/taa/output/log/train.jsonl" {
+	if cfg.ModelLogDir != "/opt/taa/output/log" {
 		t.Fatalf("ModelLogDir = %q, want default", cfg.ModelLogDir)
 	}
 	if cfg.ModelProgressDir != "/opt/taa/output/progress/progress.json" {
@@ -411,7 +411,7 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantMaxResultBytes:     3221225472,
 			wantModelInputDir:      "/opt/taa/input",
 			wantModelOutputDir:     "/opt/taa/output/result",
-			wantModelLogDir:        "/opt/taa/output/log/train.jsonl",
+			wantModelLogDir:        "/opt/taa/output/log",
 			wantModelProgressDir:   "/opt/taa/output/progress/progress.json",
 			wantModelCheckpointDir: "/opt/taa/checkpoint",
 			wantSecurityScan:       true,
@@ -431,7 +431,7 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantMaxResultBytes:     3221225472,
 			wantModelInputDir:      "/opt/taa/input",
 			wantModelOutputDir:     "/opt/taa/output/result",
-			wantModelLogDir:        "/opt/taa/output/log/train.jsonl",
+			wantModelLogDir:        "/opt/taa/output/log",
 			wantModelProgressDir:   "/opt/taa/output/progress/progress.json",
 			wantModelCheckpointDir: "/opt/taa/checkpoint",
 			wantSecurityScan:       true,
