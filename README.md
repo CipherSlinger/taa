@@ -152,7 +152,6 @@ flowchart TB
 │   ├── controller/                   # HTTP routing, state machine, import/export/attestation APIs
 │   ├── attestation/                  # CSV attestation report parsing & certificate chain validation
 │   ├── codeaudit/                    # Two-tier security audit: static rule scanner + TEE-LLM client
-│   ├── coordinator/                  # Phase state machine and execution coordinator
 │   ├── runtime/                      # Subprocess execution sandbox, process groups & output reader
 │   ├── resource/                     # Resource package decompression, verification & file tree
 │   ├── platform/                     # Unified HTTP client for platform callbacks

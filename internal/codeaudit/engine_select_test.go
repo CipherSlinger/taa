@@ -60,7 +60,7 @@ func TestNewEngineReturnsTheNamedEngine(t *testing.T) {
 
 // TestNewEngineRejectsUnknownEngineName is the last line of defence behind the
 // config whitelist. The config layer rejects an unknown name too, but a caller
-// that skips the config — the coordinator, a future entry point — must not get a
+// that builds an EngineConfig by hand and skips the whitelist must not get a
 // silent regex scan back. Falling back here is the failure mode the whole
 // selector exists to prevent: the scan runs, the report is honest, and nobody
 // notices the configured engine was never used.
@@ -281,8 +281,8 @@ func TestNewEngineIgnoresAScanTimeoutForTheRegexEngine(t *testing.T) {
 // TestGenerateAuditReportRejectsAMissingEngine pins that an unset engine is a
 // configuration error rather than a scan with no engine, which in Go would be a
 // nil interface and a panic somewhere below. A caller that never got a valid
-// selection — the coordinator's SecurityConfig can be built without one — has to
-// be told, and the import has to fail closed, which is what an error does here.
+// selection — an engine left unset in a hand-built config — has to be told, and
+// the import has to fail closed, which is what an error does here.
 func TestGenerateAuditReportRejectsAMissingEngine(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir, "train.py", "import os\n")
