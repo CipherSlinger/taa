@@ -159,3 +159,80 @@ docker run -d --name teellm-portproxy --restart unless-stopped \
 - **依赖闭包可裁剪**：`mcp`/`opentelemetry-*`/`uvicorn`/`starlette`/`pydantic` 这批是 semgrep 的 MCP 子命令带的，
   预计能省 ~20–30 MiB（压缩后）。默认**不裁**（与 docker 臂逐包保真，可复现同一次判定）；
   若要省，需实测裁剪后 `semgrep scan` 仍 exit 0。
+
+---
+
+## 实测结果（2026-10-10 完成）
+
+### 尺寸（用户指令 3 要报的数）
+
+| | 加 semgrep 前 | 加 semgrep 后 | 倍数 |
+| :--- | ---: | ---: | ---: |
+| initrd（gzip -9，落盘） | 68,222,611 B（65.1 MiB） | **160,071,959 B（152.7 MiB）** | 2.35× |
+| 解包后（= guest rootfs，常驻 guest 内存） | 152,186,368 B（145.1 MiB） | **524,587,520 B（500.3 MiB）** | +355.1 MiB |
+
+- 追加条目 4250（其中 semgrep 载荷 3329 条），cpio 条目 4682(base) + 4250 = 8932 ✓ 不变式通过。
+- 载荷未压缩 346M / 4243 文件：python3.10 运行时 18M + pylib 319M（其中 `semgrep-core` 单文件 245M）
+  + 补入 base 缺失的 8 个动态库（libstdc++/libcurl/libdw/libev/libnghttp2/libtree-sitter/libunwind）。
+- 产物 sha256 前缀 `d412ee3586fb821c`；`.entries` 完整清单 4250 行。
+
+### 实现期发现的两处设计更正（都已改在脚本里）
+
+1. **不能用 `zipfile.extractall` 解 wheel**：semgrep 的 wheel 把整个 Python 包放在 scheme 目录
+   `semgrep-1.177.0.data/purelib/` 下（要合并到安装根），而且 `semgrep-core` 的可执行位要靠 zip 条目的
+   external attributes 恢复（pip 会做，`zipfile` 不会）。手写解包的结果是 pylib 看着非空、实际没有
+   `semgrep` 包。改为在同一个 jammy 容器里 `python3.10 -m pip install --no-index --no-deps --no-compile
+   --target` 装。
+2. **PATH 上要放两个入口，不是一个**：`pylib/bin/semgrep` 会在 OCaml CLI 与 Python CLI 之间分派，OCaml CLI
+   回退时按名字找 `pysemgrep`（`entrypoint.py` 为此把 `sysconfig` 的 scripts 目录追加进 PATH，本 rootfs 上
+   就是 `/usr/local/bin`）。只放 `semgrep` 的报错是 `Unix_error: execvp pysemgrep`。
+   故 `/usr/local/bin/{semgrep,pysemgrep}` 各一个 wrapper（都 pin `PYTHONPATH=/opt/taa/semgrep/pylib`）。
+
+### 本机验证（不需要真机）
+
+`deploy/guest-build/test-semgrep-payload.sh`（新增，入库）：把 base initrd 解包、叠加载荷、`docker import`
+成镜像，在**该 rootfs 内**跑 `semgrep --version`（1.177.0）与一次真实扫描，再与运行中的 docker 臂
+（`taa-env-slim-v2`）对同一份样本比较 findings。结果：**两臂 findings 完全一致（4 条，规则名+文件+行号）**。
+说明：臂的 semgrep 只在容器可写层（`deploy-docker.sh` 运行时装的），所以对照必须走 `docker exec` 而不是
+`docker run` 新容器。
+
+注：容器化的 rootfs 里 `/dev` 由 docker 自己挂，故导入镜像前删掉 base 的 `dev/`；解包必须在 root 容器里做
+（base 带 ~250 个设备节点，非 root cpio 建不出来且返回非零）。
+
+### 第三处设计更正：LLM 启动探针必须只告警不致命（**一处 Go 改动**）
+
+计划原本写「不改任何 Go 代码」，实际必须改一处。开 `llm.enabled=true` 后首次 `launch` 卡在
+`ContainerCreating`：`Failed to create pod sandbox: … timed out connecting to vsock …`。
+从 VM 的 `console.sock` 抓 guest 控制台，拿到的是决定性的证据：
+
+```
+taa-init: created /dev/csv-guest (10, 257)
+taa-init: TAA exited immediately
+ERROR: inference service connectivity probe failed after 738ms: … dial tcp
+       172.16.10.116:8443: connect: network is unreachable
+[TAA-FATAL] probe inference service (fail-closed): …
+taa-init: TAA_REQUIRED=1; not starting kata-agent
+```
+
+即 `failClosed=true` 的**启动期**探针在 initrd 里结构上不可满足：guest 网卡由 kata-agent 配，
+而 wrapper 只在 TAA 起来之后才 `exec /sbin/init`（§4.1 的启动顺序）。TAA 一退出，wrapper 按
+`TAA_REQUIRED=1` 拒绝交出 PID 1，沙箱永远建不出来。这与 §7 第 4 条预测的注册失败是同一个根因，
+只是注册那条只是 warning、这条是致命的。
+
+处理（`internal/app/taa/app.go`）：启动探针改为**只告警**；`failClosed` 的承重位置不变，仍是
+审计前的那次探测（`internal/controller/import_processing.go:633`，网络已就绪，不可用就拒导入）。
+配套把 `TestRunWithConfig_LLMProbeFailClosed` 换成
+`TestRunWithConfig_LLMProbeFailureDoesNotAbortStartup`（用「keys 目录指到一个普通文件」让后续步骤
+确定性失败，从而证明探针之后控制流还在）。**不要**用 `llm.failClosed=false` 绕过——那会连审计期的
+fail-closed 一起关掉。
+
+### 第四处：initrd 里烘焙的注册身份必须与本次部署一致（驱动侧新增检查）
+
+第二次 `launch` 后 pod Ready、attestation 通过，但平台始终收不到注册。原因：`build` 与 `deploy`
+是两次独立调用，我这次 `build` 时没带 `TAA_PLATFORM_IP`，于是 initrd 里烘焙的是默认值
+`PLATFORM_IP=172.16.10.116:18080`；deploy/launch 却按 `172.16.10.178:18081` 走。
+guest 内的 TAA 只认 initrd 里那份，**本地完全无症状**（pod Ready、证明为真、只是注册去了别处）。
+
+处理：`deploy-taa-vm.sh` 新增 `check_initrd_identity()`，在 deploy/launch 的 preflight 里解出
+initrd 内的 `etc/default/taa.env`，与本次调用解析出的 `TAA_PLATFORM_IP`/`TAA_DOCKER_ID` 逐字比较，
+不一致就带着「重新构建」的命令行直接失败（实测能拦住，且发生在任何上传之前）。

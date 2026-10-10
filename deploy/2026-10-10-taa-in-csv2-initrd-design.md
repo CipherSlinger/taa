@@ -198,6 +198,10 @@ v1 的 `set -eu` + 新增 mknod 正是这条铁律的反面教材。
 `exec /sbin/init` **不修改**：`sbin -> usr/sbin` 是符号链接，这条本来就对，落地即 kata-agent。
 `TAA_REQUIRED=1`（默认）时 TAA 起不来就死循环、pod 不 Ready——这是有意的 fail-closed。
 
+**推论（2026-10-10 踩到，见 §7 第 4 条）**：这条启动顺序决定了"任何以网络可达为前提的启动期
+硬闸门都不可满足"——guest 的地址由 kata-agent 配，而 kata-agent 排在 TAA 之后。TAA 里凡是
+开机就要出网的判断（平台注册、LLM 连通性探针）都只能是**告警 + 后台重试**，不能是致命错误。
+
 ### 4.2 注入清单（6 个文件 + 2 个新目录）
 
 | 路径 | 来源 | 缺失后果 |
@@ -539,7 +543,9 @@ handler，空的 `io.katacontainers.config.hypervisor.kernel_params` 会**覆盖
 
 - **不做 DCU 透传**。本轮用 `kata-qemu-csv2`（非 DCU handler），**完全不碰那张卡**，
   因此前序 spec 记录的"不复位换手"缺陷不阻塞本设计。
-- 不把 LLM 扫描放进 VM（用户已明确后续分开部署）。
+- 不把 LLM 扫描放进 VM（用户已明确后续分开部署）。（**2026-10-10 同日已落地**：semgrep 1.177.0 随 TAA
+  打进 initrd（+346 MiB 未压缩、压缩后 initrd 65.1 → 152.7 MiB），`configs/taa-initrd.json` 的
+  `llm.enabled` 打开并指向 116 的 teellm。见 `.claude/plans/2026-10-10-kata-guest-semgrep-llm-in-initrd.md`。）
 - 不改 `pkg/csvattest`、不改 `internal/app/taa`、不改 `configs/taa-production.json`。
 - 不做路线 B（`csv2-vm.sh`）——那是本设计完成后的下一轮。
 - 不把 `:6001` 暴露到集群外（NodePort/Service 另议）。
@@ -562,11 +568,34 @@ handler，空的 `io.katacontainers.config.hypervisor.kernel_params` 会**覆盖
    （wrapper 阶段只有内核自己枚举到的 virtio 设备，没有地址）。因此**注册大概率失败**，
    现象只是 `WARNING: platform register failed`（app.go:136）。本轮验收不要求注册；
    若后续要求，把起 TAA 的时机改到"轮询到默认路由"之后（`/proc/net/route`，有界等待）。
-   此条为推理，未实测。
+
+   **2026-10-10 实测与关闭**：这条预测成立，而且**同一个原因还有第二个受害者**。
+   ①注册：已改为后台退避重试（faabe83），真机上实测收到注册。②LLM 启动探针：开
+   `llm.enabled=true` 后首次 `launch` 卡在 `ContainerCreating`，报
+   `Failed to create pod sandbox: ... timed out connecting to vsock ...`。从 VM 的
+   `console.sock` 抓到的 guest 控制台是决定性的：
+
+   ```
+   taa-init: created /dev/csv-guest (10, 257)
+   taa-init: TAA exited immediately
+   ERROR: inference service connectivity probe failed after 738ms: ... dial tcp
+          172.16.10.116:8443: connect: network is unreachable
+   [TAA-FATAL] probe inference service (fail-closed): ...
+   taa-init: TAA_REQUIRED=1; not starting kata-agent
+   ```
+
+   即 `failClosed=true` 的启动探针在 initrd 里**结构上不可能满足**：网卡要 kata-agent 配，
+   而 wrapper 只在 TAA 起来之后才 `exec /sbin/init`。于是 TAA 退出 → wrapper 拒绝交出 PID 1
+   → 沙箱永远建不出来。处理：`app.go` 的启动探针改为**只告警不致命**（`failClosed` 的承重位置
+   是审计前的那次探测，`import_processing.go:633`，网络已就绪且仍然拒导入），并新增
+   `TestRunWithConfig_LLMProbeFailureDoesNotAbortStartup` 钉住这条契约。**不要**用
+   `llm.failClosed=false` 绕过——那会同时关掉审计期的 fail-closed。
 5. **`fetch-base` 之后 base 与宿主再次漂移**——这是把资产移出 git 的固有代价，由
    "每次 build 打印 SHA + 条目数"与 `gzip -t` 自检来暴露。
 6. **`regex` 引擎与生产 `semgrep` 不同**——本轮只要求 TAA 起来并出证明，不要求扫描等价。
-   扫描能力的等价性属于另一条线（见 semgrep 相关 spec）。
+   扫描能力的等价性属于另一条线（见 semgrep 相关 spec）。**（2026-10-10 同日关闭）**：initrd 现已带
+   semgrep 1.177.0，等价性由新增的 `deploy/guest-build/test-semgrep-payload.sh` 在 guest rootfs 内实测：
+   与 docker 臂对同一份样本的 findings 逐条一致（规则名 + 文件 + 行号）。
 7. **历史里的假产物仍可被 checkout 出来**（`out/` 从 git 移除后，旧提交里那份 = base 的复制品
    还在）——在 `build-initrd.sh` 文件头点名，避免后来者把它当成真的构建产物。
 8. ~~**v1 那套 `init=` 是否曾经生效过**~~ —— **已关闭（2026-10-10 真机）**：`/init` 存在（§0），
