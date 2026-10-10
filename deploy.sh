@@ -170,13 +170,39 @@ CUSTOM_BASE_ARCHIVE=""
 CUSTOM_BASE_IMAGE=""
 CUSTOM_SAVE_CONFIG=""
 LOCAL_DOCKER_NETWORK="${LOCAL_DOCKER_NETWORK:-host}"
-# TEE-LLM gateway endpoint baked into taa's config. Defaults to loopback, which holds when the
-# gateway shares taa's network namespace. When it runs in its own container, pass that
-# container's address instead (e.g. TAA_LLM_ENDPOINT=https://10.0.0.2:8443).
-TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-https://127.0.0.1:8443}"
+# TEE-LLM gateway endpoint baked into taa's config. The gateway either shares taa's network
+# namespace (loopback) or runs in its own container (reached by container IP), so local docker
+# deploys discover it via resolve_llm_endpoint below instead of assuming loopback. Set
+# TAA_LLM_ENDPOINT to pin it explicitly (e.g. https://10.0.0.2:8443); that also covers the
+# remote deploy path, which cannot discover a container it does not run.
+TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-}"
+TAA_TEELLM_CONTAINER="${TAA_TEELLM_CONTAINER:-taa-teellm}"
+TAA_TEELLM_PORT="${TAA_TEELLM_PORT:-8443}"
 LOCAL_DOCKER_INPUT_DIR="${LOCAL_DOCKER_INPUT_DIR:-/opt/taa/input}"
 LOCAL_DOCKER_OUTPUT_DIR="${LOCAL_DOCKER_OUTPUT_DIR:-/opt/taa/output}"
 SAVE_CLEAN="${SAVE_CLEAN:-false}"
+
+# Resolve the TEE-LLM gateway endpoint for local docker deploys. An explicit TAA_LLM_ENDPOINT
+# wins. Otherwise, if the teellm container is running, use its address: the gateway has its own
+# container by default (see teellm/deploy.sh), and taa reaches it by container IP. Fall back to
+# loopback, which is correct when the gateway shares taa's network namespace -- a host-networked
+# teellm container reports no IP and lands here too.
+resolve_llm_endpoint() {
+  if [[ -n "$TAA_LLM_ENDPOINT" ]]; then
+    printf '%s' "$TAA_LLM_ENDPOINT"
+    return 0
+  fi
+  local teellm_ip=""
+  if command -v docker >/dev/null 2>&1; then
+    teellm_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+      "$TAA_TEELLM_CONTAINER" 2>/dev/null || true)"
+  fi
+  if [[ -n "$teellm_ip" ]]; then
+    printf 'https://%s:%s' "$teellm_ip" "$TAA_TEELLM_PORT"
+    return 0
+  fi
+  printf 'https://127.0.0.1:%s' "$TAA_TEELLM_PORT"
+}
 
 banner() {
   local title="$1"
@@ -476,7 +502,7 @@ save_local_docker_image() {
   write_taa_config "$prod_config_source" "$prod_config_template" \
     ":6001" "" "" "" \
     "/root/taa/models" "/root/taa/data" "/root/taa/results" \
-    "$TAA_LLM_ENDPOINT" "$target_model" \
+    "$(resolve_llm_endpoint)" "$target_model" \
     false "/opt/taa/input" "/opt/taa/output" "/opt/taa/keys"
   info "production config prepared for image (model: $target_model)"
 
@@ -1397,7 +1423,9 @@ deploy_docker_taa() {
   TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
   step "writing taa config for docker from $(basename "$TAA_CONFIG_TEMPLATE")"
   ensure_parent_dir "$LOCAL_DOCKER_CONFIG_SOURCE"
-  local target_llm_endpoint="$TAA_LLM_ENDPOINT"
+  local target_llm_endpoint
+  target_llm_endpoint="$(resolve_llm_endpoint)"
+  info "taa llm endpoint: $target_llm_endpoint"
   write_taa_config "$LOCAL_DOCKER_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" \
     "$TAA_CONTAINER_ADDR" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_CONTAINER" "$CONTRACT" \
     "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" \
@@ -1537,7 +1565,7 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   write_taa_config "$REMOTE_TAA_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" \
     "$TAA_CONTAINER_ADDR" "$REMOTE_PLATFORM_IP" "$REMOTE_DOCKER_ID" "$CONTRACT" \
     "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" \
-    "$TAA_LLM_ENDPOINT" "$TARGET_MODEL" "$INCLUDE_TAA_IDENTITY" "" "" "$TAA_CONTAINER_WORKDIR/keys"
+    "${TAA_LLM_ENDPOINT:-https://127.0.0.1:8443}" "$TARGET_MODEL" "$INCLUDE_TAA_IDENTITY" "" "" "$TAA_CONTAINER_WORKDIR/keys"
 
   step "uploading taa, config, and certificates to remote host"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TAA_BINARY_PATH" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/$BINARY_NAME.new"
