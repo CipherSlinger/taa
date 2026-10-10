@@ -4,36 +4,89 @@
 # 只向归档末尾追加少量新文件。不要完整解包再重新打包 base initrd，
 # 因为其中包含设备节点；普通用户解包设备节点可能失败，并导致 /dev/console
 # 等原始条目被静默丢失。
+#
+# Two traps, both promoted to hard build-time checks:
+#   1. The base initrd must be the real one from the host. The copy that lived in
+#      this repo was silently truncated (incomplete gzip stream, `cpio -t` stopped
+#      at 265 entries without reporting an error). `check_build_inputs` therefore
+#      enforces `gzip -t` and refuses it; use `fetch-base` to pull the real one.
+#      For the same reason the historical out/kata-containers-initrd-taa-csv.initrd
+#      had a git blob identical to the base: it was a copy, not a build product.
+#   2. The injected TAA must be statically linked. The base initrd has no glibc, so
+#      a dynamically linked binary cannot start. bin/taa used to be dynamic, which
+#      disagreed with the CGO_ENABLED=0 used by the production image.
 set -euo pipefail
 
 # 流程：先 build，再按需 deploy 和 launch，最后校验 Ready 和 QEMU initrd。
 
 # 按脚本所在目录解析路径，这样从任意工作目录执行脚本都能得到一致结果。
-# ROOT_DIR 是仓库根目录，SCRIPT_DIR 是 guest-build/ 目录。
+# SCRIPT_DIR 是 deploy/guest-build，ROOT_DIR 是仓库根（再上两级）。
+#
+# 这里曾经写的是 $SCRIPT_DIR/.. ——那时 guest-build/ 就在仓库根下，恰好对；
+# 它搬到 deploy/ 之后，ROOT_DIR 变成 deploy/，于是 TAA_SRC、配置与证书的默认值
+# 全部指向不存在的路径（表现为"缺 build input"，而不是"路径写错了"）。
+# 因此下面加一条断言：解析不出仓库根就当场报错，不再静默用错误默认值。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+if [[ ! -f "$ROOT_DIR/go.mod" ]]; then
+  echo "error: repository root not found from $SCRIPT_DIR (no go.mod in $ROOT_DIR)" >&2
+  echo "hint: override TAA_SRC / TAA_CONFIG_SRC / TAA_HRK_CERT_SRC / TAA_HSK_CEK_CERT_SRC explicitly" >&2
+  exit 1
+fi
 
-# 本地构建输入和输出。TAA 使用纯 Go 原生实现远程证明，无需注入外部 helper。
-# BASE_INITRD 必须是远程原始 Kata CSV initrd，不能是已经注入过 TAA 的输出文件；
-# 否则再次追加会产生重复 payload 路径，并以不可控方式改变启动度量。
-TAA_SRC="$ROOT_DIR/bin/taa"
-BASE_INITRD="$SCRIPT_DIR/base/kata-containers-initrd-confidential-csv.img"
-OUT_DIR="$SCRIPT_DIR/out"
-INITRD_OUT="$OUT_DIR/kata-containers-initrd-taa-csv.initrd"
+# Local build inputs and outputs. TAA implements remote attestation natively in
+# Go, so no external helper is injected.
+# BASE_INITRD must be the original remote Kata CSV initrd, never an
+# already-injected output file: appending twice would produce duplicate payload
+# paths and change the boot measurement in an uncontrolled way.
+#
+# These paths are all environment-overridable: it makes it easy to point at a
+# real archive kept elsewhere, and it lets the whole build path run end to end
+# locally against a small synthetic archive, so the build-time self-checks are
+# themselves testable.
+TAA_SRC="${TAA_SRC:-$ROOT_DIR/bin/taa}"
+TAA_INIT_SRC="${TAA_INIT_SRC:-$SCRIPT_DIR/taa-init.sh}"
+TAA_CONFIG_SRC="${TAA_CONFIG_SRC:-$ROOT_DIR/configs/taa-initrd.json}"
+TAA_HRK_CERT_SRC="${TAA_HRK_CERT_SRC:-$ROOT_DIR/deploy/certs/hrk.cert}"
+TAA_HSK_CEK_CERT_SRC="${TAA_HSK_CEK_CERT_SRC:-$ROOT_DIR/deploy/certs/hsk_cek.cert}"
+BASE_INITRD="${BASE_INITRD:-$SCRIPT_DIR/base/kata-containers-initrd-confidential-csv.img}"
+OUT_DIR="${OUT_DIR:-$SCRIPT_DIR/out}"
+INITRD_OUT="${INITRD_OUT:-$OUT_DIR/kata-containers-initrd-taa-csv.initrd}"
 
-# 写入 init wrapper 的运行时配置。TAA_ADDR 有默认值；PLATFORM_IP 和
-# DOCKER_ID 在构建时是可选的，因为部分调试场景只需要生成镜像。
-# 但 deploy/all 默认会要求 initrd 中已注入 /etc/default/taa.env，避免远程拉起后
-# TAA 因缺少注册身份而被跳过。TAA_REQUIRED=1 时，如果 TAA 缺少必要环境或
-# 启动后立刻退出，wrapper 不会继续启动 kata-agent，从而让 Pod Ready 校验失败。
-TAA_ADDR="${TAA_ADDR:-0.0.0.0:6001}"
+# Runtime configuration written into the init wrapper. These defaults must stay
+# in sync with the literal defaults in taa-init.sh: the wrapper is a standalone
+# file now (no heredoc, which needed dozens of escaped variables), and build-time
+# overrides reach it through /etc/default/taa.env.
+# PLATFORM_IP and DOCKER_ID are optional at build time: they only affect
+# registration with the management platform, and a failed registration is just a
+# warning inside TAA. deploy/all still require the env file by default, because
+# the production flow wants registration to succeed.
+# With TAA_REQUIRED=1, a TAA that fails to start or fails attestation keeps
+# kata-agent from starting, so the Pod stays NotReady.
+TAA_ADDR_DEFAULT="0.0.0.0:6001"
+TAA_REQUIRED_DEFAULT="1"
+TAA_REQUIRE_ATTESTATION_DEFAULT="1"
+
+TAA_ADDR="${TAA_ADDR:-$TAA_ADDR_DEFAULT}"
 TAA_PLATFORM_IP="${TAA_PLATFORM_IP:-}"
 TAA_DOCKER_ID="${TAA_DOCKER_ID:-}"
-TAA_REQUIRED="${TAA_REQUIRED:-1}"
+TAA_REQUIRED="${TAA_REQUIRED:-$TAA_REQUIRED_DEFAULT}"
+# 1 = only release kata-agent once TAA has self-verified its report, which makes
+# "the attestation is real" a precondition for the Pod reaching Ready.
+TAA_REQUIRE_ATTESTATION="${TAA_REQUIRE_ATTESTATION:-$TAA_REQUIRE_ATTESTATION_DEFAULT}"
 ALLOW_MISSING_TAA_ENV="${ALLOW_MISSING_TAA_ENV:-0}"
 
+# The env file carries every runtime switch of the wrapper. It has to be written
+# as soon as a registration identity is given, or any switch is explicitly moved
+# off its default; otherwise a build-time override would silently do nothing.
 taa_env_file_needed() {
-  [[ -n "$TAA_PLATFORM_IP" && -n "$TAA_DOCKER_ID" ]]
+  if [[ -n "$TAA_PLATFORM_IP" && -n "$TAA_DOCKER_ID" ]]; then
+    return 0
+  fi
+  [[ "$TAA_ADDR" != "$TAA_ADDR_DEFAULT" ]] && return 0
+  [[ "$TAA_REQUIRED" != "$TAA_REQUIRED_DEFAULT" ]] && return 0
+  [[ "$TAA_REQUIRE_ATTESTATION" != "$TAA_REQUIRE_ATTESTATION_DEFAULT" ]] && return 0
+  return 1
 }
 
 # 当前海光 CSV 测试主机的远程部署默认值。所有值都可通过环境变量覆盖，
@@ -62,13 +115,14 @@ SKIP_REMOTE_BASE_CHECK="${SKIP_REMOTE_BASE_CHECK:-0}"
 # 因此本地反复调试是安全的；只有显式指定 deploy、launch 或 all 时才会触碰远程服务器。
 usage() {
   cat <<EOF
-Usage: $0 [build|deploy|launch|all]
+Usage: $0 [build|fetch-base|deploy|launch|all]
 
 Commands:
-  build   Build $INITRD_OUT from $BASE_INITRD and inject TAA + init wrapper.
-  deploy  Upload the built initrd to $REMOTE and install the remote Kata guest bundle.
-  launch  Configure Kata/containerd RuntimeClass on $REMOTE and create a test Pod.
-  all     Run build, deploy, then launch.
+  build       Build $INITRD_OUT from $BASE_INITRD and inject TAA + init wrapper.
+  fetch-base  Copy the real base initrd, kernel and OVMF from $REMOTE into $(basename "$SCRIPT_DIR")/base/.
+  deploy      Upload the built initrd to $REMOTE and install the remote Kata guest bundle.
+  launch      Configure Kata/containerd RuntimeClass on $REMOTE and create a test Pod.
+  all         Run build, deploy, then launch.
 
 Environment overrides:
   REMOTE_USER=$REMOTE_USER
@@ -92,11 +146,27 @@ Environment overrides:
   TAA_PLATFORM_IP=$TAA_PLATFORM_IP
   TAA_DOCKER_ID=$TAA_DOCKER_ID
   TAA_REQUIRED=$TAA_REQUIRED
+  TAA_REQUIRE_ATTESTATION=$TAA_REQUIRE_ATTESTATION
   ALLOW_MISSING_TAA_ENV=$ALLOW_MISSING_TAA_ENV
   SKIP_REMOTE_BASE_CHECK=$SKIP_REMOTE_BASE_CHECK
 
-Note: TAA starts only when PLATFORM_IP and DOCKER_ID are provided. Set
-TAA_PLATFORM_IP and TAA_DOCKER_ID to generate /etc/default/taa.env in initrd.
+Local input/output overrides (mainly for testing the build path against a
+synthetic archive):
+  BASE_INITRD=$BASE_INITRD
+  INITRD_OUT=$INITRD_OUT
+  TAA_SRC=$TAA_SRC
+  TAA_INIT_SRC=$TAA_INIT_SRC
+  TAA_CONFIG_SRC=$TAA_CONFIG_SRC
+
+Notes:
+  TAA starts whenever /etc/taa/taa-config.json is readable: the config is a hard
+  dependency (TAA exits 1 without it). PLATFORM_IP and DOCKER_ID are optional and
+  only affect platform registration, which is a warning inside TAA. Set both to
+  have /etc/default/taa.env carry them.
+  TAA_REQUIRE_ATTESTATION=1 makes the TAA attestation self-verification a
+  precondition for starting kata-agent, so a Ready Pod implies a real report.
+  The injected TAA must be statically linked; build it with
+  CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa
 EOF
 }
 
@@ -111,7 +181,7 @@ require_cmd() {
 
 # gzip 压缩 initrd 的条目清单生成与匹配。
 # archive_has_entry 处理单次存在性检查；archive_manifest 把归档展开成一次性的清单，后续可复用。
-# manifest_has_entry 和 manifest_print_entry 只在清单上做精确匹配。
+# manifest_has_entry 只在清单上做精确匹配。
 archive_has_entry() {
   local img="$1"
   local entry="$2"
@@ -130,27 +200,51 @@ manifest_has_entry() {
   grep -Fxq -- "$entry" "$manifest"
 }
 
-manifest_print_entry() {
-  local manifest="$1"
-  local entry="$2"
-  grep -Fx -- "$entry" "$manifest"
-}
-
-# 创建临时状态前先校验所有本地构建输入。TAA 需要 PLATFORM_IP 和 DOCKER_ID
-# 成对出现：只给其中一个会导致注册 USERDATA 与平台通知上下文不一致，
-# 因此脚本会拒绝这种不完整配置。
+# Validate every local build input before any temporary state is created.
+# TAA needs PLATFORM_IP and DOCKER_ID to appear as a pair: supplying only one
+# leaves the registration USERDATA inconsistent with the platform notify
+# context, so the script refuses that incomplete configuration.
 check_build_inputs() {
   if [[ ! -x "$TAA_SRC" ]]; then
     echo "error: missing executable TAA binary: $TAA_SRC" >&2
-    echo "hint: run 'make taa' from the repository root first" >&2
+    echo "hint: build one from the repository root: CGO_ENABLED=0 go build -o bin/taa ./cmd/taa" >&2
+    exit 1
+  fi
+
+  # The base initrd has no glibc, so a dynamically linked TAA cannot start. It
+  # would not fail the build, only the boot -- long after the measurement has
+  # been taken -- so it is asserted here instead.
+  local taa_file_type
+  taa_file_type="$(file -b "$TAA_SRC" 2>/dev/null || true)"
+  if [[ "$taa_file_type" != *"statically linked"* ]]; then
+    echo "error: TAA binary is not statically linked: $TAA_SRC" >&2
+    echo "       file says: ${taa_file_type:-<file(1) produced no output>}" >&2
+    echo "hint: rebuild with CGO_ENABLED=0 go build -o bin/taa ./cmd/taa" >&2
     exit 1
   fi
 
   if [[ ! -f "$BASE_INITRD" ]]; then
     echo "error: missing base Kata CSV initrd: $BASE_INITRD" >&2
-    echo "hint: place kata-containers-initrd-confidential-csv.img under guest-build/base/" >&2
+    echo "hint: place kata-containers-initrd-confidential-csv.img under guest-build/base/, or run '$0 fetch-base'" >&2
     exit 1
   fi
+
+  # A cpio append into a truncated gzip stream fails silently: the archive is
+  # still readable up to the truncation point, so the build would succeed while
+  # producing an initrd that lost its tail. Verify the stream first.
+  if ! gzip -t "$BASE_INITRD" 2>/dev/null; then
+    echo "error: base initrd is not a valid gzip stream (truncated?): $BASE_INITRD" >&2
+    echo "hint: run '$0 fetch-base' to copy the real one from $REMOTE" >&2
+    exit 1
+  fi
+
+  local input
+  for input in "$TAA_INIT_SRC" "$TAA_CONFIG_SRC" "$TAA_HRK_CERT_SRC" "$TAA_HSK_CEK_CERT_SRC"; do
+    if [[ ! -f "$input" ]]; then
+      echo "error: missing build input: $input" >&2
+      exit 1
+    fi
+  done
 
   if { [[ -n "$TAA_PLATFORM_IP" ]] && [[ -z "$TAA_DOCKER_ID" ]]; } || { [[ -z "$TAA_PLATFORM_IP" ]] && [[ -n "$TAA_DOCKER_ID" ]]; }; then
     echo "error: TAA_PLATFORM_IP and TAA_DOCKER_ID must be set together" >&2
@@ -172,11 +266,13 @@ check_deploy_inputs() {
 # 临时 cpio 文件，追加 TAA payload 文件，校验候选归档，然后才移动到 INITRD_OUT。
 build_initrd() {
   echo "校验输入"
-  check_build_inputs
   require_cmd gzip
   require_cmd cpio
   require_cmd install
   require_cmd grep
+  require_cmd file
+  require_cmd sha256sum
+  check_build_inputs
 
   echo "准备临时目录"
 
@@ -196,11 +292,13 @@ build_initrd() {
   # 拒绝把已经注入过的镜像当作 base。重复执行具备幂等性，
   # 因为每次都从 BASE_INITRD 开始并覆盖 INITRD_OUT；这个保护用于防止误把
   # 已注入输出文件当作新的 base。
-  if manifest_has_entry "$base_manifest" "usr/local/bin/taa" || manifest_has_entry "$base_manifest" "usr/local/bin/taa-init"; then
-    echo "error: base initrd already contains TAA payload paths; refusing to append a duplicate" >&2
-    echo "hint: use the original remote Kata CSV initrd as $BASE_INITRD" >&2
-    exit 1
-  fi
+  for injected in usr/local/bin/taa usr/local/bin/taa-init etc/taa/taa-config.json; do
+    if manifest_has_entry "$base_manifest" "$injected"; then
+      echo "error: base initrd already contains TAA payload path $injected; refusing to append a duplicate" >&2
+      echo "hint: use the original remote Kata CSV initrd as $BASE_INITRD" >&2
+      exit 1
+    fi
+  done
 
   mkdir -p "$OUT_DIR" "$BUILD_WORK_DIR/extra/usr/local/bin"
 
@@ -213,54 +311,34 @@ build_initrd() {
   echo "注入 TAA"
   install -m 0755 "$TAA_SRC" "$BUILD_WORK_DIR/extra/usr/local/bin/taa"
 
-  echo "写入 init wrapper"
+  echo "写入 init wrapper 与 TAA 配置"
 
-  # Kata confidential initrd 使用 kata-agent 作为 init（usr/sbin/init），不是 systemd。
-  # 在这个镜像里放 systemd unit 不会被执行。因此 launch 步骤会追加内核参数
-  # `init=/usr/local/bin/taa-init`；该 wrapper 在必要环境变量存在时后台启动 TAA，
-  # 然后 exec 原始 /sbin/init（它是指向 usr/sbin/init 的符号链接），让 Kata 正常继续启动。
-  cat > "$BUILD_WORK_DIR/extra/usr/local/bin/taa-init" <<EOF
-#!/bin/sh
-set -eu
+  # The Kata confidential initrd uses kata-agent as its init (usr/sbin/init), not
+  # systemd, so a systemd unit placed in this image would never run. The launch
+  # step therefore passes `rdinit=/usr/local/bin/taa-init`: the kernel tries the
+  # ramdisk init before init=, so rdinit= is what actually takes effect. The
+  # wrapper starts TAA in the background, gates on its attestation verdict, then
+  # execs the original /sbin/init (a symlink to usr/sbin/init) so Kata boots on.
+  #
+  # The wrapper is a standalone repository file rather than an inline heredoc:
+  # it keeps ~60 escaped variables out of the build script and makes the logic
+  # testable on its own (see test-taa-init.sh).
+  install -m 0755 "$TAA_INIT_SRC" "$BUILD_WORK_DIR/extra/usr/local/bin/taa-init"
 
-if [ -f /etc/default/taa.env ]; then
-  . /etc/default/taa.env
-fi
-
-cd /
-TAA_ADDR="\${TAA_ADDR:-$TAA_ADDR}"
-TAA_REQUIRED="\${TAA_REQUIRED:-$TAA_REQUIRED}"
-
-fail_taa_required() {
-  echo "taa-init: \$1" >/dev/console
-  if [ "\$TAA_REQUIRED" = "1" ]; then
-    echo "taa-init: TAA_REQUIRED=1; not starting kata-agent" >/dev/console
-    while true; do sleep 3600; done
-  fi
-}
-
-if [ -n "\${PLATFORM_IP:-}" ] && [ -n "\${DOCKER_ID:-}" ]; then
-  /usr/local/bin/taa -addr "\$TAA_ADDR" >/tmp/taa.log 2>&1 &
-  TAA_PID="\$!"
-  sleep 2
-  if ! kill -0 "\$TAA_PID" >/dev/null 2>&1; then
-    if [ -f /tmp/taa.log ]; then
-      cat /tmp/taa.log >/dev/console 2>&1 || true
-    fi
-    fail_taa_required "TAA exited immediately; see console log above"
-  fi
-else
-  fail_taa_required "PLATFORM_IP or DOCKER_ID missing; skipping TAA start"
-fi
-
-exec /sbin/init "\$@"
-EOF
-  chmod 0755 "$BUILD_WORK_DIR/extra/usr/local/bin/taa-init"
+  # TAA reads its config from a fixed absolute path, so the file has to be part
+  # of the measured image. configs/taa-initrd.json is the initrd baseline: the
+  # regex engine (no semgrep rules shipped in the initrd) and the cert paths
+  # under /etc/taa/certs that the two installs below populate.
+  mkdir -p "$BUILD_WORK_DIR/extra/etc/taa/certs"
+  install -m 0644 "$TAA_CONFIG_SRC" "$BUILD_WORK_DIR/extra/etc/taa/taa-config.json"
+  install -m 0644 "$TAA_HRK_CERT_SRC" "$BUILD_WORK_DIR/extra/etc/taa/certs/hrk.cert"
+  install -m 0644 "$TAA_HSK_CEK_CERT_SRC" "$BUILD_WORK_DIR/extra/etc/taa/certs/hsk_cek.cert"
 
   echo "生成可选 env 文件"
 
-  # 可选环境文件，用于让 initrd 自身提供 TAA 注册目标。
-  # 使用 %q 做 shell 转义，避免 taa-init source 该文件时空格或特殊字符被重新解释。
+  # Optional environment file, letting the initrd carry its own TAA registration
+  # target. %q shell-escapes the values so spaces or metacharacters are not
+  # reinterpreted when taa-init sources this file.
   if taa_env_file_needed; then
     mkdir -p "$BUILD_WORK_DIR/extra/etc/default"
     {
@@ -268,19 +346,49 @@ EOF
       printf 'export PLATFORM_IP=%q\n' "$TAA_PLATFORM_IP"
       printf 'export DOCKER_ID=%q\n' "$TAA_DOCKER_ID"
       printf 'export TAA_REQUIRED=%q\n' "$TAA_REQUIRED"
+      printf 'export TAA_REQUIRE_ATTESTATION=%q\n' "$TAA_REQUIRE_ATTESTATION"
     } > "$BUILD_WORK_DIR/extra/etc/default/taa.env"
   fi
 
   echo "追加到 cpio"
 
-  # 只把新增文件追加到复制出的 base cpio。不要把 usr、usr/local、etc/default
-  # 这类 base 中已经存在的父目录再次写入归档，否则内核解包追加段时可能用
-  # 后出现的目录条目覆盖 base 目录的权限/属主/时间戳。这里显式列出需要追加的文件。
-  append_entries=(
-    "usr/local/bin/taa"
-    "usr/local/bin/taa-init"
-  )
-  append_missing_parent_dirs() {
+  # The appended entries end up inside the measured image, so their metadata has
+  # to be a function of the inputs rather than of the builder's umask. `install
+  # -m` pins the file modes, but directories created with mkdir and the env file
+  # written through a shell redirect would otherwise inherit the umask -- the
+  # same script on two hosts would then produce two different measurements for
+  # the same inputs.
+  # (The archive is not bit-reproducible: newc records each entry's inode number
+  # and mtime. That is why the summary prints the output sha256, and why deploy
+  # verifies that hash on the remote side instead of rebuilding there.)
+  find "$BUILD_WORK_DIR/extra" -type d -exec chmod 0755 {} +
+  if taa_env_file_needed; then
+    chmod 0644 "$BUILD_WORK_DIR/extra/etc/default/taa.env"
+  fi
+
+  # Only new files are appended to the copied base cpio. Parent directories that
+  # already exist in the base (usr, usr/local, etc) must not be written again:
+  # the kernel unpacks appended segments over the base, so a later directory
+  # entry would overwrite the base directory's mode, owner and timestamps.
+  append_entries=()
+
+  in_append_entries() {
+    local candidate="$1"
+    local entry
+    for entry in ${append_entries[@]+"${append_entries[@]}"}; do
+      if [[ "$entry" == "$candidate" ]]; then
+        return 0
+      fi
+    done
+    return 1
+  }
+
+  # Queue a file together with every parent directory that is missing from both
+  # the base and the queue, parents first. Deduplicating against the queue and
+  # not only against the base matters: several new files share etc/taa and
+  # etc/taa/certs, and queueing them once per file would append those directory
+  # entries two or three times over.
+  queue_entry() {
     local manifest="$1"
     local path="$2"
     local dir
@@ -293,15 +401,30 @@ EOF
     done
 
     for ((i=${#parents[@]} - 1; i >= 0; i--)); do
-      if ! manifest_has_entry "$manifest" "${parents[$i]}"; then
-        append_entries+=("${parents[$i]}")
+      if manifest_has_entry "$manifest" "${parents[$i]}"; then
+        continue
       fi
+      if in_append_entries "${parents[$i]}"; then
+        continue
+      fi
+      append_entries+=("${parents[$i]}")
     done
+
+    append_entries+=("$path")
   }
+
+  for path in \
+    usr/local/bin/taa \
+    usr/local/bin/taa-init \
+    etc/taa/taa-config.json \
+    etc/taa/certs/hrk.cert \
+    etc/taa/certs/hsk_cek.cert; do
+    queue_entry "$base_manifest" "$path"
+  done
   if taa_env_file_needed; then
-    append_missing_parent_dirs "$base_manifest" "etc/default/taa.env"
-    append_entries+=("etc/default/taa.env")
+    queue_entry "$base_manifest" "etc/default/taa.env"
   fi
+
   (
     cd "$BUILD_WORK_DIR/extra"
     printf '%s\n' "${append_entries[@]}" | cpio -o -H newc -R 0:0 -A -F "$BUILD_WORK_DIR/base.cpio" --quiet
@@ -309,44 +432,105 @@ EOF
 
   echo "重新压缩并校验"
 
-  # 使用 gzip -n，避免把本地时间戳/文件名写入 gzip 头。
-  # 候选文件会先通过校验再发布到 INITRD_OUT，因此失败构建不会覆盖之前可用的输出。
+  # gzip -n keeps local timestamps and filenames out of the gzip header, so the
+  # same inputs produce the same bytes. The candidate is validated before it is
+  # published to INITRD_OUT, so a failed build never overwrites a good output.
   candidate_manifest="$BUILD_WORK_DIR/initrd.candidate.manifest"
   gzip -n -9 < "$BUILD_WORK_DIR/base.cpio" > "$BUILD_WORK_DIR/initrd.candidate"
   archive_manifest "$BUILD_WORK_DIR/initrd.candidate" "$candidate_manifest"
 
-  for entry in usr/local/bin/taa usr/local/bin/taa-init; do
+  base_count="$(wc -l < "$base_manifest")"
+  out_count="$(wc -l < "$candidate_manifest")"
+
+  for entry in "${append_entries[@]}"; do
     if ! manifest_has_entry "$candidate_manifest" "$entry"; then
       echo "error: built initrd is missing $entry" >&2
       exit 1
     fi
   done
-  if taa_env_file_needed; then
-    if ! manifest_has_entry "$candidate_manifest" "etc/default/taa.env"; then
-      echo "error: built initrd is missing etc/default/taa.env" >&2
-      exit 1
-    fi
+
+  # The archive is append-only, so the entry count has to be exactly the base
+  # count plus what was queued. Any other number means something was queued
+  # twice or silently dropped -- either way the boot measurement would not be
+  # what this build claims it is.
+  if [[ "$out_count" -ne "$((base_count + ${#append_entries[@]}))" ]]; then
+    echo "error: unexpected entry count in built initrd: base $base_count + ${#append_entries[@]} appended != $out_count" >&2
+    exit 1
   fi
 
   mv "$BUILD_WORK_DIR/initrd.candidate" "$INITRD_OUT"
 
   echo "输出结果摘要"
 
-  base_count="$(wc -l < "$base_manifest")"
-  out_count="$(wc -l < "$candidate_manifest")"
-
   echo "base initrd: $BASE_INITRD"
-  echo "output initrd: $INITRD_OUT"
+  echo "base initrd sha256: $(sha256sum "$BASE_INITRD" | awk '{print $1}')"
   echo "base cpio entries: $base_count"
+  echo "output initrd: $INITRD_OUT"
   echo "output cpio entries: $out_count"
-  echo "usr/local/bin/taa"
-  manifest_print_entry "$candidate_manifest" "usr/local/bin/taa"
-  echo "usr/local/bin/taa-init"
-  manifest_print_entry "$candidate_manifest" "usr/local/bin/taa-init"
-  if taa_env_file_needed; then
-    echo "etc/default/taa.env"
-    manifest_print_entry "$candidate_manifest" "etc/default/taa.env"
+  echo "appended entries (${#append_entries[@]}):"
+  for entry in "${append_entries[@]}"; do
+    printf '  %s\n' "$entry"
+  done
+}
+
+# Copy the authoritative base assets from the host that runs Kata. A committed
+# copy of these files goes stale silently -- the initrd that used to live in this
+# repository was truncated, and cpio reported no error -- so the host is the only
+# authority and this subcommand is how the build obtains its input.
+fetch_base() {
+  require_cmd scp
+  require_cmd ssh
+  require_cmd gzip
+  require_cmd cpio
+  require_cmd sha256sum
+  require_cmd awk
+  require_cmd stat
+
+  local base_dir="$SCRIPT_DIR/base"
+  mkdir -p "$base_dir"
+
+  local initrd_dst="$base_dir/$(basename "$REMOTE_BASE_INITRD_SRC")"
+  local kernel_dst="$base_dir/$(basename "$REMOTE_KERNEL_SRC")"
+  local ovmf_dst="$base_dir/$(basename "$REMOTE_OVMF_SRC")"
+
+  local src dst pair
+  for pair in \
+    "$REMOTE_BASE_INITRD_SRC:$initrd_dst" \
+    "$REMOTE_KERNEL_SRC:$kernel_dst" \
+    "$REMOTE_OVMF_SRC:$ovmf_dst"; do
+    src="${pair%%:*}"
+    dst="${pair#*:}"
+
+    echo "拉取 $REMOTE:$src"
+    # Download beside the target first, then move it into place: a dropped
+    # connection must not leave a half-written archive where the build would
+    # pick it up as if it were complete.
+    if ! scp -q "$REMOTE:$src" "$dst.part"; then
+      rm -f "$dst.part"
+      echo "error: failed to fetch $src from $REMOTE" >&2
+      exit 1
+    fi
+    mv "$dst.part" "$dst"
+  done
+
+  # The initrd is the one input whose silent corruption is invisible downstream,
+  # so it is verified rather than merely downloaded.
+  if ! gzip -t "$initrd_dst" 2>/dev/null; then
+    echo "error: fetched initrd is not a valid gzip stream: $initrd_dst" >&2
+    exit 1
   fi
+
+  echo
+  echo "base assets in $base_dir:"
+  for dst in "$initrd_dst" "$kernel_dst" "$ovmf_dst"; do
+    printf '  %s\n    sha256: %s\n    bytes:  %s\n' \
+      "$(basename "$dst")" \
+      "$(sha256sum "$dst" | awk '{print $1}')" \
+      "$(stat -c %s "$dst")"
+  done
+  printf '  %s\n    cpio entries: %s\n' \
+    "$(basename "$initrd_dst")" \
+    "$(gzip -dc "$initrd_dst" | cpio -t --quiet | wc -l)"
 }
 
 # 远程部署。把构建好的 initrd 上传到远程海光 CSV 主机，并安装完整 Kata guest bundle。
@@ -555,7 +739,7 @@ cleanup_launch() {
 }
 trap cleanup_launch EXIT
 
-# 只改目标 hypervisor 表：切到 bundle、注释掉 image，并设置 init=/usr/local/bin/taa-init。
+# 只改目标 hypervisor 表：切到 bundle、注释掉 image，并设置 rdinit=/usr/local/bin/taa-init。
 echo "生成 Kata 配置"
 cp "$kata_config_src" "$tmp_kata_config"
 python3 - "$tmp_kata_config" "$bundle_dir" "$kata_hypervisor_section" <<'PY'
@@ -600,7 +784,7 @@ def emit_missing():
         out.append(f'firmware = {toml_string(bundle_dir + "/OVMF.fd")}')
         seen["firmware"] = True
     if not seen["kernel_params"]:
-        out.append('kernel_params = "init=/usr/local/bin/taa-init"')
+        out.append('kernel_params = "rdinit=/usr/local/bin/taa-init"')
         seen["kernel_params"] = True
 
 for line in lines:
@@ -639,8 +823,11 @@ for line in lines:
             raise SystemExit(f"unrecognized kernel_params line: {line}")
         existing = m.group(1).strip()
         params = shlex.split(existing) if existing else []
-        params = [p for p in params if not p.startswith("init=")]
-        params.insert(0, "init=/usr/local/bin/taa-init")
+        # Strip both keys: init= is dead config once /init exists in the initrd
+        # (the kernel tries rdinit= first) and leaving a stale init= would
+        # suggest it still has an effect.
+        params = [p for p in params if not p.startswith("init=") and not p.startswith("rdinit=")]
+        params.insert(0, "rdinit=/usr/local/bin/taa-init")
         out.append(f'kernel_params = {toml_string(" ".join(params))}')
         seen["kernel_params"] = True
         continue
@@ -781,8 +968,8 @@ if "image" in values:
 for key in ("kernel", "initrd", "firmware", "kernel_params"):
     if key not in values:
         raise SystemExit(f"missing active {key} in target Kata hypervisor section")
-if "init=/usr/local/bin/taa-init" not in values["kernel_params"]:
-    raise SystemExit("kernel_params does not contain init=/usr/local/bin/taa-init")
+if "rdinit=/usr/local/bin/taa-init" not in values["kernel_params"]:
+    raise SystemExit("kernel_params does not contain rdinit=/usr/local/bin/taa-init")
 PY
 
 handler_header="[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.\"$runtime_handler\"]"
@@ -902,6 +1089,9 @@ cmd="${1:-build}"
 case "$cmd" in
   build)
     build_initrd
+    ;;
+  fetch-base)
+    fetch_base
     ;;
   deploy)
     deploy_remote

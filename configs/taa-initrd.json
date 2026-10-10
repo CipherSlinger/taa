@@ -1,0 +1,35 @@
+{
+  "server": {
+    "addr": ":6001"
+  },
+  "storage": {
+    "model": "/root/taa/models",
+    "data": "/root/taa/data",
+    "result": "/root/taa/results",
+    "keys": "/opt/taa/keys"
+  },
+  "model": {
+    "input": "/opt/taa/input",
+    "checkpoint": "/opt/taa/checkpoint",
+    "output": {
+      "result": "/opt/taa/output/result",
+      "log": "/opt/taa/output/log",
+      "progress": "/opt/taa/output/progress/progress.json"
+    }
+  },
+  "security": {
+    "codeScan": true,
+    "codeScanEngine": "regex",
+    "resultCheck": {
+      "enabled": true,
+      "maxFileBytes": 3221225472
+    }
+  },
+  "attestation": {
+    "hrkCertPath": "/etc/taa/certs/hrk.cert",
+    "hskCekCertPath": "/etc/taa/certs/hsk_cek.cert"
+  },
+  "llm": {
+    "enabled": false
+  }
+}

@@ -2,7 +2,7 @@
 
 # 把 TAA 放进 Kata CSV2 initrd，使 MEASUREMENT 覆盖 TAA（2026-10-10，v2）
 
-- **状态**：设计已定，待实现；**§0 的宿主判定实验先跑**（不阻塞开工，但决定 v1 那条 `init=` 到底有没有生效过）
+- **状态**：**已实现**（`deploy/guest-build/` 与 `configs/taa-initrd.json` 已落地，本地合成 base 端到端与负例实测通过，详见 §5.4）；**§0 的宿主判定实验与真机 build/deploy/launch 尚未执行**（需要 172.16.10.178 的凭据），v1 那条 `init=` 到底有没有生效过也仍待该实验回答
 - **日期**：2026-10-10（v2 修订同日）
 - **宿主**：`root@172.16.10.178`（`hygon-master`），kata CSV2 机密容器
 - **目标路线**：**先路线 A**（`kata-qemu-csv2`，**不涉及 DCU**），完成后再做路线 B
@@ -202,12 +202,12 @@ v1 的 `set -eu` + 新增 mknod 正是这条铁律的反面教材。
 | 路径 | 来源 | 缺失后果 |
 | :--- | :--- | :--- |
 | `usr/local/bin/taa` | `bin/taa`，**必须静态链接** | 动态链接版在 initramfs 内找不到 glibc，必崩（§3.1 实测现况如此） |
-| `usr/local/bin/taa-init` | 脚本内 heredoc（§4.4） | 无 init，pod 永远起不来 |
+| `usr/local/bin/taa-init` | 仓库文件 `deploy/guest-build/taa-init.sh`（§4.4） | 无 init，pod 永远起不来 |
 | `etc/taa/taa-config.json` | 新增仓库文件 `configs/taa-initrd.json` | TAA `os.Exit(1)` |
 | `etc/taa/certs/hrk.cert` | `deploy/certs/hrk.cert`（832 B） | 证明**自校验失败**（报告退化为 false） |
 | `etc/taa/certs/hsk_cek.cert` | `deploy/certs/hsk_cek.cert`（2916 B） | 同上 |
 | `etc/default/taa.env` | 构建时 `TAA_PLATFORM_IP` / `TAA_DOCKER_ID` | 仅影响注册（§4.4 已不再以它作为起 TAA 的前提） |
-| `etc/taa`、`etc/taa/certs` | 父目录，由 `append_missing_parent_dirs` 补 | cpio 里路径不全 |
+| `etc/taa`、`etc/taa/certs` | 父目录，由 `queue_entry` 补 | cpio 里路径不全 |
 
 注入方式不变（append-only）：
 
@@ -221,7 +221,9 @@ gzip -n -9 < base.cpio > candidate
 预建只会引入权限风险。
 
 **条目数**：`4682 → 4682 + 8`（6 个文件 + 2 个新目录）。v1 §5 写的 `+6` 漏算了目录——
-今天 `etc/default` 那一个目录就是这么算进去的。
+今天 `etc/default` 那一个目录就是这么算进去的。这个数字**不写进脚本**：脚本按
+`base 条目数 + len(append_entries)` 现算，`usr/local/bin` 之类若在 base 里已存在就自动不追加
+（本地合成 base 上实测：父目录全缺 → +11，父目录全在 → +5/+6）。
 
 ### 4.3 `configs/taa-initrd.json`（新增）
 
@@ -247,128 +249,78 @@ model.output.* = /opt/taa/output/**
 `/root` 大概率不在 base initrd 里（§0 可顺带查），由 `ensureSecurityDirectories` 的
 `MkdirAll 0o755` 建出来，不致命。
 
-### 4.4 wrapper 全文（`usr/local/bin/taa-init`）
+### 4.4 wrapper 的交付方式与契约
 
-落进 `build-initrd.sh` 的 heredoc 时注意：该 heredoc 是**非引号** `<<EOF`，运行时变量要写 `\$`，
-构建期变量写 `$`。以下是**最终文件内容**。
+**交付方式（相对设计稿的改动）：wrapper 是仓库文件 `deploy/guest-build/taa-init.sh`，
+由构建期 `install -m 0755` 落进 initrd，不再是 heredoc。**
 
-```sh
-#!/bin/sh
-# taa-init — kata CSV2 initrd 的首个用户态进程（rdinit=）。
-#
-# PID 1 退出等于 kernel panic，所以本脚本不依赖 set -e：
-# 每一步失败都必须自行吞掉或显式处理，唯一允许的退出路径是最后那句 exec。
-set -u
+改成独立文件的三条理由：
 
-CONSOLE=/dev/console
-TAA_BIN=/usr/local/bin/taa
-TAA_CONFIG=/etc/taa/taa-config.json
-TAA_LOG=/tmp/taa.log
-ENV_FILE=/etc/default/taa.env
+1. 原方案的 heredoc 是**非引号** `<<EOF`：运行时变量写 `\$`、构建期变量写 `$`。一份 60 多行的
+   shell 里转义写错，出错方式是**静默的**（变量在构建期就被展开成字面量），只有真机启动才暴露。
+2. 独立文件能直接 `sh -n` 检查、能被 `deploy/guest-build/test-taa-init.sh` 单测。
+3. 它同时是注入清单里的一项，`git blame` 能回答"这个 initrd 里的 init 是哪一版"。
 
-log() { echo "taa-init: $*" >"$CONSOLE" 2>/dev/null || true; }
+对应地，`build-initrd.sh` 的输入全部改成可用环境变量覆盖（`TAA_INIT_SRC` / `TAA_CONFIG_SRC` /
+`TAA_HRK_CERT_SRC` / `TAA_HSK_CEK_CERT_SRC` / `BASE_INITRD` / `INITRD_OUT`），
+于是整条构建路径能在本机用小号合成 base 端到端跑通——构建期自检本身因此是可测的。
 
-[ -r "$ENV_FILE" ] && . "$ENV_FILE"
-cd / || true
+**契约（`taa-init.sh` 必须满足的性质）**：
 
-TAA_ADDR="${TAA_ADDR:-0.0.0.0:6001}"
-TAA_REQUIRED="${TAA_REQUIRED:-1}"
-TAA_REQUIRE_ATTESTATION="${TAA_REQUIRE_ATTESTATION:-1}"
+| 性质 | 落地形式 |
+| :--- | :--- |
+| 由 `rdinit=` 选中 | 根级路径 `/usr/local/bin/taa-init`；`/sbin/init` 仍是 kata-agent |
+| PID 1 不退出 | 无 `set -e`；失败路径一律 `\|\| true` 或显式处理；唯一出口是最后 `exec /sbin/init "$@"` |
+| 先挂 proc/sys 再建设备节点 | `mkdir -p /proc /sys` + `mount -t proc` / `mount -t sysfs`（本脚本先于 init 运行，这两个目录此刻是空的） |
+| 设备节点次号现读 | 先 `/proc/misc`（2026-10-09 实测口径），退回 `/sys/class/misc/csv-guest/dev`；主号固定 10 |
+| TAA 启动门槛 = config 可读 | 与 `LoadStartupConfig` 的硬依赖一致；`PLATFORM_IP` / `DOCKER_ID` 不参与判断 |
+| 证明闸门 | 默认等 `attestation report verified successfully` 至多 60 s；命中 `continuing with empty report` 或超时即 fail-closed（`TAA_REQUIRED=1` 时死循环，Pod 停在 NotReady） |
+| 无未绑定变量 | `TAA_PID=""` 先置空再判空（v1 在 `TAA_REQUIRED=0` 且缺环境变量时会踩 `set -u`） |
 
-fail_taa_required() {
-  log "$1"
-  if [ "$TAA_REQUIRED" = "1" ]; then
-    [ -r "$TAA_LOG" ] && cat "$TAA_LOG" >"$CONSOLE" 2>&1
-    log "TAA_REQUIRED=1; not starting kata-agent"
-    while true; do sleep 3600; done
-  fi
-}
+**可测的两个纯函数**（由 `test-taa-init.sh` 覆盖；`# ===== main flow` 标记行**以上必须无副作用**，
+否则 source 它就会在测试进程里起 TAA 并 exec kata-agent）：
 
-# 1) 挂 proc/sys。本脚本在 kata-agent 之前运行，这两个目录此刻是空的，
-#    而下一步取 csv-guest 次设备号要读 /proc/misc 或 /sys/class/misc/…。
-mount -t proc  proc  /proc >/dev/null 2>&1 || true
-mount -t sysfs sysfs /sys  >/dev/null 2>&1 || true
+- `resolve_csv_minor`：从两个来源取次设备号；都读不到时**不打印且返回 0**；
+  设备名按字段精确比较（`not-csv-guest` 不匹配）。
+- `wait_for_attestation_verdict`：`0` 自校验通过 / `1` 已降级 / `2` 超时。
 
-# 2) 建 /dev/csv-guest。驱动内建且已 misc_register()，缺的只是节点；
-#    主设备号固定 10，次设备号动态分配，必须现读（2026-10-09 实测配方）。
-if [ ! -e /dev/csv-guest ]; then
-  csv_minor=""
-  if [ -r /proc/misc ]; then
-    while read -r minor name; do
-      if [ "$name" = "csv-guest" ]; then csv_minor="$minor"; break; fi
-    done < /proc/misc
-  fi
-  if [ -z "$csv_minor" ] && [ -r /sys/class/misc/csv-guest/dev ]; then
-    IFS=: read -r csv_major csv_minor < /sys/class/misc/csv-guest/dev || true
-  fi
-  if [ -n "$csv_minor" ]; then
-    if mknod /dev/csv-guest c 10 "$csv_minor" 2>/dev/null; then
-      chmod 600 /dev/csv-guest 2>/dev/null || true
-      log "created /dev/csv-guest (10, $csv_minor)"
-    else
-      log "WARNING: mknod /dev/csv-guest c 10 $csv_minor failed"
-    fi
-  else
-    log "WARNING: csv-guest minor unreadable; attestation will degrade to an empty report"
-  fi
-fi
+**与设计稿逐字稿的差异**（均为落地时的有意偏离）：
 
-# 3) 起 TAA。门槛是"config 可读"——它是 TAA 的硬依赖；
-#    PLATFORM_IP/DOCKER_ID 只影响注册，而注册本来就只是 warning（app.go:135）。
-TAA_PID=""
-if [ -r "$TAA_CONFIG" ]; then
-  "$TAA_BIN" -config "$TAA_CONFIG" -addr "$TAA_ADDR" >"$TAA_LOG" 2>&1 &
-  TAA_PID="$!"
-else
-  fail_taa_required "missing $TAA_CONFIG; not starting TAA"
-fi
+| 差异 | 理由 |
+| :--- | :--- |
+| 注释改英文 | 仓库规则：代码注释只用英文 |
+| 抽出上述两个函数 + `# ===== main flow` 分隔行 | 让判定逻辑可单测 |
+| `ATTESTATION_TIMEOUT` 可被 env 覆盖（默认仍 60） | 与其它开关一致，真机调参不必改镜像 |
+| 增加 `mkdir -p /proc /sys` | base initrd 若没有这两个目录，`mount` 失败会导致次设备号取不到 |
+| `TAA_LOG=/tmp/taa.log` 不变 | `/tmp` 在 base initrd 里存在；TAA 的 `attestation.report` 因 `cd /` 落在 `/attestation.report` |
 
-# 4) 探活（进程活着 ≠ 服务可用，这里只证明它没立刻退出）
-if [ -n "$TAA_PID" ]; then
-  sleep 2
-  kill -0 "$TAA_PID" >/dev/null 2>&1 || fail_taa_required "TAA exited immediately"
-fi
-
-# 5) 证明闸门。上面两步都不构成"证明是真的"：证明失败时 TAA 会
-#    WARNING + 写空报告继续跑（app.go:548），pod 照样 Ready。
-#    这里把验收判据前移：等到自校验成功那一行为止。
-if [ -n "$TAA_PID" ] && [ "$TAA_REQUIRE_ATTESTATION" = "1" ]; then
-  i=0
-  while [ "$i" -lt 60 ]; do
-    if [ -r "$TAA_LOG" ]; then
-      grep -q "attestation report verified successfully" "$TAA_LOG" 2>/dev/null && break
-      grep -q "continuing with empty report" "$TAA_LOG" 2>/dev/null &&
-        fail_taa_required "attestation degraded to an empty report (see log above)"
-    fi
-    sleep 1
-    i=$((i + 1))
-  done
-  [ "$i" -ge 60 ] && fail_taa_required "attestation verdict not found in $TAA_LOG within 60s"
-fi
-
-exec /sbin/init "$@"
-```
-
-两处 v1 没有的防护值得点名：
-
-- `TAA_PID` 先置空再判空。v1 在 `TAA_REQUIRED=0` 且缺环境变量时会走到
-  `kill -0 "$TAA_PID"`（未绑定变量）——`set -u` 下 shell 退出 = **PID 1 退出 = kernel panic**。
-- 第 5 步的等待上限 60 s：TAA 的证明在 `startServer` 之前完成，正常是亚秒级；
-  60 s 只是给慢盘/慢密钥生成的余量。代价是 pod 就绪被推迟约 2–3 s。
+第 5 步的等待上限 60 s 的依据：TAA 的证明在 `startServer` 之前完成，正常是亚秒级；
+60 s 只是给慢盘/慢密钥生成的余量。代价是 pod 就绪被推迟约 2–3 s。
 
 ### 4.5 `build-initrd.sh` 的改动（精确到行）
 
 | 位置 | 现状 | 改成 |
 | :--- | :--- | :--- |
 | `:19` `TAA_SRC` | `$ROOT_DIR/bin/taa` | 路径不变；在 `check_build_inputs` 里**断言静态链接**（`file "$TAA_SRC"` 含 `statically linked`），并把 `file` 加进 `require_cmd` |
-| `:142` `check_build_inputs` | 只查可执行 | 增加：① 静态链接断言；② **`gzip -t "$BASE_INITRD"` 必须通过**（这一条就能拦住今天这份被静默截断的 base）；③ `configs/taa-initrd.json` 与两份证书存在 |
-| `:222-257` wrapper heredoc | 无 `-config`、无 mount、无 mknod、无证明闸门 | 整段替换为 §4.4 |
-| `:263-272` env 文件 | 写 `TAA_ADDR`/`PLATFORM_IP`/`DOCKER_ID`/`TAA_REQUIRED` | 不变，另加 `TAA_REQUIRE_ATTESTATION` |
-| `:277-282` `append_entries` | 只有 `taa`、`taa-init` | 增加 `etc/taa/taa-config.json`、`etc/taa/certs/hrk.cert`、`etc/taa/certs/hsk_cek.cert`；构建时 `install -m 0644` 落到 `extra/etc/taa/certs/` |
-| `:283-300` `append_missing_parent_dirs` | 只对 `base_manifest` 去重 | **先去重再加**：同时检查 `append_entries`（新增 `in_append_entries()` 辅助函数）。否则按 §4.2 调三次会把 `etc/taa`、`etc/taa/certs` 重复追加 2–3 次——正是 `:281` 注释警告的"后出现的目录条目覆盖前面的" |
+| `:23` `ROOT_DIR` | `$SCRIPT_DIR/..`（guest-build 曾在仓库根下，恰好对；搬到 `deploy/` 之后解析成 `deploy/`） | 改成 `$SCRIPT_DIR/../..`，并断言 `$ROOT_DIR/go.mod` 存在。**这是落地期发现的真 bug**：不修的话 `TAA_SRC` / `TAA_CONFIG_SRC` / 两份证书的默认值全部指向不存在的路径，报出来的是「缺 build input」而不是「路径写错了」 |
+| 输入路径 | 全部写死 | `TAA_SRC` / `TAA_INIT_SRC` / `TAA_CONFIG_SRC` / `TAA_HRK_CERT_SRC` / `TAA_HSK_CEK_CERT_SRC` / `BASE_INITRD` / `OUT_DIR` / `INITRD_OUT` 全部 `${VAR:-默认}`，默认值不变（§4.4 的可测性前提） |
+| `:142` `check_build_inputs` | 只查可执行 | 增加：① 静态链接断言；② **`gzip -t "$BASE_INITRD"` 必须通过**（这一条就能拦住今天这份被静默截断的 base）；③ `taa-init.sh`、`configs/taa-initrd.json` 与两份证书存在；④ `require_cmd` 移到本函数之前，否则缺 `gzip` 时会报成"base 被截断" |
+| `:222-257` wrapper heredoc | 无 `-config`、无 mount、无 mknod、无证明闸门 | 整段删除，改为 `install -m 0755 "$TAA_INIT_SRC" …/extra/usr/local/bin/taa-init`（§4.4） |
+| 新增 | — | `install -m 0644` 把 config 落到 `extra/etc/taa/taa-config.json`、两份证书落到 `extra/etc/taa/certs/` |
+| `:263-272` env 文件 | 写 `TAA_ADDR`/`PLATFORM_IP`/`DOCKER_ID`/`TAA_REQUIRED` | 不变，另加 `TAA_REQUIRE_ATTESTATION`；触发条件从"两个身份都给"扩成 `taa_env_file_needed()`——**任何一个开关偏离默认值也要写**，否则构建期覆盖静默失效 |
+| 新增 | — | 追加前归一化元数据：`find extra -type d -exec chmod 0755 {} +` 且 `chmod 0644` env 文件。`mkdir` 与 shell 重定向会继承 umask，同一个脚本在两台机器上会产出**不同的度量** |
+| `:277-282` `append_entries` | 只有 `taa`、`taa-init` | 增加 `etc/taa/taa-config.json`、`etc/taa/certs/hrk.cert`、`etc/taa/certs/hsk_cek.cert` |
+| `:283-300` `append_missing_parent_dirs` | 只对 `base_manifest` 去重；且父目录排在文件之后 | 改成 `queue_entry()`：**同时检查 `append_entries`**（`in_append_entries()`），并把**父目录排在文件之前**。否则按 §4.2 逐文件调用会把 `etc/taa`、`etc/taa/certs` 重复追加 2–3 次——正是 `:281` 注释警告的"后出现的目录条目覆盖前面的" |
 | `:316-322` 校验循环 | **硬编码** `usr/local/bin/taa usr/local/bin/taa-init` | 改成遍历 `append_entries`；并断言候选条目数 **== base 条目数 + `${#append_entries[@]}`**（重复/丢失都能当场发现） |
 | `:331` 发布 | `mv candidate → INITRD_OUT` | 不变（失败不覆盖旧产物，这个设计是对的） |
 | `:334-349` 摘要 | 只打印两个 payload | 打印 base 的 **sha256 + 条目数**、全部 `append_entries`、候选条目数 |
+| 新增子命令 | — | `fetch-base`（§4.9）：scp 三个 base 资产到 `base/`，先落 `.part` 再 `mv`，对 initrd 跑 `gzip -t`，打印 sha256/字节数/条目数 |
+
+**构建不可 bit 复现（已知且接受）**：newc 会写入每条目的 inode 号与 mtime，所以同样的输入
+两次构建的 initrd 字节不同，度量也就不同。这不影响 §5.1 第 2 条——那条比的是**同一个产物文件**
+的宿主预测值与 guest 报告值；产物的身份由摘要里打印的 sha256 承载（`deploy_remote` 也是靠它
+在上传后 `sha256sum -c` 校验，而不是靠本地重建）。真要复现，需要 `cpio` 补齐 ino/mtime 归一化，
+本轮不做，记在 §7。
 
 `deploy_remote` 的隔离（新 bundle 目录、新 kata 配置文件、新 handler、新 RuntimeClass）
 **不需要改动**；`launch_remote` 需要改一处，见 §4.6。
@@ -396,8 +348,11 @@ v1 只写了"断言静态链接"，但没有产出静态二进制的路径——
   `CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa`
   ——与生产镜像 `deploy/manifest/docker/Dockerfile:5` 一致。树里没有 `import "C"`，
   唯一的差别只是 net 解析器从 cgo 换成纯 Go。
-- initrd 体积：静态 `bin/taa` 约 21 MB（v1 写的 19.8 MB 是 §3.1 那个 kata-agent 的大小，
-  串了行）。initrd 55 MB → 约 76 MB，且 initramfs 是**常驻 guest 内存**的。若要把体积降下来，
+  （注意：`CLAUDE.md` 已被 `.gitignore` 且由 `6b0bcff` 移出版本库，所以这一处**只是本机改动**，
+  不会随提交分发；`README.md` 那处会。）
+- initrd 体积（实测，§5.4）：`CGO_ENABLED=0` 的 `bin/taa` **18.9 MB**，而树里现存的
+  `bin/taa` 是**动态链接**的 21.1 MB。v1 写的 19.8 MB 是 §3.1 那个 kata-agent 的大小，串了行。
+  initrd 55 MB → 约 74 MB，且 initramfs 是**常驻 guest 内存**的。若要把体积降下来，
   构建加 `-trimpath -ldflags="-s -w"`（约 −7 MB）——本轮不做，记在 §7。
 
 ### 4.8 证据通道（v2 新增）
@@ -494,6 +449,33 @@ v2 的三条通道，按可靠性排序：
 
 ---
 
+### 5.4 本机已完成的验证（落地证据，2026-10-10）
+
+真机（172.16.10.178）尚未执行 §5.1；下面是**本机能做的全部**，用来把"构建期自检"和
+"wrapper 判定逻辑"从"读起来对"变成"跑过了"。合成 base 是小号 cpio（rootfs 形状近似，
+无设备节点），TAA 用 `CGO_ENABLED=0` 编的最小 Go 程序顶替。
+
+| # | 验证 | 结果 |
+| :--- | :--- | :--- |
+| 1 | `deploy/guest-build/test-taa-init.sh`（9 项：次设备号两个来源、都读不到时"不打印且 rc=0"、`not-csv-guest` 不误匹配、证明三种结论、日志缺失） | 全部通过 |
+| 2 | 合成 base 端到端构建（父目录全缺） | `14 → 25`，追加 11 条，顺序为父目录在文件之前 |
+| 3 | 合成 base 端到端构建（父目录全在 base 里，`usr/local/bin`、`etc/taa/certs`、`etc/default` 预建） | `17 → 22`（无 env）/ `17 → 23`（有 env），只追加文件本身，**目录零重复** |
+| 4 | 产物核对 | `usr/local/bin/taa-init` 与 `taa-init.sh` 逐字节相同；`init -> sbin/init` 符号链接与 base 文件均未被破坏；manifest 无重复条目 |
+| 5 | 负例 8 项：动态链接 TAA、截断 base、已注入 base、缺 wrapper/config/hrk/taa 二进制、只给 `PLATFORM_IP` | 全部 `rc=1` 并有明确 `error:`，且**没有任何一次发布出产物**（旧产物不被覆盖） |
+| 6 | umask 归一化 | `umask 0002` 与 `umask 0022` 下产物条目元数据一致（目录 `0755`、文件 `0644`） |
+| 7 | 仓库里那份 base | `gzip -t` **失败**（`unexpected end of file`），`cpio -t` 只列 265 条 → 新增的自检确实拦得住它；sha256 `48da6bed…` |
+| 8 | 仓库里那份 `out/kata-containers-initrd-taa-csv.initrd` | 与 base **逐字节相同**（再次确认 §3.1：它是复制品，不是构建产物） |
+| 9 | `CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa`（§4.7 写进文档的那条） | 2.5 s 建成，`file` 判为 `statically linked`，**18.9 MB**；同时确认树里现存的 `bin/taa` 是 `dynamically linked` 的 21.1 MB——即新断言确实拦得住它 |
+| 10 | 用真 `bin/taa`（静态版）跑一遍合成 base 构建 | 通过，追加条目与用最小 fixture 时一致 |
+| 11 | **不覆盖任何默认路径**的构建（只给 `BASE_INITRD` / `INITRD_OUT` / `TAA_SRC`） | 通过 → 证明 `ROOT_DIR` 修好后，`TAA_INIT_SRC`、`TAA_CONFIG_SRC`、两份证书的默认值确实都解析到了文件。第 2–4 条当时全绿，恰恰是因为它们把每条路径都显式覆盖了；**这条默认路径用例才是抓到 `ROOT_DIR` 那个 bug 的** |
+
+第 5 条的 8 个负例是本轮唯一能证明"构建期自检真的会拦"的方式——因为它们全部在**写产物之前**
+退出，所以顺带证明了"失败不覆盖上一次可用输出"这条性质。
+
+仍未经本机验证、必须到真机才能回答的：§0 的三个问题、§5.1 第 2–8 条、以及 §7 第 1/3/4 条风险。
+
+---
+
 ## 6. 非目标
 
 - **不做 DCU 透传**。本轮用 `kata-qemu-csv2`（非 DCU handler），**完全不碰那张卡**，
@@ -512,7 +494,7 @@ v2 的三条通道，按可靠性排序：
    `/proc`、`/sys` 就是为了这个。若两者都读不到，报告会降级，而 §4.4 第 5 步的闸门会让
    pod 不 Ready（**这是有意的**）。退路：写死 `10, 256`（§3.5 实测值，同内核下稳定，
    换内核可能变）。
-2. **静态二进制体积**约 21 MB，initrd 55 → 约 76 MB，且 initramfs 常驻 guest 内存。
+2. **静态二进制体积**实测 18.9 MB，initrd 55 → 约 74 MB，且 initramfs 常驻 guest 内存。
    QEMU 与 pod 启动时间会受影响。需要时可加 `-trimpath -ldflags="-s -w"`（约 −7 MB），
    本轮不做。
 3. **TAA 起在 kata-agent 之前** ⇒ 它不在任何容器的 namespace/cgroup 里，没有监督：
@@ -531,6 +513,9 @@ v2 的三条通道，按可靠性排序：
    还在）——在 `build-initrd.sh` 文件头点名，避免后来者把它当成真的构建产物。
 8. **v1 那套 `init=` 是否曾经生效过**——§0 的实验给答案。若确认 `/init` 存在，则历史上任何
    声称"TAA 已在 kata csv2 里跑起来"的结论都需要重新取证。
+9. **构建不可 bit 复现**（§4.5 末）——newc 记录 inode 与 mtime，两次构建的 initrd 字节不同、
+   度量也就不同。判据 2 不受影响（比的是同一个产物文件），但"同一份输入 ⇒ 同一份度量"这种
+   说法在本流程里**不成立**，写文档时不要这么写。要复现需自行归一化 ino/mtime，本轮不做。
 
 ---
 
@@ -547,3 +532,7 @@ v2 的三条通道，按可靠性排序：
 | 7 | "断言静态链接"但没给构建配方 | `CLAUDE.md`/`README.md:482` 改为 `CGO_ENABLED=0`，对齐 Dockerfile:5 | 实测 `bin/taa` 当前是动态链接，v1 的断言会把构建直接卡死 |
 | 8 | 验收 2 = "度量必须不同" | 改为"宿主预测值 == guest 实测值"，另加变量隔离对照 | launch 同时改 initrd 与 cmdline，旧判据会因错误原因通过 |
 | 9 | base 治理的理由是"55 MB 浪费" | 补上 git blob 相同的硬证据，并新增 `gzip -t` 自检 | `out/…initrd` 与 base 的 git blob 同为 `c2861568` |
+| 10 | wrapper 以 heredoc 内联进 `build-initrd.sh` | 改为仓库文件 `deploy/guest-build/taa-init.sh` + `install -m 0755` | 非引号 heredoc 里 `\$` 与 `$` 写错是静默的；独立文件可 `sh -n`、可单测（`test-taa-init.sh`）、可 blame |
+| 11 | 只归一化文件权限（未提及） | 追加前 `chmod 0755` 目录 + `chmod 0644` env 文件 | `mkdir` 与 shell 重定向继承 umask，同一脚本在不同宿主上产出不同度量 |
+| 12 | `ROOT_DIR = $SCRIPT_DIR/..`（未提及） | 改成 `$SCRIPT_DIR/../..`，并断言 `go.mod` 存在 | guest-build 已不在仓库根下；不改则默认输入路径全错，且错误信息误导 |
+| 13 | `gzip -t` 自检只在 `check_build_inputs` | 同左，另加：静态链接断言用 `file`（新增依赖）、`fetch-base` 子命令、摘要打印 base sha256 | 落地时补齐 §4.9 的 `fetch-base`，并把 `file` 写进 `require_cmd` |

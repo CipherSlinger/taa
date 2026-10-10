@@ -33,6 +33,10 @@ export TEST_IMAGE=busybox:latest
 # build-initrd.sh 的输入
 export TAA_PLATFORM_IP=<平台IP:端口>
 export TAA_DOCKER_ID=<docker_id>
+# 证明闸门：1（默认）= TAA 自校验不通过就不启动 kata-agent，Pod 停在 NotReady
+export TAA_REQUIRE_ATTESTATION=1
+# TAA_REQUIRED：1（默认）= TAA 起不来时同样不让 kata-agent 启动
+export TAA_REQUIRED=1
 ```
 
 ---
@@ -92,25 +96,28 @@ kubectl -n "${TARGET_NAMESPACE}" exec "${TARGET_POD}" -c "${TARGET_CONTAINER}" -
 
 ## 2. 本地构建带 TAA 的 CSV initrd
 
-先把远程原始 initrd 放到：
+先从宿主拉取权威 base 资产（initrd / kernel / OVMF）。**不要**用历史里入库过的那份：
+它的 gzip 流是截断的，`gzip -t` 会失败，构建脚本会直接拒绝。
 
 ```bash
-mkdir -p guest-build/base
-# 该文件需要从远程服务器复制回来
-# guest-build/base/kata-containers-initrd-confidential-csv.img
+cd /home/hjy/taa/deploy/guest-build
+REMOTE_USER=root ./build-initrd.sh fetch-base
 ```
 
-构建前先确认本地二进制存在：
+`fetch-base` 会打印每个文件的 sha256、字节数与 initrd 的条目数——记到 `base/source-paths.txt`，
+下次能看出 base 是否被换过。
+
+构建前先编出**静态链接**的 TAA（initrd 里没有 glibc；动态链接版会被 `check_build_inputs` 拒绝）：
 
 ```bash
-make taa
-make attestation-ioctl
+cd /home/hjy/taa
+CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa
 ```
 
 然后构建 initrd：
 
 ```bash
-cd /mnt/d/可信数字空间/tee/guest-build
+cd /home/hjy/taa/deploy/guest-build
 TAA_PLATFORM_IP="${TAA_PLATFORM_IP}" \
 TAA_DOCKER_ID="${TAA_DOCKER_ID}" \
 ./build-initrd.sh build
@@ -119,17 +126,25 @@ TAA_DOCKER_ID="${TAA_DOCKER_ID}" \
 构建结果默认输出到：
 
 ```bash
-/mnt/d/可信数字空间/tee/guest-build/out/kata-containers-initrd-taa-csv.initrd
+/home/hjy/taa/deploy/guest-build/out/kata-containers-initrd-taa-csv.initrd
 ```
 
+摘要里会打印 base 的 sha256 与条目数、以及全部追加条目。**条目数必须等于
+`base 条目数 + 追加条数`**，不等就说明有重复或丢失，脚本会拒绝发布。
+
 如果你暂时只想构建，不想生成 `/etc/default/taa.env`，可以不设置 `TAA_PLATFORM_IP` / `TAA_DOCKER_ID`，但后续 `deploy` 可能会拒绝。
+注意：只要 `TAA_ADDR` / `TAA_REQUIRED` / `TAA_REQUIRE_ATTESTATION` 中任何一个偏离默认值，
+env 文件仍会生成（否则构建期覆盖会静默失效）。
+
+证明闸门：默认 `TAA_REQUIRE_ATTESTATION=1`，即 TAA 的自校验不通过就不启动 kata-agent，
+Pod 停在 NotReady。要观察"降级也能起来"的行为才需要 `TAA_REQUIRE_ATTESTATION=0`。
 
 ---
 
 ## 3. 上传 initrd 并安装远程 guest bundle
 
 ```bash
-cd /mnt/d/可信数字空间/tee/guest-build
+cd /home/hjy/taa/deploy/guest-build
 REMOTE_USER="${REMOTE_USER}" \
 REMOTE_HOST="${REMOTE_HOST}" \
 ./build-initrd.sh deploy
@@ -152,7 +167,7 @@ ${REMOTE_BUNDLE_DIR}
 ## 4. 配置 Kata / containerd / RuntimeClass 并拉起测试 Pod
 
 ```bash
-cd /mnt/d/可信数字空间/tee/guest-build
+cd /home/hjy/taa/deploy/guest-build
 REMOTE_USER="${REMOTE_USER}" \
 REMOTE_HOST="${REMOTE_HOST}" \
 TEST_NODE_NAME="${TEST_NODE_NAME}" \
@@ -176,7 +191,7 @@ RUNTIME_HANDLER="${RUNTIME_HANDLER}" \
 如果你想一次性执行全部步骤：
 
 ```bash
-cd /mnt/d/可信数字空间/tee/guest-build
+cd /home/hjy/taa/deploy/guest-build
 REMOTE_USER="${REMOTE_USER}" \
 REMOTE_HOST="${REMOTE_HOST}" \
 TAA_PLATFORM_IP="${TAA_PLATFORM_IP}" \
@@ -220,6 +235,8 @@ kubectl describe pod test-kata-csv2-taa
 - `REMOTE_KATA_CONFIG=/etc/kata-containers/configuration-qemu-csv2-taa.toml`
 - `RUNTIME_HANDLER=kata-qemu-csv2-taa`
 - `TEST_POD_NAME=test-kata-csv2-taa`
+- `TAA_REQUIRED=1`、`TAA_REQUIRE_ATTESTATION=1`（证明闸门）
+- 本地输入覆盖（主要给测试用）：`BASE_INITRD`、`INITRD_OUT`、`TAA_SRC`、`TAA_INIT_SRC`、`TAA_CONFIG_SRC`
 
 ### ../deploy.sh
 
@@ -237,3 +254,8 @@ kubectl describe pod test-kata-csv2-taa
 - 这份模板**不执行部署**，只整理可复制命令。
 - 真实密码、证书、环境变量值请按现场环境填入，不要直接写死到仓库。
 - 如果远程 base initrd 与本地 `guest-build/base/` 不一致，`build-initrd.sh deploy` 可能会拒绝，需要先同步 base 文件。
+- base 资产**不入库**（`base/*.img`、`base/*.container`、`base/*.fd`、`out/` 已在 `.gitignore` 里）：
+  宿主机是权威，入库的副本只会静默过期——历史上那份 `out/kata-containers-initrd-taa-csv.initrd`
+  与 base 逐字节相同，就是复制品而非构建产物。用 `./build-initrd.sh fetch-base` 取。
+- 注入的 TAA 必须是静态链接的：`CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa`。
+- wrapper（`taa-init.sh`）的判定逻辑有单测：`./test-taa-init.sh`，改动后先跑它。

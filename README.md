@@ -478,8 +478,8 @@ go build -o bin/platform-mock ./tools/platform-mock/cmd/platform-mock
 ### Build Commands
 
 ```bash
-# Build TAA enclave daemon
-go build -o bin/taa ./cmd/taa
+# Build TAA enclave daemon (static, as the production image and the CSV2 initrd build both require)
+CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa
 
 # Build platform mock emulator
 go build -o bin/platform-mock ./tools/platform-mock/cmd/platform-mock

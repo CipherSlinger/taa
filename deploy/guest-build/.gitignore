@@ -1,0 +1,12 @@
+# Base Kata assets are authoritative on the host, not in git: a committed copy
+# goes stale silently (the initrd that used to live here was truncated and cpio
+# reported no error). Fetch them with `build-initrd.sh fetch-base`; the paths and
+# hashes of whatever was fetched are recorded in base/source-paths.txt.
+base/*.img
+base/*.container
+base/*.fd
+base/*.part
+
+# Build output. It is derived state, and the copy once committed here was
+# byte-identical to the base initrd rather than a real build product.
+out/

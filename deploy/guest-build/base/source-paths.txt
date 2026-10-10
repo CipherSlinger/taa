@@ -1,3 +1,16 @@
+# Where the base Kata assets on 172.16.10.178 came from.
+# The files themselves are NOT tracked (see ../.gitignore): the host is the
+# authority, and a committed copy goes stale silently. Refresh with:
+#
+#   REMOTE_USER=root ./build-initrd.sh fetch-base
+#
+# fetch-base prints the SHA-256 and cpio entry count of what it fetched; record
+# them here so a later build can tell whether the base moved underneath it.
+#
+# NOTE: the copy that used to be committed here had a truncated gzip stream
+# (gzip -t fails, cpio -t stops at 265 entries). Check the recorded hash, do not
+# trust the working tree.
+
 /opt/kata/share/kata-containers/vmlinuz-confidential-csv.container -> /opt/kata/share/kata-containers/vmlinuz-6.6.0+-153-confidential-csv
 /opt/kata/share/kata-containers/kata-containers-initrd-confidential-csv.img -> /opt/kata/share/kata-containers/kata-containers-initrd-2026-07-24-10:36:12.922811362+0000-97bd01058-csv.initrd
 /opt/kata/share/ovmf/OVMFCSV.fd -> /opt/kata/share/ovmf/OVMFCSV.fd
