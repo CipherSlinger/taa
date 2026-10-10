@@ -32,8 +32,7 @@ RUN mkdir -p /root/taa/models \
              /root/taa/results \
              /root/taa/attestation \
              /opt/taa/input \
-             /opt/taa/output \
-             /taatest
+             /opt/taa/output
 
 WORKDIR /root/taa
 
