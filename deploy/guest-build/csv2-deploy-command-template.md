@@ -13,7 +13,9 @@
 
 ```bash
 # 远程宿主机 / Kata 侧
-export REMOTE_USER=osr
+# 脚本全程在远端 sudo 改 kata/containerd 配置并重启服务，所以默认用 root（公钥登录，不需要密码）。
+# 换成非 root 账号前，先确认该账号有免密 sudo，否则会在改配置的中途失败。
+export REMOTE_USER=root
 export REMOTE_HOST=172.16.10.178
 export REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
 
@@ -257,7 +259,7 @@ kubectl exec test-kata-csv2-taa -- \
 
 ### guest-build/build-initrd.sh
 
-- `REMOTE_USER=osr`
+- `REMOTE_USER=root`（需免密 sudo 或直接是 root；脚本会在写入前先检查）
 - `REMOTE_HOST=172.16.10.178`
 - `REMOTE_BUNDLE_DIR=/opt/kata/share/kata-containers/taa-csv-20260901`
 - `REMOTE_KATA_CONFIG=/etc/kata-containers/configuration-qemu-csv2-taa.toml`

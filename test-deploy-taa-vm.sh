@@ -51,6 +51,10 @@ default_config="$("$BUILD" print-config)"
 eval "$default_config"
 check "print-config: default annotations are an empty object" "{}" "$TEST_POD_ANNOTATIONS"
 check "print-config: default handler" "kata-qemu-csv2-taa" "$RUNTIME_HANDLER"
+# The flow writes host config through sudo all the way through, so the default
+# account has to be one that can. A non-root default needs NOPASSWD sudo set up
+# on the host first, which is exactly the failure this default avoids.
+check "print-config: default remote user is root" "root" "$REMOTE_USER"
 
 # ── 2. the containerd handler stripper ───────────────────────────────────────
 #
@@ -148,7 +152,15 @@ check_contains "guard: refuses a shared bundle directory" 'REMOTE_BUNDLE_DIR 指
 check_contains "guard: refuses a runtime still in use" '仍被以下 Pod 使用' "$driver_src"
 check_contains "guard: verifies the original kata config afterwards" '出厂 Kata 配置未变' "$driver_src"
 check_contains "guard: verifies the base initrd afterwards" 'base initrd 未变' "$driver_src"
+check_contains "guard: checks passwordless sudo before mutating" 'passwordless sudo' "$driver_src"
 check_contains "delete defaults to dry-run-able, mutation goes through one point" 'dry-run: %s' "$driver_src"
+
+# The same check must exist in build-initrd.sh's own remote steps, since those
+# are reachable without the driver.
+build_src="$(cat "$BUILD")"
+sudo_checks="$(grep -c 'id -u' "$BUILD")"
+check "build-initrd.sh: sudo precheck in both deploy and launch" "2" "$sudo_checks"
+check_contains "build-initrd.sh: the precheck explains the hint" 'NOPASSWD sudoers' "$build_src"
 
 # ── 4. argv handling ────────────────────────────────────────────────────────
 "$DRIVER" help >/dev/null 2>&1 && echo "ok   help exits 0" ||

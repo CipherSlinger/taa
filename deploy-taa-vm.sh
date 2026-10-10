@@ -108,6 +108,37 @@ require_cmd() {
   done
 }
 
+# ── Remote privilege ─────────────────────────────────────────────────────────
+#
+# Every mutating step writes host configuration through sudo, and ssh hands the
+# remote shell no tty to answer a prompt with. Worth checking before the local
+# build too: a run that cannot finish should not spend a minute building first.
+# Cached, because `up` preflights several steps and this costs an ssh each time.
+SUDO_CHECKED=0
+check_remote_sudo() {
+  [[ "$SUDO_CHECKED" == "1" ]] && return 0
+  local mode
+  if ! mode="$(ssh "$REMOTE" 'bash -s' <<'REMOTE_SUDO'
+set -u
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "已以 root 登录"
+  exit 0
+fi
+if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+  echo "非 root，但有免密 sudo"
+  exit 0
+fi
+exit 1
+REMOTE_SUDO
+  )"; then
+    echo "error: $REMOTE 无法免密提权，流程会改到一半失败" >&2
+    echo "hint: 以 root 登录（默认 REMOTE_USER=root），或给该账号配 NOPASSWD sudoers 条目" >&2
+    exit 1
+  fi
+  SUDO_CHECKED=1
+  echo "远端提权：$mode"
+}
+
 # ── CoCo annotation discovery ────────────────────────────────────────────────
 #
 # The image is pulled by the CDH inside the guest, so the registry CA has to
@@ -182,6 +213,8 @@ preflight() {
 
   case "$step" in
     deploy|up)
+      require_cmd ssh
+      check_remote_sudo
       # The initrd must carry a registration identity or deploy refuses to
       # publish it. Surface that here with both ways out, rather than letting it
       # fail after a full build.
@@ -198,6 +231,7 @@ preflight() {
   case "$step" in
     launch|up)
       require_cmd ssh
+      check_remote_sudo
       ensure_pod_annotations
       if [[ "$TEST_IMAGE" == "busybox:latest" ]]; then
         echo "note: TEST_IMAGE 仍是 busybox:latest；镜像由 guest 内的 CDH 拉取，拉不动会白等 180s" >&2
@@ -347,6 +381,14 @@ for cmd in kubectl sudo grep python3 cmp sha256sum awk; do
     exit 1
   fi
 done
+
+# Establish privilege before the first mutation, for the same reason the other
+# steps do: ssh cannot answer a sudo prompt.
+if [[ "$(id -u)" -ne 0 ]] && ! sudo -n true 2>/dev/null; then
+  echo "error: this SSH account needs passwordless sudo on the host (sudo -n true failed)" >&2
+  echo "hint: log in as root, or add a NOPASSWD sudoers entry for this account" >&2
+  exit 1
+fi
 
 # run <cmd...>: the single mutation point. In dry-run it only prints.
 run() {

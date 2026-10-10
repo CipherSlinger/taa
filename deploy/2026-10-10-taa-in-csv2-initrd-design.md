@@ -389,8 +389,10 @@ v2 的三条通道，按可靠性排序：
 | 新增子命令 | `fetch-base`：从 `$REMOTE_BASE_INITRD_SRC` / `$REMOTE_KERNEL_SRC` / `$REMOTE_OVMF_SRC` scp 到 `base/`，并打印 SHA-256 与条目数 |
 | 打印校验 | `build_initrd` 开头打印 base 的 SHA-256 与条目数，作为"这份 base 是什么"的现场记录 |
 
-`fetch-base` 复用脚本已有的 `REMOTE_*` 变量与 ssh 惯用法；`REMOTE_USER` 默认 `osr`，
-本次实操用 `root`（与凭据来源一致），通过环境变量覆盖。
+`fetch-base` 复用脚本已有的 `REMOTE_*` 变量与 ssh 惯用法。`REMOTE_USER` 原先默认 `osr`，本次实操一路用
+`root`（与凭据来源一致）；事后已把**默认值改成 `root`**——流程全程要在远端改 kata/containerd 配置并重启
+服务，非 root 账号必须先配好免密 sudo，否则会在改配置的中途失败。同时给 deploy / launch / delete 三步
+都加了**免密提权前置检查**（`id -u` 为 0，或 `sudo -n true` 成功），在任何写入之前就报错并给出提示。
 
 ---
 

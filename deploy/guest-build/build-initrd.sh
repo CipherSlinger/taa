@@ -91,7 +91,11 @@ taa_env_file_needed() {
 
 # 当前海光 CSV 测试主机的远程部署默认值。所有值都可通过环境变量覆盖，
 # 因此同一个脚本可以用于其它服务器、其它 Kata 配置或其它 RuntimeClass 名称。
-REMOTE_USER="${REMOTE_USER:-osr}"
+#
+# REMOTE_USER 默认 root：脚本在远端全程用 sudo 改 kata/containerd 配置并重启服务，
+# 用非 root 账号就必须额外配好免密 sudo，否则会在改配置的中途失败。登录用公钥，
+# 不需要密码（该账号有 pam_faillock，密码认证失败几次就锁）。
+REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_HOST="${REMOTE_HOST:-172.16.10.178}"
 REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
 REMOTE_BUNDLE_DIR="${REMOTE_BUNDLE_DIR:-/opt/kata/share/kata-containers/taa-csv-20260901}"
@@ -606,6 +610,15 @@ for cmd in sudo sha256sum awk; do
   fi
 done
 
+# Every write below goes through sudo, and ssh gives no tty to answer a prompt
+# with. Check that privilege is already available rather than discovering it
+# halfway through installing the bundle.
+if [[ "$(id -u)" -ne 0 ]] && ! sudo -n true 2>/dev/null; then
+  echo "error: this SSH account needs passwordless sudo on the host (sudo -n true failed)" >&2
+  echo "hint: log in as root, or add a NOPASSWD sudoers entry for this account" >&2
+  exit 1
+fi
+
 echo "校验上传的 initrd、kernel 和 OVMF"
 
 if [[ ! -f "$remote_initrd" ]]; then
@@ -680,6 +693,14 @@ for cmd in kubectl sudo grep ps python3 containerd hostname cmp; do
     exit 1
   fi
 done
+
+# Least-recoverable step of the flow comes next (a containerd config rewrite and
+# restart), so establish that privilege is available before touching anything.
+if [[ "$(id -u)" -ne 0 ]] && ! sudo -n true 2>/dev/null; then
+  echo "error: this SSH account needs passwordless sudo on the host (sudo -n true failed)" >&2
+  echo "hint: log in as root, or add a NOPASSWD sudoers entry for this account" >&2
+  exit 1
+fi
 
 k8s_name_re='^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
 if [[ ! "$runtime_handler" =~ $k8s_name_re ]]; then
