@@ -213,11 +213,75 @@ healthz**，而 healthz 内部会真发一次 `POST /api/generate`（`num_predic
 1. ~~**`models/ollama/lib/` 被 gitignore，soname 链接不在版本控制里**~~
    **已解决**：改由 `teellm/deploy.sh` 的 `ollama_soname_fix_script()` 在部署时自动补齐
    （§4.3），bundle 是否带链接、是否被 gitignore 都不再重要。**复发风险已消除。**
-2. **`TAA_LLM_ENDPOINT` 需要在调用 `deploy.sh` 时显式给出**，仓库里没有持久化
-   `10.0.0.2`。这是有意的（容器 IP 是运行期变量），但意味着文档/编排层要负责传递它。
+2. ~~**`TAA_LLM_ENDPOINT` 需要在调用 `deploy.sh` 时显式给出**~~
+   **已解决**：`deploy.sh` 的 `resolve_llm_endpoint()` 改成**自动探测**——显式变量优先，
+   否则取 `taa-teellm` 容器的 IP，都取不到才回落回环（host 网络的 teellm 报不出 IP，
+   正好也落回环）。远端路径**不做探测**（`docker inspect` 在本地跑，会把本地容器 IP 写进
+   远端配置），那里仍是「显式变量或回环」。见 §7。
 3. **本轮未做真实审计请求的端到端**（TAA 收到扫描任务 → 调 LLM verifier → 返回）。
    启动探测已覆盖同一条链路且成本极低，真实审计需要走平台协议的加密信封，
    留给后续按需补做。
 4. **容器 1 里那份 teellm 已被停掉**（网关现在只在容器 2）。若日后需要回退到同容器部署，
    `teellm/deploy.sh` 的默认值改回 `taa-env-slim-v2`、`TAA_LLM_ENDPOINT` 留默认回环即可，
    两条改动都是可逆的。
+
+---
+
+## 7. 顺带修掉的两个部署脚本缺陷
+
+这两个都不是容器拆分引入的，而是在用 `./deploy.sh docker` 走一遍时暴露出来的。
+
+### 7.1 端点默认值：写死回环 → 自动探测
+
+**这是本文件 §3.2 那个默认值的直接后果。** 拆容器之后 `./deploy.sh docker` 不再带
+`TAA_LLM_ENDPOINT`，于是配置被写回 `https://127.0.0.1:8443`，而网关在 `taa-teellm`
+（`10.0.0.2`）——`fail-closed: true` 让 TAA 每 10s 崩溃重启，部署在 120s 就绪等待上超时：
+
+```
+[TAA-FATAL] probe inference service (fail-closed): health check failed:
+  Get "https://127.0.0.1:8443/healthz": dial tcp 127.0.0.1:8443: connect: connection refused
+```
+
+**改法**：`TAA_LLM_ENDPOINT` 默认改为空，新增 `resolve_llm_endpoint()`：
+
+| 优先级 | 取值 |
+| :--- | :--- |
+| 1 | 显式设置的 `TAA_LLM_ENDPOINT` |
+| 2 | `taa-teellm` 容器（可用 `TAA_TEELLM_CONTAINER` 改名）的 IP |
+| 3 | `https://127.0.0.1:<TAA_TEELLM_PORT>`（默认 8443） |
+
+只在**本地 docker** 两处调用（`save_local_docker_image`、`deploy_docker_taa`），
+并在部署时打印 `✓ taa llm endpoint: https://10.0.0.2:8443` 让它可见。
+
+**远端那处刻意不探测**：那是要被 `scp` 到远端宿主机的配置，在本地跑 `docker inspect`
+会把**本地**容器 IP 写进远端配置。远端维持「显式变量，否则回环」。
+
+### 7.2 提示信息里 `\033[2m` 字面输出
+
+`teellm/deploy.sh` 的日志函数把消息放在 `%s` 参数位：
+
+```sh
+info() { printf "   ${GREEN}✓${NC} %s\n" "$1"; }
+...
+info "$label ${DIM}(took ${total_elapsed}s)${NC}"   # ← 颜色码在参数里
+```
+
+`printf` **只解释格式串里的反斜杠转义**，参数里的 `\033` 原样输出，于是终端显示
+`✓ compiling teellm-service binary \033[2m(took 1s)\033[0m`——绿色的 ✓ 正常，暗淡的耗时前后缀变成裸文本。
+
+**改法**：`step/info/warn/err/detail` 的消息参数一律从 `%s` 改为 `%b`（`%b` 会解释参数里的转义），
+一处改动覆盖全部四个调用点（`:173`、`:1272`、`:1841`、`:2119`），也防止以后再犯。
+`banner()` 用 `echo -e`，本来就没问题。
+
+### 7.3 一处误导性注释
+
+`deploy_remote` 里那对路径兼容软链接的注释写的是 **"Dynamic linker compatibility symlinks"**——
+**错的**。它们与动态加载器无关（真正的加载器问题是 §4），只是把
+`/taatest/ollama-qwen2.5-coder-0.5b` 与 `$CON_WORKDIR/ollama-qwen2.5-coder-0.5b`
+这两个**旧路径**指向当前的 `CONTAINER_OLLAMA_DIR`。注释已改正，并点明与 §4 无关。
+
+> 关于这对软链接的来历：它们在子模块的**第一个提交**（`6a1d925`，2026-09-19）就存在，
+> 提交说明里没有解释。全仓库检索 `taatest` 只有三处命中——`deploy/manifest/docker/Dockerfile.base`
+> 建了这个目录、`docs/architecture-design.md` §10.3 把它记为容器内布局、以及 `teellm/deploy.sh`
+> 自己。**当前代码里没有任何东西去读这两个旧路径**，所以它们目前是出于兼容考虑的冗余。
+> 保留（外部手工脚本可能仍在用）而非删除，属于待定项。
