@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # End-to-end driver for the "TAA inside the Kata CSV2 initrd" flow.
 #
+# Lives at the repository root so the whole flow is one command from the top of
+# the tree; the build it drives stays under deploy/guest-build/.
+#
 # build-initrd.sh stays the authority on the mechanics (how the initrd is
 # assembled, what gets written on the host, how the test Pod is launched). This
 # script only decides which steps run in what order, supplies the environment
@@ -24,7 +27,18 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_INITRD="$SCRIPT_DIR/build-initrd.sh"
+
+# This script lives at the repository root, but the build it drives lives under
+# deploy/guest-build/. Assert we really are at the root: every relative path
+# below (bin/taa, the guest-build scripts) silently points at nothing otherwise.
+if [[ ! -f "$SCRIPT_DIR/go.mod" ]]; then
+  echo "error: deploy-taa-vm.sh must sit at the repository root (no go.mod in $SCRIPT_DIR)" >&2
+  exit 1
+fi
+
+GUEST_BUILD_DIR="$SCRIPT_DIR/deploy/guest-build"
+BUILD_INITRD="$GUEST_BUILD_DIR/build-initrd.sh"
+TAA_BIN="$SCRIPT_DIR/bin/taa"
 
 if [[ ! -x "$BUILD_INITRD" ]]; then
   echo "error: $BUILD_INITRD not found or not executable" >&2
@@ -152,7 +166,7 @@ preflight() {
         echo "hint: 先跑 $0 fetch-base" >&2
         exit 1
       fi
-      local taa_bin="$SCRIPT_DIR/../../bin/taa"
+      local taa_bin="$TAA_BIN"
       if [[ ! -f "$taa_bin" ]]; then
         echo "error: bin/taa 缺失: $taa_bin" >&2
         echo "hint: CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa" >&2

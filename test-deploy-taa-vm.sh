@@ -12,7 +12,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRIVER="$SCRIPT_DIR/deploy-taa-vm.sh"
-BUILD="$SCRIPT_DIR/build-initrd.sh"
+# The driver owns the flow; build-initrd.sh owns the defaults it resolves.
+BUILD="$SCRIPT_DIR/deploy/guest-build/build-initrd.sh"
 
 tmp_dir="$(mktemp -d /tmp/test-deploy-taa-vm.XXXXXX)"
 trap 'rm -rf "$tmp_dir"' EXIT
