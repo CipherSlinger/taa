@@ -134,6 +134,20 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	// 5. 向管控平台注册本 TAA 实例，通知平台就绪并提交度量报告与公钥
 	if err := registerPlatform(ctx, platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, verifiedPass); err != nil {
 		log.Printf("WARNING: platform register failed, continuing startup: %v", err)
+		// The first attempt is expected to fail in a Kata CSV2 guest: it runs before
+		// the sandbox network exists (see register_retry.go). Keep trying in the
+		// background so the platform still learns about this instance, and keep using
+		// the boot-time timestamp so the payload stays consistent with the report
+		// attached to it (the platform's view of a registration is last-write-wins).
+		go func() {
+			err := retryRegister(ctx, registerRetryInitialDelay, registerRetryMaxDelay, registerRetryWindow,
+				func(attemptCtx context.Context) error {
+					return registerPlatform(attemptCtx, platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, verifiedPass)
+				})
+			if err != nil {
+				log.Printf("WARNING: platform register retries gave up: %v", err)
+			}
+		}()
 	} else {
 		log.Printf("platform register completed")
 	}
