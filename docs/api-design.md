@@ -123,7 +123,7 @@ TAA 服务启动时先生成随机 SM2 公私钥对，生成远程证明报告�
 | `attestation` | `string` | 是 | 远程证明报告文件，Base64 编码格式（原始 2548 字节 → 编码后约 3400 字符） |
 | `taaPublicKey` | `string` | 是 | TAA 启动时生成的 SM2 公钥 PEM（国密标准） |
 | `attestationValues` | `string` | 是 | attestation report 核心字段提取的 JSON 字符串，包含 USERDATA、MNONCE、DIGEST、CHIP_ID 等关键字段 |
-| `timestamp` | `string` | 是 | 生成 attestation 时的 Unix 时间戳（秒），与 USERDATA 中的时间戳一致 |
+| `timestamp` | `string` | 是 | 生成 attestation 时的 Unix 时间戳（秒），随注册请求单独上报；不参与 USERDATA 构成 |
 | `verifiedPass` | `bool` | 是 | TAA 验证远程证明报告结果，`true` 表示成功，`false` 表示失败 |
 | `authInfo` | `object/null` | 否 | 当前固定传 `null` |
 
@@ -307,7 +307,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
     },
     "checksum": {                                         // 数据集完整性校验
       "size": 540672,                                     // 数据集原始大小（字节）
-      "algorithm": "sm3",                                // 哈希算法：sm3 / sha256 等
+      "algorithm": "sm3",                                // 哈希算法：当前实现固定为 sm3
       "value": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"  // 哈希值
     }
   },

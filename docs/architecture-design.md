@@ -165,7 +165,7 @@ sequenceDiagram
 │                                                                     │
 │  1. 解析启动参数 (-debug, -addr, -security-scan 等)                  │
 │  2. 生成 SM2 密钥对 (taaKeyPair)                                    │
-│  3. 计算 USERDATA = SM3(publicKey + dockerId + platformIP + timestamp)│
+│  3. 计算 USERDATA = taaPublicKey.X || taaPublicKey.Y                │
 │  4. 调用 attestation helper 生成远程证明报告 (report.cert)             │
 │     └─ ATTESTATION_USERDATA 环境变量传入自定义 userdata                │
 │  5. POST /v1/taa/register → 平台注册                                 │
@@ -376,20 +376,20 @@ reportTrainingAsync()
 
 1. TAA 启动时调用 `attestation/get-attestation` helper
 2. Helper 通过 CSV 硬件（vmmcall 或 ioctl）获取远程证明报告
-3. 报告包含 USERDATA（SM3 哈希）、MNONCE、DIGEST、CHIP_ID
+3. 报告包含 USERDATA（TAA SM2 公钥 X‖Y）、MNONCE、DIGEST、CHIP_ID
 4. 注册时报告以 Base64 编码发送给平台
 5. `/v1/taa/getAttestation` 可重新生成报告（复用启动时的 USERDATA）
 
 ### 7.2 USERDATA 构成
 
 ```
-USERDATA = SM3(taaPublicKey || dockerId || platformIP || timestamp)
+USERDATA = taaPublicKey.X || taaPublicKey.Y
 ```
 
-- 64 字节（SM3 输出 32 字节，重复填充到 64 字节）
+- 64 字节 = 两个 32 字节坐标分别左侧补零到 32 字节后拼接（`internal/app/taa/app.go` 的 `deriveUserData`），不含任何哈希
 - 通过 `ATTESTATION_USERDATA` 环境变量传入 helper
 - 在 `/v1/taa/getAttestation` 返回时，`userdata` 会转换为 PEM 格式的 SM2 公钥字符串
-- 绑定 TAA 公钥、容器、平台与 TEE 硬件
+- 只绑定 TAA 公钥与 TEE 硬件；dockerId / platformIP / timestamp 随注册请求单独上报，不进入 USERDATA
 
 ### 7.3 attestationValues 字段
 

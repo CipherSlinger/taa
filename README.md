@@ -261,7 +261,7 @@ All TAA APIs are exposed over HTTP `POST`. For comprehensive request/response sc
 | Endpoint | Method | Description |
 | :--- | :---: | :--- |
 | `/v1/taa/register` | `POST` | Hardware attestation report & SM2 public key registration during bootstrap |
-| `/v1/taa/reportModelImport` | `POST` | Reports model download/import status, error messages, and SM3/SHA256 checksum |
+| `/v1/taa/reportModelImport` | `POST` | Reports model download/import status, error messages, and SM3 checksum |
 | `/v1/taa/reportAudit` | `POST` | Reports code security audit status, risk statistics (`high`/`medium`/`low`), and report URL |
 | `/v1/taa/reportProgress` | `POST` | Periodically reports training progress percentage, message, and timestamp |
 | `/v1/taa/modelLog` | `POST` | Streams incremental, deduplicated training terminal execution logs (`train.jsonl`) |
