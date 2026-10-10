@@ -82,6 +82,10 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 			}
 			log.Printf("WARNING: inference service probe failed (non-fatal): %v", err)
 		}
+	} else {
+		// Log the skip explicitly: otherwise a startup log with no connectivity verdict is
+		// ambiguous between "the gateway answered" and "no probe was ever attempted".
+		log.Printf("LLM code audit disabled; skipping inference service connectivity probe")
 	}
 
 	// 2. 加载或生成本 TAA 实例专用的国密 SM2 密钥对（优先从持久化目录加载，若不存在则生成并落盘）
@@ -199,6 +203,16 @@ func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error 
 		timeout = 3 * time.Second
 	}
 
+	probeTimeout := 5 * time.Second
+	if cfg.LLMTimeoutMs > 0 {
+		probeTimeout = timeout
+	}
+
+	// Announce the probe before building the client, so that even a configuration failure
+	// (bad endpoint, host outside AllowedHosts) is preceded by the endpoint it was aimed at.
+	log.Printf("inference service connectivity probe: endpoint=%s transport=%s attestMode=%s mutualAttest=%v timeout=%s",
+		cfg.LLMEndpoint, cfg.LLMTransport, cfg.LLMAttestationMode, cfg.LLMRequireMutualAttest, probeTimeout)
+
 	var teeTLSConfig *teetls.Config
 	if cfg.LLMTransport == "teetls" || cfg.LLMTransport == "https" || cfg.LLMTransport == "" {
 		mode := teetls.ModeStrict
@@ -229,19 +243,25 @@ func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error 
 	}
 	defer client.Close()
 
-	probeTimeout := 5 * time.Second
-	if cfg.LLMTimeoutMs > 0 {
-		probeTimeout = timeout
-	}
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	log.Printf("probing inference service readiness (transport=%s, endpoint=%s, attestMode=%s)",
-		cfg.LLMTransport, cfg.LLMEndpoint, cfg.LLMAttestationMode)
+	// The verdict carries its wall-clock cost: the probe is a full TEE-TLS handshake plus
+	// /healthz, and /healthz answers only once the backend model has loaded, so a slow gateway
+	// is expected on a cold start. Without the timing, "gateway is cold" and "gateway is
+	// unreachable" produce lookalike failures.
+	started := time.Now()
 	if err := client.HealthCheck(probeCtx); err != nil {
+		elapsed := time.Since(started).Round(time.Millisecond)
+		// Stated here as well as at the call site because with fail-closed this is the last
+		// line this process logs before exiting, and the caller's line does not carry the hint.
+		log.Printf("ERROR: inference service connectivity probe failed after %s: %v", elapsed, err)
+		log.Printf("hint: check the tee-llm gateway at %s -- \"transient status 503\" means it is "+
+			"running but its model is not loaded yet, a dial/connect error means nothing is listening there",
+			cfg.LLMEndpoint)
 		return fmt.Errorf("health check failed: %w", err)
 	}
-	log.Printf("inference service probe succeeded")
+	log.Printf("inference service connectivity probe succeeded (took %s)", time.Since(started).Round(time.Millisecond))
 	return nil
 }
 
