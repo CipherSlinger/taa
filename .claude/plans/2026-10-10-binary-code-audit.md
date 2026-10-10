@@ -93,6 +93,9 @@ go build ./... && go test ./internal/codeaudit/... ./internal/config/... ./inter
 4. **`CheckImportWithLLM` 不接二进制通道**。生产路径是 `GenerateAuditReport`（`internal/controller/import_processing.go:642`）；`CheckImportWithLLM` 只被 `llm_test.go` 使用，是第二个 gate 实现。本版不改它，**它的语义由此与生产不同**，这一点写在它的 doc comment 里。
 5. **不做二进制瘦身/反编译/符号执行**。证据是"这个文件导入了什么、说了什么、熵是多少"，不是控制流。
 6. **纯数据文件不做熵判定**。`KindRaw`（权重、张量、未知二进制）与 `KindNumpy` 只产出 strings 与 pickle 目标证据，不产出熵行。理由：模型包里绝大多数字节就是权重，权重天然接近均匀分布，整文件熵规则会对每一个 `.safetensors` 误报；而本平台不执行裸数据文件，能运行的载荷一定以 ELF 或 pickle 形式出现，两者都有精确证据（可执行节区熵 / `GLOBAL` 目标）。**代价明确**：一个以 `.bin` 投递、再由包内某个 `.so` 解密的加密载荷，其密文本身不会被判为加壳。
+7. **pickle 目标识别基于 opcode 相邻性，可被受控流规避**。`STACK_GLOBAL`（`0x93`）的模块名与属性名来自它前面紧邻的两个字符串 opcode；把模块名先 `MEMOIZE`、再用 `BINGET` 取回，相邻性就不成立，本版的扫描器看不到这个目标。`GLOBAL`（`c module\nname\n`）不受此影响，因为它自带两个内联字符串。**代价明确**：一个刻意构造的 pickle 可以让它的 `STACK_GLOBAL` 目标不出现在证据里。这不改变 fail-closed 的边界——漏读的是"证据"，不是"读取"本身，所以报告仍会因为它读到的其他东西（`GLOBAL`、strings、导入符号）作判断，只是这一条线索不可依赖。真正的修法是做一个有 memo 表的 pickle 虚拟机，那是本版明确不做的（见第 5 条）。
+8. **超过 `MaxFullScanBytes`（64 MiB）的文件只读首尾各 1 MiB**。这次跳过会按 `isExecutableKind` 的既有分野记账：`KindRaw`（张量、未知二进制）计入 `BoundedData`——可见、不阻断；`KindELF` 与 `KindPickle` 计入 `BoundedExecutable`——**fail-closed 下即阻断导入**。后半条是必须的：若窗口化不留痕，把一个 pickle 填充到 64 MiB 以上就能藏住中段的 `GLOBAL` 并且照样通过，阈值本身就成了绕过手段。**代价明确**：一个大于 64 MiB 的 `.so` 或 pickle 会被判为未完整扫描而阻断，出路是 operator 调高 `maxFullScanBytes`（这也是该配置项存在的理由），不是被静默豁免。就信息损失本身：`KindRaw` 的中段是张量数据，本平台不存在读它的加载器；`KindPickle` 的中段可能藏着一条 `GLOBAL`（在一长串数据构建 opcode 中间），首尾窗口覆盖加载时执行的前段与数据就绪后动作的后段，中段是缺口。本仓库全部语料中最大的 pickle 是 10.8 MiB，离阈值有 6 倍余量。
+9. **合并两个通道的 finding 时不再二次限流**。源码臂保有自己的 200，二进制臂保有自己的 50，合并列表不设上限（见 Task 11）。**代价明确**：极端情况下 Tier 2 的 LLM 调用上界从 200 变成 250。这个上界换的是别的东西：共享配额会让大源码臂按路径字典序挤掉二进制 finding，并且——因为触顶即 `Truncated`、`Truncated` 即 `ProvesCleanScan()` 为假、为假即删包——会把一个本来能导入的包变成被删的包。已入库语料的实测最大 finding 数是单样本 7、整语料 80，两个上限都远未接近，所以保护模型的从来是那个阻断，不是配额。
 
 ---
 
@@ -228,6 +231,12 @@ var binaryExtensions = map[string]bool{
 	".bin": true, ".pt": true, ".pth": true, ".pkl": true, ".pickle": true,
 	".joblib": true, ".safetensors": true, ".onnx": true, ".whl": true,
 	".h5": true, ".pb": true, ".tflite": true, ".npy": true, ".npz": true,
+	// Compiled Python. It is listed even though the content heuristic already
+	// catches it - a real .pyc measured 229 to 2264 NUL bytes in its first 4 KiB
+	// - because a model package carries more .pyc than .py (110 against 60 in
+	// the example corpus) and the most on-point format in this channel should
+	// not depend on a heuristic holding. The interpreter loads these directly.
+	".pyc": true, ".pyo": true,
 }
 
 // ClassifyBinary decides how a file should be read. head is the file's first
@@ -711,9 +720,12 @@ func isPrintableByte(b byte) bool {
 
 // streamEvidence runs the byte-oriented extractors over one file.
 //
-// budget is the maximum number of bytes the pass may read. Hitting it is a
-// structural bound: the tail was not read, so for a format that can execute a
-// clean verdict is withheld rather than assumed.
+// budget is the maximum number of bytes the pass may read, and it is enforced
+// inside the read rather than between reads: checking it only at the top of the
+// loop lets a single 64 KiB read walk straight past a 32-byte budget, which
+// makes the budget a decoration. Whether the file was too large is decided up
+// front from its size, so that a file that ends exactly at the budget is not
+// reported as bounded - a bound that did not cost anything is not a bound.
 func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int64) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -721,20 +733,30 @@ func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int6
 	}
 	defer f.Close()
 
+	if info, statErr := f.Stat(); statErr == nil && budget > 0 && info.Size() > budget {
+		set.markStructural(fmt.Sprintf("stream budget %d bytes reached (file is %d)", budget, info.Size()))
+	}
+
 	scanner := newStringScanner(set, cfg)
+	pickles := newPickleScanner(set)
 
 	var read int64
 	buf := make([]byte, evidenceReadChunk)
 	for {
-		if budget > 0 && read >= budget {
-			set.Bound.Structural = true
-			set.Bound.Reason = fmt.Sprintf("stream budget %d bytes reached", budget)
-			break
+		limit := len(buf)
+		if budget > 0 && int64(limit) > budget-read {
+			limit = int(budget - read)
 		}
-		n, readErr := f.Read(buf)
+		if limit <= 0 {
+			break // the budget is spent; the bound was recorded above
+		}
+		n, readErr := f.Read(buf[:limit])
 		if n > 0 {
 			chunk := buf[:n]
 			if _, wErr := scanner.Write(chunk); wErr != nil {
+				return fmt.Errorf("scan %s: %w", path, wErr)
+			}
+			if _, wErr := pickles.Write(chunk); wErr != nil {
 				return fmt.Errorf("scan %s: %w", path, wErr)
 			}
 			read += int64(n)
@@ -747,6 +769,7 @@ func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int6
 		}
 	}
 	scanner.Flush()
+	pickles.Flush()
 	return nil
 }
 
@@ -815,6 +838,20 @@ type BinaryConfig struct {
 	MaxEvidenceLines int
 	// MaxStreamBytes bounds how much of one file the streaming pass reads.
 	MaxStreamBytes int64
+	// MaxFullScanBytes is the size above which a file is no longer streamed end to
+	// end, and only its head and tail are read. The number is set from the corpus
+	// this platform actually audits rather than from a guess: the largest file in
+	// the example package that reaches a full pass is a 10.8 MiB protocol-2 pickle,
+	// with .pyc files at 45-58 KiB and the MNIST blobs at ~10 MiB behind it. 64 MiB
+	// leaves six times the headroom over the largest of them, so no file in that
+	// corpus changes behaviour, and at the measured 338 MB/s it caps the work one
+	// file can cost at about 190 ms.
+	MaxFullScanBytes int64
+	// HeadTailBytes is the window read from each end of a file above
+	// MaxFullScanBytes. One mebibyte is what makes an appended payload visible: a
+	// zip's directory and the pickle stapled after the last member are both within
+	// it of one end or the other.
+	HeadTailBytes int64
 	// MaxSectionBytes bounds one ELF section read.
 	MaxSectionBytes int64
 	// MaxArchiveMembers bounds how many container members are examined.
@@ -822,6 +859,25 @@ type BinaryConfig struct {
 	// MaxArchiveMemberBytes bounds total decompressed bytes per container.
 	MaxArchiveMemberBytes int64
 	// MaxFindings caps findings across the whole binary pass.
+	//
+	// It is deliberately not the source scanner's cap. The two channels are capped
+	// separately and the merge re-truncates neither, because a shared ceiling
+	// couples them in the one direction that costs a model package: reaching a cap
+	// sets Truncated, Truncated fails ProvesCleanScan, and a failed scan has the
+	// package deleted. A shared 200 would let a source arm carrying 190 findings
+	// and a binary arm carrying 20 push a package that used to import into that
+	// state, and would choose which findings to drop by path order rather than by
+	// importance. Nothing recorded comes near either cap - the highest finding
+	// count in any stored report in this repository is 7 for one sample and 80 for
+	// a whole 100-sample corpus - so the ceiling that protects the model is the
+	// blocking, not the cap.
+	//
+	// 50 rather than 200 because the evidence families number ten
+	// (NET_002/CMD_001/DYN_001/BIN_001/BIN_002/PKL_001/FIL_001/PER_001/ENV_001/
+	// OBF_001): fifty findings is five instances of every family, far past the
+	// point where another instance changes the verdict. Worst case LLM calls go
+	// from 200 to 250, and only when both arms saturate - a state that already
+	// blocks and deletes regardless of how many calls it costs.
 	MaxFindings int
 	// HighEntropyThreshold is the bits-per-byte above which a section or file is
 	// called near-random. Compiled code sits near 6.0-6.5; 7.5 is far enough
@@ -843,12 +899,16 @@ func DefaultBinaryConfig() BinaryConfig {
 		MaxStringLen:          DefaultBinaryMaxStringLen,
 		MaxEvidenceLines:      50000,
 		MaxStreamBytes:        3 * 1024 * 1024 * 1024,
+		MaxFullScanBytes:      64 * 1024 * 1024,
+		HeadTailBytes:         1 << 20,
 		MaxSectionBytes:       16 * 1024 * 1024,
 		MaxArchiveMembers:     4096,
 		MaxArchiveMemberBytes: 256 * 1024 * 1024,
-		MaxFindings:           DefaultConfig().MaxFindings,
-		HighEntropyThreshold:  7.5,
-		SkipDirs:              DefaultConfig().SkipDirs,
+		// Not DefaultConfig().MaxFindings: the two channels are capped
+		// independently and the merge re-truncates neither. See the field comment.
+		MaxFindings:         50,
+		HighEntropyThreshold: 7.5,
+		SkipDirs:             DefaultConfig().SkipDirs,
 	}
 }
 
@@ -868,6 +928,12 @@ func normalizeBinaryConfig(cfg BinaryConfig) BinaryConfig {
 	}
 	if cfg.MaxStreamBytes <= 0 {
 		cfg.MaxStreamBytes = def.MaxStreamBytes
+	}
+	if cfg.MaxFullScanBytes <= 0 {
+		cfg.MaxFullScanBytes = def.MaxFullScanBytes
+	}
+	if cfg.HeadTailBytes <= 0 {
+		cfg.HeadTailBytes = def.HeadTailBytes
 	}
 	if cfg.MaxSectionBytes <= 0 {
 		cfg.MaxSectionBytes = def.MaxSectionBytes
@@ -912,10 +978,6 @@ func isExecutableKind(k BinaryKind) bool {
 func evidenceError(path string, kind BinaryKind, err error) *EvidenceSet {
 	return &EvidenceSet{File: path, Kind: kind, seen: map[string]bool{}, Err: err}
 }
-
-// errNoEvidence is returned by the extractors for a file that yielded nothing
-// examinable, which is a completed look rather than a failure.
-var errNoEvidence = errors.New("no evidence")
 ```
 
 - [ ] **Step 5: 跑测试确认通过**
@@ -1246,11 +1308,11 @@ func pickleTargets(data []byte) []pickleTarget {
 			// GLOBAL carries both operands inline, each newline-terminated. Both
 			// must be present for the shape to be a target: a stray 'c' byte in
 			// machine code followed by no newline is not a call.
-			mod, _, nMod, ok := readLineString(data[i+1:])
+			mod, nMod, ok := readLineString(data[i+1:])
 			if !ok {
 				continue
 			}
-			name, _, nName, ok := readLineString(data[i+1+nMod:])
+			name, nName, ok := readLineString(data[i+1+nMod:])
 			if !ok {
 				continue
 			}
@@ -1279,15 +1341,20 @@ func pickleTargets(data []byte) []pickleTarget {
 // readLineString reads one newline-terminated string, as GLOBAL encodes its two
 // operands. It returns the string, the number of bytes consumed including the
 // terminator, and whether the shape held.
-func readLineString(data []byte) (value string, rest []byte, n int, ok bool) {
+//
+// The caller advances by n rather than by the returned slice: both operands are
+// read from the same buffer at computed offsets, and returning a slice as well
+// would be a second way to say where the next operand starts, one of which would
+// eventually be wrong.
+func readLineString(data []byte) (value string, n int, ok bool) {
 	if len(data) == 0 {
-		return "", nil, 0, false
+		return "", 0, false
 	}
 	end := bytes.IndexByte(data, '\n')
 	if end < 0 {
-		return "", nil, 0, false
+		return "", 0, false
 	}
-	return string(data[:end]), data[end+1:], end + 1, true
+	return string(data[:end]), end + 1, true
 }
 
 // readShortBinUnicode reads a SHORT_BINUNICODE operand: the opcode, a one-byte
@@ -1931,6 +1998,8 @@ git commit -m "feat(audit): read ELF imports, dependencies and section entropy a
 
 - [ ] **Step 1: 写失败测试**
 
+先在 `binary_evidence_test.go` 的 import 块补 `"bytes"`（`zipFixture` 与 gzip 夹具都要用 `bytes.Buffer`；Go 不允许未使用的 import，所以在真的用到它的这一步才加）。
+
 追加到 `binary_evidence_test.go`：
 
 ```go
@@ -2173,12 +2242,13 @@ func readMemberHead(member *zip.File, n int) ([]byte, error) {
 	return buf[:read], nil
 }
 
-// collectELFMember runs the ELF extractor over a container member.
+// collectELFMember runs the byte extractors and the ELF extractor over a
+// container member.
 //
 // debug/elf needs random access and a member is a stream, so the member is
-// materialised first, bounded by MaxSectionBytes' sibling budget. That is the
-// cost of reading a nested ELF at all, and it is why the byte budget above is
-// checked before this is called rather than inside it.
+// materialised first, bounded by the archive's byte budget. That is the cost of
+// reading a nested ELF at all, and it is why the budget above is checked before
+// this is called rather than inside it.
 func collectELFMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) error {
 	rc, err := member.Open()
 	if err != nil {
@@ -2194,11 +2264,86 @@ func collectELFMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) erro
 		set.markStructural(fmt.Sprintf("member %s truncated at the byte budget", member.Name))
 	}
 
+	// The strings and pickle passes run over the member as well as the structural
+	// parse below. Without this, an ELF nested in a .whl would be the one
+	// executable format in the channel read without a strings pass - its sibling
+	// member kinds already get one - and a nested ELF is precisely where a stapled
+	// payload would be put. The bytes are already in memory, so the pass is a scan
+	// over a slice rather than a second read.
+	//
+	// A zero budget means unlimited here: the read that filled data was the
+	// bounded one, and bounding the scan of an already-bounded slice would only
+	// lose the tail of it.
+	if err := streamReaderEvidence(bytes.NewReader(data), set, cfg, 0, ""); err != nil {
+		return err
+	}
+
 	// The member is parsed out of memory, so it gets a reader rather than a
 	// path. A temporary file would be the alternative, and it would put
 	// attacker-controlled bytes on the filesystem of the auditing process for no
 	// reason.
-	return collectELFReader(bytes.NewReader(data), int64(len(data)), set, cfg, member.Name)
+	return collectELFReader(bytes.NewReader(data), set, cfg, member.Name)
+}
+
+// streamReaderEvidence runs both byte extractors over a stream, stopping after
+// budget bytes and recording the cut as a structural bound. A budget of zero or
+// less means the stream is read to the end.
+//
+// It exists because four call sites need exactly this loop - a pickle member, an
+// ELF member, a decompressed gzip stream, and a whole file - and the bound has to
+// be enforced identically in all of them. The reason is not brevity. The bound is
+// what sets Bound.Structural, Bound.Structural is what withholds a clean verdict
+// from a stream whose tail was never read, and a call site that enforced it
+// slightly differently would be a hole in the fail-closed rule rather than a
+// style difference.
+//
+// The budget is applied inside the read rather than between reads, for the same
+// reason it is in streamEvidence: checking at the top of the loop lets one 64 KiB
+// read walk past a much smaller budget. When the budget is spent, one probe byte
+// decides whether it actually cut anything - a stream that ends exactly at the
+// budget was read completely, and marking it bounded would fail a clean scan for
+// no reason.
+//
+// bounded is the caller's wording for the cut, because the four sites name
+// different budgets in their reasons.
+func streamReaderEvidence(rc io.Reader, set *EvidenceSet, cfg BinaryConfig, budget int64, bounded string) error {
+	scanner := newStringScanner(set, cfg)
+	pickles := newPickleScanner(set)
+
+	var read int64
+	buf := make([]byte, evidenceReadChunk)
+	for {
+		limit := len(buf)
+		if budget > 0 && int64(limit) > budget-read {
+			limit = int(budget - read)
+		}
+		if limit <= 0 {
+			var probe [1]byte
+			if n, err := rc.Read(probe[:]); n > 0 || (err != nil && err != io.EOF) {
+				set.markStructural(bounded)
+			}
+			break
+		}
+		n, readErr := rc.Read(buf[:limit])
+		if n > 0 {
+			if _, err := scanner.Write(buf[:n]); err != nil {
+				return err
+			}
+			if _, err := pickles.Write(buf[:n]); err != nil {
+				return err
+			}
+			read += int64(n)
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+	scanner.Flush()
+	pickles.Flush()
+	return nil
 }
 
 // collectPickleMember runs the byte extractors over a container member, tagged
@@ -2210,36 +2355,8 @@ func collectPickleMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) e
 	}
 	defer rc.Close()
 
-	scanner := newStringScanner(set, cfg)
-	pickles := newPickleScanner(set)
-
-	var read int64
-	buf := make([]byte, evidenceReadChunk)
-	for {
-		n, readErr := rc.Read(buf)
-		if n > 0 {
-			if _, err := scanner.Write(buf[:n]); err != nil {
-				return err
-			}
-			if _, err := pickles.Write(buf[:n]); err != nil {
-				return err
-			}
-			read += int64(n)
-			if read > cfg.MaxArchiveMemberBytes {
-				set.markStructural(fmt.Sprintf("member %s exceeds the byte budget", member.Name))
-				break
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return err
-		}
-	}
-	scanner.Flush()
-	pickles.Flush()
-	return nil
+	return streamReaderEvidence(rc, set, cfg, cfg.MaxArchiveMemberBytes,
+		fmt.Sprintf("member %s exceeds the byte budget", member.Name))
 }
 
 // collectCompressed reads a single-stream compressed file. Only the formats the
@@ -2262,42 +2379,21 @@ func collectCompressed(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	}
 	defer zr.Close()
 
-	scanner := newStringScanner(set, cfg)
-	pickles := newPickleScanner(set)
-
-	var read int64
-	buf := make([]byte, evidenceReadChunk)
-	for {
-		n, readErr := zr.Read(buf)
-		if n > 0 {
-			if _, err := scanner.Write(buf[:n]); err != nil {
-				return err
-			}
-			if _, err := pickles.Write(buf[:n]); err != nil {
-				return err
-			}
-			read += int64(n)
-			if read > cfg.MaxArchiveMemberBytes {
-				set.markStructural(fmt.Sprintf("decompressed stream exceeds %d bytes", cfg.MaxArchiveMemberBytes))
-				break
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return fmt.Errorf("read gzip %s: %w", path, readErr)
-		}
+	// The decompressed length is attacker-controlled, so the budget is what keeps
+	// a small .gz from expanding into an unbounded scan - the same guard the
+	// archive path uses, and enforced through the same helper so the two cannot
+	// drift.
+	if err := streamReaderEvidence(zr, set, cfg, cfg.MaxArchiveMemberBytes,
+		fmt.Sprintf("decompressed stream exceeds %d bytes", cfg.MaxArchiveMemberBytes)); err != nil {
+		return fmt.Errorf("read gzip %s: %w", path, err)
 	}
-	scanner.Flush()
-	pickles.Flush()
 	return nil
 }
 ```
 
 - [ ] **Step 4: 把 `collectELF` 拆出 reader 版本**
 
-`collectELF(path, ...)` 与 `collectELFMember` 需要共用同一段解析逻辑，所以把 Task 5 的实现体抽到一个以 `io.ReaderAt` + size 为入口的内核上，`collectELF` 变成薄封装。修改 `binary_evidence.go` 中 Task 5 写的 `collectELF`：
+`collectELF(path, ...)` 与 `collectELFMember` 需要共用同一段解析逻辑，所以把 Task 5 的实现体抽到一个以 `io.ReaderAt` 为入口的内核上，`collectELF` 变成薄封装。修改 `binary_evidence.go` 中 Task 5 写的 `collectELF`：
 
 ```go
 // collectELF reads a file's ELF structure into evidence.
@@ -2307,35 +2403,37 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return fmt.Errorf("stat %s: %w", path, err)
-	}
 	// The stream pass and the structural pass are separate on purpose: the
 	// stream pass reads the file front to back for literals, and the structural
 	// pass seeks. Sharing one handle between them would make the structural
 	// parse depend on where the stream pass happened to stop.
-	if err := streamEvidence(path, set, cfg, cfg.MaxStreamBytes); err != nil {
+	//
+	// Through streamWithSizeSwitch rather than streamEvidence directly, so that a
+	// large shared object is windowed at its ends like any other large blob
+	// instead of being streamed whole.
+	if err := streamWithSizeSwitch(path, set, cfg); err != nil {
 		return err
 	}
-	return collectELFReader(f, info.Size(), set, cfg, path)
+	return collectELFReader(f, set, cfg, path)
 }
 
 // collectELFReader is the ELF parse itself, over any random-access reader. It is
 // separate from collectELF so that a container member - which is a stream, not a
 // path - is parsed by the same code rather than by a second implementation that
 // would drift from this one.
-func collectELFReader(r io.ReaderAt, size int64, set *EvidenceSet, cfg BinaryConfig, name string) error {
+//
+// There is no size parameter: the parse bounds itself per section through
+// readBoundedSection, and a size the body never read would be a parameter that
+// only invites the assumption that something is bounds-checked elsewhere.
+func collectELFReader(r io.ReaderAt, set *EvidenceSet, cfg BinaryConfig, name string) error {
 	ef, err := elf.NewFile(r)
 	if err != nil {
 		return fmt.Errorf("parse elf %s: %w", name, err)
 	}
 	defer ef.Close()
-	// ... (Task 5 的解析体原样搬到这里)
+	// ... (Task 5 的解析体原样搬到这里，把 path 换成 name)
 }
 ```
-
-> `size` 参数当前未被解析体使用；保留它是为了让调用方不必在将来需要文件大小时再改一次签名。若 `go vet` 报未使用参数（不会，Go 不报未使用的函数参数），忽略即可。
 
 - [ ] **Step 5: 跑测试确认通过**
 
@@ -2443,6 +2541,61 @@ func TestCollectEvidenceRecordsAnUnreadableFile(t *testing.T) {
 		t.Error("Err = nil for a file with ELF magic that does not parse; the scan would report it clean")
 	}
 }
+
+// TestCollectEvidenceWindowsAFileAboveTheSizeThreshold pins the size switch and,
+// more importantly, that it leaves a trace.
+//
+// The threshold cannot be tested by making a 64 MiB file, so the config is
+// lowered and the file kept small. Both directions are asserted for the reason
+// the switch exists: a windowed data file is visible but harmless, and a windowed
+// pickle - a format that executes - has to record a structural bound, or padding
+// a pickle past the threshold would hide a mid-stream GLOBAL and still pass.
+func TestCollectEvidenceWindowsAFileAboveTheSizeThreshold(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFullScanBytes = 16
+	cfg.HeadTailBytes = 4
+
+	// The marker sits in the middle, past the first window and before the last.
+	content := []byte("HEAD\x00")
+	content = append(content, bytes.Repeat([]byte{'x'}, 64)...)
+	content = append(content, []byte("\x00MIDDLE_MARKER\x00TAIL")...)
+
+	cases := []struct {
+		name        string
+		file        string
+		kind        BinaryKind
+		wantBlocked bool // isExecutableKind: a structural bound on this kind withholds a clean verdict
+	}{
+		{"a windowed data file is recorded but harmless", "w.bin", KindRaw, false},
+		{"a windowed pickle withholds", "m.pkl", KindPickle, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTestBytes(t, dir, tc.file, content)
+			set := CollectEvidence(path, tc.kind, cfg)
+			if set.Err != nil {
+				t.Fatalf("CollectEvidence: %v", set.Err)
+			}
+			if !set.Bound.Structural {
+				t.Error("Bound.Structural = false: the middle of an oversized file was skipped without a trace")
+			}
+			if !strings.Contains(set.Bound.Reason, "MaxFullScanBytes") {
+				t.Errorf("Bound.Reason = %q, want it to name the threshold", set.Bound.Reason)
+			}
+			for _, l := range set.Lines {
+				if l.Text == "MIDDLE_MARKER" {
+					t.Error("the middle was read anyway; the threshold is not a threshold")
+				}
+			}
+			// isExecutableKind is what decides whether that bound blocks; this
+			// asserts the same predicate the scanner folds on.
+			if got := isExecutableKind(tc.kind); got != tc.wantBlocked {
+				t.Errorf("isExecutableKind(%s) = %t, want %t", tc.kind, got, tc.wantBlocked)
+			}
+		})
+	}
+}
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -2485,11 +2638,19 @@ func CollectEvidence(path string, kind BinaryKind, cfg BinaryConfig) *EvidenceSe
 		// its members. A payload appended after the last member is outside
 		// everything the zip directory describes, and reading only the members
 		// would leave exactly that region unexamined.
+		//
+		// No size switch here: this path is already the head and tail pass, and
+		// the members behind it are bounded by MaxArchiveMemberBytes rather than
+		// by the file's own size. A 200 MiB .zip and a 92 MiB .pth both take this
+		// route today.
 		err = streamHeadAndTail(path, set, cfg)
 		if err == nil {
 			err = collectArchive(path, set, cfg)
 		}
 	case KindCompressed:
+		// Also no size switch: the stream was decompressed on purpose, and
+		// skipping its middle would defeat the only reason to have opened it.
+		// MaxArchiveMemberBytes is the bound that applies.
 		err = collectCompressed(path, set, cfg)
 	case KindNumpy, KindPickle, KindRaw:
 		// No entropy verdict for these, deliberately. A raw blob is most of what
@@ -2498,7 +2659,7 @@ func CollectEvidence(path string, kind BinaryKind, cfg BinaryConfig) *EvidenceSe
 		// the operator to ignore the family. It is also unnecessary here, because
 		// nothing on this platform executes a raw blob - a payload that runs
 		// arrives as an ELF or a pickle, and both carry precise evidence.
-		err = streamEvidence(path, set, cfg, cfg.MaxStreamBytes)
+		err = streamWithSizeSwitch(path, set, cfg)
 	default:
 		return evidenceError(path, kind, fmt.Errorf("unsupported binary kind %q", kind))
 	}
@@ -2510,14 +2671,50 @@ func CollectEvidence(path string, kind BinaryKind, cfg BinaryConfig) *EvidenceSe
 	return set
 }
 
+// streamWithSizeSwitch streams a file end to end when it is small enough to be
+// worth it, and reads only its head and tail when it is not.
+//
+// The switch exists because the two costs are not comparable. A full pass costs
+// about 3 microseconds per kibibyte at the measured rate, which is nothing for
+// the 10.8 MiB pickle that is the largest such file in the example package and
+// nine seconds for a 3 GiB shard. Above MaxFullScanBytes the pass is replaced by
+// a HeadTailBytes window at each end.
+//
+// Skipping the middle is recorded, and how it is recorded is isExecutableKind's
+// existing asymmetry rather than a new rule: a windowed pickle or ELF leaves a
+// region of an executable format unread, so it is a structural bound and a clean
+// verdict is withheld; a windowed tensor blob is a data bound and is only
+// reported. Without the first half the threshold would be an evasion: padding a
+// pickle past 64 MiB would hide a mid-stream GLOBAL and still pass.
+//
+// What that gives up is stated in the plan's boundary section rather than hidden
+// here: for a raw blob the middle is tensor data no loader reads, so nothing
+// reachable is lost. For a pickle it is a real loss - a GLOBAL emitted in the
+// middle of a long data-building run would be missed - and the two windows are
+// the mitigation rather than a cure, covering the load-time call at the front and
+// the post-load action at the back. A deployment whose packages contain such a
+// file raises maxFullScanBytes rather than being silently exempted.
+func streamWithSizeSwitch(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	if set.Size > cfg.MaxFullScanBytes {
+		set.markStructural(fmt.Sprintf("file is %d bytes, above MaxFullScanBytes %d: only the head and tail %d bytes were read",
+			set.Size, cfg.MaxFullScanBytes, cfg.HeadTailBytes))
+		return streamHeadAndTail(path, set, cfg)
+	}
+	return streamEvidence(path, set, cfg, cfg.MaxStreamBytes)
+}
+
 // streamHeadAndTail runs the byte extractors over the first and last
-// headTailBytes of a file.
+// HeadTailBytes of a file.
 //
 // It is what makes an appended payload visible. A zip's directory lives at the
 // end of the file and describes only the members before it, so a pickle stapled
 // after the last member is inside no member and would otherwise be read by
 // nothing; the same reasoning covers a section appended past an ELF's last
 // section header.
+//
+// The window size is a parameter rather than a constant because two callers want
+// different ones: a container always reads its two ends, while a large blob reads
+// its ends only because it was too large to read whole.
 func streamHeadAndTail(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -2529,7 +2726,7 @@ func streamHeadAndTail(path string, set *EvidenceSet, cfg BinaryConfig) error {
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
 
-	const headTailBytes = 1 << 20
+	headTailBytes := cfg.HeadTailBytes
 	scanner := newStringScanner(set, cfg)
 	pickles := newPickleScanner(set)
 
@@ -2983,8 +3180,13 @@ func (f *binaryFamily) appliesTo(src EvidenceSource) bool {
 	return false
 }
 
-// BinaryRuleIDs returns every family id in the table, sorted, for the report's
-// metadata and for the suggestion map's completeness test.
+// BinaryRuleIDs returns every family id in the table, sorted.
+//
+// It exists so that the completeness test can be written against the table
+// rather than against a list someone maintains by hand: a family added here and
+// forgotten in ruleSuggestionMap is a finding whose recommendation reads
+// "审查该代码片段并确认其安全性" whatever it actually is, and the test that
+// catches that has to enumerate the families from their one definition.
 func BinaryRuleIDs() []string {
 	ids := make([]string, 0, len(binaryFamilies))
 	for _, f := range binaryFamilies {
@@ -2995,19 +3197,50 @@ func BinaryRuleIDs() []string {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [ ] **Step 4: 把新 rule id 补进 `ruleSuggestionMap`**
+
+`internal/codeaudit/audit.go` 的 `ruleSuggestionMap` 目前只有源码臂的 13 个 id。二进制通道的 `BIN_001`、`BIN_002`、`PKL_001` 不在其中，落到 `SuggestionForRule` 的兜底文案上——报告会给出一条毫无指向的修复建议。补进去：
+
+```go
+	"EMB_004": "不要将数据编码后嵌入模型权重",
+	"BIN_001": "确认该二进制段是否经过加壳/加密；若无需动态解包，改用未加壳的构建产物",
+	"BIN_002": "确认该二进制为何需要敏感能力；移除不必要的敏感符号引用",
+	"PKL_001": "不要反序列化不可信 pickle；改用 weights_only=True 或 safetensors 等纯数据格式",
+}
+```
+
+- [ ] **Step 5: 加一条完整性测试，防止下次新增规则时再漏**
+
+追加到 `binary_rules_test.go`：
+
+```go
+// TestEveryBinaryRuleHasASuggestion pins that the suggestion map covers the
+// binary table. It is written against BinaryRuleIDs rather than a literal list so
+// that a family added later fails here instead of shipping a report whose
+// recommendation for it says nothing.
+func TestEveryBinaryRuleHasASuggestion(t *testing.T) {
+	const fallback = "审查该代码片段并确认其安全性"
+	for _, id := range BinaryRuleIDs() {
+		if SuggestionForRule(id) == fallback {
+			t.Errorf("rule %s has no entry in ruleSuggestionMap", id)
+		}
+	}
+}
+```
+
+- [ ] **Step 6: 跑测试确认通过**
 
 ```bash
-go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestMatchEvidence|TestSymbolRules' -v 2>&1 | tail -20
+go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestMatchEvidence|TestSymbolRules|TestEveryBinaryRuleHasASuggestion' -v 2>&1 | tail -20
 ```
 
 预期全 PASS。若 `TestBinaryRulesBorrowSharedFamilies` 报 `BIN_001` 之类的 id 冲突，说明 `binaryOnlyRules` 里写了与共享表相同的 id——修正 id 而不是放宽断言。
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 7: 提交**
 
 ```bash
 gofmt -l internal/codeaudit/ ; go vet ./internal/codeaudit/
-git add internal/codeaudit/binary_rules.go internal/codeaudit/binary_rules_test.go
+git add internal/codeaudit/binary_rules.go internal/codeaudit/binary_rules_test.go internal/codeaudit/audit.go
 git commit -m "feat(audit): add the binary rule table, borrowing shared families' severity"
 ```
 
@@ -3182,6 +3415,12 @@ func TestBinaryScannerCapsAndRecordsTruncation(t *testing.T) {
 	if !res.Summary.Truncated {
 		t.Error("Summary.Truncated = false after the finding cap fired; the dropped findings are invisible")
 	}
+	// The cap is carried into the summary so the report can say what it was
+	// truncated at. A reader who sees truncated with no number has to go find the
+	// configuration that produced it, and by then it may have changed.
+	if res.Summary.MaxFindings != 2 {
+		t.Errorf("Summary.MaxFindings = %d, want 2", res.Summary.MaxFindings)
+	}
 }
 
 func TestBinaryScannerSkipDirs(t *testing.T) {
@@ -3275,6 +3514,11 @@ type BinaryScanSummary struct {
 	Incomplete int `json:"incomplete,omitempty"`
 	// Truncated records that the finding cap was reached.
 	Truncated bool `json:"truncated,omitempty"`
+	// MaxFindings is the cap this pass ran under, carried into the report so that
+	// a reader who sees truncated can tell what it was truncated at without
+	// re-reading the scanner's configuration. It is provenance, not a second
+	// ceiling: MergeBinaryFindings does not reapply it to the joined list.
+	MaxFindings int `json:"max_findings,omitempty"`
 }
 
 // BinaryScanResult is everything one binary pass produces.
@@ -3291,10 +3535,6 @@ type BinaryScanResult struct {
 	// for a listing no one will read - the same principle the scanner applies to
 	// parsing a source file.
 	Evidence map[string]*EvidenceSet
-	// MaxFindings is the cap this result was produced under, carried so the merge
-	// applies the same ceiling to the combined list that the source arm applied
-	// to its own.
-	MaxFindings int
 }
 
 // BinaryScanner walks a directory and audits the binary files in it.
@@ -3335,9 +3575,11 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 	}
 
 	res := &BinaryScanResult{
-		Summary:     BinaryScanSummary{Kinds: map[string]int{}},
-		Evidence:    map[string]*EvidenceSet{},
-		MaxFindings: s.cfg.MaxFindings,
+		Summary: BinaryScanSummary{
+			Kinds:       map[string]int{},
+			MaxFindings: s.cfg.MaxFindings,
+		},
+		Evidence: map[string]*EvidenceSet{},
 	}
 
 	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -3707,7 +3949,6 @@ func TestMergeBinaryFindingsAppendsAndRecomputes(t *testing.T) {
 	}
 
 	res := &BinaryScanResult{
-		MaxFindings: 200,
 		Claimed:     []string{"/m/libevil.so"},
 		Findings: []Finding{
 			{File: "/m/libevil.so", Line: 4, RuleID: "NET_002", Severity: SeverityHigh, Engine: EngineNameBinary},
@@ -3742,7 +3983,6 @@ func TestMergeBinaryFindingsDropsTextFindingsForBinaryFiles(t *testing.T) {
 		},
 	}
 	res := &BinaryScanResult{
-		MaxFindings: 200,
 		Claimed:     []string{"/m/evil.py"},
 		Findings: []Finding{
 			{File: "/m/evil.py", Line: 1, RuleID: "BIN_001", Severity: SeverityMedium, Engine: EngineNameBinary},
@@ -3768,31 +4008,65 @@ func TestMergeBinaryFindingsDropsTextFindingsForBinaryFiles(t *testing.T) {
 	}
 }
 
-// TestMergeBinaryFindingsAppliesTheCombinedCap pins that the ceiling the source
-// arm applied is also applied to the joined list. The cap is what bounds the
-// Tier 2 call count, and a merge that ignored it would double the worst case
-// without changing any configuration.
-func TestMergeBinaryFindingsAppliesTheCombinedCap(t *testing.T) {
-	report := &Report{ScanComplete: true}
+// TestMergeBinaryFindingsKeepsBothChannelsFindings pins that the merge does not
+// apply a ceiling to the joined list.
+//
+// Each channel caps its own findings before the merge. A second cap here would
+// couple them: it would let a large source arm evict binary findings by path
+// order, and - because reaching a cap sets Truncated, and Truncated fails
+// ProvesCleanScan - it would newly block and delete a package that passed before
+// the binary channel existed. The fixture is the smallest one that shows the
+// difference: three source findings, one binary finding, and a source arm whose
+// own cap was three.
+func TestMergeBinaryFindingsKeepsBothChannelsFindings(t *testing.T) {
+	report := &Report{ScanComplete: true, FilesCount: 3}
 	for i := 0; i < 3; i++ {
 		report.Findings = append(report.Findings, Finding{
-			File: "/m/a.py", Line: i + 1, RuleID: "CMD_001", Severity: SeverityHigh,
+			File: "/m/a.py", Line: i + 1, RuleID: "CMD_001", Severity: SeverityMedium,
 		})
 	}
 	res := &BinaryScanResult{
-		MaxFindings: 3,
 		Findings: []Finding{
 			{File: "/m/z.so", Line: 1, RuleID: "NET_002", Severity: SeverityHigh, Engine: EngineNameBinary},
 		},
+		Summary: BinaryScanSummary{FilesCount: 2},
 	}
 
 	MergeBinaryFindings(report, res)
 
-	if len(report.Findings) != 3 {
-		t.Errorf("len(Findings) = %d, want the cap of 3", len(report.Findings))
+	if len(report.Findings) != 4 {
+		t.Errorf("len(Findings) = %d, want 4: the merge applied a ceiling to the joined list", len(report.Findings))
 	}
+	if report.Truncated {
+		t.Error("Truncated = true: the merge re-capped a list both arms had already capped")
+	}
+	if !report.Passed {
+		t.Error("Passed = false: the merge turned a package that passed into one that does not")
+	}
+	// Target.FilesScanned is copied from FilesCount, so the binary files have to
+	// be in it or the report contradicts its own scan_metadata.binary block.
+	if report.FilesCount != 5 {
+		t.Errorf("FilesCount = %d, want 5 (3 source + 2 binary)", report.FilesCount)
+	}
+}
+
+// TestMergeBinaryFindingsSurfacesTheBinaryCap pins the other half: when the
+// binary arm did drop findings, that drop has to reach the report's own Truncated
+// and not only the summary. scan_metadata.truncated is copied from Truncated, and
+// a reader who checks only the metadata must not be told nothing was dropped.
+func TestMergeBinaryFindingsSurfacesTheBinaryCap(t *testing.T) {
+	report := &Report{ScanComplete: true}
+	res := &BinaryScanResult{
+		Summary:     BinaryScanSummary{FilesCount: 1, Truncated: true},
+	}
+
+	MergeBinaryFindings(report, res)
+
 	if !report.Truncated {
-		t.Error("Truncated = false after the merge dropped a finding; the drop is invisible")
+		t.Error("Truncated = false after the binary arm capped itself; the drop is invisible to scan_metadata")
+	}
+	if report.Passed {
+		t.Error("Passed = true although the binary pass dropped findings")
 	}
 }
 
@@ -3837,15 +4111,44 @@ go test ./internal/codeaudit/ -run TestMergeBinaryFindings 2>&1 | head -10
 //     whose bytes are binary is not a file whose text reading means anything,
 //     and keeping that reading would put findings in the report that no one can
 //     act on - while letting a crafted file choose how many of them there are.
-//  3. The list is sorted and capped, and the static counts are recomputed from
-//     what is left. Recomputing rather than adjusting is what keeps Passed,
-//     HighCount and MediumCount consistent with the findings they describe.
+//  3. The static counts are recomputed from the joined list. Recomputing rather
+//     than adjusting is what keeps Passed, HighCount and MediumCount consistent
+//     with the findings they describe.
+//
+// There is deliberately no cap on the joined list, and no second truncation.
+// Each channel capped its own findings before this ran - the source arm at
+// ScannerConfig.MaxFindings, the binary arm at BinaryConfig.MaxFindings - and
+// reapplying one ceiling to the sum would couple them in the one direction that
+// costs a model package. Reaching a cap sets Truncated, Truncated fails
+// ProvesCleanScan, and a scan that cannot prove it looked has the package
+// deleted. A shared ceiling would let a source arm carrying 190 findings and a
+// binary arm carrying 20 push a package that used to import into that state, and
+// it would choose which findings to drop by path order rather than by importance.
+// The ceiling that protects the model is the blocking, not the cap.
 func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
 	if report == nil || res == nil {
 		return
 	}
 
 	report.Binary = &res.Summary
+
+	// The binary files are added to the count the report states as scanned.
+	// AssembleAuditReport copies this field into Target.FilesScanned, and the
+	// binary channel claims files the source walk never opened - a .so, a .pyc, a
+	// pickle. Leaving the count at the source arm's total would put a number in
+	// target.files_scanned that contradicts scan_metadata.binary.files_count in
+	// the same document, and the lower of the two is the one a reader would
+	// believe.
+	report.FilesCount += res.Summary.FilesCount
+
+	// The binary arm's own cap is folded into the report's Truncated rather than
+	// left on the summary alone. ProvesCleanScan reads both, so the pass decision
+	// is right either way - but scan_metadata.truncated is copied from this field,
+	// and a report whose metadata says nothing was dropped while a channel dropped
+	// fifty findings is the confusion the provenance fields exist to remove.
+	if res.Summary.Truncated {
+		report.Truncated = true
+	}
 
 	claimed := make(map[string]bool, len(res.Claimed))
 	for _, p := range res.Claimed {
@@ -3862,13 +4165,6 @@ func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
 	kept = append(kept, res.Findings...)
 
 	sortFindings(kept)
-	if res.MaxFindings > 0 && len(kept) > res.MaxFindings {
-		kept = kept[:res.MaxFindings]
-		// Truncated is set here rather than left to the source arm: the arm that
-		// capped its own list cannot know that the merged list will cap again,
-		// and a drop nobody records is the failure this field exists to prevent.
-		report.Truncated = true
-	}
 	report.Findings = kept
 
 	// The same function the source-only path uses, so the pass decision has one
@@ -4513,6 +4809,17 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 			t.Error("a negative limit was accepted; it would be normalised to the default and the operator would never know")
 		}
 	})
+
+	t.Run("the full-scan threshold is carried through", func(t *testing.T) {
+		path := writeTestConfig(t, t.TempDir(), `{"security":{"binaryAudit":{"maxFullScanBytes":134217728}}}`)
+		cfg, err := LoadStartupConfig(path)
+		if err != nil {
+			t.Fatalf("LoadStartupConfig: %v", err)
+		}
+		if cfg.BinaryAuditMaxFullScanBytes != 134217728 {
+			t.Errorf("BinaryAuditMaxFullScanBytes = %d, want 134217728", cfg.BinaryAuditMaxFullScanBytes)
+		}
+	})
 }
 ```
 
@@ -4559,6 +4866,12 @@ go test ./internal/config/ -run TestBinaryAuditConfig 2>&1 | head -10
 	// BinaryAuditMaxFindings bounds findings from the binary pass. Zero means the
 	// codeaudit default.
 	BinaryAuditMaxFindings int
+	// BinaryAuditMaxFullScanBytes is the size above which a file is read at its
+	// two ends instead of end to end. Zero means the codeaudit default. It is
+	// exposed rather than fixed because it is the one limit whose right value
+	// depends on the deployment's package sizes: raising it buys a complete pass
+	// over a large pickle at a cost of about 3 microseconds per kibibyte.
+	BinaryAuditMaxFullScanBytes int
 ```
 
 `startupSecurityConfigFile` 在 `SemgrepTimeoutSeconds` 之后追加：
@@ -4581,6 +4894,7 @@ type startupBinaryAuditConfigFile struct {
 	MaxArchiveMembers    *int     `json:"maxArchiveMembers"`
 	HighEntropyThreshold *float64 `json:"highEntropyThreshold"`
 	MaxFindings          *int     `json:"maxFindings"`
+	MaxFullScanBytes     *int64   `json:"maxFullScanBytes"`
 }
 ```
 
@@ -4607,6 +4921,9 @@ func validateBinaryAudit(cfg StartupConfig) error {
 	}
 	if cfg.BinaryAuditMaxFindings < 0 {
 		return fmt.Errorf("security.binaryAudit.maxFindings must not be negative, got %d", cfg.BinaryAuditMaxFindings)
+	}
+	if cfg.BinaryAuditMaxFullScanBytes < 0 {
+		return fmt.Errorf("security.binaryAudit.maxFullScanBytes must not be negative, got %d", cfg.BinaryAuditMaxFullScanBytes)
 	}
 	if cfg.BinaryAuditHighEntropyThreshold < 0 || cfg.BinaryAuditHighEntropyThreshold > 8 {
 		return fmt.Errorf("security.binaryAudit.highEntropyThreshold must be within [0,8] bits per byte, got %v",
@@ -4637,6 +4954,9 @@ func validateBinaryAudit(cfg StartupConfig) error {
 	if ba := fileCfg.Security.BinaryAudit; ba.MaxFindings != nil {
 		cfg.BinaryAuditMaxFindings = *ba.MaxFindings
 	}
+	if ba := fileCfg.Security.BinaryAudit; ba.MaxFullScanBytes != nil {
+		cfg.BinaryAuditMaxFullScanBytes = int(*ba.MaxFullScanBytes)
+	}
 ```
 
 - [ ] **Step 4: 装配到 controller**
@@ -4654,6 +4974,7 @@ func validateBinaryAudit(cfg StartupConfig) error {
 			Enabled:              cfg.BinaryAuditEnabled,
 			MaxArchiveMembers:    cfg.BinaryAuditMaxArchiveMembers,
 			MaxFindings:          cfg.BinaryAuditMaxFindings,
+			MaxFullScanBytes:     int64(cfg.BinaryAuditMaxFullScanBytes),
 			HighEntropyThreshold: cfg.BinaryAuditHighEntropyThreshold,
 		},
 ```
@@ -4892,12 +5213,12 @@ go test ./... 2>&1 | grep -vE "^ok|no test files" | head -30
 源码审计之外，导入审计还会遍历模型包中的**二进制文件**，与所选 Tier 1 引擎无关——正则臂与 semgrep 臂的部署都生效。
 
 - **识别**：按文件内容判定（ELF / zip 容器 / gzip / pickle / numpy / 其余二进制），扩展名仅作补充。改后缀不能绕过；`.py` 结尾的二进制同样会被认领。
-- **证据**：ELF 动态导入符号与 `DT_NEEDED`、节区构成与香农熵、可打印字符串、容器成员（zip/gzip 内部最多递归一层）、pickle 的 `GLOBAL`/`STACK_GLOBAL` 目标、文件首尾各 1 MiB（捕捉 zip 末尾追加的载荷）。
+- **证据**：ELF 动态导入符号与 `DT_NEEDED`、节区构成与香农熵、可打印字符串、容器成员（zip/gzip 内部最多递归一层）、pickle 的 `GLOBAL`/`STACK_GLOBAL` 目标、超过 64 MiB 的文件读首尾各 1 MiB（捕捉 zip 末尾追加的载荷，并把单文件成本钉在约 190 ms）。
 - **判定**：证据行按规则表匹配，产出 `Finding` 并标记 `binary_kind` / `evidence_source` / `binary_offset`；共享规则（`NET_002`/`CMD_001`/`DYN_001`/`FIL_001`/`PER_001`/`ENV_001`/`OBF_001`）的严重级从源码规则表读取，不另立一套。二进制专有规则：`BIN_001`（加壳载荷，MEDIUM）、`BIN_002`（`memfd_create`/`fexecve`，HIGH）、`PKL_001`（pickle 反序列化执行，HIGH）。
 - **复核**：二进制 finding 与源码 finding 走同一条 LLM 路径；文件级分析使用二进制专用 prompt（现有 prompt 面向 Python 源码，不适用）。
 - **完整性**：`scan_metadata.binary` 记录 `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `truncated`。可执行格式的结构抽取被截断、文件无法读取、finding 触顶，任一项都会使 `ProvesCleanScan()` 为假——fail-closed 下即阻断导入；纯数据文件（张量、npy）的证据截断只记录、不阻断。
-- **配置**：`security.binaryAudit.enabled`（默认 `true`）、`maxArchiveMembers`、`highEntropyThreshold`、`maxFindings`。关闭它即回滚，审计行为与引入该通道之前逐字节一致。
-- **边界**：PE/Mach-O 不做结构解析（本平台不加载），xz/zstd/bzip2 容器不打开，纯文本非源码文件不审。详见 `.claude/plans/2026-10-10-binary-code-audit.md` §2。
+- **配置**：`security.binaryAudit.enabled`（默认 `true`）、`maxArchiveMembers`、`highEntropyThreshold`、`maxFindings`（默认 50，独立于源码臂的 200）、`maxFullScanBytes`（默认 64 MiB）。关闭它即回滚，审计行为与引入该通道之前逐字节一致。
+- **边界**：PE/Mach-O 不做结构解析（本平台不加载），xz/zstd/bzip2 容器不打开，纯文本非源码文件不审，pickle 目标识别依赖 opcode 相邻性因而可被受控流规避。详见 `.claude/plans/2026-10-10-binary-code-audit.md` §2。
 ```
 
 - [ ] **Step 5: 提交**
@@ -4921,6 +5242,8 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 - [ ] `go test ./internal/codeaudit/ -run 'TestGenerateAuditReport' -v` 中，`regex` 与 `semgrep` 两个子用例都通过（本机装有 semgrep 时真跑）。
 - [ ] `git grep -n "Co-Authored-By\|anthropic\|Claude" -- '*.go'` 无命中（提交信息同样不得出现）。
 - [ ] 用一个真实模型包（含 `.pt` 与任意 `.so`）在容器里跑一次导入，确认 `auditReportJSON` 里出现 `binary_kind`/`evidence_source` 字段，且 `scan_metadata.binary.files_count > 0`。
+- [ ] 确认 `target.files_scanned` 与 `scan_metadata.binary.files_count` 不互相矛盾——后者是前者的子集，前者不小于后者。
+- [ ] 确认二进制臂触顶时 `scan_metadata.truncated` 为 `true`（不只是 `scan_metadata.binary.truncated`），否则只看元数据这一层的读者会以为没有丢东西。
 - [ ] 把 `security.binaryAudit.enabled` 设为 `false` 再跑一次，确认 `scan_metadata.binary` 缺失且结论与改动前一致（回滚可用）。
 - [ ] 确认 `UnsupportedExts` 仍恒为 0——本计划**不**动它，任何让它非零的改动都会使每个真实包被判定为非完整扫描。
 
@@ -4929,7 +5252,8 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 | 风险 | 对策 |
 | --- | --- |
 | `elfFixtureBytes` 的字节布局写错，Task 5–15 全部建立其上 | `TestELFFixtureIsReadByTheStandardLibrary` 先于一切断言检查夹具本身；失败时按 `debug/elf` 的报错逐字段核对 |
-| 大模型包（数 GB）的 `.pt` 让导入变慢 | 证据流式读取，无整文件驻留；容器成员按需解压且有总额预算；首个 finding 触顶即停 |
+| 大模型包（数 GB）的 `.pt` 让导入变慢 | 证据流式读取，无整文件驻留；容器成员按需解压且有总额预算；超过 `MaxFullScanBytes`（默认 64 MiB）的文件只读首尾各 1 MiB，把单文件成本钉在约 190 ms |
 | 加壳判定对 UPX 打包的合法库误报 | `BIN_001` 定为 MEDIUM：assist 策略下不阻断，gate 策略下阻断并交由 operator 判定，这是两种策略本就存在的分歧点 |
-| 二进制 finding 挤占 LLM 配额 | 合并后的列表沿用源码臂的上限（`res.MaxFindings`），Tier 2 调用数的上界不变 |
+| 二进制 finding 挤占 LLM 配额 | 两臂各自限流（源码 200、二进制 50），合并列表不再二次截断。**Tier 2 调用上界由 200 变为 250**，且只在两臂同时饱和时可达——那个状态本来就已阻断并删包，多出的调用不改变结论。反过来，共享配额会让大源码臂按路径序挤掉二进制 finding，并把一个原本可导入的包推到 `Truncated` 而被删除 |
+| 二进制通道让原本能导入的包被误阻断 | 这是本设计最贵的失败模式（`ProvesCleanScan` 为假 → `cleanDirContents` 删包），所以：`Truncated` 只由各臂自己的上限触发；纯数据文件的证据截断只记录、不阻断；`BIN_001` 定为 MEDIUM，assist 下不阻断；`security.binaryAudit.enabled=false` 是逐字节回滚。已入库语料实测最大 finding 数为单样本 7、整语料 80，离两个上限都有一个数量级 |
 | 与 semgrep 非劣性证据的交互 | 二进制通道在**两个臂之外**运行且合并发生在引擎报告之后，两臂的引擎级报告逐字节不变；`corpus_parity_test.go` 会证明这一点 |
