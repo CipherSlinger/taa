@@ -30,7 +30,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN mkdir -p /root/taa/models \
              /root/taa/data \
              /root/taa/results \
-             /root/taa/attestation \
              /opt/taa/input \
              /opt/taa/output
 
