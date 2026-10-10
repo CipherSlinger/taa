@@ -56,6 +56,32 @@ check "print-config: default handler" "kata-qemu-csv2-taa" "$RUNTIME_HANDLER"
 # on the host first, which is exactly the failure this default avoids.
 check "print-config: default remote user is root" "root" "$REMOTE_USER"
 
+# ── 1b. the test identity the driver supplies ────────────────────────────────
+#
+# `up` is meant to run with no environment set, so the platform address has to
+# be derived rather than remembered. The contract is "follow the SSH host", not
+# "equal this literal", so assert it against whatever the host default is.
+DRIVER="$SCRIPT_DIR/deploy-taa-vm.sh"
+host_default="$("$BUILD" print-config | sed -n 's/^REMOTE_HOST=//p' | tr -d "'")"
+eval "$("$DRIVER" print-config)"
+check "print-config: platform address follows the SSH host" "${host_default}:18080" "$TAA_PLATFORM_IP"
+if [[ -n "$TAA_DOCKER_ID" ]]; then
+  echo "ok   print-config: ships a non-empty docker id ($TAA_DOCKER_ID)"
+else
+  echo "FAIL print-config: docker id default is empty" >&2
+  failures=$((failures + 1))
+fi
+
+eval "$(REMOTE_HOST=10.0.0.9 PLATFORM_PORT=28080 TAA_DOCKER_ID=mine "$DRIVER" print-config)"
+check "print-config: overrides beat the defaults" "10.0.0.9:28080 mine" "$TAA_PLATFORM_IP $TAA_DOCKER_ID"
+
+# The pair has to reach build-initrd.sh, which runs as a child process; an
+# unexported default would look right in print-config and still build an initrd
+# with no identity in it. That path needs the host, so this one is a string
+# check like the guards below rather than a behavioural one.
+drv_src="$(cat "$DRIVER")"
+check_contains "print-config: the identity is exported to the build" 'export TAA_PLATFORM_IP TAA_DOCKER_ID' "$drv_src"
+
 # ── 2. the containerd handler stripper ───────────────────────────────────────
 #
 # Extract the program between the marker comments the script carries for exactly

@@ -48,8 +48,15 @@ export TEST_POD_ANNOTATIONS='{"io.katacontainers.config.runtime.cc_init_data":"<
 # 两者都会让验证静默失效（Pod 照样 Ready，但根本不是被测路径）。
 
 # build-initrd.sh 的输入
-export TAA_PLATFORM_IP=<平台IP:端口>
-export TAA_DOCKER_ID=<docker_id>
+# 走仓库根 deploy-taa-vm.sh 时**不用设**这两个：它自带默认值（平台地址跟随
+# REMOTE_HOST，端口 PLATFORM_PORT=18080；DOCKER_ID=kata-csv2-taa-test-0001），
+# 要用别的值再覆盖。下面列出来是因为手动分步执行 build-initrd.sh 时仍需显式给，
+# 且两者必须成对（只给一个会被拒）。
+# 取值参考：在跑的 osr pod 里注入的就是 PLATFORM_IP=172.16.10.178:18080
+# （宿主上 18080 由 ccs-node-agent 监听）。DOCKER_ID 每个实例必须唯一，别照抄
+# osr pod 的 2c928086a11a54d301a11acb7d1c0000，否则平台会看到两个实例共用一个身份。
+export TAA_PLATFORM_IP=172.16.10.178:18080
+export TAA_DOCKER_ID=kata-csv2-taa-test-0001
 # 证明闸门：1（默认）= TAA 自校验不通过就不启动 kata-agent，Pod 停在 NotReady
 export TAA_REQUIRE_ATTESTATION=1
 # TAA_REQUIRED：1（默认）= TAA 起不来时同样不让 kata-agent 启动
@@ -267,6 +274,10 @@ kubectl exec test-kata-csv2-taa -- \
 - `TEST_POD_NAME=test-kata-csv2-taa`
 - `TEST_IMAGE`、`TEST_POD_ANNOTATIONS='{}'`（该宿主上需填 `cc_init_data`，见 §0）
 - `TAA_REQUIRED=1`、`TAA_REQUIRE_ATTESTATION=1`（证明闸门）
+- `TAA_PLATFORM_IP`、`TAA_DOCKER_ID`：平台注册身份，必须成对。由**驱动**给默认值
+  （`${REMOTE_HOST}:${PLATFORM_PORT}` / `kata-csv2-taa-test-0001`），直接调
+  `build-initrd.sh` 时默认仍为空。用 `ALLOW_MISSING_TAA_ENV=1` 可显式放弃注册
+  （注册失败本就只是 warning，不影响 TAA 启动）
 - 本地输入覆盖（主要给测试用）：`BASE_INITRD`、`INITRD_OUT`、`TAA_SRC`、`TAA_INIT_SRC`、`TAA_CONFIG_SRC`
 
 ### ../deploy.sh
@@ -283,8 +294,9 @@ kubectl exec test-kata-csv2-taa -- \
 ## 7. 备注
 
 - 这份模板**不执行部署**，只整理可复制命令。
-- 合一入口与清理见仓库根的 `deploy-taa-vm.sh`：`up` / `verify` / `delete [--dry-run] [--force]`；
-  它的离线自测是根目录的 `./test-deploy-taa-vm.sh`。
+- 合一入口与清理见仓库根的 `deploy-taa-vm.sh`：`up` / `verify` / `delete [--dry-run] [--force]`
+  / `print-config`（打印解析后的实际取值，确认这次会用什么）；它的离线自测是根目录的
+  `./test-deploy-taa-vm.sh`。
 - 真实密码、证书、环境变量值请按现场环境填入，不要直接写死到仓库。
 - 如果远程 base initrd 与本地 `guest-build/base/` 不一致，`build-initrd.sh deploy` 可能会拒绝，需要先同步 base 文件。
 - base 资产**不入库**（`base/*.img`、`base/*.container`、`base/*.fd`、`out/` 已在 `.gitignore` 里）：

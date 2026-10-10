@@ -51,6 +51,26 @@ eval "$("$BUILD_INITRD" print-config)"
 
 REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
 
+# ── Test identity ────────────────────────────────────────────────────────────
+#
+# TAA registers itself with the management platform using PLATFORM_IP and
+# DOCKER_ID. In production the platform injects both into the container
+# environment; a CSV2 guest has no such injection, so this flow bakes them into
+# /etc/default/taa.env at build time instead. Defaulted here so `up` is one word
+# with no environment to remember -- and here rather than in build-initrd.sh,
+# where an empty value is meaningful ("the operator did not ask for a
+# registration") and drives its own check.
+#
+# The platform runs on the SSH host, so follow REMOTE_HOST; point PLATFORM_PORT
+# elsewhere only if it moved. DOCKER_ID must stay unique per instance or the
+# platform sees two instances sharing one identity -- the id in production looks
+# like the 32-hex value the platform allocates, but any stable string works, and
+# a failed registration is only a warning (it does not stop TAA from starting).
+PLATFORM_PORT="${PLATFORM_PORT:-18080}"
+TAA_PLATFORM_IP="${TAA_PLATFORM_IP:-${REMOTE_HOST}:${PLATFORM_PORT}}"
+TAA_DOCKER_ID="${TAA_DOCKER_ID:-kata-csv2-taa-test-0001}"
+export TAA_PLATFORM_IP TAA_DOCKER_ID
+
 # The shipped runtime handler. `delete` refuses to touch a runtime that points at
 # it, because that one belongs to the host, not to this flow.
 PROTECTED_HANDLER="${PROTECTED_HANDLER:-kata-qemu-csv2}"
@@ -72,6 +92,7 @@ Commands:
   fetch-base    从远端拉取权威 base 资产（等价于 build-initrd.sh fetch-base）
   verify        只读校验：向 Pod 内 TAA 要健康应答与证明报告
   delete        删除本流程在远端安装的全部产物与测试 Pod
+  print-config  打印解析后的实际取值（KEY=%q，可直接 eval），用来确认这次会用什么
   help          显示本帮助
 
 Options:
@@ -86,7 +107,8 @@ Environment:
   TEST_IMAGE=$TEST_IMAGE
   TEST_NODE_NAME=$TEST_NODE_NAME
   TEST_POD_ANNOTATIONS=$TEST_POD_ANNOTATIONS
-  TAA_PLATFORM_IP / TAA_DOCKER_ID   deploy/up 需要（或用 ALLOW_MISSING_TAA_ENV=1 显式放弃注册）
+  TAA_PLATFORM_IP=$TAA_PLATFORM_IP        （默认跟随 REMOTE_HOST，端口 PLATFORM_PORT=$PLATFORM_PORT）
+  TAA_DOCKER_ID=$TAA_DOCKER_ID            （每个实例必须唯一；覆盖 PLATFORM_PORT 可换平台端口）
   RUNTIME_HANDLER=$RUNTIME_HANDLER
 
 CoCo note: on this host a CoCo Pod also needs the cc_init_data annotation, or the
@@ -105,6 +127,19 @@ require_cmd() {
       echo "error: $cmd is not installed or not in PATH" >&2
       exit 1
     fi
+  done
+}
+
+# The resolved settings, in the same KEY=%q form build-initrd.sh prints them, so
+# `eval "$(./deploy-taa-vm.sh print-config)"` works from a shell and the test
+# suite can assert on real values instead of grepping the source.
+print_config() {
+  local key
+  for key in REMOTE_USER REMOTE_HOST REMOTE PLATFORM_PORT TAA_PLATFORM_IP \
+             TAA_DOCKER_ID RUNTIME_HANDLER RUNTIME_TYPE SNAPSHOTTER \
+             REMOTE_BUNDLE_DIR REMOTE_KATA_CONFIG TEST_POD_NAME TEST_NODE_NAME \
+             TEST_IMAGE TEST_POD_ANNOTATIONS INITRD_OUT; do
+    printf '%s=%q\n' "$key" "${!key}"
   done
 }
 
@@ -672,6 +707,9 @@ case "$cmd" in
     ;;
   delete)
     delete_remote
+    ;;
+  print-config)
+    print_config
     ;;
   -h|--help|help)
     usage

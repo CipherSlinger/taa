@@ -392,6 +392,13 @@ v2 的三条通道，按可靠性排序：
 服务，非 root 账号必须先配好免密 sudo，否则会在改配置的中途失败。同时给 deploy / launch / delete 三步
 都加了**免密提权前置检查**（`id -u` 为 0，或 `sudo -n true` 成功），在任何写入之前就报错并给出提示。
 
+注册身份（`PLATFORM_IP` / `DOCKER_ID`）在生产里由平台注入容器环境，CSV2 guest 没有这条注入路径，
+只能构建期焊进 `/etc/default/taa.env`。**默认值放在驱动 `deploy-taa-vm.sh` 里**（
+`${REMOTE_HOST}:${PLATFORM_PORT:-18080}` 与 `kata-csv2-taa-test-0001`），不放 `build-initrd.sh`：
+后者里"空值"是有含义的（表示操作者没要求注册）并驱动自己的 `taa_env_file_needed()` 判定，
+给默认值会让那个判定永远为真、静默产出一份想注册却注册不上的 initrd。驱动另外提供
+`print-config` 打印解析后的实际取值（`KEY=%q`，可直接 eval），便于确认这一次会用到什么。
+
 ---
 
 ## 5. 验证
