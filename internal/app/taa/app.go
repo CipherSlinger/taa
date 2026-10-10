@@ -66,7 +66,7 @@ func Run(ctx context.Context, configPath, addr string) error {
 }
 
 // RunWithConfig orchestrates the complete lifecycle and startup flow of the TAA service:
-//  1. If LLM code audit is enabled, probe external inference service readiness
+//  1. If LLM code audit is enabled, probe the external inference service (advisory)
 //  2. Load or generate persistent SM2 key pair for this TAA instance
 //  3. Derive 64-byte UserData and bind it to the TEE attestation report
 //  4. Generate underlying TEE hardware remote attestation report
@@ -75,11 +75,23 @@ func Run(ctx context.Context, configPath, addr string) error {
 //  7. Construct global controller state and start HTTP service, supporting graceful shutdown via ctx
 func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	// 1. If LLM code audit is enabled, probe inference service readiness.
+	//
+	// The probe's verdict is advisory, even with failClosed set. It runs before the HTTP
+	// service exists, and in the CSV2 initrd deployment it runs before the guest has a
+	// network at all: the guest interface is configured by kata-agent, which the initrd
+	// only execs after this process is up. Measured on 2026-10-10 in a booting test VM:
+	// "dial tcp 172.16.10.116:8443: connect: network is unreachable". A fatal probe is
+	// therefore unsatisfiable there by construction, and it fails in the worst way --
+	// taa-init sees TAA die, refuses to hand the VM over to kata-agent (TAA_REQUIRED=1),
+	// and the sandbox is never created.
+	//
+	// failClosed is still honoured where it is load-bearing: the pre-audit probe in the
+	// controller runs with the network up and refuses the import when the gateway is
+	// unreachable, so nothing is ever scanned without the LLM. The failure is not hidden
+	// either -- probeInferenceService logs the endpoint, the elapsed time and a hint
+	// about what the error means.
 	if cfg.EnableLLM {
 		if err := probeInferenceService(ctx, cfg); err != nil {
-			if cfg.LLMFailClosed {
-				return fmt.Errorf("probe inference service (fail-closed): %w", err)
-			}
 			log.Printf("WARNING: inference service probe failed (non-fatal): %v", err)
 		}
 	} else {

@@ -455,9 +455,22 @@ func TestProbeInferenceService_UnhealthyEndpoint(t *testing.T) {
 	}
 }
 
-// TestRunWithConfig_LLMProbeFailClosed verifies RunWithConfig fails closed when probe fails and LLMFailClosed is true.
-func TestRunWithConfig_LLMProbeFailClosed(t *testing.T) {
-	ctx := context.Background()
+// TestRunWithConfig_LLMProbeFailureDoesNotAbortStartup pins the contract that an
+// unreachable inference service at startup is advisory, not fatal -- even with
+// LLMFailClosed set. The initrd deployment starts TAA before kata-agent exists, so the
+// guest has no network yet and a fatal probe would keep the VM from ever being handed
+// over (measured 2026-10-10: "connect: network is unreachable" -> "[TAA-FATAL] probe
+// inference service (fail-closed)"). The fail-closed guarantee lives in the pre-audit
+// probe instead, which runs with the network up.
+func TestRunWithConfig_LLMProbeFailureDoesNotAbortStartup(t *testing.T) {
+	// A regular file where the keys directory belongs: the key-pair step then fails
+	// deterministically, and the error it returns is the proof that control reached it
+	// -- i.e. that the probe did not abort the startup flow.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+
 	cfg := config.StartupConfig{
 		EnableLLM:             true,
 		LLMFailClosed:         true,
@@ -465,13 +478,18 @@ func TestRunWithConfig_LLMProbeFailClosed(t *testing.T) {
 		LLMEndpoint:           "https://127.0.0.1:65534",
 		LLMInsecureSkipVerify: true,
 		LLMTimeoutMs:          100,
+		KeysDir:               filepath.Join(blocker, "keys"),
 	}
-	err := RunWithConfig(ctx, cfg)
+
+	err := RunWithConfig(context.Background(), cfg)
 	if err == nil {
-		t.Fatal("expected error on probe failure with fail-closed, got nil")
+		t.Fatal("expected the key-pair step to fail, got nil")
 	}
-	if !strings.Contains(err.Error(), "probe inference service (fail-closed)") {
-		t.Fatalf("expected fail-closed error, got: %v", err)
+	if strings.Contains(err.Error(), "probe inference service") {
+		t.Fatalf("an unreachable inference service must not abort startup, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "SM2") {
+		t.Fatalf("expected the probe to be survived and the key-pair step to fail, got: %v", err)
 	}
 }
 
