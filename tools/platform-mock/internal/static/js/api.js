@@ -81,6 +81,44 @@ async function postToTAA(endpoint, body, timeoutMs = 10000) {
   return { ok: resp.ok, status: resp.status, data };
 }
 
+// decodeHeaderFilename re-interprets a response header value as UTF-8. Header
+// values are decoded as latin1 by fetch, so a non-ASCII filename written by the
+// server arrives as one char per raw byte. Strings that already carry real
+// Unicode code points are returned untouched.
+function decodeHeaderFilename(raw) {
+  if (!raw) return '';
+  for (let i = 0; i < raw.length; i++) {
+    if (raw.charCodeAt(i) > 0xff) return raw;
+  }
+  try {
+    const bytes = Uint8Array.from(raw, ch => ch.charCodeAt(0));
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch (_) {
+    return raw;
+  }
+}
+
+// parseContentDispositionFilename extracts the filename from a
+// Content-Disposition header, preferring the RFC 5987 filename* form.
+function parseContentDispositionFilename(header) {
+  if (!header) return '';
+
+  const star = /filename\*\s*=\s*([^;]+)/i.exec(header);
+  if (star) {
+    const value = star[1].trim().replace(/^["']|["']$/g, '');
+    const encoded = value.includes("''") ? value.slice(value.indexOf("''") + 2) : value;
+    try {
+      return decodeURIComponent(encoded);
+    } catch (_) {
+      return encoded;
+    }
+  }
+
+  const plain = /filename\s*=\s*(?:"([^"]*)"|([^;]*))/i.exec(header);
+  if (!plain) return '';
+  return decodeHeaderFilename((plain[1] !== undefined ? plain[1] : plain[2] || '').trim());
+}
+
 async function postToTAAFile(endpoint, body, timeoutMs = 120000) {
   const resp = await taaFetch(endpoint, body, timeoutMs);
   if (!resp.ok) {
@@ -91,10 +129,17 @@ async function postToTAAFile(endpoint, body, timeoutMs = 120000) {
     } catch (_) {
       data = text;
     }
-    return { ok: false, status: resp.status, data, blob: null };
+    return { ok: false, status: resp.status, data, blob: null, filename: '', encrypted: false };
   }
   const blob = await resp.blob();
-  return { ok: true, status: resp.status, data: null, blob };
+  return {
+    ok: true,
+    status: resp.status,
+    data: null,
+    blob,
+    filename: parseContentDispositionFilename(resp.headers.get('Content-Disposition')),
+    encrypted: (resp.headers.get('X-TAA-Encrypted') || '').trim().toLowerCase() === 'true',
+  };
 }
 
 // ── PollingManager with Page Visibility API ──

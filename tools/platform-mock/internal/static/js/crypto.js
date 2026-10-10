@@ -266,12 +266,12 @@ async function exportReportItem(idx, shouldDecrypt, btn) {
 
       if (shouldDecrypt) {
         if (!isEncrypted) {
-          downloadBlob(r.blob, r.filename || 'export.tar.gz');
-          const plainText = `HTTP 200\n提示: 响应结果为明文（未加密，无需解密），已直接保存原文件: ${r.filename || 'export.tar.gz'}`;
+          downloadBlob(r.blob, r.filename || 'export.zip');
+          const plainText = `HTTP 200\n提示: 响应结果为明文（未加密，无需解密），已直接保存原文件: ${r.filename || 'export.zip'}`;
           if (typeof recordInteraction === 'function') {
             recordInteraction('export', { primaryContent: plainText, respBody: plainText, statusCode: 200 });
           }
-          alert(`提示: 响应结果为明文（无需解密），已保存原文件: ${r.filename || 'export.tar.gz'}`);
+          alert(`提示: 响应结果为明文（无需解密），已保存原文件: ${r.filename || 'export.zip'}`);
           return;
         }
 
@@ -295,7 +295,7 @@ async function exportReportItem(idx, shouldDecrypt, btn) {
         }
 
         const decBlob = await decRes.blob();
-        let saveFilename = r.filename || 'export.tar.gz.enc';
+        let saveFilename = r.filename || 'export.zip.enc';
         if (saveFilename.toLowerCase().endsWith('.enc')) {
           saveFilename = saveFilename.slice(0, -4);
         } else {
@@ -308,8 +308,8 @@ async function exportReportItem(idx, shouldDecrypt, btn) {
           recordInteraction('export', { primaryContent: decSuccessText, respBody: decSuccessText, statusCode: 200 });
         }
       } else {
-        downloadBlob(r.blob, r.filename || 'export.tar.gz');
-        const rawText = `HTTP 200\n已直接返回并保存原文件: ${r.filename || 'export.tar.gz'}`;
+        downloadBlob(r.blob, r.filename || 'export.zip');
+        const rawText = `HTTP 200\n已直接返回并保存原文件: ${r.filename || 'export.zip'}`;
         if (typeof recordInteraction === 'function') {
           recordInteraction('export', { primaryContent: rawText, respBody: rawText, statusCode: 200 });
         }
