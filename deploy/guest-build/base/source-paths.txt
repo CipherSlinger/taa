@@ -14,3 +14,20 @@
 /opt/kata/share/kata-containers/vmlinuz-confidential-csv.container -> /opt/kata/share/kata-containers/vmlinuz-6.6.0+-153-confidential-csv
 /opt/kata/share/kata-containers/kata-containers-initrd-confidential-csv.img -> /opt/kata/share/kata-containers/kata-containers-initrd-2026-07-24-10:36:12.922811362+0000-97bd01058-csv.initrd
 /opt/kata/share/ovmf/OVMFCSV.fd -> /opt/kata/share/ovmf/OVMFCSV.fd
+
+# Measured with `REMOTE_USER=root ./build-initrd.sh fetch-base` on 2026-10-10.
+# A later fetch that disagrees with any line below means the host base moved,
+# and the measured MEASUREMENT is not comparable with the earlier one.
+kata-containers-initrd-confidential-csv.img  sha256 a19d387cfd1822d8aedcd47f443fc691d6460adabdabcf46cfbe6e28ec842287  bytes 57258203  cpio entries 4682
+vmlinuz-confidential-csv.container            sha256 cc7e8e9f3acd8fae7dadcff7184e5584f1304e2a95e2ea6915b3be3b3499084d  bytes 7741952
+OVMFCSV.fd                                    sha256 508b8679be680fbc4462145870175f8624f05a9177f09239e34d557a5229fe79  bytes 4194304
+
+# Facts about the fetched initrd that decide how TAA can be started in it,
+# read on the same host the same day:
+#   * it carries a root-level `init -> /sbin/init` symlink (and /usr/sbin/init is
+#     the real 19 MB binary), so the kernel's ramdisk_execute_command default
+#     /init succeeds and `init=` is dead config. Only `rdinit=` takes effect.
+#   * it is built with systemd (usr/lib/systemd, rc?.d symlinks), so the wrapper
+#     is inserted ahead of /sbin/init rather than replacing it.
+#   * /dev is a tmpfs with no devtmpfs and no udev, so /dev/csv-guest has to be
+#     created by hand before TAA can read its attestation report.
