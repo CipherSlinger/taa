@@ -143,6 +143,22 @@ DEPLOY_TAA=false
 SELECTED_COMPONENT=false
 STEP=0
 
+# Best-effort routable IPv4 address of this host, empty when none can be determined.
+# The primary lookup asks the kernel which source address it would use to leave the host, which
+# naturally skips loopback and the docker bridges that "hostname -I" also reports; that list is
+# only the fallback. Every command is guarded so a missing tool cannot abort the script under
+# "set -e".
+detect_local_host_ip() {
+  local ip=""
+  if command -v ip >/dev/null 2>&1; then
+    ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit }}' || true)"
+  fi
+  if [[ -z "$ip" ]] && command -v hostname >/dev/null 2>&1; then
+    ip="$(hostname -I 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i !~ /^127\./) { print $i; exit }}' || true)"
+  fi
+  printf '%s' "$ip"
+}
+
 LOCAL_PLATFORM_STATE_DIR="${LOCAL_PLATFORM_STATE_DIR:-$PROJECT_DIR/.local/platform-mock}"
 LOCAL_PLATFORM_PORT="${LOCAL_PLATFORM_PORT:-18080}"
 LOCAL_PLATFORM_BIND="${LOCAL_PLATFORM_BIND:-0.0.0.0:${LOCAL_PLATFORM_PORT}}"
@@ -154,7 +170,12 @@ REMOTE_TAA_CONFIG_SOURCE="${REMOTE_TAA_CONFIG_SOURCE:-$LOCAL_RUN_DIR/remote-$TAA
 LOCAL_DOCKER_CONFIG_SOURCE="${LOCAL_DOCKER_CONFIG_SOURCE:-$LOCAL_RUN_DIR/docker-$TAA_CONFIG_FILE}"
 LOCAL_TAA_PORT="${LOCAL_TAA_PORT:-$CON_PORT}"
 LOCAL_TAA_BIND="${LOCAL_TAA_BIND:-:${LOCAL_TAA_PORT}}"
-LOCAL_TAA_URL="${LOCAL_TAA_URL:-http://127.0.0.1:${LOCAL_TAA_PORT}}"
+# TAA publishes on the host network, so it answers on loopback and on the host's routable
+# address alike. Prefer the routable one: platform-mock prints this value verbatim as its
+# "TAA proxy" badge, and 127.0.0.1 is meaningless to anyone reading that page from another
+# machine. Loopback remains the fallback for hosts with no routable address.
+LOCAL_HOST_IP="${LOCAL_HOST_IP:-$(detect_local_host_ip)}"
+LOCAL_TAA_URL="${LOCAL_TAA_URL:-http://${LOCAL_HOST_IP:-127.0.0.1}:${LOCAL_TAA_PORT}}"
 LOCAL_PLATFORM_LOG_FILE="${LOCAL_PLATFORM_LOG_FILE:-$PROJECT_DIR/.local/logs/platform-mock.log}"
 LOCAL_DOCKER_CONTAINER="${LOCAL_DOCKER_CONTAINER:-taa-env-slim-v2}"
 LOCAL_DOCKER_IMAGE_ARCHIVE="${LOCAL_DOCKER_IMAGE_ARCHIVE:-$PROJECT_DIR/deploy/taa-env-slim-v2.tar.gz}"

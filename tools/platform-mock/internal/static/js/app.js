@@ -1540,6 +1540,10 @@ async function detectTAAProxy() {
   const addrInput = document.getElementById('taaAddr');
   const badge = document.getElementById('taaProxyBadge');
   const pill = document.getElementById('taaTargetPill');
+  // When nothing is detected, default to the host this page was loaded from rather than a
+  // hardcoded loopback: the UI is routinely opened from another machine, and 127.0.0.1 would
+  // then point at the reader's own computer instead of the TAA service.
+  const fallbackAddr = 'http://' + (location.hostname || '127.0.0.1') + ':6001';
   try {
     const res = await fetch('/api/taa-target', { cache: 'no-store' });
     const data = await res.json();
@@ -1555,7 +1559,7 @@ async function detectTAAProxy() {
         badge.style.color = 'var(--ok)';
       }
     } else {
-      addrInput.value = 'http://127.0.0.1:6001';
+      addrInput.value = fallbackAddr;
       if (pill) {
         pill.className = 'status-pill pending';
         pill.style.display = 'inline-flex';
@@ -1566,7 +1570,7 @@ async function detectTAAProxy() {
       }
     }
   } catch {
-    addrInput.value = 'http://127.0.0.1:6001';
+    addrInput.value = fallbackAddr;
     if (pill) {
       pill.className = 'status-pill bad';
       pill.style.display = 'inline-flex';
