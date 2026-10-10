@@ -2,6 +2,10 @@
 
 > 说明：这份模板把 `guest-build/build-initrd.sh` 和 `../deploy.sh` 的关键信息整理成可复制执行的命令。
 > 默认只用于查阅和手工执行，不会自动部署。
+>
+> **先看 `deploy-taa-vm.sh`**：它是这套流程的合一入口（`up` = 构建 → 部署 → launch → 验证），
+> 并且补上了本模板没有的一步——`delete` 清理。下面的手工命令仍适用于需要分步排查的场合。
+> 它自己不带任何默认值，全部设置都向 `build-initrd.sh print-config` 要，所以两边不会漂移。
 
 ## 0. 先确认基础变量
 
@@ -277,6 +281,8 @@ kubectl exec test-kata-csv2-taa -- \
 ## 7. 备注
 
 - 这份模板**不执行部署**，只整理可复制命令。
+- 合一入口与清理见 `deploy-taa-vm.sh`：`up` / `verify` / `delete [--dry-run] [--force]`；
+  它的离线自测是 `./test-deploy-taa-vm.sh`。
 - 真实密码、证书、环境变量值请按现场环境填入，不要直接写死到仓库。
 - 如果远程 base initrd 与本地 `guest-build/base/` 不一致，`build-initrd.sh deploy` 可能会拒绝，需要先同步 base 文件。
 - base 资产**不入库**（`base/*.img`、`base/*.container`、`base/*.fd`、`out/` 已在 `.gitignore` 里）：

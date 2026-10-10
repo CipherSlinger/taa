@@ -505,8 +505,15 @@ wrapper 执行 → `TAA_REQUIRE_ATTESTATION=1` 的闸门通过 → kata-agent �
 handler，空的 `io.katacontainers.config.hypervisor.kernel_params` 会**覆盖并抹掉**我们的 `rdinit=`
 ——两者都会让验证静默失效。为此 `build-initrd.sh` 新增 `TEST_POD_ANNOTATIONS`，只注入 `cc_init_data` 一个键。
 
-**爆炸半径实测**：重启 containerd 时在跑的两个 `osr/taa-env-slim-v2-*` pod 未受影响（QEMU 7067/7068
-存活），journal 只清掉一个过期 shim。另外 `build-initrd.sh` 现在会先 `cmp` 配置：**配置没变就跳过重启**，
+**爆炸半径实测**：重启 containerd 的当时，在跑的两个 `osr/taa-env-slim-v2-*` pod 都还活着（QEMU 7067/7068
+存活），journal 只清掉一个过期 shim。重启后复查更能说明问题的是**存活 pod 自身的启动时间**：
+`taa-env-slim-v2-20260916-…-gw5kc` 的容器 `startedAt=2026-10-09T05:03:45Z`、`restartCount=2`——
+都早于本次重启（2026-10-10），即重启**没有**打扰到它。
+
+（同日稍后复查时 `osr` 下只剩这一个 pod，第二个已经不在了。本流程只按名字删自己的测试 pod，
+从没删过别人的，所以这不是本流程造成的；但**具体原因未知**，不要写成"两个都一直活着"。）
+
+另外 `build-initrd.sh` 现在会先 `cmp` 配置：**配置没变就跳过重启**，
 把这一步的动效降到零（本次 launch 走的就是这条路径，输出 `containerd 配置未变化，跳过重启`）。
 
 至此 §5.4 末尾列的"仍待真机回答"三项（§0 三问、§5.1 第 2–8 条、§7 第 1/3/4 条风险）**全部关闭**。
