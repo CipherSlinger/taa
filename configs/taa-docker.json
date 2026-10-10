@@ -18,7 +18,7 @@
     "checkpoint": "/opt/taa/checkpoint",
     "output": {
       "result": "/opt/taa/output/result",
-      "log": "/opt/taa/output/log/train.jsonl",
+      "log": "/opt/taa/output/log",
       "progress": "/opt/taa/output/progress/progress.json"
     }
   },
@@ -39,7 +39,7 @@
     "enabled": true,
     "transport": "teetls",
     "endpoint": "https://127.0.0.1:8443",
-    "model": "qwen2.5-coder:3b",
+    "model": "qwen2.5-coder:7b",
     "policy": "assist",
     "failClosed": true,
     "requestTimeoutMs": 120000,
