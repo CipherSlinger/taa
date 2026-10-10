@@ -61,13 +61,15 @@ REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
 # where an empty value is meaningful ("the operator did not ask for a
 # registration") and drives its own check.
 #
-# The platform runs on the SSH host, so follow REMOTE_HOST; point PLATFORM_PORT
-# elsewhere only if it moved. DOCKER_ID must stay unique per instance or the
-# platform sees two instances sharing one identity -- the id in production looks
-# like the 32-hex value the platform allocates, but any stable string works, and
-# a failed registration is only a warning (it does not stop TAA from starting).
+# The platform (platform-mock) runs on its own host, not on the Kata host, so the
+# default points at that address instead of following REMOTE_HOST; override
+# TAA_PLATFORM_IP to register against a platform somewhere else. DOCKER_ID must
+# stay unique per instance or the platform sees two instances sharing one
+# identity -- the id in production looks like the 32-hex value the platform
+# allocates, but any stable string works, and a failed registration is only a
+# warning (it does not stop TAA from starting).
 PLATFORM_PORT="${PLATFORM_PORT:-18080}"
-TAA_PLATFORM_IP="${TAA_PLATFORM_IP:-${REMOTE_HOST}:${PLATFORM_PORT}}"
+TAA_PLATFORM_IP="${TAA_PLATFORM_IP:-172.16.10.116:${PLATFORM_PORT}}"
 TAA_DOCKER_ID="${TAA_DOCKER_ID:-kata-csv2-taa-test-0001}"
 export TAA_PLATFORM_IP TAA_DOCKER_ID
 
