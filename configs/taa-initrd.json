@@ -19,7 +19,9 @@
   },
   "security": {
     "codeScan": true,
-    "codeScanEngine": "regex",
+    "codeScanEngine": "semgrep",
+    "semgrepRulesPath": "/opt/taa/semgrep/rules",
+    "semgrepTimeoutSeconds": 900,
     "resultCheck": {
       "enabled": true,
       "maxFileBytes": 3221225472
@@ -30,6 +32,14 @@
     "hskCekCertPath": "/etc/taa/certs/hsk_cek.cert"
   },
   "llm": {
-    "enabled": false
+    "enabled": true,
+    "transport": "teetls",
+    "endpoint": "https://172.16.10.116:8443",
+    "model": "qwen2.5-coder:7b",
+    "policy": "assist",
+    "failClosed": true,
+    "requestTimeoutMs": 120000,
+    "insecureSkipVerify": true,
+    "attestationMode": "permissive"
   }
 }

@@ -130,6 +130,15 @@ fi
 # 3) Start TAA. The gate is "config is readable" -- that file is a hard dependency
 #    (TAA exits 1 without it). PLATFORM_IP/DOCKER_ID only affect registration,
 #    and a failed registration is already just a warning (app.go:135).
+#
+#    PID 1 inherits the kernel's default PATH (/sbin:/usr/sbin:/bin:/usr/bin),
+#    which does not include /usr/local/bin. TAA resolves the semgrep CLI through
+#    PATH, so the engine would report "executable file not found" on every audit
+#    while the binary sits right next to this script. Extend PATH here, where the
+#    rest of the boot environment is already being set up.
+PATH="/usr/local/bin:$PATH"
+export PATH
+
 TAA_PID=""
 if [ -r "$TAA_CONFIG" ]; then
   "$TAA_BIN" -config "$TAA_CONFIG" -addr "$TAA_ADDR" >"$TAA_LOG" 2>&1 &

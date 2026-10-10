@@ -106,6 +106,20 @@ wait_for_attestation_verdict "$WORK_DIR/does-not-exist.log" 1
 check "missing log -> 2" "2" "$?"
 set -e
 
+echo "== main flow invariants =="
+
+# The PATH extension is a side effect on the environment, so it lives in the main
+# flow and cannot be sourced and called here. It is still worth pinning: PID 1's
+# default PATH has no /usr/local/bin, TAA resolves the semgrep CLI through PATH,
+# and the only symptom of losing this line is a remote "executable file not found"
+# on every audit -- after a build, a deploy and a boot. Order matters too: the
+# export has to precede the TAA invocation below it.
+path_line="$(grep -nF 'PATH="/usr/local/bin:$PATH"' "$TAA_INIT" | cut -d: -f1 | head -1)"
+taa_line="$(grep -nF '"$TAA_BIN" -config' "$TAA_INIT" | cut -d: -f1 | head -1)"
+check "extends PATH with /usr/local/bin" "yes" "$([[ -n "$path_line" ]] && echo yes || echo no)"
+check "extends PATH before starting TAA" "yes" \
+  "$([[ -n "$path_line" && -n "$taa_line" && "$path_line" -lt "$taa_line" ]] && echo yes || echo no)"
+
 echo
 if [[ "$failures" -eq 0 ]]; then
   echo "all checks passed"

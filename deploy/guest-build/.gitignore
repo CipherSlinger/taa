@@ -10,3 +10,9 @@ base/*.part
 # Build output. It is derived state, and the copy once committed here was
 # byte-identical to the base initrd rather than a real build product.
 out/
+
+# Semgrep payload (jammy Python 3.10 runtime + a 319 MiB site-packages tree, of
+# which semgrep-core alone is 245 MiB) injected into the initrd when the config
+# selects the semgrep engine. Rebuild it with build-semgrep-payload.sh; the size
+# is exactly why it is not tracked.
+semgrep-payload/

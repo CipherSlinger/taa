@@ -53,6 +53,13 @@ BASE_INITRD="${BASE_INITRD:-$SCRIPT_DIR/base/kata-containers-initrd-confidential
 OUT_DIR="${OUT_DIR:-$SCRIPT_DIR/out}"
 INITRD_OUT="${INITRD_OUT:-$OUT_DIR/kata-containers-initrd-taa-csv.initrd}"
 
+# Optional semgrep payload. configs/taa-initrd.json selects the scan engine, so
+# the payload is only required when that config asks for semgrep -- but when it
+# does, the guest has to carry its own interpreter and wheels: the base initrd
+# has neither python3 nor semgrep, and TAA resolves the semgrep CLI through PATH.
+# Build it with build-semgrep-payload.sh; it is gitignored because of its size.
+TAA_SEMGREP_PAYLOAD_DIR="${TAA_SEMGREP_PAYLOAD_DIR:-$SCRIPT_DIR/semgrep-payload}"
+
 # Runtime configuration written into the init wrapper. These defaults must stay
 # in sync with the literal defaults in taa-init.sh: the wrapper is a standalone
 # file now (no heredoc, which needed dozens of escaped variables), and build-time
@@ -208,7 +215,12 @@ require_cmd() {
 archive_has_entry() {
   local img="$1"
   local entry="$2"
-  gzip -dc "$img" | cpio -t --quiet | grep -Fxq -- "$entry"
+  # grep is not given -q on purpose. With -q it exits at the first match, cpio
+  # takes SIGPIPE on its next write, and `pipefail` turns that 141 into this
+  # function's status -- a false "entry is missing" that only appears once the
+  # archive is big enough for the match to land well before the end of the
+  # listing. Measured on the semgrep initrd: 141 with -q, 0 without, same image.
+  gzip -dc "$img" | cpio -t --quiet | grep -Fx -- "$entry" >/dev/null
 }
 
 archive_manifest() {
@@ -221,6 +233,14 @@ manifest_has_entry() {
   local manifest="$1"
   local entry="$2"
   grep -Fxq -- "$entry" "$manifest"
+}
+
+# The scan engine is a property of the config being injected rather than a build
+# flag, so the payload requirement follows the config. A config naming the
+# semgrep engine with no payload in the image would build and boot fine, then
+# fail every audit at import time -- far away from the build that caused it.
+taa_config_wants_semgrep() {
+  grep -qE '"codeScanEngine"[[:space:]]*:[[:space:]]*"semgrep"' "$TAA_CONFIG_SRC"
 }
 
 # Validate every local build input before any temporary state is created.
@@ -273,6 +293,45 @@ check_build_inputs() {
     echo "error: TAA_PLATFORM_IP and TAA_DOCKER_ID must be set together" >&2
     exit 1
   fi
+
+  # One entry per part of the payload that would be missed silently: the
+  # interpreter, both PATH-visible CLI entry points (semgrep dispatches to the
+  # OCaml CLI, which falls back to pysemgrep by name), the native scanner, and
+  # the rules the engine stats at construction (NewEngine fails the whole audit
+  # if the rules path is not a directory).
+  if taa_config_wants_semgrep; then
+    local payload_entry
+    for payload_entry in \
+      "rootfs/usr/bin/python3.10" \
+      "rootfs/usr/local/bin/semgrep" \
+      "rootfs/usr/local/bin/pysemgrep" \
+      "rootfs/opt/taa/semgrep/pylib/semgrep/bin/semgrep-core" \
+      "rootfs/opt/taa/semgrep/rules/python/rules.yaml"; do
+      if [[ ! -e "$TAA_SEMGREP_PAYLOAD_DIR/$payload_entry" ]]; then
+        echo "error: $TAA_CONFIG_SRC selects the semgrep engine but the payload is incomplete" >&2
+        echo "       missing: $TAA_SEMGREP_PAYLOAD_DIR/$payload_entry" >&2
+        echo "hint: run '$SCRIPT_DIR/build-semgrep-payload.sh' to build it" >&2
+        exit 1
+      fi
+    done
+  fi
+}
+
+# Copy the semgrep payload into the staging tree under the guest paths it will
+# occupy. The payload mirrors the guest rootfs, so this is a single copy; `cp -a`
+# keeps the modes and symlinks the wheel unpacking produced, none of which the
+# builder's umask may touch (everything staged here lands in the measured image).
+stage_semgrep_payload() {
+  echo "注入 semgrep 载荷"
+
+  local payload_root="$TAA_SEMGREP_PAYLOAD_DIR/rootfs"
+  cp -a "$payload_root/." "$BUILD_WORK_DIR/extra/"
+
+  # The payload is the single largest thing in the image (it is why the initrd
+  # roughly doubles), so the build reports it rather than leaving the growth to
+  # be noticed later as guest memory.
+  echo "semgrep 载荷（未压缩）: $(du -sh "$payload_root" | awk '{print $1}')"
+  echo "semgrep 载荷文件数: $(find "$payload_root" -mindepth 1 | wc -l)"
 }
 
 # 远程部署前检查输出镜像是否包含 TAA 所需的注册环境。
@@ -315,7 +374,7 @@ build_initrd() {
   # 拒绝把已经注入过的镜像当作 base。重复执行具备幂等性，
   # 因为每次都从 BASE_INITRD 开始并覆盖 INITRD_OUT；这个保护用于防止误把
   # 已注入输出文件当作新的 base。
-  for injected in usr/local/bin/taa usr/local/bin/taa-init etc/taa/taa-config.json; do
+  for injected in usr/local/bin/taa usr/local/bin/taa-init etc/taa/taa-config.json opt/taa/semgrep/MANIFEST; do
     if manifest_has_entry "$base_manifest" "$injected"; then
       echo "error: base initrd already contains TAA payload path $injected; refusing to append a duplicate" >&2
       echo "hint: use the original remote Kata CSV initrd as $BASE_INITRD" >&2
@@ -350,8 +409,9 @@ build_initrd() {
 
   # TAA reads its config from a fixed absolute path, so the file has to be part
   # of the measured image. configs/taa-initrd.json is the initrd baseline: the
-  # regex engine (no semgrep rules shipped in the initrd) and the cert paths
-  # under /etc/taa/certs that the two installs below populate.
+  # cert paths under /etc/taa/certs that the two installs below populate, and,
+  # when that config selects the semgrep engine, the payload staged afterwards
+  # under /opt/taa/semgrep plus the interpreter and CLI that run it.
   mkdir -p "$BUILD_WORK_DIR/extra/etc/taa/certs"
   install -m 0644 "$TAA_CONFIG_SRC" "$BUILD_WORK_DIR/extra/etc/taa/taa-config.json"
   install -m 0644 "$TAA_HRK_CERT_SRC" "$BUILD_WORK_DIR/extra/etc/taa/certs/hrk.cert"
@@ -371,6 +431,10 @@ build_initrd() {
       printf 'export TAA_REQUIRED=%q\n' "$TAA_REQUIRED"
       printf 'export TAA_REQUIRE_ATTESTATION=%q\n' "$TAA_REQUIRE_ATTESTATION"
     } > "$BUILD_WORK_DIR/extra/etc/default/taa.env"
+  fi
+
+  if taa_config_wants_semgrep; then
+    stage_semgrep_payload
   fi
 
   echo "追加到 cpio"
@@ -436,17 +500,13 @@ build_initrd() {
     append_entries+=("$path")
   }
 
-  for path in \
-    usr/local/bin/taa \
-    usr/local/bin/taa-init \
-    etc/taa/taa-config.json \
-    etc/taa/certs/hrk.cert \
-    etc/taa/certs/hsk_cek.cert; do
+  # Enumerate what to append rather than listing it: the semgrep payload alone is
+  # thousands of files, and a hand-kept list would drift from whatever the
+  # staging steps wrote. A C-locale sort puts every parent ahead of its children,
+  # which is what queue_entry relies on when it walks a path's parents.
+  while IFS= read -r path; do
     queue_entry "$base_manifest" "$path"
-  done
-  if taa_env_file_needed; then
-    queue_entry "$base_manifest" "etc/default/taa.env"
-  fi
+  done < <(cd "$BUILD_WORK_DIR/extra" && find . -mindepth 1 -printf '%P\n' | LC_ALL=C sort)
 
   (
     cd "$BUILD_WORK_DIR/extra"
@@ -491,9 +551,21 @@ build_initrd() {
   echo "output initrd: $INITRD_OUT"
   echo "output cpio entries: $out_count"
   echo "appended entries (${#append_entries[@]}):"
-  for entry in "${append_entries[@]}"; do
-    printf '  %s\n' "$entry"
-  done
+  # The full list is written next to the image: with the semgrep payload staged
+  # it runs to thousands of paths, which is more than a build log should carry but
+  # exactly what is needed to audit what the measurement covers.
+  entries_file="${INITRD_OUT}.entries"
+  printf '%s\n' "${append_entries[@]}" > "$entries_file"
+  if [[ "${#append_entries[@]}" -le 40 ]]; then
+    for entry in "${append_entries[@]}"; do
+      printf '  %s\n' "$entry"
+    done
+  else
+    for entry in "${append_entries[@]:0:20}"; do
+      printf '  %s\n' "$entry"
+    done
+    echo "  ... （完整清单见 $entries_file）"
+  fi
 }
 
 # Copy the authoritative base assets from the host that runs Kata. A committed
