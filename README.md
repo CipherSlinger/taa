@@ -223,9 +223,9 @@ Plaintext Data  ──►  SM4-GCM Encryption  ──►  Ciphertext Payload
                     SM2 Public Key Encryption
                             │
                             ▼
-                       WrappedKey (129 Bytes)
+                       WrappedKey (113 Bytes)
 
-Final Envelope Format:  [ WrappedKey (129B) ] || [ SM4-GCM Ciphertext ]
+Final Envelope Format:  [ WrappedKey (113B) ] || [ SM4-GCM Ciphertext ]
 ```
 
 - **SM2**: Used for asymmetric identity authentication, key exchange, and digital envelope key encapsulation.

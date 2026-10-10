@@ -36,17 +36,18 @@
 TAA 所在 Pod 容器需提供以下运行参数：
 
 ```env
-PLATFORM_IP=192.168.3.102:8080
+PLATFORM_IP={IP}:{PORT}
 DOCKER_ID=xxxxxxxxx
 CONTRACT=合约ID（预留）
+LLM_IP={IP}:{PORT}
 ```
 
 ```env
-# 模型方路径约定（详细规约参见 docs/model-provider-integration-guide.md）
-/opt/taa/input          # 输入目录（只读权限路径 READ_ONLY）
-/opt/taa/output/result  # 训练代码主输出目录（写权限路径 READ_WRITE）
-/opt/taa/output/log     # 模型终端日志目录（写权限路径 READ_WRITE）
-/opt/taa/output/progress # 训练进度目录（写权限路径 READ_WRITE）
+# 模型方路径约定
+/opt/taa/input/           # 输入目录（只读权限路径 READ_ONLY）
+/opt/taa/output/result/   # 训练代码结果输出目录（写权限路径 READ_WRITE）
+/opt/taa/output/log       # 模型终端日志目录（写权限路径 READ_WRITE）
+/opt/taa/output/progress  # 训练进度目录（写权限路径 READ_WRITE）
 ```
 
 ## 2. 公共返回格式
@@ -1096,7 +1097,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 **成功响应体**：结果文件二进制流。
 
 - `X-TAA-Encrypted: false` 时，响应体为当前阶段结果目录压缩得到的 zip 文件。
-- `X-TAA-Encrypted: true` 时，响应体为信封加密后的二进制内容，格式为 `WrappedKey(129B) || SM4-GCM Ciphertext`。
+- `X-TAA-Encrypted: true` 时，响应体为信封加密后的二进制内容，格式为 `WrappedKey(113B) || SM4-GCM Ciphertext`。
 
 **成功响应示例（200 OK，phase 2 明文导出）**：
 
@@ -1121,7 +1122,7 @@ Content-Length: 10485918
 X-TAA-Task-Id: task-001
 X-TAA-Encrypted: true
 
-<WrappedKey(129B) || SM4-GCM Ciphertext>
+<WrappedKey(113B) || SM4-GCM Ciphertext>
 ```
 
 **调用示例**：

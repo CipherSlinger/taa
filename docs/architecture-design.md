@@ -437,9 +437,9 @@ TAA_DEBUG_MODE=true ./deploy.sh taa
               ↑
         随机 AES 数据密钥
               │
-              └→ SM2 公钥加密 → WrappedKey (129 bytes)
+              └→ SM2 公钥加密 → WrappedKey (113 bytes)
 
-输出格式: WrappedKey(129B) || Ciphertext(可变长)
+输出格式: WrappedKey(113B) || Ciphertext(可变长)
 ```
 
 ### 9.2 密钥关系
