@@ -206,6 +206,9 @@ fi
 新增：把 `configs/taa-initrd.json` 拷进 `extra/etc/taa/taa-config.json`（`install -m 0644`），
 并在 `check_build_inputs` 里校验它存在。
 
+**`deploy_remote` 与 `launch_remote` 不需要改动。** 它们已经实现了正确的隔离（新 bundle 目录、
+新 kata 配置文件、新 handler、新 RuntimeClass），本轮改动完全落在 `build_initrd` 一侧。
+
 ### 4.6 base 资产的治理
 
 **决策：从 git 移除 base 的大文件，新增 `fetch-base` 子命令从宿主拉真身。**
@@ -235,11 +238,38 @@ fi
 | 3 | QEMU 真的用了新 initrd | pod 起来后宿主 `ps -eo args=` 里 `-initrd` 指向 taa 版路径 |
 | 4 | TAA 真的在跑 | 容器内 `wget -qO- localhost:6001`（kata 的 pod netns 即 guest netns）有应答 |
 | 5 | **证明是真的** | TAA 日志出现 `attestation report verified successfully`，而**不是** `continuing with empty report` |
-| 6 | 回归 | 原 `kata-qemu-csv2` handler 与其配置文件零改动；新 handler 为 `kata-qemu-csv2-taa`，新配置文件 `configuration-qemu-csv2-taa.toml` |
+| 6 | 回归 | 原 `kata-qemu-csv2` handler 与其配置文件零改动；新 handler 为 `kata-qemu-csv2-taa`，新配置文件 `configuration-qemu-csv2-taa.toml`。逐层证据见 §5.1 |
 | 7 | 不撞共享 pod | 测试 pod 名 `test-kata-csv2-taa`（默认值），与共享的 `dcu-tee-test` 无交集 |
 
 第 2 条是最有力的一条：它把"TAA 在 initrd 里"翻译成一个**可比较的密码学量**，
 而不是"文件确实被追加了"这种间接推断。
+
+### 5.1 爆炸半径：哪些 pod 会拿到含 TAA 的 initrd
+
+**结论：只有显式声明 `runtimeClassName: kata-qemu-csv2-taa` 的 pod。** 四条隔离各自独立，
+逐行核过：
+
+| 隔离层 | 新 | 原（只读，不写） | 证据 |
+| :--- | :--- | :--- | :--- |
+| initrd 文件 | `<bundle>/initramfs.img`（`taa-csv-20260901/`，新目录） | `/opt/kata/share/kata-containers/kata-containers-initrd-confidential-csv.img` | `:445` 装进新目录，原文件未被触碰 |
+| kata 配置 | `/etc/kata-containers/configuration-qemu-csv2-taa.toml` | `/opt/kata/share/defaults/…/configuration-qemu-csv2.toml` | `:560` 先 `cp` 成副本再改；`:660` 装到新路径 |
+| containerd handler | `kata-qemu-csv2-taa` | `kata-qemu-csv2` | `:679` target 为该 handler；`:724-731` 只删它自己的块 |
+| RuntimeClass | 新建 `kata-qemu-csv2-taa` | 现有 14 个 | `:848-858` |
+
+`dcu-tee-test` 走 `kata-qemu-hygon-dcu-csv2` → `configuration-qemu-hygon-dcu-csv2.toml`，
+与本流程零交集。
+
+**唯一的宿主级动效**：`:821` `sudo systemctl restart containerd`（新 handler 必须重启才生效）。
+
+- 正在运行的容器**不会**被杀（shim 是独立进程，containerd 重启后重连）；
+- 但重启窗口内**新建容器、镜像拉取、`kubectl exec`** 会短暂失败——若此刻有人正在用
+  `dcu-tee-test`，`exec` 可能被打断，**pod 本身与 DCU 卡不受影响**；
+- 脚本带回滚（`:807-813`：起不来就还原备份配置再启一次），但**回滚重启若也失败，
+  containerd 会停在那里**。这是本流程风险最高的一步，执行前应确认无人在用集群。
+
+**其它两个小项**（不影响隔离性）：测试 pod 用 `nodeName` 固定调度（`:874`），`TEST_IMAGE`
+默认 `busybox:latest`（`:58`）——该 tag 拉不下来会卡在 `:886` 的 180s 等待；用宿主上已有的
+镜像覆盖 `TEST_IMAGE` 即可。测试 pod 名默认 `test-kata-csv2-taa`，与 `dcu-tee-test` 不重名。
 
 ---
 
