@@ -170,6 +170,10 @@ CUSTOM_BASE_ARCHIVE=""
 CUSTOM_BASE_IMAGE=""
 CUSTOM_SAVE_CONFIG=""
 LOCAL_DOCKER_NETWORK="${LOCAL_DOCKER_NETWORK:-host}"
+# TEE-LLM gateway endpoint baked into taa's config. Defaults to loopback, which holds when the
+# gateway shares taa's network namespace. When it runs in its own container, pass that
+# container's address instead (e.g. TAA_LLM_ENDPOINT=https://10.0.0.2:8443).
+TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-https://127.0.0.1:8443}"
 LOCAL_DOCKER_INPUT_DIR="${LOCAL_DOCKER_INPUT_DIR:-/opt/taa/input}"
 LOCAL_DOCKER_OUTPUT_DIR="${LOCAL_DOCKER_OUTPUT_DIR:-/opt/taa/output}"
 SAVE_CLEAN="${SAVE_CLEAN:-false}"
@@ -472,7 +476,7 @@ save_local_docker_image() {
   write_taa_config "$prod_config_source" "$prod_config_template" \
     ":6001" "" "" "" \
     "/root/taa/models" "/root/taa/data" "/root/taa/results" \
-    "https://127.0.0.1:8443" "$target_model" \
+    "$TAA_LLM_ENDPOINT" "$target_model" \
     false "/opt/taa/input" "/opt/taa/output" "/opt/taa/keys"
   info "production config prepared for image (model: $target_model)"
 
@@ -1393,7 +1397,7 @@ deploy_docker_taa() {
   TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
   step "writing taa config for docker from $(basename "$TAA_CONFIG_TEMPLATE")"
   ensure_parent_dir "$LOCAL_DOCKER_CONFIG_SOURCE"
-  local target_llm_endpoint="https://127.0.0.1:8443"
+  local target_llm_endpoint="$TAA_LLM_ENDPOINT"
   write_taa_config "$LOCAL_DOCKER_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" \
     "$TAA_CONTAINER_ADDR" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_CONTAINER" "$CONTRACT" \
     "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" \
@@ -1533,7 +1537,7 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   write_taa_config "$REMOTE_TAA_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" \
     "$TAA_CONTAINER_ADDR" "$REMOTE_PLATFORM_IP" "$REMOTE_DOCKER_ID" "$CONTRACT" \
     "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" \
-    "https://127.0.0.1:8443" "$TARGET_MODEL" "$INCLUDE_TAA_IDENTITY" "" "" "$TAA_CONTAINER_WORKDIR/keys"
+    "$TAA_LLM_ENDPOINT" "$TARGET_MODEL" "$INCLUDE_TAA_IDENTITY" "" "" "$TAA_CONTAINER_WORKDIR/keys"
 
   step "uploading taa, config, and certificates to remote host"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TAA_BINARY_PATH" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/$BINARY_NAME.new"
