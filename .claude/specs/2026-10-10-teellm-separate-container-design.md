@@ -347,7 +347,34 @@ info "$label ${DIM}(took ${total_elapsed}s)${NC}"   # ← 颜色码在参数里
 >
 > 第 3、5 条是承重证据：没有别名时 **ollama → llama-server → 推理**这条链照样通。
 >
-> **未一并处理**：`deploy/manifest/docker/Dockerfile.base:36` 仍然 `mkdir -p /taatest`，
-> 于是容器里留下一个空目录；`docs/architecture-design.md` §10.3 也仍把 `/taatest/` 记作容器布局
-> （实际早已是 `/root/taa`）。两者都不影响运行，删 Dockerfile 那行需要重建并重新分发基础镜像，
-> 单独处理。
+> **两处残渣：已处理，且上表的最后一行已随之作废。**
+>
+> | 项 | 处置 |
+> | :--- | :--- |
+> | `deploy/manifest/docker/Dockerfile.base` 的 `mkdir -p /taatest` | **已删**（连同 `/taatest` 那一行） |
+> | `docs/architecture-design.md` §10.3 | **已重写**：改为 `/root/taa`（工作目录）+ `/opt/taa`（运行时数据），并说明 Ollama 已随网关移到 teellm 容器 |
+> | 容器内残留的 `/taatest`（两个容器）与容器 1 的 `/root/taa/ollama-qwen2.5-coder-0.5b` | **已删**，删前已验证无任何进程引用（`/proc/*/exe`、`/proc/*/cwd` 全扫 0 命中；容器 1 的 ollama 走 `OLLAMA_MODELS=/root/taa/ollama/models/models`） |
+>
+> ⚠️ **勘误：本文件先前的说法"删 Dockerfile 那行需要重建并重新分发基础镜像"是错的。**
+> 实测证据：
+>
+> | 检查 | 结果 |
+> | :--- | :--- |
+> | 当前 `taa-env:slim-v2` 镜像（2026-09-17）里有没有 `/taatest` | `docker run --rm --entrypoint sh taa-env:slim-v2 -c 'ls /taatest'` → **No such file** |
+> | 那容器里的 `/taatest` 从哪来 | `docker diff` 两个容器都是 **`A /taatest`**（writable layer 新增）——是**运行期**建的 |
+> | 谁建的 | 正是本次删掉的 `teellm/deploy.sh` 里那句 `mkdir -p /taatest`（容器 1 的 `/taatest` mtime `10-09 10:41`，即上一次旧脚本跑的时间点） |
+>
+> 也就是说：**`/taatest` 从来不是基础镜像的产物，删它不需要重建任何东西**，删掉运行期目录即为完整修复，
+> 而 Dockerfile 那一行本来就够不着当前镜像。
+>
+> 顺带查清了 `Dockerfile.base` 本身的处境——**它并不是当前在跑的那个镜像的来源**：
+>
+> | 检查 | 结果 |
+> | :--- | :--- |
+> | 仓库里谁 build 它 | **没有**：`grep -rn Dockerfile` 全仓无 `docker build -f`、无 Makefile 目标；仅 `README.md:189` 把它当目录泛称提到一句 |
+> | 带它 `maintainer="OSR TEE Team"` label 的本地镜像 | **0 个** |
+> | 当前镜像的 `docker history` | `ENV DEBIAN_FRONTEND…` → apt-get（**ubuntu 24.04**）→ pip torch → `COPY taa/ /root/taa/`，与 `Dockerfile.base`（ubuntu 22.04、建 `models/data/results/attestation`）**不是同一份** |
+> | 当前镜像里的 `/root/taa` | 只有 `start.sh`、`taa`、`taa.log` |
+>
+> 所以这两处改动都是**纯卫生**：Dockerfile.base 那行改的是一个当前无人构建的文件，
+> §10.3 改的是文档。两者都不影响任何正在运行的东西。

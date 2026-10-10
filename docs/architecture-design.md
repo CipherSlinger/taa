@@ -478,20 +478,35 @@ TAA_DEBUG_MODE=true ./deploy.sh taa
 
 ### 10.3 容器内目录结构
 
+容器工作目录为 `/root/taa`（镜像 `WORKDIR`，即部署脚本的 `CON_WORKDIR`）；运行时数据与暂存目录在 `/opt/taa`。
+
 ```
-/taatest/
-├── taa                          TAA 二进制
-├── attestation.report           远程证明报告
-├── attestation/
-│   └── get-attestation          证明 helper
-├── hrk.cert                     HRK 根证书
-├── hsk_cek.cert                 HSK/CEK 证书
-└── ollama/                     Ollama 离线包 (来自 teellm/models/ollama)
-    ├── ollama                   Ollama 二进制
-    ├── start-ollama.sh          启动脚本
-    ├── models/                  模型文件
-    └── lib/                     运行时库
+/root/taa/                        容器工作目录 (WORKDIR / CON_WORKDIR)
+├── taa                           TAA 二进制
+├── taa-config.json               TAA 运行时配置（部署时由部署脚本写入）
+├── start.sh                      启动监督脚本（保持 TAA 常驻）
+├── taa.log                       TAA 运行日志
+├── attestation.report            远程证明报告
+├── certs/
+│   ├── hrk.cert                  HRK 根证书
+│   └── hsk_cek.cert              HSK/CEK 证书
+├── keys/                         TAA SM2 密钥对与密封状态 (0700)
+├── models/                       平台下发的模型包
+├── data/                         解密解压后的任务数据
+└── results/                      训练与审计结果
+
+/opt/taa/                         运行时数据与暂存目录
+├── input/                        待处理输入
+├── checkpoint/                   训练检查点
+├── output/                       训练产物 (result / log / progress)
+└── semgrep/rules/                Semgrep 扫描规则
 ```
+
+配置模板 `configs/taa-docker.json` 中 `storage.keys` 写的是 `/opt/taa/keys`，实际部署时由部署脚本改写为
+`/root/taa/keys`，以容器内生效的 `taa-config.json` 为准。
+
+Ollama 离线包**不在 TAA 容器内**：TEE-LLM 网关拆分为独立容器后，Ollama 与网关同容器，
+由 `teellm` 子模块独立部署（`(cd teellm && ./deploy.sh [docker|remote])`），TAA 通过容器 IP 访问。
 
 ## 11. 项目目录结构
 
