@@ -148,63 +148,73 @@ sequenceDiagram
 |------|------|------|
 | TAA 主服务入口 | `cmd/taa/main.go` | 极简入口，参数解析与系统信号监听 |
 | TAA 启动编排 | `internal/app/taa/` | 启动生命周期编排、密钥生成、注册、HTTP 服务初始化 |
-| 平台模拟器入口 | `cmd/platform-mock/main.go` | 平台模拟器可执行入口 |
-| 平台模拟器核心 | `internal/app/mock/` | 模拟器 HTTP 服务、反向代理与嵌入控制台 |
+| 平台模拟器入口 | `tools/platform-mock/cmd/platform-mock/main.go` | 平台模拟器可执行入口 |
+| 平台模拟器核心 | `tools/platform-mock/` | 模拟器 HTTP 服务、反向代理与嵌入控制台 |
 | 控制器 | `internal/controller/` | HTTP 路由、导入/导出/审计/阶段切换逻辑 |
-| 远程证明 | `internal/attestation/` + `attestation/` | 调用 CSV 硬件生成远程证明报告 |
+| 远程证明 | `internal/attestation/` + `pkg/csvattest/` | 进程内经 ioctl 读取 CSV 硬件生成远程证明报告 |
 | 安全审计 | `internal/codeaudit/` | Python 代码静态扫描 + LLM 语义验证 |
-| 加密工具 | `crypto/` | SM2 信封加密/解密，SM4-GCM |
-| Ollama/Qwen | `teellm/models/ollama/` | 本地 LLM 推理，用于代码审计的语义验证 |
+| 加密工具 | `pkg/crypto/` | SM2 信封加密/解密，SM4-GCM |
+| LLM 推理服务 | `teellm/`（独立子模块） | `teellm-service` 网关 + Ollama/Qwen，供代码审计的语义验证 |
 
 ## 3. 启动流程
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │              TAA 启动 (cmd/taa -> internal/app/taa)                 │
-├───────────────────────────���─────────────────────────────────────────┤
+├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  1. 解析启动参数 (-debug, -addr, -security-scan 等)                  │
+│  1. 读取 taa-config.json（-config/-addr 可覆盖）                    │
 │  2. 生成 SM2 密钥对 (taaKeyPair)                                    │
 │  3. 计算 USERDATA = taaPublicKey.X || taaPublicKey.Y                │
-│  4. 调用 attestation helper 生成远程证明报告 (report.cert)             │
-│     └─ ATTESTATION_USERDATA 环境变量传入自定义 userdata                │
-│  5. POST /v1/taa/register → 平台注册                                 │
-│     └─ 携带: dockerId, attestation(base64), taaPublicKey,            │
-│              attestationValues(JSON), timestamp, verifiedPass        │
-│  6. 初始化 TAAState，启动 HTTP 服务 (默认 :6001)                      │
+│  4. 进程内生成远程证明报告 (attestation.report)，并用证书链自校验   │
+│     └─ USERDATA 由 TAA 直接传入，ATTESTATION_USERDATA 可覆盖        │
+│  5. POST /v1/taa/register → 平台注册                                │
+│     └─ 携带: dockerId, attestation(base64), taaPublicKey,           │
+│              attestationValues(JSON), timestamp, verifiedPass       │
+│  6. 初始化 TAAState，启动 HTTP 服务 (默认 :6001)                    │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.1 启动参数
+### 3.1 启动参数与配置
 
-| 参数 | 环境变量 | 默认值 | 说明 |
-|------|---------|--------|------|
-| `-debug` | — | `false` | 调试模式：跳过训练，导出原始产物 |
-| `-addr` | — | `:6001` | HTTP 监听地址 |
-| `-security-scan` | `SECURITY_SCAN` | `true` | 启用代码安全扫描 |
-| `-result-check` | `RESULT_CHECK` | `true` | 启用导出结果泄露检查 |
-| `-security-llm-verify` | `SECURITY_LLM_VERIFY` | `true` | 启用 LLM 语义验证 |
-| `-security-llm-endpoint` | `SECURITY_LLM_ENDPOINT` | `http://127.0.0.1:11434` | Ollama 端点 |
-| `-security-llm-model` | `SECURITY_LLM_MODEL` | `qwen2.5-coder:0.5b` | LLM 模型名 |
-| `-model-dir` | `MODEL_DIR` | `/opt/taa/models` | 模型代码目录 |
-| `-data-dir` | `DATA_DIR` | `/opt/taa/data` | 数据目录 |
-| `-result-dir` | `RESULT_DIR` | `/opt/taa/results` | 结果目录 |
+命令行只保留两个参数，其余配置全部来自 JSON 配置文件：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-config` | 空 | 配置文件路径；留空则用 `taa-config.json`（相对当前工作目录，即容器内的 `/root/taa/`） |
+| `-addr` | 空 | HTTP 监听地址，**覆盖**配置文件里的 `server.addr` |
+
+配置文件分 7 段：`server` / `platform` / `storage` / `model` / `security` / `attestation` / `llm`，
+模板见 `configs/taa-docker.json`（本地容器）与 `configs/taa-production.json`（生产 Pod），
+字段含义见 `README.md` 的配置说明。
+
+早期版本的 `-security-scan` / `-security-llm-*` / `-model-dir` / `-data-dir` / `-result-dir` 等命令行参数
+与其同名环境变量均已并入配置文件，不再存在。
 
 ## 4. API 接口
 
 ### 4.1 接口路由
 
+TAA 作为服务端注册的路由（`internal/controller/router.go`）：
+
 | 接口 | 方法 | 说明 |
 |------|------|------|
+| `/v1/taa/health` | POST | 健康检查 |
+| `/v1/taa/status` | POST | 查询状态 |
 | `/v1/taa/switch` | POST | 切换阶段 (1→2→3) |
-| `/v1/taa/import` | POST | 导入资源（模型/测试数据/训练数据） |
+| `/v1/taa/import` | POST | 导入资源（测试数据 / 训练数据） |
+| `/v1/taa/importModel` | POST | 导入模型资源 |
+| `/v1/taa/getResourceInfo` | POST | 查询已导入资源信息 |
+| `/v1/taa/stopTraining` | POST | 停止当前训练 |
 | `/v1/taa/export` | POST | 导出结果 |
 | `/v1/taa/getAttestation` | POST | 重新获取远程证明报告 |
-| `/v1/taa/reportRes` | POST | 平台向 TAA 上报结果状态 |
-| `/v1/taa/health` | GET | 健康检查 |
-| `/v1/taa/logs` | POST | 查询日志 |
-| `/v1/taa/status` | GET | 查询状态 |
+
+全部路由**只接受 POST**（`postOnly` 中间件统一强制，其余方法返回 405），并统一附带 CORS 头。
+
+> 反向的、由 TAA 主动调用平台的方向是另一组路径，定义在 `internal/platform/`：
+> `register` / `reportRes` / `reportAudit` / `reportProgress` / `taaLog` / `modelLog`。
+> 它们不出现在 TAA 的路由表里。
 
 ### 4.2 公共返回格式
 
@@ -344,16 +354,16 @@ reportTrainingAsync()
     verifier.VerifyFindings()
              │
              ▼
-    ┌─── LLM 语义验证 ───────┐
-    │  llm.Client → Ollama   │
-    │  http://127.0.0.1:11434│
-    │  模型: qwen2.5-coder   │
-    │                        │
-    │  对每个 Finding 判断:    │
-    │  - true_positive (确认) │
-    │  - false_positive (误报)│
-    │  - uncertain (不确定)   │
-    └────────┬───────────────┘
+    ┌─── LLM 语义验证 ───────────┐
+    │  llm.Client → teellm       │
+    │  TEE-TLS (RFC 8998)        │
+    │  :8443 qwen2.5-coder:7b    │
+    │                            │
+    │  对每个 Finding 判断:      │
+    │  - true_positive (确认)    │
+    │  - false_positive (误报)   │
+    │  - uncertain (不确定)      │
+    └────────┬───────────────────┘
              ▼
       AuditReport
       (passed/failed, risk_level, findings[])
@@ -363,22 +373,31 @@ reportTrainingAsync()
 
 | 文件 | 行数 | 职责 |
 |------|------|------|
-| `internal/security/audit.go` | 434 | 审计入口，协调扫描+LLM验证，生成 `AuditReport` |
-| `internal/security/scanner.go` | 314 | 静态扫描引擎，遍历 Python 文件匹配安全规则 |
-| `internal/security/rules.go` | 227 | 安全规则定义，`Finding` 类型和严重级别 |
-| `internal/security/llm.go` | 244 | Ollama/Qwen 客户端 |
-| `internal/security/verifier.go` | 297 | LLM 语义验证，过滤误报 |
-| `internal/security/result_checker.go` | 208 | 导出结果明文泄露检测 |
+| `internal/codeaudit/audit.go` | 612 | 审计入口，协调扫描+LLM验证，生成 `AuditReport` |
+| `internal/codeaudit/scanner.go` | 359 | 静态扫描引擎，遍历 Python 文件匹配安全规则 |
+| `internal/codeaudit/rules.go` | 319 | 安全规则定义，`Finding` 类型和严重级别 |
+| `internal/codeaudit/engine.go` | 156 | 引擎标识与选择（规则引擎 / Semgrep / CPG） |
+| `internal/codeaudit/semgrep_engine.go` | 585 | Semgrep 适配器：调用外部 CLI 并映射结果 |
+| `internal/codeaudit/cpg_analysis.go` | 241 | CPG（代码属性图）引擎适配器 |
+| `internal/codeaudit/llm.go` | 208 | TEE-LLM 客户端（经 TEE-TLS 访问 `teellm-service`） |
+| `internal/codeaudit/verifier.go` | 489 | LLM 语义验证，过滤误报 |
+| `internal/codeaudit/result_checker.go` | 241 | 导出结果明文泄露检测 |
+| `internal/codeaudit/context_slice.go` | 118 | 为 LLM 判定裁剪代码上下文窗口 |
 
 ## 7. 远程证明
 
 ### 7.1 证明流程
 
-1. TAA 启动时调用 `attestation/get-attestation` helper
-2. Helper 通过 CSV 硬件（vmmcall 或 ioctl）获取远程证明报告
-3. 报告包含 USERDATA（TAA SM2 公钥 X‖Y）、MNONCE、DIGEST、CHIP_ID
+1. TAA 启动时派生 64 字节 USERDATA（SM2 公钥 X‖Y，见 §7.2）
+2. 由 `internal/attestation` 的**进程内纯 Go 实现**（`pkg/csvattest`，ioctl 读写 `/dev/csv-guest`）取回 CSV 硬件报告
+3. 报告写入容器工作目录下的 `attestation.report`（同目录另落 `nonce.bin`），随后用 HRK / HSK-CEK 证书链自校验
 4. 注册时报告以 Base64 编码发送给平台
 5. `/v1/taa/getAttestation` 可重新生成报告（复用启动时的 USERDATA）
+
+> 2026-09-15 起已无外部 `get-attestation` helper：早期实现要 `exec` 一个 C 助手（依赖 GmSSL 编译，产物约 25MB），
+> 现由 Go 进程内直接出报告，仓库里的 `attestation/` C 工具链目录随之移除。生成失败**不致命**——
+> 记 `WARNING` 后写一份空报告继续启动，证书链自校验失败同样只记 `WARNING` 而放行（见 `internal/app/taa/app.go`
+> 的 `prepareAttestationReport`）。
 
 ### 7.2 USERDATA 构成
 
@@ -387,7 +406,7 @@ USERDATA = taaPublicKey.X || taaPublicKey.Y
 ```
 
 - 64 字节 = 两个 32 字节坐标分别左侧补零到 32 字节后拼接（`internal/app/taa/app.go` 的 `deriveUserData`），不含任何哈希
-- 通过 `ATTESTATION_USERDATA` 环境变量传入 helper
+- 正常路径由 TAA 直接传给报告生成器；`ATTESTATION_USERDATA`（64 字节 hex）是 `pkg/csvattest` 提供的覆盖项
 - 在 `/v1/taa/getAttestation` 返回时，`userdata` 会转换为 PEM 格式的 SM2 公钥字符串
 - 只绑定 TAA 公钥与 TEE 硬件；dockerId / platformIP / timestamp 随注册请求单独上报，不进入 USERDATA
 
@@ -452,23 +471,39 @@ TAA_DEBUG_MODE=true ./deploy.sh taa
 
 ### 10.1 部署脚本
 
-`deploy.sh` 支持 `local`（本地 Docker 容器化测试）与 `remote`（远程 Kubernetes 部署，默认模式）：
+`deploy.sh` 有两种模式（默认 `remote`）与三种动作（默认 `start`）：
+
+| 模式 | 含义 |
+| :--- | :--- |
+| `remote` | 远程 Kubernetes Pod 部署（默认）；默认**不**部署 platform-mock，避免与 ccs-node-agent 争 18080 |
+| `docker` | 本地 Docker 容器化测试：TAA 与依赖跑在本地容器内，platform-mock 跑在宿主机 |
+
+| 动作 | 含义 |
+| :--- | :--- |
+| `start` | 部署并启动（默认动作） |
+| `stop` | 停止目标服务 |
+| `save` | 打包基础镜像归档（**仅 docker 模式**） |
 
 ```sh
-# 远程 Kubernetes 部署（默认环境，remote 参数可选）
+# 远程 Kubernetes 部署（默认模式，remote 可省略）
 ./deploy.sh [remote]                    # 全部组件部署
-./deploy.sh [remote] taa                # 仅部署 TAA 服务
-./deploy.sh [remote] qwen               # 仅部署 Ollama/Qwen LLM
-./deploy.sh [remote] platform-mock      # 仅部署平台模拟器
-./deploy.sh [remote] stop               # 停止远程服务
+./deploy.sh remote taa                  # 仅部署 TAA 服务
+./deploy.sh remote platform-mock        # 仅部署平台模拟器
+./deploy.sh remote stop                 # 停止远程服务
 
-# 本地 Docker 容器化测试（TAA 与 Qwen 容器化运行，platform-mock 宿主机运行）
-./deploy.sh local                       # 全部组件本地启动
-./deploy.sh local taa                   # 仅本地启动 TAA
-./deploy.sh local qwen                  # 仅本地启动 Ollama/Qwen LLM
-./deploy.sh local platform-mock         # 仅本地启动平台模拟器
-./deploy.sh local stop                  # 停止本地进程与容器内服务
+# 本地 Docker 容器化测试
+./deploy.sh docker                      # 全部组件本地启动
+./deploy.sh docker taa                  # 仅本地启动 TAA
+./deploy.sh docker platform-mock        # 仅本地启动平台模拟器
+./deploy.sh docker stop                 # 停止容器内服务
+./deploy.sh docker save --tag taa-env:slim-v2-$(date +%Y%m%d)
+
+# LLM 推理服务（Qwen / Ollama / TEE-LLM）不在这里管理
+(cd teellm && ./deploy.sh [docker|remote])
 ```
+
+`local` 与 `local-docker` 是 `docker` 的历史别名，仍然可用；`qwen` 组件名保留但只打印指向上述 teellm 命令的提示。
+完整参数与环境变量清单见 `./deploy.sh --help`。
 
 ### 10.2 部署流程
 
@@ -513,60 +548,35 @@ Ollama 离线包**不在 TAA 容器内**：TEE-LLM 网关拆分为独立容器�
 ```
 tee/
 ├── cmd/
-│   ├── taa/                     TAA 主服务可执行入口
-│   │   └── main.go
-│   └── platform-mock/           平台模拟器可执行入口
-│       └── main.go
-├── Makefile                     构建命令
-├── deploy.sh                    部署脚本
-├── go.mod                       Go 模块定义
+│   └── taa/                     TAA 主服务可执行入口
 ├── internal/
-│   ├── app/                     应用启动编排层
-│   │   ├── taa/                 TAA 启动编排与服务初始化
-│   │   │   ├── app.go
-│   │   │   └── server.go
-│   │   └── mock/                平台模拟器服务与嵌入控制台
-│   │       ├── server.go
-│   │       └── index.html
-│   ├── controller/              HTTP 路由和控制器
-│   │   ├── route.go             路由注册、TAAState、handler
-│   │   ├── import_processing.go 导入流程（解密、解压、训练）
-│   │   ├── debug_mode.go        调试模式辅助函数
-│   │   ├── report.go            上报平台逻辑
-│   │   ├── register.go          注册逻辑
-│   │   ├── platform_client.go   平台 HTTP 客户端
-│   │   └── log_store.go         结构化日志存储
-│   ├── attestation/             远程证明
-│   │   ├── generate.go          调用 helper 生成报告
-│   │   └── report.go            报告字段提取
-│   ├── codeaudit/               代码安全审计
-│   │   ├── audit.go             审计入口
-│   │   ├── scanner.go           静态扫描引擎
-│   │   ├── rules.go             安全规则定义
-│   │   ├── llm.go               Ollama LLM 客户端
-│   │   ├── verifier.go          LLM 语义验证
-│   │   └── result_checker.go    导出结果泄露检测
+│   ├── app/taa/                 启动编排、崩溃恢复与 HTTP 服务装配
+│   ├── controller/              HTTP 路由、导入/导出/审计/阶段切换
+│   ├── attestation/             远程证明：生成、字段提取、证书链自校验
+│   ├── codeaudit/               代码安全审计（文件清单见 §6.2）
+│   ├── config/                  启动配置加载与校验
+│   ├── platform/                平台注册与结果上报
+│   ├── resource/                资源包下载、校验、信封解密与索引
+│   ├── runtime/                 训练子进程编排与遥测
+│   └── store/                   密封状态持久化
+├── pkg/                         可复用库
 │   ├── crypto/                  国密加解密与证书/密钥工具
-│   ├── sm2/                     SM2 国密椭圆曲线实现
-│   └── sm3/                     SM3 国密哈希算法实现
-├── attestation/                 远程证明 C 工具链
-│   ├── csv_c/                   非 SDK 的 C 工具
-│   │   ├── Makefile             C 工具链构建脚本
-│   │   ├── csv_status.h         共享 ABI 头文件
-│   │   ├── calc_vm_digest.c     VM 测量值计算
-│   │   ├── csv-guest.c         内核驱动
-│   │   ├── dcu_attestation_demo.c  DCU 证明示例
-│   │   ├── ioctl_get_attestation.c  ioctl 模式 helper
-│   │   ├── ioctl_get_key.c      ioctl sealing-key helper
-│   │   ├── verify_attestation.c  证明验证工具
-│   │   ├── vmmcall_get_attestation.c  vmmcall 模式 helper
-│   │   └── vmmcall_get_key.c    vmmcall sealing-key helper
-│   └── csv_sdk/                 CSV SDK (C)
-├── models/                      模型项目
-│   ├── LogisticRegression/      逻辑回归模型
-│   ├── TEE-test/                MNIST/CIFAR-10 测试
-│   └── Retina-DKD/              视网膜疾病模型
-├── teellm/                     TEE-LLM 独立子模块 (包含 models/ollama)
+│   ├── csvattest/               CSV 证明报告获取（ioctl）
+│   ├── errors/                  带状态码的错误封装
+│   ├── filetree/                目录树解析（多模态数据集 → JSON）
+│   ├── logger/                  分级日志与有界内存日志池
+│   └── utils/                   通用工具
+├── tools/                       辅助工具（各自独立构建入口）
+│   ├── platform-mock/           平台模拟器（含嵌入式控制台）
+│   ├── csv2-vm/                 CSV2 机密虚拟机脚本
+│   └── sdk/                     独立 go.work 模块
+├── api/                         OpenAPI 定义与 proto
+├── configs/                     部署配置模板（docker / production）
+├── deploy/                      容器部署清单、证书与监管脚本
+├── models/                      模型项目与审计语料
+├── tests/                       集成与回归测试脚本
+├── teellm/                      TEE-LLM 独立子模块（含 models/ollama）
+├── go.mod / go.work             模块与工作区定义
 └── docs/                        文档
     ├── api-design.md
     ├── architecture-design.md   (本文件)
