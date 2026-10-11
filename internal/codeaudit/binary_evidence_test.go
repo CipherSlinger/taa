@@ -1211,6 +1211,65 @@ func TestCollectELFEvidenceOnAZeroSizeDynsym(t *testing.T) {
 	}
 }
 
+// TestCollectELFEvidenceOnAZdebugNamedDynsym pins the second route to the same
+// crash. A section named ".zdebug..." of type SHT_DYNSYM whose body begins with
+// "ZLIB" has Section.Size rewritten from eight bytes the file chooses when the
+// section is opened - not when the file is parsed - so an on-disk sh_size that
+// looks perfectly ordinary (48 here) still yields an empty buffer, which the
+// symbol reader slices at entry 24 and panics on. Only reading the section the
+// way the reader does sees through it; a guard written against the header size
+// would wave this file through.
+func TestCollectELFEvidenceOnAZdebugNamedDynsym(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		zdebugDynsym: true,
+		text:         []byte("a disguised symbol table"),
+	})
+	path := writeTestBytes(t, dir, "zdebug-dynsym.so", raw)
+
+	// Check the shape the file presents before anything opens the section, since
+	// opening it is what rewrites the size - then confirm the empty buffer.
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatalf("elf.Open on the fixture: %v", err)
+	}
+	ds := f.SectionByType(elf.SHT_DYNSYM)
+	if ds == nil {
+		f.Close()
+		t.Fatal("fixture has no SHT_DYNSYM section")
+	}
+	name, onDisk := ds.Name, ds.Size
+	data, dataErr := ds.Data()
+	f.Close()
+	if !strings.HasPrefix(name, ".zdebug") {
+		t.Fatalf("fixture .dynsym name = %q, want a \".zdebug\" prefix", name)
+	}
+	if onDisk == 0 {
+		t.Fatalf("fixture .dynsym on-disk size = 0; the point is that it looks ordinary")
+	}
+	if dataErr != nil {
+		t.Fatalf("reading the fixture's section: %v", dataErr)
+	}
+	if len(data) != 0 {
+		t.Fatalf("fixture section yielded %d bytes, want 0 - the ZLIB header must declare an empty table", len(data))
+	}
+
+	// collectELF must return, not panic, and must neither invent a symbol from the
+	// unread table nor describe the present table as absent.
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF on a .zdebug-named .dynsym: %v", err)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourceDynsym {
+			t.Errorf("a .zdebug-named .dynsym produced symbol evidence %q", l.Text)
+		}
+		if l.Source == SourceNotice && strings.Contains(l.Text, "no dynamic symbol table") {
+			t.Errorf("a present .zdebug-named .dynsym was reported as an absent table: %q", l.Text)
+		}
+	}
+}
+
 // TestCollectELFEvidenceReportsACompressedSectionWithAnOutOfRangeSize pins the
 // unsigned size comparison. For a SHF_COMPRESSED section debug/elf takes
 // Section.Size from the compression header's ch_size without the int64 range

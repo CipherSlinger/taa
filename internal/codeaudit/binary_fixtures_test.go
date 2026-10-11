@@ -63,6 +63,16 @@ type elfSpec struct {
 	// section, and a normal empty table carries the 24-byte reserved entry. So
 	// the crash needs its own switch rather than a reuse of `stripped`.
 	zeroDynsym bool
+	// zdebugDynsym, when true, names the SHT_DYNSYM section ".zdebug_dynsym" and
+	// gives it a 12-byte ".zdebug" body: the "ZLIB" magic followed by a big-endian
+	// uncompressed size of 0. debug/elf reads that header when the section is
+	// opened, not when the file is parsed, and rewrites Section.Size from it - so
+	// the on-disk sh_size stays an ordinary nonzero value while the data the
+	// symbol reader receives is empty. That is the same empty buffer zeroDynsym
+	// produces, by a route no size check on the header can see. The section's
+	// sh_link still points at .dynstr, because the reader loads the string table
+	// before it slices the symbol data.
+	zdebugDynsym bool
 }
 
 // elfFixtureBytes builds a minimal but well-formed ELF64 little-endian shared
@@ -97,11 +107,15 @@ type elfSpec struct {
 // inert to both this extractor and debug/elf's SectionByType, and the fixed
 // index is what keeps e_shstrndx from having to be recomputed per fixture.
 //
-// One layout hazard is worth stating because the failure mode is a crash rather
-// than a test failure: debug/elf's getSymbols64 slices off the first 24 bytes
-// unconditionally, so a SHT_DYNSYM section with sh_size == 0 panics with
-// "slice bounds out of range [24:0]". A present .dynsym must therefore always
-// carry at least the 24-byte null entry.
+// Two layout hazards are worth stating because the failure mode is a crash
+// rather than a test failure, and they are the shapes this builder can produce
+// on purpose with zeroDynsym and zdebugDynsym. debug/elf slices off the first
+// symbol entry unconditionally after a length check that only rejects sizes not
+// a multiple of the entry size, so a SHT_DYNSYM that yields an empty buffer
+// panics with "slice bounds out of range [24:0]". That empty buffer is produced
+// by sh_size == 0, and also by a section named ".zdebug..." with a ZLIB header
+// whose declared size is 0, because opening the section rewrites its size. A
+// plain .dynsym must therefore always carry at least the 24-byte null entry.
 func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	t.Helper()
 
@@ -154,20 +168,28 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	}
 
 	// .dynsym. Entry zero is the reserved null symbol; getSymbols64 skips it, so
-	// the imports start at entry one. A stripped file has no .dynsym at all.
+	// the imports start at entry one. A stripped file has no .dynsym at all, and
+	// the .zdebug shape carries the decompression header instead of symbols.
 	var dynsym []byte
 	if !spec.stripped {
-		dynsym = make([]byte, symEntSize*(len(spec.imports)+1))
-		for i, off := range importOffsets {
-			e := dynsym[symEntSize*(i+1):]
-			le.PutUint32(e[0:4], off)
-			e[4] = byte(elf.STB_GLOBAL)<<4 | byte(elf.STT_FUNC)
-			e[5] = 0
-			le.PutUint16(e[6:8], uint16(elf.SHN_UNDEF))
-			// st_value stays zero: an imported symbol has no address in this file,
-			// which is exactly why a symbol finding carries no byte offset.
-			le.PutUint64(e[8:16], 0)
-			le.PutUint64(e[16:24], 0)
+		if spec.zdebugDynsym {
+			// A .zdebug header: "ZLIB" and a big-endian uncompressed size. The size
+			// here is 0, which is what open-time parsing turns into an empty read.
+			dynsym = make([]byte, symEntSize*2)
+			copy(dynsym[0:4], "ZLIB")
+		} else {
+			dynsym = make([]byte, symEntSize*(len(spec.imports)+1))
+			for i, off := range importOffsets {
+				e := dynsym[symEntSize*(i+1):]
+				le.PutUint32(e[0:4], off)
+				e[4] = byte(elf.STB_GLOBAL)<<4 | byte(elf.STT_FUNC)
+				e[5] = 0
+				le.PutUint16(e[6:8], uint16(elf.SHN_UNDEF))
+				// st_value stays zero: an imported symbol has no address in this file,
+				// which is exactly why a symbol finding carries no byte offset.
+				le.PutUint64(e[8:16], 0)
+				le.PutUint64(e[16:24], 0)
+			}
 		}
 	}
 
@@ -203,7 +225,11 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	nText := shName(".text")
 	nInit := shName(".init")
 	nDynstr := shName(".dynstr")
-	nDynsym := shName(".dynsym")
+	dynsymName := ".dynsym"
+	if spec.zdebugDynsym {
+		dynsymName = ".zdebug_dynsym"
+	}
+	nDynsym := shName(dynsymName)
 	nDynamic := shName(".dynamic")
 	nShstrtab := shName(".shstrtab")
 

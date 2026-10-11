@@ -670,6 +670,30 @@ func entropyVerdict(section string, data []byte, cfg BinaryConfig) (string, bool
 // kernel and the read paths are already tuned for.
 const entropyChunkBytes = 64 * 1024
 
+// symbolTableIsEmpty reports whether a symbol section would hand debug/elf's
+// symbol reader an empty buffer, which is the one input that reader panics on
+// instead of returning an error. Its getSymbols64 rejects a length that is not a
+// multiple of its entry size and then slices off the first entry unconditionally,
+// and zero is a multiple of every entry size. So a length of 1..entrySize-1 is
+// an error that fails the scan closed and has to be left to the reader, while an
+// empty buffer has to be caught here.
+//
+// It reads the section through Section.Data, the call the reader itself makes,
+// rather than checking a size in the header, because the header size is not the
+// whole story. Section.Data opens the section first, and opening a section named
+// ".zdebug..." whose body begins with "ZLIB" rewrites Section.Size from eight
+// bytes the file chooses, so a section whose on-disk sh_size looks ordinary can
+// still yield nothing. Reading the data is the check that covers both routes,
+// and it is also the safe direction: Data returns an error where the symbol
+// reader would panic.
+func symbolTableIsEmpty(sec *elf.Section) (bool, error) {
+	data, err := sec.Data()
+	if err != nil {
+		return false, err
+	}
+	return len(data) == 0, nil
+}
+
 // collectELF reads a file's ELF structure into evidence.
 //
 // Two things are read, and they answer different questions. The dynamic symbol
@@ -769,41 +793,29 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	// families were demoted for. Task 8's rule table is unchanged by this: no new
 	// evidence source is introduced, which is the point.
 	//
-	// The read is guarded because debug/elf's 64-bit symbol reader panics rather
-	// than returning an error on one shape, and it is reachable from an untrusted
-	// file: ClassifyBinary returns KindELF on the four magic bytes alone and does
-	// not look at EI_CLASS, so sh_size is a field the file itself chooses.
-	//
-	// getSymbols64 (file.go) fetches the section's data, rejects it only when
-	// len(data)%Sym64Size != 0, and then slices data[Sym64Size:]. Zero is a
-	// multiple of every entry size, so a section that yields an empty buffer
-	// passes that check and slices an empty slice, panicking with "slice bounds
-	// out of range [24:0]". Every other short length is not a multiple and is
-	// rejected with an error instead - so the panic set is exactly {length 0},
-	// not every length below one entry. The empty buffer arises when the section
-	// declares a size of zero; that is the guard below, and the boundary is exact:
-	// a declared size of 1..23 is left to the reader, which fails the scan closed,
-	// whereas skipping it would turn a malformed symbol table into a silent pass.
-	//
-	// The guard is scoped to ELFCLASS64 because the 32-bit reader has the same
-	// slice but cannot reach it with an empty buffer: getSymbols32 has an explicit
-	// `if len(data) == 0` return before it. A 32-bit table is therefore left
-	// alone, which also keeps its fail-closed error for a zero-size section, and
-	// its entries are Sym32Size (16) bytes so it is not measured against a 24-byte
-	// entry either way.
-	//
-	// A table that declares zero bytes holds no symbols, so skipping it reads as
-	// "imports nothing" - the fact a zero-entry table reports - and raises no
-	// bound, because nothing was left unexamined.
+	// The read is guarded rather than attempted and recovered, because
+	// debug/elf's symbol reader panics instead of returning an error on one
+	// input, and that input is reachable from an untrusted file: ClassifyBinary
+	// returns KindELF on the four magic bytes alone, so every size and name the
+	// reader acts on is a field the file itself chooses. symbolTableIsEmpty
+	// probes exactly that input. A table that yields no bytes holds no symbols,
+	// so skipping it reads as "imports nothing" - the fact a zero-entry table
+	// reports - and raises no bound, because nothing was left unexamined.
 	dynsym := ef.SectionByType(elf.SHT_DYNSYM)
 	switch {
 	case dynsym == nil:
 		set.addStructured(SourceNotice, "no dynamic symbol table (SHT_DYNSYM absent)")
-	case ef.Class == elf.ELFCLASS64 && dynsym.Size == 0:
-		// The panic shape: the 64-bit reader would slice an empty section. The
-		// table is held back here and reports no symbols. It holds none to lose,
-		// and calling a present table "absent" would be a false statement.
 	default:
+		empty, derr := symbolTableIsEmpty(dynsym)
+		if derr != nil {
+			return fmt.Errorf("read dynamic symbols of %s: %w", path, derr)
+		}
+		if empty {
+			// The panic shape: an empty buffer. The section is held back, which
+			// reports no symbols. Calling a present table "absent" would be a
+			// false statement, so no notice is added either.
+			break
+		}
 		syms, err := ef.DynamicSymbols()
 		if err != nil && !errors.Is(err, elf.ErrNoSymbols) {
 			return fmt.Errorf("read dynamic symbols of %s: %w", path, err)
