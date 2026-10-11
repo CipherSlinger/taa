@@ -1,6 +1,8 @@
 package codeaudit
 
 import (
+	"bytes"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -217,4 +219,65 @@ func writeTestBytes(t *testing.T, dir, name string, content []byte) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestShannonEntropy(t *testing.T) {
+	t.Run("uniform over all 256 byte values is 8 bits", func(t *testing.T) {
+		var counts [256]int64
+		for i := range counts {
+			counts[i] = 1
+		}
+		if got := shannonEntropy(counts, 256); math.Abs(got-8.0) > 1e-9 {
+			t.Errorf("entropy = %v, want 8", got)
+		}
+	})
+
+	t.Run("one repeated byte is zero bits", func(t *testing.T) {
+		var counts [256]int64
+		counts[0x41] = 4096
+		if got := shannonEntropy(counts, 4096); got != 0 {
+			t.Errorf("entropy = %v, want 0", got)
+		}
+	})
+
+	t.Run("a fair coin is one bit", func(t *testing.T) {
+		var counts [256]int64
+		counts[0] = 500
+		counts[1] = 500
+		if got := shannonEntropy(counts, 1000); math.Abs(got-1.0) > 1e-9 {
+			t.Errorf("entropy = %v, want 1", got)
+		}
+	})
+
+	t.Run("empty input is zero rather than a division by zero", func(t *testing.T) {
+		var counts [256]int64
+		if got := shannonEntropy(counts, 0); got != 0 {
+			t.Errorf("entropy = %v, want 0", got)
+		}
+	})
+}
+
+// TestEntropyVerdictIsMeasuredNotAssumed pins the line the extractor emits and
+// the threshold that gates it. The measurement is exact by construction:
+// byte(i*7) cycles through every value of a byte before repeating, so a 512-byte
+// buffer has a perfectly uniform histogram and its entropy is exactly 8.
+func TestEntropyVerdictIsMeasuredNotAssumed(t *testing.T) {
+	cfg := DefaultBinaryConfig()
+
+	uniform := make([]byte, 512)
+	for i := range uniform {
+		uniform[i] = byte(i * 7)
+	}
+	if got := measureEntropy(uniform); math.Abs(got-8.0) > 1e-9 {
+		t.Fatalf("fixture entropy = %v, want exactly 8; the fixture, not the code, is wrong", got)
+	}
+
+	if line, ok := entropyVerdict(".text", uniform, cfg); !ok || line != "high-entropy-executable-section .text 8.00" {
+		t.Errorf("verdict = %q (emitted=%v), want high-entropy-executable-section .text 8.00", line, ok)
+	}
+
+	flat := bytes.Repeat([]byte{0x41}, 512)
+	if line, ok := entropyVerdict(".text", flat, cfg); ok {
+		t.Errorf("verdict = %q for a constant buffer, want no line", line)
+	}
 }

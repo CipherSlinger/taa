@@ -3,6 +3,7 @@ package codeaudit
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -548,4 +549,60 @@ func isExecutableKind(k BinaryKind) bool {
 // first thing they look at.
 func evidenceError(path string, kind BinaryKind, err error) *EvidenceSet {
 	return &EvidenceSet{File: path, Kind: kind, seen: map[string]bool{}, Err: err}
+}
+
+// shannonEntropy returns the bits per byte of a byte histogram.
+//
+// It is computed from counts rather than from the bytes so that the same
+// function serves a buffer held in memory and a stream counted as it is read.
+// A total of zero returns zero: an empty section has no entropy to speak of, and
+// the alternative is a NaN that would compare false against every threshold and
+// be silently dropped.
+func shannonEntropy(counts [256]int64, total int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	var h float64
+	for _, c := range counts {
+		if c == 0 {
+			continue
+		}
+		p := float64(c) / float64(total)
+		h -= p * math.Log2(p)
+	}
+	return h
+}
+
+// measureEntropy is shannonEntropy over a buffer in memory, for the cases where
+// the bytes are already in hand: an ELF section, a container member.
+func measureEntropy(data []byte) float64 {
+	var counts [256]int64
+	for _, b := range data {
+		counts[b]++
+	}
+	return shannonEntropy(counts, int64(len(data)))
+}
+
+// entropyVerdict renders an ELF section's entropy as evidence, or reports that
+// there is nothing to say.
+//
+// It is called for executable sections only, and that restriction is the whole
+// design: code is not random, so a section that holds instructions and measures
+// near eight bits per byte has been compressed or encrypted and something must
+// unpack it before it can run. Data is allowed to be random - a tensor blob and
+// an encrypted payload look identical to this measurement - so measuring data
+// would produce a finding per model file and none of them would mean anything.
+//
+// Only a high reading produces a line. Emitting one for every low reading would
+// put a line per section per file into every prompt for no decision value, and
+// the rule table matches on the "high-entropy-" prefix - so the threshold is
+// applied here, where the number is, and the rule table carries only what to call
+// it. That split is deliberate: severity is policy and lives in the rule table,
+// the measurement is physics and lives here.
+func entropyVerdict(section string, data []byte, cfg BinaryConfig) (string, bool) {
+	h := measureEntropy(data)
+	if h <= cfg.HighEntropyThreshold {
+		return "", false
+	}
+	return fmt.Sprintf("high-entropy-executable-section %s %.2f", section, h), true
 }
