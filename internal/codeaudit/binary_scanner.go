@@ -189,11 +189,14 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 			// - never silently skipped, because a file the channel could not read
 			// and a file it decided not to read must not reach the report looking
 			// the same. The host has the shape to test it with: 21 truncated
-			// CUDA/MLX libraries under teellm/ and
-			// deploy/guest-build/semgrep-payload/rootfs are ~10 MiB on disk with
-			// their section headers at a ~116 MB offset, so elf.NewFile returns
-			// EOF. Counting is what makes such a file withhold the pass instead of
-			// passing as clean.
+			// CUDA/MLX libraries, all of them under
+			// teellm/models/ollama/lib/ollama and none under
+			// deploy/guest-build/semgrep-payload/rootfs, which holds 88 .so*
+			// files and not one truncated one. Twenty are exactly 10485760 bytes
+			// on disk and the twenty-first is 10747904, with their section
+			// headers 34483600 to 751773392 bytes into the file, so elf.NewFile
+			// returns EOF. Counting is what makes such a file withhold the pass
+			// instead of passing as clean.
 			res.Summary.Incomplete++
 			return nil
 		}
@@ -229,13 +232,15 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 	//
 	// The cap drops LOW findings and only LOW. A finding that can block the
 	// import under either supported policy is kept whether or not it fits the
-	// budget, and the list grows past MaxFindings instead. Both severities have
-	// to be named, because a rule that read only the default policy would keep
-	// the wrong set: `assist` withholds on HIGH alone, but `gate` withholds on
-	// HIGH or MEDIUM (internal/codeaudit/audit.go:298-309), and DYN_001 - MEDIUM
-	// in the shared table - deletes the package the moment an operator switches
-	// to `gate`. Dropping a blocking finding would turn a package that must be
-	// withheld into one that passes, which is the one failure a cap must not be
+	// budget, and the list grows past MaxFindings instead. The keep rule below
+	// therefore names the one severity that cannot block and keeps everything
+	// else, rather than naming the severities that can - naming those would read
+	// one policy's answer into a decision both policies have to survive:
+	// `assist` withholds on HIGH alone, but `gate` withholds on HIGH or MEDIUM
+	// (internal/codeaudit/audit.go:298-309), and DYN_001 - MEDIUM in the shared
+	// table - deletes the package the moment an operator switches to `gate`.
+	// Dropping a blocking finding would turn a package that must be withheld
+	// into one that passes, which is the one failure a cap must not be
 	// able to cause, and an attacker aims at exactly it by padding a package with
 	// cheap LOW findings until the ones that block fall off the end of the list.
 	//
@@ -256,7 +261,12 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 			// the set that may be dropped has to be the one that cannot block,
 			// so anything the code does not positively know to be LOW is kept.
 			// rules.go declares no SeverityLow, so LOW is a bare string here and
-			// in the table that writes it.
+			// in the table that writes it. The rule table cannot produce the input
+			// that separates the two spellings - it writes only HIGH, MEDIUM and
+			// LOW - so the property is pinned by
+			// TestBinaryScannerCapKeepsAnUnknownSeverityPastTheBudget, which
+			// builds a matcher carrying a severity no table produces and requires
+			// it to survive the cap.
 			if len(kept) < s.cfg.MaxFindings || f.Severity != "LOW" {
 				kept = append(kept, f)
 				continue
