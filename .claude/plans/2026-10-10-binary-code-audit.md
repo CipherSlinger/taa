@@ -100,8 +100,8 @@ go build ./... && go test ./internal/codeaudit/... ./internal/config/... ./inter
 11. **嵌套归档只递归一层**。`models/examples/Retina-DKD/Retina-DKD-code.zip` 把 `net_001.pth`/`net_005.pth` 作为成员携带，它们分类为 `KindArchive`；`collectArchive` 只对分类为 ELF 或 pickle 的成员下钻，因此这两个 checkpoint 不会被打开，其 `data.pkl` 永远到不了 pickle 解释器。**代价明确**：只装在 zip 里的 checkpoint 既不产出成员证据也不产出 pickle 目标；这一条现在由第 7 条的门控放大——解释器只跑在被声明为 pickle 的流上，而嵌套归档里那条流既没被声明、也没被下钻，没有第二次机会被发现；跳过是静默的（成员名与大小进了证据列表，但不置 `Bounded`）。
 12. **`.xlsx` 就是 zip**。语料里的 14 个 `.xlsx` 中 13 个是普通 zip（最坏压缩比 22.91，无炸弹形状，成员均分类为非可执行），第 14 个 `models/examples/Retina-DKD/Retina-DKD/test_result.xlsx` 是 OLE2 老式 `.xls` 顶着 `.xlsx` 名，不匹配任何魔数，落到 `KindRaw`。**代价明确**：当作 zip 的那 13 个只按普通容器处理（成员头嗅探 + 成员名/大小），内部的 XML 不进任何结构化解析；当 OLE2 的那一个只拿 strings 证据，不会因为扩展名被当成 zip 打开。
 13. **配置里只暴露五个上限，其余固定在 `DefaultBinaryConfig`，这是有判据的选择而不是遗漏**。有键的是 `maxArchiveMembers`、`maxFindings`、`maxFullScanBytes`、`maxStreamBytes`、`highEntropyThreshold`；没有键的是 `MaxEvidenceLines`（默认 50000）、`HeadTailBytes`、`MaxArchiveMemberBytes`、`MaxStringLen`/`MinStringLen`。判据是**越界之后留下什么**：越界只记 `Bound.Listing` 的天花板（如 `MaxEvidenceLines`）只影响显示、不阻断任何东西，让它固定是安全的；越界会记 `Bound.Structural` 的天花板，在可执行类型上会**阻断导入**，没有键就成了 operator 无法处置的阻断，所以必须暴露。`MaxStreamBytes` 正落在后者——它只有在一个通过了 `MaxFullScanBytes` 的文件上才可能被触到，所以把 `maxFullScanBytes` 抬到 3 GiB 以上就会让它生效；两个键因此成对出现，并在同一处校验。`maxFindings` 是这条判据的**例外，并且是刻意进例外名单的**：它既不是结构性天花板（触顶只记 `findings_capped`，不阻断），也不是显示上限（它确实会让清单少一段）——它是一个**清单预算**，而预算该多大取决于部署愿意为噪声付多少钱、以及它想要的报告有多长，这两件事只有 operator 知道。默认 50 是按十个族、每族五条定的，真实语料的最大 finding 数是 80（整语料）和 7（单样本），所以 50 只在单个包同时命中很多族时才可能被触到。**代价明确**：这五个以外的上限调不了，调它们要改代码重新部署；而 `maxFindings` 调小只会丢 LOW/MEDIUM，永远不会让一个 HIGH finding 消失。
-14. **不存在"每节字节上限"，这是删除而不是省略**。曾有一版 `MaxSectionBytes`（默认 16 MiB），用来给 `io.ReadAll` 一个可执行节设上限；它会对**普通的大库**开火——一个足够大的 `.so`，`.text` 会跨过任何固定的节上限，而触顶记的是结构性 bound，于是"这个库比较大"变成了阻断导入的理由。**宿主实测**（`readelf -SW` 取每个真实共享对象最大的 `SHF_EXECINSTR` `PROGBITS` 节）：`libLLVM.so.20.1` 单节 **63 048 722 字节**、`libclang-18.so.18` **22 284 286**、Chrome 的 `liboptimization_guide_internal.so` **20 685 714**、`libwireshark.so.17.0.2` **20 175 571**、`libpython3.13.so.1.0` **2 770 082**——16 MiB 的节上限会在前四个上直接触顶。这与本计划其余部分的实测口径不同，值得点明：**审计语料 `models/` 下一个真实 `.so` 都没有**（`find models -name '*.so*'` 命中的 50 个全是 semgrep 的 `.sol` 规则文件），而用来标定误报的那套 ollama 共享库（28 个）单节最大 2 901 464 字节，**也不会**触到 16 MiB。也就是说这个上限的代价是**潜伏**的：它在任何已实测的输入上都不发作，只在一个包里带上一个真实大库时发作——而那正是本平台要接受的包形状（带加速库的模型包），所以它必须删掉而不是调大。现在节读取改为经 `countSection` 按固定块（`entropyChunkBytes`，64 KiB）流过 256 桶直方图，内存与节大小无关，节上限已无物可保护；每文件剩下的读取预算是 `MaxStreamBytes`，触到它才记结构性。**代价明确**：调不了单个节的读取量（本来也不该调）；能调的只有每文件预算。**不要把它加回来**——加回来就是把"库比较大"重新变成阻断理由；也不要指望"把 16 MiB 调大一点"能解决，任何固定值都只是把发作点往后挪。
-15. **无节表（`len(ef.Sections) == 0`）的 ELF 记为结构性缺口，且 reason 只点名"没有节头表"**。熵检测的输入是可执行节，没有节表就没有可执行节，旧代码在这一段直接掉出去、不产生任何行也不产生任何 bound，于是"从未检查过"被报成了"没发现加壳"——这条 fail-open 已去掉。修的是**结论**而不是"补回 `DT_NEEDED`/`DT_SONAME`"：经 `PT_DYNAMIC` 恢复 needed/soname 需要先把 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移、再把 `DT_STRTAB` 的虚地址映射一次，这是一段独立的新解析逻辑，而它的产出对"有没有被加壳"不提供任何证据，所以本版不做。reason 措辞点名的是**节头表**而不是符号表：静态链接的二进制没有 `.dynsym` 但有 `.symtab`，它并不 stripped，说它"缺符号表"是假的；同理 `SHT_SYMTAB` **故意不做**符号证据的兜底来源——`.symtab` 里绝大多数是本文件自己定义的符号，拿它当能力证据就是去匹配程序自己的标识符，正是第 14 条那批误报的同一类。因此 Task 8 的规则表**不变**：没有引入新的 evidence source。**代价明确**：一个节表被删掉的正常文件（少见但存在，如某些加壳器与 `objcopy --strip-section-headers` 的产物）现在会被记为结构性缺口而不是干净通过；这是刻意方向——对可执行格式，"没看"不等于"干净"。
+14. **不存在"每节字节上限"，这是删除而不是省略**。曾有一版 `MaxSectionBytes`（默认 16 MiB），用来给 `io.ReadAll` 一个可执行节设上限；它会对**普通的大库**开火——一个足够大的 `.so`，`.text` 会跨过任何固定的节上限，而触顶记的是结构性 bound，于是"这个库比较大"变成了阻断导入的理由。**宿主实测**（`readelf -SW` 取每个真实共享对象最大的 `SHF_EXECINSTR` `PROGBITS` 节）：`libLLVM.so.20.1` 单节 **63 048 722 字节**、`libclang-18.so.18` **22 284 286**、Chrome 的 `liboptimization_guide_internal.so` **20 685 714**、`libwireshark.so.17.0.2` **20 175 571**、`libpython3.13.so.1.0` **2 770 082**——16 MiB 的节上限会在前四个上直接触顶。这与本计划其余部分的实测口径不同，值得点明：**审计语料 `models/` 下一个真实 `.so` 都没有**（`find models -name '*.so*'` 命中的 50 个全是 semgrep 的 `.sol` 规则文件），而用来标定误报的那套 ollama 共享库（28 个）单节最大 2 901 464 字节，**也不会**触到 16 MiB。也就是说这个上限的代价是**潜伏**的：它在任何已实测的输入上都不发作，只在一个包里带上一个真实大库时发作——而那正是本平台要接受的包形状（带加速库的模型包），所以它必须删掉而不是调大。现在节读取改为经 `countSection` 按固定块（`entropyChunkBytes`，64 KiB）流过 256 桶直方图，内存与节大小无关，节上限已无物可保护；每文件剩下的读取预算是 `MaxStreamBytes`，触到它才记结构性——宿主 600 个共享对象按这条路径全跑一遍，**0 个被判结构性**，也就没有一个接近那个 3 GiB 的每文件预算。**代价明确**：调不了单个节的读取量（本来也不该调）；能调的只有每文件预算。**不要把它加回来**——加回来就是把"库比较大"重新变成阻断理由；也不要指望"把 16 MiB 调大一点"能解决，任何固定值都只是把发作点往后挪。
+15. **无节表（`len(ef.Sections) == 0`）的 ELF 记为结构性缺口，且 reason 只点名"没有节头表"**。熵检测的输入是可执行节，没有节表就没有可执行节，旧代码在这一段直接掉出去、不产生任何行也不产生任何 bound，于是"从未检查过"被报成了"没发现加壳"——这条 fail-open 已去掉。修的是**结论**而不是"补回 `DT_NEEDED`/`DT_SONAME`"：经 `PT_DYNAMIC` 恢复 needed/soname 需要先把 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移、再把 `DT_STRTAB` 的虚地址映射一次，这是一段独立的新解析逻辑，而它的产出对"有没有被加壳"不提供任何证据，所以本版不做。reason 措辞点名的是**节头表**而不是符号表：静态链接的二进制没有 `.dynsym` 但有 `.symtab`，它并不 stripped，说它"缺符号表"是假的；同理 `SHT_SYMTAB` **故意不做**符号证据的兜底来源——`.symtab` 里绝大多数是本文件自己定义的符号，拿它当能力证据就是去匹配程序自己的标识符，正是第 14 条那批误报的同一类。因此 Task 8 的规则表**不变**：没有引入新的 evidence source。宿主 600 个共享对象里**0 个无节表**，所以这个形状在真实世界里确实少见——而恰恰因为它少见，"没见到"不能当成"不存在"，这才是它必须 fail-closed 而不是被静默略过的理由。**代价明确**：一个节表被删掉的正常文件（少见但存在，如某些加壳器与 `objcopy --strip-section-headers` 的产物）现在会被记为结构性缺口而不是干净通过；这是刻意方向——对可执行格式，"没看"不等于"干净"。
 16. **节声明长度越过文件末尾（或读不满）记为结构性缺口，`size=` 仍写声明长度**。判据是"读到的字节数 < 节头声明的字节数"，两种情况——`sh_offset`/`sh_size` 越过文件末尾，或触到 `MaxStreamBytes`——都是同一事实：熵值只覆盖一个**前缀**，所以这个数不报（报出来会和"整节测过"的数长得一样），替代它的是 `section .text declares N bytes, M readable` 这条结构化证据。`size=` 保持声明值，读者才能把声明长度与缺口配对看。**代价明确**：一个声明长度写错但内容正常的文件会被记为结构性缺口；这是刻意方向，理由同上。
 17. **自由字符串证据只判 LOW，且 `OBF_001` 在二进制臂被整个删掉**。判据是一条通则：**一条 finding 只有被文件无法偶然产生的结构背书时才可以判 HIGH**，而"某个字面量里出现了某个词"不是那种背书——`.pyc` 常量池会把相邻常量拼成一整段可打印串，二进制数据里遍地是长 base64 字母表串，所以按子串匹配的规则会把合法库判成恶意（实测：旧 `OBF_001` 命中 28 个合法共享库中的 23 个，旧 `PER_001`/`FIL_001`/`ENV_001` 的片段命中来自 `taint_engine.cpython-312.pyc` 与 `security.cpython-312.pyc`）。因此字符串半边不借源码臂的 HIGH/MEDIUM id，改用独立 LOW 族 `CMD_002`/`PER_002`/`FIL_002`/`ENV_002`（两端锚定 token，`ENV_002` 不带 `(?i)`），`OBF_001` 不设族。**代价明确**：一个真正把 base64 载荷以字面量形式留在代码里的文件，其字符串证据不再单独产出 finding；它若真在运行，仍会以 ELF 导入符号或 pickle 目标等结构证据（HIGH）出现，而纯数据文件本来就不被本平台加载。**不要把它"修回去"**——把字符串匹配放宽回子串或把严重级抬回 HIGH，就是重新引入这批误报，而误报在这种设计下的终点是删包。
 18. **pickle 解释器有两个固定上限（`pickleMaxStackSlots` / `pickleMaxMemoSlots`，各 `1<<20`），按第 13 条的判据它们"本该"有键，这里刻意不给，理由说得清楚**：第 13 条的判据是"越界会记 `Bound.Structural` 的天花板必须暴露，否则 operator 无法处置一次阻断"。两个上限都落在 `Bound.Structural` 上（`KindPickle` 是可执行类型，会阻断导入），但它们触及的不是"合法文件恰好很大"这一情形，而是"这段流根本不是 pickle"——真实语料里最深值栈 1007 槽、最大 memo 3669 条，距上限各有约 1000 倍与 280 倍余量，一个正常的 state dict 无论如何长都到不了 `1<<20`（映射按每项约两槽计，`1<<20` 槽覆盖约五十万项的映射，而最大实测映射是几万项）。也就是说，触顶意味着流在按每个字节推一个槽/一个 memo 项的方式自增，那是畸形或敌意输入的签名，不是"这个包比较大"；给这样的阻断配一个 operator 可调的键，等于允许把上限调到任意大，而上限存在的唯一目的就是限制它背后那块内存（栈约 24 MiB、memo 约 64 字节/项，都是"没有上限就长到 GB"的量）。**代价明确**：一个合法但极端到这两条线上的 pickle 会被判为未完整扫描而阻断，出路不是调键而是先确认它到底是不是 pickle。这与第 13 条的差别的量纲：`MaxStreamBytes` 会被一个真正的大文件触到，所以要暴露；这两个只会被一个不像 pickle 的流触到，所以固定。**不要把它们加进配置**——加进去就是把一个"这段流不合法"的判定，换成一个"把门槛抬高就能过"的旋钮。
@@ -1267,23 +1267,6 @@ func TestEntropyVerdictIsMeasuredNotAssumed(t *testing.T) {
 	if line, ok := entropyVerdict(".text", uniform, atThreshold); ok {
 		t.Errorf("verdict = %q at exactly the threshold, want no line", line)
 	}
-
-	// The streaming path and the in-memory path must agree, because an ELF
-	// section is measured one way and a container member the other. Both are
-	// driven from the same bytes here, and the assertion is equality of the
-	// rendered line rather than of the number: the line is what reaches the
-	// evidence set, so a divergence that only shows up in the formatting would
-	// otherwise go unnoticed.
-	var counts [256]int64
-	for _, b := range uniform {
-		counts[b]++
-	}
-	streamed, streamedOK := entropyVerdictFromCounts(".text", counts, int64(len(uniform)), cfg)
-	inMemory, inMemoryOK := entropyVerdict(".text", uniform, cfg)
-	if streamed != inMemory || streamedOK != inMemoryOK {
-		t.Errorf("streamed = (%q, %v), in-memory = (%q, %v); the two paths must agree",
-			streamed, streamedOK, inMemory, inMemoryOK)
-	}
 }
 ```
 
@@ -1327,11 +1310,7 @@ func shannonEntropy(counts [256]int64, total int64) float64 {
 }
 
 // measureEntropy is shannonEntropy over a buffer in memory, for the cases where
-// the bytes are already in hand - a container member is the one that matters
-// here. ELF sections do not use it: they are streamed through countSection in
-// fixed chunks so that a section that declares a gigabyte cannot make this pass
-// hold a gigabyte (see countSection), and both paths meet again in
-// entropyVerdictFromCounts.
+// the bytes are already in hand: an ELF section, a container member.
 func measureEntropy(data []byte) float64 {
 	var counts [256]int64
 	for _, b := range data {
@@ -1340,9 +1319,8 @@ func measureEntropy(data []byte) float64 {
 	return shannonEntropy(counts, int64(len(data)))
 }
 
-// entropyVerdictFromCounts renders a section's entropy as evidence, or reports
-// that there is nothing to say. It is the whole of the decision, over a
-// histogram rather than over bytes.
+// entropyVerdict renders an ELF section's entropy as evidence, or reports that
+// there is nothing to say.
 //
 // It is called for executable sections only, and that restriction is the whole
 // design: code is not random, so a section that holds instructions and measures
@@ -1357,45 +1335,13 @@ func measureEntropy(data []byte) float64 {
 // applied here, where the number is, and the rule table carries only what to call
 // it. That split is deliberate: severity is policy and lives in the rule table,
 // the measurement is physics and lives here.
-//
-// Two callers reach it and they hold their bytes differently: an ELF section
-// streams through countSection in fixed-size chunks and never holds the section
-// at all, while a container member is already in memory. Folding both into one
-// function over the histogram is what keeps them from disagreeing - if the
-// threshold lived on the in-memory path as well, the two would be two
-// implementations of one rule and a later edit to either would silently make an
-// identical section score differently depending on which path read it.
-//
-// total is passed rather than summed from the counts because it is the number of
-// bytes actually read, which is the byte count the entropy is normalized by, and
-// because shannonEntropy already refuses a zero total (see its comment): an empty
-// section returns 0, which is below every threshold, so it produces no line.
-func entropyVerdictFromCounts(section string, counts [256]int64, total int64, cfg BinaryConfig) (string, bool) {
-	h := shannonEntropy(counts, total)
+func entropyVerdict(section string, data []byte, cfg BinaryConfig) (string, bool) {
+	h := measureEntropy(data)
 	if h <= cfg.HighEntropyThreshold {
 		return "", false
 	}
 	return fmt.Sprintf("high-entropy-executable-section %s %.2f", section, h), true
 }
-
-// entropyVerdict is the in-memory spelling of the same decision, for the cases
-// where the bytes are already in hand (a container member). It builds the
-// histogram and hands it to entropyVerdictFromCounts so that a section measured
-// in memory and the same section measured by streaming cannot differ.
-func entropyVerdict(section string, data []byte, cfg BinaryConfig) (string, bool) {
-	var counts [256]int64
-	for _, b := range data {
-		counts[b]++
-	}
-	return entropyVerdictFromCounts(section, counts, int64(len(data)), cfg)
-}
-
-// entropyChunkBytes is the read size countSection uses. It is a constant rather
-// than a configuration field because it is not a limit: memory is one buffer of
-// this size no matter what it is set to, so making it tunable would offer an
-// operator a knob whose only effect is cache behaviour. 64 KiB is a size the
-// kernel and the read paths are already tuned for.
-const entropyChunkBytes = 64 * 1024
 ```
 
 在 import 块补 `"math"`。
@@ -3314,12 +3260,14 @@ func TestCollectELFEvidenceReportsASectionThatOverrunsTheFile(t *testing.T) {
 
 	// size= must still be the declared size, so a reader can pair the section
 	// line with the shortfall instead of seeing a number that silently matched
-	// the read.
+	// the read. The section line carries more than the size - the executable
+	// flag follows it, `%s size=%d executable=%t` - so this compares the
+	// prefix and not the whole line.
 	wantDeclared := fmt.Sprintf(".text size=%d", textLen+overrun)
 	var sawDeclared bool
 	for _, l := range set.Lines {
 		if l.Source == SourceSection && strings.HasPrefix(l.Text, ".text size=") {
-			sawDeclared = l.Text == wantDeclared
+			sawDeclared = strings.HasPrefix(l.Text, wantDeclared)
 		}
 	}
 	if !sawDeclared {
@@ -3432,6 +3380,27 @@ func containsString(haystack []string, needle string) bool {
 }
 ```
 
+本步还要给 Task 3 的 `TestEntropyVerdictIsMeasuredNotAssumed` 补一段断言：流式路径与内存路径必须给出**同一行**。它落在本步而不是 Task 3，理由与上面那两个符号相同——Task 3 里两条路还不都存在（`entropyVerdictFromCounts` 与 `countSection` 都是 Task 5 才引入的），把断言留在 Task 3 就是描述一个从未存在过的状态。追加到那条测试的末尾：
+
+```go
+	// The streaming path and the in-memory path must agree, because an ELF
+	// section is measured one way and a container member the other. Both are
+	// driven from the same bytes here, and the assertion is equality of the
+	// rendered line rather than of the number: the line is what reaches the
+	// evidence set, so a divergence that only shows up in the formatting would
+	// otherwise go unnoticed.
+	var counts [256]int64
+	for _, b := range uniform {
+		counts[b]++
+	}
+	streamed, streamedOK := entropyVerdictFromCounts(".text", counts, int64(len(uniform)), cfg)
+	inMemory, inMemoryOK := entropyVerdict(".text", uniform, cfg)
+	if streamed != inMemory || streamedOK != inMemoryOK {
+		t.Errorf("streamed = (%q, %v), in-memory = (%q, %v); the two paths must agree",
+			streamed, streamedOK, inMemory, inMemoryOK)
+	}
+```
+
 - [ ] **Step 3: 跑测试确认失败**
 
 本步 `binary_evidence_test.go` 的 import 块至少要含 `"bytes"`（`bytes.NewReader`/`bytes.Repeat`）、`"debug/elf"`（夹具守卫用例要自己 `elf.Open` 一次）、`"fmt"`（拼接 `size=` 的期望串）、`"math"`（流式与内存两条路比对熵值）、`"strings"`、`"testing"`。Go 拒绝未使用的 import，所以这些是随本步的用例一起加进来的。
@@ -3440,9 +3409,11 @@ func containsString(haystack []string, needle string) bool {
 go test ./internal/codeaudit/ -run 'TestELFFixture|TestCollectELF|TestCountSection' 2>&1 | head -20
 ```
 
-预期：`TestELFFixtureIsReadByTheStandardLibrary` PASS（夹具本身正确），`TestCollectELFEvidence` 编译失败 `undefined: collectELF`。
+预期：`go test` **不输出任何测试结果**，而是报**构建失败**，错误指向 Task 5 尚未定义的那些符号（首条通常是 `undefined: collectELF`，还会有 `undefined: countSection`、`undefined: entropyVerdictFromCounts`、`undefined: entropyChunkBytes`）。
 
-> 若夹具测试就失败，按 `debug/elf` 的报错逐个字段核对：最常见的是 `e_shstrndx` 与 `.shstrtab` 的节索引不一致（本文档中为 6，节表共 7 项：0 空、1 `.text`、2 `.init`、3 `.dynstr`、4 `.dynsym`、5 `.dynamic`、6 `.shstrtab`），或 `sh_link` 未指向 `.dynstr`（本文档中为 3）。索引固定不随 spec 变化，所以 `.dynsym` 被 stripped 掉时留下的是一个全零的 SHT_NULL 头，而不是把后面的节全部前移——这样 `e_shstrndx` 对每个夹具都是同一个数。
+`TestELFFixtureIsReadByTheStandardLibrary` 在本步**不可能 PASS**：Go 把一个测试包当一个编译单元，`collectELF` 未定义时整包编不过，测试二进制根本不会生成——"夹具守卫先于它所守护的实现通过"在 Go 里不是一个可达的状态。所以本步的判据不是"守卫通过"，而是**失败的原因是对的**：错误必须是"该有的符号还没定义"，而**不得**指向夹具构造器本身（除了 `undefined: …`，若还出现 `elfFixtureBytes` 的类型或语法错误，说明夹具写坏了，先修夹具）。夹具守卫的断言真正生效在 Step 5——包能编过之后，它先于任何抽取断言运行，那时它才承担自己的职责。
+
+> 若到 Step 5 守卫才失败，按 `debug/elf` 的报错逐个字段核对：最常见的是 `e_shstrndx` 与 `.shstrtab` 的节索引不一致（本文档中为 6，节表共 7 项：0 空、1 `.text`、2 `.init`、3 `.dynstr`、4 `.dynsym`、5 `.dynamic`、6 `.shstrtab`），或 `sh_link` 未指向 `.dynstr`（本文档中为 3）。索引固定不随 spec 变化，所以 `.dynsym` 被 stripped 掉时留下的是一个全零的 SHT_NULL 头，而不是把后面的节全部前移——这样 `e_shstrndx` 对每个夹具都是同一个数。
 
 - [ ] **Step 4: 实现 ELF 抽取**
 
@@ -3620,10 +3591,21 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 // It returns the count so the caller can compare it against the declared size:
 // the histogram is over a prefix whenever the read stopped early, and a prefix is
 // not something this function can tell the caller about on its own.
+//
+// The read is clamped to what the budget has left before it is issued, the same
+// way streamEvidence clamps its reads. Reading a whole chunk and testing the
+// budget at the top of the loop lets one chunk walk straight past a budget
+// smaller than it: a 4 KiB budget would return 65536, which overshoots the byte
+// count the caller subtracts from its per-file budget and makes the count depend
+// on the chunk size rather than on the budget.
 func countSection(r io.Reader, budget int64) (counts [256]int64, n int64, err error) {
 	buf := make([]byte, entropyChunkBytes)
 	for budget <= 0 || n < budget {
-		read, readErr := r.Read(buf)
+		limit := len(buf)
+		if budget > 0 && int64(limit) > budget-n {
+			limit = int(budget - n)
+		}
+		read, readErr := r.Read(buf[:limit])
 		for _, b := range buf[:read] {
 			counts[b]++
 		}
@@ -3637,6 +3619,81 @@ func countSection(r io.Reader, budget int64) (counts [256]int64, n int64, err er
 	}
 	return counts, n, nil
 }
+```
+
+本步还要把判定从 Task 3 的 `entropyVerdict`（直接吃 `[]byte`）里抽出来，因为流式路径手里没有 `[]byte`，而给它再写一份阈值判断会让**同一个可执行节**因为读它的路径不同而得到不同的判定。所以把决策整体搬进 `entropyVerdictFromCounts`，让 `entropyVerdict` 退化成"建直方图再转交"的包装，并补上 `countSection` 用到的 `entropyChunkBytes`。
+
+**这两个符号与这个常量只在 Task 5 引入，Task 3 的正文必须保持"`entropyVerdict` 直接吃 `[]byte`"的原样**——Task 3 已经作为 `7e37aca` 提交过，它交付的就是那一版；如果在 Task 3 的正文里写成"判定已经抽好了"，那 Task 3 就描述了一个从未存在过的状态，按顺序执行的人在 Task 3 之后会拿到一个 `entropyVerdictFromCounts` 未定义、根本编不过的包。**Task 5 是本任务里第一个需要这个拆分的步骤，所以拆分落在这里。**
+
+改 Task 3 写下的两处，并追加常量：
+
+```go
+// measureEntropy is shannonEntropy over a buffer in memory, for the cases where
+// the bytes are already in hand - a container member is the one that matters
+// here. ELF sections do not use it: they are streamed through countSection in
+// fixed chunks so that a section that declares a gigabyte cannot make this pass
+// hold a gigabyte (see countSection), and both paths meet again in
+// entropyVerdictFromCounts.
+// （上面这段替换 Task 3 里那个两行的注释，函数体不变。）
+func measureEntropy(data []byte) float64 { /* 同 Task 3 */ }
+
+// entropyVerdictFromCounts renders a section's entropy as evidence, or reports
+// that there is nothing to say. It is the whole of the decision, over a
+// histogram rather than over bytes.
+//
+// It is called for executable sections only, and that restriction is the whole
+// design: code is not random, so a section that holds instructions and measures
+// near eight bits per byte has been compressed or encrypted and something must
+// unpack it before it can run. Data is allowed to be random - a tensor blob and
+// an encrypted payload look identical to this measurement - so measuring data
+// would produce a finding per model file and none of them would mean anything.
+//
+// Only a high reading produces a line. Emitting one for every low reading would
+// put a line per section per file into every prompt for no decision value, and
+// the rule table matches on the "high-entropy-" prefix - so the threshold is
+// applied here, where the number is, and the rule table carries only what to call
+// it. That split is deliberate: severity is policy and lives in the rule table,
+// the measurement is physics and lives here.
+//
+// Two callers reach it and they hold their bytes differently: an ELF section
+// streams through countSection in fixed-size chunks and never holds the section
+// at all, while a container member is already in memory. Folding both into one
+// function over the histogram is what keeps them from disagreeing - if the
+// threshold lived on the in-memory path as well, the two would be two
+// implementations of one rule and a later edit to either would silently make an
+// identical section score differently depending on which path read it.
+//
+// total is passed rather than summed from the counts because it is the number of
+// bytes actually read, which is the byte count the entropy is normalized by, and
+// because shannonEntropy already refuses a zero total (see its comment): an empty
+// section returns 0, which is below every threshold, so it produces no line.
+func entropyVerdictFromCounts(section string, counts [256]int64, total int64, cfg BinaryConfig) (string, bool) {
+	h := shannonEntropy(counts, total)
+	if h <= cfg.HighEntropyThreshold {
+		return "", false
+	}
+	return fmt.Sprintf("high-entropy-executable-section %s %.2f", section, h), true
+}
+
+// entropyVerdict is the in-memory spelling of the same decision, for the cases
+// where the bytes are already in hand (a container member). It builds the
+// histogram and hands it to entropyVerdictFromCounts so that a section measured
+// in memory and the same section measured by streaming cannot differ.
+// （这个函数替换 Task 3 里那一版：函数体从 `h := measureEntropy(data)` 变成建直方图后转交。）
+func entropyVerdict(section string, data []byte, cfg BinaryConfig) (string, bool) {
+	var counts [256]int64
+	for _, b := range data {
+		counts[b]++
+	}
+	return entropyVerdictFromCounts(section, counts, int64(len(data)), cfg)
+}
+
+// entropyChunkBytes is the read size countSection uses. It is a constant rather
+// than a configuration field because it is not a limit: memory is one buffer of
+// this size no matter what it is set to, so making it tunable would offer an
+// operator a knob whose only effect is cache behaviour. 64 KiB is a size the
+// kernel and the read paths are already tuned for.
+const entropyChunkBytes = 64 * 1024
 ```
 
 同时给 `EvidenceSet` 补一个小方法（结构证据无字节偏移，走 `Offset: 0`）。`markStructural` 已在 Task 2 随 `streamEvidence` 的预算路径定义，这里只加 `addStructured`：
@@ -3669,7 +3726,7 @@ go test ./internal/codeaudit/ -run 'TestELF|TestCollectELF|TestCountSection' -v
 >
 > **四、`MaxSectionBytes` 从 `BinaryConfig` 里整个删掉，不是保留成一个改了语义的东西。** 它唯一的用途就是给"`io.ReadAll` 一个节"设上限，而那个设计会对**普通的大库**开火——一个足够大的 `.so`，它的 `.text` 会跨过任何固定的节上限，而触顶记的是结构性 bound，于是"这个库比较大"变成了阻断导入的理由。宿主实测（每个真实共享对象最大的 `SHF_EXECINSTR` `PROGBITS` 节）：`libLLVM.so.20.1` 63 048 722 字节、`libclang-18.so.18` 22 284 286、Chrome 的 `liboptimization_guide_internal.so` 20 685 714、`libwireshark.so.17.0.2` 20 175 571——16 MiB 的节上限在前四个上直接触顶。注意这个上限在**已实测的输入上都不发作**：审计语料 `models/` 下一个真实 `.so` 都没有，标定误报用的那 28 个 ollama 库单节最大 2 901 464 字节，所以它的代价是潜伏的，只在包里带上一个真实大库时发作——而那正是本平台要接受的包形状。节读取改成经 `countSection` 按固定块流过直方图之后，内存是 256 个计数器加一个 `entropyChunkBytes`（64 KiB）缓冲，与节大小无关，节上限已经**没有东西可保护**。每文件的读取预算剩下 `MaxStreamBytes`，在节循环里**跨节累减**（不是每节重置，否则成本随文件声明的可执行节数量线性增长），触到它才保持结构性。字段删除要连带 Task 14 的配置键清单和 `normalizeBinaryConfig` 一起删（本节已完成）：`MaxSectionBytes` 从来没有出现在配置键清单里，`normalizeBinaryConfig` 里那段 `if cfg.MaxSectionBytes <= 0` 也一并去掉。**不要把它加回来**，也不要指望"把 16 MiB 调大一点"能解决——任何固定值都只是把发作点往后挪。
 >
-> **五、同一份判定只能有一个实现。** `entropyVerdict` 原本直接吃 `[]byte`，而流式路径手里没有 `[]byte`——如果给流式路径再写一份阈值判断，两条路就成了一规则两实现，日后改一处就会让**同一个节**因为读它的路径不同而得到不同的分数。所以 Task 3 里把判定抽成 `entropyVerdictFromCounts(section string, counts [256]int64, total int64, cfg BinaryConfig)`，`entropyVerdict` 退化成"建直方图再转交"的包装，ELF 路径走 `countSection` + `entropyVerdictFromCounts`，容器成员路径走 `entropyVerdict`，两者在 `TestEntropyVerdictIsMeasuredNotAssumed` 里被断言必须给出同一行。
+> **五、同一份判定只能有一个实现。** `entropyVerdict` 原本直接吃 `[]byte`，而流式路径手里没有 `[]byte`——如果给流式路径再写一份阈值判断，两条路就成了一规则两实现，日后改一处就会让**同一个节**因为读它的路径不同而得到不同的分数。所以本任务（Task 5 Step 4）把判定抽成 `entropyVerdictFromCounts(section string, counts [256]int64, total int64, cfg BinaryConfig)`，`entropyVerdict` 退化成"建直方图再转交"的包装，ELF 路径走 `countSection` + `entropyVerdictFromCounts`，容器成员路径走 `entropyVerdict`，两者在 `TestEntropyVerdictIsMeasuredNotAssumed` 里被断言必须给出同一行。**拆分落在 Task 5 而不是 Task 3**：Task 3 已作为 `7e37aca` 提交，它交付的 `entropyVerdict` 就是直接吃 `[]byte` 的那一版，而两条路要到 Task 5 才同时存在（`entropyVerdictFromCounts` 与 `countSection` 都是本任务引入的）；把拆分写进 Task 3 的正文，等于描述一个从未存在过的 Task 3，按顺序执行的人在那之后会拿到一个编译不过的包。
 
 - [ ] **Step 6: 提交**
 
@@ -4909,11 +4966,12 @@ var binaryOnlyRules = map[string]Rule{
 		// an executable section that measures near eight bits per byte has been
 		// compressed or encrypted and something must unpack it before it runs -
 		// and packing is exactly what this channel exists to catch. The
-		// measurement does not misfire on ordinary libraries: the highest
-		// executable-section entropy across the 28 shared libraries of a stock
-		// ollama install is 6.75 bits/byte, well under the 7.5 threshold, and
-		// libgomp.so's 7.97 .gnu_debugdata is not SHF_EXECINSTR so the extractor
-		// never measures it.
+		// measurement does not misfire on ordinary libraries: across a measured
+		// 600 shared objects on the host, none was marked structural and none
+		// lacked a section table, and the highest executable-section entropy was
+		// 6.7624 bits/byte (libjsvml.so's .text, 262272 bytes), well under the
+		// 7.5 threshold. libgomp.so's 7.97 .gnu_debugdata is not SHF_EXECINSTR so
+		// the extractor never measures it.
 		Severity:    SeverityHigh,
 		Description: "可执行节区熵接近随机 — 代码已被压缩或加密，运行前必须先解包",
 	},
@@ -5299,7 +5357,7 @@ go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestMatchEvid
 
 - 语料中**没有任何真实 ELF/`.so`**（`find models -type f \( -name '*.so' -o -name '*.so.*' \)` 加上 ELF 魔数扫描都是 0）——`models/` 不是 `.so` 的来源，真正的 `.so` 只有 ollama 那 28 个。所以**宿主机的 `.so` 与这个语料交付的东西不成比例**，任何「按 `.so` 调参」的想法都要先想清楚它服务的是谁。
 - 28 个共享库中，旧 `OBF_001`（base64 长串）命中 **23** 个；旧 `NET_002`（含 `bind`/`send`/`recv`）至少命中 `libllama-common.so.0.1.2`（它导入 `bind recv send`，不含 `socket`/`connect`）；旧 `PER_001`/`FIL_001`/`ENV_001` 的片段命中来自 `taint_engine.cpython-312.pyc`（`'crontabz'`、`'.aws/credentialsz'`、`'.ssh/id_rsaz'`、`.profilez /etc/cron)`）与 `security.cpython-312.pyc`（小写 `private_key` 撞 `PRIVATE_KEY`）。**新表必须让这些全部归零**，这正是 `TestBinaryTableProducesNoHighFindingsOnLegitimateInputs` 的七个夹具组在钉的东西。
-- 可执行节区熵：28 个库中最高 **6.75** bits/byte（`libgomp.so` 的 7.97 在非可执行 `.gnu_debugdata`），与 7.5 阈值之间留有余量。
+- 可执行节区熵：把宿主上 **600 个共享对象**全跑一遍，**0 个被判结构性、0 个无节表**，最高 **6.7624** bits/byte（`libjsvml.so` 的 `.text`，262272 字节），与 7.5 阈值之间留有余量。早先只量了 ollama 那 28 个（最高 6.75），样本扩大二十倍而最高值几乎不动，这正是"这条判定不误伤普通库"的强度所在（`libgomp.so` 的 7.97 在非可执行 `.gnu_debugdata`，抽取器根本不测）。
 
 一条**方向性**的坦白，必须写在任务里而不是留给读者推断：**本节没有任何证据证明 `PKL_001` 会命中一个*恶意* checkpoint。** 所有被采样、被跑过解释器的真实 pickle 都是良性的（真 checkpoint 只证明解释器能读出目标，不能证明恶意目标会被判成 HIGH）。`PKL_001` 是 HIGH 档，而 HIGH 会阻断并删包，所以它的双向性**未经验证**：已知的是它不会误伤良性样本（上面的语料跑），未知的是它对恶意样本的命中率。补这个方向的唯一办法是造一个真正会执行 `posix.system` 的恶意 pickle 夹具（Task 4/Task 9 的合成夹具即用于此），不要用「跑过真实 checkpoint」冒充两边都验过。
 
@@ -7567,11 +7625,11 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 | --- | --- |
 | `elfFixtureBytes` 的字节布局写错，Task 5–15 全部建立其上 | `TestELFFixtureIsReadByTheStandardLibrary` 先于一切断言检查夹具本身；失败时按 `debug/elf` 的报错逐字段核对 |
 | 大模型包（数 GB）的 `.pt` 让导入变慢 | 证据流式读取，无整文件驻留；容器成员按需解压且有总额预算；超过 `MaxFullScanBytes`（默认 64 MiB）的文件只读首尾各 1 MiB，把单文件成本钉在约 190 ms |
-| 加壳判定对 UPX 打包的合法库误报 | `BIN_001` 定为 HIGH，但触发它的是一次**测量**而不是一次模式匹配：只有可执行节区的熵越过 7.5 bits/byte 才成立，而实测 28 个合法共享库的可执行节区最高只有 6.75（`libgomp.so` 的 7.97 落在非可执行的 `.gnu_debugdata`，抽取器根本不测）。误报面因此是「真的加壳了的合法库」，而不是「碰巧含有某个字节序列的库」；而这一面在已测的 28 个合法共享库上是空的——命中 0 个，最高 6.75 对阈值 7.5。**代价必须写清楚：`BIN_001` 是 HIGH，assist（默认策略）下照样阻断**——assist 的通过判据是 `passed = stats.High == 0`（`audit.go:303-304`），而且 assist 的静态判定连 LLM 降级都不认：`recalculateStaticPassed` 存在的唯一理由就是挡住被 LLM 降成 SUSPICIOUS/BENIGN 的静态 HIGH（`verifier.go:204-210`），所以即使 Tier 2 判它 BENIGN 也救不回这个包。也就是说，一个真的用 UPX 打包的合法库会被删包，这正是下一行「二进制通道让原本能导入的包被误阻断」所写的「最贵的失败模式是删包」。之所以保留 HIGH 而不退回 MEDIUM：这条判定由一次**测量**触发、其误报面实测为 0（28 个合法库命中 0 个），而把一个加壳 `.so` 塞进模型包本身就是经典规避手法，值得用一个删包级判定挡住。 |
+| 加壳判定对 UPX 打包的合法库误报 | `BIN_001` 定为 HIGH，但触发它的是一次**测量**而不是一次模式匹配：只有可执行节区的熵越过 7.5 bits/byte 才成立，而实测**宿主上 600 个共享对象**的可执行节区最高只有 **6.7624**（`libjsvml.so` 的 `.text`，262272 字节；`libgomp.so` 的 7.97 落在非可执行的 `.gnu_debugdata`，抽取器根本不测）。误报面因此是「真的加壳了的合法库」，而不是「碰巧含有某个字节序列的库」；而这一面在已测的 600 个共享对象上是空的——0 个被判结构性、0 个无节表、命中 0 个，最高 6.7624 对阈值 7.5（早先只量了 ollama 那 28 个，最高 6.75，样本扩大二十倍最高值几乎不动）。**代价必须写清楚：`BIN_001` 是 HIGH，assist（默认策略）下照样阻断**——assist 的通过判据是 `passed = stats.High == 0`（`audit.go:303-304`），而且 assist 的静态判定连 LLM 降级都不认：`recalculateStaticPassed` 存在的唯一理由就是挡住被 LLM 降成 SUSPICIOUS/BENIGN 的静态 HIGH（`verifier.go:204-210`），所以即使 Tier 2 判它 BENIGN 也救不回这个包。也就是说，一个真的用 UPX 打包的合法库会被删包，这正是下一行「二进制通道让原本能导入的包被误阻断」所写的「最贵的失败模式是删包」。之所以保留 HIGH 而不退回 MEDIUM：这条判定由一次**测量**触发、其误报面实测为 0（600 个共享对象命中 0 个），而把一个加壳 `.so` 塞进模型包本身就是经典规避手法，值得用一个删包级判定挡住。 |
 | 字符串证据把合法包判成恶意 | 这是本轮实测出的最贵的误报源，对策是把字符串半边整体降级并收窄：源码臂的 `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` 是 HIGH/MEDIUM（`DefaultRules()` + `audit.go:242-243`，MEDIUM 在 `gate` 下照样阻断，`audit.go:301`），所以字符串半边不借它们，改用独立的 LOW 族 `CMD_002`/`PER_002`/`FIL_002`/`ENV_002`；每个 token 两端都锚定（`^…$`）以拒绝 `.pyc` 常量池里拼接出的片段（`'crontabz'`、`'.ssh/id_rsaz'`、`.profilez /etc/cron)` 都是实测命中）；`ENV_002` 去掉 `(?i)`，否则小写标识符 `private_key` 会撞上 `PRIVATE_KEY`；`OBF_001` 从二进制臂整体删除（28 个合法库命中 23 个）。LOW 仍进报告、仍送 Tier 2 复核，只是自己不足以阻断 |
 | 二进制 finding 挤占 LLM 配额 | 两臂各自限流（源码 200、二进制 50），合并列表不再二次截断。**Tier 2 调用上界由 200 变为 250**，且只在两臂同时饱和时可达。反过来，共享配额会让大源码臂按路径序挤掉二进制 finding，而那条路只会更贵：被挤掉的是二进制通道的证据，而挤掉它的那条臂本来就已经有 finding |
-| 二进制通道让原本能导入的包被误阻断 | 这是本设计最贵的失败模式（`ProvesCleanScan` 为假 → `cleanDirContents` 删包），所以：**finding 上限不参与完整性**（触顶只写 `findings_capped`/`findings_dropped`，绝不折进 `Report.Truncated`，且 cap 从不丢 HIGH——一条 finding 只有被结构背书才是 HIGH，cap 丢得起的只有 LOW/MEDIUM）；纯数据文件的证据截断只记录、不阻断；字符串证据一律 LOW（四个独立族，不借源码臂的 HIGH/MEDIUM id）；`BIN_001` 只由测量触发、不匹配字面量；`security.binaryAudit.enabled=false` 是逐字节回滚。已入库语料实测最大 finding 数为单样本 7、整语料 80，离两个上限都有一个数量级 |
-| 去掉无节表 fail-open 后，节表被剥离的合法库被误阻断 | 这是本次修订**新引入**的代价，必须与上一行（UPX / `BIN_001`）并列看，而不是只留在 Task 5 的实现里：熵检测的输入是可执行节，而 `len(ef.Sections) == 0` 的文件（`strip --strip-section-headers` 或 `objcopy --strip-section-headers` 的产物、以及某些加壳器的输出）没有可执行节可测，新实现记为 `Bound.Structural`，而 `KindELF` 是可执行类型，于是这个包被删。旧行为是"没有节表就直接掉出去、不产生任何行也不产生任何 bound"，也就是把"从未检查过"报成"没发现加壳"（fail-open）；本版刻意翻成 fail-closed，判据是：**对可执行格式，"没看"必须不等于"干净"**。这条误报面**不靠"用 `PT_DYNAMIC` 回补 `DT_NEEDED`/`DT_SONAME`"来修**——那条链要先把 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移、再把 `DT_STRTAB` 的虚地址同样映射一次，是一段独立的新解析逻辑，而它的产出对"有没有被加壳"不提供任何证据，与这条误报面无关。真正的取舍是"宁可为被剥节的库删包，也不让一个剥了节表头的加壳载荷通过"。已入库语料实测没有这个形状（`models/` 下一个真实 `.so` 都没有，见第 14 条），所以这个代价目前是**潜伏**的，只在包带上一个被剥节的真实库时发作；`security.binaryAudit.enabled=false` 仍是逐字节回滚 |
+| 二进制通道让原本能导入的包被误阻断 | 这是本设计最贵的失败模式（`ProvesCleanScan` 为假 → `cleanDirContents` 删包），所以：**finding 上限不参与完整性**（触顶只写 `findings_capped`/`findings_dropped`，绝不折进 `Report.Truncated`，且 cap 从不丢 HIGH——一条 finding 只有被结构背书才是 HIGH，cap 丢得起的只有 LOW/MEDIUM）；纯数据文件的证据截断只记录、不阻断；字符串证据一律 LOW（四个独立族，不借源码臂的 HIGH/MEDIUM id）；`BIN_001` 只由测量触发、不匹配字面量；**ELF 的结构性 fail-closed 只设在"这次没读完"上，不设在"这个文件很大"上**——一个可执行节在每文件 `MaxStreamBytes`（3 GiB）预算内没读完，记为结构性缺口（`section .text declares N bytes, M readable`）并删包；被删掉的 `MaxSectionBytes`（16 MiB/节）为什么错，判据正在这个分界上：16 MiB 的节上限问的是"这个库是不是太大"，而任何足够大的 `.so` 都会越过某个固定值，于是它把"库比较大"变成阻断理由（实测 libLLVM/libclang/chrome/wireshark 的可执行节都越过它）；3 GiB 的每文件预算问的是"我们能不能把它读完"，实测 600 个共享对象里没有一个接近它，触到它意味着这次读取确实没完成——那才是诚实的缺口；`security.binaryAudit.enabled=false` 是逐字节回滚。已入库语料实测最大 finding 数为单样本 7、整语料 80，离两个上限都有一个数量级 |
+| 去掉无节表 fail-open 后，节表被剥离的合法库被误阻断 | 这是本次修订**新引入**的代价，必须与上一行（UPX / `BIN_001`）并列看，而不是只留在 Task 5 的实现里：熵检测的输入是可执行节，而 `len(ef.Sections) == 0` 的文件（`strip --strip-section-headers` 或 `objcopy --strip-section-headers` 的产物、以及某些加壳器的输出）没有可执行节可测，新实现记为 `Bound.Structural`，而 `KindELF` 是可执行类型，于是这个包被删。旧行为是"没有节表就直接掉出去、不产生任何行也不产生任何 bound"，也就是把"从未检查过"报成"没发现加壳"（fail-open）；本版刻意翻成 fail-closed，判据是：**对可执行格式，"没看"必须不等于"干净"**。这条误报面**不靠"用 `PT_DYNAMIC` 回补 `DT_NEEDED`/`DT_SONAME`"来修**——那条链要先把 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移、再把 `DT_STRTAB` 的虚地址同样映射一次，是一段独立的新解析逻辑，而它的产出对"有没有被加壳"不提供任何证据，与这条误报面无关。真正的取舍是"宁可为被剥节的库删包，也不让一个剥了节表头的加壳载荷通过"。已入库语料实测没有这个形状（`models/` 下一个真实 `.so` 都没有，见第 14 条），宿主 600 个共享对象里也 0 个无节表（见第 15 条），所以这个代价目前是**潜伏**的，只在包带上一个被剥节的真实库时发作；`security.binaryAudit.enabled=false` 仍是逐字节回滚 |
 | 与 semgrep 非劣性证据的交互 | 二进制通道在**两个臂之外**运行且合并发生在引擎报告之后，两臂的引擎级报告逐字节不变；`corpus_parity_test.go` 会证明这一点 |
 | pickle 解释器的门控开错方向 | 两个方向都是故障，所以各有一个测试钉住：**跑宽了**（对非 pickle 也跑解释器）会让任意字节能被读成 opcode，未知 opcode 直接置 `Bound.Structural`，而 `KindELF`/`KindPickle`/`KindArchive`/`KindCompressed` 都是可执行类型，于是每个 `.pt`/`.whl`/`.so` 都被阻断、原本能导入的包被删——`TestCollectEvidenceDoesNotInterpretNonPicklesAsPickles` 用一个良性 ELF 夹具断言既不 `Err` 也无 `Bound.Structural`、无 `SourcePickle` 行；**跑窄了**（该跑的没跑）会丢掉 pickle 证据——`TestPickleInterpreterReadsTheRealCheckpoint` 断言真 checkpoint 仍产出目标。门控规则（只跑在 `KindPickle` 的整文件/容器成员、以及解压后头部嗅探为 pickle 的 gzip 流上）写在 Task 4 Step 4，不得"简化"掉 |
 | 二进制通道无法被取消，且它的失败会删包 | `GenerateAuditReport` 由 `internal/controller/import_processing.go:642` 以 `context.Background()` 调用，新增的 `runBinaryChannel`/`ScanDirectory` 都不收 context，所以**单个文件**的工作量被 `BinaryConfig` 的上限钉住，而**总**工作量随文件数线性增长，且没有任何东西能中断它。这是既有的形状而不是新引入的类别——`engine.ScanDirectoryWithLines` 同样不收 context——所以这里只当作一个已知边界记录：一次导入的二进制臂时长与文件数成正比，超时与否只能由调用方在整条审计之外控制，本计划不新增逐文件的取消路径。同一个 `context.Background()` 调用点也是**为什么 `runBinaryChannel` 不返回 error**：`internal/controller/import_processing.go:642-660` 对任何 error 都走删包，逐文件失败（已计为 `Incomplete`）或整趟失败（已计为 `Errored`）若从那条路出去，报告根本没机会说明原因，删除也就无从复核 |
