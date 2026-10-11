@@ -97,39 +97,55 @@ func TestStringScannerCapsDistinctLinesAndRecordsIt(t *testing.T) {
 	}
 }
 
-// TestEvidenceSourcesDoNotShareADedupKey pins that the dedup key is namespaced
-// by source. All writers share one map, so a bare-text key lets one source
-// silence another: a model package whose string table contains the printable
-// literal "pickle:os.system" would occupy the key the pickle pass needs for a
-// genuine GLOBAL os.system target, and the rule that exists to catch "this file
-// unpickles a call to os.system" would never see it. That is an evasion an
-// attacker who controls the package can plant on purpose, so the string line and
-// the pickle line must both survive.
+// TestEvidenceSourcesDoNotShareADedupKey pins the property the per-source key
+// exists for: the same text arriving from two different sources must produce two
+// lines, not one. Every writer shares one dedup map, so a key that is the bare
+// text lets one source silence another. The concrete evasion is a model package
+// whose string table carries the printable literal "pickle:os.system": under a
+// bare-text key it occupies the key the pickle pass needs for a genuine GLOBAL
+// os.system target, and the rule that exists to catch "this file unpickles a
+// call to os.system" would never see it. An attacker who controls the package
+// can plant that literal on purpose, which is why the key is string(src) + "\x00"
+// + text: no two sources can ever build the same key.
 func TestEvidenceSourcesDoNotShareADedupKey(t *testing.T) {
 	ev := newTestEvidence("x.bin", KindPickle)
-	s := newStringScanner(ev, DefaultBinaryConfig())
+	// The identical text from two different sources. Under the namespaced key
+	// these are two entries; if add ever lost its source prefix they would
+	// collapse to one and this assertion must fail.
+	ev.add(SourceStrings, 0, "os.system")
+	ev.add(SourcePickle, 0, "os.system")
+
+	// add appends in call order - Finalize is what sorts, and it is not called
+	// here - so the order is total and stated: the string line first, then the
+	// pickle line.
+	if len(ev.Lines) != 2 {
+		t.Fatalf("lines = %+v, want 2: identical text from two sources collapsed onto one key", ev.Lines)
+	}
+	if ev.Lines[0].Source != SourceStrings || ev.Lines[1].Source != SourcePickle {
+		t.Fatalf("sources = [%s, %s], want [%s, %s]", ev.Lines[0].Source, ev.Lines[1].Source, SourceStrings, SourcePickle)
+	}
+
+	// Second case: the decoy literal the string scanner extracts is the rendered
+	// form a reader sees, and it must not suppress a later genuine pickle target.
+	decoy := newTestEvidence("y.bin", KindPickle)
+	s := newStringScanner(decoy, DefaultBinaryConfig())
 	if _, err := s.Write([]byte("pickle:os.system")); err != nil {
 		t.Fatal(err)
 	}
 	s.Flush()
+	decoy.add(SourcePickle, 0, "os.system")
 
-	// The pickle scanner (Task 4) writes its targets through the same method.
-	ev.add(SourcePickle, 0, "os.system")
-
-	var sawString, sawPickle bool
-	for _, l := range ev.Lines {
+	var sawDecoy, sawPickle bool
+	for _, l := range decoy.Lines {
 		if l.Source == SourceStrings && l.Text == "pickle:os.system" {
-			sawString = true
+			sawDecoy = true
 		}
 		if l.Source == SourcePickle && l.Text == "os.system" {
 			sawPickle = true
 		}
 	}
-	if !sawString {
-		t.Error("the string line was removed; one source overwrote another's evidence")
-	}
-	if !sawPickle {
-		t.Error("the pickle target was dropped; a planted string literal silenced the pickle pass")
+	if !sawDecoy || !sawPickle {
+		t.Errorf("the decoy literal and the pickle target must both survive; decoy=%t pickle=%t lines=%+v", sawDecoy, sawPickle, decoy.Lines)
 	}
 }
 
