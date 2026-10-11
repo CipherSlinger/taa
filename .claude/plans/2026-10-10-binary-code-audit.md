@@ -5427,7 +5427,7 @@ git commit -m "feat(audit): read zip and gzip containers, recursing into member 
 
 > **第三点，也是这三条里唯一一条会把结论翻面的：一个文件抽取失败时，它是被记成 `Incomplete`，不是被静默跳过。** 这条链要写全，因为它是本通道 fail-closed 的承重结构，而它同时跨了三个任务，单看任何一个任务的代码都看不出全貌：抽取函数（本步的 `collectArchive`、Task 5 的 `collectELF`、`collectCompressed` 等）在打不开容器/解析不了 ELF 时**返回 error**，而不是 `markStructural` 后继续——返回是刻意的，`markStructural` 记的是"这个文件读了但没读全"，而这里的事实是"这个文件根本没读成"，两者在报告里必须能分开；Task 7 的 `CollectEvidence` 把它收进 `set.Err` 而不是往外抛（往外抛会被 `import_processing.go:642-660` 当成整趟失败直接删包，报告连原因都来不及写）；Task 9 的 `ScanDirectory` 在 `if set.Err != nil` 分支里 `res.Summary.Incomplete++; return nil`——自增之后 `return nil`，所以这一个文件不会中断其余文件的扫描，但它**已经**被计数了。`Incomplete` 随后折进 `Report.Binary`，`ProvesCleanScan` 在 `b.Incomplete > 0` 时返回 false（`{"an unexamined file withholds", BinaryScanSummary{FilesCount: 3, Incomplete: 1}, false}`），于是导入被扣下。
 >
-> 所以判据是：**"抽取出错"与"被跳过"在报告里绝不能长得一样**。跳过是 `classify` 判定为非二进制（非常规文件、文本文件、非 ELF/pickle 的成员），它不计数，因为那不是一次失败的查看；抽取出错是一次失败的查看，它必须计数。宿主上有一个现成的形状能测这条链：`teellm/` 与 `deploy/guest-build/semgrep-payload/rootfs` 下有 **21 个被截断的 CUDA/MLX 库**——磁盘上约 10 MiB，而 ELF 头把节头表指向约 116 MB 偏移，于是 `elf.NewFile` 直接返回 `EOF`。它们今天不在任何模型包里，但只要有一个出现在包里，被截断的库就是"抽取出错"而不是"跳过"，`Incomplete` 必须是 1，包必须被扣下——这正是 `TestBinaryScannerCountsAnUnreadableFileAsIncomplete` 那一族要钉住的形状，也是它不能只测 `classify` 失败那条分支的原因。
+> 所以判据是：**"抽取出错"与"被跳过"在报告里绝不能长得一样**。跳过是 `classify` 判定为非二进制（非常规文件、文本文件、非 ELF/pickle 的成员），它不计数，因为那不是一次失败的查看；抽取出错是一次失败的查看，它必须计数。宿主上有一个现成的形状能测这条链：**21 个被截断的 CUDA/MLX 库，全部落在 `teellm/models/ollama/lib/ollama/` 下**（`cuda_v12` 3 个、`cuda_v13` 3 个、`mlx_cuda_v13` 14 个、`vulkan` 1 个）——其中 20 个在磁盘上正好 10485760 字节（10 MiB），第 21 个 `vulkan/libggml-vulkan.so` 是 10747904 字节，而 ELF 头把节头表指向 **34483600–751773392 字节（约 33–717 MB）**的偏移，于是 `elf.NewFile` 直接返回 `EOF`。**`deploy/guest-build/semgrep-payload/rootfs` 不在这 21 个里面**：它下面有 88 个 `.so*`，但截断的一个也没有（常被引用的"约 116 MB"只是 `cuda_v12/libcublas.so.12.8.5.5` 这一个样本）。它们今天不在任何模型包里，但只要有一个出现在包里，被截断的库就是"抽取出错"而不是"跳过"，`Incomplete` 必须是 1，包必须被扣下——这正是 `TestBinaryScannerCountsAnUnreadableFileAsIncomplete` 那一族要钉住的形状，也是它不能只测 `classify` 失败那条分支的原因。
 
 ---
 
@@ -6646,6 +6646,7 @@ go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestBinaryFam
 
     **这里的"9"而不是"8"，是一次漏数，不是口径差异。** 早先那一轮 `CMD_001` 只按别处举过的 `execlp` 一个符号去扫，没有走该族的完整 alternation，于是漏掉了 `mlx_cuda_v13/libgfortran.so.5.0.0` 的 `system`。`system` 是 `CMD_001` 的正成员（`binary_rules.go` 的 `CMD_001` 模式串里第一个就是它），这是一次真实的指令执行命中，不是误报——记在这里，免得后来者拿旧的"8"当成回归基线。
   - **"9"不随口径放宽而变，这才是它可信的地方。** `SourceDynsym` 不是这批库**唯一**的证据来源：在同一批文件上还能发 HIGH 的另外两条路，一条是 `SourceEntropy`（`BIN_001`，可执行节区熵近随机），一条是 `NET_002` 自己的 `SourceNeeded` 分支（`^libcurl\.so` / `^libssl\.so`）。两条都实测过，**一个文件都不加**：(a) 熵——把每个可读文件的所有 `SHF_EXECINSTR` 节**整节**（不是前缀采样）算 Shannon 熵，全树最高 **6.744751** bits/byte，出现在 `libggml-cpu-sapphirerapids.so` 的 `.text`（**1289897** 字节，整节读完），距 7.5 的阈值还差 **0.755** bits，`BIN_001` 一个都不触发（宿主 600 个共享对象那轮的最高值是 6.777009，同一个量级）；(b) `DT_NEEDED`——全树**没有任何** `libcurl`/`libssl` 的 `DT_NEEDED` 条目，`SourceNeeded` 分支一个都不加。于是"只算 dynsym"与"三源齐上"给出同一个数：**9**。这条论证要写进记录，是因为这个结论的强度不来自"我扫了哪些符号"，而来自"把所有能发 HIGH 的证据来源都走一遍，还是 9"。
+  - **三个数字的关系一次写清，免得后来者把口径差当成回归偏移。** `teellm/models/ollama/lib/ollama/` 下**顶层条目 28 个**（22 个普通 `.so*` + 6 个软链接）——本记录下面几条与 §3 里说的"28 个 ollama 共享库"（"标定误报用的那 28 个 ollama 库"、旧 `OBF_001` 命中 23 个、"单节最大 2 901 464 字节"）用的都是**这个顶层口径**；**递归下去普通 `.so*` 是 52 个**，这才是本节"9 个命中"与上面截断口径的数（连软链接一起算是 58 个**条目**，但 `filepath.Walk` 按 `lstat` 根本不读软链接，所以有效输入是 52）。于是 52 = 21 个截断 + 31 个可解析，其中 **9 个命中 HIGH**。`-maxdepth 1` 对递归、条目对普通文件，两种口径各自自洽；拿 52 去比 28 会读出一个不存在的偏移。
   - **这 9 个命中全部是合法库，而 `CMD_001`/`NET_002` 都是 HIGH**，所以只要这样的库进了模型包，`passed` 就是 false，导入会在 `import_processing.go:655-660` 走到 `cleanDirContents` 删包。这正是 §5 里 `NET_002` 那条**未裁决取舍**的实测来源（三种候选写在 Task 8 `binary_rules.go` 的 `NET_002` 注释里）。
 **上面那 9 个的复跑命令**（口径 = 只算普通文件、软链接不计，递归含 `cuda_v12`/`cuda_v13`/`mlx_cuda_v13`/`vulkan`；符号面 = `nm -D --no-demangle` 的 `U` 行剥掉 `@GLIBC_2.2.5` 这类版本后缀后的**裸名**，对应 `collectELFReader` 收的 `SHN_UNDEF && STB_GLOBAL`；规则面 = 所有能在 `SourceDynsym` 上发 HIGH 的族。`vulkan/libggml-vulkan.so` 那个截断库在 `nm -D` 下只报 `file too short`，所以它落在上面那条截断口径里、不在这里产出命中。**最后一行以非零退出是循环末尾那个 `[ -n "$h" ]` 的返回值，不是命令失败**）：
 
@@ -7127,10 +7128,14 @@ func TestBinaryScannerCountsAnUnreadableFileAsIncomplete(t *testing.T) {
 // fails at classify, so that file never gets as far as an extractor. Here the
 // file opens and classifies as an ELF, and then fails to parse - which is the
 // set.Err branch, a different line of ScanDirectory with the same meaning. The
-// fixture is the shape the host actually has: 21 truncated CUDA/MLX libraries
-// under teellm/ and deploy/guest-build/semgrep-payload/rootfs are ~10 MiB on
-// disk with their section header table at a ~116 MB offset, so elf.NewFile
-// returns EOF. A truncated file is a file that was read and could not be
+// fixture is the shape the host actually has: 21 truncated CUDA/MLX libraries,
+// all of them under teellm/models/ollama/lib/ollama - none are under
+// deploy/guest-build/semgrep-payload/rootfs, which holds 88 .so* files and not
+// one truncated one. Twenty are exactly 10485760 bytes on disk and the
+// twenty-first is 10747904, with their section header tables between 34483600
+// and 751773392 bytes into the file, so elf.NewFile returns EOF. The "~116 MB"
+// figure quoted here before is a single sample, cuda_v12/libcublas.so.12.8.5.5.
+// A truncated file is a file that was read and could not be
 // examined, never a file that was skipped, so the count must be 1 and the pass
 // must be withheld.
 func TestBinaryScannerCountsAFailedExtractionAsIncomplete(t *testing.T) {
@@ -7399,11 +7404,14 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 			// - never silently skipped, because a file the channel could not read
 			// and a file it decided not to read must not reach the report looking
 			// the same. The host has the shape to test it with: 21 truncated
-			// CUDA/MLX libraries under teellm/ and
-			// deploy/guest-build/semgrep-payload/rootfs are ~10 MiB on disk with
-			// their section headers at a ~116 MB offset, so elf.NewFile returns
-			// EOF. Counting is what makes such a file withhold the pass instead of
-			// passing as clean.
+			// CUDA/MLX libraries, all of them under
+			// teellm/models/ollama/lib/ollama and none under
+			// deploy/guest-build/semgrep-payload/rootfs, which holds 88 .so*
+			// files and not one truncated one. Twenty are exactly 10485760 bytes
+			// on disk and the twenty-first is 10747904, with their section
+			// headers 34483600 to 751773392 bytes into the file, so elf.NewFile
+			// returns EOF. Counting is what makes such a file withhold the pass
+			// instead of passing as clean.
 			res.Summary.Incomplete++
 			return nil
 		}
@@ -7557,7 +7565,7 @@ func renderEvidenceWindow(lines []EvidenceLine, start, end int) string {
 }
 ```
 
-> **陷阱：两个通道的封顶不是同一个安全模型，别把它们"统一"起来。** 文本通道的封顶是**按位置丢**的——`scanner.go:97-100` 在走的过程中把 `findings` 截到 `MaxFindings`、置 `truncated = true`、`return filepath.SkipAll`（第二处同形的在 `scanner.go:298-301`，semgrep 适配器在 `semgrep_engine.go:239-243` 置同一个 `truncated`）。它**安全**，是因为任何一次丢弃都会置 `truncated`，而 `truncated` 被 `rules.go:126-134` 的 `ProvesCleanScan` 折进去、并在 `scanner.go:231`、`verifier.go:188`/`verifier.go:235`、`audit.go:354`/`audit.go:314-316` 处被 AND 起来——所以文本通道丢一个 finding 的后果是"这个包被扣下"，不是"这个包通过"。
+> **陷阱：两个通道的封顶不是同一个安全模型，别把它们"统一"起来。** 文本通道的封顶是**按位置丢**的——`scanner.go:97-100` 在走的过程中把 `findings` 截到 `MaxFindings`、置 `truncated = true`、`return filepath.SkipAll`（第二处同形的在 `scanner.go:298-301`，semgrep 适配器在 `semgrep_engine.go:239-243` 置同一个 `truncated`）。它**安全**，是因为任何一次丢弃都会置 `truncated`，而 `truncated` 被 `rules.go:141-150` 的 `ProvesCleanScan` 折进去（读 `!r.Truncated` 的那一行是 `rules.go:146`；`rules.go:126-134` 是它的 doc comment，别把注释区当读取点）、并在 `scanner.go:231`、`verifier.go:188`/`verifier.go:235`、`audit.go:354`/`audit.go:314-316` 处被 AND 起来——所以文本通道丢一个 finding 的后果是"这个包被扣下"，不是"这个包通过"。
 >
 > **二进制通道故意不是这样**：下面的 cap 只裁剪**报告里的清单**，`FindingsCapped`/`FindingsDropped` 按 Task 10 的设计**不进** `ProvesCleanScan`，也就是说二进制通道丢一个 finding **不会**让包被扣下。它的安全因此**完全落在**这条 keep 规则上：cap 只花 **LOW** 这一档，保住 **HIGH 与 MEDIUM**，并对未知严重级 fail-closed（所以写的是 `f.Severity != "LOW"` 而不是 `f.Severity == "HIGH" || f.Severity == "MEDIUM"`）。写 `!= "LOW"` 的理由是：**能被丢的那一档必须恰好是"不能阻断"的那一档**，代码不确知是 LOW 的东西都要留下——`rules.go` 里根本没有 `SeverityLow` 常量，`"LOW"` 是个裸字符串，`gate` 下 MEDIUM 一样阻断（`audit.go:298-309`），而 `DYN_001` 正是 MEDIUM。
 >
@@ -7718,11 +7726,21 @@ go test ./internal/codeaudit/ -run 'TestProvesCleanScan' 2>&1 | head -10
 	// the channel did not run, which is what a deployment that turned it off
 	// produces and what every report predating it carries.
 	//
+	// The fold below applies only to a non-nil summary, so a caller that stamps
+	// a zero-valued summary reads as clean rather than as a gap. Only a pass that
+	// actually ran the channel may set it, and on this wiring the audit path is
+	// the only writer: Task 12 copies it into AuditMetadata and nothing else
+	// constructs one. A writer placed ahead of the channel would turn "did not
+	// look" into "looked and found nothing", which is the one failure this fold
+	// exists to prevent.
+	//
 	// It lives on the Report rather than on the AuditReport because
 	// ProvesCleanScan is what has to read it, and the whole point of that method
 	// is that every way of not having looked withholds the pass in one place.
 	Binary *BinaryScanSummary `json:"binary,omitempty"`
 ```
+
+> **指针：`Report.Binary` 只是扫描期的账，出报告时还要**另镜像一份**进 `AuditMetadata`（`audit.go:24` 的 `scan_metadata`），由 **Task 12** 承担。这条指针不能省，因为**二进制不完整性会独自扣包**——`audit.go:354` 的 `sp := scanReport.Passed && scanReport.ProvesCleanScan()`，而离场报告的 `AuditMetadata`（`audit.go:24`、组装在 `audit.go:411`）今天**不含任何二进制字段**：一旦折入扣了包而报告里没有缺口字段，operator 只能看到"包被扣下"，看不到"哪个文件没看完"，这正是 `failclosed_test.go:155` 那条"元数据存在就是为了说明是否跑完"的先例要避免的形状。Task 12 那节把镜像**必须携带 `Incomplete`/`BoundedExecutable`/`Errored` 三个缺口字段（不能只带计数）**写成显式要求，并配了钉住它的测试。
 
 修改 `ProvesCleanScan`：
 
@@ -7757,17 +7775,17 @@ func (r *Report) ProvesCleanScan() bool {
 }
 ```
 
-> **陷阱：两个通道的封顶不是同一个安全模型，别把二进制的 `FindingsCapped` 折进这个判定。** 文本通道的封顶是**按位置丢** finding 的（`scanner.go:97-100` 的截断加 `return filepath.SkipAll`、`scanner.go:298-301` 的同形第二处、`semgrep_engine.go:239-243`），它**安全**是因为任何一次丢弃都会置 `truncated = true`，而 `truncated` 正是这个函数（`rules.go:126-134`）读的完整性字段之一——文本通道丢一个 finding 的代价是"包被扣下"（`scanner.go:231`、`verifier.go:188`/`verifier.go:235`、`audit.go:354`/`audit.go:314-316` 把这条 AND 链起来）。
+> **陷阱：两个通道的封顶不是同一个安全模型，别把二进制的 `FindingsCapped` 折进这个判定。** 文本通道的封顶是**按位置丢** finding 的（`scanner.go:97-100` 的截断加 `return filepath.SkipAll`、`scanner.go:298-301` 的同形第二处、`semgrep_engine.go:239-243`），它**安全**是因为任何一次丢弃都会置 `truncated = true`，而 `truncated` 正是这个函数（`rules.go:141-150`；读 `!r.Truncated` 的是 `rules.go:146`，`rules.go:126-134` 只是 doc comment）读的完整性字段之一——文本通道丢一个 finding 的代价是"包被扣下"（`scanner.go:231`、`verifier.go:188`/`verifier.go:235`、`audit.go:354`/`audit.go:314-316` 把这条 AND 链起来）。
 >
 > **二进制通道故意不这样**：它裁剪的只是**报告里的清单**，`FindingsCapped`/`FindingsDropped` **故意不折进**这里（上面 `BoundedData` 与 `FindingsCapped` 都被明确排除在读取之外，这是刻意的），所以二进制通道丢一个 finding 不扣包。这正是"把两个通道的封顶统一起来会删掉合法包"这句话的落点——**二进制证据产生的 finding 数量远多于文本通道**（一个 `.so` 的动态符号表一次就能出几十条），如果照文本通道的样子让"触顶"也去扣包，那么任何产出超过 `MaxFindings` 条 finding 的**合法**包（一个正常的加速库就能做到）都会被 `cleanDirContents` 删掉。所以二进制通道的安全**不靠**这个折入，而**完全**靠 Task 9 那条 keep 规则：cap 只花 LOW 一档、保住 HIGH **和** MEDIUM、对未知严重级 fail-closed。改这一对设计时要两边一起看——把 `FindingsCapped` 折进这里是删合法包，把 keep 规则放宽成"只保 HIGH"则是在 `gate` 下放走 MEDIUM 阻断 finding。
 
 - [ ] **Step 4: 跑测试确认通过**
 
 ```bash
-go test ./internal/codeaudit/ -run 'TestProvesCleanScan|TestAHighFinding|TestIncomplete|TestTruncated|TestRecomputeReportPassed|TestScanMetadata|TestScanDirectory' -v 2>&1 | tail -30
+go test ./internal/codeaudit/ -run 'TestProvesCleanScan|TestEveryEngineProvesACleanScanForANormalScan|TestAHighFinding|TestIncomplete|TestTruncated|TestRecomputeReportPassed|TestScanMetadata|TestScanDirectory' -v 2>&1 | tail -30
 ```
 
-预期全 PASS。已有的 fail-closed 测试必须保持通过——它们是这次改动的回归网。这里按**实际存在的函数名**逐一选中：`failclosed_test.go` 里是 `TestProvesCleanScan*`、`TestAHighFindingStillBlocksAnIncompleteScan`、`TestIncompleteScanCannotPassTheAuditConclusion`、`TestTruncatedScanCannotPassTheAuditConclusion`、`TestRecomputeReportPassedWithholdsPassForAnIncompleteScan`、`TestScanMetadataCarriesIncompletenessToTheReportThatLeaves`，`report_fields_test.go` 里是 `TestScanDirectory*`。**不要写成 `TestFailClosed`/`TestReportFields` 这样的前缀**——包里的测试不叫这两个名字，那样的 `-run` 只选中 `TestProvesCleanScan*` 一条，等于把回归网晾在一边。
+预期全 PASS。已有的 fail-closed 测试必须保持通过——它们是这次改动的回归网。这里按**实际存在的函数名**逐一选中：`failclosed_test.go` 里是 `TestProvesCleanScan*`、**`TestEveryEngineProvesACleanScanForANormalScan`（`failclosed_test.go:189`，包内**唯一**一条直接断言 `ProvesCleanScan()` 返回 true 的用例，而这次改动改的正是这个函数的正向——少了它，回归网里没有一条会在"折入写反、把正常扫描也扣下"时变红）**、`TestAHighFindingStillBlocksAnIncompleteScan`、`TestIncompleteScanCannotPassTheAuditConclusion`、`TestTruncatedScanCannotPassTheAuditConclusion`、`TestRecomputeReportPassedWithholdsPassForAnIncompleteScan`、`TestScanMetadataCarriesIncompletenessToTheReportThatLeaves`；`TestScanDirectoryWithLines` 在 **`audit_test.go:539`**（不在 `report_fields_test.go`——`-run TestScanDirectory` 这个模式照样选中它，只是归属别写错）。**不要写成 `TestFailClosed`/`TestReportFields` 这样的前缀**——包里的测试不叫这两个名字，那样的 `-run` 只选中 `TestProvesCleanScan*` 一条，等于把回归网晾在一边。
 
 - [ ] **Step 5: 提交**
 
@@ -8197,9 +8215,41 @@ func TestGenerateAuditReportWithBinaryDisabledIsUnchanged(t *testing.T) {
 		t.Error("Passed = false with the channel disabled; the disabled path is not a rollback")
 	}
 }
+
+// TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata pins that the metadata
+// mirror carries the gap fields and not just the counts. The scan summary is
+// what makes a blocked import explainable from the report that leaves the
+// process, and a copy that kept only FilesCount would read as a channel that
+// finished on a package whose native code it never examined. The fixture fails
+// after classify - the header parses, the section header table runs off the end
+// - so the gap is Incomplete rather than a skipped file, which is exactly the
+// shape the host's truncated CUDA libraries have.
+func TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{text: []byte("truncated")})
+	// e_shoff past the end of the file (ELF64 header offset 0x28).
+	binary.LittleEndian.PutUint64(raw[0x28:0x30], 1<<30)
+	writeTestBytes(t, dir, "truncated.so", raw)
+
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(),
+		AuditConfig{LLM: LLMConfig{Enabled: false, Policy: "assist"}, Binary: DefaultBinaryConfig()}, nil)
+	if err != nil {
+		t.Fatalf("GenerateAuditReport: %v", err)
+	}
+	if audit.ScanMetadata.Binary == nil {
+		t.Fatal("ScanMetadata.Binary is nil: the binary channel did not run")
+	}
+	if audit.ScanMetadata.Binary.Incomplete != 1 {
+		t.Errorf("ScanMetadata.Binary.Incomplete = %d, want 1: the mirror must carry the gap, not only the counts",
+			audit.ScanMetadata.Binary.Incomplete)
+	}
+	if audit.Conclusion.Passed {
+		t.Error("Passed = true for a package whose native code could not be examined")
+	}
+}
 ```
 
-> 注：两步都要有，缺一不可。**构造引擎时**必须传 `repoSemgrepRules(t)`（`semgrep_engine_test.go:558-568` 的 helper），不能传裸的 `DefaultSemgrepRulesPath`——后者是相对路径，`NewEngine` 会以包目录为 cwd 去 stat，`internal/codeaudit/models/audit/...` 必然 MISSING，`NewEngine` 在进入任何 subtest **之前**就返回错误，subtest 里的 skip 救不了。仓库既有用例（`engine_select_test.go:30`/`:203`/`:249`）也一律这么写。**然后是**：semgrep 用例在未安装 semgrep CLI 的环境要 skip。在 `internal/codeaudit/engine_select_test.go` 的 import 块补 `"os/exec"`，并在子测试开头加：
+> 注：两步都要有，缺一不可。**构造引擎时**必须传 `repoSemgrepRules(t)`（`semgrep_engine_test.go:558-568` 的 helper），不能传裸的 `DefaultSemgrepRulesPath`——后者是相对路径，`NewEngine` 会以包目录为 cwd 去 stat，`internal/codeaudit/models/audit/...` 必然 MISSING，`NewEngine` 在进入任何 subtest **之前**就返回错误，subtest 里的 skip 救不了。仓库既有用例（`engine_select_test.go:30`/`:203`/`:249`）也一律这么写。**然后是**：semgrep 用例在未安装 semgrep CLI 的环境要 skip。在 `internal/codeaudit/engine_select_test.go` 的 import 块补 `"os/exec"`（`TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata` 还要用 `binary.LittleEndian` 改夹具头，所以**同一个 import 块里还要补 `"encoding/binary"`**——该文件今天的 import 块是 `context`/`os`/`path/filepath`/`strings`/`testing`/`time`，两者都不在里面），并在子测试开头加：
 
 ```go
 			if name == EngineNameSemgrep {
@@ -8392,6 +8442,8 @@ func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, 
 ```
 
 > `AssembleAuditReport` 的签名**不变**：二进制摘要搭 `Report.Binary` 的车，与 `Engine`、`Truncated` 等字段走同一条路。少改 10 个调用点，也少一处两路并行的可能。
+
+> **这一步的硬要求：镜像必须携带 `Incomplete`/`BoundedExecutable`/`Errored` 这三个缺口字段，不能只带计数。** 理由是承重的，不是风格问题：二进制不完整性会**独自扣包**（`audit.go:354` 的 `sp := scanReport.Passed && scanReport.ProvesCleanScan()`，而 `ProvesCleanScan` 在 `BoundedExecutable > 0 || Incomplete > 0 || Errored` 时返回 false），所以包被扣下之后，报告里必须能读出**哪个缺口字段**扣的它。这三个字段正是那个判定的全部输入；把它们换成一个 `files_count` 之类的数，或者只抄 `FilesCount`，就等于把"有一份原生代码没看完"和"全都看完了"在报告里写成同一句话——`failclosed_test.go:155` 那条"元数据存在就是为了说明是否跑完"的先例一破，operator 就只能看到包被删、看不到为什么。抄的是**同一个 summary 的指针**（`Binary: scanReport.Binary`），所以这一条在实现上是自然的；它要防的是后来者"顺手把它摊平成几个计数字段"，或者只挑其中一个抄。**钉住它的测试是 `TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata`**（Step 1）：夹具让 `elf.NewFile` 在一个已分类为 ELF 的文件上失败，于是 summary 里 `Incomplete = 1`，断言这个 1 一路走到 `audit.ScanMetadata.Binary.Incomplete`，并且结论是 `Passed == false`。零值陷阱也在这条要求里：**只有真正走完的 pass 才能挂非 nil summary**（`Report.Binary` 的折入只对非 nil 生效，一个非 nil 的零值 summary 会被读成 clean），所以 `runBinaryChannel` 之外不得有人构造它。
 
 - [ ] **Step 5: 机械更新全部调用点**
 
