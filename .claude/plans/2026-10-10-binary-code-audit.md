@@ -6296,12 +6296,16 @@ var binaryFamilies = []binaryFamily{
 		// did not achieve what it was for.
 		//
 		// Measured with the wide symbol readers (`nm -D`, or `readelf -sW
-		// --dyn-syms`; plain `readelf --dyn-syms` truncates long names to
-		// `[...]` and hides `socket` and `connect` in particular) against the 28
-		// shared libraries of this machine's ollama bundle: the generic and
-		// server-side symbols - `bind`, `send`, `recv` - are imported by
-		// libllama-common.so, a legitimate library, so dropping them did remove
-		// that match. But the client symbols were kept, and they sit in the same
+		// --dyn-syms`; plain `readelf --dyn-syms` elides the whole
+		// `name@GLIBC_x.y` combination into `[...]`, not merely long names, which
+		// is why even short names like `socket` and `connect` disappear) against
+		// the 28 top-level `.so*` entries of this machine's ollama bundle - 22
+		// regular files plus 6 symlinks. The recursive count of regular `.so*`
+		// files is 52, a different set: do not read 52 against 28 as a
+		// regression. The generic and server-side symbols - `bind`, `send`,
+		// `recv` - are imported by libllama-common.so, a legitimate library, so
+		// dropping them did remove that match. But the client symbols were kept,
+		// and they sit in the same
 		// libraries: libllama-common.so.0.1.2 and libllama-server-impl.so both
 		// import `socket`, `connect` and `getaddrinfo` alongside
 		// `bind`/`send`/`recv`, and the CUDA runtime libraries under
@@ -6531,11 +6535,9 @@ func (m *BinaryMatcher) Match(line EvidenceLine) *Rule {
 // index of the matched line. It is a slice-building convenience over Match so
 // that the scanner does not re-implement the precedence loop.
 //
-// It has no caller in this commit - not in the scanner, not in a test, nothing.
-// It is written ahead of the binary scanner, which Task 9 wires to this table
-// and which is the caller that would otherwise re-implement the precedence
-// loop; until that lands it is deliberately declared and deliberately unused,
-// not an oversight.
+// The binary scanner is its caller: binary_scanner.go calls MatchAll rather
+// than re-implementing the precedence loop. No test calls it yet, so it is
+// exercised only through the scanner.
 func (m *BinaryMatcher) MatchAll(lines []EvidenceLine) []binaryMatch {
 	var out []binaryMatch
 	for i := range lines {
@@ -6669,6 +6671,8 @@ done
 - `PKL_001`（pickle 反序列化执行，HIGH）本轮在真实语料上命中 **0** 次——这与下一条方向性坦白**一致**（被跑过的真实 pickle 全是良性的），不是它的反例；它 HIGH 档的双向性仍未验证。
 
 一条**方向性**的坦白，必须写在任务里而不是留给读者推断：**本节没有任何证据证明 `PKL_001` 会命中一个*恶意* checkpoint。** 所有被采样、被跑过解释器的真实 pickle 都是良性的（真 checkpoint 只证明解释器能读出目标，不能证明恶意目标会被判成 HIGH）。`PKL_001` 是 HIGH 档，而 HIGH 会阻断并删包，所以它的双向性**未经验证**：已知的是它不会误伤良性样本（上面的语料跑），未知的是它对恶意样本的命中率。补这个方向的唯一办法是造一个真正会执行 `posix.system` 的恶意 pickle 夹具（Task 4/Task 9 的合成夹具即用于此），不要用「跑过真实 checkpoint」冒充两边都验过。
+
+- **`NewEngine` 拒绝 `EngineNameBinary`/`EngineNameCPG` 这两个不可选名字，这件事由 `internal/codeaudit/engine_select_test.go` 的 `TestNewEngineRejectsTheNonSelectableChannelNames` 钉住。** 该测试表驱动遍历这两个名字（子测试 `name=<name>`），逐个断言 `NewEngine` 返回非 nil 错误、不返回可用 engine、且错误信息里出现被拒的名字。钉它的理由：这两个名字是**通道**而不是**可选 Tier 1 引擎**——`EngineNameCPG` 接在某个 Tier 1 引擎之后跑，`EngineNameBinary` 叠在某个引擎之上额外跑，部署只配一个源引擎，把通道名填进 `Engine` 要的是 `NewEngine` 跑不出来的东西，所以默认分支必须报错、而不是回落成一次正则扫描。本计划没有为这个既有文件造整文件 fence——它不属于任何任务的新增内容，这条记录就是它在计划里的坐标。
 
 - [ ] **Step 8: 提交**
 
@@ -6855,12 +6859,17 @@ func TestBinaryScannerIsDeterministic(t *testing.T) {
 // different set from run to run.
 //
 // The input below is shuffled on both axes, so this test fails if the comparison
-// is deleted, if the file key is dropped, or if the line key is dropped. It does
-// not fail if the rule-id tiebreak is dropped, and that is stated rather than
-// implied: the tiebreak only orders findings that share a file and a line, which
-// in the scanner means two rules matching one evidence line, and Match returns at
-// most one rule per line. The tiebreak is kept for totality, not because this
-// test can see it.
+// is deleted, if the file key is dropped, or if the line key is dropped.
+//
+// It fails if the rule-id tiebreak is dropped as well, and that is the result of
+// a measurement rather than of the argument this comment used to make. The two
+// fixture records {a.so, 9, CMD_001} and {a.so, 9, BIN_001} tie on file and on
+// line, so the tiebreak is the only key that can order them: with the RuleID
+// comparison removed they keep their input order and the test reports
+// "after sort, finding 1 = a.so:9 CMD_001, want a.so:9 BIN_001". An earlier
+// version of this comment claimed the opposite - that this test could not see the
+// tiebreak and that it was kept only for totality - and that claim was false,
+// because the fixture contains exactly the tie the tiebreak exists to break.
 func TestSortFindingsOrdersShuffledFindings(t *testing.T) {
 	findings := []Finding{
 		{File: "b.so", Line: 3, RuleID: "BIN_001"},
@@ -6993,6 +7002,17 @@ func TestBinaryScannerCapPreservesEveryHighFinding(t *testing.T) {
 	if res.Summary.FindingsDropped == 0 {
 		t.Error("Summary.FindingsDropped = 0 although the cap fired; the drop is invisible")
 	}
+	// The counts, not just the fact of the drop: this fixture has eight findings
+	// and a budget of three, so exactly one LOW is spent and exactly seven are
+	// kept - the three inside the budget and the four HIGH findings past it. A cap
+	// that counted a kept finding as dropped, or spent two where it spent one,
+	// satisfies the assertions above and fails these.
+	if res.Summary.FindingsDropped != 1 {
+		t.Errorf("Summary.FindingsDropped = %d, want 1: four LOW findings met a budget of three", res.Summary.FindingsDropped)
+	}
+	if len(res.Findings) != 7 {
+		t.Errorf("len(Findings) = %d, want 7: three budgeted LOW findings and four HIGH ones kept past the budget", len(res.Findings))
+	}
 	// The budget is carried into the summary so the report can say what it capped
 	// at. A reader who sees findings_capped with no number has to go find the
 	// configuration that produced it, and by then it may have changed.
@@ -7052,6 +7072,15 @@ func TestBinaryScannerCapKeepsAMediumFindingBeyondTheBudget(t *testing.T) {
 		t.Errorf("the cap did not report the LOW it spent: capped=%v dropped=%d",
 			res.Summary.FindingsCapped, res.Summary.FindingsDropped)
 	}
+	// Exact counts again: this fixture has five findings and a budget of three, so
+	// one LOW is spent and four are kept - three inside the budget and the MEDIUM
+	// past it.
+	if res.Summary.FindingsDropped != 1 {
+		t.Errorf("Summary.FindingsDropped = %d, want 1: four LOW findings met a budget of three", res.Summary.FindingsDropped)
+	}
+	if len(res.Findings) != 4 {
+		t.Errorf("len(Findings) = %d, want 4: three budgeted LOW findings and the MEDIUM kept past the budget", len(res.Findings))
+	}
 	if len(res.Findings) <= cfg.MaxFindings {
 		t.Errorf("len(Findings) = %d, want more than the budget of %d - the MEDIUM finding was kept",
 			len(res.Findings), cfg.MaxFindings)
@@ -7073,6 +7102,280 @@ func TestBinaryScannerCapIsSilentWhenTheBudgetIsNotReached(t *testing.T) {
 	if res.Summary.FindingsCapped || res.Summary.FindingsDropped != 0 {
 		t.Errorf("the cap reported a drop on a package well under budget: capped=%v dropped=%d",
 			res.Summary.FindingsCapped, res.Summary.FindingsDropped)
+	}
+}
+
+// TestBinaryScannerSplitsStructuralBoundsByKind pins the one branch in
+// ScanDirectory that decides, per file, whether a bounded read was a look that
+// did not finish or a look that finished on as much as there was reason to read.
+// Task 10's ProvesCleanScan reads that split - BoundedExecutable withholds a
+// clean verdict, BoundedData does not - so a scanner that exchanged the two arms
+// would have the package deleted for a truncated .so and every other test in
+// this file would stay green, because nothing else reads either counter.
+//
+// The bound is made deliberately rather than found: MaxFullScanBytes and
+// HeadTailBytes are set to 64 and 16, so the head-and-tail window is taken on a
+// file a few hundred bytes long and streamWithSizeSwitch records the structural
+// bound. That keeps the test independent of how large a fixture happens to be.
+//
+// Each arm asserts the whole pair rather than one counter, because one counter
+// alone cannot tell a correct count from two counters that were exchanged: a
+// swapped implementation writes 1 into the other field, and only (1, 0) against
+// (0, 1) separates the two.
+func TestBinaryScannerSplitsStructuralBoundsByKind(t *testing.T) {
+	tinyWindow := func() BinaryConfig {
+		cfg := DefaultBinaryConfig()
+		cfg.MaxFullScanBytes = 64
+		cfg.HeadTailBytes = 16
+		return cfg
+	}
+
+	t.Run("an executable kind is counted BoundedExecutable", func(t *testing.T) {
+		dir := t.TempDir()
+		writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket"}}))
+
+		s, err := newTestBinaryScanner(tinyWindow())
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := s.ScanDirectory(dir)
+		if err != nil {
+			t.Fatalf("ScanDirectory: %v", err)
+		}
+		if res.Summary.Kinds[string(KindELF)] != 1 {
+			t.Fatalf("Kinds[elf] = %d, want 1: the fixture is not the executable kind this arm is about",
+				res.Summary.Kinds[string(KindELF)])
+		}
+		if res.Summary.Incomplete != 0 {
+			t.Fatalf("Incomplete = %d, want 0: a structural bound is a look that stopped short, not one that failed",
+				res.Summary.Incomplete)
+		}
+		if res.Summary.BoundedExecutable != 1 || res.Summary.BoundedData != 0 {
+			t.Errorf("BoundedExecutable = %d, BoundedData = %d, want 1 and 0: a bounded ELF is the kind that can carry an executed payload",
+				res.Summary.BoundedExecutable, res.Summary.BoundedData)
+		}
+	})
+
+	t.Run("a data kind is counted BoundedData", func(t *testing.T) {
+		dir := t.TempDir()
+		writeTestBytes(t, dir, "weights.bin", append([]byte("data\x00"), make([]byte, 4096)...))
+
+		s, err := newTestBinaryScanner(tinyWindow())
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := s.ScanDirectory(dir)
+		if err != nil {
+			t.Fatalf("ScanDirectory: %v", err)
+		}
+		if res.Summary.Kinds[string(KindRaw)] != 1 {
+			t.Fatalf("Kinds[raw] = %d, want 1: the fixture is not the data kind this arm is about",
+				res.Summary.Kinds[string(KindRaw)])
+		}
+		if res.Summary.Incomplete != 0 {
+			t.Fatalf("Incomplete = %d, want 0: a structural bound is a look that stopped short, not one that failed",
+				res.Summary.Incomplete)
+		}
+		if res.Summary.BoundedData != 1 || res.Summary.BoundedExecutable != 0 {
+			t.Errorf("BoundedData = %d, BoundedExecutable = %d, want 1 and 0: a bounded raw blob cannot run on this platform",
+				res.Summary.BoundedData, res.Summary.BoundedExecutable)
+		}
+	})
+}
+
+// TestBinaryScannerCapKeepsLowFindingsWithinTheBudget pins the half of the cap's
+// contract that protects a legitimate package: a LOW finding inside the budget is
+// kept. Without it the cap tests only ever assert that the cap *did* spend
+// something, so an implementation that dropped every LOW finding wherever it sat
+// - keeping the HIGH and MEDIUM families intact and every other assertion in this
+// file green - would pass.
+//
+// The budget has to be large enough to hold every LOW finding and small enough
+// that the cap still runs, which is the whole difficulty of writing this case: a
+// budget above the total finding count skips the cap block entirely, and a
+// mutation that spends LOW findings wherever they sit is then invisible because
+// nothing is ever spent. Five findings of budget against eight findings does hold
+// all four LOW findings, and it still enters the cap, so the four survive three
+// HIGH findings that arrive after them rather than surviving nothing at all.
+//
+// The counts are asserted exactly rather than as lower bounds: "at least one LOW
+// survived" is an assertion the broken implementation above also satisfies.
+func TestBinaryScannerCapKeepsLowFindingsWithinTheBudget(t *testing.T) {
+	dir := t.TempDir()
+	// Four LOW findings on the file that sorts first: three FIL_002 path literals
+	// and one CMD_002 shell path.
+	writeTestBytes(t, dir, "extra.bin", []byte("x\x00/etc/passwd\x00/etc/shadow\x00/etc/sudoers\x00/bin/sh\x00"))
+	// Four HIGH findings on the file that sorts second: socket/connect -> NET_002,
+	// system/popen -> CMD_001.
+	writeTestBytes(t, dir, "zevil.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket", "connect", "system", "popen"}}))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFindings = 5
+	s, err := newTestBinaryScanner(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if len(res.Findings) != 8 {
+		t.Fatalf("len(Findings) = %d, want 8: the four LOW findings are inside the budget and the four HIGH ones may not be spent", len(res.Findings))
+	}
+	byRule := map[string]int{}
+	for _, f := range res.Findings {
+		byRule[f.RuleID]++
+	}
+	// "LOW" is the bare string the table writes: rules.go declares no SeverityLow
+	// constant, so the count of LOW findings is checked by rule id.
+	if byRule["FIL_002"] != 3 || byRule["CMD_002"] != 1 {
+		t.Errorf("kept FIL_002 = %d and CMD_002 = %d, want 3 and 1: the LOW findings inside the budget were not all kept",
+			byRule["FIL_002"], byRule["CMD_002"])
+	}
+	if res.Summary.FindingsCapped || res.Summary.FindingsDropped != 0 {
+		t.Errorf("the cap reported a drop although every LOW finding fit the budget: capped=%v dropped=%d",
+			res.Summary.FindingsCapped, res.Summary.FindingsDropped)
+	}
+}
+
+// TestBinaryScannerCapDropsExactlyTheLowFindingsBeyondTheBudget pins the count,
+// not only the fact of the drop. A cap that counted a kept finding as dropped, or
+// that spent two findings where it spent one, satisfies every existing
+// "FindingsDropped != 0" assertion while making the number the report carries a
+// lie - and that number is the only record of what the cap took, since the
+// findings themselves are gone.
+//
+// One file, four LOW findings, a budget of three: the three inside the budget are
+// kept and the fourth is spent, and the summary says exactly that.
+func TestBinaryScannerCapDropsExactlyTheLowFindingsBeyondTheBudget(t *testing.T) {
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "extra.bin", []byte("x\x00/etc/passwd\x00/etc/shadow\x00/etc/sudoers\x00/bin/sh\x00"))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFindings = 3
+	s, err := newTestBinaryScanner(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if len(res.Findings) != 3 {
+		t.Errorf("len(Findings) = %d, want 3: the budget was spent on the findings inside it", len(res.Findings))
+	}
+	if !res.Summary.FindingsCapped {
+		t.Error("Summary.FindingsCapped = false although the cap spent a finding")
+	}
+	if res.Summary.FindingsDropped != 1 {
+		t.Errorf("Summary.FindingsDropped = %d, want 1: one LOW finding was beyond the budget and one was not",
+			res.Summary.FindingsDropped)
+	}
+	if len(res.Findings)+res.Summary.FindingsDropped != 4 {
+		t.Errorf("kept %d and dropped %d, want 4 accounted for: the audit of the listing does not add up",
+			len(res.Findings), res.Summary.FindingsDropped)
+	}
+}
+
+// TestBinaryScannerCapWithNothingDroppableIsNotCapped pins the one cell that
+// separates the cap's flag from its length: a listing that grew past the budget
+// while spending nothing. Four HIGH findings against a budget of three leave
+// len(Findings) = 4 > MaxFindings with FindingsCapped false, because LOW is the
+// only thing the cap may spend and there is none here.
+//
+// It is the shape that tells `capped := dropped > 0` from `capped :=
+// len(findings) > cfg.MaxFindings`. The second reads the budget being exceeded as
+// a drop and would set the flag here, and the flag then travels into the report
+// as a claim that findings were lost when every finding is in the list.
+func TestBinaryScannerCapWithNothingDroppableIsNotCapped(t *testing.T) {
+	dir := t.TempDir()
+	// socket/connect -> NET_002, system/popen -> CMD_001: four HIGH findings, none
+	// of them spendable.
+	writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket", "connect", "system", "popen"}}))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFindings = 3
+	s, err := newTestBinaryScanner(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if len(res.Findings) != 4 {
+		t.Fatalf("len(Findings) = %d, want 4: HIGH findings are kept past the budget", len(res.Findings))
+	}
+	if res.Summary.FindingsCapped {
+		t.Error("Summary.FindingsCapped = true although the cap spent nothing: the listing grew, and growing is not dropping")
+	}
+	if res.Summary.FindingsDropped != 0 {
+		t.Errorf("Summary.FindingsDropped = %d, want 0: nothing in this package was droppable", res.Summary.FindingsDropped)
+	}
+	// The budget is still reported as the one the pass ran under, even though the
+	// listing is longer than it.
+	if res.Summary.MaxFindings != 3 {
+		t.Errorf("Summary.MaxFindings = %d, want 3", res.Summary.MaxFindings)
+	}
+}
+
+// TestBinaryScannerCapKeepsAnUnknownSeverityPastTheBudget pins the fail-closed
+// half of the keep rule: what the cap may spend is "LOW and nothing else", not
+// "HIGH or MEDIUM". The distinction cannot be reached through the rule table,
+// which produces only those three severities, so the matcher is built here rather
+// than by NewBinaryMatcher and carries a severity no table writes.
+//
+// It matters because the rule table is not the only thing that produces findings
+// - a severity borrowed from a shared family or introduced by a later engine
+// would be silently spendable by a cap written as `f.Severity == SeverityHigh ||
+// f.Severity == SeverityMedium` - and a spent finding is invisible in the report
+// by construction, since the cap's whole job is to remove it.
+//
+// The unknown-severity finding sits past the budget so the keep rule has to
+// decide it: "a.bin" sorts before "z.bin", so the LOW padding takes the single
+// budgeted slot and the unknown finding is the one whose survival is under test.
+func TestBinaryScannerCapKeepsAnUnknownSeverityPastTheBudget(t *testing.T) {
+	matcher := &BinaryMatcher{
+		order: []binaryFamily{
+			{ID: "LOWPAD", Sources: []EvidenceSource{SourceStrings}, Patterns: compilePatterns(`^PADDING$`)},
+			{ID: "FUTURE_001", Sources: []EvidenceSource{SourceStrings}, Patterns: compilePatterns(`^FUTURE$`)},
+		},
+		rules: []Rule{
+			{ID: "LOWPAD", Category: "test", Severity: "LOW", Description: "a spendable finding, to take the budgeted slot"},
+			{ID: "FUTURE_001", Category: "test", Severity: "UNKNOWN-SEVERITY", Description: "a severity no rule table produces"},
+		},
+	}
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "a.bin", []byte("PADDING\x00"))
+	writeTestBytes(t, dir, "z.bin", []byte("FUTURE\x00"))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFindings = 1
+	res, err := NewBinaryScanner(matcher, cfg).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if len(res.Findings) != 2 {
+		t.Fatalf("len(Findings) = %d, want 2: the cap spent a finding whose severity it does not positively know", len(res.Findings))
+	}
+	survived := false
+	for _, f := range res.Findings {
+		if f.RuleID == "FUTURE_001" {
+			survived = true
+			if f.Severity != "UNKNOWN-SEVERITY" {
+				t.Errorf("FUTURE_001 has severity %q, want %q: the injected severity was rewritten", f.Severity, "UNKNOWN-SEVERITY")
+			}
+		}
+	}
+	if !survived {
+		t.Error("FUTURE_001 was spent: the keep rule is not fail-closed on a severity outside HIGH/MEDIUM")
+	}
+	if res.Summary.FindingsDropped != 0 {
+		t.Errorf("Summary.FindingsDropped = %d, want 0: nothing in this package was spendable", res.Summary.FindingsDropped)
 	}
 }
 
@@ -7221,6 +7524,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // BinaryScanSummary is what one binary pass knows about its own completeness.
@@ -7447,13 +7751,15 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 	//
 	// The cap drops LOW findings and only LOW. A finding that can block the
 	// import under either supported policy is kept whether or not it fits the
-	// budget, and the list grows past MaxFindings instead. Both severities have
-	// to be named, because a rule that read only the default policy would keep
-	// the wrong set: `assist` withholds on HIGH alone, but `gate` withholds on
-	// HIGH or MEDIUM (internal/codeaudit/audit.go:298-309), and DYN_001 - MEDIUM
-	// in the shared table - deletes the package the moment an operator switches
-	// to `gate`. Dropping a blocking finding would turn a package that must be
-	// withheld into one that passes, which is the one failure a cap must not be
+	// budget, and the list grows past MaxFindings instead. The keep rule below
+	// therefore names the one severity that cannot block and keeps everything
+	// else, rather than naming the severities that can - naming those would read
+	// one policy's answer into a decision both policies have to survive:
+	// `assist` withholds on HIGH alone, but `gate` withholds on HIGH or MEDIUM
+	// (internal/codeaudit/audit.go:298-309), and DYN_001 - MEDIUM in the shared
+	// table - deletes the package the moment an operator switches to `gate`.
+	// Dropping a blocking finding would turn a package that must be withheld
+	// into one that passes, which is the one failure a cap must not be
 	// able to cause, and an attacker aims at exactly it by padding a package with
 	// cheap LOW findings until the ones that block fall off the end of the list.
 	//
@@ -7474,7 +7780,12 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 			// the set that may be dropped has to be the one that cannot block,
 			// so anything the code does not positively know to be LOW is kept.
 			// rules.go declares no SeverityLow, so LOW is a bare string here and
-			// in the table that writes it.
+			// in the table that writes it. The rule table cannot produce the input
+			// that separates the two spellings - it writes only HIGH, MEDIUM and
+			// LOW - so the property is pinned by
+			// TestBinaryScannerCapKeepsAnUnknownSeverityPastTheBudget, which
+			// builds a matcher carrying a severity no table produces and requires
+			// it to survive the cap.
 			if len(kept) < s.cfg.MaxFindings || f.Severity != "LOW" {
 				kept = append(kept, f)
 				continue
@@ -7563,17 +7874,7 @@ func renderEvidenceWindow(lines []EvidenceLine, start, end int) string {
 	}
 	return joinTrimmed(out)
 }
-```
 
-> **陷阱：两个通道的封顶不是同一个安全模型，别把它们"统一"起来。** 文本通道的封顶是**按位置丢**的——`scanner.go:97-100` 在走的过程中把 `findings` 截到 `MaxFindings`、置 `truncated = true`、`return filepath.SkipAll`（第二处同形的在 `scanner.go:298-301`，semgrep 适配器在 `semgrep_engine.go:239-243` 置同一个 `truncated`）。它**安全**，是因为任何一次丢弃都会置 `truncated`，而 `truncated` 被 `rules.go:141-150` 的 `ProvesCleanScan` 折进去（读 `!r.Truncated` 的那一行是 `rules.go:146`；`rules.go:126-134` 是它的 doc comment，别把注释区当读取点）、并在 `scanner.go:231`、`verifier.go:188`/`verifier.go:235`、`audit.go:354`/`audit.go:314-316` 处被 AND 起来——所以文本通道丢一个 finding 的后果是"这个包被扣下"，不是"这个包通过"。
->
-> **二进制通道故意不是这样**：下面的 cap 只裁剪**报告里的清单**，`FindingsCapped`/`FindingsDropped` 按 Task 10 的设计**不进** `ProvesCleanScan`，也就是说二进制通道丢一个 finding **不会**让包被扣下。它的安全因此**完全落在**这条 keep 规则上：cap 只花 **LOW** 这一档，保住 **HIGH 与 MEDIUM**，并对未知严重级 fail-closed（所以写的是 `f.Severity != "LOW"` 而不是 `f.Severity == "HIGH" || f.Severity == "MEDIUM"`）。写 `!= "LOW"` 的理由是：**能被丢的那一档必须恰好是"不能阻断"的那一档**，代码不确知是 LOW 的东西都要留下——`rules.go` 里根本没有 `SeverityLow` 常量，`"LOW"` 是个裸字符串，`gate` 下 MEDIUM 一样阻断（`audit.go:298-309`），而 `DYN_001` 正是 MEDIUM。
->
-> **为什么"统一"会删掉合法包**：二进制证据产生的 finding 数量远多于文本通道——一个 `.so` 的动态符号表一次就能出几十条。若照文本通道的样子让"触顶"也去**扣包**（把 `FindingsCapped` 折进 `ProvesCleanScan`、或让二进制臂也按位置丢并在丢时置 `truncated`），那么任何产出超过 `MaxFindings` 条 finding 的**合法**包（一个正常的加速库就能做到）都会被 `cleanDirContents` 删掉。所以这两个通道**必须**保持不同的封顶语义；改其中一边时要同时看懂另一边——把 `FindingsCapped` 折进完整性判定是删合法包，把 keep 规则放宽成"只保 HIGH"（assist 视角）则是放走 `gate` 下本应阻断的 MEDIUM。`TestBinaryScannerCapKeepsAMediumFindingBeyondTheBudget` 钉的就是后一条。
-
-`joinTrimmed` 是个小工具，追加到 `binary_scanner.go`：
-
-```go
 // joinTrimmed joins rendered evidence lines, keeping the same trimming the
 // source arms' contextWindow applies.
 func joinTrimmed(lines []string) string {
@@ -7588,7 +7889,13 @@ func joinTrimmed(lines []string) string {
 }
 ```
 
-import 块补 `"strings"`。
+> **陷阱：两个通道的封顶不是同一个安全模型，别把它们"统一"起来。** 文本通道的封顶是**按位置丢**的——`scanner.go:97-100` 在走的过程中把 `findings` 截到 `MaxFindings`、置 `truncated = true`、`return filepath.SkipAll`（第二处同形的在 `scanner.go:298-301`，semgrep 适配器在 `semgrep_engine.go:239-243` 置同一个 `truncated`）。它**安全**，是因为任何一次丢弃都会置 `truncated`，而 `truncated` 被 `rules.go:141-150` 的 `ProvesCleanScan` 折进去（读 `!r.Truncated` 的那一行是 `rules.go:146`；`rules.go:126-134` 是它的 doc comment，别把注释区当读取点）、并在 `scanner.go:231`、`verifier.go:188`/`verifier.go:235`、`audit.go:354`/`audit.go:314-316` 处被 AND 起来——所以文本通道丢一个 finding 的后果是"这个包被扣下"，不是"这个包通过"。
+>
+> **二进制通道故意不是这样**：下面的 cap 只裁剪**报告里的清单**，`FindingsCapped`/`FindingsDropped` 按 Task 10 的设计**不进** `ProvesCleanScan`，也就是说二进制通道丢一个 finding **不会**让包被扣下。它的安全因此**完全落在**这条 keep 规则上：cap 只花 **LOW** 这一档，保住 **HIGH 与 MEDIUM**，并对未知严重级 fail-closed（所以写的是 `f.Severity != "LOW"` 而不是 `f.Severity == "HIGH" || f.Severity == "MEDIUM"`）。写 `!= "LOW"` 的理由是：**能被丢的那一档必须恰好是"不能阻断"的那一档**，代码不确知是 LOW 的东西都要留下——`rules.go` 里根本没有 `SeverityLow` 常量，`"LOW"` 是个裸字符串，`gate` 下 MEDIUM 一样阻断（`audit.go:298-309`），而 `DYN_001` 正是 MEDIUM。
+>
+> **为什么"统一"会删掉合法包**：二进制证据产生的 finding 数量远多于文本通道——一个 `.so` 的动态符号表一次就能出几十条。若照文本通道的样子让"触顶"也去**扣包**（把 `FindingsCapped` 折进 `ProvesCleanScan`、或让二进制臂也按位置丢并在丢时置 `truncated`），那么任何产出超过 `MaxFindings` 条 finding 的**合法**包（一个正常的加速库就能做到）都会被 `cleanDirContents` 删掉。所以这两个通道**必须**保持不同的封顶语义；改其中一边时要同时看懂另一边——把 `FindingsCapped` 折进完整性判定是删合法包，把 keep 规则放宽成"只保 HIGH"（assist 视角）则是放走 `gate` 下本应阻断的 MEDIUM。`TestBinaryScannerCapKeepsAMediumFindingBeyondTheBudget` 钉的就是后一条。
+
+`joinTrimmed`（以及它用到的 `"strings"` import）已包含在上面那份 `binary_scanner.go` 的完整文件里；本任务不再单列这一段追加。
 
 - [ ] **Step 4: 补 `Finding` 的二进制字段与 `EngineNameBinary` 常量**
 
