@@ -428,6 +428,64 @@ func TestStringScannerCapsDistinctLinesAndRecordsIt(t *testing.T) {
 	}
 }
 
+// TestEvidenceSourcesDoNotShareADedupKey pins that the dedup key is namespaced
+// by source. All writers share one map, so a bare-text key lets one source
+// silence another: a model package whose string table contains the printable
+// literal "pickle:os.system" would occupy the key the pickle pass needs for a
+// genuine GLOBAL os.system target, and the rule that exists to catch "this file
+// unpickles a call to os.system" would never see it. That is an evasion an
+// attacker who controls the package can plant on purpose, so the string line and
+// the pickle line must both survive.
+func TestEvidenceSourcesDoNotShareADedupKey(t *testing.T) {
+	ev := newTestEvidence("x.bin", KindPickle)
+	s := newStringScanner(ev, DefaultBinaryConfig())
+	if _, err := s.Write([]byte("pickle:os.system")); err != nil {
+		t.Fatal(err)
+	}
+	s.Flush()
+
+	// The pickle scanner (Task 4) writes its targets through the same method.
+	ev.add(SourcePickle, 0, "os.system")
+
+	var sawString, sawPickle bool
+	for _, l := range ev.Lines {
+		if l.Source == SourceStrings && l.Text == "pickle:os.system" {
+			sawString = true
+		}
+		if l.Source == SourcePickle && l.Text == "os.system" {
+			sawPickle = true
+		}
+	}
+	if !sawString {
+		t.Error("the string line was removed; one source overwrote another's evidence")
+	}
+	if !sawPickle {
+		t.Error("the pickle target was dropped; a planted string literal silenced the pickle pass")
+	}
+}
+
+// TestStringScannerNormalizesAZeroConfig pins that the config is normalized
+// where it is consumed. A zero BinaryConfig gives MaxStringLen == 0, which the
+// scanner would read as "no byte may enter a run" while MinStringLen == 0 still
+// let flush emit a phantom empty line - every real string lost, and a listing
+// bound recorded instead of a structural one, which is a silent failure of
+// exactly the kind this completeness scheme exists to prevent.
+func TestStringScannerNormalizesAZeroConfig(t *testing.T) {
+	ev := newTestEvidence("x.bin", KindRaw)
+	s := newStringScanner(ev, BinaryConfig{})
+	if _, err := s.Write([]byte("hello world")); err != nil {
+		t.Fatal(err)
+	}
+	s.Flush()
+
+	if len(ev.Lines) != 1 || ev.Lines[0].Text != "hello world" {
+		t.Fatalf("lines = %+v, want one line \"hello world\"", ev.Lines)
+	}
+	if ev.Bound.Listing {
+		t.Error("Bound.Listing = true: a zero config was recorded as a listing bound instead of being normalized")
+	}
+}
+
 // TestStreamEvidenceReadsTheWholeFile pins that the pass is not silently
 // bounded: a literal past the first read chunk is found, and an unbounded pass
 // reports no bound at all.
@@ -617,6 +675,10 @@ type EvidenceSet struct {
 	// seen is the deduplication set. It is unexported because it is an
 	// implementation detail of the extractors, not part of what a reader gets.
 	seen map[string]bool
+	// maxLines is the evidence line cap, copied here from the config by
+	// newStringScanner so that add - which every extractor calls - can enforce it
+	// without every caller carrying the config. Zero means unlimited.
+	maxLines int
 }
 
 // markStructural records that the extraction of the file's structure was cut
@@ -632,6 +694,47 @@ func (s *EvidenceSet) markStructural(reason string) {
 	}
 	s.Bound.Structural = true
 	s.Bound.Reason = reason
+}
+
+// markListing records that evidence lines were dropped by the listing cap, or
+// that one line was cut short at MaxStringLen. Like markStructural the first
+// reason wins: a structural limit is what withholds a clean verdict, and a
+// listing note that only affects what is displayed must not relabel it.
+func (s *EvidenceSet) markListing(reason string) {
+	s.Bound.Listing = true
+	if s.Bound.Reason == "" {
+		s.Bound.Reason = reason
+	}
+}
+
+// add records one evidence line, deduplicating on the pair (source, text).
+//
+// Every writer shares this map, so the key is namespaced by source. An
+// unnamespaced key lets one source silence another: a file containing the
+// printable literal "pickle:os.system" would otherwise occupy the key the
+// pickle pass uses for a genuine GLOBAL target, and the rule that exists to
+// catch "this file unpickles a call to os.system" would never see it. The NUL
+// separator cannot occur in string evidence, because isPrintableByte rejects
+// it, so two sources cannot build the same key.
+//
+// A line dropped by the cap is deliberately not recorded in the map: the map's
+// length is the live line count the cap is measured against, so recording it
+// would grow the structure without bound and defeat the ceiling the cap exists
+// for.
+func (s *EvidenceSet) add(src EvidenceSource, off int64, text string) {
+	if s.seen == nil {
+		s.seen = map[string]bool{}
+	}
+	key := string(src) + "\x00" + text
+	if s.seen[key] {
+		return
+	}
+	if s.maxLines > 0 && len(s.seen) >= s.maxLines {
+		s.markListing("evidence line cap reached")
+		return
+	}
+	s.seen[key] = true
+	s.Lines = append(s.Lines, EvidenceLine{Source: src, Offset: off, Text: text})
 }
 
 // DefaultBinaryMinStringLen is the shortest printable run kept as evidence. It
@@ -653,10 +756,10 @@ const evidenceReadChunk = 64 * 1024
 // printable bytes at least MinStringLen long, deduplicated, each tagged with the
 // offset of its first occurrence.
 type stringScanner struct {
-	cfg  BinaryConfig
-	set  *EvidenceSet
-	at   int64
-	run  []byte
+	cfg   BinaryConfig
+	set   *EvidenceSet
+	at    int64
+	run   []byte
 	runAt int64
 	// truncated marks that a run hit MaxStringLen, which is a listing bound: the
 	// tail of that run is not in the listing.
@@ -664,10 +767,14 @@ type stringScanner struct {
 }
 
 func newStringScanner(set *EvidenceSet, cfg BinaryConfig) *stringScanner {
-	if set.seen == nil {
-		set.seen = map[string]bool{}
-	}
-	return &stringScanner{cfg: cfg, set: set}
+	// The config is normalized here rather than trusted from the caller: this is
+	// the function that consumes it, and a zero value would be read as "no byte
+	// may enter a run" while still emitting a line, so a mis-set config would
+	// silently lose every string and record a listing bound instead of failing
+	// loudly.
+	cfg = normalizeBinaryConfig(cfg)
+	set.maxLines = cfg.MaxEvidenceLines
+	return &stringScanner{set: set, cfg: cfg}
 }
 
 // Write implements io.Writer. The run is carried across calls, so a literal
@@ -696,9 +803,8 @@ func (s *stringScanner) Write(p []byte) (int, error) {
 // up on files ending in a literal.
 func (s *stringScanner) Flush() {
 	s.flush()
-	if s.truncated && !s.set.Bound.Listing {
-		s.set.Bound.Listing = true
-		s.set.Bound.Reason = "string truncated at MaxStringLen"
+	if s.truncated {
+		s.set.markListing("string truncated at MaxStringLen")
 	}
 }
 
@@ -712,16 +818,7 @@ func (s *stringScanner) flush() {
 // emit records one distinct string. The first occurrence wins, so a literal
 // repeated through a file is one line tagged with where it starts.
 func (s *stringScanner) emit(text string, at int64) {
-	if s.set.seen[text] {
-		return
-	}
-	if s.cfg.MaxEvidenceLines > 0 && len(s.set.seen) >= s.cfg.MaxEvidenceLines {
-		s.set.Bound.Listing = true
-		s.set.Bound.Reason = "evidence line cap reached"
-		return
-	}
-	s.set.seen[text] = true
-	s.set.Lines = append(s.set.Lines, EvidenceLine{Source: SourceStrings, Offset: at, Text: text})
+	s.set.add(SourceStrings, at, text)
 }
 
 // isPrintableByte is the printable-ASCII predicate strings(1) uses, plus tab.
@@ -788,13 +885,18 @@ func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int6
 
 // Finalize sorts and indexes a finished listing.
 //
-// The order has to be total and independent of how the evidence was gathered,
-// because Finding.Line is an index into this list: an order that varied between
-// runs would make the same finding report a different line each time, and two
+// The order has to be independent of how the evidence was gathered, because
+// Finding.Line is an index into this list: an order that varied between runs
+// would make the same finding report a different line each time, and two
 // reports of the same file would stop being diffable. The sort key is
-// (Offset, Source, Text) - byte order first, so the listing reads front to back,
-// with the structural evidence that carries no offset (all zero) ahead of it,
-// which puts "what the file is" before "what it says".
+// (Offset, Source, Text) - byte order first, so the listing reads front to back.
+// Structural evidence leads because it carries offset 0 while real evidence
+// usually carries a positive offset, which puts "what the file is" before "what
+// it says"; a string that genuinely starts at offset 0 interleaves with it, and
+// that is fine. The comparator does not special-case the source, so exact
+// (Offset, Source, Text) ties are broken by SliceStable's insertion order - the
+// key is not total, but tied lines are byte-identical and interchangeable, so
+// which one lands first cannot change a finding.
 func (s *EvidenceSet) Finalize() {
 	for i := range s.Lines {
 		s.Lines[i].Index = 0
@@ -815,7 +917,9 @@ func (s *EvidenceSet) Finalize() {
 
 // Render draws the listing as the numbered lines the Tier 2 prompt shows. The
 // index it prints is EvidenceLine.Index, so a line the model names is a line the
-// report can be searched for.
+// report can be searched for. It expects a set that has been through Finalize:
+// Index is zero until then, so calling it earlier prints 0 for every line and
+// disables the maxLines cutoff.
 func (s *EvidenceSet) Render(maxLines int) string {
 	var b strings.Builder
 	for _, l := range s.Lines {
@@ -869,7 +973,10 @@ type BinaryConfig struct {
 	MaxSectionBytes int64
 	// MaxArchiveMembers bounds how many container members are examined.
 	MaxArchiveMembers int
-	// MaxArchiveMemberBytes bounds total decompressed bytes per container.
+	// MaxArchiveMemberBytes bounds the bytes of the ELF/pickle members read whole
+	// across one container: the container's own total decompressed size is not
+	// bounded, because a member that is neither an ELF nor a pickle is classified
+	// and skipped without being read into memory.
 	MaxArchiveMemberBytes int64
 	// MaxFindings caps findings across the whole binary pass.
 	//
@@ -919,7 +1026,7 @@ func DefaultBinaryConfig() BinaryConfig {
 		MaxArchiveMemberBytes: 256 * 1024 * 1024,
 		// Not DefaultConfig().MaxFindings: the two channels are capped
 		// independently and the merge re-truncates neither. See the field comment.
-		MaxFindings:         50,
+		MaxFindings:          50,
 		HighEntropyThreshold: 7.5,
 		SkipDirs:             DefaultConfig().SkipDirs,
 	}
@@ -988,6 +1095,11 @@ func isExecutableKind(k BinaryKind) bool {
 
 // evidenceError builds the set a failed extraction returns, so that the scanner
 // has one shape to handle rather than two.
+//
+// Bound is left zeroed, which is only the right default if consumers consult Err
+// before Bound: Structural is false here, so a reader that checked Bound first
+// would see a failed extraction as a clean scan. Callers must treat Err as the
+// first thing they look at.
 func evidenceError(path string, kind BinaryKind, err error) *EvidenceSet {
 	return &EvidenceSet{File: path, Kind: kind, seen: map[string]bool{}, Err: err}
 }
