@@ -9318,7 +9318,7 @@ type startupBinaryAuditConfigFile struct {
 
 ```go
 	if err := validateBinaryAudit(cfg); err != nil {
-		return StartupConfig{}, err
+		return err
 	}
 ```
 
@@ -9444,6 +9444,8 @@ gofmt -l internal/ ; go vet ./...
 git add internal/config/ internal/app/ internal/controller/ configs/
 git commit -m "feat(config): expose the binary audit channel through security.binaryAudit"
 ```
+
+> **门禁判据：`gofmt -l internal/` 要先与基线比，别把既有文件当成自己的错。** HEAD 上这条命令本来就会列出 **11** 个未格式化文件，而且**其中两个正是本步要编辑的**：`internal/app/taa/app.go` 与 `internal/app/taa/app_test.go`（`gofmt -d` 显示是既有的 LLM 字面量对齐，不是本计划引入的）。其余九个是 `internal/codeaudit/audit.go`、`internal/codeaudit/llm.go`、`internal/codeaudit/result_checker.go`、`internal/controller/attestation_format.go`、`internal/controller/report_model_import_test.go`、`internal/controller/report_res_test.go`、`internal/platform/client_test.go`、`internal/resource/archive.go`、`internal/resource/envelope.go`。所以判据是**列表的增量**：只有出现本次新写/新改、且**在基线列表之外**的文件才是你的问题；出现在基线里的那些一律不是。（Task 11 那条只覆盖 `internal/codeaudit/` 的同类陷阱是它的子集。）**严禁 `gofmt -w`**——它会把既有文件一并重排，制造与本次改动无关的 diff。
 
 ---
 
@@ -9648,20 +9650,20 @@ go test ./... 2>&1 | grep -vE "^ok|no test files" | head -30
 
 - [ ] **Step 4: 更新 README**
 
-在 README 的代码审计章节追加一节（放在 Tier 1 引擎说明之后）：
+在 README 的代码审计章节追加一节。**插入点（务必不要切断那个编号列表）**：`## Core Security Architecture`（`README.md:199`）下的 `### 3. Two-Tier Defense-In-Depth Code Security Audit`（`README.md:235`）带着一个 `1.`/`2.` 编号列表，第 2 项以 `... strict fail-closed security gates.`（`README.md:248`）结尾；列表之后是一条以 `> **Roadmap — not part of the runtime audit path yet**` 开头的引用块（`README.md:250`）。**把新节插在这条引用块之后、其后的 `---` 分隔线之前**（即 `README.md:250` 与 `:252` 之间）——插在引用块之前会把那条注解与它所注解的列表分开。新节用 `### 4.` 编号，与 `### 1.`/`### 2.`/`### 3.` 同级；标题就是下面片段的第一行。片段正文是**英文**（README 全文为英文），计划里的中文解说留在 fence 之外：
 
 ```markdown
-### 二进制审计通道
+### 4. Binary Audit Channel
 
-源码审计之外，导入审计还会遍历模型包中的**二进制文件**，与所选 Tier 1 引擎无关——正则臂与 semgrep 臂的部署都生效。
+Alongside source auditing, the import audit also walks the **binary files** in a model package, independent of the selected Tier 1 engine - it applies to both the regex-arm and the Semgrep-arm deployments.
 
-- **识别**：按文件内容判定（ELF / zip 容器 / gzip / pickle / numpy / 其余二进制），扩展名仅作补充。改后缀不能绕过；`.py` 结尾的二进制同样会被认领。
-- **证据**：ELF 动态导入符号与 `DT_NEEDED`、节区构成与香农熵、可打印字符串、容器成员（zip/gzip 内部最多递归一层）、pickle 的 `GLOBAL`/`STACK_GLOBAL`/`INST` 目标（带 memo 表的 opcode 解释器）、超过 64 MiB 的文件读首尾各 1 MiB（捕捉 zip 末尾追加的载荷，并把单文件成本钉在约 190 ms）。
-- **判定**：证据行按规则表匹配，产出 `Finding` 并标记 `binary_kind` / `evidence_source` / `binary_offset`。**结构性证据**（ELF 动态符号、`DT_NEEDED`、熵）走共享规则 `NET_002`/`CMD_001`/`DYN_001`，其严重级从源码规则表读取，不另立一套；二进制专有规则 `BIN_001`（可执行节区熵近随机，HIGH）、`BIN_002`（`memfd_create`/`fexecve`，HIGH）、`PKL_001`（pickle 反序列化执行，HIGH）。**字符串证据**不共享源码臂的 id——`CMD_002`/`PER_002`/`FIL_002`/`ENV_002` 是四个独立的 LOW 族，理由见下：一条 finding 只有被文件无法偶然产生的结构背书时才可以是 HIGH，而一段字符串常量不是；源码臂的同名族 `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` 在共享表里是 HIGH/MEDIUM，借用它们会把「某个字面量里出现了某个词」抬到阻断级别。`OBF_001` 在二进制臂**没有**族：它的旧模式 `^[A-Za-z0-9+/]{120,}={0,2}$` 命中了 28 个合法共享库中的 23 个（`.pyc` 常量池和二进制数据里遍地是长 base64 字母表串），收紧字母表或抬高下限都治不了，只保留源码臂的调用点版本。
-- **复核**：二进制 finding 与源码 finding 走同一条 LLM 路径；文件级分析使用二进制专用 prompt（现有 prompt 面向 Python 源码，不适用）。**诚实性**：文件级分支只在调用方实现 `FileAnalyzer` 时可达，而生产的 `LLMClient`（`teellm.Client`）没有 `AnalyzeFile`，所以它今天只被测试 mock 驱动，不是线上行为——这与源码文件路径的既有处境完全相同，本计划不改变它（见 Task 13 的两条注）。
-- **完整性**：`scan_metadata.binary` 记录 `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `errored` / `findings_capped` / `findings_dropped` / `max_findings`。可执行格式的结构抽取被截断、文件无法读取、整趟无法运行，任一项都会使 `ProvesCleanScan()` 为假——fail-closed 下即阻断导入；纯数据文件（张量、npy）的证据截断只记录、不阻断。**finding 上限不属于完整性**：触顶只写 `findings_capped`/`findings_dropped`，不写 `scan_metadata.truncated`、不阻断；cap 只花 LOW 这一档，能阻断的 HIGH（`assist` 与 `gate`）与 MEDIUM（`gate`）无论预算如何都保留。
-- **配置**：`security.binaryAudit.enabled`（默认 `true`）、`maxArchiveMembers`、`highEntropyThreshold`、`maxFindings`（默认 50，独立于源码臂的 200；是清单预算，调小只会丢 LOW，不会丢任何能阻断的 finding——`assist` 与 `gate` 下的 HIGH、`gate` 下的 MEDIUM——也不会阻断）、`maxFullScanBytes`（默认 64 MiB）、`maxStreamBytes`（默认 3 GiB；与 `maxFullScanBytes` 成对，抬高后者才会让前者生效）。关闭它即回滚，审计行为与引入该通道之前逐字节一致。
-- **边界**：PE/Mach-O 不做结构解析（本平台不加载），xz/zstd/bzip2/7z 容器与 tar 不打开，纯文本非源码文件不审，嵌套归档只递归一层，pickle 解释器只跑在被声明为 pickle 的流上（因此不认领贴在非 pickle 文件尾部、头部无 pickle 魔数的 pickle）。详见 `.claude/plans/2026-10-10-binary-code-audit.md` §2。
+- **Identification**: by file content (ELF / zip container / gzip / pickle / numpy / other binary), with the extension only as a supplement. Renaming the suffix does not bypass it; a binary file named `.py` is claimed as well.
+- **Evidence**: ELF dynamic-import symbols and `DT_NEEDED`, section layout and Shannon entropy, printable strings, container members (at most one level of recursion inside zip/gzip), pickle `GLOBAL`/`STACK_GLOBAL`/`INST` targets (read with a memo-table opcode interpreter), and head-plus-tail reads of 1 MiB each for files over 64 MiB (to catch a payload appended past the zip trailer, and to pin the per-file cost at roughly 190 ms).
+- **Verdict**: evidence lines are matched against the rule table and produce a `Finding` tagged with `binary_kind` / `evidence_source` / `binary_offset`. **Structural evidence** (ELF dynamic symbols, `DT_NEEDED`, entropy) goes through the shared rules `NET_002`/`CMD_001`/`DYN_001`, whose severity is read from the source rule table rather than restated; the binary-only rules are `BIN_001` (near-random executable-section entropy, HIGH), `BIN_002` (`memfd_create`/`fexecve`, HIGH) and `PKL_001` (pickle deserialization execution, HIGH). **String evidence** does not share the source arm's ids - `CMD_002`/`PER_002`/`FIL_002`/`ENV_002` are four independent LOW families, for the reason below: a finding can be HIGH only when it is backed by a structure a file cannot produce by accident, and a string constant is not; the source arm's same-named families `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` are HIGH/MEDIUM in the shared table, and borrowing them would lift "a certain word appeared in some literal" to blocking severity. `OBF_001` has **no** family in the binary arm: its old pattern `^[A-Za-z0-9+/]{120,}={0,2}$` fired on 23 of 28 legitimate shared libraries (long base64-alphabet strings are everywhere in `.pyc` constant pools and binary data), and neither narrowing the alphabet nor raising the floor fixes it, so only the source arm's call-site version is kept.
+- **Review**: binary findings go down the same LLM path as source findings; file-level analysis uses a binary-specific prompt (the existing prompt targets Python source and does not apply). **Honesty**: the file-level branch is reachable only when the caller implements `FileAnalyzer`, and the production `LLMClient` (`teellm.Client`) has no `AnalyzeFile`, so today it is driven only by test mocks and is not live behavior - exactly the existing situation of the source file path, which this plan does not change (see the two notes in Task 13).
+- **Completeness**: `scan_metadata.binary` records `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `errored` / `findings_capped` / `findings_dropped` / `max_findings`. A truncated structural extraction of an executable format, an unreadable file, or a whole-pass failure each makes `ProvesCleanScan()` false - under fail-closed that blocks the import; a truncated evidence read of a pure data file (tensor, npy) is recorded but does not block. **The finding cap is not part of completeness**: reaching it writes only `findings_capped`/`findings_dropped`, not `scan_metadata.truncated`, and does not block; the cap spends only the LOW tier, and the findings that can block - HIGH under `assist` and `gate`, MEDIUM under `gate` - are kept regardless of the budget.
+- **Configuration**: `security.binaryAudit.enabled` (default `true`), `maxArchiveMembers`, `highEntropyThreshold`, `maxFindings` (default 50, independent of the source arm's 200; it is a listing budget, so lowering it drops only LOW findings and never a finding that can block - HIGH under `assist` and `gate`, MEDIUM under `gate` - and never blocks the import), `maxFullScanBytes` (default 64 MiB) and `maxStreamBytes` (default 3 GiB; paired with `maxFullScanBytes`, the former takes effect only once the latter is raised). Turning it off rolls back: the audit behaves byte-for-byte as before the channel was introduced.
+- **Boundaries**: PE/Mach-O are not structurally parsed (not loaded on this platform), xz/zstd/bzip2/7z containers and tar are not opened, plain-text non-source files are not audited, nested archives recurse only one level, and the pickle interpreter runs only on streams declared as pickle (so it does not claim a pickle appended past the end of a non-pickle file whose head carries no pickle magic). See the binary audit channel design notes for details.
 ```
 
 - [ ] **Step 5: 提交**
@@ -9671,6 +9673,8 @@ gofmt -l internal/ ; go vet ./...
 git add internal/codeaudit/binary_integration_test.go README.md
 git commit -m "test(audit): cover the binary channel end to end and document it"
 ```
+
+> **门禁判据：`gofmt -l internal/` 输出要先与基线比，别把既有文件当成自己的错。** 判据同 Task 14 Step 7：HEAD 上这条命令会列出既有的未格式化文件（至少 `internal/app/taa/app.go`、`internal/app/taa/app_test.go`、`internal/codeaudit/audit.go`、`internal/codeaudit/llm.go`、`internal/codeaudit/result_checker.go`），它们不是本步的问题；只有**基线之外的增量**（本步新写/新改的文件）才算你的问题，**严禁 `gofmt -w`**。
 
 本计划文件已在开工前入库（`.claude/` 在 `.gitignore` 中，需 `git add -f`），此处无需再提交。
 
@@ -9683,8 +9687,8 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 - [ ] `CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa` 成功（initrd 要求静态链接）。
 - [ ] `go test ./...` 无 FAIL。**尤其**：`internal/codeaudit` 的既有 fail-closed、gate semantics、report fields、corpus parity 用例全部保持通过——它们是这次改动的回归网。
 - [ ] `git grep -n "Co-Authored-By\|anthropic\|Claude" -- '*.go'` 无命中（提交信息同样不得出现）。
-- [ ] `go test ./internal/codeaudit/ -run 'TestGenerateAuditReport' -v`：`regex` 子用例必须 **PASS**；`semgrep` 子用例在装有 CLI 的机器上必须 PASS，在没装的机器上会 **SKIP**——跳过不等于通过，它是「这一条没有被验证」。所以在没装 semgrep 的机器上，必须在报告里显式记下它被跳过了，或者换一台装了的机器重跑。（`TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine` 的两个子用例同理，它内部对 semgrep 也是这个 skip 形状。）
-- [ ] 用一个真实模型包（含 `.pt` 与任意 `.so`）在容器里跑一次导入，确认 `auditReportJSON` 里出现 `binary_kind`/`evidence_source` 字段，且 `scan_metadata.binary.files_count > 0`；**同一个包**上确认 `target.files_scanned >= scan_metadata.binary.files_count` 且 `target.files_scanned > 0`。两条必须合看：单独拿 `0 >= 0` 也能满足那个不等式，所以「前者不小于后者」只有在 `files_count > 0` 成立时才算被验证。
+- [ ] `go test ./internal/codeaudit/ -run 'TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine' -v`：`regex` 子用例必须 **PASS**；`semgrep` 子用例在装有 CLI 的机器上必须 PASS，在没装的机器上会 **SKIP**——跳过不等于通过，它是「这一条没有被验证」。所以在没装 semgrep 的机器上，必须在报告里显式记下它被跳过了，或者换一台装了的机器重跑。（被测函数就是 `TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine`，它的两个子用例名分别是 `regex` 与 `semgrep`；仓库里**没有**一个叫 `TestGenerateAuditReport` 的函数，前面写成前缀匹配只是碰巧选中了它。）
+- [ ] 用一个真实模型包（含 `.pt` 与任意 `.so`）在容器里跑一次导入，确认 `auditReportJSON` 里出现 `binary_kind`/`evidence_source` 字段，且 `scan_metadata.binary.files_count > 0`；**同一个包**上确认 `target.files_scanned >= scan_metadata.binary.files_count` 且 `target.files_scanned > 0`。两条必须合看：单独拿 `0 >= 0` 也能满足那个不等式，所以「前者不小于后者」只有在 `files_count > 0` 成立时才算被验证。 **这一条依赖容器/部署环境**（在 CSV2 guest 里跑一次真实导入），**不是本机 `go test` 能满足的**：须单独安排一次环境验证，并在报告里注明是跑过还是未跑——未跑时这一项记为「未验证」，不得算作通过。
 - [ ] 二进制臂触顶时 `scan_metadata.binary.findings_capped` 为 `true` 且 `findings_dropped > 0`，而 **`scan_metadata.truncated` 仍为 `false`**。这一条是本计划最容易写反的地方，所以两个方向都要验：**必须在会触顶的输入上验证**——造一个二进制 finding 数超过 `BinaryConfig.MaxFindings`（默认 50）的包，确认 `scan_metadata.binary.findings_capped == true`；再抓同一个包，确认 `scan_metadata.truncated == false`。反过来的形状（触顶即把 `truncated` 置真）会让二进制通道因为"找到太多"而删包，而它丢掉的只会是 LOW——LOW 在 `assist` 与 `gate` 两种策略下都不阻断，能阻断的 HIGH 和 MEDIUM 无论预算如何都保留（`ScanDirectory` 的 cap 只花 LOW 这一档；`gate` 下 `passed` 是 `High == 0 && Medium == 0`，所以 MEDIUM 也必须留，理由见该处注释）——对一个普通包跑这一条永远是「没错顶」，等于没验。
 - [ ] 把 `security.binaryAudit.enabled` 设为 `false` 再跑一次，确认 `scan_metadata.binary` 缺失且结论与改动前一致（回滚可用）。
 - [ ] （**回归护栏，不是本功能的验收项**）`UnsupportedExts` 仍恒为 0——本计划**不**动它，任何让它非零的改动都会使每个真实包被判定为非完整扫描。它列在这里，是因为它属于同一次改动所以要一起回归，不是因为这个功能会让它变化。
