@@ -159,10 +159,11 @@ var binaryFamilies = []binaryFamily{
 		// did not achieve what it was for.
 		//
 		// Measured with the wide symbol readers (`nm -D`, or `readelf -sW
-		// --dyn-syms`; plain `readelf --dyn-syms` elides the whole
-		// `name@GLIBC_x.y` combination into `[...]`, not merely long names, which
-		// is why even short names like `socket` and `connect` disappear) against
-		// the 28 top-level `.so*` entries of this machine's ollama bundle - 22
+		// --dyn-syms`; plain `readelf --dyn-syms` replaces the symbol name with
+		// `[...]` but keeps the `@GLIBC_x.y` version suffix and index, and the
+		// elision tracks the rendered entry width rather than the name alone, so
+		// even short names like `socket` and `connect` disappear) against the 28
+		// top-level `.so*` entries of this machine's ollama bundle - 22
 		// regular files plus 6 symlinks. The recursive count of regular `.so*`
 		// files is 52, a different set: do not read 52 against 28 as a
 		// regression. The generic and server-side symbols - `bind`, `send`,
