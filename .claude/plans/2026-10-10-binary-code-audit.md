@@ -1526,11 +1526,24 @@ type elfSpec struct {
 	// verdict rather than a section summary.
 	text     []byte
 	textExec bool
+	// soname, when non-empty, adds a DT_SONAME entry to .dynamic. It must be
+	// expressible because collectELF calls DynString(elf.DT_SONAME).
+	soname string
+	// interp, when non-empty, adds a PT_INTERP program header whose file range
+	// holds the NUL-terminated interpreter path. It must be expressible because
+	// collectELF walks ef.Progs looking for PT_INTERP.
+	interp string
+	// stripped, when true, omits the SHT_DYNSYM section header entirely. That is
+	// what makes debug/elf return elf.ErrNoSymbols: SectionByType(SHT_DYNSYM)
+	// returns nil only when no section carries that type. A .dynsym that exists
+	// but holds only the 24-byte null entry is a different case: it yields an
+	// empty symbol list and a nil error.
+	stripped bool
 }
 
 // elfFixtureBytes builds a minimal but well-formed ELF64 little-endian shared
 // object with exactly the sections the extractor reads: .text, .dynstr, .dynsym,
-// .dynamic and .shstrtab.
+// .dynamic and .shstrtab, and (optionally) one PT_INTERP program header.
 //
 // It is built by hand rather than compiled, and committed as bytes rather than
 // as a binary. A `go build` fixture cannot carry a dynamic symbol table without
@@ -1542,22 +1555,33 @@ type elfSpec struct {
 // The layout follows the ELF64 spec, which debug/elf reads field by field:
 //
 //	ELF header            64 bytes
+//	program header table  only when interp != "": one 56-byte Elf64_Phdr at offset 64
+//	interpreter path      only when interp != "": NUL-terminated bytes
 //	.text                 spec.text
 //	.dynstr               a leading NUL, then each name once, NUL-terminated
-//	.dynsym               24-byte entries; entry 0 is the null symbol
-//	.dynamic              16-byte entries; DT_NEEDED... then DT_NULL
+//	.dynsym               24-byte entries; entry 0 is the null symbol (omitted when stripped)
+//	.dynamic              16-byte entries; DT_NEEDED..., [DT_SONAME], then DT_NULL
 //	.shstrtab             section names
-//	section headers       64 bytes each, 7 of them (index 0 is SHT_NULL)
+//	section headers       64 bytes each, 6 of them (index 0 is the required SHT_NULL)
+//
+// One layout hazard is worth stating because the failure mode is a crash rather
+// than a test failure: debug/elf's getSymbols64 slices off the first 24 bytes
+// unconditionally, so a SHT_DYNSYM section with sh_size == 0 panics with
+// "slice bounds out of range [24:0]". A present .dynsym must therefore always
+// carry at least the 24-byte null entry.
 func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	t.Helper()
 
 	const (
 		ehSize     = 64
+		phEntSize  = 56 // Elf64_Phdr: 2 uint32 + 6 uint64
 		shEntSize  = 64
 		symEntSize = 24
 		dynEntSize = 16
+		shNum      = 6 // index 0 null, 1..5 the five real sections
 	)
 	le := binary.LittleEndian
+	align8 := func(n int) int { return (n + 7) &^ 7 }
 
 	// .dynstr. Offsets are recorded as the table is built because both .dynsym
 	// and .dynamic index into it.
@@ -1573,37 +1597,60 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 		nameAt[s] = off
 		return off
 	}
-	importOffsets := make([]uint32, len(spec.imports))
-	for i, n := range spec.imports {
-		importOffsets[i] = intern(n)
+	var importOffsets []uint32
+	if !spec.stripped {
+		importOffsets = make([]uint32, len(spec.imports))
+		for i, n := range spec.imports {
+			importOffsets[i] = intern(n)
+		}
 	}
 	neededOffsets := make([]uint32, len(spec.needed))
 	for i, n := range spec.needed {
 		neededOffsets[i] = intern(n)
 	}
+	var sonameOff uint32
+	if spec.soname != "" {
+		sonameOff = intern(spec.soname)
+	}
 
 	// .dynsym. Entry zero is the reserved null symbol; getSymbols64 skips it, so
-	// the imports start at entry one.
-	dynsym := make([]byte, symEntSize*(len(spec.imports)+1))
-	for i, off := range importOffsets {
-		e := dynsym[symEntSize*(i+1):]
-		le.PutUint32(e[0:4], off)
-		e[4] = byte(elf.STB_GLOBAL)<<4 | byte(elf.STT_FUNC)
-		e[5] = 0
-		le.PutUint16(e[6:8], uint16(elf.SHN_UNDEF))
-		// st_value stays zero: an imported symbol has no address in this file,
-		// which is exactly why a symbol finding carries no byte offset.
-		le.PutUint64(e[8:16], 0)
-		le.PutUint64(e[16:24], 0)
+	// the imports start at entry one. A stripped file has no .dynsym at all.
+	var dynsym []byte
+	if !spec.stripped {
+		dynsym = make([]byte, symEntSize*(len(spec.imports)+1))
+		for i, off := range importOffsets {
+			e := dynsym[symEntSize*(i+1):]
+			le.PutUint32(e[0:4], off)
+			e[4] = byte(elf.STB_GLOBAL)<<4 | byte(elf.STT_FUNC)
+			e[5] = 0
+			le.PutUint16(e[6:8], uint16(elf.SHN_UNDEF))
+			// st_value stays zero: an imported symbol has no address in this file,
+			// which is exactly why a symbol finding carries no byte offset.
+			le.PutUint64(e[8:16], 0)
+			le.PutUint64(e[16:24], 0)
+		}
 	}
 
-	// .dynamic: one DT_NEEDED per library, then the DT_NULL terminator.
-	dynamic := make([]byte, dynEntSize*(len(spec.needed)+1))
-	for i, off := range neededOffsets {
-		e := dynamic[dynEntSize*i:]
+	// .dynamic: one DT_NEEDED per library, an optional DT_SONAME, then DT_NULL.
+	nDyn := len(spec.needed)
+	if spec.soname != "" {
+		nDyn++
+	}
+	dynamic := make([]byte, dynEntSize*(nDyn+1))
+	di := 0
+	for _, off := range neededOffsets {
+		e := dynamic[dynEntSize*di:]
 		le.PutUint64(e[0:8], uint64(elf.DT_NEEDED))
 		le.PutUint64(e[8:16], uint64(off))
+		di++
 	}
+	if spec.soname != "" {
+		e := dynamic[dynEntSize*di:]
+		le.PutUint64(e[0:8], uint64(elf.DT_SONAME))
+		le.PutUint64(e[8:16], uint64(sonameOff))
+		di++
+	}
+	// The DT_NULL terminator is the zeroed final entry written by make above.
 
 	// .shstrtab: the section names, indexed by offset.
 	shstrtab := []byte{0}
@@ -1619,8 +1666,16 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	nDynamic := shName(".dynamic")
 	nShstrtab := shName(".shstrtab")
 
-	align8 := func(n int) int { return (n + 7) &^ 7 }
+	// Lay out the file. Sections start at 64 unless a program header table and
+	// interpreter path precede them.
 	off := ehSize
+	phoff, interpOff := 0, 0
+	if spec.interp != "" {
+		phoff = off
+		off = align8(off + phEntSize)
+		interpOff = off
+		off = align8(off + len(spec.interp) + 1) // + trailing NUL
+	}
 	textOff := off
 	off = align8(off + len(spec.text))
 	dynstrOff := off
@@ -1633,7 +1688,7 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	off = align8(off + len(shstrtab))
 	shoff := off
 
-	buf := make([]byte, shoff+shEntSize*7)
+	buf := make([]byte, shoff+shEntSize*shNum)
 
 	// ELF header.
 	copy(buf[0:4], []byte{0x7f, 'E', 'L', 'F'})
@@ -1644,13 +1699,34 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	le.PutUint16(buf[16:18], uint16(elf.ET_DYN))
 	le.PutUint16(buf[18:20], uint16(elf.EM_X86_64))
 	le.PutUint32(buf[20:24], uint32(elf.EV_CURRENT))
-	le.PutUint64(buf[40:48], uint64(shoff))
+	le.PutUint64(buf[32:40], uint64(phoff)) // e_phoff
+	le.PutUint64(buf[40:48], uint64(shoff)) // e_shoff
 	le.PutUint16(buf[52:54], ehSize)
-	le.PutUint16(buf[54:56], 56) // e_phentsize, unused with e_phnum == 0
-	le.PutUint16(buf[56:58], 0)  // e_phnum: no program headers
+	le.PutUint16(buf[54:56], phEntSize)
+	phnum := 0
+	if spec.interp != "" {
+		phnum = 1
+	}
+	le.PutUint16(buf[56:58], uint16(phnum)) // e_phnum
 	le.PutUint16(buf[58:60], shEntSize)
-	le.PutUint16(buf[60:62], 7) // e_shnum
-	le.PutUint16(buf[62:64], 5) // e_shstrndx: .shstrtab is section 5
+	le.PutUint16(buf[60:62], uint16(shNum)) // e_shnum
+	le.PutUint16(buf[62:64], 5)             // e_shstrndx: .shstrtab is section 5
+
+	// Program header table, when requested. Only PT_INTERP is needed; a PT_PHDR
+	// entry and a .interp section are conventional, not required - collectELF
+	// only walks f.Progs for PT_INTERP and opens its file range.
+	if spec.interp != "" {
+		b := buf[phoff:]
+		le.PutUint32(b[0:4], uint32(elf.PT_INTERP))
+		le.PutUint32(b[4:8], uint32(elf.PF_R))             // p_flags: read (conventional)
+		le.PutUint64(b[8:16], uint64(interpOff))           // p_offset
+		le.PutUint64(b[16:24], 0)                          // p_vaddr
+		le.PutUint64(b[24:32], 0)                          // p_paddr
+		le.PutUint64(b[32:40], uint64(len(spec.interp)+1)) // p_filesz
+		le.PutUint64(b[40:48], uint64(len(spec.interp)+1)) // p_memsz
+		le.PutUint64(b[48:56], 1)                          // p_align
+		copy(buf[interpOff:], spec.interp)                 // trailing NUL from make
+	}
 
 	// Section headers, written field by field in Section64's order.
 	sh := func(i int, name uint32, typ elf.SectionType, flags uint64, offset, size uint64, link, info uint32, addralign, entsize uint64) {
@@ -1673,7 +1749,9 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	}
 	sh(1, nText, elf.SHT_PROGBITS, textFlags, uint64(textOff), uint64(len(spec.text)), 0, 0, 8, 0)
 	sh(2, nDynstr, elf.SHT_STRTAB, uint64(elf.SHF_ALLOC), uint64(dynstrOff), uint64(len(dynstr)), 0, 0, 1, 0)
-	sh(3, nDynsym, elf.SHT_DYNSYM, uint64(elf.SHF_ALLOC), uint64(dynsymOff), uint64(len(dynsym)), 2, 1, 8, symEntSize)
+	if !spec.stripped {
+		sh(3, nDynsym, elf.SHT_DYNSYM, uint64(elf.SHF_ALLOC), uint64(dynsymOff), uint64(len(dynsym)), 2, 1, 8, symEntSize)
+	}
 	sh(4, nDynamic, elf.SHT_DYNAMIC, uint64(elf.SHF_ALLOC), uint64(dynamicOff), uint64(len(dynamic)), 2, 0, 8, dynEntSize)
 	sh(5, nShstrtab, elf.SHT_STRTAB, 0, uint64(shstrtabOff), uint64(len(shstrtab)), 0, 0, 1, 0)
 
@@ -1752,6 +1830,8 @@ func TestCollectELFEvidence(t *testing.T) {
 		needed:   []string{"libcurl.so.4", "libc.so.6"},
 		text:     uniformBytes(512),
 		textExec: true,
+		soname:   "libevil.so.1",
+		interp:   "/lib64/ld-linux-x86-64.so.2",
 	})
 	path := writeTestBytes(t, dir, "libevil.so", raw)
 
@@ -1774,6 +1854,17 @@ func TestCollectELFEvidence(t *testing.T) {
 		if !containsString(bySource[SourceNeeded], want) {
 			t.Errorf("needed evidence missing %q; got %v", want, bySource[SourceNeeded])
 		}
+	}
+	// The soname and the interpreter are the two facts this parse reads from
+	// structure rather than from symbols: collectELF writes the soname as a
+	// section line and the interpreter as a notice. Both are asserted in the
+	// exact shape it writes, so a format change breaks this test rather than
+	// silently passing an assertion written against the old shape.
+	if !containsString(bySource[SourceSection], "soname libevil.so.1") {
+		t.Errorf("soname section line missing; got %v", bySource[SourceSection])
+	}
+	if !containsString(bySource[SourceNotice], "interpreter /lib64/ld-linux-x86-64.so.2") {
+		t.Errorf("interpreter notice missing; got %v", bySource[SourceNotice])
 	}
 	var sawExecutableSection, sawHighEntropySection bool
 	for _, text := range bySource[SourceSection] {
@@ -1814,12 +1905,14 @@ func TestCollectELFEvidenceSkipsEntropyForDataSections(t *testing.T) {
 }
 
 // TestCollectELFEvidenceOnAStrippedFile pins that a file with no dynamic symbol
-// table is a completed look, not a failure: static binaries have no .dynsym, and
-// treating that as an error would make every Go binary build in a model package
-// an incomplete scan.
+// table at all is a completed look, not a failure, and that the look says so.
+// The fixture omits the SHT_DYNSYM section entirely, which is what makes
+// debug/elf return elf.ErrNoSymbols: treating that as an error would make every
+// Go binary build in a model package an incomplete scan. The notice it produces
+// is what tells a reader the symbol list is empty because there is no table.
 func TestCollectELFEvidenceOnAStrippedFile(t *testing.T) {
 	dir := t.TempDir()
-	raw := elfFixtureBytes(t, elfSpec{text: []byte("no symbols here")})
+	raw := elfFixtureBytes(t, elfSpec{text: []byte("no symbols here"), stripped: true})
 	path := writeTestBytes(t, dir, "stripped", raw)
 
 	set := newTestEvidence(path, KindELF)
@@ -1828,6 +1921,38 @@ func TestCollectELFEvidenceOnAStrippedFile(t *testing.T) {
 	}
 	if set.Err != nil {
 		t.Errorf("Err = %v, want nil", set.Err)
+	}
+
+	var notices []string
+	for _, l := range set.Lines {
+		if l.Source == SourceNotice {
+			notices = append(notices, l.Text)
+		}
+	}
+	if !containsString(notices, "no dynamic symbol table (stripped or static)") {
+		t.Errorf("no stripped/static notice; got notices %v", notices)
+	}
+}
+
+// TestCollectELFEmptyDynsymIsNotAStrippedFile pins the distinction the stripped
+// test cannot see: a .dynsym that exists but holds only the reserved null entry
+// yields an empty symbol list and a nil error, not ErrNoSymbols. "This binary
+// imports nothing" and "this file has no symbol table" are different facts, and
+// reporting the second when the first is true would be a false statement in the
+// report - so no notice may appear here.
+func TestCollectELFEmptyDynsymIsNotAStrippedFile(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{text: []byte("a library with no imports")})
+	path := writeTestBytes(t, dir, "libempty.so", raw)
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF: %v", err)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourceNotice && strings.Contains(l.Text, "no dynamic symbol table") {
+			t.Errorf("a present but empty .dynsym produced the stripped/static notice: %q", l.Text)
+		}
 	}
 }
 
@@ -3249,7 +3374,7 @@ func TestEveryBinaryRuleHasASuggestion(t *testing.T) {
 go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestMatchEvidence|TestSymbolRules|TestEveryBinaryRuleHasASuggestion' -v 2>&1 | tail -20
 ```
 
-预期全 PASS。若 `TestBinaryRulesBorrowSharedFamilies` 报 `BIN_001` 之类的 id 冲突，说明 `binaryOnlyRules` 里写了与共享表相同的 id——修正 id 而不是放宽断言。
+预期全 PASS。若 `TestBinaryOnlyFamiliesDoNotCollide` 报 `BIN_001` 之类的 id 冲突，说明 `binaryOnlyRules` 里写了与共享表相同的 id——修正 id 而不是放宽断言。
 
 - [ ] **Step 7: 提交**
 
