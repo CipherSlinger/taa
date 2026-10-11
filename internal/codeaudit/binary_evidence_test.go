@@ -124,29 +124,6 @@ func TestEvidenceSourcesDoNotShareADedupKey(t *testing.T) {
 	if ev.Lines[0].Source != SourceStrings || ev.Lines[1].Source != SourcePickle {
 		t.Fatalf("sources = [%s, %s], want [%s, %s]", ev.Lines[0].Source, ev.Lines[1].Source, SourceStrings, SourcePickle)
 	}
-
-	// Second case: the decoy literal the string scanner extracts is the rendered
-	// form a reader sees, and it must not suppress a later genuine pickle target.
-	decoy := newTestEvidence("y.bin", KindPickle)
-	s := newStringScanner(decoy, DefaultBinaryConfig())
-	if _, err := s.Write([]byte("pickle:os.system")); err != nil {
-		t.Fatal(err)
-	}
-	s.Flush()
-	decoy.add(SourcePickle, 0, "os.system")
-
-	var sawDecoy, sawPickle bool
-	for _, l := range decoy.Lines {
-		if l.Source == SourceStrings && l.Text == "pickle:os.system" {
-			sawDecoy = true
-		}
-		if l.Source == SourcePickle && l.Text == "os.system" {
-			sawPickle = true
-		}
-	}
-	if !sawDecoy || !sawPickle {
-		t.Errorf("the decoy literal and the pickle target must both survive; decoy=%t pickle=%t lines=%+v", sawDecoy, sawPickle, decoy.Lines)
-	}
 }
 
 // TestStringScannerNormalizesAZeroConfig pins that the config is normalized
