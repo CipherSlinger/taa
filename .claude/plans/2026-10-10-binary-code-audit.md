@@ -6271,15 +6271,39 @@ var binaryFamilies = []binaryFamily{
 	},
 	{
 		// The client half of raw network use. The set is deliberately the
-		// outbound-client shape rather than every socket primitive, and the
-		// measurement is why: against the 28 shared libraries of a stock ollama
-		// install, the generic and server-side symbols - `bind`, `send`, `recv` -
-		// are imported by libllama-common.so, a legitimate library, while no
-		// library in that set imports `socket` or `connect` or needs libcurl.
-		// `bind` alone is a server, and a rule that blocks every server is a rule
-		// that blocks a networking stack; the client symbols plus a client library
-		// dependency keep the claim small enough to mean something. The shared id
-		// and its severity are the source arm's, so this family stays HIGH.
+		// outbound-client shape rather than every socket primitive, chosen
+		// against the 28 shared libraries of a stock ollama install: the generic
+		// and server-side symbols - `bind`, `send`, `recv` - are imported by
+		// legitimate libraries, and `bind` alone is a server, so a rule built on
+		// them blocks a networking stack rather than a payload. The client
+		// symbols plus a client library dependency keep the claim smaller than
+		// that.
+		//
+		// They do not keep it small enough, and this comment used to say they
+		// did. A later run over the same bundle found `socket`, `connect` and
+		// `getaddrinfo` imported by libllama-common.so.0.1.2 and
+		// libllama-server-impl.so, and the same set by the libcudart/libcudnn
+		// libraries under cuda_v12, cuda_v13 and mlx_cuda_v13. This family
+		// therefore fires NET_002 at HIGH on legitimate libraries in this
+		// deployment's own bundle; under the default `assist` policy that makes
+		// `passed` false, and internal/controller/import_processing.go:655-660
+		// then runs cleanDirContents and deletes the package. It is reachable
+		// because collectELFReader writes SHN_UNDEF global symbols into
+		// SourceDynsym by bare name - Go's Symbol.Name carries no `@version`
+		// suffix - so a library that merely links a socket client matches the
+		// anchored alternation exactly. The dependency half of the comment does
+		// hold: no library in the bundle needs libcurl.
+		//
+		// That is an unadjudicated rule trade-off, not a defect in the table, and
+		// this plan does not adjudicate it. The candidates are to narrow the
+		// alternation further, to drop the family to MEDIUM (still blocking under
+		// `gate`), or to require co-occurrence with another family; which is right
+		// depends on what a deployment wants a linked socket client to mean, and
+		// that call is the user's. It is recorded here so the measurement is not
+		// re-derived from scratch.
+		//
+		// The shared id and its severity are the source arm's, so this family
+		// stays HIGH whatever the trade-off above resolves to.
 		ID:      "NET_002",
 		Sources: []EvidenceSource{SourceDynsym, SourceNeeded},
 		Patterns: compilePatterns(
@@ -6582,8 +6606,14 @@ go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestBinaryFam
 **已测得的基线（本轮审计，写表时复核过）**，用来判断一次新跑的偏移是不是回归：
 
 - 语料中**没有任何真实 ELF/`.so`**（`find models -type f \( -name '*.so' -o -name '*.so.*' \)` 加上 ELF 魔数扫描都是 0）——`models/` 不是 `.so` 的来源，真正的 `.so` 只有 ollama 那 28 个。所以**宿主机的 `.so` 与这个语料交付的东西不成比例**，任何「按 `.so` 调参」的想法都要先想清楚它服务的是谁。
-- 28 个共享库中，旧 `OBF_001`（base64 长串）命中 **23** 个；旧 `NET_002`（含 `bind`/`send`/`recv`）至少命中 `libllama-common.so.0.1.2`（它导入 `bind recv send`，不含 `socket`/`connect`）；旧 `PER_001`/`FIL_001`/`ENV_001` 的片段命中来自 `taint_engine.cpython-312.pyc`（`'crontabz'`、`'.aws/credentialsz'`、`'.ssh/id_rsaz'`、`.profilez /etc/cron)`）与 `security.cpython-312.pyc`（小写 `private_key` 撞 `PRIVATE_KEY`）。**新表必须让这些全部归零**，这正是 `TestBinaryTableProducesNoHighFindingsOnLegitimateInputs` 的七个夹具组在钉的东西。
+- 28 个共享库中，旧 `OBF_001`（base64 长串）命中 **23** 个；旧 `NET_002`（含 `bind`/`send`/`recv`）至少命中 `libllama-common.so.0.1.2`（它导入 `bind recv send`——**本轮复核补正**：它同时也导入 `socket`/`connect`/`getaddrinfo`，旧写法「不含 `socket`/`connect`」是错的，见下一条实测与 Task 8 `binary_rules.go` 里 `NET_002` 的注释）；旧 `PER_001`/`FIL_001`/`ENV_001` 的片段命中来自 `taint_engine.cpython-312.pyc`（`'crontabz'`、`'.aws/credentialsz'`、`'.ssh/id_rsaz'`、`.profilez /etc/cron)`）与 `security.cpython-312.pyc`（小写 `private_key` 撞 `PRIVATE_KEY`）。**新表必须让这些全部归零**，这正是 `TestBinaryTableProducesNoHighFindingsOnLegitimateInputs` 的七个夹具组在钉的东西。
 - 可执行节区熵：把宿主上 **600 个共享对象**（去重后 **538** 个不同 ELF；把每个枚举到的文件条目都算上是 **2027** 个）全跑一遍，**0 个被判结构性、0 个无节表、0 个报错**，最高 **6.777009** bits/byte，出现在 **`libcrypto.so.3` 的 `.text`**（3347362 字节，**整节读完**，不是抽样前缀），与 7.5 阈值之间余量 **0.723** bits。早先只量了 ollama 那 28 个（最高 6.75），样本扩大二十倍而最高值只挪了百分之一不到，这正是"这条判定不误伤普通库"的强度所在（`libgomp.so` 的 7.97 在非可执行 `.gnu_debugdata`，抽取器根本不测）。**这个数是被删包级规则的唯一支撑，所以它必须是整节读出来的**——一个只覆盖前缀的熵值和一个覆盖整节的熵值在报告里长得一样，而前者不能用来给一条删除规则背书。
+
+- **新表在真实库上的实测（本轮，宿主 `teellm/models/ollama/lib/ollama/`，把这条路径下的 `.so` 全跑一遍）**：
+  - **21 个是被截断的 CUDA/cuDNN/NCCL/MLX 库**——磁盘上每个正好 10 MiB，而 ELF 头把节头表指向 30–750 MB 的偏移，`elf.NewFile` 直接返回 `EOF`。它们走的是**抽取出错**（`parse elf …: EOF`）这条路径，**不产出 finding**，计入 `Incomplete`——这正是 Task 7 那条"截断的库是抽取出错、不是跳过"的现成形状，它们就在这里（不在 `models/` 下；`models/` 一个真实 `.so` 都没有）。
+  - 能解析出来的库里命中 **HIGH** 的一共是 **8 个库文件**：`libggml-base.so.0.20.2` 导入 `execlp` → **`CMD_001`（HIGH）**；`libllama-common.so.0.1.2` 与 `libllama-server-impl.so` 导入 `socket`/`connect`/`getaddrinfo` → **`NET_002`（HIGH）**；`cuda_v12/libcudart.so.12.8.90`、`cuda_v13/libcudart.so.13.0.96`、`mlx_cuda_v13/libcudart.so.13.0.96` 与 `mlx_cuda_v13/libcudnn_cnn.so.9.25.0`、`mlx_cuda_v13/libcudnn_ext.so.9.25.0` 导入 `bind`/`connect`/`socket` → **`NET_002`（HIGH）**。（`filepath.Walk` 按 `lstat` 跳软链接，所以 `libggml-base.so.0`、`libllama-common.so.0` 这两个 `.so`→`.so.N` 软链接条目**不会被读**；把它们算进来才有更大的条目数。）
+  - **这 8 个命中全部是合法库，而 `CMD_001`/`NET_002` 都是 HIGH**，所以只要这样的库进了模型包，`passed` 就是 false，导入会在 `import_processing.go:655-660` 走到 `cleanDirContents` 删包。这正是 §5 里 `NET_002` 那条**未裁决取舍**的实测来源（三种候选写在 Task 8 `binary_rules.go` 的 `NET_002` 注释里）。
+- `PKL_001`（pickle 反序列化执行，HIGH）本轮在真实语料上命中 **0** 次——这与下一条方向性坦白**一致**（被跑过的真实 pickle 全是良性的），不是它的反例；它 HIGH 档的双向性仍未验证。
 
 一条**方向性**的坦白，必须写在任务里而不是留给读者推断：**本节没有任何证据证明 `PKL_001` 会命中一个*恶意* checkpoint。** 所有被采样、被跑过解释器的真实 pickle 都是良性的（真 checkpoint 只证明解释器能读出目标，不能证明恶意目标会被判成 HIGH）。`PKL_001` 是 HIGH 档，而 HIGH 会阻断并删包，所以它的双向性**未经验证**：已知的是它不会误伤良性样本（上面的语料跑），未知的是它对恶意样本的命中率。补这个方向的唯一办法是造一个真正会执行 `posix.system` 的恶意 pickle 夹具（Task 4/Task 9 的合成夹具即用于此），不要用「跑过真实 checkpoint」冒充两边都验过。
 
@@ -7475,6 +7505,12 @@ func renderEvidenceWindow(lines []EvidenceLine, start, end int) string {
 }
 ```
 
+> **陷阱：两个通道的封顶不是同一个安全模型，别把它们"统一"起来。** 文本通道的封顶是**按位置丢**的——`scanner.go:97-100` 在走的过程中把 `findings` 截到 `MaxFindings`、置 `truncated = true`、`return filepath.SkipAll`（第二处同形的在 `scanner.go:298-301`，semgrep 适配器在 `semgrep_engine.go:239-243` 置同一个 `truncated`）。它**安全**，是因为任何一次丢弃都会置 `truncated`，而 `truncated` 被 `rules.go:126-134` 的 `ProvesCleanScan` 折进去、并在 `scanner.go:231`、`verifier.go:188`/`verifier.go:235`、`audit.go:354`/`audit.go:314-316` 处被 AND 起来——所以文本通道丢一个 finding 的后果是"这个包被扣下"，不是"这个包通过"。
+>
+> **二进制通道故意不是这样**：下面的 cap 只裁剪**报告里的清单**，`FindingsCapped`/`FindingsDropped` 按 Task 10 的设计**不进** `ProvesCleanScan`，也就是说二进制通道丢一个 finding **不会**让包被扣下。它的安全因此**完全落在**这条 keep 规则上：cap 只花 **LOW** 这一档，保住 **HIGH 与 MEDIUM**，并对未知严重级 fail-closed（所以写的是 `f.Severity != "LOW"` 而不是 `f.Severity == "HIGH" || f.Severity == "MEDIUM"`）。写 `!= "LOW"` 的理由是：**能被丢的那一档必须恰好是"不能阻断"的那一档**，代码不确知是 LOW 的东西都要留下——`rules.go` 里根本没有 `SeverityLow` 常量，`"LOW"` 是个裸字符串，`gate` 下 MEDIUM 一样阻断（`audit.go:298-309`），而 `DYN_001` 正是 MEDIUM。
+>
+> **为什么"统一"会删掉合法包**：二进制证据产生的 finding 数量远多于文本通道——一个 `.so` 的动态符号表一次就能出几十条。若照文本通道的样子让"触顶"也去**扣包**（把 `FindingsCapped` 折进 `ProvesCleanScan`、或让二进制臂也按位置丢并在丢时置 `truncated`），那么任何产出超过 `MaxFindings` 条 finding 的**合法**包（一个正常的加速库就能做到）都会被 `cleanDirContents` 删掉。所以这两个通道**必须**保持不同的封顶语义；改其中一边时要同时看懂另一边——把 `FindingsCapped` 折进完整性判定是删合法包，把 keep 规则放宽成"只保 HIGH"（assist 视角）则是放走 `gate` 下本应阻断的 MEDIUM。`TestBinaryScannerCapKeepsAMediumFindingBeyondTheBudget` 钉的就是后一条。
+
 `joinTrimmed` 是个小工具，追加到 `binary_scanner.go`：
 
 ```go
@@ -7669,6 +7705,10 @@ func (r *Report) ProvesCleanScan() bool {
 }
 ```
 
+> **陷阱：两个通道的封顶不是同一个安全模型，别把二进制的 `FindingsCapped` 折进这个判定。** 文本通道的封顶是**按位置丢** finding 的（`scanner.go:97-100` 的截断加 `return filepath.SkipAll`、`scanner.go:298-301` 的同形第二处、`semgrep_engine.go:239-243`），它**安全**是因为任何一次丢弃都会置 `truncated = true`，而 `truncated` 正是这个函数（`rules.go:126-134`）读的完整性字段之一——文本通道丢一个 finding 的代价是"包被扣下"（`scanner.go:231`、`verifier.go:188`/`verifier.go:235`、`audit.go:354`/`audit.go:314-316` 把这条 AND 链起来）。
+>
+> **二进制通道故意不这样**：它裁剪的只是**报告里的清单**，`FindingsCapped`/`FindingsDropped` **故意不折进**这里（上面 `BoundedData` 与 `FindingsCapped` 都被明确排除在读取之外，这是刻意的），所以二进制通道丢一个 finding 不扣包。这正是"把两个通道的封顶统一起来会删掉合法包"这句话的落点——**二进制证据产生的 finding 数量远多于文本通道**（一个 `.so` 的动态符号表一次就能出几十条），如果照文本通道的样子让"触顶"也去扣包，那么任何产出超过 `MaxFindings` 条 finding 的**合法**包（一个正常的加速库就能做到）都会被 `cleanDirContents` 删掉。所以二进制通道的安全**不靠**这个折入，而**完全**靠 Task 9 那条 keep 规则：cap 只花 LOW 一档、保住 HIGH **和** MEDIUM、对未知严重级 fail-closed。改这一对设计时要两边一起看——把 `FindingsCapped` 折进这里是删合法包，把 keep 规则放宽成"只保 HIGH"则是在 `gate` 下放走 MEDIUM 阻断 finding。
+
 - [ ] **Step 4: 跑测试确认通过**
 
 ```bash
@@ -7700,25 +7740,36 @@ git commit -m "feat(audit): fold binary completeness into the clean-scan proof"
 ```go
 // TestMergeBinaryFindingsAppendsAndRecomputes pins the three things the merge
 // does at once: the binary findings join the list, the static counts are
-// recomputed from the joined list, and the binary summary reaches the report so
-// that ProvesCleanScan can read it.
+// recomputed from the joined list, and the binary summary is attached *before*
+// that recomputation so that ProvesCleanScan reads it.
+//
+// The fixture is built so the last assertion can fail. Both findings are MEDIUM,
+// which under the default `assist` policy does not block, so the report passes
+// before the merge and would still pass after it if the summary arrived too late
+// - the only thing that can withdraw the pass is BoundedExecutable, and only if
+// the summary was there when recomputeReportPassed ran. A fixture with a HIGH in
+// it would hold this assertion whichever order the merge used, and would pin
+// nothing.
 func TestMergeBinaryFindingsAppendsAndRecomputes(t *testing.T) {
 	report := &Report{
 		ScanComplete: true,
 		FilesCount:   1,
 		Findings: []Finding{
-			{File: "/m/clean.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh},
+			{File: "/m/clean.py", Line: 1, RuleID: "ENV_001", Severity: SeverityMedium},
 		},
 	}
 	recomputeReportPassed(report, false)
-	if report.Passed {
-		t.Fatal("fixture is wrong: a HIGH finding must already block")
+	if !report.Passed {
+		t.Fatal("fixture is wrong: a MEDIUM-only report passes under assist")
+	}
+	if report.MediumCount != 1 {
+		t.Fatalf("fixture is wrong: MediumCount = %d, want 1", report.MediumCount)
 	}
 
 	res := &BinaryScanResult{
 		Claimed: []string{"/m/libevil.so"},
 		Findings: []Finding{
-			{File: "/m/libevil.so", Line: 4, RuleID: "NET_002", Severity: SeverityHigh, Engine: EngineNameBinary},
+			{File: "/m/libevil.so", Line: 4, RuleID: "DYN_001", Severity: SeverityMedium, Engine: EngineNameBinary},
 		},
 		Summary: BinaryScanSummary{FilesCount: 1, BoundedExecutable: 1},
 	}
@@ -7728,11 +7779,17 @@ func TestMergeBinaryFindingsAppendsAndRecomputes(t *testing.T) {
 	if len(report.Findings) != 2 {
 		t.Fatalf("len(Findings) = %d, want 2", len(report.Findings))
 	}
+	if !containsFileFinding(report.Findings, "/m/libevil.so", "DYN_001") {
+		t.Error("the binary finding did not join the list")
+	}
 	if report.Binary == nil {
 		t.Fatal("report.Binary is nil; the completeness summary did not reach the report")
 	}
+	if report.MediumCount != 2 {
+		t.Errorf("MediumCount = %d, want 2: the counts were not recomputed from the joined list", report.MediumCount)
+	}
 	if report.Passed {
-		t.Error("Passed = true, want false: the binary scan was bounded and BoundedExecutable withholds the pass")
+		t.Error("Passed = true: the summary was attached after the recomputation, so ProvesCleanScan never saw BoundedExecutable")
 	}
 }
 
@@ -7783,6 +7840,14 @@ func TestMergeBinaryFindingsDropsTextFindingsForBinaryFiles(t *testing.T) {
 // by importance, and it would let a large source arm evict the binary findings
 // entirely. The fixture is the smallest one that shows the difference: three
 // source findings, one binary finding, and a source arm whose own cap was three.
+//
+// The binary finding is DYN_001/MEDIUM rather than a blocked-family HIGH,
+// because the pass assertion below has to survive the merge: what this test
+// pins is the length of the joined list, and a HIGH binary finding would
+// withdraw the pass on its own, making that assertion a statement about
+// severity instead of about capping. MEDIUM does not block under `assist`, so
+// the merge's own recomputation leaves the report passing and a future change
+// that dropped a joined finding shows up as a shorter list.
 func TestMergeBinaryFindingsKeepsBothChannelsFindings(t *testing.T) {
 	report := &Report{ScanComplete: true, FilesCount: 3}
 	for i := 0; i < 3; i++ {
@@ -7792,7 +7857,7 @@ func TestMergeBinaryFindingsKeepsBothChannelsFindings(t *testing.T) {
 	}
 	res := &BinaryScanResult{
 		Findings: []Finding{
-			{File: "/m/z.so", Line: 1, RuleID: "NET_002", Severity: SeverityHigh, Engine: EngineNameBinary},
+			{File: "/m/z.so", Line: 1, RuleID: "DYN_001", Severity: SeverityMedium, Engine: EngineNameBinary},
 		},
 		Summary: BinaryScanSummary{FilesCount: 2},
 	}
@@ -7801,6 +7866,12 @@ func TestMergeBinaryFindingsKeepsBothChannelsFindings(t *testing.T) {
 
 	if len(report.Findings) != 4 {
 		t.Errorf("len(Findings) = %d, want 4: the merge applied a ceiling to the joined list", len(report.Findings))
+	}
+	// The fourth has to be the binary one: a length check alone would also hold
+	// if the merge had dropped a source finding and kept the binary one in its
+	// place.
+	if !containsFileFinding(report.Findings, "/m/z.so", "DYN_001") {
+		t.Error("the binary finding is not in the joined list")
 	}
 	if report.Truncated {
 		t.Error("Truncated = true: the merge re-capped a list both arms had already capped")
@@ -7979,7 +8050,7 @@ git commit -m "feat(audit): merge binary findings into the audit report"
 ### Task 12: 接入 `GenerateAuditReport` 与报告元数据
 
 **Files:**
-- Modify: `internal/codeaudit/verifier.go`, `internal/codeaudit/audit.go`, `internal/codeaudit/llm_test.go`, `internal/controller/import_processing.go`
+- Modify: `internal/codeaudit/verifier.go`, `internal/codeaudit/audit.go`, `internal/controller/import_processing.go`
 - Modify (机械更新调用点): `internal/codeaudit/audit_test.go`, `internal/codeaudit/llm_absence_test.go`, `internal/codeaudit/engine_select_test.go`
 - Test: `internal/codeaudit/engine_select_test.go`（新增用例）
 
@@ -7996,7 +8067,16 @@ git commit -m "feat(audit): merge binary findings into the audit report"
 func TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine(t *testing.T) {
 	engines := map[string]StaticEngine{}
 	for _, name := range []string{EngineNameRegex, EngineNameSemgrep} {
-		engine, err := NewEngine(EngineConfig{Name: name, SemgrepRulesPath: DefaultSemgrepRulesPath})
+		// repoSemgrepRules(t), not DefaultSemgrepRulesPath: the latter is a path
+		// relative to the repository root, and NewEngine stats it with the
+		// process's working directory, which under `go test` is this package's
+		// directory - so the bare default resolves to
+		// internal/codeaudit/models/audit/... and NewEngine fails before any
+		// subtest starts, where a skip inside the subtest could not save it. The
+		// helper makes it absolute; the per-engine skip below is still needed for
+		// a host without the CLI. The regex arm ignores the field, so one value
+		// serves both.
+		engine, err := NewEngine(EngineConfig{Name: name, SemgrepRulesPath: repoSemgrepRules(t)})
 		if err != nil {
 			t.Fatalf("NewEngine(%s): %v", name, err)
 		}
@@ -8067,7 +8147,7 @@ func TestGenerateAuditReportWithBinaryDisabledIsUnchanged(t *testing.T) {
 }
 ```
 
-> 注：semgrep 用例在未安装 semgrep CLI 的环境会失败。在 `internal/codeaudit/engine_select_test.go` 的 import 块补 `"os/exec"`，并在子测试开头加：
+> 注：两步都要有，缺一不可。**构造引擎时**必须传 `repoSemgrepRules(t)`（`semgrep_engine_test.go:558-568` 的 helper），不能传裸的 `DefaultSemgrepRulesPath`——后者是相对路径，`NewEngine` 会以包目录为 cwd 去 stat，`internal/codeaudit/models/audit/...` 必然 MISSING，`NewEngine` 在进入任何 subtest **之前**就返回错误，subtest 里的 skip 救不了。仓库既有用例（`engine_select_test.go:30`/`:203`/`:249`）也一律这么写。**然后是**：semgrep 用例在未安装 semgrep CLI 的环境要 skip。在 `internal/codeaudit/engine_select_test.go` 的 import 块补 `"os/exec"`，并在子测试开头加：
 
 ```go
 			if name == EngineNameSemgrep {
