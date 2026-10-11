@@ -2215,12 +2215,7 @@ func readBoundedSection(sec *elf.Section, limit int64) (data []byte, bounded boo
 // address, and inventing one would make BinaryOffset a field a reader cannot
 // trust for the findings that carry it.
 func (s *EvidenceSet) addStructured(src EvidenceSource, text string) {
-	key := string(src) + "\x00" + text
-	if s.seen[key] {
-		return
-	}
-	s.seen[key] = true
-	s.Lines = append(s.Lines, EvidenceLine{Source: src, Text: text})
+	s.add(src, 0, text)
 }
 ```
 
