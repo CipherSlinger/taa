@@ -99,6 +99,7 @@ go build ./... && go test ./internal/codeaudit/... ./internal/config/... ./inter
 10. **tar 不被解析**。`models/audit/holdout-sources/sr.tgz` 是 gzip 包 tar（解压后 10.66 MB、4933 个条目，一整个 `semgrep-rules-develop` 检出），解压后的字节会被读取并扫过 strings 通道，所以其中的字面量可见。**代价明确**：tar 的结构全部丢失——没有按成员归属、没有按成员分类（tar 里的 ELF 拿不到节区与导入符号证据）、也不会递归进 tar 里的归档；并且 tar 字节不会命中 pickle 门控（第 7 条），pickle 解释器不跑在它上面，tar 里的 pickle opcode 只有恰好构成可打印串时才以 strings 证据出现。
 11. **嵌套归档只递归一层**。`models/examples/Retina-DKD/Retina-DKD-code.zip` 把 `net_001.pth`/`net_005.pth` 作为成员携带，它们分类为 `KindArchive`；`collectArchive` 只对分类为 ELF 或 pickle 的成员下钻，因此这两个 checkpoint 不会被打开，其 `data.pkl` 永远到不了 pickle 解释器。**代价明确**：只装在 zip 里的 checkpoint 既不产出成员证据也不产出 pickle 目标；这一条现在由第 7 条的门控放大——解释器只跑在被声明为 pickle 的流上，而嵌套归档里那条流既没被声明、也没被下钻，没有第二次机会被发现；跳过是静默的（成员名与大小进了证据列表，但不置 `Bounded`）。
 12. **`.xlsx` 就是 zip**。语料里的 14 个 `.xlsx` 中 13 个是普通 zip（最坏压缩比 22.91，无炸弹形状，成员均分类为非可执行），第 14 个 `models/examples/Retina-DKD/Retina-DKD/test_result.xlsx` 是 OLE2 老式 `.xls` 顶着 `.xlsx` 名，不匹配任何魔数，落到 `KindRaw`。**代价明确**：当作 zip 的那 13 个只按普通容器处理（成员头嗅探 + 成员名/大小），内部的 XML 不进任何结构化解析；当 OLE2 的那一个只拿 strings 证据，不会因为扩展名被当成 zip 打开。
+13. **配置里只暴露五个上限，其余固定在 `DefaultBinaryConfig`，这是有判据的选择而不是遗漏**。有键的是 `maxArchiveMembers`、`maxFindings`、`maxFullScanBytes`、`maxStreamBytes`、`highEntropyThreshold`；没有键的是 `MaxEvidenceLines`（默认 50000）、`HeadTailBytes`、`MaxSectionBytes`、`MaxArchiveMemberBytes`、`MaxStringLen`/`MinStringLen`。判据是**越界之后留下什么**：越界只记 `Bound.Listing` 的天花板（如 `MaxEvidenceLines`）只影响显示、不阻断任何东西，让它固定是安全的；越界会记 `Bound.Structural` 的天花板，在可执行类型上会**阻断导入**，没有键就成了 operator 无法处置的阻断，所以必须暴露。`MaxStreamBytes` 正落在后者——它只有在一个通过了 `MaxFullScanBytes` 的文件上才可能被触到，所以把 `maxFullScanBytes` 抬到 3 GiB 以上就会让它生效；两个键因此成对出现，并在同一处校验。**代价明确**：这五个以外的上限调不了，调它们要改代码重新部署。
 
 ---
 
@@ -1196,6 +1197,21 @@ func TestShannonEntropy(t *testing.T) {
 			t.Errorf("entropy = %v, want 0", got)
 		}
 	})
+
+	t.Run("a total of zero returns zero rather than an infinity", func(t *testing.T) {
+		// The histogram and the total are a pair the caller owns, and this
+		// function exists in counts form precisely so a stream can be counted as
+		// it is read - a caller can therefore hold a nonzero histogram and a zero
+		// total. Without the guard the division yields an infinity that compares
+		// false against every threshold, so a section would be reported as
+		// unremarkable by accident. Note this is not the same as an all-zero
+		// histogram, where the loop skips every byte and never divides.
+		var counts [256]int64
+		counts[0x41] = 5
+		if got := shannonEntropy(counts, 0); got != 0 {
+			t.Errorf("entropy = %v, want 0", got)
+		}
+	})
 }
 
 // TestEntropyVerdictIsMeasuredNotAssumed pins the line the extractor emits and
@@ -1221,10 +1237,22 @@ func TestEntropyVerdictIsMeasuredNotAssumed(t *testing.T) {
 	if line, ok := entropyVerdict(".text", flat, cfg); ok {
 		t.Errorf("verdict = %q for a constant buffer, want no line", line)
 	}
+
+	// The comparison is inclusive: a section measuring exactly the threshold has
+	// not exceeded it. The uniform buffer's entropy is exactly 8 by construction,
+	// so setting the threshold to 8 pins the boundary exactly - under a strict <
+	// this case would emit a line and fail.
+	atThreshold := cfg
+	atThreshold.HighEntropyThreshold = 8.0
+	if line, ok := entropyVerdict(".text", uniform, atThreshold); ok {
+		t.Errorf("verdict = %q at exactly the threshold, want no line", line)
+	}
 }
 ```
 
 在文件顶部 import 块补 `"bytes"`、`"math"`。
+
+> 两个用例各自钉住一个此前**没有牙**的断言，都是靠变异实测出来的：删掉 `shannonEntropy` 的 `if total <= 0` 守卫不失败任何用例——全零直方图下循环对每个字节都 `continue`，`h` 本来就是 0，根本走不到除法，所以「empty input is zero」那个子测试的名字在**声称**它钉的是除法，实际不是；真正钉住除法的是新增的「a total of zero」用例（非零直方图 + 零总数，没有守卫就会得到 `-Inf`）。同理把 `if h <= cfg.HighEntropyThreshold` 改成 `<` 也不失败任何用例——两个夹具都不在阈值上，`<` 与 `<=` 无法区分；新增的 `atThreshold` 段把阈值设成夹具熵值本身（恰好 8），才让边界被钉住。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -5863,13 +5891,16 @@ git commit -m "feat(audit): give binary files their own file-level audit prompt"
 
 追加到 `internal/config/config_test.go`：
 
+> `writeTestConfig` 的签名是 `func writeTestConfig(t *testing.T, path, content string)`——**没有返回值**，它把内容写到 `path`。所以每一处都按文件里既有调用点的写法来：先 `path := filepath.Join(t.TempDir(), DefaultFileName)`，再 `writeTestConfig(t, path, ...)`。`filepath` 与 `DefaultFileName` 在 `config_test.go` 里都已可用。
+
 ```go
 // TestBinaryAuditConfigDefaultsAndOverrides pins the switch that makes this
 // feature reversible: the channel is on unless a deployment says otherwise, and
 // every limit can be moved without touching code.
 func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 	t.Run("absent means enabled with the adapter's defaults", func(t *testing.T) {
-		path := writeTestConfig(t, t.TempDir(), `{"security":{"codeScanEngine":"regex"}}`)
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{"security":{"codeScanEngine":"regex"}}`)
 		cfg, err := LoadStartupConfig(path)
 		if err != nil {
 			t.Fatalf("LoadStartupConfig: %v", err)
@@ -5884,7 +5915,8 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 	})
 
 	t.Run("an explicit false disables it", func(t *testing.T) {
-		path := writeTestConfig(t, t.TempDir(), `{"security":{"binaryAudit":{"enabled":false}}}`)
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{"security":{"binaryAudit":{"enabled":false}}}`)
 		cfg, err := LoadStartupConfig(path)
 		if err != nil {
 			t.Fatalf("LoadStartupConfig: %v", err)
@@ -5895,7 +5927,8 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 	})
 
 	t.Run("limits are read", func(t *testing.T) {
-		path := writeTestConfig(t, t.TempDir(),
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path,
 			`{"security":{"binaryAudit":{"maxArchiveMembers":17,"highEntropyThreshold":7.25}}}`)
 		cfg, err := LoadStartupConfig(path)
 		if err != nil {
@@ -5910,14 +5943,21 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 	})
 
 	t.Run("a negative limit is rejected rather than read as a default", func(t *testing.T) {
-		path := writeTestConfig(t, t.TempDir(), `{"security":{"binaryAudit":{"maxArchiveMembers":-1}}}`)
+		// The guarantee is the load path's: LoadStartupConfig runs
+		// validateStartupConfig before anything reads the value, so a negative
+		// never reaches the normalizer. codeaudit's own normalizer tests "<= 0",
+		// so a negative arriving by any other route - a hand-built StartupConfig -
+		// would be replaced by the default instead of rejected.
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{"security":{"binaryAudit":{"maxArchiveMembers":-1}}}`)
 		if _, err := LoadStartupConfig(path); err == nil {
 			t.Error("a negative limit was accepted; it would be normalised to the default and the operator would never know")
 		}
 	})
 
 	t.Run("the full-scan threshold is carried through", func(t *testing.T) {
-		path := writeTestConfig(t, t.TempDir(), `{"security":{"binaryAudit":{"maxFullScanBytes":134217728}}}`)
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{"security":{"binaryAudit":{"maxFullScanBytes":134217728}}}`)
 		cfg, err := LoadStartupConfig(path)
 		if err != nil {
 			t.Fatalf("LoadStartupConfig: %v", err)
@@ -5929,18 +5969,33 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 }
 ```
 
-追加到 `internal/app/taa/app_test.go`（在 `TestBuildSecurityConfig` 末尾的断言之后）：
+追加到 `internal/app/taa/app_test.go`。
+
+**先**在 `TestBuildSecurityConfig` 的 `cfg := config.StartupConfig{...}` 字面量里补两个字段——这个测试是手工构造字面量、绕过了配置加载器，所以 `BinaryAuditEnabled` 不会自动为真，而 `BinaryAuditMaxArchiveMembers` 会停在 0：
+
+```go
+		BinaryAuditEnabled:           true,
+		BinaryAuditMaxArchiveMembers: 17,
+```
+
+**再**在该测试末尾的断言之后追加：
 
 ```go
 	// The binary channel's configuration is carried through rather than dropped:
 	// a value that reaches the config struct and not the controller is a setting
 	// an operator can write and cannot observe.
+	//
+	// The comparison is against the raw config value, not the resolved one. "0
+	// means use the codeaudit default" resolves in exactly one place - the
+	// codeaudit normalizer every extraction path already calls - and a second
+	// resolver here would be a second place for the two to disagree about what
+	// the default is. The resolution itself is proven at the codeaudit level.
 	if !sec.Binary.Enabled {
-		t.Error("SecurityConfig.Binary.Enabled = false, want the default of true")
+		t.Error("SecurityConfig.Binary.Enabled = false, want the value carried from BinaryAuditEnabled")
 	}
-	if sec.Binary.MaxArchiveMembers != codeaudit.DefaultBinaryConfig().MaxArchiveMembers {
-		t.Errorf("SecurityConfig.Binary.MaxArchiveMembers = %d, want the codeaudit default %d",
-			sec.Binary.MaxArchiveMembers, codeaudit.DefaultBinaryConfig().MaxArchiveMembers)
+	if sec.Binary.MaxArchiveMembers != cfg.BinaryAuditMaxArchiveMembers {
+		t.Errorf("SecurityConfig.Binary.MaxArchiveMembers = %d, want the raw config value %d",
+			sec.Binary.MaxArchiveMembers, cfg.BinaryAuditMaxArchiveMembers)
 	}
 ```
 
@@ -5978,6 +6033,17 @@ go test ./internal/config/ -run TestBinaryAuditConfig 2>&1 | head -10
 	// depends on the deployment's package sizes: raising it buys a complete pass
 	// over a large pickle at a cost of about 3 microseconds per kibibyte.
 	BinaryAuditMaxFullScanBytes int
+	// BinaryAuditMaxStreamBytes bounds how much of one file the end-to-end
+	// streaming pass reads. Zero means the codeaudit default (3 GiB).
+	//
+	// It is exposed because it is the twin of MaxFullScanBytes: the stream budget
+	// is only reachable by a file that MaxFullScanBytes let through, so an
+	// operator who raises MaxFullScanBytes past the stream ceiling makes the
+	// stream ceiling bind - and its breach records a structural bound, which on
+	// an executable kind blocks the import. Leaving it fixed while its twin is
+	// exposed would turn that into an unactionable block. Two keys that move
+	// together, in the same block and the same validation.
+	BinaryAuditMaxStreamBytes int
 ```
 
 `startupSecurityConfigFile` 在 `SemgrepTimeoutSeconds` 之后追加：
@@ -6001,10 +6067,11 @@ type startupBinaryAuditConfigFile struct {
 	HighEntropyThreshold *float64 `json:"highEntropyThreshold"`
 	MaxFindings          *int     `json:"maxFindings"`
 	MaxFullScanBytes     *int64   `json:"maxFullScanBytes"`
+	MaxStreamBytes       *int64   `json:"maxStreamBytes"`
 }
 ```
 
-在 `validateCodeScanEngine` 调用点附近（`LoadStartupConfig` 内的校验序列中）追加：
+在 `validateCodeScanEngine` 的**调用者**——`validateStartupConfig`（`internal/config/config.go:236`）——的校验序列里追加（`LoadStartupConfig` 只是调 `validateStartupConfig`，本身没有校验序列）：
 
 ```go
 	if err := validateBinaryAudit(cfg); err != nil {
@@ -6019,8 +6086,17 @@ type startupBinaryAuditConfigFile struct {
 //
 // A negative count is rejected rather than normalised: the normalisation path
 // exists for "unset", and a deployment that wrote -1 has a different problem
-// from one that wrote nothing. Rejecting at load time turns it into a startup
-// error instead of an audit that quietly ran with a different budget.
+// from one that wrote nothing. Rejecting turns it into a startup error instead
+// of an audit that quietly ran with a different budget.
+//
+// The guarantee is path-specific, and worth stating precisely: it holds on the
+// file-load path, because validateStartupConfig runs before the values are used.
+// It does not hold globally. normalizeBinaryConfig tests "<= 0", so a negative
+// that reaches codeaudit by another route - a hand-built StartupConfig, which is
+// exactly how buildSecurityConfig is called from the app tests - is silently
+// replaced by the default rather than rejected. Nothing reaches that route in
+// production: the only production construction of StartupConfig goes through
+// LoadStartupConfig.
 func validateBinaryAudit(cfg StartupConfig) error {
 	if cfg.BinaryAuditMaxArchiveMembers < 0 {
 		return fmt.Errorf("security.binaryAudit.maxArchiveMembers must not be negative, got %d", cfg.BinaryAuditMaxArchiveMembers)
@@ -6031,6 +6107,9 @@ func validateBinaryAudit(cfg StartupConfig) error {
 	if cfg.BinaryAuditMaxFullScanBytes < 0 {
 		return fmt.Errorf("security.binaryAudit.maxFullScanBytes must not be negative, got %d", cfg.BinaryAuditMaxFullScanBytes)
 	}
+	if cfg.BinaryAuditMaxStreamBytes < 0 {
+		return fmt.Errorf("security.binaryAudit.maxStreamBytes must not be negative, got %d", cfg.BinaryAuditMaxStreamBytes)
+	}
 	if cfg.BinaryAuditHighEntropyThreshold < 0 || cfg.BinaryAuditHighEntropyThreshold > 8 {
 		return fmt.Errorf("security.binaryAudit.highEntropyThreshold must be within [0,8] bits per byte, got %v",
 			cfg.BinaryAuditHighEntropyThreshold)
@@ -6039,11 +6118,13 @@ func validateBinaryAudit(cfg StartupConfig) error {
 }
 ```
 
-在 `DefaultStartupConfig` 的返回值里，`CodeScanEngine: "semgrep",` 之后追加：
+在 `defaultStartupConfig()`（`internal/config/config.go:305`；注意它**未导出**，不存在 `DefaultStartupConfig` 这个符号）的返回值里，`CodeScanEngine: "semgrep",` 之后追加：
 
 ```go
 		BinaryAuditEnabled: true,
 ```
+
+> 这一行是**唯一**让通道默认开着的东西，原因值得写下来：`BinaryConfig.Enabled` 是 `normalizeBinaryConfig` **唯一不填默认值**的字段，因为它填不了——Go 里显式的 `false` 与零值无法区分，把零值当默认就等于让「显式关掉」永远无法生效。所以任何绕过 `defaultStartupConfig`、直接构造 `codeaudit.AuditConfig{LLM: cfg}` 而把 `Binary` 留成零值的调用方，拿到的是**关着的**通道，而不是一组默认值。生产的构造路径只有 `LoadStartupConfig → applyStartupConfigFile → defaultStartupConfig` 一条，这一行在真实启动路径上承重。
 
 在文件配置覆盖段（`if trimmed := strings.ToLower(strings.TrimSpace(fileCfg.Security.CodeScanEngine)); trimmed != ""` 附近）追加：
 
@@ -6063,6 +6144,9 @@ func validateBinaryAudit(cfg StartupConfig) error {
 	if ba := fileCfg.Security.BinaryAudit; ba.MaxFullScanBytes != nil {
 		cfg.BinaryAuditMaxFullScanBytes = int(*ba.MaxFullScanBytes)
 	}
+	if ba := fileCfg.Security.BinaryAudit; ba.MaxStreamBytes != nil {
+		cfg.BinaryAuditMaxStreamBytes = int(*ba.MaxStreamBytes)
+	}
 ```
 
 - [ ] **Step 4: 装配到 controller**
@@ -6081,6 +6165,7 @@ func validateBinaryAudit(cfg StartupConfig) error {
 			MaxArchiveMembers:    cfg.BinaryAuditMaxArchiveMembers,
 			MaxFindings:          cfg.BinaryAuditMaxFindings,
 			MaxFullScanBytes:     int64(cfg.BinaryAuditMaxFullScanBytes),
+			MaxStreamBytes:       int64(cfg.BinaryAuditMaxStreamBytes),
 			HighEntropyThreshold: cfg.BinaryAuditHighEntropyThreshold,
 		},
 ```
@@ -6151,9 +6236,9 @@ func TestEndToEndMaliciousPackageIsBlocked(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir, "train.py", "import torch\n\ndef train():\n    return 1\n")
 	writeTestBytes(t, dir, "native/libevil.so", elfFixtureBytes(t, elfSpec{
-		imports: []string{"socket", "connect", "memfd_create"},
-		needed:  []string{"libcurl.so.4"},
-		text:    uniformBytes(512),
+		imports:  []string{"socket", "connect", "memfd_create"},
+		needed:   []string{"libcurl.so.4"},
+		text:     uniformBytes(512),
 		textExec: true,
 	}))
 	writeTestBytes(t, dir, "checkpoint.pt", zipFixture(t, map[string][]byte{
@@ -6323,7 +6408,7 @@ go test ./... 2>&1 | grep -vE "^ok|no test files" | head -30
 - **判定**：证据行按规则表匹配，产出 `Finding` 并标记 `binary_kind` / `evidence_source` / `binary_offset`；共享规则（`NET_002`/`CMD_001`/`DYN_001`/`FIL_001`/`PER_001`/`ENV_001`/`OBF_001`）的严重级从源码规则表读取，不另立一套。二进制专有规则：`BIN_001`（加壳载荷，MEDIUM）、`BIN_002`（`memfd_create`/`fexecve`，HIGH）、`PKL_001`（pickle 反序列化执行，HIGH）。
 - **复核**：二进制 finding 与源码 finding 走同一条 LLM 路径；文件级分析使用二进制专用 prompt（现有 prompt 面向 Python 源码，不适用）。
 - **完整性**：`scan_metadata.binary` 记录 `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `truncated`。可执行格式的结构抽取被截断、文件无法读取、finding 触顶，任一项都会使 `ProvesCleanScan()` 为假——fail-closed 下即阻断导入；纯数据文件（张量、npy）的证据截断只记录、不阻断。
-- **配置**：`security.binaryAudit.enabled`（默认 `true`）、`maxArchiveMembers`、`highEntropyThreshold`、`maxFindings`（默认 50，独立于源码臂的 200）、`maxFullScanBytes`（默认 64 MiB）。关闭它即回滚，审计行为与引入该通道之前逐字节一致。
+- **配置**：`security.binaryAudit.enabled`（默认 `true`）、`maxArchiveMembers`、`highEntropyThreshold`、`maxFindings`（默认 50，独立于源码臂的 200）、`maxFullScanBytes`（默认 64 MiB）、`maxStreamBytes`（默认 3 GiB；与 `maxFullScanBytes` 成对，抬高后者才会让前者生效）。关闭它即回滚，审计行为与引入该通道之前逐字节一致。
 - **边界**：PE/Mach-O 不做结构解析（本平台不加载），xz/zstd/bzip2/7z 容器与 tar 不打开，纯文本非源码文件不审，嵌套归档只递归一层，pickle 解释器只跑在被声明为 pickle 的流上（因此不认领贴在非 pickle 文件尾部、头部无 pickle 魔数的 pickle）。详见 `.claude/plans/2026-10-10-binary-code-audit.md` §2。
 ```
 
@@ -6345,13 +6430,12 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 
 - [ ] `CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa` 成功（initrd 要求静态链接）。
 - [ ] `go test ./...` 无 FAIL。**尤其**：`internal/codeaudit` 的既有 fail-closed、gate semantics、report fields、corpus parity 用例全部保持通过——它们是这次改动的回归网。
-- [ ] `go test ./internal/codeaudit/ -run 'TestGenerateAuditReport' -v` 中，`regex` 与 `semgrep` 两个子用例都通过（本机装有 semgrep 时真跑）。
 - [ ] `git grep -n "Co-Authored-By\|anthropic\|Claude" -- '*.go'` 无命中（提交信息同样不得出现）。
-- [ ] 用一个真实模型包（含 `.pt` 与任意 `.so`）在容器里跑一次导入，确认 `auditReportJSON` 里出现 `binary_kind`/`evidence_source` 字段，且 `scan_metadata.binary.files_count > 0`。
-- [ ] 确认 `target.files_scanned` 与 `scan_metadata.binary.files_count` 不互相矛盾——后者是前者的子集，前者不小于后者。
-- [ ] 确认二进制臂触顶时 `scan_metadata.truncated` 为 `true`（不只是 `scan_metadata.binary.truncated`），否则只看元数据这一层的读者会以为没有丢东西。
+- [ ] `go test ./internal/codeaudit/ -run 'TestGenerateAuditReport' -v`：`regex` 子用例必须 **PASS**；`semgrep` 子用例在装有 CLI 的机器上必须 PASS，在没装的机器上会 **SKIP**——跳过不等于通过，它是「这一条没有被验证」。所以在没装 semgrep 的机器上，必须在报告里显式记下它被跳过了，或者换一台装了的机器重跑。（`TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine` 的两个子用例同理，它内部对 semgrep 也是这个 skip 形状。）
+- [ ] 用一个真实模型包（含 `.pt` 与任意 `.so`）在容器里跑一次导入，确认 `auditReportJSON` 里出现 `binary_kind`/`evidence_source` 字段，且 `scan_metadata.binary.files_count > 0`；**同一个包**上确认 `target.files_scanned >= scan_metadata.binary.files_count` 且 `target.files_scanned > 0`。两条必须合看：单独拿 `0 >= 0` 也能满足那个不等式，所以「前者不小于后者」只有在 `files_count > 0` 成立时才算被验证。
+- [ ] 二进制臂触顶时 `scan_metadata.truncated` 为 `true`（不只是 `scan_metadata.binary.truncated`），否则只看元数据这一层的读者会以为没有丢东西。**必须在会触顶的输入上验证**：造一个二进制 finding 数超过 `BinaryConfig.MaxFindings`（默认 50）的包——把 `TestBinaryScannerCapsAndRecordsTruncation` 里那个夹具（6 条导入 + 均匀高熵 `.text` 的 `.so`）复制十份即可——然后跑导入，确认 `scan_metadata.truncated == true`。对一个普通包跑这一条永远是「真」，因为它从没触顶，等于没验。
 - [ ] 把 `security.binaryAudit.enabled` 设为 `false` 再跑一次，确认 `scan_metadata.binary` 缺失且结论与改动前一致（回滚可用）。
-- [ ] 确认 `UnsupportedExts` 仍恒为 0——本计划**不**动它，任何让它非零的改动都会使每个真实包被判定为非完整扫描。
+- [ ] （**回归护栏，不是本功能的验收项**）`UnsupportedExts` 仍恒为 0——本计划**不**动它，任何让它非零的改动都会使每个真实包被判定为非完整扫描。它列在这里，是因为它属于同一次改动所以要一起回归，不是因为这个功能会让它变化。
 
 ## 5. 已知风险与对策
 
