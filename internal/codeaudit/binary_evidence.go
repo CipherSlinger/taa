@@ -734,6 +734,30 @@ const (
 // claim to have looked.
 const pickleMaxOperandBytes = 64 * 1024
 
+// pickleMaxStackSlots bounds the value stack. A pickle legitimately holds many
+// slots at once: a mapping is written as MARK, then every key and value, then a
+// single SETITEMS, so a dict of n entries occupies about 2n slots before any of
+// them is popped. The deepest stack reached by any checkpoint in this repository
+// is 1007 slots, on a cifar-10 batch whose own array data is truncated at 11.3
+// MiB; the deepest complete one, a Retina-DKD net, reaches 826, and a full
+// mnist/cifar model reaches 271. 1<<20 is about a thousand times the deepest
+// measured and covers a mapping of some half a million entries, far past the tens
+// of thousands a real state dict holds. The bound is memory, not correctness: at
+// the 24-byte size of a pickSlot, 1<<20 slots is 24 MiB, where the unbounded stack
+// a flood of operand-free opcodes would otherwise reach is gigabytes (4 MiB of
+// NONE alone grows it to 4.2M slots, about 100 MiB).
+const pickleMaxStackSlots = 1 << 20
+
+// pickleMaxMemoSlots bounds the memo table. Every object a stream memoizes costs
+// one entry, and torch.save memoizes each tensor and its storage, so the count
+// tracks the model's size: the largest measured here is 3669, on the same
+// Retina-DKD net, and a small mnist model reaches 159. 1<<20 is about 280 times
+// that, enough headroom for a model two orders of magnitude larger. Like the stack
+// cap this is a memory bound - a stream that MEMOIZEs on every byte would
+// otherwise grow the map without limit - and the map, at roughly 64 bytes an
+// entry, is the larger of the two allocations.
+const pickleMaxMemoSlots = 1 << 20
+
 // pickSlot is one value-stack or memo entry.
 //
 // Only string-ness and the string itself are kept. The interpreter never has to
@@ -784,9 +808,12 @@ func newPickleScanner(set *EvidenceSet) *pickleScanner {
 	return &pickleScanner{set: set, memo: map[int]pickSlot{}}
 }
 
-// Write implements io.Writer. All parse state crosses calls, so the result is
-// independent of where the chunk boundaries fall; a boundary inside an operand and
-// a boundary on an opcode are the same thing to this loop.
+// Write implements io.Writer. All parse state - the phase, the operand in
+// progress, the absolute offset - crosses calls, so the result does not depend on
+// where the chunk boundaries fall; a boundary inside an operand and a boundary on
+// an opcode are the same thing to this loop. step consumes the buffer down to an
+// unfinished opcode and returns 0 only when there is nothing left to take, so no
+// byte is skipped and none is consumed twice.
 func (p *pickleScanner) Write(chunk []byte) (int, error) {
 	if p.stopped {
 		p.trailing += int64(len(chunk))
@@ -830,113 +857,133 @@ func (p *pickleScanner) Flush() {
 	}
 }
 
-// step consumes as much of one opcode as b holds and returns the number of bytes
-// consumed, or 0 when it needs more. It reports the absolute offset of the opcode
-// it is executing because that, not the operand's offset, is what an evidence line
-// carries.
+// step takes as much of the opcode stream as b holds, and returns the number of
+// bytes it consumed. It returns 0 only when it cannot consume anything - b is
+// empty and the opcode in progress is incomplete - so the caller can tell
+// "finished, keep these bytes for the next Write" from "made no progress".
+//
+// The loop exists for the one opcode that completes without consuming a byte: a
+// counted operand whose declared length is zero is finished at the payload phase
+// having read nothing, and returning 0 there would be read as "needs more input"
+// even though the bytes it needs are already in b. A stream that hit that would
+// have its tail stranded, and Flush would report a valid pickle as ending without
+// STOP. So the zero-length completion falls through to the opcode phase with the
+// same b and absOff - no byte was consumed, so both are unchanged - and the next
+// opcode is taken in this same call.
+//
+// It reports the absolute offset of each opcode it executes because that, not the
+// operand's offset, is what an evidence line carries.
 func (p *pickleScanner) step(b []byte, absOff int64) int {
-	switch p.phase {
-	case pickPhaseOp:
-		if len(b) == 0 {
-			return 0
-		}
-		op := b[0]
-		desc, ok := operandOf(op)
-		if !ok {
-			// We cannot know this byte's operand width, so we cannot know where
-			// the next opcode begins. Guessing is what desynchronises; stopping
-			// without a bound would let a later opcode hide, so the parse ends
-			// here and the file is recorded as not fully read.
-			p.set.markStructural(fmt.Sprintf("unknown pickle opcode 0x%02x at offset %d", op, absOff))
-			p.stopped = true
-			return 1
-		}
-		p.op = op
-		p.opOff = absOff
-		p.arg = p.arg[:0]
-		p.keep = true
-		p.sizing = false
-		switch desc {
-		case pickNone:
-			p.exec(op)
-			return 1
-		case pickFixed1:
-			p.phase, p.need = pickPhaseFixed, 1
-		case pickFixed2:
-			p.phase, p.need = pickPhaseFixed, 2
-		case pickFixed4:
-			p.phase, p.need = pickPhaseFixed, 4
-		case pickFixed8:
-			p.phase, p.need = pickPhaseFixed, 8
-		case pickLine:
-			p.phase, p.need, p.linesLeft = pickPhaseLine, -1, 1
-		case pickTwoLines:
-			p.phase, p.need, p.linesLeft = pickPhaseLine, -1, 2
-		case pickCounted1:
-			p.phase, p.need, p.sizing = pickPhaseFixed, 1, true
-		case pickCounted4:
-			p.phase, p.need, p.sizing = pickPhaseFixed, 4, true
-		case pickCounted8:
-			p.phase, p.need, p.sizing = pickPhaseFixed, 8, true
-		}
-		return 1
-
-	case pickPhaseFixed:
-		n := len(b)
-		if int64(n) > p.need {
-			n = int(p.need)
-		}
-		p.arg = append(p.arg, b[:n]...)
-		p.need -= int64(n)
-		if p.need > 0 {
-			return n
-		}
-		if p.sizing {
-			length := leUint(p.arg)
+	for {
+		switch p.phase {
+		case pickPhaseOp:
+			if len(b) == 0 {
+				return 0
+			}
+			op := b[0]
+			desc, ok := operandOf(op)
+			if !ok {
+				// We cannot know this byte's operand width, so we cannot know where
+				// the next opcode begins. Guessing is what desynchronises; stopping
+				// without a bound would let a later opcode hide, so the parse ends
+				// here and the file is recorded as not fully read.
+				p.set.markStructural(fmt.Sprintf("unknown pickle opcode 0x%02x at offset %d", op, absOff))
+				p.stopped = true
+				return 1
+			}
+			p.op = op
+			p.opOff = absOff
 			p.arg = p.arg[:0]
-			p.need = length
-			p.phase = pickPhasePayload
-			if length > pickleMaxOperandBytes {
-				p.keep = false
+			p.keep = true
+			p.sizing = false
+			switch desc {
+			case pickNone:
+				p.exec(op)
+				return 1
+			case pickFixed1:
+				p.phase, p.need = pickPhaseFixed, 1
+			case pickFixed2:
+				p.phase, p.need = pickPhaseFixed, 2
+			case pickFixed4:
+				p.phase, p.need = pickPhaseFixed, 4
+			case pickFixed8:
+				p.phase, p.need = pickPhaseFixed, 8
+			case pickLine:
+				p.phase, p.need, p.linesLeft = pickPhaseLine, -1, 1
+			case pickTwoLines:
+				p.phase, p.need, p.linesLeft = pickPhaseLine, -1, 2
+			case pickCounted1:
+				p.phase, p.need, p.sizing = pickPhaseFixed, 1, true
+			case pickCounted4:
+				p.phase, p.need, p.sizing = pickPhaseFixed, 4, true
+			case pickCounted8:
+				p.phase, p.need, p.sizing = pickPhaseFixed, 8, true
+			}
+			return 1
+
+		case pickPhaseFixed:
+			n := len(b)
+			if int64(n) > p.need {
+				n = int(p.need)
+			}
+			p.arg = append(p.arg, b[:n]...)
+			p.need -= int64(n)
+			if p.need > 0 {
+				return n
+			}
+			if p.sizing {
+				length := leUint(p.arg)
+				p.arg = p.arg[:0]
+				p.need = length
+				p.phase = pickPhasePayload
+				if length > pickleMaxOperandBytes {
+					p.keep = false
+				}
+				return n
+			}
+			p.phase = pickPhaseOp
+			p.exec(p.op)
+			return n
+
+		case pickPhaseLine:
+			idx := bytes.IndexByte(b, '\n')
+			if idx < 0 {
+				p.appendArg(b)
+				return len(b)
+			}
+			p.appendArg(b[:idx+1])
+			p.linesLeft--
+			if p.linesLeft > 0 {
+				return idx + 1
+			}
+			p.phase = pickPhaseOp
+			p.exec(p.op)
+			return idx + 1
+
+		case pickPhasePayload:
+			n := len(b)
+			if int64(n) > p.need {
+				n = int(p.need)
+			}
+			if p.keep {
+				p.arg = append(p.arg, b[:n]...)
+			}
+			p.need -= int64(n)
+			if p.need > 0 {
+				return n
+			}
+			p.phase = pickPhaseOp
+			p.exec(p.op)
+			if n == 0 {
+				// A zero-length operand: the completion above consumed nothing, so
+				// returning here would claim it needs more bytes and strand the
+				// rest of b. Loop instead, with b and absOff unchanged, so the next
+				// opcode is taken in this call.
+				continue
 			}
 			return n
 		}
-		p.phase = pickPhaseOp
-		p.exec(p.op)
-		return n
-
-	case pickPhaseLine:
-		idx := bytes.IndexByte(b, '\n')
-		if idx < 0 {
-			p.appendArg(b)
-			return len(b)
-		}
-		p.appendArg(b[:idx+1])
-		p.linesLeft--
-		if p.linesLeft > 0 {
-			return idx + 1
-		}
-		p.phase = pickPhaseOp
-		p.exec(p.op)
-		return idx + 1
-
-	case pickPhasePayload:
-		n := len(b)
-		if int64(n) > p.need {
-			n = int(p.need)
-		}
-		if p.keep {
-			p.arg = append(p.arg, b[:n]...)
-		}
-		p.need -= int64(n)
-		if p.need > 0 {
-			return n
-		}
-		p.phase = pickPhaseOp
-		p.exec(p.op)
-		return n
 	}
-	return 0
 }
 
 // appendArg keeps operand bytes up to the cap. Past the cap the value is dropped
@@ -974,7 +1021,24 @@ func leUint(b []byte) int64 {
 	return 0
 }
 
-func (p *pickleScanner) push(s pickSlot) { p.stack = append(p.stack, s) }
+func (p *pickleScanner) push(s pickSlot) {
+	if len(p.stack) >= pickleMaxStackSlots {
+		p.overflow(fmt.Sprintf("pickle value stack exceeded %d slots at offset %d", pickleMaxStackSlots, p.opOff))
+		return
+	}
+	p.stack = append(p.stack, s)
+}
+
+// overflow records a bound the interpreter cannot continue past and ends the
+// parse. A stream that reaches either cap is not behaving like a pickle - the real
+// ones measured here stay three orders of magnitude below - so "the structure was
+// not read" is the honest report, and it takes the fail-closed direction: on a
+// pickle that is a structural bound, which withholds a clean-scan verdict rather
+// than hiding whatever came after the point the interpreter stopped.
+func (p *pickleScanner) overflow(reason string) {
+	p.set.markStructural(reason)
+	p.stopped = true
+}
 
 func (p *pickleScanner) pop(n int) {
 	if n > len(p.stack) {
@@ -1106,6 +1170,10 @@ func (p *pickleScanner) exec(op byte) {
 			idx = len(p.memo)
 		default:
 			idx = int(leUint(p.arg))
+		}
+		if len(p.memo) >= pickleMaxMemoSlots {
+			p.overflow(fmt.Sprintf("pickle memo exceeded %d entries at offset %d", pickleMaxMemoSlots, p.opOff))
+			return
 		}
 		if s, ok := p.top(); ok {
 			p.memo[idx] = s

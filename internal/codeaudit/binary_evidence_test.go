@@ -445,13 +445,21 @@ func TestPickleInterpreterReadsInstAsATarget(t *testing.T) {
 
 // TestPickleInterpreterIsChunkInvariant pins the property that makes the
 // streaming contract correct: the parse carries its own state, so the listing
-// cannot depend on where the reads split. The fixtures above all fit in one 64
-// KiB chunk, so this test must run at several sizes; it is what would catch a
-// boundary bug that the real file (one chunk) cannot.
+// cannot depend on where the reads split. The sizes below include 1 and the whole
+// stream in a single Write, because those are the two extremes a one-chunk fixture
+// would never exercise, and splitAfterLength, which puts a chunk boundary in the
+// one place the parser is weakest - right after the length prefix of a zero-length
+// counted operand, so that operand's completion is the first thing the next call
+// sees.
 func TestPickleInterpreterIsChunkInvariant(t *testing.T) {
 	data := []byte{0x80, 0x04}
 	data = append(data, pickleBinUnicode(strings.Repeat("data\x63\n", 400))...)
 	data = append(data, pickleGlobal("os", "system")...)
+	// A zero-length counted operand. pickle.dumps emits these, and the length
+	// prefix is BINUNICODE's opcode plus four length bytes.
+	zeroLenAt := len(data)
+	data = append(data, pickleBinUnicode("")...)
+	splitAfterLength := zeroLenAt + 5
 	data = append(data, 0x8c, 0x03)
 	data = append(data, "abc"...)
 	data = append(data, 0x8c, 0x03)
@@ -459,7 +467,7 @@ func TestPickleInterpreterIsChunkInvariant(t *testing.T) {
 	data = append(data, 0x93, 0x2e)
 
 	want := "os.system,abc.def"
-	for _, size := range []int{1, 2, 3, 5, 8, 64, 1024, 64 * 1024} {
+	for _, size := range []int{1, 2, 3, 5, 8, 64, 1024, 64 * 1024, splitAfterLength, len(data)} {
 		set := runPickleStream(t, data, size)
 		if got := strings.Join(pickleTargetsOf(set), ","); got != want {
 			t.Fatalf("chunk=%d gave %q, want %q", size, got, want)
@@ -634,5 +642,183 @@ func TestPickleInterpreterReadsTheRealCheckpoint(t *testing.T) {
 	}
 	if set.Bound.Structural {
 		t.Errorf("the real checkpoint set Bound.Structural: %s", set.Bound.Reason)
+	}
+}
+
+// TestPickleInterpreterParsesCPythonsZeroLengthOperands pins the interpreter
+// against the two byte strings CPython itself produces for a zero-length operand,
+// because the defect they exercise was in the interpreter, not in a hand-built
+// fixture. Each is fed both in one 64 KiB chunk and in a single Write, since the
+// streaming reader reads a file that fits one chunk in a single call. The assertion
+// is on the extracted targets as well as the bound: the BINUNICODE case used to
+// both set a structural bound and lose the target that followed it, so a test that
+// checked only the bound would see half the defect.
+func TestPickleInterpreterParsesCPythonsZeroLengthOperands(t *testing.T) {
+	cases := []struct {
+		name    string
+		data    []byte
+		targets []string
+	}{
+		{
+			name: "pickle.dumps(b'', protocol=4): SHORT_BINBYTES of length 0",
+			data: []byte{0x80, 0x04, 0x95, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x43, 0x00, 0x94, 0x2e},
+		},
+		{
+			name:    "pickle.dumps({'': b''}, protocol=2): BINUNICODE of length 0 before a GLOBAL",
+			data:    []byte{0x80, 0x02, 0x7d, 0x71, 0x00, 0x58, 0x00, 0x00, 0x00, 0x00, 0x71, 0x01, 0x63, 0x5f, 0x5f, 0x62, 0x75, 0x69, 0x6c, 0x74, 0x69, 0x6e, 0x5f, 0x5f, 0x0a, 0x62, 0x79, 0x74, 0x65, 0x73, 0x0a, 0x71, 0x02, 0x29, 0x52, 0x71, 0x03, 0x73, 0x2e},
+			targets: []string{"__builtin__.bytes"},
+		},
+	}
+	for _, tc := range cases {
+		for _, chunk := range []int{64 * 1024, len(tc.data)} {
+			set := runPickleStream(t, tc.data, chunk)
+			if set.Bound.Structural {
+				t.Errorf("%s (chunk=%d): structural bound: %s", tc.name, chunk, set.Bound.Reason)
+			}
+			got := pickleTargetsOf(set)
+			if strings.Join(got, ",") != strings.Join(tc.targets, ",") {
+				t.Errorf("%s (chunk=%d): targets = %v, want %v", tc.name, chunk, got, tc.targets)
+			}
+		}
+	}
+}
+
+// TestPickleInterpreterReadsTheQuickMnistCheckpointInOneWrite is the load-bearing
+// regression test for the zero-length operand, and it uses a real file rather than
+// a fixture. Its data.pkl is 1548 bytes and holds a zero-length BINUNICODE at
+// offset 1315; at evidenceReadChunk (64 KiB) the whole stream arrives in one Write,
+// which is exactly the case the defect mis-handled - the bytes after the operand
+// were left in the buffer and Flush reported a complete pickle as structural.
+// Before the fix this test fails; the same checkpoint read in chunks that split
+// after the operand passes even while broken, which is why a fixture that fits one
+// chunk is the one to use.
+func TestPickleInterpreterReadsTheQuickMnistCheckpointInOneWrite(t *testing.T) {
+	const ckpt = "../../models/examples/TEE-test/TEE-test/output/quick_mnist/train_baseline.pth"
+	if _, err := os.Stat(ckpt); err != nil {
+		t.Skipf("corpus checkpoint not present: %v", err)
+	}
+	pkl := readZipMember(t, ckpt, "/data.pkl")
+	if pkl == nil {
+		t.Fatal("no data.pkl member in the checkpoint")
+	}
+	// One Write, then Flush: the whole file in a single chunk, as the streaming
+	// reader does for a file this size.
+	set := runPickleStream(t, pkl, len(pkl))
+	if set.Bound.Structural {
+		t.Fatalf("the checkpoint was marked structural read whole: %s", set.Bound.Reason)
+	}
+	got := pickleTargetsOf(set)
+	want := []string{
+		"collections.OrderedDict",
+		"torch._utils._rebuild_tensor_v2",
+		"torch.FloatStorage",
+		"torch.LongStorage",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("targets = %v, want %v", got, want)
+	}
+}
+
+// readZipMember returns the bytes of the last zip member whose name has the given
+// suffix, or nil when there is none.
+func readZipMember(t *testing.T, path, suffix string) []byte {
+	t.Helper()
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer zr.Close()
+	var out []byte
+	for _, f := range zr.File {
+		if !strings.HasSuffix(f.Name, suffix) {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err = io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return out
+}
+
+// TestPickleInterpreterKeepsOperandsUpToTheCapAndDropsPastIt pins the
+// pickleMaxOperandBytes boundary in both directions. At the cap the operand is
+// kept, so a target formed from it resolves; one byte past it the bytes are still
+// consumed - the parse stays in step - but the value is unresolved, so using it as
+// a STACK_GLOBAL operand is a structural bound rather than a silent wrong answer.
+func TestPickleInterpreterKeepsOperandsUpToTheCapAndDropsPastIt(t *testing.T) {
+	atCap := strings.Repeat("m", pickleMaxOperandBytes)
+	kept := []byte{0x80, 0x04}
+	kept = append(kept, pickleBinUnicode(atCap)...)
+	kept = append(kept, 0x8c, 0x01, 'x')
+	kept = append(kept, 0x93, 0x2e)
+	set := runPickleStream(t, kept, 64*1024)
+	if set.Bound.Structural {
+		t.Fatalf("an operand exactly at the cap set a structural bound: %s", set.Bound.Reason)
+	}
+	if got := pickleTargetsOf(set); len(got) != 1 || got[0] != atCap+".x" {
+		t.Fatalf("targets = %d entries, want one of the cap-length module; the operand at the cap was dropped", len(got))
+	}
+
+	past := []byte{0x80, 0x04}
+	past = append(past, pickleBinUnicode(strings.Repeat("m", pickleMaxOperandBytes+1))...)
+	past = append(past, 0x8c, 0x01, 'x')
+	past = append(past, 0x93, 0x2e)
+	if set := runPickleStream(t, past, 64*1024); !set.Bound.Structural {
+		t.Error("an operand past the cap, used as a STACK_GLOBAL operand, did not set Bound.Structural")
+	}
+}
+
+// TestPickleInterpreterReadsTwoByteOperands pins the 2-byte operand width, which
+// only BININT2 and EXT2 use. Reading one byte of it - or three - desynchronises the
+// parse at that opcode and is invisible unless the stream continues past it, so the
+// fixture puts a GLOBAL after the operand and asserts it is still found.
+func TestPickleInterpreterReadsTwoByteOperands(t *testing.T) {
+	for _, op := range []byte{0x4d, 0x83} { // BININT2, EXT2
+		data := []byte{0x80, 0x04, op, 0x01, 0x02}
+		data = append(data, pickleGlobal("os", "system")...)
+		data = append(data, 0x2e)
+		set := runPickleStream(t, data, 64*1024)
+		if set.Bound.Structural {
+			t.Errorf("opcode 0x%02x: structural bound: %s", op, set.Bound.Reason)
+		}
+		if got := pickleTargetsOf(set); len(got) != 1 || got[0] != "os.system" {
+			t.Errorf("opcode 0x%02x: targets = %v, want [os.system]: the 2-byte operand desynchronised the parse", op, got)
+		}
+	}
+}
+
+// TestPickleInterpreterBoundsARunawayStack pins that the value-stack cap is
+// enforced and reported. A flood of operand-free opcodes is the cheapest way to
+// grow the stack - each NONE is one byte and one slot - so it is what an attacker
+// would send, and a cap that stopped the parse without recording a bound would
+// miss every target after the cap while looking like a complete scan.
+func TestPickleInterpreterBoundsARunawayStack(t *testing.T) {
+	data := bytes.Repeat([]byte{0x4e}, pickleMaxStackSlots*2) // NONE
+	set := runPickleStream(t, data, 64*1024)
+	if !set.Bound.Structural {
+		t.Fatal("a runaway value stack did not set Bound.Structural; the cap is silent")
+	}
+	if !strings.Contains(set.Bound.Reason, "value stack") {
+		t.Errorf("reason = %q, want it to name the value stack", set.Bound.Reason)
+	}
+}
+
+// TestPickleInterpreterBoundsARunawayMemo pins the memo cap the same way. MEMOIZE
+// is one byte and adds one entry, so it is the memo-side analogue of the NONE
+// flood.
+func TestPickleInterpreterBoundsARunawayMemo(t *testing.T) {
+	data := bytes.Repeat([]byte{0x94}, pickleMaxMemoSlots*2) // MEMOIZE
+	set := runPickleStream(t, data, 64*1024)
+	if !set.Bound.Structural {
+		t.Fatal("a runaway memo did not set Bound.Structural; the cap is silent")
+	}
+	if !strings.Contains(set.Bound.Reason, "memo") {
+		t.Errorf("reason = %q, want it to name the memo", set.Bound.Reason)
 	}
 }
