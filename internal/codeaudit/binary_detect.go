@@ -12,7 +12,8 @@ import (
 // renamed is a package whose extension carries no evidence.
 type BinaryKind string
 
-// The values ClassifyBinary returns, listed in the order its branches can reach them.
+// The values ClassifyBinary returns. The order carries no meaning: the function
+// decides by content test, not by walking this list.
 const (
 	KindELF        BinaryKind = "elf"
 	KindArchive    BinaryKind = "archive"

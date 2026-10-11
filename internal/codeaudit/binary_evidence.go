@@ -107,8 +107,9 @@ type EvidenceSet struct {
 	// without every caller carrying the config. newStringScanner sets it too,
 	// which is idempotent and keeps the cap on a set built by hand for the string
 	// path. Zero means unlimited, so a set built literally and handed to neither
-	// is uncapped - fine only where nothing is appended to it, as in tests and
-	// evidenceError, never on an extraction path.
+	// is uncapped: evidenceError is the only such set on a real path, and it is
+	// safe because a failed extraction has nothing appended to it. The test helper
+	// newTestEvidence builds one as well and relies on the trivial volume.
 	maxLines int
 }
 
