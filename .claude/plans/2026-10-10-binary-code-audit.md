@@ -104,6 +104,8 @@ go build ./... && go test ./internal/codeaudit/... ./internal/config/... ./inter
 15. **无节表（`len(ef.Sections) == 0`）的 ELF 记为结构性缺口，且 reason 只点名"没有节头表"**。熵检测的输入是可执行节，没有节表就没有可执行节，旧代码在这一段直接掉出去、不产生任何行也不产生任何 bound，于是"从未检查过"被报成了"没发现加壳"——这条 fail-open 已去掉。修的是**结论**而不是"补回 `DT_NEEDED`/`DT_SONAME`"：经 `PT_DYNAMIC` 恢复 needed/soname 需要先把 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移、再把 `DT_STRTAB` 的虚地址映射一次，这是一段独立的新解析逻辑，而它的产出对"有没有被加壳"不提供任何证据，所以本版不做。reason 措辞点名的是**节头表**而不是符号表：静态链接的二进制没有 `.dynsym` 但有 `.symtab`，它并不 stripped，说它"缺符号表"是假的；同理 `SHT_SYMTAB` **故意不做**符号证据的兜底来源——`.symtab` 里绝大多数是本文件自己定义的符号，拿它当能力证据就是去匹配程序自己的标识符，正是第 14 条那批误报的同一类。因此 Task 8 的规则表**不变**：没有引入新的 evidence source。**代价明确**：一个节表被删掉的正常文件（少见但存在，如某些加壳器与 `objcopy --strip-sections` 的产物）现在会被记为结构性缺口而不是干净通过；这是刻意方向——对可执行格式，"没看"不等于"干净"。
 16. **节声明长度越过文件末尾（或读不满）记为结构性缺口，`size=` 仍写声明长度**。判据是"读到的字节数 < 节头声明的字节数"，两种情况——`sh_offset`/`sh_size` 越过文件末尾，或触到 `MaxStreamBytes`——都是同一事实：熵值只覆盖一个**前缀**，所以这个数不报（报出来会和"整节测过"的数长得一样），替代它的是 `section .text declares N bytes, M readable` 这条结构化证据。`size=` 保持声明值，读者才能把声明长度与缺口配对看。**代价明确**：一个声明长度写错但内容正常的文件会被记为结构性缺口；这是刻意方向，理由同上。
 17. **自由字符串证据只判 LOW，且 `OBF_001` 在二进制臂被整个删掉**。判据是一条通则：**一条 finding 只有被文件无法偶然产生的结构背书时才可以判 HIGH**，而"某个字面量里出现了某个词"不是那种背书——`.pyc` 常量池会把相邻常量拼成一整段可打印串，二进制数据里遍地是长 base64 字母表串，所以按子串匹配的规则会把合法库判成恶意（实测：旧 `OBF_001` 命中 28 个合法共享库中的 23 个，旧 `PER_001`/`FIL_001`/`ENV_001` 的片段命中来自 `taint_engine.cpython-312.pyc` 与 `security.cpython-312.pyc`）。因此字符串半边不借源码臂的 HIGH/MEDIUM id，改用独立 LOW 族 `CMD_002`/`PER_002`/`FIL_002`/`ENV_002`（两端锚定 token，`ENV_002` 不带 `(?i)`），`OBF_001` 不设族。**代价明确**：一个真正把 base64 载荷以字面量形式留在代码里的文件，其字符串证据不再单独产出 finding；它若真在运行，仍会以 ELF 导入符号或 pickle 目标等结构证据（HIGH）出现，而纯数据文件本来就不被本平台加载。**不要把它"修回去"**——把字符串匹配放宽回子串或把严重级抬回 HIGH，就是重新引入这批误报，而误报在这种设计下的终点是删包。
+18. **pickle 解释器有两个固定上限（`pickleMaxStackSlots` / `pickleMaxMemoSlots`，各 `1<<20`），按第 13 条的判据它们"本该"有键，这里刻意不给，理由说得清楚**：第 13 条的判据是"越界会记 `Bound.Structural` 的天花板必须暴露，否则 operator 无法处置一次阻断"。两个上限都落在 `Bound.Structural` 上（`KindPickle` 是可执行类型，会阻断导入），但它们触及的不是"合法文件恰好很大"这一情形，而是"这段流根本不是 pickle"——真实语料里最深值栈 1007 槽、最大 memo 3669 条，距上限各有约 1000 倍与 280 倍余量，一个正常的 state dict 无论如何长都到不了 `1<<20`（映射按每项约两槽计，`1<<20` 槽覆盖约五十万项的映射，而最大实测映射是几万项）。也就是说，触顶意味着流在按每个字节推一个槽/一个 memo 项的方式自增，那是畸形或敌意输入的签名，不是"这个包比较大"；给这样的阻断配一个 operator 可调的键，等于允许把上限调到任意大，而上限存在的唯一目的就是限制它背后那块内存（栈约 24 MiB、memo 约 64 字节/项，都是"没有上限就长到 GB"的量）。**代价明确**：一个合法但极端到这两条线上的 pickle 会被判为未完整扫描而阻断，出路不是调键而是先确认它到底是不是 pickle。这与第 13 条的差别的量纲：`MaxStreamBytes` 会被一个真正的大文件触到，所以要暴露；这两个只会被一个不像 pickle 的流触到，所以固定。**不要把它们加进配置**——加进去就是把一个"这段流不合法"的判定，换成一个"把门槛抬高就能过"的旋钮。
+19. **`step` 的返回契约是承重的：它只在"缓冲区里没有它可以消费的东西"时返回 0，绝不在"完成了一个操作数"之后返回 0**。这是流式解析能声称"结果不依赖分块位置"的前提，也是 `Flush` 两条完整性消息（`ended mid-opcode` / `ended without STOP`）能当真的前提。曾经的缺陷正出在这里：一个计数操作数声明长度为 0 时，payload 相位没有消费任何字节就完成了它，却返回 0，被读成"还需要更多输入"，于是缓冲区尾部被搁置；当这个操作数落在最后一次 `Write` 里时，没有后续读来清空缓冲区，`Flush` 就把一个完整合法的 pickle 报成"没有 STOP"的结构性缺口——而 `KindPickle` 是可执行类型，这条缺口会删包。**这不是边界情况**：本仓库五个真实 `data.pkl` 的零长 `BINUNICODE`（状态字典的空串键）分别位于 offset 1315、1315、12830、52607、52607，也就是下一个待审的包就会中招。修法限定在 payload 相位：0 长完成之后带同一个 `b` 与 `absOff` 继续取下一个 opcode；`pickPhaseFixed` 与计数操作数的长度前缀路径（宽度至少 1 字节，必然消费至少 1 字节）没有这个场景，**不要为了"统一"把补丁搬进去**。**代价明确**：无——这条修正只把错误报的完整性换成正确的完整性。
 
 ---
 
@@ -1425,7 +1427,7 @@ git commit -m "feat(audit): measure binary section and file entropy as packing e
 
 - [ ] **Step 1: 写失败测试**
 
-追加到 `binary_evidence_test.go`（import 块补 `archive/zip`、`encoding/binary`、`io`；`os`/`strings`/`testing` 已在 Task 2 引入）：
+追加到 `binary_evidence_test.go`（import 块补 `archive/zip`、`bytes`、`encoding/binary`、`io`；`os`/`strings`/`testing` 已在 Task 2 引入）：
 
 ```go
 // runPickleStream feeds data to a scanner in fixed-size chunks, which is the
@@ -1563,13 +1565,25 @@ func TestPickleInterpreterReadsInstAsATarget(t *testing.T) {
 
 // TestPickleInterpreterIsChunkInvariant pins the property that makes the
 // streaming contract correct: the parse carries its own state, so the listing
-// cannot depend on where the reads split. The fixtures above all fit in one 64
-// KiB chunk, so this test must run at several sizes; it is what would catch a
-// boundary bug that the real file (one chunk) cannot.
+// cannot depend on where the reads split. The sizes below include 1 and the whole
+// stream in a single Write, because those are the two extremes a one-chunk fixture
+// would never exercise, and splitAfterLength, which puts a chunk boundary in the
+// one place the parser is weakest - right after the length prefix of a zero-length
+// counted operand, so that operand's completion is the first thing the next call
+// sees.
+//
+// The zero-length operand is in the fixture because the interpreter used to
+// mishandle exactly that: see TestPickleInterpreterParsesCPythonsZeroLengthOperands
+// for why it is in every real checkpoint rather than being a synthetic edge.
 func TestPickleInterpreterIsChunkInvariant(t *testing.T) {
 	data := []byte{0x80, 0x04}
 	data = append(data, pickleBinUnicode(strings.Repeat("data\x63\n", 400))...)
 	data = append(data, pickleGlobal("os", "system")...)
+	// A zero-length counted operand. pickle.dumps emits these, and the length
+	// prefix is BINUNICODE's opcode plus four length bytes.
+	zeroLenAt := len(data)
+	data = append(data, pickleBinUnicode("")...)
+	splitAfterLength := zeroLenAt + 5
 	data = append(data, 0x8c, 0x03)
 	data = append(data, "abc"...)
 	data = append(data, 0x8c, 0x03)
@@ -1577,7 +1591,7 @@ func TestPickleInterpreterIsChunkInvariant(t *testing.T) {
 	data = append(data, 0x93, 0x2e)
 
 	want := "os.system,abc.def"
-	for _, size := range []int{1, 2, 3, 5, 8, 64, 1024, 64 * 1024} {
+	for _, size := range []int{1, 2, 3, 5, 8, 64, 1024, 64 * 1024, splitAfterLength, len(data)} {
 		set := runPickleStream(t, data, size)
 		if got := strings.Join(pickleTargetsOf(set), ","); got != want {
 			t.Fatalf("chunk=%d gave %q, want %q", size, got, want)
@@ -1754,6 +1768,203 @@ func TestPickleInterpreterReadsTheRealCheckpoint(t *testing.T) {
 		t.Errorf("the real checkpoint set Bound.Structural: %s", set.Bound.Reason)
 	}
 }
+
+// TestPickleInterpreterParsesCPythonsZeroLengthOperands pins the interpreter
+// against the two byte strings CPython itself produces for a zero-length operand,
+// because the defect they exercise was in the interpreter, not in a hand-built
+// fixture. Each is fed both in one 64 KiB chunk and in a single Write, since the
+// streaming reader reads a file that fits one chunk in a single call. The assertion
+// is on the extracted targets as well as the bound: the BINUNICODE case used to
+// both set a structural bound and lose the target that followed it, so a test that
+// checked only the bound would see half the defect.
+//
+// The defect is worth stating in the test that pins it. step used to return 0
+// after completing a counted operand whose declared length was zero, and Write
+// reads a 0 as "needs more input" - so it stopped, and the bytes after the operand
+// stayed in the buffer. When the operand sat in the final Write, nothing drained
+// that buffer and Flush reported a complete, valid pickle as ending without STOP.
+// KindPickle is an executable kind, so that bound blocks the import and deletes
+// the package. Every real data.pkl in this repository has a zero-length BINUNICODE
+// (the empty-string key of a state dict), at offsets 1315, 1315, 12830, 52607 and
+// 52607 across the five of them, so this was not an edge case: it was the next
+// three packages to be audited.
+func TestPickleInterpreterParsesCPythonsZeroLengthOperands(t *testing.T) {
+	cases := []struct {
+		name    string
+		data    []byte
+		targets []string
+	}{
+		{
+			name: "pickle.dumps(b'', protocol=4): SHORT_BINBYTES of length 0",
+			data: []byte{0x80, 0x04, 0x95, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x43, 0x00, 0x94, 0x2e},
+		},
+		{
+			name:    "pickle.dumps({'': b''}, protocol=2): BINUNICODE of length 0 before a GLOBAL",
+			data:    []byte{0x80, 0x02, 0x7d, 0x71, 0x00, 0x58, 0x00, 0x00, 0x00, 0x00, 0x71, 0x01, 0x63, 0x5f, 0x5f, 0x62, 0x75, 0x69, 0x6c, 0x74, 0x69, 0x6e, 0x5f, 0x5f, 0x0a, 0x62, 0x79, 0x74, 0x65, 0x73, 0x0a, 0x71, 0x02, 0x29, 0x52, 0x71, 0x03, 0x73, 0x2e},
+			targets: []string{"__builtin__.bytes"},
+		},
+	}
+	for _, tc := range cases {
+		for _, chunk := range []int{64 * 1024, len(tc.data)} {
+			set := runPickleStream(t, tc.data, chunk)
+			if set.Bound.Structural {
+				t.Errorf("%s (chunk=%d): structural bound: %s", tc.name, chunk, set.Bound.Reason)
+			}
+			got := pickleTargetsOf(set)
+			if strings.Join(got, ",") != strings.Join(tc.targets, ",") {
+				t.Errorf("%s (chunk=%d): targets = %v, want %v", tc.name, chunk, got, tc.targets)
+			}
+		}
+	}
+}
+
+// TestPickleInterpreterReadsTheQuickMnistCheckpointInOneWrite is the load-bearing
+// regression test for the zero-length operand, and it uses a real file rather than
+// a fixture. Its data.pkl is 1548 bytes and holds a zero-length BINUNICODE at
+// offset 1315; at evidenceReadChunk (64 KiB) the whole stream arrives in one Write,
+// which is exactly the case the defect mis-handled - the bytes after the operand
+// were left in the buffer and Flush reported a complete pickle as structural.
+// Before the fix this test fails; the same checkpoint read in chunks that split
+// after the operand passes even while broken, which is why a fixture that fits one
+// chunk is the one to use.
+//
+// It deliberately does not reuse net_001.pth, the checkpoint the test above reads.
+// net_001's data.pkl is 68362 bytes, so under a 64 KiB chunk it needs two Writes
+// and the stranded tail is picked up by the second one - it self-heals, and it
+// would report green against the broken interpreter. The three data.pkl files in
+// this corpus that fit a single 64 KiB read (1548, 1548 and 16009 bytes) are the
+// ones that expose the defect, and quick_mnist/train_baseline.pth is one of them.
+func TestPickleInterpreterReadsTheQuickMnistCheckpointInOneWrite(t *testing.T) {
+	const ckpt = "../../models/examples/TEE-test/TEE-test/output/quick_mnist/train_baseline.pth"
+	if _, err := os.Stat(ckpt); err != nil {
+		t.Skipf("corpus checkpoint not present: %v", err)
+	}
+	pkl := readZipMember(t, ckpt, "/data.pkl")
+	if pkl == nil {
+		t.Fatal("no data.pkl member in the checkpoint")
+	}
+	// One Write, then Flush: the whole file in a single chunk, as the streaming
+	// reader does for a file this size.
+	set := runPickleStream(t, pkl, len(pkl))
+	if set.Bound.Structural {
+		t.Fatalf("the checkpoint was marked structural read whole: %s", set.Bound.Reason)
+	}
+	got := pickleTargetsOf(set)
+	want := []string{
+		"collections.OrderedDict",
+		"torch._utils._rebuild_tensor_v2",
+		"torch.FloatStorage",
+		"torch.LongStorage",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("targets = %v, want %v", got, want)
+	}
+}
+
+// readZipMember returns the bytes of the last zip member whose name has the given
+// suffix, or nil when there is none. It exists because a second corpus test was
+// added after the first one had already written this loop inline.
+func readZipMember(t *testing.T, path, suffix string) []byte {
+	t.Helper()
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer zr.Close()
+	var out []byte
+	for _, f := range zr.File {
+		if !strings.HasSuffix(f.Name, suffix) {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err = io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return out
+}
+
+// TestPickleInterpreterKeepsOperandsUpToTheCapAndDropsPastIt pins the
+// pickleMaxOperandBytes boundary in both directions. At the cap the operand is
+// kept, so a target formed from it resolves; one byte past it the bytes are still
+// consumed - the parse stays in step - but the value is unresolved, so using it as
+// a STACK_GLOBAL operand is a structural bound rather than a silent wrong answer.
+func TestPickleInterpreterKeepsOperandsUpToTheCapAndDropsPastIt(t *testing.T) {
+	atCap := strings.Repeat("m", pickleMaxOperandBytes)
+	kept := []byte{0x80, 0x04}
+	kept = append(kept, pickleBinUnicode(atCap)...)
+	kept = append(kept, 0x8c, 0x01, 'x')
+	kept = append(kept, 0x93, 0x2e)
+	set := runPickleStream(t, kept, 64*1024)
+	if set.Bound.Structural {
+		t.Fatalf("an operand exactly at the cap set a structural bound: %s", set.Bound.Reason)
+	}
+	if got := pickleTargetsOf(set); len(got) != 1 || got[0] != atCap+".x" {
+		t.Fatalf("targets = %d entries, want one of the cap-length module; the operand at the cap was dropped", len(got))
+	}
+
+	past := []byte{0x80, 0x04}
+	past = append(past, pickleBinUnicode(strings.Repeat("m", pickleMaxOperandBytes+1))...)
+	past = append(past, 0x8c, 0x01, 'x')
+	past = append(past, 0x93, 0x2e)
+	if set := runPickleStream(t, past, 64*1024); !set.Bound.Structural {
+		t.Error("an operand past the cap, used as a STACK_GLOBAL operand, did not set Bound.Structural")
+	}
+}
+
+// TestPickleInterpreterReadsTwoByteOperands pins the 2-byte operand width, which
+// only BININT2 and EXT2 use. Reading one byte of it - or three - desynchronises the
+// parse at that opcode and is invisible unless the stream continues past it, so the
+// fixture puts a GLOBAL after the operand and asserts it is still found.
+func TestPickleInterpreterReadsTwoByteOperands(t *testing.T) {
+	for _, op := range []byte{0x4d, 0x83} { // BININT2, EXT2
+		data := []byte{0x80, 0x04, op, 0x01, 0x02}
+		data = append(data, pickleGlobal("os", "system")...)
+		data = append(data, 0x2e)
+		set := runPickleStream(t, data, 64*1024)
+		if set.Bound.Structural {
+			t.Errorf("opcode 0x%02x: structural bound: %s", op, set.Bound.Reason)
+		}
+		if got := pickleTargetsOf(set); len(got) != 1 || got[0] != "os.system" {
+			t.Errorf("opcode 0x%02x: targets = %v, want [os.system]: the 2-byte operand desynchronised the parse", op, got)
+		}
+	}
+}
+
+// TestPickleInterpreterBoundsARunawayStack pins that the value-stack cap is
+// enforced and reported. A flood of operand-free opcodes is the cheapest way to
+// grow the stack - each NONE is one byte and one slot - so it is what an attacker
+// would send, and a cap that stopped the parse without recording a bound would
+// miss every target after the cap while looking like a complete scan.
+func TestPickleInterpreterBoundsARunawayStack(t *testing.T) {
+	data := bytes.Repeat([]byte{0x4e}, pickleMaxStackSlots*2) // NONE
+	set := runPickleStream(t, data, 64*1024)
+	if !set.Bound.Structural {
+		t.Fatal("a runaway value stack did not set Bound.Structural; the cap is silent")
+	}
+	if !strings.Contains(set.Bound.Reason, "value stack") {
+		t.Errorf("reason = %q, want it to name the value stack", set.Bound.Reason)
+	}
+}
+
+// TestPickleInterpreterBoundsARunawayMemo pins the memo cap the same way. MEMOIZE
+// is one byte and adds one entry, so it is the memo-side analogue of the NONE
+// flood.
+func TestPickleInterpreterBoundsARunawayMemo(t *testing.T) {
+	data := bytes.Repeat([]byte{0x94}, pickleMaxMemoSlots*2) // MEMOIZE
+	set := runPickleStream(t, data, 64*1024)
+	if !set.Bound.Structural {
+		t.Fatal("a runaway memo did not set Bound.Structural; the cap is silent")
+	}
+	if !strings.Contains(set.Bound.Reason, "memo") {
+		t.Errorf("reason = %q, want it to name the memo", set.Bound.Reason)
+	}
+}
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -1879,6 +2090,37 @@ const (
 // claim to have looked.
 const pickleMaxOperandBytes = 64 * 1024
 
+// pickleMaxStackSlots bounds the value stack. A pickle legitimately holds many
+// slots at once: a mapping is written as MARK, then every key and value, then a
+// single SETITEMS, so a dict of n entries occupies about 2n slots before any of
+// them is popped. The deepest stack reached by any checkpoint in this repository
+// is 1007 slots, on a cifar-10 batch whose own array data is truncated at 11.3
+// MiB; the deepest complete one, a Retina-DKD net, reaches 826, and a full
+// mnist/cifar model reaches 271. 1<<20 is about a thousand times the deepest
+// measured and covers a mapping of some half a million entries, far past the tens
+// of thousands a real state dict holds. The bound is memory, not correctness: at
+// the 24-byte size of a pickSlot, 1<<20 slots is 24 MiB, where the unbounded stack
+// a flood of operand-free opcodes would otherwise reach is gigabytes (4 MiB of
+// NONE alone grows it to 4.2M slots, about 100 MiB).
+//
+// The generosity is deliberate and it is the opposite trade from the operand cap.
+// The operand cap can afford to be tight because an over-long name is not a name
+// any rule can match; the stack cap cannot, because a legitimate state dict puts
+// two slots per entry on the stack before its SETITEMS, so a cap sized for "how
+// deep does a value nest" would bound a few hundred thousand keys - an ordinary
+// checkpoint - and block the import.
+const pickleMaxStackSlots = 1 << 20
+
+// pickleMaxMemoSlots bounds the memo table. Every object a stream memoizes costs
+// one entry, and torch.save memoizes each tensor and its storage, so the count
+// tracks the model's size: the largest measured here is 3669, on the same
+// Retina-DKD net, and a small mnist model reaches 159. 1<<20 is about 280 times
+// that, enough headroom for a model two orders of magnitude larger. Like the stack
+// cap this is a memory bound - a stream that MEMOIZEs on every byte would
+// otherwise grow the map without limit - and the map, at roughly 64 bytes an
+// entry, is the larger of the two allocations.
+const pickleMaxMemoSlots = 1 << 20
+
 // pickSlot is one value-stack or memo entry.
 //
 // Only string-ness and the string itself are kept. The interpreter never has to
@@ -1933,9 +2175,23 @@ func newPickleScanner(set *EvidenceSet) *pickleScanner {
 继续追加读循环与状态推进：
 
 ```go
-// Write implements io.Writer. All parse state crosses calls, so the result is
-// independent of where the chunk boundaries fall; a boundary inside an operand and
-// a boundary on an opcode are the same thing to this loop.
+// Write implements io.Writer. All parse state - the phase, the operand in
+// progress, the absolute offset - crosses calls, so the result does not depend on
+// where the chunk boundaries fall; a boundary inside an operand and a boundary on
+// an opcode are the same thing to this loop. step consumes the buffer down to an
+// unfinished opcode and returns 0 only when there is nothing left to take, so no
+// byte is skipped and none is consumed twice.
+//
+// That invariant is what makes the two messages in Flush mean what they say. At a
+// break the retained bytes are empty or the start of an opcode the buffer could not
+// finish, so "ended mid-opcode" names a real truncation and "ended without STOP"
+// names a stream that ran out of bytes - neither is an artefact of where the reads
+// happened to split. An earlier version asserted this chunk-independence without
+// holding it: a counted operand of length zero completed at the payload phase
+// having consumed nothing, returned 0, and was read as "needs more input", so the
+// tail of the buffer was stranded and a complete pickle could reach Flush looking
+// unfinished. The loop in step is what restores the invariant, and
+// TestPickleInterpreterParsesCPythonsZeroLengthOperands pins it.
 func (p *pickleScanner) Write(chunk []byte) (int, error) {
 	if p.stopped {
 		p.trailing += int64(len(chunk))
@@ -1979,113 +2235,139 @@ func (p *pickleScanner) Flush() {
 	}
 }
 
-// step consumes as much of one opcode as b holds and returns the number of bytes
-// consumed, or 0 when it needs more. It reports the absolute offset of the opcode
-// it is executing because that, not the operand's offset, is what an evidence line
-// carries.
+// step takes as much of the opcode stream as b holds, and returns the number of
+// bytes it consumed. It returns 0 only when it cannot consume anything - b is
+// empty and the opcode in progress is incomplete - so the caller can tell
+// "finished, keep these bytes for the next Write" from "made no progress".
+//
+// The loop exists for the one opcode that completes without consuming a byte: a
+// counted operand whose declared length is zero is finished at the payload phase
+// having read nothing, and returning 0 there would be read as "needs more input"
+// even though the bytes it needs are already in b. A stream that hit that would
+// have its tail stranded, and Flush would report a valid pickle as ending without
+// STOP. So the zero-length completion falls through to the opcode phase with the
+// same b and absOff - no byte was consumed, so both are unchanged - and the next
+// opcode is taken in this same call.
+//
+// The loop is bounded without a counter because the only path that continues
+// consumes nothing and moves the phase forward: the next turn is in pickPhaseOp,
+// which either returns 0 on an empty b, returns 1 having taken an opcode, or
+// returns through one of the other cases. A second zero-length operand in the same
+// call is a second trip, capped by the bytes in b.
+//
+// It reports the absolute offset of each opcode it executes because that, not the
+// operand's offset, is what an evidence line carries.
 func (p *pickleScanner) step(b []byte, absOff int64) int {
-	switch p.phase {
-	case pickPhaseOp:
-		if len(b) == 0 {
-			return 0
-		}
-		op := b[0]
-		desc, ok := operandOf(op)
-		if !ok {
-			// We cannot know this byte's operand width, so we cannot know where
-			// the next opcode begins. Guessing is what desynchronises; stopping
-			// without a bound would let a later opcode hide, so the parse ends
-			// here and the file is recorded as not fully read.
-			p.set.markStructural(fmt.Sprintf("unknown pickle opcode 0x%02x at offset %d", op, absOff))
-			p.stopped = true
-			return 1
-		}
-		p.op = op
-		p.opOff = absOff
-		p.arg = p.arg[:0]
-		p.keep = true
-		p.sizing = false
-		switch desc {
-		case pickNone:
-			p.exec(op)
-			return 1
-		case pickFixed1:
-			p.phase, p.need = pickPhaseFixed, 1
-		case pickFixed2:
-			p.phase, p.need = pickPhaseFixed, 2
-		case pickFixed4:
-			p.phase, p.need = pickPhaseFixed, 4
-		case pickFixed8:
-			p.phase, p.need = pickPhaseFixed, 8
-		case pickLine:
-			p.phase, p.need, p.linesLeft = pickPhaseLine, -1, 1
-		case pickTwoLines:
-			p.phase, p.need, p.linesLeft = pickPhaseLine, -1, 2
-		case pickCounted1:
-			p.phase, p.need, p.sizing = pickPhaseFixed, 1, true
-		case pickCounted4:
-			p.phase, p.need, p.sizing = pickPhaseFixed, 4, true
-		case pickCounted8:
-			p.phase, p.need, p.sizing = pickPhaseFixed, 8, true
-		}
-		return 1
-
-	case pickPhaseFixed:
-		n := len(b)
-		if int64(n) > p.need {
-			n = int(p.need)
-		}
-		p.arg = append(p.arg, b[:n]...)
-		p.need -= int64(n)
-		if p.need > 0 {
-			return n
-		}
-		if p.sizing {
-			length := leUint(p.arg)
+	for {
+		switch p.phase {
+		case pickPhaseOp:
+			if len(b) == 0 {
+				return 0
+			}
+			op := b[0]
+			desc, ok := operandOf(op)
+			if !ok {
+				// We cannot know this byte's operand width, so we cannot know where
+				// the next opcode begins. Guessing is what desynchronises; stopping
+				// without a bound would let a later opcode hide, so the parse ends
+				// here and the file is recorded as not fully read.
+				p.set.markStructural(fmt.Sprintf("unknown pickle opcode 0x%02x at offset %d", op, absOff))
+				p.stopped = true
+				return 1
+			}
+			p.op = op
+			p.opOff = absOff
 			p.arg = p.arg[:0]
-			p.need = length
-			p.phase = pickPhasePayload
-			if length > pickleMaxOperandBytes {
-				p.keep = false
+			p.keep = true
+			p.sizing = false
+			switch desc {
+			case pickNone:
+				p.exec(op)
+				return 1
+			case pickFixed1:
+				p.phase, p.need = pickPhaseFixed, 1
+			case pickFixed2:
+				p.phase, p.need = pickPhaseFixed, 2
+			case pickFixed4:
+				p.phase, p.need = pickPhaseFixed, 4
+			case pickFixed8:
+				p.phase, p.need = pickPhaseFixed, 8
+			case pickLine:
+				p.phase, p.need, p.linesLeft = pickPhaseLine, -1, 1
+			case pickTwoLines:
+				p.phase, p.need, p.linesLeft = pickPhaseLine, -1, 2
+			case pickCounted1:
+				p.phase, p.need, p.sizing = pickPhaseFixed, 1, true
+			case pickCounted4:
+				p.phase, p.need, p.sizing = pickPhaseFixed, 4, true
+			case pickCounted8:
+				p.phase, p.need, p.sizing = pickPhaseFixed, 8, true
+			}
+			return 1
+
+		case pickPhaseFixed:
+			n := len(b)
+			if int64(n) > p.need {
+				n = int(p.need)
+			}
+			p.arg = append(p.arg, b[:n]...)
+			p.need -= int64(n)
+			if p.need > 0 {
+				return n
+			}
+			if p.sizing {
+				length := leUint(p.arg)
+				p.arg = p.arg[:0]
+				p.need = length
+				p.phase = pickPhasePayload
+				if length > pickleMaxOperandBytes {
+					p.keep = false
+				}
+				return n
+			}
+			p.phase = pickPhaseOp
+			p.exec(p.op)
+			return n
+
+		case pickPhaseLine:
+			idx := bytes.IndexByte(b, '\n')
+			if idx < 0 {
+				p.appendArg(b)
+				return len(b)
+			}
+			p.appendArg(b[:idx+1])
+			p.linesLeft--
+			if p.linesLeft > 0 {
+				return idx + 1
+			}
+			p.phase = pickPhaseOp
+			p.exec(p.op)
+			return idx + 1
+
+		case pickPhasePayload:
+			n := len(b)
+			if int64(n) > p.need {
+				n = int(p.need)
+			}
+			if p.keep {
+				p.arg = append(p.arg, b[:n]...)
+			}
+			p.need -= int64(n)
+			if p.need > 0 {
+				return n
+			}
+			p.phase = pickPhaseOp
+			p.exec(p.op)
+			if n == 0 {
+				// A zero-length operand: the completion above consumed nothing, so
+				// returning here would claim it needs more bytes and strand the
+				// rest of b. Loop instead, with b and absOff unchanged, so the next
+				// opcode is taken in this call.
+				continue
 			}
 			return n
 		}
-		p.phase = pickPhaseOp
-		p.exec(p.op)
-		return n
-
-	case pickPhaseLine:
-		idx := bytes.IndexByte(b, '\n')
-		if idx < 0 {
-			p.appendArg(b)
-			return len(b)
-		}
-		p.appendArg(b[:idx+1])
-		p.linesLeft--
-		if p.linesLeft > 0 {
-			return idx + 1
-		}
-		p.phase = pickPhaseOp
-		p.exec(p.op)
-		return idx + 1
-
-	case pickPhasePayload:
-		n := len(b)
-		if int64(n) > p.need {
-			n = int(p.need)
-		}
-		if p.keep {
-			p.arg = append(p.arg, b[:n]...)
-		}
-		p.need -= int64(n)
-		if p.need > 0 {
-			return n
-		}
-		p.phase = pickPhaseOp
-		p.exec(p.op)
-		return n
 	}
-	return 0
 }
 
 // appendArg keeps operand bytes up to the cap. Past the cap the value is dropped
@@ -2124,10 +2406,35 @@ func leUint(b []byte) int64 {
 }
 ```
 
+> **`pickPhaseFixed` 与计数操作数的长度前缀路径是正确的，不要动它们。** 上面那个 `continue` 只属于 `pickPhasePayload` 里"声明长度为 0"的那一次完成，因为它是唯一一条**消费 0 字节就算完成一个操作数**的路径。`pickPhaseFixed` 永远不会以 0 收尾：固定宽度操作数的 `need` 是 1/2/4/8，计数操作数的长度前缀宽度是 1/4/8，都不小于 1，所以它在把 `need` 减到 0 时必然至少消费了一个字节，`return n` 里的 `n >= 1`。计数操作数转入 payload 的那一步也只改 `p.need`、`p.phase`，本身不动字节，它返回的仍是刚消费的长度前缀字节数。因此"当操作数声明长度为 0 时回到 opcode 相位继续"这件事，`pickPhaseFixed` 和长度前缀那一步都没有对应位置——**不要为了"统一"把 `continue` 或 `return 0` 的判定搬进去**，那样会把一个只对 0 长操作数成立的补丁，塞进本来不会有该场景的分支里，反而制造新的错位。判断标准只有一条：这次 `step` 是否**完成了一个操作数却消费了 0 字节**；只有 payload 阶段的 0 长完成满足它。
+
 继续追加栈效应与目标产出：
 
 ```go
-func (p *pickleScanner) push(s pickSlot) { p.stack = append(p.stack, s) }
+func (p *pickleScanner) push(s pickSlot) {
+	if len(p.stack) >= pickleMaxStackSlots {
+		p.overflow(fmt.Sprintf("pickle value stack exceeded %d slots at offset %d", pickleMaxStackSlots, p.opOff))
+		return
+	}
+	p.stack = append(p.stack, s)
+}
+
+// overflow records a bound the interpreter cannot continue past and ends the
+// parse. A stream that reaches either cap is not behaving like a pickle - the real
+// ones measured here stay three orders of magnitude below - so "the structure was
+// not read" is the honest report, and it takes the fail-closed direction: on a
+// pickle that is a structural bound, whichwithholds a clean-scan verdict rather
+// than hiding whatever came after the point the interpreter stopped.
+//
+// The stop is what keeps the bound bounded. Marking and continuing would leave the
+// stack (or memo) growing on every following opcode, so the cap would record a
+// finding without limiting the memory it exists to limit. Both callers therefore
+// return to exec's caller right after this, and Write - which checks p.stopped after
+// every step - stops feeding the buffer and counts the rest as trailing bytes.
+func (p *pickleScanner) overflow(reason string) {
+	p.set.markStructural(reason)
+	p.stopped = true
+}
 
 func (p *pickleScanner) pop(n int) {
 	if n > len(p.stack) {
@@ -2259,6 +2566,10 @@ func (p *pickleScanner) exec(op byte) {
 			idx = len(p.memo)
 		default:
 			idx = int(leUint(p.arg))
+		}
+		if len(p.memo) >= pickleMaxMemoSlots {
+			p.overflow(fmt.Sprintf("pickle memo exceeded %d entries at offset %d", pickleMaxMemoSlots, p.opOff))
+			return
 		}
 		if s, ok := p.top(); ok {
 			p.memo[idx] = s
