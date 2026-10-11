@@ -255,6 +255,21 @@ func TestShannonEntropy(t *testing.T) {
 			t.Errorf("entropy = %v, want 0", got)
 		}
 	})
+
+	t.Run("a total of zero returns zero rather than an infinity", func(t *testing.T) {
+		// The histogram and the total are a pair the caller owns, and this
+		// function exists in counts form precisely so a stream can be counted as
+		// it is read - a caller can therefore hold a nonzero histogram and a zero
+		// total. Without the guard the division yields an infinity that compares
+		// false against every threshold, so a section would be reported as
+		// unremarkable by accident. Note this is not the same as an all-zero
+		// histogram, where the loop skips every byte and never divides.
+		var counts [256]int64
+		counts[0x41] = 5
+		if got := shannonEntropy(counts, 0); got != 0 {
+			t.Errorf("entropy = %v, want 0", got)
+		}
+	})
 }
 
 // TestEntropyVerdictIsMeasuredNotAssumed pins the line the extractor emits and
@@ -279,5 +294,15 @@ func TestEntropyVerdictIsMeasuredNotAssumed(t *testing.T) {
 	flat := bytes.Repeat([]byte{0x41}, 512)
 	if line, ok := entropyVerdict(".text", flat, cfg); ok {
 		t.Errorf("verdict = %q for a constant buffer, want no line", line)
+	}
+
+	// The comparison is inclusive: a section measuring exactly the threshold has
+	// not exceeded it. The uniform buffer's entropy is exactly 8 by construction,
+	// so setting the threshold to 8 pins the boundary exactly - under a strict <
+	// this case would emit a line and fail.
+	atThreshold := cfg
+	atThreshold.HighEntropyThreshold = 8.0
+	if line, ok := entropyVerdict(".text", uniform, atThreshold); ok {
+		t.Errorf("verdict = %q at exactly the threshold, want no line", line)
 	}
 }
