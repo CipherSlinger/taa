@@ -38,7 +38,7 @@ go build ./... && go test ./internal/codeaudit/... ./internal/config/... ./inter
 | 覆盖范围 | **按内容嗅探**，再按类型分流（ELF / zip 容器 / gzip / pickle / numpy / 其余二进制）；扩展名清单只作为补充提示，不作唯一依据 | 改后缀即可绕过扩展名清单；内容才是事实 |
 | 分析深度 | **strings + ELF 结构 + 熵**，全部标准库 | 只有导入符号能抓住 stripped 二进制的外联；熵是识别加壳/加密载荷的唯一手段 |
 | 集成层 | **独立通道**，在 `StaticEngine` 之外，两种引擎部署都生效 | 做成第三个引擎名会让源码与二进制二选一；并入两个臂的 walk 会让两臂各自实现、互相漂移 |
-| LLM | **与源码同路径走 LLM**（finding 级复用 `VerifyReport`，文件级用二进制专用 prompt） | finding 级天然复用；文件级必须换 prompt，因为现有 prompt 明写"Python 代码文件"并用 ```python``` 包裹 |
+| LLM | **与源码同路径走 LLM**（finding 级复用 `VerifyReport`，文件级用二进制专用 prompt） | finding 级天然复用；文件级必须换 prompt，因为现有 prompt 明写"Python 代码文件"并用 ```python``` 包裹。文件级这一支今天只被 mock 驱动、不是线上行为（生产的 `teellm.Client` 无 `AnalyzeFile`），见 Task 13 的诚实性注 |
 
 ### 0.4 提交约定
 
@@ -5925,22 +5925,25 @@ func TestSymbolRulesDoNotMatchStringLiterals(t *testing.T) {
 // TestBinaryTableProducesNoHighFindingsOnLegitimateInputs is the bar the table
 // has to clear, and it is a bar rather than a preference. The severity column is
 // the only control that exists downstream: `Passed` is computed as
-// `highCount == 0` (with the medium count added under the `gate` policy,
-// internal/codeaudit/audit.go:301), and a false `Passed` makes
-// `internal/controller/import_processing.go:655-660` run `cleanDirContents` and
-// delete the model package. A rule table that reports a HIGH on an ordinary
-// shared object or a compiled .pyc therefore does not merely add noise - it
-// destroys the package.
+// `highCount == 0` (with the medium count added under the `gate` policy), and a
+// false `Passed` makes `internal/controller/import_processing.go:655-660` run
+// `cleanDirContents` and delete the model package. A rule table that reports a
+// HIGH on an ordinary shared object or a compiled .pyc therefore does not merely
+// add noise - it destroys the package.
 //
 // Every fixture below reproduces a shape measured against real files on this
-// machine: `/home/hjy/taa/models` (untracked, so it cannot itself be the
-// fixture), the 28 shared libraries of a stock ollama install, and the .pyc
-// files under this repository, using the stringScanner semantics from
-// binary_evidence.go, real `readelf --dyn-syms` output and real pickle targets.
-// The measured numbers the shapes stand for - 23 of 28 libraries firing a
-// free-string rule, `bind` in libllama-common.so, `.profilez /etc/cron)` and
-// `crontabz` inside taint_engine.cpython-312.pyc - are recorded in this task's
-// prose so a later reader can repeat the run against the finished table.
+// machine: the string runs of `/home/hjy/taa/models` (740 files of that tree are
+// tracked in this repository, so it is not the untracked part - the narrower
+// truth is that the .pyc files carrying these fragments are the untracked,
+// gitignored ones, which is why the fragments are reproduced as fixtures rather
+// than the files being embedded), the 28 shared libraries of a stock ollama
+// install, and the .pyc files under this repository, using the stringScanner
+// semantics from binary_evidence.go, real `readelf --dyn-syms` output and real
+// pickle targets. The measured numbers the shapes stand for - 23 of 28 libraries
+// firing a free-string rule, `bind` in libllama-common.so, the TAB-bearing
+// `'.profilez\t/etc/cron)'` run in taint_engine.cpython-312.pyc and `crontabz` in
+// code_security_analyzer.cpython-312.pyc - are recorded in this task's prose so
+// a later reader can repeat the run against the finished table.
 func TestBinaryTableProducesNoHighFindingsOnLegitimateInputs(t *testing.T) {
 	matcher, err := NewBinaryMatcher()
 	if err != nil {
@@ -6041,9 +6044,9 @@ func TestBinaryTableStillFiresHighOnStructuralEvidence(t *testing.T) {
 // TestBinaryFamilySeveritiesArePinned pins the severity column of the resolved
 // table, one family at a time, because that column is the only control that
 // decides whether a finding blocks. Under the default `assist` policy `Passed`
-// is `highCount == 0`; under `gate` it is `High == 0 && Medium == 0`
-// (internal/codeaudit/audit.go:298-309), and a false `Passed` makes
-// internal/controller/import_processing.go:655-660 delete the package. The two
+// is `highCount == 0`; under `gate` it is `High == 0 && Medium == 0`, and a
+// false `Passed` makes internal/controller/import_processing.go:655-660 delete
+// the package. The two
 // policies therefore impose two different bars, and a family's severity has to
 // be right for both: the four string families are LOW, not MEDIUM, precisely
 // because MEDIUM would still delete once an operator switches to `gate`.
@@ -6104,6 +6107,19 @@ func TestBinaryFamilySeveritiesArePinned(t *testing.T) {
 			len(cases), len(matcher.Rules()))
 	}
 }
+
+// TestEveryBinaryRuleHasASuggestion pins that the suggestion map covers the
+// binary table. It is written against BinaryRuleIDs rather than a literal list so
+// that a family added later fails here instead of shipping a report whose
+// recommendation for it says nothing.
+func TestEveryBinaryRuleHasASuggestion(t *testing.T) {
+	const fallback = "审查该代码片段并确认其安全性"
+	for _, id := range BinaryRuleIDs() {
+		if SuggestionForRule(id) == fallback {
+			t.Errorf("rule %s has no entry in ruleSuggestionMap", id)
+		}
+	}
+}
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -6144,7 +6160,7 @@ import (
 // The reason this has to be stated rather than felt is that the severity column
 // is the only control that exists downstream. `Passed` is computed as
 // `highCount == 0` under the default `assist` policy, and with the medium count
-// added under `gate` (internal/codeaudit/audit.go:298-309). A false `Passed`
+// added under `gate`, both in ComputeConclusionContext. A false `Passed`
 // makes internal/controller/import_processing.go:655-660 run cleanDirContents
 // and delete the model package. Measured against the real files on this machine,
 // the table as first written deleted legitimate packages: one free-string rule
@@ -6155,10 +6171,9 @@ import (
 //
 // "LOW" is the literal the report path already uses for a non-blocking finding:
 // DefaultRules() has no LOW constant, and ClassifyFindingRisk falls through to
-// "LOW" for any severity that is neither HIGH nor MEDIUM
-// (internal/codeaudit/audit.go:242-243). A LOW finding still reaches the report
-// and still goes to the Tier-2 verifier, which can raise it to MALICIOUS on its
-// own evidence; it simply does not block by itself.
+// "LOW" for any severity that is neither HIGH nor MEDIUM. A LOW finding still
+// reaches the report and still goes to the Tier-2 verifier, which can raise it
+// to MALICIOUS on its own evidence; it simply does not block by itself.
 var binaryOnlyRules = map[string]Rule{
 	"BIN_001": {
 		ID:       "BIN_001",
@@ -6192,8 +6207,8 @@ var binaryOnlyRules = map[string]Rule{
 	// The four families below carry free-string evidence and are LOW. Their ids
 	// are new rather than shared because PER_001 and CMD_001 are HIGH in the
 	// source table and FIL_001/ENV_001 are MEDIUM - and MEDIUM is not the safe
-	// level either, because under the gate policy it blocks and deletes too
-	// (audit.go:301). Giving them LOW under a shared id would make the two arms
+	// level either, because under the gate policy it blocks and deletes too.
+	// Giving them LOW under a shared id would make the two arms
 	// disagree about a shared family's severity, which
 	// TestBinaryRulesBorrowSharedFamilies exists to prevent.
 	"CMD_002": {
@@ -6263,6 +6278,12 @@ var binaryFamilies = []binaryFamily{
 		// imports system() has the capability. Only SourceDynsym - the string
 		// half lives in CMD_002 below, because the same word in a literal is not
 		// a capability.
+		//
+		// The same corpus run that produced the NET_002 measurement puts this
+		// family on a legitimate library too: `nm -D` shows
+		// libggml-base.so.0.20.2 importing `execlp`, so CMD_001 reports HIGH on
+		// ggml's own backend loader. That is the same undecided posture the
+		// NET_002 note records, left undecided here for the same reason.
 		ID:      "CMD_001",
 		Sources: []EvidenceSource{SourceDynsym},
 		Patterns: compilePatterns(
@@ -6270,40 +6291,34 @@ var binaryFamilies = []binaryFamily{
 		),
 	},
 	{
-		// The client half of raw network use. The set is deliberately the
-		// outbound-client shape rather than every socket primitive, chosen
-		// against the 28 shared libraries of a stock ollama install: the generic
-		// and server-side symbols - `bind`, `send`, `recv` - are imported by
-		// legitimate libraries, and `bind` alone is a server, so a rule built on
-		// them blocks a networking stack rather than a payload. The client
-		// symbols plus a client library dependency keep the claim smaller than
-		// that.
+		// The client half of raw network use. The set was narrowed to the
+		// outbound-client shape out of the measurement below, and the narrowing
+		// did not achieve what it was for.
 		//
-		// They do not keep it small enough, and this comment used to say they
-		// did. A later run over the same bundle found `socket`, `connect` and
-		// `getaddrinfo` imported by libllama-common.so.0.1.2 and
-		// libllama-server-impl.so, and the same set by the libcudart/libcudnn
-		// libraries under cuda_v12, cuda_v13 and mlx_cuda_v13. This family
-		// therefore fires NET_002 at HIGH on legitimate libraries in this
-		// deployment's own bundle; under the default `assist` policy that makes
-		// `passed` false, and internal/controller/import_processing.go:655-660
-		// then runs cleanDirContents and deletes the package. It is reachable
-		// because collectELFReader writes SHN_UNDEF global symbols into
-		// SourceDynsym by bare name - Go's Symbol.Name carries no `@version`
-		// suffix - so a library that merely links a socket client matches the
-		// anchored alternation exactly. The dependency half of the comment does
-		// hold: no library in the bundle needs libcurl.
+		// Measured with the wide symbol readers (`nm -D`, or `readelf -sW
+		// --dyn-syms`; plain `readelf --dyn-syms` truncates long names to
+		// `[...]` and hides `socket` and `connect` in particular) against the 28
+		// shared libraries of this machine's ollama bundle: the generic and
+		// server-side symbols - `bind`, `send`, `recv` - are imported by
+		// libllama-common.so, a legitimate library, so dropping them did remove
+		// that match. But the client symbols were kept, and they sit in the same
+		// libraries: libllama-common.so.0.1.2 and libllama-server-impl.so both
+		// import `socket`, `connect` and `getaddrinfo` alongside
+		// `bind`/`send`/`recv`, and the CUDA runtime libraries under
+		// cuda_v12/cuda_v13 import `bind`/`connect`/`socket`.
 		//
-		// That is an unadjudicated rule trade-off, not a defect in the table, and
-		// this plan does not adjudicate it. The candidates are to narrow the
-		// alternation further, to drop the family to MEDIUM (still blocking under
-		// `gate`), or to require co-occurrence with another family; which is right
-		// depends on what a deployment wants a linked socket client to mean, and
-		// that call is the user's. It is recorded here so the measurement is not
-		// re-derived from scratch.
+		// So on this machine's bundle NET_002 reports HIGH on legitimate
+		// libraries, and under the default `assist` policy, where `Passed` is
+		// `highCount == 0`, that means passed=false for a package that holds one
+		// of them. The "or needs libcurl" half of the original claim does hold:
+		// no library in the bundle carries a curl or ssl DT_NEEDED.
 		//
-		// The shared id and its severity are the source arm's, so this family
-		// stays HIGH whatever the trade-off above resolves to.
+		// This is not a mis-written comment; it is a rule posture that was never
+		// decided. Narrowing the pattern set further, dropping the family to
+		// MEDIUM, and requiring it to co-occur with another family are all open,
+		// and this task chooses none of them - it records the measurement and
+		// leaves the decision unmade. The shared id and its severity are the
+		// source arm's, so as written this family stays HIGH.
 		ID:      "NET_002",
 		Sources: []EvidenceSource{SourceDynsym, SourceNeeded},
 		Patterns: compilePatterns(
@@ -6350,11 +6365,21 @@ var binaryFamilies = []binaryFamily{
 	},
 	{
 		// Token-anchored at both ends. The previous patterns fired on
-		// `'crontabz'` and on `'.profilez /etc/cron)'` inside
-		// taint_engine.cpython-312.pyc, where a .pyc's constants concatenate into
-		// a run and a mid-run path always matches an unanchored pattern. A
-		// boundary on the token, not the fragment, is the fix; raising the
-		// severity would not have been.
+		// `'crontabz'` and on `'.profilez\t/etc/cron)'`, both fragments of a
+		// concatenated .pyc constant pool, where a mid-run path always matches an
+		// unanchored pattern. A boundary on the token, not the fragment, is the
+		// fix; raising the severity would not have been.
+		//
+		// The two fragments come from different files, which an earlier version
+		// of this note got wrong by attaching both to one of them.
+		// `'.profilez\t/etc/cron)'` (a TAB, not a space) is the single occurrence
+		// in models/audit/tools/cpg/__pycache__/taint_engine.cpython-312.pyc,
+		// which contains no `crontab` substring at all. `'crontabz'` is in
+		// models/examples/__pycache__/code_security_analyzer.cpython-312.pyc,
+		// where the source literal `r"crontab"` in
+		// models/examples/code_security_analyzer.py has picked up the trailing
+		// `z` from the concatenation - the fragment is real, only the file was
+		// misattributed.
 		ID:      "PER_002",
 		Sources: []EvidenceSource{SourceStrings},
 		Patterns: compilePatterns(
@@ -6505,6 +6530,12 @@ func (m *BinaryMatcher) Match(line EvidenceLine) *Rule {
 // MatchAll returns one rule per matching line, in listing order, with the
 // index of the matched line. It is a slice-building convenience over Match so
 // that the scanner does not re-implement the precedence loop.
+//
+// It has no caller in this commit - not in the scanner, not in a test, nothing.
+// It is written ahead of the binary scanner, which Task 9 wires to this table
+// and which is the caller that would otherwise re-implement the precedence
+// loop; until that lands it is deliberately declared and deliberately unused,
+// not an oversight.
 func (m *BinaryMatcher) MatchAll(lines []EvidenceLine) []binaryMatch {
 	var out []binaryMatch
 	for i := range lines {
@@ -8395,7 +8426,26 @@ git commit -m "feat(audit): run the binary channel inside GenerateAuditReport fo
 - Modify: `internal/codeaudit/verifier.go`, `internal/codeaudit/llm_test.go`
 - Test: `internal/codeaudit/llm_test.go`
 
-- [ ] **Step 1: 让 mock 捕获 prompt**
+- [ ] **Step 1: 在 `llm_test.go` 的 import 块补 `"strings"`**
+
+本任务的两个新用例都用 `strings.Contains` 断言 prompt 的内容，而 `internal/codeaudit/llm_test.go` 的 import 块（`:3-13`）当前只有 `context`、`encoding/json`、`net/http`、`net/http/httptest`、`testing`、`time` 以及 `github.com/CipherSlinger/teellm`、`github.com/CipherSlinger/teetls`，**没有 `"strings"`**。漏补的后果不是"测试变红"而是**编译不过**：Step 4 会报 `undefined: strings`（不是那儿写的"prompt 里是 Python 框架与原始字节"），Step 7 的 `go vet ./internal/codeaudit/` 也一样挂。Go 拒绝未使用的 import，所以这一条必须和真正用到它的用例在同一步落地——这正是它被排在最前的原因：
+
+```go
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/CipherSlinger/teellm"
+	"github.com/CipherSlinger/teetls"
+)
+```
+
+- [ ] **Step 2: 让 mock 捕获 prompt**
 
 修改 `internal/codeaudit/llm_test.go` 的 `mockLLMClient`：结构体加一个字段
 
@@ -8419,7 +8469,7 @@ func (m *mockLLMClient) AnalyzeFile(_ context.Context, prompt string) (FileSumma
 }
 ```
 
-- [ ] **Step 2: 写失败测试**
+- [ ] **Step 3: 写失败测试**
 
 追加到 `internal/codeaudit/llm_test.go`：
 
@@ -8487,15 +8537,15 @@ func TestSourceFilePromptIsUnchangedByTheBinaryChannel(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: 跑测试确认失败**
+- [ ] **Step 4: 跑测试确认失败**
 
 ```bash
 go test ./internal/codeaudit/ -run 'TestBinaryFilePrompt|TestSourceFilePrompt' 2>&1 | head -20
 ```
 
-预期：`TestBinaryFilePromptCarriesEvidenceAndNotRawBytes` FAIL（prompt 里是 Python 框架与原始字节）。
+预期：`TestBinaryFilePromptCarriesEvidenceAndNotRawBytes` FAIL（prompt 里是 Python 框架与原始字节）。注意这里的前提是 Step 1 已经补过 `"strings"`——没补的话这一步会以 `undefined: strings` 编译失败，那是**另一种**红，别把它当成"预期内的失败"。
 
-- [ ] **Step 4: 实现**
+- [ ] **Step 5: 实现**
 
 修改 `internal/codeaudit/verifier.go`。
 
@@ -8556,6 +8606,18 @@ const binaryFileAnalysisPromptTemplate = `你是二进制代码安全审计专�
 // of the file. The listing is used rather than re-read from disk for two
 // reasons: a binary file read as text is noise, and re-running the extraction
 // here would read a possibly-large file a second time on the import path.
+//
+// Both branches are behind the FileAnalyzer assertion above, and the binary one
+// is reachable today only through a client that implements that interface. The
+// production client does not: it is teellm.Client (LLMClient above), whose
+// interface declares VerifyFinding, HealthCheck and Close and no AnalyzeFile,
+// and newLLMClient returns that value unchanged. The only AnalyzeFile
+// implementation in the tree is a test mock. So in production a binary file
+// falls through to synthesizeFileSummary - which is the same situation the
+// source file path has been in all along, so this is not a regression the
+// binary channel introduces; the file-level prompt is exercised by the mock
+// rather than by the deployed pipeline. This function does not change that, and
+// its tests do not claim otherwise.
 func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, findings []Finding, lineCounts map[string]int, binaryEvidence map[string]*EvidenceSet) FileSummary {
 	fa, ok := client.(FileAnalyzer)
 	if !ok {
@@ -8619,7 +8681,13 @@ func analyzeBinaryFileWithLLM(ctx context.Context, fa FileAnalyzer, ev *Evidence
 }
 ```
 
-- [ ] **Step 5: 跑测试确认通过**
+> **注（诚实性，必须按事实写，不改行为）**：上面的二进制分支今天**只被 mock 驱动，不是线上行为**。生产的 `LLMClient` 就是 `teellm.Client`（`internal/codeaudit/llm.go:70`），它的接口只声明 `VerifyFinding`/`HealthCheck`/`Close`（`teellm/client.go:56-60`），**没有** `AnalyzeFile`；`newLLMClient` 把这个接口值原样返回（`internal/controller/import_processing.go:742-753`）。全树唯一的 `AnalyzeFile` 实现者是测试 mock（`internal/codeaudit/llm_test.go:86`），`teellm.ActionAnalyzeFile`（`teellm/types.go:9`）无消费方，`parseFileSummary` 也只被测试调用。所以二进制文件在生产里落到 `synthesizeFileSummary`，**与源码文件路径的既有处境完全相同**——文件级提示词由 mock 驱动，不由线上流水线驱动，本任务不改变这一点，本任务的两个用例也不声称改变了它。**不要**照着"A file the binary channel examined takes the binary prompt…"这种前提去写注释或写断言，那是生产里不成立的说法；上面 `analyzeFileWithLLM` 的注释已按事实改过。
+>
+> **待决项**：若要让文件级提示词（源码的与二进制的）真正到达模型，需要给 `teellm.Client` 配一层实现 `FileAnalyzer` 的适配器，或让 teellm 客户端自行声明 `AnalyzeFile`——那是**扩功能**，超出本计划范围，与 `NET_002` 的未裁决 posture 同类，留给用户决定。
+
+> **注（提示词结构，不改行为）**：`binaryFileAnalysisPromptTemplate` 把 `## 判定基准` 放在**证据块之后**且没有尾部重述。这与仓库已实测的 **finding 级**先例不一致——`teellm/ollama_backend.go:15` 的 `findingAnalysisPromptTemplate` 是**准则前置**（`## 判定优先级与安全边界` 在第 17 行、证据之前）**加尾部** `## 判定提醒`（第 46 行），由 `TestFindingAnalysisPromptOrderAndVerbs`/`TestFindingAnalysisPromptCachingInvariants`（`teellm/ollama_backend_test.go:443`/`:536`）钉住——但它与自己的**文件级**同类 `fileAnalysisPromptTemplate`（`internal/codeaudit/verifier.go:300-317`，同样是准则在证据之后、无尾部重述）一致，所以本任务**保持现状不重组**：那条实测覆盖的是 finding 级提示词，没有任何针对文件级提示词的测量，而在上一条注成立的前提下它今天也到不了模型。留这条注记只为给后来者一个杠杆——**若将来要优化文件级提示词的延迟，第一个该试的杠杆是把准则前置**（与 finding 级先例同形），而且必须照那条先例的**完整形态**做：前置**并**在尾部重述，因为那条先例记录的是"只前置、无尾部重述会系统性转严"。
+
+- [ ] **Step 6: 跑测试确认通过**
 
 ```bash
 go test ./internal/codeaudit/ -run 'TestBinaryFilePrompt|TestSourceFilePrompt|TestGenerateAuditReport' -v 2>&1 | tail -20
@@ -8627,7 +8695,7 @@ go test ./internal/codeaudit/ -run 'TestBinaryFilePrompt|TestSourceFilePrompt|Te
 
 预期全 PASS。
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 7: 提交**
 
 ```bash
 gofmt -l internal/codeaudit/ ; go vet ./internal/codeaudit/
@@ -9174,7 +9242,7 @@ go test ./... 2>&1 | grep -vE "^ok|no test files" | head -30
 - **识别**：按文件内容判定（ELF / zip 容器 / gzip / pickle / numpy / 其余二进制），扩展名仅作补充。改后缀不能绕过；`.py` 结尾的二进制同样会被认领。
 - **证据**：ELF 动态导入符号与 `DT_NEEDED`、节区构成与香农熵、可打印字符串、容器成员（zip/gzip 内部最多递归一层）、pickle 的 `GLOBAL`/`STACK_GLOBAL`/`INST` 目标（带 memo 表的 opcode 解释器）、超过 64 MiB 的文件读首尾各 1 MiB（捕捉 zip 末尾追加的载荷，并把单文件成本钉在约 190 ms）。
 - **判定**：证据行按规则表匹配，产出 `Finding` 并标记 `binary_kind` / `evidence_source` / `binary_offset`。**结构性证据**（ELF 动态符号、`DT_NEEDED`、熵）走共享规则 `NET_002`/`CMD_001`/`DYN_001`，其严重级从源码规则表读取，不另立一套；二进制专有规则 `BIN_001`（可执行节区熵近随机，HIGH）、`BIN_002`（`memfd_create`/`fexecve`，HIGH）、`PKL_001`（pickle 反序列化执行，HIGH）。**字符串证据**不共享源码臂的 id——`CMD_002`/`PER_002`/`FIL_002`/`ENV_002` 是四个独立的 LOW 族，理由见下：一条 finding 只有被文件无法偶然产生的结构背书时才可以是 HIGH，而一段字符串常量不是；源码臂的同名族 `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` 在共享表里是 HIGH/MEDIUM，借用它们会把「某个字面量里出现了某个词」抬到阻断级别。`OBF_001` 在二进制臂**没有**族：它的旧模式 `^[A-Za-z0-9+/]{120,}={0,2}$` 命中了 28 个合法共享库中的 23 个（`.pyc` 常量池和二进制数据里遍地是长 base64 字母表串），收紧字母表或抬高下限都治不了，只保留源码臂的调用点版本。
-- **复核**：二进制 finding 与源码 finding 走同一条 LLM 路径；文件级分析使用二进制专用 prompt（现有 prompt 面向 Python 源码，不适用）。
+- **复核**：二进制 finding 与源码 finding 走同一条 LLM 路径；文件级分析使用二进制专用 prompt（现有 prompt 面向 Python 源码，不适用）。**诚实性**：文件级分支只在调用方实现 `FileAnalyzer` 时可达，而生产的 `LLMClient`（`teellm.Client`）没有 `AnalyzeFile`，所以它今天只被测试 mock 驱动，不是线上行为——这与源码文件路径的既有处境完全相同，本计划不改变它（见 Task 13 的两条注）。
 - **完整性**：`scan_metadata.binary` 记录 `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `errored` / `findings_capped` / `findings_dropped` / `max_findings`。可执行格式的结构抽取被截断、文件无法读取、整趟无法运行，任一项都会使 `ProvesCleanScan()` 为假——fail-closed 下即阻断导入；纯数据文件（张量、npy）的证据截断只记录、不阻断。**finding 上限不属于完整性**：触顶只写 `findings_capped`/`findings_dropped`，不写 `scan_metadata.truncated`、不阻断；cap 只花 LOW 这一档，能阻断的 HIGH（`assist` 与 `gate`）与 MEDIUM（`gate`）无论预算如何都保留。
 - **配置**：`security.binaryAudit.enabled`（默认 `true`）、`maxArchiveMembers`、`highEntropyThreshold`、`maxFindings`（默认 50，独立于源码臂的 200；是清单预算，调小只会丢 LOW，不会丢任何能阻断的 finding——`assist` 与 `gate` 下的 HIGH、`gate` 下的 MEDIUM——也不会阻断）、`maxFullScanBytes`（默认 64 MiB）、`maxStreamBytes`（默认 3 GiB；与 `maxFullScanBytes` 成对，抬高后者才会让前者生效）。关闭它即回滚，审计行为与引入该通道之前逐字节一致。
 - **边界**：PE/Mach-O 不做结构解析（本平台不加载），xz/zstd/bzip2/7z 容器与 tar 不打开，纯文本非源码文件不审，嵌套归档只递归一层，pickle 解释器只跑在被声明为 pickle 的流上（因此不认领贴在非 pickle 文件尾部、头部无 pickle 魔数的 pickle）。详见 `.claude/plans/2026-10-10-binary-code-audit.md` §2。
