@@ -5448,11 +5448,18 @@ func TestCollectEvidenceRoutesByKind(t *testing.T) {
 		file string
 		raw  []byte
 		want BinaryKind
+		// wantSource is the evidence source only the dedicated collector for
+		// this kind produces. It is asserted rather than implied by a non-empty
+		// listing because the shared strings pass emits "connect" from an ELF
+		// and "system" from a pickle just as readily as the collectors do, so
+		// presence alone stays green when a kind is misrouted into that pass -
+		// which is the loss this channel exists to prevent.
+		wantSource EvidenceSource
 	}{
-		{"elf", "lib.so", elfFixtureBytes(t, elfSpec{imports: []string{"connect"}}), KindELF},
-		{"archive", "m.pt", zipFixture(t, map[string][]byte{"a": []byte("x")}, []string{"a"}), KindArchive},
-		{"pickle", "m.pkl", []byte("\x80\x04cposix\nsystem\n."), KindPickle},
-		{"raw", "w.bin", []byte("data\x00literal_here"), KindRaw},
+		{"elf", "lib.so", elfFixtureBytes(t, elfSpec{imports: []string{"connect"}}), KindELF, SourceDynsym},
+		{"archive", "m.pt", zipFixture(t, map[string][]byte{"a": []byte("x")}, []string{"a"}), KindArchive, SourceMember},
+		{"pickle", "m.pkl", []byte("\x80\x04cposix\nsystem\n."), KindPickle, SourcePickle},
+		{"raw", "w.bin", []byte("data\x00literal_here"), KindRaw, SourceStrings},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -5463,6 +5470,23 @@ func TestCollectEvidenceRoutesByKind(t *testing.T) {
 			}
 			if len(set.Lines) == 0 {
 				t.Error("no evidence at all from a file that has some")
+			}
+			// The source is what pins the dispatch: SourceDynsym comes only
+			// from the ELF parse, SourceMember only from the zip walk and
+			// SourcePickle only from the interpreter, so a kind that never
+			// reached its collector cannot produce its line. KindRaw is the one
+			// case where the shared strings pass is the collector, so its
+			// expectation is SourceStrings and there is nothing stronger to
+			// assert.
+			found := false
+			for _, l := range set.Lines {
+				if l.Source == tc.wantSource {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("no %s evidence: the file never reached its %s collector", tc.wantSource, tc.want)
 			}
 			// Finalize assigns Index; nothing may read the listing before it.
 			for i, l := range set.Lines {
@@ -5569,8 +5593,11 @@ func TestCollectEvidenceWindowsAFileAboveTheSizeThreshold(t *testing.T) {
 					t.Error("the middle was read anyway; the threshold is not a threshold")
 				}
 			}
-			// isExecutableKind is what decides whether that bound blocks; this
-			// asserts the same predicate the scanner folds on.
+			// This last check is on the predicate itself, not on CollectEvidence:
+			// CollectEvidence never consults isExecutableKind, so this only
+			// keeps wantBlocked above honest against the table. What folds the
+			// predicate into a withheld verdict is the scanner's, and that
+			// arrives in Task 9.
 			if got := isExecutableKind(tc.kind); got != tc.wantBlocked {
 				t.Errorf("isExecutableKind(%s) = %t, want %t", tc.kind, got, tc.wantBlocked)
 			}
@@ -5578,6 +5605,8 @@ func TestCollectEvidenceWindowsAFileAboveTheSizeThreshold(t *testing.T) {
 	}
 }
 ```
+
+**关于 `pickle` 那一格的诚实说明**：加上 `wantSource` 之后，`elf`/`archive` 两格的派发是被**完全**钉住的——`SourceDynsym` 只可能来自 ELF 解析、`SourceMember` 只可能来自 zip 遍历，走岔了的 kind 产不出这一行。但 `pickle` 那一格只能钉到「解释器跑了」这一层：`CollectEvidence` 的 pickle 分支**就是**共享的 `streamWithSizeSwitch` 这一趟（见 Step 3 的 `case KindNumpy, KindPickle, KindRaw`），并不存在一个「专属的 pickle 抽取器」可供绕开，所以这一格证明的是 kind 被正确传进了那趟共享扫描、解释器随之开跑，而不是「路由到了一个别的实现」。`pickle`/`raw` 这一路上尺寸开关的残余风险由 `TestCollectEvidenceWindowsAFileAboveTheSizeThreshold` 接住——那条用例才是在钉超阈值后中间段被跳过这件事。这是派发结构本身的性质，不是这条测试的短板；写在这里，免得后来者对着这一格反复琢磨。
 
 - [ ] **Step 2: 跑测试确认失败**
 
