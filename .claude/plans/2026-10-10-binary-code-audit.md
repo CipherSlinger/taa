@@ -4426,82 +4426,94 @@ git commit -m "feat(audit): window large files to their head and tail"
 
 - [ ] **Step 2: 钉住窗口化开关的测试**
 
+在 `binary_evidence_test.go` 的 import 块补 `"fmt"`（这条用例用 `fmt.Sprintf` 拼出期望的窗口尺寸；`os` 与 `strings` 已在 Task 2 引入，`os.Stat` 用来把 `set.Size` 设成文件的真实大小）。
+
 追加到 `binary_evidence_test.go`：
 
 ```go
-// TestStreamWithSizeSwitchWindowsAFileAboveTheFullScanBudget pins the switch
-// itself, the way TestCollectEvidenceWindowsAFileAboveTheSizeThreshold pins its
-// effect on the whole collector.
+// TestStreamWithSizeSwitchWindowsAFileAboveTheFullScanBudget pins the switch in
+// both directions. At or below the budget the whole file is read, so a literal
+// that exists only in the middle is found and no bound is recorded; above it the
+// two windows are read, so the head literal is found, the middle one is not, and
+// the skip is a structural bound naming the threshold and the window size.
 //
-// It drives the switch through a small config rather than by building a 64 MiB
-// fixture: the switch compares set.Size against cfg.MaxFullScanBytes, so lowering
-// the config exercises exactly the branch a 64 MiB file would, at a fraction of
-// the cost and with no dependence on the disc. Both directions are asserted
-// because the switch has two outcomes, and a test of only the windowed one would
-// pass on a function that windowed unconditionally.
+// The threshold is read from cfg rather than a constant, so a small config drives
+// the same branch a 64 MiB fixture would and the test does not have to build that
+// fixture. Do not "fix" this by building a real oversized file.
+//
+// What a structural bound costs a package is not decided here. Task 9's scanner
+// folds it through isExecutableKind: a windowed pickle or ELF is withheld, a
+// windowed raw blob is only recorded. This test asserts the record, not the
+// block, and must not be read as the place that decides deletion.
 func TestStreamWithSizeSwitchWindowsAFileAboveTheFullScanBudget(t *testing.T) {
-	cfg := DefaultBinaryConfig()
-	cfg.MaxFullScanBytes = 4096
-	cfg.HeadTailBytes = 64
-
 	dir := t.TempDir()
-	var content []byte
-	content = append(content, []byte("HEAD_LITERAL\x00")...)
-	content = append(content, bytes.Repeat([]byte{'a'}, 128)...)
-	content = append(content, []byte("MIDDLE_LITERAL\x00")...)
-	content = append(content, bytes.Repeat([]byte{'b'}, 8192)...)
-	content = append(content, []byte("TAIL_LITERAL\x00")...)
-	path := writeTestBytes(t, dir, "big.bin", content)
+	const fullScan, window = 4096, 64
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFullScanBytes = fullScan
+	cfg.HeadTailBytes = window
 
-	// Above the budget the middle is skipped: the head and tail literals are read
-	// and the middle one is not, and the skip is recorded with the limit's name.
-	above := newTestEvidence(path, KindRaw)
-	above.Size = int64(len(content))
-	if err := streamWithSizeSwitch(path, above, cfg); err != nil {
-		t.Fatalf("streamWithSizeSwitch above the budget: %v", err)
-	}
-	if !above.Bound.Structural {
-		t.Fatalf("a file of %d bytes above a %d-byte budget recorded no structural bound; bound = %+v",
-			len(content), cfg.MaxFullScanBytes, above.Bound)
-	}
-	if !strings.Contains(above.Bound.Reason, "MaxFullScanBytes") {
-		t.Errorf("bound reason = %q, want it to name MaxFullScanBytes", above.Bound.Reason)
-	}
-	if want := fmt.Sprintf("head and tail %d bytes", cfg.HeadTailBytes); !strings.Contains(above.Bound.Reason, want) {
-		t.Errorf("bound reason = %q, want it to state %q", above.Bound.Reason, want)
-	}
-	found := map[string]bool{}
-	for _, l := range above.Lines {
-		found[l.Text] = true
-	}
-	if !found["HEAD_LITERAL"] {
-		t.Errorf("the head literal was not read from a windowed file; lines = %v", above.Lines)
-	}
-	if !found["TAIL_LITERAL"] {
-		t.Errorf("the tail literal was not read from a windowed file; lines = %v", above.Lines)
-	}
-	if found["MIDDLE_LITERAL"] {
-		t.Error("the middle literal was read anyway; the threshold is not a threshold")
-	}
+	small := make([]byte, fullScan)
+	copy(small, "\x00SMALL_HEAD\x00")
+	copy(small[fullScan/2:], "\x00SMALL_MIDDLE\x00")
 
-	// At or below the budget the whole file is read: the same middle literal is
-	// found, and nothing is recorded as skipped.
-	below := newTestEvidence(path, KindRaw)
-	below.Size = int64(len(content))
-	belowCfg := cfg
-	belowCfg.MaxFullScanBytes = int64(len(content)) + 1
-	if err := streamWithSizeSwitch(path, below, belowCfg); err != nil {
-		t.Fatalf("streamWithSizeSwitch below the budget: %v", err)
-	}
-	if below.Bound.Structural {
-		t.Errorf("a file under the budget recorded a structural bound (%q)", below.Bound.Reason)
-	}
-	found = map[string]bool{}
-	for _, l := range below.Lines {
-		found[l.Text] = true
-	}
-	if !found["MIDDLE_LITERAL"] {
-		t.Errorf("the middle literal was not read from a file under the budget; lines = %v", below.Lines)
+	large := make([]byte, fullScan*2)
+	copy(large, "\x00LARGE_HEAD\x00")
+	copy(large[fullScan:], "\x00LARGE_MIDDLE\x00")
+	copy(large[len(large)-13:], "\x00LARGE_TAIL\x00")
+
+	for _, tc := range []struct {
+		file       string
+		content    []byte
+		wantFound  []string
+		wantAbsent []string
+		wantBound  bool
+	}{
+		{"at_budget.bin", small, []string{"SMALL_HEAD", "SMALL_MIDDLE"}, nil, false},
+		{"above_budget.bin", large, []string{"LARGE_HEAD", "LARGE_TAIL"}, []string{"LARGE_MIDDLE"}, true},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			path := writeTestBytes(t, dir, tc.file, tc.content)
+			set := newTestEvidence(path, KindRaw)
+			// CollectEvidence sets Size from the file itself, and the switch decides
+			// the branch from it. A zero Size would take the whole-file branch for
+			// every file and the test would pass without ever exercising the window.
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			set.Size = info.Size()
+
+			if err := streamWithSizeSwitch(path, set, cfg); err != nil {
+				t.Fatalf("streamWithSizeSwitch: %v", err)
+			}
+
+			texts := map[string]bool{}
+			for _, l := range set.Lines {
+				texts[l.Text] = true
+			}
+			for _, want := range tc.wantFound {
+				if !texts[want] {
+					t.Errorf("%q missing from the evidence", want)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if texts[absent] {
+					t.Errorf("%q was read; the middle of an oversized file must be skipped", absent)
+				}
+			}
+			if set.Bound.Structural != tc.wantBound {
+				t.Fatalf("Bound.Structural = %t, want %t (reason %q)", set.Bound.Structural, tc.wantBound, set.Bound.Reason)
+			}
+			if !tc.wantBound {
+				return
+			}
+			if !strings.Contains(set.Bound.Reason, "MaxFullScanBytes") {
+				t.Errorf("bound reason = %q, want it to name MaxFullScanBytes", set.Bound.Reason)
+			}
+			if !strings.Contains(set.Bound.Reason, fmt.Sprintf("head and tail %d", window)) {
+				t.Errorf("bound reason = %q, want it to name the %d-byte head/tail window", set.Bound.Reason, window)
+			}
+		})
 	}
 }
 ```
@@ -4524,6 +4536,11 @@ git commit -m "test(audit): pin the head and tail windowing switch"
 ```go
 // collectELF reads a file's ELF structure into evidence.
 func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	// Resolve a zero config before it reaches streamWithSizeSwitch: that switch
+	// reads cfg.MaxFullScanBytes, and a zero there would read every non-empty file
+	// as above a 0-byte budget and window it. collectELFReader normalizes for the
+	// structural pass, but the stream pass runs first and is bounded from here.
+	cfg = normalizeBinaryConfig(cfg)
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
@@ -4693,6 +4710,73 @@ func TestCollectArchiveEvidenceBoundsMemberCount(t *testing.T) {
 	}
 }
 
+// TestCollectArchiveEvidenceBoundsAMemberAtTheByteBudget pins the per-member
+// structural bound, which is the one a container's import is actually withheld
+// on: isExecutableKind(KindArchive) is true, so a structural bound here stops the
+// scan passing, and the bound is recorded because a member's tail was never
+// looked at. Without this test the guard is unpinned - removing it leaves the
+// whole suite green, which is the shape a guard silently drops into.
+//
+// A small budget drives the same branch as a member above the default 256 MiB:
+// the guard reads cfg.MaxArchiveMemberBytes, so a tiny config reaches it without
+// a quarter-gigabyte fixture. The budget is the member's own length because that
+// is the only value that reaches this guard rather than the dispatcher's earlier
+// declared-size check: a smaller budget makes collectArchive mark the member from
+// its declared UncompressedSize64 and break before the member is opened, which is
+// a different guard. The comparison is >= rather than >, so a member exactly at
+// the budget is bounded as well - the read was capped, and whether the member
+// continued past the cap cannot be told without a further probe.
+//
+// The reason is asserted, not only the flag, because it is the line an operator
+// reads when an import is held back: a bare Bound.Structural would not say which
+// member hit which limit.
+func TestCollectArchiveEvidenceBoundsAMemberAtTheByteBudget(t *testing.T) {
+	dir := t.TempDir()
+	elfMember := elfFixtureBytes(t, elfSpec{imports: []string{"connect"}, needed: []string{"libc.so.6"}})
+	path := writeTestBytes(t, dir, "model.pt", zipFixture(t, map[string][]byte{"lib.so": elfMember}, []string{"lib.so"}))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxArchiveMemberBytes = int64(len(elfMember))
+	set := newTestEvidence(path, KindArchive)
+	if err := collectArchive(path, set, cfg); err != nil {
+		t.Fatalf("collectArchive: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("Bound.Structural = false for a member at the byte budget; its tail was never read")
+	}
+	if !strings.Contains(set.Bound.Reason, "lib.so") {
+		t.Errorf("bound reason = %q, want it to name the member lib.so", set.Bound.Reason)
+	}
+	if !strings.Contains(set.Bound.Reason, "byte budget") {
+		t.Errorf("bound reason = %q, want it to name the byte budget", set.Bound.Reason)
+	}
+}
+
+// TestCollectArchiveEvidenceReturnsAnErrorForAnUnopenableContainer pins the other
+// half of the fail-closed split, and the reason it is not folded into the
+// member-ceiling test is that the two look identical if a guard is written the
+// easy way. A container that will not open is a file the scan never looked at, so
+// collectArchive returns an error; only a container it opened and did not finish
+// gets Bound.Structural. Swallowing the open error into markStructural would make
+// an unreadable file indistinguishable from a read one - the scanner counts set.Err
+// as Incomplete and withholds the pass, and a bound alone does not carry that.
+func TestCollectArchiveEvidenceReturnsAnErrorForAnUnopenableContainer(t *testing.T) {
+	dir := t.TempDir()
+	// Zip magic, then bytes with no central directory behind them, so the magic
+	// classifies it as a container and zip.NewReader refuses it.
+	raw := append([]byte("PK\x03\x04"), bytes.Repeat([]byte{0xff}, 64)...)
+	path := writeTestBytes(t, dir, "broken.pt", raw)
+
+	set := newTestEvidence(path, KindArchive)
+	err := collectArchive(path, set, DefaultBinaryConfig())
+	if err == nil {
+		t.Fatal("collectArchive accepted a file with zip magic that will not open; a failed look must not be reported as a bounded one")
+	}
+	if set.Bound.Structural {
+		t.Errorf("an unopenable container set Bound.Structural (%q); the failure must be an error, not a bound", set.Bound.Reason)
+	}
+}
+
 // TestCollectCompressedEvidence pins both directions of the gzip gate. The
 // decompressed bytes are a file of their own, so the pickle interpreter runs on
 // them only if they sniff as a pickle: a pickle hidden in a .gz is read as one,
@@ -4744,9 +4828,260 @@ func TestCollectCompressedEvidence(t *testing.T) {
 		t.Errorf("a gzip that is not a pickle set Bound.Structural: %s", set.Bound.Reason)
 	}
 }
+
+// lyingMember builds a one-member zip whose header declares a size that does not
+// match the bytes it stores. zip.Writer.Create writes the true sizes, so a fixture
+// that has to lie needs CreateRaw and the header fields set by hand.
+//
+// It exists because a member whose declared size exceeds a budget is caught by
+// collectArchive's declared-size check before it is ever opened, so the inner
+// per-member budgets are reachable only by a member that lies - and the reader
+// bounds what it hands out: checksumReader returns ErrFormat the moment it reads
+// past the declared UncompressedSize64, so a member can never deliver more than
+// its declared size. The only lie that both bypasses the declared-size check and
+// delivers bytes is the high bit set, which makes int64(UncompressedSize64)
+// negative and the "> budget" comparison false.
+func lyingMember(t *testing.T, name string, body []byte, method uint16, declared uint64) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	fh := &zip.FileHeader{Name: name, Method: method}
+	fh.UncompressedSize64 = declared
+	fh.CompressedSize64 = uint64(len(body))
+	fh.CRC32 = crc32.ChecksumIEEE(body)
+	w, err := zw.CreateRaw(fh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// TestCollectCompressedEvidenceBoundsTheDecompressedBudget pins the budget on the
+// decompressed bytes of a gzip. It is the most serious of the container budgets:
+// it is the only thing between a small .gz and an unbounded decompression scan,
+// and reaching it needs no crafted input, only ordinary compressible data.
+//
+// A small cfg reaches the same branch as a stream above the default 256 MiB - the
+// guard reads cfg.MaxArchiveMemberBytes - so the fixture is 512 bytes, not a
+// quarter of a gigabyte. The bytes are not a pickle, so the interpreter does not
+// run and the bound asserted is the budget's rather than the interpreter's.
+func TestCollectCompressedEvidenceBoundsTheDecompressedBudget(t *testing.T) {
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(bytes.Repeat([]byte("A"), 512)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestBytes(t, dir, "big.gz", buf.Bytes())
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxArchiveMemberBytes = 64
+	set := newTestEvidence(path, KindCompressed)
+	if err := collectCompressed(path, set, cfg); err != nil {
+		t.Fatalf("collectCompressed: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("Bound.Structural = false for a .gz past the decompressed budget; the scan was not bounded")
+	}
+	if want := "decompressed stream exceeds 64 bytes"; !strings.Contains(set.Bound.Reason, want) {
+		t.Errorf("bound reason = %q, want it to name %q", set.Bound.Reason, want)
+	}
+}
+
+// TestCollectArchiveEvidenceBoundsAPickleMemberAtTheByteBudget pins the pass-through
+// from collectPickleMember to streamReaderEvidence. The bound it can set - "member
+// %s exceeds the byte budget" - is unreachable for an honest member: the declared
+// size that would exceed the budget is caught first by collectArchive's
+// declared-size check, so the member is never opened, and an honest member never
+// delivers more than its declared size. Reaching this budget is therefore only
+// possible through lyingMember's high-bit lie, which is why the fixture lies.
+//
+// A small cfg reaches the same branch as a member above the default budget, and
+// the pickle body stops at STOP well inside the budget, so the interpreter records
+// only a trailing-bytes notice and the budget is the first structural reason.
+func TestCollectArchiveEvidenceBoundsAPickleMemberAtTheByteBudget(t *testing.T) {
+	dir := t.TempDir()
+	// PROTO, GLOBAL(posix.system), STOP, then padding after STOP that the
+	// interpreter counts but does not parse.
+	body := append([]byte("\x80\x04cposix\nsystem\n."), bytes.Repeat([]byte(" "), 400)...)
+	path := writeTestBytes(t, dir, "model.pt", lyingMember(t, "payload.pkl", body, zip.Store, 1<<63))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxArchiveMemberBytes = 64
+	set := newTestEvidence(path, KindArchive)
+	if err := collectArchive(path, set, cfg); err != nil {
+		t.Fatalf("collectArchive: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("Bound.Structural = false for a pickle member past the byte budget")
+	}
+	if !strings.Contains(set.Bound.Reason, "payload.pkl") {
+		t.Errorf("bound reason = %q, want it to name the member", set.Bound.Reason)
+	}
+	if !strings.Contains(set.Bound.Reason, "exceeds the byte budget") {
+		t.Errorf("bound reason = %q, want the pickle member byte-budget wording", set.Bound.Reason)
+	}
+}
+
+// TestCollectArchiveEvidenceBoundsAMemberByItsDeclaredSize pins the declared-size
+// check, the one that fires before a member is opened and is therefore the real
+// zip-bomb guard: a small archive can declare a member far larger than the whole
+// archive, and trusting the declaration is what the check refuses to do.
+//
+// Two cases. Declared comfortably above the budget is caught by the check itself.
+// Declared with the high bit set makes int64(UncompressedSize64) negative, so the
+// "> budget" comparison is false and the check is bypassed - and then it is the
+// inner per-member budget, not this one, that bounds the member. That second case
+// is what makes the inner budgets load-bearing rather than redundant, so it is
+// pinned here over an ELF member (the pickle-side inner budget is pinned by
+// TestCollectArchiveEvidenceBoundsAPickleMemberAtTheByteBudget).
+func TestCollectArchiveEvidenceBoundsAMemberByItsDeclaredSize(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultBinaryConfig()
+	cfg.MaxArchiveMemberBytes = 64
+
+	t.Run("above the budget", func(t *testing.T) {
+		body := append([]byte("\x80\x04cposix\nsystem\n."), bytes.Repeat([]byte(" "), 400)...)
+		path := writeTestBytes(t, dir, "bomb.pt", lyingMember(t, "big.pkl", body, zip.Store, 1<<20))
+
+		set := newTestEvidence(path, KindArchive)
+		if err := collectArchive(path, set, cfg); err != nil {
+			t.Fatalf("collectArchive: %v", err)
+		}
+		if !set.Bound.Structural {
+			t.Fatalf("Bound.Structural = false for a member declaring a size above the budget")
+		}
+		if want := "member byte budget 64 reached at big.pkl"; !strings.Contains(set.Bound.Reason, want) {
+			t.Errorf("bound reason = %q, want it to name %q", set.Bound.Reason, want)
+		}
+	})
+
+	t.Run("high bit set", func(t *testing.T) {
+		body := elfFixtureBytes(t, elfSpec{imports: []string{"connect"}})
+		path := writeTestBytes(t, dir, "bomb2.pt", lyingMember(t, "lib.so", body, zip.Store, 1<<63))
+
+		set := newTestEvidence(path, KindArchive)
+		if err := collectArchive(path, set, cfg); err != nil {
+			t.Fatalf("collectArchive: %v", err)
+		}
+		if !set.Bound.Structural {
+			t.Fatalf("Bound.Structural = false for a high-bit declared member; the inner budget did not bound it")
+		}
+		if !strings.Contains(set.Bound.Reason, "lib.so") {
+			t.Errorf("bound reason = %q, want it to name the member", set.Bound.Reason)
+		}
+		if !strings.Contains(set.Bound.Reason, "truncated at the byte budget") {
+			t.Errorf("bound reason = %q, want the ELF member byte-budget wording", set.Bound.Reason)
+		}
+	})
+}
+
+// gzipOfZeros writes a gzip stream whose decompressed content is n zero bytes,
+// streaming the input so the fixture stays small even when n is hundreds of
+// megabytes. Zero bytes are used because they are neither a pickle nor a string,
+// so the only bound a scan of them can record is the byte budget's.
+func gzipOfZeros(t *testing.T, dir, name string, n int) string {
+	t.Helper()
+	var buf bytes.Buffer
+	zw, err := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := make([]byte, 1<<20)
+	for written := 0; written < n; {
+		chunk := len(block)
+		if remaining := n - written; remaining < chunk {
+			chunk = remaining
+		}
+		if _, err := zw.Write(block[:chunk]); err != nil {
+			t.Fatal(err)
+		}
+		written += chunk
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return writeTestBytes(t, dir, name, buf.Bytes())
+}
+
+// TestCollectCompressedEvidenceNormalizesAZeroConfig pins that collectCompressed
+// resolves a zero BinaryConfig to the defaults, as collectELF does. It is the
+// collector where the asymmetry is a defect and not just a wart: streamReaderEvidence
+// reads a budget of zero as "unlimited", so an unresolved zero disables the
+// decompression bound entirely - fail-open in the one direction this design
+// refuses, in contrast to the fail-closed-but-wrong a zero produces elsewhere.
+//
+// The mirror is Task 5's TestCollectELFEvidenceNormalizesAZeroConfig. Its shape is
+// forced by the asymmetry itself: the two configs differ only on a stream past the
+// DEFAULT budget, so the fixture inflates to DefaultBinaryConfig().MaxArchiveMemberBytes+1
+// zero bytes and the zero config must bound it exactly as the default does.
+func TestCollectCompressedEvidenceNormalizesAZeroConfig(t *testing.T) {
+	dir := t.TempDir()
+	budget := DefaultBinaryConfig().MaxArchiveMemberBytes
+	path := gzipOfZeros(t, dir, "huge.gz", int(budget)+1)
+
+	zero := newTestEvidence(path, KindCompressed)
+	if err := collectCompressed(path, zero, BinaryConfig{}); err != nil {
+		t.Fatalf("collectCompressed with a zero config: %v", err)
+	}
+	if !zero.Bound.Structural {
+		t.Fatalf("a zero config left a %d-byte decompressed stream unbounded; the zero value must mean the default budget, not no budget", budget+1)
+	}
+	if want := fmt.Sprintf("decompressed stream exceeds %d bytes", budget); !strings.Contains(zero.Bound.Reason, want) {
+		t.Errorf("bound reason = %q, want it to name the default budget %d", zero.Bound.Reason, budget)
+	}
+
+	def := newTestEvidence(path, KindCompressed)
+	if err := collectCompressed(path, def, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectCompressed with the default config: %v", err)
+	}
+	if zero.Bound != def.Bound {
+		t.Errorf("zero config bound = %+v, default config bound = %+v; they must agree", zero.Bound, def.Bound)
+	}
+}
+
+// TestCollectArchiveEvidenceNormalizesAZeroConfig pins that collectArchive resolves
+// a zero BinaryConfig to the defaults. It is not the fail-open case - a zero
+// MaxArchiveMembers reads as "no member allowed" and bounds the first member, which
+// is fail-closed - but it is the same asymmetry, and without it a caller that set
+// one field would silently bound every archive.
+func TestCollectArchiveEvidenceNormalizesAZeroConfig(t *testing.T) {
+	dir := t.TempDir()
+	raw := zipFixture(t, map[string][]byte{"data.pkl": []byte("\x80\x04cposix\nsystem\n.")}, []string{"data.pkl"})
+	path := writeTestBytes(t, dir, "model.pt", raw)
+
+	zero := newTestEvidence(path, KindArchive)
+	if err := collectArchive(path, zero, BinaryConfig{}); err != nil {
+		t.Fatalf("collectArchive with a zero config: %v", err)
+	}
+	def := newTestEvidence(path, KindArchive)
+	if err := collectArchive(path, def, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectArchive with the default config: %v", err)
+	}
+	if zero.Bound.Structural {
+		t.Errorf("a zero config produced a structural bound %+v; the zero value must mean the defaults", zero.Bound)
+	}
+	if zero.Bound != def.Bound {
+		t.Errorf("zero config bound = %+v, default config bound = %+v; they must agree", zero.Bound, def.Bound)
+	}
+	if len(zero.Lines) != len(def.Lines) {
+		t.Errorf("zero config produced %d evidence lines, default config produced %d", len(zero.Lines), len(def.Lines))
+	}
+}
 ```
 
-文件顶部 import 块补 `"archive/zip"`、`"compress/gzip"`、`"fmt"`。
+文件顶部 import 块补 `"archive/zip"`、`"compress/gzip"`、`"hash/crc32"`（`lyingMember` 要重算被改写头部的 CRC——`ChecksumIEEE`，因为 `CreateRaw` 不做这件事，写错的 CRC 会让 `zip.Reader` 在读到成员时直接报错，夹具就测不到它想测的那个预算）。`"fmt"` 已在 Step 2 引入。
+
+> **`TestCollectCompressedEvidenceNormalizesAZeroConfig` 的两点记录，都不改代码。** 其一，夹具必须膨胀到 `DefaultBinaryConfig().MaxArchiveMemberBytes+1`（256 MiB + 1）个字节，这个形状是被归一化的不对称本身逼出来的：两个配置只在"流越过**默认**预算"时才有分歧，所以夹具必须越过默认预算，用小 `cfg` 测不到归一化。**代价是解压 CPU，不是 256 MiB 内存**——实测约 1.37 s、约 0.1 MiB 分配、磁盘上 325 KB 的 `.gz`；`gzipOfZeros` 分块流式写入就是为了这一点。其二，它的第二段（`def` 臂：再用 `DefaultBinaryConfig()` 跑一遍并断言两个 `Bound` 相等）是**冗余**的，第一段已经从默认预算算出期望值并断言过了。评审建议删掉这一段；这里记录在案、留给最终评审，代码维持已交付的样子。
 
 - [ ] **Step 5: 跑测试确认失败**
 
@@ -4780,6 +5115,10 @@ go test ./internal/codeaudit/ -run 'TestCollectArchive|TestCollectCompressed' 2>
 // per member: a zip bomb is many small members, not one large one, so a per-member
 // limit is a limit that does not bind.
 func collectArchive(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	// Resolve a zero config to the defaults, as the other collectors do. A zero
+	// MaxArchiveMembers would read as "no member is allowed" and bound every
+	// archive on its first member - wrong, and fail-closed, but wrong.
+	cfg = normalizeBinaryConfig(cfg)
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
@@ -4919,9 +5258,12 @@ func collectELFMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) erro
 // less means the stream is read to the end. The strings pass always runs; the
 // pickle interpreter runs only when pickleScan is true.
 //
-// It exists because four call sites need exactly this loop - a pickle member, an
-// ELF member, a decompressed gzip stream, and a whole file - and the bound has to
-// be enforced identically in all of them. The reason is not brevity. The bound is
+// It exists because three call sites need exactly this loop - a pickle member, an
+// ELF member, and a decompressed gzip stream - and the bound has to be enforced
+// identically in all of them. A whole file does not use this loop: it goes through
+// streamEvidence, which is a separate implementation over the same rule, and
+// unifying the two is deliberately left out of this change rather than taken on.
+// The reason is not brevity. The bound is
 // what sets Bound.Structural, Bound.Structural is what withholds a clean verdict
 // from a stream whose tail was never read, and a call site that enforced it
 // slightly differently would be a hole in the fail-closed rule rather than a
@@ -5015,6 +5357,13 @@ func collectPickleMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) e
 // decompressor written for this purpose would be a new parser on the import
 // path with no evidence behind it.
 func collectCompressed(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	// Resolve a zero config to the defaults, and this is the collector where it
+	// matters most: streamReaderEvidence reads a budget of zero as "unlimited", so
+	// an unresolved zero here would silently disable the decompression bound - the
+	// one guard between a small .gz and an unbounded scan. That is fail-open in the
+	// single direction this design refuses, rather than the merely-wrong fail-closed
+	// a zero config produces elsewhere.
+	cfg = normalizeBinaryConfig(cfg)
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
