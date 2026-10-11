@@ -4296,6 +4296,7 @@ git commit -m "feat(audit): add the binary rule table, borrowing shared families
 
 **Files:**
 - Create: `internal/codeaudit/binary_scanner.go`
+- Modify: `internal/codeaudit/rules.go`, `internal/codeaudit/cpg_analysis.go`
 - Test: `internal/codeaudit/binary_scanner_test.go`
 
 - [ ] **Step 1: 写失败测试**
@@ -4515,6 +4516,41 @@ func TestBinaryScannerCountsAnUnreadableFileAsIncomplete(t *testing.T) {
 		t.Errorf("Incomplete = %d, want 1", res.Summary.Incomplete)
 	}
 }
+
+// TestBinaryScannerIgnoresNonRegularEntries pins what the walk does with an
+// entry that is not a regular file. A symlink is neither followed nor claimed:
+// the channel reads the bytes the package contains, and reading through a link
+// would read a file the package does not - possibly one outside the scanned
+// directory. The entry is not counted Incomplete either, because it is not a
+// file this channel was ever meant to examine; the count of what it examined
+// stays exact.
+func TestBinaryScannerIgnoresNonRegularEntries(t *testing.T) {
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "real.so", elfFixtureBytes(t, elfSpec{imports: []string{"system"}}))
+	if err := os.Symlink(filepath.Join(dir, "real.so"), filepath.Join(dir, "link.so")); err != nil {
+		t.Skipf("cannot create a symlink in this environment: %v", err)
+	}
+
+	s, err := newTestBinaryScanner(DefaultBinaryConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if res.Summary.FilesCount != 1 {
+		t.Errorf("FilesCount = %d, want 1: the symlink must not be followed", res.Summary.FilesCount)
+	}
+	for _, p := range res.Claimed {
+		if filepath.Base(p) == "link.so" {
+			t.Error("the symlink was claimed; the channel read a file the package does not contain")
+		}
+	}
+	if res.Summary.Incomplete != 0 {
+		t.Errorf("Incomplete = %d, want 0: a skipped non-regular entry is not a look that failed", res.Summary.Incomplete)
+	}
+}
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -4523,7 +4559,7 @@ func TestBinaryScannerCountsAnUnreadableFileAsIncomplete(t *testing.T) {
 go test ./internal/codeaudit/ -run TestBinaryScanner 2>&1 | head -10
 ```
 
-预期：编译失败，`undefined: BinaryScanner`。
+预期：编译失败，`undefined: BinaryScanner`（测试里用到的 `Finding.BinaryKind`/`Finding.EvidenceSource` 也还没有声明，Step 4 补上）。
 
 - [ ] **Step 3: 实现**
 
@@ -4639,16 +4675,29 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 			return nil
 		}
 		if !info.Mode().IsRegular() {
+			// A symlink, fifo, device or socket is not a file this channel reads,
+			// and it is deliberately not followed: filepath.Walk lstats each
+			// entry, so an entry that only points at a binary is skipped rather
+			// than read through. Following one would let a link out of the model
+			// directory pull in a file the package does not contain.
 			return nil
 		}
 
 		kind, headErr := s.classify(path)
 		if headErr != nil {
-			// A file whose head cannot be read is not claimed and not counted:
-			// it is not a binary this pass failed on, it is a file the pass
-			// could not even ask about. It is not silently dropped either - the
-			// source channel's own handling of it is unchanged, and the count of
-			// what this channel examined does not claim it.
+			// The walk reached the file and could not open it. That is a look
+			// that did not happen, so it is counted Incomplete and
+			// ProvesCleanScan withholds the pass - rather than being returned
+			// away as though the file were not there, which is the fail-open the
+			// completeness contract exists to close: a file the channel never
+			// read would otherwise be invisible to every downstream reader.
+			// The error is not propagated: one unreadable file must not abort the
+			// audit of the rest, so it reaches the report through the count
+			// instead of through the error path. It is also not added to Claimed,
+			// because Claimed means "classified as binary" and this file was
+			// never classified - so the source channel's own reading of it is
+			// left alone rather than suppressed on a guess.
+			res.Summary.Incomplete++
 			return nil
 		}
 		if kind == KindText {
@@ -4785,9 +4834,31 @@ func joinTrimmed(lines []string) string {
 
 import 块补 `"strings"`。
 
-- [ ] **Step 4: 补 `EngineNameBinary` 常量**
+- [ ] **Step 4: 补 `Finding` 的二进制字段与 `EngineNameBinary` 常量**
 
-修改 `internal/codeaudit/cpg_analysis.go:14` 旁边，在 `EngineNameCPG` 声明后追加：
+先修改 `internal/codeaudit/rules.go`，在 `Finding` 结构体末尾（`Engine` 字段之后）追加这三个字段：
+
+```go
+	// BinaryKind names the reading the binary channel applied to File: "elf",
+	// "archive", "pickle", "compressed", "numpy" or "raw". Empty for a finding
+	// the source channel produced, which is what makes the two kinds of finding
+	// distinguishable in a merged list without consulting the engine field.
+	BinaryKind string `json:"binary_kind,omitempty"`
+	// EvidenceSource names the evidence a binary finding came from: a dynamic
+	// symbol, a DT_NEEDED library, a string literal, a section summary, an
+	// entropy verdict, a container member or a pickle target. It is what tells a
+	// reader how much weight the finding carries - a symbol name is a capability
+	// the binary has, a string literal is a thing it says.
+	EvidenceSource string `json:"evidence_source,omitempty"`
+	// BinaryOffset is the byte offset in File the evidence was read at, for the
+	// evidence that has one. Symbol and section evidence carries zero: it names
+	// a property of the file rather than a byte range in it.
+	BinaryOffset int64 `json:"binary_offset,omitempty"`
+```
+
+> 这三个字段归本任务，不归 Task 10：Step 1 的测试与 `binaryFinding` 都要用它们，声明必须落在**第一个使用它们的任务**里，包才在本任务的提交点编译。`Report.Binary` 仍留在 Task 10——第一个读它的 `ProvesCleanScan` 在那边。
+
+再修改 `internal/codeaudit/cpg_analysis.go:14` 旁边，在 `EngineNameCPG` 声明后追加：
 
 ```go
 // EngineNameBinary names the binary channel in the Engine field of a finding it
@@ -4809,7 +4880,7 @@ go test ./internal/codeaudit/ -run TestBinaryScanner -v 2>&1 | tail -20
 
 ```bash
 gofmt -l internal/codeaudit/ ; go vet ./internal/codeaudit/
-git add internal/codeaudit/binary_scanner.go internal/codeaudit/binary_scanner_test.go internal/codeaudit/cpg_analysis.go
+git add internal/codeaudit/binary_scanner.go internal/codeaudit/binary_scanner_test.go internal/codeaudit/rules.go internal/codeaudit/cpg_analysis.go
 git commit -m "feat(audit): add the binary scanner with deterministic ordering and finding cap"
 ```
 
@@ -4834,9 +4905,9 @@ git commit -m "feat(audit): add the binary scanner with deterministic ordering a
 func TestProvesCleanScanWithholdsOnBinaryGaps(t *testing.T) {
 	base := func(sum BinaryScanSummary) *Report {
 		return &Report{
-			ScanComplete: true,
+			ScanComplete:    true,
 			ProcessExitCode: 0,
-			Binary: &sum,
+			Binary:          &sum,
 		}
 	}
 	cases := []struct {
@@ -4884,25 +4955,7 @@ go test ./internal/codeaudit/ -run 'TestProvesCleanScan' 2>&1 | head -10
 
 修改 `internal/codeaudit/rules.go`。
 
-在 `Finding` 结构体末尾（`Engine` 字段之后）追加：
-
-```go
-	// BinaryKind names the reading the binary channel applied to File: "elf",
-	// "archive", "pickle", "compressed", "numpy" or "raw". Empty for a finding
-	// the source channel produced, which is what makes the two kinds of finding
-	// distinguishable in a merged list without consulting the engine field.
-	BinaryKind string `json:"binary_kind,omitempty"`
-	// EvidenceSource names the evidence a binary finding came from: a dynamic
-	// symbol, a DT_NEEDED library, a string literal, a section summary, an
-	// entropy verdict, a container member or a pickle target. It is what tells a
-	// reader how much weight the finding carries - a symbol name is a capability
-	// the binary has, a string literal is a thing it says.
-	EvidenceSource string `json:"evidence_source,omitempty"`
-	// BinaryOffset is the byte offset in File the evidence was read at, for the
-	// evidence that has one. Symbol and section evidence carries zero: it names
-	// a property of the file rather than a byte range in it.
-	BinaryOffset int64 `json:"binary_offset,omitempty"`
-```
+`Finding` 的三个二进制字段（`BinaryKind`/`EvidenceSource`/`BinaryOffset`）在 Task 9 就已追加——那是第一个使用它们的任务，本任务不再重复。本任务只加 `Report` 上的字段与折入。
 
 在 `Report` 结构体末尾（`ProcessExitCode` 之后）追加：
 
@@ -4995,7 +5048,7 @@ func TestMergeBinaryFindingsAppendsAndRecomputes(t *testing.T) {
 	}
 
 	res := &BinaryScanResult{
-		Claimed:     []string{"/m/libevil.so"},
+		Claimed: []string{"/m/libevil.so"},
 		Findings: []Finding{
 			{File: "/m/libevil.so", Line: 4, RuleID: "NET_002", Severity: SeverityHigh, Engine: EngineNameBinary},
 		},
@@ -5029,7 +5082,7 @@ func TestMergeBinaryFindingsDropsTextFindingsForBinaryFiles(t *testing.T) {
 		},
 	}
 	res := &BinaryScanResult{
-		Claimed:     []string{"/m/evil.py"},
+		Claimed: []string{"/m/evil.py"},
 		Findings: []Finding{
 			{File: "/m/evil.py", Line: 1, RuleID: "BIN_001", Severity: SeverityMedium, Engine: EngineNameBinary},
 		},
@@ -5103,7 +5156,7 @@ func TestMergeBinaryFindingsKeepsBothChannelsFindings(t *testing.T) {
 func TestMergeBinaryFindingsSurfacesTheBinaryCap(t *testing.T) {
 	report := &Report{ScanComplete: true}
 	res := &BinaryScanResult{
-		Summary:     BinaryScanSummary{FilesCount: 1, Truncated: true},
+		Summary: BinaryScanSummary{FilesCount: 1, Truncated: true},
 	}
 
 	MergeBinaryFindings(report, res)
@@ -5163,7 +5216,7 @@ go test ./internal/codeaudit/ -run TestMergeBinaryFindings 2>&1 | head -10
 //
 // There is deliberately no cap on the joined list, and no second truncation.
 // Each channel capped its own findings before this ran - the source arm at
-// ScannerConfig.MaxFindings, the binary arm at BinaryConfig.MaxFindings - and
+// Config.MaxFindings, the binary arm at BinaryConfig.MaxFindings - and
 // reapplying one ceiling to the sum would couple them in the one direction that
 // costs a model package. Reaching a cap sets Truncated, Truncated fails
 // ProvesCleanScan, and a scan that cannot prove it looked has the package
@@ -5365,14 +5418,9 @@ type AuditConfig struct {
 	// byte-identical to the one produced before the channel existed.
 	Binary BinaryConfig
 }
-
-// DefaultAuditConfig returns the configuration a caller that has nothing to say
-// gets: the LLM as configured by DefaultLLMConfig, the binary channel on with
-// its default limits.
-func DefaultAuditConfig() AuditConfig {
-	return AuditConfig{LLM: DefaultLLMConfig(), Binary: DefaultBinaryConfig()}
-}
 ```
+
+> 这里**不**提供 `DefaultAuditConfig()`：全计划没有任何调用点会用它（每个调用点都显式构造 `AuditConfig{...}`），而本仓库带 deadcode 闸门，一个没人调用的导出函数会被它标出来。需要默认值时，`DefaultLLMConfig()` 与 `DefaultBinaryConfig()` 各自可用。
 
 修改 `GenerateAuditReport` 的签名与函数体：
 
@@ -5475,6 +5523,18 @@ func runBinaryChannel(dir string, binCfg BinaryConfig) (*BinaryScanResult, error
 	return NewBinaryScanner(matcher, binCfg).ScanDirectory(dir)
 }
 ```
+
+修改 `internal/codeaudit/verifier.go` 里还有一处**必须在本任务落地**，否则上面的 `GenerateAuditReport` 编译不过：`analyzeFileWithLLM` 的形参表末尾要加一个 `binaryEvidence map[string]*EvidenceSet`，凑成六参。
+
+```go
+func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, findings []Finding, lineCounts map[string]int, binaryEvidence map[string]*EvidenceSet) FileSummary {
+```
+
+**调用点**：`analyzeFileWithLLM` 全仓只有一个调用点——`internal/codeaudit/verifier.go:385`，就在 `GenerateAuditReport` 的 Phase 3 循环里，也就是本步骤刚重写的那段代码，它已经传了六个实参。除此之外没有别的调用点（`grep -rn 'analyzeFileWithLLM' --include=*.go internal` 只回定义 `verifier.go:401` 与这一处调用），所以这一处改完，签名即闭合。参数在本任务里暂时不被读——Go 不报未使用的形参，`go vet` 也不报——二进制分支的**函数体**由 Task 13 填进去；签名归这里，是因为调用它的第一个任务是这里。
+
+> `Finding.Line` 对二进制 finding 是**证据清单的下标，不是源码行号**（见 Task 9 的 `binaryFinding`），而它会随 `VerifyReport` 走进模型：`VerifyReport` 用 `teellm.CodeTarget{FilePath: f.File, Line: f.Line, CodeSnippet: f.CodeSnippet, ContextBefore: ..., ContextAfter: ...}`（`internal/codeaudit/verifier.go:63-69`）组装 payload，二进制 finding 与源码 finding 走的是同一条组装路径。没有消费者因此出错——`BuildFileReport` 与 `GroupFindingsByFile` 都不读 `Line`，二进制文件也在 `ReadFileForAnalysis` 之前就走完二进制分支——但模型拿到的是一个含义不同的数字，所以二进制 prompt 必须把「每一行是一条证据，格式为『序号 [来源] 内容』」讲清楚（Task 13），让那个数字在模型眼里就是证据行号。逐字改这一句的意思：这是**载荷里一个字段的含义差异**，不是消费者会崩的 bug。
+
+> 合并之后还有第二道闸门要说清：`VerifyReport` 自己按 `LLMConfig.MaxFindings` 给逐条裁定封顶（`internal/codeaudit/verifier.go:26-29`），所以那个上限现在作用在**合并后的清单**上。它按 `sortFindings` 的 (`File`, `Line`, `RuleID`) 顺序保留前 N 条，于是「先裁谁」由路径拼写决定而不是由通道决定——一旦这个值非零，排在后面的 finding（二进制文件往往不在字典序前头）就会**不被裁定**，而清单里没有任何东西说明这一点。生产配置把它设成 0（「0 means no cap」，`internal/app/taa/app.go:676-679`），所以今天它是惰性的；写在这里是因为将来有人把它调成非零，丢掉的正是二进制那条臂，而故障是静默的。
 
 - [ ] **Step 4: 让 `AssembleAuditReport` 抄二进制元数据**
 
@@ -5702,7 +5762,7 @@ const binaryFileAnalysisPromptTemplate = `你是二进制代码安全审计专�
 {"risk_level":"HIGH/MEDIUM/LOW","summary":"一句话安全结论(中文)","chained":false,"exfiltration":false}`
 ```
 
-修改 `analyzeFileWithLLM`：
+修改 `analyzeFileWithLLM`：签名已在 Task 12 扩到六参（末尾的 `binaryEvidence map[string]*EvidenceSet`），本步骤只把二进制分支填进去——`binaryEvidence` 里查到本文件就走二进制 prompt，否则维持源码路径不变：
 
 ```go
 // analyzeFileWithLLM calls the LLM for a file-level security summary.
@@ -6304,3 +6364,4 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 | 二进制通道让原本能导入的包被误阻断 | 这是本设计最贵的失败模式（`ProvesCleanScan` 为假 → `cleanDirContents` 删包），所以：`Truncated` 只由各臂自己的上限触发；纯数据文件的证据截断只记录、不阻断；`BIN_001` 定为 MEDIUM，assist 下不阻断；`security.binaryAudit.enabled=false` 是逐字节回滚。已入库语料实测最大 finding 数为单样本 7、整语料 80，离两个上限都有一个数量级 |
 | 与 semgrep 非劣性证据的交互 | 二进制通道在**两个臂之外**运行且合并发生在引擎报告之后，两臂的引擎级报告逐字节不变；`corpus_parity_test.go` 会证明这一点 |
 | pickle 解释器的门控开错方向 | 两个方向都是故障，所以各有一个测试钉住：**跑宽了**（对非 pickle 也跑解释器）会让任意字节能被读成 opcode，未知 opcode 直接置 `Bound.Structural`，而 `KindELF`/`KindPickle`/`KindArchive`/`KindCompressed` 都是可执行类型，于是每个 `.pt`/`.whl`/`.so` 都被阻断、原本能导入的包被删——`TestCollectEvidenceDoesNotInterpretNonPicklesAsPickles` 用一个良性 ELF 夹具断言既不 `Err` 也无 `Bound.Structural`、无 `SourcePickle` 行；**跑窄了**（该跑的没跑）会丢掉 pickle 证据——`TestPickleInterpreterReadsTheRealCheckpoint` 断言真 checkpoint 仍产出目标。门控规则（只跑在 `KindPickle` 的整文件/容器成员、以及解压后头部嗅探为 pickle 的 gzip 流上）写在 Task 4 Step 4，不得"简化"掉 |
+| 二进制通道无法被取消 | `GenerateAuditReport` 由 `internal/controller/import_processing.go:642` 以 `context.Background()` 调用，新增的 `runBinaryChannel`/`ScanDirectory` 都不收 context，所以**单个文件**的工作量被 `BinaryConfig` 的上限钉住，而**总**工作量随文件数线性增长，且没有任何东西能中断它。这是既有的形状而不是新引入的类别——`engine.ScanDirectoryWithLines` 同样不收 context——所以这里只当作一个已知边界记录：一次导入的二进制臂时长与文件数成正比，超时与否只能由调用方在整条审计之外控制，本计划不新增逐文件的取消路径 |
