@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"math"
 	"os"
@@ -1772,4 +1773,160 @@ func TestCollectCompressedEvidence(t *testing.T) {
 	if set.Bound.Structural {
 		t.Errorf("a gzip that is not a pickle set Bound.Structural: %s", set.Bound.Reason)
 	}
+}
+
+// lyingMember builds a one-member zip whose header declares a size that does not
+// match the bytes it stores. zip.Writer.Create writes the true sizes, so a fixture
+// that has to lie needs CreateRaw and the header fields set by hand.
+//
+// It exists because a member whose declared size exceeds a budget is caught by
+// collectArchive's declared-size check before it is ever opened, so the inner
+// per-member budgets are reachable only by a member that lies - and the reader
+// bounds what it hands out: checksumReader returns ErrFormat the moment it reads
+// past the declared UncompressedSize64, so a member can never deliver more than
+// its declared size. The only lie that both bypasses the declared-size check and
+// delivers bytes is the high bit set, which makes int64(UncompressedSize64)
+// negative and the "> budget" comparison false.
+func lyingMember(t *testing.T, name string, body []byte, method uint16, declared uint64) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	fh := &zip.FileHeader{Name: name, Method: method}
+	fh.UncompressedSize64 = declared
+	fh.CompressedSize64 = uint64(len(body))
+	fh.CRC32 = crc32.ChecksumIEEE(body)
+	w, err := zw.CreateRaw(fh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// TestCollectCompressedEvidenceBoundsTheDecompressedBudget pins the budget on the
+// decompressed bytes of a gzip. It is the most serious of the container budgets:
+// it is the only thing between a small .gz and an unbounded decompression scan,
+// and reaching it needs no crafted input, only ordinary compressible data.
+//
+// A small cfg reaches the same branch as a stream above the default 256 MiB - the
+// guard reads cfg.MaxArchiveMemberBytes - so the fixture is 512 bytes, not a
+// quarter of a gigabyte. The bytes are not a pickle, so the interpreter does not
+// run and the bound asserted is the budget's rather than the interpreter's.
+func TestCollectCompressedEvidenceBoundsTheDecompressedBudget(t *testing.T) {
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(bytes.Repeat([]byte("A"), 512)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestBytes(t, dir, "big.gz", buf.Bytes())
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxArchiveMemberBytes = 64
+	set := newTestEvidence(path, KindCompressed)
+	if err := collectCompressed(path, set, cfg); err != nil {
+		t.Fatalf("collectCompressed: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("Bound.Structural = false for a .gz past the decompressed budget; the scan was not bounded")
+	}
+	if want := "decompressed stream exceeds 64 bytes"; !strings.Contains(set.Bound.Reason, want) {
+		t.Errorf("bound reason = %q, want it to name %q", set.Bound.Reason, want)
+	}
+}
+
+// TestCollectArchiveEvidenceBoundsAPickleMemberAtTheByteBudget pins the pass-through
+// from collectPickleMember to streamReaderEvidence. The bound it can set - "member
+// %s exceeds the byte budget" - is unreachable for an honest member: the declared
+// size that would exceed the budget is caught first by collectArchive's
+// declared-size check, so the member is never opened, and an honest member never
+// delivers more than its declared size. Reaching this budget is therefore only
+// possible through lyingMember's high-bit lie, which is why the fixture lies.
+//
+// A small cfg reaches the same branch as a member above the default budget, and
+// the pickle body stops at STOP well inside the budget, so the interpreter records
+// only a trailing-bytes notice and the budget is the first structural reason.
+func TestCollectArchiveEvidenceBoundsAPickleMemberAtTheByteBudget(t *testing.T) {
+	dir := t.TempDir()
+	// PROTO, GLOBAL(posix.system), STOP, then padding after STOP that the
+	// interpreter counts but does not parse.
+	body := append([]byte("\x80\x04cposix\nsystem\n."), bytes.Repeat([]byte(" "), 400)...)
+	path := writeTestBytes(t, dir, "model.pt", lyingMember(t, "payload.pkl", body, zip.Store, 1<<63))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxArchiveMemberBytes = 64
+	set := newTestEvidence(path, KindArchive)
+	if err := collectArchive(path, set, cfg); err != nil {
+		t.Fatalf("collectArchive: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("Bound.Structural = false for a pickle member past the byte budget")
+	}
+	if !strings.Contains(set.Bound.Reason, "payload.pkl") {
+		t.Errorf("bound reason = %q, want it to name the member", set.Bound.Reason)
+	}
+	if !strings.Contains(set.Bound.Reason, "exceeds the byte budget") {
+		t.Errorf("bound reason = %q, want the pickle member byte-budget wording", set.Bound.Reason)
+	}
+}
+
+// TestCollectArchiveEvidenceBoundsAMemberByItsDeclaredSize pins the declared-size
+// check, the one that fires before a member is opened and is therefore the real
+// zip-bomb guard: a small archive can declare a member far larger than the whole
+// archive, and trusting the declaration is what the check refuses to do.
+//
+// Two cases. Declared comfortably above the budget is caught by the check itself.
+// Declared with the high bit set makes int64(UncompressedSize64) negative, so the
+// "> budget" comparison is false and the check is bypassed - and then it is the
+// inner per-member budget, not this one, that bounds the member. That second case
+// is what makes the inner budgets load-bearing rather than redundant, so it is
+// pinned here over an ELF member (the pickle-side inner budget is pinned by
+// TestCollectArchiveEvidenceBoundsAPickleMemberAtTheByteBudget).
+func TestCollectArchiveEvidenceBoundsAMemberByItsDeclaredSize(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultBinaryConfig()
+	cfg.MaxArchiveMemberBytes = 64
+
+	t.Run("above the budget", func(t *testing.T) {
+		body := append([]byte("\x80\x04cposix\nsystem\n."), bytes.Repeat([]byte(" "), 400)...)
+		path := writeTestBytes(t, dir, "bomb.pt", lyingMember(t, "big.pkl", body, zip.Store, 1<<20))
+
+		set := newTestEvidence(path, KindArchive)
+		if err := collectArchive(path, set, cfg); err != nil {
+			t.Fatalf("collectArchive: %v", err)
+		}
+		if !set.Bound.Structural {
+			t.Fatalf("Bound.Structural = false for a member declaring a size above the budget")
+		}
+		if want := "member byte budget 64 reached at big.pkl"; !strings.Contains(set.Bound.Reason, want) {
+			t.Errorf("bound reason = %q, want it to name %q", set.Bound.Reason, want)
+		}
+	})
+
+	t.Run("high bit set", func(t *testing.T) {
+		body := elfFixtureBytes(t, elfSpec{imports: []string{"connect"}})
+		path := writeTestBytes(t, dir, "bomb2.pt", lyingMember(t, "lib.so", body, zip.Store, 1<<63))
+
+		set := newTestEvidence(path, KindArchive)
+		if err := collectArchive(path, set, cfg); err != nil {
+			t.Fatalf("collectArchive: %v", err)
+		}
+		if !set.Bound.Structural {
+			t.Fatalf("Bound.Structural = false for a high-bit declared member; the inner budget did not bound it")
+		}
+		if !strings.Contains(set.Bound.Reason, "lib.so") {
+			t.Errorf("bound reason = %q, want it to name the member", set.Bound.Reason)
+		}
+		if !strings.Contains(set.Bound.Reason, "truncated at the byte budget") {
+			t.Errorf("bound reason = %q, want the ELF member byte-budget wording", set.Bound.Reason)
+		}
+	})
 }
