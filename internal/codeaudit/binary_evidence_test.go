@@ -3,6 +3,7 @@ package codeaudit
 import (
 	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -1552,5 +1553,181 @@ func TestStreamWithSizeSwitchWindowsAFileAboveTheFullScanBudget(t *testing.T) {
 				t.Errorf("bound reason = %q, want it to name the %d-byte head/tail window", set.Bound.Reason, window)
 			}
 		})
+	}
+}
+
+// zipFixture builds a zip in memory, so the container tests state their members
+// rather than depending on a committed archive.
+func zipFixture(t *testing.T, members map[string][]byte, order []string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	for _, name := range order {
+		fw, err := w.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fw.Write(members[name]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestCollectArchiveEvidenceListsMembersAndRecurses(t *testing.T) {
+	dir := t.TempDir()
+	pickle := []byte("\x80\x04cposix\nsystem\n.")
+	elfMember := elfFixtureBytes(t, elfSpec{imports: []string{"connect"}, needed: []string{"libcurl.so.4"}})
+	raw := zipFixture(t, map[string][]byte{
+		"archive/data.pkl": pickle,
+		"archive/lib.so":   elfMember,
+		"archive/version":  []byte("3"),
+	}, []string{"archive/version", "archive/data.pkl", "archive/lib.so"})
+	path := writeTestBytes(t, dir, "model.pt", raw)
+
+	set := newTestEvidence(path, KindArchive)
+	if err := collectArchive(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectArchive: %v", err)
+	}
+
+	var members, pickles, dynsyms, needed []string
+	for _, l := range set.Lines {
+		switch l.Source {
+		case SourceMember:
+			members = append(members, l.Text)
+		case SourcePickle:
+			pickles = append(pickles, l.Text)
+		case SourceDynsym:
+			dynsyms = append(dynsyms, l.Text)
+		case SourceNeeded:
+			needed = append(needed, l.Text)
+		}
+	}
+
+	for _, want := range []string{"archive/version", "archive/data.pkl", "archive/lib.so"} {
+		found := false
+		for _, m := range members {
+			if strings.HasPrefix(m, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("member %q missing; got %v", want, members)
+		}
+	}
+	if !containsString(pickles, "posix.system") {
+		t.Errorf("a pickle member produced no target evidence; got %v", pickles)
+	}
+	if !containsString(dynsyms, "connect") {
+		t.Errorf("an ELF member's imports were not read; got %v", dynsyms)
+	}
+	if !containsString(needed, "libcurl.so.4") {
+		t.Errorf("an ELF member's DT_NEEDED was not read; got %v", needed)
+	}
+}
+
+// TestCollectArchiveEvidenceBoundsMemberCount pins the member ceiling as a
+// structural bound. Members past the ceiling are never opened, and for a
+// container that can hold a pickle that is a look that did not happen - so it
+// withholds a clean verdict rather than being reported as a big archive.
+func TestCollectArchiveEvidenceBoundsMemberCount(t *testing.T) {
+	dir := t.TempDir()
+	members := map[string][]byte{}
+	var order []string
+	for i := 0; i < 5; i++ {
+		name := fmt.Sprintf("m%d", i)
+		members[name] = []byte("x")
+		order = append(order, name)
+	}
+	path := writeTestBytes(t, dir, "many.whl", zipFixture(t, members, order))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxArchiveMembers = 2
+	set := newTestEvidence(path, KindArchive)
+	if err := collectArchive(path, set, cfg); err != nil {
+		t.Fatalf("collectArchive: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Error("Bound.Structural = false after the member ceiling was reached")
+	}
+}
+
+// TestCollectArchiveEvidenceReturnsAnErrorForAnUnopenableContainer pins the other
+// half of the fail-closed split, and the reason it is not folded into the
+// member-ceiling test is that the two look identical if a guard is written the
+// easy way. A container that will not open is a file the scan never looked at, so
+// collectArchive returns an error; only a container it opened and did not finish
+// gets Bound.Structural. Swallowing the open error into markStructural would make
+// an unreadable file indistinguishable from a read one - the scanner counts set.Err
+// as Incomplete and withholds the pass, and a bound alone does not carry that.
+func TestCollectArchiveEvidenceReturnsAnErrorForAnUnopenableContainer(t *testing.T) {
+	dir := t.TempDir()
+	// Zip magic, then bytes with no central directory behind them, so the magic
+	// classifies it as a container and zip.NewReader refuses it.
+	raw := append([]byte("PK\x03\x04"), bytes.Repeat([]byte{0xff}, 64)...)
+	path := writeTestBytes(t, dir, "broken.pt", raw)
+
+	set := newTestEvidence(path, KindArchive)
+	err := collectArchive(path, set, DefaultBinaryConfig())
+	if err == nil {
+		t.Fatal("collectArchive accepted a file with zip magic that will not open; a failed look must not be reported as a bounded one")
+	}
+	if set.Bound.Structural {
+		t.Errorf("an unopenable container set Bound.Structural (%q); the failure must be an error, not a bound", set.Bound.Reason)
+	}
+}
+
+// TestCollectCompressedEvidence pins both directions of the gzip gate. The
+// decompressed bytes are a file of their own, so the pickle interpreter runs on
+// them only if they sniff as a pickle: a pickle hidden in a .gz is read as one,
+// and a gzip that is not a pickle gets the strings pass alone rather than a
+// structural bound on KindCompressed - which is executable, so a bound there
+// would block every .gz in every package.
+func TestCollectCompressedEvidence(t *testing.T) {
+	dir := t.TempDir()
+	gz := func(name, content string) string {
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		if _, err := zw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return writeTestBytes(t, dir, name, buf.Bytes())
+	}
+
+	picklePath := gz("payload.gz", "\x80\x04cposix\nsystem\n.PADDING_PADDING")
+	set := newTestEvidence(picklePath, KindCompressed)
+	if err := collectCompressed(picklePath, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectCompressed: %v", err)
+	}
+	var pickles []string
+	for _, l := range set.Lines {
+		if l.Source == SourcePickle {
+			pickles = append(pickles, l.Text)
+		}
+	}
+	if !containsString(pickles, "posix.system") {
+		t.Errorf("pickle evidence = %v, want [posix.system]", pickles)
+	}
+
+	// A gzip of bytes that are not a pickle must not produce pickle evidence and
+	// must not be bounded: the interpreter never ran.
+	textPath := gz("notes.gz", "the posix system call interface is described here")
+	set = newTestEvidence(textPath, KindCompressed)
+	if err := collectCompressed(textPath, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectCompressed: %v", err)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourcePickle {
+			t.Errorf("pickle evidence %q from a gzip that is not a pickle", l.Text)
+		}
+	}
+	if set.Bound.Structural {
+		t.Errorf("a gzip that is not a pickle set Bound.Structural: %s", set.Bound.Reason)
 	}
 }

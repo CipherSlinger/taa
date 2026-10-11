@@ -1,7 +1,10 @@
 package codeaudit
 
 import (
+	"archive/zip"
+	"bufio"
 	"bytes"
+	"compress/gzip"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -1684,6 +1687,301 @@ func streamHeadAndTail(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	scanner.Flush()
 	if pickles != nil {
 		pickles.Flush()
+	}
+	return nil
+}
+
+// collectArchive reads a zip-based container: PyTorch .pt, wheels, .npz, jars.
+//
+// Members are the subject, not the archive's own bytes, because that is where a
+// container hides code: a .pt checkpoint is a zip whose data.pkl is a pickle
+// stream, and a package can ship a shared object the same way. Every member is
+// sniffed, and the ones that sniff as ELF or pickle are read with the same
+// extractors used for a standalone file - one level deep, because a container
+// inside a container is a nesting depth this version does not follow.
+//
+// A member that sniffs as an archive is skipped, and the skip is silent: it stays
+// visible as a member line but does not set Bound. That is deliberate and its cost
+// is named in the plan's boundary section (a checkpoint shipped only inside a zip
+// never reaches its data.pkl), so it is not a hole to be plugged here by
+// recursing, which would need its own depth and budget model.
+//
+// The decompressed-byte budget is shared across the archive rather than applied
+// per member: a zip bomb is many small members, not one large one, so a per-member
+// limit is a limit that does not bind.
+func collectArchive(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+
+	zr, err := zip.NewReader(f, info.Size())
+	if err != nil {
+		// A file with zip magic that will not open is a container this scan did
+		// not look inside - a failed look, not a bounded one, so the error is
+		// returned rather than marked structural. That distinction is load-bearing
+		// downstream: CollectEvidence records it as set.Err, and the scanner counts
+		// set.Err as Incomplete rather than passing the file off as examined. A
+		// markStructural here would have said "read, with a gap" about a file that
+		// was never read at all.
+		return fmt.Errorf("open archive %s: %w", path, err)
+	}
+
+	var decompressed int64
+	for i, member := range zr.File {
+		if i >= cfg.MaxArchiveMembers {
+			set.markStructural(fmt.Sprintf("member ceiling %d reached (%d member(s))", cfg.MaxArchiveMembers, len(zr.File)))
+			break
+		}
+		set.addStructured(SourceMember, fmt.Sprintf("%s size=%d", member.Name, member.UncompressedSize64))
+
+		if member.FileInfo().IsDir() {
+			continue
+		}
+		// The head is read for every member, including the ones that turn out to
+		// be data: sniffing is what decides whether a member is worth reading in
+		// full, and a member that is never sniffed is a member whose kind is
+		// unknown.
+		head, err := readMemberHead(member, sniffBytes)
+		if err != nil {
+			set.markStructural(fmt.Sprintf("member %s unreadable: %v", member.Name, err))
+			continue
+		}
+		kind := ClassifyBinary(head, member.Name)
+		if kind != KindELF && kind != KindPickle {
+			continue
+		}
+		if decompressed+int64(member.UncompressedSize64) > cfg.MaxArchiveMemberBytes {
+			set.markStructural(fmt.Sprintf("member byte budget %d reached at %s", cfg.MaxArchiveMemberBytes, member.Name))
+			break
+		}
+		decompressed += int64(member.UncompressedSize64)
+
+		switch kind {
+		case KindELF:
+			if err := collectELFMember(set, member, cfg); err != nil {
+				// A member that cannot be read is a gap, recorded rather than
+				// fatal: the members already read are still evidence.
+				set.markStructural(fmt.Sprintf("member %s: %v", member.Name, err))
+			}
+		case KindPickle:
+			if err := collectPickleMember(set, member, cfg); err != nil {
+				set.markStructural(fmt.Sprintf("member %s: %v", member.Name, err))
+			}
+		}
+	}
+	return nil
+}
+
+// readMemberHead reads up to n bytes of a member without decompressing more than
+// that. A member that declares more bytes than it delivers is fine here: sniffing
+// needs the head only.
+func readMemberHead(member *zip.File, n int) ([]byte, error) {
+	rc, err := member.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+
+	buf := make([]byte, n)
+	read, err := io.ReadFull(rc, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return nil, err
+	}
+	return buf[:read], nil
+}
+
+// collectELFMember runs the byte extractors and the ELF extractor over a
+// container member.
+//
+// debug/elf needs random access and a member is a stream, so the member is
+// materialised first, bounded by the archive's byte budget. That is the cost of
+// reading a nested ELF at all, and it is why the budget above is checked before
+// this is called rather than inside it.
+func collectELFMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) error {
+	rc, err := member.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(io.LimitReader(rc, cfg.MaxArchiveMemberBytes))
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) >= cfg.MaxArchiveMemberBytes {
+		set.markStructural(fmt.Sprintf("member %s truncated at the byte budget", member.Name))
+	}
+
+	// The strings pass runs over the member as well as the structural parse
+	// below. Without this, an ELF nested in a .whl would be the one executable
+	// format in the channel read without a strings pass - its sibling member
+	// kinds already get one - and a nested ELF is precisely where a stapled
+	// payload would be put. The bytes are already in memory, so the pass is a scan
+	// over a slice rather than a second read.
+	//
+	// pickleScan is false, and it must stay false: this member was classified as
+	// an ELF, and the interpreter commits to a parse, so running it here would set
+	// Bound.Structural on an executable kind and block the import of every wheel
+	// that ships a shared object.
+	//
+	// A zero budget means unlimited here: the read that filled data was the
+	// bounded one, and bounding the scan of an already-bounded slice would only
+	// lose the tail of it.
+	if err := streamReaderEvidence(bytes.NewReader(data), set, cfg, 0, "", false); err != nil {
+		return err
+	}
+
+	// The member is parsed out of memory, so it gets a reader rather than a
+	// path. A temporary file would be the alternative, and it would put
+	// attacker-controlled bytes on the filesystem of the auditing process for no
+	// reason.
+	return collectELFReader(bytes.NewReader(data), set, cfg, member.Name)
+}
+
+// streamReaderEvidence runs the byte extractors over a stream, stopping after
+// budget bytes and recording the cut as a structural bound. A budget of zero or
+// less means the stream is read to the end. The strings pass always runs; the
+// pickle interpreter runs only when pickleScan is true.
+//
+// It exists because four call sites need exactly this loop - a pickle member, an
+// ELF member, a decompressed gzip stream, and a whole file - and the bound has to
+// be enforced identically in all of them. The reason is not brevity. The bound is
+// what sets Bound.Structural, Bound.Structural is what withholds a clean verdict
+// from a stream whose tail was never read, and a call site that enforced it
+// slightly differently would be a hole in the fail-closed rule rather than a
+// style difference.
+//
+// pickleScan is a parameter rather than a read of set.Kind because a member's
+// kind is the member's, not the set's: the set is the archive, and every member
+// of an archive would otherwise be judged by the archive's kind. The caller
+// already classified the member to decide to read it, so it is the caller that
+// knows whether this stream is a claimed pickle. The gate exists because the
+// interpreter commits to a parse: a byte it cannot classify as an opcode ends the
+// parse with a structural bound, and a structural bound on an executable kind
+// blocks the import - so an interpreter run over anything but a claimed pickle is
+// a bound on a file that is not malformed at all.
+//
+// The budget is applied inside the read rather than between reads, for the same
+// reason it is in streamEvidence: checking it at the top of the loop lets one 64
+// KiB read walk past a much smaller budget. When the budget is spent, one probe
+// byte decides whether it actually cut anything - a stream that ends exactly at
+// the budget was read completely, and marking it bounded would fail a clean scan
+// for no reason.
+//
+// bounded is the caller's wording for the cut, because the four sites name
+// different budgets in their reasons.
+func streamReaderEvidence(rc io.Reader, set *EvidenceSet, cfg BinaryConfig, budget int64, bounded string, pickleScan bool) error {
+	scanner := newStringScanner(set, cfg)
+	var pickles *pickleScanner
+	if pickleScan {
+		pickles = newPickleScanner(set)
+	}
+
+	var read int64
+	buf := make([]byte, evidenceReadChunk)
+	for {
+		limit := len(buf)
+		if budget > 0 && int64(limit) > budget-read {
+			limit = int(budget - read)
+		}
+		if limit <= 0 {
+			var probe [1]byte
+			if n, err := rc.Read(probe[:]); n > 0 || (err != nil && err != io.EOF) {
+				set.markStructural(bounded)
+			}
+			break
+		}
+		n, readErr := rc.Read(buf[:limit])
+		if n > 0 {
+			if _, err := scanner.Write(buf[:n]); err != nil {
+				return err
+			}
+			if pickles != nil {
+				if _, err := pickles.Write(buf[:n]); err != nil {
+					return err
+				}
+			}
+			read += int64(n)
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+	scanner.Flush()
+	if pickles != nil {
+		pickles.Flush()
+	}
+	return nil
+}
+
+// collectPickleMember runs the byte extractors over a pickle container member.
+//
+// pickleScan is true because the dispatcher classified this member as KindPickle
+// before calling, and a claimed pickle is exactly the stream the interpreter is
+// allowed to commit to.
+func collectPickleMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) error {
+	rc, err := member.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	return streamReaderEvidence(rc, set, cfg, cfg.MaxArchiveMemberBytes,
+		fmt.Sprintf("member %s exceeds the byte budget", member.Name), true)
+}
+
+// collectCompressed reads a single-stream compressed file. Only the formats the
+// standard library decompresses are opened; anything else is counted as a
+// bounded data read by the dispatcher and named in a notice, because a
+// decompressor written for this purpose would be a new parser on the import
+// path with no evidence behind it.
+func collectCompressed(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	set.addStructured(SourceNotice, "gzip stream decompressed for evidence")
+
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("open gzip %s: %w", path, err)
+	}
+	defer zr.Close()
+
+	// The decompressed bytes are a second file with their own kind, and they are
+	// the one place the pickle gate has to be decided by sniffing rather than by a
+	// classification the caller already made. It matters that it is decided at
+	// all: a gzip of a tar is the common case (models/audit/holdout-sources/sr.tgz
+	// is one), its bytes are not an opcode stream, and running the interpreter over
+	// them would set a structural bound on KindCompressed - which is executable -
+	// and block the import of every .gz that is not itself a pickle.
+	//
+	// A buffered reader peeks the head and then hands the same bytes on, so the
+	// sniff reads nothing twice and costs no second pass. The path argument to
+	// isPickleStream is empty on purpose: the extension belongs to the compressed
+	// file, not to what it expands to.
+	br := bufio.NewReaderSize(zr, sniffBytes)
+	head, _ := br.Peek(sniffBytes)
+	pickleScan := isPickleStream(head, "")
+
+	// The decompressed length is attacker-controlled, so the budget is what keeps
+	// a small .gz from expanding into an unbounded scan - the same guard the
+	// archive path uses, and enforced through the same helper so the two cannot
+	// drift.
+	if err := streamReaderEvidence(br, set, cfg, cfg.MaxArchiveMemberBytes,
+		fmt.Sprintf("decompressed stream exceeds %d bytes", cfg.MaxArchiveMemberBytes), pickleScan); err != nil {
+		return fmt.Errorf("read gzip %s: %w", path, err)
 	}
 	return nil
 }
