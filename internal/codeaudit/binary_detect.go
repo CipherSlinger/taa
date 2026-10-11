@@ -12,6 +12,7 @@ import (
 // renamed is a package whose extension carries no evidence.
 type BinaryKind string
 
+// The values ClassifyBinary returns, listed in the order its branches can reach them.
 const (
 	KindELF        BinaryKind = "elf"
 	KindArchive    BinaryKind = "archive"
@@ -67,8 +68,8 @@ var binaryExtensions = map[string]bool{
 }
 
 // ClassifyBinary decides how a file should be read. head is the file's first
-// sniffBytes (fewer at end of file), path is used only for the extension
-// fallbacks documented on each branch.
+// sniffBytes (fewer at end of file); path is consulted only by the pickle branch
+// and the binary-extension fallback.
 func ClassifyBinary(head []byte, path string) BinaryKind {
 	switch {
 	case bytes.HasPrefix(head, magicELF):
