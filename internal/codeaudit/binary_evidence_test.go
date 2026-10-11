@@ -4,12 +4,15 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"debug/elf"
 )
 
 // newTestEvidence builds an empty set for the extractor tests to fill.
@@ -307,6 +310,23 @@ func TestEntropyVerdictIsMeasuredNotAssumed(t *testing.T) {
 	atThreshold.HighEntropyThreshold = 8.0
 	if line, ok := entropyVerdict(".text", uniform, atThreshold); ok {
 		t.Errorf("verdict = %q at exactly the threshold, want no line", line)
+	}
+
+	// The streaming path and the in-memory path must agree, because an ELF
+	// section is measured one way and a container member the other. Both are
+	// driven from the same bytes here, and the assertion is equality of the
+	// rendered line rather than of the number: the line is what reaches the
+	// evidence set, so a divergence that only shows up in the formatting would
+	// otherwise go unnoticed.
+	var counts [256]int64
+	for _, b := range uniform {
+		counts[b]++
+	}
+	streamed, streamedOK := entropyVerdictFromCounts(".text", counts, int64(len(uniform)), cfg)
+	inMemory, inMemoryOK := entropyVerdict(".text", uniform, cfg)
+	if streamed != inMemory || streamedOK != inMemoryOK {
+		t.Errorf("streamed = (%q, %v), in-memory = (%q, %v); the two paths must agree",
+			streamed, streamedOK, inMemory, inMemoryOK)
 	}
 }
 
@@ -821,4 +841,361 @@ func TestPickleInterpreterBoundsARunawayMemo(t *testing.T) {
 	if !strings.Contains(set.Bound.Reason, "memo") {
 		t.Errorf("reason = %q, want it to name the memo", set.Bound.Reason)
 	}
+}
+
+// TestELFFixtureIsReadByTheStandardLibrary guards the fixture itself. If this
+// fails, the bytes are wrong and every assertion built on them is meaningless -
+// so it is checked before anything the extractor claims.
+func TestELFFixtureIsReadByTheStandardLibrary(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		imports:  []string{"connect", "socket"},
+		needed:   []string{"libcurl.so.4"},
+		text:     []byte("hello"),
+		textExec: true,
+	})
+	path := writeTestBytes(t, dir, "libevil.so", raw)
+
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatalf("elf.Open on the fixture: %v", err)
+	}
+	defer f.Close()
+
+	libs, err := f.ImportedLibraries()
+	if err != nil {
+		t.Fatalf("ImportedLibraries: %v", err)
+	}
+	if len(libs) != 1 || libs[0] != "libcurl.so.4" {
+		t.Errorf("DT_NEEDED = %v, want [libcurl.so.4]", libs)
+	}
+
+	syms, err := f.ImportedSymbols()
+	if err != nil {
+		t.Fatalf("ImportedSymbols: %v", err)
+	}
+	names := map[string]bool{}
+	for _, s := range syms {
+		names[s.Name] = true
+	}
+	for _, want := range []string{"connect", "socket"} {
+		if !names[want] {
+			t.Errorf("imported symbol %q missing from the fixture; got %v", want, names)
+		}
+	}
+}
+
+func TestCollectELFEvidence(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		imports:  []string{"connect", "system", "dlopen"},
+		needed:   []string{"libcurl.so.4", "libc.so.6"},
+		text:     uniformBytes(512),
+		textExec: true,
+		soname:   "libevil.so.1",
+		interp:   "/lib64/ld-linux-x86-64.so.2",
+	})
+	path := writeTestBytes(t, dir, "libevil.so", raw)
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF: %v", err)
+	}
+
+	bySource := map[EvidenceSource][]string{}
+	for _, l := range set.Lines {
+		bySource[l.Source] = append(bySource[l.Source], l.Text)
+	}
+
+	for _, want := range []string{"connect", "system", "dlopen"} {
+		if !containsString(bySource[SourceDynsym], want) {
+			t.Errorf("dynsym evidence missing %q; got %v", want, bySource[SourceDynsym])
+		}
+	}
+	for _, want := range []string{"libcurl.so.4", "libc.so.6"} {
+		if !containsString(bySource[SourceNeeded], want) {
+			t.Errorf("needed evidence missing %q; got %v", want, bySource[SourceNeeded])
+		}
+	}
+	// The soname and the interpreter are the two facts this parse reads from
+	// structure rather than from symbols: collectELF writes the soname as a
+	// section line and the interpreter as a notice. Both are asserted in the
+	// exact shape it writes, so a format change breaks this test rather than
+	// silently passing an assertion written against the old shape.
+	if !containsString(bySource[SourceSection], "soname libevil.so.1") {
+		t.Errorf("soname section line missing; got %v", bySource[SourceSection])
+	}
+	if !containsString(bySource[SourceNotice], "interpreter /lib64/ld-linux-x86-64.so.2") {
+		t.Errorf("interpreter notice missing; got %v", bySource[SourceNotice])
+	}
+	var sawExecutableSection, sawHighEntropySection bool
+	for _, text := range bySource[SourceSection] {
+		if strings.Contains(text, ".text") && strings.Contains(text, "executable=true") {
+			sawExecutableSection = true
+		}
+	}
+	for _, text := range bySource[SourceEntropy] {
+		if strings.HasPrefix(text, "high-entropy-executable-section .text") {
+			sawHighEntropySection = true
+		}
+	}
+	if !sawExecutableSection {
+		t.Errorf("no executable .text section line; got %v", bySource[SourceSection])
+	}
+	if !sawHighEntropySection {
+		t.Errorf("a uniform .text produced no entropy verdict; got %v", bySource[SourceEntropy])
+	}
+}
+
+// TestCollectELFEvidenceSkipsEntropyForDataSections pins the narrower half of the
+// same rule: a non-executable section that happens to be near-random says
+// nothing, because data is allowed to be random and code is not.
+func TestCollectELFEvidenceSkipsEntropyForDataSections(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{text: uniformBytes(512), textExec: false})
+	path := writeTestBytes(t, dir, "libdata.so", raw)
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF: %v", err)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourceEntropy {
+			t.Errorf("entropy evidence %q for a non-executable section", l.Text)
+		}
+	}
+}
+
+// TestCollectELFEvidenceOnAStrippedFile pins that a file with no dynamic symbol
+// table at all is a completed look, not a failure, and that the look says so.
+// The fixture omits the SHT_DYNSYM section entirely, which is what makes
+// debug/elf return elf.ErrNoSymbols: treating that as an error would make every
+// Go binary build in a model package an incomplete scan. The notice it produces
+// is what tells a reader the symbol list is empty because there is no table.
+//
+// The notice names the section type that is absent rather than calling the file
+// "stripped or static". A static binary has no .dynsym but does carry .symtab,
+// so the old wording was false for it, and a file with no section header table
+// at all is not "stripped" either - it is a different condition with its own
+// structural bound. A notice is a statement about the bytes, so it says which
+// table was looked for and not found.
+func TestCollectELFEvidenceOnAStrippedFile(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{text: []byte("no symbols here"), stripped: true})
+	path := writeTestBytes(t, dir, "stripped", raw)
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF on a file with no .dynsym: %v", err)
+	}
+	if set.Err != nil {
+		t.Errorf("Err = %v, want nil", set.Err)
+	}
+	if set.Bound.Structural {
+		t.Errorf("a stripped file was marked structural (%q); stripping is ordinary and must not withhold a pass", set.Bound.Reason)
+	}
+
+	var notices []string
+	for _, l := range set.Lines {
+		if l.Source == SourceNotice {
+			notices = append(notices, l.Text)
+		}
+	}
+	if !containsString(notices, "no dynamic symbol table (SHT_DYNSYM absent)") {
+		t.Errorf("no absent-.dynsym notice; got notices %v", notices)
+	}
+	for _, n := range notices {
+		if strings.Contains(n, "stripped or static") {
+			t.Errorf("the notice still claims the file is stripped or static: %q", n)
+		}
+	}
+}
+
+// TestCollectELFEvidenceOnAFileWithNoSectionHeaders pins the removal of a
+// fail-open. The entropy pass walks the executable sections, so a file with no
+// section header table used to walk nothing, emit no line and no bound, and pass
+// as clean - a pass that claimed to have looked for packing in a file it never
+// examined. The fixture writes e_shoff, e_shnum and e_shstrndx as zero, which is
+// the shape of a file whose section table was removed, and that must come back
+// as a structural gap that names the section header table rather than as a clean
+// pass.
+func TestCollectELFEvidenceOnAFileWithNoSectionHeaders(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{text: uniformBytes(512), textExec: true, noSections: true})
+	path := writeTestBytes(t, dir, "packed", raw)
+
+	// The fixture itself must survive the standard library before the extractor
+	// is asked about it: a file debug/elf refuses is a different case from one
+	// it reads and finds no sections in.
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatalf("elf.Open on the sectionless fixture: %v", err)
+	}
+	if got := len(f.Sections); got != 0 {
+		t.Fatalf("fixture sections = %d, want 0", got)
+	}
+	f.Close()
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("a file with no section header table produced no structural bound; bound = %+v", set.Bound)
+	}
+	// The reason must name the real condition. It is not a missing symbol table:
+	// a stripped file has no .dynsym either and is not bounded, and this file's
+	// own case is the absent section header table.
+	if !strings.Contains(set.Bound.Reason, "section header table") {
+		t.Errorf("bound reason = %q, want it to name the section header table", set.Bound.Reason)
+	}
+	if strings.Contains(set.Bound.Reason, "symbol") {
+		t.Errorf("bound reason = %q, want it not to claim a symbol table is the problem", set.Bound.Reason)
+	}
+}
+
+// TestCollectELFEvidenceReportsASectionThatOverrunsTheFile pins that a section
+// header is not taken at its word. The fixture adds bytes to .text's declared
+// sh_size that were never written, so the read stops at end of file and returns
+// fewer bytes than the header claims. An extractor that trusted the header and
+// measured whatever it got would score a prefix and call it the section; an
+// extractor that noticed but said nothing would leave the reader unable to tell
+// a short section from a short read. So the shortfall is structural and the
+// declared size is still reported as what the header said.
+func TestCollectELFEvidenceReportsASectionThatOverrunsTheFile(t *testing.T) {
+	dir := t.TempDir()
+	const textLen, overrun = 512, 1 << 20
+	raw := elfFixtureBytes(t, elfSpec{text: uniformBytes(textLen), textExec: true, overrun: overrun})
+	path := writeTestBytes(t, dir, "truncated.so", raw)
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("a section declaring more than the file holds produced no structural bound; bound = %+v", set.Bound)
+	}
+	if !strings.Contains(set.Bound.Reason, "declares") || !strings.Contains(set.Bound.Reason, "readable") {
+		t.Errorf("bound reason = %q, want it to state declared and readable byte counts", set.Bound.Reason)
+	}
+
+	// size= must still be the declared size, so a reader can pair the section
+	// line with the shortfall instead of seeing a number that silently matched
+	// the read. The section line carries its executability flag after size=, so
+	// the declared size is asserted as the line's prefix and not as the whole
+	// line.
+	wantDeclared := fmt.Sprintf(".text size=%d", textLen+overrun)
+	var sawDeclared bool
+	for _, l := range set.Lines {
+		if l.Source == SourceSection && strings.HasPrefix(l.Text, ".text size=") {
+			sawDeclared = strings.HasPrefix(l.Text, wantDeclared+" ")
+		}
+	}
+	if !sawDeclared {
+		t.Errorf("no section line %q; lines = %v", wantDeclared, set.Lines)
+	}
+
+	// The short read must not have been scored: an entropy line would be a number
+	// over a prefix, presented with the same authority as one over a whole section.
+	for _, l := range set.Lines {
+		if l.Source == SourceEntropy {
+			t.Errorf("a section that overran the file still produced entropy evidence %q", l.Text)
+		}
+	}
+}
+
+// TestCollectELFEvidenceMeasuresEveryExecutableSection pins that the entropy
+// pass is per section rather than per file. The fixture carries two executable
+// sections, a packed .text and a flat .init, and the file-level boolean a
+// one-section fixture cannot distinguish from a loop would report either both or
+// neither. Exactly one line may appear, and it must name .text.
+func TestCollectELFEvidenceMeasuresEveryExecutableSection(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		text:      uniformBytes(512),
+		textExec:  true,
+		text2:     bytes.Repeat([]byte{0x90}, 512), // NOP sled: executable and not random
+		text2Exec: true,
+	})
+	path := writeTestBytes(t, dir, "twoexec.so", raw)
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF: %v", err)
+	}
+	if set.Bound.Structural {
+		t.Fatalf("a well-formed two-section file was marked structural: %q", set.Bound.Reason)
+	}
+
+	var entropyLines []string
+	for _, l := range set.Lines {
+		if l.Source == SourceEntropy {
+			entropyLines = append(entropyLines, l.Text)
+		}
+	}
+	if len(entropyLines) != 1 || !strings.HasPrefix(entropyLines[0], "high-entropy-executable-section .text ") {
+		t.Errorf("entropy lines = %v, want exactly one for .text", entropyLines)
+	}
+}
+
+// TestCollectELFEmptyDynsymIsNotAStrippedFile pins the distinction the stripped
+// test cannot see: a .dynsym that exists but holds only the reserved null entry
+// yields an empty symbol list and a nil error, not ErrNoSymbols. "This binary
+// imports nothing" and "this file has no symbol table" are different facts, and
+// reporting the second when the first is true would be a false statement in the
+// report - so no notice may appear here.
+func TestCollectELFEmptyDynsymIsNotAStrippedFile(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{text: []byte("a library with no imports")})
+	path := writeTestBytes(t, dir, "libempty.so", raw)
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF: %v", err)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourceNotice && strings.Contains(l.Text, "no dynamic symbol table") {
+			t.Errorf("a present but empty .dynsym produced the stripped/static notice: %q", l.Text)
+		}
+	}
+}
+
+// TestCountSectionStreamsTheSameHistogramAsABufferRead pins that chunking the
+// section read does not change the number it produces. The fixture is larger
+// than one chunk so the loop body runs more than once: an implementation that
+// reset its counters per chunk, or dropped the final short chunk, would still
+// pass a single-chunk test and would make an ELF section's entropy depend on its
+// size rather than on its bytes.
+func TestCountSectionStreamsTheSameHistogramAsABufferRead(t *testing.T) {
+	data := make([]byte, entropyChunkBytes+1234)
+	for i := range data {
+		data[i] = byte((i * 31) % 251)
+	}
+
+	counts, n, err := countSection(bytes.NewReader(data), 0)
+	if err != nil {
+		t.Fatalf("countSection: %v", err)
+	}
+	if n != int64(len(data)) {
+		t.Fatalf("countSection read %d bytes, want %d", n, len(data))
+	}
+	if got, want := shannonEntropy(counts, n), measureEntropy(data); math.Abs(got-want) > 1e-12 {
+		t.Errorf("streamed entropy = %v, buffered = %v; the two must agree", got, want)
+	}
+
+	// A budget smaller than the section stops the read and reports how far it
+	// got, which is the number the caller compares against the declared size.
+	const budget = int64(4096)
+	if _, n, err := countSection(bytes.NewReader(data), budget); err != nil || n != budget {
+		t.Errorf("countSection with a %d-byte budget read %d bytes (err=%v), want exactly %d", budget, n, err, budget)
+	}
+}
+
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }
