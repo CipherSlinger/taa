@@ -5349,16 +5349,66 @@ import "testing"
 // a family both arms can report, the binary side must not carry its own severity.
 // The two arms disagreeing about how bad socket use is would make the audit's
 // verdict depend on which channel happened to notice.
+//
+// The severity comparison at the end is a consequence check, not the one that
+// does the work: NewBinaryMatcher resolves a shared id straight from
+// DefaultRules(), so for a borrowed id that comparison cannot fail on its own.
+// What can fail - and what this test is really for - is the shape a re-typed copy
+// arrives in, and there are two of them. Both are asserted over the tables rather
+// than over the resolved rules, because that is where a copy would live.
+//
+// Mutation to keep this honest: add `"NET_002": {ID: "NET_002", Severity:
+// SeverityMedium}` to binaryOnlyRules. Every other assertion in this file stays
+// green - NewBinaryMatcher still resolves NET_002 from the shared table, so the
+// resolved severity does not move, and TestBinaryOnlyFamiliesDoNotCollide only
+// walks DefaultRules() and so never sees what binaryOnlyRules now says about a
+// shared id. The "reuses a shared id" assertion below is the one that goes red.
 func TestBinaryRulesBorrowSharedFamilies(t *testing.T) {
 	byID := map[string]Rule{}
 	for _, r := range DefaultRules() {
 		byID[r.ID] = r
 	}
-	binary, err := NewBinaryMatcher()
+
+	// A binary-only entry must not reuse a shared id, and must not carry the
+	// source arm's patterns. The second assertion is the pattern-text half of the
+	// same drift: a re-typed copy arrives by copy-pasting a DefaultRules() entry,
+	// and that entry has Patterns set, whereas a genuine binary-only rule never
+	// does - the patterns live on the family (see binaryFamily), because a Rule's
+	// Patterns are the source arm's matcher and the regex and semgrep engines must
+	// not carry patterns for text they never read.
+	for id, r := range binaryOnlyRules {
+		if _, ok := byID[id]; ok {
+			t.Errorf("binary-only rule %s reuses a shared id; DefaultRules() is the source of truth for that id, so this entry is dead - and any severity or pattern text it states can drift from the one that is used", id)
+		}
+		if len(r.Patterns) != 0 {
+			t.Errorf("binary-only rule %s carries %d source-arm patterns; binary patterns belong on the family, and a Rule that carries them is a copy of a DefaultRules() entry rather than a decision", id, len(r.Patterns))
+		}
+	}
+
+	matcher, err := NewBinaryMatcher()
 	if err != nil {
 		t.Fatalf("NewBinaryMatcher: %v", err)
 	}
-	for _, r := range binary.Rules() {
+
+	// Every family must be in exactly one table, and must have at least one
+	// pattern. A family with no patterns matches nothing and nothing else
+	// notices it: it resolves fine, it sits in Rules(), and it silently never
+	// fires - which is a family that has been dropped without a trace.
+	for _, fam := range binaryFamilies {
+		_, borrowed := byID[fam.ID]
+		_, stated := binaryOnlyRules[fam.ID]
+		switch {
+		case borrowed && stated:
+			t.Errorf("family %s is both borrowed from DefaultRules() and restated in binaryOnlyRules; leave it in one place", fam.ID)
+		case !borrowed && !stated:
+			t.Errorf("family %s is in neither DefaultRules() nor binaryOnlyRules", fam.ID)
+		}
+		if len(fam.Patterns) == 0 {
+			t.Errorf("family %s has no patterns: it can never match, and nothing else notices", fam.ID)
+		}
+	}
+
+	for _, r := range matcher.Rules() {
 		shared, ok := byID[r.ID]
 		if !ok {
 			continue // a binary-only family states its own severity, by design
@@ -5751,8 +5801,8 @@ var binaryFamilies = []binaryFamily{
 		// imports system() has the capability. Only SourceDynsym - the string
 		// half lives in CMD_002 below, because the same word in a literal is not
 		// a capability.
-		ID:       "CMD_001",
-		Sources:  []EvidenceSource{SourceDynsym},
+		ID:      "CMD_001",
+		Sources: []EvidenceSource{SourceDynsym},
 		Patterns: compilePatterns(
 			`^(system|execve|execv|execvp|execl|execlp|execle|popen|posix_spawn|posix_spawnp|forkpty|WinExec|ShellExecuteA|ShellExecuteW|CreateProcessA|CreateProcessW)$`,
 		),
@@ -5768,8 +5818,8 @@ var binaryFamilies = []binaryFamily{
 		// that blocks a networking stack; the client symbols plus a client library
 		// dependency keep the claim small enough to mean something. The shared id
 		// and its severity are the source arm's, so this family stays HIGH.
-		ID:       "NET_002",
-		Sources:  []EvidenceSource{SourceDynsym, SourceNeeded},
+		ID:      "NET_002",
+		Sources: []EvidenceSource{SourceDynsym, SourceNeeded},
 		Patterns: compilePatterns(
 			`^(socket|connect|getaddrinfo|gethostbyname|gethostbyaddr|inet_addr|inet_pton|WSAStartup|WSASocketA|WSASocketW)$`,
 			`^libcurl\.so`,
@@ -5786,8 +5836,8 @@ var binaryFamilies = []binaryFamily{
 		Patterns: compilePatterns(`^(dlopen|dlmopen|dlsym)$`),
 	},
 	{
-		ID:       "PKL_001",
-		Sources:  []EvidenceSource{SourcePickle},
+		ID:      "PKL_001",
+		Sources: []EvidenceSource{SourcePickle},
 		Patterns: compilePatterns(
 			// Process execution. The module list is a deny list of capabilities,
 			// not an allow list of libraries: an allow list would have to name
@@ -5804,8 +5854,8 @@ var binaryFamilies = []binaryFamily{
 		// shapes survive here: a bare symbol name in a literal is what
 		// TestSymbolRulesDoNotMatchStringLiterals refuses, and an unanchored
 		// substring catches a fragment of a concatenated constant pool.
-		ID:       "CMD_002",
-		Sources:  []EvidenceSource{SourceStrings},
+		ID:      "CMD_002",
+		Sources: []EvidenceSource{SourceStrings},
 		Patterns: compilePatterns(
 			`^/bin/(sh|bash|dash|zsh)$`,
 			`^(bash|sh) -c\b`,
@@ -5819,8 +5869,8 @@ var binaryFamilies = []binaryFamily{
 		// a run and a mid-run path always matches an unanchored pattern. A
 		// boundary on the token, not the fragment, is the fix; raising the
 		// severity would not have been.
-		ID:       "PER_002",
-		Sources:  []EvidenceSource{SourceStrings},
+		ID:      "PER_002",
+		Sources: []EvidenceSource{SourceStrings},
 		Patterns: compilePatterns(
 			`^crontab\b`,
 			`^/etc/cron[a-z.]*`,
@@ -5834,13 +5884,21 @@ var binaryFamilies = []binaryFamily{
 	{
 		// Same anchoring requirement, same measurement. `'.aws/credentialsz'`
 		// and `'.ssh/id_rsaz'` were the observed fragments; the trailing `z` is
-		// proof the match was a fragment of a concatenated run, and the `$` is
-		// what refuses it.
-		ID:       "FIL_002",
-		Sources:  []EvidenceSource{SourceStrings},
+		// proof the match was a fragment of a concatenated run.
+		//
+		// The `$` alone is not what refuses them. It refuses a *suffixed*
+		// neighbour - `'.aws/credentialsz'` stops matching `\.aws/credentials$`
+		// because the `$` will not sit at the `z`. It does not refuse an
+		// *invented* key name: `id_[a-z]+` consumes `id_rsaz`'s trailing `z`
+		// happily, so the `$` is satisfied and the fragment matches anyway. Only
+		// a closed key-name list refuses that, which is why the `.ssh`
+		// alternation names the four real keys rather than reaching for
+		// `id_[a-z]+`.
+		ID:      "FIL_002",
+		Sources: []EvidenceSource{SourceStrings},
 		Patterns: compilePatterns(
 			`^/etc/(?:passwd|shadow|sudoers)$`,
-			`^(?:.*/)?\.ssh/(?:id_[a-z]+|authorized_keys|config)$`,
+			`^(?:.*/)?\.ssh/(?:id_(?:rsa|dsa|ecdsa|ed25519)|authorized_keys|config)$`,
 			`^(?:.*/)?\.aws/credentials$`,
 			`(?:^|/)\.kube/config$`,
 			`^/proc/self/environ$`,
@@ -5852,8 +5910,8 @@ var binaryFamilies = []binaryFamily{
 		// convention; the same flag here made the lower-case identifier
 		// `private_key` match `PRIVATE_KEY` in security.cpython-312.pyc. A bare
 		// identifier is a name, not a secret read.
-		ID:       "ENV_002",
-		Sources:  []EvidenceSource{SourceStrings},
+		ID:      "ENV_002",
+		Sources: []EvidenceSource{SourceStrings},
 		Patterns: compilePatterns(
 			`^(?:AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|API_KEY|SECRET_KEY|ACCESS_TOKEN|PRIVATE_KEY|GITHUB_TOKEN)$`,
 		),
@@ -6098,10 +6156,20 @@ func newTestBinaryScanner(cfg BinaryConfig) (*BinaryScanner, error) {
 // to the source channel, and everything with binary content or a binary
 // extension is claimed. The claim set is what MergeBinaryFindings uses to decide
 // which files the source channel must not also be believed about.
+//
+// empty.py is the degenerate case and it is here rather than in its own test
+// because it is the same question: a zero-byte file is classified KindText (see
+// TestClassifyBinaryEmptyFile), so it is not claimed and not counted. What makes
+// it worth pinning is that the wrong reading of os.File.Read - the one that
+// treats io.EOF as a failure - turns every empty file into an unreadable one,
+// which ScanDirectory counts Incomplete and which withholds the pass. An empty
+// __init__.py is routine, so that mistake fails a legitimate package, and it is
+// invisible in a claim set that never contains an empty file.
 func TestBinaryScannerClaimsOnlyBinaryFiles(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir, "train.py", "import os\n")
 	writeTestFile(t, dir, "notes.txt", "just prose\n")
+	writeTestFile(t, dir, "empty.py", "")
 	writeTestFile(t, dir, "libevil.so", "#!/bin/sh\necho hi\n")
 	writeTestBytes(t, dir, "w.bin", []byte("data\x00literal"))
 
@@ -6112,6 +6180,10 @@ func TestBinaryScannerClaimsOnlyBinaryFiles(t *testing.T) {
 	res, err := s.ScanDirectory(dir)
 	if err != nil {
 		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if res.Summary.Incomplete != 0 {
+		t.Errorf("Summary.Incomplete = %d, want 0: an empty file is a file that was read, not one that could not be", res.Summary.Incomplete)
 	}
 
 	want := map[string]bool{"libevil.so": true, "w.bin": true}
@@ -6168,10 +6240,19 @@ func TestBinaryScannerFindsImportsAndPickles(t *testing.T) {
 	}
 }
 
-// TestBinaryScannerIsDeterministic pins the ordering. The finding cap spends its
-// budget on the first findings it sees, so an order that varied between runs
-// would make a capped scan keep a different set each time and two reports of the
-// same package would stop being comparable.
+// TestBinaryScannerIsDeterministic pins run-to-run stability, which is a real
+// property: two scans of the same package must produce the same findings in the
+// same order, or two reports of the same package stop being comparable.
+//
+// It does not pin the sortFindings call, and the comment here should not claim it
+// does. The findings arrive already in (File, Line) order: filepath.Walk is
+// lexical, which fixes the file order, and MatchAll iterates a listing Finalize
+// has already ordered, which fixes the line order within a file. Deleting
+// sortFindings from ScanDirectory would leave this test green - the fixture is a
+// fixed point of the sort. The sort itself is pinned by
+// TestSortFindingsOrdersShuffledFindings below, which drives it directly with an
+// order it has to repair, and the call is kept in ScanDirectory for the case this
+// test cannot construct: two producers whose listings interleave.
 func TestBinaryScannerIsDeterministic(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i < 8; i++ {
@@ -6206,6 +6287,91 @@ func TestBinaryScannerIsDeterministic(t *testing.T) {
 					run, i, b.File, b.Line, b.RuleID, a.File, a.Line, a.RuleID)
 			}
 		}
+	}
+}
+
+// TestSortFindingsOrdersShuffledFindings pins the order itself, because no
+// scan-level test can. The order has to be total - file, then line, then rule -
+// and independent of the run, since the cap keeps the first N: a comparison that
+// stopped at the file would leave two findings in one file ordered by whatever
+// order the producers happened to emit them in, and a capped scan would keep a
+// different set from run to run.
+//
+// The input below is shuffled on both axes, so this test fails if the comparison
+// is deleted, if the file key is dropped, or if the line key is dropped. It does
+// not fail if the rule-id tiebreak is dropped, and that is stated rather than
+// implied: the tiebreak only orders findings that share a file and a line, which
+// in the scanner means two rules matching one evidence line, and Match returns at
+// most one rule per line. The tiebreak is kept for totality, not because this
+// test can see it.
+func TestSortFindingsOrdersShuffledFindings(t *testing.T) {
+	findings := []Finding{
+		{File: "b.so", Line: 3, RuleID: "BIN_001"},
+		{File: "a.so", Line: 9, RuleID: "CMD_001"},
+		{File: "a.so", Line: 9, RuleID: "BIN_001"},
+		{File: "a.so", Line: 2, RuleID: "NET_002"},
+	}
+	sortFindings(findings)
+
+	want := []struct {
+		file   string
+		line   int
+		ruleID string
+	}{
+		{"a.so", 2, "NET_002"},
+		{"a.so", 9, "BIN_001"},
+		{"a.so", 9, "CMD_001"},
+		{"b.so", 3, "BIN_001"},
+	}
+	for i := range want {
+		got := findings[i]
+		if got.File != want[i].file || got.Line != want[i].line || got.RuleID != want[i].ruleID {
+			t.Fatalf("after sort, finding %d = %s:%d %s, want %s:%d %s",
+				i, got.File, got.Line, got.RuleID, want[i].file, want[i].line, want[i].ruleID)
+		}
+	}
+}
+
+// TestBinaryScannerCountsAnUnreadableSubtree pins the walk-level error path. The
+// walk must not abort on one unreadable subtree, but it must not forget it
+// either: an entry the walk could not read is a look that did not happen, and it
+// is counted Incomplete for the same reason an unopenable file is. Without the
+// count, a directory containing an unreadable subtree scans as a clean scan of
+// whatever was readable - the exact "looks read-and-clean" shape Incomplete
+// exists to close, and at the root it is a clean scan of nothing.
+//
+// It is skipped when the suite runs as root, where mode 0o000 does not deny
+// access and there is no unreadable subtree to make. The skip is not the fix: the
+// count is asserted wherever the platform lets the subtree be unreadable, and it
+// is not conditional on this test in any other way.
+func TestBinaryScannerCountsAnUnreadableSubtree(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: mode 0o000 does not deny access, so no unreadable subtree can be made")
+	}
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket"}}))
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestBytes(t, locked, "inside.so", elfFixtureBytes(t, elfSpec{imports: []string{"system"}}))
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	// Registered after t.TempDir's cleanup, so it runs first and the tree can be
+	// removed.
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+	s, err := newTestBinaryScanner(DefaultBinaryConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if res.Summary.Incomplete == 0 {
+		t.Errorf("Summary.Incomplete = 0: an unreadable subtree was skipped without being counted; summary = %+v", res.Summary)
 	}
 }
 
@@ -6421,6 +6587,7 @@ package codeaudit
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -6443,7 +6610,11 @@ type BinaryScanSummary struct {
 	// is data on this platform. It is recorded because a reader should see it,
 	// and it does not withhold a verdict: a bounded tensor blob cannot run.
 	BoundedData int `json:"bounded_data,omitempty"`
-	// Incomplete counts files that could not be examined at all.
+	// Incomplete counts paths the channel set out to examine and could not: a
+	// file that would not open, a file whose extraction failed, and a subtree the
+	// walk could not read. It is named for what the pass failed to see rather than
+	// for the file count, because an unreadable directory is not a file and still
+	// has to make the pass admit it looked at nothing.
 	Incomplete int `json:"incomplete,omitempty"`
 	// Errored records that the pass could not run at all - the walk failed before
 	// it examined anything. It is a gap for the same reason Incomplete is: a pass
@@ -6535,6 +6706,21 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 
 	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			// The walk could not read this path. Two shapes arrive here: an entry
+			// whose lstat failed (filepath.Walk passes info as nil, because there
+			// is no FileInfo to pass), and a directory whose entries would not
+			// list (info is the directory itself and err is the listing error).
+			// Either way there is nothing here to classify - a nil info has no
+			// mode and no bytes, and a directory has no bytes of its own.
+			//
+			// Returning nil is deliberate - one unreadable subtree must not abort
+			// the audit of the rest - but the skip must not be silent either. This
+			// is the count the classify-open and extraction failures below use, and
+			// it is what makes an unreadable subtree withhold the pass rather than
+			// leave a scan that looks read-and-clean. At the root it is the
+			// difference between a clean scan of zero files and a scan that admits
+			// it looked at nothing.
+			res.Summary.Incomplete++
 			return nil
 		}
 		if info.IsDir() {
@@ -6653,6 +6839,16 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 }
 
 // classify reads a file's head and decides how it should be read.
+//
+// A zero-byte file is not an error here. os.File.Read on an empty file returns
+// (0, io.EOF), so treating "err != nil && n == 0" as a failure would return
+// every empty regular file as an unreadable one - and ScanDirectory counts an
+// unreadable file as Incomplete, which withholds the pass. An empty __init__.py
+// is routine, so that would fail a legitimate package over a file with no bytes
+// to read. The branch below therefore distinguishes "could not open" (a real
+// error, returned) from "opened and is empty" (io.EOF with nothing read, not an
+// error), and lets ClassifyBinary decide the empty head the same way it decides
+// any other: an empty .py is KindText and is skipped, not counted.
 func (s *BinaryScanner) classify(path string) (BinaryKind, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -6662,7 +6858,7 @@ func (s *BinaryScanner) classify(path string) (BinaryKind, error) {
 
 	head := make([]byte, sniffBytes)
 	n, err := f.Read(head)
-	if err != nil && n == 0 {
+	if err != nil && err != io.EOF {
 		return KindText, err
 	}
 	return ClassifyBinary(head[:n], path), nil
@@ -6773,10 +6969,10 @@ const EngineNameBinary = "binary"
 - [ ] **Step 5: 跑测试确认通过**
 
 ```bash
-go test ./internal/codeaudit/ -run TestBinaryScanner -v 2>&1 | tail -20
+go test ./internal/codeaudit/ -run 'TestBinaryScanner|TestSortFindings' -v 2>&1 | tail -20
 ```
 
-预期全 PASS。
+预期全 PASS。`TestSortFindings` 也在这一次运行里：它钉的是 `ScanDirectory` 调用的那个排序本身，而扫描层的用例构造不出乱序（见 `TestBinaryScannerIsDeterministic` 的注释），所以它必须被显式选进来。
 
 - [ ] **Step 6: 提交**
 
@@ -8370,7 +8566,7 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 | `elfFixtureBytes` 的字节布局写错，Task 5–15 全部建立其上 | `TestELFFixtureIsReadByTheStandardLibrary` 先于一切断言检查夹具本身；失败时按 `debug/elf` 的报错逐字段核对 |
 | 大模型包（数 GB）的 `.pt` 让导入变慢 | 证据流式读取，无整文件驻留；容器成员按需解压且有总额预算；超过 `MaxFullScanBytes`（默认 64 MiB）的文件只读首尾各 1 MiB，把单文件成本钉在约 190 ms |
 | 加壳判定对 UPX 打包的合法库误报 | `BIN_001` 定为 HIGH，但触发它的是一次**测量**而不是一次模式匹配：只有可执行节区的熵越过 7.5 bits/byte 才成立，而实测**宿主上 600 个共享对象**（去重后 538 个 ELF，枚举到 2027 个文件条目）的可执行节区最高只有 **6.777009**（**`libcrypto.so.3` 的 `.text`**，3347362 字节，整节读完；`libgomp.so` 的 7.97 落在非可执行的 `.gnu_debugdata`，抽取器根本不测），余量 **0.723** bits。误报面因此是「真的加壳了的合法库」，而不是「碰巧含有某个字节序列的库」；而这一面在已测的 600 个共享对象上是空的——0 个被判结构性、0 个无节表、0 个报错、命中 0 个，最高 6.777009 对阈值 7.5（早先只量了 ollama 那 28 个，最高 6.75，样本扩大二十倍最高值只挪了不到 1%）。**代价必须写清楚：`BIN_001` 是 HIGH，assist（默认策略）下照样阻断**——assist 的通过判据是 `passed = stats.High == 0`（`audit.go:303-304`），而且 assist 的静态判定连 LLM 降级都不认：`recalculateStaticPassed` 存在的唯一理由就是挡住被 LLM 降成 SUSPICIOUS/BENIGN 的静态 HIGH（`verifier.go:204-210`），所以即使 Tier 2 判它 BENIGN 也救不回这个包。也就是说，一个真的用 UPX 打包的合法库会被删包，这正是下一行「二进制通道让原本能导入的包被误阻断」所写的「最贵的失败模式是删包」。之所以保留 HIGH 而不退回 MEDIUM：这条判定由一次**测量**触发、其误报面实测为 0（600 个共享对象命中 0 个），而把一个加壳 `.so` 塞进模型包本身就是经典规避手法，值得用一个删包级判定挡住。 |
-| 字符串证据把合法包判成恶意 | 这是本轮实测出的最贵的误报源，对策是把字符串半边整体降级并收窄：源码臂的 `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` 是 HIGH/MEDIUM（`DefaultRules()` + `audit.go:242-243`，MEDIUM 在 `gate` 下照样阻断，`audit.go:301`），所以字符串半边不借它们，改用独立的 LOW 族 `CMD_002`/`PER_002`/`FIL_002`/`ENV_002`；每个 token 两端都锚定（`^…$`）以拒绝 `.pyc` 常量池里拼接出的片段（`'crontabz'`、`'.ssh/id_rsaz'`、`.profilez /etc/cron)` 都是实测命中）；`ENV_002` 去掉 `(?i)`，否则小写标识符 `private_key` 会撞上 `PRIVATE_KEY`；`OBF_001` 从二进制臂整体删除（28 个合法库命中 23 个）。LOW 仍进报告、仍送 Tier 2 复核，只是自己不足以阻断 |
+| 字符串证据把合法包判成恶意 | 这是本轮实测出的最贵的误报源，对策是把字符串半边整体降级并收窄：源码臂的 `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` 是 HIGH/MEDIUM（`DefaultRules()` + `audit.go:242-243`，MEDIUM 在 `gate` 下照样阻断，`audit.go:301`），所以字符串半边不借它们，改用独立的 LOW 族 `CMD_002`/`PER_002`/`FIL_002`/`ENV_002`；每个 token 两端都锚定（`^…$`）以拒绝 `.pyc` 常量池里拼接出的片段（`'crontabz'`、`.profilez /etc/cron)` 都是实测命中），`'.ssh/id_rsaz'` 则靠**闭合的键名列表**（`id_(?:rsa|dsa|ecdsa|ed25519)`）拒绝——单靠 `$` 不够，`id_[a-z]+` 会把结尾的 `z` 一并吃下，锚点照样满足；`ENV_002` 去掉 `(?i)`，否则小写标识符 `private_key` 会撞上 `PRIVATE_KEY`；`OBF_001` 从二进制臂整体删除（28 个合法库命中 23 个）。LOW 仍进报告、仍送 Tier 2 复核，只是自己不足以阻断 |
 | 二进制 finding 挤占 LLM 配额 | 两臂各自限流（源码 200、二进制 50），合并列表不再二次截断。**Tier 2 调用上界由 200 变为 250**，且只在两臂同时饱和时可达。反过来，共享配额会让大源码臂按路径序挤掉二进制 finding，而那条路只会更贵：被挤掉的是二进制通道的证据，而挤掉它的那条臂本来就已经有 finding |
 | 二进制通道让原本能导入的包被误阻断 | 这是本设计最贵的失败模式（`ProvesCleanScan` 为假 → `cleanDirContents` 删包），所以：**finding 上限不参与完整性**（触顶只写 `findings_capped`/`findings_dropped`，绝不折进 `Report.Truncated`，且 cap 从不丢 HIGH——一条 finding 只有被结构背书才是 HIGH，cap 丢得起的只有 LOW/MEDIUM）；纯数据文件的证据截断只记录、不阻断；字符串证据一律 LOW（四个独立族，不借源码臂的 HIGH/MEDIUM id）；`BIN_001` 只由测量触发、不匹配字面量；**ELF 的结构性 fail-closed 只设在"这次没读完"上，不设在"这个文件很大"上**——一个可执行节在每文件 `MaxStreamBytes`（3 GiB）预算内没读完，记为结构性缺口（`section .text declares N bytes, M readable`）并删包；被删掉的 `MaxSectionBytes`（16 MiB/节）为什么错，判据正在这个分界上：16 MiB 的节上限问的是"这个库是不是太大"，而任何足够大的 `.so` 都会越过某个固定值，于是它把"库比较大"变成阻断理由（实测 libLLVM/libclang/chrome/wireshark 的可执行节都越过它）；3 GiB 的每文件预算问的是"我们能不能把它读完"，实测 600 个共享对象（538 个不同 ELF、2027 个文件条目）里没有一个接近它，触到它意味着这次读取确实没完成——那才是诚实的缺口；`security.binaryAudit.enabled=false` 是逐字节回滚。已入库语料实测最大 finding 数为单样本 7、整语料 80，离两个上限都有一个数量级 |
 | 去掉无节表 fail-open 后，节表被剥离的合法库被误阻断 | 这是本次修订**新引入**的代价，必须与上一行（UPX / `BIN_001`）并列看，而不是只留在 Task 5 的实现里：熵检测的输入是可执行节，而 `len(ef.Sections) == 0` 的文件（`strip --strip-section-headers` 或 `objcopy --strip-section-headers` 的产物、以及某些加壳器的输出）没有可执行节可测，新实现记为 `Bound.Structural`，而 `KindELF` 是可执行类型，于是这个包被删。旧行为是"没有节表就直接掉出去、不产生任何行也不产生任何 bound"，也就是把"从未检查过"报成"没发现加壳"（fail-open）；本版刻意翻成 fail-closed，判据是：**对可执行格式，"没看"必须不等于"干净"**。这条误报面**不靠"用 `PT_DYNAMIC` 回补 `DT_NEEDED`/`DT_SONAME`"来修**——那条链要先把 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移、再把 `DT_STRTAB` 的虚地址同样映射一次，是一段独立的新解析逻辑，而它的产出对"有没有被加壳"不提供任何证据，与这条误报面无关。真正的取舍是"宁可为被剥节的库删包，也不让一个剥了节表头的加壳载荷通过"。已入库语料实测没有这个形状（`models/` 下一个真实 `.so` 都没有，见第 14 条），宿主 600 个共享对象（538 个不同 ELF、2027 个文件条目）里也 0 个无节表（见第 15 条），所以这个代价目前是**潜伏**的，只在包带上一个被剥节的真实库时发作；`security.binaryAudit.enabled=false` 仍是逐字节回滚 |
