@@ -93,6 +93,10 @@ type BinaryScanner struct {
 // caller could act on.
 func NewBinaryScanner(matcher *BinaryMatcher, cfg BinaryConfig) *BinaryScanner {
 	if matcher == nil {
+		// The discarded error would leave matcher nil and surface as a nil
+		// dereference at the first MatchAll rather than as a diagnosis, so the
+		// rule-table tests in binary_rules_test.go carry the weight of proving it
+		// cannot happen.
 		matcher, _ = NewBinaryMatcher()
 	}
 	return &BinaryScanner{matcher: matcher, cfg: normalizeBinaryConfig(cfg)}

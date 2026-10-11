@@ -411,19 +411,29 @@ func TestBinaryScannerCapIsSilentWhenTheBudgetIsNotReached(t *testing.T) {
 // ScanDirectory that decides, per file, whether a bounded read was a look that
 // did not finish or a look that finished on as much as there was reason to read.
 // Task 10's ProvesCleanScan reads that split - BoundedExecutable withholds a
-// clean verdict, BoundedData does not - so a scanner that exchanged the two arms
-// would have the package deleted for a truncated .so and every other test in
-// this file would stay green, because nothing else reads either counter.
+// clean verdict, BoundedData does not - and the two mistakes available here run
+// in opposite directions, which is why both are named.
+//
+// A scanner that exchanged the arms would pass a package holding a truncated .so
+// as clean: the executable kind would land in BoundedData, BoundedExecutable
+// would stay zero, nothing would withhold the verdict, and a truncated ELF is
+// exactly the shape whose unread part could hold the payload this channel exists
+// to catch. The same exchange would withhold a legitimate package whose only
+// bound was a data file, because a large .bin windowed at its ends would be
+// recorded as BoundedExecutable. That is why the split is tested here rather
+// than left to Task 10: every other test in this file would stay green through
+// either mistake, because nothing else reads either counter.
 //
 // The bound is made deliberately rather than found: MaxFullScanBytes and
-// HeadTailBytes are set to 64 and 16, so the head-and-tail window is taken on a
-// file a few hundred bytes long and streamWithSizeSwitch records the structural
-// bound. That keeps the test independent of how large a fixture happens to be.
+// HeadTailBytes are set to 64 and 16, so the head-and-tail window is taken on
+// files far above that budget and streamWithSizeSwitch records the structural
+// bound - the ELF fixture is 632 bytes and the raw one is 4101.
 //
-// Each arm asserts the whole pair rather than one counter, because one counter
-// alone cannot tell a correct count from two counters that were exchanged: a
-// swapped implementation writes 1 into the other field, and only (1, 0) against
-// (0, 1) separates the two.
+// Each arm asserts the whole pair rather than a single counter. A single counter
+// already catches the exchange, since the expected field reads 0 where the
+// swapped scanner writes 1; what only the pair catches is double counting, a
+// scanner that incremented both fields for one file reading (1, 1) while either
+// field taken alone would look right.
 func TestBinaryScannerSplitsStructuralBoundsByKind(t *testing.T) {
 	tinyWindow := func() BinaryConfig {
 		cfg := DefaultBinaryConfig()
