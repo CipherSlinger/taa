@@ -54,6 +54,21 @@ type Finding struct {
 	// originates below Tier 1, so that the graph engine's output is not
 	// indistinguishable from a pattern match once both sit in one list.
 	Engine string `json:"engine,omitempty"`
+	// BinaryKind names the reading the binary channel applied to File: "elf",
+	// "archive", "pickle", "compressed", "numpy" or "raw". Empty for a finding
+	// the source channel produced, which is what makes the two kinds of finding
+	// distinguishable in a merged list without consulting the engine field.
+	BinaryKind string `json:"binary_kind,omitempty"`
+	// EvidenceSource names the evidence a binary finding came from: a dynamic
+	// symbol, a DT_NEEDED library, a string literal, a section summary, an
+	// entropy verdict, a container member or a pickle target. It is what tells a
+	// reader how much weight the finding carries - a symbol name is a capability
+	// the binary has, a string literal is a thing it says.
+	EvidenceSource string `json:"evidence_source,omitempty"`
+	// BinaryOffset is the byte offset in File the evidence was read at, for the
+	// evidence that has one. Symbol and section evidence carries zero: it names
+	// a property of the file rather than a byte range in it.
+	BinaryOffset int64 `json:"binary_offset,omitempty"`
 }
 
 // Report is the result of a security scan.

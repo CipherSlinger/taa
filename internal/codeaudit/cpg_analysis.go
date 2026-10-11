@@ -13,6 +13,12 @@ import (
 // has found something.
 const EngineNameCPG = "cpg"
 
+// EngineNameBinary names the binary channel in the Engine field of a finding it
+// produced. Like EngineNameCPG it is not a selectable Tier 1 engine - a
+// deployment configures a source engine and gets this channel in addition - so
+// NewEngine rejects it, which a test pins.
+const EngineNameBinary = "binary"
+
 // CrossServiceRuleID is the rule id of the synthesized system-level finding.
 const CrossServiceRuleID = "taa-cross-service-rce"
 
