@@ -6296,10 +6296,11 @@ var binaryFamilies = []binaryFamily{
 		// did not achieve what it was for.
 		//
 		// Measured with the wide symbol readers (`nm -D`, or `readelf -sW
-		// --dyn-syms`; plain `readelf --dyn-syms` elides the whole
-		// `name@GLIBC_x.y` combination into `[...]`, not merely long names, which
-		// is why even short names like `socket` and `connect` disappear) against
-		// the 28 top-level `.so*` entries of this machine's ollama bundle - 22
+		// --dyn-syms`; plain `readelf --dyn-syms` replaces the symbol name with
+		// `[...]` but keeps the `@GLIBC_x.y` version suffix and index, and the
+		// elision tracks the rendered entry width rather than the name alone, so
+		// even short names like `socket` and `connect` disappear) against the 28
+		// top-level `.so*` entries of this machine's ollama bundle - 22
 		// regular files plus 6 symlinks. The recursive count of regular `.so*`
 		// files is 52, a different set: do not read 52 against 28 as a
 		// regression. The generic and server-side symbols - `bind`, `send`,
@@ -6640,6 +6641,8 @@ go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestBinaryFam
 
 - 语料中**没有任何真实 ELF/`.so`**（`find models -type f \( -name '*.so' -o -name '*.so.*' \)` 加上 ELF 魔数扫描都是 0）——`models/` 不是 `.so` 的来源，真正的 `.so` 只有 ollama 那 28 个。所以**宿主机的 `.so` 与这个语料交付的东西不成比例**，任何「按 `.so` 调参」的想法都要先想清楚它服务的是谁。
 - 28 个共享库中，旧 `OBF_001`（base64 长串）命中 **23** 个；旧 `NET_002`（含 `bind`/`send`/`recv`）至少命中 `libllama-common.so.0.1.2`（它导入 `bind recv send`——**本轮复核补正**：它同时也导入 `socket`/`connect`/`getaddrinfo`，旧写法「不含 `socket`/`connect`」是错的，见下一条实测与 Task 8 `binary_rules.go` 里 `NET_002` 的注释）；旧 `PER_001`/`FIL_001`/`ENV_001` 的片段命中来自 `taint_engine.cpython-312.pyc`（`'crontabz'`、`'.aws/credentialsz'`、`'.ssh/id_rsaz'`、`.profilez /etc/cron)`）与 `security.cpython-312.pyc`（小写 `private_key` 撞 `PRIVATE_KEY`）。**新表必须让这些全部归零**，这正是 `TestBinaryTableProducesNoHighFindingsOnLegitimateInputs` 的七个夹具组在钉的东西。
+- **代码两处 `23 of 28` 的分母口径未写明，与本节 `28` 是否同一集合未证，留最终复审**（`binary_rules.go:29-30`、`:309-310`）。这里的 `28` 与本节讲清的「28 = 顶层 22 个常规文件 + 6 个符号链接」**大概率同源**（同为顶层 glob 口径），所以**不是错误**，只是代码那句没写明口径；而它描述的是**已废弃的 `OBF_001` 原始模式**的历史测量，重测需重建已删除的模式，上一轮复审已判其出界。故本计划对代码这两处**不改数字、不加括号**，只在此登记为待最终复审的口径项。
+
 - 可执行节区熵：把宿主上 **600 个共享对象**（去重后 **538** 个不同 ELF；把每个枚举到的文件条目都算上是 **2027** 个）全跑一遍，**0 个被判结构性、0 个无节表、0 个报错**，最高 **6.777009** bits/byte，出现在 **`libcrypto.so.3` 的 `.text`**（3347362 字节，**整节读完**，不是抽样前缀），与 7.5 阈值之间余量 **0.723** bits。早先只量了 ollama 那 28 个（最高 6.75），样本扩大二十倍而最高值只挪了百分之一不到，这正是"这条判定不误伤普通库"的强度所在（`libgomp.so` 的 7.97 在非可执行 `.gnu_debugdata`，抽取器根本不测）。**这个数是被删包级规则的唯一支撑，所以它必须是整节读出来的**——一个只覆盖前缀的熵值和一个覆盖整节的熵值在报告里长得一样，而前者不能用来给一条删除规则背书。
 
 - **新表在真实库上的实测（本轮，宿主 `teellm/models/ollama/lib/ollama/`，把这条路径下的 `.so` 全跑一遍）**：
