@@ -699,6 +699,11 @@ func symbolTableIsEmpty(sec *elf.Section) (bool, error) {
 
 // collectELF reads a file's ELF structure into evidence.
 func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	// Resolve a zero config before it reaches streamWithSizeSwitch: that switch
+	// reads cfg.MaxFullScanBytes, and a zero there would read every non-empty file
+	// as above a 0-byte budget and window it. collectELFReader normalizes for the
+	// structural pass, but the stream pass runs first and is bounded from here.
+	cfg = normalizeBinaryConfig(cfg)
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
@@ -1710,6 +1715,10 @@ func streamHeadAndTail(path string, set *EvidenceSet, cfg BinaryConfig) error {
 // per member: a zip bomb is many small members, not one large one, so a per-member
 // limit is a limit that does not bind.
 func collectArchive(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	// Resolve a zero config to the defaults, as the other collectors do. A zero
+	// MaxArchiveMembers would read as "no member is allowed" and bound every
+	// archive on its first member - wrong, and fail-closed, but wrong.
+	cfg = normalizeBinaryConfig(cfg)
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
@@ -1849,9 +1858,12 @@ func collectELFMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) erro
 // less means the stream is read to the end. The strings pass always runs; the
 // pickle interpreter runs only when pickleScan is true.
 //
-// It exists because four call sites need exactly this loop - a pickle member, an
-// ELF member, a decompressed gzip stream, and a whole file - and the bound has to
-// be enforced identically in all of them. The reason is not brevity. The bound is
+// It exists because three call sites need exactly this loop - a pickle member, an
+// ELF member, and a decompressed gzip stream - and the bound has to be enforced
+// identically in all of them. A whole file does not use this loop: it goes through
+// streamEvidence, which is a separate implementation over the same rule, and
+// unifying the two is deliberately left out of this change rather than taken on.
+// The reason is not brevity. The bound is
 // what sets Bound.Structural, Bound.Structural is what withholds a clean verdict
 // from a stream whose tail was never read, and a call site that enforced it
 // slightly differently would be a hole in the fail-closed rule rather than a
@@ -1945,6 +1957,13 @@ func collectPickleMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) e
 // decompressor written for this purpose would be a new parser on the import
 // path with no evidence behind it.
 func collectCompressed(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	// Resolve a zero config to the defaults, and this is the collector where it
+	// matters most: streamReaderEvidence reads a budget of zero as "unlimited", so
+	// an unresolved zero here would silently disable the decompression bound - the
+	// one guard between a small .gz and an unbounded scan. That is fail-open in the
+	// single direction this design refuses, rather than the merely-wrong fail-closed
+	// a zero config produces elsewhere.
+	cfg = normalizeBinaryConfig(cfg)
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)

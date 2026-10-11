@@ -1930,3 +1930,96 @@ func TestCollectArchiveEvidenceBoundsAMemberByItsDeclaredSize(t *testing.T) {
 		}
 	})
 }
+
+// gzipOfZeros writes a gzip stream whose decompressed content is n zero bytes,
+// streaming the input so the fixture stays small even when n is hundreds of
+// megabytes. Zero bytes are used because they are neither a pickle nor a string,
+// so the only bound a scan of them can record is the byte budget's.
+func gzipOfZeros(t *testing.T, dir, name string, n int) string {
+	t.Helper()
+	var buf bytes.Buffer
+	zw, err := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := make([]byte, 1<<20)
+	for written := 0; written < n; {
+		chunk := len(block)
+		if remaining := n - written; remaining < chunk {
+			chunk = remaining
+		}
+		if _, err := zw.Write(block[:chunk]); err != nil {
+			t.Fatal(err)
+		}
+		written += chunk
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return writeTestBytes(t, dir, name, buf.Bytes())
+}
+
+// TestCollectCompressedEvidenceNormalizesAZeroConfig pins that collectCompressed
+// resolves a zero BinaryConfig to the defaults, as collectELF does. It is the
+// collector where the asymmetry is a defect and not just a wart: streamReaderEvidence
+// reads a budget of zero as "unlimited", so an unresolved zero disables the
+// decompression bound entirely - fail-open in the one direction this design
+// refuses, in contrast to the fail-closed-but-wrong a zero produces elsewhere.
+//
+// The mirror is Task 5's TestCollectELFEvidenceNormalizesAZeroConfig. Its shape is
+// forced by the asymmetry itself: the two configs differ only on a stream past the
+// DEFAULT budget, so the fixture inflates to DefaultBinaryConfig().MaxArchiveMemberBytes+1
+// zero bytes and the zero config must bound it exactly as the default does.
+func TestCollectCompressedEvidenceNormalizesAZeroConfig(t *testing.T) {
+	dir := t.TempDir()
+	budget := DefaultBinaryConfig().MaxArchiveMemberBytes
+	path := gzipOfZeros(t, dir, "huge.gz", int(budget)+1)
+
+	zero := newTestEvidence(path, KindCompressed)
+	if err := collectCompressed(path, zero, BinaryConfig{}); err != nil {
+		t.Fatalf("collectCompressed with a zero config: %v", err)
+	}
+	if !zero.Bound.Structural {
+		t.Fatalf("a zero config left a %d-byte decompressed stream unbounded; the zero value must mean the default budget, not no budget", budget+1)
+	}
+	if want := fmt.Sprintf("decompressed stream exceeds %d bytes", budget); !strings.Contains(zero.Bound.Reason, want) {
+		t.Errorf("bound reason = %q, want it to name the default budget %d", zero.Bound.Reason, budget)
+	}
+
+	def := newTestEvidence(path, KindCompressed)
+	if err := collectCompressed(path, def, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectCompressed with the default config: %v", err)
+	}
+	if zero.Bound != def.Bound {
+		t.Errorf("zero config bound = %+v, default config bound = %+v; they must agree", zero.Bound, def.Bound)
+	}
+}
+
+// TestCollectArchiveEvidenceNormalizesAZeroConfig pins that collectArchive resolves
+// a zero BinaryConfig to the defaults. It is not the fail-open case - a zero
+// MaxArchiveMembers reads as "no member allowed" and bounds the first member, which
+// is fail-closed - but it is the same asymmetry, and without it a caller that set
+// one field would silently bound every archive.
+func TestCollectArchiveEvidenceNormalizesAZeroConfig(t *testing.T) {
+	dir := t.TempDir()
+	raw := zipFixture(t, map[string][]byte{"data.pkl": []byte("\x80\x04cposix\nsystem\n.")}, []string{"data.pkl"})
+	path := writeTestBytes(t, dir, "model.pt", raw)
+
+	zero := newTestEvidence(path, KindArchive)
+	if err := collectArchive(path, zero, BinaryConfig{}); err != nil {
+		t.Fatalf("collectArchive with a zero config: %v", err)
+	}
+	def := newTestEvidence(path, KindArchive)
+	if err := collectArchive(path, def, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectArchive with the default config: %v", err)
+	}
+	if zero.Bound.Structural {
+		t.Errorf("a zero config produced a structural bound %+v; the zero value must mean the defaults", zero.Bound)
+	}
+	if zero.Bound != def.Bound {
+		t.Errorf("zero config bound = %+v, default config bound = %+v; they must agree", zero.Bound, def.Bound)
+	}
+	if len(zero.Lines) != len(def.Lines) {
+		t.Errorf("zero config produced %d evidence lines, default config produced %d", len(zero.Lines), len(def.Lines))
+	}
+}
