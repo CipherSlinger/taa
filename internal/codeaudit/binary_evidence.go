@@ -695,24 +695,48 @@ func symbolTableIsEmpty(sec *elf.Section) (bool, error) {
 }
 
 // collectELF reads a file's ELF structure into evidence.
-//
-// Two things are read, and they answer different questions. The dynamic symbol
-// table names what the binary calls into its libraries - the only such evidence
-// a stripped binary retains, and the reason this parse is worth having at all.
-// The sections report what the file is made of, which is where packing shows:
-// executable code is not random, so an executable section that measures near
-// eight bits per byte has been compressed or encrypted, and something has to
-// unpack it at run time for it to run.
-//
-// There is no strings pass here, and the plan says so rather than leaving it to
-// be rediscovered: Task 6 Step 4 rewrites this function to stream the file's
-// literals first and parse it second, through streamWithSizeSwitch so that a
-// large shared object is windowed at its ends like any other large blob. The
-// split is not an oversight to be "fixed" early - the size decision is what the
-// ELF path shares with every other kind, and writing it here would mean writing
-// it twice, in the one task that does not yet have the size switch. What Task 5
-// owns is the structure, and its tests assert exactly that.
 func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+	// The stream pass and the structural pass are separate on purpose: the
+	// stream pass reads the file front to back for literals, and the structural
+	// pass seeks. Sharing one handle between them would make the structural
+	// parse depend on where the stream pass happened to stop.
+	//
+	// Through streamWithSizeSwitch rather than streamEvidence directly, so that a
+	// large shared object is windowed at its ends like any other large blob
+	// instead of being streamed whole.
+	if err := streamWithSizeSwitch(path, set, cfg); err != nil {
+		return err
+	}
+	return collectELFReader(f, set, cfg, path)
+}
+
+// collectELFReader is the ELF parse itself, over any random-access reader. It is
+// separate from collectELF so that a container member - which is a stream, not a
+// path - is parsed by the same code rather than by a second implementation that
+// would drift from this one.
+//
+// It carries the whole of Task 5's body: the sectionless structural bound, the
+// .dynsym walk and its too-short-section guard, the per-section summary lines,
+// and the streamed entropy pass through countSection and entropyVerdictFromCounts.
+// All of that reads through io.ReaderAt already - debug/elf takes one, and
+// elf.Section.Open returns an io.Reader - so the move changes nothing but the
+// parameter that names the file in messages.
+//
+// Task 5's `cfg = normalizeBinaryConfig(cfg)` moves here with the body, and it
+// has to stay here rather than in the wrapper: collectELFMember reaches this
+// parse directly, so normalizing only on the path side would leave every
+// container member parsed against a config nobody resolved.
+//
+// There is no size parameter: the parse bounds itself per file through
+// cfg.MaxStreamBytes, applied as the budget countSection stops at, and a size
+// the body never read would be a parameter that only invites the assumption that
+// something is bounds-checked elsewhere.
+func collectELFReader(r io.ReaderAt, set *EvidenceSet, cfg BinaryConfig, name string) error {
 	// Normalize first, like every other collector. A zero-valued BinaryConfig is
 	// the shape a caller that only knows about one field passes, and leaving it
 	// raw is not neutral here: MaxStreamBytes of 0 makes the per-file budget spent
@@ -721,18 +745,13 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	// HighEntropyThreshold of 0 flags every non-uniform section as packed. The
 	// zero value means "use the defaults", so it is resolved to them up front.
 	cfg = normalizeBinaryConfig(cfg)
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", path, err)
-	}
-	defer f.Close()
 
-	ef, err := elf.NewFile(f)
+	ef, err := elf.NewFile(r)
 	if err != nil {
 		// A file with ELF magic that will not parse is a file this scan did not
 		// read. Returning the error is what turns it into an incomplete scan
 		// rather than a clean one.
-		return fmt.Errorf("parse elf %s: %w", path, err)
+		return fmt.Errorf("parse elf %s: %w", name, err)
 	}
 	defer ef.Close()
 
@@ -808,7 +827,7 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	default:
 		empty, derr := symbolTableIsEmpty(dynsym)
 		if derr != nil {
-			return fmt.Errorf("read dynamic symbols of %s: %w", path, derr)
+			return fmt.Errorf("read dynamic symbols of %s: %w", name, derr)
 		}
 		if empty {
 			// The panic shape: an empty buffer. The section is held back, which
@@ -818,7 +837,7 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 		}
 		syms, err := ef.DynamicSymbols()
 		if err != nil && !errors.Is(err, elf.ErrNoSymbols) {
-			return fmt.Errorf("read dynamic symbols of %s: %w", path, err)
+			return fmt.Errorf("read dynamic symbols of %s: %w", name, err)
 		}
 		if errors.Is(err, elf.ErrNoSymbols) {
 			set.addStructured(SourceNotice, "no dynamic symbol table (SHT_DYNSYM absent)")
