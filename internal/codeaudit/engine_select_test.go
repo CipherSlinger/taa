@@ -88,6 +88,29 @@ func TestNewEngineRejectsUnknownEngineName(t *testing.T) {
 	}
 }
 
+// TestNewEngineRejectsTheNonSelectableChannelNames pins that the two channel
+// names are not themselves selectable engines. EngineNameCPG is the graph
+// engine that runs after a Tier 1 engine, and EngineNameBinary is the binary
+// scanner that runs in addition to one; a deployment configures a source
+// engine, and naming a channel here asks for something NewEngine cannot run.
+// The default arm has to reject it rather than hand back a regex scan.
+func TestNewEngineRejectsTheNonSelectableChannelNames(t *testing.T) {
+	for _, name := range []string{EngineNameBinary, EngineNameCPG} {
+		t.Run("name="+name, func(t *testing.T) {
+			engine, err := NewEngine(EngineConfig{Name: name})
+			if err == nil {
+				t.Fatalf("NewEngine(%q) returned %T with no error; want a rejection", name, engine)
+			}
+			if engine != nil {
+				t.Errorf("NewEngine(%q) returned an engine alongside an error", name)
+			}
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("error %q should name the rejected value %q", err, name)
+			}
+		})
+	}
+}
+
 // TestNewEngineValidatesTheSemgrepRulesAtConstruction pins that a Semgrep
 // deployment fails where it is configured rather than where it is used.
 //

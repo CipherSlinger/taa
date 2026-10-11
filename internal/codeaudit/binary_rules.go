@@ -159,12 +159,16 @@ var binaryFamilies = []binaryFamily{
 		// did not achieve what it was for.
 		//
 		// Measured with the wide symbol readers (`nm -D`, or `readelf -sW
-		// --dyn-syms`; plain `readelf --dyn-syms` truncates long names to
-		// `[...]` and hides `socket` and `connect` in particular) against the 28
-		// shared libraries of this machine's ollama bundle: the generic and
-		// server-side symbols - `bind`, `send`, `recv` - are imported by
-		// libllama-common.so, a legitimate library, so dropping them did remove
-		// that match. But the client symbols were kept, and they sit in the same
+		// --dyn-syms`; plain `readelf --dyn-syms` elides the whole
+		// `name@GLIBC_x.y` combination into `[...]`, not merely long names, which
+		// is why even short names like `socket` and `connect` disappear) against
+		// the 28 top-level `.so*` entries of this machine's ollama bundle - 22
+		// regular files plus 6 symlinks. The recursive count of regular `.so*`
+		// files is 52, a different set: do not read 52 against 28 as a
+		// regression. The generic and server-side symbols - `bind`, `send`,
+		// `recv` - are imported by libllama-common.so, a legitimate library, so
+		// dropping them did remove that match. But the client symbols were kept,
+		// and they sit in the same
 		// libraries: libllama-common.so.0.1.2 and libllama-server-impl.so both
 		// import `socket`, `connect` and `getaddrinfo` alongside
 		// `bind`/`send`/`recv`, and the CUDA runtime libraries under
@@ -394,11 +398,9 @@ func (m *BinaryMatcher) Match(line EvidenceLine) *Rule {
 // index of the matched line. It is a slice-building convenience over Match so
 // that the scanner does not re-implement the precedence loop.
 //
-// It has no caller in this commit - not in the scanner, not in a test, nothing.
-// It is written ahead of the binary scanner, which Task 9 wires to this table
-// and which is the caller that would otherwise re-implement the precedence
-// loop; until that lands it is deliberately declared and deliberately unused,
-// not an oversight.
+// The binary scanner is its caller: binary_scanner.go calls MatchAll rather
+// than re-implementing the precedence loop. No test calls it yet, so it is
+// exercised only through the scanner.
 func (m *BinaryMatcher) MatchAll(lines []EvidenceLine) []binaryMatch {
 	var out []binaryMatch
 	for i := range lines {
