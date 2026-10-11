@@ -99,8 +99,11 @@ go build ./... && go test ./internal/codeaudit/... ./internal/config/... ./inter
 10. **tar 不被解析**。`models/audit/holdout-sources/sr.tgz` 是 gzip 包 tar（解压后 10.66 MB、4933 个条目，一整个 `semgrep-rules-develop` 检出），解压后的字节会被读取并扫过 strings 通道，所以其中的字面量可见。**代价明确**：tar 的结构全部丢失——没有按成员归属、没有按成员分类（tar 里的 ELF 拿不到节区与导入符号证据）、也不会递归进 tar 里的归档；并且 tar 字节不会命中 pickle 门控（第 7 条），pickle 解释器不跑在它上面，tar 里的 pickle opcode 只有恰好构成可打印串时才以 strings 证据出现。
 11. **嵌套归档只递归一层**。`models/examples/Retina-DKD/Retina-DKD-code.zip` 把 `net_001.pth`/`net_005.pth` 作为成员携带，它们分类为 `KindArchive`；`collectArchive` 只对分类为 ELF 或 pickle 的成员下钻，因此这两个 checkpoint 不会被打开，其 `data.pkl` 永远到不了 pickle 解释器。**代价明确**：只装在 zip 里的 checkpoint 既不产出成员证据也不产出 pickle 目标；这一条现在由第 7 条的门控放大——解释器只跑在被声明为 pickle 的流上，而嵌套归档里那条流既没被声明、也没被下钻，没有第二次机会被发现；跳过是静默的（成员名与大小进了证据列表，但不置 `Bounded`）。
 12. **`.xlsx` 就是 zip**。语料里的 14 个 `.xlsx` 中 13 个是普通 zip（最坏压缩比 22.91，无炸弹形状，成员均分类为非可执行），第 14 个 `models/examples/Retina-DKD/Retina-DKD/test_result.xlsx` 是 OLE2 老式 `.xls` 顶着 `.xlsx` 名，不匹配任何魔数，落到 `KindRaw`。**代价明确**：当作 zip 的那 13 个只按普通容器处理（成员头嗅探 + 成员名/大小），内部的 XML 不进任何结构化解析；当 OLE2 的那一个只拿 strings 证据，不会因为扩展名被当成 zip 打开。
-13. **配置里只暴露五个上限，其余固定在 `DefaultBinaryConfig`，这是有判据的选择而不是遗漏**。有键的是 `maxArchiveMembers`、`maxFindings`、`maxFullScanBytes`、`maxStreamBytes`、`highEntropyThreshold`；没有键的是 `MaxEvidenceLines`（默认 50000）、`HeadTailBytes`、`MaxSectionBytes`、`MaxArchiveMemberBytes`、`MaxStringLen`/`MinStringLen`。判据是**越界之后留下什么**：越界只记 `Bound.Listing` 的天花板（如 `MaxEvidenceLines`）只影响显示、不阻断任何东西，让它固定是安全的；越界会记 `Bound.Structural` 的天花板，在可执行类型上会**阻断导入**，没有键就成了 operator 无法处置的阻断，所以必须暴露。`MaxStreamBytes` 正落在后者——它只有在一个通过了 `MaxFullScanBytes` 的文件上才可能被触到，所以把 `maxFullScanBytes` 抬到 3 GiB 以上就会让它生效；两个键因此成对出现，并在同一处校验。`maxFindings` 是这条判据的**例外，并且是刻意进例外名单的**：它既不是结构性天花板（触顶只记 `findings_capped`，不阻断），也不是显示上限（它确实会让清单少一段）——它是一个**清单预算**，而预算该多大取决于部署愿意为噪声付多少钱、以及它想要的报告有多长，这两件事只有 operator 知道。默认 50 是按十个族、每族五条定的，真实语料的最大 finding 数是 80（整语料）和 7（单样本），所以 50 只在单个包同时命中很多族时才可能被触到。**代价明确**：这五个以外的上限调不了，调它们要改代码重新部署；而 `maxFindings` 调小只会丢 LOW/MEDIUM，永远不会让一个 HIGH finding 消失。
-14. **自由字符串证据只判 LOW，且 `OBF_001` 在二进制臂被整个删掉**。判据是一条通则：**一条 finding 只有被文件无法偶然产生的结构背书时才可以判 HIGH**，而"某个字面量里出现了某个词"不是那种背书——`.pyc` 常量池会把相邻常量拼成一整段可打印串，二进制数据里遍地是长 base64 字母表串，所以按子串匹配的规则会把合法库判成恶意（实测：旧 `OBF_001` 命中 28 个合法共享库中的 23 个，旧 `PER_001`/`FIL_001`/`ENV_001` 的片段命中来自 `taint_engine.cpython-312.pyc` 与 `security.cpython-312.pyc`）。因此字符串半边不借源码臂的 HIGH/MEDIUM id，改用独立 LOW 族 `CMD_002`/`PER_002`/`FIL_002`/`ENV_002`（两端锚定 token，`ENV_002` 不带 `(?i)`），`OBF_001` 不设族。**代价明确**：一个真正把 base64 载荷以字面量形式留在代码里的文件，其字符串证据不再单独产出 finding；它若真在运行，仍会以 ELF 导入符号或 pickle 目标等结构证据（HIGH）出现，而纯数据文件本来就不被本平台加载。**不要把它"修回去"**——把字符串匹配放宽回子串或把严重级抬回 HIGH，就是重新引入这批误报，而误报在这种设计下的终点是删包。
+13. **配置里只暴露五个上限，其余固定在 `DefaultBinaryConfig`，这是有判据的选择而不是遗漏**。有键的是 `maxArchiveMembers`、`maxFindings`、`maxFullScanBytes`、`maxStreamBytes`、`highEntropyThreshold`；没有键的是 `MaxEvidenceLines`（默认 50000）、`HeadTailBytes`、`MaxArchiveMemberBytes`、`MaxStringLen`/`MinStringLen`。判据是**越界之后留下什么**：越界只记 `Bound.Listing` 的天花板（如 `MaxEvidenceLines`）只影响显示、不阻断任何东西，让它固定是安全的；越界会记 `Bound.Structural` 的天花板，在可执行类型上会**阻断导入**，没有键就成了 operator 无法处置的阻断，所以必须暴露。`MaxStreamBytes` 正落在后者——它只有在一个通过了 `MaxFullScanBytes` 的文件上才可能被触到，所以把 `maxFullScanBytes` 抬到 3 GiB 以上就会让它生效；两个键因此成对出现，并在同一处校验。`maxFindings` 是这条判据的**例外，并且是刻意进例外名单的**：它既不是结构性天花板（触顶只记 `findings_capped`，不阻断），也不是显示上限（它确实会让清单少一段）——它是一个**清单预算**，而预算该多大取决于部署愿意为噪声付多少钱、以及它想要的报告有多长，这两件事只有 operator 知道。默认 50 是按十个族、每族五条定的，真实语料的最大 finding 数是 80（整语料）和 7（单样本），所以 50 只在单个包同时命中很多族时才可能被触到。**代价明确**：这五个以外的上限调不了，调它们要改代码重新部署；而 `maxFindings` 调小只会丢 LOW/MEDIUM，永远不会让一个 HIGH finding 消失。
+14. **不存在"每节字节上限"，这是删除而不是省略**。曾有一版 `MaxSectionBytes`（默认 16 MiB），用来给 `io.ReadAll` 一个可执行节设上限；它会对**普通的大库**开火——一个足够大的 `.so`，`.text` 会跨过任何固定的节上限，而触顶记的是结构性 bound，于是"这个库比较大"变成了阻断导入的理由。**宿主实测**（`readelf -SW` 取每个真实共享对象最大的 `SHF_EXECINSTR` `PROGBITS` 节）：`libLLVM.so.20.1` 单节 **63 048 722 字节**、`libclang-18.so.18` **22 284 286**、Chrome 的 `liboptimization_guide_internal.so` **20 685 714**、`libwireshark.so.17.0.2` **20 175 571**、`libpython3.13.so.1.0` **2 770 082**——16 MiB 的节上限会在前四个上直接触顶。这与本计划其余部分的实测口径不同，值得点明：**审计语料 `models/` 下一个真实 `.so` 都没有**（`find models -name '*.so*'` 命中的 50 个全是 semgrep 的 `.sol` 规则文件），而用来标定误报的那套 ollama 共享库（28 个）单节最大 2 901 464 字节，**也不会**触到 16 MiB。也就是说这个上限的代价是**潜伏**的：它在任何已实测的输入上都不发作，只在一个包里带上一个真实大库时发作——而那正是本平台要接受的包形状（带加速库的模型包），所以它必须删掉而不是调大。现在节读取改为经 `countSection` 按固定块（`entropyChunkBytes`，64 KiB）流过 256 桶直方图，内存与节大小无关，节上限已无物可保护；每文件剩下的读取预算是 `MaxStreamBytes`，触到它才记结构性。**代价明确**：调不了单个节的读取量（本来也不该调）；能调的只有每文件预算。**不要把它加回来**——加回来就是把"库比较大"重新变成阻断理由；也不要指望"把 16 MiB 调大一点"能解决，任何固定值都只是把发作点往后挪。
+15. **无节表（`len(ef.Sections) == 0`）的 ELF 记为结构性缺口，且 reason 只点名"没有节头表"**。熵检测的输入是可执行节，没有节表就没有可执行节，旧代码在这一段直接掉出去、不产生任何行也不产生任何 bound，于是"从未检查过"被报成了"没发现加壳"——这条 fail-open 已去掉。修的是**结论**而不是"补回 `DT_NEEDED`/`DT_SONAME`"：经 `PT_DYNAMIC` 恢复 needed/soname 需要先把 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移、再把 `DT_STRTAB` 的虚地址映射一次，这是一段独立的新解析逻辑，而它的产出对"有没有被加壳"不提供任何证据，所以本版不做。reason 措辞点名的是**节头表**而不是符号表：静态链接的二进制没有 `.dynsym` 但有 `.symtab`，它并不 stripped，说它"缺符号表"是假的；同理 `SHT_SYMTAB` **故意不做**符号证据的兜底来源——`.symtab` 里绝大多数是本文件自己定义的符号，拿它当能力证据就是去匹配程序自己的标识符，正是第 14 条那批误报的同一类。因此 Task 8 的规则表**不变**：没有引入新的 evidence source。**代价明确**：一个节表被删掉的正常文件（少见但存在，如某些加壳器与 `objcopy --strip-sections` 的产物）现在会被记为结构性缺口而不是干净通过；这是刻意方向——对可执行格式，"没看"不等于"干净"。
+16. **节声明长度越过文件末尾（或读不满）记为结构性缺口，`size=` 仍写声明长度**。判据是"读到的字节数 < 节头声明的字节数"，两种情况——`sh_offset`/`sh_size` 越过文件末尾，或触到 `MaxStreamBytes`——都是同一事实：熵值只覆盖一个**前缀**，所以这个数不报（报出来会和"整节测过"的数长得一样），替代它的是 `section .text declares N bytes, M readable` 这条结构化证据。`size=` 保持声明值，读者才能把声明长度与缺口配对看。**代价明确**：一个声明长度写错但内容正常的文件会被记为结构性缺口；这是刻意方向，理由同上。
+17. **自由字符串证据只判 LOW，且 `OBF_001` 在二进制臂被整个删掉**。判据是一条通则：**一条 finding 只有被文件无法偶然产生的结构背书时才可以判 HIGH**，而"某个字面量里出现了某个词"不是那种背书——`.pyc` 常量池会把相邻常量拼成一整段可打印串，二进制数据里遍地是长 base64 字母表串，所以按子串匹配的规则会把合法库判成恶意（实测：旧 `OBF_001` 命中 28 个合法共享库中的 23 个，旧 `PER_001`/`FIL_001`/`ENV_001` 的片段命中来自 `taint_engine.cpython-312.pyc` 与 `security.cpython-312.pyc`）。因此字符串半边不借源码臂的 HIGH/MEDIUM id，改用独立 LOW 族 `CMD_002`/`PER_002`/`FIL_002`/`ENV_002`（两端锚定 token，`ENV_002` 不带 `(?i)`），`OBF_001` 不设族。**代价明确**：一个真正把 base64 载荷以字面量形式留在代码里的文件，其字符串证据不再单独产出 finding；它若真在运行，仍会以 ELF 导入符号或 pickle 目标等结构证据（HIGH）出现，而纯数据文件本来就不被本平台加载。**不要把它"修回去"**——把字符串匹配放宽回子串或把严重级抬回 HIGH，就是重新引入这批误报，而误报在这种设计下的终点是删包。
 
 ---
 
@@ -999,8 +1002,18 @@ type BinaryConfig struct {
 	// zip's directory and the pickle stapled after the last member are both within
 	// it of one end or the other.
 	HeadTailBytes int64
-	// MaxSectionBytes bounds one ELF section read.
-	MaxSectionBytes int64
+	// There is deliberately no per-section byte cap, and its absence is a decision
+	// rather than an omission. An earlier design had MaxSectionBytes and read each
+	// executable section with io.ReadAll under it; the cap fired on ordinary real
+	// libraries - .text of a large shared object crosses any fixed section cap once
+	// the library is big enough - and a firing cap is a structural bound, so it
+	// blocked a package because a library was merely large. The section read now
+	// streams through the entropy histogram in fixed-size chunks (see
+	// countSection), so memory is O(1) regardless of section size and there is
+	// nothing for a per-section cap to protect. The remaining per-ELF bound is
+	// MaxStreamBytes, applied as a per-file budget over the sections this parse
+	// reads; breaching *that* is what stays structural, and it takes three
+	// gigabytes of executable sections to reach.
 	// MaxArchiveMembers bounds how many container members are examined.
 	MaxArchiveMembers int
 	// MaxArchiveMemberBytes bounds the bytes of the ELF/pickle members read whole
@@ -1057,7 +1070,6 @@ func DefaultBinaryConfig() BinaryConfig {
 		MaxStreamBytes:        3 * 1024 * 1024 * 1024,
 		MaxFullScanBytes:      64 * 1024 * 1024,
 		HeadTailBytes:         1 << 20,
-		MaxSectionBytes:       16 * 1024 * 1024,
 		MaxArchiveMembers:     4096,
 		MaxArchiveMemberBytes: 256 * 1024 * 1024,
 		// Not DefaultConfig().MaxFindings: the two channels are capped
@@ -1092,9 +1104,6 @@ func normalizeBinaryConfig(cfg BinaryConfig) BinaryConfig {
 	}
 	if cfg.HeadTailBytes <= 0 {
 		cfg.HeadTailBytes = def.HeadTailBytes
-	}
-	if cfg.MaxSectionBytes <= 0 {
-		cfg.MaxSectionBytes = def.MaxSectionBytes
 	}
 	if cfg.MaxArchiveMembers <= 0 {
 		cfg.MaxArchiveMembers = def.MaxArchiveMembers
@@ -1256,6 +1265,23 @@ func TestEntropyVerdictIsMeasuredNotAssumed(t *testing.T) {
 	if line, ok := entropyVerdict(".text", uniform, atThreshold); ok {
 		t.Errorf("verdict = %q at exactly the threshold, want no line", line)
 	}
+
+	// The streaming path and the in-memory path must agree, because an ELF
+	// section is measured one way and a container member the other. Both are
+	// driven from the same bytes here, and the assertion is equality of the
+	// rendered line rather than of the number: the line is what reaches the
+	// evidence set, so a divergence that only shows up in the formatting would
+	// otherwise go unnoticed.
+	var counts [256]int64
+	for _, b := range uniform {
+		counts[b]++
+	}
+	streamed, streamedOK := entropyVerdictFromCounts(".text", counts, int64(len(uniform)), cfg)
+	inMemory, inMemoryOK := entropyVerdict(".text", uniform, cfg)
+	if streamed != inMemory || streamedOK != inMemoryOK {
+		t.Errorf("streamed = (%q, %v), in-memory = (%q, %v); the two paths must agree",
+			streamed, streamedOK, inMemory, inMemoryOK)
+	}
 }
 ```
 
@@ -1299,7 +1325,11 @@ func shannonEntropy(counts [256]int64, total int64) float64 {
 }
 
 // measureEntropy is shannonEntropy over a buffer in memory, for the cases where
-// the bytes are already in hand: an ELF section, a container member.
+// the bytes are already in hand - a container member is the one that matters
+// here. ELF sections do not use it: they are streamed through countSection in
+// fixed chunks so that a section that declares a gigabyte cannot make this pass
+// hold a gigabyte (see countSection), and both paths meet again in
+// entropyVerdictFromCounts.
 func measureEntropy(data []byte) float64 {
 	var counts [256]int64
 	for _, b := range data {
@@ -1308,8 +1338,9 @@ func measureEntropy(data []byte) float64 {
 	return shannonEntropy(counts, int64(len(data)))
 }
 
-// entropyVerdict renders an ELF section's entropy as evidence, or reports that
-// there is nothing to say.
+// entropyVerdictFromCounts renders a section's entropy as evidence, or reports
+// that there is nothing to say. It is the whole of the decision, over a
+// histogram rather than over bytes.
 //
 // It is called for executable sections only, and that restriction is the whole
 // design: code is not random, so a section that holds instructions and measures
@@ -1324,13 +1355,45 @@ func measureEntropy(data []byte) float64 {
 // applied here, where the number is, and the rule table carries only what to call
 // it. That split is deliberate: severity is policy and lives in the rule table,
 // the measurement is physics and lives here.
-func entropyVerdict(section string, data []byte, cfg BinaryConfig) (string, bool) {
-	h := measureEntropy(data)
+//
+// Two callers reach it and they hold their bytes differently: an ELF section
+// streams through countSection in fixed-size chunks and never holds the section
+// at all, while a container member is already in memory. Folding both into one
+// function over the histogram is what keeps them from disagreeing - if the
+// threshold lived on the in-memory path as well, the two would be two
+// implementations of one rule and a later edit to either would silently make an
+// identical section score differently depending on which path read it.
+//
+// total is passed rather than summed from the counts because it is the number of
+// bytes actually read, which is the byte count the entropy is normalized by, and
+// because shannonEntropy already refuses a zero total (see its comment): an empty
+// section returns 0, which is below every threshold, so it produces no line.
+func entropyVerdictFromCounts(section string, counts [256]int64, total int64, cfg BinaryConfig) (string, bool) {
+	h := shannonEntropy(counts, total)
 	if h <= cfg.HighEntropyThreshold {
 		return "", false
 	}
 	return fmt.Sprintf("high-entropy-executable-section %s %.2f", section, h), true
 }
+
+// entropyVerdict is the in-memory spelling of the same decision, for the cases
+// where the bytes are already in hand (a container member). It builds the
+// histogram and hands it to entropyVerdictFromCounts so that a section measured
+// in memory and the same section measured by streaming cannot differ.
+func entropyVerdict(section string, data []byte, cfg BinaryConfig) (string, bool) {
+	var counts [256]int64
+	for _, b := range data {
+		counts[b]++
+	}
+	return entropyVerdictFromCounts(section, counts, int64(len(data)), cfg)
+}
+
+// entropyChunkBytes is the read size countSection uses. It is a constant rather
+// than a configuration field because it is not a limit: memory is one buffer of
+// this size no matter what it is set to, so making it tunable would offer an
+// operator a knob whose only effect is cache behaviour. 64 KiB is a size the
+// kernel and the read paths are already tuned for.
+const entropyChunkBytes = 64 * 1024
 ```
 
 在 import 块补 `"math"`。
@@ -2384,6 +2447,25 @@ type elfSpec struct {
 	// verdict rather than a section summary.
 	text     []byte
 	textExec bool
+	// text2, when non-nil, adds a second section named .init, and text2Exec
+	// decides whether it carries SHF_EXECINSTR. Two executable sections are the
+	// case where the verdict has to be produced per section rather than once per
+	// file: .text may measure clean while .init is packed, and a fixture with one
+	// executable section cannot tell a loop over sections from a single check on
+	// the first match.
+	text2     []byte
+	text2Exec bool
+	// overrun, when non-zero, adds that many bytes to .text's declared sh_size
+	// without writing them. The section header then claims more than the file
+	// holds, which is the case the extractor has to catch by comparing the bytes
+	// it actually read against the declared size rather than by trusting the
+	// header.
+	overrun uint64
+	// noSections, when true, writes no section header table at all: e_shoff,
+	// e_shnum and e_shstrndx are all zero. debug/elf accepts this - it rejects
+	// only shoff == 0 with shnum != 0 - and yields zero sections, which is
+	// exactly the file the extractor's fail-open used to let through.
+	noSections bool
 	// soname, when non-empty, adds a DT_SONAME entry to .dynamic. It must be
 	// expressible because collectELF calls DynString(elf.DT_SONAME).
 	soname string
@@ -2400,8 +2482,8 @@ type elfSpec struct {
 }
 
 // elfFixtureBytes builds a minimal but well-formed ELF64 little-endian shared
-// object with exactly the sections the extractor reads: .text, .dynstr, .dynsym,
-// .dynamic and .shstrtab, and (optionally) one PT_INTERP program header.
+// object with exactly the sections the extractor reads: .text, .init, .dynstr,
+// .dynsym, .dynamic and .shstrtab, and (optionally) one PT_INTERP program header.
 //
 // It is built by hand rather than compiled, and committed as bytes rather than
 // as a binary. A `go build` fixture cannot carry a dynamic symbol table without
@@ -2416,11 +2498,20 @@ type elfSpec struct {
 //	program header table  only when interp != "": one 56-byte Elf64_Phdr at offset 64
 //	interpreter path      only when interp != "": NUL-terminated bytes
 //	.text                 spec.text
+//	.init                 spec.text2 (nothing written when nil)
 //	.dynstr               a leading NUL, then each name once, NUL-terminated
-//	.dynsym               24-byte entries; entry 0 is the null symbol (omitted when stripped)
+//	.dynsym               24-byte entries; entry 0 is the null symbol (a zeroed
+//	                      header slot when stripped)
 //	.dynamic              16-byte entries; DT_NEEDED..., [DT_SONAME], then DT_NULL
 //	.shstrtab             section names
-//	section headers       64 bytes each, 6 of them (index 0 is the required SHT_NULL)
+//	section headers       64 bytes each, 7 of them (index 0 is the required SHT_NULL)
+//
+// The section indices are fixed (see the sec* constants) rather than computed
+// from which sections a spec asks for, so e_shstrndx is the same number for
+// every fixture. A stripped file leaves its .dynsym slot as a zeroed SHT_NULL
+// header instead of shifting the ones after it: an unnamed zero-size section is
+// inert to both this extractor and debug/elf's SectionByType, and the fixed
+// index is what keeps e_shstrndx from having to be recomputed per fixture.
 //
 // One layout hazard is worth stating because the failure mode is a crash rather
 // than a test failure: debug/elf's getSymbols64 slices off the first 24 bytes
@@ -2436,7 +2527,14 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 		shEntSize  = 64
 		symEntSize = 24
 		dynEntSize = 16
-		shNum      = 6 // index 0 null, 1..5 the five real sections
+		// Section indices. shNum counts the SHT_NULL entry at index 0.
+		secText    = 1
+		secInit    = 2
+		secDynstr  = 3
+		secDynsym  = 4
+		secDynamic = 5
+		secShstr   = 6
+		shNum      = 7
 	)
 	le := binary.LittleEndian
 	align8 := func(n int) int { return (n + 7) &^ 7 }
@@ -2519,6 +2617,7 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 		return off
 	}
 	nText := shName(".text")
+	nInit := shName(".init")
 	nDynstr := shName(".dynstr")
 	nDynsym := shName(".dynsym")
 	nDynamic := shName(".dynamic")
@@ -2536,6 +2635,8 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	}
 	textOff := off
 	off = align8(off + len(spec.text))
+	initOff := off
+	off = align8(off + len(spec.text2))
 	dynstrOff := off
 	off = align8(off + len(dynstr))
 	dynsymOff := off
@@ -2546,7 +2647,16 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	off = align8(off + len(shstrtab))
 	shoff := off
 
-	buf := make([]byte, shoff+shEntSize*shNum)
+	// A file with no section header table is one where e_shoff and e_shnum are
+	// both zero; debug/elf accepts that pair and reports no sections.
+	if spec.noSections {
+		shoff = 0
+	}
+	bufLen := off
+	if shoff != 0 {
+		bufLen = shoff + shEntSize*shNum
+	}
+	buf := make([]byte, bufLen)
 
 	// ELF header.
 	copy(buf[0:4], []byte{0x7f, 'E', 'L', 'F'})
@@ -2567,8 +2677,10 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	}
 	le.PutUint16(buf[56:58], uint16(phnum)) // e_phnum
 	le.PutUint16(buf[58:60], shEntSize)
-	le.PutUint16(buf[60:62], uint16(shNum)) // e_shnum
-	le.PutUint16(buf[62:64], 5)             // e_shstrndx: .shstrtab is section 5
+	if shoff != 0 {
+		le.PutUint16(buf[60:62], shNum)   // e_shnum
+		le.PutUint16(buf[62:64], secShstr) // e_shstrndx: .shstrtab is section 6
+	}
 
 	// Program header table, when requested. Only PT_INTERP is needed; a PT_PHDR
 	// entry and a .interp section are conventional, not required - collectELF
@@ -2601,19 +2713,33 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 		le.PutUint64(b[56:64], entsize)
 	}
 
-	textFlags := uint64(elf.SHF_ALLOC)
-	if spec.textExec {
-		textFlags |= uint64(elf.SHF_EXECINSTR)
+	if shoff != 0 {
+		textFlags := uint64(elf.SHF_ALLOC)
+		if spec.textExec {
+			textFlags |= uint64(elf.SHF_EXECINSTR)
+		}
+		// sh_size is the declared size. spec.overrun adds bytes that were never
+		// written, so the section claims more than the file holds - which the
+		// extractor must notice by comparing what it read against this number
+		// rather than by trusting it.
+		sh(secText, nText, elf.SHT_PROGBITS, textFlags, uint64(textOff), uint64(len(spec.text))+spec.overrun, 0, 0, 8, 0)
+		if spec.text2 != nil {
+			initFlags := uint64(elf.SHF_ALLOC)
+			if spec.text2Exec {
+				initFlags |= uint64(elf.SHF_EXECINSTR)
+			}
+			sh(secInit, nInit, elf.SHT_PROGBITS, initFlags, uint64(initOff), uint64(len(spec.text2)), 0, 0, 8, 0)
+		}
+		sh(secDynstr, nDynstr, elf.SHT_STRTAB, uint64(elf.SHF_ALLOC), uint64(dynstrOff), uint64(len(dynstr)), 0, 0, 1, 0)
+		if !spec.stripped {
+			sh(secDynsym, nDynsym, elf.SHT_DYNSYM, uint64(elf.SHF_ALLOC), uint64(dynsymOff), uint64(len(dynsym)), secDynstr, 1, 8, symEntSize)
+		}
+		sh(secDynamic, nDynamic, elf.SHT_DYNAMIC, uint64(elf.SHF_ALLOC), uint64(dynamicOff), uint64(len(dynamic)), secDynstr, 0, 8, dynEntSize)
+		sh(secShstr, nShstrtab, elf.SHT_STRTAB, 0, uint64(shstrtabOff), uint64(len(shstrtab)), 0, 0, 1, 0)
 	}
-	sh(1, nText, elf.SHT_PROGBITS, textFlags, uint64(textOff), uint64(len(spec.text)), 0, 0, 8, 0)
-	sh(2, nDynstr, elf.SHT_STRTAB, uint64(elf.SHF_ALLOC), uint64(dynstrOff), uint64(len(dynstr)), 0, 0, 1, 0)
-	if !spec.stripped {
-		sh(3, nDynsym, elf.SHT_DYNSYM, uint64(elf.SHF_ALLOC), uint64(dynsymOff), uint64(len(dynsym)), 2, 1, 8, symEntSize)
-	}
-	sh(4, nDynamic, elf.SHT_DYNAMIC, uint64(elf.SHF_ALLOC), uint64(dynamicOff), uint64(len(dynamic)), 2, 0, 8, dynEntSize)
-	sh(5, nShstrtab, elf.SHT_STRTAB, 0, uint64(shstrtabOff), uint64(len(shstrtab)), 0, 0, 1, 0)
 
 	copy(buf[textOff:], spec.text)
+	copy(buf[initOff:], spec.text2)
 	copy(buf[dynstrOff:], dynstr)
 	copy(buf[dynsymOff:], dynsym)
 	copy(buf[dynamicOff:], dynamic)
@@ -2768,6 +2894,13 @@ func TestCollectELFEvidenceSkipsEntropyForDataSections(t *testing.T) {
 // debug/elf return elf.ErrNoSymbols: treating that as an error would make every
 // Go binary build in a model package an incomplete scan. The notice it produces
 // is what tells a reader the symbol list is empty because there is no table.
+//
+// The notice names the section type that is absent rather than calling the file
+// "stripped or static". A static binary has no .dynsym but does carry .symtab,
+// so the old wording was false for it, and a file with no section header table
+// at all is not "stripped" either - it is a different condition with its own
+// structural bound. A notice is a statement about the bytes, so it says which
+// table was looked for and not found.
 func TestCollectELFEvidenceOnAStrippedFile(t *testing.T) {
 	dir := t.TempDir()
 	raw := elfFixtureBytes(t, elfSpec{text: []byte("no symbols here"), stripped: true})
@@ -2780,6 +2913,9 @@ func TestCollectELFEvidenceOnAStrippedFile(t *testing.T) {
 	if set.Err != nil {
 		t.Errorf("Err = %v, want nil", set.Err)
 	}
+	if set.Bound.Structural {
+		t.Errorf("a stripped file was marked structural (%q); stripping is ordinary and must not withhold a pass", set.Bound.Reason)
+	}
 
 	var notices []string
 	for _, l := range set.Lines {
@@ -2787,8 +2923,138 @@ func TestCollectELFEvidenceOnAStrippedFile(t *testing.T) {
 			notices = append(notices, l.Text)
 		}
 	}
-	if !containsString(notices, "no dynamic symbol table (stripped or static)") {
-		t.Errorf("no stripped/static notice; got notices %v", notices)
+	if !containsString(notices, "no dynamic symbol table (SHT_DYNSYM absent)") {
+		t.Errorf("no absent-.dynsym notice; got notices %v", notices)
+	}
+	for _, n := range notices {
+		if strings.Contains(n, "stripped or static") {
+			t.Errorf("the notice still claims the file is stripped or static: %q", n)
+		}
+	}
+}
+
+// TestCollectELFEvidenceOnAFileWithNoSectionHeaders pins the removal of a
+// fail-open. The entropy pass walks the executable sections, so a file with no
+// section header table used to walk nothing, emit no line and no bound, and pass
+// as clean - a pass that claimed to have looked for packing in a file it never
+// examined. The fixture writes e_shoff, e_shnum and e_shstrndx as zero, which is
+// the shape of a file whose section table was removed, and that must come back
+// as a structural gap that names the section header table rather than as a clean
+// pass.
+func TestCollectELFEvidenceOnAFileWithNoSectionHeaders(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{text: uniformBytes(512), textExec: true, noSections: true})
+	path := writeTestBytes(t, dir, "packed", raw)
+
+	// The fixture itself must survive the standard library before the extractor
+	// is asked about it: a file debug/elf refuses is a different case from one
+	// it reads and finds no sections in.
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatalf("elf.Open on the sectionless fixture: %v", err)
+	}
+	if got := len(f.Sections); got != 0 {
+		t.Fatalf("fixture sections = %d, want 0", got)
+	}
+	f.Close()
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("a file with no section header table produced no structural bound; bound = %+v", set.Bound)
+	}
+	// The reason must name the real condition. It is not a missing symbol table:
+	// a stripped file has no .dynsym either and is not bounded, and this file's
+	// own case is the absent section header table.
+	if !strings.Contains(set.Bound.Reason, "section header table") {
+		t.Errorf("bound reason = %q, want it to name the section header table", set.Bound.Reason)
+	}
+	if strings.Contains(set.Bound.Reason, "symbol") {
+		t.Errorf("bound reason = %q, want it not to claim a symbol table is the problem", set.Bound.Reason)
+	}
+}
+
+// TestCollectELFEvidenceReportsASectionThatOverrunsTheFile pins that a section
+// header is not taken at its word. The fixture adds bytes to .text's declared
+// sh_size that were never written, so the read stops at end of file and returns
+// fewer bytes than the header claims. An extractor that trusted the header and
+// measured whatever it got would score a prefix and call it the section; an
+// extractor that noticed but said nothing would leave the reader unable to tell
+// a short section from a short read. So the shortfall is structural and the
+// declared size is still reported as what the header said.
+func TestCollectELFEvidenceReportsASectionThatOverrunsTheFile(t *testing.T) {
+	dir := t.TempDir()
+	const textLen, overrun = 512, 1 << 20
+	raw := elfFixtureBytes(t, elfSpec{text: uniformBytes(textLen), textExec: true, overrun: overrun})
+	path := writeTestBytes(t, dir, "truncated.so", raw)
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("a section declaring more than the file holds produced no structural bound; bound = %+v", set.Bound)
+	}
+	if !strings.Contains(set.Bound.Reason, "declares") || !strings.Contains(set.Bound.Reason, "readable") {
+		t.Errorf("bound reason = %q, want it to state declared and readable byte counts", set.Bound.Reason)
+	}
+
+	// size= must still be the declared size, so a reader can pair the section
+	// line with the shortfall instead of seeing a number that silently matched
+	// the read.
+	wantDeclared := fmt.Sprintf(".text size=%d", textLen+overrun)
+	var sawDeclared bool
+	for _, l := range set.Lines {
+		if l.Source == SourceSection && strings.HasPrefix(l.Text, ".text size=") {
+			sawDeclared = l.Text == wantDeclared
+		}
+	}
+	if !sawDeclared {
+		t.Errorf("no section line %q; lines = %v", wantDeclared, set.Lines)
+	}
+
+	// The short read must not have been scored: an entropy line would be a number
+	// over a prefix, presented with the same authority as one over a whole section.
+	for _, l := range set.Lines {
+		if l.Source == SourceEntropy {
+			t.Errorf("a section that overran the file still produced entropy evidence %q", l.Text)
+		}
+	}
+}
+
+// TestCollectELFEvidenceMeasuresEveryExecutableSection pins that the entropy
+// pass is per section rather than per file. The fixture carries two executable
+// sections, a packed .text and a flat .init, and the file-level boolean a
+// one-section fixture cannot distinguish from a loop would report either both or
+// neither. Exactly one line may appear, and it must name .text.
+func TestCollectELFEvidenceMeasuresEveryExecutableSection(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		text:      uniformBytes(512),
+		textExec:  true,
+		text2:     bytes.Repeat([]byte{0x90}, 512), // NOP sled: executable and not random
+		text2Exec: true,
+	})
+	path := writeTestBytes(t, dir, "twoexec.so", raw)
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF: %v", err)
+	}
+	if set.Bound.Structural {
+		t.Fatalf("a well-formed two-section file was marked structural: %q", set.Bound.Reason)
+	}
+
+	var entropyLines []string
+	for _, l := range set.Lines {
+		if l.Source == SourceEntropy {
+			entropyLines = append(entropyLines, l.Text)
+		}
+	}
+	if len(entropyLines) != 1 || !strings.HasPrefix(entropyLines[0], "high-entropy-executable-section .text ") {
+		t.Errorf("entropy lines = %v, want exactly one for .text", entropyLines)
 	}
 }
 
@@ -2814,6 +3080,37 @@ func TestCollectELFEmptyDynsymIsNotAStrippedFile(t *testing.T) {
 	}
 }
 
+// TestCountSectionStreamsTheSameHistogramAsABufferRead pins that chunking the
+// section read does not change the number it produces. The fixture is larger
+// than one chunk so the loop body runs more than once: an implementation that
+// reset its counters per chunk, or dropped the final short chunk, would still
+// pass a single-chunk test and would make an ELF section's entropy depend on its
+// size rather than on its bytes.
+func TestCountSectionStreamsTheSameHistogramAsABufferRead(t *testing.T) {
+	data := make([]byte, entropyChunkBytes+1234)
+	for i := range data {
+		data[i] = byte((i * 31) % 251)
+	}
+
+	counts, n, err := countSection(bytes.NewReader(data), 0)
+	if err != nil {
+		t.Fatalf("countSection: %v", err)
+	}
+	if n != int64(len(data)) {
+		t.Fatalf("countSection read %d bytes, want %d", n, len(data))
+	}
+	if got, want := shannonEntropy(counts, n), measureEntropy(data); math.Abs(got-want) > 1e-12 {
+		t.Errorf("streamed entropy = %v, buffered = %v; the two must agree", got, want)
+	}
+
+	// A budget smaller than the section stops the read and reports how far it
+	// got, which is the number the caller compares against the declared size.
+	const budget = int64(4096)
+	if _, n, err := countSection(bytes.NewReader(data), budget); err != nil || n != budget {
+		t.Errorf("countSection with a %d-byte budget read %d bytes (err=%v), want exactly %d", budget, n, err, budget)
+	}
+}
+
 func containsString(haystack []string, needle string) bool {
 	for _, s := range haystack {
 		if s == needle {
@@ -2826,13 +3123,15 @@ func containsString(haystack []string, needle string) bool {
 
 - [ ] **Step 3: 跑测试确认失败**
 
+本步 `binary_evidence_test.go` 的 import 块至少要含 `"bytes"`（`bytes.NewReader`/`bytes.Repeat`）、`"debug/elf"`（夹具守卫用例要自己 `elf.Open` 一次）、`"fmt"`（拼接 `size=` 的期望串）、`"math"`（流式与内存两条路比对熵值）、`"strings"`、`"testing"`。Go 拒绝未使用的 import，所以这些是随本步的用例一起加进来的。
+
 ```bash
-go test ./internal/codeaudit/ -run 'TestELFFixture|TestCollectELF' 2>&1 | head -20
+go test ./internal/codeaudit/ -run 'TestELFFixture|TestCollectELF|TestCountSection' 2>&1 | head -20
 ```
 
 预期：`TestELFFixtureIsReadByTheStandardLibrary` PASS（夹具本身正确），`TestCollectELFEvidence` 编译失败 `undefined: collectELF`。
 
-> 若夹具测试就失败，按 `debug/elf` 的报错逐个字段核对：最常见的是 `e_shstrndx` 与 `./shstrtab` 的节索引不一致（本文档中为 5），或 `sh_link` 未指向 `.dynstr`（本文档中为 2）。
+> 若夹具测试就失败，按 `debug/elf` 的报错逐个字段核对：最常见的是 `e_shstrndx` 与 `.shstrtab` 的节索引不一致（本文档中为 6，节表共 7 项：0 空、1 `.text`、2 `.init`、3 `.dynstr`、4 `.dynsym`、5 `.dynamic`、6 `.shstrtab`），或 `sh_link` 未指向 `.dynstr`（本文档中为 3）。索引固定不随 spec 变化，所以 `.dynsym` 被 stripped 掉时留下的是一个全零的 SHT_NULL 头，而不是把后面的节全部前移——这样 `e_shstrndx` 对每个夹具都是同一个数。
 
 - [ ] **Step 4: 实现 ELF 抽取**
 
@@ -2849,9 +3148,14 @@ go test ./internal/codeaudit/ -run 'TestELFFixture|TestCollectELF' 2>&1 | head -
 // eight bits per byte has been compressed or encrypted, and something has to
 // unpack it at run time for it to run.
 //
-// The parse is bounded per section, not per file: a section that cannot be read
-// within MaxSectionBytes is a structural bound, and for a format that executes
-// that withholds a clean verdict rather than being shrugged off.
+// There is no strings pass here, and the plan says so rather than leaving it to
+// be rediscovered: Task 6 Step 4 rewrites this function to stream the file's
+// literals first and parse it second, through streamWithSizeSwitch so that a
+// large shared object is windowed at its ends like any other large blob. The
+// split is not an oversight to be "fixed" early - the size decision is what the
+// ELF path shares with every other kind, and writing it here would mean writing
+// it twice, in the one task that does not yet have the size switch. What Task 5
+// owns is the structure, and its tests assert exactly that.
 func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -2867,6 +3171,23 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 		return fmt.Errorf("parse elf %s: %w", path, err)
 	}
 	defer ef.Close()
+
+	// A file with no section header table is a structural gap, and this check is
+	// the removal of a fail-open rather than a nicety. The packing detector's
+	// input is the executable sections; with no section table there are none to
+	// measure, so the file used to fall through the section loop, produce no
+	// entropy line and no bound, and pass as clean - a pass that says "no packing
+	// found" about a file that was never examined for packing. The input most
+	// likely to have no section table is one whose section table was deliberately
+	// removed, which is exactly the file this detector exists for.
+	//
+	// The reason names the real condition. It is not "no symbol table": a
+	// sectionless file has no .dynsym, but so does a stripped one, and a stripped
+	// binary is ordinary and must not be treated this way. What is absent is the
+	// section header table, and that is what the evidence says.
+	if len(ef.Sections) == 0 {
+		set.markStructural("no section header table: the executable-section entropy pass had nothing to measure")
+	}
 
 	// The interpreter and the soname are notices rather than measurements: they
 	// say what kind of object this is, and a reader comparing two reports uses
@@ -2898,6 +3219,15 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	// DynamicSymbols rather than ImportedSymbols: the latter drops the symbol's
 	// value and section, and the section is what separates an import (SHN_UNDEF)
 	// from a definition. Only imports are evidence of what the binary can call.
+	//
+	// SHT_SYMTAB is deliberately not read as a fallback, and the notice below is
+	// worded to say only what was observed rather than to guess. A static binary
+	// has no .dynsym but does carry .symtab, so a "stripped or static" notice was
+	// false for it; and .symtab's entries are mostly this file's own defined
+	// symbols, so using it as a capability source would mean matching the
+	// program's own identifiers - the same false-positive class the free-string
+	// families were demoted for. Task 8's rule table is unchanged by this: no new
+	// evidence source is introduced, which is the point.
 	syms, err := ef.DynamicSymbols()
 	if err != nil && !errors.Is(err, elf.ErrNoSymbols) {
 		return fmt.Errorf("read dynamic symbols of %s: %w", path, err)
@@ -2909,16 +3239,35 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 		set.addStructured(SourceDynsym, s.Name)
 	}
 	if errors.Is(err, elf.ErrNoSymbols) {
-		set.addStructured(SourceNotice, "no dynamic symbol table (stripped or static)")
+		set.addStructured(SourceNotice, "no dynamic symbol table (SHT_DYNSYM absent)")
 	}
 
+	// The per-file read budget for this parse, spent across all the sections
+	// rather than reset for each one. A budget per section would make the cost of
+	// a file scale with how many executable sections it declares, and a file can
+	// declare as many as it likes - the same unbounded-work shape the streaming
+	// pass's budget exists to stop, reintroduced through the section headers.
+	budget := cfg.MaxStreamBytes
 	for _, sec := range ef.Sections {
 		executable := sec.Flags&elf.SHF_EXECINSTR != 0
+		// size= is the section header's declared size, not a count of bytes this
+		// pass read. The two differ when the section claims more than the file
+		// holds, and that case gets its own line below rather than being folded
+		// into this one - a reader comparing size= against a shortfall they cannot
+		// see would have no way to tell the claim from the read.
 		set.addStructured(SourceSection, fmt.Sprintf("%s size=%d executable=%t", sec.Name, sec.Size, executable))
 		if !executable || sec.Size == 0 {
 			continue
 		}
-		data, bounded, readErr := readBoundedSection(sec, cfg.MaxSectionBytes)
+		if budget <= 0 {
+			// Not a zero-budget read: countSection treats a non-positive budget as
+			// "unlimited", which is right for a caller with no bound and wrong
+			// here. The spend is what names the limit.
+			set.markStructural(fmt.Sprintf("section %s not read: the %d-byte per-file budget was spent", sec.Name, cfg.MaxStreamBytes))
+			continue
+		}
+		counts, read, readErr := countSection(sec.Open(), budget)
+		budget -= read
 		if readErr != nil {
 			// A section that cannot be read is a gap in the evidence, not a
 			// reason to abandon the file: the symbols already gathered are still
@@ -2926,30 +3275,56 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 			set.markStructural(fmt.Sprintf("section %s unreadable: %v", sec.Name, readErr))
 			continue
 		}
-		if bounded {
-			set.markStructural(fmt.Sprintf("section %s exceeds MaxSectionBytes", sec.Name))
+		if read < int64(sec.Size) {
+			// The section declares more bytes than were read. Two things produce
+			// this and both are the same fact about the file: a sh_offset or
+			// sh_size that runs past the end of it (the read stops at EOF), and a
+			// per-file budget breach. Either way the entropy number would be over
+			// a prefix, so it is not reported at all and the shortfall is the
+			// evidence instead: a section that could not be read in full is not a
+			// section that was measured, and for a format that executes,
+			// "not measured" must not reach the report as "measured clean".
+			set.markStructural(fmt.Sprintf("section %s declares %d bytes, %d readable", sec.Name, sec.Size, read))
+			continue
 		}
-		if line, ok := entropyVerdict(sec.Name, data, cfg); ok {
+		if line, ok := entropyVerdictFromCounts(sec.Name, counts, read, cfg); ok {
 			set.addStructured(SourceEntropy, line)
 		}
 	}
 	return nil
 }
 
-// readBoundedSection reads at most limit bytes of one section, reporting whether
-// the read was cut. The bound exists because a section can declare any size it
-// likes, and a report that tried to hold a declared gigabyte would be the denial
-// of service the audit is supposed to be part of preventing.
-func readBoundedSection(sec *elf.Section, limit int64) (data []byte, bounded bool, err error) {
-	reader := sec.Open()
-	if limit > 0 && sec.Size > uint64(limit) {
-		bounded = true
+// countSection streams one section through the entropy histogram in fixed-size
+// chunks and returns the histogram, the number of bytes it read and any read
+// error.
+//
+// It streams because a section header may declare any size and the section may
+// be read whole: an earlier version read it with io.ReadAll under a per-section
+// cap, and that cap fired on ordinary real libraries. Memory here is 256 counters
+// and one chunk regardless of how large the section is, so the only cost that
+// scales is the read itself, and the read is bounded per file by the budget the
+// caller passes (MaxStreamBytes) rather than per section - a budget that only a
+// file with gigabytes of executable sections can reach.
+//
+// It returns the count so the caller can compare it against the declared size:
+// the histogram is over a prefix whenever the read stopped early, and a prefix is
+// not something this function can tell the caller about on its own.
+func countSection(r io.Reader, budget int64) (counts [256]int64, n int64, err error) {
+	buf := make([]byte, entropyChunkBytes)
+	for budget <= 0 || n < budget {
+		read, readErr := r.Read(buf)
+		for _, b := range buf[:read] {
+			counts[b]++
+		}
+		n += int64(read)
+		if readErr == io.EOF {
+			return counts, n, nil
+		}
+		if readErr != nil {
+			return counts, n, readErr
+		}
 	}
-	data, err = io.ReadAll(io.LimitReader(reader, limit))
-	if err != nil {
-		return nil, bounded, err
-	}
-	return data, bounded, nil
+	return counts, n, nil
 }
 ```
 
@@ -2968,10 +3343,22 @@ func (s *EvidenceSet) addStructured(src EvidenceSource, text string) {
 - [ ] **Step 5: 跑测试确认通过**
 
 ```bash
-go test ./internal/codeaudit/ -run 'TestELF|TestCollectELF' -v
+go test ./internal/codeaudit/ -run 'TestELF|TestCollectELF|TestCountSection' -v
 ```
 
 预期全 PASS。
+
+> **这一版对第一节的两个决定，写在这里而不是留给读者去猜。**
+>
+> **一、无节表（`len(ef.Sections) == 0`）走的是"去掉 fail-open"，不是"用 PT_DYNAMIC 补回 DT_NEEDED/DT_SONAME"。** 两条路里选前者，理由是后者要先把 `PT_DYNAMIC` 的 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移，再把 `DT_STRTAB` 的虚地址同样映射一次才能读字符串表——这套映射本身是一段新的、需要独立夹具与独立测试的解析逻辑，而它的产出（needed/soname）只是"这个文件依赖什么"，对"这个文件有没有被加壳"这个问题不提供任何证据。真正需要修的是**结论**：熵检测的输入是可执行节，没有节表就没有可执行节，所以旧代码在这一段直接掉出去、不产生任何行也不产生任何 bound，于是"从未检查过"被报成了"没发现加壳"。改成 `markStructural` 之后，这个文件仍然拿不到 needed/soname，但它拿到了"这次没有检查过可执行节"这个**真**陈述，并且因为没有绑定可执行类型之外的例外，它在导入判定上是有界的。**代价明确**：一个节表被删掉的正常文件（少见但存在，比如某些加壳器产出的、以及某些用 `objcopy --strip-sections` 处理过的文件）现在会被记为结构性缺口而不是干净通过；这是刻意的方向——对一个可执行格式，"没看"必须不等于"干净"。
+>
+> **二、reason 的措辞点名的是"没有节头表"，不是"没有符号表"。** 旧代码在 `errors.Is(err, elf.ErrNoSymbols)` 时写的是 `"no dynamic symbol table (stripped or static)"`，这句话对**静态链接**的二进制是假的：静态二进制没有 `.dynsym` 但有 `.symtab`，它并不 stripped；对**完全没有节表**的文件也是假的：那不是被 strip 过，是另一种情况。新措辞只陈述实际观察到的事实——`"no dynamic symbol table (SHT_DYNSYM absent)"`——并**故意不加** `SHT_SYMTAB` 作为符号证据的兜底来源：`.symtab` 里绝大多数是**本文件自己定义**的符号（函数名、局部变量），拿它当能力证据意味着去匹配程序自己的标识符，那正是字符串族被降级时所针对的同一类误报。Task 8 的规则表因此**不受影响**：没有引入新的 evidence source，这正是重点。
+>
+> **三、节声明长度越过文件末尾（或读不满）记为结构性缺口，`size=` 仍写声明长度。** 判据是"读到的字节数 < 节头声明的字节数"。两种情况会触发，且都是同一个事实：`sh_offset`/`sh_size` 越过了文件末尾（读在 EOF 停下），或者触到了 `MaxStreamBytes` 的每文件预算。无论哪种，熵值都只覆盖了一个**前缀**，所以这个数**不报**——报出来它会和"整个节测过"的数长得一模一样，而"没测全"对一个会执行的格式绝不能走到报告里变成"测过且干净"。替代它出现的是 `section .text declares N bytes, M readable` 这一条结构化证据。`size=` 保持声明值而不是改成读到的值，是因为读者需要能把这个声明长度和那条缺口**配对**看：如果 `size=` 悄悄变成读到的数，报告里就再也看不出节头当初声明了多少。
+>
+> **四、`MaxSectionBytes` 从 `BinaryConfig` 里整个删掉，不是保留成一个改了语义的东西。** 它唯一的用途就是给"`io.ReadAll` 一个节"设上限，而那个设计会对**普通的大库**开火——一个足够大的 `.so`，它的 `.text` 会跨过任何固定的节上限，而触顶记的是结构性 bound，于是"这个库比较大"变成了阻断导入的理由。宿主实测（每个真实共享对象最大的 `SHF_EXECINSTR` `PROGBITS` 节）：`libLLVM.so.20.1` 63 048 722 字节、`libclang-18.so.18` 22 284 286、Chrome 的 `liboptimization_guide_internal.so` 20 685 714、`libwireshark.so.17.0.2` 20 175 571——16 MiB 的节上限在前四个上直接触顶。注意这个上限在**已实测的输入上都不发作**：审计语料 `models/` 下一个真实 `.so` 都没有，标定误报用的那 28 个 ollama 库单节最大 2 901 464 字节，所以它的代价是潜伏的，只在包里带上一个真实大库时发作——而那正是本平台要接受的包形状。节读取改成经 `countSection` 按固定块流过直方图之后，内存是 256 个计数器加一个 `entropyChunkBytes`（64 KiB）缓冲，与节大小无关，节上限已经**没有东西可保护**。每文件的读取预算剩下 `MaxStreamBytes`，在节循环里**跨节累减**（不是每节重置，否则成本随文件声明的可执行节数量线性增长），触到它才保持结构性。字段删除要连带 Task 14 的配置键清单和 `normalizeBinaryConfig` 一起删（本节已完成）：`MaxSectionBytes` 从来没有出现在配置键清单里，`normalizeBinaryConfig` 里那段 `if cfg.MaxSectionBytes <= 0` 也一并去掉。**不要把它加回来**，也不要指望"把 16 MiB 调大一点"能解决——任何固定值都只是把发作点往后挪。
+>
+> **五、同一份判定只能有一个实现。** `entropyVerdict` 原本直接吃 `[]byte`，而流式路径手里没有 `[]byte`——如果给流式路径再写一份阈值判断，两条路就成了一规则两实现，日后改一处就会让**同一个节**因为读它的路径不同而得到不同的分数。所以 Task 3 里把判定抽成 `entropyVerdictFromCounts(section string, counts [256]int64, total int64, cfg BinaryConfig)`，`entropyVerdict` 退化成"建直方图再转交"的包装，ELF 路径走 `countSection` + `entropyVerdictFromCounts`，容器成员路径走 `entropyVerdict`，两者在 `TestEntropyVerdictIsMeasuredNotAssumed` 里被断言必须给出同一行。
 
 - [ ] **Step 6: 提交**
 
@@ -3485,9 +3872,17 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 // path - is parsed by the same code rather than by a second implementation that
 // would drift from this one.
 //
-// There is no size parameter: the parse bounds itself per section through
-// readBoundedSection, and a size the body never read would be a parameter that
-// only invites the assumption that something is bounds-checked elsewhere.
+// It carries the whole of Task 5's body: the sectionless structural bound, the
+// .dynsym walk, the per-section summary lines, and the streamed entropy pass
+// through countSection and entropyVerdictFromCounts. All of that reads through
+// io.ReaderAt already - debug/elf takes one, and elf.Section.Open returns an
+// io.Reader - so the move changes nothing but the parameter that names the file
+// in messages.
+//
+// There is no size parameter: the parse bounds itself per file through
+// cfg.MaxStreamBytes, applied as the budget countSection stops at, and a size
+// the body never read would be a parameter that only invites the assumption that
+// something is bounds-checked elsewhere.
 func collectELFReader(r io.ReaderAt, set *EvidenceSet, cfg BinaryConfig, name string) error {
 	ef, err := elf.NewFile(r)
 	if err != nil {
@@ -3497,6 +3892,12 @@ func collectELFReader(r io.ReaderAt, set *EvidenceSet, cfg BinaryConfig, name st
 	// ... (Task 5 的解析体原样搬到这里，把 path 换成 name)
 }
 ```
+
+> 两个此前没有写下来的点，这里明确一次：
+>
+> **`collectELF` 的产物里没有字符串证据，是分离而不是漏做。** Task 5 的 `collectELF` 只做结构解析，本步才把 `streamWithSizeSwitch` 接在它前面，所以一个有路径的 ELF 最终拿到的是"字符串 + 结构"两份证据。顺序是先流后解析，而不是反过来：结构解析要 seek，流式读取要顺序读到底，共用一个句柄会让结构解析的位置取决于流式读取停在了哪里。`streamWithSizeSwitch` 而不是 `streamEvidence`，是为了让一个大 `.so` 和其它大 blob 一样按"头 + 尾"开窗，而不是整份读进来。
+>
+> **容器成员走的是另一条路：它先被判类、读进内存，再决定要不要解析。** 一个 zip 成员若不是 ELF/pickle 就不读进内存、不解析（这也是容器解压后的总体积不被 `MaxArchiveMemberBytes` 约束的原因）；是 ELF 就走 `collectELFReader(bytes.NewReader(data), ...)`，与有路径的 ELF 用同一段解析体。字符串证据在这一步由 `collectELFMember` 自己跑（成员已经在内存里，不需要再按大小开窗），所以成员和有路径文件最终拿到同两类证据，只是字符串那一段来自不同的读取路径——这也是 `entropyVerdictFromCounts` 必须同时被两条读取路径使用的原因之一。
 
 - [ ] **Step 5: 跑测试确认通过**
 
@@ -6724,6 +7125,15 @@ func TestEndToEndCleanPackageStillPasses(t *testing.T) {
 // TestEndToEndBoundedExecutableBlocks pins the fail-closed direction that is
 // easiest to get wrong: a shared object the scan could not finish reading must
 // block, because a verdict reached without reading it is not a verdict.
+//
+// The limit the fixture reaches is MaxStreamBytes, the per-file read budget,
+// rather than a per-section cap - there is no per-section cap any more (see
+// BinaryConfig), and a section that declares more than the file holds is caught
+// by the read-versus-declared comparison instead. Setting the budget below the
+// file size is what makes both readers stop early: the strings pass records the
+// budget bound, and the section read comes up short of .text's declared size and
+// records the same fact from the other side. Either way the file is a bounded
+// executable, and a bounded executable withholds the pass.
 func TestEndToEndBoundedExecutableBlocks(t *testing.T) {
 	dir := t.TempDir()
 	writeTestBytes(t, dir, "native/libbig.so", elfFixtureBytes(t, elfSpec{
@@ -6735,8 +7145,8 @@ func TestEndToEndBoundedExecutableBlocks(t *testing.T) {
 	cfg := AuditConfig{
 		LLM: LLMConfig{Enabled: false, Policy: "assist"},
 		Binary: BinaryConfig{
-			Enabled:         true,
-			MaxSectionBytes: 16, // smaller than .text, so the executable section cannot be read
+			Enabled:        true,
+			MaxStreamBytes: 16, // smaller than the file, so neither pass can finish reading it
 		},
 	}
 	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, nil)
@@ -6747,7 +7157,7 @@ func TestEndToEndBoundedExecutableBlocks(t *testing.T) {
 		t.Errorf("BoundedExecutable = %d, want 1", audit.ScanMetadata.Binary.BoundedExecutable)
 	}
 	if audit.Conclusion.Passed {
-		t.Error("Passed = true after an executable section could not be read; the gap did not reach the verdict")
+		t.Error("Passed = true after an executable file could not be read in full; the gap did not reach the verdict")
 	}
 }
 
