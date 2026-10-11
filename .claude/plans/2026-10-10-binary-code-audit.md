@@ -6641,9 +6641,30 @@ go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestBinaryFam
 - 可执行节区熵：把宿主上 **600 个共享对象**（去重后 **538** 个不同 ELF；把每个枚举到的文件条目都算上是 **2027** 个）全跑一遍，**0 个被判结构性、0 个无节表、0 个报错**，最高 **6.777009** bits/byte，出现在 **`libcrypto.so.3` 的 `.text`**（3347362 字节，**整节读完**，不是抽样前缀），与 7.5 阈值之间余量 **0.723** bits。早先只量了 ollama 那 28 个（最高 6.75），样本扩大二十倍而最高值只挪了百分之一不到，这正是"这条判定不误伤普通库"的强度所在（`libgomp.so` 的 7.97 在非可执行 `.gnu_debugdata`，抽取器根本不测）。**这个数是被删包级规则的唯一支撑，所以它必须是整节读出来的**——一个只覆盖前缀的熵值和一个覆盖整节的熵值在报告里长得一样，而前者不能用来给一条删除规则背书。
 
 - **新表在真实库上的实测（本轮，宿主 `teellm/models/ollama/lib/ollama/`，把这条路径下的 `.so` 全跑一遍）**：
-  - **21 个是被截断的 CUDA/cuDNN/NCCL/MLX 库**——磁盘上每个正好 10 MiB，而 ELF 头把节头表指向 30–750 MB 的偏移，`elf.NewFile` 直接返回 `EOF`。它们走的是**抽取出错**（`parse elf …: EOF`）这条路径，**不产出 finding**，计入 `Incomplete`——这正是 Task 7 那条"截断的库是抽取出错、不是跳过"的现成形状，它们就在这里（不在 `models/` 下；`models/` 一个真实 `.so` 都没有）。
-  - 能解析出来的库里命中 **HIGH** 的一共是 **8 个库文件**：`libggml-base.so.0.20.2` 导入 `execlp` → **`CMD_001`（HIGH）**；`libllama-common.so.0.1.2` 与 `libllama-server-impl.so` 导入 `socket`/`connect`/`getaddrinfo` → **`NET_002`（HIGH）**；`cuda_v12/libcudart.so.12.8.90`、`cuda_v13/libcudart.so.13.0.96`、`mlx_cuda_v13/libcudart.so.13.0.96` 与 `mlx_cuda_v13/libcudnn_cnn.so.9.25.0`、`mlx_cuda_v13/libcudnn_ext.so.9.25.0` 导入 `bind`/`connect`/`socket` → **`NET_002`（HIGH）**。（`filepath.Walk` 按 `lstat` 跳软链接，所以 `libggml-base.so.0`、`libllama-common.so.0` 这两个 `.so`→`.so.N` 软链接条目**不会被读**；把它们算进来才有更大的条目数。）
-  - **这 8 个命中全部是合法库，而 `CMD_001`/`NET_002` 都是 HIGH**，所以只要这样的库进了模型包，`passed` 就是 false，导入会在 `import_processing.go:655-660` 走到 `cleanDirContents` 删包。这正是 §5 里 `NET_002` 那条**未裁决取舍**的实测来源（三种候选写在 Task 8 `binary_rules.go` 的 `NET_002` 注释里）。
+  - **21 个是被截断的 CUDA/cuDNN/NCCL/MLX 库，而且这个数字有两套口径，不要用一个盖掉另一个**：按**磁盘**数，是 **21 个截断 ELF**——其中 **20 个恰好 10485760 字节（10 MiB）**，另一个是 `vulkan/libggml-vulkan.so`（**10747904** 字节），20 + 1 = 21；按**生产路径**数，也是 **21 个**——`elf.NewFile` 对这 21 个**全部**直接返回 `EOF`（本轮用 `elf.Open` 逐个跑了这 52 个 `.so`，报 EOF 的正是这一批 21 个，52 − 21 = 31 个能解析出来，两个口径逐文件对得上）。ELF 头把节头表指向 34483600–751773392 字节（约 33–717 MB）的偏移，而文件只有 10 MiB，所以 `debug/elf` 读节头时撞在 EOF 上。**这里保留 21**：曾经出现过的"22 个恰好 10 MiB"在磁盘上复现不出来（全仓库按 `-size 10485760c` 数就是 20 个），所以不采用 22。另外这 21 个**全部**落在 `teellm/models/ollama/lib/ollama/` 下（`cuda_v12` 3 个、`cuda_v13` 3 个、`mlx_cuda_v13` 14 个、`vulkan` 1 个）；`deploy/guest-build/semgrep-payload/rootfs` 下面有 88 个 `.so*`，但**截断的一个也没有**——Task 5 与 `binary_scanner.go` 里"`teellm/` 与 `deploy/…` 下有 21 个"是把两个根并列写在一起的，实测只来自 `teellm/` 这一个根（代码侧那句的修正在另一批里，这里只留实测口径）。它们走的是**抽取出错**（`parse elf …: EOF`）这条路径，**不产出 finding**，计入 `Incomplete`——这正是 Task 7 那条"截断的库是抽取出错、不是跳过"的现成形状（不在 `models/` 下；`models/` 一个真实 `.so` 都没有）。
+  - 能解析出来的那 31 个库里，命中 **HIGH** 的一共是 **9 个库文件**（按族拆：`NET_002` **7 个** + `CMD_001` **2 个**）：`libllama-common.so.0.1.2` 与 `libllama-server-impl.so` 导入 `socket`/`connect`/`getaddrinfo`/`inet_pton` → **`NET_002`（HIGH）**；`cuda_v12/libcudart.so.12.8.90`、`cuda_v13/libcudart.so.13.0.96`、`mlx_cuda_v13/libcudart.so.13.0.96`、`mlx_cuda_v13/libcudnn_cnn.so.9.25.0`、`mlx_cuda_v13/libcudnn_ext.so.9.25.0` 导入 `connect`/`socket` → **`NET_002`（HIGH）**；`libggml-base.so.0.20.2` 导入 `execlp` → **`CMD_001`（HIGH）**；`mlx_cuda_v13/libgfortran.so.5.0.0` 导入 `system` → **`CMD_001`（HIGH）**。（`filepath.Walk` 按 `lstat` 跳软链接，所以 `libggml-base.so.0`、`libllama-common.so.0` 这两个 `.so`→`.so.N` 软链接条目**不会被读**；把它们算进来才有更大的条目数。）
+
+    **这里的"9"而不是"8"，是一次漏数，不是口径差异。** 早先那一轮 `CMD_001` 只按别处举过的 `execlp` 一个符号去扫，没有走该族的完整 alternation，于是漏掉了 `mlx_cuda_v13/libgfortran.so.5.0.0` 的 `system`。`system` 是 `CMD_001` 的正成员（`binary_rules.go` 的 `CMD_001` 模式串里第一个就是它），这是一次真实的指令执行命中，不是误报——记在这里，免得后来者拿旧的"8"当成回归基线。
+  - **"9"不随口径放宽而变，这才是它可信的地方。** `SourceDynsym` 不是这批库**唯一**的证据来源：在同一批文件上还能发 HIGH 的另外两条路，一条是 `SourceEntropy`（`BIN_001`，可执行节区熵近随机），一条是 `NET_002` 自己的 `SourceNeeded` 分支（`^libcurl\.so` / `^libssl\.so`）。两条都实测过，**一个文件都不加**：(a) 熵——把每个可读文件的所有 `SHF_EXECINSTR` 节**整节**（不是前缀采样）算 Shannon 熵，全树最高 **6.744751** bits/byte，出现在 `libggml-cpu-sapphirerapids.so` 的 `.text`（**1289897** 字节，整节读完），距 7.5 的阈值还差 **0.755** bits，`BIN_001` 一个都不触发（宿主 600 个共享对象那轮的最高值是 6.777009，同一个量级）；(b) `DT_NEEDED`——全树**没有任何** `libcurl`/`libssl` 的 `DT_NEEDED` 条目，`SourceNeeded` 分支一个都不加。于是"只算 dynsym"与"三源齐上"给出同一个数：**9**。这条论证要写进记录，是因为这个结论的强度不来自"我扫了哪些符号"，而来自"把所有能发 HIGH 的证据来源都走一遍，还是 9"。
+  - **这 9 个命中全部是合法库，而 `CMD_001`/`NET_002` 都是 HIGH**，所以只要这样的库进了模型包，`passed` 就是 false，导入会在 `import_processing.go:655-660` 走到 `cleanDirContents` 删包。这正是 §5 里 `NET_002` 那条**未裁决取舍**的实测来源（三种候选写在 Task 8 `binary_rules.go` 的 `NET_002` 注释里）。
+**上面那 9 个的复跑命令**（口径 = 只算普通文件、软链接不计，递归含 `cuda_v12`/`cuda_v13`/`mlx_cuda_v13`/`vulkan`；符号面 = `nm -D --no-demangle` 的 `U` 行剥掉 `@GLIBC_2.2.5` 这类版本后缀后的**裸名**，对应 `collectELFReader` 收的 `SHN_UNDEF && STB_GLOBAL`；规则面 = 所有能在 `SourceDynsym` 上发 HIGH 的族。`vulkan/libggml-vulkan.so` 那个截断库在 `nm -D` 下只报 `file too short`，所以它落在上面那条截断口径里、不在这里产出命中。**最后一行以非零退出是循环末尾那个 `[ -n "$h" ]` 的返回值，不是命令失败**）：
+
+```bash
+cd /home/hjy/taa
+root=teellm/models/ollama/lib/ollama
+net='^(socket|connect|getaddrinfo|gethostbyname|gethostbyaddr|inet_addr|inet_pton|WSAStartup|WSASocketA|WSASocketW)$'
+cmd='^(system|execve|execv|execvp|execl|execlp|execle|popen|posix_spawn|posix_spawnp|forkpty|WinExec|ShellExecuteA|ShellExecuteW|CreateProcessA|CreateProcessW)$'
+bin='^(memfd_create|fexecve)$'
+find "$root" -type f -name '*.so*' | sort | while read -r f; do
+  u=$(nm -D --no-demangle "$f" 2>/dev/null | awk '$(NF-1)=="U"{n=$NF; sub(/@.*/,"",n); print n}')
+  h=""
+  printf '%s\n' "$u" | grep -qE "$bin" && h="$h BIN_002"
+  printf '%s\n' "$u" | grep -qE "$cmd" && h="$h CMD_001"
+  printf '%s\n' "$u" | grep -qE "$net" && h="$h NET_002"
+  [ -n "$h" ] && printf '%s ->%s\n' "${f#$root/}" "$h"
+done
+```
+
 - `PKL_001`（pickle 反序列化执行，HIGH）本轮在真实语料上命中 **0** 次——这与下一条方向性坦白**一致**（被跑过的真实 pickle 全是良性的），不是它的反例；它 HIGH 档的双向性仍未验证。
 
 一条**方向性**的坦白，必须写在任务里而不是留给读者推断：**本节没有任何证据证明 `PKL_001` 会命中一个*恶意* checkpoint。** 所有被采样、被跑过解释器的真实 pickle 都是良性的（真 checkpoint 只证明解释器能读出目标，不能证明恶意目标会被判成 HIGH）。`PKL_001` 是 HIGH 档，而 HIGH 会阻断并删包，所以它的双向性**未经验证**：已知的是它不会误伤良性样本（上面的语料跑），未知的是它对恶意样本的命中率。补这个方向的唯一办法是造一个真正会执行 `posix.system` 的恶意 pickle 夹具（Task 4/Task 9 的合成夹具即用于此），不要用「跑过真实 checkpoint」冒充两边都验过。
