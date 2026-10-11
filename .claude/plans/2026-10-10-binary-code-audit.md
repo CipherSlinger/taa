@@ -2685,6 +2685,8 @@ import (
 package codeaudit
 
 import (
+	"bytes"
+	"compress/zlib"
 	"encoding/binary"
 	"testing"
 
@@ -2736,6 +2738,34 @@ type elfSpec struct {
 	// but holds only the 24-byte null entry is a different case: it yields an
 	// empty symbol list and a nil error.
 	stripped bool
+	// zeroDynsym, when true, keeps the SHT_DYNSYM section header but writes its
+	// sh_size as 0: a symbol table that is present in the header table yet
+	// declares no bytes. It is the shape that makes debug/elf's 64-bit symbol
+	// reader panic, because getSymbols64 rejects only lengths that are not a
+	// multiple of 24 and then slices data[24:] - and zero is a multiple of 24.
+	// Neither of the other two shapes reaches that: a stripped file omits the
+	// section, and a normal empty table carries the 24-byte reserved entry. So
+	// the crash needs its own switch rather than a reuse of `stripped`.
+	zeroDynsym bool
+	// zdebugDynsym, when true, names the SHT_DYNSYM section ".zdebug_dynsym" and
+	// gives it a 12-byte ".zdebug" body: the "ZLIB" magic followed by a big-endian
+	// uncompressed size of 0. debug/elf reads that header when the section is
+	// opened, not when the file is parsed, and rewrites Section.Size from it - so
+	// the on-disk sh_size stays an ordinary nonzero value while the data the
+	// symbol reader receives is empty. That is the same empty buffer zeroDynsym
+	// produces, by a route no size check on the header can see. The section's
+	// sh_link still points at .dynstr, because the reader loads the string table
+	// before it slices the symbol data.
+	zdebugDynsym bool
+	// shortDynsym, when true, gives the SHT_DYNSYM section a body shorter than one
+	// 24-byte entry - eight bytes here - while leaving its name and sh_size
+	// ordinary. It is the boundary between the two shapes above and the well-formed
+	// table: the reader accepts the length, fails the multiple-of test and returns
+	// the format error, so collectELF must fail the scan closed. A guard written as
+	// a length range (len(data) < entrySize) would skip this table instead, which
+	// is a fail-open - the table is malformed, not empty - and this is the fixture
+	// that tells the two guards apart.
+	shortDynsym bool
 }
 
 // elfFixtureBytes builds a minimal but well-formed ELF64 little-endian shared
@@ -2770,11 +2800,18 @@ type elfSpec struct {
 // inert to both this extractor and debug/elf's SectionByType, and the fixed
 // index is what keeps e_shstrndx from having to be recomputed per fixture.
 //
-// One layout hazard is worth stating because the failure mode is a crash rather
-// than a test failure: debug/elf's getSymbols64 slices off the first 24 bytes
-// unconditionally, so a SHT_DYNSYM section with sh_size == 0 panics with
-// "slice bounds out of range [24:0]". A present .dynsym must therefore always
-// carry at least the 24-byte null entry.
+// Two layout hazards are worth stating because the failure mode is a crash
+// rather than a test failure, and they are the shapes this builder can produce
+// on purpose with zeroDynsym and zdebugDynsym. debug/elf slices off the first
+// symbol entry unconditionally after a length check that only rejects sizes not
+// a multiple of the entry size, so a SHT_DYNSYM that yields an empty buffer
+// panics with "slice bounds out of range [24:0]". That empty buffer is produced
+// by sh_size == 0, and also by a section named ".zdebug..." with a ZLIB header
+// whose declared size is 0, because opening the section rewrites its size. A
+// plain .dynsym must therefore always carry at least the 24-byte null entry.
+// shortDynsym sits on the other side of that same length check: a body that is
+// not a multiple of the entry size is rejected with a format error rather than
+// sliced, so holding it back would be a fail-open, not a fix.
 func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	t.Helper()
 
@@ -2827,20 +2864,35 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	}
 
 	// .dynsym. Entry zero is the reserved null symbol; getSymbols64 skips it, so
-	// the imports start at entry one. A stripped file has no .dynsym at all.
+	// the imports start at entry one. A stripped file has no .dynsym at all, and
+	// the .zdebug shape carries the decompression header instead of symbols, while
+	// shortDynsym carries a body too short to hold even the null entry.
 	var dynsym []byte
 	if !spec.stripped {
-		dynsym = make([]byte, symEntSize*(len(spec.imports)+1))
-		for i, off := range importOffsets {
-			e := dynsym[symEntSize*(i+1):]
-			le.PutUint32(e[0:4], off)
-			e[4] = byte(elf.STB_GLOBAL)<<4 | byte(elf.STT_FUNC)
-			e[5] = 0
-			le.PutUint16(e[6:8], uint16(elf.SHN_UNDEF))
-			// st_value stays zero: an imported symbol has no address in this file,
-			// which is exactly why a symbol finding carries no byte offset.
-			le.PutUint64(e[8:16], 0)
-			le.PutUint64(e[16:24], 0)
+		switch {
+		case spec.zdebugDynsym:
+			// A .zdebug header: "ZLIB" and a big-endian uncompressed size. The size
+			// here is 0, which is what open-time parsing turns into an empty read.
+			dynsym = make([]byte, symEntSize*2)
+			copy(dynsym[0:4], "ZLIB")
+		case spec.shortDynsym:
+			// A body under one entry wide. It is written verbatim with sh_size == 8,
+			// so every header the file parser sees is ordinary; only the length the
+			// symbol reader tests rejects it.
+			dynsym = make([]byte, 8)
+		default:
+			dynsym = make([]byte, symEntSize*(len(spec.imports)+1))
+			for i, off := range importOffsets {
+				e := dynsym[symEntSize*(i+1):]
+				le.PutUint32(e[0:4], off)
+				e[4] = byte(elf.STB_GLOBAL)<<4 | byte(elf.STT_FUNC)
+				e[5] = 0
+				le.PutUint16(e[6:8], uint16(elf.SHN_UNDEF))
+				// st_value stays zero: an imported symbol has no address in this file,
+				// which is exactly why a symbol finding carries no byte offset.
+				le.PutUint64(e[8:16], 0)
+				le.PutUint64(e[16:24], 0)
+			}
 		}
 	}
 
@@ -2876,7 +2928,11 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	nText := shName(".text")
 	nInit := shName(".init")
 	nDynstr := shName(".dynstr")
-	nDynsym := shName(".dynsym")
+	dynsymName := ".dynsym"
+	if spec.zdebugDynsym {
+		dynsymName = ".zdebug_dynsym"
+	}
+	nDynsym := shName(dynsymName)
 	nDynamic := shName(".dynamic")
 	nShstrtab := shName(".shstrtab")
 
@@ -2935,7 +2991,7 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	le.PutUint16(buf[56:58], uint16(phnum)) // e_phnum
 	le.PutUint16(buf[58:60], shEntSize)
 	if shoff != 0 {
-		le.PutUint16(buf[60:62], shNum)   // e_shnum
+		le.PutUint16(buf[60:62], shNum)    // e_shnum
 		le.PutUint16(buf[62:64], secShstr) // e_shstrndx: .shstrtab is section 6
 	}
 
@@ -2989,7 +3045,14 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 		}
 		sh(secDynstr, nDynstr, elf.SHT_STRTAB, uint64(elf.SHF_ALLOC), uint64(dynstrOff), uint64(len(dynstr)), 0, 0, 1, 0)
 		if !spec.stripped {
-			sh(secDynsym, nDynsym, elf.SHT_DYNSYM, uint64(elf.SHF_ALLOC), uint64(dynsymOff), uint64(len(dynsym)), secDynstr, 1, 8, symEntSize)
+			// sh_size is the declared size. zeroDynsym writes 0 over it, keeping
+			// the section present but claiming no bytes - the shape that panics
+			// debug/elf's 64-bit symbol reader.
+			dynsymSize := uint64(len(dynsym))
+			if spec.zeroDynsym {
+				dynsymSize = 0
+			}
+			sh(secDynsym, nDynsym, elf.SHT_DYNSYM, uint64(elf.SHF_ALLOC), uint64(dynsymOff), dynsymSize, secDynstr, 1, 8, symEntSize)
 		}
 		sh(secDynamic, nDynamic, elf.SHT_DYNAMIC, uint64(elf.SHF_ALLOC), uint64(dynamicOff), uint64(len(dynamic)), secDynstr, 0, 8, dynEntSize)
 		sh(secShstr, nShstrtab, elf.SHT_STRTAB, 0, uint64(shstrtabOff), uint64(len(shstrtab)), 0, 0, 1, 0)
@@ -3014,6 +3077,96 @@ func uniformBytes(n int) []byte {
 		b[i] = byte(i * 7)
 	}
 	return b
+}
+
+// elfCompressedFixture builds a minimal ELF64 with one section, .text, carrying
+// SHF_EXECINSTR | SHF_COMPRESSED. Its compression header (an Elf64_Chdr) declares
+// chSize as the uncompressed size, and its body is a real zlib stream of payload,
+// so opening the section succeeds and yields len(payload) bytes.
+//
+// It exists because chSize is attacker-controlled and debug/elf does not range-
+// check it: for a compressed section it copies ch_size straight into
+// Section.Size, applying an int64 range check only to sh_size. A value at or
+// above 2^63 therefore makes int64(Section.Size) negative, while the readable
+// size stays small - the exact pair a short-read check has to compare, and the
+// pair a signed comparison mis-handles.
+func elfCompressedFixture(t *testing.T, chSize uint64, payload []byte) []byte {
+	t.Helper()
+
+	const (
+		ehSize    = 64
+		shEntSize = 64
+		chdrSize  = 24 // Elf64_Chdr: uint32 + uint32 + uint64 + uint64
+	)
+	le := binary.LittleEndian
+	align8 := func(n int) int { return (n + 7) &^ 7 }
+
+	var z bytes.Buffer
+	zw := zlib.NewWriter(&z)
+	if _, err := zw.Write(payload); err != nil {
+		t.Fatalf("zlib write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zlib close: %v", err)
+	}
+
+	// The section body is the compression header followed by the compressed
+	// stream. debug/elf reads the header at load time and decompresses from
+	// compressionOffset (the header's own size) onward.
+	body := make([]byte, chdrSize+z.Len())
+	le.PutUint32(body[0:4], uint32(elf.COMPRESS_ZLIB)) // ch_type
+	le.PutUint32(body[4:8], 0)                         // ch_reserved
+	le.PutUint64(body[8:16], chSize)                   // ch_size (uncompressed)
+	le.PutUint64(body[16:24], 1)                       // ch_addralign
+	copy(body[chdrSize:], z.Bytes())
+
+	shstrtab := []byte{0}
+	nameText := uint32(len(shstrtab))
+	shstrtab = append(shstrtab, ".text"...)
+	shstrtab = append(shstrtab, 0)
+	nameShstr := uint32(len(shstrtab))
+	shstrtab = append(shstrtab, ".shstrtab"...)
+	shstrtab = append(shstrtab, 0)
+
+	bodyOff := ehSize
+	shstrOff := align8(bodyOff + len(body))
+	shoff := align8(shstrOff + len(shstrtab))
+	buf := make([]byte, shoff+shEntSize*3)
+
+	// ELF header: class 64, little-endian, ET_DYN, no program headers.
+	copy(buf[0:4], []byte{0x7f, 'E', 'L', 'F'})
+	buf[4] = byte(elf.ELFCLASS64)
+	buf[5] = byte(elf.ELFDATA2LSB)
+	buf[6] = byte(elf.EV_CURRENT)
+	buf[7] = byte(elf.ELFOSABI_NONE)
+	le.PutUint16(buf[16:18], uint16(elf.ET_DYN))
+	le.PutUint16(buf[18:20], uint16(elf.EM_X86_64))
+	le.PutUint32(buf[20:24], uint32(elf.EV_CURRENT))
+	le.PutUint64(buf[40:48], uint64(shoff)) // e_shoff
+	le.PutUint16(buf[52:54], ehSize)
+	le.PutUint16(buf[58:60], shEntSize)
+	le.PutUint16(buf[60:62], 3) // e_shnum: null, .text, .shstrtab
+	le.PutUint16(buf[62:64], 2) // e_shstrndx
+
+	copy(buf[bodyOff:], body)
+	copy(buf[shstrOff:], shstrtab)
+
+	sh := func(i int, name uint32, typ elf.SectionType, flags uint64, offset, size, addralign uint64) {
+		b := buf[shoff+i*shEntSize:]
+		le.PutUint32(b[0:4], name)
+		le.PutUint32(b[4:8], uint32(typ))
+		le.PutUint64(b[8:16], flags)
+		le.PutUint64(b[24:32], offset)
+		le.PutUint64(b[32:40], size)
+		le.PutUint64(b[48:56], addralign)
+	}
+	// .text is executable and compressed; debug/elf takes the section's size from
+	// the compression header, so ch_size is what a reader reports as its size.
+	// Only the two flags it needs are set - a compressed section that is also
+	// SHF_ALLOC is rejected by the reader.
+	sh(1, nameText, elf.SHT_PROGBITS, uint64(elf.SHF_EXECINSTR)|uint64(elf.SHF_COMPRESSED), uint64(bodyOff), uint64(len(body)), 1)
+	sh(2, nameShstr, elf.SHT_STRTAB, 0, uint64(shstrOff), uint64(len(shstrtab)), 1)
+	return buf
 }
 ```
 
@@ -3260,14 +3413,14 @@ func TestCollectELFEvidenceReportsASectionThatOverrunsTheFile(t *testing.T) {
 
 	// size= must still be the declared size, so a reader can pair the section
 	// line with the shortfall instead of seeing a number that silently matched
-	// the read. The section line carries more than the size - the executable
-	// flag follows it, `%s size=%d executable=%t` - so this compares the
-	// prefix and not the whole line.
+	// the read. The section line carries its executability flag after size=, so
+	// the declared size is asserted as the line's prefix and not as the whole
+	// line.
 	wantDeclared := fmt.Sprintf(".text size=%d", textLen+overrun)
 	var sawDeclared bool
 	for _, l := range set.Lines {
 		if l.Source == SourceSection && strings.HasPrefix(l.Text, ".text size=") {
-			sawDeclared = strings.HasPrefix(l.Text, wantDeclared)
+			sawDeclared = strings.HasPrefix(l.Text, wantDeclared+" ")
 		}
 	}
 	if !sawDeclared {
@@ -3335,6 +3488,275 @@ func TestCollectELFEmptyDynsymIsNotAStrippedFile(t *testing.T) {
 	for _, l := range set.Lines {
 		if l.Source == SourceNotice && strings.Contains(l.Text, "no dynamic symbol table") {
 			t.Errorf("a present but empty .dynsym produced the stripped/static notice: %q", l.Text)
+		}
+	}
+}
+
+// TestCollectELFEvidenceOnAZeroSizeDynsym pins the crash guard. A SHT_DYNSYM that
+// is present but declares sh_size == 0 makes debug/elf's 64-bit symbol reader
+// slice an empty buffer at byte 24 and panic ("slice bounds out of range
+// [24:0]") instead of returning an error: its only length check, len(data)%24,
+// accepts a zero length. ClassifyBinary returns KindELF on the four magic bytes
+// alone, so the shape is reachable from an untrusted file, and a panic aborts the
+// whole scan rather than marking the one file incomplete. collectELF has to hold
+// the table back - it holds no symbols, so nothing is lost - and must not claim
+// the table is absent, which would be a false statement about the file.
+func TestCollectELFEvidenceOnAZeroSizeDynsym(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		imports:    []string{"dlopen"},
+		zeroDynsym: true,
+		text:       []byte("a symbol table present but empty"),
+	})
+	path := writeTestBytes(t, dir, "zero-dynsym.so", raw)
+
+	// Prove the fixture really carries the crash shape, or the test would pass on
+	// a file that cannot panic.
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatalf("elf.Open on the fixture: %v", err)
+	}
+	ds := f.SectionByType(elf.SHT_DYNSYM)
+	if ds == nil {
+		f.Close()
+		t.Fatal("fixture has no SHT_DYNSYM section")
+	}
+	size := ds.Size
+	f.Close()
+	if size != 0 {
+		t.Fatalf("fixture .dynsym size = %d, want 0", size)
+	}
+
+	// collectELF must return, not panic, and must neither invent a symbol from the
+	// unread table nor describe the present table as absent.
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF on a zero-size .dynsym: %v", err)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourceDynsym {
+			t.Errorf("a zero-size .dynsym produced symbol evidence %q", l.Text)
+		}
+		if l.Source == SourceNotice && strings.Contains(l.Text, "no dynamic symbol table") {
+			t.Errorf("a present but zero-size .dynsym was reported as an absent table: %q", l.Text)
+		}
+	}
+}
+
+// TestCollectELFEvidenceOnAZdebugNamedDynsym pins the second route to the same
+// crash. A section named ".zdebug..." of type SHT_DYNSYM whose body begins with
+// "ZLIB" has Section.Size rewritten from eight bytes the file chooses when the
+// section is opened - not when the file is parsed - so an on-disk sh_size that
+// looks perfectly ordinary (48 here) still yields an empty buffer, which the
+// symbol reader slices at entry 24 and panics on. Only reading the section the
+// way the reader does sees through it; a guard written against the header size
+// would wave this file through.
+func TestCollectELFEvidenceOnAZdebugNamedDynsym(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		zdebugDynsym: true,
+		text:         []byte("a disguised symbol table"),
+	})
+	path := writeTestBytes(t, dir, "zdebug-dynsym.so", raw)
+
+	// Check the shape the file presents before anything opens the section, since
+	// opening it is what rewrites the size - then confirm the empty buffer.
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatalf("elf.Open on the fixture: %v", err)
+	}
+	ds := f.SectionByType(elf.SHT_DYNSYM)
+	if ds == nil {
+		f.Close()
+		t.Fatal("fixture has no SHT_DYNSYM section")
+	}
+	name, onDisk := ds.Name, ds.Size
+	data, dataErr := ds.Data()
+	f.Close()
+	if !strings.HasPrefix(name, ".zdebug") {
+		t.Fatalf("fixture .dynsym name = %q, want a \".zdebug\" prefix", name)
+	}
+	if onDisk == 0 {
+		t.Fatalf("fixture .dynsym on-disk size = 0; the point is that it looks ordinary")
+	}
+	if dataErr != nil {
+		t.Fatalf("reading the fixture's section: %v", dataErr)
+	}
+	if len(data) != 0 {
+		t.Fatalf("fixture section yielded %d bytes, want 0 - the ZLIB header must declare an empty table", len(data))
+	}
+
+	// collectELF must return, not panic, and must neither invent a symbol from the
+	// unread table nor describe the present table as absent.
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF on a .zdebug-named .dynsym: %v", err)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourceDynsym {
+			t.Errorf("a .zdebug-named .dynsym produced symbol evidence %q", l.Text)
+		}
+		if l.Source == SourceNotice && strings.Contains(l.Text, "no dynamic symbol table") {
+			t.Errorf("a present .zdebug-named .dynsym was reported as an absent table: %q", l.Text)
+		}
+	}
+}
+
+// TestCollectELFEvidenceFailsClosedOnATruncatedDynsym pins the boundary the
+// other two fixtures do not reach. A SHT_DYNSYM whose body is shorter than one
+// 24-byte entry (8 bytes here) is malformed, not empty: getSymbols64 rejects a
+// length that is not a multiple of the entry size and returns a format error, so
+// collectELF must fail the scan closed and say the table could not be read.
+// Skipping it as empty - which is what a length-range guard (len(data) < 24)
+// would do - is a fail-open, and it is the specific regression the wrong guard
+// shape would have introduced: the two panic fixtures both have a genuinely
+// empty buffer, so both pass under either guard, while only this one tells them
+// apart.
+func TestCollectELFEvidenceFailsClosedOnATruncatedDynsym(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		shortDynsym: true,
+		text:        []byte("a symbol table too short to hold a symbol"),
+	})
+	path := writeTestBytes(t, dir, "truncated-dynsym.so", raw)
+
+	// Prove the fixture carries the shape: a non-empty body that is not a whole
+	// number of entries, under an ordinary name and an ordinary declared size.
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatalf("elf.Open on the fixture: %v", err)
+	}
+	ds := f.SectionByType(elf.SHT_DYNSYM)
+	if ds == nil {
+		f.Close()
+		t.Fatal("fixture has no SHT_DYNSYM section")
+	}
+	name, size := ds.Name, ds.Size
+	data, dataErr := ds.Data()
+	f.Close()
+	if name != ".dynsym" {
+		t.Fatalf("fixture .dynsym name = %q, want %q", name, ".dynsym")
+	}
+	if dataErr != nil {
+		t.Fatalf("reading the fixture's section: %v", dataErr)
+	}
+	if len(data) == 0 {
+		t.Fatal("fixture section yielded 0 bytes; this test is about a non-empty, malformed table")
+	}
+	if uint64(len(data)) != size {
+		t.Fatalf("fixture section yielded %d bytes under a declared size of %d; the malformation must be the length, not a short read", len(data), size)
+	}
+	if len(data)%24 == 0 {
+		t.Fatalf("fixture body is %d bytes, a whole number of 24-byte entries; the reader would accept it", len(data))
+	}
+
+	// collectELF must fail closed rather than skip the table as empty.
+	set := newTestEvidence(path, KindELF)
+	err = collectELF(path, set, DefaultBinaryConfig())
+	if err == nil {
+		t.Fatal("collectELF accepted a truncated .dynsym; a malformed table must fail the scan rather than be skipped as empty")
+	}
+	if !strings.Contains(err.Error(), "dynamic symbols") {
+		t.Errorf("error = %v, want it to name the dynamic symbol read", err)
+	}
+}
+
+// TestCollectELFEvidenceReportsACompressedSectionWithAnOutOfRangeSize pins the
+// unsigned size comparison. For a SHF_COMPRESSED section debug/elf takes
+// Section.Size from the compression header's ch_size without the int64 range
+// check it applies to sh_size, so a crafted ch_size with the top bit set makes
+// int64(Section.Size) negative: a signed "read < int64(sec.Size)" is false for
+// every non-negative read, the section scores as read in full, and - because
+// executable code is not random - its entropy is reported as clean. The fixture's
+// section decompresses to far fewer bytes than it declares, which is exactly the
+// short-read the check exists to catch, so the size must be compared in its own
+// unsigned domain.
+func TestCollectELFEvidenceReportsACompressedSectionWithAnOutOfRangeSize(t *testing.T) {
+	// 2^63, one past the largest int64: int64(ch_size) is negative.
+	const declared = uint64(1) << 63
+	payload := bytes.Repeat([]byte{0x90}, 4096) // low entropy: no verdict either way
+
+	dir := t.TempDir()
+	path := writeTestBytes(t, dir, "packed.so", elfCompressedFixture(t, declared, payload))
+
+	// The fixture must be the shape the check is for: a compressed executable
+	// section whose reported size is the declared one.
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatalf("elf.Open on the fixture: %v", err)
+	}
+	var sec *elf.Section
+	for _, s := range f.Sections {
+		if s.Flags&elf.SHF_EXECINSTR != 0 {
+			sec = s
+		}
+	}
+	if sec == nil {
+		f.Close()
+		t.Fatal("fixture has no executable section")
+	}
+	size := sec.Size
+	f.Close()
+	if size != declared {
+		t.Fatalf("fixture section size = %d, want %d (debug/elf must take it from ch_size)", size, declared)
+	}
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF on a compressed section: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("a compressed executable section declaring %d bytes recorded no structural bound; bound = %+v", declared, set.Bound)
+	}
+	if !strings.Contains(set.Bound.Reason, "readable") {
+		t.Errorf("bound reason = %q, want the short-read reason", set.Bound.Reason)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourceEntropy {
+			t.Errorf("an under-read executable section produced entropy evidence %q", l.Text)
+		}
+	}
+}
+
+// TestCollectELFEvidenceNormalizesAZeroConfig pins that collectELF resolves a
+// zero BinaryConfig to the defaults, as its peers do. Without that,
+// MaxStreamBytes of 0 spends the per-file budget before the first section, so
+// every executable section records a "0-byte per-file budget was spent"
+// structural bound and the package is deleted - a false block produced by a
+// caller that knows about only one field. The same file under the default config
+// is clean, so the two must agree.
+func TestCollectELFEvidenceNormalizesAZeroConfig(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		imports:  []string{"dlopen"},
+		text:     []byte("an ordinary executable section of perfectly normal code"),
+		textExec: true,
+	})
+	path := writeTestBytes(t, dir, "normal.so", raw)
+
+	zero := newTestEvidence(path, KindELF)
+	if err := collectELF(path, zero, BinaryConfig{}); err != nil {
+		t.Fatalf("collectELF with a zero config: %v", err)
+	}
+	def := newTestEvidence(path, KindELF)
+	if err := collectELF(path, def, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF with the default config: %v", err)
+	}
+
+	if zero.Bound.Structural {
+		t.Errorf("a zero config produced a structural bound %+v; the zero value must mean the defaults", zero.Bound)
+	}
+	if zero.Bound != def.Bound {
+		t.Errorf("zero config bound = %+v, default config bound = %+v; they must agree", zero.Bound, def.Bound)
+	}
+	if len(zero.Lines) != len(def.Lines) {
+		t.Fatalf("zero config produced %d evidence lines, default config produced %d", len(zero.Lines), len(def.Lines))
+	}
+	for i := range zero.Lines {
+		z, d := zero.Lines[i], def.Lines[i]
+		if z.Source != d.Source || z.Offset != d.Offset || z.Text != d.Text {
+			t.Errorf("line %d differs: zero config (%s %d %q), default config (%s %d %q)",
+				i, z.Source, z.Offset, z.Text, d.Source, d.Offset, d.Text)
 		}
 	}
 }
@@ -3858,7 +4280,7 @@ go test ./internal/codeaudit/ -run 'TestELF|TestCollectELF|TestCountSection' -v
 >
 > 每一处都要有测试钉住，否则它们会在下一次重构里被当成多余的分支删掉：**（a）** 一个 `.dynsym` 解出空内容的夹具必须不 panic 且不产出 bound（"这张表没有导入"是它的事实，不是缺口）；**（a2）** 一条 `.zdebug` 形状的夹具——名字以 `.zdebug` 开头、节体是 `"ZLIB"` 加 8 个零字节、`sh_size` 是一个普通值——必须同样不 panic，且**必须在 `sh_size` 看着正常的前提下通过**，因为这条测试的全部价值就在于它钉的是"守卫必须看解出来的长度、不能看节头"；少了它，一个只看 `sh_size` 的守卫会全绿而漏洞还在；**（b）** 一个声明长度超出可读字节的节必须记为结构性缺口，且这一条要在**无符号**语义下成立（有符号写法的失败方式正是"声明长度的高位置位时整条检查被跳过"，所以这条测试的夹具要能表达那个形状：普通节的 `sh_size` 会被 `debug/elf` 在解析期拒绝，能表达它的是 `SHF_COMPRESSED` 的压缩头）；**（c）** 传一个零值 `BinaryConfig{}` 时，一个正常的可执行节仍要被量熵而不是被记成"预算花光"。
 >
-> **（a3）反向的那条同样要钉：长度 1..23 的 `.dynsym` 必须仍然失败 fail-closed**（走 error 路径、让整个文件被记为 `Incomplete`），**不得**被守卫静默跳过。这是"区间守卫是反的"那句话的落地测试——把守卫写成 `Size < 24` 会让这条测试变红，而只测 (a) 是发现不了的。注意现有的 `TestCollectELFEmptyDynsymIsNotAStrippedFile` 钉不住 (a)：它的夹具是一个合法的 24 字节保留项，根本不触发那条切片。
+> **（a3）反向的那条同样要钉：长度 1..23 的 `.dynsym` 必须仍然失败 fail-closed**（走 error 路径、让整个文件被记为 `Incomplete`），**不得**被守卫静默跳过。这是"区间守卫是反的"那句话的落地测试——把守卫写成 `Size < 24` 会让这条测试变红，而只测 (a) 是发现不了的。注意现有的 `TestCollectELFEmptyDynsymIsNotAStrippedFile` 钉不住 (a)：它的夹具是一个合法的 24 字节保留项，根本不触发那条切片。**这条规则的落地测试是 `TestCollectELFEvidenceFailsClosedOnATruncatedDynsym`**（在 Step 2 的用例清单里）：它用 `shortDynsym` 夹具写出 8 字节的 `.dynsym`，断言 `collectELF` 返回一个点名 `dynamic symbols` 的错误，而不是把这张格式错误的表当空跳过。
 
 - [ ] **Step 6: 提交**
 
