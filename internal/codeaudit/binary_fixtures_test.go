@@ -73,6 +73,15 @@ type elfSpec struct {
 	// sh_link still points at .dynstr, because the reader loads the string table
 	// before it slices the symbol data.
 	zdebugDynsym bool
+	// shortDynsym, when true, gives the SHT_DYNSYM section a body shorter than one
+	// 24-byte entry - eight bytes here - while leaving its name and sh_size
+	// ordinary. It is the boundary between the two shapes above and the well-formed
+	// table: the reader accepts the length, fails the multiple-of test and returns
+	// the format error, so collectELF must fail the scan closed. A guard written as
+	// a length range (len(data) < entrySize) would skip this table instead, which
+	// is a fail-open - the table is malformed, not empty - and this is the fixture
+	// that tells the two guards apart.
+	shortDynsym bool
 }
 
 // elfFixtureBytes builds a minimal but well-formed ELF64 little-endian shared
@@ -116,6 +125,9 @@ type elfSpec struct {
 // by sh_size == 0, and also by a section named ".zdebug..." with a ZLIB header
 // whose declared size is 0, because opening the section rewrites its size. A
 // plain .dynsym must therefore always carry at least the 24-byte null entry.
+// shortDynsym sits on the other side of that same length check: a body that is
+// not a multiple of the entry size is rejected with a format error rather than
+// sliced, so holding it back would be a fail-open, not a fix.
 func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	t.Helper()
 
@@ -169,15 +181,22 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 
 	// .dynsym. Entry zero is the reserved null symbol; getSymbols64 skips it, so
 	// the imports start at entry one. A stripped file has no .dynsym at all, and
-	// the .zdebug shape carries the decompression header instead of symbols.
+	// the .zdebug shape carries the decompression header instead of symbols, while
+	// shortDynsym carries a body too short to hold even the null entry.
 	var dynsym []byte
 	if !spec.stripped {
-		if spec.zdebugDynsym {
+		switch {
+		case spec.zdebugDynsym:
 			// A .zdebug header: "ZLIB" and a big-endian uncompressed size. The size
 			// here is 0, which is what open-time parsing turns into an empty read.
 			dynsym = make([]byte, symEntSize*2)
 			copy(dynsym[0:4], "ZLIB")
-		} else {
+		case spec.shortDynsym:
+			// A body under one entry wide. It is written verbatim with sh_size == 8,
+			// so every header the file parser sees is ordinary; only the length the
+			// symbol reader tests rejects it.
+			dynsym = make([]byte, 8)
+		default:
 			dynsym = make([]byte, symEntSize*(len(spec.imports)+1))
 			for i, off := range importOffsets {
 				e := dynsym[symEntSize*(i+1):]

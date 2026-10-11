@@ -1270,6 +1270,65 @@ func TestCollectELFEvidenceOnAZdebugNamedDynsym(t *testing.T) {
 	}
 }
 
+// TestCollectELFEvidenceFailsClosedOnATruncatedDynsym pins the boundary the
+// other two fixtures do not reach. A SHT_DYNSYM whose body is shorter than one
+// 24-byte entry (8 bytes here) is malformed, not empty: getSymbols64 rejects a
+// length that is not a multiple of the entry size and returns a format error, so
+// collectELF must fail the scan closed and say the table could not be read.
+// Skipping it as empty - which is what a length-range guard (len(data) < 24)
+// would do - is a fail-open, and it is the specific regression the wrong guard
+// shape would have introduced: the two panic fixtures both have a genuinely
+// empty buffer, so both pass under either guard, while only this one tells them
+// apart.
+func TestCollectELFEvidenceFailsClosedOnATruncatedDynsym(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		shortDynsym: true,
+		text:        []byte("a symbol table too short to hold a symbol"),
+	})
+	path := writeTestBytes(t, dir, "truncated-dynsym.so", raw)
+
+	// Prove the fixture carries the shape: a non-empty body that is not a whole
+	// number of entries, under an ordinary name and an ordinary declared size.
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatalf("elf.Open on the fixture: %v", err)
+	}
+	ds := f.SectionByType(elf.SHT_DYNSYM)
+	if ds == nil {
+		f.Close()
+		t.Fatal("fixture has no SHT_DYNSYM section")
+	}
+	name, size := ds.Name, ds.Size
+	data, dataErr := ds.Data()
+	f.Close()
+	if name != ".dynsym" {
+		t.Fatalf("fixture .dynsym name = %q, want %q", name, ".dynsym")
+	}
+	if dataErr != nil {
+		t.Fatalf("reading the fixture's section: %v", dataErr)
+	}
+	if len(data) == 0 {
+		t.Fatal("fixture section yielded 0 bytes; this test is about a non-empty, malformed table")
+	}
+	if uint64(len(data)) != size {
+		t.Fatalf("fixture section yielded %d bytes under a declared size of %d; the malformation must be the length, not a short read", len(data), size)
+	}
+	if len(data)%24 == 0 {
+		t.Fatalf("fixture body is %d bytes, a whole number of 24-byte entries; the reader would accept it", len(data))
+	}
+
+	// collectELF must fail closed rather than skip the table as empty.
+	set := newTestEvidence(path, KindELF)
+	err = collectELF(path, set, DefaultBinaryConfig())
+	if err == nil {
+		t.Fatal("collectELF accepted a truncated .dynsym; a malformed table must fail the scan rather than be skipped as empty")
+	}
+	if !strings.Contains(err.Error(), "dynamic symbols") {
+		t.Errorf("error = %v, want it to name the dynamic symbol read", err)
+	}
+}
+
 // TestCollectELFEvidenceReportsACompressedSectionWithAnOutOfRangeSize pins the
 // unsigned size comparison. For a SHF_COMPRESSED section debug/elf takes
 // Section.Size from the compression header's ch_size without the int64 range
