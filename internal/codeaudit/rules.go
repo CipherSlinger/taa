@@ -108,6 +108,14 @@ type Report struct {
 	// ProcessExitCode is the engine subprocess's exit status, -1 when there is
 	// no subprocess.
 	ProcessExitCode int `json:"process_exit_code"`
+	// Binary is the binary channel's account of its own completeness. Nil means
+	// the channel did not run, which is what a deployment that turned it off
+	// produces and what every report predating it carries.
+	//
+	// It lives on the Report rather than on the AuditReport because
+	// ProvesCleanScan is what has to read it, and the whole point of that method
+	// is that every way of not having looked withholds the pass in one place.
+	Binary *BinaryScanSummary `json:"binary,omitempty"`
 }
 
 // Rule defines a single security check pattern.
@@ -142,11 +150,29 @@ func (r *Report) ProvesCleanScan() bool {
 	if r == nil {
 		return false
 	}
-	return r.ScanComplete &&
+	if !(r.ScanComplete &&
 		!r.Truncated &&
 		r.ParserErrors == 0 &&
 		r.UnsupportedExts == 0 &&
-		r.ProcessExitCode == 0
+		r.ProcessExitCode == 0) {
+		return false
+	}
+	// The binary channel's gaps fold in here rather than at its own call sites,
+	// for the same reason every other field is read here: this is the one
+	// function that answers "did the scan look", and a check applied anywhere
+	// else is a check a later recomputation can drop.
+	//
+	// BoundedData and FindingsCapped are deliberately not read. A tensor blob
+	// whose listing was capped is a file that was read, and a package whose
+	// findings outran the listing budget is a pass that looked at everything and
+	// found too much; neither is a look that did not happen, and only a look that
+	// did not happen can make a pass a claim about absence.
+	if b := r.Binary; b != nil {
+		if b.BoundedExecutable > 0 || b.Incomplete > 0 || b.Errored {
+			return false
+		}
+	}
+	return true
 }
 
 // DefaultRules returns the built-in set of security rules for Python code.
