@@ -1,6 +1,8 @@
 package codeaudit
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"math"
@@ -291,9 +293,11 @@ func isPrintableByte(b byte) bool {
 // front from its size, so that a file that ends exactly at the budget is not
 // reported as bounded - a bound that did not cost anything is not a bound.
 //
-// This pass extracts strings only. The pickle target pass is a second scanner
-// over the same reads and is wired in by Task 4, once pickleTargets exists; the
-// shape of that patch is written out there.
+// This pass runs two scanners over the same reads: the string scanner, and the
+// pickle interpreter when the file is claimed to be a pickle. The interpreter is
+// gated on set.Kind because, unlike the string scanner, it commits to a parse -
+// it would set a structural bound on any other format, and on an executable kind
+// that bound blocks the import.
 func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int64) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -306,6 +310,15 @@ func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int6
 	}
 
 	scanner := newStringScanner(set, cfg)
+	// The interpreter runs only where the file is claimed to be a pickle. A
+	// byte-pattern scan was harmless on any input because it never committed to a
+	// parse; this one commits, and an ELF's first byte is not an opcode, so
+	// running it over a shared object would set Bound.Structural - and for a
+	// shared object that bound blocks the import.
+	var pickles *pickleScanner
+	if set.Kind == KindPickle {
+		pickles = newPickleScanner(set)
+	}
 
 	var read int64
 	buf := make([]byte, evidenceReadChunk)
@@ -323,6 +336,11 @@ func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int6
 			if _, wErr := scanner.Write(chunk); wErr != nil {
 				return fmt.Errorf("scan %s: %w", path, wErr)
 			}
+			if pickles != nil {
+				if _, wErr := pickles.Write(chunk); wErr != nil {
+					return fmt.Errorf("scan %s: %w", path, wErr)
+				}
+			}
 			read += int64(n)
 		}
 		if readErr == io.EOF {
@@ -333,6 +351,9 @@ func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int6
 		}
 	}
 	scanner.Flush()
+	if pickles != nil {
+		pickles.Flush()
+	}
 	return nil
 }
 
@@ -605,4 +626,559 @@ func entropyVerdict(section string, data []byte, cfg BinaryConfig) (string, bool
 		return "", false
 	}
 	return fmt.Sprintf("high-entropy-executable-section %s %.2f", section, h), true
+}
+
+// The pickle interpreter walks an opcode stream as opcodes, not as bytes.
+//
+// A byte-pattern scanner cannot do this job. A pickle stream interleaves its
+// opcodes with raw data payloads - string and byte operands hold arbitrary
+// bytes, including 0x63 and newlines - so any scan that hunts for "GLOBAL
+// followed by two newline-terminated runs" will eventually read a data byte as
+// an opcode, desynchronise, and then either invent a target out of the data or
+// skip over a real one. Measured on models/examples/Retina-DKD's net_001.pth,
+// whose data.pkl is a 68362-byte protocol-2 stream with four genuine GLOBAL
+// opcodes, that scanner reported 39 targets - two clean, one corrupted, and
+// torch.LongStorage missing because a false-positive match at offset 150
+// swallowed the 685 bytes containing it. The whole point of this channel is to
+// catch "c posix\nsystem\n"; a target that lands where torch.LongStorage landed
+// was being silently dropped.
+//
+// So the parser is an interpreter. It does not build objects and it does not
+// need to: it needs to consume every opcode's operand at the right width so it
+// never loses its place, and it needs to resolve two things - the two inline
+// operands of GLOBAL and INST, and the top two stack items at STACK_GLOBAL. The
+// memo table closes a documented evasion: a stream that MEMOIZEs a module name
+// and fetches it back with BINGET has no target adjacent to STACK_GLOBAL, so no
+// adjacency scan can see it, but the value is still on the stack when the opcode
+// runs.
+
+// pickOperand classifies how an opcode's operand is framed.
+type pickOperand uint8
+
+const (
+	pickNone pickOperand = iota
+	pickFixed1
+	pickFixed2
+	pickFixed4
+	pickFixed8
+	pickLine     // bytes through the next newline
+	pickTwoLines // two of those, as GLOBAL and INST encode their operands
+	pickCounted1 // 1-byte little-endian length, then that many payload bytes
+	pickCounted4 // 4-byte little-endian length, then the payload
+	pickCounted8 // 8-byte little-endian length, then the payload
+)
+
+// operandOf names the operand framing of one opcode, and reports whether the byte
+// is an opcode at all.
+//
+// The table is the complete protocol 0-5 set, and completeness is load-bearing.
+// Leaving an opcode out does not degrade a result - it desynchronises the parse at
+// that byte and turns the rest of the stream into noise. A missed opcode is
+// therefore worse than a missed target, and there is no opcode here that is safe
+// to skip: the cost of each is one case, and the cost of a gap is a checkpoint
+// that either loses its targets or blocks the import on a false structural bound.
+func operandOf(op byte) (pickOperand, bool) {
+	switch op {
+	case 0x2e, 0x30, 0x31, 0x32, 0x4e, 0x51, 0x52, 0x61, 0x62,
+		0x64, 0x65, 0x6c, 0x6f, 0x73, 0x74, 0x75, 0x7d, 0x5d, 0x29,
+		0x81, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8f, 0x90, 0x91, 0x92,
+		0x93, 0x94, 0x97, 0x98, 0x28:
+		// STOP POP POP_MARK DUP NONE BINPERSID REDUCE APPEND BUILD DICT
+		// APPENDS LIST OBJ SETITEM TUPLE SETITEMS EMPTY_DICT EMPTY_LIST
+		// EMPTY_TUPLE MARK NEWOBJ TUPLE1..3 NEWTRUE NEWFALSE EMPTY_SET
+		// ADDITEMS FROZENSET NEWOBJ_EX STACK_GLOBAL MEMOIZE NEXT_BUFFER
+		// READONLY_BUFFER: no operand, so the next byte is an opcode.
+		return pickNone, true
+	case 0x4a, 0x6a, 0x72, 0x84:
+		return pickFixed4, true // BININT LONG_BINGET LONG_BINPUT EXT4
+	case 0x47, 0x95:
+		// BINFLOAT, and FRAME: FRAME's 8-byte operand is a length hint for the
+		// bytes that follow it, not a body FRAME consumes, so it is read and
+		// discarded like any other fixed operand.
+		return pickFixed8, true
+	case 0x4b, 0x82, 0x71, 0x68, 0x80:
+		return pickFixed1, true // BININT1 EXT1 BINPUT BINGET PROTO
+	case 0x4d, 0x83:
+		return pickFixed2, true // BININT2 EXT2
+	case 0x46, 0x49, 0x4c, 0x50, 0x53, 0x56, 0x67, 0x70:
+		return pickLine, true // FLOAT INT LONG PERSID STRING UNICODE GET PUT
+	case 0x63, 0x69:
+		return pickTwoLines, true // GLOBAL, INST: module \n name \n
+	case 0x55, 0x43, 0x8a, 0x8c:
+		return pickCounted1, true // SHORT_BINSTRING SHORT_BINBYTES LONG1 SHORT_BINUNICODE
+	case 0x54, 0x58, 0x42, 0x8b:
+		return pickCounted4, true // BINSTRING BINUNICODE BINBYTES LONG4
+	case 0x8d, 0x8e, 0x96:
+		return pickCounted8, true // BINUNICODE8 BINBYTES8 BYTEARRAY8
+	}
+	return pickNone, false
+}
+
+// pickPhase is the interpreter's position within the opcode in progress. It is
+// state that crosses Write calls, which is what a chunk-boundary-safe parser
+// needs instead of the byte window the pattern scanner carried.
+type pickPhase uint8
+
+const (
+	pickPhaseOp pickPhase = iota
+	pickPhaseFixed
+	pickPhaseLine
+	pickPhasePayload
+)
+
+// pickleMaxOperandBytes bounds one operand the interpreter will hold. A module or
+// attribute name beyond this is not a name any rule or reader can act on, so the
+// bytes are consumed - the parse must stay in step - but not kept. The value
+// becomes unresolved, and if it is later used as a target's module or name that
+// is a structural bound rather than a silence: we did not read it, so we will not
+// claim to have looked.
+const pickleMaxOperandBytes = 64 * 1024
+
+// pickSlot is one value-stack or memo entry.
+//
+// Only string-ness and the string itself are kept. The interpreter never has to
+// know what an object is; it has to know whether the top two slots at
+// STACK_GLOBAL are module and name strings, and which strings they are.
+// unresolved marks a value whose bytes were not kept - an operand past the cap, or
+// a memo index never written - so that a target formed from it is refused rather
+// than guessed.
+type pickSlot struct {
+	mark       bool
+	str        bool
+	unresolved bool
+	value      string
+}
+
+// pickleScanner finds the call targets in one pickle stream.
+type pickleScanner struct {
+	set *EvidenceSet
+
+	// off is the absolute file offset of buf[0], so an evidence offset is the
+	// opcode's offset in the file and not an offset in the current chunk.
+	off int64
+	// buf holds bytes received but not yet consumed. A counted operand larger
+	// than pickleMaxOperandBytes is consumed without being stored, so buf stays
+	// bounded by the cap plus one fixed operand.
+	buf []byte
+
+	phase     pickPhase
+	op        byte
+	opOff     int64
+	linesLeft int
+	arg       []byte
+	need      int64
+	sizing    bool
+	keep      bool
+
+	stack []pickSlot
+	memo  map[int]pickSlot
+
+	// stopped ends parsing; hitStop distinguishes the pickle's own STOP from an
+	// abort, so the trailing-bytes notice is not emitted after an abort.
+	stopped  bool
+	hitStop  bool
+	trailing int64
+}
+
+func newPickleScanner(set *EvidenceSet) *pickleScanner {
+	return &pickleScanner{set: set, memo: map[int]pickSlot{}}
+}
+
+// Write implements io.Writer. All parse state crosses calls, so the result is
+// independent of where the chunk boundaries fall; a boundary inside an operand and
+// a boundary on an opcode are the same thing to this loop.
+func (p *pickleScanner) Write(chunk []byte) (int, error) {
+	if p.stopped {
+		p.trailing += int64(len(chunk))
+		return len(chunk), nil
+	}
+	p.buf = append(p.buf, chunk...)
+	i := 0
+	for i < len(p.buf) {
+		n := p.step(p.buf[i:], p.off+int64(i))
+		i += n
+		if p.stopped {
+			p.trailing += int64(len(p.buf) - i)
+			i = len(p.buf)
+			break
+		}
+		if n == 0 {
+			break
+		}
+	}
+	p.off += int64(i)
+	p.buf = append(p.buf[:0], p.buf[i:]...)
+	return len(chunk), nil
+}
+
+// Flush ends the stream. It is where the two completeness claims are made: a
+// stream that did not reach STOP was not read to the end of its structure, and a
+// stream that did has trailing bytes outside that structure - visible in a
+// notice, but not a bound, because the unpickler stops at STOP too.
+func (p *pickleScanner) Flush() {
+	if !p.stopped {
+		if p.off > 0 && p.phase != pickPhaseOp {
+			p.set.markStructural(fmt.Sprintf("pickle stream ended mid-opcode at offset %d", p.off))
+		} else if p.off > 0 {
+			p.set.markStructural(fmt.Sprintf("pickle stream ended at offset %d without STOP", p.off))
+		}
+		return
+	}
+	if p.hitStop && p.trailing > 0 {
+		p.set.add(SourceNotice, 0,
+			fmt.Sprintf("%d byte(s) after the pickle STOP were not interpreted", p.trailing))
+	}
+}
+
+// step consumes as much of one opcode as b holds and returns the number of bytes
+// consumed, or 0 when it needs more. It reports the absolute offset of the opcode
+// it is executing because that, not the operand's offset, is what an evidence line
+// carries.
+func (p *pickleScanner) step(b []byte, absOff int64) int {
+	switch p.phase {
+	case pickPhaseOp:
+		if len(b) == 0 {
+			return 0
+		}
+		op := b[0]
+		desc, ok := operandOf(op)
+		if !ok {
+			// We cannot know this byte's operand width, so we cannot know where
+			// the next opcode begins. Guessing is what desynchronises; stopping
+			// without a bound would let a later opcode hide, so the parse ends
+			// here and the file is recorded as not fully read.
+			p.set.markStructural(fmt.Sprintf("unknown pickle opcode 0x%02x at offset %d", op, absOff))
+			p.stopped = true
+			return 1
+		}
+		p.op = op
+		p.opOff = absOff
+		p.arg = p.arg[:0]
+		p.keep = true
+		p.sizing = false
+		switch desc {
+		case pickNone:
+			p.exec(op)
+			return 1
+		case pickFixed1:
+			p.phase, p.need = pickPhaseFixed, 1
+		case pickFixed2:
+			p.phase, p.need = pickPhaseFixed, 2
+		case pickFixed4:
+			p.phase, p.need = pickPhaseFixed, 4
+		case pickFixed8:
+			p.phase, p.need = pickPhaseFixed, 8
+		case pickLine:
+			p.phase, p.need, p.linesLeft = pickPhaseLine, -1, 1
+		case pickTwoLines:
+			p.phase, p.need, p.linesLeft = pickPhaseLine, -1, 2
+		case pickCounted1:
+			p.phase, p.need, p.sizing = pickPhaseFixed, 1, true
+		case pickCounted4:
+			p.phase, p.need, p.sizing = pickPhaseFixed, 4, true
+		case pickCounted8:
+			p.phase, p.need, p.sizing = pickPhaseFixed, 8, true
+		}
+		return 1
+
+	case pickPhaseFixed:
+		n := len(b)
+		if int64(n) > p.need {
+			n = int(p.need)
+		}
+		p.arg = append(p.arg, b[:n]...)
+		p.need -= int64(n)
+		if p.need > 0 {
+			return n
+		}
+		if p.sizing {
+			length := leUint(p.arg)
+			p.arg = p.arg[:0]
+			p.need = length
+			p.phase = pickPhasePayload
+			if length > pickleMaxOperandBytes {
+				p.keep = false
+			}
+			return n
+		}
+		p.phase = pickPhaseOp
+		p.exec(p.op)
+		return n
+
+	case pickPhaseLine:
+		idx := bytes.IndexByte(b, '\n')
+		if idx < 0 {
+			p.appendArg(b)
+			return len(b)
+		}
+		p.appendArg(b[:idx+1])
+		p.linesLeft--
+		if p.linesLeft > 0 {
+			return idx + 1
+		}
+		p.phase = pickPhaseOp
+		p.exec(p.op)
+		return idx + 1
+
+	case pickPhasePayload:
+		n := len(b)
+		if int64(n) > p.need {
+			n = int(p.need)
+		}
+		if p.keep {
+			p.arg = append(p.arg, b[:n]...)
+		}
+		p.need -= int64(n)
+		if p.need > 0 {
+			return n
+		}
+		p.phase = pickPhaseOp
+		p.exec(p.op)
+		return n
+	}
+	return 0
+}
+
+// appendArg keeps operand bytes up to the cap. Past the cap the value is dropped
+// but the bytes are still consumed by the caller, so the parse stays in step.
+func (p *pickleScanner) appendArg(b []byte) {
+	if !p.keep {
+		return
+	}
+	if len(p.arg)+len(b) > pickleMaxOperandBytes {
+		p.keep = false
+		p.arg = p.arg[:0]
+		return
+	}
+	p.arg = append(p.arg, b...)
+}
+
+// leUint reads a little-endian unsigned length of len(b) bytes. The 8-byte case is
+// clamped: an 8-byte length is attacker-controlled and can name a byte count past
+// any real file, and an unclamped value would overflow the skip counter.
+func leUint(b []byte) int64 {
+	switch len(b) {
+	case 1:
+		return int64(b[0])
+	case 2:
+		return int64(binary.LittleEndian.Uint16(b))
+	case 4:
+		return int64(binary.LittleEndian.Uint32(b))
+	case 8:
+		v := binary.LittleEndian.Uint64(b)
+		if v > 1<<62 {
+			return 1 << 62
+		}
+		return int64(v)
+	}
+	return 0
+}
+
+func (p *pickleScanner) push(s pickSlot) { p.stack = append(p.stack, s) }
+
+func (p *pickleScanner) pop(n int) {
+	if n > len(p.stack) {
+		n = len(p.stack)
+	}
+	p.stack = p.stack[:len(p.stack)-n]
+}
+
+// popToMark discards stack entries through the nearest mark. A missing mark is
+// tolerated: it can only mis-shape the value stack, never the byte stream, and
+// refusing here would block a file on a stack-model mistake - the one failure mode
+// that would make the channel useless.
+func (p *pickleScanner) popToMark() {
+	for i := len(p.stack) - 1; i >= 0; i-- {
+		if p.stack[i].mark {
+			p.stack = p.stack[:i]
+			return
+		}
+	}
+	p.stack = p.stack[:0]
+}
+
+func (p *pickleScanner) top() (pickSlot, bool) {
+	if len(p.stack) == 0 {
+		return pickSlot{}, false
+	}
+	return p.stack[len(p.stack)-1], true
+}
+
+// exec applies one opcode's stack effect and resolves its target, if it names one.
+func (p *pickleScanner) exec(op byte) {
+	switch op {
+	case 0x28: // MARK
+		p.push(pickSlot{mark: true})
+	case 0x30, 0x61, 0x62: // POP APPEND BUILD
+		p.pop(1)
+	case 0x73: // SETITEM
+		p.pop(2)
+	case 0x31, 0x65, 0x75, 0x90: // POP_MARK APPENDS SETITEMS ADDITEMS
+		p.popToMark()
+	case 0x64, 0x6c, 0x74, 0x6f, 0x91: // DICT LIST TUPLE OBJ FROZENSET
+		p.popToMark()
+		p.push(pickSlot{})
+	case 0x69: // INST: module and name inline, then the args popped to the mark.
+		// The protocol-0/1 spelling of "resolve this attribute", so it names a
+		// target the same way GLOBAL does.
+		p.recordTarget(p.opOff)
+		p.popToMark()
+		p.push(pickSlot{})
+	case 0x32: // DUP
+		if s, ok := p.top(); ok {
+			p.push(s)
+		}
+	case 0x2e: // STOP
+		p.stopped, p.hitStop = true, true
+	case 0x80, 0x95: // PROTO, FRAME: operand read, nothing to apply
+	case 0x4e, 0x88, 0x89, 0x7d, 0x5d, 0x29, 0x8f, 0x97:
+		// NONE NEWTRUE NEWFALSE EMPTY_DICT EMPTY_LIST EMPTY_TUPLE EMPTY_SET
+		// NEXT_BUFFER
+		p.push(pickSlot{})
+	case 0x98: // READONLY_BUFFER: rewrites the top, net stack effect zero
+	case 0x46, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x47, 0x8a, 0x8b, 0x50:
+		// FLOAT INT BININT BININT1 LONG BININT2 BINFLOAT LONG1 LONG4 PERSID
+		p.push(pickSlot{})
+	case 0x51: // BINPERSID: pops the persistent id the loader will resolve
+		p.pop(1)
+		p.push(pickSlot{})
+	case 0x52, 0x81: // REDUCE, NEWOBJ
+		p.pop(2)
+		p.push(pickSlot{})
+	case 0x92: // NEWOBJ_EX
+		p.pop(3)
+		p.push(pickSlot{})
+	case 0x82, 0x83, 0x84: // EXT1 EXT2 EXT4
+		// The callable comes from a process-global extension registry the stream
+		// does not name, so there is no target to record.
+		p.push(pickSlot{})
+	case 0x85: // TUPLE1
+		p.pop(1)
+		p.push(pickSlot{})
+	case 0x86: // TUPLE2
+		p.pop(2)
+		p.push(pickSlot{})
+	case 0x87: // TUPLE3
+		p.pop(3)
+		p.push(pickSlot{})
+	case 0x53, 0x56: // STRING, UNICODE: text operands
+		p.push(pickSlot{str: p.keep, unresolved: !p.keep, value: string(bytes.TrimRight(p.arg, "\n"))})
+	case 0x54, 0x55, 0x58, 0x8c, 0x8d, 0x42, 0x43, 0x8e, 0x96:
+		// BINSTRING SHORT_BINSTRING BINUNICODE SHORT_BINUNICODE BINUNICODE8
+		// BINBYTES SHORT_BINBYTES BINBYTES8 BYTEARRAY8. Byte operands are kept
+		// string-like too: a module name spelled as bytes is not a valid
+		// STACK_GLOBAL in CPython, so it cannot appear in a stream that runs, but
+		// refusing to look at it would trade a false positive that cannot happen
+		// for a blind spot that can.
+		p.push(pickSlot{str: p.keep, unresolved: !p.keep, value: string(p.arg)})
+	case 0x63: // GLOBAL: module and name inline
+		if !p.keep {
+			p.set.markStructural(fmt.Sprintf(
+				"GLOBAL at offset %d has an operand past the %d-byte cap", p.opOff, pickleMaxOperandBytes))
+		}
+		p.recordTarget(p.opOff)
+		p.push(pickSlot{})
+	case 0x68, 0x6a, 0x67: // BINGET LONG_BINGET GET
+		var idx int
+		if op == 0x67 {
+			idx = atoiSafe(string(bytes.TrimRight(p.arg, "\n")))
+		} else {
+			idx = int(leUint(p.arg))
+		}
+		if s, ok := p.memo[idx]; ok {
+			p.push(s)
+			return
+		}
+		// A memo index the stream never wrote cannot be resolved. Whether that
+		// matters is decided where the value is used, not here: pushing unresolved
+		// and bounding only if STACK_GLOBAL consumes it keeps a bound off streams
+		// where the reference is harmless.
+		p.push(pickSlot{unresolved: true})
+	case 0x71, 0x72, 0x70, 0x94: // BINPUT LONG_BINPUT PUT MEMOIZE
+		var idx int
+		switch op {
+		case 0x70:
+			idx = atoiSafe(string(bytes.TrimRight(p.arg, "\n")))
+		case 0x94:
+			// MEMOIZE stores at len(memo), matching CPython's dict-length rule so
+			// that a stream mixing explicit PUT with MEMOIZE indexes the same
+			// slots the unpickler would.
+			idx = len(p.memo)
+		default:
+			idx = int(leUint(p.arg))
+		}
+		if s, ok := p.top(); ok {
+			p.memo[idx] = s
+		} else {
+			p.memo[idx] = pickSlot{}
+		}
+	case 0x93: // STACK_GLOBAL: the top two strings are the module and the name
+		if len(p.stack) < 2 {
+			p.push(pickSlot{})
+			return
+		}
+		name := p.stack[len(p.stack)-1]
+		mod := p.stack[len(p.stack)-2]
+		p.pop(2)
+		if mod.unresolved || name.unresolved {
+			// The stream asked to resolve a target we could not name. Silence here
+			// is the one thing not allowed: it would be a target we did not read
+			// while reporting the file as read.
+			p.set.markStructural(fmt.Sprintf(
+				"STACK_GLOBAL at offset %d reads an operand the interpreter could not resolve", p.opOff))
+			p.push(pickSlot{})
+			return
+		}
+		if mod.str && name.str {
+			p.emit(mod.value, name.value, p.opOff)
+		}
+		p.push(pickSlot{})
+	}
+}
+
+// recordTarget emits the module.name pair a GLOBAL or INST operand carries. The
+// operand bytes are "module\nname\n", both segments newline-terminated, which is
+// why they are read as a pair and not as two independent strings.
+func (p *pickleScanner) recordTarget(off int64) {
+	if !p.keep {
+		return
+	}
+	i := bytes.IndexByte(p.arg, '\n')
+	if i < 0 {
+		return
+	}
+	rest := p.arg[i+1:]
+	j := bytes.IndexByte(rest, '\n')
+	if j < 0 {
+		return
+	}
+	mod, name := string(p.arg[:i]), string(rest[:j])
+	if mod == "" || name == "" {
+		return
+	}
+	p.emit(mod, name, off)
+}
+
+// emit records one target. It goes through add so that the cap and the
+// (source, text) deduplication are the set's, not this scanner's: a checkpoint
+// that rebuilds ten thousand tensors names the same rebuilder ten thousand times,
+// and the listing needs it once.
+func (p *pickleScanner) emit(mod, name string, off int64) {
+	p.set.add(SourcePickle, off, mod+"."+name)
+}
+
+// atoiSafe parses the decimal text operand GET and PUT carry. It stops at the
+// first non-digit rather than failing: the operand is already the right shape (a
+// line the caller could not mis-parse), and a malformed index can only address a
+// memo slot that does not exist, which is the dangling-reference case handled
+// above.
+func atoiSafe(s string) int {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return n
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
 }
