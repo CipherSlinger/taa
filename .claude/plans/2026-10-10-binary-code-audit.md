@@ -678,10 +678,30 @@ type EvidenceSet struct {
 	// seen is the deduplication set. It is unexported because it is an
 	// implementation detail of the extractors, not part of what a reader gets.
 	seen map[string]bool
-	// maxLines is the evidence line cap, copied here from the config by
-	// newStringScanner so that add - which every extractor calls - can enforce it
-	// without every caller carrying the config. Zero means unlimited.
+	// maxLines is the evidence line cap, resolved from the config by
+	// newEvidenceSet so that add - which every extractor calls - can enforce it
+	// without every caller carrying the config. newStringScanner sets it too,
+	// which is idempotent and keeps the cap on a set built by hand for the string
+	// path. Zero means unlimited, so a set built literally and handed to neither
+	// is uncapped - fine only where nothing is appended to it, as in tests and
+	// evidenceError, never on an extraction path.
 	maxLines int
+}
+
+// newEvidenceSet builds the set for one file and resolves the config's line cap
+// here, once. Every extraction path must come through this rather than filling
+// the struct literally: a set built by hand leaves maxLines at zero, and add
+// reads zero as "unlimited", so the one path that forgot would silently lose the
+// per-file memory ceiling - which is exactly what the structured extractors,
+// none of which touch the string scanner, would otherwise all do.
+func newEvidenceSet(file string, kind BinaryKind, cfg BinaryConfig) *EvidenceSet {
+	cfg = normalizeBinaryConfig(cfg)
+	return &EvidenceSet{
+		File:     file,
+		Kind:     kind,
+		seen:     map[string]bool{},
+		maxLines: cfg.MaxEvidenceLines,
+	}
 }
 
 // markStructural records that the extraction of the file's structure was cut
@@ -700,9 +720,13 @@ func (s *EvidenceSet) markStructural(reason string) {
 }
 
 // markListing records that evidence lines were dropped by the listing cap, or
-// that one line was cut short at MaxStringLen. Like markStructural the first
-// reason wins: a structural limit is what withholds a clean verdict, and a
-// listing note that only affects what is displayed must not relabel it.
+// that one line was cut short at MaxStringLen. A listing never relabels a reason
+// already recorded - it writes only when Reason is empty - while a structural
+// reason does override one, because markStructural guards on Structural rather
+// than on Reason. That is the precedence we want: a structural limit is what
+// withholds a clean verdict, and a listing note that only affects what is
+// displayed must not speak for it. Among reasons of the same class the first
+// wins.
 func (s *EvidenceSet) markListing(reason string) {
 	s.Bound.Listing = true
 	if s.Bound.Reason == "" {
@@ -3628,7 +3652,7 @@ go test ./internal/codeaudit/ -run TestCollectEvidence 2>&1 | head -10
 // that was not examined has to reach the report, not stop it.
 func CollectEvidence(path string, kind BinaryKind, cfg BinaryConfig) *EvidenceSet {
 	cfg = normalizeBinaryConfig(cfg)
-	set := &EvidenceSet{File: path, Kind: kind, seen: map[string]bool{}}
+	set := newEvidenceSet(path, kind, cfg)
 
 	if info, err := os.Stat(path); err == nil {
 		set.Size = info.Size()
