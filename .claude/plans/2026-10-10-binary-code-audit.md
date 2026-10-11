@@ -7803,6 +7803,8 @@ git commit -m "feat(audit): fold binary completeness into the clean-scan proof"
 - Modify: `internal/codeaudit/audit.go`
 - Test: `internal/codeaudit/audit_test.go`
 
+> **前置条件：Task 10 必须先提交。** 本任务的 `MergeBinaryFindings` 与它的四条测试都读写 `Report.Binary`（`*BinaryScanSummary`），并且依赖 `ProvesCleanScan` 折入那个 summary 的缺口字段——这两样**都是 Task 10 加的**。HEAD 上 `Report` 的字段到 `ProcessExitCode` 为止（`rules.go:75-111`），没有任何二进制字段；`ProvesCleanScan`（`rules.go:141-150`）今天也只读源码臂那五个字段，不读任何二进制 summary。所以先派本任务的话，Step 2 的编译错误会是**两个**：`undefined: MergeBinaryFindings` **和** `unknown field Binary in struct literal of type Report`，而不是本步预测的那一个——看到两个错误时先确认 Task 10 落地了没有，不要去改测试。
+
 - [ ] **Step 1: 写失败测试**
 
 追加到 `internal/codeaudit/audit_test.go`：
@@ -8068,12 +8070,23 @@ func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
 	report.Binary = &res.Summary
 
 	// The binary files are added to the count the report states as scanned.
-	// AssembleAuditReport copies this field into Target.FilesScanned, and the
-	// binary channel claims files the source walk never opened - a .so, a .pyc, a
-	// pickle. Leaving the count at the source arm's total would put a number in
-	// target.files_scanned that contradicts scan_metadata.binary.files_count in
-	// the same document, and the lower of the two is the one a reader would
-	// believe.
+	// AssembleAuditReport copies this field into Target.FilesScanned, and leaving
+	// it at the source arm's total would put a number in target.files_scanned that
+	// contradicts scan_metadata.binary.files_count in the same document, where the
+	// lower of the two is the one a reader would believe.
+	//
+	// The sum is not an exact count of distinct files: the two arms count by
+	// different criteria, so a file can be counted twice. The source arm counts by
+	// extension - a path whose extension is not in its set is skipped without
+	// being opened (scanner.go:86-88, scanner.go:280-282) - while this channel
+	// counts by content, so a file with a scannable extension whose bytes are
+	// binary is read by the source walk (and counted there) and then claimed here
+	// as well. Target.FilesScanned is therefore an upper bound on the files that
+	// were looked at, not a census. It is an informational field and no decision
+	// reads it, so the overlap is left in place rather than deduplicated: the
+	// exact per-arm numbers are files_count and
+	// scan_metadata.binary.files_count, and a deduplication pass would need the
+	// claimed paths to stay comparable across both arms.
 	report.FilesCount += res.Summary.FilesCount
 
 	claimed := make(map[string]bool, len(res.Claimed))
@@ -8099,6 +8112,10 @@ func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
 }
 ```
 
+> **两条实现侧的事实，先知道它们就不会被现象误导。** 其一，**`Errored` 的写入者不在本任务，也不在 Task 10**：`BinaryScanner.ScanDirectory` 从不设置它（`binary_scanner.go:35-41` 只有字段声明与注释，全包没有任何赋值点），walk 失败走的是 `return nil, fmt.Errorf("walk directory: %w", err)`（`binary_scanner.go:223`），lstat 失败与非目录同样是 `(nil, error)`（`:111`、`:114`）；`Errored: true` **只**由 Task 12 的 `runBinaryChannel` 在两处构造（Task 12 Step 3 的 `internal/codeaudit/verifier.go`）。所以"`Errored` 会扣包"这条链是 **Task 10 折入**（`ProvesCleanScan` 读 `Errored`）**→ Task 11 透传**（本函数只把 summary 指针挂上 `Report.Binary`，一个字段都不改）**→ Task 12 产生**，三段缺一不可；本任务里没有任何一行会写它，所以它的测试只能像 Step 1 那样直接构造 `BinaryScanSummary`。
+>
+> 其二，**`MergeBinaryFindings` 不是幂等的**：对同一个 `res` 再调一次，`res.Findings` 会被再加一遍、`report.FilesCount` 会再加一遍（丢弃文本 finding 的那一步按 `f.Engine != EngineNameBinary` 判断，而已并入的二进制 finding 的 `Engine` 正好是 `EngineNameBinary`，所以它们不会被清掉）。Task 12 的接线只调一次，今天也没有第二个调用点，所以**记录即可**：不要把它接进任何"重跑/补跑"的路径，也不要为它加去重逻辑（去重要读 `res.Claimed` 的绝对路径，那是另一个会出错的口径）。要再跑一次，就重新构造一份 `Report`。
+
 - [ ] **Step 4: 跑测试确认通过**
 
 ```bash
@@ -8114,6 +8131,8 @@ gofmt -l internal/codeaudit/ ; go vet ./internal/codeaudit/
 git add internal/codeaudit/audit.go internal/codeaudit/audit_test.go
 git commit -m "feat(audit): merge binary findings into the audit report"
 ```
+
+> **门禁陷阱：这一步的 `gofmt -l` 给不出信号，别把它当检查用。** HEAD 上 `internal/codeaudit/` 本来就有未格式化的文件——`gofmt -l internal/codeaudit/` 会列出 `audit.go`、`llm.go`、`result_checker.go` 三个，所以这条命令**无论如何**都会打印 `audit.go`，跟本任务改得好不好无关（本步也没有断言输出为空，它只是让人看一眼）。**不要**为了让它"变干净"去跑 `gofmt -w internal/codeaudit/`：那会把 `audit.go` 里既有的、与本任务无关的未格式化 hunk 一并改掉，把这次提交变成混进无关改动的提交——而且会把 `gofmt -l` 这个信号在后续任务里彻底变成真空。真要判格式，判据是仓库既有的那道闸门基线，不是"这条命令有没有输出"。
 
 ---
 
