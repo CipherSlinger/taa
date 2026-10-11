@@ -97,6 +97,64 @@ func TestStringScannerCapsDistinctLinesAndRecordsIt(t *testing.T) {
 	}
 }
 
+// TestEvidenceSourcesDoNotShareADedupKey pins that the dedup key is namespaced
+// by source. All writers share one map, so a bare-text key lets one source
+// silence another: a model package whose string table contains the printable
+// literal "pickle:os.system" would occupy the key the pickle pass needs for a
+// genuine GLOBAL os.system target, and the rule that exists to catch "this file
+// unpickles a call to os.system" would never see it. That is an evasion an
+// attacker who controls the package can plant on purpose, so the string line and
+// the pickle line must both survive.
+func TestEvidenceSourcesDoNotShareADedupKey(t *testing.T) {
+	ev := newTestEvidence("x.bin", KindPickle)
+	s := newStringScanner(ev, DefaultBinaryConfig())
+	if _, err := s.Write([]byte("pickle:os.system")); err != nil {
+		t.Fatal(err)
+	}
+	s.Flush()
+
+	// The pickle scanner (Task 4) writes its targets through the same method.
+	ev.add(SourcePickle, 0, "os.system")
+
+	var sawString, sawPickle bool
+	for _, l := range ev.Lines {
+		if l.Source == SourceStrings && l.Text == "pickle:os.system" {
+			sawString = true
+		}
+		if l.Source == SourcePickle && l.Text == "os.system" {
+			sawPickle = true
+		}
+	}
+	if !sawString {
+		t.Error("the string line was removed; one source overwrote another's evidence")
+	}
+	if !sawPickle {
+		t.Error("the pickle target was dropped; a planted string literal silenced the pickle pass")
+	}
+}
+
+// TestStringScannerNormalizesAZeroConfig pins that the config is normalized
+// where it is consumed. A zero BinaryConfig gives MaxStringLen == 0, which the
+// scanner would read as "no byte may enter a run" while MinStringLen == 0 still
+// let flush emit a phantom empty line - every real string lost, and a listing
+// bound recorded instead of a structural one, which is a silent failure of
+// exactly the kind this completeness scheme exists to prevent.
+func TestStringScannerNormalizesAZeroConfig(t *testing.T) {
+	ev := newTestEvidence("x.bin", KindRaw)
+	s := newStringScanner(ev, BinaryConfig{})
+	if _, err := s.Write([]byte("hello world")); err != nil {
+		t.Fatal(err)
+	}
+	s.Flush()
+
+	if len(ev.Lines) != 1 || ev.Lines[0].Text != "hello world" {
+		t.Fatalf("lines = %+v, want one line \"hello world\"", ev.Lines)
+	}
+	if ev.Bound.Listing {
+		t.Error("Bound.Listing = true: a zero config was recorded as a listing bound instead of being normalized")
+	}
+}
+
 // TestStreamEvidenceReadsTheWholeFile pins that the pass is not silently
 // bounded: a literal past the first read chunk is found, and an unbounded pass
 // reports no bound at all.
