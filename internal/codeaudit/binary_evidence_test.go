@@ -1655,6 +1655,48 @@ func TestCollectArchiveEvidenceBoundsMemberCount(t *testing.T) {
 	}
 }
 
+// TestCollectArchiveEvidenceBoundsAMemberAtTheByteBudget pins the per-member
+// structural bound, which is the one a container's import is actually withheld
+// on: isExecutableKind(KindArchive) is true, so a structural bound here stops the
+// scan passing, and the bound is recorded because a member's tail was never
+// looked at. Without this test the guard is unpinned - removing it leaves the
+// whole suite green, which is the shape a guard silently drops into.
+//
+// A small budget drives the same branch as a member above the default 256 MiB:
+// the guard reads cfg.MaxArchiveMemberBytes, so a tiny config reaches it without
+// a quarter-gigabyte fixture. The budget is the member's own length because that
+// is the only value that reaches this guard rather than the dispatcher's earlier
+// declared-size check: a smaller budget makes collectArchive mark the member from
+// its declared UncompressedSize64 and break before the member is opened, which is
+// a different guard. The comparison is >= rather than >, so a member exactly at
+// the budget is bounded as well - the read was capped, and whether the member
+// continued past the cap cannot be told without a further probe.
+//
+// The reason is asserted, not only the flag, because it is the line an operator
+// reads when an import is held back: a bare Bound.Structural would not say which
+// member hit which limit.
+func TestCollectArchiveEvidenceBoundsAMemberAtTheByteBudget(t *testing.T) {
+	dir := t.TempDir()
+	elfMember := elfFixtureBytes(t, elfSpec{imports: []string{"connect"}, needed: []string{"libc.so.6"}})
+	path := writeTestBytes(t, dir, "model.pt", zipFixture(t, map[string][]byte{"lib.so": elfMember}, []string{"lib.so"}))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxArchiveMemberBytes = int64(len(elfMember))
+	set := newTestEvidence(path, KindArchive)
+	if err := collectArchive(path, set, cfg); err != nil {
+		t.Fatalf("collectArchive: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("Bound.Structural = false for a member at the byte budget; its tail was never read")
+	}
+	if !strings.Contains(set.Bound.Reason, "lib.so") {
+		t.Errorf("bound reason = %q, want it to name the member lib.so", set.Bound.Reason)
+	}
+	if !strings.Contains(set.Bound.Reason, "byte budget") {
+		t.Errorf("bound reason = %q, want it to name the byte budget", set.Bound.Reason)
+	}
+}
+
 // TestCollectArchiveEvidenceReturnsAnErrorForAnUnopenableContainer pins the other
 // half of the fail-closed split, and the reason it is not folded into the
 // member-ceiling test is that the two look identical if a guard is written the
