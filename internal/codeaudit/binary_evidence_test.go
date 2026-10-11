@@ -1468,3 +1468,89 @@ func containsString(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// TestStreamWithSizeSwitchWindowsAFileAboveTheFullScanBudget pins the switch in
+// both directions. At or below the budget the whole file is read, so a literal
+// that exists only in the middle is found and no bound is recorded; above it the
+// two windows are read, so the head literal is found, the middle one is not, and
+// the skip is a structural bound naming the threshold and the window size.
+//
+// The threshold is read from cfg rather than a constant, so a small config drives
+// the same branch a 64 MiB fixture would and the test does not have to build that
+// fixture. Do not "fix" this by building a real oversized file.
+//
+// What a structural bound costs a package is not decided here. Task 9's scanner
+// folds it through isExecutableKind: a windowed pickle or ELF is withheld, a
+// windowed raw blob is only recorded. This test asserts the record, not the
+// block, and must not be read as the place that decides deletion.
+func TestStreamWithSizeSwitchWindowsAFileAboveTheFullScanBudget(t *testing.T) {
+	dir := t.TempDir()
+	const fullScan, window = 4096, 64
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFullScanBytes = fullScan
+	cfg.HeadTailBytes = window
+
+	small := make([]byte, fullScan)
+	copy(small, "\x00SMALL_HEAD\x00")
+	copy(small[fullScan/2:], "\x00SMALL_MIDDLE\x00")
+
+	large := make([]byte, fullScan*2)
+	copy(large, "\x00LARGE_HEAD\x00")
+	copy(large[fullScan:], "\x00LARGE_MIDDLE\x00")
+	copy(large[len(large)-13:], "\x00LARGE_TAIL\x00")
+
+	for _, tc := range []struct {
+		file       string
+		content    []byte
+		wantFound  []string
+		wantAbsent []string
+		wantBound  bool
+	}{
+		{"at_budget.bin", small, []string{"SMALL_HEAD", "SMALL_MIDDLE"}, nil, false},
+		{"above_budget.bin", large, []string{"LARGE_HEAD", "LARGE_TAIL"}, []string{"LARGE_MIDDLE"}, true},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			path := writeTestBytes(t, dir, tc.file, tc.content)
+			set := newTestEvidence(path, KindRaw)
+			// CollectEvidence sets Size from the file itself, and the switch decides
+			// the branch from it. A zero Size would take the whole-file branch for
+			// every file and the test would pass without ever exercising the window.
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			set.Size = info.Size()
+
+			if err := streamWithSizeSwitch(path, set, cfg); err != nil {
+				t.Fatalf("streamWithSizeSwitch: %v", err)
+			}
+
+			texts := map[string]bool{}
+			for _, l := range set.Lines {
+				texts[l.Text] = true
+			}
+			for _, want := range tc.wantFound {
+				if !texts[want] {
+					t.Errorf("%q missing from the evidence", want)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if texts[absent] {
+					t.Errorf("%q was read; the middle of an oversized file must be skipped", absent)
+				}
+			}
+			if set.Bound.Structural != tc.wantBound {
+				t.Fatalf("Bound.Structural = %t, want %t (reason %q)", set.Bound.Structural, tc.wantBound, set.Bound.Reason)
+			}
+			if !tc.wantBound {
+				return
+			}
+			if !strings.Contains(set.Bound.Reason, "MaxFullScanBytes") {
+				t.Errorf("bound reason = %q, want it to name MaxFullScanBytes", set.Bound.Reason)
+			}
+			if !strings.Contains(set.Bound.Reason, fmt.Sprintf("head and tail %d", window)) {
+				t.Errorf("bound reason = %q, want it to name the %d-byte head/tail window", set.Bound.Reason, window)
+			}
+		})
+	}
+}
