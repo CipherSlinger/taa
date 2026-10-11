@@ -95,11 +95,11 @@ go build ./... && go test ./internal/codeaudit/... ./internal/config/... ./inter
 6. **纯数据文件不做熵判定**。`KindRaw`（权重、张量、未知二进制）与 `KindNumpy` 只产出 strings 与 pickle 目标证据，不产出熵行。理由：模型包里绝大多数字节就是权重，权重天然接近均匀分布，整文件熵规则会对每一个 `.safetensors` 误报；而本平台不执行裸数据文件，能运行的载荷一定以 ELF 或 pickle 形式出现，两者都有精确证据（可执行节区熵 / `GLOBAL` 目标）。**代价明确**：一个以 `.bin` 投递、再由包内某个 `.so` 解密的加密载荷，其密文本身不会被判为加壳。
 7. **pickle 目标识别用带 memo 表的 opcode 解释器，识别能力上界于整个 opcode 流，而不是"相邻字节模式"**。扫描器不再按字节找形状，而是按 pickle 语法逐 opcode 前进：每个 opcode 的操作数宽度取自协议 0–5 的完整表（68 个 opcode，无一遗漏），字符串/字节操作数按它自带的长度前缀整体消费，因此数据段里偶发的 `0x63` 与换行不能再让扫描器错位——实测旧扫描器在 `net_001.pth` 的 `data.pkl` 上报出 39 个目标、漏掉 `torch.LongStorage`，解释器报出且只报出 4 个真目标；这也证伪了"`GLOBAL` 因自带两个内联字符串而不受相邻性影响"的旧说法，被吞掉的正是 offset 828 的一条 `GLOBAL`。`GLOBAL`（`c module\nname\n`）、`STACK_GLOBAL`（`0x93`，取值栈顶两项）与 `INST`（`i module\nname\n`）同步产出，模块名先 `MEMOIZE`/`BINPUT`/`PUT`、再用 `BINGET`/`GET` 取回时取回的值仍在值栈上，所以"先存 memo 再取回"这条规避对解释器不成立。仍然看不见的目标有三类：被抽取预算截断的 opcode 流、从进程扩展注册表解析的 `EXT1/EXT2/EXT4` 与走持久化 id 的 `PERSID`/`BINPERSID`（目标名根本不在流里）、以及解释器无法继续时（未知 opcode、mid-opcode 结束、`STACK_GLOBAL` 操作数无法解析）——后者会置 `Bound.Structural`，对可执行类型即阻断导入，也就是说"看不见"只会表现为"没证据"或"阻断"，不会表现为"扫干净了"。**代价明确**：解释器会在它声称解析的流上留痕，所以它只跑在**被声明为 pickle 的流**上（`KindPickle` 的整文件与容器成员、解压后头部嗅探为 pickle 的 gzip 流，见 Task 4 的门控规则），于是一个把 `GLOBAL` 放在预算之外、或完全依赖扩展注册表/持久化 id 的加载器，其目标不会以 `pickle` 证据出现；贴在张量文件尾部、其头部不携带 pickle 魔数的 pickle 也不再被认领——旧字节扫描器认领它，正因为它从不承诺自己在解析；本平台没有加载器会对 `.bin`/`.safetensors` 调 `pickle.loads`，其字面量仍由 strings 通道读出，但少了 `SourcePickle` 那一条。
 8. **超过 `MaxFullScanBytes`（64 MiB）的文件只读首尾各 1 MiB**。这次跳过会按 `isExecutableKind` 的既有分野记账：`KindRaw`（张量、未知二进制）计入 `BoundedData`——可见、不阻断；`KindELF` 与 `KindPickle` 计入 `BoundedExecutable`——**fail-closed 下即阻断导入**。后半条是必须的：若窗口化不留痕，把一个 pickle 填充到 64 MiB 以上就能藏住中段的 `GLOBAL` 并且照样通过，阈值本身就成了绕过手段。**代价明确**：一个大于 64 MiB 的 `.so` 或 pickle 会被判为未完整扫描而阻断，出路是 operator 调高 `maxFullScanBytes`（这也是该配置项存在的理由），不是被静默豁免。就信息损失本身：`KindRaw` 的中段是张量数据，本平台不存在读它的加载器；`KindPickle` 的中段可能藏着一条 `GLOBAL`（在一长串数据构建 opcode 中间），首尾窗口覆盖加载时执行的前段与数据就绪后动作的后段，中段是缺口。本仓库全部语料中最大的 pickle 是 10.8 MiB，离阈值有 6 倍余量。
-9. **合并两个通道的 finding 时不再二次限流，且二进制臂的 finding 上限不参与完整性判定**。源码臂保有自己的 200，二进制臂保有自己的 50，合并列表不设上限（见 Task 11）。上限只落在**清单**上：触顶写 `findings_capped`/`findings_dropped`，不写 `Report.Truncated`，也不进 `ProvesCleanScan()`；并且 cap **从不丢 HIGH**（一条 finding 只有被文件无法偶然产生的结构背书才是 HIGH，所以 cap 丢得起的只有 LOW/MEDIUM），一个包不可能靠堆 LOW finding 把 HIGH 挤出清单。**代价明确**：极端情况下 Tier 2 的 LLM 调用上界从 200 变成 250；且若一个包的 HIGH finding 数本身就超过上限，清单会**超过**那个数字（这是刻意的取舍——宁可清单变长，不可让一个阻断级 finding 消失）。这个上界换的是别的东西：共享配额会让大源码臂按路径字典序挤掉二进制 finding，而二进制 finding 是这里唯一能看见 `.so` 与 pickle 的证据。已入库语料的实测最大 finding 数是单样本 7、整语料 80，两个上限都远未接近。
+9. **合并两个通道的 finding 时不再二次限流，且二进制臂的 finding 上限不参与完整性判定**。源码臂保有自己的 200，二进制臂保有自己的 50，合并列表不设上限（见 Task 11）。上限只落在**清单**上：触顶写 `findings_capped`/`findings_dropped`，不写 `Report.Truncated`，也不进 `ProvesCleanScan()`；并且 cap **从不丢任何能阻断的 finding**（`assist` 下 HIGH 阻断，`gate` 下 HIGH 与 MEDIUM 都阻断，所以 cap 只花 LOW 这一档），一个包不可能靠堆 LOW finding 把能阻断的 finding 挤出清单。**代价明确**：极端情况下 Tier 2 的 LLM 调用上界从 200 变成 250；且若一个包里能阻断的 finding 数本身就超过上限，清单会**超过**那个数字（这是刻意的取舍——宁可清单变长，不可让一个阻断级 finding 消失）。这个上界换的是别的东西：共享配额会让大源码臂按路径字典序挤掉二进制 finding，而二进制 finding 是这里唯一能看见 `.so` 与 pickle 的证据。已入库语料的实测最大 finding 数是单样本 7、整语料 80，两个上限都远未接近。
 10. **tar 不被解析**。`models/audit/holdout-sources/sr.tgz` 是 gzip 包 tar（解压后 10.66 MB、4933 个条目，一整个 `semgrep-rules-develop` 检出），解压后的字节会被读取并扫过 strings 通道，所以其中的字面量可见。**代价明确**：tar 的结构全部丢失——没有按成员归属、没有按成员分类（tar 里的 ELF 拿不到节区与导入符号证据）、也不会递归进 tar 里的归档；并且 tar 字节不会命中 pickle 门控（第 7 条），pickle 解释器不跑在它上面，tar 里的 pickle opcode 只有恰好构成可打印串时才以 strings 证据出现。
 11. **嵌套归档只递归一层**。`models/examples/Retina-DKD/Retina-DKD-code.zip` 把 `net_001.pth`/`net_005.pth` 作为成员携带，它们分类为 `KindArchive`；`collectArchive` 只对分类为 ELF 或 pickle 的成员下钻，因此这两个 checkpoint 不会被打开，其 `data.pkl` 永远到不了 pickle 解释器。**代价明确**：只装在 zip 里的 checkpoint 既不产出成员证据也不产出 pickle 目标；这一条现在由第 7 条的门控放大——解释器只跑在被声明为 pickle 的流上，而嵌套归档里那条流既没被声明、也没被下钻，没有第二次机会被发现；跳过是静默的（成员名与大小进了证据列表，但不置 `Bounded`）。
 12. **`.xlsx` 就是 zip**。语料里的 14 个 `.xlsx` 中 13 个是普通 zip（最坏压缩比 22.91，无炸弹形状，成员均分类为非可执行），第 14 个 `models/examples/Retina-DKD/Retina-DKD/test_result.xlsx` 是 OLE2 老式 `.xls` 顶着 `.xlsx` 名，不匹配任何魔数，落到 `KindRaw`。**代价明确**：当作 zip 的那 13 个只按普通容器处理（成员头嗅探 + 成员名/大小），内部的 XML 不进任何结构化解析；当 OLE2 的那一个只拿 strings 证据，不会因为扩展名被当成 zip 打开。
-13. **配置里只暴露五个上限，其余固定在 `DefaultBinaryConfig`，这是有判据的选择而不是遗漏**。有键的是 `maxArchiveMembers`、`maxFindings`、`maxFullScanBytes`、`maxStreamBytes`、`highEntropyThreshold`；没有键的是 `MaxEvidenceLines`（默认 50000）、`HeadTailBytes`、`MaxArchiveMemberBytes`、`MaxStringLen`/`MinStringLen`。判据是**越界之后留下什么**：越界只记 `Bound.Listing` 的天花板（如 `MaxEvidenceLines`）只影响显示、不阻断任何东西，让它固定是安全的；越界会记 `Bound.Structural` 的天花板，在可执行类型上会**阻断导入**，没有键就成了 operator 无法处置的阻断，所以必须暴露。`MaxStreamBytes` 正落在后者——它只有在一个通过了 `MaxFullScanBytes` 的文件上才可能被触到，所以把 `maxFullScanBytes` 抬到 3 GiB 以上就会让它生效；两个键因此成对出现，并在同一处校验。`maxFindings` 是这条判据的**例外，并且是刻意进例外名单的**：它既不是结构性天花板（触顶只记 `findings_capped`，不阻断），也不是显示上限（它确实会让清单少一段）——它是一个**清单预算**，而预算该多大取决于部署愿意为噪声付多少钱、以及它想要的报告有多长，这两件事只有 operator 知道。默认 50 是按十个族、每族五条定的，真实语料的最大 finding 数是 80（整语料）和 7（单样本），所以 50 只在单个包同时命中很多族时才可能被触到。**代价明确**：这五个以外的上限调不了，调它们要改代码重新部署；而 `maxFindings` 调小只会丢 LOW/MEDIUM，永远不会让一个 HIGH finding 消失。
+13. **配置里只暴露五个上限，其余固定在 `DefaultBinaryConfig`，这是有判据的选择而不是遗漏**。有键的是 `maxArchiveMembers`、`maxFindings`、`maxFullScanBytes`、`maxStreamBytes`、`highEntropyThreshold`；没有键的是 `MaxEvidenceLines`（默认 50000）、`HeadTailBytes`、`MaxArchiveMemberBytes`、`MaxStringLen`/`MinStringLen`。判据是**越界之后留下什么**：越界只记 `Bound.Listing` 的天花板（如 `MaxEvidenceLines`）只影响显示、不阻断任何东西，让它固定是安全的；越界会记 `Bound.Structural` 的天花板，在可执行类型上会**阻断导入**，没有键就成了 operator 无法处置的阻断，所以必须暴露。`MaxStreamBytes` 正落在后者——它只有在一个通过了 `MaxFullScanBytes` 的文件上才可能被触到，所以把 `maxFullScanBytes` 抬到 3 GiB 以上就会让它生效；两个键因此成对出现，并在同一处校验。`maxFindings` 是这条判据的**例外，并且是刻意进例外名单的**：它既不是结构性天花板（触顶只记 `findings_capped`，不阻断），也不是显示上限（它确实会让清单少一段）——它是一个**清单预算**，而预算该多大取决于部署愿意为噪声付多少钱、以及它想要的报告有多长，这两件事只有 operator 知道。默认 50 是按十个族、每族五条定的，真实语料的最大 finding 数是 80（整语料）和 7（单样本），所以 50 只在单个包同时命中很多族时才可能被触到。**代价明确**：这五个以外的上限调不了，调它们要改代码重新部署；而 `maxFindings` 调小只会丢 LOW，永远不会让一个能阻断的 finding（`assist` 与 `gate` 下的 HIGH，以及 `gate` 下的 MEDIUM）消失。
 14. **不存在"每节字节上限"，这是删除而不是省略**。曾有一版 `MaxSectionBytes`（默认 16 MiB），用来给 `io.ReadAll` 一个可执行节设上限；它会对**普通的大库**开火——一个足够大的 `.so`，`.text` 会跨过任何固定的节上限，而触顶记的是结构性 bound，于是"这个库比较大"变成了阻断导入的理由。**宿主实测**（`readelf -SW` 取每个真实共享对象最大的 `SHF_EXECINSTR` `PROGBITS` 节）：`libLLVM.so.20.1` 单节 **63 048 722 字节**、`libclang-18.so.18` **22 284 286**、Chrome 的 `liboptimization_guide_internal.so` **20 685 714**、`libwireshark.so.17.0.2` **20 175 571**、`libpython3.13.so.1.0` **2 770 082**——16 MiB 的节上限会在前四个上直接触顶。这与本计划其余部分的实测口径不同，值得点明：**审计语料 `models/` 下一个真实 `.so` 都没有**（`find models -name '*.so*'` 命中的 50 个全是 semgrep 的 `.sol` 规则文件），而用来标定误报的那套 ollama 共享库（28 个）单节最大 2 901 464 字节，**也不会**触到 16 MiB。也就是说这个上限的代价是**潜伏**的：它在任何已实测的输入上都不发作，只在一个包里带上一个真实大库时发作——而那正是本平台要接受的包形状（带加速库的模型包），所以它必须删掉而不是调大。现在节读取改为经 `countSection` 按固定块（`entropyChunkBytes`，64 KiB）流过 256 桶直方图，内存与节大小无关，节上限已无物可保护；每文件剩下的读取预算是 `MaxStreamBytes`，触到它才记结构性——宿主 600 个共享对象（去重后 **538** 个 ELF；把每个文件条目都算上是 **2027** 个）按这条路径全跑一遍，**0 个被判结构性、0 个无节表、0 个报错**，也就没有一个接近那个 3 GiB 的每文件预算。**代价明确**：调不了单个节的读取量（本来也不该调）；能调的只有每文件预算。**不要把它加回来**——加回来就是把"库比较大"重新变成阻断理由；也不要指望"把 16 MiB 调大一点"能解决，任何固定值都只是把发作点往后挪。
 15. **无节表（`len(ef.Sections) == 0`）的 ELF 记为结构性缺口，且 reason 只点名"没有节头表"**。熵检测的输入是可执行节，没有节表就没有可执行节，旧代码在这一段直接掉出去、不产生任何行也不产生任何 bound，于是"从未检查过"被报成了"没发现加壳"——这条 fail-open 已去掉。修的是**结论**而不是"补回 `DT_NEEDED`/`DT_SONAME`"：经 `PT_DYNAMIC` 恢复 needed/soname 需要先把 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移、再把 `DT_STRTAB` 的虚地址映射一次，这是一段独立的新解析逻辑，而它的产出对"有没有被加壳"不提供任何证据，所以本版不做。reason 措辞点名的是**节头表**而不是符号表：静态链接的二进制没有 `.dynsym` 但有 `.symtab`，它并不 stripped，说它"缺符号表"是假的；同理 `SHT_SYMTAB` **故意不做**符号证据的兜底来源——`.symtab` 里绝大多数是本文件自己定义的符号，拿它当能力证据就是去匹配程序自己的标识符，正是第 14 条那批误报的同一类。因此 Task 8 的规则表**不变**：没有引入新的 evidence source。宿主 600 个共享对象（去重后 538 个 ELF、枚举到 2027 个文件条目）里**0 个无节表**，所以这个形状在真实世界里确实少见——而恰恰因为它少见，"没见到"不能当成"不存在"，这才是它必须 fail-closed 而不是被静默略过的理由。**代价明确**：一个节表被删掉的正常文件（少见但存在，如某些加壳器与 `objcopy --strip-section-headers` 的产物）现在会被记为结构性缺口而不是干净通过；这是刻意方向——对可执行格式，"没看"不等于"干净"。
 16. **节声明长度越过文件末尾（或读不满）记为结构性缺口，`size=` 仍写声明长度**。判据是"读到的字节数 < 节头声明的字节数"，两种情况——`sh_offset`/`sh_size` 越过文件末尾，或触到 `MaxStreamBytes`——都是同一事实：熵值只覆盖一个**前缀**，所以这个数不报（报出来会和"整节测过"的数长得一样），替代它的是 `section .text declares N bytes, M readable` 这条结构化证据。`size=` 保持声明值，读者才能把声明长度与缺口配对看。**代价明确**：一个声明长度写错但内容正常的文件会被记为结构性缺口；这是刻意方向，理由同上。
@@ -1032,13 +1032,14 @@ type BinaryConfig struct {
 	// the only one that can see a .so or a pickle at all - and it would choose
 	// which findings to drop by path order rather than by importance.
 	//
-	// Reaching it does not withhold a pass. The cap drops only LOW and MEDIUM
-	// findings (see BinaryScanner.ScanDirectory), and the drop is recorded on the
-	// summary as findings_capped/findings_dropped rather than folded into
-	// Report.Truncated, which ProvesCleanScan refuses on: a channel that deleted a
-	// package for having found too much would be a channel the operator has to
-	// tune against, and tuning it is the one thing a fail-closed control must not
-	// require.
+	// Reaching it does not withhold a pass. The cap drops LOW findings and only
+	// LOW (see BinaryScanner.ScanDirectory): HIGH blocks under `assist` and
+	// `gate`, MEDIUM blocks under `gate`, and both are kept whatever the budget.
+	// The drop is recorded on the summary as findings_capped/findings_dropped
+	// rather than folded into Report.Truncated, which ProvesCleanScan refuses on:
+	// a channel that deleted a package for having found too much would be a
+	// channel the operator has to tune against, and tuning it is the one thing a
+	// fail-closed control must not require.
 	//
 	// 50 because the evidence families number ten
 	// (NET_002/CMD_001/CMD_002/DYN_001/PKL_001/BIN_001/BIN_002/PER_002/FIL_002/
@@ -6855,10 +6856,23 @@ func TestBinaryScannerCapPreservesEveryHighFinding(t *testing.T) {
 	// is set below the total so it has to drop something, and the property under
 	// test is which something: the LOW findings are the ones a cap may spend.
 	//
-	// It matters because a HIGH is the only severity that withholds the pass by
-	// itself, so a cap that dropped one would turn a blocking package into a
-	// passing one - and an attacker could aim at exactly that by padding a package
-	// with cheap LOW findings until its HIGH ones fell off the end of the list.
+	// The arithmetic, re-derived against the cap as it now reads. The sort is
+	// (File, Line, RuleID) and "extra.bin" sorts before "libevil.so", so the four
+	// LOW findings come first and the four HIGH ones after. With the budget at 3
+	// the first three lines are kept, the fourth LOW is the one dropped, and the
+	// four HIGH findings are kept past the budget: 7 kept, 1 dropped.
+	//
+	// Those counts happen to be identical to the ones an older cap produced when
+	// it exempted HIGH alone, which is why this test cannot tell the two rules
+	// apart - its fixture holds no MEDIUM. The sibling test below is the one that
+	// does; the pair is needed because a change that re-broke MEDIUM would leave
+	// this test green.
+	//
+	// It matters because a finding that blocks under either policy may not be
+	// dropped: HIGH blocks under `assist` and `gate` alike, so a cap that dropped
+	// one would turn a withholding package into a passing one - and an attacker
+	// could aim at exactly that by padding a package with cheap LOW findings until
+	// its HIGH ones fell off the end of the list.
 	writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{
 		imports: []string{"socket", "connect", "system", "popen"},
 	}))
@@ -6901,6 +6915,63 @@ func TestBinaryScannerCapPreservesEveryHighFinding(t *testing.T) {
 	// configuration that produced it, and by then it may have changed.
 	if res.Summary.MaxFindings != 3 {
 		t.Errorf("Summary.MaxFindings = %d, want 3", res.Summary.MaxFindings)
+	}
+}
+
+// TestBinaryScannerCapKeepsAMediumFindingBeyondTheBudget is the case the HIGH
+// test above cannot see. MEDIUM does not block under the default `assist`
+// policy, but it does under `gate`, where `passed` is `High == 0 && Medium == 0`
+// (internal/codeaudit/audit.go:298-309). A cap that dropped MEDIUM would
+// therefore let a crafted package pass under `gate` with its blocking findings
+// sitting past the budget - the padding attack the HIGH test describes, aimed at
+// the other policy. DYN_001 is the concrete family: it is MEDIUM in the shared
+// table and the binary arm borrows it, so `dlopen` in a dynamic symbol table is
+// an ordinary-looking way to put a MEDIUM finding in the list.
+//
+// The fixture drives the cap the way the HIGH test does - a LOW-padded file that
+// sorts first, then the file carrying the finding under test - arranged so the
+// MEDIUM lands beyond the budget. The sort is (File, Line, RuleID) and
+// "extra.bin" precedes "zlib.so", so the four LOW line literals take the first
+// four positions and the single MEDIUM sits at five, two past a budget of 3.
+func TestBinaryScannerCapKeepsAMediumFindingBeyondTheBudget(t *testing.T) {
+	dir := t.TempDir()
+	// dlopen -> DYN_001, borrowed MEDIUM.
+	writeTestBytes(t, dir, "zlib.so", elfFixtureBytes(t, elfSpec{imports: []string{"dlopen"}}))
+	// Four LOW findings, all sorting ahead of zlib.so.
+	writeTestBytes(t, dir, "extra.bin", []byte("x\x00/etc/passwd\x00/etc/shadow\x00/etc/sudoers\x00/bin/sh\x00"))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFindings = 3
+	s, err := newTestBinaryScanner(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	mediums := 0
+	for _, f := range res.Findings {
+		if f.RuleID == "DYN_001" {
+			if f.Severity != SeverityMedium {
+				t.Fatalf("DYN_001 is %s, want %s: the family's blocking power under `gate` rests on this", f.Severity, SeverityMedium)
+			}
+			mediums++
+		}
+	}
+	if mediums != 1 {
+		t.Errorf("kept %d DYN_001 findings, want 1: the cap dropped a finding that blocks under the gate policy", mediums)
+	}
+	// The LOW padding is what the budget may spend, and the budget is still
+	// reported as spent even though the listing grew past it to keep the MEDIUM.
+	if !res.Summary.FindingsCapped || res.Summary.FindingsDropped == 0 {
+		t.Errorf("the cap did not report the LOW it spent: capped=%v dropped=%d",
+			res.Summary.FindingsCapped, res.Summary.FindingsDropped)
+	}
+	if len(res.Findings) <= cfg.MaxFindings {
+		t.Errorf("len(Findings) = %d, want more than the budget of %d - the MEDIUM finding was kept",
+			len(res.Findings), cfg.MaxFindings)
 	}
 }
 
@@ -7102,11 +7173,13 @@ type BinaryScanSummary struct {
 	// into it. Reaching the cap is a listing budget being spent, not a look that
 	// did not happen, and the report's Truncated is one of the conditions
 	// ProvesCleanScan refuses on - folding this into it would make the channel
-	// delete a package for having found too much. The cap cannot drop a HIGH (see
-	// ScanDirectory), so nothing it can drop could have blocked the import either.
+	// delete a package for having found too much. Only LOW findings are ever
+	// dropped (see ScanDirectory), and LOW blocks under neither the `assist` nor
+	// the `gate` policy - MEDIUM does block under `gate`, which is exactly why the
+	// cap keeps it - so nothing the cap drops could have blocked the import.
 	FindingsCapped bool `json:"findings_capped,omitempty"`
-	// FindingsDropped is how many LOW/MEDIUM findings the cap dropped, so the
-	// count travels with the flag rather than being re-derived from a list that no
+	// FindingsDropped is how many LOW findings the cap dropped, so the count
+	// travels with the flag rather than being re-derived from a list that no
 	// longer has them.
 	FindingsDropped int `json:"findings_dropped,omitempty"`
 	// MaxFindings is the listing budget this pass ran under, carried into the
@@ -7282,21 +7355,37 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 	// its cap: the cap keeps the first N, so a varying order would make a capped
 	// pass keep a different set each time.
 	//
-	// The cap never drops a HIGH. A HIGH is the only severity that withholds the
-	// pass by itself, so dropping one would turn a blocking package into a passing
-	// one - the exact failure a cap must not be able to cause, and one an attacker
-	// could aim at by padding a package with LOW findings until its HIGH ones fell
-	// off the end. It is therefore a budget on the listing, not a bound on the
-	// verdict: LOW and MEDIUM findings beyond the budget are dropped and counted,
-	// HIGH findings beyond it are kept and the list grows. Reaching it is recorded
-	// on the summary and nowhere else - it must not reach Report.Truncated, whose
-	// readers treat it as a completeness failure and delete the package.
+	// The cap drops LOW findings and only LOW. A finding that can block the
+	// import under either supported policy is kept whether or not it fits the
+	// budget, and the list grows past MaxFindings instead. Both severities have
+	// to be named, because a rule that read only the default policy would keep
+	// the wrong set: `assist` withholds on HIGH alone, but `gate` withholds on
+	// HIGH or MEDIUM (internal/codeaudit/audit.go:298-309), and DYN_001 - MEDIUM
+	// in the shared table - deletes the package the moment an operator switches
+	// to `gate`. Dropping a blocking finding would turn a package that must be
+	// withheld into one that passes, which is the one failure a cap must not be
+	// able to cause, and an attacker aims at exactly it by padding a package with
+	// cheap LOW findings until the ones that block fall off the end of the list.
+	//
+	// The cost is real and is accepted: a crafted package can produce an
+	// unbounded number of MEDIUM findings, because none of them may be dropped.
+	// A report that grows is the safe direction to fail in; a report that is
+	// short by a blocking finding is not.
+	//
+	// Reaching the budget is recorded on the summary and nowhere else - it must
+	// not reach Report.Truncated, whose readers treat it as a completeness
+	// failure and delete the package.
 	sortFindings(res.Findings)
 	if len(res.Findings) > s.cfg.MaxFindings {
 		kept := make([]Finding, 0, len(res.Findings))
 		dropped := 0
 		for _, f := range res.Findings {
-			if len(kept) < s.cfg.MaxFindings || f.Severity == SeverityHigh {
+			// Written as "not LOW" rather than "is HIGH or MEDIUM" on purpose:
+			// the set that may be dropped has to be the one that cannot block,
+			// so anything the code does not positively know to be LOW is kept.
+			// rules.go declares no SeverityLow, so LOW is a bare string here and
+			// in the table that writes it.
+			if len(kept) < s.cfg.MaxFindings || f.Severity != "LOW" {
 				kept = append(kept, f)
 				continue
 			}
@@ -7583,10 +7672,10 @@ func (r *Report) ProvesCleanScan() bool {
 - [ ] **Step 4: 跑测试确认通过**
 
 ```bash
-go test ./internal/codeaudit/ -run 'TestProvesCleanScan|TestFailClosed|TestReportFields' -v 2>&1 | tail -20
+go test ./internal/codeaudit/ -run 'TestProvesCleanScan|TestAHighFinding|TestIncomplete|TestTruncated|TestRecomputeReportPassed|TestScanMetadata|TestScanDirectory' -v 2>&1 | tail -30
 ```
 
-预期全 PASS。已有的 fail-closed 测试必须保持通过——它们是这次改动的回归网。
+预期全 PASS。已有的 fail-closed 测试必须保持通过——它们是这次改动的回归网。这里按**实际存在的函数名**逐一选中：`failclosed_test.go` 里是 `TestProvesCleanScan*`、`TestAHighFindingStillBlocksAnIncompleteScan`、`TestIncompleteScanCannotPassTheAuditConclusion`、`TestTruncatedScanCannotPassTheAuditConclusion`、`TestRecomputeReportPassedWithholdsPassForAnIncompleteScan`、`TestScanMetadataCarriesIncompletenessToTheReportThatLeaves`，`report_fields_test.go` 里是 `TestScanDirectory*`。**不要写成 `TestFailClosed`/`TestReportFields` 这样的前缀**——包里的测试不叫这两个名字，那样的 `-run` 只选中 `TestProvesCleanScan*` 一条，等于把回归网晾在一边。
 
 - [ ] **Step 5: 提交**
 
@@ -7729,9 +7818,10 @@ func TestMergeBinaryFindingsKeepsBothChannelsFindings(t *testing.T) {
 // TestMergeBinaryFindingsDoesNotFoldTheBinaryCapIntoTruncated pins the decision
 // that keeps the cap from deleting a package.
 //
-// The binary arm's cap drops only LOW and MEDIUM findings (see
-// BinaryScanner.ScanDirectory), so it cannot have dropped anything that would
-// have blocked the import - but the report's Truncated is a completeness flag
+// The binary arm's cap drops LOW findings and only LOW (see
+// BinaryScanner.ScanDirectory), and LOW blocks under neither policy, so it
+// cannot have dropped anything that would have blocked the import - but the
+// report's Truncated is a completeness flag
 // that ProvesCleanScan refuses on, and folding this into it would turn "the
 // channel found more than its listing budget" into "the channel did not look".
 // The drop is visible where it belongs: findings_capped and findings_dropped on
@@ -7748,7 +7838,7 @@ func TestMergeBinaryFindingsDoesNotFoldTheBinaryCapIntoTruncated(t *testing.T) {
 		t.Error("Truncated = true after the binary arm capped itself; the channel deleted a package for finding too much")
 	}
 	if !report.Passed {
-		t.Error("Passed = false although the binary cap cannot drop a HIGH")
+		t.Error("Passed = false although a capped listing is not a completeness gap: the cap drops only LOW")
 	}
 	if report.Binary == nil || !report.Binary.FindingsCapped || report.Binary.FindingsDropped != 7 {
 		t.Errorf("the cap is not visible on scan_metadata.binary: %+v", report.Binary)
@@ -7815,9 +7905,11 @@ go test ./internal/codeaudit/ -run TestMergeBinaryFindings 2>&1 | head -10
 // omission. Report.Truncated is the completeness flag the report copies into
 // scan_metadata.truncated, and ProvesCleanScan refuses on it: a merge that set
 // it from the binary arm's own cap would make the channel delete a package for
-// having found too much, and the binary arm's cap cannot drop a HIGH anyway (see
-// BinaryScanner.ScanDirectory), so nothing it drops could have blocked the import
-// on its own. A reader who wants the binary cap sees findings_capped and
+// having found too much. The cap drops LOW findings and only LOW (see
+// BinaryScanner.ScanDirectory), and LOW blocks under neither the `assist` nor the
+// `gate` policy - the two severities that can block, HIGH and MEDIUM, are kept
+// whatever the budget - so nothing the cap drops could have blocked the import on
+// its own. A reader who wants the binary cap sees findings_capped and
 // findings_dropped in scan_metadata.binary, next to the max_findings it ran
 // under; what they must not see is a completeness flag that claims a look did not
 // happen when it did.
@@ -8609,9 +8701,10 @@ go test ./internal/config/ -run TestBinaryAuditConfig 2>&1 | head -10
 	// executable section is called packed. Zero means the codeaudit default.
 	BinaryAuditHighEntropyThreshold float64
 	// BinaryAuditMaxFindings is the listing budget for the binary pass, not a
-	// completeness bound: reaching it drops LOW/MEDIUM findings and is recorded as
-	// findings_capped, and it never drops a HIGH or withholds a pass. Zero means
-	// the codeaudit default.
+	// completeness bound: reaching it drops LOW findings (and only LOW - HIGH and
+	// MEDIUM can block the import and are always kept) and is recorded as
+	// findings_capped, and it never withholds a pass. Zero means the codeaudit
+	// default.
 	BinaryAuditMaxFindings int
 	// BinaryAuditMaxFullScanBytes is the size above which a file is read at its
 	// two ends instead of end to end. Zero means the codeaudit default. It is
@@ -9002,8 +9095,8 @@ go test ./... 2>&1 | grep -vE "^ok|no test files" | head -30
 - **证据**：ELF 动态导入符号与 `DT_NEEDED`、节区构成与香农熵、可打印字符串、容器成员（zip/gzip 内部最多递归一层）、pickle 的 `GLOBAL`/`STACK_GLOBAL`/`INST` 目标（带 memo 表的 opcode 解释器）、超过 64 MiB 的文件读首尾各 1 MiB（捕捉 zip 末尾追加的载荷，并把单文件成本钉在约 190 ms）。
 - **判定**：证据行按规则表匹配，产出 `Finding` 并标记 `binary_kind` / `evidence_source` / `binary_offset`。**结构性证据**（ELF 动态符号、`DT_NEEDED`、熵）走共享规则 `NET_002`/`CMD_001`/`DYN_001`，其严重级从源码规则表读取，不另立一套；二进制专有规则 `BIN_001`（可执行节区熵近随机，HIGH）、`BIN_002`（`memfd_create`/`fexecve`，HIGH）、`PKL_001`（pickle 反序列化执行，HIGH）。**字符串证据**不共享源码臂的 id——`CMD_002`/`PER_002`/`FIL_002`/`ENV_002` 是四个独立的 LOW 族，理由见下：一条 finding 只有被文件无法偶然产生的结构背书时才可以是 HIGH，而一段字符串常量不是；源码臂的同名族 `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` 在共享表里是 HIGH/MEDIUM，借用它们会把「某个字面量里出现了某个词」抬到阻断级别。`OBF_001` 在二进制臂**没有**族：它的旧模式 `^[A-Za-z0-9+/]{120,}={0,2}$` 命中了 28 个合法共享库中的 23 个（`.pyc` 常量池和二进制数据里遍地是长 base64 字母表串），收紧字母表或抬高下限都治不了，只保留源码臂的调用点版本。
 - **复核**：二进制 finding 与源码 finding 走同一条 LLM 路径；文件级分析使用二进制专用 prompt（现有 prompt 面向 Python 源码，不适用）。
-- **完整性**：`scan_metadata.binary` 记录 `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `errored` / `findings_capped` / `findings_dropped` / `max_findings`。可执行格式的结构抽取被截断、文件无法读取、整趟无法运行，任一项都会使 `ProvesCleanScan()` 为假——fail-closed 下即阻断导入；纯数据文件（张量、npy）的证据截断只记录、不阻断。**finding 上限不属于完整性**：触顶只写 `findings_capped`/`findings_dropped`，不写 `scan_metadata.truncated`、不阻断；cap 从不丢 HIGH，所以它丢得起的只有 LOW/MEDIUM。
-- **配置**：`security.binaryAudit.enabled`（默认 `true`）、`maxArchiveMembers`、`highEntropyThreshold`、`maxFindings`（默认 50，独立于源码臂的 200；是清单预算，调小只会丢 LOW/MEDIUM，不会丢 HIGH、也不会阻断）、`maxFullScanBytes`（默认 64 MiB）、`maxStreamBytes`（默认 3 GiB；与 `maxFullScanBytes` 成对，抬高后者才会让前者生效）。关闭它即回滚，审计行为与引入该通道之前逐字节一致。
+- **完整性**：`scan_metadata.binary` 记录 `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `errored` / `findings_capped` / `findings_dropped` / `max_findings`。可执行格式的结构抽取被截断、文件无法读取、整趟无法运行，任一项都会使 `ProvesCleanScan()` 为假——fail-closed 下即阻断导入；纯数据文件（张量、npy）的证据截断只记录、不阻断。**finding 上限不属于完整性**：触顶只写 `findings_capped`/`findings_dropped`，不写 `scan_metadata.truncated`、不阻断；cap 只花 LOW 这一档，能阻断的 HIGH（`assist` 与 `gate`）与 MEDIUM（`gate`）无论预算如何都保留。
+- **配置**：`security.binaryAudit.enabled`（默认 `true`）、`maxArchiveMembers`、`highEntropyThreshold`、`maxFindings`（默认 50，独立于源码臂的 200；是清单预算，调小只会丢 LOW，不会丢任何能阻断的 finding——`assist` 与 `gate` 下的 HIGH、`gate` 下的 MEDIUM——也不会阻断）、`maxFullScanBytes`（默认 64 MiB）、`maxStreamBytes`（默认 3 GiB；与 `maxFullScanBytes` 成对，抬高后者才会让前者生效）。关闭它即回滚，审计行为与引入该通道之前逐字节一致。
 - **边界**：PE/Mach-O 不做结构解析（本平台不加载），xz/zstd/bzip2/7z 容器与 tar 不打开，纯文本非源码文件不审，嵌套归档只递归一层，pickle 解释器只跑在被声明为 pickle 的流上（因此不认领贴在非 pickle 文件尾部、头部无 pickle 魔数的 pickle）。详见 `.claude/plans/2026-10-10-binary-code-audit.md` §2。
 ```
 
@@ -9028,7 +9121,7 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 - [ ] `git grep -n "Co-Authored-By\|anthropic\|Claude" -- '*.go'` 无命中（提交信息同样不得出现）。
 - [ ] `go test ./internal/codeaudit/ -run 'TestGenerateAuditReport' -v`：`regex` 子用例必须 **PASS**；`semgrep` 子用例在装有 CLI 的机器上必须 PASS，在没装的机器上会 **SKIP**——跳过不等于通过，它是「这一条没有被验证」。所以在没装 semgrep 的机器上，必须在报告里显式记下它被跳过了，或者换一台装了的机器重跑。（`TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine` 的两个子用例同理，它内部对 semgrep 也是这个 skip 形状。）
 - [ ] 用一个真实模型包（含 `.pt` 与任意 `.so`）在容器里跑一次导入，确认 `auditReportJSON` 里出现 `binary_kind`/`evidence_source` 字段，且 `scan_metadata.binary.files_count > 0`；**同一个包**上确认 `target.files_scanned >= scan_metadata.binary.files_count` 且 `target.files_scanned > 0`。两条必须合看：单独拿 `0 >= 0` 也能满足那个不等式，所以「前者不小于后者」只有在 `files_count > 0` 成立时才算被验证。
-- [ ] 二进制臂触顶时 `scan_metadata.binary.findings_capped` 为 `true` 且 `findings_dropped > 0`，而 **`scan_metadata.truncated` 仍为 `false`**。这一条是本计划最容易写反的地方，所以两个方向都要验：**必须在会触顶的输入上验证**——造一个二进制 finding 数超过 `BinaryConfig.MaxFindings`（默认 50）的包，确认 `scan_metadata.binary.findings_capped == true`；再抓同一个包，确认 `scan_metadata.truncated == false`。反过来的形状（触顶即把 `truncated` 置真）会让二进制通道因为"找到太多"而删包，而它丢掉的只会是 LOW/MEDIUM（`ScanDirectory` 的 cap 从不丢 HIGH）——对一个普通包跑这一条永远是「没错顶」，等于没验。
+- [ ] 二进制臂触顶时 `scan_metadata.binary.findings_capped` 为 `true` 且 `findings_dropped > 0`，而 **`scan_metadata.truncated` 仍为 `false`**。这一条是本计划最容易写反的地方，所以两个方向都要验：**必须在会触顶的输入上验证**——造一个二进制 finding 数超过 `BinaryConfig.MaxFindings`（默认 50）的包，确认 `scan_metadata.binary.findings_capped == true`；再抓同一个包，确认 `scan_metadata.truncated == false`。反过来的形状（触顶即把 `truncated` 置真）会让二进制通道因为"找到太多"而删包，而它丢掉的只会是 LOW——LOW 在 `assist` 与 `gate` 两种策略下都不阻断，能阻断的 HIGH 和 MEDIUM 无论预算如何都保留（`ScanDirectory` 的 cap 只花 LOW 这一档；`gate` 下 `passed` 是 `High == 0 && Medium == 0`，所以 MEDIUM 也必须留，理由见该处注释）——对一个普通包跑这一条永远是「没错顶」，等于没验。
 - [ ] 把 `security.binaryAudit.enabled` 设为 `false` 再跑一次，确认 `scan_metadata.binary` 缺失且结论与改动前一致（回滚可用）。
 - [ ] （**回归护栏，不是本功能的验收项**）`UnsupportedExts` 仍恒为 0——本计划**不**动它，任何让它非零的改动都会使每个真实包被判定为非完整扫描。它列在这里，是因为它属于同一次改动所以要一起回归，不是因为这个功能会让它变化。
 
@@ -9041,7 +9134,7 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 | 加壳判定对 UPX 打包的合法库误报 | `BIN_001` 定为 HIGH，但触发它的是一次**测量**而不是一次模式匹配：只有可执行节区的熵越过 7.5 bits/byte 才成立，而实测**宿主上 600 个共享对象**（去重后 538 个 ELF，枚举到 2027 个文件条目）的可执行节区最高只有 **6.777009**（**`libcrypto.so.3` 的 `.text`**，3347362 字节，整节读完；`libgomp.so` 的 7.97 落在非可执行的 `.gnu_debugdata`，抽取器根本不测），余量 **0.723** bits。误报面因此是「真的加壳了的合法库」，而不是「碰巧含有某个字节序列的库」；而这一面在已测的 600 个共享对象上是空的——0 个被判结构性、0 个无节表、0 个报错、命中 0 个，最高 6.777009 对阈值 7.5（早先只量了 ollama 那 28 个，最高 6.75，样本扩大二十倍最高值只挪了不到 1%）。**代价必须写清楚：`BIN_001` 是 HIGH，assist（默认策略）下照样阻断**——assist 的通过判据是 `passed = stats.High == 0`（`audit.go:303-304`），而且 assist 的静态判定连 LLM 降级都不认：`recalculateStaticPassed` 存在的唯一理由就是挡住被 LLM 降成 SUSPICIOUS/BENIGN 的静态 HIGH（`verifier.go:204-210`），所以即使 Tier 2 判它 BENIGN 也救不回这个包。也就是说，一个真的用 UPX 打包的合法库会被删包，这正是下一行「二进制通道让原本能导入的包被误阻断」所写的「最贵的失败模式是删包」。之所以保留 HIGH 而不退回 MEDIUM：这条判定由一次**测量**触发、其误报面实测为 0（600 个共享对象命中 0 个），而把一个加壳 `.so` 塞进模型包本身就是经典规避手法，值得用一个删包级判定挡住。 |
 | 字符串证据把合法包判成恶意 | 这是本轮实测出的最贵的误报源，对策是把字符串半边整体降级并收窄：源码臂的 `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` 是 HIGH/MEDIUM（`DefaultRules()` + `audit.go:242-243`，MEDIUM 在 `gate` 下照样阻断，`audit.go:301`），所以字符串半边不借它们，改用独立的 LOW 族 `CMD_002`/`PER_002`/`FIL_002`/`ENV_002`；每个 token 两端都锚定（`^…$`）以拒绝 `.pyc` 常量池里拼接出的片段（`'crontabz'`、`.profilez /etc/cron)` 都是实测命中），`'.ssh/id_rsaz'` 则靠**闭合的键名列表**（`id_(?:rsa|dsa|ecdsa|ed25519)`）拒绝——单靠 `$` 不够，`id_[a-z]+` 会把结尾的 `z` 一并吃下，锚点照样满足；`ENV_002` 去掉 `(?i)`，否则小写标识符 `private_key` 会撞上 `PRIVATE_KEY`；`OBF_001` 从二进制臂整体删除（28 个合法库命中 23 个）。LOW 仍进报告、仍送 Tier 2 复核，只是自己不足以阻断 |
 | 二进制 finding 挤占 LLM 配额 | 两臂各自限流（源码 200、二进制 50），合并列表不再二次截断。**Tier 2 调用上界由 200 变为 250**，且只在两臂同时饱和时可达。反过来，共享配额会让大源码臂按路径序挤掉二进制 finding，而那条路只会更贵：被挤掉的是二进制通道的证据，而挤掉它的那条臂本来就已经有 finding |
-| 二进制通道让原本能导入的包被误阻断 | 这是本设计最贵的失败模式（`ProvesCleanScan` 为假 → `cleanDirContents` 删包），所以：**finding 上限不参与完整性**（触顶只写 `findings_capped`/`findings_dropped`，绝不折进 `Report.Truncated`，且 cap 从不丢 HIGH——一条 finding 只有被结构背书才是 HIGH，cap 丢得起的只有 LOW/MEDIUM）；纯数据文件的证据截断只记录、不阻断；字符串证据一律 LOW（四个独立族，不借源码臂的 HIGH/MEDIUM id）；`BIN_001` 只由测量触发、不匹配字面量；**ELF 的结构性 fail-closed 只设在"这次没读完"上，不设在"这个文件很大"上**——一个可执行节在每文件 `MaxStreamBytes`（3 GiB）预算内没读完，记为结构性缺口（`section .text declares N bytes, M readable`）并删包；被删掉的 `MaxSectionBytes`（16 MiB/节）为什么错，判据正在这个分界上：16 MiB 的节上限问的是"这个库是不是太大"，而任何足够大的 `.so` 都会越过某个固定值，于是它把"库比较大"变成阻断理由（实测 libLLVM/libclang/chrome/wireshark 的可执行节都越过它）；3 GiB 的每文件预算问的是"我们能不能把它读完"，实测 600 个共享对象（538 个不同 ELF、2027 个文件条目）里没有一个接近它，触到它意味着这次读取确实没完成——那才是诚实的缺口；`security.binaryAudit.enabled=false` 是逐字节回滚。已入库语料实测最大 finding 数为单样本 7、整语料 80，离两个上限都有一个数量级 |
+| 二进制通道让原本能导入的包被误阻断 | 这是本设计最贵的失败模式（`ProvesCleanScan` 为假 → `cleanDirContents` 删包），所以：**finding 上限不参与完整性**（触顶只写 `findings_capped`/`findings_dropped`，绝不折进 `Report.Truncated`，且 cap 只丢 LOW——能阻断的 HIGH（`assist` 与 `gate`）与 MEDIUM（`gate`）无论预算如何都保留）；纯数据文件的证据截断只记录、不阻断；字符串证据一律 LOW（四个独立族，不借源码臂的 HIGH/MEDIUM id）；`BIN_001` 只由测量触发、不匹配字面量；**ELF 的结构性 fail-closed 只设在"这次没读完"上，不设在"这个文件很大"上**——一个可执行节在每文件 `MaxStreamBytes`（3 GiB）预算内没读完，记为结构性缺口（`section .text declares N bytes, M readable`）并删包；被删掉的 `MaxSectionBytes`（16 MiB/节）为什么错，判据正在这个分界上：16 MiB 的节上限问的是"这个库是不是太大"，而任何足够大的 `.so` 都会越过某个固定值，于是它把"库比较大"变成阻断理由（实测 libLLVM/libclang/chrome/wireshark 的可执行节都越过它）；3 GiB 的每文件预算问的是"我们能不能把它读完"，实测 600 个共享对象（538 个不同 ELF、2027 个文件条目）里没有一个接近它，触到它意味着这次读取确实没完成——那才是诚实的缺口；`security.binaryAudit.enabled=false` 是逐字节回滚。已入库语料实测最大 finding 数为单样本 7、整语料 80，离两个上限都有一个数量级 |
 | 去掉无节表 fail-open 后，节表被剥离的合法库被误阻断 | 这是本次修订**新引入**的代价，必须与上一行（UPX / `BIN_001`）并列看，而不是只留在 Task 5 的实现里：熵检测的输入是可执行节，而 `len(ef.Sections) == 0` 的文件（`strip --strip-section-headers` 或 `objcopy --strip-section-headers` 的产物、以及某些加壳器的输出）没有可执行节可测，新实现记为 `Bound.Structural`，而 `KindELF` 是可执行类型，于是这个包被删。旧行为是"没有节表就直接掉出去、不产生任何行也不产生任何 bound"，也就是把"从未检查过"报成"没发现加壳"（fail-open）；本版刻意翻成 fail-closed，判据是：**对可执行格式，"没看"必须不等于"干净"**。这条误报面**不靠"用 `PT_DYNAMIC` 回补 `DT_NEEDED`/`DT_SONAME`"来修**——那条链要先把 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移、再把 `DT_STRTAB` 的虚地址同样映射一次，是一段独立的新解析逻辑，而它的产出对"有没有被加壳"不提供任何证据，与这条误报面无关。真正的取舍是"宁可为被剥节的库删包，也不让一个剥了节表头的加壳载荷通过"。已入库语料实测没有这个形状（`models/` 下一个真实 `.so` 都没有，见第 14 条），宿主 600 个共享对象（538 个不同 ELF、2027 个文件条目）里也 0 个无节表（见第 15 条），所以这个代价目前是**潜伏**的，只在包带上一个被剥节的真实库时发作；`security.binaryAudit.enabled=false` 仍是逐字节回滚 |
 | 与 semgrep 非劣性证据的交互 | 二进制通道在**两个臂之外**运行且合并发生在引擎报告之后，两臂的引擎级报告逐字节不变；`corpus_parity_test.go` 会证明这一点 |
 | pickle 解释器的门控开错方向 | 两个方向都是故障，所以各有一个测试钉住：**跑宽了**（对非 pickle 也跑解释器）会让任意字节能被读成 opcode，未知 opcode 直接置 `Bound.Structural`，而 `KindELF`/`KindPickle`/`KindArchive`/`KindCompressed` 都是可执行类型，于是每个 `.pt`/`.whl`/`.so` 都被阻断、原本能导入的包被删——`TestCollectEvidenceDoesNotInterpretNonPicklesAsPickles` 用一个良性 ELF 夹具断言既不 `Err` 也无 `Bound.Structural`、无 `SourcePickle` 行；**跑窄了**（该跑的没跑）会丢掉 pickle 证据——`TestPickleInterpreterReadsTheRealCheckpoint` 断言真 checkpoint 仍产出目标。门控规则（只跑在 `KindPickle` 的整文件/容器成员、以及解压后头部嗅探为 pickle 的 gzip 流上）写在 Task 4 Step 4，不得"简化"掉 |
