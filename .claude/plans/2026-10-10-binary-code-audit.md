@@ -93,9 +93,12 @@ go build ./... && go test ./internal/codeaudit/... ./internal/config/... ./inter
 4. **`CheckImportWithLLM` 不接二进制通道**。生产路径是 `GenerateAuditReport`（`internal/controller/import_processing.go:642`）；`CheckImportWithLLM` 只被 `llm_test.go` 使用，是第二个 gate 实现。本版不改它，**它的语义由此与生产不同**，这一点写在它的 doc comment 里。
 5. **不做二进制瘦身/反编译/符号执行**。证据是"这个文件导入了什么、说了什么、熵是多少"，不是控制流。
 6. **纯数据文件不做熵判定**。`KindRaw`（权重、张量、未知二进制）与 `KindNumpy` 只产出 strings 与 pickle 目标证据，不产出熵行。理由：模型包里绝大多数字节就是权重，权重天然接近均匀分布，整文件熵规则会对每一个 `.safetensors` 误报；而本平台不执行裸数据文件，能运行的载荷一定以 ELF 或 pickle 形式出现，两者都有精确证据（可执行节区熵 / `GLOBAL` 目标）。**代价明确**：一个以 `.bin` 投递、再由包内某个 `.so` 解密的加密载荷，其密文本身不会被判为加壳。
-7. **pickle 目标识别基于 opcode 相邻性，可被受控流规避**。`STACK_GLOBAL`（`0x93`）的模块名与属性名来自它前面紧邻的两个字符串 opcode；把模块名先 `MEMOIZE`、再用 `BINGET` 取回，相邻性就不成立，本版的扫描器看不到这个目标。`GLOBAL`（`c module\nname\n`）不受此影响，因为它自带两个内联字符串。**代价明确**：一个刻意构造的 pickle 可以让它的 `STACK_GLOBAL` 目标不出现在证据里。这不改变 fail-closed 的边界——漏读的是"证据"，不是"读取"本身，所以报告仍会因为它读到的其他东西（`GLOBAL`、strings、导入符号）作判断，只是这一条线索不可依赖。真正的修法是做一个有 memo 表的 pickle 虚拟机，那是本版明确不做的（见第 5 条）。
+7. **pickle 目标识别用带 memo 表的 opcode 解释器，识别能力上界于整个 opcode 流，而不是"相邻字节模式"**。扫描器不再按字节找形状，而是按 pickle 语法逐 opcode 前进：每个 opcode 的操作数宽度取自协议 0–5 的完整表（68 个 opcode，无一遗漏），字符串/字节操作数按它自带的长度前缀整体消费，因此数据段里偶发的 `0x63` 与换行不能再让扫描器错位——实测旧扫描器在 `net_001.pth` 的 `data.pkl` 上报出 39 个目标、漏掉 `torch.LongStorage`，解释器报出且只报出 4 个真目标；这也证伪了"`GLOBAL` 因自带两个内联字符串而不受相邻性影响"的旧说法，被吞掉的正是 offset 828 的一条 `GLOBAL`。`GLOBAL`（`c module\nname\n`）、`STACK_GLOBAL`（`0x93`，取值栈顶两项）与 `INST`（`i module\nname\n`）同步产出，模块名先 `MEMOIZE`/`BINPUT`/`PUT`、再用 `BINGET`/`GET` 取回时取回的值仍在值栈上，所以"先存 memo 再取回"这条规避对解释器不成立。仍然看不见的目标有三类：被抽取预算截断的 opcode 流、从进程扩展注册表解析的 `EXT1/EXT2/EXT4` 与走持久化 id 的 `PERSID`/`BINPERSID`（目标名根本不在流里）、以及解释器无法继续时（未知 opcode、mid-opcode 结束、`STACK_GLOBAL` 操作数无法解析）——后者会置 `Bound.Structural`，对可执行类型即阻断导入，也就是说"看不见"只会表现为"没证据"或"阻断"，不会表现为"扫干净了"。**代价明确**：解释器会在它声称解析的流上留痕，所以它只跑在**被声明为 pickle 的流**上（`KindPickle` 的整文件与容器成员、解压后头部嗅探为 pickle 的 gzip 流，见 Task 4 的门控规则），于是一个把 `GLOBAL` 放在预算之外、或完全依赖扩展注册表/持久化 id 的加载器，其目标不会以 `pickle` 证据出现；贴在张量文件尾部、其头部不携带 pickle 魔数的 pickle 也不再被认领——旧字节扫描器认领它，正因为它从不承诺自己在解析；本平台没有加载器会对 `.bin`/`.safetensors` 调 `pickle.loads`，其字面量仍由 strings 通道读出，但少了 `SourcePickle` 那一条。
 8. **超过 `MaxFullScanBytes`（64 MiB）的文件只读首尾各 1 MiB**。这次跳过会按 `isExecutableKind` 的既有分野记账：`KindRaw`（张量、未知二进制）计入 `BoundedData`——可见、不阻断；`KindELF` 与 `KindPickle` 计入 `BoundedExecutable`——**fail-closed 下即阻断导入**。后半条是必须的：若窗口化不留痕，把一个 pickle 填充到 64 MiB 以上就能藏住中段的 `GLOBAL` 并且照样通过，阈值本身就成了绕过手段。**代价明确**：一个大于 64 MiB 的 `.so` 或 pickle 会被判为未完整扫描而阻断，出路是 operator 调高 `maxFullScanBytes`（这也是该配置项存在的理由），不是被静默豁免。就信息损失本身：`KindRaw` 的中段是张量数据，本平台不存在读它的加载器；`KindPickle` 的中段可能藏着一条 `GLOBAL`（在一长串数据构建 opcode 中间），首尾窗口覆盖加载时执行的前段与数据就绪后动作的后段，中段是缺口。本仓库全部语料中最大的 pickle 是 10.8 MiB，离阈值有 6 倍余量。
 9. **合并两个通道的 finding 时不再二次限流**。源码臂保有自己的 200，二进制臂保有自己的 50，合并列表不设上限（见 Task 11）。**代价明确**：极端情况下 Tier 2 的 LLM 调用上界从 200 变成 250。这个上界换的是别的东西：共享配额会让大源码臂按路径字典序挤掉二进制 finding，并且——因为触顶即 `Truncated`、`Truncated` 即 `ProvesCleanScan()` 为假、为假即删包——会把一个本来能导入的包变成被删的包。已入库语料的实测最大 finding 数是单样本 7、整语料 80，两个上限都远未接近，所以保护模型的从来是那个阻断，不是配额。
+10. **tar 不被解析**。`models/audit/holdout-sources/sr.tgz` 是 gzip 包 tar（解压后 10.66 MB、4933 个条目，一整个 `semgrep-rules-develop` 检出），解压后的字节会被读取并扫过 strings 通道，所以其中的字面量可见。**代价明确**：tar 的结构全部丢失——没有按成员归属、没有按成员分类（tar 里的 ELF 拿不到节区与导入符号证据）、也不会递归进 tar 里的归档；并且 tar 字节不会命中 pickle 门控（第 7 条），pickle 解释器不跑在它上面，tar 里的 pickle opcode 只有恰好构成可打印串时才以 strings 证据出现。
+11. **嵌套归档只递归一层**。`models/examples/Retina-DKD/Retina-DKD-code.zip` 把 `net_001.pth`/`net_005.pth` 作为成员携带，它们分类为 `KindArchive`；`collectArchive` 只对分类为 ELF 或 pickle 的成员下钻，因此这两个 checkpoint 不会被打开，其 `data.pkl` 永远到不了 pickle 解释器。**代价明确**：只装在 zip 里的 checkpoint 既不产出成员证据也不产出 pickle 目标；这一条现在由第 7 条的门控放大——解释器只跑在被声明为 pickle 的流上，而嵌套归档里那条流既没被声明、也没被下钻，没有第二次机会被发现；跳过是静默的（成员名与大小进了证据列表，但不置 `Bounded`）。
+12. **`.xlsx` 就是 zip**。语料里的 14 个 `.xlsx` 中 13 个是普通 zip（最坏压缩比 22.91，无炸弹形状，成员均分类为非可执行），第 14 个 `models/examples/Retina-DKD/Retina-DKD/test_result.xlsx` 是 OLE2 老式 `.xls` 顶着 `.xlsx` 名，不匹配任何魔数，落到 `KindRaw`。**代价明确**：当作 zip 的那 13 个只按普通容器处理（成员头嗅探 + 成员名/大小），内部的 XML 不进任何结构化解析；当 OLE2 的那一个只拿 strings 证据，不会因为扩展名被当成 zip 打开。
 
 ---
 
@@ -838,9 +841,9 @@ func isPrintableByte(b byte) bool {
 // front from its size, so that a file that ends exactly at the budget is not
 // reported as bounded - a bound that did not cost anything is not a bound.
 //
-// This pass extracts strings only. The pickle target pass is a second scanner
-// over the same reads and is wired in by Task 4, once pickleTargets exists; the
-// shape of that patch is written out there.
+// This pass extracts strings only. The pickle interpreter is a second reader over
+// the same bytes and is wired in by Task 4, gated on set.Kind == KindPickle (the
+// gate rule is stated there); the shape of that patch is written out there.
 func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int64) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -1287,97 +1290,343 @@ git commit -m "feat(audit): measure binary section and file entropy as packing e
 
 ---
 
-### Task 4: pickle 目标抽取
+### Task 4: pickle 目标抽取（opcode 解释器）
 
 **Files:**
 - Modify: `internal/codeaudit/binary_evidence.go`
 - Test: `internal/codeaudit/binary_evidence_test.go`
 
+背景：本任务替换一版按字节模式找目标的设计（`0x63` 后跟两段换行串，或 `0x8c`/`0x8c`/`0x93`）。那版在真实文件上就是错的：`models/examples/Retina-DKD/Retina-DKD/model/fusion_TransMUF_dkd_win_num3_lr1_ep5bc_4lnum_1_Nopretrain_DKD/net_001.pth` 里的 `data.pkl`（68362 字节、protocol 2）有 4 个真目标（`collections.OrderedDict`、`torch._utils._rebuild_tensor_v2`、`torch.FloatStorage`、`torch.LongStorage`，都在 `GLOBAL` 上），字节扫描器报出 39 个，其中只有 2 个干净、1 个损坏（`module="k.windows_weightq\x02ctorch._utils"`），并且因为 offset 150 处一个假匹配吞掉了 685 字节，把 offset 828 的真实 `torch.LongStorage` 整个漏掉。原因是 pickle 的数据段持有任意字节：一个字符串操作数的载荷里可以出现 `0x63` 与换行，扫描器把它读成 opcode，于是错位。所以这一版把解析器换成 opcode 解释器——它按语法消费每个 opcode 的操作数，因此不会错位；它带一张 memo 表，因为 `MEMOIZE`/`BINPUT`/`PUT` + `BINGET`/`GET` 是文档化的规避：模块名先存进 memo 再取回，任何"相邻性"扫描都看不见它，但取回的值仍在值栈上，解释器照认得。
+
 - [ ] **Step 1: 写失败测试**
 
-追加到 `binary_evidence_test.go`：
+追加到 `binary_evidence_test.go`（import 块补 `archive/zip`、`encoding/binary`、`io`；`os`/`strings`/`testing` 已在 Task 2 引入）：
 
 ```go
-func TestPickleTargetsFindsGlobalOpcode(t *testing.T) {
-	// Protocol 4 header, then GLOBAL ("c") with the module and name each
-	// newline-terminated, then STOP.
-	data := []byte("\x80\x04cposix\nsystem\n.")
-
-	targets := pickleTargets(data)
-	if len(targets) != 1 {
-		t.Fatalf("targets = %+v, want exactly one", targets)
+// runPickleStream feeds data to a scanner in fixed-size chunks, which is the
+// only way a boundary bug shows up: at 64 KiB every fixture here fits in a
+// single chunk, and a scanner that mishandled a split operand would look
+// perfect.
+func runPickleStream(t *testing.T, data []byte, chunk int) *EvidenceSet {
+	t.Helper()
+	if chunk < 1 {
+		chunk = 1
 	}
-	if targets[0].Module != "posix" || targets[0].Name != "system" {
-		t.Errorf("target = %+v, want posix.system", targets[0])
-	}
-	if targets[0].Offset != 2 {
-		t.Errorf("offset = %d, want 2 (the GLOBAL opcode)", targets[0].Offset)
-	}
-}
-
-func TestPickleTargetsFindsStackGlobal(t *testing.T) {
-	// Protocol 4, then SHORT_BINUNICODE "posix", SHORT_BINUNICODE "system",
-	// STACK_GLOBAL (0x93).
-	data := []byte("\x80\x04\x8c\x05posix\x8c\x06system\x93.")
-
-	targets := pickleTargets(data)
-	if len(targets) != 1 || targets[0].Module != "posix" || targets[0].Name != "system" {
-		t.Fatalf("targets = %+v, want one posix.system", targets)
-	}
-}
-
-// TestPickleTargetsReadsTorchRebuilders is the false-positive guard that matters
-// most: a real .pt checkpoint is a stream of STACK_GLOBAL references to torch's
-// rebuilders, and the extractor must read them all - the deny list that decides
-// which of them is dangerous is the rule table's business, not the extractor's.
-// An extractor that filtered here would make the rule table unable to state the
-// policy, and unable to be tested against it.
-func TestPickleTargetsReadsTorchRebuilders(t *testing.T) {
-	name := "torch._utils._rebuild_tensor_v2"
-	data := append([]byte("\x80\x04\x8c\x08torch._u\x8c"), byte(len(name)))
-	data = append(data, name...)
-	data = append(data, 0x93, '.')
-
-	targets := pickleTargets(data)
-	if len(targets) != 1 {
-		t.Fatalf("targets = %+v, want one", targets)
-	}
-	if targets[0].Module != "torch._u" || targets[0].Name != name {
-		t.Errorf("target = %+v, want torch._u / %s", targets[0], name)
-	}
-}
-
-// TestPickleTargetsIgnoresOrdinaryBytes pins that the scan is a structural
-// match, not a substring search: the words appear, but not in the opcode shape,
-// so nothing is reported.
-func TestPickleTargetsIgnoresOrdinaryBytes(t *testing.T) {
-	data := []byte("the posix system call interface is described here")
-	if got := pickleTargets(data); len(got) != 0 {
-		t.Errorf("targets = %+v, want none from prose", got)
-	}
-}
-
-func TestPickleTargetsCarryAcrossChunks(t *testing.T) {
-	set := newTestEvidence("x.bin", KindRaw)
+	set := newTestEvidence("x.pkl", KindPickle)
 	p := newPickleScanner(set)
-	// Split inside the module name: a scanner without a carry sees two
-	// fragments and reports nothing.
-	if _, err := p.Write([]byte("\x80\x04cpos")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.Write([]byte("ix\nsystem\n.")); err != nil {
-		t.Fatal(err)
-	}
-	p.Flush()
-
-	var got []string
-	for _, l := range set.Lines {
-		if l.Source == SourcePickle {
-			got = append(got, l.Text)
+	for i := 0; i < len(data); i += chunk {
+		j := i + chunk
+		if j > len(data) {
+			j = len(data)
+		}
+		if _, err := p.Write(data[i:j]); err != nil {
+			t.Fatalf("write: %v", err)
 		}
 	}
+	p.Flush()
+	return set
+}
+
+func pickleTargetsOf(set *EvidenceSet) []string {
+	var out []string
+	for _, l := range set.Lines {
+		if l.Source == SourcePickle {
+			out = append(out, l.Text)
+		}
+	}
+	return out
+}
+
+// pickleBinUnicode encodes a protocol-2 BINUNICODE operand: the opcode, a 4-byte
+// little-endian length, then the bytes. The length prefix is the whole difference
+// between a scanner that reads this operand and one that reads into it.
+func pickleBinUnicode(s string) []byte {
+	b := []byte{0x58, 0, 0, 0, 0}
+	binary.LittleEndian.PutUint32(b[1:], uint32(len(s)))
+	return append(b, s...)
+}
+
+// pickleGlobal encodes "c module\nname\n".
+func pickleGlobal(mod, name string) []byte {
+	return []byte("c" + mod + "\n" + name + "\n")
+}
+
+// TestPickleInterpreterFindsTargetsInItsTwoEncodings pins both spellings of
+// "resolve this attribute" and the offset rule: an evidence offset is the
+// opcode's own offset, so it points at the 'c' of GLOBAL and the 0x93 of
+// STACK_GLOBAL, never at a string operand.
+func TestPickleInterpreterFindsTargetsInItsTwoEncodings(t *testing.T) {
+	data := []byte{0x80, 0x04}
+	data = append(data, pickleGlobal("posix", "system")...)
+	data = append(data, 0x8c, 0x02)
+	data = append(data, "os"...)
+	data = append(data, 0x8c, 0x06)
+	data = append(data, "system"...)
+	data = append(data, 0x93, 0x2e) // STACK_GLOBAL, STOP
+
+	set := runPickleStream(t, data, 64*1024)
+	got := pickleTargetsOf(set)
+	want := []string{"posix.system", "os.system"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("targets = %v, want %v", got, want)
+	}
+	if set.Lines[0].Offset != 2 {
+		t.Errorf("offset = %d, want 2 (the GLOBAL opcode)", set.Lines[0].Offset)
+	}
+	if set.Bound.Structural {
+		t.Errorf("structural bound on a well-formed stream: %s", set.Bound.Reason)
+	}
+}
+
+// TestPickleInterpreterFindsTheTargetAfterBinaryData is the test the old design
+// would have failed, and it is why this task exists. The string operand's payload
+// ends with an unterminated run after a stray 0x63, so a byte scan reads a
+// spurious GLOBAL whose operands run across the string boundary and swallow the
+// genuine GLOBAL that follows - exactly how net_001.pth's torch.LongStorage was
+// being lost. The interpreter must find both targets and must not read a byte
+// inside the payload as an opcode.
+func TestPickleInterpreterFindsTheTargetAfterBinaryData(t *testing.T) {
+	stray := "c" + "junk\n" + "c" + strings.Repeat("Z", 300)
+	data := []byte{0x80, 0x02}
+	data = append(data, pickleBinUnicode(stray)...)
+	data = append(data, pickleGlobal("posix", "system")...)
+	data = append(data, pickleGlobal("torch._utils", "_rebuild_tensor_v2")...)
+	data = append(data, 0x2e)
+
+	set := runPickleStream(t, data, 64*1024)
+	got := pickleTargetsOf(set)
+	want := []string{"posix.system", "torch._utils._rebuild_tensor_v2"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("targets = %v, want %v", got, want)
+	}
+	if set.Bound.Structural {
+		t.Errorf("structural bound on a well-formed stream: %s", set.Bound.Reason)
+	}
+}
+
+// TestPickleInterpreterResolvesStackGlobalThroughTheMemo pins the evasion the
+// memo table exists to close: the module and name are MEMOIZEd, fetched back with
+// BINGET, and only then fed to STACK_GLOBAL. Neither string is adjacent to the
+// opcode, so an adjacency scan sees nothing.
+func TestPickleInterpreterResolvesStackGlobalThroughTheMemo(t *testing.T) {
+	data := []byte{0x80, 0x04, 0x8c, 0x05}
+	data = append(data, "posix"...)
+	data = append(data, 0x94) // MEMOIZE -> memo[0]
+	data = append(data, 0x8c, 0x06)
+	data = append(data, "system"...)
+	data = append(data, 0x94)       // MEMOIZE -> memo[1]
+	data = append(data, 0x68, 0x00) // BINGET 0
+	data = append(data, 0x68, 0x01) // BINGET 1
+	data = append(data, 0x93, 0x2e) // STACK_GLOBAL, STOP
+
+	got := pickleTargetsOf(runPickleStream(t, data, 64*1024))
 	if len(got) != 1 || got[0] != "posix.system" {
-		t.Fatalf("pickle evidence = %v, want [posix.system]", got)
+		t.Fatalf("targets = %v, want [posix.system]", got)
+	}
+}
+
+// TestPickleInterpreterReadsInstAsATarget pins the protocol-0/1 spelling of the
+// same thing: INST carries module and name inline, like GLOBAL.
+func TestPickleInterpreterReadsInstAsATarget(t *testing.T) {
+	data := append([]byte{0x80, 0x04}, []byte("iposix\nsystem\n")...)
+	data = append(data, 0x2e)
+	got := pickleTargetsOf(runPickleStream(t, data, 64*1024))
+	if len(got) != 1 || got[0] != "posix.system" {
+		t.Fatalf("targets = %v, want [posix.system]", got)
+	}
+}
+
+// TestPickleInterpreterIsChunkInvariant pins the property that makes the
+// streaming contract correct: the parse carries its own state, so the listing
+// cannot depend on where the reads split. The fixtures above all fit in one 64
+// KiB chunk, so this test must run at several sizes; it is what would catch a
+// boundary bug that the real file (one chunk) cannot.
+func TestPickleInterpreterIsChunkInvariant(t *testing.T) {
+	data := []byte{0x80, 0x04}
+	data = append(data, pickleBinUnicode(strings.Repeat("data\x63\n", 400))...)
+	data = append(data, pickleGlobal("os", "system")...)
+	data = append(data, 0x8c, 0x03)
+	data = append(data, "abc"...)
+	data = append(data, 0x8c, 0x03)
+	data = append(data, "def"...)
+	data = append(data, 0x93, 0x2e)
+
+	want := "os.system,abc.def"
+	for _, size := range []int{1, 2, 3, 5, 8, 64, 1024, 64 * 1024} {
+		set := runPickleStream(t, data, size)
+		if got := strings.Join(pickleTargetsOf(set), ","); got != want {
+			t.Fatalf("chunk=%d gave %q, want %q", size, got, want)
+		}
+		if set.Bound.Structural {
+			t.Fatalf("chunk=%d set a structural bound: %s", size, set.Bound.Reason)
+		}
+	}
+}
+
+// TestPickleInterpreterBoundsAnUnknownOpcode pins the fail-closed direction for
+// the one case the interpreter cannot recover from: a byte it cannot classify is
+// a place it does not know the next opcode starts, and stopping without a bound
+// would let a later opcode hide.
+func TestPickleInterpreterBoundsAnUnknownOpcode(t *testing.T) {
+	data := []byte{0x80, 0x02}
+	data = append(data, pickleGlobal("posix", "system")...)
+	data = append(data, 0x99, 0x2e) // 0x99 is not a pickle opcode
+
+	set := runPickleStream(t, data, 64*1024)
+	if !set.Bound.Structural {
+		t.Fatal("unknown opcode did not set Bound.Structural")
+	}
+	if got := pickleTargetsOf(set); len(got) != 1 || got[0] != "posix.system" {
+		t.Errorf("targets before the unknown opcode were lost: %v", got)
+	}
+}
+
+// TestPickleInterpreterBoundsATruncatedOperand pins that an operand the stream
+// claimed and did not deliver is a structural gap, not a clean end.
+func TestPickleInterpreterBoundsATruncatedOperand(t *testing.T) {
+	// SHORT_BINUNICODE declares 5 bytes and delivers 3.
+	mid := []byte{0x80, 0x02, 0x8c, 0x05, 'p', 'o', 's'}
+	if set := runPickleStream(t, mid, 64*1024); !set.Bound.Structural {
+		t.Error("a stream ending mid-opcode did not set Bound.Structural")
+	}
+	// A declared length past EOF is the same event.
+	past := append([]byte{0x80, 0x02}, 0x58, 0xff, 0xff, 0x00, 0x00)
+	if set := runPickleStream(t, past, 64*1024); !set.Bound.Structural {
+		t.Error("a length past EOF did not set Bound.Structural")
+	}
+}
+
+// TestPickleInterpreterBoundsAStreamThatNeverStops pins that a stream which never
+// reaches STOP is structurally incomplete - and that an empty stream is not, for
+// the same reason a bound that cost nothing is not a bound.
+func TestPickleInterpreterBoundsAStreamThatNeverStops(t *testing.T) {
+	for _, data := range [][]byte{{0x80, 0x02}, {0x80, 0x02, 0x4e}} {
+		if set := runPickleStream(t, data, 64*1024); !set.Bound.Structural {
+			t.Errorf("%x: a stream without STOP did not set Bound.Structural", data)
+		}
+	}
+	if set := runPickleStream(t, nil, 64*1024); set.Bound.Structural {
+		t.Error("an empty stream set Bound.Structural")
+	}
+}
+
+// TestPickleInterpreterToleratesBytesAfterStop pins the one place trailing data
+// is not a bound: the unpickler stops at STOP too, so the bytes after it are
+// outside the structure that can execute. They stay visible as a notice, so the
+// loss is not silent.
+func TestPickleInterpreterToleratesBytesAfterStop(t *testing.T) {
+	data := []byte{0x80, 0x02}
+	data = append(data, pickleGlobal("posix", "system")...)
+	data = append(data, 0x2e)
+	data = append(data, []byte("this padding is not part of the pickle")...)
+
+	set := runPickleStream(t, data, 64*1024)
+	if set.Bound.Structural {
+		t.Fatalf("bytes after STOP set Bound.Structural: %s", set.Bound.Reason)
+	}
+	var notice bool
+	for _, l := range set.Lines {
+		if l.Source == SourceNotice {
+			notice = true
+		}
+	}
+	if !notice {
+		t.Error("bytes after STOP produced no notice; the loss is invisible")
+	}
+}
+
+// TestPickleInterpreterBoundsAnUnresolvedStackGlobalOperand pins the bound to the
+// only condition that hides a target - an unresolvable value actually used as a
+// module or name - and pins the other half too: a dangling reference that is
+// never so used is tolerated, because being strict there would put a bound on
+// benign streams.
+func TestPickleInterpreterBoundsAnUnresolvedStackGlobalOperand(t *testing.T) {
+	used := []byte{0x80, 0x04, 0x68, 0x00, 0x8c, 0x06}
+	used = append(used, "system"...)
+	used = append(used, 0x93, 0x2e) // BINGET 0 (never written), STACK_GLOBAL
+	if set := runPickleStream(t, used, 64*1024); !set.Bound.Structural {
+		t.Error("an unresolved STACK_GLOBAL operand did not set Bound.Structural")
+	}
+	unused := []byte{0x80, 0x04, 0x68, 0x00, 0x2e} // BINGET 0, never used
+	if set := runPickleStream(t, unused, 64*1024); set.Bound.Structural {
+		t.Errorf("an unused dangling reference set Bound.Structural: %s", set.Bound.Reason)
+	}
+}
+
+// TestPickleInterpreterNamesNothingInProse pins that the parser is a parser: the
+// words appear, but not in opcode shape, so no target is reported. (In production
+// the interpreter is gated to streams claimed as pickles, so prose never reaches
+// it; this asserts the parser's own silence.)
+func TestPickleInterpreterNamesNothingInProse(t *testing.T) {
+	data := []byte("the posix system call interface is described here")
+	if got := pickleTargetsOf(runPickleStream(t, data, 64*1024)); len(got) != 0 {
+		t.Errorf("targets = %v, want none from prose", got)
+	}
+}
+
+// TestPickleInterpreterSurvivesAdversarialBytes pins that the parser is total:
+// every input either parses or records why it could not, and none of them makes
+// it panic. It is fed attacker-controlled bytes by definition. The bytes are
+// enumerated rather than random so the test is deterministic.
+func TestPickleInterpreterSurvivesAdversarialBytes(t *testing.T) {
+	for b := 0; b < 256; b++ {
+		runPickleStream(t, []byte{0x80, 0x04, byte(b), byte(b), byte(b), 0x2e}, 3)
+	}
+	full := append([]byte{0x80, 0x04}, pickleGlobal("os", "system")...)
+	full = append(full, 0x2e)
+	for n := 0; n <= len(full); n++ { // every truncation of a valid stream
+		runPickleStream(t, full[:n], 1)
+	}
+}
+
+// TestPickleInterpreterReadsTheRealCheckpoint runs the interpreter over the one
+// real checkpoint in this repository that exercises the defect: a protocol-2
+// torch stream whose four GLOBAL targets sit around large binary operands, the
+// last of them at an offset a byte scan was swallowing. It skips when the file is
+// absent, because the corpus is not carried in every checkout.
+func TestPickleInterpreterReadsTheRealCheckpoint(t *testing.T) {
+	const ckpt = "../../models/examples/Retina-DKD/Retina-DKD/model/" +
+		"fusion_TransMUF_dkd_win_num3_lr1_ep5bc_4lnum_1_Nopretrain_DKD/net_001.pth"
+	if _, err := os.Stat(ckpt); err != nil {
+		t.Skipf("corpus checkpoint not present: %v", err)
+	}
+	zr, err := zip.OpenReader(ckpt)
+	if err != nil {
+		t.Fatalf("open %s: %v", ckpt, err)
+	}
+	defer zr.Close()
+
+	var pkl []byte
+	for _, f := range zr.File {
+		if strings.HasSuffix(f.Name, "/data.pkl") {
+			rc, err := f.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pkl, err = io.ReadAll(rc)
+			rc.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if pkl == nil {
+		t.Fatal("no data.pkl member in the checkpoint")
+	}
+
+	set := runPickleStream(t, pkl, 64*1024)
+	got := pickleTargetsOf(set)
+	want := []string{
+		"collections.OrderedDict",
+		"torch._utils._rebuild_tensor_v2",
+		"torch.FloatStorage",
+		"torch.LongStorage", // the target the byte scan missed
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("targets = %v, want %v", got, want)
+	}
+	if set.Bound.Structural {
+		t.Errorf("the real checkpoint set Bound.Structural: %s", set.Bound.Reason)
 	}
 }
 ```
@@ -1385,193 +1634,628 @@ func TestPickleTargetsCarryAcrossChunks(t *testing.T) {
 - [ ] **Step 2: 跑测试确认失败**
 
 ```bash
-go test ./internal/codeaudit/ -run TestPickleTargets 2>&1 | head -10
+go test ./internal/codeaudit/ -run TestPickleInterpreter 2>&1 | head -10
 ```
 
-预期：编译失败，`undefined: pickleTargets`。
+预期：编译失败，`undefined: runPickleStream`（以及实现侧的 `newPickleScanner` 等新符号）。
 
 - [ ] **Step 3: 实现**
 
-追加到 `binary_evidence.go`：
+追加到 `binary_evidence.go`（文件顶部 import 块补 `"bytes"` 与 `"encoding/binary"`）。
+
+**删除**：这一版把 Task 4 曾经的字节扫描实现整个换掉，所以 `pickleTargets`、`readLineString`、`readShortBinUnicode`、`pickleTarget` 类型、`pickleCarryBytes` 常量，以及旧的 `pickleScanner` 结构与它的 `emit` **都不再存在**——实现者要删掉它们，而不是留着。留着不只是死代码：一个已被真实文件证伪的"按字节找相邻模式"留在树里，会让后来者以为那条路是可选的。
+
+先补 opcode 表与状态机：
 
 ```go
-// Opcodes the pickle scan reads. Only the two that carry a call target matter:
-// everything else in a pickle stream is data, and the extractor's job is to name
-// what the stream asks the unpickler to resolve.
+// The pickle interpreter walks an opcode stream as opcodes, not as bytes.
+//
+// A byte-pattern scanner cannot do this job. A pickle stream interleaves its
+// opcodes with raw data payloads - string and byte operands hold arbitrary
+// bytes, including 0x63 and newlines - so any scan that hunts for "GLOBAL
+// followed by two newline-terminated runs" will eventually read a data byte as
+// an opcode, desynchronise, and then either invent a target out of the data or
+// skip over a real one. Measured on models/examples/Retina-DKD's net_001.pth,
+// whose data.pkl is a 68362-byte protocol-2 stream with four genuine GLOBAL
+// opcodes, that scanner reported 39 targets - two clean, one corrupted, and
+// torch.LongStorage missing because a false-positive match at offset 150
+// swallowed the 685 bytes containing it. The whole point of this channel is to
+// catch "c posix\nsystem\n"; a target that lands where torch.LongStorage landed
+// was being silently dropped.
+//
+// So the parser is an interpreter. It does not build objects and it does not
+// need to: it needs to consume every opcode's operand at the right width so it
+// never loses its place, and it needs to resolve two things - the two inline
+// operands of GLOBAL and INST, and the top two stack items at STACK_GLOBAL. The
+// memo table closes a documented evasion: a stream that MEMOIZEs a module name
+// and fetches it back with BINGET has no target adjacent to STACK_GLOBAL, so no
+// adjacency scan can see it, but the value is still on the stack when the opcode
+// runs.
+
+// pickOperand classifies how an opcode's operand is framed.
+type pickOperand uint8
+
 const (
-	opGlobal       = 'c'  // GLOBAL: module \n name \n
-	opStackGlobal  = 0x93 // STACK_GLOBAL: pops two strings from the stack
-	opShortBinUnic = 0x8c // SHORT_BINUNICODE: 1-byte length, then the bytes
-	opBinUnicode   = 'X'  // BINUNICODE: 4-byte little-endian length, then the bytes
+	pickNone pickOperand = iota
+	pickFixed1
+	pickFixed2
+	pickFixed4
+	pickFixed8
+	pickLine     // bytes through the next newline
+	pickTwoLines // two of those, as GLOBAL and INST encode their operands
+	pickCounted1 // 1-byte little-endian length, then that many payload bytes
+	pickCounted4 // 4-byte little-endian length, then the payload
+	pickCounted8 // 8-byte little-endian length, then the payload
 )
 
-// pickleTarget is a module and attribute pair a pickle stream asks the unpickler
-// to resolve.
-type pickleTarget struct {
-	Module string
-	Name   string
-	Offset int64
+// operandOf names the operand framing of one opcode, and reports whether the byte
+// is an opcode at all.
+//
+// The table is the complete protocol 0-5 set, and completeness is load-bearing.
+// Leaving an opcode out does not degrade a result - it desynchronises the parse at
+// that byte and turns the rest of the stream into noise. A missed opcode is
+// therefore worse than a missed target, and there is no opcode here that is safe
+// to skip: the cost of each is one case, and the cost of a gap is a checkpoint
+// that either loses its targets or blocks the import on a false structural bound.
+func operandOf(op byte) (pickOperand, bool) {
+	switch op {
+	case 0x2e, 0x30, 0x31, 0x32, 0x4e, 0x51, 0x52, 0x61, 0x62,
+		0x64, 0x65, 0x6c, 0x6f, 0x73, 0x74, 0x75, 0x7d, 0x5d, 0x29,
+		0x81, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8f, 0x90, 0x91, 0x92,
+		0x93, 0x94, 0x97, 0x98, 0x28:
+		// STOP POP POP_MARK DUP NONE BINPERSID REDUCE APPEND BUILD DICT
+		// APPENDS LIST OBJ SETITEM TUPLE SETITEMS EMPTY_DICT EMPTY_LIST
+		// EMPTY_TUPLE MARK NEWOBJ TUPLE1..3 NEWTRUE NEWFALSE EMPTY_SET
+		// ADDITEMS FROZENSET NEWOBJ_EX STACK_GLOBAL MEMOIZE NEXT_BUFFER
+		// READONLY_BUFFER: no operand, so the next byte is an opcode.
+		return pickNone, true
+	case 0x4a, 0x6a, 0x72, 0x84:
+		return pickFixed4, true // BININT LONG_BINGET LONG_BINPUT EXT4
+	case 0x47, 0x95:
+		// BINFLOAT, and FRAME: FRAME's 8-byte operand is a length hint for the
+		// bytes that follow it, not a body FRAME consumes, so it is read and
+		// discarded like any other fixed operand.
+		return pickFixed8, true
+	case 0x4b, 0x82, 0x71, 0x68, 0x80:
+		return pickFixed1, true // BININT1 EXT1 BINPUT BINGET PROTO
+	case 0x4d, 0x83:
+		return pickFixed2, true // BININT2 EXT2
+	case 0x46, 0x49, 0x4c, 0x50, 0x53, 0x56, 0x67, 0x70:
+		return pickLine, true // FLOAT INT LONG PERSID STRING UNICODE GET PUT
+	case 0x63, 0x69:
+		return pickTwoLines, true // GLOBAL, INST: module \n name \n
+	case 0x55, 0x43, 0x8a, 0x8c:
+		return pickCounted1, true // SHORT_BINSTRING SHORT_BINBYTES LONG1 SHORT_BINUNICODE
+	case 0x54, 0x58, 0x42, 0x8b:
+		return pickCounted4, true // BINSTRING BINUNICODE BINBYTES LONG4
+	case 0x8d, 0x8e, 0x96:
+		return pickCounted8, true // BINUNICODE8 BINBYTES8 BYTEARRAY8
+	}
+	return pickNone, false
 }
 
-// pickleTargets finds the call targets in one pickle buffer.
+// pickPhase is the interpreter's position within the opcode in progress. It is
+// state that crosses Write calls, which is what a chunk-boundary-safe parser
+// needs instead of the byte window the pattern scanner carried.
+type pickPhase uint8
+
+const (
+	pickPhaseOp pickPhase = iota
+	pickPhaseFixed
+	pickPhaseLine
+	pickPhasePayload
+)
+
+// pickleMaxOperandBytes bounds one operand the interpreter will hold. A module or
+// attribute name beyond this is not a name any rule or reader can act on, so the
+// bytes are consumed - the parse must stay in step - but not kept. The value
+// becomes unresolved, and if it is later used as a target's module or name that
+// is a structural bound rather than a silence: we did not read it, so we will not
+// claim to have looked.
+const pickleMaxOperandBytes = 64 * 1024
+
+// pickSlot is one value-stack or memo entry.
 //
-// It recognises the two encodings of "resolve this attribute": the GLOBAL opcode,
-// which carries the module and name inline, and STACK_GLOBAL, which takes them
-// from two string pushes. It does not interpret the stack, and it does not need
-// to: in a well-formed stream the two pushes sit immediately before the opcode,
-// so the shape is a byte pattern rather than a data-flow question.
-//
-// Nothing is filtered here. Every target the stream names becomes evidence, and
-// which of them is dangerous is decided in the rule table, so that the policy is
-// stated once, in the place a reader looks for it, instead of being split between
-// an allow list of "normal" modules here and a deny list there.
-func pickleTargets(data []byte) []pickleTarget {
-	var out []pickleTarget
-	for i := 0; i < len(data); i++ {
-		switch data[i] {
-		case opGlobal:
-			// GLOBAL carries both operands inline, each newline-terminated. Both
-			// must be present for the shape to be a target: a stray 'c' byte in
-			// machine code followed by no newline is not a call.
-			mod, nMod, ok := readLineString(data[i+1:])
-			if !ok {
-				continue
-			}
-			name, nName, ok := readLineString(data[i+1+nMod:])
-			if !ok {
-				continue
-			}
-			out = append(out, pickleTarget{Module: mod, Name: name, Offset: int64(i)})
-			i += nMod + nName - 1
-		case opShortBinUnic:
-			mod, n1, ok1 := readShortBinUnicode(data[i:])
-			if !ok1 || i+n1 >= len(data) || data[i+n1] != opShortBinUnic {
-				continue
-			}
-			name, n2, ok2 := readShortBinUnicode(data[i+n1:])
-			if !ok2 || i+n1+n2 >= len(data) || data[i+n1+n2] != opStackGlobal {
-				continue
-			}
-			out = append(out, pickleTarget{Module: mod, Name: name, Offset: int64(i)})
-			i += n1 + n2 - 1
-		}
-	}
-	return out
+// Only string-ness and the string itself are kept. The interpreter never has to
+// know what an object is; it has to know whether the top two slots at
+// STACK_GLOBAL are module and name strings, and which strings they are.
+// unresolved marks a value whose bytes were not kept - an operand past the cap, or
+// a memo index never written - so that a target formed from it is refused rather
+// than guessed.
+type pickSlot struct {
+	mark       bool
+	str        bool
+	unresolved bool
+	value      string
+}
+
+// pickleScanner finds the call targets in one pickle stream.
+type pickleScanner struct {
+	set *EvidenceSet
+
+	// off is the absolute file offset of buf[0], so an evidence offset is the
+	// opcode's offset in the file and not an offset in the current chunk.
+	off int64
+	// buf holds bytes received but not yet consumed. A counted operand larger
+	// than pickleMaxOperandBytes is consumed without being stored, so buf stays
+	// bounded by the cap plus one fixed operand.
+	buf []byte
+
+	phase     pickPhase
+	op        byte
+	opOff     int64
+	linesLeft int
+	arg       []byte
+	need      int64
+	sizing    bool
+	keep      bool
+
+	stack []pickSlot
+	memo  map[int]pickSlot
+
+	// stopped ends parsing; hitStop distinguishes the pickle's own STOP from an
+	// abort, so the trailing-bytes notice is not emitted after an abort.
+	stopped  bool
+	hitStop  bool
+	trailing int64
+}
+
+func newPickleScanner(set *EvidenceSet) *pickleScanner {
+	return &pickleScanner{set: set, memo: map[int]pickSlot{}}
 }
 ```
 
-继续追加：
+继续追加读循环与状态推进：
 
 ```go
-// readLineString reads one newline-terminated string, as GLOBAL encodes its two
-// operands. It returns the string, the number of bytes consumed including the
-// terminator, and whether the shape held.
-//
-// The caller advances by n rather than by the returned slice: both operands are
-// read from the same buffer at computed offsets, and returning a slice as well
-// would be a second way to say where the next operand starts, one of which would
-// eventually be wrong.
-func readLineString(data []byte) (value string, n int, ok bool) {
-	if len(data) == 0 {
-		return "", 0, false
-	}
-	end := bytes.IndexByte(data, '\n')
-	if end < 0 {
-		return "", 0, false
-	}
-	return string(data[:end]), end + 1, true
-}
-
-// readShortBinUnicode reads a SHORT_BINUNICODE operand: the opcode, a one-byte
-// length, then that many bytes.
-func readShortBinUnicode(data []byte) (value string, n int, ok bool) {
-	if len(data) < 2 || data[0] != opShortBinUnic {
-		return "", 0, false
-	}
-	l := int(data[1])
-	if len(data) < 2+l {
-		return "", 0, false
-	}
-	return string(data[2 : 2+l]), 2 + l, true
-}
-
-// pickleScanner finds pickle targets in a byte stream.
-//
-// It carries a window between reads because a target can straddle a chunk
-// boundary, and a scan that missed those would be input-dependent in exactly the
-// way the completeness scheme exists to avoid. The window is small and fixed:
-// the longest shape it must hold is two SHORT_BINUNICODE operands of at most 255
-// bytes each plus the opcodes.
-type pickleScanner struct {
-	set   *EvidenceSet
-	carry []byte
-	at    int64
-}
-
-// pickleCarryBytes is the window held between reads.
-const pickleCarryBytes = 1024
-
-func newPickleScanner(set *EvidenceSet) *pickleScanner {
-	if set.seen == nil {
-		set.seen = map[string]bool{}
-	}
-	return &pickleScanner{set: set}
-}
-
+// Write implements io.Writer. All parse state crosses calls, so the result is
+// independent of where the chunk boundaries fall; a boundary inside an operand and
+// a boundary on an opcode are the same thing to this loop.
 func (p *pickleScanner) Write(chunk []byte) (int, error) {
-	buf := append(p.carry, chunk...)
-	for _, t := range pickleTargets(buf) {
-		p.emit(t.Module+"."+t.Name, p.at+t.Offset)
+	if p.stopped {
+		p.trailing += int64(len(chunk))
+		return len(chunk), nil
 	}
-	keep := pickleCarryBytes
-	if keep > len(buf) {
-		keep = len(buf)
+	p.buf = append(p.buf, chunk...)
+	i := 0
+	for i < len(p.buf) {
+		n := p.step(p.buf[i:], p.off+int64(i))
+		i += n
+		if p.stopped {
+			p.trailing += int64(len(p.buf) - i)
+			i = len(p.buf)
+			break
+		}
+		if n == 0 {
+			break
+		}
 	}
-	p.carry = append(p.carry[:0], buf[len(buf)-keep:]...)
-	p.at += int64(len(buf) - keep)
+	p.off += int64(i)
+	p.buf = append(p.buf[:0], p.buf[i:]...)
 	return len(chunk), nil
 }
 
-// Flush drops the carry. It exists so the scanner satisfies the same lifecycle
-// as the string scanner; unlike that one it has nothing pending to emit, because
-// a target needs its trailing opcode to be recognised at all.
-func (p *pickleScanner) Flush() {}
-
-// emit records one pickle target as evidence. Targets dedupe the same way
-// strings do: a checkpoint that rebuilds ten thousand tensors names the same
-// rebuilder ten thousand times, and the report needs it once.
-func (p *pickleScanner) emit(text string, at int64) {
-	if p.set.seen["pickle:"+text] {
+// Flush ends the stream. It is where the two completeness claims are made: a
+// stream that did not reach STOP was not read to the end of its structure, and a
+// stream that did has trailing bytes outside that structure - visible in a
+// notice, but not a bound, because the unpickler stops at STOP too.
+func (p *pickleScanner) Flush() {
+	if !p.stopped {
+		if p.off > 0 && p.phase != pickPhaseOp {
+			p.set.markStructural(fmt.Sprintf("pickle stream ended mid-opcode at offset %d", p.off))
+		} else if p.off > 0 {
+			p.set.markStructural(fmt.Sprintf("pickle stream ended at offset %d without STOP", p.off))
+		}
 		return
 	}
-	p.set.seen["pickle:"+text] = true
-	p.set.Lines = append(p.set.Lines, EvidenceLine{Source: SourcePickle, Offset: at, Text: text})
+	if p.hitStop && p.trailing > 0 {
+		p.set.add(SourceNotice, 0,
+			fmt.Sprintf("%d byte(s) after the pickle STOP were not interpreted", p.trailing))
+	}
+}
+
+// step consumes as much of one opcode as b holds and returns the number of bytes
+// consumed, or 0 when it needs more. It reports the absolute offset of the opcode
+// it is executing because that, not the operand's offset, is what an evidence line
+// carries.
+func (p *pickleScanner) step(b []byte, absOff int64) int {
+	switch p.phase {
+	case pickPhaseOp:
+		if len(b) == 0 {
+			return 0
+		}
+		op := b[0]
+		desc, ok := operandOf(op)
+		if !ok {
+			// We cannot know this byte's operand width, so we cannot know where
+			// the next opcode begins. Guessing is what desynchronises; stopping
+			// without a bound would let a later opcode hide, so the parse ends
+			// here and the file is recorded as not fully read.
+			p.set.markStructural(fmt.Sprintf("unknown pickle opcode 0x%02x at offset %d", op, absOff))
+			p.stopped = true
+			return 1
+		}
+		p.op = op
+		p.opOff = absOff
+		p.arg = p.arg[:0]
+		p.keep = true
+		p.sizing = false
+		switch desc {
+		case pickNone:
+			p.exec(op)
+			return 1
+		case pickFixed1:
+			p.phase, p.need = pickPhaseFixed, 1
+		case pickFixed2:
+			p.phase, p.need = pickPhaseFixed, 2
+		case pickFixed4:
+			p.phase, p.need = pickPhaseFixed, 4
+		case pickFixed8:
+			p.phase, p.need = pickPhaseFixed, 8
+		case pickLine:
+			p.phase, p.need, p.linesLeft = pickPhaseLine, -1, 1
+		case pickTwoLines:
+			p.phase, p.need, p.linesLeft = pickPhaseLine, -1, 2
+		case pickCounted1:
+			p.phase, p.need, p.sizing = pickPhaseFixed, 1, true
+		case pickCounted4:
+			p.phase, p.need, p.sizing = pickPhaseFixed, 4, true
+		case pickCounted8:
+			p.phase, p.need, p.sizing = pickPhaseFixed, 8, true
+		}
+		return 1
+
+	case pickPhaseFixed:
+		n := len(b)
+		if int64(n) > p.need {
+			n = int(p.need)
+		}
+		p.arg = append(p.arg, b[:n]...)
+		p.need -= int64(n)
+		if p.need > 0 {
+			return n
+		}
+		if p.sizing {
+			length := leUint(p.arg)
+			p.arg = p.arg[:0]
+			p.need = length
+			p.phase = pickPhasePayload
+			if length > pickleMaxOperandBytes {
+				p.keep = false
+			}
+			return n
+		}
+		p.phase = pickPhaseOp
+		p.exec(p.op)
+		return n
+
+	case pickPhaseLine:
+		idx := bytes.IndexByte(b, '\n')
+		if idx < 0 {
+			p.appendArg(b)
+			return len(b)
+		}
+		p.appendArg(b[:idx+1])
+		p.linesLeft--
+		if p.linesLeft > 0 {
+			return idx + 1
+		}
+		p.phase = pickPhaseOp
+		p.exec(p.op)
+		return idx + 1
+
+	case pickPhasePayload:
+		n := len(b)
+		if int64(n) > p.need {
+			n = int(p.need)
+		}
+		if p.keep {
+			p.arg = append(p.arg, b[:n]...)
+		}
+		p.need -= int64(n)
+		if p.need > 0 {
+			return n
+		}
+		p.phase = pickPhaseOp
+		p.exec(p.op)
+		return n
+	}
+	return 0
+}
+
+// appendArg keeps operand bytes up to the cap. Past the cap the value is dropped
+// but the bytes are still consumed by the caller, so the parse stays in step.
+func (p *pickleScanner) appendArg(b []byte) {
+	if !p.keep {
+		return
+	}
+	if len(p.arg)+len(b) > pickleMaxOperandBytes {
+		p.keep = false
+		p.arg = p.arg[:0]
+		return
+	}
+	p.arg = append(p.arg, b...)
+}
+
+// leUint reads a little-endian unsigned length of len(b) bytes. The 8-byte case is
+// clamped: an 8-byte length is attacker-controlled and can name a byte count past
+// any real file, and an unclamped value would overflow the skip counter.
+func leUint(b []byte) int64 {
+	switch len(b) {
+	case 1:
+		return int64(b[0])
+	case 2:
+		return int64(binary.LittleEndian.Uint16(b))
+	case 4:
+		return int64(binary.LittleEndian.Uint32(b))
+	case 8:
+		v := binary.LittleEndian.Uint64(b)
+		if v > 1<<62 {
+			return 1 << 62
+		}
+		return int64(v)
+	}
+	return 0
 }
 ```
 
-`emit` 用 `"pickle:"+text` 作去重键，与 strings 的裸文本键分开：同一个 `system` 既可能是字符串字面量也可能是 pickle 目标，两者来源不同、都要出现在证据列表里。
+继续追加栈效应与目标产出：
 
-- [ ] **Step 4: 把 pickle 扫描接进 `streamEvidence`**
+```go
+func (p *pickleScanner) push(s pickSlot) { p.stack = append(p.stack, s) }
 
-修改 `streamEvidence` 的读循环，使一次遍历同时产出三类证据：
+func (p *pickleScanner) pop(n int) {
+	if n > len(p.stack) {
+		n = len(p.stack)
+	}
+	p.stack = p.stack[:len(p.stack)-n]
+}
+
+// popToMark discards stack entries through the nearest mark. A missing mark is
+// tolerated: it can only mis-shape the value stack, never the byte stream, and
+// refusing here would block a file on a stack-model mistake - the one failure mode
+// that would make the channel useless.
+func (p *pickleScanner) popToMark() {
+	for i := len(p.stack) - 1; i >= 0; i-- {
+		if p.stack[i].mark {
+			p.stack = p.stack[:i]
+			return
+		}
+	}
+	p.stack = p.stack[:0]
+}
+
+func (p *pickleScanner) top() (pickSlot, bool) {
+	if len(p.stack) == 0 {
+		return pickSlot{}, false
+	}
+	return p.stack[len(p.stack)-1], true
+}
+
+// exec applies one opcode's stack effect and resolves its target, if it names one.
+func (p *pickleScanner) exec(op byte) {
+	switch op {
+	case 0x28: // MARK
+		p.push(pickSlot{mark: true})
+	case 0x30, 0x61, 0x62: // POP APPEND BUILD
+		p.pop(1)
+	case 0x73: // SETITEM
+		p.pop(2)
+	case 0x31, 0x65, 0x75, 0x90: // POP_MARK APPENDS SETITEMS ADDITEMS
+		p.popToMark()
+	case 0x64, 0x6c, 0x74, 0x6f, 0x91: // DICT LIST TUPLE OBJ FROZENSET
+		p.popToMark()
+		p.push(pickSlot{})
+	case 0x69: // INST: module and name inline, then the args popped to the mark.
+		// The protocol-0/1 spelling of "resolve this attribute", so it names a
+		// target the same way GLOBAL does.
+		p.recordTarget(p.opOff)
+		p.popToMark()
+		p.push(pickSlot{})
+	case 0x32: // DUP
+		if s, ok := p.top(); ok {
+			p.push(s)
+		}
+	case 0x2e: // STOP
+		p.stopped, p.hitStop = true, true
+	case 0x80, 0x95: // PROTO, FRAME: operand read, nothing to apply
+	case 0x4e, 0x88, 0x89, 0x7d, 0x5d, 0x29, 0x8f, 0x97:
+		// NONE NEWTRUE NEWFALSE EMPTY_DICT EMPTY_LIST EMPTY_TUPLE EMPTY_SET
+		// NEXT_BUFFER
+		p.push(pickSlot{})
+	case 0x98: // READONLY_BUFFER: rewrites the top, net stack effect zero
+	case 0x46, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x47, 0x8a, 0x8b, 0x50:
+		// FLOAT INT BININT BININT1 LONG BININT2 BINFLOAT LONG1 LONG4 PERSID
+		p.push(pickSlot{})
+	case 0x51: // BINPERSID: pops the persistent id the loader will resolve
+		p.pop(1)
+		p.push(pickSlot{})
+	case 0x52, 0x81: // REDUCE, NEWOBJ
+		p.pop(2)
+		p.push(pickSlot{})
+	case 0x92: // NEWOBJ_EX
+		p.pop(3)
+		p.push(pickSlot{})
+	case 0x82, 0x83, 0x84: // EXT1 EXT2 EXT4
+		// The callable comes from a process-global extension registry the stream
+		// does not name, so there is no target to record.
+		p.push(pickSlot{})
+	case 0x85: // TUPLE1
+		p.pop(1)
+		p.push(pickSlot{})
+	case 0x86: // TUPLE2
+		p.pop(2)
+		p.push(pickSlot{})
+	case 0x87: // TUPLE3
+		p.pop(3)
+		p.push(pickSlot{})
+	case 0x53, 0x56: // STRING, UNICODE: text operands
+		p.push(pickSlot{str: p.keep, unresolved: !p.keep, value: string(bytes.TrimRight(p.arg, "\n"))})
+	case 0x54, 0x55, 0x58, 0x8c, 0x8d, 0x42, 0x43, 0x8e, 0x96:
+		// BINSTRING SHORT_BINSTRING BINUNICODE SHORT_BINUNICODE BINUNICODE8
+		// BINBYTES SHORT_BINBYTES BINBYTES8 BYTEARRAY8. Byte operands are kept
+		// string-like too: a module name spelled as bytes is not a valid
+		// STACK_GLOBAL in CPython, so it cannot appear in a stream that runs, but
+		// refusing to look at it would trade a false positive that cannot happen
+		// for a blind spot that can.
+		p.push(pickSlot{str: p.keep, unresolved: !p.keep, value: string(p.arg)})
+	case 0x63: // GLOBAL: module and name inline
+		if !p.keep {
+			p.set.markStructural(fmt.Sprintf(
+				"GLOBAL at offset %d has an operand past the %d-byte cap", p.opOff, pickleMaxOperandBytes))
+		}
+		p.recordTarget(p.opOff)
+		p.push(pickSlot{})
+	case 0x68, 0x6a, 0x67: // BINGET LONG_BINGET GET
+		var idx int
+		if op == 0x67 {
+			idx = atoiSafe(string(bytes.TrimRight(p.arg, "\n")))
+		} else {
+			idx = int(leUint(p.arg))
+		}
+		if s, ok := p.memo[idx]; ok {
+			p.push(s)
+			return
+		}
+		// A memo index the stream never wrote cannot be resolved. Whether that
+		// matters is decided where the value is used, not here: pushing unresolved
+		// and bounding only if STACK_GLOBAL consumes it keeps a bound off streams
+		// where the reference is harmless.
+		p.push(pickSlot{unresolved: true})
+	case 0x71, 0x72, 0x70, 0x94: // BINPUT LONG_BINPUT PUT MEMOIZE
+		var idx int
+		switch op {
+		case 0x70:
+			idx = atoiSafe(string(bytes.TrimRight(p.arg, "\n")))
+		case 0x94:
+			// MEMOIZE stores at len(memo), matching CPython's dict-length rule so
+			// that a stream mixing explicit PUT with MEMOIZE indexes the same
+			// slots the unpickler would.
+			idx = len(p.memo)
+		default:
+			idx = int(leUint(p.arg))
+		}
+		if s, ok := p.top(); ok {
+			p.memo[idx] = s
+		} else {
+			p.memo[idx] = pickSlot{}
+		}
+	case 0x93: // STACK_GLOBAL: the top two strings are the module and the name
+		if len(p.stack) < 2 {
+			p.push(pickSlot{})
+			return
+		}
+		name := p.stack[len(p.stack)-1]
+		mod := p.stack[len(p.stack)-2]
+		p.pop(2)
+		if mod.unresolved || name.unresolved {
+			// The stream asked to resolve a target we could not name. Silence here
+			// is the one thing not allowed: it would be a target we did not read
+			// while reporting the file as read.
+			p.set.markStructural(fmt.Sprintf(
+				"STACK_GLOBAL at offset %d reads an operand the interpreter could not resolve", p.opOff))
+			p.push(pickSlot{})
+			return
+		}
+		if mod.str && name.str {
+			p.emit(mod.value, name.value, p.opOff)
+		}
+		p.push(pickSlot{})
+	}
+}
+
+// recordTarget emits the module.name pair a GLOBAL or INST operand carries. The
+// operand bytes are "module\nname\n", both segments newline-terminated, which is
+// why they are read as a pair and not as two independent strings.
+func (p *pickleScanner) recordTarget(off int64) {
+	if !p.keep {
+		return
+	}
+	i := bytes.IndexByte(p.arg, '\n')
+	if i < 0 {
+		return
+	}
+	rest := p.arg[i+1:]
+	j := bytes.IndexByte(rest, '\n')
+	if j < 0 {
+		return
+	}
+	mod, name := string(p.arg[:i]), string(rest[:j])
+	if mod == "" || name == "" {
+		return
+	}
+	p.emit(mod, name, off)
+}
+
+// emit records one target. It goes through add so that the cap and the
+// (source, text) deduplication are the set's, not this scanner's: a checkpoint
+// that rebuilds ten thousand tensors names the same rebuilder ten thousand times,
+// and the listing needs it once.
+func (p *pickleScanner) emit(mod, name string, off int64) {
+	p.set.add(SourcePickle, off, mod+"."+name)
+}
+
+// atoiSafe parses the decimal text operand GET and PUT carry. It stops at the
+// first non-digit rather than failing: the operand is already the right shape (a
+// line the caller could not mis-parse), and a malformed index can only address a
+// memo slot that does not exist, which is the dangling-reference case handled
+// above.
+func atoiSafe(s string) int {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return n
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+```
+
+- [ ] **Step 4: 把 pickle 解释器接进采集路径（带门控）**
+
+先定下门控规则，后面 Task 6、Task 7 按它各自接线时都引用这条：
+
+**解释器只在"被声明为 pickle 的流"上运行**：(a) `set.Kind == KindPickle` 的整文件路径（`streamEvidence` 与 `streamHeadAndTail`）；(b) 分类为 `KindPickle` 的容器成员（`streamReaderEvidence` 传 `pickleScan=true`）；(c) 解压后头部嗅探为 pickle 的 gzip 流（`isPickleStream`）。**`KindELF` 以及其它任何类型绝不进解释器**：解释器一旦运行就提交于一次解析，非 pickle 的首字节不是 opcode，会立刻置 `Bound.Structural`，而对可执行类型（`isExecutableKind`：`KindELF`/`KindPickle`/`KindArchive`/`KindCompressed`）`Bound.Structural` 会**阻断导入**——一个 `.so`、一个 `.whl`、一个 `.pt` 都会因此被判为未完整扫描而删包。这一条是承重的，后来者不能把它"简化"成无条件运行。
+
+本步骤只改 Task 2 写的 `streamEvidence`；Task 6 的 `streamReaderEvidence` 与 Task 7 的 `streamHeadAndTail` 在各自的任务里做同一门控（它们还没被定义，不能在这里改）。
+
+修改 `streamEvidence` 的读循环，使一次遍历在门控成立时同时产出 strings 与 pickle 两类证据：
 
 ```go
 	scanner := newStringScanner(set, cfg)
-	pickles := newPickleScanner(set)
-	...
-		if n > 0 {
-			chunk := buf[:n]
+	// The interpreter runs only where the file is claimed to be a pickle. A
+	// byte-pattern scan was harmless on any input because it never committed to a
+	// parse; this one commits, and an ELF's first byte is not an opcode, so
+	// running it over a shared object would set Bound.Structural - and for a
+	// shared object that bound blocks the import.
+	var pickles *pickleScanner
+	if set.Kind == KindPickle {
+		pickles = newPickleScanner(set)
+	}
+```
+
+然后在 `chunk := buf[:n]` 之后：
+
+```go
 			if _, wErr := scanner.Write(chunk); wErr != nil {
 				return fmt.Errorf("scan %s: %w", path, wErr)
 			}
-			if _, wErr := pickles.Write(chunk); wErr != nil {
-				return fmt.Errorf("scan %s: %w", path, wErr)
+			if pickles != nil {
+				if _, wErr := pickles.Write(chunk); wErr != nil {
+					return fmt.Errorf("scan %s: %w", path, wErr)
+				}
 			}
 			read += int64(n)
-		}
 ```
 
-并在 `scanner.Flush()` 后加 `pickles.Flush()`。
+并在末尾 `scanner.Flush()` 之后加：
+
+```go
+	if pickles != nil {
+		pickles.Flush()
+	}
+```
 
 - [ ] **Step 5: 跑测试确认通过**
 
@@ -1586,7 +2270,7 @@ go test ./internal/codeaudit/ -run 'TestPickle|TestString|TestStream|TestShannon
 ```bash
 gofmt -l internal/codeaudit/ ; go vet ./internal/codeaudit/
 git add internal/codeaudit/binary_evidence.go internal/codeaudit/binary_evidence_test.go
-git commit -m "feat(audit): extract pickle call targets from binary streams"
+git commit -m "feat(audit): resolve pickle call targets with an opcode interpreter"
 ```
 
 ---
@@ -2349,22 +3033,29 @@ func TestCollectArchiveEvidenceBoundsMemberCount(t *testing.T) {
 	}
 }
 
-// TestCollectCompressedEvidence pins gzip: the stream is decompressed through
-// the same evidence machinery, so a pickle hidden in a .gz is read as a pickle.
+// TestCollectCompressedEvidence pins both directions of the gzip gate. The
+// decompressed bytes are a file of their own, so the pickle interpreter runs on
+// them only if they sniff as a pickle: a pickle hidden in a .gz is read as one,
+// and a gzip that is not a pickle gets the strings pass alone rather than a
+// structural bound on KindCompressed - which is executable, so a bound there
+// would block every .gz in every package.
 func TestCollectCompressedEvidence(t *testing.T) {
 	dir := t.TempDir()
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
-	if _, err := zw.Write([]byte("\x80\x04cposix\nsystem\n.PADDING_PADDING")); err != nil {
-		t.Fatal(err)
+	gz := func(name, content string) string {
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		if _, err := zw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return writeTestBytes(t, dir, name, buf.Bytes())
 	}
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	path := writeTestBytes(t, dir, "payload.gz", buf.Bytes())
 
-	set := newTestEvidence(path, KindCompressed)
-	if err := collectCompressed(path, set, DefaultBinaryConfig()); err != nil {
+	picklePath := gz("payload.gz", "\x80\x04cposix\nsystem\n.PADDING_PADDING")
+	set := newTestEvidence(picklePath, KindCompressed)
+	if err := collectCompressed(picklePath, set, DefaultBinaryConfig()); err != nil {
 		t.Fatalf("collectCompressed: %v", err)
 	}
 	var pickles []string
@@ -2375,6 +3066,22 @@ func TestCollectCompressedEvidence(t *testing.T) {
 	}
 	if !containsString(pickles, "posix.system") {
 		t.Errorf("pickle evidence = %v, want [posix.system]", pickles)
+	}
+
+	// A gzip of bytes that are not a pickle must not produce pickle evidence and
+	// must not be bounded: the interpreter never ran.
+	textPath := gz("notes.gz", "the posix system call interface is described here")
+	set = newTestEvidence(textPath, KindCompressed)
+	if err := collectCompressed(textPath, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectCompressed: %v", err)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourcePickle {
+			t.Errorf("pickle evidence %q from a gzip that is not a pickle", l.Text)
+		}
+	}
+	if set.Bound.Structural {
+		t.Errorf("a gzip that is not a pickle set Bound.Structural: %s", set.Bound.Reason)
 	}
 }
 ```
@@ -2391,7 +3098,7 @@ go test ./internal/codeaudit/ -run 'TestCollectArchive|TestCollectCompressed' 2>
 
 - [ ] **Step 3: 实现**
 
-追加到 `binary_evidence.go`（import 块补 `"archive/zip"`、`"compress/gzip"`）：
+追加到 `binary_evidence.go`（import 块补 `"archive/zip"`、`"bufio"`、`"compress/gzip"`；`isPickleStream` 由 Task 1 提供，这里直接用）：
 
 ```go
 // collectArchive reads a zip-based container: PyTorch .pt, wheels, .npz, jars.
@@ -2401,8 +3108,13 @@ go test ./internal/codeaudit/ -run 'TestCollectArchive|TestCollectCompressed' 2>
 // stream, and a package can ship a shared object the same way. Every member is
 // sniffed, and the ones that sniff as ELF or pickle are read with the same
 // extractors used for a standalone file - one level deep, because a container
-// inside a container is a nesting depth this version does not follow and says so
-// through the bound.
+// inside a container is a nesting depth this version does not follow.
+//
+// A member that sniffs as an archive is skipped, and the skip is silent: it stays
+// visible as a member line but does not set Bound. That is deliberate and its cost
+// is named in the plan's boundary section (a checkpoint shipped only inside a zip
+// never reaches its data.pkl), so it is not a hole to be plugged here by
+// recursing, which would need its own depth and budget model.
 //
 // The decompressed-byte budget is shared across the archive rather than applied
 // per member: a zip bomb is many small members, not one large one, so a per-member
@@ -2511,17 +3223,22 @@ func collectELFMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) erro
 		set.markStructural(fmt.Sprintf("member %s truncated at the byte budget", member.Name))
 	}
 
-	// The strings and pickle passes run over the member as well as the structural
-	// parse below. Without this, an ELF nested in a .whl would be the one
-	// executable format in the channel read without a strings pass - its sibling
-	// member kinds already get one - and a nested ELF is precisely where a stapled
+	// The strings pass runs over the member as well as the structural parse
+	// below. Without this, an ELF nested in a .whl would be the one executable
+	// format in the channel read without a strings pass - its sibling member
+	// kinds already get one - and a nested ELF is precisely where a stapled
 	// payload would be put. The bytes are already in memory, so the pass is a scan
 	// over a slice rather than a second read.
+	//
+	// pickleScan is false, and it must stay false: this member was classified as
+	// an ELF, and the interpreter commits to a parse, so running it here would set
+	// Bound.Structural on an executable kind and block the import of every wheel
+	// that ships a shared object.
 	//
 	// A zero budget means unlimited here: the read that filled data was the
 	// bounded one, and bounding the scan of an already-bounded slice would only
 	// lose the tail of it.
-	if err := streamReaderEvidence(bytes.NewReader(data), set, cfg, 0, ""); err != nil {
+	if err := streamReaderEvidence(bytes.NewReader(data), set, cfg, 0, "", false); err != nil {
 		return err
 	}
 
@@ -2532,9 +3249,10 @@ func collectELFMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) erro
 	return collectELFReader(bytes.NewReader(data), set, cfg, member.Name)
 }
 
-// streamReaderEvidence runs both byte extractors over a stream, stopping after
+// streamReaderEvidence runs the byte extractors over a stream, stopping after
 // budget bytes and recording the cut as a structural bound. A budget of zero or
-// less means the stream is read to the end.
+// less means the stream is read to the end. The strings pass always runs; the
+// pickle interpreter runs only when pickleScan is true.
 //
 // It exists because four call sites need exactly this loop - a pickle member, an
 // ELF member, a decompressed gzip stream, and a whole file - and the bound has to
@@ -2544,18 +3262,31 @@ func collectELFMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) erro
 // slightly differently would be a hole in the fail-closed rule rather than a
 // style difference.
 //
+// pickleScan is a parameter rather than a read of set.Kind because a member's
+// kind is the member's, not the set's: the set is the archive, and every member
+// of an archive would otherwise be judged by the archive's kind. The caller
+// already classified the member to decide to read it, so it is the caller that
+// knows whether this stream is a claimed pickle. The gate exists because the
+// interpreter commits to a parse: a byte it cannot classify as an opcode ends the
+// parse with a structural bound, and a structural bound on an executable kind
+// blocks the import - so an interpreter run over anything but a claimed pickle is
+// a bound on a file that is not malformed at all.
+//
 // The budget is applied inside the read rather than between reads, for the same
-// reason it is in streamEvidence: checking at the top of the loop lets one 64 KiB
-// read walk past a much smaller budget. When the budget is spent, one probe byte
-// decides whether it actually cut anything - a stream that ends exactly at the
-// budget was read completely, and marking it bounded would fail a clean scan for
-// no reason.
+// reason it is in streamEvidence: checking it at the top of the loop lets one 64
+// KiB read walk past a much smaller budget. When the budget is spent, one probe
+// byte decides whether it actually cut anything - a stream that ends exactly at
+// the budget was read completely, and marking it bounded would fail a clean scan
+// for no reason.
 //
 // bounded is the caller's wording for the cut, because the four sites name
 // different budgets in their reasons.
-func streamReaderEvidence(rc io.Reader, set *EvidenceSet, cfg BinaryConfig, budget int64, bounded string) error {
+func streamReaderEvidence(rc io.Reader, set *EvidenceSet, cfg BinaryConfig, budget int64, bounded string, pickleScan bool) error {
 	scanner := newStringScanner(set, cfg)
-	pickles := newPickleScanner(set)
+	var pickles *pickleScanner
+	if pickleScan {
+		pickles = newPickleScanner(set)
+	}
 
 	var read int64
 	buf := make([]byte, evidenceReadChunk)
@@ -2576,8 +3307,10 @@ func streamReaderEvidence(rc io.Reader, set *EvidenceSet, cfg BinaryConfig, budg
 			if _, err := scanner.Write(buf[:n]); err != nil {
 				return err
 			}
-			if _, err := pickles.Write(buf[:n]); err != nil {
-				return err
+			if pickles != nil {
+				if _, err := pickles.Write(buf[:n]); err != nil {
+					return err
+				}
 			}
 			read += int64(n)
 		}
@@ -2589,12 +3322,17 @@ func streamReaderEvidence(rc io.Reader, set *EvidenceSet, cfg BinaryConfig, budg
 		}
 	}
 	scanner.Flush()
-	pickles.Flush()
+	if pickles != nil {
+		pickles.Flush()
+	}
 	return nil
 }
 
-// collectPickleMember runs the byte extractors over a container member, tagged
-// so a reader can tell a member's evidence from the archive's own.
+// collectPickleMember runs the byte extractors over a pickle container member.
+//
+// pickleScan is true because the dispatcher classified this member as KindPickle
+// before calling, and a claimed pickle is exactly the stream the interpreter is
+// allowed to commit to.
 func collectPickleMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) error {
 	rc, err := member.Open()
 	if err != nil {
@@ -2603,7 +3341,7 @@ func collectPickleMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) e
 	defer rc.Close()
 
 	return streamReaderEvidence(rc, set, cfg, cfg.MaxArchiveMemberBytes,
-		fmt.Sprintf("member %s exceeds the byte budget", member.Name))
+		fmt.Sprintf("member %s exceeds the byte budget", member.Name), true)
 }
 
 // collectCompressed reads a single-stream compressed file. Only the formats the
@@ -2626,12 +3364,28 @@ func collectCompressed(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	}
 	defer zr.Close()
 
+	// The decompressed bytes are a second file with their own kind, and they are
+	// the one place the pickle gate has to be decided by sniffing rather than by a
+	// classification the caller already made. It matters that it is decided at
+	// all: a gzip of a tar is the common case (models/audit/holdout-sources/sr.tgz
+	// is one), its bytes are not an opcode stream, and running the interpreter over
+	// them would set a structural bound on KindCompressed - which is executable -
+	// and block the import of every .gz that is not itself a pickle.
+	//
+	// A buffered reader peeks the head and then hands the same bytes on, so the
+	// sniff reads nothing twice and costs no second pass. The path argument to
+	// isPickleStream is empty on purpose: the extension belongs to the compressed
+	// file, not to what it expands to.
+	br := bufio.NewReaderSize(zr, sniffBytes)
+	head, _ := br.Peek(sniffBytes)
+	pickleScan := isPickleStream(head, "")
+
 	// The decompressed length is attacker-controlled, so the budget is what keeps
 	// a small .gz from expanding into an unbounded scan - the same guard the
 	// archive path uses, and enforced through the same helper so the two cannot
 	// drift.
-	if err := streamReaderEvidence(zr, set, cfg, cfg.MaxArchiveMemberBytes,
-		fmt.Sprintf("decompressed stream exceeds %d bytes", cfg.MaxArchiveMemberBytes)); err != nil {
+	if err := streamReaderEvidence(br, set, cfg, cfg.MaxArchiveMemberBytes,
+		fmt.Sprintf("decompressed stream exceeds %d bytes", cfg.MaxArchiveMemberBytes), pickleScan); err != nil {
 		return fmt.Errorf("read gzip %s: %w", path, err)
 	}
 	return nil
@@ -2750,28 +3504,32 @@ func TestCollectEvidenceRoutesByKind(t *testing.T) {
 	}
 }
 
-// TestCollectEvidenceRunsThePickleScanOnEveryStream pins the universal half of
-// the pickle rule: the scan is not restricted to files named or sniffed as
-// pickles, so a pickle appended to a tensor blob - a shape whose head carries no
-// pickle magic - is still read as what it is.
-func TestCollectEvidenceRunsThePickleScanOnEveryStream(t *testing.T) {
+// TestCollectEvidenceDoesNotInterpretNonPicklesAsPickles pins the reversal of
+// what this test used to assert. The plan previously ran the pickle scan on every
+// stream unconditionally, which was harmless only because that scan was a
+// byte-pattern match that never committed to a parse. The interpreter commits: it
+// either reads the bytes as opcodes or records that it could not, and an ELF's
+// first byte (\x7f) is not an opcode - so running it over a shared object would set
+// Bound.Structural, and because KindELF is an executable kind that bound withholds
+// a clean verdict and blocks the import. Every .so in every model package would be
+// blocked. The interpreter therefore runs only on a stream that is claimed to be a
+// pickle (Task 4's gate rule), and a non-pickle gets the strings pass alone.
+func TestCollectEvidenceDoesNotInterpretNonPicklesAsPickles(t *testing.T) {
 	dir := t.TempDir()
-	content := []byte("SAFETENSORS_HEADER\x00\x00\x00\x00")
-	content = append(content, []byte("\x80\x04cposix\nsystem\n.")...)
-	path := writeTestBytes(t, dir, "w.safetensors", content)
+	path := writeTestBytes(t, dir, "libkernel.so",
+		elfFixtureBytes(t, elfSpec{imports: []string{"connect"}}))
 
-	set := CollectEvidence(path, KindRaw, DefaultBinaryConfig())
+	set := CollectEvidence(path, KindELF, DefaultBinaryConfig())
 	if set.Err != nil {
 		t.Fatalf("CollectEvidence: %v", set.Err)
 	}
-	var pickles []string
+	if set.Bound.Structural {
+		t.Fatalf("an ELF tripped a structural bound (%s); the interpreter ran on a non-pickle", set.Bound.Reason)
+	}
 	for _, l := range set.Lines {
 		if l.Source == SourcePickle {
-			pickles = append(pickles, l.Text)
+			t.Errorf("pickle evidence %q produced from an ELF", l.Text)
 		}
-	}
-	if !containsString(pickles, "posix.system") {
-		t.Errorf("pickle evidence = %v, want [posix.system] from a file classified as raw", pickles)
 	}
 }
 
@@ -2954,7 +3712,7 @@ func streamWithSizeSwitch(path string, set *EvidenceSet, cfg BinaryConfig) error
 // HeadTailBytes of a file.
 //
 // It is what makes an appended payload visible. A zip's directory lives at the
-// end of the file and describes only the members before it, so a pickle stapled
+// end of the file and describes only the members before it, so a payload stapled
 // after the last member is inside no member and would otherwise be read by
 // nothing; the same reasoning covers a section appended past an ELF's last
 // section header.
@@ -2962,6 +3720,18 @@ func streamWithSizeSwitch(path string, set *EvidenceSet, cfg BinaryConfig) error
 // The window size is a parameter rather than a constant because two callers want
 // different ones: a container always reads its two ends, while a large blob reads
 // its ends only because it was too large to read whole.
+//
+// The pickle interpreter is gated here the same way it is gated everywhere else:
+// it runs only when set.Kind is KindPickle, and only over the head window. That
+// gating is what keeps this path from being a bound on every archive - a zip's own
+// bytes are not an opcode stream, and KindArchive is an executable kind, so an
+// ungated interpreter would set Bound.Structural on every .pt and .whl. The head
+// window is a valid prefix of the opcode stream and can be parsed; the tail window
+// is a splice out of the middle, and feeding a spliced fragment to a stateful
+// parser would make it read the splice as a continuation and invent targets out of
+// data bytes, so the tail goes to the strings pass alone. Nothing is lost by that:
+// this path is only reached above MaxFullScanBytes, where the file is already
+// recorded as structurally bounded.
 func streamHeadAndTail(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -2975,7 +3745,10 @@ func streamHeadAndTail(path string, set *EvidenceSet, cfg BinaryConfig) error {
 
 	headTailBytes := cfg.HeadTailBytes
 	scanner := newStringScanner(set, cfg)
-	pickles := newPickleScanner(set)
+	var pickles *pickleScanner
+	if set.Kind == KindPickle {
+		pickles = newPickleScanner(set)
+	}
 
 	head := make([]byte, headTailBytes)
 	n, err := f.ReadAt(head, 0)
@@ -2985,8 +3758,10 @@ func streamHeadAndTail(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	if _, err := scanner.Write(head[:n]); err != nil {
 		return err
 	}
-	if _, err := pickles.Write(head[:n]); err != nil {
-		return err
+	if pickles != nil {
+		if _, err := pickles.Write(head[:n]); err != nil {
+			return err
+		}
 	}
 
 	if info.Size() > headTailBytes {
@@ -2996,20 +3771,19 @@ func streamHeadAndTail(path string, set *EvidenceSet, cfg BinaryConfig) error {
 		if err != nil && err != io.EOF {
 			return fmt.Errorf("read %s: %w", path, err)
 		}
-		// The offsets are rebased so that a tail literal reports where it
-		// actually is: an offset that silently restarted at zero would make two
-		// different payloads report the same location.
+		// The offset is rebased so that a tail literal reports where it actually
+		// is: an offset that silently restarted at zero would make two different
+		// payloads report the same location. The interpreter is not rebased and not
+		// fed the tail at all - see the note above.
 		scanner.at = at
-		pickles.at = at
 		if _, err := scanner.Write(tail[:n]); err != nil {
-			return err
-		}
-		if _, err := pickles.Write(tail[:n]); err != nil {
 			return err
 		}
 	}
 	scanner.Flush()
-	pickles.Flush()
+	if pickles != nil {
+		pickles.Flush()
+	}
 	return nil
 }
 ```
@@ -5460,12 +6234,12 @@ go test ./... 2>&1 | grep -vE "^ok|no test files" | head -30
 源码审计之外，导入审计还会遍历模型包中的**二进制文件**，与所选 Tier 1 引擎无关——正则臂与 semgrep 臂的部署都生效。
 
 - **识别**：按文件内容判定（ELF / zip 容器 / gzip / pickle / numpy / 其余二进制），扩展名仅作补充。改后缀不能绕过；`.py` 结尾的二进制同样会被认领。
-- **证据**：ELF 动态导入符号与 `DT_NEEDED`、节区构成与香农熵、可打印字符串、容器成员（zip/gzip 内部最多递归一层）、pickle 的 `GLOBAL`/`STACK_GLOBAL` 目标、超过 64 MiB 的文件读首尾各 1 MiB（捕捉 zip 末尾追加的载荷，并把单文件成本钉在约 190 ms）。
+- **证据**：ELF 动态导入符号与 `DT_NEEDED`、节区构成与香农熵、可打印字符串、容器成员（zip/gzip 内部最多递归一层）、pickle 的 `GLOBAL`/`STACK_GLOBAL`/`INST` 目标（带 memo 表的 opcode 解释器）、超过 64 MiB 的文件读首尾各 1 MiB（捕捉 zip 末尾追加的载荷，并把单文件成本钉在约 190 ms）。
 - **判定**：证据行按规则表匹配，产出 `Finding` 并标记 `binary_kind` / `evidence_source` / `binary_offset`；共享规则（`NET_002`/`CMD_001`/`DYN_001`/`FIL_001`/`PER_001`/`ENV_001`/`OBF_001`）的严重级从源码规则表读取，不另立一套。二进制专有规则：`BIN_001`（加壳载荷，MEDIUM）、`BIN_002`（`memfd_create`/`fexecve`，HIGH）、`PKL_001`（pickle 反序列化执行，HIGH）。
 - **复核**：二进制 finding 与源码 finding 走同一条 LLM 路径；文件级分析使用二进制专用 prompt（现有 prompt 面向 Python 源码，不适用）。
 - **完整性**：`scan_metadata.binary` 记录 `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `truncated`。可执行格式的结构抽取被截断、文件无法读取、finding 触顶，任一项都会使 `ProvesCleanScan()` 为假——fail-closed 下即阻断导入；纯数据文件（张量、npy）的证据截断只记录、不阻断。
 - **配置**：`security.binaryAudit.enabled`（默认 `true`）、`maxArchiveMembers`、`highEntropyThreshold`、`maxFindings`（默认 50，独立于源码臂的 200）、`maxFullScanBytes`（默认 64 MiB）。关闭它即回滚，审计行为与引入该通道之前逐字节一致。
-- **边界**：PE/Mach-O 不做结构解析（本平台不加载），xz/zstd/bzip2 容器不打开，纯文本非源码文件不审，pickle 目标识别依赖 opcode 相邻性因而可被受控流规避。详见 `.claude/plans/2026-10-10-binary-code-audit.md` §2。
+- **边界**：PE/Mach-O 不做结构解析（本平台不加载），xz/zstd/bzip2/7z 容器与 tar 不打开，纯文本非源码文件不审，嵌套归档只递归一层，pickle 解释器只跑在被声明为 pickle 的流上（因此不认领贴在非 pickle 文件尾部、头部无 pickle 魔数的 pickle）。详见 `.claude/plans/2026-10-10-binary-code-audit.md` §2。
 ```
 
 - [ ] **Step 5: 提交**
@@ -5504,3 +6278,4 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 | 二进制 finding 挤占 LLM 配额 | 两臂各自限流（源码 200、二进制 50），合并列表不再二次截断。**Tier 2 调用上界由 200 变为 250**，且只在两臂同时饱和时可达——那个状态本来就已阻断并删包，多出的调用不改变结论。反过来，共享配额会让大源码臂按路径序挤掉二进制 finding，并把一个原本可导入的包推到 `Truncated` 而被删除 |
 | 二进制通道让原本能导入的包被误阻断 | 这是本设计最贵的失败模式（`ProvesCleanScan` 为假 → `cleanDirContents` 删包），所以：`Truncated` 只由各臂自己的上限触发；纯数据文件的证据截断只记录、不阻断；`BIN_001` 定为 MEDIUM，assist 下不阻断；`security.binaryAudit.enabled=false` 是逐字节回滚。已入库语料实测最大 finding 数为单样本 7、整语料 80，离两个上限都有一个数量级 |
 | 与 semgrep 非劣性证据的交互 | 二进制通道在**两个臂之外**运行且合并发生在引擎报告之后，两臂的引擎级报告逐字节不变；`corpus_parity_test.go` 会证明这一点 |
+| pickle 解释器的门控开错方向 | 两个方向都是故障，所以各有一个测试钉住：**跑宽了**（对非 pickle 也跑解释器）会让任意字节能被读成 opcode，未知 opcode 直接置 `Bound.Structural`，而 `KindELF`/`KindPickle`/`KindArchive`/`KindCompressed` 都是可执行类型，于是每个 `.pt`/`.whl`/`.so` 都被阻断、原本能导入的包被删——`TestCollectEvidenceDoesNotInterpretNonPicklesAsPickles` 用一个良性 ELF 夹具断言既不 `Err` 也无 `Bound.Structural`、无 `SourcePickle` 行；**跑窄了**（该跑的没跑）会丢掉 pickle 证据——`TestPickleInterpreterReadsTheRealCheckpoint` 断言真 checkpoint 仍产出目标。门控规则（只跑在 `KindPickle` 的整文件/容器成员、以及解压后头部嗅探为 pickle 的 gzip 流上）写在 Task 4 Step 4，不得"简化"掉 |
