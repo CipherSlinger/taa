@@ -3522,53 +3522,79 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	// families were demoted for. Task 8's rule table is unchanged by this: no new
 	// evidence source is introduced, which is the point.
 	//
-	// The symbol section is read only when it can hold one symbol header, and the
-	// guard is not defensive padding: debug/elf panics on this shape instead of
-	// returning an error. getSymbols64 unconditionally drops the reserved first
-	// entry with `data = data[24:]` *before* it has counted any entries, and the
-	// one length check it does make is `len(data)%Sym64Size != 0` - which a
-	// zero-length section passes (0 % 24 == 0) - so a .dynsym with a declared size
-	// of zero panics with "slice bounds out of range [24:0]". A panic is not an
-	// error this function can return, so there is nothing to catch and the file
-	// takes the whole scan down with it rather than being recorded as a gap.
+	// The dynamic symbol read is guarded rather than attempted and recovered,
+	// because debug/elf's symbol reader panics instead of returning an error on
+	// one input, and that input is reachable from an untrusted file: ClassifyBinary
+	// returns KindELF on the four magic bytes alone and does not look at EI_CLASS,
+	// so every size and name the reader acts on is a field the file itself chooses.
 	//
-	// This is reachable, not theoretical: ClassifyBinary sorts a file into
-	// collectELF on four magic bytes alone, so every ELF-shaped input arrives here,
-	// including crafted ones. A malformed section has to leave as evidence.
+	// getSymbols64 (file.go:675-691) fetches the section's data, rejects it only
+	// when len(data)%Sym64Size != 0, and then slices data[Sym64Size:] to drop the
+	// reserved null entry. Zero is a multiple of every entry size, so a
+	// zero-length buffer passes that check and the slice panics with "slice bounds
+	// out of range [24:0]"; every other short length is not a multiple and takes
+	// the error return instead. The panic set is therefore exactly {0}, not every
+	// length below one entry - which is why the guard is "the buffer is empty" and
+	// not "the size is smaller than a symbol header". A range guard is not merely
+	// wider than needed, it is backwards: lengths 1..23 already fail the scan
+	// closed through the error path, and holding them back here would convert that
+	// failure into a silent skip - a new fail-open, in the one function whose whole
+	// argument is that not looking must not read as clean.
 	//
-	// The header size follows the file's class, and the guard is placed on the
-	// section the call actually reads. Both reads of it - DynamicSymbols and
-	// ImportedSymbols - go through the same getSymbols(SHT_DYNSYM), so one check
-	// covers both. SHT_SYMTAB has the same shape, which is a second reason this
-	// function does not read it (the first is above): a fallback source would have
-	// to carry the same guard, for symbols this parse has already decided not to
-	// use.
-	symHeader := uint64(elf.Sym64Size)
-	if ef.Class == elf.ELFCLASS32 {
-		symHeader = uint64(elf.Sym32Size)
-	}
-	readSymbols := true
-	if symSec := ef.SectionByType(elf.SHT_DYNSYM); symSec != nil && symSec.Size < symHeader {
-		set.markStructural(fmt.Sprintf("dynamic symbol section declares %d bytes: too short to hold one symbol header", symSec.Size))
-		readSymbols = false
-	}
-
-	var syms []elf.Symbol
-	if readSymbols {
-		var symErr error
-		syms, symErr = ef.DynamicSymbols()
-		if symErr != nil && !errors.Is(symErr, elf.ErrNoSymbols) {
-			return fmt.Errorf("read dynamic symbols of %s: %w", path, symErr)
+	// There is deliberately no class test here. getSymbols32 (file.go:631-633)
+	// carries an explicit `if len(data) == 0` return of its own, before its slice,
+	// so a 32-bit table cannot panic and needs no guard to stay safe. The fact the
+	// guard is about - the section yields no bytes - is the same for both classes,
+	// and a table that yields no bytes holds no symbols either way, so one uniform
+	// check covers both without branching on EI_CLASS, a field ClassifyBinary never
+	// looks at.
+	//
+	// symbolTableIsEmpty asks the question the way the reader gets its answer, and
+	// that is not the same as reading the section header: Section.Data (file.go:107)
+	// is saferio.ReadData(s.Open(), s.Size) with the arguments evaluated left to
+	// right, and Section.Open (file.go:126) rewrites s.Size at file.go:146 for a
+	// section whose name starts with ".zdebug" whose first twelve bytes are "ZLIB",
+	// taking the value from bytes the file chooses. A body of "ZLIB" plus eight
+	// zero bytes therefore makes that size zero - ReadData allocates nothing,
+	// io.ReadFull on an empty buffer succeeds vacuously, and it returns a non-nil
+	// empty slice with a nil error - and getSymbols64 sees len(data) == 0, passes
+	// its multiple check and panics. None of this is visible in sh_size, which stays
+	// an ordinary 12, so a reader checking the header would conclude the guard is
+	// unnecessary; that is the mistake this comment exists to prevent.
+	//
+	// SectionByType returns the first section of the requested type, which is what
+	// makes the shape cheap to reach: a file only has to put its ".zdebug" section
+	// ahead of its real one.
+	//
+	// A table that yields no bytes holds no symbols, so skipping it reads as
+	// "imports nothing", which is the true statement about a zero-entry table, and
+	// raises no bound because nothing was left unexamined. Calling a present table
+	// "absent" would be a false statement, so no notice is written on this path.
+	dynsym := ef.SectionByType(elf.SHT_DYNSYM)
+	switch {
+	case dynsym == nil:
+		set.addStructured(SourceNotice, "no dynamic symbol table (SHT_DYNSYM absent)")
+	default:
+		empty, derr := symbolTableIsEmpty(dynsym)
+		if derr != nil {
+			return fmt.Errorf("read dynamic symbols of %s: %w", path, derr)
 		}
-		if errors.Is(symErr, elf.ErrNoSymbols) {
+		if empty {
+			break
+		}
+		syms, err := ef.DynamicSymbols()
+		if err != nil && !errors.Is(err, elf.ErrNoSymbols) {
+			return fmt.Errorf("read dynamic symbols of %s: %w", path, err)
+		}
+		if errors.Is(err, elf.ErrNoSymbols) {
 			set.addStructured(SourceNotice, "no dynamic symbol table (SHT_DYNSYM absent)")
 		}
-	}
-	for _, s := range syms {
-		if s.Section != elf.SHN_UNDEF || elf.ST_BIND(s.Info) != elf.STB_GLOBAL {
-			continue
+		for _, s := range syms {
+			if s.Section != elf.SHN_UNDEF || elf.ST_BIND(s.Info) != elf.STB_GLOBAL {
+				continue
+			}
+			set.addStructured(SourceDynsym, s.Name)
 		}
-		set.addStructured(SourceDynsym, s.Name)
 	}
 
 	// The per-file read budget for this parse, spent across all the sections
@@ -3636,6 +3662,32 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 		}
 	}
 	return nil
+}
+
+// symbolTableIsEmpty reports whether a symbol section would hand debug/elf's
+// symbol reader an empty buffer, which is the one input that reader panics on
+// instead of returning an error. getSymbols64 (file.go) rejects a length that is
+// not a multiple of its entry size and then slices the first entry off
+// unconditionally, and zero is a multiple of every entry size - so a length of
+// 1..entrySize-1 is an error that fails the scan closed and has to be left to
+// the reader, while an empty buffer has to be caught here.
+//
+// It reads the section through Section.Data, the call the reader itself makes,
+// rather than testing a size in the header, because the header size is not the
+// whole story: Section.Open (file.go) rewrites Section.Size for a section named
+// ".zdebug..." whose body begins with "ZLIB", taking the value from eight bytes
+// the file chooses, and Section.Data is saferio.ReadData(s.Open(), s.Size) with
+// those arguments evaluated left to right - so the size Data is handed is the
+// one Open just wrote. A section whose on-disk sh_size looks ordinary can
+// therefore still yield nothing, and a guard reading sh_size would miss it.
+// Reading the data is the check that covers both routes, and it is also the safe
+// direction: Data returns an error where the symbol reader would panic.
+func symbolTableIsEmpty(sec *elf.Section) (bool, error) {
+	data, err := sec.Data()
+	if err != nil {
+		return false, err
+	}
+	return len(data) == 0, nil
 }
 
 // countSection streams one section through the entropy histogram in fixed-size
@@ -3790,15 +3842,23 @@ go test ./internal/codeaudit/ -run 'TestELF|TestCollectELF|TestCountSection' -v
 >
 > **五、同一份判定只能有一个实现。** `entropyVerdict` 原本直接吃 `[]byte`，而流式路径手里没有 `[]byte`——如果给流式路径再写一份阈值判断，两条路就成了一规则两实现，日后改一处就会让**同一个节**因为读它的路径不同而得到不同的分数。所以本任务（Task 5 Step 4）把判定抽成 `entropyVerdictFromCounts(section string, counts [256]int64, total int64, cfg BinaryConfig)`，`entropyVerdict` 退化成"建直方图再转交"的包装，ELF 路径走 `countSection` + `entropyVerdictFromCounts`，容器成员路径走 `entropyVerdict`，两者在 `TestEntropyVerdictIsMeasuredNotAssumed` 里被断言必须给出同一行。**拆分落在 Task 5 而不是 Task 3**：Task 3 已作为 `7e37aca` 提交，它交付的 `entropyVerdict` 就是直接吃 `[]byte` 的那一版，而两条路要到 Task 5 才同时存在（`entropyVerdictFromCounts` 与 `countSection` 都是本任务引入的）；把拆分写进 Task 3 的正文，等于描述一个从未存在过的 Task 3，按顺序执行的人在那之后会拿到一个编译不过的包。
 >
-> **六、`debug/elf` 在两个畸形输入上不设防，这里各补一道，理由是输入不可信。** 两条都不是"防御性编程"，而是标准库的既定行为在**敌意输入**下的直接后果，而 `ClassifyBinary` 只凭四个魔数字节就把文件送进这个函数，所以每一个 ELF 形状的输入都会走到这里，包括构造出来的。
+> **六、`debug/elf` 在敌意输入上有几处不设防，这里各补一道，理由是输入不可信。** 这几条都不是"防御性编程"，而是标准库的既定行为在**敌意输入**下的直接后果，而 `ClassifyBinary` 只凭四个魔数字节就把文件送进这个函数，所以每一个 ELF 形状的输入都会走到这里，包括构造出来的。**注意 `ClassifyBinary` 不看 `EI_CLASS`，`sh_size` 是文件自己挑的字段**——下面每条都要按这个前提读。
 >
-> 第一处是**符号节比一个符号头还短**：`getSymbols64` 在数出条目数**之前**就无条件做 `data = data[24:]` 摘掉保留的第 0 项，而它唯一的长度检查是 `len(data)%Sym64Size != 0`——长度为 0 的节 `0 % 24 == 0`，检查通过，随即 panic `slice bounds out of range [24:0]`。panic 不是这个函数能返回的 error，没有东西可以兜住，所以一个畸形节会让整个扫描跟着它一起死，而不是被记成一次缺口。守法的做法是在 `DynamicSymbols()` 之前看 `.dynsym` 的声明长度能不能装下一个符号头（按 `ef.Class` 取 `Sym64Size`=24 或 `Sym32Size`=16），装不下就跳过读取并记结构性。`ImportedSymbols` 与 `DynamicSymbols` 读的是同一个 `SHT_DYNSYM`，所以一道检查同时覆盖两者；`SHT_SYMTAB` 有同样的形状，这正好是本函数**本来就不读它**的第二个理由（第一个是符号来源的误报，见上）。
+> 第一处是**符号节解出的内容是空的**：`getSymbols64`（`file.go:675-691`）取出节的字节、只否决 `len(data)%Sym64Size != 0`，然后做 `data = data[Sym64Size:]` 摘掉保留的第 0 项。**0 是任何表项长度的倍数**，所以一个空缓冲区通过那条检查、随即在切片上 panic `slice bounds out of range [24:0]`；而长度 1..23 都不是 24 的倍数，走的是**返回 error** 的那条路，根本到不了切片。**panic 集合因此恰好是 `{0}`，不是"所有短于一个表项的长度"。** 这个边界决定了守卫的形状：守卫是"解出来的内容是空的"，**不是**"`sh_size` 小于一个符号头"。长度区间守卫不只是"比需要的宽"，它是**反的**——1..23 今天已经被 error 路径 fail-closed 挡下了，把它们也拦下来会把那次失败改写成一次静默跳过，在这个"没看绝不能读成干净"的函数里**新开一个 fail-open**。（**本计划上一版把这道守卫写成"按 `ef.Class` 取 24/16 比长度"，那是错的**：24 和 16 是**表项**长度，不是"至少要有一个表项"的判据，而且照它写的区间守卫会把 1..23 从 error 路径改写成跳过。源码行号写在这里，是为了让下一个人自己去核，而不是重新推理一遍。）
+>
+> 守卫**不做类判断**，这是有意的：`getSymbols32`（`file.go:631-633`）在它自己的切片之前有一条显式的 `if len(data) == 0 { return ... "symbol section is empty" }`，所以 32 位表**永远不会 panic**，不需要任何守卫来保安全。守卫针对的那个事实——节解出来是空的——对两个类是一样的，而一个解不出字节的表在两个类里都**没有符号可丢**，所以一道统一的检查同时覆盖两者，不必去分支 `EI_CLASS`（那正是 `ClassifyBinary` 根本不看的字段）。边界仍然恰好是"空"：长度 1..23 是另一个事实（一张畸形的表），留给读取器去报。
+>
+> "空"必须按 `debug/elf` 问的方式问，而那**不是**读节头。`Section.Data`（`file.go:107`）是 `saferio.ReadData(s.Open(), s.Size)`，而 Go 从左到右求值实参，所以 `Open` 先跑，`ReadData` 拿到的 `n` 是 `Open` 刚写下的那个值。`Section.Open`（`file.go:126`）在每次读取时都会被调用，并且在 `file.go:146` 处，对**名字以 `.zdebug` 开头、前 12 字节是 `"ZLIB"`** 的节做 `s.Size = binary.BigEndian.Uint64(b[4:12])`——**攻击者自己的字节**。于是节体为 `"ZLIB"` 加 8 个零字节的节就让 `s.Size` 变成 0，`ReadData` 于是不分配任何内存、`io.ReadFull` 对空缓冲区空成功，返回一个**非 nil 的空切片加 nil error**；`getSymbols64` 看到 `len(data) == 0`，通过倍数检查，panic。这一切在 `sh_size` 里都看不见，它仍然是普普通通的 12——所以一个只盯着节头看的读者会得出"这个守卫没必要"的结论，这正是本段存在的理由。守卫因此要按 `Data` 的顺序问同一个问题：**看 `Data` 会拿到的字节，而不是节头里的长度**（本任务用 `symbolTableIsEmpty` 封住这一点，它调用的就是符号读取器自己会调的那个 `Data`；方向也是安全的——`Data` 报 error 的地方，符号读取器会 panic）。`SectionByType` 返回**同类型里的第一个**节，这让这个形状很便宜就能构造——文件只要把自己那个 `.zdebug` 节排在真正的前面。
 >
 > 第二处是**压缩头的 `ch_size` 没有范围检查**：普通节的 `sec.Size` 来自 `sh_size`，`debug/elf` 在解析时已经拒绝把它当负数（`if int64(s.FileSize) < 0` 直接返回 `FormatError`），所以有符号比较在那里是安全的；但 `SHF_COMPRESSED` 的节 `sec.Size` 来自压缩头 `ch_size`，**同一道检查没有加在它上面**。于是一个构造出的 `ch_size = 2^63` 让 `sec.Size` 成为一个 int64 视图为负的 `uint64`，`read < int64(sec.Size)` 对任何 `read` 都为假，这个节就被当成"整节读完"——既不记结构性缺口，又因为它是可执行节而被量了熵、报了干净。这正是这条检查存在的理由被一次类型转换重新打开的 fail-open。修法是比较**无符号**（`uint64(read) < sec.Size`），两个数本来就都是字节计数。
 >
-> 这两条与 `collectELF` 开头的 `cfg = normalizeBinaryConfig(cfg)` 是同一类事：它们保护的不是"输入正常时会怎样"，而是"输入不正常时不要变成静默通过"。`normalizeBinaryConfig` 那一行的意义要单独说，因为它看着像样板：`collectELF` 直接读 `cfg.MaxStreamBytes` 当每文件预算，而 `newEvidenceSet` 与 `newStringScanner` 都会先归一化，一个零值 `BinaryConfig{}` 于是给出零预算，每个可执行节都记成"预算已花光"的结构性缺口，可执行类型的文件被删包——踩中的是将来接线的那个任务，不是现在这批测试（它们全都经 `DefaultBinaryConfig` 构造配置）。
+> `SHT_SYMTAB` 有与第一处完全相同的形状，这正好是本函数**本来就不读它**的第二个理由（第一个是符号来源的误报，见上）：一个兜底来源还得替它背同样的守卫，而它提供的是本解析已经决定不用的符号。
 >
-> 三处各要一条测试钉住，否则它们会在下一次重构里被当成多余的分支删掉：**（a）** 一个 `.dynsym` 声明长度为 0 的夹具必须产出结构性缺口而不是 panic（注意现有的 `TestCollectELFEmptyDynsymIsNotAStrippedFile` 钉不住这一条——它的夹具是一个合法的 24 字节保留项，根本不触发那条切片）；**（b）** 一个声明长度超出可读字节的节必须记为结构性缺口，且这一条要在**无符号**语义下成立（有符号写法的失败方式正是"声明长度的高位置位时整条检查被跳过"，所以这条测试的夹具要能表达那个形状：普通节的 `sh_size` 会被 `debug/elf` 在解析期拒绝，能表达它的是 `SHF_COMPRESSED` 的压缩头）；**（c）** 传一个零值 `BinaryConfig{}` 时，一个正常的可执行节仍要被量熵而不是被记成"预算花光"。
+> 这几条与 `collectELF` 开头的 `cfg = normalizeBinaryConfig(cfg)` 是同一类事：它们保护的不是"输入正常时会怎样"，而是"输入不正常时不要变成静默通过"。`normalizeBinaryConfig` 那一行的意义要单独说，因为它看着像样板：`collectELF` 直接读 `cfg.MaxStreamBytes` 当每文件预算，而 `newEvidenceSet` 与 `newStringScanner` 都会先归一化，一个零值 `BinaryConfig{}` 于是给出零预算，每个可执行节都记成"预算已花光"的结构性缺口，可执行类型的文件被删包——踩中的是将来接线的那个任务，不是现在这批测试（它们全都经 `DefaultBinaryConfig` 构造配置）。
+>
+> 每一处都要有测试钉住，否则它们会在下一次重构里被当成多余的分支删掉：**（a）** 一个 `.dynsym` 解出空内容的夹具必须不 panic 且不产出 bound（"这张表没有导入"是它的事实，不是缺口）；**（a2）** 一条 `.zdebug` 形状的夹具——名字以 `.zdebug` 开头、节体是 `"ZLIB"` 加 8 个零字节、`sh_size` 是一个普通值——必须同样不 panic，且**必须在 `sh_size` 看着正常的前提下通过**，因为这条测试的全部价值就在于它钉的是"守卫必须看解出来的长度、不能看节头"；少了它，一个只看 `sh_size` 的守卫会全绿而漏洞还在；**（b）** 一个声明长度超出可读字节的节必须记为结构性缺口，且这一条要在**无符号**语义下成立（有符号写法的失败方式正是"声明长度的高位置位时整条检查被跳过"，所以这条测试的夹具要能表达那个形状：普通节的 `sh_size` 会被 `debug/elf` 在解析期拒绝，能表达它的是 `SHF_COMPRESSED` 的压缩头）；**（c）** 传一个零值 `BinaryConfig{}` 时，一个正常的可执行节仍要被量熵而不是被记成"预算花光"。
+>
+> **（a3）反向的那条同样要钉：长度 1..23 的 `.dynsym` 必须仍然失败 fail-closed**（走 error 路径、让整个文件被记为 `Incomplete`），**不得**被守卫静默跳过。这是"区间守卫是反的"那句话的落地测试——把守卫写成 `Size < 24` 会让这条测试变红，而只测 (a) 是发现不了的。注意现有的 `TestCollectELFEmptyDynsymIsNotAStrippedFile` 钉不住 (a)：它的夹具是一个合法的 24 字节保留项，根本不触发那条切片。
 
 - [ ] **Step 6: 提交**
 
