@@ -2004,3 +2004,69 @@ func collectCompressed(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	}
 	return nil
 }
+
+// CollectEvidence gathers the evidence for one file and returns it finalized.
+//
+// It is the only entry point: the kind is decided by the caller so that the
+// classification happens once, against the same head bytes the caller already
+// read to decide the file was binary at all. A second sniff here would be a
+// second answer to one question.
+//
+// An error is recorded on the set rather than returned, because the caller's
+// decision is not "abort" but "count this file as not examined" - and a file
+// that was not examined has to reach the report, not stop it. Concretely: the
+// scanner reads set.Err and increments BinaryScanSummary.Incomplete, which
+// ProvesCleanScan refuses on. So a file whose extraction failed is counted
+// Incomplete and withholds the pass; it is never silently skipped. The two must
+// not be interchangeable - "skipped" means classify said the file is not binary,
+// which is not a look that failed, while set.Err means the file is binary and
+// this scan could not read it.
+func CollectEvidence(path string, kind BinaryKind, cfg BinaryConfig) *EvidenceSet {
+	cfg = normalizeBinaryConfig(cfg)
+	set := newEvidenceSet(path, kind, cfg)
+
+	if info, err := os.Stat(path); err == nil {
+		set.Size = info.Size()
+	}
+
+	var err error
+	switch kind {
+	case KindELF:
+		err = collectELF(path, set, cfg)
+	case KindArchive:
+		// The head and tail pass runs over the archive's own bytes as well as
+		// its members. A payload appended after the last member is outside
+		// everything the zip directory describes, and reading only the members
+		// would leave exactly that region unexamined.
+		//
+		// No size switch here: this path is already the head and tail pass, and
+		// the members behind it are bounded by MaxArchiveMemberBytes rather than
+		// by the file's own size. A 200 MiB .zip and a 92 MiB .pth both take this
+		// route today.
+		err = streamHeadAndTail(path, set, cfg)
+		if err == nil {
+			err = collectArchive(path, set, cfg)
+		}
+	case KindCompressed:
+		// Also no size switch: the stream was decompressed on purpose, and
+		// skipping its middle would defeat the only reason to have opened it.
+		// MaxArchiveMemberBytes is the bound that applies.
+		err = collectCompressed(path, set, cfg)
+	case KindNumpy, KindPickle, KindRaw:
+		// No entropy verdict for these, deliberately. A raw blob is most of what
+		// a model package is, and weights are near-random by nature: a whole-file
+		// entropy rule would fire on every .safetensors ever exported and teach
+		// the operator to ignore the family. It is also unnecessary here, because
+		// nothing on this platform executes a raw blob - a payload that runs
+		// arrives as an ELF or a pickle, and both carry precise evidence.
+		err = streamWithSizeSwitch(path, set, cfg)
+	default:
+		return evidenceError(path, kind, fmt.Errorf("unsupported binary kind %q", kind))
+	}
+
+	if err != nil {
+		set.Err = err
+	}
+	set.Finalize()
+	return set
+}

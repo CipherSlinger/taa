@@ -2023,3 +2023,140 @@ func TestCollectArchiveEvidenceNormalizesAZeroConfig(t *testing.T) {
 		t.Errorf("zero config produced %d evidence lines, default config produced %d", len(zero.Lines), len(def.Lines))
 	}
 }
+
+func TestCollectEvidenceRoutesByKind(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name string
+		file string
+		raw  []byte
+		want BinaryKind
+	}{
+		{"elf", "lib.so", elfFixtureBytes(t, elfSpec{imports: []string{"connect"}}), KindELF},
+		{"archive", "m.pt", zipFixture(t, map[string][]byte{"a": []byte("x")}, []string{"a"}), KindArchive},
+		{"pickle", "m.pkl", []byte("\x80\x04cposix\nsystem\n."), KindPickle},
+		{"raw", "w.bin", []byte("data\x00literal_here"), KindRaw},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTestBytes(t, dir, tc.file, tc.raw)
+			set := CollectEvidence(path, tc.want, DefaultBinaryConfig())
+			if set.Err != nil {
+				t.Fatalf("CollectEvidence: %v", set.Err)
+			}
+			if len(set.Lines) == 0 {
+				t.Error("no evidence at all from a file that has some")
+			}
+			// Finalize assigns Index; nothing may read the listing before it.
+			for i, l := range set.Lines {
+				if l.Index != i+1 {
+					t.Fatalf("line %d has Index %d; Finalize did not run or did not sort", i, l.Index)
+				}
+			}
+			for i := 1; i < len(set.Lines); i++ {
+				a, b := set.Lines[i-1], set.Lines[i]
+				if a.Offset > b.Offset {
+					t.Fatalf("listing is not in offset order at %d: %d then %d", i, a.Offset, b.Offset)
+				}
+			}
+		})
+	}
+}
+
+// TestCollectEvidenceDoesNotInterpretNonPicklesAsPickles pins the reversal of
+// what this test used to assert. The plan previously ran the pickle scan on every
+// stream unconditionally, which was harmless only because that scan was a
+// byte-pattern match that never committed to a parse. The interpreter commits: it
+// either reads the bytes as opcodes or records that it could not, and an ELF's
+// first byte (\x7f) is not an opcode - so running it over a shared object would set
+// Bound.Structural, and because KindELF is an executable kind that bound withholds
+// a clean verdict and blocks the import. Every .so in every model package would be
+// blocked. The interpreter therefore runs only on a stream that is claimed to be a
+// pickle (Task 4's gate rule), and a non-pickle gets the strings pass alone.
+func TestCollectEvidenceDoesNotInterpretNonPicklesAsPickles(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestBytes(t, dir, "libkernel.so",
+		elfFixtureBytes(t, elfSpec{imports: []string{"connect"}}))
+
+	set := CollectEvidence(path, KindELF, DefaultBinaryConfig())
+	if set.Err != nil {
+		t.Fatalf("CollectEvidence: %v", set.Err)
+	}
+	if set.Bound.Structural {
+		t.Fatalf("an ELF tripped a structural bound (%s); the interpreter ran on a non-pickle", set.Bound.Reason)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourcePickle {
+			t.Errorf("pickle evidence %q produced from an ELF", l.Text)
+		}
+	}
+}
+
+// TestCollectEvidenceRecordsAnUnreadableFile pins the failure direction. A file
+// that cannot be examined is an error on the set, not an empty listing: an empty
+// listing reads as "clean" to everything downstream, which is the one thing an
+// incomplete look must never say.
+func TestCollectEvidenceRecordsAnUnreadableFile(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestBytes(t, dir, "broken.so", []byte("\x7fELF\x02\x01\x01\x00not an elf at all"))
+
+	set := CollectEvidence(path, KindELF, DefaultBinaryConfig())
+	if set.Err == nil {
+		t.Error("Err = nil for a file with ELF magic that does not parse; the scan would report it clean")
+	}
+}
+
+// TestCollectEvidenceWindowsAFileAboveTheSizeThreshold pins the size switch and,
+// more importantly, that it leaves a trace.
+//
+// The threshold cannot be tested by making a 64 MiB file, so the config is
+// lowered and the file kept small. Both directions are asserted for the reason
+// the switch exists: a windowed data file is visible but harmless, and a windowed
+// pickle - a format that executes - has to record a structural bound, or padding
+// a pickle past the threshold would hide a mid-stream GLOBAL and still pass.
+func TestCollectEvidenceWindowsAFileAboveTheSizeThreshold(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFullScanBytes = 16
+	cfg.HeadTailBytes = 4
+
+	// The marker sits in the middle, past the first window and before the last.
+	content := []byte("HEAD\x00")
+	content = append(content, bytes.Repeat([]byte{'x'}, 64)...)
+	content = append(content, []byte("\x00MIDDLE_MARKER\x00TAIL")...)
+
+	cases := []struct {
+		name        string
+		file        string
+		kind        BinaryKind
+		wantBlocked bool // isExecutableKind: a structural bound on this kind withholds a clean verdict
+	}{
+		{"a windowed data file is recorded but harmless", "w.bin", KindRaw, false},
+		{"a windowed pickle withholds", "m.pkl", KindPickle, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTestBytes(t, dir, tc.file, content)
+			set := CollectEvidence(path, tc.kind, cfg)
+			if set.Err != nil {
+				t.Fatalf("CollectEvidence: %v", set.Err)
+			}
+			if !set.Bound.Structural {
+				t.Error("Bound.Structural = false: the middle of an oversized file was skipped without a trace")
+			}
+			if !strings.Contains(set.Bound.Reason, "MaxFullScanBytes") {
+				t.Errorf("Bound.Reason = %q, want it to name the threshold", set.Bound.Reason)
+			}
+			for _, l := range set.Lines {
+				if l.Text == "MIDDLE_MARKER" {
+					t.Error("the middle was read anyway; the threshold is not a threshold")
+				}
+			}
+			// isExecutableKind is what decides whether that bound blocks; this
+			// asserts the same predicate the scanner folds on.
+			if got := isExecutableKind(tc.kind); got != tc.wantBlocked {
+				t.Errorf("isExecutableKind(%s) = %t, want %t", tc.kind, got, tc.wantBlocked)
+			}
+		})
+	}
+}
