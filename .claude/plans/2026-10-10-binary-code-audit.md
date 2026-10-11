@@ -5707,11 +5707,18 @@ import "testing"
 // than over the resolved rules, because that is where a copy would live.
 //
 // Mutation to keep this honest: add `"NET_002": {ID: "NET_002", Severity:
-// SeverityMedium}` to binaryOnlyRules. Every other assertion in this file stays
-// green - NewBinaryMatcher still resolves NET_002 from the shared table, so the
-// resolved severity does not move, and TestBinaryOnlyFamiliesDoNotCollide only
-// walks DefaultRules() and so never sees what binaryOnlyRules now says about a
-// shared id. The "reuses a shared id" assertion below is the one that goes red.
+// SeverityMedium}` to binaryOnlyRules. Three assertions go red, across two
+// tests. In this test the "reuses a shared id" assertion fires on the injected
+// entry itself, and the "both borrowed and restated" branch of the family loop
+// fires on the NET_002 family, which is now in both tables. In the same file,
+// TestBinaryOnlyFamiliesDoNotCollide also fires: it walks DefaultRules() and
+// asks binaryOnlyRules about each id, which is exactly the collision the
+// injected entry creates. (An earlier version of this note said only one
+// assertion went red and that the collision test could not see the entry; both
+// claims were wrong.) What does stay green is the severity comparison at the
+// end - NewBinaryMatcher still resolves NET_002 from the shared table, so the
+// resolved severity does not move - and the pattern check, because the injected
+// entry carries no Patterns.
 func TestBinaryRulesBorrowSharedFamilies(t *testing.T) {
 	byID := map[string]Rule{}
 	for _, r := range DefaultRules() {
@@ -5853,12 +5860,15 @@ func TestMatchEvidenceRejectsTheBenignNeighbours(t *testing.T) {
 		{SourceNotice, "interpreter /lib64/ld-linux-x86-64.so.2"},
 		// Each of these is a measured false positive of the previous table, kept
 		// here so a later widening has to argue with the evidence: `bind` on its
-		// own is a server, and the two trailing runs are fragments of a
-		// concatenated string table rather than the paths they spell.
+		// own is a server, the two trailing runs are fragments of a concatenated
+		// string table rather than the paths they spell, and `private_key` is
+		// the lower-case identifier ENV_001 matched because it carries (?i) -
+		// ENV_002 drops the flag, and this line pins that the drop holds.
 		{SourceDynsym, "bind"},
 		{SourceStrings, ".profilez /etc/cron) crontabz"},
 		{SourceStrings, ".aws/credentialsz"},
 		{SourceStrings, ".ssh/id_rsaz"},
+		{SourceStrings, "private_key"},
 	}
 	for _, tc := range cases {
 		if got := matcher.Match(EvidenceLine{Source: tc.source, Text: tc.text}); got != nil {
@@ -5927,8 +5937,10 @@ func TestBinaryTableProducesNoHighFindingsOnLegitimateInputs(t *testing.T) {
 			{Source: SourceDynsym, Text: "dlsym"},
 		}},
 		// `API_KEY` matches ENV_002 and that is intended - it is a LOW, and the
-		// assertion below is about HIGH. `private_key` must NOT match, which is
-		// what dropping (?i) bought; the two `...z` runs are the .pyc fragments.
+		// assertion below is about HIGH. The lower-case `private_key` sits here
+		// among legitimate identifiers and must not fire anything either; the
+		// no-match assertion itself lives in TestMatchEvidenceRejectsThe
+		// BenignNeighbours, and the two `...z` runs are the .pyc fragments.
 		{"a string run holding ordinary identifiers", []EvidenceLine{
 			{Source: SourceStrings, Text: "API_KEY"},
 			{Source: SourceStrings, Text: "private_key"},
@@ -5995,15 +6007,82 @@ func TestBinaryTableStillFiresHighOnStructuralEvidence(t *testing.T) {
 		})
 	}
 }
+
+// TestBinaryFamilySeveritiesArePinned pins the severity column of the resolved
+// table, one family at a time, because that column is the only control that
+// decides whether a finding blocks. Under the default `assist` policy `Passed`
+// is `highCount == 0`; under `gate` it is `High == 0 && Medium == 0`
+// (internal/codeaudit/audit.go:298-309), and a false `Passed` makes
+// internal/controller/import_processing.go:655-660 delete the package. The two
+// policies therefore impose two different bars, and a family's severity has to
+// be right for both: the four string families are LOW, not MEDIUM, precisely
+// because MEDIUM would still delete once an operator switches to `gate`.
+//
+// TestBinaryTableProducesNoHighFindingsOnLegitimateInputs asserts silence at
+// HIGH only, which is the `assist` bar; this test is the other half, and the
+// half that keeps a later edit from quietly moving a family to MEDIUM and
+// turning a warning into a re-import. It reads the rules the matcher resolved,
+// not the two tables, so it pins what the scanner will actually report however
+// the id was resolved.
+func TestBinaryFamilySeveritiesArePinned(t *testing.T) {
+	matcher, err := NewBinaryMatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := map[string]Rule{}
+	for _, r := range matcher.Rules() {
+		resolved[r.ID] = r
+	}
+	cases := []struct {
+		id   string
+		want string
+	}{
+		// Structural evidence: the file's own construction produced it, so it
+		// may block, and it must keep doing so - a later softening is exactly
+		// what the test above cannot catch, because it only ever asserts
+		// silence.
+		{"BIN_001", SeverityHigh},
+		{"BIN_002", SeverityHigh},
+		{"PKL_001", SeverityHigh},
+		{"NET_002", SeverityHigh},
+		{"CMD_001", SeverityHigh},
+		// Borrowed and deliberate: MEDIUM does not block under `assist`, but it
+		// does under `gate`, so this value is load-bearing too.
+		{"DYN_001", SeverityMedium},
+		// String evidence must not block under either policy. LOW, and not
+		// MEDIUM, because MEDIUM alone deletes the package once the operator
+		// switches to `gate`. rules.go defines no SeverityLow constant, so the
+		// table writes the string and this test matches it.
+		{"CMD_002", "LOW"},
+		{"PER_002", "LOW"},
+		{"FIL_002", "LOW"},
+		{"ENV_002", "LOW"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			r, ok := resolved[tc.id]
+			if !ok {
+				t.Fatalf("%s is not in the resolved table at all", tc.id)
+			}
+			if r.Severity != tc.want {
+				t.Errorf("%s is %s, want %s", tc.id, r.Severity, tc.want)
+			}
+		})
+	}
+	if len(cases) != len(matcher.Rules()) {
+		t.Errorf("this test pins %d families but the table resolves %d: a new family has to have its severity pinned here too, or nothing notices when it is set to a level that blocks",
+			len(cases), len(matcher.Rules()))
+	}
+}
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
 
 ```bash
-go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestMatchEvidence|TestSymbolRules' 2>&1 | head -10
+go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestBinaryFamily|TestBinaryTable|TestMatchEvidence|TestSymbolRules' 2>&1 | head -10
 ```
 
-预期：编译失败，`undefined: NewBinaryMatcher`。
+预期：编译失败。首屏会同时报 `undefined: NewBinaryMatcher`、`undefined: binaryOnlyRules` 和 `undefined: binaryFamilies`（这一版三个都还没写）——不用管顺序，是编译不过就对了。
 
 - [ ] **Step 3: 实现**
 
@@ -6127,9 +6206,10 @@ type binaryFamily struct {
 
 // binaryFamilies is the table, in match-precedence order. The order is the
 // precedence: one evidence line produces at most one finding, so the first rule
-// that matches owns the line. A line that two families could describe is
-// therefore counted once, which is what keeps the statistics from
-// double-weighting one defect.
+// that matches owns the line, and a line two families could describe would be
+// counted once rather than double-weighted in the statistics. No two families
+// in the table as written actually overlap (see Match), so that rule is held for
+// the first overlap rather than exercised today.
 //
 // The claim sets are narrower than the source arm's on purpose, and the
 // narrowing is the fix for the false positives this table was measured to have.
@@ -6138,8 +6218,11 @@ type binaryFamily struct {
 // a deleted package, not a noisy report.
 var binaryFamilies = []binaryFamily{
 	{
-		// memfd_create and fexecve come before the general command family so
-		// that the more specific family names the finding.
+		// memfd_create and fexecve lead the table so that, if the general
+		// command family's claim is ever widened to cover them, the more
+		// specific family is the one that names the finding. Today CMD_001's
+		// list is anchored and names neither, so the pair does not overlap and
+		// the position is held for that widening rather than exercised now.
 		ID:       "BIN_002",
 		Sources:  []EvidenceSource{SourceDynsym},
 		Patterns: compilePatterns(`^(memfd_create|fexecve)$`),
@@ -6334,10 +6417,22 @@ func (m *BinaryMatcher) Rules() []Rule {
 // Match returns the first rule the line matches, or nil.
 //
 // First rather than all: the finding list is what the statistics and the LLM
-// quota are computed from, and one evidence line is one observation. A line that
-// two families could describe - memfd_create is both an execution capability and
-// a dynamic-loading one - is reported under the more specific family, which is
-// why the table order is the precedence and is asserted by a test.
+// quota are computed from, and one evidence line is one observation. A line two
+// families could describe is reported once, under the earlier family.
+//
+// That order is the intended rule, but it is not observable in the table as it
+// stands, because no two families overlap: each pair differs in source, in
+// pattern text, or in both, so no line is described by more than one and the
+// order never decides anything. The pair that looks like the exception is not
+// one - BIN_002 claims memfd_create and fexecve while CMD_001's command list is
+// anchored and simply does not contain fexecve, so nothing is claimed twice.
+// This doc used to cite memfd_create as an overlap the BIN_002-before-CMD_001
+// order resolved; that was wrong. The order is a rule held for the first real
+// overlap, not one doing work today, and no test asserts it for the same reason:
+// with nothing to assert against, the only way to test precedence now would be
+// to tilt the table into an overlap it does not have, which pins a fiction
+// rather than the code. When a family that genuinely overlaps an earlier one is
+// added, that is the moment to add the test and to say here which one wins.
 func (m *BinaryMatcher) Match(line EvidenceLine) *Rule {
 	for i := range m.order {
 		fam := &m.order[i]
@@ -6439,7 +6534,7 @@ func TestEveryBinaryRuleHasASuggestion(t *testing.T) {
 - [ ] **Step 6: 跑测试确认通过**
 
 ```bash
-go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestMatchEvidence|TestSymbolRules|TestEveryBinaryRuleHasASuggestion' -v 2>&1 | tail -20
+go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestBinaryFamily|TestBinaryTable|TestMatchEvidence|TestSymbolRules|TestEveryBinaryRuleHasASuggestion' -v 2>&1 | tail -20
 ```
 
 预期全 PASS。若 `TestBinaryOnlyFamiliesDoNotCollide` 报 `BIN_001` 之类的 id 冲突，说明 `binaryOnlyRules` 里写了与共享表相同的 id——修正 id 而不是放宽断言。
