@@ -689,6 +689,14 @@ const entropyChunkBytes = 64 * 1024
 // it twice, in the one task that does not yet have the size switch. What Task 5
 // owns is the structure, and its tests assert exactly that.
 func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	// Normalize first, like every other collector. A zero-valued BinaryConfig is
+	// the shape a caller that only knows about one field passes, and leaving it
+	// raw is not neutral here: MaxStreamBytes of 0 makes the per-file budget spent
+	// before the first section, so every executable section records a structural
+	// "0-byte budget was spent" bound and the package is deleted, and a
+	// HighEntropyThreshold of 0 flags every non-uniform section as packed. The
+	// zero value means "use the defaults", so it is resolved to them up front.
+	cfg = normalizeBinaryConfig(cfg)
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
@@ -760,18 +768,55 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	// program's own identifiers - the same false-positive class the free-string
 	// families were demoted for. Task 8's rule table is unchanged by this: no new
 	// evidence source is introduced, which is the point.
-	syms, err := ef.DynamicSymbols()
-	if err != nil && !errors.Is(err, elf.ErrNoSymbols) {
-		return fmt.Errorf("read dynamic symbols of %s: %w", path, err)
-	}
-	for _, s := range syms {
-		if s.Section != elf.SHN_UNDEF || elf.ST_BIND(s.Info) != elf.STB_GLOBAL {
-			continue
-		}
-		set.addStructured(SourceDynsym, s.Name)
-	}
-	if errors.Is(err, elf.ErrNoSymbols) {
+	//
+	// The read is guarded because debug/elf's 64-bit symbol reader panics rather
+	// than returning an error on one shape, and it is reachable from an untrusted
+	// file: ClassifyBinary returns KindELF on the four magic bytes alone and does
+	// not look at EI_CLASS, so sh_size is a field the file itself chooses.
+	//
+	// getSymbols64 (file.go) fetches the section's data, rejects it only when
+	// len(data)%Sym64Size != 0, and then slices data[Sym64Size:]. Zero is a
+	// multiple of every entry size, so a section that yields an empty buffer
+	// passes that check and slices an empty slice, panicking with "slice bounds
+	// out of range [24:0]". Every other short length is not a multiple and is
+	// rejected with an error instead - so the panic set is exactly {length 0},
+	// not every length below one entry. The empty buffer arises when the section
+	// declares a size of zero; that is the guard below, and the boundary is exact:
+	// a declared size of 1..23 is left to the reader, which fails the scan closed,
+	// whereas skipping it would turn a malformed symbol table into a silent pass.
+	//
+	// The guard is scoped to ELFCLASS64 because the 32-bit reader has the same
+	// slice but cannot reach it with an empty buffer: getSymbols32 has an explicit
+	// `if len(data) == 0` return before it. A 32-bit table is therefore left
+	// alone, which also keeps its fail-closed error for a zero-size section, and
+	// its entries are Sym32Size (16) bytes so it is not measured against a 24-byte
+	// entry either way.
+	//
+	// A table that declares zero bytes holds no symbols, so skipping it reads as
+	// "imports nothing" - the fact a zero-entry table reports - and raises no
+	// bound, because nothing was left unexamined.
+	dynsym := ef.SectionByType(elf.SHT_DYNSYM)
+	switch {
+	case dynsym == nil:
 		set.addStructured(SourceNotice, "no dynamic symbol table (SHT_DYNSYM absent)")
+	case ef.Class == elf.ELFCLASS64 && dynsym.Size == 0:
+		// The panic shape: the 64-bit reader would slice an empty section. The
+		// table is held back here and reports no symbols. It holds none to lose,
+		// and calling a present table "absent" would be a false statement.
+	default:
+		syms, err := ef.DynamicSymbols()
+		if err != nil && !errors.Is(err, elf.ErrNoSymbols) {
+			return fmt.Errorf("read dynamic symbols of %s: %w", path, err)
+		}
+		if errors.Is(err, elf.ErrNoSymbols) {
+			set.addStructured(SourceNotice, "no dynamic symbol table (SHT_DYNSYM absent)")
+		}
+		for _, s := range syms {
+			if s.Section != elf.SHN_UNDEF || elf.ST_BIND(s.Info) != elf.STB_GLOBAL {
+				continue
+			}
+			set.addStructured(SourceDynsym, s.Name)
+		}
 	}
 
 	// The per-file read budget for this parse, spent across all the sections
@@ -807,7 +852,16 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 			set.markStructural(fmt.Sprintf("section %s unreadable: %v", sec.Name, readErr))
 			continue
 		}
-		if read < int64(sec.Size) {
+		// The comparison is unsigned on purpose. sec.Size is a uint64, and for a
+		// SHF_COMPRESSED section it is the compression header's ch_size, which
+		// debug/elf copies into Section.Size without the int64 range check it
+		// applies to sh_size. A crafted ch_size with the high bit set therefore
+		// makes int64(sec.Size) negative, and a signed `read < int64(sec.Size)`
+		// is false for every non-negative read - the section would score as read
+		// in full and its entropy would be reported as clean. Comparing in the
+		// declared type's domain keeps "declares more than was read" true for any
+		// size the field can hold.
+		if uint64(read) < sec.Size {
 			// The section declares more bytes than were read. Two things produce
 			// this and both are the same fact about the file: a sh_offset or
 			// sh_size that runs past the end of it (the read stops at EOF), and a

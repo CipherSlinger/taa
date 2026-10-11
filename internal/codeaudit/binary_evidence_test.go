@@ -1160,6 +1160,157 @@ func TestCollectELFEmptyDynsymIsNotAStrippedFile(t *testing.T) {
 	}
 }
 
+// TestCollectELFEvidenceOnAZeroSizeDynsym pins the crash guard. A SHT_DYNSYM that
+// is present but declares sh_size == 0 makes debug/elf's 64-bit symbol reader
+// slice an empty buffer at byte 24 and panic ("slice bounds out of range
+// [24:0]") instead of returning an error: its only length check, len(data)%24,
+// accepts a zero length. ClassifyBinary returns KindELF on the four magic bytes
+// alone, so the shape is reachable from an untrusted file, and a panic aborts the
+// whole scan rather than marking the one file incomplete. collectELF has to hold
+// the table back - it holds no symbols, so nothing is lost - and must not claim
+// the table is absent, which would be a false statement about the file.
+func TestCollectELFEvidenceOnAZeroSizeDynsym(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		imports:    []string{"dlopen"},
+		zeroDynsym: true,
+		text:       []byte("a symbol table present but empty"),
+	})
+	path := writeTestBytes(t, dir, "zero-dynsym.so", raw)
+
+	// Prove the fixture really carries the crash shape, or the test would pass on
+	// a file that cannot panic.
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatalf("elf.Open on the fixture: %v", err)
+	}
+	ds := f.SectionByType(elf.SHT_DYNSYM)
+	if ds == nil {
+		f.Close()
+		t.Fatal("fixture has no SHT_DYNSYM section")
+	}
+	size := ds.Size
+	f.Close()
+	if size != 0 {
+		t.Fatalf("fixture .dynsym size = %d, want 0", size)
+	}
+
+	// collectELF must return, not panic, and must neither invent a symbol from the
+	// unread table nor describe the present table as absent.
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF on a zero-size .dynsym: %v", err)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourceDynsym {
+			t.Errorf("a zero-size .dynsym produced symbol evidence %q", l.Text)
+		}
+		if l.Source == SourceNotice && strings.Contains(l.Text, "no dynamic symbol table") {
+			t.Errorf("a present but zero-size .dynsym was reported as an absent table: %q", l.Text)
+		}
+	}
+}
+
+// TestCollectELFEvidenceReportsACompressedSectionWithAnOutOfRangeSize pins the
+// unsigned size comparison. For a SHF_COMPRESSED section debug/elf takes
+// Section.Size from the compression header's ch_size without the int64 range
+// check it applies to sh_size, so a crafted ch_size with the top bit set makes
+// int64(Section.Size) negative: a signed "read < int64(sec.Size)" is false for
+// every non-negative read, the section scores as read in full, and - because
+// executable code is not random - its entropy is reported as clean. The fixture's
+// section decompresses to far fewer bytes than it declares, which is exactly the
+// short-read the check exists to catch, so the size must be compared in its own
+// unsigned domain.
+func TestCollectELFEvidenceReportsACompressedSectionWithAnOutOfRangeSize(t *testing.T) {
+	// 2^63, one past the largest int64: int64(ch_size) is negative.
+	const declared = uint64(1) << 63
+	payload := bytes.Repeat([]byte{0x90}, 4096) // low entropy: no verdict either way
+
+	dir := t.TempDir()
+	path := writeTestBytes(t, dir, "packed.so", elfCompressedFixture(t, declared, payload))
+
+	// The fixture must be the shape the check is for: a compressed executable
+	// section whose reported size is the declared one.
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatalf("elf.Open on the fixture: %v", err)
+	}
+	var sec *elf.Section
+	for _, s := range f.Sections {
+		if s.Flags&elf.SHF_EXECINSTR != 0 {
+			sec = s
+		}
+	}
+	if sec == nil {
+		f.Close()
+		t.Fatal("fixture has no executable section")
+	}
+	size := sec.Size
+	f.Close()
+	if size != declared {
+		t.Fatalf("fixture section size = %d, want %d (debug/elf must take it from ch_size)", size, declared)
+	}
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF on a compressed section: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("a compressed executable section declaring %d bytes recorded no structural bound; bound = %+v", declared, set.Bound)
+	}
+	if !strings.Contains(set.Bound.Reason, "readable") {
+		t.Errorf("bound reason = %q, want the short-read reason", set.Bound.Reason)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourceEntropy {
+			t.Errorf("an under-read executable section produced entropy evidence %q", l.Text)
+		}
+	}
+}
+
+// TestCollectELFEvidenceNormalizesAZeroConfig pins that collectELF resolves a
+// zero BinaryConfig to the defaults, as its peers do. Without that,
+// MaxStreamBytes of 0 spends the per-file budget before the first section, so
+// every executable section records a "0-byte per-file budget was spent"
+// structural bound and the package is deleted - a false block produced by a
+// caller that knows about only one field. The same file under the default config
+// is clean, so the two must agree.
+func TestCollectELFEvidenceNormalizesAZeroConfig(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		imports:  []string{"dlopen"},
+		text:     []byte("an ordinary executable section of perfectly normal code"),
+		textExec: true,
+	})
+	path := writeTestBytes(t, dir, "normal.so", raw)
+
+	zero := newTestEvidence(path, KindELF)
+	if err := collectELF(path, zero, BinaryConfig{}); err != nil {
+		t.Fatalf("collectELF with a zero config: %v", err)
+	}
+	def := newTestEvidence(path, KindELF)
+	if err := collectELF(path, def, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF with the default config: %v", err)
+	}
+
+	if zero.Bound.Structural {
+		t.Errorf("a zero config produced a structural bound %+v; the zero value must mean the defaults", zero.Bound)
+	}
+	if zero.Bound != def.Bound {
+		t.Errorf("zero config bound = %+v, default config bound = %+v; they must agree", zero.Bound, def.Bound)
+	}
+	if len(zero.Lines) != len(def.Lines) {
+		t.Fatalf("zero config produced %d evidence lines, default config produced %d", len(zero.Lines), len(def.Lines))
+	}
+	for i := range zero.Lines {
+		z, d := zero.Lines[i], def.Lines[i]
+		if z.Source != d.Source || z.Offset != d.Offset || z.Text != d.Text {
+			t.Errorf("line %d differs: zero config (%s %d %q), default config (%s %d %q)",
+				i, z.Source, z.Offset, z.Text, d.Source, d.Offset, d.Text)
+		}
+	}
+}
+
 // TestCountSectionStreamsTheSameHistogramAsABufferRead pins that chunking the
 // section read does not change the number it produces. The fixture is larger
 // than one chunk so the loop body runs more than once: an implementation that

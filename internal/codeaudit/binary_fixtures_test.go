@@ -1,6 +1,8 @@
 package codeaudit
 
 import (
+	"bytes"
+	"compress/zlib"
 	"encoding/binary"
 	"testing"
 
@@ -52,6 +54,15 @@ type elfSpec struct {
 	// but holds only the 24-byte null entry is a different case: it yields an
 	// empty symbol list and a nil error.
 	stripped bool
+	// zeroDynsym, when true, keeps the SHT_DYNSYM section header but writes its
+	// sh_size as 0: a symbol table that is present in the header table yet
+	// declares no bytes. It is the shape that makes debug/elf's 64-bit symbol
+	// reader panic, because getSymbols64 rejects only lengths that are not a
+	// multiple of 24 and then slices data[24:] - and zero is a multiple of 24.
+	// Neither of the other two shapes reaches that: a stripped file omits the
+	// section, and a normal empty table carries the 24-byte reserved entry. So
+	// the crash needs its own switch rather than a reuse of `stripped`.
+	zeroDynsym bool
 }
 
 // elfFixtureBytes builds a minimal but well-formed ELF64 little-endian shared
@@ -305,7 +316,14 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 		}
 		sh(secDynstr, nDynstr, elf.SHT_STRTAB, uint64(elf.SHF_ALLOC), uint64(dynstrOff), uint64(len(dynstr)), 0, 0, 1, 0)
 		if !spec.stripped {
-			sh(secDynsym, nDynsym, elf.SHT_DYNSYM, uint64(elf.SHF_ALLOC), uint64(dynsymOff), uint64(len(dynsym)), secDynstr, 1, 8, symEntSize)
+			// sh_size is the declared size. zeroDynsym writes 0 over it, keeping
+			// the section present but claiming no bytes - the shape that panics
+			// debug/elf's 64-bit symbol reader.
+			dynsymSize := uint64(len(dynsym))
+			if spec.zeroDynsym {
+				dynsymSize = 0
+			}
+			sh(secDynsym, nDynsym, elf.SHT_DYNSYM, uint64(elf.SHF_ALLOC), uint64(dynsymOff), dynsymSize, secDynstr, 1, 8, symEntSize)
 		}
 		sh(secDynamic, nDynamic, elf.SHT_DYNAMIC, uint64(elf.SHF_ALLOC), uint64(dynamicOff), uint64(len(dynamic)), secDynstr, 0, 8, dynEntSize)
 		sh(secShstr, nShstrtab, elf.SHT_STRTAB, 0, uint64(shstrtabOff), uint64(len(shstrtab)), 0, 0, 1, 0)
@@ -330,4 +348,94 @@ func uniformBytes(n int) []byte {
 		b[i] = byte(i * 7)
 	}
 	return b
+}
+
+// elfCompressedFixture builds a minimal ELF64 with one section, .text, carrying
+// SHF_EXECINSTR | SHF_COMPRESSED. Its compression header (an Elf64_Chdr) declares
+// chSize as the uncompressed size, and its body is a real zlib stream of payload,
+// so opening the section succeeds and yields len(payload) bytes.
+//
+// It exists because chSize is attacker-controlled and debug/elf does not range-
+// check it: for a compressed section it copies ch_size straight into
+// Section.Size, applying an int64 range check only to sh_size. A value at or
+// above 2^63 therefore makes int64(Section.Size) negative, while the readable
+// size stays small - the exact pair a short-read check has to compare, and the
+// pair a signed comparison mis-handles.
+func elfCompressedFixture(t *testing.T, chSize uint64, payload []byte) []byte {
+	t.Helper()
+
+	const (
+		ehSize    = 64
+		shEntSize = 64
+		chdrSize  = 24 // Elf64_Chdr: uint32 + uint32 + uint64 + uint64
+	)
+	le := binary.LittleEndian
+	align8 := func(n int) int { return (n + 7) &^ 7 }
+
+	var z bytes.Buffer
+	zw := zlib.NewWriter(&z)
+	if _, err := zw.Write(payload); err != nil {
+		t.Fatalf("zlib write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zlib close: %v", err)
+	}
+
+	// The section body is the compression header followed by the compressed
+	// stream. debug/elf reads the header at load time and decompresses from
+	// compressionOffset (the header's own size) onward.
+	body := make([]byte, chdrSize+z.Len())
+	le.PutUint32(body[0:4], uint32(elf.COMPRESS_ZLIB)) // ch_type
+	le.PutUint32(body[4:8], 0)                         // ch_reserved
+	le.PutUint64(body[8:16], chSize)                   // ch_size (uncompressed)
+	le.PutUint64(body[16:24], 1)                       // ch_addralign
+	copy(body[chdrSize:], z.Bytes())
+
+	shstrtab := []byte{0}
+	nameText := uint32(len(shstrtab))
+	shstrtab = append(shstrtab, ".text"...)
+	shstrtab = append(shstrtab, 0)
+	nameShstr := uint32(len(shstrtab))
+	shstrtab = append(shstrtab, ".shstrtab"...)
+	shstrtab = append(shstrtab, 0)
+
+	bodyOff := ehSize
+	shstrOff := align8(bodyOff + len(body))
+	shoff := align8(shstrOff + len(shstrtab))
+	buf := make([]byte, shoff+shEntSize*3)
+
+	// ELF header: class 64, little-endian, ET_DYN, no program headers.
+	copy(buf[0:4], []byte{0x7f, 'E', 'L', 'F'})
+	buf[4] = byte(elf.ELFCLASS64)
+	buf[5] = byte(elf.ELFDATA2LSB)
+	buf[6] = byte(elf.EV_CURRENT)
+	buf[7] = byte(elf.ELFOSABI_NONE)
+	le.PutUint16(buf[16:18], uint16(elf.ET_DYN))
+	le.PutUint16(buf[18:20], uint16(elf.EM_X86_64))
+	le.PutUint32(buf[20:24], uint32(elf.EV_CURRENT))
+	le.PutUint64(buf[40:48], uint64(shoff)) // e_shoff
+	le.PutUint16(buf[52:54], ehSize)
+	le.PutUint16(buf[58:60], shEntSize)
+	le.PutUint16(buf[60:62], 3) // e_shnum: null, .text, .shstrtab
+	le.PutUint16(buf[62:64], 2) // e_shstrndx
+
+	copy(buf[bodyOff:], body)
+	copy(buf[shstrOff:], shstrtab)
+
+	sh := func(i int, name uint32, typ elf.SectionType, flags uint64, offset, size, addralign uint64) {
+		b := buf[shoff+i*shEntSize:]
+		le.PutUint32(b[0:4], name)
+		le.PutUint32(b[4:8], uint32(typ))
+		le.PutUint64(b[8:16], flags)
+		le.PutUint64(b[24:32], offset)
+		le.PutUint64(b[32:40], size)
+		le.PutUint64(b[48:56], addralign)
+	}
+	// .text is executable and compressed; debug/elf takes the section's size from
+	// the compression header, so ch_size is what a reader reports as its size.
+	// Only the two flags it needs are set - a compressed section that is also
+	// SHF_ALLOC is rejected by the reader.
+	sh(1, nameText, elf.SHT_PROGBITS, uint64(elf.SHF_EXECINSTR)|uint64(elf.SHF_COMPRESSED), uint64(bodyOff), uint64(len(body)), 1)
+	sh(2, nameShstr, elf.SHT_STRTAB, 0, uint64(shstrOff), uint64(len(shstrtab)), 1)
+	return buf
 }
