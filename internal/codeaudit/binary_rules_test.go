@@ -203,22 +203,25 @@ func TestSymbolRulesDoNotMatchStringLiterals(t *testing.T) {
 // TestBinaryTableProducesNoHighFindingsOnLegitimateInputs is the bar the table
 // has to clear, and it is a bar rather than a preference. The severity column is
 // the only control that exists downstream: `Passed` is computed as
-// `highCount == 0` (with the medium count added under the `gate` policy,
-// internal/codeaudit/audit.go:301), and a false `Passed` makes
-// `internal/controller/import_processing.go:655-660` run `cleanDirContents` and
-// delete the model package. A rule table that reports a HIGH on an ordinary
-// shared object or a compiled .pyc therefore does not merely add noise - it
-// destroys the package.
+// `highCount == 0` (with the medium count added under the `gate` policy), and a
+// false `Passed` makes `internal/controller/import_processing.go:655-660` run
+// `cleanDirContents` and delete the model package. A rule table that reports a
+// HIGH on an ordinary shared object or a compiled .pyc therefore does not merely
+// add noise - it destroys the package.
 //
 // Every fixture below reproduces a shape measured against real files on this
-// machine: `/home/hjy/taa/models` (untracked, so it cannot itself be the
-// fixture), the 28 shared libraries of a stock ollama install, and the .pyc
-// files under this repository, using the stringScanner semantics from
-// binary_evidence.go, real `readelf --dyn-syms` output and real pickle targets.
-// The measured numbers the shapes stand for - 23 of 28 libraries firing a
-// free-string rule, `bind` in libllama-common.so, `.profilez /etc/cron)` and
-// `crontabz` inside taint_engine.cpython-312.pyc - are recorded in this task's
-// prose so a later reader can repeat the run against the finished table.
+// machine: the string runs of `/home/hjy/taa/models` (740 files of that tree are
+// tracked in this repository, so it is not the untracked part - the narrower
+// truth is that the .pyc files carrying these fragments are the untracked,
+// gitignored ones, which is why the fragments are reproduced as fixtures rather
+// than the files being embedded), the 28 shared libraries of a stock ollama
+// install, and the .pyc files under this repository, using the stringScanner
+// semantics from binary_evidence.go, real `readelf --dyn-syms` output and real
+// pickle targets. The measured numbers the shapes stand for - 23 of 28 libraries
+// firing a free-string rule, `bind` in libllama-common.so, the TAB-bearing
+// `'.profilez\t/etc/cron)'` run in taint_engine.cpython-312.pyc and `crontabz` in
+// code_security_analyzer.cpython-312.pyc - are recorded in this task's prose so
+// a later reader can repeat the run against the finished table.
 func TestBinaryTableProducesNoHighFindingsOnLegitimateInputs(t *testing.T) {
 	matcher, err := NewBinaryMatcher()
 	if err != nil {
@@ -319,9 +322,9 @@ func TestBinaryTableStillFiresHighOnStructuralEvidence(t *testing.T) {
 // TestBinaryFamilySeveritiesArePinned pins the severity column of the resolved
 // table, one family at a time, because that column is the only control that
 // decides whether a finding blocks. Under the default `assist` policy `Passed`
-// is `highCount == 0`; under `gate` it is `High == 0 && Medium == 0`
-// (internal/codeaudit/audit.go:298-309), and a false `Passed` makes
-// internal/controller/import_processing.go:655-660 delete the package. The two
+// is `highCount == 0`; under `gate` it is `High == 0 && Medium == 0`, and a
+// false `Passed` makes internal/controller/import_processing.go:655-660 delete
+// the package. The two
 // policies therefore impose two different bars, and a family's severity has to
 // be right for both: the four string families are LOW, not MEDIUM, precisely
 // because MEDIUM would still delete once an operator switches to `gate`.

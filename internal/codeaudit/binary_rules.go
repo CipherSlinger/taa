@@ -23,7 +23,7 @@ import (
 // The reason this has to be stated rather than felt is that the severity column
 // is the only control that exists downstream. `Passed` is computed as
 // `highCount == 0` under the default `assist` policy, and with the medium count
-// added under `gate` (internal/codeaudit/audit.go:298-309). A false `Passed`
+// added under `gate`, both in ComputeConclusionContext. A false `Passed`
 // makes internal/controller/import_processing.go:655-660 run cleanDirContents
 // and delete the model package. Measured against the real files on this machine,
 // the table as first written deleted legitimate packages: one free-string rule
@@ -34,10 +34,9 @@ import (
 //
 // "LOW" is the literal the report path already uses for a non-blocking finding:
 // DefaultRules() has no LOW constant, and ClassifyFindingRisk falls through to
-// "LOW" for any severity that is neither HIGH nor MEDIUM
-// (internal/codeaudit/audit.go:242-243). A LOW finding still reaches the report
-// and still goes to the Tier-2 verifier, which can raise it to MALICIOUS on its
-// own evidence; it simply does not block by itself.
+// "LOW" for any severity that is neither HIGH nor MEDIUM. A LOW finding still
+// reaches the report and still goes to the Tier-2 verifier, which can raise it
+// to MALICIOUS on its own evidence; it simply does not block by itself.
 var binaryOnlyRules = map[string]Rule{
 	"BIN_001": {
 		ID:       "BIN_001",
@@ -71,8 +70,8 @@ var binaryOnlyRules = map[string]Rule{
 	// The four families below carry free-string evidence and are LOW. Their ids
 	// are new rather than shared because PER_001 and CMD_001 are HIGH in the
 	// source table and FIL_001/ENV_001 are MEDIUM - and MEDIUM is not the safe
-	// level either, because under the gate policy it blocks and deletes too
-	// (audit.go:301). Giving them LOW under a shared id would make the two arms
+	// level either, because under the gate policy it blocks and deletes too.
+	// Giving them LOW under a shared id would make the two arms
 	// disagree about a shared family's severity, which
 	// TestBinaryRulesBorrowSharedFamilies exists to prevent.
 	"CMD_002": {
@@ -142,6 +141,12 @@ var binaryFamilies = []binaryFamily{
 		// imports system() has the capability. Only SourceDynsym - the string
 		// half lives in CMD_002 below, because the same word in a literal is not
 		// a capability.
+		//
+		// The same corpus run that produced the NET_002 measurement puts this
+		// family on a legitimate library too: `nm -D` shows
+		// libggml-base.so.0.20.2 importing `execlp`, so CMD_001 reports HIGH on
+		// ggml's own backend loader. That is the same undecided posture the
+		// NET_002 note records, left undecided here for the same reason.
 		ID:      "CMD_001",
 		Sources: []EvidenceSource{SourceDynsym},
 		Patterns: compilePatterns(
@@ -149,16 +154,34 @@ var binaryFamilies = []binaryFamily{
 		),
 	},
 	{
-		// The client half of raw network use. The set is deliberately the
-		// outbound-client shape rather than every socket primitive, and the
-		// measurement is why: against the 28 shared libraries of a stock ollama
-		// install, the generic and server-side symbols - `bind`, `send`, `recv` -
-		// are imported by libllama-common.so, a legitimate library, while no
-		// library in that set imports `socket` or `connect` or needs libcurl.
-		// `bind` alone is a server, and a rule that blocks every server is a rule
-		// that blocks a networking stack; the client symbols plus a client library
-		// dependency keep the claim small enough to mean something. The shared id
-		// and its severity are the source arm's, so this family stays HIGH.
+		// The client half of raw network use. The set was narrowed to the
+		// outbound-client shape out of the measurement below, and the narrowing
+		// did not achieve what it was for.
+		//
+		// Measured with the wide symbol readers (`nm -D`, or `readelf -sW
+		// --dyn-syms`; plain `readelf --dyn-syms` truncates long names to
+		// `[...]` and hides `socket` and `connect` in particular) against the 28
+		// shared libraries of this machine's ollama bundle: the generic and
+		// server-side symbols - `bind`, `send`, `recv` - are imported by
+		// libllama-common.so, a legitimate library, so dropping them did remove
+		// that match. But the client symbols were kept, and they sit in the same
+		// libraries: libllama-common.so.0.1.2 and libllama-server-impl.so both
+		// import `socket`, `connect` and `getaddrinfo` alongside
+		// `bind`/`send`/`recv`, and the CUDA runtime libraries under
+		// cuda_v12/cuda_v13 import `bind`/`connect`/`socket`.
+		//
+		// So on this machine's bundle NET_002 reports HIGH on legitimate
+		// libraries, and under the default `assist` policy, where `Passed` is
+		// `highCount == 0`, that means passed=false for a package that holds one
+		// of them. The "or needs libcurl" half of the original claim does hold:
+		// no library in the bundle carries a curl or ssl DT_NEEDED.
+		//
+		// This is not a mis-written comment; it is a rule posture that was never
+		// decided. Narrowing the pattern set further, dropping the family to
+		// MEDIUM, and requiring it to co-occur with another family are all open,
+		// and this task chooses none of them - it records the measurement and
+		// leaves the decision unmade. The shared id and its severity are the
+		// source arm's, so as written this family stays HIGH.
 		ID:      "NET_002",
 		Sources: []EvidenceSource{SourceDynsym, SourceNeeded},
 		Patterns: compilePatterns(
@@ -205,11 +228,21 @@ var binaryFamilies = []binaryFamily{
 	},
 	{
 		// Token-anchored at both ends. The previous patterns fired on
-		// `'crontabz'` and on `'.profilez /etc/cron)'` inside
-		// taint_engine.cpython-312.pyc, where a .pyc's constants concatenate into
-		// a run and a mid-run path always matches an unanchored pattern. A
-		// boundary on the token, not the fragment, is the fix; raising the
-		// severity would not have been.
+		// `'crontabz'` and on `'.profilez\t/etc/cron)'`, both fragments of a
+		// concatenated .pyc constant pool, where a mid-run path always matches an
+		// unanchored pattern. A boundary on the token, not the fragment, is the
+		// fix; raising the severity would not have been.
+		//
+		// The two fragments come from different files, which an earlier version
+		// of this note got wrong by attaching both to one of them.
+		// `'.profilez\t/etc/cron)'` (a TAB, not a space) is the single occurrence
+		// in models/audit/tools/cpg/__pycache__/taint_engine.cpython-312.pyc,
+		// which contains no `crontab` substring at all. `'crontabz'` is in
+		// models/examples/__pycache__/code_security_analyzer.cpython-312.pyc,
+		// where the source literal `r"crontab"` in
+		// models/examples/code_security_analyzer.py has picked up the trailing
+		// `z` from the concatenation - the fragment is real, only the file was
+		// misattributed.
 		ID:      "PER_002",
 		Sources: []EvidenceSource{SourceStrings},
 		Patterns: compilePatterns(
@@ -360,6 +393,12 @@ func (m *BinaryMatcher) Match(line EvidenceLine) *Rule {
 // MatchAll returns one rule per matching line, in listing order, with the
 // index of the matched line. It is a slice-building convenience over Match so
 // that the scanner does not re-implement the precedence loop.
+//
+// It has no caller in this commit - not in the scanner, not in a test, nothing.
+// It is written ahead of the binary scanner, which Task 9 wires to this table
+// and which is the caller that would otherwise re-implement the precedence
+// loop; until that lands it is deliberately declared and deliberately unused,
+// not an oversight.
 func (m *BinaryMatcher) MatchAll(lines []EvidenceLine) []binaryMatch {
 	var out []binaryMatch
 	for i := range lines {
