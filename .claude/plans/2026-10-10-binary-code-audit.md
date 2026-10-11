@@ -4298,7 +4298,296 @@ git commit -m "feat(audit): read ELF imports, dependencies and section entropy a
 - Modify: `internal/codeaudit/binary_evidence.go`
 - Test: `internal/codeaudit/binary_evidence_test.go`
 
-- [ ] **Step 1: 写失败测试**
+> **本任务的步骤顺序是承重的，不要"整理"回"容器在前"。** `collectELFMember`（Step 6）调用 `collectELFReader`（Step 3 创建），而 `collectELFReader` 的薄封装又调用 `streamWithSizeSwitch`（Step 1 创建）——依赖只有一个方向，所以只有"先加窗口化开关、再拆 reader 版本、最后写容器"这个顺序能让每一次提交都编得过；把容器工作挪回最前面，恢复的正是那个编不过的顺序。
+
+- [ ] **Step 1: 加窗口化开关**
+
+追加到 `binary_evidence.go`：
+
+```go
+// streamWithSizeSwitch streams a file end to end when it is small enough to be
+// worth it, and reads only its head and tail when it is not.
+//
+// The switch exists because the two costs are not comparable. A full pass costs
+// about 3 microseconds per kibibyte at the measured rate, which is nothing for
+// the 10.8 MiB pickle that is the largest such file in the example package and
+// nine seconds for a 3 GiB shard. Above MaxFullScanBytes the pass is replaced by
+// a HeadTailBytes window at each end.
+//
+// Skipping the middle is recorded, and how it is recorded is isExecutableKind's
+// existing asymmetry rather than a new rule: a windowed pickle or ELF leaves a
+// region of an executable format unread, so it is a structural bound and a clean
+// verdict is withheld; a windowed tensor blob is a data bound and is only
+// reported. Without the first half the threshold would be an evasion: padding a
+// pickle past 64 MiB would hide a mid-stream GLOBAL and still pass.
+//
+// What that gives up is stated in the plan's boundary section rather than hidden
+// here: for a raw blob the middle is tensor data no loader reads, so nothing
+// reachable is lost. For a pickle it is a real loss - a GLOBAL emitted in the
+// middle of a long data-building run would be missed - and the two windows are
+// the mitigation rather than a cure, covering the load-time call at the front and
+// the post-load action at the back. A deployment whose packages contain such a
+// file raises maxFullScanBytes rather than being silently exempted.
+func streamWithSizeSwitch(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	if set.Size > cfg.MaxFullScanBytes {
+		set.markStructural(fmt.Sprintf("file is %d bytes, above MaxFullScanBytes %d: only the head and tail %d bytes were read",
+			set.Size, cfg.MaxFullScanBytes, cfg.HeadTailBytes))
+		return streamHeadAndTail(path, set, cfg)
+	}
+	return streamEvidence(path, set, cfg, cfg.MaxStreamBytes)
+}
+
+// streamHeadAndTail runs the byte extractors over the first and last
+// HeadTailBytes of a file.
+//
+// It is what makes an appended payload visible. A zip's directory lives at the
+// end of the file and describes only the members before it, so a payload stapled
+// after the last member is inside no member and would otherwise be read by
+// nothing; the same reasoning covers a section appended past an ELF's last
+// section header.
+//
+// The window size is a parameter rather than a constant because two callers want
+// different ones: a container always reads its two ends, while a large blob reads
+// its ends only because it was too large to read whole.
+//
+// The pickle interpreter is gated here the same way it is gated everywhere else:
+// it runs only when set.Kind is KindPickle, and only over the head window. That
+// gating is what keeps this path from being a bound on every archive - a zip's own
+// bytes are not an opcode stream, and KindArchive is an executable kind, so an
+// ungated interpreter would set Bound.Structural on every .pt and .whl. The head
+// window is a valid prefix of the opcode stream and can be parsed; the tail window
+// is a splice out of the middle, and feeding a spliced fragment to a stateful
+// parser would make it read the splice as a continuation and invent targets out of
+// data bytes, so the tail goes to the strings pass alone. Nothing is lost by that:
+// this path is only reached above MaxFullScanBytes, where the file is already
+// recorded as structurally bounded.
+func streamHeadAndTail(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+
+	headTailBytes := cfg.HeadTailBytes
+	scanner := newStringScanner(set, cfg)
+	var pickles *pickleScanner
+	if set.Kind == KindPickle {
+		pickles = newPickleScanner(set)
+	}
+
+	head := make([]byte, headTailBytes)
+	n, err := f.ReadAt(head, 0)
+	if err != nil && err != io.EOF {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	if _, err := scanner.Write(head[:n]); err != nil {
+		return err
+	}
+	if pickles != nil {
+		if _, err := pickles.Write(head[:n]); err != nil {
+			return err
+		}
+	}
+
+	if info.Size() > headTailBytes {
+		tail := make([]byte, headTailBytes)
+		at := info.Size() - headTailBytes
+		n, err := f.ReadAt(tail, at)
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("read %s: %w", path, err)
+		}
+		// The offset is rebased so that a tail literal reports where it actually
+		// is: an offset that silently restarted at zero would make two different
+		// payloads report the same location. The interpreter is not rebased and not
+		// fed the tail at all - see the note above.
+		scanner.at = at
+		if _, err := scanner.Write(tail[:n]); err != nil {
+			return err
+		}
+	}
+	scanner.Flush()
+	if pickles != nil {
+		pickles.Flush()
+	}
+	return nil
+}
+```
+
+提交：
+
+```bash
+git add internal/codeaudit/binary_evidence.go
+git commit -m "feat(audit): window large files to their head and tail"
+```
+
+- [ ] **Step 2: 钉住窗口化开关的测试**
+
+追加到 `binary_evidence_test.go`：
+
+```go
+// TestStreamWithSizeSwitchWindowsAFileAboveTheFullScanBudget pins the switch
+// itself, the way TestCollectEvidenceWindowsAFileAboveTheSizeThreshold pins its
+// effect on the whole collector.
+//
+// It drives the switch through a small config rather than by building a 64 MiB
+// fixture: the switch compares set.Size against cfg.MaxFullScanBytes, so lowering
+// the config exercises exactly the branch a 64 MiB file would, at a fraction of
+// the cost and with no dependence on the disc. Both directions are asserted
+// because the switch has two outcomes, and a test of only the windowed one would
+// pass on a function that windowed unconditionally.
+func TestStreamWithSizeSwitchWindowsAFileAboveTheFullScanBudget(t *testing.T) {
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFullScanBytes = 4096
+	cfg.HeadTailBytes = 64
+
+	dir := t.TempDir()
+	var content []byte
+	content = append(content, []byte("HEAD_LITERAL\x00")...)
+	content = append(content, bytes.Repeat([]byte{'a'}, 128)...)
+	content = append(content, []byte("MIDDLE_LITERAL\x00")...)
+	content = append(content, bytes.Repeat([]byte{'b'}, 8192)...)
+	content = append(content, []byte("TAIL_LITERAL\x00")...)
+	path := writeTestBytes(t, dir, "big.bin", content)
+
+	// Above the budget the middle is skipped: the head and tail literals are read
+	// and the middle one is not, and the skip is recorded with the limit's name.
+	above := newTestEvidence(path, KindRaw)
+	above.Size = int64(len(content))
+	if err := streamWithSizeSwitch(path, above, cfg); err != nil {
+		t.Fatalf("streamWithSizeSwitch above the budget: %v", err)
+	}
+	if !above.Bound.Structural {
+		t.Fatalf("a file of %d bytes above a %d-byte budget recorded no structural bound; bound = %+v",
+			len(content), cfg.MaxFullScanBytes, above.Bound)
+	}
+	if !strings.Contains(above.Bound.Reason, "MaxFullScanBytes") {
+		t.Errorf("bound reason = %q, want it to name MaxFullScanBytes", above.Bound.Reason)
+	}
+	if want := fmt.Sprintf("head and tail %d bytes", cfg.HeadTailBytes); !strings.Contains(above.Bound.Reason, want) {
+		t.Errorf("bound reason = %q, want it to state %q", above.Bound.Reason, want)
+	}
+	found := map[string]bool{}
+	for _, l := range above.Lines {
+		found[l.Text] = true
+	}
+	if !found["HEAD_LITERAL"] {
+		t.Errorf("the head literal was not read from a windowed file; lines = %v", above.Lines)
+	}
+	if !found["TAIL_LITERAL"] {
+		t.Errorf("the tail literal was not read from a windowed file; lines = %v", above.Lines)
+	}
+	if found["MIDDLE_LITERAL"] {
+		t.Error("the middle literal was read anyway; the threshold is not a threshold")
+	}
+
+	// At or below the budget the whole file is read: the same middle literal is
+	// found, and nothing is recorded as skipped.
+	below := newTestEvidence(path, KindRaw)
+	below.Size = int64(len(content))
+	belowCfg := cfg
+	belowCfg.MaxFullScanBytes = int64(len(content)) + 1
+	if err := streamWithSizeSwitch(path, below, belowCfg); err != nil {
+		t.Fatalf("streamWithSizeSwitch below the budget: %v", err)
+	}
+	if below.Bound.Structural {
+		t.Errorf("a file under the budget recorded a structural bound (%q)", below.Bound.Reason)
+	}
+	found = map[string]bool{}
+	for _, l := range below.Lines {
+		found[l.Text] = true
+	}
+	if !found["MIDDLE_LITERAL"] {
+		t.Errorf("the middle literal was not read from a file under the budget; lines = %v", below.Lines)
+	}
+}
+```
+
+这条测试只断言"开关留下了什么记录"，不断言"阻断"。结构性缺口能不能挡住导入，不由这条开关决定，而是由消费方 `isExecutableKind` 决定：Task 9 的 `ScanDirectory` 在 `if set.Bound.Structural` 分支里按 `isExecutableKind(kind)` 分流，可执行类型记 `BoundedExecutable`、其余记 `BoundedData`（Task 7 的 `TestCollectEvidenceWindowsAFileAboveTheSizeThreshold` 才钉那条谓词）。本条用例断言的是 `Bound.Structural` 与 `Bound.Reason` 这两个记录本身。
+
+提交：
+
+```bash
+git add internal/codeaudit/binary_evidence_test.go
+git commit -m "test(audit): pin the head and tail windowing switch"
+```
+
+- [ ] **Step 3: 把 `collectELF` 拆出 reader 版本**
+
+`collectELF(path, ...)` 与 `collectELFMember` 需要共用同一段解析逻辑，所以把 Task 5 的实现体抽到一个以 `io.ReaderAt` 为入口的内核上，`collectELF` 变成薄封装。修改 `binary_evidence.go` 中 Task 5 写的 `collectELF`：
+
+本步的测试就是 Task 5 已有的那一族 ELF 用例：它们从此要经 `collectELF` 薄封装进入 `streamWithSizeSwitch`、再进解析体，而在默认的 64 MiB 预算下这些夹具都会整份读完，所以必须**一字不改地保持全绿**——这就是"这次拆分只换了那个在消息里命名文件的参数、别的什么都没动"的证据。
+
+```go
+// collectELF reads a file's ELF structure into evidence.
+func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+	// The stream pass and the structural pass are separate on purpose: the
+	// stream pass reads the file front to back for literals, and the structural
+	// pass seeks. Sharing one handle between them would make the structural
+	// parse depend on where the stream pass happened to stop.
+	//
+	// Through streamWithSizeSwitch rather than streamEvidence directly, so that a
+	// large shared object is windowed at its ends like any other large blob
+	// instead of being streamed whole.
+	if err := streamWithSizeSwitch(path, set, cfg); err != nil {
+		return err
+	}
+	return collectELFReader(f, set, cfg, path)
+}
+
+// collectELFReader is the ELF parse itself, over any random-access reader. It is
+// separate from collectELF so that a container member - which is a stream, not a
+// path - is parsed by the same code rather than by a second implementation that
+// would drift from this one.
+//
+// It carries the whole of Task 5's body: the sectionless structural bound, the
+// .dynsym walk and its too-short-section guard, the per-section summary lines,
+// and the streamed entropy pass through countSection and entropyVerdictFromCounts.
+// All of that reads through io.ReaderAt already - debug/elf takes one, and
+// elf.Section.Open returns an io.Reader - so the move changes nothing but the
+// parameter that names the file in messages.
+//
+// Task 5's `cfg = normalizeBinaryConfig(cfg)` moves here with the body, and it
+// has to stay here rather than in the wrapper: collectELFMember reaches this
+// parse directly, so normalizing only on the path side would leave every
+// container member parsed against a config nobody resolved.
+//
+// There is no size parameter: the parse bounds itself per file through
+// cfg.MaxStreamBytes, applied as the budget countSection stops at, and a size
+// the body never read would be a parameter that only invites the assumption that
+// something is bounds-checked elsewhere.
+func collectELFReader(r io.ReaderAt, set *EvidenceSet, cfg BinaryConfig, name string) error {
+	ef, err := elf.NewFile(r)
+	if err != nil {
+		return fmt.Errorf("parse elf %s: %w", name, err)
+	}
+	defer ef.Close()
+	// ... (Task 5 的解析体原样搬到这里，把 path 换成 name)
+}
+```
+
+两个此前没有写下来的点，这里明确一次：
+
+> **`collectELF` 的产物里没有字符串证据，是分离而不是漏做。** Task 5 的 `collectELF` 只做结构解析，本步才把 `streamWithSizeSwitch` 接在它前面，所以一个有路径的 ELF 最终拿到的是"字符串 + 结构"两份证据。顺序是先流后解析，而不是反过来：结构解析要 seek，流式读取要顺序读到底，共用一个句柄会让结构解析的位置取决于流式读取停在了哪里。`streamWithSizeSwitch` 而不是 `streamEvidence`，是为了让一个大 `.so` 和其它大 blob 一样按"头 + 尾"开窗，而不是整份读进来。
+
+> **容器成员走的是另一条路：它先被判类、读进内存，再决定要不要解析。** 一个 zip 成员若不是 ELF/pickle 就不读进内存、不解析（这也是容器解压后的总体积不被 `MaxArchiveMemberBytes` 约束的原因）；是 ELF 就走 `collectELFReader(bytes.NewReader(data), ...)`，与有路径的 ELF 用同一段解析体。字符串证据在这一步由 `collectELFMember` 自己跑（成员已经在内存里，不需要再按大小开窗），所以成员和有路径文件最终拿到同两类证据，只是字符串那一段来自不同的读取路径——这也是 `entropyVerdictFromCounts` 必须同时被两条读取路径使用的原因之一。
+
+提交：
+
+```bash
+git add internal/codeaudit/binary_evidence.go
+git commit -m "refactor(audit): share the ELF parse between paths and container members"
+```
+
+- [ ] **Step 4: 写失败测试**
 
 先在 `binary_evidence_test.go` 的 import 块补 `"bytes"`（`zipFixture` 与 gzip 夹具都要用 `bytes.Buffer`；Go 不允许未使用的 import，所以在真的用到它的这一步才加）。
 
@@ -4459,7 +4748,7 @@ func TestCollectCompressedEvidence(t *testing.T) {
 
 文件顶部 import 块补 `"archive/zip"`、`"compress/gzip"`、`"fmt"`。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [ ] **Step 5: 跑测试确认失败**
 
 ```bash
 go test ./internal/codeaudit/ -run 'TestCollectArchive|TestCollectCompressed' 2>&1 | head -10
@@ -4467,7 +4756,7 @@ go test ./internal/codeaudit/ -run 'TestCollectArchive|TestCollectCompressed' 2>
 
 预期：编译失败，`undefined: collectArchive`。
 
-- [ ] **Step 3: 实现**
+- [ ] **Step 6: 实现**
 
 追加到 `binary_evidence.go`（import 块补 `"archive/zip"`、`"bufio"`、`"compress/gzip"`；`isPickleStream` 由 Task 1 提供，这里直接用）：
 
@@ -4768,300 +5057,7 @@ func collectCompressed(path string, set *EvidenceSet, cfg BinaryConfig) error {
 }
 ```
 
-- [ ] **Step 4: 大文件头尾开窗，再把 `collectELF` 拆出 reader 版本**
-
-本步分三段，每段一次提交，顺序不能换。原因在 (a)：Task 6 的 `collectELF` 薄封装要调 `streamWithSizeSwitch`，而 Go 没有前向声明，所以两个窗口化函数必须先在本任务里存在，Task 6 才能自己编过——把它们的定义留在 Task 7，一个忠实的 Task 6 会停在 `undefined: streamWithSizeSwitch`。
-
-**(a) 加窗口化开关**
-
-追加到 `binary_evidence.go`：
-
-```go
-// streamWithSizeSwitch streams a file end to end when it is small enough to be
-// worth it, and reads only its head and tail when it is not.
-//
-// The switch exists because the two costs are not comparable. A full pass costs
-// about 3 microseconds per kibibyte at the measured rate, which is nothing for
-// the 10.8 MiB pickle that is the largest such file in the example package and
-// nine seconds for a 3 GiB shard. Above MaxFullScanBytes the pass is replaced by
-// a HeadTailBytes window at each end.
-//
-// Skipping the middle is recorded, and how it is recorded is isExecutableKind's
-// existing asymmetry rather than a new rule: a windowed pickle or ELF leaves a
-// region of an executable format unread, so it is a structural bound and a clean
-// verdict is withheld; a windowed tensor blob is a data bound and is only
-// reported. Without the first half the threshold would be an evasion: padding a
-// pickle past 64 MiB would hide a mid-stream GLOBAL and still pass.
-//
-// What that gives up is stated in the plan's boundary section rather than hidden
-// here: for a raw blob the middle is tensor data no loader reads, so nothing
-// reachable is lost. For a pickle it is a real loss - a GLOBAL emitted in the
-// middle of a long data-building run would be missed - and the two windows are
-// the mitigation rather than a cure, covering the load-time call at the front and
-// the post-load action at the back. A deployment whose packages contain such a
-// file raises maxFullScanBytes rather than being silently exempted.
-func streamWithSizeSwitch(path string, set *EvidenceSet, cfg BinaryConfig) error {
-	if set.Size > cfg.MaxFullScanBytes {
-		set.markStructural(fmt.Sprintf("file is %d bytes, above MaxFullScanBytes %d: only the head and tail %d bytes were read",
-			set.Size, cfg.MaxFullScanBytes, cfg.HeadTailBytes))
-		return streamHeadAndTail(path, set, cfg)
-	}
-	return streamEvidence(path, set, cfg, cfg.MaxStreamBytes)
-}
-
-// streamHeadAndTail runs the byte extractors over the first and last
-// HeadTailBytes of a file.
-//
-// It is what makes an appended payload visible. A zip's directory lives at the
-// end of the file and describes only the members before it, so a payload stapled
-// after the last member is inside no member and would otherwise be read by
-// nothing; the same reasoning covers a section appended past an ELF's last
-// section header.
-//
-// The window size is a parameter rather than a constant because two callers want
-// different ones: a container always reads its two ends, while a large blob reads
-// its ends only because it was too large to read whole.
-//
-// The pickle interpreter is gated here the same way it is gated everywhere else:
-// it runs only when set.Kind is KindPickle, and only over the head window. That
-// gating is what keeps this path from being a bound on every archive - a zip's own
-// bytes are not an opcode stream, and KindArchive is an executable kind, so an
-// ungated interpreter would set Bound.Structural on every .pt and .whl. The head
-// window is a valid prefix of the opcode stream and can be parsed; the tail window
-// is a splice out of the middle, and feeding a spliced fragment to a stateful
-// parser would make it read the splice as a continuation and invent targets out of
-// data bytes, so the tail goes to the strings pass alone. Nothing is lost by that:
-// this path is only reached above MaxFullScanBytes, where the file is already
-// recorded as structurally bounded.
-func streamHeadAndTail(path string, set *EvidenceSet, cfg BinaryConfig) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", path, err)
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return fmt.Errorf("stat %s: %w", path, err)
-	}
-
-	headTailBytes := cfg.HeadTailBytes
-	scanner := newStringScanner(set, cfg)
-	var pickles *pickleScanner
-	if set.Kind == KindPickle {
-		pickles = newPickleScanner(set)
-	}
-
-	head := make([]byte, headTailBytes)
-	n, err := f.ReadAt(head, 0)
-	if err != nil && err != io.EOF {
-		return fmt.Errorf("read %s: %w", path, err)
-	}
-	if _, err := scanner.Write(head[:n]); err != nil {
-		return err
-	}
-	if pickles != nil {
-		if _, err := pickles.Write(head[:n]); err != nil {
-			return err
-		}
-	}
-
-	if info.Size() > headTailBytes {
-		tail := make([]byte, headTailBytes)
-		at := info.Size() - headTailBytes
-		n, err := f.ReadAt(tail, at)
-		if err != nil && err != io.EOF {
-			return fmt.Errorf("read %s: %w", path, err)
-		}
-		// The offset is rebased so that a tail literal reports where it actually
-		// is: an offset that silently restarted at zero would make two different
-		// payloads report the same location. The interpreter is not rebased and not
-		// fed the tail at all - see the note above.
-		scanner.at = at
-		if _, err := scanner.Write(tail[:n]); err != nil {
-			return err
-		}
-	}
-	scanner.Flush()
-	if pickles != nil {
-		pickles.Flush()
-	}
-	return nil
-}
-```
-
-提交：
-
-```bash
-git add internal/codeaudit/binary_evidence.go
-git commit -m "feat(audit): window large files to their head and tail"
-```
-
-**(b) 钉住窗口化开关的测试**
-
-追加到 `binary_evidence_test.go`：
-
-```go
-// TestStreamWithSizeSwitchWindowsAFileAboveTheFullScanBudget pins the switch
-// itself, the way TestCollectEvidenceWindowsAFileAboveTheSizeThreshold pins its
-// effect on the whole collector.
-//
-// It drives the switch through a small config rather than by building a 64 MiB
-// fixture: the switch compares set.Size against cfg.MaxFullScanBytes, so lowering
-// the config exercises exactly the branch a 64 MiB file would, at a fraction of
-// the cost and with no dependence on the disc. Both directions are asserted
-// because the switch has two outcomes, and a test of only the windowed one would
-// pass on a function that windowed unconditionally.
-func TestStreamWithSizeSwitchWindowsAFileAboveTheFullScanBudget(t *testing.T) {
-	cfg := DefaultBinaryConfig()
-	cfg.MaxFullScanBytes = 4096
-	cfg.HeadTailBytes = 64
-
-	dir := t.TempDir()
-	var content []byte
-	content = append(content, []byte("HEAD_LITERAL\x00")...)
-	content = append(content, bytes.Repeat([]byte{'a'}, 128)...)
-	content = append(content, []byte("MIDDLE_LITERAL\x00")...)
-	content = append(content, bytes.Repeat([]byte{'b'}, 8192)...)
-	content = append(content, []byte("TAIL_LITERAL\x00")...)
-	path := writeTestBytes(t, dir, "big.bin", content)
-
-	// Above the budget the middle is skipped: the head and tail literals are read
-	// and the middle one is not, and the skip is recorded with the limit's name.
-	above := newTestEvidence(path, KindRaw)
-	above.Size = int64(len(content))
-	if err := streamWithSizeSwitch(path, above, cfg); err != nil {
-		t.Fatalf("streamWithSizeSwitch above the budget: %v", err)
-	}
-	if !above.Bound.Structural {
-		t.Fatalf("a file of %d bytes above a %d-byte budget recorded no structural bound; bound = %+v",
-			len(content), cfg.MaxFullScanBytes, above.Bound)
-	}
-	if !strings.Contains(above.Bound.Reason, "MaxFullScanBytes") {
-		t.Errorf("bound reason = %q, want it to name MaxFullScanBytes", above.Bound.Reason)
-	}
-	if want := fmt.Sprintf("head and tail %d bytes", cfg.HeadTailBytes); !strings.Contains(above.Bound.Reason, want) {
-		t.Errorf("bound reason = %q, want it to state %q", above.Bound.Reason, want)
-	}
-	found := map[string]bool{}
-	for _, l := range above.Lines {
-		found[l.Text] = true
-	}
-	if !found["HEAD_LITERAL"] {
-		t.Errorf("the head literal was not read from a windowed file; lines = %v", above.Lines)
-	}
-	if !found["TAIL_LITERAL"] {
-		t.Errorf("the tail literal was not read from a windowed file; lines = %v", above.Lines)
-	}
-	if found["MIDDLE_LITERAL"] {
-		t.Error("the middle literal was read anyway; the threshold is not a threshold")
-	}
-
-	// At or below the budget the whole file is read: the same middle literal is
-	// found, and nothing is recorded as skipped.
-	below := newTestEvidence(path, KindRaw)
-	below.Size = int64(len(content))
-	belowCfg := cfg
-	belowCfg.MaxFullScanBytes = int64(len(content)) + 1
-	if err := streamWithSizeSwitch(path, below, belowCfg); err != nil {
-		t.Fatalf("streamWithSizeSwitch below the budget: %v", err)
-	}
-	if below.Bound.Structural {
-		t.Errorf("a file under the budget recorded a structural bound (%q)", below.Bound.Reason)
-	}
-	found = map[string]bool{}
-	for _, l := range below.Lines {
-		found[l.Text] = true
-	}
-	if !found["MIDDLE_LITERAL"] {
-		t.Errorf("the middle literal was not read from a file under the budget; lines = %v", below.Lines)
-	}
-}
-```
-
-这条测试只断言"开关留下了什么记录"，不断言"阻断"。结构性缺口能不能挡住导入，不由这条开关决定，而是由消费方 `isExecutableKind` 决定：Task 9 的 `ScanDirectory` 在 `if set.Bound.Structural` 分支里按 `isExecutableKind(kind)` 分流，可执行类型记 `BoundedExecutable`、其余记 `BoundedData`（Task 7 的 `TestCollectEvidenceWindowsAFileAboveTheSizeThreshold` 才钉那条谓词）。本条用例断言的是 `Bound.Structural` 与 `Bound.Reason` 这两个记录本身。
-
-提交：
-
-```bash
-git add internal/codeaudit/binary_evidence_test.go
-git commit -m "test(audit): pin the head and tail windowing switch"
-```
-
-**(c) 拆 `collectELF`**
-
-`collectELF(path, ...)` 与 `collectELFMember` 需要共用同一段解析逻辑，所以把 Task 5 的实现体抽到一个以 `io.ReaderAt` 为入口的内核上，`collectELF` 变成薄封装。修改 `binary_evidence.go` 中 Task 5 写的 `collectELF`：
-
-```go
-// collectELF reads a file's ELF structure into evidence.
-func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", path, err)
-	}
-	defer f.Close()
-	// The stream pass and the structural pass are separate on purpose: the
-	// stream pass reads the file front to back for literals, and the structural
-	// pass seeks. Sharing one handle between them would make the structural
-	// parse depend on where the stream pass happened to stop.
-	//
-	// Through streamWithSizeSwitch rather than streamEvidence directly, so that a
-	// large shared object is windowed at its ends like any other large blob
-	// instead of being streamed whole.
-	if err := streamWithSizeSwitch(path, set, cfg); err != nil {
-		return err
-	}
-	return collectELFReader(f, set, cfg, path)
-}
-
-// collectELFReader is the ELF parse itself, over any random-access reader. It is
-// separate from collectELF so that a container member - which is a stream, not a
-// path - is parsed by the same code rather than by a second implementation that
-// would drift from this one.
-//
-// It carries the whole of Task 5's body: the sectionless structural bound, the
-// .dynsym walk and its too-short-section guard, the per-section summary lines,
-// and the streamed entropy pass through countSection and entropyVerdictFromCounts.
-// All of that reads through io.ReaderAt already - debug/elf takes one, and
-// elf.Section.Open returns an io.Reader - so the move changes nothing but the
-// parameter that names the file in messages.
-//
-// Task 5's `cfg = normalizeBinaryConfig(cfg)` moves here with the body, and it
-// has to stay here rather than in the wrapper: collectELFMember reaches this
-// parse directly, so normalizing only on the path side would leave every
-// container member parsed against a config nobody resolved.
-//
-// There is no size parameter: the parse bounds itself per file through
-// cfg.MaxStreamBytes, applied as the budget countSection stops at, and a size
-// the body never read would be a parameter that only invites the assumption that
-// something is bounds-checked elsewhere.
-func collectELFReader(r io.ReaderAt, set *EvidenceSet, cfg BinaryConfig, name string) error {
-	ef, err := elf.NewFile(r)
-	if err != nil {
-		return fmt.Errorf("parse elf %s: %w", name, err)
-	}
-	defer ef.Close()
-	// ... (Task 5 的解析体原样搬到这里，把 path 换成 name)
-}
-```
-
-两个此前没有写下来的点，这里明确一次：
-
-> **`collectELF` 的产物里没有字符串证据，是分离而不是漏做。** Task 5 的 `collectELF` 只做结构解析，本步才把 `streamWithSizeSwitch` 接在它前面，所以一个有路径的 ELF 最终拿到的是"字符串 + 结构"两份证据。顺序是先流后解析，而不是反过来：结构解析要 seek，流式读取要顺序读到底，共用一个句柄会让结构解析的位置取决于流式读取停在了哪里。`streamWithSizeSwitch` 而不是 `streamEvidence`，是为了让一个大 `.so` 和其它大 blob 一样按"头 + 尾"开窗，而不是整份读进来。
-
-> **容器成员走的是另一条路：它先被判类、读进内存，再决定要不要解析。** 一个 zip 成员若不是 ELF/pickle 就不读进内存、不解析（这也是容器解压后的总体积不被 `MaxArchiveMemberBytes` 约束的原因）；是 ELF 就走 `collectELFReader(bytes.NewReader(data), ...)`，与有路径的 ELF 用同一段解析体。字符串证据在这一步由 `collectELFMember` 自己跑（成员已经在内存里，不需要再按大小开窗），所以成员和有路径文件最终拿到同两类证据，只是字符串那一段来自不同的读取路径——这也是 `entropyVerdictFromCounts` 必须同时被两条读取路径使用的原因之一。
-
-> **第三点，也是这三条里唯一一条会把结论翻面的：一个文件抽取失败时，它是被记成 `Incomplete`，不是被静默跳过。** 这条链要写全，因为它是本通道 fail-closed 的承重结构，而它同时跨了三个任务，单看任何一个任务的代码都看不出全貌：抽取函数（本步的 `collectArchive`、Task 5 的 `collectELF`、`collectCompressed` 等）在打不开容器/解析不了 ELF 时**返回 error**，而不是 `markStructural` 后继续——返回是刻意的，`markStructural` 记的是"这个文件读了但没读全"，而这里的事实是"这个文件根本没读成"，两者在报告里必须能分开；Task 7 的 `CollectEvidence` 把它收进 `set.Err` 而不是往外抛（往外抛会被 `import_processing.go:642-660` 当成整趟失败直接删包，报告连原因都来不及写）；Task 9 的 `ScanDirectory` 在 `if set.Err != nil` 分支里 `res.Summary.Incomplete++; return nil`——自增之后 `return nil`，所以这一个文件不会中断其余文件的扫描，但它**已经**被计数了。`Incomplete` 随后折进 `Report.Binary`，`ProvesCleanScan` 在 `b.Incomplete > 0` 时返回 false（`{"an unexamined file withholds", BinaryScanSummary{FilesCount: 3, Incomplete: 1}, false}`），于是导入被扣下。
->
-> 所以判据是：**"抽取出错"与"被跳过"在报告里绝不能长得一样**。跳过是 `classify` 判定为非二进制（非常规文件、文本文件、非 ELF/pickle 的成员），它不计数，因为那不是一次失败的查看；抽取出错是一次失败的查看，它必须计数。宿主上有一个现成的形状能测这条链：`teellm/` 与 `deploy/guest-build/semgrep-payload/rootfs` 下有 **21 个被截断的 CUDA/MLX 库**——磁盘上约 10 MiB，而 ELF 头把节头表指向约 116 MB 偏移，于是 `elf.NewFile` 直接返回 `EOF`。它们今天不在任何模型包里，但只要有一个出现在包里，被截断的库就是"抽取出错"而不是"跳过"，`Incomplete` 必须是 1，包必须被扣下——这正是 `TestBinaryScannerCountsAnUnreadableFileAsIncomplete` 那一族要钉住的形状，也是它不能只测 `classify` 失败那条分支的原因。
-
-提交：
-
-```bash
-git add internal/codeaudit/binary_evidence.go
-git commit -m "refactor(audit): share the ELF parse between paths and container members"
-```
-
-- [ ] **Step 5: 跑测试确认通过**
+- [ ] **Step 7: 跑测试确认通过**
 
 ```bash
 go test ./internal/codeaudit/ -run 'TestCollect|TestELF|TestPickle|TestString|TestStream|TestShannon|TestEntropy|TestClassify' -v
@@ -5069,15 +5065,19 @@ go test ./internal/codeaudit/ -run 'TestCollect|TestELF|TestPickle|TestString|Te
 
 预期全 PASS。
 
-本步多了一条以前没有的判据：Task 5 的 ELF 用例现在**经过** `streamWithSizeSwitch` 才进入结构解析（(c) 把 `collectELF` 改成了先 `streamWithSizeSwitch` 再 `collectELFReader`）。它们用的是 `DefaultBinaryConfig()`，`MaxFullScanBytes` 是 64 MiB，而夹具都是几百字节，所以开关判定的都是"整份读"，这些用例必须**原样全绿**——它们变红就说明 (c) 的接线把默认路径改坏了。这条不变绿是 (c) 唯一的集成证据：把整份读取换成开窗的回归不会只在这一个用例里露头，而会在 Task 5 的一整族用例上同时露头。
+本步多了一条以前没有的判据：Task 5 的 ELF 用例现在**经过** `streamWithSizeSwitch` 才进入结构解析（Step 3 把 `collectELF` 改成了先 `streamWithSizeSwitch` 再 `collectELFReader`）。它们用的是 `DefaultBinaryConfig()`，`MaxFullScanBytes` 是 64 MiB，而夹具都是几百字节，所以开关判定的都是"整份读"，这些用例必须**原样全绿**——它们变红就说明 Step 3 的接线把默认路径改坏了。这条不变绿是 Step 3 唯一的集成证据：把整份读取换成开窗的回归不会只在这一个用例里露头，而会在 Task 5 的一整族用例上同时露头。
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 8: 提交**
 
 ```bash
 gofmt -l internal/codeaudit/ ; go vet ./internal/codeaudit/
 git add internal/codeaudit/binary_evidence.go internal/codeaudit/binary_evidence_test.go
 git commit -m "feat(audit): read zip and gzip containers, recursing into member evidence"
 ```
+
+> **第三点，也是这三条里唯一一条会把结论翻面的：一个文件抽取失败时，它是被记成 `Incomplete`，不是被静默跳过。** 这条链要写全，因为它是本通道 fail-closed 的承重结构，而它同时跨了三个任务，单看任何一个任务的代码都看不出全貌：抽取函数（本步的 `collectArchive`、Task 5 的 `collectELF`、`collectCompressed` 等）在打不开容器/解析不了 ELF 时**返回 error**，而不是 `markStructural` 后继续——返回是刻意的，`markStructural` 记的是"这个文件读了但没读全"，而这里的事实是"这个文件根本没读成"，两者在报告里必须能分开；Task 7 的 `CollectEvidence` 把它收进 `set.Err` 而不是往外抛（往外抛会被 `import_processing.go:642-660` 当成整趟失败直接删包，报告连原因都来不及写）；Task 9 的 `ScanDirectory` 在 `if set.Err != nil` 分支里 `res.Summary.Incomplete++; return nil`——自增之后 `return nil`，所以这一个文件不会中断其余文件的扫描，但它**已经**被计数了。`Incomplete` 随后折进 `Report.Binary`，`ProvesCleanScan` 在 `b.Incomplete > 0` 时返回 false（`{"an unexamined file withholds", BinaryScanSummary{FilesCount: 3, Incomplete: 1}, false}`），于是导入被扣下。
+>
+> 所以判据是：**"抽取出错"与"被跳过"在报告里绝不能长得一样**。跳过是 `classify` 判定为非二进制（非常规文件、文本文件、非 ELF/pickle 的成员），它不计数，因为那不是一次失败的查看；抽取出错是一次失败的查看，它必须计数。宿主上有一个现成的形状能测这条链：`teellm/` 与 `deploy/guest-build/semgrep-payload/rootfs` 下有 **21 个被截断的 CUDA/MLX 库**——磁盘上约 10 MiB，而 ELF 头把节头表指向约 116 MB 偏移，于是 `elf.NewFile` 直接返回 `EOF`。它们今天不在任何模型包里，但只要有一个出现在包里，被截断的库就是"抽取出错"而不是"跳过"，`Incomplete` 必须是 1，包必须被扣下——这正是 `TestBinaryScannerCountsAnUnreadableFileAsIncomplete` 那一族要钉住的形状，也是它不能只测 `classify` 失败那条分支的原因。
 
 ---
 
