@@ -516,7 +516,6 @@ go test ./internal/codeaudit/ -run 'TestString|TestStream' 2>&1 | head -20
 package codeaudit
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -618,6 +617,21 @@ type EvidenceSet struct {
 	// seen is the deduplication set. It is unexported because it is an
 	// implementation detail of the extractors, not part of what a reader gets.
 	seen map[string]bool
+}
+
+// markStructural records that the extraction of the file's structure was cut
+// short. The first reason wins, so the report names the limit that was reached
+// first rather than the last one a loop happened to notice.
+//
+// It lives here rather than with the extractors that call it most, because the
+// stream budget in streamEvidence is the first caller: this task's own tests
+// assert on the flag it sets.
+func (s *EvidenceSet) markStructural(reason string) {
+	if s.Bound.Structural {
+		return
+	}
+	s.Bound.Structural = true
+	s.Bound.Reason = reason
 }
 
 // DefaultBinaryMinStringLen is the shortest printable run kept as evidence. It
@@ -726,6 +740,10 @@ func isPrintableByte(b byte) bool {
 // makes the budget a decoration. Whether the file was too large is decided up
 // front from its size, so that a file that ends exactly at the budget is not
 // reported as bounded - a bound that did not cost anything is not a bound.
+//
+// This pass extracts strings only. The pickle target pass is a second scanner
+// over the same reads and is wired in by Task 4, once pickleTargets exists; the
+// shape of that patch is written out there.
 func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int64) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -738,7 +756,6 @@ func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int6
 	}
 
 	scanner := newStringScanner(set, cfg)
-	pickles := newPickleScanner(set)
 
 	var read int64
 	buf := make([]byte, evidenceReadChunk)
@@ -756,9 +773,6 @@ func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int6
 			if _, wErr := scanner.Write(chunk); wErr != nil {
 				return fmt.Errorf("scan %s: %w", path, wErr)
 			}
-			if _, wErr := pickles.Write(chunk); wErr != nil {
-				return fmt.Errorf("scan %s: %w", path, wErr)
-			}
 			read += int64(n)
 		}
 		if readErr == io.EOF {
@@ -769,7 +783,6 @@ func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int6
 		}
 	}
 	scanner.Flush()
-	pickles.Flush()
 	return nil
 }
 
@@ -1473,6 +1486,19 @@ git commit -m "feat(audit): extract pickle call targets from binary streams"
 - Modify: `internal/codeaudit/binary_evidence.go`
 - Test: `internal/codeaudit/binary_evidence_test.go`
 
+本 Task 的 `collectELF` 要用 `errors.Is(err, elf.ErrNoSymbols)` 区分"没有符号表"和"读符号表失败"。`errors` 在 Task 2 建立这个文件时还没有使用者（Go 拒绝未使用的 import，那时加上会直接编译失败），所以先把 import 块补成：
+
+```go
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strings"
+)
+```
+
 - [ ] **Step 1: 写夹具构造器**
 
 创建 `internal/codeaudit/binary_fixtures_test.go`。**这是本计划风险最高的一段**，字段偏移必须逐字节正确（Go 的 `debug/elf` 用 `binary.Read` 按 `Section64` 字段顺序读 64 字节，无对齐填充）：
@@ -1944,7 +1970,7 @@ func readBoundedSection(sec *elf.Section, limit int64) (data []byte, bounded boo
 }
 ```
 
-同时给 `EvidenceSet` 加两个小方法（结构证据无字节偏移，走 `Offset: 0`）：
+同时给 `EvidenceSet` 补一个小方法（结构证据无字节偏移，走 `Offset: 0`）。`markStructural` 已在 Task 2 随 `streamEvidence` 的预算路径定义，这里只加 `addStructured`：
 
 ```go
 // addStructured records evidence that names a property of the file rather than a
@@ -1958,17 +1984,6 @@ func (s *EvidenceSet) addStructured(src EvidenceSource, text string) {
 	}
 	s.seen[key] = true
 	s.Lines = append(s.Lines, EvidenceLine{Source: src, Text: text})
-}
-
-// markStructural records that the extraction of the file's structure was cut
-// short. The first reason wins, so the report names the limit that was reached
-// first rather than the last one a loop happened to notice.
-func (s *EvidenceSet) markStructural(reason string) {
-	if s.Bound.Structural {
-		return
-	}
-	s.Bound.Structural = true
-	s.Bound.Reason = reason
 }
 ```
 
