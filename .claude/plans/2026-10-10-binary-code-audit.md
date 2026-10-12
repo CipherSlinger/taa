@@ -9408,9 +9408,18 @@ func TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine(t *testing.T) {
 	for name, engine := range engines {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
+			// The packed section is not decoration: Task 11b's corroboration gate
+			// downgrades a presence-only family (NET_002, from the socket/connect
+			// imports) to LOW unless the same file carries independent corroboration,
+			// so a fixture that imported socket without a near-random executable
+			// section would pass under assist and this assertion could not hold. The
+			// measured entropy is what makes the package block on evidence rather than
+			// on a name.
 			writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{
-				imports: []string{"socket", "connect"},
-				needed:  []string{"libcurl.so.4"},
+				imports:  []string{"socket", "connect"},
+				needed:   []string{"libcurl.so.4"},
+				text:     uniformBytes(512),
+				textExec: true,
 			}))
 
 			cfg := AuditConfig{
@@ -9635,10 +9644,11 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 // channel ran that never did.
 //
 // It deliberately returns no error, and the reason is the caller's failure path
-// rather than this function's convenience. GenerateAuditReport's caller deletes
-// the package on any error (internal/controller/import_processing.go:642-660),
-// so an error returned here decides the import before the report it belongs to
-// exists - with nothing recorded about which file, or which channel, or why. A
+// rather than this function's convenience. GenerateAuditReport's caller turns any
+// error into a refusal that skips the report entirely (Task 11a removed the
+// package deletion that used to be here; what remains is that the audit returns
+// before any report exists), so an error returned here decides the import before
+// the report it belongs to exists - with nothing recorded about which file, or which channel, or why. A
 // per-file failure is already the scanner's own business: it is counted as
 // Incomplete and withholds the pass through ProvesCleanScan. A whole-pass failure
 // is recorded the same way, as Errored, so the verdict is the one the report
