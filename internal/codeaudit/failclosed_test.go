@@ -296,7 +296,7 @@ func TestAHighFindingStillBlocksAnIncompleteScan(t *testing.T) {
 // The finding cap is in the table as a case that does NOT withhold, because that
 // is the property being pinned: reaching the cap means the channel found more
 // than its listing budget, which is not the same fact as a look that did not
-// happen, and treating it as one would delete a package for having findings.
+// happen, and treating it as one would refuse an import for having findings.
 func TestProvesCleanScanWithholdsOnBinaryGaps(t *testing.T) {
 	base := func(sum BinaryScanSummary) *Report {
 		return &Report{

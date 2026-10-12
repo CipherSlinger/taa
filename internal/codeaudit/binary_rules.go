@@ -23,14 +23,16 @@ import (
 // The reason this has to be stated rather than felt is that the severity column
 // is the only control that exists downstream. `Passed` is computed as
 // `highCount == 0` under the default `assist` policy, and with the medium count
-// added under `gate`, both in ComputeConclusionContext. A false `Passed`
-// makes internal/controller/import_processing.go:655-660 run cleanDirContents
-// and delete the model package. Measured against the real files on this machine,
-// the table as first written deleted legitimate packages: one free-string rule
-// fired on 23 of 28 legitimate shared libraries. That is why the four
-// string-evidence families below live under new ids at LOW rather than borrowing
-// the source arm's severity - the source arm's rules match Python source, where
-// a literal in a call is a different fact from a byte run in a binary.
+// added under `gate`, both in ComputeConclusionContext. A `Passed` that comes
+// out false refuses the import (internal/controller/import_processing.go) and
+// reports the package as unsafe; it deletes nothing, because the audit never
+// writes to, deletes, or modifies the package it reads. Measured against the
+// real files on this machine, the table as first written refused legitimate
+// packages: one free-string rule fired on 23 of 28 legitimate shared libraries.
+// That is why the four string-evidence families below live under new ids at LOW
+// rather than borrowing the source arm's severity - the source arm's rules match
+// Python source, where a literal in a call is a different fact from a byte run
+// in a binary.
 //
 // "LOW" is the literal the report path already uses for a non-blocking finding:
 // DefaultRules() has no LOW constant, and ClassifyFindingRisk falls through to

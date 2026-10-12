@@ -651,7 +651,7 @@ func riskOrder(level string) int {
 // Nothing here sets Report.Truncated, and that is a decision rather than an
 // omission. Report.Truncated is the completeness flag the report copies into
 // scan_metadata.truncated, and ProvesCleanScan refuses on it: a merge that set
-// it from the binary arm's own cap would make the channel delete a package for
+// it from the binary arm's own cap would make the channel refuse an import for
 // having found too much. The cap drops LOW findings and only LOW (see
 // BinaryScanner.ScanDirectory), and LOW blocks under neither the `assist` nor the
 // `gate` policy - the two severities that can block, HIGH and MEDIUM, are kept

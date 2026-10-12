@@ -204,10 +204,12 @@ func TestSymbolRulesDoNotMatchStringLiterals(t *testing.T) {
 // has to clear, and it is a bar rather than a preference. The severity column is
 // the only control that exists downstream: `Passed` is computed as
 // `highCount == 0` (with the medium count added under the `gate` policy), and a
-// false `Passed` makes `internal/controller/import_processing.go:655-660` run
-// `cleanDirContents` and delete the model package. A rule table that reports a
-// HIGH on an ordinary shared object or a compiled .pyc therefore does not merely
-// add noise - it destroys the package.
+// `Passed` that comes out false makes `internal/controller/import_processing.go`
+// refuse the import and report the package as unsafe. The audit never writes to,
+// deletes, or modifies the package it reads, so a rule table that reports a HIGH
+// on an ordinary shared object or a compiled .pyc does not destroy anything - it
+// refuses a legitimate import and hands the operator a report that calls the
+// package dangerous.
 //
 // Every fixture below reproduces a shape measured against real files on this
 // machine: the string runs of `/home/hjy/taa/models` (740 files of that tree are
@@ -361,7 +363,7 @@ func TestBinaryFamilySeveritiesArePinned(t *testing.T) {
 		// does under `gate`, so this value is load-bearing too.
 		{"DYN_001", SeverityMedium},
 		// String evidence must not block under either policy. LOW, and not
-		// MEDIUM, because MEDIUM alone deletes the package once the operator
+		// MEDIUM, because MEDIUM alone refuses the import once the operator
 		// switches to `gate`. rules.go defines no SeverityLow constant, so the
 		// table writes the string and this test matches it.
 		{"CMD_002", "LOW"},

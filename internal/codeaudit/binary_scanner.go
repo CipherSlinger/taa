@@ -38,7 +38,7 @@ type BinaryScanSummary struct {
 	// Errored records that the pass could not run at all - the walk failed before
 	// it examined anything. It is a gap for the same reason Incomplete is: a pass
 	// that did not happen is not evidence of absence, and the alternative (an
-	// error out of the channel) would delete the package through
+	// error out of the channel) would refuse the import through
 	// internal/controller/import_processing.go:642-660 without the report ever
 	// saying why.
 	Errored bool `json:"errored,omitempty"`
@@ -48,7 +48,7 @@ type BinaryScanSummary struct {
 	// into it. Reaching the cap is a listing budget being spent, not a look that
 	// did not happen, and the report's Truncated is one of the conditions
 	// ProvesCleanScan refuses on - folding this into it would make the channel
-	// delete a package for having found too much. Only LOW findings are ever
+	// refuse an import for having found too much. Only LOW findings are ever
 	// dropped (see ScanDirectory), and LOW blocks under neither the `assist` nor
 	// the `gate` policy - MEDIUM does block under `gate`, which is exactly why the
 	// cap keeps it - so nothing the cap drops could have blocked the import.
@@ -265,7 +265,7 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 	// one policy's answer into a decision both policies have to survive:
 	// `assist` withholds on HIGH alone, but `gate` withholds on HIGH or MEDIUM
 	// (internal/codeaudit/audit.go:298-309), and DYN_001 - MEDIUM in the shared
-	// table - deletes the package the moment an operator switches to `gate`.
+	// table - refuses the import the moment an operator switches to `gate`.
 	// Dropping a blocking finding would turn a package that must be withheld
 	// into one that passes, which is the one failure a cap must not be
 	// able to cause, and an attacker aims at exactly it by padding a package with
@@ -278,7 +278,7 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 	//
 	// Reaching the budget is recorded on the summary and nowhere else - it must
 	// not reach Report.Truncated, whose readers treat it as a completeness
-	// failure and delete the package.
+	// failure and refuse the import.
 	sortFindings(res.Findings)
 	if len(res.Findings) > s.cfg.MaxFindings {
 		kept := make([]Finding, 0, len(res.Findings))

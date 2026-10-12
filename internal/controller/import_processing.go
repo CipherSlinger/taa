@@ -606,6 +606,11 @@ func (s *TAAState) launchModelAudit(req importRequest, phase int) {
 
 // auditAndReportModelImport 对解压后的模型代码执行安全审计（静态扫描 + 可选 LLM 语义验证），
 // 并将审计结果通过 /v1/taa/reportAudit 上报平台。返回是否审计通过。
+//
+// The audit reads, judges and reports; it never writes to, deletes, or modifies
+// what it reads. A non-passing verdict is reported and the import is refused by
+// the caller - the model package and its bundled dependency libraries are left
+// exactly as they were uploaded.
 func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 	// Cleared as soon as a verdict exists, not when the goroutine unwinds. The
 	// unwind happens after the platform report, so a crash in between would leave
@@ -632,9 +637,7 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 	// 若不可用则直接判定失败，避免降级为纯静态扫描静默放行。
 	if cfg.Enabled && cfg.FailClosed && !isLLMServiceAvailable(llmClient, cfg.Endpoint, cfg.Model) {
 		s.Logs.Add(LogError, "audit", "LLM 服务不可用，按 fail-closed 策略上报失败: endpoint=%s model=%s", cfg.Endpoint, cfg.Model)
-		if err := cleanDirContents(s.Security.ModelDir); err != nil {
-			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
-		}
+		s.Logs.Add(LogWarn, "audit", "审计未通过：仅上报结论，未删除或改动模型包与依赖库: dir=%s", s.Security.ModelDir)
 		s.reportAuditAsync(req.RequestID, req.TaskID, 2, "LLM 服务不可用，按 fail-closed 策略上报失败", "")
 		return false
 	}
@@ -642,9 +645,7 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 	audit, err := codeaudit.GenerateAuditReport(context.Background(), s.Security.ModelDir, s.Security.Engine, cfg, llmClient)
 	if err != nil {
 		s.Logs.Add(LogError, "audit", "模型代码审计失败: %v", err)
-		if err := cleanDirContents(s.Security.ModelDir); err != nil {
-			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
-		}
+		s.Logs.Add(LogWarn, "audit", "审计未通过：仅上报结论，未删除或改动模型包与依赖库: dir=%s", s.Security.ModelDir)
 		s.reportAuditAsync(req.RequestID, req.TaskID, 2, fmt.Sprintf("代码审计失败: %v", err), "")
 		return false
 	}
@@ -655,9 +656,7 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 	passed := audit.Conclusion.Passed
 	if !passed {
 		code = 1
-		if err := cleanDirContents(s.Security.ModelDir); err != nil {
-			s.Logs.Add(LogError, "audit", "物理清除已解压模型代码失败: %v", err)
-		}
+		s.Logs.Add(LogWarn, "audit", "审计未通过：仅上报结论，未删除或改动模型包与依赖库: dir=%s", s.Security.ModelDir)
 	}
 	s.Logs.Add(LogInfo, "audit", "审计完成: passed=%v, riskLevel=%s, totalFindings=%d",
 		audit.Conclusion.Passed, audit.Conclusion.RiskLevel, audit.Conclusion.Statistics.Total())

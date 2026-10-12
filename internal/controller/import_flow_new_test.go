@@ -334,10 +334,10 @@ result = {"dataset": {"total_samples": 1, "splits": {"train": 1, "test": 0}}, "m
 				t.Fatalf("expected ModelImported=false after audit failure")
 			}
 
-			// 验证 ModelDir 内容已被物理清空
+			// 审计只做审计：ModelDir 内容不得被删除或改动
 			entries, _ := os.ReadDir(state.Security.ModelDir)
-			if len(entries) != 0 {
-				t.Fatalf("expected ModelDir to be cleaned, found %d entries", len(entries))
+			if len(entries) == 0 {
+				t.Fatalf("audit failure cleared ModelDir; the audit must not modify the package it reads")
 			}
 
 			// 尝试导入数据，由于模型审计失败未放行，绝对不应触发训练

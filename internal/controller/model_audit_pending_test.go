@@ -73,10 +73,12 @@ func TestScanDisabledSealsNoPending(t *testing.T) {
 
 // TestAuditPanicRollsBackModelImport covers the panic path.
 //
-// The audit goroutine panicking used to leave the model imported, its code on
-// disk, and the audit state merely reset. Since the panic means no verdict will
-// ever arrive, the import itself has to be undone — matching what the normal
-// audit-failure path already does.
+// The audit goroutine panicking used to leave the model imported and the audit
+// state merely reset. Since the panic means no verdict will ever arrive, the
+// import itself has to be undone — matching what the normal audit-failure path
+// already does. The rollback is state only: the audit never writes to, deletes,
+// or modifies the package it reads, so the code extracted to disk stays there
+// and only the imported marker is cleared.
 //
 // The test also guards the lock discipline: stopActiveTraining re-acquires s.mu,
 // so calling it while the rollback still holds the write lock deadlocks this test
@@ -148,8 +150,8 @@ func TestAuditPanicRollsBackModelImport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read model dir: %v", err)
 	}
-	if len(entries) != 0 {
-		t.Errorf("un-adjudicated model code was left on disk: %d entries remain", len(entries))
+	if len(entries) != 1 {
+		t.Errorf("the panic rollback changed the package on disk: %d entries remain, want 1", len(entries))
 	}
 
 	select {

@@ -835,8 +835,15 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 	// A panicking audit is an audit that will never reach a verdict, so the model
 	// it was judging must not be left looking imported-and-fine. The isolation
 	// this branch exists for is about not disturbing a concurrent training task's
-	// snapshot — it was never a reason to keep the un-adjudicated model, and
-	// keeping it is what let a panic leave a never-audited model trainable.
+	// snapshot — it was never a reason to keep the un-adjudicated model marked
+	// imported, and keeping that marker is what let a panic leave a never-audited
+	// model trainable.
+	//
+	// The rollback below is state only. The audit contract is that it never
+	// writes to, deletes, or modifies the package it reads, and a panic is not an
+	// exception to it: the extracted model directory and its dependency libraries
+	// are left exactly as they were. Refusing the import here means clearing the
+	// imported marker and stopping training, never removing files.
 	//
 	// The work is split around the unlock on purpose: updateImportState and
 	// stopActiveTraining both re-acquire s.mu (Lock and RLock respectively), and
@@ -856,14 +863,8 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 		if err := s.sealStateLocked(); err != nil {
 			s.Logs.Add(LogError, "panic", "回滚模型导入状态失败: %v", err)
 		}
-		modelDir := s.Security.ModelDir
 		s.mu.Unlock()
 
-		if modelDir != "" {
-			if err := cleanDirContents(modelDir); err != nil {
-				s.Logs.Add(LogError, "panic", "物理清除已解压模型代码失败: %v", err)
-			}
-		}
 		s.stopActiveTraining("模型安全审计异常终止，未通过安全审计")
 		if platformIP != "" && dockerID != "" && (taskID != "" || requestID != "") {
 			s.reportAuditAsync(requestID, taskID, 2, fmt.Sprintf("model audit panic: %s", panicMsg), "")
