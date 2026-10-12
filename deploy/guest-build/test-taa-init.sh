@@ -116,7 +116,6 @@ echo "== main flow invariants =="
 # export has to precede the TAA invocation below it.
 path_line="$(grep -nF 'PATH="/usr/local/bin:$PATH"' "$TAA_INIT" | cut -d: -f1 | head -1)"
 taa_line="$(grep -nF '"$TAA_BIN" -config' "$TAA_INIT" | cut -d: -f1 | head -1)"
-check "extends PATH with /usr/local/bin" "yes" "$([[ -n "$path_line" ]] && echo yes || echo no)"
 check "extends PATH before starting TAA" "yes" \
   "$([[ -n "$path_line" && -n "$taa_line" && "$path_line" -lt "$taa_line" ]] && echo yes || echo no)"
 

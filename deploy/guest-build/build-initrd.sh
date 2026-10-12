@@ -215,12 +215,14 @@ require_cmd() {
 archive_has_entry() {
   local img="$1"
   local entry="$2"
-  # grep is not given -q on purpose. With -q it exits at the first match, cpio
-  # takes SIGPIPE on its next write, and `pipefail` turns that 141 into this
-  # function's status -- a false "entry is missing" that only appears once the
-  # archive is big enough for the match to land well before the end of the
-  # listing. Measured on the semgrep initrd: 141 with -q, 0 without, same image.
-  gzip -dc "$img" | cpio -t --quiet | grep -Fx -- "$entry" >/dev/null
+  # -q lets grep exit at the first match, cpio then takes SIGPIPE on its next
+  # write, and `pipefail` would turn that 141 into this function's status -- a
+  # false "entry is missing" that only appears once the archive is big enough for
+  # the match to land well before the end of the listing. Measured on the semgrep
+  # initrd: 141 with -q under pipefail, 0 in this form, same image. Turning
+  # pipefail off for this pipeline alone keeps the early exit and the correct
+  # status at once.
+  ( set +o pipefail; gzip -dc "$img" | cpio -t --quiet | grep -Fxq -- "$entry" )
 }
 
 archive_manifest() {
@@ -329,17 +331,75 @@ stage_semgrep_payload() {
 
   # The payload is the single largest thing in the image (it is why the initrd
   # roughly doubles), so the build reports it rather than leaving the growth to
-  # be noticed later as guest memory.
-  echo "semgrep 载荷（未压缩）: $(du -sh "$payload_root" | awk '{print $1}')"
-  echo "semgrep 载荷文件数: $(find "$payload_root" -mindepth 1 | wc -l)"
+  # be noticed later as guest memory. Both numbers come out of one walk: `du` and
+  # `find | wc -l` would each re-traverse the ~350 MiB tree for a single line.
+  local payload_files payload_mib
+  read -r payload_files payload_mib < <(
+    find "$payload_root" -mindepth 1 -printf '%s\n' |
+      awk '{n++; s += $1} END {printf "%d %.1f\n", n, s / 1048576}'
+  )
+  echo "semgrep 载荷（未压缩，按文件大小计）: ${payload_mib} MiB / ${payload_files} 个文件"
 }
 
-# 远程部署前检查输出镜像是否包含 TAA 所需的注册环境。
+# 远程部署前检查输出镜像是否包含 TAA 所需的注册环境，并核对其中烘焙的注册身份。
 check_deploy_inputs() {
   if [[ "$ALLOW_MISSING_TAA_ENV" != "1" ]] && ! archive_has_entry "$INITRD_OUT" "etc/default/taa.env"; then
     echo "error: built initrd does not contain etc/default/taa.env" >&2
-    echo "hint: rebuild with TAA_PLATFORM_IP=<ip:port> TAA_DOCKER_ID=<id> $0 build" >&2
+    rebuild_hint
     echo "hint: set ALLOW_MISSING_TAA_ENV=1 only if another early-boot path supplies these env vars" >&2
+    exit 1
+  fi
+  if [[ "$ALLOW_MISSING_TAA_ENV" != "1" ]]; then
+    check_initrd_identity
+  fi
+}
+
+# The rebuild command that fixes both "the image carries no registration identity"
+# and "it carries a different one". Stated once because the values are what the
+# operator has to retype; an empty value gets a placeholder, and an empty value is
+# exactly what produces the missing-entry case above.
+rebuild_hint() {
+  echo "hint: 重新构建：TAA_PLATFORM_IP=${TAA_PLATFORM_IP:-<ip:port>} TAA_DOCKER_ID=${TAA_DOCKER_ID:-<id>} $0 build" >&2
+}
+
+# taa-init reads /etc/default/taa.env from inside the guest, where nothing about
+# the deploying shell's environment can still reach it, so the registration
+# address is fixed at build time. An initrd built with different values deploys
+# and boots perfectly -- Ready pod, verified attestation -- and then registers
+# somewhere else entirely, which is invisible from this side: the only symptom is
+# a platform that never hears from TAA. `build` and `deploy` are separate
+# commands, so the values that built this image are not necessarily the ones this
+# invocation carries; compare them here, at the handoff into deploy, which is also
+# the first point at which the image under test is the one being published.
+check_initrd_identity() {
+  local baked_env baked_platform baked_docker_id want_platform want_docker_id
+
+  # --to-stdout prints the entry instead of extracting it, so there is no temp
+  # directory to own and nothing left behind if this exits midway. The whole
+  # archive is streamed either way; there is no way to stop cpio early.
+  baked_env="$(gzip -dc "$INITRD_OUT" 2>/dev/null |
+    cpio -i --to-stdout --quiet etc/default/taa.env 2>/dev/null || true)"
+
+  if [[ -z "$baked_env" ]]; then
+    echo "error: 无法从 $INITRD_OUT 中读出 etc/default/taa.env" >&2
+    exit 1
+  fi
+
+  baked_platform="$(sed -n 's/^export PLATFORM_IP=//p' <<<"$baked_env" | head -n 1)"
+  baked_docker_id="$(sed -n 's/^export DOCKER_ID=//p' <<<"$baked_env" | head -n 1)"
+
+  # Compared in the %q form the writer below produces, not as raw values: a value
+  # %q decides to quote is stored quoted, and comparing it raw would fail the
+  # deploy for a difference that is only escaping.
+  want_platform="$(printf '%q' "$TAA_PLATFORM_IP")"
+  want_docker_id="$(printf '%q' "$TAA_DOCKER_ID")"
+
+  if [[ "$baked_platform" != "$want_platform" || "$baked_docker_id" != "$want_docker_id" ]]; then
+    echo "error: initrd 里烘焙的注册身份与本次调用不一致" >&2
+    echo "       initrd: PLATFORM_IP=$baked_platform DOCKER_ID=$baked_docker_id" >&2
+    echo "       本次:   PLATFORM_IP=$want_platform DOCKER_ID=$want_docker_id" >&2
+    echo "hint: guest 内的 TAA 只认 initrd 里这份，发布出去它就会注册到旧地址且没有任何本地症状" >&2
+    rebuild_hint
     exit 1
   fi
 }
@@ -459,16 +519,14 @@ build_initrd() {
   # entry would overwrite the base directory's mode, owner and timestamps.
   append_entries=()
 
-  in_append_entries() {
-    local candidate="$1"
-    local entry
-    for entry in ${append_entries[@]+"${append_entries[@]}"}; do
-      if [[ "$entry" == "$candidate" ]]; then
-        return 0
-      fi
-    done
-    return 1
-  }
+  # Both sets are held in memory rather than asked of the manifest with grep: the
+  # payload makes this run thousands of times, and a fork per parent against an
+  # 8900-line list is tens of thousands of processes for a lookup bash can do
+  # itself. Reading the manifest once is a single pass and no forks at all.
+  declare -A base_entries=() appended_entries=()
+  while IFS= read -r entry; do
+    base_entries["$entry"]=1
+  done < "$base_manifest"
 
   # Queue a file together with every parent directory that is missing from both
   # the base and the queue, parents first. Deduplicating against the queue and
@@ -476,8 +534,7 @@ build_initrd() {
   # etc/taa/certs, and queueing them once per file would append those directory
   # entries two or three times over.
   queue_entry() {
-    local manifest="$1"
-    local path="$2"
+    local path="$1"
     local dir
     local parents=()
 
@@ -487,16 +544,24 @@ build_initrd() {
       dir="$(dirname "$dir")"
     done
 
+    local i parent
     for ((i=${#parents[@]} - 1; i >= 0; i--)); do
-      if manifest_has_entry "$manifest" "${parents[$i]}"; then
+      parent="${parents[$i]}"
+      if [[ -n "${base_entries[$parent]:-}" || -n "${appended_entries[$parent]:-}" ]]; then
         continue
       fi
-      if in_append_entries "${parents[$i]}"; then
-        continue
-      fi
-      append_entries+=("${parents[$i]}")
+      appended_entries["$parent"]=1
+      append_entries+=("$parent")
     done
 
+    # The path itself is recorded too, not only the parents. A directory reached
+    # here as a path is also reached again as the parent of everything under it,
+    # and without this line the second visit finds nothing in the set and appends
+    # the same directory entry twice -- which the kernel then unpacks over the
+    # base's, overwriting the mode and timestamps this whole block exists to
+    # preserve. The entry-count check below cannot catch that: both copies are
+    # appended and both are counted.
+    appended_entries["$path"]=1
     append_entries+=("$path")
   }
 
@@ -505,7 +570,7 @@ build_initrd() {
   # staging steps wrote. A C-locale sort puts every parent ahead of its children,
   # which is what queue_entry relies on when it walks a path's parents.
   while IFS= read -r path; do
-    queue_entry "$base_manifest" "$path"
+    queue_entry "$path"
   done < <(cd "$BUILD_WORK_DIR/extra" && find . -mindepth 1 -printf '%P\n' | LC_ALL=C sort)
 
   (
@@ -525,12 +590,31 @@ build_initrd() {
   base_count="$(wc -l < "$base_manifest")"
   out_count="$(wc -l < "$candidate_manifest")"
 
+  # Membership by set rather than by grep, for the same reason as the queueing
+  # above: this loop runs once per appended entry, so a fork here would put back
+  # the per-entry process the in-memory sets exist to avoid.
+  declare -A candidate_entries=()
+  while IFS= read -r entry; do
+    candidate_entries["$entry"]=1
+  done < "$candidate_manifest"
+
   for entry in "${append_entries[@]}"; do
-    if ! manifest_has_entry "$candidate_manifest" "$entry"; then
+    if [[ -z "${candidate_entries[$entry]:-}" ]]; then
       echo "error: built initrd is missing $entry" >&2
       exit 1
     fi
   done
+
+  # The append list must not repeat a path. A second entry for the same path is
+  # unpacked over the first, so the directory mode and timestamps that the staging
+  # step pins would be replaced by those of the later copy, and the measurement
+  # would stop being a function of the inputs. The count check below cannot see
+  # this -- both copies are appended and both are counted -- but the queueing set
+  # can: it holds one key per path queued, and it is already built.
+  if [[ "${#appended_entries[@]}" -ne "${#append_entries[@]}" ]]; then
+    echo "error: append list repeats a path: ${#appended_entries[@]} distinct of ${#append_entries[@]}" >&2
+    exit 1
+  fi
 
   # The archive is append-only, so the entry count has to be exactly the base
   # count plus what was queued. Any other number means something was queued
@@ -556,14 +640,14 @@ build_initrd() {
   # exactly what is needed to audit what the measurement covers.
   entries_file="${INITRD_OUT}.entries"
   printf '%s\n' "${append_entries[@]}" > "$entries_file"
-  if [[ "${#append_entries[@]}" -le 40 ]]; then
-    for entry in "${append_entries[@]}"; do
-      printf '  %s\n' "$entry"
-    done
+  # Print the list in full while it still fits in a build log, otherwise the head
+  # of it; one bound drives both so the truncation can never contradict the
+  # "complete list" pointer.
+  local max_listed=20
+  if [[ "${#append_entries[@]}" -le $((max_listed * 2)) ]]; then
+    sed 's/^/  /' "$entries_file"
   else
-    for entry in "${append_entries[@]:0:20}"; do
-      printf '  %s\n' "$entry"
-    done
+    head -n "$max_listed" "$entries_file" | sed 's/^/  /'
     echo "  ... （完整清单见 $entries_file）"
   fi
 }
