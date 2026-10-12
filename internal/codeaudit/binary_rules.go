@@ -420,9 +420,11 @@ type BinaryMatcher struct {
 // would therefore make the later family inherit the earlier one's
 // classification silently, and for corroborates that inheritance is fail-open:
 // a presence family would be treated as a corroborator for every file it
-// matched. Uniqueness is enforced here rather than only in a test so that a
-// duplicated table is refused by the one function every caller goes through,
-// rather than merely detected by the suite.
+// matched. Uniqueness is enforced here, at construction, rather than only in a
+// test: a test pins today's table, but construction is the first point that sees
+// the edit made tomorrow. It is not claimed to be the last point - NewBinaryScanner
+// deliberately discards this error (see its comment), so a duplicated row reached
+// through it surfaces as a nil matcher rather than as this diagnosis.
 func NewBinaryMatcher() (*BinaryMatcher, error) {
 	shared := map[string]Rule{}
 	for _, r := range DefaultRules() {
