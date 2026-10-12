@@ -274,6 +274,12 @@
     min-width: 0;
   }
   .row .chip { margin-left: auto; }
+  .tree-note {
+    margin: 12px 0 0;
+    font-size: 0.8125rem;
+    line-height: 1.6;
+    color: var(--ink-faint);
+  }
 
   /* ── 表格 ─────────────────────────────────────────────── */
   .table-wrap { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); }
@@ -400,7 +406,7 @@
     <p class="eyebrow">TAA · 模型提供方手册</p>
     <h1>模型提供方文件读写约定</h1>
     <p class="standfirst">
-      搬进可信沙箱执行的训练与推理代码，应该从哪里读文件、往哪里写文件，以及写的时候要遵守什么格式。
+      搬进 TEE 内部执行的训练与推理代码，应该从哪里读文件、往哪里写文件，以及写的时候要遵守什么格式。
       按本手册改造后的代码不调用任何网络接口，也不需要引入专有依赖，在普通环境下同样能跑。
     </p>
     <div class="chips">
@@ -438,17 +444,15 @@
           <div class="tree-head"><span>沙箱文件系统</span><span>角色</span></div>
           <div class="tree">
             <div class="row"><span class="path">/opt/taa/input/</span><span class="chip is-read">只读</span></div>
-            <div class="row"><span class="path">&nbsp;&nbsp;├── train/ &nbsp; val/ &nbsp; test/</span></div>
-            <div class="row"><span class="path">&nbsp;&nbsp;├── labels.csv</span></div>
-            <div class="row"><span class="path">&nbsp;&nbsp;└── weights/</span></div>
+            <p class="tree-note">输入目录下的内容按模型所需的数据而定，此处不列举。</p>
 
             <div class="row gap-top"><span class="path">/opt/taa/output/</span><span class="chip is-write">可写</span></div>
-            <div class="row"><span class="path">&nbsp;&nbsp;├── result/</span><span class="chip is-ship">交付 · 唯一会被带出</span></div>
+            <div class="row"><span class="path">&nbsp;&nbsp;├── result/</span><span class="chip is-ship">交付 · 唯一会被导出</span></div>
             <div class="row"><span class="path">&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;├── weights/</span></div>
             <div class="row"><span class="path">&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;├── training_result.json</span></div>
             <div class="row"><span class="path">&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;└── test_result.xlsx</span></div>
-            <div class="row"><span class="path">&nbsp;&nbsp;├── log/</span><span class="chip is-side">旁路 · 不带出</span></div>
-            <div class="row"><span class="path">&nbsp;&nbsp;└── progress/</span><span class="chip is-side">旁路 · 不带出</span></div>
+            <div class="row"><span class="path">&nbsp;&nbsp;├── log/</span><span class="chip is-side">旁路 · 不导出</span></div>
+            <div class="row"><span class="path">&nbsp;&nbsp;└── progress/</span><span class="chip is-side">旁路 · 不导出</span></div>
 
             <div class="row gap-top"><span class="path">/opt/taa/checkpoint/</span><span class="chip is-write">可写 · 跨任务保留</span></div>
             <div class="row gap-top"><span class="path">/opt/taa/models/</span><span class="chip is-read">你的源码 · 进程工作目录</span></div>
@@ -663,7 +667,7 @@ TASK_ID    = os.environ.get(<span class="s">"TAA_TASK_ID"</span>, <span class="s
       <section id="result">
         <h2><span class="num">05</span><span>写结果汇总</span></h2>
         <p><strong>位置</strong>：产物目录根部，即 <code>&lt;output&gt;/training_result.json</code>。</p>
-        <p>进程以退出码 0 结束后，该文件会被读取并与审计信息、数据校验和合并成最终报告。<strong>只有 <code>result/</code> 里的产物会被带出</strong>；进程非 0 退出时产物不会被收集。</p>
+        <p>进程以退出码 0 结束后，该文件会被读取并与审计信息、数据校验和合并成最终报告。<strong>只有 <code>result/</code> 里的产物会被导出</strong>；进程非 0 退出时产物不会被收集。</p>
 
 <pre><span class="c">{</span>
   <span class="s">"training_task"</span><span class="c">:</span> <span class="c">{</span>
