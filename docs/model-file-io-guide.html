@@ -467,7 +467,7 @@
       <!-- 02 -->
       <section id="log">
         <h2><span class="num">02</span><span>写日志</span></h2>
-        <p><strong>位置</strong>：<code>$TAA_LOG_DIR</code>（默认 <code>/opt/taa/output/log/</code>）。目录下所有 <code>*.jsonl</code> 与 <code>*.log</code> 文件都会被读取。</p>
+        <p><strong>位置</strong>：<code>/opt/taa/output/log/</code>。目录下所有 <code>*.jsonl</code> 与 <code>*.log</code> 文件都会被读取。</p>
         <p><strong>格式</strong>：每行一个 JSON 对象，追加写入。</p>
 
 <pre><span class="c">{</span><span class="s">"timestamp"</span><span class="c">:</span> <span class="s">"2026-10-12T07:15:32Z"</span><span class="c">,</span> <span class="s">"message"</span><span class="c">:</span> <span class="s">"[Train] Epoch 3/150 finished - loss: 0.3821"</span><span class="c">}</span></pre>
@@ -515,7 +515,7 @@
       <!-- 03 -->
       <section id="progress">
         <h2><span class="num">03</span><span>写进度</span></h2>
-        <p><strong>位置</strong>：<code>$TAA_PROGRESS_DIR</code>，默认 <code>/opt/taa/output/progress/progress.json</code>。注意默认值是一个<strong>文件路径</strong>，不是目录。</p>
+        <p><strong>位置</strong>：<code>/opt/taa/output/progress/progress.json</code>。注意这是一个<strong>文件路径</strong>，不是目录。</p>
 
 <pre><span class="c">{</span>
   <span class="s">"percent"</span><span class="c">:</span> 34.6525<span class="c">,</span>
@@ -608,7 +608,7 @@
       <!-- 04 -->
       <section id="result">
         <h2><span class="num">04</span><span>写结果汇总</span></h2>
-        <p><strong>位置</strong>：产物目录根部，即 <code>&lt;output&gt;/training_result.json</code>。</p>
+        <p><strong>位置</strong>：产物目录根部，即 <code>/opt/taa/output/result/training_result.json</code>。</p>
         <p>进程以退出码 0 结束后，该文件会被读取并与审计信息、数据校验和合并成最终报告。<strong>只有 <code>result/</code> 里的产物会被导出</strong>；进程非 0 退出时产物不会被收集。</p>
 
 <pre><span class="c">{</span>
