@@ -81,8 +81,10 @@ func TestClassifyBinaryClaimsAProtocol01PickleByItsContent(t *testing.T) {
 		{"a target-less pickle named .json stays text", noTarget, "model.json", KindText},
 		{"a target-less pickle named .pkl is still claimed by extension", noTarget, "model.pkl", KindPickle},
 
-		// A realistic source file: "#" is not an opcode, so the walk stops at
-		// byte 0 and the file stays with the channel that reads Python.
+		// A realistic source file. Under a .py name the veto short-circuits before
+		// the sniff, so this head is never walked - and that is all the case pins:
+		// with the veto removed the sniff would refuse it anyway, since "#" is not
+		// an opcode and the walk would stop at byte 0.
 		{"python source is not taken from the source channel",
 			[]byte("# -*- coding: utf-8 -*-\nimport os\nos.system('id')\n"), "train.py", KindText},
 		// The 3.10 .pyc magic begins 0x6f, which is the OBJ opcode. OBJ takes no

@@ -131,8 +131,8 @@ func ClassifyBinary(head []byte, path string) BinaryKind {
 // classified text, and either way the interpreter never ran and PKL_001 could
 // not fire.
 //
-// So a protocol 0/1 stream is claimed by its content. Three signals decide it,
-// and each one closes a hole the others leave open:
+// So a protocol 0/1 stream is claimed by its content: one veto and two signals,
+// each closing a hole the others leave open:
 //
 //   - The extension is not one the source arm reads. See sourceExtensions: the
 //     merge step drops a claimed file from the source arm's reading, so a crafted
