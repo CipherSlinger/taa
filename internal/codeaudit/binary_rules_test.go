@@ -1,6 +1,9 @@
 package codeaudit
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestBinaryRulesBorrowSharedFamilies pins the single-source-of-truth rule: for
 // a family both arms can report, the binary side must not carry its own severity.
@@ -455,7 +458,9 @@ func TestBinaryBlockingFamiliesDoNotReadFreeStrings(t *testing.T) {
 // a family added later is classified deliberately rather than by accident.
 // Downgradable is exactly the presence-only HIGH families: BIN_002 because its
 // evidence is a dynsym entry like the other two, and DYN_001 not at all, because
-// it declares MEDIUM and can never produce the HIGH this rule gates.
+// it resolves to MEDIUM - a family declares no severity of its own, the value
+// comes from the shared rule the id borrows - and can never produce the HIGH this
+// rule gates.
 func TestBinaryFamilyClassificationIsPinned(t *testing.T) {
 	m, err := NewBinaryMatcher()
 	if err != nil {
@@ -475,6 +480,45 @@ func TestBinaryFamilyClassificationIsPinned(t *testing.T) {
 	}
 	if m.downgrades("NET_001") {
 		t.Error("downgrades(NET_001) = true: the source arm's rule is not in the binary table")
+	}
+}
+
+// TestBinaryMatcherRejectsADuplicateRuleID pins the constructor's uniqueness
+// check, and with it the assumption both predicates rest on: downgrades and
+// corroborates resolve an id by returning on the first family that carries it,
+// so a duplicated id would silently lend the later family the earlier one's
+// classification - fail-open for corroborates, which would then treat a presence
+// family as a corroborator for every file it matched.
+//
+// The table is a package-level var, so the test does not copy the check into
+// itself: it appends a duplicate of the first family and calls the real
+// constructor, which reads the var at call time. The cleanup restores the var so
+// no later test inherits the injected table. The real table's uniqueness is
+// asserted first, because with a genuine duplicate already in place the injection
+// below could not be told apart from it.
+func TestBinaryMatcherRejectsADuplicateRuleID(t *testing.T) {
+	seen := map[string]bool{}
+	for _, id := range BinaryRuleIDs() {
+		if seen[id] {
+			t.Fatalf("the real table lists %s twice: the constructor is supposed to refuse that table, not answer questions about it", id)
+		}
+		seen[id] = true
+	}
+
+	orig := binaryFamilies
+	t.Cleanup(func() { binaryFamilies = orig })
+	dup := orig[0]
+	injected := make([]binaryFamily, 0, len(orig)+1)
+	injected = append(injected, orig...)
+	injected = append(injected, dup)
+	binaryFamilies = injected
+
+	_, err := NewBinaryMatcher()
+	if err == nil {
+		t.Fatalf("NewBinaryMatcher accepted a table with %s listed twice", dup.ID)
+	}
+	if !strings.Contains(err.Error(), dup.ID) {
+		t.Errorf("NewBinaryMatcher error = %q, want it to name the duplicated id %s", err, dup.ID)
 	}
 }
 

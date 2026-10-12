@@ -844,6 +844,48 @@ func TestBinaryScannerCorroboratesAcrossArchiveMembers(t *testing.T) {
 	}
 }
 
+// TestBinaryScannerDoesNotLetACorroboratorTravelBetweenFiles pins the per-file
+// boundary the whole gate rests on. Its justification is that a name in the
+// symbol table is confirmed only by evidence the same file carries, and none of
+// the tests around this one can see the outward edge of that boundary: each puts
+// the corroborator and the presence family in one file, so a mutant that hoists
+// the corroborated flag above the walk - letting one packed file clear every
+// presence finding in the package - stays green on all of them.
+//
+// The ordering is what makes the leak visible. "a.so" sorts first and carries the
+// corroborator, a measured near-random executable section, and no presence
+// evidence of its own; "b.so" sorts second, imports socket, and carries no
+// measurement and no pickle. Sticky corroboration can therefore reach b.so only
+// because a.so was walked first, which is why the sorted order is load-bearing:
+// with the packed file second the same mutant would look correct.
+func TestBinaryScannerDoesNotLetACorroboratorTravelBetweenFiles(t *testing.T) {
+	dir := t.TempDir()
+	// The corroborator alone on the file that sorts first: .text measures 8.00
+	// bits per byte, so BIN_001 is HIGH and nothing else here matches.
+	writeTestBytes(t, dir, "a.so", elfFixtureBytes(t, elfSpec{
+		text:     uniformBytes(512),
+		textExec: true,
+	}))
+	// The presence finding on the file that sorts second: socket -> NET_002,
+	// with no corroborator of its own.
+	writeTestBytes(t, dir, "b.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket"}}))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if f := findFinding(t, res.Findings, "BIN_001"); f.Severity != SeverityHigh {
+		t.Errorf("BIN_001 severity = %q, want HIGH: the entropy measurement is the corroborator, not a presence claim", f.Severity)
+	}
+	if f := findFinding(t, res.Findings, "NET_002"); f.Severity != "LOW" {
+		t.Errorf("NET_002 severity = %q, want LOW: the corroborator is in a.so and must not clear a finding in b.so", f.Severity)
+	}
+	if res.Summary.PresenceDowngraded != 1 {
+		t.Errorf("PresenceDowngraded = %d, want 1: only b.so's presence finding is uncorroborated", res.Summary.PresenceDowngraded)
+	}
+}
+
 // TestBinaryScannerDowngradeHappensBeforeTheCap is the only test that can tell
 // the two orderings apart, so it is not optional. Downgrading after the cap would
 // leave the cap reasoning about HIGH while the report says LOW, and it would keep

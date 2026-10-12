@@ -29,10 +29,12 @@ import (
 // file also carries a corroborator, and LOW otherwise. The gate lives in
 // ScanDirectory, which is the one layer that sees all of a file's evidence at
 // once: BinaryMatcher.Match is shown a single line and cannot see co-occurrence
-// at all, and MergeBinaryFindings holds findings rather than evidence. The rule
-// table is deliberately untouched - the id and the severity it resolves to are
-// still the shared table's, and TestBinaryRulesBorrowSharedFamilies still holds -
-// because the downgrade acts on the Finding and never on the Rule.
+// at all, and MergeBinaryFindings runs after both channels have capped, so a
+// gate placed there would leave the cap reasoning about HIGH while the report
+// carries LOW. The rule table is deliberately untouched - the id and the
+// severity it resolves to are still the shared table's, and
+// TestBinaryRulesBorrowSharedFamilies still holds - because the downgrade acts
+// on the Finding and never on the Rule.
 //
 // The measurement that decided this, on this machine's bundle. Three of the HIGH
 // families had a single .dynsym entry as their entire evidence, and legitimate
@@ -46,9 +48,11 @@ import (
 //
 // Reachability, the other candidate fix, was measured and rejected. These C++
 // and Rust objects are not built with -fvisibility=hidden: libllama-common
-// defines or weakly defines 2878 of its 2881 functions in .dynsym, so the callers
-// of socket are themselves exported entry points and not one of the nine flagged
-// libraries was cleared by a call-graph reading. Nor is a disassembler available
+// defines or weakly defines 2878 of its 2881 functions in .dynsym (2878 is the
+// distinct defined STT_FUNC addresses in .dynsym, 2881 the labels objdump -d
+// shows once its @plt thunks are excluded), so the callers of socket are
+// themselves exported entry points and not one of the nine flagged libraries was
+// cleared by a call-graph reading. Nor is a disassembler available
 // to do it differently: the guest rootfs's usr/bin holds a single python3.10, and
 // golang.org/x/arch is not available offline.
 //
@@ -409,14 +413,29 @@ type BinaryMatcher struct {
 // that is in neither table is a programming error, and a matcher that silently
 // skipped it would drop a whole family's findings without a trace. The engine
 // selector makes the same choice for the same reason.
+//
+// Ids are required to be unique for the same reason, and more specifically
+// because both downgrades and corroborates return on the first family carrying
+// an id. A duplicated id - the shape a copy-pasted table row arrives in -
+// would therefore make the later family inherit the earlier one's
+// classification silently, and for corroborates that inheritance is fail-open:
+// a presence family would be treated as a corroborator for every file it
+// matched. Uniqueness is enforced here rather than only in a test so that a
+// duplicated table is refused by the one function every caller goes through,
+// rather than merely detected by the suite.
 func NewBinaryMatcher() (*BinaryMatcher, error) {
 	shared := map[string]Rule{}
 	for _, r := range DefaultRules() {
 		shared[r.ID] = r
 	}
 
+	seen := make(map[string]bool, len(binaryFamilies))
 	m := &BinaryMatcher{order: binaryFamilies}
 	for _, fam := range binaryFamilies {
+		if seen[fam.ID] {
+			return nil, fmt.Errorf("binary family %s appears twice in the table: a duplicate id would inherit the first family's classification", fam.ID)
+		}
+		seen[fam.ID] = true
 		var rule Rule
 		if r, ok := shared[fam.ID]; ok {
 			rule = r
