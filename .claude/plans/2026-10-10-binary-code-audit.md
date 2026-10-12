@@ -103,9 +103,9 @@ go build ./... && go test ./internal/codeaudit/... ./internal/config/... ./inter
 14. **不存在"每节字节上限"，这是删除而不是省略**。曾有一版 `MaxSectionBytes`（默认 16 MiB），用来给 `io.ReadAll` 一个可执行节设上限；它会对**普通的大库**开火——一个足够大的 `.so`，`.text` 会跨过任何固定的节上限，而触顶记的是结构性 bound，于是"这个库比较大"变成了阻断导入的理由。**宿主实测**（`readelf -SW` 取每个真实共享对象最大的 `SHF_EXECINSTR` `PROGBITS` 节）：`libLLVM.so.20.1` 单节 **63 048 722 字节**、`libclang-18.so.18` **22 284 286**、Chrome 的 `liboptimization_guide_internal.so` **20 685 714**、`libwireshark.so.17.0.2` **20 175 571**、`libpython3.13.so.1.0` **2 770 082**——16 MiB 的节上限会在前四个上直接触顶。这与本计划其余部分的实测口径不同，值得点明：**审计语料 `models/` 下一个真实 `.so` 都没有**（`find models -name '*.so*'` 命中的 50 个全是 semgrep 的 `.sol` 规则文件），而用来标定误报的那套 ollama 共享库（28 个）单节最大 2 901 464 字节，**也不会**触到 16 MiB。也就是说这个上限的代价是**潜伏**的：它在任何已实测的输入上都不发作，只在一个包里带上一个真实大库时发作——而那正是本平台要接受的包形状（带加速库的模型包），所以它必须删掉而不是调大。现在节读取改为经 `countSection` 按固定块（`entropyChunkBytes`，64 KiB）流过 256 桶直方图，内存与节大小无关，节上限已无物可保护；每文件剩下的读取预算是 `MaxStreamBytes`，触到它才记结构性——宿主 600 个共享对象（去重后 **538** 个 ELF；把每个文件条目都算上是 **2027** 个）按这条路径全跑一遍，**0 个被判结构性、0 个无节表、0 个报错**，也就没有一个接近那个 3 GiB 的每文件预算。**代价明确**：调不了单个节的读取量（本来也不该调）；能调的只有每文件预算。**不要把它加回来**——加回来就是把"库比较大"重新变成阻断理由；也不要指望"把 16 MiB 调大一点"能解决，任何固定值都只是把发作点往后挪。
 15. **无节表（`len(ef.Sections) == 0`）的 ELF 记为结构性缺口，且 reason 只点名"没有节头表"**。熵检测的输入是可执行节，没有节表就没有可执行节，旧代码在这一段直接掉出去、不产生任何行也不产生任何 bound，于是"从未检查过"被报成了"没发现加壳"——这条 fail-open 已去掉。修的是**结论**而不是"补回 `DT_NEEDED`/`DT_SONAME`"：经 `PT_DYNAMIC` 恢复 needed/soname 需要先把 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移、再把 `DT_STRTAB` 的虚地址映射一次，这是一段独立的新解析逻辑，而它的产出对"有没有被加壳"不提供任何证据，所以本版不做。reason 措辞点名的是**节头表**而不是符号表：静态链接的二进制没有 `.dynsym` 但有 `.symtab`，它并不 stripped，说它"缺符号表"是假的；同理 `SHT_SYMTAB` **故意不做**符号证据的兜底来源——`.symtab` 里绝大多数是本文件自己定义的符号，拿它当能力证据就是去匹配程序自己的标识符，正是第 14 条那批误报的同一类。因此 Task 8 的规则表**不变**：没有引入新的 evidence source。宿主 600 个共享对象（去重后 538 个 ELF、枚举到 2027 个文件条目）里**0 个无节表**，所以这个形状在真实世界里确实少见——而恰恰因为它少见，"没见到"不能当成"不存在"，这才是它必须 fail-closed 而不是被静默略过的理由。**代价明确**：一个节表被删掉的正常文件（少见但存在，如某些加壳器与 `objcopy --strip-section-headers` 的产物）现在会被记为结构性缺口而不是干净通过；这是刻意方向——对可执行格式，"没看"不等于"干净"。
 16. **节声明长度越过文件末尾（或读不满）记为结构性缺口，`size=` 仍写声明长度**。判据是"读到的字节数 < 节头声明的字节数"，两种情况——`sh_offset`/`sh_size` 越过文件末尾，或触到 `MaxStreamBytes`——都是同一事实：熵值只覆盖一个**前缀**，所以这个数不报（报出来会和"整节测过"的数长得一样），替代它的是 `section .text declares N bytes, M readable` 这条结构化证据。`size=` 保持声明值，读者才能把声明长度与缺口配对看。**代价明确**：一个声明长度写错但内容正常的文件会被记为结构性缺口；这是刻意方向，理由同上。
-17. **自由字符串证据只判 LOW，且 `OBF_001` 在二进制臂被整个删掉**。判据是一条通则：**一条 finding 只有被文件无法偶然产生的结构背书时才可以判 HIGH**，而"某个字面量里出现了某个词"不是那种背书——`.pyc` 常量池会把相邻常量拼成一整段可打印串，二进制数据里遍地是长 base64 字母表串，所以按子串匹配的规则会把合法库判成恶意（实测：旧 `OBF_001` 命中 28 个合法共享库中的 23 个，旧 `PER_001`/`FIL_001`/`ENV_001` 的片段命中来自 `taint_engine.cpython-312.pyc` 与 `security.cpython-312.pyc`）。因此字符串半边不借源码臂的 HIGH/MEDIUM id，改用独立 LOW 族 `CMD_002`/`PER_002`/`FIL_002`/`ENV_002`（两端锚定 token，`ENV_002` 不带 `(?i)`），`OBF_001` 不设族。**代价明确**：一个真正把 base64 载荷以字面量形式留在代码里的文件，其字符串证据不再单独产出 finding；它若真在运行，仍会以 ELF 导入符号或 pickle 目标等结构证据（HIGH）出现，而纯数据文件本来就不被本平台加载。**不要把它"修回去"**——把字符串匹配放宽回子串或把严重级抬回 HIGH，就是重新引入这批误报，而误报在这种设计下的终点是删包。
+17. **自由字符串证据只判 LOW，且 `OBF_001` 在二进制臂被整个删掉**。判据是一条通则：**一条 finding 只有被文件无法偶然产生的结构背书时才可以判 HIGH**，而"某个字面量里出现了某个词"不是那种背书——`.pyc` 常量池会把相邻常量拼成一整段可打印串，二进制数据里遍地是长 base64 字母表串，所以按子串匹配的规则会把合法库判成恶意（实测：旧 `OBF_001` 命中 28 个合法共享库中的 23 个，旧 `PER_001`/`FIL_001`/`ENV_001` 的片段命中来自 `taint_engine.cpython-312.pyc` 与 `security.cpython-312.pyc`）。因此字符串半边不借源码臂的 HIGH/MEDIUM id，改用独立 LOW 族 `CMD_002`/`PER_002`/`FIL_002`/`ENV_002`（两端锚定 token，`ENV_002` 不带 `(?i)`），`OBF_001` 不设族。**代价明确**：一个真正把 base64 载荷以字面量形式留在代码里的文件，其字符串证据不再单独产出 finding；它若真在运行，仍会以 ELF 导入符号或 pickle 目标等结构证据（HIGH）出现，而纯数据文件本来就不被本平台加载。**不要把它"修回去"**——把字符串匹配放宽回子串或把严重级抬回 HIGH，就是重新引入这批误报，而误报在这种设计下的终点是拒绝一次本该接受的导入，并留下一份说它不安全的报告。
 18. **pickle 解释器有两个固定上限（`pickleMaxStackSlots` / `pickleMaxMemoSlots`，各 `1<<20`），按第 13 条的判据它们"本该"有键，这里刻意不给，理由说得清楚**：第 13 条的判据是"越界会记 `Bound.Structural` 的天花板必须暴露，否则 operator 无法处置一次阻断"。两个上限都落在 `Bound.Structural` 上（`KindPickle` 是可执行类型，会阻断导入），但它们触及的不是"合法文件恰好很大"这一情形，而是"这段流根本不是 pickle"——真实语料里最深值栈 1007 槽、最大 memo 3669 条，距上限各有约 1000 倍与 280 倍余量，一个正常的 state dict 无论如何长都到不了 `1<<20`（映射按每项约两槽计，`1<<20` 槽覆盖约五十万项的映射，而最大实测映射是几万项）。也就是说，触顶意味着流在按每个字节推一个槽/一个 memo 项的方式自增，那是畸形或敌意输入的签名，不是"这个包比较大"；给这样的阻断配一个 operator 可调的键，等于允许把上限调到任意大，而上限存在的唯一目的就是限制它背后那块内存（栈约 24 MiB、memo 约 64 字节/项，都是"没有上限就长到 GB"的量）。**代价明确**：一个合法但极端到这两条线上的 pickle 会被判为未完整扫描而阻断，出路不是调键而是先确认它到底是不是 pickle。这与第 13 条的差别的量纲：`MaxStreamBytes` 会被一个真正的大文件触到，所以要暴露；这两个只会被一个不像 pickle 的流触到，所以固定。**不要把它们加进配置**——加进去就是把一个"这段流不合法"的判定，换成一个"把门槛抬高就能过"的旋钮。
-19. **`step` 的返回契约是承重的：它只在"缓冲区里没有它可以消费的东西"时返回 0，绝不在"完成了一个操作数"之后返回 0**。这是流式解析能声称"结果不依赖分块位置"的前提，也是 `Flush` 两条完整性消息（`ended mid-opcode` / `ended without STOP`）能当真的前提。曾经的缺陷正出在这里：一个计数操作数声明长度为 0 时，payload 相位没有消费任何字节就完成了它，却返回 0，被读成"还需要更多输入"，于是缓冲区尾部被搁置；当这个操作数落在最后一次 `Write` 里时，没有后续读来清空缓冲区，`Flush` 就把一个完整合法的 pickle 报成"没有 STOP"的结构性缺口——而 `KindPickle` 是可执行类型，这条缺口会删包。**这不是边界情况**：本仓库五个真实 `data.pkl` 的零长 `BINUNICODE`（状态字典的空串键）分别位于 offset 1315、1315、12830、52607、52607，也就是下一个待审的包就会中招。修法限定在 payload 相位：0 长完成之后带同一个 `b` 与 `absOff` 继续取下一个 opcode；`pickPhaseFixed` 与计数操作数的长度前缀路径（宽度至少 1 字节，必然消费至少 1 字节）没有这个场景，**不要为了"统一"把补丁搬进去**。**代价明确**：无——这条修正只把错误报的完整性换成正确的完整性。
+19. **`step` 的返回契约是承重的：它只在"缓冲区里没有它可以消费的东西"时返回 0，绝不在"完成了一个操作数"之后返回 0**。这是流式解析能声称"结果不依赖分块位置"的前提，也是 `Flush` 两条完整性消息（`ended mid-opcode` / `ended without STOP`）能当真的前提。曾经的缺陷正出在这里：一个计数操作数声明长度为 0 时，payload 相位没有消费任何字节就完成了它，却返回 0，被读成"还需要更多输入"，于是缓冲区尾部被搁置；当这个操作数落在最后一次 `Write` 里时，没有后续读来清空缓冲区，`Flush` 就把一个完整合法的 pickle 报成"没有 STOP"的结构性缺口——而 `KindPickle` 是可执行类型，这条缺口会拒绝这次导入并留下一份错误的报告。**这不是边界情况**：本仓库五个真实 `data.pkl` 的零长 `BINUNICODE`（状态字典的空串键）分别位于 offset 1315、1315、12830、52607、52607，也就是下一个待审的包就会中招。修法限定在 payload 相位：0 长完成之后带同一个 `b` 与 `absOff` 继续取下一个 opcode；`pickPhaseFixed` 与计数操作数的长度前缀路径（宽度至少 1 字节，必然消费至少 1 字节）没有这个场景，**不要为了"统一"把补丁搬进去**。**代价明确**：无——这条修正只把错误报的完整性换成正确的完整性。
 
 ---
 
@@ -1043,7 +1043,7 @@ type BinaryConfig struct {
 	// `gate`, MEDIUM blocks under `gate`, and both are kept whatever the budget.
 	// The drop is recorded on the summary as findings_capped/findings_dropped
 	// rather than folded into Report.Truncated, which ProvesCleanScan refuses on:
-	// a channel that deleted a package for having found too much would be a
+	// a channel that refused the import for having found too much would be a
 	// channel the operator has to tune against, and tuning it is the one thing a
 	// fail-closed control must not require.
 	//
@@ -2605,7 +2605,7 @@ func atoiSafe(s string) int {
 
 先定下门控规则，后面 Task 6、Task 7 按它各自接线时都引用这条：
 
-**解释器只在"被声明为 pickle 的流"上运行**：(a) `set.Kind == KindPickle` 的整文件路径（`streamEvidence` 与 `streamHeadAndTail`）；(b) 分类为 `KindPickle` 的容器成员（`streamReaderEvidence` 传 `pickleScan=true`）；(c) 解压后头部嗅探为 pickle 的 gzip 流（`isPickleStream`）。**`KindELF` 以及其它任何类型绝不进解释器**：解释器一旦运行就提交于一次解析，非 pickle 的首字节不是 opcode，会立刻置 `Bound.Structural`，而对可执行类型（`isExecutableKind`：`KindELF`/`KindPickle`/`KindArchive`/`KindCompressed`）`Bound.Structural` 会**阻断导入**——一个 `.so`、一个 `.whl`、一个 `.pt` 都会因此被判为未完整扫描而删包。这一条是承重的，后来者不能把它"简化"成无条件运行。
+**解释器只在"被声明为 pickle 的流"上运行**：(a) `set.Kind == KindPickle` 的整文件路径（`streamEvidence` 与 `streamHeadAndTail`）；(b) 分类为 `KindPickle` 的容器成员（`streamReaderEvidence` 传 `pickleScan=true`）；(c) 解压后头部嗅探为 pickle 的 gzip 流（`isPickleStream`）。**`KindELF` 以及其它任何类型绝不进解释器**：解释器一旦运行就提交于一次解析，非 pickle 的首字节不是 opcode，会立刻置 `Bound.Structural`，而对可执行类型（`isExecutableKind`：`KindELF`/`KindPickle`/`KindArchive`/`KindCompressed`）`Bound.Structural` 会**阻断导入**——一个 `.so`、一个 `.whl`、一个 `.pt` 都会因此被判为未完整扫描而拒绝导入。这一条是承重的，后来者不能把它"简化"成无条件运行。
 
 本步骤只改 Task 2 写的 `streamEvidence`；Task 6 的 `streamReaderEvidence` 与 Task 7 的 `streamHeadAndTail` 在各自的任务里做同一门控（它们还没被定义，不能在这里改）。
 
@@ -4666,7 +4666,7 @@ go test ./internal/codeaudit/ -run 'TestELF|TestCollectELF|TestCountSection' -v
 >
 > `SHT_SYMTAB` 有与第一处完全相同的形状，这正好是本函数**本来就不读它**的第二个理由（第一个是符号来源的误报，见上）：一个兜底来源还得替它背同样的守卫，而它提供的是本解析已经决定不用的符号。
 >
-> 这几条与 `collectELF` 开头的 `cfg = normalizeBinaryConfig(cfg)` 是同一类事：它们保护的不是"输入正常时会怎样"，而是"输入不正常时不要变成静默通过"。`normalizeBinaryConfig` 那一行的意义要单独说，因为它看着像样板：`collectELF` 直接读 `cfg.MaxStreamBytes` 当每文件预算，而 `newEvidenceSet` 与 `newStringScanner` 都会先归一化，一个零值 `BinaryConfig{}` 于是给出零预算，每个可执行节都记成"预算已花光"的结构性缺口，可执行类型的文件被删包——踩中的是将来接线的那个任务，不是现在这批测试（它们全都经 `DefaultBinaryConfig` 构造配置）。
+> 这几条与 `collectELF` 开头的 `cfg = normalizeBinaryConfig(cfg)` 是同一类事：它们保护的不是"输入正常时会怎样"，而是"输入不正常时不要变成静默通过"。`normalizeBinaryConfig` 那一行的意义要单独说，因为它看着像样板：`collectELF` 直接读 `cfg.MaxStreamBytes` 当每文件预算，而 `newEvidenceSet` 与 `newStringScanner` 都会先归一化，一个零值 `BinaryConfig{}` 于是给出零预算，每个可执行节都记成"预算已花光"的结构性缺口，可执行类型的文件被拒绝导入——踩中的是将来接线的那个任务，不是现在这批测试（它们全都经 `DefaultBinaryConfig` 构造配置）。
 >
 > 每一处都要有测试钉住，否则它们会在下一次重构里被当成多余的分支删掉：**（a）** 一个 `.dynsym` 解出空内容的夹具必须不 panic 且不产出 bound（"这张表没有导入"是它的事实，不是缺口）；**（a2）** 一条 `.zdebug` 形状的夹具——名字以 `.zdebug` 开头、节体是 `"ZLIB"` 加 8 个零字节、`sh_size` 是一个普通值——必须同样不 panic，且**必须在 `sh_size` 看着正常的前提下通过**，因为这条测试的全部价值就在于它钉的是"守卫必须看解出来的长度、不能看节头"；少了它，一个只看 `sh_size` 的守卫会全绿而漏洞还在；**（b）** 一个声明长度超出可读字节的节必须记为结构性缺口，且这一条要在**无符号**语义下成立（有符号写法的失败方式正是"声明长度的高位置位时整条检查被跳过"，所以这条测试的夹具要能表达那个形状：普通节的 `sh_size` 会被 `debug/elf` 在解析期拒绝，能表达它的是 `SHF_COMPRESSED` 的压缩头）；**（c）** 传一个零值 `BinaryConfig{}` 时，一个正常的可执行节仍要被量熵而不是被记成"预算花光"。
 >
@@ -5814,7 +5814,7 @@ git add internal/codeaudit/binary_evidence.go internal/codeaudit/binary_evidence
 git commit -m "feat(audit): read zip and gzip containers, recursing into member evidence"
 ```
 
-> **第三点，也是这三条里唯一一条会把结论翻面的：一个文件抽取失败时，它是被记成 `Incomplete`，不是被静默跳过。** 这条链要写全，因为它是本通道 fail-closed 的承重结构，而它同时跨了三个任务，单看任何一个任务的代码都看不出全貌：抽取函数（本步的 `collectArchive`、Task 5 的 `collectELF`、`collectCompressed` 等）在打不开容器/解析不了 ELF 时**返回 error**，而不是 `markStructural` 后继续——返回是刻意的，`markStructural` 记的是"这个文件读了但没读全"，而这里的事实是"这个文件根本没读成"，两者在报告里必须能分开；Task 7 的 `CollectEvidence` 把它收进 `set.Err` 而不是往外抛（往外抛会被 `import_processing.go:642-660` 当成整趟失败直接删包，报告连原因都来不及写）；Task 9 的 `ScanDirectory` 在 `if set.Err != nil` 分支里 `res.Summary.Incomplete++; return nil`——自增之后 `return nil`，所以这一个文件不会中断其余文件的扫描，但它**已经**被计数了。`Incomplete` 随后折进 `Report.Binary`，`ProvesCleanScan` 在 `b.Incomplete > 0` 时返回 false（`{"an unexamined file withholds", BinaryScanSummary{FilesCount: 3, Incomplete: 1}, false}`），于是导入被扣下。
+> **第三点，也是这三条里唯一一条会把结论翻面的：一个文件抽取失败时，它是被记成 `Incomplete`，不是被静默跳过。** 这条链要写全，因为它是本通道 fail-closed 的承重结构，而它同时跨了三个任务，单看任何一个任务的代码都看不出全貌：抽取函数（本步的 `collectArchive`、Task 5 的 `collectELF`、`collectCompressed` 等）在打不开容器/解析不了 ELF 时**返回 error**，而不是 `markStructural` 后继续——返回是刻意的，`markStructural` 记的是"这个文件读了但没读全"，而这里的事实是"这个文件根本没读成"，两者在报告里必须能分开；Task 7 的 `CollectEvidence` 把它收进 `set.Err` 而不是往外抛（往外抛会被 `import_processing.go:642-660` 当成整趟失败而拒绝这次导入，报告连原因都来不及写；删包那一动作已由 Task 11a 移除，但错误路径仍会在报告生成之前返回）；Task 9 的 `ScanDirectory` 在 `if set.Err != nil` 分支里 `res.Summary.Incomplete++; return nil`——自增之后 `return nil`，所以这一个文件不会中断其余文件的扫描，但它**已经**被计数了。`Incomplete` 随后折进 `Report.Binary`，`ProvesCleanScan` 在 `b.Incomplete > 0` 时返回 false（`{"an unexamined file withholds", BinaryScanSummary{FilesCount: 3, Incomplete: 1}, false}`），于是导入被扣下。
 >
 > 所以判据是：**"抽取出错"与"被跳过"在报告里绝不能长得一样**。跳过是 `classify` 判定为非二进制（非常规文件、文本文件、非 ELF/pickle 的成员），它不计数，因为那不是一次失败的查看；抽取出错是一次失败的查看，它必须计数。宿主上有一个现成的形状能测这条链：**21 个被截断的 CUDA/MLX 库，全部落在 `teellm/models/ollama/lib/ollama/` 下**（`cuda_v12` 3 个、`cuda_v13` 3 个、`mlx_cuda_v13` 14 个、`vulkan` 1 个）——其中 20 个在磁盘上正好 10485760 字节（10 MiB），第 21 个 `vulkan/libggml-vulkan.so` 是 10747904 字节，而 ELF 头把节头表指向 **34483600–751773392 字节（约 33–717 MB）**的偏移，于是 `elf.NewFile` 直接返回 `EOF`。**`deploy/guest-build/semgrep-payload/rootfs` 不在这 21 个里面**：它下面有 88 个 `.so*`，但截断的一个也没有（常被引用的"约 116 MB"只是 `cuda_v12/libcublas.so.12.8.5.5` 这一个样本）。它们今天不在任何模型包里，但只要有一个出现在包里，被截断的库就是"抽取出错"而不是"跳过"，`Incomplete` 必须是 1，包必须被扣下——这正是 `TestBinaryScannerCountsAnUnreadableFileAsIncomplete` 那一族要钉住的形状，也是它不能只测 `classify` 失败那条分支的原因。
 
@@ -6315,10 +6315,12 @@ func TestSymbolRulesDoNotMatchStringLiterals(t *testing.T) {
 // has to clear, and it is a bar rather than a preference. The severity column is
 // the only control that exists downstream: `Passed` is computed as
 // `highCount == 0` (with the medium count added under the `gate` policy), and a
-// false `Passed` makes `internal/controller/import_processing.go:655-660` run
-// `cleanDirContents` and delete the model package. A rule table that reports a
-// HIGH on an ordinary shared object or a compiled .pyc therefore does not merely
-// add noise - it destroys the package.
+// `Passed` that comes out false makes `internal/controller/import_processing.go`
+// refuse the import and report the package as unsafe. The audit never writes to,
+// deletes, or modifies the package it reads, so a rule table that reports a HIGH
+// on an ordinary shared object or a compiled .pyc does not destroy anything - it
+// refuses a legitimate import and hands the operator a report that calls the
+// package dangerous.
 //
 // Every fixture below reproduces a shape measured against real files on this
 // machine: the string runs of `/home/hjy/taa/models` (740 files of that tree are
@@ -6472,7 +6474,7 @@ func TestBinaryFamilySeveritiesArePinned(t *testing.T) {
 		// does under `gate`, so this value is load-bearing too.
 		{"DYN_001", SeverityMedium},
 		// String evidence must not block under either policy. LOW, and not
-		// MEDIUM, because MEDIUM alone deletes the package once the operator
+		// MEDIUM, because MEDIUM alone refuses the import once the operator
 		// switches to `gate`. rules.go defines no SeverityLow constant, so the
 		// table writes the string and this test matches it.
 		{"CMD_002", "LOW"},
@@ -6549,14 +6551,16 @@ import (
 // The reason this has to be stated rather than felt is that the severity column
 // is the only control that exists downstream. `Passed` is computed as
 // `highCount == 0` under the default `assist` policy, and with the medium count
-// added under `gate`, both in ComputeConclusionContext. A false `Passed`
-// makes internal/controller/import_processing.go:655-660 run cleanDirContents
-// and delete the model package. Measured against the real files on this machine,
-// the table as first written deleted legitimate packages: one free-string rule
-// fired on 23 of 28 legitimate shared libraries. That is why the four
-// string-evidence families below live under new ids at LOW rather than borrowing
-// the source arm's severity - the source arm's rules match Python source, where
-// a literal in a call is a different fact from a byte run in a binary.
+// added under `gate`, both in ComputeConclusionContext. A `Passed` that comes
+// out false refuses the import (internal/controller/import_processing.go) and
+// reports the package as unsafe; it deletes nothing, because the audit never
+// writes to, deletes, or modifies the package it reads. Measured against the
+// real files on this machine, the table as first written refused legitimate
+// packages: one free-string rule fired on 23 of 28 legitimate shared libraries.
+// That is why the four string-evidence families below live under new ids at LOW
+// rather than borrowing the source arm's severity - the source arm's rules match
+// Python source, where a literal in a call is a different fact from a byte run
+// in a binary.
 //
 // "LOW" is the literal the report path already uses for a non-blocking finding:
 // DefaultRules() has no LOW constant, and ClassifyFindingRisk falls through to
@@ -7032,7 +7036,7 @@ go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestBinaryFam
 - 28 个共享库中，旧 `OBF_001`（base64 长串）命中 **23** 个；旧 `NET_002`（含 `bind`/`send`/`recv`）至少命中 `libllama-common.so.0.1.2`（它导入 `bind recv send`——**本轮复核补正**：它同时也导入 `socket`/`connect`/`getaddrinfo`，旧写法「不含 `socket`/`connect`」是错的，见下一条实测与 Task 8 `binary_rules.go` 里 `NET_002` 的注释）；旧 `PER_001`/`FIL_001`/`ENV_001` 的片段命中来自 `taint_engine.cpython-312.pyc`（`'crontabz'`、`'.aws/credentialsz'`、`'.ssh/id_rsaz'`、`.profilez /etc/cron)`）与 `security.cpython-312.pyc`（小写 `private_key` 撞 `PRIVATE_KEY`）。**新表必须让这些全部归零**，这正是 `TestBinaryTableProducesNoHighFindingsOnLegitimateInputs` 的七个夹具组在钉的东西。
 - **代码两处 `23 of 28` 的分母口径未写明，与本节 `28` 是否同一集合未证，留最终复审**（`binary_rules.go:29-30`、`:309-310`）。这里的 `28` 与本节讲清的「28 = 顶层 22 个常规文件 + 6 个符号链接」**大概率同源**（同为顶层 glob 口径），所以**不是错误**，只是代码那句没写明口径；而它描述的是**已废弃的 `OBF_001` 原始模式**的历史测量，重测需重建已删除的模式，上一轮复审已判其出界。故本计划对代码这两处**不改数字、不加括号**，只在此登记为待最终复审的口径项。
 
-- 可执行节区熵：把宿主上 **600 个共享对象**（去重后 **538** 个不同 ELF；把每个枚举到的文件条目都算上是 **2027** 个）全跑一遍，**0 个被判结构性、0 个无节表、0 个报错**，最高 **6.777009** bits/byte，出现在 **`libcrypto.so.3` 的 `.text`**（3347362 字节，**整节读完**，不是抽样前缀），与 7.5 阈值之间余量 **0.723** bits。早先只量了 ollama 那 28 个（最高 6.75），样本扩大二十倍而最高值只挪了百分之一不到，这正是"这条判定不误伤普通库"的强度所在（`libgomp.so` 的 7.97 在非可执行 `.gnu_debugdata`，抽取器根本不测）。**这个数是被删包级规则的唯一支撑，所以它必须是整节读出来的**——一个只覆盖前缀的熵值和一个覆盖整节的熵值在报告里长得一样，而前者不能用来给一条删除规则背书。
+- 可执行节区熵：把宿主上 **600 个共享对象**（去重后 **538** 个不同 ELF；把每个枚举到的文件条目都算上是 **2027** 个）全跑一遍，**0 个被判结构性、0 个无节表、0 个报错**，最高 **6.777009** bits/byte，出现在 **`libcrypto.so.3` 的 `.text`**（3347362 字节，**整节读完**，不是抽样前缀），与 7.5 阈值之间余量 **0.723** bits。早先只量了 ollama 那 28 个（最高 6.75），样本扩大二十倍而最高值只挪了百分之一不到，这正是"这条判定不误伤普通库"的强度所在（`libgomp.so` 的 7.97 在非可执行 `.gnu_debugdata`，抽取器根本不测）。**这个数是被阻断导入那条规则的唯一支撑，所以它必须是整节读出来的**——一个只覆盖前缀的熵值和一个覆盖整节的熵值在报告里长得一样，而前者不能用来给一条会拒绝导入的规则背书。
 
 - **新表在真实库上的实测（本轮，宿主 `teellm/models/ollama/lib/ollama/`，把这条路径下的 `.so` 全跑一遍）**：
   - **21 个是被截断的 CUDA/cuDNN/NCCL/MLX 库，而且这个数字有两套口径，不要用一个盖掉另一个**：按**磁盘**数，是 **21 个截断 ELF**——其中 **20 个恰好 10485760 字节（10 MiB）**，另一个是 `vulkan/libggml-vulkan.so`（**10747904** 字节），20 + 1 = 21；按**生产路径**数，也是 **21 个**——`elf.NewFile` 对这 21 个**全部**直接返回 `EOF`（本轮用 `elf.Open` 逐个跑了这 52 个 `.so`，报 EOF 的正是这一批 21 个，52 − 21 = 31 个能解析出来，两个口径逐文件对得上）。ELF 头把节头表指向 34483600–751773392 字节（约 33–717 MB）的偏移，而文件只有 10 MiB，所以 `debug/elf` 读节头时撞在 EOF 上。**这里保留 21**：曾经出现过的"22 个恰好 10 MiB"在磁盘上复现不出来（全仓库按 `-size 10485760c` 数就是 20 个），所以不采用 22。另外这 21 个**全部**落在 `teellm/models/ollama/lib/ollama/` 下（`cuda_v12` 3 个、`cuda_v13` 3 个、`mlx_cuda_v13` 14 个、`vulkan` 1 个）；`deploy/guest-build/semgrep-payload/rootfs` 下面有 88 个 `.so*`，但**截断的一个也没有**——Task 5 与 `binary_scanner.go` 里"`teellm/` 与 `deploy/…` 下有 21 个"是把两个根并列写在一起的，实测只来自 `teellm/` 这一个根（代码侧那句的修正在另一批里，这里只留实测口径）。它们走的是**抽取出错**（`parse elf …: EOF`）这条路径，**不产出 finding**，计入 `Incomplete`——这正是 Task 7 那条"截断的库是抽取出错、不是跳过"的现成形状（不在 `models/` 下；`models/` 一个真实 `.so` 都没有）。
@@ -7041,7 +7045,7 @@ go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestBinaryFam
     **这里的"9"而不是"8"，是一次漏数，不是口径差异。** 早先那一轮 `CMD_001` 只按别处举过的 `execlp` 一个符号去扫，没有走该族的完整 alternation，于是漏掉了 `mlx_cuda_v13/libgfortran.so.5.0.0` 的 `system`。`system` 是 `CMD_001` 的正成员（`binary_rules.go` 的 `CMD_001` 模式串里第一个就是它），这是一次真实的指令执行命中，不是误报——记在这里，免得后来者拿旧的"8"当成回归基线。
   - **"9"不随口径放宽而变，这才是它可信的地方。** `SourceDynsym` 不是这批库**唯一**的证据来源：在同一批文件上还能发 HIGH 的另外两条路，一条是 `SourceEntropy`（`BIN_001`，可执行节区熵近随机），一条是 `NET_002` 自己的 `SourceNeeded` 分支（`^libcurl\.so` / `^libssl\.so`）。两条都实测过，**一个文件都不加**：(a) 熵——把每个可读文件的所有 `SHF_EXECINSTR` 节**整节**（不是前缀采样）算 Shannon 熵，全树最高 **6.744751** bits/byte，出现在 `libggml-cpu-sapphirerapids.so` 的 `.text`（**1289897** 字节，整节读完），距 7.5 的阈值还差 **0.755** bits，`BIN_001` 一个都不触发（宿主 600 个共享对象那轮的最高值是 6.777009，同一个量级）；(b) `DT_NEEDED`——全树**没有任何** `libcurl`/`libssl` 的 `DT_NEEDED` 条目，`SourceNeeded` 分支一个都不加。于是"只算 dynsym"与"三源齐上"给出同一个数：**9**。这条论证要写进记录，是因为这个结论的强度不来自"我扫了哪些符号"，而来自"把所有能发 HIGH 的证据来源都走一遍，还是 9"。
   - **三个数字的关系一次写清，免得后来者把口径差当成回归偏移。** `teellm/models/ollama/lib/ollama/` 下**顶层条目 28 个**（22 个普通 `.so*` + 6 个软链接）——本记录下面几条与 §3 里说的"28 个 ollama 共享库"（"标定误报用的那 28 个 ollama 库"、旧 `OBF_001` 命中 23 个、"单节最大 2 901 464 字节"）用的都是**这个顶层口径**；**递归下去普通 `.so*` 是 52 个**，这才是本节"9 个命中"与上面截断口径的数（连软链接一起算是 58 个**条目**，但 `filepath.Walk` 按 `lstat` 根本不读软链接，所以有效输入是 52）。于是 52 = 21 个截断 + 31 个可解析，其中 **9 个命中 HIGH**。`-maxdepth 1` 对递归、条目对普通文件，两种口径各自自洽；拿 52 去比 28 会读出一个不存在的偏移。
-  - **这 9 个命中全部是合法库，而 `CMD_001`/`NET_002` 都是 HIGH**，所以只要这样的库进了模型包，`passed` 就是 false，导入会在 `import_processing.go:655-660` 走到 `cleanDirContents` 删包。这正是 §5 里 `NET_002` 那条**未裁决取舍**的实测来源（三种候选写在 Task 8 `binary_rules.go` 的 `NET_002` 注释里）。
+  - **这 9 个命中全部是合法库，而 `CMD_001`/`NET_002` 都是 HIGH**，所以只要这样的库进了模型包，`passed` 就是 false，这次导入会被拒绝（`import_processing.go:655-660` 的 `cleanDirContents` 已由 Task 11a 移除），并留下一份说这个包不安全的报告。这正是 §5 里 `NET_002` 那条**未裁决取舍**的实测来源（三种候选写在 Task 8 `binary_rules.go` 的 `NET_002` 注释里）。
 **上面那 9 个的复跑命令**（口径 = 只算普通文件、软链接不计，递归含 `cuda_v12`/`cuda_v13`/`mlx_cuda_v13`/`vulkan`；符号面 = `nm -D --no-demangle` 的 `U` 行剥掉 `@GLIBC_2.2.5` 这类版本后缀后的**裸名**，对应 `collectELFReader` 收的 `SHN_UNDEF && STB_GLOBAL`；规则面 = 所有能在 `SourceDynsym` 上发 HIGH 的族。`vulkan/libggml-vulkan.so` 那个截断库在 `nm -D` 下只报 `file too short`，所以它落在上面那条截断口径里、不在这里产出命中。**最后一行以非零退出是循环末尾那个 `[ -n "$h" ]` 的返回值，不是命令失败**）：
 
 ```bash
@@ -7062,7 +7066,7 @@ done
 
 - `PKL_001`（pickle 反序列化执行，HIGH）本轮在真实语料上命中 **0** 次——这与下一条方向性坦白**一致**（被跑过的真实 pickle 全是良性的），不是它的反例；它 HIGH 档的双向性仍未验证。
 
-一条**方向性**的坦白，必须写在任务里而不是留给读者推断：**本节没有任何证据证明 `PKL_001` 会命中一个*恶意* checkpoint。** 所有被采样、被跑过解释器的真实 pickle 都是良性的（真 checkpoint 只证明解释器能读出目标，不能证明恶意目标会被判成 HIGH）。`PKL_001` 是 HIGH 档，而 HIGH 会阻断并删包，所以它的双向性**未经验证**：已知的是它不会误伤良性样本（上面的语料跑），未知的是它对恶意样本的命中率。补这个方向的唯一办法是造一个真正会执行 `posix.system` 的恶意 pickle 夹具（Task 4/Task 9 的合成夹具即用于此），不要用「跑过真实 checkpoint」冒充两边都验过。
+一条**方向性**的坦白，必须写在任务里而不是留给读者推断：**本节没有任何证据证明 `PKL_001` 会命中一个*恶意* checkpoint。** 所有被采样、被跑过解释器的真实 pickle 都是良性的（真 checkpoint 只证明解释器能读出目标，不能证明恶意目标会被判成 HIGH）。`PKL_001` 是 HIGH 档，而 HIGH 会阻断导入并留下一份错误的报告，所以它的双向性**未经验证**：已知的是它不会误伤良性样本（上面的语料跑），未知的是它对恶意样本的命中率。补这个方向的唯一办法是造一个真正会执行 `posix.system` 的恶意 pickle 夹具（Task 4/Task 9 的合成夹具即用于此），不要用「跑过真实 checkpoint」冒充两边都验过。
 
 - **`NewEngine` 拒绝 `EngineNameBinary`/`EngineNameCPG` 这两个不可选名字，这件事由 `internal/codeaudit/engine_select_test.go` 的 `TestNewEngineRejectsTheNonSelectableChannelNames` 钉住。** 该测试表驱动遍历这两个名字（子测试 `name=<name>`），逐个断言 `NewEngine` 返回非 nil 错误、不返回可用 engine、且错误信息里出现被拒的名字。钉它的理由：这两个名字是**通道**而不是**可选 Tier 1 引擎**——`EngineNameCPG` 接在某个 Tier 1 引擎之后跑，`EngineNameBinary` 叠在某个引擎之上额外跑，部署只配一个源引擎，把通道名填进 `Engine` 要的是 `NewEngine` 跑不出来的东西，所以默认分支必须报错、而不是回落成一次正则扫描。本计划没有为这个既有文件造整文件 fence——它不属于任何任务的新增内容，这条记录就是它在计划里的坐标。
 
@@ -7959,7 +7963,7 @@ type BinaryScanSummary struct {
 	// Errored records that the pass could not run at all - the walk failed before
 	// it examined anything. It is a gap for the same reason Incomplete is: a pass
 	// that did not happen is not evidence of absence, and the alternative (an
-	// error out of the channel) would delete the package through
+	// error out of the channel) would refuse the import through
 	// internal/controller/import_processing.go:642-660 without the report ever
 	// saying why.
 	Errored bool `json:"errored,omitempty"`
@@ -7969,7 +7973,7 @@ type BinaryScanSummary struct {
 	// into it. Reaching the cap is a listing budget being spent, not a look that
 	// did not happen, and the report's Truncated is one of the conditions
 	// ProvesCleanScan refuses on - folding this into it would make the channel
-	// delete a package for having found too much. Only LOW findings are ever
+	// refuse an import for having found too much. Only LOW findings are ever
 	// dropped (see ScanDirectory), and LOW blocks under neither the `assist` nor
 	// the `gate` policy - MEDIUM does block under `gate`, which is exactly why the
 	// cap keeps it - so nothing the cap drops could have blocked the import.
@@ -8186,7 +8190,7 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 	// one policy's answer into a decision both policies have to survive:
 	// `assist` withholds on HIGH alone, but `gate` withholds on HIGH or MEDIUM
 	// (internal/codeaudit/audit.go:298-309), and DYN_001 - MEDIUM in the shared
-	// table - deletes the package the moment an operator switches to `gate`.
+	// table - refuses the import the moment an operator switches to `gate`.
 	// Dropping a blocking finding would turn a package that must be withheld
 	// into one that passes, which is the one failure a cap must not be
 	// able to cause, and an attacker aims at exactly it by padding a package with
@@ -8199,7 +8203,7 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 	//
 	// Reaching the budget is recorded on the summary and nowhere else - it must
 	// not reach Report.Truncated, whose readers treat it as a completeness
-	// failure and delete the package.
+	// failure and refuse the import.
 	sortFindings(res.Findings)
 	if len(res.Findings) > s.cfg.MaxFindings {
 		kept := make([]Finding, 0, len(res.Findings))
@@ -8322,7 +8326,7 @@ func joinTrimmed(lines []string) string {
 >
 > **二进制通道故意不是这样**：下面的 cap 只裁剪**报告里的清单**，`FindingsCapped`/`FindingsDropped` 按 Task 10 的设计**不进** `ProvesCleanScan`，也就是说二进制通道丢一个 finding **不会**让包被扣下。它的安全因此**完全落在**这条 keep 规则上：cap 只花 **LOW** 这一档，保住 **HIGH 与 MEDIUM**，并对未知严重级 fail-closed（所以写的是 `f.Severity != "LOW"` 而不是 `f.Severity == "HIGH" || f.Severity == "MEDIUM"`）。写 `!= "LOW"` 的理由是：**能被丢的那一档必须恰好是"不能阻断"的那一档**，代码不确知是 LOW 的东西都要留下——`rules.go` 里根本没有 `SeverityLow` 常量，`"LOW"` 是个裸字符串，`gate` 下 MEDIUM 一样阻断（`audit.go:298-309`），而 `DYN_001` 正是 MEDIUM。
 >
-> **为什么"统一"会删掉合法包**：二进制证据产生的 finding 数量远多于文本通道——一个 `.so` 的动态符号表一次就能出几十条。若照文本通道的样子让"触顶"也去**扣包**（把 `FindingsCapped` 折进 `ProvesCleanScan`、或让二进制臂也按位置丢并在丢时置 `truncated`），那么任何产出超过 `MaxFindings` 条 finding 的**合法**包（一个正常的加速库就能做到）都会被 `cleanDirContents` 删掉。所以这两个通道**必须**保持不同的封顶语义；改其中一边时要同时看懂另一边——把 `FindingsCapped` 折进完整性判定是删合法包，把 keep 规则放宽成"只保 HIGH"（assist 视角）则是放走 `gate` 下本应阻断的 MEDIUM。`TestBinaryScannerCapKeepsAMediumFindingBeyondTheBudget` 钉的就是后一条。
+> **为什么"统一"会拒掉合法包**：二进制证据产生的 finding 数量远多于文本通道——一个 `.so` 的动态符号表一次就能出几十条。若照文本通道的样子让"触顶"也去**扣包**（把 `FindingsCapped` 折进 `ProvesCleanScan`、或让二进制臂也按位置丢并在丢时置 `truncated`），那么任何产出超过 `MaxFindings` 条 finding 的**合法**包（一个正常的加速库就能做到）都会被拒绝导入。所以这两个通道**必须**保持不同的封顶语义；改其中一边时要同时看懂另一边——把 `FindingsCapped` 折进完整性判定是拒合法包，把 keep 规则放宽成"只保 HIGH"（assist 视角）则是放走 `gate` 下本应阻断的 MEDIUM。`TestBinaryScannerCapKeepsAMediumFindingBeyondTheBudget` 钉的就是后一条。
 
 `joinTrimmed`（以及它用到的 `"strings"` import）已包含在上面那份 `binary_scanner.go` 的完整文件里；本任务不再单列这一段追加。
 
@@ -8398,7 +8402,7 @@ git commit -m "feat(audit): add the binary scanner with deterministic ordering a
 // The finding cap is in the table as a case that does NOT withhold, because that
 // is the property being pinned: reaching the cap means the channel found more
 // than its listing budget, which is not the same fact as a look that did not
-// happen, and treating it as one would delete a package for having findings.
+// happen, and treating it as one would refuse an import for having findings.
 func TestProvesCleanScanWithholdsOnBinaryGaps(t *testing.T) {
 	base := func(sum BinaryScanSummary) *Report {
 		return &Report{
@@ -8518,7 +8522,7 @@ func (r *Report) ProvesCleanScan() bool {
 
 > **陷阱：两个通道的封顶不是同一个安全模型，别把二进制的 `FindingsCapped` 折进这个判定。** 文本通道的封顶是**按位置丢** finding 的（`scanner.go:97-100` 的截断加 `return filepath.SkipAll`、`scanner.go:298-301` 的同形第二处、`semgrep_engine.go:239-243`），它**安全**是因为任何一次丢弃都会置 `truncated = true`，而 `truncated` 正是这个函数（`rules.go:141-150`；读 `!r.Truncated` 的是 `rules.go:146`，`rules.go:126-134` 只是 doc comment）读的完整性字段之一——文本通道丢一个 finding 的代价是"包被扣下"（`scanner.go:231`、`verifier.go:188`/`verifier.go:235`、`audit.go:354`/`audit.go:314-316` 把这条 AND 链起来）。
 >
-> **二进制通道故意不这样**：它裁剪的只是**报告里的清单**，`FindingsCapped`/`FindingsDropped` **故意不折进**这里（上面 `BoundedData` 与 `FindingsCapped` 都被明确排除在读取之外，这是刻意的），所以二进制通道丢一个 finding 不扣包。这正是"把两个通道的封顶统一起来会删掉合法包"这句话的落点——**二进制证据产生的 finding 数量远多于文本通道**（一个 `.so` 的动态符号表一次就能出几十条），如果照文本通道的样子让"触顶"也去扣包，那么任何产出超过 `MaxFindings` 条 finding 的**合法**包（一个正常的加速库就能做到）都会被 `cleanDirContents` 删掉。所以二进制通道的安全**不靠**这个折入，而**完全**靠 Task 9 那条 keep 规则：cap 只花 LOW 一档、保住 HIGH **和** MEDIUM、对未知严重级 fail-closed。改这一对设计时要两边一起看——把 `FindingsCapped` 折进这里是删合法包，把 keep 规则放宽成"只保 HIGH"则是在 `gate` 下放走 MEDIUM 阻断 finding。
+> **二进制通道故意不这样**：它裁剪的只是**报告里的清单**，`FindingsCapped`/`FindingsDropped` **故意不折进**这里（上面 `BoundedData` 与 `FindingsCapped` 都被明确排除在读取之外，这是刻意的），所以二进制通道丢一个 finding 不扣包。这正是"把两个通道的封顶统一起来会拒掉合法包"这句话的落点——**二进制证据产生的 finding 数量远多于文本通道**（一个 `.so` 的动态符号表一次就能出几十条），如果照文本通道的样子让"触顶"也去扣包，那么任何产出超过 `MaxFindings` 条 finding 的**合法**包（一个正常的加速库就能做到）都会被拒绝导入。所以二进制通道的安全**不靠**这个折入，而**完全**靠 Task 9 那条 keep 规则：cap 只花 LOW 一档、保住 HIGH **和** MEDIUM、对未知严重级 fail-closed。改这一对设计时要两边一起看——把 `FindingsCapped` 折进这里是拒合法包，把 keep 规则放宽成"只保 HIGH"则是在 `gate` 下放走 MEDIUM 阻断 finding。
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -8719,7 +8723,7 @@ func TestMergeBinaryFindingsDoesNotFoldTheBinaryCapIntoTruncated(t *testing.T) {
 	MergeBinaryFindings(report, res)
 
 	if report.Truncated {
-		t.Error("Truncated = true after the binary arm capped itself; the channel deleted a package for finding too much")
+		t.Error("Truncated = true after the binary arm capped itself; the channel refused a package for finding too much")
 	}
 	if !report.Passed {
 		t.Error("Passed = false although a capped listing is not a completeness gap: the cap drops only LOW")
@@ -8788,7 +8792,7 @@ go test ./internal/codeaudit/ -run TestMergeBinaryFindings 2>&1 | head -10
 // Nothing here sets Report.Truncated, and that is a decision rather than an
 // omission. Report.Truncated is the completeness flag the report copies into
 // scan_metadata.truncated, and ProvesCleanScan refuses on it: a merge that set
-// it from the binary arm's own cap would make the channel delete a package for
+// it from the binary arm's own cap would make the channel refuse an import for
 // having found too much. The cap drops LOW findings and only LOW (see
 // BinaryScanner.ScanDirectory), and LOW blocks under neither the `assist` nor the
 // `gate` policy - the two severities that can block, HIGH and MEDIUM, are kept
@@ -8878,11 +8882,107 @@ git commit -m "feat(audit): merge binary findings into the audit report"
 
 ---
 
+### Task 11a: 审计过程不得删除或改动模型包与依赖库
+
+**决策**：审计只做审计。**整个审计过程不得删除模型包，不得对被打包的源代码与依赖库做任何改动动作。** 当前实现违反这一点，且违反的地方是可枚举的——所以先量后改：
+
+- `internal/codeaudit` 全包**没有任何文件写入**（`grep -rn "os\.OpenFile\|os\.WriteFile\|ioutil\.WriteFile\|os\.Symlink\|os\.Link(" internal/codeaudit/*.go` 无命中），唯一的外部进程是一次 semgrep CLI 调用（`semgrep_engine.go:555`），它的规则文件是部署时就位的、不写进被扫描目录。所以通道本身是只读的。
+- 全仓库没有 `pip install` / `requirements.txt` 之类的依赖安装步骤，模型包自带的那批 `.so` 不会被安装动作改写。
+- 因此**审计路径上的破坏性动作有四处**，全部在 `internal/controller`，全部是 `cleanDirContents(s.Security.ModelDir)`：`import_processing.go:635-637`（fail-closed 且 LLM 不可用）、`:645-647`（审计返回 error）、`:658-660`（结论未通过），以及 panic 回滚路径 `route.go:861-865`。`cleanDirContents` → `utils.CleanDir`（`import_helpers.go:74-77`），注释自述"清空 dir 目录下的所有文件和子目录"。
+- **另有两条恢复路径删的是同一个目录，首轮量漏了**：`internal/app/taa/recovery.go:276`（`reconcileAbandonedAudit`）与 `:95`（`reconcileCrashRecovery` 的 `model_import` 分支）。两条互斥：审计是异步的、会把导入任务先释放掉，所以审计中途崩溃时 `activeTask` 为 nil，只有 `PendingAudit` 记得它——`:276` 正是"审计被打断 → 删包"这条路本身。两条自述的理由都是"未审计的代码不得留在盘上"，而同等隔离已由紧随其后的 `UpdateImportState(true, false, ...)` 提供，删除并不是唯一防线。
+
+**保留什么（这是本任务的边界，不要顺手改掉）**：审计仍然是闸门。结论照样判出、照样经 `reportAuditAsync` 上报、未通过照样不算导入成功——`launchModelAudit`（`import_processing.go:594-605`）在 `!passed` 时清的是**导入状态标记**（`clearImportedState` → `updateImportState(..., false, ...)`，`import_processing.go:913-915`）并停止训练，两者都不触碰文件，保留。被拿掉的只有"物理清除"这一个动作：**审计的结论改变的是"这次导入是否被接受"，而不是"磁盘上还剩什么"。**
+
+**改动后的后果，必须原样写进注释与风险表**：一次误报 HIGH 的代价从"删掉用户的模型包"变成"这次导入被拒、用户看到一份说不安全的报告"；一次漏报的代价从"包被留下但已被删过"变成"一个没被完整看过的包被判通过"。两个方向都还在，但都变成了**报告层面**的后果，不再有不可逆的文件损失。这正是 `rules.go`/`binary_scanner.go`/`binary_rules.go` 里那些"否则会删包"的注释必须改写的原因：它们描述的行为将不再存在。
+
+**Files:**
+- Modify: `internal/controller/import_processing.go`（三处删除动作 + 相关日志）
+- Modify: `internal/controller/route.go`（panic 回滚路径的一处）
+- Modify: `internal/codeaudit/binary_rules.go:26-28`、`internal/codeaudit/binary_scanner.go:262-272`（"否则删包"的注释改成真实后果）
+- Test: `internal/controller/`（新增"失败审计不动文件"的钉子）
+- Test: `internal/codeaudit/binary_rules_test.go:208`、`:364`（两处注释同步）
+
+- [ ] **Step 1: 写失败测试**
+
+在现有审计测试所在文件（`internal/controller/audit_model_import_test.go`，先确认它与相邻测试如何驱动 `auditAndReportModelImport`/`launchModelAudit`，按该文件的既有模式驱动，不要新造一套）追加：
+
+```go
+// TestFailedAuditLeavesTheImportedPackageUntouched pins the rule the audit is
+// under: it reads, it judges, it reports, and it changes nothing. The failure it
+// guards is not hypothetical - the audit gate used to call cleanDirContents on
+// the model directory whenever the verdict was not a pass, so a false positive
+// did not just refuse an import, it destroyed the artifact the operator had
+// uploaded.
+//
+// The whole tree is compared, not one path: "we only deleted the checkpoints"
+// is the same defect with a smaller blast radius, and the dependency libraries a
+// model package bundles live in that same tree.
+func TestFailedAuditLeavesTheImportedPackageUntouched(t *testing.T) {
+	// Build a package that fails the audit (the fixture the neighbouring tests
+	// already use for a non-passing verdict) and record the tree before the run.
+	before := snapshotTree(t, modelDir)
+
+	passed := state.auditAndReportModelImport(req)
+
+	if passed {
+		t.Fatal("fixture is wrong: this package is supposed to fail the audit")
+	}
+	after := snapshotTree(t, modelDir)
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("the audit changed the package it audited:\n before: %v\n after:  %v", before, after)
+	}
+}
+```
+
+`snapshotTree` 记录每个文件的相对路径、大小与内容摘要（按路径排序）；若同文件已有等价辅助函数就复用。
+
+- [ ] **Step 2: 跑测试，确认失败**
+
+```bash
+go test ./internal/controller/ -run TestFailedAuditLeavesTheImportedPackageUntouched -count=1 -v 2>&1 | tail -20
+```
+
+Expected: FAIL，`after` 为空树（或只剩目录本身）。若它直接通过，说明夹具走的不是未通过分支——先改夹具，不要改断言。
+
+- [ ] **Step 3: 去掉四处删除动作**
+
+把 `import_processing.go:635-637`、`:645-647`、`:658-660` 三处 `if err := cleanDirContents(s.Security.ModelDir); err != nil { ... }` 整块删掉，`route.go:861-865` 的同类块一并删掉（保留 panic 路径其余的状态回滚、`stopActiveTraining`、panic 上报）。**不要**动 `import_processing.go:342`/`:383`/`:434`/`:528`/`:531`——那是训练的工作目录与产物目录，不是模型包，且不在审计路径上（改动前先逐一确认这一点并在报告里写明）。
+
+日志：三处 `"物理清除已解压模型代码失败"` 随代码消失。取而代之，在结论未通过时补一行说明审计**没有**动过文件，例如：
+
+```go
+s.Logs.Add(LogWarn, "audit", "审计未通过：仅上报结论，未删除或改动模型包与依赖库: dir=%s", s.Security.ModelDir)
+```
+
+**这句话不是客套**：此前失败日志与"已物理清除"是配对的，去掉删除而不留话，运维会去找一个其实还在的包（或者更糟——以为包已被清掉而不再处理）。
+
+- [ ] **Step 4: 注释与文档同步（本仓库最常出错的一类）**
+
+`internal/codeaudit/binary_rules.go:26-28` 现在写的是"A false `Passed` makes …run cleanDirContents and delete the model package"，`binary_scanner.go:262-272` 写的是 MEDIUM 在 `gate` 下"deletes the package"。这些句子在 Step 3 之后**全部为假**，必须改成真实后果：误报改变的是**这次导入是否被接受**，不再有任何文件被删。`binary_rules_test.go:208`、`:364` 两处测试注释同理。
+
+改写时保留原本的推理强度（这些注释存在的理由是解释严重级别为何被定成那样），只把后果从"删包"换成"拒绝导入 + 一份错误的报告"。加一句明确的边界：**审计从不写、不删、不改它读的东西**，并指向该契约的实现处。
+
+- [ ] **Step 5: 跑测试并提交**
+
+```bash
+go test ./internal/controller/ ./internal/codeaudit/ -count=1
+go build ./... && CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa
+git add internal/controller/import_processing.go internal/controller/route.go internal/controller/audit_model_import_test.go internal/codeaudit/binary_rules.go internal/codeaudit/binary_scanner.go internal/codeaudit/binary_rules_test.go
+git commit -m "fix(audit): never delete or modify the package being audited"
+```
+
+**补充（本轮追加，已实施）**：首轮只覆盖审计路径与点名的注释，复核发现两处缺口，随后以两个提交补齐：
+
+- `a3ea354` `docs(audit): finish the comment sweep for the non-destructive audit`——把仍然声称"判错会删包"的注释与测试错误串一次扫净。首轮只改了任务点名的几处，漏了 `binary_rules.go:128`、`binary_rules_test.go` 的 `TestBinaryFamilySeveritiesArePinned` 文档（一处两句）、`audit_test.go:1033` 与 `:1052`、`binary_evidence.go:473/486/758`、`binary_evidence_test.go:1395`，以及 `engine.go`、`engine_select_test.go`、`config.go`、`config_test.go`、`app_test.go`、`model_audit_pending_test.go`、`route.go:392`。判据是"这句在改动后是否还成立"，不是"是否被点名"。
+- `a4acbbf` `fix(audit): stop deleting the model directory on the recovery path`——去掉 `recovery.go:95` 与 `:276` 的两处 `CleanDir(ModelDir)`，**保留**状态复位、`LogWarn` 与平台补报（code=2）。同时把 `TestRecovery_ModelImportQuarantine` 与 `TestRecovery_AbandonedAuditQuarantine` 从"断言目录被清空"翻成"断言整树逐字节未变"，并改写假定发生清除的中文日志与平台文案（"模型已隔离，请重新下发模型"→"本次导入被拒绝，模型包保持上传原样、不得视为已导入，请重新下发模型"）。
+
+**边界因此扩大一句**：本任务约束的不是"`internal/controller` 里的那几个调用点"，而是**任何以"审计未完成/未通过"为由触碰模型包与其依赖库的动作**，崩溃恢复路径包括在内。回滚的含义也随之从"文件回到原状"（本来就没有文件被改动）变成"导入状态回到未导入"。
+
 ### Task 11b: 佐证门控 —— 仅凭符号名不得单独升 HIGH
 
 **背景（实测，不是推测）**
 
-`NET_002`、`CMD_001`、`BIN_002` 三个 HIGH 族的证据是 `.dynsym` 的一项或一个 `DT_NEEDED` 名字。链接器会把目标文件可能引用的**每一个**符号都写进去，所以"表里有 `socket`"只说明这个库**有能力**调用 socket，不说明它调用。在这台机器上按现状实测：`libllama-common.so.0.1.2` 与 `libllama-server-impl.so` 在 `httplib::detail::*` 里导入 `socket`/`connect`/`getaddrinfo`/`inet_pton`，`libggml-base.so.0.20.2` 在 `ggml_print_backtrace` 里导入 `execlp`，`libgfortran.so.5.0.0` 导入 `system`，`libcudart.so.12`/`libcudnn_*.so` 导入 `socket`/`connect`。默认 `assist` 下 `passed = highCount == 0`，所以上面任意一个都让 `internal/controller/import_processing.go:655-660` 删掉整个模型包。
+`NET_002`、`CMD_001`、`BIN_002` 三个 HIGH 族的证据是 `.dynsym` 的一项或一个 `DT_NEEDED` 名字。链接器会把目标文件可能引用的**每一个**符号都写进去，所以"表里有 `socket`"只说明这个库**有能力**调用 socket，不说明它调用。在这台机器上按现状实测：`libllama-common.so.0.1.2` 与 `libllama-server-impl.so` 在 `httplib::detail::*` 里导入 `socket`/`connect`/`getaddrinfo`/`inet_pton`，`libggml-base.so.0.20.2` 在 `ggml_print_backtrace` 里导入 `execlp`，`libgfortran.so.5.0.0` 导入 `system`，`libcudart.so.12`/`libcudnn_*.so` 导入 `socket`/`connect`。默认 `assist` 下 `passed = highCount == 0`，所以上面任意一个都让 `launchModelAudit` 拒绝这次导入并留下一份说这个包不安全的报告（`internal/controller/import_processing.go:655-660` 的 `cleanDirContents` 已由 Task 11a 移除）。
 
 **可达性（调用图）曾作为修正方案被实测否决**：这批 C++/Rust 目标文件没开 `-fvisibility=hidden`，`libllama-common` 在 `.dynsym` 里定义/弱定义 **2878/2881** 个函数，`socket` 的调用者本身就是导出入口，9 个被标记的库**一个都翻不了案**；而且 guest rootfs 里没有任何反汇编器（payload rootfs 的 `usr/bin` 只有一个 `python3.10`），`golang.org/x/arch` 离线不可得。
 
@@ -8898,7 +8998,7 @@ git commit -m "feat(audit): merge binary findings into the audit report"
 - `BIN_002`（`memfd_create`/`fexecve`）：它本身就是 `.dynsym` 里的一个名字，与待证事项**同一类**证据；接受它等于允许载荷引用一个无关符号自证。
 - "另一个符号族共现"（如 `socket` + `system`）：同样是同一类证据数两遍。合法大库天然两者都有（`libllama-common` 有网络符号，`libggml-base` 有 `execlp`），这条一加，本任务要救的库一个都救不了。
 
-**级别取 LOW，不取 MEDIUM**（已决）：`assist` 只看 HIGH，`gate` 看 HIGH 或 MEDIUM（`internal/codeaudit/audit.go:304-312`），所以 MEDIUM 在 `gate` 下照样阻断、照样删包——那不是修复，是同一个删除换个数字。LOW 是两种策略下都不阻断的唯一取值（`rules.go` 没有 `SeverityLow` 常量，表里写裸字符串）。
+**级别取 LOW，不取 MEDIUM**（已决）：`assist` 只看 HIGH，`gate` 看 HIGH 或 MEDIUM（`internal/codeaudit/audit.go:304-312`），所以 MEDIUM 在 `gate` 下照样阻断——那不是修复，是同一个阻断换个数字。LOW 是两种策略下都不阻断的唯一取值（`rules.go` 没有 `SeverityLow` 常量，表里写裸字符串）。
 
 **`BIN_002` 一并纳入降级范围**（已决）：它与 `NET_002`/`CMD_001` 同为"仅凭符号名"的 HIGH 族，按同一规则处理，不写成例外。
 
@@ -9029,7 +9129,7 @@ func TestBinaryScannerDowngradeHappensBeforeTheCap(t *testing.T) {
 // TestBinaryScannerDowngradedEvidenceDoesNotBlockUnderEitherPolicy pins the
 // severity the decision needs. It asserts both policies, because assist passes on
 // a MEDIUM downgrade too - only the gate assertion distinguishes LOW from MEDIUM,
-// and MEDIUM under gate deletes the package.
+// and MEDIUM under gate refuses the import.
 func TestBinaryScannerDowngradedEvidenceDoesNotBlockUnderEitherPolicy(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir, "libnet.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket"}}))
@@ -9470,7 +9570,7 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	// It returns no error, and that is the point rather than an oversight: see
 	// runBinaryChannel. A binary-channel failure is a gap the report records and
 	// ProvesCleanScan refuses on, not a second way for the audit to return an
-	// error - the caller treats any error as a reason to delete the package
+	// error - the caller turns any error into a refusal that skips the report
 	// (internal/controller/import_processing.go:642-660), which is the outcome
 	// this channel exists to make accurate rather than to make easy.
 	binaryRes := runBinaryChannel(dir, cfg.Binary)
@@ -9595,7 +9695,7 @@ func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, 
 
 > `AssembleAuditReport` 的签名**不变**：二进制摘要搭 `Report.Binary` 的车，与 `Engine`、`Truncated` 等字段走同一条路。少改 10 个调用点，也少一处两路并行的可能。
 
-> **这一步的硬要求：镜像必须携带 `Incomplete`/`BoundedExecutable`/`Errored` 这三个缺口字段，不能只带计数。** 理由是承重的，不是风格问题：二进制不完整性会**独自扣包**（`audit.go:354` 的 `sp := scanReport.Passed && scanReport.ProvesCleanScan()`，而 `ProvesCleanScan` 在 `BoundedExecutable > 0 || Incomplete > 0 || Errored` 时返回 false），所以包被扣下之后，报告里必须能读出**哪个缺口字段**扣的它。这三个字段正是那个判定的全部输入；把它们换成一个 `files_count` 之类的数，或者只抄 `FilesCount`，就等于把"有一份原生代码没看完"和"全都看完了"在报告里写成同一句话——`failclosed_test.go:155` 那条"元数据存在就是为了说明是否跑完"的先例一破，operator 就只能看到包被删、看不到为什么。抄的是**同一个 summary 的指针**（`Binary: scanReport.Binary`），所以这一条在实现上是自然的；它要防的是后来者"顺手把它摊平成几个计数字段"，或者只挑其中一个抄。**钉住它的测试是 `TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata`**（Step 1）：夹具让 `elf.NewFile` 在一个已分类为 ELF 的文件上失败，于是 summary 里 `Incomplete = 1`，断言这个 1 一路走到 `audit.ScanMetadata.Binary.Incomplete`，并且结论是 `Passed == false`。零值陷阱也在这条要求里：**只有真正走完的 pass 才能挂非 nil summary**（`Report.Binary` 的折入只对非 nil 生效，一个非 nil 的零值 summary 会被读成 clean），所以 `runBinaryChannel` 之外不得有人构造它。
+> **这一步的硬要求：镜像必须携带 `Incomplete`/`BoundedExecutable`/`Errored` 这三个缺口字段，不能只带计数。** 理由是承重的，不是风格问题：二进制不完整性会**独自扣包**（`audit.go:354` 的 `sp := scanReport.Passed && scanReport.ProvesCleanScan()`，而 `ProvesCleanScan` 在 `BoundedExecutable > 0 || Incomplete > 0 || Errored` 时返回 false），所以包被扣下之后，报告里必须能读出**哪个缺口字段**扣的它。这三个字段正是那个判定的全部输入；把它们换成一个 `files_count` 之类的数，或者只抄 `FilesCount`，就等于把"有一份原生代码没看完"和"全都看完了"在报告里写成同一句话——`failclosed_test.go:155` 那条"元数据存在就是为了说明是否跑完"的先例一破，operator 就只能看到导入被拒、看不到为什么。抄的是**同一个 summary 的指针**（`Binary: scanReport.Binary`），所以这一条在实现上是自然的；它要防的是后来者"顺手把它摊平成几个计数字段"，或者只挑其中一个抄。**钉住它的测试是 `TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata`**（Step 1）：夹具让 `elf.NewFile` 在一个已分类为 ELF 的文件上失败，于是 summary 里 `Incomplete = 1`，断言这个 1 一路走到 `audit.ScanMetadata.Binary.Incomplete`，并且结论是 `Passed == false`。零值陷阱也在这条要求里：**只有真正走完的 pass 才能挂非 nil summary**（`Report.Binary` 的折入只对非 nil 生效，一个非 nil 的零值 summary 会被读成 clean），所以 `runBinaryChannel` 之外不得有人构造它。
 
 - [ ] **Step 5: 机械更新全部调用点**
 
@@ -10498,9 +10598,10 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 - [ ] `git grep -n "Co-Authored-By\|anthropic\|Claude" -- '*.go'` 无命中（提交信息同样不得出现）。
 - [ ] `go test ./internal/codeaudit/ -run 'TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine' -v`：`regex` 子用例必须 **PASS**；`semgrep` 子用例在装有 CLI 的机器上必须 PASS，在没装的机器上会 **SKIP**——跳过不等于通过，它是「这一条没有被验证」。所以在没装 semgrep 的机器上，必须在报告里显式记下它被跳过了，或者换一台装了的机器重跑。（被测函数就是 `TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine`，它的两个子用例名分别是 `regex` 与 `semgrep`；仓库里**没有**一个叫 `TestGenerateAuditReport` 的函数，前面写成前缀匹配只是碰巧选中了它。）
 - [ ] 用一个真实模型包（含 `.pt` 与任意 `.so`）在容器里跑一次导入，确认 `auditReportJSON` 里出现 `binary_kind`/`evidence_source` 字段，且 `scan_metadata.binary.files_count > 0`；**同一个包**上确认 `target.files_scanned >= scan_metadata.binary.files_count` 且 `target.files_scanned > 0`。两条必须合看：单独拿 `0 >= 0` 也能满足那个不等式，所以「前者不小于后者」只有在 `files_count > 0` 成立时才算被验证。 **这一条依赖容器/部署环境**（在 CSV2 guest 里跑一次真实导入），**不是本机 `go test` 能满足的**：须单独安排一次环境验证，并在报告里注明是跑过还是未跑——未跑时这一项记为「未验证」，不得算作通过。
-- [ ] 二进制臂触顶时 `scan_metadata.binary.findings_capped` 为 `true` 且 `findings_dropped > 0`，而 **`scan_metadata.truncated` 仍为 `false`**。这一条是本计划最容易写反的地方，所以两个方向都要验：**必须在会触顶的输入上验证**——造一个二进制 finding 数超过 `BinaryConfig.MaxFindings`（默认 50）的包，确认 `scan_metadata.binary.findings_capped == true`；再抓同一个包，确认 `scan_metadata.truncated == false`。反过来的形状（触顶即把 `truncated` 置真）会让二进制通道因为"找到太多"而删包，而它丢掉的只会是 LOW——LOW 在 `assist` 与 `gate` 两种策略下都不阻断，能阻断的 HIGH 和 MEDIUM 无论预算如何都保留（`ScanDirectory` 的 cap 只花 LOW 这一档；`gate` 下 `passed` 是 `High == 0 && Medium == 0`，所以 MEDIUM 也必须留，理由见该处注释）——对一个普通包跑这一条永远是「没错顶」，等于没验。
+- [ ] 二进制臂触顶时 `scan_metadata.binary.findings_capped` 为 `true` 且 `findings_dropped > 0`，而 **`scan_metadata.truncated` 仍为 `false`**。这一条是本计划最容易写反的地方，所以两个方向都要验：**必须在会触顶的输入上验证**——造一个二进制 finding 数超过 `BinaryConfig.MaxFindings`（默认 50）的包，确认 `scan_metadata.binary.findings_capped == true`；再抓同一个包，确认 `scan_metadata.truncated == false`。反过来的形状（触顶即把 `truncated` 置真）会让二进制通道因为"找到太多"而拒绝导入，而它丢掉的只会是 LOW——LOW 在 `assist` 与 `gate` 两种策略下都不阻断，能阻断的 HIGH 和 MEDIUM 无论预算如何都保留（`ScanDirectory` 的 cap 只花 LOW 这一档；`gate` 下 `passed` 是 `High == 0 && Medium == 0`，所以 MEDIUM 也必须留，理由见该处注释）——对一个普通包跑这一条永远是「没错顶」，等于没验。
 - [ ] 把 `security.binaryAudit.enabled` 设为 `false` 再跑一次，确认 `scan_metadata.binary` 缺失且结论与改动前一致（回滚可用）。
-- [ ] 佐证门控生效（Task 11b）：造一个**只**从 `.dynsym` 导入 `socket` 的 `.so` 包，确认 `NET_002` 的 `severity` 为 `LOW`、`downgrade_reason` 非空，且结论 `passed == true`。**同一条要在 `gate` 策略下再跑一次**，仍须 `passed == true`——只验 `assist` 会把 MEDIUM 的降级误判成通过（`gate` 看 HIGH 或 MEDIUM）。随后在同一个文件里放一个高熵可执行节（真加壳），确认 `NET_002` 回到 `HIGH` 且包被删——两个方向都要验，只验降级等于只验了抑制。
+- [ ] 佐证门控生效（Task 11b）：造一个**只**从 `.dynsym` 导入 `socket` 的 `.so` 包，确认 `NET_002` 的 `severity` 为 `LOW`、`downgrade_reason` 非空，且结论 `passed == true`。**同一条要在 `gate` 策略下再跑一次**，仍须 `passed == true`——只验 `assist` 会把 MEDIUM 的降级误判成通过（`gate` 看 HIGH 或 MEDIUM）。随后在同一个文件里放一个高熵可执行节（真加壳），确认 `NET_002` 回到 `HIGH`、这次导入被拒，且模型包仍在磁盘上、逐字节未变（审计不删、不改它读的东西）。两个方向都要验，只验降级等于只验了抑制。
+- [ ] 崩溃恢复同样不动文件（Task 11a 补充）：造一个 `model_import` 任务处于 RUNNING 时崩溃的状态，以及一个只留下 `PendingAudit` 的状态，各重启一次，确认导入状态为未导入、平台收到 code=2 补报，且模型目录逐字节未变。这两条路互斥，所以要分别造——只造其中一条会漏掉另一条。
 - [ ] `scan_metadata.binary.presence_downgraded` 在含符号证据的包上大于 0，且在触顶的包上仍等于降级总数（该计数在降级时累加，不随 cap 丢弃而减少）。
 - [ ] （**回归护栏，不是本功能的验收项**）`UnsupportedExts` 仍恒为 0——本计划**不**动它，任何让它非零的改动都会使每个真实包被判定为非完整扫描。它列在这里，是因为它属于同一次改动所以要一起回归，不是因为这个功能会让它变化。
 
@@ -10510,12 +10611,12 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 | --- | --- |
 | `elfFixtureBytes` 的字节布局写错，Task 5–15 全部建立其上 | `TestELFFixtureIsReadByTheStandardLibrary` 先于一切断言检查夹具本身；失败时按 `debug/elf` 的报错逐字段核对 |
 | 大模型包（数 GB）的 `.pt` 让导入变慢 | 证据流式读取，无整文件驻留；容器成员按需解压且有总额预算；超过 `MaxFullScanBytes`（默认 64 MiB）的文件只读首尾各 1 MiB，把单文件成本钉在约 190 ms |
-| 加壳判定对 UPX 打包的合法库误报 | `BIN_001` 定为 HIGH，但触发它的是一次**测量**而不是一次模式匹配：只有可执行节区的熵越过 7.5 bits/byte 才成立，而实测**宿主上 600 个共享对象**（去重后 538 个 ELF，枚举到 2027 个文件条目）的可执行节区最高只有 **6.777009**（**`libcrypto.so.3` 的 `.text`**，3347362 字节，整节读完；`libgomp.so` 的 7.97 落在非可执行的 `.gnu_debugdata`，抽取器根本不测），余量 **0.723** bits。误报面因此是「真的加壳了的合法库」，而不是「碰巧含有某个字节序列的库」；而这一面在已测的 600 个共享对象上是空的——0 个被判结构性、0 个无节表、0 个报错、命中 0 个，最高 6.777009 对阈值 7.5（早先只量了 ollama 那 28 个，最高 6.75，样本扩大二十倍最高值只挪了不到 1%）。**代价必须写清楚：`BIN_001` 是 HIGH，assist（默认策略）下照样阻断**——assist 的通过判据是 `passed = stats.High == 0`（`audit.go:303-304`），而且 assist 的静态判定连 LLM 降级都不认：`recalculateStaticPassed` 存在的唯一理由就是挡住被 LLM 降成 SUSPICIOUS/BENIGN 的静态 HIGH（`verifier.go:204-210`），所以即使 Tier 2 判它 BENIGN 也救不回这个包。也就是说，一个真的用 UPX 打包的合法库会被删包，这正是下一行「二进制通道让原本能导入的包被误阻断」所写的「最贵的失败模式是删包」。之所以保留 HIGH 而不退回 MEDIUM：这条判定由一次**测量**触发、其误报面实测为 0（600 个共享对象命中 0 个），而把一个加壳 `.so` 塞进模型包本身就是经典规避手法，值得用一个删包级判定挡住。 |
+| 加壳判定对 UPX 打包的合法库误报 | `BIN_001` 定为 HIGH，但触发它的是一次**测量**而不是一次模式匹配：只有可执行节区的熵越过 7.5 bits/byte 才成立，而实测**宿主上 600 个共享对象**（去重后 538 个 ELF，枚举到 2027 个文件条目）的可执行节区最高只有 **6.777009**（**`libcrypto.so.3` 的 `.text`**，3347362 字节，整节读完；`libgomp.so` 的 7.97 落在非可执行的 `.gnu_debugdata`，抽取器根本不测），余量 **0.723** bits。误报面因此是「真的加壳了的合法库」，而不是「碰巧含有某个字节序列的库」；而这一面在已测的 600 个共享对象上是空的——0 个被判结构性、0 个无节表、0 个报错、命中 0 个，最高 6.777009 对阈值 7.5（早先只量了 ollama 那 28 个，最高 6.75，样本扩大二十倍最高值只挪了不到 1%）。**代价必须写清楚：`BIN_001` 是 HIGH，assist（默认策略）下照样阻断**——assist 的通过判据是 `passed = stats.High == 0`（`audit.go:303-304`），而且 assist 的静态判定连 LLM 降级都不认：`recalculateStaticPassed` 存在的唯一理由就是挡住被 LLM 降成 SUSPICIOUS/BENIGN 的静态 HIGH（`verifier.go:204-210`），所以即使 Tier 2 判它 BENIGN 也救不回这个包。也就是说，一个真的用 UPX 打包的合法库会被拒绝导入并拿到一份说它不安全的报告，这正是下一行「二进制通道让原本能导入的包被误阻断」所写的「最贵的失败模式是错误地拒掉一次本该接受的导入」。之所以保留 HIGH 而不退回 MEDIUM：这条判定由一次**测量**触发、其误报面实测为 0（600 个共享对象命中 0 个），而把一个加壳 `.so` 塞进模型包本身就是经典规避手法，值得用一个阻断导入级判定挡住。 |
 | 字符串证据把合法包判成恶意 | 这是本轮实测出的最贵的误报源，对策是把字符串半边整体降级并收窄：源码臂的 `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` 是 HIGH/MEDIUM（`DefaultRules()` + `audit.go:242-243`，MEDIUM 在 `gate` 下照样阻断，`audit.go:301`），所以字符串半边不借它们，改用独立的 LOW 族 `CMD_002`/`PER_002`/`FIL_002`/`ENV_002`；每个 token 两端都锚定（`^…$`）以拒绝 `.pyc` 常量池里拼接出的片段（`'crontabz'`、`.profilez /etc/cron)` 都是实测命中），`'.ssh/id_rsaz'` 则靠**闭合的键名列表**（`id_(?:rsa|dsa|ecdsa|ed25519)`）拒绝——单靠 `$` 不够，`id_[a-z]+` 会把结尾的 `z` 一并吃下，锚点照样满足；`ENV_002` 去掉 `(?i)`，否则小写标识符 `private_key` 会撞上 `PRIVATE_KEY`；`OBF_001` 从二进制臂整体删除（28 个合法库命中 23 个）。LOW 仍进报告、仍送 Tier 2 复核，只是自己不足以阻断 |
 | 二进制 finding 挤占 LLM 配额 | 两臂各自限流（源码 200、二进制 50），合并列表不再二次截断。**Tier 2 调用上界由 200 变为 250**，且只在两臂同时饱和时可达。反过来，共享配额会让大源码臂按路径序挤掉二进制 finding，而那条路只会更贵：被挤掉的是二进制通道的证据，而挤掉它的那条臂本来就已经有 finding |
-| 二进制通道让原本能导入的包被误阻断 | 这是本设计最贵的失败模式（`ProvesCleanScan` 为假 → `cleanDirContents` 删包），所以：**finding 上限不参与完整性**（触顶只写 `findings_capped`/`findings_dropped`，绝不折进 `Report.Truncated`，且 cap 只丢 LOW——能阻断的 HIGH（`assist` 与 `gate`）与 MEDIUM（`gate`）无论预算如何都保留）；纯数据文件的证据截断只记录、不阻断；字符串证据一律 LOW（四个独立族，不借源码臂的 HIGH/MEDIUM id）；`BIN_001` 只由测量触发、不匹配字面量；**ELF 的结构性 fail-closed 只设在"这次没读完"上，不设在"这个文件很大"上**——一个可执行节在每文件 `MaxStreamBytes`（3 GiB）预算内没读完，记为结构性缺口（`section .text declares N bytes, M readable`）并删包；被删掉的 `MaxSectionBytes`（16 MiB/节）为什么错，判据正在这个分界上：16 MiB 的节上限问的是"这个库是不是太大"，而任何足够大的 `.so` 都会越过某个固定值，于是它把"库比较大"变成阻断理由（实测 libLLVM/libclang/chrome/wireshark 的可执行节都越过它）；3 GiB 的每文件预算问的是"我们能不能把它读完"，实测 600 个共享对象（538 个不同 ELF、2027 个文件条目）里没有一个接近它，触到它意味着这次读取确实没完成——那才是诚实的缺口；`security.binaryAudit.enabled=false` 是逐字节回滚。已入库语料实测最大 finding 数为单样本 7、整语料 80，离两个上限都有一个数量级 |
-| 去掉无节表 fail-open 后，节表被剥离的合法库被误阻断 | 这是本次修订**新引入**的代价，必须与上一行（UPX / `BIN_001`）并列看，而不是只留在 Task 5 的实现里：熵检测的输入是可执行节，而 `len(ef.Sections) == 0` 的文件（`strip --strip-section-headers` 或 `objcopy --strip-section-headers` 的产物、以及某些加壳器的输出）没有可执行节可测，新实现记为 `Bound.Structural`，而 `KindELF` 是可执行类型，于是这个包被删。旧行为是"没有节表就直接掉出去、不产生任何行也不产生任何 bound"，也就是把"从未检查过"报成"没发现加壳"（fail-open）；本版刻意翻成 fail-closed，判据是：**对可执行格式，"没看"必须不等于"干净"**。这条误报面**不靠"用 `PT_DYNAMIC` 回补 `DT_NEEDED`/`DT_SONAME`"来修**——那条链要先把 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移、再把 `DT_STRTAB` 的虚地址同样映射一次，是一段独立的新解析逻辑，而它的产出对"有没有被加壳"不提供任何证据，与这条误报面无关。真正的取舍是"宁可为被剥节的库删包，也不让一个剥了节表头的加壳载荷通过"。已入库语料实测没有这个形状（`models/` 下一个真实 `.so` 都没有，见第 14 条），宿主 600 个共享对象（538 个不同 ELF、2027 个文件条目）里也 0 个无节表（见第 15 条），所以这个代价目前是**潜伏**的，只在包带上一个被剥节的真实库时发作；`security.binaryAudit.enabled=false` 仍是逐字节回滚 |
+| 二进制通道让原本能导入的包被误阻断 | 这是本设计最贵的失败模式（`ProvesCleanScan` 为假 → 这次导入被拒；审计只判、只报，不删文件），所以：**finding 上限不参与完整性**（触顶只写 `findings_capped`/`findings_dropped`，绝不折进 `Report.Truncated`，且 cap 只丢 LOW——能阻断的 HIGH（`assist` 与 `gate`）与 MEDIUM（`gate`）无论预算如何都保留）；纯数据文件的证据截断只记录、不阻断；字符串证据一律 LOW（四个独立族，不借源码臂的 HIGH/MEDIUM id）；`BIN_001` 只由测量触发、不匹配字面量；**ELF 的结构性 fail-closed 只设在"这次没读完"上，不设在"这个文件很大"上**——一个可执行节在每文件 `MaxStreamBytes`（3 GiB）预算内没读完，记为结构性缺口（`section .text declares N bytes, M readable`）并拒绝导入；被删掉的 `MaxSectionBytes`（16 MiB/节）为什么错，判据正在这个分界上：16 MiB 的节上限问的是"这个库是不是太大"，而任何足够大的 `.so` 都会越过某个固定值，于是它把"库比较大"变成阻断理由（实测 libLLVM/libclang/chrome/wireshark 的可执行节都越过它）；3 GiB 的每文件预算问的是"我们能不能把它读完"，实测 600 个共享对象（538 个不同 ELF、2027 个文件条目）里没有一个接近它，触到它意味着这次读取确实没完成——那才是诚实的缺口；`security.binaryAudit.enabled=false` 是逐字节回滚。已入库语料实测最大 finding 数为单样本 7、整语料 80，离两个上限都有一个数量级 |
+| 去掉无节表 fail-open 后，节表被剥离的合法库被误阻断 | 这是本次修订**新引入**的代价，必须与上一行（UPX / `BIN_001`）并列看，而不是只留在 Task 5 的实现里：熵检测的输入是可执行节，而 `len(ef.Sections) == 0` 的文件（`strip --strip-section-headers` 或 `objcopy --strip-section-headers` 的产物、以及某些加壳器的输出）没有可执行节可测，新实现记为 `Bound.Structural`，而 `KindELF` 是可执行类型，于是这次导入被拒。旧行为是"没有节表就直接掉出去、不产生任何行也不产生任何 bound"，也就是把"从未检查过"报成"没发现加壳"（fail-open）；本版刻意翻成 fail-closed，判据是：**对可执行格式，"没看"必须不等于"干净"**。这条误报面**不靠"用 `PT_DYNAMIC` 回补 `DT_NEEDED`/`DT_SONAME`"来修**——那条链要先把 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移、再把 `DT_STRTAB` 的虚地址同样映射一次，是一段独立的新解析逻辑，而它的产出对"有没有被加壳"不提供任何证据，与这条误报面无关。真正的取舍是"宁可为被剥节的库拒绝导入，也不让一个剥了节表头的加壳载荷通过"。已入库语料实测没有这个形状（`models/` 下一个真实 `.so` 都没有，见第 14 条），宿主 600 个共享对象（538 个不同 ELF、2027 个文件条目）里也 0 个无节表（见第 15 条），所以这个代价目前是**潜伏**的，只在包带上一个被剥节的真实库时发作；`security.binaryAudit.enabled=false` 仍是逐字节回滚 |
 | 与 semgrep 非劣性证据的交互 | 二进制通道在**两个臂之外**运行且合并发生在引擎报告之后，两臂的引擎级报告逐字节不变；`corpus_parity_test.go` 会证明这一点 |
-| pickle 解释器的门控开错方向 | 两个方向都是故障，所以各有一个测试钉住：**跑宽了**（对非 pickle 也跑解释器）会让任意字节能被读成 opcode，未知 opcode 直接置 `Bound.Structural`，而 `KindELF`/`KindPickle`/`KindArchive`/`KindCompressed` 都是可执行类型，于是每个 `.pt`/`.whl`/`.so` 都被阻断、原本能导入的包被删——`TestCollectEvidenceDoesNotInterpretNonPicklesAsPickles` 用一个良性 ELF 夹具断言既不 `Err` 也无 `Bound.Structural`、无 `SourcePickle` 行；**跑窄了**（该跑的没跑）会丢掉 pickle 证据——`TestPickleInterpreterReadsTheRealCheckpoint` 断言真 checkpoint 仍产出目标。门控规则（只跑在 `KindPickle` 的整文件/容器成员、以及解压后头部嗅探为 pickle 的 gzip 流上）写在 Task 4 Step 4，不得"简化"掉 |
+| pickle 解释器的门控开错方向 | 两个方向都是故障，所以各有一个测试钉住：**跑宽了**（对非 pickle 也跑解释器）会让任意字节能被读成 opcode，未知 opcode 直接置 `Bound.Structural`，而 `KindELF`/`KindPickle`/`KindArchive`/`KindCompressed` 都是可执行类型，于是每个 `.pt`/`.whl`/`.so` 都被阻断、原本能导入的包被误拒——`TestCollectEvidenceDoesNotInterpretNonPicklesAsPickles` 用一个良性 ELF 夹具断言既不 `Err` 也无 `Bound.Structural`、无 `SourcePickle` 行；**跑窄了**（该跑的没跑）会丢掉 pickle 证据——`TestPickleInterpreterReadsTheRealCheckpoint` 断言真 checkpoint 仍产出目标。门控规则（只跑在 `KindPickle` 的整文件/容器成员、以及解压后头部嗅探为 pickle 的 gzip 流上）写在 Task 4 Step 4，不得"简化"掉 |
 | 符号证据缺佐证时降为 LOW，未加壳的网络/命令型载荷不再静态阻断 | 这是本轮**明确接受**的取舍，判据来自实测而不是偏好：一个 `.dynsym` 项或 `DT_NEEDED` 名字只说明文件**有能力**调用（链接器把可能引用的每个符号都写进去），而"调用图可达性"作为替代方案已被实测否决——宿主上被标记的 9 个合法库**一个都翻不了案**（`libllama-common` 在 `.dynsym` 里定义/弱定义 2878/2881 个函数，`socket` 的调用者本身就是导出入口），且 guest rootfs 里没有反汇编器、`golang.org/x/arch` 离线不可得。保留的判定：`BIN_001`（加壳，一次**测量**，无条件 HIGH）与 `PKL_001`（pickle 解释器真的走完 opcode 流），`NET_002`/`CMD_001`/`BIN_002` 只在**同一文件**内有这两者之一时才 HIGH。Tier 2 仍是兜底：降级的 finding 照常进报告、照常送给模型，模型判 MALICIOUS 时 `ClassifyFindingRisk` 分类为 HIGH 并阻断（`audit.go:212-252`）——所以「降级」去掉的是一次自动阻断，不是这条证据，**没有佐证也不等于无害**。**不得**把 `BIN_002` 或"第二个符号族"当作佐证：前者本身就是符号表里的名字，后者更是合法大库的常态（`libllama-common` 有网络符号、`libggml-base` 有 `execlp`），任一条加进去都会让本规则对实测要救的库**完全不生效** |
-| 二进制通道无法被取消，且它的失败会删包 | `GenerateAuditReport` 由 `internal/controller/import_processing.go:642` 以 `context.Background()` 调用，新增的 `runBinaryChannel`/`ScanDirectory` 都不收 context，所以**单个文件**的工作量被 `BinaryConfig` 的上限钉住，而**总**工作量随文件数线性增长，且没有任何东西能中断它。这是既有的形状而不是新引入的类别——`engine.ScanDirectoryWithLines` 同样不收 context——所以这里只当作一个已知边界记录：一次导入的二进制臂时长与文件数成正比，超时与否只能由调用方在整条审计之外控制，本计划不新增逐文件的取消路径。同一个 `context.Background()` 调用点也是**为什么 `runBinaryChannel` 不返回 error**：`internal/controller/import_processing.go:642-660` 对任何 error 都走删包，逐文件失败（已计为 `Incomplete`）或整趟失败（已计为 `Errored`）若从那条路出去，报告根本没机会说明原因，删除也就无从复核 |
+| 二进制通道无法被取消，且它失败时这次导入会被拒 | `GenerateAuditReport` 由 `internal/controller/import_processing.go:642` 以 `context.Background()` 调用，新增的 `runBinaryChannel`/`ScanDirectory` 都不收 context，所以**单个文件**的工作量被 `BinaryConfig` 的上限钉住，而**总**工作量随文件数线性增长，且没有任何东西能中断它。这是既有的形状而不是新引入的类别——`engine.ScanDirectoryWithLines` 同样不收 context——所以这里只当作一个已知边界记录：一次导入的二进制臂时长与文件数成正比，超时与否只能由调用方在整条审计之外控制，本计划不新增逐文件的取消路径。同一个 `context.Background()` 调用点也是**为什么 `runBinaryChannel` 不返回 error**：`internal/controller/import_processing.go:642-660` 对任何 error 都在 `GenerateAuditReport` 之后立刻上报 code=2 并返回（Task 11a 之后不再删包，但错误路径让审计报告根本没机会生成），逐文件失败（已计为 `Incomplete`）或整趟失败（已计为 `Errored`）若从那条路出去，报告就丢掉了说明原因的那一段——导入照样被拒，但 operator 看不到为什么 |
