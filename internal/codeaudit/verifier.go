@@ -316,10 +316,26 @@ const fileAnalysisPromptTemplate = `你是一个严谨的代码安全审计专�
 ## 请严格按以下 JSON 格式输出，不要包含其他内容:
 {"risk_level":"HIGH/MEDIUM/LOW","summary":"一句话安全结论(中文)","chained":false,"exfiltration":false}`
 
+// AuditConfig is the configuration of one audit run: the two things an audit can
+// be told to do differently.
+//
+// The binary channel is configured here rather than on the Tier 1 engine because
+// it is not part of any engine: it runs for whichever one the deployment chose.
+// Putting it on the engine's config would tie binary coverage to the source
+// engine selection, which is the coupling the channel exists to avoid.
+type AuditConfig struct {
+	// LLM configures the Tier 2 verifier.
+	LLM LLMConfig
+	// Binary configures the binary channel. Enabled false leaves the audit
+	// byte-identical to the one produced before the channel existed.
+	Binary BinaryConfig
+}
+
 // GenerateAuditReport is the high-level entry point that performs a full
 // security audit: static scan → finding-level LLM → file-level LLM → aggregate.
-func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, cfg LLMConfig, client LLMClient) (*AuditReport, error) {
+func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, cfg AuditConfig, client LLMClient) (*AuditReport, error) {
 	startTime := time.Now()
+	llmCfg := cfg.LLM
 
 	if dir == "" {
 		return nil, fmt.Errorf("audit directory is empty")
@@ -338,13 +354,31 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 		return nil, fmt.Errorf("static scan: %w", err)
 	}
 
+	// Phase 1b: the binary channel. It runs after the source scan and before the
+	// LLM phases so that the findings it produces are adjudicated by the same
+	// verifier, in the same pass, as the source findings - a separate pass would
+	// need a second quota and a second failure mode.
+	//
+	// It returns no error, and that is the point rather than an oversight: see
+	// runBinaryChannel. A binary-channel failure is a gap the report records and
+	// ProvesCleanScan refuses on, not a second way for the audit to return an
+	// error - the caller turns any error into a refusal that skips the report
+	// (internal/controller/import_processing.go:651-656), which is the outcome
+	// this channel exists to make accurate rather than to make easy.
+	binaryRes := runBinaryChannel(dir, cfg.Binary)
+
+	// Phase 1c: merge.
+	if binaryRes != nil {
+		MergeBinaryFindings(scanReport, binaryRes)
+	}
+
 	// Whether the LLM has anything to do here, and whether it can actually do it,
 	// are decided once and reused by all three places below. Written out longhand,
 	// the degrade decision and the two phase guards are three spellings of one
 	// condition, and a later edit to any one of them silently breaks the pairing
 	// the rest of this function depends on: marking a run degraded that in fact
 	// ran the LLM, or skipping a phase while reporting a full one.
-	llmWanted := cfg.Enabled && len(scanReport.Findings) > 0
+	llmWanted := llmCfg.Enabled && len(scanReport.Findings) > 0
 	llmActive := llmWanted && client != nil
 
 	// A deployment that asked for the LLM and got no client has produced a
@@ -359,7 +393,7 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	// so calling such a run degraded would be a false statement, and failing it
 	// closed a rejection of a package the static scan examined completely.
 	if llmWanted && !llmActive {
-		if cfg.FailClosed {
+		if llmCfg.FailClosed {
 			return nil, fmt.Errorf("llm enabled with fail-closed but no inference client: %d finding(s) would go unadjudicated",
 				len(scanReport.Findings))
 		}
@@ -368,7 +402,7 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 
 	// Phase 2: Finding-level LLM verification (reuse existing VerifyReport).
 	if llmActive {
-		scanReport, err = VerifyReport(ctx, scanReport, cfg, client)
+		scanReport, err = VerifyReport(ctx, scanReport, llmCfg, client)
 		if err != nil {
 			log.Printf("LLM finding verification failed (non-fatal): %v", err)
 		}
@@ -377,12 +411,16 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	// Phase 3: Group findings by file + file-level LLM analysis.
 	fileGroups := GroupFindingsByFile(scanReport.Findings)
 	var fileReports []FileReport
+	var binaryEvidence map[string]*EvidenceSet
+	if binaryRes != nil {
+		binaryEvidence = binaryRes.Evidence
+	}
 
 	for filePath, findings := range fileGroups {
 		fr := BuildFileReport(filePath, findings)
 
 		if llmActive {
-			summary := analyzeFileWithLLM(ctx, client, filePath, findings, lineCounts)
+			summary := analyzeFileWithLLM(ctx, client, filePath, findings, lineCounts, binaryEvidence)
 			fr.RiskLevel = summary.RiskLevel
 			fr.Summary = summary.Summary
 			fr.Chained = summary.Chained
@@ -393,12 +431,48 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	}
 
 	// Phase 4: Assemble the full audit report (Go-side aggregation).
-	audit := AssembleAuditReport(dir, scanReport, fileReports, lineCounts, cfg, time.Since(startTime))
+	audit := AssembleAuditReport(dir, scanReport, fileReports, lineCounts, llmCfg, time.Since(startTime))
 	return audit, nil
 }
 
+// runBinaryChannel runs the binary pass when it is enabled, and returns nil when
+// it is not.
+//
+// Nil rather than an empty result is the signal the rest of the function keys on:
+// an empty result would be indistinguishable from a pass that examined a package
+// with no binary files in it, and the report's metadata would then claim a
+// channel ran that never did.
+//
+// It deliberately returns no error, and the reason is the caller's failure path
+// rather than this function's convenience. GenerateAuditReport's caller turns any
+// error into a refusal that skips the report entirely (Task 11a removed the
+// package deletion that used to be here; what remains is that the audit returns
+// before any report exists), so an error returned here decides the import before
+// the report it belongs to exists - with nothing recorded about which file, or
+// which channel, or why. A per-file failure is already the scanner's own business:
+// it is counted as Incomplete and withholds the pass through ProvesCleanScan. A
+// whole-pass failure is recorded the same way, as Errored, so the verdict is the
+// one the report computes and the reason travels in scan_metadata.binary rather
+// than in a log line the report never reaches.
+func runBinaryChannel(dir string, binCfg BinaryConfig) *BinaryScanResult {
+	if !binCfg.Enabled {
+		return nil
+	}
+	matcher, err := NewBinaryMatcher()
+	if err != nil {
+		log.Printf("binary channel: matcher build failed, pass withheld: %v", err)
+		return &BinaryScanResult{Summary: BinaryScanSummary{Errored: true}}
+	}
+	res, err := NewBinaryScanner(matcher, binCfg).ScanDirectory(dir)
+	if err != nil {
+		log.Printf("binary channel: scan failed, pass withheld: %v", err)
+		return &BinaryScanResult{Summary: BinaryScanSummary{Errored: true}}
+	}
+	return res
+}
+
 // analyzeFileWithLLM calls the LLM for a file-level security summary.
-func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, findings []Finding, lineCounts map[string]int) FileSummary {
+func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, findings []Finding, lineCounts map[string]int, binaryEvidence map[string]*EvidenceSet) FileSummary {
 	if fa, ok := client.(FileAnalyzer); ok {
 		maxLines := 80
 		code := ReadFileForAnalysis(filePath, maxLines)

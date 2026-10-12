@@ -92,6 +92,13 @@ type AuditMetadata struct {
 	Truncated       bool   `json:"truncated"`
 	UnsupportedExts int    `json:"unsupported_extensions"`
 	ProcessExitCode int    `json:"process_exit_code"`
+
+	// Binary is the binary channel's completeness account, copied from the scan
+	// report so that the report leaving the process states what the channel
+	// examined and where it stopped. It is a copy rather than a recomputation:
+	// the summary is produced where the loss happens, and a second derivation
+	// from the findings could not see a loss that produced no finding.
+	Binary *BinaryScanSummary `json:"binary,omitempty"`
 }
 
 // FileSummary is the LLM response for file-level analysis.
@@ -385,6 +392,7 @@ func AssembleAuditReport(
 		truncated       bool
 		unsupportedExts int
 		processExitCode int
+		binary          *BinaryScanSummary
 	)
 	if scanReport != nil {
 		engine = scanReport.Engine
@@ -394,6 +402,7 @@ func AssembleAuditReport(
 		truncated = scanReport.Truncated
 		unsupportedExts = scanReport.UnsupportedExts
 		processExitCode = scanReport.ProcessExitCode
+		binary = scanReport.Binary
 	}
 
 	return &AuditReport{
@@ -424,6 +433,7 @@ func AssembleAuditReport(
 			Truncated:       truncated,
 			UnsupportedExts: unsupportedExts,
 			ProcessExitCode: processExitCode,
+			Binary:          binary,
 		},
 	}
 }

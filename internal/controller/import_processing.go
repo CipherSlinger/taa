@@ -642,7 +642,12 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 		return false
 	}
 
-	audit, err := codeaudit.GenerateAuditReport(context.Background(), s.Security.ModelDir, s.Security.Engine, cfg, llmClient)
+	// TODO(task-14): replace the codeaudit.DefaultBinaryConfig placeholder below
+	// with s.Security.Binary once the binary channel's config key exists on
+	// SecurityConfig; this placeholder keeps the channel on with the built-in
+	// defaults in the meantime.
+	audit, err := codeaudit.GenerateAuditReport(context.Background(), s.Security.ModelDir, s.Security.Engine,
+		codeaudit.AuditConfig{LLM: cfg, Binary: codeaudit.DefaultBinaryConfig()}, llmClient)
 	if err != nil {
 		s.Logs.Add(LogError, "audit", "模型代码审计失败: %v", err)
 		s.Logs.Add(LogWarn, "audit", "审计未通过：仅上报结论，未删除或改动模型包与依赖库: dir=%s", s.Security.ModelDir)
@@ -660,6 +665,11 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 	}
 	s.Logs.Add(LogInfo, "audit", "审计完成: passed=%v, riskLevel=%s, totalFindings=%d",
 		audit.Conclusion.Passed, audit.Conclusion.RiskLevel, audit.Conclusion.Statistics.Total())
+	if audit.ScanMetadata.Binary != nil {
+		b := audit.ScanMetadata.Binary
+		s.Logs.Add(LogInfo, "audit", "二进制审计: files=%d kinds=%v boundedExecutable=%d boundedData=%d incomplete=%d errored=%v findingsCapped=%v findingsDropped=%d",
+			b.FilesCount, b.Kinds, b.BoundedExecutable, b.BoundedData, b.Incomplete, b.Errored, b.FindingsCapped, b.FindingsDropped)
+	}
 
 	s.reportAuditAsync(req.RequestID, req.TaskID, code, msg, auditReportJSON(audit))
 	return passed
