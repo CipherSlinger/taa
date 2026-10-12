@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>模型提供方文件读写约定</title>
-<meta name="description" content="模型代码在 TEE 内的目录布局、路径取值、日志/进度/结果/断点的写入格式与上线检查清单。">
+<meta name="description" content="模型代码在 TEE 内的目录布局，以及日志、进度、结果与断点文件的写入格式和上线检查清单。">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=swap">
@@ -423,13 +423,12 @@
       <p class="rail-title">目录</p>
       <ol>
         <li><a href="#layout"><span class="num">01</span><span>目录布局</span></a></li>
-        <li><a href="#paths"><span class="num">02</span><span>路径怎么取</span></a></li>
-        <li><a href="#log"><span class="num">03</span><span>写日志</span></a></li>
-        <li><a href="#progress"><span class="num">04</span><span>写进度</span></a></li>
-        <li><a href="#result"><span class="num">05</span><span>写结果汇总</span></a></li>
-        <li><a href="#checkpoint"><span class="num">06</span><span>写断点</span></a></li>
-        <li><a href="#forbidden"><span class="num">07</span><span>禁止事项</span></a></li>
-        <li><a href="#checklist"><span class="num">08</span><span>上线前检查清单</span></a></li>
+        <li><a href="#log"><span class="num">02</span><span>写日志</span></a></li>
+        <li><a href="#progress"><span class="num">03</span><span>写进度</span></a></li>
+        <li><a href="#result"><span class="num">04</span><span>写结果汇总</span></a></li>
+        <li><a href="#checkpoint"><span class="num">05</span><span>写断点</span></a></li>
+        <li><a href="#forbidden"><span class="num">06</span><span>禁止事项</span></a></li>
+        <li><a href="#checklist"><span class="num">07</span><span>上线前检查清单</span></a></li>
       </ol>
     </nav>
 
@@ -463,68 +462,13 @@
         <ol class="plain">
           <li><strong>输入目录只读。</strong>不得在 <code>/opt/taa/input</code> 下创建、修改或删除任何文件，包括缓存与临时文件。</li>
           <li><strong>产物集中在 <code>result/</code>。</strong><code>log/</code> 与 <code>progress/</code> 只是旁路通道；需要交付的文件一律放 <code>result/</code>。</li>
-          <li><strong>路径不要写死，也不要写相对路径。</strong>进程的工作目录是你的源码目录，相对路径会落到代码目录而不是产物目录。取值方式见下一节。</li>
+          <li><strong>不要写相对路径。</strong>进程的工作目录是你的源码目录，相对路径会落到代码目录而不是产物目录。</li>
         </ol>
       </section>
 
       <!-- 02 -->
-      <section id="paths">
-        <h2><span class="num">02</span><span>路径怎么取</span></h2>
-        <p class="lede">启动你的命令时，命令文本与 <code>env</code> 的值都会做宏替换，同时注入一组环境变量。两种方式取到的是同一批真实路径。</p>
-
-        <h3>命令行宏</h3>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>宏</th><th>替换为</th></tr></thead>
-            <tbody>
-              <tr><td class="mono">&lt;input&gt; &lt;INPUT&gt; &lt;in&gt; &lt;IN&gt;</td><td>输入数据目录（默认 <code>/opt/taa/input</code>）</td></tr>
-              <tr><td class="mono">&lt;output&gt; &lt;OUTPUT&gt; &lt;out&gt; &lt;OUT&gt;</td><td>产物目录（默认 <code>/opt/taa/output/result</code>）</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-<pre><span class="c">{</span>
-  <span class="s">"commands"</span><span class="c">:</span> [<span class="s">"python train_fusion.py --data-root &lt;input&gt; --output-dir &lt;output&gt; -e 150"</span>]<span class="c">,</span>
-  <span class="s">"env"</span><span class="c">:</span> <span class="c">{</span> <span class="s">"OMP_NUM_THREADS"</span><span class="c">:</span> <span class="s">"8"</span> <span class="c">}</span>
-<span class="c">}</span></pre>
-
-        <h3>环境变量</h3>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>变量</th><th>含义</th></tr></thead>
-            <tbody>
-              <tr><td class="mono">TAA_TASK_ID</td><td>本次任务标识</td></tr>
-              <tr><td class="mono">TAA_STARTED_AT</td><td>任务启动时间（RFC3339）</td></tr>
-              <tr><td class="mono">TAA_DATA_DIR<br>TAA_INPUT_DIR<br>TAA_MODEL_INPUT_DIR</td><td>输入数据目录</td></tr>
-              <tr><td class="mono">TAA_OUTPUT_DIR<br>TAA_MODEL_OUTPUT_DIR</td><td>产物目录</td></tr>
-              <tr><td class="mono">TAA_LOG_DIR</td><td>日志目录（默认 <code>/opt/taa/output/log</code>）</td></tr>
-              <tr><td class="mono">TAA_PROGRESS_DIR</td><td>进度文件位置（默认 <code>/opt/taa/output/progress/progress.json</code>）</td></tr>
-              <tr><td class="mono">TAA_CHECKPOINT_DIR<br>TAA_MODEL_CHECKPOINT_DIR<br>CIPHERFLOW_CHECKPOINT_DIR</td><td>断点目录</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <p>推荐写法是读环境变量、缺省回落到默认绝对路径：</p>
-
-<pre><span class="k">import</span> os
-<span class="k">from</span> pathlib <span class="k">import</span> Path
-
-INPUT_DIR  = Path(os.environ.get(<span class="s">"TAA_INPUT_DIR"</span>,  <span class="s">"/opt/taa/input"</span>))
-OUTPUT_DIR = Path(os.environ.get(<span class="s">"TAA_OUTPUT_DIR"</span>, <span class="s">"/opt/taa/output/result"</span>))
-LOG_DIR    = Path(os.environ.get(<span class="s">"TAA_LOG_DIR"</span>,    <span class="s">"/opt/taa/output/log"</span>))
-PROGRESS   = Path(os.environ.get(<span class="s">"TAA_PROGRESS_DIR"</span>, <span class="s">"/opt/taa/output/progress/progress.json"</span>))
-CKPT_DIR   = Path(os.environ.get(<span class="s">"TAA_CHECKPOINT_DIR"</span>, <span class="s">"/opt/taa/checkpoint"</span>))
-
-TASK_ID    = os.environ.get(<span class="s">"TAA_TASK_ID"</span>, <span class="s">"local-task"</span>)</pre>
-
-        <div class="callout">
-          <p>上面这些默认绝对路径即使直接硬编码也能正常工作：例如 <code>/opt/taa/output/result/xxx</code> 会被自动换算到实际产物目录。但环境变量优先，便于本地调试与路径调整。</p>
-        </div>
-      </section>
-
-      <!-- 03 -->
       <section id="log">
-        <h2><span class="num">03</span><span>写日志</span></h2>
+        <h2><span class="num">02</span><span>写日志</span></h2>
         <p><strong>位置</strong>：<code>$TAA_LOG_DIR</code>（默认 <code>/opt/taa/output/log/</code>）。目录下所有 <code>*.jsonl</code> 与 <code>*.log</code> 文件都会被读取。</p>
         <p><strong>格式</strong>：每行一个 JSON 对象，追加写入。</p>
 
@@ -570,9 +514,9 @@ TASK_ID    = os.environ.get(<span class="s">"TAA_TASK_ID"</span>, <span class="s
         </div>
       </section>
 
-      <!-- 04 -->
+      <!-- 03 -->
       <section id="progress">
-        <h2><span class="num">04</span><span>写进度</span></h2>
+        <h2><span class="num">03</span><span>写进度</span></h2>
         <p><strong>位置</strong>：<code>$TAA_PROGRESS_DIR</code>，默认 <code>/opt/taa/output/progress/progress.json</code>。注意默认值是一个<strong>文件路径</strong>，不是目录。</p>
 
 <pre><span class="c">{</span>
@@ -663,9 +607,9 @@ TASK_ID    = os.environ.get(<span class="s">"TAA_TASK_ID"</span>, <span class="s
         </div>
       </section>
 
-      <!-- 05 -->
+      <!-- 04 -->
       <section id="result">
-        <h2><span class="num">05</span><span>写结果汇总</span></h2>
+        <h2><span class="num">04</span><span>写结果汇总</span></h2>
         <p><strong>位置</strong>：产物目录根部，即 <code>&lt;output&gt;/training_result.json</code>。</p>
         <p>进程以退出码 0 结束后，该文件会被读取并与审计信息、数据校验和合并成最终报告。<strong>只有 <code>result/</code> 里的产物会被导出</strong>；进程非 0 退出时产物不会被收集。</p>
 
@@ -704,9 +648,9 @@ TASK_ID    = os.environ.get(<span class="s">"TAA_TASK_ID"</span>, <span class="s
         <p>阶段 2（测试）另需在 <code>result/</code> 下产出评测明细表，按约定命名 <code>test_result.xlsx</code>；文件名与列结构由模型方与平台约定。</p>
       </section>
 
-      <!-- 06 -->
+      <!-- 05 -->
       <section id="checkpoint">
-        <h2><span class="num">06</span><span>写断点</span></h2>
+        <h2><span class="num">05</span><span>写断点</span></h2>
         <p><strong>位置</strong>：<code>$TAA_CHECKPOINT_DIR</code>（默认 <code>/opt/taa/checkpoint/</code>）。此目录跨任务保留，用于宿主机异常重启后的续训。</p>
 
         <div class="table-wrap">
@@ -724,9 +668,9 @@ TASK_ID    = os.environ.get(<span class="s">"TAA_TASK_ID"</span>, <span class="s
         <p>权重同时保存到 <code>result/weights/</code> 时，交付产物与断点是两份独立文件，互不影响。</p>
       </section>
 
-      <!-- 07 -->
+      <!-- 06 -->
       <section id="forbidden">
-        <h2><span class="num">07</span><span>禁止事项</span></h2>
+        <h2><span class="num">06</span><span>禁止事项</span></h2>
         <div class="table-wrap">
           <table>
             <thead><tr><th>行为</th><th>后果</th></tr></thead>
@@ -742,9 +686,9 @@ TASK_ID    = os.environ.get(<span class="s">"TAA_TASK_ID"</span>, <span class="s
         </div>
       </section>
 
-      <!-- 08 -->
+      <!-- 07 -->
       <section id="checklist">
-        <h2><span class="num">08</span><span>上线前检查清单</span></h2>
+        <h2><span class="num">07</span><span>上线前检查清单</span></h2>
         <ul class="checklist">
           <li><span class="box"></span><span>输入目录只读，代码中没有任何指向 <code>/opt/taa/input</code> 的写操作</span></li>
           <li><span class="box"></span><span>所有需要交付的文件都写在产物目录（<code>&lt;output&gt;</code> / <code>TAA_OUTPUT_DIR</code>）下，没有散落在别处</span></li>
