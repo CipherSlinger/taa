@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>模型提供方文件读写约定</title>
-<meta name="description" content="模型代码在 TAA 沙箱内的目录布局、路径取值、日志/进度/结果/断点的写入格式与上线检查清单。">
+<meta name="description" content="模型代码在 TEE 内的目录布局、路径取值、日志/进度/结果/断点的写入格式与上线检查清单。">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=swap">
@@ -438,10 +438,10 @@
       <!-- 01 -->
       <section id="layout">
         <h2><span class="num">01</span><span>目录布局</span></h2>
-        <p class="lede">沙箱内固定提供以下目录，训练代码只与它们打交道。</p>
+        <p class="lede">TEE 内固定提供以下目录，训练代码只与它们打交道。</p>
 
         <div class="tree-card">
-          <div class="tree-head"><span>沙箱文件系统</span><span>角色</span></div>
+          <div class="tree-head"><span>TEE 文件系统</span><span>角色</span></div>
           <div class="tree">
             <div class="row"><span class="path">/opt/taa/input/</span><span class="chip is-read">只读</span></div>
             <p class="tree-note">输入目录下的内容按模型所需的数据而定，此处不列举。</p>
@@ -731,7 +731,7 @@ TASK_ID    = os.environ.get(<span class="s">"TAA_TASK_ID"</span>, <span class="s
           <table>
             <thead><tr><th>行为</th><th>后果</th></tr></thead>
             <tbody>
-              <tr><td>在 <code>/opt/taa/input</code> 下创建、修改、删除文件</td><td>违反沙箱只读约束</td></tr>
+              <tr><td>在 <code>/opt/taa/input</code> 下创建、修改、删除文件</td><td>违反 TEE 内只读约束</td></tr>
               <tr><td>把输入数据原样拷进 <code>result/</code>（原始图片、CSV、标注文件）</td><td>导出前的反泄露检查会比对数据特征，命中即<strong>拒绝导出</strong></td></tr>
               <tr><td>在产物中写入明文 PEM 私钥、<code>SECRET_KEY=</code> / <code>API_KEY=</code> 等环境变量转储</td><td>同上，命中明文特征即拒绝导出</td></tr>
               <tr><td>任何网络外联（<code>socket</code> / <code>requests</code> / <code>urllib</code> / <code>httpx</code> / <code>aiohttp</code>）</td><td>代码审计红线，导入阶段即被阻断</td></tr>
