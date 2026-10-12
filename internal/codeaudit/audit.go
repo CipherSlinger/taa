@@ -617,3 +617,100 @@ func riskOrder(level string) int {
 		return 5
 	}
 }
+
+// MergeBinaryFindings folds one binary pass into the scan report that the LLM
+// and the conclusion read.
+//
+// It is a merge rather than a second report because everything downstream - the
+// finding-level verifier, the file grouping, the risk classification, the
+// statistics, the recommendation - is written against one finding list. A
+// parallel list would be a second implementation of each of them, and the two
+// would answer differently the first time one was changed.
+//
+// Three things happen, and the order matters:
+//
+//  1. The binary summary is attached first, because recomputeReportPassed below
+//     reads it through ProvesCleanScan, and a summary attached after the
+//     recomputation would leave the pass decision computed without it.
+//  2. The text findings of files the binary channel claimed are dropped. A file
+//     whose bytes are binary is not a file whose text reading means anything,
+//     and keeping that reading would put findings in the report that no one can
+//     act on - while letting a crafted file choose how many of them there are.
+//  3. The static counts are recomputed from the joined list. Recomputing rather
+//     than adjusting is what keeps Passed, HighCount and MediumCount consistent
+//     with the findings they describe.
+//
+// There is deliberately no cap on the joined list, and no second truncation.
+// Each channel capped its own findings before this ran - the source arm at
+// Config.MaxFindings, the binary arm at BinaryConfig.MaxFindings - and
+// reapplying one ceiling to the sum would couple them in the one direction that
+// costs a model package. A shared ceiling would let a large source arm evict
+// binary findings by path order, and it would choose which findings to drop by
+// path order rather than by importance.
+//
+// Nothing here sets Report.Truncated, and that is a decision rather than an
+// omission. Report.Truncated is the completeness flag the report copies into
+// scan_metadata.truncated, and ProvesCleanScan refuses on it: a merge that set
+// it from the binary arm's own cap would make the channel delete a package for
+// having found too much. The cap drops LOW findings and only LOW (see
+// BinaryScanner.ScanDirectory), and LOW blocks under neither the `assist` nor the
+// `gate` policy - the two severities that can block, HIGH and MEDIUM, are kept
+// whatever the budget - so nothing the cap drops could have blocked the import on
+// its own. A reader who wants the binary cap sees findings_capped and
+// findings_dropped in scan_metadata.binary, next to the max_findings it ran
+// under; what they must not see is a completeness flag that claims a look did not
+// happen when it did.
+//
+// This is the only place the binary channel touches any completeness field on
+// Report, which is worth stating because the other three - ScanComplete,
+// ParserErrors and UnsupportedExts - are the source arm's and are read by
+// ProvesCleanScan as such. The binary channel's own gaps travel on
+// Report.Binary and are folded by that method; none of them is written here.
+func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
+	if report == nil || res == nil {
+		return
+	}
+
+	report.Binary = &res.Summary
+
+	// The binary files are added to the count the report states as scanned.
+	// AssembleAuditReport copies this field into Target.FilesScanned, and leaving
+	// it at the source arm's total would put a number in target.files_scanned that
+	// contradicts scan_metadata.binary.files_count in the same document, where the
+	// lower of the two is the one a reader would believe.
+	//
+	// The sum is not an exact count of distinct files: the two arms count by
+	// different criteria, so a file can be counted twice. The source arm counts by
+	// extension - a path whose extension is not in its set is skipped without
+	// being opened (scanner.go:86-88, scanner.go:280-282) - while this channel
+	// counts by content, so a file with a scannable extension whose bytes are
+	// binary is read by the source walk (and counted there) and then claimed here
+	// as well. Target.FilesScanned is therefore an upper bound on the files that
+	// were looked at, not a census. It is an informational field and no decision
+	// reads it, so the overlap is left in place rather than deduplicated: the
+	// exact per-arm numbers are files_count and
+	// scan_metadata.binary.files_count, and a deduplication pass would need the
+	// claimed paths to stay comparable across both arms.
+	report.FilesCount += res.Summary.FilesCount
+
+	claimed := make(map[string]bool, len(res.Claimed))
+	for _, p := range res.Claimed {
+		claimed[cleanAbs(p)] = true
+	}
+
+	kept := make([]Finding, 0, len(report.Findings)+len(res.Findings))
+	for _, f := range report.Findings {
+		if f.Engine != EngineNameBinary && claimed[cleanAbs(f.File)] {
+			continue
+		}
+		kept = append(kept, f)
+	}
+	kept = append(kept, res.Findings...)
+
+	sortFindings(kept)
+	report.Findings = kept
+
+	// The same function the source-only path uses, so the pass decision has one
+	// implementation rather than two that agree today.
+	recomputeReportPassed(report, false)
+}
