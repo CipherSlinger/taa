@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>模型提供方文件读写约定</title>
-<meta name="description" content="模型代码在 TEE 内的目录布局，以及日志、进度、结果与断点文件的写入格式和上线检查清单。">
+<meta name="description" content="模型代码在 TEE 内的目录布局，以及日志、进度与结果文件的写入格式和上线检查清单。">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=swap">
@@ -426,9 +426,8 @@
         <li><a href="#log"><span class="num">02</span><span>写日志</span></a></li>
         <li><a href="#progress"><span class="num">03</span><span>写进度</span></a></li>
         <li><a href="#result"><span class="num">04</span><span>写结果汇总</span></a></li>
-        <li><a href="#checkpoint"><span class="num">05</span><span>写断点</span></a></li>
-        <li><a href="#forbidden"><span class="num">06</span><span>禁止事项</span></a></li>
-        <li><a href="#checklist"><span class="num">07</span><span>上线前检查清单</span></a></li>
+        <li><a href="#forbidden"><span class="num">05</span><span>禁止事项</span></a></li>
+        <li><a href="#checklist"><span class="num">06</span><span>上线前检查清单</span></a></li>
       </ol>
     </nav>
 
@@ -649,28 +648,8 @@
       </section>
 
       <!-- 05 -->
-      <section id="checkpoint">
-        <h2><span class="num">05</span><span>写断点</span></h2>
-        <p><strong>位置</strong>：<code>$TAA_CHECKPOINT_DIR</code>（默认 <code>/opt/taa/checkpoint/</code>）。此目录跨任务保留，用于宿主机异常重启后的续训。</p>
-
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>文件</th><th>内容</th></tr></thead>
-            <tbody>
-              <tr><td class="mono">latest.pt</td><td>最新权重快照</td></tr>
-              <tr><td class="mono">best.pt</td><td>最优指标权重快照</td></tr>
-              <tr><td class="mono">checkpoint_meta.json</td><td>元数据：<code>task_id</code>、<code>epoch</code>、<code>step</code>、<code>metrics</code>、<code>is_best</code></td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <p>是否从断点恢复由<strong>你的脚本自行判断</strong>（目录非空、文件可加载、epoch 未达上限）。建议在脚本入口做一次检测，并在日志中说明本次走的是恢复还是全新训练。</p>
-        <p>权重同时保存到 <code>result/weights/</code> 时，交付产物与断点是两份独立文件，互不影响。</p>
-      </section>
-
-      <!-- 06 -->
       <section id="forbidden">
-        <h2><span class="num">06</span><span>禁止事项</span></h2>
+        <h2><span class="num">05</span><span>禁止事项</span></h2>
         <div class="table-wrap">
           <table>
             <thead><tr><th>行为</th><th>后果</th></tr></thead>
@@ -686,9 +665,9 @@
         </div>
       </section>
 
-      <!-- 07 -->
+      <!-- 06 -->
       <section id="checklist">
-        <h2><span class="num">07</span><span>上线前检查清单</span></h2>
+        <h2><span class="num">06</span><span>上线前检查清单</span></h2>
         <ul class="checklist">
           <li><span class="box"></span><span>输入目录只读，代码中没有任何指向 <code>/opt/taa/input</code> 的写操作</span></li>
           <li><span class="box"></span><span>所有需要交付的文件都写在产物目录（<code>&lt;output&gt;</code> / <code>TAA_OUTPUT_DIR</code>）下，没有散落在别处</span></li>
