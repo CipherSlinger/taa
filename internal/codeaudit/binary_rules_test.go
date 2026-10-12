@@ -386,6 +386,53 @@ func TestBinaryFamilySeveritiesArePinned(t *testing.T) {
 	}
 }
 
+// TestBinaryBlockingFamiliesDoNotReadFreeStrings pins the premise the capped
+// listing branch in ScanDirectory rests on, rather than leaving it as a claim in
+// a comment.
+//
+// A capped listing on a non-executable kind is counted BoundedData, and
+// ProvesCleanScan deliberately does not read BoundedData. That is only safe
+// because such a cap can have dropped nothing but free strings: Raw and Numpy are
+// read by the streaming pass alone, which emits SourceStrings, and no other
+// source reaches them. So a family that can block, reading SourceStrings, is the
+// one edit that turns that branch into a hole - a crafted data file whose listing
+// cap lands before the matching literal loses a blocking finding with no trace,
+// and the package is released as clean. Nothing else in this package notices: the
+// capped-listing regression test is about an ELF and stays green.
+//
+// This is the sibling of TestBinaryFamilySeveritiesArePinned, which guards which
+// severities may block; this one guards which sources a blocking family may read.
+// Both read the matcher's resolved tables rather than the source tables, so a
+// family added later is covered without registering it here.
+//
+// The check is one-directional on purpose. It does not forbid a LOW family from
+// reading SourceStrings - that is what the four string families are for - and it
+// does not ask whether any other source is safe for a blocking family, because
+// the question this premise raises is answered by the resolved table: the loop
+// walks every family the matcher holds, so a blocking family that reads a source
+// a data-kind cap can drop fails here.
+func TestBinaryBlockingFamiliesDoNotReadFreeStrings(t *testing.T) {
+	matcher, err := NewBinaryMatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocking := 0
+	for i, fam := range matcher.order {
+		sev := matcher.rules[i].Severity
+		if sev != SeverityHigh && sev != SeverityMedium {
+			continue
+		}
+		blocking++
+		if fam.appliesTo(SourceStrings) {
+			t.Errorf("family %s is %s and reads %s: a capped listing on a data kind could drop a line it matches, and the package would be released as clean",
+				fam.ID, sev, SourceStrings)
+		}
+	}
+	if blocking == 0 {
+		t.Fatal("no family resolved to HIGH or MEDIUM: the loop above asserted nothing, so this test is not guarding the premise it exists for")
+	}
+}
+
 // TestEveryBinaryRuleHasASuggestion pins that the suggestion map covers the
 // binary table. It is written against BinaryRuleIDs rather than a literal list so
 // that a family added later fails here instead of shipping a report whose
