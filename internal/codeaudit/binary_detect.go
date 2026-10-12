@@ -75,8 +75,9 @@ var binaryExtensions = map[string]bool{
 // It is not a second opinion about what source is. What makes a file a source
 // file here is that another channel has rules for it: a claimed file is one the
 // merge step drops from that channel's reading, keeping no text finding for a
-// path in Claimed. (MergeBinaryFindings lands in the next task; this guard is
-// written against that contract rather than an existing call.) Claiming a source
+// path in Claimed. (MergeBinaryFindings is where that contract is enforced: it
+// drops the source arm's reading for every path in Claimed, which is why this
+// guard keeps a source file out of that set.) Claiming a source
 // file would leave it read by neither - this channel would discard its text
 // findings and the source arm would not be believed about it. An import line is
 // exactly the shape of a protocol 0 target - "i" is INST, which consumes the next

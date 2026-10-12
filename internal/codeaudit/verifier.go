@@ -451,9 +451,10 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 // the report it belongs to exists - with nothing recorded about which file, or
 // which channel, or why. A per-file failure is already the scanner's own business:
 // it is counted as Incomplete and withholds the pass through ProvesCleanScan. A
-// whole-pass failure is recorded the same way, as Errored, so the verdict is the
-// one the report computes and the reason travels in scan_metadata.binary rather
-// than in a log line the report never reaches.
+// whole-pass failure is recorded the same way, as Errored: the fact travels as
+// errored: true in the in-process summary, and the reason - a matcher that would
+// not build, or a scan that would not run - travels only in the log line its
+// branch below writes, not in anything the report carries.
 func runBinaryChannel(dir string, binCfg BinaryConfig) *BinaryScanResult {
 	if !binCfg.Enabled {
 		return nil

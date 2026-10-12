@@ -39,7 +39,7 @@ type BinaryScanSummary struct {
 	// it examined anything. It is a gap for the same reason Incomplete is: a pass
 	// that did not happen is not evidence of absence, and the alternative (an
 	// error out of the channel) would refuse the import through
-	// internal/controller/import_processing.go:642-660 without the report ever
+	// internal/controller/import_processing.go:651-656 without the report ever
 	// saying why.
 	Errored bool `json:"errored,omitempty"`
 	// FindingsCapped records that the finding cap dropped at least one finding.

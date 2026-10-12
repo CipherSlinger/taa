@@ -94,10 +94,18 @@ type AuditMetadata struct {
 	ProcessExitCode int    `json:"process_exit_code"`
 
 	// Binary is the binary channel's completeness account, copied from the scan
-	// report so that the report leaving the process states what the channel
-	// examined and where it stopped. It is a copy rather than a recomputation:
-	// the summary is produced where the loss happens, and a second derivation
-	// from the findings could not see a loss that produced no finding.
+	// report for the in-process consumers of the audit: the host-side log line at
+	// internal/controller/import_processing.go:668-672 reads it, and so does any
+	// caller holding the *AuditReport directly. It does not travel in the report
+	// that leaves the process - projectCodeAuditSection
+	// (internal/controller/codeaudit_projection.go:21-33) emits only conclusion and
+	// file_reports, so scan_metadata crosses no boundary - and the refusal the
+	// channel can cause reaches the platform through conclusion.passed, not
+	// through this struct.
+	//
+	// It is a copy rather than a recomputation: the summary is produced where the
+	// loss happens, and a second derivation from the findings could not see a loss
+	// that produced no finding.
 	Binary *BinaryScanSummary `json:"binary,omitempty"`
 }
 
@@ -518,6 +526,18 @@ func buildSummaryText(stats AuditStatistics, riskLevel string) string {
 
 func buildSummaryTextExt(stats AuditStatistics, riskLevel string, passed bool, llmDegraded bool, hasLLMBenign bool) string {
 	if stats.Total() == 0 {
+		// No finding is not the same as no gap: a scan that did not look
+		// everywhere still finds nothing, so the finding list can be empty on the
+		// exact report the conclusion refuses. This branch therefore has to read
+		// passed, or the summary asserts a pass on the report the conclusion is
+		// refusing. The text names no specific cause because passed is false for
+		// many of them at once - an incomplete scan, findings dropped at the cap,
+		// a parser failure, files skipped by extension, a subprocess that exited
+		// non-zero, a binary pass that could not run - and this function is not
+		// told which one applies.
+		if !passed {
+			return "审计未覆盖全部内容或存在未决项，不得判定为通过，禁止导入"
+		}
 		return "未发现安全问题，代码通过审计"
 	}
 
@@ -686,6 +706,13 @@ func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
 		return
 	}
 
+	// The result handed here is expected to carry a populated summary - the
+	// channel's producer guarantees it, returning either a scanned result or an
+	// Errored summary rather than an empty one. It matters because the assignment
+	// is unconditional and the two states are not distinguishable downstream:
+	// ProvesCleanScan reads the all-zero summary of a &BinaryScanResult{} as a
+	// clean scan, so an enabled channel that had a result but could not populate
+	// it must say so via Errored rather than arrive empty.
 	report.Binary = &res.Summary
 
 	// The binary files are added to the count the report states as scanned.

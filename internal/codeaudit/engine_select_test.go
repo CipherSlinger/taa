@@ -427,12 +427,12 @@ func TestGenerateAuditReportWithBinaryDisabledIsUnchanged(t *testing.T) {
 
 // TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata pins that the metadata
 // mirror carries the gap fields and not just the counts. The scan summary is
-// what makes a blocked import explainable from the report that leaves the
-// process, and a copy that kept only FilesCount would read as a channel that
-// finished on a package whose native code it never examined. The fixture fails
-// after classify - the header parses, the section header table runs off the end
-// - so the gap is Incomplete rather than a skipped file, which is exactly the
-// shape the host's truncated CUDA libraries have.
+// what makes a blocked import explainable to the in-process consumers of the
+// audit and to the host-side log line, and a copy that kept only FilesCount
+// would read as a channel that finished on a package whose native code it never
+// examined. The fixture fails after classify - the header parses, the section
+// header table runs off the end - so the gap is Incomplete rather than a skipped
+// file, which is exactly the shape the host's truncated CUDA libraries have.
 func TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata(t *testing.T) {
 	dir := t.TempDir()
 	raw := elfFixtureBytes(t, elfSpec{text: []byte("truncated")})
@@ -454,5 +454,41 @@ func TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata(t *testing.T) {
 	}
 	if audit.Conclusion.Passed {
 		t.Error("Passed = true for a package whose native code could not be examined")
+	}
+}
+
+// TestRunBinaryChannelReportsAWholePassFailure pins the failure contract for a
+// channel that is enabled but could not run at all. The distinction it protects
+// is the one between a pass that ran and a pass that did not: without it an
+// Errored channel and a disabled one are the same nil result, ProvesCleanScan
+// returns true, and the report reads as a clean scan of a package whose native
+// code was never examined.
+func TestRunBinaryChannelReportsAWholePassFailure(t *testing.T) {
+	// A path that is not a directory reaches the scan-failure branch, because
+	// BinaryScanner.ScanDirectory stats the path and returns an error for
+	// anything that is not a directory before it walks a single file. A regular
+	// file therefore produces a scan error rather than an empty clean scan, which
+	// is what makes this the input that exercises the branch.
+	notADir := writeTestFile(t, t.TempDir(), "model.py", "import os\n")
+
+	res := runBinaryChannel(notADir, BinaryConfig{Enabled: true})
+	if res == nil {
+		t.Fatal("runBinaryChannel returned nil for an enabled channel that could not scan: " +
+			"an enabled failure is now indistinguishable from a disabled channel")
+	}
+	if !res.Summary.Errored {
+		t.Error("Summary.Errored = false after a scan failure: the gap does not travel in the summary")
+	}
+
+	// The downstream chain the summary feeds: MergeBinaryFindings attaches it to
+	// the scan report, ProvesCleanScan then withholds the pass on Errored, and
+	// AssembleAuditReport turns that into conclusion.Passed=false - which is what
+	// makes the platform refuse the import
+	// (internal/controller/import_processing.go:662-663).
+	report := &Report{ScanComplete: true}
+	MergeBinaryFindings(report, res)
+	if report.ProvesCleanScan() {
+		t.Error("ProvesCleanScan() = true for a report whose binary channel could not run: " +
+			"the package would read as a clean scan of native code that was never examined")
 	}
 }

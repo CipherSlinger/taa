@@ -335,6 +335,35 @@ func TestAssembleAuditReport_SummaryHonestyAndFailClosed(t *testing.T) {
 	}
 }
 
+// TestBuildSummaryTextDoesNotClaimAPassWhenRefused pins the branch where the
+// conclusion withholds the pass although no finding was produced. That input is
+// reachable - an enabled binary channel that could not scan a file records the
+// gap without emitting a finding, so Statistics.Total() stays 0 while
+// ProvesCleanScan returns false and the conclusion refuses - and the summary must
+// not then tell the platform the code passed, because the platform refuses the
+// import on conclusion.passed and reads this text as the human reason.
+func TestBuildSummaryTextDoesNotClaimAPassWhenRefused(t *testing.T) {
+	refused := buildSummaryTextExt(AuditStatistics{}, "NONE", false, false, true)
+
+	// The claim that was broken: an empty finding list is not a pass when the
+	// scan did not look everywhere.
+	if strings.Contains(refused, "通过审计") {
+		t.Errorf("refused summary claims a pass: %q", refused)
+	}
+	// Pin the message that replaced it, on the phrase that states the reason
+	// rather than the whole sentence.
+	if !strings.Contains(refused, "未覆盖全部内容") {
+		t.Errorf("refused summary does not state that the audit did not cover everything: %q", refused)
+	}
+
+	// The pass branch is unchanged: zero findings with passed true is still the
+	// clean statement the platform has always received.
+	clean := buildSummaryTextExt(AuditStatistics{}, "NONE", true, false, true)
+	if clean != "未发现安全问题，代码通过审计" {
+		t.Errorf("clean summary = %q, want 未发现安全问题，代码通过审计", clean)
+	}
+}
+
 // ── GenerateAuditReport end-to-end tests ─────────────────
 
 func TestGenerateAuditReportCleanCode(t *testing.T) {
