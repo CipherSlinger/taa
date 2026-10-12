@@ -284,9 +284,17 @@ func TestBinaryTableProducesNoHighFindingsOnLegitimateInputs(t *testing.T) {
 // it is what keeps the test above from being vacuous: a table with no rules at
 // all would pass a test that only asserts silence. Every case here is evidence
 // the file's own construction produced - a committed pickle parse, a symbol or
-// library name the linker wrote, a measured executable-section entropy - and
-// each must stay HIGH, so a later recalibration that softens one of them fails
-// here rather than silently lowering the bar.
+// library name the linker wrote, a measured executable-section entropy - and each
+// must stay HIGH, so a later recalibration that softens one of them fails here
+// rather than silently lowering the bar.
+//
+// It pins the matched Rule, which is the table's own severity. It deliberately
+// says nothing about the severity of a Finding: the presence families
+// (NET_002/CMD_001/BIN_002) resolve to HIGH here and a finding under them is
+// still withheld from HIGH when its file carries no independent corroborator.
+// That gate lives in ScanDirectory and is pinned by the scanner tests; reading
+// this test as "a finding under these ids blocks" is the mistake it cannot
+// catch, because a matcher is never shown a whole file.
 func TestBinaryTableStillFiresHighOnStructuralEvidence(t *testing.T) {
 	matcher, err := NewBinaryMatcher()
 	if err != nil {
@@ -331,12 +339,20 @@ func TestBinaryTableStillFiresHighOnStructuralEvidence(t *testing.T) {
 // the four string families are LOW, not MEDIUM, precisely because MEDIUM would
 // still refuse the import once an operator switches to `gate`.
 //
+// It pins the resolved Rule, so it is a statement about the table and not about
+// what a scan reports: a NET_002/CMD_001/BIN_002 finding on a file with no
+// independent corroborator is reported LOW although the family resolves to HIGH
+// here, because that gate needs the whole file and lives in ScanDirectory (see
+// TestBinaryFamilyClassificationIsPinned for the ids it covers, and the scanner
+// tests for the behaviour). A reader who took this test as "these ids block"
+// would be reading the table for the report.
+//
 // TestBinaryTableProducesNoHighFindingsOnLegitimateInputs asserts silence at
 // HIGH only, which is the `assist` bar; this test is the other half, and the
 // half that keeps a later edit from quietly moving a family to MEDIUM and
 // turning a warning into a re-import. It reads the rules the matcher resolved,
-// not the two tables, so it pins what the scanner will actually report however
-// the id was resolved.
+// not the two tables, so it pins what the scanner's rule table will report
+// however the id was resolved.
 func TestBinaryFamilySeveritiesArePinned(t *testing.T) {
 	matcher, err := NewBinaryMatcher()
 	if err != nil {
@@ -432,6 +448,33 @@ func TestBinaryBlockingFamiliesDoNotReadFreeStrings(t *testing.T) {
 	}
 	if blocking == 0 {
 		t.Fatal("no family resolved to HIGH or MEDIUM: the loop above asserted nothing, so this test is not guarding the premise it exists for")
+	}
+}
+
+// TestBinaryFamilyClassificationIsPinned pins the two predicates by name, so that
+// a family added later is classified deliberately rather than by accident.
+// Downgradable is exactly the presence-only HIGH families: BIN_002 because its
+// evidence is a dynsym entry like the other two, and DYN_001 not at all, because
+// it declares MEDIUM and can never produce the HIGH this rule gates.
+func TestBinaryFamilyClassificationIsPinned(t *testing.T) {
+	m, err := NewBinaryMatcher()
+	if err != nil {
+		t.Fatalf("NewBinaryMatcher: %v", err)
+	}
+
+	wantDowngrade := map[string]bool{"NET_002": true, "CMD_001": true, "BIN_002": true}
+	wantCorroborate := map[string]bool{"BIN_001": true, "PKL_001": true}
+
+	for _, id := range BinaryRuleIDs() {
+		if got := m.downgrades(id); got != wantDowngrade[id] {
+			t.Errorf("downgrades(%s) = %v, want %v", id, got, wantDowngrade[id])
+		}
+		if got := m.corroborates(id); got != wantCorroborate[id] {
+			t.Errorf("corroborates(%s) = %v, want %v", id, got, wantCorroborate[id])
+		}
+	}
+	if m.downgrades("NET_001") {
+		t.Error("downgrades(NET_001) = true: the source arm's rule is not in the binary table")
 	}
 }
 

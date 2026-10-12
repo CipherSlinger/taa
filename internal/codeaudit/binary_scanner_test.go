@@ -247,22 +247,30 @@ func TestBinaryScannerCountsAnUnreadableSubtree(t *testing.T) {
 
 func TestBinaryScannerCapPreservesEveryHighFinding(t *testing.T) {
 	dir := t.TempDir()
-	// Four HIGH evidence lines (socket/connect -> NET_002, system/popen ->
-	// CMD_001) and four LOW ones (the path literals -> FIL_002 / CMD_002). The cap
-	// is set below the total so it has to drop something, and the property under
-	// test is which something: the LOW findings are the ones a cap may spend.
+	// Four presence findings (socket/connect -> NET_002, system/popen -> CMD_001)
+	// and one measured BIN_001, all HIGH, on the file that sorts second; four LOW
+	// path literals (FIL_002 / CMD_002) on the file that sorts first. The cap is
+	// set below the total so it has to drop something, and the property under test
+	// is which something: the LOW findings are the ones a cap may spend.
+	//
+	// The .text below is not decoration. Without it the four presence findings
+	// carry no corroborator and are reported LOW, so there would be no HIGH
+	// finding for this test to preserve - the fixture would still pass an
+	// assertion written loosely, and the property would have quietly vanished.
+	// uniformBytes measures exactly 8.00 bits per byte, so .text is reported
+	// BIN_001 HIGH and the same file's presence findings stay HIGH.
 	//
 	// The arithmetic, re-derived against the cap as it now reads. The sort is
 	// (File, Line, RuleID) and "extra.bin" sorts before "libevil.so", so the four
-	// LOW findings come first and the four HIGH ones after. With the budget at 3
+	// LOW findings come first and the five HIGH ones after. With the budget at 3
 	// the first three lines are kept, the fourth LOW is the one dropped, and the
-	// four HIGH findings are kept past the budget: 7 kept, 1 dropped.
+	// five HIGH findings are kept past the budget: 8 kept, 1 dropped.
 	//
-	// Those counts happen to be identical to the ones an older cap produced when
-	// it exempted HIGH alone, which is why this test cannot tell the two rules
-	// apart - its fixture holds no MEDIUM. The sibling test below is the one that
-	// does; the pair is needed because a change that re-broke MEDIUM would leave
-	// this test green.
+	// This test still cannot tell the present keep rule ("keep everything not
+	// positively known to be LOW") from an older one that exempted HIGH alone:
+	// its fixture holds no MEDIUM, so the two rules keep the same set here. The
+	// sibling test below is the one that separates them; the pair is needed
+	// because a change that re-broke MEDIUM would leave this test green.
 	//
 	// It matters because a finding that blocks under either policy may not be
 	// dropped: HIGH blocks under `assist` and `gate` alike, so a cap that dropped
@@ -270,7 +278,9 @@ func TestBinaryScannerCapPreservesEveryHighFinding(t *testing.T) {
 	// could aim at exactly that by padding a package with cheap LOW findings until
 	// its HIGH ones fell off the end of the list.
 	writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{
-		imports: []string{"socket", "connect", "system", "popen"},
+		imports:  []string{"socket", "connect", "system", "popen"},
+		text:     uniformBytes(512),
+		textExec: true,
 	}))
 	writeTestBytes(t, dir, "extra.bin", []byte("x\x00/etc/passwd\x00/etc/shadow\x00/etc/sudoers\x00/bin/sh\x00"))
 
@@ -291,8 +301,8 @@ func TestBinaryScannerCapPreservesEveryHighFinding(t *testing.T) {
 			highs++
 		}
 	}
-	if highs != 4 {
-		t.Errorf("kept %d HIGH findings, want all 4: the cap dropped a blocking finding", highs)
+	if highs != 5 {
+		t.Errorf("kept %d HIGH findings, want all 5: the cap dropped a blocking finding", highs)
 	}
 	// The list is allowed to exceed the budget to keep them. A cap that held the
 	// line at 3 by dropping a HIGH would satisfy the budget and fail the audit.
@@ -306,16 +316,16 @@ func TestBinaryScannerCapPreservesEveryHighFinding(t *testing.T) {
 	if res.Summary.FindingsDropped == 0 {
 		t.Error("Summary.FindingsDropped = 0 although the cap fired; the drop is invisible")
 	}
-	// The counts, not just the fact of the drop: this fixture has eight findings
-	// and a budget of three, so exactly one LOW is spent and exactly seven are
-	// kept - the three inside the budget and the four HIGH findings past it. A cap
+	// The counts, not just the fact of the drop: this fixture has nine findings
+	// and a budget of three, so exactly one LOW is spent and exactly eight are
+	// kept - the three inside the budget and the five HIGH findings past it. A cap
 	// that counted a kept finding as dropped, or spent two where it spent one,
 	// satisfies the assertions above and fails these.
 	if res.Summary.FindingsDropped != 1 {
 		t.Errorf("Summary.FindingsDropped = %d, want 1: four LOW findings met a budget of three", res.Summary.FindingsDropped)
 	}
-	if len(res.Findings) != 7 {
-		t.Errorf("len(Findings) = %d, want 7: three budgeted LOW findings and four HIGH ones kept past the budget", len(res.Findings))
+	if len(res.Findings) != 8 {
+		t.Errorf("len(Findings) = %d, want 8: three budgeted LOW findings and five HIGH ones kept past the budget", len(res.Findings))
 	}
 	// The budget is carried into the summary so the report can say what it capped
 	// at. A reader who sees findings_capped with no number has to go find the
@@ -508,9 +518,16 @@ func TestBinaryScannerSplitsStructuralBoundsByKind(t *testing.T) {
 // that the cap still runs, which is the whole difficulty of writing this case: a
 // budget above the total finding count skips the cap block entirely, and a
 // mutation that spends LOW findings wherever they sit is then invisible because
-// nothing is ever spent. Five findings of budget against eight findings does hold
-// all four LOW findings, and it still enters the cap, so the four survive three
+// nothing is ever spent. Five findings of budget against nine findings does hold
+// all four LOW findings, and it still enters the cap, so the four survive five
 // HIGH findings that arrive after them rather than surviving nothing at all.
+//
+// The second file carries a measured BIN_001 as well as the four presence
+// findings, and that is load-bearing rather than scene-setting: without a
+// corroborator the four presence findings are reported LOW and the file becomes
+// four more spendable findings, which is a different fixture with a different
+// arithmetic (nine findings, five of them LOW, budget five) and no longer the
+// shape this test is about.
 //
 // The counts are asserted exactly rather than as lower bounds: "at least one LOW
 // survived" is an assertion the broken implementation above also satisfies.
@@ -519,9 +536,13 @@ func TestBinaryScannerCapKeepsLowFindingsWithinTheBudget(t *testing.T) {
 	// Four LOW findings on the file that sorts first: three FIL_002 path literals
 	// and one CMD_002 shell path.
 	writeTestBytes(t, dir, "extra.bin", []byte("x\x00/etc/passwd\x00/etc/shadow\x00/etc/sudoers\x00/bin/sh\x00"))
-	// Four HIGH findings on the file that sorts second: socket/connect -> NET_002,
-	// system/popen -> CMD_001.
-	writeTestBytes(t, dir, "zevil.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket", "connect", "system", "popen"}}))
+	// Five HIGH findings on the file that sorts second: socket/connect -> NET_002,
+	// system/popen -> CMD_001, and the measured BIN_001 the four need to stay HIGH.
+	writeTestBytes(t, dir, "zevil.so", elfFixtureBytes(t, elfSpec{
+		imports:  []string{"socket", "connect", "system", "popen"},
+		text:     uniformBytes(512),
+		textExec: true,
+	}))
 
 	cfg := DefaultBinaryConfig()
 	cfg.MaxFindings = 5
@@ -534,8 +555,8 @@ func TestBinaryScannerCapKeepsLowFindingsWithinTheBudget(t *testing.T) {
 		t.Fatalf("ScanDirectory: %v", err)
 	}
 
-	if len(res.Findings) != 8 {
-		t.Fatalf("len(Findings) = %d, want 8: the four LOW findings are inside the budget and the four HIGH ones may not be spent", len(res.Findings))
+	if len(res.Findings) != 9 {
+		t.Fatalf("len(Findings) = %d, want 9: the four LOW findings are inside the budget and the five HIGH ones may not be spent", len(res.Findings))
 	}
 	byRule := map[string]int{}
 	for _, f := range res.Findings {
@@ -546,6 +567,13 @@ func TestBinaryScannerCapKeepsLowFindingsWithinTheBudget(t *testing.T) {
 	if byRule["FIL_002"] != 3 || byRule["CMD_002"] != 1 {
 		t.Errorf("kept FIL_002 = %d and CMD_002 = %d, want 3 and 1: the LOW findings inside the budget were not all kept",
 			byRule["FIL_002"], byRule["CMD_002"])
+	}
+	// The HIGH findings are named too, so that a fixture edit which silently
+	// dropped the corroborator (turning five HIGH into five LOW) fails here
+	// instead of turning the test into one about nine spendable findings.
+	if byRule["NET_002"] != 2 || byRule["CMD_001"] != 2 || byRule["BIN_001"] != 1 {
+		t.Errorf("kept NET_002 = %d, CMD_001 = %d and BIN_001 = %d, want 2, 2 and 1: the fixture's HIGH findings moved",
+			byRule["NET_002"], byRule["CMD_001"], byRule["BIN_001"])
 	}
 	if res.Summary.FindingsCapped || res.Summary.FindingsDropped != 0 {
 		t.Errorf("the cap reported a drop although every LOW finding fit the budget: capped=%v dropped=%d",
@@ -595,9 +623,15 @@ func TestBinaryScannerCapDropsExactlyTheLowFindingsBeyondTheBudget(t *testing.T)
 
 // TestBinaryScannerCapWithNothingDroppableIsNotCapped pins the one cell that
 // separates the cap's flag from its length: a listing that grew past the budget
-// while spending nothing. Four HIGH findings against a budget of three leave
-// len(Findings) = 4 > MaxFindings with FindingsCapped false, because LOW is the
+// while spending nothing. Five HIGH findings against a budget of three leave
+// len(Findings) = 5 > MaxFindings with FindingsCapped false, because LOW is the
 // only thing the cap may spend and there is none here.
+//
+// The corroborator below is what keeps this the shape the name promises. The four
+// presence findings are HIGH only because the file also measures as packed; drop
+// the .text and they become four spendable LOW findings, at which point the cap
+// does spend and the test silently becomes a second copy of
+// TestBinaryScannerCapDropsExactlyTheLowFindingsBeyondTheBudget.
 //
 // It is the shape that tells `capped := dropped > 0` from `capped :=
 // len(findings) > cfg.MaxFindings`. The second reads the budget being exceeded as
@@ -605,9 +639,13 @@ func TestBinaryScannerCapDropsExactlyTheLowFindingsBeyondTheBudget(t *testing.T)
 // as a claim that findings were lost when every finding is in the list.
 func TestBinaryScannerCapWithNothingDroppableIsNotCapped(t *testing.T) {
 	dir := t.TempDir()
-	// socket/connect -> NET_002, system/popen -> CMD_001: four HIGH findings, none
-	// of them spendable.
-	writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket", "connect", "system", "popen"}}))
+	// socket/connect -> NET_002, system/popen -> CMD_001, and the measured
+	// BIN_001 that keeps all four HIGH: five findings, none of them spendable.
+	writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{
+		imports:  []string{"socket", "connect", "system", "popen"},
+		text:     uniformBytes(512),
+		textExec: true,
+	}))
 
 	cfg := DefaultBinaryConfig()
 	cfg.MaxFindings = 3
@@ -620,8 +658,8 @@ func TestBinaryScannerCapWithNothingDroppableIsNotCapped(t *testing.T) {
 		t.Fatalf("ScanDirectory: %v", err)
 	}
 
-	if len(res.Findings) != 4 {
-		t.Fatalf("len(Findings) = %d, want 4: HIGH findings are kept past the budget", len(res.Findings))
+	if len(res.Findings) != 5 {
+		t.Fatalf("len(Findings) = %d, want 5: HIGH findings are kept past the budget", len(res.Findings))
 	}
 	if res.Summary.FindingsCapped {
 		t.Error("Summary.FindingsCapped = true although the cap spent nothing: the listing grew, and growing is not dropping")
@@ -690,6 +728,178 @@ func TestBinaryScannerCapKeepsAnUnknownSeverityPastTheBudget(t *testing.T) {
 	}
 	if res.Summary.FindingsDropped != 0 {
 		t.Errorf("Summary.FindingsDropped = %d, want 0: nothing in this package was spendable", res.Summary.FindingsDropped)
+	}
+}
+
+// findFinding returns the single finding with the given rule id, or fails the
+// test. The corroboration tests all ask a question about one specific family
+// among the several a fixture produces, and selecting it by name is what keeps
+// the assertion about that family rather than about the first finding in a list
+// whose order is not the point.
+func findFinding(t *testing.T, findings []Finding, ruleID string) Finding {
+	t.Helper()
+	var found *Finding
+	for i := range findings {
+		if findings[i].RuleID == ruleID {
+			if found != nil {
+				t.Fatalf("found %d findings under %s, want exactly one to assert against", countRule(findings, ruleID), ruleID)
+			}
+			found = &findings[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("no %s finding; findings = %+v", ruleID, findings)
+	}
+	return *found
+}
+
+// countRule counts the findings under one rule id, for the failure message above.
+func countRule(findings []Finding, ruleID string) int {
+	n := 0
+	for _, f := range findings {
+		if f.RuleID == ruleID {
+			n++
+		}
+	}
+	return n
+}
+
+// TestBinaryScannerDoesNotLetTwoPresenceFamiliesCorroborateEachOther is the test
+// that protects the whole change. Two families that both read the dynamic symbol
+// table are the same class of evidence counted twice, and a large legitimate
+// library carries both: on this host libllama-common.so imports socket/connect/
+// getaddrinfo while libggml-base.so imports execlp. So an implementation that
+// treats "a second blocking family is present" as corroboration would keep every
+// file this rule exists to clear, and this fixture is the smallest one that
+// distinguishes it: two presence families, no measurement and no pickle parse.
+func TestBinaryScannerDoesNotLetTwoPresenceFamiliesCorroborateEachOther(t *testing.T) {
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "libboth.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket", "system"}}))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	net := findFinding(t, res.Findings, "NET_002")
+	cmd := findFinding(t, res.Findings, "CMD_001")
+	for _, f := range []Finding{net, cmd} {
+		if f.Severity != "LOW" {
+			t.Errorf("%s severity = %q, want LOW: a presence family was corroborated by another presence family", f.RuleID, f.Severity)
+		}
+		if f.DowngradeReason == "" {
+			t.Errorf("%s carries no downgrade reason: a reader cannot tell why it is not HIGH", f.RuleID)
+		}
+	}
+	if res.Summary.PresenceDowngraded != 2 {
+		t.Errorf("PresenceDowngraded = %d, want 2", res.Summary.PresenceDowngraded)
+	}
+}
+
+// TestBinaryScannerKeepsAPresenceFamilyHighWhenTheFileIsPacked is the other half:
+// corroboration has to actually work, or the rule is just a suppression.
+func TestBinaryScannerKeepsAPresenceFamilyHighWhenTheFileIsPacked(t *testing.T) {
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "libpacked.so", elfFixtureBytes(t, elfSpec{
+		imports:  []string{"socket"},
+		text:     uniformBytes(512),
+		textExec: true,
+	}))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if f := findFinding(t, res.Findings, "NET_002"); f.Severity != SeverityHigh {
+		t.Errorf("NET_002 severity = %q, want HIGH: a measured near-random executable section corroborates it", f.Severity)
+	}
+	if f := findFinding(t, res.Findings, "BIN_001"); f.Severity != SeverityHigh {
+		t.Errorf("BIN_001 severity = %q, want HIGH: the entropy measurement is not itself a presence claim", f.Severity)
+	}
+	if res.Summary.PresenceDowngraded != 0 {
+		t.Errorf("PresenceDowngraded = %d, want 0", res.Summary.PresenceDowngraded)
+	}
+}
+
+// TestBinaryScannerCorroboratesAcrossArchiveMembers pins the granularity. The
+// corroborator does not have to be in the same member: a .pt that carries a
+// socket-importing ELF member and a process-executing data.pkl is one artifact
+// whose parts run together, and collectArchive routes both members through one
+// EvidenceSet.
+func TestBinaryScannerCorroboratesAcrossArchiveMembers(t *testing.T) {
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "model.pt", zipFixture(t, map[string][]byte{
+		"lib/x.so":         elfFixtureBytes(t, elfSpec{imports: []string{"socket"}}),
+		"archive/data.pkl": []byte("cposix\nsystem\n."),
+	}, []string{"archive/data.pkl", "lib/x.so"}))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if f := findFinding(t, res.Findings, "NET_002"); f.Severity != SeverityHigh {
+		t.Errorf("NET_002 severity = %q, want HIGH: the same file carries a committed pickle parse", f.Severity)
+	}
+}
+
+// TestBinaryScannerDowngradeHappensBeforeTheCap is the only test that can tell
+// the two orderings apart, so it is not optional. Downgrading after the cap would
+// leave the cap reasoning about HIGH while the report says LOW, and it would keep
+// findings the cap was supposed to be allowed to spend.
+func TestBinaryScannerDowngradeHappensBeforeTheCap(t *testing.T) {
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "libmany.so", elfFixtureBytes(t, elfSpec{
+		imports: []string{"socket", "connect", "system", "popen"},
+	}))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{MaxFindings: 2}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if len(res.Findings) != 2 {
+		t.Errorf("len(Findings) = %d, want 2: a downgraded finding is spendable, so the cap can drop it", len(res.Findings))
+	}
+	if !res.Summary.FindingsCapped || res.Summary.FindingsDropped != 2 {
+		t.Errorf("capped = %v, dropped = %d, want true/2", res.Summary.FindingsCapped, res.Summary.FindingsDropped)
+	}
+	if res.Summary.PresenceDowngraded != 4 {
+		t.Errorf("PresenceDowngraded = %d, want 4: the count is taken at downgrade time, not at keep time", res.Summary.PresenceDowngraded)
+	}
+}
+
+// TestBinaryScannerDowngradedEvidenceDoesNotBlockUnderEitherPolicy pins the
+// severity the decision needs. It asserts both policies, because assist passes on
+// a MEDIUM downgrade too - only the gate assertion distinguishes LOW from MEDIUM,
+// and MEDIUM under gate refuses the import.
+func TestBinaryScannerDowngradedEvidenceDoesNotBlockUnderEitherPolicy(t *testing.T) {
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "libnet.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket"}}))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	report := &Report{ScanComplete: true}
+	MergeBinaryFindings(report, res)
+
+	if report.HighCount != 0 {
+		t.Fatalf("HighCount = %d, want 0", report.HighCount)
+	}
+	if report.MediumCount != 0 {
+		t.Fatalf("MediumCount = %d, want 0: MEDIUM blocks under gate, so a MEDIUM downgrade is not a fix", report.MediumCount)
+	}
+	stats := ComputeStatistics(report.Findings)
+	// ScanPassed carries the completeness precondition the production path folds
+	// in (AssembleAuditReport), so a pass here is the finding decision alone.
+	scanPassed := report.ProvesCleanScan()
+	for _, mode := range []string{"assist", "gate"} {
+		concl := ComputeConclusionContext(stats, nil, mode, ConclusionContext{ScanPassed: &scanPassed})
+		if !concl.Passed {
+			t.Errorf("policy %s: passed = false for a package whose only evidence is a symbol name", mode)
+		}
 	}
 }
 

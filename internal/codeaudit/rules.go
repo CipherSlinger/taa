@@ -69,6 +69,14 @@ type Finding struct {
 	// evidence that has one. Symbol and section evidence carries zero: it names
 	// a property of the file rather than a byte range in it.
 	BinaryOffset int64 `json:"binary_offset,omitempty"`
+	// DowngradeReason explains why this finding is reported below the severity its
+	// rule carries in the table. It is set by a rule that gates a severity on
+	// something a single evidence line cannot show - today, the binary channel's
+	// presence families, which report HIGH only when the same file carries
+	// independent corroboration. Empty for every finding whose severity is the
+	// rule's own, so a reader can tell "the rule says LOW" from "the rule says
+	// HIGH but this file did not earn it".
+	DowngradeReason string `json:"downgrade_reason,omitempty"`
 }
 
 // Report is the result of a security scan.

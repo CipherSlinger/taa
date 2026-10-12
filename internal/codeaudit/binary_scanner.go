@@ -62,6 +62,13 @@ type BinaryScanSummary struct {
 	// at without re-reading the scanner's configuration. It is provenance, not a
 	// second ceiling: MergeBinaryFindings does not reapply it to the joined list.
 	MaxFindings int `json:"max_findings,omitempty"`
+	// PresenceDowngraded counts findings reported below the severity their rule
+	// carries because their file held no independent corroboration. It is taken at
+	// downgrade time rather than at keep time, so it survives the finding cap
+	// spending some of them - a reader must be able to see that the channel found
+	// presence evidence and chose not to call it HIGH, even when the budget later
+	// dropped the individual findings.
+	PresenceDowngraded int `json:"presence_downgraded,omitempty"`
 }
 
 // BinaryScanResult is everything one binary pass produces.
@@ -243,9 +250,31 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 		if len(matches) == 0 {
 			return nil
 		}
+
+		// Corroboration is decided per file, over every rule that matched in it,
+		// before any finding is built: a presence finding is only meaningful next to
+		// what else the file contains.
+		corroborated := false
+		for _, m := range matches {
+			if s.matcher.corroborates(m.Rule.ID) {
+				corroborated = true
+				break
+			}
+		}
+
 		res.Evidence[path] = set
 		for _, m := range matches {
-			res.Findings = append(res.Findings, binaryFinding(set, m))
+			f := binaryFinding(set, m)
+			// Before the sort and the cap below, never after: the cap's contract is
+			// written in terms of severity - it spends only what it positively knows
+			// is LOW - so a downgrade applied afterwards would leave the cap reasoning
+			// about HIGH while the report carries LOW.
+			if !corroborated && s.matcher.downgrades(m.Rule.ID) {
+				f.Severity = "LOW"
+				f.DowngradeReason = presenceDowngradeReason
+				res.Summary.PresenceDowngraded++
+			}
+			res.Findings = append(res.Findings, f)
 		}
 		return nil
 	})
@@ -334,6 +363,11 @@ func (s *BinaryScanner) classify(path string) (BinaryKind, error) {
 	}
 	return ClassifyBinary(head[:n], path), nil
 }
+
+// presenceDowngradeReason travels with every finding the corroboration gate
+// lowered, so the report says why rather than leaving a reader to infer it from a
+// severity that does not match the rule table.
+const presenceDowngradeReason = "本文件内未发现独立佐证（没有可执行节区的高熵测量，也没有具备进程/IO/网络能力的 pickle 解析目标）：动态符号表或依赖库中的名字只说明该文件具备调用能力，不足以判定其会调用，故按 LOW 上报，交由语义分析定夺。"
 
 // binaryFinding turns one matched evidence line into a finding.
 //

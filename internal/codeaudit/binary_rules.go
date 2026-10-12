@@ -12,13 +12,63 @@ import (
 // instead, so the two channels cannot disagree about a shared family's severity.
 //
 // The severity column is policy, and the policy this table encodes is one
-// sentence: a finding may be HIGH only when it is corroborated by structure the
-// file cannot produce by accident. A dynamic symbol table entry, a DT_NEEDED
-// name, a committed pickle parse and a measured executable-section entropy are
-// all produced by the file's own construction. A free string is not: a .so
-// contains whatever text its authors embedded, and a .pyc's constants
-// concatenate into runs that contain anything, so a string match is evidence for
-// a reader and for the Tier-2 model rather than a verdict on its own.
+// sentence: a finding may be HIGH only when it is corroborated by evidence the
+// file cannot produce by naming something. A committed pickle parse and a
+// measured executable-section entropy are such evidence - the first is an
+// interpreter that walked the whole opcode stream and resolved a target, the
+// second is a measurement of bytes. A dynamic symbol table entry and a DT_NEEDED
+// name are not: the linker writes into the table every symbol the object might
+// reference, so "socket is in .dynsym" says the library *can* call socket, never
+// that it does. A free string is not evidence either: a .so contains whatever
+// text its authors embedded, and a .pyc's constants concatenate into runs that
+// contain anything, so a string match is evidence for a reader and for the Tier-2
+// model rather than a verdict on its own.
+//
+// The three presence families - NET_002, CMD_001 and BIN_002, the ones whose
+// only sources are dynsym and needed - therefore report HIGH only when the same
+// file also carries a corroborator, and LOW otherwise. The gate lives in
+// ScanDirectory, which is the one layer that sees all of a file's evidence at
+// once: BinaryMatcher.Match is shown a single line and cannot see co-occurrence
+// at all, and MergeBinaryFindings holds findings rather than evidence. The rule
+// table is deliberately untouched - the id and the severity it resolves to are
+// still the shared table's, and TestBinaryRulesBorrowSharedFamilies still holds -
+// because the downgrade acts on the Finding and never on the Rule.
+//
+// The measurement that decided this, on this machine's bundle. Three of the HIGH
+// families had a single .dynsym entry as their entire evidence, and legitimate
+// libraries carry exactly those entries: libllama-common.so.0.1.2 and
+// libllama-server-impl.so import socket/connect/getaddrinfo/inet_pton inside
+// httplib::detail::*, libggml-base.so.0.20.2 imports execlp inside
+// ggml_print_backtrace, libgfortran.so.5.0.0 imports system, and
+// libcudart.so.12 with libcudnn_*.so import socket/connect. Under the default
+// `assist` policy, where Passed is `highCount == 0`, any one of them refused the
+// import of a legitimate package.
+//
+// Reachability, the other candidate fix, was measured and rejected. These C++
+// and Rust objects are not built with -fvisibility=hidden: libllama-common
+// defines or weakly defines 2878 of its 2881 functions in .dynsym, so the callers
+// of socket are themselves exported entry points and not one of the nine flagged
+// libraries was cleared by a call-graph reading. Nor is a disassembler available
+// to do it differently: the guest rootfs's usr/bin holds a single python3.10, and
+// golang.org/x/arch is not available offline.
+//
+// What this gate does not accept as corroboration, since accepting either would
+// keep every file it exists to clear. BIN_002 is not a corroborator: it is
+// itself one name in .dynsym, the same class of evidence as the thing it would
+// confirm, so accepting it would let a payload self-certify by referencing an
+// unrelated symbol. Nor is "a second blocking family is present": socket next to
+// system is the same class of evidence counted twice, and a large legitimate
+// library naturally carries both - libllama-common has the network symbols and
+// libggml-base has execlp - so that rule would clear nothing.
+//
+// The cost, stated rather than left to be discovered. An unpacked .so whose only
+// offense is importing socket or system no longer blocks statically; it is left
+// to Tier-2 semantic analysis alone, which still receives the finding and can
+// still return MALICIOUS on its own evidence (audit.go:212-252 classifies a
+// MALICIOUS verdict as HIGH, which blocks). A packed payload is unaffected -
+// BIN_001 is a measurement and stays HIGH unconditionally. What the downgrade
+// removes is one automatic refusal, not the finding, and no corroborator is not
+// the same claim as harmless.
 //
 // The reason this has to be stated rather than felt is that the severity column
 // is the only control that exists downstream. `Passed` is computed as
@@ -38,7 +88,12 @@ import (
 // DefaultRules() has no LOW constant, and ClassifyFindingRisk falls through to
 // "LOW" for any severity that is neither HIGH nor MEDIUM. A LOW finding still
 // reaches the report and still goes to the Tier-2 verifier, which can raise it
-// to MALICIOUS on its own evidence; it simply does not block by itself.
+// to MALICIOUS on its own evidence; it simply does not block by itself. LOW and
+// not MEDIUM is deliberate for the gated families too: `assist` withholds on
+// HIGH alone but `gate` withholds on HIGH or MEDIUM (internal/codeaudit/audit.go),
+// so a MEDIUM downgrade would still refuse the import under `gate` - the same
+// block under a different number. LOW is the only value that does not block
+// under either policy.
 var binaryOnlyRules = map[string]Rule{
 	"BIN_001": {
 		ID:       "BIN_001",
@@ -133,6 +188,14 @@ var binaryFamilies = []binaryFamily{
 		// specific family is the one that names the finding. Today CMD_001's
 		// list is anchored and names neither, so the pair does not overlap and
 		// the position is held for that widening rather than exercised now.
+		//
+		// It is covered by the corroboration gate rather than exempted from it,
+		// for the reason the table header gives: its whole evidence is one
+		// .dynsym entry, exactly like NET_002 and CMD_001, so treating it
+		// differently would let a payload corroborate the other families by
+		// referencing an unrelated symbol - and it would be an exception carved
+		// for nothing, because no measurement clears the other two and not this
+		// one.
 		ID:       "BIN_002",
 		Sources:  []EvidenceSource{SourceDynsym},
 		Patterns: compilePatterns(`^(memfd_create|fexecve)$`),
@@ -146,9 +209,13 @@ var binaryFamilies = []binaryFamily{
 		//
 		// The same corpus run that produced the NET_002 measurement puts this
 		// family on a legitimate library too: `nm -D` shows
-		// libggml-base.so.0.20.2 importing `execlp`, so CMD_001 reports HIGH on
-		// ggml's own backend loader. That is the same undecided posture the
-		// NET_002 note records, left undecided here for the same reason.
+		// libggml-base.so.0.20.2 importing `execlp`, so as written CMD_001
+		// reported HIGH on ggml's own backend loader, and on libgfortran.so.5.0.0
+		// - which imports `system` - and so refused legitimate packages under
+		// `assist`. It is now one of the three presence families the
+		// corroboration gate covers (see the table header): a name in the symbol
+		// table is the capability, never the call, so a finding here is withheld
+		// from HIGH unless the same file carries an independent corroborator.
 		ID:      "CMD_001",
 		Sources: []EvidenceSource{SourceDynsym},
 		Patterns: compilePatterns(
@@ -179,16 +246,27 @@ var binaryFamilies = []binaryFamily{
 		//
 		// So on this machine's bundle NET_002 reports HIGH on legitimate
 		// libraries, and under the default `assist` policy, where `Passed` is
-		// `highCount == 0`, that means passed=false for a package that holds one
+		// `highCount == 0`, that meant passed=false for a package that holds one
 		// of them. The "or needs libcurl" half of the original claim does hold:
 		// no library in the bundle carries a curl or ssl DT_NEEDED.
 		//
-		// This is not a mis-written comment; it is a rule posture that was never
-		// decided. Narrowing the pattern set further, dropping the family to
-		// MEDIUM, and requiring it to co-occur with another family are all open,
-		// and this task chooses none of them - it records the measurement and
-		// leaves the decision unmade. The shared id and its severity are the
-		// source arm's, so as written this family stays HIGH.
+		// This is now decided, not left open. Narrowing the pattern set further
+		// and dropping the family to MEDIUM were both rejected: the client
+		// symbols are real imports of legitimate libraries, so no narrowing
+		// clears the bundle - libllama-common.so.0.1.2 and
+		// libllama-server-impl.so import socket/connect/getaddrinfo/inet_pton
+		// inside httplib::detail::*, and libcudart.so.12 and libcudnn_*.so
+		// import socket/connect - and MEDIUM still refuses the import under
+		// `gate`, so it is the same block under a different number. Requiring
+		// co-occurrence with another family was rejected for the reason the table
+		// header records: the other family is the same class of evidence, and a
+		// legitimate library carries both. What is adopted instead is the
+		// corroboration gate: the shared id and its shared severity are
+		// untouched, and a NET_002 finding on a file with no independent
+		// corroborator is reported LOW rather than HIGH. And a call-graph fix was
+		// measured, not merely doubted: these objects export 2878 of 2881
+		// functions, so socket's callers are exported entry points and not one of
+		// the nine flagged libraries is cleared by reachability.
 		ID:      "NET_002",
 		Sources: []EvidenceSource{SourceDynsym, SourceNeeded},
 		Patterns: compilePatterns(
@@ -419,6 +497,66 @@ func (m *BinaryMatcher) MatchAll(lines []EvidenceLine) []binaryMatch {
 type binaryMatch struct {
 	Index int
 	Rule  Rule
+}
+
+// presenceOnly reports whether every source this family draws on is a name the
+// linker wrote. Such a family's evidence says the artifact *can* do something,
+// never that it does: the linker writes every symbol the object might reference.
+// The set is expressed over sources rather than as a list of ids so that a family
+// added later is classified by what its evidence is, not by whether someone
+// remembered to add it to a list.
+func (f *binaryFamily) presenceOnly() bool {
+	for _, s := range f.Sources {
+		if s != SourceDynsym && s != SourceNeeded {
+			return false
+		}
+	}
+	return true
+}
+
+// corroborating reports whether this family is evidence independent of the
+// file's own self-description. Only two are: a measured executable-section
+// entropy, and a committed pickle parse. Everything else either is a name
+// (dynsym, DT_NEEDED, string literals - the file says it) or a structural
+// container listing (member, notice, section), and none of those can confirm
+// another of the same kind.
+func (f *binaryFamily) corroborating() bool {
+	for _, s := range f.Sources {
+		if s != SourceEntropy && s != SourcePickle {
+			return false
+		}
+	}
+	return true
+}
+
+// downgrades reports whether a finding under this id must be withheld from HIGH
+// unless its file carries a corroborator. The severity is read from the resolved
+// rule, not from the family: the families that borrow an id own no severity, and
+// a family that resolves to MEDIUM (DYN_001) can never produce the HIGH this
+// gates.
+//
+// The lookups scan the order slice instead of using a map built in
+// NewBinaryMatcher. The matcher is constructed literally in a test, and a
+// precomputed map would silently answer "no" for it; scanning ten entries per
+// finding costs nothing.
+func (m *BinaryMatcher) downgrades(id string) bool {
+	for i := range m.order {
+		if m.order[i].ID == id {
+			return m.order[i].presenceOnly() && m.rules[i].Severity == SeverityHigh
+		}
+	}
+	return false
+}
+
+// corroborates reports whether a finding under this id is independent evidence
+// that a presence claim in the same file is real.
+func (m *BinaryMatcher) corroborates(id string) bool {
+	for i := range m.order {
+		if m.order[i].ID == id {
+			return m.order[i].corroborating()
+		}
+	}
+	return false
 }
 
 func (f *binaryFamily) appliesTo(src EvidenceSource) bool {
