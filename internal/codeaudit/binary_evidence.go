@@ -81,11 +81,12 @@ type Bounding struct {
 	// clean-scan verdict, because the unread part is exactly where a payload
 	// would live.
 	Structural bool
-	// Listing is set when the evidence listing hit its line cap. The file was
-	// read; not every distinct string in it is in the report. This is recorded
-	// because a reader should be able to see it, and it does not withhold a
-	// verdict on its own: a binary with sixty thousand distinct strings is a
-	// large binary, not an unexamined one.
+	// Listing is set when the evidence listing hit its line cap, so distinct
+	// lines were dropped rather than displayed. It does not withhold a verdict on
+	// its own, but it is not display-only either: the dropped lines are matcher
+	// input that no rule was shown, so the consumer decides by kind - the scanner
+	// counts a capped listing on an executable format as a bounded executable
+	// read, because there the dropped lines can be blocking evidence.
 	Listing bool
 	// Reason names the limit that fired, for the report. It is a string rather
 	// than an enum so that adding a limit does not change a wire type.
@@ -157,10 +158,15 @@ func (s *EvidenceSet) markStructural(reason string) {
 // that one line was cut short at MaxStringLen. A listing never relabels a reason
 // already recorded - it writes only when Reason is empty - while a structural
 // reason does override one, because markStructural guards on Structural rather
-// than on Reason. That is the precedence we want: a structural limit is what
-// withholds a clean verdict, and a listing note that only affects what is
-// displayed must not speak for it. Among reasons of the same class the first
-// wins.
+// than on Reason. Among reasons of the same class the first wins.
+//
+// That precedence is not a claim that a listing bound is harmless. A dropped line
+// is a line the matcher was never shown: add returns before appending it, so the
+// listing is the matcher's input rather than a view of it. Whether this bound
+// withholds a clean verdict is therefore a decision for the consumer, which knows
+// the file's kind - the scanner counts it BoundedExecutable for a format that
+// executes, where the dropped lines can be blocking evidence, and BoundedData
+// otherwise.
 func (s *EvidenceSet) markListing(reason string) {
 	s.Bound.Listing = true
 	if s.Bound.Reason == "" {

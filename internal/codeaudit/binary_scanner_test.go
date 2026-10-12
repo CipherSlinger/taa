@@ -2,6 +2,7 @@ package codeaudit
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -813,4 +814,146 @@ func TestBinaryScannerIgnoresNonRegularEntries(t *testing.T) {
 	if res.Summary.Incomplete != 0 {
 		t.Errorf("Incomplete = %d, want 0: a skipped non-regular entry is not a look that failed", res.Summary.Incomplete)
 	}
+}
+
+// TestBinaryScannerCappedListingOnAnExecutableKindWithholdsThePass pins the
+// fail-open a capped listing used to leave open on a format that executes.
+//
+// The cap is not merely a shorter display. ScanDirectory matches over set.Lines,
+// and EvidenceSet.add returns before appending a line the cap refuses, so a
+// capped listing is a set of evidence lines no rule is ever shown. On an ELF the
+// strings pass runs first and reads .dynstr and .shstrtab, which are walls of
+// literals - one line per symbol name - so it fills the cap on its own, and every
+// line the structural pass then adds is dropped. That is the whole of the
+// blocking evidence: all five blocking families read dynsym, needed, entropy or
+// pickle, and none of them reads a free string. A shared object padded with
+// distinct symbols ahead of "socket" therefore produced no NET_002 at all, and
+// while Bound.Listing was counted as BoundedData the Task 10 fold did not fire on
+// it: the package was released as clean with a network symbol in it that no rule
+// had been shown.
+//
+// The first subtest is what makes that a fact rather than an assertion. The same
+// fixture with the cap lifted does match NET_002, so the finding's absence under
+// the cap is the cap's doing and not a fixture that never carried it.
+func TestBinaryScannerCappedListingOnAnExecutableKindWithholdsThePass(t *testing.T) {
+	// The padding is what puts the blocking symbol past the cap, and both numbers
+	// are chosen so the test does not depend on how many lines a fixture happens
+	// to produce: 80 distinct symbols against a 4-line cap leaves "socket" the
+	// eighty-first distinct line, far beyond a cutting point the strings pass
+	// reaches long before it.
+	const (
+		padSymbols    = 80
+		lineCap       = 4
+		paddingPrefix = "pad_symbol_"
+	)
+
+	elfWithSocketBehindPadding := func(t *testing.T) []byte {
+		t.Helper()
+		imports := make([]string, 0, padSymbols+1)
+		for i := 0; i < padSymbols; i++ {
+			imports = append(imports, fmt.Sprintf("%s%03d", paddingPrefix, i))
+		}
+		// socket last, so it is the line the cap has to be past for the bypass to
+		// be exercised at all.
+		imports = append(imports, "socket")
+		return elfFixtureBytes(t, elfSpec{imports: imports})
+	}
+
+	hasNet002 := func(res *BinaryScanResult) bool {
+		for _, f := range res.Findings {
+			if f.RuleID == "NET_002" {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("uncapped, the fixture does carry the blocking finding", func(t *testing.T) {
+		dir := t.TempDir()
+		writeTestBytes(t, dir, "libnet.so", elfWithSocketBehindPadding(t))
+
+		cfg := DefaultBinaryConfig()
+		s, err := newTestBinaryScanner(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := s.ScanDirectory(dir)
+		if err != nil {
+			t.Fatalf("ScanDirectory: %v", err)
+		}
+		if !hasNet002(res) {
+			t.Fatal("no NET_002 without the cap: the fixture does not carry the finding the capped arms are about")
+		}
+		if res.Summary.BoundedExecutable != 0 || res.Summary.BoundedData != 0 {
+			t.Fatalf("bounds = (%d executable, %d data), want (0, 0): an uncapped read is not bounded",
+				res.Summary.BoundedExecutable, res.Summary.BoundedData)
+		}
+	})
+
+	t.Run("capped, an executable listing withholds the pass", func(t *testing.T) {
+		dir := t.TempDir()
+		writeTestBytes(t, dir, "libnet.so", elfWithSocketBehindPadding(t))
+
+		cfg := DefaultBinaryConfig()
+		cfg.MaxEvidenceLines = lineCap
+		s, err := newTestBinaryScanner(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := s.ScanDirectory(dir)
+		if err != nil {
+			t.Fatalf("ScanDirectory: %v", err)
+		}
+		if res.Summary.Kinds[string(KindELF)] != 1 || res.Summary.Incomplete != 0 {
+			t.Fatalf("fixture shape = %d elf / %d incomplete, want 1 elf and 0 incomplete",
+				res.Summary.Kinds[string(KindELF)], res.Summary.Incomplete)
+		}
+		if res.Summary.BoundedExecutable != 1 || res.Summary.BoundedData != 0 {
+			t.Errorf("bounds = (%d executable, %d data), want (1, 0): a capped listing on a format that executes is a look that did not finish",
+				res.Summary.BoundedExecutable, res.Summary.BoundedData)
+		}
+		// The mechanism, pinned rather than assumed: the line socket occupies was
+		// refused by the cap, so the rule that exists to catch it was never shown
+		// it. If this ever starts passing, the cap stopped being a matcher input
+		// and the reasoning above needs to be re-derived.
+		if hasNet002(res) {
+			t.Error("NET_002 matched a listing the cap cut before socket: the cap is no longer dropping matcher input")
+		}
+		report := &Report{ScanComplete: true, ProcessExitCode: 0, Binary: &res.Summary}
+		if report.ProvesCleanScan() {
+			t.Error("ProvesCleanScan = true for a capped executable listing: the package would be released as clean with a blocking-symbol line never matched")
+		}
+	})
+
+	t.Run("capped, a data listing is still only reported", func(t *testing.T) {
+		dir := t.TempDir()
+		fill := make([]byte, 0, padSymbols*12)
+		for i := 0; i < padSymbols; i++ {
+			fill = append(fill, []byte(fmt.Sprintf("%s%03d\x00", paddingPrefix, i))...)
+		}
+		writeTestBytes(t, dir, "weights.bin", fill)
+
+		cfg := DefaultBinaryConfig()
+		cfg.MaxEvidenceLines = lineCap
+		s, err := newTestBinaryScanner(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := s.ScanDirectory(dir)
+		if err != nil {
+			t.Fatalf("ScanDirectory: %v", err)
+		}
+		if res.Summary.Kinds[string(KindRaw)] != 1 || res.Summary.Incomplete != 0 {
+			t.Fatalf("fixture shape = %d raw / %d incomplete, want 1 raw and 0 incomplete",
+				res.Summary.Kinds[string(KindRaw)], res.Summary.Incomplete)
+		}
+		if res.Summary.BoundedData != 1 || res.Summary.BoundedExecutable != 0 {
+			t.Errorf("bounds = (%d executable, %d data), want (0, 1): nothing on this platform executes a raw blob, so its capped listing is visible but is not a look that did not finish",
+				res.Summary.BoundedExecutable, res.Summary.BoundedData)
+		}
+		report := &Report{ScanComplete: true, ProcessExitCode: 0, Binary: &res.Summary}
+		if !report.ProvesCleanScan() {
+			t.Error("ProvesCleanScan = false for a capped data listing: the data bound is reported, not a completeness failure")
+		}
+	})
 }

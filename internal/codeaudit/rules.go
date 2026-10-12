@@ -162,11 +162,16 @@ func (r *Report) ProvesCleanScan() bool {
 	// function that answers "did the scan look", and a check applied anywhere
 	// else is a check a later recomputation can drop.
 	//
-	// BoundedData and FindingsCapped are deliberately not read. A tensor blob
-	// whose listing was capped is a file that was read, and a package whose
-	// findings outran the listing budget is a pass that looked at everything and
-	// found too much; neither is a look that did not happen, and only a look that
-	// did not happen can make a pass a claim about absence.
+	// BoundedData and FindingsCapped are deliberately not read. BoundedData is a
+	// cut that landed on a kind which cannot execute - a raw blob or a tensor file
+	// - whether the cut was structural or a capped listing. Nothing on this
+	// platform runs such a file, and no blocking family reads the free-string
+	// source that a capped listing can drop from one, so a cut there cannot be
+	// hiding a blocking finding. FindingsCapped is a different thing again: it
+	// records the LOW findings the finding cap dropped, and LOW does not block
+	// under either policy (assist withholds on HIGH, gate on HIGH or MEDIUM).
+	// Neither is a look that did not happen, and only a look that did not happen
+	// can make a pass a claim about absence.
 	if b := r.Binary; b != nil {
 		if b.BoundedExecutable > 0 || b.Incomplete > 0 || b.Errored {
 			return false

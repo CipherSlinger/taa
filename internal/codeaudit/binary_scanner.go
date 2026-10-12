@@ -18,13 +18,16 @@ type BinaryScanSummary struct {
 	// Kinds is the per-kind file count, so a reader can see what the package was
 	// made of without walking the findings.
 	Kinds map[string]int `json:"kinds,omitempty"`
-	// BoundedExecutable counts files whose structural extraction was cut short
-	// and whose format can carry an executed payload. A pass over one of these is
-	// not evidence of absence, and ProvesCleanScan withholds it.
+	// BoundedExecutable counts files whose evidence was cut short on a format that
+	// can carry an executed payload: a structural extraction that stopped early, or
+	// a capped listing whose dropped lines can be blocking evidence. A pass over
+	// one of these is not evidence of absence, and ProvesCleanScan withholds it.
 	BoundedExecutable int `json:"bounded_executable,omitempty"`
-	// BoundedData counts files whose extraction was cut short and whose format
-	// is data on this platform. It is recorded because a reader should see it,
-	// and it does not withhold a verdict: a bounded tensor blob cannot run.
+	// BoundedData counts files whose evidence was cut short on a format that is
+	// data on this platform, by either bound. It is recorded because a reader
+	// should see it, and it does not withhold a verdict: a bounded tensor blob
+	// cannot run, and a capped listing on one can only have dropped free-string
+	// lines, which no blocking family reads.
 	BoundedData int `json:"bounded_data,omitempty"`
 	// Incomplete counts paths the channel set out to examine and could not: a
 	// file that would not open, a file whose extraction failed, and a subtree the
@@ -211,9 +214,29 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 				res.Summary.BoundedData++
 			}
 		} else if set.Bound.Listing {
-			// A capped listing is a data bound for every kind: the file was read,
-			// and what is missing is evidence lines rather than unexamined bytes.
-			res.Summary.BoundedData++
+			// A capped listing splits by kind for the same reason a bounded read
+			// does, but it is not the same loss. The cap is the matcher's input:
+			// ScanDirectory matches over set.Lines, and EvidenceSet.add returns
+			// before appending a line the cap refuses, so a dropped line is a line
+			// no rule was shown. That is why this bound cannot be treated as
+			// display-only, and why the decision belongs to the consumer that knows
+			// the file's kind.
+			//
+			// On an executable format the loss reaches the blocking evidence. Every
+			// blocking family reads a structural source - dynsym, needed, entropy,
+			// pickle - and only an executable format emits those lines, while the
+			// free-string families are all LOW. So a capped .so or .pt can have its
+			// blocking line dropped without a trace, and it is counted
+			// BoundedExecutable so the Task 10 fold withholds the pass.
+			//
+			// On a data kind the cap can only have dropped free-string lines, and no
+			// blocking family reads those, so it stays BoundedData: visible in the
+			// report, not a look that did not finish.
+			if isExecutableKind(kind) {
+				res.Summary.BoundedExecutable++
+			} else {
+				res.Summary.BoundedData++
+			}
 		}
 
 		matches := s.matcher.MatchAll(set.Lines)
