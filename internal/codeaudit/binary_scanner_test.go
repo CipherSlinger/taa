@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -956,4 +957,69 @@ func TestBinaryScannerCappedListingOnAnExecutableKindWithholdsThePass(t *testing
 			t.Error("ProvesCleanScan = false for a capped data listing: the data bound is reported, not a completeness failure")
 		}
 	})
+}
+
+// TestBinaryScannerClaimsAProtocol01PickleNamedAsWeights runs the claim rule
+// through the channel. The file's name is the one the extension set reads as a
+// raw blob, so the finding exists only if the interpreter ran.
+func TestBinaryScannerClaimsAProtocol01PickleNamedAsWeights(t *testing.T) {
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "model.bin", []byte("cposix\nsystem\n(Vid\ntR."))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if res.Summary.Kinds[string(KindPickle)] != 1 {
+		t.Errorf("kinds = %v, want one pickle", res.Summary.Kinds)
+	}
+	// The claim must not, by itself, make the pass unprovable: the stream is a
+	// pickle and it parses, so nothing here is a look that did not happen.
+	if res.Summary.BoundedExecutable != 0 || res.Summary.BoundedData != 0 || res.Summary.Incomplete != 0 {
+		t.Errorf("summary = %+v, want no bounds on a clean parse", res.Summary)
+	}
+	var found bool
+	for _, f := range res.Findings {
+		if f.RuleID == "PKL_001" {
+			found = true
+			if f.Severity != SeverityHigh {
+				t.Errorf("PKL_001 severity = %q, want %q", f.Severity, SeverityHigh)
+			}
+			if f.BinaryKind != string(KindPickle) || f.EvidenceSource != string(SourcePickle) {
+				t.Errorf("finding provenance = (%q, %q), want (%q, %q)",
+					f.BinaryKind, f.EvidenceSource, KindPickle, SourcePickle)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no PKL_001 finding; findings = %+v", res.Findings)
+	}
+}
+
+// TestBinaryScannerCountsAStreamThatDesynchronisesPastTheHead pins the accepted
+// residual of claiming a protocol 0/1 stream by its head: a file that walks
+// cleanly across the whole head and then hits an unknown opcode is still
+// claimed, and the scanner counts it BoundedExecutable. Withholding is the
+// fail-closed answer here, and the bound is in the report rather than silent.
+func TestBinaryScannerCountsAStreamThatDesynchronisesPastTheHead(t *testing.T) {
+	// A clean prefix: a GLOBAL target, then a MARK and thousands of pushed ints,
+	// so the first 4096 bytes are all legal opcodes.
+	var b strings.Builder
+	b.WriteString("cposix\nsystem\n")
+	b.WriteString("(")
+	for b.Len() < sniffBytes {
+		b.WriteString("I1\n")
+	}
+	b.WriteString("t")
+	b.WriteString("\x00junk")
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "model.bin", []byte(b.String()))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if res.Summary.BoundedExecutable != 1 {
+		t.Errorf("bounded_executable = %d, want 1: summary = %+v", res.Summary.BoundedExecutable, res.Summary)
+	}
 }

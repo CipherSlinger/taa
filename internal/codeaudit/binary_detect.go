@@ -3,6 +3,7 @@ package codeaudit
 import (
 	"bytes"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -68,6 +69,25 @@ var binaryExtensions = map[string]bool{
 	".pyc": true, ".pyo": true,
 }
 
+// sourceExtensions are the extensions the source arm reads, and the pickle sniff
+// never claims one of them.
+//
+// It is not a second opinion about what source is. What makes a file a source
+// file here is that another channel has rules for it: a claimed file is dropped
+// from that channel's reading (MergeBinaryFindings keeps no text finding for a
+// path in Claimed), so claiming a source file would leave it read by neither -
+// this channel would discard its text findings and the source arm would not be
+// believed about it. An import line is exactly the shape of a protocol 0 target -
+// "i" is INST, which consumes the next two lines as its module and name, so
+// "import os\nos.system('x')\n" walks cleanly and resolves one - which is why the
+// extension, and not the walk, is what separates the two readings.
+//
+// TestSourceExtensionsCoverTheSourceArmsDefaults pins the correspondence, so a
+// language added to the source arm has to be added here in the same change.
+var sourceExtensions = map[string]bool{
+	".py": true,
+}
+
 // ClassifyBinary decides how a file should be read. head is the file's first
 // sniffBytes (fewer at end of file); path is consulted only by the pickle branch
 // and the binary-extension fallback.
@@ -102,19 +122,95 @@ func ClassifyBinary(head []byte, path string) BinaryKind {
 //
 // Pickle protocols 2 and up begin with PROTO (0x80) followed by the protocol
 // number, which is a magic. Protocols 0 and 1 have no magic at all: a protocol 0
-// pickle of a tuple is the single byte "(". For those the extension is the only
-// signal available, and taking it is cheap — being wrong costs one strings pass
-// over a file nothing else would have read.
+// pickle of a tuple is the single byte "(", and a payload is ASCII to the last
+// byte. For those the extension used to be the only signal, and that left a
+// rename as the whole evasion - "cposix\nsystem\n(Vid\ntR." named model.bin,
+// model.pt or payload.pth was classified raw, and named model.json it was
+// classified text, and either way the interpreter never ran and PKL_001 could
+// not fire.
+//
+// So a protocol 0/1 stream is claimed by its content. Three signals decide it,
+// and each one closes a hole the others leave open:
+//
+//   - The extension is not one the source arm reads. See sourceExtensions: a
+//     claimed file is dropped from the source arm's reading, so a crafted source
+//     file shaped like a pickle could hide a source finding.
+//   - The head walks to a target with no structural mark on the way.
+//   - The target is shaped like one. See sniffProtocol01Pickle: without this, an
+//     import line resolves "mport os.os.system('x')", which is a line of text
+//     read as an operand rather than a target.
+//
+// The extension set stays as the last signal, where it still catches a protocol
+// 0/1 stream whose target lies past the head and a source-named file that the
+// sniff refuses: a .pkl is a pickle whatever its bytes look like.
 func isPickleStream(head []byte, path string) bool {
 	if len(head) >= 2 && head[0] == 0x80 && head[1] >= 0x02 && head[1] <= 0x05 {
 		return true
 	}
-	switch strings.ToLower(filepath.Ext(path)) {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
 	case ".pkl", ".pickle", ".joblib":
 		return true
 	}
+	if sourceExtensions[ext] {
+		return false
+	}
+	return sniffProtocol01Pickle(head)
+}
+
+// sniffProtocol01Pickle reports whether head begins a pickle stream that the
+// unpickler would resolve a module.attribute target in.
+//
+// It asks the interpreter rather than a second opcode table. The claim has to
+// agree with the parse that follows it, and a hand-written validator would be a
+// second copy of operandOf, drifting the first time an opcode is added - and a
+// claim that then fails to parse is not a wasted pass, it is a file counted
+// BoundedExecutable.
+//
+// Three conditions, all required:
+//
+//   - No structural mark. A mark means the walk desynchronised - an unknown
+//     opcode, an operand past pickleMaxOperandBytes, an overrun stack or memo -
+//     and a stream that cannot survive its own head is not one to claim.
+//   - At least one SourcePickle line, because a stream with no module.attribute
+//     target carries no PKL_001 evidence and the claim is not free: a claimed
+//     file is read by the pickle interpreter instead of the string scanner.
+//   - That line is shaped like a target. GLOBAL, INST and OBJ take their operands
+//     as newline-terminated lines, so any two lines of text read as one - "import
+//     os" resolves "mport os.os.system('x')". A module.attribute pair cannot
+//     contain a space or a bracket, and requiring that is what tells a stream
+//     from a text file that happens to line up.
+//
+// Flush is deliberately not called. A head is a prefix, so "no STOP yet" is the
+// expected state at this offset, and Flush reads exactly that as a stream that
+// ended without STOP.
+//
+// The claim is made about a prefix. A file that walks cleanly to the end of the
+// head and desynchronises past it is still claimed, and the scanner then counts
+// it BoundedExecutable and withholds the pass - the fail-closed direction, with
+// the bound visible in the report rather than silent.
+func sniffProtocol01Pickle(head []byte) bool {
+	if len(head) == 0 {
+		return false
+	}
+	probe := newEvidenceSet("", KindPickle, BinaryConfig{})
+	p := newPickleScanner(probe)
+	_, _ = p.Write(head)
+	if probe.Bound.Structural {
+		return false
+	}
+	for _, line := range probe.Lines {
+		if line.Source == SourcePickle && pickleTargetRe.MatchString(line.Text) {
+			return true
+		}
+	}
 	return false
 }
+
+// pickleTargetRe is the shape of a resolved module.attribute target: a dotted
+// identifier, at least one dot, because recordTarget writes "module.name". A line
+// that is not this shape came from a walk that consumed text as an operand.
+var pickleTargetRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$`)
 
 // looksBinary applies the heuristic git and grep do: a NUL byte in the head
 // means the file is not text.

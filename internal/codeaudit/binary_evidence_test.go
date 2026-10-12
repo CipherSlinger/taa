@@ -1630,6 +1630,36 @@ func TestCollectArchiveEvidenceListsMembersAndRecurses(t *testing.T) {
 	}
 }
 
+// TestCollectArchiveEvidenceClaimsAProtocol01MemberByNameAlone pins the second
+// call site of the claim rule. collectArchive classifies every zip member with
+// ClassifyBinary(head, member.Name), so a member that is a protocol 0/1 pickle
+// under a data name - data.bin, which the extension set reads as a raw blob - has
+// to reach collectPickleMember on its content alone. Without the content claim
+// the member is skipped, the container yields no pickle target, and PKL_001
+// cannot fire on a checkpoint whose payload was moved inside a .pt.
+func TestCollectArchiveEvidenceClaimsAProtocol01MemberByNameAlone(t *testing.T) {
+	dir := t.TempDir()
+	raw := zipFixture(t, map[string][]byte{
+		"data.bin": []byte("cposix\nsystem\n(Vid\ntR."),
+	}, []string{"data.bin"})
+	path := writeTestBytes(t, dir, "model.pt", raw)
+
+	set := newTestEvidence(path, KindArchive)
+	if err := collectArchive(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectArchive: %v", err)
+	}
+
+	var pickles []string
+	for _, l := range set.Lines {
+		if l.Source == SourcePickle {
+			pickles = append(pickles, l.Text)
+		}
+	}
+	if !containsString(pickles, "posix.system") {
+		t.Errorf("a protocol 0/1 member named data.bin produced no target evidence; got %v", pickles)
+	}
+}
+
 // TestCollectArchiveEvidenceBoundsMemberCount pins the member ceiling as a
 // structural bound. Members past the ceiling are never opened, and for a
 // container that can hold a pickle that is a look that did not happen - so it
