@@ -85,9 +85,10 @@ func TestClassifyBinaryClaimsAProtocol01PickleByItsContent(t *testing.T) {
 		// byte 0 and the file stays with the channel that reads Python.
 		{"python source is not taken from the source channel",
 			[]byte("# -*- coding: utf-8 -*-\nimport os\nos.system('id')\n"), "train.py", KindText},
-		// The 3.10 .pyc magic begins 0x6f, which is the OBJ opcode: the walk takes
-		// "\r\r" as a module name and then runs out of head mid-operand, so no
-		// target is resolved. The coincidence is why the case is pinned.
+		// The 3.10 .pyc magic begins 0x6f, which is the OBJ opcode. OBJ takes no
+		// operand, so the walk advances one byte and lands on 0x0d, which is not an
+		// opcode at all: the unknown-opcode structural mark fires at byte 1 and no
+		// target is ever resolved. The coincidence is why the case is pinned.
 		{"a 3.10 pyc head is not claimed",
 			[]byte{0x6f, 0x0d, 0x0d, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00}, "m.cpython-310.pyc", KindRaw},
 		{"a 3.12 pyc head is not claimed",
@@ -97,21 +98,36 @@ func TestClassifyBinaryClaimsAProtocol01PickleByItsContent(t *testing.T) {
 
 		// An import line is operand-shaped: "i" is INST and takes the next two
 		// lines as its module and name, so this head walks and resolves a target.
-		// It is still a source file, and the sniff must not take it.
+		// Named .bin - a name the source arm does not read - it reaches the shape
+		// test, which refuses that target, and the file then falls to its .bin
+		// extension and is read as a raw blob. This case is what isolates the shape
+		// test: with the shape test removed the head classifies as a pickle.
+		{"an import-led head named .bin is not claimed as a pickle",
+			[]byte("import os\nos.system('x')\n"), "model.bin", KindRaw},
+		// The same head under a source name is text, and the source veto is what
+		// decides it: the veto runs before the sniff, so this head is never walked.
+		// On its own the case pins little - the shape test would refuse the head
+		// anyway - so it is paired with the pickle-shaped source case below, which
+		// is the one the veto alone can decide.
 		{"an import-led source head stays text",
 			[]byte("import os\nos.system('x')\n"), "train.py", KindText},
-		// The same head under a name the source arm does not read is not claimed
-		// either: the "target" it resolves is a line of text read as an operand,
-		// not a module.attribute pair.
-		{"an import-led head named .bin is not claimed",
-			[]byte("import os\nos.system('x')\n"), "model.bin", KindRaw},
+		// A head that IS a valid pickle target under a source name is still text:
+		// the veto refuses it whatever its bytes look like. This is the case that
+		// pins the veto - with sourceExtensions removed, "collections.OrderedDict"
+		// would be claimed as a pickle and the file taken from the source arm.
+		{"a pickle-shaped head under a source name stays text",
+			[]byte("ccollections\nOrderedDict\np0\n."), "train.py", KindText},
 		// A real target is a dotted identifier, and the shape test must not
 		// overreach: this is the two-line protocol 0 pickle of an OrderedDict.
 		{"a dotted-identifier target is claimed",
 			[]byte("ccollections\nOrderedDict\np0\n."), "model.bin", KindPickle},
-		// The sniff refuses a source name; the extension set still claims one.
-		{"a source-named file with a pickle name is still claimed",
-			payload, "model.pkl", KindPickle},
+		// The .pkl arm returns before both the source veto and the sniff, so a
+		// pickle-named file is claimed by its name even when its bytes would not
+		// walk: "#" is not an opcode, so the sniff refuses this head and the name
+		// alone decides it. Without the .pkl arm the head would fall to its binary
+		// extension and be read as a raw blob.
+		{"a pickle-named file that does not walk is still claimed by its name",
+			[]byte("# not a pickle stream\n"), "model.pkl", KindPickle},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -124,11 +140,13 @@ func TestClassifyBinaryClaimsAProtocol01PickleByItsContent(t *testing.T) {
 
 // TestSourceExtensionsCoverTheSourceArmsDefaults pins the one coupling the claim
 // rule rests on: every extension the source arm reads has to be one the sniff
-// refuses. The rule is not "these are source files", it is "another channel has
-// rules for this file, so this one does not take it" - and a language added to
-// the source arm without being added here would silently reopen the hole the
-// guard closes, because MergeBinaryFindings drops the text findings of every
-// claimed file.
+// refuses, and nothing else belongs in the set. The rule is not "these are source
+// files", it is "another channel has rules for this file, so this one does not
+// take it" - and a language added to the source arm without being added here
+// would reopen the hole the guard closes, because the merge step is to drop the
+// text findings of every claimed file. The reverse direction catches the other
+// mistake: an entry no source arm reads is a veto that refuses a claim nothing
+// else covers, so the file would be read by nobody.
 func TestSourceExtensionsCoverTheSourceArmsDefaults(t *testing.T) {
 	exts := DefaultConfig().Extensions
 	if len(exts) == 0 {
@@ -137,6 +155,18 @@ func TestSourceExtensionsCoverTheSourceArmsDefaults(t *testing.T) {
 	for _, ext := range exts {
 		if !sourceExtensions[strings.ToLower(ext)] {
 			t.Errorf("the source arm reads %s and the pickle sniff would claim it: add it to sourceExtensions", ext)
+		}
+	}
+	for ext := range sourceExtensions {
+		reads := false
+		for _, e := range exts {
+			if strings.ToLower(e) == ext {
+				reads = true
+				break
+			}
+		}
+		if !reads {
+			t.Errorf("sourceExtensions lists %s but no source arm reads it: drop the stale entry or add the arm", ext)
 		}
 	}
 }

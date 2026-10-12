@@ -73,14 +73,16 @@ var binaryExtensions = map[string]bool{
 // never claims one of them.
 //
 // It is not a second opinion about what source is. What makes a file a source
-// file here is that another channel has rules for it: a claimed file is dropped
-// from that channel's reading (MergeBinaryFindings keeps no text finding for a
-// path in Claimed), so claiming a source file would leave it read by neither -
-// this channel would discard its text findings and the source arm would not be
-// believed about it. An import line is exactly the shape of a protocol 0 target -
-// "i" is INST, which consumes the next two lines as its module and name, so
-// "import os\nos.system('x')\n" walks cleanly and resolves one - which is why the
-// extension, and not the walk, is what separates the two readings.
+// file here is that another channel has rules for it: a claimed file is one the
+// merge step drops from that channel's reading, keeping no text finding for a
+// path in Claimed. (MergeBinaryFindings lands in the next task; this guard is
+// written against that contract rather than an existing call.) Claiming a source
+// file would leave it read by neither - this channel would discard its text
+// findings and the source arm would not be believed about it. An import line is
+// exactly the shape of a protocol 0 target - "i" is INST, which consumes the next
+// two lines as its module and name, so "import os\nos.system('x')\n" walks
+// cleanly and resolves one - which is why the extension, and not the walk, is
+// what separates the two readings.
 //
 // TestSourceExtensionsCoverTheSourceArmsDefaults pins the correspondence, so a
 // language added to the source arm has to be added here in the same change.
@@ -132,17 +134,19 @@ func ClassifyBinary(head []byte, path string) BinaryKind {
 // So a protocol 0/1 stream is claimed by its content. Three signals decide it,
 // and each one closes a hole the others leave open:
 //
-//   - The extension is not one the source arm reads. See sourceExtensions: a
-//     claimed file is dropped from the source arm's reading, so a crafted source
-//     file shaped like a pickle could hide a source finding.
+//   - The extension is not one the source arm reads. See sourceExtensions: the
+//     merge step drops a claimed file from the source arm's reading, so a crafted
+//     source file shaped like a pickle could hide a source finding.
 //   - The head walks to a target with no structural mark on the way.
 //   - The target is shaped like one. See sniffProtocol01Pickle: without this, an
 //     import line resolves "mport os.os.system('x')", which is a line of text
 //     read as an operand rather than a target.
 //
-// The extension set stays as the last signal, where it still catches a protocol
-// 0/1 stream whose target lies past the head and a source-named file that the
-// sniff refuses: a .pkl is a pickle whatever its bytes look like.
+// The extension set is the second test, ahead of both the source veto and the
+// sniff, so a .pkl, .pickle or .joblib is claimed by its name whatever its bytes
+// look like - which covers a protocol 0/1 stream whose target lies past the head,
+// and a file that does not walk at all. It cannot cover a source-named file: .py
+// is not in the extension set, and the veto for it runs after this test.
 func isPickleStream(head []byte, path string) bool {
 	if len(head) >= 2 && head[0] == 0x80 && head[1] >= 0x02 && head[1] <= 0x05 {
 		return true
@@ -167,6 +171,13 @@ func isPickleStream(head []byte, path string) bool {
 // claim that then fails to parse is not a wasted pass, it is a file counted
 // BoundedExecutable.
 //
+// The probe runs with the normalized default config, deliberately: ClassifyBinary
+// takes no config parameter, and the only field this path reads is
+// MaxEvidenceLines. A scan whose own cap was lower would reach its listing bound
+// on the real parse instead, and for a KindPickle that sets Bound.Listing, which
+// the scanner counts BoundedExecutable - the pass is withheld rather than the
+// claim silently trusted.
+//
 // Three conditions, all required:
 //
 //   - No structural mark. A mark means the walk desynchronised - an unknown
@@ -175,11 +186,12 @@ func isPickleStream(head []byte, path string) bool {
 //   - At least one SourcePickle line, because a stream with no module.attribute
 //     target carries no PKL_001 evidence and the claim is not free: a claimed
 //     file is read by the pickle interpreter instead of the string scanner.
-//   - That line is shaped like a target. GLOBAL, INST and OBJ take their operands
-//     as newline-terminated lines, so any two lines of text read as one - "import
-//     os" resolves "mport os.os.system('x')". A module.attribute pair cannot
-//     contain a space or a bracket, and requiring that is what tells a stream
-//     from a text file that happens to line up.
+//   - That line is shaped like a target. GLOBAL and INST take their operands as
+//     two newline-terminated lines, so any two lines of text read as one - "import
+//     os" resolves "mport os.os.system('x')". The gate is a dotted identifier:
+//     identifier characters only, at least one dot, no leading digit. A space or a
+//     bracket disqualifies a line because it is not an identifier character, which
+//     is a consequence of the charset rather than the rule.
 //
 // Flush is deliberately not called. A head is a prefix, so "no STOP yet" is the
 // expected state at this offset, and Flush reads exactly that as a stream that
@@ -195,6 +207,8 @@ func sniffProtocol01Pickle(head []byte) bool {
 	}
 	probe := newEvidenceSet("", KindPickle, BinaryConfig{})
 	p := newPickleScanner(probe)
+	// pickleScanner.Write always returns (len(chunk), nil), so the discarded pair
+	// is deliberate rather than an oversight.
 	_, _ = p.Write(head)
 	if probe.Bound.Structural {
 		return false
