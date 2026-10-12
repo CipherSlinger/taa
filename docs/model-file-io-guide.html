@@ -671,9 +671,9 @@
           <li><span class="box"></span><span>输入目录只读，代码中没有任何指向 <code>/opt/taa/input</code> 的写操作</span></li>
           <li><span class="box"></span><span>所有需要交付的文件都写在 <code>/opt/taa/output/result/</code> 下，没有散落在别处</span></li>
           <li><span class="box"></span><span>路径按上述绝对路径书写，没有写成相对路径</span></li>
-          <li><span class="box"></span><span>日志写在 <code>$TAA_LOG_DIR</code>，每行以换行符结尾，只追加不重写</span></li>
-          <li><span class="box"></span><span>进度原子写入 <code>$TAA_PROGRESS_DIR</code>，<code>percent</code> 在 0–100 之间且单调不回退</span></li>
-          <li><span class="box"></span><span>结束前写出 <code>&lt;output&gt;/training_result.json</code>，含 <code>training_task.metrics</code> 与 <code>dataset</code></span></li>
+          <li><span class="box"></span><span>日志写在 <code>/opt/taa/output/log/</code>，每行以换行符结尾，只追加不重写</span></li>
+          <li><span class="box"></span><span>进度原子写入 <code>/opt/taa/output/progress/progress.json</code>，<code>percent</code> 在 0–100 之间且单调不回退</span></li>
+          <li><span class="box"></span><span>结束前写出 <code>/opt/taa/output/result/training_result.json</code>，含 <code>training_task.metrics</code> 与 <code>dataset</code></span></li>
           <li><span class="box"></span><span>失败路径同样写出 <code>training_result.json</code>，或至少保证日志与进度可用</span></li>
           <li><span class="box"></span><span>产物中没有原始数据副本、密钥、环境变量转储</span></li>
           <li><span class="box"></span><span>代码中不存在任何网络调用</span></li>
