@@ -10018,7 +10018,12 @@ func analyzeBinaryFileWithLLM(ctx context.Context, fa FileAnalyzer, ev *Evidence
 
 > **注（诚实性，必须按事实写，不改行为）**：上面的二进制分支今天**只被 mock 驱动，不是线上行为**。生产的 `LLMClient` 就是 `teellm.Client`（`internal/codeaudit/llm.go:70`），它的接口只声明 `VerifyFinding`/`HealthCheck`/`Close`（`teellm/client.go:56-60`），**没有** `AnalyzeFile`；`newLLMClient` 把这个接口值原样返回（`internal/controller/import_processing.go:742-753`）。全树唯一的 `AnalyzeFile` 实现者是测试 mock（`internal/codeaudit/llm_test.go:86`），`teellm.ActionAnalyzeFile`（`teellm/types.go:9`）无消费方，`parseFileSummary` 也只被测试调用。所以二进制文件在生产里落到 `synthesizeFileSummary`，**与源码文件路径的既有处境完全相同**——文件级提示词由 mock 驱动，不由线上流水线驱动，本任务不改变这一点，本任务的两个用例也不声称改变了它。**不要**照着"A file the binary channel examined takes the binary prompt…"这种前提去写注释或写断言，那是生产里不成立的说法；上面 `analyzeFileWithLLM` 的注释已按事实改过。
 >
-> **待决项**：若要让文件级提示词（源码的与二进制的）真正到达模型，需要给 `teellm.Client` 配一层实现 `FileAnalyzer` 的适配器，或让 teellm 客户端自行声明 `AnalyzeFile`——那是**扩功能**，超出本计划范围，与 `NET_002` 的未裁决 posture 同类，留给用户决定。
+> **已决（2026-10-12，用户裁定）：保持现状并写明，不给生产路径补适配器。** 决策前实测到的约束，逐条记在这里以免后来者重新走一遍：
+> - 生产 `LLMClient` 是 `teellm.Client` 的**类型别名**（`internal/codeaudit/llm.go:71`），而 `teellm.Client` 只有一个端点 `/v1/verify`（`teellm/client.go:149`），收的是 `RequestEnvelope`。该结构**没有任何承载提示词的字段**——内容槽只有 `FindingPayload`（`teellm/types.go:78-90`）。所以"补一层实现 `AnalyzeFile` 的适配器"在现有协议下**写不出来**：没有地方放 `prompt`。
+> - `teellm.ActionAnalyzeFile`（`teellm/types.go:9`）在全仓**无任何消费方**：客户端不发、服务端（`ollama_backend.go`）不处理，服务只认 `VERIFY_FINDING`。它是个声明过的死常量。
+> - 因此另两条路各自的代价是：**映射到 `VERIFY_FINDING`**（把证据清单塞进合成的 `FindingPayload.CodeTarget.CodeSnippet`）无需改协议，但服务会按 finding 级准则作答、返回 `DecisionResult`，拿不到文件级要求的 `chained`/`exfiltration` 两个字段，且等于向服务谎报"这是一条 finding"；**扩协议**（`RequestEnvelope` 加提示词槽 + 服务端实现 `ANALYZE_FILE`）语义正确、字段完整，但要改 `teellm` **子模块（另一个仓库）** 并重建服务镜像，是本计划之外的一次独立改动。两条都被否。
+> - 这个缺口**不是二进制通道引入的**：源码文件路径一直如此。二进制 finding 仍逐条走 `VerifyReport` → `VerifyFinding` 送模型复核，阻断判定不依赖文件级小结，所以本任务的两个用例由 mock 驱动是诚实的测试，不是掩盖。
+> - 若将来要真正打通，第一条路（扩协议）是正解；而按 finding 级已实测的先例，届时文件级提示词也该照那条先例的完整形态重组（准则前置 **并** 尾部重述）。
 
 > **注（提示词结构，不改行为）**：`binaryFileAnalysisPromptTemplate` 把 `## 判定基准` 放在**证据块之后**且没有尾部重述。这与仓库已实测的 **finding 级**先例不一致——`teellm/ollama_backend.go:15` 的 `findingAnalysisPromptTemplate` 是**准则前置**（`## 判定优先级与安全边界` 在第 17 行、证据之前）**加尾部** `## 判定提醒`（第 46 行），由 `TestFindingAnalysisPromptOrderAndVerbs`/`TestFindingAnalysisPromptCachingInvariants`（`teellm/ollama_backend_test.go:443`/`:536`）钉住——但它与自己的**文件级**同类 `fileAnalysisPromptTemplate`（`internal/codeaudit/verifier.go:300-317`，同样是准则在证据之后、无尾部重述）一致，所以本任务**保持现状不重组**：那条实测覆盖的是 finding 级提示词，没有任何针对文件级提示词的测量，而在上一条注成立的前提下它今天也到不了模型。留这条注记只为给后来者一个杠杆——**若将来要优化文件级提示词的延迟，第一个该试的杠杆是把准则前置**（与 finding 级先例同形），而且必须照那条先例的**完整形态**做：前置**并**在尾部重述，因为那条先例记录的是"只前置、无尾部重述会系统性转严"。
 
