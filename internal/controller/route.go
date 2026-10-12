@@ -353,7 +353,7 @@ func (s *TAAState) saveModelSuccessLocked(resourceURL string) {
 // between them leaves either a model that no audit is owed for (nothing on disk
 // says an audit was pending, so a never-audited model reads as imported-and-fine)
 // or a pending audit for a model not yet marked imported (the next restart
-// quarantines a directory that may hold a previously audited model).
+// quarantines an import that may point at a previously audited model).
 func (s *TAAState) beginModelImportAndAudit(req importRequest, phase int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -594,7 +594,7 @@ func (s *TAAState) clearAuditState() {
 //
 // It is split from launching the goroutine so that "model is imported" and "an
 // audit is owed for it" become durable together. Launched first, the audit could
-// fail and clear the model before saveModelSuccess re-sealed it as imported.
+// fail and clear the imported marker before saveModelSuccess re-sealed it as imported.
 //
 // Scanning disabled means no audit is owed: auditAndReportModelImport returns
 // immediately, so writing the marker would leave a window in which a crash

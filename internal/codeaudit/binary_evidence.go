@@ -479,8 +479,8 @@ type BinaryConfig struct {
 	// blocking, not the cap.
 	//
 	// 50 rather than 200 because the evidence families number ten
-	// (NET_002/CMD_001/DYN_001/BIN_001/BIN_002/PKL_001/FIL_001/PER_001/ENV_001/
-	// OBF_001): fifty findings is five instances of every family, far past the
+	// (NET_002/CMD_001/DYN_001/BIN_001/BIN_002/PKL_001/FIL_002/PER_002/ENV_002/
+	// CMD_002): fifty findings is five instances of every family, far past the
 	// point where another instance changes the verdict. Worst case LLM calls go
 	// from 200 to 250, and only when both arms saturate - a state that already
 	// blocks regardless of how many calls it costs.

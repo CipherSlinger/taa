@@ -590,7 +590,7 @@ func (s *TAAState) stopActiveTraining(reason string) {
 //
 // The audit's in-memory and durable markers are set by beginModelImportAndAudit,
 // which must have sealed before this is called: launched first, a failing audit
-// would clear the model only for the import path to re-seal it as imported.
+// would clear the imported marker only for the import path to re-seal it as imported.
 func (s *TAAState) launchModelAudit(req importRequest, phase int) {
 	s.runAsyncSafe("modelAudit", func() {
 		s.clearAuditState()

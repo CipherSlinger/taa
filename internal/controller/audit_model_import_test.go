@@ -33,9 +33,9 @@ type treeEntry struct {
 }
 
 // snapshotTree records every file under dir as a path-sorted list of
-// (relative path, size, content digest). Directories are not recorded: an empty
-// directory is the residue a "cleanDirContents" style wipe leaves behind, and
-// counting it would let a wiped tree match a populated one. The digest is what
+// (relative path, size, content digest). Directories are not recorded: a
+// directory carries no content of its own, so the file entries are what
+// discriminate, and recording directories would add nothing. The digest is what
 // makes the comparison a statement about content rather than about names.
 func snapshotTree(t *testing.T, dir string) []treeEntry {
 	t.Helper()

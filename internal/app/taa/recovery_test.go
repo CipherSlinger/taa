@@ -20,8 +20,8 @@ import (
 )
 
 // snapshotTreeHashes 记录 dir 下每个文件的相对路径、大小与内容摘要（sha256），
-// 用于断言恢复后模型包逐字节原样保留（路径 + 大小 + 内容哈希）。目录本身不记录，
-// 因为空目录正是 "cleanDirContents" 式清空留下的残迹，记录它会让被清空的树与完整的树相等。
+// 用于断言恢复后模型包逐字节原样保留（路径 + 大小 + 内容哈希）。目录本身不记录：
+// 目录不携带自身内容，能区分快照的是文件条目，记录目录不会带来额外信息。
 func snapshotTreeHashes(t *testing.T, dir string) map[string]string {
 	t.Helper()
 	snap := make(map[string]string)

@@ -1484,7 +1484,7 @@ func containsString(haystack []string, needle string) bool {
 // What a structural bound costs a package is not decided here. Task 9's scanner
 // folds it through isExecutableKind: a windowed pickle or ELF is withheld, a
 // windowed raw blob is only recorded. This test asserts the record, not the
-// block, and must not be read as the place that decides deletion.
+// block, and must not be read as the place that decides whether to block or withhold.
 func TestStreamWithSizeSwitchWindowsAFileAboveTheFullScanBudget(t *testing.T) {
 	dir := t.TempDir()
 	const fullScan, window = 4096, 64
