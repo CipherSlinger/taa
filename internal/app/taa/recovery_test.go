@@ -2,18 +2,53 @@ package taa
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"taa/internal/controller"
 )
+
+// snapshotTreeHashes 记录 dir 下每个文件的相对路径、大小与内容摘要（sha256），
+// 用于断言恢复后模型包逐字节原样保留（路径 + 大小 + 内容哈希）。目录本身不记录，
+// 因为空目录正是 "cleanDirContents" 式清空留下的残迹，记录它会让被清空的树与完整的树相等。
+func snapshotTreeHashes(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	snap := make(map[string]string)
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(data)
+		snap[rel] = fmt.Sprintf("%d:%s", len(data), hex.EncodeToString(sum[:]))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot %s: %v", dir, err)
+	}
+	return snap
+}
 
 // setupTestRecoveryState 构造用于自愈测试的独立环境与状态实例
 func setupTestRecoveryState(t *testing.T) (*controller.TAAState, *controller.StateStore, string) {
@@ -164,7 +199,8 @@ func TestRecovery_CircuitBreaker(t *testing.T) {
 }
 
 // TestRecovery_ModelImportQuarantine 校验未审计模型代码安全隔离机制（规约 1）：
-// 若崩溃任务属于 model_import，强制物理清空 modelDir 中的未审计代码，并将 ModelImported 置为 false。
+// 若崩溃任务属于 model_import，仅复位 ModelImported = false；隔离只在状态层面发生，
+// modelDir 中的模型代码与依赖库保持上传原样，不得被删除或改动。
 func TestRecovery_ModelImportQuarantine(t *testing.T) {
 	state, store, _ := setupTestRecoveryState(t)
 
@@ -176,6 +212,9 @@ func TestRecovery_ModelImportQuarantine(t *testing.T) {
 	nestedDir := filepath.Join(state.Security.ModelDir, "subpkg")
 	_ = os.MkdirAll(nestedDir, 0o755)
 	_ = os.WriteFile(filepath.Join(nestedDir, "leak.sh"), []byte("#!/bin/sh\n"), 0o755)
+
+	// 恢复前对 modelDir 做逐字节快照
+	before := snapshotTreeHashes(t, state.Security.ModelDir)
 
 	// 模拟之前已被置位为 ModelImported
 	state.SaveModelSuccess("https://test.s3.com/model.tar.gz")
@@ -209,13 +248,16 @@ func TestRecovery_ModelImportQuarantine(t *testing.T) {
 		t.Fatalf("reconcileCrashRecovery model_import failed: %v", err)
 	}
 
-	// 验证 modelDir 已被物理清空
-	entries, err := os.ReadDir(state.Security.ModelDir)
-	if err != nil {
-		t.Fatalf("read modelDir: %v", err)
+	// 隔离是状态层面的：modelDir 必须逐字节原样保留，不得被删除或改动
+	after := snapshotTreeHashes(t, state.Security.ModelDir)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("quarantine changed the model package on disk: before=%v after=%v", before, after)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("expected modelDir to be empty after quarantine, but found %d entries", len(entries))
+	if _, err := os.Stat(unAuditedFile); err != nil {
+		t.Fatalf("recovery deleted the un-audited model code it must leave untouched: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(nestedDir, "leak.sh")); err != nil {
+		t.Fatalf("recovery deleted a nested package file it must leave untouched: %v", err)
 	}
 
 	// 验证 ModelImported 已被强制重置为 false
@@ -544,6 +586,9 @@ func TestRecovery_DualTrackDrain(t *testing.T) {
 // that an audit was owed — AuditPending is that record, and this is the startup
 // path that consumes it.
 //
+// The isolation it applies is a state rollback only: the import is refused and
+// the package is left exactly as it was uploaded, byte for byte.
+//
 // It is the activeTask==nil half of TestRecovery_ModelImportQuarantine.
 func TestRecovery_AbandonedAuditQuarantine(t *testing.T) {
 	state, store, _ := setupTestRecoveryState(t)
@@ -552,6 +597,9 @@ func TestRecovery_AbandonedAuditQuarantine(t *testing.T) {
 	if err := os.WriteFile(unAudited, []byte("import os; os.system('malicious')"), 0o644); err != nil {
 		t.Fatalf("write un-adjudicated model file: %v", err)
 	}
+
+	// 恢复前对 modelDir 做逐字节快照
+	before := snapshotTreeHashes(t, state.Security.ModelDir)
 
 	reports := make(chan map[string]any, 4)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -599,12 +647,14 @@ func TestRecovery_AbandonedAuditQuarantine(t *testing.T) {
 		t.Fatalf("reconcileAbandonedAudit failed: %v", err)
 	}
 
-	entries, err := os.ReadDir(state.Security.ModelDir)
-	if err != nil {
-		t.Fatalf("read modelDir: %v", err)
+	// The rollback is state only: the audit never deletes or modifies the package
+	// it was reading, so the un-adjudicated code has to be left byte-identical.
+	after := snapshotTreeHashes(t, state.Security.ModelDir)
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("the abandoned-audit rollback changed the package on disk: before=%v after=%v", before, after)
 	}
-	if len(entries) != 0 {
-		t.Errorf("un-adjudicated model code survived the restart: %d entries remain", len(entries))
+	if _, err := os.Stat(unAudited); err != nil {
+		t.Errorf("the abandoned-audit rollback deleted the model code it must leave untouched: %v", err)
 	}
 
 	persisted, err := store.UnsealState()
@@ -646,8 +696,9 @@ func TestRecovery_AbandonedAuditQuarantine(t *testing.T) {
 //
 // Deployments that do not scan seal ModelImported=true and never write a marker,
 // as do deployments whose audit has already concluded. Were the reconciliation
-// keyed on ModelImported instead of on the marker, every restart would wipe a
-// perfectly good model directory and report an audit that never happened.
+// keyed on ModelImported instead of on the marker, every restart would quarantine
+// a perfectly good model — clear its imported marker and report an audit that
+// never happened — even though the package on disk is untouched.
 func TestRecovery_NoPendingAudit_LeavesModelUntouched(t *testing.T) {
 	state, store, _ := setupTestRecoveryState(t)
 

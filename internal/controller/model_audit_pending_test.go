@@ -50,7 +50,8 @@ func TestModelImportSealsPendingWithModelImported(t *testing.T) {
 // TestScanDisabledSealsNoPending is the other side of the same seal: a deployment
 // that does not scan owes no audit, so it must not leave a marker. Were one left,
 // a crash before the (immediate) verdict would quarantine a model that never
-// needed auditing — every restart would wipe ModelDir.
+// needed auditing — every restart would clear its imported marker and report an
+// audit that never happened, though the package on disk is untouched.
 func TestScanDisabledSealsNoPending(t *testing.T) {
 	state, _ := setupTestState(t)
 	store, _ := createTestStateStore(t)
