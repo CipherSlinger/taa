@@ -117,7 +117,7 @@ func TestNewEngineRejectsTheNonSelectableChannelNames(t *testing.T) {
 // The rules path is the one thing Semgrep cannot run without, and its built-in
 // default is relative to the repository root, so a container that does not set
 // it is the expected mistake. Without this check that mistake surfaces as every
-// model import being blocked and its code deleted — indistinguishable, from the
+// model import being blocked — indistinguishable, from the
 // operator's side, from the scanner working correctly and finding something.
 func TestNewEngineValidatesTheSemgrepRulesAtConstruction(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "rules.yaml")

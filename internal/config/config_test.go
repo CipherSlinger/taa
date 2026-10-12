@@ -1075,7 +1075,7 @@ func TestLoadStartupConfigReadsTheSemgrepTimeout(t *testing.T) {
 // the daemon cannot honour fails where it is written.
 //
 // A negative deadline is not a shorter scan: it is a scan that is already
-// expired, so every import would fail closed with the model code deleted, and
+// expired, so every import would fail closed, and
 // the configuration that caused it would be the one line nobody re-reads. The
 // failure has to land on the operator's config, not on every import.
 func TestLoadStartupConfigRejectsANonPositiveSemgrepTimeout(t *testing.T) {

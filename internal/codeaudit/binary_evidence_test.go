@@ -1392,7 +1392,7 @@ func TestCollectELFEvidenceReportsACompressedSectionWithAnOutOfRangeSize(t *test
 // zero BinaryConfig to the defaults, as its peers do. Without that,
 // MaxStreamBytes of 0 spends the per-file budget before the first section, so
 // every executable section records a "0-byte per-file budget was spent"
-// structural bound and the package is deleted - a false block produced by a
+// structural bound and the import is refused - a false block produced by a
 // caller that knows about only one field. The same file under the default config
 // is clean, so the two must agree.
 func TestCollectELFEvidenceNormalizesAZeroConfig(t *testing.T) {

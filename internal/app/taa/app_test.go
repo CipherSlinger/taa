@@ -330,7 +330,7 @@ func TestBuildSecurityConfigResolvesTheConfiguredEngine(t *testing.T) {
 // Both cases below are configuration mistakes with consequences that look like
 // the scanner working: an unknown name would silently scan with another engine,
 // and a missing rules file fails every scan, which the import path reports as a
-// failed audit and deletes the model code for. Neither is diagnosable from the
+// failed audit. Neither is diagnosable from the
 // audit result, so both have to be refused here.
 func TestBuildSecurityConfigFailsFastOnAnUnusableEngine(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent-rules.yaml")

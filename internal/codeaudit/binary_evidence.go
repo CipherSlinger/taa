@@ -469,8 +469,8 @@ type BinaryConfig struct {
 	// It is deliberately not the source scanner's cap. The two channels are capped
 	// separately and the merge re-truncates neither, because a shared ceiling
 	// couples them in the one direction that costs a model package: reaching a cap
-	// sets Truncated, Truncated fails ProvesCleanScan, and a failed scan has the
-	// package deleted. A shared 200 would let a source arm carrying 190 findings
+	// sets Truncated, Truncated fails ProvesCleanScan, and a failed scan refuses
+	// the import. A shared 200 would let a source arm carrying 190 findings
 	// and a binary arm carrying 20 push a package that used to import into that
 	// state, and would choose which findings to drop by path order rather than by
 	// importance. Nothing recorded comes near either cap - the highest finding
@@ -483,7 +483,7 @@ type BinaryConfig struct {
 	// OBF_001): fifty findings is five instances of every family, far past the
 	// point where another instance changes the verdict. Worst case LLM calls go
 	// from 200 to 250, and only when both arms saturate - a state that already
-	// blocks and deletes regardless of how many calls it costs.
+	// blocks regardless of how many calls it costs.
 	MaxFindings int
 	// HighEntropyThreshold is the bits-per-byte above which a section or file is
 	// called near-random. Compiled code sits near 6.0-6.5; 7.5 is far enough
@@ -755,7 +755,7 @@ func collectELFReader(r io.ReaderAt, set *EvidenceSet, cfg BinaryConfig, name st
 	// the shape a caller that only knows about one field passes, and leaving it
 	// raw is not neutral here: MaxStreamBytes of 0 makes the per-file budget spent
 	// before the first section, so every executable section records a structural
-	// "0-byte budget was spent" bound and the package is deleted, and a
+	// "0-byte budget was spent" bound and the import is refused, and a
 	// HighEntropyThreshold of 0 flags every non-uniform section as packed. The
 	// zero value means "use the defaults", so it is resolved to them up front.
 	cfg = normalizeBinaryConfig(cfg)

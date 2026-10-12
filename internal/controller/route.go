@@ -389,9 +389,9 @@ func (s *TAAState) updateImportState(isModel bool, imported bool, phase int) {
 		if !imported {
 			s.SavedModelResourceURL = ""
 			s.RuntimeConfig = ""
-			// Dropping the model drops whatever audit was outstanding for it: the
-			// verdict can no longer apply to anything, so leaving the marker would
-			// quarantine an already-discarded model on the next restart.
+			// Dropping the model import drops whatever audit was outstanding for it:
+			// the verdict can no longer apply to anything, so leaving the marker
+			// would quarantine a model that is no longer imported on the next restart.
 			s.pendingAudit = nil
 		}
 	} else if !imported {

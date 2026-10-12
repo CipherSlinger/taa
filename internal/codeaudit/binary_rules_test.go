@@ -325,11 +325,11 @@ func TestBinaryTableStillFiresHighOnStructuralEvidence(t *testing.T) {
 // table, one family at a time, because that column is the only control that
 // decides whether a finding blocks. Under the default `assist` policy `Passed`
 // is `highCount == 0`; under `gate` it is `High == 0 && Medium == 0`, and a
-// false `Passed` makes internal/controller/import_processing.go:655-660 delete
-// the package. The two
-// policies therefore impose two different bars, and a family's severity has to
-// be right for both: the four string families are LOW, not MEDIUM, precisely
-// because MEDIUM would still delete once an operator switches to `gate`.
+// false `Passed` makes internal/controller/import_processing.go:655-660 refuse
+// the import and report the package as unsafe. The two policies therefore
+// impose two different bars, and a family's severity has to be right for both:
+// the four string families are LOW, not MEDIUM, precisely because MEDIUM would
+// still refuse the import once an operator switches to `gate`.
 //
 // TestBinaryTableProducesNoHighFindingsOnLegitimateInputs asserts silence at
 // HIGH only, which is the `assist` bar; this test is the other half, and the

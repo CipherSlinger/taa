@@ -1030,7 +1030,7 @@ func TestMergeBinaryFindingsKeepsBothChannelsFindings(t *testing.T) {
 }
 
 // TestMergeBinaryFindingsDoesNotFoldTheBinaryCapIntoTruncated pins the decision
-// that keeps the cap from deleting a package.
+// that keeps the cap from refusing an import.
 //
 // The binary arm's cap drops LOW findings and only LOW (see
 // BinaryScanner.ScanDirectory), and LOW blocks under neither policy, so it
@@ -1049,7 +1049,7 @@ func TestMergeBinaryFindingsDoesNotFoldTheBinaryCapIntoTruncated(t *testing.T) {
 	MergeBinaryFindings(report, res)
 
 	if report.Truncated {
-		t.Error("Truncated = true after the binary arm capped itself; the channel deleted a package for finding too much")
+		t.Error("Truncated = true after the binary arm capped itself; the channel refused a package for finding too much")
 	}
 	if !report.Passed {
 		t.Error("Passed = false although a capped listing is not a completeness gap: the cap drops only LOW")

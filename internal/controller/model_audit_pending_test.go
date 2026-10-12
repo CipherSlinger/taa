@@ -204,8 +204,9 @@ func TestAuditVerdictClearsPending(t *testing.T) {
 }
 
 // TestAuditFailureClearsPending is the failing-verdict half. The normal failure
-// path already drops the model; this pins that it drops the marker too, so a
-// restart does not re-quarantine a model that has already been discarded.
+// path already refuses the import and clears the imported marker; this pins that
+// it drops the marker too, so a restart does not re-quarantine a model that is no
+// longer imported.
 func TestAuditFailureClearsPending(t *testing.T) {
 	state, _ := setupTestState(t)
 	store, _ := createTestStateStore(t)

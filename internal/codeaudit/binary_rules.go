@@ -72,7 +72,7 @@ var binaryOnlyRules = map[string]Rule{
 	// The four families below carry free-string evidence and are LOW. Their ids
 	// are new rather than shared because PER_001 and CMD_001 are HIGH in the
 	// source table and FIL_001/ENV_001 are MEDIUM - and MEDIUM is not the safe
-	// level either, because under the gate policy it blocks and deletes too.
+	// level either, because under the gate policy it blocks the import too.
 	// Giving them LOW under a shared id would make the two arms
 	// disagree about a shared family's severity, which
 	// TestBinaryRulesBorrowSharedFamilies exists to prevent.
@@ -125,7 +125,7 @@ type binaryFamily struct {
 // narrowing is the fix for the false positives this table was measured to have.
 // A rule whose claim is a bare identifier or a substring catches every
 // legitimate file that happens to contain it - which for a model package means
-// a deleted package, not a noisy report.
+// a refused import, not a noisy report.
 var binaryFamilies = []binaryFamily{
 	{
 		// memfd_create and fexecve lead the table so that, if the general

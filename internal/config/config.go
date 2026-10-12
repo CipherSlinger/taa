@@ -271,8 +271,8 @@ func validateLLMTemperature(cfg StartupConfig) error {
 
 // validateSemgrepTimeout rejects a deadline the adapter cannot honour. A
 // negative duration is not a shorter scan: the deadline is already expired when
-// the scan starts, so every import fails closed and its model code is deleted,
-// and the cause is a line of configuration nothing re-reads. The failure belongs
+// the scan starts, so every import fails closed, and the cause is a line of
+// configuration nothing re-reads. The failure belongs
 // on the configuration, where an operator sees it at startup.
 func validateSemgrepTimeout(cfg StartupConfig) error {
 	if cfg.SemgrepTimeout < 0 {
