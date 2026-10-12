@@ -452,7 +452,6 @@
             <div class="row"><span class="path">&nbsp;&nbsp;├── log/</span><span class="chip is-side">旁路 · 不导出</span></div>
             <div class="row"><span class="path">&nbsp;&nbsp;└── progress/</span><span class="chip is-side">旁路 · 不导出</span></div>
 
-            <div class="row gap-top"><span class="path">/opt/taa/checkpoint/</span><span class="chip is-write">可写 · 跨任务保留</span></div>
             <div class="row gap-top"><span class="path">/opt/taa/models/</span><span class="chip is-read">你的源码 · 进程工作目录</span></div>
           </div>
         </div>
@@ -676,7 +675,6 @@
           <li><span class="box"></span><span>进度原子写入 <code>$TAA_PROGRESS_DIR</code>，<code>percent</code> 在 0–100 之间且单调不回退</span></li>
           <li><span class="box"></span><span>结束前写出 <code>&lt;output&gt;/training_result.json</code>，含 <code>training_task.metrics</code> 与 <code>dataset</code></span></li>
           <li><span class="box"></span><span>失败路径同样写出 <code>training_result.json</code>，或至少保证日志与进度可用</span></li>
-          <li><span class="box"></span><span>断点写入 <code>$TAA_CHECKPOINT_DIR</code>，入口处有恢复检测</span></li>
           <li><span class="box"></span><span>产物中没有原始数据副本、密钥、环境变量转储</span></li>
           <li><span class="box"></span><span>代码中不存在任何网络调用</span></li>
         </ul>
