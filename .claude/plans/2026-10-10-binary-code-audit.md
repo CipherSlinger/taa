@@ -99,7 +99,7 @@ go build ./... && go test ./internal/codeaudit/... ./internal/config/... ./inter
 10. **tar 不被解析**。`models/audit/holdout-sources/sr.tgz` 是 gzip 包 tar（解压后 10.66 MB、4933 个条目，一整个 `semgrep-rules-develop` 检出），解压后的字节会被读取并扫过 strings 通道，所以其中的字面量可见。**代价明确**：tar 的结构全部丢失——没有按成员归属、没有按成员分类（tar 里的 ELF 拿不到节区与导入符号证据）、也不会递归进 tar 里的归档；并且 tar 字节不会命中 pickle 门控（第 7 条），pickle 解释器不跑在它上面，tar 里的 pickle opcode 只有恰好构成可打印串时才以 strings 证据出现。
 11. **嵌套归档只递归一层**。`models/examples/Retina-DKD/Retina-DKD-code.zip` 把 `net_001.pth`/`net_005.pth` 作为成员携带，它们分类为 `KindArchive`；`collectArchive` 只对分类为 ELF 或 pickle 的成员下钻，因此这两个 checkpoint 不会被打开，其 `data.pkl` 永远到不了 pickle 解释器。**代价明确**：只装在 zip 里的 checkpoint 既不产出成员证据也不产出 pickle 目标；这一条现在由第 7 条的门控放大——解释器只跑在被声明为 pickle 的流上，而嵌套归档里那条流既没被声明、也没被下钻，没有第二次机会被发现；跳过是静默的（成员名与大小进了证据列表，但不置 `Bounded`）。
 12. **`.xlsx` 就是 zip**。语料里的 14 个 `.xlsx` 中 13 个是普通 zip（最坏压缩比 22.91，无炸弹形状，成员均分类为非可执行），第 14 个 `models/examples/Retina-DKD/Retina-DKD/test_result.xlsx` 是 OLE2 老式 `.xls` 顶着 `.xlsx` 名，不匹配任何魔数，落到 `KindRaw`。**代价明确**：当作 zip 的那 13 个只按普通容器处理（成员头嗅探 + 成员名/大小），内部的 XML 不进任何结构化解析；当 OLE2 的那一个只拿 strings 证据，不会因为扩展名被当成 zip 打开。
-13. **配置里只暴露五个上限，其余固定在 `DefaultBinaryConfig`，这是有判据的选择而不是遗漏**。有键的是 `maxArchiveMembers`、`maxFindings`、`maxFullScanBytes`、`maxStreamBytes`、`highEntropyThreshold`；没有键的是 `MaxEvidenceLines`（默认 50000）、`HeadTailBytes`、`MaxArchiveMemberBytes`、`MaxStringLen`/`MinStringLen`。判据是**越界之后留下什么**：越界只记 `Bound.Listing` 的天花板（如 `MaxEvidenceLines`）只影响显示、不阻断任何东西，让它固定是安全的；越界会记 `Bound.Structural` 的天花板，在可执行类型上会**阻断导入**，没有键就成了 operator 无法处置的阻断，所以必须暴露。`MaxStreamBytes` 正落在后者——它只有在一个通过了 `MaxFullScanBytes` 的文件上才可能被触到，所以把 `maxFullScanBytes` 抬到 3 GiB 以上就会让它生效；两个键因此成对出现，并在同一处校验。`maxFindings` 是这条判据的**例外，并且是刻意进例外名单的**：它既不是结构性天花板（触顶只记 `findings_capped`，不阻断），也不是显示上限（它确实会让清单少一段）——它是一个**清单预算**，而预算该多大取决于部署愿意为噪声付多少钱、以及它想要的报告有多长，这两件事只有 operator 知道。默认 50 是按十个族、每族五条定的，真实语料的最大 finding 数是 80（整语料）和 7（单样本），所以 50 只在单个包同时命中很多族时才可能被触到。**代价明确**：这五个以外的上限调不了，调它们要改代码重新部署；而 `maxFindings` 调小只会丢 LOW，永远不会让一个能阻断的 finding（`assist` 与 `gate` 下的 HIGH，以及 `gate` 下的 MEDIUM）消失。
+13. **配置里只暴露五个上限，其余固定在 `DefaultBinaryConfig`，这是有判据的选择而不是遗漏**。有键的是 `maxArchiveMembers`、`maxFindings`、`maxFullScanBytes`、`maxStreamBytes`、`highEntropyThreshold`；没有键的是 `MaxEvidenceLines`（默认 50000）、`HeadTailBytes`、`MaxArchiveMemberBytes`、`MaxStringLen`/`MinStringLen`。判据是**越界之后留下什么**。这里要先修正一处此前的误述：`Bound.Listing` 的天花板**不是"只影响显示"**——cap 就是匹配器的输入（`EvidenceSet.add` 在被 cap 拒绝的行上直接返回、不追加，`binary_scanner.go:242` 的 `MatchAll` 只读 `set.Lines`），被丢的是一条任何规则都没见过的行。所以 `80cecb3` 把 `else if set.Bound.Listing` 这段也按 kind 分流：可执行类型记 `BoundedExecutable`（丢的可能是阻断证据，于是 `ProvesCleanScan` 扣包），其余记 `BoundedData`（只可能丢自由字符串行，可见、不阻断）。分流按 kind 而不按 `Bound` 字段，是因为**能阻断的二进制 family 全都读结构来源**——`DYN_001`/`CMD_001`/`NET_002` 读 dynsym 与 `DT_NEEDED`、`BIN_001`/`BIN_002` 读节熵与导入符号、`PKL_001` 读 pickle 目标——而**只有可执行格式才产生这些行**；字符串那四个 family（`CMD_002`/`PER_002`/`FIL_002`/`ENV_002`）无一例外是 LOW，丢它们影响不了任何判定。这条判据因此落在**"这次越界能不能靠抬上限合法化解"**：`Bound.Structural` 的天花板在可执行类型上会**阻断导入**，而它触顶的形状正是"文件本来就很大"，抬上限是 operator 该有的出路，没有键就成了无法处置的阻断，所以必须暴露；`MaxEvidenceLines` 这类 `Bound.Listing` 天花板虽同样能在可执行类型上扣包，却**不给键**——触顶的形状是"单个文件把证据清单撑满了"，给一个调大的键等于把"这个文件不正常"换成"把门槛抬到够高就能过"，而出路本该是去看那个文件。`MaxStreamBytes` 正落在前者（记 `Bound.Structural`、必须暴露的那一类）——它只有在一个通过了 `MaxFullScanBytes` 的文件上才可能被触到，所以把 `maxFullScanBytes` 抬到 3 GiB 以上就会让它生效；两个键因此成对出现，并在同一处校验。`maxFindings` 是这条判据的**例外，并且是刻意进例外名单的**：它既不是结构性天花板（触顶只记 `findings_capped`，不阻断），也不是显示上限（它确实会让清单少一段）——它是一个**清单预算**，而预算该多大取决于部署愿意为噪声付多少钱、以及它想要的报告有多长，这两件事只有 operator 知道。默认 50 是按十个族、每族五条定的，真实语料的最大 finding 数是 80（整语料）和 7（单样本），所以 50 只在单个包同时命中很多族时才可能被触到。**代价明确**：这五个以外的上限调不了，调它们要改代码重新部署；而 `maxFindings` 调小只会丢 LOW，永远不会让一个能阻断的 finding（`assist` 与 `gate` 下的 HIGH，以及 `gate` 下的 MEDIUM）消失。
 14. **不存在"每节字节上限"，这是删除而不是省略**。曾有一版 `MaxSectionBytes`（默认 16 MiB），用来给 `io.ReadAll` 一个可执行节设上限；它会对**普通的大库**开火——一个足够大的 `.so`，`.text` 会跨过任何固定的节上限，而触顶记的是结构性 bound，于是"这个库比较大"变成了阻断导入的理由。**宿主实测**（`readelf -SW` 取每个真实共享对象最大的 `SHF_EXECINSTR` `PROGBITS` 节）：`libLLVM.so.20.1` 单节 **63 048 722 字节**、`libclang-18.so.18` **22 284 286**、Chrome 的 `liboptimization_guide_internal.so` **20 685 714**、`libwireshark.so.17.0.2` **20 175 571**、`libpython3.13.so.1.0` **2 770 082**——16 MiB 的节上限会在前四个上直接触顶。这与本计划其余部分的实测口径不同，值得点明：**审计语料 `models/` 下一个真实 `.so` 都没有**（`find models -name '*.so*'` 命中的 50 个全是 semgrep 的 `.sol` 规则文件），而用来标定误报的那套 ollama 共享库（28 个）单节最大 2 901 464 字节，**也不会**触到 16 MiB。也就是说这个上限的代价是**潜伏**的：它在任何已实测的输入上都不发作，只在一个包里带上一个真实大库时发作——而那正是本平台要接受的包形状（带加速库的模型包），所以它必须删掉而不是调大。现在节读取改为经 `countSection` 按固定块（`entropyChunkBytes`，64 KiB）流过 256 桶直方图，内存与节大小无关，节上限已无物可保护；每文件剩下的读取预算是 `MaxStreamBytes`，触到它才记结构性——宿主 600 个共享对象（去重后 **538** 个 ELF；把每个文件条目都算上是 **2027** 个）按这条路径全跑一遍，**0 个被判结构性、0 个无节表、0 个报错**，也就没有一个接近那个 3 GiB 的每文件预算。**代价明确**：调不了单个节的读取量（本来也不该调）；能调的只有每文件预算。**不要把它加回来**——加回来就是把"库比较大"重新变成阻断理由；也不要指望"把 16 MiB 调大一点"能解决，任何固定值都只是把发作点往后挪。
 15. **无节表（`len(ef.Sections) == 0`）的 ELF 记为结构性缺口，且 reason 只点名"没有节头表"**。熵检测的输入是可执行节，没有节表就没有可执行节，旧代码在这一段直接掉出去、不产生任何行也不产生任何 bound，于是"从未检查过"被报成了"没发现加壳"——这条 fail-open 已去掉。修的是**结论**而不是"补回 `DT_NEEDED`/`DT_SONAME`"：经 `PT_DYNAMIC` 恢复 needed/soname 需要先把 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移、再把 `DT_STRTAB` 的虚地址映射一次，这是一段独立的新解析逻辑，而它的产出对"有没有被加壳"不提供任何证据，所以本版不做。reason 措辞点名的是**节头表**而不是符号表：静态链接的二进制没有 `.dynsym` 但有 `.symtab`，它并不 stripped，说它"缺符号表"是假的；同理 `SHT_SYMTAB` **故意不做**符号证据的兜底来源——`.symtab` 里绝大多数是本文件自己定义的符号，拿它当能力证据就是去匹配程序自己的标识符，正是第 14 条那批误报的同一类。因此 Task 8 的规则表**不变**：没有引入新的 evidence source。宿主 600 个共享对象（去重后 538 个 ELF、枚举到 2027 个文件条目）里**0 个无节表**，所以这个形状在真实世界里确实少见——而恰恰因为它少见，"没见到"不能当成"不存在"，这才是它必须 fail-closed 而不是被静默略过的理由。**代价明确**：一个节表被删掉的正常文件（少见但存在，如某些加壳器与 `objcopy --strip-section-headers` 的产物）现在会被记为结构性缺口而不是干净通过；这是刻意方向——对可执行格式，"没看"不等于"干净"。
 16. **节声明长度越过文件末尾（或读不满）记为结构性缺口，`size=` 仍写声明长度**。判据是"读到的字节数 < 节头声明的字节数"，两种情况——`sh_offset`/`sh_size` 越过文件末尾，或触到 `MaxStreamBytes`——都是同一事实：熵值只覆盖一个**前缀**，所以这个数不报（报出来会和"整节测过"的数长得一样），替代它的是 `section .text declares N bytes, M readable` 这条结构化证据。`size=` 保持声明值，读者才能把声明长度与缺口配对看。**代价明确**：一个声明长度写错但内容正常的文件会被记为结构性缺口；这是刻意方向，理由同上。
@@ -655,11 +655,12 @@ type Bounding struct {
 	// clean-scan verdict, because the unread part is exactly where a payload
 	// would live.
 	Structural bool
-	// Listing is set when the evidence listing hit its line cap. The file was
-	// read; not every distinct string in it is in the report. This is recorded
-	// because a reader should be able to see it, and it does not withhold a
-	// verdict on its own: a binary with sixty thousand distinct strings is a
-	// large binary, not an unexamined one.
+	// Listing is set when the evidence listing hit its line cap, so distinct
+	// lines were dropped rather than displayed. It does not withhold a verdict on
+	// its own, but it is not display-only either: the dropped lines are matcher
+	// input that no rule was shown, so the consumer decides by kind - the scanner
+	// counts a capped listing on an executable format as a bounded executable
+	// read, because there the dropped lines can be blocking evidence.
 	Listing bool
 	// Reason names the limit that fired, for the report. It is a string rather
 	// than an enum so that adding a limit does not change a wire type.
@@ -731,10 +732,15 @@ func (s *EvidenceSet) markStructural(reason string) {
 // that one line was cut short at MaxStringLen. A listing never relabels a reason
 // already recorded - it writes only when Reason is empty - while a structural
 // reason does override one, because markStructural guards on Structural rather
-// than on Reason. That is the precedence we want: a structural limit is what
-// withholds a clean verdict, and a listing note that only affects what is
-// displayed must not speak for it. Among reasons of the same class the first
-// wins.
+// than on Reason. Among reasons of the same class the first wins.
+//
+// That precedence is not a claim that a listing bound is harmless. A dropped line
+// is a line the matcher was never shown: add returns before appending it, so the
+// listing is the matcher's input rather than a view of it. Whether this bound
+// withholds a clean verdict is therefore a decision for the consumer, which knows
+// the file's kind - the scanner counts it BoundedExecutable for a format that
+// executes, where the dropped lines can be blocking evidence, and BoundedData
+// otherwise.
 func (s *EvidenceSet) markListing(reason string) {
 	s.Bound.Listing = true
 	if s.Bound.Reason == "" {
@@ -2655,6 +2661,389 @@ gofmt -l internal/codeaudit/ ; go vet ./internal/codeaudit/
 git add internal/codeaudit/binary_evidence.go internal/codeaudit/binary_evidence_test.go
 git commit -m "feat(audit): resolve pickle call targets with an opcode interpreter"
 ```
+
+---
+
+### Task 4b: 无 magic 的协议 0/1 pickle 按内容认领
+
+> **为什么编号是 4b：** 它修的是 Task 4 立下的**认领规则**，不是新加一个子系统——`isPickleStream` 只靠扩展名认领协议 0/1，而改名是免费的。插入而不重排任务号，是为了不让 Task 5–15 的既有交叉引用全部漂移。
+
+**Files:**
+- Modify: `internal/codeaudit/binary_detect.go`
+- Test: `internal/codeaudit/binary_detect_test.go`
+- Test: `internal/codeaudit/binary_scanner_test.go`
+- Test: `internal/codeaudit/binary_evidence_test.go`
+
+**背景（已在源码上核实，不是推测）：** 协议 0/1 的 pickle 没有 magic。`isPickleStream` 只在尾部用扩展名（`.pkl`/`.pickle`/`.joblib`）认领它们，于是：
+
+- 一个协议 0 pickle 改名 `model.bin` / `model.pt` / `payload.pth`（三者都在 `binaryExtensions` 里）→ `KindRaw`，pickle 解释器**不跑**；
+- 改名 `model.json`（不在 `binaryExtensions`、内容又是 ASCII）→ `KindText`，**连分类都不算二进制的**；
+- 改名后无扩展名 → `KindText`。
+
+三种情况 `PKL_001`(HIGH) **连无上限时都不触发**，而阻断家族没有一条读 `SourceStrings`，所以只剩 LOW 字符串 family → `passed=true`，恶意包被导入。改一个文件名即可，这是这个通道最核心那条 HIGH 规则的整条绕过。
+
+**但按内容认领的第一版规则经反例证伪，这里记下来：** 规则原文是"一个头能被**解释器自己**走到 `SourcePickle` 目标、且途中不置任何 `Bound.Structural` 的流，就是 pickle 流，无论它叫什么名字"。它错在 `i` 是协议 0 的 `INST` opcode，把**后两行**当作 module 和 name，于是再普通不过的 import 行也是操作数形状的：
+
+```go
+ClassifyBinary([]byte("import os\nos.system('x')\n"), "train.py") == KindPickle   // WRONG
+ClassifyBinary([]byte("import os\nimport sys\n"),  "train.py") == KindPickle      // 19 bytes, walks cleanly
+```
+
+后果不是表面文章：一个 `Claimed` 路径会被从源码臂的读取里摘掉（Task 11 的 `MergeBinaryFindings` 丢弃 `Claimed` 里每个路径的文本 finding），于是一个伪装成 pickle 的 `.py` 能藏住一条**源码** HIGH——这是规则**新引入**的绕过，不是文件本身的。更值得记住的是它**没被语料测量抓住**：2782 个真实 `.py`/`.pyc`/`.so` 里新认领 0 个，唯一抓住它的是既有的 `python_source_stays_text` 用例。教训：**"N 个真实文件里 0 个改变"不是一条规则对对抗性输入安全的证据**——真实文件在前 4 KiB 内就失步，反例只是一个 19 字节的文件。
+
+**修正后的认领规则：** 一个协议 0/1 流按内容认领需要**三个信号同时成立**：（1）扩展名不是源码臂读取的那种（`sourceExtensions`）；（2）头能被**解释器自己**走到 `SourcePickle` 目标、途中不置任何 `Bound.Structural`；（3）该目标是点分标识符（`pickleTargetRe`）。复用解释器而不是手写第二张 opcode 表——手写的校验器是 `operandOf` 的第二份拷贝，第一次新增 opcode 就会分叉，而分叉的代价是"认领了却解析失败"。
+
+- [ ] **Step 1: 写失败测试**
+
+追加到 `internal/codeaudit/binary_detect_test.go`（**新加函数，不要改既有的 `TestClassifyBinary` 表**，避免猜测它的字段形状；但既有的那张表——包括它的 `python_source_stays_text` 用例——必须**原样通过**，它就是信号 1（源码名一律不按内容认领）的验收判据）：
+
+```go
+// TestClassifyBinaryClaimsAProtocol01PickleByItsContent pins the claim rule for
+// the one pickle shape that has no magic. A protocol 0/1 stream is ASCII, so
+// neither the magic test nor looksBinary sees it, and the extension was the only
+// signal left - which made a rename the whole evasion.
+func TestClassifyBinaryClaimsAProtocol01PickleByItsContent(t *testing.T) {
+	// The classic protocol 0 payload: GLOBAL posix.system, then REDUCE over a
+	// one-element tuple. The interpreter resolves the GLOBAL to a SourcePickle
+	// line, and that line is what the claim rests on.
+	payload := []byte("cposix\nsystem\n(Vid\ntR.")
+	// A real protocol 0 pickle of a two-element list. It is a pickle, and it
+	// carries no module.attribute target, so there is no PKL_001 evidence to
+	// find in it.
+	noTarget := []byte("(lp0\nI1\naI2\na.")
+
+	cases := []struct {
+		name string
+		head []byte
+		path string
+		want BinaryKind
+	}{
+		{"a payload named .bin is claimed", payload, "model.bin", KindPickle},
+		{"a payload named .pt is claimed", payload, "model.pt", KindPickle},
+		{"a payload named .pth is claimed", payload, "payload.pth", KindPickle},
+		{"a payload named .json is claimed", payload, "model.json", KindPickle},
+		{"a payload with no extension is claimed", payload, "payload", KindPickle},
+		{"the extension's case does not decide it", payload, "MODEL.PT", KindPickle},
+
+		// An import line is operand-shaped: "i" is INST and takes the next two
+		// lines as its module and name, so this head walks and resolves a target.
+		// It is still a source file, and the sniff must not take it.
+		{"an import-led source head stays text",
+			[]byte("import os\nos.system('x')\n"), "train.py", KindText},
+		// The same head under a name the source arm does not read is not claimed
+		// either: the "target" it resolves is a line of text read as an operand,
+		// not a module.attribute pair.
+		{"an import-led head named .bin is not claimed",
+			[]byte("import os\nos.system('x')\n"), "model.bin", KindRaw},
+		// A real target is a dotted identifier, and the shape test must not
+		// overreach: this is the two-line protocol 0 pickle of an OrderedDict.
+		{"a dotted-identifier target is claimed",
+			[]byte("ccollections\nOrderedDict\np0\n."), "model.bin", KindPickle},
+		// The sniff refuses a source name; the extension set still claims one.
+		{"a source-named file with a pickle name is still claimed",
+			payload, "model.pkl", KindPickle},
+
+		{"a target-less pickle named .bin stays raw", noTarget, "model.bin", KindRaw},
+		{"a target-less pickle named .json stays text", noTarget, "model.json", KindText},
+		{"a target-less pickle named .pkl is still claimed by extension", noTarget, "model.pkl", KindPickle},
+
+		// A realistic source file: "#" is not an opcode, so the walk stops at
+		// byte 0 and the file stays with the channel that reads Python.
+		{"python source is not taken from the source channel",
+			[]byte("# -*- coding: utf-8 -*-\nimport os\nos.system('id')\n"), "train.py", KindText},
+		// The 3.10 .pyc magic begins 0x6f, which is the OBJ opcode: the walk takes
+		// "\r\r" as a module name and then runs out of head mid-operand, so no
+		// target is resolved. The coincidence is why the case is pinned.
+		{"a 3.10 pyc head is not claimed",
+			[]byte{0x6f, 0x0d, 0x0d, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00}, "m.cpython-310.pyc", KindRaw},
+		{"a 3.12 pyc head is not claimed",
+			[]byte{0xcb, 0x0d, 0x0d, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00}, "m.cpython-312.pyc", KindRaw},
+		{"a binary blob is not claimed",
+			[]byte{0x00, 0x01, 0x02, 0x63, 0x70, 0x6f, 0x73, 0x69, 0x78, 0x0a}, "weights.bin", KindRaw},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyBinary(tc.head, tc.path); got != tc.want {
+				t.Errorf("ClassifyBinary(%q, %q) = %q, want %q", tc.head, tc.path, got, tc.want)
+			}
+		})
+	}
+}
+```
+
+- [ ] **Step 1b: 钉住认领规则唯一的耦合（源码臂的默认扩展名）**
+
+追加到 `internal/codeaudit/binary_detect_test.go`：
+
+```go
+// TestSourceExtensionsCoverTheSourceArmsDefaults pins the one coupling the claim
+// rule rests on: every extension the source arm reads has to be one the sniff
+// refuses. The rule is not "these are source files", it is "another channel has
+// rules for this file, so this one does not take it" - and a language added to
+// the source arm without being added here would silently reopen the hole the
+// guard closes, because MergeBinaryFindings drops the text findings of every
+// claimed file.
+func TestSourceExtensionsCoverTheSourceArmsDefaults(t *testing.T) {
+	exts := DefaultConfig().Extensions
+	if len(exts) == 0 {
+		t.Fatal("the source arm's default extension list is empty, so this test asserts nothing")
+	}
+	for _, ext := range exts {
+		if !sourceExtensions[strings.ToLower(ext)] {
+			t.Errorf("the source arm reads %s and the pickle sniff would claim it: add it to sourceExtensions", ext)
+		}
+	}
+}
+```
+
+（`DefaultConfig()` 在 `internal/codeaudit/scanner.go:20`，返回 `Extensions: []string{".py"}`；所以这道护栏是包级常量而不是配置项——没有任何运行时配置项写 `Extensions`，`grep` 显示它只在那里被写入。）
+
+- [ ] **Step 2: 跑测试确认失败**
+
+```bash
+go test ./internal/codeaudit/ -run 'TestClassifyBinaryClaimsAProtocol01PickleByItsContent' -count=1 2>&1 | head -20
+```
+
+预期：七条 FAIL——前六条与新增的 `"a dotted-identifier target is claimed"`（`want "pickle"`，得到 `"raw"` 或 `"text"`）。其余各条此时应当已经通过——它们钉的是"不许扩张"，失败说明规则写歪了。
+
+- [ ] **Step 3: 实现**
+
+修改 `internal/codeaudit/binary_detect.go`。`isPickleStream` 增加按内容认领的手臂，并新增 `sourceExtensions` / `pickleTargetRe` 两个声明与探测函数（`regexp` 因此成为该文件的新 import）：
+
+```go
+// sourceExtensions are the extensions the source arm reads, and the pickle sniff
+// never claims one of them.
+//
+// It is not a second opinion about what source is. What makes a file a source
+// file here is that another channel has rules for it: a claimed file is dropped
+// from that channel's reading (MergeBinaryFindings keeps no text finding for a
+// path in Claimed), so claiming a source file would leave it read by neither -
+// this channel would discard its text findings and the source arm would not be
+// believed about it. An import line is exactly the shape of a protocol 0 target -
+// "i" is INST, which consumes the next two lines as its module and name, so
+// "import os\nos.system('x')\n" walks cleanly and resolves one - which is why the
+// extension, and not the walk, is what separates the two readings.
+//
+// TestSourceExtensionsCoverTheSourceArmsDefaults pins the correspondence, so a
+// language added to the source arm has to be added here in the same change.
+var sourceExtensions = map[string]bool{
+	".py": true,
+}
+
+// isPickleStream reports whether head begins a pickle stream.
+//
+// Pickle protocols 2 and up begin with PROTO (0x80) followed by the protocol
+// number, which is a magic. Protocols 0 and 1 have no magic at all: a protocol 0
+// pickle of a tuple is the single byte "(", and a payload is ASCII to the last
+// byte. For those the extension used to be the only signal, and that left a
+// rename as the whole evasion - "cposix\nsystem\n(Vid\ntR." named model.bin,
+// model.pt or payload.pth was classified raw, and named model.json it was
+// classified text, and either way the interpreter never ran and PKL_001 could
+// not fire.
+//
+// So a protocol 0/1 stream is claimed by its content. Three signals decide it,
+// and each one closes a hole the others leave open:
+//
+//   - The extension is not one the source arm reads. See sourceExtensions: a
+//     claimed file is dropped from the source arm's reading, so a crafted source
+//     file shaped like a pickle could hide a source finding.
+//   - The head walks to a target with no structural mark on the way.
+//   - The target is shaped like one. See sniffProtocol01Pickle: without this, an
+//     import line resolves "mport os.os.system('x')", which is a line of text
+//     read as an operand rather than a target.
+//
+// The extension set stays as the last signal, where it still catches a protocol
+// 0/1 stream whose target lies past the head and a source-named file that the
+// sniff refuses: a .pkl is a pickle whatever its bytes look like.
+func isPickleStream(head []byte, path string) bool {
+	if len(head) >= 2 && head[0] == 0x80 && head[1] >= 0x02 && head[1] <= 0x05 {
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".pkl", ".pickle", ".joblib":
+		return true
+	}
+	if sourceExtensions[ext] {
+		return false
+	}
+	return sniffProtocol01Pickle(head)
+}
+
+// sniffProtocol01Pickle reports whether head begins a pickle stream that the
+// unpickler would resolve a module.attribute target in.
+//
+// It asks the interpreter rather than a second opcode table. The claim has to
+// agree with the parse that follows it, and a hand-written validator would be a
+// second copy of operandOf, drifting the first time an opcode is added - and a
+// claim that then fails to parse is not a wasted pass, it is a file counted
+// BoundedExecutable.
+//
+// Three conditions, all required:
+//
+//   - No structural mark. A mark means the walk desynchronised - an unknown
+//     opcode, an operand past pickleMaxOperandBytes, an overrun stack or memo -
+//     and a stream that cannot survive its own head is not one to claim.
+//   - At least one SourcePickle line, because a stream with no module.attribute
+//     target carries no PKL_001 evidence and the claim is not free: a claimed
+//     file is read by the pickle interpreter instead of the string scanner.
+//   - That line is shaped like a target. GLOBAL, INST and OBJ take their operands
+//     as newline-terminated lines, so any two lines of text read as one - "import
+//     os" resolves "mport os.os.system('x')". A module.attribute pair cannot
+//     contain a space or a bracket, and requiring that is what tells a stream
+//     from a text file that happens to line up.
+//
+// Flush is deliberately not called. A head is a prefix, so "no STOP yet" is the
+// expected state at this offset, and Flush reads exactly that as a stream that
+// ended without STOP.
+//
+// The claim is made about a prefix. A file that walks cleanly to the end of the
+// head and desynchronises past it is still claimed, and the scanner then counts
+// it BoundedExecutable and withholds the pass - the fail-closed direction, with
+// the bound visible in the report rather than silent.
+func sniffProtocol01Pickle(head []byte) bool {
+	if len(head) == 0 {
+		return false
+	}
+	probe := newEvidenceSet("", KindPickle, BinaryConfig{})
+	p := newPickleScanner(probe)
+	_, _ = p.Write(head)
+	if probe.Bound.Structural {
+		return false
+	}
+	for _, line := range probe.Lines {
+		if line.Source == SourcePickle && pickleTargetRe.MatchString(line.Text) {
+			return true
+		}
+	}
+	return false
+}
+
+// pickleTargetRe is the shape of a resolved module.attribute target: a dotted
+// identifier, at least one dot, because recordTarget writes "module.name". A line
+// that is not this shape came from a walk that consumed text as an operand.
+var pickleTargetRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$`)
+```
+
+（`binary_detect.go` 的 import 需要**新增 `regexp`**——`pickleTargetRe` 用它编译形状正则；`bytes`、`path/filepath`、`strings` 已在，`newEvidenceSet`/`newPickleScanner`/`BinaryConfig`/`SourcePickle` 同包。）
+
+- [ ] **Step 4: 端到端测试——通道真的报出 PKL_001**
+
+追加到 `internal/codeaudit/binary_scanner_test.go`（夹具请沿用该文件既有的写法；下面的 `writeFixture` 只是占位，换成文件里已有的辅助函数）：
+
+```go
+// TestBinaryScannerClaimsAProtocol01PickleNamedAsWeights runs the claim rule
+// through the channel. The file's name is the one the extension set reads as a
+// raw blob, so the finding exists only if the interpreter ran.
+func TestBinaryScannerClaimsAProtocol01PickleNamedAsWeights(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, filepath.Join(dir, "model.bin"), "cposix\nsystem\n(Vid\ntR.")
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if res.Summary.Kinds[string(KindPickle)] != 1 {
+		t.Errorf("kinds = %v, want one pickle", res.Summary.Kinds)
+	}
+	// The claim must not, by itself, make the pass unprovable: the stream is a
+	// pickle and it parses, so nothing here is a look that did not happen.
+	if res.Summary.BoundedExecutable != 0 || res.Summary.BoundedData != 0 || res.Summary.Incomplete != 0 {
+		t.Errorf("summary = %+v, want no bounds on a clean parse", res.Summary)
+	}
+	var found bool
+	for _, f := range res.Findings {
+		if f.RuleID == "PKL_001" {
+			found = true
+			if f.Severity != SeverityHigh {
+				t.Errorf("PKL_001 severity = %q, want %q", f.Severity, SeverityHigh)
+			}
+			if f.BinaryKind != string(KindPickle) || f.EvidenceSource != string(SourcePickle) {
+				t.Errorf("finding provenance = (%q, %q), want (%q, %q)",
+					f.BinaryKind, f.EvidenceSource, KindPickle, SourcePickle)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no PKL_001 finding; findings = %+v", res.Findings)
+	}
+}
+```
+
+再追加一条钉住**残余**的测试（延迟失步只在头之后才暴露）。构造一个 ≥4096 字节、全程合法的前缀，再让头之后的字节失步：
+
+```go
+// TestBinaryScannerCountsAStreamThatDesynchronisesPastTheHead pins the accepted
+// residual of claiming a protocol 0/1 stream by its head: a file that walks
+// cleanly across the whole head and then hits an unknown opcode is still
+// claimed, and the scanner counts it BoundedExecutable. Withholding is the
+// fail-closed answer here, and the bound is in the report rather than silent.
+func TestBinaryScannerCountsAStreamThatDesynchronisesPastTheHead(t *testing.T) {
+	// A clean prefix: a GLOBAL target, then a MARK and thousands of pushed ints,
+	// so the first 4096 bytes are all legal opcodes.
+	var b strings.Builder
+	b.WriteString("cposix\nsystem\n")
+	b.WriteString("(")
+	for b.Len() < sniffBytes {
+		b.WriteString("I1\n")
+	}
+	b.WriteString("t")     // TUPLE: closes the MARK
+	b.WriteString("\x00junk") // the first byte the interpreter cannot read
+	dir := t.TempDir()
+	writeFixture(t, filepath.Join(dir, "model.bin"), b.String())
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if res.Summary.BoundedExecutable != 1 {
+		t.Errorf("bounded_executable = %d, want 1: summary = %+v", res.Summary.BoundedExecutable, res.Summary)
+	}
+}
+```
+
+（`strings` 可能要在该测试文件里 import；若已有则不加。）
+
+- [ ] **Step 5: 归档成员一并生效**
+
+`ClassifyBinary` 还有第二个调用点：`binary_evidence.go:1770`，对 zip 的每个成员分类，`KindPickle` 成员随后走 `collectPickleMember`。所以上面这条规则对归档内成员同样生效。追加一条测试到 `internal/codeaudit/binary_evidence_test.go`（沿用该文件既有的 zip 夹具写法）：一个 zip，成员名 `data.bin`，内容是协议 0 载荷；断言收集到的证据里存在 `SourcePickle` 行。
+
+- [ ] **Step 6: 用真实语料证伪（这一步是这次修复的关键证据，不要跳过）**
+
+在包内临时写一个测试文件（跑完**删除**，不要提交），对仓库里的真实文件调用 `ClassifyBinary`，逐类计数，重点回答四个问题：
+
+```bash
+ls models/examples/__pycache__ models/audit/tools/cpg/__pycache__ 2>/dev/null
+find models -name '*.pyc' | head
+find models -name '*.bin' -o -name '*.pt' -o -name '*.pth' 2>/dev/null | head
+```
+
+要求报告：
+1. 真实 `.pyc` / `.py` / `.so` 里**被新规则认领的有几个**——预期 0。若不是 0，把文件名和头几个字节带回来，规则太松。
+2. 用 `python3 -I -c 'import pickle,os;print(repr(pickle.dumps(os.system,0)))'` 之外的方式构造一个真实的协议 0 pickle（例如 `python3 -I -c 'import pickle,collections;print(repr(pickle.dumps(collections.OrderedDict,0)))'`），确认它**被认领**（`ccollections\nOrderedDict\np0\n.`）。
+3. 每个文件分类的额外耗时：把 `ClassifyBinary` 在一个真实目录上跑若干遍，给出每文件的平均微秒数，与"只做 magic + looksBinary 的旧路径"对比。数量级即可，不必精确。
+4. 有多少真实文件的头能一路走通、但被点分标识符形状拒掉（也就是旧规则会误认领的）？这个数就是信号 3 买回来的东西。
+
+**本轮实测结果（`/home/hjy/taa/models`，14 366 个文件）：**
+- `.py`/`.pyc`/`.so` 共扫 2782 个，**新认领 0 个**；其中 1715 个是 ≤4096 字节的 `.py`，643 个的首字节就是一个 pickle opcode——语料确实走到了这条路径上，只是没有一个被误认领。
+- `pickle.dumps(collections.OrderedDict, 0)` = `b'ccollections\nOrderedDict\np0\n.'` → **被认领**。
+- 耗时：完整分类 3.24 µs/文件，对照"只做 magic + looksBinary + 扩展名"的路径 1.38 µs/文件（3413 个文件 × 20 轮），即 **+1.9 µs/文件**。
+
+- [ ] **Step 7: 跑全包测试与提交**
+
+```bash
+gofmt -l internal/codeaudit/ ; go vet ./internal/codeaudit/
+go test ./internal/codeaudit/ -count=1
+go build ./...
+git add internal/codeaudit/binary_detect.go internal/codeaudit/binary_detect_test.go internal/codeaudit/binary_scanner_test.go internal/codeaudit/binary_evidence_test.go
+git commit -m "fix(audit): claim a protocol 0/1 pickle by its content, not its name"
+```
+
+预期：`gofmt -l internal/codeaudit/` 只列出既有的三个未格式化文件（`audit.go`、`llm.go`、`result_checker.go`），**严禁 `gofmt -w`**——它们在本任务之前就没格式化，动它们会把无关改动混进本次提交。
+
+> **取舍（必须写进代码注释，也必须让复审能挑战）：** 认领是对**前缀**做的，所以"头之后才失步"的文件仍会被认领、计 `BoundedExecutable`、导致扣包。这要求 ≥4KiB 的**真 pickle 前缀**后面接不上 STOP，本身就属于可疑文件，扣包是 fail-closed 的正确方向。上一轮讨论里提过"解析失败只记不扣包的 bound"，这里**没有**采纳：探测已经把"误认领"压到几乎不可能，为残余再引一条"试探性认领"的 provenance 管道，会去动 Task 9 已钉住的 `isExecutableKind` 不变式，代价大于收益。这个偏离要在提交说明和给用户的回报里讲清楚。
+
+> **另一条边界（不在本任务范围，须写进 Task 15 的 README）：** 认领靠内容，所以协议 0/1 的 pickle 无论叫什么都会被读；但**扩展名**手臂仍在，用于"目标在头之后"的协议 0/1 流（例如先来 50KiB BINSTRING 再来 GLOBAL 的协议 1 流，只有 `.pkl`/`.pickle`/`.joblib` 会被认领）。这是一条真实的残余边界，README 里要写明，不要假装覆盖完整。
 
 ---
 
@@ -7550,13 +7939,16 @@ type BinaryScanSummary struct {
 	// Kinds is the per-kind file count, so a reader can see what the package was
 	// made of without walking the findings.
 	Kinds map[string]int `json:"kinds,omitempty"`
-	// BoundedExecutable counts files whose structural extraction was cut short
-	// and whose format can carry an executed payload. A pass over one of these is
-	// not evidence of absence, and ProvesCleanScan withholds it.
+	// BoundedExecutable counts files whose evidence was cut short on a format that
+	// can carry an executed payload: a structural extraction that stopped early, or
+	// a capped listing whose dropped lines can be blocking evidence. A pass over
+	// one of these is not evidence of absence, and ProvesCleanScan withholds it.
 	BoundedExecutable int `json:"bounded_executable,omitempty"`
-	// BoundedData counts files whose extraction was cut short and whose format
-	// is data on this platform. It is recorded because a reader should see it,
-	// and it does not withhold a verdict: a bounded tensor blob cannot run.
+	// BoundedData counts files whose evidence was cut short on a format that is
+	// data on this platform, by either bound. It is recorded because a reader
+	// should see it, and it does not withhold a verdict: a bounded tensor blob
+	// cannot run, and a capped listing on one can only have dropped free-string
+	// lines, which no blocking family reads.
 	BoundedData int `json:"bounded_data,omitempty"`
 	// Incomplete counts paths the channel set out to examine and could not: a
 	// file that would not open, a file whose extraction failed, and a subtree the
@@ -7743,9 +8135,29 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 				res.Summary.BoundedData++
 			}
 		} else if set.Bound.Listing {
-			// A capped listing is a data bound for every kind: the file was read,
-			// and what is missing is evidence lines rather than unexamined bytes.
-			res.Summary.BoundedData++
+			// A capped listing splits by kind for the same reason a bounded read
+			// does, but it is not the same loss. The cap is the matcher's input:
+			// ScanDirectory matches over set.Lines, and EvidenceSet.add returns
+			// before appending a line the cap refuses, so a dropped line is a line
+			// no rule was shown. That is why this bound cannot be treated as
+			// display-only, and why the decision belongs to the consumer that knows
+			// the file's kind.
+			//
+			// On an executable format the loss reaches the blocking evidence. Every
+			// blocking family reads a structural source - dynsym, needed, entropy,
+			// pickle - and only an executable format emits those lines, while the
+			// free-string families are all LOW. So a capped .so or .pt can have its
+			// blocking line dropped without a trace, and it is counted
+			// BoundedExecutable so the Task 10 fold withholds the pass.
+			//
+			// On a data kind the cap can only have dropped free-string lines, and no
+			// blocking family reads those, so it stays BoundedData: visible in the
+			// report, not a look that did not finish.
+			if isExecutableKind(kind) {
+				res.Summary.BoundedExecutable++
+			} else {
+				res.Summary.BoundedData++
+			}
 		}
 
 		matches := s.matcher.MatchAll(set.Lines)
@@ -8085,11 +8497,16 @@ func (r *Report) ProvesCleanScan() bool {
 	// function that answers "did the scan look", and a check applied anywhere
 	// else is a check a later recomputation can drop.
 	//
-	// BoundedData and FindingsCapped are deliberately not read. A tensor blob
-	// whose listing was capped is a file that was read, and a package whose
-	// findings outran the listing budget is a pass that looked at everything and
-	// found too much; neither is a look that did not happen, and only a look that
-	// did not happen can make a pass a claim about absence.
+	// BoundedData and FindingsCapped are deliberately not read. BoundedData is a
+	// cut that landed on a kind which cannot execute - a raw blob or a tensor file
+	// - whether the cut was structural or a capped listing. Nothing on this
+	// platform runs such a file, and no blocking family reads the free-string
+	// source that a capped listing can drop from one, so a cut there cannot be
+	// hiding a blocking finding. FindingsCapped is a different thing again: it
+	// records the LOW findings the finding cap dropped, and LOW does not block
+	// under either policy (assist withholds on HIGH, gate on HIGH or MEDIUM).
+	// Neither is a look that did not happen, and only a look that did not happen
+	// can make a pass a claim about absence.
 	if b := r.Binary; b != nil {
 		if b.BoundedExecutable > 0 || b.Incomplete > 0 || b.Errored {
 			return false
@@ -9657,13 +10074,13 @@ go test ./... 2>&1 | grep -vE "^ok|no test files" | head -30
 
 Alongside source auditing, the import audit also walks the **binary files** in a model package, independent of the selected Tier 1 engine - it applies to both the regex-arm and the Semgrep-arm deployments.
 
-- **Identification**: by file content (ELF / zip container / gzip / pickle / numpy / other binary), with the extension only as a supplement. Renaming the suffix does not bypass it; a binary file named `.py` is claimed as well.
+- **Identification**: by file content (ELF / zip container / gzip / pickle / numpy / other binary), with the extension only as a supplement. Renaming the suffix does not bypass it; a binary file named `.py` is claimed as well. A file is read as a pickle when its head carries a pickle magic, when its name says `.pkl`/`.pickle`/`.joblib`, or - for the magic-less protocols 0 and 1 - when the head parses as a protocol 0/1 pickle stream carrying a `module.attribute` target - though that content claim applies only to files the source arm does not read (a `.py` is left to the source channel, since a claimed file's text reading is dropped).
 - **Evidence**: ELF dynamic-import symbols and `DT_NEEDED`, section layout and Shannon entropy, printable strings, container members (at most one level of recursion inside zip/gzip), pickle `GLOBAL`/`STACK_GLOBAL`/`INST` targets (read with a memo-table opcode interpreter), and head-plus-tail reads of 1 MiB each for files over 64 MiB (to catch a payload appended past the zip trailer, and to pin the per-file cost at roughly 190 ms).
 - **Verdict**: evidence lines are matched against the rule table and produce a `Finding` tagged with `binary_kind` / `evidence_source` / `binary_offset`. **Structural evidence** (ELF dynamic symbols, `DT_NEEDED`, entropy) goes through the shared rules `NET_002`/`CMD_001`/`DYN_001`, whose severity is read from the source rule table rather than restated; the binary-only rules are `BIN_001` (near-random executable-section entropy, HIGH), `BIN_002` (`memfd_create`/`fexecve`, HIGH) and `PKL_001` (pickle deserialization execution, HIGH). **String evidence** does not share the source arm's ids - `CMD_002`/`PER_002`/`FIL_002`/`ENV_002` are four independent LOW families, for the reason below: a finding can be HIGH only when it is backed by a structure a file cannot produce by accident, and a string constant is not; the source arm's same-named families `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` are HIGH/MEDIUM in the shared table, and borrowing them would lift "a certain word appeared in some literal" to blocking severity. `OBF_001` has **no** family in the binary arm: its old pattern `^[A-Za-z0-9+/]{120,}={0,2}$` fired on 23 of 28 legitimate shared libraries (long base64-alphabet strings are everywhere in `.pyc` constant pools and binary data), and neither narrowing the alphabet nor raising the floor fixes it, so only the source arm's call-site version is kept.
 - **Review**: binary findings go down the same LLM path as source findings; file-level analysis uses a binary-specific prompt (the existing prompt targets Python source and does not apply). **Honesty**: the file-level branch is reachable only when the caller implements `FileAnalyzer`, and the production `LLMClient` (`teellm.Client`) has no `AnalyzeFile`, so today it is driven only by test mocks and is not live behavior - exactly the existing situation of the source file path, which this plan does not change (see the two notes in Task 13).
-- **Completeness**: `scan_metadata.binary` records `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `errored` / `findings_capped` / `findings_dropped` / `max_findings`. A truncated structural extraction of an executable format, an unreadable file, or a whole-pass failure each makes `ProvesCleanScan()` false - under fail-closed that blocks the import; a truncated evidence read of a pure data file (tensor, npy) is recorded but does not block. **The finding cap is not part of completeness**: reaching it writes only `findings_capped`/`findings_dropped`, not `scan_metadata.truncated`, and does not block; the cap spends only the LOW tier, and the findings that can block - HIGH under `assist` and `gate`, MEDIUM under `gate` - are kept regardless of the budget.
+- **Completeness**: `scan_metadata.binary` records `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `errored` / `findings_capped` / `findings_dropped` / `max_findings`. Any gap that lands on a format that can execute (ELF, archive, pickle, compressed) makes `ProvesCleanScan()` false - a truncated structural extraction, a capped listing, an unreadable file, or a whole-pass failure - and under fail-closed that blocks the import; the same cut on a pure data file (raw blob, tensor) is recorded but does not withhold. The split is by kind rather than by which bound fired: a capped listing is the matcher's input, so on an executable kind it can drop blocking evidence, while on a data kind it can only drop LOW free-string lines. **The finding cap is not part of completeness**: reaching it writes only `findings_capped`/`findings_dropped`, not `scan_metadata.truncated`, and does not block; the cap spends only the LOW tier, and the findings that can block - HIGH under `assist` and `gate`, MEDIUM under `gate` - are kept regardless of the budget.
 - **Configuration**: `security.binaryAudit.enabled` (default `true`), `maxArchiveMembers`, `highEntropyThreshold`, `maxFindings` (default 50, independent of the source arm's 200; it is a listing budget, so lowering it drops only LOW findings and never a finding that can block - HIGH under `assist` and `gate`, MEDIUM under `gate` - and never blocks the import), `maxFullScanBytes` (default 64 MiB) and `maxStreamBytes` (default 3 GiB; paired with `maxFullScanBytes`, the former takes effect only once the latter is raised). Turning it off rolls back: the audit behaves byte-for-byte as before the channel was introduced.
-- **Boundaries**: PE/Mach-O are not structurally parsed (not loaded on this platform), xz/zstd/bzip2/7z containers and tar are not opened, plain-text non-source files are not audited, nested archives recurse only one level, and the pickle interpreter runs only on streams declared as pickle (so it does not claim a pickle appended past the end of a non-pickle file whose head carries no pickle magic). See the binary audit channel design notes for details.
+- **Boundaries**: PE/Mach-O are not structurally parsed (not loaded on this platform), xz/zstd/bzip2/7z containers and tar are not opened, plain-text non-source files are not audited, nested archives recurse only one level, and the pickle interpreter runs only on streams claimed as pickle - by magic, by name, or by a protocol 0/1 target the head parses to. One residual boundary follows from the claim being made about the 4 KiB head: a protocol 0/1 stream whose `module.attribute` target lies past the head (say, a protocol 1 stream that pushes a large BINSTRING before its GLOBAL) is claimed only by extension, so only a `.pkl`/`.pickle`/`.joblib` name reaches the interpreter; next to it is the source-named residual: a protocol 0/1 pickle named `.py` is not claimed by content and is only caught by extension; and a pickle appended past the end of a non-pickle file whose head carries no pickle magic is not claimed at all. See the binary audit channel design notes for details.
 ```
 
 - [ ] **Step 5: 提交**
