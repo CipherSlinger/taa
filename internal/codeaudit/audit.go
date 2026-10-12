@@ -662,10 +662,11 @@ func riskOrder(level string) int {
 // happen when it did.
 //
 // This is the only place the binary channel touches any completeness field on
-// Report, which is worth stating because the other three - ScanComplete,
-// ParserErrors and UnsupportedExts - are the source arm's and are read by
-// ProvesCleanScan as such. The binary channel's own gaps travel on
-// Report.Binary and are folded by that method; none of them is written here.
+// Report, which is worth stating because the other five - ScanComplete,
+// Truncated, ParserErrors, UnsupportedExts and ProcessExitCode - are the source
+// arm's and are read by ProvesCleanScan as such. The binary channel's own gaps
+// travel on Report.Binary and are folded by that method; none of them is written
+// here.
 func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
 	if report == nil || res == nil {
 		return
