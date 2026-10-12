@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>TAA 沙箱文件读写约定</title>
+<title>模型提供方文件读写约定</title>
 <meta name="description" content="模型代码在 TAA 沙箱内的目录布局、路径取值、日志/进度/结果/断点的写入格式与上线检查清单。">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -398,7 +398,7 @@
 
   <header class="masthead">
     <p class="eyebrow">TAA · 模型提供方手册</p>
-    <h1>沙箱文件读写约定</h1>
+    <h1>模型提供方文件读写约定</h1>
     <p class="standfirst">
       搬进可信沙箱执行的训练与推理代码，应该从哪里读文件、往哪里写文件，以及写的时候要遵守什么格式。
       按本手册改造后的代码不调用任何网络接口，也不需要引入专有依赖，在普通环境下同样能跑。
