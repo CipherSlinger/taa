@@ -1,0 +1,767 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TAA 沙箱文件读写约定</title>
+<meta name="description" content="模型代码在 TAA 沙箱内的目录布局、路径取值、日志/进度/结果/断点的写入格式与上线检查清单。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=swap">
+<style>
+  /* ── 设计令牌：冷青灰纸面 + 蓝绿强调色，语义色用于文件读写角色 ──────
+     布局：单栏正文（68ch 行宽），宽屏时左侧固定章节导航，窄屏自动堆叠 */
+  :root {
+    color-scheme: light;
+    --paper:      #f6f9f9;
+    --surface:    #ffffff;
+    --surface-2:  #edf3f4;
+    --surface-3:  #10232a;
+    --ink:        #13222b;
+    --ink-muted:  #56676f;
+    --ink-faint:  #7d8d94;
+    --rule:       #d6e0e2;
+    --rule-soft:  #e6edee;
+    --accent:     #0c6d73;
+    --accent-ink: #0a5b60;
+    --accent-soft:#dceff0;
+    --ok:         #2c7a4e;
+    --ok-soft:    #e0f0e7;
+    --warn:       #96620f;
+    --warn-soft:  #f7ecd8;
+    --danger:     #a2382f;
+    --danger-soft:#f8e5e2;
+    --code-ink:   #dbe9ec;
+    --code-key:   #7fd0d2;
+    --code-str:   #b9d68f;
+    --code-punc:  #7f9aa2;
+
+    --font-display: "Noto Serif SC", "Songti SC", "SimSun", serif;
+    --font-body:    "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+    --font-mono:    "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+    --step--1: 0.8125rem;
+    --step-0:  1rem;
+    --step-1:  1.125rem;
+    --step-2:  1.375rem;
+    --step-3:  1.875rem;
+    --step-4:  2.5rem;
+
+    --rail: 232px;
+    --gutter: 22px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --paper:      #0d1618;
+      --surface:    #131f22;
+      --surface-2:  #1a282c;
+      --surface-3:  #0a1315;
+      --ink:        #e4edef;
+      --ink-muted:  #9badb3;
+      --ink-faint:  #7a8c92;
+      --rule:       #26363a;
+      --rule-soft:  #1d2b2f;
+      --accent:     #4fc0c2;
+      --accent-ink: #7ad4d6;
+      --accent-soft:#123236;
+      --ok:         #63b98a;
+      --ok-soft:    #12301f;
+      --warn:       #d0a04a;
+      --warn-soft:  #2e2412;
+      --danger:     #e28d84;
+      --danger-soft:#331916;
+      --code-ink:   #dbe9ec;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --paper:      #0d1618;
+    --surface:    #131f22;
+    --surface-2:  #1a282c;
+    --surface-3:  #0a1315;
+    --ink:        #e4edef;
+    --ink-muted:  #9badb3;
+    --ink-faint:  #7a8c92;
+    --rule:       #26363a;
+    --rule-soft:  #1d2b2f;
+    --accent:     #4fc0c2;
+    --accent-ink: #7ad4d6;
+    --accent-soft:#123236;
+    --ok:         #63b98a;
+    --ok-soft:    #12301f;
+    --warn:       #d0a04a;
+    --warn-soft:  #2e2412;
+    --danger:     #e28d84;
+    --danger-soft:#331916;
+    --code-ink:   #dbe9ec;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { background: var(--paper); }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: var(--step-0);
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding-block: 0 72px;
+    padding-inline: var(--gutter);
+  }
+
+  /* ── 页眉 ─────────────────────────────────────────────── */
+  .masthead {
+    border-bottom: 1px solid var(--rule);
+    padding-block: 44px 30px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: var(--step--1);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0;
+  }
+  h1 {
+    font-family: var(--font-display);
+    font-size: var(--step-4);
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: 0.01em;
+    text-wrap: balance;
+    margin: 0;
+  }
+  .standfirst {
+    max-width: 62ch;
+    color: var(--ink-muted);
+    margin: 0;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+
+  .chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.02em;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--rule);
+    background: var(--surface);
+    color: var(--ink-muted);
+    white-space: nowrap;
+  }
+  .chip.is-read  { color: var(--ink-muted); border-color: var(--rule); background: var(--surface-2); }
+  .chip.is-write { color: var(--ok);        border-color: var(--ok);  background: var(--ok-soft); }
+  .chip.is-ship  { color: var(--accent-ink);border-color: var(--accent); background: var(--accent-soft); }
+  .chip.is-side  { color: var(--warn);      border-color: var(--warn); background: var(--warn-soft); }
+
+  /* ── 主体网格 ─────────────────────────────────────────── */
+  .body-grid {
+    display: grid;
+    grid-template-columns: var(--rail) minmax(0, 1fr);
+    gap: 48px;
+    padding-top: 40px;
+    align-items: start;
+  }
+  @media (max-width: 940px) {
+    .body-grid { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+    .rail { position: static !important; order: 2; border-top: 1px solid var(--rule); padding-top: 22px; }
+  }
+
+  .rail { position: sticky; top: 22px; }
+  .rail-title {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 10px;
+  }
+  .rail ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  .rail a {
+    display: flex;
+    gap: 10px;
+    padding: 5px 8px;
+    border-radius: 5px;
+    color: var(--ink-muted);
+    text-decoration: none;
+    font-size: 0.9375rem;
+    line-height: 1.45;
+    border-left: 2px solid transparent;
+  }
+  .rail a:hover, .rail a:focus-visible { background: var(--surface-2); color: var(--ink); }
+  .rail a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .rail .num { font-family: var(--font-mono); font-size: 0.75rem; color: var(--ink-faint); padding-top: 3px; }
+
+  main { display: flex; flex-direction: column; gap: 46px; min-width: 0; }
+  main > section { scroll-margin-top: 20px; }
+
+  h2 {
+    font-family: var(--font-display);
+    font-size: var(--step-3);
+    font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: 0.01em;
+    margin: 0 0 4px;
+    text-wrap: balance;
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+  }
+  h2 .num { font-family: var(--font-mono); font-size: 0.9375rem; color: var(--accent); font-weight: 500; }
+  h3 {
+    font-family: var(--font-body);
+    font-size: var(--step-1);
+    font-weight: 700;
+    margin: 0 0 6px;
+    letter-spacing: 0.005em;
+  }
+  p { margin: 0 0 14px; max-width: 68ch; }
+  section > p:last-child, section > *:last-child { margin-bottom: 0; }
+  .lede { color: var(--ink-muted); margin-bottom: 20px; }
+  strong { font-weight: 700; }
+  a { color: var(--accent-ink); text-underline-offset: 3px; }
+
+  ul.plain, ol.plain { margin: 0 0 16px; padding-left: 1.15em; max-width: 68ch; display: flex; flex-direction: column; gap: 7px; }
+  ul.plain li::marker { color: var(--accent); }
+  ol.plain li::marker { color: var(--accent); font-family: var(--font-mono); font-size: 0.875em; }
+
+  /* ── 目录契约面板 ─────────────────────────────────────── */
+  .tree-card {
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    background: var(--surface);
+    overflow: hidden;
+    margin-bottom: 20px;
+  }
+  .tree-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--rule-soft);
+    background: var(--surface-2);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .tree { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 2px; overflow-x: auto; }
+  .row { display: flex; align-items: center; gap: 12px; white-space: nowrap; }
+  .row.gap-top { margin-top: 12px; }
+  .path {
+    font-family: var(--font-mono);
+    font-size: 0.875rem;
+    color: var(--ink);
+    min-width: 0;
+  }
+  .row .chip { margin-left: auto; }
+
+  /* ── 表格 ─────────────────────────────────────────────── */
+  .table-wrap { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9375rem; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+  th {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 500;
+    background: var(--surface-2);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.mono, th.mono, .mono { font-family: var(--font-mono); font-size: 0.8125rem; }
+  td .req-yes { color: var(--accent-ink); font-weight: 500; }
+  td .req-no  { color: var(--ink-faint); }
+  td { font-variant-numeric: tabular-nums; }
+
+  /* ── 代码 ─────────────────────────────────────────────── */
+  pre {
+    margin: 0 0 18px;
+    padding: 15px 17px;
+    border-radius: 10px;
+    background: var(--surface-3);
+    border: 1px solid var(--rule);
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.65;
+    color: var(--code-ink);
+    tab-size: 2;
+  }
+  code { font-family: var(--font-mono); font-size: 0.875em; }
+  p code, li code, td code {
+    background: var(--surface-2);
+    border: 1px solid var(--rule-soft);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--accent-ink);
+    white-space: nowrap;
+  }
+  .k { color: var(--code-key); }
+  .s { color: var(--code-str); }
+  .c { color: var(--code-punc); }
+
+  /* ── 规则清单 ─────────────────────────────────────────── */
+  .rules { display: flex; flex-direction: column; gap: 12px; margin: 0 0 18px; padding: 0; list-style: none; }
+  .rules li {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+    max-width: 68ch;
+  }
+  .rules .mark {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.75;
+    color: var(--accent);
+  }
+
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    border-radius: 0 8px 8px 0;
+    padding: 12px 16px;
+    margin: 0 0 18px;
+    max-width: 68ch;
+  }
+  .callout p { margin: 0; max-width: none; font-size: 0.9375rem; }
+  .callout.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+
+  /* ── 检查清单 ─────────────────────────────────────────── */
+  .checklist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; background: var(--rule-soft); }
+  .checklist li {
+    display: grid;
+    grid-template-columns: 26px minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+    padding: 10px 14px;
+    background: var(--surface);
+    font-size: 0.9375rem;
+  }
+  .checklist .box {
+    width: 15px; height: 15px;
+    margin-top: 5px;
+    border: 1.5px solid var(--ink-faint);
+    border-radius: 4px;
+  }
+
+  footer {
+    margin-top: 56px;
+    padding-top: 20px;
+    border-top: 1px solid var(--rule);
+    color: var(--ink-faint);
+    font-size: var(--step--1);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+
+  /* ── 打印 ─────────────────────────────────────────────── */
+  @media print {
+    :root { --paper: #fff; --surface: #fff; --surface-2: #fff; --surface-3: #f2f5f6; --rule: #bbb; --rule-soft: #ddd; }
+    body { font-size: 10.5pt; }
+    .rail { display: none; }
+    .body-grid { grid-template-columns: minmax(0, 1fr); padding-top: 0; gap: 0; }
+    main { gap: 24px; }
+    main > section { break-inside: avoid-page; }
+    pre, .table-wrap, .tree-card { break-inside: avoid; }
+    a { color: inherit; text-decoration: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <header class="masthead">
+    <p class="eyebrow">TAA · 模型提供方手册</p>
+    <h1>沙箱文件读写约定</h1>
+    <p class="standfirst">
+      搬进可信沙箱执行的训练与推理代码，应该从哪里读文件、往哪里写文件，以及写的时候要遵守什么格式。
+      按本手册改造后的代码不调用任何网络接口，也不需要引入专有依赖，在普通环境下同样能跑。
+    </p>
+    <div class="chips">
+      <span class="chip is-read">输入只读</span>
+      <span class="chip is-ship">产物集中在一处</span>
+      <span class="chip is-write">原子写入</span>
+      <span class="chip is-side">日志与进度是旁路</span>
+    </div>
+  </header>
+
+  <div class="body-grid">
+
+    <nav class="rail" aria-label="章节导航">
+      <p class="rail-title">目录</p>
+      <ol>
+        <li><a href="#layout"><span class="num">01</span><span>目录布局</span></a></li>
+        <li><a href="#paths"><span class="num">02</span><span>路径怎么取</span></a></li>
+        <li><a href="#log"><span class="num">03</span><span>写日志</span></a></li>
+        <li><a href="#progress"><span class="num">04</span><span>写进度</span></a></li>
+        <li><a href="#result"><span class="num">05</span><span>写结果汇总</span></a></li>
+        <li><a href="#checkpoint"><span class="num">06</span><span>写断点</span></a></li>
+        <li><a href="#forbidden"><span class="num">07</span><span>禁止事项</span></a></li>
+        <li><a href="#checklist"><span class="num">08</span><span>上线前检查清单</span></a></li>
+      </ol>
+    </nav>
+
+    <main>
+
+      <!-- 01 -->
+      <section id="layout">
+        <h2><span class="num">01</span><span>目录布局</span></h2>
+        <p class="lede">沙箱内固定提供以下目录，训练代码只与它们打交道。</p>
+
+        <div class="tree-card">
+          <div class="tree-head"><span>沙箱文件系统</span><span>角色</span></div>
+          <div class="tree">
+            <div class="row"><span class="path">/opt/taa/input/</span><span class="chip is-read">只读</span></div>
+            <div class="row"><span class="path">&nbsp;&nbsp;├── train/ &nbsp; val/ &nbsp; test/</span></div>
+            <div class="row"><span class="path">&nbsp;&nbsp;├── labels.csv</span></div>
+            <div class="row"><span class="path">&nbsp;&nbsp;└── weights/</span></div>
+
+            <div class="row gap-top"><span class="path">/opt/taa/output/</span><span class="chip is-write">可写</span></div>
+            <div class="row"><span class="path">&nbsp;&nbsp;├── result/</span><span class="chip is-ship">交付 · 唯一会被带出</span></div>
+            <div class="row"><span class="path">&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;├── weights/</span></div>
+            <div class="row"><span class="path">&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;├── training_result.json</span></div>
+            <div class="row"><span class="path">&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;└── test_result.xlsx</span></div>
+            <div class="row"><span class="path">&nbsp;&nbsp;├── log/</span><span class="chip is-side">旁路 · 不带出</span></div>
+            <div class="row"><span class="path">&nbsp;&nbsp;└── progress/</span><span class="chip is-side">旁路 · 不带出</span></div>
+
+            <div class="row gap-top"><span class="path">/opt/taa/checkpoint/</span><span class="chip is-write">可写 · 跨任务保留</span></div>
+            <div class="row gap-top"><span class="path">/opt/taa/models/</span><span class="chip is-read">你的源码 · 进程工作目录</span></div>
+          </div>
+        </div>
+
+        <p>三条硬性规则：</p>
+        <ol class="plain">
+          <li><strong>输入目录只读。</strong>不得在 <code>/opt/taa/input</code> 下创建、修改或删除任何文件，包括缓存与临时文件。</li>
+          <li><strong>产物集中在 <code>result/</code>。</strong><code>log/</code> 与 <code>progress/</code> 只是旁路通道；需要交付的文件一律放 <code>result/</code>。</li>
+          <li><strong>路径不要写死，也不要写相对路径。</strong>进程的工作目录是你的源码目录，相对路径会落到代码目录而不是产物目录。取值方式见下一节。</li>
+        </ol>
+      </section>
+
+      <!-- 02 -->
+      <section id="paths">
+        <h2><span class="num">02</span><span>路径怎么取</span></h2>
+        <p class="lede">启动你的命令时，命令文本与 <code>env</code> 的值都会做宏替换，同时注入一组环境变量。两种方式取到的是同一批真实路径。</p>
+
+        <h3>命令行宏</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>宏</th><th>替换为</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">&lt;input&gt; &lt;INPUT&gt; &lt;in&gt; &lt;IN&gt;</td><td>输入数据目录（默认 <code>/opt/taa/input</code>）</td></tr>
+              <tr><td class="mono">&lt;output&gt; &lt;OUTPUT&gt; &lt;out&gt; &lt;OUT&gt;</td><td>产物目录（默认 <code>/opt/taa/output/result</code>）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+<pre><span class="c">{</span>
+  <span class="s">"commands"</span><span class="c">:</span> [<span class="s">"python train_fusion.py --data-root &lt;input&gt; --output-dir &lt;output&gt; -e 150"</span>]<span class="c">,</span>
+  <span class="s">"env"</span><span class="c">:</span> <span class="c">{</span> <span class="s">"OMP_NUM_THREADS"</span><span class="c">:</span> <span class="s">"8"</span> <span class="c">}</span>
+<span class="c">}</span></pre>
+
+        <h3>环境变量</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>变量</th><th>含义</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">TAA_TASK_ID</td><td>本次任务标识</td></tr>
+              <tr><td class="mono">TAA_STARTED_AT</td><td>任务启动时间（RFC3339）</td></tr>
+              <tr><td class="mono">TAA_DATA_DIR<br>TAA_INPUT_DIR<br>TAA_MODEL_INPUT_DIR</td><td>输入数据目录</td></tr>
+              <tr><td class="mono">TAA_OUTPUT_DIR<br>TAA_MODEL_OUTPUT_DIR</td><td>产物目录</td></tr>
+              <tr><td class="mono">TAA_LOG_DIR</td><td>日志目录（默认 <code>/opt/taa/output/log</code>）</td></tr>
+              <tr><td class="mono">TAA_PROGRESS_DIR</td><td>进度文件位置（默认 <code>/opt/taa/output/progress/progress.json</code>）</td></tr>
+              <tr><td class="mono">TAA_CHECKPOINT_DIR<br>TAA_MODEL_CHECKPOINT_DIR<br>CIPHERFLOW_CHECKPOINT_DIR</td><td>断点目录</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>推荐写法是读环境变量、缺省回落到默认绝对路径：</p>
+
+<pre><span class="k">import</span> os
+<span class="k">from</span> pathlib <span class="k">import</span> Path
+
+INPUT_DIR  = Path(os.environ.get(<span class="s">"TAA_INPUT_DIR"</span>,  <span class="s">"/opt/taa/input"</span>))
+OUTPUT_DIR = Path(os.environ.get(<span class="s">"TAA_OUTPUT_DIR"</span>, <span class="s">"/opt/taa/output/result"</span>))
+LOG_DIR    = Path(os.environ.get(<span class="s">"TAA_LOG_DIR"</span>,    <span class="s">"/opt/taa/output/log"</span>))
+PROGRESS   = Path(os.environ.get(<span class="s">"TAA_PROGRESS_DIR"</span>, <span class="s">"/opt/taa/output/progress/progress.json"</span>))
+CKPT_DIR   = Path(os.environ.get(<span class="s">"TAA_CHECKPOINT_DIR"</span>, <span class="s">"/opt/taa/checkpoint"</span>))
+
+TASK_ID    = os.environ.get(<span class="s">"TAA_TASK_ID"</span>, <span class="s">"local-task"</span>)</pre>
+
+        <div class="callout">
+          <p>上面这些默认绝对路径即使直接硬编码也能正常工作：例如 <code>/opt/taa/output/result/xxx</code> 会被自动换算到实际产物目录。但环境变量优先，便于本地调试与路径调整。</p>
+        </div>
+      </section>
+
+      <!-- 03 -->
+      <section id="log">
+        <h2><span class="num">03</span><span>写日志</span></h2>
+        <p><strong>位置</strong>：<code>$TAA_LOG_DIR</code>（默认 <code>/opt/taa/output/log/</code>）。目录下所有 <code>*.jsonl</code> 与 <code>*.log</code> 文件都会被读取。</p>
+        <p><strong>格式</strong>：每行一个 JSON 对象，追加写入。</p>
+
+<pre><span class="c">{</span><span class="s">"timestamp"</span><span class="c">:</span> <span class="s">"2026-10-12T07:15:32Z"</span><span class="c">,</span> <span class="s">"message"</span><span class="c">:</span> <span class="s">"[Train] Epoch 3/150 finished - loss: 0.3821"</span><span class="c">}</span></pre>
+
+        <ul class="plain">
+          <li>消息字段取 <code>message</code>，也接受 <code>msg</code>；时间字段取 <code>timestamp</code>，也接受 <code>time</code>、<code>ts</code>。</li>
+          <li>时间戳可选；写了会显示为日志前缀。</li>
+          <li>也接受不含 JSON 的纯文本行；未识别的字段会被忽略，可以按需增加。</li>
+        </ul>
+
+        <p>必须遵守：</p>
+        <ul class="rules">
+          <li><span class="mark">01</span><span><strong>每行以换行符结尾。</strong>没有换行的尾部（包括正在写入的半行）不会被读取，直到换行符落盘为止。</span></li>
+          <li><span class="mark">02</span><span><strong>只追加，不覆盖、不回退。</strong>文件如果变小（被截断重写），会被当作新文件从头读取，导致日志重复。</span></li>
+          <li><span class="mark">03</span><span><strong>及时 flush</strong>，否则滞留在进程缓冲区的日志看不到。</span></li>
+        </ul>
+
+        <h3>参考实现</h3>
+<pre><span class="k">import</span> json
+<span class="k">from</span> datetime <span class="k">import</span> datetime, timezone
+
+<span class="k">class</span> ModelLogger:
+    <span class="k">def</span> __init__(self, log_dir, filename=<span class="s">"train.log"</span>):
+        self.path = Path(log_dir) / filename
+        self.path.parent.mkdir(parents=<span class="k">True</span>, exist_ok=<span class="k">True</span>)
+        self._file = open(self.path, <span class="s">"a"</span>, encoding=<span class="s">"utf-8"</span>)
+
+    <span class="k">def</span> log(self, message: str) -&gt; <span class="k">None</span>:
+        ts = datetime.now(timezone.utc).strftime(<span class="s">"%Y-%m-%dT%H:%M:%SZ"</span>)
+        self._file.write(json.dumps({<span class="s">"timestamp"</span>: ts, <span class="s">"message"</span>: str(message)},
+                                    ensure_ascii=<span class="k">False</span>) + <span class="s">"\n"</span>)
+        self._file.flush()          <span class="c"># 不 flush，日志会滞留在缓冲区</span>
+        print(message)              <span class="c"># 同时输出到控制台，便于本地调试</span>
+
+    <span class="k">def</span> close(self) -&gt; <span class="k">None</span>:
+        <span class="k">if</span> self._file <span class="k">and</span> <span class="k">not</span> self._file.closed:
+            self._file.flush()
+            self._file.close()</pre>
+
+        <div class="callout warn">
+          <p>每次任务开始前 <code>log/</code> 目录会被清空。不要依赖上一次运行留下的文件，每次运行重新创建。</p>
+        </div>
+      </section>
+
+      <!-- 04 -->
+      <section id="progress">
+        <h2><span class="num">04</span><span>写进度</span></h2>
+        <p><strong>位置</strong>：<code>$TAA_PROGRESS_DIR</code>，默认 <code>/opt/taa/output/progress/progress.json</code>。注意默认值是一个<strong>文件路径</strong>，不是目录。</p>
+
+<pre><span class="c">{</span>
+  <span class="s">"percent"</span><span class="c">:</span> 34.6525<span class="c">,</span>
+  <span class="s">"timestamp"</span><span class="c">:</span> <span class="s">"2026-10-12T07:15:32.123456Z"</span><span class="c">,</span>
+  <span class="s">"stage"</span><span class="c">:</span> <span class="s">"train"</span><span class="c">,</span>
+  <span class="s">"message"</span><span class="c">:</span> <span class="s">"Epoch 3/150 (Midpoint) [Batch 20/40, 50.0%] - loss: 0.3821, acc: 85.00%"</span><span class="c">,</span>
+  <span class="s">"epoch"</span><span class="c">:</span> 3<span class="c">,</span> <span class="s">"total_epochs"</span><span class="c">:</span> 150<span class="c">,</span>
+  <span class="s">"batch"</span><span class="c">:</span> 20<span class="c">,</span> <span class="s">"total_batches"</span><span class="c">:</span> 40<span class="c">,</span>
+  <span class="s">"loss"</span><span class="c">:</span> 0.3821<span class="c">,</span> <span class="s">"acc"</span><span class="c">:</span> 85.0
+<span class="c">}</span></pre>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>字段</th><th>必填</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">percent</td><td><span class="req-yes">是</span></td><td>0.0 – 100.0，也接受 <code>percentage</code>。越界或非数字会被忽略，进度将停在原处</td></tr>
+              <tr><td class="mono">timestamp</td><td><span class="req-no">否</span></td><td>RFC3339 / RFC3339Nano UTC，建议带微秒。缺失或格式非法时使用文件修改时间</td></tr>
+              <tr><td class="mono">stage · message<br>epoch · total_epochs<br>batch · total_batches<br>loss · acc</td><td><span class="req-no">否</span></td><td>用于平台展示；其余自定义字段同样不会报错</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>必须遵守：</p>
+        <ul class="rules">
+          <li><span class="mark">01</span><span><strong>原子写入。</strong>先写同目录下的临时文件，<code>fsync</code>，再 <code>os.replace</code> 覆盖。直接覆盖写会让读取方读到半截 JSON。</span></li>
+          <li><span class="mark">02</span><span><strong>只在有变化时写。</strong>只有 <code>(percent, timestamp)</code> 这一对与上次不同时才会被采用，重复写同样的值没有意义。</span></li>
+          <li><span class="mark">03</span><span><strong>建议节流。</strong>每个 batch 都落盘会拖慢训练；典型策略是距上次写入超过 0.2 秒、或进度变化超过 0.0001% 才写，关键里程碑强制写一次。</span></li>
+          <li><span class="mark">04</span><span><strong>建议单调不回退。</strong>进度回退会让进度条来回跳。</span></li>
+        </ul>
+
+        <h3>参考实现</h3>
+<pre><span class="k">import</span> json, os, time
+<span class="k">from</span> datetime <span class="k">import</span> datetime, timezone
+
+<span class="k">class</span> ProgressTracker:
+    <span class="k">def</span> __init__(self, progress_path, min_interval_seconds=0.2, min_percent_delta=0.0001):
+        self.path = Path(progress_path)
+        self.tmp_path = self.path.with_suffix(self.path.suffix + <span class="s">".tmp"</span>)
+        self.path.parent.mkdir(parents=<span class="k">True</span>, exist_ok=<span class="k">True</span>)
+        self.min_interval_seconds = min_interval_seconds
+        self.min_percent_delta = min_percent_delta
+        self._last_percent = -1.0
+        self._last_write_time = 0.0
+
+    <span class="k">def</span> update(self, percent, stage=<span class="k">None</span>, message=<span class="k">None</span>, force=<span class="k">False</span>, **extra) -&gt; bool:
+        percent = max(0.0, min(100.0, round(float(percent), 4)))
+        <span class="k">if</span> self._last_percent &gt;= 0.0:
+            percent = max(percent, self._last_percent)          <span class="c"># 单调不回退</span>
+        <span class="k">if</span> <span class="k">not</span> force <span class="k">and</span> self._last_percent &gt;= 0.0:
+            elapsed = time.time() - self._last_write_time
+            <span class="k">if</span> elapsed &lt; self.min_interval_seconds <span class="k">and</span> abs(percent - self._last_percent) &lt; self.min_percent_delta:
+                <span class="k">return</span> <span class="k">False</span>
+
+        payload = {
+            <span class="s">"percent"</span>: percent,
+            <span class="s">"timestamp"</span>: datetime.now(timezone.utc).strftime(<span class="s">"%Y-%m-%dT%H:%M:%S.%fZ"</span>),
+        }
+        <span class="k">if</span> stage:   payload[<span class="s">"stage"</span>] = stage
+        <span class="k">if</span> message: payload[<span class="s">"message"</span>] = message
+        payload.update({k: v <span class="k">for</span> k, v <span class="k">in</span> extra.items() <span class="k">if</span> v <span class="k">is</span> <span class="k">not</span> <span class="k">None</span>})
+
+        <span class="k">with</span> open(self.tmp_path, <span class="s">"w"</span>, encoding=<span class="s">"utf-8"</span>) <span class="k">as</span> f:
+            f.write(json.dumps(payload, ensure_ascii=<span class="k">False</span>, indent=2) + <span class="s">"\n"</span>)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(self.tmp_path, self.path)                    <span class="c"># 原子替换</span>
+
+        self._last_percent = percent
+        self._last_write_time = time.time()
+        <span class="k">return</span> <span class="k">True</span></pre>
+
+        <h3>建议的进度预算</h3>
+        <p>可按任务调整，原则是初始化与收尾都要覆盖，长循环中间要有细粒度变化。</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>区间</th><th>内容</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">0% – 2%</td><td>参数解析、模型构建、损失与优化器、DataLoader 就绪</td></tr>
+              <tr><td class="mono">2% – 96%</td><td>按 epoch 均分；epoch 内按 batch 平滑插值；每 epoch 开始、25%、50%、75%、收尾各强制写一次</td></tr>
+              <tr><td class="mono">96% – 100%</td><td>指标汇总、写 <code>training_result.json</code>、完成</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout warn">
+          <p>每次任务开始前进度文件会被删除。若进度长时间不动，平台侧看到的进度条也会停住。</p>
+        </div>
+      </section>
+
+      <!-- 05 -->
+      <section id="result">
+        <h2><span class="num">05</span><span>写结果汇总</span></h2>
+        <p><strong>位置</strong>：产物目录根部，即 <code>&lt;output&gt;/training_result.json</code>。</p>
+        <p>进程以退出码 0 结束后，该文件会被读取并与审计信息、数据校验和合并成最终报告。<strong>只有 <code>result/</code> 里的产物会被带出</strong>；进程非 0 退出时产物不会被收集。</p>
+
+<pre><span class="c">{</span>
+  <span class="s">"training_task"</span><span class="c">:</span> <span class="c">{</span>
+    <span class="s">"metrics"</span><span class="c">:</span> <span class="c">{</span>
+      <span class="s">"final_accuracy"</span><span class="c">:</span> 0.9425<span class="c">,</span>
+      <span class="s">"final_loss"</span><span class="c">:</span> 0.1352<span class="c">,</span>
+      <span class="s">"final_auc"</span><span class="c">:</span> 0.9810<span class="c">,</span>
+      <span class="s">"final_f1"</span><span class="c">:</span> 0.9380<span class="c">,</span>
+      <span class="s">"epochs"</span><span class="c">:</span> [
+        <span class="c">{</span><span class="s">"epoch"</span><span class="c">:</span> 1<span class="c">,</span> <span class="s">"accuracy"</span><span class="c">:</span> 0.6500<span class="c">,</span> <span class="s">"loss"</span><span class="c">:</span> 0.8500<span class="c">}</span><span class="c">,</span>
+        <span class="c">{</span><span class="s">"epoch"</span><span class="c">:</span> 2<span class="c">,</span> <span class="s">"accuracy"</span><span class="c">:</span> 0.8100<span class="c">,</span> <span class="s">"loss"</span><span class="c">:</span> 0.4200<span class="c">}</span><span class="c">,</span>
+        <span class="c">{</span><span class="s">"epoch"</span><span class="c">:</span> 3<span class="c">,</span> <span class="s">"accuracy"</span><span class="c">:</span> 0.9425<span class="c">,</span> <span class="s">"loss"</span><span class="c">:</span> 0.1352<span class="c">}</span>
+      ]
+    <span class="c">}</span>
+  <span class="c">}</span><span class="c">,</span>
+  <span class="s">"dataset"</span><span class="c">:</span> <span class="c">{</span>
+    <span class="s">"total_samples"</span><span class="c">:</span> 12500<span class="c">,</span>
+    <span class="s">"splits"</span><span class="c">:</span> <span class="c">{</span><span class="s">"train"</span><span class="c">:</span> 10000<span class="c">,</span> <span class="s">"test"</span><span class="c">:</span> 2500<span class="c">}</span>
+  <span class="c">}</span>
+<span class="c">}</span></pre>
+
+        <ul class="plain">
+          <li><code>training_task.metrics</code> 与 <code>dataset</code> 是实际被采集的两块内容，指标键名自定。</li>
+          <li><strong>无需填写</strong> <code>task_id</code>、<code>started_at</code>、<code>finished_at</code>、<code>duration_seconds</code>、<code>status</code>、<code>exit_code</code>、<code>failure_reason</code>：这些由运行侧统一填写，你写了也会被覆盖。</li>
+          <li><code>dataset</code> 中不要使用 <code>data_structure</code> 字段。</li>
+          <li>文件缺失不会导致任务失败，但报告里就没有你的指标。<strong>无论成功失败都应尽量写出该文件。</strong></li>
+        </ul>
+
+<pre>result_path = OUTPUT_DIR / <span class="s">"training_result.json"</span>
+<span class="k">with</span> open(result_path, <span class="s">"w"</span>, encoding=<span class="s">"utf-8"</span>) <span class="k">as</span> f:
+    json.dump(training_result, f, indent=2, ensure_ascii=<span class="k">False</span>)
+    f.write(<span class="s">"\n"</span>)</pre>
+
+        <p>阶段 2（测试）另需在 <code>result/</code> 下产出评测明细表，按约定命名 <code>test_result.xlsx</code>；文件名与列结构由模型方与平台约定。</p>
+      </section>
+
+      <!-- 06 -->
+      <section id="checkpoint">
+        <h2><span class="num">06</span><span>写断点</span></h2>
+        <p><strong>位置</strong>：<code>$TAA_CHECKPOINT_DIR</code>（默认 <code>/opt/taa/checkpoint/</code>）。此目录跨任务保留，用于宿主机异常重启后的续训。</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>文件</th><th>内容</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">latest.pt</td><td>最新权重快照</td></tr>
+              <tr><td class="mono">best.pt</td><td>最优指标权重快照</td></tr>
+              <tr><td class="mono">checkpoint_meta.json</td><td>元数据：<code>task_id</code>、<code>epoch</code>、<code>step</code>、<code>metrics</code>、<code>is_best</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>是否从断点恢复由<strong>你的脚本自行判断</strong>（目录非空、文件可加载、epoch 未达上限）。建议在脚本入口做一次检测，并在日志中说明本次走的是恢复还是全新训练。</p>
+        <p>权重同时保存到 <code>result/weights/</code> 时，交付产物与断点是两份独立文件，互不影响。</p>
+      </section>
+
+      <!-- 07 -->
+      <section id="forbidden">
+        <h2><span class="num">07</span><span>禁止事项</span></h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>行为</th><th>后果</th></tr></thead>
+            <tbody>
+              <tr><td>在 <code>/opt/taa/input</code> 下创建、修改、删除文件</td><td>违反沙箱只读约束</td></tr>
+              <tr><td>把输入数据原样拷进 <code>result/</code>（原始图片、CSV、标注文件）</td><td>导出前的反泄露检查会比对数据特征，命中即<strong>拒绝导出</strong></td></tr>
+              <tr><td>在产物中写入明文 PEM 私钥、<code>SECRET_KEY=</code> / <code>API_KEY=</code> 等环境变量转储</td><td>同上，命中明文特征即拒绝导出</td></tr>
+              <tr><td>任何网络外联（<code>socket</code> / <code>requests</code> / <code>urllib</code> / <code>httpx</code> / <code>aiohttp</code>）</td><td>代码审计红线，导入阶段即被阻断</td></tr>
+              <tr><td>反弹 Shell、提权、危险系统调用</td><td>同上</td></tr>
+              <tr><td>单次产物超过大小上限（默认 3 GB）</td><td>导出被拒绝</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 08 -->
+      <section id="checklist">
+        <h2><span class="num">08</span><span>上线前检查清单</span></h2>
+        <ul class="checklist">
+          <li><span class="box"></span><span>输入目录只读，代码中没有任何指向 <code>/opt/taa/input</code> 的写操作</span></li>
+          <li><span class="box"></span><span>所有需要交付的文件都写在产物目录（<code>&lt;output&gt;</code> / <code>TAA_OUTPUT_DIR</code>）下，没有散落在别处</span></li>
+          <li><span class="box"></span><span>路径从环境变量或宏获取，没有硬编码相对路径</span></li>
+          <li><span class="box"></span><span>日志写在 <code>$TAA_LOG_DIR</code>，每行以换行符结尾，只追加不重写</span></li>
+          <li><span class="box"></span><span>进度原子写入 <code>$TAA_PROGRESS_DIR</code>，<code>percent</code> 在 0–100 之间且单调不回退</span></li>
+          <li><span class="box"></span><span>结束前写出 <code>&lt;output&gt;/training_result.json</code>，含 <code>training_task.metrics</code> 与 <code>dataset</code></span></li>
+          <li><span class="box"></span><span>失败路径同样写出 <code>training_result.json</code>，或至少保证日志与进度可用</span></li>
+          <li><span class="box"></span><span>断点写入 <code>$TAA_CHECKPOINT_DIR</code>，入口处有恢复检测</span></li>
+          <li><span class="box"></span><span>产物中没有原始数据副本、密钥、环境变量转储</span></li>
+          <li><span class="box"></span><span>代码中不存在任何网络调用</span></li>
+        </ul>
+      </section>
+
+      <footer>
+        本手册只覆盖文件读写约定。审计红线、阶段划分与导出口径见《模型提供方开发与接口对接规范》（<code>docs/model-provider-integration-guide.md</code>）。
+      </footer>
+
+    </main>
+  </div>
+</div>
+
+</body>
+</html>
