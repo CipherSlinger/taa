@@ -667,6 +667,10 @@ func riskOrder(level string) int {
 // arm's and are read by ProvesCleanScan as such. The binary channel's own gaps
 // travel on Report.Binary and are folded by that method; none of them is written
 // here.
+//
+// It is not idempotent: a second call with the same res appends res.Findings to
+// the joined list again and adds res.Summary.FilesCount again, so it is called
+// at most once per Report.
 func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
 	if report == nil || res == nil {
 		return
@@ -690,8 +694,10 @@ func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
 	// were looked at, not a census. It is an informational field and no decision
 	// reads it, so the overlap is left in place rather than deduplicated: the
 	// exact per-arm numbers are files_count and
-	// scan_metadata.binary.files_count, and a deduplication pass would need the
-	// claimed paths to stay comparable across both arms.
+	// scan_metadata.binary.files_count. A deduplication pass is not available
+	// even in principle, because the source arm never exposes which files it
+	// counted - Report carries only counts, so its scanned set cannot be
+	// reconstructed from the findings it happens to have produced.
 	report.FilesCount += res.Summary.FilesCount
 
 	claimed := make(map[string]bool, len(res.Claimed))
@@ -701,6 +707,10 @@ func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
 
 	kept := make([]Finding, 0, len(report.Findings)+len(res.Findings))
 	for _, f := range report.Findings {
+		// Drops the source arm's reading of a file the binary arm claimed. The
+		// engine test is the other half of it: a finding the binary arm produced
+		// carries EngineNameBinary, so a binary finding already joined on an
+		// earlier call is not filtered out by its own path.
 		if f.Engine != EngineNameBinary && claimed[cleanAbs(f.File)] {
 			continue
 		}
@@ -712,6 +722,11 @@ func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
 	report.Findings = kept
 
 	// The same function the source-only path uses, so the pass decision has one
-	// implementation rather than two that agree today.
+	// implementation rather than two that agree today. The flag is false because
+	// it reads each finding's LLMVerdict, and nothing reaches the merge carrying
+	// one - the binary arm attaches no verdict and this function writes none - so
+	// on the list being merged the exonerating spelling could not change
+	// HighCount either way. Where the choice is observable, VerifyReport owns it
+	// per policy: recalculateGatePassed (true) or recalculateStaticPassed (false).
 	recomputeReportPassed(report, false)
 }

@@ -935,14 +935,54 @@ func TestMergeBinaryFindingsDropsTextFindingsForBinaryFiles(t *testing.T) {
 	}
 }
 
+// TestMergeBinaryFindingsDropsTextFindingsAcrossPathSpellings pins the cleanAbs
+// normalisation on both sides of the claim test.
+//
+// The two arms do not have to spell the same file the same way: ScanDirectory
+// hands back the path it walked, while the source arm's findings carry the path
+// its own walk produced. Both paths in the fixture are absolute so nothing here
+// depends on the process CWD, and the claimed one carries a redundant component,
+// so a plain string comparison keeps the text finding beside the binary one.
+func TestMergeBinaryFindingsDropsTextFindingsAcrossPathSpellings(t *testing.T) {
+	report := &Report{
+		ScanComplete: true,
+		Findings: []Finding{
+			{File: "/m/evil.py", Line: 12, RuleID: "CMD_001", Severity: SeverityHigh},
+		},
+	}
+	res := &BinaryScanResult{
+		Claimed: []string{"/m/./evil.py"},
+		Findings: []Finding{
+			{File: "/m/evil.py", Line: 1, RuleID: "BIN_001", Severity: SeverityHigh, Engine: EngineNameBinary},
+		},
+	}
+
+	MergeBinaryFindings(report, res)
+
+	for _, f := range report.Findings {
+		if f.Engine != EngineNameBinary && f.File == "/m/evil.py" {
+			t.Errorf("the text reading of %q survived the claim on %q: both sides of the "+
+				"claim test have to go through cleanAbs", f.File, res.Claimed[0])
+		}
+	}
+	if !containsFileFinding(report.Findings, "/m/evil.py", "BIN_001") {
+		t.Error("the binary finding is missing; the fixture is wrong")
+	}
+	if len(report.Findings) != 1 {
+		t.Errorf("len(Findings) = %d, want 1: the text reading was not replaced by the binary one", len(report.Findings))
+	}
+}
+
 // TestMergeBinaryFindingsKeepsBothChannelsFindings pins that the merge does not
 // apply a ceiling to the joined list.
 //
 // Each channel caps its own findings before the merge. A second cap here would
 // couple them: it would choose which findings to drop by path order rather than
 // by importance, and it would let a large source arm evict the binary findings
-// entirely. The fixture is the smallest one that shows the difference: three
-// source findings, one binary finding, and a source arm whose own cap was three.
+// entirely. The fixture holds three source findings and one binary finding, so
+// the length assertion below rules out a merge-side ceiling that kept three of
+// the four - not a ceiling in general: a cap of four or more would leave the
+// joined list at four and still pass.
 //
 // The binary finding is DYN_001/MEDIUM rather than a blocked-family HIGH,
 // because the pass assertion below has to survive the merge: what this test
