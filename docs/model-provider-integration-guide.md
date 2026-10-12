@@ -194,7 +194,7 @@ TAA 的平台调度由 `/v1/taa/switch` 推进，模型代码通过 `cipherflow.
 
 | 安全检查项 | 行为要求 | 违规后果 |
 | :--- | :--- | :--- |
-| **网络外联** | 严禁使用 `socket`, `requests`, `urllib`, `aiohttp`, `httpx` 等任何网络外联行为 | 审计阻断（Verdict: MALICIOUS），物理清除代码并终止导入 |
+| **网络外联** | 严禁使用 `socket`, `requests`, `urllib`, `aiohttp`, `httpx` 等任何网络外联行为 | 审计阻断（Verdict: MALICIOUS），拒绝导入并终止流程（模型包保持上传原样） |
 | **系统逃逸** | 严禁反弹 Shell（如 `/dev/tcp`, `sh -i`）、提权操作（`sudo`, `setuid`）、危险系统调用（`subprocess.Popen("rm -rf /")`） | 审计阻断，上报平台并终止 |
 | **环境窃取** | 严禁扫描获取包含 `SECRET`, `KEY`, `TOKEN` 的系统环境变量 | 审计阻断 |
 | **数据泄露** | 严禁将 `/opt/taa/input` 中的原始图片、原始数据文件直接复制到输出目录。TAA `ResultChecker` 会对输出进行特征比对与大小异常排查 | 导出阶段阻断，拒绝回传密文 |

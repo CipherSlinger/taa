@@ -14,7 +14,7 @@ TAA（Trusted Application Attestation）运行于 Hygon CSV TEE 物理隔离环�
 6. **自愈二次崩溃与幽灵失败（Recovery Loop & Ghost Failure）**：磁盘写满（`ENOSPC`）会导致自愈写入失败报告再度崩溃；而异步补偿若跨越 HTTP 端口开放，会导致新调度的重试任务被旧补偿包误杀。
 
 ### 1.2 核心设计目标
-- **零安全死角（Zero Un-audited Execution）**：未通过审计的模型在崩溃后必须被物理清除，绝对禁止任何未通过审计的代码被复用。
+- **零安全死角（Zero Un-audited Execution）**：未通过审计的模型在崩溃后必须被状态隔离并拒绝导入，绝对禁止任何未通过审计的代码被复用；同时审计全程只读，不删除、不改动模型包与依赖库。
 - **全状态生命周期强互斥**：运行中严格禁止任何阶段切换，彻底杜绝并发踩踏。
 - **TEE 硬件级密封存储（Sealed Storage）**：高敏状态通过 SM4-GCM 密态落盘，具备防篡改与机密性保证。
 - **自愈熔断与双轨投递（Circuit Breaker & Dual-Track Drain）**：前置极速同步补偿（< 2s） + 离线后台重试，解耦 K8s 存活探针，配备二次崩溃熔断保护。
@@ -229,11 +229,11 @@ flowchart TD
 
 ### 5.1 关键自愈步骤技术规约
 
-#### 规约 1：未审计代码的物理隔离自愈（堵塞后门）
+#### 规约 1：未审计代码的状态隔离自愈（堵塞后门）
 - 若崩溃时处于 `ActiveTask.Type == "model_import"` 且尚未完成上报（说明未经完整安全审计或在审计中崩溃）：
-  - **强制物理执行 `cleanDirContents(s.Security.ModelDir)`**；
-  - 强制将 `ModelImported` 置为 `false`；
-  - **安全收益**：根除任何攻击者利用空 URL 复用残留后门代码的可能性。
+  - 强制将 `ModelImported` 置为 `false`（并消费 `PendingAudit` 标记），**只在状态层面隔离**；
+  - **禁止删除或改动模型包与依赖库**：盘上的 `<modelDir>` 保持上传原样，审计链路全程只读；
+  - **安全收益**：训练与导出一律以 `ModelImported == true` 为唯一法定依据，因此根除任何攻击者利用空 URL 复用残留后门代码的可能性，同时不再销毁证据、不再误删合法模型。
 
 #### 规约 2：实例密钥漂移（Key Drift）自愈容错
 - 检查 `state.sealed` 解封失败的原因：
@@ -303,11 +303,11 @@ flowchart TD
 - 当 TAA 接收到 SIGTERM 优雅停机信号或在自愈流程清理孤儿时，通过负 PGID（`syscall.Kill(-pgid, syscall.SIGKILL)`）向整个进程树广播杀灭信号；
 - 确保包含 PyTorch DDP / Torchrun 多卡分布式训练、Python multiprocessing 及 Shell 管道在内的所有后代孤儿进程被物理消灭，彻底回收 GPU 显存并释放显卡硬件锁。
 
-#### 规约 10：模型代码审计失败即刻熔断与物理清除（Audit Failure Immediate Abort & Quarantine）
+#### 规约 10：模型代码审计失败即刻熔断（Audit Failure Immediate Abort & Quarantine）
 - 当 `auditAndReportModelImport` 检测到源码存在高危风险（`audit.Conclusion.Passed == false`）或在 `failClosed=true` 下 LLM 服务不可用时：
-  - **立即物理清空 `<modelDir>`（`cleanDirContents`）**，销毁所有已解压代码；
-  - 严禁将 `ModelImported` 置为 `true`；
-  - **立即终止当前导入链路并返回**，绝对禁止在 Phase 1 或 Phase 2/3 中继续流转至训练执行。
+  - **立即熔断：拒绝本次导入**，断开导入链路并返回，绝对禁止在 Phase 1 或 Phase 2/3 中继续流转至训练执行；
+  - 严禁将 `ModelImported` 置为 `true`（隔离只在状态层面发生，`hasSavedModel()` 以该标记为唯一依据）；
+  - **审计只做审计**：绝不删除、清空或改写 `<modelDir>` 及其依赖库，盘上内容保持上传原样，结论只通过平台上报表达。
 
 #### 规约 11：异步协程 Panic 统一捕获与平台兜底补偿（Async Goroutine Panic Recovery & Compensation）
 - 在 `runAsyncSafe` 捕获到未处理的 `recover()` 时：
@@ -357,8 +357,8 @@ flowchart TD
 |:---|:---|:---|
 | **恶意修改 `state.sealed` 注入伪造公钥** | SM4-GCM Tag 认证失败，若私钥未变则判定遭篡改，直接以 `exit 1` 拒绝启动并报警 | **Fail-Closed**：防止攻击者伪造 `ExportPublicKey` 窃取导出模型 |
 | **宿主机快照回滚与重放攻击（Rollback Attack）** | 引入单调递增 `StateSeq uint64` 与冷启动 `IncarnationID`，单调校验状态时序 | **状态防回滚**：杜绝非信任宿主机通过还原旧虚拟磁盘快照重放会话 |
-| **审计中途崩溃后利用空 URL 绕过检测** | 自愈逻辑强行清空 `<modelDir>`，`hasSavedModel()` 强校验持久化标记 | **代码安全兜底**：绝不允许任何未通过审计的代码被沙箱拉起执行 |
-| **代码审计未通过仍被触发执行** | 审计失败（`Passed==false`）即刻阻断流程，清空代码目录，禁止置位 `ModelImported` | **带毒代码零执行**：杜绝高危漏洞/后门模型在后续数据到达时被拉起训练 |
+| **审计中途崩溃后利用空 URL 绕过检测** | 自愈逻辑消费 `PendingAudit` 标记并复位 `ModelImported = false`（状态隔离，不动盘上代码），`hasSavedModel()` 强校验持久化标记 | **代码安全兜底**：绝不允许任何未通过审计的代码被沙箱拉起执行 |
+| **代码审计未通过仍被触发执行** | 审计失败（`Passed==false`）即刻拒绝导入，禁止置位 `ModelImported`，模型包保持上传原样 | **带毒代码零执行**：杜绝高危漏洞/后门模型在后续数据到达时被拉起训练 |
 | **任务执行途中下发强切 Phase 指令** | `switchHandler` 拦截并发状态，严格返回 `409 Conflict` | **状态单调性**：消灭双进程并发读写输出目录造成的产物污染 |
 | **跨阶段权限降级明文导出漏洞** | `ImportIndexRecord` 持久化绑定 `Phase`，`exportHandler` 强制根据 `record.Phase` 断言加密 | **防产物降级外泄**：彻底消除 Phase 3 正式训练模型在切回 Phase 1 后被明文带出的漏洞 |
 | **导出打包软链接穿透窃取宿主私钥** | 遍历产物时调用 `filepath.EvalSymlinks` 解析真实物理路径，脱离 `srcDir` 坚决拒绝打包 | **TEE 根凭证保护**：阻断恶意脚本通过软链接窃取 `/opt/taa/keys/private.pem` |
@@ -395,8 +395,8 @@ flowchart TD
    - `runAsyncSafe` 强化 Panic 兜底，自动向平台补偿投递致命错误上报。
 4. **解压安全、审计熔断与进程树生命周期管控 (`internal/controller/import_processing.go`)**：
    - `extractTarStream` / `extractZipArchive` 注入 `maxExtractBytes` 解压配额限制；
-   - `auditAndReportModelImport` 改造为带状态熔断，审计失败立即执行物理清库（`cleanDirContents`）并阻断后续执行；
+   - `auditAndReportModelImport` 改造为带状态熔断，审计失败立即拒绝导入（复位导入状态、终止后续执行，不触碰盘上代码）；
    - `runRuntimeConfig` 显式设置独立进程组（`Setpgid: true`）并提供 `syscall.Kill(-pgid, syscall.SIGKILL)` 级联杀树机制。
 5. **自愈与熔断流水线 (`internal/app/taa/app.go`)**：
    - 在 `startServer` 前组装 `reconcileCrashRecovery` 链；
-   - 实现未审计代码清除、/tmp 碎片清理、孤儿进程探测杀灭、熔断计数器累加、规范占位报告生成与双轨补偿投递。
+   - 实现未审计导入的状态隔离、/tmp 碎片清理、孤儿进程探测杀灭、熔断计数器累加、规范占位报告生成与双轨补偿投递。

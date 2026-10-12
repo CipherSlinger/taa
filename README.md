@@ -241,7 +241,7 @@ Untrusted model code undergoes rigorous two-tier verification before execution:
    - Detects command execution (`os.system`, `os.popen`, `subprocess`), network egress (`requests`, `urllib`, raw sockets), sensitive file and environment variable access, obfuscation/deserialization (`base64`, `pickle`, `marshal`), dynamic code execution (`eval`, `exec`, `__import__`), persistence mechanisms (`crontab`, `systemctl`), and result-embedded plaintext data (writing raw datasets into output artifacts or logs).
    - Each finding carries the matched line plus a physical ±3 line context window, which is what gets forwarded to Tier 2.
    - Detection is line-oriented text matching: alias re-binding (`import socket as s`), string-split obfuscation, and cross-function/cross-file data flow are currently out of scope.
-   - Fail-closed: a scan error or any HIGH-severity finding rejects the import and the extracted code is wiped.
+   - Fail-closed: a scan error or any HIGH-severity finding rejects the import. The audit only ever reads: the uploaded package and its dependencies are left exactly as uploaded, and isolation happens purely in state (`ModelImported` stays `false`, so training never starts).
 2. **Tier 2: Decoupled TEE-LLM Semantic Arbitration**:
    - Forwards flagged code snippets and their context windows to the local `teellm-service` (Qwen2.5-Coder) over TEE-TLS 1.3.
    - LLM analyzes whether flagged snippets represent malicious intent or benign ML operations (e.g., standard PyTorch checkpoint saving).
