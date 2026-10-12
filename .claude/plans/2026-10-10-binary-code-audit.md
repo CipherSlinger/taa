@@ -8799,10 +8799,11 @@ go test ./internal/codeaudit/ -run TestMergeBinaryFindings 2>&1 | head -10
 // happen when it did.
 //
 // This is the only place the binary channel touches any completeness field on
-// Report, which is worth stating because the other three - ScanComplete,
-// ParserErrors and UnsupportedExts - are the source arm's and are read by
-// ProvesCleanScan as such. The binary channel's own gaps travel on
-// Report.Binary and are folded by that method; none of them is written here.
+// Report, which is worth stating because the other five - ScanComplete,
+// Truncated, ParserErrors, UnsupportedExts and ProcessExitCode - are the source
+// arm's and are read by ProvesCleanScan as such. The binary channel's own gaps
+// travel on Report.Binary and are folded by that method; none of them is written
+// here.
 func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
 	if report == nil || res == nil {
 		return
@@ -8876,6 +8877,397 @@ git commit -m "feat(audit): merge binary findings into the audit report"
 > **门禁陷阱：这一步的 `gofmt -l` 给不出信号，别把它当检查用。** HEAD 上 `internal/codeaudit/` 本来就有未格式化的文件——`gofmt -l internal/codeaudit/` 会列出 `audit.go`、`llm.go`、`result_checker.go` 三个，所以这条命令**无论如何**都会打印 `audit.go`，跟本任务改得好不好无关（本步也没有断言输出为空，它只是让人看一眼）。**不要**为了让它"变干净"去跑 `gofmt -w internal/codeaudit/`：那会把 `audit.go` 里既有的、与本任务无关的未格式化 hunk 一并改掉，把这次提交变成混进无关改动的提交——而且会把 `gofmt -l` 这个信号在后续任务里彻底变成真空。真要判格式，判据是仓库既有的那道闸门基线，不是"这条命令有没有输出"。
 
 ---
+
+### Task 11b: 佐证门控 —— 仅凭符号名不得单独升 HIGH
+
+**背景（实测，不是推测）**
+
+`NET_002`、`CMD_001`、`BIN_002` 三个 HIGH 族的证据是 `.dynsym` 的一项或一个 `DT_NEEDED` 名字。链接器会把目标文件可能引用的**每一个**符号都写进去，所以"表里有 `socket`"只说明这个库**有能力**调用 socket，不说明它调用。在这台机器上按现状实测：`libllama-common.so.0.1.2` 与 `libllama-server-impl.so` 在 `httplib::detail::*` 里导入 `socket`/`connect`/`getaddrinfo`/`inet_pton`，`libggml-base.so.0.20.2` 在 `ggml_print_backtrace` 里导入 `execlp`，`libgfortran.so.5.0.0` 导入 `system`，`libcudart.so.12`/`libcudnn_*.so` 导入 `socket`/`connect`。默认 `assist` 下 `passed = highCount == 0`，所以上面任意一个都让 `internal/controller/import_processing.go:655-660` 删掉整个模型包。
+
+**可达性（调用图）曾作为修正方案被实测否决**：这批 C++/Rust 目标文件没开 `-fvisibility=hidden`，`libllama-common` 在 `.dynsym` 里定义/弱定义 **2878/2881** 个函数，`socket` 的调用者本身就是导出入口，9 个被标记的库**一个都翻不了案**；而且 guest rootfs 里没有任何反汇编器（payload rootfs 的 `usr/bin` 只有一个 `python3.10`），`golang.org/x/arch` 离线不可得。
+
+**本次采用的门控，以及两个已决事项**
+
+存在性证据只有在**同一文件**内获得**独立佐证**时才报 HIGH。佐证集合只有两个：
+
+- `BIN_001`（`SourceEntropy`）：可执行节区熵接近随机的**测量**。它量的是字节，不是文件的自述，任何"起个名字"都造不出来。
+- `PKL_001`（`SourcePickle`）：pickle 解释器**真的走完了 opcode 流**并解析出一个具备进程/IO/网络能力的 `module.attribute` 目标。这是一次 committed parse，与符号表无关。
+
+**不得作为佐证**（这是本任务最容易被写错的一处）：
+
+- `BIN_002`（`memfd_create`/`fexecve`）：它本身就是 `.dynsym` 里的一个名字，与待证事项**同一类**证据；接受它等于允许载荷引用一个无关符号自证。
+- "另一个符号族共现"（如 `socket` + `system`）：同样是同一类证据数两遍。合法大库天然两者都有（`libllama-common` 有网络符号，`libggml-base` 有 `execlp`），这条一加，本任务要救的库一个都救不了。
+
+**级别取 LOW，不取 MEDIUM**（已决）：`assist` 只看 HIGH，`gate` 看 HIGH 或 MEDIUM（`internal/codeaudit/audit.go:304-312`），所以 MEDIUM 在 `gate` 下照样阻断、照样删包——那不是修复，是同一个删除换个数字。LOW 是两种策略下都不阻断的唯一取值（`rules.go` 没有 `SeverityLow` 常量，表里写裸字符串）。
+
+**`BIN_002` 一并纳入降级范围**（已决）：它与 `NET_002`/`CMD_001` 同为"仅凭符号名"的 HIGH 族，按同一规则处理，不写成例外。
+
+**代价，必须原样写进注释**：未加壳、只调 `socket` 或只调 `system` 的 `.so` 从此不再静态阻断，只剩 Tier-2 语义分析这一道（该 finding 仍然进报告、仍然送给模型，模型可凭自身证据判 MALICIOUS，`audit.go:212-252` 会把 MALICIOUS 分类为 HIGH 并阻断）。已加壳的载荷不受影响（`BIN_001` 无条件 HIGH）。**降级去掉的是一次自动阻断，不是 finding 本身；没有佐证不等于无害。**
+
+**为什么判定必须在截断之前**：`ScanDirectory` 的截断契约是"只丢弃它确知为 LOW 的"（`binary_scanner.go:283-308`，keep 规则 `len(kept) < MaxFindings || f.Severity != "LOW"`）。先截断后降级会得到一个"截断按 HIGH 判定保留、报告里写着 LOW"的 finding——截断推理的级别与报告承载的级别不一致；而且 `TestBinaryScannerCapKeepsLowFindingsWithinTheBudget`、`TestBinaryScannerCapWithNothingDroppableIsNotCapped` 会**变绿但前提失效**（"四个 HIGH 都不可丢"不再成立）。
+
+**为什么判定在扫描器而不是规则表**：`BinaryMatcher.Match` 一次只看一行证据（`binary_rules.go:383-396`），看不到共现；`MergeBinaryFindings` 只有 finding、没有证据。判定属于"按文件看到全部证据"的那一层，即 `ScanDirectory`。规则表**不能**改：`NET_002`/`CMD_001`/`DYN_001` 的 id 与级别是从 `DefaultRules()` 借来的，`TestBinaryRulesBorrowSharedFamilies` 钉住两个通道不得对同一 id 报不同级别；降级作用在 **Finding** 上、从不作用在 **Rule** 上，所以 `matcher.Rules()` 不变。两个通道描述的本就不是同一件事：源码臂的 `NET_002` 是**会执行**的代码里出现 `socket.socket(`，二进制臂的是符号表里可能出现的一个名字。
+
+**Files:**
+- Modify: `internal/codeaudit/rules.go`（`Finding` 增加降级原因字段）
+- Modify: `internal/codeaudit/binary_rules.go`（族分类谓词 + matcher 查询 + 表头注释改写）
+- Modify: `internal/codeaudit/binary_scanner.go`（`BinaryScanSummary.PresenceDowngraded`；`ScanDirectory` 按文件降级）
+- Test: `internal/codeaudit/binary_scanner_test.go`（三个既有截断测试必须改；新增行为测试）
+- Test: `internal/codeaudit/binary_rules_test.go`（分类钉子；两处注释性断言文字修正）
+
+- [ ] **Step 1: 写失败测试（先钉住最容易被写错的那条）**
+
+在 `binary_scanner_test.go` 追加。**夹具字段名以 `binary_fixtures_test.go` 现状为准**（设计期读到的是 `elfSpec{imports, text, textExec}` 与 `uniformBytes(n)`；若实际不同，按实际改并在报告里说明）：
+
+```go
+// TestBinaryScannerDoesNotLetTwoPresenceFamiliesCorroborateEachOther is the test
+// that protects the whole change. Two families that both read the dynamic symbol
+// table are the same class of evidence counted twice, and a large legitimate
+// library carries both: on this host libllama-common.so imports socket/connect/
+// getaddrinfo while libggml-base.so imports execlp. So an implementation that
+// treats "a second blocking family is present" as corroboration would keep every
+// file this rule exists to clear, and this fixture is the smallest one that
+// distinguishes it: two presence families, no measurement and no pickle parse.
+func TestBinaryScannerDoesNotLetTwoPresenceFamiliesCorroborateEachOther(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "libboth.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket", "system"}}))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	net := findFinding(t, res.Findings, "NET_002")
+	cmd := findFinding(t, res.Findings, "CMD_001")
+	for _, f := range []Finding{net, cmd} {
+		if f.Severity != "LOW" {
+			t.Errorf("%s severity = %q, want LOW: a presence family was corroborated by another presence family", f.RuleID, f.Severity)
+		}
+		if f.DowngradeReason == "" {
+			t.Errorf("%s carries no downgrade reason: a reader cannot tell why it is not HIGH", f.RuleID)
+		}
+	}
+	if res.Summary.PresenceDowngraded != 2 {
+		t.Errorf("PresenceDowngraded = %d, want 2", res.Summary.PresenceDowngraded)
+	}
+}
+
+// TestBinaryScannerKeepsAPresenceFamilyHighWhenTheFileIsPacked is the other half:
+// corroboration has to actually work, or the rule is just a suppression.
+func TestBinaryScannerKeepsAPresenceFamilyHighWhenTheFileIsPacked(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "libpacked.so", elfFixtureBytes(t, elfSpec{
+		imports:  []string{"socket"},
+		text:     uniformBytes(512),
+		textExec: true,
+	}))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if f := findFinding(t, res.Findings, "NET_002"); f.Severity != SeverityHigh {
+		t.Errorf("NET_002 severity = %q, want HIGH: a measured near-random executable section corroborates it", f.Severity)
+	}
+	if f := findFinding(t, res.Findings, "BIN_001"); f.Severity != SeverityHigh {
+		t.Errorf("BIN_001 severity = %q, want HIGH: the entropy measurement is not itself a presence claim", f.Severity)
+	}
+	if res.Summary.PresenceDowngraded != 0 {
+		t.Errorf("PresenceDowngraded = %d, want 0", res.Summary.PresenceDowngraded)
+	}
+}
+
+// TestBinaryScannerCorroboratesAcrossArchiveMembers pins the granularity. The
+// corroborator does not have to be in the same member: a .pt that carries a
+// socket-importing ELF member and a process-executing data.pkl is one artifact
+// whose parts run together, and collectArchive routes both members through one
+// EvidenceSet.
+func TestBinaryScannerCorroboratesAcrossArchiveMembers(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "model.pt", zipFixture(t, map[string][]byte{
+		"lib/x.so":       elfFixtureBytes(t, elfSpec{imports: []string{"socket"}}),
+		"archive/data.pkl": []byte("cposix\nsystem\n."),
+	}))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if f := findFinding(t, res.Findings, "NET_002"); f.Severity != SeverityHigh {
+		t.Errorf("NET_002 severity = %q, want HIGH: the same file carries a committed pickle parse", f.Severity)
+	}
+}
+
+// TestBinaryScannerDowngradeHappensBeforeTheCap is the only test that can tell
+// the two orderings apart, so it is not optional. Downgrading after the cap would
+// leave the cap reasoning about HIGH while the report says LOW, and it would keep
+// findings the cap was supposed to be allowed to spend.
+func TestBinaryScannerDowngradeHappensBeforeTheCap(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "libmany.so", elfFixtureBytes(t, elfSpec{
+		imports: []string{"socket", "connect", "system", "popen"},
+	}))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{MaxFindings: 2}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if len(res.Findings) != 2 {
+		t.Errorf("len(Findings) = %d, want 2: a downgraded finding is spendable, so the cap can drop it", len(res.Findings))
+	}
+	if !res.Summary.FindingsCapped || res.Summary.FindingsDropped != 2 {
+		t.Errorf("capped = %v, dropped = %d, want true/2", res.Summary.FindingsCapped, res.Summary.FindingsDropped)
+	}
+	if res.Summary.PresenceDowngraded != 4 {
+		t.Errorf("PresenceDowngraded = %d, want 4: the count is taken at downgrade time, not at keep time", res.Summary.PresenceDowngraded)
+	}
+}
+
+// TestBinaryScannerDowngradedEvidenceDoesNotBlockUnderEitherPolicy pins the
+// severity the decision needs. It asserts both policies, because assist passes on
+// a MEDIUM downgrade too - only the gate assertion distinguishes LOW from MEDIUM,
+// and MEDIUM under gate deletes the package.
+func TestBinaryScannerDowngradedEvidenceDoesNotBlockUnderEitherPolicy(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "libnet.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket"}}))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	report := &Report{ScanComplete: true}
+	MergeBinaryFindings(report, res)
+
+	if report.HighCount != 0 {
+		t.Fatalf("HighCount = %d, want 0", report.HighCount)
+	}
+	if report.MediumCount != 0 {
+		t.Fatalf("MediumCount = %d, want 0: MEDIUM blocks under gate, so a MEDIUM downgrade is not a fix", report.MediumCount)
+	}
+	stats := ComputeStatistics(report.Findings)
+	for _, mode := range []string{"assist", "gate"} {
+		concl := ComputeConclusionContext(stats, nil, mode, report.ProvesCleanScan(), false, nil)
+		if !concl.Passed {
+			t.Errorf("policy %s: passed = false for a package whose only evidence is a symbol name", mode)
+		}
+	}
+}
+```
+
+`findFinding` 若包里已有等价辅助函数就复用，不要重名（先在 `grep -rn "func findFinding\|func writeFixture" internal/codeaudit/` 里确认；`elfFixtureBytes`/`zipFixture`/`uniformBytes` 的签名同理以现状为准）。
+
+在 `binary_rules_test.go` 追加分类钉子：
+
+```go
+// TestBinaryFamilyClassificationIsPinned pins the two predicates by name, so that
+// a family added later is classified deliberately rather than by accident.
+// Downgradable is exactly the presence-only HIGH families: BIN_002 because its
+// evidence is a dynsym entry like the other two, and DYN_001 not at all, because
+// it declares MEDIUM and can never produce the HIGH this rule gates.
+func TestBinaryFamilyClassificationIsPinned(t *testing.T) {
+	m, err := NewBinaryMatcher()
+	if err != nil {
+		t.Fatalf("NewBinaryMatcher: %v", err)
+	}
+
+	wantDowngrade := map[string]bool{"NET_002": true, "CMD_001": true, "BIN_002": true}
+	wantCorroborate := map[string]bool{"BIN_001": true, "PKL_001": true}
+
+	for _, id := range BinaryRuleIDs() {
+		if got := m.downgrades(id); got != wantDowngrade[id] {
+			t.Errorf("downgrades(%s) = %v, want %v", id, got, wantDowngrade[id])
+		}
+		if got := m.corroborates(id); got != wantCorroborate[id] {
+			t.Errorf("corroborates(%s) = %v, want %v", id, got, wantCorroborate[id])
+		}
+	}
+	if m.downgrades("NET_001") {
+		t.Error("downgrades(NET_001) = true: the source arm's rule is not in the binary table")
+	}
+}
+```
+
+- [ ] **Step 2: 跑测试，确认失败**
+
+```bash
+go test ./internal/codeaudit/ -run 'TestBinaryScannerDoesNotLetTwoPresenceFamilies|TestBinaryScannerKeepsAPresenceFamilyHigh|TestBinaryScannerCorroboratesAcrossArchive|TestBinaryScannerDowngradeHappensBefore|TestBinaryScannerDowngradedEvidenceDoesNot|TestBinaryFamilyClassificationIsPinned' -v 2>&1 | tail -30
+```
+
+Expected: 全部编译失败或断言失败（`DowngradeReason`、`PresenceDowngraded`、`downgrades`、`corroborates` 都还不存在）。注意：`MergeBinaryFindings` 与 `ComputeStatistics`/`ComputeConclusionContext` 已存在（Task 11 已落地），若报未定义，说明你所在的分支不是预期状态，停下来报告。
+
+- [ ] **Step 3: 实现**
+
+`rules.go`，`Finding` 结构体末尾（`BinaryOffset` 之后）：
+
+```go
+	// DowngradeReason explains why this finding is reported below the severity its
+	// rule carries in the table. It is set by a rule that gates a severity on
+	// something a single evidence line cannot show - today, the binary channel's
+	// presence families, which report HIGH only when the same file carries
+	// independent corroboration. Empty for every finding whose severity is the
+	// rule's own, so a reader can tell "the rule says LOW" from "the rule says
+	// HIGH but this file did not earn it".
+	DowngradeReason string `json:"downgrade_reason,omitempty"`
+```
+
+`binary_rules.go`，在 `binaryFamily` 定义之后加谓词，并在 `BinaryMatcher` 上加两个查询：
+
+```go
+// presenceOnly reports whether every source this family draws on is a name the
+// linker wrote. Such a family's evidence says the artifact *can* do something,
+// never that it does: the linker writes every symbol the object might reference.
+// The set is expressed over sources rather than as a list of ids so that a family
+// added later is classified by what its evidence is, not by whether someone
+// remembered to add it to a list.
+func (f *binaryFamily) presenceOnly() bool {
+	for _, s := range f.Sources {
+		if s != SourceDynsym && s != SourceNeeded {
+			return false
+		}
+	}
+	return true
+}
+
+// corroborating reports whether this family is evidence independent of the
+// file's own self-description. Only two are: a measured executable-section
+// entropy, and a committed pickle parse. Everything else either is a name
+// (dynsym, DT_NEEDED, string literals - the file says it) or a structural
+// container listing (member, notice, section), and none of those can confirm
+// another of the same kind.
+func (f *binaryFamily) corroborating() bool {
+	for _, s := range f.Sources {
+		if s != SourceEntropy && s != SourcePickle {
+			return false
+		}
+	}
+	return true
+}
+
+// downgrades reports whether a finding under this id must be withheld from HIGH
+// unless its file carries a corroborator. The severity is read from the resolved
+// rule, not from the family: the families that borrow an id own no severity, and
+// a family that resolves to MEDIUM (DYN_001) can never produce the HIGH this
+// gates.
+//
+// The lookups scan the order slice instead of using a map built in
+// NewBinaryMatcher. The matcher is constructed literally in a test, and a
+// precomputed map would silently answer "no" for it; scanning ten entries per
+// finding costs nothing.
+func (m *BinaryMatcher) downgrades(id string) bool {
+	for i := range m.order {
+		if m.order[i].ID == id {
+			return m.order[i].presenceOnly() && m.rules[i].Severity == SeverityHigh
+		}
+	}
+	return false
+}
+
+// corroborates reports whether a finding under this id is independent evidence
+// that a presence claim in the same file is real.
+func (m *BinaryMatcher) corroborates(id string) bool {
+	for i := range m.order {
+		if m.order[i].ID == id {
+			return m.order[i].corroborating()
+		}
+	}
+	return false
+}
+```
+
+同时改写表头注释：删掉 `binary_rules.go:14-21`、`CMD_001` 的 "the same undecided posture"（`:137-149`）与 `NET_002` 的 "a rule posture that was never decided"（`:178-189`）三段"未决"表述，换成已决的门控，正文用上面"背景"与"代价"两段的实测内容（`libllama-common`/`libggml-base`/`libgfortran`/`libcudart` 的导入事实、9 个库可达性 0 翻案、guest 无反汇编器、LOW 而非 MEDIUM 的原因、`BIN_002` 与"另一符号族"为何不算佐证）。**注释必须说明这次降级放走了什么**：未加壳的 `socket`/`system` 型载荷只剩 Tier-2 一道，且「没有佐证 ≠ 无害」。
+
+`binary_scanner.go`，`BinaryScanSummary` 增加字段：
+
+```go
+	// PresenceDowngraded counts findings reported below the severity their rule
+	// carries because their file held no independent corroboration. It is taken at
+	// downgrade time rather than at keep time, so it survives the finding cap
+	// spending some of them - a reader must be able to see that the channel found
+	// presence evidence and chose not to call it HIGH, even when the budget later
+	// dropped the individual findings.
+	PresenceDowngraded int `json:"presence_downgraded,omitempty"`
+```
+
+`ScanDirectory` 中 `matches := s.matcher.MatchAll(set.Lines)` 之后：
+
+```go
+		matches := s.matcher.MatchAll(set.Lines)
+		if len(matches) == 0 {
+			return nil
+		}
+
+		// Corroboration is decided per file, over every rule that matched in it,
+		// before any finding is built: a presence finding is only meaningful next to
+		// what else the file contains.
+		corroborated := false
+		for _, m := range matches {
+			if s.matcher.corroborates(m.Rule.ID) {
+				corroborated = true
+				break
+			}
+		}
+
+		res.Evidence[path] = set
+		for _, m := range matches {
+			f := binaryFinding(set, m)
+			// Before the sort and the cap below, never after: the cap's contract is
+			// written in terms of severity - it spends only what it positively knows
+			// is LOW - so a downgrade applied afterwards would leave the cap reasoning
+			// about HIGH while the report carries LOW.
+			if !corroborated && s.matcher.downgrades(m.Rule.ID) {
+				f.Severity = "LOW"
+				f.DowngradeReason = presenceDowngradeReason
+				res.Summary.PresenceDowngraded++
+			}
+			res.Findings = append(res.Findings, f)
+		}
+		return nil
+```
+
+并加常量（与包内其他面向用户的字符串一致用中文）：
+
+```go
+// presenceDowngradeReason travels with every finding the corroboration gate
+// lowered, so the report says why rather than leaving a reader to infer it from a
+// severity that does not match the rule table.
+const presenceDowngradeReason = "本文件内未发现独立佐证（没有可执行节区的高熵测量，也没有具备进程/IO/网络能力的 pickle 解析目标）：动态符号表或依赖库中的名字只说明该文件具备调用能力，不足以判定其会调用，故按 LOW 上报，交由语义分析定夺。"
+```
+
+- [ ] **Step 4: 修正被这次改动打破的三个既有截断测试**
+
+这三个测试的夹具是 `imports: {socket, connect, system, popen}` 且没有佐证，改动后四个 finding 全部变 LOW，"四个 HIGH 都不可丢"的前提不再成立：
+
+- `TestBinaryScannerCapPreservesEveryHighFinding`（`binary_scanner_test.go:248-326`）
+- `TestBinaryScannerCapKeepsLowFindingsWithinTheBudget`（`:517-554`）
+- `TestBinaryScannerCapWithNothingDroppableIsNotCapped`（`:606-637`）
+
+修法：给夹具加一个真佐证（`text: uniformBytes(512), textExec: true`），让四个 presence finding 保持 HIGH、并多出一个 `BIN_001` HIGH，然后**按新的实际数字重推**条数与 rule-id 计数——不要只改常量去凑断言。三个测试各自钉的性质必须保留：第一个钉"能阻断的 finding 无论预算都被保留"，第二个钉"预算内的 LOW 会被保留"，第三个钉"没有可丢的就不算 capped"。
+
+`binary_rules_test.go` 里 `TestBinaryFamilySeveritiesArePinned`（`:322-337`）与 `TestBinaryTableStillFiresHighOnStructuralEvidence`（`:281-287`）文字需修正：它们钉的是**解析出的规则表**（仍然 HIGH，未变），但现有措辞会让人读成"finding 会阻断"。改措辞，不改断言。
+
+- [ ] **Step 5: 跑测试，确认通过**
+
+```bash
+go test ./internal/codeaudit/ -count=1
+```
+
+Expected: `ok taa/internal/codeaudit`。整包约 50s。
+
+- [ ] **Step 6: 变异验证（本仓库已两次被"钉住错误契约"的测试背书，这一步不是可选的）**
+
+用 `go test -overlay`（**不要就地改仓库文件**）至少验证：把 `corroborates` 改成"任何第二个 HIGH 族算佐证"→ `TestBinaryScannerDoesNotLetTwoPresenceFamiliesCorroborateEachOther` 必须变红；把降级挪到 sort/cap 之后 → `TestBinaryScannerDowngradeHappensBeforeTheCap` 必须变红；把级别写成 MEDIUM → `TestBinaryScannerDowngradedEvidenceDoesNotBlockUnderEitherPolicy` 的 gate 断言必须变红；去掉佐证判定、无条件降级 → `TestBinaryScannerKeepsAPresenceFamilyHighWhenTheFileIsPacked` 必须变红；把 `presenceOnly` 写成"Sources 含 SourceDynsym"（而不是"⊆ {Dynsym, Needed}"）→ `TestBinaryFamilyClassificationIsPinned` 必须变红。报告逐条结果，并如实报告哪条变异**没有**被抓到。
+
+- [ ] **Step 7: 提交**
+
+```bash
+gofmt -l internal/codeaudit/   # 基线：audit.go / llm.go / result_checker.go 本就未格式化；绝不要 gofmt -w
+go vet ./internal/codeaudit/
+git add internal/codeaudit/rules.go internal/codeaudit/binary_rules.go internal/codeaudit/binary_scanner.go internal/codeaudit/binary_scanner_test.go internal/codeaudit/binary_rules_test.go
+git commit -m "fix(audit): gate binary HIGH on independent corroboration"
+```
 
 ### Task 12: 接入 `GenerateAuditReport` 与报告元数据
 
@@ -10108,6 +10500,8 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 - [ ] 用一个真实模型包（含 `.pt` 与任意 `.so`）在容器里跑一次导入，确认 `auditReportJSON` 里出现 `binary_kind`/`evidence_source` 字段，且 `scan_metadata.binary.files_count > 0`；**同一个包**上确认 `target.files_scanned >= scan_metadata.binary.files_count` 且 `target.files_scanned > 0`。两条必须合看：单独拿 `0 >= 0` 也能满足那个不等式，所以「前者不小于后者」只有在 `files_count > 0` 成立时才算被验证。 **这一条依赖容器/部署环境**（在 CSV2 guest 里跑一次真实导入），**不是本机 `go test` 能满足的**：须单独安排一次环境验证，并在报告里注明是跑过还是未跑——未跑时这一项记为「未验证」，不得算作通过。
 - [ ] 二进制臂触顶时 `scan_metadata.binary.findings_capped` 为 `true` 且 `findings_dropped > 0`，而 **`scan_metadata.truncated` 仍为 `false`**。这一条是本计划最容易写反的地方，所以两个方向都要验：**必须在会触顶的输入上验证**——造一个二进制 finding 数超过 `BinaryConfig.MaxFindings`（默认 50）的包，确认 `scan_metadata.binary.findings_capped == true`；再抓同一个包，确认 `scan_metadata.truncated == false`。反过来的形状（触顶即把 `truncated` 置真）会让二进制通道因为"找到太多"而删包，而它丢掉的只会是 LOW——LOW 在 `assist` 与 `gate` 两种策略下都不阻断，能阻断的 HIGH 和 MEDIUM 无论预算如何都保留（`ScanDirectory` 的 cap 只花 LOW 这一档；`gate` 下 `passed` 是 `High == 0 && Medium == 0`，所以 MEDIUM 也必须留，理由见该处注释）——对一个普通包跑这一条永远是「没错顶」，等于没验。
 - [ ] 把 `security.binaryAudit.enabled` 设为 `false` 再跑一次，确认 `scan_metadata.binary` 缺失且结论与改动前一致（回滚可用）。
+- [ ] 佐证门控生效（Task 11b）：造一个**只**从 `.dynsym` 导入 `socket` 的 `.so` 包，确认 `NET_002` 的 `severity` 为 `LOW`、`downgrade_reason` 非空，且结论 `passed == true`。**同一条要在 `gate` 策略下再跑一次**，仍须 `passed == true`——只验 `assist` 会把 MEDIUM 的降级误判成通过（`gate` 看 HIGH 或 MEDIUM）。随后在同一个文件里放一个高熵可执行节（真加壳），确认 `NET_002` 回到 `HIGH` 且包被删——两个方向都要验，只验降级等于只验了抑制。
+- [ ] `scan_metadata.binary.presence_downgraded` 在含符号证据的包上大于 0，且在触顶的包上仍等于降级总数（该计数在降级时累加，不随 cap 丢弃而减少）。
 - [ ] （**回归护栏，不是本功能的验收项**）`UnsupportedExts` 仍恒为 0——本计划**不**动它，任何让它非零的改动都会使每个真实包被判定为非完整扫描。它列在这里，是因为它属于同一次改动所以要一起回归，不是因为这个功能会让它变化。
 
 ## 5. 已知风险与对策
@@ -10123,4 +10517,5 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 | 去掉无节表 fail-open 后，节表被剥离的合法库被误阻断 | 这是本次修订**新引入**的代价，必须与上一行（UPX / `BIN_001`）并列看，而不是只留在 Task 5 的实现里：熵检测的输入是可执行节，而 `len(ef.Sections) == 0` 的文件（`strip --strip-section-headers` 或 `objcopy --strip-section-headers` 的产物、以及某些加壳器的输出）没有可执行节可测，新实现记为 `Bound.Structural`，而 `KindELF` 是可执行类型，于是这个包被删。旧行为是"没有节表就直接掉出去、不产生任何行也不产生任何 bound"，也就是把"从未检查过"报成"没发现加壳"（fail-open）；本版刻意翻成 fail-closed，判据是：**对可执行格式，"没看"必须不等于"干净"**。这条误报面**不靠"用 `PT_DYNAMIC` 回补 `DT_NEEDED`/`DT_SONAME`"来修**——那条链要先把 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移、再把 `DT_STRTAB` 的虚地址同样映射一次，是一段独立的新解析逻辑，而它的产出对"有没有被加壳"不提供任何证据，与这条误报面无关。真正的取舍是"宁可为被剥节的库删包，也不让一个剥了节表头的加壳载荷通过"。已入库语料实测没有这个形状（`models/` 下一个真实 `.so` 都没有，见第 14 条），宿主 600 个共享对象（538 个不同 ELF、2027 个文件条目）里也 0 个无节表（见第 15 条），所以这个代价目前是**潜伏**的，只在包带上一个被剥节的真实库时发作；`security.binaryAudit.enabled=false` 仍是逐字节回滚 |
 | 与 semgrep 非劣性证据的交互 | 二进制通道在**两个臂之外**运行且合并发生在引擎报告之后，两臂的引擎级报告逐字节不变；`corpus_parity_test.go` 会证明这一点 |
 | pickle 解释器的门控开错方向 | 两个方向都是故障，所以各有一个测试钉住：**跑宽了**（对非 pickle 也跑解释器）会让任意字节能被读成 opcode，未知 opcode 直接置 `Bound.Structural`，而 `KindELF`/`KindPickle`/`KindArchive`/`KindCompressed` 都是可执行类型，于是每个 `.pt`/`.whl`/`.so` 都被阻断、原本能导入的包被删——`TestCollectEvidenceDoesNotInterpretNonPicklesAsPickles` 用一个良性 ELF 夹具断言既不 `Err` 也无 `Bound.Structural`、无 `SourcePickle` 行；**跑窄了**（该跑的没跑）会丢掉 pickle 证据——`TestPickleInterpreterReadsTheRealCheckpoint` 断言真 checkpoint 仍产出目标。门控规则（只跑在 `KindPickle` 的整文件/容器成员、以及解压后头部嗅探为 pickle 的 gzip 流上）写在 Task 4 Step 4，不得"简化"掉 |
+| 符号证据缺佐证时降为 LOW，未加壳的网络/命令型载荷不再静态阻断 | 这是本轮**明确接受**的取舍，判据来自实测而不是偏好：一个 `.dynsym` 项或 `DT_NEEDED` 名字只说明文件**有能力**调用（链接器把可能引用的每个符号都写进去），而"调用图可达性"作为替代方案已被实测否决——宿主上被标记的 9 个合法库**一个都翻不了案**（`libllama-common` 在 `.dynsym` 里定义/弱定义 2878/2881 个函数，`socket` 的调用者本身就是导出入口），且 guest rootfs 里没有反汇编器、`golang.org/x/arch` 离线不可得。保留的判定：`BIN_001`（加壳，一次**测量**，无条件 HIGH）与 `PKL_001`（pickle 解释器真的走完 opcode 流），`NET_002`/`CMD_001`/`BIN_002` 只在**同一文件**内有这两者之一时才 HIGH。Tier 2 仍是兜底：降级的 finding 照常进报告、照常送给模型，模型判 MALICIOUS 时 `ClassifyFindingRisk` 分类为 HIGH 并阻断（`audit.go:212-252`）——所以「降级」去掉的是一次自动阻断，不是这条证据，**没有佐证也不等于无害**。**不得**把 `BIN_002` 或"第二个符号族"当作佐证：前者本身就是符号表里的名字，后者更是合法大库的常态（`libllama-common` 有网络符号、`libggml-base` 有 `execlp`），任一条加进去都会让本规则对实测要救的库**完全不生效** |
 | 二进制通道无法被取消，且它的失败会删包 | `GenerateAuditReport` 由 `internal/controller/import_processing.go:642` 以 `context.Background()` 调用，新增的 `runBinaryChannel`/`ScanDirectory` 都不收 context，所以**单个文件**的工作量被 `BinaryConfig` 的上限钉住，而**总**工作量随文件数线性增长，且没有任何东西能中断它。这是既有的形状而不是新引入的类别——`engine.ScanDirectoryWithLines` 同样不收 context——所以这里只当作一个已知边界记录：一次导入的二进制臂时长与文件数成正比，超时与否只能由调用方在整条审计之外控制，本计划不新增逐文件的取消路径。同一个 `context.Background()` 调用点也是**为什么 `runBinaryChannel` 不返回 error**：`internal/controller/import_processing.go:642-660` 对任何 error 都走删包，逐文件失败（已计为 `Incomplete`）或整趟失败（已计为 `Errored`）若从那条路出去，报告根本没机会说明原因，删除也就无从复核 |
