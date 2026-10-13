@@ -10613,6 +10613,17 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 
 本计划文件已在开工前入库（`.claude/` 在 `.gitignore` 中，需 `git add -f`），此处无需再提交。
 
+> **质量审查后的修正（2026-10-13）**：Task 14 的代码质量审查提出 10 条，三条改了代码或测试（`ead3cd5`、`167e513`、`794f721`）。
+>
+> 1. **`streamWithSizeSwitch` 只按大小记结构性边界——真缺陷，已修（`ead3cd5`）**。原实现 `if set.Size > cfg.MaxFullScanBytes` 就 `markStructural`，从不判断两个 `HeadTailBytes` 窗口是否真的留下未读中段。默认配置（64 MiB 阈值、1 MiB 窗口）下不可能触发——越过 64 MiB 必然也越过 2 MiB——但**本任务刚把这个旋钮交给运维**：一旦 `maxFullScanBytes` 调到 2 MiB 以下，一个被两个窗口**整份覆盖**的文件会被记成 windowed，理由串还写着"只读了首尾 N 字节"，而 `KindELF`/`KindArchive`/`KindPickle`/`KindCompressed` 都是可执行类型，于是 `ProvesCleanScan()` 为假、这次导入被拒——为一份什么都没漏掉的文件、用一句与事实相反的理由。改为仅当 `set.Size > 2*cfg.HeadTailBytes` 时才记录。回归测试 `TestStreamWithSizeSwitchRecordsNoBoundWhenTheWindowsCoverTheFile`（`fullScan=64`、`window=4096`、8192 字节，正好被两窗口铺满）钉住；**变异证明**：把条件改回 `if true`，该测试失败并打印出那句假理由。既有的 `TestStreamWithSizeSwitchWindowsAFileAboveTheFullScanBudget` 不受影响（`fullScan=4096`、`window=64`，8192 字节远在 128 之上）。
+> 2. **注释与事实不符，已改（`167e513`）**：`startupBinaryAuditConfigFile` 的指针理由（原写"操作者写的 0 会被拒"，见上文更正条）、`BinaryAuditMaxStreamBytes` 的"同一处校验、两个键一起动"（**没有任何跨字段校验**，改成写清运维必须自己保证什么）、`BinaryAuditHighEntropyThreshold` 未说明区间两端的行为（8.0 使该族静默失效，≤6.0 使每个 `.so` 都被判加壳并在两种策略下阻断）、以及 `SecurityConfig.Binary` 的零值语义（见下条）。
+> 3. **测试判别力不足，已补（`794f721`）**：`validateBinaryAudit` 的六个分支原本只驱动了一个，`TestBuildSecurityConfig` 六个字段原本只比了两个。现改为表驱动覆盖全部六分支（四个负数 + 阈值 `-0.5`/`8.5`）、六个字段各取互不相同的值、并把开关的两个方向都验——只验 true 时，把 `Enabled` 硬编码成 `true` 仍能通过，而那正是这处接线唯一会"看着对却是坏的"方式。**变异证明**：削弱两个校验分支后 config 测试失败；把 `Enabled` 硬编码为 `true`、`MaxFindings` 置 0 后 app 测试失败。
+> 4. **`app_test.go` 的 gofmt 增量（已处理）**：新增字段加宽了那个复合字面量的对齐列，使该文件的 `gofmt -d` hunk 从基线的 1 个变成 2 个。已把字面量按 gofmt 对齐（同时保留既有那条 import 顺序 hunk 不动），hunk 数回到 1，`gofmt -l` 列表与基线逐项一致。
+>
+> 记录但**未改**（属产品决策或超出本任务范围，留待最终评审）：`maxStreamBytes < maxFullScanBytes` 无校验（夹在两者之间大小的文件会全部记边界，在可执行类型上阻断导入）；`highEntropyThreshold` 接受整个 `[0,8]`；启动日志不打印二进制通道的开关与限值；`BinaryAuditMaxFullScanBytes`/`MaxStreamBytes` 用 `int` 而同结构体里同类字节数用 `int64`（只在 32 位目标上会截断 3 GiB，当前目标不涉及）。
+>
+> 另有一条**既成事实、刻意不回退**：`SecurityConfig.Binary` 的零值就是"关闭"。Task 12 之前 `import_processing.go` 硬编码 `codeaudit.DefaultBinaryConfig()`，所以控制器测试一直在通道开启下跑；换成 `s.Security.Binary` 后，凡是没有显式设置该字段的 `SecurityConfig`（如 `handler_test.go` 的 `setupTestState`）都变成通道关闭。控制器测试里**没有一条**断言二进制通道（`grep -n "Binary" internal/controller/*_test.go` 无命中），所以没有断言丢失，变的是执行覆盖而非验证强度；生产路径只有一个构造点（`buildSecurityConfig`）且总是设置该字段，已在 `SecurityConfig` 的文档注释里写明这个陷阱。
+
 ---
 
 ## 4. 验收清单
