@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // BinaryScanSummary is what one binary pass knows about its own completeness.
@@ -214,13 +213,7 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 			res.Summary.Incomplete++
 			return nil
 		}
-		if set.Bound.Structural {
-			if isExecutableKind(kind) {
-				res.Summary.BoundedExecutable++
-			} else {
-				res.Summary.BoundedData++
-			}
-		} else if set.Bound.Listing {
+		if set.Bound.Structural || set.Bound.Listing {
 			// A capped listing splits by kind for the same reason a bounded read
 			// does, but it is not the same loss. The cap is the matcher's input:
 			// ScanDirectory matches over set.Lines, and EvidenceSet.add returns
@@ -270,7 +263,7 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 			// is LOW - so a downgrade applied afterwards would leave the cap reasoning
 			// about HIGH while the report carries LOW.
 			if !corroborated && s.matcher.downgrades(m.Rule.ID) {
-				f.Severity = "LOW"
+				f.Severity = SeverityLow
 				f.DowngradeReason = presenceDowngradeReason
 				res.Summary.PresenceDowngraded++
 			}
@@ -316,14 +309,12 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 			// Written as "not LOW" rather than "is HIGH or MEDIUM" on purpose:
 			// the set that may be dropped has to be the one that cannot block,
 			// so anything the code does not positively know to be LOW is kept.
-			// rules.go declares no SeverityLow, so LOW is a bare string here and
-			// in the table that writes it. The rule table cannot produce the input
-			// that separates the two spellings - it writes only HIGH, MEDIUM and
-			// LOW - so the property is pinned by
-			// TestBinaryScannerCapKeepsAnUnknownSeverityPastTheBudget, which
-			// builds a matcher carrying a severity no table produces and requires
-			// it to survive the cap.
-			if len(kept) < s.cfg.MaxFindings || f.Severity != "LOW" {
+			// The rule table cannot produce the input that separates the two
+			// spellings - it writes only HIGH, MEDIUM and LOW - so the property is
+			// pinned by TestBinaryScannerCapKeepsAnUnknownSeverityPastTheBudget,
+			// which builds a matcher carrying a severity no table produces and
+			// requires it to survive the cap.
+			if len(kept) < s.cfg.MaxFindings || f.Severity != SeverityLow {
 				kept = append(kept, f)
 				continue
 			}
@@ -397,35 +388,18 @@ func binaryFinding(set *EvidenceSet, m binaryMatch) Finding {
 }
 
 // renderEvidenceWindow renders the listing lines in [start, end) the way the
-// prompt shows them. The geometry matches contextWindow's, deliberately: the two
-// channels feed one prompt, and a window that meant something different on one
-// side would be a difference the reader cannot see.
+// prompt shows them. The geometry and the trimming are contextWindow's, taken
+// from it rather than restated: the two channels feed one prompt, and a window
+// that meant something different on one side would be a difference the reader
+// cannot see.
 func renderEvidenceWindow(lines []EvidenceLine, start, end int) string {
-	if start < 0 {
-		start = 0
-	}
-	if end > len(lines) {
-		end = len(lines)
-	}
+	start, end = windowBounds(len(lines), start, end)
 	if start >= end {
 		return ""
 	}
-	out := make([]string, 0, end-start)
+	rendered := make([]string, 0, end-start)
 	for _, l := range lines[start:end] {
-		out = append(out, fmt.Sprintf("[%s] %s", l.Source, l.Text))
+		rendered = append(rendered, fmt.Sprintf("[%s] %s", l.Source, l.Text))
 	}
-	return joinTrimmed(out)
-}
-
-// joinTrimmed joins rendered evidence lines, keeping the same trimming the
-// source arms' contextWindow applies.
-func joinTrimmed(lines []string) string {
-	var b strings.Builder
-	for i, l := range lines {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		b.WriteString(l)
-	}
-	return strings.TrimSpace(b.String())
+	return contextWindow(rendered, 0, len(rendered))
 }

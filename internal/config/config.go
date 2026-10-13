@@ -516,22 +516,23 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 		cfg.SemgrepTimeout = time.Duration(seconds) * time.Second
 	}
 
-	if ba := fileCfg.Security.BinaryAudit; ba.Enabled != nil {
+	ba := fileCfg.Security.BinaryAudit
+	if ba.Enabled != nil {
 		cfg.BinaryAuditEnabled = *ba.Enabled
 	}
-	if ba := fileCfg.Security.BinaryAudit; ba.MaxArchiveMembers != nil {
+	if ba.MaxArchiveMembers != nil {
 		cfg.BinaryAuditMaxArchiveMembers = *ba.MaxArchiveMembers
 	}
-	if ba := fileCfg.Security.BinaryAudit; ba.HighEntropyThreshold != nil {
+	if ba.HighEntropyThreshold != nil {
 		cfg.BinaryAuditHighEntropyThreshold = *ba.HighEntropyThreshold
 	}
-	if ba := fileCfg.Security.BinaryAudit; ba.MaxFindings != nil {
+	if ba.MaxFindings != nil {
 		cfg.BinaryAuditMaxFindings = *ba.MaxFindings
 	}
-	if ba := fileCfg.Security.BinaryAudit; ba.MaxFullScanBytes != nil {
+	if ba.MaxFullScanBytes != nil {
 		cfg.BinaryAuditMaxFullScanBytes = int(*ba.MaxFullScanBytes)
 	}
-	if ba := fileCfg.Security.BinaryAudit; ba.MaxStreamBytes != nil {
+	if ba.MaxStreamBytes != nil {
 		cfg.BinaryAuditMaxStreamBytes = int(*ba.MaxStreamBytes)
 	}
 

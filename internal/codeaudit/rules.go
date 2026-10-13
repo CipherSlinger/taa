@@ -8,6 +8,7 @@ import "regexp"
 const (
 	SeverityHigh   = "HIGH"
 	SeverityMedium = "MEDIUM"
+	SeverityLow    = "LOW"
 )
 
 // TaintStep represents an inter-procedural taint propagation step in the CPG evidence chain.

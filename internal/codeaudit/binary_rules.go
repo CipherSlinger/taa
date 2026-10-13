@@ -88,10 +88,10 @@ import (
 // Python source, where a literal in a call is a different fact from a byte run
 // in a binary.
 //
-// "LOW" is the literal the report path already uses for a non-blocking finding:
-// DefaultRules() has no LOW constant, and ClassifyFindingRisk falls through to
-// "LOW" for any severity that is neither HIGH nor MEDIUM. A LOW finding still
-// reaches the report and still goes to the Tier-2 verifier, which can raise it
+// These families sit at SeverityLow, the value the report path already uses for
+// a non-blocking finding: ClassifyFindingRisk falls through to "LOW" for any
+// severity that is neither HIGH nor MEDIUM. A LOW finding still reaches the
+// report and still goes to the Tier-2 verifier, which can raise it
 // to MALICIOUS on its own evidence; it simply does not block by itself. LOW and
 // not MEDIUM is deliberate for the gated families too: `assist` withholds on
 // HIGH alone but `gate` withholds on HIGH or MEDIUM (internal/codeaudit/audit.go),
@@ -138,25 +138,25 @@ var binaryOnlyRules = map[string]Rule{
 	"CMD_002": {
 		ID:          "CMD_002",
 		Category:    "命令执行（字符串证据）",
-		Severity:    "LOW",
+		Severity:    SeverityLow,
 		Description: "二进制中的字面量呈现命令行形态 — 需人工确认是配置文本还是执行载荷",
 	},
 	"PER_002": {
 		ID:          "PER_002",
 		Category:    "持久化后门（字符串证据）",
-		Severity:    "LOW",
+		Severity:    SeverityLow,
 		Description: "二进制中的字面量呈现持久化形态 — 需人工确认",
 	},
 	"FIL_002": {
 		ID:          "FIL_002",
 		Category:    "敏感文件读取（字符串证据）",
-		Severity:    "LOW",
+		Severity:    SeverityLow,
 		Description: "二进制中的字面量指向敏感路径 — 需人工确认是读取能力还是日志文本",
 	},
 	"ENV_002": {
 		ID:          "ENV_002",
 		Category:    "环境变量（字符串证据）",
-		Severity:    "LOW",
+		Severity:    SeverityLow,
 		Description: "二进制中的字面量是一个密钥型环境变量名 — 需人工确认",
 	},
 }

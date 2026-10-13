@@ -146,13 +146,20 @@ func (s *Scanner) ScanFile(path string) ([]Finding, error) {
 	return findings, nil
 }
 
-func contextWindow(lines []string, start, end int) string {
+// windowBounds clamps a [start, end) line window to a listing of n lines.
+// It is shared so that every arm renders its context with the same geometry.
+func windowBounds(n, start, end int) (int, int) {
 	if start < 0 {
 		start = 0
 	}
-	if end > len(lines) {
-		end = len(lines)
+	if end > n {
+		end = n
 	}
+	return start, end
+}
+
+func contextWindow(lines []string, start, end int) string {
+	start, end = windowBounds(len(lines), start, end)
 	if start >= end {
 		return ""
 	}

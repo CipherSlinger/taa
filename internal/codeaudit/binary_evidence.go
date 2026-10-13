@@ -317,7 +317,11 @@ func isPrintableByte(b byte) bool {
 // pickle interpreter when the file is claimed to be a pickle. The interpreter is
 // gated on set.Kind because, unlike the string scanner, it commits to a parse -
 // it would set a structural bound on any other format, and on an executable kind
-// that bound blocks the import.
+// that bound blocks the import. A whole file is the one stream whose kind is the
+// set's own, so the gate is decided here and handed over.
+//
+// The read loop itself is streamReaderEvidence's: this function owns the file
+// handle and the size check, so the budget clamp is written once.
 func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int64) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -325,54 +329,17 @@ func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int6
 	}
 	defer f.Close()
 
+	// The cut is decided from the file's size rather than left to the probe byte
+	// streamReaderEvidence uses, so that the reason can name both numbers. It is
+	// recorded before the read, and markStructural keeps the first reason, so the
+	// wording handed over below is only reached where the size check could not see
+	// the cut at all.
 	if info, statErr := f.Stat(); statErr == nil && budget > 0 && info.Size() > budget {
 		set.markStructural(fmt.Sprintf("stream budget %d bytes reached (file is %d)", budget, info.Size()))
 	}
-
-	scanner := newStringScanner(set, cfg)
-	// The interpreter runs only where the file is claimed to be a pickle. A
-	// byte-pattern scan was harmless on any input because it never committed to a
-	// parse; this one commits, and an ELF's first byte is not an opcode, so
-	// running it over a shared object would set Bound.Structural - and for a
-	// shared object that bound blocks the import.
-	var pickles *pickleScanner
-	if set.Kind == KindPickle {
-		pickles = newPickleScanner(set)
-	}
-
-	var read int64
-	buf := make([]byte, evidenceReadChunk)
-	for {
-		limit := len(buf)
-		if budget > 0 && int64(limit) > budget-read {
-			limit = int(budget - read)
-		}
-		if limit <= 0 {
-			break // the budget is spent; the bound was recorded above
-		}
-		n, readErr := f.Read(buf[:limit])
-		if n > 0 {
-			chunk := buf[:n]
-			if _, wErr := scanner.Write(chunk); wErr != nil {
-				return fmt.Errorf("scan %s: %w", path, wErr)
-			}
-			if pickles != nil {
-				if _, wErr := pickles.Write(chunk); wErr != nil {
-					return fmt.Errorf("scan %s: %w", path, wErr)
-				}
-			}
-			read += int64(n)
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return fmt.Errorf("read %s: %w", path, readErr)
-		}
-	}
-	scanner.Flush()
-	if pickles != nil {
-		pickles.Flush()
+	if err := streamReaderEvidence(f, set, cfg, budget,
+		fmt.Sprintf("stream budget %d bytes reached", budget), set.Kind == KindPickle); err != nil {
+		return fmt.Errorf("scan %s: %w", path, err)
 	}
 	return nil
 }
@@ -1943,16 +1910,17 @@ func collectELFMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) erro
 // less means the stream is read to the end. The strings pass always runs; the
 // pickle interpreter runs only when pickleScan is true.
 //
-// It exists because three call sites need exactly this loop - a pickle member, an
-// ELF member, and a decompressed gzip stream - and the bound has to be enforced
-// identically in all of them. A whole file does not use this loop: it goes through
-// streamEvidence, which is a separate implementation over the same rule, and
-// unifying the two is deliberately left out of this change rather than taken on.
-// The reason is not brevity. The bound is
-// what sets Bound.Structural, Bound.Structural is what withholds a clean verdict
-// from a stream whose tail was never read, and a call site that enforced it
-// slightly differently would be a hole in the fail-closed rule rather than a
+// It is the only implementation of this loop, because the bound has to be
+// enforced identically everywhere it applies: four call sites reach it - a whole
+// file, a pickle member, an ELF member, and a decompressed gzip stream. The bound
+// is what sets Bound.Structural, Bound.Structural is what withholds a clean
+// verdict from a stream whose tail was never read, and a call site that enforced
+// it slightly differently would be a hole in the fail-closed rule rather than a
 // style difference.
+//
+// A whole file arrives through streamEvidence, which owns the handle and records
+// the cut from the file's size before entering here; the probe byte below is what
+// covers the sites that cannot know a size up front.
 //
 // pickleScan is a parameter rather than a read of set.Kind because a member's
 // kind is the member's, not the set's: the set is the archive, and every member
