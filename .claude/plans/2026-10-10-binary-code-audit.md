@@ -10229,10 +10229,14 @@ go test ./internal/config/ -run TestBinaryAuditConfig 2>&1 | head -10
 ```go
 // startupBinaryAuditConfigFile is the security.binaryAudit block.
 //
-// Every limit is a pointer so that "absent" and "zero" stay distinguishable: a
-// zero the operator wrote is a limit of zero and is rejected below, while an
-// absent field means "use the codeaudit default". Reading both as zero would
-// turn a deliberate 0 into a silently substituted default.
+// Enabled is a pointer because "absent" and "false" must not collapse: the
+// channel defaults on, so an absent field read as false would turn silence into
+// a rollback. The limits are pointers too, but only this layer gets a
+// distinction out of it - validateBinaryAudit rejects a negative and lets zero
+// through, and a zero then resolves to the codeaudit default through
+// normalizeBinaryConfig exactly as an absent field does. A deliberate 0 is
+// therefore not rejected; it is read as "use the default", which is the same
+// thing the field says when it is missing.
 type startupBinaryAuditConfigFile struct {
 	Enabled              *bool    `json:"enabled"`
 	MaxArchiveMembers    *int     `json:"maxArchiveMembers"`
@@ -10242,6 +10246,8 @@ type startupBinaryAuditConfigFile struct {
 	MaxStreamBytes       *int64   `json:"maxStreamBytes"`
 }
 ```
+
+> 更正（2026-10-13，规格审查发现）：上面这段注释原文写的是「操作者写的 0 会在下面被拒」，与同一段规格里的 `validateBinaryAudit` 矛盾——后者只拒**负数**。显式 0 能通过校验，随后被 `normalizeBinaryConfig`（`internal/codeaudit/binary_evidence.go:592`，十个闸门全是 `<= 0`）解析成默认值，与字段缺失时**同一条路径**。也就是说指针在这层之外的区分并不留存。已按实际行为改写，实现按改写后的文本落地（`69815fc` 之后的注释修正提交）。
 
 在 `validateCodeScanEngine` 的**调用者**——`validateStartupConfig`（`internal/config/config.go:236`）——的校验序列里追加（`LoadStartupConfig` 只是调 `validateStartupConfig`，本身没有校验序列）：
 
