@@ -448,8 +448,8 @@ func TestImportModel_PublicKeyReuseAndLog(t *testing.T) {
 		t.Fatalf("marshal SM2 key 2: %v", err)
 	}
 
-	// 1. 首次未提供公钥：应记录 Warn
-	t.Run("first import without publicKey warns", func(t *testing.T) {
+	// 1. 首次未提供公钥：应记录 Info（公钥非必填，导出自行回退）
+	t.Run("first import without publicKey logs the fallback", func(t *testing.T) {
 		_ = state.Logs.Drain()
 		resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
 			"resourceUrl": "http://example.com/model1.tar.gz",
@@ -457,15 +457,15 @@ func TestImportModel_PublicKeyReuseAndLog(t *testing.T) {
 		})
 		_ = decodeResponse(t, resp)
 		logs := state.Logs.Drain()
-		foundWarn := false
+		foundInfo := false
 		for _, l := range logs {
-			if strings.Contains(l.Message, "未提供 publicKey，后续阶段3导出可能失败") {
-				foundWarn = true
+			if strings.Contains(l.Message, "未提供 publicKey 且此前未保存过") {
+				foundInfo = true
 				break
 			}
 		}
-		if !foundWarn {
-			t.Fatal("expected warning log when first import has no publicKey")
+		if !foundInfo {
+			t.Fatal("expected info log when first import has no publicKey")
 		}
 	})
 
@@ -507,20 +507,20 @@ func TestImportModel_PublicKeyReuseAndLog(t *testing.T) {
 		}
 		logs := state.Logs.Drain()
 		foundReuse := false
-		foundWarn := false
+		foundFallback := false
 		for _, l := range logs {
 			if strings.Contains(l.Message, "请求未提供 publicKey，复用已保存的 ExportPublicKey") {
 				foundReuse = true
 			}
-			if strings.Contains(l.Message, "未提供 publicKey，后续阶段3导出可能失败") {
-				foundWarn = true
+			if strings.Contains(l.Message, "未提供 publicKey 且此前未保存过") {
+				foundFallback = true
 			}
 		}
 		if !foundReuse {
 			t.Fatal("expected '复用已保存的 ExportPublicKey' log")
 		}
-		if foundWarn {
-			t.Fatal("unexpected warning log when publicKey is already saved")
+		if foundFallback {
+			t.Fatal("unexpected fallback log when publicKey is already saved")
 		}
 	})
 

@@ -864,7 +864,67 @@ func TestExportHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("phase 3 rejects export when ExportPublicKey is empty", func(t *testing.T) {
+	t.Run("phase 3 falls back to the request publicKey when none was saved", func(t *testing.T) {
+		reqKey, err := teecrypto.GenerateSM2KeyPair()
+		if err != nil {
+			t.Fatalf("generate request SM2 key: %v", err)
+		}
+		reqPubPEM, err := teecrypto.MarshalSM2PublicKeyPEM(&reqKey.PublicKey)
+		if err != nil {
+			t.Fatalf("marshal request SM2 pub key: %v", err)
+		}
+
+		state.mu.Lock()
+		prevPhase := state.CurrentPhase
+		prevKey := state.ExportPublicKey
+		state.CurrentPhase = 3
+		state.ExportPublicKey = ""
+		state.mu.Unlock()
+		defer func() {
+			state.mu.Lock()
+			state.CurrentPhase = prevPhase
+			state.ExportPublicKey = prevKey
+			state.mu.Unlock()
+		}()
+
+		record := seedExportIndexRecord(t, state, "req-export-p3-fallback", "task-p3-fallback", "export-p3-fallback")
+		if err := os.WriteFile(filepath.Join(record.ResultDir, "out.bin"), exportPlaintext, 0o644); err != nil {
+			t.Fatalf("write seeded out.bin: %v", err)
+		}
+
+		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+			"requestId": "req-export-p3-fallback",
+			"taskId":    "task-p3-fallback",
+			"publicKey": string(reqPubPEM),
+		})
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, body)
+		}
+		if got := resp.Header.Get("X-TAA-Encrypted"); got != "true" {
+			t.Fatalf("X-TAA-Encrypted = %q, want true", got)
+		}
+		if disp := resp.Header.Get("Content-Disposition"); !strings.Contains(disp, ".zip.enc\"") {
+			t.Fatalf("Content-Disposition = %q, want .zip.enc\"", disp)
+		}
+		sealed, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read response body: %v", err)
+		}
+		decrypted, err := teecrypto.OpenSM2SM4GCM(reqKey, sealed)
+		if err != nil {
+			t.Fatalf("decrypt with the request public key: %v", err)
+		}
+		files := extractZipMap(t, decrypted)
+		if got, ok := files["export-p3-fallback/out.bin"]; !ok {
+			t.Fatalf("decrypted zip missing export-p3-fallback/out.bin, got keys: %v", keysOfMap(files))
+		} else if !bytes.Equal(got, exportPlaintext) {
+			t.Fatalf("decrypted content = %q, want %q", got, exportPlaintext)
+		}
+	})
+
+	t.Run("phase 3 exports plaintext when neither the saved nor the request key is present", func(t *testing.T) {
 		state.mu.Lock()
 		prevPhase := state.CurrentPhase
 		prevKey := state.ExportPublicKey
@@ -887,12 +947,26 @@ func TestExportHandler(t *testing.T) {
 			"requestId": "req-export-p3-nokey",
 			"taskId":    "task-p3-nokey",
 		})
-		api := decodeResponse(t, resp)
-		if resp.StatusCode != http.StatusBadRequest || api.Error != 400 {
-			t.Fatalf("expected 400 when ExportPublicKey empty in phase 3, got status=%d error=%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, body)
 		}
-		if !strings.Contains(api.Msg, "阶段 3 产物必须使用阶段 1 导入的公钥加密导出") {
-			t.Fatalf("unexpected msg: %s", api.Msg)
+		if got := resp.Header.Get("X-TAA-Encrypted"); got == "true" {
+			t.Fatalf("X-TAA-Encrypted = %q, want not true (plaintext)", got)
+		}
+		if disp := resp.Header.Get("Content-Disposition"); !strings.Contains(disp, ".zip\"") {
+			t.Fatalf("Content-Disposition = %q, want .zip\"", disp)
+		}
+		raw, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read response body: %v", err)
+		}
+		files := extractZipMap(t, raw)
+		if got, ok := files["export-p3-nokey/out.bin"]; !ok {
+			t.Fatalf("plaintext zip missing export-p3-nokey/out.bin, got keys: %v", keysOfMap(files))
+		} else if !bytes.Equal(got, exportPlaintext) {
+			t.Fatalf("plaintext content = %q, want %q", got, exportPlaintext)
 		}
 	})
 
@@ -943,7 +1017,7 @@ func TestExportHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("phase 3 ignores request publicKey and always uses saved ExportPublicKey", func(t *testing.T) {
+	t.Run("phase 3 prefers the saved ExportPublicKey over the request publicKey", func(t *testing.T) {
 		otherKey, err := teecrypto.GenerateSM2KeyPair()
 		if err != nil {
 			t.Fatalf("generate other SM2 key: %v", err)

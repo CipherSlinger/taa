@@ -306,7 +306,10 @@ paths:
   /v1/taa/export:
     post:
       summary: 导出结果
-      description: 平台请求 TAA 打包导出当前阶段的结果。若提供 publicKey 则以 SM2 信封加密后返回文件流，否则仅允许在 Phase 1/2 以明文流返回。
+      description: >-
+        平台请求 TAA 打包导出当前阶段的结果。publicKey 整体非必填：phase 1/2 取请求中的 publicKey，
+        phase 3 依次取 phase 1 /v1/taa/importModel 保存的公钥、请求中的 publicKey；取到公钥则以 SM2
+        信封加密后返回文件流，取不到则以明文流返回。
       tags:
         - 任务执行
       requestBody:
@@ -641,7 +644,9 @@ components:
           description: 请求唯一标识（与 taskId 不能同时为空）
         publicKey:
           type: string
-          description: SM2 公钥 PEM。TAA 在 phase=1 时保存，用于后续 phase=3 结果加密导出
+          description: >-
+            SM2 公钥 PEM，非必填。TAA 在 phase=1 且本字段非空时保存，作为 phase=3 结果加密导出的首选公钥；
+            为空时不校验、不保存、也不返回失败，phase=3 导出会回退到导出请求携带的 publicKey，仍为空则明文导出
         runtimeConfig:
           type: string
           description: 模型运行配置 JSON 字符串（包含 commands 和 env）。resourceUrl 为空时必填且 commands 不能为空。
@@ -691,7 +696,9 @@ components:
           description: 任务 ID
         publicKey:
           type: string
-          description: 结果接收方的国密 SM2 公钥 PEM。若为空且处于 Phase 1/2 则导出明文，否则必须提供公钥进行信封重加密
+          description: >-
+            结果接收方的国密 SM2 公钥 PEM，非必填。phase 1/2：非空时用于信封加密，为空则明文导出；
+            phase 3：优先使用 phase 1 /v1/taa/importModel 保存的公钥，未保存时使用本字段，两者都为空则明文导出
 
     # ── 回调请求模型 ────────────────────────────────────────────────────────
     RegisterRequest:

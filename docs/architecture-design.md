@@ -63,11 +63,12 @@ sequenceDiagram
     Note over Platform,Provider: 阶段 4：防泄露检查与密态导出
     TAA->>TAA: 扫描输出目录进行敏感数据明文泄漏检查
     Platform->>TAA: POST /v1/taa/export (携带数据方 ExportPublicKey)
-    alt 指定导出公钥 (密态导出)
+    alt 有可用导出公钥 (密态导出)
         TAA->>TAA: 重新执行 SM2 信封加密 (SM4-GCM + ExportPublicKey)
+        Note over TAA: 阶段 3 优先用阶段 1 保存的公钥，其次用请求携带的 publicKey
         TAA-->>Platform: 返回信封密文流及任务元数据
-    else 无导出公钥 (调试明文导出)
-        TAA-->>Platform: 返回原始产物 (仅限 Phase 1/2 调试模式)
+    else 无可用导出公钥 (明文导出)
+        TAA-->>Platform: 返回原始产物 (明文 zip)
     end
     Platform-->>Provider: 回传最终训练结果/模型权重
 ```
@@ -321,8 +322,9 @@ Phase 1 (调试)     Phase 2 (测试)     Phase 3 (正式训练)
     │  有key→加密   │
     │              │
     │ Phase 3:     │
-    │  无key→400   │
+    │  无key→明文   │
     │  有key→加密   │
+    │  (保存优先)   │
     └──────────────┘
 ```
 

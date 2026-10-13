@@ -903,7 +903,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | `resourceUrl` | `string` | 否* | 模型资源下载地址；为空时表示只更新 `runtimeConfig` 并复用已导入的模型，此时此前必须已导入过模型 |
 | `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空 |
 | `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空 |
-| `publicKey` | `string` | 否 | 平台侧 SM2 公钥 PEM，供 phase 3 导出结果加密使用；仅 phase 1 且请求携带时校验并保存，已保存过则保留首个公钥。资源解封使用 TAA 自身私钥，与此参数无关 |
+| `publicKey` | `string` | 否 | 平台侧 SM2 公钥 PEM，**非必填**。仅 phase 1 且请求携带时校验并保存（已保存过则保留首个公钥）；为空时不校验、不保存、也不返回失败。资源解封使用 TAA 自身私钥，与此参数无关；阶段 3 导出时的公钥选择顺序见 [4.6](#46-请求-taa-导出结果v1taaexport) |
 | `runtimeConfig` | `string` | 否 | 运行配置 JSON 字符串（`{"commands":[...]}`）；非空即覆盖已保存的配置，与 `resourceUrl` 是否为空无关 |
 
 **请求示例**：
@@ -1068,6 +1068,8 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 
 该接口用于请求导出 TAA 当前阶段产生的结果目录压缩包。考虑到结果文件可能较大，成功时接口直接返回二进制文件流。
 
+> 公钥为非必填：能取到公钥就加密导出，取不到就明文导出。阶段 3 的公钥选择顺序为「阶段 1 `/v1/taa/importModel` 保存的公钥 → 本请求的 `publicKey` → 明文」；阶段 1/2 为「本请求的 `publicKey` → 明文」。
+
 > 注意：该接口与其他 TAA 接口不同，**成功响应不是公共 JSON 格式**；只有失败响应继续遵循 [2. 公共返回格式](#2-公共返回格式)。
 
 **请求**：`POST /v1/taa/export`
@@ -1079,7 +1081,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空；TAA 会将其写入导出文件名 |
-| `publicKey` | `string/null` | 否 | SM2 公钥 PEM。phase 1/2 中为空、缺省或 `null` 时明文导出，非空时使用该公钥做 SM2+SM4-GCM 信封加密；phase 3 中当前实现不使用请求中的 `publicKey`，固定使用 phase 1 导入模型时保存的公钥加密 |
+| `publicKey` | `string/null` | 否 | SM2 公钥 PEM。phase 1/2 中为空、缺省或 `null` 时明文导出，非空时使用该公钥做 SM2+SM4-GCM 信封加密；phase 3 中优先使用 phase 1 `/v1/taa/importModel` 保存的公钥，未保存时改用本请求的 `publicKey`，两者都为空时明文导出 |
 | `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空；缺省时响应头 `X-TAA-Task-Id` 为空 |
 
 **请求示例（phase 1/2 明文导出）**：
@@ -1108,7 +1110,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | --- | --- | --- | --- |
 | phase 1（调试） | `RESULT_DIR/debug` 目录压缩得到的 zip 文件 | `result-debug-{requestId}.zip` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
 | phase 2（测试） | `RESULT_DIR/train` 目录压缩得到的 zip 文件 | `result-train-{requestId}.zip` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
-| phase 3（正式训练） | `RESULT_DIR/train` 目录压缩得到的 zip 文件 | `result-train-{requestId}.zip` | 固定使用 phase 1 `/v1/taa/importModel` 保存的公钥加密，文件名追加 `.enc`；未保存公钥时返回 400 |
+| phase 3（正式训练） | `RESULT_DIR/train` 目录压缩得到的 zip 文件 | `result-train-{requestId}.zip` | 优先使用 phase 1 `/v1/taa/importModel` 保存的公钥加密；未保存时使用请求 `publicKey`；两者均为空则明文导出。加密时文件名追加 `.enc` |
 | phase 4（推理） | 暂不支持 | - | 返回 400 |
 
 **成功响应内容类型**：`application/octet-stream`
@@ -1188,14 +1190,6 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 ```jsonc
 {
   "msg": "publicKey 解析失败: ...",
-  "result": null,
-  "error": 400
-}
-```
-
-```jsonc
-{
-  "msg": "阶段 3 需要先通过阶段 1 导入公钥",
   "result": null,
   "error": 400
 }

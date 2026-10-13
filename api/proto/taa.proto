@@ -125,7 +125,7 @@ message ImportModelRequest {
   string task_id = 2;
   string request_id = 3;
   string runtime_config = 4; // 运行配置 JSON 字符串（commands + env）
-  string public_key = 5; // SM2 公钥 PEM，phase=1 保存用于后续导出加密
+  string public_key = 5; // SM2 公钥 PEM，非必填：phase=1 且非空时保存，作为 phase=3 导出的首选公钥；为空时不校验、不保存、也不返回失败
 }
 
 message GetResourceInfoRequest {
@@ -151,7 +151,7 @@ message SwitchRequest {
 
 message ExportRequest {
   string task_id = 1;
-  string public_key = 2; // 导出公钥 (PEM 格式 SM2 公钥)
+  string public_key = 2; // 导出公钥 (PEM 格式 SM2 公钥)，非必填。phase=1/2 非空即用它加密；phase=3 优先用 importModel 保存的公钥，其次用它；两者都为空则明文导出
 }
 
 message ExportResponse {

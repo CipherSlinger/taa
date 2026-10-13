@@ -45,7 +45,8 @@ func TestSwitchHandlerMutualExclusion(t *testing.T) {
 	}
 }
 
-// 2. 产物阶段亲和性绑定与越权跨阶段明文导出阻断测试
+// 2. 产物阶段亲和性绑定测试：导出分支由记录阶段决定（当前阶段被切回 Phase 1 也不改变），
+// Phase 3 记录优先使用阶段 1 保存的公钥，仅在两处公钥都为空时才回退为明文导出。
 func TestExportHandlerPhaseAffinity(t *testing.T) {
 	state, server := setupTestServer(t)
 	sm2Key := state.SM2PrivateKey
@@ -86,24 +87,24 @@ func TestExportHandlerPhaseAffinity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 当前系统被切回 Phase 1（模拟攻击者试图明文导出 Phase 3 产物）
+	// 当前系统被切回 Phase 1（模拟攻击者试图让 Phase 3 产物走明文分支）
 	state.mu.Lock()
 	state.CurrentPhase = 1
 	state.ExportPublicKey = ""
 	state.mu.Unlock()
 
-	// 情况 2.1: savedPublicKey 为空时，拒绝明文导出，返回 400
+	// 情况 2.1: 记录阶段仍为 3，但两处公钥都为空，按约定回退为明文导出
 	resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
 		"requestId": "req-p3-affinity",
 		"taskId":    "task-p3-affinity",
 	})
-	api := decodeResponse(t, resp)
-	if resp.StatusCode != http.StatusBadRequest || api.Error != 400 {
-		t.Fatalf("expected 400 Bad Request, got status=%d error=%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
 	}
-	if !strings.Contains(api.Msg, "阶段 3 产物必须使用阶段 1 导入的公钥加密导出") {
-		t.Fatalf("unexpected message: %s", api.Msg)
+	if got := resp.Header.Get("X-TAA-Encrypted"); got == "true" {
+		t.Fatalf("expected plaintext fallback when no public key is available, got X-TAA-Encrypted=%q", got)
 	}
+	resp.Body.Close()
 
 	// 情况 2.2: 配置 savedPublicKey 后，即使当前在 Phase 1 且未传 publicKey，也必须强制以 savedPublicKey 加密导出
 	state.mu.Lock()

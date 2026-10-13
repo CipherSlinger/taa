@@ -210,8 +210,11 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		s.mu.Unlock()
 	} else if phase == 1 {
+		// publicKey is optional on this endpoint: a platform that sends none is
+		// not doing anything wrong, it just leaves the phase 3 export to fall
+		// back on the key carried by the export request (or to plaintext).
 		if savedPublicKey == "" {
-			s.Logs.Add(LogWarn, "importModel", "阶段1: 未提供 publicKey，后续阶段3导出可能失败")
+			s.Logs.Add(LogInfo, "importModel", "阶段1: 未提供 publicKey 且此前未保存过，阶段3导出将改用导出请求携带的 publicKey，仍为空则明文导出")
 		} else {
 			s.Logs.Add(LogInfo, "importModel", "阶段1: 请求未提供 publicKey，复用已保存的 ExportPublicKey (长度=%d)", len(savedPublicKey))
 		}

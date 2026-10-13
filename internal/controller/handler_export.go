@@ -122,14 +122,21 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case 3:
-		if savedPublicKey == "" {
-			s.Logs.Add(LogError, "export", "阶段3: ExportPublicKey 为空，无法加密导出")
-			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "阶段 3 产物必须使用阶段 1 导入的公钥加密导出"))
-			return
+		// The phase 3 key chain is a preference order, not a requirement: the key
+		// saved at model import wins, the one carried by this request is the
+		// fallback, and with neither the artifacts go out in plaintext.
+		switch {
+		case savedPublicKey != "":
+			pubKeyPEM = savedPublicKey
+			encrypt = true
+			s.Logs.Add(LogInfo, "export", "阶段3: 使用阶段1保存的 ExportPublicKey 加密 (长度=%d)\n%s", len(pubKeyPEM), pubKeyPEM)
+		case req.PublicKey != nil && strings.TrimSpace(*req.PublicKey) != "":
+			pubKeyPEM = strings.TrimSpace(*req.PublicKey)
+			encrypt = true
+			s.Logs.Add(LogInfo, "export", "阶段3: 未保存 ExportPublicKey，使用请求中的 publicKey 加密 (长度=%d)", len(pubKeyPEM))
+		default:
+			s.Logs.Add(LogInfo, "export", "阶段3: 未保存 ExportPublicKey 且请求未提供 publicKey，返回明文")
 		}
-		pubKeyPEM = savedPublicKey
-		encrypt = true
-		s.Logs.Add(LogInfo, "export", "阶段3: 使用阶段1保存的 ExportPublicKey 加密 (长度=%d)\n%s", len(pubKeyPEM), pubKeyPEM)
 
 	default:
 		s.Logs.Add(LogError, "export", "不支持的阶段: %d", recordPhase)
