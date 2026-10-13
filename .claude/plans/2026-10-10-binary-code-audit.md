@@ -10410,19 +10410,32 @@ package codeaudit
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"testing"
 )
+
+// endToEndConfig is the audit configuration the integration tests share: Tier 1
+// only, so a verdict comes from the matchers rather than from a model.
+func endToEndConfig(policy string) AuditConfig {
+	return AuditConfig{
+		LLM:    LLMConfig{Enabled: false, Policy: policy},
+		Binary: DefaultBinaryConfig(),
+	}
+}
 
 // TestEndToEndMaliciousPackageIsBlocked walks the whole pipeline on a package
 // shaped like the ones this feature exists for: ordinary training code, a shared
 // object that reaches out, and a checkpoint whose pickle stream executes on load.
 //
-// Every one of the three parts is load-bearing. The source file proves the
-// channel did not replace the source engines; the shared object proves the
-// dynamic symbol evidence reaches the verdict; the checkpoint proves the
-// container recursion does. A pass that got the verdict right by another route
-// would still fail this test on the per-file assertions.
+// The verdict here is over-determined, and the assertions are written knowing
+// that: the shared object alone carries four HIGH findings (a packed executable
+// section, plus the corroborated presence families), so the pass stays withheld
+// even if the checkpoint's arm went silent. What pins each arm is its per-file
+// assertion, not the conclusion - drop the container recursion and PKL_001
+// disappears from the checkpoint while CRITICAL survives on the strength of the
+// shared object. train.py carries no assertion at all: it is here because a real
+// package has source next to its binaries, and it produces no finding either way.
 func TestEndToEndMaliciousPackageIsBlocked(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir, "train.py", "import torch\n\ndef train():\n    return 1\n")
@@ -10436,11 +10449,7 @@ func TestEndToEndMaliciousPackageIsBlocked(t *testing.T) {
 		"archive/data.pkl": []byte("\x80\x04cposix\nsystem\n."),
 	}, []string{"archive/data.pkl"}))
 
-	cfg := AuditConfig{
-		LLM:    LLMConfig{Enabled: false, Policy: "assist"},
-		Binary: DefaultBinaryConfig(),
-	}
-	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, nil)
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), endToEndConfig("assist"), nil)
 	if err != nil {
 		t.Fatalf("GenerateAuditReport: %v", err)
 	}
@@ -10453,27 +10462,52 @@ func TestEndToEndMaliciousPackageIsBlocked(t *testing.T) {
 		t.Errorf("RiskLevel = %s, want CRITICAL", audit.Conclusion.RiskLevel)
 	}
 
-	byFile := map[string][]string{}
-	for _, fr := range audit.FileReports {
-		for _, f := range fr.Findings {
-			byFile[f.File] = append(byFile[f.File], f.RuleID)
-		}
-	}
-	assertHasRule(t, byFile, "native/libevil.so", "NET_002")
-	assertHasRule(t, byFile, "native/libevil.so", "BIN_002")
+	byFile := rulesByFile(audit)
 	assertHasRule(t, byFile, "checkpoint.pt", "PKL_001")
 
-	if audit.ScanMetadata.Binary == nil {
-		t.Fatal("ScanMetadata.Binary is nil")
+	// Severity, not just presence, is what pins each arm's weight. The verdict
+	// alone cannot: it is over-determined, so demoting any one arm leaves it
+	// CRITICAL on the strength of the others. Asserting the tier each finding
+	// lands in is what makes the entropy family, the corroborated presence
+	// families and the pickle target each individually load-bearing.
+	//
+	// The presence families are the interesting half. This file packs its own
+	// executable section, which is exactly the independent corroboration the gate
+	// waits for, so they must stay at their rule's HIGH. A gate that downgraded
+	// everything - or one whose corroboration lookup never matched - would leave
+	// the import blocked for the wrong reason and every other assertion green.
+	for _, rule := range []string{"BIN_001", "NET_002", "BIN_002"} {
+		f, ok := endToEndFinding(audit, "native/libevil.so", rule)
+		if !ok {
+			t.Fatalf("no %s finding for native/libevil.so; findings: %s", rule, dumpFindings(audit))
+		}
+		if f.Severity != "HIGH" {
+			t.Errorf("%s severity = %s, want HIGH: native/libevil.so carries a high-entropy executable section, "+
+				"which is both the packing measurement and the corroboration these families report HIGH on", rule, f.Severity)
+		}
+		if f.DowngradeReason != "" {
+			t.Errorf("%s carries a downgrade reason (%q) in a file that corroborates it", rule, f.DowngradeReason)
+		}
 	}
-	if got := audit.ScanMetadata.Binary.Kinds[string(KindELF)]; got != 1 {
+	pkl, ok := endToEndFinding(audit, "checkpoint.pt", "PKL_001")
+	if !ok {
+		t.Fatalf("no PKL_001 finding for checkpoint.pt; findings: %s", dumpFindings(audit))
+	}
+	if pkl.Severity != "HIGH" {
+		t.Errorf("PKL_001 severity = %s, want HIGH: a pickle target that resolves to posix.system is on its own "+
+			"enough to refuse the import, and at any lower tier this test stops proving the container recursion reaches the verdict",
+			pkl.Severity)
+	}
+
+	summary := binarySummary(t, audit)
+	if got := summary.Kinds[string(KindELF)]; got != 1 {
 		t.Errorf("Binary.Kinds[elf] = %d, want 1", got)
 	}
-	if got := audit.ScanMetadata.Binary.Kinds[string(KindArchive)]; got != 1 {
+	if got := summary.Kinds[string(KindArchive)]; got != 1 {
 		t.Errorf("Binary.Kinds[archive] = %d, want 1", got)
 	}
-	if audit.ScanMetadata.Binary.FilesCount != 2 {
-		t.Errorf("Binary.FilesCount = %d, want 2 (the .so and the .pt; train.py is text)", audit.ScanMetadata.Binary.FilesCount)
+	if summary.FilesCount != 2 {
+		t.Errorf("Binary.FilesCount = %d, want 2 (the .so and the .pt; train.py is text)", summary.FilesCount)
 	}
 }
 
@@ -10481,11 +10515,18 @@ func TestEndToEndMaliciousPackageIsBlocked(t *testing.T) {
 // whether the feature is usable. A model package is mostly weights, framework
 // imports and ordinary code; if any of those produced a blocking finding the
 // channel would be turned off in a week.
+//
+// It asserts the absence of findings that can block rather than the absence of
+// findings, which is what the channel promises and all it promises: the string
+// families are LOW by design and do reach the report, so a package full of
+// ordinary strings is expected to carry them.
 func TestEndToEndCleanPackageStillPasses(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir, "train.py", "import torch\n\ndef train():\n    return 1\n")
 	// A shared object with the imports an accelerated kernel actually has, plus a
 	// tensor blob that is near-random by nature and must not read as packed code.
+	// Neither import here matches a presence pattern, so this fixture does not
+	// exercise the corroboration gate - see the gate's own test below.
 	writeTestBytes(t, dir, "native/libkernel.so", elfFixtureBytes(t, elfSpec{
 		imports: []string{"malloc", "memcpy", "pthread_create", "cblas_sgemm"},
 		needed:  []string{"libc.so.6", "libm.so.6", "libgomp.so.1"},
@@ -10493,19 +10534,78 @@ func TestEndToEndCleanPackageStillPasses(t *testing.T) {
 	}))
 	writeTestBytes(t, dir, "weights.safetensors", uniformBytes(4096))
 
-	cfg := AuditConfig{
-		LLM:    LLMConfig{Enabled: false, Policy: "assist"},
-		Binary: DefaultBinaryConfig(),
-	}
-	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, nil)
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), endToEndConfig("assist"), nil)
 	if err != nil {
 		t.Fatalf("GenerateAuditReport: %v", err)
 	}
 	if !audit.Conclusion.Passed {
 		t.Fatalf("a clean package was blocked; findings: %s", dumpFindings(audit))
 	}
-	if audit.ScanMetadata.Binary.FilesCount != 2 {
-		t.Errorf("Binary.FilesCount = %d, want 2", audit.ScanMetadata.Binary.FilesCount)
+	for _, fr := range audit.FileReports {
+		for _, f := range fr.Findings {
+			if f.Severity == "HIGH" || f.Severity == "MEDIUM" {
+				t.Errorf("%s was reported %s by %s, which blocks under gate and under assist; "+
+					"a near-random tensor blob and a kernel's ordinary imports must not reach that tier",
+					f.File, f.Severity, f.RuleID)
+			}
+		}
+	}
+	if got := binarySummary(t, audit).FilesCount; got != 2 {
+		t.Errorf("Binary.FilesCount = %d, want 2", got)
+	}
+}
+
+// TestEndToEndUncorroboratedPresenceStillPasses pins the corroboration gate end
+// to end, which is the one shape the other tests cannot reach: a shared object
+// whose only evidence is a symbol name.
+//
+// NET_002 reads .dynsym, and a linker writes every symbol the object might
+// reference into it, so the name says the file is able to call socket - not that
+// it does. The gate therefore reports it at LOW unless the same file carries
+// independent corroboration (a packed executable section, or a pickle target).
+// This fixture has neither, so the finding must come out LOW with a reason
+// attached, the count must be recorded, and the import must be allowed through.
+//
+// Both policies are run because they disagree about what the downgrade has to
+// reach. assist passes on High == 0; gate passes on High == 0 && Medium == 0. A
+// gate that stopped at MEDIUM would leave this package passable under assist and
+// block it in production, and only the gate half of this test would notice.
+func TestEndToEndUncorroboratedPresenceStillPasses(t *testing.T) {
+	for _, policy := range []string{"assist", "gate"} {
+		t.Run(policy, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTestBytes(t, dir, "native/libnet.so", elfFixtureBytes(t, elfSpec{
+				imports: []string{"socket"},
+				needed:  []string{"libc.so.6"},
+				text:    []byte("ordinary code, no packed section"),
+			}))
+
+			audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), endToEndConfig(policy), nil)
+			if err != nil {
+				t.Fatalf("GenerateAuditReport: %v", err)
+			}
+			if !audit.Conclusion.Passed {
+				t.Fatalf("a shared object whose only evidence is an uncorroborated symbol name was blocked under %s; findings: %s",
+					policy, dumpFindings(audit))
+			}
+
+			f, ok := endToEndFinding(audit, "native/libnet.so", "NET_002")
+			if !ok {
+				t.Fatalf("no NET_002 finding for native/libnet.so; the dynsym import did not reach the report at all. findings: %s",
+					dumpFindings(audit))
+			}
+			if f.Severity != "LOW" {
+				t.Errorf("NET_002 severity = %s, want LOW: this file carries no corroboration, and %s blocks the import under assist and gate alike",
+					f.Severity, f.Severity)
+			}
+			if f.DowngradeReason == "" {
+				t.Error("NET_002 was reported below its rule's severity with no downgrade reason attached; " +
+					"a reader cannot tell 'the rule says LOW' from 'the rule says HIGH and this file did not earn it'")
+			}
+			if got := binarySummary(t, audit).PresenceDowngraded; got != 1 {
+				t.Errorf("Binary.PresenceDowngraded = %d, want 1", got)
+			}
+		})
 	}
 }
 
@@ -10516,11 +10616,14 @@ func TestEndToEndCleanPackageStillPasses(t *testing.T) {
 // The limit the fixture reaches is MaxStreamBytes, the per-file read budget,
 // rather than a per-section cap - there is no per-section cap any more (see
 // BinaryConfig), and a section that declares more than the file holds is caught
-// by the read-versus-declared comparison instead. Setting the budget below the
-// file size is what makes both readers stop early: the strings pass records the
-// budget bound, and the section read comes up short of .text's declared size and
-// records the same fact from the other side. Either way the file is a bounded
-// executable, and a bounded executable withholds the pass.
+// by the read-versus-declared comparison instead.
+//
+// The absence assertion is what makes this test about the budget rather than
+// about the file being large: .text here is high-entropy and executable, so if
+// the section reader ignored the budget and read the section anyway, BIN_001
+// would fire and the file would be refused for being packed instead. Both
+// outcomes withhold the pass, so only the absence of the entropy verdict
+// distinguishes a scan that stopped short from one that measured everything.
 func TestEndToEndBoundedExecutableBlocks(t *testing.T) {
 	dir := t.TempDir()
 	writeTestBytes(t, dir, "native/libbig.so", elfFixtureBytes(t, elfSpec{
@@ -10529,40 +10632,91 @@ func TestEndToEndBoundedExecutableBlocks(t *testing.T) {
 		textExec: true,
 	}))
 
-	cfg := AuditConfig{
-		LLM: LLMConfig{Enabled: false, Policy: "assist"},
-		Binary: BinaryConfig{
-			Enabled:        true,
-			MaxStreamBytes: 16, // smaller than the file, so neither pass can finish reading it
-		},
+	cfg := endToEndConfig("assist")
+	// Only MaxStreamBytes is set: normalizeBinaryConfig resolves every other zero
+	// to its default, and Enabled is the one field it cannot touch, so it is
+	// spelled out. A zero-valued BinaryConfig would run the channel disabled and
+	// this test would then assert a bound nothing produced.
+	cfg.Binary = BinaryConfig{
+		Enabled:        true,
+		MaxStreamBytes: 16, // smaller than the file, so neither pass can finish reading it
 	}
+
 	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, nil)
 	if err != nil {
 		t.Fatalf("GenerateAuditReport: %v", err)
 	}
-	if audit.ScanMetadata.Binary.BoundedExecutable != 1 {
-		t.Errorf("BoundedExecutable = %d, want 1", audit.ScanMetadata.Binary.BoundedExecutable)
+	if got := binarySummary(t, audit).BoundedExecutable; got != 1 {
+		t.Errorf("BoundedExecutable = %d, want 1", got)
 	}
 	if audit.Conclusion.Passed {
 		t.Error("Passed = true after an executable file could not be read in full; the gap did not reach the verdict")
 	}
+	if _, ok := endToEndFinding(audit, "native/libbig.so", "BIN_001"); ok {
+		t.Error("BIN_001 fired on a file the budget was supposed to stop the section reader from measuring; " +
+			"the bound is recorded but the read it bounds did not happen")
+	}
+}
+
+// rulesByFile indexes the report's rule ids by file, for assertHasRule.
+func rulesByFile(audit *AuditReport) map[string][]string {
+	byFile := map[string][]string{}
+	for _, fr := range audit.FileReports {
+		for _, f := range fr.Findings {
+			byFile[f.File] = append(byFile[f.File], f.RuleID)
+		}
+	}
+	return byFile
+}
+
+// binarySummary returns the binary scan summary, failing the test rather than
+// panicking when the channel did not run - a nil deref in three places would
+// report the symptom as a crash instead of as the missing pass it is.
+func binarySummary(t *testing.T, audit *AuditReport) *BinaryScanSummary {
+	t.Helper()
+	if audit.ScanMetadata.Binary == nil {
+		t.Fatal("ScanMetadata.Binary is nil; the binary channel did not run")
+	}
+	return audit.ScanMetadata.Binary
+}
+
+// findFinding returns the first finding the report carries for the file whose
+// path ends in suffix under the given rule.
+func endToEndFinding(audit *AuditReport, suffix, rule string) (Finding, bool) {
+	for _, fr := range audit.FileReports {
+		for _, f := range fr.Findings {
+			if strings.HasSuffix(f.File, suffix) && f.RuleID == rule {
+				return f, true
+			}
+		}
+	}
+	return Finding{}, false
 }
 
 func assertHasRule(t *testing.T, byFile map[string][]string, file, rule string) {
 	t.Helper()
-	for f, rules := range byFile {
-		if !strings.HasSuffix(f, file) {
-			continue
+	var matched []string
+	for f := range byFile {
+		if strings.HasSuffix(f, file) {
+			matched = append(matched, f)
 		}
-		for _, r := range rules {
+	}
+	// Sorted so that a fixture with two files sharing a suffix names the same one
+	// on every run; ranging the map directly would make the message - and which
+	// file is checked first - depend on map order.
+	sort.Strings(matched)
+	if len(matched) == 0 {
+		t.Errorf("no file report for %s; findings were %v", file, byFile)
+		return
+	}
+	for _, f := range matched {
+		for _, r := range byFile[f] {
 			if r == rule {
 				return
 			}
 		}
-		t.Errorf("%s has rules %v, want %s among them", f, rules, rule)
-		return
 	}
-	t.Errorf("no file report for %s; findings were %v", file, byFile)
+	t.Errorf("no file matching %s carries %s; findings were %v", file, rule, byFile)
 }
 
 func dumpFindings(audit *AuditReport) string {
@@ -10603,11 +10757,11 @@ go test ./... 2>&1 | grep -vE "^ok|no test files" | head -30
 
 Alongside source auditing, the import audit also walks the **binary files** in a model package, independent of the selected Tier 1 engine - it applies to both the regex-arm and the Semgrep-arm deployments.
 
-- **Identification**: by file content (ELF / zip container / gzip / pickle / numpy / other binary), with the extension only as a supplement. Renaming the suffix does not bypass it; a binary file named `.py` is claimed as well. A file is read as a pickle when its head carries a pickle magic, when its name says `.pkl`/`.pickle`/`.joblib`, or - for the magic-less protocols 0 and 1 - when the head parses as a protocol 0/1 pickle stream carrying a `module.attribute` target - though that content claim applies only to files the source arm does not read (a `.py` is left to the source channel, since a claimed file's text reading is dropped).
-- **Evidence**: ELF dynamic-import symbols and `DT_NEEDED`, section layout and Shannon entropy, printable strings, container members (at most one level of recursion inside zip/gzip), pickle `GLOBAL`/`STACK_GLOBAL`/`INST` targets (read with a memo-table opcode interpreter), and head-plus-tail reads of 1 MiB each for files over 64 MiB (to catch a payload appended past the zip trailer, and to pin the per-file cost at roughly 190 ms).
+- **Identification**: by file content (ELF / zip container / gzip / pickle / numpy / other binary), with the extension only as a supplement. Renaming the suffix does not bypass it; a binary file named `.py` is claimed as well. A file is read as a pickle when its head carries a pickle magic, when its name says `.pkl`/`.pickle`/`.joblib`, or - for the magic-less protocols 0 and 1 - when the head parses as a protocol 0/1 pickle stream carrying a `module.attribute` target. Only that third test yields to the source arm: a `.py` is vetoed from the head sniff and stays with the source channel, while a `.py` whose head carries a pickle magic, and any file named `.pkl`/`.pickle`/`.joblib`, is claimed as a pickle anyway - the claim rests on content the source reader would never look at, and a claimed file's text reading is dropped.
+- **Evidence**: ELF dynamic-import symbols and `DT_NEEDED`, section layout and Shannon entropy, printable strings, container members (at most one level of recursion inside zip/gzip), pickle `GLOBAL`/`STACK_GLOBAL`/`INST` targets (read with a memo-table opcode interpreter). Files are read end to end up to 64 MiB, which at the measured 338 MB/s caps one file's read at about 190 ms; above that only the head and tail 1 MiB are read, which is what keeps a payload appended past a zip trailer visible.
 - **Verdict**: evidence lines are matched against the rule table and produce a `Finding` tagged with `binary_kind` / `evidence_source` / `binary_offset`. **Structural evidence** (ELF dynamic symbols, `DT_NEEDED`) goes through the shared rules `NET_002`/`CMD_001`/`DYN_001`, whose severity is read from the source rule table rather than restated; the binary-only rules are `BIN_001` (near-random executable-section entropy, HIGH), `BIN_002` (`memfd_create`/`fexecve`, HIGH) and `PKL_001` (pickle deserialization execution, HIGH). **A name is not a call**: `NET_002`, `CMD_001` and `BIN_002` take their evidence only from `.dynsym` and `DT_NEEDED`, which a linker fills with every symbol the object might reference, so those three report HIGH only when the same file also carries a corroborator - entropy evidence or a resolved pickle target (`BIN_001` or `PKL_001`) - and LOW otherwise, with the count recorded as `presence_downgraded`. The rule table itself is untouched: the id and the severity it resolves to are still the shared table's, because the downgrade acts on the finding and never on the rule. **String evidence** does not share the source arm's ids - `CMD_002`/`PER_002`/`FIL_002`/`ENV_002` are four independent LOW families, for the reason below: a finding can be HIGH only when it is backed by a structure a file cannot produce by accident, and a string constant is not; the source arm's same-named families `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` are HIGH/MEDIUM in the shared table, and borrowing them would lift "a certain word appeared in some literal" to blocking severity. `OBF_001` has **no** family in the binary arm: its old pattern `^[A-Za-z0-9+/]{120,}={0,2}$` fired on 23 of 28 legitimate shared libraries (long base64-alphabet strings are everywhere in `.pyc` constant pools and binary data), and neither narrowing the alphabet nor raising the floor fixes it, so only the source arm's call-site version is kept.
 - **Review**: binary findings go down the same LLM path as source findings; file-level analysis uses a binary-specific prompt (the existing prompt targets Python source and does not apply). **Honesty**: the file-level branch is reachable only when the caller implements `FileAnalyzer`, and the production `LLMClient` (`teellm.Client`) has no `AnalyzeFile`, so today it is driven only by test mocks and is not live behavior - exactly the existing situation of the source file path, which this plan does not change.
-- **Completeness**: `scan_metadata.binary` records `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `errored` / `findings_capped` / `findings_dropped` / `max_findings`. Any gap that lands on a format that can execute (ELF, archive, pickle, compressed) makes `ProvesCleanScan()` false - a truncated structural extraction, a capped listing, an unreadable file, or a whole-pass failure - and under fail-closed that blocks the import; the same cut on a pure data file (raw blob, tensor) is recorded but does not withhold. The split is by kind rather than by which bound fired: a capped listing is the matcher's input, so on an executable kind it can drop blocking evidence, while on a data kind it can only drop LOW free-string lines. **The finding cap is not part of completeness**: reaching it writes only `findings_capped`/`findings_dropped`, not `scan_metadata.truncated`, and does not block; the cap spends only the LOW tier, and the findings that can block - HIGH under `assist` and `gate`, MEDIUM under `gate` - are kept regardless of the budget.
+- **Completeness**: `scan_metadata.binary` records `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `errored` / `findings_capped` / `findings_dropped` / `max_findings` / `presence_downgraded`. Any gap that lands on a format that can execute (ELF, archive, pickle, compressed) makes `ProvesCleanScan()` false - a truncated structural extraction, a capped listing, an unreadable file, or a whole-pass failure - and under fail-closed that blocks the import; the same cut on a pure data file (raw blob, tensor) is recorded but does not withhold. The split is by kind rather than by which bound fired: a capped listing is the matcher's input, so on an executable kind it can drop blocking evidence, while on a data kind it can only drop LOW free-string lines. **The finding cap is not part of completeness**: reaching it writes only `findings_capped`/`findings_dropped`, not `scan_metadata.truncated`, and does not block; the cap spends only the LOW tier, and the findings that can block - HIGH under `assist` and `gate`, MEDIUM under `gate` - are kept regardless of the budget.
 - **Configuration**: `security.binaryAudit.enabled` (default `true`), `maxArchiveMembers`, `highEntropyThreshold`, `maxFindings` (default 50, independent of the source arm's 200; it is a listing budget, so lowering it drops only LOW findings and never a finding that can block - HIGH under `assist` and `gate`, MEDIUM under `gate` - and never blocks the import), `maxFullScanBytes` (default 64 MiB) and `maxStreamBytes` (default 3 GiB; paired with `maxFullScanBytes`, the former takes effect only once the latter is raised). Turning it off rolls back: the audit behaves byte-for-byte as before the channel was introduced.
 - **Boundaries**: PE/Mach-O are not structurally parsed (not loaded on this platform), xz/zstd/bzip2/7z containers and tar are not opened, plain-text non-source files are not audited, nested archives recurse only one level, and the pickle interpreter runs only on streams claimed as pickle - by magic, by name, or by a protocol 0/1 target the head parses to. One residual boundary follows from the claim being made about the 4 KiB head: a protocol 0/1 stream whose `module.attribute` target lies past the head (say, a protocol 1 stream that pushes a large BINSTRING before its GLOBAL) is claimed only by extension, so only a `.pkl`/`.pickle`/`.joblib` name reaches the interpreter; next to it is the source-named residual: a protocol 0/1 pickle named `.py` is not claimed by the binary channel at all - `.py` is not in the pickle extension set and the source veto runs ahead of the head sniff - so it stays with the source arm, which reads it as Python text and never runs the pickle interpreter; and a pickle appended past the end of a non-pickle file whose head carries no pickle magic is not claimed at all. See the binary audit channel design notes for details.
 ```
@@ -10629,6 +10783,15 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 > **规格评审后的修正（2026-10-13）**：Task 15 的规格符合性评审判定实现（`binary_integration_test.go` + README 新节）与规格一致，只提出一处偏离——README 的 **Review** 条目比本节草稿少了结尾的 `(see the two notes in Task 13)`。偏离方向本身是对的（`Task 13` 指计划内部章节，README 的读者看不到），但实现者既没回退也没上报，而本节写明了「片段正文原样插入」。**修正落在本计划而不是 README**：删掉草稿里那句内部引用。README 无需改动，因此本次只改计划文件。
 >
 > 追记：第一版把解释这句改动的中文直接附在了 Review 条目那一行上，而那一行在 ```markdown fence **之内**——本节 Step 4 明写「片段正文是**英文**……中文解说留在 fence 之外」，评审据此打回。现改为英文正文与 README 逐字一致（已核对：fence 内 9 行对 README `### 4.` 节 9 行，`BYTE-IDENTICAL`，fence 内无非 ASCII），中文解说移到闭 fence 之后。
+
+> **代码质量评审后的修正（2026-10-13）**：判 **CHANGES REQUESTED**——无生产缺陷，但测试的判别力弱于其注释所称，且 README 有三处事实错误。四项处置如下。
+>
+> 1. **佐证门控在端到端层零覆盖（新增测试）**。门控正是本轮 README 更正的主题，而三条既有测试里它从不触发：恶意包的 `.so` 总被自身熵行佐证，干净包的导入不匹配任何 presence 模式，探针显示每种情形的 `presence_downgraded` 都是 0。变异证明：`downgrades` 恒假、`corroborates` 恒假都无人捕获。新增 `TestEndToEndUncorroboratedPresenceStillPasses`：只从 `.dynsym` 导入 `socket`、无可执行节、无 pickle 目标，断言 `NET_002` 严重级为 LOW、`DowngradeReason` 非空、`presence_downgraded == 1`，且**在 `assist` 与 `gate` 两种策略下各跑一遍**——这两者对此事的判据不同（`assist` 看 `High == 0`，`gate` 看 `High == 0 && Medium == 0`），只停在 MEDIUM 的门控会在 `assist` 下放行、在生产里阻断，只有 `gate` 那半边能发现。这一条同时补上了本计划第 4 节验收清单里的「佐证门控生效（两种策略）」。
+> 2. **三条臂的权重没被钉住（加断言）**。原测试只断言规则**存在**，不断言层级；而结论是**过度决定**的——`libevil.so` 单文件就有四个 HIGH，任何一条臂被降级，`CRITICAL` 与 `!Passed` 都靠其余臂继续成立。于是把 PKL_001 的严重级降到 LOW 这类改动无人捕获。现改为对 `libevil.so` 的 `BIN_001`/`NET_002`/`BIN_002` 逐条断言 `HIGH` 且 `DowngradeReason` 为空（该文件自带高熵可执行节，正是门控等待的佐证），并对 `checkpoint.pt` 的 `PKL_001` 断言 `HIGH`。**变异证明**：把 `PKL_001`、`BIN_001`、`NET_002` 的 finding 事后改成 LOW，三条现在都被捕获。
+> 3. **有界测试分不清是哪个 reader 撞了预算（加缺失断言）**。`streamWithSizeSwitch` 仅凭「文件大小 > 预算」就已置位 `Bound.Structural`，所以 `BoundedExecutable == 1` 与 `!Passed` 在 section reader 完全无视预算时同样成立——去掉 `countSection` 的预算钳制，该测试照样通过（此时整节被读完，反而触发 `BIN_001`，路径不同而结论相同）。现补上「`libbig.so` 上**不得**出现 `BIN_001`」这一缺失断言：夹具的 `.text` 是高熵且可执行，绕开预算就会以「加壳」为由拒绝，两种结局都拒绝，只有这条缺失断言能把「读到一半停下」与「全都量过了」分开。**变异证明**：去掉 `countSection` 的钳制后该测试失败。
+> 4. **README 三处事实错误（已改，并同步回本节 Step 4 的 fence）**：(a) Identification 条目把「内容主张只作用于源码臂不读的文件」写成覆盖整条 pickle 判定，但 `isPickleStream` 的 **magic 分支排在源码 veto 之前**，所以带 pickle magic 的 `.py` 确实被认领为 pickle——原句与该条目开头「命名为 `.py` 的二进制文件同样会被认领」自相矛盾；现改为只有第三项（protocol 0/1 嗅探）让位于源码臂。(b) Evidence 条目把「约 190 ms」挂在首尾各 1 MiB 的读法上，而 190 ms 是 **64 MiB 全量扫描**的成本（338 MB/s），首尾各 1 MiB 只有约 6 ms；现改为挂在全量读上。(c) Completeness 条目列了 9 个字段而 `BinaryScanSummary` 有 **10** 个，漏掉 `presence_downgraded`，而同节 Verdict 条目正在讨论它；已补全。
+>
+> 记录但**未改**：`downgrades` 恒真的变异仍无人捕获，但经核实这是**等效变异体**而非覆盖缺口——门控的调用点是 `if !corroborated && s.matcher.downgrades(id)`，所以它只作用于**未被佐证**的文件；而 `BIN_001`（熵）与 `PKL_001`（pickle）本身就是佐证来源，一旦命中即把 `corroborated` 置真、整个分支变死，于是未被佐证的文件里能命中的 HIGH 规则只剩三个 presence 族。恒真与真门控在全部可达输入上等价，故不必也不应为它加测试。
 
 ---
 
