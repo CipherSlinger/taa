@@ -168,17 +168,21 @@ type startupSecurityConfigFile struct {
 	// means the adapter's default; zero is not read as "no deadline", because an
 	// unbounded scan is a hung import rather than a faster one.
 	SemgrepTimeoutSeconds int                          `json:"semgrepTimeoutSeconds"`
+	BinaryAudit           startupBinaryAuditConfigFile `json:"binaryAudit"`
 	ResultCheck           startupResultCheckConfigFile `json:"resultCheck"`
 	MaxFileBytes          *int64                       `json:"maxFileBytes"`
-	BinaryAudit           startupBinaryAuditConfigFile `json:"binaryAudit"`
 }
 
 // startupBinaryAuditConfigFile is the security.binaryAudit block.
 //
-// Every limit is a pointer so that "absent" and "zero" stay distinguishable: a
-// zero the operator wrote is a limit of zero and is rejected below, while an
-// absent field means "use the codeaudit default". Reading both as zero would
-// turn a deliberate 0 into a silently substituted default.
+// Enabled is a pointer because "absent" and "false" must not collapse: the
+// channel defaults on, so an absent field read as false would turn silence into
+// a rollback. The limits are pointers too, but only this layer gets a
+// distinction out of it - validateBinaryAudit rejects a negative and lets zero
+// through, and a zero then resolves to the codeaudit default through
+// normalizeBinaryConfig exactly as an absent field does. A deliberate 0 is
+// therefore not rejected; it is read as "use the default", which is the same
+// thing the field says when it is missing.
 type startupBinaryAuditConfigFile struct {
 	Enabled              *bool    `json:"enabled"`
 	MaxArchiveMembers    *int     `json:"maxArchiveMembers"`
