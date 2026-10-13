@@ -50,7 +50,8 @@ func TestModelImportSealsPendingWithModelImported(t *testing.T) {
 // TestScanDisabledSealsNoPending is the other side of the same seal: a deployment
 // that does not scan owes no audit, so it must not leave a marker. Were one left,
 // a crash before the (immediate) verdict would quarantine a model that never
-// needed auditing — every restart would wipe ModelDir.
+// needed auditing — every restart would clear its imported marker and report an
+// audit that never happened, though the package on disk is untouched.
 func TestScanDisabledSealsNoPending(t *testing.T) {
 	state, _ := setupTestState(t)
 	store, _ := createTestStateStore(t)
@@ -73,10 +74,12 @@ func TestScanDisabledSealsNoPending(t *testing.T) {
 
 // TestAuditPanicRollsBackModelImport covers the panic path.
 //
-// The audit goroutine panicking used to leave the model imported, its code on
-// disk, and the audit state merely reset. Since the panic means no verdict will
-// ever arrive, the import itself has to be undone — matching what the normal
-// audit-failure path already does.
+// The audit goroutine panicking used to leave the model imported and the audit
+// state merely reset. Since the panic means no verdict will ever arrive, the
+// import itself has to be undone — matching what the normal audit-failure path
+// already does. The rollback is state only: the audit never writes to, deletes,
+// or modifies the package it reads, so the code extracted to disk stays there
+// and only the imported marker is cleared.
 //
 // The test also guards the lock discipline: stopActiveTraining re-acquires s.mu,
 // so calling it while the rollback still holds the write lock deadlocks this test
@@ -148,8 +151,8 @@ func TestAuditPanicRollsBackModelImport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read model dir: %v", err)
 	}
-	if len(entries) != 0 {
-		t.Errorf("un-adjudicated model code was left on disk: %d entries remain", len(entries))
+	if len(entries) != 1 {
+		t.Errorf("the panic rollback changed the package on disk: %d entries remain, want 1", len(entries))
 	}
 
 	select {
@@ -202,8 +205,9 @@ func TestAuditVerdictClearsPending(t *testing.T) {
 }
 
 // TestAuditFailureClearsPending is the failing-verdict half. The normal failure
-// path already drops the model; this pins that it drops the marker too, so a
-// restart does not re-quarantine a model that has already been discarded.
+// path already refuses the import and clears the imported marker; this pins that
+// it drops the marker too, so a restart does not re-quarantine a model that is no
+// longer imported.
 func TestAuditFailureClearsPending(t *testing.T) {
 	state, _ := setupTestState(t)
 	store, _ := createTestStateStore(t)

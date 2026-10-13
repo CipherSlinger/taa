@@ -92,6 +92,21 @@ type AuditMetadata struct {
 	Truncated       bool   `json:"truncated"`
 	UnsupportedExts int    `json:"unsupported_extensions"`
 	ProcessExitCode int    `json:"process_exit_code"`
+
+	// Binary is the binary channel's completeness account, copied from the scan
+	// report for the in-process consumers of the audit: the host-side log line at
+	// internal/controller/import_processing.go:668-672 reads it, and so does any
+	// caller holding the *AuditReport directly. It does not travel in the report
+	// that leaves the process - projectCodeAuditSection
+	// (internal/controller/codeaudit_projection.go:21-33) emits only conclusion and
+	// file_reports, so scan_metadata crosses no boundary - and the refusal the
+	// channel can cause reaches the platform through conclusion.passed, not
+	// through this struct.
+	//
+	// It is a copy rather than a recomputation: the summary is produced where the
+	// loss happens, and a second derivation from the findings could not see a loss
+	// that produced no finding.
+	Binary *BinaryScanSummary `json:"binary,omitempty"`
 }
 
 // FileSummary is the LLM response for file-level analysis.
@@ -120,6 +135,13 @@ var ruleSuggestionMap = map[string]string{
 	"EMB_002": "不要将数据复制到输出目录",
 	"EMB_003": "避免在日志中打印原始数据",
 	"EMB_004": "不要将数据编码后嵌入模型权重",
+	"BIN_001": "确认该二进制段是否经过加壳/加密；若无需动态解包，改用未加壳的构建产物",
+	"BIN_002": "确认该二进制为何需要敏感能力；移除不必要的敏感符号引用",
+	"PKL_001": "不要反序列化不可信 pickle；改用 weights_only=True 或 safetensors 等纯数据格式",
+	"CMD_002": "确认该命令字符串是否来自可信构建；非必要不保留可执行的命令行",
+	"PER_002": "确认该持久化路径引用是否为良性常量；非必要不写入自启动/计划任务位置",
+	"FIL_002": "确认该敏感文件路径字符串的用途；非必要不引用凭证或系统文件",
+	"ENV_002": "确认该环境变量名是否为误报的字面量；凭证读取请集中在可信配置层",
 }
 
 // SuggestionForRule returns the fix suggestion for a given rule ID.
@@ -378,6 +400,7 @@ func AssembleAuditReport(
 		truncated       bool
 		unsupportedExts int
 		processExitCode int
+		binary          *BinaryScanSummary
 	)
 	if scanReport != nil {
 		engine = scanReport.Engine
@@ -387,6 +410,7 @@ func AssembleAuditReport(
 		truncated = scanReport.Truncated
 		unsupportedExts = scanReport.UnsupportedExts
 		processExitCode = scanReport.ProcessExitCode
+		binary = scanReport.Binary
 	}
 
 	return &AuditReport{
@@ -417,6 +441,7 @@ func AssembleAuditReport(
 			Truncated:       truncated,
 			UnsupportedExts: unsupportedExts,
 			ProcessExitCode: processExitCode,
+			Binary:          binary,
 		},
 	}
 }
@@ -501,6 +526,23 @@ func buildSummaryText(stats AuditStatistics, riskLevel string) string {
 
 func buildSummaryTextExt(stats AuditStatistics, riskLevel string, passed bool, llmDegraded bool, hasLLMBenign bool) string {
 	if stats.Total() == 0 {
+		// No finding is not the same as no gap: a scan that did not look
+		// everywhere still finds nothing, so the finding list can be empty on the
+		// exact report the conclusion refuses. This branch therefore has to read
+		// passed, or the summary asserts a pass on the report the conclusion is
+		// refusing. The text names no specific cause because passed is false for
+		// many of them at once - an incomplete scan, a parser failure, files
+		// skipped by extension, a subprocess that exited non-zero, a binary pass
+		// that could not run - and this function is not told which one applies.
+		// Truncated is deliberately not in that list: it is set only when the
+		// source arm's finding cap drops findings, which requires a non-zero
+		// total and so cannot be the reason on this branch. The binary arm's own
+		// cap is excluded from the verdict entirely (ProvesCleanScan reads the
+		// binary gaps, not FindingsCapped) and drops only LOW findings, which do
+		// not block under either policy.
+		if !passed {
+			return "审计未覆盖全部内容或存在未决项，不得判定为通过，禁止导入"
+		}
 		return "未发现安全问题，代码通过审计"
 	}
 
@@ -609,4 +651,124 @@ func riskOrder(level string) int {
 	default:
 		return 5
 	}
+}
+
+// MergeBinaryFindings folds one binary pass into the scan report that the LLM
+// and the conclusion read.
+//
+// It is a merge rather than a second report because everything downstream - the
+// finding-level verifier, the file grouping, the risk classification, the
+// statistics, the recommendation - is written against one finding list. A
+// parallel list would be a second implementation of each of them, and the two
+// would answer differently the first time one was changed.
+//
+// Three things happen, and the order matters:
+//
+//  1. The binary summary is attached first, because recomputeReportPassed below
+//     reads it through ProvesCleanScan, and a summary attached after the
+//     recomputation would leave the pass decision computed without it.
+//  2. The text findings of files the binary channel claimed are dropped. A file
+//     whose bytes are binary is not a file whose text reading means anything,
+//     and keeping that reading would put findings in the report that no one can
+//     act on - while letting a crafted file choose how many of them there are.
+//  3. The static counts are recomputed from the joined list. Recomputing rather
+//     than adjusting is what keeps Passed, HighCount and MediumCount consistent
+//     with the findings they describe.
+//
+// There is deliberately no cap on the joined list, and no second truncation.
+// Each channel capped its own findings before this ran - the source arm at
+// Config.MaxFindings, the binary arm at BinaryConfig.MaxFindings - and
+// reapplying one ceiling to the sum would couple them in the one direction that
+// costs a model package. A shared ceiling would let a large source arm evict
+// binary findings by path order, and it would choose which findings to drop by
+// path order rather than by importance.
+//
+// Nothing here sets Report.Truncated, and that is a decision rather than an
+// omission. Report.Truncated is the completeness flag the report copies into
+// scan_metadata.truncated, and ProvesCleanScan refuses on it: a merge that set
+// it from the binary arm's own cap would make the channel refuse an import for
+// having found too much. The cap drops LOW findings and only LOW (see
+// BinaryScanner.ScanDirectory), and LOW blocks under neither the `assist` nor the
+// `gate` policy - the two severities that can block, HIGH and MEDIUM, are kept
+// whatever the budget - so nothing the cap drops could have blocked the import on
+// its own. A reader who wants the binary cap sees findings_capped and
+// findings_dropped in scan_metadata.binary, next to the max_findings it ran
+// under; what they must not see is a completeness flag that claims a look did not
+// happen when it did.
+//
+// This is the only place the binary channel touches any completeness field on
+// Report, which is worth stating because the other five - ScanComplete,
+// Truncated, ParserErrors, UnsupportedExts and ProcessExitCode - are the source
+// arm's and are read by ProvesCleanScan as such. The binary channel's own gaps
+// travel on Report.Binary and are folded by that method; none of them is written
+// here.
+//
+// It is not idempotent: a second call with the same res appends res.Findings to
+// the joined list again and adds res.Summary.FilesCount again, so it is called
+// at most once per Report.
+func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
+	if report == nil || res == nil {
+		return
+	}
+
+	// The result handed here is expected to carry a populated summary - the
+	// channel's producer guarantees it, returning either a scanned result or an
+	// Errored summary rather than an empty one. It matters because the assignment
+	// is unconditional and the two states are not distinguishable downstream:
+	// ProvesCleanScan reads the all-zero summary of a &BinaryScanResult{} as a
+	// clean scan, so an enabled channel that had a result but could not populate
+	// it must say so via Errored rather than arrive empty.
+	report.Binary = &res.Summary
+
+	// The binary files are added to the count the report states as scanned.
+	// AssembleAuditReport copies this field into Target.FilesScanned, and leaving
+	// it at the source arm's total would put a number in target.files_scanned that
+	// contradicts scan_metadata.binary.files_count in the same document, where the
+	// lower of the two is the one a reader would believe.
+	//
+	// The sum is not an exact count of distinct files: the two arms count by
+	// different criteria, so a file can be counted twice. The source arm counts by
+	// extension - a path whose extension is not in its set is skipped without
+	// being opened (scanner.go:86-88, scanner.go:280-282) - while this channel
+	// counts by content, so a file with a scannable extension whose bytes are
+	// binary is read by the source walk (and counted there) and then claimed here
+	// as well. Target.FilesScanned is therefore an upper bound on the files that
+	// were looked at, not a census. It is an informational field and no decision
+	// reads it, so the overlap is left in place rather than deduplicated: the
+	// exact per-arm numbers are files_count and
+	// scan_metadata.binary.files_count. A deduplication pass is not available
+	// even in principle, because the source arm never exposes which files it
+	// counted - Report carries only counts, so its scanned set cannot be
+	// reconstructed from the findings it happens to have produced.
+	report.FilesCount += res.Summary.FilesCount
+
+	claimed := make(map[string]bool, len(res.Claimed))
+	for _, p := range res.Claimed {
+		claimed[cleanAbs(p)] = true
+	}
+
+	kept := make([]Finding, 0, len(report.Findings)+len(res.Findings))
+	for _, f := range report.Findings {
+		// Drops the source arm's reading of a file the binary arm claimed. The
+		// engine test is the other half of it: a finding the binary arm produced
+		// carries EngineNameBinary, so a binary finding already joined on an
+		// earlier call is not filtered out by its own path.
+		if f.Engine != EngineNameBinary && claimed[cleanAbs(f.File)] {
+			continue
+		}
+		kept = append(kept, f)
+	}
+	kept = append(kept, res.Findings...)
+
+	sortFindings(kept)
+	report.Findings = kept
+
+	// The same function the source-only path uses, so the pass decision has one
+	// implementation rather than two that agree today. The flag is false because
+	// it reads each finding's LLMVerdict, and nothing reaches the merge carrying
+	// one - the binary arm attaches no verdict and this function writes none - so
+	// on the list being merged the exonerating spelling could not change
+	// HighCount either way. Where the choice is observable, VerifyReport owns it
+	// per policy: recalculateGatePassed (true) or recalculateStaticPassed (false).
+	recomputeReportPassed(report, false)
 }

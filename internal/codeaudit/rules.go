@@ -54,6 +54,29 @@ type Finding struct {
 	// originates below Tier 1, so that the graph engine's output is not
 	// indistinguishable from a pattern match once both sit in one list.
 	Engine string `json:"engine,omitempty"`
+	// BinaryKind names the reading the binary channel applied to File: "elf",
+	// "archive", "pickle", "compressed", "numpy" or "raw". Empty for a finding
+	// the source channel produced, which is what makes the two kinds of finding
+	// distinguishable in a merged list without consulting the engine field.
+	BinaryKind string `json:"binary_kind,omitempty"`
+	// EvidenceSource names the evidence a binary finding came from: a dynamic
+	// symbol, a DT_NEEDED library, a string literal, a section summary, an
+	// entropy verdict, a container member or a pickle target. It is what tells a
+	// reader how much weight the finding carries - a symbol name is a capability
+	// the binary has, a string literal is a thing it says.
+	EvidenceSource string `json:"evidence_source,omitempty"`
+	// BinaryOffset is the byte offset in File the evidence was read at, for the
+	// evidence that has one. Symbol and section evidence carries zero: it names
+	// a property of the file rather than a byte range in it.
+	BinaryOffset int64 `json:"binary_offset,omitempty"`
+	// DowngradeReason explains why this finding is reported below the severity its
+	// rule carries in the table. It is set by a rule that gates a severity on
+	// something a single evidence line cannot show - today, the binary channel's
+	// presence families, which report HIGH only when the same file carries
+	// independent corroboration. Empty for every finding whose severity is the
+	// rule's own, so a reader can tell "the rule says LOW" from "the rule says
+	// HIGH but this file did not earn it".
+	DowngradeReason string `json:"downgrade_reason,omitempty"`
 }
 
 // Report is the result of a security scan.
@@ -93,6 +116,14 @@ type Report struct {
 	// ProcessExitCode is the engine subprocess's exit status, -1 when there is
 	// no subprocess.
 	ProcessExitCode int `json:"process_exit_code"`
+	// Binary is the binary channel's account of its own completeness. Nil means
+	// the channel did not run, which is what a deployment that turned it off
+	// produces and what every report predating it carries.
+	//
+	// It lives on the Report rather than on the AuditReport because
+	// ProvesCleanScan is what has to read it, and the whole point of that method
+	// is that every way of not having looked withholds the pass in one place.
+	Binary *BinaryScanSummary `json:"binary,omitempty"`
 }
 
 // Rule defines a single security check pattern.
@@ -127,11 +158,34 @@ func (r *Report) ProvesCleanScan() bool {
 	if r == nil {
 		return false
 	}
-	return r.ScanComplete &&
+	if !(r.ScanComplete &&
 		!r.Truncated &&
 		r.ParserErrors == 0 &&
 		r.UnsupportedExts == 0 &&
-		r.ProcessExitCode == 0
+		r.ProcessExitCode == 0) {
+		return false
+	}
+	// The binary channel's gaps fold in here rather than at its own call sites,
+	// for the same reason every other field is read here: this is the one
+	// function that answers "did the scan look", and a check applied anywhere
+	// else is a check a later recomputation can drop.
+	//
+	// BoundedData and FindingsCapped are deliberately not read. BoundedData is a
+	// cut that landed on a kind which cannot execute - a raw blob or a tensor file
+	// - whether the cut was structural or a capped listing. Nothing on this
+	// platform runs such a file, and no blocking family reads the free-string
+	// source that a capped listing can drop from one, so a cut there cannot be
+	// hiding a blocking finding. FindingsCapped is a different thing again: it
+	// records the LOW findings the finding cap dropped, and LOW does not block
+	// under either policy (assist withholds on HIGH, gate on HIGH or MEDIUM).
+	// Neither is a look that did not happen, and only a look that did not happen
+	// can make a pass a claim about absence.
+	if b := r.Binary; b != nil {
+		if b.BoundedExecutable > 0 || b.Incomplete > 0 || b.Errored {
+			return false
+		}
+	}
+	return true
 }
 
 // DefaultRules returns the built-in set of security rules for Python code.

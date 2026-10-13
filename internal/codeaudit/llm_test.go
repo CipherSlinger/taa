@@ -3,8 +3,11 @@ package codeaudit
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +52,9 @@ type mockLLMClient struct {
 	fileSummaries []FileSummary
 	callCount     int
 	fileCallCount int
+	// filePrompts records the text of every file-level prompt, so a test can
+	// assert what the model was shown rather than only what it answered.
+	filePrompts []string
 }
 
 func (m *mockLLMClient) VerifyFinding(_ context.Context, _ *teellm.RequestEnvelope) (*teellm.ResponseEnvelope, error) {
@@ -83,7 +89,8 @@ func (m *mockLLMClient) Close() error {
 	return nil
 }
 
-func (m *mockLLMClient) AnalyzeFile(_ context.Context, _ string) (FileSummary, error) {
+func (m *mockLLMClient) AnalyzeFile(_ context.Context, prompt string) (FileSummary, error) {
+	m.filePrompts = append(m.filePrompts, prompt)
 	if m.fileCallCount >= len(m.fileSummaries) {
 		return FileSummary{RiskLevel: "UNCERTAIN", Summary: "no more mock summaries"}, nil
 	}
@@ -883,5 +890,155 @@ func TestParseFileSummaryInvalidRiskLevel(t *testing.T) {
 	s := parseFileSummary(raw)
 	if s.RiskLevel != "UNCERTAIN" {
 		t.Fatalf("risk_level = %s, want UNCERTAIN for invalid value", s.RiskLevel)
+	}
+}
+
+// TestBinaryFilePromptCarriesEvidenceAndNotRawBytes pins what the model is shown
+// for a binary file.
+//
+// The source prompt cannot be reused: it opens by telling the model it is looking
+// at a Python source file and wraps the content in a python fence. Handing it
+// extracted evidence under that framing asks the model to judge one thing while
+// telling it another, and the answer is uninterpretable either way. The binary
+// prompt therefore states what the lines are, and the test pins that the state-
+// ment, the evidence, and the absence of the source framing all survive.
+func TestBinaryFilePromptCarriesEvidenceAndNotRawBytes(t *testing.T) {
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{
+		imports: []string{"socket", "connect"},
+		needed:  []string{"libcurl.so.4"},
+	}))
+
+	mock := &mockLLMClient{fileSummaries: []FileSummary{{RiskLevel: "HIGH", Summary: "外联"}}}
+	cfg := AuditConfig{
+		LLM:    LLMConfig{Enabled: true, Policy: "assist", Model: "test"},
+		Binary: DefaultBinaryConfig(),
+	}
+	if _, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, mock); err != nil {
+		t.Fatalf("GenerateAuditReport: %v", err)
+	}
+
+	if len(mock.filePrompts) != 1 {
+		t.Fatalf("file prompts = %d, want 1", len(mock.filePrompts))
+	}
+	prompt := mock.filePrompts[0]
+	for _, want := range []string{"libevil.so", "[dynsym] connect", "[needed] libcurl.so.4"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("binary prompt is missing %q; prompt was:\n%s", want, prompt)
+		}
+	}
+	// Pin a rendered listing line rather than a heading word: "证据" alone is
+	// satisfied by "## 证据说明", which says nothing about what the model was
+	// shown. A listing line carries the index and its source tag, so this asserts
+	// the shape the model actually reads.
+	if !regexp.MustCompile(`(?m)^\d+\t\[dynsym\] connect$`).MatchString(prompt) {
+		t.Errorf("binary prompt has no rendered dynsym line for connect; prompt was:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "```python") {
+		t.Errorf("binary prompt reuses the Python fence; the model is told the wrong thing about its input:\n%s", prompt)
+	}
+	// The name claims raw bytes are not carried, so assert it: the ELF header magic
+	// is the file's first four bytes, and a prompt that had dumped the file instead
+	// of its extracted evidence would carry them.
+	if strings.Contains(prompt, "\x7fELF") {
+		t.Errorf("binary prompt carries the file's raw header bytes; the model was given the file rather than its evidence:\n%s", prompt)
+	}
+}
+
+// TestSourceFilePromptIsUnchangedByTheBinaryChannel pins that adding the binary
+// channel did not change what the source channel asks: a source file still
+// reaches the model through the source prompt, Python fence and all. That is the
+// whole of the claim. The non-inferiority measurement (see corpus_parity_test.go)
+// compares the two static engines' findings, not the file-level prompt, so it
+// neither rests on the source prompt being unchanged nor would be moved by a
+// change here.
+func TestSourceFilePromptIsUnchangedByTheBinaryChannel(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "train.py", "import os\nos.system(cmd)\n")
+
+	mock := &mockLLMClient{fileSummaries: []FileSummary{{RiskLevel: "HIGH", Summary: "x"}}}
+	cfg := AuditConfig{
+		LLM:    LLMConfig{Enabled: true, Policy: "assist", Model: "test"},
+		Binary: DefaultBinaryConfig(),
+	}
+	if _, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, mock); err != nil {
+		t.Fatalf("GenerateAuditReport: %v", err)
+	}
+	if len(mock.filePrompts) != 1 {
+		t.Fatalf("file prompts = %d, want 1", len(mock.filePrompts))
+	}
+	if !strings.Contains(mock.filePrompts[0], "```python") {
+		t.Errorf("the source prompt lost its Python fence:\n%s", mock.filePrompts[0])
+	}
+}
+
+// TestBinaryFilePromptExcerptKeepsStructuralEvidenceUnderSymbolFlood pins the
+// contract of RenderExcerpt: a symbol-dense file must still reach the model with
+// its structural evidence.
+//
+// Finalize sorts by (Offset, Source, Text), and every structured line carries
+// offset 0, so within offset 0 the sort falls through to the source name and
+// dynsym leads. A plain prefix of that listing therefore fills with dynsym
+// lines on a file with many imports and shows the model none of the section,
+// entropy or DT_NEEDED evidence its rubric needs. The fixture carries more
+// imports than the prompt's budget so that a prefix would be dynsym and nothing
+// else; the test asserts the structural lines survive.
+func TestBinaryFilePromptExcerptKeepsStructuralEvidenceUnderSymbolFlood(t *testing.T) {
+	dir := t.TempDir()
+
+	// The import list is sized from binaryFilePromptMaxLines rather than a
+	// literal, so the fixture keeps exceeding the budget if that constant changes
+	// and the test cannot silently stop exercising the flood it describes. The
+	// first import fires a rule, which is what makes the file eligible for
+	// file-level analysis at all; the rest are filler that would fill a prefix.
+	imports := make([]string, 0, binaryFilePromptMaxLines+10)
+	imports = append(imports, "system")
+	for i := 0; i < binaryFilePromptMaxLines+9; i++ {
+		imports = append(imports, fmt.Sprintf("sym_%04d", i))
+	}
+	writeTestBytes(t, dir, "libflood.so", elfFixtureBytes(t, elfSpec{
+		imports:  imports,
+		needed:   []string{"libc.so.6"},
+		text:     uniformBytes(512),
+		textExec: true,
+	}))
+
+	mock := &mockLLMClient{fileSummaries: []FileSummary{{RiskLevel: "LOW", Summary: "x"}}}
+	cfg := AuditConfig{
+		LLM:    LLMConfig{Enabled: true, Policy: "assist", Model: "test"},
+		Binary: DefaultBinaryConfig(),
+	}
+	if _, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, mock); err != nil {
+		t.Fatalf("GenerateAuditReport: %v", err)
+	}
+	if len(mock.filePrompts) != 1 {
+		t.Fatalf("file prompts = %d, want 1", len(mock.filePrompts))
+	}
+	prompt := mock.filePrompts[0]
+
+	// Assert on the rendered line shape, not on a heading: each listing line is
+	// "序号\t[来源] 内容".
+	matches := func(re string) bool {
+		return regexp.MustCompile(re).MatchString(prompt)
+	}
+	if !matches(`(?m)^\d+\t\[dynsym\] `) {
+		t.Fatalf("fixture produced no dynsym line; the test is not exercising the flood it describes:\n%s", prompt)
+	}
+	if !matches(`(?m)^\d+\t\[entropy\] `) {
+		t.Errorf("a symbol-dense file reached the model without its entropy verdict:\n%s", prompt)
+	}
+	if !matches(`(?m)^\d+\t\[needed\] libc\.so\.6$`) {
+		t.Errorf("a symbol-dense file reached the model without its DT_NEEDED evidence:\n%s", prompt)
+	}
+
+	// The excerpt is bounded: the listing lines it carries do not exceed the cap,
+	// and because the listing is longer than the cap the omission marker is shown
+	// so the model knows the listing is partial.
+	listingLines := regexp.MustCompile(`(?m)^\d+\t\[`).FindAllString(prompt, -1)
+	if n := len(listingLines); n > binaryFilePromptMaxLines {
+		t.Errorf("excerpt carries %d listing lines, over the %d cap:\n%s", n, binaryFilePromptMaxLines, prompt)
+	}
+	if !matches(`\.\.\. \(\d+ more evidence line\(s\) not shown\)`) {
+		t.Errorf("excerpt of an over-budget listing has no omission marker:\n%s", prompt)
 	}
 }

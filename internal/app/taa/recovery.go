@@ -23,7 +23,7 @@ const maxCrashRecoveryAttempts = 3
 // 当 TAA 冷启动发现持久化存储中存在 RUNNING 状态的在飞任务时触发执行：
 //
 // 1. 规约 3 熔断保护：若 activeTask.RecoveryAttempts >= 3，归档为 .dead-letter 并清除任务，复位退出；
-// 2. 规约 1 安全隔离：若为 model_import 崩溃，强制物理清空 modelDir 未审计代码并重置 ModelImported = false；
+// 2. 规约 1 安全隔离：若为 model_import 崩溃，仅复位 ModelImported = false，不删除或改动模型包与依赖库；
 // 3. 规约 6 脏环境清理：清空输入输出目录，扫描清除 /tmp/taa-download-* 与 /tmp/*.extract-* 残留碎片；
 // 4. 规约 6/9 孤儿进程回收：扫描并杀灭残留的训练孤儿进程树（python/torch等），释放 GPU 显存；
 // 5. 规约 4 索引清洗与归档：调用 Purge 清除孤儿索引，重命名产物目录为 .failed-<taskId>-<timestamp> 黑匣子留存；
@@ -90,12 +90,8 @@ func reconcileCrashRecovery(ctx context.Context, state *controller.TAAState, sto
 	// ------------------------------------------------------------------------
 	if activeTask.Type == "model_import" {
 		if state != nil {
-			if state.Security.ModelDir != "" {
-				log.Printf("[RECOVERY] cleaning un-audited code directory: %s", state.Security.ModelDir)
-				if err := utils.CleanDir(state.Security.ModelDir); err != nil {
-					log.Printf("WARNING: clean model dir %s failed: %v", state.Security.ModelDir, err)
-				}
-			}
+			// 审计只做审计：不删除或改动模型包与其依赖库。隔离只在状态层面发生，
+			// 复位 ModelImported 即可阻止训练，盘上的模型代码保持上传原样。
 			state.UpdateImportState(true, false, activeTask.Phase)
 		}
 	}
@@ -266,18 +262,11 @@ func reconcileAbandonedAudit(ctx context.Context, state *controller.TAAState, pe
 		pending.RequestID, pending.TaskID, pending.Phase, utils.FormatISO8601(pending.StartedAt))
 	if state.Logs != nil {
 		state.Logs.Add(controller.LogWarn, "recovery",
-			"检测到被遗弃的模型代码审计 (taskId: %s)，审计未出裁决，强制隔离模型并复位导入状态", pending.TaskID)
+			"检测到被遗弃的模型代码审计 (taskId: %s)，审计未出裁决，本次导入被拒绝并复位导入状态，模型包保持上传原样", pending.TaskID)
 	}
 
-	// 规约 1 安全隔离：审计不会再给出结论，盘上的模型代码等同于未审计代码。
-	// utils.CleanDir 与 reconcileCrashRecovery 用的是同一个工具。
-	if modelDir := state.Security.ModelDir; modelDir != "" {
-		log.Printf("[RECOVERY AUDIT] cleaning un-adjudicated model directory: %s", modelDir)
-		if err := utils.CleanDir(modelDir); err != nil {
-			log.Printf("WARNING: clean model dir %s failed: %v", modelDir, err)
-		}
-	}
-
+	// 规约 1 安全隔离：审计不会再给出结论，因此本次导入按未通过处理并复位导入状态；
+	// 隔离只在状态层面发生，盘上的模型包与依赖库保持上传原样，绝不删除或改动。
 	// 复位导入状态并落盘。这一步同时清掉 pendingAudit，因此下一次重启不会再隔离、
 	// 也不会再补报同一个被遗弃的审计。
 	state.UpdateImportState(true, false, pending.Phase)
@@ -289,7 +278,7 @@ func reconcileAbandonedAudit(ctx context.Context, state *controller.TAAState, pe
 		return nil
 	}
 
-	msg := "TAA 异常崩溃重启，模型代码审计中断未出裁决，模型已隔离，请重新下发模型"
+	msg := "TAA 异常崩溃重启，模型代码审计中断未出裁决，本次导入被拒绝，模型包保持上传原样、不得视为已导入，请重新下发模型"
 	reportCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if err := controller.ReportAudit(reportCtx, platformIP, dockerID, pending.RequestID, pending.TaskID, 2, msg, ""); err != nil {

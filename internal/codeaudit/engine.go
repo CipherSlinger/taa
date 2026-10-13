@@ -113,7 +113,7 @@ var engineNames = []string{EngineNameRegex, EngineNameSemgrep}
 //
 // The rules path is checked here, where the deployment is configured, rather
 // than left to the first scan. A missing rules file does not degrade the scan,
-// it fails every import and has the model code deleted, which from the
+// it fails every import, which from the
 // operator's side is indistinguishable from the scanner working and finding
 // something. Failing at construction turns that into a startup error.
 func NewEngine(cfg EngineConfig) (StaticEngine, error) {

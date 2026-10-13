@@ -284,3 +284,56 @@ func TestAHighFindingStillBlocksAnIncompleteScan(t *testing.T) {
 			"an unexamined part of the input cannot be exonerated")
 	}
 }
+
+// ── The binary channel's gaps ─────────────────────────────
+
+// TestProvesCleanScanWithholdsOnBinaryGaps pins the fold. A report whose binary
+// channel did not look everywhere is not evidence of absence, and the two
+// classes are treated differently on purpose: a bounded executable is a look
+// that did not finish, a bounded data file is a look that finished on as much as
+// there was reason to read.
+//
+// The finding cap is in the table as a case that does NOT withhold, because that
+// is the property being pinned: reaching the cap means the channel found more
+// than its listing budget, which is not the same fact as a look that did not
+// happen, and treating it as one would refuse an import for having findings.
+func TestProvesCleanScanWithholdsOnBinaryGaps(t *testing.T) {
+	base := func(sum BinaryScanSummary) *Report {
+		return &Report{
+			ScanComplete:    true,
+			ProcessExitCode: 0,
+			Binary:          &sum,
+		}
+	}
+	cases := []struct {
+		name string
+		sum  BinaryScanSummary
+		want bool
+	}{
+		{"no binary files at all", BinaryScanSummary{}, true},
+		{"files examined, nothing bounded", BinaryScanSummary{FilesCount: 3}, true},
+		{"a bounded data file is visible but does not withhold", BinaryScanSummary{FilesCount: 3, BoundedData: 1}, true},
+		{"a capped listing is a data bound", BinaryScanSummary{FilesCount: 3, BoundedData: 2}, true},
+		{"the finding cap does not withhold", BinaryScanSummary{FilesCount: 3, FindingsCapped: true, FindingsDropped: 4}, true},
+		{"a bounded executable withholds", BinaryScanSummary{FilesCount: 3, BoundedExecutable: 1}, false},
+		{"an unexamined file withholds", BinaryScanSummary{FilesCount: 3, Incomplete: 1}, false},
+		{"a pass that could not run withholds", BinaryScanSummary{Errored: true}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := base(tc.sum).ProvesCleanScan(); got != tc.want {
+				t.Errorf("ProvesCleanScan() = %v, want %v for %+v", got, tc.want, tc.sum)
+			}
+		})
+	}
+}
+
+// TestProvesCleanScanUnchangedWithoutABinaryChannel pins the rollback: a report
+// that never ran the binary channel - every existing caller, and any deployment
+// that turns it off - behaves exactly as it did before.
+func TestProvesCleanScanUnchangedWithoutABinaryChannel(t *testing.T) {
+	r := &Report{ScanComplete: true, ProcessExitCode: 0}
+	if !r.ProvesCleanScan() {
+		t.Error("a report with no binary channel must still prove a clean scan")
+	}
+}

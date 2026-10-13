@@ -2,7 +2,9 @@ package codeaudit
 
 import (
 	"context"
+	"encoding/binary"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -88,13 +90,36 @@ func TestNewEngineRejectsUnknownEngineName(t *testing.T) {
 	}
 }
 
+// TestNewEngineRejectsTheNonSelectableChannelNames pins that the two channel
+// names are not themselves selectable engines. EngineNameCPG is the graph
+// engine that runs after a Tier 1 engine, and EngineNameBinary is the binary
+// scanner that runs in addition to one; a deployment configures a source
+// engine, and naming a channel here asks for something NewEngine cannot run.
+// The default arm has to reject it rather than hand back a regex scan.
+func TestNewEngineRejectsTheNonSelectableChannelNames(t *testing.T) {
+	for _, name := range []string{EngineNameBinary, EngineNameCPG} {
+		t.Run("name="+name, func(t *testing.T) {
+			engine, err := NewEngine(EngineConfig{Name: name})
+			if err == nil {
+				t.Fatalf("NewEngine(%q) returned %T with no error; want a rejection", name, engine)
+			}
+			if engine != nil {
+				t.Errorf("NewEngine(%q) returned an engine alongside an error", name)
+			}
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("error %q should name the rejected value %q", err, name)
+			}
+		})
+	}
+}
+
 // TestNewEngineValidatesTheSemgrepRulesAtConstruction pins that a Semgrep
 // deployment fails where it is configured rather than where it is used.
 //
 // The rules path is the one thing Semgrep cannot run without, and its built-in
 // default is relative to the repository root, so a container that does not set
 // it is the expected mistake. Without this check that mistake surfaces as every
-// model import being blocked and its code deleted — indistinguishable, from the
+// model import being blocked — indistinguishable, from the
 // operator's side, from the scanner working correctly and finding something.
 func TestNewEngineValidatesTheSemgrepRulesAtConstruction(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "rules.yaml")
@@ -207,7 +232,7 @@ func TestGenerateAuditReportUsesTheEngineItWasGiven(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewEngine(%+v): %v", tc.cfg, err)
 			}
-			audit, err := GenerateAuditReport(context.Background(), dir, engine, LLMConfig{Policy: "assist"}, nil)
+			audit, err := GenerateAuditReport(context.Background(), dir, engine, AuditConfig{LLM: LLMConfig{Policy: "assist"}}, nil)
 			if err != nil {
 				t.Fatalf("GenerateAuditReport: %v", err)
 			}
@@ -287,7 +312,7 @@ func TestGenerateAuditReportRejectsAMissingEngine(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir, "train.py", "import os\n")
 
-	audit, err := GenerateAuditReport(context.Background(), dir, nil, LLMConfig{Policy: "assist"}, nil)
+	audit, err := GenerateAuditReport(context.Background(), dir, nil, AuditConfig{LLM: LLMConfig{Policy: "assist"}}, nil)
 	if err == nil {
 		t.Fatalf("GenerateAuditReport with a nil engine returned an audit: %+v", audit)
 	}
@@ -296,5 +321,174 @@ func TestGenerateAuditReportRejectsAMissingEngine(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "engine") {
 		t.Errorf("error %q should say the engine is the problem", err)
+	}
+}
+
+// TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine pins the property
+// that made the binary channel a channel rather than a third engine: whichever
+// source engine a deployment configured, the binary files in the package are
+// audited. A deployment must not have to choose between source coverage and
+// binary coverage.
+func TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine(t *testing.T) {
+	engines := map[string]StaticEngine{}
+	for _, name := range []string{EngineNameRegex, EngineNameSemgrep} {
+		// repoSemgrepRules(t), not DefaultSemgrepRulesPath: the latter is a path
+		// relative to the repository root, and NewEngine stats it with the
+		// process's working directory, which under `go test` is this package's
+		// directory - so the bare default resolves to
+		// internal/codeaudit/models/audit/... and NewEngine fails before any
+		// subtest starts, where a skip inside the subtest could not save it. The
+		// helper makes it absolute; the per-engine skip below is still needed for
+		// a host without the CLI. The regex arm ignores the field, so one value
+		// serves both.
+		engine, err := NewEngine(EngineConfig{Name: name, SemgrepRulesPath: repoSemgrepRules(t)})
+		if err != nil {
+			t.Fatalf("NewEngine(%s): %v", name, err)
+		}
+		engines[name] = engine
+	}
+
+	for name, engine := range engines {
+		t.Run(name, func(t *testing.T) {
+			if name == EngineNameSemgrep {
+				if _, err := exec.LookPath("semgrep"); err != nil {
+					t.Skip("semgrep not installed on this host")
+				}
+			}
+
+			dir := t.TempDir()
+			// The packed section is not decoration: the corroboration gate downgrades
+			// a presence-only family (NET_002, from the socket/connect imports) to LOW
+			// unless the same file carries independent corroboration, so a fixture that
+			// imported socket without a near-random executable section would pass under
+			// assist and this assertion could not hold. The measured entropy is what
+			// makes the package block on evidence rather than on a name.
+			writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{
+				imports:  []string{"socket", "connect"},
+				needed:   []string{"libcurl.so.4"},
+				text:     uniformBytes(512),
+				textExec: true,
+			}))
+
+			cfg := AuditConfig{
+				LLM:    LLMConfig{Enabled: false, Policy: "assist"},
+				Binary: DefaultBinaryConfig(),
+			}
+			audit, err := GenerateAuditReport(context.Background(), dir, engine, cfg, nil)
+			if err != nil {
+				t.Fatalf("GenerateAuditReport: %v", err)
+			}
+			if audit.ScanMetadata.Binary == nil {
+				t.Fatal("ScanMetadata.Binary is nil: the binary channel did not run")
+			}
+			if audit.ScanMetadata.Binary.FilesCount != 1 {
+				t.Errorf("Binary.FilesCount = %d, want 1", audit.ScanMetadata.Binary.FilesCount)
+			}
+			if audit.Conclusion.Passed {
+				t.Error("conclusion Passed = true for a package whose shared object imports socket and connect")
+			}
+			found := false
+			for _, fr := range audit.FileReports {
+				for _, f := range fr.Findings {
+					if f.RuleID == "NET_002" && f.Engine == EngineNameBinary {
+						found = true
+					}
+				}
+			}
+			if !found {
+				t.Error("no binary NET_002 finding in the audit report")
+			}
+		})
+	}
+}
+
+// TestGenerateAuditReportWithBinaryDisabledIsUnchanged pins the rollback: with
+// the channel off, an audit of a package full of native code behaves exactly as
+// it did before the channel existed, and says so by leaving the field nil.
+func TestGenerateAuditReportWithBinaryDisabledIsUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket", "connect"}}))
+
+	cfg := AuditConfig{
+		LLM:    LLMConfig{Enabled: false, Policy: "assist"},
+		Binary: BinaryConfig{Enabled: false},
+	}
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, nil)
+	if err != nil {
+		t.Fatalf("GenerateAuditReport: %v", err)
+	}
+	if audit.ScanMetadata.Binary != nil {
+		t.Errorf("ScanMetadata.Binary = %+v with the channel disabled", audit.ScanMetadata.Binary)
+	}
+	if !audit.Conclusion.Passed {
+		t.Error("Passed = false with the channel disabled; the disabled path is not a rollback")
+	}
+}
+
+// TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata pins that the metadata
+// mirror carries the gap fields and not just the counts. The scan summary is
+// what makes a blocked import explainable to the in-process consumers of the
+// audit and to the host-side log line, and a copy that kept only FilesCount
+// would read as a channel that finished on a package whose native code it never
+// examined. The fixture fails after classify - the header parses, the section
+// header table runs off the end - so the gap is Incomplete rather than a skipped
+// file, which is exactly the shape the host's truncated CUDA libraries have.
+func TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata(t *testing.T) {
+	dir := t.TempDir()
+	raw := elfFixtureBytes(t, elfSpec{text: []byte("truncated")})
+	// e_shoff past the end of the file (ELF64 header offset 0x28).
+	binary.LittleEndian.PutUint64(raw[0x28:0x30], 1<<30)
+	writeTestBytes(t, dir, "truncated.so", raw)
+
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(),
+		AuditConfig{LLM: LLMConfig{Enabled: false, Policy: "assist"}, Binary: DefaultBinaryConfig()}, nil)
+	if err != nil {
+		t.Fatalf("GenerateAuditReport: %v", err)
+	}
+	if audit.ScanMetadata.Binary == nil {
+		t.Fatal("ScanMetadata.Binary is nil: the binary channel did not run")
+	}
+	if audit.ScanMetadata.Binary.Incomplete != 1 {
+		t.Errorf("ScanMetadata.Binary.Incomplete = %d, want 1: the mirror must carry the gap, not only the counts",
+			audit.ScanMetadata.Binary.Incomplete)
+	}
+	if audit.Conclusion.Passed {
+		t.Error("Passed = true for a package whose native code could not be examined")
+	}
+}
+
+// TestRunBinaryChannelReportsAWholePassFailure pins the failure contract for a
+// channel that is enabled but could not run at all. The distinction it protects
+// is the one between a pass that ran and a pass that did not: without it an
+// Errored channel and a disabled one are the same nil result, ProvesCleanScan
+// returns true, and the report reads as a clean scan of a package whose native
+// code was never examined.
+func TestRunBinaryChannelReportsAWholePassFailure(t *testing.T) {
+	// A path that is not a directory reaches the scan-failure branch, because
+	// BinaryScanner.ScanDirectory stats the path and returns an error for
+	// anything that is not a directory before it walks a single file. A regular
+	// file therefore produces a scan error rather than an empty clean scan, which
+	// is what makes this the input that exercises the branch.
+	notADir := writeTestFile(t, t.TempDir(), "model.py", "import os\n")
+
+	res := runBinaryChannel(notADir, BinaryConfig{Enabled: true})
+	if res == nil {
+		t.Fatal("runBinaryChannel returned nil for an enabled channel that could not scan: " +
+			"an enabled failure is now indistinguishable from a disabled channel")
+	}
+	if !res.Summary.Errored {
+		t.Error("Summary.Errored = false after a scan failure: the gap does not travel in the summary")
+	}
+
+	// The downstream chain the summary feeds: MergeBinaryFindings attaches it to
+	// the scan report, ProvesCleanScan then withholds the pass on Errored, and
+	// AssembleAuditReport turns that into conclusion.Passed=false - which is what
+	// makes the platform refuse the import
+	// (internal/controller/import_processing.go:662-663).
+	report := &Report{ScanComplete: true}
+	MergeBinaryFindings(report, res)
+	if report.ProvesCleanScan() {
+		t.Error("ProvesCleanScan() = true for a report whose binary channel could not run: " +
+			"the package would read as a clean scan of native code that was never examined")
 	}
 }

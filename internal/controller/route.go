@@ -30,9 +30,18 @@ const maxDownloadBytes = config.DefaultMaxFileBytes // 3 GB
 // SecurityConfig holds immutable security settings configured at startup.
 // Separated from TAAState so it doesn't need the phase mutex and can't be
 // accidentally left at zero values.
+//
+// Binary is the exception that proves that rule: its zero value is a working
+// configuration rather than an obviously broken one. BinaryConfig.Enabled has no
+// normalizer default - Go cannot tell an explicit false from the zero value - so
+// a SecurityConfig built without this field runs the audit with no binary pass
+// at all, silently: no error, no log line, and a report indistinguishable from
+// one where the operator turned the channel off. buildSecurityConfig is the only
+// production constructor and always sets it; a second caller must as well.
 type SecurityConfig struct {
 	ScanEnabled        bool                   // 是否在 import type=1 时执行源码安全扫描
 	Engine             codeaudit.StaticEngine // Tier 1 静态扫描引擎（启动时由 codeScanEngine 配置解析）
+	Binary             codeaudit.BinaryConfig // 二进制审计通道配置（与 Tier 1 引擎无关，两种引擎部署都生效）
 	ModelDir           string                 // 模型代码存放目录（扫描目标，type=1）
 	DataDir            string                 // 数据目录（type=2 测试数据，type=3 训练数据，用于数据指纹比对）
 	ResultCheck        bool                   // 是否在 export 时检查明文数据泄露
@@ -353,7 +362,7 @@ func (s *TAAState) saveModelSuccessLocked(resourceURL string) {
 // between them leaves either a model that no audit is owed for (nothing on disk
 // says an audit was pending, so a never-audited model reads as imported-and-fine)
 // or a pending audit for a model not yet marked imported (the next restart
-// quarantines a directory that may hold a previously audited model).
+// quarantines an import that may point at a previously audited model).
 func (s *TAAState) beginModelImportAndAudit(req importRequest, phase int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -389,9 +398,9 @@ func (s *TAAState) updateImportState(isModel bool, imported bool, phase int) {
 		if !imported {
 			s.SavedModelResourceURL = ""
 			s.RuntimeConfig = ""
-			// Dropping the model drops whatever audit was outstanding for it: the
-			// verdict can no longer apply to anything, so leaving the marker would
-			// quarantine an already-discarded model on the next restart.
+			// Dropping the model import drops whatever audit was outstanding for it:
+			// the verdict can no longer apply to anything, so leaving the marker
+			// would quarantine a model that is no longer imported on the next restart.
 			s.pendingAudit = nil
 		}
 	} else if !imported {
@@ -594,7 +603,7 @@ func (s *TAAState) clearAuditState() {
 //
 // It is split from launching the goroutine so that "model is imported" and "an
 // audit is owed for it" become durable together. Launched first, the audit could
-// fail and clear the model before saveModelSuccess re-sealed it as imported.
+// fail and clear the imported marker before saveModelSuccess re-sealed it as imported.
 //
 // Scanning disabled means no audit is owed: auditAndReportModelImport returns
 // immediately, so writing the marker would leave a window in which a crash
@@ -835,8 +844,15 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 	// A panicking audit is an audit that will never reach a verdict, so the model
 	// it was judging must not be left looking imported-and-fine. The isolation
 	// this branch exists for is about not disturbing a concurrent training task's
-	// snapshot — it was never a reason to keep the un-adjudicated model, and
-	// keeping it is what let a panic leave a never-audited model trainable.
+	// snapshot — it was never a reason to keep the un-adjudicated model marked
+	// imported, and keeping that marker is what let a panic leave a never-audited
+	// model trainable.
+	//
+	// The rollback below is state only. The audit contract is that it never
+	// writes to, deletes, or modifies the package it reads, and a panic is not an
+	// exception to it: the extracted model directory and its dependency libraries
+	// are left exactly as they were. Refusing the import here means clearing the
+	// imported marker and stopping training, never removing files.
 	//
 	// The work is split around the unlock on purpose: updateImportState and
 	// stopActiveTraining both re-acquire s.mu (Lock and RLock respectively), and
@@ -856,14 +872,8 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 		if err := s.sealStateLocked(); err != nil {
 			s.Logs.Add(LogError, "panic", "回滚模型导入状态失败: %v", err)
 		}
-		modelDir := s.Security.ModelDir
 		s.mu.Unlock()
 
-		if modelDir != "" {
-			if err := cleanDirContents(modelDir); err != nil {
-				s.Logs.Add(LogError, "panic", "物理清除已解压模型代码失败: %v", err)
-			}
-		}
 		s.stopActiveTraining("模型安全审计异常终止，未通过安全审计")
 		if platformIP != "" && dockerID != "" && (taskID != "" || requestID != "") {
 			s.reportAuditAsync(requestID, taskID, 2, fmt.Sprintf("model audit panic: %s", panicMsg), "")

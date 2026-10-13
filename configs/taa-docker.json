@@ -29,6 +29,9 @@
     "resultCheck": {
       "enabled": true,
       "maxFileBytes": 3221225472
+    },
+    "binaryAudit": {
+      "enabled": true
     }
   },
   "attestation": {

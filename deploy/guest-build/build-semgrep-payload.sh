@@ -86,14 +86,21 @@ die()  { echo "error: $*" >&2; exit 1; }
 # Everything below is staged by root inside a container, so the host user cannot
 # always remove it again. Delegate the removal to the same runtime that created
 # the files instead of making the build depend on host sudo.
-wipe_payload_dir() {
-  [[ -e "$SEMGREP_PAYLOAD_DIR" ]] || return 0
-  if rm -rf "$SEMGREP_PAYLOAD_DIR" 2>/dev/null && [[ ! -e "$SEMGREP_PAYLOAD_DIR" ]]; then
-    return 0
+#
+# The delegated removal runs on PYTHON_IMAGE rather than PIP_IMAGE on purpose:
+# PIP_IMAGE carries an ENTRYPOINT (start.sh), so a bare `docker run <image>
+# rm ...` would run that script and ignore the command entirely.
+rinse() {
+  local target="$1"
+  [[ -e "$target" ]] || return 0
+  # A direct removal is tried first: it is instant and needs no container. Only
+  # files staged by root inside the container defeat it, which is the case the
+  # container is there for.
+  if ! rm -rf "$target" 2>/dev/null || [[ -e "$target" ]]; then
+    info "改用容器清理: $target"
+    docker run --rm -v "$(dirname "$target"):/parent" "$PYTHON_IMAGE" \
+      rm -rf "/parent/$(basename "$target")"
   fi
-  info "载荷目录含 root 属主文件，改用容器清理"
-  docker run --rm -v "$(dirname "$SEMGREP_PAYLOAD_DIR"):/parent" "$PYTHON_IMAGE" \
-    rm -rf "/parent/$(basename "$SEMGREP_PAYLOAD_DIR")"
 }
 
 for cmd in docker gzip cpio sha256sum find; do
@@ -111,7 +118,7 @@ step "读取 base initrd 的文件清单"
 base_libs="$(gzip -dc "$BASE_INITRD" | cpio -it 2>/dev/null | awk -F/ '{print $NF}' | LC_ALL=C sort -u)"
 info "base entries: $(printf '%s\n' "$base_libs" | wc -l)"
 
-wipe_payload_dir
+rinse "$SEMGREP_PAYLOAD_DIR"
 mkdir -p "$ROOTFS/usr/bin" "$ROOTFS/usr/lib" "$ROOTFS/usr/local/bin" "$ROOTFS/opt/taa/semgrep" "$WHEEL_DIR"
 
 step "下载 semgrep $SEMGREP_VERSION 的 cp310 wheel（含完整依赖闭包）"
@@ -131,16 +138,16 @@ for p in "${WHEEL_PLATFORMS[@]}"; do platform_args+=(--platform "$p"); done
 # The freeze is written by deploy-docker.sh into the running container's writable
 # layer, so a fresh `docker run` of that image cannot see it -- read it out of the
 # running container first and only fall back to the image.
-constraints_args=()
+have_freeze=0
 : > "$SEMGREP_PAYLOAD_DIR/pip-freeze.txt"
 if docker cp "$PIP_CONSTRAINTS_CONTAINER:$PIP_CONSTRAINTS_SRC" "$SEMGREP_PAYLOAD_DIR/pip-freeze.raw" >/dev/null 2>&1; then
   grep -v '^semgrep==' "$SEMGREP_PAYLOAD_DIR/pip-freeze.raw" > "$SEMGREP_PAYLOAD_DIR/pip-freeze.txt" || true
-  constraints_args=(-c /freeze.txt)
+  have_freeze=1
   info "constraints: $PIP_CONSTRAINTS_CONTAINER:$PIP_CONSTRAINTS_SRC ($(wc -l < "$SEMGREP_PAYLOAD_DIR/pip-freeze.txt") 行)"
 elif docker run --rm --entrypoint sh "$PIP_IMAGE" -c "test -f '$PIP_CONSTRAINTS_SRC'" >/dev/null 2>&1; then
   docker run --rm --entrypoint sh "$PIP_IMAGE" -c "grep -v '^semgrep==' '$PIP_CONSTRAINTS_SRC'" \
     > "$SEMGREP_PAYLOAD_DIR/pip-freeze.txt"
-  constraints_args=(-c /freeze.txt)
+  have_freeze=1
   info "constraints: $PIP_IMAGE:$PIP_CONSTRAINTS_SRC ($(wc -l < "$SEMGREP_PAYLOAD_DIR/pip-freeze.txt") 行)"
 else
   info "constraints: 无（$PIP_CONSTRAINTS_CONTAINER 与 $PIP_IMAGE 里都没有 $PIP_CONSTRAINTS_SRC），按当前 PyPI 解析"
@@ -173,15 +180,13 @@ python3 -m pip download --dest /payload/wheels \
 # the engine plus the rules, both fixed -- while the rest of the closure follows the
 # index. The MANIFEST records which freeze was used and the versions that actually
 # shipped, so the difference stays visible after the fact.
-if [[ "${#constraints_args[@]}" -gt 0 ]]; then
+if [[ "$have_freeze" == 1 ]]; then
   if download_wheels "-c /freeze.txt"; then
     freeze_used="$PIP_CONSTRAINTS_SRC"
   else
     info "警告：带 constraints 解析失败（冻结的版本可能没有 cp310 wheel），改为不约束重试"
-    # The removal runs on PYTHON_IMAGE rather than PIP_IMAGE on purpose: PIP_IMAGE
-    # carries an ENTRYPOINT (start.sh), so a bare `docker run <image> rm ...` would
-    # run that script and ignore the command entirely.
-    docker run --rm -v "$SEMGREP_PAYLOAD_DIR:/payload" "$PYTHON_IMAGE" rm -rf /payload/wheels
+    # The failed resolve leaves a partial set behind; the retry starts from empty.
+    rinse "$WHEEL_DIR"
     : > "$SEMGREP_PAYLOAD_DIR/pip-freeze.txt"
     freeze_used="none (docker-arm freeze has no cp310 wheel for every pin)"
     download_wheels ""
@@ -239,11 +244,8 @@ info "python3.10 runtime: $(du -sh "$ROOTFS/usr/lib/python3.10" | awk '{print $1
 [[ -x "$PYLIB/semgrep/bin/semgrep-core" ]] || die "semgrep-core missing from the pip install"
 info "pylib: $(du -sh "$PYLIB" | awk '{print $1}') (semgrep-core: $(du -h "$PYLIB/semgrep/bin/semgrep-core" | awk '{print $1}'))"
 # The wheels are dropped only now: everything that can still fail has failed by
-# this point, so a failure above leaves them on disk to be inspected. The
-# removal runs on PYTHON_IMAGE rather than PIP_IMAGE on purpose: PIP_IMAGE
-# carries an ENTRYPOINT (start.sh), so a bare `docker run <image> rm ...` would
-# run that script and ignore the command entirely.
-docker run --rm -v "$SEMGREP_PAYLOAD_DIR:/payload" "$PYTHON_IMAGE" rm -rf /payload/wheels
+# this point, so a failure above leaves them on disk to be inspected.
+rinse "$WHEEL_DIR"
 
 step "补齐 base initrd 缺少的动态库"
 # Every ELF object the payload runs is asked for its dependencies; whatever
