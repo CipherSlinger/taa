@@ -43,12 +43,19 @@ const (
 	toolVersion = "1.0.0"
 	headSize    = 512     // 魔数探测读取的头部字节数
 	sniffSize   = 1 << 20 // 文本嗅探上限 1MB
+
+	// PreviewRows 表格类文件预览的最大行数
+	PreviewRows = 5
+	// previewCellRunes 预览单元格的最大字符数，超出部分截断并追加省略号
+	previewCellRunes = 128
 )
 
 // TableInfo SQLite 内单张表的信息
 type TableInfo struct {
-	Name string `json:"name"`
-	Rows int64  `json:"rows"`
+	Name    string  `json:"name"`
+	Rows    int64   `json:"rows"`
+	Columns []Field `json:"columns,omitempty"` // 列定义，与 Preview 的行按位置对齐
+	Preview [][]any `json:"preview,omitempty"` // 前 PreviewRows 行数据
 }
 
 // Field 描述结构化文件里的一个字段
@@ -74,6 +81,9 @@ type Node struct {
 	// 目录属性
 	FileCount int     `json:"file_count,omitempty"` // 目录下（递归）文件总数
 	Children  []*Node `json:"children,omitempty"`
+
+	// 表格类文件的前 PreviewRows 行数据；每行是一个数组，与 Fields 按位置对齐
+	Preview [][]any `json:"preview,omitempty"`
 }
 
 // FormatStat 格式分布统计
@@ -110,6 +120,10 @@ type Options struct {
 	MaxParseBytes int64
 	ArchivePath   string        // 可选：明文压缩包路径；若提供，优先计算该归档包的 SM3 校验和（与 import 接口逻辑一致）
 	Checksum      *ChecksumInfo // 可选：直接注入的校验和信���
+	// IncludePreview 可选：为表格类文件生成前 PreviewRows 行预览。默认关闭——
+	// 预览会把真实数据值带进输出，只有一次性应答（如 getResourceInfo）才应打开它；
+	// 报告类产物会落盘并随导出接口外发，必须保持关闭。
+	IncludePreview bool
 }
 
 // DefaultOptions 返回与 CLI 相同的默认扫描参数。
@@ -222,6 +236,7 @@ func BuildReport(root string, opts Options) (*Report, error) {
 		root:     abs,
 		maxFiles: opts.MaxFiles,
 		maxParse: opts.MaxParseBytes,
+		preview:  opts.IncludePreview,
 		byFormat: map[string]*FormatStat{},
 	}
 	tree, err := s.scan(abs, "")
@@ -681,25 +696,33 @@ func mergeFieldSets(dstOrder *[]string, dstStates map[string]*typeState, srcOrde
 	}
 }
 
-func decodeJSONArray(dec *json.Decoder) ([]string, map[string]*typeState, int64, error) {
+// decodeJSONArray 遍历顶层数组，汇总字段集合并留下前 PreviewRows 个对象元素，
+// 供调用方在字段顺序确定后回填预览。
+func decodeJSONArray(dec *json.Decoder, withPreview bool) ([]map[string]any, []string, map[string]*typeState, int64, error) {
 	order := make([]string, 0)
 	states := map[string]*typeState{}
 	rows := int64(0)
+	samples := make([]map[string]any, 0, PreviewRows)
 	for dec.More() {
 		var raw json.RawMessage
 		if err := dec.Decode(&raw); err != nil {
-			return nil, nil, 0, err
+			return nil, nil, nil, 0, err
 		}
 		rows++
 		raw = bytes.TrimSpace(raw)
 		if len(raw) == 0 || raw[0] != '{' {
 			continue
 		}
+		if withPreview && len(samples) < PreviewRows {
+			if obj, objErr := decodeJSONObjectValue(raw); objErr == nil && obj != nil {
+				samples = append(samples, obj)
+			}
+		}
 		nested := json.NewDecoder(bytes.NewReader(raw))
 		nested.UseNumber()
 		tok, err := nested.Token()
 		if err != nil {
-			return nil, nil, 0, err
+			return nil, nil, nil, 0, err
 		}
 		delim, ok := tok.(json.Delim)
 		if !ok || delim != '{' {
@@ -707,14 +730,14 @@ func decodeJSONArray(dec *json.Decoder) ([]string, map[string]*typeState, int64,
 		}
 		srcOrder, srcStates, err := decodeJSONObject(nested)
 		if err != nil {
-			return nil, nil, 0, err
+			return nil, nil, nil, 0, err
 		}
 		if _, err := nested.Token(); err != nil {
-			return nil, nil, 0, err
+			return nil, nil, nil, 0, err
 		}
 		mergeFieldSets(&order, states, srcOrder, srcStates)
 	}
-	return order, states, rows, nil
+	return samples, order, states, rows, nil
 }
 
 func describeParquet(path string, n *Node) error {
@@ -792,9 +815,81 @@ func parquetColumnType(col *goparquet.Column) string {
 // 结构化文件解析（schema + 数据量）
 // ---------------------------------------------------------------------------
 
+// previewCell 截断过长的单元格值；非字符串值原样保留。
+func previewCell(v any) any {
+	s, ok := v.(string)
+	if !ok {
+		return v
+	}
+	r := []rune(s)
+	if len(r) <= previewCellRunes {
+		return s
+	}
+	return string(r[:previewCellRunes]) + "…"
+}
+
+// buildPreviewRow 把一行单元格整理成与列定义按位置对齐的预览行：不足补空串，
+// 超出丢弃，过长截断。预览行不带列名，全靠位置对齐，所以长度必须恒等于列数。
+func buildPreviewRow(cells []any, width int) []any {
+	row := make([]any, width)
+	for i := 0; i < width; i++ {
+		if i < len(cells) {
+			row[i] = previewCell(cells[i])
+		} else {
+			row[i] = ""
+		}
+	}
+	return row
+}
+
+// buildObjectPreview 按字段顺序把若干行对象摊平成预览行。
+// JSON 对象的键顺序在解码后已丢失，所以字段顺序必须在解析完成后回填。
+func buildObjectPreview(objs []map[string]any, fields []Field) [][]any {
+	if len(fields) == 0 {
+		return nil
+	}
+	out := make([][]any, 0, len(objs))
+	for _, obj := range objs {
+		cells := make([]any, len(fields))
+		for i, f := range fields {
+			cells[i] = jsonCell(obj[f.Name])
+		}
+		out = append(out, buildPreviewRow(cells, len(fields)))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// jsonCell 把嵌套的 JSON 值压成可放进预览单元格的标量。
+func jsonCell(v any) any {
+	switch v.(type) {
+	case map[string]any, []any:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil
+		}
+		return string(b)
+	default:
+		return v
+	}
+}
+
+// decodeJSONObjectValue 解码一行 JSON 对象，数字保留原始字面量。
+func decodeJSONObjectValue(raw []byte) (map[string]any, error) {
+	var obj map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&obj); err != nil {
+		return nil, err
+	}
+	return obj, nil
+}
+
 // describeFile 解析单个结构化文件，返回要写进节点的计量信息。
 // 任何 panic/错误都兜底为 Warning，不中断整体扫描。
-func describeFile(path, format string, size int64, n *Node, warn func(string)) {
+func describeFile(path, format string, size int64, n *Node, preview bool, warn func(string)) {
 	defer func() {
 		if r := recover(); r != nil {
 			n.Warning = fmt.Sprintf("解析异常: %v", r)
@@ -804,16 +899,17 @@ func describeFile(path, format string, size int64, n *Node, warn func(string)) {
 	var err error
 	switch format {
 	case "csv":
-		err = describeCSV(path, n)
+		err = describeCSV(path, n, preview)
 	case "json":
-		err = describeJSON(path, n)
+		err = describeJSON(path, n, preview)
 	case "jsonl":
-		err = describeJSONL(path, n)
+		err = describeJSONL(path, n, preview)
 	case "xlsx":
-		err = describeXLSX(path, n)
+		err = describeXLSX(path, n, preview)
 	case "sqlite":
-		err = describeSQLite(path, n)
+		err = describeSQLite(path, n, preview)
 	case "parquet":
+		// 这里只读元数据（列定义与行数），没有行读取路径，因此不产生预览。
 		err = describeParquet(path, n)
 	default:
 		return // 非结构化格式不解析
@@ -824,7 +920,7 @@ func describeFile(path, format string, size int64, n *Node, warn func(string)) {
 }
 
 // describeCSV 流式统计行数并按列值推断类型，字段顺序保留表头顺序。
-func describeCSV(path string, n *Node) error {
+func describeCSV(path string, n *Node, withPreview bool) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -859,6 +955,8 @@ func describeCSV(path string, n *Node) error {
 	states := map[string]*typeState{}
 	ordered := make([]Field, 0)
 	rows := int64(0)
+	// 前 PreviewRows 行顺手留下：整表本来就要读一遍，预览不额外增加扫描。
+	preview := make([][]any, 0, PreviewRows)
 	for {
 		rec, err := cr.Read()
 		if err == io.EOF {
@@ -879,6 +977,13 @@ func describeCSV(path string, n *Node) error {
 			continue
 		}
 		rows++
+		if withPreview && len(preview) < PreviewRows {
+			cells := make([]any, len(rec))
+			for i, v := range rec {
+				cells[i] = v
+			}
+			preview = append(preview, buildPreviewRow(cells, len(header)))
+		}
 		for i, name := range header {
 			if i >= len(rec) {
 				continue
@@ -895,6 +1000,9 @@ func describeCSV(path string, n *Node) error {
 	}
 	n.Rows = &rows
 	n.Fields = ordered
+	if len(ordered) > 0 && len(preview) > 0 {
+		n.Preview = preview
+	}
 	return nil
 }
 
@@ -922,7 +1030,7 @@ func countPlainLines(path string, n *Node) error {
 }
 
 // describeJSON 全量解析单值 JSON（对象或数组），字段顺序按源顺序保留。
-func describeJSON(path string, n *Node) error {
+func describeJSON(path string, n *Node, withPreview bool) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -952,7 +1060,7 @@ func describeJSON(path string, n *Node) error {
 		n.Fields = finalizeFields(fields, states)
 		return nil
 	case '[':
-		fields, states, rows, err := decodeJSONArray(dec)
+		samples, fields, states, rows, err := decodeJSONArray(dec, withPreview)
 		if err != nil {
 			return err
 		}
@@ -962,6 +1070,7 @@ func describeJSON(path string, n *Node) error {
 		n.Rows = &rows
 		if len(fields) > 0 {
 			n.Fields = finalizeFields(fields, states)
+			n.Preview = buildObjectPreview(samples, n.Fields)
 		}
 		return nil
 	default:
@@ -970,7 +1079,7 @@ func describeJSON(path string, n *Node) error {
 }
 
 // describeJSONL 逐行流式解析 JSON Lines，字段顺序按首次出现顺序保留。
-func describeJSONL(path string, n *Node) error {
+func describeJSONL(path string, n *Node, withPreview bool) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -980,11 +1089,19 @@ func describeJSONL(path string, n *Node) error {
 	order := make([]string, 0)
 	states := map[string]*typeState{}
 	docs := int64(0)
+	// 前 PreviewRows 行的原始对象另存一份，等字段顺序最终确定后再摊平成预览行。
+	// 只有这几行会被二次解码，代价可忽略。
+	samples := make([]map[string]any, 0, PreviewRows)
 	for {
 		s, err := br.ReadString('\n')
 		s = strings.TrimSpace(strings.TrimRight(s, "\r\n"))
 		if s != "" {
 			docs++
+			if withPreview && len(samples) < PreviewRows {
+				if obj, objErr := decodeJSONObjectValue([]byte(s)); objErr == nil && obj != nil {
+					samples = append(samples, obj)
+				}
+			}
 			nested := json.NewDecoder(strings.NewReader(s))
 			nested.UseNumber()
 			tok, tokErr := nested.Token()
@@ -1017,11 +1134,12 @@ func describeJSONL(path string, n *Node) error {
 	}
 	n.Rows = &docs
 	n.Fields = finalizeFields(order, states)
+	n.Preview = buildObjectPreview(samples, n.Fields)
 	return nil
 }
 
 // describeXLSX 用 excelize 只读解析首个工作表，字段顺序按首行顺序保留。
-func describeXLSX(path string, n *Node) error {
+func describeXLSX(path string, n *Node, withPreview bool) error {
 	f, err := excelize.OpenFile(path)
 	if err != nil {
 		return err
@@ -1040,6 +1158,7 @@ func describeXLSX(path string, n *Node) error {
 	order := make([]string, 0)
 	states := map[string]*typeState{}
 	rows := int64(0)
+	preview := make([][]any, 0, PreviewRows)
 	for it.Next() {
 		cells, err := it.Columns()
 		if err != nil {
@@ -1056,6 +1175,13 @@ func describeXLSX(path string, n *Node) error {
 			continue
 		}
 		rows++
+		if withPreview && len(preview) < PreviewRows {
+			values := make([]any, len(cells))
+			for i, c := range cells {
+				values[i] = c
+			}
+			preview = append(preview, buildPreviewRow(values, len(header)))
+		}
 		for i, name := range header {
 			if name == "" || i >= len(cells) {
 				continue
@@ -1072,11 +1198,14 @@ func describeXLSX(path string, n *Node) error {
 	}
 	n.Rows = &rows
 	n.Fields = finalizeFields(order, states)
+	if len(order) > 0 && len(preview) > 0 {
+		n.Preview = preview
+	}
 	return nil
 }
 
-// describeSQLite 只读打开 SQLite，列出全部表与行数
-func describeSQLite(path string, n *Node) error {
+// describeSQLite 只读打开 SQLite，列出全部表、列定义与行数
+func describeSQLite(path string, n *Node, withPreview bool) error {
 	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
 	if err != nil {
 		return err
@@ -1109,7 +1238,22 @@ func describeSQLite(path string, n *Node) error {
 		if err := db.QueryRow(q).Scan(&cnt); err != nil {
 			return err
 		}
-		infos = append(infos, TableInfo{Name: t, Rows: cnt})
+		info := TableInfo{Name: t, Rows: cnt}
+		// 列定义属于元数据，始终带上：其他格式的 files 字段一直都在，
+		// 没有列名的位置化预览行也无从解释。
+		columns, err := sqliteColumns(db, t)
+		if err != nil {
+			return err
+		}
+		info.Columns = columns
+		if withPreview {
+			preview, err := sqlitePreviewRows(db, t, len(columns))
+			if err != nil {
+				return err
+			}
+			info.Preview = preview
+		}
+		infos = append(infos, info)
 		total += cnt
 	}
 	if len(infos) == 0 {
@@ -1120,6 +1264,105 @@ func describeSQLite(path string, n *Node) error {
 	return nil
 }
 
+// sqliteColumns 读取表的列定义，顺序与 SELECT * 一致。
+func sqliteColumns(db *sql.DB, table string) ([]Field, error) {
+	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%q)`, table))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	fields := make([]Field, 0)
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			declared  string
+			notNull   int
+			dfltValue any
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &declared, &notNull, &dfltValue, &pk); err != nil {
+			return nil, err
+		}
+		fields = append(fields, Field{Name: name, Type: sqliteColumnType(declared)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return fields, nil
+}
+
+// sqlitePreviewRows 读取表的前 PreviewRows 行，值保持驱动返回的原生类型。
+func sqlitePreviewRows(db *sql.DB, table string, width int) ([][]any, error) {
+	if width == 0 {
+		return nil, nil
+	}
+	rows, err := db.Query(fmt.Sprintf(`SELECT * FROM %q LIMIT %d`, table, PreviewRows))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([][]any, 0, PreviewRows)
+	for rows.Next() {
+		scanned := make([]any, width)
+		targets := make([]any, width)
+		for i := range scanned {
+			targets[i] = &scanned[i]
+		}
+		if err := rows.Scan(targets...); err != nil {
+			return nil, err
+		}
+		cells := make([]any, width)
+		for i, v := range scanned {
+			cells[i] = sqliteCell(v)
+		}
+		out = append(out, buildPreviewRow(cells, width))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// sqliteCell BLOB 等字节切片转字符串，其余类型原样保留。
+func sqliteCell(v any) any {
+	if b, ok := v.([]byte); ok {
+		return string(b)
+	}
+	return v
+}
+
+// sqliteColumnType 按 SQLite 的类型亲和性规则把声明类型归一到与其他格式一致的词汇表，
+// 否则 fields[].type 在 sqlite 上会是 INTEGER/TEXT，与 csv 的 int/str 对不上。
+func sqliteColumnType(declared string) string {
+	t := strings.ToUpper(strings.TrimSpace(declared))
+	switch {
+	case t == "":
+		return "str" // BLOB 亲和性
+	case strings.Contains(t, "INT"):
+		return "int"
+	case strings.Contains(t, "CHAR"), strings.Contains(t, "CLOB"), strings.Contains(t, "TEXT"):
+		return "str"
+	case strings.Contains(t, "BLOB"):
+		return "str"
+	case strings.Contains(t, "BOOL"):
+		return "bool"
+	case strings.Contains(t, "DATETIME"), strings.Contains(t, "TIMESTAMP"):
+		return "datetime"
+	case strings.Contains(t, "DATE"):
+		return "date"
+	case strings.Contains(t, "TIME"):
+		return "datetime"
+	case strings.Contains(t, "REAL"), strings.Contains(t, "FLOA"), strings.Contains(t, "DOUB"):
+		return "float"
+	default:
+		// 未识别的声明类型按最保守的猜测处理，不猜成数值。
+		return "str"
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 目录扫描与树构建
 // ---------------------------------------------------------------------------
@@ -1128,6 +1371,7 @@ type scanner struct {
 	root       string
 	maxFiles   int
 	maxParse   int64 // 单文件解析上限
+	preview    bool  // 是否生成表格类文件的预览行
 	totalSize  int64
 	fileCount  int
 	structured int
@@ -1241,7 +1485,7 @@ func (s *scanner) scanFile(full, rel string, info os.FileInfo) *Node {
 
 	// 结构化解析（带单文件大小上限）
 	if info.Size() <= s.maxParse {
-		describeFile(full, n.Format, info.Size(), n, s.warn)
+		describeFile(full, n.Format, info.Size(), n, s.preview, s.warn)
 	} else {
 		n.Warning = fmt.Sprintf("超过单文件解析上限 %s，仅识别格式", humanSize(s.maxParse))
 	}

@@ -675,7 +675,80 @@ components:
           description: 解包后文件总数
         fileTree:
           type: object
-          description: 多模态目录树结构与 Schema 注释
+          description: >-
+            多模态目录树结构与 Schema 注释。表格类文件额外带 preview：最多 5 行的样本数据，
+            每行是一个数组，按位置对齐同级的 fields（行内不带列名）。预览只在本接口返回，
+            训练报告里的 result_files 不含预览。
+          properties:
+            name:
+              type: string
+            type:
+              type: string
+              enum: [dir, file]
+            fmt:
+              type: string
+              description: 魔数探测出的格式标签（csv/json/jsonl/xlsx/sqlite/parquet/txt/zip/...）
+            size:
+              type: integer
+            rows:
+              type: integer
+              description: 结构化文件的数据行数（不含表头）
+            isObject:
+              type: boolean
+              description: 单值 JSON 是否为对象
+            fields:
+              type: array
+              description: 列定义，顺序与源文件一致；preview 的行按位置与之对齐
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  type:
+                    type: string
+            tables:
+              type: array
+              description: SQLite 表级明细
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  rows:
+                    type: integer
+                  columns:
+                    type: array
+                    description: 列定义，preview 的行按位置与之对齐
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        type:
+                          type: string
+                  preview:
+                    type: array
+                    description: 该表的前 5 行，按位置对齐 columns
+                    items:
+                      type: array
+                      items: {}
+            preview:
+              type: array
+              description: >-
+                表格类文件（csv/json 数组/jsonl/xlsx/sqlite）的前 5 行样本数据，按位置对齐 fields。
+                短行补空串、超出列数丢弃、单元格超过 128 字符截断并以省略号结尾。
+                parquet 只读元数据，没有预览；单值 JSON 对象不是表格，也没有预览。
+              items:
+                type: array
+                items: {}
+            warning:
+              type: string
+            file_count:
+              type: integer
+            children:
+              type: array
+              items:
+                type: object
 
     # ── 阶段切换与导出 ──────────────────────────────────────────────────────
     SwitchRequest:

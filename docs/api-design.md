@@ -267,7 +267,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 0,
   "msg": null,
-  "report": "{\"generated_at\":\"2026-09-02T10:03:43Z\",\"report_id\":\"train-report-20260902-100343-ae53fa14\",\"dataset\":{\"total_samples\":12500,\"splits\":{\"train\":10000,\"test\":1000},\"checksum\":{\"size\":540672,\"algorithm\":\"sm3\",\"value\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}},\"training_task\":{\"task_id\":\"task-20260825-001\",\"status\":\"succeeded\",\"exit_code\":0,\"failure_reason\":null,\"started_at\":\"2026-09-02T10:03:35Z\",\"finished_at\":\"2026-09-02T10:03:43Z\",\"duration_seconds\":8,\"model_checksum\":{\"size\":581632,\"algorithm\":\"sm3\",\"value\":\"a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd\"},\"metrics\":{\"final_accuracy\":0.9087,\"final_loss\":0.2145,\"epochs\":[{\"epoch\":1,\"accuracy\":0.5231,\"loss\":1.2345},{\"epoch\":2,\"accuracy\":0.6789,\"loss\":0.9876}]}},\"codeaudit\":{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"\u672a\u53d1\u73b0\u5b89\u5168\u95ee\u9898\uff0c\u4ee3\u7801\u901a\u8fc7\u5ba1\u8ba1\",\"recommendation\":\"\u65e0\u9700\u4fee\u590d\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null}}"
+  "report": "{\"generated_at\":\"2026-09-02T10:03:43Z\",\"report_id\":\"train-report-20260902-100343-ae53fa14\",\"dataset\":{\"total_samples\":12500,\"splits\":{\"train\":10000,\"test\":1000},\"checksum\":{\"size\":540672,\"algorithm\":\"sm3\",\"value\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}},\"training_task\":{\"task_id\":\"task-20260825-001\",\"status\":\"succeeded\",\"exit_code\":0,\"failure_reason\":null,\"started_at\":\"2026-09-02T10:03:35Z\",\"finished_at\":\"2026-09-02T10:03:43Z\",\"duration_seconds\":8,\"model_checksum\":{\"size\":581632,\"algorithm\":\"sm3\",\"value\":\"a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd\"},\"metrics\":{\"final_accuracy\":0.9087,\"final_loss\":0.2145,\"epochs\":[{\"epoch\":1,\"accuracy\":0.5231,\"loss\":1.2345},{\"epoch\":2,\"accuracy\":0.6789,\"loss\":0.9876}]}},\"result_files\":{\"total_files\":3,\"total_size\":541184,\"total_size_h\":\"528.5KB\",\"tree\":{\"name\":\"result\",\"type\":\"dir\",\"file_count\":3,\"children\":[{\"name\":\"metrics.csv\",\"type\":\"file\",\"fmt\":\"csv\",\"size\":428,\"rows\":2,\"fields\":[{\"name\":\"epoch\",\"type\":\"int\"},{\"name\":\"val_accuracy\",\"type\":\"float\"}]},{\"name\":\"model.pt\",\"type\":\"file\",\"fmt\":\"zip\",\"size\":540672}]}},\"codeaudit\":{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"\u672a\u53d1\u73b0\u5b89\u5168\u95ee\u9898\uff0c\u4ee3\u7801\u901a\u8fc7\u5ba1\u8ba1\",\"recommendation\":\"\u65e0\u9700\u4fee\u590d\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null}}"
 }
 ```
 
@@ -336,6 +336,35 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
       ]
     }
   },
+  "result_files": {                                       // 导出目录的文件结构（TAA 扫描结果目录生成）
+    "total_files": 3,                                     // 结果目录文件总数
+    "total_size": 541184,                                 // 结果目录总字节数
+    "total_size_h": "528.5KB",                            // 人类可读总大小
+    "tree": {                                             // 目录树根节点，结构与 /v1/taa/getResourceInfo 的 tree 完全一致
+      "name": "result",
+      "type": "dir",
+      "file_count": 3,
+      "children": [
+        {
+          "name": "metrics.csv",                          // 表格类文件带 fmt / rows / fields
+          "type": "file",
+          "fmt": "csv",
+          "size": 428,
+          "rows": 2,
+          "fields": [
+            { "name": "epoch", "type": "int" },
+            { "name": "val_accuracy", "type": "float" }
+          ]
+        },
+        {
+          "name": "model.pt",                             // 二进制产物不带解析信息
+          "type": "file",
+          "fmt": "zip",
+          "size": 540672
+        }
+      ]
+    }
+  },
   "codeaudit": {                                          // 代码安全审计（TAA 填写）
     "conclusion": {                                       // 审计总体结论
       "passed": true,                                     // 是否通过：true 未发现阻断风险，false 存在高危/恶意
@@ -357,6 +386,13 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 > phase 1 调试阶段（明文结果返回模型提供方）
 > phase 2 测试阶段（明文结果返回平台）
 > phase 3 拒绝调用
+
+**关于 `result_files`**：该字段是导出目录（`/v1/taa/export` 打包的那个目录）的文件结构树，节点结构与 [4.1 节](#41-资源信息获取v1taagetresourceinfo) `getResourceInfo` 返回的 `tree` 完全一致，便于平台在收到报告时直接核对产物。两点差异：
+
+- **不含文件预览**：表格类文件的 `preview`（前 5 行数据）只在 `getResourceInfo` 中返回。`result_files` 会写进结果目录里的 `training_report.json`，并随导出接口一起打包外发，带上预览等于把训练数据的样本行送进导出产物，因此报告侧始终剥离。
+- **不含报告自身**：扫描发生在 `training_report.json` 落盘之前，所以树里不会出现该文件。
+
+目录为空或扫描失败时省略该字段，报告其余部分照常生成。
 
 ### 3.5 TAA 上报模型导入结果（/v1/taa/reportModelImport）
 
@@ -767,13 +803,20 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | `checksum.value` | `string` | 64 位十六进制 SM3 哈希值 |
 | `checksum.size` | `int64` | 压缩包原始字节大小 |
 | `tree` | `object` | 目录树根节点对象，递归包含子目录和文件的 schema、行数等详细标注 |
+| `tree.fields` | `array` | 表格类文件的列定义（`name`、`type`），按解析顺序排列 |
+| `tree.preview` | `array` | 表格类文件的**前 5 行数据**，每行是一个数组，与 `tree.fields` **按位置对齐**（不重复列名）；单元格最长 128 字符，超出截断并追加 `…`。仅 CSV / JSONL / JSON 数组 / XLSX / SQLite 产生预览，其余格式不返回该字段 |
+| `tree.tables` | `array` | 库类文件（如 SQLite）按表拆分的结构信息，每项含 `name`、`rows`、`columns`、`preview` |
+| `tree.tables[].columns` | `array` | 该表的列定义，元素结构同 `fields`，用于解释 `preview` 的列位置 |
+| `tree.tables[].preview` | `array` | 该表的前 5 行数据，与 `columns` 按位置对齐 |
+
+> **`preview` 只在本接口返回**：`getResourceInfo` 是对资源包的一次性应答，平台需要看到样本数据本身。训练报告 `report.result_files` 的结构树与本接口完全一致，但**始终不含 `preview`**——那份报告会落盘并随 `/v1/taa/export` 打包外发，带上预览等于把样本行送进导出产物。
 
 **成功响应示例**（200 OK）：
 
 ```jsonc
 {
   "msg": "ok",
-  "result": "{\n  \"version\": \"1.0.0\",\n  \"generated_at\": \"2026-09-08T10:00:00Z\",\n  \"total_files\": 2,\n  \"total_size\": 540672,\n  \"total_size_h\": \"528.0KB\",\n  \"structured_files\": 1,\n  \"by_format\": [\n    {\"format\": \"csv\", \"count\": 1, \"size_sum\": 340000},\n    {\"format\": \"txt\", \"count\": 1, \"size_sum\": 200672}\n  ],\n  \"checksum\": {\n    \"size\": 540672,\n    \"algorithm\": \"sm3\",\n    \"value\": \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"\n  },\n  \"tree\": {\n    \"name\": \"dataset\",\n    \"type\": \"dir\",\n    \"file_count\": 2,\n    \"children\": [\n      {\n        \"name\": \"users.csv\",\n        \"type\": \"file\",\n        \"fmt\": \"csv\",\n        \"size\": 340000,\n        \"rows\": 2000,\n        \"fields\": [\n          {\"name\": \"user_id\", \"type\": \"int\"},\n          {\"name\": \"name\", \"type\": \"str\"}\n        ]\n      }\n    ]\n  }\n}",
+  "result": "{\n  \"version\": \"1.0.0\",\n  \"generated_at\": \"2026-09-08T10:00:00Z\",\n  \"total_files\": 2,\n  \"total_size\": 540672,\n  \"total_size_h\": \"528.0KB\",\n  \"structured_files\": 1,\n  \"by_format\": [\n    {\"format\": \"csv\", \"count\": 1, \"size_sum\": 340000},\n    {\"format\": \"txt\", \"count\": 1, \"size_sum\": 200672}\n  ],\n  \"checksum\": {\n    \"size\": 540672,\n    \"algorithm\": \"sm3\",\n    \"value\": \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"\n  },\n  \"tree\": {\n    \"name\": \"dataset\",\n    \"type\": \"dir\",\n    \"file_count\": 2,\n    \"children\": [\n      {\n        \"name\": \"users.csv\",\n        \"type\": \"file\",\n        \"fmt\": \"csv\",\n        \"size\": 340000,\n        \"rows\": 2000,\n        \"fields\": [\n          {\"name\": \"user_id\", \"type\": \"int\"},\n          {\"name\": \"name\", \"type\": \"str\"}\n        ],\n        \"preview\": [\n          [\"1\", \"alice\"],\n          [\"2\", \"bob\"]\n        ]\n      }\n    ]\n  }\n}",
   "error": 0
 }
 ```

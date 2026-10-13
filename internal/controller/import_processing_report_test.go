@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,5 +209,143 @@ func TestBuildAndSaveTrainingReportDoesNotScanDataset(t *testing.T) {
 		if _, ok := dataset["data_structure"]; ok {
 			t.Fatalf("dataset should not contain data_structure: %v", dataset)
 		}
+	}
+}
+
+func TestBuildAndSaveTrainingReportAddsResultFilesWithoutPreview(t *testing.T) {
+	resultDir := t.TempDir()
+	modelDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(modelDir, "model.bin"), []byte("test-model"), 0o644); err != nil {
+		t.Fatalf("write model file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(resultDir, "logs"), 0o755); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(resultDir, "logs", "train.log"), []byte("epoch 1\n"), 0o644); err != nil {
+		t.Fatalf("write train.log: %v", err)
+	}
+	csv := "epoch,val_accuracy\n1,0.52\n2,0.68\n"
+	if err := os.WriteFile(filepath.Join(resultDir, "metrics.csv"), []byte(csv), 0o644); err != nil {
+		t.Fatalf("write metrics.csv: %v", err)
+	}
+
+	state := &TAAState{
+		Security: SecurityConfig{ModelDir: modelDir},
+		Logs:     NewLogStore(64),
+	}
+
+	data, err := state.buildAndSaveTrainingReport("task-123", time.Now().Add(-time.Second), time.Now(), "succeeded", 0, "", nil, false, resultDir)
+	if err != nil {
+		t.Fatalf("buildAndSaveTrainingReport: %v", err)
+	}
+
+	var report map[string]any
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	resultFiles, ok := report["result_files"].(map[string]any)
+	if !ok {
+		t.Fatalf("report missing result_files: %v", report)
+	}
+	if got := resultFiles["total_files"]; got != float64(2) {
+		t.Fatalf("result_files.total_files = %v, want 2", got)
+	}
+	tree, ok := resultFiles["tree"].(map[string]any)
+	if !ok {
+		t.Fatalf("result_files.tree missing: %v", resultFiles)
+	}
+	if tree["name"] != filepath.Base(resultDir) {
+		t.Fatalf("result_files.tree.name = %v, want %v", tree["name"], filepath.Base(resultDir))
+	}
+
+	// 报告会随导出接口外发，绝不能带上样本数据值
+	if strings.Contains(string(data), `"preview"`) {
+		t.Fatalf("report leaked a preview: %s", data)
+	}
+	// metrics.csv 的结构信息本身应该在树里
+	if !strings.Contains(string(data), "metrics.csv") {
+		t.Fatalf("report tree missing metrics.csv: %s", data)
+	}
+
+	// 同一份内容也要落盘到训练报告文件中
+	onDisk, err := os.ReadFile(filepath.Join(resultDir, "training_report.json"))
+	if err != nil {
+		t.Fatalf("read training_report.json: %v", err)
+	}
+	if !strings.Contains(string(onDisk), `"result_files"`) {
+		t.Fatalf("training_report.json missing result_files: %s", onDisk)
+	}
+}
+
+func TestBuildAndSaveTrainingReportOmitsResultFilesWhenScanFails(t *testing.T) {
+	resultDir := t.TempDir()
+	modelDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(modelDir, "model.bin"), []byte("test-model"), 0o644); err != nil {
+		t.Fatalf("write model file: %v", err)
+	}
+	// 结果目录不可读，结构树扫描必然失败
+	missing := filepath.Join(resultDir, "gone")
+
+	state := &TAAState{
+		Security: SecurityConfig{ModelDir: modelDir},
+		Logs:     NewLogStore(64),
+	}
+
+	data, err := state.buildAndSaveTrainingReport("task-123", time.Now().Add(-time.Second), time.Now(), "succeeded", 0, "", nil, false, missing)
+	if err != nil {
+		t.Fatalf("buildAndSaveTrainingReport should tolerate a failed tree scan: %v", err)
+	}
+
+	var report map[string]any
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if _, ok := report["result_files"]; ok {
+		t.Fatalf("result_files should be omitted when the scan fails: %v", report)
+	}
+}
+
+func TestBuildResourceInfoJSONIncludesPreview(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, "users.csv"), []byte("user_id,name\n1,alice\n2,bob\n"), 0o644); err != nil {
+		t.Fatalf("write users.csv: %v", err)
+	}
+
+	out, err := buildResourceInfoJSON(dataDir, "")
+	if err != nil {
+		t.Fatalf("buildResourceInfoJSON: %v", err)
+	}
+	if !strings.Contains(out, `"preview"`) {
+		t.Fatalf("getResourceInfo output missing preview: %s", out)
+	}
+
+	var payload struct {
+		Tree struct {
+			Children []struct {
+				Name    string                        `json:"name"`
+				Fields  []struct{ Name, Type string } `json:"fields"`
+				Preview [][]any                       `json:"preview"`
+			} `json:"children"`
+		} `json:"tree"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("unmarshal resource info: %v", err)
+	}
+	if len(payload.Tree.Children) != 1 {
+		t.Fatalf("tree children = %d, want 1", len(payload.Tree.Children))
+	}
+	csv := payload.Tree.Children[0]
+	if csv.Name != "users.csv" {
+		t.Fatalf("child name = %q, want %q", csv.Name, "users.csv")
+	}
+	if len(csv.Preview) != 2 {
+		t.Fatalf("preview rows = %d, want 2", len(csv.Preview))
+	}
+	// 预览行按位置对齐 fields，不带列名
+	if len(csv.Fields) != 2 || csv.Fields[0].Name != "user_id" || csv.Fields[1].Name != "name" {
+		t.Fatalf("fields = %#v, want user_id,name", csv.Fields)
+	}
+	if first := csv.Preview[0]; len(first) != 2 || first[0] != "1" || first[1] != "alice" {
+		t.Fatalf("first preview row = %#v, want [1 alice]", first)
 	}
 }

@@ -172,7 +172,24 @@ func reconcileCrashRecovery(ctx context.Context, state *controller.TAAState, sto
 	finishedAt := time.Now().UTC()
 	failureReason := "TAA 异常崩溃重启，执行已被安全终止 (Process Interrupted by Crash)"
 
+	// 报告应保存至黑匣子归档目录（若存在），否则保存至 ResultDir
+	targetReportDir := archivedResultDir
+	if targetReportDir == "" {
+		targetReportDir = activeTask.ResultDir
+	}
+	if targetReportDir == "" && state != nil && state.Security.ResultDir != "" {
+		targetReportDir = state.Security.ResultDir
+	}
+
 	reportMap, err := controller.BuildCrashFailureReport(activeTask.TaskID, startedAt, finishedAt, failureReason, modelChecksum, dataChecksum)
+	if err == nil && reportMap != nil {
+		// 与正常路径一致：结果目录结构树是附加证据，扫描失败只省略该字段。
+		if resultFiles, treeErr := controller.BuildResultFilesTree(targetReportDir); treeErr != nil {
+			log.Printf("WARNING: build result_files for crash report failed: %v", treeErr)
+		} else if resultFiles != nil {
+			reportMap["result_files"] = resultFiles
+		}
+	}
 	var reportJSON string
 	if err == nil && reportMap != nil {
 		if b, mErr := json.Marshal(reportMap); mErr == nil {
@@ -182,15 +199,6 @@ func reconcileCrashRecovery(ctx context.Context, state *controller.TAAState, sto
 	if reportJSON == "" {
 		reportJSON = fmt.Sprintf(`{"schema_version":"1.0","training_task":{"task_id":%q,"status":"failed","exit_code":137,"failure_reason":%q}}`,
 			activeTask.TaskID, failureReason)
-	}
-
-	// 报告应保存至黑匣子归档目录（若存在），否则保存至 ResultDir
-	targetReportDir := archivedResultDir
-	if targetReportDir == "" {
-		targetReportDir = activeTask.ResultDir
-	}
-	if targetReportDir == "" && state != nil && state.Security.ResultDir != "" {
-		targetReportDir = state.Security.ResultDir
 	}
 
 	if targetReportDir != "" && reportMap != nil {
