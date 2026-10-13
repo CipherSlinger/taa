@@ -734,7 +734,8 @@
           <ol class="plain">
             <li><strong>输入目录只读。</strong>不得在 <code>/opt/taa/input</code> 下创建、修改或删除任何文件，包括缓存与临时文件。</li>
             <li><strong>产物集中在 <code>result/</code>。</strong><code>log/</code> 与 <code>progress/</code> 只是旁路通道；需要交付的文件一律放
-              <code>result/</code>。</li>
+              <code>result/</code>。
+            </li>
             <li><strong>不要写相对路径。</strong>进程的工作目录是你的源码目录，相对路径会落到代码目录而不是产物目录。</li>
           </ol>
         </section>
@@ -750,7 +751,8 @@
 
           <ul class="plain">
             <li>消息字段取 <code>message</code>，也接受 <code>msg</code>；时间字段取 <code>timestamp</code>，也接受
-              <code>time</code>、<code>ts</code>。</li>
+              <code>time</code>、<code>ts</code>。
+            </li>
             <li>时间戳可选；写了会显示为日志前缀。</li>
             <li>也接受不含 JSON 的纯文本行；未识别的字段会被忽略，可以按需增加。</li>
           </ul>
@@ -826,17 +828,6 @@
           </div>
 
           <p>整个文件只会被读取这两个字段，其余字段一律忽略：写了不报错，但不会展示、也不会被使用。进度之外的信息请写进日志。</p>
-
-          <p>必须遵守：</p>
-          <ul class="rules">
-            <li><span class="mark">01</span><span><strong>原子写入。</strong>先写同目录下的临时文件，<code>fsync</code>，再
-                <code>os.replace</code> 覆盖。直接覆盖写会让读取方读到半截 JSON。</span></li>
-            <li><span class="mark">02</span><span><strong>只在有变化时写。</strong>只有 <code>(percent, timestamp)</code>
-                这一对与上次不同时才会被采用，重复写同样的值没有意义。</span></li>
-            <li><span class="mark">03</span><span><strong>建议节流。</strong>每个 batch 都落盘会拖慢训练；典型策略是距上次写入超过 0.2 秒、或进度变化超过
-                0.0001% 才写，关键里程碑强制写一次。</span></li>
-            <li><span class="mark">04</span><span><strong>建议单调不回退。</strong>进度回退会让进度条来回跳。</span></li>
-          </ul>
 
           <h3>参考实现</h3>
           <pre><span class="k">import</span> json, os, time
@@ -936,19 +927,13 @@
 
           <ul class="plain">
             <li><code>training_task.metrics</code> 与 <code>dataset</code> 是实际被采集的两块内容，指标键名自定。</li>
-            <li><strong>无需填写</strong>
-              <code>task_id</code>、<code>started_at</code>、<code>finished_at</code>、<code>duration_seconds</code>、<code>status</code>、<code>exit_code</code>、<code>failure_reason</code>：这些由运行侧统一填写，你写了也会被覆盖。
-            </li>
-            <li><code>dataset</code> 中不要使用 <code>data_structure</code> 字段。</li>
-            <li>文件缺失不会导致任务失败，但报告里就没有你的指标。<strong>无论成功失败都应尽量写出该文件。</strong></li>
+            <li>文件缺失不会导致任务失败，但报告里就没有对应指标。<strong>无论成功失败都应尽量写出该文件。</strong></li>
           </ul>
 
           <pre>result_path = OUTPUT_DIR / <span class="s">"training_result.json"</span>
 <span class="k">with</span> open(result_path, <span class="s">"w"</span>, encoding=<span class="s">"utf-8"</span>) <span class="k">as</span> f:
     json.dump(training_result, f, indent=2, ensure_ascii=<span class="k">False</span>)
     f.write(<span class="s">"\n"</span>)</pre>
-
-          <p>阶段 2（测试）另需在 <code>result/</code> 下产出评测明细表，按约定命名 <code>test_result.xlsx</code>；文件名与列结构由模型方与平台约定。</p>
         </section>
 
         <!-- 05 -->
@@ -977,7 +962,8 @@
                 </tr>
                 <tr>
                   <td>任何网络外联（<code>socket</code> / <code>requests</code> / <code>urllib</code> / <code>httpx</code> /
-                    <code>aiohttp</code>）</td>
+                    <code>aiohttp</code>）
+                  </td>
                   <td>代码审计红线，导入阶段即被阻断</td>
                 </tr>
                 <tr>
@@ -998,7 +984,7 @@
           <h2><span class="num">06</span><span>上线前检查清单</span></h2>
           <ul class="checklist">
             <li><span class="box"></span><span>输入目录只读，代码中没有任何指向 <code>/opt/taa/input</code> 的写操作</span></li>
-            <li><span class="box"></span><span>所有需要交付的文件都写在 <code>/opt/taa/output/result/</code> 下，没有散落在别处</span></li>
+            <li><span class="box"></span><span>所有需要交付导出的文件都写在 <code>/opt/taa/output/result/</code> 下，没有散落在别处</span></li>
             <li><span class="box"></span><span>路径按上述绝对路径书写，没有写成相对路径</span></li>
             <li><span class="box"></span><span>日志写在 <code>/opt/taa/output/log/</code>，每行以换行符结尾，只追加不重写</span></li>
             <li><span class="box"></span><span>进度原子写入
