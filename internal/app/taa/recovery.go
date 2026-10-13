@@ -181,15 +181,7 @@ func reconcileCrashRecovery(ctx context.Context, state *controller.TAAState, sto
 		targetReportDir = state.Security.ResultDir
 	}
 
-	reportMap, err := controller.BuildCrashFailureReport(activeTask.TaskID, startedAt, finishedAt, failureReason, modelChecksum, dataChecksum)
-	if err == nil && reportMap != nil {
-		// 与正常路径一致：结果目录结构树是附加证据，扫描失败只省略该字段。
-		if resultFiles, treeErr := controller.BuildResultFilesTree(targetReportDir); treeErr != nil {
-			log.Printf("WARNING: build result_files for crash report failed: %v", treeErr)
-		} else if resultFiles != nil {
-			reportMap["result_files"] = resultFiles
-		}
-	}
+	reportMap, err := controller.BuildCrashFailureReport(activeTask.TaskID, startedAt, finishedAt, failureReason, modelChecksum, dataChecksum, targetReportDir)
 	var reportJSON string
 	if err == nil && reportMap != nil {
 		if b, mErr := json.Marshal(reportMap); mErr == nil {

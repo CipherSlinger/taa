@@ -305,6 +305,44 @@ func TestBuildAndSaveTrainingReportOmitsResultFilesWhenScanFails(t *testing.T) {
 	}
 }
 
+func TestBuildCrashFailureReportCarriesResultFiles(t *testing.T) {
+	resultDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(resultDir, "train.log"), []byte("epoch 1\n"), 0o644); err != nil {
+		t.Fatalf("write train.log: %v", err)
+	}
+	startedAt := time.Now().Add(-time.Minute)
+	finishedAt := time.Now()
+
+	// 崩溃自愈与异步 panic 都走这个入口；它们产出的报告必须与正常路径同构
+	report, err := BuildCrashFailureReport("task-crash-1", startedAt, finishedAt, "boom", nil, nil, resultDir)
+	if err != nil {
+		t.Fatalf("BuildCrashFailureReport: %v", err)
+	}
+	resultFiles, ok := report["result_files"].(map[string]any)
+	if !ok {
+		t.Fatalf("crash report missing result_files: %v", report)
+	}
+	if got := resultFiles["total_files"]; got != 1 {
+		t.Fatalf("result_files.total_files = %v, want 1", got)
+	}
+
+	// 报告会随导出接口外发，绝不能带上样本数据值
+	if data, mErr := json.Marshal(report); mErr != nil {
+		t.Fatalf("marshal crash report: %v", mErr)
+	} else if strings.Contains(string(data), `"preview"`) {
+		t.Fatalf("crash report leaked a preview: %s", data)
+	}
+
+	// 没有结果目录时（例如崩溃发生在目录创建前）报告照常产出，只是不带该字段
+	bare, err := BuildCrashFailureReport("task-crash-2", startedAt, finishedAt, "boom", nil, nil, "")
+	if err != nil {
+		t.Fatalf("BuildCrashFailureReport without resultDir: %v", err)
+	}
+	if _, ok := bare["result_files"]; ok {
+		t.Fatalf("result_files should be omitted without a result dir: %v", bare)
+	}
+}
+
 func TestBuildResourceInfoJSONIncludesPreview(t *testing.T) {
 	dataDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dataDir, "users.csv"), []byte("user_id,name\n1,alice\n2,bob\n"), 0o644); err != nil {

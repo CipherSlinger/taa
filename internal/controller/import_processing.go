@@ -962,11 +962,8 @@ func (s *TAAState) buildAndSaveTrainingReport(taskID string, startedAt, finished
 	if err != nil {
 		return nil, err
 	}
-	// 结果目录结构树是附加证据，扫描失败不能拖垮整份报告，缺了就省略该字段。
-	if resultFiles, treeErr := BuildResultFilesTree(resultDir); treeErr != nil {
-		s.Logs.Add(LogWarn, "report", "生成结果目录结构树失败，报告中省略 result_files: %v", treeErr)
-	} else if resultFiles != nil {
-		report["result_files"] = resultFiles
+	if err := AttachResultFiles(report, resultDir); err != nil {
+		s.Logs.Add(LogWarn, "report", "生成结果目录结构树失败，报告中省略 result_files: %v", err)
 	}
 	if err := writeJSONFile(filepath.Join(resultDir, "training_report.json"), report); err != nil {
 		return nil, err
@@ -996,9 +993,17 @@ func loadTrainingResult(path string) (map[string]any, error) {
 	return result, nil
 }
 
-// BuildCrashFailureReport 构造崩溃/异常自愈场景下的标准 Schema 1.0 失败报告
-func BuildCrashFailureReport(taskID string, startedAt, finishedAt time.Time, failureReason string, modelChecksum, dataChecksum map[string]any) (map[string]any, error) {
-	return runtime.BuildCrashFailureReport(taskID, startedAt, finishedAt, failureReason, modelChecksum, dataChecksum)
+// BuildCrashFailureReport 构造崩溃/异常自愈场景下的标准 Schema 1.0 失败报告。
+// resultDir 非空时附上结果目录结构树，与正常完成路径的报告结构保持一致。
+func BuildCrashFailureReport(taskID string, startedAt, finishedAt time.Time, failureReason string, modelChecksum, dataChecksum map[string]any, resultDir string) (map[string]any, error) {
+	report, err := runtime.BuildCrashFailureReport(taskID, startedAt, finishedAt, failureReason, modelChecksum, dataChecksum)
+	if err != nil {
+		return nil, err
+	}
+	if attachErr := AttachResultFiles(report, resultDir); attachErr != nil {
+		log.Printf("WARNING: build result_files for crash report failed: %v", attachErr)
+	}
+	return report, nil
 }
 
 func buildTrainingReport(taskID string, startedAt, finishedAt time.Time, status string, exitCode int, failureReason string, modelChecksum map[string]any, dataChecksum map[string]any, trainingResult map[string]any, audit *codeaudit.AuditReport, includeAudit bool) (map[string]any, error) {

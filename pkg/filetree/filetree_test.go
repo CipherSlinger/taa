@@ -558,4 +558,16 @@ func TestReportChecksum(t *testing.T) {
 	if repExplicit.Checksum == nil || repExplicit.Checksum.Value != "custom-sm3-hash" {
 		t.Fatalf("explicit checksum = %#v", repExplicit.Checksum)
 	}
+
+	// 4. SkipChecksum：不计算校验和，但目录结构照常扫描
+	repSkipped, err := BuildReport(root, Options{SkipChecksum: true})
+	if err != nil {
+		t.Fatalf("BuildReport with SkipChecksum failed: %v", err)
+	}
+	if repSkipped.Checksum != nil {
+		t.Fatalf("SkipChecksum should leave Checksum nil, got %#v", repSkipped.Checksum)
+	}
+	if repSkipped.TotalFiles != 2 || repSkipped.Tree == nil {
+		t.Fatalf("SkipChecksum must not skip the scan: files=%d tree=%v", repSkipped.TotalFiles, repSkipped.Tree)
+	}
 }

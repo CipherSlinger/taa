@@ -932,7 +932,7 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 	// 2. 构建规约 11 标准崩溃失败报告 (exit_code: 137, status: "failed")
 	finishedAt := time.Now().UTC()
 	failureReason := fmt.Sprintf("%s 发生异常 panic: %s", name, panicMsg)
-	reportMap, err := BuildCrashFailureReport(taskID, startedAt, finishedAt, failureReason, modelChecksum, dataChecksum)
+	reportMap, err := BuildCrashFailureReport(taskID, startedAt, finishedAt, failureReason, modelChecksum, dataChecksum, resultDir)
 	var reportJSON string
 	if err == nil {
 		if b, mErr := json.Marshal(reportMap); mErr == nil {

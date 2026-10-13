@@ -119,7 +119,11 @@ type Options struct {
 	MaxFiles      int
 	MaxParseBytes int64
 	ArchivePath   string        // 可选：明文压缩包路径；若提供，优先计算该归档包的 SM3 校验和（与 import 接口逻辑一致）
-	Checksum      *ChecksumInfo // 可选：直接注入的校验和信���
+	Checksum      *ChecksumInfo // 可选：直接注入的校验和信息
+	// SkipChecksum 可选：不计算任何校验和，Report.Checksum 保持 nil。默认关闭——
+	// 既没给 Checksum 也没给 ArchivePath 时，BuildReport 会回落到整目录 SM3 重读，
+	// 只取目录结构的调用方（如训练报告的 result_files，那里不序列化 checksum）应打开它。
+	SkipChecksum bool
 	// IncludePreview 可选：为表格类文件生成前 PreviewRows 行预览。默认关闭——
 	// 预览会把真实数据值带进输出，只有一次性应答（如 getResourceInfo）才应打开它；
 	// 报告类产物会落盘并随导出接口外发，必须保持关闭。
@@ -252,15 +256,16 @@ func BuildReport(root string, opts Options) (*Report, error) {
 	sort.Slice(formats, func(i, j int) bool { return formats[i].Count > formats[j].Count })
 
 	var checksum *ChecksumInfo
-	if opts.Checksum != nil {
+	switch {
+	case opts.Checksum != nil:
 		checksum = opts.Checksum
-	} else if opts.ArchivePath != "" {
+	case opts.ArchivePath != "":
 		c, err := computeFileSM3(opts.ArchivePath)
 		if err != nil {
 			return nil, fmt.Errorf("计算归档包 SM3 校验和失败: %w", err)
 		}
 		checksum = c
-	} else {
+	case !opts.SkipChecksum:
 		c, err := computeDirectorySM3(abs)
 		if err == nil {
 			checksum = c
@@ -659,28 +664,38 @@ func inferTextType(s string) string {
 	return "str"
 }
 
-func decodeJSONObject(dec *json.Decoder) ([]string, map[string]*typeState, error) {
+// decodeJSONObject 遍历单个 JSON 对象的键值，汇总字段顺序与类型。collect 为真时
+// 一并返回解码出的键值，供调用方在字段顺序确定后回填预览——值本来就要解出来判类型，
+// 顺带留下即可，不必为同一元素再解一遍。
+func decodeJSONObject(dec *json.Decoder, collect bool) ([]string, map[string]*typeState, map[string]any, error) {
 	order := make([]string, 0)
 	states := map[string]*typeState{}
+	var obj map[string]any
+	if collect {
+		obj = make(map[string]any)
+	}
 	for dec.More() {
 		tok, err := dec.Token()
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		key, ok := tok.(string)
 		if !ok {
-			return nil, nil, fmt.Errorf("JSON 对象键错误")
+			return nil, nil, nil, fmt.Errorf("JSON 对象键错误")
 		}
 		var val interface{}
 		if err := dec.Decode(&val); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if _, exists := states[key]; !exists {
 			order = append(order, key)
 		}
 		updateTypeState(states, key, inferJSONValueType(val))
+		if obj != nil {
+			obj[key] = val
+		}
 	}
-	return order, states, nil
+	return order, states, obj, nil
 }
 
 func mergeFieldSets(dstOrder *[]string, dstStates map[string]*typeState, srcOrder []string, srcStates map[string]*typeState) {
@@ -713,27 +728,24 @@ func decodeJSONArray(dec *json.Decoder, withPreview bool) ([]map[string]any, []s
 		if len(raw) == 0 || raw[0] != '{' {
 			continue
 		}
-		if withPreview && len(samples) < PreviewRows {
-			if obj, objErr := decodeJSONObjectValue(raw); objErr == nil && obj != nil {
-				samples = append(samples, obj)
-			}
-		}
 		nested := json.NewDecoder(bytes.NewReader(raw))
 		nested.UseNumber()
 		tok, err := nested.Token()
 		if err != nil {
 			return nil, nil, nil, 0, err
 		}
-		delim, ok := tok.(json.Delim)
-		if !ok || delim != '{' {
+		if delim, ok := tok.(json.Delim); !ok || delim != '{' {
 			continue
 		}
-		srcOrder, srcStates, err := decodeJSONObject(nested)
+		srcOrder, srcStates, obj, err := decodeJSONObject(nested, withPreview && len(samples) < PreviewRows)
 		if err != nil {
 			return nil, nil, nil, 0, err
 		}
 		if _, err := nested.Token(); err != nil {
 			return nil, nil, nil, 0, err
+		}
+		if obj != nil {
+			samples = append(samples, obj)
 		}
 		mergeFieldSets(&order, states, srcOrder, srcStates)
 	}
@@ -856,9 +868,6 @@ func buildObjectPreview(objs []map[string]any, fields []Field) [][]any {
 		}
 		out = append(out, buildPreviewRow(cells, len(fields)))
 	}
-	if len(out) == 0 {
-		return nil
-	}
 	return out
 }
 
@@ -876,20 +885,9 @@ func jsonCell(v any) any {
 	}
 }
 
-// decodeJSONObjectValue 解码一行 JSON 对象，数字保留原始字面量。
-func decodeJSONObjectValue(raw []byte) (map[string]any, error) {
-	var obj map[string]any
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	if err := dec.Decode(&obj); err != nil {
-		return nil, err
-	}
-	return obj, nil
-}
-
 // describeFile 解析单个结构化文件，返回要写进节点的计量信息。
 // 任何 panic/错误都兜底为 Warning，不中断整体扫描。
-func describeFile(path, format string, size int64, n *Node, preview bool, warn func(string)) {
+func describeFile(path, format string, size int64, n *Node, withPreview bool, warn func(string)) {
 	defer func() {
 		if r := recover(); r != nil {
 			n.Warning = fmt.Sprintf("解析异常: %v", r)
@@ -899,15 +897,15 @@ func describeFile(path, format string, size int64, n *Node, preview bool, warn f
 	var err error
 	switch format {
 	case "csv":
-		err = describeCSV(path, n, preview)
+		err = describeCSV(path, n, withPreview)
 	case "json":
-		err = describeJSON(path, n, preview)
+		err = describeJSON(path, n, withPreview)
 	case "jsonl":
-		err = describeJSONL(path, n, preview)
+		err = describeJSONL(path, n, withPreview)
 	case "xlsx":
-		err = describeXLSX(path, n, preview)
+		err = describeXLSX(path, n, withPreview)
 	case "sqlite":
-		err = describeSQLite(path, n, preview)
+		err = describeSQLite(path, n, withPreview)
 	case "parquet":
 		// 这里只读元数据（列定义与行数），没有行读取路径，因此不产生预览。
 		err = describeParquet(path, n)
@@ -1048,7 +1046,7 @@ func describeJSON(path string, n *Node, withPreview bool) error {
 	}
 	switch delim {
 	case '{':
-		fields, states, err := decodeJSONObject(dec)
+		fields, states, _, err := decodeJSONObject(dec, false)
 		if err != nil {
 			return err
 		}
@@ -1089,30 +1087,27 @@ func describeJSONL(path string, n *Node, withPreview bool) error {
 	order := make([]string, 0)
 	states := map[string]*typeState{}
 	docs := int64(0)
-	// 前 PreviewRows 行的原始对象另存一份，等字段顺序最终确定后再摊平成预览行。
-	// 只有这几行会被二次解码，代价可忽略。
+	// 前 PreviewRows 行的对象在解析时顺手留下，等字段顺序最终确定后再摊平成预览行。
 	samples := make([]map[string]any, 0, PreviewRows)
 	for {
 		s, err := br.ReadString('\n')
 		s = strings.TrimSpace(strings.TrimRight(s, "\r\n"))
 		if s != "" {
 			docs++
-			if withPreview && len(samples) < PreviewRows {
-				if obj, objErr := decodeJSONObjectValue([]byte(s)); objErr == nil && obj != nil {
-					samples = append(samples, obj)
-				}
-			}
 			nested := json.NewDecoder(strings.NewReader(s))
 			nested.UseNumber()
 			tok, tokErr := nested.Token()
 			if tokErr == nil {
 				if delim, ok := tok.(json.Delim); ok && delim == '{' {
-					srcOrder, srcStates, decErr := decodeJSONObject(nested)
+					srcOrder, srcStates, obj, decErr := decodeJSONObject(nested, withPreview && len(samples) < PreviewRows)
 					if decErr != nil {
 						return decErr
 					}
 					if _, endErr := nested.Token(); endErr != nil {
 						return endErr
+					}
+					if obj != nil {
+						samples = append(samples, obj)
 					}
 					mergeFieldSets(&order, states, srcOrder, srcStates)
 				} else {
