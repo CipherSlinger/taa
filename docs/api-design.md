@@ -810,10 +810,11 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `resourceUrl` | `string` | 是 | 资源下载地址 |
-| `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空 |
-| `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空 |
-| `publicKey` | `string` | 否 | SM2 公钥 PEM，用于资源解密和结果导出 |
+| `resourceUrl` | `string` | 是 | 数据资源下载地址 |
+| `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空；同一 `requestId` 不能重复导入 |
+| `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空；同一 `taskId` 不能重复导入 |
+| `publicKey` | `string` | 否 | 结构上接受，但本接口不使用：资源解封使用 TAA 自身的 SM2 私钥；结果导出用的平台公钥由 `/v1/taa/importModel`（phase 1）保存 |
+| `runtimeConfig` | `string` | 否 | 运行配置 JSON 字符串，非空时覆盖已保存的配置 |
 
 **请求示例**：
 
@@ -822,13 +823,110 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
   "resourceUrl": "xx",
   "requestId": "xx",
   "taskId": "xxx",
-  "publicKey": "xx"
+  "publicKey": "xx",
+  "runtimeConfig": "{\"commands\":[\"python3 train.py\"]}"
 }
 ```
 
 **响应内容类型**：`application/json`
 
 **响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，该接口成功时 `result` 为 `null`。
+
+**执行规则**：
+
+1. 本接口是**触发训练的唯一入口**。资源接收后异步执行：下载 → 解密 → 解压入库 → 上报导入索引。
+2. 数据入库完成后检查训练前置条件——模型已导入（`ModelImported=true`）、无模型导入在飞、无其他训练在飞、`runtimeConfig` 及其 `commands` 有效。全部满足才执行训练。
+3. 条件不满足时的处理：
+   - 模型尚未导入、模型仍在导入传输中、已有训练在飞：本次数据仅入库、不训练，TAA 只记日志，不另行上报；训练由后续数据下发重新触发。
+   - `runtimeConfig` 为空、解析失败或 `commands` 为空：回滚本次导入索引，并通过 `/v1/taa/reportRes` 上报一条训练失败结果。
+4. 训练结果（成功或失败）统一通过 `/v1/taa/reportRes` 上报。
+
+**成功响应示例**（200 OK，资源已接收并开始异步下载处理）：
+
+```jsonc
+{
+  "msg": "数据已接收，训练结果将通过 reportRes 上报",
+  "result": null,
+  "error": 0
+}
+```
+
+> 收到该响应只表示资源已接收，此后的解密、解压与训练结果是否产生均通过回调体现。
+
+**验证失败响应示例**（400 Bad Request）：
+
+```jsonc
+{
+  "msg": "resourceUrl 不能为空",
+  "result": null,
+  "error": 400
+}
+```
+
+其余 400 场景：`requestId` 和 `taskId` 同时为空；`requestId` 或 `taskId` 已存在或正在处理中。
+
+**并发冲突响应示例**（409 Conflict）：
+
+```jsonc
+{
+  "msg": "当前已有训练任务正在执行中 (taskId: task-001, op: training)，请等待完成后再提交",
+  "result": null,
+  "error": 409
+}
+```
+
+其余 409 场景：已有其他任务正在下载或解密（`当前已有任务正在执行中`）。模型代码审计与训练解耦，审计进行中**不阻止**数据下发。
+
+**失败响应示例**（500 Internal Server Error）：
+
+```jsonc
+{
+  "msg": "下载资源失败: HTTP 404",
+  "result": null,
+  "error": 500
+}
+```
+
+其余 500 场景：加载导入索引失败。
+
+### 4.3 下发模型资源（/v1/taa/importModel）
+
+**请求**：`POST /v1/taa/importModel`
+
+**请求内容类型**：`application/json`
+
+**参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `resourceUrl` | `string` | 否* | 模型资源下载地址；为空时表示只更新 `runtimeConfig` 并复用已导入的模型，此时此前必须已导入过模型 |
+| `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空 |
+| `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空 |
+| `publicKey` | `string` | 否 | 平台侧 SM2 公钥 PEM，供 phase 3 导出结果加密使用；仅 phase 1 且请求携带时校验并保存，已保存过则保留首个公钥。资源解封使用 TAA 自身私钥，与此参数无关 |
+| `runtimeConfig` | `string` | 否 | 运行配置 JSON 字符串（`{"commands":[...]}`）；非空即覆盖已保存的配置，与 `resourceUrl` 是否为空无关 |
+
+**请求示例**：
+
+```jsonc
+{
+  "resourceUrl": "xx",
+  "requestId": "xx",
+  "taskId": "xxx",
+  "publicKey": "xx",
+  "runtimeConfig": "{\"commands\":[\"python3 train.py\"]}"
+}
+```
+
+**响应内容类型**：`application/json`
+
+**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，该接口成功时 `result` 为 `null`；导入结果与审计结论分别通过 `/v1/taa/reportModelImport`、`/v1/taa/reportAudit` 异步上报，不在本响应中返回。
+
+**执行规则**：
+
+1. `resourceUrl` 非空：下载 → 解密 → 计算原始压缩包 SM3 → 解压到模型目录 → **立即**上报 `/v1/taa/reportModelImport`（code=0，携带 SM3）→ 记录 `ModelImported` 与待决审计标记（同一次落盘）→ 后台异步启动代码安全审计。
+2. `resourceUrl` 为空：仅更新 `runtimeConfig` 并置 `ModelImported=true`，不下载、不审计。
+3. **本接口不触发训练**：训练由数据下发（`/v1/taa/import`）拉起，模型导入完成后等待数据下发。
+4. 模型包与其依赖库始终保持上传原样：审计只读、只判、只报，任何结论都不删除、不改写模型目录。
 
 **成功响应示例**（200 OK，`resourceUrl` 非空：资源已接收并开始异步下载处理）：
 
@@ -885,7 +983,6 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
   "error": 500
 }
 ```
-
 
 > **加密格式说明**：与 `/v1/taa/import` 相同。
 
