@@ -2847,9 +2847,8 @@
         </div>
         <div class="summary-item">
           <b>依据</b>
-          <p>结合
-            `qwen-audit-implementation-design.md`、`audit-rules-design.md`、`audit-prompt-matrix.md`、`audit-evaluation-results-template.md`
-            与 `audit-eval-iteration-log.md` 的已有结论。</p>
+          <p>以仓库内已落地的审计实现（规则表、提示词契约、门禁判据、二进制通道的实际取值）与本文档第 5、6 节的
+            Audit-100 基准实测数据为依据，结论在本文档内自洽给出。</p>
         </div>
       </div>
     </div>
@@ -5937,7 +5936,7 @@ type Finding struct {
       <div class="footer" style="margin-top: 24px;">
         文档定位：独立技术设计稿 · 同时承载 TAA 审计闭环、benchmark 设计与实测结果。
         <div class="footnotes">
-          <div class="note"><b>写作原则：</b>工程事实优先，判断结论明确，所有推荐都能回指到现有文档依据。</div>
+          <div class="note"><b>写作原则：</b>工程事实优先，判断结论明确，所有结论与推荐都在本文档内给出依据，不引用外部文档。</div>
           <div class="note"><b>设计判断：</b>当前链路是“足够正确但还不够可治理”，补齐治理层后就能稳定承载后续迭代。</div>
         </div>
       </div>
