@@ -531,10 +531,15 @@ func buildSummaryTextExt(stats AuditStatistics, riskLevel string, passed bool, l
 		// exact report the conclusion refuses. This branch therefore has to read
 		// passed, or the summary asserts a pass on the report the conclusion is
 		// refusing. The text names no specific cause because passed is false for
-		// many of them at once - an incomplete scan, findings dropped at the cap,
-		// a parser failure, files skipped by extension, a subprocess that exited
-		// non-zero, a binary pass that could not run - and this function is not
-		// told which one applies.
+		// many of them at once - an incomplete scan, a parser failure, files
+		// skipped by extension, a subprocess that exited non-zero, a binary pass
+		// that could not run - and this function is not told which one applies.
+		// Truncated is deliberately not in that list: it is set only when the
+		// source arm's finding cap drops findings, which requires a non-zero
+		// total and so cannot be the reason on this branch. The binary arm's own
+		// cap is excluded from the verdict entirely (ProvesCleanScan reads the
+		// binary gaps, not FindingsCapped) and drops only LOW findings, which do
+		// not block under either policy.
 		if !passed {
 			return "审计未覆盖全部内容或存在未决项，不得判定为通过，禁止导入"
 		}
