@@ -122,7 +122,8 @@ paths:
       responses:
         '200':
           description: >-
-            请求已受理，result 恒为 null；解密、解压与训练结果均通过 /v1/taa/reportRes 异步回传。
+            请求已受理，result 恒为 null。资源下载在响应返回前同步完成（下载失败返回 500）；
+            此后的解密、解压与训练结果均通过 /v1/taa/reportRes 异步回传。
           content:
             application/json:
               schema:
@@ -186,15 +187,16 @@ paths:
       responses:
         '200':
           description: >-
-            请求已受理。result 恒为 null；模型导入结果通过 /v1/taa/reportModelImport 异步回传，
-            代码审计结论通过 /v1/taa/reportAudit 异步回传。
+            请求已受理。result 恒为 null。资源下载在响应返回前同步完成（下载失败返回 500）；
+            模型导入结果通过 /v1/taa/reportModelImport 异步回传，代码审计结论通过
+            /v1/taa/reportAudit 异步回传。
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiResponse'
               examples:
                 resourceAccepted:
-                  summary: resourceUrl 非空，资源已接收并开始异步下载处理
+                  summary: resourceUrl 非空，资源已下载完成，解密、解压与审计随后异步执行
                   value:
                     msg: "模型已接收，训练结果将通过 reportRes 上报"
                     result: null
