@@ -1686,8 +1686,17 @@ func atoiSafe(s string) int {
 // file raises maxFullScanBytes rather than being silently exempted.
 func streamWithSizeSwitch(path string, set *EvidenceSet, cfg BinaryConfig) error {
 	if set.Size > cfg.MaxFullScanBytes {
-		set.markStructural(fmt.Sprintf("file is %d bytes, above MaxFullScanBytes %d: only the head and tail %d bytes were read",
-			set.Size, cfg.MaxFullScanBytes, cfg.HeadTailBytes))
+		// The bound is recorded only when the two windows actually leave a middle
+		// unread. On size alone it would fire for a file the windows cover end to
+		// end, and the reason below would say "only the head and tail were read"
+		// about a file that was read whole - which the report then carries into a
+		// refusal, since a structural bound on an executable kind withholds the
+		// pass. Reachable as soon as a deployment lowers MaxFullScanBytes below
+		// twice HeadTailBytes, and the configuration exposes that knob.
+		if set.Size > 2*cfg.HeadTailBytes {
+			set.markStructural(fmt.Sprintf("file is %d bytes, above MaxFullScanBytes %d: only the head and tail %d bytes were read",
+				set.Size, cfg.MaxFullScanBytes, cfg.HeadTailBytes))
+		}
 		return streamHeadAndTail(path, set, cfg)
 	}
 	return streamEvidence(path, set, cfg, cfg.MaxStreamBytes)

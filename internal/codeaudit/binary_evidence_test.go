@@ -1557,8 +1557,63 @@ func TestStreamWithSizeSwitchWindowsAFileAboveTheFullScanBudget(t *testing.T) {
 	}
 }
 
-// zipFixture builds a zip in memory, so the container tests state their members
-// rather than depending on a committed archive.
+// TestStreamWithSizeSwitchRecordsNoBoundWhenTheWindowsCoverTheFile pins the
+// other half of the switch: the two windows are taken for any file above
+// MaxFullScanBytes, but they only leave a middle unread when the file is longer
+// than both of them together.
+//
+// The default configuration cannot express the difference - 64 MiB is thirty-two
+// times the 1 MiB window, so every file that takes the branch also has a middle -
+// which is why the threshold and the window are driven from a config here. The
+// reachable case is a deployment that lowers MaxFullScanBytes below twice
+// HeadTailBytes: the file then fits inside the windows, is read in full, and must
+// not be recorded as bounded. Recording it would be worse than a wrong number in
+// a report - a structural bound on an executable kind withholds the pass, so the
+// import would be refused over a file nothing was missed in, with a reason string
+// claiming a middle was skipped.
+func TestStreamWithSizeSwitchRecordsNoBoundWhenTheWindowsCoverTheFile(t *testing.T) {
+	dir := t.TempDir()
+	const fullScan, window = 64, 4096
+	cfg := DefaultBinaryConfig()
+	cfg.MaxFullScanBytes = fullScan
+	cfg.HeadTailBytes = window
+
+	// Above the threshold - so the windows are what read it - and no longer than
+	// the two windows together, so between them they cover every byte.
+	content := make([]byte, 2*window)
+	copy(content, "\x00COVERED_HEAD\x00")
+	copy(content[len(content)-15:], "\x00COVERED_TAIL\x00")
+
+	path := writeTestBytes(t, dir, "covered.bin", content)
+	set := newTestEvidence(path, KindELF)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Size = info.Size()
+	if set.Size <= int64(fullScan) || set.Size > 2*int64(window) {
+		t.Fatalf("fixture is %d bytes, which does not sit in (%d, %d]; the test would not reach the branch it names",
+			set.Size, fullScan, 2*window)
+	}
+
+	if err := streamWithSizeSwitch(path, set, cfg); err != nil {
+		t.Fatalf("streamWithSizeSwitch: %v", err)
+	}
+
+	if set.Bound.Structural {
+		t.Errorf("Bound.Structural = true with reason %q for a file the two windows cover end to end", set.Bound.Reason)
+	}
+	texts := map[string]bool{}
+	for _, l := range set.Lines {
+		texts[l.Text] = true
+	}
+	for _, want := range []string{"COVERED_HEAD", "COVERED_TAIL"} {
+		if !texts[want] {
+			t.Errorf("%q missing from the evidence", want)
+		}
+	}
+}
+
 func zipFixture(t *testing.T, members map[string][]byte, order []string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
