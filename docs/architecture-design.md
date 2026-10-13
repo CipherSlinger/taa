@@ -234,22 +234,23 @@ TAA 作为服务端注册的路由（`internal/controller/router.go`）：
 ```
 Phase 1 (调试)     Phase 2 (测试)     Phase 3 (正式训练)
 ┌──────────┐      ┌──────────┐      ┌──────────────┐
-│ type=1   │  →   │ type=2   │  →   │ type=3       │
+│ phase=1  │  →   │ phase=2  │  →   │ phase=3      │
 │ 模型+代码 │      │ 测试数据  │      │ 训练数据      │
 │ debug.sh │      │ train.sh │      │ train.sh     │
 │ +审计     │      │ +审计    │      │ 无审计        │
 └──────────┘      └──────────┘      └──────────────┘
 ```
 
-> **模型导入与审计的实际位置**：模型代码包由 `/v1/taa/importModel` 单独下发，本节图中的 `type` 与
-> “代码安全审计”属于早期一体化流程。当前实现中，模型导入完成后由后台 goroutine 异步执行代码审计，
-> 审计结论经 `reportAudit` 单独回传平台；**审计与训练并行，不构成训练的前置闸门**，
-> 训练由数据下发（`/v1/taa/import`）在模型已导入且无在飞任务时拉起。详见 `docs/api-design.md` 4.3、3.6 节。
+> **当前阶段由 `/v1/taa/switch` 的 `phase` 决定**，图中的 `phase=N` 指该接口设定并持久化的阶段值；请求体里的历史字段
+> `type` 服务端完全忽略（不解析、不校验、不参与任何分支）。图中的 `debug.sh`/`train.sh` 与“代码安全审计”属于早期一体化流程：
+> 当前实现执行的命令来自模型下发时保存的 `runtimeConfig`。模型代码包由 `/v1/taa/importModel` 单独下发，导入完成后由后台
+> goroutine 异步执行代码审计，审计结论经 `reportAudit` 单独回传平台；**审计与训练并行，不构成训练的前置闸门**，训练由数据
+> 下发（`/v1/taa/import`）在模型已导入且无在飞任务时拉起。详见 `docs/api-design.md` 4.2、4.3、3.6 节。
 
 ### 5.2 导入流程 (`/v1/taa/import`)
 
 ```
-平台发送 import 请求 (resourceUrl, type, taskId, requestId)
+平台发送 import 请求 (resourceUrl, taskId, requestId, runtimeConfig)
                     │
                     ▼
           ┌─── 下载密文文件 ───┐
@@ -265,8 +266,8 @@ Phase 1 (调试)     Phase 2 (测试)     Phase 3 (正式训练)
                    ▼
           ┌─── 解压 ───────────────────────────────────┐
           │  自动检测格式: tar.gz / zip / tar            │
-          │  type=1 → ModelDir  (/opt/taa/models)      │
-          │  type=2,3 → DataDir (/opt/taa/data)        │
+          │  数据 → DataDir (/opt/taa/data)            │
+          │  模型目录仅由 importModel 写入             │
           │  .sh 文件自动 chmod +x                      │
           └────────┬───────────────────────────────────┘
                    ▼
@@ -279,17 +280,17 @@ Phase 1 (调试)     Phase 2 (测试)     Phase 3 (正式训练)
     │  调试模式     │   │           生产模式                   │
     ├─────────────┤   ├────────────────────────────────────┤
     │             │   │                                    │
-    │ 保存调试产物  │   │  Phase 1 (type=1):                 │
+    │ 保存调试产物  │   │  Phase 1:                          │
     │ resultDir/  │   │    执行 debug.sh                    │
     │  debug/     │   │    代码安全审计                      │
     │  <taskId>/  │   │    生成报告 → 上报平台               │
     │  input.bin  │   │                                    │
-    │  manifest   │   │  Phase 2 (type=2):                 │
+    │  manifest   │   │  Phase 2:                          │
     │             │   │    执行 train.sh                    │
     │ 生成模板报告  │   │    代码安全审计                      │
     │ debug_mode  │   │    生成报告 → 上报平台               │
     │  = true     │   │                                    │
-    │             │   │  Phase 3 (type=3):                 │
+    │             │   │  Phase 3:                          │
     │ 上报平台     │   │    执行 train.sh                    │
     │ code=0      │   │    无审计                           │
     │             │   │    生成报告 → 上报平台               │

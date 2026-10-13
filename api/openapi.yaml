@@ -102,7 +102,10 @@ paths:
   /v1/taa/import:
     post:
       summary: 导入数据资源
-      description: 平台向 TAA 下发测试数据（type=2）或正式训练数据（type=3）的密态资源包进行解密和校验。
+      description: >-
+        平台向 TAA 下发测试数据（phase 2）或正式训练数据（phase 3）的密态资源包，TAA 同步接收后异步解密、校验并入库。
+        本接口是触发训练的唯一入口：数据入库后，若模型已导入且当前无在飞训练，立即执行 runtimeConfig 中的命令，
+        训练结果通过 /v1/taa/reportRes 上报。请求中的历史字段 type 被完全忽略。
       tags:
         - 资源流转
       requestBody:
@@ -113,21 +116,51 @@ paths:
               $ref: '#/components/schemas/ImportRequest'
             example:
               resourceUrl: "http://platform.internal/files/encrypted-data.tar.gz.enc"
-              type: 2
               taskId: "task-20260902-001"
               requestId: "req-imp-001"
+              runtimeConfig: '{"commands":["python3 train.py --epochs 10"]}'
       responses:
         '200':
-          description: 资源导入成功
+          description: >-
+            请求已受理，result 恒为 null；解密、解压与训练结果均通过 /v1/taa/reportRes 异步回传。
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiResponse'
               example:
-                msg: "资源导入成功"
-                result:
-                  taskId: "task-20260902-001"
+                msg: "数据已接收，训练结果将通过 reportRes 上报"
+                result: null
                 error: 0
+        '400':
+          description: 参数错误（resourceUrl 为空；requestId/taskId 同时为空；requestId 或 taskId 已存在或正在处理中）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                msg: "resourceUrl 不能为空"
+                result: null
+                error: 400
+        '409':
+          description: 并发冲突（已有训练任务或其他任务正在执行中）。模型代码审计与训练解耦，审计进行中不阻止数据下发
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                msg: "当前已有训练任务正在执行中 (taskId: task-001, op: training)，请等待完成后再提交"
+                result: null
+                error: 409
+        '500':
+          description: 下载资源失败或加载导入索引失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                msg: "下载资源失败: HTTP 404"
+                result: null
+                error: 500
 
   /v1/taa/importModel:
     post:
@@ -571,23 +604,26 @@ components:
       type: object
       required:
         - resourceUrl
-        - type
-        - taskId
-        - requestId
       properties:
         resourceUrl:
           type: string
           description: 加密数据资源的 HTTP(S) 下载地址
         type:
           type: integer
-          enum: [2, 3]
-          description: 资源类型 (2=测试数据, 3=训练数据)
+          deprecated: true
+          description: 历史字段（1=模型, 2=测试数据, 3=训练数据）。服务端完全忽略：不解析、不校验、不参与任何分支；请求携带什么资源由接口本身决定。保留定义仅为兼容仍携带该字段的旧平台
         taskId:
           type: string
-          description: 任务唯一标识
+          description: 任务唯一标识（与 requestId 不能同时为空）；同一 taskId 不能重复导入
         requestId:
           type: string
-          description: 请求唯一标识
+          description: 请求唯一标识（与 taskId 不能同时为空）；同一 requestId 不能重复导入
+        publicKey:
+          type: string
+          description: 结构上接受，但本接口不使用：资源解封使用 TAA 自身的 SM2 私钥；结果导出用的平台公钥由 /v1/taa/importModel（phase 1）保存
+        runtimeConfig:
+          type: string
+          description: 运行配置 JSON 字符串，非空时覆盖已保存的配置并落盘
 
     ImportModelRequest:
       type: object

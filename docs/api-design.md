@@ -814,7 +814,9 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空；同一 `requestId` 不能重复导入 |
 | `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空；同一 `taskId` 不能重复导入 |
 | `publicKey` | `string` | 否 | 结构上接受，但本接口不使用：资源解封使用 TAA 自身的 SM2 私钥；结果导出用的平台公钥由 `/v1/taa/importModel`（phase 1）保存 |
-| `runtimeConfig` | `string` | 否 | 运行配置 JSON 字符串，非空时覆盖已保存的配置 |
+| `runtimeConfig` | `string` | 否 | 运行配置 JSON 字符串，非空时覆盖已保存的配置并落盘 |
+
+> **`type` 字段被完全忽略**：早期一体化流程用 `type`（1=模型, 2=测试数据, 3=训练数据）区分资源类型。当前实现不解析、不校验该字段，也不参与任何分支——请求携带什么资源由接口本身决定（模型走 `/v1/taa/importModel`，数据走本接口）。携带该字段不影响行为，仅为兼容旧平台。
 
 **请求示例**：
 
@@ -823,7 +825,6 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
   "resourceUrl": "xx",
   "requestId": "xx",
   "taskId": "xxx",
-  "publicKey": "xx",
   "runtimeConfig": "{\"commands\":[\"python3 train.py\"]}"
 }
 ```

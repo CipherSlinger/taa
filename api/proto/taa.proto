@@ -115,7 +115,7 @@ message GetAttestationResult {
 
 message ImportRequest {
   string resource_url = 1;
-  int32 type = 2; // 2=测试数据, 3=训练数据
+  int32 type = 2; // 历史字段（1=模型, 2=测试数据, 3=训练数据）。服务端完全忽略：不解析、不参与任何分支，请求携带什么资源由接口本身决定；保留字段号仅为兼容旧平台
   string task_id = 3;
   string request_id = 4;
 }
