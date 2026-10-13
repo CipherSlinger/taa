@@ -409,28 +409,25 @@ func (s *EvidenceSet) Finalize() {
 	}
 }
 
-// appendEvidenceLine writes one listing line in the shape the file-level binary
-// prompt shows. The format lives here once so that the listing has a single
-// spelling of a line rather than one per caller.
-func appendEvidenceLine(b *strings.Builder, l EvidenceLine) {
-	fmt.Fprintf(b, "%d\t[%s] %s\n", l.Index, l.Source, l.Text)
-}
-
 // reservedExcerptSources is the set of sources RenderExcerpt reserves ahead of
 // the rest. Each names a property of the file's structure rather than of its
 // content volume - how many sections it declares, how many libraries it names,
 // how many container members it holds - so the number of reserved lines is
-// bounded by the file's shape rather than by how much text it contains, and
-// reserving them cannot crowd out the symbols, strings and pickle targets that
-// take the remaining budget.
+// bounded by the file's shape rather than by how much text it contains.
+//
+// The reservation takes priority, not merely a head start. When the reserved
+// lines alone reach the budget the segment is structural-only and the remainder
+// stays empty, so a file that declares enough structure can still crowd the
+// symbols, strings and pickle targets out of the excerpt entirely.
 //
 // The reservation is what fixes the plain-prefix problem. Finalize
 // sorts by (Offset, Source, Text) and every structured line carries offset 0, so
 // within offset 0 the sort falls through to the source name and dynsym leads. A
-// symbol-dense library therefore fills a short prefix with dynsym lines alone - a
-// single libstdc++ has more than two hundred dynamic imports, past any cap this
-// prompt uses - and the model sees no section, entropy or DT_NEEDED evidence at
-// all, though those are exactly what the prompt's rubric asks it to weigh.
+// symbol-dense library therefore fills a short prefix with dynsym lines alone -
+// a single libstdc++ has 189 undefined global dynamic symbols (SHN_UNDEF,
+// STB_GLOBAL, matching how the extractor counts them), past any cap this prompt
+// uses - and the model sees no section, entropy or DT_NEEDED evidence at all,
+// though those are exactly what the prompt's rubric asks it to weigh.
 var reservedExcerptSources = map[EvidenceSource]bool{
 	SourceEntropy: true,
 	SourceSection: true,
@@ -439,18 +436,23 @@ var reservedExcerptSources = map[EvidenceSource]bool{
 }
 
 // RenderExcerpt draws a bounded excerpt of the listing for the file-level binary
-// prompt. It shows every reserved structural line first, in the listing's index
-// order, then fills whatever budget remains with the other sources, also in
-// index order.
+// prompt. It shows every reserved structural line first, then fills whatever
+// budget remains with the other sources, both in the listing's index order.
 //
-// This is not a plain prefix: the reserved lines are gathered from wherever they
-// sit in the listing, so the excerpt's indices are non-contiguous. The index
-// printed is still EvidenceLine.Index, so a line the model names by number is a
-// line the report carries. When the budget is smaller than the listing it
-// appends an omission marker with the count of lines actually left out, so the
-// model is told the listing is partial - which the prompt's rubric relies on. It
-// expects a set that has been through Finalize (Index is zero until then, so an
-// unfinalized listing numbers every line 0), and maxLines <= 0 means no bound.
+// The excerpt is not a plain prefix, and not merely non-contiguous: because the
+// reserved lines are emitted first, it is not in index order at all. A
+// symbol-dense file begins at a high index (131, 132, ...) and only later drops
+// to the low ones (1, 2, 3, 4), once the reserved lines are exhausted. The
+// ordering is not an invariant and should not be "fixed" back into a prefix;
+// what matters is that the index printed is EvidenceLine.Index, so a line the
+// model names by number still resolves to the line the report carries. When the
+// budget is smaller than the listing it appends an omission marker with the
+// count of lines actually left out, so the model is told the listing is partial
+// - which the prompt's rubric relies on. It expects a set that has been through
+// Finalize: without it every Index is still zero, and the excerpt comes out
+// well-formed but silently wrong - a bounded listing that numbers every line 0,
+// indistinguishable from a correct excerpt - so a caller must not read it
+// without Finalize. maxLines <= 0 means no bound.
 func (s *EvidenceSet) RenderExcerpt(maxLines int) string {
 	if maxLines <= 0 || maxLines > len(s.Lines) {
 		maxLines = len(s.Lines)
@@ -481,7 +483,7 @@ func (s *EvidenceSet) RenderExcerpt(maxLines int) string {
 
 	var b strings.Builder
 	for _, l := range shown {
-		appendEvidenceLine(&b, l)
+		fmt.Fprintf(&b, "%d\t[%s] %s\n", l.Index, l.Source, l.Text)
 	}
 	if omitted := len(s.Lines) - len(shown); omitted > 0 {
 		fmt.Fprintf(&b, "... (%d more evidence line(s) not shown)\n", omitted)

@@ -578,14 +578,17 @@ func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, 
 
 // binaryFilePromptMaxLines bounds the excerpt handed to the model. It is a
 // separate number from the source prompt's 80 lines because the two budgets
-// measure different things. The source budget is whole file lines; this one has
-// to hold every reserved structural line - the sections, entropy verdicts and
-// DT_NEEDED entries a judgement is built on - and still leave a useful number of
-// imports, which dominate the listing at the densities this channel meets: a
-// single libstdc++ carries more than two hundred dynamic imports. 120 is the
-// budget that fits both. RenderExcerpt guarantees the structural sources are
-// reserved ahead of the rest rather than merely sorted first, which is where a
-// symbol-dense file would otherwise bury them.
+// measure different things. The source budget is whole file lines; this one is
+// sized to hold the reserved structural lines - the sections, entropy verdicts
+// and DT_NEEDED entries a judgement is built on - and, in the ordinary case,
+// still leave room for the imports that dominate the listing at the densities
+// this channel meets: a single libstdc++ carries 189 undefined global dynamic
+// symbols (SHN_UNDEF, STB_GLOBAL). It cannot guarantee both, though: when the
+// reserved lines alone reach the budget the excerpt is structural-only and the
+// remainder stays empty, which is the priority order the reservation imposes.
+// 120 is the budget that covers both in the common case. RenderExcerpt reserves
+// the structural sources ahead of the rest rather than merely sorting them
+// first, which is where a symbol-dense file would otherwise bury them.
 const binaryFilePromptMaxLines = 120
 
 // analyzeBinaryFileWithLLM asks the model about a file the binary channel read.
