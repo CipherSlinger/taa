@@ -324,10 +324,16 @@ const fileAnalysisPromptTemplate = `你是一个严谨的代码安全审计专�
 // source prompt says "here is Python"; this one says "here is a listing of
 // extracted evidence, each line numbered and tagged with where it came from",
 // and a model given the first while shown the second answers a question nobody
-// asked. The evidence block is the same rendering the finding-level prompt's
-// context comes from, so a line the model names is a line the report carries.
+// asked. The evidence block is a bounded excerpt of the same indexed listing the
+// finding-level prompt's context is drawn from, and its numbers are that
+// listing's indices: because they come from Finalize, a line the model names by
+// number is a line the report carries. The finding-level context renders the
+// same lines without the number, so it can name a source and its content but not
+// a line.
 //
-// The listing is capped, and the cap is stated in the prompt. A model that
+// The listing is an excerpt and the prompt says so: rubric item 4 tells the
+// model the listing has a ceiling and that a missing line is not an absent fact,
+// and the renderer appends the number of lines it left out. A model that
 // believed it had seen everything would treat the absence of a signal as
 // evidence of its absence, which is the same mistake the completeness fields in
 // the report exist to prevent.
@@ -570,11 +576,16 @@ func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, 
 	return result
 }
 
-// binaryFilePromptMaxLines bounds the listing handed to the model. It is a
-// separate number from the source prompt's 80 lines because an evidence line is
-// a few dozen bytes where a source line is a few dozen characters, and because
-// the ordering puts the structural evidence - the part a judgement needs most -
-// at the front of the listing.
+// binaryFilePromptMaxLines bounds the excerpt handed to the model. It is a
+// separate number from the source prompt's 80 lines because the two budgets
+// measure different things. The source budget is whole file lines; this one has
+// to hold every reserved structural line - the sections, entropy verdicts and
+// DT_NEEDED entries a judgement is built on - and still leave a useful number of
+// imports, which dominate the listing at the densities this channel meets: a
+// single libstdc++ carries more than two hundred dynamic imports. 120 is the
+// budget that fits both. RenderExcerpt guarantees the structural sources are
+// reserved ahead of the rest rather than merely sorted first, which is where a
+// symbol-dense file would otherwise bury them.
 const binaryFilePromptMaxLines = 120
 
 // analyzeBinaryFileWithLLM asks the model about a file the binary channel read.
@@ -582,7 +593,7 @@ func analyzeBinaryFileWithLLM(ctx context.Context, fa FileAnalyzer, ev *Evidence
 	prompt := fmt.Sprintf(binaryFileAnalysisPromptTemplate,
 		filepath.Base(ev.File), ev.Kind, ev.Size, len(ev.Lines),
 		len(findings), BuildFindingsSummary(findings),
-		ev.Render(binaryFilePromptMaxLines),
+		ev.RenderExcerpt(binaryFilePromptMaxLines),
 	)
 
 	result, err := fa.AnalyzeFile(ctx, prompt)
