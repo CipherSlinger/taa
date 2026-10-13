@@ -38,8 +38,9 @@ type PersistentState struct {
 	// ModelImported describes. Its only purpose is to survive a crash: the audit
 	// runs in a background goroutine that outlives the import task, so if the
 	// process dies mid-audit nothing else on disk says the model never got a
-	// verdict. Startup reads this and quarantines the model rather than letting a
-	// never-audited package look imported-and-fine.
+	// verdict. Startup reads this and reports the interrupted audit to the
+	// platform as a reference result; the verdict is advisory, so it never
+	// changes whether the model stays imported or trainable.
 	//
 	// It is deliberately not implied by ModelImported: ModelImported=true with a
 	// nil AuditPending means no audit was owed (scanning disabled) or the audit

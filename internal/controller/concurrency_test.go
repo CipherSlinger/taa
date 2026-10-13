@@ -395,19 +395,16 @@ func TestConcurrency_ModelImportRejectedWhileAuditing(t *testing.T) {
 	}
 }
 
-// TestConcurrency_AuditPanicRollsBackModelButKeepsTrainingTask covers an audit
-// panic while a training task is running.
+// TestConcurrency_AuditPanicKeepsModelAndTrainingTask covers an audit panic while
+// a training task is running.
 //
-// Two things have to hold at once, and they pull in opposite directions. The
-// model the abandoned audit was judging must be rolled back: no verdict is
-// coming, so leaving it marked imported is a pass nobody granted. The concurrent
-// training task's own state must survive untouched: the panic belongs to the
-// audit, and unwinding it is not a licence to corrupt an unrelated task's
-// snapshot or active-task identity.
-//
-// Cancelling the training process is deliberate rather than a violation of that
-// isolation — the model being trained is the one just found un-adjudicated.
-func TestConcurrency_AuditPanicRollsBackModelButKeepsTrainingTask(t *testing.T) {
+// The panic belongs to the audit alone. The verdict is advisory, so it reaches no
+// further than the audit's own state: the concurrent training task's snapshot and
+// active-task identity stay untouched, and the model the abandoned audit was
+// judging stays imported and keeps training. Only the audit fields are reset and
+// the durable marker dropped, since the panic itself is what reports the
+// interruption to the platform.
+func TestConcurrency_AuditPanicKeepsModelAndTrainingTask(t *testing.T) {
 	state, _ := setupTestServer(t)
 
 	control := newTrainingControl()
@@ -459,18 +456,17 @@ func TestConcurrency_AuditPanicRollsBackModelButKeepsTrainingTask(t *testing.T) 
 		t.Fatalf("activeTask snapshot was cleared by audit panic: %+v", state.activeTask)
 	}
 
-	// The un-adjudicated model itself must not survive the panic
-	if state.ModelImported {
-		t.Error("ModelImported stayed true after the audit panicked; the model keeps its imported status " +
-			"although no verdict will ever arrive")
+	// The advisory verdict must not touch the model or the running training
+	if !state.ModelImported {
+		t.Error("the audit panic cleared ModelImported; an advisory verdict must leave the model imported")
 	}
-	if state.SavedModelResourceURL != "" {
-		t.Errorf("SavedModelResourceURL was kept after the audit panicked: %q", state.SavedModelResourceURL)
+	if state.SavedModelResourceURL != "https://example.test/model.tar.gz" {
+		t.Errorf("SavedModelResourceURL = %q after the audit panicked, want it kept", state.SavedModelResourceURL)
 	}
 	if state.pendingAudit != nil {
 		t.Errorf("the pending audit marker survived the panic: %+v", state.pendingAudit)
 	}
-	if !control.IsCancelled() {
-		t.Error("training was left running against a model whose audit was abandoned")
+	if control.IsCancelled() {
+		t.Error("training was cancelled by an advisory audit verdict; the audit must not stop a running training")
 	}
 }

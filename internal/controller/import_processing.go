@@ -78,13 +78,13 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		// ── Stage 2: Record the model and the audit owed for it, then launch it ──
 		// The model is recorded as imported and the audit as outstanding in one
 		// sealed write: the audit runs in a goroutine that outlives this task, so
-		// the on-disk marker is the only thing that can tell a later restart the
-		// model never got a verdict.
+		// the on-disk marker is the only thing that can tell a later restart that
+		// an audit was owed for this model and never reached a verdict.
 		s.beginModelImportAndAudit(req, phase)
 
 		// Decouples auditing from task pipeline so data import and training are not blocked.
-		s.launchModelAudit(req, phase)
-		s.Logs.Add(LogInfo, "import", "阶段%d: 模型导入完成，安全审计已在后台异步启动，等待数据下发后执行训练: taskId=%s", phase, req.TaskID)
+		s.launchModelAudit(req)
+		s.Logs.Add(LogInfo, "import", "阶段%d: 模型导入完成，代码审计已在后台异步启动（结论仅作参考），等待数据下发后执行训练: taskId=%s", phase, req.TaskID)
 		s.setCurrentOp("idle")
 		return
 	} else {
@@ -565,41 +565,24 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 	s.Logs.Add(LogInfo, "import", "资源导入流程完成: taskId=%s", trainReq.TaskID)
 }
 
-// stopActiveTraining requests cancellation of any actively executing training process.
-func (s *TAAState) stopActiveTraining(reason string) {
-	s.mu.RLock()
-	control := s.trainingControl
-	isTraining := s.TrainingRunning && s.activeTask != nil && s.activeTask.Type == "training"
-	s.mu.RUnlock()
-
-	if control == nil || !isTraining {
-		return
-	}
-	s.Logs.Add(LogWarn, "train", "%s, cancelling active training task", reason)
-	cmd := control.requestStop()
-	if cmd != nil {
-		if err := KillProcessGroup(cmd); err != nil {
-			s.Logs.Add(LogWarn, "train", "warning cancelling training process group: %v", err)
-		}
-	}
-}
-
 // launchModelAudit starts the model security audit asynchronously in the background.
 // This decouples code auditing from the main task pipeline, allowing subsequent data
 // imports and training tasks to proceed concurrently without mutual exclusion conflicts.
 //
+// The verdict is advisory: it is reported to the platform as a reference result and
+// changes nothing about what TAA imports or executes. A failing audit neither rolls
+// back the import nor stops a training run that is already executing, so the model
+// package and its bundled dependency libraries always stay exactly as uploaded.
+//
 // The audit's in-memory and durable markers are set by beginModelImportAndAudit,
-// which must have sealed before this is called: launched first, a failing audit
-// would clear the imported marker only for the import path to re-seal it as imported.
-func (s *TAAState) launchModelAudit(req importRequest, phase int) {
+// which must have sealed before this is called: the marker is what tells a later
+// restart that an audit was owed for this model.
+func (s *TAAState) launchModelAudit(req importRequest) {
 	s.runAsyncSafe("modelAudit", func() {
 		s.clearAuditState()
 	}, func() {
-		passed := s.auditAndReportModelImport(req)
-		if !passed {
-			s.Logs.Add(LogError, "import", "模型安全审计未通过，清除模型状态: taskId=%s", req.TaskID)
-			s.clearImportedState(true, phase)
-			s.stopActiveTraining("模型安全审计未通过")
+		if !s.auditAndReportModelImport(req) {
+			s.Logs.Add(LogWarn, "import", "模型代码审计未通过，结论仅作参考，不阻断导入与训练: taskId=%s", req.TaskID)
 		}
 	})
 }
@@ -608,14 +591,14 @@ func (s *TAAState) launchModelAudit(req importRequest, phase int) {
 // 并将审计结果通过 /v1/taa/reportAudit 上报平台。返回是否审计通过。
 //
 // The audit reads, judges and reports; it never writes to, deletes, or modifies
-// what it reads. A non-passing verdict is reported and the import is refused by
-// the caller - the model package and its bundled dependency libraries are left
-// exactly as they were uploaded.
+// what it reads. The verdict is advisory - the caller only logs it - so the model
+// package and its bundled dependency libraries stay exactly as uploaded, and the
+// import remains usable whatever the verdict says.
 func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 	// Cleared as soon as a verdict exists, not when the goroutine unwinds. The
 	// unwind happens after the platform report, so a crash in between would leave
 	// a pending marker for a model that had in fact been adjudicated — and the
-	// next restart would quarantine it.
+	// next restart would report the same interrupted audit a second time.
 	defer s.concludeAuditPending()
 
 	s.setLastAudit(nil)

@@ -152,13 +152,22 @@ func TestPhase1ModelImportFailureReportsModelImport(t *testing.T) {
 	})
 }
 
-func TestPhase1ModelAuditFailureAbortsTraining(t *testing.T) {
+// TestPhase1ModelAuditFailureDoesNotBlockTraining pins that the model code audit is
+// advisory: its verdict is reported to the platform as a reference result and
+// decides nothing about what TAA imports or executes.
+//
+// Both ways of failing are covered — a static-audit finding and an LLM that cannot
+// be reached under fail-closed — because they used to share the same blocking
+// path. Neither may roll the import back or hold up the training run that the
+// following data delivery starts: the model stays imported, the package on disk
+// stays exactly as uploaded, and the data import trains and reports normally.
+func TestPhase1ModelAuditFailureDoesNotBlockTraining(t *testing.T) {
 	cases := []struct {
 		name string
 		llm  codeaudit.LLMConfig
 	}{
-		{name: "static audit failure aborts training", llm: codeaudit.LLMConfig{Enabled: false}},
-		{name: "fail-closed aborts training", llm: codeaudit.LLMConfig{Enabled: true, Model: "qwen2.5-coder:0.5b", FailClosed: true}},
+		{name: "static audit failure", llm: codeaudit.LLMConfig{Enabled: false}},
+		{name: "fail-closed", llm: codeaudit.LLMConfig{Enabled: true, Model: "qwen2.5-coder:0.5b", FailClosed: true}},
 	}
 
 	for _, tc := range cases {
@@ -311,7 +320,7 @@ result = {"dataset": {"total_samples": 1, "splits": {"train": 1, "test": 0}}, "m
 
 			// 2. 验证审计阶段上报为失败 (静态审计失败 code=1, fail-closed code=2)
 			wantAuditCode := 1
-			if tc.name == "fail-closed aborts training" {
+			if tc.name == "fail-closed" {
 				wantAuditCode = 2
 			}
 			select {
@@ -326,12 +335,16 @@ result = {"dataset": {"total_samples": 1, "splits": {"train": 1, "test": 0}}, "m
 				t.Fatal("timed out waiting for reportAudit")
 			}
 
-			// 验证 ModelImported 为 false
+			// 审计结论仅供参考：失败裁决不得回滚导入状态
 			state.mu.RLock()
 			modelImported := state.ModelImported
+			savedURL := state.SavedModelResourceURL
 			state.mu.RUnlock()
-			if modelImported {
-				t.Fatalf("expected ModelImported=false after audit failure")
+			if !modelImported {
+				t.Fatal("expected ModelImported=true after audit failure: the verdict is advisory and must not roll back the import")
+			}
+			if savedURL == "" {
+				t.Fatal("the audit failure cleared SavedModelResourceURL; the model must stay reusable")
 			}
 
 			// 审计只做审计：ModelDir 内容不得被删除或改动
@@ -347,20 +360,25 @@ result = {"dataset": {"total_samples": 1, "splits": {"train": 1, "test": 0}}, "m
 				t.Fatalf("audit failure changed the package it audited: %v", err)
 			}
 
-			// 尝试导入数据，由于模型审计失败未放行，绝对不应触发训练
+			// 数据下发后必须照常训练并上报：审计裁决不阻断训练
 			importData()
 
 			select {
 			case payload := <-trainingResCh:
-				t.Fatalf("unexpected training report received: %+v", payload)
-			case <-time.After(500 * time.Millisecond):
-				// 期望没有训练上报
+				if payload.Code != 0 {
+					t.Fatalf("reportRes code = %d, want 0 after an advisory audit failure: %+v", payload.Code, payload)
+				}
+				if payload.RequestID != "req-"+strings.ReplaceAll(tc.name, " ", "-")+"-data" {
+					t.Fatalf("reportRes requestId = %q", payload.RequestID)
+				}
+			case <-time.After(15 * time.Second):
+				t.Fatal("a failing model audit blocked training; the verdict is advisory and must not gate the data import")
 			}
 
 			markerDir := resultDirForRequestTask(state.Security.ResultDir, "req-"+strings.ReplaceAll(tc.name, " ", "-")+"-data", "task-"+strings.ReplaceAll(tc.name, " ", "-"))
 			markerPath := filepath.Join(markerDir, "marker.txt")
-			if _, err := os.Stat(markerPath); err == nil {
-				t.Fatalf("training marker should not exist: %s", markerPath)
+			if _, err := os.Stat(markerPath); err != nil {
+				t.Fatalf("training marker missing at %s: %v", markerPath, err)
 			}
 		})
 	}

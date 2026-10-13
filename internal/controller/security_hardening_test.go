@@ -315,8 +315,9 @@ func TestDownloadToTempFileLimit(t *testing.T) {
 	}
 }
 
-// 5. 模型审计失败即刻熔断并终止导入流程测试（审计不得改动模型目录内容）
-func TestAuditFailureAbortsWithoutClearingDir(t *testing.T) {
+// 5. 模型审计失败的处理测试：结论仅供参考，且审计不得改动模型目录内容。
+// 结论是否阻断导入/训练由 import_flow_new_test.go 的 TestPhase1ModelAuditFailureDoesNotBlockTraining 覆盖。
+func TestAuditFailureLeavesModelDirIntact(t *testing.T) {
 	state, _ := setupTestState(t)
 	modelDir := t.TempDir()
 	state.Security.ScanEnabled = true

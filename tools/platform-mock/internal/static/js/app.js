@@ -1059,7 +1059,7 @@ function renderAuditDashboard(report) {
           </div>
           <div style="display:flex; align-items:center; gap:8px;">
             <span class="status-pill ${passed ? 'ok' : 'bad'}" style="font-size:12.5px; font-weight:700;">
-              ${passed ? '✓ 审计合规通过' : '✗ 存在阻断级风险'}
+              ${passed ? '✓ 审计合规通过' : '⚠ 审计未通过（仅供参考）'}
             </span>
             <span class="status-pill ${conclusion.risk_level === 'HIGH' ? 'bad' : (conclusion.risk_level === 'MEDIUM' ? 'running' : 'ok')}">
               风险等级: ${escapeHtml(conclusion.risk_level || 'LOW')}
@@ -1238,12 +1238,14 @@ function syncStepperState(res) {
         }
       } catch (e) {}
     }
+    // The verdict is advisory: a failing audit does not stop the pipeline, so the step
+    // still completes and the line advances - only the label reports the verdict.
     if (auditPassed) {
       setStepStatus(sAud, dAud, 'completed', `审计通过 (${risk})`);
       if (l23) l23.className = 'stepper-line completed';
     } else {
-      setStepStatus(sAud, dAud, 'failed', `审计不通过 (${risk})`);
-      if (l23) l23.className = 'stepper-line';
+      setStepStatus(sAud, dAud, 'completed', `⚠ 审计未通过 (${risk})，仅供参考`);
+      if (l23) l23.className = 'stepper-line completed';
     }
   } else if (regOk) {
     setStepStatus(sAud, dAud, 'active', '准备下发模型');

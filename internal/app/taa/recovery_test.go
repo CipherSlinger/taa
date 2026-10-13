@@ -577,20 +577,23 @@ func TestRecovery_DualTrackDrain(t *testing.T) {
 	})
 }
 
-// TestRecovery_AbandonedAuditQuarantine covers the crash that
+// TestRecovery_AbandonedAuditReportsOnly covers the crash that
 // reconcileCrashRecovery cannot see.
 //
 // An audit runs in a goroutine that outlives the import task, so a crash
 // mid-audit leaves ActiveTask nil while ModelImported stays true and the model's
-// code sits on disk un-adjudicated. Nothing else the daemon persists records
+// code sits on disk without a verdict. Nothing else the daemon persists records
 // that an audit was owed — AuditPending is that record, and this is the startup
 // path that consumes it.
 //
-// The isolation it applies is a state rollback only: the import is refused and
-// the package is left exactly as it was uploaded, byte for byte.
+// All the recovery does is report. The verdict is advisory, so an interrupted
+// audit says nothing about the import: the model stays imported with its resource
+// URL intact, and the package is left exactly as it was uploaded, byte for byte.
+// The marker is dropped after reporting so the next restart does not send the
+// same report again.
 //
 // It is the activeTask==nil half of TestRecovery_ModelImportQuarantine.
-func TestRecovery_AbandonedAuditQuarantine(t *testing.T) {
+func TestRecovery_AbandonedAuditReportsOnly(t *testing.T) {
 	state, store, _ := setupTestRecoveryState(t)
 
 	unAudited := filepath.Join(state.Security.ModelDir, "backdoor.py")
@@ -647,28 +650,28 @@ func TestRecovery_AbandonedAuditQuarantine(t *testing.T) {
 		t.Fatalf("reconcileAbandonedAudit failed: %v", err)
 	}
 
-	// The rollback is state only: the audit never deletes or modifies the package
+	// The recovery only reports: the audit never deletes or modifies the package
 	// it was reading, so the un-adjudicated code has to be left byte-identical.
 	after := snapshotTreeHashes(t, state.Security.ModelDir)
 	if !reflect.DeepEqual(before, after) {
-		t.Errorf("the abandoned-audit rollback changed the package on disk: before=%v after=%v", before, after)
+		t.Errorf("the abandoned-audit recovery changed the package on disk: before=%v after=%v", before, after)
 	}
 	if _, err := os.Stat(unAudited); err != nil {
-		t.Errorf("the abandoned-audit rollback deleted the model code it must leave untouched: %v", err)
+		t.Errorf("the abandoned-audit recovery deleted the model code it must leave untouched: %v", err)
 	}
 
 	persisted, err := store.UnsealState()
 	if err != nil {
 		t.Fatalf("unseal state: %v", err)
 	}
-	if persisted.ModelImported {
-		t.Error("the model came back as imported although its audit never reached a verdict")
+	if !persisted.ModelImported {
+		t.Error("the model came back as not imported; an interrupted audit must not roll back the import")
 	}
-	if persisted.SavedModelResourceURL != "" {
-		t.Errorf("the resource URL of an un-adjudicated model was kept: %q", persisted.SavedModelResourceURL)
+	if persisted.SavedModelResourceURL != "https://test.s3.com/model.tar.gz" {
+		t.Errorf("the resource URL of the model was cleared: %q", persisted.SavedModelResourceURL)
 	}
 	if persisted.AuditPending != nil {
-		t.Errorf("the pending marker survived reconciliation, so every restart would quarantine again: %+v",
+		t.Errorf("the pending marker survived reconciliation, so every restart would report the same interruption again: %+v",
 			persisted.AuditPending)
 	}
 

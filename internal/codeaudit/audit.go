@@ -541,7 +541,7 @@ func buildSummaryTextExt(stats AuditStatistics, riskLevel string, passed bool, l
 		// binary gaps, not FindingsCapped) and drops only LOW findings, which do
 		// not block under either policy.
 		if !passed {
-			return "审计未覆盖全部内容或存在未决项，不得判定为通过，禁止导入"
+			return "审计未覆盖全部内容或存在未决项，不得判定为通过，建议拒绝该模型"
 		}
 		return "未发现安全问题，代码通过审计"
 	}
@@ -573,14 +573,14 @@ func buildSummaryTextExt(stats AuditStatistics, riskLevel string, passed bool, l
 
 	if !passed {
 		if riskLevel == "CRITICAL" || riskLevel == "HIGH" {
-			summary += "。存在数据泄露风险，建议阻断导入"
+			summary += "。存在数据泄露风险，建议拒绝该模型"
 		} else {
-			summary += "。触发 fail-closed 阻断策略，禁止导入"
+			summary += "。触发 fail-closed 阻断策略，审计结论为未通过"
 		}
 	} else if riskLevel == "CRITICAL" || riskLevel == "HIGH" {
-		summary += "。存在数据泄露风险，建议阻断导入"
+		summary += "。存在数据泄露风险，建议拒绝该模型"
 	} else if riskLevel == "LOW" || riskLevel == "NONE" {
-		summary += "。代码符合安全规范，准予导入"
+		summary += "。代码符合安全规范，未发现阻断级风险"
 	}
 	return summary
 }

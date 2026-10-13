@@ -164,7 +164,8 @@ type TAAState struct {
 	ActiveAuditRequestID  string                   // Current active audit request ID
 
 	// pendingAudit is the durable counterpart of the audit fields above: it is
-	// what makes an audit that never concluded visible after a restart. It is
+	// what makes an audit that never concluded visible after a restart, so the
+	// startup path can report it to the platform as an interrupted audit. It is
 	// held separately rather than derived from AuditRunning/CurrentAuditOp on
 	// restore, because restoring those would make isAuditBusyLocked() true
 	// forever and, through tryAcquireTask, permanently refuse every model import.
@@ -359,10 +360,10 @@ func (s *TAAState) saveModelSuccessLocked(resourceURL string) {
 // owed for it in one locked, sealed write.
 //
 // The two facts have to become durable in the same seal. Recorded apart, a crash
-// between them leaves either a model that no audit is owed for (nothing on disk
-// says an audit was pending, so a never-audited model reads as imported-and-fine)
-// or a pending audit for a model not yet marked imported (the next restart
-// quarantines an import that may point at a previously audited model).
+// between them leaves either a model that no audit is owed for on disk (so an
+// interrupted audit goes unreported) or a pending audit for a model not yet
+// marked imported (so startup reports an interruption for an import that never
+// happened).
 func (s *TAAState) beginModelImportAndAudit(req importRequest, phase int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -399,8 +400,8 @@ func (s *TAAState) updateImportState(isModel bool, imported bool, phase int) {
 			s.SavedModelResourceURL = ""
 			s.RuntimeConfig = ""
 			// Dropping the model import drops whatever audit was outstanding for it:
-			// the verdict can no longer apply to anything, so leaving the marker
-			// would quarantine a model that is no longer imported on the next restart.
+			// the verdict can no longer refer to anything, so keeping the marker
+			// would have startup report an interrupted audit for an import that is gone.
 			s.pendingAudit = nil
 		}
 	} else if !imported {
@@ -606,8 +607,8 @@ func (s *TAAState) clearAuditState() {
 // fail and clear the imported marker before saveModelSuccess re-sealed it as imported.
 //
 // Scanning disabled means no audit is owed: auditAndReportModelImport returns
-// immediately, so writing the marker would leave a window in which a crash
-// quarantines a model that never needed auditing.
+// immediately, so writing the marker would leave a window in which a crash makes
+// startup report an audit that never ran.
 func (s *TAAState) markModelAuditPendingLocked(req importRequest, phase int) {
 	s.ActiveAuditTaskID = req.TaskID
 	s.ActiveAuditRequestID = req.RequestID
@@ -636,7 +637,7 @@ func (s *TAAState) clearAuditPendingLocked() {
 // audit which reached a verdict is not mistaken for an abandoned one after a
 // restart. Called when the verdict is known rather than when the goroutine
 // unwinds: the unwind happens after the platform report, and a crash in between
-// would otherwise quarantine a model that had in fact passed.
+// would otherwise have startup report an audit that had in fact concluded.
 func (s *TAAState) concludeAuditPending() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -647,6 +648,12 @@ func (s *TAAState) concludeAuditPending() {
 	if err := s.sealStateLocked(); err != nil {
 		s.Logs.Add(LogError, "state", "持久化审计结论状态失败: %v", err)
 	}
+}
+
+// ConcludeAuditPending 导出供调用的待决审计标记清除方法，供启动期对账使用：
+// 被遗弃的审计补报平台后调用，避免同一次中断审计在下次启动被重复上报。
+func (s *TAAState) ConcludeAuditPending() {
+	s.concludeAuditPending()
 }
 
 // PendingAudit reports the audit that was in flight when the process last sealed
@@ -841,23 +848,19 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 	s.Logs.Add(LogError, "panic", "%s 发生异常恢复: %v", name, r)
 	log.Printf("[PANIC RECOVERY] %s recovered from panic: %v", name, r)
 
-	// A panicking audit is an audit that will never reach a verdict, so the model
-	// it was judging must not be left looking imported-and-fine. The isolation
-	// this branch exists for is about not disturbing a concurrent training task's
-	// snapshot — it was never a reason to keep the un-adjudicated model marked
-	// imported, and keeping that marker is what let a panic leave a never-audited
-	// model trainable.
+	// A panicking audit is an audit that will never reach a verdict. The verdict
+	// is advisory, so nothing about the import is rolled back here: the model stays
+	// imported and a training run in flight is left alone. What this branch owes
+	// the platform is the record that the audit did not conclude, reported under
+	// the same ids the audit itself would have used.
 	//
-	// The rollback below is state only. The audit contract is that it never
-	// writes to, deletes, or modifies the package it reads, and a panic is not an
-	// exception to it: the extracted model directory and its dependency libraries
-	// are left exactly as they were. Refusing the import here means clearing the
-	// imported marker and stopping training, never removing files.
+	// The audit contract is that it never writes to, deletes, or modifies the
+	// package it reads, and a panic is not an exception to it: the extracted model
+	// directory and its dependency libraries are left exactly as they were.
 	//
-	// The work is split around the unlock on purpose: updateImportState and
-	// stopActiveTraining both re-acquire s.mu (Lock and RLock respectively), and
-	// sync.RWMutex is not reentrant, so calling either while holding the write
-	// lock would deadlock the goroutine instead of rolling anything back.
+	// The durable marker is dropped here instead of being left for the next
+	// restart: this branch reports the interruption itself, so leaving the marker
+	// would only make startup report the same interrupted audit a second time.
 	if name == "modelAudit" {
 		s.mu.Lock()
 		taskID := s.ActiveAuditTaskID
@@ -865,16 +868,12 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 		platformIP := s.PlatformIP
 		dockerID := s.DockerID
 		s.resetAuditStateLocked()
-		s.ModelImported = false
-		s.SavedModelResourceURL = ""
-		s.RuntimeConfig = ""
 		s.clearAuditPendingLocked()
 		if err := s.sealStateLocked(); err != nil {
-			s.Logs.Add(LogError, "panic", "回滚模型导入状态失败: %v", err)
+			s.Logs.Add(LogError, "panic", "持久化审计中断状态失败: %v", err)
 		}
 		s.mu.Unlock()
 
-		s.stopActiveTraining("模型安全审计异常终止，未通过安全审计")
 		if platformIP != "" && dockerID != "" && (taskID != "" || requestID != "") {
 			s.reportAuditAsync(requestID, taskID, 2, fmt.Sprintf("model audit panic: %s", panicMsg), "")
 		}
