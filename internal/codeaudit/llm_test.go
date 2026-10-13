@@ -978,11 +978,11 @@ func TestSourceFilePromptIsUnchangedByTheBinaryChannel(t *testing.T) {
 //
 // Finalize sorts by (Offset, Source, Text), and every structured line carries
 // offset 0, so within offset 0 the sort falls through to the source name and
-// dynsym leads. A plain prefix of that listing - which is what Render takes -
-// therefore fills with dynsym lines on a file with many imports and shows the
-// model none of the section, entropy or DT_NEEDED evidence its rubric needs. The
-// fixture carries more imports than the prompt's budget so that a prefix would
-// be dynsym and nothing else; the test asserts the structural lines survive.
+// dynsym leads. A plain prefix of that listing therefore fills with dynsym
+// lines on a file with many imports and shows the model none of the section,
+// entropy or DT_NEEDED evidence its rubric needs. The fixture carries more
+// imports than the prompt's budget so that a prefix would be dynsym and nothing
+// else; the test asserts the structural lines survive.
 func TestBinaryFilePromptExcerptKeepsStructuralEvidenceUnderSymbolFlood(t *testing.T) {
 	dir := t.TempDir()
 
