@@ -30,6 +30,14 @@ const maxDownloadBytes = config.DefaultMaxFileBytes // 3 GB
 // SecurityConfig holds immutable security settings configured at startup.
 // Separated from TAAState so it doesn't need the phase mutex and can't be
 // accidentally left at zero values.
+//
+// Binary is the exception that proves that rule: its zero value is a working
+// configuration rather than an obviously broken one. BinaryConfig.Enabled has no
+// normalizer default - Go cannot tell an explicit false from the zero value - so
+// a SecurityConfig built without this field runs the audit with no binary pass
+// at all, silently: no error, no log line, and a report indistinguishable from
+// one where the operator turned the channel off. buildSecurityConfig is the only
+// production constructor and always sets it; a second caller must as well.
 type SecurityConfig struct {
 	ScanEnabled        bool                   // 是否在 import type=1 时执行源码安全扫描
 	Engine             codeaudit.StaticEngine // Tier 1 静态扫描引擎（启动时由 codeScanEngine 配置解析）

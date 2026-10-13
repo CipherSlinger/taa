@@ -42,7 +42,14 @@ type StartupConfig struct {
 	// examined. Zero means the codeaudit default.
 	BinaryAuditMaxArchiveMembers int
 	// BinaryAuditHighEntropyThreshold is the bits-per-byte above which an
-	// executable section is called packed. Zero means the codeaudit default.
+	// executable section is called packed. Zero means the codeaudit default
+	// (7.5).
+	//
+	// The whole of [0,8] is accepted, and neither end is neutral: at 8.0 nothing
+	// is ever called packed, because Shannon entropy cannot exceed 8, so the
+	// family goes quiet on this deployment; at or below the 6.0-6.5 band ordinary
+	// compiled code occupies, every shared object is called packed, and the
+	// resulting BIN_001 is HIGH, which blocks the import under both policies.
 	BinaryAuditHighEntropyThreshold float64
 	// BinaryAuditMaxFindings is the listing budget for the binary pass, not a
 	// completeness bound: reaching it drops LOW findings (and only LOW - HIGH and
@@ -55,6 +62,13 @@ type StartupConfig struct {
 	// exposed rather than fixed because it is the one limit whose right value
 	// depends on the deployment's package sizes: raising it buys a complete pass
 	// over a large pickle at a cost of about 3 microseconds per kibibyte.
+	//
+	// Lowering it below twice the head-and-tail window (2 MiB) does not by itself
+	// cost completeness: the two windows then cover a file that size end to end,
+	// no bound is recorded and nothing is refused. What changes is which
+	// extractors run - the two windows instead of one front-to-back pass - so on
+	// that route the pickle interpreter, which is gated to the head window, stops
+	// seeing the middle.
 	BinaryAuditMaxFullScanBytes int
 	// BinaryAuditMaxStreamBytes bounds how much of one file the end-to-end
 	// streaming pass reads. Zero means the codeaudit default (3 GiB).
@@ -64,8 +78,13 @@ type StartupConfig struct {
 	// operator who raises MaxFullScanBytes past the stream ceiling makes the
 	// stream ceiling bind - and its breach records a structural bound, which on
 	// an executable kind blocks the import. Leaving it fixed while its twin is
-	// exposed would turn that into an unactionable block. Two keys that move
-	// together, in the same block and the same validation.
+	// exposed would turn that into an unactionable block.
+	//
+	// The pairing is a constraint on the operator, not on the loader: nothing
+	// checks the two against each other, and a value below MaxFullScanBytes is
+	// accepted without complaint. Keep it at or above MaxFullScanBytes, and above
+	// anything the deployment imports, or every file in the gap between the two
+	// records a bound and an executable one refuses the import.
 	BinaryAuditMaxStreamBytes  int
 	ModelDir                   string
 	EnableResultCheck          bool
@@ -177,12 +196,11 @@ type startupSecurityConfigFile struct {
 //
 // Enabled is a pointer because "absent" and "false" must not collapse: the
 // channel defaults on, so an absent field read as false would turn silence into
-// a rollback. The limits are pointers too, but only this layer gets a
-// distinction out of it - validateBinaryAudit rejects a negative and lets zero
-// through, and a zero then resolves to the codeaudit default through
-// normalizeBinaryConfig exactly as an absent field does. A deliberate 0 is
-// therefore not rejected; it is read as "use the default", which is the same
-// thing the field says when it is missing.
+// a rollback. The limits are pointers for symmetry with it, and the symmetry
+// buys nothing on purpose - no layer reads the pointer, so an absent limit and
+// an explicit zero are identical by design: validateBinaryAudit rejects only a
+// negative, and a zero then resolves to the codeaudit default through
+// normalizeBinaryConfig exactly as an absent field does.
 type startupBinaryAuditConfigFile struct {
 	Enabled              *bool    `json:"enabled"`
 	MaxArchiveMembers    *int     `json:"maxArchiveMembers"`
