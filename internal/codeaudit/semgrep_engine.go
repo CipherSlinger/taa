@@ -45,7 +45,15 @@ const DefaultSemgrepMaxMemoryMB = 1024
 // this default exists so that the local path works without configuration, and
 // NewEngine checks it so an unset path in a directory that has no rules fails at
 // startup rather than on every import.
-const DefaultSemgrepRulesPath = "models/audit/semgrep/rules/python/rules.yaml"
+//
+// It names the rules tree rather than one pack inside it. Every pack declares
+// the languages it applies to, and semgrep dispatches on that declaration, so a
+// single --config over the tree loads all of them and applies each only to its
+// own language. Naming one file - which is what this constant did while
+// python's was the only pack - leaves every other pack unloaded however many
+// are added, and the failure is silent: the scan succeeds and simply reports
+// nothing outside that one language.
+const DefaultSemgrepRulesPath = "models/audit/semgrep/rules"
 
 // semgrepEngine is the Tier 1 engine that matches with the Semgrep CLI instead
 // of the built-in regular expressions.
@@ -302,10 +310,35 @@ func (e *semgrepEngine) walkTargets(dir string) ([]string, error) {
 }
 
 // isSourceFile checks if a file matches supported multi-language extensions or scanner extensions.
+//
+// The list is the GA tier of semgrep's language set: C#, Go, Java, JavaScript,
+// PHP, Python, Ruby, Scala, Terraform and TypeScript, plus the C/C++/CUDA and
+// shell packs that predate it. Before this, only .py .go .c .cpp .cu .h .hpp
+// .java .sh were admitted, so a package written in any of the other GA
+// languages was never handed to semgrep at all and its pack had nothing to run
+// on - the scan succeeded and reported nothing.
+//
+// JSON is deliberately absent. Its ".json" and ".ipynb" extensions are its only
+// ones, and admitting ".json" would put every data file of a model package into
+// the pass: the audit-100 benchmark carries 920 of them, and a tokenizer.json
+// is megabytes of vocabulary no rule reads. A notebook needs its cell sources
+// extracted rather than a JSON parse, which is separate work; until that lands,
+// JSON coverage would spend the scan budget on bytes it cannot interpret.
 func (e *semgrepEngine) isSourceFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
-	case ".py", ".go", ".c", ".cpp", ".cu", ".h", ".hpp", ".java", ".sh":
+	case ".cs",
+		".go",
+		".java",
+		".cjs", ".js", ".jsx", ".mjs",
+		".php", ".phtml", ".tpl",
+		".py", ".pyi",
+		".rb",
+		".scala",
+		".hcl", ".tf", ".tfvars", ".tofu",
+		".ts", ".tsx",
+		".c", ".cpp", ".cu", ".h", ".hpp",
+		".sh":
 		return true
 	}
 	if e.scanner != nil && e.scanner.hasMatchingExtension(path) {
