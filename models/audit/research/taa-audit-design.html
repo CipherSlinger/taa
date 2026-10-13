@@ -1202,7 +1202,7 @@
 
   .semgrep-compare-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
     gap: 16px;
   }
 
@@ -1220,10 +1220,6 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-  }
-
-  .semgrep-compare-card.current {
-    border-left: 4px solid var(--muted);
   }
 
   .semgrep-compare-card.enhanced {
@@ -1269,10 +1265,6 @@
     content: "•";
     color: var(--accent);
     font-weight: bold;
-  }
-
-  .semgrep-compare-card.current .semgrep-compare-list li::before {
-    color: var(--muted);
   }
 
   .semgrep-perks-grid {
@@ -3320,20 +3312,6 @@
 
         <!-- 机制对比面板 -->
         <div class="semgrep-compare-grid" style="margin-top: 20px;">
-          <div class="semgrep-compare-card current">
-            <div class="semgrep-compare-head">
-              <span class="semgrep-compare-title">⚠️ 传统缺陷：单行文本 / 正则扫描 (Legacy Regex Baseline)</span>
-              <span style="font-size: 11px; color: var(--muted); font-weight: 600;">已废黜引擎</span>
-            </div>
-            <ul class="semgrep-compare-list">
-              <li><strong>匹配粒度：</strong>基于单行文本字符串或正则模式匹配，逐行无状态机械扫描。</li>
-              <li><strong>别名逃逸盲区：</strong>无法感知 <code>import socket as s; s.connect()</code> 或 <code>getattr(os, "system")</code> 等别名重命名。</li>
-              <li><strong>数据流割裂盲区：</strong>无法跨行追踪数据来源，第 12 行读取凭据至第 45 行外发完全脱节。</li>
-              <li><strong>上下文机械生硬：</strong>机械截取前后固定的物理行数，经常截断真实函数边界，诱发大模型幻觉。</li>
-              <li><strong>语言单一受限：</strong>仅能勉强匹配 Python 规则，无法支持 Go、C/CUDA、Java 等微工程混合审查。</li>
-            </ul>
-          </div>
-
           <div class="semgrep-compare-card enhanced">
             <div class="semgrep-compare-head">
               <span class="semgrep-compare-title" style="color: var(--accent);">🚀 核心防线：Semgrep AST 语义与跨语言污点引擎 (Semgrep Native Core)</span>
