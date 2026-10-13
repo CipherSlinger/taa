@@ -2951,12 +2951,20 @@
             <text x="525" y="222" class="fw-code" style="font-size: 11px; fill: var(--accent); font-weight: 700;">触发疑点 /
               跨模块分析请求</text>
 
-            <!-- ================= TIER 2: 跨仓库 CPG 过程间分析中枢 (Y: 236 - 476) ================= -->
-            <rect x="40" y="236" rx="16" ry="16" width="1320" height="240" class="fw-box"
+            <!-- ================= TIER 2: 跨仓库 CPG 过程间分析中枢 (Y: 236 - 486) ================= -->
+            <rect x="40" y="236" rx="16" ry="16" width="1320" height="250" class="fw-box"
               style="stroke-width: 2.2; stroke: var(--accent); fill: color-mix(in srgb, var(--accent) 5%, var(--panel));">
             </rect>
 
-            <!-- CPG 容器标��与标签 -->
+            <!-- The six layers are two phases rather than one flat pipeline: L1-L3 build
+                 the graph, L4-L6 consume it. These two tints are drawn before every
+                 layer box, so they only ever sit underneath them. -->
+            <rect x="50" y="276" width="650" height="190" rx="12"
+              style="fill: color-mix(in srgb, var(--accent) 6%, transparent); stroke: none;"></rect>
+            <rect x="704" y="276" width="650" height="190" rx="12"
+              style="fill: color-mix(in srgb, var(--ok) 6%, transparent); stroke: none;"></rect>
+
+            <!-- CPG 容器标题与标签 -->
             <g transform="translate(60, 246)">
               <rect width="700" height="26" rx="6" fill="color-mix(in srgb, var(--accent) 20%, var(--panel))"
                 stroke="color-mix(in srgb, var(--accent) 40%, var(--line))" stroke-width="1"></rect>
@@ -3008,22 +3016,22 @@
             <!-- 箭头 L2 -> L3 -->
             <line x1="474" y1="372" x2="490" y2="372" class="fw-line" style="stroke-width: 1.5;"></line>
 
-            <!-- Layer 3: 过程间 CFG / DFG -->
+            <!-- Layer 3: intra-procedural CFG / DFG, plus the inter-procedural call graph -->
             <g transform="translate(490, 282)">
               <rect width="205" height="180" rx="10" class="fw-box" style="fill: var(--panel-2); stroke: var(--line);">
               </rect>
               <rect width="205" height="26" rx="8" fill="color-mix(in srgb, var(--accent) 15%, var(--panel))"></rect>
               <text x="102" y="18" text-anchor="middle" font-size="12px" font-weight="700" fill="var(--accent)">Layer 3:
-                过程间 CFG / DFG</text>
-              <text x="12" y="46" class="fw-small" font-weight="600">• 过程间调用图 (CallGraph)</text>
-              <text x="12" y="66" class="fw-small">• 实参形参绑定:</text>
-              <text x="20" y="84" class="fw-code" style="font-size: 10px; color: var(--muted);">CALL_ARG (arg -&gt;
+                CFG / DFG + 调用图</text>
+              <text x="12" y="46" class="fw-small" font-weight="600">• 过程内 CFG 控制流</text>
+              <text x="12" y="66" class="fw-small">• 过程内到达定值流 DFG_DEF_USE</text>
+              <text x="12" y="84" class="fw-small" font-weight="600">• 过程间调用图 (CallGraph)</text>
+              <text x="20" y="104" class="fw-code" style="font-size: 10px; color: var(--muted);">CALL_ARG (arg -&gt;
                 param)</text>
-              <text x="12" y="104" class="fw-small">• 返回值到调用目标赋值:</text>
               <text x="20" y="122" class="fw-code" style="font-size: 10px; color: var(--muted);">CALL_RET (ret -&gt;
                 lhs)</text>
-              <text x="12" y="142" class="fw-small">• 到达定值流 DFG_DEF_USE</text>
-              <text x="12" y="166" class="fw-code" style="font-size: 10px; fill: var(--ok);">跨函数跨文件深度连通</text>
+              <text x="12" y="142" class="fw-small">• 实参形参绑定 · 返回值回写</text>
+              <text x="12" y="166" class="fw-code" style="font-size: 10px; fill: var(--ok);">跨文件连通由调用图承载</text>
             </g>
 
             <!-- 箭头 L3 -> L4 -->
@@ -3091,9 +3099,15 @@
               <text x="12" y="166" class="fw-code" style="font-size: 10px; fill: var(--ok);">无损压缩 · 零幻觉底座</text>
             </g>
 
+            <!-- Phase labels for the two tints above: which half builds, which half queries. -->
+            <text x="375" y="480" text-anchor="middle" class="fw-small"
+              style="fill: var(--accent); font-weight: 700;">建图期 (L1–L3)：逐文件解析构建，跨文件调用需整体再解析一遍</text>
+            <text x="1029" y="480" text-anchor="middle" class="fw-small"
+              style="fill: var(--ok); font-weight: 700;">查询期 (L4–L6)：在已成图上按序消费，只加边、只读、只渲染</text>
+
             <!-- 连线：CPG 引擎 -> 深度证据融合与协议封装 (向下) -->
-            <path d="M 700 476 L 700 508" class="fw-line fw-line--accent" style="stroke-width: 2.2;"></path>
-            <text x="712" y="496" class="fw-code"
+            <path d="M 700 486 L 700 508" class="fw-line fw-line--accent" style="stroke-width: 2.2;"></path>
+            <text x="712" y="501" class="fw-code"
               style="font-size: 11px; fill: var(--accent); font-weight: 700;">输出标准化因果证据链</text>
 
             <!-- ================= TIER 3: 深度证据融合与强类型协议封装 (Y: 508 - 612) ================= -->
@@ -4166,7 +4180,9 @@
             </div>
             <div>
               经核查生产代码库（<code>cmd/taa</code>、<code>internal/codeaudit/</code> 与 <code>internal/codeaudit/cpg/</code>），CPG
-              各层已全部由 Go 原生实现并接入生产守护进程热路径：
+              各层已全部由 Go 原生实现并接入生产守护进程热路径。这 6 层<strong>不是一条平铺的串行流水线</strong>，而是两段：
+              <strong>L1–L3 建图</strong>——逐文件交织构建（每个文件内先建节点、再连 CFG/DFG、最后收集调用点），且跨文件调用必须等全部文件入图后
+              再整体解析一遍；<strong>L4–L6 查询</strong>——在已经建好的图上严格按序消费，L4 只加跨服务边、L5 只读、L6 只渲染，三者都不再改动图结构。
               <ul style="margin: 6px 0 0 18px; padding: 0;">
                 <li><strong>接入方式（按需触发）：</strong>图分析<strong>不是</strong>无条件执行。Tier 1 引擎（Semgrep / 正则）返回 <strong>0 条
                     Finding 时立即返回</strong>，零告警样本走毫秒级快速旁路，不承担任何图构建开销；仅当 <strong>Finding &gt; 0</strong> 时才构建
@@ -4174,9 +4190,11 @@
                 <li><strong>Layer 1–2: AST 统一建模与跨文件符号解析（已接入）：</strong><code>internal/codeaudit/cpg/ast_bridge.go</code>
                   以 Python 标准库 <code>ast</code> 做 JSON dump（5 秒超时、进程隔离、<strong>零 CGO</strong>）作为唯一桥接点，其余全部为 Go
                   原生；<code>resolver.go</code> 完成跨文件 import / 别名 / <code>from … import …</code> 的 FQN 解析。</li>
-                <li><strong>Layer 3: 过程间 CFG / DFG / Call Graph（已接入）：</strong><code>builder.go</code> 构建
+                <li><strong>Layer 3: 过程内 CFG / DFG + 过程间调用图（已接入）：</strong><code>builder.go</code> 构建
                   <code>AST_STMT</code>/<code>AST_FUNC_DEF</code>、<code>CFG_BRANCH_*</code>、<code>DFG_DEF_USE</code> 与
-                  <code>CALL_ARG</code>/<code>CALL_RET</code> 过程间边。</li>
+                  <code>CALL_ARG</code>/<code>CALL_RET</code> 边。其中 <code>CFG_*</code> 与 <code>DFG_DEF_USE</code> 是
+                  <strong>函数内/文件内</strong>的（代码注释亦如此标注），真正<strong>过程间</strong>的只有调用图那一段
+                  <code>CALL</code>/<code>CALL_ARG</code>/<code>CALL_RET</code>——跨文件连通由它承载。</li>
                 <li><strong>Layer 4: 微服务边界穿透（已接入）：</strong><code>microservice.go</code> 提取 HTTP 客户端调用与 Flask/FastAPI
                   服务端路由并做拓扑匹配，生成
                   <code>MICROSERVICE_HTTP</code>/<code>MICROSERVICE_PAYLOAD</code>/<code>MICROSERVICE_RESPONSE</code>
@@ -4240,7 +4258,7 @@
             <div class="card" style="background: var(--panel);">
               <h4>3. 不动点污点传播引擎 (Worklist Taint Engine)</h4>
               <ul>
-                <li><strong>敏感源与汇聚点：</strong>精准捕获敏感环境变量 (<code>ENV_001</code>)、核心密钥凭据 (<code>FIL_001</code>) 及��始训练数据
+                <li><strong>敏感源与汇聚点：</strong>精准捕获敏感环境变量 (<code>ENV_001</code>)、核心密钥凭据 (<code>FIL_001</code>) 及原始训练数据
                   (<code>RAW_DATA</code>)。</li>
                 <li><strong>有限跳步不动点算法：</strong>维护 <code>(node_id, source_id)</code> 访问集合阻断递归环路，设置
                   <code>max_hops=50</code> 保证确定性收敛。</li>
