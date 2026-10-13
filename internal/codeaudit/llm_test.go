@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +50,9 @@ type mockLLMClient struct {
 	fileSummaries []FileSummary
 	callCount     int
 	fileCallCount int
+	// filePrompts records the text of every file-level prompt, so a test can
+	// assert what the model was shown rather than only what it answered.
+	filePrompts []string
 }
 
 func (m *mockLLMClient) VerifyFinding(_ context.Context, _ *teellm.RequestEnvelope) (*teellm.ResponseEnvelope, error) {
@@ -83,7 +87,8 @@ func (m *mockLLMClient) Close() error {
 	return nil
 }
 
-func (m *mockLLMClient) AnalyzeFile(_ context.Context, _ string) (FileSummary, error) {
+func (m *mockLLMClient) AnalyzeFile(_ context.Context, prompt string) (FileSummary, error) {
+	m.filePrompts = append(m.filePrompts, prompt)
 	if m.fileCallCount >= len(m.fileSummaries) {
 		return FileSummary{RiskLevel: "UNCERTAIN", Summary: "no more mock summaries"}, nil
 	}
@@ -883,5 +888,67 @@ func TestParseFileSummaryInvalidRiskLevel(t *testing.T) {
 	s := parseFileSummary(raw)
 	if s.RiskLevel != "UNCERTAIN" {
 		t.Fatalf("risk_level = %s, want UNCERTAIN for invalid value", s.RiskLevel)
+	}
+}
+
+// TestBinaryFilePromptCarriesEvidenceAndNotRawBytes pins what the model is shown
+// for a binary file.
+//
+// The source prompt cannot be reused: it opens by telling the model it is looking
+// at a Python source file and wraps the content in a python fence. Handing it
+// extracted evidence under that framing asks the model to judge one thing while
+// telling it another, and the answer is uninterpretable either way. The binary
+// prompt therefore states what the lines are, and the test pins that the state-
+// ment, the evidence, and the absence of the source framing all survive.
+func TestBinaryFilePromptCarriesEvidenceAndNotRawBytes(t *testing.T) {
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{
+		imports: []string{"socket", "connect"},
+		needed:  []string{"libcurl.so.4"},
+	}))
+
+	mock := &mockLLMClient{fileSummaries: []FileSummary{{RiskLevel: "HIGH", Summary: "外联"}}}
+	cfg := AuditConfig{
+		LLM:    LLMConfig{Enabled: true, Policy: "assist", Model: "test"},
+		Binary: DefaultBinaryConfig(),
+	}
+	if _, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, mock); err != nil {
+		t.Fatalf("GenerateAuditReport: %v", err)
+	}
+
+	if len(mock.filePrompts) != 1 {
+		t.Fatalf("file prompts = %d, want 1", len(mock.filePrompts))
+	}
+	prompt := mock.filePrompts[0]
+	for _, want := range []string{"libevil.so", "[dynsym] connect", "[needed] libcurl.so.4", "证据"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("binary prompt is missing %q; prompt was:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "```python") {
+		t.Errorf("binary prompt reuses the Python fence; the model is told the wrong thing about its input:\n%s", prompt)
+	}
+}
+
+// TestSourceFilePromptIsUnchangedByTheBinaryChannel pins that adding a channel
+// did not change what the source channel asks. The non-inferiority measurement
+// rests on the source prompt being what it was.
+func TestSourceFilePromptIsUnchangedByTheBinaryChannel(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "train.py", "import os\nos.system(cmd)\n")
+
+	mock := &mockLLMClient{fileSummaries: []FileSummary{{RiskLevel: "HIGH", Summary: "x"}}}
+	cfg := AuditConfig{
+		LLM:    LLMConfig{Enabled: true, Policy: "assist", Model: "test"},
+		Binary: DefaultBinaryConfig(),
+	}
+	if _, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, mock); err != nil {
+		t.Fatalf("GenerateAuditReport: %v", err)
+	}
+	if len(mock.filePrompts) != 1 {
+		t.Fatalf("file prompts = %d, want 1", len(mock.filePrompts))
+	}
+	if !strings.Contains(mock.filePrompts[0], "```python") {
+		t.Errorf("the source prompt lost its Python fence:\n%s", mock.filePrompts[0])
 	}
 }

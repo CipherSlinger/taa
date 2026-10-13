@@ -316,6 +316,49 @@ const fileAnalysisPromptTemplate = `你是一个严谨的代码安全审计专�
 ## 请严格按以下 JSON 格式输出，不要包含其他内容:
 {"risk_level":"HIGH/MEDIUM/LOW","summary":"一句话安全结论(中文)","chained":false,"exfiltration":false}`
 
+// binaryFileAnalysisPromptTemplate is the file-level prompt for a file whose
+// content is not source.
+//
+// It is separate from the source prompt rather than parameterised into it,
+// because the two tell the model different things about the same slot. The
+// source prompt says "here is Python"; this one says "here is a listing of
+// extracted evidence, each line numbered and tagged with where it came from",
+// and a model given the first while shown the second answers a question nobody
+// asked. The evidence block is the same rendering the finding-level prompt's
+// context comes from, so a line the model names is a line the report carries.
+//
+// The listing is capped, and the cap is stated in the prompt. A model that
+// believed it had seen everything would treat the absence of a signal as
+// evidence of its absence, which is the same mistake the completeness fields in
+// the report exist to prevent.
+const binaryFileAnalysisPromptTemplate = `你是二进制代码安全审计专家。以下是一个二进制文件的证据清单，请判断它是否包含恶意行为、数据外传或后门。
+
+## 文件信息
+文件: %s (类型: %s, 大小: %d 字节, 证据行数: %d)
+静态规则命中 (%d 处需确认点): %s
+
+## 证据说明
+每一行是一条证据，格式为「序号	[来源] 内容」，来源含义：
+- dynsym：该二进制从动态库导入的符号，即它能够调用的能力（stripped 二进制仅存此类证据）
+- needed：DT_NEEDED，加载器会载入的依赖库
+- strings：从文件中提取的可打印字符串
+- section / entropy：节区构成与香农熵；可执行节区熵接近 8 说明代码被压缩或加密，运行前必须先解包
+- member：压缩包成员
+- pickle：pickle 流要求反序列化器解析的「模块.属性」，加载即执行
+- notice：文件自身属性（解释器、格式说明）
+
+## 证据清单（节选）
+%s
+
+## 判定基准
+1. 模型权重、张量数据、数学库依赖（libc/libm/libstdc++/libgomp）、框架运行库导入属于正常模型包的构成，风险等级为 LOW，chained 与 exfiltration 均为 false。
+2. 只有当证据确凿指向未授权的网络外发（socket/connect + 外联库）、命令执行（system/execve/popen）、内存中落地并执行（memfd_create/fexecve）、pickle 反序列化执行（posix.system 等），或可执行节区被加壳时，才判定 risk_level 为 HIGH/MEDIUM，并相应标记 chained 或 exfiltration。
+3. 严禁仅凭「导入了某个库」就判定为恶意：一个普通加速库导入 dlopen 或 mmap 是正常的，必须结合证据链判断。
+4. 证据清单是有上限的节选；清单未出现某项证据不等于该证据不存在。
+
+## 请严格按以下 JSON 格式输出，不要包含其他内容:
+{"risk_level":"HIGH/MEDIUM/LOW","summary":"一句话安全结论(中文)","chained":false,"exfiltration":false}`
+
 // AuditConfig is the configuration of one audit run: the two things an audit can
 // be told to do differently.
 //
@@ -473,35 +516,84 @@ func runBinaryChannel(dir string, binCfg BinaryConfig) *BinaryScanResult {
 }
 
 // analyzeFileWithLLM calls the LLM for a file-level security summary.
+//
+// A file the binary channel examined takes the binary prompt and the listing the
+// channel already produced; everything else takes the source prompt and a read
+// of the file. The listing is used rather than re-read from disk for two
+// reasons: a binary file read as text is noise, and re-running the extraction
+// here would read a possibly-large file a second time on the import path.
+//
+// Both branches are behind the FileAnalyzer assertion above, and the binary one
+// is reachable today only through a client that implements that interface. The
+// production client does not: it is teellm.Client (LLMClient above), whose
+// interface declares VerifyFinding, HealthCheck and Close and no AnalyzeFile,
+// and newLLMClient returns that value unchanged. The only AnalyzeFile
+// implementation in the tree is a test mock. So in production a binary file
+// falls through to synthesizeFileSummary - which is the same situation the
+// source file path has been in all along, so this is not a regression the
+// binary channel introduces; the file-level prompt is exercised by the mock
+// rather than by the deployed pipeline. This function does not change that, and
+// its tests do not claim otherwise.
 func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, findings []Finding, lineCounts map[string]int, binaryEvidence map[string]*EvidenceSet) FileSummary {
-	if fa, ok := client.(FileAnalyzer); ok {
-		maxLines := 80
-		code := ReadFileForAnalysis(filePath, maxLines)
-		lineCount := lineCounts[filePath]
-		if lineCount == 0 {
-			lineCount = CountFileLines(filePath)
-		}
-		summary := BuildFindingsSummary(findings)
-
-		prompt := fmt.Sprintf(fileAnalysisPromptTemplate,
-			filepath.Base(filePath), lineCount,
-			len(findings), summary,
-			code,
-		)
-
-		result, err := fa.AnalyzeFile(ctx, prompt)
-		if err != nil {
-			log.Printf("LLM file analysis error for %s: %v", filepath.Base(filePath), err)
-			return FileSummary{
-				RiskLevel: "UNCERTAIN",
-				Summary:   fmt.Sprintf("LLM 分析失败: %v", err),
-			}
-		}
-		return result
+	fa, ok := client.(FileAnalyzer)
+	if !ok {
+		// Synthesize a FileSummary from findings when client does not implement FileAnalyzer.
+		return synthesizeFileSummary(filePath, findings)
 	}
 
-	// Synthesize a FileSummary from findings when client does not implement FileAnalyzer.
-	return synthesizeFileSummary(filePath, findings)
+	if ev := binaryEvidence[filePath]; ev != nil {
+		return analyzeBinaryFileWithLLM(ctx, fa, ev, findings)
+	}
+
+	maxLines := 80
+	code := ReadFileForAnalysis(filePath, maxLines)
+	lineCount := lineCounts[filePath]
+	if lineCount == 0 {
+		lineCount = CountFileLines(filePath)
+	}
+	summary := BuildFindingsSummary(findings)
+
+	prompt := fmt.Sprintf(fileAnalysisPromptTemplate,
+		filepath.Base(filePath), lineCount,
+		len(findings), summary,
+		code,
+	)
+
+	result, err := fa.AnalyzeFile(ctx, prompt)
+	if err != nil {
+		log.Printf("LLM file analysis error for %s: %v", filepath.Base(filePath), err)
+		return FileSummary{
+			RiskLevel: "UNCERTAIN",
+			Summary:   fmt.Sprintf("LLM 分析失败: %v", err),
+		}
+	}
+	return result
+}
+
+// binaryFilePromptMaxLines bounds the listing handed to the model. It is a
+// separate number from the source prompt's 80 lines because an evidence line is
+// a few dozen bytes where a source line is a few dozen characters, and because
+// the ordering puts the structural evidence - the part a judgement needs most -
+// at the front of the listing.
+const binaryFilePromptMaxLines = 120
+
+// analyzeBinaryFileWithLLM asks the model about a file the binary channel read.
+func analyzeBinaryFileWithLLM(ctx context.Context, fa FileAnalyzer, ev *EvidenceSet, findings []Finding) FileSummary {
+	prompt := fmt.Sprintf(binaryFileAnalysisPromptTemplate,
+		filepath.Base(ev.File), ev.Kind, ev.Size, len(ev.Lines),
+		len(findings), BuildFindingsSummary(findings),
+		ev.Render(binaryFilePromptMaxLines),
+	)
+
+	result, err := fa.AnalyzeFile(ctx, prompt)
+	if err != nil {
+		log.Printf("LLM binary file analysis error for %s: %v", filepath.Base(ev.File), err)
+		return FileSummary{
+			RiskLevel: "UNCERTAIN",
+			Summary:   fmt.Sprintf("LLM 分析失败: %v", err),
+		}
+	}
+	return result
 }
 
 // synthesizeFileSummary derives a FileSummary from finding severities and categories.
