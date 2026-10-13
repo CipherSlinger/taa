@@ -9990,10 +9990,9 @@ func analyzeFileWithLLM(ctx context.Context, client LLMClient, filePath string, 
 }
 
 // binaryFilePromptMaxLines bounds the listing handed to the model. It is a
-// separate number from the source prompt's 80 lines because an evidence line is
-// a few dozen bytes where a source line is a few dozen characters, and because
-// the ordering puts the structural evidence - the part a judgement needs most -
-// at the front of the listing.
+// separate number from the source prompt's 80 lines because the budget has to
+// hold every reserved structural line plus a useful number of imports at the
+// measured densities (a real C++ library has hundreds).
 const binaryFilePromptMaxLines = 120
 
 // analyzeBinaryFileWithLLM asks the model about a file the binary channel read.
@@ -10001,7 +10000,7 @@ func analyzeBinaryFileWithLLM(ctx context.Context, fa FileAnalyzer, ev *Evidence
 	prompt := fmt.Sprintf(binaryFileAnalysisPromptTemplate,
 		filepath.Base(ev.File), ev.Kind, ev.Size, len(ev.Lines),
 		len(findings), BuildFindingsSummary(findings),
-		ev.Render(binaryFilePromptMaxLines),
+		ev.RenderExcerpt(binaryFilePromptMaxLines),
 	)
 
 	result, err := fa.AnalyzeFile(ctx, prompt)
@@ -10026,6 +10025,12 @@ func analyzeBinaryFileWithLLM(ctx context.Context, fa FileAnalyzer, ev *Evidence
 > - 若将来要真正打通，第一条路（扩协议）是正解；而按 finding 级已实测的先例，届时文件级提示词也该照那条先例的完整形态重组（准则前置 **并** 尾部重述）。
 
 > **注（提示词结构，不改行为）**：`binaryFileAnalysisPromptTemplate` 把 `## 判定基准` 放在**证据块之后**且没有尾部重述。这与仓库已实测的 **finding 级**先例不一致——`teellm/ollama_backend.go:15` 的 `findingAnalysisPromptTemplate` 是**准则前置**（`## 判定优先级与安全边界` 在第 17 行、证据之前）**加尾部** `## 判定提醒`（第 46 行），由 `TestFindingAnalysisPromptOrderAndVerbs`/`TestFindingAnalysisPromptCachingInvariants`（`teellm/ollama_backend_test.go:443`/`:536`）钉住——但它与自己的**文件级**同类 `fileAnalysisPromptTemplate`（`internal/codeaudit/verifier.go:300-317`，同样是准则在证据之后、无尾部重述）一致，所以本任务**保持现状不重组**：那条实测覆盖的是 finding 级提示词，没有任何针对文件级提示词的测量，而在上一条注成立的前提下它今天也到不了模型。留这条注记只为给后来者一个杠杆——**若将来要优化文件级提示词的延迟，第一个该试的杠杆是把准则前置**（与 finding 级先例同形），而且必须照那条先例的**完整形态**做：前置**并**在尾部重述，因为那条先例记录的是"只前置、无尾部重述会系统性转严"。
+
+> **已决（2026-10-13，用户裁定）：证据节选改为按来源取样，放弃 `Render` 的前缀截断。** 计划原定的 `ev.Render(binaryFilePromptMaxLines)` 取的是**前缀**，而 `Finalize`（`internal/codeaudit/binary_evidence.go:396`）的排序键是 `(Offset, Source, Text)`：所有结构性证据经 `addStructured`（`:211`）落盘时 `Offset` 都是 0，offset 相同时比较器落到**来源名字典序**，于是 offset 0 内的次序是 dynsym → entropy → member → needed → notice → pickle → section。dynsym 每有一个 `SHN_UNDEF`+`STB_GLOBAL` 动态符号就产出一行（`:860-865`）且**没有逐来源上限**，所以符号密集的库会把 120 行预算整段吃掉。**实测**：`/usr/lib/x86_64-linux-gnu/libstdc++.so.6` 有 202 个这样的符号，单独就超过上限；在该形状的 fixture 上 `Render(120)` 的产出是 `dynsym:120`，entropy/section/needed 各 0 行。后果恰是提示词自己 `## 判定基准` 第 2 条（可执行节区加壳、DT_NEEDED 外联库）所要的证据一行都进不去——所以计划里那句"排序把结构性证据放在清单最前"只对 offset 0 这个**大类**成立，对该类内部的次序不成立，那句话已从代码注释里删掉。
+>
+> 改法：新增 `(*EvidenceSet).RenderExcerpt`（`binary_evidence.go`），先按索引序输出**保留来源**（entropy / section / needed / notice——行数由文件的**结构**决定，不由内容体量决定），再用剩余预算按索引序补足其余来源；逐行格式抽到 `appendEvidenceLine`（`:415`）一处，两个渲染器不会漂移。**索引仍取自 `Finalize`**，所以"模型点到的行就是报告里的行"这一不变式不动（节选内索引因此不连续，这是预期而非缺陷）。同一 fixture 换成 `RenderExcerpt(120)` 后产出 `dynsym:112, section:6, entropy:1, needed:1`。取样契约由新增的 `TestBinaryFilePromptExcerptKeepsStructuralEvidenceUnderSymbolFlood` 钉住，其 fixture 的 import 数量由 `binaryFilePromptMaxLines` 推导而非写死，常量改大时该测试不会悄悄失去判别力。
+>
+> **`Finalize` 的比较器与契约未动**：给 offset 0 内的来源定优先级是另一条候选路，被否决——`Finalize` 的顺序是 `Finding.Line` 索引所依赖的既有契约，改它会波及上一批任务已复核的排序测试，并可能改变既有 finding 的行号。因为改写后 `Render` 已无调用方（`RenderExcerpt` 在保留集为空时即等价的纯前缀），已将其删除，方法名不再存在于树中。
 
 - [ ] **Step 6: 跑测试确认通过**
 
