@@ -2867,7 +2867,7 @@
     <main class="content">
       <section class="section" id="scope">
         <h2>1. 设计框架</h2>
-        <p class="lead">本节描述 TAA 代码审计的全景分层架构及各阶段职责分配。系统采用“多语言多模块源码输入 → Semgrep 静态语义初筛（50% 零告警算力快速旁路） + 跨仓库/跨微服务代码属性图 (CPG) 深度过程间污点引擎（AST/CFG/DFG/Call Graph/微服务边界穿透） → 深度因果证据切片与轨迹压缩 → TEE-LLM 语义仲裁协议（Finding 级与 File 级解耦验证） → 严谨 Fail-Closed 门禁决策”的现代化闭环架构，全面杜绝传统单文件扫描器的跨模块与微服务审计死角。</p>
+        <p class="lead">本节描述 TAA 代码审计的全景分层架构及各阶段职责分配。系统采用“多语言多模块源码输入 → Semgrep 静态语义初筛（50% 零告警算力快速旁路） + 跨仓库/跨微服务代码属性图 (CPG) 深度过程间污点引擎（AST/CFG/DFG/Call Graph/微服务边界穿透） → 深度因果证据切片与轨迹压缩 → TEE-LLM 语义仲裁协议（Finding 级与 File 级解耦验证） → 严谨 Fail-Closed 门禁决策”的现代化闭环架构，全面杜绝传统单文件扫描器的跨模块与微服务审计死角。此外，导入审计同时对模型包内的<strong>二进制文件</strong>（ELF / 容器 / pickle / 张量）运行一条并行的证据通道，按内容识别、独立于所选 Tier 1 引擎，详见第 3 节。</p>
 
         <figure class="framework-figure">
           <svg class="framework-svg" viewBox="0 0 1400 780" role="img"
@@ -4080,8 +4080,341 @@
         </div>
       </section>
 
+      <section class="section" id="binary">
+        <h2>3. 二进制代码审计通道 (Binary Audit Channel)</h2>
+        <p class="lead">源码臂按<strong>扩展名</strong>纳管文件，而模型包里承载原生代码与可执行载荷的那几类文件——<code>.so</code>、<code>.pt</code>、<code>.whl</code>、<code>.safetensors</code>——此前根本不进扫描器：审计对它们既没有结论，也没有留下「没看过」的记录。本节定义的二进制通道在<strong>所选 Tier 1 引擎之外</strong>并行运行（regex 臂与 Semgrep 臂部署都跑），按<strong>文件内容</strong>识别二进制、抽取结构化证据、匹配规则表，并把结论并入同一份 <code>audit_report.json</code>。</p>
+
+        <div style="margin: 10px 0 16px 0; padding: 10px 14px; background: color-mix(in srgb, var(--ok) 10%, var(--panel)); border: 1px solid color-mix(in srgb, var(--ok) 30%, var(--line)); border-radius: 8px; font-size: 12.5px; display: flex; align-items: center; gap: 10px;">
+          <span style="background: var(--ok); color: #fff; font-weight: 800; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;">工程交付达成</span>
+          <span><strong>实现位置：</strong><code>internal/codeaudit/binary_detect.go</code> / <code>binary_evidence.go</code> / <code>binary_rules.go</code> / <code>binary_scanner.go</code> · <strong>依赖：</strong>仅 Go 标准库（<code>debug/elf</code>、<code>archive/zip</code>、<code>compress/gzip</code>），无第三方解析器、不起子进程 · <strong>回滚：</strong><code>security.binaryAudit.enabled=false</code> 后审计逐字节回到通道引入之前 · <strong>交付日期：</strong>2026-10-13。</span>
+        </div>
+
+        <!-- 3.1 四段式流水线 -->
+        <h3 style="margin: 22px 0 6px 0; font-size: 16px; font-weight: 800;">3.1 四段式流水线</h3>
+        <p style="font-size: 13px; line-height: 1.7; margin: 0 0 12px 0;">通道由四个各自可测的阶段组成，阶段之间只传结构化的证据行与缺口记录，不传「判断」：</p>
+        <div class="spec-grid" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-bottom: 14px;">
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;">
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px;">① 识别 <code>ClassifyBinary</code></div>
+            <ul style="margin: 0; padding-left: 16px; line-height: 1.55;">
+              <li>按<strong>内容</strong>判定文件种类：<code>elf</code> / <code>archive</code> / <code>compressed</code> / <code>pickle</code> / <code>numpy</code> / <code>raw</code> / <code>text</code>。</li>
+              <li>扩展名只作补充与候选提示，改名不构成绕过。</li>
+            </ul>
+          </div>
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;">
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px;">② 取证 <code>CollectEvidence</code></div>
+            <ul style="margin: 0; padding-left: 16px; line-height: 1.55;">
+              <li>流式抽取五类证据行，每条带来源标签（<code>dynsym</code> / <code>needed</code> / <code>entropy</code> / <code>string</code> / <code>member</code> / <code>pickle</code>）。</li>
+              <li>无整文件驻留；越界与读取缺口在同一处记账。</li>
+            </ul>
+          </div>
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;">
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px;">③ 判定 <code>BinaryMatcher</code></div>
+            <ul style="margin: 0; padding-left: 16px; line-height: 1.55;">
+              <li>证据行匹配规则表，产出带 <code>binary_kind</code> / <code>evidence_source</code> / <code>binary_offset</code> 的 <code>Finding</code>。</li>
+              <li>每个文件先算一次佐证，再决定 presence 族是否降级。</li>
+            </ul>
+          </div>
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;">
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px;">④ 完整性 <code>ProvesCleanScan</code></div>
+            <ul style="margin: 0; padding-left: 16px; line-height: 1.55;">
+              <li>把「没读完」的缺口折进 clean-scan 证明，与源码臂的 <code>Truncated</code> 走同一条 fail-closed 路。</li>
+              <li>缺口与 finding 上限是两回事，见 3.6。</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- 3.2 识别 -->
+        <h3 style="margin: 22px 0 6px 0; font-size: 16px; font-weight: 800;">3.2 识别：按内容判定，扩展名只作补充</h3>
+        <p style="font-size: 13px; line-height: 1.7; margin: 0 0 12px 0;">判定的次序是：魔数 → pickle 三条判据 → 头部 NUL 启发式 → 扩展名，全部落空才归为文本。判断一旦成立，该文件就<strong>脱离源码臂</strong>：同一份字节不会被两个通道各读一遍并各自出结论。pickle 的判据是刻意分层的三条，因为前两条能被伪造、第三条不能：</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 130px;">种类</th>
+                <th style="width: 300px;">判据</th>
+                <th>说明与已知残差</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>elf</td>
+                <td>文件头魔数 <code>\x7fELF</code></td>
+                <td>解析器为 Go 标准库 <code>debug/elf</code>；解析失败记为「这次没读成」而不是「干净」。</td>
+              </tr>
+              <tr>
+                <td>archive</td>
+                <td>zip 中央目录魔数 <code>PK\x03\x04</code> 等</td>
+                <td>覆盖 <code>.pt</code>/<code>.whl</code>/<code>.zip</code> 等 torch 与 Python 打包形态。</td>
+              </tr>
+              <tr>
+                <td>compressed</td>
+                <td>gzip 魔数 <code>\x1f\x8b</code></td>
+                <td>解压后仅对头部嗅探；嗅探为 pickle 才交给解释器。</td>
+              </tr>
+              <tr>
+                <td>pickle</td>
+                <td>① 头部带 pickle 魔数 <code>0x80 0x02</code>–<code>0x05</code>；② 文件名属 <code>.pkl</code>/<code>.pickle</code>/<code>.joblib</code>；③ 头部能按协议 0/1 解析出 <code>module.attribute</code> 目标</td>
+                <td><strong>只有第③条让位于源码臂</strong>：<code>.py</code> 会被源码否决挡在嗅探之外。带 pickle 魔数的 <code>.py</code>、以及任何 <code>.pkl</code>/<code>.pickle</code>/<code>.joblib</code> 仍然被认领为 pickle——认领依据的是源码读者根本不会看的那部分字节。</td>
+              </tr>
+              <tr>
+                <td>numpy / raw</td>
+                <td><code>npy</code> 魔数；匹配不到任何魔数时，头部含 NUL 或扩展名命中二进制扩展名表即为 <code>raw</code></td>
+                <td><code>raw</code> 是纯数据类：其上的证据截断只记录、不阻断（见 3.6）。</td>
+              </tr>
+              <tr>
+                <td>text</td>
+                <td>判定序列全部落空（头部 4 KiB 内无 NUL、扩展名不在二进制表内）</td>
+                <td>交回源码臂；二进制通道不重复审计纯文本。<code>text</code> 是一个明确取值而不是空串，这样调用方分得清「看过且是文本」与「从没看过」。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 3.3 取证 -->
+        <h3 style="margin: 22px 0 6px 0; font-size: 16px; font-weight: 800;">3.3 取证：五类证据与读取预算</h3>
+        <div class="spec-grid" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-bottom: 14px;">
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;">
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px;">🔗 ELF 动态符号与依赖</div>
+            <ul style="margin: 0; padding-left: 16px; line-height: 1.55;">
+              <li><code>.dynsym</code> 导入符号（含版本后缀剥离）与 <code>DT_NEEDED</code> 依赖名。</li>
+              <li>读符号表前先探一次空缓冲（<code>symbolTableIsEmpty</code>）：<code>debug/elf</code> 的符号读取器对空缓冲是 <strong>panic 而不是返回 error</strong>，而 <code>ClassifyBinary</code> 只看四个魔数字节就把文件判为 ELF，于是每个尺寸与节名都是文件自己选的字段。探测走 <code>Section.Data()</code> 而不是读头部尺寸，因为名为 <code>.zdebug…</code> 且体部以 <code>ZLIB</code> 开头的节会把 <code>Section.Size</code> 改写成文件指定的值——读一次数据同时覆盖这两条通路。</li>
+            </ul>
+          </div>
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;">
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px;">📐 节区布局与香农熵</div>
+            <ul style="margin: 0; padding-left: 16px; line-height: 1.55;">
+              <li>逐节区流式统计 256 桶直方图，按实际读到的字节数归一化。</li>
+              <li><strong>无节表即结构性缺口</strong>：熵检测的输入是节区，没有节表就没有可测对象，记为缺口而不是「无发现」。</li>
+            </ul>
+          </div>
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;">
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px;">🧵 可打印字符串</div>
+            <ul style="margin: 0; padding-left: 16px; line-height: 1.55;">
+              <li>按长度窗口提取，去重键按来源命名空间隔离，避免同文本在不同来源互相顶掉。</li>
+              <li>只喂给四个 LOW 族，不参与任何可阻断判定。</li>
+            </ul>
+          </div>
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;">
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px;">📦 容器成员</div>
+            <ul style="margin: 0; padding-left: 16px; line-height: 1.55;">
+              <li>zip/gzip 递归<strong>一层</strong>，成员各自独立识别与取证。</li>
+              <li>成员数上限与「容器内被整读的 ELF/pickle 成员字节总量」上限各自独立，任一触顶记为结构性缺口。</li>
+            </ul>
+          </div>
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;">
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px;">🥒 pickle 操作码解释器</div>
+            <ul style="margin: 0; padding-left: 16px; line-height: 1.55;">
+              <li>自实现 memo 表解释器，解析 <code>GLOBAL</code>/<code>STACK_GLOBAL</code>/<code>INST</code> 得到真实的 <code>module.attribute</code> 目标。</li>
+              <li>不反序列化载荷本身——只走 opcode 流取目标名，<strong>不构造任何对象</strong>。</li>
+              <li>零长度操作数（真实语料中确实存在）单独处理，避免解析停滞。</li>
+            </ul>
+          </div>
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;">
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px;">⏱️ 读取预算</div>
+            <ul style="margin: 0; padding-left: 16px; line-height: 1.55;">
+              <li>不超过 64 MiB 的文件<strong>端到端读完</strong>；按实测 338 MB/s，单文件上限约 <strong>190 ms</strong>。</li>
+              <li>超过则只读首尾各 1 MiB，中间未读<strong>如实记账</strong>——这正是让「追加在 zip 尾目录之后的载荷」仍然可见的做法。</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- 3.4 规则表 -->
+        <h3 style="margin: 22px 0 6px 0; font-size: 16px; font-weight: 800;">3.4 判定：二进制臂规则表</h3>
+        <p style="font-size: 13px; line-height: 1.7; margin: 0 0 12px 0;">规则表分三类来源。<strong>结构证据</strong>沿用源码臂的共享 id 与共享严重级（严重级仍由源码规则表决定，二进制臂不另立一套）；<strong>熵与 pickle</strong>是二进制臂独有的可执行语义，各立新族；<strong>字符串证据</strong>整体另立四个 LOW 族，理由见 3.5。</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 110px;">规则编号</th>
+                <th style="width: 130px;">证据来源</th>
+                <th style="width: 130px;">严重级别</th>
+                <th style="width: 210px;">语义</th>
+                <th>触发条件</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>BIN_001</td>
+                <td>熵测量</td>
+                <td><span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span></td>
+                <td><strong>加壳 / 运行前需解包</strong></td>
+                <td>可执行节区（<code>SHF_EXECINSTR</code>）香农熵<strong>严格大于</strong> 7.5 bits/byte。触发它的是<strong>一次测量</strong>而非模式匹配，所以不匹配字面量、不会因畸形常量池误报。</td>
+              </tr>
+              <tr>
+                <td>BIN_002</td>
+                <td>结构（<code>.dynsym</code>）</td>
+                <td><span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span></td>
+                <td><strong>内存中落盘并执行</strong></td>
+                <td>导入 <code>memfd_create</code> / <code>fexecve</code>。受佐证门控约束（见 3.5）。</td>
+              </tr>
+              <tr>
+                <td>PKL_001</td>
+                <td>pickle 解释器</td>
+                <td><span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span></td>
+                <td><strong>加载即执行</strong></td>
+                <td>pickle 目标解析为进程执行语义（<code>posix.system</code> / <code>subprocess.*</code> / <code>pty.*</code> 等）。走完 opcode 流才成立。</td>
+              </tr>
+              <tr>
+                <td>NET_002</td>
+                <td>结构（<code>.dynsym</code>/<code>DT_NEEDED</code>）</td>
+                <td><span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span></td>
+                <td><strong>原生网络外联</strong></td>
+                <td>导入 <code>socket</code>/<code>connect</code>/<code>getaddrinfo</code> 等，或依赖 <code>libcurl.so</code>/<code>libssl.so</code>。id 与严重级借自共享表，受佐证门控约束。</td>
+              </tr>
+              <tr>
+                <td>CMD_001</td>
+                <td>结构（<code>.dynsym</code>）</td>
+                <td><span class="rule-sev-pill sev-high"><span class="sev-dot"></span>HIGH 高危</span></td>
+                <td><strong>命令执行</strong></td>
+                <td>导入 <code>system</code>/<code>exec*</code>/<code>popen</code>/<code>posix_spawn*</code> 等。共享 id，受佐证门控约束。</td>
+              </tr>
+              <tr>
+                <td>DYN_001</td>
+                <td>结构（<code>.dynsym</code>）</td>
+                <td><span class="rule-sev-pill sev-medium"><span class="sev-dot"></span>MEDIUM 中危</span></td>
+                <td><strong>运行时动态加载</strong></td>
+                <td>导入 <code>dlopen</code>/<code>dlmopen</code>/<code>dlsym</code>。共享 id，严重级为 MEDIUM，<strong>不适用</strong>佐证门控（门控只作用于 HIGH 族），代价见 3.8。</td>
+              </tr>
+              <tr>
+                <td>CMD_002<br>PER_002<br>FIL_002<br>ENV_002</td>
+                <td>可打印字符串</td>
+                <td><span class="rule-sev-pill" style="background: color-mix(in srgb, var(--muted) 12%, var(--panel)); color: var(--muted); border: 1px solid color-mix(in srgb, var(--muted) 30%, transparent);"><span class="sev-dot" style="width: 6px; height: 6px; border-radius: 50%; background: var(--muted);"></span>LOW 低危</span></td>
+                <td><strong>命令 / 持久化 / 敏感文件 / 环境变量四类线索</strong></td>
+                <td>两端锚定的<strong>完整字符串</strong>常量。四个独立族而不是借用源码臂的 <code>CMD_001</code>/<code>PER_001</code>/<code>FIL_001</code>/<code>ENV_001</code>（后两者在共享表里是 HIGH/MEDIUM，MEDIUM 在 <code>gate</code> 下同样阻断）。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout" style="margin-top: 16px;">
+          <strong>为什么字符串证据一律 LOW：</strong>一条 finding 只有在由<strong>文件无法偶然产生的结构</strong>支撑时才应是 HIGH，而字符串常量不是这种结构。实测中源码臂的旧混淆模式 <code>^[A-Za-z0-9+/]{120,}={0,2}$</code> 在 28 个合法共享库上命中 23 个（长 base64 字符集串在 <code>.pyc</code> 常量池与二进制数据里到处都是），收窄字母表或抬高门槛都救不回来，因此该模式<strong>在二进制臂整体删除</strong>，只保留源码臂的调用点版本。同理，四个字符串族的每个 token 都两端锚定，闭集列举（如 <code>id_(?:rsa|dsa|ecdsa|ed25519)</code>），并去掉大小写不敏感——否则 <code>private_key</code> 会撞上 <code>PRIVATE_KEY</code>。
+        </div>
+
+        <!-- 3.5 佐证门控 -->
+        <h3 style="margin: 22px 0 6px 0; font-size: 16px; font-weight: 800;">3.5 佐证门控：名字不是调用</h3>
+        <p style="font-size: 13px; line-height: 1.7; margin: 0 0 12px 0;"><code>.dynsym</code> 与 <code>DT_NEEDED</code> 里的名字是<strong>链接器</strong>写进去的：它列出该目标<strong>可能引用</strong>的每一个符号，而不是它实际调用过的符号。因此 <code>NET_002</code>/<code>CMD_001</code>/<code>BIN_002</code> 这三族只有在<strong>同一文件内</strong>另有独立佐证时才报 HIGH，否则降为 LOW 并把次数计入 <code>presence_downgraded</code>。</p>
+        <div class="spec-grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 14px;">
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;">
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px;">构成佐证的两族</div>
+            <ul style="margin: 0; padding-left: 16px; line-height: 1.55;">
+              <li><code>BIN_001</code>：同文件的可执行节区熵测量。</li>
+              <li><code>PKL_001</code>：同文件走完的 pickle opcode 目标解析。</li>
+              <li>两族都是<strong>测量/解析</strong>结果，不是又一个名字——同类的名字不能互相佐证。</li>
+            </ul>
+          </div>
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;">
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px;">降级的作用对象是 finding，不是规则</div>
+            <ul style="margin: 0; padding-left: 16px; line-height: 1.55;">
+              <li>规则表本身不动：id 与它解析到的严重级仍是共享表的。</li>
+              <li>降级写在排序与截断<strong>之前</strong>，因为上限的契约是按严重级表述的——它只花它确知为 LOW 的部分。</li>
+            </ul>
+          </div>
+          <div style="background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 12.5px;">
+            <div style="font-weight: 700; color: var(--accent); margin-bottom: 6px;">为什么不用调用图替代</div>
+            <ul style="margin: 0; padding-left: 16px; line-height: 1.55;">
+              <li>已实测否决：<code>libllama-common</code> 在 <code>.dynsym</code> 里定义/弱定义了 2881 个函数中的 2878 个，<code>socket</code> 的调用者本身就是导出入口，被标记的 9 个合法库<strong>一个都翻不了案</strong>。</li>
+              <li>且 guest rootfs 内无反汇编器，<code>golang.org/x/arch</code> 离线不可得。</li>
+            </ul>
+          </div>
+        </div>
+        <div class="callout warn" style="margin-top: 4px;">
+          <strong>这是一次明确的取舍：</strong>未加壳的网络/命令型载荷不再被<strong>静态</strong>阻断。代价被写在明面上而不是被藏起来——降级后的 finding 照常进报告、照常送 Tier 2 复核，模型判 MALICIOUS 时仍会分类为 HIGH 并阻断。<strong>「降级」去掉的是一次自动阻断，不是这条证据</strong>；没有佐证也不等于无害。
+        </div>
+
+        <!-- 3.6 完整性 -->
+        <h3 style="margin: 22px 0 6px 0; font-size: 16px; font-weight: 800;">3.6 完整性与 Fail-Closed</h3>
+        <p style="font-size: 13px; line-height: 1.7; margin: 0 0 12px 0;">通道的完整性账目记在 <code>scan_metadata.binary</code> 的十个字段上：<code>files_count</code> / <code>kinds</code> / <code>bounded_executable</code> / <code>bounded_data</code> / <code>incomplete</code> / <code>errored</code> / <code>findings_capped</code> / <code>findings_dropped</code> / <code>max_findings</code> / <code>presence_downgraded</code>。其中前两者是计数，中间四个（<code>bounded_executable</code> / <code>bounded_data</code> / <code>incomplete</code> / <code>errored</code>）是缺口，最后四个是预算与降级记录（<code>findings_capped</code> / <code>findings_dropped</code> / <code>max_findings</code> / <code>presence_downgraded</code>）。</p>
+        <div class="callout danger" style="margin-top: 4px;">
+          <strong>缺口按「能否执行」而非按「哪个上限触发」分类：</strong>落在<strong>可执行格式</strong>（ELF / 归档 / pickle / 压缩）上的任何缺口——截断的结构抽取、触顶的清单、读不了的文件、整趟失败——都让 <code>ProvesCleanScan()</code> 为假，在 fail-closed 下<strong>阻断这次导入</strong>；同一条截断落在纯数据文件（<code>raw</code>、张量）上则只记录、不阻断。判据是：清单触顶时被丢掉的是<strong>匹配器的输入</strong>，在可执行格式上它可能丢掉本可阻断的证据，而在数据格式上它只可能丢掉 LOW 的自由字符串行。
+        </div>
+        <div class="callout" style="margin-top: 12px;">
+          <strong>finding 上限不参与完整性：</strong>触顶只写 <code>findings_capped</code>/<code>findings_dropped</code>，<strong>绝不折进 <code>scan_metadata.truncated</code></strong>，也不阻断导入。理由同样具体：上限只花 LOW 这一档，而能阻断的档位——<code>assist</code> 与 <code>gate</code> 下的 HIGH、<code>gate</code> 下的 MEDIUM——无论预算多少都保留。反过来的实现（触顶即置 <code>truncated</code>）会让二进制通道因为「找到太多」而拒绝导入。
+        </div>
+
+        <!-- 3.7 配置 -->
+        <h3 style="margin: 22px 0 6px 0; font-size: 16px; font-weight: 800;">3.7 配置项与回滚</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 300px;">配置项</th>
+                <th style="width: 150px;">默认值</th>
+                <th>含义与调节后果</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>security.binaryAudit.enabled</td>
+                <td>true</td>
+                <td>总开关。关闭后审计行为<strong>逐字节</strong>回到通道引入之前，即完整回滚路径。</td>
+              </tr>
+              <tr>
+                <td>maxArchiveMembers</td>
+                <td>4096</td>
+                <td>单个归档最多贡献多少成员作为证据。触顶在可执行格式上记为缺口，会阻止放行。</td>
+              </tr>
+              <tr>
+                <td>highEntropyThreshold</td>
+                <td>7.5</td>
+                <td>可执行节区被判为加壳的熵<strong>下界（严格大于）</strong>。接受区间 <code>[0, 8]</code>；<code>0</code> 解析为默认值，负值或大于 8 在启动时<strong>拒绝</strong>而不是回退默认。</td>
+              </tr>
+              <tr>
+                <td>maxFindings</td>
+                <td>50</td>
+                <td>二进制 finding 的清单预算，与源码臂的 200 相互独立（合并时不再二次截断）。只花 LOW 档，调低永远不会丢掉可阻断的 finding。</td>
+              </tr>
+              <tr>
+                <td>maxFullScanBytes</td>
+                <td>64 MiB</td>
+                <td>超过此大小的文件不再端到端读取，只读首尾各 1 MiB。窗口化的可执行/pickle 文件记为缺口并阻止放行——否则把 pickle 垫到 64 MiB 以上就能藏住流中段的目标而照样通过。</td>
+              </tr>
+              <tr>
+                <td>maxStreamBytes</td>
+                <td>3 GiB</td>
+                <td>端到端读取的单文件预算。相对出厂 <code>maxFullScanBytes</code> 永不生效；<strong>把它调到 <code>maxFullScanBytes</code> 以下</strong>才会生效，此时落在两者之间的文件会提前停止读取并记为缺口。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 3.8 实测标定与代价 -->
+        <h3 style="margin: 22px 0 6px 0; font-size: 16px; font-weight: 800;">3.8 实测标定与已知代价</h3>
+        <div class="kpi">
+          <div class="kpi-card">
+            <div class="num">600</div>
+            <div class="label">宿主实测共享对象（去重后 538 个不同 ELF，枚举到 2027 个文件条目）</div>
+          </div>
+          <div class="kpi-card">
+            <div class="num">6.777009</div>
+            <div class="label">可执行节区最高熵，出自 <code>libcrypto.so.3</code> 的 <code>.text</code>（3347362 字节，整节读完）；对阈值 7.5 余量 0.723</div>
+          </div>
+          <div class="kpi-card">
+            <div class="num">~190 ms</div>
+            <div class="label">单文件全量读取上限（64 MiB，按实测 338 MB/s）</div>
+          </div>
+          <div class="kpi-card">
+            <div class="num">0</div>
+            <div class="label">600 个共享对象中被误判为加壳的数量（0 个无节表、0 个报错）</div>
+          </div>
+        </div>
+        <p style="font-size: 13px; line-height: 1.7; margin: 14px 0 12px 0;">阈值 7.5 的余量不是设计出来的而是量出来的：<code>libgomp.so</code> 那个 7.97 落在<strong>非可执行</strong>的 <code>.gnu_debugdata</code> 上，抽取器根本不测它。误报面因此是「<strong>真的被加壳</strong>的合法库」，而不是「碰巧含有某个字节序列的库」。</p>
+        <div class="callout danger" style="margin-top: 4px;">
+          <strong>已知代价（三条，都是刻意接受的）：</strong>
+          <ul style="margin: 8px 0 0 0; padding-left: 18px; line-height: 1.7;">
+            <li><strong>被剥掉节表的合法库会被拒。</strong>旧行为是「没有节表就直接跳过、不产生任何行也不产生任何缺口」，等于把<strong>从未检查过</strong>报成<strong>没发现加壳</strong>；本设计刻意翻成 fail-closed。代价目前是潜伏的：已入库语料与宿主 600 个共享对象里都没有这个形状。</li>
+            <li><strong><code>gate</code> 策略下，导入 <code>dlopen</code>/<code>dlmopen</code>/<code>dlsym</code> 的合法共享库会被拒。</strong><code>DYN_001</code> 是 presence-only 的 MEDIUM，而佐证门控只作用于 HIGH 族，所以它不降级；<code>gate</code> 的通过判据是 <code>High == 0 &amp;&amp; Medium == 0</code>。这正是该通道「一条名字不阻断」的取向在同一严重级上留下的缺口。需要放行时的做法是改用 <code>assist</code>，或者给该库补上真实佐证，而不是放宽门控判据。</li>
+            <li><strong>PE / Mach-O 不做结构解析</strong>（本平台不加载），xz / zstd / bzip2 / 7z 与 tar 不打开，嵌套归档只递归一层，纯文本非源码文件不审计。</li>
+          </ul>
+        </div>
+        <div class="callout warn" style="margin-top: 12px;">
+          <strong>诚实说明：</strong>二进制 finding 与源码 finding 走<strong>同一条</strong> LLM 复核路径，文件级分析另有一套面向二进制的提示词（原有提示词面向 Python 源码，不适用）。但该文件级分支只有在调用方实现 <code>FileAnalyzer</code> 时才可达，而生产用的 <code>teellm.Client</code> 没有 <code>AnalyzeFile</code>，所以它目前只由测试桩驱动、<strong>不是线上的实际行为</strong>——与源码文件级路径的现状完全一致。
+        </div>
+        <div class="callout" style="margin-top: 12px;">
+          <strong>非破坏性约束（设计铁律）：</strong>整条审计链路<strong>只读不写</strong>——不删除、不修改被审计的模型包与其依赖库。审计结论通过 <code>conclusion.passed</code> 与报告正文交给平台，拒绝导入时模型目录在磁盘上逐字节不变，并由专门的测试钉住这条性质。
+        </div>
+      </section>
+
       <section class="section" id="llm">
-        <h2>3. TEE-LLM 强类型交互契约与数据流规范</h2>
+        <h2>4. TEE-LLM 强类型交互契约与数据流规范</h2>
         <p class="lead">TAA 审计体系严格摒弃传统无序的自然语言拼包，定义了工业级强类型的 <strong>TEE-LLM 协议契约（teellm-protocol/v1）</strong>。审计调度中枢（Go 运行时）通过硬件远程证明的 <strong>TEE-TLS 专用机密通信信道</strong> 与 <code>teellm-service</code> 推理后端交互，实现代码片段与推理意图的端到端飞地保护。协议架构坚持<strong>“双级解耦、因果图注入、严格 JSON 契约、底层 Fail-Closed 熔断”</strong>四大设计铁律：单点 Finding 级验证专注语义定点排误，File 级分析聚焦宏观复合攻击链，而跨仓库 CPG 深度因果轨迹则作为高密度证据链直接注入契约 Payload，确保端侧轻量模型（0.5B-8B）实现无幻觉高保真裁决。</p>
 
         <!-- LLM 审计执行时序图与流程拆解 -->
@@ -4605,7 +4938,7 @@ type Finding struct {
       </section>
 
       <section class="section" id="benchmark-design">
-        <h2>4. Benchmark 评测基准设计 (Audit-100)</h2>
+        <h2>5. Benchmark 评测基准设计 (Audit-100)</h2>
         <p class="lead">评估代码安全审计引擎的核心挑战在于平衡<strong>误报率（False Positive Rate, FPR）</strong>与<strong>漏报率（False Negative
             Rate, FNR）</strong>，并在有限计算资源下追求最高性价比。当前行业内存在两大技术流派：一是激进的<strong>【纯端到端 LLM
             审计（Pure-LLM）】</strong>，即直接将全量源代码塞入大模型，不做任何先验规则过滤；二是工程化的<strong>【Semgrep 动静两阶段协同审计 (Semgrep-LLM)】</strong>，通过 Semgrep 跨语言 AST 模式与污点分析完成毫秒级高保真初筛与零命中算力旁路，并仅将疑点及 AST 作用域闭包切片与跨行污点因果链交付大模型定点仲裁。为此，我们设计并构建了标准化的
@@ -5219,7 +5552,7 @@ type Finding struct {
       </section>
 
       <section class="section" id="benchmark-results">
-        <h2>5. Benchmark 评测结果与实测分析 (6 模型 × 3 方案 三轨正交对比矩阵 · Semgrep 深度协同)</h2>
+        <h2>6. Benchmark 评测结果与实测分析 (6 模型 × 3 方案 三轨正交对比矩阵 · Semgrep 深度协同)</h2>
 
         <!-- 基准协议生命周期版本化状态标注 -->
         <div class="callout" style="background: color-mix(in srgb, var(--accent) 8%, var(--panel)); border-left: 4px solid var(--accent); margin-bottom: 20px;">
