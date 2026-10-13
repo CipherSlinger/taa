@@ -440,19 +440,21 @@ var reservedExcerptSources = map[EvidenceSource]bool{
 // budget remains with the other sources, both in the listing's index order.
 //
 // The excerpt is not a plain prefix, and not merely non-contiguous: because the
-// reserved lines are emitted first, it is not in index order at all. A
-// symbol-dense file begins at a high index (131, 132, ...) and only later drops
-// to the low ones (1, 2, 3, 4), once the reserved lines are exhausted. The
-// ordering is not an invariant and should not be "fixed" back into a prefix;
-// what matters is that the index printed is EvidenceLine.Index, so a line the
-// model names by number still resolves to the line the report carries. When the
-// budget is smaller than the listing it appends an omission marker with the
-// count of lines actually left out, so the model is told the listing is partial
-// - which the prompt's rubric relies on. It expects a set that has been through
-// Finalize: without it every Index is still zero, and the excerpt comes out
-// well-formed but silently wrong - a bounded listing that numbers every line 0,
-// indistinguishable from a correct excerpt - so a caller must not read it
-// without Finalize. maxLines <= 0 means no bound.
+// reserved lines are emitted first, it leaves index order whenever a reserved
+// line precedes a non-reserved one. A symbol-dense file begins at a high index
+// (the fixture's 130 imports put its first reserved line at 131) and only later
+// drops to the low ones (1, 2, 3, 4), once the reserved lines are exhausted. A
+// set with no reserved sources, or one whose lines are all reserved, is still
+// rendered in index order. The ordering is not an invariant and should not be
+// "fixed" back into a prefix; what matters is that the index printed is
+// EvidenceLine.Index, so a line the model names by number still resolves to the
+// line the report carries. When the budget is smaller than the listing it
+// appends an omission marker with the count of lines actually left out, so the
+// model is told the listing is partial - which the prompt's rubric relies on. It
+// expects a set that has been through Finalize: without it every Index is still
+// zero, and the excerpt comes out well-formed but silently wrong - a bounded
+// listing that numbers every line 0, indistinguishable from a correct excerpt -
+// so a caller must not read it without Finalize. maxLines <= 0 means no bound.
 func (s *EvidenceSet) RenderExcerpt(maxLines int) string {
 	if maxLines <= 0 || maxLines > len(s.Lines) {
 		maxLines = len(s.Lines)
