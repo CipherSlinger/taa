@@ -409,32 +409,11 @@ func (s *EvidenceSet) Finalize() {
 	}
 }
 
-// appendEvidenceLine writes one listing line in the shape both renderers show.
-// The format lives here once so Render and RenderExcerpt cannot drift into two
-// spellings of the same line.
+// appendEvidenceLine writes one listing line in the shape the file-level binary
+// prompt shows. The format lives here once so that the listing has a single
+// spelling of a line rather than one per caller.
 func appendEvidenceLine(b *strings.Builder, l EvidenceLine) {
 	fmt.Fprintf(b, "%d\t[%s] %s\n", l.Index, l.Source, l.Text)
-}
-
-// Render draws the listing as the numbered lines the Tier 2 prompt shows. The
-// index it prints is EvidenceLine.Index, so a line the model names is a line the
-// report can be searched for. It expects a set that has been through Finalize:
-// Index is zero until then, so calling it earlier prints 0 for every line and
-// disables the maxLines cutoff.
-//
-// It takes a prefix of the sorted listing, which is what its callers want. For
-// the file-level binary prompt, whose budget is small enough that a prefix can
-// be all one source, see RenderExcerpt.
-func (s *EvidenceSet) Render(maxLines int) string {
-	var b strings.Builder
-	for _, l := range s.Lines {
-		if maxLines > 0 && l.Index > maxLines {
-			fmt.Fprintf(&b, "... (%d more evidence line(s) not shown)\n", len(s.Lines)-maxLines)
-			break
-		}
-		appendEvidenceLine(&b, l)
-	}
-	return strings.TrimRight(b.String(), "\n")
 }
 
 // reservedExcerptSources is the set of sources RenderExcerpt reserves ahead of
@@ -445,7 +424,7 @@ func (s *EvidenceSet) Render(maxLines int) string {
 // reserving them cannot crowd out the symbols, strings and pickle targets that
 // take the remaining budget.
 //
-// The reservation is what RenderExcerpt adds over Render's prefix. Finalize
+// The reservation is what fixes the plain-prefix problem. Finalize
 // sorts by (Offset, Source, Text) and every structured line carries offset 0, so
 // within offset 0 the sort falls through to the source name and dynsym leads. A
 // symbol-dense library therefore fills a short prefix with dynsym lines alone - a
@@ -464,14 +443,14 @@ var reservedExcerptSources = map[EvidenceSource]bool{
 // order, then fills whatever budget remains with the other sources, also in
 // index order.
 //
-// Unlike Render this is not a prefix: the reserved lines are gathered from
-// wherever they sit in the listing, so the excerpt's indices are non-contiguous.
-// The index printed is still EvidenceLine.Index, so a line the model names by
-// number is a line the report carries. When the budget is smaller than the
-// listing it appends the same omission marker Render does, with the count of
-// lines actually left out, so the model is told the listing is partial - which
-// the prompt's rubric relies on. Like Render it expects a set that has been
-// through Finalize, and maxLines <= 0 means no bound.
+// This is not a plain prefix: the reserved lines are gathered from wherever they
+// sit in the listing, so the excerpt's indices are non-contiguous. The index
+// printed is still EvidenceLine.Index, so a line the model names by number is a
+// line the report carries. When the budget is smaller than the listing it
+// appends an omission marker with the count of lines actually left out, so the
+// model is told the listing is partial - which the prompt's rubric relies on. It
+// expects a set that has been through Finalize (Index is zero until then, so an
+// unfinalized listing numbers every line 0), and maxLines <= 0 means no bound.
 func (s *EvidenceSet) RenderExcerpt(maxLines int) string {
 	if maxLines <= 0 || maxLines > len(s.Lines) {
 		maxLines = len(s.Lines)
