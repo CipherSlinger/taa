@@ -121,10 +121,11 @@ message ImportRequest {
 }
 
 message ImportModelRequest {
-  string resource_url = 1;
+  string resource_url = 1; // 为空时复用已保存模型，仅更新 runtime_config，不触发训练
   string task_id = 2;
   string request_id = 3;
-  string runtime_config = 4;
+  string runtime_config = 4; // 运行配置 JSON 字符串（commands + env）
+  string public_key = 5; // SM2 公钥 PEM，phase=1 保存用于后续导出加密
 }
 
 message GetResourceInfoRequest {
@@ -226,6 +227,8 @@ message ReportAuditRequest {
   string docker_id = 1;
   string request_id = 2;
   string task_id = 3;
+  // 审计状态码：0=通过, 1=未通过, 2=未得出结论（LLM 不可用或审计中断）。
+  // 结论仅供参考，不触发也不阻止训练。
   int32 code = 4;
   string msg = 5;
   string report = 6;

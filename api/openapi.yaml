@@ -132,7 +132,11 @@ paths:
   /v1/taa/importModel:
     post:
       summary: 导入模型代码
-      description: 平台向 TAA 下发模型代码密态资源包（Phase 1），TAA 在 TEE 内完成解封、解压、静态代码扫描及 LLM 语义安全审计。
+      description: >-
+        平台向 TAA 下发模型代码密态资源包（Phase 1）。TAA 同步接收请求并异步完成解封、解压，
+        随后在 TEE 内执行静态代码扫描及 LLM 语义安全审计。审计在后台异步进行，其结论通过
+        /v1/taa/reportAudit 单独回传，仅供参考：本接口不等待审计结论，也不由审计结论触发或阻止训练。
+        本接口不触发训练，训练由后续数据下发 /v1/taa/import 拉起。
       tags:
         - 资源流转
       requestBody:
@@ -145,20 +149,59 @@ paths:
               resourceUrl: "http://platform.internal/files/model-package.tar.gz.enc"
               taskId: "task-20260902-001"
               requestId: "req-model-001"
-              runtimeConfig: "python3 train.py --epochs 10"
+              runtimeConfig: '{"commands":["python3 train.py --epochs 10"]}'
       responses:
         '200':
-          description: 模型导入成功并完成代码安全审计
+          description: >-
+            请求已受理。result 恒为 null；模型导入结果通过 /v1/taa/reportModelImport 异步回传，
+            代码审计结论通过 /v1/taa/reportAudit 异步回传。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              examples:
+                resourceAccepted:
+                  summary: resourceUrl 非空，资源已接收并开始异步下载处理
+                  value:
+                    msg: "模型已接收，训练结果将通过 reportRes 上报"
+                    result: null
+                    error: 0
+                configOnly:
+                  summary: resourceUrl 为空，仅更新模型运行配置，等待数据再次下发
+                  value:
+                    msg: "模型参数命令已导入，等待数据重新导入后执行训练"
+                    result: null
+                    error: 0
+        '400':
+          description: 参数错误（requestId/taskId 同时为空；resourceUrl 为空且此前未导入过模型；publicKey 解析失败；resourceUrl 为空时 runtimeConfig 为空、解析失败或 commands 为空）
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiResponse'
               example:
-                msg: "模型导入成功，审计已通过"
-                result:
-                  taskId: "task-20260902-001"
-                  auditPassed: true
-                error: 0
+                msg: "resourceUrl 不能为空: 之前未传输过且请求中为空"
+                result: null
+                error: 400
+        '409':
+          description: 并发冲突（已有训练任务或任务正在执行中；已有模型代码审计正在执行中）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                msg: "当前已有训练任务正在执行中 (taskId: task-001, op: training)，请等待完成后再提交"
+                result: null
+                error: 409
+        '500':
+          description: 资源下载失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+              example:
+                msg: "下载资源失败: HTTP 404"
+                result: null
+                error: 500
 
   /v1/taa/getResourceInfo:
     post:
@@ -351,7 +394,9 @@ paths:
   /v1/taa/reportAudit:
     post:
       summary: 上报模型代码安全审计结果
-      description: TAA 完成模型代码静态规则扫描与 LLM 语义审查后，向平台回传代码审计结论与明细报告。
+      description: >-
+        TAA 完成模型代码静态规则扫描与 LLM 语义审查后，向平台回传代码审计结论与明细报告。
+        审计在后台异步执行，本结论仅供参考：它不触发也不阻止训练，平台如需按结论处置该模型需自行判断。
       tags:
         - 平台回调
       requestBody:
@@ -549,7 +594,7 @@ components:
       properties:
         resourceUrl:
           type: string
-          description: 模型代码包的 HTTP(S) 下载地址。若之前未传输过且请求中为空则报错；若之前已传输保存过，则允许为空。为空时直接复用已保存模型，使用 runtimeConfig 中的 commands 对最新数据索引对应的数据执行训练。
+          description: 模型代码包的 HTTP(S) 下载地址。若之前未传输过且请求中为空则报错；若之前已传输保存过，则允许为空。为空时仅保存 runtimeConfig 并复用已保存的模型，不触发训练，等待后续数据下发（/v1/taa/import）时执行训练。
         taskId:
           type: string
           description: 任务唯一标识（与 requestId 不能同时为空）
@@ -714,7 +759,10 @@ components:
           type: string
         code:
           type: integer
-          description: 0=代码审计通过, 1=代码审计未通过, 2=LLM服务不可用
+          description: >-
+            `0`=代码审计通过, `1`=代码审计未通过（发现恶意/高危违规代码）,
+            `2`=未得出结论（LLM 服务不可用，或审计进程异常中断，含 TAA 崩溃重启后由启动期补报）。
+            审计结论仅供参考：无论取值如何，模型均保持已导入状态，TAA 不因此回滚或拒绝该模型。
         msg:
           type: string
           nullable: true

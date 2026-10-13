@@ -39,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   - Upgraded Python SDK path resolution (`get_output_dir`, `get_log_dir`, `get_progress_dir`).
 
 ### Changed
+- **Model Code Audit Is Now Advisory**: A failing model code audit no longer blocks anything. Its verdict is reported to the platform as a reference result (`/v1/taa/reportAudit`, codes `0` pass / `1` fail / `2` no verdict) and decides nothing on the TAA side: a failing or interrupted audit neither rolls back the import nor cancels a running training, so the model stays imported and trainable and the package on disk stays exactly as uploaded. Previously a failing verdict cleared `ModelImported` and stopped the active training. Concurrency is unchanged: a model import is still refused while another audit is running, and the 409 busy responses are unrelated to the verdict. The crash-recovery path now only reports the interrupted audit instead of rolling the import back, and the audit summary no longer claims TAA blocks the import.
 - **Toolchain Reorganization (`tools/`)**: Reorganized auxiliary tools into top-level `tools/` directory, moving platform mock to `tools/platform-mock/` and cryptographic tools to `tools/sdk/`.
 - **Go Workspace Orchestration**: Configured `go.work` multi-module workspace orchestrating `taa`, `teellm`, `teetls`, and `tools/sdk` on Go 1.22+.
 - **Configuration Templates**:

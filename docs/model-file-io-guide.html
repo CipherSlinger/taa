@@ -964,7 +964,7 @@
                   <td>任何网络外联（<code>socket</code> / <code>requests</code> / <code>urllib</code> / <code>httpx</code> /
                     <code>aiohttp</code>）
                   </td>
-                  <td>代码审计红线，导入阶段即被阻断</td>
+                  <td>代码审计红线，审计结论将判为未通过并上报平台（结论仅供参考，由平台侧处置）</td>
                 </tr>
                 <tr>
                   <td>反弹 Shell、提权、危险系统调用</td>
@@ -998,7 +998,7 @@
         </section>
 
         <footer>
-          本手册只覆盖文件读写约定。审计红线、阶段划分与导出口径见《模型提供方开发与接口对接规范》（<code>docs/model-provider-integration-guide.md</code>）。
+          本手册只覆盖文件读写约定。审计红线、阶段划分与导出口径见 <code>docs/api-design.md</code> 与 <code>docs/architecture-design.md</code>；模型代码审计结论仅供参考，不阻断 TAA 侧的模型导入与训练。
         </footer>
 
       </main>

@@ -437,6 +437,8 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 **触发时机**：TAA 完成模型解压后，对模型代码执行安全审计（静态扫描规则分析 + LLM 语义审查）。审计流程完成后，调用此接口上报审计结论与明细报告。
 
+> **审计结论仅供参考**：模型代码审计与训练流程解耦，审计在后台异步执行，`importModel` 接口不等待审计结论，也不由审计结论触发或阻止训练。无论 `code` 为 `0`、`1` 还是 `2`，模型均保持"已导入"状态，其后的数据下发都会照常触发训练；TAA 不因审计结论删除、回滚或拒绝已导入的模型包及其依赖库。平台如需按审计结论决定是否使用该模型，应在此接口回调中自行处置。
+
 **参数**：
 
 | 参数 | 类型 | 必填 | 说明 |
@@ -444,7 +446,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 | `dockerId` | `string` | 是 | 取值为容器启动参数 `DOCKER_ID` |
 | `requestId` | `string` | 是 | 与 `/v1/taa/importModel` 请求中的 `requestId` 一致，用于绑定同一轮模型导入 |
 | `taskId` | `string` | 否 | 任务 ID，与 `/v1/taa/importModel` 请求中的 `taskId` 一致 |
-| `code` | `number` | 是 | 审计状态码：<br>• `0`：代码审计通过<br>• `1`：**代码审计未通过**（发现恶意/高危违规代码）<br>• `2`：**LLM 服务不可用**（模型探测失败或服务离线，按 Fail-Closed 策略拦截） |
+| `code` | `number` | 是 | 审计状态码：<br>• `0`：代码审计通过<br>• `1`：**代码审计未通过**（发现恶意/高危违规代码）<br>• `2`：**未得出结论**——LLM 服务不可用（模型探测失败或服务离线），或审计进程异常中断（含 TAA 崩溃重启后由启动期补报） |
 | `msg` | `string` | 否 | 审计结论摘要或异常说明 |
 | `report` | `string` | 否 | 代码审计报告 JSON 字符串，格式与训练结果报告中的 `codeaudit` 字段完全一致。当 LLM 服务不可用时可为空字符串 |
 
@@ -469,12 +471,12 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "requestId": "request-001",
   "taskId": "task-001",
   "code": 1,
-  "msg": "代码安全审计未通过: 发现反弹 Shell 风险",
-  "report": "{\"conclusion\":{\"passed\":false,\"risk_level\":\"CRITICAL\",\"summary\":\"发现高危后门代码\",\"recommendation\":\"请清理非法网络外联指令\",\"statistics\":{\"high\":1,\"medium\":0,\"low\":0}},\"file_reports\":[{\"filename\":\"train.py\",\"findings\":[{\"rule_id\":\"SEC-PY-003\",\"line\":42,\"severity\":\"HIGH\",\"description\":\"可疑网络反弹 Shell 代码\",\"llm_verdict\":\"MALICIOUS\"}]}]}"
+  "msg": "审计结论: 发现 1 处高危风险代码。存在数据泄露风险，建议拒绝该模型",
+  "report": "{\"conclusion\":{\"passed\":false,\"risk_level\":\"CRITICAL\",\"summary\":\"审计结论: 发现 1 处高危风险代码。存在数据泄露风险，建议拒绝该模型\",\"recommendation\":\"建议修复: CMD_001: 移除子进程调用，使用安全的替代方案\",\"statistics\":{\"high\":1,\"medium\":0,\"low\":0}},\"file_reports\":[{\"file\":\"train.py\",\"findings_count\":1,\"high_count\":1,\"risk_level\":\"HIGH\",\"findings\":[{\"rule_id\":\"CMD_001\",\"line\":2,\"severity\":\"HIGH\",\"description\":\"shell 命令执行或危险外部命令\"}]}]}"
 }
 ```
 
-**请求示例（LLM 服务不可用：Fail-Closed 拦截）**：
+**请求示例（未得出结论：LLM 服务不可用）**：
 
 ```jsonc
 {
@@ -482,7 +484,20 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "requestId": "request-001",
   "taskId": "task-001",
   "code": 2,
-  "msg": "LLM 服务不可用，按 Fail-Closed 策略拦截",
+  "msg": "LLM 服务不可用，审计未出结论",
+  "report": ""
+}
+```
+
+**请求示例（审计中断：TAA 异常崩溃重启后补报）**：
+
+```jsonc
+{
+  "dockerId": "DOCKER_ID",
+  "requestId": "request-001",
+  "taskId": "task-001",
+  "code": 2,
+  "msg": "TAA 异常崩溃重启，模型代码审计中断未出裁决，该结论仅供参考（不阻断模型导入与训练），模型包保持上传原样",
   "report": ""
 }
 ```
@@ -815,120 +830,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 
 **响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，该接口成功时 `result` 为 `null`。
 
-**成功响应示例**（200 OK，仅资源接收，未触发训练模拟）：
-
-```jsonc
-{
-  "msg": "资源已接收，下载处理中",
-  "result": null,
-  "error": 0
-}
-```
-
-**成功响应示例**（200 OK，触发训练模拟并异步上报训练结果）：
-
-> TAA 在资源接收后根据当前阶段执行相应操作，并将训练结果通过 `/v1/taa/reportRes` 异步上报平台。
-
-```jsonc
-{
-  "msg": "数据已接收，训练结果将通过 reportRes 上报",
-  "result": null,
-  "error": 0
-}
-```
-
-**验证失败响应示例**（400 Bad Request）：
-
-```jsonc
-{
-  "msg": "resourceUrl 不能为空",
-  "result": null,
-  "error": 400
-}
-```
-
-**下载失败响应示例**（500 Internal Server Error）：
-
-```jsonc
-{
-  "msg": "下载资源失败: HTTP 404",
-  "result": null,
-  "error": 500
-}
-```
-
-
-### 4.3 下发模型资源（/v1/taa/importModel）
-
-该接口**专门用于平台向 TAA 下发模型资源**（模型代码 + 训练代码 + 数据），复用 `/v1/taa/import` 的资源接收与处理流程，区别在于：固定处理模型导入场景，**移除 `type` 字段**。
-
-**请求**：`POST /v1/taa/importModel`
-
-**请求内容类型**：`application/json`
-
-**参数**：
-
- | 参数 | 类型 | 必填 | 说明 |
- | --- | --- | --- | --- |
- | `resourceUrl` | `string` | 否* | 资源下载地址。与 `publicKey` 规则一致：若之前未传输过且请求中为空，则报错（400）；若之前已传输并保存过，则允许为空。当为空时，直接复用已保存模型，使用 `runtimeConfig` 中的 `commands` 对最新数据索引对应的数据执行训练 |
- | `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空 |
- | `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空 |
- | `publicKey` | `string` | 否 | SM2 公钥 PEM。TAA 在 phase=1 时校验并保存该公��，用于后续 phase=3 结果加密导出 |
- | `runtimeConfig` | `string` | 否* | 运行配置 JSON 字符串。包含顺序执行的命令列表和环境变量。当 `resourceUrl` 为空时必填且 `commands` 不能为空；缺省时按默认训练流程执行 |
-
-**`runtimeConfig` 字段格式**：
-
-`runtimeConfig` 的值是一个 JSON 字符串，字符串解析后的内容结构如下：
-
-| 子字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `commands` | `array[string]` | 否* | 按顺序执行的命令列表。数组顺序即执行顺序，任一命令失败则停止后续执行。当 `resourceUrl` 为空复用模型时必填且至少包含一条命令 |
-| `env` | `string` | 否 | 运行时环境变量 JSON 字符串。字符串内容应为 JSON 对象，解析后得到键值对并注入到每条命令的执行环境中 |
-
-**执行规则**：
-
-- `commands` 按数组顺序执行。
-- 前一条命令成功后，才执行下一条命令。
-- 任一条命令失败时，立即停止后续执行，并将失败结果上报平台。
-- `env` 为空、缺省或为空字符串时，不额外注入环境变量。
-- `env` 字符串解析后的环境变量对该次导入模型的执行过程生效。
-- `runtimeConfig` 为空、缺省或为空字符串时，TAA 按默认模型导入流程执行，不额外注入命令和环境变量。
-- **resourceUrl 复用与最新数据训练**：当 `resourceUrl` 为空且之前已传输/保存过模型时，TAA 直接跳过模型下载与审计，从数据索引记录中获取最新导入的数据（Latest Data Record），根据 `runtimeConfig` 中的 `commands` 与环境变量对该数据直接执行训练。训练完成后通过 `/v1/taa/reportRes` 异步上报结果，并支持平台后续按 `taskId`/`requestId` 调用 `/v1/taa/export` 导出该轮训练产物。若之前未保存过模型或未找到已导入数据，则返回 400 错误。
-
-**请求示例**：
-
-```jsonc
-{
-  "resourceUrl": "xx",
-  "requestId": "xx",
-  "taskId": "xxx",
-  "publicKey": "xx",
-  "runtimeConfig": {
-    "commands": [
-      "python preprocess.py",
-      "python train.py --epochs 20 --batch-size 64",
-      "python export_model.py"
-    ],
-    "env": "{\"CUDA_VISIBLE_DEVICES\":\"0\",\"OMP_NUM_THREADS\":\"4\"}"
-  }
-}
-```
-
-**响应内容类型**：`application/json`
-
-**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，该接口成功时 `result` 为 `null`。
-
-**成功响应示例**（200 OK，仅资源接收，未触发训练模拟）：
-
-```jsonc
-{
-  "msg": "资源已接收，下载处理中",
-  "result": null,
-  "error": 0
-}
-```
-
-**成功响应示例**（200 OK，触发训练模拟并异步上报训练结果）：
+**成功响应示例**（200 OK，`resourceUrl` 非空：资源已接收并开始异步下载处理）：
 
 ```jsonc
 {
@@ -938,15 +840,41 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 }
 ```
 
-**验证失败响应示例**（400 Bad Request，`resourceUrl` 为空）：
+> 该消息为历史遗留文案。本接口不触发训练，训练由数据下发（`/v1/taa/import`）拉起，因此这里的 `reportRes` 指后续数据下发所触发的那一轮训练。
+
+**成功响应示例**（200 OK，`resourceUrl` 为空：仅更新模型运行配置）：
 
 ```jsonc
 {
-  "msg": "resourceUrl 不能为空",
+  "msg": "模型参数命令已导入，等待数据重新导入后执行训练",
+  "result": null,
+  "error": 0
+}
+```
+
+**验证失败响应示例**（400 Bad Request）：
+
+```jsonc
+{
+  "msg": "resourceUrl 不能为空: 之前未传输过且请求中为空",
   "result": null,
   "error": 400
 }
 ```
+
+其余 400 场景：`requestId` 和 `taskId` 同时为空；`publicKey` 解析失败（仅 phase 1 且请求中携带 `publicKey` 时校验）；`resourceUrl` 为空时 `runtimeConfig` 为空、解析失败或 `commands` 为空数组。
+
+**并发冲突响应示例**（409 Conflict）：
+
+```jsonc
+{
+  "msg": "当前已有训练任务正在执行中 (taskId: task-001, op: training)，请等待完成后再提交",
+  "result": null,
+  "error": 409
+}
+```
+
+其余 409 场景：`resourceUrl` 非空时，已有其他任务在飞（`当前已有任务正在执行中`）；已有模型代码审计正在执行中（`当前已有模型代码审计正在执行中`）。模型代码审计与训练并行，审计进行中不阻止数据下发与训练，但会拒绝新的模型下发，以免两轮导入争用同一模型目录。
 
 **下载失败响应示例**（500 Internal Server Error）：
 
@@ -957,6 +885,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
   "error": 500
 }
 ```
+
 
 > **加密格式说明**：与 `/v1/taa/import` 相同。
 
