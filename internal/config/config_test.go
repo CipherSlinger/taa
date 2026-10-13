@@ -1150,3 +1150,77 @@ func TestLoadStartupConfigRejectsOutOfRangeLLMTemperature(t *testing.T) {
 		t.Fatalf("LoadStartupConfig() = nil error, want rejection of temperature 3")
 	}
 }
+
+// TestBinaryAuditConfigDefaultsAndOverrides pins the switch that makes this
+// feature reversible: the channel is on unless a deployment says otherwise, and
+// every limit can be moved without touching code.
+func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
+	t.Run("absent means enabled with the adapter's defaults", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{"security":{"codeScanEngine":"regex"}}`)
+		cfg, err := LoadStartupConfig(path)
+		if err != nil {
+			t.Fatalf("LoadStartupConfig: %v", err)
+		}
+		if !cfg.BinaryAuditEnabled {
+			t.Error("BinaryAuditEnabled = false when the section is absent; the default must be on")
+		}
+		if cfg.BinaryAuditMaxArchiveMembers != 0 {
+			t.Errorf("BinaryAuditMaxArchiveMembers = %d, want 0 (meaning \"use the codeaudit default\")",
+				cfg.BinaryAuditMaxArchiveMembers)
+		}
+	})
+
+	t.Run("an explicit false disables it", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{"security":{"binaryAudit":{"enabled":false}}}`)
+		cfg, err := LoadStartupConfig(path)
+		if err != nil {
+			t.Fatalf("LoadStartupConfig: %v", err)
+		}
+		if cfg.BinaryAuditEnabled {
+			t.Error("BinaryAuditEnabled = true after an explicit false")
+		}
+	})
+
+	t.Run("limits are read", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path,
+			`{"security":{"binaryAudit":{"maxArchiveMembers":17,"highEntropyThreshold":7.25}}}`)
+		cfg, err := LoadStartupConfig(path)
+		if err != nil {
+			t.Fatalf("LoadStartupConfig: %v", err)
+		}
+		if cfg.BinaryAuditMaxArchiveMembers != 17 {
+			t.Errorf("BinaryAuditMaxArchiveMembers = %d, want 17", cfg.BinaryAuditMaxArchiveMembers)
+		}
+		if cfg.BinaryAuditHighEntropyThreshold != 7.25 {
+			t.Errorf("BinaryAuditHighEntropyThreshold = %v, want 7.25", cfg.BinaryAuditHighEntropyThreshold)
+		}
+	})
+
+	t.Run("a negative limit is rejected rather than read as a default", func(t *testing.T) {
+		// The guarantee is the load path's: LoadStartupConfig runs
+		// validateStartupConfig before anything reads the value, so a negative
+		// never reaches the normalizer. codeaudit's own normalizer tests "<= 0",
+		// so a negative arriving by any other route - a hand-built StartupConfig -
+		// would be replaced by the default instead of rejected.
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{"security":{"binaryAudit":{"maxArchiveMembers":-1}}}`)
+		if _, err := LoadStartupConfig(path); err == nil {
+			t.Error("a negative limit was accepted; it would be normalised to the default and the operator would never know")
+		}
+	})
+
+	t.Run("the full-scan threshold is carried through", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{"security":{"binaryAudit":{"maxFullScanBytes":134217728}}}`)
+		cfg, err := LoadStartupConfig(path)
+		if err != nil {
+			t.Fatalf("LoadStartupConfig: %v", err)
+		}
+		if cfg.BinaryAuditMaxFullScanBytes != 134217728 {
+			t.Errorf("BinaryAuditMaxFullScanBytes = %d, want 134217728", cfg.BinaryAuditMaxFullScanBytes)
+		}
+	})
+}

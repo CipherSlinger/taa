@@ -115,6 +115,8 @@ func TestBuildSecurityConfig(t *testing.T) {
 		LLMModel:                   "qwen2.5-coder:0.5b",
 		LLMPolicy:                  "strict",
 		LLMFailClosed:              true,
+		BinaryAuditEnabled:           true,
+		BinaryAuditMaxArchiveMembers: 17,
 	}
 
 	sec, err := buildSecurityConfig(cfg)
@@ -238,6 +240,23 @@ func TestBuildSecurityConfig(t *testing.T) {
 	}
 	if sec.LLM.CooldownSec != wantLLM.CooldownSec {
 		t.Errorf("LLM.CooldownSec = %d, want %d", sec.LLM.CooldownSec, wantLLM.CooldownSec)
+	}
+
+	// The binary channel's configuration is carried through rather than dropped:
+	// a value that reaches the config struct and not the controller is a setting
+	// an operator can write and cannot observe.
+	//
+	// The comparison is against the raw config value, not the resolved one. "0
+	// means use the codeaudit default" resolves in exactly one place - the
+	// codeaudit normalizer every extraction path already calls - and a second
+	// resolver here would be a second place for the two to disagree about what
+	// the default is. The resolution itself is proven at the codeaudit level.
+	if !sec.Binary.Enabled {
+		t.Error("SecurityConfig.Binary.Enabled = false, want the value carried from BinaryAuditEnabled")
+	}
+	if sec.Binary.MaxArchiveMembers != cfg.BinaryAuditMaxArchiveMembers {
+		t.Errorf("SecurityConfig.Binary.MaxArchiveMembers = %d, want the raw config value %d",
+			sec.Binary.MaxArchiveMembers, cfg.BinaryAuditMaxArchiveMembers)
 	}
 }
 

@@ -33,7 +33,40 @@ type StartupConfig struct {
 	// deadline into a failed scan, which the audit fails closed on. Zero means
 	// the adapter's own default (codeaudit.DefaultSemgrepTimeout), which is where
 	// the enforced number lives; a negative value is rejected at load time.
-	SemgrepTimeout             time.Duration
+	SemgrepTimeout time.Duration
+	// BinaryAuditEnabled turns the binary channel on for model import audits. It
+	// defaults to true; turning it off is the rollback of this feature and leaves
+	// an audit byte-identical to the one produced before the channel existed.
+	BinaryAuditEnabled bool
+	// BinaryAuditMaxArchiveMembers bounds how many members of a container are
+	// examined. Zero means the codeaudit default.
+	BinaryAuditMaxArchiveMembers int
+	// BinaryAuditHighEntropyThreshold is the bits-per-byte above which an
+	// executable section is called packed. Zero means the codeaudit default.
+	BinaryAuditHighEntropyThreshold float64
+	// BinaryAuditMaxFindings is the listing budget for the binary pass, not a
+	// completeness bound: reaching it drops LOW findings (and only LOW - HIGH and
+	// MEDIUM can block the import and are always kept) and is recorded as
+	// findings_capped, and it never withholds a pass. Zero means the codeaudit
+	// default.
+	BinaryAuditMaxFindings int
+	// BinaryAuditMaxFullScanBytes is the size above which a file is read at its
+	// two ends instead of end to end. Zero means the codeaudit default. It is
+	// exposed rather than fixed because it is the one limit whose right value
+	// depends on the deployment's package sizes: raising it buys a complete pass
+	// over a large pickle at a cost of about 3 microseconds per kibibyte.
+	BinaryAuditMaxFullScanBytes int
+	// BinaryAuditMaxStreamBytes bounds how much of one file the end-to-end
+	// streaming pass reads. Zero means the codeaudit default (3 GiB).
+	//
+	// It is exposed because it is the twin of MaxFullScanBytes: the stream budget
+	// is only reachable by a file that MaxFullScanBytes let through, so an
+	// operator who raises MaxFullScanBytes past the stream ceiling makes the
+	// stream ceiling bind - and its breach records a structural bound, which on
+	// an executable kind blocks the import. Leaving it fixed while its twin is
+	// exposed would turn that into an unactionable block. Two keys that move
+	// together, in the same block and the same validation.
+	BinaryAuditMaxStreamBytes  int
 	ModelDir                   string
 	EnableResultCheck          bool
 	MaxFileBytes               int64
@@ -137,6 +170,22 @@ type startupSecurityConfigFile struct {
 	SemgrepTimeoutSeconds int                          `json:"semgrepTimeoutSeconds"`
 	ResultCheck           startupResultCheckConfigFile `json:"resultCheck"`
 	MaxFileBytes          *int64                       `json:"maxFileBytes"`
+	BinaryAudit           startupBinaryAuditConfigFile `json:"binaryAudit"`
+}
+
+// startupBinaryAuditConfigFile is the security.binaryAudit block.
+//
+// Every limit is a pointer so that "absent" and "zero" stay distinguishable: a
+// zero the operator wrote is a limit of zero and is rejected below, while an
+// absent field means "use the codeaudit default". Reading both as zero would
+// turn a deliberate 0 into a silently substituted default.
+type startupBinaryAuditConfigFile struct {
+	Enabled              *bool    `json:"enabled"`
+	MaxArchiveMembers    *int     `json:"maxArchiveMembers"`
+	HighEntropyThreshold *float64 `json:"highEntropyThreshold"`
+	MaxFindings          *int     `json:"maxFindings"`
+	MaxFullScanBytes     *int64   `json:"maxFullScanBytes"`
+	MaxStreamBytes       *int64   `json:"maxStreamBytes"`
 }
 
 type startupResultCheckConfigFile struct {
@@ -243,7 +292,45 @@ func validateStartupConfig(cfg StartupConfig) error {
 	if err := validateLLMTemperature(cfg); err != nil {
 		return err
 	}
+	if err := validateBinaryAudit(cfg); err != nil {
+		return err
+	}
 	return validateLLMPolicy(cfg)
+}
+
+// validateBinaryAudit rejects limits that cannot mean what they say.
+//
+// A negative count is rejected rather than normalised: the normalisation path
+// exists for "unset", and a deployment that wrote -1 has a different problem
+// from one that wrote nothing. Rejecting turns it into a startup error instead
+// of an audit that quietly ran with a different budget.
+//
+// The guarantee is path-specific, and worth stating precisely: it holds on the
+// file-load path, because validateStartupConfig runs before the values are used.
+// It does not hold globally. normalizeBinaryConfig tests "<= 0", so a negative
+// that reaches codeaudit by another route - a hand-built StartupConfig, which is
+// exactly how buildSecurityConfig is called from the app tests - is silently
+// replaced by the default rather than rejected. Nothing reaches that route in
+// production: the only production construction of StartupConfig goes through
+// LoadStartupConfig.
+func validateBinaryAudit(cfg StartupConfig) error {
+	if cfg.BinaryAuditMaxArchiveMembers < 0 {
+		return fmt.Errorf("security.binaryAudit.maxArchiveMembers must not be negative, got %d", cfg.BinaryAuditMaxArchiveMembers)
+	}
+	if cfg.BinaryAuditMaxFindings < 0 {
+		return fmt.Errorf("security.binaryAudit.maxFindings must not be negative, got %d", cfg.BinaryAuditMaxFindings)
+	}
+	if cfg.BinaryAuditMaxFullScanBytes < 0 {
+		return fmt.Errorf("security.binaryAudit.maxFullScanBytes must not be negative, got %d", cfg.BinaryAuditMaxFullScanBytes)
+	}
+	if cfg.BinaryAuditMaxStreamBytes < 0 {
+		return fmt.Errorf("security.binaryAudit.maxStreamBytes must not be negative, got %d", cfg.BinaryAuditMaxStreamBytes)
+	}
+	if cfg.BinaryAuditHighEntropyThreshold < 0 || cfg.BinaryAuditHighEntropyThreshold > 8 {
+		return fmt.Errorf("security.binaryAudit.highEntropyThreshold must be within [0,8] bits per byte, got %v",
+			cfg.BinaryAuditHighEntropyThreshold)
+	}
+	return nil
 }
 
 // validateLLMTemperature rejects a sampling temperature outside [0, 2].
@@ -319,6 +406,7 @@ func defaultStartupConfig() StartupConfig {
 		Contract:                   os.Getenv("CONTRACT"),
 		EnableSecurityScan:         true,
 		CodeScanEngine:             "semgrep",
+		BinaryAuditEnabled:         true,
 		ModelDir:                   "/opt/taa/models",
 		EnableResultCheck:          true,
 		MaxFileBytes:               DefaultMaxFileBytes,
@@ -402,6 +490,25 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if seconds := fileCfg.Security.SemgrepTimeoutSeconds; seconds != 0 {
 		cfg.SemgrepTimeout = time.Duration(seconds) * time.Second
+	}
+
+	if ba := fileCfg.Security.BinaryAudit; ba.Enabled != nil {
+		cfg.BinaryAuditEnabled = *ba.Enabled
+	}
+	if ba := fileCfg.Security.BinaryAudit; ba.MaxArchiveMembers != nil {
+		cfg.BinaryAuditMaxArchiveMembers = *ba.MaxArchiveMembers
+	}
+	if ba := fileCfg.Security.BinaryAudit; ba.HighEntropyThreshold != nil {
+		cfg.BinaryAuditHighEntropyThreshold = *ba.HighEntropyThreshold
+	}
+	if ba := fileCfg.Security.BinaryAudit; ba.MaxFindings != nil {
+		cfg.BinaryAuditMaxFindings = *ba.MaxFindings
+	}
+	if ba := fileCfg.Security.BinaryAudit; ba.MaxFullScanBytes != nil {
+		cfg.BinaryAuditMaxFullScanBytes = int(*ba.MaxFullScanBytes)
+	}
+	if ba := fileCfg.Security.BinaryAudit; ba.MaxStreamBytes != nil {
+		cfg.BinaryAuditMaxStreamBytes = int(*ba.MaxStreamBytes)
 	}
 
 	if trimmed := strings.TrimSpace(fileCfg.ModelDir); trimmed != "" {

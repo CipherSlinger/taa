@@ -642,12 +642,8 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 		return false
 	}
 
-	// TODO(task-14): replace the codeaudit.DefaultBinaryConfig placeholder below
-	// with s.Security.Binary once the binary channel's config key exists on
-	// SecurityConfig; this placeholder keeps the channel on with the built-in
-	// defaults in the meantime.
 	audit, err := codeaudit.GenerateAuditReport(context.Background(), s.Security.ModelDir, s.Security.Engine,
-		codeaudit.AuditConfig{LLM: cfg, Binary: codeaudit.DefaultBinaryConfig()}, llmClient)
+		codeaudit.AuditConfig{LLM: cfg, Binary: s.Security.Binary}, llmClient)
 	if err != nil {
 		s.Logs.Add(LogError, "audit", "模型代码审计失败: %v", err)
 		s.Logs.Add(LogWarn, "audit", "审计未通过：仅上报结论，未删除或改动模型包与依赖库: dir=%s", s.Security.ModelDir)
