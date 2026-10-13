@@ -912,10 +912,7 @@ func TestExportHandler(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read response body: %v", err)
 		}
-		decrypted, err := teecrypto.OpenSM2SM4GCM(reqKey, sealed)
-		if err != nil {
-			t.Fatalf("decrypt with the request public key: %v", err)
-		}
+		decrypted := openSealedForTAA(t, reqKey, sealed)
 		files := extractZipMap(t, decrypted)
 		if got, ok := files["export-p3-fallback/out.bin"]; !ok {
 			t.Fatalf("decrypted zip missing export-p3-fallback/out.bin, got keys: %v", keysOfMap(files))

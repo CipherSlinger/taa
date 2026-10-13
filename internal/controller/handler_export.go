@@ -108,40 +108,34 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── 确定公钥和是否加密 ──
-	var pubKeyPEM string
-	var encrypt bool
+	// The export key is optional on every phase: the first non-empty candidate
+	// wins, and with no candidate at all the artifacts go out in plaintext.
+	// Phase 3 prefers the key saved at model import and falls back to the one
+	// carried by this request; phases 1/2 only ever use the request's.
+	reqPubKey := ""
+	if req.PublicKey != nil {
+		reqPubKey = strings.TrimSpace(*req.PublicKey)
+	}
 
+	var pubKeyPEM, keySource string
 	switch recordPhase {
 	case 1, 2:
-		if req.PublicKey != nil && strings.TrimSpace(*req.PublicKey) != "" {
-			pubKeyPEM = strings.TrimSpace(*req.PublicKey)
-			encrypt = true
-			s.Logs.Add(LogInfo, "export", "阶段%d: 使用请求中的 publicKey 加密 (长度=%d)", recordPhase, len(pubKeyPEM))
-		} else {
-			s.Logs.Add(LogInfo, "export", "阶段%d: 未传入 publicKey，返回明文", recordPhase)
-		}
-
+		pubKeyPEM, keySource = reqPubKey, "请求中的 publicKey"
 	case 3:
-		// The phase 3 key chain is a preference order, not a requirement: the key
-		// saved at model import wins, the one carried by this request is the
-		// fallback, and with neither the artifacts go out in plaintext.
-		switch {
-		case savedPublicKey != "":
-			pubKeyPEM = savedPublicKey
-			encrypt = true
-			s.Logs.Add(LogInfo, "export", "阶段3: 使用阶段1保存的 ExportPublicKey 加密 (长度=%d)\n%s", len(pubKeyPEM), pubKeyPEM)
-		case req.PublicKey != nil && strings.TrimSpace(*req.PublicKey) != "":
-			pubKeyPEM = strings.TrimSpace(*req.PublicKey)
-			encrypt = true
-			s.Logs.Add(LogInfo, "export", "阶段3: 未保存 ExportPublicKey，使用请求中的 publicKey 加密 (长度=%d)", len(pubKeyPEM))
-		default:
-			s.Logs.Add(LogInfo, "export", "阶段3: 未保存 ExportPublicKey 且请求未提供 publicKey，返回明文")
+		pubKeyPEM, keySource = savedPublicKey, "阶段1保存的 ExportPublicKey"
+		if pubKeyPEM == "" {
+			pubKeyPEM, keySource = reqPubKey, "请求中的 publicKey"
 		}
-
 	default:
 		s.Logs.Add(LogError, "export", "不支持的阶段: %d", recordPhase)
 		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, fmt.Sprintf("当前阶段 %d 不支持导出", recordPhase)))
 		return
+	}
+
+	if pubKeyPEM == "" {
+		s.Logs.Add(LogInfo, "export", "阶段%d: 无可用 publicKey，返回明文", recordPhase)
+	} else {
+		s.Logs.Add(LogInfo, "export", "阶段%d: 使用 %s 加密 (长度=%d)", recordPhase, keySource, len(pubKeyPEM))
 	}
 
 	resultData, err := resource.CompressDirToZip(record.ResultDir)
@@ -159,7 +153,7 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 
 	filename := filepath.Base(record.ResultDir) + ".zip"
 
-	if encrypt {
+	if pubKeyPEM != "" {
 		pub, err := teecrypto.ParseSM2PublicKeyPEM([]byte(pubKeyPEM))
 		if err != nil {
 			s.Logs.Add(LogError, "export", "publicKey 解析失败: %v", err)
