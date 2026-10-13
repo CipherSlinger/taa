@@ -10816,6 +10816,25 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 - [ ] `scan_metadata.binary.presence_downgraded` 在含符号证据的包上大于 0，且在触顶的包上仍等于降级总数（该计数在降级时累加，不随 cap 丢弃而减少）。
 - [ ] （**回归护栏，不是本功能的验收项**）`UnsupportedExts` 仍恒为 0——本计划**不**动它，任何让它非零的改动都会使每个真实包被判定为非完整扫描。它列在这里，是因为它属于同一次改动所以要一起回归，不是因为这个功能会让它变化。
 
+### 4.1 验收执行记录（2026-10-13）
+
+逐项执行结果。**未打勾的只有一项**，它依赖容器环境，本机不可满足，按「未验证」记录。
+
+| 清单项 | 结果 | 依据 |
+| --- | --- | --- |
+| 静态构建 | **PASS** | `CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa` exit 0 |
+| 全量测试无 FAIL | **PASS（范围有替换）** | `go test ./...` 在本树不可用——`models/audit/holdout-sources/` 下有未跟踪、被 gitignore 的 semgrep 夹具 `.go` 文件，会让它构建失败。改用 `go test ./internal/... ./cmd/... ./pkg/...`：16 个包全 ok、0 FAIL |
+| 无 AI 署名 | **PASS** | `git grep -n "Co-Authored-By\|anthropic\|Claude" -- '*.go'` 无命中（exit 1） |
+| 两个引擎下都跑二进制通道 | **PASS（两个子用例都真跑了）** | `regex` PASS、`semgrep` **PASS 而非 SKIP**（本机装有 semgrep CLI），故这一条是**已核实**而不是「被跳过」 |
+| 容器内真实模型包导入 | **未验证** | 依赖 CSV2 guest / 容器环境，本机 `go test` 无法满足。**不得计为通过** |
+| 触顶时 `findings_capped=true` 且 `truncated=false` | **PASS（两个方向）** | 触顶一半：`TestBinaryScannerCapDropsExactlyTheLowFindingsBeyondTheBudget` 等 7 条 cap 用例；`truncated` 仍为假那一半：`TestMergeBinaryFindingsDoesNotFoldTheBinaryCapIntoTruncated`（`audit_test.go:1072`，正是为这一条写的） |
+| `enabled:false` 逐字节回滚 | **PASS** | `TestGenerateAuditReportWithBinaryDisabledIsUnchanged` |
+| 佐证门控（`assist` 与 `gate` 各一次）+ 加了佐证后被拒 + 文件逐字节未变 | **PASS（降级方向两种策略都验了）** | 降级方向：本轮新增的 `TestEndToEndUncorroboratedPresenceStillPasses`，`assist` 与 `gate` 两个子用例都 PASS（此前该条在整个端到端层零覆盖）。「文件仍在磁盘上、逐字节未变」由 `TestFailedAuditLeavesTheImportedPackageUntouched` 覆盖 |
+| 崩溃恢复不动文件（RUNNING 崩溃 + 只剩 `PendingAudit` 两条路） | **PASS** | `TestAuditPanicRollsBackModelImport`、`TestTAAState_RunAsyncSafe_ModelImportPanicRecovery`、`TestModelImportSealsPendingWithModelImported` |
+| `presence_downgraded > 0`，且触顶时不随 cap 减少 | **PASS** | 端到端：`TestEndToEndUncorroboratedPresenceStillPasses` 断言等于 1；计数语义：`binary_scanner_test.go:910` 专门钉住「在降级时累加、不随 cap 丢弃而减少」 |
+| `UnsupportedExts` 恒为 0（回归护栏） | **PASS（但依据是「无写入点」，不是某条测试）** | 全树非测试代码里 `UnsupportedExts` 只被读、从未被写：`rules.go:113/115` 声明、`:164` 作为完整性判据的合取项读它，`audit.go:93/411/442` 只是搬运。因此「恒为 0」是结构性的；`failclosed_test.go:44` 用非零夹具证明该判据确实会拒绝。**没有**一条测试在真实扫描上断言它为零——因为没有任何代码路径能把它置非零 |
+
+
 ## 5. 已知风险与对策
 
 | 风险 | 对策 |
