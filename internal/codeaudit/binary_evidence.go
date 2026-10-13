@@ -439,18 +439,21 @@ var reservedExcerptSources = map[EvidenceSource]bool{
 // prompt. It shows every reserved structural line first, then fills whatever
 // budget remains with the other sources, both in the listing's index order.
 //
-// The excerpt is not a plain prefix, and not merely non-contiguous: because the
-// reserved lines are emitted first, it leaves index order whenever a reserved
-// line precedes a non-reserved one. A symbol-dense file begins at a high index
-// (the fixture's 130 imports put its first reserved line at 131) and only later
-// drops to the low ones (1, 2, 3, 4), once the reserved lines are exhausted. A
-// set with no reserved sources, or one whose lines are all reserved, is still
-// rendered in index order. The ordering is not an invariant and should not be
-// "fixed" back into a prefix; what matters is that the index printed is
-// EvidenceLine.Index, so a line the model names by number still resolves to the
-// line the report carries. When the budget is smaller than the listing it
-// appends an omission marker with the count of lines actually left out, so the
-// model is told the listing is partial - which the prompt's rubric relies on. It
+// The excerpt is not a plain prefix: the reserved lines are emitted first and
+// the remaining budget is then filled from the other sources, so the numbering
+// comes out non-monotonic exactly when a shown non-reserved line sits earlier in
+// the listing than a shown reserved line (when every shown reserved line already
+// precedes every shown non-reserved one, both passes stay in order and the
+// result is sorted). A symbol-dense file is the first shape, because its imports
+// lead the listing: the fixture's 130 imports put its first reserved line at
+// index 131, so the excerpt begins high and only later drops to 1, 2, 3, 4. A
+// set with no reserved sources is likewise rendered in index order. The ordering
+// is not an invariant and should not be "fixed" back into a prefix; what matters
+// is that the index printed is EvidenceLine.Index, so a line the model names by
+// number still resolves to the line the report carries. When the budget is
+// smaller than the listing it appends an omission marker with the count of lines
+// actually left out, so the model is told the listing is partial - which the
+// prompt's rubric relies on. It
 // expects a set that has been through Finalize: without it every Index is still
 // zero, and the excerpt comes out well-formed but silently wrong - a bounded
 // listing that numbers every line 0, indistinguishable from a correct excerpt -
