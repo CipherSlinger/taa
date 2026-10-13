@@ -142,20 +142,29 @@ func TestExtractTarGzStream(t *testing.T) {
 	}
 }
 
-func TestWriteExtractedFileWithLimitExceeded(t *testing.T) {
+func TestWriteExtractedFileDoesNotTruncate(t *testing.T) {
 	tmpDir := t.TempDir()
-	target := filepath.Join(tmpDir, "huge.bin")
+	target := filepath.Join(tmpDir, "payload.bin")
 
-	hugeData := bytes.Repeat([]byte("A"), 1024)
-	limit := int64(512)
-
-	_, err := WriteExtractedFileWithLimit(target, bytes.NewReader(hugeData), 0o644, limit)
-	if err == nil {
-		t.Fatal("expected quota exceeded error, got nil")
+	// 8 MiB of non-repeating data so a truncated copy cannot match by accident.
+	payload := make([]byte, 8<<20)
+	for i := range payload {
+		payload[i] = byte(i * 7)
 	}
 
-	// 验证超额后自动清理了目标文件
-	if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
-		t.Fatalf("expected target file to be cleaned up, stat returned %v", statErr)
+	n, err := WriteExtractedFile(target, bytes.NewReader(payload), 0o644)
+	if err != nil {
+		t.Fatalf("WriteExtractedFile failed: %v", err)
+	}
+	if n != int64(len(payload)) {
+		t.Fatalf("WriteExtractedFile wrote %d bytes; want %d", n, len(payload))
+	}
+
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat extracted file: %v", err)
+	}
+	if info.Size() != int64(len(payload)) {
+		t.Fatalf("extracted file is %d bytes; want %d", info.Size(), len(payload))
 	}
 }

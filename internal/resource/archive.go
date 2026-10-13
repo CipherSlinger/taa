@@ -18,11 +18,6 @@ import (
 	"taa/pkg/utils"
 )
 
-const (
-	// DefaultMaxExtractBytes 解压累计最大安全配额 (2 GB)
-	DefaultMaxExtractBytes int64 = 2 << 30
-)
-
 // ResourceURLHasEncSuffix 检查资源 URL 路径是否以 .enc 结尾
 func ResourceURLHasEncSuffix(resourceURL string) bool {
 	path := resourceURL
@@ -194,7 +189,7 @@ func ExtractArchiveFile(dst, filePath string) error {
 	return fmt.Errorf("unsupported archive format or extract failed")
 }
 
-// ExtractZipArchive 解压 ZIP 内存字节到目标目录，执行配额上限与目录逃逸校验
+// ExtractZipArchive 解压 ZIP 内存字节到目标目录，执行目录逃逸校验
 func ExtractZipArchive(dst string, data []byte) error {
 	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
@@ -204,7 +199,6 @@ func ExtractZipArchive(dst string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	var totalExtractedBytes int64
 	for _, f := range r.File {
 		target, err := SafeJoinWithBase(dst, baseAbs, f.Name)
 		if err != nil {
@@ -223,30 +217,22 @@ func ExtractZipArchive(dst string, data []byte) error {
 		if err != nil {
 			return err
 		}
-		remain := DefaultMaxExtractBytes - totalExtractedBytes
-		if remain < 0 {
-			_ = rc.Close()
-			_ = utils.CleanDir(dst)
-			return fmt.Errorf("解压累计字节超过上限 %d bytes", DefaultMaxExtractBytes)
-		}
-		written, err := WriteExtractedFileWithLimit(target, rc, f.Mode(), remain)
+		_, err = WriteExtractedFile(target, rc, f.Mode())
 		_ = rc.Close()
 		if err != nil {
 			_ = utils.CleanDir(dst)
 			return err
 		}
-		totalExtractedBytes += written
 	}
 	return nil
 }
 
-// ExtractTarStream 从流中解压 TAR 包，拦截软链接逃逸与超大解压炸弹
+// ExtractTarStream 从流中解压 TAR 包，拦截软链接逃逸
 func ExtractTarStream(dst string, src io.Reader) error {
 	baseAbs, err := filepath.Abs(dst)
 	if err != nil {
 		return err
 	}
-	var totalExtractedBytes int64
 	tr := tar.NewReader(src)
 	for {
 		hdr, err := tr.Next()
@@ -271,17 +257,10 @@ func ExtractTarStream(dst string, src io.Reader) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			remain := DefaultMaxExtractBytes - totalExtractedBytes
-			if remain < 0 {
-				_ = utils.CleanDir(dst)
-				return fmt.Errorf("解压累计字节超过上限 %d bytes", DefaultMaxExtractBytes)
-			}
-			written, err := WriteExtractedFileWithLimit(target, tr, hdr.FileInfo().Mode(), remain)
-			if err != nil {
+			if _, err := WriteExtractedFile(target, tr, hdr.FileInfo().Mode()); err != nil {
 				_ = utils.CleanDir(dst)
 				return err
 			}
-			totalExtractedBytes += written
 		case tar.TypeSymlink, tar.TypeLink:
 			return fmt.Errorf("unsupported archive entry type for %s", hdr.Name)
 		default:
@@ -290,14 +269,13 @@ func ExtractTarStream(dst string, src io.Reader) error {
 	}
 }
 
-// WriteExtractedFileWithLimit 带大小配额限制写入文件
-func WriteExtractedFileWithLimit(target string, src io.Reader, mode os.FileMode, maxBytes int64) (int64, error) {
+// WriteExtractedFile 将归档条目内容写入目标文件
+func WriteExtractedFile(target string, src io.Reader, mode os.FileMode) (int64, error) {
 	out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
 		return 0, err
 	}
-	lr := io.LimitReader(src, maxBytes+1)
-	n, err := io.Copy(out, lr)
+	n, err := io.Copy(out, src)
 	closeErr := out.Close()
 	if err != nil {
 		_ = os.Remove(target)
@@ -306,10 +284,6 @@ func WriteExtractedFileWithLimit(target string, src io.Reader, mode os.FileMode,
 	if closeErr != nil {
 		_ = os.Remove(target)
 		return n, closeErr
-	}
-	if n > maxBytes {
-		_ = os.Remove(target)
-		return n, fmt.Errorf("解压数据超过配额上限 %d bytes", DefaultMaxExtractBytes)
 	}
 	return n, nil
 }

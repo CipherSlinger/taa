@@ -929,10 +929,6 @@ func extractZipArchive(dst string, data []byte) error {
 	return resource.ExtractZipArchive(dst, data)
 }
 
-func writeExtractedFileWithLimit(target string, src io.Reader, mode os.FileMode, maxBytes int64) (int64, error) {
-	return resource.WriteExtractedFileWithLimit(target, src, mode, maxBytes)
-}
-
 func chmodScripts(root string) error {
 	return resource.ChmodScripts(root)
 }
