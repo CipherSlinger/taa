@@ -153,14 +153,149 @@ func TestScanReadsSQLiteAndParquetDetails(t *testing.T) {
 		{Name: "lifetime_value", Type: "float"},
 		{Name: "segment", Type: "str"},
 	})
+	// parquet 只读元数据，没有行读取路径，因此没有预览
+	if len(parquetNode.Preview) != 0 {
+		t.Fatalf("user_profiles.parquet preview = %#v, want none", parquetNode.Preview)
+	}
+}
+
+func TestPreviewKeepsFirstRowsAlignedToFields(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "users.csv"), []byte(strings.Join([]string{
+		"user_id,name,note",
+		"1,user1,n1",
+		"2,user2,n2",
+		"3,user3",
+		"4,user4,n4",
+		"5,user5,n5",
+		"6,user6,n6",
+		"7,user7,n7",
+	}, "\n")+"\n"))
+
+	node := mustFindNode(t, scanTree(t, root), "users.csv")
+	if node.Rows == nil || *node.Rows != 7 {
+		t.Fatalf("users.csv rows = %v, want 7", node.Rows)
+	}
+	// 只留前 5 行；第 3 行缺列，必须补空串才能保持位置对齐
+	assertPreview(t, node.Name, node.Preview,
+		`[["1","user1","n1"],["2","user2","n2"],["3","user3",""],["4","user4","n4"],["5","user5","n5"]]`)
+}
+
+func TestPreviewCoversJSONLJSONArrayAndXLSX(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "events.jsonl"), []byte(strings.Join([]string{
+		`{"a":1,"b":"x"}`,
+		`{"a":2,"b":"y"}`,
+		`{"b":"z","a":3}`,
+	}, "\n")+"\n"))
+	mustWriteFile(t, filepath.Join(root, "list.json"), []byte(`[{"a":1,"b":"x"},{"a":2,"b":"y"}]`))
+	mustWriteFile(t, filepath.Join(root, "single.json"), []byte(`{"a":1}`))
+	mustWriteXLSXFile(t, filepath.Join(root, "orders.xlsx"), [][]any{
+		{"id", "amount"},
+		{"o1", "1.5"},
+		{"o2", "2.5"},
+	})
+
+	tree := scanTree(t, root)
+
+	// 字段顺序在源码里是首次出现的顺序，所以第三行虽写成 b,a，预览仍按 a,b 排列
+	assertPreview(t, "events.jsonl", mustFindNode(t, tree, "events.jsonl").Preview,
+		`[[1,"x"],[2,"y"],[3,"z"]]`)
+	assertPreview(t, "list.json", mustFindNode(t, tree, "list.json").Preview,
+		`[[1,"x"],[2,"y"]]`)
+	assertPreview(t, "orders.xlsx", mustFindNode(t, tree, "orders.xlsx").Preview,
+		`[["o1","1.5"],["o2","2.5"]]`)
+	// 单值 JSON 对象不是表格，没有预览
+	if single := mustFindNode(t, tree, "single.json"); single.Preview != nil {
+		t.Fatalf("single.json preview = %#v, want nil", single.Preview)
+	}
+}
+
+func TestPreviewReadsSQLiteColumnsAndRows(t *testing.T) {
+	root := t.TempDir()
+	mustWriteSQLiteFile(t, filepath.Join(root, "analytics.db"))
+
+	node := mustFindNode(t, scanTree(t, root), "analytics.db")
+	if len(node.Tables) != 2 {
+		t.Fatalf("tables len = %d, want 2", len(node.Tables))
+	}
+
+	assertFieldList(t, "dim_users", node.Tables[0].Columns, []Field{
+		{Name: "id", Type: "int"},
+		{Name: "name", Type: "str"},
+	})
+	assertPreview(t, "dim_users", node.Tables[0].Preview,
+		`[[1,"a"],[2,"b"],[3,"c"],[4,"d"]]`)
+
+	assertFieldList(t, "fct_orders", node.Tables[1].Columns, []Field{
+		{Name: "id", Type: "int"},
+		{Name: "amount", Type: "float"},
+	})
+	assertPreview(t, "fct_orders", node.Tables[1].Preview,
+		`[[1,1.5],[2,2.5],[3,3.5],[4,4.5],[5,5.5]]`)
+}
+
+func TestPreviewTruncatesLongCells(t *testing.T) {
+	root := t.TempDir()
+	long := strings.Repeat("x", 200)
+	mustWriteFile(t, filepath.Join(root, "wide.csv"), []byte("a,b\n"+long+",short\n"))
+
+	node := mustFindNode(t, scanTree(t, root), "wide.csv")
+	if len(node.Preview) != 1 || len(node.Preview[0]) != 2 {
+		t.Fatalf("preview shape = %#v", node.Preview)
+	}
+	cell, ok := node.Preview[0][0].(string)
+	if !ok {
+		t.Fatalf("cell type = %T, want string", node.Preview[0][0])
+	}
+	if want := strings.Repeat("x", previewCellRunes) + "…"; cell != want {
+		t.Fatalf("long cell = %q (len %d), want length %d with ellipsis", cell, len([]rune(cell)), previewCellRunes+1)
+	}
+	if node.Preview[0][1] != "short" {
+		t.Fatalf("short cell = %#v, want %q", node.Preview[0][1], "short")
+	}
+}
+
+func TestPreviewStaysOffUnlessRequested(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "users.csv"), []byte("a,b\n1,2\n"))
+	mustWriteSQLiteFile(t, filepath.Join(root, "analytics.db"))
+
+	// 默认关闭：报告类产物会落盘到结果目录并随导出接口外发，
+	// 预览等于把真实数据值送进导出产物。
+	off, err := BuildReport(root, DefaultOptions())
+	if err != nil {
+		t.Fatalf("BuildReport with DefaultOptions failed: %v", err)
+	}
+	assertNoPreview(t, off.Tree)
+
+	on, err := BuildReport(root, Options{IncludePreview: true})
+	if err != nil {
+		t.Fatalf("BuildReport with IncludePreview failed: %v", err)
+	}
+	assertPreview(t, "users.csv", mustFindNode(t, on.Tree, "users.csv").Preview, `[["1","2"]]`)
+
+	// 列定义属于元数据而非数据值，两种模式下都要有
+	for _, rep := range []*Report{off, on} {
+		db := mustFindNode(t, rep.Tree, "analytics.db")
+		if len(db.Tables) == 0 || len(db.Tables[0].Columns) == 0 {
+			t.Fatalf("analytics.db columns missing: %#v", db.Tables)
+		}
+	}
 }
 
 func scanTree(t *testing.T, root string) *Node {
+	t.Helper()
+	return scanTreeWithPreview(t, root, true)
+}
+
+func scanTreeWithPreview(t *testing.T, root string, preview bool) *Node {
 	t.Helper()
 	s := &scanner{
 		root:     root,
 		maxFiles: 100000,
 		maxParse: 128 << 20,
+		preview:  preview,
 		byFormat: map[string]*FormatStat{},
 	}
 	tree, err := s.scan(root, "")
@@ -208,25 +343,60 @@ func assertFields(t *testing.T, n *Node, want []Field) {
 	if n == nil {
 		t.Fatal("node is nil")
 	}
-	if len(n.Fields) != len(want) {
-		t.Fatalf("%s fields len = %d, want %d", n.Name, len(n.Fields), len(want))
+	assertFieldList(t, n.Name, n.Fields, want)
+}
+
+func assertFieldList(t *testing.T, label string, got, want []Field) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s fields len = %d, want %d", label, len(got), len(want))
 	}
 	for i := range want {
-		if n.Fields[i] != want[i] {
-			t.Fatalf("%s field %d = %#v, want %#v", n.Name, i, n.Fields[i], want[i])
+		if got[i] != want[i] {
+			t.Fatalf("%s field %d = %#v, want %#v", label, i, got[i], want[i])
 		}
 	}
 }
 
+// assertTables 只比对表名与行数，列定义与预览由专门的用例断言。
 func assertTables(t *testing.T, n *Node, want []TableInfo) {
 	t.Helper()
 	if len(n.Tables) != len(want) {
 		t.Fatalf("%s tables len = %d, want %d", n.Name, len(n.Tables), len(want))
 	}
 	for i := range want {
-		if n.Tables[i] != want[i] {
-			t.Fatalf("%s table %d = %#v, want %#v", n.Name, i, n.Tables[i], want[i])
+		if n.Tables[i].Name != want[i].Name || n.Tables[i].Rows != want[i].Rows {
+			t.Fatalf("%s table %d = (%s, %d), want (%s, %d)",
+				n.Name, i, n.Tables[i].Name, n.Tables[i].Rows, want[i].Name, want[i].Rows)
 		}
+	}
+}
+
+// assertPreview 以 JSON 形态比对预览，规避驱动返回值在 int64/float64 上的差异。
+func assertPreview(t *testing.T, label string, got [][]any, want string) {
+	t.Helper()
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("%s marshal preview failed: %v", label, err)
+	}
+	if string(data) != want {
+		t.Fatalf("%s preview = %s, want %s", label, data, want)
+	}
+}
+
+// assertNoPreview 递归确认整棵树都没有携带预览行。
+func assertNoPreview(t *testing.T, n *Node) {
+	t.Helper()
+	if len(n.Preview) != 0 {
+		t.Fatalf("%s unexpectedly carries a preview: %#v", n.Name, n.Preview)
+	}
+	for _, tb := range n.Tables {
+		if len(tb.Preview) != 0 {
+			t.Fatalf("%s table %s unexpectedly carries a preview: %#v", n.Name, tb.Name, tb.Preview)
+		}
+	}
+	for _, ch := range n.Children {
+		assertNoPreview(t, ch)
 	}
 }
 

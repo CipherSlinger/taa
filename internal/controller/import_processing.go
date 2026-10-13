@@ -962,6 +962,12 @@ func (s *TAAState) buildAndSaveTrainingReport(taskID string, startedAt, finished
 	if err != nil {
 		return nil, err
 	}
+	// 结果目录结构树是附加证据，扫描失败不能拖垮整份报告，缺了就省略该字段。
+	if resultFiles, treeErr := BuildResultFilesTree(resultDir); treeErr != nil {
+		s.Logs.Add(LogWarn, "report", "生成结果目录结构树失败，报告中省略 result_files: %v", treeErr)
+	} else if resultFiles != nil {
+		report["result_files"] = resultFiles
+	}
 	if err := writeJSONFile(filepath.Join(resultDir, "training_report.json"), report); err != nil {
 		return nil, err
 	}
