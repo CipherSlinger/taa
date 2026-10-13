@@ -45,11 +45,13 @@ type StartupConfig struct {
 	// executable section is called packed. Zero means the codeaudit default
 	// (7.5).
 	//
-	// The whole of [0,8] is accepted, and neither end is neutral: at 8.0 nothing
+	// The whole of [0,8] is accepted, and neither end is neutral. At 8.0 nothing
 	// is ever called packed, because Shannon entropy cannot exceed 8, so the
-	// family goes quiet on this deployment; at or below the 6.0-6.5 band ordinary
-	// compiled code occupies, every shared object is called packed, and the
-	// resulting BIN_001 is HIGH, which blocks the import under both policies.
+	// family goes quiet on this deployment. Lower down, a threshold that lands
+	// inside the band compiled code already occupies (roughly 6.0-6.5) starts
+	// calling ordinary shared objects packed - and BIN_001 is HIGH, so those
+	// imports are refused under both policies. The default is 7.5, clear of the
+	// band.
 	BinaryAuditHighEntropyThreshold float64
 	// BinaryAuditMaxFindings is the listing budget for the binary pass, not a
 	// completeness bound: reaching it drops LOW findings (and only LOW - HIGH and
@@ -63,12 +65,12 @@ type StartupConfig struct {
 	// depends on the deployment's package sizes: raising it buys a complete pass
 	// over a large pickle at a cost of about 3 microseconds per kibibyte.
 	//
-	// Lowering it below twice the head-and-tail window (2 MiB) does not by itself
-	// cost completeness: the two windows then cover a file that size end to end,
-	// no bound is recorded and nothing is refused. What changes is which
-	// extractors run - the two windows instead of one front-to-back pass - so on
-	// that route the pickle interpreter, which is gated to the head window, stops
-	// seeing the middle.
+	// Lowering it costs completeness only for a file longer than the two windows
+	// together (2 MiB): a file at or below that is covered end to end by the
+	// windows, so no bound is recorded and nothing is refused, while a longer one
+	// still has its middle unread - still recorded, and still a refusal on an
+	// executable kind. On the windowed route the pickle interpreter, which is
+	// gated to the head window, stops seeing the middle.
 	BinaryAuditMaxFullScanBytes int
 	// BinaryAuditMaxStreamBytes bounds how much of one file the end-to-end
 	// streaming pass reads. Zero means the codeaudit default (3 GiB).

@@ -1614,6 +1614,8 @@ func TestStreamWithSizeSwitchRecordsNoBoundWhenTheWindowsCoverTheFile(t *testing
 	}
 }
 
+// zipFixture builds a zip in memory, so the container tests state their members
+// rather than depending on a committed archive.
 func zipFixture(t *testing.T, members map[string][]byte, order []string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
