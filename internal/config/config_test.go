@@ -1199,16 +1199,34 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 		}
 	})
 
-	t.Run("a negative limit is rejected rather than read as a default", func(t *testing.T) {
+	t.Run("a limit that cannot mean what it says is rejected rather than read as a default", func(t *testing.T) {
 		// The guarantee is the load path's: LoadStartupConfig runs
 		// validateStartupConfig before anything reads the value, so a negative
 		// never reaches the normalizer. codeaudit's own normalizer tests "<= 0",
 		// so a negative arriving by any other route - a hand-built StartupConfig -
 		// would be replaced by the default instead of rejected.
-		path := filepath.Join(t.TempDir(), DefaultFileName)
-		writeTestConfig(t, path, `{"security":{"binaryAudit":{"maxArchiveMembers":-1}}}`)
-		if _, err := LoadStartupConfig(path); err == nil {
-			t.Error("a negative limit was accepted; it would be normalised to the default and the operator would never know")
+		//
+		// Every guard is driven rather than one of them: they are separate
+		// branches, and a test that named only the first stays green with the
+		// other five deleted.
+		for _, tc := range []struct {
+			name  string
+			audit string
+		}{
+			{"a negative member count", `"maxArchiveMembers":-1`},
+			{"a negative finding budget", `"maxFindings":-1`},
+			{"a negative full-scan budget", `"maxFullScanBytes":-1`},
+			{"a negative stream budget", `"maxStreamBytes":-1`},
+			{"an entropy threshold below zero", `"highEntropyThreshold":-0.5`},
+			{"an entropy threshold above eight", `"highEntropyThreshold":8.5`},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), DefaultFileName)
+				writeTestConfig(t, path, `{"security":{"binaryAudit":{`+tc.audit+`}}}`)
+				if _, err := LoadStartupConfig(path); err == nil {
+					t.Errorf("%s was accepted; it would be normalised to the default and the operator would never know", tc.audit)
+				}
+			})
 		}
 	})
 

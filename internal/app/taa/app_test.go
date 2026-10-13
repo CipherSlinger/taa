@@ -85,38 +85,42 @@ func TestBuildSecurityConfig(t *testing.T) {
 	// loader must not get a scan with an engine nobody chose. The loader's own
 	// default is "regex" and is asserted in the config package.
 	cfg := config.StartupConfig{
-		EnableSecurityScan:         true,
-		CodeScanEngine:             "regex",
-		ModelDir:                   "/opt/taa/models",
-		EnableResultCheck:          true,
-		MaxFileBytes:               3 * 1024 * 1024 * 1024,
-		MaxResultBytes:             3 * 1024 * 1024 * 1024,
-		DataDir:                    "/opt/taa/data",
-		ResultDir:                  "/opt/taa/results",
-		ModelInputDir:              "/opt/taa/models/input",
-		ModelOutputDir:             "/opt/taa/models/output",
-		ModelLogDir:                "/opt/taa/models/log",
-		ModelProgressDir:           "/opt/taa/models/progress",
-		ModelCheckpointDir:         "/opt/taa/models/checkpoint",
-		EnableLLM:                  true,
-		LLMTransport:               "teetls",
-		LLMEndpoint:                "https://127.0.0.1:8443",
-		LLMAttestationMode:         "permissive",
-		LLMHRKCertPath:             "/path/hrk.cert",
-		LLMHSKCekCertPath:          "/path/hsk.cert",
-		LLMExpectedMeasurements:    []string{"measure-1"},
-		LLMRequireMutualAttest:     true,
-		LLMInsecureSkipVerify:      true,
-		LLMAuthToken:               "test-secret-token",
-		LLMTimeoutMs:               60000,
-		LLMAllowedHosts:            []string{"127.0.0.1", "localhost"},
-		LLMCircuitBreakerThreshold: 5,
-		LLMCooldownSec:             45,
-		LLMModel:                   "qwen2.5-coder:0.5b",
-		LLMPolicy:                  "strict",
-		LLMFailClosed:              true,
-		BinaryAuditEnabled:           true,
-		BinaryAuditMaxArchiveMembers: 17,
+		EnableSecurityScan:              true,
+		CodeScanEngine:                  "regex",
+		ModelDir:                        "/opt/taa/models",
+		EnableResultCheck:               true,
+		MaxFileBytes:                    3 * 1024 * 1024 * 1024,
+		MaxResultBytes:                  3 * 1024 * 1024 * 1024,
+		DataDir:                         "/opt/taa/data",
+		ResultDir:                       "/opt/taa/results",
+		ModelInputDir:                   "/opt/taa/models/input",
+		ModelOutputDir:                  "/opt/taa/models/output",
+		ModelLogDir:                     "/opt/taa/models/log",
+		ModelProgressDir:                "/opt/taa/models/progress",
+		ModelCheckpointDir:              "/opt/taa/models/checkpoint",
+		EnableLLM:                       true,
+		LLMTransport:                    "teetls",
+		LLMEndpoint:                     "https://127.0.0.1:8443",
+		LLMAttestationMode:              "permissive",
+		LLMHRKCertPath:                  "/path/hrk.cert",
+		LLMHSKCekCertPath:               "/path/hsk.cert",
+		LLMExpectedMeasurements:         []string{"measure-1"},
+		LLMRequireMutualAttest:          true,
+		LLMInsecureSkipVerify:           true,
+		LLMAuthToken:                    "test-secret-token",
+		LLMTimeoutMs:                    60000,
+		LLMAllowedHosts:                 []string{"127.0.0.1", "localhost"},
+		LLMCircuitBreakerThreshold:      5,
+		LLMCooldownSec:                  45,
+		LLMModel:                        "qwen2.5-coder:0.5b",
+		LLMPolicy:                       "strict",
+		LLMFailClosed:                   true,
+		BinaryAuditEnabled:              true,
+		BinaryAuditMaxArchiveMembers:    17,
+		BinaryAuditHighEntropyThreshold: 7.25,
+		BinaryAuditMaxFindings:          23,
+		BinaryAuditMaxFullScanBytes:     134217728,
+		BinaryAuditMaxStreamBytes:       268435456,
 	}
 
 	sec, err := buildSecurityConfig(cfg)
@@ -251,12 +255,46 @@ func TestBuildSecurityConfig(t *testing.T) {
 	// codeaudit normalizer every extraction path already calls - and a second
 	// resolver here would be a second place for the two to disagree about what
 	// the default is. The resolution itself is proven at the codeaudit level.
-	if !sec.Binary.Enabled {
-		t.Error("SecurityConfig.Binary.Enabled = false, want the value carried from BinaryAuditEnabled")
+	//
+	// All six are compared, and each carries a different value, because the
+	// failure this guards against is a pair swapped in the literal or a field
+	// left at zero - both of which a check on one or two of them survives.
+	if sec.Binary.Enabled != cfg.BinaryAuditEnabled {
+		t.Errorf("SecurityConfig.Binary.Enabled = %t, want the value carried from BinaryAuditEnabled",
+			sec.Binary.Enabled)
 	}
 	if sec.Binary.MaxArchiveMembers != cfg.BinaryAuditMaxArchiveMembers {
 		t.Errorf("SecurityConfig.Binary.MaxArchiveMembers = %d, want the raw config value %d",
 			sec.Binary.MaxArchiveMembers, cfg.BinaryAuditMaxArchiveMembers)
+	}
+	if sec.Binary.HighEntropyThreshold != cfg.BinaryAuditHighEntropyThreshold {
+		t.Errorf("SecurityConfig.Binary.HighEntropyThreshold = %v, want the raw config value %v",
+			sec.Binary.HighEntropyThreshold, cfg.BinaryAuditHighEntropyThreshold)
+	}
+	if sec.Binary.MaxFindings != cfg.BinaryAuditMaxFindings {
+		t.Errorf("SecurityConfig.Binary.MaxFindings = %d, want the raw config value %d",
+			sec.Binary.MaxFindings, cfg.BinaryAuditMaxFindings)
+	}
+	if sec.Binary.MaxFullScanBytes != int64(cfg.BinaryAuditMaxFullScanBytes) {
+		t.Errorf("SecurityConfig.Binary.MaxFullScanBytes = %d, want the raw config value %d",
+			sec.Binary.MaxFullScanBytes, cfg.BinaryAuditMaxFullScanBytes)
+	}
+	if sec.Binary.MaxStreamBytes != int64(cfg.BinaryAuditMaxStreamBytes) {
+		t.Errorf("SecurityConfig.Binary.MaxStreamBytes = %d, want the raw config value %d",
+			sec.Binary.MaxStreamBytes, cfg.BinaryAuditMaxStreamBytes)
+	}
+
+	// The enabled flag is checked in both directions. A single case with the
+	// fixture set to true is satisfied by an Enabled hard-coded to true, which is
+	// the one way this wiring can break while looking right: the channel would
+	// then run on a deployment that turned it off.
+	cfg.BinaryAuditEnabled = false
+	sec, err = buildSecurityConfig(cfg)
+	if err != nil {
+		t.Fatalf("buildSecurityConfig() with the channel off error = %v", err)
+	}
+	if sec.Binary.Enabled {
+		t.Error("SecurityConfig.Binary.Enabled = true for BinaryAuditEnabled false; the rollback would not take effect")
 	}
 }
 
