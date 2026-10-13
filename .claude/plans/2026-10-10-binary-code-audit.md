@@ -10791,7 +10791,12 @@ git commit -m "test(audit): cover the binary channel end to end and document it"
 > 3. **有界测试分不清是哪个 reader 撞了预算（加缺失断言）**。`streamWithSizeSwitch` 仅凭「文件大小 > 预算」就已置位 `Bound.Structural`，所以 `BoundedExecutable == 1` 与 `!Passed` 在 section reader 完全无视预算时同样成立——去掉 `countSection` 的预算钳制，该测试照样通过（此时整节被读完，反而触发 `BIN_001`，路径不同而结论相同）。现补上「`libbig.so` 上**不得**出现 `BIN_001`」这一缺失断言：夹具的 `.text` 是高熵且可执行，绕开预算就会以「加壳」为由拒绝，两种结局都拒绝，只有这条缺失断言能把「读到一半停下」与「全都量过了」分开。**变异证明**：去掉 `countSection` 的钳制后该测试失败。
 > 4. **README 三处事实错误（已改，并同步回本节 Step 4 的 fence）**：(a) Identification 条目把「内容主张只作用于源码臂不读的文件」写成覆盖整条 pickle 判定，但 `isPickleStream` 的 **magic 分支排在源码 veto 之前**，所以带 pickle magic 的 `.py` 确实被认领为 pickle——原句与该条目开头「命名为 `.py` 的二进制文件同样会被认领」自相矛盾；现改为只有第三项（protocol 0/1 嗅探）让位于源码臂。(b) Evidence 条目把「约 190 ms」挂在首尾各 1 MiB 的读法上，而 190 ms 是 **64 MiB 全量扫描**的成本（338 MB/s），首尾各 1 MiB 只有约 6 ms；现改为挂在全量读上。(c) Completeness 条目列了 9 个字段而 `BinaryScanSummary` 有 **10** 个，漏掉 `presence_downgraded`，而同节 Verdict 条目正在讨论它；已补全。
 >
-> 记录但**未改**：`downgrades` 恒真的变异仍无人捕获，但经核实这是**等效变异体**而非覆盖缺口——门控的调用点是 `if !corroborated && s.matcher.downgrades(id)`，所以它只作用于**未被佐证**的文件；而 `BIN_001`（熵）与 `PKL_001`（pickle）本身就是佐证来源，一旦命中即把 `corroborated` 置真、整个分支变死，于是未被佐证的文件里能命中的 HIGH 规则只剩三个 presence 族。恒真与真门控在全部可达输入上等价，故不必也不应为它加测试。
+> **追记（2026-10-13，复核轮打回）**：上一版此处的记录写着「`downgrades` 恒真的变异仍无人捕获，且经核实是等效变异体」。**两句都错**，已删改：
+>
+> - **并非无人捕获**，只是不被这四条集成测试捕获。把 `go test` 的范围从 `-run TestEndToEnd` 放开到整个包，`TestBinaryFamilyClassificationIsPinned`（`binary_rules_test.go:475`，逐族断言 `downgrades(id) == wantDowngrade[id]`）与 `TestBinaryScannerCapKeepsAMediumFindingBeyondTheBudget`、`TestBinaryScannerCapKeepsAnUnknownSeverityPastTheBudget` 三条立即失败。我上一轮只跑了 `-run TestEndToEnd`，把「不被这四条抓住」当成了「无人抓住」。
+> - **并非等效变异体**。`downgrades` 的判据是 `presenceOnly() && Severity == SeverityHigh`（`binary_rules.go:566`），而 **`DYN_001` 是 presence-only 但 MEDIUM**（`binary_rules.go:283-289`），所以真门控对它返回 false、变异体返回 true——两者在**未被佐证**的文件上就分岔：一个只导入 `dlopen` 的 `.so`，真门控把 `DYN_001` 留在 MEDIUM（`gate` 下阻断），变异体改写成 LOW（不阻断），此外还会给命中的 LOW 字符串族挂上伪 `DowngradeReason` 并虚增 `presence_downgraded`。门控自己的注释（`binary_rules.go:554-556`）早就写明「解析为 MEDIUM 的族（DYN_001）永远产生不了这里要拦的 HIGH」——我读到了这句却把它当成了「所以降不降无所谓」。我上一轮引用的调用点短路 `!corroborated && …` 是真的，但它只说明被佐证的文件不受影响，**不能**推出未被佐证的那一支等价。
+>
+> 结论：这个变异不需要新测试（已有单元测试覆盖），但理由与上一版记录写的相反——**它是被别处覆盖，不是无害**。
 
 ---
 
