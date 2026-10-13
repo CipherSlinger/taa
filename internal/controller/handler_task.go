@@ -11,6 +11,12 @@ import (
 	pkgerrors "taa/pkg/errors"
 )
 
+// importRequest is the body shared by /v1/taa/import and /v1/taa/importModel.
+//
+// The early combined flow routed on a "type" field (1=model, 2=debug data,
+// 3=training data). That field is ignored: there is no field for it here, so
+// decoding drops it and a client that still sends one changes nothing. Which
+// resource a request carries is decided by the endpoint alone.
 type importRequest struct {
 	ResourceURL   string  `json:"resourceUrl"`
 	RequestID     string  `json:"requestId"`
@@ -123,6 +129,12 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.RuntimeConfig) != "" {
 		s.mu.Lock()
 		s.RuntimeConfig = req.RuntimeConfig
+		// Sealed exactly like the model import path. Left in memory only, the
+		// overwrite would survive until the next restart and then silently revert
+		// this run to the previous configuration.
+		if err := s.sealStateLocked(); err != nil {
+			s.Logs.Add(LogError, "state", "持久化 runtimeConfig 失败: %v", err)
+		}
 		s.mu.Unlock()
 		s.Logs.Add(LogInfo, "import", "已保存 runtimeConfig (长度=%d)", len(req.RuntimeConfig))
 	}

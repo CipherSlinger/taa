@@ -40,6 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ### Changed
 - **Model Code Audit Is Now Advisory**: A failing model code audit no longer blocks anything. Its verdict is reported to the platform as a reference result (`/v1/taa/reportAudit`, codes `0` pass / `1` fail / `2` no verdict) and decides nothing on the TAA side: a failing or interrupted audit neither rolls back the import nor cancels a running training, so the model stays imported and trainable and the package on disk stays exactly as uploaded. Previously a failing verdict cleared `ModelImported` and stopped the active training. Concurrency is unchanged: a model import is still refused while another audit is running, and the 409 busy responses are unrelated to the verdict. The crash-recovery path now only reports the interrupted audit instead of rolling the import back, and the audit summary no longer claims TAA blocks the import.
+- **The Historical `type` Field Is Fully Ignored on Resource Delivery**: `/v1/taa/import` no longer presents `type` (1=model, 2=debug data, 3=training data) as a routing input. It never was one — the request struct has no field for it, so decoding dropped it and no branch consulted it — but the API spec required it and the architecture diagrams routed on it. The field is now marked ignored on both endpoints, and which resource a request carries is decided by the endpoint alone.
 - **Toolchain Reorganization (`tools/`)**: Reorganized auxiliary tools into top-level `tools/` directory, moving platform mock to `tools/platform-mock/` and cryptographic tools to `tools/sdk/`.
 - **Go Workspace Orchestration**: Configured `go.work` multi-module workspace orchestrating `taa`, `teellm`, `teetls`, and `tools/sdk` on Go 1.22+.
 - **Configuration Templates**:
@@ -49,6 +50,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - **Dynamic File Size Threshold**: Replaced hardcoded size limits with configurable `maxFileBytes` (default 3 GB) for export data leakage inspection.
 
 ### Fixed
+- **`/v1/taa/import` seals the `runtimeConfig` it accepts, at the moment it accepts it.** The data path left the overwrite in memory and relied on the task release to persist it, so a crash during the download or during the training it started reverted the run to the configuration saved before it. `/v1/taa/importModel` already sealed the same field on the spot.
 - **Offline audit benchmark (evaluation-only): the Semgrep rule set was realigned with the regex baseline it is meant to mirror.** The two arms diverged in both directions, which would have made any engine comparison uninterpretable:
   - `FIL_001` had lost its sensitive-path predicate and matched *any* `open()` call while carrying `HIGH` severity where the baseline has `MEDIUM`. This is the rule that flagged all 100 audit-100 samples in the one recorded full-corpus Semgrep run.
   - `CMD_001` kept only the `shell=True` form, so every list-form invocation was missed, including the primary attack of samples M1-02/M1-07 (`subprocess.check_output(["bash", "-c", "whoami"])`).

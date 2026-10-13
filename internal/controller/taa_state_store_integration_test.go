@@ -189,6 +189,66 @@ func TestTAAState_ImportSuccessMethods_Sealing(t *testing.T) {
 	}
 }
 
+// TestDataImportSealsRuntimeConfig covers the runtimeConfig delivered with a data
+// import. The overwrite has to reach disk when it is made, not when the task it
+// belongs to ends: the data path used to rely on the task release to seal, so a
+// crash during the download or the training it starts reverted the run to the
+// configuration saved before it.
+func TestDataImportSealsRuntimeConfig(t *testing.T) {
+	state, server := setupTestServer(t)
+	store, _ := createTestStateStore(t)
+	state.SetStateStore(store)
+
+	// The download is held open so the assertion lands while the request is still
+	// in flight, which is exactly the window the seal has to cover.
+	started := make(chan struct{})
+	archiveServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		// Abort rather than answer: the request has to fail in the download so it
+		// never reaches the async pipeline, which would outlive this test's cleanup.
+		panic(http.ErrAbortHandler)
+	}))
+	defer archiveServer.Close()
+
+	cfg := `{"commands":["python3 train.py"]}`
+	body, err := json.Marshal(map[string]any{
+		"resourceUrl":   archiveServer.URL + "/data.tar.gz",
+		"requestId":     "req-seal-1",
+		"taskId":        "task-seal-1",
+		"runtimeConfig": cfg,
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+
+	failed := make(chan int, 1)
+	go func() {
+		resp, err := http.Post(server.URL+"/v1/taa/import", "application/json", bytes.NewReader(body))
+		if err != nil {
+			failed <- -1
+			return
+		}
+		defer resp.Body.Close()
+		var api apiResponse
+		_ = json.NewDecoder(resp.Body).Decode(&api)
+		failed <- api.Error
+	}()
+
+	<-started
+
+	diskState, err := store.UnsealState()
+	if err != nil {
+		t.Fatalf("unseal state failed: %v", err)
+	}
+	if diskState.RuntimeConfig != cfg {
+		t.Fatalf("runtimeConfig was not sealed when it was overwritten: got %q, want %q", diskState.RuntimeConfig, cfg)
+	}
+
+	if code := <-failed; code != http.StatusInternalServerError {
+		t.Fatalf("expected the aborted download to fail with 500, got error=%d", code)
+	}
+}
+
 // ── 5. ResetActiveTask 与 RestoreFromPersistentState 测试 ──
 
 func TestTAAState_ResetActiveTaskAndRestore(t *testing.T) {
