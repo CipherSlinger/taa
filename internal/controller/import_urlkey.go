@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/hex"
 	"fmt"
 
 	"taa/internal/resource"
@@ -40,5 +41,9 @@ func (s *TAAState) unwrapDataKeyCipherFromURL(rawURL string) (downloadURL string
 	if err != nil {
 		return "", nil, fmt.Errorf("dataKeyCipher 解封失败: %w", err)
 	}
+	// Debugging aid for the delivery protocol: both halves of the envelope are printed
+	// so a platform-side wrap can be checked against what TAA actually unwrapped.
+	s.Logs.Add(LogInfo, "import", "信封调试: dataKeyCipher=%s -> 数据密钥=%s (%d 字节)",
+		dataKeyCipherHex, hex.EncodeToString(dataKey), len(dataKey))
 	return downloadURL, dataKey, nil
 }
