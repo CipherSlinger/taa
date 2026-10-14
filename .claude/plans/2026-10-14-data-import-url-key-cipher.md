@@ -773,7 +773,7 @@ git commit -m "feat(import): decrypt data resources with the URL-carried key env
 **Files:**
 - Test: `internal/controller/import_urlkey_test.go`（追加）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `internal/controller/import_urlkey_test.go` 追加：
 
@@ -936,7 +936,7 @@ func TestImportURLKeyDecryptFailureReportsPublicKey(t *testing.T) {
 
 并把该文件 import 块补上 `"encoding/json"`、`"fmt"`、`"strings"`、`"time"`（`encoding/hex`、`net/http`、`net/http/httptest`、`os`、`path/filepath`、`sync/atomic`、`testing`、`teecrypto "taa/pkg/crypto"` 已列出）。
 
-- [ ] **Step 2: 跑测试确认通过（不需要改生产代码）**
+- [x] **Step 2: 跑测试确认通过（不需要改生产代码）**
 
 Run: `go test ./internal/controller/ -run 'TestImportRejectsBadDataKeyCipherBeforeDownloading|TestImportFallsBackToLegacyFormatWithoutDataKeyCipher|TestImportURLKeyDecryptFailureReportsPublicKey' -v`
 Expected: 全部 PASS
@@ -944,17 +944,27 @@ Expected: 全部 PASS
 若「envelope for another key」一例的 `hits` 不为 0，说明提前解封没有生效，回到 Task 3 Step 6 检查解析块的位置是否在校验之后、下载之前。
 若 `TestImportURLKeyDecryptFailureReportsPublicKey` 超时，说明新分支把失败吞掉了没有走 `reportImportFailure`，检查 `resolvePlaintextResourceWithDataKey` 的返回值是否被 `processImportedResource` 的 `if err != nil` 接住。
 
-- [ ] **Step 3: 范围护栏——模型下发与资源信息仍解整文件信封**
+- [x] **Step 3: 范围护栏——模型下发与资源信息仍解整文件信封**
 
 Run: `go test ./internal/controller/ -run 'TestResourceInfoHandlerDecryptsWithoutEncSuffix|TestPhase1ModelImportFailureReportsModelImport' -v 2>&1 | tail -20`
 Expected: PASS（这两个接口的解密路径未被本次改动触及）
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add internal/controller/import_urlkey_test.go
 git commit -m "test(import): cover download-time rejection and the legacy fallback"
 ```
+
+> **执行记录（2026-10-14）**：已实现并提交 `fba012f`（1 文件，仅测试，+157/-0 相对本任务起点）。规格审查逐行一致：相对 `6ea68c1` 零删除行，Task 3 的 `urlKeyResource` 与 `TestImportDecryptsWithDataKeyCipherFromURL` 逐字节未动；五个表用例、`hits == 0` 断言、四个新 import 均与规格一致；提交信息无正文、无 trailer。
+>
+> **Task 3 遗留的两条变异在本提交转为失败**（本任务的验收标准，不只是"跑绿"）：`handler_task.go:110` 的 `if err != nil` → `if false` 使 `duplicate_parameter` 与 `empty_value` 报 `status=500 error=500 msg=Get "": unsupported protocol scheme ""`；丢弃 `UnwrapKeySM2` 错误使 `envelope_for_another_key` 报 `status=200`。审查者独立复现两条，还原后 `handler_task.go` 的 sha256 回到 `b48d601d…`，工作区无残留。
+>
+> 质量审查结论「可合并」，六条全为 Minor、无 Important/Critical。采纳 4 条后 amend 为 `fba012f`，复核确认四条全部闭合且未削弱其他断言：断言收紧为 `数据密钥信封长度无效`（原先 `长度无效` 由 `seal.go:146` 与 `seal.go:38` 同时发出，无法区分二者）；篡改载荷由 25B 补到 39B，真正走到 `gcm.Open` 的标签校验（原先 25B 撞的是 `密文长度不足`，与注释自称的 "GCM authentication fails" 不符）；删掉 `reportPayload` 中从未读取的 `Report` 字段；`state, server := … ; _ = state` 改为 `_, server := …`。
+>
+> 未采纳 2 条：`reportResCh` 缓冲 1 配 10s 超时在"多上报一次"时会挂起（该路径只上报一次，要触发需不存在的代码路径；改成丢弃式发送只是把假想的挂起换成静默丢弃）；五个子测试共用 `hits`/`fileServer`（`t.Run` 顺序执行、无 `t.Parallel()`，安全）。
+>
+> 一处推定更正：`crypto.Decrypt` 的长度判据是严格 `< nonceSize+overhead`（即 `< 28`），28 字节本身已通过并进入 `gcm.Open`。实测 25/26/27 → `密文长度不足`，28 及以上 → `cipher: message authentication failed`。
 
 ---
 
