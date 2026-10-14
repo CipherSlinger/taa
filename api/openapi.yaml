@@ -106,6 +106,10 @@ paths:
         平台向 TAA 下发测试数据（phase 2）或正式训练数据（phase 3）的密态资源包，TAA 同步接收后异步解密、校验并入库。
         本接口是触发训练的唯一入口：数据入库后，若模型已导入且当前无在飞训练，立即执行 runtimeConfig 中的命令，
         训练结果通过 /v1/taa/reportRes 上报。请求中的历史字段 type 被完全忽略。
+        密态资源支持两种形态（仅本接口；/v1/taa/getResourceInfo 与 /v1/taa/importModel 不解析该参数）：
+        resourceUrl 形如 <下载链接>?dataKeyCipher=<hex C1C3C2> 时，
+        下载链接只含 SM4-GCM 密文，密钥信封由该参数给出，TAA 在下载前解析并解封，参数非法即返回 400 且不发起下载；
+        未携带该参数时沿用原逻辑：整文件信封（WrappedKey || Ciphertext）、.enc 后缀强制解密、明文压缩包按魔数直通。
       tags:
         - 资源流转
       requestBody:
@@ -133,7 +137,7 @@ paths:
                 result: null
                 error: 0
         '400':
-          description: 参数错误（resourceUrl 为空；requestId/taskId 同时为空；requestId 或 taskId 已存在或正在处理中）
+          description: 参数错误（resourceUrl 为空；requestId/taskId 同时为空；requestId 或 taskId 已存在或正在处理中；dataKeyCipher 重复、为空、hex 非法、长度非法或信封解不开）
           content:
             application/json:
               schema:
@@ -612,7 +616,7 @@ components:
       properties:
         resourceUrl:
           type: string
-          description: 加密数据资源的 HTTP(S) 下载地址
+          description: 加密数据资源的 HTTP(S) 下载地址。密态资源可携带 ?dataKeyCipher=<hex> 参数承载 SM2 数据密钥信封（C1C3C2 布局，112 或 113 字节），该参数不会被转发到下载请求；其余 query 参数原样保留
         type:
           type: integer
           deprecated: true
