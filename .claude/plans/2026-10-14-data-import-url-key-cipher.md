@@ -1549,19 +1549,19 @@ git commit -m "docs(api): document the URL-carried data key envelope"
 
 ### Task 8: 全量验证与收尾
 
-- [ ] **Step 1: 全量测试**
+- [x] **Step 1: 全量测试**
 
 Run: `go test ./... 2>&1 | grep -v "^ok\|no test files" | head -20`
 Expected: 无输出（全绿）
 
 > 已知偶发：`internal/controller` 的并发相关用例约有 7.5% 波动率，与本改动无关；若只在并发用例上失败，重跑一次确认。
 
-- [ ] **Step 2: 构建校验**
+- [x] **Step 2: 构建校验**
 
 Run: `CGO_ENABLED=0 GOOS=linux go build -o /tmp/taa-urlkey ./cmd/taa && ls -l /tmp/taa-urlkey`
 Expected: 生成静态二进制，无报错
 
-- [ ] **Step 3: 确认工作区只含预期改动**
+- [x] **Step 3: 确认工作区只含预期改动**
 
 Run: `git status --short && git log --oneline master..HEAD`
 Expected: 无未提交改动（`go.work` 与子模块不进版本控制）；`master..HEAD` 只含本计划产生的提交——每个 Task 一条实现提交加一条 `docs(import): record Task N completion in the plan`。逐条核对提交主题与 Task 一一对应，不要按固定条数（本计划执行期间条数会随记账提交增长）
@@ -1569,6 +1569,19 @@ Expected: 无未提交改动（`go.work` 与子模块不进版本控制）；`ma
 - [ ] **Step 4: 回到主检出合并**
 
 由用户确认后执行：在 worktree 中把分支合回 `master`，删除 worktree 与分支（`ExitWorktree` 时选 remove，或手工 `git merge --no-ff feat/import-url-key-envelope`）。
+
+> **执行记录（2026-10-14）**：Step 1/2/3 已完成，**Step 4 待用户确认**（见下）。
+>
+> - **Step 1**：`go test ./...` 退出码 0，过滤后无任何输出（全绿）。在合并前三处文档提交完成后重跑过一次，仍全绿。计划里那条 7.5% 偶发在本次两轮运行中均未出现。
+> - **Step 2**：`CGO_ENABLED=0 GOOS=linux go build -o /tmp/taa-urlkey ./cmd/taa` 成功；`file` 判定 `ELF 64-bit LSB executable, x86-64 … statically linked`，20304608 字节（20.3 MB）。
+> - **Step 3**：`git status --short` 空（工作区干净）；`master..HEAD` 共 16 条，逐条核对为：Task 1–7 各一条实现提交 + 一条 `docs(import): record Task N completion in the plan`，加计划本身的 2 条（`915b625` 立计划、`5b5873b` 计划注释改英文）。`go.work` 与子模块指针均未入库。
+> - **合并前漂移检查（计划外，但合并前必查）**：本分支基于 `78b289a`，master 之后前进了一条 `c83c6b4`（deploy 脚本迁到仓库根），其中**也改了 `docs/architecture-design.md`**——恰好是 Task 7 动过图的那个文件。已实测 `git merge-tree --write-tree master HEAD`（退出码 0）并检查合并结果树：本分支的新方框与 §5.2 注解、master 的两处 `deploy-llm.sh` 文案**四者同时存在**，合并后的方框六行仍为 56 显示列；master 的两处改动在 512/554 行附近，与 §5.2 的 262–268 行不相邻，因此是文本与语义都干净，不只是"无冲突"。
+>
+> **终审（全实现范围，跨任务视角）**：结论 **可以合并**，无 Critical、无 Important。终审以 7 次变异实验取证（用 `go test -overlay=...` 在 `/tmp` 造变异副本，仓库内零改动），其中 4 次针对集成接缝——把 `hasDataKeyCipher` 强制为 false、下载改用未剥离的 `req.ResourceURL`、吞掉 `UnwrapKeySM2` 的错误、把 `len(dataKey) > 0` 改成恒真——四次均被测试拦下；据此确认「新协议用例」「回退用例」「信封解不开用例」都有真实判别力，而不是假绿。终审同时确认：不存在 `dataKey` 非 nil 却未被使用（或反之）的分支；被剥离的参数不进日志、不进导入索引（`ImportIndexRecord` 无 URL 字段）、不进 `reportImportFailure`；提交 16 条全部单行英文 Conventional Commits、`git log --format='%b'` 全空即无正文无任何 trailer。
+>
+> **终审提出的 3 条 Minor 及处置**：① 上面的验证清单原把「密文为空 / GCM 失败」并作一格记作已覆盖，实测只有 GCM 那条有覆盖，`route.go:1045` 的空体分支全仓库无测试（终审以 `if false {` 变异取证：controller 包仍全绿）——**已改清单为如实记账**，该分支纯属防御（空体交给 `Decrypt` 同样报长度错，只是文案不同），故不补测，不为一处无行为差异的分支在终审之后追加改动。② `import_processing.go:928` 的 `isDecrypted` 返回值无断言（变异为 `false` 后测试仍绿，后果是明文临时文件不再被回收）——该缺口在 legacy 路径同样存在，非本次引入，**仅记录不动**。③ 本条 Task 8 记账缺失——**本条执行记录即为销账**。
+>
+> **待用户决定**：Step 4 合回 `master` 未执行，且**本步骤的原始说法不可满足**——本会话被隔离在 worktree 内，harness 拒绝任何重定向到共享检出的 git 命令（`git -C /home/hjy/taa …` 直接报错），因此"在 worktree 中把分支合回 master"做不到。合并必须由用户在共享检出里手工执行：先确认共享检出位于 `master` 且工作区干净，再 `git merge --no-ff feat/import-url-key-envelope`，随后在合并结果上重跑 `go test ./...`；确认无误后再移除本 worktree、删除分支（删除分支必须在移除 worktree 之后，否则 git 会因分支仍被占用而拒绝）。
 
 ---
 
@@ -1579,7 +1592,8 @@ Expected: 无未提交改动（`go.work` 与子模块不进版本控制）；`ma
 | URL 逐段剥离、保住其余参数与转义 | Task 1 |
 | 112/113 两种 hex 布局 | Task 2 |
 | 下载前解封、信封错→400 且不下载 | Task 3 / Task 4 |
-| 密文为空 / GCM 失败 → 异步上报 | Task 4（`TestImportURLKeyDecryptFailureReportsPublicKey`） |
+| GCM 认证失败 → 异步上报 | Task 4（`TestImportURLKeyDecryptFailureReportsPublicKey`，39 字节被篡改载荷，实测失败信息为 `cipher: message authentication failed`） |
+| 密文为空 → 异步上报 | **无覆盖**（`route.go:1045` 的 `len(ciphertext) == 0` 分支全仓库无测试；终审以变异取证：改为 `if false {` 后 controller 包仍全绿）。该分支纯属防御——空体交给 `Decrypt` 同样会报长度错，只是错误文案不同——故按现状记账，不补测 |
 | 无 `dataKeyCipher` 完全回退 | Task 4 |
 | `importModel` / `getResourceInfo` 不受影响 | Task 4 Step 3 |
 | platform-mock 可端到端联调 | Task 5 / Task 6 |
