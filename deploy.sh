@@ -133,6 +133,18 @@ CLI_MODEL=""
 READY_TIMEOUT="${READY_TIMEOUT:-120}"
 READY_INTERVAL="${READY_INTERVAL:-2}"
 
+# Semgrep payload for the code scan engine. TAA resolves the engine fail-closed: with
+# security.codeScanEngine=semgrep the rules path must exist or the daemon exits FATAL at startup
+# and the supervisor restarts it every 10s. The kata pod image ships python3 and tar but neither
+# the semgrep CLI nor any rules, so a remote deploy has to provision both.
+# The engine runtime is a fixed third-party payload and travels as an archive that is expected to
+# sit on the remote host (build it with deploy/guest-build/build-semgrep-payload-container.sh and
+# copy it over, or point SEMGREP_BUNDLE at a local copy to have it uploaded). The rules are not
+# part of it: they evolve with every commit, so they are streamed from this checkout instead.
+REMOTE_SEMGREP_BUNDLE="${REMOTE_SEMGREP_BUNDLE:-$REMOTE_DIR/semgrep-bundle.tar.gz}"
+SEMGREP_BUNDLE="${SEMGREP_BUNDLE:-}"
+SEMGREP_RULES_SOURCE="${SEMGREP_RULES_SOURCE:-$PROJECT_DIR/models/audit/semgrep/rules}"
+
 # 远程 SSH 密码：通过 TARGET_PASSWORD 覆盖；置空时启动脚本会交互式询问。
 PASSWORD="${TARGET_PASSWORD:-Osrd@2026}"
 
@@ -733,6 +745,12 @@ Environment overrides:
       本地 attestation 证书目录。
   TAA_KEEP_MANUAL=${TAA_KEEP_MANUAL:-false}
       远程部署后是否保持容器 manual 挂起状态而不自启（默认 false）。
+  REMOTE_SEMGREP_BUNDLE=$REMOTE_SEMGREP_BUNDLE
+      宿主上的 semgrep 引擎 payload 归档；配置选中 semgrep 引擎但容器里没有时从这里注入。
+  SEMGREP_BUNDLE=${SEMGREP_BUNDLE:-<未设置>}
+      本地 semgrep 引擎 payload 归档；设置后会先上传到宿主再注入，留空则要求宿主上已存在。
+  SEMGREP_RULES_SOURCE=$SEMGREP_RULES_SOURCE
+      注入容器的代码扫描规则目录，按配置里的 semgrepRulesPath 落位。
   READY_TIMEOUT=${READY_TIMEOUT}
       等待服务就绪的最长时间（秒）。
   READY_INTERVAL=${READY_INTERVAL}
@@ -963,6 +981,115 @@ except Exception:
     pass
 PY
   fi
+}
+
+# Reads the code scan engine and its rules path out of a TAA config template and prints them as
+# one line, "<engine> <rulesPath>". An empty engine means the template does not set the key, which
+# is what a deployment that never configured the engine looks like; the caller decides what that
+# implies. Nothing is printed when the template cannot be read or parsed, so a malformed template
+# cannot make this look like "engine disabled".
+taa_scan_engine_requirements() {
+  local template="$1"
+  if [[ ! -f "$template" ]]; then
+    return 0
+  fi
+  python3 - "$template" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    security = cfg.get("security") or {}
+    engine = security.get("codeScanEngine") or ""
+    rules = security.get("semgrepRulesPath") or ""
+    if isinstance(engine, str) and isinstance(rules, str):
+        print("%s %s" % (engine.strip(), rules.strip()))
+except Exception:
+    pass
+PY
+}
+
+# Streams a local directory or file into the container as the destination path. The archive is
+# built in memory and unpacked by the container's own tar, so nothing is staged on the remote host
+# and the destination name is decided here rather than by how `kubectl cp` names directories.
+stream_local_path_to_container() {
+  local source="$1"
+  local destination="$2"
+  local source_parent source_name destination_parent destination_name
+  source_parent="$(dirname "$source")"
+  source_name="$(basename "$source")"
+  destination_parent="$(dirname "$destination")"
+  destination_name="$(basename "$destination")"
+  tar -czf - --transform "s|^${source_name}|${destination_name}|" -C "$source_parent" "$source_name" \
+    | remote_ssh "$(container_exec_i) sh -lc 'mkdir -p $destination_parent && rm -rf $destination && tar -xzf - -C $destination_parent'"
+}
+
+# Makes sure the code scan engine the config selects actually works inside the container. The
+# engine is resolved by taa at startup and is fail-closed: a missing rules path is a FATAL exit,
+# and the supervisor then restarts the daemon every 10s while the readiness gate keeps failing --
+# an unprovisioned engine therefore looks exactly like a hung service. Probing first keeps a
+# redeploy onto an already-provisioned pod free.
+provision_remote_scan_engine() {
+  local template="$1"
+  local engine="" rules_path=""
+  read -r engine rules_path <<<"$(taa_scan_engine_requirements "$template")"
+
+  if [[ "$engine" != "semgrep" ]]; then
+    info "code scan engine '${engine:-unset}' needs no semgrep payload"
+    return 0
+  fi
+
+  if [[ -z "$rules_path" ]]; then
+    err "security.semgrepRulesPath is empty in $(basename "$template") but security.codeScanEngine=semgrep"
+    detail "Without it taa falls back to its built-in path relative to the working directory, which does not exist in the container."
+    detail "Set security.semgrepRulesPath (the shipped templates use $CONTAINER_TAA_CONFIG_PATH's directory, e.g. /opt/taa/semgrep/rules)."
+    exit 1
+  fi
+
+  local probe state engine_present rules_present
+  probe="e=no; r=no; command -v semgrep >/dev/null 2>&1 && semgrep --version >/dev/null 2>&1 && e=yes; test -e $rules_path && r=yes; echo engine=\$e rules=\$r"
+  state="$(remote_ssh "$(container_exec) sh -lc '$probe'" 2>/dev/null || echo 'engine=no rules=no')"
+  engine_present="${state#engine=}"; engine_present="${engine_present%% *}"
+  rules_present="${state##*rules=}"
+
+  if [[ "$engine_present" == "yes" && "$rules_present" == "yes" ]]; then
+    info "code scan engine already provisioned inside container (rules: $rules_path)"
+    return 0
+  fi
+
+  if [[ "$engine_present" != "yes" ]]; then
+    warn "semgrep is not installed in the container; taa would exit FATAL and restart every 10s"
+    if [[ -n "$SEMGREP_BUNDLE" ]]; then
+      require_file "semgrep payload bundle not found" "$SEMGREP_BUNDLE"
+      spin_task "uploading semgrep payload to ${REMOTE_HOST} ($(du -h "$SEMGREP_BUNDLE" 2>/dev/null | cut -f1))" \
+        sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$SEMGREP_BUNDLE" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_SEMGREP_BUNDLE.new"
+      remote_ssh "mv '$REMOTE_SEMGREP_BUNDLE.new' '$REMOTE_SEMGREP_BUNDLE'"
+    fi
+    if ! remote_ssh "test -f '$REMOTE_SEMGREP_BUNDLE'"; then
+      err "semgrep payload bundle not found: ${REMOTE_HOST}:$REMOTE_SEMGREP_BUNDLE"
+      detail "Build it with 'deploy/guest-build/build-semgrep-payload-container.sh', then copy the archive there:"
+      detail "  scp <bundle>.tar.gz ${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_SEMGREP_BUNDLE"
+      detail "Or point SEMGREP_BUNDLE at a local archive and rerun; it will be uploaded for you."
+      exit 1
+    fi
+    # Read the archive on the remote host instead of streaming it across SSH a second time.
+    spin_task "installing semgrep into the container from $REMOTE_SEMGREP_BUNDLE" \
+      remote_ssh "cat '$REMOTE_SEMGREP_BUNDLE' | $(container_exec_i) sh -lc 'tar -xzf - -C /'"
+  fi
+
+  if [[ "$rules_present" != "yes" ]]; then
+    warn "code scan rules are missing in the container at $rules_path"
+    require_dir "semgrep rules not found" "$SEMGREP_RULES_SOURCE"
+    spin_task "copying code scan rules into the container ($rules_path)" \
+      stream_local_path_to_container "$SEMGREP_RULES_SOURCE" "$rules_path"
+  fi
+
+  local engine_version
+  engine_version="$(remote_ssh "$(container_exec) sh -lc 'semgrep --validate --config $rules_path >/dev/null 2>&1 && semgrep --version 2>/dev/null | head -n 1'" || true)"
+  if [[ -z "$engine_version" ]]; then
+    err "code scan engine verification failed inside the container (semgrep --validate --config $rules_path)"
+    exit 1
+  fi
+  info "code scan engine ready inside container: semgrep $engine_version (rules: $rules_path)"
 }
 
 resolve_target_model() {
@@ -1599,6 +1726,11 @@ if [[ "$DEPLOY_TAA" == true ]]; then
 
   step "replacing remote taa, config, and certificates"
   remote_ssh "mv '$REMOTE_DIR/$BINARY_NAME.new' '$REMOTE_DIR/$BINARY_NAME' && mv '$REMOTE_TAA_CONFIG_PATH.new' '$REMOTE_TAA_CONFIG_PATH' && mv '$REMOTE_DIR/hrk.cert.new' '$REMOTE_DIR/hrk.cert' && mv '$REMOTE_DIR/hsk_cek.cert.new' '$REMOTE_DIR/hsk_cek.cert' && chmod +x '$REMOTE_DIR/$BINARY_NAME'"
+
+  # Before the running taa is disturbed: an unprovisioned engine is a startup FATAL, so failing
+  # here leaves the previous daemon serving instead of trading it for a restart loop.
+  step "provisioning code scan engine inside container"
+  provision_remote_scan_engine "$TAA_CONFIG_TEMPLATE"
 
   step "pausing old taa inside container for update"
   remote_ssh "$(container_exec) sh -lc 'touch "$TAA_CONTAINER_WORKDIR/manual" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"

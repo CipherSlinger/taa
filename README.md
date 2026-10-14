@@ -459,6 +459,17 @@ Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (d
 ./deploy-llm.sh remote start                  # Deploy TEE-LLM service in remote Kubernetes Pod
 ```
 
+> **Remote deploys provision the code scan engine.** When the config selects the semgrep engine
+> (`security.codeScanEngine`), `deploy.sh remote` makes sure the container has both the CLI and the
+> rules *before* it touches the running daemon. The engine comes from a payload archive kept on the
+> host (`REMOTE_SEMGREP_BUNDLE`, default `$REMOTE_DIR/semgrep-bundle.tar.gz`, built with
+> `deploy/guest-build/build-semgrep-payload-container.sh`; set `SEMGREP_BUNDLE` to a local archive to
+> have it uploaded first), and the rules are streamed from this checkout
+> (`models/audit/semgrep/rules`) on every deploy. A missing archive fails the deploy immediately
+> with the recipe to build it, instead of running into the readiness timeout through the daemon's
+> 10s restart loop. The payload lands in the Pod's writable layer, so a recreated Pod needs another
+> deploy.
+
 ---
 
 ## Local Platform Mock & Web Console
