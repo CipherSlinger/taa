@@ -23,7 +23,7 @@ import (
 	"github.com/CipherSlinger/teellm"
 )
 
-func (s *TAAState) processImportedResource(req importRequest, phase int, isModel bool, ciphertextPath string) {
+func (s *TAAState) processImportedResource(req importRequest, phase int, isModel bool, ciphertextPath string, dataKey []byte) {
 	startedAt := time.Now().UTC()
 	PhaseSeparator(fmt.Sprintf("Phase %d Import: taskId=%s", phase, req.TaskID))
 	s.Logs.Add(LogInfo, "import", "收到资源导入请求: taskId=%s, requestId=%s, phase=%d, isModel=%v", req.TaskID, req.RequestID, phase, isModel)
@@ -32,7 +32,14 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 
 	StepSeparator("Decrypt")
 	s.setCurrentOp("decrypting")
-	plaintextPath, isDecrypted, err := s.resolvePlaintextResource(req.ResourceURL, ciphertextPath, "decrypt")
+	var plaintextPath string
+	var isDecrypted bool
+	var err error
+	if len(dataKey) > 0 {
+		plaintextPath, isDecrypted, err = s.resolvePlaintextResourceWithDataKey(dataKey, ciphertextPath)
+	} else {
+		plaintextPath, isDecrypted, err = s.resolvePlaintextResource(req.ResourceURL, ciphertextPath, "decrypt")
+	}
 	if err != nil {
 		s.setCurrentOp("idle")
 		s.reportImportFailure(req, phase, isModel, startedAt, err.Error())
@@ -895,6 +902,29 @@ func (s *TAAState) resolvePlaintextResource(resourceURL, downloadedPath, logScop
 		return "", false, pkgerrors.Wrap(pkgerrors.CodeInternal, fmt.Sprintf("资源非 .enc 后缀且非有效压缩包，尝试解密失败: %v", err), err)
 	}
 	s.Logs.Add(LogInfo, logScope, "尝试解密成功 -> %s", decryptedPath)
+	return decryptedPath, true, nil
+}
+
+// resolvePlaintextResourceWithDataKey resolves a ciphertext-only resource using the
+// data key envelope carried by the delivery URL.
+//
+// It sits next to the legacy path in resolvePlaintextResource. The envelope was
+// already unwrapped into dataKey by the caller during the synchronous phase, and
+// there is no archive-magic probing here: carrying an envelope declares the payload
+// to be ciphertext, so failing to open it is a failure and never a silent
+// re-classification as plaintext. The error carries the TAA public key so the
+// platform can tell which key should have wrapped the envelope.
+func (s *TAAState) resolvePlaintextResourceWithDataKey(dataKey []byte, ciphertextPath string) (string, bool, error) {
+	decryptedPath, err := s.decryptCiphertextWithDataKey(dataKey, ciphertextPath)
+	if err != nil {
+		s.Logs.Add(LogError, "decrypt", "数据密钥解密失败: %v", err)
+		if pubKey := s.getTAAPublicKeyPEM(); pubKey != "" {
+			return "", false, pkgerrors.Wrap(pkgerrors.CodeInternal,
+				fmt.Sprintf("解密资源失败: %v, taaPublicKey: %s", err, pubKey), err)
+		}
+		return "", false, pkgerrors.Wrap(pkgerrors.CodeInternal, fmt.Sprintf("解密资源失败: %v", err), err)
+	}
+	s.Logs.Add(LogInfo, "decrypt", "使用 URL 携带的数据密钥信封解密成功 -> %s", decryptedPath)
 	return decryptedPath, true, nil
 }
 

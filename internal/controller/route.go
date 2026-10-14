@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -1020,6 +1021,53 @@ func (s *TAAState) decryptResourceToTempFile(ciphertextPath string) (string, err
 	out.Close()
 	plaintext = nil
 
+	return plainPath, nil
+}
+
+// decryptCiphertextWithDataKey decrypts a ciphertext-only resource file with an
+// SM4 data key supplied from outside.
+//
+// Unlike decryptResourceToTempFile there is no SM2 key envelope prefix inside the
+// file: the envelope came from the dataKeyCipher parameter of the delivery URL and
+// was already unwrapped into dataKey upstream. The plaintext is written to a temp
+// file whose path is returned; the caller removes it.
+func (s *TAAState) decryptCiphertextWithDataKey(dataKey []byte, ciphertextPath string) (string, error) {
+	f, err := os.Open(ciphertextPath)
+	if err != nil {
+		return "", fmt.Errorf("打开密文文件: %w", err)
+	}
+	defer f.Close()
+
+	ciphertext, err := io.ReadAll(f)
+	if err != nil {
+		return "", fmt.Errorf("读取密文: %w", err)
+	}
+	if len(ciphertext) == 0 {
+		return "", errors.New("密文为空")
+	}
+
+	plaintext, err := teecrypto.Decrypt(dataKey, ciphertext)
+	ciphertext = nil // release the ciphertext buffer early
+	if err != nil {
+		return "", err
+	}
+
+	out, err := os.CreateTemp("", "taa-plaintext-*")
+	if err != nil {
+		plaintext = nil
+		return "", fmt.Errorf("创建明文临时文件: %w", err)
+	}
+	plainPath := out.Name()
+	if _, err := out.Write(plaintext); err != nil {
+		_ = out.Close()
+		_ = os.Remove(plainPath)
+		plaintext = nil
+		return "", fmt.Errorf("写入明文临时文件: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(plainPath)
+		return "", fmt.Errorf("关闭明文临时文件: %w", err)
+	}
 	return plainPath, nil
 }
 

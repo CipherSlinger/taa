@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"taa/internal/resource"
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 )
@@ -100,6 +101,31 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Encrypted data resources use the shape "envelope in the URL, ciphertext
+	// downloaded on its own": resourceUrl looks like
+	// <download link>?dataKeyCipher=<hex C1C3C2>.
+	// The envelope is unwrapped before the download, so a malformed value or a key
+	// mismatch surfaces without first pulling the whole ciphertext.
+	downloadURL, dataKeyCipherHex, hasDataKeyCipher, err := resource.SplitDataKeyCipher(req.ResourceURL)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, err.Error(), err))
+		return
+	}
+	var dataKey []byte
+	if hasDataKeyCipher {
+		wrapped, err := teecrypto.ParseWrappedDataKeyHex(dataKeyCipherHex)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, err.Error(), err))
+			return
+		}
+		dataKey, err = teecrypto.UnwrapKeySM2(s.SM2PrivateKey, wrapped)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument,
+				fmt.Sprintf("dataKeyCipher 解封失败: %v", err), err))
+			return
+		}
+	}
+
 	release, err := s.tryAcquireTask(req.TaskID, req.RequestID, "downloading", false)
 	if err != nil {
 		s.Logs.Add(LogWarn, "import", "拒绝并发任务请求: %v", err)
@@ -141,8 +167,8 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 
 	msg := "资源已接收，下载处理中"
 	s.setCurrentOp("downloading")
-	s.Logs.Add(LogInfo, "import", "开始下载资源: %s", req.ResourceURL)
-	ciphertextPath, size, err := s.downloadToTempFile(req.ResourceURL)
+	s.Logs.Add(LogInfo, "import", "开始下载资源: %s", downloadURL)
+	ciphertextPath, size, err := s.downloadToTempFile(downloadURL)
 	if err != nil {
 		store.Rollback(req.RequestID, req.TaskID)
 		release()
@@ -156,7 +182,7 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusOK, msg, nil, 0)
 
 	s.runAsyncSafe("processImportedResource", release, func() {
-		s.processImportedResource(req, phase, false, ciphertextPath)
+		s.processImportedResource(req, phase, false, ciphertextPath, dataKey)
 	})
 }
 
@@ -307,6 +333,6 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusOK, msg, nil, 0)
 
 	s.runAsyncSafe("processImportedResource", release, func() {
-		s.processImportedResource(req, phase, true, ciphertextPath)
+		s.processImportedResource(req, phase, true, ciphertextPath, nil)
 	})
 }
