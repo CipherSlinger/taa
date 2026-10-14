@@ -1,7 +1,7 @@
 # 数据下发 URL 密钥信封协议改造 — 设计
 
 日期：2026-10-14
-状态：待评审
+状态：已实现（数据路径）。
 
 ## 1. 背景与目标
 
@@ -29,6 +29,8 @@ https://host/files/data.sm4?dataKeyCipher=<hex>&<其余参数>
 - platform-mock 同步支持，保证本地可端到端联调。
 
 非目标：`/v1/taa/importModel` 与 `/v1/taa/getResourceInfo` 不改，继续按「整文件信封」处理。
+
+> **2026-10-14 范围更新**：`/v1/taa/importModel` 这一项已被取代——模型导入随后实现了同一套 URL 密钥信封协议，设计见 `.claude/specs/2026-10-14-model-import-url-key-cipher-design.md`。`/v1/taa/getResourceInfo` 仍在范围外，仍按「整文件信封」处理（不解析 `dataKeyCipher`）。本文件其余部分保留为当时的设计记录；凡声称 `importModel` 不变的表述，均以本条为准。
 
 ## 2. 协议规格
 
@@ -118,7 +120,7 @@ func (s *TAAState) processImportedResource(
 - `len(dataKey) > 0` → 新路径：读取密文全文件 → 空文件报「密文为空」→ `teecrypto.Decrypt(dataKey, sealed)` → 写临时明文文件；解密失败时错误信息附带 TAA 公钥，与旧路径行为一致。新路径**不做压缩包魔数探测**：携带 `dataKeyCipher` 即声明这是密文，即使文件头恰好是 ZIP/GZIP/TAR 魔数也仍按密文解密，失败即失败，不静默改判为明文。
 - `len(dataKey) == 0` → 原样调用 `resolvePlaintextResource`（`.enc` 后缀强制解密 / 压缩包魔数探测 / 明文直通），**现有分支逻辑一个字符不改**。
 
-调用点只有两处：`importHandler` 传 `dataKey`，`modelImportHandler` 传 `nil`。
+调用点只有两处：`importHandler` 传 `dataKey`，`modelImportHandler` 传 `nil`。（2026-10-14：`modelImportHandler` 现亦传入 `dataKey`，见 §1 范围更新。）
 
 新增解密函数 `decryptCiphertextWithDataKey(dataKey []byte, ciphertextPath string) (string, error)`，与现有 `decryptResourceToTempFile` 并列，区别是不再从文件头部切信封。
 
@@ -158,7 +160,7 @@ func (s *TAAState) processImportedResource(
 - 解压到内容寻址目录 `DataDir/<sm3>`，同 hash 复用；
 - `store.Commit` 写入导入索引；
 - 训练触发闸门（`ModelImported` / 无模型导入在飞 / 无训练在飞 / `runtimeConfig` 有效）逐条不变；
-- `importModel` 与 `getResourceInfo` 的解密路径不变。
+- `importModel` 与 `getResourceInfo` 的解密路径不变。（2026-10-14：`importModel` 一项已被取代，见 §1 范围更新；`getResourceInfo` 不变。）
 
 ## 6. 测试
 
@@ -169,7 +171,7 @@ func (s *TAAState) processImportedResource(
 | `post /v1/taa/import` 新协议端到端 | 新 URL → 解密 → 解压入库 → 触发训练（复用现有 httptest 桩） |
 | 下载前拦截 | 坏 hex 时断言下载桩请求计数为 0 |
 | 回退 | 不带 `dataKeyCipher` 的旧 URL 走原路径，现有测试全绿 |
-| 范围护栏 | `importModel` 与 `getResourceInfo` 仍能解「整文件信封」格式 |
+| 范围护栏 | `getResourceInfo` 仍能解「整文件信封」格式；`importModel` 已改为两种形态都接受（2026-10-14，见 §1 范围更新） |
 | platform-mock | `urlkey` 模式上传返回的 URL 含 `dataKeyCipher`；mock 加密 → TAA 解密的往返一致 |
 
 ## 7. 文档
@@ -186,4 +188,4 @@ func (s *TAAState) processImportedResource(
 | 重复参数含义不明 | 显式报错，不猜测 |
 | 信封与密文不配套 | 由 SM4-GCM 认证标签兜底，异步暴露 |
 | 平台误用其他公钥加密信封 | 提前解封使其在下载前 400 暴露 |
-| 新模式 URL 被误用于 `importModel` / `getResourceInfo` | 属于误用，两接口按旧格式报错；mock 用 `.sm4` 后缀降低误配概率 |
+| 新模式 URL 被误用于 `importModel` / `getResourceInfo` | 属于误用，两接口按旧格式报错；mock 用 `.sm4` 后缀降低误配概率（2026-10-14 更新：`importModel` 现已支持新模式，仍按旧格式报错的只剩 `getResourceInfo`，见 §1 范围更新） |

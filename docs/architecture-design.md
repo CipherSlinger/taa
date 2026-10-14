@@ -299,7 +299,7 @@ Phase 1 (调试)     Phase 2 (测试)     Phase 3 (正式训练)
     └─────────────┘   └────────────────────────────────────┘
 ```
 
-> 携带 `dataKeyCipher` 时，信封在**下载前**就已解封（见 `internal/controller/handler_task.go`）：格式非法或公钥不匹配直接返回 400，不消耗下载带宽；解密失败仍属异步阶段，经 `reportRes` 上报。
+> 携带 `dataKeyCipher` 时，信封在**下载前**就已解封（见 `internal/controller/handler_task.go`）：格式非法或公钥不匹配直接返回 400，不消耗下载带宽；解密失败仍属异步阶段。数据下发经 `reportRes` 上报，模型下发（`/v1/taa/importModel`）与数据下发共用这套解封与解密流程，其异步失败经 `reportModelImport` 上报。
 
 ### 5.3 导出流程 (`/v1/taa/export`)
 
