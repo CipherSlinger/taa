@@ -3,6 +3,7 @@ package mock
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -1982,6 +1983,22 @@ func TestResourceInfoMergedUnderUploadColumn(t *testing.T) {
 	}
 }
 
+func TestUploadEncryptModeSelectReplacesLegacySwitch(t *testing.T) {
+	// The upload panel's encryption checkbox became a three-state select; the two
+	// wire formats it chooses between must stay reachable from the UI.
+	if strings.Contains(indexHTML, "uploadEncryptSwitch") {
+		t.Errorf("indexHTML should not contain the legacy uploadEncryptSwitch control")
+	}
+	if !strings.Contains(indexHTML, `id="uploadEncryptMode"`) {
+		t.Errorf("indexHTML missing the encrypt-mode select")
+	}
+	for _, tok := range []string{"append('encryptMode'", "result.dataKeyCipher"} {
+		if !strings.Contains(frontendBundle, tok) {
+			t.Errorf("frontendBundle missing %q", tok)
+		}
+	}
+}
+
 func TestConsolidatedCardsAndRemovedHints(t *testing.T) {
 	if strings.Contains(indexHTML, `<div class="flow-col-stack">`) {
 		t.Fatal("indexHTML should no longer use flow-col-stack; cards should be single consolidated cards")
@@ -2502,5 +2519,163 @@ func TestUILayoutKeyModalAndSideBySideInputs(t *testing.T) {
 	}
 	if strings.Contains(frontendBundle, `showResult('switchResult'`) {
 		t.Fatal("quickSwitchPhase should not invoke showResult for switchResult")
+	}
+}
+
+func TestUploadURLKeyModeSplitsEnvelopeIntoTheURL(t *testing.T) {
+	privKey, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate SM2 key pair: %v", err)
+	}
+	pubPEM, err := crypto.MarshalSM2PublicKeyPEM(&privKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal SM2 public key PEM: %v", err)
+	}
+
+	uploadDir := filepath.Join(t.TempDir(), "uploads")
+	server := newUploadTestServer(t, uploadDir)
+	defer server.Close()
+
+	rawContent := []byte("dataset bytes for the urlkey protocol")
+
+	// 1. urlkey mode: the name gains .sm4 rather than .enc, and the response
+	// carries the envelope hex
+	status, api := postMultipartUploadWithFields(t, server.URL+"/api/upload", "dataset.tar.gz", rawContent, map[string]string{
+		"encryptMode": "urlkey",
+		"publicKey":   string(pubPEM),
+	})
+	if status != http.StatusOK || api.Error != 0 {
+		t.Fatalf("urlkey upload failed: status=%d, api=%+v", status, api)
+	}
+	resMap, ok := api.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result is not map: %+v", api.Result)
+	}
+	if orig, _ := resMap["originalName"].(string); orig != "dataset.tar.gz.sm4" {
+		t.Fatalf("originalName = %q, want dataset.tar.gz.sm4", orig)
+	}
+	if enc, _ := resMap["encrypted"].(bool); !enc {
+		t.Fatalf("encrypted flag = %v, want true", resMap["encrypted"])
+	}
+	keyHex, _ := resMap["dataKeyCipher"].(string)
+	if keyHex == "" {
+		t.Fatal("dataKeyCipher missing from the upload response")
+	}
+	// The mock deliberately ships the 112-byte C1||C3||C2 form: the URL parameter
+	// is the envelope without the uncompressed-point 0x04 prefix.
+	rawEnvelope, err := hex.DecodeString(keyHex)
+	if err != nil {
+		t.Fatalf("dataKeyCipher is not valid hex: %v", err)
+	}
+	if want := crypto.SM2WrappedKeySize - 1; len(rawEnvelope) != want {
+		t.Fatalf("dataKeyCipher decodes to %d bytes, want %d (C1||C3||C2 without the 0x04 prefix)",
+			len(rawEnvelope), want)
+	}
+	fileURL, _ := resMap["url"].(string)
+	if !strings.Contains(fileURL, "?dataKeyCipher="+keyHex) {
+		t.Fatalf("url = %q, want it to carry dataKeyCipher", fileURL)
+	}
+
+	// 2. Only ciphertext hits the disk: no plaintext and no envelope
+	// (ciphertext = nonce 12B + plaintext + tag 16B)
+	storedName, _ := resMap["filename"].(string)
+	cipherBytes, err := os.ReadFile(filepath.Join(uploadDir, storedName))
+	if err != nil {
+		t.Fatalf("read stored file: %v", err)
+	}
+	if bytes.Contains(cipherBytes, rawContent) {
+		t.Fatal("stored file still contains the plaintext")
+	}
+	if want := len(rawContent) + 12 + 16; len(cipherBytes) != want {
+		t.Fatalf("stored size = %d, want %d: only the ciphertext should be stored, without the %d-byte envelope",
+			len(cipherBytes), want, crypto.SM2WrappedKeySize)
+	}
+
+	// 3. Take the envelope back out of the URL and unwrap the data key to recover
+	// the plaintext
+	wrapped, err := crypto.ParseWrappedDataKeyHex(keyHex)
+	if err != nil {
+		t.Fatalf("ParseWrappedDataKeyHex: %v", err)
+	}
+	dataKey, err := crypto.UnwrapKeySM2(privKey, wrapped)
+	if err != nil {
+		t.Fatalf("UnwrapKeySM2: %v", err)
+	}
+	decrypted, err := crypto.Decrypt(dataKey, cipherBytes)
+	if err != nil {
+		t.Fatalf("Decrypt: %v", err)
+	}
+	if !bytes.Equal(decrypted, rawContent) {
+		t.Fatalf("decrypted = %q, want %q", string(decrypted), string(rawContent))
+	}
+
+	// 4. The legacy encrypt=true still uses the whole-file envelope and carries no
+	// dataKeyCipher
+	status, api = postMultipartUploadWithFields(t, server.URL+"/api/upload", "legacy.tar.gz", rawContent, map[string]string{
+		"encrypt":   "true",
+		"publicKey": string(pubPEM),
+	})
+	if status != http.StatusOK || api.Error != 0 {
+		t.Fatalf("legacy encrypted upload failed: status=%d, api=%+v", status, api)
+	}
+	legacyMap := api.Result.(map[string]any)
+	if orig, _ := legacyMap["originalName"].(string); orig != "legacy.tar.gz.enc" {
+		t.Fatalf("legacy originalName = %q, want legacy.tar.gz.enc", orig)
+	}
+	// The response body is a map[string]any, so the field is always present:
+	// assert on the empty value rather than on nil.
+	if v, _ := legacyMap["dataKeyCipher"].(string); v != "" {
+		t.Fatalf("legacy mode must not carry dataKeyCipher, got %q", v)
+	}
+}
+
+func TestUploadEncryptModeMapping(t *testing.T) {
+	privKey, err := crypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate SM2 key pair: %v", err)
+	}
+	pubPEM, err := crypto.MarshalSM2PublicKeyPEM(&privKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal SM2 public key PEM: %v", err)
+	}
+	server := newUploadTestServer(t, filepath.Join(t.TempDir(), "uploads"))
+	defer server.Close()
+
+	tests := []struct {
+		name          string
+		fields        map[string]string
+		wantSuffix    string
+		wantEncrypted bool
+	}{
+		{"envelope mode encrypts with .enc", map[string]string{"encryptMode": "envelope"}, ".enc", true},
+		{"none mode stores plaintext", map[string]string{"encryptMode": "none"}, "", false},
+		// An explicit encryptMode wins over the legacy encrypt field, which is only
+		// consulted when encryptMode is not one of the three known values.
+		{"envelope mode beats legacy encrypt=false", map[string]string{"encryptMode": "envelope", "encrypt": "false"}, ".enc", true},
+		// An unknown mode string falls back to the legacy encrypt field; with no
+		// usable encrypt value it degrades to none rather than guessing.
+		{"unknown mode falls back to none", map[string]string{"encryptMode": "bogus"}, "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fields := map[string]string{"publicKey": string(pubPEM)}
+			for k, v := range tc.fields {
+				fields[k] = v
+			}
+			status, api := postMultipartUploadWithFields(t, server.URL+"/api/upload", "payload.bin", []byte("mode mapping"), fields)
+			if status != http.StatusOK || api.Error != 0 {
+				t.Fatalf("upload failed: status=%d, api=%+v", status, api)
+			}
+			res, ok := api.Result.(map[string]any)
+			if !ok {
+				t.Fatalf("result is not map: %+v", api.Result)
+			}
+			if orig, _ := res["originalName"].(string); orig != "payload.bin"+tc.wantSuffix {
+				t.Fatalf("originalName = %q, want %q", orig, "payload.bin"+tc.wantSuffix)
+			}
+			if enc, _ := res["encrypted"].(bool); enc != tc.wantEncrypted {
+				t.Fatalf("encrypted = %v, want %v", enc, tc.wantEncrypted)
+			}
+		})
 	}
 }

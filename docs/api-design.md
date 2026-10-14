@@ -853,13 +853,33 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `resourceUrl` | `string` | 是 | 数据资源下载地址 |
+| `resourceUrl` | `string` | 是 | 数据资源下载地址。密态资源可携带 `?dataKeyCipher=<hex>` 参数承载 SM2 数据密钥信封，见下方说明 |
 | `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空；同一 `requestId` 不能重复导入 |
 | `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空；同一 `taskId` 不能重复导入 |
 | `publicKey` | `string` | 否 | 结构上接受，但本接口不使用：资源解封使用 TAA 自身的 SM2 私钥；结果导出用的平台公钥由 `/v1/taa/importModel`（phase 1）保存 |
 | `runtimeConfig` | `string` | 否 | 运行配置 JSON 字符串，非空时覆盖已保存的配置并落盘 |
 
 > **`type` 字段被完全忽略**：早期一体化流程用 `type`（1=模型, 2=测试数据, 3=训练数据）区分资源类型。当前实现不解析、不校验该字段，也不参与任何分支——请求携带什么资源由接口本身决定（模型走 `/v1/taa/importModel`，数据走本接口）。携带该字段不影响行为，仅为兼容旧平台。
+
+> **密态资源的两种形态**（**资源/数据下发与模型下发通用**：`/v1/taa/import` 与 `/v1/taa/importModel` 都接受这两种形态；仅 `/v1/taa/getResourceInfo` 不解析该参数，仍按整文件信封处理）：
+> 1. **URL 密钥信封（当前协议）**：`resourceUrl` 形如 `<下载链接>?dataKeyCipher=<hex>`。
+>    `dataKeyCipher` 是 SM2 数据密钥信封的 hex 编码（C1C3C2 布局，112 字节不带未压缩点前缀，
+>    或 113 字节带 `0x04` 前缀，两者都接受）；**下载链接指向的响应体只含 SM4-GCM 密文**。
+>    TAA 在下载前解析并剥离该参数，用 TAA 自身 SM2 私钥解出 16 字节数据密钥后再下载密文；
+>    参数重复出现、值为空、hex 非法、长度非法或信封解不开，均在校验阶段返回 400，**不发起下载**。
+>    其余 query 参数（含签名类参数）逐字节保留，不被重编码；被剥离的 `dataKeyCipher` 不进日志、
+>    不进导入索引，因此也不会被转发到实际下载请求。
+>    分隔符 `?` 与 `&` 都认：下载链接本身带 query 时（预签名链接都带），即使平台用朴素拼接
+>    写成 `<链接>?X-Amz-Signature=<hex>?dataKeyCipher=<hex>`，参数仍能被剥离，剩下的 URL 与
+>    「不带信封时应发的那个」逐字节相同，签名依旧有效。
+> 2. **整文件信封（兼容形态）**：URL 不带 `dataKeyCipher` 时沿用原逻辑——
+>    文件内容为 `WrappedKey(113B) ‖ Ciphertext`，或 `.enc` 后缀强制解密，
+>    或按压缩包魔数判定为明文直通。
+>
+> 信封与密文之间没有显式绑定：SM4-GCM 认证标签是两者唯一的关联，而它只认数据密钥——换上的密文若不是用同一数据密钥加密的，校验必然失败。
+>
+> 仅 `/v1/taa/getResourceInfo` 不支持该参数：把带 `dataKeyCipher` 的 URL 交给它，该参数会被原样转发到下载请求（并在日志中出现），
+> 随后因解不开整文件信封而失败。
 
 **请求示例**：
 
@@ -907,7 +927,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 }
 ```
 
-其余 400 场景：`requestId` 和 `taskId` 同时为空；`requestId` 或 `taskId` 已存在或正在处理中。
+其余 400 场景：`requestId` 和 `taskId` 同时为空；`requestId` 或 `taskId` 已存在或正在处理中；`dataKeyCipher` 重复、为空、hex 非法、长度非法或信封解不开。
 
 **并发冲突响应示例**（409 Conflict）：
 
@@ -943,11 +963,17 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `resourceUrl` | `string` | 否* | 模型资源下载地址；为空时表示只更新 `runtimeConfig` 并复用已导入的模型，此时此前必须已导入过模型 |
+| `resourceUrl` | `string` | 否* | 模型资源下载地址。密态资源可携带 `?dataKeyCipher=<hex>` 参数承载 SM2 数据密钥信封，见下方说明；为空时表示只更新 `runtimeConfig` 并复用已导入的模型，此时此前必须已导入过模型（**只有** `?dataKeyCipher=<hex>`、没有下载地址的 `resourceUrl` 不算「为空」，按 400 拒绝） |
 | `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空 |
 | `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空 |
 | `publicKey` | `string` | 否 | 平台侧 SM2 公钥 PEM，**非必填**。仅 phase 1 且请求携带时校验并保存（已保存过则保留首个公钥）；为空时不校验、不保存、也不返回失败。资源解封使用 TAA 自身私钥，与此参数无关；阶段 3 导出时的公钥选择顺序见 [4.6](#46-请求-taa-导出结果v1taaexport) |
 | `runtimeConfig` | `string` | 否 | 运行配置 JSON 字符串（`{"commands":[...]}`）；非空即覆盖已保存的配置，与 `resourceUrl` 是否为空无关 |
+
+> **密态资源的两种形态**（机制与 [4.2 /v1/taa/import](#42-下发资源数据v1taaimport) 完全一致，模型下发同样支持）：
+> 1. **URL 密钥信封（当前协议）**：`resourceUrl` 形如 `<下载链接>?dataKeyCipher=<hex>`，下载链接指向的响应体只含 SM4-GCM 密文。TAA 在下载前剥离该参数，用自身 SM2 私钥解出数据密钥后再下载密文；参数重复、值为空、hex 非法、长度非法或信封解不开均直接返回 400，**不发起下载**。被剥离的 `dataKeyCipher` 不进入下载请求，作为投递记录保存的 `resourceUrl` 也只保留剥离后的 URL。
+> 2. **整文件信封（兼容形态）**：URL 不带 `dataKeyCipher` 时沿用原逻辑——文件内容为 `WrappedKey(113B) ‖ Ciphertext`，或 `.enc` 后缀强制解密，或按压缩包魔数判定为明文直通。
+>
+> 解封与下载都正常、但下载体解不开的失败发生在异步阶段，经 `/v1/taa/reportModelImport`（`code=1`，`msg` 含 `解密资源失败` 与 `taaPublicKey:`）上报。
 
 **请求示例**：
 
@@ -1006,7 +1032,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 }
 ```
 
-其余 400 场景：`requestId` 和 `taskId` 同时为空；`publicKey` 解析失败（仅 phase 1 且请求中携带 `publicKey` 时校验）；`resourceUrl` 为空时 `runtimeConfig` 为空、解析失败或 `commands` 为空数组。
+其余 400 场景：`requestId` 和 `taskId` 同时为空；`publicKey` 解析失败（仅 phase 1 且请求中携带 `publicKey` 时校验）；`resourceUrl` 为空时 `runtimeConfig` 为空、解析失败或 `commands` 为空数组；`dataKeyCipher` 重复、为空、hex 非法、长度非法或信封解不开；`resourceUrl` 剥离 `dataKeyCipher` 后为空（缺少下载地址）。
 
 **并发冲突响应示例**（409 Conflict）：
 
@@ -1030,7 +1056,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 }
 ```
 
-> **加密格式说明**：与 `/v1/taa/import` 相同。
+> **加密格式说明**：与 `/v1/taa/import` 相同——支持 URL 密钥信封（`?dataKeyCipher=<hex>`）与整文件信封两种形态，解封与解密逻辑完全共用。格式非法或信封解不开在下载前返回 400；密文解不开的失败发生在异步阶段，经 `/v1/taa/reportModelImport`（`code=1`）上报。
 
 ### 4.4 中止当前训练任务（/v1/taa/stopTraining）
 

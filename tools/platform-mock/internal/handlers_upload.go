@@ -1,6 +1,7 @@
 package mock
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -244,13 +245,25 @@ func uploadHandler(addr, uploadDir string, registerStores ...*registerStateStore
 
 		originalName := sanitizeUploadFilename(header.Filename)
 
-		encryptVal := strings.TrimSpace(r.FormValue("encrypt"))
-		shouldEncrypt := strings.EqualFold(encryptVal, "true") || encryptVal == "1" || strings.EqualFold(encryptVal, "on")
+		// encryptMode is none / envelope (whole-file envelope, the legacy format) /
+		// urlkey (envelope in the URL, the new protocol). The legacy encrypt=true
+		// field maps to envelope for backward compatibility.
+		encryptMode := strings.ToLower(strings.TrimSpace(r.FormValue("encryptMode")))
+		if encryptMode != "none" && encryptMode != "envelope" && encryptMode != "urlkey" {
+			encryptVal := strings.TrimSpace(r.FormValue("encrypt"))
+			if strings.EqualFold(encryptVal, "true") || encryptVal == "1" || strings.EqualFold(encryptVal, "on") {
+				encryptMode = "envelope"
+			} else {
+				encryptMode = "none"
+			}
+		}
+		shouldEncrypt := encryptMode != "none"
 
 		var (
-			fileSize int64
-			filename string
-			filePath string
+			fileSize      int64
+			filename      string
+			filePath      string
+			dataKeyCipher string
 		)
 
 		if shouldEncrypt {
@@ -275,24 +288,50 @@ func uploadHandler(addr, uploadDir string, registerStores ...*registerStateStore
 				return
 			}
 
-			cipherBytes, err := crypto.SealSM2SM4GCM(pubKey, fileBytes)
-			if err != nil {
-				writeEnvelope(w, http.StatusInternalServerError, "SM2+SM4-GCM 加密失败: "+err.Error(), nil, http.StatusInternalServerError)
-				return
-			}
+			if encryptMode == "urlkey" {
+				// New protocol: the file holds nothing but ciphertext, and the SM2 key
+				// envelope is hex-encoded onto the download URL.
+				env, err := crypto.SealSM2(pubKey, fileBytes)
+				if err != nil {
+					writeEnvelope(w, http.StatusInternalServerError, "SM2+SM4-GCM 加密失败: "+err.Error(), nil, http.StatusInternalServerError)
+					return
+				}
 
-			if !strings.HasSuffix(strings.ToLower(originalName), ".enc") {
-				originalName += ".enc"
-			}
+				if !strings.HasSuffix(strings.ToLower(originalName), ".sm4") {
+					originalName += ".sm4"
+				}
 
-			filename = fmt.Sprintf("%d_%s", time.Now().UnixNano(), originalName)
-			filePath = filepath.Join(uploadDir, filename)
+				filename = fmt.Sprintf("%d_%s", time.Now().UnixNano(), originalName)
+				filePath = filepath.Join(uploadDir, filename)
 
-			if err := os.WriteFile(filePath, cipherBytes, 0o644); err != nil {
-				writeEnvelope(w, http.StatusInternalServerError, "保存加密文件失败: "+err.Error(), nil, http.StatusInternalServerError)
-				return
+				if err := os.WriteFile(filePath, env.Ciphertext, 0o644); err != nil {
+					writeEnvelope(w, http.StatusInternalServerError, "保存加密文件失败: "+err.Error(), nil, http.StatusInternalServerError)
+					return
+				}
+				// Deliver the 112-byte C1C3C2 form (no uncompressed point prefix);
+				// TAA accepts either layout.
+				dataKeyCipher = hex.EncodeToString(env.WrappedKey[1:])
+				fileSize = int64(len(env.Ciphertext))
+			} else {
+				cipherBytes, err := crypto.SealSM2SM4GCM(pubKey, fileBytes)
+				if err != nil {
+					writeEnvelope(w, http.StatusInternalServerError, "SM2+SM4-GCM 加密失败: "+err.Error(), nil, http.StatusInternalServerError)
+					return
+				}
+
+				if !strings.HasSuffix(strings.ToLower(originalName), ".enc") {
+					originalName += ".enc"
+				}
+
+				filename = fmt.Sprintf("%d_%s", time.Now().UnixNano(), originalName)
+				filePath = filepath.Join(uploadDir, filename)
+
+				if err := os.WriteFile(filePath, cipherBytes, 0o644); err != nil {
+					writeEnvelope(w, http.StatusInternalServerError, "保存加密文件失败: "+err.Error(), nil, http.StatusInternalServerError)
+					return
+				}
+				fileSize = int64(len(cipherBytes))
 			}
-			fileSize = int64(len(cipherBytes))
 		} else {
 			filename = fmt.Sprintf("%d_%s", time.Now().UnixNano(), originalName)
 			filePath = filepath.Join(uploadDir, filename)
@@ -317,16 +356,20 @@ func uploadHandler(addr, uploadDir string, registerStores ...*registerStateStore
 		// Use the server's actual IP address instead of 0.0.0.0
 		host := platformIP(addr)
 		fileURL := fmt.Sprintf("http://%s/files/%s", host, filename)
+		if dataKeyCipher != "" {
+			fileURL += "?dataKeyCipher=" + dataKeyCipher
+		}
 
-		log.Printf("file uploaded: %s → %s (encrypted=%v)", originalName, fileURL, shouldEncrypt)
+		log.Printf("file uploaded: %s → %s (mode=%s)", originalName, fileURL, encryptMode)
 
 		writeEnvelope(w, http.StatusOK, "文件上传成功", map[string]any{
-			"filename":     filename,
-			"originalName": originalName,
-			"size":         fileSize,
-			"url":          fileURL,
-			"encrypted":    shouldEncrypt,
-			"uploadedAt":   time.Now().UTC(),
+			"filename":      filename,
+			"originalName":  originalName,
+			"size":          fileSize,
+			"url":           fileURL,
+			"encrypted":     shouldEncrypt,
+			"dataKeyCipher": dataKeyCipher,
+			"uploadedAt":    time.Now().UTC(),
 		}, 0)
 	}
 }

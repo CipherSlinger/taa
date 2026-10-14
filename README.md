@@ -133,7 +133,7 @@ flowchart TB
 
 1. **Hardware-Enforced Attestation**: On boot, TAA generates an ephemeral SM2 keypair, injects the public key into the CSV hardware `USERDATA` slot (`X || Y`), and retrieves a hardware-signed attestation report via direct `/dev/csv-guest` ioctl (`pkg/csvattest`).
 2. **Identity Registration & Binding**: TAA registers with the platform by submitting its SM2 public key, raw CSV attestation report, and certificate validation parameters (`/v1/taa/register`), permanently tying the container workload to the genuine CSV hardware root of trust.
-3. **Ciphertext Ingress**: The platform delivers encrypted resource packages via HTTP (`/v1/taa/import`, `/v1/taa/importModel`). TAA decrypts, unpacks, and validates the resources strictly inside the TEE memory and local disk sandbox.
+3. **Ciphertext Ingress**: The platform delivers encrypted resource packages via HTTP (`/v1/taa/import`, `/v1/taa/importModel`). Both endpoints accept either the URL-carried data key (`?dataKeyCipher=`) or the legacy in-file envelope. TAA decrypts, unpacks, and validates the resources strictly inside the TEE memory and local disk sandbox.
 4. **Two-Tier Code Audit (Advisory Verdict)**: TAA performs rule-based static security scanning with 13 built-in pattern rules (covering command execution, network egress, sensitive file and environment access, obfuscation, and dynamic evaluation) over Python source, followed by semantic verification against a decoupled local LLM (`teellm-service`) over RFC 8998 TEE-TLS 1.3 to eliminate false positives. The audit runs in the background and in parallel with training, and both a scan error and any HIGH-severity finding make the audit fail closed - i.e. the verdict is `1`/`2` rather than `0`. The verdict is a *reference result*: it is reported to the platform via `/v1/taa/reportAudit` and decides nothing on the TAA side, so a failing audit neither rolls back the import nor stops training. Acting on the verdict is the platform's call.
 5. **Real-time Progress & Dual-Log Telemetry**: During training execution, TAA monitors intermediate progress snapshots (`/v1/taa/reportProgress`), streams chunked deduplicated terminal execution logs (`/v1/taa/modelLog`), and actively reports internal operational logs (`/v1/taa/taaLog`).
 6. **Task Interruption & Graceful Abortion**: TAA provides a dedicated stop interface (`/v1/taa/stopTraining`) that recursively terminates subprocess process trees upon command.
@@ -225,8 +225,12 @@ Plaintext Data  ──►  SM4-GCM Encryption  ──►  Ciphertext Payload
                             ▼
                        WrappedKey (113 Bytes)
 
-Final Envelope Format:  [ WrappedKey (113B) ] || [ SM4-GCM Ciphertext ]
+In-file envelope (legacy):  [ WrappedKey (113B) ] || [ SM4-GCM Ciphertext ]
+URL-carried key (current):  <download link>?dataKeyCipher=<hex C1C3C2>
+                            (the downloaded body is bare SM4-GCM ciphertext)
 ```
+
+Both `/v1/taa/import` and `/v1/taa/importModel` accept either shape. With `?dataKeyCipher=`, TAA strips the parameter before the download (it is never forwarded; the other query parameters survive byte-for-byte) and unwraps it with its own SM2 private key into the 16-byte SM4 data key. The hex is 112 bytes (`C1 || C3 || C2`, no `0x04` prefix) or 113 bytes carrying the `0x04` prefix; a duplicate, empty, malformed, or foreign-key envelope is rejected with HTTP 400 before any download. When the download link already carries a query string (a presigned link always does) the parameter may be appended with either `?` or `&`, so `...&X-Amz-Signature=<hex>?dataKeyCipher=<hex>` is stripped back to the signed URL byte-for-byte. Without the parameter the legacy in-file envelope applies unchanged (compatibility). `/v1/taa/getResourceInfo` does not parse the parameter.
 
 - **SM2**: Used for asymmetric identity authentication, key exchange, and digital envelope key encapsulation.
 - **SM3**: Cryptographic hash function used for digest calculation, model checksums, and attestation binding.
@@ -287,7 +291,7 @@ All TAA APIs are exposed over HTTP `POST`. For comprehensive request/response sc
 
 | Endpoint | Method | Description |
 | :--- | :---: | :--- |
-| `/v1/taa/importModel` | `POST` | Ingresses model code archive, triggers decompression and two-tier security audit |
+| `/v1/taa/importModel` | `POST` | Ingresses model code archive (URL-carried data key or legacy in-file envelope), triggers decompression and two-tier security audit |
 | `/v1/taa/import` | `POST` | Ingresses dataset/resource packages into sandbox directories |
 | `/v1/taa/switch` | `POST` | Transitions lifecycle phases (`Phase 1`: Debug, `Phase 2`: Test, `Phase 3`: Train) |
 | `/v1/taa/stopTraining` | `POST` | Forcibly interrupts the active training job and recursively cleans up child process trees |

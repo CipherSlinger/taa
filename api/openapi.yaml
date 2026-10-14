@@ -106,6 +106,11 @@ paths:
         平台向 TAA 下发测试数据（phase 2）或正式训练数据（phase 3）的密态资源包，TAA 同步接收后异步解密、校验并入库。
         本接口是触发训练的唯一入口：数据入库后，若模型已导入且当前无在飞训练，立即执行 runtimeConfig 中的命令，
         训练结果通过 /v1/taa/reportRes 上报。请求中的历史字段 type 被完全忽略。
+        密态资源支持两种形态（本接口与 /v1/taa/importModel 均解析该参数；/v1/taa/getResourceInfo 不解析该参数）：
+        resourceUrl 形如 <下载链接>?dataKeyCipher=<hex C1C3C2> 时，
+        下载链接只含 SM4-GCM 密文，密钥信封由该参数给出，TAA 在下载前解析并解封，参数非法即返回 400 且不发起下载；
+        参数前的分隔符 ? 与 & 均可（下载链接自带 query 时平台常用 ? 拼接），剥离后其余 query 逐字节保留；
+        未携带该参数时沿用原逻辑：整文件信封（WrappedKey || Ciphertext）、.enc 后缀强制解密、明文压缩包按魔数直通。
       tags:
         - 资源流转
       requestBody:
@@ -133,7 +138,7 @@ paths:
                 result: null
                 error: 0
         '400':
-          description: 参数错误（resourceUrl 为空；requestId/taskId 同时为空；requestId 或 taskId 已存在或正在处理中）
+          description: 参数错误（resourceUrl 为空；requestId/taskId 同时为空；requestId 或 taskId 已存在或正在处理中；dataKeyCipher 重复、为空、hex 非法、长度非法或信封解不开）
           content:
             application/json:
               schema:
@@ -171,6 +176,11 @@ paths:
         随后在 TEE 内执行静态代码扫描及 LLM 语义安全审计。审计在后台异步进行，其结论通过
         /v1/taa/reportAudit 单独回传，仅供参考：本接口不等待审计结论，也不由审计结论触发或阻止训练。
         本接口不触发训练，训练由后续数据下发 /v1/taa/import 拉起。
+        密态资源支持两种形态（本接口与 /v1/taa/import 均解析该参数；/v1/taa/getResourceInfo 不解析该参数）：
+        resourceUrl 形如 <下载链接>?dataKeyCipher=<hex C1C3C2> 时，
+        下载链接只含 SM4-GCM 密文，密钥信封由该参数给出，TAA 在下载前解析并解封，参数非法即返回 400 且不发起下载；
+        参数前的分隔符 ? 与 & 均可（下载链接自带 query 时平台常用 ? 拼接），剥离后其余 query 逐字节保留；
+        未携带该参数时沿用原逻辑：整文件信封（WrappedKey || Ciphertext）、.enc 后缀强制解密、明文压缩包按魔数直通。
       tags:
         - 资源流转
       requestBody:
@@ -208,7 +218,7 @@ paths:
                     result: null
                     error: 0
         '400':
-          description: 参数错误（requestId/taskId 同时为空；resourceUrl 为空且此前未导入过模型；publicKey 解析失败；resourceUrl 为空时 runtimeConfig 为空、解析失败或 commands 为空）
+          description: 参数错误（requestId/taskId 同时为空；resourceUrl 为空且此前未导入过模型；publicKey 解析失败；resourceUrl 为空时 runtimeConfig 为空、解析失败或 commands 为空；dataKeyCipher 重复、为空、hex 非法、长度非法或信封解不开）
           content:
             application/json:
               schema:
@@ -612,7 +622,7 @@ components:
       properties:
         resourceUrl:
           type: string
-          description: 加密数据资源的 HTTP(S) 下载地址
+          description: 加密数据资源的 HTTP(S) 下载地址。密态资源可携带 ?dataKeyCipher=<hex> 参数承载 SM2 数据密钥信封（C1C3C2 布局，112 或 113 字节），该参数不会被转发到下载请求；其余 query 参数原样保留
         type:
           type: integer
           deprecated: true
@@ -635,7 +645,7 @@ components:
       properties:
         resourceUrl:
           type: string
-          description: 模型代码包的 HTTP(S) 下载地址。若之前未传输过且请求中为空则报错；若之前已传输保存过，则允许为空。为空时仅保存 runtimeConfig 并复用已保存的模型，不触发训练，等待后续数据下发（/v1/taa/import）时执行训练。
+          description: 模型代码包的 HTTP(S) 下载地址。若之前未传输过且请求中为空则报错；若之前已传输保存过，则允许为空。为空时仅保存 runtimeConfig 并复用已保存的模型，不触发训练，等待后续数据下发（/v1/taa/import）时执行训练。密态资源可携带 ?dataKeyCipher=<hex> 参数承载 SM2 数据密钥信封（C1C3C2 布局，112 或 113 字节），该参数不会被转发到下载请求；其余 query 参数原样保留
         taskId:
           type: string
           description: 任务唯一标识（与 requestId 不能同时为空）
@@ -659,7 +669,7 @@ components:
       properties:
         resourceUrl:
           type: string
-          description: 待预分析的资源 URL
+          description: 待预分析的资源 URL。本接口不解析 resourceUrl 中的 dataKeyCipher 参数（该参数仅供 /v1/taa/import 与 /v1/taa/importModel 使用）
 
     ResourceInfoResult:
       type: object
