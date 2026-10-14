@@ -23,9 +23,9 @@
 | 文件 | 职责 | 动作 |
 | --- | --- | --- |
 | `internal/resource/urlkey.go` | 从资源 URL 剥离 `dataKeyCipher`，返回可下载 URL 与 hex 值 | 新建 |
-| `internal/resource/urlkey_test.go` | 上述函数的表驱动测试 | 新建 |
+| `internal/resource/urlkey_test.go` | 上述函数的 `t.Run` 子测试（含错误分支的文案断言） | 新建 |
 | `pkg/crypto/seal.go` | 新增 `ParseWrappedDataKeyHex`（hex → 113B 信封，兼容两种布局） | 修改 |
-| `pkg/crypto/wrappedkey_test.go` | 上述函数的表驱动测试 | 新建 |
+| `pkg/crypto/wrappedkey_test.go` | 上述函数的 `t.Run` 子测试 | 新建 |
 | `internal/controller/route.go` | 新增 `decryptCiphertextWithDataKey`（数据密钥 + 纯密文文件 → 明文临时文件） | 修改 |
 | `internal/controller/import_processing.go` | `processImportedResource` 增加 `dataKey` 参数；新增 `resolvePlaintextResourceWithDataKey`；新增解密分支 | 修改 |
 | `internal/controller/handler_task.go` | `importHandler` 解析 URL、提前解封、传参；`modelImportHandler` 传 `nil` | 修改 |
@@ -47,7 +47,7 @@
 - Create: `internal/resource/urlkey.go`
 - Test: `internal/resource/urlkey_test.go`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `internal/resource/urlkey_test.go`：
 
@@ -141,12 +141,12 @@ func TestSplitDataKeyCipher(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `go test ./internal/resource/ -run TestSplitDataKeyCipher -v`
 Expected: 编译失败，`undefined: SplitDataKeyCipher`
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 创建 `internal/resource/urlkey.go`：
 
@@ -230,17 +230,26 @@ func splitURLParts(rawURL string) (base, query, fragment string) {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `go test ./internal/resource/ -run TestSplitDataKeyCipher -v`
 Expected: `--- PASS: TestSplitDataKeyCipher` 及全部子测试 PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add internal/resource/urlkey.go internal/resource/urlkey_test.go
 git commit -m "feat(resource): split the data key cipher out of a resource URL"
 ```
+
+> **执行记录（2026-10-14）**：已实现并提交 `eb886af`。代码质量审查提出两条 Important，均已修：
+> 1. `SplitDataKeyCipher` 的文档补上"出错时三个返回值均为零值，调用方必须先查 `err` 再查 `found`"——
+>    否则下游若只判 `found`，就会静默回退到 legacy，带着仍含 `dataKeyCipher` 的 URL 去下载。
+> 2. 原测试对两个错误分支无判别力（对调错误文案后仍全绿），且 `?dataKeyCipher`（无 `=`）
+>    这条分支零覆盖。现三个错误子测试各自断言文案（"重复"／"值为空"），子测试共 8 个；
+>    已用对调文案实验验证：对调后三个错误子测试全部失败，还原后通过（复查代理独立复现，并逐字节核验还原）。
+>
+> 审查另建议给提交加归属尾行（`Co-Authored-By`），与本项目规则冲突，未采纳。
 
 ---
 
@@ -1356,18 +1365,22 @@ git commit -m "feat(mock): pick the upload encryption mode from a select"
 (b) 在 `> **type 字段被完全忽略**` 引用块之后、`**请求示例**：` 之前（`docs/api-design.md:856` 附近）插入：
 
 ```markdown
-> **密态资源的两种形态**：
+> **密态资源的两种形态**（**仅本接口**；`/v1/taa/getResourceInfo` 与 `/v1/taa/importModel` 不解析该参数，仍按整文件信封处理）：
 > 1. **URL 密钥信封（当前协议）**：`resourceUrl` 形如 `<下载链接>?dataKeyCipher=<hex>`。
 >    `dataKeyCipher` 是 SM2 数据密钥信封的 hex 编码（C1C3C2 布局，112 字节不带未压缩点前缀，
 >    或 113 字节带 `0x04` 前缀，两者都接受）；**下载链接指向的响应体只含 SM4-GCM 密文**。
 >    TAA 在下载前解析并剥离该参数，用 TAA 自身 SM2 私钥解出 16 字节数据密钥后再下载密文；
 >    参数重复出现、值为空、hex 非法、长度非法或信封解不开，均在校验阶段返回 400，**不发起下载**。
->    其余 query 参数（含签名类参数）逐字节保留，不被重编码。
+>    其余 query 参数（含签名类参数）逐字节保留，不被重编码；被剥离的 `dataKeyCipher` 不进日志、
+>    不进导入索引，因此也不会被转发到实际下载请求。
 > 2. **整文件信封（兼容形态）**：URL 不带 `dataKeyCipher` 时沿用原逻辑——
 >    文件内容为 `WrappedKey(113B) ‖ Ciphertext`，或 `.enc` 后缀强制解密，
 >    或按压缩包魔数判定为明文直通。
 >
 > 信封与密文的绑定是隐式的：换掉密文而沿用信封，SM4-GCM 认证标签必然校验失败。
+>
+> 剥离只发生在本接口：把带 `dataKeyCipher` 的 URL 交给 `getResourceInfo` 或 `importModel`，
+> 该参数会被原样转发到下载请求（并在日志中出现），随后因解不开整文件信封而失败。
 ```
 
 并把「其余 400 场景」一行的内容改为：
@@ -1381,7 +1394,8 @@ git commit -m "feat(mock): pick the upload encryption mode from a select"
 (a) `api/openapi.yaml:105-107`，`/v1/taa/import` 的 `description`（`>-` 折叠块）末尾追加一行：
 
 ```yaml
-        密态资源支持两种形态：resourceUrl 形如 <下载链接>?dataKeyCipher=<hex C1C3C2> 时，
+        密态资源支持两种形态（仅本接口；/v1/taa/getResourceInfo 与 /v1/taa/importModel 不解析该参数）：
+        resourceUrl 形如 <下载链接>?dataKeyCipher=<hex C1C3C2> 时，
         下载链接只含 SM4-GCM 密文，密钥信封由该参数给出，TAA 在下载前解析并解封，参数非法即返回 400 且不发起下载；
         未携带该参数时按整文件信封（WrappedKey || Ciphertext）处理。
 ```
