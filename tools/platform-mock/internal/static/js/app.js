@@ -263,19 +263,18 @@ async function uploadFile() {
   const formData = new FormData();
   formData.append('file', file);
 
-  const encryptSwitch = document.getElementById('uploadEncryptSwitch');
-  const isEncrypted = encryptSwitch && encryptSwitch.checked;
-  if (isEncrypted) {
-    formData.append('encrypt', 'true');
-    if (lastRegisterData && lastRegisterData.taaPublicKey) {
-      formData.append('publicKey', lastRegisterData.taaPublicKey);
-    }
+  const encryptSelect = document.getElementById('uploadEncryptMode');
+  const encryptMode = (encryptSelect && encryptSelect.value) || 'none';
+  const isEncrypted = encryptMode !== 'none';
+  formData.append('encryptMode', encryptMode);
+  if (isEncrypted && lastRegisterData && lastRegisterData.taaPublicKey) {
+    formData.append('publicKey', lastRegisterData.taaPublicKey);
   }
 
   const uploadMeta = {
     fileName: file.name,
     fileSize: file.size,
-    encrypted: isEncrypted,
+    encryptMode: encryptMode,
     publicKey: isEncrypted ? (lastRegisterData && lastRegisterData.taaPublicKey ? '(配置已指定公钥)' : '未提供公钥') : '不加密',
   };
   recordInteraction('upload', {
@@ -302,7 +301,8 @@ async function uploadFile() {
         renderUploadedFiles([uploaded, ...uploadedFiles.filter(item => item.filename !== uploaded.filename)]);
       }
       const encNote = data.result.encrypted ? ' (已使用 TAA 注册公钥加密)' : '';
-      showResult('uploadResult', true, `文件上传成功${encNote}\n\n文件名: ${data.result.originalName}\n保存名: ${data.result.filename}\n大小: ${data.result.size} bytes\nURL: ${data.result.url}`);
+      const keyNote = data.result.dataKeyCipher ? `\n信封 (dataKeyCipher): ${data.result.dataKeyCipher}` : '';
+      showResult('uploadResult', true, `文件上传成功${encNote}\n\n文件名: ${data.result.originalName}\n保存名: ${data.result.filename}\n大小: ${data.result.size} bytes\nURL: ${data.result.url}${keyNote}`);
       fileInput.value = '';
       await refreshUploadedFiles();
     } else {

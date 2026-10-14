@@ -141,13 +141,12 @@
       <label for="uploadFile">选择文件</label>
       <input id="uploadFile" type="file">
       <div style="margin: 10px 0 6px; display: flex; align-items: center; gap: 12px;">
-        <label class="switch-label" for="uploadEncryptSwitch">
-          <span class="switch-wrapper">
-            <input type="checkbox" id="uploadEncryptSwitch">
-            <span class="switch-slider"></span>
-          </span>
-          <span>启用加密</span>
-        </label>
+        <label for="uploadEncryptMode">加密方式</label>
+        <select id="uploadEncryptMode">
+          <option value="none">不加密</option>
+          <option value="envelope">整文件信封（WrappedKey ‖ Ciphertext）</option>
+          <option value="urlkey">URL 密钥信封（密文单文件 + ?dataKeyCipher）</option>
+        </select>
       </div>
       <div class="actions">
         <button onclick="uploadFile()">上传文件</button>

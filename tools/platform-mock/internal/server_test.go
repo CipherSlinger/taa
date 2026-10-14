@@ -1983,6 +1983,22 @@ func TestResourceInfoMergedUnderUploadColumn(t *testing.T) {
 	}
 }
 
+func TestUploadEncryptModeSelectReplacesLegacySwitch(t *testing.T) {
+	// The upload panel's encryption checkbox became a three-state select; the two
+	// wire formats it chooses between must stay reachable from the UI.
+	if strings.Contains(indexHTML, "uploadEncryptSwitch") {
+		t.Errorf("indexHTML should not contain the legacy uploadEncryptSwitch control")
+	}
+	if !strings.Contains(indexHTML, `id="uploadEncryptMode"`) {
+		t.Errorf("indexHTML missing the encrypt-mode select")
+	}
+	for _, tok := range []string{"append('encryptMode'", "result.dataKeyCipher"} {
+		if !strings.Contains(frontendBundle, tok) {
+			t.Errorf("frontendBundle missing %q", tok)
+		}
+	}
+}
+
 func TestConsolidatedCardsAndRemovedHints(t *testing.T) {
 	if strings.Contains(indexHTML, `<div class="flow-col-stack">`) {
 		t.Fatal("indexHTML should no longer use flow-col-stack; cards should be single consolidated cards")
