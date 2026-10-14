@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"taa/internal/resource"
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 )
@@ -106,24 +105,10 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 	// <download link>?dataKeyCipher=<hex C1C3C2>.
 	// The envelope is unwrapped before the download, so a malformed value or a key
 	// mismatch surfaces without first pulling the whole ciphertext.
-	downloadURL, dataKeyCipherHex, hasDataKeyCipher, err := resource.SplitDataKeyCipher(req.ResourceURL)
+	downloadURL, dataKey, err := s.unwrapDataKeyCipherFromURL(req.ResourceURL)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, err.Error(), err))
 		return
-	}
-	var dataKey []byte
-	if hasDataKeyCipher {
-		wrapped, err := teecrypto.ParseWrappedDataKeyHex(dataKeyCipherHex)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, err.Error(), err))
-			return
-		}
-		dataKey, err = teecrypto.UnwrapKeySM2(s.SM2PrivateKey, wrapped)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument,
-				fmt.Sprintf("dataKeyCipher 解封失败: %v", err), err))
-			return
-		}
 	}
 
 	release, err := s.tryAcquireTask(req.TaskID, req.RequestID, "downloading", false)
@@ -199,6 +184,38 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	req.TaskID = strings.TrimSpace(req.TaskID)
 	if req.RequestID == "" && req.TaskID == "" {
 		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "requestId 和 taskId 不能同时为空"))
+		return
+	}
+
+	// Models are delivered exactly like data: an encrypted model either arrives as a
+	// whole-file envelope, or its key envelope travels in the URL
+	// (<download link>?dataKeyCipher=<hex C1C3C2>) while the file itself is bare
+	// ciphertext.
+	//
+	// The parse sits here, before any state is written (the phase-1 export key,
+	// ModelImported, the saved model URL) and before the download, so a rejected
+	// request leaves nothing behind and no bandwidth is spent on a payload whose key
+	// is already known to be unusable.
+	resourceURL, dataKey, err := s.unwrapDataKeyCipherFromURL(req.ResourceURL)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, err.Error(), err))
+		return
+	}
+	// From here on req.ResourceURL is the stripped URL, and every later reader wants
+	// it that way: the download, the log line, the legacy resolver, and
+	// beginModelImportAndAudit, which re-records the URL as the model's delivery
+	// record once the import succeeds in the async stage. Rewriting the local copy
+	// keeps those writers from disagreeing, and leaves the wrapped key in exactly one
+	// place -- the dataKey above.
+	req.ResourceURL = resourceURL
+
+	// A URL that consisted of nothing but the enveloped key ("?dataKeyCipher=<hex>")
+	// strips down to "". That is not the "runtimeConfig only" request handled below:
+	// the caller did send a resource URL and a key, it just never named a download
+	// address. Reading it as runtimeConfig-only would answer 200 and drop the key.
+	if req.ResourceURL == "" && dataKey != nil {
+		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument,
+			"resourceUrl 缺少下载地址: 剥离 dataKeyCipher 后为空"))
 		return
 	}
 
@@ -333,6 +350,6 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	writeEnvelope(w, http.StatusOK, msg, nil, 0)
 
 	s.runAsyncSafe("processImportedResource", release, func() {
-		s.processImportedResource(req, phase, true, ciphertextPath, nil)
+		s.processImportedResource(req, phase, true, ciphertextPath, dataKey)
 	})
 }
