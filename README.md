@@ -428,7 +428,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 Specify one or more components: `platform-mock`, `taa`. If omitted:
 - In `docker` mode: defaults to deploying both `platform-mock` and `taa`.
 - In `remote` mode: defaults to `taa` (omits `platform-mock` to avoid port 18080 conflict with host production agents).
-- **Note on TEE-LLM / Qwen / Ollama**: The LLM inference service sources live in the `teellm` submodule, but its deployment script now sits at the repository root. To deploy TEE-LLM, run `./deploy-llm.sh [docker|remote]`.
+- **Note on TEE-LLM / Qwen / Ollama**: The LLM inference service sources live in the `teellm` submodule, but its deployment script now sits at the repository root. To deploy TEE-LLM, run `./deploy-llm.sh [docker|remote-docker|remote]`.
 
 ### 4. Container Autostart Supervisor (`deploy/start.sh`)
 
@@ -454,7 +454,8 @@ Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (d
 ./deploy.sh remote stop                       # Stop remote services
 
 # Decoupled TEE-LLM Service
-./deploy-llm.sh docker start                  # Deploy TEE-LLM service in Docker
+./deploy-llm.sh docker start                  # Deploy TEE-LLM service in a local Docker container
+./deploy-llm.sh remote-docker start           # Deploy TEE-LLM service into a container on the remote host (SSH + docker)
 ./deploy-llm.sh remote start                  # Deploy TEE-LLM service in remote Kubernetes Pod
 ```
 
