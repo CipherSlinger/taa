@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 )
@@ -110,6 +111,41 @@ func OpenSM2SM4GCM(priv *SM2PrivateKey, sealed []byte) ([]byte, error) {
 		return nil, err
 	}
 	return OpenSM2(priv, env)
+}
+
+// sm2CipherPointPrefix is the leading byte of the uncompressed point C1 in an
+// SM2 ciphertext.
+const sm2CipherPointPrefix = 0x04
+
+// ParseWrappedDataKeyHex decodes a hex-encoded SM2 data key envelope and returns
+// an SM2WrappedKeySize byte envelope ready for UnwrapKeySM2.
+//
+// The platform may deliver either layout: 112 bytes (C1 || C3 || C2, without the
+// uncompressed point prefix) or 113 bytes (with the 0x04 prefix). The former gets
+// the prefix restored, the latter is accepted as-is.
+//
+// UnwrapKeySM2 does not check the prefix: gmsm's SM2 Decrypt discards byte 0
+// unconditionally, so a wrong leading byte still unwraps. The check below is the
+// only thing that rejects a 113-byte value that does not start with 0x04.
+func ParseWrappedDataKeyHex(hexValue string) ([]byte, error) {
+	raw, err := hex.DecodeString(hexValue)
+	if err != nil {
+		return nil, fmt.Errorf("teecrypto: 数据密钥信封不是合法 hex: %w", err)
+	}
+	switch len(raw) {
+	case SM2WrappedKeySize - 1:
+		wrapped := make([]byte, 0, SM2WrappedKeySize)
+		wrapped = append(wrapped, sm2CipherPointPrefix)
+		return append(wrapped, raw...), nil
+	case SM2WrappedKeySize:
+		if raw[0] != sm2CipherPointPrefix {
+			return nil, fmt.Errorf("teecrypto: 数据密钥信封首字节为 0x%02x，应为 0x%02x", raw[0], sm2CipherPointPrefix)
+		}
+		return raw, nil
+	default:
+		return nil, fmt.Errorf("teecrypto: 数据密钥信封长度无效: %d 字节（应为 %d 或 %d）",
+			len(raw), SM2WrappedKeySize-1, SM2WrappedKeySize)
+	}
 }
 
 // DeriveSealingKey 利用 SM2 私钥标量 D 派生 16 字节 SM4 状态密封密钥:
