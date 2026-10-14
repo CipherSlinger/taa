@@ -496,7 +496,43 @@ print_container_summary() {
   echo ""
 }
 
+# ── Pod Reachability ──────────────────────────────────────────
+# Cluster pod network that has to reach the gateway. 10.244.0.0/16 is kube-flannel's default and
+# what the TAA pods on 172.16.10.178 use.
+POD_CIDR="${POD_CIDR:-10.244.0.0/16}"
+
+# Allows the pod network to reach the gateway's published port on the host. A bridge-networked
+# container is not reachable from outside the docker bridges by default: docker installs
+# `-A DOCKER ! -i docker0 -o docker0 -j DROP` in FORWARD, and publishing a port only adds an
+# ACCEPT for traffic addressed to the host, not for traffic forwarded to the container's own IP.
+# TAA runs in a pod, so without this rule its calls to https://<container ip>:<port> are dropped
+# silently -- measured on 172.16.10.178 by watching the drop rule's packet counter climb.
+#
+# The rule is not persistent: it lives until the host reboots (or until something flushes FORWARD),
+# so it is re-checked on every deploy rather than assumed.
+allow_pod_access_to_container() {
+  local ip="$1"
+  if [[ -z "$ip" ]]; then
+    info "container is on the host network; pods reach it on the host address, no FORWARD rule needed"
+    return 0
+  fi
+  local rule="-s $POD_CIDR -d $ip/32 -p tcp --dport $TEELLM_PORT -j ACCEPT"
+  if remote_ssh "iptables -C FORWARD $rule 2>/dev/null"; then
+    info "pod access to $ip:$TEELLM_PORT already allowed"
+    return 0
+  fi
+  if remote_ssh "iptables -I FORWARD 1 $rule"; then
+    info "allowed $POD_CIDR -> $ip:$TEELLM_PORT (iptables FORWARD; lost on reboot)"
+    return 0
+  fi
+  # Not fatal: a host that routes the pod network differently still works, and the deploy should
+  # not fail over a rule the operator may prefer to add through their own firewall management.
+  warn "could not add the FORWARD rule for $POD_CIDR -> $ip:$TEELLM_PORT"
+  detail "If taa runs in a pod on ${REMOTE_HOST}, add it there as root: iptables -I FORWARD 1 $rule"
+}
+
 # ── Ollama Discovery, Binary Check & Artifact Resolver ─────────
+
 
 resolve_ollama_local_dir() {
   if [[ -n "${OLLAMA_LOCAL_DIR:-}" ]]; then
@@ -2054,6 +2090,9 @@ deploy_container() {
   info "teellm-service ready and verified via TEE-TLS 1.3: https://127.0.0.1:${TEELLM_PORT} ${DIM}(took ${total_elapsed}s)${NC}"
 
   if [[ "$REMOTE_CONTAINER_MODE" == true ]]; then
+    step "allowing cluster pods to reach the gateway"
+    read -r _ _ container_ip < <(container_facts)
+    allow_pod_access_to_container "$container_ip"
     banner "Deploy Complete (Remote Docker)" "TEE-LLM service running and verified healthy in ${TARGET_CONTAINER}"
     print_container_summary "${REMOTE_USER}@${REMOTE_HOST} docker daemon"
   else

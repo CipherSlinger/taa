@@ -98,6 +98,18 @@ case "$cmd" in
 esac
 MOCK
 
+# iptables, standing in for the remote host's firewall. The test may run as root, and the real
+# command would then install a FORWARD rule on the machine running the tests.
+cat > "$MOCK_BIN/iptables" <<'MOCK'
+#!/usr/bin/env bash
+echo "IPTABLES $*" >> "$MOCK_LOG"
+case "${1:-}" in
+  -C) exit 1 ;;   # the rule is not there yet, so the script has to add it
+  -I) exit 0 ;;
+  *) exit 0 ;;
+esac
+MOCK
+
 chmod +x "$MOCK_BIN"/*
 
 set +e
@@ -134,6 +146,13 @@ grep -q "replacing the ollama daemon already listening" <<<"$output" \
   || fail "a daemon serving another model set was reused instead of replaced"
 grep -q "DOCKER exec.*pkill -x ollama" "$MOCK_LOG" \
   || fail "the stale ollama daemon was never stopped"
+
+# A bridge-networked container is invisible to cluster pods unless the host forwards to it, and
+# docker's own DOCKER chain drops exactly that traffic.
+grep -q "IPTABLES -C FORWARD -s 10.244.0.0/16 -d 172.17.0.2/32 -p tcp --dport 8443 -j ACCEPT" "$MOCK_LOG" \
+  || fail "the pod-to-gateway FORWARD rule was never checked"
+grep -q "IPTABLES -I FORWARD 1 -s 10.244.0.0/16 -d 172.17.0.2/32 -p tcp --dport 8443 -j ACCEPT" "$MOCK_LOG" \
+  || fail "pods were left unable to reach the gateway container"
 
 # The summary has to hand over what a follow-up taa deployment needs.
 grep -q "Container  : taa-env-slim-v2 (running)" <<<"$output" || fail "container name missing from the summary"
