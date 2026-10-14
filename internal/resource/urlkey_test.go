@@ -74,6 +74,46 @@ func TestSplitDataKeyCipher(t *testing.T) {
 		}
 	})
 
+	t.Run("an envelope appended with a stray question mark is still stripped", func(t *testing.T) {
+		// What plain concatenation produces on a presigned link: the producer appends
+		// "?dataKeyCipher=" to a URL that already has a query string, so the delimiter
+		// inside the query is a '?' and the parameter would otherwise be read as part
+		// of the signature's value.
+		signed := "http://host/files/data.sm4?X-Amz-Signature=6092f943d67c3bd99f00accfa330c7fd92a7293db2551c5525b55909a5cbca37"
+		clean, hex, found, err := SplitDataKeyCipher(signed + "?dataKeyCipher=" + hexValue)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !found || hex != hexValue {
+			t.Fatalf("found=%v hex=%q, want true/%q", found, hex, hexValue)
+		}
+		if clean != signed {
+			t.Fatalf("clean = %q, want the signed URL byte-for-byte (%q)", clean, signed)
+		}
+	})
+
+	t.Run("a stray question mark in the middle keeps the rest of the query", func(t *testing.T) {
+		raw := "http://host/f.sm4?a=1?dataKeyCipher=" + hexValue + "&b=2"
+		clean, _, found, err := SplitDataKeyCipher(raw)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !found || clean != "http://host/f.sm4?a=1&b=2" {
+			t.Fatalf("found=%v clean=%q", found, clean)
+		}
+	})
+
+	t.Run("a stray question mark in front of the fragment keeps the fragment", func(t *testing.T) {
+		raw := "http://host/f.sm4?a=1?dataKeyCipher=" + hexValue + "#part"
+		clean, _, found, err := SplitDataKeyCipher(raw)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !found || clean != "http://host/f.sm4?a=1#part" {
+			t.Fatalf("found=%v clean=%q", found, clean)
+		}
+	})
+
 	t.Run("duplicate parameter is rejected", func(t *testing.T) {
 		_, _, _, err := SplitDataKeyCipher("http://host/f.sm4?dataKeyCipher=aa&dataKeyCipher=bb")
 		if err == nil {

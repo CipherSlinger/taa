@@ -109,6 +109,7 @@ paths:
         密态资源支持两种形态（本接口与 /v1/taa/importModel 均解析该参数；/v1/taa/getResourceInfo 不解析该参数）：
         resourceUrl 形如 <下载链接>?dataKeyCipher=<hex C1C3C2> 时，
         下载链接只含 SM4-GCM 密文，密钥信封由该参数给出，TAA 在下载前解析并解封，参数非法即返回 400 且不发起下载；
+        参数前的分隔符 ? 与 & 均可（下载链接自带 query 时平台常用 ? 拼接），剥离后其余 query 逐字节保留；
         未携带该参数时沿用原逻辑：整文件信封（WrappedKey || Ciphertext）、.enc 后缀强制解密、明文压缩包按魔数直通。
       tags:
         - 资源流转
@@ -178,6 +179,7 @@ paths:
         密态资源支持两种形态（本接口与 /v1/taa/import 均解析该参数；/v1/taa/getResourceInfo 不解析该参数）：
         resourceUrl 形如 <下载链接>?dataKeyCipher=<hex C1C3C2> 时，
         下载链接只含 SM4-GCM 密文，密钥信封由该参数给出，TAA 在下载前解析并解封，参数非法即返回 400 且不发起下载；
+        参数前的分隔符 ? 与 & 均可（下载链接自带 query 时平台常用 ? 拼接），剥离后其余 query 逐字节保留；
         未携带该参数时沿用原逻辑：整文件信封（WrappedKey || Ciphertext）、.enc 后缀强制解密、明文压缩包按魔数直通。
       tags:
         - 资源流转

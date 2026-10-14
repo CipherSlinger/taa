@@ -869,6 +869,9 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 >    参数重复出现、值为空、hex 非法、长度非法或信封解不开，均在校验阶段返回 400，**不发起下载**。
 >    其余 query 参数（含签名类参数）逐字节保留，不被重编码；被剥离的 `dataKeyCipher` 不进日志、
 >    不进导入索引，因此也不会被转发到实际下载请求。
+>    分隔符 `?` 与 `&` 都认：下载链接本身带 query 时（预签名链接都带），即使平台用朴素拼接
+>    写成 `<链接>?X-Amz-Signature=<hex>?dataKeyCipher=<hex>`，参数仍能被剥离，剩下的 URL 与
+>    「不带信封时应发的那个」逐字节相同，签名依旧有效。
 > 2. **整文件信封（兼容形态）**：URL 不带 `dataKeyCipher` 时沿用原逻辑——
 >    文件内容为 `WrappedKey(113B) ‖ Ciphertext`，或 `.enc` 后缀强制解密，
 >    或按压缩包魔数判定为明文直通。
@@ -960,7 +963,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `resourceUrl` | `string` | 否* | 模型资源下载地址。密态资源可携带 `?dataKeyCipher=<hex>` 参数承载 SM2 数据密钥信封，见下方说明；为空时表示只更新 `runtimeConfig` 并复用已导入的模型，此时此前必须已导入过模型 |
+| `resourceUrl` | `string` | 否* | 模型资源下载地址。密态资源可携带 `?dataKeyCipher=<hex>` 参数承载 SM2 数据密钥信封，见下方说明；为空时表示只更新 `runtimeConfig` 并复用已导入的模型，此时此前必须已导入过模型（**只有** `?dataKeyCipher=<hex>`、没有下载地址的 `resourceUrl` 不算「为空」，按 400 拒绝） |
 | `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空 |
 | `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空 |
 | `publicKey` | `string` | 否 | 平台侧 SM2 公钥 PEM，**非必填**。仅 phase 1 且请求携带时校验并保存（已保存过则保留首个公钥）；为空时不校验、不保存、也不返回失败。资源解封使用 TAA 自身私钥，与此参数无关；阶段 3 导出时的公钥选择顺序见 [4.6](#46-请求-taa-导出结果v1taaexport) |
@@ -1029,7 +1032,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 }
 ```
 
-其余 400 场景：`requestId` 和 `taskId` 同时为空；`publicKey` 解析失败（仅 phase 1 且请求中携带 `publicKey` 时校验）；`resourceUrl` 为空时 `runtimeConfig` 为空、解析失败或 `commands` 为空数组；`dataKeyCipher` 重复、为空、hex 非法、长度非法或信封解不开。
+其余 400 场景：`requestId` 和 `taskId` 同时为空；`publicKey` 解析失败（仅 phase 1 且请求中携带 `publicKey` 时校验）；`resourceUrl` 为空时 `runtimeConfig` 为空、解析失败或 `commands` 为空数组；`dataKeyCipher` 重复、为空、hex 非法、长度非法或信封解不开；`resourceUrl` 剥离 `dataKeyCipher` 后为空（缺少下载地址）。
 
 **并发冲突响应示例**（409 Conflict）：
 

@@ -72,9 +72,20 @@ func SplitDataKeyCipher(rawURL string) (cleanURL, hexValue string, found bool, e
 1. 先切出 `#fragment`，尾部原样保留在 `cleanURL` 中。
 2. 无 `?` → `found=false`，`cleanURL == rawURL`（逐字节相等）。
 3. query 按 `&` 切段；段的 key 取第一个 `=` 之前的部分；key 恰为 `dataKeyCipher` 的段被删除。
+   段分隔符也接受 `?`：见下方「2026-10-14 实测修正」。
 4. **其余段逐字节保留顺序与转义**，不做 `url.Values.Encode()` 重编码——重编码会排序并转义，破坏签名类参数。
 5. 删除后 query 为空 → 连 `?` 一起去掉。
 6. 出现多次 → 返回错误（歧义，不猜第一个）；值为空串 → 返回错误。
+
+> **2026-10-14 实测修正：`?` 也算段分隔符**。平台侧是朴素拼接
+> （`downloadUrl + "?dataKeyCipher=" + hex`），而预签名下载链接**本身带 query**，
+> 于是实际收到的是
+> `...&X-Amz-Signature=<hex>?dataKeyCipher=<hex>`——第二个 `?` 落在了签名值里。
+> 旧解析只按 `&` 切段，`X-Amz-Signature=<hex>?dataKeyCipher=<hex>` 的 key 是
+> `X-Amz-Signature`，于是 `found=false`：既不认信封（回退到整文件信封），又把
+> `?dataKeyCipher=...` 算进签名值 → MinIO 判签名不符、下载 403（2026-10-14 18:29
+> 实测日志）。现在 `&` 与 `?` 都当段分隔符，剥离时连同相邻的**一个**分隔符一起删除，
+> 因此剩下的 URL 与「平台本来该发的那个」逐字节相同，签名依旧有效。
 
 该函数只做字符串处理，不校验 hex 内容；hex 与长度校验由 §3.2 负责。
 
