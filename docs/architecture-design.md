@@ -512,7 +512,7 @@ TAA_DEBUG_MODE=true ./deploy.sh taa
 ./deploy.sh docker save --tag taa-env:slim-v2-$(date +%Y%m%d)
 
 # LLM 推理服务（Qwen / Ollama / TEE-LLM）不在这里管理
-(cd teellm && ./deploy.sh [docker|remote])
+./deploy-llm.sh [docker|remote]
 ```
 
 `local` 与 `local-docker` 是 `docker` 的历史别名，仍然可用；`qwen` 组件名保留但只打印指向上述 teellm 命令的提示。
@@ -554,7 +554,7 @@ TAA_DEBUG_MODE=true ./deploy.sh taa
 `/root/taa/keys`，以容器内生效的 `taa-config.json` 为准。
 
 Ollama 离线包**不在 TAA 容器内**：TEE-LLM 网关拆分为独立容器后，Ollama 与网关同容器，
-由 `teellm` 子模块独立部署（`(cd teellm && ./deploy.sh [docker|remote])`），TAA 通过容器 IP 访问。
+由 `teellm` 子模块提供源码、由仓库根目录的 `deploy-llm.sh` 独立部署（`./deploy-llm.sh [docker|remote]`），TAA 通过容器 IP 访问。
 
 ## 11. 项目目录结构
 

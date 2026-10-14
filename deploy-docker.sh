@@ -91,7 +91,7 @@ TEELLM_PORT="${TEELLM_PORT:-8443}"
 READY_TIMEOUT="${READY_TIMEOUT:-120}"
 READY_INTERVAL="${READY_INTERVAL:-2}"
 
-# Ollama runtime settings. Mirrors teellm/deploy.sh so the warm-up step below targets
+# Ollama runtime settings. Mirrors deploy-llm.sh so the warm-up step below targets
 # the same daemon, model store, and log file that teellm-service will use.
 CONTAINER_OLLAMA_DIR="${CONTAINER_OLLAMA_DIR:-$CONTAINER_WORKDIR/ollama}"
 OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
@@ -122,7 +122,7 @@ Options:
                        image rather than the configuration production runs.
   --no-clean           Skip runtime trace cleanup (logs, results, keys, pause flags)
   --reset-container    Recreate the container from the base image before deploying.
-                       Discards the deployed ollama runtime and weights; teellm/deploy.sh
+                       Discards the deployed ollama runtime and weights; deploy-llm.sh
                        re-syncs them from teellm/models/ollama, which is slow.
   -h, --help           Show this help
 
@@ -196,7 +196,7 @@ require_command python3
 docker info >/dev/null 2>&1 || die "docker daemon is not running or accessible"
 
 [[ -f "$PROJECT_DIR/deploy.sh" ]] || die "deploy.sh not found in $PROJECT_DIR"
-[[ -x "$PROJECT_DIR/teellm/deploy.sh" ]] || die "teellm/deploy.sh not found or not executable"
+[[ -x "$PROJECT_DIR/deploy-llm.sh" ]] || die "deploy-llm.sh not found or not executable"
 [[ -f "$PROJECT_DIR/deploy/start.sh" ]] || die "deploy/start.sh not found"
 [[ -f "$TEELLM_CONFIG_TEMPLATE" ]] || die "teellm config template not found: $TEELLM_CONFIG_TEMPLATE"
 [[ -f "$TAA_TEMPLATE" ]] || die "taa config template not found: $TAA_TEMPLATE"
@@ -246,7 +246,7 @@ fi
 # teellm-service answers /healthz with a real one-token generation, so the very first
 # probe pays the cold weight load (seconds to minutes). `teellm-service -probe` allows
 # only 5s and cancels its request on timeout, which aborts the load inside ollama --
-# so the 30 retries in teellm/deploy.sh can never converge and its readiness gate fails
+# so the 30 retries in deploy-llm.sh can never converge and its readiness gate fails
 # on a container whose ollama was recently restarted. Load the weights here instead,
 # and hold them resident for the rest of the run.
 #
@@ -283,7 +283,7 @@ container_running || die "container $CONTAINER_NAME is not running"
 if docker exec -i "$CONTAINER_NAME" curl -fsS -m 5 "http://${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then
   info "ollama daemon already running on http://${OLLAMA_HOST}"
 else
-  info "ollama daemon not running; starting it as teellm/deploy.sh would"
+  info "ollama daemon not running; starting it as deploy-llm.sh would"
   docker exec -d "$CONTAINER_NAME" sh -lc "cd '$CONTAINER_OLLAMA_DIR' && exec env OLLAMA_HOST='$OLLAMA_HOST' OLLAMA_MODELS='$CONTAINER_OLLAMA_DIR/models/models' OLLAMA_LIBRARY_PATH='$CONTAINER_OLLAMA_DIR/lib/ollama' ./start-ollama.sh > '$OLLAMA_LOG_FILE' 2>&1"
   if ! wait_for_ollama; then
     err "ollama daemon did not become ready within ${OLLAMA_READY_TIMEOUT}s"
@@ -296,14 +296,14 @@ fi
 if warm_model; then
   info "model $LLM_MODEL loaded and held resident for ${MODEL_KEEP_ALIVE}"
 else
-  warn "model warm-up failed (missing weights?); teellm/deploy.sh will report the cause"
+  warn "model warm-up failed (missing weights?); deploy-llm.sh will report the cause"
 fi
 
 # ── 2. TEE-LLM first: TAA's fail-closed probe needs :8443 already up ──
 step "deploying TEE-LLM (model: $LLM_MODEL)"
-info "running: (cd teellm && ./deploy.sh docker --model $LLM_MODEL --container $CONTAINER_NAME --config $TEELLM_CONFIG_TEMPLATE)"
-( cd "$PROJECT_DIR/teellm" && ./deploy.sh docker --model "$LLM_MODEL" --container "$CONTAINER_NAME" \
-    --config "$TEELLM_CONFIG_TEMPLATE" )
+info "running: $PROJECT_DIR/deploy-llm.sh docker --model $LLM_MODEL --container $CONTAINER_NAME --config $TEELLM_CONFIG_TEMPLATE"
+"$PROJECT_DIR/deploy-llm.sh" docker --model "$LLM_MODEL" --container "$CONTAINER_NAME" \
+    --config "$TEELLM_CONFIG_TEMPLATE"
 info "TEE-LLM deployed"
 
 # ── 3. Tier 1 static scan engine ─────────────────────────────
@@ -476,7 +476,7 @@ PY
   info "platform block removed: identity is injected via PLATFORM_IP/DOCKER_ID/CONTRACT"
 fi
 
-# teellm/deploy.sh copies the model catalog verbatim and never updates activeModel, so
+# deploy-llm.sh copies the model catalog verbatim and never updates activeModel, so
 # keep it consistent with the model actually frozen into backend.defaultModel.
 docker exec -i "$CONTAINER_NAME" python3 - "$CONTAINER_WORKDIR/configs/models.json" "$LLM_MODEL" <<'PY'
 import json, sys

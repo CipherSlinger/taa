@@ -205,7 +205,7 @@ SAVE_CLEAN="${SAVE_CLEAN:-false}"
 
 # Resolve the TEE-LLM gateway endpoint for local docker deploys. An explicit TAA_LLM_ENDPOINT
 # wins. Otherwise, if the teellm container is running, use its address: the gateway has its own
-# container by default (see teellm/deploy.sh), and taa reaches it by container IP. Fall back to
+# container by default (see deploy-llm.sh), and taa reaches it by container IP. Fall back to
 # loopback, which is correct when the gateway shares taa's network namespace -- a host-networked
 # teellm container reports no IP and lands here too.
 resolve_llm_endpoint() {
@@ -650,7 +650,7 @@ Options:
 Component selection:
   When no component names are given, target components are deployed by default (in remote mode, platform-mock is omitted to avoid port 18080 conflict with ccs-node-agent).
   Provide one or more component names (platform-mock, taa) to deploy or operate on them separately.
-  Note: Qwen / Ollama / TEE-LLM inference service is managed independently via teellm/deploy.sh.
+  Note: Qwen / Ollama / TEE-LLM inference service is managed independently via deploy-llm.sh.
 
 Examples:
   # Docker mode (local Docker container)
@@ -1216,7 +1216,7 @@ else
         ;;
       qwen)
         info "Qwen/Ollama/TEE-LLM is now independently managed by teellm submodule."
-        info "To deploy TEE-LLM, please execute: (cd teellm && ./deploy.sh [docker|remote])"
+        info "To deploy TEE-LLM, please execute: ./deploy-llm.sh [docker|remote]"
         ;;
       --model=*)
         CLI_MODEL="${arg#*=}"

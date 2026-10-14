@@ -168,7 +168,7 @@ flowchart TB
 │   ├── cmd/teellm-service/           # Confidential inference daemon entry point
 │   ├── configs/                      # TEE-LLM deployment configs (Docker & Production)
 │   ├── deploy/                       # TEE-LLM container supervisor and start scripts
-│   ├── deploy.sh                     # Standalone TEE-LLM deployment & model management script
+│   ├── models/ollama/                # Offline Ollama runtime & model weight bundle
 │   └── teetls/                       # RFC 8998 TLS 1.3 ShangMi protocol library (nested submodule)
 ├── tools/                            # Auxiliary developer and platform tools
 │   ├── platform-mock/                # Test management platform emulator & Web console
@@ -190,6 +190,7 @@ flowchart TB
 ├── models/                           # Bundled offline models & runtimes (e.g., Ollama / Qwen)
 ├── docs/                             # Architecture specifications & API design documents
 ├── deploy.sh                         # Unified multi-mode deployment, lifecycle & packaging script
+├── deploy-llm.sh                     # TEE-LLM service deployment & model management script
 ├── go.work                           # Go workspace definition (orchestrating taa, teellm, teetls, sdk)
 └── go.mod                            # Go module definition (Go 1.22+)
 ```
@@ -427,7 +428,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 Specify one or more components: `platform-mock`, `taa`. If omitted:
 - In `docker` mode: defaults to deploying both `platform-mock` and `taa`.
 - In `remote` mode: defaults to `taa` (omits `platform-mock` to avoid port 18080 conflict with host production agents).
-- **Note on TEE-LLM / Qwen / Ollama**: The LLM inference service is decoupled and independently managed by the `teellm` submodule. To deploy TEE-LLM, run `(cd teellm && ./deploy.sh [docker|remote])`.
+- **Note on TEE-LLM / Qwen / Ollama**: The LLM inference service sources live in the `teellm` submodule, but its deployment script now sits at the repository root. To deploy TEE-LLM, run `./deploy-llm.sh [docker|remote]`.
 
 ### 4. Container Autostart Supervisor (`deploy/start.sh`)
 
@@ -453,8 +454,8 @@ Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (d
 ./deploy.sh remote stop                       # Stop remote services
 
 # Decoupled TEE-LLM Service
-(cd teellm && ./deploy.sh docker start)       # Deploy TEE-LLM service in Docker
-(cd teellm && ./deploy.sh remote start)       # Deploy TEE-LLM service in remote Kubernetes Pod
+./deploy-llm.sh docker start                  # Deploy TEE-LLM service in Docker
+./deploy-llm.sh remote start                  # Deploy TEE-LLM service in remote Kubernetes Pod
 ```
 
 ---
