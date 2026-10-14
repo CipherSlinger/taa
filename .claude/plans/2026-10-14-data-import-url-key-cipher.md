@@ -1284,7 +1284,7 @@ git commit -m "feat(mock): add a urlkey upload mode that ships the envelope in t
 - Modify: `tools/platform-mock/internal/static/index.html:143-151`
 - Modify: `tools/platform-mock/internal/static/js/app.js:255-305`
 
-- [ ] **Step 1: 替换开关为下拉**
+- [x] **Step 1: 替换开关为下拉**
 
 `tools/platform-mock/internal/static/index.html`，把
 
@@ -1313,7 +1313,7 @@ git commit -m "feat(mock): add a urlkey upload mode that ships the envelope in t
       </div>
 ```
 
-- [ ] **Step 2: 上传逻辑按模式提交**
+- [x] **Step 2: 上传逻辑按模式提交**
 
 `tools/platform-mock/internal/static/js/app.js`，把 `uploadFile()` 里
 
@@ -1366,22 +1366,34 @@ git commit -m "feat(mock): add a urlkey upload mode that ships the envelope in t
       showResult('uploadResult', true, `文件上传成功${encNote}\n\n文件名: ${data.result.originalName}\n保存名: ${data.result.filename}\n大小: ${data.result.size} bytes\nURL: ${data.result.url}${keyNote}`);
 ```
 
-- [ ] **Step 3: 验证没有遗留引用**
+- [x] **Step 3: 验证没有遗留引用**
 
 Run: `grep -rn "uploadEncryptSwitch" tools/platform-mock/internal/static/`
 Expected: 无输出
 
-- [ ] **Step 4: 跑 mock 测试**
+- [x] **Step 4: 跑 mock 测试**
 
 Run: `go test ./tools/platform-mock/... 2>&1 | tail -3`
 Expected: `ok`
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add tools/platform-mock/internal/static/index.html tools/platform-mock/internal/static/js/app.js
 git commit -m "feat(mock): pick the upload encryption mode from a select"
 ```
+
+> **执行记录（2026-10-14）**：已实现并提交 `87e81ec`（3 文件：`index.html` +13/-7、`app.js` +18/-9、`server_test.go` +16）。规格审查 ✅ 逐字一致：HTML 块与三处 JS 替换均与规格 byte-for-byte（含 `id`、选项顺序、`‖` 经码点确认为 U+2016）；`components.css` 未改动，其 `.switch-*` 规则仍由 `importModelUsePublicKeySwitch`（`index.html:224-227`）使用；提交信息无正文、无 trailer。
+>
+> 跨端一致性已核：HTML 三个 `<option value>`、JS 转发的值、后端守卫（`handlers_upload.go:251-252`）三者同为 `none`/`envelope`/`urlkey`，无错配。另核：裸 `<select>` 并非无样式默认控件——`components.css:321` 有全局 `input, textarea, select` 规则（含 `select:focus` 于 `:355`），标签也命中全局 `label` 规则（`:371-377`），与它替换掉的 `.switch-label` 提供的字重/颜色一致；仓库内没有别的 `<select>` 也没有 `.select` 类，即该全局元素规则本身就是既定约定。
+>
+> 质量审查结论「可合并」，无 Important。**采纳一条建议并把一次性的 grep 升级为常驻断言**：计划 Step 3 的 `grep -rn "uploadEncryptSwitch"` 只护当下、不护将来，而本仓库 mock 测试本就有"对嵌入的前端 bundle 断言遗留标记不存在、必需标记存在"的既定写法（`server_test.go:1868-1952`），故新增 `TestUploadEncryptModeSelectReplacesLegacySwitch`（`indexHTML` 与 `frontendBundle` 均为 `server.go:32-60` 的 `init()` 从 `//go:embed all:static` 构建的包级变量）。判别力经两次取证：把 `uploadEncryptSwitch` 临时塞回 `index.html` 使首条断言以 `indexHTML should not contain the legacy uploadEncryptSwitch control` 失败，还原后 blob 哈希回到 `d95c0fc…`。
+>
+> **复核又抓出我这一版断言的一半是空的**：`frontendBundle` 由 `indexHTML` 加 JS 拼成，而 `id="uploadEncryptMode"` 本身就含 `encryptMode`、选项文案含 `?dataKeyCipher`，所以 token 循环即使 `app.js` 退回发旧字段 `encrypt` 也照样通过。已收紧为 HTML 无法满足的 JS 专有形式 `append('encryptMode'` 与 `result.dataKeyCipher`，并取证：把 `app.js` 的该行改回 `append('encrypt', …)`、`result.dataKeyCipher` 改名为 `kc` 后，两条 token 同时失败；还原后 `app.js` 哈希逐位一致。
+>
+> 未采纳 2 条：新加的 `keyNote` 行实际不会被渲染（`RESULT_INTERACTION_KEYS['uploadResult'] = 'upload'`，故 `openStoredResult` 走 `openInteractionDrawer`，而 `recordInteraction` 已先写入 `primaryContent: data`，使 `showResult` 的 `primaryContent == null` 守卫为假，字符串只留在 `resultBodies` 里没人读）——我独立复核了这条链路并确认成立，但**按计划保留**：被它修改的兄弟行 `encNote` 具有完全相同的性质，说明这是既有渲染路径的属性而非本次改动引入，改这条路径超出本任务范围；信封实际通过交互抽屉里的 JSON 正文与 URL 字段可见。另一条是窄视口下 `flex` 行可能溢出（`width:100%` 的 select 其 min-content 受最长选项文案撑开）——目标本就是桌面联调工具，审查者自己也判为无关。
+>
+> **同时修正了 Task 7 Step 3 的计划产物（尚未执行）**：要换上的新方框显示宽度为 54/61/60/62/59/52（旧的为 56/57/57/58/56），右边界参差，换上会比原来更歪。已按显示宽度重新生成，六行统一为 58 列，且 `┬` 仍保持在列索引 19，使下方 `▼` 连接符位置不变。
 
 ---
 
@@ -1487,12 +1499,12 @@ git commit -m "feat(mock): pick the upload encryption mode from a select"
 替换为（`docs/architecture-design.md:262-266`，旧 5 行换新 6 行）：
 
 ```text
-          ┌─── 解密 ─────────────────────────────────┐
-          │  信封来源: URL 参数 dataKeyCipher / 文件头      │
-          │  下载链接只含 SM4-GCM 密文                     │
-          │  SM2 私钥解包信封 → SM4 数据密钥 (16B)           │
-          │  SM4-GCM 解密 → 明文归档包                    │
-          └────────┬───────────────────────────────┘
+          ┌─── 解密 ─────────────────────────────────────┐
+          │  信封来源: URL 参数 dataKeyCipher / 文件头   │
+          │  下载链接只含 SM4-GCM 密文                   │
+          │  SM2 私钥解包信封 → SM4 数据密钥 (16B)       │
+          │  SM4-GCM 解密 → 明文归档包                   │
+          └────────┬─────────────────────────────────────┘
 ```
 
 并在紧随其后的 ``` 闭合围栏之后、`### 5.3 导出流程 (\`/v1/taa/export\`)` 之前追加一段（§5.2 图后原本没有正文段落，这句就是唯一说明）：
