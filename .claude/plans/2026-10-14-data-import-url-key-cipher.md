@@ -158,17 +158,21 @@ import (
 	"strings"
 )
 
-// dataKeyCipherParam 是数据下发 URL 上承载 SM2 数据密钥信封的 query 参数名。
+// dataKeyCipherParam is the query parameter that carries the SM2 data key envelope
+// on a data-delivery resource URL.
 const dataKeyCipherParam = "dataKeyCipher"
 
-// SplitDataKeyCipher 从资源 URL 中剥离 dataKeyCipher 参数，
-// 返回可直接下载的 URL 与该参数的原始 hex 值。
+// SplitDataKeyCipher strips the dataKeyCipher parameter from a resource URL and
+// returns the downloadable URL together with the parameter's raw hex value.
 //
-// found 为 false 表示 URL 未携带该参数，调用方应回退到旧格式处理。
-// 只有两种情况返回错误：参数出现多次（含义有歧义），或参数值为空。
+// found is false when the URL carries no such parameter; the caller then falls
+// back to the legacy format. Only two cases return an error: the parameter
+// appears more than once (which one to use would be ambiguous), or its value is
+// empty.
 //
-// 剥离是逐段字符串操作：其余 query 段的字节、顺序与转义一律保持原样，
-// 因此带签名的下载链接不会被改写。
+// The strip is segment-by-segment string surgery: the bytes, order and escaping
+// of every other query segment are preserved verbatim, so a signed download URL
+// is never rewritten.
 func SplitDataKeyCipher(rawURL string) (cleanURL, hexValue string, found bool, err error) {
 	base, query, fragment := splitURLParts(rawURL)
 	if query == "" {
@@ -211,8 +215,8 @@ func SplitDataKeyCipher(rawURL string) (cleanURL, hexValue string, found bool, e
 	return clean + fragment, hexValue, true, nil
 }
 
-// splitURLParts 把 URL 切成 base、query 与 fragment（fragment 含开头的 '#'）。
-// query 为空串表示 URL 没有 query 段。
+// splitURLParts cuts a URL into base, query and fragment (the fragment keeps its
+// leading '#'). An empty query means the URL has no query part.
 func splitURLParts(rawURL string) (base, query, fragment string) {
 	rest := rawURL
 	if i := strings.Index(rest, "#"); i >= 0 {
@@ -364,14 +368,16 @@ import (
 在 `OpenSM2SM4GCM` 之后追加：
 
 ```go
-// sm2CipherPointPrefix 是 SM2 密文中未压缩点 C1 的起始字节。
+// sm2CipherPointPrefix is the leading byte of the uncompressed point C1 in an
+// SM2 ciphertext.
 const sm2CipherPointPrefix = 0x04
 
-// ParseWrappedDataKeyHex 解析 hex 编码的 SM2 数据密钥信封，
-// 返回可直接交给 UnwrapKeySM2 的 SM2WrappedKeySize 字节信封。
+// ParseWrappedDataKeyHex decodes a hex-encoded SM2 data key envelope and returns
+// an SM2WrappedKeySize byte envelope ready for UnwrapKeySM2.
 //
-// 平台可能下发两种布局：112 字节（C1 ‖ C3 ‖ C2，不含未压缩点前缀）与
-// 113 字节（含 0x04 前缀）。前者补回前缀，后者原样接受。
+// The platform may deliver either layout: 112 bytes (C1 || C3 || C2, without the
+// uncompressed point prefix) or 113 bytes (with the 0x04 prefix). The former gets
+// the prefix restored, the latter is accepted as-is.
 func ParseWrappedDataKeyHex(hexValue string) ([]byte, error) {
 	raw, err := hex.DecodeString(hexValue)
 	if err != nil {
@@ -435,7 +441,8 @@ import (
 	teecrypto "taa/pkg/crypto"
 )
 
-// urlKeyResource 把明文归档封成「信封进 URL、密文单独下载」的形态。
+// urlKeyResource seals a plaintext archive into the new shape: the envelope goes
+// into the URL, the ciphertext is downloaded on its own.
 func urlKeyResource(t *testing.T, pub *teecrypto.SM2PublicKey, plaintext []byte) (ciphertext []byte, hexValue string) {
 	t.Helper()
 	env, err := teecrypto.SealSM2(pub, plaintext)
@@ -529,11 +536,13 @@ import (
 在 `decryptResourceToTempFile` 函数之后追加：
 
 ```go
-// decryptCiphertextWithDataKey 用外部提供的 SM4 数据密钥解密「仅含密文」的资源文件。
+// decryptCiphertextWithDataKey decrypts a ciphertext-only resource file with an
+// SM4 data key supplied from outside.
 //
-// 与 decryptResourceToTempFile 的区别：密文文件里不再有 SM2 密钥信封前缀，
-// 信封由下发 URL 的 dataKeyCipher 参数单独给出，并已在上游解封为 dataKey。
-// 明文写入临时文件，返回明文文件路径，调用方负责删除。
+// Unlike decryptResourceToTempFile there is no SM2 key envelope prefix inside the
+// file: the envelope came from the dataKeyCipher parameter of the delivery URL and
+// was already unwrapped into dataKey upstream. The plaintext is written to a temp
+// file whose path is returned; the caller removes it.
 func (s *TAAState) decryptCiphertextWithDataKey(dataKey []byte, ciphertextPath string) (string, error) {
 	f, err := os.Open(ciphertextPath)
 	if err != nil {
@@ -580,11 +589,15 @@ func (s *TAAState) decryptCiphertextWithDataKey(dataKey []byte, ciphertextPath s
 在 `internal/controller/import_processing.go` 中，紧跟 `resolvePlaintextResource` 之后追加：
 
 ```go
-// resolvePlaintextResourceWithDataKey 用数据下发 URL 携带的数据密钥信封解开「仅含密文」的资源。
+// resolvePlaintextResourceWithDataKey resolves a ciphertext-only resource using the
+// data key envelope carried by the delivery URL.
 //
-// 与 resolvePlaintextResource 的旧格式路径并列：信封已由调用方在同步段解封为 dataKey，
-// 这里不再做压缩包魔数探测——URL 携带了信封即声明这是密文，解不开就按失败处理，
-// 不静默改判为明文。失败时错误信息附带 TAA 公钥，便于平台确认该用哪把公钥加密信封。
+// It sits next to the legacy path in resolvePlaintextResource. The envelope was
+// already unwrapped into dataKey by the caller during the synchronous phase, and
+// there is no archive-magic probing here: carrying an envelope declares the payload
+// to be ciphertext, so failing to open it is a failure and never a silent
+// re-classification as plaintext. The error carries the TAA public key so the
+// platform can tell which key should have wrapped the envelope.
 func (s *TAAState) resolvePlaintextResourceWithDataKey(dataKey []byte, ciphertextPath string) (string, bool, error) {
 	decryptedPath, err := s.decryptCiphertextWithDataKey(dataKey, ciphertextPath)
 	if err != nil {
@@ -654,9 +667,11 @@ import (
 在 `importHandler` 中，紧跟「requestId 和 taskId 不能同时为空」校验之后插入：
 
 ```go
-	// 数据下发的密态资源采用「信封进 URL、密文单独下载」的形态：
-	// resourceUrl 形如 <下载链接>?dataKeyCipher=<hex C1C3C2>。
-	// 信封在下载前就解封：格式非法或公钥不匹配无需先拉完整份密文才暴露。
+	// Encrypted data resources use the shape "envelope in the URL, ciphertext
+	// downloaded on its own": resourceUrl looks like
+	// <download link>?dataKeyCipher=<hex C1C3C2>.
+	// The envelope is unwrapped before the download, so a malformed value or a key
+	// mismatch surfaces without first pulling the whole ciphertext.
 	downloadURL, dataKeyCipherHex, hasDataKeyCipher, err := resource.SplitDataKeyCipher(req.ResourceURL)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, err.Error(), err))
@@ -778,7 +793,8 @@ func TestImportRejectsBadDataKeyCipherBeforeDownloading(t *testing.T) {
 	}
 }
 
-// otherKeyEnvelopeHex 生成一个用别的 SM2 公钥封装的信封，用来触发解封失败。
+// otherKeyEnvelopeHex builds an envelope wrapped for a different SM2 public key,
+// so that unwrapping against TAA's key fails.
 func otherKeyEnvelopeHex(t *testing.T) string {
 	t.Helper()
 	other, err := teecrypto.GenerateSM2KeyPair()
@@ -850,7 +866,9 @@ func TestImportURLKeyDecryptFailureReportsPublicKey(t *testing.T) {
 	state.PlatformIP = platformServer.URL
 	state.mu.Unlock()
 
-	// 信封本身合法，但响应体与信封不配对：信封层通过，GCM 认证失败，落到异步上报。
+	// The envelope itself is valid but does not pair with the response body: the
+	// envelope layer passes, GCM authentication fails, and the failure lands in the
+	// asynchronous report.
 	_, keyHex := urlKeyResource(t, &state.SM2PrivateKey.PublicKey, []byte("data"))
 
 	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -937,7 +955,8 @@ func TestUploadURLKeyModeSplitsEnvelopeIntoTheURL(t *testing.T) {
 
 	rawContent := []byte("dataset bytes for the urlkey protocol")
 
-	// 1. urlkey 模式：文件名补 .sm4 而非 .enc，响应带回信封 hex
+	// 1. urlkey mode: the name gains .sm4 rather than .enc, and the response
+	// carries the envelope hex
 	status, api := postMultipartUploadWithFields(t, server.URL+"/api/upload", "dataset.tar.gz", rawContent, map[string]string{
 		"encryptMode": "urlkey",
 		"publicKey":   string(pubPEM),
@@ -964,7 +983,8 @@ func TestUploadURLKeyModeSplitsEnvelopeIntoTheURL(t *testing.T) {
 		t.Fatalf("url = %q, want it to carry dataKeyCipher", fileURL)
 	}
 
-	// 2. 落盘的是纯密文：既不含明文，也不含信封（密文 = nonce 12B + 明文 + tag 16B）
+	// 2. Only ciphertext hits the disk: no plaintext and no envelope
+	// (ciphertext = nonce 12B + plaintext + tag 16B)
 	storedName, _ := resMap["filename"].(string)
 	cipherBytes, err := os.ReadFile(filepath.Join(uploadDir, storedName))
 	if err != nil {
@@ -978,7 +998,8 @@ func TestUploadURLKeyModeSplitsEnvelopeIntoTheURL(t *testing.T) {
 			len(cipherBytes), want, crypto.SM2WrappedKeySize)
 	}
 
-	// 3. 从 URL 取回信封，用私钥解出数据密钥即可还原明文
+	// 3. Take the envelope back out of the URL and unwrap the data key to recover
+	// the plaintext
 	wrapped, err := crypto.ParseWrappedDataKeyHex(keyHex)
 	if err != nil {
 		t.Fatalf("ParseWrappedDataKeyHex: %v", err)
@@ -995,7 +1016,8 @@ func TestUploadURLKeyModeSplitsEnvelopeIntoTheURL(t *testing.T) {
 		t.Fatalf("decrypted = %q, want %q", string(decrypted), string(rawContent))
 	}
 
-	// 4. 旧的 encrypt=true 仍走整文件信封，且不带 dataKeyCipher
+	// 4. The legacy encrypt=true still uses the whole-file envelope and carries no
+	// dataKeyCipher
 	status, api = postMultipartUploadWithFields(t, server.URL+"/api/upload", "legacy.tar.gz", rawContent, map[string]string{
 		"encrypt":   "true",
 		"publicKey": string(pubPEM),
@@ -1007,7 +1029,8 @@ func TestUploadURLKeyModeSplitsEnvelopeIntoTheURL(t *testing.T) {
 	if orig, _ := legacyMap["originalName"].(string); orig != "legacy.tar.gz.enc" {
 		t.Fatalf("legacy originalName = %q, want legacy.tar.gz.enc", orig)
 	}
-	// 响应体是 map[string]any，字段恒在，因此这里判空值而非判 nil。
+	// The response body is a map[string]any, so the field is always present:
+	// assert on the empty value rather than on nil.
 	if v, _ := legacyMap["dataKeyCipher"].(string); v != "" {
 		t.Fatalf("legacy mode must not carry dataKeyCipher, got %q", v)
 	}
@@ -1059,8 +1082,9 @@ type uploadedFileRecord struct {
 替换为：
 
 ```go
-		// encryptMode：none / envelope（整文件信封，旧格式）/ urlkey（信封进 URL，新协议）。
-		// 旧的 encrypt=true 字段按 envelope 处理，保持向后兼容。
+		// encryptMode is none / envelope (whole-file envelope, the legacy format) /
+		// urlkey (envelope in the URL, the new protocol). The legacy encrypt=true
+		// field maps to envelope for backward compatibility.
 		encryptMode := strings.ToLower(strings.TrimSpace(r.FormValue("encryptMode")))
 		if encryptMode != "none" && encryptMode != "envelope" && encryptMode != "urlkey" {
 			encryptVal := strings.TrimSpace(r.FormValue("encrypt"))
@@ -1109,7 +1133,8 @@ type uploadedFileRecord struct {
 
 ```go
 			if encryptMode == "urlkey" {
-				// 新协议：文件里只放密文，SM2 密钥信封 hex 化后随下载 URL 一起下发。
+				// New protocol: the file holds nothing but ciphertext, and the SM2 key
+				// envelope is hex-encoded onto the download URL.
 				env, err := crypto.SealSM2(pubKey, fileBytes)
 				if err != nil {
 					writeEnvelope(w, http.StatusInternalServerError, "SM2+SM4-GCM 加密失败: "+err.Error(), nil, http.StatusInternalServerError)
@@ -1127,7 +1152,8 @@ type uploadedFileRecord struct {
 					writeEnvelope(w, http.StatusInternalServerError, "保存加密文件失败: "+err.Error(), nil, http.StatusInternalServerError)
 					return
 				}
-				// 下发 112 字节的 C1C3C2 形式（不含未压缩点前缀）；TAA 侧两种布局都接受。
+				// Deliver the 112-byte C1C3C2 form (no uncompressed point prefix);
+				// TAA accepts either layout.
 				dataKeyCipher = hex.EncodeToString(env.WrappedKey[1:])
 				fileSize = int64(len(env.Ciphertext))
 			} else {
