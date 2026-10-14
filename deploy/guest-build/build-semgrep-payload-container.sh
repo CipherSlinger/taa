@@ -123,9 +123,18 @@ for name in semgrep pysemgrep; do
 # interpreter are pinned because a --target install puts neither on the default sys.path or PATH;
 # PATH carries pylib/bin because this wheel's semgrep is a thin launcher that execs pysemgrep by
 # name, and the console script beside it is the only copy on the image.
+#
+# The two SEMGREP_* variables are what makes the CLI usable in the container it is installed into.
+# semgrep dispatches to its OCaml semgrep-core binary, which dials semgrep.dev before doing any
+# work; a TAA container has no route off the host, and that call blocks there instead of failing,
+# so the CLI prints its version and then never exits. Setting them here rather than at each call
+# site is what keeps every caller -- deploy.sh, taa's own audit path, someone typing semgrep by
+# hand -- from having to know that.
 PYTHONPATH=$PYLIB_DIR
 PATH=$PYLIB_DIR/bin:\$PATH
-export PYTHONPATH PATH
+SEMGREP_SEND_METRICS=off
+SEMGREP_ENABLE_VERSION_CHECK=0
+export PYTHONPATH PATH SEMGREP_SEND_METRICS SEMGREP_ENABLE_VERSION_CHECK
 exec /usr/bin/python3 $PYLIB_DIR/bin/$name "\$@"
 EOF
   chmod 0755 "/usr/local/bin/$name"

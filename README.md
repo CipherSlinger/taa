@@ -469,6 +469,15 @@ Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (d
 > with the recipe to build it, instead of running into the readiness timeout through the daemon's
 > 10s restart loop. The payload lands in the Pod's writable layer, so a recreated Pod needs another
 > deploy.
+>
+> Every deploy then runs one scan with the same argv taa uses at audit time and requires it to read
+> the target and still match a shipped rule, so "the files are there" is never mistaken for "the
+> engine works" — that distinction is what the check exists for. All of it is offline and bounded
+> (`SEMGREP_OFFLINE_TIMEOUT`, default 90s): semgrep reaches for the network before it scans, a
+> container with no route off the host answers none of it, and the retry backoff makes one
+> unflagged call cost over a minute. `semgrep --validate` is not usable here at all — it downloads
+> a registry metacheck pack that no flag can skip, and offline that ends the command with a
+> non-zero exit. A failure prints semgrep's own output rather than an exit code alone.
 
 ---
 

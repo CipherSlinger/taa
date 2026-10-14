@@ -1023,6 +1023,67 @@ stream_local_path_to_container() {
     | remote_ssh "$(container_exec_i) sh -lc 'mkdir -p $destination_parent && rm -rf $destination && tar -xzf - -C $destination_parent'"
 }
 
+# Every semgrep invocation in here is offline and bounded, and both halves are load-bearing.
+# semgrep reaches for the network before it does any work: it resolves semgrep.dev for a version
+# check, and some commands download from it outright. A TAA container has no route off the host and
+# no reachable resolver, so that lookup is never answered and the process sits in getaddrinfo;
+# AppSession retries on top of it with a 16/32/64s backoff, making one unflagged call cost a
+# minute or more. `semgrep --validate` does not even get that far -- see below. The flags stop
+# those calls from starting at all; the bound is what keeps a payload built before this was fixed
+# -- like the one already inside a running pod -- from hanging the deploy instead of failing it.
+# `timeout` is coreutils and a slim image may still not ship it, so the bound degrades to running
+# unbounded rather than to failing, which would misreport a healthy engine as missing.
+SEMGREP_OFFLINE_TIMEOUT="${SEMGREP_OFFLINE_TIMEOUT:-90}"
+SEMGREP_OFFLINE_PREAMBLE="bounded() { if command -v timeout >/dev/null 2>&1; then timeout $SEMGREP_OFFLINE_TIMEOUT \"\$@\"; else \"\$@\"; fi; }
+SEMGREP_SEND_METRICS=off; SEMGREP_ENABLE_VERSION_CHECK=0; export SEMGREP_SEND_METRICS SEMGREP_ENABLE_VERSION_CHECK"
+
+# The verification scans a two-line probe with the same argv taa's engine runs at audit time,
+# including the --max-memory cap, and demands what the engine demands of that run: exit 0, nothing
+# in semgrep's error list, the target actually read, and a rule that still matches it. The probe
+# calls os.system, which the shipped CMD_001 rule matches, so a rules tree that loads but matches
+# nothing is caught here rather than showing up later as an audit that quietly finds nothing.
+#
+# `semgrep --validate` is the obvious check and the wrong one: before validating anything it loads
+# the registry-hosted metacheck pack (p/semgrep-rule-lints) unconditionally, and no flag or
+# environment variable skips that. Offline the download fails and takes the command with it --
+# measured inside a kata pod, exit code 2 after about 200 seconds, which is precisely the failure
+# this step used to report. This scan argv answers in seconds there. The max-memory value is kept
+# in step with DefaultSemgrepMaxMemoryMB in internal/codeaudit/semgrep_engine.go.
+SEMGREP_VERIFY_MAX_MEMORY="${SEMGREP_VERIFY_MAX_MEMORY:-1024}"
+SEMGREP_VERIFY_BODY='
+probe=/tmp/taa-deploy-probe.py
+out=/tmp/taa-deploy-probe.json
+err=/tmp/taa-deploy-probe.err
+rm -f "$out" "$err"
+printf "import os\nos.system(1)\n" > "$probe"
+bounded semgrep scan --config $rules_path --json --quiet --disable-version-check --no-git-ignore --max-memory $max_memory "$probe" > "$out" 2> "$err"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "FAIL rc=$rc $(printf %s "$(cat "$err")" | tr "\n" " " | cut -c1-300)"
+  exit 0
+fi
+verdict=$(python3 - "$out" <<PY
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception as exc:
+    print("FAIL rc=0 semgrep output was not JSON: %s" % exc); sys.exit(0)
+errors = data.get("errors") or []
+scanned = (data.get("paths") or {}).get("scanned") or []
+results = data.get("results") or []
+if errors:
+    print("FAIL rc=0 semgrep reported %d error(s): %s" % (len(errors), errors[0].get("message", "")))
+elif not scanned:
+    print("FAIL rc=0 semgrep read none of the file(s) it was given")
+elif not results:
+    print("FAIL rc=0 the rules matched nothing in the probe; the rule set may not be usable")
+else:
+    print("OK findings=%d scanned=%d" % (len(results), len(scanned)))
+PY
+)
+version=$(bounded semgrep --version --disable-version-check 2>/dev/null | head -n 1)
+echo "$verdict version=${version:-unknown}"'
+
 # Makes sure the code scan engine the config selects actually works inside the container. The
 # engine is resolved by taa at startup and is fail-closed: a missing rules path is a FATAL exit,
 # and the supervisor then restarts the daemon every 10s while the readiness gate keeps failing --
@@ -1046,50 +1107,68 @@ provision_remote_scan_engine() {
   fi
 
   local probe state engine_present rules_present
-  probe="e=no; r=no; command -v semgrep >/dev/null 2>&1 && semgrep --version >/dev/null 2>&1 && e=yes; test -e $rules_path && r=yes; echo engine=\$e rules=\$r"
+  probe="$SEMGREP_OFFLINE_PREAMBLE
+e=no; r=no
+command -v semgrep >/dev/null 2>&1 && bounded semgrep --version --disable-version-check >/dev/null 2>&1 && e=yes
+test -e $rules_path && r=yes
+echo engine=\$e rules=\$r"
   state="$(remote_ssh "$(container_exec) sh -lc '$probe'" 2>/dev/null || echo 'engine=no rules=no')"
   engine_present="${state#engine=}"; engine_present="${engine_present%% *}"
   rules_present="${state##*rules=}"
 
   if [[ "$engine_present" == "yes" && "$rules_present" == "yes" ]]; then
     info "code scan engine already provisioned inside container (rules: $rules_path)"
-    return 0
-  fi
-
-  if [[ "$engine_present" != "yes" ]]; then
-    warn "semgrep is not installed in the container; taa would exit FATAL and restart every 10s"
-    if [[ -n "$SEMGREP_BUNDLE" ]]; then
-      require_file "semgrep payload bundle not found" "$SEMGREP_BUNDLE"
-      spin_task "uploading semgrep payload to ${REMOTE_HOST} ($(du -h "$SEMGREP_BUNDLE" 2>/dev/null | cut -f1))" \
-        sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$SEMGREP_BUNDLE" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_SEMGREP_BUNDLE.new"
-      remote_ssh "mv '$REMOTE_SEMGREP_BUNDLE.new' '$REMOTE_SEMGREP_BUNDLE'"
+  else
+    if [[ "$engine_present" != "yes" ]]; then
+      warn "semgrep is not installed in the container; taa would exit FATAL and restart every 10s"
+      if [[ -n "$SEMGREP_BUNDLE" ]]; then
+        require_file "semgrep payload bundle not found" "$SEMGREP_BUNDLE"
+        spin_task "uploading semgrep payload to ${REMOTE_HOST} ($(du -h "$SEMGREP_BUNDLE" 2>/dev/null | cut -f1))" \
+          sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$SEMGREP_BUNDLE" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_SEMGREP_BUNDLE.new"
+        remote_ssh "mv '$REMOTE_SEMGREP_BUNDLE.new' '$REMOTE_SEMGREP_BUNDLE'"
+      fi
+      if ! remote_ssh "test -f '$REMOTE_SEMGREP_BUNDLE'"; then
+        err "semgrep payload bundle not found: ${REMOTE_HOST}:$REMOTE_SEMGREP_BUNDLE"
+        detail "Build it with 'deploy/guest-build/build-semgrep-payload-container.sh', then copy the archive there:"
+        detail "  scp <bundle>.tar.gz ${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_SEMGREP_BUNDLE"
+        detail "Or point SEMGREP_BUNDLE at a local archive and rerun; it will be uploaded for you."
+        exit 1
+      fi
+      # Read the archive on the remote host instead of streaming it across SSH a second time.
+      spin_task "installing semgrep into the container from $REMOTE_SEMGREP_BUNDLE" \
+        remote_ssh "cat '$REMOTE_SEMGREP_BUNDLE' | $(container_exec_i) sh -lc 'tar -xzf - -C /'"
     fi
-    if ! remote_ssh "test -f '$REMOTE_SEMGREP_BUNDLE'"; then
-      err "semgrep payload bundle not found: ${REMOTE_HOST}:$REMOTE_SEMGREP_BUNDLE"
-      detail "Build it with 'deploy/guest-build/build-semgrep-payload-container.sh', then copy the archive there:"
-      detail "  scp <bundle>.tar.gz ${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_SEMGREP_BUNDLE"
-      detail "Or point SEMGREP_BUNDLE at a local archive and rerun; it will be uploaded for you."
-      exit 1
+
+    if [[ "$rules_present" != "yes" ]]; then
+      warn "code scan rules are missing in the container at $rules_path"
+      require_dir "semgrep rules not found" "$SEMGREP_RULES_SOURCE"
+      spin_task "copying code scan rules into the container ($rules_path)" \
+        stream_local_path_to_container "$SEMGREP_RULES_SOURCE" "$rules_path"
     fi
-    # Read the archive on the remote host instead of streaming it across SSH a second time.
-    spin_task "installing semgrep into the container from $REMOTE_SEMGREP_BUNDLE" \
-      remote_ssh "cat '$REMOTE_SEMGREP_BUNDLE' | $(container_exec_i) sh -lc 'tar -xzf - -C /'"
   fi
 
-  if [[ "$rules_present" != "yes" ]]; then
-    warn "code scan rules are missing in the container at $rules_path"
-    require_dir "semgrep rules not found" "$SEMGREP_RULES_SOURCE"
-    spin_task "copying code scan rules into the container ($rules_path)" \
-      stream_local_path_to_container "$SEMGREP_RULES_SOURCE" "$rules_path"
-  fi
+  # Presence is not proof, and the probe above cannot tell the two apart: the payload can be
+  # extracted and the rules in place while semgrep still cannot run them in this container, which
+  # is a state the probe reports as provisioned. The check therefore runs on every deploy rather
+  # than only after an install, and its output is kept instead of discarded, because the failure it
+  # has to explain is usually semgrep's own.
+  local verify_script verify_out engine_version
+  verify_script="$SEMGREP_OFFLINE_PREAMBLE
+rules_path=$rules_path
+max_memory=$SEMGREP_VERIFY_MAX_MEMORY
+$SEMGREP_VERIFY_BODY"
+  verify_out="$(remote_ssh "$(container_exec) sh -lc '$verify_script'" 2>&1 || true)"
 
-  local engine_version
-  engine_version="$(remote_ssh "$(container_exec) sh -lc 'semgrep --validate --config $rules_path >/dev/null 2>&1 && semgrep --version 2>/dev/null | head -n 1'" || true)"
-  if [[ -z "$engine_version" ]]; then
-    err "code scan engine verification failed inside the container (semgrep --validate --config $rules_path)"
+  if [[ "$verify_out" == OK\ * ]]; then
+    engine_version="${verify_out##*version=}"
+    info "code scan engine ready inside container: semgrep ${engine_version:-unknown} (rules: $rules_path)"
+  else
+    err "code scan engine verification failed inside the container"
+    detail "${verify_out:-no output from the container}"
+    detail "Checked with the argv taa runs at audit time: semgrep scan --config $rules_path --json --quiet --disable-version-check --no-git-ignore --max-memory $SEMGREP_VERIFY_MAX_MEMORY <probe.py>"
+    detail "semgrep reaches for the network before it scans, and a container with no route off the host answers none of it; every check in this step is offline and bounded (${SEMGREP_OFFLINE_TIMEOUT}s) for that reason."
     exit 1
   fi
-  info "code scan engine ready inside container: semgrep $engine_version (rules: $rules_path)"
 }
 
 resolve_target_model() {

@@ -105,7 +105,16 @@ case "$verb" in
           *) touch "$MOCK_STATE_DIR/engine" ;;
         esac
         ;;
-      *"semgrep --validate"*) echo "1.177.0" ;;
+      *"semgrep scan"*)
+        # The remote script prints one line: "OK findings=<n> scanned=<n> version=<v>", or
+        # "FAIL ..." with semgrep's own words when the engine cannot run. A pod whose semgrep
+        # blocks or fails reports that here rather than hanging, so the mock can too.
+        if [[ -f "$MOCK_STATE_DIR/verify_fails" ]]; then
+          echo "FAIL rc=2 Failed to find semgrep-core in PATH or in the semgrep package version=unknown"
+        else
+          echo "OK findings=1 scanned=1 version=1.177.0"
+        fi
+        ;;
       *) ;;
     esac
     exit 0
@@ -149,6 +158,10 @@ run_deploy
 [[ $status -eq 0 ]] || fail "deploy exited $status with an already-provisioned pod"
 grep -q "code scan engine already provisioned inside container" <<<"$output" \
   || fail "an already-provisioned engine was not detected"
+# Provisioned is not verified: the check runs on every deploy, and this is the case that must not
+# silently skip it, because a pod can hold an engine that cannot run.
+grep -q "code scan engine ready inside container: semgrep 1.177.0" <<<"$output" \
+  || fail "a redeploy onto a provisioned pod skipped the engine verification"
 grep -q "STREAM" "$MOCK_LOG" && fail "an archive was streamed into a pod that already had the engine"
 rm -f "$MOCK_STATE_DIR/engine" "$MOCK_STATE_DIR/rules"
 
@@ -166,8 +179,8 @@ grep -q "STREAM bytes=[1-9][0-9]* :: mkdir -p /opt/taa/semgrep .* -C /opt/taa/se
 grep -q "code scan engine ready inside container: semgrep 1.177.0 (rules: /opt/taa/semgrep/rules)" <<<"$output" \
   || fail "the provisioned engine was not verified against the rules path"
 
-# The engine has to land before the rules: `semgrep --validate` needs the CLI that the payload
-# brings, so a rules-first order would only be provable by accident on a slower host.
+# The engine has to land before the rules: the verification scans with the CLI the payload brings,
+# so a rules-first order would only be provable by accident on a slower host.
 engine_line="$(grep -n 'STREAM.*-C /$' "$MOCK_LOG" | head -n 1 | cut -d: -f1)"
 rules_line="$(grep -n 'STREAM.*-C /opt/taa/semgrep$' "$MOCK_LOG" | head -n 1 | cut -d: -f1)"
 [[ -n "$engine_line" && -n "$rules_line" && "$engine_line" -lt "$rules_line" ]] \
@@ -184,5 +197,25 @@ grep -q "build-semgrep-payload-container.sh" <<<"$output" \
   || fail "the failure did not name the recipe that produces the payload"
 grep -q "pausing old taa inside container" <<<"$output" \
   && fail "the deploy disturbed the running taa before it knew it could provision the engine"
+
+# ── Scenario D: the payload installs but the engine cannot run ───────────────
+# The failure this pins down is the one a network-isolated container produces: semgrep starts and
+# then blocks on its own update check, so the check has to fail with an explanation rather than
+# wait, and the daemon must not have been replaced by then.
+rm -f "$MOCK_STATE_DIR/engine" "$MOCK_STATE_DIR/rules"
+printf 'not-a-real-payload\n' > "$BUNDLE"
+touch "$MOCK_STATE_DIR/verify_fails"
+: > "$MOCK_LOG"
+run_deploy
+[[ $status -ne 0 ]] || fail "deploy succeeded although the engine could not be verified"
+grep -q "code scan engine verification failed inside the container" <<<"$output" \
+  || fail "a failing engine verification did not fail the deploy"
+grep -q "Failed to find semgrep-core" <<<"$output" \
+  || fail "semgrep's own output was discarded instead of being reported"
+grep -q "offline and bounded" <<<"$output" \
+  || fail "the verification failure did not explain the offline bound"
+grep -q "pausing old taa inside container" <<<"$output" \
+  && fail "the deploy replaced the running taa with an engine it could not verify"
+rm -f "$MOCK_STATE_DIR/verify_fails"
 
 echo "PASS: remote taa deploys provision the code scan engine before touching the running daemon"
