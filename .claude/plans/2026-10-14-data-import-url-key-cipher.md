@@ -259,7 +259,7 @@ git commit -m "feat(resource): split the data key cipher out of a resource URL"
 - Modify: `pkg/crypto/seal.go`
 - Test: `pkg/crypto/wrappedkey_test.go`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `pkg/crypto/wrappedkey_test.go`：
 
@@ -357,12 +357,12 @@ func TestParseWrappedDataKeyHex(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `go test ./pkg/crypto/ -run TestParseWrappedDataKeyHex -v`
 Expected: 编译失败，`undefined: ParseWrappedDataKeyHex`
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 在 `pkg/crypto/seal.go` 的 import 块加入 `"encoding/hex"`（其余保持不变）：
 
@@ -409,17 +409,29 @@ func ParseWrappedDataKeyHex(hexValue string) ([]byte, error) {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `go test ./pkg/crypto/ -run TestParseWrappedDataKeyHex -v`
 Expected: 全部子测试 PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add pkg/crypto/seal.go pkg/crypto/wrappedkey_test.go
 git commit -m "feat(crypto): parse a hex data key envelope in either layout"
 ```
+
+> **执行记录（2026-10-14）**：已实现并提交 `4269bb5`。规格审查逐字节比对一致、无多余无遗漏。
+> 代码质量审查结论为可合并，无 Critical／Important；两处变异实验（112 字节分支补错前缀、default 分支返回 raw）均被测试捕获。
+>
+> 审查暴露一个不显然的依赖事实，已补进文档注释：**gmsm v1.4.1 的 `sm2.Decrypt` 无条件执行 `data = data[1:]`，从不校验第 0 字节**
+> （`sm2.go:314-333` 各分支皆如此），因此「能 unwrap」不能证明前缀补对了——实测把 112 分支改成补 `0x03`，
+> 往返子测试依然通过。`seal.go` 里那句 `raw[0] != sm2CipherPointPrefix` 是全仓库对该值**唯一**的前缀闸门，
+> 注释已写明，避免后人误以为 `UnwrapKeySM2` 会兜底而删掉字节相等断言。
+>
+> 未采纳的 Minor：把 `sm2.go:307/314` 的 `4` 字面量换成新常量（超出本任务文件范围）；
+> 解码前置长度检查（会把 `"zzzz"` 从「非 hex」误判为「长度错」，诊断力下降）；长度循环改 `t.Errorf`
+> （首个失败之后才多出输出，三种长度本就都能被捕获）。
 
 ---
 
