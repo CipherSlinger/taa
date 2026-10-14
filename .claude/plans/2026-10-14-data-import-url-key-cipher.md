@@ -1404,7 +1404,7 @@ git commit -m "feat(mock): pick the upload encryption mode from a select"
 - Modify: `api/openapi.yaml`（`/v1/taa/import`）
 - Modify: `docs/architecture-design.md`（§5.2）
 
-- [ ] **Step 1: 补 api-design §4.2**
+- [x] **Step 1: 补 api-design §4.2**
 
 (a) 在 `docs/api-design.md` 的 §4.2 参数表里，把
 
@@ -1433,10 +1433,10 @@ git commit -m "feat(mock): pick the upload encryption mode from a select"
 >    文件内容为 `WrappedKey(113B) ‖ Ciphertext`，或 `.enc` 后缀强制解密，
 >    或按压缩包魔数判定为明文直通。
 >
-> 信封与密文的绑定是隐式的：换掉密文而沿用信封，SM4-GCM 认证标签必然校验失败。
+> 信封与密文之间没有显式绑定：SM4-GCM 认证标签是两者唯一的关联，而它只认数据密钥——换上的密文若不是用同一数据密钥加密的，校验必然失败。
 >
-> 剥离只发生在本接口：把带 `dataKeyCipher` 的 URL 交给 `getResourceInfo` 或 `importModel`，
-> 该参数会被原样转发到下载请求（并在日志中出现），随后因解不开整文件信封而失败。
+> 把带 `dataKeyCipher` 的 URL 交给 `getResourceInfo` 或 `importModel`，该参数会被原样转发到下载请求（并在日志中出现），
+> 随后因解不开整文件信封而失败。
 ```
 
 并把「其余 400 场景」一行的内容改为：
@@ -1445,7 +1445,7 @@ git commit -m "feat(mock): pick the upload encryption mode from a select"
 其余 400 场景：`requestId` 和 `taskId` 同时为空；`requestId` 或 `taskId` 已存在或正在处理中；`dataKeyCipher` 重复、为空、hex 非法、长度非法或信封解不开。
 ```
 
-- [ ] **Step 2: 补 openapi**
+- [x] **Step 2: 补 openapi**
 
 (a) `api/openapi.yaml:105-107`，`/v1/taa/import` 的 `description`（`>-` 折叠块）末尾追加一行：
 
@@ -1453,7 +1453,7 @@ git commit -m "feat(mock): pick the upload encryption mode from a select"
         密态资源支持两种形态（仅本接口；/v1/taa/getResourceInfo 与 /v1/taa/importModel 不解析该参数）：
         resourceUrl 形如 <下载链接>?dataKeyCipher=<hex C1C3C2> 时，
         下载链接只含 SM4-GCM 密文，密钥信封由该参数给出，TAA 在下载前解析并解封，参数非法即返回 400 且不发起下载；
-        未携带该参数时按整文件信封（WrappedKey || Ciphertext）处理。
+        未携带该参数时沿用原逻辑：整文件信封（WrappedKey || Ciphertext）、.enc 后缀强制解密、明文压缩包按魔数直通。
 ```
 
 (b) `api/openapi.yaml:136`，把
@@ -1484,7 +1484,7 @@ git commit -m "feat(mock): pick the upload encryption mode from a select"
           description: 加密数据资源的 HTTP(S) 下载地址。密态资源可携带 ?dataKeyCipher=<hex> 参数承载 SM2 数据密钥信封（C1C3C2 布局，112 或 113 字节），该参数不会被转发到下载请求；其余 query 参数原样保留
 ```
 
-- [ ] **Step 3: 补 architecture §5.2**
+- [x] **Step 3: 补 architecture §5.2**
 
 `docs/architecture-design.md` 中 `### 5.2 导入流程 (`/v1/taa/import`)` 的解密方框：
 
@@ -1499,12 +1499,12 @@ git commit -m "feat(mock): pick the upload encryption mode from a select"
 替换为（`docs/architecture-design.md:262-266`，旧 5 行换新 6 行）：
 
 ```text
-          ┌─── 解密 ─────────────────────────────────────┐
-          │  信封来源: URL 参数 dataKeyCipher / 文件头   │
-          │  下载链接只含 SM4-GCM 密文                   │
-          │  SM2 私钥解包信封 → SM4 数据密钥 (16B)       │
-          │  SM4-GCM 解密 → 明文归档包                   │
-          └────────┬─────────────────────────────────────┘
+          ┌─── 解密 ───────────────────────────────────┐
+          │  信封来源: URL 参数 dataKeyCipher / 文件头 │
+          │  下载体: 密文 (URL) / 信封+密文 (文件)     │
+          │  SM2 私钥解包信封 → SM4 数据密钥 (16B)     │
+          │  SM4-GCM 解密 → 明文归档包                 │
+          └────────┬───────────────────────────────────┘
 ```
 
 并在紧随其后的 ``` 闭合围栏之后、`### 5.3 导出流程 (\`/v1/taa/export\`)` 之前追加一段（§5.2 图后原本没有正文段落，这句就是唯一说明）：
@@ -1513,12 +1513,37 @@ git commit -m "feat(mock): pick the upload encryption mode from a select"
 > 携带 `dataKeyCipher` 时，信封在**下载前**就已解封（见 `internal/controller/handler_task.go`）：格式非法或公钥不匹配直接返回 400，不消耗下载带宽；解密失败仍属异步阶段，经 `reportRes` 上报。
 ```
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add docs/api-design.md api/openapi.yaml docs/architecture-design.md
 git commit -m "docs(api): document the URL-carried data key envelope"
 ```
+
+> **执行记录（2026-10-14）**：已实现并提交 `5407ec5`（3 文件：`api/openapi.yaml` +8/-2、`docs/api-design.md` +21/-2、`docs/architecture-design.md` +9/-3）。该 SHA 是 amend 后的结果——首次提交为 `112c992`，质量审查提出修正后原地 amend，`git log -1 --format=%B` 仍是单行 subject、无正文无 trailer（分支未 push，amend 安全）。
+>
+> 规格审查 ✅：把四组编辑逐段抽成期望文本后与提交内的 blob 做 `diff`，八处全部 identical；`‖` 经码点确认在 `api-design` 为 U+2016、在 `openapi.yaml` 为 ASCII `||`（分别按规格），方框字符集合与原图一致，`git show --check` 无空白告警，YAML 可解析。§4.3 的「其余 400 场景」与另两个端点的 `'400'` 描述经比对逐字节未动。
+>
+> **计划缺陷（本任务内被发现并修正）**：计划的 Step 1 sanity check 写「api-design 应出现 5 次 `dataKeyCipher`」，实测 7 次。是计划漏算——要插入的那段 blockquote 自身就有 5 行含该词，加表格行与 400 行共 7。文本本身无误，已按实测记录。
+>
+> 质量审查：1 Important + 5 Minor。**Important 成立且是计划产物**：新方框上行写「信封来源: … / 文件头」、下行写「下载链接只含 SM4-GCM 密文」，两种形态矛盾——文件头形态的下载体是 `WrappedKey(113B) ‖ Ciphertext`，不是纯密文。修补前我先量了显示宽度（非字节长度），发现方框还背着第二个问题：改前「解密」框本就内部参差（边框 56，内容行 57/57/58），而本次改动把它变成六行整齐的 58，却比下方「解压」框（56）宽 2 列——而这两个框改前是对齐的。故未采纳审查者给的两条措辞建议，而是把方框**恢复为 56 列**并重写该行，一次解决 Important 与 Minor 4：
+>
+> ```text
+>           ┌─── 解密 ───────────────────────────────────┐
+>           │  信封来源: URL 参数 dataKeyCipher / 文件头 │
+>           │  下载体: 密文 (URL) / 信封+密文 (文件)     │
+>           │  SM2 私钥解包信封 → SM4 数据密钥 (16B)     │
+>           │  SM4-GCM 解密 → 明文归档包                 │
+>           └────────┬───────────────────────────────────┘
+> ```
+>
+> 六行均为 56 显示列，且上下边框与 `112c992^` **逐字节相同**（故根本不出现在 diff 里），`┬`/`▼` 仍在第 19 列，箭头对位未受影响；「解压」框刻意不动——它对着自己的边框本就参差（内容 58/56/56/57 对 56 宽的边框），与本次协议变更无关，加宽它只是把参差搬个位置。审查者复核后同意，并判替代方案优于其原提案。
+>
+> 已采纳 3 条 Minor：`必然校验失败` 过头（GCM 标签只认数据密钥、不认信封，若平台复用同一数据密钥则换密文仍可通过，已改为「信封与密文之间没有显式绑定…换上的密文若不是用同一数据密钥加密的，校验必然失败」）；`openapi.yaml` 追加行只写了回退三分支中的一支（`resolvePlaintextResource` 还有 `.enc` 强制解密与明文魔数直通，已补全）；结尾段与头部重复声明「仅本接口」，已删重复只留误用后果。未采纳 Minor 6（在 §4.1/§4.3 加交叉引用）：§4.2 头部与 OpenAPI 描述已两处声明范围，可发现性足够，逐端点加注属全文档约定变更而非本次协议变更，审查者亦同意。
+>
+> 复核结论 **mergeable**，无新增阻塞项；审查者另行确认四处改动未引入新的准确性/一致性/清晰度问题，且 `git diff 112c992 5407ec5` 仅含那三个文档、两者父提交同为 `09ec221`，故首轮对代码的全部核验（剥离完整、下载前 400、112/113 两布局、异步 reportRes、其余 query 逐字节保留）继续成立。
+>
+> **本任务同时修正了计划自身的产物**（与上述提交无关，仅改计划文件）：① Task 7 Step 3 的替换方框文本同步为上面这版（原计划文本会把已被证伪的那行重新引入）；② Step 1(b) 的两句措辞、Step 2(a) 的回退分支句同步为审查后的最终文本；③ Task 8 Step 3 原写「日志为本次 7 个提交」，而记账提交会使条数持续增长，已改为按提交主题逐条核对、不按固定条数。执行实现子代理曾把 ③ 这条并发改动当成「第四个被改文件」上报——它确实不是实现代理所为（是协调者本人在其运行期间改的），实现代理正确地既未还原也未纳入提交。
 
 ---
 
@@ -1539,7 +1564,7 @@ Expected: 生成静态二进制，无报错
 - [ ] **Step 3: 确认工作区只含预期改动**
 
 Run: `git status --short && git log --oneline master..HEAD`
-Expected: 无未提交改动（`go.work` 与子模块不进版本控制），日志为本次 7 个提交
+Expected: 无未提交改动（`go.work` 与子模块不进版本控制）；`master..HEAD` 只含本计划产生的提交——每个 Task 一条实现提交加一条 `docs(import): record Task N completion in the plan`。逐条核对提交主题与 Task 一一对应，不要按固定条数（本计划执行期间条数会随记账提交增长）
 
 - [ ] **Step 4: 回到主检出合并**
 
