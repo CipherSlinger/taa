@@ -975,7 +975,7 @@ git commit -m "test(import): cover download-time rejection and the legacy fallba
 - Modify: `tools/platform-mock/internal/handlers_upload.go`
 - Test: `tools/platform-mock/internal/server_test.go`（追加）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `tools/platform-mock/internal/server_test.go` 末尾追加（该文件已 import `bytes`、`encoding/json`、`net/http`、`os`、`path/filepath`、`strings`、`testing`、`taa/pkg/crypto`，无需新增 import）：
 
@@ -1078,12 +1078,12 @@ func TestUploadURLKeyModeSplitsEnvelopeIntoTheURL(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `go test ./tools/platform-mock/... -run TestUploadURLKeyModeSplitsEnvelopeIntoTheURL -v`
 Expected: FAIL —— `originalName = "dataset.tar.gz", want dataset.tar.gz.sm4`（未识别的 encryptMode 落到不加密）
 
-- [ ] **Step 3: 给上传记录加字段**
+- [x] **Step 3: 给上传记录加字段** —— **已跳过（本步骤是计划缺陷，见执行记录）**
 
 `tools/platform-mock/internal/store.go`，把 `uploadedFileRecord` 改为：
 
@@ -1099,7 +1099,7 @@ type uploadedFileRecord struct {
 }
 ```
 
-- [ ] **Step 4: 实现三态加密模式**
+- [x] **Step 4: 实现三态加密模式**
 
 `tools/platform-mock/internal/handlers_upload.go`：
 
@@ -1252,17 +1252,29 @@ type uploadedFileRecord struct {
 
 并把同一函数内的日志行 `log.Printf("file uploaded: %s → %s (encrypted=%v)", originalName, fileURL, shouldEncrypt)` 改为 `log.Printf("file uploaded: %s → %s (mode=%s)", originalName, fileURL, encryptMode)`。
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 Run: `go test ./tools/platform-mock/... 2>&1 | tail -5`
 Expected: `ok taa/tools/platform-mock/internal`（含新增测试）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add tools/platform-mock/internal/store.go tools/platform-mock/internal/handlers_upload.go tools/platform-mock/internal/server_test.go
 git commit -m "feat(mock): add a urlkey upload mode that ships the envelope in the URL"
 ```
+
+> **执行记录（2026-10-14）**：已实现并提交 `64b6092`（2 文件：`handlers_upload.go` +95/-26、`server_test.go` +159）。规格审查 ✅ 逐字一致：三态块、urlkey 分支、`?dataKeyCipher=` 拼接、七个响应键、日志改 `(mode=%s)` 均与规格相同；`else` 分支与替换前逐行比对除缩进外**零文本差异**，`.sm4` 后缀只出现在 urlkey 分支，落盘的是 `env.Ciphertext`、hex 编码的是 `env.WrappedKey[1:]`。
+>
+> **偏差一：Step 3 未执行，`store.go` 未改动。** 该步骤的前提是上传处理器返回 `uploadedFileRecord`；实际返回 `map[string]any`，而 `uploadedFileRecord` 的唯一构造点是 `listUploadedFiles`（扫盘，无法获知信封）。全目录仅 3 处引用（定义、该构造点、测试读取），**不存在任何可赋值站点**，加进去必然是死字段。`dataKeyCipher` 由 Step 4(d) 的响应 map 承载，与规格自述一致。实现者与规格审查者各自独立复核了这个判断。（因此 Step 6 的 `git add` 行里列出的 `store.go` 实际未提交。）
+>
+> **偏差二：测试多了一条断言。** 计划给的测试文本无法锁住实现里那句注释所声称的"下发 112 字节 C1C3C2"：实现者实测把 `hex.EncodeToString(env.WrappedKey[1:])` 改成完整的 113 字节 `env.WrappedKey`，测试**照样通过**——因为 `ParseWrappedDataKeyHex` 两种布局都收，所以该测试在结构上分辨不出二者（它校验的是端到端契约，不是布局约定）。已补一条解码长度断言（`crypto.SM2WrappedKeySize - 1`）并追加 `encoding/hex` import；变异取证：改成 113 字节后以 `dataKeyCipher decodes to 113 bytes, want 112` 失败。
+>
+> 质量审查结论「可合并」，一条 Important 已修：`encryptMode=envelope` 当时**零覆盖**，而 Task 6 之后它就是 mock UI 的真实输入。审查者用实测证明后果——删掉守卫里的 `&& encryptMode != "envelope"` 后整套测试仍全绿，探针显示此时 `encryptMode=envelope` 请求返回 `encrypted:false`、无后缀、**明文落盘**，即模式字符串集里打错一个字就会在 UI 将要驱动的那条路径上静默关掉加密。已补表驱动 `TestUploadEncryptModeMapping` 四行（envelope / none / envelope 压过 legacy `encrypt=false` / 未知值回落 none）；复核：变异下两个 envelope 子测试转为 FAIL，而 `None`、未知值两行与原 `TestUploadURLKeyModeSplitsEnvelopeIntoTheURL` 仍绿——最后一条正是缺口先前存在的原因。第四行的额外价值是钉住"显式 `encryptMode` 短路 legacy 字段"，而这正是 Task 6 依赖的契约（`<select>` 替换同一表单上的旧开关，两个字段并存是真实过渡态）。
+>
+> 未采纳 2 条 Minor：加密两分支去重（本提交的承重属性是 legacy 路径可证未变，规格审查已认证 `else` 分支逐字节等同，为省约 12 行放弃该属性不划算，且这是低频 dev mock）；`env.WrappedKey[1:]` 的长度防御（`WrapKeySM2` 在 nil error 下保证 113 字节，且新断言已在 mock 的契约边界把解码长度钉死为 112）。另记一处审查者指出但未采纳的对称性缺口：`encryptMode=none` 压过陈旧 `encrypt=true` 这一方向未单独成行——同一条件已被第四行证明，为一个方向再走一轮 amend+复核不值。
+>
+> 相邻观察（非本提交缺陷，故意不动）：`listUploadedFiles` 的 `Encrypted` 只看 `.enc` 后缀，对 `.sm4` 文件会报 `false`，且文件列表没有任何途径暴露信封。日志行故意打印含 `dataKeyCipher` 的完整 `fileURL`——这是本地联调 mock 的既定用途，不脱敏。
 
 ---
 
