@@ -443,7 +443,7 @@ git commit -m "feat(crypto): parse a hex data key envelope in either layout"
 - Modify: `internal/controller/handler_task.go`（import 块、`importHandler`、`modelImportHandler`）
 - Test: `internal/controller/import_urlkey_test.go`（新建）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `internal/controller/import_urlkey_test.go`：
 
@@ -520,12 +520,12 @@ func TestImportDecryptsWithDataKeyCipherFromURL(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `go test ./internal/controller/ -run TestImportDecryptsWithDataKeyCipherFromURL -v`
 Expected: FAIL —— `resourceUrl` 被原样下载，服务端收到 `dataKeyCipher` 参数且响应体是纯密文，解密失败，数据目录不存在
 
-- [ ] **Step 3: 新增按数据密钥解密的函数**
+- [x] **Step 3: 新增按数据密钥解密的函数**
 
 在 `internal/controller/route.go` 的 import 块加入 `"errors"`（其余不变）：
 
@@ -605,7 +605,7 @@ func (s *TAAState) decryptCiphertextWithDataKey(dataKey []byte, ciphertextPath s
 }
 ```
 
-- [ ] **Step 4: 新增按数据密钥解密的判定包装**
+- [x] **Step 4: 新增按数据密钥解密的判定包装**
 
 在 `internal/controller/import_processing.go` 中，紧跟 `resolvePlaintextResource` 之后追加：
 
@@ -634,7 +634,7 @@ func (s *TAAState) resolvePlaintextResourceWithDataKey(dataKey []byte, ciphertex
 }
 ```
 
-- [ ] **Step 5: 让异步段接受数据密钥**
+- [x] **Step 5: 让异步段接受数据密钥**
 
 在 `internal/controller/import_processing.go` 中，把函数签名改为：
 
@@ -667,7 +667,7 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 
 （紧随其后的 `if err != nil { ... }` 块保持不变。）
 
-- [ ] **Step 6: 同步段解析 URL 并提前解封**
+- [x] **Step 6: 同步段解析 URL 并提前解封**
 
 在 `internal/controller/handler_task.go` 的 import 块加入 resource 包：
 
@@ -739,22 +739,32 @@ import (
 	})
 ```
 
-- [ ] **Step 7: 跑测试确认通过**
+- [x] **Step 7: 跑测试确认通过**
 
 Run: `go test ./internal/controller/ -run TestImportDecryptsWithDataKeyCipherFromURL -v`
 Expected: PASS
 
-- [ ] **Step 8: 跑相关包回归**
+- [x] **Step 8: 跑相关包回归**
 
 Run: `go test ./internal/controller/ ./internal/resource/ ./pkg/crypto/ 2>&1 | tail -5`
 Expected: 三个包全 `ok`
 
-- [ ] **Step 9: 提交**
+- [x] **Step 9: 提交**
 
 ```bash
 git add internal/controller/route.go internal/controller/import_processing.go internal/controller/handler_task.go internal/controller/import_urlkey_test.go
 git commit -m "feat(import): decrypt data resources with the URL-carried key envelope"
 ```
+
+> **执行记录（2026-10-14）**：已实现并提交 `6ea68c1`（4 文件，+180/-6）。规格审查逐字符一致，并单独核验了解析块的 `err` 绑定非遮蔽（函数级声明，后续 `release, err :=` 复用而非重声明）。
+>
+> 质量审查结论「可合并」，**生产代码零缺陷**，三条指定变异（下载改用 `req.ResourceURL`、异步段传 `nil`、`hasDataKeyCipher` 体置空）全部被测试拦住，各自还原后哈希逐位一致。已核：FD 与临时文件在所有早退路径都不泄漏（明文临时文件 0600）；`dataKey` 与信封 hex 不进日志、不进导入索引、不进响应体；解封位于 `tryAcquireTask` 之前无 TOCTOU、失败请求不占槽也不泄漏 `release`。
+>
+> **唯一一条 Important 是覆盖缺口，正是 Task 4 的内容**：三条「下载前拒绝」分支（split 报错、hex/长度非法、解封失败）在本提交尚无测试，审查者另跑的两条变异（`if err != nil` → `if false`、删掉解封错误分支）当时都没能让测试失败。Task 4 的表驱动测试必须让这两条变异转为失败——这是 Task 4 的验收标准，不只是"跑绿"。
+>
+> 未采纳的 Minor：`dataKey` 未清零（全仓库对使用后的密钥都不擦除，`= nil` 只是释放内存而非擦除，加了反而制造"已擦除"的错觉）；`decryptCiphertextWithDataKey` 挂在 `*TAAState` 上不用 `s`；`logScope` 写死为 `"decrypt"`（均为观感，无行为影响）。
+>
+> 相邻观察（非本提交缺陷）：`handler_system.go:216/219-220` 的 `getResourceInfo` 会把原始 `resourceUrl` 整条写进日志并原样下载。新形态限定在 `/v1/taa/import` 是刻意设计，Task 7 的文档已如实写明该端点会把参数转发出去并失败。
 
 ---
 
