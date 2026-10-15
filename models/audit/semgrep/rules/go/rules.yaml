@@ -44,11 +44,24 @@ rules:
     metadata:
       category: credential
       rule_family: ENV_001
-    pattern: os.Getenv(...)
+    # Was a bare os.Getenv(...), which is every environment read in the
+    # language: HOME, PATH and GOMAXPROCS are all findings under it. The Python
+    # pack constrains the variable's *name* to a sensitive-keyword alternation,
+    # and this family is meant to mean the same thing in both packs, so the same
+    # predicate is applied here. The key is written quoted so it binds a string
+    # literal only - the baseline does not flag an indirection
+    # (os.Getenv(keyVar)) and this arm must not either.
+    patterns:
+      - pattern-either:
+          - pattern: os.Getenv("$KEY")
+          - pattern: os.LookupEnv("$KEY", ...)
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: "(?i).*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab).*"
 
   - id: taa-dyn-eval-go
     languages: [go]
-    severity: ERROR
+    severity: WARNING
     message: "Dynamic plugin loading detected in Go code"
     metadata:
       category: dynamic
@@ -57,11 +70,239 @@ rules:
 
   - id: taa-fil-probe-go
     languages: [go]
-    severity: ERROR
+    severity: WARNING
     message: "Credential file probe detected in Go code"
     metadata:
       category: credential
       rule_family: FIL_001
+    # Only os.Open/os.ReadFile were listed before, which is every file read in
+    # the language. The Python pack's FIL arm requires a *sensitive path* in the
+    # literal, and this pack is the same family, so the same predicate is
+    # applied here: without it the rule reports every configuration read in the
+    # package and the family stops meaning "credential probe".
     pattern-either:
-      - pattern: os.Open(...)
-      - pattern: os.ReadFile(...)
+      - patterns:
+          - pattern-either:
+              - pattern: os.Open($PATH)
+              - pattern: os.OpenFile($PATH, ...)
+              - pattern: os.ReadFile($PATH)
+              - pattern: ioutil.ReadFile($PATH)
+          - metavariable-regex:
+              metavariable: $PATH
+              regex: (?i).*(\.ssh|\.env|password|credential|\.aws|\.kube|id_rsa|authorized_keys|\.netrc|\.docker/config\.json)
+      - patterns:
+          - pattern: filepath.Join($DIR, $BASE)
+          - metavariable-regex:
+              metavariable: $BASE
+              regex: (?i)"(\.ssh|\.env|id_rsa|authorized_keys|\.netrc|credentials)"
+
+  - id: taa-obf-exec-go
+    languages: [go]
+    severity: ERROR
+    message: "Encoded or deserialized payload construction detected in Go code"
+    metadata:
+      category: payload
+      rule_family: OBF_001
+    # Mirrors the Python pack's OBF arm, which flags *use* of a decode or
+    # deserialization API rather than decoding-into-eval (strictly narrower).
+    # The Go set is the same idea in this ecosystem's primitives: the base64 and
+    # hex codecs, the gob/serialization decoders, and the compression readers
+    # that carry a stage-2 blob.
+    #
+    # The fourth branch is Go's own obfuscation primitive and has no Python
+    # analogue: //go:linkname binds a local symbol to an unexported function of
+    # another package (usually runtime or syscall) with no import and no type
+    # checking, so the call it produces is invisible to a reader and to every
+    # ordinary static tool. It is a build directive, not an expression, so it is
+    # matched as text.
+    #
+    # This arm is the one place in the tree where a comment line *is* the
+    # finding instead of the thing to skip: the directive only takes effect as a
+    # line comment, so an arm carrying the `^(?![ \t]*//)` guard that every
+    # other line regex here uses could match nothing but a string literal
+    # spelling "go:linkname" - the one spelling that is not a directive, since a
+    # bare `go:linkname` outside a comment does not parse. The guard is
+    # therefore deliberately absent and the arm is anchored to the directive's
+    # own form.
+    pattern-either:
+      - pattern: base64.StdEncoding.DecodeString(...)
+      - pattern: base64.StdEncoding.EncodeToString(...)
+      - pattern: base64.StdEncoding.Decode(...)
+      - pattern: base64.RawStdEncoding.DecodeString(...)
+      - pattern: base64.URLEncoding.DecodeString(...)
+      - pattern: hex.DecodeString(...)
+      - pattern: hex.EncodeToString(...)
+      - pattern: gob.NewDecoder(...)
+      - pattern: zlib.NewReader(...)
+      - pattern: gzip.NewReader(...)
+      - pattern: flate.NewReader(...)
+      - pattern-regex: ^[ \t]*//go:linkname\b
+
+  - id: taa-secret-exfiltration-go
+    languages: [go]
+    severity: ERROR
+    message: "Sensitive credential flows from source to external network sink"
+    metadata:
+      category: credential
+      rule_family: EXF_001
+    # Same three-part shape as the Python pack's EXF arm (source -> sink, with
+    # sanitizers named explicitly). Go's taint engine propagates through
+    # assignment and string concatenation on its own, which is how most of this
+    # ecosystem builds a request URL, so only the conversions that lose the
+    # value's identity need declaring.
+    mode: taint
+    pattern-sources:
+      - pattern: os.Getenv($KEY)
+      - pattern: os.LookupEnv($KEY, ...)
+      - pattern: os.Environ()
+      - pattern: os.ReadFile($PATH)
+      - pattern: ioutil.ReadFile($PATH)
+    pattern-propagators:
+      - pattern: $OUT = fmt.Sprintf($FMT, $IN, ...)
+        from: $IN
+        to: $OUT
+      - pattern: $OUT = []byte($IN)
+        from: $IN
+        to: $OUT
+      - pattern: $OUT = string($IN)
+        from: $IN
+        to: $OUT
+      - pattern: $OUT = base64.StdEncoding.EncodeToString($IN)
+        from: $IN
+        to: $OUT
+    pattern-sanitizers:
+      - pattern: sha256.Sum256(...)
+      - pattern: hmac.New(...)
+      - pattern: md5.Sum(...)
+    pattern-sinks:
+      - pattern: http.Post($URL, $CT, $DATA)
+      - pattern: http.PostForm($URL, $DATA)
+      - pattern: http.Get($URL)
+      - pattern: $CLIENT.Do($REQ)
+      - pattern: net.Dial($NET, $ADDR)
+
+  - id: taa-per-backdoor-go
+    languages: [go]
+    severity: ERROR
+    message: "Persistence backdoor or autorun script modification detected"
+    metadata:
+      category: persistence
+      rule_family: PER_001
+    # The Python pack's PER arm is a text search for the persistence target, not
+    # an AST rule, because the baseline it mirrors is a regex. The same mirror
+    # is used here; the comment prefix changes from '#' to '//' because that is
+    # what a Go comment is, and without it a commented-out crontab line is a
+    # finding.
+    #
+    # There is deliberately no "write whose destination names a profile" branch:
+    # it matches the same line the mirror already matches (the path literal is
+    # on that line by construction) and the engine turns every semgrep result
+    # into its own finding, so it would double the family's count without
+    # finding anything the mirror had missed.
+    pattern-either:
+      - pattern-regex: ^(?![ \t]*//)[^\n]*crontab
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:\.bashrc|\.bash_profile|\.zshrc|\.profile)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*systemctl\s+(?:enable|start)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*/etc/init\.d
+      - pattern-regex: ^(?![ \t]*//)[^\n]*/etc/systemd
+
+  - id: taa-emb-data-dump-go
+    languages: [go]
+    severity: ERROR
+    message: "Raw dataset or sensitive features serialized to output file"
+    metadata:
+      category: embedded
+      rule_family: EMB_001
+    # Mirrors the Python pack's EMB_DATA_DUMP arm, whose discriminator is the
+    # *payload* argument naming a dataset rather than the write call. Go writes
+    # datasets through os.WriteFile and through the encoding/csv and encoding/gob
+    # encoders; all three are listed, each with the payload predicate, so a
+    # checkpoint write of weights (the false positive the Python arm was once
+    # burned by) stays out.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: os.WriteFile($PATH, $DATA, ...)
+              - pattern: ioutil.WriteFile($PATH, $DATA, ...)
+          - metavariable-regex:
+              metavariable: $DATA
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train|features)\\b"
+      - patterns:
+          - pattern-either:
+              - pattern: $W.Write($DATA)
+              - pattern: $ENC.Encode($DATA)
+          - metavariable-regex:
+              metavariable: $DATA
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train|features)\\b"
+      - pattern-regex: ^(?![ \t]*//)[^\n]*os\.Create\s*\([^)\n]*(?:raw_|train_|test_)?(?:data|dataset|images|samples)\.
+
+  - id: taa-emb-copy-export-go
+    languages: [go]
+    severity: ERROR
+    message: "Sensitive data or models copied to export/result directory"
+    metadata:
+      category: embedded
+      rule_family: EMB_002
+    # Mirrors the Python arm's structure: a copy/move whose *destination* names
+    # an export directory. io.Copy takes the destination first and os.Rename
+    # takes it second, so the two cannot share one metavariable position and are
+    # written as separate branches.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: os.Rename($SRC, $DST)
+              - pattern: os.Link($SRC, $DST)
+          - metavariable-regex:
+              metavariable: $DST
+              regex: (?i).*(output|export|result).*
+      - patterns:
+          - pattern: io.Copy($DST, $SRC)
+          - metavariable-regex:
+              metavariable: $DST
+              regex: (?i).*(output|export|result).*
+
+  - id: taa-emb-log-dump-go
+    languages: [go]
+    severity: WARNING
+    message: "Raw sample data or sensitive features dumped to standard log/output"
+    metadata:
+      category: embedded
+      rule_family: EMB_003
+    # Mirrors the Python arm: the family is about the *argument*, not the
+    # logging call, so every branch carries the same dataset-name predicate. The
+    # Go print and log entry points are all listed because which one a training
+    # script uses is a matter of taste, and a finding that depends on taste is
+    # not a finding.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: fmt.Print($ARG)
+              - pattern: fmt.Println($ARG)
+              - pattern: fmt.Printf($FMT, $ARG)
+              - pattern: log.Print($ARG)
+              - pattern: log.Println($ARG)
+              - pattern: log.Printf($FMT, $ARG)
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
+      - patterns:
+          - pattern: fmt.Fprintln(os.Stdout, $ARG)
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
+
+  - id: taa-emb-stego-weight-go
+    languages: [go]
+    severity: ERROR
+    message: "Encoded data or steganographic payload embedded into model weights"
+    metadata:
+      category: embedded
+      rule_family: EMB_004
+    # Mirrors the Python arm branch for branch, translated to Go's encoders:
+    # the family is "an encode/decode step meeting a weights artefact", and the
+    # codec names change with the language while the shape does not.
+    pattern-either:
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:(?:state_dict|weights|params).*(?:hidden|secret|payload|stego|embed|hide)(_?data)?)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:base64.*[Ss]ave|[Ss]ave.*base64)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:[Ee]ncode.*[Ww]eights|[Ww]eights.*[Ee]ncode)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:(?:zlib|gzip|gob).*[Ss]ave|[Ss]ave.*(?:zlib|gzip|gob))

@@ -11,3 +11,279 @@ rules:
     pattern-either:
       - pattern: Runtime.getRuntime().exec(...)
       - pattern: new ProcessBuilder(...)
+
+  - id: taa-net-general-java
+    languages: [java]
+    severity: ERROR
+    message: "HTTP outbound call detected in Java"
+    metadata:
+      category: network
+      rule_family: NET_001
+    # Java has no single HTTP client, so the family lists every one in
+    # mainstream use rather than picking the modern one: this pack audits
+    # packages written over the last fifteen years, and the older arms are the
+    # ones a dropper reaches for precisely because they are still present in
+    # every JDK.
+    pattern-either:
+      - pattern: new URL(...).openConnection(...)
+      - pattern: new URL(...).openStream()
+      - pattern: $CONN.getInputStream()
+      - pattern: java.net.http.HttpClient.$C(...)
+      - pattern: $CLIENT.send($REQ, ...)
+      - pattern: okhttp3.$CLASS.$M(...)
+      - pattern: $HTTP.execute(...)
+
+  - id: taa-net-socket-java
+    languages: [java]
+    severity: ERROR
+    message: "Raw socket communication detected in Java"
+    metadata:
+      category: network
+      rule_family: NET_002
+    pattern-either:
+      - pattern: new Socket(...)
+      - pattern: new DatagramSocket(...)
+      - pattern: new ServerSocket(...)
+      - pattern: SocketChannel.open(...)
+      - pattern: DatagramChannel.open(...)
+
+  - id: taa-dyn-eval-java
+    languages: [java]
+    severity: WARNING
+    message: "Dynamic class loading or evaluation detected in Java"
+    metadata:
+      category: dynamic
+      rule_family: DYN_001
+    # Matches the Python arm's shape - the reflective entry points, not a
+    # source-to-sink flow. Java's equivalents are class loading by name, the
+    # scripting engine, and reflective member invocation. Method.invoke in
+    # particular is how a dropper calls a method it never names in source.
+    pattern-either:
+      - pattern: Class.forName(...)
+      - pattern: $LOADER.loadClass(...)
+      - pattern: $ENGINE.eval(...)
+      - pattern: new ScriptEngineManager(...).getEngineByName(...)
+      - pattern: $METHOD.invoke(...)
+      - pattern: $CONSTRUCTOR.newInstance(...)
+
+  - id: taa-fil-probe-java
+    languages: [java]
+    severity: WARNING
+    message: "Sensitive credential file access probe detected"
+    metadata:
+      category: credential
+      rule_family: FIL_001
+    # The Python arm requires the *path* to name a credential store, because a
+    # bare read is every file read in the language. The same predicate is
+    # applied here, in both the literal and the Path-built forms.
+    # The call patterns bind a string literal (`"$PATH"`), which is what keeps
+    # this branch and the Paths-built branch below from both matching one line:
+    # a call whose argument is a Paths.get(...) node belongs to the second
+    # branch, and the engine turns every semgrep result into its own finding, so
+    # an overlap would report the same line twice.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: new FileInputStream("$PATH")
+              - pattern: new FileReader("$PATH")
+              - pattern: new File("$PATH")
+              - pattern: Paths.get("$PATH")
+              - pattern: Path.of("$PATH")
+              - pattern: Files.readString("$PATH")
+              - pattern: Files.readAllBytes("$PATH")
+              - pattern: Files.lines("$PATH")
+          - metavariable-regex:
+              metavariable: $PATH
+              regex: (?i).*(\.ssh|\.env|password|credential|\.aws|\.kube|id_rsa|authorized_keys|\.netrc)
+      - patterns:
+          - pattern-either:
+              - pattern: Files.readAllBytes($PATH)
+              - pattern: Files.readString($PATH)
+              - pattern: Files.newInputStream($PATH)
+              - pattern: Files.lines($PATH)
+          - metavariable-regex:
+              metavariable: $PATH
+              regex: (?i).*(\.ssh|\.env|password|credential|\.aws|\.kube|id_rsa|authorized_keys|\.netrc)
+
+  - id: taa-env-secret-java
+    languages: [java]
+    severity: WARNING
+    message: "Sensitive environment variable access detected in Java"
+    metadata:
+      category: credential
+      rule_family: ENV_001
+    # Constrained by name, as the Python arm is: System.getenv() with no
+    # predicate is every environment read on the machine.
+    patterns:
+      - pattern: System.getenv("$KEY")
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: "(?i).*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab).*"
+
+  - id: taa-obf-exec-java
+    languages: [java]
+    severity: ERROR
+    message: "Encoded or deserialized payload construction detected in Java"
+    metadata:
+      category: payload
+      rule_family: OBF_001
+    # Mirrors the Python arm: the *use* of a decoder or a deserializer, not a
+    # decode-into-eval flow. defineClass is the branch with no Python analogue -
+    # it turns a byte array into a loaded class without touching disk, which is
+    # the standard way to run a stage-2 payload in this ecosystem.
+    pattern-either:
+      - pattern: Base64.getDecoder().decode(...)
+      - pattern: Base64.getUrlDecoder().decode(...)
+      - pattern: Base64.getMimeDecoder().decode(...)
+      - pattern: $DECODER.decode(...)
+      - pattern: new ObjectInputStream(...)
+      - pattern: $OIS.readObject()
+      - pattern: $LOADER.defineClass(...)
+      - pattern: new GZIPInputStream(...)
+      - pattern: new InflaterInputStream(...)
+
+  - id: taa-secret-exfiltration-java
+    languages: [java]
+    severity: ERROR
+    message: "Sensitive credential flows from source to external network sink"
+    metadata:
+      category: credential
+      rule_family: EXF_001
+    # Same three-part shape as the Python arm. Java's taint engine propagates
+    # through assignment and string concatenation; the propagator listed covers
+    # the StringBuilder form, which is how this ecosystem assembles a URL
+    # without the compiler folding it into one expression.
+    mode: taint
+    pattern-sources:
+      - pattern: System.getenv($KEY)
+      - pattern: System.getProperty($KEY)
+      - pattern: Files.readString($PATH)
+      - pattern: Files.readAllBytes($PATH)
+      - pattern: new FileInputStream($PATH)
+    pattern-propagators:
+      - pattern: $OUT.append($IN)
+        from: $IN
+        to: $OUT
+      - pattern: new String($IN)
+        from: $IN
+        to: $OUT
+      - pattern: Base64.getEncoder().encodeToString($IN)
+        from: $IN
+        to: $OUT
+    pattern-sanitizers:
+      - pattern: MessageDigest.getInstance(...)
+      - pattern: $MD.digest(...)
+      - pattern: Mac.getInstance(...)
+    pattern-sinks:
+      - pattern: new URL($URL).openConnection(...)
+      - pattern: new URL($URL).openStream()
+      - pattern: $CLIENT.send($REQ, ...)
+      - pattern: new Socket($HOST, $PORT)
+      - pattern: $OUT.write($DATA)
+
+  - id: taa-per-backdoor-java
+    languages: [java]
+    severity: ERROR
+    message: "Persistence backdoor or autorun script modification detected"
+    metadata:
+      category: persistence
+      rule_family: PER_001
+    # Text mirror of the Python arm with Java's comment prefix, plus the one
+    # persistence primitive this platform adds that a text search cannot see:
+    # a shutdown hook arranges for the payload to be re-run without writing a
+    # profile at all.
+    #
+    # There is deliberately no "file write whose destination names a profile"
+    # branch. It would match the same line the text mirror already matches - the
+    # path literal is on that line by construction - and the engine turns every
+    # semgrep result into its own finding, so the branch would double the count
+    # of a family without ever finding anything the mirror had missed.
+    pattern-either:
+      - pattern-regex: ^(?![ \t]*//)[^\n]*crontab
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:\.bashrc|\.bash_profile|\.zshrc|\.profile)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*systemctl\s+(?:enable|start)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*/etc/init\.d
+      - pattern-regex: ^(?![ \t]*//)[^\n]*/etc/systemd
+      - pattern: Runtime.getRuntime().addShutdownHook(...)
+
+  - id: taa-emb-data-dump-java
+    languages: [java]
+    severity: ERROR
+    message: "Raw dataset or sensitive features serialized to output file"
+    metadata:
+      category: embedded
+      rule_family: EMB_001
+    # Discriminated on the payload, as the Python arm is: a checkpoint write of
+    # weights is not this family.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: Files.write($PATH, $DATA)
+              - pattern: Files.writeString($PATH, $DATA)
+              - pattern: $OOS.writeObject($DATA)
+              - pattern: $WRITER.write($DATA)
+          - metavariable-regex:
+              metavariable: $DATA
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train|features)\\b"
+
+  - id: taa-emb-copy-export-java
+    languages: [java]
+    severity: ERROR
+    message: "Sensitive data or models copied to export/result directory"
+    metadata:
+      category: embedded
+      rule_family: EMB_002
+    # Destination-discriminated, as the Python arm is. Files.copy and Files.move
+    # take the destination second and first respectively here, so the two are
+    # separate branches rather than one shared position.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: Files.copy($SRC, $DST)
+              - pattern: Files.move($SRC, $DST)
+          - metavariable-regex:
+              metavariable: $DST
+              regex: (?i).*(output|export|result).*
+      - patterns:
+          - pattern: Files.copy($SRC, $DST, ...)
+          - metavariable-regex:
+              metavariable: $DST
+              regex: (?i).*(output|export|result).*
+
+  - id: taa-emb-log-dump-java
+    languages: [java]
+    severity: WARNING
+    message: "Raw sample data or sensitive features dumped to standard log/output"
+    metadata:
+      category: embedded
+      rule_family: EMB_003
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: System.out.println($ARG)
+              - pattern: System.out.print($ARG)
+              - pattern: System.err.println($ARG)
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
+      - patterns:
+          - pattern-either:
+              - pattern: $LOG.info($ARG)
+              - pattern: $LOG.debug($ARG)
+              - pattern: $LOG.warn($ARG)
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
+
+  - id: taa-emb-stego-weight-java
+    languages: [java]
+    severity: ERROR
+    message: "Encoded data or steganographic payload embedded into model weights"
+    metadata:
+      category: embedded
+      rule_family: EMB_004
+    pattern-either:
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:(?:state_dict|weights|params).*(?:hidden|secret|payload|stego|embed|hide)(_?data)?)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:[Bb]ase64.*[Ss]ave|[Ss]ave.*[Bb]ase64)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:[Ee]ncode.*[Ww]eights|[Ww]eights.*[Ee]ncode)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:(?:[Zz]lib|[Gg]zip|[Dd]eflater).*[Ss]ave|[Ss]ave.*(?:[Zz]lib|[Gg]zip|[Dd]eflater))
