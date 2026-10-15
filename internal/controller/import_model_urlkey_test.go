@@ -187,6 +187,41 @@ func TestModelImportRejectsKeyEnvelopeWithoutDownloadAddress(t *testing.T) {
 	}
 }
 
+// The platform's own SM4 files carry a one-byte format version in front of the nonce
+// ([version][nonce][ciphertext][tag]); TAA writes the bare layout. The GCM tag decides
+// which one a file is, so a versioned body has to reach the same plaintext as a bare one
+// instead of failing authentication on a nonce read one byte too early.
+func TestModelImportAcceptsVersionedSm4File(t *testing.T) {
+	state, server := setupTestServer(t)
+
+	archive := buildTarGzArchive(t, map[string]archiveEntry{
+		"bundle/versioned.py": {mode: 0o644, data: []byte("print('versioned model')\n")},
+	})
+	bare, keyHex := urlKeyResource(t, &state.SM2PrivateKey.PublicKey, archive)
+	versioned := append([]byte{sm4FileVersion}, bare...)
+
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(versioned)
+	}))
+	defer fileServer.Close()
+
+	resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+		"resourceUrl": fileServer.URL + "/model-package.enc?dataKeyCipher=" + keyHex,
+		"requestId":   "req-model-urlkey-versioned",
+		"taskId":      "task-model-urlkey-versioned",
+	})
+	api := decodeResponse(t, resp)
+	if resp.StatusCode != http.StatusOK || api.Error != 0 {
+		t.Fatalf("importModel: status=%d error=%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+	}
+
+	waitForIdle(t, state)
+
+	if _, err := os.Stat(filepath.Join(state.Security.ModelDir, "bundle", "versioned.py")); err != nil {
+		t.Fatalf("versioned SM4 file was not decrypted and extracted into %s: %v", state.Security.ModelDir, err)
+	}
+}
+
 func TestModelImportFallsBackToLegacyFormatWithoutDataKeyCipher(t *testing.T) {
 	state, server := setupTestServer(t)
 
