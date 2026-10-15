@@ -254,7 +254,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 | `dockerId` | `string` | 是 | 取值为容器启动参数 `DOCKER_ID` |
 | `requestId` | `string` | 是 | 启动测试时对应的请求 ID |
 | `taskId` | `string` | 否 | 训练任务 ID |
-| `code` | `number` | 是 | `0` 表示成功，非 `0` 表示失败 |
+| `code` | `number` | 是 | `0` 表示成功；`1` 表示训练执行失败；`2` 表示训练执行完成但结果被拒（结果目录含原始训练数据，见下方说明） |
 | `msg` | `string` | 否 | 失败时为失败原因 |
 | `report` | `string` | 否 | 训练结果报告字符串 |
 
@@ -267,7 +267,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 0,
   "msg": null,
-  "report": "{\"generated_at\":\"2026-09-02T10:03:43Z\",\"report_id\":\"train-report-20260902-100343-ae53fa14\",\"dataset\":{\"total_samples\":12500,\"splits\":{\"train\":10000,\"test\":1000},\"checksum\":{\"size\":540672,\"algorithm\":\"sm3\",\"value\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}},\"training_task\":{\"task_id\":\"task-20260825-001\",\"status\":\"succeeded\",\"exit_code\":0,\"failure_reason\":null,\"started_at\":\"2026-09-02T10:03:35Z\",\"finished_at\":\"2026-09-02T10:03:43Z\",\"duration_seconds\":8,\"model_checksum\":{\"size\":581632,\"algorithm\":\"sm3\",\"value\":\"a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd\"},\"metrics\":{\"final_accuracy\":0.9087,\"final_loss\":0.2145,\"epochs\":[{\"epoch\":1,\"accuracy\":0.5231,\"loss\":1.2345},{\"epoch\":2,\"accuracy\":0.6789,\"loss\":0.9876}]}},\"result_files\":{\"total_files\":3,\"total_size\":541184,\"total_size_h\":\"528.5KB\",\"contains_dataset\":false,\"tree\":{\"name\":\"result\",\"type\":\"dir\",\"file_count\":3,\"children\":[{\"name\":\"metrics.csv\",\"type\":\"file\",\"fmt\":\"csv\",\"size\":428,\"rows\":2,\"fields\":[{\"name\":\"epoch\",\"type\":\"int\"},{\"name\":\"val_accuracy\",\"type\":\"float\"}],\"preview\":[[\"1\",\"0.5231\"],[\"2\",\"0.6789\"]]},{\"name\":\"model.pt\",\"type\":\"file\",\"fmt\":\"zip\",\"size\":540672}]}},\"codeaudit\":{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"\u672a\u53d1\u73b0\u5b89\u5168\u95ee\u9898\uff0c\u4ee3\u7801\u901a\u8fc7\u5ba1\u8ba1\",\"recommendation\":\"\u65e0\u9700\u4fee\u590d\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null}}"
+  "report": "{\"generated_at\":\"2026-09-02T10:03:43Z\",\"report_id\":\"train-report-20260902-100343-ae53fa14\",\"dataset\":{\"total_samples\":12500,\"splits\":{\"train\":10000,\"test\":1000},\"checksum\":{\"size\":540672,\"algorithm\":\"sm3\",\"value\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}},\"training_task\":{\"task_id\":\"task-20260825-001\",\"status\":\"succeeded\",\"exit_code\":0,\"failure_reason\":null,\"started_at\":\"2026-09-02T10:03:35Z\",\"finished_at\":\"2026-09-02T10:03:43Z\",\"duration_seconds\":8,\"model_checksum\":{\"size\":581632,\"algorithm\":\"sm3\",\"value\":\"a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd\"},\"metrics\":{\"final_accuracy\":0.9087,\"final_loss\":0.2145,\"epochs\":[{\"epoch\":1,\"accuracy\":0.5231,\"loss\":1.2345},{\"epoch\":2,\"accuracy\":0.6789,\"loss\":0.9876}]}},\"result_files\":{\"total_files\":3,\"total_size\":541184,\"total_size_h\":\"528.5KB\",\"tree\":{\"name\":\"result\",\"type\":\"dir\",\"file_count\":3,\"children\":[{\"name\":\"metrics.csv\",\"type\":\"file\",\"fmt\":\"csv\",\"size\":428,\"rows\":2,\"fields\":[{\"name\":\"epoch\",\"type\":\"int\"},{\"name\":\"val_accuracy\",\"type\":\"float\"}],\"preview\":[[\"1\",\"0.5231\"],[\"2\",\"0.6789\"]]},{\"name\":\"model.pt\",\"type\":\"file\",\"fmt\":\"zip\",\"size\":540672}]}},\"codeaudit\":{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"\u672a\u53d1\u73b0\u5b89\u5168\u95ee\u9898\uff0c\u4ee3\u7801\u901a\u8fc7\u5ba1\u8ba1\",\"recommendation\":\"\u65e0\u9700\u4fee\u590d\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null}}"
 }
 ```
 
@@ -340,7 +340,6 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
     "total_files": 3,                                     // 结果目录文件总数
     "total_size": 541184,                                 // 结果目录总字节数
     "total_size_h": "528.5KB",                            // 人类可读总大小
-    "contains_dataset": false,                            // 训练结束时的明文泄露检查结论：true 表示结果目录里出现了训练数据；无结论时整个字段不出现
     "tree": {                                             // 目录树根节点，结构与 /v1/taa/getResourceInfo 的 tree 完全一致
       "name": "result",
       "type": "dir",
@@ -395,11 +394,19 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 **关于 `result_files`**：该字段是导出目录（`/v1/taa/export` 打包的那个目录）的文件结构树，节点结构与 [4.1 节](#41-资源信息获取v1taagetresourceinfo) `getResourceInfo` 返回的 `tree` 完全一致——**含表格类文件的 `preview` 前 5 行**，平台据此核对产物并看到样本行。两点差异：
 
 - **不含报告自身**：扫描发生在 `training_report.json` 落盘之前，所以树里不会出现该文件。
-- **多一个 `contains_dataset`**：`true` 表示训练结束时的明文泄露检查（`bytes.Contains`）在结果目录里找到了训练数据，`false` 表示查过且干净。它与 `/v1/taa/export` 的放行判定读的是同一份裁决——`contains_dataset` 为 `true` 时导出会被 400 拒绝。`security.resultCheck.enabled` 关闭、训练失败/崩溃路径、或检查自身没跑起来时，该字段**整个不出现**：缺字段表示"没查过"，比写成 `false`（读起来像"查过且干净"）诚实。
+- **检查指认泄露时整段不出现**：训练结束时若明文泄露检查（`bytes.Contains`）在结果目录里发现了原始训练数据，该字段**整个不出现**（`code` 为 `2`，原因见 `msg`，报告体内 `training_task.status` 为 `failed`）——目录树的预览就是那些数据行，正是要拒的东西，TAA 连扫都不扫。没有裁决（未开启检查、训练执行失败/崩溃路径）或裁决记着检查自身没跑起来时照常给出该字段：那是没有证据，不是有证据说泄露。
 
 > 报告里的样本行不会外流：`training_report.json` 已被排除在导出清单之外（见 [4.6 节](#46-请求-taa-导出结果v1taaexport)），这份报告只经 `/v1/taa/reportRes` 上报给平台；导出目录中真正会被打包外发的文件照旧受明文泄露检查约束。
 
 目录为空或扫描失败时省略该字段，报告其余部分照常生成。
+
+**关于结果被拒（`code=2`）**：训练结束时若 `security.resultCheck.enabled` 为 `true` 且检查在结果目录里查出了原始训练数据，TAA 把这次运行按失败上报：
+
+- `code` 为 `2`（区别于 `1`——训练进程本身跑完了，是产物被拒），`msg` 为 `结果目录包含原始训练数据，训练结果拒绝提供目录清单与预览: <高危明细>`；
+- 报告体内 `training_task.status` 为 `failed`、`failure_reason` 为同样的原因、**`exit_code` 仍为 `0`**（训练进程正常退出），且不带 `result_files`；
+- 随后 `/v1/taa/export` 对该任务一律返回 `400`（见 [4.6 节](#46-请求-taa-导出结果v1taaexport)）。
+
+检查自身没跑起来（裁决里 `error` 非空）不算被拒：报告照常给出、`code` 仍为 `0`，只有导出闸门在 `llm.failClosed` 为 `true` 时会拦。
 
 ### 3.5 TAA 上报模型导入结果（/v1/taa/reportModelImport）
 
@@ -816,7 +823,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | `tree.tables[].columns` | `array` | 该表的列定义，元素结构同 `fields`，用于解释 `preview` 的列位置 |
 | `tree.tables[].preview` | `array` | 该表的前 5 行数据，与 `columns` 按位置对齐 |
 
-> **`preview` 的两个出口**：`getResourceInfo` 是对资源包的一次性应答，平台需要看到样本数据本身；训练报告 `report.result_files` 的结构树与本接口完全一致，**同样带 `preview`**——这份报告只上报给平台，不会进导出包（`training_report.json` 已被排除在导出清单之外）。报告侧还多一个训练结束时得到的 `contains_dataset`，本接口不返回它。
+> **`preview` 的两个出口**：`getResourceInfo` 是对资源包的一次性应答，平台需要看到样本数据本身；训练报告 `report.result_files` 的结构树与本接口完全一致，**同样带 `preview`**——这份报告只上报给平台，不会进导出包（`training_report.json` 已被排除在导出清单之外）。唯一的例外是泄露被查出的那次：报告干脆不带 `result_files`（见 [3.4 节](#34-taa-上报训练完成结果v1taareportres)），因为预览就是那些数据行。本接口不受此影响。
 
 **成功响应示例**（200 OK）：
 

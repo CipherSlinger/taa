@@ -573,7 +573,22 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 	s.setCurrentOp("reporting")
 	s.Logs.Add(LogInfo, "report", "生成训练报告: taskId=%s", trainReq.TaskID)
 	finishedAt := time.Now().UTC()
-	report, err := s.buildAndSaveTrainingReport(trainReq.TaskID, startedAt, finishedAt, "succeeded", 0, "", s.getLastAudit(), true, trainOutputDir, trainResultCheck)
+
+	// A result directory the leakage check found to hold the training data is reported as
+	// a rejected run: the platform gets code 2 plus the reason in msg, and the report body
+	// says status "failed" with the same reason. exit_code stays 0 - the training process
+	// itself exited cleanly, it is its artifacts that are refused. result_files is dropped
+	// by AttachResultFiles, previews included.
+	status, exitCode, failureReason, code, msg := "succeeded", 0, "", 0, ""
+	if resultLeakDetected(trainResultCheck) {
+		status = "failed"
+		failureReason = resultLeakText(resultLeakBaseReason, trainResultCheck)
+		code = reportCodeResultLeak
+		msg = resultLeakText(resultLeakBaseMsg, trainResultCheck)
+		s.Logs.Add(LogError, "report", "训练结果被拒: %s", failureReason)
+	}
+
+	report, err := s.buildAndSaveTrainingReport(trainReq.TaskID, startedAt, finishedAt, status, exitCode, failureReason, s.getLastAudit(), true, trainOutputDir, trainResultCheck)
 	if err != nil {
 		if checkCancelled() {
 			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
@@ -588,13 +603,13 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 	}
 	s.Logs.Add(LogInfo, "report", "训练报告生成成功并写入 training_report.json (%d bytes)", len(report))
 
-	s.Logs.Add(LogInfo, "report", "上报训练结果到平台: code=0, taskId=%s", trainReq.TaskID)
+	s.Logs.Add(LogInfo, "report", "上报训练结果到平台: code=%d, taskId=%s", code, trainReq.TaskID)
 
 	if checkCancelled() {
 		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
 		return
 	}
-	s.reportTrainingAsync(trainReq.RequestID, trainReq.TaskID, 0, "", string(report))
+	s.reportTrainingAsync(trainReq.RequestID, trainReq.TaskID, code, msg, string(report))
 	s.setCurrentOp("idle")
 	s.Logs.Add(LogInfo, "import", "资源导入流程完成: taskId=%s", trainReq.TaskID)
 }

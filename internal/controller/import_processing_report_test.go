@@ -302,13 +302,16 @@ func findTreeNode(t *testing.T, node map[string]any, name string) map[string]any
 	return nil
 }
 
-func TestBuildAndSaveTrainingReportCarriesContainsDataset(t *testing.T) {
+func TestBuildAndSaveTrainingReportWithholdsResultFilesOnLeak(t *testing.T) {
 	newState := func(t *testing.T) (*TAAState, string) {
 		t.Helper()
 		resultDir := t.TempDir()
 		modelDir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(modelDir, "model.bin"), []byte("test-model"), 0o644); err != nil {
 			t.Fatalf("write model file: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(resultDir, "model.pt"), []byte("weights"), 0o644); err != nil {
+			t.Fatalf("write result file: %v", err)
 		}
 		return &TAAState{Security: SecurityConfig{ModelDir: modelDir}, Logs: NewLogStore(64)}, resultDir
 	}
@@ -323,44 +326,52 @@ func TestBuildAndSaveTrainingReportCarriesContainsDataset(t *testing.T) {
 		if err := json.Unmarshal(data, &report); err != nil {
 			t.Fatalf("unmarshal report: %v", err)
 		}
+		return report
+	}
+
+	// 裁决指认结果目录里有原始数据：整段 result_files 都不给——树的预览就是那些数据行。
+	// 落盘的 training_report.json 与上报的那份是同一个 map，一起没有。
+	t.Run("leaking verdict withholds result_files", func(t *testing.T) {
+		state, resultDir := newState(t)
+		report := build(t, state, resultDir, &resource.ResultCheckVerdict{Passed: false, Details: []string{"[plaintext_section] leak.csv"}})
+		if resultFiles, ok := report["result_files"]; ok {
+			t.Fatalf("result_files should be withheld on a leaking verdict: %v", resultFiles)
+		}
+		onDisk, err := os.ReadFile(filepath.Join(resultDir, trainingReportFileName))
+		if err != nil {
+			t.Fatalf("read training_report.json: %v", err)
+		}
+		if strings.Contains(string(onDisk), `"result_files"`) {
+			t.Fatalf("training_report.json should not carry result_files: %s", onDisk)
+		}
+	})
+
+	t.Run("passing verdict keeps result_files", func(t *testing.T) {
+		state, resultDir := newState(t)
+		report := build(t, state, resultDir, &resource.ResultCheckVerdict{Passed: true})
 		resultFiles, ok := report["result_files"].(map[string]any)
 		if !ok {
 			t.Fatalf("report missing result_files: %v", report)
 		}
-		return resultFiles
-	}
-
-	t.Run("failing verdict reports contains_dataset true", func(t *testing.T) {
-		state, resultDir := newState(t)
-		resultFiles := build(t, state, resultDir, &resource.ResultCheckVerdict{Passed: false, Details: []string{"[plaintext_section] x"}})
-		if got, ok := resultFiles["contains_dataset"]; !ok || got != true {
-			t.Fatalf("contains_dataset = %v (present=%v), want true", got, ok)
-		}
-	})
-
-	t.Run("passing verdict reports contains_dataset false", func(t *testing.T) {
-		state, resultDir := newState(t)
-		resultFiles := build(t, state, resultDir, &resource.ResultCheckVerdict{Passed: true})
-		if got, ok := resultFiles["contains_dataset"]; !ok || got != false {
-			t.Fatalf("contains_dataset = %v (present=%v), want false", got, ok)
-		}
-	})
-
-	// 没查过就什么都不说：写成 false 会被读成"查过且干净"。
-	t.Run("no verdict omits the field", func(t *testing.T) {
-		state, resultDir := newState(t)
-		if resultFiles := build(t, state, resultDir, nil); len(resultFiles) > 0 {
-			if _, ok := resultFiles["contains_dataset"]; ok {
-				t.Fatalf("contains_dataset should be absent without a verdict: %v", resultFiles)
-			}
-		}
-	})
-
-	t.Run("verdict that failed to run omits the field", func(t *testing.T) {
-		state, resultDir := newState(t)
-		resultFiles := build(t, state, resultDir, &resource.ResultCheckVerdict{Error: "read result dir: permission denied"})
 		if _, ok := resultFiles["contains_dataset"]; ok {
-			t.Fatalf("contains_dataset should be absent when the check did not run: %v", resultFiles)
+			t.Fatalf("contains_dataset is no longer a report field: %v", resultFiles)
+		}
+	})
+
+	t.Run("no verdict keeps result_files", func(t *testing.T) {
+		state, resultDir := newState(t)
+		report := build(t, state, resultDir, nil)
+		if _, ok := report["result_files"].(map[string]any); !ok {
+			t.Fatalf("report missing result_files: %v", report)
+		}
+	})
+
+	// 检查自己没跑起来只是没有证据，不是有证据说泄露：照常给树。
+	t.Run("verdict that failed to run keeps result_files", func(t *testing.T) {
+		state, resultDir := newState(t)
+		report := build(t, state, resultDir, &resource.ResultCheckVerdict{Error: "read result dir: permission denied"})
+		if _, ok := report["result_files"].(map[string]any); !ok {
+			t.Fatalf("report missing result_files: %v", report)
 		}
 	})
 }

@@ -77,8 +77,9 @@ func TestPhase1RequiresBothModelAndDataBeforeTraining(t *testing.T) {
 
 // TestPhase1ResultCheckRunsAtTrainingEnd covers the leakage check end to end: it runs
 // when training finishes and its verdict is persisted on the import index record, and
-// export only ever reads that verdict. A leaking artifact must not fail the training
-// run - training still succeeds and the report still reaches the platform - but the
+// export only ever reads that verdict. A leaking artifact does not fail the training
+// process - exit_code stays 0 and the report still reaches the platform - but the run is
+// reported as failed (code 2, reason in msg, no result_files in the report) and the
 // export that follows is refused.
 func TestPhase1ResultCheckRunsAtTrainingEnd(t *testing.T) {
 	modelArchive := func() []byte {
@@ -109,7 +110,7 @@ func TestPhase1ResultCheckRunsAtTrainingEnd(t *testing.T) {
 		})
 	})
 
-	t.Run("leaking artifact fails the verdict but not the training", func(t *testing.T) {
+	t.Run("leaking artifact is reported as a rejected run", func(t *testing.T) {
 		failed := false
 		runPhase1FlowCase(t, phase1FlowCase{
 			name:              "resultcheck leak",
@@ -120,6 +121,8 @@ func TestPhase1ResultCheckRunsAtTrainingEnd(t *testing.T) {
 			resultCheck:       true,
 			wantVerdict:       &failed,
 			wantExportStatus:  http.StatusBadRequest,
+			wantReportCode:    reportCodeResultLeak,
+			wantReportStatus:  "failed",
 			extraRuntimeCommands: []string{
 				`printf 'id,label,image\n1,cat,img1.jpg\n' > "$TAA_OUTPUT_DIR/leak.csv"`,
 			},
@@ -448,6 +451,11 @@ type phase1FlowCase struct {
 	resultCheck      bool
 	wantVerdict      *bool
 	wantExportStatus int
+	// wantReportCode / wantReportStatus pin the upload envelope when the verdict is a
+	// rejection: a leaking result is reported as a failed run even though exit_code
+	// stays 0. Zero values are the ordinary success (code 0, status "succeeded").
+	wantReportCode   int
+	wantReportStatus string
 	// extraRuntimeCommands are appended to the training commands, letting a case plant
 	// an artifact the leakage check is meant to catch.
 	extraRuntimeCommands []string
@@ -547,8 +555,8 @@ func runPhase1FlowCase(t *testing.T, tc phase1FlowCase) {
 	case <-time.After(15 * time.Second):
 		t.Fatalf("timed out waiting for reportRes for case %s", tc.name)
 	}
-	if payload.Code != 0 {
-		t.Fatalf("reportRes code = %d, want 0: %+v", payload.Code, payload)
+	if payload.Code != tc.wantReportCode {
+		t.Fatalf("reportRes code = %d, want %d: %+v", payload.Code, tc.wantReportCode, payload)
 	}
 	if payload.Report == "" {
 		t.Fatal("reportRes payload missing report")
@@ -560,9 +568,16 @@ func runPhase1FlowCase(t *testing.T, tc phase1FlowCase) {
 	if report["schema_version"] != "1.0" {
 		t.Fatalf("report schema_version = %v, want 1.0", report["schema_version"])
 	}
+	wantStatus := tc.wantReportStatus
+	if wantStatus == "" {
+		wantStatus = "succeeded"
+	}
 	trainingTask := report["training_task"].(map[string]any)
-	if trainingTask["status"] != "succeeded" {
-		t.Fatalf("training_task.status = %v, want succeeded", trainingTask["status"])
+	if trainingTask["status"] != wantStatus {
+		t.Fatalf("training_task.status = %v, want %s", trainingTask["status"], wantStatus)
+	}
+	if trainingTask["exit_code"] != float64(0) {
+		t.Fatalf("training_task.exit_code = %v, want 0", trainingTask["exit_code"])
 	}
 	if tc.wantTrainMarker {
 		markerDir := resultDirForRequestTask(state.Security.ResultDir, "req-"+strings.ReplaceAll(tc.name, " ", "-")+"-data", "task-"+strings.ReplaceAll(tc.name, " ", "-"))
@@ -573,16 +588,15 @@ func runPhase1FlowCase(t *testing.T, tc phase1FlowCase) {
 	}
 
 	if tc.resultCheck {
-		assertFlowResultCheck(t, state, server, tc, report)
+		assertFlowResultCheck(t, state, server, tc, payload, report)
 	}
 }
 
 // assertFlowResultCheck pins that the plaintext leakage check belongs to the training
 // run: by the time it returns, the report has already been delivered (asserted by the
-// caller), so even a failing verdict leaves training successful. Export then reads
-// that verdict instead of scanning again, and the delivered report carries the same
-// conclusion as result_files.contains_dataset.
-func assertFlowResultCheck(t *testing.T, state *TAAState, server *httptest.Server, tc phase1FlowCase, report map[string]any) {
+// caller), so even a rejection leaves the training process itself successful - exit_code
+// 0. Export then reads that verdict instead of scanning again.
+func assertFlowResultCheck(t *testing.T, state *TAAState, server *httptest.Server, tc phase1FlowCase, payload importedReportPayload, report map[string]any) {
 	t.Helper()
 
 	taskID := "task-" + strings.ReplaceAll(tc.name, " ", "-")
@@ -604,14 +618,17 @@ func assertFlowResultCheck(t *testing.T, state *TAAState, server *httptest.Serve
 		t.Fatalf("verdict passed = %v, want %v (details=%v)", record.ResultCheck.Passed, *tc.wantVerdict, record.ResultCheck.Details)
 	}
 
-	resultFiles, ok := report["result_files"].(map[string]any)
-	if !ok {
-		t.Fatalf("delivered report missing result_files: %v", report)
-	}
-	if tc.wantVerdict != nil {
-		if got, ok := resultFiles["contains_dataset"]; !ok || got != !*tc.wantVerdict {
-			t.Fatalf("report result_files.contains_dataset = %v (present=%v), want %v", got, ok, !*tc.wantVerdict)
+	// A verdict that says the result directory holds the training data withholds the
+	// whole tree - its previews are the data rows - and the platform is told why.
+	if tc.wantVerdict != nil && !*tc.wantVerdict {
+		if resultFiles, ok := report["result_files"]; ok {
+			t.Fatalf("rejected report must not carry result_files: %v", resultFiles)
 		}
+		if payload.Msg == nil || !strings.Contains(*payload.Msg, "原始训练数据") {
+			t.Fatalf("reportRes msg = %v, want the leakage reason", payload.Msg)
+		}
+	} else if _, ok := report["result_files"].(map[string]any); !ok {
+		t.Fatalf("delivered report missing result_files: %v", report)
 	}
 
 	if tc.wantExportStatus == 0 {
