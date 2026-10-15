@@ -22,7 +22,7 @@ TAA coordinates the entire confidential computing lifecycle through the followin
 ```mermaid
 flowchart TB
     %% =========================================================================
-    %% TOP: External Ecosystem & Control Plane
+    %% TOP: External Ecosystem & Control Plane (single horizontal band)
     %% =========================================================================
     subgraph ControlPlane["External Ecosystem & Management Plane (Host Environment)"]
         direction LR
@@ -37,7 +37,6 @@ flowchart TB
     subgraph TEE["Hygon CSV TEE Trusted Execution Boundary (Hardware Enclave)"]
         direction TB
 
-        %% Enclave Controller & Supervisor
         subgraph EnclaveMgmt["Enclave Lifecycle & Supervisor"]
             direction LR
             Supervisor["<b>Container Supervisor</b><br/><code>deploy/start.sh</code> • Auto-Restart Daemon"]
@@ -45,46 +44,48 @@ flowchart TB
             Supervisor -.->|"Keep-Alive & Guard"| TAA
         end
 
-        %% Phase 1: Attestation
-        subgraph Stage1["Phase 1: Hardware-Enforced Identity & Attestation"]
+        %% Phases 1-3 run left to right, phases 4-5 fold back onto a second row
+        subgraph PipelineA["Confidential Lifecycle Stage Pipeline — Phase 1 ➔ Phase 3"]
             direction LR
-            S1["<b>Ephemeral Keypair & Cert Validation</b><br/><sub>In-Memory SM2 Key • HRK ➔ HSK ➔ CEK Chain</sub>"]
-            CSVDriver[("<b>Hygon CSV PSP</b><br/><code>/dev/csv-guest ioctl</code>")]
-            S1 <-->|"Inject USERDATA & Sign Report"| CSVDriver
+            subgraph Stage1["Phase 1: Identity & Attestation"]
+                direction TB
+                S1["<b>Ephemeral Keypair & Cert Validation</b><br/><sub>In-Memory SM2 Key • HRK ➔ HSK ➔ CEK Chain</sub>"]
+                CSVDriver[("<b>Hygon CSV PSP</b><br/><code>/dev/csv-guest ioctl</code>")]
+                S1 <-->|"Inject USERDATA & Sign Report"| CSVDriver
+            end
+            subgraph Stage2["Phase 2: Ciphertext Ingress"]
+                direction TB
+                S2["<b>Envelope Decapsulation & Sandbox Ingress</b><br/><sub>SM2 Key Unwrap • SM4-GCM Decrypt • <code>/opt/taa/input</code></sub>"]
+            end
+            subgraph Stage3["Phase 3: Code Security Audit"]
+                direction TB
+                S3["<b>Tier 1: Static Rule Engine</b><br/><sub>13 Built-in Rules (Exec, Network, Credentials, Eval)</sub>"]
+                TEELLM["<b>Tier 2: teellm-service (:8443)</b><br/><sub>Decoupled Qwen2.5-Coder • Semantic Intent Arbitration</sub>"]
+                S3 <-->|"RFC 8998 TLS 1.3 ShangMi<br/>(Mutual Attestation)"| TEELLM
+            end
+            Stage1 ==>|"Registered"| Stage2
+            Stage2 ==>|"Unpacked"| Stage3
         end
 
-        %% Phase 2: Ingress
-        subgraph Stage2["Phase 2: Ciphertext Ingress & Decryption"]
+        subgraph PipelineB["Confidential Lifecycle Stage Pipeline — Phase 4 ➔ Phase 5"]
             direction LR
-            S2["<b>Envelope Decapsulation & Sandbox Ingress</b><br/><sub>SM2 Key Unwrap • SM4-GCM Decrypt • <code>/opt/taa/input</code></sub>"]
+            subgraph Stage4["Phase 4: Sandboxed Execution"]
+                direction TB
+                S4["<b>Subprocess Runtime Sandbox</b><br/><sub>Dedicated Process Group • Process Tree Termination<br/>Phase 1/2/3 Lifecycle (debug.sh / train.sh)</sub>"]
+            end
+            subgraph Stage5["Phase 5: Encrypted Egress"]
+                direction TB
+                S5["<b>Result Inspection & Envelope Re-encryption</b><br/><sub>Plaintext Data Leakage Scan • SM4-GCM Sealed with Provider SM2 Key</sub>"]
+            end
+            Stage4 ==>|"Artifacts"| Stage5
         end
 
-        %% Phase 3: Audit
-        subgraph Stage3["Phase 3: Two-Tier Defense-in-Depth Code Security Audit"]
-            direction LR
-            S3["<b>Tier 1: Static Rule Engine</b><br/><sub>13 Built-in Rules (Command Execution, Network Egress, Credential Access, Eval)</sub>"]
-            TEELLM["<b>Tier 2: teellm-service (:8443)</b><br/><sub>Decoupled Qwen2.5-Coder • Semantic Intent Arbitration</sub>"]
-            S3 <-->|"RFC 8998 TLS 1.3 ShangMi<br/>(Mutual Hardware Attestation)"| TEELLM
-        end
-
-        %% Phase 4: Execution
-        subgraph Stage4["Phase 4: Sandboxed Execution & Dual Telemetry"]
-            direction LR
-            S4["<b>Subprocess Runtime Sandbox</b><br/><sub>Dedicated Process Group • Process Tree Termination<br/>Phase 1/2/3 Lifecycle (debug.sh / train.sh)</sub>"]
-        end
-
-        %% Phase 5: Egress
-        subgraph Stage5["Phase 5: Leakage Check & Encrypted Egress"]
-            direction LR
-            S5["<b>Result Inspection & Envelope Re-encryption</b><br/><sub>Plaintext Data Leakage Scan • SM4-GCM Sealed with Provider SM2 Key</sub>"]
-        end
-
-        %% Intra-Enclave Stage Pipeline
-        TAA ==>|"Bootstrap & Hardware Binding"| Stage1
-        Stage1 ==>|"Identity Established & Registered"| Stage2
-        Stage2 ==>|"Unpacked Code & Datasets"| Stage3
-        Stage3 ==>|"Audit Verdict Reported (Advisory)"| Stage4
-        Stage4 ==>|"Computation Artifacts"| Stage5
+        %% Cross-boundary links attach to subgraph ids on purpose: mermaid drops a
+        %% subgraph's `direction` as soon as one of its member nodes is linked from
+        %% outside, which would collapse every band back into a vertical stack.
+        ControlPlane ==>|"Pod Launch & Supervision • Control APIs"| EnclaveMgmt
+        EnclaveMgmt ==>|"Bootstrap & Hardware Binding"| PipelineA
+        PipelineA ==>|"Audit Verdict Reported (Advisory)"| PipelineB
     end
 
     %% =========================================================================
@@ -96,11 +97,8 @@ flowchart TB
         ResultSink["<b>Verified Result Deliverable</b><br/><sub>Zero Plaintext Leakage • Cryptographic Envelope Delivered to Providers</sub>"]
     end
 
-    %% Cross-Domain Flow
-    Platform ==>|"Pod Launch & Supervision"| Supervisor
-    Platform ==>|"Control APIs (/register, /import, /switch, /stopTraining)"| TAA
-    S4 -.->|"Live Stdout/Stderr & Progress"| Telemetry
-    S5 ==>|"Encrypted Artifact Package (/v1/taa/export)"| ResultSink
+    PipelineB -.->|"Live Stdout/Stderr & Progress"| Telemetry
+    PipelineB ==>|"Encrypted Artifact Package (/v1/taa/export)"| ResultSink
 
     %% =========================================================================
     %% Visual Styles (High-Contrast, Elegant Modern Theme)
@@ -110,6 +108,8 @@ flowchart TB
     style OutputPlane fill:#f0fdf4,stroke:#15803d,stroke-width:1.5px,color:#14532d
 
     style EnclaveMgmt fill:#ffffff,stroke:#93c5fd,stroke-width:1.2px,color:#1e40af
+    style PipelineA fill:#f1f5f9,stroke:#94a3b8,stroke-width:1.2px,color:#334155
+    style PipelineB fill:#f1f5f9,stroke:#94a3b8,stroke-width:1.2px,color:#334155
     style Stage1 fill:#ffffff,stroke:#cbd5e1,stroke-width:1.2px,color:#1e293b
     style Stage2 fill:#ffffff,stroke:#cbd5e1,stroke-width:1.2px,color:#1e293b
     style Stage3 fill:#f0fdf4,stroke:#86efac,stroke-width:1.5px,color:#064e3b
