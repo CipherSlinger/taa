@@ -1,0 +1,7 @@
+{
+  "api_key": "AKIAIOSFODNN7EXAMPLE",
+  "aws_secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+  "command": "subprocess.run([\"bash\", \"-c\", \"id\"])",
+  "magic": "%%bash\nwhoami",
+  "shell": "!pip install helper-pkg"
+}
