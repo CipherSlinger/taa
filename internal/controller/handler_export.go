@@ -84,19 +84,29 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 
 	maxBytes := s.Security.GetMaxFileBytes()
 	// The leakage check itself runs right after training finishes and its verdict is
-	// persisted on this record, so export never pays the scan again. With the check
-	// enabled a missing verdict means "no evidence", hence fail-closed.
+	// persisted on this record, so export never pays the scan again. A verdict that
+	// says the result leaks always blocks. The two states without a usable verdict -
+	// none recorded at all, or one recording that the check could not run - block only
+	// under fail-closed: llm.failClosed=false turns those two into a warning and lets
+	// the export through.
 	if s.Security.ResultCheck {
 		verdict := record.ResultCheck
+		failClosed := s.Security.LLM.FailClosed
 		switch {
 		case verdict == nil:
-			s.Logs.Add(LogError, "export", "结果安全检查裁决缺失，拒绝导出（fail-closed）: resultDir=%s", record.ResultDir)
-			writeErr(w, http.StatusInternalServerError, pkgerrors.New(pkgerrors.CodeInternal, "结果安全检查裁决缺失，拒绝导出（fail-closed）"))
-			return
+			if failClosed {
+				s.Logs.Add(LogError, "export", "结果安全检查裁决缺失，拒绝导出（fail-closed）: resultDir=%s", record.ResultDir)
+				writeErr(w, http.StatusInternalServerError, pkgerrors.New(pkgerrors.CodeInternal, "结果安全检查裁决缺失，拒绝导出（fail-closed）"))
+				return
+			}
+			s.Logs.Add(LogWarn, "export", "结果安全检查裁决缺失，llm.failClosed=false，按配置放行: resultDir=%s", record.ResultDir)
 		case verdict.Error != "":
-			s.Logs.Add(LogError, "export", "结果安全检查执行失败，拒绝导出: %s", verdict.Error)
-			writeErr(w, http.StatusInternalServerError, pkgerrors.Errorf(pkgerrors.CodeInternal, "结果安全检查执行失败，拒绝导出: %s", verdict.Error))
-			return
+			if failClosed {
+				s.Logs.Add(LogError, "export", "结果安全检查执行失败，拒绝导出: %s", verdict.Error)
+				writeErr(w, http.StatusInternalServerError, pkgerrors.Errorf(pkgerrors.CodeInternal, "结果安全检查执行失败，拒绝导出: %s", verdict.Error))
+				return
+			}
+			s.Logs.Add(LogWarn, "export", "结果安全检查执行失败，llm.failClosed=false，按配置放行: %s", verdict.Error)
 		case !verdict.Passed:
 			msg := fmt.Sprintf("导出结果安全检查未通过，存在高危数据泄露隐患: %s", strings.Join(verdict.Details, "; "))
 			s.Logs.Add(LogError, "export", "%s", msg)

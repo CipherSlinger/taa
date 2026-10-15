@@ -1622,6 +1622,7 @@ func TestExportFileSizeLimit(t *testing.T) {
 	t.Run("resultCheck rejects a failing verdict recorded at training end", func(t *testing.T) {
 		state.Security.MaxFileBytes = 3 * 1024 * 1024 * 1024
 		state.Security.ResultCheck = true
+		state.Security.LLM.FailClosed = false // 泄露裁决与 failClose 无关，永远拦
 		defer func() {
 			state.Security.ResultCheck = false
 		}()
@@ -1663,6 +1664,7 @@ func TestExportFileSizeLimit(t *testing.T) {
 
 	t.Run("resultCheck missing verdict fails closed with 500", func(t *testing.T) {
 		state.Security.ResultCheck = true
+		state.Security.LLM.FailClosed = true
 		defer func() {
 			state.Security.ResultCheck = false
 		}()
@@ -1684,6 +1686,7 @@ func TestExportFileSizeLimit(t *testing.T) {
 
 	t.Run("resultCheck verdict that failed to run returns 500", func(t *testing.T) {
 		state.Security.ResultCheck = true
+		state.Security.LLM.FailClosed = true
 		defer func() {
 			state.Security.ResultCheck = false
 		}()
@@ -1713,6 +1716,91 @@ func TestExportFileSizeLimit(t *testing.T) {
 		}
 		if strings.Contains(api.Msg, "未通过") {
 			t.Fatalf("a broken check must not be reported as a leakage finding: %s", api.Msg)
+		}
+	})
+
+	// llm.failClosed=false：没有可用裁决（没查过 / 查了没跑起来）时按配置放行，
+	// 但"查过且判定泄露"永远拦——那条裁决不依赖 failClose。
+	t.Run("resultCheck missing verdict passes with failClosed disabled", func(t *testing.T) {
+		state.Security.ResultCheck = true
+		state.Security.LLM.FailClosed = false
+		defer func() {
+			state.Security.ResultCheck = false
+		}()
+
+		seedExportIndexRecord(t, state, "req-export-noverdict-open", "task-noverdict-open", "export-noverdict-open")
+
+		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+			"requestId": "req-export-noverdict-open",
+			"taskId":    "task-noverdict-open",
+		})
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("expected 200 with failClosed disabled, got status=%d body=%s", resp.StatusCode, body)
+		}
+	})
+
+	t.Run("resultCheck broken check passes with failClosed disabled", func(t *testing.T) {
+		state.Security.ResultCheck = true
+		state.Security.LLM.FailClosed = false
+		defer func() {
+			state.Security.ResultCheck = false
+		}()
+
+		seedExportIndexRecord(t, state, "req-export-checkerr-open", "task-checkerr-open", "export-checkerr-open")
+		store, err := state.importIndexStore()
+		if err != nil {
+			t.Fatalf("load import index store: %v", err)
+		}
+		if err := store.SetResultCheck("req-export-checkerr-open", "task-checkerr-open", &resource.ResultCheckVerdict{
+			Error:     "read result dir: permission denied",
+			CheckedAt: "2026-10-15T00:00:00Z",
+		}); err != nil {
+			t.Fatalf("SetResultCheck: %v", err)
+		}
+
+		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+			"requestId": "req-export-checkerr-open",
+			"taskId":    "task-checkerr-open",
+		})
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("expected 200 with failClosed disabled, got status=%d body=%s", resp.StatusCode, body)
+		}
+	})
+
+	t.Run("resultCheck failing verdict still blocks with failClosed disabled", func(t *testing.T) {
+		state.Security.ResultCheck = true
+		state.Security.LLM.FailClosed = false
+		defer func() {
+			state.Security.ResultCheck = false
+		}()
+
+		seedExportIndexRecord(t, state, "req-export-leak-open", "task-leak-open", "export-leak-open")
+		store, err := state.importIndexStore()
+		if err != nil {
+			t.Fatalf("load import index store: %v", err)
+		}
+		if err := store.SetResultCheck("req-export-leak-open", "task-leak-open", &resource.ResultCheckVerdict{
+			Passed:    false,
+			Details:   []string{"[plaintext-data] leak.csv 与训练数据匹配"},
+			CheckedAt: "2026-10-15T00:00:00Z",
+		}); err != nil {
+			t.Fatalf("SetResultCheck: %v", err)
+		}
+
+		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+			"requestId": "req-export-leak-open",
+			"taskId":    "task-leak-open",
+		})
+		api := decodeResponse(t, resp)
+		if resp.StatusCode != http.StatusBadRequest || api.Error != pkgerrors.CodeInvalidArgument {
+			t.Fatalf("expected 400 on a leaking verdict, got status=%d error=%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		}
+		if !strings.Contains(api.Msg, "导出结果安全检查未通过") {
+			t.Fatalf("unexpected error message: %s", api.Msg)
 		}
 	})
 }
