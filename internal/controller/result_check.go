@@ -22,7 +22,9 @@ func (s *TAAState) runResultCheck(dir string) *resource.ResultCheckVerdict {
 	// GetMaxFileBytes feeds ResultChecker.limit(); using another value here would
 	// change the oversized-file verdict.
 	checker := codeaudit.NewResultChecker(s.Security.DataDir, s.Security.GetMaxFileBytes())
-	report, err := checker.CheckDirectory(dir)
+	// The report itself is skipped: it is TAA's own artifact and holds table previews
+	// by design, so scanning it would flag the check's own output as leaked data.
+	report, err := checker.CheckDirectory(dir, trainingReportFileName)
 	if err != nil {
 		verdict.Error = err.Error()
 		return verdict

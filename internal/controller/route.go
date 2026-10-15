@@ -945,7 +945,7 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 	}
 
 	if resultDir != "" && reportMap != nil {
-		_ = writeJSONFile(filepath.Join(resultDir, "training_report.json"), reportMap)
+		_ = writeJSONFile(filepath.Join(resultDir, trainingReportFileName), reportMap)
 	}
 
 	// 3. Fail-Closed: 主动向管控平台发送失败通知（通过 ReportTaskOutcome 自动分流）

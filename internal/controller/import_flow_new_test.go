@@ -902,8 +902,12 @@ result = {"dataset": {"total_samples": 10, "splits": {"train": 10, "test": 0}}, 
 	if _, ok := files[dirName+"/trained_model.bin"]; !ok {
 		t.Fatalf("exported zip missing trained_model.bin: got keys %v", keysOfMap(files))
 	}
-	if _, ok := files[dirName+"/training_report.json"]; !ok {
-		t.Fatalf("exported zip missing training_report.json: got keys %v", keysOfMap(files))
+	// 报告是 TAA 自己的产物，且带样本行预览，不进导出清单
+	if _, ok := files[dirName+"/training_report.json"]; ok {
+		t.Fatalf("exported zip must not carry training_report.json: got keys %v", keysOfMap(files))
+	}
+	if _, ok := files[dirName+"/training_result.json"]; !ok {
+		t.Fatalf("exported zip missing the training script's own training_result.json: got keys %v", keysOfMap(files))
 	}
 }
 
@@ -1415,8 +1419,9 @@ result = {"dataset": {"content": data_content}, "metrics": {"marker": args.marke
 	if _, ok := files[dirName+"/marker.txt"]; !ok {
 		t.Fatalf("exported zip missing marker.txt: got keys %v", keysOfMap(files))
 	}
-	if _, ok := files[dirName+"/training_report.json"]; !ok {
-		t.Fatalf("exported zip missing training_report.json: got keys %v", keysOfMap(files))
+	// 报告是 TAA 自己的产物，且带样本行预览，不进导出清单
+	if _, ok := files[dirName+"/training_report.json"]; ok {
+		t.Fatalf("exported zip must not carry training_report.json: got keys %v", keysOfMap(files))
 	}
 
 	// 7. 测试下发空 URL 模型更新配置，随后下发数据触发训练

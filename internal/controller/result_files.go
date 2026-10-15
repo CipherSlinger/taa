@@ -7,11 +7,21 @@ import (
 	filetree "taa/pkg/filetree"
 )
 
+// trainingReportFileName is TAA's own report, written at the root of the result
+// directory by every path that ends a training run (normal completion, boot-time
+// crash recovery, async panic). It is not a training artifact: it is packed out of
+// the export and skipped by the leakage check - because it carries table previews,
+// i.e. dataset rows, by design (see AttachResultFiles). Every write, the export
+// 404 probe, the packer and the check resolve the name through this constant so
+// the exclusions cannot drift away from the file actually written.
+const trainingReportFileName = "training_report.json"
+
 // AttachResultFiles 把结果目录结构树挂到报告的 result_files 段上。
 //
-// 结构树与 /v1/taa/getResourceInfo 的 tree 完全一致，但**不含预览**：这个段会写进
-// training_report.json，而该文件就在结果目录里，会被 /v1/taa/export 一起打包外发，
-// 带上预览等于把训练数据的样本行送进导出产物。
+// 结构树与 /v1/taa/getResourceInfo 的 tree 完全一致，**含预览**：平台需要看到样本行本身，
+// 和 getResourceInfo 一样。这些样本行不会流到导出产物里——training_report.json 已被排除在
+// /v1/taa/export 的打包清单之外（见 trainingReportFileName），报告只经 /v1/taa/reportRes
+// 上报给平台，而导出目录里那些真正会被打包外发的文件照旧受明文泄露检查约束。
 //
 // resultCheck 非空时额外挂上 contains_dataset —— 训练结束时那次明文泄露检查的结论，
 // 也就是 /v1/taa/export 用来决定放不放行的那份裁决。没有裁决（未开启检查、失败路径、
@@ -39,6 +49,8 @@ func buildResultFilesTree(resultDir string, resultCheck *resource.ResultCheckVer
 		return nil, nil
 	}
 	opts := filetree.DefaultOptions()
+	// 模板类文件的样本行要随报告上报，与 getResourceInfo 一致。
+	opts.IncludePreview = true
 	// 这里只取 tree 与几个统计值，不序列化 checksum。默认选项既没给 Checksum 也没给
 	// ArchivePath，BuildReport 会回落到整目录 SM3——那是对结果目录的又一次全量读取。
 	opts.SkipChecksum = true

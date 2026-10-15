@@ -1022,7 +1022,7 @@ func (s *TAAState) buildAndSaveTrainingReport(taskID string, startedAt, finished
 	if err := AttachResultFiles(report, resultDir, resultCheck); err != nil {
 		s.Logs.Add(LogWarn, "report", "生成结果目录结构树失败，报告中省略 result_files: %v", err)
 	}
-	if err := writeJSONFile(filepath.Join(resultDir, "training_report.json"), report); err != nil {
+	if err := writeJSONFile(filepath.Join(resultDir, trainingReportFileName), report); err != nil {
 		return nil, err
 	}
 	return json.Marshal(report)

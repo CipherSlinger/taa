@@ -22,8 +22,9 @@ type exportRequest struct {
 }
 
 // compressDirToZip 将目录压缩为 zip 格式的字节切片，并对软链接进行越界安全校验。
-func compressDirToZip(srcDir string) ([]byte, error) {
-	return resource.CompressDirToZip(srcDir)
+// skipRootNames 见 resource.CompressDirToZip：列出根目录下不进导出清单的文件名。
+func compressDirToZip(srcDir string, skipRootNames ...string) ([]byte, error) {
+	return resource.CompressDirToZip(srcDir, skipRootNames...)
 }
 
 func safeFilenamePart(value string) string {
@@ -59,9 +60,9 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := os.Stat(filepath.Join(record.ResultDir, "training_report.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(record.ResultDir, trainingReportFileName)); err != nil {
 		if os.IsNotExist(err) {
-			writeError(w, http.StatusNotFound, fmt.Sprintf("结果文件不存在: %s", filepath.Join(record.ResultDir, "training_report.json")))
+			writeError(w, http.StatusNotFound, fmt.Sprintf("结果文件不存在: %s", filepath.Join(record.ResultDir, trainingReportFileName)))
 			return
 		}
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("检查结果文件失败: %v", err))
@@ -137,7 +138,10 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 		s.Logs.Add(LogInfo, "export", "阶段%d: 使用 %s 加密 (长度=%d)", recordPhase, keySource, len(pubKeyPEM))
 	}
 
-	resultData, err := resource.CompressDirToZip(record.ResultDir)
+	// The report is TAA's own metadata and carries table previews (dataset rows) by
+	// design, so it is packed out of the export rather than shipped with it. It is
+	// also the one file the leakage check skips, for the same reason.
+	resultData, err := compressDirToZip(record.ResultDir, trainingReportFileName)
 	if err != nil {
 		s.Logs.Add(LogError, "export", "压缩结果目录失败: %v", err)
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("压缩结果目录失败: %v", err))

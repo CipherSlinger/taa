@@ -70,8 +70,15 @@ func EncryptDataEnvelope(pubKeyPEM string, plaintext []byte) ([]byte, error) {
 	return sealed, nil
 }
 
-// CompressDirToZip 将目录压缩为 zip 格式的字节切片，并对软链接进行越界安全校验
-func CompressDirToZip(srcDir string) ([]byte, error) {
+// CompressDirToZip 将目录压缩为 zip 格式的字节切片，并对软链接进行越界安全校验。
+//
+// skipRootNames lists file names to leave out when they sit directly in srcDir:
+// the caller's own metadata artifacts (the training report) belong there but are
+// not deliverables. Only direct children match, so a file of the same name deeper
+// in the tree is still packed - the packer and the leakage check must agree on
+// exactly which files are excluded, or a file the check never looked at would
+// still travel in the export.
+func CompressDirToZip(srcDir string, skipRootNames ...string) ([]byte, error) {
 	srcDir = filepath.Clean(srcDir)
 	info, err := os.Stat(srcDir)
 	if err != nil {
@@ -79,6 +86,13 @@ func CompressDirToZip(srcDir string) ([]byte, error) {
 	}
 	if !info.IsDir() {
 		return nil, fmt.Errorf("路径不是目录: %s", srcDir)
+	}
+
+	skip := make(map[string]bool, len(skipRootNames))
+	for _, name := range skipRootNames {
+		if name != "" {
+			skip[name] = true
+		}
 	}
 
 	evalSrcDir, err := filepath.EvalSymlinks(srcDir)
@@ -102,6 +116,10 @@ func CompressDirToZip(srcDir string) ([]byte, error) {
 			return fmt.Errorf("计算相对路径失败 %s: %w", path, err)
 		}
 		relPath = filepath.ToSlash(relPath)
+
+		if len(skip) > 0 && filepath.Dir(path) == srcDir && skip[info.Name()] {
+			return nil
+		}
 
 		if info.Mode()&os.ModeSymlink != 0 {
 			evalPath, err := filepath.EvalSymlinks(path)

@@ -133,9 +133,24 @@ func (rc *ResultChecker) CheckFile(resultPath string) (*ResultCheckReport, error
 }
 
 // CheckDirectory inspects all files in a result directory.
-func (rc *ResultChecker) CheckDirectory(resultDir string) (*ResultCheckReport, error) {
+//
+// skipRootNames lists file names to ignore when they are direct children of
+// resultDir. TAA's own report belongs there and is not a training artifact: it
+// carries table previews by design, so scanning it would report the check's own
+// bookkeeping as leaked dataset rows. Only direct children are skipped, matching
+// the export packer's rule - a same-named file produced deeper in the tree is
+// still scanned, so nothing can travel in an export unchecked.
+func (rc *ResultChecker) CheckDirectory(resultDir string, skipRootNames ...string) (*ResultCheckReport, error) {
 	var allWarnings []ResultCheckIssue
 	passed := true
+
+	skip := make(map[string]bool, len(skipRootNames))
+	for _, name := range skipRootNames {
+		if name != "" {
+			skip[name] = true
+		}
+	}
+	root := filepath.Clean(resultDir)
 
 	err := filepath.Walk(resultDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
@@ -143,6 +158,9 @@ func (rc *ResultChecker) CheckDirectory(resultDir string) (*ResultCheckReport, e
 		}
 		// Skip hidden files and common non-result files.
 		if strings.HasPrefix(info.Name(), ".") {
+			return nil
+		}
+		if len(skip) > 0 && filepath.Dir(path) == root && skip[info.Name()] {
 			return nil
 		}
 

@@ -294,6 +294,50 @@ func TestCompressDirToZip_SuccessAndInternalSymlink(t *testing.T) {
 	}
 }
 
+// 3.3 导出清单排除：根目录下被点名的文件（TAA 自己的训练报告）不进 zip，
+// 目录深处同名文件照常打包——排除规则必须与结果泄露检查的跳过规则逐字对应。
+func TestCompressDirToZipSkipsNamedRootFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	srcDir := filepath.Join(tempDir, "export-box")
+	subDir := filepath.Join(srcDir, "sub")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "training_report.json"), []byte(`{"preview":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "training_report.json"), []byte("nested"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "model.bin"), []byte("weights"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	zipData, err := compressDirToZip(srcDir, "training_report.json")
+	if err != nil {
+		t.Fatalf("compressDirToZip failed: %v", err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	if err != nil {
+		t.Fatalf("zip.NewReader failed: %v", err)
+	}
+	entries := make(map[string]bool)
+	for _, f := range zr.File {
+		entries[f.Name] = true
+	}
+
+	baseName := filepath.Base(srcDir)
+	if entries[baseName+"/training_report.json"] {
+		t.Fatalf("root training_report.json must not be packed: %v", entries)
+	}
+	if !entries[baseName+"/sub/training_report.json"] {
+		t.Fatalf("nested same-named file must still be packed: %v", entries)
+	}
+	if !entries[baseName+"/model.bin"] {
+		t.Fatalf("model.bin missing from zip: %v", entries)
+	}
+}
+
 // 4. 流式下载超限熔断防护测试
 func TestDownloadToTempFileLimit(t *testing.T) {
 	// 创建一个超过 512MB 或者使用 chunked 传输的 mock server

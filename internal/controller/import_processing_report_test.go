@@ -213,7 +213,7 @@ func TestBuildAndSaveTrainingReportDoesNotScanDataset(t *testing.T) {
 	}
 }
 
-func TestBuildAndSaveTrainingReportAddsResultFilesWithoutPreview(t *testing.T) {
+func TestBuildAndSaveTrainingReportAddsResultFilesWithPreview(t *testing.T) {
 	resultDir := t.TempDir()
 	modelDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(modelDir, "model.bin"), []byte("test-model"), 0o644); err != nil {
@@ -259,23 +259,47 @@ func TestBuildAndSaveTrainingReportAddsResultFilesWithoutPreview(t *testing.T) {
 		t.Fatalf("result_files.tree.name = %v, want %v", tree["name"], filepath.Base(resultDir))
 	}
 
-	// 报告会随导出接口外发，绝不能带上样本数据值
-	if strings.Contains(string(data), `"preview"`) {
-		t.Fatalf("report leaked a preview: %s", data)
+	// 样本行随报告上报给平台，与 getResourceInfo 一致；它们不会流到导出产物里，
+	// 因为 training_report.json 已被排除在导出清单之外（见 flow 测试）
+	csvNode := findTreeNode(t, tree, "metrics.csv")
+	preview, ok := csvNode["preview"].([]any)
+	if !ok {
+		t.Fatalf("metrics.csv node missing preview: %v", csvNode)
 	}
-	// metrics.csv 的结构信息本身应该在树里
-	if !strings.Contains(string(data), "metrics.csv") {
-		t.Fatalf("report tree missing metrics.csv: %s", data)
+	if len(preview) != 2 {
+		t.Fatalf("preview rows = %d, want 2: %v", len(preview), preview)
+	}
+	if first, _ := preview[0].([]any); len(first) != 2 || first[0] != "1" || first[1] != "0.52" {
+		t.Fatalf("first preview row = %#v, want [1 0.52]", preview[0])
 	}
 
 	// 同一份内容也要落盘到训练报告文件中
-	onDisk, err := os.ReadFile(filepath.Join(resultDir, "training_report.json"))
+	onDisk, err := os.ReadFile(filepath.Join(resultDir, trainingReportFileName))
 	if err != nil {
 		t.Fatalf("read training_report.json: %v", err)
 	}
 	if !strings.Contains(string(onDisk), `"result_files"`) {
 		t.Fatalf("training_report.json missing result_files: %s", onDisk)
 	}
+}
+
+// findTreeNode 在目录树里按名字深度优先找一个节点。
+func findTreeNode(t *testing.T, node map[string]any, name string) map[string]any {
+	t.Helper()
+	if node["name"] == name {
+		return node
+	}
+	children, _ := node["children"].([]any)
+	for _, child := range children {
+		childNode, ok := child.(map[string]any)
+		if !ok {
+			continue
+		}
+		if found := findTreeNode(t, childNode, name); found != nil {
+			return found
+		}
+	}
+	return nil
 }
 
 func TestBuildAndSaveTrainingReportCarriesContainsDataset(t *testing.T) {
@@ -374,6 +398,9 @@ func TestBuildCrashFailureReportCarriesResultFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(resultDir, "train.log"), []byte("epoch 1\n"), 0o644); err != nil {
 		t.Fatalf("write train.log: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(resultDir, "metrics.csv"), []byte("epoch,val_accuracy\n1,0.52\n"), 0o644); err != nil {
+		t.Fatalf("write metrics.csv: %v", err)
+	}
 	startedAt := time.Now().Add(-time.Minute)
 	finishedAt := time.Now()
 
@@ -386,15 +413,15 @@ func TestBuildCrashFailureReportCarriesResultFiles(t *testing.T) {
 	if !ok {
 		t.Fatalf("crash report missing result_files: %v", report)
 	}
-	if got := resultFiles["total_files"]; got != 1 {
-		t.Fatalf("result_files.total_files = %v, want 1", got)
+	if got := resultFiles["total_files"]; got != 2 {
+		t.Fatalf("result_files.total_files = %v, want 2", got)
 	}
 
-	// 报告会随导出接口外发，绝不能带上样本数据值
+	// 崩溃路径的报告同样带样本行预览（与正常路径一致）
 	if data, mErr := json.Marshal(report); mErr != nil {
 		t.Fatalf("marshal crash report: %v", mErr)
-	} else if strings.Contains(string(data), `"preview"`) {
-		t.Fatalf("crash report leaked a preview: %s", data)
+	} else if !strings.Contains(string(data), `"preview"`) {
+		t.Fatalf("crash report missing preview: %s", data)
 	}
 
 	// 没有结果目录时（例如崩溃发生在目录创建前）报告照常产出，只是不带该字段

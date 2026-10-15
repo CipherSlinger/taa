@@ -156,6 +156,52 @@ func TestResultCheckerDirectory(t *testing.T) {
 	}
 }
 
+// 根目录下被点名的文件是调用方自己的元数据（训练报告），它按设计带样本行预览，
+// 扫它等于把检查自己的产物报成泄露。
+func TestResultCheckerSkipsNamedRootFiles(t *testing.T) {
+	reported := "training_report.json"
+
+	t.Run("skipped at the root", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, reported),
+			[]byte(`{"preview":[["1","cat","img1.jpg"]]}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		checker := DefaultResultChecker()
+		report, err := checker.CheckDirectory(dir, reported)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !report.Passed {
+			t.Fatalf("named root file should be skipped, got warnings: %+v", report.Warnings)
+		}
+	})
+
+	// 跳过规则只认根目录：同名文件出现在深处就是训练脚本自己的产物，必须照扫，
+	// 否则"没被检查过的文件照样进导出包"。
+	t.Run("still scanned deeper in the tree", func(t *testing.T) {
+		dir := t.TempDir()
+		sub := filepath.Join(dir, "sub")
+		if err := os.MkdirAll(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sub, reported),
+			[]byte("binary...id,label,image\n...more"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		checker := DefaultResultChecker()
+		report, err := checker.CheckDirectory(dir, reported)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Passed {
+			t.Fatal("a same-named file below the root must still be checked")
+		}
+	})
+}
+
 func TestResultCheckerNonExistentFile(t *testing.T) {
 	checker := DefaultResultChecker()
 	_, err := checker.CheckFile("/nonexistent/file.bin")
