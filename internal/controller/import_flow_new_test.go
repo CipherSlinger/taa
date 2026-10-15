@@ -573,15 +573,16 @@ func runPhase1FlowCase(t *testing.T, tc phase1FlowCase) {
 	}
 
 	if tc.resultCheck {
-		assertFlowResultCheck(t, state, server, tc)
+		assertFlowResultCheck(t, state, server, tc, report)
 	}
 }
 
 // assertFlowResultCheck pins that the plaintext leakage check belongs to the training
 // run: by the time it returns, the report has already been delivered (asserted by the
 // caller), so even a failing verdict leaves training successful. Export then reads
-// that verdict instead of scanning again.
-func assertFlowResultCheck(t *testing.T, state *TAAState, server *httptest.Server, tc phase1FlowCase) {
+// that verdict instead of scanning again, and the delivered report carries the same
+// conclusion as result_files.contains_dataset.
+func assertFlowResultCheck(t *testing.T, state *TAAState, server *httptest.Server, tc phase1FlowCase, report map[string]any) {
 	t.Helper()
 
 	taskID := "task-" + strings.ReplaceAll(tc.name, " ", "-")
@@ -601,6 +602,16 @@ func assertFlowResultCheck(t *testing.T, state *TAAState, server *httptest.Serve
 	}
 	if tc.wantVerdict != nil && record.ResultCheck.Passed != *tc.wantVerdict {
 		t.Fatalf("verdict passed = %v, want %v (details=%v)", record.ResultCheck.Passed, *tc.wantVerdict, record.ResultCheck.Details)
+	}
+
+	resultFiles, ok := report["result_files"].(map[string]any)
+	if !ok {
+		t.Fatalf("delivered report missing result_files: %v", report)
+	}
+	if tc.wantVerdict != nil {
+		if got, ok := resultFiles["contains_dataset"]; !ok || got != !*tc.wantVerdict {
+			t.Fatalf("report result_files.contains_dataset = %v (present=%v), want %v", got, ok, !*tc.wantVerdict)
+		}
 	}
 
 	if tc.wantExportStatus == 0 {

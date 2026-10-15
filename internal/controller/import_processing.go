@@ -548,10 +548,12 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 	// persisted on the import index record, which is what the export handler reads
 	// later. Deliberately non-fatal: a failing or impossible check must not turn a
 	// successful training run into a failure, so every error below only warns.
+	var trainResultCheck *resource.ResultCheckVerdict
 	if s.Security.ResultCheck {
 		StepSeparator("Result Leakage Check")
 		s.Logs.Add(LogInfo, "resultcheck", "训练结束，执行结果明文泄露检查: resultDir=%s", trainOutputDir)
 		verdict := s.runResultCheck(trainOutputDir)
+		trainResultCheck = verdict
 		switch {
 		case verdict.Error != "":
 			s.Logs.Add(LogError, "resultcheck", "结果明文泄露检查执行失败: %s", verdict.Error)
@@ -571,7 +573,7 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 	s.setCurrentOp("reporting")
 	s.Logs.Add(LogInfo, "report", "生成训练报告: taskId=%s", trainReq.TaskID)
 	finishedAt := time.Now().UTC()
-	report, err := s.buildAndSaveTrainingReport(trainReq.TaskID, startedAt, finishedAt, "succeeded", 0, "", s.getLastAudit(), true, trainOutputDir)
+	report, err := s.buildAndSaveTrainingReport(trainReq.TaskID, startedAt, finishedAt, "succeeded", 0, "", s.getLastAudit(), true, trainOutputDir, trainResultCheck)
 	if err != nil {
 		if checkCancelled() {
 			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
@@ -961,7 +963,7 @@ func (s *TAAState) reportTrainingFailureFromResult(req importRequest, startedAt 
 	s.Logs.Add(LogError, "import", "训练流程失败: %s", reason)
 	s.Logs.Add(LogInfo, "report", "生成失败报告: taskId=%s", req.TaskID)
 	finishedAt := time.Now().UTC()
-	report, err := s.buildAndSaveTrainingReport(req.TaskID, startedAt, finishedAt, "failed", 1, reason, audit, includeAudit, resultDir)
+	report, err := s.buildAndSaveTrainingReport(req.TaskID, startedAt, finishedAt, "failed", 1, reason, audit, includeAudit, resultDir, nil)
 	if err != nil {
 		s.Logs.Add(LogError, "report", "生成失败报告失败: %v", err)
 		return
@@ -996,7 +998,7 @@ func safeJoinWithBase(baseDir, baseAbs, name string) (string, error) {
 	return resource.SafeJoinWithBase(baseDir, baseAbs, name)
 }
 
-func (s *TAAState) buildAndSaveTrainingReport(taskID string, startedAt, finishedAt time.Time, status string, exitCode int, failureReason string, audit *codeaudit.AuditReport, includeAudit bool, resultDir string) ([]byte, error) {
+func (s *TAAState) buildAndSaveTrainingReport(taskID string, startedAt, finishedAt time.Time, status string, exitCode int, failureReason string, audit *codeaudit.AuditReport, includeAudit bool, resultDir string, resultCheck *resource.ResultCheckVerdict) ([]byte, error) {
 	trainingResult, err := loadTrainingResult(filepath.Join(resultDir, "training_result.json"))
 	if err != nil {
 		return nil, err
@@ -1017,7 +1019,7 @@ func (s *TAAState) buildAndSaveTrainingReport(taskID string, startedAt, finished
 	if err != nil {
 		return nil, err
 	}
-	if err := AttachResultFiles(report, resultDir); err != nil {
+	if err := AttachResultFiles(report, resultDir, resultCheck); err != nil {
 		s.Logs.Add(LogWarn, "report", "生成结果目录结构树失败，报告中省略 result_files: %v", err)
 	}
 	if err := writeJSONFile(filepath.Join(resultDir, "training_report.json"), report); err != nil {
@@ -1055,7 +1057,7 @@ func BuildCrashFailureReport(taskID string, startedAt, finishedAt time.Time, fai
 	if err != nil {
 		return nil, err
 	}
-	if attachErr := AttachResultFiles(report, resultDir); attachErr != nil {
+	if attachErr := AttachResultFiles(report, resultDir, nil); attachErr != nil {
 		log.Printf("WARNING: build result_files for crash report failed: %v", attachErr)
 	}
 	return report, nil

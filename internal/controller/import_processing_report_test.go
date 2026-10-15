@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"taa/internal/codeaudit"
+	"taa/internal/resource"
 )
 
 func TestBuildTrainingReportAddsModelChecksumAndKeepsTrainingMetrics(t *testing.T) {
@@ -192,7 +193,7 @@ func TestBuildAndSaveTrainingReportDoesNotScanDataset(t *testing.T) {
 	finishedAt := time.Now()
 
 	// buildAndSaveTrainingReport 不再包含 dataDir 和 loadResourceDataset
-	data, err := state.buildAndSaveTrainingReport("task-123", startedAt, finishedAt, "succeeded", 0, "", nil, false, resultDir)
+	data, err := state.buildAndSaveTrainingReport("task-123", startedAt, finishedAt, "succeeded", 0, "", nil, false, resultDir, nil)
 	if err != nil {
 		t.Fatalf("buildAndSaveTrainingReport: %v", err)
 	}
@@ -234,7 +235,7 @@ func TestBuildAndSaveTrainingReportAddsResultFilesWithoutPreview(t *testing.T) {
 		Logs:     NewLogStore(64),
 	}
 
-	data, err := state.buildAndSaveTrainingReport("task-123", time.Now().Add(-time.Second), time.Now(), "succeeded", 0, "", nil, false, resultDir)
+	data, err := state.buildAndSaveTrainingReport("task-123", time.Now().Add(-time.Second), time.Now(), "succeeded", 0, "", nil, false, resultDir, nil)
 	if err != nil {
 		t.Fatalf("buildAndSaveTrainingReport: %v", err)
 	}
@@ -277,6 +278,69 @@ func TestBuildAndSaveTrainingReportAddsResultFilesWithoutPreview(t *testing.T) {
 	}
 }
 
+func TestBuildAndSaveTrainingReportCarriesContainsDataset(t *testing.T) {
+	newState := func(t *testing.T) (*TAAState, string) {
+		t.Helper()
+		resultDir := t.TempDir()
+		modelDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(modelDir, "model.bin"), []byte("test-model"), 0o644); err != nil {
+			t.Fatalf("write model file: %v", err)
+		}
+		return &TAAState{Security: SecurityConfig{ModelDir: modelDir}, Logs: NewLogStore(64)}, resultDir
+	}
+
+	build := func(t *testing.T, state *TAAState, resultDir string, verdict *resource.ResultCheckVerdict) map[string]any {
+		t.Helper()
+		data, err := state.buildAndSaveTrainingReport("task-cd", time.Now().Add(-time.Second), time.Now(), "succeeded", 0, "", nil, false, resultDir, verdict)
+		if err != nil {
+			t.Fatalf("buildAndSaveTrainingReport: %v", err)
+		}
+		var report map[string]any
+		if err := json.Unmarshal(data, &report); err != nil {
+			t.Fatalf("unmarshal report: %v", err)
+		}
+		resultFiles, ok := report["result_files"].(map[string]any)
+		if !ok {
+			t.Fatalf("report missing result_files: %v", report)
+		}
+		return resultFiles
+	}
+
+	t.Run("failing verdict reports contains_dataset true", func(t *testing.T) {
+		state, resultDir := newState(t)
+		resultFiles := build(t, state, resultDir, &resource.ResultCheckVerdict{Passed: false, Details: []string{"[plaintext_section] x"}})
+		if got, ok := resultFiles["contains_dataset"]; !ok || got != true {
+			t.Fatalf("contains_dataset = %v (present=%v), want true", got, ok)
+		}
+	})
+
+	t.Run("passing verdict reports contains_dataset false", func(t *testing.T) {
+		state, resultDir := newState(t)
+		resultFiles := build(t, state, resultDir, &resource.ResultCheckVerdict{Passed: true})
+		if got, ok := resultFiles["contains_dataset"]; !ok || got != false {
+			t.Fatalf("contains_dataset = %v (present=%v), want false", got, ok)
+		}
+	})
+
+	// 没查过就什么都不说：写成 false 会被读成"查过且干净"。
+	t.Run("no verdict omits the field", func(t *testing.T) {
+		state, resultDir := newState(t)
+		if resultFiles := build(t, state, resultDir, nil); len(resultFiles) > 0 {
+			if _, ok := resultFiles["contains_dataset"]; ok {
+				t.Fatalf("contains_dataset should be absent without a verdict: %v", resultFiles)
+			}
+		}
+	})
+
+	t.Run("verdict that failed to run omits the field", func(t *testing.T) {
+		state, resultDir := newState(t)
+		resultFiles := build(t, state, resultDir, &resource.ResultCheckVerdict{Error: "read result dir: permission denied"})
+		if _, ok := resultFiles["contains_dataset"]; ok {
+			t.Fatalf("contains_dataset should be absent when the check did not run: %v", resultFiles)
+		}
+	})
+}
+
 func TestBuildAndSaveTrainingReportOmitsResultFilesWhenScanFails(t *testing.T) {
 	resultDir := t.TempDir()
 	modelDir := t.TempDir()
@@ -291,7 +355,7 @@ func TestBuildAndSaveTrainingReportOmitsResultFilesWhenScanFails(t *testing.T) {
 		Logs:     NewLogStore(64),
 	}
 
-	data, err := state.buildAndSaveTrainingReport("task-123", time.Now().Add(-time.Second), time.Now(), "succeeded", 0, "", nil, false, missing)
+	data, err := state.buildAndSaveTrainingReport("task-123", time.Now().Add(-time.Second), time.Now(), "succeeded", 0, "", nil, false, missing, nil)
 	if err != nil {
 		t.Fatalf("buildAndSaveTrainingReport should tolerate a failed tree scan: %v", err)
 	}
