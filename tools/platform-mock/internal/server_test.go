@@ -2577,7 +2577,7 @@ func TestUploadURLKeyModeSplitsEnvelopeIntoTheURL(t *testing.T) {
 	}
 
 	// 2. Only ciphertext hits the disk: no plaintext and no envelope
-	// (ciphertext = nonce 12B + plaintext + tag 16B)
+	// (ciphertext = version 1B + nonce 12B + plaintext + tag 16B)
 	storedName, _ := resMap["filename"].(string)
 	cipherBytes, err := os.ReadFile(filepath.Join(uploadDir, storedName))
 	if err != nil {
@@ -2586,13 +2586,18 @@ func TestUploadURLKeyModeSplitsEnvelopeIntoTheURL(t *testing.T) {
 	if bytes.Contains(cipherBytes, rawContent) {
 		t.Fatal("stored file still contains the plaintext")
 	}
-	if want := len(rawContent) + 12 + 16; len(cipherBytes) != want {
-		t.Fatalf("stored size = %d, want %d: only the ciphertext should be stored, without the %d-byte envelope",
+	if want := 1 + len(rawContent) + 12 + 16; len(cipherBytes) != want {
+		t.Fatalf("stored size = %d, want %d: the body is the platform's version byte plus the ciphertext, without the %d-byte envelope",
 			len(cipherBytes), want, crypto.SM2WrappedKeySize)
+	}
+	if cipherBytes[0] != crypto.SM4FileVersion {
+		t.Fatalf("stored file starts with %d, want the platform's format version %d",
+			cipherBytes[0], crypto.SM4FileVersion)
 	}
 
 	// 3. Take the envelope back out of the URL and unwrap the data key to recover
-	// the plaintext
+	// the plaintext. The version byte comes off the front first: it identifies the
+	// container, it is not part of the SM4-GCM input.
 	wrapped, err := crypto.ParseWrappedDataKeyHex(keyHex)
 	if err != nil {
 		t.Fatalf("ParseWrappedDataKeyHex: %v", err)
@@ -2601,7 +2606,7 @@ func TestUploadURLKeyModeSplitsEnvelopeIntoTheURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UnwrapKeySM2: %v", err)
 	}
-	decrypted, err := crypto.Decrypt(dataKey, cipherBytes)
+	decrypted, err := crypto.Decrypt(dataKey, cipherBytes[1:])
 	if err != nil {
 		t.Fatalf("Decrypt: %v", err)
 	}

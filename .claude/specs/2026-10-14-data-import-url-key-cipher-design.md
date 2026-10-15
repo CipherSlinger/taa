@@ -56,8 +56,8 @@ https://host/files/data.sm4?dataKeyCipher=<hex>&<其余参数>
 
 | 布局 | 来源 |
 | --- | --- |
-| `nonce(12) ‖ 密文 ‖ tag(16)` | TAA 自己的 `Encrypt` 口径，platform-mock 的 `urlkey` 模式按它产出 |
-| `版本(1) ‖ nonce(12) ‖ 密文 ‖ tag(16)` | 平台前端产出的 `.enc`/`.sm4`（首字节为格式版本，目前恒为 `1`） |
+| `nonce(12) ‖ 密文 ‖ tag(16)` | TAA 自己的 `Encrypt` 口径（旧 mock 与 SDK 产出的形态） |
+| `版本(1) ‖ nonce(12) ‖ 密文 ‖ tag(16)` | 平台前端产出的 `.enc`/`.sm4`（首字节为格式版本，目前恒为 `1`）；mock 的 `urlkey` 模式自 2026-10-15 起也按它产出 |
 
 > **2026-10-14 实测修正**：第一版只按 `nonce ‖ 密文 ‖ tag` 解，把平台那份的首字节版本号
 > 当成了 nonce 的第一个字节，于是 GCM tag 必然不匹配、报「解密失败(密钥错误或数据被篡改)」
@@ -66,6 +66,21 @@ https://host/files/data.sm4?dataKeyCipher=<hex>&<其余参数>
 > 首字节本身判不了（随机 nonce 也有 1/256 概率是 `0x01`），但 GCM 认证标签能判：
 > 两种布局里最多只有一种能通过校验。版本号只认已知的 `1`，别的版本直接拒绝，
 > 不从「随便跳过一字节」里猜——前端对该字节的定义就是「认版本，不认识就别拿错密钥去试」。
+
+> **2026-10-15 补齐配套**：解密侧的兼容由 `913b54f` 落到主分支，此后补了两处配套，
+> 使这条兼容不再只靠单元测试背书：
+>
+> 1. **mock 按生产布局产出**。`tools/platform-mock` 的 `urlkey` 模式此前写无版本布局，
+>    于是本地端到端跑的根本不是生产那条格式——兼容代码在联调里等于没被执行过。现在
+>    mock 也写 `版本(1) ‖ nonce ‖ 密文 ‖ tag`（`crypto.SM4FileVersion`，与解密侧同一个
+>    常量定义，不再各写一份），mock 自己的用例同时钉住首字节与「去掉首字节后能解出明文」。
+> 2. **数据路径补用例**。版本布局此前只有模型端点的用例（`/v1/taa/importModel`）；
+>    两条路径共用 `decryptCiphertextWithDataKey`，但生产上真正在跑的是数据下发
+>    （`/v1/taa/import`），故为它补 `TestImportAcceptsVersionedSm4File`。
+>
+> 变异校验：把重试条件改为恒假后，`TestImportAcceptsVersionedSm4File` 与
+> `TestModelImportAcceptsVersionedSm4File` 同时 **FAIL**（`解密失败(密钥错误或数据被篡改)`），
+> 恢复后 PASS——即两个用例钉住的确实是「接受版本布局」这一行为。
 
 ### 2.4 绑定关系
 

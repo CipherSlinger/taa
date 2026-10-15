@@ -16,6 +16,13 @@ const (
 
 	// sm4GCMSealedOverhead 是 Encrypt 输出中 nonce 与认证标签的总长度。
 	sm4GCMSealedOverhead = 28
+
+	// SM4FileVersion is the format version the platform writes as the first byte of
+	// its bare SM4 files -- [version][nonce][ciphertext][tag]. It is a container
+	// convention of the producer and takes no part in the SM4-GCM calculation: TAA's
+	// own Encrypt output starts straight at the nonce. Both layouts exist in the
+	// field, so a reader has to accept either one (the GCM tag tells them apart).
+	SM4FileVersion = 1
 )
 
 var (

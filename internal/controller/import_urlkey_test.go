@@ -73,6 +73,45 @@ func TestImportDecryptsWithDataKeyCipherFromURL(t *testing.T) {
 	}
 }
 
+// The platform's bare SM4 files carry a one-byte format version in front of the nonce
+// -- [version][nonce][ciphertext][tag] -- while TAA's own Encrypt output starts at the
+// nonce. A downloaded body has to reach the same plaintext either way; the GCM tag is
+// what tells the two layouts apart.
+func TestImportAcceptsVersionedSm4File(t *testing.T) {
+	state, server := setupTestServer(t)
+
+	archive := buildTarGzArchive(t, map[string]archiveEntry{
+		"data/versioned.txt": {mode: 0o644, data: []byte("training data with a version byte\n")},
+	})
+	bare, keyHex := urlKeyResource(t, &state.SM2PrivateKey.PublicKey, archive)
+	versioned := make([]byte, 0, len(bare)+1)
+	versioned = append(versioned, teecrypto.SM4FileVersion)
+	versioned = append(versioned, bare...)
+
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(versioned)
+	}))
+	defer fileServer.Close()
+
+	resp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+		"resourceUrl": fileServer.URL + "/data.sm4?dataKeyCipher=" + keyHex,
+		"requestId":   "req-urlkey-versioned",
+		"taskId":      "task-urlkey-versioned",
+	})
+	api := decodeResponse(t, resp)
+	if resp.StatusCode != http.StatusOK || api.Error != 0 {
+		t.Fatalf("import: status=%d error=%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+	}
+
+	waitForIdle(t, state)
+
+	sum := teecrypto.SM3Sum(archive)
+	dataDir := filepath.Join(state.Security.DataDir, hex.EncodeToString(sum[:]))
+	if _, err := os.Stat(filepath.Join(dataDir, "data", "versioned.txt")); err != nil {
+		t.Fatalf("versioned SM4 body was not decrypted and extracted into %s: %v", dataDir, err)
+	}
+}
+
 func TestImportRejectsBadDataKeyCipherBeforeDownloading(t *testing.T) {
 	_, server := setupTestServer(t)
 

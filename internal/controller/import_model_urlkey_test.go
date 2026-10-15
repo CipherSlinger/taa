@@ -198,7 +198,7 @@ func TestModelImportAcceptsVersionedSm4File(t *testing.T) {
 		"bundle/versioned.py": {mode: 0o644, data: []byte("print('versioned model')\n")},
 	})
 	bare, keyHex := urlKeyResource(t, &state.SM2PrivateKey.PublicKey, archive)
-	versioned := append([]byte{sm4FileVersion}, bare...)
+	versioned := append([]byte{teecrypto.SM4FileVersion}, bare...)
 
 	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(versioned)

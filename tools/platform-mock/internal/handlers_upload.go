@@ -297,6 +297,15 @@ func uploadHandler(addr, uploadDir string, registerStores ...*registerStateStore
 					return
 				}
 
+				// The platform's frontend prefixes the body with a one-byte format
+				// version -- [version][nonce][ciphertext][tag] -- so the mock mirrors
+				// it instead of writing the bare layout: local runs then deliver
+				// exactly what the platform delivers. (TAA reads both; the GCM tag
+				// decides which one a body is.)
+				body := make([]byte, 0, len(env.Ciphertext)+1)
+				body = append(body, crypto.SM4FileVersion)
+				body = append(body, env.Ciphertext...)
+
 				if !strings.HasSuffix(strings.ToLower(originalName), ".sm4") {
 					originalName += ".sm4"
 				}
@@ -304,14 +313,14 @@ func uploadHandler(addr, uploadDir string, registerStores ...*registerStateStore
 				filename = fmt.Sprintf("%d_%s", time.Now().UnixNano(), originalName)
 				filePath = filepath.Join(uploadDir, filename)
 
-				if err := os.WriteFile(filePath, env.Ciphertext, 0o644); err != nil {
+				if err := os.WriteFile(filePath, body, 0o644); err != nil {
 					writeEnvelope(w, http.StatusInternalServerError, "保存加密文件失败: "+err.Error(), nil, http.StatusInternalServerError)
 					return
 				}
 				// Deliver the 112-byte C1C3C2 form (no uncompressed point prefix);
 				// TAA accepts either layout.
 				dataKeyCipher = hex.EncodeToString(env.WrappedKey[1:])
-				fileSize = int64(len(env.Ciphertext))
+				fileSize = int64(len(body))
 			} else {
 				cipherBytes, err := crypto.SealSM2SM4GCM(pubKey, fileBytes)
 				if err != nil {

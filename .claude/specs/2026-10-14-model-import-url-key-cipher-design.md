@@ -85,7 +85,9 @@ func (s *TAAState) unwrapDataKeyCipherFromURL(rawURL string) (downloadURL string
 - `/v1/taa/getResourceInfo`：仍不解析 `dataKeyCipher`，传给它带参数的 URL 会把参数原样转发
   并在整文件信封上失败。它是数据资源树接口，不是模型通道。
 - `tools/platform-mock`：上传侧的 `urlkey` 模式与端点无关，模型卡片把上传结果里的 `url`
-  原样填进 `resourceUrl`，因此模型下发无需改动即已支持新协议。
+  原样填进 `resourceUrl`，因此模型下发无需改动即已支持新协议。该模式自 2026-10-15 起按平台
+  前端的容器布局产出（`版本(1) ‖ nonce ‖ 密文 ‖ tag`），本地联调跑的就是生产那条格式；
+  详见数据侧设计 §2.3 的「2026-10-15 补齐配套」。
 - `resolvePlaintextResource` 及其 `.enc` 后缀判定、压缩包魔数探测：只服务 legacy 分支。
 - `internal/resource/urlkey.go`、`pkg/crypto.ParseWrappedDataKeyHex`：直接复用，未改。
 
@@ -100,6 +102,7 @@ func (s *TAAState) unwrapDataKeyCipherFromURL(rawURL string) (downloadURL string
 | `TestModelImportRejectsBadDataKeyCipherBeforeDownloading` | 5 种非法信封（重复/空/非 hex/长度/他人密钥）→ 400 + 下载次数 0 + `ModelImported` 与下发记录都未被改动 |
 | `TestModelImportRejectsKeyEnvelopeWithoutDownloadAddress` | `?dataKeyCipher=<hex>`（只有信封、没有下载地址）→ 400 而不是 `200 模型参数命令已导入` |
 | `TestModelImportFallsBackToLegacyFormatWithoutDataKeyCipher` | 无参数时整文件信封链路逐字不变 |
+| `TestModelImportAcceptsVersionedSm4File` | 下载体带平台的首字节版本号（`版本(1) ‖ nonce ‖ 密文 ‖ tag`）时同样解得出并解压进 `ModelDir`；无版本布局在它之前已试过且失败，只有版本布局能过 GCM 校验 |
 | `TestModelImportURLKeyDecryptFailureReportsPublicKey` | 信封合法但密文被篡改 → 同步 200，异步 `reportModelImport` `code=1` 且带 `taaPublicKey:` |
 
 既有模型导入测试（整文件信封、明文压缩包、phase1 流程、审计）全部未改并保持通过。

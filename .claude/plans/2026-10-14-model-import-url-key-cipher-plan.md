@@ -62,3 +62,24 @@
    （`TempDir RemoveAll cleanup: ... results: directory not empty`，异步流水线活过
    `t.TempDir()` 清理），本轮 4 次运行中命中 1 次，属既有已知抖动，非本次引入。
 
+
+## 2026-10-15 追加：版本布局的配套
+
+解密侧的版本布局兼容（`route.go` 的 `decryptCiphertextWithDataKey`）由 `913b54f`
+落到主分支，但当时只有单元测试背书，缺两处配套；本次补齐。
+
+| 改动 | 文件 | 理由 |
+| --- | --- | --- |
+| 版本号常量上提到共享包 | `pkg/crypto/sm4.go` 新增 `SM4FileVersion`；`internal/controller/route.go` 删掉本地 `sm4FileVersion`，改用 `teecrypto.SM4FileVersion` | 生产端（mock）与消费端（TAA）此后共用同一处定义，不会各写一份再漂移 |
+| mock 按生产布局产出 | `tools/platform-mock/internal/handlers_upload.go` 的 `urlkey` 模式写 `版本(1) ‖ nonce ‖ 密文 ‖ tag` | 此前 mock 写无版本布局，本地端到端跑的不是生产格式，兼容代码在联调里从未被执行 |
+| mock 用例跟上 | `tools/platform-mock/internal/server_test.go` 的 urlkey 用例：长度断言 +1，并断言首字节为版本号、去掉首字节后可解出明文 | 让 mock 的产出格式有断言钉住，而不是靠注释 |
+| 数据路径补用例 | `internal/controller/import_urlkey_test.go` 新增 `TestImportAcceptsVersionedSm4File` | 生产上真正在跑的是数据下发；此前版本布局只有模型端点的用例 |
+
+验证：
+
+- `go build`（`CGO_ENABLED=0 GOOS=linux` 静态构建 TAA、mock）通过；`gofmt -l` 对本次改动的
+  文件无输出（列出的 `attestation_format.go` 等为既有未格式化文件，非本次引入）。
+- 回归：`internal/controller` ok、`pkg/crypto` ok、`tools/platform-mock/internal` ok。
+- 变异校验：把重试条件改为恒假（`if false && err != nil && ...`）后，
+  `TestImportAcceptsVersionedSm4File` 与 `TestModelImportAcceptsVersionedSm4File` 同时 FAIL
+  （`解密失败(密钥错误或数据被篡改): cipher: message authentication failed`），恢复后 PASS。

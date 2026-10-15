@@ -1024,11 +1024,6 @@ func (s *TAAState) decryptResourceToTempFile(ciphertextPath string) (string, err
 	return plainPath, nil
 }
 
-// sm4FileVersion is the format version the platform writes as the first byte of its
-// bare SM4 files ([version][nonce][ciphertext][tag]). Only the version TAA knows how
-// to read is accepted; see decryptCiphertextWithDataKey.
-const sm4FileVersion = 1
-
 // decryptCiphertextWithDataKey decrypts a ciphertext-only resource file with an
 // SM4 data key supplied from outside.
 //
@@ -1052,12 +1047,11 @@ func (s *TAAState) decryptCiphertextWithDataKey(dataKey []byte, ciphertextPath s
 	}
 
 	plaintext, err := teecrypto.Decrypt(dataKey, ciphertext)
-	if err != nil && len(ciphertext) > 0 && ciphertext[0] == sm4FileVersion {
+	if err != nil && ciphertext[0] == teecrypto.SM4FileVersion {
 		// The platform's own SM4 files carry a one-byte format version in front of the
-		// nonce -- [version][nonce][ciphertext][tag] -- while TAA and the mock that
-		// stands in for the platform write the bare [nonce][ciphertext][tag]. Reading a
-		// versioned file as the bare layout takes that byte into the nonce and every
-		// tag check fails with the message above.
+		// nonce -- [version][nonce][ciphertext][tag] -- while TAA writes the bare
+		// [nonce][ciphertext][tag]. Reading a versioned file as the bare layout takes
+		// that byte into the nonce and every tag check fails with the message above.
 		//
 		// The first byte alone cannot settle the layout (a random nonce starts with 0x01
 		// one time in 256), so the bare layout is tried first and the versioned one only
