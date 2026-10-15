@@ -1,0 +1,139 @@
+# Semgrep rules for JSON code security audit (Jupyter notebooks).
+#
+# This pack holds TWO rules, not thirteen, and that asymmetry is deliberate.
+# The `json` language in semgrep is a text language: it has no AST, no call
+# graph and no data flow, so every rule here is necessarily a `pattern-regex`
+# over the raw bytes of the document. Of the canonical thirteen families only
+# two have a JSON primitive at all - a hard-coded credential (ENV_001) and
+# shell/process execution written in a cell (CMD_001). The GA-11 design spec's
+# coverage matrix marks the other eleven as structurally N/A for JSON (a JSON
+# document has no socket, no eval, no import and no taint source), and a rule
+# for one of them would be dead text that can never match.
+#
+# The consequence is that this pack is SMOKE ONLY. It proves the pack loads,
+# dispatches on the right extension and fires on real notebook bytes. It is not
+# a semantic detector for the code inside a notebook cell - semgrep cannot see
+# that code as code. Extracting cell sources and scanning them as Python is a
+# separate engine change, listed as an open item in the design spec.
+#
+# NOTEBOOKS ONLY. Every rule below carries a rule-level path filter:
+#
+#     paths:
+#       include:
+#         - "*.ipynb"
+#
+# This is load-bearing, not decoration. internal/codeaudit/semgrep_engine.go's
+# isSourceFile admits `.ipynb` but deliberately does NOT admit `.json`, with
+# the rationale written there: admitting `.json` would put every data file of a
+# model package through the scan - the audit-100 benchmark alone carries 920 of
+# them, and a tokenizer.json is megabytes of vocabulary no rule reads. The
+# filter makes that decision enforceable one layer lower, so a plain JSON file
+# cannot light this pack up even if `.json` is ever admitted to the walk.
+#
+# Measured on semgrep 1.177.0, the filter is honoured even when the file is
+# handed to semgrep as an explicit path rather than as a directory, which is how
+# this engine invokes it. The measurement is a controlled pair, because the
+# single scan it replaced proved nothing: a file every rule excludes this way
+# does not appear in paths.scanned at all, so handing semgrep `decoy.json` alone
+# answers scanned=[] with no results and no errors - silence over a file nothing
+# read. `testdata/ga11/json/decoy.json` and `testdata/ga11/jsonfilter/decoy.ipynb`
+# are byte-identical, so the extension is the only variable between them, and
+# they come out opposite: the notebook is read and matched by both rules here,
+# the data file is neither read nor matched. TestGA11PacksMatchTheirSamples
+# asserts the pair, that the two files still hold the same bytes, and that the
+# engine's completeness check turns a filtered-out target into a failed scan
+# rather than a clean report.
+#
+# WHAT A NOTEBOOK LOOKS LIKE ON DISK - measured, not assumed.
+#
+# An .ipynb file is JSON and each cell source is a JSON string, so quote
+# characters inside a cell are escaped in the file. A cell containing
+#
+#     aws_access_key_id = "AKIAIOSFODNN7EXAMPLE"
+#
+# is written as
+#
+#     "aws_access_key_id = \"AKIAIOSFODNN7EXAMPLE\"\n",
+#
+# with a backslash before every double quote and a two-character \n where the
+# cell has a line break. Measured on semgrep 1.177.0 against the smoke samples:
+# a regex written as if it were reading Python source
+# (`aws_access_key_id\s*=\s*"`) matches NOTHING in a real notebook, because the
+# file holds \" where the pattern expects ". Two ways out, and both are used
+# below: match the escaped form explicitly (`\\?["']` - an optional literal
+# backslash followed by either quote), or key on the value alone, where no
+# quote is involved at all. Single quotes are NOT escaped by JSON, so the
+# optional-quote form covers `= '...'` and `= "..."` alike.
+#
+# WHERE THE FALSE-POSITIVE LINE IS DRAWN.
+#
+# This is text matching over a JSON document, so the predicates must be tight
+# enough that an ordinary data-science notebook does not light up;
+# negative.ipynb is the sample that pins that down. Three decisions:
+#
+#   * ENV requires a credential-shaped *name* AND a long literal (16+ chars of
+#     a base64-ish alphabet) after an `=` or `:`. A bare mention of "token" or
+#     "password" in prose is not a finding, and neither is a name that merely
+#     ends in a keyword. `max_new_tokens = 512` and `token_count = len(tokens)`
+#     in the negative notebook are ignored on the trailing word boundary alone,
+#     and `tok = AutoTokenizer.from_pretrained('distilgpt2')` is ignored because
+#     the keyword there is inside a longer identifier and is not followed by a
+#     separator.
+#   * CMD's `!` and `%` forms are anchored to the start of a cell line (the
+#     byte after the opening `"` or after the escaped `\n`), so the `!` in
+#     `x != y` and the `%` in `"%s tokens" % n` are not mistaken for escapes.
+#   * CMD's direct-call form requires a module-qualified name and an opening
+#     parenthesis, so an `import subprocess` with no call, or `os.path.join(`
+#     next to it, is ignored.
+# The residual false positives are deliberate mentions of these APIs in a
+# markdown cell; this family accepts those.
+rules:
+  - id: taa-env-secret-json
+    languages: [json]
+    severity: WARNING
+    message: "Hard-coded credential material found in a notebook"
+    metadata:
+      category: credential
+      rule_family: ENV_001
+    paths:
+      include:
+        - "*.ipynb"
+    # Two branches, because text matching has no notion of an assignment. The
+    # first keys on the value alone (provider token prefixes are self-identifying
+    # and contain no quote, so the escaping described above is irrelevant to
+    # it); the second keys on a secret-shaped name followed by a separator and a
+    # long literal. The `\\?["']?` on either side of the separator is what makes
+    # the second branch work on real bytes: it matches the `\"` of a notebook
+    # string, the bare `"` of a file that was never escaped, and the unescaped
+    # `'` of a single-quoted cell alike. The 16-character floor is the FP line:
+    # every value below it was a placeholder, a count or a path in the corpus.
+    pattern-either:
+      - pattern-regex: \b(?:AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})\b
+      - pattern-regex: (?i)(?:api[_-]?key|access[_-]?key|secret[_-]?key|aws_access_key_id|aws_secret_access_key|client[_-]?secret|private[_-]?key|password|passwd|token|auth[_-]?token|bearer|secret)\b\\?["']?\s*[=:]\s*\\?["']?[A-Za-z0-9+/_.-]{16,}
+
+  - id: taa-cmd-exec-json
+    languages: [json]
+    severity: ERROR
+    message: "Shell or process execution written in a notebook cell"
+    metadata:
+      category: execution
+      rule_family: CMD_001
+    paths:
+      include:
+        - "*.ipynb"
+    # The three shapes a notebook uses to run a command, each written for the
+    # escaped bytes it actually has on disk.
+    #
+    # `(?:^|"|\\n)[ \t]*` is the cell-line anchor. A cell's first line follows
+    # the JSON string's opening quote and a later line follows the escaped \n,
+    # so a `!` or `%` in that position is a cell-level escape; a `!` or `%`
+    # anywhere else is ordinary program text and is left alone.
+    #
+    # The direct-call branch needs no escape handling: a module-qualified call
+    # contains no quote character. It requires the opening parenthesis so that a
+    # mere `import subprocess` or a docstring mention of the module name is not
+    # a finding.
+    pattern-either:
+      - pattern-regex: (?:^|"|\\n)[ \t]*![A-Za-z_/]
+      - pattern-regex: (?:^|"|\\n)[ \t]*%%?(?:bash|sh|system|cmd|powershell|script)\b
+      - pattern-regex: \b(?:subprocess\.(?:run|call|Popen|check_output|check_call|getoutput)|os\.system|os\.popen|os\.exec[a-z]*|pty\.spawn)\s*\(

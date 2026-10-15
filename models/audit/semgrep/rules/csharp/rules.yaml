@@ -1,0 +1,294 @@
+# Semgrep rules for C# code security audit
+# Rule families align with TAA canonical 13-rule specification.
+#
+# The family set is the Python pack's thirteen, mapped onto this ecosystem's
+# primitives. Where a family's discriminator in the Python pack is the *name* of
+# an argument (a dataset-shaped payload, a credential-shaped path, a
+# secret-shaped environment key), the same predicate is applied here: a rule
+# that fires on every file read or every environment lookup is not the family it
+# claims to be, it is noise wearing the family's label.
+rules:
+  - id: taa-cmd-exec-csharp
+    languages: [csharp]
+    severity: ERROR
+    message: "Process execution detected in C#"
+    metadata:
+      category: execution
+      rule_family: CMD_001
+    pattern-either:
+      - pattern: Process.Start(...)
+      - pattern: Process.Start($INFO)
+      - pattern: new ProcessStartInfo(...)
+      - pattern: new Process()
+
+  - id: taa-net-general-csharp
+    languages: [csharp]
+    severity: ERROR
+    message: "HTTP outbound call detected in C#"
+    metadata:
+      category: network
+      rule_family: NET_001
+    pattern-either:
+      - pattern: $CLIENT.GetAsync(...)
+      - pattern: $CLIENT.PostAsync(...)
+      - pattern: $CLIENT.SendAsync(...)
+      - pattern: $CLIENT.GetStringAsync(...)
+      - pattern: $CLIENT.DownloadString(...)
+      - pattern: $CLIENT.DownloadFile(...)
+      - pattern: WebRequest.Create(...)
+      - pattern: HttpWebRequest.Create(...)
+      - pattern: new HttpClient(...)
+      - pattern: new WebClient()
+
+  - id: taa-net-socket-csharp
+    languages: [csharp]
+    severity: ERROR
+    message: "Raw socket communication detected in C#"
+    metadata:
+      category: network
+      rule_family: NET_002
+    pattern-either:
+      - pattern: new TcpClient(...)
+      - pattern: new UdpClient(...)
+      - pattern: new Socket(...)
+      - pattern: TcpClient.Connect(...)
+
+  - id: taa-dyn-eval-csharp
+    languages: [csharp]
+    severity: WARNING
+    message: "Dynamic type loading or reflection detected in C#"
+    metadata:
+      category: dynamic
+      rule_family: DYN_001
+    # Activator.CreateInstance and Assembly.Load are the two halves of the
+    # standard reflective-load idiom; Type.GetType and Invoke are the member
+    # level of the same idea.
+    pattern-either:
+      - pattern: Activator.CreateInstance(...)
+      - pattern: Assembly.Load(...)
+      - pattern: Assembly.LoadFile(...)
+      - pattern: Assembly.LoadFrom(...)
+      - pattern: Type.GetType(...)
+      - pattern: $TYPE.GetMethod(...).Invoke(...)
+      - pattern: $TYPE.InvokeMember(...)
+
+  - id: taa-fil-probe-csharp
+    languages: [csharp]
+    severity: WARNING
+    message: "Sensitive credential file access probe detected"
+    metadata:
+      category: credential
+      rule_family: FIL_001
+    # The path predicate is written without surrounding quotes on purpose. In
+    # this language's parser a metavariable bound to a string literal matches
+    # *without* the quotes (measured on semgrep 1.177.0 - the same rule form in
+    # Java binds them with the quotes), so a regex anchored on `"` matches
+    # nothing at all and the family silently disappears. Matching the text
+    # without quotes works under either binding, because a dot cannot appear in
+    # an identifier.
+    # The call patterns bind a string literal (`"$PATH"`), which is what keeps
+    # this branch and the path-assembly branch below from both matching one
+    # line: a call whose argument is a Path.Combine(...) node belongs to the
+    # second branch, and the engine turns every semgrep result into its own
+    # finding, so an overlap would report the same line twice.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: File.ReadAllText("$PATH")
+              - pattern: File.ReadAllBytes("$PATH")
+              - pattern: File.OpenRead("$PATH")
+              - pattern: File.Open("$PATH", ...)
+              - pattern: new StreamReader("$PATH")
+          - metavariable-regex:
+              metavariable: $PATH
+              regex: (?i).*(\.ssh|\.env|password|credential|\.aws|\.kube|id_rsa|authorized_keys|\.netrc)
+      - patterns:
+          # One variadic branch, not three arity-specific ones. Three branches
+          # overlap on a three-argument call (the sensitive component can be
+          # either the middle or the last argument), and overlapping branches of
+          # one rule report the same line twice - the engine turns each result
+          # into a separate finding, so an arity-shaped rule inflates the count
+          # it is supposed to measure.
+          - pattern: Path.Combine(..., $BASE)
+          - metavariable-regex:
+              metavariable: $BASE
+              regex: (?i).*(\.ssh|\.env|id_rsa|authorized_keys|\.netrc|credential)
+
+  - id: taa-env-secret-csharp
+    languages: [csharp]
+    severity: WARNING
+    message: "Sensitive environment variable access detected in C#"
+    metadata:
+      category: credential
+      rule_family: ENV_001
+    patterns:
+      - pattern: Environment.GetEnvironmentVariable("$KEY")
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: "(?i).*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab).*"
+
+  - id: taa-obf-exec-csharp
+    languages: [csharp]
+    severity: ERROR
+    message: "Encoded or deserialized payload construction detected in C#"
+    metadata:
+      category: payload
+      rule_family: OBF_001
+    # Convert.FromBase64String is this ecosystem's decoder of record and the
+    # first hop of nearly every staged loader; Assembly.Load carries the bytes
+    # into memory without ever touching disk. The deserializers are included for
+    # the same reason the Python arm includes pickle: they are the stage-2
+    # execution primitive rather than a decode helper.
+    pattern-either:
+      - pattern: Convert.FromBase64String(...)
+      - pattern: Convert.ToBase64String(...)
+      - pattern: Assembly.Load(...)
+      - pattern: new BinaryFormatter().Deserialize(...)
+      - pattern: $FMT.Deserialize(...)
+      - pattern: new GZipStream(...)
+      - pattern: new DeflateStream(...)
+      - pattern: new CryptoStream(...)
+
+  - id: taa-secret-exfiltration-csharp
+    languages: [csharp]
+    severity: ERROR
+    message: "Sensitive credential flows from source to external network sink"
+    metadata:
+      category: credential
+      rule_family: EXF_001
+    mode: taint
+    pattern-sources:
+      - pattern: Environment.GetEnvironmentVariable($KEY)
+      - pattern: File.ReadAllText($PATH)
+      - pattern: File.ReadAllBytes($PATH)
+      - pattern: $CONFIG[$KEY]
+    pattern-propagators:
+      - pattern: $OUT.Append($IN)
+        from: $IN
+        to: $OUT
+      - pattern: Convert.ToBase64String($IN)
+        from: $IN
+        to: $OUT
+      - pattern: $OUT = $IN.ToString()
+        from: $IN
+        to: $OUT
+    pattern-sanitizers:
+      - pattern: $SHA.ComputeHash(...)
+      - pattern: $HMAC.ComputeHash(...)
+    pattern-sinks:
+      - pattern: $CLIENT.GetAsync($URL)
+      - pattern: $CLIENT.PostAsync($URL, $DATA)
+      - pattern: $CLIENT.SendAsync($REQ)
+      - pattern: WebRequest.Create($URL)
+      - pattern: $CLIENT.DownloadString($URL)
+
+  - id: taa-per-backdoor-csharp
+    languages: [csharp]
+    severity: ERROR
+    message: "Persistence backdoor or autorun script modification detected"
+    metadata:
+      category: persistence
+      rule_family: PER_001
+    # Text mirror of the Python arm with C#'s comment prefix, plus the two
+    # persistence mechanisms this platform adds that a text search cannot see:
+    # the registry Run keys, which are the Windows equivalent of a shell
+    # profile, and the scheduled task.
+    #
+    # There is deliberately no "file write whose destination names a profile"
+    # branch. It would match the same line the text mirror already matches - the
+    # path literal is on that line by construction - and the engine turns every
+    # semgrep result into its own finding, so the branch would double the count
+    # of a family without ever finding anything the mirror had missed.
+    pattern-either:
+      - pattern-regex: ^(?![ \t]*//)[^\n]*crontab
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:\.bashrc|\.bash_profile|\.zshrc|\.profile)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*systemctl\s+(?:enable|start)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*/etc/init\.d
+      - pattern-regex: ^(?![ \t]*//)[^\n]*/etc/systemd
+      - patterns:
+          - pattern-either:
+              - pattern: Registry.CurrentUser.OpenSubKey($KEY, ...)
+              - pattern: Registry.LocalMachine.OpenSubKey($KEY, ...)
+              - pattern: Registry.CurrentUser.CreateSubKey($KEY)
+              - pattern: Registry.LocalMachine.CreateSubKey($KEY)
+          - metavariable-regex:
+              metavariable: $KEY
+              regex: (?i).*[\\/]Run\b.*
+      - pattern: new ScheduledTask(...)
+
+  - id: taa-emb-data-dump-csharp
+    languages: [csharp]
+    severity: ERROR
+    message: "Raw dataset or sensitive features serialized to output file"
+    metadata:
+      category: embedded
+      rule_family: EMB_001
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: File.WriteAllBytes($PATH, $DATA)
+              - pattern: File.WriteAllText($PATH, $DATA)
+              - pattern: $SERIALIZER.Serialize($STREAM, $DATA)
+              - pattern: $WRITER.Write($DATA)
+          - metavariable-regex:
+              metavariable: $DATA
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train|features)\\b"
+
+  - id: taa-emb-copy-export-csharp
+    languages: [csharp]
+    severity: ERROR
+    message: "Sensitive data or models copied to export/result directory"
+    metadata:
+      category: embedded
+      rule_family: EMB_002
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: File.Copy($SRC, $DST)
+              - pattern: File.Move($SRC, $DST)
+          - metavariable-regex:
+              metavariable: $DST
+              regex: (?i).*(output|export|result).*
+      - patterns:
+          - pattern: File.Copy($SRC, $DST, ...)
+          - metavariable-regex:
+              metavariable: $DST
+              regex: (?i).*(output|export|result).*
+
+  - id: taa-emb-log-dump-csharp
+    languages: [csharp]
+    severity: WARNING
+    message: "Raw sample data or sensitive features dumped to standard log/output"
+    metadata:
+      category: embedded
+      rule_family: EMB_003
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: Console.WriteLine($ARG)
+              - pattern: Console.Write($ARG)
+              - pattern: Debug.WriteLine($ARG)
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
+      - patterns:
+          - pattern-either:
+              - pattern: $LOG.LogInformation($ARG)
+              - pattern: $LOG.LogDebug($ARG)
+              - pattern: $LOG.LogWarning($ARG)
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
+
+  - id: taa-emb-stego-weight-csharp
+    languages: [csharp]
+    severity: ERROR
+    message: "Encoded data or steganographic payload embedded into model weights"
+    metadata:
+      category: embedded
+      rule_family: EMB_004
+    pattern-either:
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:(?:state_dict|weights|params).*(?:hidden|secret|payload|stego|embed|hide)(_?data)?)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:[Bb]ase64.*[Ss]ave|[Ss]ave.*[Bb]ase64)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:[Ee]ncode.*[Ww]eights|[Ww]eights.*[Ee]ncode)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:(?:[Zz]lib|[Gg]zip|[Dd]eflate).*[Ss]ave|[Ss]ave.*(?:[Zz]lib|[Gg]zip|[Dd]eflate))
