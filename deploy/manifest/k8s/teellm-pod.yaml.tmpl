@@ -26,8 +26,8 @@
 #  main.go). TAA verifies the report against the real Hygon HRK, so that
 #  fallback fails the handshake with "untrusted HRK certificate" and the code
 #  audit reports failure under its fail-closed policy. A plain docker container
-#  cannot have the device -- a kata-qemu-csv2 Pod can, because its guest init
-#  creates the node (deploy/guest-build/taa-init.sh).
+#  cannot have the device at all; a kata-qemu-csv2 Pod can, but only because
+#  something creates the node -- see the startup command below.
 # ============================================================================
 apiVersion: v1
 kind: Pod
@@ -53,9 +53,11 @@ metadata:
     #       parameters, so an empty value erases the rdinit= that boots TAA's
     #       guest. Set a parameter only by editing the kata config.
 spec:
-  # The RuntimeClass whose guest creates /dev/csv-guest. Without it the
-  # container starts with no device, teellm-service serves mock evidence, and
-  # every TAA handshake fails.
+  # The RuntimeClass that boots a CSV2 guest, which is what makes the csv-guest
+  # kernel driver -- and so a real attestation -- possible at all. Necessary but
+  # not sufficient: the driver only registers a misc device, and the node still
+  # has to be created inside the container. Without both, teellm-service serves
+  # mock evidence and every TAA handshake fails.
   runtimeClassName: __RUNTIME_CLASS__
   nodeName: __NODE_NAME__
   # Always rather than Never: the container has to come back in place if it
@@ -71,13 +73,49 @@ spec:
       # guest's writable layer -- and the multi-GB model with it -- out of
       # reach of the deployment.
       command: ["/bin/sh", "-c"]
-      args: ["while true; do sleep 3600; done"]
+      # Creating /dev/csv-guest is part of starting, not an afterthought. The
+      # CSV2 guest kernel registers a csv-guest misc device, but /dev inside the
+      # container is a fresh tmpfs: /proc/misc lists the device while /dev stays
+      # empty, and teellm-service reads that empty /dev as "no device" and
+      # silently serves mock evidence. TAA's own deployment manifest handles this
+      # with a postStart hook; this is the same recipe, run before the keep-alive
+      # loop instead, so the node exists by the time the container is Ready and
+      # the deploy gate may check it. The minor number is not stable -- read it.
+      # Failure here is deliberately not fatal: a crash-looping container would
+      # burn the deployment's Ready timeout, where the deploy gate reports the
+      # missing device immediately and names the cause. Do not "simplify" this
+      # away on the assumption that the guest creates the node.
+      args:
+        - |
+          set -u
+          dev=""
+          i=0
+          while [ -z "$dev" ] && [ "$i" -lt 60 ]; do
+            dev="$(cat /sys/class/misc/csv-guest/dev 2>/dev/null || true)"
+            if [ -z "$dev" ]; then i=$((i + 1)); sleep 1; fi
+          done
+          if [ -n "$dev" ]; then
+            mknod /dev/csv-guest c "${dev%%:*}" "${dev##*:}" 2>/dev/null || true
+            chmod 666 /dev/csv-guest 2>/dev/null || true
+          fi
+          if [ ! -e /dev/csv-guest ]; then
+            echo "warning: could not create /dev/csv-guest; teellm-service will fall back to mock evidence" >&2
+          fi
+          exec sleep infinity
       resources:
         # Kata sizes the VM from the limits: guest RAM = the kata default_memory
         # (23552M in this host's configuration-qemu-csv2.toml) + limits.memory,
         # and guest vCPUs = default_vcpus (1) + limits.cpu. Requests equal the
         # limits because CSV2 encrypted memory is resident from boot: it is a
         # permanent cost on the host, not a burstable request.
+        #
+        # The memory figure has to hold the model, not just teellm-service. An
+        # earlier default of 8Gi -- copied from the TAA Pod, which serves the
+        # same model -- was not enough: llama-server was OOM-killed inside the
+        # container's own cgroup while loading a 7B model (the blob's page cache
+        # plus ~4.5GB of tensor buffers), and the readiness probe saw 503 until
+        # the deployment timed out. The TAA Pod hides this because its LLM calls
+        # fail at the attestation handshake and never reach inference.
         limits:
           cpu: "__CPU__"
           memory: "__MEMORY__"

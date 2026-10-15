@@ -1,7 +1,7 @@
 # teellm 落进专用 Kata CSV2 Pod：让 TAA 收到真证明
 
 日期：2026-10-15
-状态：已实现（离线验证完成；178 上的实机验证见文末「验证状态」）
+状态：已实现并在 178 上实机验证（离线与实机结果见文末「验证状态」）
 
 ## 背景
 
@@ -31,8 +31,13 @@ FORWARD 链后，`DOCKER` 链的 DROP 排在了 `deploy-llm.sh` 手工 ACCEPT �
 
 - 在跑的 TAA Pod 都是 `runtimeClassName: kata-qemu-csv2`（宿主既有 handler）、`nodeName: hygon-master`、
   镜像 `172.16.10.178:31313/taa-env:slim-v2-20260916`，**容器里都有 `/dev/csv-guest`（`crw-rw-rw- 10,257`）**。
-- 设备节点由 **guest init** 建（`deploy/guest-build/taa-init.sh:119` 的 `mknod`），不是容器建的；
-  所以「含 `/dev/csv-guest` 的 Pod」= 本机上一个 CSV2 Pod，没有额外魔法。
+- **该设备不是 RuntimeClass 白送的（首次部署实测推翻，见下方「修正」）**：CSV2 guest 内核只**注册** misc 设备
+  （容器里 `/proc/misc` 有 `257 csv-guest`、`/sys/class/misc/csv-guest/dev` = `10:257`），容器的 `/dev`
+  是一块**全新 tmpfs**，节点要**容器侧**建。TAA 的 Deployment 清单里有一个 `lifecycle.postStart`
+  钩子做这件事（等 sysfs → `mknod` → `chmod 666`），那个清单**不在本仓库**，所以在本仓库 grep
+  `mknod` 找不到它。
+- `deploy/guest-build/taa-init.sh:119` 的 `mknod` 是**guest 内** PID 1 自己用的（在 guest 的 /dev 里），
+  并不会传进容器；容器看到的是另一块 tmpfs。
 - guest 规格：**guest RAM = kata `default_memory` 23552M + `limits.memory`**；
   **vCPU = `default_vcpus` 1 + `limits.cpu`**。CSV2 加密内存**开机即 100% 实占**。
 - 宿主：251GB / 64 核，可用 ~123GB。
@@ -41,6 +46,13 @@ FORWARD 链后，`DOCKER` 链的 DROP 排在了 `deploy-llm.sh` 手工 ACCEPT �
 - `deploy-llm.sh` 的 `remote` 模式**已经是完整的 Pod 部署路径**（`deploy_remote()`：流式传 ollama、
   起 ollama、`kubectl cp` teellm-service + 配置 + 证书、起服务、`-probe` 探活），
   但它**从不创建 Pod**，Pod 路径上也**没有任何 `/dev/csv-guest` 检查**（那条只在 docker 路径上）。
+- **8Gi 装不下一个 7B 模型（首次成功建 Pod 后再次实测，见下方「修正 2」）**：容器自己的 cgroup
+  （`/sys/fs/cgroup/memory.max` = 8Gi）在 llama-server 加载 `qwen2.5-coder:7b` 时被打爆 ——
+  `memory.events` 的 `oom_kill=128`、guest `dmesg` 里
+  `Memory cgroup out of memory: Killed process … (llama-server) anon-rss:3690072kB`。
+  模型 blob 的 page cache（4.4GB）加上张量缓冲（`load_tensors` 报 1483.70 + 2976.75 MiB）一起越顶，
+  于是 teellm-service 一直回 503、部署在第 14 步超时退出。**默认内存因此从 8Gi 提到 16Gi。**
+  TAA Pod 同样是 8Gi 却看不出问题，是因为它的 LLM 调用从来没越过握手、根本没让 ollama 加载过模型。
 
 ## 三个必须绕开的陷阱
 
@@ -80,13 +92,13 @@ __CPU__ __MEMORY__ __CC_INIT_DATA__`。
   （**不是 `Never`**：容器退出要能原地重启、保住 Pod IP）、`imagePullPolicy: IfNotPresent`。
 - `command: ["/bin/sh","-c"]` / `args: ["while true; do sleep 3600; done"]`：容器活着以便
   `kubectl exec/cp`，同时**覆盖镜像 ENTRYPOINT**，不跑 TAA 自己的 `start.sh`。
-- `resources.requests == limits`（Guaranteed，账要实）：默认 `cpu: 8` / `memory: 8Gi`
-  → VM ≈ 23552 + 8192 = **31.5GiB 常驻**。
+- `resources.requests == limits`（Guaranteed，账要实）：默认 `cpu: 8` / `memory: 16Gi`
+  → VM ≈ 23552 + 16384 = **39GiB 常驻**（16Gi 而非 8Gi 的理由见「现场事实」修正 2）。
 
 ### `deploy-llm.sh` 改动
 
 1. **变量**：`TEELLM_POD_NAME=taa-teellm`、`TEELLM_POD_IMAGE`、`TEELLM_POD_NODE=hygon-master`、
-   `TEELLM_POD_RUNTIME_CLASS=kata-qemu-csv2`、`TEELLM_POD_CPU=8`、`TEELLM_POD_MEMORY=8Gi`、
+   `TEELLM_POD_RUNTIME_CLASS=kata-qemu-csv2`、`TEELLM_POD_CPU=8`、`TEELLM_POD_MEMORY=16Gi`、
    `TEELLM_POD_READY_TIMEOUT=600`（guest 要从本地 registry 拉镜像）、`TEELLM_POD_TEMPLATE`、
    `TEELLM_POD_CC_INIT_DATA`、`TEELLM_POD_IP`、`CREATE_POD=false`、`TEMP_POD_MANIFEST=""`。
    并在 `TARGET_POD` 默认赋值**之前**捕获 `TARGET_POD_WAS_SET="${TARGET_POD+set}"`。
@@ -150,7 +162,7 @@ TAA_LLM_ENDPOINT=https://<taa-teellm 的 PodIP>:8443 TARGET_POD=<TAA pod> ./depl
 | 风险 | 处理 |
 |---|---|
 | 造出第二台 VM（永久吃宿主内存） | 字面 Pod 名；已存在绝不 apply、绝不 delete+recreate；测试断言第二次零 apply |
-| 三台 100% 常驻 CSV2 VM 造成宿主 OOM | `requests == limits`；默认 8Gi 而非 16Gi；预检复核 `free -g`；`TEELLM_POD_MEMORY` 可调小 |
+| 三台 100% 常驻 CSV2 VM 造成宿主 OOM | `requests == limits`；默认 **16Gi**（8Gi 实测被 cgroup OOM 打爆，见「现场事实」修正 2）；预检复核 `free -g`；`TEELLM_POD_MEMORY` 可调小 |
 | `-probe` 在 mock 上照样通过 → 假成功 | 部署路径硬闸门 + 日志快检 + 实机反证（同锚换端点必须失败） |
 | Pod 重建换 IP → TAA 里的 endpoint 废掉 | `restartPolicy: Always`；横幅打印 IP |
 | guest 拉镜像超时 | `TEELLM_POD_READY_TIMEOUT=600`，超时先 dump events |
@@ -163,7 +175,10 @@ TAA_LLM_ENDPOINT=https://<taa-teellm 的 PodIP>:8443 TARGET_POD=<TAA pod> ./depl
   （`InsecureSkipAttestationVerify` 默认 false），实机反证已构成真证明。
 - `deploy-llm.sh` 里 `allow_pod_access_to_container` 的 DOCKER 链 bug：teellm 搬进 Pod 后
   TAA 直连 Pod IP，**这条路不再经过 docker0**，该 bug 不在关键路径上，另行处理。
-- 178 上手工加的那条 DOCKER 链放行规则：同上，搬完后可清掉。
+- 178 上手工加的那条 DOCKER 链放行规则（搬完后可清掉）：截至本次交付**仍在**，且已确认**不在关键路径上**
+  ——TAA 现在直连 `10.244.0.25:8443`，不经过 docker0。要清掉的话，规则原文是
+  `-A DOCKER -s 10.244.0.0/16 -d 172.17.0.2/32 ! -i docker0 -o docker0 -p tcp --dport 8443 -j ACCEPT`
+  （`FORWARD` 链里还有一条同义规则），按整条 spec 删即可，别按行号删。
 
 ## 验证状态
 
@@ -172,6 +187,25 @@ TAA_LLM_ENDPOINT=https://<taa-teellm 的 PodIP>:8443 TARGET_POD=<TAA pod> ./depl
   去掉 `/dev/csv-guest` 闸门、禁掉复用路径）分别给出预期失败；
   `tests/deploy_ollama_preflight_test.sh`、`tests/deploy_docker_transfer_test.sh`、
   `tests/deploy_scan_engine_test.sh` 回归通过；`CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa` 通过。
-- **实机（待做）**：`remote --create-pod start`、同锚反证（连还活着的 docker 容器必须失败在
-  `untrusted HRK certificate`）、端到端审计 `code=2 → code≠2`、差分反证、幂等复核（不发第二次 apply、
-  Pod IP 不变、宿主 qemu 进程数不变），以及清理 178 上手工加的那条 DOCKER 链规则。
+- **实机（2026-10-15 完成）**：
+  - **建与部署**：`remote --create-pod start --model qwen2.5-coder:7b` → 第 02 步建 Pod，
+    第 13 步报 `service is serving Hygon hardware evidence (/dev/csv-guest present)`，
+    横幅给出 `TAA_LLM_ENDPOINT=https://10.244.0.25:8443`；teellm-service 日志里**没有** mock 回退行。
+  - **反证 A（同锚换端点）**：用同一份真 HRK 做**校验型**探针（临时 `cmd/attest-probe`，
+    `InsecureSkipAttestationVerify` 关着，未入库）—— 对 `https://10.244.0.25:8443` **通过**，
+    对还活着的 docker 容器 `https://172.17.0.2:8443` **失败**在信任链
+    （探针报文为 `CEK verification of PEK signature failed`；TAA 自己同期打的是
+    `untrusted HRK certificate`，两者都是信任链失败，措辞不同而已）。
+  - **端到端**：同一个自制包、同一个 TAA Pod，改端点前后两跑 ——
+    改之前 `code=2, reportLen=0`（`LLM 服务不可用，按 fail-closed 策略上报失败`）；
+    改之后 `审计完成: passed=false, riskLevel=CRITICAL, totalFindings=4`、`code=1, reportLen=4249`，
+    且 `isLLMServiceAvailable` 失败行与 fail-closed 行都不再出现。这一跑（改之前）同时充当差分反证 B：
+    包、TAA、HRK 都没换，只有端点不同。
+  - **幂等**：重跑 `remote --create-pod start` → 走复用路径（`reusing the running TEE-LLM Pod
+    (nothing applied)`），**零次 `kubectl apply`**；Pod 仍是 `10.244.0.25`、
+    `creationTimestamp` 仍是 `2026-10-15T04:04:05Z`（VM 未重建）；宿主 kata qemu 进程数与
+    `osr` 里的 Pod 数一一对应，仍为 3。
+    —— 注意 `ps -eo args= | grep -F qemu` 还会捞到平台自带的两个 `qemu-kvm`
+    （`ccs_cipher_app_service`、`mini_dev_app_service`，已运行 42 小时以上），
+    所以该命令的原始计数是 5；比"VM 数"要用 `/opt/kata/bin/qemu-system-x86_64` 去数。
+  - **未做**：178 上手工加的那条 DOCKER 链放行规则**仍在**（见「明确不做」）。

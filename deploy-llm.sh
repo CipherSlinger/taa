@@ -286,7 +286,15 @@ TEELLM_POD_RUNTIME_CLASS="${TEELLM_POD_RUNTIME_CLASS:-kata-qemu-csv2}"
 # Kata sizes the guest as default_memory + limits.memory and default_vcpus + limits.cpu, and
 # encrypted memory is resident from boot, so these two numbers are a permanent host cost.
 TEELLM_POD_CPU="${TEELLM_POD_CPU:-8}"
-TEELLM_POD_MEMORY="${TEELLM_POD_MEMORY:-8Gi}"
+# 16Gi, not the 8Gi the TAA Pod gets away with: this container also has to hold a whole model.
+# At 8Gi the first deployment of this feature came up, reported the hardware evidence provider,
+# and then had llama-server SIGKILLed while loading qwen2.5-coder:7b -- the container's cgroup
+# hit its ceiling (memory.events oom_kill=128, the model's page cache and the 4.5GB of tensor
+# buffers together exceeding 8Gi) and teellm-service answered 503 until the deploy gave up. The
+# TAA Pod never showed this because TAA's LLM calls never got past the handshake to request an
+# inference, so its own ollama was never asked to load anything. Sizing has to cover the model,
+# not just the service.
+TEELLM_POD_MEMORY="${TEELLM_POD_MEMORY:-16Gi}"
 # 600s rather than the 180s a plain Pod needs: a fresh CSV2 Pod boots its guest first and pulls
 # this image inside it, through the in-guest CDH.
 TEELLM_POD_READY_TIMEOUT="${TEELLM_POD_READY_TIMEOUT:-600}"
@@ -1703,7 +1711,8 @@ Environment overrides:
       Container CPU / memory for the dedicated TEE-LLM Pod. Kata sizes the guest from these
       limits (guest RAM = the kata default_memory + TEELLM_POD_MEMORY, vCPUs = default_vcpus +
       TEELLM_POD_CPU) and CSV2 encrypted memory is resident from boot, so the memory figure is a
-      permanent cost on the host rather than a ceiling.
+      permanent cost on the host rather than a ceiling. It has to fit the served model as well as
+      teellm-service: 8Gi OOM-killed llama-server while it loaded a 7B model.
   TEELLM_POD_READY_TIMEOUT=${TEELLM_POD_READY_TIMEOUT}
       Seconds to wait for a freshly created TEE-LLM Pod to become Ready. Long by default: the
       guest boots before it can pull the image, through its own CDH.

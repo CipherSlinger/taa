@@ -246,7 +246,15 @@ grep -q "^  restartPolicy: Always$" "$APPLIED" \
   || fail "the manifest does not keep the Pod restartable in place"
 grep -q 'cc_init_data: DERIVED_CC_INIT_DATA$' "$APPLIED" \
   || fail "the cc_init_data annotation was not derived and injected"
-grep -q 'memory: "8Gi"' "$APPLIED" || fail "the manifest does not carry the memory limit"
+# The memory limit has to fit the model, not just teellm-service. 8Gi -- the figure the TAA Pod
+# gets away with -- let the container cgroup OOM-kill llama-server while it loaded a 7B model, so
+# the default is asserted to stay above it. requests must equal limits: CSV2 memory is resident
+# from boot, so an overcommit here is a permanent host cost, not a burst.
+memory_limits="$(grep -cE '^          memory: "' "$APPLIED")"
+[[ "$memory_limits" == "2" ]] || fail "expected a memory figure on both limits and requests"
+memory_gi="$(grep -oE '^          memory: "[0-9]+Gi"' "$APPLIED" | grep -oE '[0-9]+' | sort -u)"
+[[ "$memory_gi" == "16" ]] \
+  || fail "the TEE-LLM Pod memory default is $memory_gi Gi; a 7B model needs 16 (see the OOM note in deploy-llm.sh)"
 
 # Exactly one annotation key, and it is the CoCo one. The runtime-handler key would hijack the
 # runtime away from runtimeClassName, and an empty hypervisor kernel_params value would erase the
@@ -255,6 +263,14 @@ annotation_keys="$(grep -cE '^    io\.' "$APPLIED")"
 [[ "$annotation_keys" == "1" ]] || fail "expected exactly 1 annotation key, found $annotation_keys"
 grep -qE '^    io\.katacontainers\.config\.runtime\.cc_init_data:' "$APPLIED" \
   || fail "the single annotation is not cc_init_data"
+
+# The device node is created inside the container, not by the guest. A first version of this
+# template assumed the RuntimeClass alone was enough, and the Pod came up Ready with an empty
+# /dev -- every other gate would have passed while teellm-service served mock evidence.
+grep -q "mknod /dev/csv-guest" "$APPLIED" || fail "the manifest does not create /dev/csv-guest"
+grep -q "/sys/class/misc/csv-guest/dev" "$APPLIED" \
+  || fail "the manifest does not read the csv-guest device numbers from sysfs"
+grep -q "exec sleep infinity" "$APPLIED" || fail "the manifest does not keep the container alive"
 
 # The deployment body must address the TEE-LLM Pod and nothing else. Aimed at the default TARGET_POD
 # it would still pass every gate -- that Pod has /dev/csv-guest too -- and fail in production.
