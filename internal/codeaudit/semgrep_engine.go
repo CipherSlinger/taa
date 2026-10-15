@@ -45,7 +45,15 @@ const DefaultSemgrepMaxMemoryMB = 1024
 // this default exists so that the local path works without configuration, and
 // NewEngine checks it so an unset path in a directory that has no rules fails at
 // startup rather than on every import.
-const DefaultSemgrepRulesPath = "models/audit/semgrep/rules/python/rules.yaml"
+//
+// It names the rules tree rather than one pack inside it. Every pack declares
+// the languages it applies to, and semgrep dispatches on that declaration, so a
+// single --config over the tree loads all of them and applies each only to its
+// own language. Naming one file - which is what this constant did while
+// python's was the only pack - leaves every other pack unloaded however many
+// are added, and the failure is silent: the scan succeeds and simply reports
+// nothing outside that one language.
+const DefaultSemgrepRulesPath = "models/audit/semgrep/rules"
 
 // semgrepEngine is the Tier 1 engine that matches with the Semgrep CLI instead
 // of the built-in regular expressions.
@@ -54,11 +62,17 @@ const DefaultSemgrepRulesPath = "models/audit/semgrep/rules/python/rules.yaml"
 //
 // Severity, category and description come from the production rule table passed
 // in as the scanner's rules, keyed on the semgrep rule's rule_family metadata —
-// never from semgrep's own severity field. The two happen to agree on all
-// thirteen rules of this corpus, so reading the wrong one is invisible on the
-// corpus and would only surface after a rule changed. The table is the single
-// source of truth, and a rule the table does not contain fails the scan rather
-// than being assigned a default.
+// never from semgrep's own severity field. The table is the single source of
+// truth, and a rule the table does not contain fails the scan rather than being
+// assigned a default.
+//
+// Because that makes the two severity fields redundant, they are held equal:
+// every rule in every pack carries the severity the table gives its family, and
+// TestRulePacksAreWellFormed fails when one drifts. They did drift before that
+// assertion existed - the go pack reported ERROR on the two families the table
+// calls medium - and the mismatch was invisible in production for exactly the
+// reason above, so nothing but a test can keep the two readings of the same
+// family from diverging again.
 //
 // The context window is rebuilt in Go from the file and the reported line
 // number, using the same helper the regex engine uses. semgrep reports a
@@ -302,10 +316,45 @@ func (e *semgrepEngine) walkTargets(dir string) ([]string, error) {
 }
 
 // isSourceFile checks if a file matches supported multi-language extensions or scanner extensions.
+//
+// The list is the GA tier of semgrep's language set: C#, Go, Java, JavaScript,
+// PHP, Python, Ruby, Scala, Terraform and TypeScript, plus the C/C++/CUDA and
+// shell packs that predate it. Before this, only .py .go .c .cpp .cu .h .hpp
+// .java .sh were admitted, so a package written in any of the other GA
+// languages was never handed to semgrep at all and its pack had nothing to run
+// on - the scan succeeded and reported nothing.
+//
+// JSON is deliberately absent from the extension list. Admitting ".json" would
+// put every data file of a model package into the pass: the audit-100 benchmark
+// carries 920 of them, and a tokenizer.json is megabytes of vocabulary no rule
+// reads. The json *pack* is gated to notebooks by a rule-level
+// `paths: include: ["*.ipynb"]` filter, so this exclusion is what keeps the two
+// halves of that decision consistent - the pack covers notebooks, the walk
+// never hands it a data file, and neither half depends on the other being
+// right.
+//
+// ".ipynb" is admitted, and the reason is not volume - the holdout corpus
+// carries none of them. A notebook is source rather than data: the JSON
+// wrapper is a container, and its cell sources are code that executes when the
+// notebook is run, which is exactly what the json pack reads. Admitting it
+// cannot spend scan budget on bytes no rule interprets, because the only pack
+// that declares the json language is filtered to this extension.
 func (e *semgrepEngine) isSourceFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
-	case ".py", ".go", ".c", ".cpp", ".cu", ".h", ".hpp", ".java", ".sh":
+	case ".cs",
+		".go",
+		".java",
+		".cjs", ".js", ".jsx", ".mjs",
+		".php", ".phtml", ".tpl",
+		".py", ".pyi",
+		".ipynb",
+		".rb",
+		".scala",
+		".hcl", ".tf", ".tfvars", ".tofu",
+		".ts", ".tsx",
+		".c", ".cpp", ".cu", ".h", ".hpp",
+		".sh":
 		return true
 	}
 	if e.scanner != nil && e.scanner.hasMatchingExtension(path) {

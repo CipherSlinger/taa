@@ -550,8 +550,8 @@ func semgrepCLI(t *testing.T) string {
 	return path
 }
 
-// repoSemgrepRules is the rules file the integration tests scan with: the same
-// file the benchmark runs, resolved from the package directory through the
+// repoSemgrepRules is the rules tree the integration tests scan with: the same
+// tree the benchmark runs, resolved from the package directory through the
 // production default. Resolving the default rather than repeating its value
 // means a wrong DefaultSemgrepRulesPath fails these tests instead of surviving
 // until a deployment.
@@ -562,7 +562,7 @@ func repoSemgrepRules(t *testing.T) string {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("DefaultSemgrepRulesPath does not resolve to a readable file: %v", err)
+		t.Fatalf("DefaultSemgrepRulesPath does not resolve to a readable path: %v", err)
 	}
 	return path
 }

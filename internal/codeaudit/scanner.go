@@ -24,6 +24,15 @@ func DefaultConfig() Config {
 		SkipDirs: map[string]bool{
 			".git": true, "__pycache__": true, ".idea": true,
 			".vscode": true, "node_modules": true, "venv": true, ".venv": true,
+			// Dependency trees of the languages the rule packs now cover. Each
+			// holds code the package did not write and does not ship, so
+			// descending would attribute a dependency's findings to the package
+			// and spend the scan budget on it. They are named per ecosystem
+			// because that is where each language puts them: vendor for Go,
+			// target for Maven and Scala, bower_components and Pods for the
+			// JavaScript and iOS toolchains, and the rest for build output.
+			"vendor": true, "target": true, "dist": true, "build": true,
+			".tox": true, "bower_components": true, "Pods": true,
 		},
 	}
 }

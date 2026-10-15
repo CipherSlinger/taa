@@ -1,0 +1,477 @@
+# Semgrep rules for PHP code security audit
+# Rule families align with TAA canonical 13-rule specification.
+#
+# The family set is the Python pack's thirteen, mapped onto PHP's primitives.
+# Where a family's discriminator in the Python pack is the *name* of an argument
+# (a dataset-shaped payload, a credential-shaped path, a secret-shaped
+# environment key), the same predicate is applied here: a rule that fires on
+# every file read or every environment lookup is not the family it claims to be,
+# it is noise wearing the family's label.
+#
+# Two binding facts were measured on semgrep 1.177.0 before this pack was
+# written, because they decide how every predicate below is spelled:
+#
+#   1. When the *pattern* carries the quote (`file_get_contents("$PATH")`), a
+#      string literal binds WITHOUT the quotes, single- and double-quoted alike
+#      (`'/root/.ssh/id_rsa'` binds `/root/.ssh/id_rsa`). PHP behaves like C#
+#      here, not like Java.
+#   2. When the pattern leaves a bare metavariable (`assert($X)`), the
+#      metavariable binds the source text verbatim: a string literal keeps its
+#      quotes (`assert("phpinfo()")` binds `"phpinfo()"`) and a variable keeps
+#      its sigil (`echo $dataset;` binds `$dataset`).
+#
+# So a predicate anchored with `^` on a bare-metavariable branch must allow the
+# quote or the sigil, and a path predicate is written without surrounding quotes
+# - that form holds under either binding because a dot cannot appear in an
+# identifier. This is the same reasoning the C# and Java packs record, with the
+# PHP answer measured rather than assumed.
+rules:
+  - id: taa-cmd-exec-php
+    languages: [php]
+    severity: ERROR
+    message: "Suspicious command execution detected in PHP code"
+    metadata:
+      category: execution
+      rule_family: CMD_001
+    # The seven language constructs that run a program. pcntl_exec is the one
+    # that replaces the current process outright - it needs no shell and leaves
+    # no child to inspect, which is why a dropper prefers it when the extension
+    # is present.
+    #
+    # Backticks are the eighth form and are matched as text, not as an AST
+    # pattern: PHP parses `` `id` `` into its own shell-exec node and no call
+    # pattern reaches it (measured - a probe carrying both `shell_exec($X)` and
+    # `` `$X` `` matched only the first). The regex carries the comment guard
+    # used throughout this file, so a commented-out backtick payload is not a
+    # finding; the AST branches need no guard, since a comment is not in the
+    # AST.
+    pattern-either:
+      - pattern: system(...)
+      - pattern: exec(...)
+      - pattern: shell_exec(...)
+      - pattern: passthru(...)
+      - pattern: popen(...)
+      - pattern: proc_open(...)
+      - pattern: pcntl_exec(...)
+      - pattern-regex: ^(?![ \t]*(?://|#))[^\n]*`[^`\n]+`
+
+  - id: taa-net-general-php
+    languages: [php]
+    severity: ERROR
+    message: "Suspicious external network request detected in PHP code"
+    metadata:
+      category: network
+      rule_family: NET_001
+    # HTTP-level outbound traffic. stream_socket_client appears in the task's
+    # NET_001 sketch and in its NET_002 sketch; it is listed once, under NET_002,
+    # because it opens a raw socket stream rather than speaking HTTP - it is
+    # fsockopen's stream-wrapper sibling. Listing one call under two families
+    # would inflate both counts without detecting anything extra.
+    #
+    # The URL predicate is written as `^["']?https?://` rather than `^https?://`
+    # because this branch takes its metavariable from the pattern's quoted
+    # position only, but the text form keeps the branch honest if that binding
+    # ever changes - a leading quote would otherwise silently switch the family
+    # off, which is the failure mode the C# pack records.
+    #
+    # The last branch is Guzzle and its many lookalikes. Type information is not
+    # available to a pattern, so the only discriminator is the method name, and
+    # `$C->get(...)` will also report a cache or repository getter. That
+    # trade-off is already taken by the C# and Java arms (`$CLIENT.GetAsync`,
+    # `$HTTP.execute`), and narrowing it further - requiring a literal URL in
+    # argument one - was rejected: a client that follows a redirect reuses a URL
+    # it holds in a variable, and that is exactly the request worth seeing.
+    pattern-either:
+      - pattern: curl_exec(...)
+      - pattern: curl_multi_exec(...)
+      - patterns:
+          - pattern: file_get_contents("$URL")
+          - metavariable-regex:
+              metavariable: $URL
+              regex: (?i)^["']?https?://
+      - patterns:
+          - pattern: $CLIENT->$METHOD($URL, ...)
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: "^(request|get|post|put|patch|delete|head)$"
+
+  - id: taa-net-socket-php
+    languages: [php]
+    severity: ERROR
+    message: "Raw socket communication detected in PHP code"
+    metadata:
+      category: network
+      rule_family: NET_002
+    # The raw-transport entry points. socket_create and socket_connect are one
+    # connection in two calls, and an audit of a staged loader wants to see both
+    # halves, so neither is dropped for the sake of one finding per connection.
+    pattern-either:
+      - pattern: fsockopen(...)
+      - pattern: pfsockopen(...)
+      - pattern: stream_socket_client(...)
+      - pattern: socket_create(...)
+      - pattern: socket_connect(...)
+
+  - id: taa-dyn-eval-php
+    languages: [php]
+    severity: WARNING
+    message: "Dynamic code evaluation or dangerous reflection detected in PHP code"
+    metadata:
+      category: dynamic
+      rule_family: DYN_001
+    # eval and create_function run a string as code; call_user_func($f, ...) runs
+    # whatever `$f` names, including a name built at runtime.
+    #
+    # assert is a language construct whose argument is a string: `assert($X)`
+    # alone would put this family on every assertion in every unit test, so the
+    # branch carries a predicate that selects the two argument shapes that are
+    # code rather than a condition - a string literal (the PHP 4/5
+    # eval-equivalent, which binds with its quotes as measured) and a request
+    # superglobal (the one-line webshell, `assert($_POST['c'])`). A plain
+    # `assert($x > 0)` has neither shape and belongs to no family here.
+    #
+    # preg_replace's /e modifier compiles the replacement as code. It was
+    # removed in PHP 7, which is exactly why it still matters: the packages this
+    # pack audits are old enough to have been written against PHP 5, and an
+    # auditor reading `preg_replace` should be told which of its call sites run
+    # code. The predicate is written `.*/e['"]?$` - unanchored at the front and
+    # anchored at the end - so that it holds whether the engine treats
+    # metavariable-regex as a search or a full match, and so that a pattern like
+    # `/even/` (which contains `/e`) is not mistaken for the modifier.
+    #
+    # Variable functions (`$fn($arg)`) are deliberately NOT a branch. The
+    # obvious pattern for them, `$FN(...)`, is every call expression in the
+    # language - measured at 11 hits on 11 lines of a file that contains nothing
+    # but calls - so it would add no discrimination at all. Catching a real one
+    # (a variable assigned `"system"` and then invoked) needs constant
+    # propagation, which is taint's job, not a pattern's.
+    pattern-either:
+      - pattern: eval(...)
+      - patterns:
+          - pattern: assert($X, ...)
+          - metavariable-regex:
+              metavariable: $X
+              regex: ^(?:["']|\$_POST|\$_GET|\$_REQUEST|\$_COOKIE)
+      - pattern: create_function(...)
+      - pattern: call_user_func(...)
+      - pattern: call_user_func_array(...)
+      - patterns:
+          - pattern: preg_replace($PATTERN, $REPL, $SUBJ, ...)
+          - metavariable-regex:
+              metavariable: $PATTERN
+              regex: .*/e['"]?$
+
+  - id: taa-fil-probe-php
+    languages: [php]
+    severity: WARNING
+    message: "Sensitive credential file access probe detected"
+    metadata:
+      category: credential
+      rule_family: FIL_001
+    # Path-discriminated, as the Python arm is: a bare read is every file read
+    # in the language, and `file_get_contents` with no predicate fires on every
+    # template, config and cache lookup in a web application.
+    #
+    # One literal branch and one assembled branch, kept disjoint. The call
+    # patterns write the quote (`"$PATH"`), which in this parser matches string
+    # literals only; a call whose argument is a concatenation node cannot match
+    # them and is the assembled branch's business. The engine turns every
+    # semgrep result into its own finding, so two branches matching one line
+    # would report that line twice.
+    #
+    # The assembled branch is the concat form rather than a `path.join` - PHP
+    # has no join helper for this, it has `.`, and `__DIR__ . '/.ssh/id_rsa'` is
+    # the idiom that defeats a literal-only search. The predicate sits on the
+    # literal component, which is the half that names the credential store.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: file_get_contents("$PATH", ...)
+              - pattern: fopen("$PATH", ...)
+              - pattern: readfile("$PATH", ...)
+              - pattern: file("$PATH", ...)
+              - pattern: new SplFileObject("$PATH", ...)
+          - metavariable-regex:
+              metavariable: $PATH
+              regex: (?i).*(\.ssh|\.env|password|credential|\.aws|\.kube|id_rsa|authorized_keys|\.netrc)
+      - patterns:
+          - pattern: $BASE . "$PART"
+          - metavariable-regex:
+              metavariable: $PART
+              regex: (?i).*(\.ssh|\.env|id_rsa|authorized_keys|\.netrc|credential)
+
+  - id: taa-env-secret-php
+    languages: [php]
+    severity: WARNING
+    message: "Sensitive environment variable access detected in PHP code"
+    metadata:
+      category: credential
+      rule_family: ENV_001
+    # Constrained by name, as the Python arm is. The consequence of not doing so
+    # is recorded in the Python pack: a bare environment read fired 47 times over
+    # a 311-sample holdout on names such as PAGER, TERM and XDG_CONFIG_HOME, and
+    # the baseline fired zero times. This pack applies the same keyword
+    # alternation, and the same reasoning.
+    #
+    # All three PHP environment entry points are listed because the corpus uses
+    # all three: getenv(), $_ENV (populated only when variables_order says so)
+    # and $_SERVER (always populated, which is why the pack that forgot it saw
+    # half the reads). The key is written quoted so that it binds a string
+    # literal only - an indirection, `getenv($name)`, is not a finding here
+    # either.
+    patterns:
+      - pattern-either:
+          - pattern: getenv("$KEY")
+          - pattern: $_ENV["$KEY"]
+          - pattern: $_SERVER["$KEY"]
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: "(?i).*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab).*"
+
+  - id: taa-obf-exec-php
+    languages: [php]
+    severity: ERROR
+    message: "Encoded or deserialized payload construction detected in PHP code"
+    metadata:
+      category: payload
+      rule_family: OBF_001
+    # Same shape as the Python arm: *use* of a decoder or a deserializer, not a
+    # decode-into-eval flow, which is strictly narrower (a blob that is decoded
+    # and exfiltrated rather than run never reaches the eval sink).
+    #
+    # The set is the Python list translated plus the two branches this ecosystem
+    # adds. str_rot13 and convert_uudecode are the classic PHP dropper codecs -
+    # neither is in the Python baseline, and both appear in webshell samples
+    # precisely because they look like harmless string helpers. unserialize is
+    # the stage-2 primitive here: an object graph from an untrusted string is the
+    # PHP equivalent of pickle.loads, and it is included on that basis rather
+    # than as a decode helper.
+    pattern-either:
+      - pattern: base64_decode(...)
+      - pattern: base64_encode(...)
+      - pattern: gzinflate(...)
+      - pattern: gzuncompress(...)
+      - pattern: gzdecode(...)
+      - pattern: str_rot13(...)
+      - pattern: convert_uudecode(...)
+      - pattern: unserialize(...)
+
+  - id: taa-secret-exfiltration-php
+    languages: [php]
+    severity: ERROR
+    message: "Sensitive credential flows from source to external network sink"
+    metadata:
+      category: credential
+      rule_family: EXF_001
+    # Taint, in the Python arm's three-part shape. PHP taint mode is supported by
+    # semgrep 1.177.0 - verified before this rule was written, with a probe
+    # whose source was getenv() and whose sink was curl_setopt(), fired through
+    # both an assignment and a string concatenation.
+    #
+    # The propagators declared are the conversions that lose the value's
+    # identity: the PHP engine carries taint through assignment and through `.`
+    # on its own (that is how almost every URL in this ecosystem is built), but a
+    # value that has been through base64_encode, json_encode or sprintf is a new
+    # string to the analysis, and those three are how a credential gets dressed
+    # up before it is sent.
+    #
+    # The curl sinks are curl_setopt rather than curl_exec: PHP's handle-based
+    # API puts the URL and the body several statements away from the call that
+    # sends them, and the taint is visible where it is bound - CURLOPT_URL is
+    # how `curl "http://evil/$TOKEN"` is written in this language, and
+    # CURLOPT_POSTFIELDS is how the body is. mail() is listed because in PHP it
+    # is a real exfiltration channel that needs no network code at all.
+    mode: taint
+    pattern-sources:
+      - pattern: getenv($KEY)
+      - pattern: $_ENV[$KEY]
+      - pattern: $_SERVER[$KEY]
+      - pattern: file_get_contents($PATH)
+      - pattern: fread($FH, $LEN)
+    pattern-propagators:
+      - pattern: $OUT = base64_encode($IN)
+        from: $IN
+        to: $OUT
+      - pattern: $OUT = json_encode($IN, ...)
+        from: $IN
+        to: $OUT
+      - pattern: $OUT = sprintf($FMT, $IN, ...)
+        from: $IN
+        to: $OUT
+      - pattern: $OUT[] = $IN
+        from: $IN
+        to: $OUT
+    pattern-sanitizers:
+      - pattern: hash(...)
+      - pattern: hash_hmac(...)
+      - pattern: md5(...)
+      - pattern: sha1(...)
+      - pattern: password_hash(...)
+    pattern-sinks:
+      - pattern: curl_setopt($CH, CURLOPT_URL, $DATA)
+      - pattern: curl_setopt($CH, CURLOPT_POSTFIELDS, $DATA)
+      - pattern: $CLIENT->post($URL, $DATA)
+      - pattern: $CLIENT->get($URL)
+      - pattern: mail($TO, $SUBJ, $DATA, ...)
+      - pattern: stream_socket_client($ADDR)
+
+  - id: taa-per-backdoor-php
+    languages: [php]
+    severity: ERROR
+    message: "Persistence backdoor or autorun script modification detected"
+    metadata:
+      category: persistence
+      rule_family: PER_001
+    # Text mirror of the Python arm's five branches, because the baseline it
+    # mirrors is a regex: it searches for the persistence target and never
+    # requires the literal to be an argument to a write.
+    #
+    # The guard is PHP's line-comment prefix, and PHP has two of them. The
+    # Python arm's `^(?![ \t]*#)` becomes `^(?![ \t]*(?://|#))`: `#` is a
+    # comment in PHP too, so keeping only `//` would flag the commented-out
+    # payloads that this corpus is full of, and `/*` is deliberately absent -
+    # a block comment's continuation lines are not identifiable by a line
+    # prefix (a leading `*` is a style, not a rule), so guarding on it would
+    # buy nothing and could skip a real line.
+    #
+    # The second mirror branch is widened with `.user.ini` and `.htaccess`,
+    # which are this platform's profile files: they are read once per request
+    # by the web server and can name a file to execute before every script
+    # (`auto_prepend_file`). Dropping a payload into one of them is PHP's
+    # equivalent of appending to `.bashrc`, and a text search for shell
+    # profiles alone never sees it.
+    #
+    # Two AST branches follow, for the autorun primitives a text search cannot
+    # see at all. ini_set('auto_prepend_file', ...) is the same mechanism
+    # arranged from inside the process, and register_shutdown_function is the
+    # in-process shutdown hook - the direct analogue of the Java arm's
+    # addShutdownHook, which this repo already accepts as a PER finding.
+    #
+    # There is deliberately no "file write whose destination names a profile"
+    # branch. It would match the same line the text mirror already matches - the
+    # path literal is on that line by construction - and the engine turns every
+    # semgrep result into its own finding, so the branch would double the count
+    # of a family without ever finding anything the mirror had missed.
+    pattern-either:
+      - pattern-regex: ^(?![ \t]*(?://|#))[^\n]*crontab
+      - pattern-regex: ^(?![ \t]*(?://|#))[^\n]*(?:\.bashrc|\.bash_profile|\.zshrc|\.profile|\.user\.ini|\.htaccess)
+      - pattern-regex: ^(?![ \t]*(?://|#))[^\n]*systemctl\s+(?:enable|start)
+      - pattern-regex: ^(?![ \t]*(?://|#))[^\n]*/etc/init\.d
+      - pattern-regex: ^(?![ \t]*(?://|#))[^\n]*/etc/systemd
+      - pattern: ini_set("auto_prepend_file", ...)
+      - pattern: register_shutdown_function(...)
+
+  - id: taa-emb-data-dump-php
+    languages: [php]
+    severity: ERROR
+    message: "Raw dataset or sensitive features serialized to output file"
+    metadata:
+      category: embedded
+      rule_family: EMB_001
+    # Discriminated on the *payload* argument, as the Python arm is: a
+    # checkpoint write of weights is not this family, and the Python pack's
+    # comment records what happens when that discriminator is dropped (a HIGH
+    # finding on 75 mostly benign samples).
+    #
+    # The predicate is anchored with `^` and starts with `\$?` because of the
+    # binding measured above: a variable in a bare-metavariable position binds
+    # with its sigil, so `file_put_contents($out, $dataset)` presents the
+    # argument as `$dataset` and a predicate written for the Python arm
+    # (`^(?:raw_|...)(?:data|...)`) would match nothing at all. The sigil is
+    # optional rather than mandatory so that a literal payload name still
+    # matches under the other binding.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: file_put_contents($PATH, $DATA, ...)
+              - pattern: fwrite($FH, $DATA, ...)
+              - pattern: fputs($FH, $DATA, ...)
+              - pattern: fputcsv($FH, $DATA, ...)
+          - metavariable-regex:
+              metavariable: $DATA
+              regex: "^\\$?(?:raw_|train_|test_)?(?:data|dataset|images|samples|x_train|y_train|features)\\b"
+
+  - id: taa-emb-copy-export-php
+    languages: [php]
+    severity: ERROR
+    message: "Sensitive data or models copied to export/result directory"
+    metadata:
+      category: embedded
+      rule_family: EMB_002
+    # Destination-discriminated, as the Python arm is. copy() and rename() both
+    # take the destination second, so one metavariable position covers both; the
+    # predicate is unanchored and quote-free on purpose, since the destination
+    # may be a literal (`"output/dump.bin"`, which binds with its quotes under a
+    # bare metavariable) or a variable (`$result_path`).
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: copy($SRC, $DST)
+              - pattern: rename($SRC, $DST)
+          - metavariable-regex:
+              metavariable: $DST
+              regex: (?i).*(output|export|result).*
+
+  - id: taa-emb-log-dump-php
+    languages: [php]
+    severity: WARNING
+    message: "Raw sample data or sensitive features dumped to standard log/output"
+    metadata:
+      category: embedded
+      rule_family: EMB_003
+    # The family is about the *argument*, not about the logging call, so every
+    # branch carries the same dataset-name predicate - the two-branch shape of
+    # the Python arm (a stdout arm and a logger arm) is kept because that is what
+    # the baseline encodes.
+    #
+    # print($X) matches both `print($dataset);` and `print $dataset;` (measured),
+    # and echo is a separate statement form that print() does not reach, so the
+    # two are listed once each and neither line is matched twice.
+    #
+    # error_log is the language's own stdout/stderr of record, and $LOG->info()
+    # is the PSR-3 shape the training scripts in this corpus actually use.
+    # The method-name predicate is what makes the logger branch specific; without
+    # it, `$anything->debug()` is a finding.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: echo $X;
+              - pattern: print($X)
+              - pattern: var_dump($X)
+              - pattern: error_log($X, ...)
+          - metavariable-regex:
+              metavariable: $X
+              regex: "^\\$?(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
+      - patterns:
+          - pattern: $LOG->$METHOD($X, ...)
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: "^(info|debug|warning|warn)$"
+          - metavariable-regex:
+              metavariable: $X
+              regex: "^\\$?(?:raw_|train_|test_)?(?:data|dataset|images|samples|batch|x_train|y_train)\\b"
+
+  - id: taa-emb-stego-weight-php
+    languages: [php]
+    severity: ERROR
+    message: "Encoded data or steganographic payload embedded into model weights"
+    metadata:
+      category: embedded
+      rule_family: EMB_004
+    # Text mirror of the Python arm branch for branch, with the codec names
+    # translated: the family is "an encode/decode step meeting a weights
+    # artefact", and the codec is whatever the language spells it as. PHP's are
+    # base64_encode, gzcompress/gzencode and zlib_encode, and `save` is a naming
+    # convention rather than a function here - the mirror therefore matches the
+    # identifier `save_weights`, exactly as the Python arm's `base64.*save`
+    # matches a name rather than a call.
+    #
+    # The comment guard is the same one the PER rule uses, and for the same
+    # reason. Each branch is anchored and mutually exclusive on its keywords:
+    # a line that says both `weights` and `encode` is branch three, not branch
+    # one, so one line cannot be reported twice by one rule.
+    pattern-either:
+      - pattern-regex: ^(?![ \t]*(?://|#))[^\n]*(?:(?:state_dict|weights|params).*(?:hidden|secret|payload|stego|embed|hide)(_?data)?)
+      - pattern-regex: ^(?![ \t]*(?://|#))[^\n]*(?:[Bb]ase64.*[Ss]ave|[Ss]ave.*[Bb]ase64)
+      - pattern-regex: ^(?![ \t]*(?://|#))[^\n]*(?:[Ee]ncode.*[Ww]eights|[Ww]eights.*[Ee]ncode)
+      - pattern-regex: ^(?![ \t]*(?://|#))[^\n]*(?:(?:[Zz]lib|[Gg]zencode|[Gg]zcompress).*[Ss]ave|[Ss]ave.*(?:[Zz]lib|[Gg]zencode|[Gg]zcompress))

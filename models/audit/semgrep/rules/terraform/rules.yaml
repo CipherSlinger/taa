@@ -1,0 +1,276 @@
+# Semgrep rules for Terraform code security audit
+# Rule families align with TAA canonical 13-rule specification, restricted to
+# the subset Terraform's configuration language can actually express. This is
+# the spec's shape, not a shortfall: see the coverage matrix in
+# .claude/specs/2026-10-13-semgrep-ga11-rule-matrix-design.md section 3, where
+# the Terraform column carries five ticks and eight structural N/A cells.
+#
+#
+# WHY THIS PACK HAS FIVE RULES AND NOT THIRTEEN
+#
+# A later reader will find eight families missing here and may be tempted to
+# "complete" the pack to thirteen. Do not. Terraform is HCL: a declarative
+# configuration language with no runtime, no standard library and no way to
+# express the primitives the other eight families are written against. A rule
+# for a family whose primitive does not exist is not a lenient rule, it is a
+# dead rule - it can never match any input, it inflates the family coverage a
+# report claims, and it makes a coverage gap look like a covered case. The
+# absence of the following eight is deliberate and is the spec's decision:
+#
+#   net-socket (NET_002)       No socket primitive exists. HCL has no socket
+#                              API, no bind/connect call and no way to name a
+#                              port or an address as an object; the only
+#                              outbound surface is a provider data source,
+#                              which is NET_GENERAL.
+#   dyn-eval (DYN_001)         No evaluation semantics. HCL evaluates its own
+#                              expressions, but nothing in the language takes a
+#                              string or a byte payload and evaluates it as
+#                              code; there is no eval, no import, no
+#                              deserialize-to-callable primitive to name.
+#   fil-probe (FIL_001)        Carried by EMB_DATA_DUMP. The language has no
+#                              file-read API at all - path probing has no
+#                              primitive of its own - and the single file
+#                              surface that does exist, local_file, is the
+#                              family EMB_DATA_DUMP already covers.
+#   obf-exec (OBF_001)         No obfuscate-and-execute semantics. There is no
+#                              decode step (no base64/codec API in the
+#                              language) and, per DYN_001, no execution sink to
+#                              feed a decoded payload into.
+#   per-backdoor (PER_001)     No process lifecycle primitives. Terraform
+#                              configures resources; it neither runs as a
+#                              process nor installs one, and the nearest thing
+#                              to a process hook (a provisioner) is already
+#                              CMD_001's subject.
+#   emb-copy-export (EMB_002)  No copy/export primitive. There is no
+#                              shutil.copy/cp/rename equivalent in the
+#                              language; writing one file is local_file, which
+#                              EMB_DATA_DUMP owns.
+#   emb-log-dump (EMB_003)     No logging primitive. stdout, print, console and
+#                              log handlers do not exist in the configuration
+#                              language; a provisioner's own output is a
+#                              CMD_001 concern.
+#   emb-stego-weight (EMB_004) No model or weights surface. Terraform knows
+#                              nothing about tensors, checkpoints or
+#                              serialization formats, so there is no object for
+#                              a steganographic payload to be embedded into.
+#
+# WHAT WAS MEASURED BEFORE WRITING THESE FIVE (semgrep 1.177.0, this host)
+#
+# 1. Structured HCL patterns work; there is no pattern-regex fallback here.
+#    A probe confirmed that an ellipsis body (`provisioner "local-exec" { ... }`)
+#    matches, that `pattern-inside` binds against a block, that a block label
+#    metavariable is usable in metavariable-regex, and that a `var.$NAME`
+#    traversal is visible to the matcher even when it sits inside a template
+#    interpolation string (`"curl -d ${var.db_password} ..."`). Every branch
+#    below is therefore structural.
+#
+# 2. String-literal metavariable binding differs per language, and Terraform is
+#    not uniform even within itself. Measured on this host:
+#      - a block LABEL binds WITHOUT its quotes (`resource "local_file" $NAME`
+#        matched `^dump$` and did not match `^"dump"$`);
+#      - an attribute VALUE binds WITH its quotes (`url = $U` matched
+#        `^"https://evil.example/stage2.sh"$` and did not match the unquoted
+#        form), which is the Java-style binding rather than the C#-style one;
+#      - an attribute KEY binds bare, like an identifier.
+#    Every name predicate in this file is therefore written WITHOUT surrounding
+#    quotes and against a label or a key, never a value. That form is also the
+#    portable one: a dot cannot occur in an identifier or in a label, so
+#    `(?i).*(token|secret)` cannot be fooled by a quote character, and the same
+#    regex works under the C# binding (without quotes) and the Java one (with).
+#
+# 3. `mode: taint` does not run for this language. A probe whose source and
+#    sink were the same node produced zero results and no error, so the taint
+#    engine is not merely failing to propagate - it is not running at all for
+#    `languages: [terraform]`. EXF_001 below is a documented structural
+#    approximation because of that measurement, not by preference.
+rules:
+  - id: taa-cmd-exec-terraform
+    languages: [terraform]
+    severity: ERROR
+    message: "Provisioner command execution detected in Terraform code"
+    metadata:
+      category: execution
+      rule_family: CMD_001
+    # A provisioner exists to run something on the machine applying the plan,
+    # so both of these are command execution by construction: local-exec runs
+    # `command` through a shell on the host, and remote-exec ships `inline`
+    # over SSH to the target. There is nothing to discriminate on - the block
+    # type is the finding - and no other provisioner type is listed, because
+    # `file` and `chef`/`salt`/`puppet` provisioners are not shell execution.
+    #
+    # Two branches rather than one `provisioner $KIND` branch with a
+    # metavariable-regex: a single block carries a single label, so the two
+    # branches can never match the same line, and spelling the ids out keeps
+    # the rule readable next to the pack it was modelled on.
+    pattern-either:
+      - pattern: |
+          provisioner "local-exec" {
+            ...
+          }
+      - pattern: |
+          provisioner "remote-exec" {
+            ...
+          }
+
+  - id: taa-net-general-terraform
+    languages: [terraform]
+    severity: ERROR
+    message: "External network fetch detected in Terraform code"
+    metadata:
+      category: network
+      rule_family: NET_001
+    # Terraform has no outbound network primitive of its own; the config is
+    # executed by whatever machine runs `terraform apply`, and what that
+    # machine fetches is decided by the data sources the configuration names.
+    # That is why this family is written against data sources rather than
+    # against a request API: where a module reads its payload from is the
+    # supply-chain question, and a plan-time HTTP fetch has no review step
+    # between the URL literal and the fetched bytes.
+    #
+    # Branch 1 is the http provider's data source, which is exactly a
+    # plan-time URL fetch. Branch 2 is any *other* data source parameterised
+    # by a `url` attribute - a fetch the provider performs on the module's
+    # behalf. Branch 2 excludes `http` (the `$TYPE` regex is a negative
+    # lookahead, measured working against a block label on this host) so that
+    # an http data source is one finding on its block line rather than one on
+    # the block line and another on its `url` line: the Go engine turns every
+    # semgrep result into its own finding, so the two branches would
+    # double-count the family on the same data source.
+    pattern-either:
+      - pattern: |
+          data "http" $NAME {
+            ...
+          }
+      - patterns:
+          - pattern: url = $URL
+          - pattern-inside: |
+              data $TYPE $NAME {
+                ...
+              }
+          - metavariable-regex:
+              metavariable: $TYPE
+              regex: ^(?!http$).*$
+
+  - id: taa-env-secret-terraform
+    languages: [terraform]
+    severity: WARNING
+    message: "Hard-coded credential detected in Terraform configuration"
+    metadata:
+      category: credential
+      rule_family: ENV_001
+    # Terraform's equivalent of "a secret read from the environment" is a
+    # secret written into the configuration: the value has to live somewhere,
+    # and a `default` or a provider argument is where it ends up when it is not
+    # passed in from a secret store. This is the family where the name
+    # predicate is load-bearing - a rule that fired on every variable and every
+    # provider argument would fire on `region`, `instance_type` and every
+    # `prevent_destroy` in every module, and would have stopped meaning
+    # "credential" - so both branches carry the keyword alternation the
+    # Python/Go/Java arms use, against a label (branch 1) or an attribute key
+    # (branch 2), which is the binding this pack measured as unquoted.
+    #
+    # Branch 1 requires a `default` as well as the secret-shaped name, so that
+    # a variable declared empty and fed by a secret store at plan time is not
+    # reported: this family is about material that is in the file. Branch 2
+    # sits inside a provider block for the same reason - a `token = "..."` on
+    # any other resource is a different question.
+    pattern-either:
+      - patterns:
+          - pattern: default = $V
+          - pattern-inside: |
+              variable $NAME {
+                ...
+              }
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: "(?i).*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab).*"
+      - patterns:
+          - pattern: $ARG = $V
+          - pattern-inside: |
+              provider $P {
+                ...
+              }
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: "(?i).*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab).*"
+
+  - id: taa-secret-exfiltration-terraform
+    languages: [terraform]
+    severity: ERROR
+    message: "Sensitive credential flows from source to execution sink"
+    metadata:
+      category: credential
+      rule_family: EXF_001
+    # This family is a flow in every other arm, and the flow is what makes it
+    # worth having: a secret and a shell are each unremarkable, a secret
+    # reaching the shell is the finding. It cannot be a flow here.
+    #
+    # Measured, not assumed: `mode: taint` is a silent no-op for
+    # `languages: [terraform]` on semgrep 1.177.0. A probe with a taint source
+    # and a taint sink on the *same node* (so no propagation was needed)
+    # reported zero findings and raised no error, and neither did a probe whose
+    # source and sink sat in different blocks. The engine does not run for this
+    # language, so writing the taint form would have produced a rule that
+    # quietly never fires - the dead-rule failure mode this pack's header warns
+    # about - while reading, to anyone reviewing the file, like the strongest
+    # rule in it.
+    #
+    # What is written instead is a structural approximation of the flow, and it
+    # is deliberately the conservative half of it: a secret-shaped `var`/`local`
+    # REFERENCE that appears inside a local-exec or remote-exec block. It does
+    # not track the value - it cannot, there is no execution to track it
+    # through - so it does not need the reference to be on the `command` line
+    # specifically; being anywhere in the provisioner block is what "reaches
+    # the sink" means in a language where the block is the sink. The two
+    # preconditions are not redundant: the name predicate is what separates
+    # this family from CMD_001 (which reports every provisioner, secret or
+    # not), and the provisioner-inside is what separates it from ENV_001
+    # (which reports the secret wherever it is declared). A `${var.region}`
+    # inside a local-exec is CMD_001's finding and not this one.
+    #
+    # `$KIND` is constrained to the two exec provisioners rather than left
+    # open, because the `file` provisioner is not an execution sink and a
+    # secret-shaped reference inside one belongs to no family here.
+    patterns:
+      - pattern-inside: |
+          provisioner $KIND {
+            ...
+          }
+      - metavariable-regex:
+          metavariable: $KIND
+          regex: ^(local-exec|remote-exec)$
+      - pattern-either:
+          - pattern: var.$NAME
+          - pattern: local.$NAME
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: "(?i).*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|pwd|cred|credential|auth|session|cookie|kube|aws|gcp|azure|github|gitlab).*"
+
+  - id: taa-emb-data-dump-terraform
+    languages: [terraform]
+    severity: ERROR
+    message: "Raw data written to a local file in Terraform code"
+    metadata:
+      category: embedded
+      rule_family: EMB_001
+    # local_file is the only way a configuration writes bytes to disk, and it
+    # exists for exactly this: it materialises an attribute's value into a file
+    # at apply time. Both spellings are listed because both write - the
+    # resource form writes what the plan computed, and the data-source form
+    # reads a file that is already on the host, which is the same file surface
+    # reached from the other side. The two branches cannot match the same line,
+    # since a block is headed by either `resource` or `data`.
+    #
+    # No payload predicate here, unlike the Python arm: there the baseline keys
+    # off the payload being dataset-shaped, because the language has a thousand
+    # ways to write a file and only some of them are this family. Terraform has
+    # one way, so `local_file` is the predicate.
+    pattern-either:
+      - pattern: |
+          resource "local_file" $NAME {
+            ...
+          }
+      - pattern: |
+          data "local_file" $NAME {
+            ...
+          }
