@@ -19,6 +19,7 @@ import (
 
 	"taa/internal/attestation"
 	"taa/internal/codeaudit"
+	"taa/internal/resource"
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 )
@@ -131,15 +132,24 @@ func makeRuntimeConfigJSON(t *testing.T, commands []string, env map[string]strin
 	return string(data)
 }
 
-func makePhase1TrainingRuntimeConfigJSON(t *testing.T, marker string) string {
-	t.Helper()
-	return makeRuntimeConfigJSON(t, []string{
+// phase1TrainingCommands is the command list every phase 1 flow case runs. extra
+// commands are spliced in before the heredoc: commands are joined with " && " into a
+// single /bin/sh line, so anything appended after the heredoc would land on its
+// terminator line and be swallowed into the file.
+func phase1TrainingCommands(marker string, extra ...string) []string {
+	commands := []string{
 		`mkdir -p "$TAA_OUTPUT_DIR"`,
 		fmt.Sprintf(`printf '%%s\n' %q > "$TAA_OUTPUT_DIR/marker.txt"`, marker),
-		`cat > "$TAA_OUTPUT_DIR/training_result.json" <<'JSON'
+	}
+	commands = append(commands, extra...)
+	return append(commands, `cat > "$TAA_OUTPUT_DIR/training_result.json" <<'JSON'
 {"dataset":{"total_samples":1,"splits":{"train":1,"test":0}},"metrics":{"loss":0.0,"accuracy":1.0}}
-JSON`,
-	}, map[string]string{"PYTHONUNBUFFERED": "1"})
+JSON`)
+}
+
+func makePhase1TrainingRuntimeConfigJSON(t *testing.T, marker string, extra ...string) string {
+	t.Helper()
+	return makeRuntimeConfigJSON(t, phase1TrainingCommands(marker, extra...), map[string]string{"PYTHONUNBUFFERED": "1"})
 }
 
 func postJSON(t *testing.T, url string, body any) *http.Response {
@@ -1609,7 +1619,7 @@ func TestExportFileSizeLimit(t *testing.T) {
 		}
 	})
 
-	t.Run("resultCheck detects data leakage and returns 400", func(t *testing.T) {
+	t.Run("resultCheck rejects a failing verdict recorded at training end", func(t *testing.T) {
 		state.Security.MaxFileBytes = 3 * 1024 * 1024 * 1024
 		state.Security.ResultCheck = true
 		defer func() {
@@ -1617,9 +1627,22 @@ func TestExportFileSizeLimit(t *testing.T) {
 		}()
 
 		record := seedExportIndexRecord(t, state, "req-export-leak", "task-leak", "export-leak")
-		leakContent := []byte("id,label,image\n1,cat,img1.jpg\n")
-		if err := os.WriteFile(filepath.Join(record.ResultDir, "leak.csv"), leakContent, 0o644); err != nil {
-			t.Fatalf("write seeded leak.csv: %v", err)
+
+		// The verdict is stored while the result directory is still clean, so a 400
+		// below can only come from the persisted verdict - export no longer scans.
+		store, err := state.importIndexStore()
+		if err != nil {
+			t.Fatalf("load import index store: %v", err)
+		}
+		if err := store.SetResultCheck("req-export-leak", "task-leak", &resource.ResultCheckVerdict{
+			Passed:    false,
+			Details:   []string{"[plaintext-data] leak.csv 与训练数据匹配"},
+			CheckedAt: "2026-10-15T00:00:00Z",
+		}); err != nil {
+			t.Fatalf("SetResultCheck: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(record.ResultDir, "leak.csv")); !os.IsNotExist(err) {
+			t.Fatalf("test premise broken: result dir should not contain leak.csv, stat err=%v", err)
 		}
 
 		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
@@ -1632,6 +1655,64 @@ func TestExportFileSizeLimit(t *testing.T) {
 		}
 		if !strings.Contains(api.Msg, "导出结果安全检查未通过") {
 			t.Fatalf("unexpected error message: %s", api.Msg)
+		}
+		if !strings.Contains(api.Msg, "leak.csv") {
+			t.Fatalf("verdict details missing from message: %s", api.Msg)
+		}
+	})
+
+	t.Run("resultCheck missing verdict fails closed with 500", func(t *testing.T) {
+		state.Security.ResultCheck = true
+		defer func() {
+			state.Security.ResultCheck = false
+		}()
+
+		seedExportIndexRecord(t, state, "req-export-noverdict", "task-noverdict", "export-noverdict")
+
+		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+			"requestId": "req-export-noverdict",
+			"taskId":    "task-noverdict",
+		})
+		api := decodeResponse(t, resp)
+		if resp.StatusCode != http.StatusInternalServerError || api.Error != pkgerrors.CodeInternal {
+			t.Fatalf("expected 500 on missing verdict, got status=%d error=%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		}
+		if !strings.Contains(api.Msg, "裁决缺失") {
+			t.Fatalf("unexpected error message: %s", api.Msg)
+		}
+	})
+
+	t.Run("resultCheck verdict that failed to run returns 500", func(t *testing.T) {
+		state.Security.ResultCheck = true
+		defer func() {
+			state.Security.ResultCheck = false
+		}()
+
+		seedExportIndexRecord(t, state, "req-export-checkerr", "task-checkerr", "export-checkerr")
+		store, err := state.importIndexStore()
+		if err != nil {
+			t.Fatalf("load import index store: %v", err)
+		}
+		if err := store.SetResultCheck("req-export-checkerr", "task-checkerr", &resource.ResultCheckVerdict{
+			Error:     "read result dir: permission denied",
+			CheckedAt: "2026-10-15T00:00:00Z",
+		}); err != nil {
+			t.Fatalf("SetResultCheck: %v", err)
+		}
+
+		resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+			"requestId": "req-export-checkerr",
+			"taskId":    "task-checkerr",
+		})
+		api := decodeResponse(t, resp)
+		if resp.StatusCode != http.StatusInternalServerError || api.Error != pkgerrors.CodeInternal {
+			t.Fatalf("expected 500 on failed check execution, got status=%d error=%d msg=%s", resp.StatusCode, api.Error, api.Msg)
+		}
+		if !strings.Contains(api.Msg, "结果安全检查执行失败") {
+			t.Fatalf("unexpected error message: %s", api.Msg)
+		}
+		if strings.Contains(api.Msg, "未通过") {
+			t.Fatalf("a broken check must not be reported as a leakage finding: %s", api.Msg)
 		}
 	})
 }

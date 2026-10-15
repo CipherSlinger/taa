@@ -75,6 +75,58 @@ func TestPhase1RequiresBothModelAndDataBeforeTraining(t *testing.T) {
 	})
 }
 
+// TestPhase1ResultCheckRunsAtTrainingEnd covers the leakage check end to end: it runs
+// when training finishes and its verdict is persisted on the import index record, and
+// export only ever reads that verdict. A leaking artifact must not fail the training
+// run - training still succeeds and the report still reaches the platform - but the
+// export that follows is refused.
+func TestPhase1ResultCheckRunsAtTrainingEnd(t *testing.T) {
+	modelArchive := func() []byte {
+		return buildTarGzArchive(t, map[string]archiveEntry{
+			"bundle/train.py": {mode: 0o755, data: []byte("#!/usr/bin/env python3\nprint('phase1')\n")},
+		})
+	}
+	dataArchive := func() []byte {
+		return buildTarGzArchive(t, map[string]archiveEntry{
+			"data/sample.txt": {
+				mode: 0o644,
+				data: []byte("training data\n"),
+			},
+		})
+	}
+
+	t.Run("clean artifacts pass and export succeeds", func(t *testing.T) {
+		passed := true
+		runPhase1FlowCase(t, phase1FlowCase{
+			name:              "resultcheck clean",
+			modelArchiveData:  modelArchive(),
+			dataArchiveData:   dataArchive(),
+			plaintextResource: true,
+			wantTrainMarker:   true,
+			resultCheck:       true,
+			wantVerdict:       &passed,
+			wantExportStatus:  http.StatusOK,
+		})
+	})
+
+	t.Run("leaking artifact fails the verdict but not the training", func(t *testing.T) {
+		failed := false
+		runPhase1FlowCase(t, phase1FlowCase{
+			name:              "resultcheck leak",
+			modelArchiveData:  modelArchive(),
+			dataArchiveData:   dataArchive(),
+			plaintextResource: true,
+			wantTrainMarker:   true,
+			resultCheck:       true,
+			wantVerdict:       &failed,
+			wantExportStatus:  http.StatusBadRequest,
+			extraRuntimeCommands: []string{
+				`printf 'id,label,image\n1,cat,img1.jpg\n' > "$TAA_OUTPUT_DIR/leak.csv"`,
+			},
+		})
+	})
+}
+
 func TestPhase1ModelImportFailureReportsModelImport(t *testing.T) {
 	t.Run("decrypt failure reports model import", func(t *testing.T) {
 		state, server := setupTestServer(t)
@@ -391,6 +443,14 @@ type phase1FlowCase struct {
 	plaintextResource bool
 	wantTrainMarker   bool
 	importDataFirst   bool
+	// resultCheck turns Security.ResultCheck on for the whole flow, so the case also
+	// asserts the verdict training left behind and how export reacts to it.
+	resultCheck      bool
+	wantVerdict      *bool
+	wantExportStatus int
+	// extraRuntimeCommands are appended to the training commands, letting a case plant
+	// an artifact the leakage check is meant to catch.
+	extraRuntimeCommands []string
 }
 
 func runPhase1FlowCase(t *testing.T, tc phase1FlowCase) {
@@ -401,6 +461,7 @@ func runPhase1FlowCase(t *testing.T, tc phase1FlowCase) {
 	state.CurrentPhase = 1
 	state.DockerID = "docker-" + strings.ReplaceAll(tc.name, " ", "-")
 	state.mu.Unlock()
+	state.Security.ResultCheck = tc.resultCheck
 
 	platformReportCh := make(chan importedReportPayload, 1)
 	platformServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -444,13 +505,15 @@ func runPhase1FlowCase(t *testing.T, tc phase1FlowCase) {
 	}))
 	defer resourceServer.Close()
 
+	runtimeConfig := makePhase1TrainingRuntimeConfigJSON(t, tc.name, tc.extraRuntimeCommands...)
+
 	importModel := func() {
 		resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
 			"resourceUrl":   resourceServer.URL + "/model.tar.gz",
 			"requestId":     "req-" + strings.ReplaceAll(tc.name, " ", "-") + "-model",
 			"taskId":        "task-" + strings.ReplaceAll(tc.name, " ", "-"),
 			"publicKey":     string(pubKeyPEM),
-			"runtimeConfig": makePhase1TrainingRuntimeConfigJSON(t, tc.name),
+			"runtimeConfig": runtimeConfig,
 		})
 		api := decodeResponse(t, resp)
 		if resp.StatusCode != http.StatusOK || api.Error != 0 {
@@ -507,6 +570,47 @@ func runPhase1FlowCase(t *testing.T, tc phase1FlowCase) {
 		if _, err := os.Stat(markerPath); err != nil {
 			t.Fatalf("train marker missing at %s: %v", markerPath, err)
 		}
+	}
+
+	if tc.resultCheck {
+		assertFlowResultCheck(t, state, server, tc)
+	}
+}
+
+// assertFlowResultCheck pins that the plaintext leakage check belongs to the training
+// run: by the time it returns, the report has already been delivered (asserted by the
+// caller), so even a failing verdict leaves training successful. Export then reads
+// that verdict instead of scanning again.
+func assertFlowResultCheck(t *testing.T, state *TAAState, server *httptest.Server, tc phase1FlowCase) {
+	t.Helper()
+
+	taskID := "task-" + strings.ReplaceAll(tc.name, " ", "-")
+	store, err := state.importIndexStore()
+	if err != nil {
+		t.Fatalf("load import index store: %v", err)
+	}
+	record, ok := store.LookupByTaskID(taskID)
+	if !ok {
+		t.Fatalf("import index record missing for %s", taskID)
+	}
+	if record.ResultCheck == nil {
+		t.Fatalf("no result check verdict persisted for %s", taskID)
+	}
+	if record.ResultCheck.Error != "" {
+		t.Fatalf("result check did not run cleanly: %s", record.ResultCheck.Error)
+	}
+	if tc.wantVerdict != nil && record.ResultCheck.Passed != *tc.wantVerdict {
+		t.Fatalf("verdict passed = %v, want %v (details=%v)", record.ResultCheck.Passed, *tc.wantVerdict, record.ResultCheck.Details)
+	}
+
+	if tc.wantExportStatus == 0 {
+		return
+	}
+	resp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{"taskId": taskID})
+	defer resp.Body.Close()
+	if resp.StatusCode != tc.wantExportStatus {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("export status = %d, want %d, body=%s", resp.StatusCode, tc.wantExportStatus, body)
 	}
 }
 

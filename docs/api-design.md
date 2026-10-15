@@ -1144,6 +1144,8 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 
 > 注意：该接口与其他 TAA 接口不同，**成功响应不是公共 JSON 格式**；只有失败响应继续遵循 [2. 公共返回格式](#2-公共返回格式)。
 
+> **结果泄露检查在训练结束时执行，导出只读结论**：`security.resultCheck.enabled` 打开时（默认打开），TAA 在训练产物收集完成之后、写 `training_report.json` 之前，对结果目录执行一次明文泄露检查，并把裁决（是否通过、高危项、执行时间）写进 `{RESULT_DIR}/import-index.json` 中该任务的记录。导出接口读取这份裁决、**不再扫描结果目录**，因此收到请求后立即开始传输字节。代价是 fail-closed：裁决不通过、检查自身执行失败、或该记录根本没有裁决（例如由引入该字段之前的版本提交），导出都会被拒绝。检查本身不阻断训练——不通过只记日志，训练报告照常上报给平台。
+
 **请求**：`POST /v1/taa/export`
 
 **请求内容类型**：`application/json`
@@ -1264,6 +1266,30 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
   "msg": "publicKey 解析失败: ...",
   "result": null,
   "error": 400
+}
+```
+
+```jsonc
+{
+  "msg": "导出结果安全检查未通过，存在高危数据泄露隐患: [plaintext_section] 结果文件中检测到明文段: CSV header (training data)",
+  "result": null,
+  "error": 400
+}
+```
+
+```jsonc
+{
+  "msg": "结果安全检查执行失败，拒绝导出: read result dir: permission denied",
+  "result": null,
+  "error": 500
+}
+```
+
+```jsonc
+{
+  "msg": "结果安全检查裁决缺失，拒绝导出（fail-closed）",
+  "result": null,
+  "error": 500
 }
 ```
 

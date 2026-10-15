@@ -542,6 +542,31 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 		s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
 		return
 	}
+
+	// Plaintext leakage check on the finished artifacts. It runs before the report
+	// is written (so training_report.json itself is not scanned) and its verdict is
+	// persisted on the import index record, which is what the export handler reads
+	// later. Deliberately non-fatal: a failing or impossible check must not turn a
+	// successful training run into a failure, so every error below only warns.
+	if s.Security.ResultCheck {
+		StepSeparator("Result Leakage Check")
+		s.Logs.Add(LogInfo, "resultcheck", "训练结束，执行结果明文泄露检查: resultDir=%s", trainOutputDir)
+		verdict := s.runResultCheck(trainOutputDir)
+		switch {
+		case verdict.Error != "":
+			s.Logs.Add(LogError, "resultcheck", "结果明文泄露检查执行失败: %s", verdict.Error)
+		case !verdict.Passed:
+			s.Logs.Add(LogError, "resultcheck", "结果明文泄露检查未通过: %s", strings.Join(verdict.Details, "; "))
+		default:
+			s.Logs.Add(LogInfo, "resultcheck", "结果明文泄露检查通过")
+		}
+		if store, err := s.importIndexStore(); err != nil {
+			s.Logs.Add(LogWarn, "resultcheck", "加载导入索引失败，检查裁决未能落盘: %v", err)
+		} else if err := store.SetResultCheck(trainReq.RequestID, trainReq.TaskID, verdict); err != nil {
+			s.Logs.Add(LogWarn, "resultcheck", "保存检查裁决失败: %v", err)
+		}
+	}
+
 	StepSeparator("Build & Upload Report")
 	s.setCurrentOp("reporting")
 	s.Logs.Add(LogInfo, "report", "生成训练报告: taskId=%s", trainReq.TaskID)

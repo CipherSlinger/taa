@@ -13,6 +13,16 @@ import (
 	"taa/pkg/utils"
 )
 
+// ResultCheckVerdict 记录训练结束后对结果目录执行明文泄露检查的裁决。
+// A nil verdict means "never checked"; a non-nil one with a non-empty Error means
+// the check itself failed to run, which is deliberately distinct from "checked and passed".
+type ResultCheckVerdict struct {
+	Passed    bool     `json:"passed"`
+	Error     string   `json:"error,omitempty"`
+	Details   []string `json:"details,omitempty"`
+	CheckedAt string   `json:"checkedAt,omitempty"`
+}
+
 // ImportIndexRecord 记录单次数据/模型导入索引信息
 type ImportIndexRecord struct {
 	RequestID string `json:"requestId"`
@@ -21,6 +31,10 @@ type ImportIndexRecord struct {
 	DataDir   string `json:"dataDir"`
 	ResultDir string `json:"resultDir"`
 	Phase     int    `json:"phase"`
+	// ResultCheck is the verdict of the plaintext leakage check run right after
+	// training finished. It lives here because export already resolves this very
+	// record to locate ResultDir, so no second lookup path is needed.
+	ResultCheck *ResultCheckVerdict `json:"resultCheck,omitempty"`
 }
 
 type importIndexSnapshot struct {
@@ -273,6 +287,12 @@ func (s *ImportIndexStore) Lookup(requestID, taskID string) (ImportIndexRecord, 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	return s.lookupLocked(requestID, taskID)
+}
+
+// lookupLocked 在已持有 s.mu 的前提下按 requestId/taskId 解析唯一记录。
+// Both Lookup and SetResultCheck go through it so the conflict rules cannot drift apart.
+func (s *ImportIndexStore) lookupLocked(requestID, taskID string) (ImportIndexRecord, error) {
 	var (
 		reqRecord  ImportIndexRecord
 		taskRecord ImportIndexRecord
@@ -299,6 +319,62 @@ func (s *ImportIndexStore) Lookup(requestID, taskID string) (ImportIndexRecord, 
 	default:
 		return ImportIndexRecord{}, fmt.Errorf("未找到对应记录: requestId=%s taskId=%s", requestID, taskID)
 	}
+}
+
+// SetResultCheck 为已提交的记录挂上（或传 nil 清除）明文泄露检查裁决。
+// The verdict pointer is shared by every holder of the record, so callers must treat
+// it as immutable once stored. Note that the verdict is intentionally NOT part of
+// sameImportIndexRecord: pointer identity does not survive a reload, so comparing it
+// would break the "is this the latest record" test in Purge.
+func (s *ImportIndexStore) SetResultCheck(requestID, taskID string, verdict *ResultCheckVerdict) error {
+	requestID = strings.TrimSpace(requestID)
+	taskID = strings.TrimSpace(taskID)
+	if requestID == "" && taskID == "" {
+		return fmt.Errorf("requestId 和 taskId 不能同时为空")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	record, err := s.lookupLocked(requestID, taskID)
+	if err != nil {
+		return err
+	}
+
+	oldRecords := append([]ImportIndexRecord(nil), s.records...)
+	oldByRequest := cloneImportIndexMap(s.byRequestID)
+	oldByTask := cloneImportIndexMap(s.byTaskID)
+	oldLatest := s.latestRecord
+
+	updated := record
+	updated.ResultCheck = verdict
+
+	for i := range s.records {
+		if sameImportIndexRecord(s.records[i], record) {
+			s.records[i] = updated
+		}
+	}
+	if record.RequestID != "" {
+		s.byRequestID[record.RequestID] = updated
+	}
+	if record.TaskID != "" {
+		s.byTaskID[record.TaskID] = updated
+	}
+	if s.latestRecord != nil && sameImportIndexRecord(*s.latestRecord, record) {
+		// Replace the pointer instead of mutating the pointee: the rollback snapshot
+		// above keeps referring to the old struct.
+		latest := updated
+		s.latestRecord = &latest
+	}
+
+	if err := s.saveLocked(); err != nil {
+		s.records = oldRecords
+		s.byRequestID = oldByRequest
+		s.byTaskID = oldByTask
+		s.latestRecord = oldLatest
+		return err
+	}
+	return nil
 }
 
 // Latest 获取最近一次成功提交的导入记录
@@ -435,6 +511,10 @@ func (s *ImportIndexStore) refreshBakLocked(data []byte) {
 	_ = utils.AtomicWriteFile(bakPath, data, 0o600)
 }
 
+// sameImportIndexRecord 判定两条记录是否为同一条。
+// ResultCheck is deliberately left out: after a reload the verdict pointers in
+// records/latest differ even for the same logical record, so comparing them would
+// make Purge miss the latest record.
 func sameImportIndexRecord(a, b ImportIndexRecord) bool {
 	return a.RequestID == b.RequestID && a.TaskID == b.TaskID && a.Hash == b.Hash && a.DataDir == b.DataDir && a.ResultDir == b.ResultDir && a.Phase == b.Phase
 }
