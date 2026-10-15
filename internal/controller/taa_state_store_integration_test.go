@@ -189,18 +189,51 @@ func TestTAAState_ImportSuccessMethods_Sealing(t *testing.T) {
 	}
 }
 
-// TestDataImportSealsRuntimeConfig covers the runtimeConfig delivered with a data
-// import. The overwrite has to reach disk when it is made, not when the task it
-// belongs to ends: the data path used to rely on the task release to seal, so a
-// crash during the download or the training it starts reverted the run to the
-// configuration saved before it.
-func TestDataImportSealsRuntimeConfig(t *testing.T) {
+// TestDataImportIgnoresPublicKeyAndRuntimeConfig pins the contract of the data
+// path: /v1/taa/import reads neither field. Both are saved when the model is
+// delivered (/v1/taa/importModel, phase 1), and the data endpoint is what starts
+// the run, so accepting an overwrite here would give one run two sources for the
+// commands it executes and let whichever endpoint spoke last decide them.
+//
+// The cost of the rule is that a platform still sending runtimeConfig with its
+// data is not told by the response that the field did nothing; the warn log is
+// the only signal, so what this test protects is that the field really is inert.
+func TestDataImportIgnoresPublicKeyAndRuntimeConfig(t *testing.T) {
 	state, server := setupTestServer(t)
 	store, _ := createTestStateStore(t)
 	state.SetStateStore(store)
 
-	// The download is held open so the assertion lands while the request is still
-	// in flight, which is exactly the window the seal has to cover.
+	// The seeded configuration stands in for the one saved at model delivery; the
+	// seed is read back before the request so the assertion below cannot pass just
+	// because nothing was ever written to disk.
+	savedCfg := `{"commands":["python3 train.py --tag saved-at-model-delivery"]}`
+	state.mu.Lock()
+	state.RuntimeConfig = savedCfg
+	err := state.sealStateLocked()
+	state.mu.Unlock()
+	if err != nil {
+		t.Fatalf("seed saved runtimeConfig: %v", err)
+	}
+	seeded, err := store.UnsealState()
+	if err != nil {
+		t.Fatalf("unseal seeded state failed: %v", err)
+	}
+	if seeded.RuntimeConfig != savedCfg {
+		t.Fatalf("seed did not reach disk: got %q, want %q", seeded.RuntimeConfig, savedCfg)
+	}
+
+	priv, err := teecrypto.GenerateSM2KeyPair()
+	if err != nil {
+		t.Fatalf("generate SM2 key pair: %v", err)
+	}
+	pubPEM, err := teecrypto.MarshalSM2PublicKeyPEM(&priv.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal SM2 public key PEM: %v", err)
+	}
+
+	// The download is held open so the assertions land while the request is still
+	// in flight: a field the handler ignores has to be ignored at that point too,
+	// not merely absent from the state by the time the response comes back.
 	started := make(chan struct{})
 	archiveServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		close(started)
@@ -210,12 +243,13 @@ func TestDataImportSealsRuntimeConfig(t *testing.T) {
 	}))
 	defer archiveServer.Close()
 
-	cfg := `{"commands":["python3 train.py"]}`
+	deliveredCfg := `{"commands":["python3 train.py --tag delivered-with-data"]}`
 	body, err := json.Marshal(map[string]any{
 		"resourceUrl":   archiveServer.URL + "/data.tar.gz",
-		"requestId":     "req-seal-1",
-		"taskId":        "task-seal-1",
-		"runtimeConfig": cfg,
+		"requestId":     "req-ignore-1",
+		"taskId":        "task-ignore-1",
+		"runtimeConfig": deliveredCfg,
+		"publicKey":     string(pubPEM),
 	})
 	if err != nil {
 		t.Fatalf("marshal body: %v", err)
@@ -236,12 +270,25 @@ func TestDataImportSealsRuntimeConfig(t *testing.T) {
 
 	<-started
 
+	state.mu.RLock()
+	memCfg, memKey := state.RuntimeConfig, state.ExportPublicKey
+	state.mu.RUnlock()
+	if memCfg != savedCfg {
+		t.Fatalf("data import overwrote the in-memory runtimeConfig: got %q, want %q", memCfg, savedCfg)
+	}
+	if memKey != "" {
+		t.Fatalf("data import saved an export public key: got %q, want none", memKey)
+	}
+
 	diskState, err := store.UnsealState()
 	if err != nil {
 		t.Fatalf("unseal state failed: %v", err)
 	}
-	if diskState.RuntimeConfig != cfg {
-		t.Fatalf("runtimeConfig was not sealed when it was overwritten: got %q, want %q", diskState.RuntimeConfig, cfg)
+	if diskState.RuntimeConfig != savedCfg {
+		t.Fatalf("data import overwrote the saved runtimeConfig on disk: got %q, want %q", diskState.RuntimeConfig, savedCfg)
+	}
+	if diskState.ExportPublicKey != "" {
+		t.Fatalf("data import sealed an export public key: got %q, want none", diskState.ExportPublicKey)
 	}
 
 	if code := <-failed; code != http.StatusInternalServerError {

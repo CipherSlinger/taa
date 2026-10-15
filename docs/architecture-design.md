@@ -251,7 +251,7 @@ Phase 1 (调试)     Phase 2 (测试)     Phase 3 (正式训练)
 ### 5.2 导入流程 (`/v1/taa/import`)
 
 ```
-平台发送 import 请求 (resourceUrl, taskId, requestId, runtimeConfig)
+平台发送 import 请求 (resourceUrl, taskId, requestId)
                     │
                     ▼
           ┌─── 下载密文文件 ───┐

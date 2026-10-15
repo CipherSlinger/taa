@@ -104,8 +104,10 @@ paths:
       summary: 导入数据资源
       description: >-
         平台向 TAA 下发测试数据（phase 2）或正式训练数据（phase 3）的密态资源包，TAA 同步接收后异步解密、校验并入库。
-        本接口是触发训练的唯一入口：数据入库后，若模型已导入且当前无在飞训练，立即执行 runtimeConfig 中的命令，
+        本接口是触发训练的唯一入口：数据入库后，若模型已导入且当前无在飞训练，立即执行模型下发时保存的 runtimeConfig 中的命令，
         训练结果通过 /v1/taa/reportRes 上报。请求中的历史字段 type 被完全忽略。
+        本接口不接收 publicKey 与 runtimeConfig：这两个字段的生效点在 /v1/taa/importModel（公钥在 phase 1 模型下发时保存，
+        运行的命令同样来自那里）。请求仍携带它们不会报错，但字段被忽略，不落盘、不覆盖已保存的配置。
         密态资源支持两种形态（本接口与 /v1/taa/importModel 均解析该参数；/v1/taa/getResourceInfo 不解析该参数）：
         resourceUrl 形如 <下载链接>?dataKeyCipher=<hex C1C3C2> 时，
         下载链接只含 SM4-GCM 密文，密钥信封由该参数给出，TAA 在下载前解析并解封，参数非法即返回 400 且不发起下载；
@@ -123,7 +125,6 @@ paths:
               resourceUrl: "http://platform.internal/files/encrypted-data.tar.gz.enc"
               taskId: "task-20260902-001"
               requestId: "req-imp-001"
-              runtimeConfig: '{"commands":["python3 train.py --epochs 10"]}'
       responses:
         '200':
           description: >-
@@ -633,12 +634,6 @@ components:
         requestId:
           type: string
           description: 请求唯一标识（与 taskId 不能同时为空）；同一 requestId 不能重复导入
-        publicKey:
-          type: string
-          description: 结构上接受，但本接口不使用：资源解封使用 TAA 自身的 SM2 私钥；结果导出用的平台公钥由 /v1/taa/importModel（phase 1）保存
-        runtimeConfig:
-          type: string
-          description: 运行配置 JSON 字符串，非空时覆盖已保存的配置并落盘
 
     ImportModelRequest:
       type: object

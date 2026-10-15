@@ -13,6 +13,12 @@ import (
 
 // importRequest is the body shared by /v1/taa/import and /v1/taa/importModel.
 //
+// PublicKey and RuntimeConfig are read by /v1/taa/importModel alone: the export
+// public key is saved when the model is delivered in phase 1, and training runs
+// the runtimeConfig saved there. A data import (/v1/taa/import) that carries
+// either field is accepted and the field is ignored, so the two endpoints cannot
+// disagree about the key an export uses or the commands a run executes.
+//
 // The early combined flow routed on a "type" field (1=model, 2=debug data,
 // 3=training data). That field is ignored: there is no field for it here, so
 // decoding drops it and a client that still sends one changes nothing. Which
@@ -137,17 +143,15 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 	s.Logs.Add(LogInfo, "import", "收到数据 import 请求: taskId=%s, requestId=%s, phase=%d",
 		req.TaskID, req.RequestID, phase)
 
-	if strings.TrimSpace(req.RuntimeConfig) != "" {
-		s.mu.Lock()
-		s.RuntimeConfig = req.RuntimeConfig
-		// Sealed exactly like the model import path. Left in memory only, the
-		// overwrite would survive until the next restart and then silently revert
-		// this run to the previous configuration.
-		if err := s.sealStateLocked(); err != nil {
-			s.Logs.Add(LogError, "state", "持久化 runtimeConfig 失败: %v", err)
-		}
-		s.mu.Unlock()
-		s.Logs.Add(LogInfo, "import", "已保存 runtimeConfig (长度=%d)", len(req.RuntimeConfig))
+	// publicKey and runtimeConfig belong to /v1/taa/importModel: the export key is
+	// saved when the model is delivered in phase 1, and training runs the
+	// runtimeConfig saved there. A data import that carries either one is not an
+	// error, but it changes nothing here — the alternative was two sources for the
+	// same setting, and a run that executes the configuration of whichever
+	// endpoint spoke last. Logged rather than dropped in silence, because a
+	// platform that still sends them expects them to apply.
+	if strings.TrimSpace(req.RuntimeConfig) != "" || (req.PublicKey != nil && strings.TrimSpace(*req.PublicKey) != "") {
+		s.Logs.Add(LogWarn, "import", "数据下发携带 publicKey/runtimeConfig: 本接口不读取这两个字段，已忽略; 训练执行的是 /v1/taa/importModel 保存的 runtimeConfig")
 	}
 
 	msg := "资源已接收，下载处理中"
