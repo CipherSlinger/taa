@@ -1152,7 +1152,11 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 
 ### 4.6 请求 TAA 导出结果（/v1/taa/export）
 
-该接口用于请求导出 TAA 当前阶段产生的结果目录压缩包。考虑到结果文件可能较大，成功时接口直接返回二进制文件流。
+该接口用于导出某个任务的结果目录压缩包：目录取自导入索引（`{security.resultDir}/import-index.json`）中按 `requestId`/`taskId` 命中的那条记录。考虑到结果文件可能较大，成功时接口直接返回二进制文件流。
+
+> **打包的是该任务自己的结果目录，文件名取自该目录名**：导出对象是记录里的 `{security.resultDir}/{requestId}-{taskId}`（`resultDir` 默认 `/opt/taa/results`），也就是这次训练执行时 `<out>` 指向的目录；压缩包文件名等于该目录名，即 `{requestId}-{taskId}.zip`，加密导出时追加 `.enc`。`requestId`/`taskId` 在拼进路径前会做文件名净化：非 `A-Za-z0-9-_.` 的字符替换为 `-`，净化后为空的片段落为 `request`（例如只给 `taskId=task-001` 时文件名是 `request-task-001.zip`）。接口不按阶段去挑 `debug`/`train` 子目录。
+
+> **导出用哪把公钥由「记录阶段」决定**：记录的阶段来自该次数据下发（`/v1/taa/import`）落库时的当前阶段；记录里没有阶段（为 0）时回退到当前阶段。阶段只支持 1/2/3，落在其他值（例如 4 推理）时返回 400。
 
 > 公钥为非必填：能取到公钥就加密导出，取不到就明文导出。阶段 3 的公钥选择顺序为「阶段 1 `/v1/taa/importModel` 保存的公钥 → 本请求的 `publicKey` → 明文」；阶段 1/2 为「本请求的 `publicKey` → 明文」。
 
@@ -1170,9 +1174,9 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空；TAA 会将其写入导出文件名 |
+| `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空；两者一起用于在导入索引中定位记录，并组成导出文件名 `{requestId}-{taskId}.zip` |
 | `publicKey` | `string/null` | 否 | SM2 公钥 PEM。phase 1/2 中为空、缺省或 `null` 时明文导出，非空时使用该公钥做 SM2+SM4-GCM 信封加密；phase 3 中优先使用 phase 1 `/v1/taa/importModel` 保存的公钥，未保存时改用本请求的 `publicKey`，两者都为空时明文导出 |
-| `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空；缺省时响应头 `X-TAA-Task-Id` 为空 |
+| `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空；用于定位记录并参与文件名；缺省时响应头 `X-TAA-Task-Id` 为空 |
 
 **请求示例（phase 1/2 明文导出）**：
 
@@ -1194,14 +1198,14 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 }
 ```
 
-**当前阶段导出内容**：
+**导出内容与文件名**：
 
-| 当前阶段 | 明文导出内容 | 明文文件名 | 加密规则 |
+| 记录阶段 | 明文导出内容 | 文件名 | 加密规则 |
 | --- | --- | --- | --- |
-| phase 1（调试） | `RESULT_DIR/debug` 目录压缩得到的 zip 文件 | `result-debug-{requestId}.zip` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
-| phase 2（测试） | `RESULT_DIR/train` 目录压缩得到的 zip 文件 | `result-train-{requestId}.zip` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
-| phase 3（正式训练） | `RESULT_DIR/train` 目录压缩得到的 zip 文件 | `result-train-{requestId}.zip` | 优先使用 phase 1 `/v1/taa/importModel` 保存的公钥加密；未保存时使用请求 `publicKey`；两者均为空则明文导出。加密时文件名追加 `.enc` |
-| phase 4（推理） | 暂不支持 | - | 返回 400 |
+| phase 1（调试） | 该任务结果目录压缩得到的 zip | `{requestId}-{taskId}.zip` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
+| phase 2（测试） | 该任务结果目录压缩得到的 zip | `{requestId}-{taskId}.zip` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
+| phase 3（正式训练） | 该任务结果目录压缩得到的 zip | `{requestId}-{taskId}.zip` | 优先使用 phase 1 `/v1/taa/importModel` 保存的公钥加密；未保存时使用请求 `publicKey`；两者均为空则明文导出。加密时文件名追加 `.enc` |
+| 其他值（如 phase 4 推理） | 暂不支持 | - | 返回 400 |
 
 **成功响应内容类型**：`application/octet-stream`
 
@@ -1210,7 +1214,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | 响应头 | 说明 |
 | --- | --- |
 | `Content-Type` | 固定为 `application/octet-stream` |
-| `Content-Disposition` | 附件下载文件名。明文时为 `result-debug-{requestId}.zip` 或 `result-train-{requestId}.zip`；加密时追加 `.enc` |
+| `Content-Disposition` | 附件下载文件名：`attachment; filename="{requestId}-{taskId}.zip"`；加密时追加 `.enc` |
 | `Content-Length` | 文件大小，单位为字节；加密导出时为加密后的文件大小 |
 | `X-TAA-Task-Id` | 任务 ID，与请求中的 `taskId` 一致；`taskId` 缺省时为空 |
 | `X-TAA-Encrypted` | 是否加密，`true` 表示响应体为 SM2+SM4-GCM 信封加密结果，`false` 表示响应体为明文 zip 压缩包 |
@@ -1225,12 +1229,12 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 ```http
 HTTP/1.1 200 OK
 Content-Type: application/octet-stream
-Content-Disposition: attachment; filename="result-train-req-export-001.zip"
+Content-Disposition: attachment; filename="req-export-001-task-001.zip"
 Content-Length: 10485760
 X-TAA-Task-Id: task-001
 X-TAA-Encrypted: false
 
-<result-train-req-export-001.zip binary stream>
+<req-export-001-task-001.zip binary stream>
 ```
 
 **成功响应示例（200 OK，phase 3 加密导出）**：
@@ -1238,7 +1242,7 @@ X-TAA-Encrypted: false
 ```http
 HTTP/1.1 200 OK
 Content-Type: application/octet-stream
-Content-Disposition: attachment; filename="result-train-req-export-002.zip.enc"
+Content-Disposition: attachment; filename="req-export-002-task-001.zip.enc"
 Content-Length: 10485901
 X-TAA-Task-Id: task-001
 X-TAA-Encrypted: true
@@ -1252,7 +1256,7 @@ X-TAA-Encrypted: true
 curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
   -H "Content-Type: application/json" \
   -d '{"requestId":"req-export-001","publicKey":null,"taskId":"task-001"}' \
-  -o result-train-req-export-001.zip
+  -o req-export-001-task-001.zip
 ```
 
 **失败响应内容类型**：`application/json`
@@ -1263,7 +1267,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
 ```jsonc
 {
-  "msg": "requestId 不能为空",
+  "msg": "requestId 和 taskId 不能同时为空",
   "result": null,
   "error": 400
 }
@@ -1271,9 +1275,41 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
 ```jsonc
 {
-  "msg": "压缩 train 目录失败: 目录不存在: stat /opt/taa/results/train: no such file or directory",
+  "msg": "未找到对应记录: requestId=req-export-001 taskId=task-001",
+  "result": null,
+  "error": 400
+}
+```
+
+```jsonc
+{
+  "msg": "结果文件不存在: /opt/taa/results/req-export-001-task-001/training_report.json",
+  "result": null,
+  "error": 404
+}
+```
+
+```jsonc
+{
+  "msg": "当前阶段 4 不支持导出",
+  "result": null,
+  "error": 400
+}
+```
+
+```jsonc
+{
+  "msg": "压缩结果目录失败: 目录不存在: stat /opt/taa/results/req-export-001-task-001: no such file or directory",
   "result": null,
   "error": 500
+}
+```
+
+```jsonc
+{
+  "msg": "导出产物大小超过限制: 3221225473 bytes, 上限 3221225472 bytes",
+  "result": null,
+  "error": 400
 }
 ```
 
@@ -1310,6 +1346,8 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 ```
 
 > 上面两条 500 只在 `llm.failClosed` 为 `true` 时返回；设为 `false` 时这两种状态记警告后照常导出，只有第一条"未通过"的 400 与开关无关。
+
+其余失败场景：请求体 JSON 解析失败、`requestId` 与 `taskId` 命中了不同记录、加密后产物大小超限（均为 400）；加载导入索引失败、检查结果文件失败（`training_report.json` 存在但无法 stat）、加密失败（均为 500）。结果目录不存在时不会走到压缩这一步——入口的文件检查会先返回 404。
 
 ---
 

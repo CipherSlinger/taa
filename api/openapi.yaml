@@ -318,9 +318,12 @@ paths:
     post:
       summary: 导出结果
       description: >-
-        平台请求 TAA 打包导出当前阶段的结果。publicKey 整体非必填：phase 1/2 取请求中的 publicKey，
+        平台请求 TAA 打包导出某个任务的结果目录：目录取自导入索引中按 requestId/taskId 命中的记录，
+        压缩包文件名等于该目录名，即 {requestId}-{taskId}.zip（加密时追加 .enc）。
+        publicKey 整体非必填：phase 1/2 取请求中的 publicKey，
         phase 3 依次取 phase 1 /v1/taa/importModel 保存的公钥、请求中的 publicKey；取到公钥则以 SM2
-        信封加密后返回文件流，取不到则以明文流返回。
+        信封加密后返回文件流，取不到则以明文流返回。用哪把公钥由记录自身的阶段决定（记录无阶段时回退到当前阶段），
+        阶段不是 1/2/3 时返回 400。resultDir 根部没有 training_report.json 时返回 404。
       tags:
         - 任务执行
       requestBody:
@@ -339,7 +342,7 @@ paths:
             Content-Disposition:
               schema:
                 type: string
-              example: "attachment; filename=\"result-task-001.bin\""
+              example: "attachment; filename=\"req-export-001-task-001.zip\""
             X-TAA-Task-Id:
               schema:
                 type: string
@@ -354,7 +357,19 @@ paths:
                 type: string
                 format: binary
         '400':
-          description: 参数错误或未通过结果泄露检查
+          description: 参数错误（含 requestId 与 taskId 同时为空、未找到对应记录、阶段不支持、产物超限、publicKey 解析失败）或未通过结果泄露检查
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+        '404':
+          description: 该任务的结果目录下不存在 training_report.json
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+        '500':
+          description: 加载导入索引失败、检查结果文件失败、压缩结果目录失败、加密失败，或结果泄露检查裁决不可用且 llm.failClosed=true
           content:
             application/json:
               schema:
@@ -772,10 +787,14 @@ components:
 
     ExportRequest:
       type: object
+      description: requestId 与 taskId 不能同时为空：两者用于在导入索引中定位记录，并组成导出文件名 {requestId}-{taskId}.zip
       properties:
+        requestId:
+          type: string
+          description: 请求唯一标识（与 taskId 不能同时为空）；与 taskId 一起定位记录并组成导出文件名
         taskId:
           type: string
-          description: 任务 ID
+          description: 任务 ID（与 requestId 不能同时为空）；用于定位记录并组成导出文件名
         publicKey:
           type: string
           description: >-
