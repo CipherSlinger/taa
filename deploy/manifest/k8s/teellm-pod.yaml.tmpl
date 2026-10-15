@@ -1,0 +1,124 @@
+# ============================================================================
+#  TEE-LLM service Pod (Kata CSV2 confidential VM) -- TEMPLATE
+# ----------------------------------------------------------------------------
+#  This is a TEMPLATE, not a file to apply by hand. `deploy-llm.sh remote
+#  --create-pod start` renders it and creates the Pod, and that is the only
+#  supported path: the same script owns the gates that decide whether the Pod
+#  can produce a real attestation (see the /dev/csv-guest check in pod_up).
+#
+#  Placeholders, all substituted by deploy-llm.sh:
+#
+#    POD_NAME         metadata.name          (TEELLM_POD_NAME, default taa-teellm)
+#    NAMESPACE        metadata.namespace     (TARGET_NAMESPACE, default osr)
+#    NODE_NAME        spec.nodeName          (TEELLM_POD_NODE)
+#    IMAGE            containers[0].image    (TEELLM_POD_IMAGE)
+#    RUNTIME_CLASS    runtimeClassName       (TEELLM_POD_RUNTIME_CLASS)
+#    CPU, MEMORY      container resources    (TEELLM_POD_CPU, TEELLM_POD_MEMORY)
+#    CC_INIT_DATA     cc_init_data annotation, read from a running CoCo Pod
+#
+#  The placeholders in this comment carry no underscores; the fields below carry
+#  them wrapped in double underscores, so the sed pass in pod_up substitutes the
+#  fields and leaves the documentation readable.
+#
+#  Why the service needs a Pod of its own: teellm-service reads /dev/csv-guest
+#  only if the device is there, and otherwise falls back to a mock evidence
+#  provider whose HRK is regenerated on every start (teellm/cmd/teellm-service/
+#  main.go). TAA verifies the report against the real Hygon HRK, so that
+#  fallback fails the handshake with "untrusted HRK certificate" and the code
+#  audit reports failure under its fail-closed policy. A plain docker container
+#  cannot have the device at all; a kata-qemu-csv2 Pod can, but only because
+#  something creates the node -- see the startup command below.
+# ============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  # A literal name, never generateName: a second Pod is a second confidential
+  # VM, and CSV2 encrypted memory is 100% host-resident from boot, so a stray
+  # duplicate costs tens of GiB until someone notices it.
+  name: __POD_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    app: taa-teellm
+  annotations:
+    # Required. The guest pulls the image through its own CDH, and the host's
+    # trust in the local registry's self-signed certificate does not carry into
+    # the guest. Without this annotation the Pod stops in StartError.
+    io.katacontainers.config.runtime.cc_init_data: __CC_INIT_DATA__
+    # Deliberately not copied over from tools/csv2-vm/dcu-tee-pod.yaml, for the
+    # same reasons recorded in deploy-taa-vm.sh:
+    #   io.containerd.cri.runtime-handler
+    #       hijacks the runtime selection away from runtimeClassName.
+    #   io.katacontainers.config.hypervisor.kernel_params
+    #       a hypervisor parameter value is appended to the config file's own
+    #       parameters, so an empty value erases the rdinit= that boots TAA's
+    #       guest. Set a parameter only by editing the kata config.
+spec:
+  # The RuntimeClass that boots a CSV2 guest, which is what makes the csv-guest
+  # kernel driver -- and so a real attestation -- possible at all. Necessary but
+  # not sufficient: the driver only registers a misc device, and the node still
+  # has to be created inside the container. Without both, teellm-service serves
+  # mock evidence and every TAA handshake fails.
+  runtimeClassName: __RUNTIME_CLASS__
+  nodeName: __NODE_NAME__
+  # Always rather than Never: the container has to come back in place if it
+  # exits, and the Pod IP that TAA's llm.endpoint points at has to survive.
+  restartPolicy: Always
+  containers:
+    - name: teellm
+      image: __IMAGE__
+      imagePullPolicy: IfNotPresent
+      # Overrides the image ENTRYPOINT (TAA's own start script) and keeps the
+      # container alive so teellm-service, ollama and the model can be copied
+      # in and started over kubectl cp/exec. A dead container would take the
+      # guest's writable layer -- and the multi-GB model with it -- out of
+      # reach of the deployment.
+      command: ["/bin/sh", "-c"]
+      # Creating /dev/csv-guest is part of starting, not an afterthought. The
+      # CSV2 guest kernel registers a csv-guest misc device, but /dev inside the
+      # container is a fresh tmpfs: /proc/misc lists the device while /dev stays
+      # empty, and teellm-service reads that empty /dev as "no device" and
+      # silently serves mock evidence. TAA's own deployment manifest handles this
+      # with a postStart hook; this is the same recipe, run before the keep-alive
+      # loop instead, so the node exists by the time the container is Ready and
+      # the deploy gate may check it. The minor number is not stable -- read it.
+      # Failure here is deliberately not fatal: a crash-looping container would
+      # burn the deployment's Ready timeout, where the deploy gate reports the
+      # missing device immediately and names the cause. Do not "simplify" this
+      # away on the assumption that the guest creates the node.
+      args:
+        - |
+          set -u
+          dev=""
+          i=0
+          while [ -z "$dev" ] && [ "$i" -lt 60 ]; do
+            dev="$(cat /sys/class/misc/csv-guest/dev 2>/dev/null || true)"
+            if [ -z "$dev" ]; then i=$((i + 1)); sleep 1; fi
+          done
+          if [ -n "$dev" ]; then
+            mknod /dev/csv-guest c "${dev%%:*}" "${dev##*:}" 2>/dev/null || true
+            chmod 666 /dev/csv-guest 2>/dev/null || true
+          fi
+          if [ ! -e /dev/csv-guest ]; then
+            echo "warning: could not create /dev/csv-guest; teellm-service will fall back to mock evidence" >&2
+          fi
+          exec sleep infinity
+      resources:
+        # Kata sizes the VM from the limits: guest RAM = the kata default_memory
+        # (23552M in this host's configuration-qemu-csv2.toml) + limits.memory,
+        # and guest vCPUs = default_vcpus (1) + limits.cpu. Requests equal the
+        # limits because CSV2 encrypted memory is resident from boot: it is a
+        # permanent cost on the host, not a burstable request.
+        #
+        # The memory figure has to hold the model, not just teellm-service. An
+        # earlier default of 8Gi -- copied from the TAA Pod, which serves the
+        # same model -- was not enough: llama-server was OOM-killed inside the
+        # container's own cgroup while loading a 7B model (the blob's page cache
+        # plus ~4.5GB of tensor buffers), and the readiness probe saw 503 until
+        # the deployment timed out. The TAA Pod hides this because its LLM calls
+        # fail at the attestation handshake and never reach inference.
+        limits:
+          cpu: "__CPU__"
+          memory: "__MEMORY__"
+        requests:
+          cpu: "__CPU__"
+          memory: "__MEMORY__"

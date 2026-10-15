@@ -36,6 +36,7 @@ LAST_ERR_LINE=""
 LAST_ERR_CMD=""
 TEMP_FILELIST=""
 TEMP_CONFIG_FILE=""
+TEMP_POD_MANIFEST=""
 TRAP_SUPPRESS_DEPLOYMENT_BANNER=false
 STEP=0
 
@@ -61,6 +62,9 @@ cleanup_display() {
   fi
   if [[ -n "${TEMP_CONFIG_FILE:-}" && -f "$TEMP_CONFIG_FILE" ]]; then
     rm -f "$TEMP_CONFIG_FILE" 2>/dev/null || true
+  fi
+  if [[ -n "${TEMP_POD_MANIFEST:-}" && -f "$TEMP_POD_MANIFEST" ]]; then
+    rm -f "$TEMP_POD_MANIFEST" 2>/dev/null || true
   fi
 
   if [[ $exit_code -ne 0 && "${TRAP_SUPPRESS_DEPLOYMENT_BANNER:-false}" != "true" ]]; then
@@ -250,6 +254,10 @@ OLLAMA_PRUNE_SYNC="${OLLAMA_PRUNE_SYNC:-true}"
 
 # Kubernetes & Remote settings
 TARGET_NAMESPACE="${TARGET_NAMESPACE:-osr}"
+# Whether the caller named a Pod. Captured before the default below, so that --create-pod can tell
+# "the operator asked for this Pod" from "the script filled in a default" and refuse the pairing
+# instead of quietly deploying a TEE-LLM Pod they did not ask for.
+TARGET_POD_WAS_SET="${TARGET_POD+set}"
 TARGET_POD="${TARGET_POD:-taa-env-slim-v2-20260916-b2038037072e1052-54f554445c-n2pnv}"
 REMOTE_HOST="${REMOTE_HOST:-172.16.10.178}"
 REMOTE_USER="${REMOTE_USER:-root}"
@@ -261,6 +269,42 @@ REMOTE_OLLAMA_DIR="${REMOTE_OLLAMA_DIR:-$REMOTE_DIR/$OLLAMA_DIR_NAME}"
 # docker cp resolves both of its arguments on the daemon's host, so uploads land here first.
 REMOTE_STAGE_DIR="${REMOTE_STAGE_DIR:-$REMOTE_DIR/stage}"
 K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
+
+# ── Dedicated TEE-LLM Pod (remote target) ─────────────────────
+# The TEE-LLM service needs /dev/csv-guest to produce a real CSV attestation; a plain docker
+# container has no such device, so teellm-service falls back to a mock evidence provider whose HRK
+# changes on every start, and TAA rejects the handshake with "untrusted HRK certificate". A
+# kata-qemu-csv2 Pod has the device, because its guest init creates it -- which is the whole
+# reason this Pod exists, and why --create-pod deploys into it rather than into the TAA Pod that
+# TARGET_POD defaults to (that Pod has the device too, but it is not where teellm-service should
+# run, and aiming the deployment at it would make every later gate pass while the service never
+# reaches the Pod the endpoint points at).
+TEELLM_POD_NAME="${TEELLM_POD_NAME:-taa-teellm}"
+TEELLM_POD_IMAGE="${TEELLM_POD_IMAGE:-172.16.10.178:31313/taa-env:slim-v2-20260916}"
+TEELLM_POD_NODE="${TEELLM_POD_NODE:-hygon-master}"
+TEELLM_POD_RUNTIME_CLASS="${TEELLM_POD_RUNTIME_CLASS:-kata-qemu-csv2}"
+# Kata sizes the guest as default_memory + limits.memory and default_vcpus + limits.cpu, and
+# encrypted memory is resident from boot, so these two numbers are a permanent host cost.
+TEELLM_POD_CPU="${TEELLM_POD_CPU:-8}"
+# 16Gi, not the 8Gi the TAA Pod gets away with: this container also has to hold a whole model.
+# At 8Gi the first deployment of this feature came up, reported the hardware evidence provider,
+# and then had llama-server SIGKILLed while loading qwen2.5-coder:7b -- the container's cgroup
+# hit its ceiling (memory.events oom_kill=128, the model's page cache and the 4.5GB of tensor
+# buffers together exceeding 8Gi) and teellm-service answered 503 until the deploy gave up. The
+# TAA Pod never showed this because TAA's LLM calls never got past the handshake to request an
+# inference, so its own ollama was never asked to load anything. Sizing has to cover the model,
+# not just the service.
+TEELLM_POD_MEMORY="${TEELLM_POD_MEMORY:-16Gi}"
+# 600s rather than the 180s a plain Pod needs: a fresh CSV2 Pod boots its guest first and pulls
+# this image inside it, through the in-guest CDH.
+TEELLM_POD_READY_TIMEOUT="${TEELLM_POD_READY_TIMEOUT:-600}"
+TEELLM_POD_TEMPLATE="${TEELLM_POD_TEMPLATE:-$PROJECT_DIR/deploy/manifest/k8s/teellm-pod.yaml.tmpl}"
+# Optional escape hatch for hosts with no CoCo Pod to copy the annotation from; leave empty to
+# derive it (see derive_cc_init_data).
+TEELLM_POD_CC_INIT_DATA="${TEELLM_POD_CC_INIT_DATA:-}"
+TEELLM_POD_IP=""
+CREATE_POD=false
+TEMP_POD_MANIFEST=""
 
 SSH_OPTS=(
   -q
@@ -400,6 +444,143 @@ check_remote_pod() {
     exit 1
   fi
   info "remote target pod verified: ${TARGET_POD} (namespace: ${TARGET_NAMESPACE:-default})"
+}
+
+# ── Dedicated TEE-LLM Pod lifecycle (remote target) ───────────
+
+# Reads the cc_init_data annotation off a CoCo Pod that already runs on the remote host. The
+# guest's CDH needs it to trust the local registry's self-signed certificate when it pulls the
+# image -- the host's own trust does not carry into the guest -- and a Pod without it stops in
+# StartError. Only that one annotation is ever copied: the runtime-handler key would hijack the
+# runtime, and an empty hypervisor kernel_params value would erase the rdinit= that boots TAA's
+# guest. Prints the bare value; the caller substitutes it into the manifest.
+derive_cc_init_data() {
+  if [[ -n "$TEELLM_POD_CC_INIT_DATA" ]]; then
+    printf '%s' "$TEELLM_POD_CC_INIT_DATA"
+    return 0
+  fi
+  local derived
+  derived="$(remote_ssh 'bash -s' <<'REMOTE_DERIVE' || true
+set -euo pipefail
+command -v kubectl >/dev/null 2>&1 || exit 1
+# The dots inside the annotation key are escaped for jsonpath. Inside this quoted heredoc the
+# backslashes reach the remote shell unchanged.
+kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.annotations.io\.katacontainers\.config\.runtime\.cc_init_data}{"\n"}{end}' 2>/dev/null |
+  awk 'NF {print; exit}'
+REMOTE_DERIVE
+)"
+  derived="${derived//$'\r'/}"
+  derived="${derived//$'\n'/}"
+  if [[ -z "$derived" ]]; then
+    err "no Pod on ${REMOTE_USER}@${REMOTE_HOST} carries the cc_init_data annotation"
+    detail "Without it the guest's CDH cannot pull the image and the new Pod stops in StartError."
+    detail "Bring up any CoCo Pod once (deploy-taa-vm.sh up) or pass TEELLM_POD_CC_INIT_DATA=<base64>."
+    exit 1
+  fi
+  printf '%s' "$derived"
+}
+
+# Prints the target Pod's IP, or nothing when it has none yet.
+teellm_pod_ip() {
+  local ip
+  ip="$(remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o jsonpath='{.status.podIP}' 2>/dev/null" || true)"
+  ip="${ip//$'\r'/}"
+  ip="${ip//$'\n'/}"
+  printf '%s' "$ip"
+}
+
+# Makes sure the dedicated TEE-LLM Pod exists, is Ready and can really produce a CSV attestation,
+# then records its IP in TEELLM_POD_IP.
+pod_up() {
+  require_file "TEE-LLM Pod template" "$TEELLM_POD_TEMPLATE"
+  step "checking the dedicated TEE-LLM Pod ($TARGET_POD in $TARGET_NAMESPACE)"
+
+  if remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
+    # An existing Pod is never re-applied and never recreated. Its annotations and resource
+    # limits are immutable, so an apply fails; and "delete then apply" would build a second
+    # confidential VM, throw away the guest's writable layer (the ollama bundle and the model
+    # live there) and change the Pod IP that TAA's endpoint points at.
+    if ! remote_ssh "kubectl $K_NS wait --for=condition=Ready --timeout=5s pod/'$TARGET_POD' >/dev/null 2>&1"; then
+      err "Pod '$TARGET_POD' exists but is not Ready"
+      remote_ssh "kubectl $K_NS get pod '$TARGET_POD' -o wide" || true
+      remote_ssh "kubectl $K_NS describe pod '$TARGET_POD' | tail -n 30" || true
+      detail "Recreating it would not help: the guest's writable layer holds the ollama runtime and"
+      detail "the model, and a new Pod would also change the IP. Delete it by hand only if it is wedged."
+      exit 1
+    fi
+    info "reusing the running TEE-LLM Pod (nothing applied)"
+  else
+    local cc_init_data
+    cc_init_data="$(derive_cc_init_data)"
+    TEMP_POD_MANIFEST="$(mktemp /tmp/teellm-pod.XXXXXX.yaml)"
+    # The placeholders are substituted with | as the delimiter because the injected base64 value
+    # contains / and + but never |. Values are quoted in the template, so an unquoted-looking
+    # value cannot leak into YAML either.
+    sed -e "s|__POD_NAME__|$TARGET_POD|g" \
+        -e "s|__NAMESPACE__|$TARGET_NAMESPACE|g" \
+        -e "s|__NODE_NAME__|$TEELLM_POD_NODE|g" \
+        -e "s|__IMAGE__|$TEELLM_POD_IMAGE|g" \
+        -e "s|__RUNTIME_CLASS__|$TEELLM_POD_RUNTIME_CLASS|g" \
+        -e "s|__CPU__|$TEELLM_POD_CPU|g" \
+        -e "s|__MEMORY__|$TEELLM_POD_MEMORY|g" \
+        -e "s|__CC_INIT_DATA__|$cc_init_data|g" \
+        "$TEELLM_POD_TEMPLATE" > "$TEMP_POD_MANIFEST"
+    step "creating the TEE-LLM Pod (runtimeClassName: $TEELLM_POD_RUNTIME_CLASS, node: $TEELLM_POD_NODE)"
+    remote_ssh "kubectl $K_NS apply -f -" < "$TEMP_POD_MANIFEST"
+    rm -f "$TEMP_POD_MANIFEST"
+    TEMP_POD_MANIFEST=""
+    # Long, because the guest boots before it can pull the image. Dumping the events first keeps a
+    # timeout diagnosable, which a bare "timed out" is not.
+    if ! remote_ssh "kubectl $K_NS wait --for=condition=Ready --timeout=${TEELLM_POD_READY_TIMEOUT}s pod/'$TARGET_POD'"; then
+      err "TEE-LLM Pod '$TARGET_POD' did not become Ready within ${TEELLM_POD_READY_TIMEOUT}s"
+      remote_ssh "kubectl $K_NS describe pod '$TARGET_POD' | tail -n 40" || true
+      detail "The Pod is left in place for inspection: kubectl $K_NS describe pod '$TARGET_POD'"
+      exit 1
+    fi
+    info "TEE-LLM Pod created and Ready"
+  fi
+
+  # The device is the point of this Pod. Its absence is silent: teellm-service merely logs a
+  # warning, switches to mock evidence and still answers the readiness probe -- which cannot
+  # catch this, because that probe's client skips attestation verification. Check the device
+  # rather than the RuntimeClass name, since the name alone does not prove which guest booted.
+  if ! remote_ssh "$(container_exec) test -e /dev/csv-guest"; then
+    err "Pod '$TARGET_POD' has no /dev/csv-guest, so it cannot produce a real CSV attestation"
+    detail "teellm-service would fall back to mock evidence and TAA would reject every handshake"
+    detail "with 'untrusted HRK certificate'. Expected runtimeClassName $TEELLM_POD_RUNTIME_CLASS."
+    detail "Pod left running for inspection: kubectl $K_NS exec '$TARGET_POD' -- ls -l /dev/csv*"
+    exit 1
+  fi
+
+  TEELLM_POD_IP="$(teellm_pod_ip)"
+  if [[ -z "$TEELLM_POD_IP" ]]; then
+    err "Pod '$TARGET_POD' is Ready but reports no Pod IP"
+    exit 1
+  fi
+  info "TEE-LLM Pod ready with a real CSV device: $TARGET_POD at $TEELLM_POD_IP"
+}
+
+# Deletes the dedicated TEE-LLM Pod. Destructive by design: the guest's writable layer -- the
+# ollama runtime and the model copied into it -- goes with it, so the next start has to deploy
+# them again.
+pod_down() {
+  step "deleting the TEE-LLM Pod ($TARGET_POD in $TARGET_NAMESPACE)"
+  if ! remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
+    info "TEE-LLM Pod '$TARGET_POD' does not exist"
+    return 0
+  fi
+  remote_ssh "kubectl $K_NS delete pod '$TARGET_POD' --ignore-not-found --wait=true --timeout=90s" || true
+  # A VM-backed Pod whose guest is wedged will not answer a graceful delete; fall back to force so
+  # a broken Pod cannot block the teardown. Its memory is host-resident, so leaving it costs GiB.
+  if remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
+    warn "Pod '$TARGET_POD' did not exit within 90s; forcing deletion"
+    remote_ssh "kubectl $K_NS delete pod '$TARGET_POD' --force --grace-period=0" || true
+  fi
+  if remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
+    err "Pod '$TARGET_POD' is still present after a forced delete"
+    exit 1
+  fi
+  info "TEE-LLM Pod '$TARGET_POD' deleted"
 }
 
 ensure_go_compiler() {
@@ -1452,7 +1633,7 @@ PY
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [docker|remote-docker|remote] [start|stop|probe] [options]
+Usage: $(basename "$0") [docker|remote-docker|remote] [start|stop|probe|pod-down] [options]
        $(basename "$0") models [list|info|switch] [args]
 
 Deploy and manage standalone TEE-LLM inference service and offline Ollama runtime.
@@ -1473,6 +1654,7 @@ Actions:
   start        Build binary, incrementally sync model & runtime, start daemons, and verify (default).
   stop         Stop target services (teellm-service, ollama, llama-server).
   probe        Probe target TEE-LLM HTTPS endpoint for RFC 8998 TEE-TLS 1.3 readiness.
+  pod-down     Delete the dedicated TEE-LLM Pod (remote target; see --create-pod).
 
 Options:
   --model <name> (or --model=<name>)
@@ -1483,6 +1665,13 @@ Options:
       Specify target local Docker container name (docker mode).
   --remote-container <name> (or --remote-container=<name>)
       Specify target Docker container name on the remote host (remote-docker mode).
+  --create-pod
+      Deploy into a dedicated Kata CSV2 Pod named by TEELLM_POD_NAME, creating it if it is
+      absent, instead of into TARGET_POD (remote target only). The Pod exists to give
+      teellm-service a real /dev/csv-guest: without that device it serves mock evidence, and
+      TAA rejects the handshake with "untrusted HRK certificate". An existing Pod is reused and
+      never re-created -- a second Pod would be a second confidential VM.
+      If TARGET_POD is set explicitly it must equal TEELLM_POD_NAME, or the run is refused.
   --port <port> (or --port=<port>)
       Specify TEE-LLM service listening port (default: $TEELLM_PORT).
   --config <path> (or --config=<path>)
@@ -1506,9 +1695,32 @@ Environment overrides:
   CONTAINER_OLLAMA_DIR=${CONTAINER_OLLAMA_DIR}
       Ollama deployment directory inside target container.
   TARGET_NAMESPACE=${TARGET_NAMESPACE}
-      Remote Kubernetes namespace.
+      Remote Kubernetes namespace (the TEE-LLM Pod's namespace too).
   TARGET_POD=${TARGET_POD}
       Remote Kubernetes target Pod name.
+  TEELLM_POD_NAME=${TEELLM_POD_NAME}
+      Name of the dedicated TEE-LLM Pod (--create-pod, pod-down).
+  TEELLM_POD_IMAGE=${TEELLM_POD_IMAGE}
+      Image for the dedicated TEE-LLM Pod; it must carry ollama, tar/curl and python3.
+  TEELLM_POD_NODE=${TEELLM_POD_NODE}
+      Node the dedicated TEE-LLM Pod is pinned to.
+  TEELLM_POD_RUNTIME_CLASS=${TEELLM_POD_RUNTIME_CLASS}
+      RuntimeClass of the dedicated TEE-LLM Pod. It has to be a CSV2 class, because only such a
+      guest creates /dev/csv-guest.
+  TEELLM_POD_CPU=${TEELLM_POD_CPU} / TEELLM_POD_MEMORY=${TEELLM_POD_MEMORY}
+      Container CPU / memory for the dedicated TEE-LLM Pod. Kata sizes the guest from these
+      limits (guest RAM = the kata default_memory + TEELLM_POD_MEMORY, vCPUs = default_vcpus +
+      TEELLM_POD_CPU) and CSV2 encrypted memory is resident from boot, so the memory figure is a
+      permanent cost on the host rather than a ceiling. It has to fit the served model as well as
+      teellm-service: 8Gi OOM-killed llama-server while it loaded a 7B model.
+  TEELLM_POD_READY_TIMEOUT=${TEELLM_POD_READY_TIMEOUT}
+      Seconds to wait for a freshly created TEE-LLM Pod to become Ready. Long by default: the
+      guest boots before it can pull the image, through its own CDH.
+  TEELLM_POD_CC_INIT_DATA=<base64>
+      cc_init_data annotation for the new Pod. Left empty it is read from a CoCo Pod that already
+      runs on the remote host; without it the guest cannot pull the image. Exactly this one
+      annotation is ever copied -- the runtime-handler key would hijack the runtime, and an empty
+      hypervisor kernel_params value would erase the rdinit= that boots the guest.
   REMOTE_HOST=${REMOTE_HOST}
       Remote SSH host IP or hostname.
   REMOTE_USER=${REMOTE_USER}
@@ -1535,6 +1747,14 @@ Examples:
   $(basename "$0") remote start
   $(basename "$0") remote probe
   $(basename "$0") remote stop
+  $(basename "$0") remote --create-pod start
+  $(basename "$0") remote --create-pod start --model qwen2.5-coder:7b
+  $(basename "$0") remote pod-down
+
+Point TAA at the Pod afterwards: the deployment prints
+  TAA_LLM_ENDPOINT=https://<pod-ip>:${TEELLM_PORT}
+which deploy.sh writes into TAA's llm.endpoint. Use the Pod IP, not a Service name: a kata guest
+cannot resolve cluster DNS.
 EOF
 }
 
@@ -1606,6 +1826,17 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       ACTION="probe"
+      ;;
+    pod-down)
+      if [[ -n "$ACTION" && "$ACTION" != "pod-down" ]]; then
+        err "cannot specify multiple actions ($ACTION and pod-down)"
+        usage >&2
+        exit 1
+      fi
+      ACTION="pod-down"
+      ;;
+    --create-pod)
+      CREATE_POD=true
       ;;
     --model=*)
       CLI_MODEL="${arg#*=}"
@@ -1703,6 +1934,30 @@ esac
 
 ACTION="${ACTION:-start}"
 
+# --create-pod and pod-down both address the dedicated TEE-LLM Pod, which only exists on the
+# remote Kubernetes target. On the container targets the flag would be ignored, and on a
+# non-remote target pod-down would be asked to delete something that is not there.
+if [[ "$CREATE_POD" == true || "$ACTION" == "pod-down" ]] && [[ "$DEPLOY_REMOTE" != true ]]; then
+  err "--create-pod and pod-down require the remote target, but the target is '$MODE'"
+  usage >&2
+  exit 1
+fi
+
+if [[ "$CREATE_POD" == true || "$ACTION" == "pod-down" ]]; then
+  # An explicitly named Pod wins the argument: overriding it would aim the deployment at a Pod
+  # the operator named, which is exactly the silent mis-target these paths have to prevent.
+  if [[ "$TARGET_POD_WAS_SET" == "set" && "$TARGET_POD" != "$TEELLM_POD_NAME" ]]; then
+    err "this command addresses the TEE-LLM Pod '$TEELLM_POD_NAME', but TARGET_POD names '$TARGET_POD'"
+    detail "Unset TARGET_POD, or set TEELLM_POD_NAME=$TARGET_POD to treat that Pod as the TEE-LLM Pod."
+    exit 1
+  fi
+  # Unconditional, default or not: TARGET_POD defaults to a TAA environment Pod, which has
+  # /dev/csv-guest as well, so a mis-aimed deployment passes every gate below while teellm-service
+  # ends up in a Pod that the printed endpoint does not point at -- and pod-down would delete TAA
+  # itself.
+  TARGET_POD="$TEELLM_POD_NAME"
+fi
+
 if [[ -n "$CLI_CONTAINER" ]]; then
   LOCAL_DOCKER_CONTAINER="$CLI_CONTAINER"
 fi
@@ -1784,6 +2039,21 @@ if [[ "$ACTION" == "stop" ]]; then
     info "teellm-service, ollama, and llama-server stopped cleanly in remote pod $TARGET_POD"
     exit 0
   fi
+fi
+
+# ── Dedicated Pod Teardown Handler ────────────────────────────
+# Handled before the start path's preflight, which insists on the local offline ollama bundle --
+# a teardown must not depend on the machine that deployed the bundle still having it.
+
+if [[ "$ACTION" == "pod-down" ]]; then
+  banner "Deleting the TEE-LLM Pod" "Pod: $TARGET_POD (namespace: ${TARGET_NAMESPACE:-default})"
+  ensure_remote_ssh
+  pod_down
+  echo ""
+  warn "The guest's writable layer went with the Pod, so the ollama runtime and the model are gone."
+  detail "The next 'remote --create-pod start' deploys them again."
+  echo ""
+  exit 0
 fi
 
 # ── Deployment Logic (start) ──────────────────────────────────
@@ -2237,7 +2507,15 @@ deploy_remote() {
 
   step "verifying remote host and target pod connectivity"
   check_remote_connectivity
+  # Before check_remote_pod, which demands that the Pod exists: on this path the script is what
+  # brings it into existence.
+  if [[ "$CREATE_POD" == true ]]; then
+    pod_up
+  fi
   check_remote_pod
+  if [[ -z "$TEELLM_POD_IP" ]]; then
+    TEELLM_POD_IP="$(teellm_pod_ip)"
+  fi
 
   build_local_binary
 
@@ -2302,6 +2580,13 @@ deploy_remote() {
   if [[ -n "$LOCAL_HRK_CERT" && -n "$LOCAL_HSK_CERT" ]]; then
     sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$LOCAL_HRK_CERT" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/certs/hrk.cert"
     sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$LOCAL_HSK_CERT" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/certs/hsk_cek.cert"
+  elif [[ "$CREATE_POD" == true ]]; then
+    # Fatal on this path only. The certificates are what binds the report's SM3 public key to the
+    # trust anchor, so serving without them fails every handshake -- and a deployment that reports
+    # success while doing that is worse than one that refuses to run.
+    err "no Hygon attestation certificates found, and the TEE-LLM Pod cannot serve without them"
+    detail "Expected $PROJECT_DIR/deploy/certs/hrk.cert and hsk_cek.cert (ATT_HRK_SOURCE / ATT_HSK_SOURCE override the location)."
+    exit 1
   fi
 
   remote_ssh "mv '$REMOTE_DIR/teellm-service.new' '$REMOTE_DIR/teellm-service' && chmod +x '$REMOTE_DIR/teellm-service'"
@@ -2358,13 +2643,43 @@ deploy_remote() {
   local total_elapsed=$(( $(date +%s) - wait_start_ts ))
   info "remote teellm-service ready and verified via TEE-TLS 1.3: https://127.0.0.1:${TEELLM_PORT} ${DIM}(took ${total_elapsed}s)${NC}"
 
+  # The probe above cannot vouch for the attestation: its client is built with
+  # InsecureSkipAttestationVerify set (see runProbe in teellm/cmd/teellm-service), so it passes
+  # just as well against a mock report. Which provider the server picked is only in its log, and a
+  # mock provider is exactly the failure that reaches production as "untrusted HRK certificate".
+  if [[ "$CREATE_POD" == true ]]; then
+    step "confirming the service serves hardware evidence, not mock evidence"
+    local provider_log
+    provider_log="$(remote_ssh "$(container_exec) tail -n 200 '$TEELLM_LOG_FILE'" || true)"
+    if ! grep -q "using Hygon hardware evidence provider" <<<"$provider_log"; then
+      err "teellm-service in '$TARGET_POD' did not report the Hygon hardware evidence provider"
+      remote_ssh "$(container_exec) tail -n 30 '$TEELLM_LOG_FILE'" || true
+      detail "TAA will reject a mock report with 'untrusted HRK certificate', so this deployment"
+      detail "would fail code audit. Check that the Pod still has /dev/csv-guest."
+      exit 1
+    fi
+    if grep -q "falling back to mock attestation provider" <<<"$provider_log"; then
+      err "teellm-service in '$TARGET_POD' fell back to the mock attestation provider"
+      remote_ssh "$(container_exec) tail -n 30 '$TEELLM_LOG_FILE'" || true
+      exit 1
+    fi
+    info "service is serving Hygon hardware evidence (/dev/csv-guest present)"
+  fi
+
   banner "Deploy Complete (Remote)" "TEE-LLM remote service running and verified healthy"
   echo -e "  ${BOLD}${CYAN}● TEE-LLM Inference Service${NC}  ${DIM}(RFC 8998 ShangMi TEE-TLS 1.3)${NC}"
   echo -e "    ${MUTED}↳ Target Pod :${NC} ${TARGET_POD} (${TARGET_NAMESPACE})"
+  echo -e "    ${MUTED}↳ Pod IP     :${NC} ${TEELLM_POD_IP:-unknown}"
   echo -e "    ${MUTED}↳ Remote Host:${NC} ${REMOTE_USER}@${REMOTE_HOST}"
   echo -e "    ${MUTED}↳ Port       :${NC} ${TEELLM_PORT}"
   echo -e "    ${MUTED}↳ Config     :${NC} ${CON_WORKDIR}/configs/teellm-production.json"
   echo -e "    ${MUTED}↳ Log file   :${NC} ${TEELLM_LOG_FILE}"
+  if [[ -n "$TEELLM_POD_IP" ]]; then
+    # The Pod IP, not a Service name: a kata guest cannot resolve cluster DNS, so TAA has to be
+    # pointed at the address itself. This is also the only knob that changes TAA's llm.endpoint
+    # on the remote path -- deploy.sh always writes it from TAA_LLM_ENDPOINT.
+    echo -e "    ${MUTED}↳ For TAA    :${NC} TAA_LLM_ENDPOINT=https://${TEELLM_POD_IP}:${TEELLM_PORT}"
+  fi
   echo ""
   echo -e "  ${BOLD}${CYAN}● Ollama / Qwen Engine${NC}  ${DIM}(In-Pod Engine)${NC}"
   echo -e "    ${MUTED}↳ Endpoint   :${NC} ${BOLD}http://${OLLAMA_HOST}${NC}"
