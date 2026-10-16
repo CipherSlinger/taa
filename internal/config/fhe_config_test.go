@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,6 +172,11 @@ func TestFHEConfigRequiredWhenTypeIsFHE(t *testing.T) {
 }
 
 func TestFHESectionIsWarnedAndIgnoredWhenTypeIsTEE(t *testing.T) {
+	var logged bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logged)
+	defer log.SetOutput(prev)
+
 	body := `{"server":{"type":"tee"},"fhe":{"endpoint":"http://127.0.0.1:58996","dataDir":"/opt/fhe-data"}}`
 	cfg, err := LoadStartupConfig(writeConfig(t, body))
 	if err != nil {
@@ -178,24 +185,124 @@ func TestFHESectionIsWarnedAndIgnoredWhenTypeIsTEE(t *testing.T) {
 	if cfg.FHE != nil {
 		t.Errorf("FHE = %+v, want nil: the section must be ignored on a tee instance", cfg.FHE)
 	}
+	if !strings.Contains(logged.String(), "WARNING:") || !strings.Contains(logged.String(), "fhe section") {
+		t.Errorf("log output %q does not warn about the ignored fhe section", logged.String())
+	}
 }
 
 func TestFHEConfigRejectsBadEndpoint(t *testing.T) {
-	for _, bad := range []string{`"127.0.0.1:58996"`, `"ftp://host"`, `"://"`} {
+	for _, bad := range []string{`"127.0.0.1:58996"`, `"ftp://host"`, `"://"`, `"http://:1"`, `"not a url at all"`} {
 		body := `{"server":{"type":"fhe"},"fhe":{
 		  "endpoint":` + bad + `,"dataDir":"/d","keyCacheDir":"/k",
 		  "callbackBaseUrl":"http://t","callbackToken":"x"}}`
 		if _, err := LoadStartupConfig(writeConfig(t, body)); err == nil {
 			t.Errorf("endpoint %s accepted, want error", bad)
+		} else if !strings.Contains(err.Error(), "fhe.endpoint") {
+			t.Errorf("endpoint %s: error %q does not name the field", bad, err)
 		}
 	}
 }
 
-func TestFHEConfigRejectsNonPositiveBounds(t *testing.T) {
-	body := `{"server":{"type":"fhe"},"fhe":{
+// callbackBaseUrl is the other URL-shaped field, and it gets the same shape
+// check as endpoint: a value with no scheme, an unusable scheme, or an empty
+// host is rejected at startup rather than stored for the task runner to fail on.
+func TestFHEConfigRejectsBadCallbackBaseURL(t *testing.T) {
+	for _, bad := range []string{`"172.16.10.130:6001"`, `"ftp://host"`, `"http://:1"`, `"not a url at all"`, `"javascript:1"`, `"://"`} {
+		body := `{"server":{"type":"fhe"},"fhe":{
+		  "endpoint":"http://h:1","dataDir":"/d","keyCacheDir":"/k",
+		  "callbackBaseUrl":` + bad + `,"callbackToken":"x"}}`
+		if _, err := LoadStartupConfig(writeConfig(t, body)); err == nil {
+			t.Errorf("callbackBaseUrl %s accepted, want error", bad)
+		} else if !strings.Contains(err.Error(), "fhe.callbackBaseUrl") {
+			t.Errorf("callbackBaseUrl %s: error %q does not name the field", bad, err)
+		}
+	}
+}
+
+// zeroBoundsBody carries a zero for every bounded field. The loader's convention
+// is that zero means "unset" and takes the default, so none of these is an
+// error; the non-positive check only ever fires for a negative value.
+func zeroBoundsBody() string {
+	return `{"server":{"type":"fhe"},"fhe":{
 	  "endpoint":"http://h:1","dataDir":"/d","keyCacheDir":"/k",
-	  "callbackBaseUrl":"http://t","callbackToken":"x","maxEvalKeyBytes":-1}}`
-	if _, err := LoadStartupConfig(writeConfig(t, body)); err == nil {
-		t.Error("negative maxEvalKeyBytes accepted, want error")
+	  "callbackBaseUrl":"http://t","callbackToken":"x",
+	  "maxEvalKeyBytes":0,"pollIntervalMs":0,"requestTimeoutMs":0,"taskTimeoutMs":0}}`
+}
+
+func TestFHEConfigZeroBoundsTakeDefaults(t *testing.T) {
+	cfg, err := LoadStartupConfig(writeConfig(t, zeroBoundsBody()))
+	if err != nil {
+		t.Fatalf("LoadStartupConfig: %v", err)
+	}
+	if cfg.FHE.MaxEvalKeyBytes != DefaultFHEMaxEvalKeyBytes {
+		t.Errorf("MaxEvalKeyBytes = %d, want the default %d", cfg.FHE.MaxEvalKeyBytes, DefaultFHEMaxEvalKeyBytes)
+	}
+	if cfg.FHE.PollIntervalMs != DefaultFHEPollIntervalMs {
+		t.Errorf("PollIntervalMs = %d, want the default %d", cfg.FHE.PollIntervalMs, DefaultFHEPollIntervalMs)
+	}
+	if cfg.FHE.RequestTimeoutMs != DefaultFHERequestTimeoutMs {
+		t.Errorf("RequestTimeoutMs = %d, want the default %d", cfg.FHE.RequestTimeoutMs, DefaultFHERequestTimeoutMs)
+	}
+	if cfg.FHE.TaskTimeoutMs != DefaultFHETaskTimeoutMs {
+		t.Errorf("TaskTimeoutMs = %d, want the default %d", cfg.FHE.TaskTimeoutMs, DefaultFHETaskTimeoutMs)
+	}
+}
+
+// A negative bound is rejected even though zero is not: zero is the unset
+// sentinel the loader fills in, while a negative one can only come from a
+// deliberate (and wrong) edit, so it is reported instead of quietly defaulted.
+func TestFHEConfigRejectsNonPositiveBounds(t *testing.T) {
+	for _, tc := range []struct {
+		field string
+		value string
+	}{
+		{"maxEvalKeyBytes", "-1"},
+		{"pollIntervalMs", "-1"},
+		{"requestTimeoutMs", "-5000"},
+		{"taskTimeoutMs", "-1"},
+	} {
+		body := `{"server":{"type":"fhe"},"fhe":{
+		  "endpoint":"http://h:1","dataDir":"/d","keyCacheDir":"/k",
+		  "callbackBaseUrl":"http://t","callbackToken":"x","` + tc.field + `":` + tc.value + `}}`
+		if _, err := LoadStartupConfig(writeConfig(t, body)); err == nil {
+			t.Errorf("negative %s accepted, want error", tc.field)
+		} else if !strings.Contains(err.Error(), "fhe."+tc.field) {
+			t.Errorf("negative %s: error %q does not name the field", tc.field, err)
+		}
+	}
+}
+
+// ActivateModelOnImport is a pointer so that "absent" and "explicitly false"
+// stay distinct: the field defaults to true, and an absent key read as false
+// would turn a missing setting into a deliberate opt-out. This pins all three
+// states, including that an explicit null is treated as absent.
+func TestFHEActivateModelOnImportDistinguishesFalseFromAbsent(t *testing.T) {
+	body := func(field string) string {
+		return `{"server":{"type":"fhe"},"fhe":{
+		  "endpoint":"http://h:1","dataDir":"/d","keyCacheDir":"/k",
+		  "callbackBaseUrl":"http://t","callbackToken":"x"` + field + `}}`
+	}
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"explicit true stays true", `,"activateModelOnImport":true`, true},
+		{"explicit false stays false", `,"activateModelOnImport":false`, false},
+		{"explicit null defaults to true", `,"activateModelOnImport":null`, true},
+		{"absent defaults to true", ``, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadStartupConfig(writeConfig(t, body(tc.raw)))
+			if err != nil {
+				t.Fatalf("LoadStartupConfig: %v", err)
+			}
+			if cfg.FHE.ActivateModelOnImport == nil {
+				t.Fatal("ActivateModelOnImport = nil, want it resolved")
+			}
+			if got := *cfg.FHE.ActivateModelOnImport; got != tc.want {
+				t.Errorf("ActivateModelOnImport = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

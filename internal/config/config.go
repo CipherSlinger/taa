@@ -511,16 +511,22 @@ func validateStartupConfig(cfg StartupConfig) error {
 	return validateLLMPolicy(cfg)
 }
 
+// serverTypes lists the instance roles understood by the startup config (see
+// StartupConfig.ServerType). It is declared once so the membership test and the
+// accepted-values message cannot drift apart when a role is added.
+var serverTypes = []string{ServerTypeTEE, ServerTypeFHE}
+
 // validateServerType rejects an unrecognised server.type rather than falling back
 // to tee. A silent fallback would leave a deployment believing it runs one kind
 // of instance while it runs the other.
 func validateServerType(cfg StartupConfig) error {
-	switch cfg.ServerType {
-	case ServerTypeTEE, ServerTypeFHE:
-		return nil
+	for _, t := range serverTypes {
+		if cfg.ServerType == t {
+			return nil
+		}
 	}
-	return fmt.Errorf("unsupported server.type %q in startup config: must be one of %s, %s",
-		cfg.ServerType, ServerTypeTEE, ServerTypeFHE)
+	return fmt.Errorf("unsupported server.type %q in startup config: must be one of %s",
+		cfg.ServerType, strings.Join(serverTypes, ", "))
 }
 
 // validateFHEConfig enforces the fhe section on an fhe instance. All five
@@ -550,7 +556,10 @@ func validateFHEConfig(cfg StartupConfig) error {
 			return fmt.Errorf("fhe.%s is required when server.type is %q", r.name, ServerTypeFHE)
 		}
 	}
-	if err := validateFHEEndpoint(cfg.FHE.Endpoint); err != nil {
+	if err := validateFHEURL("endpoint", cfg.FHE.Endpoint); err != nil {
+		return err
+	}
+	if err := validateFHEURL("callbackBaseUrl", cfg.FHE.CallbackBaseURL); err != nil {
 		return err
 	}
 	if cfg.FHE.MaxEvalKeyBytes <= 0 {
@@ -571,13 +580,18 @@ func validateFHEConfig(cfg StartupConfig) error {
 	return nil
 }
 
-func validateFHEEndpoint(endpoint string) error {
-	u, err := url.Parse(strings.TrimSpace(endpoint))
+// validateFHEURL rejects a value that is not an absolute http or https URL with
+// a non-empty host. A bare "host:port" has no scheme, so it fails; and a URL
+// like "http://:1" has an empty host even though Host is non-empty, which is why
+// the check reads Hostname rather than Host. Both mistakes otherwise survive
+// until the instance tries to reach the service, long after startup.
+func validateFHEURL(name, value string) error {
+	u, err := url.Parse(strings.TrimSpace(value))
 	if err != nil {
-		return fmt.Errorf("unsupported fhe.endpoint %q in startup config: %v", endpoint, err)
+		return fmt.Errorf("unsupported fhe.%s %q in startup config: %v", name, value, err)
 	}
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("unsupported fhe.endpoint %q in startup config: must be an absolute http or https URL", endpoint)
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return fmt.Errorf("unsupported fhe.%s %q in startup config: must be an absolute http or https URL with a host", name, value)
 	}
 	return nil
 }
@@ -966,7 +980,7 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 			applyFHEDefaults(&f)
 			cfg.FHE = &f
 		} else {
-			log.Printf("WARN: startup config carries an fhe section but server.type is %q; the section is ignored", cfg.ServerType)
+			log.Printf("WARNING: startup config carries an fhe section but server.type is %q; the section is ignored", cfg.ServerType)
 		}
 	}
 }
