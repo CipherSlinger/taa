@@ -684,6 +684,20 @@ else
   fi
   run cp -a "$MODELS_SRC/." "$STAGED_MODELS_DIR/"
 fi
+# After the copy, not before it: `cp -a` gives models/ the source directory's mode,
+# and on a bundle whose models are not group- or world-traversable that would be the
+# last word on the mode and put the directory back out of the containers' reach.
+#
+# These are the directories the api, worker and redis containers enter through a bind
+# mount, and they run as a uid other than this script's, so every one of them has to
+# stay traversable. mkdir cannot be relied on for that: its mode argument is masked
+# by the caller's umask, and it is ignored entirely for a directory that already
+# exists -- which is every one of these on a second run. Under `umask 077` all five
+# were left 0700, and the service could not enter them at all. The mode is therefore
+# set explicitly, on every run, and separately from the mkdir. It is the mode a
+# default umask already produced, so nothing that works today changes; only the
+# restrictive-umask case does.
+run chmod 755 "$HOST_DATA_DIR" "$HOST_DATA_DIR"/{models,keys,tasks,results} "$HOST_REDIS_DIR"
 
 step "starting the FHE node stack (api + worker + redis)"
 # HOST_DATA_DIR / HOST_RUNTIME_DIR / HOST_REDIS_DIR / API_HOST_PORT are exported
