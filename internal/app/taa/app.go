@@ -90,7 +90,7 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	// unreachable, so nothing is ever scanned without the LLM. The failure is not hidden
 	// either -- probeInferenceService logs the endpoint, the elapsed time and a hint
 	// about what the error means.
-	if cfg.EnableLLM {
+	if cfg.LLM.Enabled {
 		if err := probeInferenceService(ctx, cfg); err != nil {
 			log.Printf("WARNING: inference service probe failed (non-fatal): %v", err)
 		}
@@ -224,45 +224,45 @@ func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error 
 		return err
 	}
 
-	timeout := time.Duration(cfg.LLMTimeoutMs) * time.Millisecond
+	timeout := time.Duration(cfg.LLM.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
 
 	probeTimeout := 5 * time.Second
-	if cfg.LLMTimeoutMs > 0 {
+	if cfg.LLM.TimeoutMs > 0 {
 		probeTimeout = timeout
 	}
 
 	// Announce the probe before building the client, so that even a configuration failure
 	// (bad endpoint, host outside AllowedHosts) is preceded by the endpoint it was aimed at.
 	log.Printf("inference service connectivity probe: endpoint=%s transport=%s attestMode=%s mutualAttest=%v timeout=%s",
-		cfg.LLMEndpoint, cfg.LLMTransport, cfg.LLMAttestationMode, cfg.LLMRequireMutualAttest, probeTimeout)
+		cfg.LLM.Endpoint, cfg.LLM.Transport, cfg.LLM.AttestationMode, cfg.LLM.RequireMutualAttest, probeTimeout)
 
 	var teeTLSConfig *teetls.Config
-	if cfg.LLMTransport == "teetls" || cfg.LLMTransport == "https" || cfg.LLMTransport == "" {
+	if cfg.LLM.Transport == "teetls" || cfg.LLM.Transport == "https" || cfg.LLM.Transport == "" {
 		mode := teetls.ModeStrict
-		if cfg.LLMAttestationMode == "permissive" {
+		if cfg.LLM.AttestationMode == "permissive" {
 			mode = teetls.ModePermissive
 		}
 		teeTLSConfig = &teetls.Config{
 			Mode:                          mode,
-			InsecureSkipAttestationVerify: cfg.LLMInsecureSkipVerify,
-			ExpectedMeasurements:          cfg.LLMExpectedMeasurements,
-			VerifyMutualAttestation:       cfg.LLMRequireMutualAttest,
+			InsecureSkipAttestationVerify: cfg.LLM.InsecureSkipVerify,
+			ExpectedMeasurements:          cfg.LLM.ExpectedMeasurements,
+			VerifyMutualAttestation:       cfg.LLM.RequireMutualAttest,
 		}
-		if cfg.LLMHRKCertPath != "" || cfg.LLMHSKCekCertPath != "" {
-			teeTLSConfig.EvidenceProvider = teetls.NewHygonHardwareProvider("", cfg.LLMHRKCertPath, cfg.LLMHSKCekCertPath)
+		if cfg.LLM.HRKCertPath != "" || cfg.LLM.HSKCekCertPath != "" {
+			teeTLSConfig.EvidenceProvider = teetls.NewHygonHardwareProvider("", cfg.LLM.HRKCertPath, cfg.LLM.HSKCekCertPath)
 		}
 	}
 
 	client, err := teellm.NewClient(teellm.Config{
-		Endpoint:                       cfg.LLMEndpoint,
+		Endpoint:                       cfg.LLM.Endpoint,
 		Timeout:                        timeout,
-		AllowedHosts:                   cfg.LLMAllowedHosts,
+		AllowedHosts:                   cfg.LLM.AllowedHosts,
 		TEETLS:                         teeTLSConfig,
-		CircuitBreakerFailureThreshold: cfg.LLMCircuitBreakerThreshold,
-		CircuitBreakerCooldown:         time.Duration(cfg.LLMCooldownSec) * time.Second,
+		CircuitBreakerFailureThreshold: cfg.LLM.CircuitBreakerThreshold,
+		CircuitBreakerCooldown:         time.Duration(cfg.LLM.CooldownSec) * time.Second,
 	})
 	if err != nil {
 		return fmt.Errorf("create inference client: %w", err)
@@ -284,7 +284,7 @@ func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error 
 		log.Printf("ERROR: inference service connectivity probe failed after %s: %v", elapsed, err)
 		log.Printf("hint: check the tee-llm gateway at %s -- \"transient status 503\" means it is "+
 			"running but its model is not loaded yet, a dial/connect error means nothing is listening there",
-			cfg.LLMEndpoint)
+			cfg.LLM.Endpoint)
 		return fmt.Errorf("health check failed: %w", err)
 	}
 	log.Printf("inference service connectivity probe succeeded (took %s)", time.Since(started).Round(time.Millisecond))
@@ -625,7 +625,7 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 		return controller.SecurityConfig{}, fmt.Errorf("resolve code scan engine: %w", err)
 	}
 
-	timeout := time.Duration(cfg.LLMTimeoutMs) * time.Millisecond
+	timeout := time.Duration(cfg.LLM.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
@@ -641,14 +641,14 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 	// than reject: a non-zero temperature is a deliberate choice, but its symptom
 	// - a benign import blocked by one unlucky MALICIOUS verdict - appears
 	// elsewhere and long afterwards, so the cause belongs in the startup log.
-	if cfg.LLMTemperature != nil && *cfg.LLMTemperature != 0 {
+	if cfg.LLM.Temperature != nil && *cfg.LLM.Temperature != 0 {
 		log.Printf("WARNING: llm.temperature=%v overrides the inference service's deterministic decoding; "+
 			"identical findings may now yield different verdicts, which fail-closed can turn into a blocked import",
-			*cfg.LLMTemperature)
+			*cfg.LLM.Temperature)
 	}
 	return controller.SecurityConfig{
-		ScanEnabled:        cfg.EnableSecurityScan,
-		Engine:             engine,
+		ScanEnabled: cfg.EnableCodeAudit,
+		Engine:      engine,
 		Binary: codeaudit.BinaryConfig{
 			Enabled:              cfg.BinaryAuditEnabled,
 			MaxArchiveMembers:    cfg.BinaryAuditMaxArchiveMembers,
@@ -657,40 +657,40 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 			MaxStreamBytes:       int64(cfg.BinaryAuditMaxStreamBytes),
 			HighEntropyThreshold: cfg.BinaryAuditHighEntropyThreshold,
 		},
-		ModelDir:           cfg.ModelDir,
-		ResultCheck:        cfg.EnableResultCheck,
-		DataDir:            cfg.DataDir,
-		ResultDir:          cfg.ResultDir,
-		MaxFileBytes:       maxBytes,
-		MaxResultBytes:     maxBytes,
-		ModelInputDir:      cfg.ModelInputDir,
-		ModelOutputDir:     cfg.ModelOutputDir,
-		ModelLogDir:        cfg.ModelLogDir,
-		ModelProgressDir:   cfg.ModelProgressDir,
+		ModelDir:         cfg.ModelDir,
+		ResultCheck:      cfg.EnableResultCheck,
+		DataDir:          cfg.DataDir,
+		ResultDir:        cfg.ResultDir,
+		MaxFileBytes:     maxBytes,
+		MaxResultBytes:   maxBytes,
+		ModelInputDir:    cfg.ModelInputDir,
+		ModelOutputDir:   cfg.ModelOutputDir,
+		ModelLogDir:      cfg.ModelLogDir,
+		ModelProgressDir: cfg.ModelProgressDir,
 		LLM: codeaudit.LLMConfig{
-			Enabled:                 cfg.EnableLLM,
-			Transport:               cfg.LLMTransport,
-			Endpoint:                cfg.LLMEndpoint,
-			AttestationMode:         cfg.LLMAttestationMode,
-			HRKCertPath:             cfg.LLMHRKCertPath,
-			HSKCekCertPath:          cfg.LLMHSKCekCertPath,
-			ExpectedMeasurements:    cfg.LLMExpectedMeasurements,
-			RequireMutualAttest:     cfg.LLMRequireMutualAttest,
-			InsecureSkipVerify:      cfg.LLMInsecureSkipVerify,
-			AuthToken:               cfg.LLMAuthToken,
-			Model:                   cfg.LLMModel,
-			Timeout:                 timeout,
+			Enabled:              cfg.LLM.Enabled,
+			Transport:            cfg.LLM.Transport,
+			Endpoint:             cfg.LLM.Endpoint,
+			AttestationMode:      cfg.LLM.AttestationMode,
+			HRKCertPath:          cfg.LLM.HRKCertPath,
+			HSKCekCertPath:       cfg.LLM.HSKCekCertPath,
+			ExpectedMeasurements: cfg.LLM.ExpectedMeasurements,
+			RequireMutualAttest:  cfg.LLM.RequireMutualAttest,
+			InsecureSkipVerify:   cfg.LLM.InsecureSkipVerify,
+			AuthToken:            cfg.LLM.AuthToken,
+			Model:                cfg.LLM.Model,
+			Timeout:              timeout,
 			// 0 means no cap: every finding the static scanner reports gets a verdict.
 			// The old value of 20 left the tail of a large scan reported but never
 			// adjudicated. The scanner's own cap (ScannerConfig.MaxFindings, 200) is
 			// the real ceiling on how many calls this can produce.
 			MaxFindings:             0,
-			Policy:                  cfg.LLMPolicy,
-			Temperature:             cfg.LLMTemperature,
-			FailClosed:              cfg.LLMFailClosed,
-			AllowedHosts:            cfg.LLMAllowedHosts,
-			CircuitBreakerThreshold: cfg.LLMCircuitBreakerThreshold,
-			CooldownSec:             cfg.LLMCooldownSec,
+			Policy:                  cfg.LLM.Policy,
+			Temperature:             cfg.LLM.Temperature,
+			FailClosed:              cfg.LLM.FailClosed,
+			AllowedHosts:            cfg.LLM.AllowedHosts,
+			CircuitBreakerThreshold: cfg.LLM.CircuitBreakerThreshold,
+			CooldownSec:             cfg.LLM.CooldownSec,
 		},
 	}, nil
 }

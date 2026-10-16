@@ -266,7 +266,7 @@ Alongside source auditing, the import audit also walks the **binary files** in a
 - **Verdict**: evidence lines are matched against the rule table and produce a `Finding` tagged with `binary_kind` / `evidence_source` / `binary_offset`. **Structural evidence** (ELF dynamic symbols, `DT_NEEDED`) goes through the shared rules `NET_002`/`CMD_001`/`DYN_001`, whose severity is read from the source rule table rather than restated; the binary-only rules are `BIN_001` (near-random executable-section entropy, HIGH), `BIN_002` (`memfd_create`/`fexecve`, HIGH) and `PKL_001` (pickle deserialization execution, HIGH). **A name is not a call**: `NET_002`, `CMD_001` and `BIN_002` take their evidence only from `.dynsym` and `DT_NEEDED`, which a linker fills with every symbol the object might reference, so those three report HIGH only when the same file also carries a corroborator - entropy evidence or a resolved pickle target (`BIN_001` or `PKL_001`) - and LOW otherwise, with the count recorded as `presence_downgraded`. The rule table itself is untouched: the id and the severity it resolves to are still the shared table's, because the downgrade acts on the finding and never on the rule. **String evidence** does not share the source arm's ids - `CMD_002`/`PER_002`/`FIL_002`/`ENV_002` are four independent LOW families, for the reason below: a finding can be HIGH only when it is backed by a structure a file cannot produce by accident, and a string constant is not; the source arm's same-named families `CMD_001`/`PER_001`/`FIL_001`/`ENV_001` are HIGH/MEDIUM in the shared table, and borrowing them would lift "a certain word appeared in some literal" to blocking severity. `OBF_001` has **no** family in the binary arm: its old pattern `^[A-Za-z0-9+/]{120,}={0,2}$` fired on 23 of 28 legitimate shared libraries (long base64-alphabet strings are everywhere in `.pyc` constant pools and binary data), and neither narrowing the alphabet nor raising the floor fixes it, so only the source arm's call-site version is kept.
 - **Review**: binary findings go down the same LLM path as source findings; file-level analysis uses a binary-specific prompt (the existing prompt targets Python source and does not apply). **Honesty**: the file-level branch is reachable only when the caller implements `FileAnalyzer`, and the production `LLMClient` (`teellm.Client`) has no `AnalyzeFile`, so today it is driven only by test mocks and is not live behavior - exactly the existing situation of the source file path, which this plan does not change.
 - **Completeness**: `scan_metadata.binary` records `files_count` / `kinds` / `bounded_executable` / `bounded_data` / `incomplete` / `errored` / `findings_capped` / `findings_dropped` / `max_findings` / `presence_downgraded`. Any gap that lands on a format that can execute (ELF, archive, pickle, compressed) makes `ProvesCleanScan()` false - a truncated structural extraction, a capped listing, an unreadable file, or a whole-pass failure - and under fail-closed that withholds the pass; the same cut on a pure data file (raw blob, tensor) is recorded but does not withhold. The split is by kind rather than by which bound fired: a capped listing is the matcher's input, so on an executable kind it can drop blocking evidence, while on a data kind it can only drop LOW free-string lines. **The finding cap is not part of completeness**: reaching it writes only `findings_capped`/`findings_dropped`, not `scan_metadata.truncated`, and never withholds the pass; the cap spends only the LOW tier, and the findings that can withhold it - HIGH under `assist` and `gate`, MEDIUM under `gate` - are kept regardless of the budget.
-- **Configuration**: `security.binaryAudit.enabled` (default `true`), `maxArchiveMembers`, `highEntropyThreshold`, `maxFindings` (default 50, independent of the source arm's 200; it is a listing budget, so lowering it drops only LOW findings and never a finding that can withhold the pass - HIGH under `assist` and `gate`, MEDIUM under `gate`), `maxFullScanBytes` (default 64 MiB) and `maxStreamBytes` (default 3 GiB, which against the shipped `maxFullScanBytes` never binds). Turning it off rolls back: the audit behaves byte-for-byte as before the channel was introduced.
+- **Configuration**: `codeAudit.binaryAudit.enabled` (default `true`), `maxArchiveMembers`, `highEntropyThreshold`, `maxFindings` (default 50, independent of the source arm's 200; it is a listing budget, so lowering it drops only LOW findings and never a finding that can withhold the pass - HIGH under `assist` and `gate`, MEDIUM under `gate`), `maxFullScanBytes` (default 64 MiB) and `maxStreamBytes` (default 3 GiB, which against the shipped `maxFullScanBytes` never binds). Turning it off rolls back: the audit behaves byte-for-byte as before the channel was introduced.
 - **Boundaries**: PE/Mach-O are not structurally parsed (not loaded on this platform), xz/zstd/bzip2/7z containers and tar are not opened, plain-text non-source files are not audited, nested archives recurse only one level, and the pickle interpreter runs only on streams claimed as pickle - by magic, by name, or by a protocol 0/1 target the head parses to. One residual boundary follows from the claim being made about the 4 KiB head: a protocol 0/1 stream whose `module.attribute` target lies past the head (say, a protocol 1 stream that pushes a large BINSTRING before its GLOBAL) is claimed only by extension, so only a `.pkl`/`.pickle`/`.joblib` name reaches the interpreter; next to it is the source-named residual: a protocol 0/1 pickle named `.py` is not claimed by the binary channel at all - `.py` is not in the pickle extension set and the source veto runs ahead of the head sniff - so it stays with the source arm, which reads it as Python text and never runs the pickle interpreter; and a pickle appended past the end of a non-pickle file whose head carries no pickle magic is not claimed at all.
 
 ---
@@ -310,7 +310,7 @@ All TAA APIs are exposed over HTTP `POST`. For comprehensive request/response sc
 
 ## Runtime Configuration
 
-TAA reads its configuration from `taa-config.json` located in its working directory. Configuration is organized into 7 cohesive functional domains (`server`, `platform`, `storage`, `model`, `security`, `attestation`, `llm`). For backward compatibility, legacy flat fields are also accepted as fallbacks.
+TAA reads its configuration from `taa-config.json` located in its working directory. Configuration is organized into 6 cohesive functional domains (`server`, `platform`, `storage`, `model`, `codeAudit`, `attestation`). For backward compatibility, legacy flat fields are also accepted as fallbacks.
 
 ### Configuration Fields
 
@@ -338,29 +338,31 @@ TAA reads its configuration from `taa-config.json` located in its working direct
       "progress": "/opt/taa/output/progress/progress.json"
     }
   },
-  "security": {
+  "codeAudit": {
     "codeScan": true,
+    "codeScanEngine": "semgrep",
+    "semgrepRulesPath": "/opt/taa/semgrep/rules",
     "resultCheck": {
       "enabled": true,
       "maxFileBytes": 3221225472
     },
     "binaryAudit": {
       "enabled": true
+    },
+    "llm": {
+      "enabled": true,
+      "transport": "teetls",
+      "endpoint": "https://127.0.0.1:8443",
+      "model": "qwen2.5-coder:7b",
+      "policy": "assist",
+      "failClosed": true,
+      "insecureSkipVerify": false,
+      "attestationMode": "strict"
     }
   },
   "attestation": {
     "hrkCertPath": "/root/taa/certs/hrk.cert",
     "hskCekCertPath": "/root/taa/certs/hsk_cek.cert"
-  },
-  "llm": {
-    "enabled": true,
-    "transport": "teetls",
-    "endpoint": "https://127.0.0.1:8443",
-    "model": "qwen2.5-coder:3b",
-    "policy": "assist",
-    "failClosed": true,
-    "insecureSkipVerify": false,
-    "attestationMode": "strict"
   }
 }
 ```
@@ -379,27 +381,27 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `model.output.result` | `/opt/taa/output/result` | Target output directory for model training checkpoints and artifacts |
 | `model.output.log` | `/opt/taa/output/log` | Model execution log directory (or file) monitored by log watcher (`modelLog`); every `*.log`/`*.jsonl` file in it is streamed |
 | `model.output.progress` | `/opt/taa/output/progress/progress.json` | Model progress file (or directory) monitored by progress watcher (`reportProgress`) |
-| `security.codeScan` | `true` | Master audit switch: enables the static rule-based security scan during model import |
-| `security.resultCheck.enabled` | `true` | Runs the plaintext data leakage check over the result directory as soon as training finishes, and stores the verdict on the task's import index record. `/v1/taa/export` reads that verdict instead of scanning again, so it refuses to export when the verdict failed, when the check itself could not run, and when no verdict exists at all (fail-closed: records committed before this field existed have none and must be retrained - both of those states are governed by `llm.failClosed`, which turns them into a warning when set to `false`). A failing check never fails the training process itself, but it does change how the run is reported: the training report is uploaded with `code` `2` and the reason in `msg`, its `training_task.status` is `failed` (with `exit_code` still `0`), and it carries no `result_files` at all - the directory tree's table previews are the data rows being withheld. Everything else about the run still reports normally (accepts object or boolean) |
-| `security.resultCheck.maxFileBytes` | `3221225472` (3 GB) | Maximum file size limit enforced for both file downloads (`import`, `importModel`, `getResourceInfo`) and result exports (`export`), as well as anomaly inspection threshold |
-| `security.binaryAudit.enabled` | `true` | Runs the binary audit channel alongside the source scan (see [4. Binary Audit Channel](#4-binary-audit-channel)). Off restores the pre-channel behavior exactly |
-| `security.binaryAudit.maxArchiveMembers` | `4096` | How many container members one archive may contribute as evidence. Reaching the ceiling records a completeness gap on an executable kind, which withholds the pass |
-| `security.binaryAudit.highEntropyThreshold` | `7.5` | Shannon entropy (bits/byte) **above** which an executable section reads as packed. Values are accepted within `[0, 8]`; `0` resolves to the default, and a negative value or one above `8` is rejected at startup rather than defaulted |
-| `security.binaryAudit.maxFindings` | `50` | Listing budget for binary findings, independent of the source arm's `maxFindings`. It spends only the LOW tier, so lowering it can never drop a finding that withholds the pass |
-| `security.binaryAudit.maxFullScanBytes` | `67108864` (64 MiB) | Above this size a file is no longer read end to end, only its head and tail (1 MiB each). A windowed executable or pickle records a completeness gap and withholds the pass - without that, padding a pickle past the cut would hide a mid-stream target and still pass. On a data file the gap is recorded but does not withhold |
-| `security.binaryAudit.maxStreamBytes` | `3221225472` (3 GiB) | Per-file read budget for the end-to-end pass. Against the shipped `maxFullScanBytes` (64 MiB) it never binds; **lowering** it below `maxFullScanBytes` makes files in between stop short, which records a completeness gap and withholds the pass on executable kinds |
-| `security.maxFileBytes` | `3221225472` (3 GB) | Top-level security alias for `maxFileBytes` |
+| `codeAudit.codeScan` | `true` | Master audit switch: enables the static rule-based security scan during model import |
+| `codeAudit.resultCheck.enabled` | `true` | Runs the plaintext data leakage check over the result directory as soon as training finishes, and stores the verdict on the task's import index record. `/v1/taa/export` reads that verdict instead of scanning again, so it refuses to export when the verdict failed, when the check itself could not run, and when no verdict exists at all (fail-closed: records committed before this field existed have none and must be retrained - both of those states are governed by `codeAudit.llm.failClosed`, which turns them into a warning when set to `false`). A failing check never fails the training process itself, but it does change how the run is reported: the training report is uploaded with `code` `2` and the reason in `msg`, its `training_task.status` is `failed` (with `exit_code` still `0`), and it carries no `result_files` at all - the directory tree's table previews are the data rows being withheld. Everything else about the run still reports normally (accepts object or boolean) |
+| `codeAudit.resultCheck.maxFileBytes` | `3221225472` (3 GB) | Maximum file size limit enforced for both file downloads (`import`, `importModel`, `getResourceInfo`) and result exports (`export`), as well as anomaly inspection threshold |
+| `codeAudit.binaryAudit.enabled` | `true` | Runs the binary audit channel alongside the source scan (see [4. Binary Audit Channel](#4-binary-audit-channel)). Off restores the pre-channel behavior exactly |
+| `codeAudit.binaryAudit.maxArchiveMembers` | `4096` | How many container members one archive may contribute as evidence. Reaching the ceiling records a completeness gap on an executable kind, which withholds the pass |
+| `codeAudit.binaryAudit.highEntropyThreshold` | `7.5` | Shannon entropy (bits/byte) **above** which an executable section reads as packed. Values are accepted within `[0, 8]`; `0` resolves to the default, and a negative value or one above `8` is rejected at startup rather than defaulted |
+| `codeAudit.binaryAudit.maxFindings` | `50` | Listing budget for binary findings, independent of the source arm's `maxFindings`. It spends only the LOW tier, so lowering it can never drop a finding that withholds the pass |
+| `codeAudit.binaryAudit.maxFullScanBytes` | `67108864` (64 MiB) | Above this size a file is no longer read end to end, only its head and tail (1 MiB each). A windowed executable or pickle records a completeness gap and withholds the pass - without that, padding a pickle past the cut would hide a mid-stream target and still pass. On a data file the gap is recorded but does not withhold |
+| `codeAudit.binaryAudit.maxStreamBytes` | `3221225472` (3 GiB) | Per-file read budget for the end-to-end pass. Against the shipped `maxFullScanBytes` (64 MiB) it never binds; **lowering** it below `maxFullScanBytes` makes files in between stop short, which records a completeness gap and withholds the pass on executable kinds |
+| `codeAudit.maxFileBytes` | `3221225472` (3 GB) | Alias for `maxFileBytes` set inside the audit block rather than at the root |
+| `codeAudit.llm.enabled` | `true` | Enables local LLM semantic arbitration for code security audits |
+| `codeAudit.llm.transport` | `teetls` | Transport protocol for TEE-LLM communication (`teetls` for RFC 8998 TLS 1.3 ShangMi, or `http`) |
+| `codeAudit.llm.endpoint` | `https://127.0.0.1:8443` | Decoupled TEE-LLM service endpoint |
+| `codeAudit.llm.model` | `qwen2.5-coder:0.5b` | Target LLM model for code analysis. The shipped templates all override this with `qwen2.5-coder:7b`, which is what a deployment actually runs |
+| `codeAudit.llm.policy` | `assist` | LLM arbitration mode (`assist`: LLM results are informational and the static verdict stands; `gate`: strict — HIGH findings fail the audit unless the LLM rules them benign, MEDIUM findings always fail it). Values are normalized to lower case; any other value is rejected at startup |
+| `codeAudit.llm.failClosed` | `true` | Fails code audit if the LLM inference service is unreachable or encounters timeout. It also decides what the export gate does when the result leakage check left no usable verdict: with `true`, a missing verdict or a verdict recording that the check could not run rejects the export with a 500; with `false`, both are logged as warnings and the export proceeds. A verdict that says the result leaks is never affected - it always returns 400 |
+| `codeAudit.llm.temperature` | unset | Sampling temperature sent with each verify request, in `[0, 2]`. Unset leaves the choice to the inference service, which decodes deterministically so the same finding always yields the same verdict. Setting anything other than `0` re-enables sampling: identical findings may then be judged differently, and a single `MALICIOUS` verdict under `assist` + `failClosed` fails the audit. A non-zero value is therefore logged as a startup warning. Out-of-range values are rejected at startup |
+| `codeAudit.llm.insecureSkipVerify` | `false` | Skips TLS CA certificate verification (set to `true` only for local Docker testing) |
+| `codeAudit.llm.attestationMode` | `strict` | Hardware attestation verification policy for TEE-TLS (`strict` in production, `permissive` in local simulation) |
 | `attestation.hrkCertPath` | `/root/taa/certs/hrk.cert` | Hygon Root Key (HRK) certificate path for CSV attestation verification |
 | `attestation.hskCekCertPath` | `/root/taa/certs/hsk_cek.cert` | Hygon Sign Key (HSK) / Chip Endorsement Key (CEK) certificate path |
-| `llm.enabled` | `true` | Enables local LLM semantic arbitration for code security audits |
-| `llm.transport` | `teetls` | Transport protocol for TEE-LLM communication (`teetls` for RFC 8998 TLS 1.3 ShangMi, or `http`) |
-| `llm.endpoint` | `https://127.0.0.1:8443` | Decoupled TEE-LLM service endpoint |
-| `llm.model` | `qwen2.5-coder:3b` | Target LLM model for code analysis |
-| `llm.policy` | `assist` | LLM arbitration mode (`assist`: LLM results are informational and the static verdict stands; `gate`: strict — HIGH findings fail the audit unless the LLM rules them benign, MEDIUM findings always fail it). Values are normalized to lower case; any other value is rejected at startup |
-| `llm.failClosed` | `true` | Fails code audit if the LLM inference service is unreachable or encounters timeout. It also decides what the export gate does when the result leakage check left no usable verdict: with `true`, a missing verdict or a verdict recording that the check could not run rejects the export with a 500; with `false`, both are logged as warnings and the export proceeds. A verdict that says the result leaks is never affected - it always returns 400 |
-| `llm.temperature` | unset | Sampling temperature sent with each verify request, in `[0, 2]`. Unset leaves the choice to the inference service, which decodes deterministically so the same finding always yields the same verdict. Setting anything other than `0` re-enables sampling: identical findings may then be judged differently, and a single `MALICIOUS` verdict under `assist` + `failClosed` fails the audit. A non-zero value is therefore logged as a startup warning. Out-of-range values are rejected at startup |
-| `llm.insecureSkipVerify` | `false` | Skips TLS CA certificate verification (set to `true` only for local Docker testing) |
-| `llm.attestationMode` | `strict` | Hardware attestation verification policy for TEE-TLS (`strict` in production, `permissive` in local simulation) |
 
 ### Configuration Templates
 
@@ -464,7 +466,7 @@ Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (d
 ```
 
 > **Remote deploys provision the code scan engine.** When the config selects the semgrep engine
-> (`security.codeScanEngine`), `deploy.sh remote` makes sure the container has both the CLI and the
+> (`codeAudit.codeScanEngine`), `deploy.sh remote` makes sure the container has both the CLI and the
 > rules *before* it touches the running daemon. The engine comes from a payload archive kept on the
 > host (`REMOTE_SEMGREP_BUNDLE`, default `$REMOTE_DIR/semgrep-bundle.tar.gz`, built with
 > `deploy/guest-build/build-semgrep-payload-container.sh`; set `SEMGREP_BUNDLE` to a local archive to

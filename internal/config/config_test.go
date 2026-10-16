@@ -22,12 +22,14 @@ func TestLoadStartupConfigFallsBackToIdentityEnvironment(t *testing.T) {
 		"resultCheck": false,
 		"dataDir": "/tmp/data",
 		"resultDir": "/tmp/results",
-		"llm": {
-			"enabled": false,
-			"endpoint": "http://llm.example:11434",
-			"model": "qwen-test",
-			"policy": "gate",
-			"failClosed": false
+		"codeAudit": {
+			"llm": {
+				"enabled": false,
+				"endpoint": "http://llm.example:11434",
+				"model": "qwen-test",
+				"policy": "gate",
+				"failClosed": false
+			}
 		}
 	}`)
 
@@ -88,8 +90,8 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if cfg.Addr != ":6001" {
 		t.Fatalf("Addr = %q, want default", cfg.Addr)
 	}
-	if !cfg.EnableSecurityScan {
-		t.Fatalf("EnableSecurityScan = false, want default true")
+	if !cfg.EnableCodeAudit {
+		t.Fatalf("EnableCodeAudit = false, want default true")
 	}
 	if cfg.ModelDir != "/opt/taa/models" {
 		t.Fatalf("ModelDir = %q, want default", cfg.ModelDir)
@@ -124,20 +126,20 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if cfg.KeysDir != "/root/taa/keys" {
 		t.Fatalf("KeysDir = %q, want default", cfg.KeysDir)
 	}
-	if !cfg.EnableLLM {
-		t.Fatalf("EnableLLM = false, want default true")
+	if !cfg.LLM.Enabled {
+		t.Fatalf("LLM.Enabled = false, want default true")
 	}
-	if cfg.LLMEndpoint != "https://127.0.0.1:8443" {
-		t.Fatalf("LLMEndpoint = %q, want default", cfg.LLMEndpoint)
+	if cfg.LLM.Endpoint != "https://127.0.0.1:8443" {
+		t.Fatalf("LLM.Endpoint = %q, want default", cfg.LLM.Endpoint)
 	}
-	if cfg.LLMModel != "qwen2.5-coder:0.5b" {
-		t.Fatalf("LLMModel = %q, want default", cfg.LLMModel)
+	if cfg.LLM.Model != "qwen2.5-coder:0.5b" {
+		t.Fatalf("LLM.Model = %q, want default", cfg.LLM.Model)
 	}
-	if cfg.LLMPolicy != "assist" {
-		t.Fatalf("LLMPolicy = %q, want default", cfg.LLMPolicy)
+	if cfg.LLM.Policy != "assist" {
+		t.Fatalf("LLM.Policy = %q, want default", cfg.LLM.Policy)
 	}
-	if !cfg.LLMFailClosed {
-		t.Fatalf("LLMFailClosed = false, want default true")
+	if !cfg.LLM.FailClosed {
+		t.Fatalf("LLM.FailClosed = false, want default true")
 	}
 	if cfg.AttestationHRKCertPath == "" || cfg.AttestationHSKCekCertPath == "" {
 		t.Fatalf("Attestation cert paths unexpectedly empty: hrk=%q, hsk=%q", cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
@@ -201,7 +203,7 @@ func TestLoadStartupConfigMaxFileBytesPrecedence(t *testing.T) {
 		writeTestConfig(t, path, `{
 			"maxResultBytes": 100,
 			"maxFileBytes": 200,
-			"security": {
+			"codeAudit": {
 				"maxFileBytes": 300,
 				"resultCheck": {
 					"maxFileBytes": 400
@@ -223,7 +225,7 @@ func TestLoadStartupConfigMaxFileBytesPrecedence(t *testing.T) {
 		writeTestConfig(t, path, `{
 			"maxResultBytes": 100,
 			"maxFileBytes": 200,
-			"security": {
+			"codeAudit": {
 				"maxFileBytes": 300
 			}
 		}`)
@@ -272,8 +274,10 @@ func TestLoadStartupConfigIgnoresWhitespaceKeysDir(t *testing.T) {
 func TestLoadStartupConfigReadsLLMDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
-		"llm": {
-			"dir": "/opt/taa/ollama"
+		"codeAudit": {
+			"llm": {
+				"dir": "/opt/taa/ollama"
+			}
 		}
 	}`)
 
@@ -281,8 +285,8 @@ func TestLoadStartupConfigReadsLLMDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
-	if cfg.LLMDir != "/opt/taa/ollama" {
-		t.Fatalf("LLMDir = %q, want file value", cfg.LLMDir)
+	if cfg.LLM.Dir != "/opt/taa/ollama" {
+		t.Fatalf("LLM.Dir = %q, want file value", cfg.LLM.Dir)
 	}
 }
 
@@ -308,13 +312,13 @@ func TestLoadStartupConfigDoesNotReadOtherRuntimeEnvironment(t *testing.T) {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
-	if !cfg.EnableSecurityScan || !cfg.EnableResultCheck || !cfg.EnableLLM || !cfg.LLMFailClosed {
+	if !cfg.EnableCodeAudit || !cfg.EnableResultCheck || !cfg.LLM.Enabled || !cfg.LLM.FailClosed {
 		t.Fatalf("boolean runtime config unexpectedly read from environment: %+v", cfg)
 	}
 	if cfg.ModelDir != "/opt/taa/models" || cfg.DataDir != "/opt/taa/data" || cfg.ResultDir != "/opt/taa/results" || cfg.KeysDir != "/root/taa/keys" {
 		t.Fatalf("directory runtime config unexpectedly read from environment: %+v", cfg)
 	}
-	if cfg.LLMEndpoint != "https://127.0.0.1:8443" || cfg.LLMModel != "qwen2.5-coder:0.5b" || cfg.LLMPolicy != "assist" || cfg.LLMDir != "" {
+	if cfg.LLM.Endpoint != "https://127.0.0.1:8443" || cfg.LLM.Model != "qwen2.5-coder:0.5b" || cfg.LLM.Policy != "assist" || cfg.LLM.Dir != "" {
 		t.Fatalf("LLM runtime config unexpectedly read from environment: %+v", cfg)
 	}
 }
@@ -385,7 +389,7 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 		wantModelOutputDir   string
 		wantModelLogDir      string
 		wantModelProgressDir string
-		wantSecurityScan     bool
+		wantCodeAudit        bool
 		wantResultCheck      bool
 		wantPlatformIP       string
 		wantDockerID         string
@@ -394,6 +398,13 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 		// covers a cold model load on CPU-only inference; see
 		// .claude/specs/2026-10-08-llm-timeout-layering-design.md.
 		wantLLMTimeoutMs int64
+		// wantSemgrepRulesPath and wantLLMModel are asserted because both differ
+		// from the code defaults (empty, and qwen2.5-coder:0.5b). They are what
+		// makes this test evidence that the codeAudit block is read as a block:
+		// a config whose inner sections went unread would still satisfy every
+		// other assertion here, since those pin values the defaults already have.
+		wantSemgrepRulesPath string
+		wantLLMModel         string
 	}{
 		{
 			relPath:              "../../configs/taa-production.json",
@@ -409,10 +420,12 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantModelOutputDir:   "/opt/taa/output/result",
 			wantModelLogDir:      "/opt/taa/output/log",
 			wantModelProgressDir: "/opt/taa/output/progress/progress.json",
-			wantSecurityScan:     true,
+			wantCodeAudit:        true,
 			wantResultCheck:      true,
 			wantPlatformIP:       "",
 			wantDockerID:         "",
+			wantSemgrepRulesPath: "/opt/taa/semgrep/rules",
+			wantLLMModel:         "qwen2.5-coder:7b",
 		},
 		{
 			relPath:              "../../configs/taa-docker.json",
@@ -428,11 +441,13 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantModelOutputDir:   "/opt/taa/output/result",
 			wantModelLogDir:      "/opt/taa/output/log",
 			wantModelProgressDir: "/opt/taa/output/progress/progress.json",
-			wantSecurityScan:     true,
+			wantCodeAudit:        true,
 			wantResultCheck:      true,
 			wantPlatformIP:       "127.0.0.1:18080",
 			wantDockerID:         "taa-env-slim-v2",
 			wantLLMTimeoutMs:     120000,
+			wantSemgrepRulesPath: "/opt/taa/semgrep/rules",
+			wantLLMModel:         "qwen2.5-coder:7b",
 		},
 	}
 
@@ -481,8 +496,8 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			if cfg.ModelProgressDir != tc.wantModelProgressDir {
 				t.Errorf("ModelProgressDir = %q, want %q", cfg.ModelProgressDir, tc.wantModelProgressDir)
 			}
-			if cfg.EnableSecurityScan != tc.wantSecurityScan {
-				t.Errorf("EnableSecurityScan = %v, want %v", cfg.EnableSecurityScan, tc.wantSecurityScan)
+			if cfg.EnableCodeAudit != tc.wantCodeAudit {
+				t.Errorf("EnableCodeAudit = %v, want %v", cfg.EnableCodeAudit, tc.wantCodeAudit)
 			}
 			if cfg.EnableResultCheck != tc.wantResultCheck {
 				t.Errorf("EnableResultCheck = %v, want %v", cfg.EnableResultCheck, tc.wantResultCheck)
@@ -493,8 +508,14 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			if tc.wantDockerID != "" && cfg.DockerID != tc.wantDockerID {
 				t.Errorf("DockerID = %q, want %q", cfg.DockerID, tc.wantDockerID)
 			}
-			if tc.wantLLMTimeoutMs != 0 && cfg.LLMTimeoutMs != tc.wantLLMTimeoutMs {
-				t.Errorf("LLMTimeoutMs = %d, want %d", cfg.LLMTimeoutMs, tc.wantLLMTimeoutMs)
+			if tc.wantLLMTimeoutMs != 0 && cfg.LLM.TimeoutMs != tc.wantLLMTimeoutMs {
+				t.Errorf("LLM.TimeoutMs = %d, want %d", cfg.LLM.TimeoutMs, tc.wantLLMTimeoutMs)
+			}
+			if cfg.SemgrepRulesPath != tc.wantSemgrepRulesPath {
+				t.Errorf("SemgrepRulesPath = %q, want %q", cfg.SemgrepRulesPath, tc.wantSemgrepRulesPath)
+			}
+			if cfg.LLM.Model != tc.wantLLMModel {
+				t.Errorf("LLM.Model = %q, want %q", cfg.LLM.Model, tc.wantLLMModel)
 			}
 		})
 	}
@@ -517,7 +538,7 @@ func TestLoadStartupConfig_ModularSections(t *testing.T) {
 			"result": "/data/storage/results",
 			"keys": "/data/storage/keys"
 		},
-		"security": {
+		"codeAudit": {
 			"codeScan": false,
 			"resultCheck": {
 				"enabled": false,
@@ -555,7 +576,7 @@ func TestLoadStartupConfig_ModularSections(t *testing.T) {
 	if cfg.KeysDir != "/data/storage/keys" {
 		t.Errorf("KeysDir = %q, want /data/storage/keys", cfg.KeysDir)
 	}
-	if cfg.EnableSecurityScan {
+	if cfg.EnableCodeAudit {
 		t.Errorf("EnableSecurityScan = true, want false")
 	}
 	if cfg.EnableResultCheck {
@@ -572,7 +593,7 @@ func TestLoadStartupConfig_ModularSections(t *testing.T) {
 func TestLoadStartupConfig_ResultCheckBooleanCompatibility(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
-		"security": {
+		"codeAudit": {
 			"codeScan": true,
 			"resultCheck": false
 		}
@@ -583,7 +604,7 @@ func TestLoadStartupConfig_ResultCheckBooleanCompatibility(t *testing.T) {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
-	if !cfg.EnableSecurityScan {
+	if !cfg.EnableCodeAudit {
 		t.Errorf("EnableSecurityScan = false, want true")
 	}
 	if cfg.EnableResultCheck {
@@ -726,25 +747,27 @@ func TestLoadStartupConfigModelOverridesLegacy(t *testing.T) {
 func TestStartupConfig_InferenceOptions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
-		"llm": {
-			"enabled": true,
-			"transport": "teetls",
-			"endpoint": "https://127.0.0.1:8443",
-			"attestationMode": "permissive",
-			"hrkCertPath": "/custom/hrk.cert",
-			"hskCekCertPath": "/custom/hsk_cek.cert",
-			"expectedMeasurements": ["deadbeef01234567"],
-			"requireMutualAttest": true,
-			"insecureSkipVerify": true,
-			"model": "qwen2.5-coder:3b",
-			"policy": "gate",
-			"temperature": 0.3,
-			"failClosed": true,
-			"authToken": "secret-token",
-			"requestTimeoutMs": 15000,
-			"allowedHosts": ["127.0.0.1", "inference-host"],
-			"circuitBreakerThreshold": 5,
-			"cooldownSec": 45
+		"codeAudit": {
+			"llm": {
+				"enabled": true,
+				"transport": "teetls",
+				"endpoint": "https://127.0.0.1:8443",
+				"attestationMode": "permissive",
+				"hrkCertPath": "/custom/hrk.cert",
+				"hskCekCertPath": "/custom/hsk_cek.cert",
+				"expectedMeasurements": ["deadbeef01234567"],
+				"requireMutualAttest": true,
+				"insecureSkipVerify": true,
+				"model": "qwen2.5-coder:3b",
+				"policy": "gate",
+				"temperature": 0.3,
+				"failClosed": true,
+				"authToken": "secret-token",
+				"requestTimeoutMs": 15000,
+				"allowedHosts": ["127.0.0.1", "inference-host"],
+				"circuitBreakerThreshold": 5,
+				"cooldownSec": 45
+			}
 		}
 	}`)
 
@@ -753,50 +776,50 @@ func TestStartupConfig_InferenceOptions(t *testing.T) {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
-	if cfg.LLMTransport != "teetls" {
-		t.Errorf("got transport %q, want 'teetls'", cfg.LLMTransport)
+	if cfg.LLM.Transport != "teetls" {
+		t.Errorf("got transport %q, want 'teetls'", cfg.LLM.Transport)
 	}
-	if cfg.LLMEndpoint != "https://127.0.0.1:8443" {
-		t.Errorf("got endpoint %q, want 'https://127.0.0.1:8443'", cfg.LLMEndpoint)
+	if cfg.LLM.Endpoint != "https://127.0.0.1:8443" {
+		t.Errorf("got endpoint %q, want 'https://127.0.0.1:8443'", cfg.LLM.Endpoint)
 	}
-	if cfg.LLMAttestationMode != "permissive" {
-		t.Errorf("got attestationMode %q, want 'permissive'", cfg.LLMAttestationMode)
+	if cfg.LLM.AttestationMode != "permissive" {
+		t.Errorf("got attestationMode %q, want 'permissive'", cfg.LLM.AttestationMode)
 	}
-	if cfg.LLMHRKCertPath != "/custom/hrk.cert" {
-		t.Errorf("got hrkCertPath %q, want '/custom/hrk.cert'", cfg.LLMHRKCertPath)
+	if cfg.LLM.HRKCertPath != "/custom/hrk.cert" {
+		t.Errorf("got hrkCertPath %q, want '/custom/hrk.cert'", cfg.LLM.HRKCertPath)
 	}
-	if cfg.LLMHSKCekCertPath != "/custom/hsk_cek.cert" {
-		t.Errorf("got hskCekCertPath %q, want '/custom/hsk_cek.cert'", cfg.LLMHSKCekCertPath)
+	if cfg.LLM.HSKCekCertPath != "/custom/hsk_cek.cert" {
+		t.Errorf("got hskCekCertPath %q, want '/custom/hsk_cek.cert'", cfg.LLM.HSKCekCertPath)
 	}
-	if len(cfg.LLMExpectedMeasurements) != 1 || cfg.LLMExpectedMeasurements[0] != "deadbeef01234567" {
-		t.Errorf("got expectedMeasurements %v, want ['deadbeef01234567']", cfg.LLMExpectedMeasurements)
+	if len(cfg.LLM.ExpectedMeasurements) != 1 || cfg.LLM.ExpectedMeasurements[0] != "deadbeef01234567" {
+		t.Errorf("got expectedMeasurements %v, want ['deadbeef01234567']", cfg.LLM.ExpectedMeasurements)
 	}
-	if !cfg.LLMRequireMutualAttest {
+	if !cfg.LLM.RequireMutualAttest {
 		t.Errorf("got requireMutualAttest false, want true")
 	}
-	if !cfg.LLMInsecureSkipVerify {
+	if !cfg.LLM.InsecureSkipVerify {
 		t.Errorf("got insecureSkipVerify false, want true")
 	}
-	if cfg.LLMAuthToken != "secret-token" {
-		t.Errorf("got token %q", cfg.LLMAuthToken)
+	if cfg.LLM.AuthToken != "secret-token" {
+		t.Errorf("got token %q", cfg.LLM.AuthToken)
 	}
-	if cfg.LLMTimeoutMs != 15000 {
-		t.Errorf("got timeout %d, want 15000", cfg.LLMTimeoutMs)
+	if cfg.LLM.TimeoutMs != 15000 {
+		t.Errorf("got timeout %d, want 15000", cfg.LLM.TimeoutMs)
 	}
-	if len(cfg.LLMAllowedHosts) != 2 || cfg.LLMAllowedHosts[0] != "127.0.0.1" || cfg.LLMAllowedHosts[1] != "inference-host" {
-		t.Errorf("got allowedHosts %v", cfg.LLMAllowedHosts)
+	if len(cfg.LLM.AllowedHosts) != 2 || cfg.LLM.AllowedHosts[0] != "127.0.0.1" || cfg.LLM.AllowedHosts[1] != "inference-host" {
+		t.Errorf("got allowedHosts %v", cfg.LLM.AllowedHosts)
 	}
-	if cfg.LLMCircuitBreakerThreshold != 5 {
-		t.Errorf("got threshold %d, want 5", cfg.LLMCircuitBreakerThreshold)
+	if cfg.LLM.CircuitBreakerThreshold != 5 {
+		t.Errorf("got threshold %d, want 5", cfg.LLM.CircuitBreakerThreshold)
 	}
-	if cfg.LLMCooldownSec != 45 {
-		t.Errorf("got cooldown %d, want 45", cfg.LLMCooldownSec)
+	if cfg.LLM.CooldownSec != 45 {
+		t.Errorf("got cooldown %d, want 45", cfg.LLM.CooldownSec)
 	}
-	if cfg.LLMTemperature == nil {
+	if cfg.LLM.Temperature == nil {
 		t.Fatalf("got nil temperature, want 0.3")
 	}
-	if *cfg.LLMTemperature != 0.3 {
-		t.Errorf("got temperature %v, want 0.3", *cfg.LLMTemperature)
+	if *cfg.LLM.Temperature != 0.3 {
+		t.Errorf("got temperature %v, want 0.3", *cfg.LLM.Temperature)
 	}
 }
 
@@ -809,41 +832,41 @@ func TestStartupConfig_InferenceDefaults(t *testing.T) {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
-	if cfg.LLMTransport != "teetls" {
-		t.Errorf("got default transport %q, want 'teetls'", cfg.LLMTransport)
+	if cfg.LLM.Transport != "teetls" {
+		t.Errorf("got default transport %q, want 'teetls'", cfg.LLM.Transport)
 	}
-	if cfg.LLMEndpoint != "https://127.0.0.1:8443" {
-		t.Errorf("got default endpoint %q, want 'https://127.0.0.1:8443'", cfg.LLMEndpoint)
+	if cfg.LLM.Endpoint != "https://127.0.0.1:8443" {
+		t.Errorf("got default endpoint %q, want 'https://127.0.0.1:8443'", cfg.LLM.Endpoint)
 	}
-	if cfg.LLMAttestationMode != "strict" {
-		t.Errorf("got default attestationMode %q, want 'strict'", cfg.LLMAttestationMode)
+	if cfg.LLM.AttestationMode != "strict" {
+		t.Errorf("got default attestationMode %q, want 'strict'", cfg.LLM.AttestationMode)
 	}
-	if cfg.LLMHRKCertPath == "" || cfg.LLMHSKCekCertPath == "" {
-		t.Errorf("got empty default cert paths: hrk=%q, hsk=%q", cfg.LLMHRKCertPath, cfg.LLMHSKCekCertPath)
+	if cfg.LLM.HRKCertPath == "" || cfg.LLM.HSKCekCertPath == "" {
+		t.Errorf("got empty default cert paths: hrk=%q, hsk=%q", cfg.LLM.HRKCertPath, cfg.LLM.HSKCekCertPath)
 	}
-	if cfg.LLMExpectedMeasurements != nil {
-		t.Errorf("got default expectedMeasurements %v, want nil", cfg.LLMExpectedMeasurements)
+	if cfg.LLM.ExpectedMeasurements != nil {
+		t.Errorf("got default expectedMeasurements %v, want nil", cfg.LLM.ExpectedMeasurements)
 	}
-	if cfg.LLMRequireMutualAttest {
+	if cfg.LLM.RequireMutualAttest {
 		t.Errorf("got default requireMutualAttest true, want false")
 	}
-	if cfg.LLMInsecureSkipVerify {
+	if cfg.LLM.InsecureSkipVerify {
 		t.Errorf("got default insecureSkipVerify true, want false")
 	}
-	if cfg.LLMAuthToken != "" {
-		t.Errorf("got default token %q, want empty", cfg.LLMAuthToken)
+	if cfg.LLM.AuthToken != "" {
+		t.Errorf("got default token %q, want empty", cfg.LLM.AuthToken)
 	}
-	if cfg.LLMTimeoutMs != 30000 {
-		t.Errorf("got default timeout %d, want 30000", cfg.LLMTimeoutMs)
+	if cfg.LLM.TimeoutMs != 30000 {
+		t.Errorf("got default timeout %d, want 30000", cfg.LLM.TimeoutMs)
 	}
-	if cfg.LLMCircuitBreakerThreshold != 3 {
-		t.Errorf("got default threshold %d, want 3", cfg.LLMCircuitBreakerThreshold)
+	if cfg.LLM.CircuitBreakerThreshold != 3 {
+		t.Errorf("got default threshold %d, want 3", cfg.LLM.CircuitBreakerThreshold)
 	}
-	if cfg.LLMCooldownSec != 30 {
-		t.Errorf("got default cooldown %d, want 30", cfg.LLMCooldownSec)
+	if cfg.LLM.CooldownSec != 30 {
+		t.Errorf("got default cooldown %d, want 30", cfg.LLM.CooldownSec)
 	}
-	if cfg.LLMTemperature != nil {
-		t.Errorf("got default temperature %v, want nil (unset, leaving the choice to the inference service)", *cfg.LLMTemperature)
+	if cfg.LLM.Temperature != nil {
+		t.Errorf("got default temperature %v, want nil (unset, leaving the choice to the inference service)", *cfg.LLM.Temperature)
 	}
 }
 
@@ -860,18 +883,18 @@ func TestStartupConfig_InferenceDefaults(t *testing.T) {
 // changes.
 func TestLoadStartupConfigExplicitZeroTemperature(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, `{"llm": {"temperature": 0}}`)
+	writeTestConfig(t, path, `{"codeAudit":{"llm":{"temperature":0}}}`)
 
 	cfg, err := LoadStartupConfig(path)
 	if err != nil {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
-	if cfg.LLMTemperature == nil {
+	if cfg.LLM.Temperature == nil {
 		t.Fatalf("got nil temperature, want an explicit 0")
 	}
-	if *cfg.LLMTemperature != 0 {
-		t.Errorf("got temperature %v, want 0", *cfg.LLMTemperature)
+	if *cfg.LLM.Temperature != 0 {
+		t.Errorf("got temperature %v, want 0", *cfg.LLM.Temperature)
 	}
 }
 
@@ -882,14 +905,16 @@ func TestLoadStartupConfigExplicitZeroTemperature(t *testing.T) {
 func TestLoadStartupConfigRejectsUnknownLLMPolicy(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
-		"llm": {
-			"policy": "enforce"
+		"codeAudit": {
+			"llm": {
+				"policy": "enforce"
+			}
 		}
 	}`)
 
 	cfg, err := LoadStartupConfig(path)
 	if err == nil {
-		t.Fatalf("LoadStartupConfig() error = nil, want rejection of unknown llm policy; got policy %q", cfg.LLMPolicy)
+		t.Fatalf("LoadStartupConfig() error = nil, want rejection of unknown llm policy; got policy %q", cfg.LLM.Policy)
 	}
 	if !strings.Contains(err.Error(), "enforce") {
 		t.Fatalf("error %q should name the rejected value", err)
@@ -900,7 +925,7 @@ func TestLoadStartupConfigNormalizesLLMPolicy(t *testing.T) {
 	for _, policy := range []string{"assist", "gate", "GATE", " gate ", ""} {
 		t.Run("policy="+policy, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), DefaultFileName)
-			writeTestConfig(t, path, fmt.Sprintf(`{"llm":{"policy":%q}}`, policy))
+			writeTestConfig(t, path, fmt.Sprintf(`{"codeAudit":{"llm":{"policy":%q}}}`, policy))
 
 			cfg, err := LoadStartupConfig(path)
 			if err != nil {
@@ -911,8 +936,8 @@ func TestLoadStartupConfigNormalizesLLMPolicy(t *testing.T) {
 			if want == "" {
 				want = "assist"
 			}
-			if cfg.LLMPolicy != want {
-				t.Fatalf("LLMPolicy = %q, want %q", cfg.LLMPolicy, want)
+			if cfg.LLM.Policy != want {
+				t.Fatalf("LLM.Policy = %q, want %q", cfg.LLM.Policy, want)
 			}
 		})
 	}
@@ -926,7 +951,7 @@ func TestLoadStartupConfigNormalizesLLMPolicy(t *testing.T) {
 func TestLoadStartupConfigRejectsUnknownCodeScanEngine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
-		"security": {
+		"codeAudit": {
 			"codeScanEngine": "semgrep-cli"
 		}
 	}`)
@@ -951,7 +976,7 @@ func TestLoadStartupConfigNormalizesCodeScanEngine(t *testing.T) {
 	for _, engine := range []string{"regex", "semgrep", "SEMGREP", " semgrep ", ""} {
 		t.Run("engine="+engine, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), DefaultFileName)
-			writeTestConfig(t, path, fmt.Sprintf(`{"security":{"codeScanEngine":%q}}`, engine))
+			writeTestConfig(t, path, fmt.Sprintf(`{"codeAudit":{"codeScanEngine":%q}}`, engine))
 
 			cfg, err := LoadStartupConfig(path)
 			if err != nil {
@@ -977,7 +1002,7 @@ func TestLoadStartupConfigNormalizesCodeScanEngine(t *testing.T) {
 func TestLoadStartupConfigReadsSemgrepRulesPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
-		"security": {
+		"codeAudit": {
 			"codeScanEngine": "semgrep",
 			"semgrepRulesPath": "/opt/taa/semgrep/rules.yaml"
 		}
@@ -998,7 +1023,7 @@ func TestLoadStartupConfigReadsSemgrepRulesPath(t *testing.T) {
 // drift, and the config layer has no way to notice.
 func TestLoadStartupConfigLeavesSemgrepRulesPathUnset(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, `{"security":{"codeScanEngine":"regex"}}`)
+	writeTestConfig(t, path, `{"codeAudit":{"codeScanEngine":"regex"}}`)
 
 	cfg, err := LoadStartupConfig(path)
 	if err != nil {
@@ -1016,7 +1041,7 @@ func TestLoadStartupConfigLeavesSemgrepRulesPathUnset(t *testing.T) {
 // places, and the one that is actually enforced is the adapter's.
 func TestLoadStartupConfigLeavesTheSemgrepTimeoutAtZeroForTheEngineToResolve(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, `{"security":{"codeScanEngine":"semgrep"}}`)
+	writeTestConfig(t, path, `{"codeAudit":{"codeScanEngine":"semgrep"}}`)
 
 	cfg, err := LoadStartupConfig(path)
 	if err != nil {
@@ -1030,7 +1055,7 @@ func TestLoadStartupConfigLeavesTheSemgrepTimeoutAtZeroForTheEngineToResolve(t *
 func TestLoadStartupConfigReadsTheSemgrepTimeout(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
-		"security": {
+		"codeAudit": {
 			"codeScanEngine": "semgrep",
 			"semgrepTimeoutSeconds": 45
 		}
@@ -1057,7 +1082,7 @@ func TestLoadStartupConfigRejectsANonPositiveSemgrepTimeout(t *testing.T) {
 		t.Run("seconds="+seconds, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), DefaultFileName)
 			writeTestConfig(t, path, fmt.Sprintf(`{
-				"security": {
+				"codeAudit": {
 					"codeScanEngine": "semgrep",
 					"semgrepTimeoutSeconds": %s
 				}
@@ -1103,7 +1128,7 @@ func TestValidateLLMTemperature(t *testing.T) {
 			if tc.temp != nil {
 				got = fmt.Sprintf("%v", *tc.temp)
 			}
-			err := validateLLMTemperature(StartupConfig{LLMTemperature: tc.temp})
+			err := validateLLMTemperature(StartupConfig{LLM: LLMConfig{Temperature: tc.temp}})
 			if tc.wantErr && err == nil {
 				t.Fatalf("validateLLMTemperature(%s) = nil, want error", got)
 			}
@@ -1118,7 +1143,7 @@ func TestValidateLLMTemperature(t *testing.T) {
 // actually on the load path, not merely correct in isolation.
 func TestLoadStartupConfigRejectsOutOfRangeLLMTemperature(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, `{"llm": {"temperature": 3}}`)
+	writeTestConfig(t, path, `{"codeAudit":{"llm":{"temperature":3}}}`)
 
 	if _, err := LoadStartupConfig(path); err == nil {
 		t.Fatalf("LoadStartupConfig() = nil error, want rejection of temperature 3")
@@ -1131,7 +1156,7 @@ func TestLoadStartupConfigRejectsOutOfRangeLLMTemperature(t *testing.T) {
 func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 	t.Run("absent means enabled with the adapter's defaults", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), DefaultFileName)
-		writeTestConfig(t, path, `{"security":{"codeScanEngine":"regex"}}`)
+		writeTestConfig(t, path, `{"codeAudit":{"codeScanEngine":"regex"}}`)
 		cfg, err := LoadStartupConfig(path)
 		if err != nil {
 			t.Fatalf("LoadStartupConfig: %v", err)
@@ -1147,7 +1172,7 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 
 	t.Run("an explicit false disables it", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), DefaultFileName)
-		writeTestConfig(t, path, `{"security":{"binaryAudit":{"enabled":false}}}`)
+		writeTestConfig(t, path, `{"codeAudit":{"binaryAudit":{"enabled":false}}}`)
 		cfg, err := LoadStartupConfig(path)
 		if err != nil {
 			t.Fatalf("LoadStartupConfig: %v", err)
@@ -1160,7 +1185,7 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 	t.Run("limits are read", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), DefaultFileName)
 		writeTestConfig(t, path,
-			`{"security":{"binaryAudit":{"maxArchiveMembers":17,"highEntropyThreshold":7.25}}}`)
+			`{"codeAudit":{"binaryAudit":{"maxArchiveMembers":17,"highEntropyThreshold":7.25}}}`)
 		cfg, err := LoadStartupConfig(path)
 		if err != nil {
 			t.Fatalf("LoadStartupConfig: %v", err)
@@ -1196,7 +1221,7 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				path := filepath.Join(t.TempDir(), DefaultFileName)
-				writeTestConfig(t, path, `{"security":{"binaryAudit":{`+tc.audit+`}}}`)
+				writeTestConfig(t, path, `{"codeAudit":{"binaryAudit":{`+tc.audit+`}}}`)
 				if _, err := LoadStartupConfig(path); err == nil {
 					t.Errorf("%s was accepted; it would be normalised to the default and the operator would never know", tc.audit)
 				}
@@ -1206,7 +1231,7 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 
 	t.Run("the full-scan threshold is carried through", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), DefaultFileName)
-		writeTestConfig(t, path, `{"security":{"binaryAudit":{"maxFullScanBytes":134217728}}}`)
+		writeTestConfig(t, path, `{"codeAudit":{"binaryAudit":{"maxFullScanBytes":134217728}}}`)
 		cfg, err := LoadStartupConfig(path)
 		if err != nil {
 			t.Fatalf("LoadStartupConfig: %v", err)
@@ -1215,4 +1240,66 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 			t.Errorf("BinaryAuditMaxFullScanBytes = %d, want 134217728", cfg.BinaryAuditMaxFullScanBytes)
 		}
 	})
+}
+
+// TestLoadStartupConfigRejectsRemovedKeys pins the failure mode that replaced a
+// silent one.
+//
+// encoding/json drops a key it does not recognise, so before this rejection a
+// config still written against the old layout loaded without complaint - and
+// every setting under the old keys was discarded, leaving the audit on defaults
+// (the regex baseline, the local inference endpoint) with nothing in the log to
+// say so. The rejection has to name the key to edit, and it has to name both
+// when both are present, so an operator fixes the file in one pass.
+func TestLoadStartupConfigRejectsRemovedKeys(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{
+			name:    "the old security block",
+			content: `{"security":{"codeScanEngine":"semgrep"}}`,
+			want:    []string{`"security"`, `"codeAudit"`},
+		},
+		{
+			name:    "a top-level llm block",
+			content: `{"llm":{"endpoint":"https://10.0.0.1:8443"}}`,
+			want:    []string{`"llm"`, `"codeAudit.llm"`},
+		},
+		{
+			name:    "both at once, reported together",
+			content: `{"security":{"codeScan":true},"llm":{"enabled":true}}`,
+			want:    []string{`"security"`, `"codeAudit"`, `"llm"`, `"codeAudit.llm"`},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), DefaultFileName)
+			writeTestConfig(t, path, tc.content)
+
+			_, err := LoadStartupConfig(path)
+			if err == nil {
+				t.Fatal("LoadStartupConfig() error = nil, want rejection of the removed key")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %s", err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestLoadStartupConfigAcceptsExplicitNullRemovedKeys pins the boundary of the
+// rejection above: an explicit null carries no settings, so a config that writes
+// one loses nothing by loading and must not be failed for it.
+func TestLoadStartupConfigAcceptsExplicitNullRemovedKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{"security":null,"llm":null}`)
+
+	if _, err := LoadStartupConfig(path); err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v, want nil for explicit nulls", err)
+	}
 }

@@ -15,13 +15,18 @@ const (
 )
 
 type StartupConfig struct {
-	Addr               string
-	PlatformIP         string
-	DockerID           string
-	Contract           string
-	EnableSecurityScan bool
+	Addr       string
+	PlatformIP string
+	DockerID   string
+	Contract   string
+	// EnableCodeAudit gates the whole code audit: the static scan and, with it,
+	// the LLM arbitration that only ever runs on what the scan raised. Turning it
+	// off is the audit's kill switch, not a per-channel toggle; the channels
+	// themselves are switched by CodeScanEngine/BinaryAuditEnabled.
+	EnableCodeAudit bool
 	// CodeScanEngine selects the Tier 1 static engine ("regex" or "semgrep").
-	// The default stays "regex" until the holdout evidence passes (spec §6.5).
+	// The default is "semgrep" (see defaultStartupConfig); "regex" is the
+	// baseline an operator falls back to deliberately.
 	CodeScanEngine string
 	// SemgrepRulesPath is the rules file or directory for the semgrep engine,
 	// passed through as --config. Empty means the engine's own default, which is
@@ -87,45 +92,55 @@ type StartupConfig struct {
 	// accepted without complaint. Keep it at or above MaxFullScanBytes, and above
 	// anything the deployment imports, or every file in the gap between the two
 	// records a bound and an executable one refuses the import.
-	BinaryAuditMaxStreamBytes  int
-	ModelDir                   string
-	EnableResultCheck          bool
-	MaxFileBytes               int64
-	MaxResultBytes             int64
-	DataDir                    string
-	ResultDir                  string
-	ModelInputDir              string
-	ModelOutputDir             string
-	ModelLogDir                string
-	ModelProgressDir           string
-	KeysDir                    string
-	AttestationHRKCertPath     string
-	AttestationHSKCekCertPath  string
-	EnableLLM                  bool
-	LLMTransport               string
-	LLMEndpoint                string
-	LLMAttestationMode         string
-	LLMHRKCertPath             string
-	LLMHSKCekCertPath          string
-	LLMExpectedMeasurements    []string
-	LLMRequireMutualAttest     bool
-	LLMInsecureSkipVerify      bool
-	LLMAuthToken               string
-	LLMTimeoutMs               int64
-	LLMAllowedHosts            []string
-	LLMCircuitBreakerThreshold int
-	LLMCooldownSec             int
-	LLMModel                   string
-	LLMPolicy                  string
-	LLMFailClosed              bool
-	LLMDir                     string
+	BinaryAuditMaxStreamBytes int
+	ModelDir                  string
+	EnableResultCheck         bool
+	MaxFileBytes              int64
+	MaxResultBytes            int64
+	DataDir                   string
+	ResultDir                 string
+	ModelInputDir             string
+	ModelOutputDir            string
+	ModelLogDir               string
+	ModelProgressDir          string
+	KeysDir                   string
+	AttestationHRKCertPath    string
+	AttestationHSKCekCertPath string
+	// LLM bundles the inference service the audit arbitrates findings with. It is
+	// nested because every one of these settings exists for the code audit and
+	// nothing else: TAA has no other use for a model.
+	LLM LLMConfig
+}
 
-	// LLMTemperature overrides the sampling temperature the audit requests
+// LLMConfig is the inference service the code audit calls to adjudicate the
+// findings its static scan raised. Field names carry no "LLM" prefix - the type
+// already says it.
+type LLMConfig struct {
+	Enabled                 bool
+	Transport               string
+	Endpoint                string
+	AttestationMode         string
+	HRKCertPath             string
+	HSKCekCertPath          string
+	ExpectedMeasurements    []string
+	RequireMutualAttest     bool
+	InsecureSkipVerify      bool
+	AuthToken               string
+	TimeoutMs               int64
+	AllowedHosts            []string
+	CircuitBreakerThreshold int
+	CooldownSec             int
+	Model                   string
+	Policy                  string
+	FailClosed              bool
+	Dir                     string
+
+	// Temperature overrides the sampling temperature the audit requests
 	// from the inference service. nil means "not configured": the service
 	// applies its own default, which is 0 (deterministic decoding). A non-nil
 	// value is sent as-is and re-enables sampling, so identical findings may
 	// then yield different verdicts.
-	LLMTemperature *float32
+	Temperature *float32
 }
 
 type startupConfigFile struct {
@@ -133,9 +148,17 @@ type startupConfigFile struct {
 	Platform    startupPlatformConfigFile    `json:"platform"`
 	Storage     startupStorageConfigFile     `json:"storage"`
 	Model       startupModelConfigFile       `json:"model"`
-	Security    startupSecurityConfigFile    `json:"security"`
+	CodeAudit   startupCodeAuditConfigFile   `json:"codeAudit"`
 	Attestation startupAttestationConfigFile `json:"attestation"`
-	LLM         startupLLMConfigFile         `json:"llm"`
+
+	// Removed keys. These are declared for one reason only: to make their
+	// presence detectable. encoding/json drops a key it does not recognise
+	// without a trace, so a config still written against the old layout would
+	// load cleanly with every audit setting at its default - the scan silently
+	// back on the regex baseline, the inference service back on 127.0.0.1:8443 -
+	// and nothing in the log would say so. See rejectRemovedKeys.
+	RemovedSecurity json.RawMessage `json:"security"`
+	RemovedLLM      json.RawMessage `json:"llm"`
 
 	// Legacy flat fields for backward compatibility
 	Addr               string `json:"addr"`
@@ -178,7 +201,10 @@ type startupStorageConfigFile struct {
 	KeysDir   string `json:"keysDir"`
 }
 
-type startupSecurityConfigFile struct {
+// startupCodeAuditConfigFile is the codeAudit block: everything the audit needs,
+// including the limits of the result-leakage check and the inference service it
+// arbitrates with.
+type startupCodeAuditConfigFile struct {
 	CodeScan         *bool  `json:"codeScan"`
 	Scan             *bool  `json:"scan"`
 	CodeScanEngine   string `json:"codeScanEngine"`
@@ -190,9 +216,10 @@ type startupSecurityConfigFile struct {
 	BinaryAudit           startupBinaryAuditConfigFile `json:"binaryAudit"`
 	ResultCheck           startupResultCheckConfigFile `json:"resultCheck"`
 	MaxFileBytes          *int64                       `json:"maxFileBytes"`
+	LLM                   startupLLMConfigFile         `json:"llm"`
 }
 
-// startupBinaryAuditConfigFile is the security.binaryAudit block.
+// startupBinaryAuditConfigFile is the codeAudit.binaryAudit block.
 //
 // Enabled is a pointer because "absent" and "false" must not collapse: the
 // channel defaults on, so an absent field read as false would turn silence into
@@ -281,12 +308,48 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 	if err := json.Unmarshal(data, &fileCfg); err != nil {
 		return StartupConfig{}, fmt.Errorf("parse startup config %s: %w", path, err)
 	}
+	if err := rejectRemovedKeys(path, fileCfg); err != nil {
+		return StartupConfig{}, err
+	}
 
 	applyStartupConfigFile(&cfg, fileCfg)
 	if err := validateStartupConfig(cfg); err != nil {
 		return StartupConfig{}, err
 	}
 	return cfg, nil
+}
+
+// rejectRemovedKeys fails the load when the config still uses a key that was
+// renamed or moved.
+//
+// It fails rather than warns because the alternative is not "carry on as
+// before": the old keys are no longer read, so the settings under them would be
+// discarded and the audit would run on defaults. On the initrd path TAA is a
+// boot gate, so a hard failure is also the honest signal - the operator sees a
+// message naming the fix instead of a VM that boots with a changed audit.
+//
+// Both keys are reported in one error when both are present, so a config that
+// was written against the old layout is fixed in a single pass.
+func rejectRemovedKeys(path string, fileCfg startupConfigFile) error {
+	var found []string
+	if hasJSONValue(fileCfg.RemovedSecurity) {
+		found = append(found, `"security" (rename to "codeAudit")`)
+	}
+	if hasJSONValue(fileCfg.RemovedLLM) {
+		found = append(found, `"llm" (move under "codeAudit.llm")`)
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	return fmt.Errorf("startup config %s uses removed keys: %s", path, strings.Join(found, ", "))
+}
+
+// hasJSONValue reports whether a declared-but-unread key was actually present.
+// An explicit null is treated as absent: it carries no settings, so rejecting it
+// would fail a config that loses nothing by loading.
+func hasJSONValue(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null"
 }
 
 // llmPolicies lists the arbitration modes understood by the audit code
@@ -336,19 +399,19 @@ func validateStartupConfig(cfg StartupConfig) error {
 // LoadStartupConfig.
 func validateBinaryAudit(cfg StartupConfig) error {
 	if cfg.BinaryAuditMaxArchiveMembers < 0 {
-		return fmt.Errorf("security.binaryAudit.maxArchiveMembers must not be negative, got %d", cfg.BinaryAuditMaxArchiveMembers)
+		return fmt.Errorf("codeAudit.binaryAudit.maxArchiveMembers must not be negative, got %d", cfg.BinaryAuditMaxArchiveMembers)
 	}
 	if cfg.BinaryAuditMaxFindings < 0 {
-		return fmt.Errorf("security.binaryAudit.maxFindings must not be negative, got %d", cfg.BinaryAuditMaxFindings)
+		return fmt.Errorf("codeAudit.binaryAudit.maxFindings must not be negative, got %d", cfg.BinaryAuditMaxFindings)
 	}
 	if cfg.BinaryAuditMaxFullScanBytes < 0 {
-		return fmt.Errorf("security.binaryAudit.maxFullScanBytes must not be negative, got %d", cfg.BinaryAuditMaxFullScanBytes)
+		return fmt.Errorf("codeAudit.binaryAudit.maxFullScanBytes must not be negative, got %d", cfg.BinaryAuditMaxFullScanBytes)
 	}
 	if cfg.BinaryAuditMaxStreamBytes < 0 {
-		return fmt.Errorf("security.binaryAudit.maxStreamBytes must not be negative, got %d", cfg.BinaryAuditMaxStreamBytes)
+		return fmt.Errorf("codeAudit.binaryAudit.maxStreamBytes must not be negative, got %d", cfg.BinaryAuditMaxStreamBytes)
 	}
 	if cfg.BinaryAuditHighEntropyThreshold < 0 || cfg.BinaryAuditHighEntropyThreshold > 8 {
-		return fmt.Errorf("security.binaryAudit.highEntropyThreshold must be within [0,8] bits per byte, got %v",
+		return fmt.Errorf("codeAudit.binaryAudit.highEntropyThreshold must be within [0,8] bits per byte, got %v",
 			cfg.BinaryAuditHighEntropyThreshold)
 	}
 	return nil
@@ -368,11 +431,11 @@ func validateBinaryAudit(cfg StartupConfig) error {
 // A negative temperature is rejected for the same class of reason: it is not a
 // sharper setting, it is not something the inference service can honour.
 func validateLLMTemperature(cfg StartupConfig) error {
-	if cfg.LLMTemperature == nil {
+	if cfg.LLM.Temperature == nil {
 		return nil
 	}
-	if t := *cfg.LLMTemperature; t < 0 || t > 2 {
-		return fmt.Errorf("llm temperature in startup config must be within [0, 2]: got %v", t)
+	if t := *cfg.LLM.Temperature; t < 0 || t > 2 {
+		return fmt.Errorf("codeAudit.llm.temperature in startup config must be within [0, 2]: got %v", t)
 	}
 	return nil
 }
@@ -384,7 +447,7 @@ func validateLLMTemperature(cfg StartupConfig) error {
 // on the configuration, where an operator sees it at startup.
 func validateSemgrepTimeout(cfg StartupConfig) error {
 	if cfg.SemgrepTimeout < 0 {
-		return fmt.Errorf("semgrepTimeoutSeconds in startup config must not be negative: got %d",
+		return fmt.Errorf("codeAudit.semgrepTimeoutSeconds in startup config must not be negative: got %d",
 			int64(cfg.SemgrepTimeout/time.Second))
 	}
 	return nil
@@ -396,18 +459,18 @@ func validateCodeScanEngine(cfg StartupConfig) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("unsupported code scan engine %q in startup config: must be one of %s",
+	return fmt.Errorf("unsupported codeAudit.codeScanEngine %q in startup config: must be one of %s",
 		cfg.CodeScanEngine, strings.Join(staticEngines, ", "))
 }
 
 func validateLLMPolicy(cfg StartupConfig) error {
 	for _, policy := range llmPolicies {
-		if cfg.LLMPolicy == policy {
+		if cfg.LLM.Policy == policy {
 			return nil
 		}
 	}
-	return fmt.Errorf("unsupported llm policy %q in startup config: must be one of %s",
-		cfg.LLMPolicy, strings.Join(llmPolicies, ", "))
+	return fmt.Errorf("unsupported codeAudit.llm.policy %q in startup config: must be one of %s",
+		cfg.LLM.Policy, strings.Join(llmPolicies, ", "))
 }
 
 func defaultStartupConfig() StartupConfig {
@@ -421,43 +484,42 @@ func defaultStartupConfig() StartupConfig {
 	}
 
 	return StartupConfig{
-		Addr:                       ":6001",
-		PlatformIP:                 os.Getenv("PLATFORM_IP"),
-		DockerID:                   os.Getenv("DOCKER_ID"),
-		Contract:                   os.Getenv("CONTRACT"),
-		EnableSecurityScan:         true,
-		CodeScanEngine:             "semgrep",
-		BinaryAuditEnabled:         true,
-		ModelDir:                   "/opt/taa/models",
-		EnableResultCheck:          true,
-		MaxFileBytes:               DefaultMaxFileBytes,
-		MaxResultBytes:             DefaultMaxResultBytes,
-		DataDir:                    "/opt/taa/data",
-		ResultDir:                  "/opt/taa/results",
-		ModelInputDir:              "/opt/taa/input",
-		ModelOutputDir:             "/opt/taa/output/result",
-		ModelLogDir:                "/opt/taa/output/log",
-		ModelProgressDir:           "/opt/taa/output/progress/progress.json",
-		KeysDir:                    "/root/taa/keys",
-		AttestationHRKCertPath:     hrkDefault,
-		AttestationHSKCekCertPath:  hskDefault,
-		EnableLLM:                  true,
-		LLMTransport:               "teetls",
-		LLMEndpoint:                "https://127.0.0.1:8443",
-		LLMAttestationMode:         "strict",
-		LLMHRKCertPath:             hrkDefault,
-		LLMHSKCekCertPath:          hskDefault,
-		LLMExpectedMeasurements:    nil,
-		LLMRequireMutualAttest:     false,
-		LLMInsecureSkipVerify:      false,
-		LLMAuthToken:               "",
-		LLMTimeoutMs:               30000,
-		LLMAllowedHosts:            nil,
-		LLMCircuitBreakerThreshold: 3,
-		LLMCooldownSec:             30,
-		LLMModel:                   "qwen2.5-coder:0.5b",
-		LLMPolicy:                  "assist",
-		LLMFailClosed:              true,
+		Addr:                      ":6001",
+		PlatformIP:                os.Getenv("PLATFORM_IP"),
+		DockerID:                  os.Getenv("DOCKER_ID"),
+		Contract:                  os.Getenv("CONTRACT"),
+		EnableCodeAudit:           true,
+		CodeScanEngine:            "semgrep",
+		BinaryAuditEnabled:        true,
+		ModelDir:                  "/opt/taa/models",
+		EnableResultCheck:         true,
+		MaxFileBytes:              DefaultMaxFileBytes,
+		MaxResultBytes:            DefaultMaxResultBytes,
+		DataDir:                   "/opt/taa/data",
+		ResultDir:                 "/opt/taa/results",
+		ModelInputDir:             "/opt/taa/input",
+		ModelOutputDir:            "/opt/taa/output/result",
+		ModelLogDir:               "/opt/taa/output/log",
+		ModelProgressDir:          "/opt/taa/output/progress/progress.json",
+		KeysDir:                   "/root/taa/keys",
+		AttestationHRKCertPath:    hrkDefault,
+		AttestationHSKCekCertPath: hskDefault,
+		LLM: LLMConfig{
+			Enabled:                 true,
+			Transport:               "teetls",
+			Endpoint:                "https://127.0.0.1:8443",
+			AttestationMode:         "strict",
+			HRKCertPath:             hrkDefault,
+			HSKCekCertPath:          hskDefault,
+			RequireMutualAttest:     false,
+			InsecureSkipVerify:      false,
+			TimeoutMs:               30000,
+			CircuitBreakerThreshold: 3,
+			CooldownSec:             30,
+			Model:                   "qwen2.5-coder:0.5b",
+			Policy:                  "assist",
+			FailClosed:              true,
+		},
 	}
 }
 
@@ -493,26 +555,26 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 
 	if fileCfg.EnableSecurityScan != nil {
-		cfg.EnableSecurityScan = *fileCfg.EnableSecurityScan
+		cfg.EnableCodeAudit = *fileCfg.EnableSecurityScan
 	}
-	if fileCfg.Security.Scan != nil {
-		cfg.EnableSecurityScan = *fileCfg.Security.Scan
+	if fileCfg.CodeAudit.Scan != nil {
+		cfg.EnableCodeAudit = *fileCfg.CodeAudit.Scan
 	}
-	if fileCfg.Security.CodeScan != nil {
-		cfg.EnableSecurityScan = *fileCfg.Security.CodeScan
+	if fileCfg.CodeAudit.CodeScan != nil {
+		cfg.EnableCodeAudit = *fileCfg.CodeAudit.CodeScan
 	}
 
-	if trimmed := strings.ToLower(strings.TrimSpace(fileCfg.Security.CodeScanEngine)); trimmed != "" {
+	if trimmed := strings.ToLower(strings.TrimSpace(fileCfg.CodeAudit.CodeScanEngine)); trimmed != "" {
 		cfg.CodeScanEngine = trimmed
 	}
-	if trimmed := strings.TrimSpace(fileCfg.Security.SemgrepRulesPath); trimmed != "" {
+	if trimmed := strings.TrimSpace(fileCfg.CodeAudit.SemgrepRulesPath); trimmed != "" {
 		cfg.SemgrepRulesPath = trimmed
 	}
-	if seconds := fileCfg.Security.SemgrepTimeoutSeconds; seconds != 0 {
+	if seconds := fileCfg.CodeAudit.SemgrepTimeoutSeconds; seconds != 0 {
 		cfg.SemgrepTimeout = time.Duration(seconds) * time.Second
 	}
 
-	ba := fileCfg.Security.BinaryAudit
+	ba := fileCfg.CodeAudit.BinaryAudit
 	if ba.Enabled != nil {
 		cfg.BinaryAuditEnabled = *ba.Enabled
 	}
@@ -548,8 +610,8 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	if fileCfg.EnableResultCheck != nil {
 		cfg.EnableResultCheck = *fileCfg.EnableResultCheck
 	}
-	if fileCfg.Security.ResultCheck.Enabled != nil {
-		cfg.EnableResultCheck = *fileCfg.Security.ResultCheck.Enabled
+	if fileCfg.CodeAudit.ResultCheck.Enabled != nil {
+		cfg.EnableResultCheck = *fileCfg.CodeAudit.ResultCheck.Enabled
 	}
 
 	if fileCfg.MaxResultBytes != nil {
@@ -558,11 +620,11 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	if fileCfg.MaxFileBytes != nil {
 		cfg.MaxFileBytes = *fileCfg.MaxFileBytes
 	}
-	if fileCfg.Security.MaxFileBytes != nil {
-		cfg.MaxFileBytes = *fileCfg.Security.MaxFileBytes
+	if fileCfg.CodeAudit.MaxFileBytes != nil {
+		cfg.MaxFileBytes = *fileCfg.CodeAudit.MaxFileBytes
 	}
-	if fileCfg.Security.ResultCheck.MaxFileBytes != nil {
-		cfg.MaxFileBytes = *fileCfg.Security.ResultCheck.MaxFileBytes
+	if fileCfg.CodeAudit.ResultCheck.MaxFileBytes != nil {
+		cfg.MaxFileBytes = *fileCfg.CodeAudit.ResultCheck.MaxFileBytes
 	}
 	cfg.MaxResultBytes = cfg.MaxFileBytes
 
@@ -629,65 +691,65 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	if trimmed := strings.TrimSpace(fileCfg.Attestation.HSKCekCertPath); trimmed != "" {
 		cfg.AttestationHSKCekCertPath = trimmed
 	}
-	if fileCfg.LLM.Enabled != nil {
-		cfg.EnableLLM = *fileCfg.LLM.Enabled
+	if fileCfg.CodeAudit.LLM.Enabled != nil {
+		cfg.LLM.Enabled = *fileCfg.CodeAudit.LLM.Enabled
 	}
-	if fileCfg.LLM.Transport != "" {
-		cfg.LLMTransport = strings.TrimSpace(fileCfg.LLM.Transport)
+	if fileCfg.CodeAudit.LLM.Transport != "" {
+		cfg.LLM.Transport = strings.TrimSpace(fileCfg.CodeAudit.LLM.Transport)
 	}
-	if fileCfg.LLM.Endpoint != "" {
-		cfg.LLMEndpoint = fileCfg.LLM.Endpoint
+	if fileCfg.CodeAudit.LLM.Endpoint != "" {
+		cfg.LLM.Endpoint = fileCfg.CodeAudit.LLM.Endpoint
 	}
-	if trimmed := strings.TrimSpace(fileCfg.LLM.AttestationMode); trimmed != "" {
-		cfg.LLMAttestationMode = trimmed
+	if trimmed := strings.TrimSpace(fileCfg.CodeAudit.LLM.AttestationMode); trimmed != "" {
+		cfg.LLM.AttestationMode = trimmed
 	}
-	if trimmed := strings.TrimSpace(fileCfg.LLM.HRKCertPath); trimmed != "" {
-		cfg.LLMHRKCertPath = trimmed
+	if trimmed := strings.TrimSpace(fileCfg.CodeAudit.LLM.HRKCertPath); trimmed != "" {
+		cfg.LLM.HRKCertPath = trimmed
 	}
-	if trimmed := strings.TrimSpace(fileCfg.LLM.HSKCekCertPath); trimmed != "" {
-		cfg.LLMHSKCekCertPath = trimmed
+	if trimmed := strings.TrimSpace(fileCfg.CodeAudit.LLM.HSKCekCertPath); trimmed != "" {
+		cfg.LLM.HSKCekCertPath = trimmed
 	}
-	if len(fileCfg.LLM.ExpectedMeasurements) > 0 {
-		cfg.LLMExpectedMeasurements = fileCfg.LLM.ExpectedMeasurements
+	if len(fileCfg.CodeAudit.LLM.ExpectedMeasurements) > 0 {
+		cfg.LLM.ExpectedMeasurements = fileCfg.CodeAudit.LLM.ExpectedMeasurements
 	}
-	if fileCfg.LLM.RequireMutualAttest != nil {
-		cfg.LLMRequireMutualAttest = *fileCfg.LLM.RequireMutualAttest
+	if fileCfg.CodeAudit.LLM.RequireMutualAttest != nil {
+		cfg.LLM.RequireMutualAttest = *fileCfg.CodeAudit.LLM.RequireMutualAttest
 	}
-	if fileCfg.LLM.InsecureSkipVerify != nil {
-		cfg.LLMInsecureSkipVerify = *fileCfg.LLM.InsecureSkipVerify
+	if fileCfg.CodeAudit.LLM.InsecureSkipVerify != nil {
+		cfg.LLM.InsecureSkipVerify = *fileCfg.CodeAudit.LLM.InsecureSkipVerify
 	}
-	if fileCfg.LLM.AuthToken != "" {
-		cfg.LLMAuthToken = fileCfg.LLM.AuthToken
+	if fileCfg.CodeAudit.LLM.AuthToken != "" {
+		cfg.LLM.AuthToken = fileCfg.CodeAudit.LLM.AuthToken
 	}
-	if fileCfg.LLM.RequestTimeoutMs > 0 {
-		cfg.LLMTimeoutMs = fileCfg.LLM.RequestTimeoutMs
+	if fileCfg.CodeAudit.LLM.RequestTimeoutMs > 0 {
+		cfg.LLM.TimeoutMs = fileCfg.CodeAudit.LLM.RequestTimeoutMs
 	}
-	if len(fileCfg.LLM.AllowedHosts) > 0 {
-		cfg.LLMAllowedHosts = fileCfg.LLM.AllowedHosts
+	if len(fileCfg.CodeAudit.LLM.AllowedHosts) > 0 {
+		cfg.LLM.AllowedHosts = fileCfg.CodeAudit.LLM.AllowedHosts
 	}
-	if fileCfg.LLM.CircuitBreakerThreshold > 0 {
-		cfg.LLMCircuitBreakerThreshold = fileCfg.LLM.CircuitBreakerThreshold
+	if fileCfg.CodeAudit.LLM.CircuitBreakerThreshold > 0 {
+		cfg.LLM.CircuitBreakerThreshold = fileCfg.CodeAudit.LLM.CircuitBreakerThreshold
 	}
-	if fileCfg.LLM.CooldownSec > 0 {
-		cfg.LLMCooldownSec = fileCfg.LLM.CooldownSec
+	if fileCfg.CodeAudit.LLM.CooldownSec > 0 {
+		cfg.LLM.CooldownSec = fileCfg.CodeAudit.LLM.CooldownSec
 	}
-	if fileCfg.LLM.Model != "" {
-		cfg.LLMModel = fileCfg.LLM.Model
+	if fileCfg.CodeAudit.LLM.Model != "" {
+		cfg.LLM.Model = fileCfg.CodeAudit.LLM.Model
 	}
-	if fileCfg.LLM.Policy != "" {
-		cfg.LLMPolicy = strings.ToLower(strings.TrimSpace(fileCfg.LLM.Policy))
+	if fileCfg.CodeAudit.LLM.Policy != "" {
+		cfg.LLM.Policy = strings.ToLower(strings.TrimSpace(fileCfg.CodeAudit.LLM.Policy))
 	}
 	// nil-guard rather than the "> 0" guard the neighbouring LLM numerics use.
 	// nil means "not configured"; zero is a real sampling value here (greedy
 	// decoding, which is what the audit wants), so a "> 0" guard would make it
 	// impossible to state zero explicitly.
-	if fileCfg.LLM.Temperature != nil {
-		cfg.LLMTemperature = fileCfg.LLM.Temperature
+	if fileCfg.CodeAudit.LLM.Temperature != nil {
+		cfg.LLM.Temperature = fileCfg.CodeAudit.LLM.Temperature
 	}
-	if fileCfg.LLM.FailClosed != nil {
-		cfg.LLMFailClosed = *fileCfg.LLM.FailClosed
+	if fileCfg.CodeAudit.LLM.FailClosed != nil {
+		cfg.LLM.FailClosed = *fileCfg.CodeAudit.LLM.FailClosed
 	}
-	if fileCfg.LLM.Dir != "" {
-		cfg.LLMDir = fileCfg.LLM.Dir
+	if fileCfg.CodeAudit.LLM.Dir != "" {
+		cfg.LLM.Dir = fileCfg.CodeAudit.LLM.Dir
 	}
 }

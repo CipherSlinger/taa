@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/CipherSlinger/teetls"
 	"taa/internal/attestation"
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 	teecrypto "taa/pkg/crypto"
-	"github.com/CipherSlinger/teetls"
 )
 
 // TestDeriveUserDataAndKeyPair 校验国密 SM2 密钥生成与 UserData 派生逻辑：
@@ -85,35 +85,37 @@ func TestBuildSecurityConfig(t *testing.T) {
 	// loader must not get a scan with an engine nobody chose. The loader's own
 	// default is "regex" and is asserted in the config package.
 	cfg := config.StartupConfig{
-		EnableSecurityScan:              true,
-		CodeScanEngine:                  "regex",
-		ModelDir:                        "/opt/taa/models",
-		EnableResultCheck:               true,
-		MaxFileBytes:                    3 * 1024 * 1024 * 1024,
-		MaxResultBytes:                  3 * 1024 * 1024 * 1024,
-		DataDir:                         "/opt/taa/data",
-		ResultDir:                       "/opt/taa/results",
-		ModelInputDir:                   "/opt/taa/models/input",
-		ModelOutputDir:                  "/opt/taa/models/output",
-		ModelLogDir:                     "/opt/taa/models/log",
-		ModelProgressDir:                "/opt/taa/models/progress",
-		EnableLLM:                       true,
-		LLMTransport:                    "teetls",
-		LLMEndpoint:                     "https://127.0.0.1:8443",
-		LLMAttestationMode:              "permissive",
-		LLMHRKCertPath:                  "/path/hrk.cert",
-		LLMHSKCekCertPath:               "/path/hsk.cert",
-		LLMExpectedMeasurements:         []string{"measure-1"},
-		LLMRequireMutualAttest:          true,
-		LLMInsecureSkipVerify:           true,
-		LLMAuthToken:                    "test-secret-token",
-		LLMTimeoutMs:                    60000,
-		LLMAllowedHosts:                 []string{"127.0.0.1", "localhost"},
-		LLMCircuitBreakerThreshold:      5,
-		LLMCooldownSec:                  45,
-		LLMModel:                        "qwen2.5-coder:0.5b",
-		LLMPolicy:                       "strict",
-		LLMFailClosed:                   true,
+		EnableCodeAudit:   true,
+		CodeScanEngine:    "regex",
+		ModelDir:          "/opt/taa/models",
+		EnableResultCheck: true,
+		MaxFileBytes:      3 * 1024 * 1024 * 1024,
+		MaxResultBytes:    3 * 1024 * 1024 * 1024,
+		DataDir:           "/opt/taa/data",
+		ResultDir:         "/opt/taa/results",
+		ModelInputDir:     "/opt/taa/models/input",
+		ModelOutputDir:    "/opt/taa/models/output",
+		ModelLogDir:       "/opt/taa/models/log",
+		ModelProgressDir:  "/opt/taa/models/progress",
+		LLM: config.LLMConfig{
+			Enabled:                 true,
+			Transport:               "teetls",
+			Endpoint:                "https://127.0.0.1:8443",
+			AttestationMode:         "permissive",
+			HRKCertPath:             "/path/hrk.cert",
+			HSKCekCertPath:          "/path/hsk.cert",
+			ExpectedMeasurements:    []string{"measure-1"},
+			RequireMutualAttest:     true,
+			InsecureSkipVerify:      true,
+			AuthToken:               "test-secret-token",
+			TimeoutMs:               60000,
+			AllowedHosts:            []string{"127.0.0.1", "localhost"},
+			CircuitBreakerThreshold: 5,
+			CooldownSec:             45,
+			Model:                   "qwen2.5-coder:0.5b",
+			Policy:                  "strict",
+			FailClosed:              true,
+		},
 		BinaryAuditEnabled:              true,
 		BinaryAuditMaxArchiveMembers:    17,
 		BinaryAuditHighEntropyThreshold: 7.25,
@@ -127,8 +129,8 @@ func TestBuildSecurityConfig(t *testing.T) {
 		t.Fatalf("buildSecurityConfig() error = %v", err)
 	}
 
-	if sec.ScanEnabled != cfg.EnableSecurityScan {
-		t.Errorf("ScanEnabled = %v, want %v", sec.ScanEnabled, cfg.EnableSecurityScan)
+	if sec.ScanEnabled != cfg.EnableCodeAudit {
+		t.Errorf("ScanEnabled = %v, want %v", sec.ScanEnabled, cfg.EnableCodeAudit)
 	}
 	if sec.ModelDir != cfg.ModelDir {
 		t.Errorf("ModelDir = %q, want %q", sec.ModelDir, cfg.ModelDir)
@@ -162,24 +164,24 @@ func TestBuildSecurityConfig(t *testing.T) {
 	}
 
 	wantLLM := codeaudit.LLMConfig{
-		Enabled:                 cfg.EnableLLM,
-		Transport:               cfg.LLMTransport,
-		Endpoint:                cfg.LLMEndpoint,
-		AttestationMode:         cfg.LLMAttestationMode,
-		HRKCertPath:             cfg.LLMHRKCertPath,
-		HSKCekCertPath:          cfg.LLMHSKCekCertPath,
-		ExpectedMeasurements:    cfg.LLMExpectedMeasurements,
-		RequireMutualAttest:     cfg.LLMRequireMutualAttest,
-		InsecureSkipVerify:      cfg.LLMInsecureSkipVerify,
-		AuthToken:               cfg.LLMAuthToken,
-		Model:                   cfg.LLMModel,
+		Enabled:                 cfg.LLM.Enabled,
+		Transport:               cfg.LLM.Transport,
+		Endpoint:                cfg.LLM.Endpoint,
+		AttestationMode:         cfg.LLM.AttestationMode,
+		HRKCertPath:             cfg.LLM.HRKCertPath,
+		HSKCekCertPath:          cfg.LLM.HSKCekCertPath,
+		ExpectedMeasurements:    cfg.LLM.ExpectedMeasurements,
+		RequireMutualAttest:     cfg.LLM.RequireMutualAttest,
+		InsecureSkipVerify:      cfg.LLM.InsecureSkipVerify,
+		AuthToken:               cfg.LLM.AuthToken,
+		Model:                   cfg.LLM.Model,
 		Timeout:                 60 * time.Second,
 		MaxFindings:             0,
-		Policy:                  cfg.LLMPolicy,
-		FailClosed:              cfg.LLMFailClosed,
-		AllowedHosts:            cfg.LLMAllowedHosts,
-		CircuitBreakerThreshold: cfg.LLMCircuitBreakerThreshold,
-		CooldownSec:             cfg.LLMCooldownSec,
+		Policy:                  cfg.LLM.Policy,
+		FailClosed:              cfg.LLM.FailClosed,
+		AllowedHosts:            cfg.LLM.AllowedHosts,
+		CircuitBreakerThreshold: cfg.LLM.CircuitBreakerThreshold,
+		CooldownSec:             cfg.LLM.CooldownSec,
 	}
 	if sec.LLM.Enabled != wantLLM.Enabled {
 		t.Errorf("LLM.Enabled = %v, want %v", sec.LLM.Enabled, wantLLM.Enabled)
@@ -317,7 +319,9 @@ func TestBuildSecurityConfigPassesThroughTemperature(t *testing.T) {
 			cfg := config.StartupConfig{
 				CodeScanEngine: "regex",
 				ModelDir:       "/opt/taa/models",
-				LLMTemperature: tc.given,
+				LLM: config.LLMConfig{
+					Temperature: tc.given,
+				},
 			}
 
 			sec, err := buildSecurityConfig(cfg)
@@ -446,10 +450,12 @@ func TestProbeInferenceService_ContextCancelled(t *testing.T) {
 	cancel()
 
 	cfg := config.StartupConfig{
-		LLMTransport:          "teetls",
-		LLMEndpoint:           "https://127.0.0.1:65534",
-		LLMInsecureSkipVerify: true,
-		LLMTimeoutMs:          3000,
+		LLM: config.LLMConfig{
+			Transport:          "teetls",
+			Endpoint:           "https://127.0.0.1:65534",
+			InsecureSkipVerify: true,
+			TimeoutMs:          3000,
+		},
 	}
 
 	err := probeInferenceService(ctx, cfg)
@@ -471,10 +477,12 @@ func TestProbeInferenceService_HealthyEndpoint(t *testing.T) {
 	defer server.Close()
 
 	cfg := config.StartupConfig{
-		LLMTransport:          "teetls",
-		LLMEndpoint:           server.URL,
-		LLMInsecureSkipVerify: true,
-		LLMTimeoutMs:          3000,
+		LLM: config.LLMConfig{
+			Transport:          "teetls",
+			Endpoint:           server.URL,
+			InsecureSkipVerify: true,
+			TimeoutMs:          3000,
+		},
 	}
 
 	err := probeInferenceService(context.Background(), cfg)
@@ -496,10 +504,12 @@ func TestProbeInferenceService_UnhealthyEndpoint(t *testing.T) {
 	defer server.Close()
 
 	cfg := config.StartupConfig{
-		LLMTransport:          "teetls",
-		LLMEndpoint:           server.URL,
-		LLMInsecureSkipVerify: true,
-		LLMTimeoutMs:          3000,
+		LLM: config.LLMConfig{
+			Transport:          "teetls",
+			Endpoint:           server.URL,
+			InsecureSkipVerify: true,
+			TimeoutMs:          3000,
+		},
 	}
 
 	err := probeInferenceService(context.Background(), cfg)
@@ -525,13 +535,15 @@ func TestRunWithConfig_LLMProbeFailureDoesNotAbortStartup(t *testing.T) {
 	}
 
 	cfg := config.StartupConfig{
-		EnableLLM:             true,
-		LLMFailClosed:         true,
-		LLMTransport:          "teetls",
-		LLMEndpoint:           "https://127.0.0.1:65534",
-		LLMInsecureSkipVerify: true,
-		LLMTimeoutMs:          100,
-		KeysDir:               filepath.Join(blocker, "keys"),
+		LLM: config.LLMConfig{
+			Enabled:            true,
+			FailClosed:         true,
+			Transport:          "teetls",
+			Endpoint:           "https://127.0.0.1:65534",
+			InsecureSkipVerify: true,
+			TimeoutMs:          100,
+		},
+		KeysDir: filepath.Join(blocker, "keys"),
 	}
 
 	err := RunWithConfig(context.Background(), cfg)

@@ -16,7 +16,7 @@
       "progress": "/opt/taa/output/progress/progress.json"
     }
   },
-  "security": {
+  "codeAudit": {
     "codeScan": true,
     "codeScanEngine": "semgrep",
     "semgrepRulesPath": "/opt/taa/semgrep/rules",
@@ -27,21 +27,21 @@
     },
     "binaryAudit": {
       "enabled": true
+    },
+    "llm": {
+      "enabled": true,
+      "transport": "teetls",
+      "endpoint": "https://172.16.10.116:8443",
+      "model": "qwen2.5-coder:7b",
+      "policy": "assist",
+      "failClosed": true,
+      "requestTimeoutMs": 120000,
+      "insecureSkipVerify": true,
+      "attestationMode": "permissive"
     }
   },
   "attestation": {
     "hrkCertPath": "/etc/taa/certs/hrk.cert",
     "hskCekCertPath": "/etc/taa/certs/hsk_cek.cert"
-  },
-  "llm": {
-    "enabled": true,
-    "transport": "teetls",
-    "endpoint": "https://172.16.10.116:8443",
-    "model": "qwen2.5-coder:7b",
-    "policy": "assist",
-    "failClosed": true,
-    "requestTimeoutMs": 120000,
-    "insecureSkipVerify": true,
-    "attestationMode": "permissive"
   }
 }

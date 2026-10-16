@@ -187,7 +187,7 @@ sequenceDiagram
 | `-config` | 空 | 配置文件路径；留空则用 `taa-config.json`（相对当前工作目录，即容器内的 `/root/taa/`） |
 | `-addr` | 空 | HTTP 监听地址，**覆盖**配置文件里的 `server.addr` |
 
-配置文件分 7 段：`server` / `platform` / `storage` / `model` / `security` / `attestation` / `llm`，
+配置文件分 6 段：`server` / `platform` / `storage` / `model` / `codeAudit` / `attestation`，
 模板见 `configs/taa-docker.json`（本地容器）与 `configs/taa-production.json`（生产 Pod），
 字段含义见 `README.md` 的配置说明。
 

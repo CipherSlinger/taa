@@ -134,7 +134,7 @@ READY_TIMEOUT="${READY_TIMEOUT:-120}"
 READY_INTERVAL="${READY_INTERVAL:-2}"
 
 # Semgrep payload for the code scan engine. TAA resolves the engine fail-closed: with
-# security.codeScanEngine=semgrep the rules path must exist or the daemon exits FATAL at startup
+# codeAudit.codeScanEngine=semgrep the rules path must exist or the daemon exits FATAL at startup
 # and the supervisor restarts it every 10s. The kata pod image ships python3 and tar but neither
 # the semgrep CLI nor any rules, so a remote deploy has to provision both.
 # The engine runtime is a fixed third-party payload and travels as an archive that is expected to
@@ -974,7 +974,7 @@ import json, sys
 try:
     with open(sys.argv[1], "r", encoding="utf-8") as f:
         data = json.load(f)
-    model = (data.get("llm") or {}).get("model")
+    model = ((data.get("codeAudit") or {}).get("llm") or {}).get("model")
     if model and isinstance(model, str) and model.strip():
         print(model.strip())
 except Exception:
@@ -998,9 +998,9 @@ import json, sys
 try:
     with open(sys.argv[1], "r", encoding="utf-8") as f:
         cfg = json.load(f)
-    security = cfg.get("security") or {}
-    engine = security.get("codeScanEngine") or ""
-    rules = security.get("semgrepRulesPath") or ""
+    code_audit = cfg.get("codeAudit") or {}
+    engine = code_audit.get("codeScanEngine") or ""
+    rules = code_audit.get("semgrepRulesPath") or ""
     if isinstance(engine, str) and isinstance(rules, str):
         print("%s %s" % (engine.strip(), rules.strip()))
 except Exception:
@@ -1100,9 +1100,9 @@ provision_remote_scan_engine() {
   fi
 
   if [[ -z "$rules_path" ]]; then
-    err "security.semgrepRulesPath is empty in $(basename "$template") but security.codeScanEngine=semgrep"
+    err "codeAudit.semgrepRulesPath is empty in $(basename "$template") but codeAudit.codeScanEngine=semgrep"
     detail "Without it taa falls back to its built-in path relative to the working directory, which does not exist in the container."
-    detail "Set security.semgrepRulesPath (the shipped templates use $CONTAINER_TAA_CONFIG_PATH's directory, e.g. /opt/taa/semgrep/rules)."
+    detail "Set codeAudit.semgrepRulesPath (the shipped templates use $CONTAINER_TAA_CONFIG_PATH's directory, e.g. /opt/taa/semgrep/rules)."
     exit 1
   fi
 
@@ -1276,7 +1276,7 @@ for key in ("securityScan", "resultCheck", "maxFileBytes", "maxResultBytes"):
     if key in cfg and not isinstance(cfg[key], dict):
         cfg.pop(key, None)
 
-llm = cfg.setdefault("llm", {})
+llm = cfg.setdefault("codeAudit", {}).setdefault("llm", {})
 if llm_endpoint:
     llm["endpoint"] = llm_endpoint
 if llm_model:

@@ -190,7 +190,7 @@ step "preflight checks"
 require_command() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 require_command docker
 # The engine reaches the daemon through a config template derived on the host, because
-# write_taa_config copies the security block verbatim and a config patched into the
+# write_taa_config copies the codeAudit block verbatim and a config patched into the
 # container afterwards would need a second daemon restart to take effect.
 require_command python3
 docker info >/dev/null 2>&1 || die "docker daemon is not running or accessible"
@@ -364,7 +364,7 @@ fi
 
 # ── 3b. Deriving the TAA config template ─────────────────────
 # Both arms derive, because the config the image boots with has to name the engine the
-# image carries. write_taa_config copies the security block verbatim, so the engine key
+# image carries. write_taa_config copies the codeAudit block verbatim, so the engine key
 # reaches the daemon from whichever template deploy.sh is handed -- and a deployment that
 # names an engine it does not carry fails there, at startup: buildSecurityConfig resolves
 # the engine and a missing rules path is an error rather than a degraded scan. Deriving it
@@ -376,10 +376,10 @@ import json, sys
 src, dst, engine, rules = sys.argv[1:5]
 with open(src, "r", encoding="utf-8") as f:
     cfg = json.load(f)
-security = cfg.setdefault("security", {})
-security["codeScanEngine"] = engine
+code_audit = cfg.setdefault("codeAudit", {})
+code_audit["codeScanEngine"] = engine
 if engine == "semgrep":
-    security["semgrepRulesPath"] = rules
+    code_audit["semgrepRulesPath"] = rules
 with open(dst, "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2)
     f.write("\n")
