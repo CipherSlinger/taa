@@ -19,7 +19,14 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # every path below assumes.
 HANDOFF_DIR="${HANDOFF_DIR:-$PROJECT_DIR/latti-fhe-handoff}"
 FHE_IMAGE="${FHE_IMAGE:-latti/latti-server:latest}"
-FHE_IMAGE_ARCHIVE="${FHE_IMAGE_ARCHIVE:-$HANDOFF_DIR/image/latti-server-latest.tar.gz}"
+# The archive the bundle ships, named once: it is both the default for
+# FHE_IMAGE_ARCHIVE and the file the bundle's own SHA256SUMS entry covers, and the
+# verification step below has to tell the two apart without them drifting.
+BUNDLE_IMAGE_ARCHIVE="$HANDOFF_DIR/image/latti-server-latest.tar.gz"
+FHE_IMAGE_ARCHIVE="${FHE_IMAGE_ARCHIVE:-$BUNDLE_IMAGE_ARCHIVE}"
+# Expected digest for an archive the bundle does not ship; empty means the
+# operator vouched for neither and the verification step says so.
+FHE_IMAGE_ARCHIVE_SHA256="${FHE_IMAGE_ARCHIVE_SHA256:-}"
 FHE_MODEL_ID="${FHE_MODEL_ID:-cifar10}"
 
 # ── TAA side ─────────────────────────────────────────────────────────────────
@@ -204,7 +211,15 @@ Environment:
   FHE_IMAGE=${FHE_IMAGE}
       Image tag the handoff archive is loaded as.
   FHE_IMAGE_ARCHIVE=${FHE_IMAGE_ARCHIVE}
-      Archive verified and then loaded by 'docker load'.
+      Archive loaded by 'docker load'. Defaults to the archive the bundle ships,
+      which is verified against the bundle's SHA256SUMS first. An archive the
+      bundle does not ship is not covered by those manifests: give its digest
+      below, or the run warns that it is loading this one unverified.
+  FHE_IMAGE_ARCHIVE_SHA256=${FHE_IMAGE_ARCHIVE_SHA256}
+      Expected sha256 of FHE_IMAGE_ARCHIVE. Set it when FHE_IMAGE_ARCHIVE names a
+      self-built or pulled image, and the archive is verified against this digest
+      the way the bundle's own archive is verified against SHA256SUMS. A mismatch
+      fails the run in both cases.
   FHE_MODEL_ID=${FHE_MODEL_ID}
       Model activated on the stack before a task can run.
   TAA_IMAGE=${TAA_IMAGE}
@@ -284,6 +299,11 @@ HOST_REDIS_DIR="${HOST_REDIS_DIR:-$HOST_DATA_DIR/redis}"
 # then hangs until taskTimeoutMs.
 export HOST_DATA_DIR HOST_RUNTIME_DIR HOST_REDIS_DIR API_HOST_PORT
 
+NODE_DOCKER_DIR="$HANDOFF_DIR/deploy/docker"
+# Resolved exactly the way run-node.sh resolves it, so the report below reads the
+# file the stack is going to read and not just the one next to it.
+NODE_ENV_FILE="${NODE_LOCAL_ENV_FILE:-$NODE_DOCKER_DIR/env/node.local.env}"
+
 # Same problem, two names nobody had checked. NODE_ID_OVERRIDE and
 # NODE_IP_OVERRIDE are on run-node.sh's restore list and env/node.local.env sets
 # both -- NODE_ID_OVERRIDE=local and NODE_IP_OVERRIDE=172.16.10.178, the FHE
@@ -295,13 +315,59 @@ export HOST_DATA_DIR HOST_RUNTIME_DIR HOST_REDIS_DIR API_HOST_PORT
 # in this script's environment and the export passes it through. The report below
 # names the divergence when the env file disagrees.
 NODE_ID_OVERRIDE="${NODE_ID_OVERRIDE:-$(hostname -s 2>/dev/null || true)}"
-NODE_IP_OVERRIDE="${NODE_IP_OVERRIDE:-$(hostname -I 2>/dev/null | awk '{print $1}' || true)}"
+# A derivation that yields nothing has to export nothing. run-node.sh's restore
+# rule is `[[ -v $name ]]`, so a set-but-empty exported value wins over the env
+# file's exactly as a good one does: exporting an empty NODE_IP_OVERRIDE is what
+# turned NODE_API_URL into "http://:58996". Unset instead, which leaves the env
+# file's value in force -- the honest outcome of "this run could not derive one".
+if [ -z "$NODE_ID_OVERRIDE" ]; then
+  warn "'hostname -s' reported no name, so NODE_ID_OVERRIDE is not exported and $NODE_ENV_FILE decides it"
+  unset NODE_ID_OVERRIDE
+fi
+# The address needs more than "not empty". 'hostname -I' lists every address the
+# host has in no documented order, and its first field is regularly an IPv6
+# address or the docker0 bridge (172.17.0.0/16) -- neither of which the platform
+# can reach at NODE_API_URL, so taking the first unconditionally advertises an
+# address that never answers. A candidate therefore has to look like an IPv4
+# dotted quad, a non-bridge candidate is preferred over a bridge one, and what was
+# chosen and what was passed over are both named below.
+if [ -z "${NODE_IP_OVERRIDE:-}" ]; then
+  NODE_IP_OVERRIDE=""
+  node_ip_all="$(hostname -I 2>/dev/null || true)"
+  node_ip_skipped=""
+  node_ip_bridge=""
+  for node_ip in $node_ip_all; do
+    if ! printf '%s' "$node_ip" \
+         | grep -Eq '^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$'; then
+      node_ip_skipped="${node_ip_skipped:+$node_ip_skipped }$node_ip (not an IPv4 dotted quad)"
+      continue
+    fi
+    case "$node_ip" in
+      172.17.*)
+        node_ip_bridge="${node_ip_bridge:-$node_ip}"
+        node_ip_skipped="${node_ip_skipped:+$node_ip_skipped }$node_ip (Docker bridge)"
+        continue
+        ;;
+    esac
+    NODE_IP_OVERRIDE="$node_ip"
+    break
+  done
+  # A host whose only IPv4 address is the bridge is still better identified by
+  # that than by the env file's address, which names a different machine.
+  if [ -z "$NODE_IP_OVERRIDE" ]; then
+    NODE_IP_OVERRIDE="$node_ip_bridge"
+  fi
+  if [ -z "$NODE_IP_OVERRIDE" ]; then
+    warn "'hostname -I' reported no usable IPv4 address (${node_ip_all:-no output}), so NODE_IP_OVERRIDE is not exported and $NODE_ENV_FILE decides it"
+    unset NODE_IP_OVERRIDE
+  elif [ "$NODE_IP_OVERRIDE" = "$node_ip_bridge" ]; then
+    warn "NODE_IP_OVERRIDE=$NODE_IP_OVERRIDE, but every IPv4 address 'hostname -I' reported (${node_ip_all:-no output}) is a Docker bridge, which the platform cannot reach; set NODE_IP_OVERRIDE to the address it should use"
+  elif [ -n "$node_ip_skipped" ]; then
+    warn "NODE_IP_OVERRIDE=$NODE_IP_OVERRIDE, chosen from 'hostname -I' (${node_ip_all:-no output}); passed over $node_ip_skipped"
+  fi
+fi
 export NODE_ID_OVERRIDE NODE_IP_OVERRIDE
 
-NODE_DOCKER_DIR="$HANDOFF_DIR/deploy/docker"
-# Resolved exactly the way run-node.sh resolves it, so the report below reads the
-# file the stack is going to read and not just the one next to it.
-NODE_ENV_FILE="${NODE_LOCAL_ENV_FILE:-$NODE_DOCKER_DIR/env/node.local.env}"
 # The rendered config is written here on the host, to a mode-600 file that the
 # data directory's owner can inspect, and then copied into the container at the
 # path taa reads by default (TAA_CONTAINER_CONFIG_PATH). It used to be consumed in
@@ -376,14 +442,18 @@ report_stack_binding() {
   # silent override rather than a reported one. Unlike the four above, a value the
   # env file carries here is worth a WARNING: the bundle's 172.16.10.178 is not
   # this host, and an operator reading the banner should see that this run did not
-  # adopt it.
+  # adopt it. A name the derivation above could not produce is not exported at
+  # all, and then the env file's value is what runs -- said here rather than in
+  # the branch below, which would otherwise report an override that never happened.
   for name in NODE_ID_OVERRIDE NODE_IP_OVERRIDE; do
-    want="${!name}"
+    want="${!name:-}"
     got=""
     if [ -f "$NODE_ENV_FILE" ]; then
       got="$(read_env_path "$NODE_ENV_FILE" "$name")"
     fi
-    if [ -n "$got" ] && [ "$got" != "$want" ]; then
+    if [ -z "$want" ]; then
+      log "$name is not exported by this run ($NODE_ENV_FILE carries ${got:-none}), so the env file decides it"
+    elif [ -n "$got" ] && [ "$got" != "$want" ]; then
       warn "$NODE_ENV_FILE carries $name=$got, which this run overrides with $name='$want'; run-node.sh keeps the exported value, so the stack registers as ${want:-the host default}, not $got"
     else
       log "$name=${want} (the value $NODE_ENV_FILE carries: ${got:-none})"
@@ -406,17 +476,27 @@ report_stack_binding() {
 #
 # $1 is the name SHA256SUMS uses; $2, when given, is the file to hash, so a
 # caller whose artifact path is overridable can make the checksum cover the file
-# that is actually consumed instead of the one it defaulted to.
+# that is actually consumed instead of the one it defaulted to; $3, when given, is
+# a digest the caller vouches for, and it is matched instead of the SHA256SUMS
+# entry -- for an artifact the bundle's manifests do not cover.
 verify_one() {
-  local rel="$1" file="${2:-$HANDOFF_DIR/$1}" want got
+  local rel="$1" file="${2:-$HANDOFF_DIR/$1}" expected="${3:-}" want got
   if is_dry_run; then
-    log "would verify $rel against SHA256SUMS"
+    if [ -n "$expected" ]; then
+      log "would verify $rel against the expected digest"
+    else
+      log "would verify $rel against SHA256SUMS"
+    fi
     return 0
   fi
-  [ -f "$HANDOFF_DIR/SHA256SUMS" ] || die "no SHA256SUMS in $HANDOFF_DIR"
+  if [ -n "$expected" ]; then
+    want="$expected"
+  else
+    [ -f "$HANDOFF_DIR/SHA256SUMS" ] || die "no SHA256SUMS in $HANDOFF_DIR"
+    want="$(awk -v f="$rel" '$2 == f || $2 == "*"f {print $1}' "$HANDOFF_DIR/SHA256SUMS")"
+    [ -n "$want" ] || die "SHA256SUMS has no entry for $rel"
+  fi
   [ -f "$file" ] || die "missing artifact: $file"
-  want="$(awk -v f="$rel" '$2 == f || $2 == "*"f {print $1}' "$HANDOFF_DIR/SHA256SUMS")"
-  [ -n "$want" ] || die "SHA256SUMS has no entry for $rel"
   got="$(sha256sum "$file" | awk '{print $1}')"
   [ "$got" = "$want" ] || die "checksum mismatch for $rel ($file): got $got want $want"
   log "verified $rel"
@@ -621,7 +701,26 @@ step "verifying the bundle artifacts this deployment consumes"
 # daemon, and until it verifies nothing of it should be. FHE_IMAGE_ARCHIVE is
 # overridable, so the checksum is taken over the file that gets loaded: verifying
 # the default while loading an override verifies nothing about what runs.
-verify_one image/latti-server-latest.tar.gz "$FHE_IMAGE_ARCHIVE"
+#
+# Which digest it can be taken against depends on which archive it is. The
+# bundle's own archive is covered by the SHA256SUMS the bundle ships, and that
+# check stays exactly as it was. An archive the bundle does not ship -- a
+# self-built or pulled image, which is what the override is for -- is not in those
+# manifests, and holding it to another archive's digest rejects it for merely
+# differing. So it is verified against FHE_IMAGE_ARCHIVE_SHA256 when the operator
+# supplies one, and otherwise loaded unverified with a warning that names the
+# check that did not happen: a silent skip is what this whole step exists to
+# prevent.
+if same_path "$FHE_IMAGE_ARCHIVE" "$BUNDLE_IMAGE_ARCHIVE"; then
+  verify_one image/latti-server-latest.tar.gz "$FHE_IMAGE_ARCHIVE"
+elif [ -n "$FHE_IMAGE_ARCHIVE_SHA256" ]; then
+  verify_one image/latti-server-latest.tar.gz "$FHE_IMAGE_ARCHIVE" "$FHE_IMAGE_ARCHIVE_SHA256"
+else
+  warn "FHE_IMAGE_ARCHIVE=$FHE_IMAGE_ARCHIVE is not the archive this bundle ships ($BUNDLE_IMAGE_ARCHIVE), so it is NOT covered by $HANDOFF_DIR/SHA256SUMS; set FHE_IMAGE_ARCHIVE_SHA256=<sha256> to have it verified"
+  if ! is_dry_run; then
+    [ -f "$FHE_IMAGE_ARCHIVE" ] || die "missing artifact: $FHE_IMAGE_ARCHIVE"
+  fi
+fi
 # This one covers third_party/latti-ai-runtime.tar.gz, while the staging step
 # rsyncs third_party/latti-ai-runtime/ -- the unpacked directory beside it, which
 # SHA256SUMS carries no checksum for. Unpacking the verified tarball here would be
