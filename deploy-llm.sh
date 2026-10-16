@@ -226,15 +226,8 @@ require_command() {
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEELLM_DIR="${TEELLM_DIR:-$PROJECT_DIR/teellm}"
 
-# Docker runtime settings
-# The TEE-LLM service runs in its own container, separate from TAA, so that the two
-# processes no longer share a network namespace: TAA reaches the gateway by container
-# IP instead of 127.0.0.1.
-LOCAL_DOCKER_CONTAINER="${LOCAL_DOCKER_CONTAINER:-taa-teellm}"
-# Container targeted by remote-docker mode. Every container-specific path below
-# ($CON_WORKDIR, $CONTAINER_OLLAMA_DIR) describes that container too, since the layout inside
-# a TAA environment container does not depend on where its daemon runs.
-REMOTE_DOCKER_CONTAINER="${REMOTE_DOCKER_CONTAINER:-taa-env-slim-v2}"
+# Paths inside the TEE-LLM Pod. The layout does not depend on the target: it is the same
+# /root/taa tree the teellm submodule's deploy/start.sh expects.
 CON_WORKDIR="${CON_WORKDIR:-/root/taa}"
 CONTAINER_OLLAMA_DIR="${CONTAINER_OLLAMA_DIR:-/root/taa/ollama}"
 # Older image revisions ship the same ollama bundle under this name. It carries the identical
@@ -265,12 +258,9 @@ PASSWORD="${TARGET_PASSWORD:-${PASSWORD:-Osrd@2026}}"
 REMOTE_DIR="${REMOTE_DIR:-/root/taa}"
 OLLAMA_DIR_NAME="$(basename "$CONTAINER_OLLAMA_DIR")"
 REMOTE_OLLAMA_DIR="${REMOTE_OLLAMA_DIR:-$REMOTE_DIR/$OLLAMA_DIR_NAME}"
-# Staging area on the remote host for files that have to be copied into a remote container:
-# docker cp resolves both of its arguments on the daemon's host, so uploads land here first.
-REMOTE_STAGE_DIR="${REMOTE_STAGE_DIR:-$REMOTE_DIR/stage}"
 K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
 
-# ── Dedicated TEE-LLM Pod (remote target) ─────────────────────
+# ── Dedicated TEE-LLM Pod ─────────────────────────────────────
 # The TEE-LLM service needs /dev/csv-guest to produce a real CSV attestation; a plain docker
 # container has no such device, so teellm-service falls back to a mock evidence provider whose HRK
 # changes on every start, and TAA rejects the handshake with "untrusted HRK certificate". A
@@ -325,57 +315,6 @@ container_cp() {
   echo "kubectl $K_NS cp '$1' '$TARGET_POD':'$2'"
 }
 
-# ── Container Target Abstraction ──────────────────────────────
-# Two targets deploy the TEE-LLM service into a plain container: the local docker daemon
-# (docker mode) and the docker daemon on the remote host (remote-docker mode, which is how the
-# service gets into a TAA environment container such as taa-env-slim-v2 on 172.16.10.178).
-# TARGET_CONTAINER names the container in both cases and REMOTE_CONTAINER_MODE says which
-# daemon owns it, so the deployment body below is written once and runs against either.
-
-# Quotes one argument so a POSIX shell re-parses it as a single word. Single-quote escaping is
-# used rather than printf's %q because scripts handed to `sh -lc` can span several lines, and %q
-# would encode those with bash-only ANSI-C quoting.
-shq() {
-  printf "'%s'" "${1//\'/\'\\\'\'}"
-}
-
-# Runs a docker subcommand against the target daemon. In remote-docker mode every argument is
-# re-quoted and handed to the remote shell, which keeps multi-word `sh -lc` scripts intact
-# across the SSH hop; stdin and stdout stay connected, so tar streams keep working.
-dk() {
-  if [[ "$REMOTE_CONTAINER_MODE" != true ]]; then
-    docker "$@"
-    return
-  fi
-  local quoted="" arg
-  for arg in "$@"; do
-    quoted+=" $(shq "$arg")"
-  done
-  remote_ssh "docker$quoted"
-}
-
-# Copies a local file into the target container at path $2. In remote-docker mode the daemon
-# resolves paths on the remote host, so the file is uploaded to $REMOTE_STAGE_DIR first and
-# copied into the container from there; $3 optionally names the staged copy, which keeps
-# temporary local names (mktemp) out of the remote host's staging directory.
-ctr_cp_in() {
-  local local_path="$1" container_path="$2" staged_name="${3:-$(basename "$1")}"
-  if [[ "$REMOTE_CONTAINER_MODE" != true ]]; then
-    docker cp "$local_path" "$TARGET_CONTAINER:$container_path"
-    return
-  fi
-  local staged="$REMOTE_STAGE_DIR/$staged_name"
-  remote_ssh "mkdir -p '$REMOTE_STAGE_DIR'"
-  sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$local_path" "${REMOTE_USER}@${REMOTE_HOST}:$staged"
-  remote_ssh "docker cp '$staged' '$TARGET_CONTAINER:$container_path'"
-}
-
-# Streams the files named in $2 (paths relative to $1) directly into $3 inside the target
-# container, so multi-GB model weights never have to fit on disk anywhere in between.
-stream_files_into_container() {
-  tar -b 1024 -C "$1" -cf - -T "$2" | dk exec -i "$TARGET_CONTAINER" tar -xf - -C "$3"
-}
-
 # llama-server links against the soname forms of its libraries (libllama-common.so.0,
 # libllama.so.0, libmtmd.so.0, libggml.so.0, libggml-base.so.0) and carries RUNPATH=$ORIGIN,
 # so the loader looks for those exact names next to the binary. The offline ollama bundle
@@ -403,9 +342,6 @@ SONAME_FIX
 }
 
 ensure_remote_ssh() {
-  if [[ "$DEPLOY_DOCKER" == true ]]; then
-    return 0
-  fi
   if [[ -z "$PASSWORD" ]]; then
     read -rsp "Password for ${REMOTE_USER}@${REMOTE_HOST}: " PASSWORD
     echo
@@ -422,9 +358,6 @@ remote_ssh() {
 }
 
 check_remote_connectivity() {
-  if [[ "$DEPLOY_DOCKER" == true ]]; then
-    return 0
-  fi
   ensure_remote_ssh
   if ! sshpass -p "$PASSWORD" ssh "${SSH_OPTS[@]}" -o ConnectTimeout=5 "${REMOTE_USER}@${REMOTE_HOST}" "true" 2>/dev/null; then
     err "cannot connect to remote host ${REMOTE_USER}@${REMOTE_HOST} via SSH (timeout or authentication failed)"
@@ -435,9 +368,6 @@ check_remote_connectivity() {
 }
 
 check_remote_pod() {
-  if [[ "$DEPLOY_DOCKER" == true ]]; then
-    return 0
-  fi
   if ! remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
     err "target pod '$TARGET_POD' not found in namespace '${TARGET_NAMESPACE:-default}' on remote host"
     detail "Please check TARGET_POD or run 'kubectl get pods -n ${TARGET_NAMESPACE:-default}' on remote host."
@@ -446,7 +376,7 @@ check_remote_pod() {
   info "remote target pod verified: ${TARGET_POD} (namespace: ${TARGET_NAMESPACE:-default})"
 }
 
-# ── Dedicated TEE-LLM Pod lifecycle (remote target) ───────────
+# ── Dedicated TEE-LLM Pod lifecycle ───────────────────────────
 
 # Reads the cc_init_data annotation off a CoCo Pod that already runs on the remote host. The
 # guest's CDH needs it to trust the local registry's self-signed certificate when it pulls the
@@ -599,117 +529,6 @@ ensure_go_compiler() {
     err "go compiler is required but not found in PATH"
     exit 1
   fi
-}
-
-# Verifies the target container exists and is running. It never creates one: in docker mode the
-# container comes from a packaged image, and in remote-docker mode it is the environment
-# container already running on the remote host.
-ensure_target_container() {
-  local where="local docker daemon"
-  if [[ "$REMOTE_CONTAINER_MODE" == true ]]; then
-    where="docker daemon on ${REMOTE_USER}@${REMOTE_HOST}"
-  fi
-
-  step "checking container on $where: $TARGET_CONTAINER"
-  if dk ps --format '{{.Names}}' | grep -Eq "^${TARGET_CONTAINER}\$"; then
-    info "container is currently running: $TARGET_CONTAINER"
-  elif dk ps -a --format '{{.Names}}' | grep -Eq "^${TARGET_CONTAINER}\$"; then
-    info "starting stopped container: $TARGET_CONTAINER"
-    dk start "$TARGET_CONTAINER" >/dev/null
-  else
-    err "docker container '$TARGET_CONTAINER' does not exist on $where"
-    detail "Please start or load the container image first (e.g. via taa deploy.sh docker start)."
-    exit 1
-  fi
-
-  # Mark manual flag to avoid port conflict from legacy image scripts
-  dk exec -i "$TARGET_CONTAINER" sh -lc "mkdir -p '$CON_WORKDIR' && touch '$CON_WORKDIR/manual-teellm'" >/dev/null 2>&1 || true
-}
-
-# Echoes "<image> <status> <ip>" for the target container. Empty fields are left blank, and a
-# host-networked container reports no IP at all.
-container_facts() {
-  local raw image status ip
-  raw="$(dk inspect -f '{{.Config.Image}} {{.State.Status}} {{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$TARGET_CONTAINER" 2>/dev/null | head -n 1)"
-  image="${raw%% *}"
-  raw="${raw#* }"
-  status="${raw%% *}"
-  ip="$(printf '%s' "${raw#* }" | tr -d ' \n')"
-  printf '%s %s %s\n' "$image" "$status" "$ip"
-}
-
-# Prints the target container and its gateway endpoints, then the values a follow-up taa
-# deployment needs. TAA reaches the gateway either by container IP (separate containers on the
-# same host) or over loopback (same network namespace), so both endpoints are printed.
-print_container_summary() {
-  local where="$1" image status ip
-  read -r image status ip < <(container_facts)
-
-  echo -e "  ${BOLD}${CYAN}● Target Container${NC}  ${DIM}(${where})${NC}"
-  echo -e "    ${MUTED}↳ Container  :${NC} ${BOLD}${TARGET_CONTAINER}${NC}${status:+ ${DIM}(${status})${NC}}"
-  [[ -n "$image" ]] && echo -e "    ${MUTED}↳ Image      :${NC} ${image}"
-  if [[ -n "$ip" ]]; then
-    echo -e "    ${MUTED}↳ Container IP:${NC} ${ip}"
-  else
-    echo -e "    ${MUTED}↳ Network    :${NC} host (no container IP; gateway binds on the host itself)"
-  fi
-  echo -e "    ${MUTED}↳ Endpoint (inside the container)     :${NC} ${BOLD}https://127.0.0.1:${TEELLM_PORT}${NC}"
-  echo -e "    ${MUTED}↳ Endpoint (host / other containers)  :${NC} ${BOLD}https://${ip:-127.0.0.1}:${TEELLM_PORT}${NC}"
-  echo -e "    ${MUTED}↳ Config     :${NC} ${CON_WORKDIR}/configs/teellm-docker.json"
-  echo -e "    ${MUTED}↳ Log file   :${NC} ${TEELLM_LOG_FILE}"
-  echo ""
-  echo -e "  ${BOLD}${CYAN}● Ollama / Qwen Engine${NC}  ${DIM}(In-Container Daemon)${NC}"
-  echo -e "    ${MUTED}↳ Endpoint   :${NC} ${BOLD}http://${OLLAMA_HOST}${NC}"
-  echo -e "    ${MUTED}↳ Model      :${NC} ${PURPLE}${OLLAMA_MODEL}${NC}"
-  echo -e "    ${MUTED}↳ Path       :${NC} ${TARGET_CONTAINER}:${CONTAINER_OLLAMA_DIR}"
-  echo -e "    ${MUTED}↳ Log file   :${NC} ${OLLAMA_LOG_FILE}"
-  echo ""
-  echo -e "  ${BOLD}${CYAN}● Next: deploy taa against this container${NC}"
-  echo -e "    ${MUTED}↳ TAA_LLM_ENDPOINT, taa sharing the container:${NC} ${BOLD}https://127.0.0.1:${TEELLM_PORT}${NC}"
-  echo -e "    ${MUTED}↳ TAA_LLM_ENDPOINT, taa elsewhere on the host:${NC} ${BOLD}https://${ip:-127.0.0.1}:${TEELLM_PORT}${NC}"
-  if [[ "$REMOTE_CONTAINER_MODE" == true ]]; then
-    echo -e "    ${MUTED}↳ Shell      :${NC} ssh ${REMOTE_USER}@${REMOTE_HOST} 'docker exec -it ${TARGET_CONTAINER} bash'"
-    echo -e "    ${MUTED}↳ Re-probe   :${NC} $(basename "$0") remote-docker probe"
-  else
-    echo -e "    ${MUTED}↳ Shell      :${NC} docker exec -it ${TARGET_CONTAINER} bash"
-    echo -e "    ${MUTED}↳ Re-probe   :${NC} $(basename "$0") docker probe"
-  fi
-  echo ""
-}
-
-# ── Pod Reachability ──────────────────────────────────────────
-# Cluster pod network that has to reach the gateway. 10.244.0.0/16 is kube-flannel's default and
-# what the TAA pods on 172.16.10.178 use.
-POD_CIDR="${POD_CIDR:-10.244.0.0/16}"
-
-# Allows the pod network to reach the gateway's published port on the host. A bridge-networked
-# container is not reachable from outside the docker bridges by default: docker installs
-# `-A DOCKER ! -i docker0 -o docker0 -j DROP` in FORWARD, and publishing a port only adds an
-# ACCEPT for traffic addressed to the host, not for traffic forwarded to the container's own IP.
-# TAA runs in a pod, so without this rule its calls to https://<container ip>:<port> are dropped
-# silently -- measured on 172.16.10.178 by watching the drop rule's packet counter climb.
-#
-# The rule is not persistent: it lives until the host reboots (or until something flushes FORWARD),
-# so it is re-checked on every deploy rather than assumed.
-allow_pod_access_to_container() {
-  local ip="$1"
-  if [[ -z "$ip" ]]; then
-    info "container is on the host network; pods reach it on the host address, no FORWARD rule needed"
-    return 0
-  fi
-  local rule="-s $POD_CIDR -d $ip/32 -p tcp --dport $TEELLM_PORT -j ACCEPT"
-  if remote_ssh "iptables -C FORWARD $rule 2>/dev/null"; then
-    info "pod access to $ip:$TEELLM_PORT already allowed"
-    return 0
-  fi
-  if remote_ssh "iptables -I FORWARD 1 $rule"; then
-    info "allowed $POD_CIDR -> $ip:$TEELLM_PORT (iptables FORWARD; lost on reboot)"
-    return 0
-  fi
-  # Not fatal: a host that routes the pod network differently still works, and the deploy should
-  # not fail over a rule the operator may prefer to add through their own firewall management.
-  warn "could not add the FORWARD rule for $POD_CIDR -> $ip:$TEELLM_PORT"
-  detail "If taa runs in a pod on ${REMOTE_HOST}, add it there as root: iptables -I FORWARD 1 $rule"
 }
 
 # ── Ollama Discovery, Binary Check & Artifact Resolver ─────────
@@ -917,12 +736,7 @@ resolve_target_model() {
     printf '%s' "$OLLAMA_MODEL"
     return 0
   fi
-  local cfg_file
-  if [[ "$DEPLOY_DOCKER" == true ]]; then
-    cfg_file="${TEELLM_CONFIG_PATH:-$TEELLM_DIR/configs/teellm-docker.json}"
-  else
-    cfg_file="${TEELLM_CONFIG_PATH:-$TEELLM_DIR/configs/teellm-production.json}"
-  fi
+  local cfg_file="${TEELLM_CONFIG_PATH:-$TEELLM_DIR/configs/teellm-production.json}"
   if [[ -f "$cfg_file" ]]; then
     local m
     m=$(python3 -c 'import sys, json; print((json.load(open(sys.argv[1])) or {}).get("backend", {}).get("defaultModel", ""))' "$cfg_file" 2>/dev/null || true)
@@ -1618,8 +1432,7 @@ PY
       done <<< "$switch_output"
       echo ""
       echo -e "${BOLD}Next steps to deploy with ${model_arg}:${NC}"
-      echo "  Deploy to local Docker:      ./deploy-llm.sh docker start"
-      echo "  Deploy to remote Kubernetes: ./deploy-llm.sh remote start"
+      echo "  Deploy: ./deploy-llm.sh --create-pod start"
       ;;
     *)
       err "unknown models subcommand: $subcmd"
@@ -1633,44 +1446,34 @@ PY
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [docker|remote-docker|remote] [start|stop|probe|pod-down] [options]
+Usage: $(basename "$0") [start|stop|probe|pod-down] [options]
        $(basename "$0") models [list|info|switch] [args]
 
-Deploy and manage standalone TEE-LLM inference service and offline Ollama runtime.
+Deploy and manage the standalone TEE-LLM inference service and its offline Ollama runtime in a
+Kata CSV2 Kubernetes Pod.
 
 Model Management Commands:
   models list                  List available models and active selection.
   models info <model>          Display detailed profile and blob readiness for a model.
   models switch <model>        Verify and switch active model across configurations.
 
-Targets:
-  docker       Deploy to a local Docker container (default, container: $LOCAL_DOCKER_CONTAINER).
-  remote-docker
-               Deploy to a Docker container on the remote host over SSH
-               (default container: $REMOTE_DOCKER_CONTAINER on ${REMOTE_USER}@${REMOTE_HOST}).
-  remote       Deploy to remote Kubernetes Pod / host via SSH and kubectl.
-
 Actions:
   start        Build binary, incrementally sync model & runtime, start daemons, and verify (default).
-  stop         Stop target services (teellm-service, ollama, llama-server).
-  probe        Probe target TEE-LLM HTTPS endpoint for RFC 8998 TEE-TLS 1.3 readiness.
-  pod-down     Delete the dedicated TEE-LLM Pod (remote target; see --create-pod).
+  stop         Stop the Pod's services (teellm-service, ollama, llama-server).
+  probe        Probe the TEE-LLM HTTPS endpoint for RFC 8998 TEE-TLS 1.3 readiness.
+  pod-down     Delete the dedicated TEE-LLM Pod (see --create-pod).
 
 Options:
   --model <name> (or --model=<name>)
       Specify target LLM model name (default: qwen2.5-coder:3b).
   --ollama-dir <path> (or --ollama-dir=<path>)
       Specify local directory containing offline Ollama package and models.
-  --container <name> (or --container=<name>)
-      Specify target local Docker container name (docker mode).
-  --remote-container <name> (or --remote-container=<name>)
-      Specify target Docker container name on the remote host (remote-docker mode).
   --create-pod
-      Deploy into a dedicated Kata CSV2 Pod named by TEELLM_POD_NAME, creating it if it is
-      absent, instead of into TARGET_POD (remote target only). The Pod exists to give
-      teellm-service a real /dev/csv-guest: without that device it serves mock evidence, and
-      TAA rejects the handshake with "untrusted HRK certificate". An existing Pod is reused and
-      never re-created -- a second Pod would be a second confidential VM.
+      Deploy into a dedicated Kata CSV2 Pod named by TEELLM_POD_NAME, creating it if it is absent,
+      instead of into TARGET_POD. The Pod exists to give teellm-service a real /dev/csv-guest:
+      without that device it serves mock evidence, and TAA rejects every handshake with
+      "untrusted HRK certificate". An existing Pod is reused and never re-created -- a second Pod
+      would be a second confidential VM.
       If TARGET_POD is set explicitly it must equal TEELLM_POD_NAME, or the run is refused.
   --port <port> (or --port=<port>)
       Specify TEE-LLM service listening port (default: $TEELLM_PORT).
@@ -1680,10 +1483,6 @@ Options:
       Display this help documentation.
 
 Environment overrides:
-  LOCAL_DOCKER_CONTAINER=${LOCAL_DOCKER_CONTAINER}
-      Local Docker container name.
-  REMOTE_DOCKER_CONTAINER=${REMOTE_DOCKER_CONTAINER}
-      Docker container name on the remote host (remote-docker mode).
   TEELLM_PORT=${TEELLM_PORT}
       TEE-LLM service listening port.
   OLLAMA_LOCAL_DIR=${OLLAMA_LOCAL_DIR:-}
@@ -1691,9 +1490,9 @@ Environment overrides:
   OLLAMA_MODEL=${OLLAMA_MODEL:-}
       Default model override for inference.
   CON_WORKDIR=${CON_WORKDIR}
-      Working directory inside target container.
+      Working directory inside the TEE-LLM Pod.
   CONTAINER_OLLAMA_DIR=${CONTAINER_OLLAMA_DIR}
-      Ollama deployment directory inside target container.
+      Ollama deployment directory inside the TEE-LLM Pod.
   TARGET_NAMESPACE=${TARGET_NAMESPACE}
       Remote Kubernetes namespace (the TEE-LLM Pod's namespace too).
   TARGET_POD=${TARGET_POD}
@@ -1735,21 +1534,12 @@ Examples:
   $(basename "$0") models list
   $(basename "$0") models info qwen2.5-coder:3b
   $(basename "$0") models switch qwen2.5-coder:3b
-  $(basename "$0") docker start
-  $(basename "$0") docker start --model qwen2.5-coder:7b
-  $(basename "$0") docker stop
-  $(basename "$0") docker probe
-  $(basename "$0") remote-docker start
-  $(basename "$0") remote-docker start --model qwen2.5-coder:7b
-  $(basename "$0") remote-docker start --remote-container taa-env-slim-v2
-  $(basename "$0") remote-docker probe
-  $(basename "$0") remote-docker stop
-  $(basename "$0") remote start
-  $(basename "$0") remote probe
-  $(basename "$0") remote stop
-  $(basename "$0") remote --create-pod start
-  $(basename "$0") remote --create-pod start --model qwen2.5-coder:7b
-  $(basename "$0") remote pod-down
+  $(basename "$0") --create-pod start
+  $(basename "$0") --create-pod start --model qwen2.5-coder:7b
+  $(basename "$0") start
+  $(basename "$0") probe
+  $(basename "$0") stop
+  $(basename "$0") pod-down
 
 Point TAA at the Pod afterwards: the deployment prints
   TAA_LLM_ENDPOINT=https://<pod-ip>:${TEELLM_PORT}
@@ -1758,15 +1548,9 @@ cannot resolve cluster DNS.
 EOF
 }
 
-DEPLOY_DOCKER=false
-DEPLOY_REMOTE=false
-REMOTE_CONTAINER_MODE=false
-MODE=""
 ACTION=""
 CLI_MODEL=""
 CLI_OLLAMA_DIR=""
-CLI_CONTAINER=""
-CLI_REMOTE_CONTAINER=""
 CLI_PORT=""
 CLI_CONFIG=""
 
@@ -1778,30 +1562,6 @@ while [[ $# -gt 0 ]]; do
       shift
       handle_models_command "$@"
       exit 0
-      ;;
-    docker)
-      if [[ -n "$MODE" && "$MODE" != "docker" ]]; then
-        err "cannot specify multiple targets ($MODE and docker)"
-        usage >&2
-        exit 1
-      fi
-      MODE="docker"
-      ;;
-    remote-docker)
-      if [[ -n "$MODE" && "$MODE" != "remote-docker" ]]; then
-        err "cannot specify multiple targets ($MODE and remote-docker)"
-        usage >&2
-        exit 1
-      fi
-      MODE="remote-docker"
-      ;;
-    remote)
-      if [[ -n "$MODE" && "$MODE" != "remote" ]]; then
-        err "cannot specify multiple targets ($MODE and remote)"
-        usage >&2
-        exit 1
-      fi
-      MODE="remote"
       ;;
     start)
       if [[ -n "$ACTION" && "$ACTION" != "start" ]]; then
@@ -1862,30 +1622,6 @@ while [[ $# -gt 0 ]]; do
       fi
       CLI_OLLAMA_DIR="$1"
       ;;
-    --container=*)
-      CLI_CONTAINER="${arg#*=}"
-      ;;
-    --container)
-      shift
-      if [[ $# -eq 0 || "$1" == -* ]]; then
-        err "--container requires a container name argument"
-        usage >&2
-        exit 1
-      fi
-      CLI_CONTAINER="$1"
-      ;;
-    --remote-container=*)
-      CLI_REMOTE_CONTAINER="${arg#*=}"
-      ;;
-    --remote-container)
-      shift
-      if [[ $# -eq 0 || "$1" == -* ]]; then
-        err "--remote-container requires a container name argument"
-        usage >&2
-        exit 1
-      fi
-      CLI_REMOTE_CONTAINER="$1"
-      ;;
     --port=*)
       CLI_PORT="${arg#*=}"
       ;;
@@ -1923,25 +1659,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-# The target keyword is stored as a single mode so that two targets can never be combined;
-# the booleans below are what the rest of the script switches on.
-MODE="${MODE:-docker}"
-case "$MODE" in
-  docker) DEPLOY_DOCKER=true ;;
-  remote) DEPLOY_REMOTE=true ;;
-  remote-docker) REMOTE_CONTAINER_MODE=true ;;
-esac
-
 ACTION="${ACTION:-start}"
-
-# --create-pod and pod-down both address the dedicated TEE-LLM Pod, which only exists on the
-# remote Kubernetes target. On the container targets the flag would be ignored, and on a
-# non-remote target pod-down would be asked to delete something that is not there.
-if [[ "$CREATE_POD" == true || "$ACTION" == "pod-down" ]] && [[ "$DEPLOY_REMOTE" != true ]]; then
-  err "--create-pod and pod-down require the remote target, but the target is '$MODE'"
-  usage >&2
-  exit 1
-fi
 
 if [[ "$CREATE_POD" == true || "$ACTION" == "pod-down" ]]; then
   # An explicitly named Pod wins the argument: overriding it would aim the deployment at a Pod
@@ -1958,20 +1676,6 @@ if [[ "$CREATE_POD" == true || "$ACTION" == "pod-down" ]]; then
   TARGET_POD="$TEELLM_POD_NAME"
 fi
 
-if [[ -n "$CLI_CONTAINER" ]]; then
-  LOCAL_DOCKER_CONTAINER="$CLI_CONTAINER"
-fi
-if [[ -n "$CLI_REMOTE_CONTAINER" ]]; then
-  REMOTE_DOCKER_CONTAINER="$CLI_REMOTE_CONTAINER"
-fi
-
-# The container the deployment body operates on: whichever daemon the selected target owns.
-if [[ "$REMOTE_CONTAINER_MODE" == true ]]; then
-  TARGET_CONTAINER="$REMOTE_DOCKER_CONTAINER"
-else
-  TARGET_CONTAINER="$LOCAL_DOCKER_CONTAINER"
-fi
-
 if [[ -n "$CLI_PORT" ]]; then
   TEELLM_PORT="$CLI_PORT"
 fi
@@ -1985,33 +1689,14 @@ cd "$PROJECT_DIR"
 
 if [[ "$ACTION" == "probe" ]]; then
   banner "Probing TEE-LLM Service" "Endpoint: https://127.0.0.1:${TEELLM_PORT}"
-  if [[ "$DEPLOY_REMOTE" != true ]]; then
-    probe_where="the local docker daemon"
-    if [[ "$REMOTE_CONTAINER_MODE" == true ]]; then
-      probe_where="${REMOTE_USER}@${REMOTE_HOST}"
-    fi
-    step "probing teellm-service in container ($TARGET_CONTAINER on $probe_where)"
-    if ! dk ps --format '{{.Names}}' | grep -Eq "^${TARGET_CONTAINER}\$"; then
-      err "docker container '$TARGET_CONTAINER' is not running"
-      exit 1
-    fi
-    if dk exec -i "$TARGET_CONTAINER" "$CON_WORKDIR/teellm-service" -probe "https://127.0.0.1:${TEELLM_PORT}"; then
-      info "probe check successful: teellm-service is healthy on https://127.0.0.1:${TEELLM_PORT}"
-      exit 0
-    else
-      err "probe check failed on https://127.0.0.1:${TEELLM_PORT}"
-      exit 1
-    fi
+  step "probing teellm-service in remote pod ($TARGET_POD)"
+  ensure_remote_ssh
+  if remote_ssh "$(container_exec) \"$CON_WORKDIR/teellm-service\" -probe \"https://127.0.0.1:${TEELLM_PORT}\""; then
+    info "remote probe check successful: teellm-service is healthy on https://127.0.0.1:${TEELLM_PORT}"
+    exit 0
   else
-    step "probing teellm-service in remote pod ($TARGET_POD)"
-    ensure_remote_ssh
-    if remote_ssh "$(container_exec) \"$CON_WORKDIR/teellm-service\" -probe \"https://127.0.0.1:${TEELLM_PORT}\""; then
-      info "remote probe check successful: teellm-service is healthy on https://127.0.0.1:${TEELLM_PORT}"
-      exit 0
-    else
-      err "remote probe check failed on https://127.0.0.1:${TEELLM_PORT}"
-      exit 1
-    fi
+    err "remote probe check failed on https://127.0.0.1:${TEELLM_PORT}"
+    exit 1
   fi
 fi
 
@@ -2019,26 +1704,11 @@ fi
 
 if [[ "$ACTION" == "stop" ]]; then
   banner "Stopping TEE-LLM Services"
-  if [[ "$DEPLOY_REMOTE" != true ]]; then
-    step "stopping teellm-service and ollama in container ($TARGET_CONTAINER)"
-    if dk ps --format '{{.Names}}' | grep -Eq "^${TARGET_CONTAINER}\$"; then
-      dk exec -i "$TARGET_CONTAINER" sh -lc "touch '$CON_WORKDIR/manual-teellm'; pkill -f '[s]tart-teellm\.sh' >/dev/null 2>&1 || true; pkill -x teellm-service >/dev/null 2>&1 || true; killall teellm-service >/dev/null 2>&1 || true; pkill -x ollama >/dev/null 2>&1 || true; killall ollama >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true; killall llama-server >/dev/null 2>&1 || true" 2>/dev/null || true
-      for _ in {1..20}; do
-        if ! dk exec -i "$TARGET_CONTAINER" sh -lc "pgrep -f '[s]tart-teellm\.sh' >/dev/null 2>&1 || pgrep -x teellm-service >/dev/null 2>&1 || pgrep -x ollama >/dev/null 2>&1"; then
-          break
-        fi
-        sleep 0.2
-      done
-    fi
-    info "teellm-service, ollama, and llama-server stopped cleanly in $TARGET_CONTAINER"
-    exit 0
-  else
-    step "stopping teellm-service and ollama in remote pod ($TARGET_POD)"
-    ensure_remote_ssh
-    remote_ssh "$(container_exec) sh -lc 'pkill -x teellm-service >/dev/null 2>&1 || true; killall teellm-service >/dev/null 2>&1 || true; pkill -x ollama >/dev/null 2>&1 || true; killall ollama >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true; killall llama-server >/dev/null 2>&1 || true'" 2>/dev/null || true
-    info "teellm-service, ollama, and llama-server stopped cleanly in remote pod $TARGET_POD"
-    exit 0
-  fi
+  step "stopping teellm-service and ollama in remote pod ($TARGET_POD)"
+  ensure_remote_ssh
+  remote_ssh "$(container_exec) sh -lc 'pkill -x teellm-service >/dev/null 2>&1 || true; killall teellm-service >/dev/null 2>&1 || true; pkill -x ollama >/dev/null 2>&1 || true; killall ollama >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true; killall llama-server >/dev/null 2>&1 || true'" 2>/dev/null || true
+  info "teellm-service, ollama, and llama-server stopped cleanly in remote pod $TARGET_POD"
+  exit 0
 fi
 
 # ── Dedicated Pod Teardown Handler ────────────────────────────
@@ -2051,7 +1721,7 @@ if [[ "$ACTION" == "pod-down" ]]; then
   pod_down
   echo ""
   warn "The guest's writable layer went with the Pod, so the ollama runtime and the model are gone."
-  detail "The next 'remote --create-pod start' deploys them again."
+  detail "The next '--create-pod start' deploys them again."
   echo ""
   exit 0
 fi
@@ -2090,288 +1760,7 @@ build_local_binary() {
   info "teellm-service binary built: $TEELLM_DIR/bin/teellm-service"
 }
 
-# ── Container Deployment Mode (local docker or remote docker over SSH) ────────
-
-deploy_container() {
-  if [[ "$REMOTE_CONTAINER_MODE" == true ]]; then
-    banner "Deploying TEE-LLM Service (Remote Docker)" \
-      "Host: ${REMOTE_USER}@${REMOTE_HOST} | Container: $TARGET_CONTAINER | Model: $OLLAMA_MODEL (${model_mb}MB)"
-    step "verifying remote host connectivity"
-    check_remote_connectivity
-  else
-    banner "Deploying TEE-LLM Service (Docker)" \
-      "Container: $TARGET_CONTAINER | Model: $OLLAMA_MODEL (${model_mb}MB)"
-    require_command docker
-  fi
-
-  dk info >/dev/null 2>&1 || {
-    err "docker daemon is not running or not accessible"
-    if [[ "$REMOTE_CONTAINER_MODE" == true ]]; then
-      detail "Check that the docker daemon on ${REMOTE_USER}@${REMOTE_HOST} is up and that ${REMOTE_USER} may use it."
-    fi
-    exit 1
-  }
-
-  ensure_target_container
-  build_local_binary
-
-  step "checking attestation prerequisites inside container"
-  if ! dk exec -i "$TARGET_CONTAINER" sh -lc 'test -e /dev/csv-guest' 2>/dev/null; then
-    warn "/dev/csv-guest not found in container (mock attestation provider fallback active)"
-  else
-    info "Hygon CSV hardware attestation device /dev/csv-guest detected"
-  fi
-
-  # Incremental sync of Ollama package and model
-  # An image that shipped the bundle under its older name keeps that runtime on disk; move it
-  # into place instead of streaming several GB of identical libraries again. The
-  # is-not-a-symlink guard skips containers that carry an alias left behind by an earlier
-  # revision of this script.
-  if [[ "$CONTAINER_LEGACY_OLLAMA_DIR" != "$CONTAINER_OLLAMA_DIR" ]]; then
-    if dk exec -i "$TARGET_CONTAINER" sh -lc "test -d '$CONTAINER_LEGACY_OLLAMA_DIR/lib/ollama' && ! test -L '$CONTAINER_LEGACY_OLLAMA_DIR' && ! test -d '$CONTAINER_OLLAMA_DIR/lib/ollama'" >/dev/null 2>&1; then
-      step "migrating the existing ollama runtime from $CONTAINER_LEGACY_OLLAMA_DIR"
-      dk exec -i "$TARGET_CONTAINER" sh -lc "mkdir -p '$CON_WORKDIR' && if [ ! -d '$CONTAINER_OLLAMA_DIR' ]; then mv '$CONTAINER_LEGACY_OLLAMA_DIR' '$CONTAINER_OLLAMA_DIR'; elif [ ! -d '$CONTAINER_OLLAMA_DIR/lib' ]; then cp -r -n '$CONTAINER_LEGACY_OLLAMA_DIR/lib' '$CONTAINER_OLLAMA_DIR/'; fi"
-      info "existing ollama runtime reused from $CONTAINER_LEGACY_OLLAMA_DIR"
-    fi
-  fi
-
-  step "checking ollama package and model weights inside container"
-  dk exec -i "$TARGET_CONTAINER" mkdir -p "$CONTAINER_OLLAMA_DIR" "$CON_WORKDIR/certs" "$CON_WORKDIR/configs"
-
-  local check_script has_base_runtime=false has_lib=false has_model=false
-  check_script="$(resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "check_model_sh" "$CONTAINER_OLLAMA_DIR")"
-
-  if dk exec -i "$TARGET_CONTAINER" sh -lc "test -f '$CONTAINER_OLLAMA_DIR/ollama' && test -f '$CONTAINER_OLLAMA_DIR/start-ollama.sh' && test -f '$CONTAINER_OLLAMA_DIR/lib/ollama/libllama-server-impl.so'"; then
-    has_base_runtime=true
-  fi
-  if dk exec -i "$TARGET_CONTAINER" sh -lc "test -f '$CONTAINER_OLLAMA_DIR/lib/ollama/libllama-server-impl.so'"; then
-    has_lib=true
-  fi
-  if dk exec -i "$TARGET_CONTAINER" sh -lc "$check_script" >/dev/null 2>&1; then
-    has_model=true
-  fi
-
-  if [[ "$FORCE_QWEN_COPY" == false && "$has_base_runtime" == true && "$has_model" == true ]]; then
-    info "ollama runtime and target model '$OLLAMA_MODEL' (${model_mb}MB) already present in container"
-  elif [[ "$FORCE_QWEN_COPY" == false && "$has_base_runtime" == true && "$has_model" == false ]]; then
-    step "incrementally copying model '$OLLAMA_MODEL' (${model_mb}MB) into container"
-    local qwen_filelist
-    qwen_filelist="$(mktemp /tmp/teellm_qwen_files.XXXXXX)"
-    TEMP_FILELIST="$qwen_filelist"
-    resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "model_only" > "$qwen_filelist"
-    spin_task "transferring model weights (${model_mb}MB) into container" \
-      stream_files_into_container "$OLLAMA_LOCAL_DIR" "$qwen_filelist" "$CONTAINER_OLLAMA_DIR"
-    rm -f "$qwen_filelist"
-    TEMP_FILELIST=""
-    info "incremental model transfer completed"
-  else
-    step "copying ollama runtime and model '$OLLAMA_MODEL' (${model_mb}MB) into container"
-    local qwen_filelist
-    qwen_filelist="$(mktemp /tmp/teellm_qwen_files.XXXXXX)"
-    TEMP_FILELIST="$qwen_filelist"
-
-    if [[ "$FORCE_QWEN_COPY" == true ]]; then
-      dk exec -i "$TARGET_CONTAINER" rm -rf "$CONTAINER_OLLAMA_DIR"
-      dk exec -i "$TARGET_CONTAINER" mkdir -p "$CONTAINER_OLLAMA_DIR"
-      resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "full" > "$qwen_filelist"
-    elif [[ "$has_lib" == true ]]; then
-      info "reusing existing lib directory in container; syncing runtime scripts and model"
-      {
-        echo "ollama"
-        echo "start-ollama.sh"
-        for opt in "models/cache" "models/models/cache" "models/models/id_ed25519" "models/models/id_ed25519.pub"; do
-          [[ -e "$OLLAMA_LOCAL_DIR/$opt" ]] && echo "$opt"
-        done
-        resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "model_only"
-      } > "$qwen_filelist"
-    else
-      resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "full" > "$qwen_filelist"
-    fi
-
-    spin_task "transferring ollama bundle into container" \
-      stream_files_into_container "$OLLAMA_LOCAL_DIR" "$qwen_filelist" "$CONTAINER_OLLAMA_DIR"
-    rm -f "$qwen_filelist"
-    TEMP_FILELIST=""
-    info "ollama package transfer completed"
-  fi
-
-  dk exec -i "$TARGET_CONTAINER" sh -lc "chmod +x '$CONTAINER_OLLAMA_DIR/ollama' '$CONTAINER_OLLAMA_DIR/start-ollama.sh' '$CONTAINER_OLLAMA_DIR/lib/ollama/llama-'* 2>/dev/null || true"
-
-  # Restore the soname symlinks llama-server needs; the bundle ships versioned files only.
-  local soname_links
-  soname_links="$(dk exec -i "$TARGET_CONTAINER" sh -lc "$(ollama_soname_fix_script)" sh "$CONTAINER_OLLAMA_DIR/lib/ollama" 2>/dev/null || echo 0)"
-  if [[ "${soname_links:-0}" != "0" ]]; then
-    info "restored $soname_links ollama soname symlink(s) in $CONTAINER_OLLAMA_DIR/lib/ollama"
-  fi
-
-  # Start Ollama daemon
-  step "checking ollama daemon status inside container"
-  local ollama_already_running=false ollama_tags=""
-  # A daemon answering on the port is only reusable if it serves the model this deployment
-  # installs. A container that shipped the older layout keeps its own daemon running from
-  # $CONTAINER_LEGACY_OLLAMA_DIR, pointed at that directory's model set, so it would answer the
-  # port while being unable to serve the deployed model. Asking /api/tags which models the
-  # running daemon actually has tells the two apart, whichever directory it was started from.
-  ollama_tags="$(dk exec -i "$TARGET_CONTAINER" curl -fsS "http://$OLLAMA_HOST/api/tags" 2>/dev/null || true)"
-  if grep -q "\"$OLLAMA_MODEL\"" <<<"$ollama_tags"; then
-    ollama_already_running=true
-    info "ollama daemon is already active on http://$OLLAMA_HOST with model '$OLLAMA_MODEL'"
-  elif [[ -n "$ollama_tags" ]]; then
-    warn "replacing the ollama daemon already listening on $OLLAMA_HOST: it does not serve '$OLLAMA_MODEL'"
-    step "stopping the stale ollama daemon inside container"
-    dk exec -i "$TARGET_CONTAINER" sh -lc "pkill -x ollama >/dev/null 2>&1 || true; killall ollama >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true; killall llama-server >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
-    for _ in {1..20}; do
-      if ! dk exec -i "$TARGET_CONTAINER" sh -lc "pgrep -x ollama >/dev/null 2>&1" >/dev/null 2>&1; then
-        break
-      fi
-      sleep 0.5
-    done
-    info "stale ollama daemon stopped"
-  fi
-
-  if [[ "$ollama_already_running" == false ]]; then
-    step "starting ollama daemon inside container"
-    dk exec -d "$TARGET_CONTAINER" sh -lc "cd '$CONTAINER_OLLAMA_DIR' && exec env OLLAMA_HOST='$OLLAMA_HOST' OLLAMA_MODELS='$CONTAINER_OLLAMA_DIR/models/models' OLLAMA_LIBRARY_PATH='$CONTAINER_OLLAMA_DIR/lib/ollama' ./start-ollama.sh > '$OLLAMA_LOG_FILE' 2>&1"
-
-    step "waiting for ollama service to become ready"
-    local ollama_ready=false
-    local wait_start_ts
-    wait_start_ts=$(date +%s)
-    cursor_hide
-    local spin_len=${#SPIN_FRAMES[@]}
-    local i=0
-    for ((attempt=1; attempt<=OLLAMA_READY_TIMEOUT/OLLAMA_READY_INTERVAL; attempt++)); do
-      if dk exec -i "$TARGET_CONTAINER" curl -fsS "http://$OLLAMA_HOST/api/tags" >/dev/null 2>&1; then
-        ollama_ready=true
-        break
-      fi
-      if [[ "$IS_TTY" == true ]]; then
-        local now
-        now=$(date +%s)
-        local elapsed=$((now - wait_start_ts))
-        local frame="${SPIN_FRAMES[$i]}"
-        printf "\r   ${CYAN}%s${NC} waiting for ollama daemon ${DIM}(%ds / %ds)...${NC}" "$frame" "$elapsed" "$OLLAMA_READY_TIMEOUT"
-        i=$(( (i + 1) % spin_len ))
-      fi
-      sleep "$OLLAMA_READY_INTERVAL"
-    done
-    cursor_show
-    printf "\r\033[K"
-    if [[ "$ollama_ready" != true ]]; then
-      err "ollama daemon did not become ready within ${OLLAMA_READY_TIMEOUT}s"
-      dk exec -i "$TARGET_CONTAINER" tail -n 50 "$OLLAMA_LOG_FILE" || true
-      exit 1
-    fi
-    info "ollama daemon ready and responding on http://$OLLAMA_HOST"
-  fi
-
-  # Deploy certificates if available locally
-  step "configuring attestation certificates"
-  if [[ -n "$LOCAL_HRK_CERT" && -n "$LOCAL_HSK_CERT" ]]; then
-    ctr_cp_in "$LOCAL_HRK_CERT" "$CON_WORKDIR/certs/hrk.cert" >/dev/null
-    ctr_cp_in "$LOCAL_HSK_CERT" "$CON_WORKDIR/certs/hsk_cek.cert" >/dev/null
-    info "certificates deployed: $CON_WORKDIR/certs/hrk.cert and hsk_cek.cert"
-  else
-    if dk exec -i "$TARGET_CONTAINER" sh -lc "test -f '$CON_WORKDIR/certs/hrk.cert' && test -f '$CON_WORKDIR/certs/hsk_cek.cert'"; then
-      info "using existing certificates inside container ($CON_WORKDIR/certs)"
-    else
-      warn "attestation certificates not found locally or in container; fallback mock will be used"
-    fi
-  fi
-
-  # Prepare & Copy teellm-docker.json
-  step "preparing and deploying teellm configuration"
-  local cfg_template="${TEELLM_CONFIG_PATH:-$TEELLM_DIR/configs/teellm-docker.json}"
-  local tmp_cfg
-  tmp_cfg="$(mktemp /tmp/teellm_cfg.XXXXXX)"
-  TEMP_CONFIG_FILE="$tmp_cfg"
-  prepare_config "$cfg_template" "$tmp_cfg" "$OLLAMA_MODEL" "$TEELLM_PORT" "$CON_WORKDIR/certs/hrk.cert" "$CON_WORKDIR/certs/hsk_cek.cert"
-  ctr_cp_in "$tmp_cfg" "$CON_WORKDIR/configs/teellm-docker.json" "teellm-docker.json"
-  ctr_cp_in "$tmp_cfg" "$CON_WORKDIR/teellm-docker.json" "teellm-docker.json" 2>/dev/null || true
-  if [[ -f "$TEELLM_DIR/configs/models.json" ]]; then
-    ctr_cp_in "$TEELLM_DIR/configs/models.json" "$CON_WORKDIR/configs/models.json" >/dev/null 2>&1 || true
-  fi
-  rm -f "$tmp_cfg"
-  TEMP_CONFIG_FILE=""
-  info "configuration deployed to $TARGET_CONTAINER:$CON_WORKDIR/configs/teellm-docker.json"
-
-  # Copy teellm-service binary and supervisor script
-  step "copying teellm-service binary and supervisor script into container"
-  ctr_cp_in "$TEELLM_DIR/bin/teellm-service" "$CON_WORKDIR/teellm-service"
-  ctr_cp_in "$TEELLM_DIR/deploy/start.sh" "$CON_WORKDIR/start-teellm.sh"
-  dk exec -i "$TARGET_CONTAINER" sh -lc "chmod +x '$CON_WORKDIR/teellm-service' '$CON_WORKDIR/start-teellm.sh'"
-  info "binary and supervisor deployed to $TARGET_CONTAINER:$CON_WORKDIR"
-
-  # Stop old teellm-service and daemon wrapper
-  step "stopping previous teellm-service and daemon wrapper inside container"
-  dk exec -i "$TARGET_CONTAINER" sh -lc "touch '$CON_WORKDIR/manual-teellm'; pkill -f '[s]tart-teellm\.sh' >/dev/null 2>&1 || true; pkill -x teellm-service >/dev/null 2>&1 || true; killall teellm-service >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
-  local teellm_stopped=false
-  for _ in {1..30}; do
-    if ! dk exec -i "$TARGET_CONTAINER" sh -lc "pgrep -f '[s]tart-teellm\.sh' >/dev/null 2>&1 || pgrep -x teellm-service >/dev/null 2>&1"; then
-      teellm_stopped=true
-      break
-    fi
-    sleep 0.2
-  done
-  if [[ "$teellm_stopped" != true ]]; then
-    warn "teellm-service or start-teellm.sh did not terminate gracefully; force-killing"
-    dk exec -i "$TARGET_CONTAINER" sh -lc "pkill -9 -f '[s]tart-teellm\.sh' >/dev/null 2>&1 || true; pkill -9 -x teellm-service >/dev/null 2>&1 || true; killall -9 teellm-service >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
-    sleep 0.5
-  fi
-  info "stopped previous teellm-service and daemon instances"
-
-  # Start teellm supervisor inside container
-  step "starting teellm supervisor inside container on port :${TEELLM_PORT}"
-  dk exec -i "$TARGET_CONTAINER" sh -lc "rm -f '$CON_WORKDIR/manual-teellm'"
-  dk exec -d "$TARGET_CONTAINER" sh -lc "cd '$CON_WORKDIR' && nohup bash ./start-teellm.sh >/dev/null 2>&1 &"
-
-  # Probe TEE-LLM readiness
-  step "probing teellm-service readiness via TEE-TLS 1.3"
-  local teellm_ready=false
-  local wait_start_ts
-  wait_start_ts=$(date +%s)
-  cursor_hide
-  local spin_len=${#SPIN_FRAMES[@]}
-  local i=0
-  for ((attempt=1; attempt<=30; attempt++)); do
-    if dk exec -i "$TARGET_CONTAINER" "$CON_WORKDIR/teellm-service" -probe "https://127.0.0.1:${TEELLM_PORT}" >/dev/null 2>&1; then
-      teellm_ready=true
-      break
-    fi
-    if [[ "$IS_TTY" == true ]]; then
-      local now
-      now=$(date +%s)
-      local elapsed=$((now - wait_start_ts))
-      local frame="${SPIN_FRAMES[$i]}"
-      printf "\r   ${CYAN}%s${NC} probing teellm-service readiness ${DIM}(%ds / 30s)...${NC}" "$frame" "$elapsed"
-      i=$(( (i + 1) % spin_len ))
-    fi
-    sleep 1
-  done
-  cursor_show
-  printf "\r\033[K"
-  if [[ "$teellm_ready" != true ]]; then
-    err "teellm-service did not become ready on https://127.0.0.1:${TEELLM_PORT}"
-    echo -e "   ${YELLOW}↳${NC} teellm-service log (${TEELLM_LOG_FILE}):"
-    dk exec -i "$TARGET_CONTAINER" sh -lc "tail -n 60 '$TEELLM_LOG_FILE' 2>/dev/null || true"
-    exit 1
-  fi
-  local total_elapsed=$(( $(date +%s) - wait_start_ts ))
-  info "teellm-service ready and verified via TEE-TLS 1.3: https://127.0.0.1:${TEELLM_PORT} ${DIM}(took ${total_elapsed}s)${NC}"
-
-  if [[ "$REMOTE_CONTAINER_MODE" == true ]]; then
-    step "allowing cluster pods to reach the gateway"
-    read -r _ _ container_ip < <(container_facts)
-    allow_pod_access_to_container "$container_ip"
-    banner "Deploy Complete (Remote Docker)" "TEE-LLM service running and verified healthy in ${TARGET_CONTAINER}"
-    print_container_summary "${REMOTE_USER}@${REMOTE_HOST} docker daemon"
-  else
-    banner "Deploy Complete (Docker)" "TEE-LLM service running and verified healthy"
-    print_container_summary "local docker daemon"
-  fi
-}
-
-# ── Remote Deployment Mode ───────────────────────�──────────────
+# ── TEE-LLM Pod Deployment ────────────────────────────────────
 
 sync_ollama_to_remote() {
   step "syncing ollama package to remote host (${REMOTE_USER}@${REMOTE_HOST})"
@@ -2502,8 +1891,8 @@ copy_ollama_to_remote_pod() {
   info "ollama runtime and model '$OLLAMA_MODEL' verified inside remote pod"
 }
 
-deploy_remote() {
-  banner "Deploying TEE-LLM Service (Remote)" "Host: ${REMOTE_USER}@${REMOTE_HOST} | Pod: $TARGET_POD | Model: $OLLAMA_MODEL"
+deploy_teellm() {
+  banner "Deploying TEE-LLM Service" "Host: ${REMOTE_USER}@${REMOTE_HOST} | Pod: $TARGET_POD | Model: $OLLAMA_MODEL"
 
   step "verifying remote host and target pod connectivity"
   check_remote_connectivity
@@ -2666,7 +2055,7 @@ deploy_remote() {
     info "service is serving Hygon hardware evidence (/dev/csv-guest present)"
   fi
 
-  banner "Deploy Complete (Remote)" "TEE-LLM remote service running and verified healthy"
+  banner "Deploy Complete (TEE-LLM Pod)" "TEE-LLM service running and verified healthy"
   echo -e "  ${BOLD}${CYAN}● TEE-LLM Inference Service${NC}  ${DIM}(RFC 8998 ShangMi TEE-TLS 1.3)${NC}"
   echo -e "    ${MUTED}↳ Target Pod :${NC} ${TARGET_POD} (${TARGET_NAMESPACE})"
   echo -e "    ${MUTED}↳ Pod IP     :${NC} ${TEELLM_POD_IP:-unknown}"
@@ -2691,8 +2080,4 @@ deploy_remote() {
 
 # ── Main Entrypoint ───────────────────────────────────────────
 
-if [[ "$DEPLOY_REMOTE" == true ]]; then
-  deploy_remote
-else
-  deploy_container
-fi
+deploy_teellm

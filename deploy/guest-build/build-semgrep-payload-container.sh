@@ -30,7 +30,7 @@
 # Environment (all optional):
 #   CONTAINER_IMAGE      taa-env:slim-v2   image whose Python the payload is built for
 #   IMAGE_ARCHIVE        $ROOT_DIR/deploy/taa-env-slim-v2.tar.gz  loaded when the image is absent
-#   SEMGREP_VERSION      1.177.0           (keep in step with deploy-docker.sh)
+#   SEMGREP_VERSION      1.177.0           (keep in step with deploy.sh)
 #   OUT                  $SCRIPT_DIR/out/semgrep-bundle.tar.gz
 #   PIP_INDEX_URL        passed through to pip when set
 #   KEEP_BUILDER         false             leave the build container behind for inspection

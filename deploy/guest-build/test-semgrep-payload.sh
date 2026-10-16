@@ -133,7 +133,7 @@ fi
 
 step "对照臂：运行中的 TAA 容器"
 # The container arm's semgrep lives in the container's writable layer, not in
-# the image (deploy-docker.sh installs it at deploy time), so the comparison has
+# the image (it was installed at image build time), so the comparison has
 # to go through the running container rather than a fresh `docker run`.
 arm_ran=0
 arm_sample=""

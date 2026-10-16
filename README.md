@@ -502,7 +502,7 @@ An instance whose `server.type` is `fhe` exposes the same API surface as a `tee`
 Specify one or more components: `platform-mock`, `taa`. If omitted:
 - In `docker` mode: defaults to deploying both `platform-mock` and `taa`.
 - In `remote` mode: defaults to `taa` (omits `platform-mock` to avoid port 18080 conflict with host production agents).
-- **Note on TEE-LLM / Qwen / Ollama**: The LLM inference service sources live in the `teellm` submodule, but its deployment script now sits at the repository root. To deploy TEE-LLM, run `./deploy-llm.sh [docker|remote-docker|remote]`.
+- **Note on TEE-LLM / Qwen / Ollama**: The LLM inference service sources live in the `teellm` submodule, but its deployment script sits at the repository root. TEE-LLM needs a real `/dev/csv-guest` to produce a genuine attestation, so it is deployed as a Kata CSV2 Pod on the remote host: run `./deploy-llm.sh` (add `--create-pod` the first time, to create that Pod).
 
 ### 4. Container Autostart Supervisor (`deploy/start.sh`)
 
@@ -527,10 +527,11 @@ Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (d
 ./deploy.sh remote taa                        # Update TAA in remote Pod
 ./deploy.sh remote stop                       # Stop remote services
 
-# Decoupled TEE-LLM Service
-./deploy-llm.sh docker start                  # Deploy TEE-LLM service in a local Docker container
-./deploy-llm.sh remote-docker start           # Deploy TEE-LLM service into a container on the remote host (SSH + docker)
-./deploy-llm.sh remote start                  # Deploy TEE-LLM service in remote Kubernetes Pod
+# Decoupled TEE-LLM Service (Kata CSV2 Pod on the remote host)
+./deploy-llm.sh --create-pod start            # Create the dedicated TEE-LLM Pod and deploy into it
+./deploy-llm.sh start                         # Redeploy into the existing Pod
+./deploy-llm.sh probe                         # Probe the TEE-TLS endpoint inside the Pod
+./deploy-llm.sh pod-down                      # Delete the dedicated TEE-LLM Pod
 ```
 
 > **Remote deploys provision the code scan engine.** When the config selects the semgrep engine
@@ -574,7 +575,7 @@ Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (d
 >
 > ```bash
 > ./deploy.sh docker save --tag my-taa:v1 -o /tmp/taa.tar.gz
-> ./deploy-llm.sh docker start                      # TEE-LLM in its own container
+> ./deploy-llm.sh --create-pod start                # TEE-LLM in its own Kata CSV2 Pod
 > docker run -e TAA_LLM_ENDPOINT=https://10.0.0.2:8443 my-taa:v1
 > ```
 >
@@ -582,7 +583,9 @@ Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (d
 > the endpoint the image was packaged with); the `platform` identity fields do not follow that rule.
 > `PLATFORM_IP`, `DOCKER_ID` and `CONTRACT_ID` only seed defaults that the file wins over — on a `tee`
 > instance. On an `fhe` instance the first two flip to environment-wins (see
-> [Platform Identity Precedence](#platform-identity-precedence)).
+> [Platform Identity Precedence](#platform-identity-precedence)). Read the endpoint off the
+> deployment summary: `deploy-llm.sh` prints `TAA_LLM_ENDPOINT=https://<pod-ip>:8443`, and the Pod
+> IP is the only address that works — a Kata guest cannot resolve cluster DNS.
 
 ---
 

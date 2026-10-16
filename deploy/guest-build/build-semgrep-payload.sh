@@ -33,7 +33,7 @@
 # Usage: ./build-semgrep-payload.sh
 #
 # Environment (all optional):
-#   SEMGREP_VERSION      1.177.0 (keep in step with deploy-docker.sh --scan-engine semgrep)
+#   SEMGREP_VERSION      1.177.0 (keep in step with deploy.sh --scan-engine semgrep)
 #   SEMGREP_RULES_SRC    $ROOT_DIR/models/audit/semgrep/rules
 #   SEMGREP_PAYLOAD_DIR  $SCRIPT_DIR/semgrep-payload
 #   BASE_INITRD          $SCRIPT_DIR/base/kata-containers-initrd-confidential-csv.img
@@ -135,7 +135,7 @@ for p in "${WHEEL_PLATFORMS[@]}"; do platform_args+=(--platform "$p"); done
 # is dropped: pip rejects a package that is both a requirement and an equal
 # constraint.
 #
-# The freeze is written by deploy-docker.sh into the running container's writable
+# The freeze was recorded at image build time in the running container's writable
 # layer, so a fresh `docker run` of that image cannot see it -- read it out of the
 # running container first and only fall back to the image.
 have_freeze=0

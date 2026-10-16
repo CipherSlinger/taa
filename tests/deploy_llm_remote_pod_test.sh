@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verifies the dedicated TEE-LLM Pod path (remote --create-pod / pod-down).
+# Verifies the dedicated TEE-LLM Pod path (--create-pod / pod-down).
 #
 # That Pod is what gives teellm-service a real /dev/csv-guest; without the device it serves mock
 # evidence and TAA rejects every handshake. The traps this test guards are not visible in a
@@ -11,7 +11,9 @@
 #     host-resident encrypted memory, and a new IP that TAA's endpoint no longer points at);
 #   * a Pod without the device must fail the deploy, since the readiness probe cannot tell the
 #     difference (its client skips attestation verification);
-#   * a deployment with no attestation certificates must fail rather than serve nothing.
+#   * a deployment with no attestation certificates must fail rather than serve nothing;
+#   * an invocation with no action keyword must reach that same Pod path, since the target keyword
+#     that used to say so is gone -- a bare run is now the only way to start a deployment.
 #
 # The script is run from a throwaway repository root, which is what makes the last case reachable
 # and keeps the whole test independent of the teellm submodule and of the real ollama bundle.
@@ -229,8 +231,8 @@ kubectl_lines() { grep -c '^KUBECTL ' "$MOCK_LOG" || true; }
 rm -f "$MOCK_STATE_DIR/applied.yaml" "$MOCK_STATE_DIR/apply-count"
 touch "$MOCK_STATE_DIR/csv_device"
 
-run_deploy remote --create-pod start --model qwen2.5-coder:0.5b
-[[ $status -eq 0 ]] || fail "remote --create-pod start exited $status"
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+[[ $status -eq 0 ]] || fail "--create-pod start exited $status"
 
 [[ "$(cat "$MOCK_STATE_DIR/apply-count" 2>/dev/null || echo 0)" == "1" ]] \
   || fail "the Pod was applied $(cat "$MOCK_STATE_DIR/apply-count" 2>/dev/null || echo 0) times, expected exactly one"
@@ -288,52 +290,63 @@ grep -q "TAA_LLM_ENDPOINT=https://$MOCK_POD_IP:8443" <<<"$output" \
 
 # ── 2. Second run: the Pod exists and is Ready ───────────────────────────────
 
-run_deploy remote --create-pod start --model qwen2.5-coder:0.5b
-[[ $status -eq 0 ]] || fail "the second remote --create-pod start exited $status"
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+[[ $status -eq 0 ]] || fail "the second --create-pod start exited $status"
 [[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "1" ]] \
   || fail "the second run applied the manifest again instead of reusing the Pod"
 grep -q "reusing the running TEE-LLM Pod" <<<"$output" || fail "the second run did not reuse the Pod"
 
-# ── 3. Negative control: a Pod without /dev/csv-guest ────────────────────────
+# ── 3. A bare invocation, with no action keyword ─────────────────────────────
+# With the target keyword gone there is nothing left to name a target with, so the default path is
+# the only one -- and this is what pins it down: the bare form must reach the same Pod lifecycle as
+# the explicit one rather than falling through to a no-op.
+
+run_deploy --create-pod --model qwen2.5-coder:0.5b
+[[ $status -eq 0 ]] || fail "a bare invocation (no action keyword) exited $status"
+[[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "1" ]] \
+  || fail "the bare invocation created a second Pod instead of reusing the existing one"
+grep -q "reusing the running TEE-LLM Pod" <<<"$output" || fail "the bare invocation did not reuse the Pod"
+
+# ── 4. Negative control: a Pod without /dev/csv-guest ────────────────────────
 
 rm -f "$MOCK_STATE_DIR/csv_device"
-run_deploy remote --create-pod start --model qwen2.5-coder:0.5b
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
 [[ $status -ne 0 ]] || fail "a Pod without /dev/csv-guest was accepted"
 grep -q "/dev/csv-guest" <<<"$output" || fail "the missing device was not named in the error"
 touch "$MOCK_STATE_DIR/csv_device"
 
-# ── 4. Negative control: --create-pod with a different explicit TARGET_POD ───
+# ── 5. Negative control: --create-pod with a different explicit TARGET_POD ───
 
 before="$(kubectl_lines)"
 set +e
 output="$(PATH="$MOCK_BIN:$PATH" TARGET_POD=some-other-pod \
-  timeout 300 "$REPO/deploy-llm.sh" remote --create-pod start 2>&1)"
+  timeout 300 "$REPO/deploy-llm.sh" --create-pod start 2>&1)"
 status=$?
 set -e
 [[ $status -ne 0 ]] || fail "--create-pod overrode an explicit TARGET_POD"
 grep -q "addresses the TEE-LLM Pod" <<<"$output" || fail "the refusal does not explain the conflict"
 [[ "$(kubectl_lines)" == "$before" ]] || fail "the refusal happened only after touching the cluster"
 
-# ── 5. Negative control: no attestation certificates on the create path ──────
+# ── 6. Negative control: no attestation certificates on the create path ──────
 
 mv "$REPO/deploy/certs" "$TMP_DIR/certs-hidden"
-run_deploy remote --create-pod start --model qwen2.5-coder:0.5b
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
 [[ $status -ne 0 ]] || fail "a deployment without attestation certificates reported success"
 grep -q "no Hygon attestation certificates found" <<<"$output" \
   || fail "the missing certificates were not named in the error"
 mv "$TMP_DIR/certs-hidden" "$REPO/deploy/certs"
 
-# ── 6. pod-down: the Pod is deleted, and nothing else is ─────────────────────
+# ── 7. pod-down: the Pod is deleted, and nothing else is ─────────────────────
 
 # Pointed at a bundle that does not exist: a teardown must not depend on the machine that deployed
 # the bundle still having it, so this also pins down where the action is handled.
 RUN_OLLAMA_DIR="$TMP_DIR/no-such-bundle"
-run_deploy remote pod-down
-[[ $status -eq 0 ]] || fail "remote pod-down exited $status"
+run_deploy pod-down
+[[ $status -eq 0 ]] || fail "pod-down exited $status"
 [[ -f "$MOCK_STATE_DIR/pod" ]] && fail "the TEE-LLM Pod survived pod-down"
 grep -q "TEE-LLM Pod '$COPY_POD_NAME' deleted" <<<"$output" || fail "pod-down did not report the deletion"
 if grep -q "$DEFAULT_POD_NAME" "$MOCK_LOG"; then
   fail "pod-down was aimed at the default TARGET_POD ($DEFAULT_POD_NAME)"
 fi
 
-echo "PASS: the dedicated TEE-LLM Pod is created once, reused, and gated on its CSV device"
+echo "PASS: the dedicated TEE-LLM Pod is created once, reused, gated on its CSV device, and is what the bare invocation deploys into"

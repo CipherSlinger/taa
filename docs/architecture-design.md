@@ -518,7 +518,8 @@ TAA_DEBUG_MODE=true ./deploy.sh taa
 ./deploy.sh docker save --tag taa-env:slim-v2-$(date +%Y%m%d)
 
 # LLM 推理服务（Qwen / Ollama / TEE-LLM）不在这里管理
-./deploy-llm.sh [docker|remote-docker|remote]
+# 它部署在远端宿主机的 Kata CSV2 Pod 里（首次需 --create-pod），TAA 通过 Pod IP 访问
+./deploy-llm.sh [--create-pod] [start|stop|probe|pod-down]
 ```
 
 `local` 与 `local-docker` 是 `docker` 的历史别名，仍然可用；`qwen` 组件名保留但只打印指向上述 teellm 命令的提示。
@@ -558,8 +559,10 @@ TAA_DEBUG_MODE=true ./deploy.sh taa
 配置模板 `configs/*.json` 中 `storage.keys` 与 `models`/`data`/`results`/`certs` 同前缀，落在 `/root/taa/keys`，
 由部署脚本以 `0700` 创建；TAA 首次生成密钥对时也会以 `0700` 自建该目录。
 
-Ollama 离线包**不在 TAA 容器内**：TEE-LLM 网关拆分为独立容器后，Ollama 与网关同容器，
-由 `teellm` 子模块提供源码、由仓库根目录的 `deploy-llm.sh` 独立部署（`./deploy-llm.sh [docker|remote-docker|remote]`），TAA 通过容器 IP 访问。
+Ollama 离线包**不在 TAA 容器内**：TEE-LLM 网关拆分为独立部署后，Ollama 与网关同容器，
+由 `teellm` 子模块提供源码、由仓库根目录的 `deploy-llm.sh` 独立部署到远端宿主机的
+Kata CSV2 Pod（`./deploy-llm.sh --create-pod start`，之后 `./deploy-llm.sh start` 复用它），
+TAA 通过 Pod IP 访问。
 
 ## 11. 项目目录结构
 

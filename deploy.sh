@@ -211,47 +211,27 @@ CUSTOM_BASE_ARCHIVE=""
 CUSTOM_BASE_IMAGE=""
 CUSTOM_SAVE_CONFIG=""
 LOCAL_DOCKER_NETWORK="${LOCAL_DOCKER_NETWORK:-host}"
-# TEE-LLM gateway endpoint for the local docker start path. The gateway either shares taa's
-# network namespace (loopback) or runs in its own container (reached by container IP), so that
-# path discovers it via resolve_llm_endpoint below instead of assuming loopback. Set
-# TAA_LLM_ENDPOINT to pin it explicitly (e.g. https://10.0.0.2:8443); that also covers the
-# remote deploy path, which cannot discover a container it does not run. The save path does not
-# use either: it keeps the endpoint written in the production template, verbatim.
+# TEE-LLM gateway endpoint baked into taa's config. The gateway does not run on this host at all --
+# it is deployed as a Kata CSV2 Pod on the remote host (see deploy-llm.sh), which prints the Pod IP
+# to use -- so this value is normally supplied explicitly through TAA_LLM_ENDPOINT. The loopback
+# fallback covers a gateway that shares taa's network namespace.
 TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-}"
-TAA_TEELLM_CONTAINER="${TAA_TEELLM_CONTAINER:-taa-teellm}"
 TAA_TEELLM_PORT="${TAA_TEELLM_PORT:-8443}"
 LOCAL_DOCKER_INPUT_DIR="${LOCAL_DOCKER_INPUT_DIR:-/opt/taa/input}"
 # The result directory itself, not the output root: this value becomes model.output.result, and all
 # three templates put it one level down (/opt/taa/output/result) so results do not share a directory
-# with log/ and progress/ -- which deploy-docker.sh creates as exactly that three-way split. Passing
-# the root here was the same slip as in the save path, and it produced a different layout from the
-# template in both places. TAA creates whichever of the three directories it needs, so pre-creating
-# only this one is enough.
+# with log/ and progress/ -- the three-way split this deployment itself creates. Passing the root
+# here was the same slip as in the save path, and it produced a different layout from the template
+# in both places. TAA creates whichever of the three directories it needs, so pre-creating only this
+# one is enough.
 LOCAL_DOCKER_OUTPUT_DIR="${LOCAL_DOCKER_OUTPUT_DIR:-/opt/taa/output/result}"
 
-# Resolve the TEE-LLM gateway endpoint for the local docker start path. An explicit
-# TAA_LLM_ENDPOINT wins. Otherwise, if the teellm container is running, use its address: the
-# gateway has its own container by default (see deploy-llm.sh), and taa reaches it by container
-# IP. Fall back to loopback, which is correct when the gateway shares taa's network namespace --
-# a host-networked teellm container reports no IP and lands here too.
+# Resolve the TEE-LLM gateway endpoint for local docker deploys. TAA_LLM_ENDPOINT is the only way
+# to name a gateway that runs elsewhere; the loopback fallback is correct when the gateway shares
+# taa's network namespace.
 resolve_llm_endpoint() {
   if [[ -n "$TAA_LLM_ENDPOINT" ]]; then
     printf '%s' "$TAA_LLM_ENDPOINT"
-    return 0
-  fi
-  local teellm_ip=""
-  if command -v docker >/dev/null 2>&1; then
-    teellm_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
-      "$TAA_TEELLM_CONTAINER" 2>/dev/null || true)"
-  fi
-  # A stopped container is not "no address": docker 29 renders the zero netip.Addr as the literal
-  # string "invalid IP", which is non-empty and would otherwise be baked into the image as
-  # "https://invalid IP:8443" -- a URL with a space in it. Only a dotted quad is accepted here.
-  if [[ -n "$teellm_ip" && ! "$teellm_ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
-    teellm_ip=""
-  fi
-  if [[ -n "$teellm_ip" ]]; then
-    printf 'https://%s:%s' "$teellm_ip" "$TAA_TEELLM_PORT"
     return 0
   fi
   printf 'https://127.0.0.1:%s' "$TAA_TEELLM_PORT"
@@ -1630,7 +1610,7 @@ else
         ;;
       qwen)
         info "Qwen/Ollama/TEE-LLM is now independently managed by teellm submodule."
-        info "To deploy TEE-LLM, please execute: ./deploy-llm.sh [docker|remote]"
+        info "To deploy TEE-LLM, please execute: ./deploy-llm.sh"
         ;;
       --model=*)
         CLI_MODEL="${arg#*=}"
