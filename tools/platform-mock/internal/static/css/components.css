@@ -1815,3 +1815,101 @@ kbd {
   border-radius: 4px;
   box-shadow: 0 1px 1px rgba(0,0,0,0.1);
 }
+
+/* ── Console mode: the TEE console and the FHE console ── */
+/* The two consoles share one page and one set of endpoints; only the panels
+   differ, because the two instance types do different work. The TEE instance
+   audits the model and attests to a CSV guest; the FHE instance passes the model
+   and the data straight to the FHE service and has no attestation, no audit and
+   no phase. Body[data-mode] is what selects the set, so a panel is hidden by
+   being tagged rather than by any script hiding it panel by panel.
+
+   The tag is an attribute rather than a class because the renderers assign
+   className whole - pill.className = 'status-pill pending' - so a class added in
+   the markup is erased by the first poll and the panel reappears under the other
+   console. An attribute survives every one of those assignments. */
+body[data-mode="fhe"] [data-console="tee"],
+body[data-mode="tee"] [data-console="fhe"] {
+  display: none !important;
+}
+
+.console-mode-bar {
+  display: inline-flex;
+  align-items: center;
+  background: var(--panel-sub);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px;
+  gap: 3px;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.console-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 650;
+  cursor: pointer;
+  background: transparent;
+  color: var(--muted);
+  transition: all .18s cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+}
+
+.console-mode-btn:hover:not(.active) {
+  color: var(--text);
+  background: rgba(127, 127, 127, .1);
+}
+
+.console-mode-btn.active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 1px 4px rgba(37, 99, 235, .35);
+}
+
+/* The FHE mode is marked apart from the TEE one at a glance: the badge keeps the
+   accent for TEE and turns green for FHE, so a screenshot says which console it
+   is without reading the label. */
+body[data-mode="fhe"] .console-mode-btn.active {
+  background: var(--ok);
+  box-shadow: 0 1px 4px rgba(5, 150, 105, .35);
+}
+
+body[data-mode="fhe"] .header-badge {
+  background: rgba(5, 150, 105, 0.1);
+  color: var(--ok);
+  border-color: rgba(5, 150, 105, 0.25);
+}
+
+.fhe-file-select {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 13px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.fhe-file-hint {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin: 4px 0 10px;
+}
+
+.fhe-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin: 4px 0 10px;
+}
+
+@media (max-width: 768px) {
+  .fhe-picker-grid {
+    grid-template-columns: 1fr;
+  }
+}

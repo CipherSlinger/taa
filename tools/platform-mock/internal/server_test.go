@@ -2684,3 +2684,69 @@ func TestUploadEncryptModeMapping(t *testing.T) {
 		})
 	}
 }
+
+// TestConsoleModePanelsAreTaggedAndHidden is the guard for the TEE/FHE console
+// switch, which is otherwise a set of agreements no compiler checks.
+//
+// The mode is carried by body[data-mode] and the panels differ by being tagged
+// data-console="tee" / "fhe" in the markup, so three separate things have to line
+// up for the switch to do anything: the markup has to carry the tags, the
+// stylesheet has to hide both sets, and the script has to know both mode names.
+// Any one of them missing leaves a console that looks switched but is not - a TEE
+// panel still showing under an FHE heading, or a button calling a function that is
+// not there.
+//
+// Both directions of the hiding rule are asserted separately because they fail
+// differently: without the fhe arm the FHE console quietly keeps every TEE panel,
+// and without the tee arm the FHE-only panel follows the operator into the TEE
+// console instead.
+//
+// The tag is an attribute rather than a class on purpose. The renderers assign
+// className whole, so a class here is erased by the first poll and the panel comes
+// back - which is exactly what the audit pill did before this was an attribute.
+// A class-based selector would pass this test and still be wrong, so the rule is
+// asserted in the form that survives.
+func TestConsoleModePanelsAreTaggedAndHidden(t *testing.T) {
+	css, err := staticFS.ReadFile("static/css/components.css")
+	if err != nil {
+		t.Fatalf("read the embedded components.css: %v", err)
+	}
+	stylesheet := string(css)
+
+	for _, rule := range []string{
+		`body[data-mode="fhe"] [data-console="tee"]`,
+		`body[data-mode="tee"] [data-console="fhe"]`,
+	} {
+		if !strings.Contains(stylesheet, rule) {
+			t.Errorf("components.css has no %s rule, so that set of panels is never hidden", rule)
+		}
+	}
+
+	for _, mode := range []string{"tee", "fhe"} {
+		if !strings.Contains(frontendBundle, `data-console="`+mode+`"`) {
+			t.Errorf("no element is tagged data-console=%q, so the switch has nothing to act on", mode)
+		}
+	}
+
+	// The switch itself: one button per mode, and each mode named in the script.
+	for _, mode := range []string{"tee", "fhe"} {
+		if !strings.Contains(frontendBundle, `data-mode="`+mode+`"`) {
+			t.Errorf("no console-mode button carries data-mode=%q", mode)
+		}
+		if !strings.Contains(frontendBundle, mode+": {") {
+			t.Errorf("CONSOLE_MODES has no %q entry, so setConsoleMode would refuse it", mode)
+		}
+	}
+	if !strings.Contains(frontendBundle, "function setConsoleMode(") {
+		t.Error("setConsoleMode is missing, but the console-mode buttons call it")
+	}
+	if !strings.Contains(frontendBundle, "function initConsoleMode(") {
+		t.Error("initConsoleMode is missing, so nothing applies the mode on load")
+	}
+
+	// The body has to carry a mode before the script runs, or the first paint shows
+	// both consoles' panels at once.
+	if !strings.Contains(frontendBundle, `<body data-mode="tee"`) {
+		t.Error("body has no data-mode attribute, so both panel sets render until the script runs")
+	}
+}

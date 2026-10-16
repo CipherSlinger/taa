@@ -15,6 +15,90 @@ let lastPhaseSwitchResp = null;
 let lastRegisterModalTitle = '平台注册返回 body';
 let lastRegisterModalBody = null;
 
+// ── Console mode: which kind of TAA instance this console stands in for ──
+// Both instance types register, report and run tasks through the same endpoints,
+// so nothing the mock receives says which one it is serving. The mode is therefore
+// the operator's choice, and what it changes is which panels are worth showing:
+// a TEE instance audits and attests, an FHE instance does neither.
+//
+// The panels are tagged tee-only / fhe-only in the markup and the CSS hides the
+// set that does not match body[data-mode]. That is deliberately not a script that
+// hides panel by panel: every panel hidden here lives in the same block as the one
+// shown, and a list in JavaScript would drift from the markup it describes.
+const CONSOLE_MODES = {
+  tee: { badge: 'TEE Enclave Console', title: 'TAA 平台模拟器' },
+  fhe: { badge: 'FHE Compute Console', title: 'TAA 平台模拟器 · FHE' },
+};
+
+const CONSOLE_MODE_STORAGE_KEY = 'platform-mock-console-mode';
+let consoleMode = 'tee';
+
+// readStoredConsoleMode is defensive because the storage can throw rather than
+// return null: a private window, or site data turned off, makes the accessor
+// itself raise. A console that refuses to render over a remembered preference is
+// worse than one that forgets it.
+function readStoredConsoleMode() {
+  try {
+    return localStorage.getItem(CONSOLE_MODE_STORAGE_KEY);
+  } catch (_) {
+    return null;
+  }
+}
+
+function storeConsoleMode(mode) {
+  try {
+    localStorage.setItem(CONSOLE_MODE_STORAGE_KEY, mode);
+  } catch (_) {
+    // Nothing to do: the mode still applies to this page view.
+  }
+}
+
+// resolveConsoleMode picks the mode this page opens in: an explicit ?mode= wins,
+// so a link or a deployment script can open straight into one console, then the
+// remembered one, then TEE.
+function resolveConsoleMode() {
+  let requested = '';
+  try {
+    requested = new URLSearchParams(location.search).get('mode') || '';
+  } catch (_) {
+    requested = '';
+  }
+  requested = requested.trim().toLowerCase();
+  if (CONSOLE_MODES[requested]) return requested;
+  const stored = (readStoredConsoleMode() || '').trim().toLowerCase();
+  if (CONSOLE_MODES[stored]) return stored;
+  return 'tee';
+}
+
+// setConsoleMode switches the console and remembers the choice. Every panel that
+// differs between the two is selected by the body attribute this sets, so there is
+// nothing else to keep in sync here.
+function setConsoleMode(mode, persist = true) {
+  const next = String(mode || '').trim().toLowerCase();
+  if (!CONSOLE_MODES[next]) return consoleMode;
+
+  consoleMode = next;
+  document.body.dataset.mode = next;
+
+  const meta = CONSOLE_MODES[next];
+  const badge = document.getElementById('consoleBadge');
+  if (badge) badge.textContent = meta.badge;
+  document.title = meta.title;
+
+  document.querySelectorAll('.console-mode-btn[data-mode]').forEach(btn => {
+    const active = btn.dataset.mode === next;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+
+  if (persist) storeConsoleMode(next);
+  return consoleMode;
+}
+
+function initConsoleMode() {
+  setConsoleMode(resolveConsoleMode(), false);
+}
+
 // DOM Helpers
 function text(id, value) {
   const el = document.getElementById(id);
@@ -50,6 +134,147 @@ function randomizeImportModelIds() {
 function randomizeImportIds() {
   randomizeField('importRequestId', 'req-data');
   randomizeField('importTaskId', 'task-data');
+}
+
+function randomizeFheIds() {
+  randomizeField('fheRequestId', 'req-fhe');
+  randomizeField('fheTaskId', 'task-fhe');
+}
+
+// ── FHE task submission ──
+// The FHE chain starts here rather than at TAA's own import endpoint: the mock owns
+// the upload directory and the address TAA can reach it on, so it is the mock that
+// can turn an uploaded file name into the evalKeyUrl and the SM3 digest TAA needs.
+
+// formatFileSize renders a byte count the way the upload list does, so the same
+// file reads the same in both places.
+function formatFileSize(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return value + ' B';
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let scaled = value / 1024;
+  let i = 0;
+  while (scaled >= 1024 && i < units.length - 1) {
+    scaled /= 1024;
+    i++;
+  }
+  return scaled.toFixed(scaled >= 10 ? 1 : 2) + ' ' + units[i];
+}
+
+// fillFheFileSelect replaces a select's options with the uploaded files, keeping
+// the current choice when that file is still there. The value is the stored name
+// rather than the original one: /api/fhe/submit resolves the name against the
+// upload directory, and the directory holds the stored name.
+function fillFheFileSelect(selectId, files, preferredSuffix) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  const previous = sel.value;
+  sel.innerHTML = '';
+
+  if (files.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '（上传目录里还没有文件）';
+    sel.appendChild(opt);
+    return;
+  }
+
+  let preferred = '';
+  files.forEach(file => {
+    const opt = document.createElement('option');
+    opt.value = file.filename;
+    const size = formatFileSize(file.size);
+    opt.textContent = (file.originalName || file.filename) + ' · ' + size +
+      (file.encrypted ? ' · 密文' : '');
+    sel.appendChild(opt);
+    if (!preferred && preferredSuffix && String(file.originalName || '').toLowerCase().endsWith(preferredSuffix)) {
+      preferred = file.filename;
+    }
+  });
+
+  // A file already chosen stays chosen, unless it is gone; otherwise the suffix
+  // hint picks the likely one, and otherwise the newest file does.
+  if (previous && files.some(f => f.filename === previous)) {
+    sel.value = previous;
+  } else if (preferred) {
+    sel.value = preferred;
+  }
+}
+
+// refreshFheUploadOptions fills both pickers from the mock's upload directory.
+async function refreshFheUploadOptions() {
+  try {
+    const res = await fetch('/api/uploads', { cache: 'no-store' });
+    const data = await res.json();
+    const result = responseResult(data);
+    const files = (result && result.files) || [];
+    fillFheFileSelect('fheEvalKeyFile', files, '.bin');
+    fillFheFileSelect('fheInputZip', files, '.zip');
+  } catch (err) {
+    ['fheEvalKeyFile', 'fheInputZip'].forEach(id => {
+      const sel = document.getElementById(id);
+      if (sel) sel.innerHTML = '<option value="">读取上传目录失败: ' + escapeHtml(String(err)) + '</option>';
+    });
+  }
+}
+
+async function submitFheTask() {
+  const evalKeyFile = (document.getElementById('fheEvalKeyFile') || {}).value || '';
+  const inputZip = (document.getElementById('fheInputZip') || {}).value || '';
+  const requestId = ((document.getElementById('fheRequestId') || {}).value || '').trim();
+  const taskId = ((document.getElementById('fheTaskId') || {}).value || '').trim();
+
+  if (!evalKeyFile) {
+    showResult('fheSubmitResult', false, '请先选择 evalKey 文件');
+    return;
+  }
+  if (!inputZip) {
+    showResult('fheSubmitResult', false, '请先选择 inputZip 数据包');
+    return;
+  }
+
+  const reqBody = { evalKeyFile, inputZip, requestId, taskId };
+  showResultRunning('fheSubmitResult', '正在下发 FHE 任务...');
+
+  try {
+    const res = await fetch('/api/fhe/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(reqBody),
+    });
+    const text = await res.text();
+    recordInteraction('fheSubmit', {
+      title: 'FHE 任务下发',
+      method: 'POST',
+      url: location.origin + '/api/fhe/submit',
+      reqBody,
+      respBody: text,
+      statusCode: res.status,
+      primaryContent: text,
+      secondaryContent: formatJSONText(JSON.stringify(reqBody)),
+    });
+    showResult('fheSubmitResult', res.ok, text);
+    if (res.ok) {
+      // TAA reports the task back through reportRes/reportProgress, so the panels
+      // below are where its progress shows up - refresh them now rather than
+      // waiting for the next poll tick.
+      refreshReportResStatus();
+      refreshReportProgress();
+    }
+  } catch (e) {
+    const message = '下发失败: ' + e.message;
+    recordInteraction('fheSubmit', {
+      title: 'FHE 任务下发',
+      method: 'POST',
+      url: location.origin + '/api/fhe/submit',
+      reqBody,
+      respBody: message,
+      statusCode: 0,
+      primaryContent: message,
+      secondaryContent: formatJSONText(JSON.stringify(reqBody)),
+    });
+    showResult('fheSubmitResult', false, message);
+  }
 }
 
 // ── File Upload Formatting & Drag-and-Drop ──
@@ -322,6 +547,7 @@ const RESULT_TITLES = {
   resourceInfoResult: '/v1/taa/getResourceInfo 返回',
   switchResult: '/v1/taa/switch 返回',
   attestationResult: '/v1/taa/getAttestation 返回',
+  fheSubmitResult: '/api/fhe/submit 返回',
 };
 
 const RESULT_INTERACTION_KEYS = {
@@ -331,6 +557,7 @@ const RESULT_INTERACTION_KEYS = {
   resourceInfoResult: 'resourceInfo',
   switchResult: 'switch',
   attestationResult: 'attestation',
+  fheSubmitResult: 'fheSubmit',
 };
 
 const HEADER_RESULT_MAPPINGS = {
@@ -351,6 +578,12 @@ const HEADER_RESULT_MAPPINGS = {
     boxId: 'importStatusBox',
     dotId: 'importDot',
     textId: 'importStatusText',
+  },
+  fheSubmitResult: {
+    btnId: 'fheSubmitBodyBtn',
+    boxId: 'fheSubmitStatusBox',
+    dotId: 'fheSubmitDot',
+    textId: 'fheSubmitStatusText',
   },
 };
 
@@ -1586,9 +1819,12 @@ async function detectTAAProxy() {
 
 // ── Application Lifecycle Bootstrapping ──
 document.addEventListener('DOMContentLoaded', () => {
+  // First, so the page never paints the wrong console's panels on the way in.
+  initConsoleMode();
   detectTAAProxy();
   setupResourceUrlDropZones();
   refreshUploadedFiles();
+  refreshFheUploadOptions();
   refreshStatus();
   refreshReportResStatus();
   setReportModelImportPending();

@@ -8,13 +8,20 @@
   <link rel="stylesheet" href="/static/css/layout.css">
   <link rel="stylesheet" href="/static/css/components.css">
 </head>
-<body>
+<body data-mode="tee">
 <main>
   <header style="margin-bottom: 22px;">
+    <!-- Top-left: which kind of TAA instance this console is standing in for.
+         Both instance types register here the same way, so the console is the
+         operator's to pick rather than something the registration reveals. -->
+    <div class="console-mode-bar" id="consoleModeBar" role="group" aria-label="控制台模式" style="margin-bottom: 12px;">
+      <button type="button" class="console-mode-btn active" data-mode="tee" onclick="setConsoleMode('tee')">TEE 机密计算</button>
+      <button type="button" class="console-mode-btn" data-mode="fhe" onclick="setConsoleMode('fhe')">FHE 同态计算</button>
+    </div>
     <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom: 6px;">
       <h1>
         TAA 平台模拟器
-        <span class="header-badge">TEE Enclave Console</span>
+        <span class="header-badge" id="consoleBadge">TEE Enclave Console</span>
       </h1>
       <span id="taaTargetPill" class="status-pill pending" style="display:none; font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">
         <span class="pill-dot"></span>
@@ -66,8 +73,9 @@
       </div>
     </div>
 
-    <!-- Row 3: Attestation operations -->
-    <div class="card-compact" style="min-height:auto;">
+    <!-- Row 3: Attestation operations. TEE only: the FHE instance runs on a plain
+         GPU host and has no CSV guest to attest to. -->
+    <div class="card-compact" data-console="tee" style="min-height:auto;">
       <input type="hidden" id="attestRequestId" value="req-mock-attest-001">
       <div id="attestationResult" class="test-result" style="display:none;"></div>
       <div class="actions" style="margin-top:0; display:flex; gap:8px; flex-wrap:wrap;">
@@ -79,7 +87,10 @@
   </section>
 
   <!-- ─── 训练流程（平台 → TAA）接口测试 ─── -->
-  <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; margin:24px 0 10px; flex-wrap:wrap;">
+  <!-- TEE only: the debug/test/train/infer phases belong to the audited training
+       flow. The FHE instance has one path - the model and the data go to the FHE
+       service - and no phase to switch. -->
+  <div data-console="tee" style="display:flex; align-items:center; justify-content:space-between; gap:16px; margin:24px 0 10px; flex-wrap:wrap;">
     <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
       <h2 style="margin:0;">训练流程</h2>
       <div class="phase-switch-bar">
@@ -159,7 +170,9 @@
         </div>
         <div id="uploadedFilesList" style="display:flex; flex-direction:column; gap:6px;"></div>
       </div>
-      <div id="card-resourceInfo" style="border-top: 1px dashed var(--line); margin-top: 14px; padding-top: 14px; display:flex; flex-direction:column;">
+      <!-- TEE only: the directory-tree probe belongs to the resource-analysis
+           flow, which the FHE chain does not run. -->
+      <div id="card-resourceInfo" data-console="tee" style="border-top: 1px dashed var(--line); margin-top: 14px; padding-top: 14px; display:flex; flex-direction:column;">
         <label for="resourceInfoUrl">resourceUrl (目录树分析)</label>
         <input id="resourceInfoUrl" value="http://example.com/data.tar.gz">
         <div class="actions">
@@ -180,7 +193,7 @@
               <span id="reportModelImportDot" class="dot pill-dot pending"></span>
               <span id="reportModelImportStatusText">模型导入结果上报</span>
             </span>
-            <span id="reportAuditPill" class="status-pill pending">
+            <span id="reportAuditPill" class="status-pill pending" data-console="tee">
               <span id="reportAuditDot" class="dot pill-dot pending"></span>
               <span id="reportAuditStatusText">代码审计结果</span>
             </span>
@@ -193,7 +206,7 @@
           </div>
           <button id="importModelBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('importModelResult')" disabled>查看返回</button>
           <button id="reportModelImportBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportModelImportBodyModal()" disabled title="查看模型导入回调上报返回体">导入上报</button>
-          <button id="reportAuditBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportAuditBodyModal()" disabled title="查看代码审计回调上报返回体">审计上报</button>
+          <button id="reportAuditBodyBtn" class="secondary" data-console="tee" style="padding:6px 12px; font-size:13px;" onclick="openReportAuditBodyModal()" disabled title="查看代码审计回调上报返回体">审计上报</button>
         </div>
       </div>
       <label for="importModelResourceUrl">resourceUrl</label>
@@ -220,27 +233,31 @@
           </div>
         </div>
       </div>
-      <div style="margin: 10px 0 6px; display: flex; align-items: center; gap: 12px;">
-        <label class="switch-label" for="importModelUsePublicKeySwitch">
-          <span class="switch-wrapper">
-            <input type="checkbox" id="importModelUsePublicKeySwitch" onchange="onImportModelUsePublicKeyToggle(this)">
-            <span class="switch-slider"></span>
-          </span>
-          <span>是否填入公钥</span>
-        </label>
-      </div>
-      <label>commands</label>
-      <div id="importModelCommandsList" style="display:flex; flex-direction:column; gap:6px;">
-        <div class="dynamic-input-row" style="display:flex; gap:6px; align-items:center;">
-          <input type="text" class="import-model-cmd-input" value="python3 train_fusion.py -b TransMUF -g cpu -bc 16 -e 30 -d _dkd -s 128" placeholder="单条命令，如 python3 train.py" style="flex:1; margin:0;">
-          <button type="button" class="icon-btn-compact" onclick="addModelCommandRow(this)" title="添加一行" style="padding:4px 8px; font-size:12px;">+</button>
+      <!-- TEE only: the FHE instance runs no model command and needs no platform
+           public key - it hands the package straight to the FHE service. -->
+      <div data-console="tee" style="display:flex; flex-direction:column;">
+        <div style="margin: 10px 0 6px; display: flex; align-items: center; gap: 12px;">
+          <label class="switch-label" for="importModelUsePublicKeySwitch">
+            <span class="switch-wrapper">
+              <input type="checkbox" id="importModelUsePublicKeySwitch" onchange="onImportModelUsePublicKeyToggle(this)">
+              <span class="switch-slider"></span>
+            </span>
+            <span>是否填入公钥</span>
+          </label>
         </div>
-      </div>
-      <label style="margin-top:8px;">env (KEY=VALUE)</label>
-      <div id="importModelEnvList" style="display:flex; flex-direction:column; gap:6px;">
-        <div class="dynamic-input-row" style="display:flex; gap:6px; align-items:center;">
-          <input type="text" class="import-model-env-input" value="CUDA_VISIBLE_DEVICES=0" placeholder="KEY=VALUE" style="flex:1; margin:0;">
-          <button type="button" class="icon-btn-compact" onclick="addModelEnvRow(this)" title="添加一行" style="padding:4px 8px; font-size:12px;">+</button>
+        <label>commands</label>
+        <div id="importModelCommandsList" style="display:flex; flex-direction:column; gap:6px;">
+          <div class="dynamic-input-row" style="display:flex; gap:6px; align-items:center;">
+            <input type="text" class="import-model-cmd-input" value="python3 train_fusion.py -b TransMUF -g cpu -bc 16 -e 30 -d _dkd -s 128" placeholder="单条命令，如 python3 train.py" style="flex:1; margin:0;">
+            <button type="button" class="icon-btn-compact" onclick="addModelCommandRow(this)" title="添加一行" style="padding:4px 8px; font-size:12px;">+</button>
+          </div>
+        </div>
+        <label style="margin-top:8px;">env (KEY=VALUE)</label>
+        <div id="importModelEnvList" style="display:flex; flex-direction:column; gap:6px;">
+          <div class="dynamic-input-row" style="display:flex; gap:6px; align-items:center;">
+            <input type="text" class="import-model-env-input" value="CUDA_VISIBLE_DEVICES=0" placeholder="KEY=VALUE" style="flex:1; margin:0;">
+            <button type="button" class="icon-btn-compact" onclick="addModelEnvRow(this)" title="添加一行" style="padding:4px 8px; font-size:12px;">+</button>
+          </div>
         </div>
       </div>
       <div class="actions">
@@ -265,6 +282,11 @@
           <button id="reportResBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openReportResBodyModal()" disabled>查看返回</button>
         </div>
       </div>
+      <!-- TEE only: this manual import posts a bare resourceUrl to TAA. The FHE
+           chain needs the eval key and its SM3 digest with it, which is what the
+           FHE 任务下发 card below sends instead. The report panel underneath is
+           shared: both instance types report their results back through it. -->
+      <div data-console="tee" style="display:flex; flex-direction:column;">
       <label for="importResourceUrl">resourceUrl</label>
       <input id="importResourceUrl" value="http://example.com/data.tar.gz">
       <div class="id-input-row">
@@ -293,6 +315,7 @@
         <button onclick="testImport()">发送测试</button>
       </div>
       <div id="importResult" style="display:none;"></div>
+      </div>
       <div id="card-reportRes" style="border-top: 1px dashed var(--line); margin-top: 14px; padding-top: 14px; display:flex; flex-direction:column; gap:10px;">
         <div>
           <div class="status" style="font-size:14px; font-weight:650;"><span id="reportResDot" class="dot status-pill pending"></span><span id="reportResStatusText">等待训练结果上报</span></div>
@@ -325,6 +348,74 @@
       </div>
     </section>
   </div>
+
+  <!-- ─── FHE 任务下发 ─── -->
+  <!-- FHE only. This is the step the TEE console has no equivalent of: the platform
+       hands the FHE service an evaluation key and a data package, and TAA starts and
+       drives the task from them. Both files are named by the name the upload
+       endpoint returned, which is how a real platform references its object store. -->
+  <div data-console="fhe" style="display:flex; align-items:center; justify-content:space-between; gap:16px; margin:24px 0 10px; flex-wrap:wrap;">
+    <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+      <h2 style="margin:0;">FHE 任务下发</h2>
+      <span class="muted" style="font-size:12.5px;">POST /api/fhe/submit → TAA /v1/taa/import（evalKeyUrl + evalKeyFileHash）</span>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <div id="fheSubmitStatusBox" class="status" style="font-size:12px; display:none;">
+        <span id="fheSubmitDot" class="dot status-pill pending"></span>
+        <span id="fheSubmitStatusText"></span>
+      </div>
+      <button id="fheSubmitBodyBtn" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="openStoredResult('fheSubmitResult')" disabled>查看返回</button>
+    </div>
+  </div>
+  <section class="card" id="card-fheSubmit" data-console="fhe" style="margin-bottom:24px;">
+    <div class="card-head">
+      <div>
+        <h2>① 选择评测密钥与数据包</h2>
+        <div class="muted" style="font-size:12.5px; margin-top:4px;">文件来自本 mock 的上传目录（① 文件上传 / 资源信息 一栏上传）</div>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+        <button type="button" class="secondary" style="padding:6px 12px; font-size:13px;" onclick="refreshFheUploadOptions()">刷新文件列表</button>
+      </div>
+    </div>
+    <div class="fhe-picker-grid">
+      <div style="display:flex; flex-direction:column;">
+        <label for="fheEvalKeyFile">evalKey（同态评测密钥，未加密）</label>
+        <select id="fheEvalKeyFile" class="fhe-file-select"></select>
+        <div class="fhe-file-hint">mock 会以 SM3 计算该文件的摘要，并把 evalKeyUrl 与 evalKeyFileHash 一并交给 TAA</div>
+      </div>
+      <div style="display:flex; flex-direction:column;">
+        <label for="fheInputZip">inputZip（待推理数据包）</label>
+        <select id="fheInputZip" class="fhe-file-select"></select>
+        <div class="fhe-file-hint">作为 resourceUrl 下发；TAA 收到后即启动 FHE 任务</div>
+      </div>
+    </div>
+    <div class="id-input-row">
+      <button type="button" class="secondary btn-field-random" onclick="randomizeFheIds()" title="同时随机生成 requestId 与 taskId">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px; vertical-align:-1px;">
+          <polyline points="16 3 21 3 21 8"></polyline>
+          <line x1="4" y1="20" x2="21" y2="3"></line>
+          <polyline points="21 16 21 21 16 21"></polyline>
+          <line x1="15" y1="15" x2="21" y2="21"></line>
+          <line x1="4" y1="4" x2="9" y2="9"></line>
+        </svg>
+        随机 ID
+      </button>
+      <div class="id-inputs-cols">
+        <div class="id-input-col">
+          <label for="fheRequestId">requestId</label>
+          <input id="fheRequestId" value="req-mock-fhe-001">
+        </div>
+        <div class="id-input-col">
+          <label for="fheTaskId">taskId</label>
+          <input id="fheTaskId" value="task-mock-fhe-001">
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <button onclick="submitFheTask()">下发 FHE 任务</button>
+    </div>
+    <div id="fheSubmitResult" style="display:none;"></div>
+  </section>
 
   <!-- TAA 运行日志 -->
   <h2>TAA 运行日志</h2>
