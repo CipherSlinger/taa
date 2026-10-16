@@ -5,7 +5,11 @@
 # deploy.sh installs.
 #
 # This script owns the FHE side; deploy.sh owns the TAA image itself.
-set -euo pipefail
+# -E (errtrace) is what makes the ERR trap below reach the run/run_in/render
+# functions and the few subshells: without it bash does not inherit the ERR trap
+# into a function, and every external command here runs inside one, so the trap
+# never fired and every failure exited silently.
+set -Eeuo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -90,18 +94,31 @@ report_left_running() {
 on_error() {
   local rc="$1"
   trap - ERR
+  # With -E the trap is inherited by subshells too, and a subshell's REPORTING is
+  # its own copy: reporting there would leave the parent's REPORTING at 0 and the
+  # parent would report the same failure a second time (run_in's `( cd ... && ... )`
+  # fails exactly once but is entered twice). The subshell leaves the report to the
+  # parent, which sees the subshell's status through `set -e`.
+  if [ "$BASHPID" != "$$" ]; then
+    exit "$rc"
+  fi
   report_left_running "step ${STEP} failed (exit ${rc})"
   exit "$rc"
 }
 on_signal() {
+  local sig="${1:-INT}" num
   trap - INT TERM
   report_left_running "interrupted"
-  exit 130
+  # 130 is the SIGINT convention (128 + 2); TERM is 143, so the signal's own
+  # number decides the status instead of reusing INT's for both.
+  num="$(kill -l "$sig" 2>/dev/null)" || num=2
+  exit $((128 + num))
 }
 # Without these, a `die` after step 4 or a Ctrl-C during `docker load` leaves the
 # host in a state only the operator's memory knows about.
 trap 'on_error $?' ERR
-trap on_signal INT TERM
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
 
 is_dry_run() { [ "$DRY_RUN" = "1" ]; }
 
@@ -175,6 +192,15 @@ Environment:
   NODE_LOCAL_ENV_FILE=${NODE_LOCAL_ENV_FILE:-}
       env file run-node.sh reads instead of \$NODE_DOCKER_DIR/env/node.local.env.
       Both the stack and the report below use this one when it is set.
+  NODE_ID_OVERRIDE=${NODE_ID_OVERRIDE:-}
+      Node id the FHE stack registers under; defaults to this host's short
+      hostname. run-node.sh keeps an exported value over the one in the env file
+      above, so this script, not that file, decides it.
+  NODE_IP_OVERRIDE=${NODE_IP_OVERRIDE:-}
+      Address the stack advertises, which NODE_API_URL is built from; defaults to
+      the first address 'hostname -I' reports. Same override rule: the bundle's
+      env file names another machine, and without the exported value the stack
+      would register as that host.
   FHE_IMAGE=${FHE_IMAGE}
       Image tag the handoff archive is loaded as.
   FHE_IMAGE_ARCHIVE=${FHE_IMAGE_ARCHIVE}
@@ -258,6 +284,20 @@ HOST_REDIS_DIR="${HOST_REDIS_DIR:-$HOST_DATA_DIR/redis}"
 # then hangs until taskTimeoutMs.
 export HOST_DATA_DIR HOST_RUNTIME_DIR HOST_REDIS_DIR API_HOST_PORT
 
+# Same problem, two names nobody had checked. NODE_ID_OVERRIDE and
+# NODE_IP_OVERRIDE are on run-node.sh's restore list and env/node.local.env sets
+# both -- NODE_ID_OVERRIDE=local and NODE_IP_OVERRIDE=172.16.10.178, the FHE
+# team's machine -- so without an exported value the file's win, and the stack
+# registers itself as another team's node with NODE_API_URL pointing at that
+# host's address. The values exported here are the ones run-node.sh would have
+# derived on its own (hostname -s, and the first address hostname -I reports), so
+# this run decides the identity; an operator who wants a specific one sets these
+# in this script's environment and the export passes it through. The report below
+# names the divergence when the env file disagrees.
+NODE_ID_OVERRIDE="${NODE_ID_OVERRIDE:-$(hostname -s 2>/dev/null || true)}"
+NODE_IP_OVERRIDE="${NODE_IP_OVERRIDE:-$(hostname -I 2>/dev/null | awk '{print $1}' || true)}"
+export NODE_ID_OVERRIDE NODE_IP_OVERRIDE
+
 NODE_DOCKER_DIR="$HANDOFF_DIR/deploy/docker"
 # Resolved exactly the way run-node.sh resolves it, so the report below reads the
 # file the stack is going to read and not just the one next to it.
@@ -332,6 +372,23 @@ report_stack_binding() {
       log "$name=$want -- $NODE_ENV_FILE carries $got, which this run overrides: the exported value wins in run-node.sh, so the stack uses $want, not $got"
     fi
   done
+  # The same report for the node identity, which is the pair that used to be a
+  # silent override rather than a reported one. Unlike the four above, a value the
+  # env file carries here is worth a WARNING: the bundle's 172.16.10.178 is not
+  # this host, and an operator reading the banner should see that this run did not
+  # adopt it.
+  for name in NODE_ID_OVERRIDE NODE_IP_OVERRIDE; do
+    want="${!name}"
+    got=""
+    if [ -f "$NODE_ENV_FILE" ]; then
+      got="$(read_env_path "$NODE_ENV_FILE" "$name")"
+    fi
+    if [ -n "$got" ] && [ "$got" != "$want" ]; then
+      warn "$NODE_ENV_FILE carries $name=$got, which this run overrides with $name='$want'; run-node.sh keeps the exported value, so the stack registers as ${want:-the host default}, not $got"
+    else
+      log "$name=${want} (the value $NODE_ENV_FILE carries: ${got:-none})"
+    fi
+  done
   # FHE_IMAGE cannot be pinned the same way, and that is a property of run-node.sh
   # rather than an oversight here: load_local_env_defaults restores only the names
   # on its own list, and LATTI_SERVER_IMAGE is not one of them, so the env file
@@ -346,18 +403,22 @@ report_stack_binding() {
 # The bundle's SHA256SUMS lists client/latti-client-wasm-0.1.0.zip while the
 # shipped file is latti-wasm-0.1.1.zip, so an unconditional `sha256sum -c`
 # always fails. Verify the two artifacts that matter, by their real names.
+#
+# $1 is the name SHA256SUMS uses; $2, when given, is the file to hash, so a
+# caller whose artifact path is overridable can make the checksum cover the file
+# that is actually consumed instead of the one it defaulted to.
 verify_one() {
-  local rel="$1" want got
+  local rel="$1" file="${2:-$HANDOFF_DIR/$1}" want got
   if is_dry_run; then
     log "would verify $rel against SHA256SUMS"
     return 0
   fi
   [ -f "$HANDOFF_DIR/SHA256SUMS" ] || die "no SHA256SUMS in $HANDOFF_DIR"
-  [ -f "$HANDOFF_DIR/$rel" ] || die "missing artifact: $HANDOFF_DIR/$rel"
+  [ -f "$file" ] || die "missing artifact: $file"
   want="$(awk -v f="$rel" '$2 == f || $2 == "*"f {print $1}' "$HANDOFF_DIR/SHA256SUMS")"
   [ -n "$want" ] || die "SHA256SUMS has no entry for $rel"
-  got="$(sha256sum "$HANDOFF_DIR/$rel" | awk '{print $1}')"
-  [ "$got" = "$want" ] || die "checksum mismatch for $rel: got $got want $want"
+  got="$(sha256sum "$file" | awk '{print $1}')"
+  [ "$got" = "$want" ] || die "checksum mismatch for $rel ($file): got $got want $want"
   log "verified $rel"
 }
 
@@ -375,6 +436,13 @@ wait_for_taa() {
 render_taa_config() {
   [ -f "$TAA_FHE_CONFIG" ] || die "TAA config template not found: $TAA_FHE_CONFIG"
   command -v jq >/dev/null 2>&1 || die "command 'jq' is required but not installed or not in PATH"
+  # The two ways the pipeline below fails are not the same failure, so the
+  # destination is checked first and named separately: "$TAA_RENDERED_CONFIG's
+  # directory is missing" is a cp/mkdir problem, and reporting it as "failed to
+  # render with jq" sends the operator to the template.
+  local rendered_dir
+  rendered_dir="$(dirname "$TAA_RENDERED_CONFIG")"
+  [ -d "$rendered_dir" ] || die "cannot write $TAA_RENDERED_CONFIG: $rendered_dir does not exist"
   # Two things happen here that the shell has to do rather than jq: the callback
   # token reaches jq through its environment, never through argv (--arg token would
   # publish the secret in /proc/<pid>/cmdline to every local user for as long as jq
@@ -387,7 +455,7 @@ render_taa_config() {
       '.fhe.callbackBaseUrl = $url | .fhe.callbackToken = $ENV.TAA_CALLBACK_TOKEN
        | .fhe.endpoint = $endpoint | .fhe.dataDir = $data' \
       "$TAA_FHE_CONFIG" > "$TAA_RENDERED_CONFIG" ) \
-    || die "failed to render $TAA_FHE_CONFIG with jq"
+    || die "failed to render $TAA_FHE_CONFIG -> $TAA_RENDERED_CONFIG (jq rejected the template, or the redirect could not create that file)"
   # The file carries the callback token. The redirect above already created it 0600;
   # this is for the case where it already existed with a wider mode.
   chmod 600 "$TAA_RENDERED_CONFIG"
@@ -402,13 +470,18 @@ render_taa_config() {
 }
 
 # Mirrors deploy.sh's container handling: reuse a container that already runs the
-# expected image, recreate one that does not.
+# expected image *and* carries the bind this run needs, recreate one that does not.
 start_taa_container() {
   local -a args=(-d --name "$TAA_CONTAINER_NAME" --network "$TAA_DOCKER_NETWORK")
   args+=(-v "$HOST_DATA_DIR:$HOST_DATA_DIR")
   args+=(--entrypoint tail "$TAA_IMAGE" -f /dev/null)
 
   if is_dry_run; then
+    # A dry run executes nothing -- in particular it does not call docker, which is
+    # what lets it run on a host with no daemon -- so it cannot know whether the
+    # container already exists. Print the decision the real run would make instead
+    # of the create branch as though it were certain.
+    log "dry-run: the real run would reuse $TAA_CONTAINER_NAME if it already exists with image $TAA_IMAGE and the bind $HOST_DATA_DIR:$HOST_DATA_DIR, and would otherwise create it:"
     run docker run "${args[@]}"
     return 0
   fi
@@ -418,7 +491,8 @@ start_taa_container() {
   # container and report it as already running, and every later docker exec would
   # fail against a container this deployment does not own.
   if docker ps -a --format '{{.Names}}' | grep -Fxq "$TAA_CONTAINER_NAME"; then
-    local current_image current_id target_id image_mismatch=false
+    local current_image current_id target_id image_mismatch=false bind_mismatch=false
+    local required_bind current_binds
     current_image="$(docker inspect --format '{{.Config.Image}}' "$TAA_CONTAINER_NAME" 2>/dev/null || true)"
     current_id="$(docker inspect --format '{{.Image}}' "$TAA_CONTAINER_NAME" 2>/dev/null || true)"
     target_id="$(docker image inspect --format '{{.Id}}' "$TAA_IMAGE" 2>/dev/null || true)"
@@ -427,8 +501,28 @@ start_taa_container() {
     elif [ -n "$current_id" ] && [ -n "$target_id" ] && [ "$current_id" != "$target_id" ]; then
       image_mismatch=true
     fi
-    if [ "$image_mismatch" = true ]; then
-      warn "container $TAA_CONTAINER_NAME runs $current_image, expected $TAA_IMAGE; recreating"
+    # The bind is as much a part of the container's identity as its image, for this
+    # script: the config copied in below sets fhe.dataDir to $HOST_DATA_DIR, and the
+    # only thing that makes that path the same directory on both sides is this
+    # bind. Comparing the image alone let a re-run with a different HOST_DATA_DIR
+    # reuse the old container and then push a config for the new directory into it;
+    # taa's os.MkdirAll then created that path in the container's own writable
+    # layer, where no host directory backs it, and the run printed its success
+    # banner. A bind that cannot be read is treated as a mismatch: the failure this
+    # guards is silent, so the unconfirmed case has to take the loud branch.
+    required_bind="$HOST_DATA_DIR:$HOST_DATA_DIR"
+    current_binds="$(docker inspect --format '{{json .HostConfig.Binds}}' "$TAA_CONTAINER_NAME" 2>/dev/null || true)"
+    if ! printf '%s' "$current_binds" \
+         | jq -e --arg b "$required_bind" 'type == "array" and index($b) != null' >/dev/null 2>&1; then
+      bind_mismatch=true
+    fi
+    if [ "$image_mismatch" = true ] || [ "$bind_mismatch" = true ]; then
+      if [ "$image_mismatch" = true ]; then
+        warn "container $TAA_CONTAINER_NAME runs $current_image, expected $TAA_IMAGE; recreating"
+      fi
+      if [ "$bind_mismatch" = true ]; then
+        warn "container $TAA_CONTAINER_NAME does not carry the bind $required_bind (its binds: ${current_binds:-unreadable}); recreating so taa sees the data directory this run configured"
+      fi
       run docker rm -f "$TAA_CONTAINER_NAME"
     fi
   fi
@@ -447,11 +541,46 @@ start_taa_container() {
 }
 
 # ── Guards on the operator-invented paths ────────────────────────────────────
-# Both are configuration mistakes rather than missing inputs, so unlike
+# All of them are configuration mistakes rather than missing inputs, so unlike
 # require_input they refuse in --dry-run too: a dry run is where a path this cheap
 # to check and this expensive to survive should be caught.
+#
+# The bundle trees the staging step reads from are defined here so every guard runs
+# before the run has done anything at all -- including `docker load`, which mutates
+# the daemon's image store.
+RUNTIME_SRC="$HANDOFF_DIR/third_party/latti-ai-runtime"
+MODELS_SRC="$HANDOFF_DIR/data/models"
+# $HOST_DATA_DIR/models is the one the staging step copies into; naming it once keeps
+# the guard and the copy below on the same path.
+STAGED_MODELS_DIR="$HOST_DATA_DIR/models"
+
 if paths_overlap "$HOST_RUNTIME_DIR" "$HOST_DATA_DIR"; then
   die "HOST_RUNTIME_DIR=$HOST_RUNTIME_DIR and HOST_DATA_DIR=$HOST_DATA_DIR overlap (one is the other, or one contains the other); 'rsync -a --delete' in the staging step targets HOST_RUNTIME_DIR, so this would delete the eval-key cache and the task state before only models/ is put back"
+fi
+# Every tree the staging step must not consume, checked against the destination it
+# deletes into. The check that used to stand in for this was equality-only, which
+# HOST_RUNTIME_DIR set to the source's *parent* walks straight through: the files
+# being read are the files being deleted, and all rsync reports is "file has
+# vanished" (exit 24). paths_overlap is nesting-aware and symmetric, so the two
+# spellings of the mistake -- one containing the other -- are both caught. Equality
+# with RUNTIME_SRC is the one legitimate overlap ("already staged in place") and is
+# excluded, exactly as it is in the copy below.
+if paths_overlap "$RUNTIME_SRC" "$HOST_RUNTIME_DIR" && ! same_path "$RUNTIME_SRC" "$HOST_RUNTIME_DIR"; then
+  die "HOST_RUNTIME_DIR=$HOST_RUNTIME_DIR and the bundle runtime $RUNTIME_SRC overlap (one contains the other); 'rsync -a --delete' targets HOST_RUNTIME_DIR, so staging would delete the source it is reading from"
+fi
+if paths_overlap "$MODELS_SRC" "$HOST_RUNTIME_DIR"; then
+  die "HOST_RUNTIME_DIR=$HOST_RUNTIME_DIR and the bundle models $MODELS_SRC overlap (one contains the other); 'rsync -a --delete' targets HOST_RUNTIME_DIR, so staging would delete the models the next step copies from"
+fi
+# HOST_REDIS_DIR may live outside HOST_DATA_DIR, and then the guard above does not
+# reach it: the redis AOF is still a tree the rsync must not delete.
+if paths_overlap "$HOST_REDIS_DIR" "$HOST_RUNTIME_DIR"; then
+  die "HOST_RUNTIME_DIR=$HOST_RUNTIME_DIR and HOST_REDIS_DIR=$HOST_REDIS_DIR overlap (one contains the other); 'rsync -a --delete' targets HOST_RUNTIME_DIR, so staging would delete the redis AOF"
+fi
+# And the copy itself: 'cp -a $MODELS_SRC/. $STAGED_MODELS_DIR/' recurses when the
+# source is inside the destination or the other way round. Equality is the bundle's
+# own data directory being used in place, which the copy skips.
+if paths_overlap "$MODELS_SRC" "$STAGED_MODELS_DIR" && ! same_path "$MODELS_SRC" "$STAGED_MODELS_DIR"; then
+  die "$STAGED_MODELS_DIR and the bundle models $MODELS_SRC overlap (one contains the other); 'cp -a' would copy a tree into itself"
 fi
 # deploy/start.sh is the supervisor this script now runs TAA under, and it owns
 # /root/taa: it cds there, runs ./taa there -- which is how taa finds
@@ -460,6 +589,12 @@ fi
 # on the config baked into the image while this script reported success.
 if [ "$TAA_CONTAINER_WORKDIR" != "/root/taa" ]; then
   die "TAA_CONTAINER_WORKDIR=$TAA_CONTAINER_WORKDIR, but deploy/start.sh runs taa in /root/taa and taa reads ./taa-config.json from its working directory; the rendered config would never be read"
+fi
+# TAA_CONTAINER_CONFIG_PATH decides the same thing from the other end, so it gets
+# the same treatment rather than being left as a knob that silently stops the
+# supervisor from seeing the rendered config.
+if [ "$TAA_CONTAINER_CONFIG_PATH" != "$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE" ]; then
+  die "TAA_CONTAINER_CONFIG_PATH=$TAA_CONTAINER_CONFIG_PATH, but deploy/start.sh runs taa with no --config, so taa reads $TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE; the rendered config would never be read"
 fi
 
 # ── Steps ────────────────────────────────────────────────────────────────────
@@ -483,8 +618,16 @@ report_stack_binding
 
 step "verifying the bundle artifacts this deployment consumes"
 # Before the load below, not after: an archive that verifies is imported into the
-# daemon, and until it verifies nothing of it should be.
-verify_one image/latti-server-latest.tar.gz
+# daemon, and until it verifies nothing of it should be. FHE_IMAGE_ARCHIVE is
+# overridable, so the checksum is taken over the file that gets loaded: verifying
+# the default while loading an override verifies nothing about what runs.
+verify_one image/latti-server-latest.tar.gz "$FHE_IMAGE_ARCHIVE"
+# This one covers third_party/latti-ai-runtime.tar.gz, while the staging step
+# rsyncs third_party/latti-ai-runtime/ -- the unpacked directory beside it, which
+# SHA256SUMS carries no checksum for. Unpacking the verified tarball here would be
+# the way to bind them, and it is not worth what it costs: the bundle's own env
+# names that directory, the delivery ships them as one tree, and an empty or
+# missing directory is already refused below. It stays a gap by choice.
 verify_one third_party/latti-ai-runtime.tar.gz
 
 step "importing $FHE_IMAGE from the handoff bundle"
@@ -498,8 +641,6 @@ else
 fi
 
 step "staging the FHE runtime and models"
-RUNTIME_SRC="$HANDOFF_DIR/third_party/latti-ai-runtime"
-MODELS_SRC="$HANDOFF_DIR/data/models"
 # HOST_DATA_DIR may legitimately be the bundle's own data directory (that is the
 # path the bundle's env/node.local.env names), and then the copy below would have
 # source == destination: GNU cp fails with "'...' and '...' are the same file",
@@ -512,23 +653,36 @@ if same_path "$RUNTIME_SRC" "$HOST_RUNTIME_DIR"; then
 else
   # --delete is kept deliberately: it is what makes a re-staged runtime match the
   # bundle instead of accumulating shared objects from an older handoff, and a stale
-  # .so is a silently wrong deployment. The overlap guard above is what makes it
+  # .so is a silently wrong deployment. The overlap guards above are what make it
   # safe, and the checks below close the one way it still destroys something: an
   # empty or missing source would empty the destination. They are skipped in
   # --dry-run, which deletes nothing and has to stay runnable on a host the bundle
   # is not unpacked on.
   if ! is_dry_run; then
     [ -d "$RUNTIME_SRC" ] || die "runtime source not found: $RUNTIME_SRC"
-    [ -n "$(ls -A "$RUNTIME_SRC")" ] || die "runtime source is empty: $RUNTIME_SRC (rsync -a --delete would empty $HOST_RUNTIME_DIR)"
+    # `ls` failing is not the same as `ls` succeeding with nothing to say: a
+    # directory this user cannot read reports the same empty string as an empty one,
+    # and calling that "the source is empty" hides the permission problem behind a
+    # diagnosis that would send the operator looking at the bundle instead.
+    src_entries="$(ls -A "$RUNTIME_SRC" 2>/dev/null)" \
+      || die "runtime source is not readable: $RUNTIME_SRC"
+    [ -n "$src_entries" ] || die "runtime source is empty: $RUNTIME_SRC (rsync -a --delete would empty $HOST_RUNTIME_DIR)"
   fi
   run mkdir -p "$HOST_RUNTIME_DIR"
   run rsync -a --delete "$RUNTIME_SRC/" "$HOST_RUNTIME_DIR/"
 fi
 run mkdir -p "$HOST_DATA_DIR"/{models,keys,tasks,results} "$HOST_REDIS_DIR"
-if same_path "$MODELS_SRC" "$HOST_DATA_DIR/models"; then
-  log "models already in place: $HOST_DATA_DIR/models is the bundle's own data/models"
+if same_path "$MODELS_SRC" "$STAGED_MODELS_DIR"; then
+  log "models already in place: $STAGED_MODELS_DIR is the bundle's own data/models"
 else
-  run cp -a "$MODELS_SRC/." "$HOST_DATA_DIR/models/"
+  # The destination is created just above; the source is not checked anywhere else,
+  # and a missing one is a bundle that was never unpacked rather than an empty
+  # delivery, so it says which of the two it is instead of leaving `cp` to print its
+  # own error. Skipped in --dry-run for the same reason the runtime checks are.
+  if ! is_dry_run; then
+    [ -d "$MODELS_SRC" ] || die "models source not found: $MODELS_SRC"
+  fi
+  run cp -a "$MODELS_SRC/." "$STAGED_MODELS_DIR/"
 fi
 
 step "starting the FHE node stack (api + worker + redis)"
@@ -568,6 +722,13 @@ TAA_CONTAINER_TOUCHED=1
 # supervisor a taa that dies after this script exits -- panic, OOM, a corrupt eval
 # key -- stays dead and unlogged while the node keeps looking deployed, where
 # deploy.sh's readiness gate would otherwise keep being retried.
+#
+# Every command from here to the nohup below acts inside the container the step
+# just settled on. A dry run never creates one, so it names that rather than
+# printing the copies as if they ran against something.
+if is_dry_run; then
+  log "dry-run: the copies and execs below target the container the step above would leave ($TAA_CONTAINER_NAME); nothing is copied here, since the rendered config is not written either"
+fi
 run docker exec -i "$TAA_CONTAINER_NAME" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR'"
 run docker cp "$PROJECT_DIR/deploy/start.sh" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_WORKDIR/start.sh"
 run docker exec -i "$TAA_CONTAINER_NAME" sh -lc "chmod +x '$TAA_CONTAINER_WORKDIR/start.sh'"
@@ -619,8 +780,18 @@ else
   log "FHE data dir   : $HOST_DATA_DIR"
   log "FHE runtime    : $HOST_RUNTIME_DIR"
   log "FHE redis dir  : $HOST_REDIS_DIR"
-  log "TAA instance   : http://127.0.0.1:${TAA_PORT}/v1/taa/health (container $TAA_CONTAINER_NAME)"
-  log "TAA supervisor : deploy/start.sh in $TAA_CONTAINER_NAME restarts taa every 10s (log $TAA_LOG_FILE)"
+  # The readiness probe above proves something answers on $TAA_PORT and nothing
+  # more -- any other listener on the host satisfies it -- and `docker exec -d`
+  # returning 0 means only that docker delivered the command. So the supervisor is
+  # reported as what it was observed to be, with the bracket keeping pgrep from
+  # matching the shell that carries the pattern.
+  if docker exec -i "$TAA_CONTAINER_NAME" sh -lc "pgrep -f '[s]tart\.sh' >/dev/null 2>&1"; then
+    log "TAA instance   : http://127.0.0.1:${TAA_PORT}/v1/taa/health (container $TAA_CONTAINER_NAME)"
+    log "TAA supervisor : deploy/start.sh observed running in $TAA_CONTAINER_NAME; it restarts taa every 10s (log $TAA_LOG_FILE)"
+  else
+    log "TAA instance   : http://127.0.0.1:${TAA_PORT}/v1/taa/health (container $TAA_CONTAINER_NAME)"
+    warn "no running start.sh supervisor observed in $TAA_CONTAINER_NAME: something answers on 127.0.0.1:$TAA_PORT, but nothing will restart taa if it exits (log $TAA_LOG_FILE, stop with docker rm -f $TAA_CONTAINER_NAME)"
+  fi
   log "TAA config     : $TAA_RENDERED_CONFIG -> $TAA_CONTAINER_NAME:$TAA_CONTAINER_CONFIG_PATH"
   log "Callback URL   : $TAA_CALLBACK_BASE_URL"
   log "stop the stack : (cd $NODE_DOCKER_DIR && ./scripts/run-node.sh down)"
