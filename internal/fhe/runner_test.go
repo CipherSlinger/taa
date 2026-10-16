@@ -1105,6 +1105,57 @@ func TestCopyFileAtomicDoesNotWriteThroughAFixedStagingName(t *testing.T) {
 	}
 }
 
+// TestRunnerCancelLosesTheRaceToThePollerAndSaysSo is the regression test for
+// the cancel result that was thrown away.
+//
+// Cancel checked run.done once, then spent an HTTP round trip on the service's
+// cancel endpoint, then resolved the run and discarded whether that resolution
+// was the one that counted. When the poller - or a callback - won the terminal
+// transition during that round trip, Cancel's own finish lost the once-only race
+// and Cancel still returned nil, so the platform was told "FHE 任务已取消" for a
+// task whose recorded outcome was completed. A false report is the worst failure
+// class this path has, and ErrTaskAlreadyFinished is what exists to prevent it.
+func TestRunnerCancelLosesTheRaceToThePollerAndSaysSo(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	cancelArrived := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/cancel") {
+			http.NotFound(w, r)
+			return
+		}
+		close(cancelArrived)
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	r := newTestRunner(t, srv.URL, layout)
+	run := r.registerTestRun("task-1", TaskSpec{TaskID: "task-1", UserID: testHashA, ModelID: testHashB})
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- r.Cancel(context.Background(), "task-1") }()
+	<-cancelArrived
+
+	// The poller sees the task finish while the cancel request is on the wire: the
+	// run completed a moment before the stop arrived.
+	if _, won := r.finish(run, TaskOutcome{Status: StatusCompleted}); !won {
+		t.Fatal("the poller's terminal transition lost; the fixture no longer drives the race")
+	}
+	close(release)
+
+	err := <-errCh
+	if err == nil {
+		t.Fatalf("Cancel = nil for a run whose recorded outcome is %q: the platform would be told the task was cancelled", run.outcome.Status)
+	}
+	if !errors.Is(err, ErrTaskAlreadyFinished) {
+		t.Errorf("Cancel = %v, want ErrTaskAlreadyFinished: the run had already reached %q when the cancel round trip finished", err, run.outcome.Status)
+	}
+	if run.outcome.Status != StatusCompleted {
+		t.Errorf("the recorded outcome is now %q, want %q left alone", run.outcome.Status, StatusCompleted)
+	}
+}
+
 // TestRunnerCancelAfterTheTaskFinishedIsNotAFailedStop pins the third answer
 // Cancel can give. A task that finished a moment before the platform's
 // stopTraining arrived is a race, and reporting it as a failed stop would be

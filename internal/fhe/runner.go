@@ -335,7 +335,17 @@ func (r *Runner) Cancel(ctx context.Context, taskID string) error {
 	if err := r.client.CancelTask(sendCtx, taskID, run.spec.UserID); err != nil {
 		return err
 	}
-	r.finish(run, TaskOutcome{Status: StatusCancelled, Err: fmt.Errorf("fhe task %s was cancelled", taskID)})
+	// The check above and this transition are separated by an HTTP round trip,
+	// which is long enough for the poller or a callback to resolve the run first.
+	// finish resolves a run exactly once, so a lost race means this cancel is the
+	// one that did not happen, whatever the service answered: reporting success
+	// then would tell the platform a task was cancelled whose recorded outcome is
+	// something else, and the outcome is what the report and the result archive are
+	// built from.
+	if _, won := r.finish(run, TaskOutcome{Status: StatusCancelled, Err: fmt.Errorf("fhe task %s was cancelled", taskID)}); !won {
+		return fmt.Errorf("fhe task %s reached the terminal state %q while the cancel request was in flight, "+
+			"so the cancel did not stop it: %w", taskID, run.outcome.Status, ErrTaskAlreadyFinished)
+	}
 	return nil
 }
 
