@@ -101,4 +101,3 @@ func TestReportResAutoFillsEmptyTaskIDFromRequestID(t *testing.T) {
 		t.Fatalf("expected TaskID to be %q, got %q", taskID, got.TaskID)
 	}
 }
-

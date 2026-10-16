@@ -138,4 +138,3 @@ func TestReportAuditIncludesReport(t *testing.T) {
 		t.Fatalf("reportAudit raw body should not contain checksum: %s", rawBody)
 	}
 }
-
