@@ -372,6 +372,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | Field | Default | Description |
 | :--- | :--- | :--- |
 | `server.addr` | `:6001` | HTTP server listening address |
+| `server.type` | `tee` | Instance role, `tee` or `fhe`. `fhe` means this instance orchestrates an FHE service on a GPU node and performs no code audit, no remote attestation and no training pipeline |
 | `platform.ip` | Env `PLATFORM_IP` | Platform IP and port (`host:port`); dynamically injected via environment in production |
 | `platform.dockerID` | Env `DOCKER_ID` | Container / Pod identifier; dynamically injected via environment in production |
 | `platform.contract` | Env `CONTRACT` | Contract identifier (reserved optional) |
@@ -407,11 +408,22 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `codeAudit.llm.attestationMode` | `strict` | Hardware attestation verification policy for TEE-TLS (`strict` in production, `permissive` in local simulation) |
 | `attestation.hrkCertPath` | `/root/taa/certs/hrk.cert` | Hygon Root Key (HRK) certificate path for CSV attestation verification |
 | `attestation.hskCekCertPath` | `/root/taa/certs/hsk_cek.cert` | Hygon Sign Key (HSK) / Chip Endorsement Key (CEK) certificate path |
+| `fhe` | — | Read only when `server.type=fhe`. `endpoint` / `dataDir` / `keyCacheDir` / `callbackBaseUrl` / `callbackToken` are required; `maxEvalKeyBytes` (default 6 GiB) is **independent of** `codeAudit.resultCheck.maxFileBytes`: a measured evaluation key of 3.101 GiB already exceeds the latter's 3 GiB default |
 
 ### Configuration Templates
 
 - **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths, with explicit `platform` configuration, `attestationMode: "permissive"`, and `insecureSkipVerify: true`.
 - **`configs/taa-production.json`**: For production Kubernetes Pods. Omits `platform` so parameters are dynamically injected by the orchestration platform via environment variables, and enforces `attestationMode: "strict"`.
+
+### FHE Instance Interface Differences
+
+An instance whose `server.type` is `fhe` exposes the same API surface but differs from a `tee` instance on the paths below:
+
+- `POST /v1/taa/import` must carry `evalKeyUrl` and `evalKeyFileHash` (SM3, lower-case hex, 64 characters); a `tee` instance returns 400 when either field is present.
+- `importModel` on an FHE instance lays the model package out under `<fhe.dataDir>/models/<modelHash>/` and requires a `server/` directory inside the package.
+- **Execution is triggered by the `import` landing on disk**, so `switch` does not have to be called first; `switch` only moves the phase.
+- `POST /v1/taa/fheCallback?token=<callbackToken>` is new and lets the FHE service report a terminal state; a token mismatch returns 404.
+- `export` on an FHE instance is always a plaintext zip (holding `output.zip` and `training_report.json`); a `publicKey` in the request is ignored and logged as a WARN.
 
 ---
 

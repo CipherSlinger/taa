@@ -1,0 +1,59 @@
+{
+  "server": {
+    "addr": ":6001",
+    "type": "fhe"
+  },
+  "storage": {
+    "model": "/root/taa/models",
+    "data": "/root/taa/data",
+    "result": "/root/taa/results",
+    "keys": "/root/taa/keys"
+  },
+  "model": {
+    "input": "/opt/taa/input",
+    "output": {
+      "result": "/opt/taa/output/result",
+      "log": "/opt/taa/output/log",
+      "progress": "/opt/taa/output/progress/progress.json"
+    }
+  },
+  "codeAudit": {
+    "enabled": true,
+    "codeScan": {
+      "engine": "semgrep",
+      "rulesPath": "/opt/taa/semgrep/rules"
+    },
+    "resultCheck": {
+      "enabled": true,
+      "maxFileBytes": 3221225472
+    },
+    "binaryAudit": {
+      "enabled": true
+    },
+    "llm": {
+      "enabled": true,
+      "transport": "teetls",
+      "endpoint": "https://127.0.0.1:8443",
+      "model": "qwen2.5-coder:7b",
+      "policy": "assist",
+      "failClosed": true,
+      "attestationMode": "permissive"
+    }
+  },
+  "attestation": {
+    "hrkCertPath": "/root/taa/certs/hrk.cert",
+    "hskCekCertPath": "/root/taa/certs/hsk_cek.cert"
+  },
+  "fhe": {
+    "endpoint": "http://127.0.0.1:58996",
+    "dataDir": "/opt/fhe-data",
+    "keyCacheDir": "/root/taa/fhe-keys",
+    "callbackBaseUrl": "http://172.16.10.130:6001",
+    "callbackToken": "",
+    "maxEvalKeyBytes": 6442450944,
+    "pollIntervalMs": 5000,
+    "requestTimeoutMs": 30000,
+    "taskTimeoutMs": 1800000,
+    "activateModelOnImport": true
+  }
+}
