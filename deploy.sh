@@ -1076,6 +1076,18 @@ stream_local_path_to_container() {
     | remote_ssh "$(container_exec_i) sh -lc 'mkdir -p $destination_parent && rm -rf $destination && tar -xzf - -C $destination_parent'"
 }
 
+# The docker twin of stream_local_path_to_container: copies a local path into a running local
+# container under a destination name decided here. `docker cp` would otherwise name the destination
+# after the source's own basename, and copying a directory into an existing one nests it instead of
+# replacing it -- which is why the destination is removed first.
+docker_cp_into_container() {
+  local container="$1"
+  local source="$2"
+  local destination="$3"
+  docker exec -i "$container" sh -lc "mkdir -p '$(dirname "$destination")' && rm -rf '$destination'" >/dev/null
+  docker cp "$source" "$container:$destination" >/dev/null
+}
+
 # Every semgrep invocation in here is offline and bounded, and both halves are load-bearing.
 # semgrep reaches for the network before it does any work: it resolves semgrep.dev for a version
 # check, and some commands download from it outright. A TAA container has no route off the host and
@@ -1220,6 +1232,95 @@ $SEMGREP_VERIFY_BODY"
     detail "${verify_out:-no output from the container}"
     detail "Checked with the argv taa runs at audit time: semgrep scan --config $rules_path --json --quiet --disable-version-check --no-git-ignore --max-memory $SEMGREP_VERIFY_MAX_MEMORY <probe.py>"
     detail "semgrep reaches for the network before it scans, and a container with no route off the host answers none of it; every check in this step is offline and bounded (${SEMGREP_OFFLINE_TIMEOUT}s) for that reason."
+    exit 1
+  fi
+}
+
+# The docker-mode twin of provision_remote_scan_engine, run against the ephemeral builder container
+# so the engine lands in the committed image. Same detection, same payload, same verification probe:
+# presence is not proof, because the payload can be extracted and the rules in place while semgrep
+# still cannot run them in this image -- a state the cheap probe reports as provisioned. Unlike the
+# remote path nothing is installed over the network; the payload is extracted from an archive.
+provision_local_scan_engine() {
+  local container="$1"
+  local template="$2"
+  local engine="" rules_path=""
+  read -r engine rules_path <<<"$(taa_scan_engine_requirements "$template")"
+
+  if [[ "$engine" != "semgrep" ]]; then
+    info "code scan engine '${engine:-unset}' needs no semgrep payload"
+    return 0
+  fi
+
+  if [[ -z "$rules_path" ]]; then
+    err "codeAudit.codeScan.rulesPath is empty in $(basename "$template") but codeAudit.codeScan.engine=semgrep"
+    detail "Without it taa falls back to its built-in path relative to the working directory, which does not exist in the image."
+    detail "Set codeAudit.codeScan.rulesPath (the shipped templates use a path under $CONTAINER_SEMGREP_DIR, e.g. $CONTAINER_SEMGREP_DIR/rules)."
+    exit 1
+  fi
+
+  step "provisioning the $engine code scan engine in the image"
+  local probe state engine_present rules_present
+  probe="$SEMGREP_OFFLINE_PREAMBLE
+e=no; r=no
+command -v semgrep >/dev/null 2>&1 && bounded semgrep --version --disable-version-check >/dev/null 2>&1 && e=yes
+test -e $rules_path && r=yes
+echo engine=\$e rules=\$r"
+  state="$(docker exec -i "$container" sh -lc "$probe" 2>/dev/null || echo 'engine=no rules=no')"
+  engine_present="${state#engine=}"; engine_present="${engine_present%% *}"
+  rules_present="${state##*rules=}"
+
+  if [[ "$engine_present" == "yes" && "$rules_present" == "yes" ]]; then
+    info "code scan engine already provisioned in the image (rules: $rules_path)"
+  else
+    if [[ "$engine_present" != "yes" ]]; then
+      require_file "semgrep payload bundle not found; build it with deploy/guest-build/build-semgrep-payload-container.sh" "$SEMGREP_PAYLOAD_BUNDLE"
+      local bundle_version=""
+      bundle_version="$(tar -xzOf "$SEMGREP_PAYLOAD_BUNDLE" opt/taa/semgrep/MANIFEST 2>/dev/null \
+        | awk '$1 == "version" { print $2; exit }')" || true
+      if [[ -z "$bundle_version" ]]; then
+        warn "payload bundle carries no readable opt/taa/semgrep/MANIFEST; its version was not checked"
+      elif [[ "$bundle_version" != "$SEMGREP_VERSION" ]]; then
+        err "semgrep payload bundle holds $bundle_version but this build expects $SEMGREP_VERSION"
+        detail "Rebuild it: deploy/guest-build/build-semgrep-payload-container.sh"
+        exit 1
+      fi
+
+      spin_task "extracting semgrep payload into the image" bash -c '
+        set -euo pipefail
+        docker cp "$1" "$2:/tmp/taa-semgrep-payload.tar.gz"
+        docker exec -i "$2" sh -lc "tar -xzf /tmp/taa-semgrep-payload.tar.gz -C / && rm -f /tmp/taa-semgrep-payload.tar.gz"
+      ' _ "$SEMGREP_PAYLOAD_BUNDLE" "$container"
+
+      if ! docker exec -i "$container" sh -lc "test -d '$CONTAINER_SEMGREP_DIR/pylib'"; then
+        err "payload extracted but $CONTAINER_SEMGREP_DIR/pylib is missing"
+        detail "The bundle is expected to carry opt/taa/semgrep/pylib; rebuild it with deploy/guest-build/build-semgrep-payload-container.sh"
+        exit 1
+      fi
+    fi
+
+    if [[ "$rules_present" != "yes" ]]; then
+      require_dir "semgrep rules not found" "$SEMGREP_RULES_SOURCE"
+      spin_task "copying code scan rules into the image ($rules_path)" \
+        docker_cp_into_container "$container" "$SEMGREP_RULES_SOURCE" "$rules_path"
+    fi
+  fi
+
+  local verify_script verify_out engine_version
+  verify_script="$SEMGREP_OFFLINE_PREAMBLE
+rules_path=$rules_path
+max_memory=$SEMGREP_VERIFY_MAX_MEMORY
+$SEMGREP_VERIFY_BODY"
+  verify_out="$(docker exec -i "$container" sh -lc "$verify_script" 2>&1 || true)"
+
+  if [[ "$verify_out" == OK\ * ]]; then
+    engine_version="${verify_out##*version=}"
+    info "code scan engine ready in the image: semgrep ${engine_version:-unknown} (rules: $rules_path)"
+  else
+    err "code scan engine verification failed in the image"
+    detail "${verify_out:-no output from the container}"
+    detail "Checked with the argv taa runs at audit time: semgrep scan --config $rules_path --json --quiet --disable-version-check --no-git-ignore --max-memory $SEMGREP_VERIFY_MAX_MEMORY <probe.py>"
+    detail "semgrep reaches for the network before it scans; every check in this step is offline and bounded (${SEMGREP_OFFLINE_TIMEOUT}s) for that reason."
     exit 1
   fi
 }
