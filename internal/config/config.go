@@ -3,6 +3,8 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -19,6 +21,10 @@ type StartupConfig struct {
 	PlatformIP string
 	DockerID   string
 	Contract   string
+	// ServerType is "tee" (the default) or "fhe", from server.type.
+	ServerType string
+	// FHE is non-nil only on a server.type=fhe instance.
+	FHE *FHEConfig
 	// EnableCodeAudit gates the whole code audit: the static scan and, with it,
 	// the LLM arbitration that only ever runs on what the scan raised. Turning it
 	// off is the audit's kill switch, not a per-channel toggle; the channels
@@ -151,6 +157,45 @@ type CodeScanConfig struct {
 	Timeout time.Duration
 }
 
+// Server instance roles, selected by the server.type config key.
+const (
+	// ServerTypeTEE is the CSV guest that audits models and attests to the
+	// platform. It is the default, so every existing config keeps its behaviour.
+	ServerTypeTEE = "tee"
+	// ServerTypeFHE orchestrates the FHE service on a GPU host. Such an instance
+	// is not a TEE, does not attest, and runs no training pipeline.
+	ServerTypeFHE = "fhe"
+)
+
+// FHE section defaults. maxEvalKeyBytes is deliberately independent of
+// codeAudit.resultCheck.maxFileBytes: a measured eval_context.bin is
+// 3,329,929,205 B and the result-check cap defaults to 3 GiB, which is 103.7 MiB
+// too small to download a real key.
+const (
+	DefaultFHEMaxEvalKeyBytes  = int64(6) << 30 // 6442450944
+	DefaultFHEPollIntervalMs   = 5000
+	DefaultFHERequestTimeoutMs = 30000
+	DefaultFHETaskTimeoutMs    = 1800000
+)
+
+// FHEConfig is the parsed fhe section. It is only consulted when
+// server.type=fhe.
+type FHEConfig struct {
+	Endpoint         string `json:"endpoint"`
+	DataDir          string `json:"dataDir"`
+	KeyCacheDir      string `json:"keyCacheDir"`
+	CallbackBaseURL  string `json:"callbackBaseUrl"`
+	CallbackToken    string `json:"callbackToken"`
+	MaxEvalKeyBytes  int64  `json:"maxEvalKeyBytes"`
+	PollIntervalMs   int    `json:"pollIntervalMs"`
+	RequestTimeoutMs int    `json:"requestTimeoutMs"`
+	TaskTimeoutMs    int    `json:"taskTimeoutMs"`
+	// ActivateModelOnImport is a pointer because "absent" and "explicitly false"
+	// must not collapse: the field defaults to true, so an absent one read as
+	// false would turn a missing setting into a deliberate opt-out.
+	ActivateModelOnImport *bool `json:"activateModelOnImport"`
+}
+
 type startupConfigFile struct {
 	Server      startupServerConfigFile      `json:"server"`
 	Platform    startupPlatformConfigFile    `json:"platform"`
@@ -158,6 +203,10 @@ type startupConfigFile struct {
 	Model       startupModelConfigFile       `json:"model"`
 	CodeAudit   startupCodeAuditConfigFile   `json:"codeAudit"`
 	Attestation startupAttestationConfigFile `json:"attestation"`
+	// FHE is a pointer because "absent" and "present but empty" must be
+	// distinguishable: a type=fhe instance with no section at all is a different
+	// mistake from one with an empty callbackToken, and both are startup errors.
+	FHE *FHEConfig `json:"fhe"`
 
 	// Removed keys. These are declared for one reason only: to make their
 	// presence detectable. encoding/json drops a key it does not recognise
@@ -189,6 +238,7 @@ type startupConfigFile struct {
 
 type startupServerConfigFile struct {
 	Addr string `json:"addr"`
+	Type string `json:"type"`
 }
 
 type startupPlatformConfigFile struct {
@@ -440,6 +490,12 @@ var llmPolicies = []string{"assist", "gate"}
 var staticEngines = []string{"regex", "semgrep"}
 
 func validateStartupConfig(cfg StartupConfig) error {
+	if err := validateServerType(cfg); err != nil {
+		return err
+	}
+	if err := validateFHEConfig(cfg); err != nil {
+		return err
+	}
 	if err := validateCodeScanEngine(cfg); err != nil {
 		return err
 	}
@@ -453,6 +509,77 @@ func validateStartupConfig(cfg StartupConfig) error {
 		return err
 	}
 	return validateLLMPolicy(cfg)
+}
+
+// validateServerType rejects an unrecognised server.type rather than falling back
+// to tee. A silent fallback would leave a deployment believing it runs one kind
+// of instance while it runs the other.
+func validateServerType(cfg StartupConfig) error {
+	switch cfg.ServerType {
+	case ServerTypeTEE, ServerTypeFHE:
+		return nil
+	}
+	return fmt.Errorf("unsupported server.type %q in startup config: must be one of %s, %s",
+		cfg.ServerType, ServerTypeTEE, ServerTypeFHE)
+}
+
+// validateFHEConfig enforces the fhe section on an fhe instance. All five
+// connection fields are required: a half-configured instance would fail at task
+// time, after the platform was already told the import succeeded. callbackToken
+// especially - an unauthenticated callback endpoint is open to every process on
+// the host.
+func validateFHEConfig(cfg StartupConfig) error {
+	if cfg.ServerType != ServerTypeFHE {
+		return nil
+	}
+	if cfg.FHE == nil {
+		return fmt.Errorf("server.type is %q but the startup config has no fhe section", ServerTypeFHE)
+	}
+	required := []struct {
+		name  string
+		value string
+	}{
+		{"endpoint", cfg.FHE.Endpoint},
+		{"dataDir", cfg.FHE.DataDir},
+		{"keyCacheDir", cfg.FHE.KeyCacheDir},
+		{"callbackBaseUrl", cfg.FHE.CallbackBaseURL},
+		{"callbackToken", cfg.FHE.CallbackToken},
+	}
+	for _, r := range required {
+		if strings.TrimSpace(r.value) == "" {
+			return fmt.Errorf("fhe.%s is required when server.type is %q", r.name, ServerTypeFHE)
+		}
+	}
+	if err := validateFHEEndpoint(cfg.FHE.Endpoint); err != nil {
+		return err
+	}
+	if cfg.FHE.MaxEvalKeyBytes <= 0 {
+		return fmt.Errorf("unsupported fhe.maxEvalKeyBytes %d in startup config: must be positive", cfg.FHE.MaxEvalKeyBytes)
+	}
+	for _, b := range []struct {
+		name  string
+		value int
+	}{
+		{"pollIntervalMs", cfg.FHE.PollIntervalMs},
+		{"requestTimeoutMs", cfg.FHE.RequestTimeoutMs},
+		{"taskTimeoutMs", cfg.FHE.TaskTimeoutMs},
+	} {
+		if b.value <= 0 {
+			return fmt.Errorf("unsupported fhe.%s %d in startup config: must be positive", b.name, b.value)
+		}
+	}
+	return nil
+}
+
+func validateFHEEndpoint(endpoint string) error {
+	u, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return fmt.Errorf("unsupported fhe.endpoint %q in startup config: %v", endpoint, err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("unsupported fhe.endpoint %q in startup config: must be an absolute http or https URL", endpoint)
+	}
+	return nil
 }
 
 // validateBinaryAudit rejects limits that cannot mean what they say.
@@ -558,6 +685,7 @@ func defaultStartupConfig() StartupConfig {
 
 	return StartupConfig{
 		Addr:                      ":6001",
+		ServerType:                ServerTypeTEE,
 		PlatformIP:                os.Getenv("PLATFORM_IP"),
 		DockerID:                  os.Getenv("DOCKER_ID"),
 		Contract:                  os.Getenv("CONTRACT"),
@@ -602,6 +730,9 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if trimmed := strings.TrimSpace(fileCfg.Server.Addr); trimmed != "" {
 		cfg.Addr = trimmed
+	}
+	if trimmed := strings.ToLower(strings.TrimSpace(fileCfg.Server.Type)); trimmed != "" {
+		cfg.ServerType = trimmed
 	}
 
 	if trimmed := strings.TrimSpace(fileCfg.PlatformIP); trimmed != "" {
@@ -824,5 +955,39 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if fileCfg.CodeAudit.LLM.Dir != "" {
 		cfg.LLM.Dir = fileCfg.CodeAudit.LLM.Dir
+	}
+
+	// The fhe section is only meaningful on an fhe instance. A tee instance that
+	// carries one is a deployment mistake, but not a fatal one: warn and drop it
+	// so the instance keeps behaving exactly as it did before the section existed.
+	if fileCfg.FHE != nil {
+		if cfg.ServerType == ServerTypeFHE {
+			f := *fileCfg.FHE
+			applyFHEDefaults(&f)
+			cfg.FHE = &f
+		} else {
+			log.Printf("WARN: startup config carries an fhe section but server.type is %q; the section is ignored", cfg.ServerType)
+		}
+	}
+}
+
+// applyFHEDefaults fills the optional fhe fields. Required fields are left as
+// they are: an empty required field must be rejected, not silently defaulted.
+func applyFHEDefaults(f *FHEConfig) {
+	if f.MaxEvalKeyBytes == 0 {
+		f.MaxEvalKeyBytes = DefaultFHEMaxEvalKeyBytes
+	}
+	if f.PollIntervalMs == 0 {
+		f.PollIntervalMs = DefaultFHEPollIntervalMs
+	}
+	if f.RequestTimeoutMs == 0 {
+		f.RequestTimeoutMs = DefaultFHERequestTimeoutMs
+	}
+	if f.TaskTimeoutMs == 0 {
+		f.TaskTimeoutMs = DefaultFHETaskTimeoutMs
+	}
+	if f.ActivateModelOnImport == nil {
+		v := true
+		f.ActivateModelOnImport = &v
 	}
 }
