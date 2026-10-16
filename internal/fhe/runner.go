@@ -3,6 +3,7 @@ package fhe
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -204,10 +205,20 @@ func (r *Runner) registerTestRun(taskID string, spec TaskSpec) *taskRun {
 
 func (r *Runner) lookupForTest(taskID string) *taskRun { return r.lookup(taskID) }
 
-func (r *Runner) forget(taskID string) {
+// forget drops run from the in-flight table, but only if the table still holds
+// that very run.
+//
+// Two Executes for one task id - a replayed import, or a platform retry while
+// the first is still in flight - both run to completion, and the second
+// prepare replaces the first's entry. Deleting by id alone therefore lets
+// whichever run returns first delete the other's entry, after which that run's
+// callbacks are dropped as "unknown task" and Cancel can no longer find it.
+func (r *Runner) forget(run *taskRun) {
 	r.mu.Lock()
-	delete(r.tasks, taskID)
-	r.mu.Unlock()
+	defer r.mu.Unlock()
+	if cur, ok := r.tasks[run.spec.TaskID]; ok && cur == run {
+		delete(r.tasks, run.spec.TaskID)
+	}
 }
 
 // finish resolves a run exactly once and reports whether this call is the one
@@ -241,10 +252,30 @@ func (r *Runner) ResolveTask(taskID string) (TaskOutcome, bool) {
 // Deliver records a terminal callback. It returns true only for the delivery
 // that actually advanced the task, so a retry or a race with the poller is a
 // no-op.
+//
+// The callback channel and the polling channel must agree on what ends a task:
+// both decide with IsTerminal, and Deliver used not to. Without that agreement a
+// callback carrying a non-terminal status - "running", which is out of contract
+// but arrives over the same wire - resolved the run as failed while the service
+// was still burning the GPU on it, and the poller was then shut out by the
+// once-only transition.
+//
+// Every terminal status the service can emit is inside IsTerminal: the status
+// vocabulary is queued / running / completed / failed / cancelled (tools/fake-fhe
+// implements the contract), and IsTerminal also covers the plausible synonyms
+// succeeded / success / error / canceled / timeout / timed_out / expired /
+// deleted. A status word outside that set is treated as non-terminal here, so
+// such a callback is ignored and the run is left to its poll and its TaskTimeout
+// - it waits for the timeout instead of being resolved, which is the failure
+// mode this predicate trades for.
 func (r *Runner) Deliver(p CallbackPayload) bool {
 	run := r.lookup(p.TaskID)
 	if run == nil {
 		r.log(LevelWarn, "收到未知任务的回调，已忽略: taskId=%s", p.TaskID)
+		return false
+	}
+	if !IsTerminal(p.Status) {
+		r.log(LevelWarn, "收到非终态回调，已忽略: taskId=%s, status=%s", p.TaskID, p.Status)
 		return false
 	}
 	_, won := r.finish(run, r.outcomeFromStatus(run.spec, TaskStatus{
@@ -252,6 +283,18 @@ func (r *Runner) Deliver(p CallbackPayload) bool {
 	}))
 	return won
 }
+
+// ErrTaskAlreadyFinished reports that Cancel was called for a task this instance
+// did run and that had already reached a terminal state.
+//
+// It is a distinct value rather than a plain message because the two refusals
+// are opposite from the caller's side. A task this instance never tracked is a
+// stop that cannot be performed and must be reported as such; a task that
+// finished a moment ago is a stop that does not have to be performed, and the
+// platform's stopTraining arriving just after a task ends is a race common
+// enough that reporting it as a failed stop would be wrong. Callers tell the two
+// apart with errors.Is.
+var ErrTaskAlreadyFinished = errors.New("fhe task already finished")
 
 // Cancel maps TAA's stopTraining onto the service's cancel endpoint and resolves
 // the local run.
@@ -265,6 +308,12 @@ func (r *Runner) Deliver(p CallbackPayload) bool {
 // reports that no-op to the platform as a success. Reporting the task as unknown
 // is the only answer here that is true, and Cancel is TAA's stopTraining, which
 // must not claim a stop that never happened.
+//
+// A run that already reached a terminal state is a third case, and it is not a
+// refusal in the same sense: the run is over, so there is nothing to cancel and
+// nothing to report as broken. It is reported through ErrTaskAlreadyFinished,
+// without a request, so a caller does not have to treat "it just finished" as a
+// failed stop.
 func (r *Runner) Cancel(ctx context.Context, taskID string) error {
 	run := r.lookup(taskID)
 	if run == nil {
@@ -272,6 +321,14 @@ func (r *Runner) Cancel(ctx context.Context, taskID string) error {
 			"it either never ran here, already finished, or was started before the last restart. "+
 			"The FHE service scopes task calls by tenant and the tenant is known only for an in-flight task, "+
 			"so no cancel request was sent; cancel it through the FHE service directly if it is still running", taskID)
+	}
+	// Reading run.outcome after observing done closed is ordered by the channel
+	// close, which finish performs after storing the outcome.
+	select {
+	case <-run.done:
+		return fmt.Errorf("fhe task %s already reached the terminal state %q, so there is nothing to cancel "+
+			"and no cancel request was sent: %w", taskID, run.outcome.Status, ErrTaskAlreadyFinished)
+	default:
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, r.cfg.RequestTimeout)
 	defer cancel()
@@ -288,14 +345,25 @@ func (r *Runner) Cancel(ctx context.Context, taskID string) error {
 // creates the task, then waits for the callback or the poll fallback, whichever
 // arrives first, bounded by TaskTimeout. onProgress, when non-nil, receives the
 // finished and total case counts the service reported.
+//
+// The task's budget is derived here, at the entry, and covers staging as well as
+// waiting: publishing the key is a multi-gigabyte download when the cache is
+// cold, so a key server that never answers would otherwise hold the import
+// goroutine open forever, and TaskTimeout's claim to bound "a whole task" would
+// be false. Staging, the create/probe/continue calls and the wait all run on
+// that one deadline, so the caller's cancellation stops staging too.
 func (r *Runner) Execute(ctx context.Context, spec TaskSpec, onProgress func(done, total int)) (TaskOutcome, error) {
-	run, err := r.prepare(spec)
+	deadline := time.Now().Add(r.cfg.TaskTimeout)
+	stageCtx, cancelStage := context.WithDeadline(ctx, deadline)
+	defer cancelStage()
+
+	run, err := r.prepare(stageCtx, spec)
 	if err != nil {
 		return TaskOutcome{Status: StatusFailed, Err: err}, err
 	}
-	defer r.forget(spec.TaskID)
+	defer r.forget(run)
 
-	createCtx, cancel := context.WithTimeout(ctx, r.cfg.RequestTimeout)
+	createCtx, cancel := context.WithTimeout(stageCtx, r.cfg.RequestTimeout)
 	err = r.client.CreateTask(createCtx, CreateTaskRequest{
 		UserID:             spec.UserID,
 		ModelID:            spec.ModelID,
@@ -308,16 +376,35 @@ func (r *Runner) Execute(ctx context.Context, spec TaskSpec, onProgress func(don
 		// A replayed import must resume the task that already exists rather than
 		// create a second one: the input package is still on disk and the service
 		// keeps per-case results, so /continue reruns only what is unfinished.
-		probeCtx, probeCancel := context.WithTimeout(ctx, r.cfg.RequestTimeout)
-		_, probeErr := r.client.Task(probeCtx, spec.TaskID, spec.UserID)
+		//
+		// The probe's answer is what decides whether that is the right move, so it
+		// is kept. It used to be discarded, and a task that had already completed
+		// was then handed a /continue that reset it to running and threw away the
+		// result already sitting in the shared directory.
+		//
+		// The probe proves only that a task with this id exists for this tenant. It
+		// cannot prove the task belongs to this spec, so reusing one task id for
+		// two different specs is the caller's responsibility.
+		probeCtx, probeCancel := context.WithTimeout(stageCtx, r.cfg.RequestTimeout)
+		st, probeErr := r.client.Task(probeCtx, spec.TaskID, spec.UserID)
 		probeCancel()
 		if probeErr != nil {
 			out := TaskOutcome{Status: StatusFailed, Err: fmt.Errorf("create fhe task: %w", err)}
 			r.finish(run, out)
 			return out, out.Err
 		}
-		r.log(LevelInfo, "任务已存在，改用 continue 重跑未完成 case: taskId=%s", spec.TaskID)
-		contCtx, contCancel := context.WithTimeout(ctx, r.cfg.RequestTimeout)
+		// A task that already ran to a successful end is adopted as it is: it has
+		// a stored result, and /continue on it would destroy that result to rerun
+		// cases that are already done. A task that ended unsuccessfully is the case
+		// the design's replay rule covers - rerun the unfinished cases rather than
+		// report the old failure a second time - so only that one is continued.
+		if IsSuccess(st.Status) {
+			out, _ := r.finish(run, r.outcomeFromStatus(spec, st))
+			r.log(LevelInfo, "任务已完成，直接采用服务端结果: taskId=%s, status=%s", spec.TaskID, st.Status)
+			return out, out.Err
+		}
+		r.log(LevelInfo, "任务已存在，改用 continue 重跑未完成 case: taskId=%s, status=%s", spec.TaskID, st.Status)
+		contCtx, contCancel := context.WithTimeout(stageCtx, r.cfg.RequestTimeout)
 		contErr := r.client.ContinueTask(contCtx, spec.TaskID, spec.UserID)
 		contCancel()
 		if contErr != nil {
@@ -327,13 +414,16 @@ func (r *Runner) Execute(ctx context.Context, spec TaskSpec, onProgress func(don
 		}
 	}
 
-	return r.wait(ctx, run, onProgress)
+	return r.wait(ctx, run, deadline, onProgress)
 }
 
 // prepare validates the spec, publishes the key and the input package, and
 // registers the run. Registration happens before the task is created so a
 // callback that arrives immediately still finds the run.
-func (r *Runner) prepare(spec TaskSpec) (*taskRun, error) {
+//
+// ctx is the task's context, so cancelling the caller aborts a cold-cache key
+// download instead of leaving it running behind a returned Execute.
+func (r *Runner) prepare(ctx context.Context, spec TaskSpec) (*taskRun, error) {
 	if !ValidHash(spec.EvalKeyHash) {
 		return nil, fmt.Errorf("invalid eval key hash %q: want 64 lowercase hex characters", spec.EvalKeyHash)
 	}
@@ -347,7 +437,7 @@ func (r *Runner) prepare(spec TaskSpec) (*taskRun, error) {
 		return nil, fmt.Errorf("input archive path is empty")
 	}
 
-	keySrc, err := r.keys.Ensure(spec.EvalKeyHash, spec.EvalKeyURL)
+	keySrc, err := r.keys.Ensure(ctx, spec.EvalKeyHash, spec.EvalKeyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -381,27 +471,38 @@ func (r *Runner) prepare(spec TaskSpec) (*taskRun, error) {
 	return run, nil
 }
 
-func (r *Runner) wait(ctx context.Context, run *taskRun, onProgress func(done, total int)) (TaskOutcome, error) {
-	deadline := time.NewTimer(r.cfg.TaskTimeout)
-	defer deadline.Stop()
+// wait blocks until the run reaches a terminal state, through any of its four
+// channels: a poll that saw one, a callback that resolved the run while this
+// loop was sleeping, the task's own deadline, or the caller giving up.
+//
+// deadline is the one derived in Execute, not a fresh TaskTimeout: staging has
+// already spent part of the budget, and giving the wait its own full timeout
+// would let one task run for a multiple of what Config.TaskTimeout promises.
+func (r *Runner) wait(ctx context.Context, run *taskRun, deadline time.Time, onProgress func(done, total int)) (TaskOutcome, error) {
+	expired := time.NewTimer(time.Until(deadline))
+	defer expired.Stop()
+	// The polls are bounded by whichever runs out first: the per-call request
+	// budget, or what is left of the task budget. The task deadline itself is
+	// reported by the timer below rather than by ctx, so which of the two ends the
+	// task does not change the error the caller sees.
+	pollCtx, stopPolling := context.WithDeadline(ctx, deadline)
+	defer stopPolling()
 	ticker := time.NewTicker(r.cfg.PollInterval)
 	defer ticker.Stop()
 
 	for {
-		if out, ok := r.pollOnce(ctx, run, onProgress); ok {
-			r.finish(run, out)
+		if out, ok := r.pollOnce(pollCtx, run, onProgress); ok {
 			final, _ := r.finish(run, out)
 			return final, final.Err
 		}
 		select {
 		case <-run.done:
-			select {
-			case <-ctx.Done():
-			default:
-			}
+			// A callback delivered while this loop was waiting: the callback
+			// channel's whole purpose is to resolve a run its importer is waiting
+			// on, so this is the path a healthy task normally takes.
 			return run.outcome, run.outcome.Err
 		case <-ticker.C:
-		case <-deadline.C:
+		case <-expired.C:
 			out, _ := r.finish(run, TaskOutcome{
 				Status: StatusFailed,
 				Err:    fmt.Errorf("fhe task %s timed out after %s", run.spec.TaskID, r.cfg.TaskTimeout),

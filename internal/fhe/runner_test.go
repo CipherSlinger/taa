@@ -3,6 +3,7 @@ package fhe
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -162,6 +163,54 @@ func newTestRunner(t *testing.T, srvURL string, layout Layout) *Runner {
 	return r
 }
 
+// newRunnerWithTimeout wires a Runner against a fake service with the given task
+// budget, for the tests whose subject is a deadline or a cancellation.
+func newRunnerWithTimeout(t *testing.T, srvURL string, layout Layout, taskTimeout time.Duration) *Runner {
+	t.Helper()
+	cfg := Config{
+		Endpoint:        srvURL,
+		DataDir:         layout.DataDir(),
+		KeyCacheDir:     t.TempDir(),
+		CallbackBaseURL: "http://taa.test:6001",
+		CallbackToken:   "tok",
+		MaxEvalKeyBytes: DefaultMaxEvalKeyBytes,
+		PollInterval:    10 * time.Millisecond,
+		RequestTimeout:  5 * time.Second,
+		TaskTimeout:     taskTimeout,
+	}
+	r, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return r
+}
+
+// keyServer serves payload as the eval key, the way the deployment's key server
+// does.
+func keyServer(t *testing.T, payload []byte) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// waitForRun waits until the in-flight table holds a run for taskID and returns
+// it, so a test can act once a task is genuinely in flight.
+func waitForRun(t *testing.T, r *Runner, taskID string) *taskRun {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if run := r.lookupForTest(taskID); run != nil {
+			return run
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("no run for %s appeared in the in-flight table", taskID)
+	return nil
+}
+
 // specFor stages an eval key and an input archive and returns a matching spec.
 func specFor(t *testing.T, r *Runner, keySrvURL string, keyBytes, inputBytes []byte) TaskSpec {
 	t.Helper()
@@ -244,6 +293,15 @@ func TestRunnerExecuteStagesSharedDirectoryAndCompletes(t *testing.T) {
 	}
 }
 
+// TestRunnerExecuteRejectsInvalidIdentifiers pins prepare's validation, one
+// error message at a time.
+//
+// Asserting only "an error came back" left all three checks untested: every one
+// of these specs is also rejected downstream - by the layout's path builders or
+// by the client's guard - so deleting the checks kept the test green. ModelID is
+// the reason that mattered: nothing downstream validates it at all, and an
+// invalid one reached the create request body unexamined. The identifiers become
+// directory names, so this is the project's path-traversal boundary.
 func TestRunnerExecuteRejectsInvalidIdentifiers(t *testing.T) {
 	layout := NewLayout(t.TempDir())
 	_, srv := newFakeFHE(t, layout)
@@ -253,16 +311,24 @@ func TestRunnerExecuteRejectsInvalidIdentifiers(t *testing.T) {
 		TaskID: "task-1", UserID: testHashA, ModelID: testHashB,
 		EvalKeyHash: testHashA, EvalKeyURL: "http://x/y", InputZipPath: "/nonexistent",
 	}
-	cases := map[string]func(*TaskSpec){
-		"eval key hash": func(s *TaskSpec) { s.EvalKeyHash = "../../etc"; s.UserID = "../../etc" },
-		"model hash":    func(s *TaskSpec) { s.ModelID = "../x" },
-		"task id":       func(s *TaskSpec) { s.TaskID = "../x" },
+	cases := map[string]struct {
+		mutate func(*TaskSpec)
+		want   string
+	}{
+		"eval key hash": {func(s *TaskSpec) { s.EvalKeyHash = "../../etc"; s.UserID = "../../etc" }, "invalid eval key hash"},
+		"model hash":    {func(s *TaskSpec) { s.ModelID = "../x" }, "invalid model hash"},
+		"task id":       {func(s *TaskSpec) { s.TaskID = "../x" }, "invalid task id"},
 	}
-	for name, mutate := range cases {
+	for name, tc := range cases {
 		s := base
-		mutate(&s)
-		if _, err := r.Execute(context.Background(), s, nil); err == nil {
+		tc.mutate(&s)
+		_, err := r.Execute(context.Background(), s, nil)
+		if err == nil {
 			t.Errorf("%s: Execute = nil, want error", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error %q does not come from the %q check", name, err, tc.want)
 		}
 	}
 }
@@ -443,6 +509,12 @@ func TestRunnerCancelUnknownTaskIsRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("Cancel of an untracked task = nil, want an error: a cancel that matched nothing must not be reported as a success")
 	}
+	// An untracked task is not the same answer as one that already finished: the
+	// first is a stop that cannot be performed, the second a stop that does not
+	// have to be.
+	if errors.Is(err, ErrTaskAlreadyFinished) {
+		t.Error("an untracked task was reported as an already-finished one, which would turn a stop TAA never made into a no-op success")
+	}
 	if got := fake.status("task-1"); got != "running" {
 		t.Errorf("service status = %q, want running: no cancel request may be sent without a tenant", got)
 	}
@@ -582,6 +654,7 @@ func TestParseCallback(t *testing.T) {
 	}
 }
 
+// TestNewValidatesConfigAndCreatesDirs covers the startup gate.
 func TestNewValidatesConfigAndCreatesDirs(t *testing.T) {
 	layout := NewLayout(t.TempDir())
 	cfg := Config{
@@ -597,5 +670,281 @@ func TestNewValidatesConfigAndCreatesDirs(t *testing.T) {
 	bad.CallbackToken = ""
 	if _, err := New(bad, nil); err == nil {
 		t.Error("New with an empty callback token = nil, want error")
+	}
+}
+
+// TestRunnerConcurrentRunsForOneTaskIDDoNotForgetEachOther is the regression
+// test for forget deleting by task id alone.
+//
+// Two Executes for one task id - a replayed import, or a platform retry while
+// the first is still in flight - both register under that id, and the second
+// prepare replaces the first's entry in the table. Whichever run returns first
+// then used to delete the other's entry, after which that run's terminal
+// callback was dropped as "unknown task" and Execute sat there until its own
+// timeout - which is why the second run here must still be resolved by its
+// callback.
+func TestRunnerConcurrentRunsForOneTaskIDDoNotForgetEachOther(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	keyBytes := []byte("k")
+	keySrv := keyServer(t, keyBytes)
+	_, srv := newFakeFHE(t, layout)
+	r := newRunnerWithTimeout(t, srv.URL, layout, 5*time.Second)
+	spec := specFor(t, r, keySrv.URL, keyBytes, []byte("i"))
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+	firstDone := make(chan TaskOutcome, 1)
+	go func() {
+		out, _ := r.Execute(ctx1, spec, nil)
+		firstDone <- out
+	}()
+	run1 := waitForRun(t, r, "task-1")
+
+	secondDone := make(chan TaskOutcome, 1)
+	secondErr := make(chan error, 1)
+	go func() {
+		out, err := r.Execute(context.Background(), spec, nil)
+		secondDone <- out
+		secondErr <- err
+	}()
+	// Wait until the second run has replaced the first in the table.
+	deadline := time.Now().Add(5 * time.Second)
+	var run2 *taskRun
+	for time.Now().Before(deadline) {
+		if got := r.lookupForTest("task-1"); got != nil && got != run1 {
+			run2 = got
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if run2 == nil {
+		t.Fatal("the second run never registered")
+	}
+
+	// Ending the first run is what triggers its cleanup.
+	cancel1()
+	<-firstDone
+
+	if r.lookupForTest("task-1") != run2 {
+		t.Fatal("run 2 was forgotten by run 1's cleanup while run 2 is still in flight")
+	}
+	start := time.Now()
+	if !r.Deliver(CallbackPayload{TaskID: "task-1", Status: "completed"}) {
+		t.Fatal("a callback for the still-in-flight run 2 was dropped")
+	}
+	err := <-secondErr
+	out := <-secondDone
+	if err != nil {
+		t.Fatalf("the second Execute: %v", err)
+	}
+	if out.Status != StatusCompleted {
+		t.Errorf("the second Execute returned %q, want %q", out.Status, StatusCompleted)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("the second Execute took %v after its callback", elapsed)
+	}
+}
+
+// TestRunnerExecuteAdoptsAnAlreadyCompletedTask is the regression test for the
+// probe whose status was thrown away.
+//
+// A replayed import whose task has already completed failed to create - the task
+// exists - and was then handed a /continue that reset it to running and dropped
+// the result already sitting in the shared directory, so the import ended as a
+// timeout failure for a task that had succeeded.
+func TestRunnerExecuteAdoptsAnAlreadyCompletedTask(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	keyBytes := []byte("k")
+	keySrv := keyServer(t, keyBytes)
+	fake, srv := newFakeFHE(t, layout)
+	r := newRunnerWithTimeout(t, srv.URL, layout, 500*time.Millisecond)
+	spec := specFor(t, r, keySrv.URL, keyBytes, []byte("i"))
+
+	// The task already ran to a successful end, and its result is on disk.
+	fake.completeTask("task-1")
+	stored, err := layout.ResultPath("task-1")
+	if err != nil {
+		t.Fatalf("ResultPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(stored), 0o755); err != nil {
+		t.Fatalf("create the result dir: %v", err)
+	}
+	if err := os.WriteFile(stored, fake.resultBytes, 0o644); err != nil {
+		t.Fatalf("write the stored result: %v", err)
+	}
+
+	out, err := r.Execute(context.Background(), spec, nil)
+	if err != nil {
+		t.Fatalf("Execute of an already completed task = %v, want the completed outcome", err)
+	}
+	if out.Status != StatusCompleted {
+		t.Errorf("Status = %q, want %q", out.Status, StatusCompleted)
+	}
+	if out.ResultZip != stored {
+		t.Errorf("ResultZip = %q, want the stored result %q", out.ResultZip, stored)
+	}
+	if fake.continueHits != 0 {
+		t.Errorf("continueHits = %d, want 0: a completed task must not be restarted", fake.continueHits)
+	}
+}
+
+// TestRunnerDeliverIgnoresNonTerminalCallbacks pins the two channels agreeing on
+// what ends a task. Deliver used to resolve a run whatever status it was handed,
+// so an out-of-contract status:"running" callback ended a live task as failed
+// while the service was still working on it, and the once-only transition then
+// shut the poller out.
+func TestRunnerDeliverIgnoresNonTerminalCallbacks(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	_, srv := newFakeFHE(t, layout)
+	r := newTestRunner(t, srv.URL, layout)
+	run := r.registerTestRun("task-1", TaskSpec{TaskID: "task-1", UserID: testHashA, ModelID: testHashB})
+
+	for _, status := range []string{"running", "queued", "pending", ""} {
+		if r.Deliver(CallbackPayload{TaskID: "task-1", Status: status}) {
+			t.Errorf("Deliver(status=%q) = true, want false: it is not a terminal state", status)
+		}
+		select {
+		case <-run.done:
+			t.Fatalf("Deliver(status=%q) resolved the run", status)
+		default:
+		}
+	}
+
+	// The predicate must not simply ignore everything: a terminal status still
+	// advances the run.
+	if !r.Deliver(CallbackPayload{TaskID: "task-1", Status: "failed"}) {
+		t.Fatal("Deliver(status=failed) = false, want true")
+	}
+	<-run.done
+	if run.outcome.Status != StatusFailed {
+		t.Errorf("resolved status = %q, want %q", run.outcome.Status, StatusFailed)
+	}
+}
+
+// TestRunnerExecuteIsResolvedByACallbackWhileItWaits covers the branch of wait
+// that a callback takes - no test used to execute it (its coverage count was 0).
+// The fake service never reports a terminal state here, so the callback is the
+// only way this Execute can end, and it must end promptly and with the
+// callback's outcome rather than with a stale one.
+func TestRunnerExecuteIsResolvedByACallbackWhileItWaits(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	keyBytes := []byte("k")
+	keySrv := keyServer(t, keyBytes)
+	_, srv := newFakeFHE(t, layout)
+	r := newRunnerWithTimeout(t, srv.URL, layout, 10*time.Second)
+	spec := specFor(t, r, keySrv.URL, keyBytes, []byte("i"))
+
+	done := make(chan TaskOutcome, 1)
+	failed := make(chan error, 1)
+	go func() {
+		out, err := r.Execute(context.Background(), spec, nil)
+		done <- out
+		failed <- err
+	}()
+	waitForRun(t, r, "task-1")
+
+	// An out-of-contract non-terminal callback must not resolve the run, which is
+	// what Execute would then have reported as the task's status.
+	if r.Deliver(CallbackPayload{TaskID: "task-1", Status: "running"}) {
+		t.Error("a non-terminal callback advanced the run")
+	}
+
+	start := time.Now()
+	if !r.Deliver(CallbackPayload{TaskID: "task-1", Status: "completed"}) {
+		t.Fatal("the terminal callback did not advance the run")
+	}
+	out := <-done
+	err := <-failed
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("Execute returned %v after the callback: a delivered callback must resolve it promptly", elapsed)
+	}
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if out.Status != StatusCompleted {
+		t.Errorf("Execute returned %q, want %q", out.Status, StatusCompleted)
+	}
+}
+
+// TestRunnerExecuteAbortsStagingWhenTheCallerGivesUp is the regression test for
+// staging that ignored the caller's context.
+//
+// The key download ran on http.Get with no context, so cancelling the caller
+// left Execute publishing a multi-gigabyte key: it returned 1.5s after a
+// cancellation at 100ms against a 3s download, and a key server that never
+// answered would have held the import goroutine forever. Staging now runs on the
+// task's context, so the cancellation stops it where it stands.
+func TestRunnerExecuteAbortsStagingWhenTheCallerGivesUp(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	payload := []byte("eval-key-bytes")
+	head, tail := payload[:4], payload[4:]
+
+	started := make(chan struct{})
+	var once sync.Once
+	keySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(head)
+		flush(w)
+		once.Do(func() { close(started) })
+		select {
+		case <-r.Context().Done():
+		case <-time.After(3 * time.Second):
+		}
+		_, _ = w.Write(tail)
+	}))
+	defer keySrv.Close()
+
+	fake, srv := newFakeFHE(t, layout)
+	r := newRunnerWithTimeout(t, srv.URL, layout, time.Minute)
+	spec := specFor(t, r, keySrv.URL, payload, []byte("i"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-started
+		cancel()
+	}()
+
+	start := time.Now()
+	out, err := r.Execute(ctx, spec, nil)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Execute with a cancelled caller = nil, want error")
+	}
+	if out.Status != StatusFailed {
+		t.Errorf("Status = %q, want %q", out.Status, StatusFailed)
+	}
+	if elapsed > time.Second {
+		t.Errorf("Execute returned after %v, want it to stop when its caller cancelled at the start of a 3s download", elapsed)
+	}
+	if fake.createHits != 0 {
+		t.Errorf("createHits = %d, want 0: staging failed, so no task may be created", fake.createHits)
+	}
+}
+
+// TestRunnerCancelAfterTheTaskFinishedIsNotAFailedStop pins the third answer
+// Cancel can give. A task that finished a moment before the platform's
+// stopTraining arrived is a race, and reporting it as a failed stop would be
+// wrong; it is reported through ErrTaskAlreadyFinished instead, and nothing is
+// sent to the service.
+func TestRunnerCancelAfterTheTaskFinishedIsNotAFailedStop(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	fake, srv := newFakeFHE(t, layout)
+	r := newTestRunner(t, srv.URL, layout)
+	fake.mu.Lock()
+	fake.tasks["task-1"] = "running"
+	fake.mu.Unlock()
+
+	run := r.registerTestRun("task-1", TaskSpec{TaskID: "task-1", UserID: testHashA, ModelID: testHashB})
+	r.finish(run, TaskOutcome{Status: StatusCompleted})
+
+	err := r.Cancel(context.Background(), "task-1")
+	if !errors.Is(err, ErrTaskAlreadyFinished) {
+		t.Fatalf("Cancel of a finished task = %v, want ErrTaskAlreadyFinished", err)
+	}
+	if got := fake.status("task-1"); got != "running" {
+		t.Errorf("service status = %q, want running: a finished task must not be cancelled", got)
+	}
+	if run.outcome.Status != StatusCompleted {
+		t.Errorf("the finished run's outcome is now %q, want it left alone", run.outcome.Status)
 	}
 }

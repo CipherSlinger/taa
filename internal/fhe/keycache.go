@@ -1,16 +1,20 @@
 package fhe
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
-	"taa/internal/resource"
 	teecrypto "taa/pkg/crypto"
+	pkgerrors "taa/pkg/errors"
 	"taa/pkg/utils"
 )
 
@@ -69,19 +73,31 @@ func (c *KeyCache) Path(hash string) (string, error) {
 // A cached key is returned as-is; a miss downloads from url, verifies the digest,
 // and only then moves the file into place, so a partially written or rejected
 // download can never be mistaken for a cached key.
-func (c *KeyCache) Ensure(hash, url string) (string, error) {
+//
+// ctx bounds the download, and the caller's cancellation reaches it: a key
+// server that accepted the connection and then said nothing must not hold the
+// import goroutine that is waiting for this key open forever.
+//
+// The lock covers the cache lookup alone. It used to be held across the download
+// and the digest - a multi-gigabyte transfer plus a multi-gigabyte SM3 - so one
+// slow key serialized every other digest in the process. Nothing needs that:
+// names are content-addressed and publication is an atomic rename, so two
+// concurrent downloads of one digest verify the same bytes and publish the same
+// file, and the second one's rename is a no-op in effect.
+func (c *KeyCache) Ensure(ctx context.Context, hash, url string) (string, error) {
 	dst, err := c.Path(hash)
 	if err != nil {
 		return "", err
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if _, err := os.Stat(dst); err == nil {
+	_, statErr := os.Stat(dst)
+	c.mu.Unlock()
+	if statErr == nil {
 		return dst, nil
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("stat cached eval key %s: %w", dst, err)
+	}
+	if !os.IsNotExist(statErr) {
+		return "", fmt.Errorf("stat cached eval key %s: %w", dst, statErr)
 	}
 
 	if strings.TrimSpace(url) == "" {
@@ -90,7 +106,7 @@ func (c *KeyCache) Ensure(hash, url string) (string, error) {
 
 	// The cap is this package's own, never the import cap: a real key is 3.101 GiB
 	// and codeAudit.resultCheck.maxFileBytes defaults to 3 GiB.
-	tmp, _, err := resource.DownloadToTempFile(url, c.maxBytes)
+	tmp, err := downloadKey(ctx, url, c.maxBytes)
 	if err != nil {
 		return "", fmt.Errorf("download eval key: %w", err)
 	}
@@ -111,6 +127,81 @@ func (c *KeyCache) Ensure(hash, url string) (string, error) {
 		return "", fmt.Errorf("move eval key into the cache: %w", err)
 	}
 	return dst, nil
+}
+
+// keyHeaderTimeout bounds how long the key server may take to send response
+// headers, which is the one thing a whole-request timeout cannot do here.
+const keyHeaderTimeout = 30 * time.Second
+
+// keyDownloadClient fetches eval keys.
+//
+// Its whole-request timeout is deliberately off, for the reason Client documents
+// for its download client: http.Client.Timeout also covers reading the body, and
+// a key is multi-gigabyte, so a timeout there aborts a healthy download
+// mid-stream. The transfer is instead bounded by the caller's context - Execute
+// hands Ensure the task's deadline - and by the header timeout, which stops a
+// service that accepts the connection and then says nothing from holding the
+// download open for the whole task budget.
+//
+// It follows redirects, unlike the API client. That difference is deliberate:
+// what makes a redirect dangerous there is the tenant header riding on the
+// request, and this request carries none. A key url is the deployment's own
+// storage url, and this download used to go through http.Get, which follows
+// redirects too - narrowing that here would turn a storage deployment that
+// answers with a redirect into one whose keys can never be fetched.
+var keyDownloadClient = func() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = keyHeaderTimeout
+	return &http.Client{Transport: transport}
+}()
+
+// downloadKey streams url into a temp file, bounded by ctx and by maxBytes,
+// which NewKeyCache has already checked is positive.
+//
+// resource.DownloadToTempFile does the same thing without a context - it calls
+// http.Get - so a cancelled import could not stop it and a hung server could
+// hold it forever. The same download is implemented here because this package
+// may not change the resource package, and because a wrapper around it (a
+// goroutine plus a select on ctx.Done) would leak the download it walked away
+// from.
+func downloadKey(ctx context.Context, url string, maxBytes int64) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("build the eval key download request for %s: %w", url, err)
+	}
+	resp, err := keyDownloadClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	if resp.ContentLength > maxBytes {
+		return "", pkgerrors.Errorf(pkgerrors.CodeInvalidArgument,
+			"eval key is %d bytes, over the %d byte cap", resp.ContentLength, maxBytes)
+	}
+
+	f, err := os.CreateTemp("", "taa-download-*")
+	if err != nil {
+		return "", fmt.Errorf("create the eval key temp file: %w", err)
+	}
+	path := f.Name()
+
+	reader := io.LimitReader(resp.Body, maxBytes+1)
+	n, err := io.Copy(f, reader)
+	f.Close()
+	if err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("write the eval key download to %s: %w", path, err)
+	}
+	if n > maxBytes {
+		_ = os.Remove(path)
+		return "", pkgerrors.Errorf(pkgerrors.CodeInvalidArgument,
+			"eval key is over the %d byte cap: %d bytes", maxBytes, n)
+	}
+	return path, nil
 }
 
 // moveIntoCache moves src onto dst, falling back to a copy when the two paths are

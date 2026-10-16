@@ -1,13 +1,16 @@
 package fhe
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // sm3HexOf computes the SM3 digest of b the same way the cache does, by writing
@@ -39,7 +42,7 @@ func TestKeyCacheEnsureDownloadsAndVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKeyCache: %v", err)
 	}
-	got, err := c.Ensure(hash, srv.URL+"/eval_context.bin")
+	got, err := c.Ensure(context.Background(), hash, srv.URL+"/eval_context.bin")
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -55,7 +58,7 @@ func TestKeyCacheEnsureDownloadsAndVerifies(t *testing.T) {
 
 	// Second call must be served from the cache: the point of the cache is that a
 	// repeat task for the same user never re-downloads several gigabytes.
-	again, err := c.Ensure(hash, srv.URL+"/eval_context.bin")
+	again, err := c.Ensure(context.Background(), hash, srv.URL+"/eval_context.bin")
 	if err != nil {
 		t.Fatalf("second Ensure: %v", err)
 	}
@@ -80,7 +83,7 @@ func TestKeyCacheRejectsHashMismatchAndCleansUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKeyCache: %v", err)
 	}
-	_, err = c.Ensure(wrong, srv.URL+"/eval_context.bin")
+	_, err = c.Ensure(context.Background(), wrong, srv.URL+"/eval_context.bin")
 	if err == nil {
 		t.Fatal("Ensure with a mismatched hash = nil, want error")
 	}
@@ -108,7 +111,7 @@ func TestKeyCacheRejectsInvalidHashBeforeAnyIO(t *testing.T) {
 		t.Fatalf("NewKeyCache: %v", err)
 	}
 	for _, bad := range []string{"", "..", "../../etc", "short", strings.ToUpper(testHashA)} {
-		if _, err := c.Ensure(bad, srv.URL); err == nil {
+		if _, err := c.Ensure(context.Background(), bad, srv.URL); err == nil {
 			t.Errorf("Ensure(%q) = nil, want error", bad)
 		}
 	}
@@ -129,26 +132,185 @@ func TestKeyCacheRejectsOversizedDownload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKeyCache: %v", err)
 	}
-	if _, err := c.Ensure(hash, srv.URL); err == nil {
+	if _, err := c.Ensure(context.Background(), hash, srv.URL); err == nil {
 		t.Fatal("Ensure of an oversized key = nil, want error")
 	}
 }
 
+// TestKeyCacheRequiresAURLOnAMiss pins the empty-url gate itself, not just "an
+// error came back". A blank url used to be handed to http.Get("  "), which fails
+// on its own, so asserting only err != nil left the gate untested: deleting it
+// kept the suite green while the package attempted a request for a url that was
+// never given.
 func TestKeyCacheRequiresAURLOnAMiss(t *testing.T) {
+	var hits int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&hits, 1)
+	}))
+	defer srv.Close()
+
 	c, err := NewKeyCache(t.TempDir(), DefaultMaxEvalKeyBytes)
 	if err != nil {
 		t.Fatalf("NewKeyCache: %v", err)
 	}
-	if _, err := c.Ensure(testHashA, "  "); err == nil {
+	_, err = c.Ensure(context.Background(), testHashA, "  ")
+	if err == nil {
 		t.Fatal("Ensure with no url on a miss = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "no download url") {
+		t.Errorf("error %q is not the gate's: want it to say no download url was given", err)
+	}
+	if atomic.LoadInt64(&hits) != 0 {
+		t.Errorf("the blank-url path sent %d requests, want 0", hits)
 	}
 }
 
+// TestNewKeyCacheValidatesArguments covers the cache's own argument checks.
 func TestNewKeyCacheValidatesArguments(t *testing.T) {
 	if _, err := NewKeyCache("", 1024); err == nil {
 		t.Error("empty dir accepted, want error")
 	}
 	if _, err := NewKeyCache(t.TempDir(), 0); err == nil {
 		t.Error("zero max bytes accepted, want error")
+	}
+}
+
+// TestKeyCacheEnsureDoesNotSerializeUnrelatedDigests is the regression test for
+// the mutex that covered the whole download and the whole SM3 digest: one slow
+// key made every other Ensure in the process wait for it (measured at 2.7s
+// behind a 3s download). The cache is content-addressed and publication is an
+// atomic rename, so a lookup is all the lock has to cover.
+func TestKeyCacheEnsureDoesNotSerializeUnrelatedDigests(t *testing.T) {
+	slowBytes := []byte("slow-key-bytes")
+	slowHash := sm3HexOf(t, slowBytes)
+	fastBytes := []byte("fast-key-bytes")
+	fastHash := sm3HexOf(t, fastBytes)
+
+	slowStarted := make(chan struct{})
+	var once sync.Once
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(slowBytes[:4])
+		flush(w)
+		once.Do(func() { close(slowStarted) })
+		time.Sleep(2 * time.Second)
+		_, _ = w.Write(slowBytes[4:])
+	}))
+	defer slow.Close()
+	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(fastBytes)
+	}))
+	defer fast.Close()
+
+	c, err := NewKeyCache(t.TempDir(), DefaultMaxEvalKeyBytes)
+	if err != nil {
+		t.Fatalf("NewKeyCache: %v", err)
+	}
+
+	slowDone := make(chan error, 1)
+	go func() {
+		_, err := c.Ensure(context.Background(), slowHash, slow.URL)
+		slowDone <- err
+	}()
+	<-slowStarted
+
+	start := time.Now()
+	if _, err := c.Ensure(context.Background(), fastHash, fast.URL); err != nil {
+		t.Fatalf("Ensure of an unrelated digest while a slow download runs: %v", err)
+	}
+	blocked := time.Since(start)
+	if blocked > time.Second {
+		t.Errorf("an unrelated Ensure waited %v for a 2s download: the cache lock must not cover the transfer", blocked)
+	}
+	if err := <-slowDone; err != nil {
+		t.Fatalf("the slow Ensure: %v", err)
+	}
+}
+
+// TestKeyCacheEnsureConcurrentSameDigest checks the claim that makes dropping the
+// lock safe: two concurrent downloads of one digest are harmless because both
+// verify the same bytes and the rename that publishes them is atomic. Neither may
+// see the other's staging file, and both must end up with the verified key.
+func TestKeyCacheEnsureConcurrentSameDigest(t *testing.T) {
+	payload := []byte("eval-key-bytes")
+	hash := sm3HexOf(t, payload)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	c, err := NewKeyCache(dir, DefaultMaxEvalKeyBytes)
+	if err != nil {
+		t.Fatalf("NewKeyCache: %v", err)
+	}
+	paths := make([]string, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			paths[i], errs[i] = c.Ensure(context.Background(), hash, srv.URL)
+		}(i)
+	}
+	wg.Wait()
+
+	want := filepath.Join(dir, hash, "eval_context.bin")
+	for i := 0; i < 2; i++ {
+		if errs[i] != nil {
+			t.Fatalf("concurrent Ensure #%d: %v", i, errs[i])
+		}
+		if paths[i] != want {
+			t.Errorf("concurrent Ensure #%d path = %q, want %q", i, paths[i], want)
+		}
+	}
+	b, err := os.ReadFile(want)
+	if err != nil {
+		t.Fatalf("read the cached key: %v", err)
+	}
+	if string(b) != string(payload) {
+		t.Errorf("cached key = %q, want %q", b, payload)
+	}
+	entries, err := os.ReadDir(filepath.Dir(want))
+	if err != nil {
+		t.Fatalf("read the cache entry dir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != "eval_context.bin" {
+			t.Errorf("staging file %q was left behind in the cache entry", e.Name())
+		}
+	}
+}
+
+// TestDownloadKeyIsBoundedByTheCallerContext pins the bound the download itself
+// has to have: a key server that sends headers and then stalls must not hold the
+// caller open past its own cancellation.
+func TestDownloadKeyIsBoundedByTheCallerContext(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("head"))
+		flush(w)
+		// A stall with an end, so a download that ignores the context fails the
+		// bound below instead of hanging the suite.
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+		_, _ = w.Write([]byte("tail"))
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	tmp, err := downloadKey(ctx, srv.URL, DefaultMaxEvalKeyBytes)
+	if err == nil {
+		_ = os.Remove(tmp)
+		t.Fatal("downloadKey with a cancelled context = nil, want error")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("downloadKey returned after %v, want it to stop at the caller's cancellation", elapsed)
 	}
 }
