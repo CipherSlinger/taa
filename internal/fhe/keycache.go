@@ -15,7 +15,6 @@ import (
 
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
-	"taa/pkg/utils"
 )
 
 // hashFileSM3 is the digest used for every content-addressed name in this
@@ -212,23 +211,58 @@ func downloadKey(ctx context.Context, url string, maxBytes int64) (string, error
 // boundary (EXDEV). The fallback copies into a sibling of dst first so the final
 // rename stays inside one filesystem and stays atomic: a half-copied key must
 // never appear at dst, where a cache hit would trust it without re-hashing.
+//
+// Both paths sync the bytes before the rename and the directory after it. This
+// invariant is stronger than the one client.DownloadResult keeps for a result
+// archive: a hit here skips verification entirely, so a name that exists but
+// whose data never reached the disk would serve corrupt key bytes forever.
 func moveIntoCache(src, dst string) error {
-	err := os.Rename(src, dst)
-	if err == nil {
-		return nil
+	dir := filepath.Dir(dst)
+	if err := fsyncFile(src); err != nil {
+		return fmt.Errorf("sync %s before moving it into the cache: %w", src, err)
 	}
-	if !errors.Is(err, syscall.EXDEV) {
+	if err := os.Rename(src, dst); err == nil {
+		_ = fsyncDir(dir)
+		return nil
+	} else if !errors.Is(err, syscall.EXDEV) {
 		return err
 	}
 
-	tmp := dst + ".partial"
-	if copyErr := utils.CopyFile(tmp, src, 0o600); copyErr != nil {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	// The staging name is unique per attempt, so two publishers of one digest
+	// cannot truncate each other's staging file.
+	out, err := os.CreateTemp(dir, evalKeyFileName+".partial.*")
+	if err != nil {
+		return err
+	}
+	tmp := out.Name()
+	copyErr := func() error {
+		if _, err := io.Copy(out, in); err != nil {
+			return err
+		}
+		if err := out.Sync(); err != nil {
+			return err
+		}
+		return nil
+	}()
+	if copyErr != nil {
+		_ = out.Close()
 		_ = os.Remove(tmp)
 		return copyErr
 	}
-	if renameErr := os.Rename(tmp, dst); renameErr != nil {
+	if err := out.Close(); err != nil {
 		_ = os.Remove(tmp)
-		return renameErr
+		return err
 	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	_ = fsyncDir(dir)
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -279,6 +280,117 @@ func TestKeyCacheEnsureConcurrentSameDigest(t *testing.T) {
 		if e.Name() != "eval_context.bin" {
 			t.Errorf("staging file %q was left behind in the cache entry", e.Name())
 		}
+	}
+}
+
+// TestMoveIntoCacheCrossDeviceFallback exercises the EXDEV path, which is the one
+// the cache takes in production when the key is downloaded into os.TempDir() and
+// the cache lives on a real disk. It needs two filesystems, so it skips where
+// there is only one.
+//
+// The path is what a crash would corrupt: the staging file it writes must be
+// unique (a fixed "<dst>.partial" lets two publishers truncate each other's
+// bytes) and it must be gone whatever happens.
+func TestMoveIntoCacheCrossDeviceFallback(t *testing.T) {
+	srcDir := "/dev/shm"
+	if _, err := os.Stat(srcDir); err != nil {
+		t.Skipf("no second filesystem to cross: %v", err)
+	}
+	dstDir := t.TempDir()
+	devOf := func(p string) uint64 {
+		t.Helper()
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat %s: %v", p, err)
+		}
+		return st.Sys().(*syscall.Stat_t).Dev
+	}
+	if devOf(srcDir) == devOf(dstDir) {
+		t.Skipf("%s and %s are one filesystem, so rename cannot fail with EXDEV", srcDir, dstDir)
+	}
+
+	src, err := os.CreateTemp(srcDir, "taa-key-*")
+	if err != nil {
+		t.Skipf("cannot write to %s: %v", srcDir, err)
+	}
+	payload := []byte("cross-device-key-bytes")
+	if _, err := src.Write(payload); err != nil {
+		t.Fatalf("write the key: %v", err)
+	}
+	if err := src.Close(); err != nil {
+		t.Fatalf("close the key: %v", err)
+	}
+	defer os.Remove(src.Name())
+
+	dst := filepath.Join(dstDir, "eval_context.bin")
+	// Another publisher staged under the fixed name this used to use.
+	fixed := dst + ".partial"
+	if err := os.WriteFile(fixed, []byte("another-publisher-staging"), 0o600); err != nil {
+		t.Fatalf("write the sentinel: %v", err)
+	}
+
+	if err := moveIntoCache(src.Name(), dst); err != nil {
+		t.Fatalf("moveIntoCache across filesystems: %v", err)
+	}
+	b, err := os.ReadFile(dst)
+	if err != nil || string(b) != string(payload) {
+		t.Errorf("moved key = %q, err = %v", b, err)
+	}
+	if b, err := os.ReadFile(fixed); err != nil || string(b) != "another-publisher-staging" {
+		t.Errorf("the staging file at %s = %q, err = %v: moveIntoCache wrote through a fixed staging name", fixed, b, err)
+	}
+	entries, err := os.ReadDir(dstDir)
+	if err != nil {
+		t.Fatalf("read the cache dir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".partial.") {
+			t.Errorf("staging file %q was left behind", e.Name())
+		}
+	}
+}
+
+// TestMoveIntoCacheRemovesItsStagingFileOnFailure checks the failure path of the
+// cross-device copy: a half-written key must not be left next to dst, where the
+// next attempt - or an operator - could mistake it for a cache entry.
+//
+// The failure is arranged after the staging file exists, by handing the copy a
+// directory as its source: reading it fails with EISDIR, so the copy dies with
+// its staging file already in dst's directory.
+func TestMoveIntoCacheRemovesItsStagingFileOnFailure(t *testing.T) {
+	srcDir := "/dev/shm"
+	dstDir := t.TempDir()
+	devOf := func(p string) uint64 {
+		t.Helper()
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Skipf("cannot stat %s: %v", p, err)
+		}
+		return st.Sys().(*syscall.Stat_t).Dev
+	}
+	if devOf(srcDir) == devOf(dstDir) {
+		t.Skipf("%s and %s are one filesystem, so the cross-device copy is not reached", srcDir, dstDir)
+	}
+	src, err := os.MkdirTemp(srcDir, "taa-key-dir-*")
+	if err != nil {
+		t.Skipf("cannot write to %s: %v", srcDir, err)
+	}
+	defer os.RemoveAll(src)
+
+	dst := filepath.Join(dstDir, "eval_context.bin")
+	if err := moveIntoCache(src, dst); err == nil {
+		t.Fatal("moveIntoCache with an unreadable source = nil, want error")
+	}
+	entries, err := os.ReadDir(dstDir)
+	if err != nil {
+		t.Fatalf("read the cache dir: %v", err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("cache dir holds %v after a failed move, want nothing", names)
 	}
 }
 

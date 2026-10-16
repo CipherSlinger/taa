@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -918,6 +919,122 @@ func TestRunnerExecuteAbortsStagingWhenTheCallerGivesUp(t *testing.T) {
 	}
 	if fake.createHits != 0 {
 		t.Errorf("createHits = %d, want 0: staging failed, so no task may be created", fake.createHits)
+	}
+}
+
+// TestRunnerPublishedFilesAreReadableDespiteTheUmask is the regression test for
+// the modes of the files published into the shared directory.
+//
+// The FHE service reads them from a container running as another user, which is
+// why linkOrCopy chmods the key; the input archive published by prepare got
+// nothing, so under a restrictive umask it landed 0600 and the service could not
+// read it at all.
+func TestRunnerPublishedFilesAreReadableDespiteTheUmask(t *testing.T) {
+	old := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(old) })
+
+	layout := NewLayout(t.TempDir())
+	keyBytes := []byte("eval-key-bytes")
+	keySrv := keyServer(t, keyBytes)
+	fake, srv := newFakeFHE(t, layout)
+	r := newRunnerWithTimeout(t, srv.URL, layout, 2*time.Second)
+	spec := specFor(t, r, keySrv.URL, keyBytes, []byte("i"))
+
+	go func() {
+		for i := 0; i < 400; i++ {
+			if fake.status("task-1") != "" {
+				fake.completeTask("task-1")
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	if _, err := r.Execute(context.Background(), spec, nil); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	keyDst, err := layout.KeyPath(spec.EvalKeyHash)
+	if err != nil {
+		t.Fatalf("KeyPath: %v", err)
+	}
+	inDst, err := layout.TaskInputPath("task-1")
+	if err != nil {
+		t.Fatalf("TaskInputPath: %v", err)
+	}
+	for _, p := range []string{keyDst, inDst} {
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat %s: %v", p, err)
+		}
+		if got := st.Mode().Perm(); got != 0o644 {
+			t.Errorf("%s is %v under umask 077, want 0644: the service reads it as another user", p, got)
+		}
+	}
+}
+
+// TestLinkOrCopyKeepsThePublishedKeyWhenItFails is the regression test for the
+// remove-then-link order: a publish that failed after removing dst left no key
+// at all where a good one was, and in between the two calls a reader saw no key.
+func TestLinkOrCopyKeepsThePublishedKeyWhenItFails(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "eval_context.bin")
+	if err := os.WriteFile(dst, []byte("the-published-key"), 0o644); err != nil {
+		t.Fatalf("write the published key: %v", err)
+	}
+
+	// A source that has vanished makes both os.Link and the copy fallback fail.
+	if err := linkOrCopy(filepath.Join(t.TempDir(), "vanished"), dst); err == nil {
+		t.Fatal("linkOrCopy of a missing source = nil, want error")
+	}
+	b, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("the published key is gone after a failed publish: %v", err)
+	}
+	if string(b) != "the-published-key" {
+		t.Errorf("the published key is now %q, want the previous one", b)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read the key dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "eval_context.bin" {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("key dir holds %v after a failed publish, want only the published key", names)
+	}
+}
+
+// TestCopyFileAtomicDoesNotWriteThroughAFixedStagingName pins the staging name.
+//
+// copyFileAtomic stages next to the destination, so a name derived from the
+// destination alone is shared by every publisher of that destination - and this
+// runs with no lock at all on the shared data directory, so two publishers
+// truncate each other's bytes. One publisher's staging file standing in for the
+// other is what that looks like from a single process.
+func TestCopyFileAtomicDoesNotWriteThroughAFixedStagingName(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "input.zip")
+	const foreign = "another-publisher-staging-bytes"
+	fixed := dst + ".partial"
+	if err := os.WriteFile(fixed, []byte(foreign), 0o644); err != nil {
+		t.Fatalf("write the other publisher's staging file: %v", err)
+	}
+
+	src := filepath.Join(t.TempDir(), "input-src.zip")
+	payload := []byte("the-input-archive")
+	if err := os.WriteFile(src, payload, 0o600); err != nil {
+		t.Fatalf("write the source archive: %v", err)
+	}
+	if err := copyFileAtomic(src, dst); err != nil {
+		t.Fatalf("copyFileAtomic: %v", err)
+	}
+	if b, err := os.ReadFile(dst); err != nil || string(b) != string(payload) {
+		t.Errorf("published archive = %q, err = %v", b, err)
+	}
+	if b, err := os.ReadFile(fixed); err != nil || string(b) != foreign {
+		t.Errorf("the staging file at %s = %q, err = %v: copyFileAtomic wrote through a name derived from the destination", fixed, b, err)
 	}
 }
 

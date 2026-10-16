@@ -600,30 +600,107 @@ func (r *Runner) CopyResult(ctx context.Context, spec TaskSpec, out TaskOutcome,
 	return "", nil
 }
 
-// linkOrCopy hard-links src to dst, falling back to a copy when the two are not
-// on one filesystem. A hard link is what keeps publishing a 3.1 GiB eval key
-// free; the copy fallback costs one extra copy, not a wrong result.
+// linkOrCopy publishes src at dst without ever destroying what is already there.
+//
+// A hard link is what keeps publishing a 3.1 GiB eval key free; the copy
+// fallback costs one extra copy, not a wrong result.
+//
+// Both paths stage next to dst and rename into place. Removing dst and only then
+// linking - which is what this used to do - has two failures: a link that fails
+// after the remove leaves no key at all where a good one was, and in between the
+// two calls a reader sees no key. A rename is atomic, so the published path only
+// ever holds a complete file.
 //
 // The destination is left mode 0644 because the FHE service reads it from a
 // container running as a different user. On a hard link this also relaxes the
 // source's mode, which is fine: the cache holds public keys.
 func linkOrCopy(src, dst string) error {
-	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+	dir := filepath.Dir(dst)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	if err := os.Link(src, dst); err == nil {
-		return os.Chmod(dst, 0o644)
-	}
-	if err := copyFileAtomic(src, dst); err != nil {
+	staged, err := stagePath(dir, filepath.Base(dst))
+	if err != nil {
 		return err
 	}
-	return os.Chmod(dst, 0o644)
+	defer func() { _ = os.Remove(staged) }() // a no-op once the rename moved it
+
+	// Anything but a successful link - a different filesystem, the link limit,
+	// permissions - falls back to the copy.
+	if err := os.Link(src, staged); err != nil {
+		if err := copyFileAtomic(src, staged); err != nil {
+			return err
+		}
+	}
+	// 0644 explicitly, for the reason above: the process umask must not decide
+	// whether the service can read the key it is being handed.
+	if err := os.Chmod(staged, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(staged, dst)
+}
+
+// stagePath reserves a unique staging path in dir for a file named base.
+//
+// The name must be unique per attempt, and must not be derived from the
+// destination alone: copyFileAtomic is called with no lock at all on the shared
+// data directory, so a fixed "<dst>.partial" name lets two publishers of one
+// destination open the same staging file and truncate each other's bytes. This
+// is the hazard client.DownloadResult already avoids with os.CreateTemp.
+//
+// The file CreateTemp made is removed so the caller gets a free name it can
+// create itself, which is what os.Link needs; the window in which another
+// process could take the name is the width of the random name's collision odds.
+func stagePath(dir, base string) (string, error) {
+	f, err := os.CreateTemp(dir, base+".partial.*")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := os.Remove(name); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+// fsyncFile pushes a file's bytes to stable storage, so a rename that follows
+// cannot land ahead of the data it names.
+func fsyncFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
+}
+
+// fsyncDir pushes a directory's entries to stable storage, which is what makes a
+// rename inside it survive a crash. Callers treat a failure as best-effort, the
+// way client.DownloadResult does: the file itself is already synced.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 // copyFileAtomic stages the copy next to its destination and renames it into
 // place, so a reader never observes a half-written archive.
+//
+// The staging name is unique per attempt rather than a fixed "<dst>.partial";
+// see stagePath. The file is synced before the rename, so "dst exists" keeps
+// meaning "dst is complete" across a crash as well as between processes, and it
+// is 0644 in spite of the umask, because the FHE service reads these archives
+// from a container running as another user.
 func copyFileAtomic(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	dir := filepath.Dir(dst)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	in, err := os.Open(src)
@@ -632,12 +709,26 @@ func copyFileAtomic(src, dst string) error {
 	}
 	defer in.Close()
 
-	tmp := dst + ".partial"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	tmp, err := stagePath(dir, filepath.Base(dst))
+	if err != nil {
+		return err
+	}
+	// O_EXCL because stagePath released the name: this holds it for the whole copy.
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := out.Chmod(0o644); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := out.Sync(); err != nil {
 		out.Close()
 		os.Remove(tmp)
 		return err
@@ -650,5 +741,6 @@ func copyFileAtomic(src, dst string) error {
 		os.Remove(tmp)
 		return err
 	}
+	_ = fsyncDir(dir)
 	return nil
 }
