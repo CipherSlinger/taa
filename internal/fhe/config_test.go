@@ -92,6 +92,13 @@ func TestConfigValidateRejectsBadEndpointShape(t *testing.T) {
 			endpoint: "http://",
 			want:     `fhe.endpoint "http://" has no host`,
 		},
+		{
+			// Host is non-empty (":1") but there is no host name at all; the
+			// startup-config layer rejects this shape too, and the two gates must
+			// not disagree on what an absolute URL is.
+			endpoint: "http://:1",
+			want:     `fhe.endpoint "http://:1" has no host name`,
+		},
 	}
 	for _, tc := range tests {
 		c := validConfig()
@@ -133,6 +140,10 @@ func TestConfigValidateRejectsBadCallbackBaseURL(t *testing.T) {
 		{
 			base: "http://",
 			want: `fhe.callbackBaseUrl "http://" has no host`,
+		},
+		{
+			base: "http://:1",
+			want: `fhe.callbackBaseUrl "http://:1" has no host name`,
 		},
 		{
 			// A fragment swallows the appended path *and* the token, so the

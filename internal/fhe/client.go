@@ -35,18 +35,21 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("fhe %s %s: HTTP %d: %s", e.Method, e.Path, e.StatusCode, body)
 }
 
-func asAPIError(err error, target **APIError) bool {
-	return errors.As(err, target)
-}
-
 // Client talks to the FHE service's /api/v1 surface.
 //
 // Only the calls TAA makes are implemented. The service is unauthenticated and
 // takes the tenant from the X-User-Id header, so every task-scoped call carries
-// the eval key digest as that header.
+// the eval key digest as that header - and refuses to send one without it,
+// because the header is what the service reads the tenant from.
+//
+// The two HTTP clients differ in exactly one way, and it is load-bearing: the
+// unary client bounds a whole call by the configured request timeout, and the
+// download client must not, because http.Client.Timeout also covers reading the
+// body, so a per-request timeout aborts a multi-gigabyte result mid-stream.
 type Client struct {
-	baseURL string
-	http    *http.Client
+	baseURL  string
+	http     *http.Client
+	download *http.Client
 }
 
 // NewClient returns a client for endpoint, which may or may not already carry
@@ -70,10 +73,65 @@ func NewClient(endpoint string, timeout time.Duration) (*Client, error) {
 	if !strings.HasSuffix(base, "/api/v1") {
 		base += "/api/v1"
 	}
-	return &Client{baseURL: base, http: &http.Client{Timeout: timeout}}, nil
+	return &Client{
+		baseURL:  base,
+		http:     newHTTPClient(timeout),
+		download: newHTTPClient(0),
+	}, nil
 }
 
-func (c *Client) do(ctx context.Context, method, path, userID string, body any, out any) error {
+// newHTTPClient builds one HTTP client. A timeout of 0 means "no whole-request
+// deadline", which is what the download needs; the connection phases stay
+// bounded either way, so a service that accepts a connection and then says
+// nothing cannot hold a call open forever.
+//
+// Neither client follows a redirect. A redirect is how a task-scoped call
+// leaks its tenant: a 307 re-sends the POST to whatever host Location names, and
+// a 303 turns the POST into a GET that still answers 200, so a mutating call
+// reports success while doing nothing. Handing the 3xx back to the caller
+// surfaces both as an APIError instead.
+func newHTTPClient(timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if timeout > 0 {
+		// Time to the first byte, not time to the last: headers still have to
+		// arrive inside the request timeout, which the body must not be.
+		transport.ResponseHeaderTimeout = timeout
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+// guardTaskCall rejects a task-scoped call this package must not send.
+//
+// The id must be one safe path segment: url.PathEscape is not a traversal
+// defence, because it escapes neither "." nor "/", so "../models/activate"
+// survives escaping and the server decodes the path back to
+// /api/v1/tasks/../models/activate. The tenant must be present, because an empty
+// one used to drop the X-User-Id header and succeed as no tenant at all.
+func guardTaskCall(taskID, userID string) error {
+	if err := ValidTaskID(taskID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(userID) == "" {
+		return fmt.Errorf("fhe task-scoped call for task %q requires a user id", taskID)
+	}
+	return nil
+}
+
+// do performs one unary call.
+//
+// emptyOK marks the calls whose response body this package does not consume:
+// the service is entitled to answer a cancel with 204 No Content, and decoding
+// an empty body into a throwaway value would turn that success into an error.
+// The calls whose body carries data (health, create, task) pass false, where an
+// empty body is still an error - a zero value returned there would be a phantom
+// success that the runner acts on.
+func (c *Client) do(ctx context.Context, method, path, userID string, body, out any, emptyOK bool) error {
 	var reader io.Reader
 	if body != nil {
 		buf, err := json.Marshal(body)
@@ -102,11 +160,10 @@ func (c *Client) do(ctx context.Context, method, path, userID string, body any, 
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		return &APIError{Method: method, Path: path, StatusCode: resp.StatusCode, Body: string(snippet)}
 	}
-	if out == nil {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil
-	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		if emptyOK && errors.Is(err, io.EOF) {
+			return nil
+		}
 		return fmt.Errorf("decode fhe %s %s response: %w", method, path, err)
 	}
 	return nil
@@ -115,14 +172,14 @@ func (c *Client) do(ctx context.Context, method, path, userID string, body any, 
 // Health checks that the service answers.
 func (c *Client) Health(ctx context.Context) error {
 	var st map[string]any
-	return c.do(ctx, http.MethodGet, "/health", "", nil, &st)
+	return c.do(ctx, http.MethodGet, "/health", "", nil, &st, false)
 }
 
 // ActivateModel asks the service to scan and hot-load a model. The call is
 // idempotent, so it may be repeated.
 func (c *Client) ActivateModel(ctx context.Context, modelID string) error {
 	var st map[string]any
-	return c.do(ctx, http.MethodPost, "/models/activate?model_id="+url.QueryEscape(modelID), "", nil, &st)
+	return c.do(ctx, http.MethodPost, "/models/activate?model_id="+url.QueryEscape(modelID), "", nil, &st, true)
 }
 
 // CreateTaskRequest is the body of POST /tasks.
@@ -137,7 +194,10 @@ type CreateTaskRequest struct {
 // CreateTask submits a task. The input package must already be on disk.
 func (c *Client) CreateTask(ctx context.Context, req CreateTaskRequest) error {
 	var st map[string]any
-	return c.do(ctx, http.MethodPost, "/tasks", req.UserID, req, &st)
+	if err := guardTaskCall(req.TaskID, req.UserID); err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodPost, "/tasks", req.UserID, req, &st, false)
 }
 
 // CaseStatus is one entry of a task's case list.
@@ -161,6 +221,12 @@ type TaskStatus struct {
 	Results   []CaseStatus `json:"results"`
 }
 
+// caseList returns the case entries the service reported.
+//
+// "results" is a fallback spelling of "cases", not a second list to merge: the
+// response shape is undocumented and only one of the two keys is ever filled in,
+// so cases wins whenever it is non-empty. A service that one day sends both
+// would have its "cases" list reported and its "results" list ignored.
 func (t TaskStatus) caseList() []CaseStatus {
 	if len(t.Cases) > 0 {
 		return t.Cases
@@ -168,8 +234,12 @@ func (t TaskStatus) caseList() []CaseStatus {
 	return t.Results
 }
 
-// Progress returns the finished case count and the total the service reported.
-// Both are zero when no case list was recognised.
+// Progress returns the finished case count and the total the service reported,
+// in that order. Both are zero when no case list was recognised, so a caller
+// MUST check total > 0 before computing a percentage: done*100/total divides by
+// zero otherwise. A case whose Error field is set still counts as done - the
+// service finished with it, so a failed case must not stall the reported
+// percentage below 100.
 func (t TaskStatus) Progress() (done, total int) {
 	cases := t.caseList()
 	for _, c := range cases {
@@ -191,41 +261,58 @@ func (t TaskStatus) Failed() int {
 	return n
 }
 
-// Task fetches a task's state.
+// Task fetches a task's state. The body carries the status this package waits
+// on, so an empty one is an error rather than a zero TaskStatus.
 func (c *Client) Task(ctx context.Context, taskID, userID string) (TaskStatus, error) {
 	var st TaskStatus
-	err := c.do(ctx, http.MethodGet, "/tasks/"+url.PathEscape(taskID), userID, nil, &st)
+	if err := guardTaskCall(taskID, userID); err != nil {
+		return st, err
+	}
+	err := c.do(ctx, http.MethodGet, "/tasks/"+url.PathEscape(taskID), userID, nil, &st, false)
 	return st, err
 }
 
 // CancelTask maps TAA's stopTraining onto the service's cancel endpoint.
 func (c *Client) CancelTask(ctx context.Context, taskID, userID string) error {
+	if err := guardTaskCall(taskID, userID); err != nil {
+		return err
+	}
 	var st map[string]any
-	return c.do(ctx, http.MethodPost, "/tasks/"+url.PathEscape(taskID)+"/cancel", userID, nil, &st)
+	return c.do(ctx, http.MethodPost, "/tasks/"+url.PathEscape(taskID)+"/cancel", userID, nil, &st, true)
 }
 
 // ContinueTask re-runs the unfinished cases of a task that already exists, which
 // is how a replayed import is retried instead of creating a second task.
 func (c *Client) ContinueTask(ctx context.Context, taskID, userID string) error {
+	if err := guardTaskCall(taskID, userID); err != nil {
+		return err
+	}
 	var st map[string]any
-	return c.do(ctx, http.MethodPost, "/tasks/"+url.PathEscape(taskID)+"/continue", userID, nil, &st)
+	return c.do(ctx, http.MethodPost, "/tasks/"+url.PathEscape(taskID)+"/continue", userID, nil, &st, true)
 }
 
 // DownloadResult fetches output.zip and writes it to dst, creating parent
 // directories. It is the fallback used when the shared directory does not hold
 // the result - for instance when TAA and the service are not on one host.
+//
+// The archive is streamed by the download client, which has no whole-request
+// timeout, so the caller's context is what bounds it. There is deliberately no
+// size cap here: a cap would have to be a caller-supplied parameter, which would
+// change this signature; the eval key download is capped separately, by the key
+// cache's MaxEvalKeyBytes.
 func (c *Client) DownloadResult(ctx context.Context, taskID, userID, dst string) error {
+	if err := guardTaskCall(taskID, userID); err != nil {
+		return err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		c.baseURL+"/tasks/"+url.PathEscape(taskID)+"/results/download", nil)
 	if err != nil {
-		return fmt.Errorf("build result download request: %w", err)
+		return fmt.Errorf("build result download request for task %s: %w", taskID, err)
 	}
-	if userID != "" {
-		req.Header.Set("X-User-Id", userID)
-	}
-	resp, err := c.http.Do(req)
+	req.Header.Set("X-User-Id", userID)
+	resp, err := c.download.Do(req)
 	if err != nil {
-		return fmt.Errorf("download fhe result: %w", err)
+		return fmt.Errorf("download result for task %s: %w", taskID, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
@@ -233,26 +320,45 @@ func (c *Client) DownloadResult(ctx context.Context, taskID, userID, dst string)
 		return &APIError{Method: http.MethodGet, Path: "/tasks/" + taskID + "/results/download",
 			StatusCode: resp.StatusCode, Body: string(snippet)}
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return fmt.Errorf("create result dir: %w", err)
+	dir := filepath.Dir(dst)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create result dir %s for task %s: %w", dir, taskID, err)
 	}
-	tmp := dst + ".partial"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	// The archive is staged next to dst and renamed into place, so a reader never
+	// sees a partial file: after the rename, "dst exists" means "dst is complete".
+	// The staging name is unique per attempt, so two concurrent downloads of one
+	// task cannot truncate each other's bytes into the same temp file.
+	f, err := os.CreateTemp(dir, filepath.Base(dst)+".partial.*")
 	if err != nil {
-		return fmt.Errorf("create result temp file: %w", err)
+		return fmt.Errorf("create result temp file in %s for task %s: %w", dir, taskID, err)
 	}
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return fmt.Errorf("write result file: %w", err)
+	tmp := f.Name()
+	defer func() { _ = os.Remove(tmp) }() // a no-op once the rename moved it
+	if err := f.Chmod(0o644); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("set result temp file mode for task %s: %w", taskID, err)
+	}
+	written, err := io.Copy(f, resp.Body)
+	if err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write result file for task %s to %s after %d bytes: %w", taskID, dst, written, err)
+	}
+	// Syncing before the rename is what keeps the invariant above true across a
+	// crash: without it the rename can land while the bytes are still in the page
+	// cache, leaving a short or empty output.zip under the final name.
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("sync result file for task %s to %s (%d bytes): %w", taskID, dst, written, err)
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("close result file: %w", err)
+		return fmt.Errorf("close result file for task %s to %s (%d bytes): %w", taskID, dst, written, err)
 	}
 	if err := os.Rename(tmp, dst); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("move result into place: %w", err)
+		return fmt.Errorf("move result for task %s into place at %s (%d bytes): %w", taskID, dst, written, err)
+	}
+	if parent, err := os.Open(dir); err == nil {
+		_ = parent.Sync()
+		_ = parent.Close()
 	}
 	return nil
 }

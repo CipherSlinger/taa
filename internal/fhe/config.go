@@ -79,6 +79,13 @@ func validateBaseURL(field, raw string) error {
 	if u.Host == "" {
 		return fmt.Errorf("fhe.%s %q has no host", field, raw)
 	}
+	// Host is not enough: "http://:1" has Host ":1" and no host name at all, so
+	// the two would accept a URL nothing can connect to. The startup-config layer
+	// reads Hostname for the same reason, and two gates that validate the same
+	// property must not disagree.
+	if u.Hostname() == "" {
+		return fmt.Errorf("fhe.%s %q has no host name", field, raw)
+	}
 	return nil
 }
 
