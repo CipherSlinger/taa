@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1042,6 +1043,56 @@ func TestImportFHEModelStagesIntoSharedDirAndSkipsTheAudit(t *testing.T) {
 	// And importModel is what names the model the task will run against.
 	if got, _ := env.state.getModelChecksum()["value"].(string); got != hash {
 		t.Errorf("recorded model checksum = %q, want %q", got, hash)
+	}
+}
+
+// TestFHEModelImportIsReadableDespiteTheUmask is the regression test for the
+// modes of the staged model package.
+//
+// The FHE service reads <data>/models/<hash>/server from a container running as
+// another user, so every directory down to it has to be enterable and every file
+// in it readable. The import created the model directory with os.MkdirAll, which
+// applies the umask, and extraction then replaced that directory outright with
+// one os.MkdirTemp had made - os.MkdirTemp is 0700 whatever the umask is - so
+// under umask 077 the package the service had just been told to activate was
+// unreachable. Nothing failed at import time: the failure surfaced at the first
+// task, as an activation error against a model that had staged correctly.
+func TestFHEModelImportIsReadableDespiteTheUmask(t *testing.T) {
+	old := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(old) })
+
+	env := newFHETestEnv(t)
+	hash := env.importModel()
+
+	modelDir, err := env.runner.Layout().ModelDir(hash)
+	if err != nil {
+		t.Fatalf("ModelDir: %v", err)
+	}
+
+	// <data>/models comes first because traversal is checked one component at a
+	// time: a directory the service cannot enter hides everything below it, however
+	// open the rest is.
+	for _, dir := range []string{
+		filepath.Join(env.sharedDir, "models"),
+		modelDir,
+		filepath.Join(modelDir, "server"),
+	} {
+		st, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if got := st.Mode().Perm(); got != 0o755 {
+			t.Errorf("%s is %v under umask 077, want 0755: the service traverses into it as another user", dir, got)
+		}
+	}
+
+	modelFile := filepath.Join(modelDir, "server", "model.bin")
+	st, err := os.Stat(modelFile)
+	if err != nil {
+		t.Fatalf("stat %s: %v", modelFile, err)
+	}
+	if got := st.Mode().Perm(); got != 0o644 {
+		t.Errorf("%s is %v under umask 077, want 0644: the service reads it as another user", modelFile, got)
 	}
 }
 

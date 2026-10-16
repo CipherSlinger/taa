@@ -30,17 +30,22 @@ const evalKeyFileName = "eval_context.bin"
 // produced before this was pinned: the service has been reading through these
 // directories all along.
 //
-// This is the mode of the shared layout only, and applies to <data>/keys,
-// <data>/keys/<userID>, <data>/tasks and <data>/tasks/<taskID> through
-// Layout.MkdirShared. It is deliberately NOT the mode of:
+// This is the mode of the shared layout only, and applies to <data>/models,
+// <data>/models/<modelHash>, <data>/keys, <data>/keys/<userID>, <data>/tasks and
+// <data>/tasks/<taskID>, through Layout.MkdirShared and Layout.MakeTreeShared. It
+// is deliberately NOT the mode of:
 //
 //   - the eval key cache, which is TAA-private and stays 0700 (KeyCache);
 //   - the shared root itself, whose mode belongs to the bind mount and to
 //     deploy-fhe.sh;
-//   - <data>/models, which this package only builds paths for and never
-//     creates - deploy-fhe.sh stages it;
 //   - <data>/results, which the FHE service writes and TAA reads.
 const sharedDirMode os.FileMode = 0o755
+
+// sharedFileMode is the mode of the files inside those directories, for the same
+// reason: the service reads them as another user. It is OR-ed into whatever mode
+// a file arrived with rather than assigned, so a member the extraction made
+// executable stays executable - see Layout.MakeTreeShared.
+const sharedFileMode os.FileMode = 0o644
 
 // sm3HexPattern matches an SM3 digest: exactly 64 lowercase hex characters.
 //
@@ -169,28 +174,99 @@ func (l Layout) ResultPath(taskID string) (string, error) {
 // <data>/keys/<userID> whatever mode that one holds.
 //
 // The shared root itself is not touched - deploy-fhe.sh creates it and its mode
-// belongs to the bind mount - and neither is anything outside it. Directories
-// this package does not create are not covered either: <data>/models is staged by
-// deploy-fhe.sh and <data>/results is the service's own output directory.
+// belongs to the bind mount - and neither is anything outside it.
 func (l Layout) MkdirShared(dir string) error {
-	root, err := l.root()
-	if err != nil {
+	if err := l.checkInside(dir); err != nil {
 		return err
 	}
-	rel, err := filepath.Rel(root, dir)
-	if err != nil {
-		return fmt.Errorf("resolve %s against the shared data dir %s: %w", dir, root, err)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("refusing to create %s: it is outside the shared data dir %s", dir, root)
-	}
 	if err := os.MkdirAll(dir, sharedDirMode); err != nil {
+		return err
+	}
+	root, err := l.root()
+	if err != nil {
 		return err
 	}
 	for d := dir; d != root; d = filepath.Dir(d) {
 		if err := os.Chmod(d, sharedDirMode); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// MakeTreeShared makes root and everything under it readable and traversable by
+// the FHE service, whatever modes they arrived with.
+//
+// MkdirShared covers the directories this package creates. This one covers a tree
+// this package only moves into place. The model package is extracted by
+// resource.ExtractArchiveToDir, which removes the destination and renames a
+// directory os.MkdirTemp created onto it - os.MkdirTemp is 0700 whatever the
+// process umask is, and it is the directory that survives the rename - and writes
+// each member with the mode the archive carries, masked by the umask. So under
+// umask 077 a package that staged and reported successfully, and that the service
+// had already been told to activate, was a tree the service could not enter: the
+// failure surfaced one step later, as an activation error against a model that was
+// on disk the whole time.
+//
+// The bits are added, never replaced. ExtractArchiveToDir runs ChmodScripts over
+// the extracted tree, so a member ending in .sh is already executable, and a
+// helper that assigned sharedFileMode outright would take that back.
+//
+// root must be inside the shared data directory. The shared root itself is not
+// touched, for the reason MkdirShared gives, and neither are the directories
+// between it and root: this one walks down from root, so the ancestors of a tree
+// someone else extracted are Layout.MkdirShared's half, and the import path calls
+// both.
+func (l Layout) MakeTreeShared(root string) error {
+	if err := l.checkInside(root); err != nil {
+		return err
+	}
+	sharedRoot, err := l.root()
+	if err != nil {
+		return err
+	}
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == sharedRoot {
+			// The one directory the walk must not reach, even when root is the
+			// shared root itself.
+			return nil
+		}
+		mode := info.Mode()
+		if !mode.IsDir() && !mode.IsRegular() {
+			// A symlink is not followed, because os.Chmod acts on its target and the
+			// target may be outside this tree; nothing else in an extracted archive
+			// needs a mode.
+			return nil
+		}
+		want := mode.Perm() | sharedFileMode
+		if mode.IsDir() {
+			want = mode.Perm() | sharedDirMode
+		}
+		if mode.Perm() == want {
+			return nil
+		}
+		return os.Chmod(path, want)
+	})
+}
+
+// checkInside rejects a path that is not inside the shared data directory, which
+// is what bounds the blast radius of the chmod walks above: the shared root's own
+// mode belongs to the bind mount, and nothing outside the root is this package's
+// to relax.
+func (l Layout) checkInside(p string) error {
+	root, err := l.root()
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return fmt.Errorf("resolve %s against the shared data dir %s: %w", p, root, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("refusing to touch %s: it is outside the shared data dir %s", p, root)
 	}
 	return nil
 }

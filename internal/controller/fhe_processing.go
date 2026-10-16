@@ -85,12 +85,25 @@ func (s *TAAState) importFHEModel(req importRequest, phase int, plaintextPath st
 		s.reportImportFailure(req, phase, true, startedAt, err.Error())
 		return
 	}
-	if err := os.MkdirAll(modelDir, 0o755); err != nil {
+	// MkdirShared, not MkdirAll: the service reads this package out of the shared
+	// directory as another user, so <data>/models and <data>/models/<hash> have to
+	// be enterable by it, and MkdirAll applies the process umask to the mode it is
+	// given. The extracted tree below is fixed separately, after extraction.
+	if err := layout.MkdirShared(modelDir); err != nil {
 		s.reportImportFailure(req, phase, true, startedAt, fmt.Sprintf("创建模型目录失败: %v", err))
 		return
 	}
 	if err := extractArchiveToDir(modelDir, plaintextPath); err != nil {
 		s.reportImportFailure(req, phase, true, startedAt, fmt.Sprintf("解压模型包失败: %v", err))
+		return
+	}
+	// Extraction decides the modes of everything under here, and it decides them
+	// against the service: it replaces modelDir with a directory os.MkdirTemp made
+	// (0700 regardless of umask) and writes each member with the mode the archive
+	// carries, masked by the umask. Left alone, the package stages successfully,
+	// activates, and is then unreadable to the process that was asked to load it.
+	if err := layout.MakeTreeShared(modelDir); err != nil {
+		s.reportImportFailure(req, phase, true, startedAt, fmt.Sprintf("设置模型目录权限失败: %v", err))
 		return
 	}
 	// The package layout is the delivery bundle's, not ours to guess: an archive

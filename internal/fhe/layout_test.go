@@ -179,3 +179,97 @@ func TestMkdirSharedStaysInsideTheDataDir(t *testing.T) {
 		}
 	}
 }
+
+// TestMakeTreeSharedRelaxesAnExtractedPackage covers the tree MakeTreeShared
+// exists for: one an extraction left behind, whose modes were decided by
+// os.MkdirTemp (0700, whatever the umask is) and by the archive members (masked
+// by the umask).
+//
+// It is a unit test rather than only an end-to-end one because the execute bits
+// are the part that is easy to get wrong: assigning sharedFileMode outright is
+// the obvious implementation and it is wrong, since ExtractArchiveToDir has
+// already run ChmodScripts over the tree and a member that arrived executable has
+// to stay executable.
+func TestMakeTreeSharedRelaxesAnExtractedPackage(t *testing.T) {
+	root := t.TempDir()
+	l := NewLayout(root)
+	modelDir, err := l.ModelDir(testHashA)
+	if err != nil {
+		t.Fatalf("ModelDir: %v", err)
+	}
+	serverDir := filepath.Join(modelDir, "server")
+	// 0700 throughout, set rather than inherited - t.TempDir returns a directory
+	// created 0777 &^ umask, so its own mode is not the one to assert against - so
+	// that any relaxation by the calls below is visible.
+	for _, dir := range []string{root, filepath.Join(root, "models"), modelDir, serverDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("create %s: %v", dir, err)
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatalf("chmod %s: %v", dir, err)
+		}
+	}
+	plain := filepath.Join(serverDir, "model.bin")
+	script := filepath.Join(serverDir, "run.sh")
+	for path, mode := range map[string]os.FileMode{plain: 0o600, script: 0o755} {
+		if err := os.WriteFile(path, []byte("x"), mode); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatalf("chmod %s: %v", path, err)
+		}
+	}
+
+	// The two calls the import path makes, in the order it makes them: MkdirShared
+	// puts <data>/models and the model directory itself in place before the
+	// extraction replaces the latter, and MakeTreeShared then covers everything the
+	// extraction left behind. MakeTreeShared walks down from its argument only, so
+	// the parent is exactly the half MkdirShared is here for.
+	if err := l.MkdirShared(modelDir); err != nil {
+		t.Fatalf("MkdirShared: %v", err)
+	}
+	if err := l.MakeTreeShared(modelDir); err != nil {
+		t.Fatalf("MakeTreeShared: %v", err)
+	}
+
+	for _, dir := range []string{filepath.Join(root, "models"), modelDir, serverDir} {
+		st, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if got := st.Mode().Perm(); got != sharedDirMode {
+			t.Errorf("%s is %v after the import path's two calls, want %v: the service enters it as another user", dir, got, sharedDirMode)
+		}
+	}
+	st, err := os.Stat(plain)
+	if err != nil {
+		t.Fatalf("stat %s: %v", plain, err)
+	}
+	if got := st.Mode().Perm(); got != sharedFileMode {
+		t.Errorf("%s is %v after MakeTreeShared, want %v: the service reads it as another user", plain, got, sharedFileMode)
+	}
+	// The execute bits survive: the helper adds permissions, it does not set them.
+	st, err = os.Stat(script)
+	if err != nil {
+		t.Fatalf("stat %s: %v", script, err)
+	}
+	if got := st.Mode().Perm(); got != 0o755 {
+		t.Errorf("%s is %v after MakeTreeShared, want 0755: the extraction had already made it executable", script, got)
+	}
+
+	// The shared root is not the helper's to relax, and neither is anything outside
+	// it: its mode belongs to the bind mount and to deploy-fhe.sh.
+	if err := l.MakeTreeShared(filepath.Dir(root)); err == nil {
+		t.Error("MakeTreeShared outside the data dir = nil, want error")
+	}
+	if err := l.MakeTreeShared(root); err != nil {
+		t.Fatalf("MakeTreeShared on the shared root: %v", err)
+	}
+	st, err = os.Stat(root)
+	if err != nil {
+		t.Fatalf("stat %s: %v", root, err)
+	}
+	if got := st.Mode().Perm(); got != 0o700 {
+		t.Errorf("the shared root is %v, want its own mode untouched", got)
+	}
+}
