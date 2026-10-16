@@ -328,3 +328,81 @@ func TestFHESubmitIsRegisteredOnTheServerMux(t *testing.T) {
 		t.Fatalf("TAA requests = %d on %q, want 1 on /v1/taa/import", taa.requests, taa.path)
 	}
 }
+
+// The submit handler turns cfg.Addr into the host TAA downloads the eval key and
+// the input package from, and that host has to be resolved while the request is
+// served. platformIP answers 127.0.0.1 until a non-loopback interface is up, so a
+// base captured when the handler was built would serve an unreachable host to TAA
+// for the whole life of the process - and those URLs are the only way TAA can
+// fetch the two files.
+func TestFHESubmitResolvesTheHostPerRequest(t *testing.T) {
+	uploadDir := t.TempDir()
+	writeFHEUpload(t, uploadDir, testEvalKeyName, []byte("key"))
+	writeFHEUpload(t, uploadDir, testInputZip, []byte("zip"))
+
+	calls := 0
+	prev := platformIPForRequest
+	platformIPForRequest = func(addr string) string {
+		calls++
+		return platformIP(addr)
+	}
+	t.Cleanup(func() { platformIPForRequest = prev })
+
+	taa := newRecordingTAA(t)
+	handler := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, taa.URL)
+
+	if calls != 0 {
+		t.Fatalf("building the handler resolved the host %d times, want 0: the host must not be fixed before the request", calls)
+	}
+	for i := 1; i <= 2; i++ {
+		if w := postFHESubmit(handler, fheSubmitBody(t, testEvalKeyName, testInputZip)); w.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, want 200; body=%s", i, w.Code, w.Body.String())
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("the host was resolved %d times while serving 2 requests, want 2", calls)
+	}
+}
+
+// An eval key that /api/upload encrypted is ciphertext. Hashing it would hand TAA
+// the SM3 of a value it never receives, and the evalKeyUrl would carry no
+// ?dataKeyCipher=, so TAA could neither unwrap nor verify the key it downloads.
+// The upload directory is shared between the two endpoints, so the suffix is the
+// only signal available here - and a 400 says that better than a failed key
+// download does.
+func TestFHESubmitRejectsAnEncryptedEvalKey(t *testing.T) {
+	uploadDir := t.TempDir()
+	writeFHEUpload(t, uploadDir, testEvalKeyName, []byte("plaintext key"))
+	writeFHEUpload(t, uploadDir, testInputZip, []byte("zip"))
+
+	taa := newRecordingTAA(t)
+	handler := fheSubmitHandler(Config{Addr: ":8080", UploadDir: uploadDir}, taa.URL)
+
+	// encryptMode=envelope appends ".enc", encryptMode=urlkey appends ".sm4".
+	for _, name := range []string{
+		"1700000000000000000_eval_context.bin.enc",
+		"1700000000000000000_eval_context.bin.sm4",
+		"1700000000000000000_EVAL_CONTEXT.BIN.ENC",
+	} {
+		writeFHEUpload(t, uploadDir, name, []byte("ciphertext"))
+		t.Run(name, func(t *testing.T) {
+			w := postFHESubmit(handler, fheSubmitBody(t, name, testInputZip))
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+	if taa.requests != 0 {
+		t.Fatalf("TAA requests = %d, want 0: an encrypted key must not be hashed and forwarded", taa.requests)
+	}
+
+	// The plaintext one still goes through: the guard keys on the upload's suffix,
+	// not on encryption being in use at all.
+	w := postFHESubmit(handler, fheSubmitBody(t, testEvalKeyName, testInputZip))
+	if w.Code != http.StatusOK {
+		t.Fatalf("plaintext status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if taa.requests != 1 {
+		t.Fatalf("TAA requests = %d, want 1 (the plaintext key only)", taa.requests)
+	}
+}

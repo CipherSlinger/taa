@@ -13,6 +13,27 @@
 // has no upload endpoint - and it refuses a task whose eval context, model, or
 // input archive is not already on disk. That refusal is the point: the fake must
 // not go green on a premise the real service would reject.
+//
+// Two properties below are deliberate and are written down here because the rest
+// of the double's comments depend on them:
+//
+//   - The terminal callback is posted at most once per work attempt, not once per
+//     task. work resets the task's notified flag at the start of every attempt, so
+//     a cancel followed by /continue is two attempts and one task can deliver two
+//     terminal callbacks (cancelled, then completed); a cancel/resume storm
+//     delivers one cancelled callback per attempt. TAA latches only the first
+//     terminal state it receives (internal/fhe/runner.go: finish is a sync.Once),
+//     so after a cancel-then-resume TAA keeps reporting "cancelled" for a task
+//     this service ends as "completed". That asymmetry is the behaviour the reset
+//     exists to exercise, not a bug in the double.
+//
+//   - Nothing survives a restart. The task record and the per-case results live in
+//     this process's memory and the output.zip on disk is never read back, so a
+//     restarted double answers 404 for a task that had been running and a replayed
+//     import creates it fresh, re-evaluating every case. The real service is
+//     Redis-backed - fhe-redis is in its Compose stack - and may well persist
+//     across a restart, so a restart exercised against this double is not evidence
+//     about the real service.
 package main
 
 import (
@@ -27,10 +48,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"taa/internal/fhe"
 )
 
 // Names inside the shared directory, fixed by the service contract.
@@ -59,10 +81,12 @@ const placeholderResultBytes = 128 << 10
 // arrives must not wedge the caller, so the last attempt gives up and only logs.
 var callbackBackoff = []time.Duration{0, time.Second, 4 * time.Second, 16 * time.Second}
 
-var (
-	hashPattern   = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	taskIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
-)
+// Identifier validation is delegated to the production package rather than
+// copied into this file. "The double is not weaker than the production client" is
+// a property worth keeping, and a hand-maintained copy of the pattern would
+// silently stop tracking a tightening on the TAA side: a path traversal TAA
+// refuses would still be accepted here. tools/fake-fhe lives inside module taa,
+// so internal/fhe is importable from it.
 
 type task struct {
 	ID        string
@@ -107,41 +131,54 @@ func main() {
 	if *dataDir == "" {
 		log.Fatal("fake-fhe: -data-dir is required")
 	}
-	abs, err := filepath.Abs(*dataDir)
+	s, err := newServer(*dataDir, *delay)
 	if err != nil {
-		log.Fatalf("fake-fhe: resolve data dir: %v", err)
-	}
-	// The four subdirectories are the contract TAA publishes into; create them so
-	// a missing-dir error can only ever mean a missing input, not a missing root.
-	for _, sub := range []string{"models", "keys", "tasks", "results"} {
-		if err := os.MkdirAll(filepath.Join(abs, sub), 0o755); err != nil {
-			log.Fatalf("fake-fhe: %v", err)
-		}
+		log.Fatalf("fake-fhe: %v", err)
 	}
 
-	s := &server{
+	httpServer := &http.Server{
+		Addr:              *addr,
+		Handler:           s.mux(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	log.Printf("fake-fhe listening on %s, data dir %s", *addr, s.dataDir)
+	log.Fatal(httpServer.ListenAndServe())
+}
+
+// newServer prepares a server over dataDir. The four contract subdirectories are
+// created here, so a missing-dir error can only ever mean a missing input, not a
+// missing root. Tests build a server through this too, which is what lets a test
+// restart the double over the same data directory.
+func newServer(dataDir string, delay time.Duration) (*server, error) {
+	abs, err := filepath.Abs(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve data dir: %w", err)
+	}
+	for _, sub := range []string{"models", "keys", "tasks", "results"} {
+		if err := os.MkdirAll(filepath.Join(abs, sub), 0o755); err != nil {
+			return nil, err
+		}
+	}
+	return &server{
 		dataDir:   abs,
-		delay:     *delay,
+		delay:     delay,
 		client:    &http.Client{Timeout: 10 * time.Second},
 		tasks:     map[string]*task{},
 		inflight:  map[string]bool{},
 		activated: map[string]bool{},
-	}
+	}, nil
+}
 
+// mux is the /api/v1 surface. It is a method rather than a block in main so a
+// test drives the routes the binary actually serves.
+func (s *server) mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/health", s.health)
 	mux.HandleFunc("/api/v1/models", s.models)
 	mux.HandleFunc("/api/v1/models/activate", s.activate)
 	mux.HandleFunc("/api/v1/tasks", s.createTask)
 	mux.HandleFunc("/api/v1/tasks/", s.taskRoutes)
-
-	httpServer := &http.Server{
-		Addr:              *addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	log.Printf("fake-fhe listening on %s, data dir %s", *addr, abs)
-	log.Fatal(httpServer.ListenAndServe())
+	return mux
 }
 
 // ── Shared-directory paths ───────────────────────────────
@@ -231,7 +268,7 @@ func (s *server) activate(w http.ResponseWriter, r *http.Request) {
 	if modelID == "" {
 		modelID = strings.TrimSpace(r.FormValue("model_id"))
 	}
-	if !hashPattern.MatchString(modelID) {
+	if !fhe.ValidHash(modelID) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid model_id %q: want 64 lowercase hex characters", modelID))
 		return
 	}
@@ -303,14 +340,14 @@ func (s *server) createTask(w http.ResponseWriter, r *http.Request) {
 // the eval context, the model, and the input archive must all already be in the
 // shared directory. Nothing is uploaded over HTTP.
 func (s *server) checkInputs(userID, modelID, taskID string) error {
-	if !hashPattern.MatchString(userID) {
+	if !fhe.ValidHash(userID) {
 		return fmt.Errorf("invalid user_id %q: want 64 lowercase hex characters", userID)
 	}
-	if !hashPattern.MatchString(modelID) {
+	if !fhe.ValidHash(modelID) {
 		return fmt.Errorf("invalid model_id %q: want 64 lowercase hex characters", modelID)
 	}
-	if !taskIDPattern.MatchString(taskID) {
-		return fmt.Errorf("invalid task_id %q: want 1-128 characters of [A-Za-z0-9._-] starting with an alphanumeric", taskID)
+	if err := fhe.ValidTaskID(taskID); err != nil {
+		return err
 	}
 	if st, err := os.Stat(s.keyPath(userID)); err != nil || st.IsDir() {
 		return fmt.Errorf("no eval context at keys/%s/%s", userID, evalKeyFileName)
@@ -378,9 +415,17 @@ func (s *server) taskCancel(w http.ResponseWriter, r *http.Request, id string) {
 	writeJSON(w, http.StatusOK, snap.body())
 }
 
-// taskContinue reruns whatever the task has not finished. The input archive and
-// the per-case results survive a restart, so a replayed import resumes instead
-// of starting over.
+// taskContinue reruns whatever the task has not finished.
+//
+// This resumes within one process only. The input archive is on disk and survives
+// a restart, but the task record and every per-case result live in this process's
+// memory, and the output.zip already written is never read back, so a restarted
+// double has forgotten the task completely: /continue answers 404, and a replayed
+// import has /create answer 200 and re-evaluate all cases from the beginning
+// instead of resuming. That is a fidelity gap, not a claim about the real
+// service: fhe-redis is in the service's Compose stack, so it may well persist.
+// What this double does cover is the resume path TAA takes without any restart -
+// a duplicate create is refused with 409, and TAA falls back to /continue.
 func (s *server) taskContinue(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w, http.MethodPost)
@@ -529,8 +574,26 @@ func readCases(inputPath string) ([]caseResult, error) {
 }
 
 // resultName maps a case's ciphertext entry to its result entry.
+//
+// The entry name comes from the archive the caller uploaded, so it is not this
+// double's to trust: an entry called "../evil.cipher" would otherwise be copied
+// straight into output.zip as "../evil.result.bin", and every consumer that
+// unpacks the archive would have to sanitise it. TAA copies the archive rather
+// than unpacking it (internal/fhe/runner.go, CopyResult), which is why the leak
+// is harmless today and why it must not be relied on: only the last path segment
+// survives, with both separators treated as separators because the consumer that
+// unpacks it need not be POSIX.
 func resultName(entry string) string {
-	return strings.TrimSuffix(entry, filepath.Ext(entry)) + ".result.bin"
+	base := entry
+	if i := strings.LastIndexAny(base, `/\`); i >= 0 {
+		base = base[i+1:]
+	}
+	if base == "" || base == "." || base == ".." {
+		// Nothing usable is left, and a bare "." / ".." must never reach the
+		// archive, so the case gets a fixed name instead.
+		base = "case"
+	}
+	return strings.TrimSuffix(base, filepath.Ext(base)) + ".result.bin"
 }
 
 // placeholderResult returns deterministic bytes standing in for an evaluated
@@ -604,8 +667,15 @@ func (s *server) writeResultZip(taskID string) error {
 	return nil
 }
 
-// complete moves the task to a terminal state and posts its callback exactly
-// once, whichever of the worker or a cancel gets there first.
+// complete moves the task to a terminal state and posts the callback for this
+// attempt exactly once, whichever of the worker or a cancel gets there first.
+//
+// The cardinality is per attempt, not per task. notified is reset at the start of
+// every attempt in work, so a cancel followed by /continue reports cancelled and
+// then completed for one task, and a long cancel/resume storm reports one
+// cancelled callback per attempt. That reset is deliberate: it is what exercises
+// TAA's first-terminal-callback latch, which keeps the first status it is handed
+// and ignores the rest. See the package comment.
 func (s *server) complete(t *task, status string, cause error) {
 	s.mu.Lock()
 	if t.notified {
@@ -615,7 +685,7 @@ func (s *server) complete(t *task, status string, cause error) {
 	t.notified = true
 	t.Status = status
 	if status == statusCompleted {
-		t.ResultZip = pathInData(filepath.Join("results", t.ID, resultZipName))
+		t.ResultZip = toSlash(filepath.Join("results", t.ID, resultZipName))
 	}
 	snap := t.snapshot()
 	s.mu.Unlock()
@@ -821,9 +891,15 @@ func requestUserID(r *http.Request) string {
 	return strings.TrimSpace(r.Header.Get("X-User-Id"))
 }
 
-// pathInData renders a shared-directory path the way the service reports it:
-// relative to the data directory, with forward slashes.
-func pathInData(p string) string {
+// toSlash renders a shared-directory path the way the service reports it: with
+// forward slashes.
+//
+// It does not make a path relative, whatever the result_zip field it feeds looks
+// like: it is handed a path that is already relative to the data directory, and
+// TAA locates the archive through its own layout rather than through this field,
+// so the value is informational. A future caller that passes an absolute path
+// would leak a host path into a client-visible body - keep the input relative.
+func toSlash(p string) string {
 	return filepath.ToSlash(p)
 }
 

@@ -23,6 +23,13 @@ type fheSubmitRequest struct {
 	TaskID      string `json:"taskId"`
 }
 
+// platformIPForRequest is platformIP, indirected so a test can observe when the
+// submit handler resolves the host its file URLs are built on. The handler must
+// resolve it per request, not once at construction: platformIP answers
+// 127.0.0.1 while the mock has no non-loopback address yet, so a value captured
+// before the interface comes up would be served for the whole process lifetime.
+var platformIPForRequest = platformIP
+
 // fheSubmitHandler drives the whole FHE chain from the mock: it hashes the eval
 // key with SM3, then calls TAA's import with the two new fields, exactly as a
 // real platform would.
@@ -35,12 +42,6 @@ func fheSubmitHandler(cfg Config, taaAddr string) http.HandlerFunc {
 	if abs, err := filepath.Abs(uploadDir); err == nil {
 		uploadDir = abs
 	}
-
-	// The URLs handed to TAA must be absolute: the download happens from TAA,
-	// not from the browser that uploaded the file. cfg.Addr is a bare listen
-	// address (":8080"), so it carries neither a scheme nor a host - build the
-	// base the same way the upload endpoint does, off platformIP.
-	baseURL := fmt.Sprintf("http://%s/files/", platformIP(cfg.Addr))
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
@@ -58,6 +59,18 @@ func fheSubmitHandler(cfg Config, taaAddr string) http.HandlerFunc {
 			return
 		}
 
+		// The URLs handed to TAA must be absolute: the download happens from TAA,
+		// not from the browser that uploaded the file. cfg.Addr is a bare listen
+		// address (":8080"), so it carries neither a scheme nor a host - build the
+		// base the same way the upload endpoint does, off platformIP.
+		//
+		// It is resolved here, per request, and must stay here: platformIP falls
+		// back to 127.0.0.1 while no non-loopback interface is up, so a base built
+		// once at construction would bake an unreachable host into every URL for
+		// the rest of the process's life - and those URLs are the ones TAA has to
+		// download the eval key and the input package from.
+		baseURL := fmt.Sprintf("http://%s/files/", platformIPForRequest(cfg.Addr))
+
 		var req fheSubmitRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 			writeEnvelope(w, http.StatusBadRequest, "解析请求体失败: "+err.Error(), nil, http.StatusBadRequest)
@@ -73,6 +86,20 @@ func fheSubmitHandler(cfg Config, taaAddr string) http.HandlerFunc {
 		keyPath, err := resolveUploadFilePath(uploadDir, req.EvalKeyFile)
 		if err != nil {
 			writeEnvelope(w, http.StatusBadRequest, "eval key 文件不可用: "+err.Error(), nil, http.StatusBadRequest)
+			return
+		}
+		// An encrypted upload is refused rather than hashed. /api/upload writes its
+		// ciphertext into the same directory this handler reads, so an eval key sent
+		// with encryptMode=envelope|urlkey would otherwise be SM3-hashed as
+		// ciphertext and advertised through an evalKeyUrl that carries no
+		// ?dataKeyCipher= - a key TAA could neither unwrap nor verify. The default
+		// upload path is unencrypted and TAA rejects the result loudly, but a 400
+		// here says what actually went wrong.
+		if uploadNameIsEncrypted(req.EvalKeyFile) {
+			writeEnvelope(w, http.StatusBadRequest,
+				"eval key 必须是未加密的上传文件: "+filepath.Base(keyPath)+
+					" 是密文，SM3 摘要和 evalKeyUrl 都无法让 TAA 使用它；请以 encryptMode=none 重新上传",
+				nil, http.StatusBadRequest)
 			return
 		}
 		inputPath, err := resolveUploadFilePath(uploadDir, req.InputZip)
@@ -114,6 +141,19 @@ func fheSubmitHandler(cfg Config, taaAddr string) http.HandlerFunc {
 		w.WriteHeader(status)
 		_, _ = w.Write(respBody)
 	}
+}
+
+// uploadNameIsEncrypted reports whether an upload holds ciphertext rather than
+// the plaintext this package can hash or hand to TAA.
+//
+// The suffix is the same one /api/upload appends and the same rule
+// listUploadedFiles derives its "encrypted" flag from: ".enc" for
+// encryptMode=envelope and ".sm4" for encryptMode=urlkey. Nothing records the
+// mode a file was uploaded with, so its name is the only signal a later request
+// has.
+func uploadNameIsEncrypted(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	return strings.HasSuffix(lower, ".enc") || strings.HasSuffix(lower, ".sm4")
 }
 
 // resolveUploadFilePath turns an uploaded file name into the absolute path of
