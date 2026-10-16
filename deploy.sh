@@ -604,6 +604,17 @@ save_local_docker_image() {
     chmod 700 /root/taa/keys
   "
 
+  # Order matters: the engine is provisioned before the binary and config are copied so the image is
+  # assembled once, and the supervisor is installed from the repository rather than inherited --
+  # save never copied start.sh, so whatever the base image happened to carry became the ENTRYPOINT.
+  strip_teellm_from_image "$builder_container"
+
+  step "installing the TAA supervisor"
+  spin_task "copying deploy/start.sh into the image" \
+    docker cp "$PROJECT_DIR/deploy/start.sh" "$builder_container:/root/taa/start.sh"
+
+  provision_local_scan_engine "$builder_container" "$prod_config_template"
+
   step "deploying taa binary, certificates, and production config"
   spin_task "copying runtime files into container" bash -c '
     set -euo pipefail
