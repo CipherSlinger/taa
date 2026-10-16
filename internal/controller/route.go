@@ -17,6 +17,7 @@ import (
 
 	"taa/internal/codeaudit"
 	"taa/internal/config"
+	"taa/internal/fhe"
 	"taa/internal/resource"
 	"taa/internal/runtime"
 	teecrypto "taa/pkg/crypto"
@@ -162,6 +163,14 @@ type TAAState struct {
 	stateStore      *StateStore      // 持久化密封存储
 	importIndex     *ImportIndexStore
 	importIndexErr  error
+
+	// FHE is nil unless this instance runs as server.type=fhe. A nil runner is
+	// the single switch every FHE branch keys on, so a tee instance cannot
+	// accidentally enter an FHE path.
+	FHE *fhe.Runner
+	// fheActiveTaskID is the FHE task currently in flight, so stopTraining can be
+	// mapped onto the service's cancel endpoint. It is empty when no FHE task runs.
+	fheActiveTaskID string
 }
 
 // SetStateStore 注入密封状态存储引擎
@@ -554,6 +563,48 @@ func (s *TAAState) setCurrentOp(op string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.CurrentOp = op
+}
+
+// SetFHERunner installs the FHE runner. It is called once at boot on a
+// server.type=fhe instance, before the HTTP server starts.
+func (s *TAAState) SetFHERunner(r *fhe.Runner) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.FHE = r
+}
+
+// fheEnabled reports whether this instance orchestrates the FHE service.
+func (s *TAAState) fheEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.FHE != nil
+}
+
+// fheRunner returns the FHE runner, or nil on a tee instance.
+func (s *TAAState) fheRunner() *fhe.Runner {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.FHE
+}
+
+func (s *TAAState) setFHEActiveTask(taskID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fheActiveTaskID = taskID
+}
+
+func (s *TAAState) clearFHEActiveTask(taskID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fheActiveTaskID == taskID {
+		s.fheActiveTaskID = ""
+	}
+}
+
+func (s *TAAState) fheActiveTask() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.fheActiveTaskID
 }
 
 // setCurrentAuditOp is a helper to update the audit operation status.

@@ -18,6 +18,7 @@ import (
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 	"taa/internal/controller"
+	"taa/internal/fhe"
 	"taa/internal/store"
 	teecrypto "taa/pkg/crypto"
 )
@@ -138,9 +139,29 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	logUserDataSummary(platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, userData)
 
 	// 4. Generate attestation report containing UserData and perform certificate self-verification
-	verifiedPass, err := prepareAttestationReport(ctx, userData, cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
-	if err != nil {
-		return err
+	//
+	// A server.type=fhe instance is not a TEE: it runs on a plain GPU host with no
+	// /dev/csv-guest, so the report can only fail and fill the log with warnings.
+	// The skip is explicit rather than inferred from that failure, and
+	// verifiedPass stays false - the platform must not read "fhe" as "attested".
+	//
+	// The empty report file is still written, because registration reads that path
+	// (platform.NoticeRegister stats and reads it, and refuses to register when it
+	// is absent). Leaving it absent would turn every registration attempt on an fhe
+	// instance into "attestation report file is not accessible" instead of the
+	// empty-attestation registration the degraded TEE path already produces.
+	verifiedPass := false
+	if cfg.ServerType == config.ServerTypeFHE {
+		log.Printf("instance type is fhe: remote attestation is not provided by this instance")
+		if err := os.WriteFile(fixedAttestationFile, nil, 0o600); err != nil {
+			return fmt.Errorf("write empty attestation report: %w", err)
+		}
+	} else {
+		var err error
+		verifiedPass, err = prepareAttestationReport(ctx, userData, cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
+		if err != nil {
+			return err
+		}
 	}
 
 	// 5. 向管控平台注册本 TAA 实例，通知平台就绪并提交度量报告与公钥
@@ -186,6 +207,30 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		userData,
 		sec,
 	)
+
+	fheRunner, err := buildFHERunner(cfg)
+	if err != nil {
+		return fmt.Errorf("build the FHE runner: %w", err)
+	}
+	if fheRunner != nil {
+		state.SetFHERunner(fheRunner)
+		// The runner needs a logger, and TAAState owns the log store, so the
+		// adapter is installed after the state exists.
+		fheRunner.SetLogger(func(level fhe.Level, scope, format string, args ...any) {
+			switch level {
+			case fhe.LevelWarn:
+				state.Logs.Add(controller.LogWarn, scope, format, args...)
+			case fhe.LevelError:
+				state.Logs.Add(controller.LogError, scope, format, args...)
+			default:
+				state.Logs.Add(controller.LogInfo, scope, format, args...)
+			}
+		})
+		log.Printf("instance type: fhe (endpoint=%s, dataDir=%s)", cfg.FHE.Endpoint, cfg.FHE.DataDir)
+	} else {
+		log.Printf("instance type: tee")
+	}
+
 	state.SetStateStore(stateStore)
 
 	pState := stateStore.GetState()
@@ -693,6 +738,35 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 			CooldownSec:             cfg.LLM.CooldownSec,
 		},
 	}, nil
+}
+
+// buildFHERunner returns the FHE runner for this instance, or nil when the
+// instance is a tee. The runner is the only thing that talks to the FHE service,
+// so nil here means every FHE code path stays unreachable.
+func buildFHERunner(cfg config.StartupConfig) (*fhe.Runner, error) {
+	if cfg.ServerType != config.ServerTypeFHE {
+		return nil, nil
+	}
+	if cfg.FHE == nil {
+		return nil, fmt.Errorf("server.type is %q but the startup config has no fhe section", config.ServerTypeFHE)
+	}
+	f := *cfg.FHE
+	activate := true
+	if f.ActivateModelOnImport != nil {
+		activate = *f.ActivateModelOnImport
+	}
+	return fhe.New(fhe.Config{
+		Endpoint:              f.Endpoint,
+		DataDir:               f.DataDir,
+		KeyCacheDir:           f.KeyCacheDir,
+		CallbackBaseURL:       f.CallbackBaseURL,
+		CallbackToken:         f.CallbackToken,
+		MaxEvalKeyBytes:       f.MaxEvalKeyBytes,
+		PollInterval:          time.Duration(f.PollIntervalMs) * time.Millisecond,
+		RequestTimeout:        time.Duration(f.RequestTimeoutMs) * time.Millisecond,
+		TaskTimeout:           time.Duration(f.TaskTimeoutMs) * time.Millisecond,
+		ActivateModelOnImport: activate,
+	}, nil)
 }
 
 // ensureSecurityDirectories 确保模型目录、数据目录、结果目录以及模型输入输出目录在本地文件系统中存在

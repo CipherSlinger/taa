@@ -168,11 +168,22 @@ func (r *Runner) Layout() Layout { return r.layout }
 // Client returns the underlying API client.
 func (r *Runner) Client() *Client { return r.client }
 
+// SetLogger installs the logger after construction, for callers that only have
+// a logger once the state they log into exists.
+func (r *Runner) SetLogger(logf Logger) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.logf = logf
+}
+
 func (r *Runner) log(level Level, format string, args ...any) {
-	if r.logf == nil {
+	r.mu.Lock()
+	logf := r.logf
+	r.mu.Unlock()
+	if logf == nil {
 		return
 	}
-	r.logf(level, "fhe", format, args...)
+	logf(level, "fhe", format, args...)
 }
 
 func (r *Runner) lookup(taskID string) *taskRun {
