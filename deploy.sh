@@ -1341,6 +1341,13 @@ rules_path=$rules_path
 max_memory=$SEMGREP_VERIFY_MAX_MEMORY
 $SEMGREP_VERIFY_BODY"
   verify_out="$(docker exec -i "$container" sh -lc "$verify_script" 2>&1 || true)"
+  # The probe leaves its own files behind and semgrep leaves its state behind: the probe script, its
+  # JSON and its stderr in /tmp, an empty /tmp/semgrep-mcp, and /root/.semgrep -- created on
+  # semgrep's first run and carrying an anonymous_user_id generated on the packaging host. This
+  # container is about to be committed, so without this all of it ships inside the image. Measured,
+  # not guessed: a filesystem diff of the packaged image against its base names exactly these paths.
+  docker exec -i "$container" sh -lc \
+    'rm -rf /tmp/taa-deploy-probe.py /tmp/taa-deploy-probe.json /tmp/taa-deploy-probe.err /tmp/semgrep-mcp /root/.semgrep' >/dev/null 2>&1 || true
 
   if [[ "$verify_out" == OK\ * ]]; then
     engine_version="${verify_out##*version=}"
