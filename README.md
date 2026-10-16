@@ -182,6 +182,7 @@ flowchart TB
 │   └── proto/                        # Protocol buffer schemas (e.g., CipherFlow v1)
 ├── configs/                          # Deployment configuration templates
 │   ├── taa-docker.json               # Local Docker container development template
+│   ├── taa-fhe.json                  # FHE instance template for the GPU host (server.type=fhe)
 │   └── taa-production.json           # Production Kubernetes Pod template (identity injected via env)
 ├── deploy/                           # Container deployment manifests & supervisor scripts
 │   ├── start.sh                      # TAA autostart supervisor daemon with keep-alive & manual mode
@@ -311,7 +312,7 @@ All TAA APIs are exposed over HTTP `POST`. For comprehensive request/response sc
 
 ## Runtime Configuration
 
-TAA reads its configuration from `taa-config.json` located in its working directory. Configuration is organized into 6 cohesive functional domains (`server`, `platform`, `storage`, `model`, `codeAudit`, `attestation`). For backward compatibility, legacy flat fields are also accepted as fallbacks.
+TAA reads its configuration from `taa-config.json` located in its working directory. Configuration is organized into 7 cohesive functional domains (`server`, `platform`, `storage`, `model`, `codeAudit`, `attestation`, `fhe`). For backward compatibility, legacy flat fields are also accepted as fallbacks.
 
 ### Configuration Fields
 
@@ -388,7 +389,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `codeAudit.enabled` | `true` | Master audit switch: enables the static rule-based security scan during model import |
 | `codeAudit.codeScan.engine` | `semgrep` | Tier 1 static engine, `semgrep` or `regex`. Normalized to lower case; any other value is rejected at startup, because an unrecognized name would silently scan with the regex baseline while the deployment believed otherwise. `regex` is the baseline an operator falls back to deliberately |
 | `codeAudit.codeScan.rulesPath` | unset | Rules file or directory for the semgrep engine, passed through as semgrep's `--config`. Unset means the engine's built-in default, which is relative to the repository root and therefore useless in a container: a deployment that selects semgrep has to set this, and startup fails when the path does not exist |
-| `codeAudit.codeScan.timeoutSeconds` | unset | Whole-scan deadline for one semgrep run, not a scan budget but a safety net: an import waits on the scan, and an expired deadline becomes a failed scan, which the audit fails closed on. Unset or `0` means the adapter's own default (5 minutes); a negative value is rejected at startup. The `taa-initrd.json` template sets `900`; the other two leave it unset |
+| `codeAudit.codeScan.timeoutSeconds` | unset | Whole-scan deadline for one semgrep run, not a scan budget but a safety net: an import waits on the scan, and an expired deadline becomes a failed scan, which the audit fails closed on. Unset or `0` means the adapter's own default (5 minutes); a negative value is rejected at startup. The `taa-initrd.json` template sets `900`; the other three leave it unset |
 | `codeAudit.resultCheck.enabled` | `true` | Runs the plaintext data leakage check over the result directory as soon as training finishes, and stores the verdict on the task's import index record. `/v1/taa/export` reads that verdict instead of scanning again, so it refuses to export when the verdict failed, when the check itself could not run, and when no verdict exists at all (fail-closed: records committed before this field existed have none and must be retrained - both of those states are governed by `codeAudit.llm.failClosed`, which turns them into a warning when set to `false`). A failing check never fails the training process itself, but it does change how the run is reported: the training report is uploaded with `code` `2` and the reason in `msg`, its `training_task.status` is `failed` (with `exit_code` still `0`), and it carries no `result_files` at all - the directory tree's table previews are the data rows being withheld. Everything else about the run still reports normally (accepts object or boolean) |
 | `codeAudit.resultCheck.maxFileBytes` | `3221225472` (3 GB) | Maximum file size limit enforced for both file downloads (`import`, `importModel`, `getResourceInfo`) and result exports (`export`), as well as anomaly inspection threshold |
 | `codeAudit.binaryAudit.enabled` | `true` | Runs the binary audit channel alongside the source scan (see [4. Binary Audit Channel](#4-binary-audit-channel)). Off restores the pre-channel behavior exactly |
@@ -426,6 +427,7 @@ The whole `fhe` section is read only when `server.type` is `fhe`; a `tee` instan
 
 - **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths, with explicit `platform` configuration, `attestationMode: "permissive"`, and `insecureSkipVerify: true`.
 - **`configs/taa-production.json`**: For production Kubernetes Pods. Omits `platform` so parameters are dynamically injected by the orchestration platform via environment variables, and enforces `attestationMode: "strict"`.
+- **`configs/taa-fhe.json`**: For an `fhe` instance — the GPU host co-located with the FHE service. Sets `server.type: "fhe"` and the `fhe` section. **`fhe.callbackToken` ships empty and must be filled in before use**: startup refuses an empty token rather than defaulting one, so this template will not boot as-is.
 
 ### FHE Instance Interface Differences
 
