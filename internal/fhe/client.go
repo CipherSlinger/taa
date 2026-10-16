@@ -45,7 +45,10 @@ func (e *APIError) Error() string {
 // The two HTTP clients differ in exactly one way, and it is load-bearing: the
 // unary client bounds a whole call by the configured request timeout, and the
 // download client must not, because http.Client.Timeout also covers reading the
-// body, so a per-request timeout aborts a multi-gigabyte result mid-stream.
+// body, so a per-request timeout aborts a multi-gigabyte result mid-stream. The
+// wait for a response head is bounded on both of them, so the download client is
+// not the one place a wedged service can hold a call open: it takes that bound
+// from the configured request timeout instead of from a whole-request deadline.
 type Client struct {
 	baseURL  string
 	http     *http.Client
@@ -73,30 +76,37 @@ func NewClient(endpoint string, timeout time.Duration) (*Client, error) {
 	if !strings.HasSuffix(base, "/api/v1") {
 		base += "/api/v1"
 	}
+	// The download client is built with no whole-request deadline, so the header
+	// bound it does get cannot come from the same argument. A non-positive request
+	// timeout therefore falls back to the default rather than leaving the one
+	// streaming client unbounded at both ends.
+	headerTimeout := timeout
+	if headerTimeout <= 0 {
+		headerTimeout = DefaultRequestTimeout
+	}
 	return &Client{
 		baseURL:  base,
-		http:     newHTTPClient(timeout),
-		download: newHTTPClient(0),
+		http:     newHTTPClient(timeout, headerTimeout),
+		download: newHTTPClient(0, headerTimeout),
 	}, nil
 }
 
 // newHTTPClient builds one HTTP client. A timeout of 0 means "no whole-request
-// deadline", which is what the download needs; the connection phases stay
-// bounded either way, so a service that accepts a connection and then says
-// nothing cannot hold a call open forever.
+// deadline", which is what the download needs; headerTimeout is separate from it
+// and always positive, so a service that accepts a connection and then says
+// nothing cannot hold a call open for longer than that, whether or not the body
+// is allowed to stream.
 //
 // Neither client follows a redirect. A redirect is how a task-scoped call
 // leaks its tenant: a 307 re-sends the POST to whatever host Location names, and
 // a 303 turns the POST into a GET that still answers 200, so a mutating call
 // reports success while doing nothing. Handing the 3xx back to the caller
 // surfaces both as an APIError instead.
-func newHTTPClient(timeout time.Duration) *http.Client {
+func newHTTPClient(timeout, headerTimeout time.Duration) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if timeout > 0 {
-		// Time to the first byte, not time to the last: headers still have to
-		// arrive inside the request timeout, which the body must not be.
-		transport.ResponseHeaderTimeout = timeout
-	}
+	// Time to the first byte, not time to the last: headers still have to arrive
+	// inside headerTimeout, which the body must not be.
+	transport.ResponseHeaderTimeout = headerTimeout
 	return &http.Client{
 		Timeout:   timeout,
 		Transport: transport,

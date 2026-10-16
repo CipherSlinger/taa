@@ -297,6 +297,48 @@ func TestDownloadResultHonoursTheCallerContext(t *testing.T) {
 	}
 }
 
+// TestDownloadResultBoundsTheHeaderPhase pins that the download client's freedom
+// from a whole-request timeout is not freedom from every deadline.
+//
+// newHTTPClient set ResponseHeaderTimeout only when the constructor's timeout was
+// positive, and NewClient builds the download client with 0, so the one client
+// whose body has to be allowed to stream for minutes had no bound at all in front
+// of the response: a service that accepted the connection and then said nothing
+// held the download until the caller's context expired. The runner's fallback
+// passes context.WithTimeout(ctx, TaskTimeout), so the whole task budget - half an
+// hour by default - was spent on a header that never came, after the task had
+// already finished. The doc comment claimed the connection phases stayed bounded
+// either way and that the two clients differed in exactly one way; neither was
+// true.
+func TestDownloadResultBoundsTheHeaderPhase(t *testing.T) {
+	// The handler accepts the request and never sends a response head, which is
+	// what a service whose worker has wedged looks like. The release channel keeps
+	// the handler from outliving the test; cleanups run last-registered-first, so
+	// this one runs before the server is closed.
+	release := make(chan struct{})
+	c, _ := newTestClientWithTimeout(t, 200*time.Millisecond, func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusOK)
+	})
+	t.Cleanup(func() { close(release) })
+
+	dst := filepath.Join(t.TempDir(), "output.zip")
+	done := make(chan error, 1)
+	go func() {
+		// No deadline on the context: only the client's own bounds can stop this.
+		done <- c.DownloadResult(context.Background(), "task-1", testHashA, dst)
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("DownloadResult = nil against a service that never answered")
+		}
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("DownloadResult was still waiting 1.5s after the request timeout expired: nothing bounds the header phase of the download client")
+	}
+}
+
 // TestDownloadResultErrorNamesTaskDstAndBytes covers the diagnosability of a
 // truncated transfer: "unexpected EOF" alone says nothing about which of a
 // service's concurrent tasks produced it, where it was going, or how much
