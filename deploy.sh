@@ -145,6 +145,14 @@ REMOTE_SEMGREP_BUNDLE="${REMOTE_SEMGREP_BUNDLE:-$REMOTE_DIR/semgrep-bundle.tar.g
 SEMGREP_BUNDLE="${SEMGREP_BUNDLE:-}"
 SEMGREP_RULES_SOURCE="${SEMGREP_RULES_SOURCE:-$PROJECT_DIR/models/audit/semgrep/rules}"
 
+# The container-shaped semgrep payload, built by deploy/guest-build/build-semgrep-payload-container.sh.
+# It carries site-packages and the semgrep wrapper but not the rules, which are streamed separately
+# from $SEMGREP_RULES_SOURCE so a rules edit does not force a payload rebuild. It is extracted with
+# `tar -xzf - -C /`, so packaging needs no network -- unlike a pip install.
+SEMGREP_PAYLOAD_BUNDLE="${SEMGREP_PAYLOAD_BUNDLE:-$PROJECT_DIR/deploy/guest-build/out/semgrep-bundle.tar.gz}"
+CONTAINER_SEMGREP_DIR="${CONTAINER_SEMGREP_DIR:-/opt/taa/semgrep}"
+SEMGREP_VERSION="${SEMGREP_VERSION:-1.177.0}"
+
 # 远程 SSH 密码：通过 TARGET_PASSWORD 覆盖；置空时启动脚本会交互式询问。
 PASSWORD="${TARGET_PASSWORD:-Osrd@2026}"
 
@@ -229,6 +237,12 @@ resolve_llm_endpoint() {
   if command -v docker >/dev/null 2>&1; then
     teellm_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
       "$TAA_TEELLM_CONTAINER" 2>/dev/null || true)"
+  fi
+  # A stopped container is not "no address": docker 29 renders the zero netip.Addr as the literal
+  # string "invalid IP", which is non-empty and would otherwise be baked into the image as
+  # "https://invalid IP:8443" -- a URL with a space in it. Only a dotted quad is accepted here.
+  if [[ -n "$teellm_ip" && ! "$teellm_ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+    teellm_ip=""
   fi
   if [[ -n "$teellm_ip" ]]; then
     printf 'https://%s:%s' "$teellm_ip" "$TAA_TEELLM_PORT"
