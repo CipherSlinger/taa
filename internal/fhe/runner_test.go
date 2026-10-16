@@ -629,6 +629,101 @@ func TestRunnerCopyResultSharedDirectoryHit(t *testing.T) {
 	}
 }
 
+// TestRunnerCopyResultWaitsForALateResult is the regression test for the live
+// failure that motivated resultReadyWait.
+//
+// A task that finished correctly was reported as failed. The service flips the
+// task to "completed" when the last case ends and assembles the archive
+// afterwards; TAA probed once inside that window, both probes missed - the shared
+// directory held no file yet and the download answered 404 - and one miss was
+// terminal, so the run was failed and the service's own callback then arrived as
+// an unknown task.
+//
+// Both halves are asserted together because either alone still fails a task in
+// production: the download 404s until the archive is published, and the shared
+// directory stays empty until then.
+func TestRunnerCopyResultWaitsForALateResult(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	var downloads atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/results/download") {
+			http.NotFound(w, r)
+			return
+		}
+		downloads.Add(1)
+		// The service's answer while the archive is still being assembled.
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"detail":"Result zip not found"}`))
+	}))
+	defer srv.Close()
+
+	r := newTestRunner(t, srv.URL, layout)
+	resultPath, err := layout.ResultPath("task-late")
+	if err != nil {
+		t.Fatalf("ResultPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(resultPath), 0o755); err != nil {
+		t.Fatalf("create the results dir: %v", err)
+	}
+	// The archive lands well after the single probe that used to decide this
+	// task's fate.
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		_ = os.WriteFile(resultPath, []byte("late-result"), 0o600)
+	}()
+
+	dst := filepath.Join(t.TempDir(), "published", "output.zip")
+	got, err := r.CopyResult(context.Background(),
+		TaskSpec{TaskID: "task-late", UserID: testHashA},
+		TaskOutcome{Status: StatusCompleted}, dst)
+	if err != nil {
+		t.Fatalf("CopyResult = %v, want success: an archive published after the terminal status is not a failed task", err)
+	}
+	if got != resultPath {
+		t.Errorf("returned path = %q, want the shared-directory path %q", got, resultPath)
+	}
+	if b, err := os.ReadFile(dst); err != nil || string(b) != "late-result" {
+		t.Errorf("dst = %q, err = %v", b, err)
+	}
+	if downloads.Load() == 0 {
+		t.Error("the download fallback was never tried, so the wait was not exercised")
+	}
+}
+
+// TestRunnerCopyResultDoesNotWaitOutARealFailure guards the other side of the
+// wait: only "not published yet" is worth waiting for.
+//
+// Without it a service answering 500 would hold every task for the whole
+// resultReadyWait before failing it, turning one broken deployment into a minute
+// of dead time per task.
+func TestRunnerCopyResultDoesNotWaitOutARealFailure(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	r := newTestRunner(t, srv.URL, layout)
+	dst := filepath.Join(t.TempDir(), "published", "output.zip")
+	start := time.Now()
+	_, err := r.CopyResult(context.Background(),
+		TaskSpec{TaskID: "task-500", UserID: testHashA},
+		TaskOutcome{Status: StatusCompleted}, dst)
+	if err == nil {
+		t.Fatal("CopyResult = nil, want the service's error")
+	}
+	// The wait is bounded by resultReadyWait, which is far longer than this: the
+	// point is that a 500 is not retried at all, not that it is retried quickly.
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("CopyResult spent %s failing a 500; only a missing archive is worth waiting out", elapsed)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("the service was called %d times, want 1: a 500 is not a not-ready answer", n)
+	}
+}
+
 func TestParseCallback(t *testing.T) {
 	p, err := ParseCallback([]byte(`{"task_id":"t1","status":"completed","result_zip":"results/t1/output.zip","cases":[{"entry":"a","result_id":"a.bin"}]}`))
 	if err != nil {

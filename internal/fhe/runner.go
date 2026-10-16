@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -627,6 +628,57 @@ func (r *Runner) outcomeFromStatus(spec TaskSpec, st TaskStatus) TaskOutcome {
 	return out
 }
 
+// resultReadyWait bounds how long CopyResult waits for a finished task's result to
+// appear before it reports the task as failed.
+//
+// A terminal status and a published result are two different events. The service
+// reports "completed" when the last case finishes and assembles the archive after
+// that: on a live 10-case cifar10 task the status flipped at 12:29:59 and
+// results/<taskID>/output.zip landed in the same second, after TAA had already
+// looked. Probing once therefore turns a task that finished correctly into a
+// permanent failure - the run is reported failed, its id leaves the in-flight
+// table, and the service's own callback then arrives as an unknown task - over a
+// window milliseconds wide.
+//
+// It is a constant rather than a config key because it covers an assembly window,
+// not a transfer: the copy or download that follows is bounded by the caller's
+// context instead. What the bound is for is the other direction - a service that
+// never publishes a result must still fail the task rather than hang in it.
+const resultReadyWait = 60 * time.Second
+
+// resultNotReady reports whether err is the service saying the archive is not there
+// yet, which is the one failure worth waiting out.
+//
+// The service answers 404 both for "this task's result is not assembled yet" and
+// for "no such task", and the response does not distinguish them. Waiting out the
+// unknown-task case as well costs the bounded window and then reports the error it
+// was given, which is the truthful outcome for it either way.
+func resultNotReady(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
+}
+
+// sharedResultPath reports where the service wrote the archive inside the shared
+// directory, or "" while it is not there yet.
+//
+// The path is re-derived on every attempt rather than read from out: out is a
+// snapshot taken when the task was resolved, and the whole point of this loop is
+// that the file may appear only after that snapshot was taken.
+func (r *Runner) sharedResultPath(spec TaskSpec, out TaskOutcome) string {
+	p := out.ResultZip
+	if p == "" {
+		derived, err := r.layout.ResultPath(spec.TaskID)
+		if err != nil {
+			return ""
+		}
+		p = derived
+	}
+	if _, err := os.Stat(p); err != nil {
+		return ""
+	}
+	return p
+}
+
 // CopyResult makes the task's result archive available at dst and returns the
 // path it used.
 //
@@ -635,18 +687,15 @@ func (r *Runner) outcomeFromStatus(spec TaskSpec, st TaskStatus) TaskOutcome {
 // not write there - a split deployment, or a task whose results were cleaned up -
 // is covered by the download fallback.
 //
+// Both branches are retried until the archive exists, because a terminal task
+// status does not promise that it does; see resultReadyWait.
+//
 // The return value is NOT dst, in either branch, and callers must not treat it
 // as the published location: on the shared-directory hit it is the source path
 // inside the shared directory, and on the download fallback it is the empty
 // string. dst is the only path that holds the result in both cases, so that is
 // the one to hand to whatever publishes it.
 func (r *Runner) CopyResult(ctx context.Context, spec TaskSpec, out TaskOutcome, dst string) (string, error) {
-	if out.ResultZip != "" {
-		if err := copyFileAtomic(out.ResultZip, dst); err != nil {
-			return "", fmt.Errorf("copy the shared-directory result: %w", err)
-		}
-		return out.ResultZip, nil
-	}
 	// A result archive is a bulk transfer, not a request/response round trip, so
 	// RequestTimeout - a per-call budget that defaults to 30s - is the wrong bound
 	// for it: with it, any archive that needed longer than 30s died mid-body even
@@ -657,10 +706,31 @@ func (r *Runner) CopyResult(ctx context.Context, spec TaskSpec, out TaskOutcome,
 	// transfer.
 	dlCtx, cancel := context.WithTimeout(ctx, r.cfg.TaskTimeout)
 	defer cancel()
-	if err := r.client.DownloadResult(dlCtx, spec.TaskID, spec.UserID, dst); err != nil {
-		return "", fmt.Errorf("download the task result: %w", err)
+
+	deadline := time.Now().Add(resultReadyWait)
+	for {
+		if p := r.sharedResultPath(spec, out); p != "" {
+			if err := copyFileAtomic(p, dst); err != nil {
+				return "", fmt.Errorf("copy the shared-directory result: %w", err)
+			}
+			return p, nil
+		}
+		err := r.client.DownloadResult(dlCtx, spec.TaskID, spec.UserID, dst)
+		if err == nil {
+			return "", nil
+		}
+		if !resultNotReady(err) || !time.Now().Before(deadline) {
+			return "", fmt.Errorf("download the task result: %w", err)
+		}
+		r.log(LevelWarn, "FHE 结果尚未落盘，将继续等待: taskId=%s, err=%v", spec.TaskID, err)
+		wait := time.NewTimer(r.cfg.PollInterval)
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			return "", fmt.Errorf("download the task result: %w", ctx.Err())
+		case <-wait.C:
+		}
 	}
-	return "", nil
 }
 
 // linkOrCopy publishes src at dst without ever destroying what is already there.
