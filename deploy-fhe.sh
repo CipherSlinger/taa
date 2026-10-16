@@ -42,11 +42,69 @@ TAA_CONTAINER_WORKDIR="${TAA_CONTAINER_WORKDIR:-/root/taa}"
 TAA_CONFIG_FILE="taa-config.json"
 BINARY_NAME="${BINARY_NAME:-taa}"
 TAA_LOG_FILE="${TAA_LOG_FILE:-$TAA_CONTAINER_WORKDIR/taa.log}"
+# The supervisor's command line as a pgrep/pkill pattern, bracketed in the first
+# letter and in the dot so that it matches start.sh without matching the shell that
+# carries the pattern. Written without a backslash on purpose: under --remote the
+# string crosses two more shells, and '[.]' is one literal character there where '\\.'
+# depends on every layer agreeing about backslashes.
+SUPERVISOR_PATTERN='[s]tart[.]sh'
 # Must match server.addr in $TAA_FHE_CONFIG; the readiness probe below, and the
 # URL the FHE containers call back on, both use it.
 TAA_PORT="${TAA_PORT:-6001}"
 TAA_READY_TIMEOUT="${TAA_READY_TIMEOUT:-120}"
 TAA_READY_INTERVAL="${TAA_READY_INTERVAL:-2}"
+
+# ── Where the deployment happens ─────────────────────────────────────────────
+# An empty REMOTE_TARGET means the FHE host is this one, and every host-side
+# command below runs as a plain local command -- the behaviour this script had
+# before it could deploy anywhere else. `--remote` sets it to
+# $REMOTE_USER@$REMOTE_HOST, and then each host-side command becomes one ssh
+# invocation instead. See ssh_host/run/run_in/host_sh below: they are the only
+# places that know the difference, which is what keeps the rest of the script
+# from having to care.
+#
+# These names are deploy.sh's, deliberately: an operator already exporting
+# REMOTE_HOST/TARGET_PASSWORD for the TAA side does not restate them here.
+REMOTE_HOST="${REMOTE_HOST:-172.16.10.178}"
+REMOTE_USER="${REMOTE_USER:-root}"
+PASSWORD="${TARGET_PASSWORD:-Osrd@2026}"
+REMOTE_DIR="${REMOTE_DIR:-/root/taa-fhe}"
+REMOTE_TARGET="${REMOTE_TARGET:-}"
+# Where the bundle is copied to on the remote host. Derived here rather than
+# after the upload so the guard below can refuse a target that would collide
+# with a directory the upload's --delete is about to write into.
+REMOTE_HANDOFF_DIR="${REMOTE_HANDOFF_DIR:-$REMOTE_DIR/latti-fhe-handoff}"
+
+# ── Platform side ────────────────────────────────────────────────────────────
+# platform-mock stands in for the control plane, so a full chain (TAA registers,
+# the platform drives tasks, results come back) can be run without one. 18081,
+# not deploy.sh's 18080: on the shared FHE host 18080 is held by ccs-node-agent.
+PLATFORM_PORT="${PLATFORM_PORT:-18081}"
+PLATFORM_ADDR="${PLATFORM_ADDR:-0.0.0.0:$PLATFORM_PORT}"
+PLATFORM_MOCK_BINARY_NAME="${PLATFORM_MOCK_BINARY_NAME:-platform-mock}"
+PLATFORM_MOCK_BINARY_PATH="${PLATFORM_MOCK_BINARY_PATH:-$PROJECT_DIR/bin/$PLATFORM_MOCK_BINARY_NAME}"
+PLATFORM_MOCK_STATE_DIR="${PLATFORM_MOCK_STATE_DIR:-$REMOTE_DIR/platform-mock-state}"
+PLATFORM_MOCK_UPLOAD_DIR="${PLATFORM_MOCK_UPLOAD_DIR:-$REMOTE_DIR/platform-mock-files}"
+PLATFORM_READY_TIMEOUT="${PLATFORM_READY_TIMEOUT:-30}"
+DEPLOY_PLATFORM_MOCK=1
+# TAA's own binary: built here and pushed into the container, so a deployment
+# runs the commit it was launched from rather than whatever the base image
+# happens to carry. The container's copy is not installed otherwise -- nothing
+# else in this script writes one.
+TAA_BINARY_PATH="${TAA_BINARY_PATH:-$PROJECT_DIR/bin/taa}"
+BUILD_BINARIES=1
+
+# The identity the TAA container is given with -e. On a type=fhe instance these
+# win over the config file (internal/config, applyFHEIdentityOverride), so they
+# are the channel a deployment uses to say where this instance registers.
+#
+# PLATFORM_IP is defaulted only when this run starts the mock itself, because
+# only then does the script know where the mock is; DOCKER_ID is never
+# defaulted, so the template's platform block stays the fallback it is meant to
+# be. Both are left to the template when unset, which is a working default
+# rather than a half-configured instance.
+PLATFORM_IP="${PLATFORM_IP:-}"
+DOCKER_ID="${DOCKER_ID:-}"
 
 DRY_RUN="${DRY_RUN:-0}"
 
@@ -127,13 +185,36 @@ trap 'on_error $?' ERR
 trap 'on_signal INT' INT
 trap 'on_signal TERM' TERM
 
+# The rendered config carries the callback token, and a --remote run writes it to a
+# private directory here before uploading it. No exit path may leave that behind, so
+# the cleanup hangs off EXIT, which every path above ends in -- including the ones
+# that exit through die(), a signal, or set -e.
+TAA_RENDER_TMPDIR=""
+cleanup_render_out() {
+  [ -n "${TAA_RENDER_TMPDIR:-}" ] || return 0
+  rm -rf "$TAA_RENDER_TMPDIR"
+  TAA_RENDER_TMPDIR=""
+}
+trap 'cleanup_render_out' EXIT
+
 is_dry_run() { [ "$DRY_RUN" = "1" ]; }
 
 # Every external command goes through run/run_in so that DRY_RUN=1 prints the
 # plan instead of touching the host.
 run() {
-  if is_dry_run; then printf '[deploy-fhe] would run: %s\n' "$*"; return 0; fi
-  "$@"
+  if is_dry_run; then
+    # $* rather than the shell_quote form that actually goes over the wire: this line
+    # is read by an operator, and every %q escape of a space or a quote costs more than
+    # the fidelity is worth. An argument carrying a space is the one case where the two
+    # disagree, and it disagrees in the harmless direction -- the real command quotes.
+    if [ -n "$REMOTE_TARGET" ]; then
+      printf '[deploy-fhe] would run on %s: %s\n' "$REMOTE_TARGET" "$*"
+    else
+      printf '[deploy-fhe] would run: %s\n' "$*"
+    fi
+    return 0
+  fi
+  ssh_host "$@"
 }
 
 # Same, for the one command that has to execute in another directory (rsync and
@@ -141,13 +222,232 @@ run() {
 run_in() {
   local dir="$1"
   shift
-  if is_dry_run; then printf '[deploy-fhe] would run: (cd %s && %s)\n' "$dir" "$*"; return 0; fi
-  ( cd "$dir" && "$@" )
+  if is_dry_run; then
+    if [ -n "$REMOTE_TARGET" ]; then
+      printf '[deploy-fhe] would run on %s: (cd %s && %s)\n' "$REMOTE_TARGET" "$dir" "$*"
+    else
+      printf '[deploy-fhe] would run: (cd %s && %s)\n' "$dir" "$*"
+    fi
+    return 0
+  fi
+  if [ -z "$REMOTE_TARGET" ]; then
+    ( cd "$dir" && "$@" )
+    return
+  fi
+  # One ssh, and the remote login shell does the cd: ssh already runs its command
+  # through that shell, so a second sh -lc would only add a quoting layer.
+  local cmd
+  printf -v cmd 'cd %q && %s' "$dir" "$(shell_quote "$@")"
+  "${REMOTE_SSH[@]}" "$REMOTE_TARGET" "$cmd"
+}
+
+# ── The two hosts ────────────────────────────────────────────────────────────
+# Everything that has to happen on the deployment host goes through one of these, so
+# "which machine runs this" is decided in a handful of functions instead of at thirty
+# call sites: ssh_host/run/run_in for an argv, host_sh/host_capture for a shell string
+# or a value, host_detach for something that outlives the ssh, and upload_file/
+# upload_tree for the files themselves. Everything else in this script is either local
+# by nature (jq, go build, the bundle's own checksums) or says in a comment why.
+#
+# The one-shot commands get ssh -n (stdin from /dev/null): nothing here streams input
+# to the remote, and without it the first ssh in a loop would swallow the rest of this
+# script's stdin. See SSH_COMMON_OPTS for why the uploads must not get it.
+# Options every ssh/scp to the deployment host shares. -n is deliberately not one
+# of them: it belongs to the one-shot commands below (without it the first ssh in
+# a loop swallows the rest of this script's stdin), and it must not reach the
+# uploads -- rsync's transport *is* the ssh child's own stdin and stdout, and
+# ssh -n redirects that from /dev/null, so the transfer would move nothing.
+SSH_COMMON_OPTS=(
+  -q
+  -o LogLevel=ERROR
+  -o StrictHostKeyChecking=accept-new
+  -o UserKnownHostsFile="$HOME/.ssh/known_hosts"
+)
+SSH_OPTS=(-n "${SSH_COMMON_OPTS[@]}")
+
+# Renders an argv as one line the remote login shell re-parses into the same
+# words. %q is what keeps a path with a space, a quote or a $ in it intact
+# across the trip; the login shell on the hosts this targets is bash.
+shell_quote() {
+  local out="" arg q
+  for arg in "$@"; do
+    printf -v q '%q' "$arg"
+    out+="$q "
+  done
+  printf '%s' "${out% }"
+}
+
+# sshpass only when a password is set, so key or agent authentication works by
+# clearing TARGET_PASSWORD rather than being second-class. scp and rsync need the
+# same wrapper, so the three invocations are built here rather than at each call.
+setup_remote_ssh() {
+  [ -n "$REMOTE_TARGET" ] || return 0
+  local -a prefix=()
+  if [ -n "$PASSWORD" ]; then
+    command -v sshpass >/dev/null 2>&1 \
+      || die "sshpass is required to reach $REMOTE_TARGET with TARGET_PASSWORD set; install it, or clear TARGET_PASSWORD to use key authentication"
+    prefix=(sshpass -p "$PASSWORD")
+  fi
+  require_command scp
+  require_command rsync
+  REMOTE_SSH=("${prefix[@]}" ssh "${SSH_OPTS[@]}")
+  # -q: scp's progress meter is one line per file rewritten in place, and the files
+  # it carries here are small; the 300 MiB bundle goes over rsync instead.
+  REMOTE_SCP=("${prefix[@]}" scp -q "${SSH_COMMON_OPTS[@]}")
+  # The transport rsync is given with -e, which it splits and runs as a shell
+  # command rather than reading as an argv -- hence its own rendering of the same
+  # options. -q and the log-level option are dropped here: rsync wants ssh's own
+  # diagnostics on a transfer that fails, and SSH_COMMON_OPTS' -q would silence them.
+  RSYNC_SSH=""
+  [ -n "$PASSWORD" ] && RSYNC_SSH="sshpass -p $(shell_quote "$PASSWORD") "
+  RSYNC_SSH+="ssh $(shell_quote -o LogLevel=ERROR -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$HOME/.ssh/known_hosts")"
+}
+
+# One command on the deployment host, argv and all.
+ssh_host() {
+  if [ -z "$REMOTE_TARGET" ]; then
+    "$@"
+  else
+    "${REMOTE_SSH[@]}" "$REMOTE_TARGET" "$(shell_quote "$@")"
+  fi
+}
+
+# For the commands that are a pipeline or a shell builtin rather than an argv --
+# `docker ps | grep -Fxq`, `[ -w path ]`, a pgrep inside the container. They run
+# under bash -c locally so the caller writes one form for both hosts, and the
+# exit status comes back through ssh, which is what makes `if host_sh ...` work.
+host_sh() {
+  local script="$1"
+  if is_dry_run; then
+    if [ -n "$REMOTE_TARGET" ]; then
+      printf '[deploy-fhe] would run on %s: %s\n' "$REMOTE_TARGET" "$script"
+    else
+      printf '[deploy-fhe] would run: %s\n' "$script"
+    fi
+    return 0
+  fi
+  if [ -z "$REMOTE_TARGET" ]; then
+    bash -c "$script"
+  else
+    "${REMOTE_SSH[@]}" "$REMOTE_TARGET" "$script"
+  fi
+}
+
+# host_sh for a value rather than a status. A remote --dry-run reads nothing and
+# says so: a dry run has to stay runnable without reaching the host at all, and
+# every caller below treats an empty answer as "this run could not derive one"
+# rather than as a value. The local dry run keeps reading, as it always has.
+host_capture() {
+  local script="$1"
+  if is_dry_run && [ -n "$REMOTE_TARGET" ]; then
+    printf '[deploy-fhe] dry-run: not reading %s from %s\n' "$script" "$REMOTE_TARGET" >&2
+    return 0
+  fi
+  if [ -z "$REMOTE_TARGET" ]; then
+    bash -c "$script"
+  else
+    "${REMOTE_SSH[@]}" "$REMOTE_TARGET" "$script"
+  fi
 }
 
 require_command() {
   local name="$1"
   command -v "$name" >/dev/null 2>&1 || die "command '$name' is required but not installed or not in PATH"
+}
+
+# Builds one binary on the machine running this script. Deliberately not one of the
+# host helpers: a --remote run builds here and uploads, so what reaches the container
+# is the commit this script was launched from rather than whatever the deployment host
+# has checked out. CGO_ENABLED=0 and GOOS=linux to match the images it lands in.
+build_binary() {
+  local out="$1" pkg="$2"
+  if is_dry_run; then
+    log "would build $out (CGO_ENABLED=0 GOOS=linux go build -o $out $pkg)"
+    return 0
+  fi
+  require_command go
+  log "building $out"
+  ( cd "$PROJECT_DIR" && CGO_ENABLED=0 GOOS=linux go build -o "$out" "$pkg" ) \
+    || die "go build failed for $pkg"
+  [ -f "$out" ] || die "go build reported success but $out is not there"
+}
+
+# What require_command is for the deployment host: the same check, run there. Every
+# name checked this way is one a host-side command below invokes (docker, curl,
+# rsync), so checking it here rather than on the machine running this script is the
+# difference between a preflight and a guess.
+require_host_command() {
+  local name="$1"
+  host_sh "command -v $(shell_quote "$name") >/dev/null 2>&1" \
+    || die "command '$name' is required on ${REMOTE_TARGET:-this host} but is not installed or not in PATH there"
+}
+
+# Starts a command on the deployment host that has to outlive the shell that starts
+# it. The three redirections are what let ssh return rather than hold the channel
+# open for as long as the process lives: ssh waits for every writer of its stdout
+# and stderr to exit, and a daemon that keeps them keeps ssh with it.
+host_detach() {
+  local log="$1" pidfile="$2"
+  shift 2
+  if is_dry_run; then
+    printf '[deploy-fhe] would start on %s: %s > %s 2>&1 & (detached)\n' \
+      "${REMOTE_TARGET:-this host}" "$(shell_quote "$@")" "$log"
+    return 0
+  fi
+  if [ -z "$REMOTE_TARGET" ]; then
+    nohup "$@" >"$log" 2>&1 </dev/null &
+    printf '%s\n' "$!" >"$pidfile"
+  else
+    "${REMOTE_SSH[@]}" "$REMOTE_TARGET" \
+      "nohup $(shell_quote "$@") > $(shell_quote "$log") 2>&1 < /dev/null & echo \$! > $(shell_quote "$pidfile")" >/dev/null \
+      || die "failed to start $(shell_quote "$@") on $REMOTE_TARGET"
+  fi
+  log "started '$1' on ${REMOTE_TARGET:-this host} (pid $(host_capture "cat $(shell_quote "$pidfile")" 2>/dev/null || true), log $log)"
+}
+
+# Copies one file to a path on the deployment host. Writes a .new beside the
+# destination and renames onto it, so a reader on that host -- the FHE stack, or TAA
+# reading its rendered config -- never catches a half-written file. $3 is the mode,
+# defaulting to what scp would have left.
+upload_file() {
+  local src="$1" dest="$2" mode="${3:-}"
+  [ -n "$REMOTE_TARGET" ] || return 0
+  # The existence check comes after the dry-run return on purpose: a dry run has to
+  # stay runnable on a host where nothing has been built or unpacked yet -- it is what
+  # an operator runs to see what a deployment would do -- so it prints the copy it
+  # would make instead of refusing over a file the real run would have produced.
+  if is_dry_run; then
+    printf '[deploy-fhe] would copy %s -> %s:%s (mode %s)\n' "$src" "$REMOTE_TARGET" "$dest" "${mode:-644}"
+    return 0
+  fi
+  [ -f "$src" ] || die "cannot upload $src: no such file"
+  local tmp="${dest}.new"
+  host_sh "mkdir -p $(shell_quote "$(dirname "$dest")")" \
+    || die "cannot create $(dirname "$dest") on $REMOTE_TARGET"
+  "${REMOTE_SCP[@]}" "$src" "$REMOTE_TARGET:$tmp" \
+    || die "failed to copy $src to $REMOTE_TARGET:$tmp"
+  host_sh "chmod ${mode:-644} $(shell_quote "$tmp") && mv -f $(shell_quote "$tmp") $(shell_quote "$dest")" \
+    || die "failed to place $dest on $REMOTE_TARGET"
+  log "uploaded $src -> $REMOTE_TARGET:$dest"
+}
+
+# The same for a whole tree, which is what the handoff bundle is. --delete is here
+# for the reason the staging step keeps it: a re-upload has to match the bundle that
+# was delivered rather than accumulate files from an older handoff, and a stale
+# third_party tree is a silently wrong deployment. The guard on REMOTE_HANDOFF_DIR
+# below is what keeps that from being destructive.
+upload_tree() {
+  local src="$1" dest="$2"
+  [ -n "$REMOTE_TARGET" ] || return 0
+  if is_dry_run; then
+    printf '[deploy-fhe] would rsync -a --delete %s/ -> %s:%s/\n' "$src" "$REMOTE_TARGET" "$dest"
+    return 0
+  fi
+  [ -d "$src" ] || die "cannot upload $src: no such directory"
+  host_sh "mkdir -p $(shell_quote "$dest")" || die "cannot create $dest on $REMOTE_TARGET"
+  rsync -a --delete -e "$RSYNC_SSH" "$src/" "$REMOTE_TARGET:$dest/" \
+    || die "failed to upload $src to $REMOTE_TARGET:$dest"
+  log "uploaded $src/ -> $REMOTE_TARGET:$dest/"
 }
 
 usage() {
@@ -157,18 +457,72 @@ Usage: $(basename "$0") [options]
 Deploy the FHE side on a GPU host: import the Latti server image from the handoff
 bundle, stage the FHE runtime and models, start the api/worker/redis stack, then
 start this host's TAA instance with server.type=fhe under the deploy/start.sh
-supervisor.
+supervisor. With --remote the same run happens on another host, platform-mock
+included, which is what makes an end-to-end registration test possible there.
 
 Options:
   -n, --dry-run
       Print the commands that would run and execute nothing. Needs no GPU, no
-      FHE stack and no Docker.
+      FHE stack and no Docker. With --remote it prints the ssh command lines and
+      still connects to nothing.
+  --remote
+      Deploy to \${REMOTE_USER}@\${REMOTE_HOST} instead of this host: the bundle,
+      the supervisor, the TAA binary and platform-mock are copied over, and every
+      host-side command becomes one ssh invocation. Default target is
+      ${REMOTE_USER}@${REMOTE_HOST}; REMOTE_HOST, REMOTE_USER, TARGET_PASSWORD,
+      REMOTE_DIR and REMOTE_HANDOFF_DIR override it, and the first three are the
+      names deploy.sh uses for the same host.
+  --no-platform-mock
+      Do not build, upload or start platform-mock, and do not check the
+      registration at the end. Then nothing here answers at PLATFORM_IP, so set
+      PLATFORM_IP (or rely on the template's platform block) to point TAA at a
+      platform that is already running.
+  --skip-build
+      Do not run 'go build' for the TAA binary or platform-mock; use what is
+      already at TAA_BINARY_PATH / PLATFORM_MOCK_BINARY_PATH, which then have to
+      exist.
   -h, --help
       Display this help documentation.
 
 Environment:
+  REMOTE_HOST=${REMOTE_HOST}, REMOTE_USER=${REMOTE_USER}
+      Host and user --remote targets. TARGET_PASSWORD is the ssh password (empty
+      means key or agent authentication); REMOTE_DIR=\${REMOTE_DIR} is where this
+      run keeps the uploaded bundle, the binaries and platform-mock's state, and
+      REMOTE_HANDOFF_DIR=\${REMOTE_HANDOFF_DIR} is the uploaded bundle itself.
+  PLATFORM_IP=${PLATFORM_IP}
+      Passed to the TAA container as PLATFORM_IP, which on a type=fhe instance
+      wins over the config file's platform block. Defaulted to
+      127.0.0.1:\${PLATFORM_PORT} when this run starts platform-mock itself, since
+      only then is the address known; left unset otherwise, so the template's
+      platform.ip decides.
+  DOCKER_ID=${DOCKER_ID}
+      Passed the same way. Never defaulted: the template's platform.dockerID is
+      the fallback, and registration refuses an empty dockerId outright. The last
+      step of a run requires the platform to have recorded this value, from
+      whichever of the two sources applies.
+  PLATFORM_PORT=${PLATFORM_PORT}
+      Port platform-mock listens on (PLATFORM_ADDR=\${PLATFORM_ADDR}). Not
+      deploy.sh's 18080 -- on the shared FHE host that port is already taken.
+  PLATFORM_MOCK_BINARY_PATH=${PLATFORM_MOCK_BINARY_PATH}
+      platform-mock binary. Built here unless --skip-build, uploaded to
+      \${REMOTE_DIR}/bin/ on a remote run.
+  PLATFORM_MOCK_STATE_DIR=${PLATFORM_MOCK_STATE_DIR}
+      Register/report state platform-mock persists. This run clears the register
+      state before TAA starts, so the registration it checks at the end is one
+      TAA actually made.
+  PLATFORM_MOCK_UPLOAD_DIR=${PLATFORM_MOCK_UPLOAD_DIR}
+      Directory platform-mock stores uploads in, served at /files/.
+  PLATFORM_READY_TIMEOUT=${PLATFORM_READY_TIMEOUT}
+      Seconds to wait for platform-mock to answer after this run starts it.
+  TAA_BINARY_PATH=${TAA_BINARY_PATH}
+      TAA binary. Built here unless --skip-build, copied into the container at
+      \$TAA_CONTAINER_WORKDIR/$BINARY_NAME on every run: nothing else installs one,
+      so without it the image's own binary would serve.
   HANDOFF_DIR=${HANDOFF_DIR}
-      Delivery bundle (image/, third_party/, data/, deploy/docker/).
+      Delivery bundle (image/, third_party/, data/, deploy/docker/). On a remote
+      run this script's copy is verified here and uploaded; the deployment host
+      then reads the copy under REMOTE_HANDOFF_DIR.
   HOST_DATA_DIR=${HOST_DATA_DIR:-}
       Shared directory the FHE stack mounts as /data and TAA reads as fhe.dataDir.
       The script exports it (and HOST_RUNTIME_DIR, HOST_REDIS_DIR, API_HOST_PORT
@@ -194,7 +548,7 @@ Environment:
       directory, must not contain it and must not be inside it -- nor may it
       contain or be inside HOST_TAA_STATE_DIR: the run refuses otherwise, before
       anything is deleted.
-  HOST_REDIS_DIR=${HOST_REDIS_DIR:-$HOST_DATA_DIR/redis}
+  HOST_REDIS_DIR=${HOST_REDIS_DIR:-${HOST_DATA_DIR:-/opt/fhe-data}/redis}
       Redis AOF directory the stack mounts as /data in fhe-redis. Defaults to a
       directory inside HOST_DATA_DIR; set it to keep an AOF that already exists
       elsewhere.
@@ -202,7 +556,9 @@ Environment:
       TAA configuration template rendered with the callback URL/token below.
       Defaults to $PROJECT_DIR/configs/taa-fhe.json; an override is used as given.
   TAA_CALLBACK_BASE_URL=${TAA_CALLBACK_BASE_URL:-}
-      Base URL of this TAA instance as the FHE containers reach it.
+      Base URL of this TAA instance as the FHE containers reach it. Under --remote
+      that is the deployment host's address, not this machine's (for the shared
+      FHE host, http://172.16.10.178:\${TAA_PORT}).
   TAA_CALLBACK_TOKEN=${TAA_CALLBACK_TOKEN:-}
       Shared secret the FHE service presents on the callback endpoint. Required:
       an unauthenticated callback endpoint is open to every local process.
@@ -244,10 +600,10 @@ Environment:
       it cds there, runs ./taa there and logs to /root/taa/taa.log, so this must
       stay /root/taa. The rendered config is placed at
       \$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE, the path taa reads by default.
-  TAA_CONTAINER_CONFIG_PATH=${TAA_CONTAINER_CONFIG_PATH}
+  TAA_CONTAINER_CONFIG_PATH=${TAA_CONTAINER_CONFIG_PATH:-}
       Path inside the container the rendered config is copied to. Changing it
       stops the supervisor from seeing the rendered config.
-  TAA_RENDERED_CONFIG=${TAA_RENDERED_CONFIG}
+  TAA_RENDERED_CONFIG=${TAA_RENDERED_CONFIG:-}
       Host-side path the rendered config is written to before it is copied in.
   TAA_LOG_FILE=${TAA_LOG_FILE}
       Log the TAA supervisor writes, inside the container.
@@ -268,11 +624,16 @@ EOF
 while [ $# -gt 0 ]; do
   case "$1" in
     -n|--dry-run) DRY_RUN=1 ;;
+    --remote) REMOTE_TARGET="${REMOTE_USER}@${REMOTE_HOST}" ;;
+    --no-platform-mock) DEPLOY_PLATFORM_MOCK=0 ;;
+    --skip-build) BUILD_BINARIES=0 ;;
     -h|--help|help) usage; exit 0 ;;
     *) printf '[deploy-fhe] ERROR: unknown argument: %s\n' "$1" >&2; usage >&2; exit 1 ;;
   esac
   shift
 done
+
+setup_remote_ssh
 
 # ── Required inputs ──────────────────────────────────────────────────────────
 # Checked before anything runs, and before anything is staged: a run that cannot
@@ -317,10 +678,28 @@ HOST_REDIS_DIR="${HOST_REDIS_DIR:-$HOST_DATA_DIR/redis}"
 # then hangs until taskTimeoutMs.
 export HOST_DATA_DIR HOST_RUNTIME_DIR HOST_REDIS_DIR API_HOST_PORT
 
-NODE_DOCKER_DIR="$HANDOFF_DIR/deploy/docker"
-# Resolved exactly the way run-node.sh resolves it, so the report below reads the
-# file the stack is going to read and not just the one next to it.
+# ── The bundle as the deployment host sees it ────────────────────────────────
+# On a --remote run there are two copies of the handoff bundle: the one this script
+# holds, which is what gets verified here (verify_one hashes it, and SHA256SUMS is
+# beside it) and uploaded, and the one the deployment host reads, which is what
+# `docker load` and the staging rsync consume. Every host-side path below is named
+# from HOST_HANDOFF_DIR rather than from HANDOFF_DIR, so the guards that reason about
+# them reason about the paths that are really used.
+if [ -n "$REMOTE_TARGET" ]; then
+  HOST_HANDOFF_DIR="$REMOTE_HANDOFF_DIR"
+else
+  HOST_HANDOFF_DIR="$HANDOFF_DIR"
+fi
+
+NODE_DOCKER_DIR="$HOST_HANDOFF_DIR/deploy/docker"
+# NODE_ENV_FILE is the path run-node.sh resolves on the host; NODE_ENV_FILE_LOCAL is
+# the copy of that same file beside this script. The upload copies the bundle
+# verbatim, so the two carry the same content, and it is the local one the report
+# below can actually open. NODE_LOCAL_ENV_FILE overrides the first and, being a path
+# on the host, leaves the report reading nothing -- which it says, rather than
+# reporting the file as carrying no value.
 NODE_ENV_FILE="${NODE_LOCAL_ENV_FILE:-$NODE_DOCKER_DIR/env/node.local.env}"
+NODE_ENV_FILE_LOCAL="$HANDOFF_DIR/deploy/docker/env/node.local.env"
 
 # Same problem, two names nobody had checked. NODE_ID_OVERRIDE and
 # NODE_IP_OVERRIDE are on run-node.sh's restore list and env/node.local.env sets
@@ -332,7 +711,13 @@ NODE_ENV_FILE="${NODE_LOCAL_ENV_FILE:-$NODE_DOCKER_DIR/env/node.local.env}"
 # this run decides the identity; an operator who wants a specific one sets these
 # in this script's environment and the export passes it through. The report below
 # names the divergence when the env file disagrees.
-NODE_ID_OVERRIDE="${NODE_ID_OVERRIDE:-$(hostname -s 2>/dev/null || true)}"
+#
+# Both are read from the deployment host rather than the one this script runs on
+# (host_capture), because that is the machine run-node.sh derives them on: on a
+# remote run the identity has to be the remote host's or the stack registers as
+# the wrong node -- and under `--remote -n` it is read from neither, which leaves
+# the env file's value in force and is reported as such.
+NODE_ID_OVERRIDE="${NODE_ID_OVERRIDE:-$(host_capture 'hostname -s' 2>/dev/null || true)}"
 # A derivation that yields nothing has to export nothing. run-node.sh's restore
 # rule is `[[ -v $name ]]`, so a set-but-empty exported value wins over the env
 # file's exactly as a good one does: exporting an empty NODE_IP_OVERRIDE is what
@@ -351,7 +736,7 @@ fi
 # chosen and what was passed over are both named below.
 if [ -z "${NODE_IP_OVERRIDE:-}" ]; then
   NODE_IP_OVERRIDE=""
-  node_ip_all="$(hostname -I 2>/dev/null || true)"
+  node_ip_all="$(host_capture 'hostname -I' 2>/dev/null || true)"
   node_ip_skipped=""
   node_ip_bridge=""
   for node_ip in $node_ip_all; do
@@ -393,6 +778,20 @@ export NODE_ID_OVERRIDE NODE_IP_OVERRIDE
 # has to run under start.sh, which passes no --config.
 TAA_RENDERED_CONFIG="${TAA_RENDERED_CONFIG:-$HOST_DATA_DIR/taa-fhe.rendered.json}"
 TAA_CONTAINER_CONFIG_PATH="${TAA_CONTAINER_CONFIG_PATH:-$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE}"
+# Where jq writes, which is not always where the deployment host wants it. jq runs
+# here in both modes -- it holds the callback token in its environment, and this is
+# the side that can create the file 0600 from the start -- so a remote run renders
+# into a private temporary directory (mktemp -d is 0700, and the EXIT trap above
+# removes it) and uploads the result, while TAA_RENDERED_CONFIG stays what it always
+# was: the path on the deployment host the config is deployed to. Everything that
+# reads the rendered bytes -- the two guards in render_taa_config -- reads the local
+# copy either way; only where it lives during the run differs.
+TAA_RENDER_OUT="$TAA_RENDERED_CONFIG"
+if [ -n "$REMOTE_TARGET" ] && ! is_dry_run; then
+  TAA_RENDER_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/deploy-fhe-render.XXXXXX")" \
+    || die "cannot create a temporary directory for the rendered config"
+  TAA_RENDER_OUT="$TAA_RENDER_TMPDIR/taa-fhe.rendered.json"
+fi
 
 # ── Read-only helpers ────────────────────────────────────────────────────────
 
@@ -434,6 +833,49 @@ paths_overlap() {
   return 1
 }
 
+# The one-way form of paths_overlap: true when $1 is $2 or contains it. For the guards
+# where the direction is the whole question -- 'rsync --delete' writes into the first
+# path, so a second path inside it is destroyed while a second path containing it is
+# merely adjacent.
+path_contains() {
+  local outer inner
+  outer="$(realpath -m -- "$1")" || return 1
+  inner="$(realpath -m -- "$2")" || return 1
+  if [ "$outer" = "/" ] || [ "$outer" = "$inner" ]; then
+    return 0
+  fi
+  case "$inner/" in "$outer"/*) return 0 ;; esac
+  return 1
+}
+
+# ── The files this run puts on the deployment host ───────────────────────────
+# Four paths, each named once for the host that reads it: the image archive docker
+# load reads, the supervisor docker cp copies in, and the two binaries. Locally each
+# is the operator-facing path unchanged; under --remote each is the copy the upload
+# phase places under REMOTE_DIR, because every command that touches them runs there.
+#
+# An archive the bundle ships keeps its place inside the uploaded tree -- the upload
+# carries it, so the host's copy is the one to load. An archive the operator pointed
+# at from elsewhere is used as given and is *not* uploaded: there is no rule for where
+# it would go, and inventing one would put a second copy of a multi-gigabyte image on
+# a host that already has one. The warning is what keeps that from being a surprise.
+if same_path "$FHE_IMAGE_ARCHIVE" "$BUNDLE_IMAGE_ARCHIVE"; then
+  HOST_FHE_IMAGE_ARCHIVE="$HOST_HANDOFF_DIR/image/latti-server-latest.tar.gz"
+else
+  HOST_FHE_IMAGE_ARCHIVE="$FHE_IMAGE_ARCHIVE"
+  if [ -n "$REMOTE_TARGET" ]; then
+    warn "--remote uploads $HANDOFF_DIR and nothing else, so FHE_IMAGE_ARCHIVE=$FHE_IMAGE_ARCHIVE is read on $REMOTE_TARGET exactly as written; it has to exist there"
+  fi
+fi
+HOST_START_SH="$PROJECT_DIR/deploy/start.sh"
+HOST_TAA_BINARY_PATH="$TAA_BINARY_PATH"
+HOST_PLATFORM_MOCK_BINARY_PATH="$PLATFORM_MOCK_BINARY_PATH"
+if [ -n "$REMOTE_TARGET" ]; then
+  HOST_START_SH="$REMOTE_DIR/deploy/start.sh"
+  HOST_TAA_BINARY_PATH="$REMOTE_DIR/bin/$BINARY_NAME"
+  HOST_PLATFORM_MOCK_BINARY_PATH="$REMOTE_DIR/bin/$PLATFORM_MOCK_BINARY_NAME"
+fi
+
 # Reports the values the FHE stack will actually run with, and says so when the
 # bundle's env file disagrees with this run. It is a report, not a warning: the
 # export above makes the exported value win in run-node.sh, so a mismatch in the
@@ -442,11 +884,22 @@ paths_overlap() {
 # is exactly where an operator should learn which tree the stack will use.
 report_stack_binding() {
   local name want got
+  # The file this reads is the local copy of the one the stack reads (see
+  # NODE_ENV_FILE_LOCAL above); the messages below name the host-side path, because
+  # that is the file the value they report actually comes from. An override that
+  # names a path only the host has leaves nothing to read here, and then the report
+  # compares against no file at all -- said first, so the "(no NAME in ...)" lines
+  # below are not read as "the env file carries nothing".
+  local env_src="$NODE_ENV_FILE_LOCAL"
+  [ -z "${NODE_LOCAL_ENV_FILE:-}" ] || env_src="$NODE_LOCAL_ENV_FILE"
+  if [ ! -r "$env_src" ]; then
+    warn "cannot read $env_src from here, so this report compares against no env file; the stack on ${REMOTE_TARGET:-this host} reads ${NODE_ENV_FILE}"
+  fi
   for name in HOST_DATA_DIR HOST_RUNTIME_DIR HOST_REDIS_DIR API_HOST_PORT; do
     want="${!name}"
     got=""
-    if [ -f "$NODE_ENV_FILE" ]; then
-      got="$(read_env_path "$NODE_ENV_FILE" "$name")"
+    if [ -r "$env_src" ]; then
+      got="$(read_env_path "$env_src" "$name")"
     fi
     if [ -z "$got" ]; then
       log "$name=$want (no $name in $NODE_ENV_FILE)"
@@ -466,8 +919,8 @@ report_stack_binding() {
   for name in NODE_ID_OVERRIDE NODE_IP_OVERRIDE; do
     want="${!name:-}"
     got=""
-    if [ -f "$NODE_ENV_FILE" ]; then
-      got="$(read_env_path "$NODE_ENV_FILE" "$name")"
+    if [ -r "$env_src" ]; then
+      got="$(read_env_path "$env_src" "$name")"
     fi
     if [ -z "$want" ]; then
       log "$name is not exported by this run ($NODE_ENV_FILE carries ${got:-none}), so the env file decides it"
@@ -523,7 +976,37 @@ verify_one() {
 wait_for_taa() {
   local deadline=$((SECONDS + TAA_READY_TIMEOUT))
   while [ "$SECONDS" -lt "$deadline" ]; do
-    if curl -fsS -o /dev/null -X POST "http://127.0.0.1:${TAA_PORT}/v1/taa/health" 2>/dev/null; then
+    # host_sh: the probe has to run where taa listens. On a remote run 127.0.0.1
+    # is the remote host, which is the point -- probing from here would answer
+    # for whichever taa happens to run on this machine.
+    if host_sh "curl -fsS -o /dev/null -X POST 'http://127.0.0.1:${TAA_PORT}/v1/taa/health'" 2>/dev/null; then
+      return 0
+    fi
+    sleep "$TAA_READY_INTERVAL"
+  done
+  return 1
+}
+
+# What the mock recorded for the last registration attempt, as the JSON it answered
+# with, and nothing at all when it never received one. Read as the last gate of a run:
+# a TAA that answers /v1/taa/health proves it started, not that the platform ever heard
+# from it, and a failed registration is only a warning at startup (internal/app/taa) --
+# so the two are checked separately. The whole state is returned rather than just the
+# dockerId because a rejected registration stores the dockerId too (with accepted
+# false), and reading the id alone would pass on exactly the failure this gate exists
+# to catch.
+platform_register_state() {
+  host_capture "curl -fsS 'http://127.0.0.1:${PLATFORM_PORT}/api/register/status'" 2>/dev/null || true
+}
+
+# The mock answering is not the same as the mock that answers being ours: on a re-run
+# the previous run's process is still listening, and a second one would fail to bind
+# and exit. So the port is probed first and an answer is reported as "already there"
+# rather than as this run's doing.
+wait_for_platform_mock() {
+  local deadline=$((SECONDS + PLATFORM_READY_TIMEOUT))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if host_sh "curl -fsS -o /dev/null 'http://127.0.0.1:${PLATFORM_PORT}/api/register/status'" 2>/dev/null; then
       return 0
     fi
     sleep "$TAA_READY_INTERVAL"
@@ -535,12 +1018,13 @@ render_taa_config() {
   [ -f "$TAA_FHE_CONFIG" ] || die "TAA config template not found: $TAA_FHE_CONFIG"
   command -v jq >/dev/null 2>&1 || die "command 'jq' is required but not installed or not in PATH"
   # The two ways the pipeline below fails are not the same failure, so the
-  # destination is checked first and named separately: "$TAA_RENDERED_CONFIG's
-  # directory is missing" is a cp/mkdir problem, and reporting it as "failed to
-  # render with jq" sends the operator to the template.
+  # destination is checked first and named separately: a missing directory is a
+  # mkdir problem, and reporting it as "failed to render with jq" sends the operator
+  # to the template. Under --remote this is the local staging file -- the upload
+  # after the render creates the directory on the deployment host itself.
   local rendered_dir
-  rendered_dir="$(dirname "$TAA_RENDERED_CONFIG")"
-  [ -d "$rendered_dir" ] || die "cannot write $TAA_RENDERED_CONFIG: $rendered_dir does not exist"
+  rendered_dir="$(dirname "$TAA_RENDER_OUT")"
+  [ -d "$rendered_dir" ] || die "cannot write $TAA_RENDER_OUT: $rendered_dir does not exist"
   # Two things happen here that the shell has to do rather than jq: the callback
   # token reaches jq through its environment, never through argv (--arg token would
   # publish the secret in /proc/<pid>/cmdline to every local user for as long as jq
@@ -559,17 +1043,23 @@ render_taa_config() {
        | .fhe.keyCacheDir = ($data + "/taa-fhe-keys")
        | .storage.result  = ($data + "/taa-results")
        | .storage.keys    = ($state + "/keys")' \
-      "$TAA_FHE_CONFIG" > "$TAA_RENDERED_CONFIG" ) \
-    || die "failed to render $TAA_FHE_CONFIG -> $TAA_RENDERED_CONFIG (jq rejected the template, or the redirect could not create that file)"
+      "$TAA_FHE_CONFIG" > "$TAA_RENDER_OUT" ) \
+    || die "failed to render $TAA_FHE_CONFIG -> $TAA_RENDER_OUT (jq rejected the template, or the redirect could not create that file)"
   # The file carries the callback token. The redirect above already created it 0600;
   # this is for the case where it already existed with a wider mode.
-  chmod 600 "$TAA_RENDERED_CONFIG"
-  log "rendered $TAA_FHE_CONFIG -> $TAA_RENDERED_CONFIG"
+  chmod 600 "$TAA_RENDER_OUT"
+  log "rendered $TAA_FHE_CONFIG -> $TAA_RENDER_OUT"
+  # The second hop, on a remote run: docker cp below reads the config from the
+  # deployment host, so it has to be there before that step. Mode 600 all the way --
+  # the file carries the callback token.
+  if [ -n "$REMOTE_TARGET" ]; then
+    upload_file "$TAA_RENDER_OUT" "$TAA_RENDERED_CONFIG" 600
+  fi
 
   # The readiness probe and the callback URL both assume TAA listens on
   # TAA_PORT; a template that says otherwise would be polled at the wrong port.
   local addr
-  addr="$(jq -r '.server.addr' "$TAA_RENDERED_CONFIG")"
+  addr="$(jq -r '.server.addr' "$TAA_RENDER_OUT")"
   [ "$addr" = ":$TAA_PORT" ] \
     || die "server.addr in the rendered config is '$addr' but TAA_PORT is ':$TAA_PORT'"
 
@@ -607,7 +1097,7 @@ render_taa_config() {
     ".storage.keys|$HOST_TAA_STATE_DIR"; do
     state_key="${state_pair%%|*}"
     state_bind="${state_pair#*|}"
-    state_path="$(jq -r "$state_key" "$TAA_RENDERED_CONFIG")"
+    state_path="$(jq -r "$state_key" "$TAA_RENDER_OUT")"
     case "$state_path" in
       "$state_bind"/*) ;;
       *) die "the rendered config sets $state_key to '$state_path', outside the bind '$state_bind' that has to carry it: recreating the container would destroy it" ;;
@@ -627,6 +1117,20 @@ start_taa_container() {
   # rendered config's absolute paths mean anything.
   args+=(-v "$HOST_DATA_DIR:$HOST_DATA_DIR")
   args+=(-v "$HOST_TAA_STATE_DIR:$HOST_TAA_STATE_DIR")
+  # The instance's identity, in the one channel internal/config lets win over the
+  # config file on a type=fhe instance. Both are optional: an unset value is left to
+  # the template's platform block, which is a working default rather than a
+  # half-configured instance -- and the recreate check below is what stops a container
+  # that a previous run created without them from continuing without them.
+  local -a required_envs=()
+  if [ -n "$PLATFORM_IP" ]; then
+    args+=(-e "PLATFORM_IP=$PLATFORM_IP")
+    required_envs+=("PLATFORM_IP=$PLATFORM_IP")
+  fi
+  if [ -n "$DOCKER_ID" ]; then
+    args+=(-e "DOCKER_ID=$DOCKER_ID")
+    required_envs+=("DOCKER_ID=$DOCKER_ID")
+  fi
   args+=(--entrypoint tail "$TAA_IMAGE" -f /dev/null)
 
   if is_dry_run; then
@@ -634,7 +1138,7 @@ start_taa_container() {
     # what lets it run on a host with no daemon -- so it cannot know whether the
     # container already exists. Print the decision the real run would make instead
     # of the create branch as though it were certain.
-    log "dry-run: the real run would reuse $TAA_CONTAINER_NAME if it already exists with image $TAA_IMAGE and the binds $HOST_DATA_DIR:$HOST_DATA_DIR and $HOST_TAA_STATE_DIR:$HOST_TAA_STATE_DIR, and would otherwise create it:"
+    log "dry-run: the real run would reuse $TAA_CONTAINER_NAME if it already exists with image $TAA_IMAGE, the binds $HOST_DATA_DIR:$HOST_DATA_DIR and $HOST_TAA_STATE_DIR:$HOST_TAA_STATE_DIR and the environment ${required_envs[*]:-this run sets none}, and would otherwise create it:"
     run docker run "${args[@]}"
     return 0
   fi
@@ -643,12 +1147,12 @@ start_taa_container() {
   # an unrelated "taaXfhe". That match would make this block skip creating the
   # container and report it as already running, and every later docker exec would
   # fail against a container this deployment does not own.
-  if docker ps -a --format '{{.Names}}' | grep -Fxq "$TAA_CONTAINER_NAME"; then
-    local current_image current_id target_id image_mismatch=false bind_mismatch=false
-    local required_bind current_binds missing_binds=""
-    current_image="$(docker inspect --format '{{.Config.Image}}' "$TAA_CONTAINER_NAME" 2>/dev/null || true)"
-    current_id="$(docker inspect --format '{{.Image}}' "$TAA_CONTAINER_NAME" 2>/dev/null || true)"
-    target_id="$(docker image inspect --format '{{.Id}}' "$TAA_IMAGE" 2>/dev/null || true)"
+  if host_sh "docker ps -a --format '{{.Names}}' | grep -Fxq $(shell_quote "$TAA_CONTAINER_NAME")"; then
+    local current_image current_id target_id image_mismatch=false bind_mismatch=false env_mismatch=false
+    local required_bind required_env current_binds current_env missing_binds="" missing_env=""
+    current_image="$(host_capture "docker inspect --format '{{.Config.Image}}' $(shell_quote "$TAA_CONTAINER_NAME")" 2>/dev/null || true)"
+    current_id="$(host_capture "docker inspect --format '{{.Image}}' $(shell_quote "$TAA_CONTAINER_NAME")" 2>/dev/null || true)"
+    target_id="$(host_capture "docker image inspect --format '{{.Id}}' $(shell_quote "$TAA_IMAGE")" 2>/dev/null || true)"
     if [ -n "$current_image" ] && [ "$current_image" != "$TAA_IMAGE" ]; then
       image_mismatch=true
     elif [ -n "$current_id" ] && [ -n "$target_id" ] && [ "$current_id" != "$target_id" ]; then
@@ -668,7 +1172,7 @@ start_taa_container() {
     # the host that nothing mounted -- while this run reported success. A bind that
     # cannot be read is treated as a mismatch: the failure this guards is silent, so
     # the unconfirmed case has to take the loud branch.
-    current_binds="$(docker inspect --format '{{json .HostConfig.Binds}}' "$TAA_CONTAINER_NAME" 2>/dev/null || true)"
+    current_binds="$(host_capture "docker inspect --format '{{json .HostConfig.Binds}}' $(shell_quote "$TAA_CONTAINER_NAME")" 2>/dev/null || true)"
     for required_bind in "$HOST_DATA_DIR:$HOST_DATA_DIR" "$HOST_TAA_STATE_DIR:$HOST_TAA_STATE_DIR"; do
       if ! printf '%s' "$current_binds" \
            | jq -e --arg b "$required_bind" 'type == "array" and index($b) != null' >/dev/null 2>&1; then
@@ -676,22 +1180,44 @@ start_taa_container() {
         missing_binds="${missing_binds:+$missing_binds, }$required_bind"
       fi
     done
-    if [ "$image_mismatch" = true ] || [ "$bind_mismatch" = true ]; then
+    # And the environment, for the same reason and with a quieter failure. A container
+    # built before this run had PLATFORM_IP/DOCKER_ID -- or one built by a run whose
+    # values differed -- is reused by the image and bind checks above, and then the
+    # identity never reaches the process inside it: internal/config falls back to the
+    # template, the instance registers under the wrong dockerId or cannot register at
+    # all, and the only symptom is a platform that never hears from a node this run
+    # reported as deployed. Only the variables this run means to set are compared, so
+    # a run that sets neither behaves exactly as it did before.
+    current_env="$(host_capture "docker inspect --format '{{json .Config.Env}}' $(shell_quote "$TAA_CONTAINER_NAME")" 2>/dev/null || true)"
+    # ${arr[@]+"${arr[@]}"} rather than "${arr[@]}": under set -u an empty array is an
+    # unbound variable before bash 4.4, and this list is empty whenever the run sets
+    # neither variable -- the case that has to keep working unchanged.
+    for required_env in ${required_envs[@]+"${required_envs[@]}"}; do
+      if ! printf '%s' "$current_env" \
+           | jq -e --arg e "$required_env" 'type == "array" and index($e) != null' >/dev/null 2>&1; then
+        env_mismatch=true
+        missing_env="${missing_env:+$missing_env, }$required_env"
+      fi
+    done
+    if [ "$image_mismatch" = true ] || [ "$bind_mismatch" = true ] || [ "$env_mismatch" = true ]; then
       if [ "$image_mismatch" = true ]; then
         warn "container $TAA_CONTAINER_NAME runs $current_image, expected $TAA_IMAGE; recreating"
       fi
       if [ "$bind_mismatch" = true ]; then
         warn "container $TAA_CONTAINER_NAME does not carry every bind this run needs: missing $missing_binds (its binds: ${current_binds:-unreadable}); recreating so taa reads the directories this run configured"
       fi
+      if [ "$env_mismatch" = true ]; then
+        warn "container $TAA_CONTAINER_NAME does not carry every environment variable this run sets: missing $missing_env (its environment: ${current_env:-unreadable}); recreating so the instance registers as this run intends"
+      fi
       run docker rm -f "$TAA_CONTAINER_NAME"
     fi
   fi
 
-  if docker ps --format '{{.Names}}' | grep -Fxq "$TAA_CONTAINER_NAME"; then
+  if host_sh "docker ps --format '{{.Names}}' | grep -Fxq $(shell_quote "$TAA_CONTAINER_NAME")"; then
     log "container $TAA_CONTAINER_NAME is already running"
     return 0
   fi
-  if docker ps -a --format '{{.Names}}' | grep -Fxq "$TAA_CONTAINER_NAME"; then
+  if host_sh "docker ps -a --format '{{.Names}}' | grep -Fxq $(shell_quote "$TAA_CONTAINER_NAME")"; then
     log "starting stopped container $TAA_CONTAINER_NAME"
     run docker start "$TAA_CONTAINER_NAME"
     return 0
@@ -707,9 +1233,11 @@ start_taa_container() {
 #
 # The bundle trees the staging step reads from are defined here so every guard runs
 # before the run has done anything at all -- including `docker load`, which mutates
-# the daemon's image store.
-RUNTIME_SRC="$HANDOFF_DIR/third_party/latti-ai-runtime"
-MODELS_SRC="$HANDOFF_DIR/data/models"
+# the daemon's image store. Both are named from HOST_HANDOFF_DIR, the copy on the
+# machine that runs the staging: on a --remote run the source of the rsync is the
+# uploaded tree, not the one this script is holding.
+RUNTIME_SRC="$HOST_HANDOFF_DIR/third_party/latti-ai-runtime"
+MODELS_SRC="$HOST_HANDOFF_DIR/data/models"
 # $HOST_DATA_DIR/models is the one the staging step copies into; naming it once keeps
 # the guard and the copy below on the same path.
 STAGED_MODELS_DIR="$HOST_DATA_DIR/models"
@@ -779,16 +1307,49 @@ fi
 if [ "$TAA_CONTAINER_CONFIG_PATH" != "$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE" ]; then
   die "TAA_CONTAINER_CONFIG_PATH=$TAA_CONTAINER_CONFIG_PATH, but deploy/start.sh runs taa with no --config, so taa reads $TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE; the rendered config would never be read"
 fi
+# And the one path only a --remote run has: where the upload writes the bundle. It is
+# 'rsync -a --delete', so a destination that is one of the trees this deployment has
+# to keep -- or that contains one -- would delete state instead of refreshing a
+# bundle. REMOTE_DIR itself is not refused in general; it is caught here exactly
+# because the binaries and the supervisor live under it.
+if [ -n "$REMOTE_TARGET" ]; then
+  case "$REMOTE_HANDOFF_DIR" in
+    ""|/) die "REMOTE_HANDOFF_DIR='$REMOTE_HANDOFF_DIR' is not a directory the bundle may be uploaded into: the upload runs 'rsync -a --delete' there" ;;
+  esac
+  remote_keep_paths=("$HOST_DATA_DIR" "$HOST_RUNTIME_DIR" "$HOST_TAA_STATE_DIR" "$HOST_REDIS_DIR" "$HOST_TAA_BINARY_PATH" "$HOST_START_SH")
+  if [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
+    remote_keep_paths+=("$PLATFORM_MOCK_STATE_DIR" "$PLATFORM_MOCK_UPLOAD_DIR")
+  fi
+  # The image archive is on the list only when it is not the bundle's own. The one the
+  # bundle ships lives inside the uploaded tree by design -- the upload is what puts it
+  # there, and the run loads it from there -- so holding the destination away from it
+  # would refuse every default run.
+  if ! same_path "$FHE_IMAGE_ARCHIVE" "$BUNDLE_IMAGE_ARCHIVE"; then
+    remote_keep_paths+=("$HOST_FHE_IMAGE_ARCHIVE")
+  fi
+  for remote_keep in "${remote_keep_paths[@]}"; do
+    if path_contains "$REMOTE_HANDOFF_DIR" "$remote_keep"; then
+      die "REMOTE_HANDOFF_DIR=$REMOTE_HANDOFF_DIR contains $remote_keep, which has to survive this run; the upload's 'rsync -a --delete' would delete it (set REMOTE_HANDOFF_DIR to a directory of its own)"
+    fi
+  done
+fi
 
 # ── Steps ────────────────────────────────────────────────────────────────────
 
 if is_dry_run; then
   log "dry-run: nothing will be executed; the tool preflight is skipped"
 else
-  # realpath is here for the path guards above, which answer "no overlap" when it
-  # is missing -- that is the silent direction, so it is checked like the rest.
-  for cmd in docker jq rsync sha256sum curl awk realpath; do
+  # Split by the machine that runs each command, not by what it does. jq, sha256sum,
+  # awk and realpath are this script's own: it renders the config, verifies the bundle
+  # and compares paths here, and the deployment host needs none of them. docker, curl
+  # and rsync are the host's -- every use below goes through run/run_in/host_sh -- and
+  # realpath is here for the path guards above, which answer "no overlap" when it is
+  # missing, so it is checked like the rest.
+  for cmd in jq sha256sum awk realpath; do
     require_command "$cmd"
+  done
+  for cmd in docker curl rsync; do
+    require_host_command "$cmd"
   done
   # Checked here rather than in the last step so a missing template cannot fail after
   # the FHE stack is already up.
@@ -796,6 +1357,20 @@ else
   # The supervisor is installed into the container, not taken from the image: a base
   # image that never carried one would otherwise leave taa unsupervised.
   [ -f "$PROJECT_DIR/deploy/start.sh" ] || die "TAA supervisor script missing: $PROJECT_DIR/deploy/start.sh"
+  # The GPU is the one thing about the deployment host that can be wrong without any
+  # command failing. The FHE worker's runtime is built for Ada (CUDA arch 89, per the
+  # bundle's build-info/manifest.json), needs roughly 45 GiB of free card memory to
+  # start, and is a Hygon DCU's non-starter because it is CUDA. Reported rather than
+  # refused -- this script cannot know what else the card is for -- and reported here,
+  # before 300 MiB is uploaded, so the operator sees it before the wait.
+  gpu_report="$(host_capture 'nvidia-smi --query-gpu=name,compute_cap,memory.total,memory.used --format=csv,noheader' 2>/dev/null || true)"
+  if [ -n "$gpu_report" ]; then
+    while IFS= read -r gpu_line; do
+      [ -n "$gpu_line" ] && log "GPU on ${REMOTE_TARGET:-this host}: $gpu_line"
+    done <<<"$gpu_report"
+  else
+    warn "nvidia-smi reported no GPU on ${REMOTE_TARGET:-this host}; the FHE worker needs a CUDA device, and the bundled runtime is built for compute capability 8.9 (Ada)"
+  fi
 fi
 report_stack_binding
 
@@ -832,13 +1407,51 @@ fi
 # missing directory is already refused below. It stays a gap by choice.
 verify_one third_party/latti-ai-runtime.tar.gz
 
+step "building the binaries this run deploys"
+# Both are built on this machine and pushed, so a deployment runs the commit it was
+# launched from: the TAA binary is copied into the container below, and platform-mock
+# is the control-plane stand-in the last gate reads. --skip-build keeps whatever is
+# already at TAA_BINARY_PATH / PLATFORM_MOCK_BINARY_PATH, for a run that has just
+# built them, and is then held to the two files actually existing.
+if [ "$BUILD_BINARIES" != 1 ]; then
+  log "--skip-build: using $TAA_BINARY_PATH and $PLATFORM_MOCK_BINARY_PATH as they are"
+  if ! is_dry_run; then
+    [ -f "$TAA_BINARY_PATH" ] || die "--skip-build was given but $TAA_BINARY_PATH does not exist"
+    if [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
+      [ -f "$PLATFORM_MOCK_BINARY_PATH" ] || die "--skip-build was given but $PLATFORM_MOCK_BINARY_PATH does not exist"
+    fi
+  fi
+else
+  build_binary "$TAA_BINARY_PATH" ./cmd/taa
+  if [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
+    build_binary "$PLATFORM_MOCK_BINARY_PATH" ./tools/platform-mock/cmd/platform-mock
+  fi
+fi
+
+step "uploading this run's inputs to ${REMOTE_TARGET:-this host}"
+# Everything the host-side commands read has to be there first: the bundle, which
+# `docker load` and the staging rsync read from; the supervisor, which docker cp
+# copies into the container; and the two binaries. The rendered config is the one
+# exception -- it does not exist yet, and the step that renders it uploads it.
+if [ -z "$REMOTE_TARGET" ]; then
+  log "no --remote: the bundle is read where it is, and the binaries the step above wrote are where the commands below look for them"
+else
+  log "uploading $HANDOFF_DIR to $REMOTE_TARGET:$REMOTE_HANDOFF_DIR; this is the long part of a remote run"
+  upload_tree "$HANDOFF_DIR" "$REMOTE_HANDOFF_DIR"
+  upload_file "$PROJECT_DIR/deploy/start.sh" "$HOST_START_SH" 755
+  upload_file "$TAA_BINARY_PATH" "$HOST_TAA_BINARY_PATH" 755
+  if [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
+    upload_file "$PLATFORM_MOCK_BINARY_PATH" "$HOST_PLATFORM_MOCK_BINARY_PATH" 755
+  fi
+fi
+
 step "importing $FHE_IMAGE from the handoff bundle"
-run docker load -i "$FHE_IMAGE_ARCHIVE"
+run docker load -i "$HOST_FHE_IMAGE_ARCHIVE"
 if is_dry_run; then
   log "would assert image $FHE_IMAGE is present"
 else
-  docker image inspect "$FHE_IMAGE" >/dev/null 2>&1 \
-    || die "image $FHE_IMAGE not found after loading $FHE_IMAGE_ARCHIVE"
+  host_sh "docker image inspect $(shell_quote "$FHE_IMAGE") >/dev/null 2>&1" \
+    || die "image $FHE_IMAGE not found after loading $HOST_FHE_IMAGE_ARCHIVE"
   log "image $FHE_IMAGE is present"
 fi
 
@@ -861,12 +1474,12 @@ else
   # --dry-run, which deletes nothing and has to stay runnable on a host the bundle
   # is not unpacked on.
   if ! is_dry_run; then
-    [ -d "$RUNTIME_SRC" ] || die "runtime source not found: $RUNTIME_SRC"
+    host_sh "test -d $(shell_quote "$RUNTIME_SRC")" || die "runtime source not found: $RUNTIME_SRC"
     # `ls` failing is not the same as `ls` succeeding with nothing to say: a
     # directory this user cannot read reports the same empty string as an empty one,
     # and calling that "the source is empty" hides the permission problem behind a
     # diagnosis that would send the operator looking at the bundle instead.
-    src_entries="$(ls -A "$RUNTIME_SRC" 2>/dev/null)" \
+    src_entries="$(host_capture "ls -A $(shell_quote "$RUNTIME_SRC")" 2>/dev/null)" \
       || die "runtime source is not readable: $RUNTIME_SRC"
     [ -n "$src_entries" ] || die "runtime source is empty: $RUNTIME_SRC (rsync -a --delete would empty $HOST_RUNTIME_DIR)"
   fi
@@ -882,7 +1495,7 @@ else
   # delivery, so it says which of the two it is instead of leaving `cp` to print its
   # own error. Skipped in --dry-run for the same reason the runtime checks are.
   if ! is_dry_run; then
-    [ -d "$MODELS_SRC" ] || die "models source not found: $MODELS_SRC"
+    host_sh "test -d $(shell_quote "$MODELS_SRC")" || die "models source not found: $MODELS_SRC"
   fi
   run cp -a "$MODELS_SRC/." "$STAGED_MODELS_DIR/"
 fi
@@ -901,6 +1514,52 @@ fi
 # restrictive-umask case does.
 run chmod 755 "$HOST_DATA_DIR" "$HOST_DATA_DIR"/{models,keys,tasks,results} "$HOST_REDIS_DIR"
 
+step "starting platform-mock on $PLATFORM_ADDR"
+# Before the FHE stack, and well before TAA: TAA registers within a few seconds of
+# coming up, and a mock that is not listening yet turns that registration into the
+# background retry loop it is designed to be -- which is exactly what this hunk of the
+# run exists to observe, so it must not be the thing that is being observed.
+#
+# -allow-empty-attestation is not optional. A type=fhe instance writes an empty
+# attestation by design (internal/app/taa), and the mock rejects a registration
+# carrying one unless that flag is set -- so a run without it reports a TAA that came
+# up healthy and a platform that never heard from it, with nothing naming the flag.
+if [ "$DEPLOY_PLATFORM_MOCK" != 1 ]; then
+  log "--no-platform-mock: nothing started here; TAA registers with PLATFORM_IP=${PLATFORM_IP:-<unset: platform.ip in the template decides>}"
+else
+  # The one place PLATFORM_IP gets a default, because this is the one place the mock's
+  # address is known to this script. TAA runs on the host network (TAA_DOCKER_NETWORK),
+  # so 127.0.0.1 means the host from inside its container as well. Computed outside the
+  # dry-run branch below on purpose: the TAA container's environment is settled in a
+  # later step, and a plan that left out an -e the real run would add is a plan that
+  # does not describe the run.
+  PLATFORM_IP="${PLATFORM_IP:-127.0.0.1:$PLATFORM_PORT}"
+  if is_dry_run; then
+    log "would probe http://127.0.0.1:$PLATFORM_PORT/api/register/status, start $HOST_PLATFORM_MOCK_BINARY_PATH if nothing answers, clear its register state, and give TAA PLATFORM_IP=$PLATFORM_IP"
+  else
+    if host_sh "curl -fsS -o /dev/null 'http://127.0.0.1:${PLATFORM_PORT}/api/register/status'"; then
+      warn "something already answers on 127.0.0.1:$PLATFORM_PORT; reusing it instead of starting a second platform-mock. This run cannot see how that process was started, so -allow-empty-attestation is not confirmed, and clearing its register state below affects whatever else is using it."
+    else
+      host_detach "$REMOTE_DIR/platform-mock.log" "$REMOTE_DIR/platform-mock.pid" \
+        "$HOST_PLATFORM_MOCK_BINARY_PATH" \
+        -addr "$PLATFORM_ADDR" \
+        -state-dir "$PLATFORM_MOCK_STATE_DIR" \
+        -upload-dir "$PLATFORM_MOCK_UPLOAD_DIR" \
+        -taa-target "http://127.0.0.1:$TAA_PORT" \
+        -allow-empty-attestation
+      wait_for_platform_mock \
+        || die "platform-mock did not answer on 127.0.0.1:$PLATFORM_PORT within ${PLATFORM_READY_TIMEOUT}s (log $REMOTE_DIR/platform-mock.log)"
+      log "platform-mock is answering on 127.0.0.1:$PLATFORM_PORT (state $PLATFORM_MOCK_STATE_DIR)"
+    fi
+    # The mock keeps its register state in a file that outlives this run, and the gate
+    # at the end reads it. Clearing it here is what makes that gate a statement about
+    # *this* run: otherwise a registration recorded on a previous run satisfies it
+    # while the TAA started below never reached the platform at all.
+    run curl -fsS -o /dev/null -X POST "http://127.0.0.1:${PLATFORM_PORT}/api/register/reset" \
+      || die "could not clear the register state on http://127.0.0.1:${PLATFORM_PORT}"
+  fi
+fi
+
 step "starting the FHE node stack (api + worker + redis)"
 # HOST_DATA_DIR / HOST_RUNTIME_DIR / HOST_REDIS_DIR / API_HOST_PORT are exported
 # above, which is what points the stack at the tree staged in the previous step.
@@ -911,9 +1570,9 @@ step "preflight: the FHE stack is serving on 127.0.0.1:$API_HOST_PORT"
 run curl -fsS -o /dev/null "http://127.0.0.1:${API_HOST_PORT}/api/v1/health" \
   || die "FHE health check failed"
 if is_dry_run; then
-  log "would check: test -w $HOST_DATA_DIR"
+  log "would check on ${REMOTE_TARGET:-this host}: test -w $HOST_DATA_DIR"
 else
-  [ -w "$HOST_DATA_DIR" ] || die "$HOST_DATA_DIR is not writable"
+  host_sh "test -w $(shell_quote "$HOST_DATA_DIR")" || die "$HOST_DATA_DIR is not writable"
 fi
 # A model must activate before a task can run. The bundled cifar10 model is the
 # one the delivery bundle measured against.
@@ -929,6 +1588,15 @@ else
 fi
 if [ "$TAA_DOCKER_NETWORK" != "host" ]; then
   warn "TAA_DOCKER_NETWORK=$TAA_DOCKER_NETWORK, but fhe.endpoint is http://127.0.0.1:${API_HOST_PORT}: inside a non-host network 127.0.0.1 is the TAA container itself"
+  # The same mistake on the other address this run hands the container, and quieter:
+  # the registration that follows would go to whatever answers on that port inside the
+  # container's own network, or to nothing, and the platform would simply never hear
+  # from this node.
+  if [ -n "$PLATFORM_IP" ]; then
+    case "$PLATFORM_IP" in
+      127.0.0.1:*|localhost:*) warn "PLATFORM_IP=$PLATFORM_IP, but TAA_DOCKER_NETWORK=$TAA_DOCKER_NETWORK: inside a non-host network that address is the TAA container itself, not the platform, so the registration will not reach it" ;;
+    esac
+  fi
 fi
 start_taa_container
 TAA_CONTAINER_TOUCHED=1
@@ -946,8 +1614,15 @@ if is_dry_run; then
   log "dry-run: the copies and execs below target the container the step above would leave ($TAA_CONTAINER_NAME); nothing is copied here, since the rendered config is not written either"
 fi
 run docker exec -i "$TAA_CONTAINER_NAME" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR'"
-run docker cp "$PROJECT_DIR/deploy/start.sh" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_WORKDIR/start.sh"
+run docker cp "$HOST_START_SH" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_WORKDIR/start.sh"
 run docker exec -i "$TAA_CONTAINER_NAME" sh -lc "chmod +x '$TAA_CONTAINER_WORKDIR/start.sh'"
+# The binary, from the build step, over whatever the base image carries. start.sh runs
+# ./taa from the workdir, so this is the file that decides which commit a deployment
+# runs; without it the run would report success while the image's own binary served.
+# The path is inside the workdir rather than on either bind, so it is the container's
+# writable layer and is refreshed on every run -- recreated containers included.
+run docker cp "$HOST_TAA_BINARY_PATH" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_WORKDIR/$BINARY_NAME"
+run docker exec -i "$TAA_CONTAINER_NAME" sh -lc "chmod +x '$TAA_CONTAINER_WORKDIR/$BINARY_NAME'"
 # Copied rather than rendered through the data-directory mount: start.sh runs ./taa
 # with no --config, so the config has to be at the path taa reads by default.
 run docker cp "$TAA_RENDERED_CONFIG" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_CONFIG_PATH"
@@ -957,22 +1632,24 @@ run docker cp "$TAA_RENDERED_CONFIG" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_CONFIG_
 # readiness wait below would then time out against a taa nobody started.
 run docker exec -i "$TAA_CONTAINER_NAME" sh -lc "touch '$TAA_CONTAINER_WORKDIR/manual'"
 run docker exec -i "$TAA_CONTAINER_NAME" \
-  sh -lc "pkill -f '[s]tart\.sh' >/dev/null 2>&1 || true; pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true"
+  sh -lc "pkill -f '$SUPERVISOR_PATTERN' >/dev/null 2>&1 || true; pkill -x '$BINARY_NAME' >/dev/null 2>&1 || true"
 if is_dry_run; then
   log "would wait for any previous start.sh in $TAA_CONTAINER_NAME to exit, then start ./start.sh under nohup"
 else
   waited=0
   while [ "$waited" -lt 25 ]; do
-    docker exec -i "$TAA_CONTAINER_NAME" sh -lc "pgrep -f '[s]tart\.sh' >/dev/null 2>&1" || break
+    host_sh "docker exec -i '$TAA_CONTAINER_NAME' sh -lc \"pgrep -f '$SUPERVISOR_PATTERN' >/dev/null 2>&1\"" || break
     waited=$((waited + 1))
     sleep 0.2
   done
   # pgrep -f matches the command line, which a zombie no longer has, so a stopped
   # supervisor is really stopped here and this cannot wedge on a defunct process.
-  if docker exec -i "$TAA_CONTAINER_NAME" sh -lc "pgrep -f '[s]tart\.sh' >/dev/null 2>&1"; then
+  # Each turn is one round trip under --remote, which is why the loop is bounded by a
+  # count of turns rather than by seconds.
+  if host_sh "docker exec -i '$TAA_CONTAINER_NAME' sh -lc \"pgrep -f '$SUPERVISOR_PATTERN' >/dev/null 2>&1\""; then
     warn "a previous start.sh supervisor is still running in $TAA_CONTAINER_NAME; force-killing it"
     run docker exec -i "$TAA_CONTAINER_NAME" \
-      sh -lc "pkill -9 -f '[s]tart\.sh' >/dev/null 2>&1 || true; pkill -9 -x '$BINARY_NAME' >/dev/null 2>&1 || true"
+      sh -lc "pkill -9 -f '$SUPERVISOR_PATTERN' >/dev/null 2>&1 || true; pkill -9 -x '$BINARY_NAME' >/dev/null 2>&1 || true"
   fi
 fi
 run docker exec -i "$TAA_CONTAINER_NAME" sh -lc "rm -f '$TAA_CONTAINER_WORKDIR/manual'"
@@ -983,11 +1660,10 @@ TAA_SUPERVISOR_STARTED=1
 step "waiting for TAA to answer on 127.0.0.1:$TAA_PORT"
 if is_dry_run; then
   log "would wait up to ${TAA_READY_TIMEOUT}s for POST http://127.0.0.1:${TAA_PORT}/v1/taa/health"
-  log "dry-run complete: nothing was executed"
 else
   if ! wait_for_taa; then
     log "taa log ($TAA_LOG_FILE):"
-    docker exec -i "$TAA_CONTAINER_NAME" sh -lc "tail -n 60 '$TAA_LOG_FILE' 2>/dev/null || true"
+    host_sh "docker exec -i '$TAA_CONTAINER_NAME' sh -lc \"tail -n 60 '$TAA_LOG_FILE' 2>/dev/null || true\"" || true
     die "TAA did not answer POST http://127.0.0.1:${TAA_PORT}/v1/taa/health within ${TAA_READY_TIMEOUT}s"
   fi
   log "TAA fhe instance is ready"
@@ -1002,7 +1678,7 @@ else
   # returning 0 means only that docker delivered the command. So the supervisor is
   # reported as what it was observed to be, with the bracket keeping pgrep from
   # matching the shell that carries the pattern.
-  if docker exec -i "$TAA_CONTAINER_NAME" sh -lc "pgrep -f '[s]tart\.sh' >/dev/null 2>&1"; then
+  if host_sh "docker exec -i '$TAA_CONTAINER_NAME' sh -lc \"pgrep -f '$SUPERVISOR_PATTERN' >/dev/null 2>&1\""; then
     log "TAA instance   : http://127.0.0.1:${TAA_PORT}/v1/taa/health (container $TAA_CONTAINER_NAME)"
     log "TAA supervisor : deploy/start.sh observed running in $TAA_CONTAINER_NAME; it restarts taa every 10s (log $TAA_LOG_FILE)"
   else
@@ -1013,4 +1689,53 @@ else
   log "Callback URL   : $TAA_CALLBACK_BASE_URL"
   log "stop the stack : (cd $NODE_DOCKER_DIR && ./scripts/run-node.sh down)"
   log "stop TAA       : docker rm -f $TAA_CONTAINER_NAME"
+fi
+
+step "verifying the platform recorded this instance's registration"
+# The one check that says the identity this run injected took effect. Everything above
+# can pass while the platform never hears from the node: an empty attestation against a
+# mock started without -allow-empty-attestation, a dockerId the platform refuses, a
+# PLATFORM_IP that reaches nothing -- each of those is a WARNING in TAA's own log and a
+# background retry, so "TAA is up" and "the platform knows about it" are two different
+# statements and only this one is about the deployment being usable.
+if is_dry_run; then
+  if [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
+    log "would read on ${REMOTE_TARGET:-this host}: http://127.0.0.1:$PLATFORM_PORT/api/register/status, and require the dockerId it recorded to be the one this run's identity resolves to"
+  else
+    log "--no-platform-mock: nothing to ask; this run does not start the platform, so it has no endpoint whose answer it could hold to"
+  fi
+elif [ "$DEPLOY_PLATFORM_MOCK" != 1 ]; then
+  log "--no-platform-mock: nothing to ask; this run did not start the platform, so it has no endpoint whose answer it could hold to"
+else
+  # Which dockerId should have arrived is what this run decided, and saying which of
+  # the two sources it came from is half the value of the check: the injected
+  # environment wins over the file on a type=fhe instance, and with nothing injected the
+  # template's platform block is what the instance reads.
+  if [ -n "$DOCKER_ID" ]; then
+    expected_docker_id="$DOCKER_ID"
+    expected_source="DOCKER_ID, injected into the container by this run"
+  else
+    expected_docker_id="$(jq -r '.platform.dockerID // empty' "$TAA_RENDER_OUT" 2>/dev/null || true)"
+    expected_source="platform.dockerID in $TAA_FHE_CONFIG, since this run injected none"
+  fi
+  register_state="$(platform_register_state)"
+  registered_id="$(printf '%s' "$register_state" | jq -r '.result.dockerId // empty' 2>/dev/null || true)"
+  registered_ok="$(printf '%s' "$register_state" | jq -r '.result.accepted // false' 2>/dev/null || true)"
+  if [ -z "$registered_id" ] && [ "$registered_ok" != "true" ]; then
+    die "platform-mock on 127.0.0.1:$PLATFORM_PORT recorded no registration at all (expected dockerId '$expected_docker_id' from $expected_source). TAA is up, but the platform never heard from it -- the registration warning in the taa log names why (docker exec $TAA_CONTAINER_NAME tail -n 60 $TAA_LOG_FILE)"
+  fi
+  if [ "$registered_ok" != "true" ]; then
+    die "platform-mock recorded dockerId '$registered_id' and REJECTED it: $(printf '%s' "$register_state" | jq -r '.result.message // "no message"' 2>/dev/null || true)"
+  fi
+  if [ "$registered_id" != "$expected_docker_id" ]; then
+    die "platform-mock recorded dockerId '$registered_id', but this run's identity resolves to '$expected_docker_id' (from $expected_source); the instance registered under another identity, which is what a container reused with a stale environment looks like"
+  fi
+  log "registration confirmed: platform-mock recorded dockerId=$registered_id accepted=true (expected '$expected_docker_id' from $expected_source)"
+  log "platform status: http://127.0.0.1:$PLATFORM_PORT/api/register/status"
+fi
+
+# Last line of the script on purpose: a dry run prints this once, after the last step,
+# so its position is what says the plan above is the whole plan.
+if is_dry_run; then
+  log "dry-run complete: nothing was executed"
 fi
