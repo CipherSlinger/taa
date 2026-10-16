@@ -521,9 +521,9 @@ docker exec -i "$CONTAINER_NAME" bash -c "
   set -u
   mkdir -p '$CONTAINER_WORKDIR'/models '$CONTAINER_WORKDIR'/data '$CONTAINER_WORKDIR'/results \
            '$CONTAINER_WORKDIR'/keys '$CONTAINER_WORKDIR'/certs '$CONTAINER_WORKDIR'/configs
-  mkdir -p /opt/taa/keys /opt/taa/input /opt/taa/output/result /opt/taa/output/log \
+  mkdir -p /opt/taa/input /opt/taa/output/result /opt/taa/output/log \
            /opt/taa/output/progress
-  chmod 700 '$CONTAINER_WORKDIR/keys' /opt/taa/keys
+  chmod 700 '$CONTAINER_WORKDIR/keys'
 " >/dev/null 2>&1 || true
 info "runtime directories recreated with 700 permissions on keys dirs"
 

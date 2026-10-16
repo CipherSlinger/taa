@@ -103,7 +103,7 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	// 2. 加载或生成本 TAA 实例专用的国密 SM2 密钥对（优先从持久化目录加载，若不存在则生成并落盘）
 	keysDir := cfg.KeysDir
 	if keysDir == "" {
-		keysDir = "/opt/taa/keys"
+		keysDir = "/root/taa/keys"
 	}
 	keyPair, loaded, err := loadOrGenerateTAAKeyPair(keysDir)
 	if err != nil {
@@ -392,7 +392,7 @@ func writeKeyFileAtomic(targetPath string, data []byte, perm os.FileMode) error 
 func loadOrGenerateTAAKeyPair(keysDir string) (*taaKeyPair, bool, error) {
 	cleanDir := strings.TrimSpace(keysDir)
 	if cleanDir == "" {
-		cleanDir = "/opt/taa/keys"
+		cleanDir = "/root/taa/keys"
 	}
 	cleanDir = filepath.Clean(cleanDir)
 

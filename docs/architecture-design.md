@@ -96,7 +96,7 @@ sequenceDiagram
 │                                                        │
 │  ┌──────────────────────────────────────────────────┐  │
 │  │ 1. 身份与度量 (启动即证明)                       │  │
-│  │    SM2 私钥 (/opt/taa/keys) ──► USERDATA (64B)   │  │
+│  │    SM2 私钥 (/root/taa/keys) ──► USERDATA (64B)  │  │
 │  │    /dev/csv-guest IOCTL ────► Attestation Report │  │
 │  └──────────────────────────────────────────────────┘  │
 │                           │                            │
@@ -552,8 +552,8 @@ TAA_DEBUG_MODE=true ./deploy.sh taa
 └── semgrep/rules/                Semgrep 扫描规则
 ```
 
-配置模板 `configs/taa-docker.json` 中 `storage.keys` 写的是 `/opt/taa/keys`，实际部署时由部署脚本改写为
-`/root/taa/keys`，以容器内生效的 `taa-config.json` 为准。
+配置模板 `configs/*.json` 中 `storage.keys` 与 `models`/`data`/`results`/`certs` 同前缀，落在 `/root/taa/keys`，
+由部署脚本以 `0700` 创建；TAA 首次生成密钥对时也会以 `0700` 自建该目录。
 
 Ollama 离线包**不在 TAA 容器内**：TEE-LLM 网关拆分为独立容器后，Ollama 与网关同容器，
 由 `teellm` 子模块提供源码、由仓库根目录的 `deploy-llm.sh` 独立部署（`./deploy-llm.sh [docker|remote-docker|remote]`），TAA 通过容器 IP 访问。

@@ -121,7 +121,7 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if cfg.ModelProgressDir != "/opt/taa/output/progress/progress.json" {
 		t.Fatalf("ModelProgressDir = %q, want default", cfg.ModelProgressDir)
 	}
-	if cfg.KeysDir != "/opt/taa/keys" {
+	if cfg.KeysDir != "/root/taa/keys" {
 		t.Fatalf("KeysDir = %q, want default", cfg.KeysDir)
 	}
 	if !cfg.EnableLLM {
@@ -264,8 +264,8 @@ func TestLoadStartupConfigIgnoresWhitespaceKeysDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
-	if cfg.KeysDir != "/opt/taa/keys" {
-		t.Fatalf("KeysDir = %q, want default /opt/taa/keys", cfg.KeysDir)
+	if cfg.KeysDir != "/root/taa/keys" {
+		t.Fatalf("KeysDir = %q, want default /root/taa/keys", cfg.KeysDir)
 	}
 }
 
@@ -311,7 +311,7 @@ func TestLoadStartupConfigDoesNotReadOtherRuntimeEnvironment(t *testing.T) {
 	if !cfg.EnableSecurityScan || !cfg.EnableResultCheck || !cfg.EnableLLM || !cfg.LLMFailClosed {
 		t.Fatalf("boolean runtime config unexpectedly read from environment: %+v", cfg)
 	}
-	if cfg.ModelDir != "/opt/taa/models" || cfg.DataDir != "/opt/taa/data" || cfg.ResultDir != "/opt/taa/results" || cfg.KeysDir != "/opt/taa/keys" {
+	if cfg.ModelDir != "/opt/taa/models" || cfg.DataDir != "/opt/taa/data" || cfg.ResultDir != "/opt/taa/results" || cfg.KeysDir != "/root/taa/keys" {
 		t.Fatalf("directory runtime config unexpectedly read from environment: %+v", cfg)
 	}
 	if cfg.LLMEndpoint != "https://127.0.0.1:8443" || cfg.LLMModel != "qwen2.5-coder:0.5b" || cfg.LLMPolicy != "assist" || cfg.LLMDir != "" {
@@ -401,7 +401,7 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantModelDir:         "/root/taa/models",
 			wantDataDir:          "/root/taa/data",
 			wantResultDir:        "/root/taa/results",
-			wantKeysDir:          "/opt/taa/keys",
+			wantKeysDir:          "/root/taa/keys",
 			wantHRK:              "/root/taa/certs/hrk.cert",
 			wantHSKCek:           "/root/taa/certs/hsk_cek.cert",
 			wantMaxResultBytes:   3221225472,
@@ -420,7 +420,7 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantModelDir:         "/root/taa/models",
 			wantDataDir:          "/root/taa/data",
 			wantResultDir:        "/root/taa/results",
-			wantKeysDir:          "/opt/taa/keys",
+			wantKeysDir:          "/root/taa/keys",
 			wantHRK:              "/root/taa/certs/hrk.cert",
 			wantHSKCek:           "/root/taa/certs/hsk_cek.cert",
 			wantMaxResultBytes:   3221225472,

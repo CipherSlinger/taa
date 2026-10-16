@@ -539,7 +539,7 @@ save_local_docker_image() {
     ":6001" "" "" "" \
     "/root/taa/models" "/root/taa/data" "/root/taa/results" \
     "$(resolve_llm_endpoint)" "$target_model" \
-    false "/opt/taa/input" "/opt/taa/output" "/opt/taa/keys"
+    false "/opt/taa/input" "/opt/taa/output" "/root/taa/keys"
   info "production config prepared for image (model: $target_model)"
 
   step "creating ephemeral container to assemble image"
@@ -548,8 +548,8 @@ save_local_docker_image() {
 
   spin_task "initializing container directories" docker run --name "$builder_container" --entrypoint bash "$base_image" -c "
     rm -f /root/taa/manual /root/taa/taa.log 2>/dev/null || true
-    mkdir -p /root/taa/models /root/taa/data /root/taa/results /root/taa/certs /opt/taa/keys /opt/taa/input /opt/taa/output
-    chmod 700 /opt/taa/keys
+    mkdir -p /root/taa/models /root/taa/data /root/taa/results /root/taa/certs /root/taa/keys /opt/taa/input /opt/taa/output
+    chmod 700 /root/taa/keys
   "
 
   step "deploying taa binary, certificates, and production config"

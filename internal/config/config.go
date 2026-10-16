@@ -438,7 +438,7 @@ func defaultStartupConfig() StartupConfig {
 		ModelOutputDir:             "/opt/taa/output/result",
 		ModelLogDir:                "/opt/taa/output/log",
 		ModelProgressDir:           "/opt/taa/output/progress/progress.json",
-		KeysDir:                    "/opt/taa/keys",
+		KeysDir:                    "/root/taa/keys",
 		AttestationHRKCertPath:     hrkDefault,
 		AttestationHSKCekCertPath:  hskDefault,
 		EnableLLM:                  true,

@@ -328,7 +328,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
     "model": "/root/taa/models",
     "data": "/root/taa/data",
     "result": "/root/taa/results",
-    "keys": "/opt/taa/keys"
+    "keys": "/root/taa/keys"
   },
   "model": {
     "input": "/opt/taa/input",
@@ -374,7 +374,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `storage.model` | `/root/taa/models` | TAA platform-internal storage directory for imported model code |
 | `storage.data` | `/root/taa/data` | TAA platform-internal storage directory for imported datasets and resources |
 | `storage.result` | `/root/taa/results` | TAA platform-internal storage directory for final packaged computation results |
-| `storage.keys` | `/opt/taa/keys` | Sensitive cryptographic key storage (restricted with `0700` permissions) |
+| `storage.keys` | `/root/taa/keys` | Sensitive cryptographic key storage (restricted with `0700` permissions) |
 | `model.input` | `/opt/taa/input` | Read-only input dataset directory mounted for model training sandbox runtime |
 | `model.output.result` | `/opt/taa/output/result` | Target output directory for model training checkpoints and artifacts |
 | `model.output.log` | `/opt/taa/output/log` | Model execution log directory (or file) monitored by log watcher (`modelLog`); every `*.log`/`*.jsonl` file in it is streamed |
