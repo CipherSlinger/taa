@@ -445,7 +445,10 @@ func (r *Runner) prepare(ctx context.Context, spec TaskSpec) (*taskRun, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(keyDst), 0o755); err != nil {
+	// MkdirShared rather than MkdirAll: the service has to traverse these
+	// directories as another user, and MkdirAll would leave them at the umask's
+	// answer. See Layout.MkdirShared.
+	if err := r.layout.MkdirShared(filepath.Dir(keyDst)); err != nil {
 		return nil, fmt.Errorf("create the shared key dir: %w", err)
 	}
 	if err := linkOrCopy(keySrc, keyDst); err != nil {
@@ -456,7 +459,7 @@ func (r *Runner) prepare(ctx context.Context, spec TaskSpec) (*taskRun, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(inDst), 0o755); err != nil {
+	if err := r.layout.MkdirShared(filepath.Dir(inDst)); err != nil {
 		return nil, fmt.Errorf("create the shared task dir: %w", err)
 	}
 	if err := copyFileAtomic(spec.InputZipPath, inDst); err != nil {
@@ -616,6 +619,8 @@ func (r *Runner) CopyResult(ctx context.Context, spec TaskSpec, out TaskOutcome,
 // source's mode, which is fine: the cache holds public keys.
 func linkOrCopy(src, dst string) error {
 	dir := filepath.Dir(dst)
+	// A safety net only: the shared data directory this publishes into is created
+	// by Layout.MkdirShared, which is what fixes its mode for the service.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -700,6 +705,10 @@ func fsyncDir(dir string) error {
 // from a container running as another user.
 func copyFileAtomic(src, dst string) error {
 	dir := filepath.Dir(dst)
+	// A safety net only, and deliberately left at 0755-and-umask: dst is a shared
+	// data directory (already created by Layout.MkdirShared) or a destination of
+	// TAA's own that no other user reads. See Layout.MkdirShared for the modes
+	// that are load-bearing.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}

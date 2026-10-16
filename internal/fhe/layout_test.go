@@ -1,6 +1,10 @@
 package fhe
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 const (
 	testHashA = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -93,5 +97,85 @@ func TestLayoutPaths(t *testing.T) {
 func TestLayoutRejectsEmptyRoot(t *testing.T) {
 	if _, err := NewLayout("").KeyPath(testHashA); err == nil {
 		t.Error("empty data dir accepted, want error")
+	}
+}
+
+// TestMkdirSharedRelaxesAnAlreadyExistingDirectory pins the half of the shared
+// directory fix that os.MkdirAll alone cannot cover.
+//
+// MkdirAll leaves the mode of a directory that already exists alone, so a
+// <data>/keys/<userID> an earlier run created under a restrictive umask stays
+// 0700 for good unless the call that finds it there relaxes it too - and the
+// whole point of relaxing it is that the service traverses these directories as
+// another user.
+func TestMkdirSharedRelaxesAnAlreadyExistingDirectory(t *testing.T) {
+	root := t.TempDir()
+	l := NewLayout(root)
+	keyDir, err := l.KeyDir(testHashA)
+	if err != nil {
+		t.Fatalf("KeyDir: %v", err)
+	}
+	if err := os.MkdirAll(keyDir, 0o700); err != nil {
+		t.Fatalf("pre-create the key dir: %v", err)
+	}
+
+	if err := l.MkdirShared(keyDir); err != nil {
+		t.Fatalf("MkdirShared: %v", err)
+	}
+	for _, p := range []string{filepath.Join(root, "keys"), keyDir} {
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat %s: %v", p, err)
+		}
+		if got := st.Mode().Perm(); got != sharedDirMode {
+			t.Errorf("%s is %v after MkdirShared, want %v: MkdirAll changed nothing on a directory that already existed, so relaxing a mode cannot be left to the create", p, got, sharedDirMode)
+		}
+	}
+}
+
+// TestMkdirSharedStaysInsideTheDataDir bounds the blast radius of the directory
+// fix: since it chmods the ancestors of what it creates, it must not walk out of
+// the shared data directory - neither upward past the root, whose mode belongs to
+// the bind mount and to deploy-fhe.sh, nor into a path outside it at all.
+func TestMkdirSharedStaysInsideTheDataDir(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "data")
+	outside := filepath.Join(base, "private")
+	// 0700 throughout, set rather than inherited - t.TempDir's own mode follows the
+	// umask - so that any relaxation by the calls below is visible.
+	for _, p := range []string{base, root, outside} {
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			t.Fatalf("create %s: %v", p, err)
+		}
+		if err := os.Chmod(p, 0o700); err != nil {
+			t.Fatalf("chmod %s: %v", p, err)
+		}
+	}
+	l := NewLayout(root)
+
+	// A published directory is a legitimate call, and the walk up from it has to
+	// stop at the root.
+	keyDir, err := l.KeyDir(testHashA)
+	if err != nil {
+		t.Fatalf("KeyDir: %v", err)
+	}
+	if err := l.MkdirShared(keyDir); err != nil {
+		t.Fatalf("MkdirShared: %v", err)
+	}
+	if err := l.MkdirShared(outside); err == nil {
+		t.Error("MkdirShared outside the data dir = nil, want error")
+	}
+	if err := l.MkdirShared(base); err == nil {
+		t.Error("MkdirShared on the data dir's parent = nil, want error")
+	}
+
+	for _, p := range []string{base, root, outside} {
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat %s: %v", p, err)
+		}
+		if got := st.Mode().Perm(); got != 0o700 {
+			t.Errorf("%s is %v, want 0700 unchanged: MkdirShared relaxed a directory it was not asked to create", p, got)
+		}
 	}
 }

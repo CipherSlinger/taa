@@ -972,6 +972,73 @@ func TestRunnerPublishedFilesAreReadableDespiteTheUmask(t *testing.T) {
 	}
 }
 
+// TestRunnerPublishedDirectoriesAreTraversableDespiteTheUmask is the regression
+// test for the modes of the directories TAA publishes into the shared
+// directory.
+//
+// A readable file inside an unenterable directory is still unreadable: the
+// service reaches <data>/keys/<userID>/eval_context.bin and
+// <data>/tasks/<taskID>/input.zip as another user, and traversal is checked
+// against the mode of every directory on the way. os.MkdirAll applies the
+// umask, so under umask 077 those directories were 0700 and the service could
+// not enter them at all - the same failure the 0644 file fix removed, one path
+// component further out.
+func TestRunnerPublishedDirectoriesAreTraversableDespiteTheUmask(t *testing.T) {
+	old := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(old) })
+
+	layout := NewLayout(t.TempDir())
+	keyBytes := []byte("eval-key-bytes")
+	keySrv := keyServer(t, keyBytes)
+	fake, srv := newFakeFHE(t, layout)
+	r := newRunnerWithTimeout(t, srv.URL, layout, 2*time.Second)
+	spec := specFor(t, r, keySrv.URL, keyBytes, []byte("i"))
+
+	go func() {
+		for i := 0; i < 400; i++ {
+			if fake.status("task-1") != "" {
+				fake.completeTask("task-1")
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	if _, err := r.Execute(context.Background(), spec, nil); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	keyDst, err := layout.KeyPath(spec.EvalKeyHash)
+	if err != nil {
+		t.Fatalf("KeyPath: %v", err)
+	}
+	inDst, err := layout.TaskInputPath("task-1")
+	if err != nil {
+		t.Fatalf("TaskInputPath: %v", err)
+	}
+	for _, p := range []string{keyDst, inDst} {
+		assertTraversableFromTheSharedRoot(t, layout.DataDir(), p)
+	}
+}
+
+// assertTraversableFromTheSharedRoot fails when any directory between the shared
+// root and p - both exclusive of the root, whose mode belongs to the bind mount
+// and to deploy-fhe.sh - is not traversable by another user.
+func assertTraversableFromTheSharedRoot(t *testing.T, root, p string) {
+	t.Helper()
+	for dir := filepath.Dir(p); dir != root; dir = filepath.Dir(dir) {
+		st, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if got := st.Mode().Perm(); got != sharedDirMode {
+			t.Errorf("%s is %v under umask 077, want %v: the service traverses into it as another user, and a directory it cannot enter hides the readable file inside", dir, got, sharedDirMode)
+		}
+		if parent := filepath.Dir(dir); parent == dir {
+			t.Fatalf("%s is not inside the shared root %s", p, root)
+		}
+	}
+}
+
 // TestLinkOrCopyKeepsThePublishedKeyWhenItFails is the regression test for the
 // remove-then-link order: a publish that failed after removing dst left no key
 // at all where a good one was, and in between the two calls a reader saw no key.

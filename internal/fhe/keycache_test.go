@@ -426,3 +426,42 @@ func TestDownloadKeyIsBoundedByTheCallerContext(t *testing.T) {
 		t.Errorf("downloadKey returned after %v, want it to stop at the caller's cancellation", elapsed)
 	}
 }
+
+// TestKeyCacheDirsStayRestrictive pins the boundary of the shared-directory mode
+// fix: the cache is TAA-private, lives outside the shared data directory, and
+// must not be relaxed along with the published key and task directories. Nothing
+// reads it but TAA itself.
+//
+// The umask is a permissive one on purpose. The claim is not that the umask
+// cannot open the cache up - it is that the cache's mode comes from an explicit
+// 0700 in either direction.
+func TestKeyCacheDirsStayRestrictive(t *testing.T) {
+	old := syscall.Umask(0o022)
+	t.Cleanup(func() { syscall.Umask(old) })
+
+	payload := []byte("eval-key-bytes")
+	hash := sm3HexOf(t, payload)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	dir := filepath.Join(t.TempDir(), "cache")
+	c, err := NewKeyCache(dir, DefaultMaxEvalKeyBytes)
+	if err != nil {
+		t.Fatalf("NewKeyCache: %v", err)
+	}
+	if _, err := c.Ensure(context.Background(), hash, srv.URL+"/eval_context.bin"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	for _, p := range []string{dir, filepath.Join(dir, hash)} {
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat %s: %v", p, err)
+		}
+		if got := st.Mode().Perm(); got != 0o700 {
+			t.Errorf("%s is %v, want 0700: the eval key cache is TAA-private, not a directory the FHE service reads", p, got)
+		}
+	}
+}
