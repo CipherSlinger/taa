@@ -375,9 +375,9 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | :--- | :--- | :--- |
 | `server.addr` | `:6001` | HTTP server listening address |
 | `server.type` | `tee` | Instance role, `tee` or `fhe`. `fhe` means this instance orchestrates an FHE service on a GPU node and performs no code audit, no remote attestation and no training pipeline |
-| `platform.ip` | Env `PLATFORM_IP` | Platform IP and port (`host:port`); dynamically injected via environment in production |
-| `platform.dockerID` | Env `DOCKER_ID` | Container / Pod identifier; dynamically injected via environment in production |
-| `platform.contract` | Env `CONTRACT` | Contract identifier (reserved optional) |
+| `platform.ip` | Env `PLATFORM_IP` | Platform IP and port (`host:port`); dynamically injected via environment in production. The file wins over the environment, except on an `fhe` instance — see [Platform Identity Precedence](#platform-identity-precedence) |
+| `platform.dockerID` | Env `DOCKER_ID` | Container / Pod identifier; dynamically injected via environment in production. Same precedence rule as `platform.ip` |
+| `platform.contract` | Env `CONTRACT` | Contract identifier (reserved optional). Always the file-wins rule, on both instance types |
 | `storage.model` | `/root/taa/models` | TAA platform-internal storage directory for imported model code |
 | `storage.data` | `/root/taa/data` | TAA platform-internal storage directory for imported datasets and resources |
 | `storage.result` | `/root/taa/results` | TAA platform-internal storage directory for final packaged computation results |
@@ -423,11 +423,20 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 
 The whole `fhe` section is read only when `server.type` is `fhe`; a `tee` instance that carries one logs a warning and ignores it.
 
+### Platform Identity Precedence
+
+`platform.ip` / `PLATFORM_IP` and `platform.dockerID` / `DOCKER_ID` are settled by one rule per instance type:
+
+- **`tee` instances: the config file wins.** The startup file is applied over the environment-derived defaults, so a template that carries a `platform` block pins the identity no matter what the orchestration platform injects. `configs/taa-production.json` deliberately omits the block for exactly this reason — it wants the injected values to be the only source.
+- **`fhe` instances: the environment wins.** On `server.type: "fhe"`, a non-empty `PLATFORM_IP` or `DOCKER_ID` in the container's environment overrides whatever the template says. The address an FHE instance registers with depends on the machine it is deployed to, and the image ships one template for every GPU host, so the template can only be a fallback. `configs/taa-fhe.json` carries a `platform` block for that role (`127.0.0.1:18081` / `taa-fhe`, the mock used in end-to-end testing), and setting the two variables replaces it field by field — unset one and the template's value for that field is what the instance runs with.
+
+`platform.contract` / `CONTRACT` is not part of the flip: it stays file-wins on both types.
+
 ### Configuration Templates
 
 - **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths, with explicit `platform` configuration, `attestationMode: "permissive"`, and `insecureSkipVerify: true`.
 - **`configs/taa-production.json`**: For production Kubernetes Pods. Omits `platform` so parameters are dynamically injected by the orchestration platform via environment variables, and enforces `attestationMode: "strict"`.
-- **`configs/taa-fhe.json`**: For an `fhe` instance — the GPU host co-located with the FHE service. Sets `server.type: "fhe"` and the `fhe` section. **`fhe.callbackToken` ships empty and must be filled in before use**: startup refuses an empty token rather than defaulting one, so this template will not boot as-is. `deploy-fhe.sh` renders it before starting taa, and that is where `fhe.dataDir` and `storage.keys` come from: the data directory is the tree the FHE stack shares as `/data`, and `storage.keys` is a directory that stack does not mount at all, so the SM2 key pair and the sealed instance state stay out of the FHE service's reach.
+- **`configs/taa-fhe.json`**: For an `fhe` instance — the GPU host co-located with the FHE service. Sets `server.type: "fhe"` and the `fhe` section, and carries a `platform` block (`127.0.0.1:18081`, `taa-fhe`) naming the mock used in end-to-end testing; on this instance type the environment overrides both fields, so the block is the fallback rather than the last word. **`fhe.callbackToken` ships empty and must be filled in before use**: startup refuses an empty token rather than defaulting one, so this template will not boot as-is. `deploy-fhe.sh` renders it before starting taa, and that is where `fhe.dataDir` and `storage.keys` come from: the data directory is the tree the FHE stack shares as `/data`, and `storage.keys` is a directory that stack does not mount at all, so the SM2 key pair and the sealed instance state stay out of the FHE service's reach.
 
 ### FHE Instance Interface Differences
 
@@ -541,9 +550,55 @@ Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (d
 > docker run -e TAA_LLM_ENDPOINT=https://10.0.0.2:8443 my-taa:v1
 > ```
 >
-> This is the one variable that **overrides** the config file — `PLATFORM_IP`, `DOCKER_ID` and
-> `CONTRACT` only seed defaults that the file wins over. Leave it empty to keep the endpoint the
-> image was packaged with.
+> `TAA_LLM_ENDPOINT` is the one variable that **overrides** the config file (leave it empty to keep
+> the endpoint the image was packaged with); the `platform` identity fields do not follow that rule.
+> `PLATFORM_IP`, `DOCKER_ID` and `CONTRACT` only seed defaults that the file wins over — on a `tee`
+> instance. On an `fhe` instance the first two flip to environment-wins (see
+> [Platform Identity Precedence](#platform-identity-precedence)).
+
+---
+
+## Deploying the FHE Side (`deploy-fhe.sh`)
+
+`deploy.sh` owns the TAA image; `deploy-fhe.sh` owns the FHE side of a GPU host. It imports the
+delivered `latti/latti-server` image, stages the runtime and models into the shared data directory,
+starts the api/worker/redis stack, and then starts this host's TAA instance under the same
+supervisor.
+
+```bash
+# On the GPU host itself
+HOST_RUNTIME_DIR=/srv/latti-runtime TAA_CALLBACK_BASE_URL=http://10.0.0.5:6001 \
+  ./deploy-fhe.sh
+
+# Same run, driven from a workstation: every host-side command goes over ssh
+TARGET_PASSWORD=... ./deploy-fhe.sh --remote
+```
+
+- **`--remote`** runs against `REMOTE_HOST` (default `172.16.10.178`) over ssh, the same host
+  `deploy.sh remote` uses, and takes the same credentials (`TARGET_PASSWORD`). It uploads the
+  handoff bundle to `REMOTE_HANDOFF_DIR`, builds `bin/taa` and `bin/platform-mock` here and copies
+  them over, then runs every command of the local path on that host. Everything else — the paths in
+  the report, the render, the readiness wait — reads as a path on the deployment host.
+- **`-n` / `--dry-run`** prints the whole plan and connects to nothing; it does not need the remote
+  to be reachable, or the binaries to be built, or the bundle to be unpacked.
+- **`--skip-build`** uses the binaries already on disk instead of building them.
+- **`--no-platform-mock`** skips the platform-mock step, and with it the registration check below.
+
+**The last step is the one that proves the deployment works.** After TAA answers its health probe,
+the script asks the platform what `dockerId` it recorded, and refuses unless it is the one this
+run's identity resolves to and it was accepted. TAA being up and the platform having heard from it
+are two different statements: a rejected registration is a warning in TAA's own log and a background
+retry, so the daemon looks perfectly healthy while nothing reaches the platform. Without
+`--remote` the same check runs against a platform-mock this script starts on the host.
+
+Two notes for a remote run: the platform-mock is started with `-allow-empty-attestation`, because an
+`fhe` instance writes an empty attestation by design; and `REMOTE_HANDOFF_DIR` has to be a directory
+of its own, since the upload is an `rsync -a --delete`.
+
+> **The GPU has to be able to run the delivered runtime.** The bundle's `liblattisense.so` needs
+> CUDA 12 and is built for compute capability 8.9 (Ada), and the worker's memory pool pre-allocates
+> against free device memory. The preflight reports what the host has and warns rather than refuses,
+> so read it before concluding a stack that will not start is a configuration problem.
 
 ---
 

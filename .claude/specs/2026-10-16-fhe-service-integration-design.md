@@ -1,7 +1,7 @@
 # FHE 服务接入 TAA：把 Latti FHE 作为一类执行后端编排进来
 
 日期：2026-10-16
-状态：设计已定，尚未实现
+状态：已实现；真 GPU 端到端待跑（见文末「验证状态」）
 
 ## 背景
 
@@ -184,6 +184,29 @@ TAA 容器（普通 docker，**非 TEE、无 `/dev/csv-guest`**）挂两条 bind
 新增配置模板 `configs/taa-fhe.json`；`configs/taa-production.json` / `taa-docker.json` /
 `taa-initrd.json` **不改**（它们都是 tee 实例）。
 
+#### 2.1 `platform` 段与身份优先级（2026-10-16 补）
+
+模板新增 `platform` 段，作为 FHE 实例注册身份的兜底：
+
+```json
+"platform": { "ip": "127.0.0.1:18081", "dockerID": "taa-fhe", "contract": "" }
+```
+
+`ip` 指向 platform-mock（**18081 而非 18080**：共享 FHE 宿主上 18080 被 `ccs-node-agent` 占着），
+`dockerID` 非空是硬要求——`register.go` 对空 dockerID 直接报错，空值等于永远注册不上。
+
+**优先级按实例类型分叉**（`internal/config.applyFHEIdentityOverride`，排在 `applyStartupConfigFile`
+之后）：
+
+| 实例类型 | `PLATFORM_IP` / `DOCKER_ID` | `CONTRACT` |
+|---|---|---|
+| `tee` | 文件赢（既有行为，三个 tee 模板与既有测试不动） | 文件赢 |
+| `fhe` | **环境变量赢**（非空才覆盖，空则回落文件） | 文件赢 |
+
+理由：`tee` 实例的 platform 地址是它被打包时那个部署的一部分；`fhe` 实例则相反——同一个镜像会被
+发到任意一台空闲 GPU 宿主，而那台机器上 platform 在哪，写模板的时候不可能知道，所以模板只能是兜底。
+两项各自独立判定，只设 `PLATFORM_IP` 不改 `DOCKER_ID` 时，后者仍取文件里的值。
+
 ### 3. 接口契约变更
 
 `POST /v1/taa/import` 请求体新增两个字段：
@@ -306,6 +329,28 @@ internal/fhe/
 - 预检：`GET /api/v1/health` + 共享目录可写 + `POST /models/activate` 能成功；
 - 起 TAA 容器（`type=fhe` 配置 + 共享目录挂载）。
 
+**远程模式（2026-10-16 补）**：FHE 环节要 GPU，真正有意义的端到端只发生在有卡的那台机器上，所以
+脚本支持 `--remote` 直接对 `REMOTE_HOST`（默认 `172.16.10.178`，与 `deploy.sh` 同名同默认）跑：
+
+- **逐命令 ssh 包装**：宿主机侧命令全部收敛在 `run` / `run_in` / `host_sh` / `host_capture` /
+  `host_detach` / `upload_file` / `upload_tree` 七个原语里，"这条命令在哪台机器上跑"只在这几个
+  函数里决定，调用点不必知道。上传后的 bundle 变量重新指向远端副本，于是所有路径表达式天然是远端路径。
+- 上传 `latti-fhe-handoff/`、`deploy/start.sh`、本机 `go build` 出来的 `bin/taa` 与
+  `bin/platform-mock`（`--skip-build` 复用已有的）。
+- 按用户决定，`taa` 二进制由 driver 编译后 `docker cp` 进容器，**不再依赖基础镜像里那份**。
+- `-n/--dry-run` 在远程模式下照样可用且**不要求 ssh 连通**：完整打印每条 ssh 命令行。
+
+**终局闸门（这是本轮改动的真正证明）**：TAA 起来之后去 platform-mock 查它记下的注册，
+要求 `dockerId` 等于本次运行身份解析出来的那个、且 `accepted=true`。
+"TAA 活着"和"平台收到了它的注册"是两件事：注册被拒在 TAA 侧只是 WARNING + 后台重试，
+进程看起来完全健康。**闸门必须看 `accepted` 而不只是 `dockerId`**——`registerState` 在注册被拒时
+照样会存下 dockerId。
+
+连带的两处：`start_taa_container` 的 `docker run` 注入 `-e PLATFORM_IP` / `-e DOCKER_ID`，
+并把"环境变量是否一致"加进重建判定——只比镜像和 binds 的话，一个已存在但没有这两个变量的容器会被
+复用，注入的环境永远进不去，注册继续静默失败；platform-mock 用 `-allow-empty-attestation` 起，
+因为 `fhe` 实例按设计写空证明，而 mock 默认拒绝空证明。
+
 ### 9. platform-mock 扩展
 
 - 复用现有上传目录（已挂成 `/files/`，即本地 MinIO 替身）承载 `eval_context.bin` 与 `input.zip`；
@@ -371,4 +416,16 @@ go test ./internal/fhe/... ./internal/config/... ./internal/controller/...
 
 ## 验证状态
 
-未实现。设计已定；实现计划另见 `.claude/plans/`。
+**已实现。** 截至 2026-10-16：
+
+- `internal/fhe`（client / config / keycache / layout / runner）与 `tools/fake-fhe` 均已落地，
+  单元测试与契约测试全绿；`tools/platform-mock` 的 FHE 侧（`handlers_fhe.go`、上传目录、
+  注册状态）同样已落地。
+- `deploy-fhe.sh` 已能部署 FHE 栈 + TAA `type=fhe` 实例，并支持 `--remote` 到共享 GPU 宿主。
+- 身份优先级：`internal/config` 的四条单测覆盖 env 赢 / 文件兜底 / tee 不受影响（
+  `TestLoadStartupConfigFHEIdentityEnvironmentWins`、`…FallsBackToFile`、
+  `TestLoadStartupConfigTEEIdentityIgnoresEnvironment`、`TestLoadStartupConfigFHEPlatformSection`）。
+- 已验证的手段：`bash -n`、本机 `DRY_RUN=1` 与基线逐行 diff（只多出新增行）、
+  `DRY_RUN=1 --remote` 逐行审 ssh 命令（不连接）、`go test -count=1 -p 1 ./...` 全绿。
+- **尚未验证**：178 上的真 GPU 端到端（真 FHE 栈 + TAA + mock 跑通 cifar-10），
+  即交付包 108.9 s / 78.6 s 基线的对照。这一步会真的在共享宿主上起容器，需要单独安排。
