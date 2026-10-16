@@ -53,6 +53,8 @@ SUPERVISOR_PATTERN='[s]tart[.]sh'
 TAA_PORT="${TAA_PORT:-6001}"
 TAA_READY_TIMEOUT="${TAA_READY_TIMEOUT:-120}"
 TAA_READY_INTERVAL="${TAA_READY_INTERVAL:-2}"
+# Seconds to wait for the FHE api to answer after `up -d` returns; see wait_for_fhe_stack.
+FHE_READY_TIMEOUT="${FHE_READY_TIMEOUT:-120}"
 
 # ── Where the deployment happens ─────────────────────────────────────────────
 # An empty REMOTE_TARGET means the FHE host is this one, and every host-side
@@ -615,6 +617,12 @@ Environment:
       TAA listening port; must match server.addr in \$TAA_FHE_CONFIG.
   TAA_READY_TIMEOUT=${TAA_READY_TIMEOUT}
       Seconds to wait for TAA to answer its health endpoint.
+  FHE_READY_TIMEOUT=${FHE_READY_TIMEOUT}
+      Seconds to wait for the FHE api to answer /api/v1/health after the stack step
+      starts it. 'run-node.sh up -d' returns when the containers have started, not
+      when the application inside has bound its port, so this probe has to wait.
+  TAA_READY_INTERVAL=${TAA_READY_INTERVAL}
+      Seconds between two attempts of any of the waits above.
   DRY_RUN=${DRY_RUN}
       Same as --dry-run. A dry run prints <unset> for the required inputs above
       that are not set, instead of refusing the way a real run does.
@@ -980,6 +988,22 @@ wait_for_taa() {
     # is the remote host, which is the point -- probing from here would answer
     # for whichever taa happens to run on this machine.
     if host_sh "curl -fsS -o /dev/null -X POST 'http://127.0.0.1:${TAA_PORT}/v1/taa/health'" 2>/dev/null; then
+      return 0
+    fi
+    sleep "$TAA_READY_INTERVAL"
+  done
+  return 1
+}
+
+# The FHE api needs the same wait for the same reason, and it is the one step of this
+# script that a live run caught out: `run-node.sh up -d` is `docker compose up -d`, which
+# returns when the containers have *started*, not when the application inside has bound
+# its port. Probing once in that window gets a connection reset -- measured at ~7s on the
+# first real run -- and reports a healthy stack as a broken one.
+wait_for_fhe_stack() {
+  local deadline=$((SECONDS + FHE_READY_TIMEOUT))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if host_sh "curl -fsS -o /dev/null 'http://127.0.0.1:${API_HOST_PORT}/api/v1/health'" 2>/dev/null; then
       return 0
     fi
     sleep "$TAA_READY_INTERVAL"
@@ -1567,8 +1591,17 @@ FHE_STACK_TOUCHED=1
 run_in "$NODE_DOCKER_DIR" ./scripts/run-node.sh up -d
 
 step "preflight: the FHE stack is serving on 127.0.0.1:$API_HOST_PORT"
-run curl -fsS -o /dev/null "http://127.0.0.1:${API_HOST_PORT}/api/v1/health" \
-  || die "FHE health check failed"
+if is_dry_run; then
+  log "would wait up to ${FHE_READY_TIMEOUT}s for GET http://127.0.0.1:${API_HOST_PORT}/api/v1/health"
+else
+  wait_for_fhe_stack || {
+    # What the stack step left, so a stack that never comes up is diagnosable from
+    # this output rather than from a second run: compose's own state, and the api
+    # container's log, which is where a failed model load reports itself.
+    host_sh "docker ps -a --filter 'name=fhe-' --format '{{.Names}}  {{.Status}}'" || true
+    die "FHE stack did not answer GET http://127.0.0.1:${API_HOST_PORT}/api/v1/health within ${FHE_READY_TIMEOUT}s (logs: cd $NODE_DOCKER_DIR && ./scripts/run-node.sh logs --tail=50)"
+  }
+fi
 if is_dry_run; then
   log "would check on ${REMOTE_TARGET:-this host}: test -w $HOST_DATA_DIR"
 else
