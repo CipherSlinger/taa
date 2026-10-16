@@ -1302,8 +1302,11 @@ echo engine=\$e rules=\$r"
     if [[ "$engine_present" != "yes" ]]; then
       require_file "semgrep payload bundle not found; build it with deploy/guest-build/build-semgrep-payload-container.sh" "$SEMGREP_PAYLOAD_BUNDLE"
       local bundle_version=""
-          bundle_version="$(tar -xzOf "$SEMGREP_PAYLOAD_BUNDLE" opt/taa/semgrep/MANIFEST 2>/dev/null \
-        | awk '$1 == "version" { print $2; exit }')" || true
+      # The MANIFEST is colon-separated ("semgrep_version: 1.177.0", written by
+      # build-semgrep-payload-container.sh), not the whitespace-separated form an earlier version of
+      # this check assumed -- which matched nothing and quietly downgraded the gate to a warning.
+      bundle_version="$(tar -xzOf "$SEMGREP_PAYLOAD_BUNDLE" opt/taa/semgrep/MANIFEST 2>/dev/null \
+        | awk -F':' '$1 == "semgrep_version" { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }')" || true
       if [[ -z "$bundle_version" ]]; then
         warn "payload bundle carries no readable opt/taa/semgrep/MANIFEST; its version was not checked"
       elif [[ "$bundle_version" != "$SEMGREP_VERSION" ]]; then
