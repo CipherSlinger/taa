@@ -381,7 +381,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `storage.model` | `/root/taa/models` | TAA platform-internal storage directory for imported model code |
 | `storage.data` | `/root/taa/data` | TAA platform-internal storage directory for imported datasets and resources |
 | `storage.result` | `/root/taa/results` | TAA platform-internal storage directory for final packaged computation results |
-| `storage.keys` | `/root/taa/keys` | Sensitive cryptographic key storage (restricted with `0700` permissions) |
+| `storage.keys` | `/root/taa/keys` | Sensitive cryptographic key storage (restricted with `0700` permissions). On an `fhe` instance it must be a directory the deployment persists across container recreation: `configs/taa-fhe.json` points it at `/opt/taa-state/keys`, inside a bind of its own rather than the data directory the FHE stack mounts |
 | `model.input` | `/opt/taa/input` | Read-only input dataset directory mounted for model training sandbox runtime |
 | `model.output.result` | `/opt/taa/output/result` | Target output directory for model training checkpoints and artifacts |
 | `model.output.log` | `/opt/taa/output/log` | Model execution log directory (or file) monitored by log watcher (`modelLog`); every `*.log`/`*.jsonl` file in it is streamed |
@@ -427,7 +427,7 @@ The whole `fhe` section is read only when `server.type` is `fhe`; a `tee` instan
 
 - **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths, with explicit `platform` configuration, `attestationMode: "permissive"`, and `insecureSkipVerify: true`.
 - **`configs/taa-production.json`**: For production Kubernetes Pods. Omits `platform` so parameters are dynamically injected by the orchestration platform via environment variables, and enforces `attestationMode: "strict"`.
-- **`configs/taa-fhe.json`**: For an `fhe` instance — the GPU host co-located with the FHE service. Sets `server.type: "fhe"` and the `fhe` section. **`fhe.callbackToken` ships empty and must be filled in before use**: startup refuses an empty token rather than defaulting one, so this template will not boot as-is.
+- **`configs/taa-fhe.json`**: For an `fhe` instance — the GPU host co-located with the FHE service. Sets `server.type: "fhe"` and the `fhe` section. **`fhe.callbackToken` ships empty and must be filled in before use**: startup refuses an empty token rather than defaulting one, so this template will not boot as-is. `deploy-fhe.sh` renders it before starting taa, and that is where `fhe.dataDir` and `storage.keys` come from: the data directory is the tree the FHE stack shares as `/data`, and `storage.keys` is a directory that stack does not mount at all, so the SM2 key pair and the sealed instance state stay out of the FHE service's reach.
 
 ### FHE Instance Interface Differences
 

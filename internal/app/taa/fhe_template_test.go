@@ -53,24 +53,45 @@ func TestShippedFHEConfigStartsWithoutAnyFileOnDisk(t *testing.T) {
 	}
 }
 
-// TestShippedFHEConfigKeepsStateOnTheBind pins where the fhe template's two
+// fheStateDir is the directory deploy-fhe.sh binds second, for TAA's own state; the
+// template's storage.keys points at the keys directory inside it.
+//
+// Both paths in that sentence are literals here because nothing else in the template
+// names them. The state directory is HOST_TAA_STATE_DIR in deploy-fhe.sh, and the
+// default of that variable is the same literal. The two have to agree, because the
+// template is usable on its own - the test above loads it without rendering anything
+// into it - and an instance started from a template naming a directory the deployment
+// does not bind writes the SM2 key pair and state.sealed into its own writable layer,
+// for the next container recreation to take. Writing the literal here is what turns a
+// divergence into a failing test rather than a deployment.
+const fheStateDir = "/opt/taa-state"
+
+// TestShippedFHEConfigKeepsStateOnTheBinds pins where the fhe template's three
 // stateful paths point.
 //
-// deploy-fhe.sh creates the TAA container with exactly one bind - $HOST_DATA_DIR,
-// which is also fhe.dataDir - and recreates it whenever the image or the bind
-// changes. Anything outside that bind lives in the container's writable layer and
-// is gone after such a recreate. For the eval key cache that means re-downloading
-// 3.1 GiB per user on every deploy, against a cache the design says is never
-// evicted; for the result directory it means the finished task's result and
-// import-index.json are gone, and import-index.json is the record export resolves
-// a result through, so every completed task answers 404 from then on.
+// deploy-fhe.sh creates the TAA container with two binds and recreates it whenever
+// the image or either bind changes. Anything outside a bind lives in the container's
+// writable layer and is gone after such a recreate. For the eval key cache that means
+// re-downloading 3.1 GiB per user on every deploy, against a cache the design says is
+// never evicted; for the result directory it means the finished task's result and
+// import-index.json are gone, and import-index.json is the record export resolves a
+// result through, so every completed task answers 404 from then on; for the keys
+// directory it means the SM2 key pair and the sealed instance state are gone, and
+// ModelChecksum is sealed state, so the instance forgets it ever imported a model and
+// refuses every data import as "no model imported yet" - while the model package
+// itself is still sitting on the bind.
 //
-// The assertion is about the template as shipped, whose fhe.dataDir is
-// /opt/fhe-data - the default HOST_DATA_DIR. deploy-fhe.sh rewrites fhe.dataDir
-// from HOST_DATA_DIR and nothing else, so a deployment that overrides
-// HOST_DATA_DIR has to move these two along with it, or they silently land back
-// inside the container.
-func TestShippedFHEConfigKeepsStateOnTheBind(t *testing.T) {
+// Two paths sit on the first bind, $HOST_DATA_DIR, which is also fhe.dataDir. The
+// third is on a bind of its own, and that is the point of it: $HOST_DATA_DIR is the
+// tree the FHE stack mounts as /data, so TAA's SM2 private key under it would be
+// readable from inside the FHE containers.
+//
+// The assertions are about the template as shipped, whose fhe.dataDir is
+// /opt/fhe-data - the default HOST_DATA_DIR. deploy-fhe.sh renders fhe.dataDir,
+// fhe.keyCacheDir and storage.result from HOST_DATA_DIR and storage.keys from
+// HOST_TAA_STATE_DIR, so a deployment that overrides either gets the paths moved with
+// it rather than silently landing back inside the container.
+func TestShippedFHEConfigKeepsStateOnTheBinds(t *testing.T) {
 	cfg := loadShippedFHEConfig(t)
 	if cfg.FHE == nil {
 		t.Fatal("the shipped fhe template carries no fhe section")
@@ -82,9 +103,23 @@ func TestShippedFHEConfigKeepsStateOnTheBind(t *testing.T) {
 		{"storage.result", cfg.ResultDir},
 	} {
 		if !strings.HasPrefix(p.path, bind+"/") {
-			t.Errorf("%s is %q, outside the only bind %q: container recreation (which deploy-fhe.sh does whenever the image or the bind changes) would destroy it",
+			t.Errorf("%s is %q, outside the data bind %q: container recreation (which deploy-fhe.sh does whenever the image or a bind changes) would destroy it",
 				p.name, p.path, bind)
 		}
+	}
+
+	// Both halves of the exception are worth pinning, and neither one alone says much.
+	// "Not on the data bind" is satisfied by the writable layer too, and "persisted
+	// somewhere" is satisfied by the tree the FHE stack reads. What the template can
+	// decide is that the path is the one the deployment binds; that the deployment
+	// then mounts it, and mounts nothing else there, is shell the Go side cannot see.
+	if want := fheStateDir + "/keys"; cfg.KeysDir != want {
+		t.Errorf("storage.keys is %q, want %q - the path deploy-fhe.sh renders into the state bind it mounts for it; a template naming anything else leaves the SM2 key pair and state.sealed in the container's writable layer",
+			cfg.KeysDir, want)
+	}
+	if strings.HasPrefix(cfg.KeysDir, bind+"/") {
+		t.Errorf("storage.keys is %q, inside the data bind %q that the FHE stack mounts as /data: the SM2 private key and state.sealed would be readable from the FHE containers",
+			cfg.KeysDir, bind)
 	}
 }
 

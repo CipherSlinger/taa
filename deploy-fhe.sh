@@ -176,11 +176,24 @@ Environment:
       over the one in env/node.local.env -- so the stack uses this path whatever
       the env file says, and the stack and TAA share one directory by
       construction rather than by hand-alignment.
+  HOST_TAA_STATE_DIR=${HOST_TAA_STATE_DIR:-/opt/taa-state}
+      Directory TAA's own instance state lives in, mounted at itself as a second
+      bind; the config's storage.keys is the keys/ directory inside it, so the SM2
+      key pair and state.sealed land here. Deliberately not inside HOST_DATA_DIR:
+      that tree is what the FHE stack mounts as /data, and these are TAA's identity
+      rather than anything the service is meant to read. It has to be persistent for
+      the same reason the derived paths do - the container is recreated whenever the
+      image or either bind changes - and losing it is the quietest of the three,
+      because the config still validates: state.sealed holds the imported-model
+      checksum, so a fresh directory makes the instance reject every data import
+      with "no model imported yet" while the model package sits untouched on the
+      data bind.
   HOST_RUNTIME_DIR=${HOST_RUNTIME_DIR:-}
       Where the FHE runtime from the bundle is staged; mounted read-only by the
       stack. 'rsync -a --delete' targets it, so it must not be the data
-      directory, must not contain it and must not be inside it: the run refuses
-      otherwise, before anything is deleted.
+      directory, must not contain it and must not be inside it -- nor may it
+      contain or be inside HOST_TAA_STATE_DIR: the run refuses otherwise, before
+      anything is deleted.
   HOST_REDIS_DIR=${HOST_REDIS_DIR:-$HOST_DATA_DIR/redis}
       Redis AOF directory the stack mounts as /data in fhe-redis. Defaults to a
       directory inside HOST_DATA_DIR; set it to keep an AOF that already exists
@@ -281,6 +294,11 @@ require_input() {
 }
 
 HOST_DATA_DIR="${HOST_DATA_DIR:-/opt/fhe-data}"
+# Not exported, unlike the four at the end of this block: the bundle's run-node.sh has
+# no name for this directory and nothing in the stack reads it. TAA reaches it through
+# the rendered config's storage.keys, and through the second bind start_taa_container
+# adds.
+HOST_TAA_STATE_DIR="${HOST_TAA_STATE_DIR:-/opt/taa-state}"
 require_input HOST_RUNTIME_DIR 'HOST_RUNTIME_DIR must point at third_party/latti-ai-runtime'
 TAA_FHE_CONFIG="${TAA_FHE_CONFIG:-$PROJECT_DIR/configs/taa-fhe.json}"
 require_input TAA_CALLBACK_BASE_URL 'TAA_CALLBACK_BASE_URL must be reachable from the FHE containers'
@@ -528,14 +546,19 @@ render_taa_config() {
   # publish the secret in /proc/<pid>/cmdline to every local user for as long as jq
   # lives), and umask 077 creates the file 0600 from the start instead of leaving it
   # at the caller's umask until the chmod below runs. $ENV needs jq 1.5 or newer.
+  #
+  # storage.keys is the one path taken from a second variable, because it is the one
+  # that does not belong on the data bind: see the loop at the end of this function.
   ( umask 077; TAA_CALLBACK_TOKEN="$TAA_CALLBACK_TOKEN" jq \
       --arg url "$TAA_CALLBACK_BASE_URL" \
       --arg endpoint "http://127.0.0.1:${API_HOST_PORT}" \
       --arg data "$HOST_DATA_DIR" \
+      --arg state "$HOST_TAA_STATE_DIR" \
       '.fhe.callbackBaseUrl = $url | .fhe.callbackToken = $ENV.TAA_CALLBACK_TOKEN
        | .fhe.endpoint = $endpoint | .fhe.dataDir = $data
        | .fhe.keyCacheDir = ($data + "/taa-fhe-keys")
-       | .storage.result  = ($data + "/taa-results")' \
+       | .storage.result  = ($data + "/taa-results")
+       | .storage.keys    = ($state + "/keys")' \
       "$TAA_FHE_CONFIG" > "$TAA_RENDERED_CONFIG" ) \
     || die "failed to render $TAA_FHE_CONFIG -> $TAA_RENDERED_CONFIG (jq rejected the template, or the redirect could not create that file)"
   # The file carries the callback token. The redirect above already created it 0600;
@@ -550,35 +573,60 @@ render_taa_config() {
   [ "$addr" = ":$TAA_PORT" ] \
     || die "server.addr in the rendered config is '$addr' but TAA_PORT is ':$TAA_PORT'"
 
-  # TAA's key cache and result directories have to land inside the one bind this
-  # script gives the container (start_taa_container mounts
-  # "$HOST_DATA_DIR:$HOST_DATA_DIR" and nothing else), or they live in the writable
-  # layer and die with the container: the cache is never evicted by design, and the
-  # result directories - plus the import index beside them - are what export resolves
-  # a finished task through, so losing them loses work the platform was already told
-  # succeeded.
+  # Three of TAA's stateful paths have to land inside the bind that carries them - the
+  # container gets two, and start_taa_container recreates it whenever either changes -
+  # or they live in the writable layer and die with the container:
   #
-  # The filter above is what delivers that, by assigning both from $data. This loop
-  # asserts it rather than checking it: with those two lines intact it cannot fire.
-  # It is here for the edit that removes or weakens them, which is invisible while
-  # HOST_DATA_DIR keeps its default - the template's literals happen to agree with it
-  # - and wrong the moment it does not. Contrast the addr check above, which reads a
-  # field the filter never writes and so can catch the template itself.
-  local state_key state_path
-  for state_key in '.fhe.keyCacheDir' '.storage.result'; do
+  #   - fhe.keyCacheDir holds the eval keys, re-downloaded 3.1 GiB at a time against
+  #     a cache the design deliberately never evicts;
+  #   - storage.result holds each finished task's result directory and the
+  #     import-index.json beside them, which is the record export resolves a result
+  #     through, so losing it answers 404 for work already reported as succeeded;
+  #   - storage.keys holds the TAA SM2 key pair and state.sealed, the sealed instance
+  #     state. ModelChecksum lives in there, and the FHE task path refuses an import
+  #     while it is empty, so an instance that loses this directory forgets its model
+  #     was ever imported and rejects every data import as "no model imported yet" -
+  #     while the model package sits untouched on the bind.
+  #
+  # The filter above is what delivers that, by assigning each path from the variable
+  # whose bind carries it. This loop asserts it rather than checking it: with those
+  # lines intact it cannot fire. It is here for the edit that removes or weakens them,
+  # which is invisible while both variables keep their defaults - the template's
+  # literals happen to agree with them - and wrong the moment either does not. Contrast
+  # the addr check above, which reads a field the filter never writes and so can catch
+  # the template itself.
+  #
+  # storage.keys is checked against the second bind rather than the first, and that is
+  # the whole reason this loops over pairs: asserting it against $HOST_DATA_DIR would
+  # both reject the correct render and accept one that put TAA's SM2 key pair inside
+  # the tree the FHE stack mounts as /data.
+  local state_pair state_key state_bind state_path
+  for state_pair in \
+    ".fhe.keyCacheDir|$HOST_DATA_DIR" \
+    ".storage.result|$HOST_DATA_DIR" \
+    ".storage.keys|$HOST_TAA_STATE_DIR"; do
+    state_key="${state_pair%%|*}"
+    state_bind="${state_pair#*|}"
     state_path="$(jq -r "$state_key" "$TAA_RENDERED_CONFIG")"
     case "$state_path" in
-      "$HOST_DATA_DIR"/*) ;;
-      *) die "the rendered config sets $state_key to '$state_path', outside the only bind '$HOST_DATA_DIR': recreating the container would destroy it" ;;
+      "$state_bind"/*) ;;
+      *) die "the rendered config sets $state_key to '$state_path', outside the bind '$state_bind' that has to carry it: recreating the container would destroy it" ;;
     esac
   done
 }
 
 # Mirrors deploy.sh's container handling: reuse a container that already runs the
-# expected image *and* carries the bind this run needs, recreate one that does not.
+# expected image *and* carries both binds this run needs, recreate one that does not.
 start_taa_container() {
   local -a args=(-d --name "$TAA_CONTAINER_NAME" --network "$TAA_DOCKER_NETWORK")
+  # Two binds, and the second is the reason there are two: the first is the tree the
+  # FHE stack shares as /data, the second carries TAA's own state - the keys directory
+  # the rendered config names, holding the SM2 key pair and state.sealed - and is
+  # deliberately not inside the first. Mounting both at themselves keeps each path
+  # spelled the same way on the host and in the container, which is what lets the
+  # rendered config's absolute paths mean anything.
   args+=(-v "$HOST_DATA_DIR:$HOST_DATA_DIR")
+  args+=(-v "$HOST_TAA_STATE_DIR:$HOST_TAA_STATE_DIR")
   args+=(--entrypoint tail "$TAA_IMAGE" -f /dev/null)
 
   if is_dry_run; then
@@ -586,7 +634,7 @@ start_taa_container() {
     # what lets it run on a host with no daemon -- so it cannot know whether the
     # container already exists. Print the decision the real run would make instead
     # of the create branch as though it were certain.
-    log "dry-run: the real run would reuse $TAA_CONTAINER_NAME if it already exists with image $TAA_IMAGE and the bind $HOST_DATA_DIR:$HOST_DATA_DIR, and would otherwise create it:"
+    log "dry-run: the real run would reuse $TAA_CONTAINER_NAME if it already exists with image $TAA_IMAGE and the binds $HOST_DATA_DIR:$HOST_DATA_DIR and $HOST_TAA_STATE_DIR:$HOST_TAA_STATE_DIR, and would otherwise create it:"
     run docker run "${args[@]}"
     return 0
   fi
@@ -597,7 +645,7 @@ start_taa_container() {
   # fail against a container this deployment does not own.
   if docker ps -a --format '{{.Names}}' | grep -Fxq "$TAA_CONTAINER_NAME"; then
     local current_image current_id target_id image_mismatch=false bind_mismatch=false
-    local required_bind current_binds
+    local required_bind current_binds missing_binds=""
     current_image="$(docker inspect --format '{{.Config.Image}}' "$TAA_CONTAINER_NAME" 2>/dev/null || true)"
     current_id="$(docker inspect --format '{{.Image}}' "$TAA_CONTAINER_NAME" 2>/dev/null || true)"
     target_id="$(docker image inspect --format '{{.Id}}' "$TAA_IMAGE" 2>/dev/null || true)"
@@ -606,27 +654,34 @@ start_taa_container() {
     elif [ -n "$current_id" ] && [ -n "$target_id" ] && [ "$current_id" != "$target_id" ]; then
       image_mismatch=true
     fi
-    # The bind is as much a part of the container's identity as its image, for this
-    # script: the config copied in below sets fhe.dataDir to $HOST_DATA_DIR, and the
-    # only thing that makes that path the same directory on both sides is this
-    # bind. Comparing the image alone let a re-run with a different HOST_DATA_DIR
-    # reuse the old container and then push a config for the new directory into it;
-    # taa's os.MkdirAll then created that path in the container's own writable
-    # layer, where no host directory backs it, and the run printed its success
-    # banner. A bind that cannot be read is treated as a mismatch: the failure this
-    # guards is silent, so the unconfirmed case has to take the loud branch.
-    required_bind="$HOST_DATA_DIR:$HOST_DATA_DIR"
+    # Both binds are as much a part of the container's identity as its image, for this
+    # script: the config copied in below sets fhe.dataDir to $HOST_DATA_DIR and
+    # storage.keys to $HOST_TAA_STATE_DIR/keys, and the only thing that makes each path
+    # the same directory on both sides is its bind. Comparing the image alone let a
+    # re-run with a different HOST_DATA_DIR reuse the old container and then push a
+    # config for the new directory into it; taa's os.MkdirAll then created that path in
+    # the container's own writable layer, where no host directory backs it, and the run
+    # printed its success banner. The same mistake on the second bind is quieter and
+    # worse: taa would mint a fresh SM2 key pair and a fresh state.sealed in the
+    # writable layer, report itself healthy, and then refuse every data import as "no
+    # model imported yet", because the ModelChecksum it sealed is in the directory on
+    # the host that nothing mounted -- while this run reported success. A bind that
+    # cannot be read is treated as a mismatch: the failure this guards is silent, so
+    # the unconfirmed case has to take the loud branch.
     current_binds="$(docker inspect --format '{{json .HostConfig.Binds}}' "$TAA_CONTAINER_NAME" 2>/dev/null || true)"
-    if ! printf '%s' "$current_binds" \
-         | jq -e --arg b "$required_bind" 'type == "array" and index($b) != null' >/dev/null 2>&1; then
-      bind_mismatch=true
-    fi
+    for required_bind in "$HOST_DATA_DIR:$HOST_DATA_DIR" "$HOST_TAA_STATE_DIR:$HOST_TAA_STATE_DIR"; do
+      if ! printf '%s' "$current_binds" \
+           | jq -e --arg b "$required_bind" 'type == "array" and index($b) != null' >/dev/null 2>&1; then
+        bind_mismatch=true
+        missing_binds="${missing_binds:+$missing_binds, }$required_bind"
+      fi
+    done
     if [ "$image_mismatch" = true ] || [ "$bind_mismatch" = true ]; then
       if [ "$image_mismatch" = true ]; then
         warn "container $TAA_CONTAINER_NAME runs $current_image, expected $TAA_IMAGE; recreating"
       fi
       if [ "$bind_mismatch" = true ]; then
-        warn "container $TAA_CONTAINER_NAME does not carry the bind $required_bind (its binds: ${current_binds:-unreadable}); recreating so taa sees the data directory this run configured"
+        warn "container $TAA_CONTAINER_NAME does not carry every bind this run needs: missing $missing_binds (its binds: ${current_binds:-unreadable}); recreating so taa reads the directories this run configured"
       fi
       run docker rm -f "$TAA_CONTAINER_NAME"
     fi
@@ -680,6 +735,29 @@ fi
 # reach it: the redis AOF is still a tree the rsync must not delete.
 if paths_overlap "$HOST_REDIS_DIR" "$HOST_RUNTIME_DIR"; then
   die "HOST_RUNTIME_DIR=$HOST_RUNTIME_DIR and HOST_REDIS_DIR=$HOST_REDIS_DIR overlap (one contains the other); 'rsync -a --delete' targets HOST_RUNTIME_DIR, so staging would delete the redis AOF"
+fi
+# TAA's own state directory holds the keys directory TAA identifies itself through -
+# the SM2 key pair, and state.sealed beside it. It gets a bind of its own precisely so
+# those stay out of the tree the FHE stack reads, and that only holds while it stays
+# outside both trees that stack mounts: HOST_DATA_DIR (as /data in api and worker, and
+# the tree the whole FHE contract is built on) and HOST_REDIS_DIR (as /data in
+# fhe-redis). Nesting counts - a bind of $HOST_DATA_DIR/keys is still a directory under
+# /data - and the 0700 taa enforces on the keys directory does not cover this either:
+# that mode keeps out a non-root container user, not a root one.
+if paths_overlap "$HOST_TAA_STATE_DIR" "$HOST_DATA_DIR"; then
+  die "HOST_TAA_STATE_DIR=$HOST_TAA_STATE_DIR and HOST_DATA_DIR=$HOST_DATA_DIR overlap (one is the other, or one contains the other); the FHE stack mounts HOST_DATA_DIR as /data, so TAA's SM2 key pair and sealed instance state would be readable from inside the FHE containers, which is what the second bind exists to prevent"
+fi
+# HOST_REDIS_DIR may live outside HOST_DATA_DIR, and then the guard just above does
+# not reach it: the redis container mounts that directory as /data, so the key pair
+# is reachable from there instead.
+if paths_overlap "$HOST_TAA_STATE_DIR" "$HOST_REDIS_DIR"; then
+  die "HOST_TAA_STATE_DIR=$HOST_TAA_STATE_DIR and HOST_REDIS_DIR=$HOST_REDIS_DIR overlap (one contains the other); the FHE stack mounts HOST_REDIS_DIR as /data in fhe-redis, so TAA's SM2 key pair and sealed instance state would be readable from inside that container"
+fi
+# And the rsync above, from the other side: it targets HOST_RUNTIME_DIR with --delete,
+# so a state directory inside it would be deleted on every re-stage, taking the SM2 key
+# pair and the sealed state with it.
+if paths_overlap "$HOST_TAA_STATE_DIR" "$HOST_RUNTIME_DIR"; then
+  die "HOST_TAA_STATE_DIR=$HOST_TAA_STATE_DIR and HOST_RUNTIME_DIR=$HOST_RUNTIME_DIR overlap (one contains the other); 'rsync -a --delete' targets HOST_RUNTIME_DIR, so staging would delete TAA's SM2 key pair and sealed instance state"
 fi
 # And the copy itself: 'cp -a $MODELS_SRC/. $STAGED_MODELS_DIR/' recurses when the
 # source is inside the destination or the other way round. Equality is the bundle's
@@ -845,7 +923,7 @@ run curl -fsS -o /dev/null -X POST \
 
 step "starting the TAA fhe instance"
 if is_dry_run; then
-  log "would render $TAA_FHE_CONFIG -> $TAA_RENDERED_CONFIG (callbackBaseUrl, callbackToken, endpoint, dataDir, keyCacheDir, storage.result)"
+  log "would render $TAA_FHE_CONFIG -> $TAA_RENDERED_CONFIG (callbackBaseUrl, callbackToken, endpoint, dataDir, keyCacheDir, storage.result, storage.keys)"
 else
   render_taa_config
 fi
@@ -918,6 +996,7 @@ else
   log "FHE data dir   : $HOST_DATA_DIR"
   log "FHE runtime    : $HOST_RUNTIME_DIR"
   log "FHE redis dir  : $HOST_REDIS_DIR"
+  log "TAA state dir  : $HOST_TAA_STATE_DIR (SM2 key pair and sealed instance state; it is on a bind of its own, so it is the one directory here the FHE containers cannot read)"
   # The readiness probe above proves something answers on $TAA_PORT and nothing
   # more -- any other listener on the host satisfies it -- and `docker exec -d`
   # returning 0 means only that docker delivered the command. So the supervisor is

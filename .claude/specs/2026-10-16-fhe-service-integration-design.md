@@ -103,31 +103,44 @@ FHE 服务**不做代码审计、不做远程证明**——这两条不是省事
 
 ### 1. 部署与目录契约
 
-一台 GPU 节点跑两类东西，共享同一个 bind mount 目录：
+一台 GPU 节点跑两类东西，共享同一个 bind mount 目录，另有一条 bind 只给 TAA：
 
 ```
 <host>/
 ├── deploy/docker/                   FHE 三件套 compose（交付包原样，不改）
 ├── third_party/latti-ai-runtime/    FHE 原生运行时（容器内只读挂载）
-└── var/fhe-data/                    ← 共享数据目录，两边都挂
-    ├── models/<modelHash>/server/                TAA 写 / FHE 读
-    ├── keys/<evalKeyHash>/eval_context.bin       TAA 写 / FHE 只读
-    ├── tasks/<taskId>/input.zip                  TAA 写 / FHE 读
-    ├── results/<taskId>/output.zip               FHE 写 / TAA 读
-    ├── taa-fhe-keys/<evalKeyHash>/               TAA 私有：公钥缓存（决策 14 不淘汰）
-    └── taa-results/                              TAA 私有：结果副本与 import-index.json
+├── var/fhe-data/                    ← 共享数据目录，TAA 与 FHE 都挂（第一条 bind）
+│   ├── models/<modelHash>/server/               TAA 写 / FHE 读
+│   ├── keys/<evalKeyHash>/eval_context.bin      TAA 写 / FHE 只读
+│   ├── tasks/<taskId>/input.zip                 TAA 写 / FHE 读
+│   ├── results/<taskId>/output.zip              FHE 写 / TAA 读
+│   ├── taa-fhe-keys/<evalKeyHash>/              TAA 私有：公钥缓存（决策 14 不淘汰）
+│   └── taa-results/                             TAA 私有：结果副本与 import-index.json
+└── var/taa-state/                   ← TAA 私有目录，只挂进 TAA 容器（第二条 bind）
+    └── keys/                                     SM2 密钥对与 state.sealed
 ```
 
-`taa-` 前缀的两个目录不属于 FHE 契约，FHE 侧不读不写。它们必须落在共享目录里，是因为
-`deploy-fhe.sh` 只给 TAA 容器挂 `$HOST_DATA_DIR` 这一条 bind，而容器在镜像或 bind 变化时会被重建、
-可写层随之清空：公钥缓存留在 `/root/taa` 下则每次部署都要重下 3.1 GiB/用户，结果副本与
-`import-index.json` 留在 `/root/taa` 下则已完成任务的 export 在重建后一律 404。
+`taa-fhe-keys/` 与 `taa-results/` 不属于 FHE 契约，FHE 侧不读不写。它们必须落在共享目录里，是因为
+容器在镜像或 bind 变化时会被重建、可写层随之清空：公钥缓存留在 `/root/taa` 下则每次部署都要重下
+3.1 GiB/用户；结果副本与 `import-index.json` 留在 `/root/taa` 下则已完成任务的 export 在重建后
+一律 404。
 
-**注意**：`deploy-fhe.sh` 渲染时只重写 `fhe.dataDir`（取自 `HOST_DATA_DIR`），这两个派生路径要跟着
-一起改，否则覆盖 `HOST_DATA_DIR` 的部署会悄悄把它们放回容器可写层。
+`taa-state/keys/` 同样要持久化，但它要的是**第二条 bind**，不是共享目录那一条。放共享目录也能活过
+重建，代价却是把两样东西交给半可信的 FHE 服务去读：一个是 SM2 私钥（这个实例的身份），另一个是
+`state.sealed`——`ModelChecksum` 就在密封状态里，丢了实例就会忘记"模型已导入"，此后每次数据下发
+都被拒（`尚未导入模型`），而模型包一直躺在 `models/<hash>` 上。TAA 对 `storage.keys` 强制 0700，
+但那挡的是非 root 的容器用户，挡不住 root。
 
-TAA 容器（普通 docker，**非 TEE、无 `/dev/csv-guest`**）多挂一条，把同一目录挂成配置里的
-`fhe.dataDir`。**TAA 与 FHE 进程看到的路径必须一致**——这是整个契约的支点。
+**注意**：`deploy-fhe.sh` 渲染时把 `fhe.dataDir` / `fhe.keyCacheDir` / `storage.result` 从
+`HOST_DATA_DIR` 派生，把 `storage.keys` 从 `HOST_TAA_STATE_DIR`（默认 `/opt/taa-state`）派生，
+并**逐条**断言每个路径落在承载它的那条 bind 之内；两条 bind 也都参与容器的重建判定。任一处漏掉，
+覆盖对应变量的部署就会把它悄悄放回容器可写层。`HOST_TAA_STATE_DIR` 另有守卫拒绝它与
+`HOST_DATA_DIR`、`HOST_REDIS_DIR`（FHE 挂载的树，防被读）以及 `HOST_RUNTIME_DIR`
+（`rsync -a --delete` 的目标，防被删）重叠。
+
+TAA 容器（普通 docker，**非 TEE、无 `/dev/csv-guest`**）挂两条 bind：共享目录挂成配置里的
+`fhe.dataDir`，TAA 私有目录挂成 `storage.keys` 的父目录。**TAA 与 FHE 进程看到的共享目录路径必须
+一致**——这是整个契约的支点；私有目录则相反，它不进任何 FHE 容器。
 
 `server.type=fhe` 的 TAA 实例与 FHE 三件套同机；`server.type=tee` 的实例保持现状，完全不受影响。
 
