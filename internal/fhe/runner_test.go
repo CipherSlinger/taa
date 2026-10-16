@@ -424,6 +424,138 @@ func TestRunnerCancelMapsToTheCancelEndpoint(t *testing.T) {
 	}
 }
 
+// TestRunnerCancelUnknownTaskIsRefused pins what Cancel does for a task this
+// instance does not track - the state a restart leaves behind, because the
+// in-flight table is in memory only. It must both refuse and stay off the wire:
+// a cancel sent without the tenant is not a cancel, and a 2xx for it would be
+// reported to the platform as a successful stop.
+func TestRunnerCancelUnknownTaskIsRefused(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	fake, srv := newFakeFHE(t, layout)
+	r := newTestRunner(t, srv.URL, layout)
+	// The service knows a task under this id; this TAA instance does not. If a
+	// cancel request were sent, the fake would flip this to "cancelled".
+	fake.mu.Lock()
+	fake.tasks["task-1"] = "running"
+	fake.mu.Unlock()
+
+	err := r.Cancel(context.Background(), "task-1")
+	if err == nil {
+		t.Fatal("Cancel of an untracked task = nil, want an error: a cancel that matched nothing must not be reported as a success")
+	}
+	if got := fake.status("task-1"); got != "running" {
+		t.Errorf("service status = %q, want running: no cancel request may be sent without a tenant", got)
+	}
+	for _, want := range []string{"task-1", "not in flight", "restart", "no cancel request was sent"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not tell the operator %q", err, want)
+		}
+	}
+}
+
+// TestRunnerCancelTrackedTaskStillWorks guards the refusal above from swallowing
+// the normal path: a task created through Execute is cancelled as before.
+func TestRunnerCancelTrackedTaskStillWorks(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	fake, srv := newFakeFHE(t, layout)
+	r := newTestRunner(t, srv.URL, layout)
+	r.registerTestRun("task-1", TaskSpec{TaskID: "task-1", UserID: testHashA, ModelID: testHashB})
+	fake.mu.Lock()
+	fake.tasks["task-1"] = "running"
+	fake.mu.Unlock()
+
+	if err := r.Cancel(context.Background(), "task-1"); err != nil {
+		t.Fatalf("Cancel of a tracked task: %v", err)
+	}
+	if got := fake.status("task-1"); got != "cancelled" {
+		t.Errorf("service status = %q, want cancelled", got)
+	}
+}
+
+// TestRunnerCopyResultDownloadIsNotBoundedByRequestTimeout is the regression
+// test for a bulk transfer bounded by a per-call budget: the download fallback
+// handed DownloadResult a RequestTimeout-sized context, so an archive that
+// needed longer than 30s was aborted mid-body in production while a suite using
+// ten-byte payloads passed. The body here takes longer than RequestTimeout and
+// is still far inside TaskTimeout.
+func TestRunnerCopyResultDownloadIsNotBoundedByRequestTimeout(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	head, tail := []byte("result-head"), []byte("result-tail")
+
+	// The flush before the sleep is what makes this the documented failure: the
+	// response headers are already in the client's hands, so only the body's
+	// duration decides the outcome.
+	const bodyDelay = 400 * time.Millisecond
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/results/download") {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(head)
+		w.(http.Flusher).Flush()
+		time.Sleep(bodyDelay)
+		_, _ = w.Write(tail)
+	}))
+	defer srv.Close()
+
+	cfg := Config{
+		Endpoint: srv.URL, DataDir: layout.DataDir(), KeyCacheDir: t.TempDir(),
+		CallbackBaseURL: "http://taa.test:6001", CallbackToken: "tok",
+		MaxEvalKeyBytes: DefaultMaxEvalKeyBytes,
+		PollInterval:    20 * time.Millisecond,
+		RequestTimeout:  150 * time.Millisecond,
+		TaskTimeout:     30 * time.Second,
+	}
+	r, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "out", "output.zip")
+	// An outcome with no ResultZip is what selects the download fallback.
+	got, err := r.CopyResult(context.Background(),
+		TaskSpec{TaskID: "task-1", UserID: testHashA},
+		TaskOutcome{Status: StatusCompleted}, dst)
+	if err != nil {
+		t.Fatalf("CopyResult via download = %v, want success: RequestTimeout must not bound a bulk transfer", err)
+	}
+	if got != "" {
+		t.Errorf("returned path = %q, want \"\": only dst is guaranteed to hold the result", got)
+	}
+	b, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read the downloaded result: %v", err)
+	}
+	if string(b) != string(head)+string(tail) {
+		t.Errorf("downloaded %q, want %q", b, string(head)+string(tail))
+	}
+}
+
+// TestRunnerCopyResultSharedDirectoryHit pins the other half of the return
+// contract: the shared-directory hit returns the source path, not dst.
+func TestRunnerCopyResultSharedDirectoryHit(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	r := newTestRunner(t, "http://127.0.0.1:1", layout)
+	src := filepath.Join(t.TempDir(), "output.zip")
+	if err := os.WriteFile(src, []byte("shared-result"), 0o600); err != nil {
+		t.Fatalf("write the shared result: %v", err)
+	}
+	dst := filepath.Join(t.TempDir(), "published", "output.zip")
+
+	got, err := r.CopyResult(context.Background(),
+		TaskSpec{TaskID: "task-1", UserID: testHashA},
+		TaskOutcome{Status: StatusCompleted, ResultZip: src}, dst)
+	if err != nil {
+		t.Fatalf("CopyResult from the shared directory: %v", err)
+	}
+	if got != src {
+		t.Errorf("returned path = %q, want the source %q", got, src)
+	}
+	if b, err := os.ReadFile(dst); err != nil || string(b) != "shared-result" {
+		t.Errorf("dst = %q, err = %v", b, err)
+	}
+}
+
 func TestParseCallback(t *testing.T) {
 	p, err := ParseCallback([]byte(`{"task_id":"t1","status":"completed","result_zip":"results/t1/output.zip","cases":[{"entry":"a","result_id":"a.bin"}]}`))
 	if err != nil {

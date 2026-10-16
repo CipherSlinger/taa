@@ -244,20 +244,30 @@ func (r *Runner) Deliver(p CallbackPayload) bool {
 
 // Cancel maps TAA's stopTraining onto the service's cancel endpoint and resolves
 // the local run.
+//
+// A task this instance does not track is refused rather than cancelled: the
+// tenant the service scopes every task call by is the eval key digest, which is
+// known only for an in-flight task, and the table holding it is in memory, so it
+// is empty after a restart. Sending the cancel anyway would put TAA in the worst
+// possible position: the service answers a tenant-less cancel without matching
+// the task, so the call returns 2xx for a cancel that did nothing and TAA
+// reports that no-op to the platform as a success. Reporting the task as unknown
+// is the only answer here that is true, and Cancel is TAA's stopTraining, which
+// must not claim a stop that never happened.
 func (r *Runner) Cancel(ctx context.Context, taskID string) error {
 	run := r.lookup(taskID)
-	userID := ""
-	if run != nil {
-		userID = run.spec.UserID
+	if run == nil {
+		return fmt.Errorf("fhe task %s is not in flight on this TAA instance, so it cannot be cancelled: "+
+			"it either never ran here, already finished, or was started before the last restart. "+
+			"The FHE service scopes task calls by tenant and the tenant is known only for an in-flight task, "+
+			"so no cancel request was sent; cancel it through the FHE service directly if it is still running", taskID)
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, r.cfg.RequestTimeout)
 	defer cancel()
-	if err := r.client.CancelTask(sendCtx, taskID, userID); err != nil {
+	if err := r.client.CancelTask(sendCtx, taskID, run.spec.UserID); err != nil {
 		return err
 	}
-	if run != nil {
-		r.finish(run, TaskOutcome{Status: StatusCancelled, Err: fmt.Errorf("fhe task %s was cancelled", taskID)})
-	}
+	r.finish(run, TaskOutcome{Status: StatusCancelled, Err: fmt.Errorf("fhe task %s was cancelled", taskID)})
 	return nil
 }
 
@@ -449,6 +459,12 @@ func (r *Runner) outcomeFromStatus(spec TaskSpec, st TaskStatus) TaskOutcome {
 // are on one host and reading a file beats re-downloading it. A service that did
 // not write there - a split deployment, or a task whose results were cleaned up -
 // is covered by the download fallback.
+//
+// The return value is NOT dst, in either branch, and callers must not treat it
+// as the published location: on the shared-directory hit it is the source path
+// inside the shared directory, and on the download fallback it is the empty
+// string. dst is the only path that holds the result in both cases, so that is
+// the one to hand to whatever publishes it.
 func (r *Runner) CopyResult(ctx context.Context, spec TaskSpec, out TaskOutcome, dst string) (string, error) {
 	if out.ResultZip != "" {
 		if err := copyFileAtomic(out.ResultZip, dst); err != nil {
@@ -456,7 +472,15 @@ func (r *Runner) CopyResult(ctx context.Context, spec TaskSpec, out TaskOutcome,
 		}
 		return out.ResultZip, nil
 	}
-	dlCtx, cancel := context.WithTimeout(ctx, r.cfg.RequestTimeout)
+	// A result archive is a bulk transfer, not a request/response round trip, so
+	// RequestTimeout - a per-call budget that defaults to 30s - is the wrong bound
+	// for it: with it, any archive that needed longer than 30s died mid-body even
+	// though the download client has no whole-request timeout of its own.
+	// TaskTimeout is the budget this config already has for "as long as one task
+	// may take", which is the scale a multi-gigabyte archive belongs to. It is
+	// derived from the caller's ctx, so cancelling the caller still cancels the
+	// transfer.
+	dlCtx, cancel := context.WithTimeout(ctx, r.cfg.TaskTimeout)
 	defer cancel()
 	if err := r.client.DownloadResult(dlCtx, spec.TaskID, spec.UserID, dst); err != nil {
 		return "", fmt.Errorf("download the task result: %w", err)
