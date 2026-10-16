@@ -1,8 +1,16 @@
 package controller
 
 import (
+	"archive/zip"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"taa/internal/fhe"
 )
@@ -110,5 +118,726 @@ func TestValidateFHEFields(t *testing.T) {
 				t.Fatalf("validateFHEFields() = %q, want %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+// ── FHE task execution and result landing ────────────────────────────────
+
+// newStubRunner builds a runner with no live service behind it.
+//
+// Its endpoint is a closed port, so it is only useful to tests that read the
+// runner's presence (the instance-type switch) or that deliberately drive the
+// failure branch of Execute. The callback and export test files share it and
+// must not redefine it.
+func newStubRunner(t *testing.T) *fhe.Runner {
+	t.Helper()
+	r, err := fhe.New(fhe.Config{
+		Endpoint: "http://127.0.0.1:1", DataDir: t.TempDir(), KeyCacheDir: t.TempDir(),
+		CallbackBaseURL: "http://taa:6001", CallbackToken: "t",
+		MaxEvalKeyBytes: fhe.DefaultMaxEvalKeyBytes,
+		PollInterval:    time.Second, RequestTimeout: time.Second, TaskTimeout: time.Minute,
+	}, nil)
+	if err != nil {
+		t.Fatalf("fhe.New: %v", err)
+	}
+	return r
+}
+
+// decodeImportRequest decodes a request body the way the import endpoints do.
+func decodeImportRequest(body string, req *importRequest) error {
+	return json.Unmarshal([]byte(body), req)
+}
+
+// postImport drives the real handler, so the FHE field validation is exercised
+// through the HTTP surface the platform actually uses.
+func postImport(t *testing.T, s *TAAState, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/taa/import", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.importHandler(rec, req)
+	return rec
+}
+
+func TestFHEImportRequestFieldsDecode(t *testing.T) {
+	body := `{"resourceUrl":"http://x/in.zip","requestId":"r","taskId":"t",
+	          "evalKeyUrl":"http://x/eval_context.bin","evalKeyFileHash":"` + strings.Repeat("a", 64) + `"}`
+	var req importRequest
+	if err := decodeImportRequest(body, &req); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if req.EvalKeyURL != "http://x/eval_context.bin" {
+		t.Errorf("EvalKeyURL = %q", req.EvalKeyURL)
+	}
+	if req.EvalKeyFileHash != strings.Repeat("a", 64) {
+		t.Errorf("EvalKeyFileHash = %q", req.EvalKeyFileHash)
+	}
+}
+
+func TestImportRejectsFHEFieldsOnTEEInstance(t *testing.T) {
+	s, _ := setupTestState(t)
+	rec := postImport(t, s, `{"resourceUrl":"http://x/in.zip","requestId":"r","taskId":"t",
+	  "evalKeyUrl":"http://x/k","evalKeyFileHash":"`+strings.Repeat("a", 64)+`"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "tee") {
+		t.Errorf("body = %s", rec.Body.String())
+	}
+}
+
+// fheServiceStub answers the calls the runner makes, so a controller-level test
+// can drive a whole FHE task without the real service.
+type fheServiceStub struct {
+	*httptest.Server
+
+	evalKey []byte
+
+	mu             sync.Mutex
+	created        []fhe.CreateTaskRequest
+	activations    []string
+	polls          int
+	taskStatus     string
+	caseEntries    int
+	downloadStatus int
+	downloadBody   string
+
+	// onCreate runs inside the service call that creates a task, which is the only
+	// moment a run's own state can be sampled without racing it.
+	onCreate           func()
+	opDuringCreate     string
+	activeDuringCreate string
+	busyDuringCreate   bool
+}
+
+func newFHEServiceStub(t *testing.T) *fheServiceStub {
+	t.Helper()
+	s := &fheServiceStub{
+		evalKey:      []byte("eval-context-bytes"),
+		taskStatus:   "completed",
+		caseEntries:  1,
+		downloadBody: "DOWNLOADED-RESULT",
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/eval_context.bin", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(s.evalKey)
+	})
+	mux.HandleFunc("/api/v1/models/activate", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.activations = append(s.activations, r.URL.Query().Get("model_id"))
+		s.mu.Unlock()
+		_, _ = w.Write([]byte(`{}`))
+	})
+	mux.HandleFunc("/api/v1/tasks", func(w http.ResponseWriter, r *http.Request) {
+		var req fhe.CreateTaskRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.mu.Lock()
+		s.created = append(s.created, req)
+		cb := s.onCreate
+		s.mu.Unlock()
+		if cb != nil {
+			cb()
+		}
+		_, _ = w.Write([]byte(`{}`))
+	})
+	mux.HandleFunc("/api/v1/tasks/", s.serveTask)
+	s.Server = httptest.NewServer(mux)
+	t.Cleanup(s.Close)
+	return s
+}
+
+func (s *fheServiceStub) serveTask(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/")
+	switch {
+	case strings.HasSuffix(path, "/results/download"):
+		s.mu.Lock()
+		status, body := s.downloadStatus, s.downloadBody
+		s.mu.Unlock()
+		if status != 0 {
+			http.Error(w, "download refused", status)
+			return
+		}
+		_, _ = w.Write([]byte(body))
+	case strings.HasSuffix(path, "/continue"), strings.HasSuffix(path, "/cancel"):
+		_, _ = w.Write([]byte(`{}`))
+	default:
+		s.mu.Lock()
+		s.polls++
+		status, entries := s.taskStatus, s.caseEntries
+		s.mu.Unlock()
+		cases := make([]fhe.CaseStatus, 0, entries)
+		for i := 0; i < entries; i++ {
+			cases = append(cases, fhe.CaseStatus{Entry: "case", ResultID: "r"})
+		}
+		_ = json.NewEncoder(w).Encode(fhe.TaskStatus{TaskID: path, Status: status, Cases: cases})
+	}
+}
+
+func (s *fheServiceStub) createdTasks() []fhe.CreateTaskRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]fhe.CreateTaskRequest(nil), s.created...)
+}
+
+func (s *fheServiceStub) activateCalls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.activations...)
+}
+
+func (s *fheServiceStub) setTaskStatus(status string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.taskStatus = status
+}
+
+func (s *fheServiceStub) failDownload(status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.downloadStatus = status
+}
+
+func (s *fheServiceStub) sampleOnCreate() (op, active string, busy bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.opDuringCreate, s.activeDuringCreate, s.busyDuringCreate
+}
+
+// evalKeyHash is the digest the platform declares for the stub's eval key. The
+// runner verifies the downloaded key against it, so the two must agree.
+func (s *fheServiceStub) evalKeyHash(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "eval_context.bin")
+	if err := os.WriteFile(path, s.evalKey, 0o600); err != nil {
+		t.Fatalf("write eval key: %v", err)
+	}
+	hash, err := sm3HexOfFile(path)
+	if err != nil {
+		t.Fatalf("hash eval key: %v", err)
+	}
+	return hash
+}
+
+// fheTestEnv is one FHE instance worth of fixture: the controller state, the stub
+// service answering it, and the runner whose shared directory the two share.
+type fheTestEnv struct {
+	t         *testing.T
+	state     *TAAState
+	stub      *fheServiceStub
+	runner    *fhe.Runner
+	sharedDir string
+	keyHash   string
+	modelHash string
+}
+
+func newFHETestEnv(t *testing.T) *fheTestEnv {
+	t.Helper()
+	stub := newFHEServiceStub(t)
+	sharedDir := t.TempDir()
+	runner, err := fhe.New(fhe.Config{
+		Endpoint:        stub.URL,
+		DataDir:         sharedDir,
+		KeyCacheDir:     t.TempDir(),
+		CallbackBaseURL: "http://127.0.0.1:6001",
+		CallbackToken:   "test-token",
+
+		MaxEvalKeyBytes: fhe.DefaultMaxEvalKeyBytes,
+		PollInterval:    5 * time.Millisecond,
+		RequestTimeout:  2 * time.Second,
+		TaskTimeout:     5 * time.Second,
+		// Set explicitly, because this field's zero value is a working-but-wrong
+		// configuration: a Config built without it stages models and never
+		// hot-loads them (see fhe.Config.ActivateModelOnImport).
+		ActivateModelOnImport: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("fhe.New: %v", err)
+	}
+	state, _ := setupTestState(t)
+	state.SetFHERunner(runner)
+	return &fheTestEnv{
+		t: t, state: state, stub: stub, runner: runner,
+		sharedDir: sharedDir, keyHash: stub.evalKeyHash(t),
+	}
+}
+
+// importModel drives the model half of the flow and returns the digest the
+// platform names the model by.
+//
+// It goes through processImportedResource rather than calling the FHE branch
+// directly, because the branch's position is part of what is being tested: a
+// handler that selected it too late would still run the FHE import and then fall
+// through into the training one, and only the entry point shows that.
+func (e *fheTestEnv) importModel() string {
+	e.t.Helper()
+	zipPath, _ := writeTestZip(e.t, e.t.TempDir(), map[string]string{"server/model.bin": "fhe-model"})
+	e.state.processImportedResource(importRequest{RequestID: "req-model", TaskID: "task-model"}, 1, true, zipPath, nil)
+	hash, _ := e.state.getModelChecksum()["value"].(string)
+	if !fhe.ValidHash(hash) {
+		e.t.Fatalf("model checksum = %v, want an SM3 digest after a model import", e.state.getModelChecksum())
+	}
+	e.modelHash = hash
+	return hash
+}
+
+// dataRequest is the import request the platform sends to run a task.
+func (e *fheTestEnv) dataRequest() importRequest {
+	return importRequest{
+		ResourceURL:     "http://127.0.0.1:1/in.zip",
+		RequestID:       "req-data",
+		TaskID:          "task-data",
+		EvalKeyURL:      e.stub.URL + "/eval_context.bin",
+		EvalKeyFileHash: e.keyHash,
+	}
+}
+
+// resultDir is where the platform expects the task's artifacts: the same layout
+// the import index records for a training run.
+func (e *fheTestEnv) resultDir() string {
+	return resultDirForRequestTask(e.state.Security.ResultDir, "req-data", "task-data")
+}
+
+// commitRecord writes the import index record for the task, the way the training
+// path writes its own. Export resolves ResultDir and the leakage verdict through
+// that record, so a test that wants to read the verdict back needs one.
+func (e *fheTestEnv) commitRecord() {
+	e.t.Helper()
+	store, err := e.state.importIndexStore()
+	if err != nil {
+		e.t.Fatalf("importIndexStore: %v", err)
+	}
+	if err := store.Reserve("req-data", "task-data"); err != nil {
+		e.t.Fatalf("Reserve: %v", err)
+	}
+	if err := store.Commit(ImportIndexRecord{
+		RequestID: "req-data", TaskID: "task-data",
+		Hash: strings.Repeat("c", 64), ResultDir: e.resultDir(),
+	}); err != nil {
+		e.t.Fatalf("Commit: %v", err)
+	}
+}
+
+// runData drives the data half through processImportedResource, which is the
+// entry point the import handler calls: the FHE branch sits inside it.
+func (e *fheTestEnv) runData(zipPath string) {
+	e.t.Helper()
+	e.state.processImportedResource(e.dataRequest(), 2, false, zipPath, nil)
+}
+
+// writeTestZip writes a real archive and returns its path and bytes.
+func writeTestZip(t *testing.T, dir string, entries map[string]string) (string, []byte) {
+	t.Helper()
+	path := filepath.Join(dir, "input.zip")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create test zip: %v", err)
+	}
+	zw := zip.NewWriter(f)
+	for name, body := range entries {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatalf("create zip entry %s: %v", name, err)
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Fatalf("write zip entry %s: %v", name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close test zip: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close test zip file: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read test zip: %v", err)
+	}
+	return path, data
+}
+
+func readFileOrFail(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
+// logContains reports whether any log line carries substr.
+func logContains(s *TAAState, substr string) bool {
+	for _, entry := range s.Logs.All() {
+		if strings.Contains(entry.Message, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// requireLog fails the test when no log line carries substr.
+func requireLog(t *testing.T, s *TAAState, substr string) {
+	t.Helper()
+	if !logContains(s, substr) {
+		t.Errorf("no log line contains %q; logs: %v", substr, logLines(s))
+	}
+}
+
+func logLines(s *TAAState) []string {
+	var out []string
+	for _, entry := range s.Logs.All() {
+		out = append(out, entry.Message)
+	}
+	return out
+}
+
+// trainingReportStatus reads the status the platform will see out of the report
+// written into resultDir.
+func trainingReportStatus(t *testing.T, resultDir string) (string, string) {
+	t.Helper()
+	raw := readFileOrFail(t, filepath.Join(resultDir, trainingReportFileName))
+	var report struct {
+		TrainingTask struct {
+			Status        string `json:"status"`
+			FailureReason string `json:"failure_reason"`
+		} `json:"training_task"`
+	}
+	if err := json.Unmarshal([]byte(raw), &report); err != nil {
+		t.Fatalf("decode %s: %v", trainingReportFileName, err)
+	}
+	return report.TrainingTask.Status, report.TrainingTask.FailureReason
+}
+
+// TestFHEImportDispatchesTaskAndLandsResult walks the whole flow through
+// processImportedResource for both halves: the model import stages the package
+// into the shared directory, and the data import dispatches a task whose result
+// is copied out of that directory into the task's result directory.
+//
+// It pins the published paths, not just the fact that something ran: output.zip
+// and training_report.json have to be where the platform and the export handler
+// look for them, and the leakage verdict has to be recorded, because export reads
+// it under fail-closed.
+func TestFHEImportDispatchesTaskAndLandsResult(t *testing.T) {
+	env := newFHETestEnv(t)
+	env.importModel()
+	env.commitRecord()
+
+	// The FHE service writes the result into the shared directory; the controller
+	// has to copy it out of there rather than re-download it.
+	sharedResult, err := env.runner.Layout().ResultPath("task-data")
+	if err != nil {
+		t.Fatalf("ResultPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(sharedResult), 0o755); err != nil {
+		t.Fatalf("create shared result dir: %v", err)
+	}
+	if err := os.WriteFile(sharedResult, []byte("SHARED-RESULT"), 0o644); err != nil {
+		t.Fatalf("write shared result: %v", err)
+	}
+
+	env.stub.onCreate = func() {
+		// Sample the instance state at the one moment the run is definitely in
+		// flight. The state lock is released between the two reads and busy is
+		// computed under the lock alone: isTrainingBusyLocked and fheActiveTask
+		// each take the lock themselves, and a nested RLock would deadlock as soon
+		// as a writer queued up behind it.
+		env.state.mu.RLock()
+		op := env.state.CurrentOp
+		busy := env.state.isTrainingBusyLocked()
+		env.state.mu.RUnlock()
+		active := env.state.fheActiveTask()
+
+		env.stub.mu.Lock()
+		defer env.stub.mu.Unlock()
+		env.stub.opDuringCreate = op
+		env.stub.busyDuringCreate = busy
+		env.stub.activeDuringCreate = active
+	}
+
+	zipPath, zipData := writeTestZip(t, t.TempDir(), map[string]string{"data/case.txt": "ciphertext"})
+	env.runData(zipPath)
+
+	created := env.stub.createdTasks()
+	if len(created) != 1 {
+		t.Fatalf("dispatched %d tasks, want 1", len(created))
+	}
+	if created[0].UserID != env.keyHash {
+		t.Errorf("task user_id = %q, want the eval key digest %q", created[0].UserID, env.keyHash)
+	}
+	if created[0].ModelID != env.modelHash {
+		t.Errorf("task model_id = %q, want the imported model digest %q", created[0].ModelID, env.modelHash)
+	}
+	if created[0].TaskID != "task-data" {
+		t.Errorf("task id = %q, want task-data", created[0].TaskID)
+	}
+	if !strings.Contains(created[0].CallbackURL, "/v1/taa/fheCallback?token=test-token") {
+		t.Errorf("callback url = %q, want the token-authenticated callback", created[0].CallbackURL)
+	}
+
+	// The plaintext zip arrived without an .enc suffix, so it must have been taken
+	// as-is rather than decrypted.
+	requireLog(t, env.state, "跳过解密")
+
+	// The two inputs the service reads out of the shared directory.
+	layout := env.runner.Layout()
+	keyPath, err := layout.KeyPath(env.keyHash)
+	if err != nil {
+		t.Fatalf("KeyPath: %v", err)
+	}
+	if got := readFileOrFail(t, keyPath); got != string(env.stub.evalKey) {
+		t.Errorf("published eval key = %q, want %q", got, env.stub.evalKey)
+	}
+	inputPath, err := layout.TaskInputPath("task-data")
+	if err != nil {
+		t.Fatalf("TaskInputPath: %v", err)
+	}
+	if got := readFileOrFail(t, inputPath); got != string(zipData) {
+		t.Errorf("published input archive differs from the imported package (%d vs %d bytes)", len(got), len(zipData))
+	}
+
+	// The result the platform reads.
+	resultDir := env.resultDir()
+	if got := readFileOrFail(t, filepath.Join(resultDir, "output.zip")); got != "SHARED-RESULT" {
+		t.Errorf("result archive = %q, want the service's bytes", got)
+	}
+	status, reason := trainingReportStatus(t, resultDir)
+	if status != "succeeded" {
+		t.Errorf("report status = %q (failure_reason %q), want succeeded", status, reason)
+	}
+
+	// The verdict export reads under fail-closed.
+	store, err := env.state.importIndexStore()
+	if err != nil {
+		t.Fatalf("importIndexStore: %v", err)
+	}
+	record, err := store.Lookup("req-data", "task-data")
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if record.ResultCheck == nil || !record.ResultCheck.Passed {
+		t.Fatalf("recorded verdict = %+v, want a passing one", record.ResultCheck)
+	}
+	if len(record.ResultCheck.Details) == 0 || record.ResultCheck.Details[0] != "skipped: FHE ciphertext result" {
+		t.Errorf("verdict details = %v, want the skip reason", record.ResultCheck.Details)
+	}
+
+	// While the run was in flight the instance had to look busy, and stopTraining
+	// had to be able to find the task.
+	op, active, busy := env.stub.sampleOnCreate()
+	if op != "training" {
+		t.Errorf("CurrentOp during the run = %q, want training (a status query would otherwise report the instance as free)", op)
+	}
+	if !busy {
+		t.Error("isTrainingBusyLocked() = false during the run; a concurrent import would be admitted")
+	}
+	if active != "task-data" {
+		t.Errorf("fheActiveTask() during the run = %q, want task-data", active)
+	}
+
+	// And afterwards nothing may be left marked in flight.
+	if got := env.state.fheActiveTask(); got != "" {
+		t.Errorf("fheActiveTask() after the run = %q, want empty", got)
+	}
+	if got := env.state.CurrentOp; got != "idle" {
+		t.Errorf("CurrentOp after the run = %q, want idle", got)
+	}
+}
+
+// TestExecuteFHETaskDownloadsResultWhenTheSharedDirMisses covers the fallback:
+// the service did not write into the shared directory, so the result has to be
+// fetched over the API instead.
+func TestExecuteFHETaskDownloadsResultWhenTheSharedDirMisses(t *testing.T) {
+	env := newFHETestEnv(t)
+	env.importModel()
+	zipPath, _ := writeTestZip(t, t.TempDir(), map[string]string{"data/case.txt": "ciphertext"})
+	env.runData(zipPath)
+
+	if got := readFileOrFail(t, filepath.Join(env.resultDir(), "output.zip")); got != "DOWNLOADED-RESULT" {
+		t.Errorf("result archive = %q, want the downloaded bytes", got)
+	}
+	status, reason := trainingReportStatus(t, env.resultDir())
+	if status != "succeeded" {
+		t.Errorf("report status = %q (failure_reason %q), want succeeded", status, reason)
+	}
+}
+
+// TestExecuteFHETaskReportsAFailedTask pins the failure branch: a task the
+// service reports as failed must produce a failed report and no result archive.
+func TestExecuteFHETaskReportsAFailedTask(t *testing.T) {
+	env := newFHETestEnv(t)
+	env.importModel()
+	env.stub.setTaskStatus("failed")
+	zipPath, _ := writeTestZip(t, t.TempDir(), map[string]string{"data/case.txt": "ciphertext"})
+	env.runData(zipPath)
+
+	if len(env.stub.createdTasks()) != 1 {
+		t.Fatalf("the task was not dispatched: %+v", env.stub.createdTasks())
+	}
+	requireLog(t, env.state, "FHE 任务失败")
+	status, reason := trainingReportStatus(t, env.resultDir())
+	if status != "failed" {
+		t.Errorf("report status = %q, want failed", status)
+	}
+	if reason == "" {
+		t.Error("failure_reason is empty; the platform cannot tell why the task failed")
+	}
+	if _, err := os.Stat(filepath.Join(env.resultDir(), "output.zip")); err == nil {
+		t.Error("output.zip exists for a failed task")
+	}
+	// A failed run must release the task id it registered, on this exit path too.
+	// A left-behind id is not inert: stopTraining consults it first, and the runner
+	// refuses to cancel a task it does not track, so a stale id turns a later stop
+	// into an error about a task that already ended.
+	if got := env.state.fheActiveTask(); got != "" {
+		t.Errorf("fheActiveTask() after a failed run = %q, want empty", got)
+	}
+	if got := env.state.CurrentOp; got != "idle" {
+		t.Errorf("CurrentOp after a failed run = %q, want idle", got)
+	}
+}
+
+// TestExecuteFHETaskReportsWhenTheResultCannotBeFetched is the other failure
+// branch the plan names: the task succeeded but its archive could not be
+// retrieved, which must also be reported as a failure rather than as a success
+// with a missing result.
+func TestExecuteFHETaskReportsWhenTheResultCannotBeFetched(t *testing.T) {
+	env := newFHETestEnv(t)
+	env.importModel()
+	env.stub.failDownload(http.StatusInternalServerError)
+	zipPath, _ := writeTestZip(t, t.TempDir(), map[string]string{"data/case.txt": "ciphertext"})
+	env.runData(zipPath)
+
+	requireLog(t, env.state, "取回 FHE 结果失败")
+	status, reason := trainingReportStatus(t, env.resultDir())
+	if status != "failed" {
+		t.Errorf("report status = %q, want failed", status)
+	}
+	if !strings.Contains(reason, "取回 FHE 结果失败") {
+		t.Errorf("failure_reason = %q, want the fetch failure", reason)
+	}
+	if got := env.state.fheActiveTask(); got != "" {
+		t.Errorf("fheActiveTask() after a result-fetch failure = %q, want empty", got)
+	}
+}
+
+// TestExecuteFHETaskRejectsANonArchiveInput drives executeFHETask directly: a
+// decrypted payload that is not an archive reaches it through
+// resolvePlaintextResource (a resource with no .enc suffix whose bytes are not a
+// known archive is decrypted, and what comes out need not be one).
+func TestExecuteFHETaskRejectsANonArchiveInput(t *testing.T) {
+	env := newFHETestEnv(t)
+	env.importModel()
+	plain := filepath.Join(t.TempDir(), "input.bin")
+	if err := os.WriteFile(plain, []byte("not an archive"), 0o644); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	env.state.executeFHETask(env.dataRequest(), 2, plain, time.Now().UTC(), env.runner)
+
+	requireLog(t, env.state, "输入包不是压缩包")
+	if got := env.stub.createdTasks(); len(got) != 0 {
+		t.Errorf("a non-archive input was dispatched as a task: %+v", got)
+	}
+	status, _ := trainingReportStatus(t, filepath.Join(env.state.Security.ResultDir, "train"))
+	if status != "failed" {
+		t.Errorf("report status = %q, want failed", status)
+	}
+}
+
+// TestExecuteFHETaskRequiresAModelImport pins the ordering contract: a task
+// submitted before any model was imported has no model to run against, and must
+// be refused instead of being sent with an empty model id.
+func TestExecuteFHETaskRequiresAModelImport(t *testing.T) {
+	env := newFHETestEnv(t)
+	zipPath, _ := writeTestZip(t, t.TempDir(), map[string]string{"data/case.txt": "ciphertext"})
+	env.state.executeFHETask(env.dataRequest(), 2, zipPath, time.Now().UTC(), env.runner)
+
+	requireLog(t, env.state, "尚未导入模型")
+	if got := env.stub.createdTasks(); len(got) != 0 {
+		t.Errorf("a task ran without a model import: %+v", got)
+	}
+}
+
+// TestExecuteFHETaskReportsAnUnreachableService covers the last error path the
+// plan names: Execute itself failing, here because the eval key cannot be
+// fetched from a dead endpoint.
+func TestExecuteFHETaskReportsAnUnreachableService(t *testing.T) {
+	s, _ := setupTestState(t)
+	s.SetFHERunner(newStubRunner(t))
+	s.setModelChecksum(map[string]any{"size": int64(0), "algorithm": "sm3", "value": strings.Repeat("b", 64)})
+
+	zipPath, _ := writeTestZip(t, t.TempDir(), map[string]string{"data/case.txt": "ciphertext"})
+	s.executeFHETask(importRequest{
+		ResourceURL: "http://127.0.0.1:1/in.zip", RequestID: "req-data", TaskID: "task-data",
+		EvalKeyURL: "http://127.0.0.1:1/eval_context.bin", EvalKeyFileHash: strings.Repeat("a", 64),
+	}, 2, zipPath, time.Now().UTC(), s.fheRunner())
+
+	requireLog(t, s, "FHE 任务失败")
+	resultDir := resultDirForRequestTask(s.Security.ResultDir, "req-data", "task-data")
+	status, reason := trainingReportStatus(t, resultDir)
+	if status != "failed" || reason == "" {
+		t.Errorf("report = (%q, %q), want a failed status with a reason", status, reason)
+	}
+	// This is the earliest failure Execute can produce - it never reaches the
+	// service - so it is the one that would most easily skip a cleanup written at
+	// the end of the happy path.
+	if got := s.fheActiveTask(); got != "" {
+		t.Errorf("fheActiveTask() after an unreachable service = %q, want empty", got)
+	}
+}
+
+// TestProcessImportedResourceFHEWithoutRunnerFails covers the defensive guard:
+// the branch is only reachable on an fhe instance, but a runner that went away
+// must fail the import rather than silently drop it.
+func TestProcessImportedResourceFHEWithoutRunnerFails(t *testing.T) {
+	s, _ := setupTestState(t)
+	zipPath, _ := writeTestZip(t, t.TempDir(), map[string]string{"data/case.txt": "ciphertext"})
+	s.processImportedResourceFHE(importRequest{RequestID: "req-data", TaskID: "task-data"}, 2, false, zipPath, time.Now().UTC())
+
+	requireLog(t, s, "FHE 运行器未初始化")
+	status, _ := trainingReportStatus(t, filepath.Join(s.Security.ResultDir, "train"))
+	if status != "failed" {
+		t.Errorf("report status = %q, want failed", status)
+	}
+}
+
+// TestImportFHEModelStagesIntoSharedDirAndSkipsTheAudit covers the model half.
+//
+// The audit bypass is asserted structurally rather than through a log line: the
+// training path extracts the package into s.Security.ModelDir and owes an audit
+// for it (beginModelImportAndAudit sets AuditRunning), while the FHE path puts it
+// in the shared directory and owes neither.
+func TestImportFHEModelStagesIntoSharedDirAndSkipsTheAudit(t *testing.T) {
+	env := newFHETestEnv(t)
+	hash := env.importModel()
+
+	modelDir, err := env.runner.Layout().ModelDir(hash)
+	if err != nil {
+		t.Fatalf("ModelDir: %v", err)
+	}
+	if got := readFileOrFail(t, filepath.Join(modelDir, "server", "model.bin")); got != "fhe-model" {
+		t.Errorf("staged model = %q, want the package bytes", got)
+	}
+
+	if got := env.stub.activateCalls(); len(got) != 1 || got[0] != hash {
+		t.Errorf("activate calls = %v, want exactly [%s] (ActivateModelOnImport must be read, not assumed)", got, hash)
+	}
+
+	// The training path's model directory must be untouched: it is what the audit
+	// reads and what a TEE model import extracts into.
+	if entries, err := os.ReadDir(env.state.Security.ModelDir); err == nil && len(entries) > 0 {
+		t.Errorf("the package also landed in the training model dir (%v); the FHE import took the training path", entries)
+	}
+	env.state.mu.RLock()
+	auditing := env.state.AuditRunning
+	env.state.mu.RUnlock()
+	if auditing {
+		t.Error("AuditRunning is set; an FHE model import must not owe a code audit")
+	}
+	requireLog(t, env.state, "免代码审计")
+
+	// And importModel is what names the model the task will run against.
+	if got, _ := env.state.getModelChecksum()["value"].(string); got != hash {
+		t.Errorf("recorded model checksum = %q, want %q", got, hash)
 	}
 }

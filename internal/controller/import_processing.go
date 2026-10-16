@@ -49,6 +49,15 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		defer os.Remove(plaintextPath)
 	}
 
+	// An fhe instance hands the resolved resource straight to the FHE service
+	// instead of the training pipeline. The branch sits here, after decryption, so
+	// the two instance types share one download/decode path and one concurrency
+	// gate, and diverge only in what they do with the bytes.
+	if s.fheEnabled() {
+		s.processImportedResourceFHE(req, phase, isModel, plaintextPath, startedAt)
+		return
+	}
+
 	trainRecord := ImportIndexRecord{}
 	if isModel {
 		size, hash, err := teecrypto.HashFileSM3(plaintextPath)
