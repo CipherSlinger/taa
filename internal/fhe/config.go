@@ -50,7 +50,36 @@ type Config struct {
 	// TaskTimeout bounds a whole task, polls and callback together.
 	TaskTimeout time.Duration
 	// ActivateModelOnImport calls /models/activate right after a model is staged.
+	//
+	// This field is the exception to this struct's rule that a zero value is an
+	// obviously broken configuration: its zero value is a working-but-wrong one.
+	// A plain bool cannot tell "the operator turned activation off" from "the
+	// field was never set", so a Config built without it stages models and never
+	// hot-loads them - no startup error, no log line, and every task then fails
+	// at run time with a model the service never loaded. Production is safe only
+	// because the JSON layer resolves a *bool that defaults to true; a second
+	// caller building a Config in Go must set this field as well.
 	ActivateModelOnImport bool
+}
+
+// validateBaseURL checks that raw is an absolute http or https URL with a host.
+//
+// Both URL-shaped fields go through here: this package appends a path and a
+// query to each of them and hands the result to the FHE service, so a value the
+// service cannot POST to has to be an operator-facing startup error rather than
+// a silent failure discovered at task time.
+func validateBaseURL(field, raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("fhe.%s %q is not a valid URL: %w", field, raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("fhe.%s %q must use the http or https scheme", field, raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("fhe.%s %q has no host", field, raw)
+	}
+	return nil
 }
 
 // Validate rejects a configuration this package cannot safely run with. It is
@@ -60,15 +89,8 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Endpoint) == "" {
 		return fmt.Errorf("fhe.endpoint is required")
 	}
-	u, err := url.Parse(strings.TrimSpace(c.Endpoint))
-	if err != nil {
-		return fmt.Errorf("fhe.endpoint %q is not a valid URL: %w", c.Endpoint, err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("fhe.endpoint %q must use the http or https scheme", c.Endpoint)
-	}
-	if u.Host == "" {
-		return fmt.Errorf("fhe.endpoint %q has no host", c.Endpoint)
+	if err := validateBaseURL("endpoint", c.Endpoint); err != nil {
+		return err
 	}
 	if strings.TrimSpace(c.DataDir) == "" {
 		return fmt.Errorf("fhe.dataDir is required")
@@ -79,20 +101,32 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.CallbackBaseURL) == "" {
 		return fmt.Errorf("fhe.callbackBaseUrl is required")
 	}
+	if err := validateBaseURL("callbackBaseUrl", c.CallbackBaseURL); err != nil {
+		return err
+	}
+	// CallbackURL appends "/v1/taa/fheCallback?token=..." to this value, so either
+	// character corrupts the result: a '#' swallows the appended path and the
+	// token, and a '?' leaves the token in the path of an already-queried URL.
+	if strings.ContainsAny(c.CallbackBaseURL, "?#") {
+		return fmt.Errorf("fhe.callbackBaseUrl %q must not contain a query or a fragment", c.CallbackBaseURL)
+	}
 	if strings.TrimSpace(c.CallbackToken) == "" {
 		return fmt.Errorf("fhe.callbackToken is required")
 	}
 	if c.MaxEvalKeyBytes <= 0 {
 		return fmt.Errorf("fhe.maxEvalKeyBytes must be positive, got %d", c.MaxEvalKeyBytes)
 	}
+	// The ...Ms keys are milliseconds, so the message prints milliseconds rather
+	// than the raw time.Duration ("got -1ns" names a unit the operator cannot
+	// find anywhere in the startup config).
 	if c.PollInterval <= 0 {
-		return fmt.Errorf("fhe.pollIntervalMs must be positive, got %s", c.PollInterval)
+		return fmt.Errorf("fhe.pollIntervalMs must be positive, got %d", int64(c.PollInterval/time.Millisecond))
 	}
 	if c.RequestTimeout <= 0 {
-		return fmt.Errorf("fhe.requestTimeoutMs must be positive, got %s", c.RequestTimeout)
+		return fmt.Errorf("fhe.requestTimeoutMs must be positive, got %d", int64(c.RequestTimeout/time.Millisecond))
 	}
 	if c.TaskTimeout <= 0 {
-		return fmt.Errorf("fhe.taskTimeoutMs must be positive, got %s", c.TaskTimeout)
+		return fmt.Errorf("fhe.taskTimeoutMs must be positive, got %d", int64(c.TaskTimeout/time.Millisecond))
 	}
 	return nil
 }
