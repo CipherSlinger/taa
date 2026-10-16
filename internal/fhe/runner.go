@@ -434,8 +434,7 @@ func (r *Runner) Execute(ctx context.Context, spec TaskSpec, onProgress func(don
 		st, probeErr := r.client.Task(probeCtx, spec.TaskID, spec.UserID)
 		probeCancel()
 		if probeErr != nil {
-			out := TaskOutcome{Status: StatusFailed, Err: fmt.Errorf("create fhe task: %w", err)}
-			r.finish(run, out)
+			out, _ := r.finish(run, TaskOutcome{Status: StatusFailed, Err: fmt.Errorf("create fhe task: %w", err)})
 			return out, out.Err
 		}
 		// A task that already ran to a successful end is adopted as it is: it has
@@ -453,8 +452,7 @@ func (r *Runner) Execute(ctx context.Context, spec TaskSpec, onProgress func(don
 		contErr := r.client.ContinueTask(contCtx, spec.TaskID, spec.UserID)
 		contCancel()
 		if contErr != nil {
-			out := TaskOutcome{Status: StatusFailed, Err: fmt.Errorf("continue existing fhe task: %w (create failed: %v)", contErr, err)}
-			r.finish(run, out)
+			out, _ := r.finish(run, TaskOutcome{Status: StatusFailed, Err: fmt.Errorf("continue existing fhe task: %w (create failed: %v)", contErr, err)})
 			return out, out.Err
 		}
 	}

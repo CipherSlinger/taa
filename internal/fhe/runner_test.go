@@ -1250,6 +1250,69 @@ func TestRunnerForgetIsOrderIndependent(t *testing.T) {
 	}
 }
 
+// TestRunnerEarlyFailureReturnsTheRecordedOutcome pins that Execute's
+// early-failure branches report the outcome that was recorded rather than the one
+// they built locally.
+//
+// Both branches used to hand finish an outcome and then return their own copy of
+// it. finish resolves a run exactly once, so when a terminal callback - or the
+// poller - had already won that race, the recorded outcome and the returned one
+// disagreed, and the import path reported a status the run never reached.
+func TestRunnerEarlyFailureReturnsTheRecordedOutcome(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	keyBytes := []byte("k")
+	keySrv := keyServer(t, keyBytes)
+
+	probeArrived := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/tasks":
+			// Create fails, which is what sends Execute down the probe branch.
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":"task exists"}`))
+		case strings.HasPrefix(r.URL.Path, "/api/v1/tasks/"):
+			once.Do(func() { close(probeArrived) })
+			<-release
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"probe failed"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	r := newRunnerWithTimeout(t, srv.URL, layout, 5*time.Second)
+	spec := specFor(t, r, keySrv.URL, keyBytes, []byte("i"))
+
+	type result struct {
+		out TaskOutcome
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := r.Execute(context.Background(), spec, nil)
+		done <- result{out, err}
+	}()
+	<-probeArrived
+
+	// The run reaches a terminal state while the probe is on the wire.
+	if !r.Deliver(CallbackPayload{TaskID: "task-1", Status: "cancelled"}) {
+		t.Fatal("the terminal callback was dropped; the fixture does not resolve the run")
+	}
+	close(release)
+
+	got := <-done
+	if got.out.Status != StatusCancelled {
+		t.Errorf("Execute returned %q with err %v, want the recorded outcome %q: the local branch outcome and the recorded one must not disagree",
+			got.out.Status, got.err, StatusCancelled)
+	}
+	if got.err == nil {
+		t.Error("Execute returned a cancelled outcome with no error")
+	}
+}
+
 // TestRunnerCancelAfterTheTaskFinishedIsNotAFailedStop pins the third answer
 // Cancel can give. A task that finished a moment before the platform's
 // stopTraining arrived is a race, and reporting it as a failed stop would be
