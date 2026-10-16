@@ -20,8 +20,7 @@
   "codeAudit": {
     "enabled": true,
     "codeScan": {
-      "engine": "semgrep",
-      "rulesPath": "/opt/taa/semgrep/rules"
+      "engine": "regex"
     },
     "resultCheck": {
       "enabled": true,
