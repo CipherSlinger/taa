@@ -814,6 +814,13 @@ Environment overrides:
       本地 semgrep 引擎 payload 归档；设置后会先上传到宿主再注入，留空则要求宿主上已存在。
   SEMGREP_RULES_SOURCE=$SEMGREP_RULES_SOURCE
       注入容器的代码扫描规则目录，按配置里的 codeAudit.codeScan.rulesPath 落位。
+  SEMGREP_PAYLOAD_BUNDLE=$SEMGREP_PAYLOAD_BUNDLE
+      docker save 打包时解包进镜像的 semgrep 容器 payload（由
+      deploy/guest-build/build-semgrep-payload-container.sh 产出）。
+  CONTAINER_SEMGREP_DIR=$CONTAINER_SEMGREP_DIR
+      镜像内 semgrep 的安装根目录（pylib 与规则所在位置）。
+  SEMGREP_VERSION=$SEMGREP_VERSION
+      期望的 semgrep 版本；与 payload 包内 MANIFEST 记录的版本不一致时报错。
   READY_TIMEOUT=${READY_TIMEOUT}
       等待服务就绪的最长时间（秒）。
   READY_INTERVAL=${READY_INTERVAL}

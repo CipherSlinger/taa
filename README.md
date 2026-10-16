@@ -432,7 +432,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 
 - **`start`** (default): Builds binaries, prepares configs/certs, starts supervisor daemon, and launches target services.
 - **`stop`**: Gracefully stops target services in the chosen mode.
-- **`save`**: **Exclusively valid in `docker` mode** (`./deploy.sh docker save`). Packages the base image archive (`deploy/taa-env-slim-v2.tar.gz`) with production configuration (`configs/taa-production.json`) and pre-bundled LLM weights, tags it with a date stamp, and exports a deployable image archive.
+- **`save`**: **Exclusively valid in `docker` mode** (`./deploy.sh docker save`). Assembles a **TAA-only production image — TAA plus the code scan engine** — and exports it as an archive. It removes every TEE-LLM and ollama artifact the base image may carry (asserting each is gone), installs the supervisor from `deploy/start.sh` instead of inheriting the base image's copy, provisions semgrep offline from a payload archive and verifies it with a real scan, then copies the binary, certificates and generated production config (`configs/taa-production.json`) before `docker commit` + `docker save`. TEE-LLM and ollama are **not** in this image; deploy them separately with `./deploy-llm.sh` and point the image at them with `TAA_LLM_ENDPOINT`.
 
 ### 3. Component Selection
 
@@ -489,6 +489,35 @@ Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (d
 > unflagged call cost over a minute. `semgrep --validate` is not usable here at all — it downloads
 > a registry metacheck pack that no flag can skip, and offline that ends the command with a
 > non-zero exit. A failure prints semgrep's own output rather than an exit code alone.
+
+> **`docker save` needs the semgrep payload archive built first.** The base image carries neither
+> the engine nor the rules while the production template selects semgrep, and a missing rules path is
+> a hard startup failure rather than a downgrade — an image packaged without an engine would start,
+> die, and then sit in the supervisor's 10s restart loop. Build the archive once with
+> `./deploy/guest-build/build-semgrep-payload-container.sh` (needs network, ~350 MiB, writes
+> `deploy/guest-build/out/semgrep-bundle.tar.gz`); every later `./deploy.sh docker save` extracts it
+> offline, so packaging itself never needs the network. A missing archive fails the packaging with
+> that command as the hint instead of producing an image that cannot scan.
+>
+> The archive's embedded `MANIFEST` is checked against `SEMGREP_VERSION` (1.177.0) so a stale bundle
+> is rejected rather than shipped, the rules are copied from `SEMGREP_RULES_SOURCE`
+> (`models/audit/semgrep/rules`) into the path the template names, and the same bounded offline scan
+> probe the remote path runs has to pass — semgrep being *present* is not the same as semgrep being
+> *able to run the rules*. Overrides: `SEMGREP_PAYLOAD_BUNDLE`, `CONTAINER_SEMGREP_DIR`,
+> `SEMGREP_VERSION`.
+>
+> **Pointing the image at a separately deployed TEE-LLM.** `TAA_LLM_ENDPOINT` overrides
+> `codeAudit.llm.endpoint` at startup, so the endpoint baked into an image is only a default:
+>
+> ```bash
+> ./deploy.sh docker save --tag my-taa:v1 -o /tmp/taa.tar.gz
+> ./deploy-llm.sh docker start                      # TEE-LLM in its own container
+> docker run -e TAA_LLM_ENDPOINT=https://10.0.0.2:8443 my-taa:v1
+> ```
+>
+> This is the one variable that **overrides** the config file — `PLATFORM_IP`, `DOCKER_ID` and
+> `CONTRACT` only seed defaults that the file wins over. Leave it empty to keep the endpoint the
+> image was packaged with.
 
 ---
 
