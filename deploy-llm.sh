@@ -226,8 +226,8 @@ require_command() {
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEELLM_DIR="${TEELLM_DIR:-$PROJECT_DIR/teellm}"
 
-# Paths inside the TEE-LLM Pod. The layout does not depend on the target: it is the same
-# /root/taa tree the teellm submodule's deploy/start.sh expects.
+# Paths inside the TEE-LLM Pod. /root/taa is the tree the teellm submodule's deploy/start.sh
+# expects, and the Pod is the only target left, so there is nothing to vary these by.
 CON_WORKDIR="${CON_WORKDIR:-/root/taa}"
 CONTAINER_OLLAMA_DIR="${CONTAINER_OLLAMA_DIR:-/root/taa/ollama}"
 # Older image revisions ship the same ollama bundle under this name. It carries the identical
@@ -511,6 +511,14 @@ pod_down() {
     exit 1
   fi
   info "TEE-LLM Pod '$TARGET_POD' deleted"
+}
+
+# Stops the three daemons this deployment owns inside the Pod. Both the 'stop' action and the start
+# path's "stopping old daemons" step need the whole list, so it lives here and is written once.
+# 'killall' and 'pkill -x' are both tried: a busybox userland has only the former. A miss is not an
+# error -- the daemon may simply not be running -- hence the trailing || true on every clause.
+stop_pod_daemons() {
+  remote_ssh "$(container_exec) sh -lc 'pkill -x teellm-service >/dev/null 2>&1 || true; killall teellm-service >/dev/null 2>&1 || true; pkill -x ollama >/dev/null 2>&1 || true; killall ollama >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true; killall llama-server >/dev/null 2>&1 || true'"
 }
 
 ensure_go_compiler() {
@@ -1690,7 +1698,6 @@ cd "$PROJECT_DIR"
 if [[ "$ACTION" == "probe" ]]; then
   banner "Probing TEE-LLM Service" "Endpoint: https://127.0.0.1:${TEELLM_PORT}"
   step "probing teellm-service in remote pod ($TARGET_POD)"
-  ensure_remote_ssh
   if remote_ssh "$(container_exec) \"$CON_WORKDIR/teellm-service\" -probe \"https://127.0.0.1:${TEELLM_PORT}\""; then
     info "remote probe check successful: teellm-service is healthy on https://127.0.0.1:${TEELLM_PORT}"
     exit 0
@@ -1704,9 +1711,8 @@ fi
 
 if [[ "$ACTION" == "stop" ]]; then
   banner "Stopping TEE-LLM Services"
-  step "stopping teellm-service and ollama in remote pod ($TARGET_POD)"
-  ensure_remote_ssh
-  remote_ssh "$(container_exec) sh -lc 'pkill -x teellm-service >/dev/null 2>&1 || true; killall teellm-service >/dev/null 2>&1 || true; pkill -x ollama >/dev/null 2>&1 || true; killall ollama >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true; killall llama-server >/dev/null 2>&1 || true'" 2>/dev/null || true
+  step "stopping teellm-service, ollama, and llama-server in remote pod ($TARGET_POD)"
+  stop_pod_daemons 2>/dev/null || true
   info "teellm-service, ollama, and llama-server stopped cleanly in remote pod $TARGET_POD"
   exit 0
 fi
@@ -1717,7 +1723,6 @@ fi
 
 if [[ "$ACTION" == "pod-down" ]]; then
   banner "Deleting the TEE-LLM Pod" "Pod: $TARGET_POD (namespace: ${TARGET_NAMESPACE:-default})"
-  ensure_remote_ssh
   pod_down
   echo ""
   warn "The guest's writable layer went with the Pod, so the ollama runtime and the model are gone."
@@ -1909,7 +1914,7 @@ deploy_teellm() {
   build_local_binary
 
   step "stopping old daemons inside remote pod"
-  remote_ssh "$(container_exec) sh -lc 'killall ollama >/dev/null 2>&1 || true; pkill -x ollama >/dev/null 2>&1 || true; killall llama-server >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true; killall teellm-service >/dev/null 2>&1 || true; pkill -x teellm-service >/dev/null 2>&1 || true'"
+  stop_pod_daemons
 
   sync_ollama_to_remote
   copy_ollama_to_remote_pod

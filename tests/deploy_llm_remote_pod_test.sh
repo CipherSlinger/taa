@@ -288,26 +288,18 @@ grep -q "service is serving Hygon hardware evidence" <<<"$output" \
 grep -q "TAA_LLM_ENDPOINT=https://$MOCK_POD_IP:8443" <<<"$output" \
   || fail "the summary does not hand over TAA_LLM_ENDPOINT"
 
-# ── 2. Second run: the Pod exists and is Ready ───────────────────────────────
-
-run_deploy --create-pod start --model qwen2.5-coder:0.5b
-[[ $status -eq 0 ]] || fail "the second --create-pod start exited $status"
-[[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "1" ]] \
-  || fail "the second run applied the manifest again instead of reusing the Pod"
-grep -q "reusing the running TEE-LLM Pod" <<<"$output" || fail "the second run did not reuse the Pod"
-
-# ── 3. A bare invocation, with no action keyword ─────────────────────────────
-# With the target keyword gone there is nothing left to name a target with, so the default path is
-# the only one -- and this is what pins it down: the bare form must reach the same Pod lifecycle as
-# the explicit one rather than falling through to a no-op.
+# ── 2. Second run, with no action keyword: the Pod exists and is Ready ───────
+# With the target keyword gone there is nothing left to name a target with, so the bare form has to
+# reach the same Pod lifecycle as the explicit one rather than falling through to a no-op. Case 1
+# already covered --create-pod start, so the reuse half is pinned down here in its bare form.
 
 run_deploy --create-pod --model qwen2.5-coder:0.5b
-[[ $status -eq 0 ]] || fail "a bare invocation (no action keyword) exited $status"
+[[ $status -eq 0 ]] || fail "the bare invocation (no action keyword) exited $status"
 [[ "$(cat "$MOCK_STATE_DIR/apply-count")" == "1" ]] \
-  || fail "the bare invocation created a second Pod instead of reusing the existing one"
+  || fail "the bare invocation applied the manifest again instead of reusing the Pod"
 grep -q "reusing the running TEE-LLM Pod" <<<"$output" || fail "the bare invocation did not reuse the Pod"
 
-# ── 4. Negative control: a Pod without /dev/csv-guest ────────────────────────
+# ── 3. Negative control: a Pod without /dev/csv-guest ────────────────────────
 
 rm -f "$MOCK_STATE_DIR/csv_device"
 run_deploy --create-pod start --model qwen2.5-coder:0.5b
@@ -315,7 +307,7 @@ run_deploy --create-pod start --model qwen2.5-coder:0.5b
 grep -q "/dev/csv-guest" <<<"$output" || fail "the missing device was not named in the error"
 touch "$MOCK_STATE_DIR/csv_device"
 
-# ── 5. Negative control: --create-pod with a different explicit TARGET_POD ───
+# ── 4. Negative control: --create-pod with a different explicit TARGET_POD ───
 
 before="$(kubectl_lines)"
 set +e
@@ -327,7 +319,7 @@ set -e
 grep -q "addresses the TEE-LLM Pod" <<<"$output" || fail "the refusal does not explain the conflict"
 [[ "$(kubectl_lines)" == "$before" ]] || fail "the refusal happened only after touching the cluster"
 
-# ── 6. Negative control: no attestation certificates on the create path ──────
+# ── 5. Negative control: no attestation certificates on the create path ──────
 
 mv "$REPO/deploy/certs" "$TMP_DIR/certs-hidden"
 run_deploy --create-pod start --model qwen2.5-coder:0.5b
@@ -336,7 +328,7 @@ grep -q "no Hygon attestation certificates found" <<<"$output" \
   || fail "the missing certificates were not named in the error"
 mv "$TMP_DIR/certs-hidden" "$REPO/deploy/certs"
 
-# ── 7. pod-down: the Pod is deleted, and nothing else is ─────────────────────
+# ── 6. pod-down: the Pod is deleted, and nothing else is ─────────────────────
 
 # Pointed at a bundle that does not exist: a teardown must not depend on the machine that deployed
 # the bundle still having it, so this also pins down where the action is handled.

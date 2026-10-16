@@ -211,12 +211,13 @@ CUSTOM_BASE_ARCHIVE=""
 CUSTOM_BASE_IMAGE=""
 CUSTOM_SAVE_CONFIG=""
 LOCAL_DOCKER_NETWORK="${LOCAL_DOCKER_NETWORK:-host}"
-# TEE-LLM gateway endpoint baked into taa's config. The gateway does not run on this host at all --
-# it is deployed as a Kata CSV2 Pod on the remote host (see deploy-llm.sh), which prints the Pod IP
-# to use -- so this value is normally supplied explicitly through TAA_LLM_ENDPOINT. The loopback
-# fallback covers a gateway that shares taa's network namespace.
-TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-}"
+# TEE-LLM gateway endpoint written into taa's config. The gateway does not run on the machine that
+# writes the config: it is deployed as a Kata CSV2 Pod on the remote host (see deploy-llm.sh), which
+# prints the Pod IP to use, so this is set explicitly in practice. Empty means "keep the endpoint
+# the config template names"; the local docker start path falls back to loopback, which is correct
+# when the gateway shares taa's network namespace.
 TAA_TEELLM_PORT="${TAA_TEELLM_PORT:-8443}"
+TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-}"
 LOCAL_DOCKER_INPUT_DIR="${LOCAL_DOCKER_INPUT_DIR:-/opt/taa/input}"
 # The result directory itself, not the output root: this value becomes model.output.result, and all
 # three templates put it one level down (/opt/taa/output/result) so results do not share a directory
@@ -225,17 +226,6 @@ LOCAL_DOCKER_INPUT_DIR="${LOCAL_DOCKER_INPUT_DIR:-/opt/taa/input}"
 # in both places. TAA creates whichever of the three directories it needs, so pre-creating only this
 # one is enough.
 LOCAL_DOCKER_OUTPUT_DIR="${LOCAL_DOCKER_OUTPUT_DIR:-/opt/taa/output/result}"
-
-# Resolve the TEE-LLM gateway endpoint for local docker deploys. TAA_LLM_ENDPOINT is the only way
-# to name a gateway that runs elsewhere; the loopback fallback is correct when the gateway shares
-# taa's network namespace.
-resolve_llm_endpoint() {
-  if [[ -n "$TAA_LLM_ENDPOINT" ]]; then
-    printf '%s' "$TAA_LLM_ENDPOINT"
-    return 0
-  fi
-  printf 'https://127.0.0.1:%s' "$TAA_TEELLM_PORT"
-}
 
 banner() {
   local title="$1"
@@ -583,9 +573,9 @@ save_local_docker_image() {
   # to disagree about the same key.
   #
   # The LLM endpoint is passed empty for the same reason: empty means "leave the template alone".
-  # What resolve_llm_endpoint answers on the packaging host is not the address the shipped image
-  # will use -- it is a container IP that changes on restart, or loopback when TEE-LLM happens not
-  # to be running -- so baking it in replaced the template's endpoint with a guess. The image
+  # What the packaging host could answer is not the address the shipped image will use -- the Pod
+  # IP changes when the Pod is recreated, and loopback is only right when the gateway shares taa's
+  # network namespace -- so baking it in replaced the template's endpoint with a guess. The image
   # carries exactly the endpoint configs/taa-production.json names; a deployment that needs a
   # different one sets TAA_LLM_ENDPOINT at container startup, which still overrides it.
   write_taa_config "$prod_config_source" "$prod_config_template" \
@@ -1841,8 +1831,7 @@ deploy_docker_taa() {
   TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
   step "writing taa config for docker from $(basename "$TAA_CONFIG_TEMPLATE")"
   ensure_parent_dir "$LOCAL_DOCKER_CONFIG_SOURCE"
-  local target_llm_endpoint
-  target_llm_endpoint="$(resolve_llm_endpoint)"
+  local target_llm_endpoint="${TAA_LLM_ENDPOINT:-https://127.0.0.1:${TAA_TEELLM_PORT}}"
   info "taa llm endpoint: $target_llm_endpoint"
   write_taa_config "$LOCAL_DOCKER_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" \
     "$TAA_CONTAINER_ADDR" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_CONTAINER" "$CONTRACT_ID" \
