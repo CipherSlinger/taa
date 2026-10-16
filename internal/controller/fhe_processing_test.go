@@ -994,6 +994,26 @@ func TestFHEImportResultIsExportable(t *testing.T) {
 	if string(got) != "DOWNLOADED-RESULT" {
 		t.Errorf("exported output.zip = %q, want the service's result bytes", got)
 	}
+
+	// The record has to survive a restart as committed. LoadImportIndexStore fails
+	// the whole index - not just the record - on a malformed one, and the fields it
+	// checks are requestId/taskId/hash: the FHE record is the first committed with an
+	// empty DataDir, so this is what proves that shape is loadable rather than a 500
+	// on every export after a restart.
+	reloaded, err := LoadImportIndexStore(filepath.Join(env.state.Security.ResultDir, "import-index.json"))
+	if err != nil {
+		t.Fatalf("reload the import index: %v", err)
+	}
+	reloadedRecord, err := reloaded.Lookup("req-data", "task-data")
+	if err != nil {
+		t.Fatalf("the committed record does not survive a reload: %v", err)
+	}
+	if reloadedRecord.Hash != env.modelHash || reloadedRecord.ResultDir != env.resultDir() {
+		t.Errorf("reloaded record = %+v, want hash %q and result dir %q", reloadedRecord, env.modelHash, env.resultDir())
+	}
+	if reloadedRecord.ResultCheck == nil || !reloadedRecord.ResultCheck.Passed {
+		t.Errorf("reloaded verdict = %+v, want the persisted passing verdict", reloadedRecord.ResultCheck)
+	}
 }
 
 // TestImportModelWarnsOnEvalKeyFields pins both halves of the model endpoint's
