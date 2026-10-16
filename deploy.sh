@@ -598,11 +598,19 @@ save_local_docker_image() {
   local builder_container="taa-builder-prod-$$"
   TEMP_BUILDER_CONTAINER="$builder_container"
 
-  spin_task "initializing container directories" docker run --name "$builder_container" --entrypoint bash "$base_image" -c "
-    rm -f /root/taa/manual /root/taa/taa.log 2>/dev/null || true
-    mkdir -p /root/taa/models /root/taa/data /root/taa/results /root/taa/certs /root/taa/keys /opt/taa/input /opt/taa/output
-    chmod 700 /root/taa/keys
-  "
+  spin_task "initializing container directories" bash -c '
+    set -euo pipefail
+    # Detached on purpose. Everything below reaches into this container with `docker exec`, which a
+    # stopped container refuses; the previous foreground form ran its init command and exited, so the
+    # container was already stopped by the next line. `docker cp` and `docker commit` work either
+    # way, which is why this went unnoticed until the packaging steps needed an exec.
+    docker run -d --name "$1" --entrypoint bash "$2" -c "sleep infinity" >/dev/null
+    docker exec -i "$1" bash -c "
+      rm -f /root/taa/manual /root/taa/taa.log 2>/dev/null || true
+      mkdir -p /root/taa/models /root/taa/data /root/taa/results /root/taa/certs /root/taa/keys /opt/taa/input /opt/taa/output
+      chmod 700 /root/taa/keys
+    "
+  ' _ "$builder_container" "$base_image"
 
   # Order matters: the engine is provisioned before the binary and config are copied so the image is
   # assembled once, and the supervisor is installed from the repository rather than inherited --
@@ -1294,7 +1302,7 @@ echo engine=\$e rules=\$r"
     if [[ "$engine_present" != "yes" ]]; then
       require_file "semgrep payload bundle not found; build it with deploy/guest-build/build-semgrep-payload-container.sh" "$SEMGREP_PAYLOAD_BUNDLE"
       local bundle_version=""
-      bundle_version="$(tar -xzOf "$SEMGREP_PAYLOAD_BUNDLE" opt/taa/semgrep/MANIFEST 2>/dev/null \
+          bundle_version="$(tar -xzOf "$SEMGREP_PAYLOAD_BUNDLE" opt/taa/semgrep/MANIFEST 2>/dev/null \
         | awk '$1 == "version" { print $2; exit }')" || true
       if [[ -z "$bundle_version" ]]; then
         warn "payload bundle carries no readable opt/taa/semgrep/MANIFEST; its version was not checked"
