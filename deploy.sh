@@ -220,7 +220,13 @@ TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-}"
 TAA_TEELLM_CONTAINER="${TAA_TEELLM_CONTAINER:-taa-teellm}"
 TAA_TEELLM_PORT="${TAA_TEELLM_PORT:-8443}"
 LOCAL_DOCKER_INPUT_DIR="${LOCAL_DOCKER_INPUT_DIR:-/opt/taa/input}"
-LOCAL_DOCKER_OUTPUT_DIR="${LOCAL_DOCKER_OUTPUT_DIR:-/opt/taa/output}"
+# The result directory itself, not the output root: this value becomes model.output.result, and all
+# three templates put it one level down (/opt/taa/output/result) so results do not share a directory
+# with log/ and progress/ -- which deploy-docker.sh creates as exactly that three-way split. Passing
+# the root here was the same slip as in the save path, and it produced a different layout from the
+# template in both places. TAA creates whichever of the three directories it needs, so pre-creating
+# only this one is enough.
+LOCAL_DOCKER_OUTPUT_DIR="${LOCAL_DOCKER_OUTPUT_DIR:-/opt/taa/output/result}"
 SAVE_CLEAN="${SAVE_CLEAN:-false}"
 
 # Resolve the TEE-LLM gateway endpoint for local docker deploys. An explicit TAA_LLM_ENDPOINT
@@ -587,11 +593,17 @@ save_local_docker_image() {
   local prod_config_source="$LOCAL_RUN_DIR/export-production-taa-config.json"
   ensure_parent_dir "$prod_config_source"
 
+  # The result path is /opt/taa/output/result and not /opt/taa/output, matching every template: a
+  # non-empty model_output_dir overwrites the template's value rather than falling back to it, so
+  # passing the output root here silently rewrote model.output.result and results landed beside
+  # log/ and progress/ instead of in their own directory. The remote path passes empty for both
+  # staging paths and therefore kept the template's value -- which is how the two deployments came
+  # to disagree about the same key.
   write_taa_config "$prod_config_source" "$prod_config_template" \
     ":6001" "" "" "" \
     "/root/taa/models" "/root/taa/data" "/root/taa/results" \
     "$(resolve_llm_endpoint)" "$target_model" \
-    false "/opt/taa/input" "/opt/taa/output" "/root/taa/keys"
+    false "/opt/taa/input" "/opt/taa/output/result" "/root/taa/keys"
   info "production config prepared for image (model: $target_model)"
 
   step "creating ephemeral container to assemble image"
