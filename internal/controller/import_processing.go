@@ -564,6 +564,16 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 		}
 	}
 
+	// The model's 100% was held back for exactly this point: the platform must not be
+	// told the task is over while the artifacts are still being collected and checked.
+	// Released whatever the verdict says - a leak is reported as a rejected run through
+	// reportRes, it does not make the run stop short of its end. A cancelled task and
+	// every failure before here return without reaching this line, and the held snapshot
+	// goes with them.
+	if !checkCancelled() {
+		watcher.reportDeferredProgress(context.Background())
+	}
+
 	StepSeparator("Build & Upload Report")
 	s.setCurrentOp("reporting")
 	s.Logs.Add(LogInfo, "report", "生成训练报告: taskId=%s", trainReq.TaskID)

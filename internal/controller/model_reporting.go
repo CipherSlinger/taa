@@ -23,6 +23,14 @@ const (
 	maxLogBatchSize        = 100
 )
 
+// progressHoldPercent is the progress value the watcher deliberately withholds. A model
+// reporting 100% has finished training, but TAA has not finished the task: the artifacts
+// still have to be collected out of the model output directory and the result leakage
+// check still has to run over them. Reporting 100% as soon as it is read would tell the
+// platform the task is over while that work is in flight, so the snapshot is parked in
+// the watcher and released by reportDeferredProgress once the pipeline is past the check.
+const progressHoldPercent = 100.0
+
 // ModelLogEntry 表示模型日志上报中的单条日志。
 type ModelLogEntry = platform.ModelLogEntry
 
@@ -178,6 +186,11 @@ type reportWatcher struct {
 	lastProgressKey string
 	interval        time.Duration
 
+	// deferredProgress holds the snapshot the watcher is sitting on because it is
+	// progressHoldPercent or above; see flushWithContext and reportDeferredProgress.
+	deferredProgress    progressSnapshot
+	hasDeferredProgress bool
+
 	startOnce sync.Once
 	stopOnce  sync.Once
 }
@@ -283,11 +296,54 @@ func (w *reportWatcher) flushWithContext(ctx context.Context) {
 	if !ok || progress.Key == w.lastProgressKey {
 		return
 	}
+	if progress.Percent >= progressHoldPercent {
+		w.holdFullProgress(progress)
+		return
+	}
 	if err := ReportProgress(ctx, w.platformAddr, w.dockerID, w.requestID, w.taskID, progress.Percent, progress.Timestamp); err != nil {
 		w.warn("上报训练进度失败: %v", err)
 		return
 	}
 	w.lastProgressKey = progress.Key
+}
+
+// holdFullProgress parks a 100% snapshot instead of reporting it. See
+// progressHoldPercent for why it is held; reportDeferredProgress releases it.
+func (w *reportWatcher) holdFullProgress(progress progressSnapshot) {
+	if !w.hasDeferredProgress {
+		w.info("训练已到 100%%，暂不上报，等结果检查结束后补报: taskId=%s", w.taskID)
+	}
+	w.deferredProgress = progress
+	w.hasDeferredProgress = true
+	// Claimed like any reported snapshot so the next tick does not park it again.
+	w.lastProgressKey = progress.Key
+}
+
+// reportDeferredProgress reports the 100% snapshot the watcher held back. The training
+// pipeline calls it once the result leakage check has reached its verdict - or, when
+// that check is switched off, once the artifacts have been collected - so the platform
+// only learns the task reached 100% after TAA has finished the work that follows
+// training. A model that never reported 100% leaves nothing to release, and a failure or
+// a stop before the release point drops the held snapshot on the floor - 100% is only
+// ever reported for a run TAA carried to its end. Releasing twice reports once: the
+// snapshot is claimed before it is sent.
+func (w *reportWatcher) reportDeferredProgress(ctx context.Context) {
+	if !w.hasDeferredProgress {
+		return
+	}
+	progress := w.deferredProgress
+	w.deferredProgress = progressSnapshot{}
+	w.hasDeferredProgress = false
+	w.info("结果检查结束，补报训练进度 100%%: taskId=%s", w.taskID)
+	if err := ReportProgress(ctx, w.platformAddr, w.dockerID, w.requestID, w.taskID, progress.Percent, progress.Timestamp); err != nil {
+		w.warn("上报训练进度失败: %v", err)
+	}
+}
+
+func (w *reportWatcher) info(format string, args ...any) {
+	if w.state != nil && w.state.Logs != nil {
+		w.state.Logs.Add(LogInfo, "report", format, args...)
+	}
 }
 
 func (w *reportWatcher) warn(format string, args ...any) {
