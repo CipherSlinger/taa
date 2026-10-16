@@ -13,9 +13,17 @@ import (
 	"time"
 )
 
-// Task status values this package produces locally. The service's own status
-// string is passed through as-is; these three are used when no service status is
-// available.
+// Task status values.
+//
+// The service's own status string is passed through as-is, so these are what this
+// package writes when it is the one deciding, not the vocabulary it reads: a
+// locally decided terminal state is StatusFailed (staging, probe, continue, or
+// the wait's deadline) or StatusCancelled (a stop that landed).
+//
+// StatusCompleted is the one value here this package never produces. A task
+// completes only when the service says so, and that answer travels through as the
+// service's own spelling; StatusCompleted exists for the other direction - it is
+// the word callers and tests compare a finished outcome against.
 const (
 	StatusCompleted = "completed"
 	StatusFailed    = "failed"
@@ -395,8 +403,19 @@ func (r *Runner) Cancel(ctx context.Context, taskID string) error {
 // waiting: publishing the key is a multi-gigabyte download when the cache is
 // cold, so a key server that never answers would otherwise hold the import
 // goroutine open forever, and TaskTimeout's claim to bound "a whole task" would
-// be false. Staging, the create/probe/continue calls and the wait all run on
-// that one deadline, so the caller's cancellation stops staging too.
+// be false. Staging, the create/probe/continue calls and the wait all run on that
+// one deadline, so the caller's cancellation reaches the key download.
+//
+// It does not reach everything in staging, and the difference is worth stating
+// rather than rounding away. The bytes this package moves after the download -
+// the SM3 digest the key cache takes over the downloaded key, the rename or copy
+// into the cache, and the link-or-copy that publishes the key and the input
+// archive into the shared directory - take no context, so neither the deadline
+// nor the caller's cancellation interrupts one. A multi-gigabyte copy runs to
+// completion behind a returned Execute, and a cancelled import releases its
+// goroutine when that copy finishes rather than when the cancel arrives. Bounding
+// them means giving these helpers a context, which is a change to the publishing
+// path rather than to this comment.
 func (r *Runner) Execute(ctx context.Context, spec TaskSpec, onProgress func(done, total int)) (TaskOutcome, error) {
 	deadline := time.Now().Add(r.cfg.TaskTimeout)
 	stageCtx, cancelStage := context.WithDeadline(ctx, deadline)

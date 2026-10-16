@@ -118,11 +118,15 @@ func newHTTPClient(timeout, headerTimeout time.Duration) *http.Client {
 
 // guardTaskCall rejects a task-scoped call this package must not send.
 //
-// The id must be one safe path segment: url.PathEscape is not a traversal
-// defence, because it escapes neither "." nor "/", so "../models/activate"
-// survives escaping and the server decodes the path back to
-// /api/v1/tasks/../models/activate. The tenant must be present, because an empty
-// one used to drop the X-User-Id header and succeed as no tenant at all.
+// The id must be one safe path segment, because url.PathEscape is not a traversal
+// defence. It does escape "/" - as %2F - but it leaves "." alone, so the id ".."
+// survives escaping unchanged and lands in the URL as a parent segment; and
+// escaping the slash in a longer id buys nothing, because the hierarchy is
+// restored the moment the path is decoded for matching, which is what net/http
+// does (URL.Path is stored decoded). The conclusion is the one that matters: the
+// segment has to be checked before the request is built, and ValidTaskID is that
+// check. The tenant must be present, because an empty one used to drop the
+// X-User-Id header and succeed as no tenant at all.
 func guardTaskCall(taskID, userID string) error {
 	if err := ValidTaskID(taskID); err != nil {
 		return err
