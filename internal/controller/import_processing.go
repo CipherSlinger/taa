@@ -397,17 +397,6 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 		return
 	}
 
-	checkpointDir := s.Security.GetModelCheckpointDir()
-	if err := os.MkdirAll(checkpointDir, 0o755); err != nil {
-		if checkCancelled() {
-			s.Logs.Add(LogInfo, "train", "训练任务已中止: taskId=%s", trainReq.TaskID)
-			return
-		}
-		s.Logs.Add(LogError, "train", "创建检查点目录失败: %v", err)
-		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("创建检查点目录失败: %v", err))
-		return
-	}
-
 	for name, target := range map[string]string{
 		"模型日志": s.Security.GetModelLogDir(),
 		"模型进度": s.Security.GetModelProgressDir(),
@@ -453,9 +442,6 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 	if env == nil {
 		env = make(map[string]string)
 	}
-	env["TAA_CHECKPOINT_DIR"] = checkpointDir
-	env["TAA_MODEL_CHECKPOINT_DIR"] = checkpointDir
-	env["CIPHERFLOW_CHECKPOINT_DIR"] = checkpointDir
 	env["TAA_LOG_DIR"] = s.Security.GetModelLogDir()
 	env["TAA_PROGRESS_DIR"] = s.Security.GetModelProgressDir()
 

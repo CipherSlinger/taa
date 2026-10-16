@@ -68,23 +68,21 @@ func setupTestState(t *testing.T) (*TAAState, string) {
 	outputDir := filepath.Join(tmpDir, "output")
 	logDir := filepath.Join(tmpDir, "log")
 	progressDir := filepath.Join(tmpDir, "progress")
-	checkpointDir := filepath.Join(tmpDir, "checkpoint")
 
 	state := NewTAAState(attestationPath, "127.0.0.1:65535", "test-docker-001", "", "", sm2Key, userData, SecurityConfig{
 		ScanEnabled: false,
 		// The engine is what production resolves from codeScanEngine at startup.
 		// A state built without one is not "no engine configured", it is a
 		// configuration the audit refuses, so the fixture supplies the baseline.
-		Engine:             codeaudit.DefaultEngine(),
-		ModelDir:           modelDir,
-		DataDir:            dataDir,
-		ResultCheck:        false,
-		ResultDir:          resultDir,
-		ModelInputDir:      inputDir,
-		ModelOutputDir:     outputDir,
-		ModelLogDir:        logDir,
-		ModelProgressDir:   progressDir,
-		ModelCheckpointDir: checkpointDir,
+		Engine:           codeaudit.DefaultEngine(),
+		ModelDir:         modelDir,
+		DataDir:          dataDir,
+		ResultCheck:      false,
+		ResultDir:        resultDir,
+		ModelInputDir:    inputDir,
+		ModelOutputDir:   outputDir,
+		ModelLogDir:      logDir,
+		ModelProgressDir: progressDir,
 	})
 	return state, attestationPath
 }

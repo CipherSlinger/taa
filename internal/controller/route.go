@@ -40,29 +40,27 @@ const maxDownloadBytes = config.DefaultMaxFileBytes // 3 GB
 // one where the operator turned the channel off. buildSecurityConfig is the only
 // production constructor and always sets it; a second caller must as well.
 type SecurityConfig struct {
-	ScanEnabled        bool                   // 是否在 import type=1 时执行源码安全扫描
-	Engine             codeaudit.StaticEngine // Tier 1 静态扫描引擎（启动时由 codeScanEngine 配置解析）
-	Binary             codeaudit.BinaryConfig // 二进制审计通道配置（与 Tier 1 引擎无关，两种引擎部署都生效）
-	ModelDir           string                 // 模型代码存放目录（扫描目标，type=1）
-	DataDir            string                 // 数据目录（type=2 测试数据，type=3 训练数据，用于数据指纹比对）
-	ResultCheck        bool                   // 是否在 export 时检查明文数据泄露
-	ResultDir          string                 // 训练结果目录（导出前检查）
-	MaxFileBytes       int64                  // Maximum file size limit in bytes (downloads and exports, default 3GB)
-	MaxResultBytes     int64                  // Backward-compatible alias for MaxFileBytes
-	ModelInputDir      string                 // 模型数据输入目录（缺省 /opt/taa/input）
-	ModelOutputDir     string                 // 模型结果输出目录（缺省 /opt/taa/output/result）
-	ModelLogDir        string                 // Model log file or directory path (default /opt/taa/output/log)
-	ModelProgressDir   string                 // Model progress file or directory path (default /opt/taa/output/progress/progress.json)
-	ModelCheckpointDir string                 // Model checkpoint directory (default /opt/taa/checkpoint)
-	LLM                codeaudit.LLMConfig    // 本地 LLM 语义验证配置
+	ScanEnabled      bool                   // 是否在 import type=1 时执行源码安全扫描
+	Engine           codeaudit.StaticEngine // Tier 1 静态扫描引擎（启动时由 codeScanEngine 配置解析）
+	Binary           codeaudit.BinaryConfig // 二进制审计通道配置（与 Tier 1 引擎无关，两种引擎部署都生效）
+	ModelDir         string                 // 模型代码存放目录（扫描目标，type=1）
+	DataDir          string                 // 数据目录（type=2 测试数据，type=3 训练数据，用于数据指纹比对）
+	ResultCheck      bool                   // 是否在 export 时检查明文数据泄露
+	ResultDir        string                 // 训练结果目录（导出前检查）
+	MaxFileBytes     int64                  // Maximum file size limit in bytes (downloads and exports, default 3GB)
+	MaxResultBytes   int64                  // Backward-compatible alias for MaxFileBytes
+	ModelInputDir    string                 // 模型数据输入目录（缺省 /opt/taa/input）
+	ModelOutputDir   string                 // 模型结果输出目录（缺省 /opt/taa/output/result）
+	ModelLogDir      string                 // Model log file or directory path (default /opt/taa/output/log)
+	ModelProgressDir string                 // Model progress file or directory path (default /opt/taa/output/progress/progress.json)
+	LLM              codeaudit.LLMConfig    // 本地 LLM 语义验证配置
 }
 
 const (
-	DefaultModelInputDir      = "/opt/taa/input"
-	DefaultModelOutputDir     = "/opt/taa/output/result"
-	DefaultModelLogDir        = "/opt/taa/output/log"
-	DefaultModelProgressDir   = "/opt/taa/output/progress/progress.json"
-	DefaultModelCheckpointDir = "/opt/taa/checkpoint"
+	DefaultModelInputDir    = "/opt/taa/input"
+	DefaultModelOutputDir   = "/opt/taa/output/result"
+	DefaultModelLogDir      = "/opt/taa/output/log"
+	DefaultModelProgressDir = "/opt/taa/output/progress/progress.json"
 )
 
 func (sec SecurityConfig) GetMaxFileBytes() int64 {
@@ -112,17 +110,6 @@ func (sec SecurityConfig) GetModelProgressDir() string {
 	dir := DefaultModelProgressDir
 	if strings.TrimSpace(sec.ModelProgressDir) != "" {
 		dir = sec.ModelProgressDir
-	}
-	if abs, err := filepath.Abs(dir); err == nil {
-		return filepath.Clean(abs)
-	}
-	return filepath.Clean(dir)
-}
-
-func (sec SecurityConfig) GetModelCheckpointDir() string {
-	dir := DefaultModelCheckpointDir
-	if strings.TrimSpace(sec.ModelCheckpointDir) != "" {
-		dir = sec.ModelCheckpointDir
 	}
 	if abs, err := filepath.Abs(dir); err == nil {
 		return filepath.Clean(abs)

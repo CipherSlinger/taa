@@ -97,7 +97,6 @@ func TestBuildSecurityConfig(t *testing.T) {
 		ModelOutputDir:                  "/opt/taa/models/output",
 		ModelLogDir:                     "/opt/taa/models/log",
 		ModelProgressDir:                "/opt/taa/models/progress",
-		ModelCheckpointDir:              "/opt/taa/models/checkpoint",
 		EnableLLM:                       true,
 		LLMTransport:                    "teetls",
 		LLMEndpoint:                     "https://127.0.0.1:8443",
@@ -160,9 +159,6 @@ func TestBuildSecurityConfig(t *testing.T) {
 	}
 	if sec.ModelProgressDir != cfg.ModelProgressDir {
 		t.Errorf("ModelProgressDir = %q, want %q", sec.ModelProgressDir, cfg.ModelProgressDir)
-	}
-	if sec.ModelCheckpointDir != cfg.ModelCheckpointDir {
-		t.Errorf("ModelCheckpointDir = %q, want %q", sec.ModelCheckpointDir, cfg.ModelCheckpointDir)
 	}
 
 	wantLLM := codeaudit.LLMConfig{

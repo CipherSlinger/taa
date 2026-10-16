@@ -548,7 +548,6 @@ TAA_DEBUG_MODE=true ./deploy.sh taa
 
 /opt/taa/                         运行时数据与暂存目录
 ├── input/                        待处理输入
-├── checkpoint/                   训练检查点
 ├── output/                       训练产物 (result / log / progress)
 └── semgrep/rules/                Semgrep 扫描规则
 ```

@@ -98,7 +98,6 @@ type StartupConfig struct {
 	ModelOutputDir             string
 	ModelLogDir                string
 	ModelProgressDir           string
-	ModelCheckpointDir         string
 	KeysDir                    string
 	AttestationHRKCertPath     string
 	AttestationHSKCekCertPath  string
@@ -154,7 +153,6 @@ type startupConfigFile struct {
 	ModelOutputDir     string `json:"modelOutputDir"`
 	ModelLogDir        string `json:"modelLogDir"`
 	ModelProgressDir   string `json:"modelProgressDir"`
-	ModelCheckpointDir string `json:"modelCheckpointDir"`
 	KeysDir            string `json:"keysDir"`
 }
 
@@ -233,10 +231,9 @@ func (r *startupResultCheckConfigFile) UnmarshalJSON(data []byte) error {
 }
 
 type startupModelConfigFile struct {
-	Dir        string                       `json:"dir"`
-	Input      string                       `json:"input"`
-	Checkpoint string                       `json:"checkpoint"`
-	Output     startupModelOutputConfigFile `json:"output"`
+	Dir    string                       `json:"dir"`
+	Input  string                       `json:"input"`
+	Output startupModelOutputConfigFile `json:"output"`
 }
 
 type startupModelOutputConfigFile struct {
@@ -441,7 +438,6 @@ func defaultStartupConfig() StartupConfig {
 		ModelOutputDir:             "/opt/taa/output/result",
 		ModelLogDir:                "/opt/taa/output/log",
 		ModelProgressDir:           "/opt/taa/output/progress/progress.json",
-		ModelCheckpointDir:         "/opt/taa/checkpoint",
 		KeysDir:                    "/opt/taa/keys",
 		AttestationHRKCertPath:     hrkDefault,
 		AttestationHSKCekCertPath:  hskDefault,
@@ -626,12 +622,6 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if trimmed := strings.TrimSpace(fileCfg.Model.Output.Progress); trimmed != "" {
 		cfg.ModelProgressDir = trimmed
-	}
-	if trimmed := strings.TrimSpace(fileCfg.ModelCheckpointDir); trimmed != "" {
-		cfg.ModelCheckpointDir = trimmed
-	}
-	if trimmed := strings.TrimSpace(fileCfg.Model.Checkpoint); trimmed != "" {
-		cfg.ModelCheckpointDir = trimmed
 	}
 	if trimmed := strings.TrimSpace(fileCfg.Attestation.HRKCertPath); trimmed != "" {
 		cfg.AttestationHRKCertPath = trimmed
