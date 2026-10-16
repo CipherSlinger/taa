@@ -1,7 +1,7 @@
 # FHE 服务接入 TAA：把 Latti FHE 作为一类执行后端编排进来
 
 日期：2026-10-16
-状态：已实现；真 GPU 端到端待跑（见文末「验证状态」）
+状态：已实现；远程部署与注册已在真 GPU 宿主上跑通，FHE 任务端到端待跑（见文末「验证状态」）
 
 ## 背景
 
@@ -427,5 +427,13 @@ go test ./internal/fhe/... ./internal/config/... ./internal/controller/...
   `TestLoadStartupConfigTEEIdentityIgnoresEnvironment`、`TestLoadStartupConfigFHEPlatformSection`）。
 - 已验证的手段：`bash -n`、本机 `DRY_RUN=1` 与基线逐行 diff（只多出新增行）、
   `DRY_RUN=1 --remote` 逐行审 ssh 命令（不连接）、`go test -count=1 -p 1 ./...` 全绿。
-- **尚未验证**：178 上的真 GPU 端到端（真 FHE 栈 + TAA + mock 跑通 cifar-10），
-  即交付包 108.9 s / 78.6 s 基线的对照。这一步会真的在共享宿主上起容器，需要单独安排。
+- **178 真机 e2e 已跑通（2026-10-16）**：`./deploy-fhe.sh --remote` 在 172.16.10.178 上一次
+  完成 FHE 栈 + platform-mock + TAA `type=fhe` 的部署，注册闸门两次都过：
+  - 不注入 `DOCKER_ID` → 平台记到 `taa-fhe`（模板 `platform.dockerID`），即兜底路径；
+  - 注入 `DOCKER_ID=taa-fhe-env` → 平台记到 `taa-fhe-env`，而模板里写的是 `taa-fhe`，
+    即**环境变量赢**。容器环境、TAA 自身日志（`dockerId=taa-fhe-env`）与 mock 的
+    `accepted:true` 三处一致。顺带证实容器重建判定生效（旧容器缺该变量时被重建而非复用）。
+  - 首次真机运行暴露并修掉了脚本的一个缺口：`run-node.sh up -d` 返回时应用还没绑端口，
+    单次探健康会读到 connection reset（实测约 7 s），已改为 `wait_for_fhe_stack` 有界重试。
+- **尚未验证**：真机上的 FHE 任务端到端（投任务 → 回调 → 收结果 → export），
+  即交付包 108.9 s / 78.6 s 基线的对照。本轮只验到「注册到达平台」这一层。
