@@ -166,8 +166,11 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 	}
 
 	s.setFHEActiveTask(req.TaskID)
-	// The defer is the safety net for the early returns below, and clearing twice
-	// is harmless: clearFHEActiveTask is a no-op unless the id still matches.
+	// The defer is the backstop, and clearing twice is harmless: clearFHEActiveTask
+	// is a no-op unless the id still matches. Nothing below returns early before
+	// the explicit clear at the end of Execute, so its live purpose is the panic
+	// path - Execute unwinding through here releases the id instead of leaving it
+	// set on an instance that has no task running.
 	defer s.clearFHEActiveTask(req.TaskID)
 	s.promoteCurrentTaskToFHE()
 
@@ -246,9 +249,10 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 	// Only a run that produced a result archive gets a record. A failed run leaves
 	// nothing to export, and committing it would both stamp the "passed, skipped"
 	// verdict above onto artifacts that were never produced and consume the
-	// requestId/taskId for the life of the process. Those paths release the
-	// reservation the handler took instead, so the platform can submit the same
-	// ids again.
+	// requestId/taskId for good: a committed record is durable, and the only thing
+	// that removes one is the crash-recovery Purge for that exact task, which a
+	// failed FHE run is not. Those paths release the reservation the handler took
+	// instead, so the platform can submit the same ids again.
 	if status != "succeeded" {
 		if store, err := s.importIndexStore(); err == nil {
 			store.Rollback(req.RequestID, req.TaskID)
@@ -296,7 +300,7 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 // promoteCurrentTaskToFHE marks the in-flight import as a running task.
 //
 // It sets CurrentOp to "training" and nothing else. That string is load-bearing:
-// isTrainingBusyLocked（route.go:673）keys on it, so without it a status query
+// isTrainingBusyLocked（route.go:723）keys on it, so without it a status query
 // during an FHE run would report the instance as free while a task is using the
 // GPU. It is deliberately the existing value rather than a new "fhe" one, because
 // effectiveOpLocked returns CurrentOp verbatim to the platform and a value the

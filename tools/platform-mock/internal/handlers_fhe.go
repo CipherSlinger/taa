@@ -146,11 +146,14 @@ func fheSubmitHandler(cfg Config, taaAddr string) http.HandlerFunc {
 // uploadNameIsEncrypted reports whether an upload holds ciphertext rather than
 // the plaintext this package can hash or hand to TAA.
 //
-// The suffix is the same one /api/upload appends and the same rule
-// listUploadedFiles derives its "encrypted" flag from: ".enc" for
-// encryptMode=envelope and ".sm4" for encryptMode=urlkey. Nothing records the
-// mode a file was uploaded with, so its name is the only signal a later request
-// has.
+// The suffix is the one /api/upload appends: ".enc" for encryptMode=envelope
+// and ".sm4" for encryptMode=urlkey. Nothing records the mode a file was
+// uploaded with, so its name is the only signal a later request has.
+//
+// listUploadedFiles' "encrypted" flag is narrower than this: it tests for
+// ".enc" alone, so an ".sm4" upload is listed as plaintext. That flag is
+// advisory - no submit path reads it - so the two disagree about a label
+// rather than about what TAA is handed.
 func uploadNameIsEncrypted(name string) bool {
 	lower := strings.ToLower(strings.TrimSpace(name))
 	return strings.HasSuffix(lower, ".enc") || strings.HasSuffix(lower, ".sm4")
