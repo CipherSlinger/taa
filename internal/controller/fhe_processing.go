@@ -196,36 +196,73 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 	}
 
 	// The ciphertext result is not scanned for plaintext leakage: the artifacts
-	// are FHE ciphertexts, which is exactly what this instance exists to move. The
-	// verdict is still recorded, because export reads it under fail-closed and a
-	// missing verdict would turn a correct export into a 500.
-	verdict := &resource.ResultCheckVerdict{
-		Passed:    true,
-		Details:   []string{"skipped: FHE ciphertext result"},
-		CheckedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-	if store, err := s.importIndexStore(); err != nil {
-		s.Logs.Add(LogWarn, "fhe", "加载导入索引失败，跳过裁决未能落盘: %v", err)
-	} else if err := store.SetResultCheck(req.RequestID, req.TaskID, verdict); err != nil {
-		s.Logs.Add(LogWarn, "fhe", "保存跳过裁决失败: %v", err)
-	}
-
-	resultPath := ""
+	// are FHE ciphertexts, which is exactly what this instance exists to move.
 	if execErr == nil {
 		dst := filepath.Join(resultDir, "output.zip")
-		_, err := runner.CopyResult(context.Background(), spec, outcome, dst)
-		if err != nil {
+		if _, err := runner.CopyResult(context.Background(), spec, outcome, dst); err != nil {
 			status = "failed"
 			failureReason = fmt.Sprintf("取回 FHE 结果失败: %v", err)
 			code = reportCodeFHEFailure
 			msg = failureReason
 			s.Logs.Add(LogError, "fhe", "取回 FHE 结果失败: taskId=%s, err=%v", req.TaskID, err)
 		} else {
-			resultPath = dst
 			s.Logs.Add(LogInfo, "fhe", "FHE 结果已落盘: %s", dst)
 		}
 	}
-	_ = resultPath
+
+	// The verdict export reads under fail-closed. A missing verdict would turn a
+	// correct export into a 500, so it is recorded even though no scan ran.
+	verdict := &resource.ResultCheckVerdict{
+		Passed:    true,
+		Details:   []string{"skipped: FHE ciphertext result"},
+		CheckedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// The import index record, and then the verdict attached to it, in that order:
+	// export resolves both ResultDir and the verdict through this record, and
+	// SetResultCheck refuses to attach one to a record that was never committed.
+	// Without the record there is no way to retrieve a result at all - the import
+	// handler reserved the ids, and a reservation alone is not lookup-able.
+	//
+	// Only a run that produced a result archive gets a record. A failed run leaves
+	// nothing to export, and committing it would both stamp the "passed, skipped"
+	// verdict above onto artifacts that were never produced and consume the
+	// requestId/taskId for the life of the process. Those paths release the
+	// reservation the handler took instead, so the platform can submit the same
+	// ids again.
+	if status != "succeeded" {
+		if store, err := s.importIndexStore(); err == nil {
+			store.Rollback(req.RequestID, req.TaskID)
+		}
+	} else {
+		// Hash is the FHE model digest rather than a digest of the data package:
+		// the training path records the resource it staged for the run, and on this
+		// instance the run is bound to a model - the same digest the task carried
+		// as model_id. DataDir stays empty on purpose: the training path points it
+		// at the directory the data package was extracted into (keyed by Hash), and
+		// this path extracts nothing into a hash directory - the input package is
+		// published to the runner's per-task input file, and Hash here is the
+		// model's, so a path derived from it would name a directory that does not
+		// exist. Phase is the phase the import ran under, as on the training path:
+		// export reads 0 as "use whatever phase the instance is in now", which
+		// would let a later phase change pick a different export key.
+		record := ImportIndexRecord{
+			RequestID: req.RequestID,
+			TaskID:    req.TaskID,
+			Hash:      modelHash,
+			ResultDir: resultDir,
+			Phase:     phase,
+		}
+		store, err := s.importIndexStore()
+		if err != nil {
+			s.Logs.Add(LogWarn, "fhe", "加载导入索引失败，结果将无法通过 export 取回: %v", err)
+		} else if err := store.Commit(record); err != nil {
+			s.Logs.Add(LogWarn, "fhe", "保存导入索引失败，结果将无法通过 export 取回: %v", err)
+			store.Rollback(req.RequestID, req.TaskID)
+		} else if err := store.SetResultCheck(req.RequestID, req.TaskID, verdict); err != nil {
+			s.Logs.Add(LogWarn, "fhe", "保存跳过裁决失败: %v", err)
+		}
+	}
 
 	report, err := s.buildAndSaveTrainingReport(req.TaskID, startedAt, time.Now().UTC(), status, 0, failureReason, s.getLastAudit(), false, resultDir, verdict)
 	if err != nil {

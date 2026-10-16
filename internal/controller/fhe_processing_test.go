@@ -3,6 +3,7 @@ package controller
 import (
 	"archive/zip"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -399,10 +400,14 @@ func (e *fheTestEnv) resultDir() string {
 	return resultDirForRequestTask(e.state.Security.ResultDir, "req-data", "task-data")
 }
 
-// commitRecord writes the import index record for the task, the way the training
-// path writes its own. Export resolves ResultDir and the leakage verdict through
-// that record, so a test that wants to read the verdict back needs one.
-func (e *fheTestEnv) commitRecord() {
+// reserveRecord takes the import index reservation for the task, which is what
+// the import handler does before it hands the request to the asynchronous import.
+//
+// It deliberately does NOT commit a record. The record is the import path's own
+// output and export resolves ResultDir and the leakage verdict through it, so a
+// fixture that commits one itself would test export against state production
+// never builds - which is how the import path's missing commit stayed invisible.
+func (e *fheTestEnv) reserveRecord() {
 	e.t.Helper()
 	store, err := e.state.importIndexStore()
 	if err != nil {
@@ -411,18 +416,16 @@ func (e *fheTestEnv) commitRecord() {
 	if err := store.Reserve("req-data", "task-data"); err != nil {
 		e.t.Fatalf("Reserve: %v", err)
 	}
-	if err := store.Commit(ImportIndexRecord{
-		RequestID: "req-data", TaskID: "task-data",
-		Hash: strings.Repeat("c", 64), ResultDir: e.resultDir(),
-	}); err != nil {
-		e.t.Fatalf("Commit: %v", err)
-	}
 }
 
 // runData drives the data half through processImportedResource, which is the
 // entry point the import handler calls: the FHE branch sits inside it.
+//
+// The reservation is taken first because the handler takes it before calling in:
+// committing the record is the import path's own job.
 func (e *fheTestEnv) runData(zipPath string) {
 	e.t.Helper()
+	e.reserveRecord()
 	e.state.processImportedResource(e.dataRequest(), 2, false, zipPath, nil)
 }
 
@@ -521,7 +524,6 @@ func trainingReportStatus(t *testing.T, resultDir string) (string, string) {
 func TestFHEImportDispatchesTaskAndLandsResult(t *testing.T) {
 	env := newFHETestEnv(t)
 	env.importModel()
-	env.commitRecord()
 
 	// The FHE service writes the result into the shared directory; the controller
 	// has to copy it out of there rather than re-download it.
@@ -606,14 +608,16 @@ func TestFHEImportDispatchesTaskAndLandsResult(t *testing.T) {
 		t.Errorf("report status = %q (failure_reason %q), want succeeded", status, reason)
 	}
 
-	// The verdict export reads under fail-closed.
+	// The record the import committed on its own, and the verdict export reads
+	// under fail-closed. Nothing seeded this: the lookup below fails unless the
+	// data import committed both.
 	store, err := env.state.importIndexStore()
 	if err != nil {
 		t.Fatalf("importIndexStore: %v", err)
 	}
 	record, err := store.Lookup("req-data", "task-data")
 	if err != nil {
-		t.Fatalf("Lookup: %v", err)
+		t.Fatalf("the data import committed no index record: %v", err)
 	}
 	if record.ResultCheck == nil || !record.ResultCheck.Passed {
 		t.Fatalf("recorded verdict = %+v, want a passing one", record.ResultCheck)
@@ -684,6 +688,20 @@ func TestExecuteFHETaskReportsAFailedTask(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(env.resultDir(), "output.zip")); err == nil {
 		t.Error("output.zip exists for a failed task")
+	}
+	// A failed run has nothing to export, so it must leave no index record - and
+	// must not keep the handler's reservation either. A held reservation is not
+	// inert: it refuses every later submission of the same requestId/taskId, for
+	// the life of the process.
+	store, err := env.state.importIndexStore()
+	if err != nil {
+		t.Fatalf("importIndexStore: %v", err)
+	}
+	if record, err := store.Lookup("req-data", "task-data"); err == nil {
+		t.Errorf("a failed task committed an index record (%+v); export would serve an empty result dir", record)
+	}
+	if err := store.Reserve("req-data", "task-data"); err != nil {
+		t.Errorf("the reservation is still held after a failed run: %v", err)
 	}
 	// A failed run must release the task id it registered, on this exit path too.
 	// A left-behind id is not inert: stopTraining consults it first, and the runner
@@ -839,5 +857,141 @@ func TestImportFHEModelStagesIntoSharedDirAndSkipsTheAudit(t *testing.T) {
 	// And importModel is what names the model the task will run against.
 	if got, _ := env.state.getModelChecksum()["value"].(string); got != hash {
 		t.Errorf("recorded model checksum = %q, want %q", got, hash)
+	}
+}
+
+// TestFHEImportResultIsExportable runs the deliverable through the HTTP surface:
+// a data import arrives at /v1/taa/import on an fhe instance, the task runs against
+// the FHE stub, and the result is then retrieved through /v1/taa/export, which is
+// the only retrieval path the contract offers.
+//
+// Nothing about the store is seeded by hand. Export resolves ResultDir and the
+// leakage verdict through the record the import itself commits, so a fixture that
+// commits one would exercise export while leaving the path that has to produce the
+// record unexercised - which is exactly how the missing commit stayed invisible.
+//
+// The port's phase is left at the fixture's default (1) and the leakage check is
+// switched on with fail-closed, because that turns both halves of the record that
+// export reads into hard requirements: no record is a 400, and a record without a
+// verdict is a 500.
+func TestFHEImportResultIsExportable(t *testing.T) {
+	env := newFHETestEnv(t)
+
+	env.state.Security.ResultCheck = true
+	env.state.Security.LLM.FailClosed = true
+
+	// The model first: a task without one is refused before it is dispatched.
+	env.importModel()
+
+	// The platform's reportRes endpoint. The import is asynchronous, and receiving
+	// this report is what says the whole chain - task, result, verdict, report -
+	// has run, without polling the filesystem for a file that may appear mid-write.
+	type reportPayload struct {
+		Code int     `json:"code"`
+		Msg  *string `json:"msg"`
+	}
+	reported := make(chan reportPayload, 1)
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/taa/reportRes" {
+			var payload reportPayload
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			reported <- payload
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer platform.Close()
+	env.state.mu.Lock()
+	env.state.PlatformIP = platform.URL
+	env.state.mu.Unlock()
+
+	// The package the platform delivers for this task.
+	_, pkg := writeTestZip(t, t.TempDir(), map[string]string{"data/case.txt": "ciphertext"})
+	pkgServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(pkg)
+	}))
+	defer pkgServer.Close()
+
+	mux := http.NewServeMux()
+	RegisterRoutes(mux, env.state)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	importResp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+		"resourceUrl":     pkgServer.URL + "/in.zip",
+		"requestId":       "req-data",
+		"taskId":          "task-data",
+		"evalKeyUrl":      env.stub.URL + "/eval_context.bin",
+		"evalKeyFileHash": env.keyHash,
+	})
+	importBody, _ := io.ReadAll(importResp.Body)
+	importResp.Body.Close()
+	if importResp.StatusCode != http.StatusOK {
+		t.Fatalf("import: status = %d, body = %s", importResp.StatusCode, importBody)
+	}
+
+	select {
+	case payload := <-reported:
+		if payload.Code != 0 {
+			msg := ""
+			if payload.Msg != nil {
+				msg = *payload.Msg
+			}
+			t.Fatalf("reportRes code = %d (msg %q), want a successful FHE run", payload.Code, msg)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for the FHE import to report its result")
+	}
+
+	// The retrieval the contract promises. It runs before the record assertions
+	// below so that a missing record is reported as the failure the platform would
+	// actually see - a refused export - with the lookup failure attached.
+	exportResp := postJSON(t, server.URL+"/v1/taa/export", map[string]any{
+		"requestId": "req-data",
+		"taskId":    "task-data",
+	})
+	exportBody, err := io.ReadAll(exportResp.Body)
+	exportResp.Body.Close()
+	if err != nil {
+		t.Fatalf("read export body: %v", err)
+	}
+	if exportResp.StatusCode != http.StatusOK {
+		store, storeErr := env.state.importIndexStore()
+		_, lookupErr := store.Lookup("req-data", "task-data")
+		t.Fatalf("export of a finished FHE task: status = %d, body = %s (index store %v, lookup %v)",
+			exportResp.StatusCode, exportBody, storeErr, lookupErr)
+	}
+
+	// The record the import had to leave behind, with the fields export reads.
+	store, err := env.state.importIndexStore()
+	if err != nil {
+		t.Fatalf("importIndexStore: %v", err)
+	}
+	record, err := store.Lookup("req-data", "task-data")
+	if err != nil {
+		t.Fatalf("the FHE import left no usable index record: %v", err)
+	}
+	if record.Hash != env.modelHash {
+		t.Errorf("record hash = %q, want the FHE model digest %q", record.Hash, env.modelHash)
+	}
+	if record.ResultDir != env.resultDir() {
+		t.Errorf("record result dir = %q, want %q", record.ResultDir, env.resultDir())
+	}
+	// Non-zero on purpose: export reads phase 0 as "unknown, use the current one",
+	// which would let a later phase change pick a different export key.
+	if record.Phase == 0 {
+		t.Error("record phase = 0; export would fall back to whatever phase the instance is in")
+	}
+	if record.ResultCheck == nil || !record.ResultCheck.Passed || record.ResultCheck.Error != "" {
+		t.Fatalf("record verdict = %+v, want a passing, error-free one", record.ResultCheck)
+	}
+
+	files := extractZipMap(t, exportBody)
+	resultName := filepath.Base(env.resultDir()) + "/output.zip"
+	got, ok := files[resultName]
+	if !ok {
+		t.Fatalf("exported archive lacks %s; entries: %v", resultName, keysOfMap(files))
+	}
+	if string(got) != "DOWNLOADED-RESULT" {
+		t.Errorf("exported output.zip = %q, want the service's result bytes", got)
 	}
 }
