@@ -148,6 +148,7 @@ func NewServer(cfg Config) *Server {
 	registerUploadDeleteRoutes(mux, uploadDir)
 	mux.HandleFunc("/api/uploads", uploadListHandler(cfg.Addr, uploadDir))
 	mux.HandleFunc("/api/uploads/reset", uploadResetHandler(uploadDir))
+	mux.HandleFunc("/api/fhe/submit", fheSubmitHandler(cfg, taaAddr))
 	mux.HandleFunc("/api/crypto/generate-key", cryptoGenerateKeyHandler)
 	mux.HandleFunc("/api/crypto/decrypt", cryptoDecryptHandler)
 	mux.HandleFunc("/api/request-logs/status", requestLogsStatusHandler)
