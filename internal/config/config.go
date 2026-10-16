@@ -358,10 +358,29 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 	}
 
 	applyStartupConfigFile(&cfg, fileCfg)
+	applyLLMEndpointOverride(&cfg)
 	if err := validateStartupConfig(cfg); err != nil {
 		return StartupConfig{}, err
 	}
 	return cfg, nil
+}
+
+// applyLLMEndpointOverride lets the deployment environment point TAA at a
+// TEE-LLM instance that does not live at the address baked into the image,
+// without rebuilding the image.
+//
+// This is deliberately the opposite precedence from PlatformIP, DockerID and
+// Contract: those are seeded in defaultStartupConfig and the config file wins
+// over them, because the packaged config simply omits the platform block and
+// the environment value is what is left. The LLM endpoint is written into
+// every shipped template, so an environment value that could not override it
+// would never take effect.
+func applyLLMEndpointOverride(cfg *StartupConfig) {
+	endpoint := strings.TrimSpace(os.Getenv("TAA_LLM_ENDPOINT"))
+	if endpoint == "" {
+		return
+	}
+	cfg.LLM.Endpoint = endpoint
 }
 
 // rejectRemovedKeys fails the load when the config still uses a key that was

@@ -1369,3 +1369,41 @@ func TestLoadStartupConfigAcceptsExplicitNullRemovedKeys(t *testing.T) {
 		t.Fatalf("LoadStartupConfig() error = %v, want nil for explicit nulls", err)
 	}
 }
+
+func TestLoadStartupConfigLLMEndpointEnvOverride(t *testing.T) {
+	t.Run("environment overrides the configured endpoint", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{
+			"codeAudit": {
+				"llm": { "endpoint": "https://from-file:8443" }
+			}
+		}`)
+		t.Setenv("TAA_LLM_ENDPOINT", "https://from-env:8443")
+
+		cfg, err := LoadStartupConfig(path)
+		if err != nil {
+			t.Fatalf("LoadStartupConfig() error = %v", err)
+		}
+		if cfg.LLM.Endpoint != "https://from-env:8443" {
+			t.Fatalf("LLM.Endpoint = %q, want %q", cfg.LLM.Endpoint, "https://from-env:8443")
+		}
+	})
+
+	t.Run("an empty environment leaves the configured endpoint alone", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{
+			"codeAudit": {
+				"llm": { "endpoint": "https://from-file:8443" }
+			}
+		}`)
+		t.Setenv("TAA_LLM_ENDPOINT", "")
+
+		cfg, err := LoadStartupConfig(path)
+		if err != nil {
+			t.Fatalf("LoadStartupConfig() error = %v", err)
+		}
+		if cfg.LLM.Endpoint != "https://from-file:8443" {
+			t.Fatalf("LLM.Endpoint = %q, want %q", cfg.LLM.Endpoint, "https://from-file:8443")
+		}
+	})
+}
