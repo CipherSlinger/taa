@@ -29,6 +29,20 @@ type importRequest struct {
 	TaskID        string  `json:"taskId"`
 	PublicKey     *string `json:"publicKey,omitempty"`
 	RuntimeConfig string  `json:"runtimeConfig,omitempty"`
+
+	// EvalKeyURL and EvalKeyFileHash are the FHE contract's additions.
+	//
+	// Which branch a request takes is decided by the instance type alone
+	// (TAAState.fheEnabled), never by these fields: on an fhe instance both are
+	// mandatory and on a tee instance both are refused. EvalKeyURL is where the
+	// eval key is fetched from when it is not already cached. EvalKeyFileHash is
+	// the SM3 digest of that key; it names the cache entry and is the FHE-side
+	// user id.
+	//
+	// The hash is required even on a cache hit: it declares which user the task
+	// belongs to, which the URL alone cannot say.
+	EvalKeyURL      string `json:"evalKeyUrl,omitempty"`
+	EvalKeyFileHash string `json:"evalKeyFileHash,omitempty"`
 }
 
 func (r *importRequest) UnmarshalJSON(data []byte) error {
@@ -103,6 +117,17 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.RequestID == "" && req.TaskID == "" {
 		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "requestId 和 taskId 不能同时为空"))
+		return
+	}
+
+	// The eval key fields are checked before anything is reserved or downloaded,
+	// so a request that cannot be served is refused without touching state. On a
+	// tee instance both fields must be absent, which leaves every existing request
+	// unchanged.
+	req.EvalKeyURL = strings.TrimSpace(req.EvalKeyURL)
+	req.EvalKeyFileHash = strings.TrimSpace(req.EvalKeyFileHash)
+	if err := s.validateFHEFields(req); err != nil {
+		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, err.Error(), err))
 		return
 	}
 
