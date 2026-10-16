@@ -196,11 +196,18 @@ type fheServiceStub struct {
 	mu             sync.Mutex
 	created        []fhe.CreateTaskRequest
 	activations    []string
+	cancels        []string
 	polls          int
 	taskStatus     string
 	caseEntries    int
 	downloadStatus int
 	downloadBody   string
+
+	// pollGate, when non-nil, holds a poll response until it is closed. A test
+	// uses it to park a run inside its poll loop: that is the one moment a run can
+	// be resolved by a callback and still be in the runner's in-flight table,
+	// because Execute drops it there when it returns.
+	pollGate chan struct{}
 
 	// onCreate runs inside the service call that creates a task, which is the only
 	// moment a run's own state can be sampled without racing it.
@@ -261,13 +268,22 @@ func (s *fheServiceStub) serveTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, _ = w.Write([]byte(body))
-	case strings.HasSuffix(path, "/continue"), strings.HasSuffix(path, "/cancel"):
+	case strings.HasSuffix(path, "/cancel"):
+		s.mu.Lock()
+		s.cancels = append(s.cancels, r.Method+" "+r.URL.Path)
+		s.mu.Unlock()
+		_, _ = w.Write([]byte(`{}`))
+	case strings.HasSuffix(path, "/continue"):
 		_, _ = w.Write([]byte(`{}`))
 	default:
 		s.mu.Lock()
 		s.polls++
+		gate := s.pollGate
 		status, entries := s.taskStatus, s.caseEntries
 		s.mu.Unlock()
+		if gate != nil {
+			<-gate
+		}
 		cases := make([]fhe.CaseStatus, 0, entries)
 		for i := 0; i < entries; i++ {
 			cases = append(cases, fhe.CaseStatus{Entry: "case", ResultID: "r"})
@@ -292,6 +308,36 @@ func (s *fheServiceStub) setTaskStatus(status string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.taskStatus = status
+}
+
+// cancelCalls is every cancel request the service received, as "METHOD path".
+func (s *fheServiceStub) cancelCalls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.cancels...)
+}
+
+// holdPolls makes every poll block until releasePolls is called.
+func (s *fheServiceStub) holdPolls() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pollGate = make(chan struct{})
+}
+
+// releasePolls lets a poll held by holdPolls answer, and later polls run free.
+func (s *fheServiceStub) releasePolls() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pollGate != nil {
+		close(s.pollGate)
+		s.pollGate = nil
+	}
+}
+
+func (s *fheServiceStub) pollCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.polls
 }
 
 func (s *fheServiceStub) failDownload(status int) {

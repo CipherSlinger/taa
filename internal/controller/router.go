@@ -11,6 +11,7 @@ func RegisterRoutes(mux *http.ServeMux, state *TAAState) {
 		handler http.HandlerFunc
 	}{
 		{"/v1/taa/health", state.healthHandler},
+		{"/v1/taa/fheCallback", state.fheCallbackHandler},
 		{"/v1/taa/stopTraining", state.stopTrainingHandler},
 		{"/v1/taa/import", state.importHandler},
 		{"/v1/taa/importModel", state.modelImportHandler},

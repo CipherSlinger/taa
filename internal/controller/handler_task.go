@@ -2,11 +2,13 @@ package controller
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"taa/internal/fhe"
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 )
@@ -74,6 +76,33 @@ func (r *importRequest) UnmarshalJSON(data []byte) error {
 // ── Handler: /v1/taa/stopTraining ────────────────────────
 
 func (s *TAAState) stopTrainingHandler(w http.ResponseWriter, r *http.Request) {
+	// An FHE task is cancelled through the service's own endpoint: there is no
+	// local process group to kill, and the worker is the only thing that can stop
+	// the run. This branch comes first because an FHE task never sets
+	// trainingControl, so the training check below would report one that is
+	// running as "不存在训练任务" and leave the GPU busy.
+	if runner := s.fheRunner(); runner != nil {
+		if taskID := s.fheActiveTask(); taskID != "" {
+			switch err := runner.Cancel(r.Context(), taskID); {
+			case err == nil:
+				s.Logs.Add(LogInfo, "fhe", "已取消 FHE 任务: taskId=%s", taskID)
+				writeEnvelope(w, http.StatusOK, "FHE 任务已取消", nil, 0)
+			case errors.Is(err, fhe.ErrTaskAlreadyFinished):
+				// The task reached its terminal state before this request arrived.
+				// That is not a failed stop: the platform asked for the task not to
+				// be running, and it is not. Reporting it as a failure would send
+				// back an error for a stop that has nothing left to stop.
+				s.Logs.Add(LogInfo, "fhe", "FHE 任务在停止请求到达前已结束: taskId=%s", taskID)
+				writeEnvelope(w, http.StatusOK, "FHE 任务已结束", nil, 0)
+			default:
+				s.Logs.Add(LogError, "fhe", "取消 FHE 任务失败: taskId=%s, err=%v", taskID, err)
+				writeErr(w, http.StatusInternalServerError,
+					pkgerrors.Wrap(pkgerrors.CodeInternal, "取消 FHE 任务失败", err))
+			}
+			return
+		}
+	}
+
 	s.mu.RLock()
 	control := s.trainingControl
 	isTraining := s.TrainingRunning && s.activeTask != nil && s.activeTask.Type == "training"
