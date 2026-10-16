@@ -335,6 +335,37 @@ host_sh() {
   fi
 }
 
+# run_node runs a run-node.sh subcommand with the stack-shaping values handed to it
+# on the command line instead of by inheritance.
+#
+# The exports above are what point the stack at the tree this script stages, and they
+# are enough while this script and the stack share one environment. A --remote run is
+# the case where they do not: every host-side command goes over ssh, ssh carries no
+# environment, and run-node.sh then falls back to the bundle's own env/node.local.env
+# -- absolute paths belonging to the machine the bundle was assembled on. The stack
+# comes up healthy against a tree TAA never writes to and activation still succeeds,
+# because the bundle carries the same model, so the only symptom is tasks that never
+# finish. Naming the values here is the form that survives the hop, and it is
+# equivalent to the export it replaces because run-node.sh restores every name it
+# finds already set.
+run_node() {
+  local assignments="" name
+  # Only the names this run decided. run-node.sh's restore rule is `[[ -v $name ]]`,
+  # so assigning an empty value wins over the env file exactly as a good one does --
+  # and NODE_IP_OVERRIDE is deliberately unset rather than emptied when this run
+  # could not derive an address.
+  for name in HOST_DATA_DIR HOST_RUNTIME_DIR HOST_REDIS_DIR API_HOST_PORT NODE_ID_OVERRIDE NODE_IP_OVERRIDE; do
+    if [ -n "${!name:-}" ]; then
+      assignments+="$(printf '%q ' "$name=${!name}")"
+    fi
+  done
+  local args="" arg
+  for arg in "$@"; do
+    args+="$(printf ' %q' "$arg")"
+  done
+  host_sh "cd $(printf %q "$NODE_DOCKER_DIR") && env ${assignments}./scripts/run-node.sh$args"
+}
+
 # host_sh for a value rather than a status. A remote --dry-run reads nothing and
 # says so: a dry run has to stay runnable without reaching the host at all, and
 # every caller below treats an empty answer as "this run could not derive one"
@@ -684,6 +715,13 @@ HOST_REDIS_DIR="${HOST_REDIS_DIR:-$HOST_DATA_DIR/redis}"
 # the stack looks while TAA reads $HOST_DATA_DIR: the stack still comes up healthy
 # (the bundle carries the same model), activation still succeeds, and every task
 # then hangs until taskTimeoutMs.
+#
+# The export decides that only while this script and the stack share one
+# environment. On a --remote run every host-side command goes over ssh, and ssh
+# carries no environment, so the export reaches nothing: the failure it was written
+# to prevent is the one a live remote run produced, and it looked exactly as
+# described above. run_node below passes the same values on the command line, which
+# does survive the hop, and is what the stack step uses.
 export HOST_DATA_DIR HOST_RUNTIME_DIR HOST_REDIS_DIR API_HOST_PORT
 
 # ── The bundle as the deployment host sees it ────────────────────────────────
@@ -1585,10 +1623,10 @@ else
 fi
 
 step "starting the FHE node stack (api + worker + redis)"
-# HOST_DATA_DIR / HOST_RUNTIME_DIR / HOST_REDIS_DIR / API_HOST_PORT are exported
-# above, which is what points the stack at the tree staged in the previous step.
+# run_node, not run_in: the values that point the stack at the tree staged in the
+# previous step have to travel on the command line to reach a remote host at all.
 FHE_STACK_TOUCHED=1
-run_in "$NODE_DOCKER_DIR" ./scripts/run-node.sh up -d
+run_node up -d
 
 step "preflight: the FHE stack is serving on 127.0.0.1:$API_HOST_PORT"
 if is_dry_run; then
