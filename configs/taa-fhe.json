@@ -3,6 +3,11 @@
     "addr": ":6001",
     "type": "fhe"
   },
+  "platform": {
+    "ip": "127.0.0.1:18081",
+    "dockerID": "taa-fhe",
+    "contract": ""
+  },
   "storage": {
     "model": "/root/taa/models",
     "data": "/root/taa/data",

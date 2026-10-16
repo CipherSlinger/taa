@@ -409,6 +409,7 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 
 	applyStartupConfigFile(&cfg, fileCfg)
 	applyLLMEndpointOverride(&cfg)
+	applyFHEIdentityOverride(&cfg)
 	if err := validateStartupConfig(cfg); err != nil {
 		return StartupConfig{}, err
 	}
@@ -425,12 +426,43 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 // the environment value is what is left. The LLM endpoint is written into
 // every shipped template, so an environment value that could not override it
 // would never take effect.
+//
+// applyFHEIdentityOverride is the one exception to that rule, and only for
+// server.type=fhe.
 func applyLLMEndpointOverride(cfg *StartupConfig) {
 	endpoint := strings.TrimSpace(os.Getenv("TAA_LLM_ENDPOINT"))
 	if endpoint == "" {
 		return
 	}
 	cfg.LLM.Endpoint = endpoint
+}
+
+// applyFHEIdentityOverride lets the deployment environment point a type=fhe
+// instance at the platform it registers with, and give it an identity there,
+// without editing the config the image ships with.
+//
+// The fhe template does carry a platform block, so this is not the "file omits
+// it and the environment is what is left" situation the other identity fields
+// are in: it is an override, and the environment wins. The reason is that where
+// a fhe instance registers is a property of where it was deployed, not of the
+// build -- the same image goes to whichever GPU host is free, and the platform
+// address on that host is not knowable when the template is written. A tee
+// instance keeps the file-wins rule, because its platform address is part of
+// the deployment it was packaged for.
+//
+// An unset or empty variable leaves the file's value in place, so the template
+// stays a working default rather than a value the environment must always
+// restate.
+func applyFHEIdentityOverride(cfg *StartupConfig) {
+	if cfg.ServerType != ServerTypeFHE {
+		return
+	}
+	if ip := strings.TrimSpace(os.Getenv("PLATFORM_IP")); ip != "" {
+		cfg.PlatformIP = ip
+	}
+	if dockerID := strings.TrimSpace(os.Getenv("DOCKER_ID")); dockerID != "" {
+		cfg.DockerID = dockerID
+	}
 }
 
 // rejectRemovedKeys fails the load when the config still uses a key that was

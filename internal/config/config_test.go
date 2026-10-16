@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -75,6 +76,163 @@ func TestLoadStartupConfigUsesIdentityFromFile(t *testing.T) {
 	}
 	if cfg.Contract != "file-contract" {
 		t.Fatalf("Contract = %q, want file value", cfg.Contract)
+	}
+}
+
+// writeFHEConfig writes a type=fhe config that passes validation, so a test can
+// vary only the identity it is about. The fhe section is required in full: an fhe
+// instance with a half-filled one is rejected at load, before the platform is
+// ever told anything.
+func writeFHEConfig(t *testing.T, path, platformBlock string) {
+	t.Helper()
+	writeTestConfig(t, path, `{
+		"server": {"type": "fhe"},
+		`+platformBlock+`
+		"fhe": {
+			"endpoint": "http://127.0.0.1:58996",
+			"dataDir": "/opt/fhe-data",
+			"keyCacheDir": "/opt/fhe-data/taa-fhe-keys",
+			"callbackBaseUrl": "http://127.0.0.1:6001",
+			"callbackToken": "test-token"
+		}
+	}`)
+}
+
+// TestLoadStartupConfigFHEIdentityEnvironmentWins pins the one place where the
+// identity fields do not follow the file-wins rule. It exists because the rule
+// itself is asserted by the two tests above: without this one, dropping the
+// scoping from applyFHEIdentityOverride would leave every other test green.
+func TestLoadStartupConfigFHEIdentityEnvironmentWins(t *testing.T) {
+	t.Setenv("PLATFORM_IP", "env-platform:9999")
+	t.Setenv("DOCKER_ID", "env-docker")
+	t.Setenv("CONTRACT", "env-contract")
+
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeFHEConfig(t, path, `"platform": {"ip": "file-platform:8080", "dockerID": "file-docker", "contract": "file-contract"},`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if cfg.PlatformIP != "env-platform:9999" {
+		t.Errorf("PlatformIP = %q, want the environment value to win on an fhe instance", cfg.PlatformIP)
+	}
+	if cfg.DockerID != "env-docker" {
+		t.Errorf("DockerID = %q, want the environment value to win on an fhe instance", cfg.DockerID)
+	}
+	// Contract is deliberately not part of the override: it travels with the
+	// deployment's paperwork, not with the host this instance happens to run on.
+	if cfg.Contract != "file-contract" {
+		t.Errorf("Contract = %q, want the file value (contract is not overridden)", cfg.Contract)
+	}
+}
+
+// TestLoadStartupConfigFHEIdentityFallsBackToFile is the other half of the pair:
+// the template's platform block has to stay a working default. An empty value is
+// what a container passes through when the deploy script has nothing to say, so
+// it must not blank the file's value out.
+func TestLoadStartupConfigFHEIdentityFallsBackToFile(t *testing.T) {
+	t.Setenv("PLATFORM_IP", "")
+	t.Setenv("DOCKER_ID", "")
+
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeFHEConfig(t, path, `"platform": {"ip": "file-platform:8080", "dockerID": "file-docker"},`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if cfg.PlatformIP != "file-platform:8080" {
+		t.Errorf("PlatformIP = %q, want the file value when the environment is empty", cfg.PlatformIP)
+	}
+	if cfg.DockerID != "file-docker" {
+		t.Errorf("DockerID = %q, want the file value when the environment is empty", cfg.DockerID)
+	}
+}
+
+// TestLoadStartupConfigTEEIdentityIgnoresEnvironment is the guard on the scope
+// of the override. A tee instance is packaged for one deployment and its
+// platform address is part of that packaging, so an environment variable must
+// not be able to retarget it.
+func TestLoadStartupConfigTEEIdentityIgnoresEnvironment(t *testing.T) {
+	t.Setenv("PLATFORM_IP", "env-platform:9999")
+	t.Setenv("DOCKER_ID", "env-docker")
+
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"server": {"type": "tee"},
+		"platform": {"ip": "file-platform:8080", "dockerID": "file-docker"},
+		"codeAudit": {"llm": {"enabled": false}}
+	}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if cfg.PlatformIP != "file-platform:8080" {
+		t.Errorf("PlatformIP = %q, want the file value on a tee instance", cfg.PlatformIP)
+	}
+	if cfg.DockerID != "file-docker" {
+		t.Errorf("DockerID = %q, want the file value on a tee instance", cfg.DockerID)
+	}
+}
+
+// TestLoadStartupConfigFHEPlatformSection makes the shipped fhe template the
+// subject rather than a synthetic config: it is what an fhe deployment actually
+// loads, and the platform block it carries is the fallback the environment
+// overrides.
+//
+// It is not in TestLoadStartupConfigTemplateFiles because that table loads each
+// template as it stands, and this one is a render input: its callbackToken is
+// empty and deploy-fhe.sh supplies it (from TAA_CALLBACK_TOKEN), so loading it
+// unrendered is correctly refused. The patch below is that one render step.
+func TestLoadStartupConfigFHEPlatformSection(t *testing.T) {
+	t.Setenv("PLATFORM_IP", "")
+	t.Setenv("DOCKER_ID", "")
+
+	raw, err := os.ReadFile("../../configs/taa-fhe.json")
+	if err != nil {
+		t.Fatalf("read taa-fhe.json: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse taa-fhe.json: %v", err)
+	}
+	fheSection, ok := doc["fhe"].(map[string]any)
+	if !ok {
+		t.Fatalf("taa-fhe.json has no fhe section to render into")
+	}
+	if fheSection["callbackToken"] != "" {
+		t.Fatalf("taa-fhe.json ships callbackToken %v, want it empty so deploy-fhe.sh supplies it",
+			fheSection["callbackToken"])
+	}
+	fheSection["callbackToken"] = "rendered-by-deploy-fhe"
+	patched, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal patched taa-fhe.json: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, string(patched))
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig(rendered taa-fhe.json) error = %v", err)
+	}
+
+	if cfg.ServerType != ServerTypeFHE {
+		t.Fatalf("ServerType = %q, want %q", cfg.ServerType, ServerTypeFHE)
+	}
+	if cfg.PlatformIP != "127.0.0.1:18081" {
+		t.Errorf("PlatformIP = %q, want the template's platform.ip", cfg.PlatformIP)
+	}
+	// Non-empty is the point, not the value: registration refuses an empty
+	// dockerId outright, and the failure surfaces only as a warning at startup.
+	if cfg.DockerID != "taa-fhe" {
+		t.Errorf("DockerID = %q, want the template's platform.dockerID", cfg.DockerID)
 	}
 }
 
