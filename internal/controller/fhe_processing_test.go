@@ -870,6 +870,97 @@ func TestExecuteFHETaskRequiresAModelImport(t *testing.T) {
 	}
 }
 
+// TestExecuteFHETaskCommitsNothingWhenTheReportCannotBeWritten pins the single
+// commit: export resolves the result directory, the report and the leakage verdict
+// through one index record, so that record must not exist until all three do.
+//
+// The record used to be committed first and the verdict attached to it in a second
+// call, with the report written after both. A failure in either of the later steps
+// left the record committed - and the requestId/taskId spent for the life of the
+// process - with nothing exportable behind it: no verdict is a permanent 500 under
+// fail-closed, no report is a 404 at export's os.Stat, and the ids cannot be
+// resubmitted to try again.
+func TestExecuteFHETaskCommitsNothingWhenTheReportCannotBeWritten(t *testing.T) {
+	env := newFHETestEnv(t)
+	env.state.Security.ResultCheck = true
+	env.state.Security.LLM.FailClosed = true
+	env.importModel()
+
+	// The seam is the report's own input: a directory where training_result.json
+	// belongs makes buildAndSaveTrainingReport fail at its first read, before it
+	// writes training_report.json, and it is the only failure available after the
+	// result archive has landed.
+	resultDir := env.resultDir()
+	if err := os.MkdirAll(filepath.Join(resultDir, "training_result.json"), 0o755); err != nil {
+		t.Fatalf("occupy the training_result.json path: %v", err)
+	}
+
+	zipPath, _ := writeTestZip(t, t.TempDir(), map[string]string{"data/case.txt": "ciphertext"})
+	env.runData(zipPath)
+
+	requireLog(t, env.state, "生成结果报告失败")
+
+	// The run itself succeeded and its archive is on disk: what failed is the
+	// report, which is part of what the record promises.
+	if _, err := os.Stat(filepath.Join(resultDir, "output.zip")); err != nil {
+		t.Errorf("the result archive is missing (%v); the seam was supposed to leave the run successful", err)
+	}
+	if _, err := os.Stat(filepath.Join(resultDir, trainingReportFileName)); err == nil {
+		t.Error("training_report.json exists; the report write was supposed to fail")
+	}
+
+	store, err := env.state.importIndexStore()
+	if err != nil {
+		t.Fatalf("importIndexStore: %v", err)
+	}
+	if record, err := store.Lookup("req-data", "task-data"); err == nil {
+		t.Errorf("a run whose report was never written left a committed record (%+v); export would 404 on it and the ids are spent", record)
+	}
+	// And the ids have to be usable again: the reservation is what refuses every
+	// later submission of the same requestId/taskId.
+	if err := store.Reserve("req-data", "task-data"); err != nil {
+		t.Errorf("the reservation is still held after the report failure: %v", err)
+	}
+}
+
+// TestExecuteFHETaskCommitsTheVerdictWithTheRecord pins the other half of the
+// single commit: the verdict export reads under fail-closed is part of the record
+// from the start, so there is no state in which a committed record has no verdict.
+func TestExecuteFHETaskCommitsTheVerdictWithTheRecord(t *testing.T) {
+	env := newFHETestEnv(t)
+	env.state.Security.ResultCheck = true
+	env.state.Security.LLM.FailClosed = true
+	env.importModel()
+
+	zipPath, _ := writeTestZip(t, t.TempDir(), map[string]string{"data/case.txt": "ciphertext"})
+	env.runData(zipPath)
+
+	store, err := env.state.importIndexStore()
+	if err != nil {
+		t.Fatalf("importIndexStore: %v", err)
+	}
+	record, err := store.Lookup("req-data", "task-data")
+	if err != nil {
+		t.Fatalf("the successful run left no record: %v", err)
+	}
+	if record.ResultCheck == nil || !record.ResultCheck.Passed {
+		t.Fatalf("record verdict = %+v, want a passing one", record.ResultCheck)
+	}
+	// The same verdict has to be what a reload sees: it is one durable write now,
+	// and a verdict that only ever lived in memory would fail closed after a restart.
+	reloaded, err := LoadImportIndexStore(filepath.Join(env.state.Security.ResultDir, "import-index.json"))
+	if err != nil {
+		t.Fatalf("reload the import index: %v", err)
+	}
+	reloadedRecord, err := reloaded.Lookup("req-data", "task-data")
+	if err != nil {
+		t.Fatalf("the committed record does not survive a reload: %v", err)
+	}
+	if reloadedRecord.ResultCheck == nil || !reloadedRecord.ResultCheck.Passed {
+		t.Errorf("reloaded verdict = %+v, want the persisted passing verdict", reloadedRecord.ResultCheck)
+	}
+}
+
 // TestExecuteFHETaskReportsAnUnreachableService covers the last error path the
 // plan names: Execute itself failing, here because the eval key cannot be
 // fetched from a dead endpoint.

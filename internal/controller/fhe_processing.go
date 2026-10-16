@@ -230,12 +230,27 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 		CheckedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
-	// The import index record, and then the verdict attached to it, in that order:
-	// export resolves both ResultDir and the verdict through this record, and
-	// SetResultCheck refuses to attach one to a record that was never committed.
-	// Without the record there is no way to retrieve a result at all - the import
-	// handler reserved the ids, and a reservation alone is not lookup-able.
+	// Everything the record promises is produced first, and the record is committed
+	// once, at the end, carrying the verdict with it.
 	//
+	// The order is the point. Export resolves the result directory, the report and
+	// the verdict through this one record, so a record that exists before its
+	// report does is a record export cannot honour: os.Stat answers 404 and the
+	// platform never gets its report. And a verdict attached in a second call after
+	// the commit is a window in which a committed record has none, which under
+	// Security.ResultCheck is a permanent 500 at export. Both windows consumed the
+	// requestId/taskId as well, so neither could be retried. Failing before the
+	// commit leaves no record at all, and the rollback below - the same one the
+	// failed-run paths use - puts the ids back in circulation.
+	report, err := s.buildAndSaveTrainingReport(req.TaskID, startedAt, time.Now().UTC(), status, 0, failureReason, s.getLastAudit(), false, resultDir, verdict)
+	if err != nil {
+		s.Logs.Add(LogError, "fhe", "生成结果报告失败: %v", err)
+		if store, storeErr := s.importIndexStore(); storeErr == nil {
+			store.Rollback(req.RequestID, req.TaskID)
+		}
+		return
+	}
+
 	// Only a run that produced a result archive gets a record. A failed run leaves
 	// nothing to export, and committing it would both stamp the "passed, skipped"
 	// verdict above onto artifacts that were never produced and consume the
@@ -258,12 +273,20 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 		// exist. Phase is the phase the import ran under, as on the training path:
 		// export reads 0 as "use whatever phase the instance is in now", which
 		// would let a later phase change pick a different export key.
+		//
+		// The verdict travels in the record rather than being attached to it
+		// afterwards. Committing it this way is what SetResultCheck would have
+		// done - it looks the record up and replaces it in the same three places,
+		// and sameImportIndexRecord ignores ResultCheck on purpose, so nothing
+		// separates the two outcomes - minus its second durable write, which is the
+		// step that could fail on its own.
 		record := ImportIndexRecord{
-			RequestID: req.RequestID,
-			TaskID:    req.TaskID,
-			Hash:      modelHash,
-			ResultDir: resultDir,
-			Phase:     phase,
+			RequestID:   req.RequestID,
+			TaskID:      req.TaskID,
+			Hash:        modelHash,
+			ResultDir:   resultDir,
+			Phase:       phase,
+			ResultCheck: verdict,
 		}
 		store, err := s.importIndexStore()
 		if err != nil {
@@ -271,16 +294,9 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 		} else if err := store.Commit(record); err != nil {
 			s.Logs.Add(LogWarn, "fhe", "保存导入索引失败，结果将无法通过 export 取回: %v", err)
 			store.Rollback(req.RequestID, req.TaskID)
-		} else if err := store.SetResultCheck(req.RequestID, req.TaskID, verdict); err != nil {
-			s.Logs.Add(LogWarn, "fhe", "保存跳过裁决失败: %v", err)
 		}
 	}
 
-	report, err := s.buildAndSaveTrainingReport(req.TaskID, startedAt, time.Now().UTC(), status, 0, failureReason, s.getLastAudit(), false, resultDir, verdict)
-	if err != nil {
-		s.Logs.Add(LogError, "fhe", "生成结果报告失败: %v", err)
-		return
-	}
 	s.reportTrainingAsync(req.RequestID, req.TaskID, code, msg, string(report))
 	s.Logs.Add(LogInfo, "import", "FHE 导入流程完成: taskId=%s, phase=%d", req.TaskID, phase)
 }
