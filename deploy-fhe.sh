@@ -533,7 +533,9 @@ render_taa_config() {
       --arg endpoint "http://127.0.0.1:${API_HOST_PORT}" \
       --arg data "$HOST_DATA_DIR" \
       '.fhe.callbackBaseUrl = $url | .fhe.callbackToken = $ENV.TAA_CALLBACK_TOKEN
-       | .fhe.endpoint = $endpoint | .fhe.dataDir = $data' \
+       | .fhe.endpoint = $endpoint | .fhe.dataDir = $data
+       | .fhe.keyCacheDir = ($data + "/taa-fhe-keys")
+       | .storage.result  = ($data + "/taa-results")' \
       "$TAA_FHE_CONFIG" > "$TAA_RENDERED_CONFIG" ) \
     || die "failed to render $TAA_FHE_CONFIG -> $TAA_RENDERED_CONFIG (jq rejected the template, or the redirect could not create that file)"
   # The file carries the callback token. The redirect above already created it 0600;
@@ -547,6 +549,23 @@ render_taa_config() {
   addr="$(jq -r '.server.addr' "$TAA_RENDERED_CONFIG")"
   [ "$addr" = ":$TAA_PORT" ] \
     || die "server.addr in the rendered config is '$addr' but TAA_PORT is ':$TAA_PORT'"
+
+  # TAA's own state has to land inside the one bind this script gives the container
+  # (start_taa_container mounts "$HOST_DATA_DIR:$HOST_DATA_DIR" and nothing else), or
+  # it lives in the container's writable layer and dies with the container. The key
+  # cache is never evicted by design, and the result directories - plus the import
+  # index beside them - are what export resolves a finished task through, so losing
+  # them loses work the platform was already told succeeded. The filter above forces
+  # both under $data; this catches a template that moved them again, the same way the
+  # addr check above catches a template that moved the port.
+  local state_key state_path
+  for state_key in '.fhe.keyCacheDir' '.storage.result'; do
+    state_path="$(jq -r "$state_key" "$TAA_RENDERED_CONFIG")"
+    case "$state_path" in
+      "$HOST_DATA_DIR"/*) ;;
+      *) die "the rendered config sets $state_key to '$state_path', outside the only bind '$HOST_DATA_DIR': recreating the container would destroy it" ;;
+    esac
+  done
 }
 
 # Mirrors deploy.sh's container handling: reuse a container that already runs the
@@ -820,7 +839,7 @@ run curl -fsS -o /dev/null -X POST \
 
 step "starting the TAA fhe instance"
 if is_dry_run; then
-  log "would render $TAA_FHE_CONFIG -> $TAA_RENDERED_CONFIG (callbackBaseUrl, callbackToken, endpoint, dataDir)"
+  log "would render $TAA_FHE_CONFIG -> $TAA_RENDERED_CONFIG (callbackBaseUrl, callbackToken, endpoint, dataDir, keyCacheDir, storage.result)"
 else
   render_taa_config
 fi
