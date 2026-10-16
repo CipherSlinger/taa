@@ -435,5 +435,21 @@ go test ./internal/fhe/... ./internal/config/... ./internal/controller/...
     `accepted:true` 三处一致。顺带证实容器重建判定生效（旧容器缺该变量时被重建而非复用）。
   - 首次真机运行暴露并修掉了脚本的一个缺口：`run-node.sh up -d` 返回时应用还没绑端口，
     单次探健康会读到 connection reset（实测约 7 s），已改为 `wait_for_fhe_stack` 有界重试。
-- **尚未验证**：真机上的 FHE 任务端到端（投任务 → 回调 → 收结果 → export），
-  即交付包 108.9 s / 78.6 s 基线的对照。本轮只验到「注册到达平台」这一层。
+- **178 真机 FHE 任务端到端已跑通（2026-10-16）**：importModel（staged + activated 一次成功）
+  → import（评估密钥 + 10 case 输入）→ 任务触发 → `completed` **10/10，failed 0**
+  → `FHE 结果已落盘`（无 404、无「unknown task」回调告警）→ `reportRes code=0`
+  → export **http=200，10,002,232 B**。落盘结果与交付包基线**逐文件** sha256 比对
+  **identical=10 / differing=0**。（整包 sha256 不同是假的：基线来自另一个 task，且 zip 存 mtime。）
+- **本轮 e2e 的根因修复（`7bf89a6`）**：FHE 服务在最后一个 case 结束的瞬间把任务翻成 `completed`，
+  之后才组装 `output.zip`；TAA 恰好在这个亚秒窗口里探了一次结果，404 被当成终态失败并永久置败。
+  修法是 `CopyResult` 在有界窗口内等这个 404（`resultReadyWait = 60s`，只对 404 重试，
+  共享目录每次重新 stat），真实错误不等待。回归测试
+  `TestRunnerCopyResultWaitsForALateResult` / `…DoesNotWaitOutARealFailure` 已入库；
+  把 `resultReadyWait` 改回 0 能逐字复现线上失败，说明测试有判别力而非仅通过。
+- **platform-mock 控制台已分 TEE / FHE 两种模式（`462a15a`）**：左上角切换 + `body[data-mode]`
+  驱动面板显隐，FHE 侧新增投递卡片（从上传目录选评估密钥与输入包、随机 requestId/taskId、
+  下发后自动刷新 reportRes 与进度）。切换持久化到 localStorage，`?mode=` 可覆盖。
+  真实浏览器四态验证通过（默认 / `?mode=fhe` / `?mode=tee` / 点击切换）；
+  投递卡片实测发出的正是 `/api/fhe/submit` 约定的**文件名**而非路径。
+- **至此交付包基线对照已完成**，本 spec 无遗留未验证项。**仍未做**：DCU 侧不适用（交付包是 CUDA）；
+  多任务并发与失败态（超时、cancel 映射）只在单测覆盖，真机未构造。
