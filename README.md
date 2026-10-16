@@ -297,6 +297,7 @@ All TAA APIs are exposed over HTTP `POST`. For comprehensive request/response sc
 | `/v1/taa/stopTraining` | `POST` | Forcibly interrupts the active training job and recursively cleans up child process trees |
 | `/v1/taa/export` | `POST` | Exports computation results (supports plaintext or SM2/SM4 digital envelope encryption) |
 | `/v1/taa/getResourceInfo` | `POST` | Inspects metadata, file listings, and sizes of uploaded resource packages |
+| `/v1/taa/fheCallback?token=<callbackToken>` | `POST` | **`fhe` instances only.** Called by the FHE service rather than the platform, to report a task's terminal state. It is authenticated with the configured `fhe.callbackToken` in the `token` query parameter: an empty token is refused at startup rather than defaulted, and a request whose token does not match is rejected |
 
 ### 3. Observability & Diagnostics (Platform → TAA)
 
@@ -408,7 +409,18 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `codeAudit.llm.attestationMode` | `strict` | Hardware attestation verification policy for TEE-TLS (`strict` in production, `permissive` in local simulation) |
 | `attestation.hrkCertPath` | `/root/taa/certs/hrk.cert` | Hygon Root Key (HRK) certificate path for CSV attestation verification |
 | `attestation.hskCekCertPath` | `/root/taa/certs/hsk_cek.cert` | Hygon Sign Key (HSK) / Chip Endorsement Key (CEK) certificate path |
-| `fhe` | — | Read only when `server.type=fhe`. `endpoint` / `dataDir` / `keyCacheDir` / `callbackBaseUrl` / `callbackToken` are required; `maxEvalKeyBytes` (default 6 GiB) is **independent of** `codeAudit.resultCheck.maxFileBytes`: a measured evaluation key of 3.101 GiB already exceeds the latter's 3 GiB default |
+| `fhe.endpoint` | **required** | String. FHE API base URL, an absolute `http`/`https` URL with a host, e.g. `http://127.0.0.1:58996` |
+| `fhe.dataDir` | **required** | String. The shared directory, given as the local path of the same bind mount the FHE containers see as `/data` |
+| `fhe.keyCacheDir` | **required** | String. Holds eval keys by content digest, so a repeat user never re-downloads several gigabytes |
+| `fhe.callbackBaseUrl` | **required** | String. How the FHE service reaches this TAA instance, e.g. `http://172.16.10.130:6001`. It must carry no query and no fragment, because `/v1/taa/fheCallback?token=...` is appended to it |
+| `fhe.callbackToken` | **required** | String. Authenticates the callback endpoint, compared in constant time; an empty token is refused at startup rather than defaulted, because the endpoint would otherwise be open to every process on the host |
+| `fhe.maxEvalKeyBytes` | `6442450944` (6 GiB) | Integer. Cap on the eval key download. It is **independent of** `codeAudit.resultCheck.maxFileBytes`: a measured evaluation key of 3.101 GiB already exceeds the latter's 3 GiB default |
+| `fhe.pollIntervalMs` | `5000` | Integer. Fallback poll period used while waiting for a task |
+| `fhe.requestTimeoutMs` | `30000` | Integer. Bounds one HTTP call to the FHE service |
+| `fhe.taskTimeoutMs` | `1800000` (30 min) | Integer. Bounds a whole task, polls and callback together |
+| `fhe.activateModelOnImport` | `true` | Boolean (`*bool` in the config struct). Calls `/models/activate` right after a model is staged. It is a pointer precisely so that "unset" stays distinguishable from "false": unset resolves to `true`, and a missing setting read as `false` would turn into a deliberate opt-out that leaves every task to fail at run time, against a model the service was never told to load |
+
+The whole `fhe` section is read only when `server.type` is `fhe`; a `tee` instance that carries one logs a warning and ignores it.
 
 ### Configuration Templates
 
@@ -417,7 +429,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 
 ### FHE Instance Interface Differences
 
-An instance whose `server.type` is `fhe` exposes the same API surface but differs from a `tee` instance on the paths below:
+An instance whose `server.type` is `fhe` exposes the same API surface as a `tee` instance with one addition — `POST /v1/taa/fheCallback` exists only on an `fhe` instance. Every other path listed below exists on both, and behaves differently on the `fhe` one as described:
 
 - `POST /v1/taa/import` must carry `evalKeyUrl` and `evalKeyFileHash` (SM3, lower-case hex, 64 characters); a `tee` instance returns 400 when either field is present.
 - `importModel` on an FHE instance lays the model package out under `<fhe.dataDir>/models/<modelHash>/` and requires a `server/` directory inside the package.
