@@ -497,6 +497,44 @@ ensure_local_docker_container() {
   info "container python runtime: $py_ver"
 }
 
+# Removes every TEE-LLM and ollama artifact a base image may carry, then asserts each one is gone.
+# The list is enumerated from the combined images this repository produces (taa-env:slim-v2-<date>),
+# not guessed. A base image that never carried teellm makes every rm a no-op and every assertion
+# pass, so the same code covers both the slim base and a previously combined image.
+strip_teellm_from_image() {
+  local container="$1"
+  step "removing TEE-LLM and ollama artifacts from the image"
+  docker exec -i "$container" sh -lc '
+    rm -rf /root/taa/ollama \
+           /root/taa/ollama-qwen \
+           /root/taa/ollama-qwen2.5-coder-0.5b \
+           /root/taa/teellm-service \
+           /root/taa/teellm-docker.json \
+           /root/taa/start-teellm.sh \
+           /root/taa/.start-teellm.lock \
+           /root/taa/configs/teellm-docker.json \
+           /root/taa/configs/teellm-production.json \
+           /root/taa/configs/models.json
+  ' >/dev/null
+
+  local leftovers="" path
+  for path in \
+    /root/taa/ollama /root/taa/ollama-qwen /root/taa/ollama-qwen2.5-coder-0.5b \
+    /root/taa/teellm-service /root/taa/teellm-docker.json /root/taa/start-teellm.sh \
+    /root/taa/.start-teellm.lock /root/taa/configs/teellm-docker.json \
+    /root/taa/configs/teellm-production.json /root/taa/configs/models.json; do
+    if docker exec -i "$container" sh -lc "test -e '$path'"; then
+      leftovers="${leftovers}${path} "
+    fi
+  done
+  if [[ -n "$leftovers" ]]; then
+    err "TEE-LLM artifacts survived removal and would ship inside the image"
+    detail "still present: ${leftovers% }"
+    exit 1
+  fi
+  info "no TEE-LLM or ollama artifacts remain in the image"
+}
+
 save_local_docker_image() {
   local base_archive="${CUSTOM_BASE_ARCHIVE:-$BASE_DOCKER_IMAGE_ARCHIVE}"
   local base_image="${CUSTOM_BASE_IMAGE:-$BASE_DOCKER_IMAGE}"
