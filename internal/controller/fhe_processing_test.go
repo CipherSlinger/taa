@@ -995,3 +995,58 @@ func TestFHEImportResultIsExportable(t *testing.T) {
 		t.Errorf("exported output.zip = %q, want the service's result bytes", got)
 	}
 }
+
+// TestImportModelWarnsOnEvalKeyFields pins both halves of the model endpoint's
+// contract on an fhe instance: the eval key fields are inapplicable there - the
+// eval key travels with the data package on /v1/taa/import - so they are ignored
+// and warned about, but not refused. A refusal would close the only endpoint that
+// stages a model package, which is exactly what this endpoint has to keep doing.
+func TestImportModelWarnsOnEvalKeyFields(t *testing.T) {
+	env := newFHETestEnv(t)
+
+	zipPath, modelZip := writeTestZip(t, t.TempDir(), map[string]string{"server/model.bin": "fhe-model"})
+	hash, err := sm3HexOfFile(zipPath)
+	if err != nil {
+		t.Fatalf("hash model package: %v", err)
+	}
+	pkgServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(modelZip)
+	}))
+	defer pkgServer.Close()
+
+	mux := http.NewServeMux()
+	RegisterRoutes(mux, env.state)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
+		"resourceUrl":     pkgServer.URL + "/model.zip",
+		"requestId":       "req-model",
+		"taskId":          "task-model",
+		"evalKeyUrl":      env.stub.URL + "/eval_context.bin",
+		"evalKeyFileHash": env.keyHash,
+	})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("importModel with inapplicable eval key fields: status = %d, body = %s (the fields must be ignored, not refused)", resp.StatusCode, body)
+	}
+	requireLog(t, env.state, "本接口不读取这两个字段")
+
+	// Wait out the staging the handler starts asynchronously, so this test does not
+	// leave it running into the fixture's temp-dir cleanup.
+	modelDir, err := env.runner.Layout().ModelDir(hash)
+	if err != nil {
+		t.Fatalf("ModelDir: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(modelDir, "server")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for the model package to be staged into %s", modelDir)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

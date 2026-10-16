@@ -216,6 +216,20 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// evalKeyUrl and evalKeyFileHash belong to /v1/taa/import: the eval key is
+	// delivered with the data package it is used for, while this endpoint stages the
+	// model package. They are not rejected here the way validateFHEFields rejects
+	// them on the data endpoint - importModel is how a model reaches an fhe instance,
+	// so refusing the request would close the only path that stages one - but a
+	// platform that sends them here expects them to apply, and they do not. Logged
+	// rather than dropped in silence, like the mirror-image case on importHandler,
+	// where the data endpoint names the endpoint that does read what it ignores.
+	req.EvalKeyURL = strings.TrimSpace(req.EvalKeyURL)
+	req.EvalKeyFileHash = strings.TrimSpace(req.EvalKeyFileHash)
+	if req.EvalKeyURL != "" || req.EvalKeyFileHash != "" {
+		s.Logs.Add(LogWarn, "importModel", "模型下发携带 evalKeyUrl/evalKeyFileHash: 本接口不读取这两个字段，已忽略; eval key 随 /v1/taa/import 的数据下发提交")
+	}
+
 	// Models are delivered exactly like data: an encrypted model either arrives as a
 	// whole-file envelope, or its key envelope travels in the URL
 	// (<download link>?dataKeyCipher=<hex C1C3C2>) while the file itself is bare
