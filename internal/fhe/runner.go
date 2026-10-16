@@ -134,7 +134,7 @@ type Runner struct {
 	logf   Logger
 
 	mu    sync.Mutex
-	tasks map[string]*taskRun
+	tasks map[string][]*taskRun
 }
 
 // New builds a runner, creating the key cache directory.
@@ -156,7 +156,7 @@ func New(cfg Config, logf Logger) (*Runner, error) {
 		keys:   keys,
 		client: client,
 		logf:   logf,
-		tasks:  map[string]*taskRun{},
+		tasks:  map[string][]*taskRun{},
 	}, nil
 }
 
@@ -187,38 +187,73 @@ func (r *Runner) log(level Level, format string, args ...any) {
 	logf(level, "fhe", format, args...)
 }
 
+// lookup returns the newest run registered for taskID, or nil.
+//
+// Newest rather than oldest: a replayed import registers a second run for an id
+// whose first run may still be in flight, and a callback or a stop that arrives
+// is about the run the platform is waiting on now.
 func (r *Runner) lookup(taskID string) *taskRun {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.tasks[taskID]
+	return r.newestLocked(taskID)
+}
+
+// newestLocked is lookup's body for callers already holding r.mu.
+func (r *Runner) newestLocked(taskID string) *taskRun {
+	runs := r.tasks[taskID]
+	if len(runs) == 0 {
+		return nil
+	}
+	return runs[len(runs)-1]
+}
+
+// register adds run to the in-flight table as the newest run for its task id.
+func (r *Runner) register(run *taskRun) {
+	r.mu.Lock()
+	r.tasks[run.spec.TaskID] = append(r.tasks[run.spec.TaskID], run)
+	r.mu.Unlock()
 }
 
 // registerTestRun exposes task registration to tests without going through the
 // service. Production code registers through prepare.
 func (r *Runner) registerTestRun(taskID string, spec TaskSpec) *taskRun {
 	run := &taskRun{spec: spec, done: make(chan struct{})}
-	r.mu.Lock()
-	r.tasks[taskID] = run
-	r.mu.Unlock()
+	r.register(run)
 	return run
 }
 
 func (r *Runner) lookupForTest(taskID string) *taskRun { return r.lookup(taskID) }
 
-// forget drops run from the in-flight table, but only if the table still holds
-// that very run.
+// forget drops run from the in-flight table, and only that run.
 //
-// Two Executes for one task id - a replayed import, or a platform retry while
-// the first is still in flight - both run to completion, and the second
-// prepare replaces the first's entry. Deleting by id alone therefore lets
-// whichever run returns first delete the other's entry, after which that run's
-// callbacks are dropped as "unknown task" and Cancel can no longer find it.
+// Two Executes for one task id - a replayed import, or a platform retry while the
+// first is still in flight - both run to completion, and the second prepare
+// registers over the first. That is why the table keeps every live run for an id
+// rather than one: a slot that holds a single run can only be corrected by the
+// run that happens to be in it, so whichever of the two returns first decides
+// what the other can still do. Deleting by id alone deleted the older run's entry
+// whenever the newer one returned first, after which the older run's callbacks
+// were dropped as "unknown task" and Cancel could no longer find it - and the
+// newer run returning first is the reachable order, because a run that adopts an
+// already-completed task returns without waiting. Taking out the one run this
+// call was given is an operation on that run, so the order the two return in does
+// not matter.
 func (r *Runner) forget(run *taskRun) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if cur, ok := r.tasks[run.spec.TaskID]; ok && cur == run {
-		delete(r.tasks, run.spec.TaskID)
+	runs := r.tasks[run.spec.TaskID]
+	for i, cur := range runs {
+		if cur != run {
+			continue
+		}
+		runs = append(runs[:i], runs[i+1:]...)
+		break
 	}
+	if len(runs) == 0 {
+		delete(r.tasks, run.spec.TaskID)
+		return
+	}
+	r.tasks[run.spec.TaskID] = runs
 }
 
 // finish resolves a run exactly once and reports whether this call is the one
@@ -477,9 +512,7 @@ func (r *Runner) prepare(ctx context.Context, spec TaskSpec) (*taskRun, error) {
 	}
 
 	run := &taskRun{spec: spec, done: make(chan struct{})}
-	r.mu.Lock()
-	r.tasks[spec.TaskID] = run
-	r.mu.Unlock()
+	r.register(run)
 	r.log(LevelInfo, "已下发 FHE 任务: taskId=%s, userId=%s, modelId=%s", spec.TaskID, spec.UserID, spec.ModelID)
 	return run, nil
 }

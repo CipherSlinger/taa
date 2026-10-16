@@ -1156,6 +1156,100 @@ func TestRunnerCancelLosesTheRaceToThePollerAndSaysSo(t *testing.T) {
 	}
 }
 
+// TestRunnerForgetIsOrderIndependent is the regression test for the in-flight
+// table being emptied while a run was still going.
+//
+// forget compares pointers, which protects the current occupant of the slot and
+// nothing else. Two Executes for one task id - a replayed import, or a platform
+// retry while the first is still in flight - both register, and the second
+// replaces the first. When it is the *second* that returns first, which the adopt
+// path makes easy because it returns the moment the probe reports a successful
+// status, forgetting it deleted the entry outright and left the table empty while
+// the first run was still running: from then on its callbacks were dropped as
+// belonging to an unknown task and it could not be cancelled.
+//
+// The two runs here differ in their user id, which is what a replay with a fresh
+// eval key looks like, and lets the one service distinguish them: the tenant of
+// run B already has a completed task, so B adopts it and returns immediately
+// while A is left waiting.
+func TestRunnerForgetIsOrderIndependent(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	keyA, keyB := []byte("key-a"), []byte("key-b")
+	keySrvA, keySrvB := keyServer(t, keyA), keyServer(t, keyB)
+
+	userB := sm3HexOf(t, keyB)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/tasks":
+			// The task exists for both tenants, so both Executes probe it.
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":"task exists"}`))
+		case strings.HasSuffix(r.URL.Path, "/continue"):
+			_, _ = w.Write([]byte(`{"status":"running"}`))
+		case strings.HasPrefix(r.URL.Path, "/api/v1/tasks/"):
+			// One task id, two tenants: run B's user already has a finished task,
+			// run A's is still running.
+			status := "running"
+			if r.Header.Get("X-User-Id") == userB {
+				status = "completed"
+			}
+			_, _ = fmt.Fprintf(w, `{"task_id":"task-1","status":%q,"cases":[]}`, status)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	r := newRunnerWithTimeout(t, srv.URL, layout, 5*time.Second)
+	specA := specFor(t, r, keySrvA.URL, keyA, []byte("i"))
+	specB := specFor(t, r, keySrvB.URL, keyB, []byte("i"))
+	if specA.UserID == specB.UserID {
+		t.Fatalf("both specs carry the user id %q; the service cannot tell them apart", specA.UserID)
+	}
+
+	ctxA, cancelA := context.WithCancel(context.Background())
+	defer cancelA()
+	runADone := make(chan TaskOutcome, 1)
+	go func() {
+		out, _ := r.Execute(ctxA, specA, nil)
+		runADone <- out
+	}()
+	runA := waitForRun(t, r, "task-1")
+
+	runBDone := make(chan TaskOutcome, 1)
+	go func() {
+		out, _ := r.Execute(context.Background(), specB, nil)
+		runBDone <- out
+	}()
+
+	// Run B adopts the already-completed task and returns without waiting.
+	select {
+	case out := <-runBDone:
+		if out.Status != StatusCompleted {
+			t.Fatalf("run B returned %q, want %q: the fixture did not take the adopt path", out.Status, StatusCompleted)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run B never returned; the fixture did not take the adopt path")
+	}
+
+	// Run B's cleanup is the trigger. Run A is still in flight.
+	if got := r.lookupForTest("task-1"); got != runA {
+		t.Fatalf("after run B returned, the in-flight table holds %v, want run A: run B's cleanup emptied the table while run A was still running", got)
+	}
+	if !r.Deliver(CallbackPayload{TaskID: "task-1", Status: "completed"}) {
+		t.Fatal("a terminal callback for the still-in-flight run A was dropped as an unknown task")
+	}
+	select {
+	case out := <-runADone:
+		if out.Status != StatusCompleted {
+			t.Errorf("run A returned %q after its callback, want %q", out.Status, StatusCompleted)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run A did not return after its callback was delivered")
+	}
+}
+
 // TestRunnerCancelAfterTheTaskFinishedIsNotAFailedStop pins the third answer
 // Cancel can give. A task that finished a moment before the platform's
 // stopTraining arrived is a race, and reporting it as a failed stop would be
