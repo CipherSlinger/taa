@@ -617,9 +617,9 @@ func registerPlatform(ctx context.Context, platformIP, dockerID, publicKeyPEM st
 // scanning with the wrong engine or blocking every import with a scan failure.
 func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, error) {
 	engine, err := codeaudit.NewEngine(codeaudit.EngineConfig{
-		Name:             cfg.CodeScanEngine,
-		SemgrepRulesPath: cfg.SemgrepRulesPath,
-		SemgrepTimeout:   cfg.SemgrepTimeout,
+		Name:             cfg.CodeScan.Engine,
+		SemgrepRulesPath: cfg.CodeScan.RulesPath,
+		SemgrepTimeout:   cfg.CodeScan.Timeout,
 	})
 	if err != nil {
 		return controller.SecurityConfig{}, fmt.Errorf("resolve code scan engine: %w", err)

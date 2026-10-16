@@ -134,7 +134,7 @@ READY_TIMEOUT="${READY_TIMEOUT:-120}"
 READY_INTERVAL="${READY_INTERVAL:-2}"
 
 # Semgrep payload for the code scan engine. TAA resolves the engine fail-closed: with
-# codeAudit.codeScanEngine=semgrep the rules path must exist or the daemon exits FATAL at startup
+# codeAudit.codeScan.engine=semgrep the rules path must exist or the daemon exits FATAL at startup
 # and the supervisor restarts it every 10s. The kata pod image ships python3 and tar but neither
 # the semgrep CLI nor any rules, so a remote deploy has to provision both.
 # The engine runtime is a fixed third-party payload and travels as an archive that is expected to
@@ -750,7 +750,7 @@ Environment overrides:
   SEMGREP_BUNDLE=${SEMGREP_BUNDLE:-<未设置>}
       本地 semgrep 引擎 payload 归档；设置后会先上传到宿主再注入，留空则要求宿主上已存在。
   SEMGREP_RULES_SOURCE=$SEMGREP_RULES_SOURCE
-      注入容器的代码扫描规则目录，按配置里的 semgrepRulesPath 落位。
+      注入容器的代码扫描规则目录，按配置里的 codeAudit.codeScan.rulesPath 落位。
   READY_TIMEOUT=${READY_TIMEOUT}
       等待服务就绪的最长时间（秒）。
   READY_INTERVAL=${READY_INTERVAL}
@@ -999,8 +999,9 @@ try:
     with open(sys.argv[1], "r", encoding="utf-8") as f:
         cfg = json.load(f)
     code_audit = cfg.get("codeAudit") or {}
-    engine = code_audit.get("codeScanEngine") or ""
-    rules = code_audit.get("semgrepRulesPath") or ""
+    code_scan = code_audit.get("codeScan") or {}
+    engine = code_scan.get("engine") or ""
+    rules = code_scan.get("rulesPath") or ""
     if isinstance(engine, str) and isinstance(rules, str):
         print("%s %s" % (engine.strip(), rules.strip()))
 except Exception:
@@ -1100,9 +1101,9 @@ provision_remote_scan_engine() {
   fi
 
   if [[ -z "$rules_path" ]]; then
-    err "codeAudit.semgrepRulesPath is empty in $(basename "$template") but codeAudit.codeScanEngine=semgrep"
+    err "codeAudit.codeScan.rulesPath is empty in $(basename "$template") but codeAudit.codeScan.engine=semgrep"
     detail "Without it taa falls back to its built-in path relative to the working directory, which does not exist in the container."
-    detail "Set codeAudit.semgrepRulesPath (the shipped templates use $CONTAINER_TAA_CONFIG_PATH's directory, e.g. /opt/taa/semgrep/rules)."
+    detail "Set codeAudit.codeScan.rulesPath (the shipped templates use $CONTAINER_TAA_CONFIG_PATH's directory, e.g. /opt/taa/semgrep/rules)."
     exit 1
   fi
 

@@ -80,13 +80,13 @@ func TestCheckKeyFileExists_DirectoryTargetFails(t *testing.T) {
 
 // TestBuildSecurityConfig verifies mapping from StartupConfig to controller.SecurityConfig
 func TestBuildSecurityConfig(t *testing.T) {
-	// CodeScanEngine is set explicitly because an unset engine name is rejected
+	// CodeScan.Engine is set explicitly because an unset engine name is rejected
 	// rather than treated as the baseline: a caller that bypassed the config
 	// loader must not get a scan with an engine nobody chose. The loader's own
-	// default is "regex" and is asserted in the config package.
+	// default is "semgrep" and is asserted in the config package.
 	cfg := config.StartupConfig{
 		EnableCodeAudit:   true,
-		CodeScanEngine:    "regex",
+		CodeScan:          config.CodeScanConfig{Engine: "regex"},
 		ModelDir:          "/opt/taa/models",
 		EnableResultCheck: true,
 		MaxFileBytes:      3 * 1024 * 1024 * 1024,
@@ -317,8 +317,8 @@ func TestBuildSecurityConfigPassesThroughTemperature(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.StartupConfig{
-				CodeScanEngine: "regex",
-				ModelDir:       "/opt/taa/models",
+				CodeScan: config.CodeScanConfig{Engine: "regex"},
+				ModelDir: "/opt/taa/models",
 				LLM: config.LLMConfig{
 					Temperature: tc.given,
 				},
@@ -364,8 +364,7 @@ func TestBuildSecurityConfigResolvesTheConfiguredEngine(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sec, err := buildSecurityConfig(config.StartupConfig{
-				CodeScanEngine:   tc.engine,
-				SemgrepRulesPath: tc.rules,
+				CodeScan: config.CodeScanConfig{Engine: tc.engine, RulesPath: tc.rules},
 			})
 			if err != nil {
 				t.Fatalf("buildSecurityConfig() error = %v", err)
@@ -403,8 +402,7 @@ func TestBuildSecurityConfigFailsFastOnAnUnusableEngine(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sec, err := buildSecurityConfig(config.StartupConfig{
-				CodeScanEngine:   tc.engine,
-				SemgrepRulesPath: tc.rules,
+				CodeScan: config.CodeScanConfig{Engine: tc.engine, RulesPath: tc.rules},
 			})
 			if err == nil {
 				t.Fatalf("buildSecurityConfig() accepted %q and returned engine %v; "+

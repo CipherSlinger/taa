@@ -398,13 +398,13 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 		// covers a cold model load on CPU-only inference; see
 		// .claude/specs/2026-10-08-llm-timeout-layering-design.md.
 		wantLLMTimeoutMs int64
-		// wantSemgrepRulesPath and wantLLMModel are asserted because both differ
+		// wantRulesPath and wantLLMModel are asserted because both differ
 		// from the code defaults (empty, and qwen2.5-coder:0.5b). They are what
 		// makes this test evidence that the codeAudit block is read as a block:
 		// a config whose inner sections went unread would still satisfy every
 		// other assertion here, since those pin values the defaults already have.
-		wantSemgrepRulesPath string
-		wantLLMModel         string
+		wantRulesPath string
+		wantLLMModel  string
 	}{
 		{
 			relPath:              "../../configs/taa-production.json",
@@ -424,7 +424,7 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantResultCheck:      true,
 			wantPlatformIP:       "",
 			wantDockerID:         "",
-			wantSemgrepRulesPath: "/opt/taa/semgrep/rules",
+			wantRulesPath:        "/opt/taa/semgrep/rules",
 			wantLLMModel:         "qwen2.5-coder:7b",
 		},
 		{
@@ -446,7 +446,7 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantPlatformIP:       "127.0.0.1:18080",
 			wantDockerID:         "taa-env-slim-v2",
 			wantLLMTimeoutMs:     120000,
-			wantSemgrepRulesPath: "/opt/taa/semgrep/rules",
+			wantRulesPath:        "/opt/taa/semgrep/rules",
 			wantLLMModel:         "qwen2.5-coder:7b",
 		},
 	}
@@ -511,8 +511,8 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			if tc.wantLLMTimeoutMs != 0 && cfg.LLM.TimeoutMs != tc.wantLLMTimeoutMs {
 				t.Errorf("LLM.TimeoutMs = %d, want %d", cfg.LLM.TimeoutMs, tc.wantLLMTimeoutMs)
 			}
-			if cfg.SemgrepRulesPath != tc.wantSemgrepRulesPath {
-				t.Errorf("SemgrepRulesPath = %q, want %q", cfg.SemgrepRulesPath, tc.wantSemgrepRulesPath)
+			if cfg.CodeScan.RulesPath != tc.wantRulesPath {
+				t.Errorf("CodeScan.RulesPath = %q, want %q", cfg.CodeScan.RulesPath, tc.wantRulesPath)
 			}
 			if cfg.LLM.Model != tc.wantLLMModel {
 				t.Errorf("LLM.Model = %q, want %q", cfg.LLM.Model, tc.wantLLMModel)
@@ -539,7 +539,7 @@ func TestLoadStartupConfig_ModularSections(t *testing.T) {
 			"keys": "/data/storage/keys"
 		},
 		"codeAudit": {
-			"codeScan": false,
+			"enabled": false,
 			"resultCheck": {
 				"enabled": false,
 				"maxFileBytes": 1048576
@@ -577,7 +577,7 @@ func TestLoadStartupConfig_ModularSections(t *testing.T) {
 		t.Errorf("KeysDir = %q, want /data/storage/keys", cfg.KeysDir)
 	}
 	if cfg.EnableCodeAudit {
-		t.Errorf("EnableSecurityScan = true, want false")
+		t.Errorf("EnableCodeAudit = true, want false")
 	}
 	if cfg.EnableResultCheck {
 		t.Errorf("EnableResultCheck = true, want false")
@@ -594,7 +594,7 @@ func TestLoadStartupConfig_ResultCheckBooleanCompatibility(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
 		"codeAudit": {
-			"codeScan": true,
+			"enabled": true,
 			"resultCheck": false
 		}
 	}`)
@@ -952,13 +952,15 @@ func TestLoadStartupConfigRejectsUnknownCodeScanEngine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
 		"codeAudit": {
-			"codeScanEngine": "semgrep-cli"
+			"codeScan": {
+				"engine": "semgrep-cli"
+			}
 		}
 	}`)
 
 	cfg, err := LoadStartupConfig(path)
 	if err == nil {
-		t.Fatalf("LoadStartupConfig() error = nil, want rejection of unknown engine; got engine %q", cfg.CodeScanEngine)
+		t.Fatalf("LoadStartupConfig() error = nil, want rejection of unknown engine; got engine %q", cfg.CodeScan.Engine)
 	}
 	if !strings.Contains(err.Error(), "semgrep-cli") {
 		t.Fatalf("error %q should name the rejected value", err)
@@ -976,7 +978,7 @@ func TestLoadStartupConfigNormalizesCodeScanEngine(t *testing.T) {
 	for _, engine := range []string{"regex", "semgrep", "SEMGREP", " semgrep ", ""} {
 		t.Run("engine="+engine, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), DefaultFileName)
-			writeTestConfig(t, path, fmt.Sprintf(`{"codeAudit":{"codeScanEngine":%q}}`, engine))
+			writeTestConfig(t, path, fmt.Sprintf(`{"codeAudit":{"codeScan":{"engine":%q}}}`, engine))
 
 			cfg, err := LoadStartupConfig(path)
 			if err != nil {
@@ -988,8 +990,8 @@ func TestLoadStartupConfigNormalizesCodeScanEngine(t *testing.T) {
 				// Default is semgrep following formal production integration.
 				want = "semgrep"
 			}
-			if cfg.CodeScanEngine != want {
-				t.Fatalf("CodeScanEngine = %q, want %q", cfg.CodeScanEngine, want)
+			if cfg.CodeScan.Engine != want {
+				t.Fatalf("CodeScan.Engine = %q, want %q", cfg.CodeScan.Engine, want)
 			}
 		})
 	}
@@ -1003,8 +1005,10 @@ func TestLoadStartupConfigReadsSemgrepRulesPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
 		"codeAudit": {
-			"codeScanEngine": "semgrep",
-			"semgrepRulesPath": "/opt/taa/semgrep/rules.yaml"
+			"codeScan": {
+				"engine": "semgrep",
+				"rulesPath": "/opt/taa/semgrep/rules.yaml"
+			}
 		}
 	}`)
 
@@ -1012,8 +1016,8 @@ func TestLoadStartupConfigReadsSemgrepRulesPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
-	if cfg.SemgrepRulesPath != "/opt/taa/semgrep/rules.yaml" {
-		t.Fatalf("SemgrepRulesPath = %q, want the configured path", cfg.SemgrepRulesPath)
+	if cfg.CodeScan.RulesPath != "/opt/taa/semgrep/rules.yaml" {
+		t.Fatalf("CodeScan.RulesPath = %q, want the configured path", cfg.CodeScan.RulesPath)
 	}
 }
 
@@ -1023,14 +1027,14 @@ func TestLoadStartupConfigReadsSemgrepRulesPath(t *testing.T) {
 // drift, and the config layer has no way to notice.
 func TestLoadStartupConfigLeavesSemgrepRulesPathUnset(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, `{"codeAudit":{"codeScanEngine":"regex"}}`)
+	writeTestConfig(t, path, `{"codeAudit":{"codeScan":{"engine":"regex"}}}`)
 
 	cfg, err := LoadStartupConfig(path)
 	if err != nil {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
-	if cfg.SemgrepRulesPath != "" {
-		t.Fatalf("SemgrepRulesPath = %q, want empty so the engine's own default applies", cfg.SemgrepRulesPath)
+	if cfg.CodeScan.RulesPath != "" {
+		t.Fatalf("CodeScan.RulesPath = %q, want empty so the engine's own default applies", cfg.CodeScan.RulesPath)
 	}
 }
 
@@ -1041,14 +1045,14 @@ func TestLoadStartupConfigLeavesSemgrepRulesPathUnset(t *testing.T) {
 // places, and the one that is actually enforced is the adapter's.
 func TestLoadStartupConfigLeavesTheSemgrepTimeoutAtZeroForTheEngineToResolve(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, `{"codeAudit":{"codeScanEngine":"semgrep"}}`)
+	writeTestConfig(t, path, `{"codeAudit":{"codeScan":{"engine":"semgrep"}}}`)
 
 	cfg, err := LoadStartupConfig(path)
 	if err != nil {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
-	if cfg.SemgrepTimeout != 0 {
-		t.Fatalf("SemgrepTimeout = %v, want 0 so the engine's own default applies", cfg.SemgrepTimeout)
+	if cfg.CodeScan.Timeout != 0 {
+		t.Fatalf("CodeScan.Timeout = %v, want 0 so the engine's own default applies", cfg.CodeScan.Timeout)
 	}
 }
 
@@ -1056,8 +1060,10 @@ func TestLoadStartupConfigReadsTheSemgrepTimeout(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
 		"codeAudit": {
-			"codeScanEngine": "semgrep",
-			"semgrepTimeoutSeconds": 45
+			"codeScan": {
+				"engine": "semgrep",
+				"timeoutSeconds": 45
+			}
 		}
 	}`)
 
@@ -1065,8 +1071,8 @@ func TestLoadStartupConfigReadsTheSemgrepTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
-	if cfg.SemgrepTimeout != 45*time.Second {
-		t.Fatalf("SemgrepTimeout = %v, want 45s", cfg.SemgrepTimeout)
+	if cfg.CodeScan.Timeout != 45*time.Second {
+		t.Fatalf("CodeScan.Timeout = %v, want 45s", cfg.CodeScan.Timeout)
 	}
 }
 
@@ -1083,16 +1089,18 @@ func TestLoadStartupConfigRejectsANonPositiveSemgrepTimeout(t *testing.T) {
 			path := filepath.Join(t.TempDir(), DefaultFileName)
 			writeTestConfig(t, path, fmt.Sprintf(`{
 				"codeAudit": {
-					"codeScanEngine": "semgrep",
-					"semgrepTimeoutSeconds": %s
+					"codeScan": {
+						"engine": "semgrep",
+						"timeoutSeconds": %s
+					}
 				}
 			}`, seconds))
 
 			cfg, err := LoadStartupConfig(path)
 			if err == nil {
-				t.Fatalf("LoadStartupConfig() error = nil, want rejection; got timeout %v", cfg.SemgrepTimeout)
+				t.Fatalf("LoadStartupConfig() error = nil, want rejection; got timeout %v", cfg.CodeScan.Timeout)
 			}
-			if !strings.Contains(err.Error(), "semgrepTimeoutSeconds") {
+			if !strings.Contains(err.Error(), "codeScan.timeoutSeconds") {
 				t.Fatalf("error %q should name the offending key", err)
 			}
 		})
@@ -1156,7 +1164,7 @@ func TestLoadStartupConfigRejectsOutOfRangeLLMTemperature(t *testing.T) {
 func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 	t.Run("absent means enabled with the adapter's defaults", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), DefaultFileName)
-		writeTestConfig(t, path, `{"codeAudit":{"codeScanEngine":"regex"}}`)
+		writeTestConfig(t, path, `{"codeAudit":{"codeScan":{"engine":"regex"}}}`)
 		cfg, err := LoadStartupConfig(path)
 		if err != nil {
 			t.Fatalf("LoadStartupConfig: %v", err)
@@ -1249,8 +1257,8 @@ func TestBinaryAuditConfigDefaultsAndOverrides(t *testing.T) {
 // config still written against the old layout loaded without complaint - and
 // every setting under the old keys was discarded, leaving the audit on defaults
 // (the regex baseline, the local inference endpoint) with nothing in the log to
-// say so. The rejection has to name the key to edit, and it has to name both
-// when both are present, so an operator fixes the file in one pass.
+// say so. The rejection has to name the key to edit, and it has to name every
+// one that is present, so an operator fixes the file in one pass.
 func TestLoadStartupConfigRejectsRemovedKeys(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1268,9 +1276,30 @@ func TestLoadStartupConfigRejectsRemovedKeys(t *testing.T) {
 			want:    []string{`"llm"`, `"codeAudit.llm"`},
 		},
 		{
-			name:    "both at once, reported together",
-			content: `{"security":{"codeScan":true},"llm":{"enabled":true}}`,
-			want:    []string{`"security"`, `"codeAudit"`, `"llm"`, `"codeAudit.llm"`},
+			name:    "the old codeScanEngine key",
+			content: `{"codeAudit":{"codeScanEngine":"semgrep"}}`,
+			want:    []string{`"codeAudit.codeScanEngine"`, `"codeAudit.codeScan.engine"`},
+		},
+		{
+			name:    "the old semgrepRulesPath key",
+			content: `{"codeAudit":{"semgrepRulesPath":"/opt/taa/semgrep/rules"}}`,
+			want:    []string{`"codeAudit.semgrepRulesPath"`, `"codeAudit.codeScan.rulesPath"`},
+		},
+		{
+			name:    "the old semgrepTimeoutSeconds key",
+			content: `{"codeAudit":{"semgrepTimeoutSeconds":900}}`,
+			want:    []string{`"codeAudit.semgrepTimeoutSeconds"`, `"codeAudit.codeScan.timeoutSeconds"`},
+		},
+		{
+			name: "the whole old block, reported together",
+			content: `{"security":{"codeScan":true},"llm":{"enabled":true},"codeAudit":{` +
+				`"codeScanEngine":"semgrep","semgrepRulesPath":"/r","semgrepTimeoutSeconds":900}}`,
+			want: []string{
+				`"security"`, `"codeAudit"`, `"llm"`, `"codeAudit.llm"`,
+				`"codeAudit.codeScanEngine"`, `"codeAudit.codeScan.engine"`,
+				`"codeAudit.semgrepRulesPath"`, `"codeAudit.codeScan.rulesPath"`,
+				`"codeAudit.semgrepTimeoutSeconds"`, `"codeAudit.codeScan.timeoutSeconds"`,
+			},
 		},
 	}
 
@@ -1292,12 +1321,49 @@ func TestLoadStartupConfigRejectsRemovedKeys(t *testing.T) {
 	}
 }
 
+// TestLoadStartupConfigRejectsTheOldCodeScanShape covers the one old key whose
+// type changed rather than only its name.
+//
+// codeScan used to be the on/off switch, so an old config writes a bool where a
+// block now has to be. encoding/json would report that as an unmarshal type
+// error naming the Go struct field, which tells an operator nothing about where
+// the switch went; the custom unmarshaler replaces it with the fix. The
+// boundary matters as much as the rejection: an explicit null is not the old
+// shape and is not rejected, matching how every other removed key treats it.
+func TestLoadStartupConfigRejectsTheOldCodeScanShape(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{"codeAudit":{"codeScan":true,"llm":{"enabled":false}}}`)
+
+	_, err := LoadStartupConfig(path)
+	if err == nil {
+		t.Fatal("LoadStartupConfig() error = nil, want rejection of a bool codeScan")
+	}
+	for _, want := range []string{
+		"codeAudit.codeScan", "codeAudit.enabled",
+		"codeAudit.codeScan.engine", "codeAudit.codeScan.rulesPath", "codeAudit.codeScan.timeoutSeconds",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %s", err, want)
+		}
+	}
+
+	t.Run("an explicit null is not the old shape", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{"codeAudit":{"codeScan":null}}`)
+
+		if _, err := LoadStartupConfig(path); err != nil {
+			t.Fatalf("LoadStartupConfig() error = %v, want nil for an explicit null", err)
+		}
+	})
+}
+
 // TestLoadStartupConfigAcceptsExplicitNullRemovedKeys pins the boundary of the
 // rejection above: an explicit null carries no settings, so a config that writes
 // one loses nothing by loading and must not be failed for it.
 func TestLoadStartupConfigAcceptsExplicitNullRemovedKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, `{"security":null,"llm":null}`)
+	writeTestConfig(t, path, `{"security":null,"llm":null,"codeAudit":{`+
+		`"codeScanEngine":null,"semgrepRulesPath":null,"semgrepTimeoutSeconds":null}}`)
 
 	if _, err := LoadStartupConfig(path); err != nil {
 		t.Fatalf("LoadStartupConfig() error = %v, want nil for explicit nulls", err)

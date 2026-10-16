@@ -41,7 +41,7 @@ const maxDownloadBytes = config.DefaultMaxFileBytes // 3 GB
 // production constructor and always sets it; a second caller must as well.
 type SecurityConfig struct {
 	ScanEnabled      bool                   // 是否在 import type=1 时执行源码安全扫描
-	Engine           codeaudit.StaticEngine // Tier 1 静态扫描引擎（启动时由 codeScanEngine 配置解析）
+	Engine           codeaudit.StaticEngine // Tier 1 静态扫描引擎（启动时由 codeAudit.codeScan.engine 配置解析）
 	Binary           codeaudit.BinaryConfig // 二进制审计通道配置（与 Tier 1 引擎无关，两种引擎部署都生效）
 	ModelDir         string                 // 模型代码存放目录（扫描目标，type=1）
 	DataDir          string                 // 数据目录（type=2 测试数据，type=3 训练数据，用于数据指纹比对）

@@ -377,18 +377,19 @@ src, dst, engine, rules = sys.argv[1:5]
 with open(src, "r", encoding="utf-8") as f:
     cfg = json.load(f)
 code_audit = cfg.setdefault("codeAudit", {})
-code_audit["codeScanEngine"] = engine
+code_scan = code_audit.setdefault("codeScan", {})
+code_scan["engine"] = engine
 if engine == "semgrep":
-    code_audit["semgrepRulesPath"] = rules
+    code_scan["rulesPath"] = rules
 with open(dst, "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2)
     f.write("\n")
 PY
 TAA_TEMPLATE="$TMP_TAA_TEMPLATE"
 if [[ "$SCAN_ENGINE" == "semgrep" ]]; then
-  info "derived template sets codeScanEngine=semgrep and semgrepRulesPath=$CONTAINER_SEMGREP_DIR/rules"
+  info "derived template sets codeAudit.codeScan.engine=semgrep and .rulesPath=$CONTAINER_SEMGREP_DIR/rules"
 else
-  warn "derived template sets codeScanEngine=regex: this image runs the baseline, not the semgrep engine the tracked templates and the code default select"
+  warn "derived template sets codeAudit.codeScan.engine=regex: this image runs the baseline, not the semgrep engine the tracked templates and the code default select"
 fi
 
 # ── 4. TAA ───────────────────────────────────────────────────

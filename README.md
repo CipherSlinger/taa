@@ -339,9 +339,11 @@ TAA reads its configuration from `taa-config.json` located in its working direct
     }
   },
   "codeAudit": {
-    "codeScan": true,
-    "codeScanEngine": "semgrep",
-    "semgrepRulesPath": "/opt/taa/semgrep/rules",
+    "enabled": true,
+    "codeScan": {
+      "engine": "semgrep",
+      "rulesPath": "/opt/taa/semgrep/rules"
+    },
     "resultCheck": {
       "enabled": true,
       "maxFileBytes": 3221225472
@@ -381,7 +383,10 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `model.output.result` | `/opt/taa/output/result` | Target output directory for model training checkpoints and artifacts |
 | `model.output.log` | `/opt/taa/output/log` | Model execution log directory (or file) monitored by log watcher (`modelLog`); every `*.log`/`*.jsonl` file in it is streamed |
 | `model.output.progress` | `/opt/taa/output/progress/progress.json` | Model progress file (or directory) monitored by progress watcher (`reportProgress`) |
-| `codeAudit.codeScan` | `true` | Master audit switch: enables the static rule-based security scan during model import |
+| `codeAudit.enabled` | `true` | Master audit switch: enables the static rule-based security scan during model import |
+| `codeAudit.codeScan.engine` | `semgrep` | Tier 1 static engine, `semgrep` or `regex`. Normalized to lower case; any other value is rejected at startup, because an unrecognized name would silently scan with the regex baseline while the deployment believed otherwise. `regex` is the baseline an operator falls back to deliberately |
+| `codeAudit.codeScan.rulesPath` | unset | Rules file or directory for the semgrep engine, passed through as semgrep's `--config`. Unset means the engine's built-in default, which is relative to the repository root and therefore useless in a container: a deployment that selects semgrep has to set this, and startup fails when the path does not exist |
+| `codeAudit.codeScan.timeoutSeconds` | unset | Whole-scan deadline for one semgrep run, not a scan budget but a safety net: an import waits on the scan, and an expired deadline becomes a failed scan, which the audit fails closed on. Unset or `0` means the adapter's own default (5 minutes); a negative value is rejected at startup. The `taa-initrd.json` template sets `900`; the other two leave it unset |
 | `codeAudit.resultCheck.enabled` | `true` | Runs the plaintext data leakage check over the result directory as soon as training finishes, and stores the verdict on the task's import index record. `/v1/taa/export` reads that verdict instead of scanning again, so it refuses to export when the verdict failed, when the check itself could not run, and when no verdict exists at all (fail-closed: records committed before this field existed have none and must be retrained - both of those states are governed by `codeAudit.llm.failClosed`, which turns them into a warning when set to `false`). A failing check never fails the training process itself, but it does change how the run is reported: the training report is uploaded with `code` `2` and the reason in `msg`, its `training_task.status` is `failed` (with `exit_code` still `0`), and it carries no `result_files` at all - the directory tree's table previews are the data rows being withheld. Everything else about the run still reports normally (accepts object or boolean) |
 | `codeAudit.resultCheck.maxFileBytes` | `3221225472` (3 GB) | Maximum file size limit enforced for both file downloads (`import`, `importModel`, `getResourceInfo`) and result exports (`export`), as well as anomaly inspection threshold |
 | `codeAudit.binaryAudit.enabled` | `true` | Runs the binary audit channel alongside the source scan (see [4. Binary Audit Channel](#4-binary-audit-channel)). Off restores the pre-channel behavior exactly |
@@ -466,7 +471,7 @@ Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (d
 ```
 
 > **Remote deploys provision the code scan engine.** When the config selects the semgrep engine
-> (`codeAudit.codeScanEngine`), `deploy.sh remote` makes sure the container has both the CLI and the
+> (`codeAudit.codeScan.engine`), `deploy.sh remote` makes sure the container has both the CLI and the
 > rules *before* it touches the running daemon. The engine comes from a payload archive kept on the
 > host (`REMOTE_SEMGREP_BUNDLE`, default `$REMOTE_DIR/semgrep-bundle.tar.gz`, built with
 > `deploy/guest-build/build-semgrep-payload-container.sh`; set `SEMGREP_BUNDLE` to a local archive to

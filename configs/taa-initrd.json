@@ -17,10 +17,12 @@
     }
   },
   "codeAudit": {
-    "codeScan": true,
-    "codeScanEngine": "semgrep",
-    "semgrepRulesPath": "/opt/taa/semgrep/rules",
-    "semgrepTimeoutSeconds": 900,
+    "enabled": true,
+    "codeScan": {
+      "engine": "semgrep",
+      "rulesPath": "/opt/taa/semgrep/rules",
+      "timeoutSeconds": 900
+    },
     "resultCheck": {
       "enabled": true,
       "maxFileBytes": 3221225472

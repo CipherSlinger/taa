@@ -22,23 +22,11 @@ type StartupConfig struct {
 	// EnableCodeAudit gates the whole code audit: the static scan and, with it,
 	// the LLM arbitration that only ever runs on what the scan raised. Turning it
 	// off is the audit's kill switch, not a per-channel toggle; the channels
-	// themselves are switched by CodeScanEngine/BinaryAuditEnabled.
+	// themselves are switched by CodeScan and BinaryAuditEnabled.
 	EnableCodeAudit bool
-	// CodeScanEngine selects the Tier 1 static engine ("regex" or "semgrep").
-	// The default is "semgrep" (see defaultStartupConfig); "regex" is the
-	// baseline an operator falls back to deliberately.
-	CodeScanEngine string
-	// SemgrepRulesPath is the rules file or directory for the semgrep engine,
-	// passed through as --config. Empty means the engine's own default, which is
-	// relative to the repository root and therefore useless in a container: a
-	// deployment that selects semgrep is expected to set this.
-	SemgrepRulesPath string
-	// SemgrepTimeout bounds one semgrep scan. It is not a scan budget but a
-	// safety net: an import waits on this scan, and the adapter turns an expired
-	// deadline into a failed scan, which the audit fails closed on. Zero means
-	// the adapter's own default (codeaudit.DefaultSemgrepTimeout), which is where
-	// the enforced number lives; a negative value is rejected at load time.
-	SemgrepTimeout time.Duration
+	// CodeScan is the Tier 1 static scan: which engine runs, where its rules come
+	// from, and how long one scan may take.
+	CodeScan CodeScanConfig
 	// BinaryAuditEnabled turns the binary channel on for model import audits. It
 	// defaults to true; turning it off is the rollback of this feature and leaves
 	// an audit byte-identical to the one produced before the channel existed.
@@ -143,6 +131,26 @@ type LLMConfig struct {
 	Temperature *float32
 }
 
+// CodeScanConfig is the Tier 1 static scan. Field names carry no "codeScan"
+// prefix - the type already says it.
+type CodeScanConfig struct {
+	// Engine selects the Tier 1 static engine ("regex" or "semgrep"). The
+	// default is "semgrep" (see defaultStartupConfig); "regex" is the baseline
+	// an operator falls back to deliberately.
+	Engine string
+	// RulesPath is the rules file or directory for the semgrep engine, passed
+	// through as --config. Empty means the engine's own default, which is
+	// relative to the repository root and therefore useless in a container: a
+	// deployment that selects semgrep is expected to set this.
+	RulesPath string
+	// Timeout bounds one semgrep scan. It is not a scan budget but a safety net:
+	// an import waits on this scan, and the adapter turns an expired deadline
+	// into a failed scan, which the audit fails closed on. Zero means the
+	// adapter's own default (codeaudit.DefaultSemgrepTimeout), which is where the
+	// enforced number lives; a negative value is rejected at load time.
+	Timeout time.Duration
+}
+
 type startupConfigFile struct {
 	Server      startupServerConfigFile      `json:"server"`
 	Platform    startupPlatformConfigFile    `json:"platform"`
@@ -205,18 +213,55 @@ type startupStorageConfigFile struct {
 // including the limits of the result-leakage check and the inference service it
 // arbitrates with.
 type startupCodeAuditConfigFile struct {
-	CodeScan         *bool  `json:"codeScan"`
-	Scan             *bool  `json:"scan"`
-	CodeScanEngine   string `json:"codeScanEngine"`
-	SemgrepRulesPath string `json:"semgrepRulesPath"`
-	// SemgrepTimeoutSeconds is a whole-scan deadline in seconds. Absent or zero
-	// means the adapter's default; zero is not read as "no deadline", because an
+	Enabled *bool `json:"enabled"`
+	// Scan is the second accepted spelling of the same switch; when a config
+	// writes both, this one is applied first and Enabled wins.
+	Scan         *bool                        `json:"scan"`
+	CodeScan     startupCodeScanConfigFile    `json:"codeScan"`
+	BinaryAudit  startupBinaryAuditConfigFile `json:"binaryAudit"`
+	ResultCheck  startupResultCheckConfigFile `json:"resultCheck"`
+	MaxFileBytes *int64                       `json:"maxFileBytes"`
+	LLM          startupLLMConfigFile         `json:"llm"`
+
+	// Removed keys, declared only so their presence is detectable. See
+	// rejectRemovedKeys.
+	RemovedCodeScanEngine   json.RawMessage `json:"codeScanEngine"`
+	RemovedSemgrepRulesPath json.RawMessage `json:"semgrepRulesPath"`
+	RemovedSemgrepTimeout   json.RawMessage `json:"semgrepTimeoutSeconds"`
+}
+
+// startupCodeScanConfigFile is the codeAudit.codeScan block.
+type startupCodeScanConfigFile struct {
+	Engine    string `json:"engine"`
+	RulesPath string `json:"rulesPath"`
+	// TimeoutSeconds is a whole-scan deadline in seconds. Absent or zero means
+	// the adapter's default; zero is not read as "no deadline", because an
 	// unbounded scan is a hung import rather than a faster one.
-	SemgrepTimeoutSeconds int                          `json:"semgrepTimeoutSeconds"`
-	BinaryAudit           startupBinaryAuditConfigFile `json:"binaryAudit"`
-	ResultCheck           startupResultCheckConfigFile `json:"resultCheck"`
-	MaxFileBytes          *int64                       `json:"maxFileBytes"`
-	LLM                   startupLLMConfigFile         `json:"llm"`
+	TimeoutSeconds int `json:"timeoutSeconds"`
+}
+
+// UnmarshalJSON turns the one shape this key used to have into a message naming
+// the fix. Before the split codeScan was the on/off switch itself, so a config
+// written against that layout says "codeScan": true - which would otherwise
+// surface as "cannot unmarshal bool into Go struct field", a type error whose
+// cause is not visible in the message.
+func (s *startupCodeScanConfigFile) UnmarshalJSON(data []byte) error {
+	if trimmed := strings.TrimSpace(string(data)); trimmed == "null" {
+		return nil
+	}
+	var asBool bool
+	if err := json.Unmarshal(data, &asBool); err == nil {
+		return fmt.Errorf("codeAudit.codeScan is now a block: the on/off switch moved to " +
+			"codeAudit.enabled, and this key holds codeAudit.codeScan.engine, " +
+			"codeAudit.codeScan.rulesPath and codeAudit.codeScan.timeoutSeconds")
+	}
+	type rawCodeScan startupCodeScanConfigFile
+	var raw rawCodeScan
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*s = startupCodeScanConfigFile(raw)
+	return nil
 }
 
 // startupBinaryAuditConfigFile is the codeAudit.binaryAudit block.
@@ -328,8 +373,8 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 // boot gate, so a hard failure is also the honest signal - the operator sees a
 // message naming the fix instead of a VM that boots with a changed audit.
 //
-// Both keys are reported in one error when both are present, so a config that
-// was written against the old layout is fixed in a single pass.
+// Every key is reported in one error when several are present, so a config that
+// was written against an old layout is fixed in a single pass.
 func rejectRemovedKeys(path string, fileCfg startupConfigFile) error {
 	var found []string
 	if hasJSONValue(fileCfg.RemovedSecurity) {
@@ -337,6 +382,15 @@ func rejectRemovedKeys(path string, fileCfg startupConfigFile) error {
 	}
 	if hasJSONValue(fileCfg.RemovedLLM) {
 		found = append(found, `"llm" (move under "codeAudit.llm")`)
+	}
+	if hasJSONValue(fileCfg.CodeAudit.RemovedCodeScanEngine) {
+		found = append(found, `"codeAudit.codeScanEngine" (move to "codeAudit.codeScan.engine")`)
+	}
+	if hasJSONValue(fileCfg.CodeAudit.RemovedSemgrepRulesPath) {
+		found = append(found, `"codeAudit.semgrepRulesPath" (move to "codeAudit.codeScan.rulesPath")`)
+	}
+	if hasJSONValue(fileCfg.CodeAudit.RemovedSemgrepTimeout) {
+		found = append(found, `"codeAudit.semgrepTimeoutSeconds" (move to "codeAudit.codeScan.timeoutSeconds")`)
 	}
 	if len(found) == 0 {
 		return nil
@@ -446,21 +500,21 @@ func validateLLMTemperature(cfg StartupConfig) error {
 // configuration nothing re-reads. The failure belongs
 // on the configuration, where an operator sees it at startup.
 func validateSemgrepTimeout(cfg StartupConfig) error {
-	if cfg.SemgrepTimeout < 0 {
-		return fmt.Errorf("codeAudit.semgrepTimeoutSeconds in startup config must not be negative: got %d",
-			int64(cfg.SemgrepTimeout/time.Second))
+	if cfg.CodeScan.Timeout < 0 {
+		return fmt.Errorf("codeAudit.codeScan.timeoutSeconds in startup config must not be negative: got %d",
+			int64(cfg.CodeScan.Timeout/time.Second))
 	}
 	return nil
 }
 
 func validateCodeScanEngine(cfg StartupConfig) error {
 	for _, engine := range staticEngines {
-		if cfg.CodeScanEngine == engine {
+		if cfg.CodeScan.Engine == engine {
 			return nil
 		}
 	}
-	return fmt.Errorf("unsupported codeAudit.codeScanEngine %q in startup config: must be one of %s",
-		cfg.CodeScanEngine, strings.Join(staticEngines, ", "))
+	return fmt.Errorf("unsupported codeAudit.codeScan.engine %q in startup config: must be one of %s",
+		cfg.CodeScan.Engine, strings.Join(staticEngines, ", "))
 }
 
 func validateLLMPolicy(cfg StartupConfig) error {
@@ -489,7 +543,7 @@ func defaultStartupConfig() StartupConfig {
 		DockerID:                  os.Getenv("DOCKER_ID"),
 		Contract:                  os.Getenv("CONTRACT"),
 		EnableCodeAudit:           true,
-		CodeScanEngine:            "semgrep",
+		CodeScan:                  CodeScanConfig{Engine: "semgrep"},
 		BinaryAuditEnabled:        true,
 		ModelDir:                  "/opt/taa/models",
 		EnableResultCheck:         true,
@@ -560,18 +614,18 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	if fileCfg.CodeAudit.Scan != nil {
 		cfg.EnableCodeAudit = *fileCfg.CodeAudit.Scan
 	}
-	if fileCfg.CodeAudit.CodeScan != nil {
-		cfg.EnableCodeAudit = *fileCfg.CodeAudit.CodeScan
+	if fileCfg.CodeAudit.Enabled != nil {
+		cfg.EnableCodeAudit = *fileCfg.CodeAudit.Enabled
 	}
 
-	if trimmed := strings.ToLower(strings.TrimSpace(fileCfg.CodeAudit.CodeScanEngine)); trimmed != "" {
-		cfg.CodeScanEngine = trimmed
+	if trimmed := strings.ToLower(strings.TrimSpace(fileCfg.CodeAudit.CodeScan.Engine)); trimmed != "" {
+		cfg.CodeScan.Engine = trimmed
 	}
-	if trimmed := strings.TrimSpace(fileCfg.CodeAudit.SemgrepRulesPath); trimmed != "" {
-		cfg.SemgrepRulesPath = trimmed
+	if trimmed := strings.TrimSpace(fileCfg.CodeAudit.CodeScan.RulesPath); trimmed != "" {
+		cfg.CodeScan.RulesPath = trimmed
 	}
-	if seconds := fileCfg.CodeAudit.SemgrepTimeoutSeconds; seconds != 0 {
-		cfg.SemgrepTimeout = time.Duration(seconds) * time.Second
+	if seconds := fileCfg.CodeAudit.CodeScan.TimeoutSeconds; seconds != 0 {
+		cfg.CodeScan.Timeout = time.Duration(seconds) * time.Second
 	}
 
 	ba := fileCfg.CodeAudit.BinaryAudit

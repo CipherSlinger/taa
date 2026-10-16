@@ -242,7 +242,7 @@ manifest_has_entry() {
 # semgrep engine with no payload in the image would build and boot fine, then
 # fail every audit at import time -- far away from the build that caused it.
 taa_config_wants_semgrep() {
-  grep -qE '"codeScanEngine"[[:space:]]*:[[:space:]]*"semgrep"' "$TAA_CONFIG_SRC"
+  grep -qE '"engine"[[:space:]]*:[[:space:]]*"semgrep"' "$TAA_CONFIG_SRC"
 }
 
 # Validate every local build input before any temporary state is created.

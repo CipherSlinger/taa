@@ -71,8 +71,8 @@ func setupTestState(t *testing.T) (*TAAState, string) {
 
 	state := NewTAAState(attestationPath, "127.0.0.1:65535", "test-docker-001", "", "", sm2Key, userData, SecurityConfig{
 		ScanEnabled: false,
-		// The engine is what production resolves from codeScanEngine at startup.
-		// A state built without one is not "no engine configured", it is a
+		// The engine is what production resolves from codeAudit.codeScan.engine at
+		// startup. A state built without one is not "no engine configured", it is a
 		// configuration the audit refuses, so the fixture supplies the baseline.
 		Engine:           codeaudit.DefaultEngine(),
 		ModelDir:         modelDir,
