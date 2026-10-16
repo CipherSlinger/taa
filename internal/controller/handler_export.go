@@ -35,6 +35,27 @@ func safeFilenamePart(value string) string {
 	return res
 }
 
+// exportPublicKeyForRequest resolves the public key an export should encrypt to.
+//
+// A server.type=fhe instance always returns empty: it never records an export
+// public key, and the export envelope is out of scope for this instance type. A
+// key carried in the request would otherwise reintroduce the envelope, so it is
+// ignored with a warning rather than silently honoured - the caller expects an
+// envelope when it sends one, and a silent drop would leave it unable to read the
+// result.
+func (s *TAAState) exportPublicKeyForRequest(req *string) string {
+	if s.fheEnabled() {
+		if req != nil && strings.TrimSpace(*req) != "" {
+			s.Logs.Add(LogWarn, "export", "FHE 实例不提供导出信封，忽略请求携带的 publicKey")
+		}
+		return ""
+	}
+	if req == nil {
+		return ""
+	}
+	return strings.TrimSpace(*req)
+}
+
 func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 	var req exportRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -71,8 +92,17 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.RLock()
 	currentPhase := s.CurrentPhase
-	savedPublicKey := s.ExportPublicKey
 	s.mu.RUnlock()
+
+	savedPublicKey := s.getExportPublicKey()
+	// The phase-3 branch below prefers the saved key, so the instance type has to
+	// decide it here too. An fhe instance must not encrypt, and this field
+	// outlives the code that used to record it: it is part of the sealed state, so
+	// a value written by an older build - or by a boot of this container as a tee
+	// instance - would reseal the export if it were read unguarded.
+	if s.fheEnabled() {
+		savedPublicKey = ""
+	}
 
 	recordPhase := record.Phase
 	if recordPhase == 0 {
@@ -121,11 +151,10 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 	// The export key is optional on every phase: the first non-empty candidate
 	// wins, and with no candidate at all the artifacts go out in plaintext.
 	// Phase 3 prefers the key saved at model import and falls back to the one
-	// carried by this request; phases 1/2 only ever use the request's.
-	reqPubKey := ""
-	if req.PublicKey != nil {
-		reqPubKey = strings.TrimSpace(*req.PublicKey)
-	}
+	// carried by this request; phases 1/2 only ever use the request's. On an fhe
+	// instance both candidates resolve empty, which is what puts this export in
+	// the plaintext branch below.
+	reqPubKey := s.exportPublicKeyForRequest(req.PublicKey)
 
 	var pubKeyPEM, keySource string
 	switch recordPhase {

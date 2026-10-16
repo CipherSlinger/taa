@@ -308,7 +308,22 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	hasPublicKeyInput := req.PublicKey != nil && strings.TrimSpace(*req.PublicKey) != ""
 	savedPublicKey := s.getExportPublicKey()
 
-	if phase == 1 && hasPublicKeyInput {
+	if s.fheEnabled() {
+		// An fhe instance never offers an export envelope, and this is where that
+		// is decided: the key arrives with the request, so the handler that reads
+		// the request is the site that can decline it. Export prefers this saved
+		// key over the request's on phase 3, so a key saved here is an envelope on
+		// the export of an instance that must not have one - however long after
+		// the import that export happens.
+		//
+		// The key is not validated either. It is ignored in full, and refusing a
+		// request over a value this instance never acts on would reject a platform
+		// for something that changes nothing - the same reason the eval key fields
+		// are warned about rather than refused on this endpoint.
+		if hasPublicKeyInput {
+			s.Logs.Add(LogWarn, "importModel", "FHE 实例不提供导出信封，忽略请求携带的 publicKey")
+		}
+	} else if phase == 1 && hasPublicKeyInput {
 		cleanKey := strings.TrimSpace(*req.PublicKey)
 		if _, err := teecrypto.ParseSM2PublicKeyPEM([]byte(cleanKey)); err != nil {
 			writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("publicKey 解析失败: %v", err), err))

@@ -72,8 +72,13 @@ func (s *TAAState) processImportedResourceFHE(req importRequest, phase int, isMo
 //
 // It deliberately does not go through beginModelImportAndAudit: an FHE model is a
 // set of FHE layers and parameters the runtime loads, not user-supplied
-// executable code, so there is no code audit to owe and no export public key to
-// record. Skipping that call is what keeps the model-import path envelope-free.
+// executable code, so there is no code audit to owe and no audit state to record.
+//
+// The export public key is not this function's to decline. The key travels in the
+// request, and the request is read by modelImportHandler, which is where an fhe
+// instance stops saving it - skipping this call never was what kept the
+// model-import path envelope-free, and warning here would have announced a
+// decision made somewhere else, after it had already been made.
 func (s *TAAState) importFHEModel(req importRequest, phase int, plaintextPath string, startedAt time.Time, runner *fhe.Runner) {
 	size, hash, err := teecrypto.HashFileSM3(plaintextPath)
 	if err != nil {
@@ -81,10 +86,6 @@ func (s *TAAState) importFHEModel(req importRequest, phase int, plaintextPath st
 		return
 	}
 	s.setModelChecksum(map[string]any{"size": size, "algorithm": "sm3", "value": hash})
-
-	if req.PublicKey != nil && strings.TrimSpace(*req.PublicKey) != "" {
-		s.Logs.Add(LogWarn, "importModel", "FHE 实例不提供导出信封，忽略请求携带的 publicKey")
-	}
 
 	layout := runner.Layout()
 	modelDir, err := layout.ModelDir(hash)

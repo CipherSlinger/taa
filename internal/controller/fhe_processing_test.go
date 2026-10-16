@@ -525,6 +525,18 @@ func logContains(s *TAAState, substr string) bool {
 	return false
 }
 
+// countLogs counts the log lines carrying substr. It is the assertion form for
+// "logged exactly once": a duplicate line means two sites made the same decision.
+func countLogs(s *TAAState, substr string) int {
+	n := 0
+	for _, entry := range s.Logs.All() {
+		if strings.Contains(entry.Message, substr) {
+			n++
+		}
+	}
+	return n
+}
+
 // requireLog fails the test when no log line carries substr.
 func requireLog(t *testing.T, s *TAAState, substr string) {
 	t.Helper()
