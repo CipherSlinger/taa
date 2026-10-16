@@ -299,6 +299,73 @@ func TestStopTrainingDoesNotCallAFailedStopOnAFinishedFHETask(t *testing.T) {
 	}
 }
 
+// waitForDownload blocks until the run has asked the service for its result,
+// which with holdDownloads installed means it is parked inside CopyResult - after
+// Execute has already returned and dropped the task from the runner's table.
+func waitForDownload(t *testing.T, env *fheTestEnv) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if env.stub.downloadCount() > 0 {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("the run never asked for its result")
+}
+
+// TestStopTrainingOnAFinishedFHETaskWhoseResultIsStillLanding covers the window
+// the finished-task test above does not reach.
+//
+// Execute drops the run from the runner's in-flight table before it returns, so
+// from that moment Runner.Cancel refuses the id - and it refuses it deliberately,
+// because a task it does not track is one it cannot scope to a tenant. The state,
+// however, kept the task marked active for the whole of the result landing (a
+// multi-gigabyte copy or download) and the platform reporting, so a stop arriving
+// in that window was answered 500 for a task that in fact succeeded. Reporting a
+// failure for a stop that has nothing left to stop is exactly what the
+// already-finished branch exists to avoid.
+func TestStopTrainingOnAFinishedFHETaskWhoseResultIsStillLanding(t *testing.T) {
+	env := newFHETestEnv(t)
+	env.importModel()
+	// The result is never written into the shared directory, so it has to be
+	// fetched - and that fetch is the landing the stop lands in.
+	env.stub.holdDownloads()
+	// Released on every exit path: a parked download holds the stub server's Close
+	// open, so a failing assertion above would otherwise hang the test instead of
+	// reporting it.
+	t.Cleanup(env.stub.releaseDownloads)
+
+	zipPath, _ := writeTestZip(t, t.TempDir(), map[string]string{"case": "input"})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		env.runData(zipPath)
+	}()
+	waitForDownload(t, env)
+
+	rec := postStopTraining(t, env.state)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for a run that already finished: %s", rec.Code, rec.Body.String())
+	}
+	if msg := envelopeMsg(t, rec); msg != "不存在训练任务" {
+		t.Errorf("msg = %q, want the no-task message: a task this instance no longer tracks is not a failed stop", msg)
+	}
+	// Nothing may be sent to the service: the run is over, and the only cancel TAA
+	// could send for it is the tenant-less one the service answers 2xx to without
+	// matching the task.
+	if got := env.stub.cancelCalls(); len(got) != 0 {
+		t.Errorf("the service received %v, want no cancel request for a finished task", got)
+	}
+
+	env.stub.releaseDownloads()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the run did not return after its download was released")
+	}
+}
+
 // TestStopTrainingReportsATaskThisInstanceDoesNotTrack covers the other side of
 // the same call: a task the runner never had cannot be cancelled, and reporting
 // that as a success would tell the platform a stop happened that never did.

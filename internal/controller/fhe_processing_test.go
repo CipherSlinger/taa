@@ -209,6 +209,13 @@ type fheServiceStub struct {
 	// because Execute drops it there when it returns.
 	pollGate chan struct{}
 
+	// downloadGate, when non-nil, holds a result download until it is closed. It
+	// parks a run that has already finished - Execute has returned and dropped the
+	// task from the runner's table - inside CopyResult, which is where a stop used
+	// to find a task marked active that no longer existed.
+	downloadGate chan struct{}
+	downloads    int
+
 	// onCreate runs inside the service call that creates a task, which is the only
 	// moment a run's own state can be sampled without racing it.
 	onCreate           func()
@@ -262,7 +269,12 @@ func (s *fheServiceStub) serveTask(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(path, "/results/download"):
 		s.mu.Lock()
 		status, body := s.downloadStatus, s.downloadBody
+		gate := s.downloadGate
+		s.downloads++
 		s.mu.Unlock()
+		if gate != nil {
+			<-gate
+		}
 		if status != 0 {
 			http.Error(w, "download refused", status)
 			return
@@ -344,6 +356,30 @@ func (s *fheServiceStub) failDownload(status int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.downloadStatus = status
+}
+
+// holdDownloads makes the next result download block until releaseDownloads is
+// called.
+func (s *fheServiceStub) holdDownloads() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.downloadGate = make(chan struct{})
+}
+
+// releaseDownloads lets a held download answer, and later ones run free.
+func (s *fheServiceStub) releaseDownloads() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.downloadGate != nil {
+		close(s.downloadGate)
+		s.downloadGate = nil
+	}
+}
+
+func (s *fheServiceStub) downloadCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.downloads
 }
 
 func (s *fheServiceStub) sampleOnCreate() (op, active string, busy bool) {

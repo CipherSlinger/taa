@@ -174,6 +174,8 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 	}
 
 	s.setFHEActiveTask(req.TaskID)
+	// The defer is the safety net for the early returns below, and clearing twice
+	// is harmless: clearFHEActiveTask is a no-op unless the id still matches.
 	defer s.clearFHEActiveTask(req.TaskID)
 	s.promoteCurrentTaskToFHE()
 
@@ -184,6 +186,15 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 		}
 		s.reportFHEProgress(req.RequestID, req.TaskID, float64(done)/float64(total)*100)
 	})
+	// Released the moment the run stops being cancellable, which is here: Execute
+	// drops the run from the runner's in-flight table before it returns, so from
+	// now on Runner.Cancel refuses the id - deliberately, because it cannot scope a
+	// task it does not track to a tenant. Keeping the task marked active through
+	// the result landing below (a multi-gigabyte copy or download) and the platform
+	// reporting would answer a stop arriving there with a 500 for a run that in
+	// fact succeeded. Cleared here, that stop falls through to the handler's
+	// "不存在训练任务", which is the truth.
+	s.clearFHEActiveTask(req.TaskID)
 
 	status, failureReason, code, msg := "succeeded", "", 0, ""
 	if execErr != nil {
