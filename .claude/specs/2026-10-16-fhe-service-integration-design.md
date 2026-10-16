@@ -113,8 +113,18 @@ FHE 服务**不做代码审计、不做远程证明**——这两条不是省事
     ├── models/<modelHash>/server/                TAA 写 / FHE 读
     ├── keys/<evalKeyHash>/eval_context.bin       TAA 写 / FHE 只读
     ├── tasks/<taskId>/input.zip                  TAA 写 / FHE 读
-    └── results/<taskId>/output.zip               FHE 写 / TAA 读
+    ├── results/<taskId>/output.zip               FHE 写 / TAA 读
+    ├── taa-fhe-keys/<evalKeyHash>/               TAA 私有：公钥缓存（决策 14 不淘汰）
+    └── taa-results/                              TAA 私有：结果副本与 import-index.json
 ```
+
+`taa-` 前缀的两个目录不属于 FHE 契约，FHE 侧不读不写。它们必须落在共享目录里，是因为
+`deploy-fhe.sh` 只给 TAA 容器挂 `$HOST_DATA_DIR` 这一条 bind，而容器在镜像或 bind 变化时会被重建、
+可写层随之清空：公钥缓存留在 `/root/taa` 下则每次部署都要重下 3.1 GiB/用户，结果副本与
+`import-index.json` 留在 `/root/taa` 下则已完成任务的 export 在重建后一律 404。
+
+**注意**：`deploy-fhe.sh` 渲染时只重写 `fhe.dataDir`（取自 `HOST_DATA_DIR`），这两个派生路径要跟着
+一起改，否则覆盖 `HOST_DATA_DIR` 的部署会悄悄把它们放回容器可写层。
 
 TAA 容器（普通 docker，**非 TEE、无 `/dev/csv-guest`**）多挂一条，把同一目录挂成配置里的
 `fhe.dataDir`。**TAA 与 FHE 进程看到的路径必须一致**——这是整个契约的支点。
@@ -139,7 +149,7 @@ TAA 容器（普通 docker，**非 TEE、无 `/dev/csv-guest`**）多挂一条�
 "fhe": {
   "endpoint": "http://127.0.0.1:58996",
   "dataDir": "/opt/fhe-data",
-  "keyCacheDir": "/root/taa/fhe-keys",
+  "keyCacheDir": "/opt/fhe-data/taa-fhe-keys",
   "callbackBaseUrl": "http://172.16.10.130:6001",
   "callbackToken": "<共享串>",
   "maxEvalKeyBytes": 6442450944,

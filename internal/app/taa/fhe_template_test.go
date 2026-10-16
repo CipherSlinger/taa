@@ -26,29 +26,8 @@ const shippedFHEConfigPath = "../../../configs/taa-fhe.json"
 // service. That is why the fhe template selects the engine that carries its rules
 // in the binary, and this test is what keeps it that way.
 func TestShippedFHEConfigStartsWithoutAnyFileOnDisk(t *testing.T) {
-	raw, err := os.ReadFile(shippedFHEConfigPath)
-	if err != nil {
-		t.Fatalf("read the shipped fhe template: %v", err)
-	}
+	cfg := loadShippedFHEConfig(t)
 
-	// The template ships callbackToken empty - it is a template, and the token
-	// belongs to the deployment, which deploy-fhe.sh injects - and an empty token
-	// is refused by design. Fill that one field and load everything else exactly as
-	// shipped; nothing below rewrites another path, which is the point.
-	const emptyToken = `"callbackToken": ""`
-	if strings.Count(string(raw), emptyToken) != 1 {
-		t.Fatalf("the shipped fhe template does not carry exactly one empty callbackToken; deploy-fhe.sh fills that field from the environment and this test relies on doing the same")
-	}
-	patched := strings.Replace(string(raw), emptyToken, `"callbackToken": "test-token"`, 1)
-	path := filepath.Join(t.TempDir(), "taa-fhe.json")
-	if err := os.WriteFile(path, []byte(patched), 0o600); err != nil {
-		t.Fatalf("write the patched template: %v", err)
-	}
-
-	cfg, err := config.LoadStartupConfig(path)
-	if err != nil {
-		t.Fatalf("the shipped fhe template does not load: %v", err)
-	}
 	if cfg.ServerType != config.ServerTypeFHE {
 		t.Fatalf("the shipped fhe template loads as server.type=%q", cfg.ServerType)
 	}
@@ -72,4 +51,69 @@ func TestShippedFHEConfigStartsWithoutAnyFileOnDisk(t *testing.T) {
 	if _, err := buildSecurityConfig(probe); err != nil {
 		t.Fatalf("the engine in the shipped fhe template needs a file on disk: %v", err)
 	}
+}
+
+// TestShippedFHEConfigKeepsStateOnTheBind pins where the fhe template's two
+// stateful paths point.
+//
+// deploy-fhe.sh creates the TAA container with exactly one bind - $HOST_DATA_DIR,
+// which is also fhe.dataDir - and recreates it whenever the image or the bind
+// changes. Anything outside that bind lives in the container's writable layer and
+// is gone after such a recreate. For the eval key cache that means re-downloading
+// 3.1 GiB per user on every deploy, against a cache the design says is never
+// evicted; for the result directory it means the finished task's result and
+// import-index.json are gone, and import-index.json is the record export resolves
+// a result through, so every completed task answers 404 from then on.
+//
+// The assertion is about the template as shipped, whose fhe.dataDir is
+// /opt/fhe-data - the default HOST_DATA_DIR. deploy-fhe.sh rewrites fhe.dataDir
+// from HOST_DATA_DIR and nothing else, so a deployment that overrides
+// HOST_DATA_DIR has to move these two along with it, or they silently land back
+// inside the container.
+func TestShippedFHEConfigKeepsStateOnTheBind(t *testing.T) {
+	cfg := loadShippedFHEConfig(t)
+	if cfg.FHE == nil {
+		t.Fatal("the shipped fhe template carries no fhe section")
+	}
+
+	bind := strings.TrimSuffix(cfg.FHE.DataDir, "/")
+	for _, p := range []struct{ name, path string }{
+		{"fhe.keyCacheDir", cfg.FHE.KeyCacheDir},
+		{"storage.result", cfg.ResultDir},
+	} {
+		if !strings.HasPrefix(p.path, bind+"/") {
+			t.Errorf("%s is %q, outside the only bind %q: container recreation (which deploy-fhe.sh does whenever the image or the bind changes) would destroy it",
+				p.name, p.path, bind)
+		}
+	}
+}
+
+// loadShippedFHEConfig loads the shipped template with the one field a template
+// cannot carry filled in.
+//
+// The callbackToken ships empty - it belongs to the deployment, which
+// deploy-fhe.sh injects - and an empty token is refused by design, so the field is
+// replaced and every other byte is loaded exactly as shipped.
+func loadShippedFHEConfig(t *testing.T) config.StartupConfig {
+	t.Helper()
+
+	raw, err := os.ReadFile(shippedFHEConfigPath)
+	if err != nil {
+		t.Fatalf("read the shipped fhe template: %v", err)
+	}
+	const emptyToken = `"callbackToken": ""`
+	if strings.Count(string(raw), emptyToken) != 1 {
+		t.Fatalf("the shipped fhe template does not carry exactly one empty callbackToken; deploy-fhe.sh fills that field from the environment and this test relies on doing the same")
+	}
+	patched := strings.Replace(string(raw), emptyToken, `"callbackToken": "test-token"`, 1)
+	path := filepath.Join(t.TempDir(), "taa-fhe.json")
+	if err := os.WriteFile(path, []byte(patched), 0o600); err != nil {
+		t.Fatalf("write the patched template: %v", err)
+	}
+
+	cfg, err := config.LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("the shipped fhe template does not load: %v", err)
+	}
+	return cfg
 }

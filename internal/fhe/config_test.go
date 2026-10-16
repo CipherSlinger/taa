@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"taa/internal/config"
 )
 
 func validConfig() Config {
@@ -285,5 +287,30 @@ func TestConfigDefaults(t *testing.T) {
 	if DefaultPollInterval >= DefaultTaskTimeout {
 		t.Errorf("DefaultPollInterval %s must stay below DefaultTaskTimeout %s",
 			DefaultPollInterval, DefaultTaskTimeout)
+	}
+}
+
+// TestDefaultsMatchTheStartupConfigDefaults binds this package's four constants to
+// the config package's, which are the ones production actually uses.
+//
+// The same four numbers are spelled twice: internal/config defines DefaultFHE*, and
+// applyFHEDefaults fills a template that omitted one with them, while the constants
+// below are what this package's own tests build a Config from. Nothing made the two
+// agree, so raising a default on the production side alone would have left every
+// test here green against a number no deployment uses - and this package's tests
+// are the evidence that the timeout, poll and key-cap agree with each other.
+func TestDefaultsMatchTheStartupConfigDefaults(t *testing.T) {
+	if DefaultMaxEvalKeyBytes != config.DefaultFHEMaxEvalKeyBytes {
+		t.Errorf("DefaultMaxEvalKeyBytes = %d, but the startup config defaults to %d",
+			DefaultMaxEvalKeyBytes, config.DefaultFHEMaxEvalKeyBytes)
+	}
+	if got, want := DefaultPollInterval, time.Duration(config.DefaultFHEPollIntervalMs)*time.Millisecond; got != want {
+		t.Errorf("DefaultPollInterval = %s, but the startup config defaults to %s", got, want)
+	}
+	if got, want := DefaultRequestTimeout, time.Duration(config.DefaultFHERequestTimeoutMs)*time.Millisecond; got != want {
+		t.Errorf("DefaultRequestTimeout = %s, but the startup config defaults to %s", got, want)
+	}
+	if got, want := DefaultTaskTimeout, time.Duration(config.DefaultFHETaskTimeoutMs)*time.Millisecond; got != want {
+		t.Errorf("DefaultTaskTimeout = %s, but the startup config defaults to %s", got, want)
 	}
 }
