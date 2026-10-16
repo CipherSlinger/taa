@@ -550,14 +550,20 @@ render_taa_config() {
   [ "$addr" = ":$TAA_PORT" ] \
     || die "server.addr in the rendered config is '$addr' but TAA_PORT is ':$TAA_PORT'"
 
-  # TAA's own state has to land inside the one bind this script gives the container
-  # (start_taa_container mounts "$HOST_DATA_DIR:$HOST_DATA_DIR" and nothing else), or
-  # it lives in the container's writable layer and dies with the container. The key
-  # cache is never evicted by design, and the result directories - plus the import
-  # index beside them - are what export resolves a finished task through, so losing
-  # them loses work the platform was already told succeeded. The filter above forces
-  # both under $data; this catches a template that moved them again, the same way the
-  # addr check above catches a template that moved the port.
+  # TAA's key cache and result directories have to land inside the one bind this
+  # script gives the container (start_taa_container mounts
+  # "$HOST_DATA_DIR:$HOST_DATA_DIR" and nothing else), or they live in the writable
+  # layer and die with the container: the cache is never evicted by design, and the
+  # result directories - plus the import index beside them - are what export resolves
+  # a finished task through, so losing them loses work the platform was already told
+  # succeeded.
+  #
+  # The filter above is what delivers that, by assigning both from $data. This loop
+  # asserts it rather than checking it: with those two lines intact it cannot fire.
+  # It is here for the edit that removes or weakens them, which is invisible while
+  # HOST_DATA_DIR keeps its default - the template's literals happen to agree with it
+  # - and wrong the moment it does not. Contrast the addr check above, which reads a
+  # field the filter never writes and so can catch the template itself.
   local state_key state_path
   for state_key in '.fhe.keyCacheDir' '.storage.result'; do
     state_path="$(jq -r "$state_key" "$TAA_RENDERED_CONFIG")"
