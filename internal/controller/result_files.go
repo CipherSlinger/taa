@@ -24,6 +24,13 @@ const trainingReportFileName = "training_report.json"
 // drops result_files entirely.
 const reportCodeResultLeak = 2
 
+// reportCodeFHEFailure is the /v1/taa/reportRes code for a failed FHE task. It is
+// deliberately its own code rather than reusing the training-failure one: the two
+// instance types fail for different reasons, and a single code would make the
+// platform's log unable to tell them apart. 3 is the next free number after
+// reportCodeResultLeak above.
+const reportCodeFHEFailure = 3
+
 // AttachResultFiles 把结果目录结构树挂到报告的 result_files 段上。
 //
 // 结构树与 /v1/taa/getResourceInfo 的 tree 完全一致，**含预览**：平台需要看到样本行本身，

@@ -14,14 +14,6 @@ import (
 	teecrypto "taa/pkg/crypto"
 )
 
-// reportCodeFHEFailure is the /v1/taa/reportRes code for a failed FHE task. It is
-// deliberately its own code rather than reusing the training-failure one: the two
-// instance types fail for different reasons, and a single code would make the
-// platform's log unable to tell them apart. 3 is the next free number after
-// reportCodeResultLeak, whose definition stays in result_files.go together with
-// the other codes.
-const reportCodeFHEFailure = 3
-
 // validateFHEFields enforces the two eval key fields against the instance type.
 //
 // On an fhe instance both are mandatory: this instance exists to run FHE tasks,
