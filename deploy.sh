@@ -211,11 +211,12 @@ CUSTOM_BASE_ARCHIVE=""
 CUSTOM_BASE_IMAGE=""
 CUSTOM_SAVE_CONFIG=""
 LOCAL_DOCKER_NETWORK="${LOCAL_DOCKER_NETWORK:-host}"
-# TEE-LLM gateway endpoint baked into taa's config. The gateway either shares taa's network
-# namespace (loopback) or runs in its own container (reached by container IP), so local docker
-# deploys discover it via resolve_llm_endpoint below instead of assuming loopback. Set
+# TEE-LLM gateway endpoint for the local docker start path. The gateway either shares taa's
+# network namespace (loopback) or runs in its own container (reached by container IP), so that
+# path discovers it via resolve_llm_endpoint below instead of assuming loopback. Set
 # TAA_LLM_ENDPOINT to pin it explicitly (e.g. https://10.0.0.2:8443); that also covers the
-# remote deploy path, which cannot discover a container it does not run.
+# remote deploy path, which cannot discover a container it does not run. The save path does not
+# use either: it keeps the endpoint written in the production template, verbatim.
 TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-}"
 TAA_TEELLM_CONTAINER="${TAA_TEELLM_CONTAINER:-taa-teellm}"
 TAA_TEELLM_PORT="${TAA_TEELLM_PORT:-8443}"
@@ -229,11 +230,11 @@ LOCAL_DOCKER_INPUT_DIR="${LOCAL_DOCKER_INPUT_DIR:-/opt/taa/input}"
 LOCAL_DOCKER_OUTPUT_DIR="${LOCAL_DOCKER_OUTPUT_DIR:-/opt/taa/output/result}"
 SAVE_CLEAN="${SAVE_CLEAN:-false}"
 
-# Resolve the TEE-LLM gateway endpoint for local docker deploys. An explicit TAA_LLM_ENDPOINT
-# wins. Otherwise, if the teellm container is running, use its address: the gateway has its own
-# container by default (see deploy-llm.sh), and taa reaches it by container IP. Fall back to
-# loopback, which is correct when the gateway shares taa's network namespace -- a host-networked
-# teellm container reports no IP and lands here too.
+# Resolve the TEE-LLM gateway endpoint for the local docker start path. An explicit
+# TAA_LLM_ENDPOINT wins. Otherwise, if the teellm container is running, use its address: the
+# gateway has its own container by default (see deploy-llm.sh), and taa reaches it by container
+# IP. Fall back to loopback, which is correct when the gateway shares taa's network namespace --
+# a host-networked teellm container reports no IP and lands here too.
 resolve_llm_endpoint() {
   if [[ -n "$TAA_LLM_ENDPOINT" ]]; then
     printf '%s' "$TAA_LLM_ENDPOINT"
@@ -599,10 +600,17 @@ save_local_docker_image() {
   # log/ and progress/ instead of in their own directory. The remote path passes empty for both
   # staging paths and therefore kept the template's value -- which is how the two deployments came
   # to disagree about the same key.
+  #
+  # The LLM endpoint is passed empty for the same reason: empty means "leave the template alone".
+  # What resolve_llm_endpoint answers on the packaging host is not the address the shipped image
+  # will use -- it is a container IP that changes on restart, or loopback when TEE-LLM happens not
+  # to be running -- so baking it in replaced the template's endpoint with a guess. The image
+  # carries exactly the endpoint configs/taa-production.json names; a deployment that needs a
+  # different one sets TAA_LLM_ENDPOINT at container startup, which still overrides it.
   write_taa_config "$prod_config_source" "$prod_config_template" \
     ":6001" "" "" "" \
     "/root/taa/models" "/root/taa/data" "/root/taa/results" \
-    "$(resolve_llm_endpoint)" "$target_model" \
+    "" "$target_model" \
     false "/opt/taa/input" "/opt/taa/output/result" "/root/taa/keys"
   info "production config prepared for image (model: $target_model)"
 
@@ -1997,7 +2005,7 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   write_taa_config "$REMOTE_TAA_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" \
     "$TAA_CONTAINER_ADDR" "$REMOTE_PLATFORM_IP" "$REMOTE_DOCKER_ID" "$CONTRACT" \
     "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" \
-    "${TAA_LLM_ENDPOINT:-https://127.0.0.1:8443}" "$TARGET_MODEL" "$INCLUDE_TAA_IDENTITY" "" "" "$TAA_CONTAINER_WORKDIR/keys"
+    "${TAA_LLM_ENDPOINT:-}" "$TARGET_MODEL" "$INCLUDE_TAA_IDENTITY" "" "" "$TAA_CONTAINER_WORKDIR/keys"
 
   step "uploading taa, config, and certificates to remote host"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TAA_BINARY_PATH" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/$BINARY_NAME.new"
