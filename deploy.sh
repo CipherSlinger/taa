@@ -228,7 +228,6 @@ LOCAL_DOCKER_INPUT_DIR="${LOCAL_DOCKER_INPUT_DIR:-/opt/taa/input}"
 # template in both places. TAA creates whichever of the three directories it needs, so pre-creating
 # only this one is enough.
 LOCAL_DOCKER_OUTPUT_DIR="${LOCAL_DOCKER_OUTPUT_DIR:-/opt/taa/output/result}"
-SAVE_CLEAN="${SAVE_CLEAN:-false}"
 
 # Resolve the TEE-LLM gateway endpoint for the local docker start path. An explicit
 # TAA_LLM_ENDPOINT wins. Otherwise, if the teellm container is running, use its address: the
@@ -572,7 +571,9 @@ save_local_docker_image() {
   step "building taa daemon"
   ensure_go_compiler
   ensure_parent_dir "$TAA_BINARY_PATH"
-  spin_task "building taa daemon from ./cmd/taa" go build -o "$TAA_BINARY_PATH" ./cmd/taa
+  # Static build, matching deploy/manifest/docker/Dockerfile: the packaging host's glibc is not
+  # necessarily the image's, and the saved binary must not depend on the two happening to match.
+  spin_task "building taa daemon from ./cmd/taa" env CGO_ENABLED=0 GOOS=linux go build -o "$TAA_BINARY_PATH" ./cmd/taa
   require_file "build failed: taa binary" "$TAA_BINARY_PATH"
   require_file "certificate missing: hrk.cert" "$ATT_HRK_SOURCE"
   require_file "certificate missing: hsk_cek.cert" "$ATT_HSK_SOURCE"
@@ -1555,9 +1556,6 @@ else
         fi
         ACTION="save"
         ;;
-      --clean|--prune)
-        SAVE_CLEAN=true
-        ;;
       --archive=*|--output=*)
         CUSTOM_SAVE_ARCHIVE="${arg#*=}"
         LOCAL_DOCKER_IMAGE_ARCHIVE="${arg#*=}"
@@ -1802,7 +1800,7 @@ fi
 if [[ "$DEPLOY_TAA" == true ]]; then
   ensure_go_compiler
   ensure_parent_dir "$TAA_BINARY_PATH"
-  spin_task "building taa daemon from ./cmd/taa" go build -o "$TAA_BINARY_PATH" ./cmd/taa
+  spin_task "building taa daemon from ./cmd/taa" env CGO_ENABLED=0 GOOS=linux go build -o "$TAA_BINARY_PATH" ./cmd/taa
 fi
 
 if [[ "$DEPLOY_PLATFORM_MOCK" == true && ! -f "$MOCK_BINARY_PATH" ]]; then
