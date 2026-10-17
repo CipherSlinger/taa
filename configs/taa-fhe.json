@@ -22,7 +22,7 @@
       "progress": "/opt/taa/output/progress/progress.json"
     }
   },
-  "maxFileBytes": 3221225472,
+  "maxFileBytes": 5368709120,
   "fhe": {
     "endpoint": "http://127.0.0.1:58996",
     "dataDir": "/opt/fhe-data",
