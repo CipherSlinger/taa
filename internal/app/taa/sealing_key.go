@@ -42,9 +42,6 @@ func fetchStartupHardwareKey(fetch hardwareSealingKeyFetcher) ([]byte, error) {
 		return nil, fmt.Errorf("acquire CSV hardware sealing key via /dev/csv-guest: %w", err)
 	}
 	log.Printf("csv hardware sealing key fingerprint: %s", sealingKeyFingerprint(hwKey))
-	// Debug-only: the full hardware key is printed until the CSV hardware
-	// path has been verified on the target host. Remove this line after.
-	log.Printf("DEBUG: csv hardware sealing key: %x", hwKey)
 	return hwKey, nil
 }
 
