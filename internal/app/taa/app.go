@@ -805,11 +805,21 @@ func buildFHERunner(cfg config.StartupConfig) (*fhe.Runner, error) {
 	if f.ActivateModelOnImport != nil {
 		activate = *f.ActivateModelOnImport
 	}
+	// callbackBaseUrl may be the "auto" sentinel, which is resolved here rather
+	// than at load time so that it is derived in the network namespace the
+	// instance actually runs in.
+	callbackBaseURL, err := config.ResolveFHECallbackBaseURL(f.CallbackBaseURL, cfg.Addr)
+	if err != nil {
+		return nil, err
+	}
+	if config.IsFHECallbackBaseURLAuto(f.CallbackBaseURL) {
+		log.Printf("fhe.callbackBaseUrl is %q, resolved to %s", config.FHECallbackBaseURLAuto, callbackBaseURL)
+	}
 	return fhe.New(fhe.Config{
 		Endpoint:              f.Endpoint,
 		DataDir:               f.DataDir,
 		KeyCacheDir:           f.KeyCacheDir,
-		CallbackBaseURL:       f.CallbackBaseURL,
+		CallbackBaseURL:       callbackBaseURL,
 		CallbackToken:         f.CallbackToken,
 		MaxEvalKeyBytes:       f.MaxEvalKeyBytes,
 		PollInterval:          time.Duration(f.PollIntervalMs) * time.Millisecond,

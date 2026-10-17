@@ -702,7 +702,10 @@ Environment:
       Base URL of this TAA instance as the FHE containers reach it. Defaults to
       http://\${REMOTE_HOST}:\${TAA_PORT} on the default remote run; a local run
       has to set it. Required by the save path too, because the config baked
-      into the image carries it.
+      into the image carries it. Set it to 'auto' to have TAA derive the address
+      at startup (server.addr port plus the address this instance resolves
+      itself to); that is the value that survives a Pod being recreated with a
+      new Pod IP.
   TAA_CALLBACK_TOKEN=${TAA_CALLBACK_TOKEN:-}
       Shared secret the FHE service presents on the callback endpoint. A default
       is set in this script so the plain invocation is complete; set it in the
@@ -900,9 +903,10 @@ TAA_FHE_CONFIG="${TAA_FHE_CONFIG:-$PROJECT_DIR/configs/taa-fhe.json}"
 # Both paths that produce a runnable TAA need the address the FHE containers call
 # back on: the deploy path writes it into the config it installs at start time,
 # and the save path bakes the same rendered config into the image. The template
-# and the token are checked by render_taa_config itself.
+# and the token are checked by render_taa_config itself. 'auto' is a valid value:
+# TAA then derives the address from server.addr and its own host name at startup.
 if [ "$DEPLOY_TAA" = 1 ]; then
-  require_input TAA_CALLBACK_BASE_URL 'TAA_CALLBACK_BASE_URL must be reachable from the FHE containers'
+  require_input TAA_CALLBACK_BASE_URL 'TAA_CALLBACK_BASE_URL must be reachable from the FHE containers, or set to auto'
 fi
 API_HOST_PORT="${API_HOST_PORT:-58996}"
 HOST_REDIS_DIR="${HOST_REDIS_DIR:-$HOST_DATA_DIR/redis}"

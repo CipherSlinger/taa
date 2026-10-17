@@ -28,7 +28,7 @@
     "endpoint": "http://127.0.0.1:58996",
     "dataDir": "/opt/fhe-data",
     "keyCacheDir": "/opt/fhe-data/taa-fhe-keys",
-    "callbackBaseUrl": "http://172.16.10.130:6001",
+    "callbackBaseUrl": "auto",
     "callbackToken": "",
     "maxEvalKeyBytes": 6442450944,
     "pollIntervalMs": 5000,

@@ -2,7 +2,9 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -302,6 +304,156 @@ func TestFHEActivateModelOnImportDistinguishesFalseFromAbsent(t *testing.T) {
 			}
 			if got := *cfg.FHE.ActivateModelOnImport; got != tc.want {
 				t.Errorf("ActivateModelOnImport = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The "auto" sentinel is not a URL, so it must be exempt from URL validation at
+// load time; the address is resolved when the FHE runner is built, which happens
+// after the instance is already inside its own network namespace.
+func TestFHECallbackBaseURLAcceptsAutoSentinel(t *testing.T) {
+	body := strings.Replace(fheConfigBody, `"callbackBaseUrl": "http://172.16.10.130:6001"`,
+		`"callbackBaseUrl": "auto"`, 1)
+	cfg, err := LoadStartupConfig(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("LoadStartupConfig with callbackBaseUrl=auto: %v", err)
+	}
+	if !IsFHECallbackBaseURLAuto(cfg.FHE.CallbackBaseURL) {
+		t.Errorf("CallbackBaseURL = %q, want the auto sentinel", cfg.FHE.CallbackBaseURL)
+	}
+}
+
+func TestResolveFHECallbackBaseURLKeepsLiteralValue(t *testing.T) {
+	got, err := ResolveFHECallbackBaseURL("  http://172.16.10.178:6001  ", ":6001")
+	if err != nil {
+		t.Fatalf("ResolveFHECallbackBaseURL: %v", err)
+	}
+	if want := "http://172.16.10.178:6001"; got != want {
+		t.Errorf("ResolveFHECallbackBaseURL = %q, want %q", got, want)
+	}
+}
+
+// A literal value is never re-derived, even when server.addr is malformed: the
+// operator named the address, so that value is what the FHE service is told.
+func TestResolveFHECallbackBaseURLLiteralIgnoresListenAddr(t *testing.T) {
+	if _, err := ResolveFHECallbackBaseURL("http://172.16.10.178:6001", "no-port"); err != nil {
+		t.Errorf("ResolveFHECallbackBaseURL(literal, bad addr) error = %v, want nil", err)
+	}
+}
+
+func TestResolveFHECallbackBaseURLAutoRequiresListenPort(t *testing.T) {
+	_, err := ResolveFHECallbackBaseURL(FHECallbackBaseURLAuto, "no-port")
+	if err == nil {
+		t.Fatal("auto with a server.addr that has no port was accepted")
+	}
+	if !strings.Contains(err.Error(), "server.addr") {
+		t.Errorf("error %q does not name server.addr", err)
+	}
+}
+
+func TestListenAddrPort(t *testing.T) {
+	for _, tc := range []struct {
+		addr string
+		want string
+	}{
+		{":6001", "6001"},
+		{"0.0.0.0:6001", "6001"},
+		{"[::]:6001", "6001"},
+	} {
+		got, err := listenAddrPort(tc.addr)
+		if err != nil {
+			t.Errorf("listenAddrPort(%q) error = %v", tc.addr, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("listenAddrPort(%q) = %q, want %q", tc.addr, got, tc.want)
+		}
+	}
+	for _, bad := range []string{"", "6001", "127.0.0.1"} {
+		if _, err := listenAddrPort(bad); err == nil {
+			t.Errorf("listenAddrPort(%q) accepted, want error", bad)
+		}
+	}
+}
+
+// deriveSelfIPv4 is the `hostname -i` equivalent. The host name is tried
+// first; only when it yields nothing usable does the interface list count.
+// Loopback and link-local addresses are never returned, because a callback URL
+// built from one can only be reached from inside the same namespace.
+func TestDeriveSelfIPv4(t *testing.T) {
+	lookup := func(addrs []string) func(string) ([]string, error) {
+		return func(string) ([]string, error) { return addrs, nil }
+	}
+	ifaces := func(addrs []string) func() ([]net.Addr, error) {
+		return func() ([]net.Addr, error) {
+			out := make([]net.Addr, 0, len(addrs))
+			for _, raw := range addrs {
+				ip := net.ParseIP(raw)
+				out = append(out, &net.IPNet{IP: ip, Mask: net.CIDRMask(32, 32)})
+			}
+			return out, nil
+		}
+	}
+	failingLookup := func(string) ([]string, error) { return nil, fmt.Errorf("no such host") }
+
+	for _, tc := range []struct {
+		name     string
+		hostname string
+		lookup   func(string) ([]string, error)
+		ifaces   func() ([]net.Addr, error)
+		want     string
+		wantErr  bool
+	}{
+		{
+			name:     "host name resolves to the pod IP",
+			hostname: "pod",
+			lookup:   lookup([]string{"127.0.0.1", "10.244.0.89"}),
+			ifaces:   ifaces([]string{"172.17.0.1"}),
+			want:     "10.244.0.89",
+		},
+		{
+			name:     "loopback-only host name falls back to the interfaces",
+			hostname: "hygon-master",
+			lookup:   lookup([]string{"127.0.0.1"}),
+			ifaces:   ifaces([]string{"127.0.0.1", "172.16.10.178", "10.244.0.1"}),
+			want:     "172.16.10.178",
+		},
+		{
+			name:     "unresolvable host name falls back to the interfaces",
+			hostname: "unknown",
+			lookup:   failingLookup,
+			ifaces:   ifaces([]string{"10.244.0.89"}),
+			want:     "10.244.0.89",
+		},
+		{
+			name:     "link-local addresses are skipped",
+			hostname: "host",
+			lookup:   lookup([]string{"169.254.10.1", "192.168.1.5"}),
+			ifaces:   nil,
+			want:     "192.168.1.5",
+		},
+		{
+			name:     "nothing usable is an error",
+			hostname: "host",
+			lookup:   lookup([]string{"127.0.0.1"}),
+			ifaces:   ifaces([]string{"127.0.0.1"}),
+			wantErr:  true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := deriveSelfIPv4(tc.hostname, tc.lookup, tc.ifaces)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("deriveSelfIPv4 = %q, want error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("deriveSelfIPv4: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("deriveSelfIPv4 = %q, want %q", got, tc.want)
 			}
 		})
 	}
