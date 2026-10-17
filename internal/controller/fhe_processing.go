@@ -14,6 +14,11 @@ import (
 	teecrypto "taa/pkg/crypto"
 )
 
+// fheResultArchiveName is the file name the FHE service gives its result
+// archive. executeFHETask stores the service's bytes under this name and export
+// reads them back unchanged, so both ends have to agree on it.
+const fheResultArchiveName = "output.zip"
+
 // validateFHEFields enforces the two eval key fields against the instance type.
 //
 // On an fhe instance both are mandatory: this instance exists to run FHE tasks,
@@ -218,7 +223,7 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 	// The ciphertext result is not scanned for plaintext leakage: the artifacts
 	// are FHE ciphertexts, which is exactly what this instance exists to move.
 	if execErr == nil {
-		dst := filepath.Join(resultDir, "output.zip")
+		dst := filepath.Join(resultDir, fheResultArchiveName)
 		if _, err := runner.CopyResult(context.Background(), spec, outcome, dst); err != nil {
 			status = "failed"
 			failureReason = fmt.Sprintf("取回 FHE 结果失败: %v", err)

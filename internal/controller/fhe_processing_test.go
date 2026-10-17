@@ -1221,14 +1221,9 @@ func TestFHEImportResultIsExportable(t *testing.T) {
 		t.Fatalf("record verdict = %+v, want a passing, error-free one", record.ResultCheck)
 	}
 
-	files := extractZipMap(t, exportBody)
-	resultName := filepath.Base(env.resultDir()) + "/output.zip"
-	got, ok := files[resultName]
-	if !ok {
-		t.Fatalf("exported archive lacks %s; entries: %v", resultName, keysOfMap(files))
-	}
-	if string(got) != "DOWNLOADED-RESULT" {
-		t.Errorf("exported output.zip = %q, want the service's result bytes", got)
+	// The export is the stored archive itself, not a directory re-zipped around it.
+	if string(exportBody) != "DOWNLOADED-RESULT" {
+		t.Errorf("exported body = %q, want the service's result archive bytes", exportBody)
 	}
 
 	// The record has to survive a restart as committed. LoadImportIndexStore fails

@@ -81,8 +81,8 @@ func TestFHEExportDropsASavedKeyEvenIfTheStateCarriesOne(t *testing.T) {
 	env.state.mu.Unlock()
 
 	record := seedExportIndexRecord(t, env.state, "req-saved-key", "task-saved-key", "export-fhe-saved-key")
-	if err := os.WriteFile(filepath.Join(record.ResultDir, "out.bin"), []byte("fhe-ciphertext"), 0o644); err != nil {
-		t.Fatalf("write seeded out.bin: %v", err)
+	if err := os.WriteFile(filepath.Join(record.ResultDir, fheResultArchiveName), []byte("fhe-ciphertext"), 0o644); err != nil {
+		t.Fatalf("write seeded output.zip: %v", err)
 	}
 
 	mux := http.NewServeMux()
@@ -108,11 +108,8 @@ func TestFHEExportDropsASavedKeyEvenIfTheStateCarriesOne(t *testing.T) {
 	if disp := resp.Header.Get("Content-Disposition"); strings.Contains(disp, ".enc") {
 		t.Errorf("Content-Disposition = %q; a state-file key resealed the export", disp)
 	}
-	files := extractZipMap(t, body)
-	if got, ok := files["export-fhe-saved-key/out.bin"]; !ok {
-		t.Fatalf("exported zip lacks the seeded artifact; entries: %v", keysOfMap(files))
-	} else if string(got) != "fhe-ciphertext" {
-		t.Errorf("exported out.bin = %q, want the plaintext artifact", got)
+	if string(body) != "fhe-ciphertext" {
+		t.Errorf("exported body = %q, want the stored result archive bytes unchanged", body)
 	}
 }
 
@@ -320,16 +317,11 @@ func TestFHEExportOfAPhaseThreeTaskIgnoresAPhaseOnePublicKey(t *testing.T) {
 		t.Error("an SM2 envelope was sealed for an fhe export")
 	}
 
-	// And the body has to be the plaintext result archive, readable as a zip: an
-	// .enc body is a C1C3C2 blob that would fail to parse.
-	files := extractZipMap(t, exportBody)
-	resultName := filepath.Base(env.resultDir()) + "/output.zip"
-	got, ok := files[resultName]
-	if !ok {
-		t.Fatalf("the exported bytes are not the result archive: no %s among %v", resultName, keysOfMap(files))
-	}
-	if string(got) != "DOWNLOADED-RESULT" {
-		t.Errorf("exported output.zip = %q, want the service's result bytes", got)
+	// And the body has to be the plaintext result archive itself, not a re-zipped
+	// directory around it: an .enc body is a C1C3C2 blob that would fail to parse,
+	// and a second archive would make the platform unpack twice.
+	if string(exportBody) != "DOWNLOADED-RESULT" {
+		t.Errorf("exported body = %q, want the service's result archive bytes", exportBody)
 	}
 	requireLog(t, env.state, "明文导出")
 }

@@ -180,15 +180,30 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 	// The report is TAA's own metadata and carries table previews (dataset rows) by
 	// design, so it is packed out of the export rather than shipped with it. It is
 	// also the one file the leakage check skips, for the same reason.
-	resultData, err := compressDirToZip(record.ResultDir, trainingReportFileName)
-	if err != nil {
-		s.Logs.Add(LogError, "export", "压缩结果目录失败: %v", err)
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("压缩结果目录失败: %v", err))
-		return
+	//
+	// An FHE result already arrives as an archive: executeFHETask stores the
+	// service's output.zip byte-for-byte. Re-zipping the result directory would
+	// wrap that archive in a second one and make the platform unpack twice, so the
+	// stored bytes are exported as they are and only the response filename changes.
+	var resultData []byte
+	if s.fheEnabled() {
+		resultData, err = os.ReadFile(filepath.Join(record.ResultDir, fheResultArchiveName))
+		if err != nil {
+			s.Logs.Add(LogError, "export", "读取 FHE 结果包失败: %v", err)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("读取 FHE 结果包失败: %v", err))
+			return
+		}
+	} else {
+		resultData, err = compressDirToZip(record.ResultDir, trainingReportFileName)
+		if err != nil {
+			s.Logs.Add(LogError, "export", "压缩结果目录失败: %v", err)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("压缩结果目录失败: %v", err))
+			return
+		}
 	}
 
 	if int64(len(resultData)) > maxBytes {
-		s.Logs.Add(LogError, "export", "导出产物压缩后大小超限: %d bytes > %d bytes", len(resultData), maxBytes)
+		s.Logs.Add(LogError, "export", "导出产物大小超限: %d bytes > %d bytes", len(resultData), maxBytes)
 		writeErr(w, http.StatusBadRequest, pkgerrors.Errorf(pkgerrors.CodeInvalidArgument, "导出产物大小超过限制: %d bytes, 上限 %d bytes", len(resultData), maxBytes))
 		return
 	}
