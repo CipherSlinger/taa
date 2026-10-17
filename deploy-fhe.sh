@@ -96,6 +96,20 @@ DEPLOY_PLATFORM_MOCK=1
 TAA_BINARY_PATH="${TAA_BINARY_PATH:-$PROJECT_DIR/bin/taa}"
 BUILD_BINARIES=1
 
+# ── Packaging the taa-fhe image (taa save) ───────────────────────────────────
+# A save run builds no deployment: it bakes the TAA binary and its supervisor
+# into $TAA_IMAGE, tags the result here and exports it as an archive beside the
+# base-image archives deploy.sh writes. The tag carries the date for the same
+# reason deploy.sh's does -- an archive is a snapshot, and rebuilding must not
+# silently replace the one an earlier delivery was made from. The config is
+# deliberately not baked in: it carries the callback token and this deployment's
+# paths, and deploy-fhe.sh taa copies the rendered one in at start time.
+SAVE_DATE_TAG="$(date +%Y%m%d)"
+TAA_FHE_SAVE_IMAGE="${TAA_FHE_SAVE_IMAGE:-taa-fhe:${SAVE_DATE_TAG}}"
+TAA_FHE_SAVE_ARCHIVE="${TAA_FHE_SAVE_ARCHIVE:-$PROJECT_DIR/deploy/taa-fhe-${SAVE_DATE_TAG}.tar.gz}"
+SAVE_ACTION=0
+SAVE_BUILDER_CONTAINER=""
+
 # The identity the TAA container is given with -e. On a type=fhe instance these
 # win over the config file (internal/config, applyFHEIdentityOverride), so they
 # are the channel a deployment uses to say where this instance registers.
@@ -197,7 +211,17 @@ cleanup_render_out() {
   rm -rf "$TAA_RENDER_TMPDIR"
   TAA_RENDER_TMPDIR=""
 }
-trap 'cleanup_render_out' EXIT
+# The save path assembles its image in a throwaway container on the deployment
+# host. Removing it from a trap rather than at the end of the happy path is what
+# keeps a failed commit or an interrupted save from leaving a multi-gigabyte
+# container behind. An empty name means the run never got that far.
+cleanup_save_builder() {
+  [ -n "${SAVE_BUILDER_CONTAINER:-}" ] || return 0
+  local name="$SAVE_BUILDER_CONTAINER"
+  SAVE_BUILDER_CONTAINER=""
+  host_sh "docker rm -f $(shell_quote "$name") >/dev/null 2>&1 || true" || true
+}
+trap 'cleanup_render_out; cleanup_save_builder' EXIT
 
 is_dry_run() { [ "$DRY_RUN" = "1" ]; }
 
@@ -483,9 +507,26 @@ upload_tree() {
   log "uploaded $src/ -> $REMOTE_TARGET:$dest/"
 }
 
+# The reverse of upload_file, for the one artifact this script produces on the
+# deployment host and has to hand back: the image archive the save action writes
+# where docker runs. A local run chooses the destination as its source, so there
+# is nothing to copy there.
+download_file() {
+  local src="$1" dest="$2"
+  [ -n "$REMOTE_TARGET" ] || return 0
+  if is_dry_run; then
+    printf '[deploy-fhe] would copy %s:%s -> %s\n' "$REMOTE_TARGET" "$src" "$dest"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dest")"
+  "${REMOTE_SCP[@]}" "$REMOTE_TARGET:$src" "$dest" \
+    || die "failed to copy $src from $REMOTE_TARGET to $dest"
+  log "downloaded $REMOTE_TARGET:$src -> $dest"
+}
+
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [fhe|taa|platform-mock] [options]
+Usage: $(basename "$0") [fhe|taa|platform-mock] [save] [options]
 
 Deploy the FHE side on a GPU host: import the Latti server image from the handoff
 bundle, stage the FHE runtime and models, start the api/worker/redis stack, then
@@ -518,6 +559,17 @@ Arguments:
       original behaviour.
 
   fhe, taa and platform-mock are mutually exclusive; passing two is refused.
+
+  save
+      Package instead of deploy, and only with the taa argument: build the TAA
+      binary, bake it and its supervisor into the base image (TAA_IMAGE), tag
+      the result TAA_FHE_SAVE_IMAGE and export it as a gzipped archive at
+      TAA_FHE_SAVE_ARCHIVE, which defaults to deploy/taa-fhe-<date>.tar.gz.
+      Nothing is started and no config is baked in: the rendered config
+      carries this deployment's callback token and paths, and the taa
+      argument installs it at start time. On the default remote target the
+      image is assembled and saved where docker runs, then copied back; the
+      copy left on the host is removed.
 
 Options:
   -n, --dry-run
@@ -658,7 +710,13 @@ Environment:
   FHE_MODEL_ID=${FHE_MODEL_ID}
       Model activated on the stack before a task can run.
   TAA_IMAGE=${TAA_IMAGE}
-      TAA image started on this host (deploy.sh builds it).
+      TAA image started on this host (deploy.sh builds it). A taa save run bakes
+      the binary and supervisor into this image to produce its archive.
+  TAA_FHE_SAVE_IMAGE=${TAA_FHE_SAVE_IMAGE}
+      Tag given to the image a taa save run packages (date-stamped by default).
+  TAA_FHE_SAVE_ARCHIVE=${TAA_FHE_SAVE_ARCHIVE}
+      Archive a taa save run writes, in the project's deploy/ directory by
+      default. On a remote run it is saved on the host and copied back here.
   TAA_CONTAINER_NAME=${TAA_CONTAINER_NAME}
       TAA container name.
   TAA_CONTAINER_WORKDIR=${TAA_CONTAINER_WORKDIR}
@@ -709,6 +767,14 @@ while [ $# -gt 0 ]; do
       fi
       DEPLOY_MODE="$1"
       ;;
+    save)
+      if [ "$SAVE_ACTION" = 1 ]; then
+        printf '[deploy-fhe] ERROR: save was given twice\n' >&2
+        usage >&2
+        exit 1
+      fi
+      SAVE_ACTION=1
+      ;;
     -n|--dry-run) DRY_RUN=1 ;;
     --remote) REMOTE_TARGET="${REMOTE_USER}@${REMOTE_HOST}" ;;
     --local) REMOTE_TARGET="" ;;
@@ -734,6 +800,15 @@ esac
 # TAA, which is what it always meant.
 if [ "$DEPLOY_MODE" = "platform-mock" ] && [ "$DEPLOY_PLATFORM_MOCK" != 1 ]; then
   printf '[deploy-fhe] ERROR: the platform-mock argument deploys platform-mock, but --no-platform-mock was given\n' >&2
+  usage >&2
+  exit 1
+fi
+# save packages the TAA side into an image and starts nothing. It is meaningful
+# only with the taa argument: the fhe and platform-mock arguments name components
+# that have no image of their own here, and the bare form describes a deployment
+# rather than a package.
+if [ "$SAVE_ACTION" = 1 ] && [ "$DEPLOY_MODE" != "taa" ]; then
+  printf '[deploy-fhe] ERROR: save is only valid with the taa argument: deploy-fhe.sh taa save\n' >&2
   usage >&2
   exit 1
 fi
@@ -790,7 +865,10 @@ if [ "$DEPLOY_FHE_STACK" = 1 ]; then
   require_input HOST_RUNTIME_DIR 'HOST_RUNTIME_DIR must point at third_party/latti-ai-runtime'
 fi
 TAA_FHE_CONFIG="${TAA_FHE_CONFIG:-$PROJECT_DIR/configs/taa-fhe.json}"
-if [ "$DEPLOY_TAA" = 1 ]; then
+# A save run renders nothing, so neither the callback address nor the config
+# template is an input to it: the image carries the binary and its supervisor,
+# and the config is supplied when that image is deployed.
+if [ "$DEPLOY_TAA" = 1 ] && [ "$SAVE_ACTION" != 1 ]; then
   require_input TAA_CALLBACK_BASE_URL 'TAA_CALLBACK_BASE_URL must be reachable from the FHE containers'
 fi
 API_HOST_PORT="${API_HOST_PORT:-58996}"
@@ -1507,9 +1585,12 @@ else
   # the FHE stack is already up. Both belong to the TAA side, so a run that deploys
   # only the FHE stack does not need them.
   if [ "$DEPLOY_TAA" = 1 ]; then
-    [ -f "$TAA_FHE_CONFIG" ] || die "TAA config template not found: $TAA_FHE_CONFIG"
+    if [ "$SAVE_ACTION" != 1 ]; then
+      [ -f "$TAA_FHE_CONFIG" ] || die "TAA config template not found: $TAA_FHE_CONFIG"
+    fi
     # The supervisor is installed into the container, not taken from the image: a base
-    # image that never carried one would otherwise leave taa unsupervised.
+    # image that never carried one would otherwise leave taa unsupervised. A save run
+    # bakes this same file in, so it needs it just as much as a deploy does.
     [ -f "$PROJECT_DIR/deploy/start.sh" ] || die "TAA supervisor script missing: $PROJECT_DIR/deploy/start.sh"
   fi
   if [ "$DEPLOY_FHE_STACK" = 1 ]; then
@@ -1619,6 +1700,83 @@ else
   if [ "$DEPLOY_MOCK" = 1 ] && [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
     upload_file "$PLATFORM_MOCK_BINARY_PATH" "$HOST_PLATFORM_MOCK_BINARY_PATH" 755
   fi
+fi
+
+if [ "$SAVE_ACTION" = 1 ]; then
+step "packaging the taa-fhe image ($TAA_FHE_SAVE_IMAGE)"
+# The image is $TAA_IMAGE with the binary the build step just produced and the
+# supervisor baked into the workdir start.sh runs from. The rendered config is
+# not part of it: the callback token and the data/state paths belong to one
+# deployment, and the taa path copies the rendered file in every time, so a
+# baked config would either be stale or wrong on the next host.
+#
+# The entrypoint is installed here for the same reason deploy.sh installs it on
+# its save path: without one, whatever the base image carried decides how the
+# container starts. The deploy path overrides it with `--entrypoint tail` and
+# starts start.sh itself, so the two do not disagree.
+builder="taa-fhe-builder-$$"
+SAVE_BUILDER_CONTAINER="$builder"
+run docker run -d --name "$builder" --entrypoint tail "$TAA_IMAGE" -f /dev/null
+run docker exec -i "$builder" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR'"
+run docker cp "$HOST_START_SH" "$builder:$TAA_CONTAINER_WORKDIR/start.sh"
+run docker cp "$HOST_TAA_BINARY_PATH" "$builder:$TAA_CONTAINER_WORKDIR/$BINARY_NAME"
+run docker exec -i "$builder" sh -lc "chmod +x '$TAA_CONTAINER_WORKDIR/start.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME'"
+run docker commit \
+  -c 'ENTRYPOINT ["bash", "/root/taa/start.sh"]' \
+  -c 'CMD []' \
+  -c 'WORKDIR /root/taa' \
+  -c 'EXPOSE 6001' \
+  -m "taa-fhe image packaged from $TAA_IMAGE at $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  "$builder" "$TAA_FHE_SAVE_IMAGE"
+run docker rm -f "$builder"
+SAVE_BUILDER_CONTAINER=""
+
+step "saving the image archive to $TAA_FHE_SAVE_ARCHIVE"
+# The archive is written where docker runs and then brought back, so a remote
+# run leaves the same file in deploy/ that a --local one does. The temporary
+# name is what keeps a half-written archive from looking like a package.
+if [ -n "$REMOTE_TARGET" ]; then
+  host_archive="$REMOTE_DIR/$(basename "$TAA_FHE_SAVE_ARCHIVE")"
+else
+  host_archive="$TAA_FHE_SAVE_ARCHIVE"
+  if ! is_dry_run; then
+    mkdir -p "$(dirname "$host_archive")"
+  fi
+fi
+# pigz when the host has it: the base image alone is tens of gigabytes, and the
+# difference is minutes rather than seconds.
+compressor="gzip"
+if host_sh "command -v pigz >/dev/null 2>&1"; then
+  compressor="pigz"
+fi
+save_tmp="${host_archive}.tmp.$$"
+# pipefail matters here: without it a failing `docker save` leaves pigz/gzip
+# compressing an empty stream, exiting 0, and the `mv` below would publish a
+# truncated archive under the real name.
+run bash -lc "set -euo pipefail; docker save $(shell_quote "$TAA_FHE_SAVE_IMAGE") | $compressor -c > $(shell_quote "$save_tmp") && mv -f $(shell_quote "$save_tmp") $(shell_quote "$host_archive")"
+download_file "$host_archive" "$TAA_FHE_SAVE_ARCHIVE"
+# Only a remote run has a second copy to remove; locally the saved path and the
+# deliverable are the same file.
+if [ -n "$REMOTE_TARGET" ] && ! is_dry_run; then
+  run rm -f "$host_archive"
+fi
+
+if is_dry_run; then
+  log "would leave $TAA_FHE_SAVE_ARCHIVE for delivery; nothing is deployed by this run"
+else
+  [ -f "$TAA_FHE_SAVE_ARCHIVE" ] || die "docker save reported success but $TAA_FHE_SAVE_ARCHIVE is not there"
+  archive_size=$(stat -c %s "$TAA_FHE_SAVE_ARCHIVE" 2>/dev/null || echo 0)
+  archive_mb=$(awk -v b="$archive_size" 'BEGIN { printf "%.1f", b / 1048576 }')
+  printf '\n[deploy-fhe] taa-fhe image packaged\n'
+  log "image      : $TAA_FHE_SAVE_IMAGE"
+  log "base image : $TAA_IMAGE"
+  log "contents   : $TAA_CONTAINER_WORKDIR/$BINARY_NAME and start.sh baked in"
+  log "archive    : $TAA_FHE_SAVE_ARCHIVE (${archive_mb}MB)"
+  log "load with  : docker load -i $(basename "$TAA_FHE_SAVE_ARCHIVE")"
+  log "deploy with: TAA_IMAGE=$TAA_FHE_SAVE_IMAGE ./deploy-fhe.sh taa"
+  log "config     : not baked in; the taa path renders and copies it at start time"
+fi
+exit 0
 fi
 
 if [ "$DEPLOY_FHE_STACK" = 1 ]; then
