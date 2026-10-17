@@ -571,8 +571,17 @@ supervisor.
 
 # On the GPU host itself
 ./deploy-fhe.sh --local
+
+# Deploy one component only (mutually exclusive)
+./deploy-fhe.sh fhe             # fhe-api + fhe-worker + fhe-redis
+./deploy-fhe.sh taa             # only this host's TAA instance
+./deploy-fhe.sh platform-mock   # only platform-mock
 ```
 
+- **Positional modes.** The bare form deploys the FHE stack, platform-mock and TAA together.
+  `fhe`, `taa` and `platform-mock` narrow the run to one component: `fhe` touches no TAA or
+  platform-mock, `taa` assumes both the FHE stack and a platform are already running and skips
+  model activation, and `platform-mock` touches neither the FHE stack nor TAA.
 - **Remote by default.** The run targets `REMOTE_HOST` (default `172.16.10.178`) over ssh, the
   same host `deploy.sh remote` uses, and takes the same credentials (`TARGET_PASSWORD`). It
   uploads the handoff bundle to `REMOTE_HANDOFF_DIR`, builds `bin/taa` and `bin/platform-mock`
@@ -588,13 +597,16 @@ supervisor.
   to be reachable, or the binaries to be built, or the bundle to be unpacked.
 - **`--skip-build`** uses the binaries already on disk instead of building them.
 - **`--no-platform-mock`** skips the platform-mock step, and with it the registration check below.
+  It is refused together with the `platform-mock` argument.
 
 **The last step is the one that proves the deployment works.** After TAA answers its health probe,
 the script asks the platform what `dockerId` it recorded, and refuses unless it is the one this
 run's identity resolves to and it was accepted. TAA being up and the platform having heard from it
 are two different statements: a rejected registration is a warning in TAA's own log and a background
 retry, so the daemon looks perfectly healthy while nothing reaches the platform. Under `--local`
-the same check runs against a platform-mock this script starts on the host.
+the same check runs against a platform-mock this script starts on the host. In a `taa`-only run it
+runs only when something answers on `PLATFORM_PORT`; with no platform there, the run warns instead
+of failing.
 
 Two notes for a remote run: the platform-mock is started with `-allow-empty-attestation`, because an
 `fhe` instance writes an empty attestation by design; and `REMOTE_HANDOFF_DIR` has to be a directory

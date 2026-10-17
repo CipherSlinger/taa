@@ -485,15 +485,15 @@ upload_tree() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [fhe|taa] [options]
+Usage: $(basename "$0") [fhe|taa|platform-mock] [options]
 
 Deploy the FHE side on a GPU host: import the Latti server image from the handoff
 bundle, stage the FHE runtime and models, start the api/worker/redis stack, then
 start that host's TAA instance with server.type=fhe under the deploy/start.sh
 supervisor. The deployment host is \${REMOTE_USER}@\${REMOTE_HOST} by default --
 this script runs on an operator workstation, and the FHE worker needs the CUDA
-host. platform-mock is deployed there too, which is what makes an end-to-end
-registration test possible.
+host. platform-mock is deployed there too by the bare form, which is what makes an
+end-to-end registration test possible.
 
 Arguments:
   fhe
@@ -503,16 +503,21 @@ Arguments:
       platform-mock and the binaries they need are not built, uploaded or
       started.
   taa
-      Deploy only the TAA instance and the platform-mock it registers with:
-      build and upload the TAA and platform-mock binaries plus the supervisor,
-      start platform-mock (unless --no-platform-mock), render the config,
-      create the container and start it, then wait for its health endpoint and
-      check its registration against the mock. The FHE stack is assumed to be
-      running already, and model activation is not repeated.
+      Deploy only the TAA instance: build and upload the TAA binary and its
+      supervisor, render the config, create the container and start it, then
+      wait for its health endpoint. The FHE stack and platform-mock are
+      assumed to be running already; model activation is not repeated, and
+      the registration check runs only when something answers on
+      PLATFORM_PORT.
+  platform-mock
+      Deploy only platform-mock: build and upload its binary, start it if
+      nothing answers on PLATFORM_PORT, and clear its register state. No FHE
+      image, runtime, model or TAA container is touched.
   (no argument)
-      Deploy both, in that order. This is the original behaviour.
+      Deploy the FHE stack, platform-mock and TAA, in that order. This is the
+      original behaviour.
 
-  fhe and taa are mutually exclusive; passing both is refused.
+  fhe, taa and platform-mock are mutually exclusive; passing two is refused.
 
 Options:
   -n, --dry-run
@@ -531,7 +536,8 @@ Options:
       Do not build, upload or start platform-mock, and do not check the
       registration at the end. Then nothing here answers at PLATFORM_IP, so set
       PLATFORM_IP (or rely on the template's platform block) to point TAA at a
-      platform that is already running.
+      platform that is already running. Not valid with the platform-mock
+      argument.
   --skip-build
       Do not run 'go build' for the TAA binary or platform-mock; use what is
       already at TAA_BINARY_PATH / PLATFORM_MOCK_BINARY_PATH, which then have to
@@ -688,16 +694,16 @@ EOF
 }
 
 # What this run deploys. The bare invocation keeps the original behaviour: the
-# FHE stack, then the TAA instance on top of it. A positional `fhe` or `taa`
-# narrows the run to one side; the two are mutually exclusive because passing
-# both would mean exactly what the bare form already does.
+# FHE stack, platform-mock, then the TAA instance on top of them. A positional
+# `fhe`, `taa` or `platform-mock` narrows the run to one component; they are
+# mutually exclusive because passing two would not name a single component.
 DEPLOY_MODE="all"
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    fhe|taa)
+    fhe|taa|platform-mock)
       if [ "$DEPLOY_MODE" != "all" ] && [ "$DEPLOY_MODE" != "$1" ]; then
-        printf '[deploy-fhe] ERROR: choose either fhe or taa, not both\n' >&2
+        printf '[deploy-fhe] ERROR: choose one of fhe, taa or platform-mock\n' >&2
         usage >&2
         exit 1
       fi
@@ -716,10 +722,21 @@ done
 
 DEPLOY_FHE_STACK=1
 DEPLOY_TAA=1
+DEPLOY_MOCK=1
 case "$DEPLOY_MODE" in
-  fhe) DEPLOY_TAA=0 ;;
-  taa) DEPLOY_FHE_STACK=0 ;;
+  fhe) DEPLOY_TAA=0; DEPLOY_MOCK=0 ;;
+  taa) DEPLOY_FHE_STACK=0; DEPLOY_MOCK=0 ;;
+  platform-mock) DEPLOY_FHE_STACK=0; DEPLOY_TAA=0 ;;
 esac
+# --no-platform-mock removes the one thing the platform-mock argument exists to
+# deploy, so the two together describe no run at all rather than a smaller one.
+# In the bare form the flag stays valid: it narrows the run to the FHE stack and
+# TAA, which is what it always meant.
+if [ "$DEPLOY_MODE" = "platform-mock" ] && [ "$DEPLOY_PLATFORM_MOCK" != 1 ]; then
+  printf '[deploy-fhe] ERROR: the platform-mock argument deploys platform-mock, but --no-platform-mock was given\n' >&2
+  usage >&2
+  exit 1
+fi
 
 setup_remote_ssh
 
@@ -1551,24 +1568,30 @@ fi
 verify_one third_party/latti-ai-runtime.tar.gz
 fi
 
-if [ "$DEPLOY_TAA" = 1 ]; then
+if [ "$DEPLOY_TAA" = 1 ] || [ "$DEPLOY_MOCK" = 1 ]; then
 step "building the binaries this run deploys"
-# Both are built on this machine and pushed, so a deployment runs the commit it was
-# launched from: the TAA binary is copied into the container below, and platform-mock
-# is the control-plane stand-in the last gate reads. --skip-build keeps whatever is
-# already at TAA_BINARY_PATH / PLATFORM_MOCK_BINARY_PATH, for a run that has just
-# built them, and is then held to the two files actually existing.
+# Each binary is built only for the side that runs it: a taa-only run does not
+# build platform-mock, and a platform-mock-only run does not build TAA. Both are
+# built on this machine and pushed, so a deployment runs the commit it was
+# launched from: the TAA binary is copied into the container below, and
+# platform-mock is the control-plane stand-in the last gate reads. --skip-build
+# keeps whatever is already at the paths below, for a run that has just built
+# them, and is then held to those files actually existing.
 if [ "$BUILD_BINARIES" != 1 ]; then
-  log "--skip-build: using $TAA_BINARY_PATH and $PLATFORM_MOCK_BINARY_PATH as they are"
+  log "--skip-build: using the binaries already at the paths this run deploys"
   if ! is_dry_run; then
-    [ -f "$TAA_BINARY_PATH" ] || die "--skip-build was given but $TAA_BINARY_PATH does not exist"
-    if [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
+    if [ "$DEPLOY_TAA" = 1 ]; then
+      [ -f "$TAA_BINARY_PATH" ] || die "--skip-build was given but $TAA_BINARY_PATH does not exist"
+    fi
+    if [ "$DEPLOY_MOCK" = 1 ] && [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
       [ -f "$PLATFORM_MOCK_BINARY_PATH" ] || die "--skip-build was given but $PLATFORM_MOCK_BINARY_PATH does not exist"
     fi
   fi
 else
-  build_binary "$TAA_BINARY_PATH" ./cmd/taa
-  if [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
+  if [ "$DEPLOY_TAA" = 1 ]; then
+    build_binary "$TAA_BINARY_PATH" ./cmd/taa
+  fi
+  if [ "$DEPLOY_MOCK" = 1 ] && [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
     build_binary "$PLATFORM_MOCK_BINARY_PATH" ./tools/platform-mock/cmd/platform-mock
   fi
 fi
@@ -1592,9 +1615,9 @@ else
   if [ "$DEPLOY_TAA" = 1 ]; then
     upload_file "$PROJECT_DIR/deploy/start.sh" "$HOST_START_SH" 755
     upload_file "$TAA_BINARY_PATH" "$HOST_TAA_BINARY_PATH" 755
-    if [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
-      upload_file "$PLATFORM_MOCK_BINARY_PATH" "$HOST_PLATFORM_MOCK_BINARY_PATH" 755
-    fi
+  fi
+  if [ "$DEPLOY_MOCK" = 1 ] && [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
+    upload_file "$PLATFORM_MOCK_BINARY_PATH" "$HOST_PLATFORM_MOCK_BINARY_PATH" 755
   fi
 fi
 
@@ -1669,9 +1692,10 @@ fi
 run chmod 755 "$HOST_DATA_DIR" "$HOST_DATA_DIR"/{models,keys,tasks,results} "$HOST_REDIS_DIR"
 fi
 
-if [ "$DEPLOY_TAA" = 1 ]; then
+if [ "$DEPLOY_MOCK" = 1 ]; then
 step "starting platform-mock on $PLATFORM_ADDR"
-# Before the FHE stack, and well before TAA: TAA registers within a few seconds of
+# In the bare form this runs before the FHE stack, and well before TAA: TAA
+# registers within a few seconds of
 # coming up, and a mock that is not listening yet turns that registration into the
 # background retry loop it is designed to be -- which is exactly what this hunk of the
 # run exists to observe, so it must not be the thing that is being observed.
@@ -1846,6 +1870,7 @@ else
   else
     printf '\n[deploy-fhe] TAA instance deployed\n'
     log "FHE stack      : http://127.0.0.1:${API_HOST_PORT}/api/v1 (not touched by this run; model activation was not repeated)"
+    log "platform-mock  : not touched by this run; TAA registers with PLATFORM_IP=${PLATFORM_IP:-<unset: platform.ip in the rendered config decides>}"
   fi
   log "FHE data dir   : $HOST_DATA_DIR"
   log "FHE runtime    : $HOST_RUNTIME_DIR"
@@ -1877,13 +1902,22 @@ step "verifying the platform recorded this instance's registration"
 # background retry, so "TAA is up" and "the platform knows about it" are two different
 # statements and only this one is about the deployment being usable.
 if is_dry_run; then
-  if [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
+  if [ "$DEPLOY_PLATFORM_MOCK" != 1 ]; then
+    log "--no-platform-mock: nothing to ask; this run does not start the platform, so it has no endpoint whose answer it could hold to"
+  elif [ "$DEPLOY_MOCK" = 1 ]; then
     log "would read on ${REMOTE_TARGET:-this host}: http://127.0.0.1:$PLATFORM_PORT/api/register/status, and require the dockerId it recorded to be the one this run's identity resolves to"
   else
-    log "--no-platform-mock: nothing to ask; this run does not start the platform, so it has no endpoint whose answer it could hold to"
+    log "would read on ${REMOTE_TARGET:-this host}: http://127.0.0.1:$PLATFORM_PORT/api/register/status only if something answers there; a taa-only run does not deploy the mock and does not require one"
   fi
 elif [ "$DEPLOY_PLATFORM_MOCK" != 1 ]; then
   log "--no-platform-mock: nothing to ask; this run did not start the platform, so it has no endpoint whose answer it could hold to"
+elif [ "$DEPLOY_MOCK" != 1 ] \
+  && ! host_sh "curl -fsS -o /dev/null 'http://127.0.0.1:${PLATFORM_PORT}/api/register/status'"; then
+  # A taa-only run deploys neither the mock nor the FHE stack, so there may be no
+  # platform to ask at the one address this script knows. The registration is still
+  # worth checking when a mock from an earlier run is listening; refusing the whole
+  # deployment over a platform this run never claimed to start is not.
+  warn "taa-only run: nothing answers on 127.0.0.1:$PLATFORM_PORT, so the registration was not checked; deploy platform-mock (./deploy-fhe.sh platform-mock) or point PLATFORM_IP at a live platform to have it verified"
 else
   # Which dockerId should have arrived is what this run decided, and saying which of
   # the two sources it came from is half the value of the check: the injected
@@ -1922,6 +1956,13 @@ if [ "$DEPLOY_FHE_STACK" = 1 ] && [ "$DEPLOY_TAA" = 0 ] && ! is_dry_run; then
   log "FHE runtime    : $HOST_RUNTIME_DIR"
   log "FHE redis dir  : $HOST_REDIS_DIR"
   log "stop the stack : (cd $NODE_DOCKER_DIR && ./scripts/run-node.sh down)"
+fi
+
+# A platform-mock-only run likewise has no TAA step to print a summary.
+if [ "$DEPLOY_MOCK" = 1 ] && [ "$DEPLOY_TAA" = 0 ] && ! is_dry_run; then
+  printf '\n[deploy-fhe] platform-mock deployed\n'
+  log "platform-mock  : http://127.0.0.1:${PLATFORM_PORT} (state $PLATFORM_MOCK_STATE_DIR)"
+  log "platform log   : $REMOTE_DIR/platform-mock.log"
 fi
 
 # Last line of the script on purpose: a dry run prints this once, after the last step,
