@@ -22,7 +22,7 @@ func createTestStateStore(t *testing.T) (*StateStore, string) {
 		t.Fatalf("generate SM2 key failed: %v", err)
 	}
 	sealingKey := DeriveSealingKey(privKey)
-	store, err := NewStateStore(statePath, sealingKey)
+	store, err := NewStateStore(statePath, sealingKey, KeySourceSM2)
 	if err != nil {
 		t.Fatalf("new state store failed: %v", err)
 	}

@@ -123,7 +123,7 @@ if [ ! -e "$CSV_DEV" ]; then
       log "WARNING: mknod $CSV_DEV c $CSV_MAJOR $csv_minor failed"
     fi
   else
-    log "WARNING: csv-guest minor unreadable from $CSV_MISC_FILE and $CSV_SYSDEV_FILE; attestation will degrade to an empty report"
+    log "WARNING: csv-guest minor unreadable from $CSV_MISC_FILE and $CSV_SYSDEV_FILE; the csv-hw state sealing key is unavailable and attestation will degrade to an empty report"
   fi
 fi
 

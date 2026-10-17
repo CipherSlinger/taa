@@ -116,15 +116,28 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		log.Printf("generated and saved persistent TAA SM2 key pair to %s", keysDir)
 	}
 
-	// 派生 SealingKey 并初始化持久化密封状态存储
-	sealingKey := store.DeriveSealingKey(keyPair.PrivateKey)
+	// Resolve the sealing key source and initialize the sealed state store
+	sealingKey, keySource, err := resolveStateSealingKey(
+		cfg.StateSealingKeySource, keyPair.PrivateKey, fetchCSVHardwareSealingKey)
+	if err != nil {
+		return fmt.Errorf("resolve state sealing key: %w", err)
+	}
+	log.Printf("state sealing key source: %s", keySource)
+
 	statePath := filepath.Join(keysDir, "state.sealed")
-	stateStore, err := store.NewStateStore(statePath, sealingKey)
+	stateStore, err := store.NewStateStore(statePath, sealingKey, keySource)
 	if err != nil {
 		return fmt.Errorf("initialize state store: %w", err)
 	}
-	if _, err := stateStore.DetectAndHandleKeyDrift(!loaded); err != nil {
+	// isNewKey describes the SM2 key pair only; it has nothing to do with the
+	// hardware key, so a csv-hw store must never be told the key is new.
+	keyIsNew := !loaded && keySource == store.KeySourceSM2
+	drifted, err := stateStore.DetectAndHandleKeyDrift(keyIsNew)
+	if err != nil {
 		return fmt.Errorf("detect and handle key drift (fail-closed): %w", err)
+	}
+	if drifted {
+		log.Printf("WARNING: prior sealed state was archived as %s/.orphaned.<unix> and a clean state was initialized", keysDir)
 	}
 
 	platformIP := cfg.PlatformIP

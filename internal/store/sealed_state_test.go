@@ -19,7 +19,7 @@ func TestStateStore_SealAndUnseal(t *testing.T) {
 		key[i] = byte(i + 1)
 	}
 
-	st, err := store.NewStateStore(statePath, key)
+	st, err := store.NewStateStore(statePath, key, store.KeySourceSM2)
 	if err != nil {
 		t.Fatalf("new state store: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestPersistentState_AuditPendingRoundTrips(t *testing.T) {
 		UpdatedAt: time.Now().UTC(),
 	}
 
-	st, err := store.NewStateStore(filepath.Join(t.TempDir(), "state.sealed"), testSealingKey())
+	st, err := store.NewStateStore(filepath.Join(t.TempDir(), "state.sealed"), testSealingKey(), store.KeySourceSM2)
 	if err != nil {
 		t.Fatalf("new state store: %v", err)
 	}

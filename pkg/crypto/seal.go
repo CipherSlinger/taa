@@ -148,6 +148,48 @@ func ParseWrappedDataKeyHex(hexValue string) ([]byte, error) {
 	}
 }
 
+// CSVSealingKeySize is the size of the Hygon CSV hardware sealing key carried in
+// an attestation report.
+const CSVSealingKeySize = 32
+
+// ErrInvalidCSVSealingKey reports a hardware sealing key that cannot be used to
+// derive a state sealing key.
+var ErrInvalidCSVSealingKey = errors.New("teecrypto: invalid CSV hardware sealing key")
+
+// DeriveSealingKeyFromCSV derives the 16-byte SM4 state sealing key from the
+// 32-byte Hygon CSV hardware sealing key:
+// SM3(hwKey || "TAA-STATE-SEALING-CSV-V1" || 0x00000001)[:16].
+//
+// The label differs from the legacy SM2 derivation, so equal input bytes still
+// produce different keys. An all-zero key is rejected: the ioctl can succeed
+// while the report's sealing-key field is zeroed.
+func DeriveSealingKeyFromCSV(hwKey []byte) ([]byte, error) {
+	if len(hwKey) != CSVSealingKeySize {
+		return nil, fmt.Errorf("%w: expected %d bytes, got %d",
+			ErrInvalidCSVSealingKey, CSVSealingKeySize, len(hwKey))
+	}
+	var nonZero byte
+	for _, b := range hwKey {
+		nonZero |= b
+	}
+	if nonZero == 0 {
+		return nil, fmt.Errorf("%w: key is all zero", ErrInvalidCSVSealingKey)
+	}
+
+	label := []byte("TAA-STATE-SEALING-CSV-V1")
+	counter := []byte{0x00, 0x00, 0x00, 0x01}
+
+	material := make([]byte, 0, len(hwKey)+len(label)+len(counter))
+	material = append(material, hwKey...)
+	material = append(material, label...)
+	material = append(material, counter...)
+
+	sum := SM3Sum(material)
+	key := make([]byte, 16)
+	copy(key, sum[:16])
+	return key, nil
+}
+
 // DeriveSealingKey 利用 SM2 私钥标量 D 派生 16 字节 SM4 状态密封密钥:
 // SM3(privKey.D || "TAA-STATE-SEALING-V1" || 0x00000001)[:16]
 func DeriveSealingKey(privKey *SM2PrivateKey) []byte {

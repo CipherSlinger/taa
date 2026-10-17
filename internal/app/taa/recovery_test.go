@@ -74,7 +74,7 @@ func setupTestRecoveryState(t *testing.T) (*controller.TAAState, *controller.Sta
 	}
 	sealingKey := controller.DeriveSealingKey(keyPair.PrivateKey)
 	statePath := filepath.Join(keysDir, "state.sealed")
-	store, err := controller.NewStateStore(statePath, sealingKey)
+	store, err := controller.NewStateStore(statePath, sealingKey, controller.KeySourceSM2)
 	if err != nil {
 		t.Fatalf("new state store: %v", err)
 	}

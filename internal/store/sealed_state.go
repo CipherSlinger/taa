@@ -83,17 +83,22 @@ type StateStore struct {
 	mu         sync.RWMutex
 	path       string
 	sealingKey []byte
+	keySource  KeySource
 	state      *PersistentState
 }
 
 // NewStateStore 构造密封状态存储引擎
-func NewStateStore(path string, sealingKey []byte) (*StateStore, error) {
+func NewStateStore(path string, sealingKey []byte, source KeySource) (*StateStore, error) {
 	if len(sealingKey) != 16 {
 		return nil, fmt.Errorf("invalid sealing key size: expected 16 bytes, got %d", len(sealingKey))
+	}
+	if !validKeySource(source) {
+		return nil, fmt.Errorf("invalid sealing key source %q", source)
 	}
 	return &StateStore{
 		path:       path,
 		sealingKey: append([]byte(nil), sealingKey...),
+		keySource:  source,
 	}, nil
 }
 
@@ -137,7 +142,16 @@ func (s *StateStore) sealStateLocked(state *PersistentState) error {
 		return fmt.Errorf("encrypt state: %w", err)
 	}
 
-	if err := utils.AtomicWriteFile(s.path, ciphertext, 0o600); err != nil {
+	header, err := buildSealedStateHeader(s.keySource)
+	if err != nil {
+		return fmt.Errorf("build state header: %w", err)
+	}
+
+	sealed := make([]byte, 0, len(header)+len(ciphertext))
+	sealed = append(sealed, header...)
+	sealed = append(sealed, ciphertext...)
+
+	if err := utils.AtomicWriteFile(s.path, sealed, 0o600); err != nil {
 		return fmt.Errorf("atomic write state file: %w", err)
 	}
 
@@ -154,9 +168,14 @@ func (s *StateStore) UnsealState() (*PersistentState, error) {
 }
 
 func (s *StateStore) unsealStateLocked() (*PersistentState, error) {
-	ciphertext, err := os.ReadFile(s.path)
+	raw, err := os.ReadFile(s.path)
 	if err != nil {
 		return nil, err
+	}
+
+	storedSource, ciphertext := splitSealedStateFile(raw)
+	if storedSource != s.keySource {
+		return nil, fmt.Errorf("%w: stored=%q active=%q", ErrKeySourceMismatch, storedSource, s.keySource)
 	}
 
 	plaintext, err := teecrypto.Decrypt(s.sealingKey, ciphertext)
@@ -197,7 +216,7 @@ func (s *StateStore) DetectAndHandleKeyDrift(isNewKey bool) (bool, error) {
 	}
 
 	// 若文件不存在，属于初次启动，直接初始化干净状态
-	if os.IsNotExist(err) {
+	if errors.Is(err, os.ErrNotExist) {
 		cleanState := NewCleanPersistentState()
 		if err := s.sealStateLocked(cleanState); err != nil {
 			return false, fmt.Errorf("initialize clean state: %w", err)
@@ -205,22 +224,40 @@ func (s *StateStore) DetectAndHandleKeyDrift(isNewKey bool) (bool, error) {
 		return false, nil
 	}
 
+	// The key source switched (sm2 <-> csv-hw): archive and rebuild by design,
+	// whether or not the key itself was just generated.
+	if errors.Is(err, ErrKeySourceMismatch) {
+		if archiveErr := s.archiveAndSealCleanLocked(); archiveErr != nil {
+			return false, archiveErr
+		}
+		return true, nil
+	}
+
 	// 文件存在但解密认证失败
 	if isNewKey {
-		timestamp := time.Now().Unix()
-		parentDir := filepath.Dir(s.path)
-		orphanedPath := filepath.Join(parentDir, fmt.Sprintf(".orphaned.%d", timestamp))
-		if renameErr := os.Rename(s.path, orphanedPath); renameErr != nil && !os.IsNotExist(renameErr) {
-			return false, fmt.Errorf("archive orphaned state file failed: %w", renameErr)
-		}
-
-		cleanState := NewCleanPersistentState()
-		if err := s.sealStateLocked(cleanState); err != nil {
-			return false, fmt.Errorf("seal clean state after key drift: %w", err)
+		if archiveErr := s.archiveAndSealCleanLocked(); archiveErr != nil {
+			return false, archiveErr
 		}
 		return true, nil
 	}
 
 	// 老私钥但解密失败：Fail-Closed 拒绝启动
 	return false, fmt.Errorf("state integrity verification failed (fail-closed): %w", err)
+}
+
+// archiveAndSealCleanLocked renames the current state file to .orphaned.<unix>
+// and seals a fresh clean state in its place.
+func (s *StateStore) archiveAndSealCleanLocked() error {
+	timestamp := time.Now().Unix()
+	parentDir := filepath.Dir(s.path)
+	orphanedPath := filepath.Join(parentDir, fmt.Sprintf(".orphaned.%d", timestamp))
+	if renameErr := os.Rename(s.path, orphanedPath); renameErr != nil && !os.IsNotExist(renameErr) {
+		return fmt.Errorf("archive orphaned state file failed: %w", renameErr)
+	}
+
+	cleanState := NewCleanPersistentState()
+	if err := s.sealStateLocked(cleanState); err != nil {
+		return fmt.Errorf("seal clean state after key drift: %w", err)
+	}
+	return nil
 }

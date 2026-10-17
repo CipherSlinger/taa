@@ -12,7 +12,8 @@
     "model": "/root/taa/models",
     "data": "/root/taa/data",
     "result": "/opt/fhe-data/taa-results",
-    "keys": "/opt/taa-state/keys"
+    "keys": "/opt/taa-state/keys",
+    "stateSealingKeySource": "sm2"
   },
   "model": {
     "input": "/opt/taa/input",

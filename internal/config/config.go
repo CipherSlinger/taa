@@ -98,6 +98,11 @@ type StartupConfig struct {
 	ModelLogDir               string
 	ModelProgressDir          string
 	KeysDir                   string
+	// StateSealingKeySource selects where the persistent state sealing key
+	// comes from: "sm2" (derived from the SM2 private scalar) or "csv-hw"
+	// (Hygon CSV hardware key via /dev/csv-guest). See
+	// storage.stateSealingKeySource.
+	StateSealingKeySource     string
 	AttestationHRKCertPath    string
 	AttestationHSKCekCertPath string
 	// LLM bundles the inference service the audit arbitrates findings with. It is
@@ -166,6 +171,18 @@ const (
 	// is not a TEE, does not attest, and runs no training pipeline.
 	ServerTypeFHE = "fhe"
 )
+
+// State sealing key sources, selected by storage.stateSealingKeySource.
+const (
+	// StateSealingKeySourceSM2 derives the key from the SM2 private scalar.
+	StateSealingKeySourceSM2 = "sm2"
+	// StateSealingKeySourceCSVHW reads the key from the Hygon CSV hardware
+	// through /dev/csv-guest. It is required to be available: there is no
+	// fallback to the SM2 derivation.
+	StateSealingKeySourceCSVHW = "csv-hw"
+)
+
+var stateSealingKeySources = []string{StateSealingKeySourceSM2, StateSealingKeySourceCSVHW}
 
 // FHE section defaults. maxEvalKeyBytes is deliberately independent of
 // codeAudit.resultCheck.maxFileBytes: a measured eval_context.bin is
@@ -249,14 +266,15 @@ type startupPlatformConfigFile struct {
 }
 
 type startupStorageConfigFile struct {
-	Model     string `json:"model"`
-	Data      string `json:"data"`
-	Result    string `json:"result"`
-	Keys      string `json:"keys"`
-	ModelDir  string `json:"modelDir"`
-	DataDir   string `json:"dataDir"`
-	ResultDir string `json:"resultDir"`
-	KeysDir   string `json:"keysDir"`
+	Model                 string `json:"model"`
+	Data                  string `json:"data"`
+	Result                string `json:"result"`
+	Keys                  string `json:"keys"`
+	StateSealingKeySource string `json:"stateSealingKeySource"`
+	ModelDir              string `json:"modelDir"`
+	DataDir               string `json:"dataDir"`
+	ResultDir             string `json:"resultDir"`
+	KeysDir               string `json:"keysDir"`
 }
 
 // startupCodeAuditConfigFile is the codeAudit block: everything the audit needs,
@@ -525,6 +543,9 @@ func validateStartupConfig(cfg StartupConfig) error {
 	if err := validateServerType(cfg); err != nil {
 		return err
 	}
+	if err := validateStateSealingKeySource(cfg); err != nil {
+		return err
+	}
 	if err := validateFHEConfig(cfg); err != nil {
 		return err
 	}
@@ -559,6 +580,24 @@ func validateServerType(cfg StartupConfig) error {
 	}
 	return fmt.Errorf("unsupported server.type %q in startup config: must be one of %s",
 		cfg.ServerType, strings.Join(serverTypes, ", "))
+}
+
+// validateStateSealingKeySource rejects an unrecognised key source rather than
+// falling back to sm2, and refuses csv-hw on an fhe instance: fhe runs outside
+// the CSV guest and has no /dev/csv-guest.
+func validateStateSealingKeySource(cfg StartupConfig) error {
+	for _, source := range stateSealingKeySources {
+		if cfg.StateSealingKeySource != source {
+			continue
+		}
+		if source == StateSealingKeySourceCSVHW && cfg.ServerType == ServerTypeFHE {
+			return fmt.Errorf("storage.stateSealingKeySource is %q but server.type is %q: an fhe instance is not a CSV guest and has no /dev/csv-guest; use %q",
+				source, ServerTypeFHE, StateSealingKeySourceSM2)
+		}
+		return nil
+	}
+	return fmt.Errorf("unsupported storage.stateSealingKeySource %q: must be one of %s",
+		cfg.StateSealingKeySource, strings.Join(stateSealingKeySources, ", "))
 }
 
 // validateFHEConfig enforces the fhe section on an fhe instance. All five
@@ -749,6 +788,7 @@ func defaultStartupConfig() StartupConfig {
 		ModelLogDir:               "/opt/taa/output/log",
 		ModelProgressDir:          "/opt/taa/output/progress/progress.json",
 		KeysDir:                   "/root/taa/keys",
+		StateSealingKeySource:     StateSealingKeySourceSM2,
 		AttestationHRKCertPath:    hrkDefault,
 		AttestationHSKCekCertPath: hskDefault,
 		LLM: LLMConfig{
@@ -930,6 +970,9 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if trimmed := strings.TrimSpace(fileCfg.Storage.Keys); trimmed != "" {
 		cfg.KeysDir = trimmed
+	}
+	if trimmed := strings.ToLower(strings.TrimSpace(fileCfg.Storage.StateSealingKeySource)); trimmed != "" {
+		cfg.StateSealingKeySource = trimmed
 	}
 
 	if trimmed := strings.TrimSpace(fileCfg.ModelInputDir); trimmed != "" {

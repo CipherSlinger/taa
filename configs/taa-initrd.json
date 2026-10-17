@@ -6,7 +6,8 @@
     "model": "/root/taa/models",
     "data": "/root/taa/data",
     "result": "/root/taa/results",
-    "keys": "/root/taa/keys"
+    "keys": "/root/taa/keys",
+    "stateSealingKeySource": "csv-hw"
   },
   "model": {
     "input": "/opt/taa/input",

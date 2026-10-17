@@ -46,7 +46,7 @@ func TestStateStore_Unseal_TamperedOrCorrupted(t *testing.T) {
 	}
 	sealingKey := DeriveSealingKey(privKey)
 
-	store, err := NewStateStore(statePath, sealingKey)
+	store, err := NewStateStore(statePath, sealingKey, KeySourceSM2)
 	if err != nil {
 		t.Fatalf("new state store failed: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestStateStore_Unseal_TamperedOrCorrupted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate other SM2 key failed: %v", err)
 	}
-	wrongStore, err := NewStateStore(statePath, DeriveSealingKey(otherPrivKey))
+	wrongStore, err := NewStateStore(statePath, DeriveSealingKey(otherPrivKey), KeySourceSM2)
 	if err != nil {
 		t.Fatalf("new wrong store failed: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestStateStore_DetectAndHandleKeyDrift_NewKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate old key failed: %v", err)
 	}
-	oldStore, err := NewStateStore(statePath, DeriveSealingKey(oldPrivKey))
+	oldStore, err := NewStateStore(statePath, DeriveSealingKey(oldPrivKey), KeySourceSM2)
 	if err != nil {
 		t.Fatalf("new old store failed: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestStateStore_DetectAndHandleKeyDrift_NewKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate new key failed: %v", err)
 	}
-	newStore, err := NewStateStore(statePath, DeriveSealingKey(newPrivKey))
+	newStore, err := NewStateStore(statePath, DeriveSealingKey(newPrivKey), KeySourceSM2)
 	if err != nil {
 		t.Fatalf("new store failed: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestStateStore_DetectAndHandleKeyDrift_OldKeyFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate key failed: %v", err)
 	}
-	store, err := NewStateStore(statePath, DeriveSealingKey(privKey))
+	store, err := NewStateStore(statePath, DeriveSealingKey(privKey), KeySourceSM2)
 	if err != nil {
 		t.Fatalf("new store failed: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestStateStore_DetectAndHandleKeyDrift_CleanStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate key failed: %v", err)
 	}
-	store, err := NewStateStore(statePath, DeriveSealingKey(privKey))
+	store, err := NewStateStore(statePath, DeriveSealingKey(privKey), KeySourceSM2)
 	if err != nil {
 		t.Fatalf("new store failed: %v", err)
 	}

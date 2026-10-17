@@ -406,6 +406,9 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if cfg.KeysDir != "/root/taa/keys" {
 		t.Fatalf("KeysDir = %q, want default", cfg.KeysDir)
 	}
+	if cfg.StateSealingKeySource != StateSealingKeySourceSM2 {
+		t.Fatalf("StateSealingKeySource = %q, want default %q", cfg.StateSealingKeySource, StateSealingKeySourceSM2)
+	}
 	if !cfg.LLM.Enabled {
 		t.Fatalf("LLM.Enabled = false, want default true")
 	}
@@ -673,6 +676,9 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 		wantResultCheck      bool
 		wantPlatformIP       string
 		wantDockerID         string
+		// wantStateSealingKeySource pins the state sealing key source the
+		// template asks for: the CSV hardware key on TEE deployments.
+		wantStateSealingKeySource string
 		// wantLLMTimeoutMs pins the per-request inference budget a template sets.
 		// Zero means "not asserted". The docker template needs a budget that
 		// covers a cold model load on CPU-only inference; see
@@ -687,47 +693,49 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 		wantLLMModel  string
 	}{
 		{
-			relPath:              "../../configs/taa-production.json",
-			wantAddr:             ":6001",
-			wantModelDir:         "/root/taa/models",
-			wantDataDir:          "/root/taa/data",
-			wantResultDir:        "/root/taa/results",
-			wantKeysDir:          "/root/taa/keys",
-			wantHRK:              "/root/taa/certs/hrk.cert",
-			wantHSKCek:           "/root/taa/certs/hsk_cek.cert",
-			wantMaxResultBytes:   3221225472,
-			wantModelInputDir:    "/opt/taa/input",
-			wantModelOutputDir:   "/opt/taa/output/result",
-			wantModelLogDir:      "/opt/taa/output/log",
-			wantModelProgressDir: "/opt/taa/output/progress/progress.json",
-			wantCodeAudit:        true,
-			wantResultCheck:      true,
-			wantPlatformIP:       "",
-			wantDockerID:         "",
-			wantRulesPath:        "/opt/taa/semgrep/rules",
-			wantLLMModel:         "qwen2.5-coder:7b",
+			relPath:                   "../../configs/taa-production.json",
+			wantAddr:                  ":6001",
+			wantModelDir:              "/root/taa/models",
+			wantDataDir:               "/root/taa/data",
+			wantResultDir:             "/root/taa/results",
+			wantKeysDir:               "/root/taa/keys",
+			wantHRK:                   "/root/taa/certs/hrk.cert",
+			wantHSKCek:                "/root/taa/certs/hsk_cek.cert",
+			wantMaxResultBytes:        3221225472,
+			wantModelInputDir:         "/opt/taa/input",
+			wantModelOutputDir:        "/opt/taa/output/result",
+			wantModelLogDir:           "/opt/taa/output/log",
+			wantModelProgressDir:      "/opt/taa/output/progress/progress.json",
+			wantCodeAudit:             true,
+			wantResultCheck:           true,
+			wantPlatformIP:            "",
+			wantDockerID:              "",
+			wantStateSealingKeySource: StateSealingKeySourceCSVHW,
+			wantRulesPath:             "/opt/taa/semgrep/rules",
+			wantLLMModel:              "qwen2.5-coder:7b",
 		},
 		{
-			relPath:              "../../configs/taa-docker.json",
-			wantAddr:             ":6001",
-			wantModelDir:         "/root/taa/models",
-			wantDataDir:          "/root/taa/data",
-			wantResultDir:        "/root/taa/results",
-			wantKeysDir:          "/root/taa/keys",
-			wantHRK:              "/root/taa/certs/hrk.cert",
-			wantHSKCek:           "/root/taa/certs/hsk_cek.cert",
-			wantMaxResultBytes:   3221225472,
-			wantModelInputDir:    "/opt/taa/input",
-			wantModelOutputDir:   "/opt/taa/output/result",
-			wantModelLogDir:      "/opt/taa/output/log",
-			wantModelProgressDir: "/opt/taa/output/progress/progress.json",
-			wantCodeAudit:        true,
-			wantResultCheck:      true,
-			wantPlatformIP:       "127.0.0.1:18080",
-			wantDockerID:         "taa-env-slim-v2",
-			wantLLMTimeoutMs:     120000,
-			wantRulesPath:        "/opt/taa/semgrep/rules",
-			wantLLMModel:         "qwen2.5-coder:7b",
+			relPath:                   "../../configs/taa-docker.json",
+			wantAddr:                  ":6001",
+			wantModelDir:              "/root/taa/models",
+			wantDataDir:               "/root/taa/data",
+			wantResultDir:             "/root/taa/results",
+			wantKeysDir:               "/root/taa/keys",
+			wantHRK:                   "/root/taa/certs/hrk.cert",
+			wantHSKCek:                "/root/taa/certs/hsk_cek.cert",
+			wantMaxResultBytes:        3221225472,
+			wantModelInputDir:         "/opt/taa/input",
+			wantModelOutputDir:        "/opt/taa/output/result",
+			wantModelLogDir:           "/opt/taa/output/log",
+			wantModelProgressDir:      "/opt/taa/output/progress/progress.json",
+			wantCodeAudit:             true,
+			wantResultCheck:           true,
+			wantPlatformIP:            "127.0.0.1:18080",
+			wantDockerID:              "taa-env-slim-v2",
+			wantStateSealingKeySource: StateSealingKeySourceSM2,
+			wantLLMTimeoutMs:          120000,
+			wantRulesPath:             "/opt/taa/semgrep/rules",
+			wantLLMModel:              "qwen2.5-coder:7b",
 		},
 	}
 
@@ -751,6 +759,9 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			}
 			if cfg.KeysDir != tc.wantKeysDir {
 				t.Errorf("KeysDir = %q, want %q", cfg.KeysDir, tc.wantKeysDir)
+			}
+			if cfg.StateSealingKeySource != tc.wantStateSealingKeySource {
+				t.Errorf("StateSealingKeySource = %q, want %q", cfg.StateSealingKeySource, tc.wantStateSealingKeySource)
 			}
 			if cfg.AttestationHRKCertPath != tc.wantHRK {
 				t.Errorf("AttestationHRKCertPath = %q, want %q", cfg.AttestationHRKCertPath, tc.wantHRK)
