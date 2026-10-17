@@ -235,6 +235,14 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 		}
 	}
 
+	// Progress normally reaches 100% on the poll that observes the terminal
+	// state, but the service's callback can resolve the run first, and the
+	// callback path never polls again. Report the final percentage explicitly so
+	// a finished task never leaves the platform's progress bar short of 100.
+	if status == "succeeded" {
+		s.reportFHEProgress(req.RequestID, req.TaskID, 100)
+	}
+
 	// The verdict export reads under fail-closed. A missing verdict would turn a
 	// correct export into a 500, so it is recorded even though no scan ran.
 	verdict := &resource.ResultCheckVerdict{

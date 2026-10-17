@@ -1301,3 +1301,103 @@ func TestImportModelWarnsOnEvalKeyFields(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// TestFHESuccessReportsFullProgress pins the explicit final progress report.
+//
+// The poll that observes the terminal state reports 100% on its own, but the
+// service's callback can resolve the run first and no further poll happens. The
+// stub here holds its polls and answers a running task with no cases, so the
+// callback is the only thing that can end the run - and 100% can only arrive if
+// executeFHETask sends it once the run has succeeded.
+func TestFHESuccessReportsFullProgress(t *testing.T) {
+	env := newFHETestEnv(t)
+	env.importModel()
+
+	progress := make(chan float64, 4)
+	reported := make(chan struct{}, 1)
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/taa/reportProgress":
+			var payload struct {
+				Percent float64 `json:"percent"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err == nil {
+				progress <- payload.Percent
+			}
+		case "/v1/taa/reportRes":
+			reported <- struct{}{}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer platform.Close()
+
+	env.state.mu.Lock()
+	env.state.PlatformIP = platform.URL
+	env.state.mu.Unlock()
+
+	// Hold the first poll and make every poll answer "running" with no cases, so
+	// the poll path cannot report progress; only the callback ends the run.
+	env.stub.holdPolls()
+	defer env.stub.releasePolls()
+	env.stub.mu.Lock()
+	env.stub.taskStatus = "running"
+	env.stub.caseEntries = 0
+	env.stub.mu.Unlock()
+
+	pkgPath, _ := writeTestZip(t, t.TempDir(), map[string]string{"case-00.ct": "ciphertext"})
+	done := make(chan struct{})
+	go func() {
+		env.state.processImportedResource(importRequest{
+			RequestID:       "req-data",
+			TaskID:          "task-data",
+			EvalKeyURL:      env.stub.URL + "/eval_context.bin",
+			EvalKeyFileHash: env.keyHash,
+		}, 3, false, pkgPath, nil)
+		close(done)
+	}()
+
+	// The run is registered before the service is asked to create it, so a
+	// created task means a callback will find it.
+	deadline := time.Now().Add(10 * time.Second)
+	for len(env.stub.createdTasks()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the FHE task to be created")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mux := http.NewServeMux()
+	RegisterRoutes(mux, env.state)
+	callback := httptest.NewServer(mux)
+	defer callback.Close()
+
+	resp := postJSON(t, callback.URL+"/v1/taa/fheCallback?token=test-token", map[string]any{
+		"task_id": "task-data",
+		"status":  "completed",
+		"cases":   []map[string]any{{"entry": "case-00", "result_id": "r"}},
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("callback: status = %d, want 200", resp.StatusCode)
+	}
+
+	env.stub.releasePolls()
+	<-done
+
+	select {
+	case percent := <-progress:
+		if percent != 100 {
+			t.Errorf("progress report = %v, want 100 after a successful run", percent)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no progress report reached the platform; a callback-resolved run leaves the bar short")
+	}
+
+	// Let the asynchronous result report finish before the fixture's server goes
+	// away, so the test does not end with a reset connection log line.
+	select {
+	case <-reported:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the FHE run never reported its result")
+	}
+}
