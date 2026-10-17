@@ -582,16 +582,19 @@ Arguments:
 
   save
       Package instead of deploy, and only with the taa argument: build the TAA
-      binary, bake it and its supervisor into the base image (TAA_IMAGE), tag
-      the result TAA_FHE_SAVE_IMAGE and export it as a gzipped archive at
-      TAA_FHE_SAVE_ARCHIVE, which defaults to deploy/taa-fhe-<date>.tar.gz.
-      The image is assembled and saved on this machine, so the archive lands
-      in the local deploy/ directory. On the default remote target the archive
-      is then uploaded and loaded into the host's docker daemon automatically;
-      the uploaded copy is kept at REMOTE_DIR so a later reload or deployment
-      does not upload it again. Nothing is started and no config
-      is baked in: the rendered config carries this deployment's callback token
-      and paths, and the taa argument installs it at start time.
+      binary, bake it, its supervisor and the rendered config into the base
+      image (TAA_IMAGE), tag the result TAA_FHE_SAVE_IMAGE and export it as a
+      gzipped archive at TAA_FHE_SAVE_ARCHIVE, which defaults to
+      deploy/taa-fhe-<date>.tar.gz. The image is assembled and saved on this
+      machine, so the archive lands in the local deploy/ directory. On the
+      default remote target the archive is then uploaded and loaded into the
+      host's docker daemon automatically; the uploaded copy is kept at
+      REMOTE_DIR so a later reload or deployment does not upload it again.
+      Nothing is started. The config is rendered from TAA_FHE_CONFIG with the
+      callback URL/token and the data/state paths below, then placed at
+      \$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE, so the image boots without the
+      taa argument's copy step; a taa run still renders and copies its own
+      config over it. The image therefore carries TAA_CALLBACK_TOKEN.
 
 Options:
   -n, --dry-run
@@ -691,12 +694,15 @@ Environment:
       directory inside HOST_DATA_DIR; set it to keep an AOF that already exists
       elsewhere.
   TAA_FHE_CONFIG=${TAA_FHE_CONFIG:-}
-      TAA configuration template rendered with the callback URL/token below.
-      Defaults to $PROJECT_DIR/configs/taa-fhe.json; an override is used as given.
+      TAA configuration template rendered with the callback URL/token below and
+      the data/state paths. Defaults to $PROJECT_DIR/configs/taa-fhe.json; an
+      override is used as given. A save run bakes the rendered result into the
+      image, so the template is an input to both the taa and the save path.
   TAA_CALLBACK_BASE_URL=${TAA_CALLBACK_BASE_URL:-}
       Base URL of this TAA instance as the FHE containers reach it. Defaults to
       http://\${REMOTE_HOST}:\${TAA_PORT} on the default remote run; a local run
-      has to set it.
+      has to set it. Required by the save path too, because the config baked
+      into the image carries it.
   TAA_CALLBACK_TOKEN=${TAA_CALLBACK_TOKEN:-}
       Shared secret the FHE service presents on the callback endpoint. A default
       is set in this script so the plain invocation is complete; set it in the
@@ -891,10 +897,11 @@ if [ "$DEPLOY_FHE_STACK" = 1 ]; then
   require_input HOST_RUNTIME_DIR 'HOST_RUNTIME_DIR must point at third_party/latti-ai-runtime'
 fi
 TAA_FHE_CONFIG="${TAA_FHE_CONFIG:-$PROJECT_DIR/configs/taa-fhe.json}"
-# A save run renders nothing, so neither the callback address nor the config
-# template is an input to it: the image carries the binary and its supervisor,
-# and the config is supplied when that image is deployed.
-if [ "$DEPLOY_TAA" = 1 ] && [ "$SAVE_ACTION" != 1 ]; then
+# Both paths that produce a runnable TAA need the address the FHE containers call
+# back on: the deploy path writes it into the config it installs at start time,
+# and the save path bakes the same rendered config into the image. The template
+# and the token are checked by render_taa_config itself.
+if [ "$DEPLOY_TAA" = 1 ]; then
   require_input TAA_CALLBACK_BASE_URL 'TAA_CALLBACK_BASE_URL must be reachable from the FHE containers'
 fi
 API_HOST_PORT="${API_HOST_PORT:-58996}"
@@ -1271,6 +1278,10 @@ wait_for_platform_mock() {
 }
 
 render_taa_config() {
+  # The save path renders on the packaging machine and bakes the result straight
+  # into the image, so it must not upload the copy it just made to the deployment
+  # host; pass 0 to skip that hop.
+  local upload="${1:-1}"
   [ -f "$TAA_FHE_CONFIG" ] || die "TAA config template not found: $TAA_FHE_CONFIG"
   command -v jq >/dev/null 2>&1 || die "command 'jq' is required but not installed or not in PATH"
   # The two ways the pipeline below fails are not the same failure, so the
@@ -1308,7 +1319,7 @@ render_taa_config() {
   # The second hop, on a remote run: docker cp below reads the config from the
   # deployment host, so it has to be there before that step. Mode 600 all the way --
   # the file carries the callback token.
-  if [ -n "$REMOTE_TARGET" ]; then
+  if [ -n "$REMOTE_TARGET" ] && [ "$upload" = 1 ]; then
     upload_file "$TAA_RENDER_OUT" "$TAA_RENDERED_CONFIG" 600
   fi
 
@@ -1742,10 +1753,13 @@ if [ "$SAVE_ACTION" = 1 ]; then
 step "packaging the taa-fhe image locally ($TAA_FHE_SAVE_IMAGE)"
 # The image is assembled and exported on this machine, then shipped: docker and
 # the base image are here, and the archive belongs in deploy/ beside the
-# base-image archives. It carries the binary from the build step and the
-# supervisor start.sh runs from. The rendered config is deliberately not part of
-# it -- it carries the callback token and this deployment's paths, and the taa
-# path copies it in at start time anyway.
+# base-image archives. It carries the binary from the build step, the supervisor
+# start.sh runs from, and the rendered config at the path taa reads by default.
+# Baking the config is what makes the image bootable on its own -- a k8s pod or a
+# bare docker run starts it without the deploy path's copy step. A deploy-fhe.sh
+# taa run still renders and copies its own config every time, so the baked one is
+# a fallback there rather than the one that decides. It carries the callback
+# token, so the image itself is as sensitive as that token.
 #
 # The entrypoint is installed for the same reason deploy.sh installs it on its
 # save path: without one, whatever the base image carried decides how the
@@ -1761,6 +1775,21 @@ if ! is_dry_run; then
     log "loading base image $TAA_IMAGE from $TAA_BASE_IMAGE_ARCHIVE"
     docker load -i "$TAA_BASE_IMAGE_ARCHIVE" || die "failed to load $TAA_BASE_IMAGE_ARCHIVE"
   fi
+  # Render before the builder exists, so a template jq rejects fails the run
+  # without leaving a container behind. A --remote run already created
+  # TAA_RENDER_TMPDIR at startup; a --local save has none, so create one. The
+  # EXIT trap removes it either way, keeping a file that carries the callback
+  # token from surviving the run.
+  if [ -z "${TAA_RENDER_TMPDIR:-}" ]; then
+    TAA_RENDER_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/deploy-fhe-save.XXXXXX")" \
+      || die "cannot create a temporary directory for the rendered config"
+  fi
+  TAA_RENDER_OUT="$TAA_RENDER_TMPDIR/$TAA_CONFIG_FILE"
+  # 0: the config is baked into the image here, so there is no deployment host
+  # to upload it to on this path.
+  render_taa_config 0
+else
+  log "would render $TAA_FHE_CONFIG -> $TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE (callback $TAA_CALLBACK_BASE_URL) and bake it into the image"
 fi
 builder="taa-fhe-builder-$$"
 SAVE_BUILDER_CONTAINER="$builder"
@@ -1768,7 +1797,16 @@ run_local docker run -d --name "$builder" --entrypoint tail "$TAA_IMAGE" -f /dev
 run_local docker exec -i "$builder" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR'"
 run_local docker cp "$PROJECT_DIR/deploy/start.sh" "$builder:$TAA_CONTAINER_WORKDIR/start.sh"
 run_local docker cp "$TAA_BINARY_PATH" "$builder:$TAA_CONTAINER_WORKDIR/$BINARY_NAME"
-run_local docker exec -i "$builder" sh -lc "chmod +x '$TAA_CONTAINER_WORKDIR/start.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME'"
+if ! is_dry_run; then
+  run_local docker cp "$TAA_RENDER_OUT" "$builder:$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE"
+fi
+run_local docker exec -i "$builder" sh -lc "chmod +x '$TAA_CONTAINER_WORKDIR/start.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' && chmod 600 '$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE'"
+# start.sh treats a `manual` marker in the workdir as "do not start taa" and
+# appends to taa.log. Either one surviving in the base image would make a freshly
+# packaged node look deployed while taa never runs, or present a previous
+# deployment's log as though it belonged to this image. Both are build residue,
+# not content.
+run_local docker exec -i "$builder" sh -lc "rm -f '$TAA_CONTAINER_WORKDIR/manual' '$TAA_CONTAINER_WORKDIR/manual-teellm' '$TAA_CONTAINER_WORKDIR/taa.log'"
 run_local docker commit \
   -c 'ENTRYPOINT ["bash", "/root/taa/start.sh"]' \
   -c 'CMD []' \
@@ -1830,14 +1868,15 @@ else
   printf '\n[deploy-fhe] taa-fhe image packaged\n'
   log "image      : $TAA_FHE_SAVE_IMAGE"
   log "base image : $TAA_IMAGE"
-  log "contents   : $TAA_CONTAINER_WORKDIR/$BINARY_NAME and start.sh baked in"
+  log "contents   : $TAA_CONTAINER_WORKDIR/$BINARY_NAME, start.sh and $TAA_CONFIG_FILE baked in"
   log "archive    : $TAA_FHE_SAVE_ARCHIVE (${archive_mb}MB)"
   if [ -n "$REMOTE_TARGET" ]; then
     log "loaded on  : $REMOTE_TARGET"
     log "remote copy: $REMOTE_DIR/$(basename "$TAA_FHE_SAVE_ARCHIVE") (kept)"
   fi
   log "deploy with: TAA_IMAGE=$TAA_FHE_SAVE_IMAGE ./deploy-fhe.sh taa"
-  log "config     : not baked in; the taa path renders and copies it at start time"
+  log "config     : $TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE baked in (rendered from $(basename "$TAA_FHE_CONFIG"))"
+  log "             a deploy-fhe.sh taa run renders and copies its own config over it"
 fi
 exit 0
 fi

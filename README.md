@@ -464,7 +464,7 @@ does not reach it, so `TAASECRETKEY` there needs an additional injection path.
 
 - **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths, with explicit `platform` configuration, `attestationMode: "permissive"`, and `insecureSkipVerify: true`.
 - **`configs/taa-production.json`**: For production Kubernetes Pods. Omits `platform` so parameters are dynamically injected by the orchestration platform via environment variables, and enforces `attestationMode: "strict"`.
-- **`configs/taa-fhe.json`**: For an `fhe` instance — the GPU host co-located with the FHE service. Sets `server.type: "fhe"` and the `fhe` section, and carries a `platform` block (`127.0.0.1:18081`, `taa-fhe`) naming the mock used in end-to-end testing; on this instance type the environment overrides both fields, so the block is the fallback rather than the last word. **`fhe.callbackToken` ships empty and must be filled in before use**: startup refuses an empty token rather than defaulting one, so this template will not boot as-is. `deploy-fhe.sh` renders it before starting taa, and that is where `fhe.dataDir` and `storage.keys` come from: the data directory is the tree the FHE stack shares as `/data`, and `storage.keys` is a directory that stack does not mount at all, so the SM2 key pair and the sealed instance state stay out of the FHE service's reach.
+- **`configs/taa-fhe.json`**: For an `fhe` instance — the GPU host co-located with the FHE service. Sets `server.type: "fhe"` and the `fhe` section, and carries a `platform` block (`127.0.0.1:18081`, `taa-fhe`) naming the mock used in end-to-end testing; on this instance type the environment overrides both fields, so the block is the fallback rather than the last word. **`fhe.callbackToken` ships empty and must be filled in before use**: startup refuses an empty token rather than defaulting one, so this template will not boot as-is. `deploy-fhe.sh` renders it before starting taa — and `taa save` bakes the same rendered result into the image — and that is where `fhe.dataDir` and `storage.keys` come from: the data directory is the tree the FHE stack shares as `/data`, and `storage.keys` is a directory that stack does not mount at all, so the SM2 key pair and the sealed instance state stay out of the FHE service's reach.
 
 ### FHE Instance Interface Differences
 
@@ -609,12 +609,16 @@ supervisor.
 ./deploy-fhe.sh taa save        # -> deploy/taa-fhe-<date>.tar.gz
 ```
 
-- **`taa save`** builds the TAA binary, bakes it and `deploy/start.sh` into `TAA_IMAGE`
-  (`taa-env:slim-v2`), tags the result `TAA_FHE_SAVE_IMAGE` (`taa-fhe:<date>`) and exports it as
-  `TAA_FHE_SAVE_ARCHIVE` (default `deploy/taa-fhe-<date>.tar.gz`). Nothing is started. The rendered
-  config is deliberately not baked in — it carries the callback token and this host's data/state
-  paths, and `deploy-fhe.sh taa` installs it at start time anyway. The image is assembled and
-  saved **locally**, so the archive lands in the local `deploy/` directory. On the default remote
+- **`taa save`** builds the TAA binary, bakes it, `deploy/start.sh` and the rendered config into
+  `TAA_IMAGE` (`taa-env:slim-v2`), tags the result `TAA_FHE_SAVE_IMAGE` (`taa-fhe:<date>`) and
+  exports it as `TAA_FHE_SAVE_ARCHIVE` (default `deploy/taa-fhe-<date>.tar.gz`). Nothing is
+  started. The config is rendered from `TAA_FHE_CONFIG` with `TAA_CALLBACK_BASE_URL`,
+  `TAA_CALLBACK_TOKEN` and the `HOST_DATA_DIR`/`HOST_TAA_STATE_DIR` paths, and placed at
+  `/root/taa/taa-config.json` — the path taa reads by default — so an image started without
+  `deploy-fhe.sh taa` (a k8s pod, a bare `docker run`) still boots. A `deploy-fhe.sh taa` run
+  renders and copies its own config over it at start time. **The image therefore carries the
+  callback token**: treat the archive as holding that secret. The image is assembled and saved
+  **locally**, so the archive lands in the local `deploy/` directory. On the default remote
   target it is then uploaded and loaded into the host's docker daemon automatically, and the
   uploaded copy is removed afterwards; with `--local` there is nothing to upload or load.
   `save` is only accepted with the `taa` argument.
