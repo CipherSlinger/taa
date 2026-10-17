@@ -101,27 +101,35 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		log.Printf("LLM code audit disabled; skipping inference service connectivity probe")
 	}
 
-	// 2. 加载或生成本 TAA 实例专用的国密 SM2 密钥对（优先从持久化目录加载，若不存在则生成并落盘）
+	// 2. 加载或恢复本 TAA 实例专用的国密 SM2 密钥对（优先从持久化目录加载，若不存在则生成并落盘）；
+	//    CSV 环境下同时导出可经 TAASECRETKEY 带回的私钥密文
 	keysDir := cfg.KeysDir
 	if keysDir == "" {
 		keysDir = "/root/taa/keys"
 	}
-	keyPair, loaded, err := loadOrGenerateTAAKeyPair(keysDir)
+	material, err := resolveStartupKeyMaterial(
+		keysDir, cfg.StateSealingKeySource, cfg.Contract,
+		os.Getenv(taaSecretKeyEnv), fetchCSVHardwareSealingKey)
 	if err != nil {
-		return fmt.Errorf("initialize TAA SM2 key pair: %w", err)
+		return fmt.Errorf("initialize TAA key material: %w", err)
 	}
-	if loaded {
+	defer clear(material.sealingKey)
+
+	keyPair := material.keyPair
+	if material.recovered {
+		log.Printf("recovered TAA SM2 key pair from %s", taaSecretKeyEnv)
+	} else if material.loaded {
 		log.Printf("loaded persistent TAA SM2 key pair from %s", keysDir)
 	} else {
 		log.Printf("generated and saved persistent TAA SM2 key pair to %s", keysDir)
 	}
-
-	// Resolve the sealing key source and initialize the sealed state store
-	sealingKey, keySource, err := resolveStateSealingKey(
-		cfg.StateSealingKeySource, keyPair.PrivateKey, fetchCSVHardwareSealingKey)
-	if err != nil {
-		return fmt.Errorf("resolve state sealing key: %w", err)
+	if material.taaSecretKey != "" {
+		log.Printf("derived taaSecretKey for platform registration (%d hex chars)", len(material.taaSecretKey))
 	}
+
+	// The sealing key source and the sealed state store
+	sealingKey := material.sealingKey
+	keySource := material.keySource
 	log.Printf("state sealing key source: %s fingerprint: %s", keySource, sealingKeyFingerprint(sealingKey))
 	// Debug-only: the full derived key is printed until the CSV hardware path
 	// has been verified on the target host. Remove this line after.
@@ -133,8 +141,9 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		return fmt.Errorf("initialize state store: %w", err)
 	}
 	// isNewKey describes the SM2 key pair only; it has nothing to do with the
-	// hardware key, so a csv-hw store must never be told the key is new.
-	keyIsNew := !loaded && keySource == store.KeySourceSM2
+	// hardware key, so a csv-hw store must never be told the key is new. A key
+	// recovered from TAASECRETKEY is not new either.
+	keyIsNew := !material.loaded && !material.recovered && keySource == store.KeySourceSM2
 	drifted, err := stateStore.DetectAndHandleKeyDrift(keyIsNew)
 	if err != nil {
 		return fmt.Errorf("detect and handle key drift (fail-closed): %w", err)
@@ -181,7 +190,7 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	}
 
 	// 5. 向管控平台注册本 TAA 实例，通知平台就绪并提交度量报告与公钥
-	if err := registerPlatform(ctx, platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, verifiedPass); err != nil {
+	if err := registerPlatform(ctx, platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, verifiedPass, material.taaSecretKey); err != nil {
 		log.Printf("WARNING: platform register failed, continuing startup: %v", err)
 		// The first attempt is expected to fail in a Kata CSV2 guest: it runs before
 		// the sandbox network exists (see register_retry.go). Keep trying in the
@@ -191,7 +200,7 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		go func() {
 			err := retryRegister(ctx, registerRetryInitialDelay, registerRetryMaxDelay, registerRetryWindow,
 				func(attemptCtx context.Context) error {
-					return registerPlatform(attemptCtx, platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, verifiedPass)
+					return registerPlatform(attemptCtx, platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, verifiedPass, material.taaSecretKey)
 				})
 			if err != nil {
 				log.Printf("WARNING: platform register retries gave up: %v", err)
@@ -445,6 +454,37 @@ func writeKeyFileAtomic(targetPath string, data []byte, perm os.FileMode) error 
 	return nil
 }
 
+// ensureKeyPermissions tightens an existing private key file and its directory
+// before the key is loaded. A key readable by the group or others that cannot
+// be closed down aborts startup; a directory that cannot be tightened only warns.
+func ensureKeyPermissions(privPath, dir string) error {
+	privStat, err := os.Stat(privPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat private key file %s: %w", privPath, err)
+	}
+	if privStat.Mode().Perm() != 0o600 {
+		if err := os.Chmod(privPath, 0o600); err != nil {
+			if privStat.Mode().Perm()&0o077 != 0 {
+				return fmt.Errorf("insecure private key permissions (%o) on %s and failed to tighten: %w", privStat.Mode().Perm(), privPath, err)
+			}
+			log.Printf("WARNING: failed to tighten private key permissions on %s from %o to 0600: %v", privPath, privStat.Mode().Perm(), err)
+		}
+	}
+
+	dirStat, err := os.Stat(dir)
+	if err == nil && dirStat.Mode().Perm() != 0o700 {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			if dirStat.Mode().Perm()&0o077 != 0 {
+				log.Printf("WARNING: insecure keys directory permissions (%o) on %s and failed to tighten: %v", dirStat.Mode().Perm(), dir, err)
+			}
+		}
+	}
+	return nil
+}
+
 // loadOrGenerateTAAKeyPair 优先从 keysDir 目录检查并加载已有的国密 SM2 公私钥对；
 // 若密钥不存在，则生成新的 SM2 密钥对并以安全权限持久化落盘（私钥 0600，公钥 0644）；
 // 若检测到公私钥不匹配或非预期的单边损坏，采用 Fail-Closed 严格报错以避免覆盖损坏历史解密凭证；
@@ -471,20 +511,8 @@ func loadOrGenerateTAAKeyPair(keysDir string) (*taaKeyPair, bool, error) {
 
 	// 防御性安全加固：若私钥存在但权限被外部篡改，在加载或自愈前主动收紧权限；若属于组或其他用户可读且收紧失败则 Fail-Closed
 	if privExists {
-		if privStat, err := os.Stat(privPath); err == nil && privStat.Mode().Perm() != 0o600 {
-			if err := os.Chmod(privPath, 0o600); err != nil {
-				if privStat.Mode().Perm()&0o077 != 0 {
-					return nil, false, fmt.Errorf("insecure private key permissions (%o) on %s and failed to tighten: %w", privStat.Mode().Perm(), privPath, err)
-				}
-				log.Printf("WARNING: failed to tighten private key permissions on %s from %o to 0600: %v", privPath, privStat.Mode().Perm(), err)
-			}
-		}
-		if dirStat, err := os.Stat(cleanDir); err == nil && dirStat.Mode().Perm() != 0o700 {
-			if err := os.Chmod(cleanDir, 0o700); err != nil {
-				if dirStat.Mode().Perm()&0o077 != 0 {
-					log.Printf("WARNING: insecure keys directory permissions (%o) on %s and failed to tighten: %v", dirStat.Mode().Perm(), cleanDir, err)
-				}
-			}
+		if err := ensureKeyPermissions(privPath, cleanDir); err != nil {
+			return nil, false, err
 		}
 	}
 
@@ -657,11 +685,11 @@ func prepareAttestationReport(ctx context.Context, userData []byte, hrkCertPath,
 	return true, nil
 }
 
-// registerPlatform sends a registration request to the platform, reporting DockerID, attestation report, TAA public key, timestamp, and self-verification status.
-func registerPlatform(ctx context.Context, platformIP, dockerID, publicKeyPEM string, timestamp int64, verifiedPass bool) error {
+// registerPlatform sends a registration request to the platform, reporting DockerID, attestation report, TAA public key, timestamp, self-verification status and, when available, the wrapped TAA private key.
+func registerPlatform(ctx context.Context, platformIP, dockerID, publicKeyPEM string, timestamp int64, verifiedPass bool, taaSecretKey string) error {
 	log.Printf("notifying platform register: platform=%s dockerId=%s attestation=%s timestamp=%d verifiedPass=%v",
 		platformIP, dockerID, fixedAttestationFile, timestamp, verifiedPass)
-	return controller.NoticeRegister(ctx, platformIP, dockerID, fixedAttestationFile, publicKeyPEM, timestamp, verifiedPass)
+	return controller.NoticeRegister(ctx, platformIP, dockerID, fixedAttestationFile, publicKeyPEM, timestamp, verifiedPass, taaSecretKey)
 }
 
 // ============================================================================

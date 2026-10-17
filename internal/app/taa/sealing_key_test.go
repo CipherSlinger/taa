@@ -42,20 +42,24 @@ func TestResolveStateSealingKey_CSVHWDerivesFromFetchedKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate SM2 key: %v", err)
 	}
-	hwKey := testHardwareKey()
+	wantKey := testHardwareKey()
 
 	fetch := func(buf []byte) error {
-		copy(buf, hwKey)
+		copy(buf, wantKey)
 		return nil
 	}
-	key, source, err := resolveStateSealingKey(config.StateSealingKeySourceCSVHW, priv, fetch)
+	hwKey, err := fetchStartupHardwareKey(fetch)
+	if err != nil {
+		t.Fatalf("fetch hardware key: %v", err)
+	}
+	key, source, err := resolveStateSealingKey(config.StateSealingKeySourceCSVHW, priv, hwKey)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	if source != store.KeySourceCSVHW {
 		t.Fatalf("source = %q, want %q", source, store.KeySourceCSVHW)
 	}
-	want, err := teecrypto.DeriveSealingKeyFromCSV(hwKey)
+	want, err := teecrypto.DeriveSealingKeyFromCSV(wantKey)
 	if err != nil {
 		t.Fatalf("expected derivation: %v", err)
 	}
@@ -64,19 +68,14 @@ func TestResolveStateSealingKey_CSVHWDerivesFromFetchedKey(t *testing.T) {
 	}
 }
 
-func TestResolveStateSealingKey_CSVHWFetchFailureIsFatal(t *testing.T) {
-	priv, err := teecrypto.GenerateSM2KeyPair()
-	if err != nil {
-		t.Fatalf("generate SM2 key: %v", err)
-	}
-
-	key, source, err := resolveStateSealingKey(config.StateSealingKeySourceCSVHW, priv,
+func TestFetchStartupHardwareKey_FailureIsFatal(t *testing.T) {
+	hwKey, err := fetchStartupHardwareKey(
 		func([]byte) error { return errors.New("open /dev/csv-guest: no such file") })
 	if err == nil {
-		t.Fatal("expected the fetch failure to abort key resolution")
+		t.Fatal("expected the fetch failure to abort startup")
 	}
-	if key != nil || source != "" {
-		t.Fatalf("a fatal fetch must not return a fallback key, got source=%q key=%x", source, key)
+	if hwKey != nil {
+		t.Fatalf("a fatal fetch must not return a key, got %x", hwKey)
 	}
 }
 
@@ -86,10 +85,14 @@ func TestResolveStateSealingKey_CSVHWRejectsAllZeroKey(t *testing.T) {
 		t.Fatalf("generate SM2 key: %v", err)
 	}
 
-	_, _, err = resolveStateSealingKey(config.StateSealingKeySourceCSVHW, priv, func(buf []byte) error {
+	hwKey, err := fetchStartupHardwareKey(func(buf []byte) error {
 		clear(buf)
 		return nil
 	})
+	if err != nil {
+		t.Fatalf("fetch hardware key: %v", err)
+	}
+	_, _, err = resolveStateSealingKey(config.StateSealingKeySourceCSVHW, priv, hwKey)
 	if !errors.Is(err, teecrypto.ErrInvalidCSVSealingKey) {
 		t.Fatalf("expected ErrInvalidCSVSealingKey, got %v", err)
 	}

@@ -20,6 +20,7 @@ type registerRequest struct {
 	DockerID          string `json:"dockerId"`
 	AuthInfo          any    `json:"authInfo"`
 	TaaPublicKey      string `json:"taaPublicKey"`
+	TaaSecretKey      string `json:"taaSecretKey,omitempty"`
 	AttestationValues string `json:"attestationValues"`
 	Timestamp         string `json:"timestamp"`
 	VerifiedPass      bool   `json:"verifiedPass"`
@@ -27,13 +28,14 @@ type registerRequest struct {
 }
 
 // NoticeRegister registers this TAA instance to the control platform and reports TEE attestation report, public key, and self-verification status.
-func NoticeRegister(ctx context.Context, platformAddr, dockerID, attestationFile, taaPublicKey string, timestamp int64, verifiedPass bool) error {
+// taaSecretKey is the hex SM4-GCM ciphertext of the TAA private scalar; it is empty when the instance recovered its key from TAASECRETKEY.
+func NoticeRegister(ctx context.Context, platformAddr, dockerID, attestationFile, taaPublicKey string, timestamp int64, verifiedPass bool, taaSecretKey string) error {
 	client := NewClient(platformAddr, dockerID)
-	return client.NoticeRegister(ctx, attestationFile, taaPublicKey, timestamp, verifiedPass)
+	return client.NoticeRegister(ctx, attestationFile, taaPublicKey, timestamp, verifiedPass, taaSecretKey)
 }
 
 // NoticeRegister sends registration request from Client instance.
-func (c *Client) NoticeRegister(ctx context.Context, attestationFile, taaPublicKey string, timestamp int64, verifiedPass bool) error {
+func (c *Client) NoticeRegister(ctx context.Context, attestationFile, taaPublicKey string, timestamp int64, verifiedPass bool, taaSecretKey string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -72,6 +74,7 @@ func (c *Client) NoticeRegister(ctx context.Context, attestationFile, taaPublicK
 		DockerID:          c.DockerID,
 		AuthInfo:          nil,
 		TaaPublicKey:      taaPublicKey,
+		TaaSecretKey:      taaSecretKey,
 		AttestationValues: reportValues,
 		Timestamp:         fmt.Sprintf("%d", timestamp),
 		VerifiedPass:      verifiedPass,

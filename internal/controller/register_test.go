@@ -75,7 +75,7 @@ func TestPostRegisterIncludesNewFields(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := postRegister(context.Background(), server.Client(), server.URL+registerEndpoint, "docker-1", attestationPath, "-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----", "{}", true, 1234567890); err != nil {
+	if err := postRegister(context.Background(), server.Client(), server.URL+registerEndpoint, "docker-1", attestationPath, "-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----", "{}", true, 1234567890, ""); err != nil {
 		t.Fatalf("postRegister() error = %v", err)
 	}
 
@@ -124,7 +124,7 @@ func TestPostRegisterIncludesNewFields(t *testing.T) {
 	}
 }
 
-func TestPostRegisterLogsFullRequestOnPlatformError(t *testing.T) {
+func TestPostRegisterLogsRedactedRequestOnPlatformError(t *testing.T) {
 	tmpDir := t.TempDir()
 	attestationPath := filepath.Join(tmpDir, "attestation.report")
 	if err := os.WriteFile(attestationPath, []byte("attestation-body"), 0o600); err != nil {
@@ -141,7 +141,8 @@ func TestPostRegisterLogsFullRequestOnPlatformError(t *testing.T) {
 	log.SetOutput(&logs)
 	defer log.SetOutput(oldOutput)
 
-	err := postRegister(context.Background(), server.Client(), server.URL+registerEndpoint, "docker-1", attestationPath, "-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----", "{}", true, 1234567890)
+	const secret = "00112233445566778899aabbccddeeff"
+	err := postRegister(context.Background(), server.Client(), server.URL+registerEndpoint, "docker-1", attestationPath, "-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----", "{}", true, 1234567890, secret)
 	if err == nil {
 		t.Fatal("expected platform error")
 	}
@@ -155,6 +156,7 @@ func TestPostRegisterLogsFullRequestOnPlatformError(t *testing.T) {
 		`"dockerId":"docker-1"`,
 		`"authInfo":null`,
 		`"taaPublicKey":"-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----"`,
+		`"taaSecretKey":"<redacted>"`,
 		`"attestationValues":"{}"`,
 		`"timestamp":"1234567890"`,
 		`"verifiedPass":true`,
@@ -163,6 +165,71 @@ func TestPostRegisterLogsFullRequestOnPlatformError(t *testing.T) {
 		if !strings.Contains(logText, want) {
 			t.Fatalf("log does not contain %q:\n%s", want, logText)
 		}
+	}
+	if strings.Contains(logText, secret) {
+		t.Fatalf("log leaks the taaSecretKey value:\n%s", logText)
+	}
+}
+
+func TestNoticeRegisterIncludesTaaSecretKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	attestationPath := filepath.Join(tmpDir, "attestation.report")
+	if err := os.WriteFile(attestationPath, []byte("short"), 0o600); err != nil {
+		t.Fatalf("write attestation file: %v", err)
+	}
+
+	var (
+		got       map[string]json.RawMessage
+		decodeErr error
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		decodeErr = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	const secret = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+	if err := NoticeRegister(context.Background(), server.URL, "docker-1", attestationPath, "pub", 1234567890, true, secret); err != nil {
+		t.Fatalf("NoticeRegister() error = %v", err)
+	}
+	if decodeErr != nil {
+		t.Fatalf("decode payload: %v", decodeErr)
+	}
+
+	var value string
+	if err := json.Unmarshal(got["taaSecretKey"], &value); err != nil {
+		t.Fatalf("decode taaSecretKey: %v", err)
+	}
+	if value != secret {
+		t.Fatalf("taaSecretKey = %q, want %q", value, secret)
+	}
+}
+
+func TestNoticeRegisterOmitsEmptyTaaSecretKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	attestationPath := filepath.Join(tmpDir, "attestation.report")
+	if err := os.WriteFile(attestationPath, []byte("short"), 0o600); err != nil {
+		t.Fatalf("write attestation file: %v", err)
+	}
+
+	var (
+		got       map[string]json.RawMessage
+		decodeErr error
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		decodeErr = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	if err := NoticeRegister(context.Background(), server.URL, "docker-1", attestationPath, "pub", 1234567890, true, ""); err != nil {
+		t.Fatalf("NoticeRegister() error = %v", err)
+	}
+	if decodeErr != nil {
+		t.Fatalf("decode payload: %v", decodeErr)
+	}
+	if _, ok := got["taaSecretKey"]; ok {
+		t.Fatal("taaSecretKey should be omitted when empty")
 	}
 }
 
@@ -189,7 +256,7 @@ func TestNoticeRegisterValidation(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := NoticeRegister(context.Background(), tc.platform, tc.dockerID, tc.file, tc.pubKey, 1234567890, true)
+			err := NoticeRegister(context.Background(), tc.platform, tc.dockerID, tc.file, tc.pubKey, 1234567890, true, "")
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -202,7 +269,7 @@ func TestNoticeRegisterValidation(t *testing.T) {
 
 func TestPostRegisterRejectsMissingFile(t *testing.T) {
 	missingPath := filepath.Join(t.TempDir(), "missing.report")
-	err := postRegister(context.Background(), http.DefaultClient, "http://127.0.0.1:65535", "docker-1", missingPath, "pub", "{}", true, 1234567890)
+	err := postRegister(context.Background(), http.DefaultClient, "http://127.0.0.1:65535", "docker-1", missingPath, "pub", "{}", true, 1234567890, "")
 	if err == nil {
 		t.Fatal("expected postRegister to fail for missing attestation file")
 	}
@@ -231,7 +298,7 @@ func TestNoticeRegisterFallsBackWhenAttestationValuesExtractionFails(t *testing.
 	}))
 	defer server.Close()
 
-	if err := NoticeRegister(context.Background(), server.URL, "docker-1", attestationPath, "pub", 1234567890, true); err != nil {
+	if err := NoticeRegister(context.Background(), server.URL, "docker-1", attestationPath, "pub", 1234567890, true, ""); err != nil {
 		t.Fatalf("NoticeRegister() error = %v", err)
 	}
 	if gotPayload.AttestationValues != "" {
@@ -264,7 +331,7 @@ func TestNoticeRegisterPassesVerifiedPassFlag(t *testing.T) {
 	defer server.Close()
 
 	// 1. Pass verifiedPass = true with a validly sized report
-	if err := NoticeRegister(context.Background(), server.URL, "docker-1", attestationPath, "pub", 1234567890, true); err != nil {
+	if err := NoticeRegister(context.Background(), server.URL, "docker-1", attestationPath, "pub", 1234567890, true, ""); err != nil {
 		t.Fatalf("NoticeRegister() error = %v", err)
 	}
 	if !gotPayload.VerifiedPass {
@@ -272,7 +339,7 @@ func TestNoticeRegisterPassesVerifiedPassFlag(t *testing.T) {
 	}
 
 	// 2. Pass verifiedPass = false
-	if err := NoticeRegister(context.Background(), server.URL, "docker-1", attestationPath, "pub", 1234567890, false); err != nil {
+	if err := NoticeRegister(context.Background(), server.URL, "docker-1", attestationPath, "pub", 1234567890, false, ""); err != nil {
 		t.Fatalf("NoticeRegister() error = %v", err)
 	}
 	if gotPayload.VerifiedPass {
@@ -287,7 +354,7 @@ func TestNoticeRegisterReturnsErrorWhenPlatformUnavailable(t *testing.T) {
 		t.Fatalf("write attestation file: %v", err)
 	}
 
-	err := NoticeRegister(context.Background(), "127.0.0.1:65535", "docker-1", attestationPath, "pub", 1234567890, true)
+	err := NoticeRegister(context.Background(), "127.0.0.1:65535", "docker-1", attestationPath, "pub", 1234567890, true, "")
 	if err == nil {
 		t.Fatal("expected NoticeRegister to return an error when platform is unavailable")
 	}

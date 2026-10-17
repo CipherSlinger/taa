@@ -59,6 +59,7 @@ func registerHandler(store *registerStateStore, allowEmptyAttestation bool) http
 			state.AuthInfo = "null"
 		}
 		state.TaaPublicKey = req.TaaPublicKey
+		state.TaaSecretKey = req.TaaSecretKey
 		state.AttestationValues = req.AttestationValues
 		state.Timestamp = req.Timestamp
 		state.VerifiedPass = req.VerifiedPass

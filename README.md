@@ -132,7 +132,7 @@ flowchart TB
 ```
 
 1. **Hardware-Enforced Attestation**: On boot, TAA generates an ephemeral SM2 keypair, injects the public key into the CSV hardware `USERDATA` slot (`X || Y`), and retrieves a hardware-signed attestation report via direct `/dev/csv-guest` ioctl (`pkg/csvattest`).
-2. **Identity Registration & Binding**: TAA registers with the platform by submitting its SM2 public key, raw CSV attestation report, and certificate validation parameters (`/v1/taa/register`), permanently tying the container workload to the genuine CSV hardware root of trust.
+2. **Identity Registration & Binding**: TAA registers with the platform by submitting its SM2 public key, raw CSV attestation report, and certificate validation parameters (`/v1/taa/register`), permanently tying the container workload to the genuine CSV hardware root of trust. On CSV hardware the request also carries `taaSecretKey`, a hardware-key-wrapped copy of the private scalar that lets the platform restore the same key pair after the guest filesystem is lost (see [TAA Key Recovery](#taa-key-recovery-taasecretkey)).
 3. **Ciphertext Ingress**: The platform delivers encrypted resource packages via HTTP (`/v1/taa/import`, `/v1/taa/importModel`). Both endpoints accept either the URL-carried data key (`?dataKeyCipher=`) or the legacy in-file envelope. TAA decrypts, unpacks, and validates the resources strictly inside the TEE memory and local disk sandbox.
 4. **Two-Tier Code Audit (Advisory Verdict)**: TAA performs rule-based static security scanning with 13 built-in pattern rules (covering command execution, network egress, sensitive file and environment access, obfuscation, and dynamic evaluation) over Python source, followed by semantic verification against a decoupled local LLM (`teellm-service`) over RFC 8998 TEE-TLS 1.3 to eliminate false positives. The audit runs in the background and in parallel with training, and both a scan error and any HIGH-severity finding make the audit fail closed - i.e. the verdict is `1`/`2` rather than `0`. The verdict is a *reference result*: it is reported to the platform via `/v1/taa/reportAudit` and decides nothing on the TAA side, so a failing audit neither rolls back the import nor stops training. Acting on the verdict is the platform's call.
 5. **Real-time Progress & Dual-Log Telemetry**: During training execution, TAA monitors intermediate progress snapshots (`/v1/taa/reportProgress`), streams chunked deduplicated terminal execution logs (`/v1/taa/modelLog`), and actively reports internal operational logs (`/v1/taa/taaLog`).
@@ -377,7 +377,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `server.type` | `tee` | Instance role, `tee` or `fhe`. `fhe` means this instance orchestrates an FHE service on a GPU node and performs no code audit, no remote attestation and no training pipeline |
 | `platform.ip` | Env `PLATFORM_IP` | Platform IP and port (`host:port`); dynamically injected via environment in production. The file wins over the environment, except on an `fhe` instance — see [Platform Identity Precedence](#platform-identity-precedence) |
 | `platform.dockerID` | Env `DOCKER_ID` | Container / Pod identifier; dynamically injected via environment in production. Same precedence rule as `platform.ip` |
-| `platform.contract` | Env `CONTRACT` | Contract identifier (reserved optional). Always the file-wins rule, on both instance types |
+| `platform.contract` | Env `CONTRACT` | Contract identifier (reserved optional). Always the file-wins rule, on both instance types. It is also the second input of the `taaSecretKey` derivation, so changing it makes previously reported `TAASECRETKEY` values undecryptable |
 | `storage.model` | `/root/taa/models` | TAA platform-internal storage directory for imported model code |
 | `storage.data` | `/root/taa/data` | TAA platform-internal storage directory for imported datasets and resources |
 | `storage.result` | `/root/taa/results` | TAA platform-internal storage directory for final packaged computation results |
@@ -432,6 +432,33 @@ The whole `fhe` section is read only when `server.type` is `fhe`; a `tee` instan
 - **`fhe` instances: the environment wins.** On `server.type: "fhe"`, a non-empty `PLATFORM_IP` or `DOCKER_ID` in the container's environment overrides whatever the template says. The address an FHE instance registers with depends on the machine it is deployed to, and the image ships one template for every GPU host, so the template can only be a fallback. `configs/taa-fhe.json` carries a `platform` block for that role (`127.0.0.1:18081` / `taa-fhe`, the mock used in end-to-end testing), and setting the two variables replaces it field by field — unset one and the template's value for that field is what the instance runs with.
 
 `platform.contract` / `CONTRACT` is not part of the flip: it stays file-wins on both types.
+
+### TAA Key Recovery (`TAASECRETKEY`)
+
+In a CSV2 deployment the `storage.keys` directory lives inside the guest, so recreating the
+container or the VM loses the SM2 key pair and the public key the platform saved becomes stale.
+TAA therefore reports a wrapped copy of its private key with registration:
+
+- `sk = SM3(csv sealing key(32 bytes) || CONTRACT)[:16]`
+- `taaSecretKey = hex(SM4-128-GCM(sk, D))`, where `D` is the private scalar as a 32-byte
+  big-endian value. The ciphertext is 60 bytes, so the field is 120 lowercase hex characters.
+
+The field is present only on instances that read the CSV hardware sealing key
+(`storage.stateSealingKeySource: "csv-hw"`) and did not recover their key on this boot.
+
+To restore an instance, set `TAASECRETKEY` to the value the platform stored. TAA decrypts it with
+the same hardware key and `CONTRACT`, recomputes the public key (`Q = d·G`), archives any
+conflicting key files as `*.bak.<unix>`, and registers again without the `taaSecretKey` field.
+The environment variable wins over the keys directory; keeping it set across restarts is
+idempotent (matching files are reused, not rewritten). Recovery is fail-closed: a wrong hardware
+key, a different `CONTRACT`, a corrupted or non-hex value, or a plaintext outside the valid SM2
+scalar range aborts startup. An `sm2` instance (Docker, FHE) neither exports the field nor accepts
+`TAASECRETKEY`.
+
+The GCM nonce is random, so every boot reports a different `taaSecretKey` for the same private
+key — it identifies nothing by itself. Note also that in the initrd deployment TAA's environment
+comes from the guest's `/etc/default/taa.env` written at image build time; the Pod's environment
+does not reach it, so `TAASECRETKEY` there needs an additional injection path.
 
 ### Configuration Templates
 

@@ -22,6 +22,7 @@ type registerState struct {
 	DockerID           string `json:"dockerId"`
 	AuthInfo           string `json:"authInfo"`
 	TaaPublicKey       string `json:"taaPublicKey"`
+	TaaSecretKey       string `json:"taaSecretKey,omitempty"`
 	AttestationValues  string `json:"attestationValues"`
 	Timestamp          string `json:"timestamp"`
 	VerifiedPass       bool   `json:"verifiedPass"`
@@ -37,6 +38,7 @@ type registerRequest struct {
 	DockerID          string          `json:"dockerId"`
 	AuthInfo          json.RawMessage `json:"authInfo"`
 	TaaPublicKey      string          `json:"taaPublicKey"`
+	TaaSecretKey      string          `json:"taaSecretKey"`
 	AttestationValues string          `json:"attestationValues"`
 	Timestamp         string          `json:"timestamp"`
 	VerifiedPass      bool            `json:"verifiedPass"`

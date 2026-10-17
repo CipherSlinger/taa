@@ -28,15 +28,34 @@ func sealingKeyFingerprint(key []byte) string {
 	return fmt.Sprintf("%x", sum[:8])
 }
 
-// resolveStateSealingKey returns the 16-byte SM4 key that seals the persistent
-// state, together with the source it came from.
+// fetchStartupHardwareKey fetches the CSV hardware sealing key exactly once per
+// startup. The caller owns the returned buffer and must clear it.
 //
-// csv-hw has no fallback: a missing device, a failed ioctl, or an unusable key
-// aborts startup. sm2 keeps the legacy derivation.
+// There is no fallback: a missing device or a failed ioctl aborts startup.
+func fetchStartupHardwareKey(fetch hardwareSealingKeyFetcher) ([]byte, error) {
+	if fetch == nil {
+		return nil, errors.New("csv-hw state sealing key source requires a hardware fetcher")
+	}
+	hwKey := make([]byte, csvattest.SealingKeySize)
+	if err := fetch(hwKey); err != nil {
+		clear(hwKey)
+		return nil, fmt.Errorf("acquire CSV hardware sealing key via /dev/csv-guest: %w", err)
+	}
+	log.Printf("csv hardware sealing key fingerprint: %s", sealingKeyFingerprint(hwKey))
+	// Debug-only: the full hardware key is printed until the CSV hardware
+	// path has been verified on the target host. Remove this line after.
+	log.Printf("DEBUG: csv hardware sealing key: %x", hwKey)
+	return hwKey, nil
+}
+
+// resolveStateSealingKey returns the 16-byte SM4 key that seals the persistent
+// state, together with the source it came from. hwKey is nil unless the source
+// is csv-hw; it is fetched once by fetchStartupHardwareKey and shared with the
+// taaSecretKey path.
 func resolveStateSealingKey(
 	source string,
 	privKey *teecrypto.SM2PrivateKey,
-	fetch hardwareSealingKeyFetcher,
+	hwKey []byte,
 ) ([]byte, store.KeySource, error) {
 	switch source {
 	case config.StateSealingKeySourceSM2:
@@ -47,18 +66,10 @@ func resolveStateSealingKey(
 		return key, store.KeySourceSM2, nil
 
 	case config.StateSealingKeySourceCSVHW:
-		if fetch == nil {
-			return nil, "", errors.New("csv-hw state sealing key source requires a hardware fetcher")
+		if len(hwKey) != csvattest.SealingKeySize {
+			return nil, "", fmt.Errorf("csv-hw state sealing key source requires a %d-byte hardware key (got %d)",
+				csvattest.SealingKeySize, len(hwKey))
 		}
-		hwKey := make([]byte, csvattest.SealingKeySize)
-		defer clear(hwKey)
-		if err := fetch(hwKey); err != nil {
-			return nil, "", fmt.Errorf("acquire CSV hardware sealing key via /dev/csv-guest: %w", err)
-		}
-		log.Printf("csv hardware sealing key fingerprint: %s", sealingKeyFingerprint(hwKey))
-		// Debug-only: the full hardware key is printed until the CSV hardware
-		// path has been verified on the target host. Remove this line after.
-		log.Printf("DEBUG: csv hardware sealing key: %x", hwKey)
 		key, err := teecrypto.DeriveSealingKeyFromCSV(hwKey)
 		if err != nil {
 			return nil, "", fmt.Errorf("derive state sealing key from CSV hardware key: %w", err)

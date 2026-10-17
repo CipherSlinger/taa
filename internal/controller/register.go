@@ -23,6 +23,7 @@ type registerRequest struct {
 	DockerID          string `json:"dockerId"`
 	AuthInfo          any    `json:"authInfo"`
 	TaaPublicKey      string `json:"taaPublicKey"`
+	TaaSecretKey      string `json:"taaSecretKey,omitempty"`
 	AttestationValues string `json:"attestationValues"`
 	Timestamp         string `json:"timestamp"`
 	VerifiedPass      bool   `json:"verifiedPass"`
@@ -30,16 +31,17 @@ type registerRequest struct {
 }
 
 // NoticeRegister makes one best-effort attempt to POST /v1/taa/register.
-// The request carries the attestation report and TAA public key.
-func NoticeRegister(ctx context.Context, platformAddr, dockerID, attestationFile, taaPublicKey string, timestamp int64, verifiedPass bool) error {
-	return platform.NoticeRegister(ctx, platformAddr, dockerID, attestationFile, taaPublicKey, timestamp, verifiedPass)
+// The request carries the attestation report, TAA public key and, when
+// available, the wrapped TAA private key.
+func NoticeRegister(ctx context.Context, platformAddr, dockerID, attestationFile, taaPublicKey string, timestamp int64, verifiedPass bool, taaSecretKey string) error {
+	return platform.NoticeRegister(ctx, platformAddr, dockerID, attestationFile, taaPublicKey, timestamp, verifiedPass, taaSecretKey)
 }
 
 func logRegisterRequestFailure(url, contentType string, payload []byte, statusCode int, responseBody string, sendErr error) {
 	platform.LogRequestFailure(url, contentType, payload, statusCode, responseBody, sendErr)
 }
 
-func postRegister(ctx context.Context, client *http.Client, url, dockerID, attestationFile, taaPublicKey, reportValues string, verifiedPass bool, timestamp int64) error {
+func postRegister(ctx context.Context, client *http.Client, url, dockerID, attestationFile, taaPublicKey, reportValues string, verifiedPass bool, timestamp int64, taaSecretKey string) error {
 	// Read and Base64 encode the attestation report
 	reportData, err := os.ReadFile(attestationFile)
 	if err != nil {
@@ -51,6 +53,7 @@ func postRegister(ctx context.Context, client *http.Client, url, dockerID, attes
 		DockerID:          dockerID,
 		AuthInfo:          nil,
 		TaaPublicKey:      taaPublicKey,
+		TaaSecretKey:      taaSecretKey,
 		AttestationValues: reportValues,
 		Timestamp:         fmt.Sprintf("%d", timestamp),
 		VerifiedPass:      verifiedPass,

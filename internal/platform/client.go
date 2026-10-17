@@ -3,6 +3,7 @@ package platform
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -43,6 +44,27 @@ func PlatformURL(platformAddr, endpoint string) string {
 	return "http://" + addr + endpoint
 }
 
+// redactedPayload replaces the taaSecretKey value in a JSON object payload so
+// the wrapped private key does not land in the log. Anything that is not a JSON
+// object carrying that field is returned unchanged.
+func redactedPayload(payload []byte) []byte {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &obj); err != nil {
+		return payload
+	}
+	if _, ok := obj["taaSecretKey"]; !ok {
+		return payload
+	}
+	obj["taaSecretKey"] = json.RawMessage(`"<redacted>"`)
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(obj); err != nil {
+		return payload
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n")
+}
+
 // LogRequestFailure 记录平台请求失败转储日志
 func LogRequestFailure(url, contentType string, payload []byte, statusCode int, responseBody string, sendErr error) {
 	if sendErr != nil {
@@ -51,7 +73,7 @@ func LogRequestFailure(url, contentType string, payload []byte, statusCode int, 
 		log.Printf("platform register request rejected: status=%d response=%s", statusCode, responseBody)
 	}
 	log.Printf("platform register request dump:\nPOST %s\nContent-Type: %s\nContent-Length: %d\n\n%s",
-		url, contentType, len(payload), string(payload))
+		url, contentType, len(payload), string(redactedPayload(payload)))
 }
 
 // SendPlatformJSON 发送 JSON POST 请求到管控平台

@@ -107,7 +107,7 @@ Agent 公共请求返回参数如下：
 
 ### 3.1 TAA 启动后生成远程证明报告并通知平台（/v1/taa/register）
 
-TAA 服务启动时先生成随机 SM2 公私钥对，生成远程证明报告后，再调用平台注册接口。
+TAA 服务启动时先生成随机 SM2 公私钥对（若注入了环境变量 `TAASECRETKEY`，则从中恢复既有私钥），生成远程证明报告后，再调用平台注册接口。
 
 **请求**：`POST http://{PLATFORM_IP}/v1/taa/register`
 
@@ -121,7 +121,8 @@ TAA 服务启动时先生成随机 SM2 公私钥对，生成远程证明报告�
 | --- | --- | --- | --- |
 | `dockerId` | `string` | 是 | docker id |
 | `attestation` | `string` | 是 | 远程证明报告文件，Base64 编码格式（原始 2548 字节 → 编码后约 3400 字符） |
-| `taaPublicKey` | `string` | 是 | TAA 启动时生成的 SM2 公钥 PEM（国密标准） |
+| `taaPublicKey` | `string` | 是 | TAA 启动时生成（或从 `TAASECRETKEY` 恢复）的 SM2 公钥 PEM（国密标准） |
+| `taaSecretKey` | `string` | 否 | 加密后的 TAA SM2 私钥，hex 小写编码（60 字节 → 120 字符）。仅在 CSV 环境下、且本次启动**未**从 `TAASECRETKEY` 恢复私钥时携带；恢复模式与非 CSV 实例省略该字段 |
 | `attestationValues` | `string` | 是 | attestation report 核心字段提取的 JSON 字符串，包含 USERDATA、MNONCE、DIGEST、CHIP_ID 等关键字段 |
 | `timestamp` | `string` | 是 | 生成 attestation 时的 Unix 时间戳（秒），随注册请求单独上报；不参与 USERDATA 构成 |
 | `verifiedPass` | `bool` | 是 | TAA 验证远程证明报告结果，`true` 表示成功，`false` 表示失败 |
@@ -131,6 +132,13 @@ TAA 服务启动时先生成随机 SM2 公私钥对，生成远程证明报告�
 - 原始报告大小：`0x9F4` = 2548 字节
 - Base64 编码后大小：约 3400 字符（计算公式：`ceil(2548 / 3) * 4 = 3400`）
 - 编码会增加约 33% 的体积
+
+**`taaSecretKey` 生成与恢复**：
+- `sk = SM3(csv sealing key(32 字节) || CONTRACT)[:16]`；`CONTRACT` 按 UTF-8 原始字节拼接，无分隔符。
+- `ct = SM4-128-GCM(sk, D)`，`D` 是 SM2 私钥的 32 字节大端裸标量（不是 PEM）。GCM nonce 随机生成并前置，因此密文固定 60 字节，hex 为 120 个小写字符。
+- 平台保存该值；TAA 的 keys 目录丢失后，平台把它作为环境变量 `TAASECRETKEY` 注入。TAA 用同一 CSV sealing key 与 CONTRACT 解密、重算 `Q = d·G`，并以**不含** `taaSecretKey` 的请求重新注册。
+- 非 CSV 实例（`storage.stateSealingKeySource: "sm2"`，如 docker/FHE）既不生成该字段，也不接受 `TAASECRETKEY`。
+- 同一私钥每次启动得到的 `taaSecretKey` 不同（随机 nonce），不能用作实例唯一标识；`CONTRACT` 或宿主硬件 key 变化会让旧值解不开，启动 fail-closed。
 
 **请求示例**：
 

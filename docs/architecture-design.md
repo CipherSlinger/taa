@@ -28,7 +28,7 @@ sequenceDiagram
 
     %% 阶段 1：启动、证明与身份注册
     Note over TAA,CSV: 阶段 1：启动与硬件证明绑定
-    TAA->>TAA: 实例启动，生成/加载持久化 SM2 密钥对
+    TAA->>TAA: 实例启动，生成/加载/从 TAASECRETKEY 恢复 SM2 密钥对
     TAA->>TAA: 构造 USERDATA = taaPublicKey.X || taaPublicKey.Y (64B)
     TAA->>CSV: IOCTL / VMMCALL 请求硬件度量
     CSV-->>TAA: 返回 CSV 远程证明报告 (report.cert)
@@ -166,13 +166,16 @@ sequenceDiagram
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
 │  1. 读取 taa-config.json（-config/-addr 可覆盖）                    │
-│  2. 生成 SM2 密钥对 (taaKeyPair)                                    │
+│  2. 生成、加载或恢复 SM2 密钥对 (taaKeyPair)                        │
+│     └─ 注入 TAASECRETKEY 时用 CSV sealing key + CONTRACT 解密并重算  │
+│     └─ 否则加载/生成，并导出 taaSecretKey（仅 CSV 环境）            │
 │  3. 计算 USERDATA = taaPublicKey.X || taaPublicKey.Y                │
 │  4. 进程内生成远程证明报告 (attestation.report)，并用证书链自校验   │
 │     └─ USERDATA 由 TAA 直接传入，ATTESTATION_USERDATA 可覆盖        │
 │  5. POST /v1/taa/register → 平台注册                                │
 │     └─ 携带: dockerId, attestation(base64), taaPublicKey,           │
-│              attestationValues(JSON), timestamp, verifiedPass       │
+│              taaSecretKey(可选), attestationValues(JSON),           │
+│              timestamp, verifiedPass                                │
 │  6. 初始化 TAAState，启动 HTTP 服务 (默认 :6001)                    │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘

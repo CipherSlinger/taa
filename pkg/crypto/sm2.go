@@ -14,6 +14,8 @@ import (
 
 const (
 	sm2PointSize = 65
+	// SM2ScalarSize is the fixed byte length of an SM2 private scalar.
+	SM2ScalarSize = 32
 	// SM2WrappedKeySize 是 WrapKeySM2 输出的字节长度。
 	// gmsm 的 SM2 密文格式为 0x04 || x1(32B) || y1(32B) || c3(32B) || c2(明文长度),
 	// 因此对 16 字节数据密钥: 1 + 64 + 32 + 16 = 113。
@@ -68,6 +70,34 @@ func GenerateSM2KeyPair() (*SM2PrivateKey, error) {
 		PublicKey: SM2PublicKey{X: priv.X, Y: priv.Y},
 		D:         priv.D,
 	}, nil
+}
+
+// NewSM2PrivateKeyFromScalar builds a private key from a fixed 32-byte
+// big-endian scalar and derives the matching public key (Q = d*G).
+// The scalar must satisfy 0 < d < N.
+func NewSM2PrivateKeyFromScalar(scalar []byte) (*SM2PrivateKey, error) {
+	if len(scalar) != SM2ScalarSize {
+		return nil, fmt.Errorf("teecrypto: SM2 私钥标量长度无效: %d", len(scalar))
+	}
+	d := new(big.Int).SetBytes(scalar)
+	if d.Sign() <= 0 || d.Cmp(sm2Curve.Params().N) >= 0 {
+		return nil, errors.New("teecrypto: SM2 私钥标量无效")
+	}
+	x, y := sm2Curve.ScalarBaseMult(sm2ScalarBytes(d))
+	if x == nil || y == nil {
+		return nil, errors.New("teecrypto: SM2 私钥生成公钥失败")
+	}
+	return &SM2PrivateKey{PublicKey: SM2PublicKey{X: x, Y: y}, D: d}, nil
+}
+
+// ScalarBytes returns the private scalar as a fixed 32-byte big-endian value.
+func (k *SM2PrivateKey) ScalarBytes() []byte {
+	if k == nil || k.D == nil {
+		return nil
+	}
+	out := make([]byte, SM2ScalarSize)
+	k.D.FillBytes(out)
+	return out
 }
 
 // ─── PEM 序列化 ──────────────────────────────────────────────────────

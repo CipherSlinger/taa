@@ -219,7 +219,7 @@ func TestRegisterHandlerAcceptsJSONPayload(t *testing.T) {
 	store := &registerStateStore{path: filepath.Join(t.TempDir(), "register-state.json")}
 	handler := registerHandler(store, false)
 	attestation := base64.StdEncoding.EncodeToString([]byte("attestation-body"))
-	body := strings.NewReader(`{"dockerId":"docker-1","authInfo":null,"taaPublicKey":"-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----","attestationValues":"{\"userdata\":\"abcd\",\"mnonce\":\"ef01\",\"digest\":\"2345\",\"chipId\":\"6789\"}","timestamp":"1234567890","verifiedPass":true,"attestation":"` + attestation + `"}`)
+	body := strings.NewReader(`{"dockerId":"docker-1","authInfo":null,"taaPublicKey":"-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----","taaSecretKey":"c0ffee","attestationValues":"{\"userdata\":\"abcd\",\"mnonce\":\"ef01\",\"digest\":\"2345\",\"chipId\":\"6789\"}","timestamp":"1234567890","verifiedPass":true,"attestation":"` + attestation + `"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/taa/register", body)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -237,6 +237,9 @@ func TestRegisterHandlerAcceptsJSONPayload(t *testing.T) {
 	}
 	if state.TaaPublicKey != "-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----" {
 		t.Fatalf("taaPublicKey = %q", state.TaaPublicKey)
+	}
+	if state.TaaSecretKey != "c0ffee" {
+		t.Fatalf("taaSecretKey = %q, want c0ffee", state.TaaSecretKey)
 	}
 	if state.AttestationValues != `{"userdata":"abcd","mnonce":"ef01","digest":"2345","chipId":"6789"}` {
 		t.Fatalf("attestationValues = %q", state.AttestationValues)

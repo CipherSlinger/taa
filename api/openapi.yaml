@@ -821,6 +821,12 @@ components:
         taaPublicKey:
           type: string
           description: TAA 实例专属 SM2 公钥 PEM
+        taaSecretKey:
+          type: string
+          description: >-
+            hex 编码的 TAA SM2 私钥密文：ct = SM4-128-GCM(SM3(csv sealing key || CONTRACT)[:16], D)，
+            D 为 32 字节裸标量，密文 60 字节 / 120 hex 字符。仅在 CSV 实例且本次启动未从
+            TAASECRETKEY 恢复时出现；恢复模式与非 CSV 实例省略该字段
         attestationValues:
           type: string
           description: 报告提取核心字段 JSON
