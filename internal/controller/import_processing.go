@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -230,6 +231,15 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	if trainReq.RequestID == "" && trainRecord.RequestID != "" {
 		trainReq.RequestID = trainRecord.RequestID
 	}
+
+	// The import phase holds the whole ciphertext and its plaintext in memory at
+	// once. Both are garbage by now -- the decrypt helpers drop their references
+	// before returning -- but Go only reclaims them at its next GC trigger, and the
+	// trainer runs as a child process whose allocations never trigger this one. A
+	// forced GC plus a return of the freed pages to the OS keeps the import peak
+	// from overlapping the training peak in the same cgroup.
+	debug.FreeOSMemory()
+	s.Logs.Add(LogInfo, "import", "导入阶段结束，已释放导入占用的内存")
 
 	s.executeTraining(trainReq, phase, trainRecord, cfg, env, startedAt)
 }
