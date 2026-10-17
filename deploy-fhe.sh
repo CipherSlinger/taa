@@ -101,9 +101,9 @@ BUILD_BINARIES=1
 # into $TAA_IMAGE, tags the result here and exports it as an archive beside the
 # base-image archives deploy.sh writes. The tag carries the date for the same
 # reason deploy.sh's does -- an archive is a snapshot, and rebuilding must not
-# silently replace the one an earlier delivery was made from. The config is
-# deliberately not baked in: it carries the callback token and this deployment's
-# paths, and deploy-fhe.sh taa copies the rendered one in at start time.
+# silently replace the one an earlier delivery was made from. The rendered config
+# is baked in too, so an image started without a deploy run still boots; a
+# deploy-fhe.sh taa run renders and copies its own config over it at start time.
 SAVE_DATE_TAG="$(date +%Y%m%d)"
 TAA_FHE_SAVE_IMAGE="${TAA_FHE_SAVE_IMAGE:-taa-fhe:${SAVE_DATE_TAG}}"
 TAA_FHE_SAVE_ARCHIVE="${TAA_FHE_SAVE_ARCHIVE:-$PROJECT_DIR/deploy/taa-fhe-${SAVE_DATE_TAG}.tar.gz}"
@@ -698,14 +698,15 @@ Environment:
       the data/state paths. Defaults to $PROJECT_DIR/configs/taa-fhe.json; an
       override is used as given. A save run bakes the rendered result into the
       image, so the template is an input to both the taa and the save path.
-  TAA_CALLBACK_BASE_URL=${TAA_CALLBACK_BASE_URL:-}
+  TAA_CALLBACK_BASE_URL=${TAA_CALLBACK_BASE_URL:-auto}
       Base URL of this TAA instance as the FHE containers reach it. Defaults to
-      http://\${REMOTE_HOST}:\${TAA_PORT} on the default remote run; a local run
-      has to set it. Required by the save path too, because the config baked
-      into the image carries it. Set it to 'auto' to have TAA derive the address
-      at startup (server.addr port plus the address this instance resolves
-      itself to); that is the value that survives a Pod being recreated with a
-      new Pod IP.
+      'auto': TAA derives the address at startup (the server.addr port plus the
+      address this instance resolves itself to), which is the only value that
+      can be right for an instance that has not been deployed yet -- a Pod's
+      address does not exist at packaging time and changes when the Pod is
+      recreated. Set an explicit URL to pin an address that cannot be derived
+      unambiguously (several interfaces, or a name that resolves to none of
+      them).
   TAA_CALLBACK_TOKEN=${TAA_CALLBACK_TOKEN:-}
       Shared secret the FHE service presents on the callback endpoint. A default
       is set in this script so the plain invocation is complete; set it in the
@@ -852,12 +853,12 @@ setup_remote_ssh
 
 # ── Required inputs ──────────────────────────────────────────────────────────
 # Checked before anything runs, and before anything is staged: a run that cannot
-# finish should fail here rather than halfway through an rsync --delete. Neither
-# value has a safe default -- a stack pointed at the wrong runtime, or a callback
-# endpoint with no token, is worse than a refused run -- so the real run refuses
-# without them. A dry run has nothing to protect, so it prints a visible
-# placeholder instead: that keeps `DRY_RUN=1 ./deploy-fhe.sh` runnable on a host
-# that has never deployed this stack.
+# finish should fail here rather than halfway through an rsync --delete. The
+# runtime directory has no safe default -- a stack pointed at the wrong runtime
+# is worse than a refused run -- so the real run refuses without it. A dry run
+# has nothing to protect, so it prints a visible placeholder instead: that keeps
+# `DRY_RUN=1 ./deploy-fhe.sh` runnable on a host that has never deployed this
+# stack.
 require_input() {
   local name="$1" message="$2"
   [ -n "${!name:-}" ] && return 0
@@ -877,37 +878,34 @@ HOST_DATA_DIR="${HOST_DATA_DIR:-/opt/fhe-data}"
 HOST_TAA_STATE_DIR="${HOST_TAA_STATE_DIR:-/opt/taa-state}"
 # Defaults for the three inputs that used to be required. They are named in the
 # environment they describe: on a remote run the runtime directory is the uploaded
-# bundle's copy on that host, and the callback URL is the deployment host's address
-# as the FHE containers reach it. An explicit environment value still wins, and a
+# bundle's copy on that host. An explicit environment value still wins, and a
 # local run (--local) falls back to the bundle beside this script.
 if [ -n "$REMOTE_TARGET" ]; then
   # A sibling of the uploaded bundle, not a directory inside it: the upload is
   # 'rsync -a --delete' into REMOTE_HANDOFF_DIR, so the runtime has to be staged
   # out of it before the stack mounts it.
   HOST_RUNTIME_DIR="${HOST_RUNTIME_DIR:-$REMOTE_DIR/latti-runtime}"
-  TAA_CALLBACK_BASE_URL="${TAA_CALLBACK_BASE_URL:-http://${REMOTE_HOST}:${TAA_PORT}}"
 else
   HOST_RUNTIME_DIR="${HOST_RUNTIME_DIR:-$HANDOFF_DIR/third_party/latti-ai-runtime}"
 fi
+# The callback address defaults to 'auto' rather than to this packaging host's
+# address: the image is packaged before it is deployed, so at render time there is
+# no real instance to name -- and a Pod's address only exists once it is scheduled,
+# and changes every time it is recreated. TAA resolves 'auto' in its own network
+# namespace at startup (see config.ResolveFHECallbackBaseURL), so one image is
+# valid wherever it lands. Set this only to pin an address that cannot be derived
+# unambiguously.
+TAA_CALLBACK_BASE_URL="${TAA_CALLBACK_BASE_URL:-auto}"
 # Shared secret the FHE service presents on the callback endpoint. It is set here
 # so the default invocation (`./deploy-fhe.sh`) is complete; override it from the
 # environment to use a different one. This file is the only place it is stored.
 TAA_CALLBACK_TOKEN="${TAA_CALLBACK_TOKEN:-8a9711dfcb0b55a296d9db255dba7dc47be23ca06deeff58}"
-# The runtime directory is only consumed by the staging step, and the callback
-# URL only by the rendered config, so each is required only when the side that
-# reads it is part of this run.
+# The runtime directory is only consumed by the staging step, so it is required
+# only when the side that reads it is part of this run.
 if [ "$DEPLOY_FHE_STACK" = 1 ]; then
   require_input HOST_RUNTIME_DIR 'HOST_RUNTIME_DIR must point at third_party/latti-ai-runtime'
 fi
 TAA_FHE_CONFIG="${TAA_FHE_CONFIG:-$PROJECT_DIR/configs/taa-fhe.json}"
-# Both paths that produce a runnable TAA need the address the FHE containers call
-# back on: the deploy path writes it into the config it installs at start time,
-# and the save path bakes the same rendered config into the image. The template
-# and the token are checked by render_taa_config itself. 'auto' is a valid value:
-# TAA then derives the address from server.addr and its own host name at startup.
-if [ "$DEPLOY_TAA" = 1 ]; then
-  require_input TAA_CALLBACK_BASE_URL 'TAA_CALLBACK_BASE_URL must be reachable from the FHE containers, or set to auto'
-fi
 API_HOST_PORT="${API_HOST_PORT:-58996}"
 HOST_REDIS_DIR="${HOST_REDIS_DIR:-$HOST_DATA_DIR/redis}"
 

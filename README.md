@@ -633,9 +633,12 @@ supervisor.
   here and copies them over, then runs every command of the local path on that host. Everything
   else — the paths in the report, the render, the readiness wait — reads as a path on the
   deployment host. Defaults filled in by the script: `HOST_RUNTIME_DIR=$REMOTE_DIR/latti-runtime`,
-  `TAA_CALLBACK_BASE_URL=http://$REMOTE_HOST:6001`, and a callback token. `REMOTE_HOST`,
-  `REMOTE_USER`, `TARGET_PASSWORD`, `REMOTE_DIR` and `REMOTE_HANDOFF_DIR` override the target;
-  setting any of the defaults in the environment still wins.
+  `TAA_CALLBACK_BASE_URL=auto`, and a callback token. `auto` is deliberate: packaging happens
+  before deployment, so the address the FHE containers will reach does not exist yet (a Pod's IP is
+  assigned when it is scheduled and changes when it is recreated). TAA resolves it at startup in
+  its own network namespace, and the config therefore carries the sentinel rather than a host.
+  `REMOTE_HOST`, `REMOTE_USER`, `TARGET_PASSWORD`, `REMOTE_DIR` and `REMOTE_HANDOFF_DIR` override
+  the target; setting any of the defaults in the environment still wins.
 - **`--local`** deploys on the machine running the script instead, which then needs a CUDA GPU and
   a writable `HOST_DATA_DIR`/`HOST_TAA_STATE_DIR`.
 - **`-n` / `--dry-run`** prints the whole plan and connects to nothing; it does not need the remote
