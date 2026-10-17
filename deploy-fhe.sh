@@ -485,7 +485,7 @@ upload_tree() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [options]
+Usage: $(basename "$0") [fhe|taa] [options]
 
 Deploy the FHE side on a GPU host: import the Latti server image from the handoff
 bundle, stage the FHE runtime and models, start the api/worker/redis stack, then
@@ -494,6 +494,23 @@ supervisor. The deployment host is \${REMOTE_USER}@\${REMOTE_HOST} by default --
 this script runs on an operator workstation, and the FHE worker needs the CUDA
 host. platform-mock is deployed there too, which is what makes an end-to-end
 registration test possible.
+
+Arguments:
+  fhe
+      Deploy only the three FHE services (fhe-api, fhe-worker, fhe-redis):
+      verify and load the server image, stage the runtime and models, start
+      the stack, wait for its health endpoint and activate the model. TAA,
+      platform-mock and the binaries they need are not built, uploaded or
+      started.
+  taa
+      Deploy only the TAA instance: build and upload the TAA binary and its
+      supervisor, render the config, create the container and start it, then
+      wait for its health endpoint and check its registration. The FHE stack
+      is assumed to be running already, and model activation is not repeated.
+  (no argument)
+      Deploy both, in that order. This is the original behaviour.
+
+  fhe and taa are mutually exclusive; passing both is refused.
 
 Options:
   -n, --dry-run
@@ -668,8 +685,22 @@ Environment:
 EOF
 }
 
+# What this run deploys. The bare invocation keeps the original behaviour: the
+# FHE stack, then the TAA instance on top of it. A positional `fhe` or `taa`
+# narrows the run to one side; the two are mutually exclusive because passing
+# both would mean exactly what the bare form already does.
+DEPLOY_MODE="all"
+
 while [ $# -gt 0 ]; do
   case "$1" in
+    fhe|taa)
+      if [ "$DEPLOY_MODE" != "all" ] && [ "$DEPLOY_MODE" != "$1" ]; then
+        printf '[deploy-fhe] ERROR: choose either fhe or taa, not both\n' >&2
+        usage >&2
+        exit 1
+      fi
+      DEPLOY_MODE="$1"
+      ;;
     -n|--dry-run) DRY_RUN=1 ;;
     --remote) REMOTE_TARGET="${REMOTE_USER}@${REMOTE_HOST}" ;;
     --local) REMOTE_TARGET="" ;;
@@ -680,6 +711,13 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+DEPLOY_FHE_STACK=1
+DEPLOY_TAA=1
+case "$DEPLOY_MODE" in
+  fhe) DEPLOY_TAA=0 ;;
+  taa) DEPLOY_FHE_STACK=0 ;;
+esac
 
 setup_remote_ssh
 
@@ -726,9 +764,16 @@ fi
 # so the default invocation (`./deploy-fhe.sh`) is complete; override it from the
 # environment to use a different one. This file is the only place it is stored.
 TAA_CALLBACK_TOKEN="${TAA_CALLBACK_TOKEN:-8a9711dfcb0b55a296d9db255dba7dc47be23ca06deeff58}"
-require_input HOST_RUNTIME_DIR 'HOST_RUNTIME_DIR must point at third_party/latti-ai-runtime'
+# The runtime directory is only consumed by the staging step, and the callback
+# URL only by the rendered config, so each is required only when the side that
+# reads it is part of this run.
+if [ "$DEPLOY_FHE_STACK" = 1 ]; then
+  require_input HOST_RUNTIME_DIR 'HOST_RUNTIME_DIR must point at third_party/latti-ai-runtime'
+fi
 TAA_FHE_CONFIG="${TAA_FHE_CONFIG:-$PROJECT_DIR/configs/taa-fhe.json}"
-require_input TAA_CALLBACK_BASE_URL 'TAA_CALLBACK_BASE_URL must be reachable from the FHE containers'
+if [ "$DEPLOY_TAA" = 1 ]; then
+  require_input TAA_CALLBACK_BASE_URL 'TAA_CALLBACK_BASE_URL must be reachable from the FHE containers'
+fi
 API_HOST_PORT="${API_HOST_PORT:-58996}"
 HOST_REDIS_DIR="${HOST_REDIS_DIR:-$HOST_DATA_DIR/redis}"
 
@@ -1440,28 +1485,36 @@ else
     require_host_command "$cmd"
   done
   # Checked here rather than in the last step so a missing template cannot fail after
-  # the FHE stack is already up.
-  [ -f "$TAA_FHE_CONFIG" ] || die "TAA config template not found: $TAA_FHE_CONFIG"
-  # The supervisor is installed into the container, not taken from the image: a base
-  # image that never carried one would otherwise leave taa unsupervised.
-  [ -f "$PROJECT_DIR/deploy/start.sh" ] || die "TAA supervisor script missing: $PROJECT_DIR/deploy/start.sh"
-  # The GPU is the one thing about the deployment host that can be wrong without any
-  # command failing. The FHE worker's runtime is built for Ada (CUDA arch 89, per the
-  # bundle's build-info/manifest.json), needs roughly 45 GiB of free card memory to
-  # start, and is a Hygon DCU's non-starter because it is CUDA. Reported rather than
-  # refused -- this script cannot know what else the card is for -- and reported here,
-  # before 300 MiB is uploaded, so the operator sees it before the wait.
-  gpu_report="$(host_capture 'nvidia-smi --query-gpu=name,compute_cap,memory.total,memory.used --format=csv,noheader' 2>/dev/null || true)"
-  if [ -n "$gpu_report" ]; then
-    while IFS= read -r gpu_line; do
-      [ -n "$gpu_line" ] && log "GPU on ${REMOTE_TARGET:-this host}: $gpu_line"
-    done <<<"$gpu_report"
-  else
-    warn "nvidia-smi reported no GPU on ${REMOTE_TARGET:-this host}; the FHE worker needs a CUDA device, and the bundled runtime is built for compute capability 8.9 (Ada)"
+  # the FHE stack is already up. Both belong to the TAA side, so a run that deploys
+  # only the FHE stack does not need them.
+  if [ "$DEPLOY_TAA" = 1 ]; then
+    [ -f "$TAA_FHE_CONFIG" ] || die "TAA config template not found: $TAA_FHE_CONFIG"
+    # The supervisor is installed into the container, not taken from the image: a base
+    # image that never carried one would otherwise leave taa unsupervised.
+    [ -f "$PROJECT_DIR/deploy/start.sh" ] || die "TAA supervisor script missing: $PROJECT_DIR/deploy/start.sh"
+  fi
+  if [ "$DEPLOY_FHE_STACK" = 1 ]; then
+    # The GPU is the one thing about the deployment host that can be wrong without any
+    # command failing. The FHE worker's runtime is built for Ada (CUDA arch 89, per the
+    # bundle's build-info/manifest.json), needs roughly 45 GiB of free card memory to
+    # start, and is a Hygon DCU's non-starter because it is CUDA. Reported rather than
+    # refused -- this script cannot know what else the card is for -- and reported here,
+    # before 300 MiB is uploaded, so the operator sees it before the wait.
+    gpu_report="$(host_capture 'nvidia-smi --query-gpu=name,compute_cap,memory.total,memory.used --format=csv,noheader' 2>/dev/null || true)"
+    if [ -n "$gpu_report" ]; then
+      while IFS= read -r gpu_line; do
+        [ -n "$gpu_line" ] && log "GPU on ${REMOTE_TARGET:-this host}: $gpu_line"
+      done <<<"$gpu_report"
+    else
+      warn "nvidia-smi reported no GPU on ${REMOTE_TARGET:-this host}; the FHE worker needs a CUDA device, and the bundled runtime is built for compute capability 8.9 (Ada)"
+    fi
   fi
 fi
-report_stack_binding
+if [ "$DEPLOY_FHE_STACK" = 1 ]; then
+  report_stack_binding
+fi
 
+if [ "$DEPLOY_FHE_STACK" = 1 ]; then
 step "verifying the bundle artifacts this deployment consumes"
 # Before the load below, not after: an archive that verifies is imported into the
 # daemon, and until it verifies nothing of it should be. FHE_IMAGE_ARCHIVE is
@@ -1494,7 +1547,9 @@ fi
 # names that directory, the delivery ships them as one tree, and an empty or
 # missing directory is already refused below. It stays a gap by choice.
 verify_one third_party/latti-ai-runtime.tar.gz
+fi
 
+if [ "$DEPLOY_TAA" = 1 ]; then
 step "building the binaries this run deploys"
 # Both are built on this machine and pushed, so a deployment runs the commit it was
 # launched from: the TAA binary is copied into the container below, and platform-mock
@@ -1515,24 +1570,33 @@ else
     build_binary "$PLATFORM_MOCK_BINARY_PATH" ./tools/platform-mock/cmd/platform-mock
   fi
 fi
+else
+  log "fhe-only run: nothing is built here; the FHE stack runs the image the bundle ships"
+fi
 
 step "uploading this run's inputs to ${REMOTE_TARGET:-this host}"
 # Everything the host-side commands read has to be there first: the bundle, which
 # `docker load` and the staging rsync read from; the supervisor, which docker cp
 # copies into the container; and the two binaries. The rendered config is the one
-# exception -- it does not exist yet, and the step that renders it uploads it.
+# exception -- it does not exist yet, and the step that renders it uploads it. A run
+# that deploys one side uploads only that side's inputs.
 if [ -z "$REMOTE_TARGET" ]; then
   log "local run: the bundle is read where it is, and the binaries the step above wrote are where the commands below look for them"
 else
-  log "uploading $HANDOFF_DIR to $REMOTE_TARGET:$REMOTE_HANDOFF_DIR; this is the long part of a remote run"
-  upload_tree "$HANDOFF_DIR" "$REMOTE_HANDOFF_DIR"
-  upload_file "$PROJECT_DIR/deploy/start.sh" "$HOST_START_SH" 755
-  upload_file "$TAA_BINARY_PATH" "$HOST_TAA_BINARY_PATH" 755
-  if [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
-    upload_file "$PLATFORM_MOCK_BINARY_PATH" "$HOST_PLATFORM_MOCK_BINARY_PATH" 755
+  if [ "$DEPLOY_FHE_STACK" = 1 ]; then
+    log "uploading $HANDOFF_DIR to $REMOTE_TARGET:$REMOTE_HANDOFF_DIR; this is the long part of a remote run"
+    upload_tree "$HANDOFF_DIR" "$REMOTE_HANDOFF_DIR"
+  fi
+  if [ "$DEPLOY_TAA" = 1 ]; then
+    upload_file "$PROJECT_DIR/deploy/start.sh" "$HOST_START_SH" 755
+    upload_file "$TAA_BINARY_PATH" "$HOST_TAA_BINARY_PATH" 755
+    if [ "$DEPLOY_PLATFORM_MOCK" = 1 ]; then
+      upload_file "$PLATFORM_MOCK_BINARY_PATH" "$HOST_PLATFORM_MOCK_BINARY_PATH" 755
+    fi
   fi
 fi
 
+if [ "$DEPLOY_FHE_STACK" = 1 ]; then
 step "importing $FHE_IMAGE from the handoff bundle"
 run docker load -i "$HOST_FHE_IMAGE_ARCHIVE"
 if is_dry_run; then
@@ -1601,7 +1665,9 @@ fi
 # default umask already produced, so nothing that works today changes; only the
 # restrictive-umask case does.
 run chmod 755 "$HOST_DATA_DIR" "$HOST_DATA_DIR"/{models,keys,tasks,results} "$HOST_REDIS_DIR"
+fi
 
+if [ "$DEPLOY_TAA" = 1 ]; then
 step "starting platform-mock on $PLATFORM_ADDR"
 # Before the FHE stack, and well before TAA: TAA registers within a few seconds of
 # coming up, and a mock that is not listening yet turns that registration into the
@@ -1647,7 +1713,9 @@ else
       || die "could not clear the register state on http://127.0.0.1:${PLATFORM_PORT}"
   fi
 fi
+fi
 
+if [ "$DEPLOY_FHE_STACK" = 1 ]; then
 step "starting the FHE node stack (api + worker + redis)"
 # run_node, not run_in: the values that point the stack at the tree staged in the
 # previous step have to travel on the command line to reach a remote host at all.
@@ -1676,8 +1744,14 @@ fi
 run curl -fsS -o /dev/null -X POST \
   "http://127.0.0.1:${API_HOST_PORT}/api/v1/models/activate?model_id=${FHE_MODEL_ID}" \
   || die "model activation failed"
+fi
 
+if [ "$DEPLOY_TAA" = 1 ]; then
 step "starting the TAA fhe instance"
+# A taa-only run never runs the staging step, which is what normally creates
+# HOST_DATA_DIR -- and the rendered config is written under it. Creating it here is
+# also what a TAA container needs: it bind-mounts this directory.
+run mkdir -p "$HOST_DATA_DIR"
 if is_dry_run; then
   log "would render $TAA_FHE_CONFIG -> $TAA_RENDERED_CONFIG (callbackBaseUrl, callbackToken, endpoint, dataDir, keyCacheDir, storage.result, storage.keys)"
 else
@@ -1764,8 +1838,13 @@ else
     die "TAA did not answer POST http://127.0.0.1:${TAA_PORT}/v1/taa/health within ${TAA_READY_TIMEOUT}s"
   fi
   log "TAA fhe instance is ready"
-  printf '\n[deploy-fhe] deployment complete\n'
-  log "FHE stack      : http://127.0.0.1:${API_HOST_PORT}/api/v1 (model ${FHE_MODEL_ID} activated)"
+  if [ "$DEPLOY_FHE_STACK" = 1 ]; then
+    printf '\n[deploy-fhe] deployment complete\n'
+    log "FHE stack      : http://127.0.0.1:${API_HOST_PORT}/api/v1 (model ${FHE_MODEL_ID} activated)"
+  else
+    printf '\n[deploy-fhe] TAA instance deployed\n'
+    log "FHE stack      : http://127.0.0.1:${API_HOST_PORT}/api/v1 (not touched by this run; model activation was not repeated)"
+  fi
   log "FHE data dir   : $HOST_DATA_DIR"
   log "FHE runtime    : $HOST_RUNTIME_DIR"
   log "FHE redis dir  : $HOST_REDIS_DIR"
@@ -1829,6 +1908,18 @@ else
   fi
   log "registration confirmed: platform-mock recorded dockerId=$registered_id accepted=true (expected '$expected_docker_id' from $expected_source)"
   log "platform status: http://127.0.0.1:$PLATFORM_PORT/api/register/status"
+fi
+fi
+
+# An fhe-only run has no TAA step to print a summary, so it gets its own here. Same
+# directories a full run reports, minus the TAA ones this run did not deploy.
+if [ "$DEPLOY_FHE_STACK" = 1 ] && [ "$DEPLOY_TAA" = 0 ] && ! is_dry_run; then
+  printf '\n[deploy-fhe] FHE stack deployed\n'
+  log "FHE stack      : http://127.0.0.1:${API_HOST_PORT}/api/v1 (model ${FHE_MODEL_ID} activated)"
+  log "FHE data dir   : $HOST_DATA_DIR"
+  log "FHE runtime    : $HOST_RUNTIME_DIR"
+  log "FHE redis dir  : $HOST_REDIS_DIR"
+  log "stop the stack : (cd $NODE_DOCKER_DIR && ./scripts/run-node.sh down)"
 fi
 
 # Last line of the script on purpose: a dry run prints this once, after the last step,
