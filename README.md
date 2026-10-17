@@ -377,7 +377,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `server.type` | `tee` | Instance role, `tee` or `fhe`. `fhe` means this instance orchestrates an FHE service on a GPU node and performs no code audit, no remote attestation and no training pipeline |
 | `platform.ip` | Env `PLATFORM_IP` | Platform IP and port (`host:port`); dynamically injected via environment in production. The file wins over the environment, except on an `fhe` instance — see [Platform Identity Precedence](#platform-identity-precedence) |
 | `platform.dockerID` | Env `DOCKER_ID` | Container / Pod identifier; dynamically injected via environment in production. Same precedence rule as `platform.ip` |
-| `platform.contract` | Env `CONTRACT` | Contract identifier (reserved optional). Always the file-wins rule, on both instance types. It is also the second input of the `taaSecretKey` derivation, so changing it makes previously reported `TAASECRETKEY` values undecryptable |
+| `platform.contract` | Env `CONTRACT_ID` | Contract identifier (reserved optional). Always the file-wins rule, on both instance types. It is also the second input of the `taaSecretKey` derivation, so changing it makes previously reported `TAASECRETKEY` values undecryptable |
 | `storage.model` | `/root/taa/models` | TAA platform-internal storage directory for imported model code |
 | `storage.data` | `/root/taa/data` | TAA platform-internal storage directory for imported datasets and resources |
 | `storage.result` | `/root/taa/results` | TAA platform-internal storage directory for final packaged computation results |
@@ -431,7 +431,7 @@ The whole `fhe` section is read only when `server.type` is `fhe`; a `tee` instan
 - **`tee` instances: the config file wins.** The startup file is applied over the environment-derived defaults, so a template that carries a `platform` block pins the identity no matter what the orchestration platform injects. `configs/taa-production.json` deliberately omits the block for exactly this reason — it wants the injected values to be the only source.
 - **`fhe` instances: the environment wins.** On `server.type: "fhe"`, a non-empty `PLATFORM_IP` or `DOCKER_ID` in the container's environment overrides whatever the template says. The address an FHE instance registers with depends on the machine it is deployed to, and the image ships one template for every GPU host, so the template can only be a fallback. `configs/taa-fhe.json` carries a `platform` block for that role (`127.0.0.1:18081` / `taa-fhe`, the mock used in end-to-end testing), and setting the two variables replaces it field by field — unset one and the template's value for that field is what the instance runs with.
 
-`platform.contract` / `CONTRACT` is not part of the flip: it stays file-wins on both types.
+`platform.contract` / `CONTRACT_ID` is not part of the flip: it stays file-wins on both types.
 
 ### TAA Key Recovery (`TAASECRETKEY`)
 
@@ -439,7 +439,7 @@ In a CSV2 deployment the `storage.keys` directory lives inside the guest, so rec
 container or the VM loses the SM2 key pair and the public key the platform saved becomes stale.
 TAA therefore reports a wrapped copy of its private key with registration:
 
-- `sk = SM3(csv sealing key(32 bytes) || CONTRACT)[:16]`
+- `sk = SM3(csv sealing key(32 bytes) || CONTRACT_ID)[:16]`
 - `taaSecretKey = hex(SM4-128-GCM(sk, D))`, where `D` is the private scalar as a 32-byte
   big-endian value. The ciphertext is 60 bytes, so the field is 120 lowercase hex characters.
 
@@ -447,11 +447,11 @@ The field is present only on instances that read the CSV hardware sealing key
 (`storage.stateSealingKeySource: "csv-hw"`) and did not recover their key on this boot.
 
 To restore an instance, set `TAASECRETKEY` to the value the platform stored. TAA decrypts it with
-the same hardware key and `CONTRACT`, recomputes the public key (`Q = d·G`), archives any
+the same hardware key and `CONTRACT_ID`, recomputes the public key (`Q = d·G`), archives any
 conflicting key files as `*.bak.<unix>`, and registers again without the `taaSecretKey` field.
 The environment variable wins over the keys directory; keeping it set across restarts is
 idempotent (matching files are reused, not rewritten). Recovery is fail-closed: a wrong hardware
-key, a different `CONTRACT`, a corrupted or non-hex value, or a plaintext outside the valid SM2
+key, a different `CONTRACT_ID`, a corrupted or non-hex value, or a plaintext outside the valid SM2
 scalar range aborts startup. An `sm2` instance (Docker, FHE) neither exports the field nor accepts
 `TAASECRETKEY`.
 
@@ -580,7 +580,7 @@ Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (d
 >
 > `TAA_LLM_ENDPOINT` is the one variable that **overrides** the config file (leave it empty to keep
 > the endpoint the image was packaged with); the `platform` identity fields do not follow that rule.
-> `PLATFORM_IP`, `DOCKER_ID` and `CONTRACT` only seed defaults that the file wins over — on a `tee`
+> `PLATFORM_IP`, `DOCKER_ID` and `CONTRACT_ID` only seed defaults that the file wins over — on a `tee`
 > instance. On an `fhe` instance the first two flip to environment-wins (see
 > [Platform Identity Precedence](#platform-identity-precedence)).
 

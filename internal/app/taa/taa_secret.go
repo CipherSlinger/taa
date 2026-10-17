@@ -23,7 +23,7 @@ const (
 )
 
 // deriveTAASecretSM4Key derives the SM4 key that wraps the TAA SM2 private key:
-// SM3(hardware key || CONTRACT)[:16]. The construction is a wire contract with
+// SM3(hardware key || CONTRACT_ID)[:16]. The construction is a wire contract with
 // the platform, so it must not add a domain label or a separator.
 func deriveTAASecretSM4Key(hwKey []byte, contract string) ([]byte, error) {
 	if len(hwKey) != csvattest.SealingKeySize {

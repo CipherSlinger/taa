@@ -773,7 +773,7 @@ func defaultStartupConfig() StartupConfig {
 		ServerType:                ServerTypeTEE,
 		PlatformIP:                os.Getenv("PLATFORM_IP"),
 		DockerID:                  os.Getenv("DOCKER_ID"),
-		Contract:                  os.Getenv("CONTRACT"),
+		Contract:                  os.Getenv("CONTRACT_ID"),
 		EnableCodeAudit:           true,
 		CodeScan:                  CodeScanConfig{Engine: "semgrep"},
 		BinaryAuditEnabled:        true,

@@ -474,7 +474,7 @@ with open(path, "w", encoding="utf-8") as f:
     json.dump(cfg, f, indent=2, ensure_ascii=False)
     f.write("\n")
 PY
-  info "platform block removed: identity is injected via PLATFORM_IP/DOCKER_ID/CONTRACT"
+  info "platform block removed: identity is injected via PLATFORM_IP/DOCKER_ID/CONTRACT_ID"
 fi
 
 # deploy-llm.sh copies the model catalog verbatim and never updates activeModel, so
@@ -598,7 +598,7 @@ echo -e "  ${BOLD}${CYAN}● Contents${NC}"
 echo -e "    ${MUTED}↳ Model      :${NC} ${PURPLE}${LLM_MODEL}${NC}"
 echo -e "    ${MUTED}↳ Autostart  :${NC} start.sh (taa :${TAA_PORT}) + start-teellm.sh (teellm :${TEELLM_PORT})"
 echo -e "    ${MUTED}↳ Attestation:${NC} ${attestation_mode}"
-echo -e "    ${MUTED}↳ Platform   :${NC} $([[ "$INCLUDE_PLATFORM" == true ]] && echo "embedded (test image)" || echo "injected via PLATFORM_IP/DOCKER_ID/CONTRACT")"
+echo -e "    ${MUTED}↳ Platform   :${NC} $([[ "$INCLUDE_PLATFORM" == true ]] && echo "embedded (test image)" || echo "injected via PLATFORM_IP/DOCKER_ID/CONTRACT_ID")"
 echo ""
 echo -e "  ${MUTED}Load on a target host:  docker load -i $(basename "$ARCHIVE_PATH")${NC}"
 echo ""

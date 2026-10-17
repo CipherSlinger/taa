@@ -38,7 +38,7 @@ TAA 所在 Pod 容器需提供以下运行参数：
 ```env
 PLATFORM_IP={IP}:{PORT}
 DOCKER_ID=xxxxxxxxx
-CONTRACT=合约ID（预留）
+CONTRACT_ID=合约ID（预留）
 LLM_IP={IP}:{PORT}
 ```
 
@@ -134,11 +134,11 @@ TAA 服务启动时先生成随机 SM2 公私钥对（若注入了环境变量 `
 - 编码会增加约 33% 的体积
 
 **`taaSecretKey` 生成与恢复**：
-- `sk = SM3(csv sealing key(32 字节) || CONTRACT)[:16]`；`CONTRACT` 按 UTF-8 原始字节拼接，无分隔符。
+- `sk = SM3(csv sealing key(32 字节) || CONTRACT_ID)[:16]`；`CONTRACT_ID` 按 UTF-8 原始字节拼接，无分隔符。
 - `ct = SM4-128-GCM(sk, D)`，`D` 是 SM2 私钥的 32 字节大端裸标量（不是 PEM）。GCM nonce 随机生成并前置，因此密文固定 60 字节，hex 为 120 个小写字符。
-- 平台保存该值；TAA 的 keys 目录丢失后，平台把它作为环境变量 `TAASECRETKEY` 注入。TAA 用同一 CSV sealing key 与 CONTRACT 解密、重算 `Q = d·G`，并以**不含** `taaSecretKey` 的请求重新注册。
+- 平台保存该值；TAA 的 keys 目录丢失后，平台把它作为环境变量 `TAASECRETKEY` 注入。TAA 用同一 CSV sealing key 与 CONTRACT_ID 解密、重算 `Q = d·G`，并以**不含** `taaSecretKey` 的请求重新注册。
 - 非 CSV 实例（`storage.stateSealingKeySource: "sm2"`，如 docker/FHE）既不生成该字段，也不接受 `TAASECRETKEY`。
-- 同一私钥每次启动得到的 `taaSecretKey` 不同（随机 nonce），不能用作实例唯一标识；`CONTRACT` 或宿主硬件 key 变化会让旧值解不开，启动 fail-closed。
+- 同一私钥每次启动得到的 `taaSecretKey` 不同（随机 nonce），不能用作实例唯一标识；`CONTRACT_ID` 或宿主硬件 key 变化会让旧值解不开，启动 fail-closed。
 
 **请求示例**：
 

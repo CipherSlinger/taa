@@ -13,7 +13,7 @@ import (
 func TestLoadStartupConfigFallsBackToIdentityEnvironment(t *testing.T) {
 	t.Setenv("PLATFORM_IP", "env-platform:8080")
 	t.Setenv("DOCKER_ID", "env-docker")
-	t.Setenv("CONTRACT", "env-contract")
+	t.Setenv("CONTRACT_ID", "env-contract")
 
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
@@ -53,7 +53,7 @@ func TestLoadStartupConfigFallsBackToIdentityEnvironment(t *testing.T) {
 func TestLoadStartupConfigUsesIdentityFromFile(t *testing.T) {
 	t.Setenv("PLATFORM_IP", "env-platform:8080")
 	t.Setenv("DOCKER_ID", "env-docker")
-	t.Setenv("CONTRACT", "env-contract")
+	t.Setenv("CONTRACT_ID", "env-contract")
 
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
@@ -105,7 +105,7 @@ func writeFHEConfig(t *testing.T, path, platformBlock string) {
 func TestLoadStartupConfigFHEIdentityEnvironmentWins(t *testing.T) {
 	t.Setenv("PLATFORM_IP", "env-platform:9999")
 	t.Setenv("DOCKER_ID", "env-docker")
-	t.Setenv("CONTRACT", "env-contract")
+	t.Setenv("CONTRACT_ID", "env-contract")
 
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeFHEConfig(t, path, `"platform": {"ip": "file-platform:8080", "dockerID": "file-docker", "contract": "file-contract"},`)

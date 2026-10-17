@@ -167,7 +167,7 @@ sequenceDiagram
 │                                                                     │
 │  1. 读取 taa-config.json（-config/-addr 可覆盖）                    │
 │  2. 生成、加载或恢复 SM2 密钥对 (taaKeyPair)                        │
-│     └─ 注入 TAASECRETKEY 时用 CSV sealing key + CONTRACT 解密并重算  │
+│     └─ 注入 TAASECRETKEY 时用 CSV sealing key + CONTRACT_ID 解密并重算  │
 │     └─ 否则加载/生成，并导出 taaSecretKey（仅 CSV 环境）            │
 │  3. 计算 USERDATA = taaPublicKey.X || taaPublicKey.Y                │
 │  4. 进程内生成远程证明报告 (attestation.report)，并用证书链自校验   │
