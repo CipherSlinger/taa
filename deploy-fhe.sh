@@ -57,13 +57,13 @@ TAA_READY_INTERVAL="${TAA_READY_INTERVAL:-2}"
 FHE_READY_TIMEOUT="${FHE_READY_TIMEOUT:-120}"
 
 # ── Where the deployment happens ─────────────────────────────────────────────
-# An empty REMOTE_TARGET means the FHE host is this one, and every host-side
-# command below runs as a plain local command -- the behaviour this script had
-# before it could deploy anywhere else. `--remote` sets it to
-# $REMOTE_USER@$REMOTE_HOST, and then each host-side command becomes one ssh
-# invocation instead. See ssh_host/run/run_in/host_sh below: they are the only
-# places that know the difference, which is what keeps the rest of the script
-# from having to care.
+# Remote is the default: this script runs on an operator workstation while the
+# FHE worker needs a CUDA host, so there is nothing useful to deploy locally on
+# the machine that launches it. REMOTE_TARGET defaults to
+# $REMOTE_USER@$REMOTE_HOST, and every host-side command below becomes one ssh
+# invocation. `--local` empties it and turns the same commands into plain local
+# ones; the distinction lives only in ssh_host/run/run_in/host_sh below, which
+# is what keeps the rest of the script from having to care.
 #
 # These names are deploy.sh's, deliberately: an operator already exporting
 # REMOTE_HOST/TARGET_PASSWORD for the TAA side does not restate them here.
@@ -71,7 +71,7 @@ REMOTE_HOST="${REMOTE_HOST:-172.16.10.178}"
 REMOTE_USER="${REMOTE_USER:-root}"
 PASSWORD="${TARGET_PASSWORD:-Osrd@2026}"
 REMOTE_DIR="${REMOTE_DIR:-/root/taa-fhe}"
-REMOTE_TARGET="${REMOTE_TARGET:-}"
+REMOTE_TARGET="${REMOTE_TARGET:-${REMOTE_USER}@${REMOTE_HOST}}"
 # Where the bundle is copied to on the remote host. Derived here rather than
 # after the upload so the guard below can refuse a target that would collide
 # with a directory the upload's --delete is about to write into.
@@ -489,22 +489,25 @@ Usage: $(basename "$0") [options]
 
 Deploy the FHE side on a GPU host: import the Latti server image from the handoff
 bundle, stage the FHE runtime and models, start the api/worker/redis stack, then
-start this host's TAA instance with server.type=fhe under the deploy/start.sh
-supervisor. With --remote the same run happens on another host, platform-mock
-included, which is what makes an end-to-end registration test possible there.
+start that host's TAA instance with server.type=fhe under the deploy/start.sh
+supervisor. The deployment host is \${REMOTE_USER}@\${REMOTE_HOST} by default --
+this script runs on an operator workstation, and the FHE worker needs the CUDA
+host. platform-mock is deployed there too, which is what makes an end-to-end
+registration test possible.
 
 Options:
   -n, --dry-run
       Print the commands that would run and execute nothing. Needs no GPU, no
-      FHE stack and no Docker. With --remote it prints the ssh command lines and
-      still connects to nothing.
+      FHE stack and no Docker. With the default remote target it prints the ssh
+      command lines and still connects to nothing.
   --remote
-      Deploy to \${REMOTE_USER}@\${REMOTE_HOST} instead of this host: the bundle,
-      the supervisor, the TAA binary and platform-mock are copied over, and every
-      host-side command becomes one ssh invocation. Default target is
-      ${REMOTE_USER}@${REMOTE_HOST}; REMOTE_HOST, REMOTE_USER, TARGET_PASSWORD,
-      REMOTE_DIR and REMOTE_HANDOFF_DIR override it, and the first three are the
-      names deploy.sh uses for the same host.
+      Deploy to \${REMOTE_USER}@\${REMOTE_HOST}. This is the default, and the
+      flag is accepted for explicitness; REMOTE_HOST, REMOTE_USER,
+      TARGET_PASSWORD, REMOTE_DIR and REMOTE_HANDOFF_DIR override the target,
+      and the first three are the names deploy.sh uses for the same host.
+  --local
+      Deploy on the machine running this script instead. Needs a CUDA GPU and
+      a writable HOST_DATA_DIR/HOST_TAA_STATE_DIR there.
   --no-platform-mock
       Do not build, upload or start platform-mock, and do not check the
       registration at the end. Then nothing here answers at PLATFORM_IP, so set
@@ -577,7 +580,10 @@ Environment:
       data bind.
   HOST_RUNTIME_DIR=${HOST_RUNTIME_DIR:-}
       Where the FHE runtime from the bundle is staged; mounted read-only by the
-      stack. 'rsync -a --delete' targets it, so it must not be the data
+      stack. Defaults to \${REMOTE_DIR}/latti-runtime on the default remote run
+      (a directory of its own, because the upload is an rsync --delete into
+      REMOTE_HANDOFF_DIR), and to the local bundle's third_party/latti-ai-runtime
+      under --local. 'rsync -a --delete' targets it, so it must not be the data
       directory, must not contain it and must not be inside it -- nor may it
       contain or be inside HOST_TAA_STATE_DIR: the run refuses otherwise, before
       anything is deleted.
@@ -589,12 +595,14 @@ Environment:
       TAA configuration template rendered with the callback URL/token below.
       Defaults to $PROJECT_DIR/configs/taa-fhe.json; an override is used as given.
   TAA_CALLBACK_BASE_URL=${TAA_CALLBACK_BASE_URL:-}
-      Base URL of this TAA instance as the FHE containers reach it. Under --remote
-      that is the deployment host's address, not this machine's (for the shared
-      FHE host, http://172.16.10.178:\${TAA_PORT}).
+      Base URL of this TAA instance as the FHE containers reach it. Defaults to
+      http://\${REMOTE_HOST}:\${TAA_PORT} on the default remote run; a local run
+      has to set it.
   TAA_CALLBACK_TOKEN=${TAA_CALLBACK_TOKEN:-}
-      Shared secret the FHE service presents on the callback endpoint. Required:
-      an unauthenticated callback endpoint is open to every local process.
+      Shared secret the FHE service presents on the callback endpoint. A default
+      is set in this script so the plain invocation is complete; set it in the
+      environment to use another one. An empty value is refused, because an
+      unauthenticated callback endpoint is open to every local process.
   API_HOST_PORT=${API_HOST_PORT:-58996}
       Host port the FHE api service publishes. Exported to the stack like the
       directory variables above.
@@ -664,6 +672,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -n|--dry-run) DRY_RUN=1 ;;
     --remote) REMOTE_TARGET="${REMOTE_USER}@${REMOTE_HOST}" ;;
+    --local) REMOTE_TARGET="" ;;
     --no-platform-mock) DEPLOY_PLATFORM_MOCK=0 ;;
     --skip-build) BUILD_BINARIES=0 ;;
     -h|--help|help) usage; exit 0 ;;
@@ -699,10 +708,27 @@ HOST_DATA_DIR="${HOST_DATA_DIR:-/opt/fhe-data}"
 # the rendered config's storage.keys, and through the second bind start_taa_container
 # adds.
 HOST_TAA_STATE_DIR="${HOST_TAA_STATE_DIR:-/opt/taa-state}"
+# Defaults for the three inputs that used to be required. They are named in the
+# environment they describe: on a remote run the runtime directory is the uploaded
+# bundle's copy on that host, and the callback URL is the deployment host's address
+# as the FHE containers reach it. An explicit environment value still wins, and a
+# local run (--local) falls back to the bundle beside this script.
+if [ -n "$REMOTE_TARGET" ]; then
+  # A sibling of the uploaded bundle, not a directory inside it: the upload is
+  # 'rsync -a --delete' into REMOTE_HANDOFF_DIR, so the runtime has to be staged
+  # out of it before the stack mounts it.
+  HOST_RUNTIME_DIR="${HOST_RUNTIME_DIR:-$REMOTE_DIR/latti-runtime}"
+  TAA_CALLBACK_BASE_URL="${TAA_CALLBACK_BASE_URL:-http://${REMOTE_HOST}:${TAA_PORT}}"
+else
+  HOST_RUNTIME_DIR="${HOST_RUNTIME_DIR:-$HANDOFF_DIR/third_party/latti-ai-runtime}"
+fi
+# Shared secret the FHE service presents on the callback endpoint. It is set here
+# so the default invocation (`./deploy-fhe.sh`) is complete; override it from the
+# environment to use a different one. This file is the only place it is stored.
+TAA_CALLBACK_TOKEN="${TAA_CALLBACK_TOKEN:-8a9711dfcb0b55a296d9db255dba7dc47be23ca06deeff58}"
 require_input HOST_RUNTIME_DIR 'HOST_RUNTIME_DIR must point at third_party/latti-ai-runtime'
 TAA_FHE_CONFIG="${TAA_FHE_CONFIG:-$PROJECT_DIR/configs/taa-fhe.json}"
 require_input TAA_CALLBACK_BASE_URL 'TAA_CALLBACK_BASE_URL must be reachable from the FHE containers'
-require_input TAA_CALLBACK_TOKEN 'TAA_CALLBACK_TOKEN must be set; an unauthenticated callback endpoint is open to every local process'
 API_HOST_PORT="${API_HOST_PORT:-58996}"
 HOST_REDIS_DIR="${HOST_REDIS_DIR:-$HOST_DATA_DIR/redis}"
 
@@ -1496,7 +1522,7 @@ step "uploading this run's inputs to ${REMOTE_TARGET:-this host}"
 # copies into the container; and the two binaries. The rendered config is the one
 # exception -- it does not exist yet, and the step that renders it uploads it.
 if [ -z "$REMOTE_TARGET" ]; then
-  log "no --remote: the bundle is read where it is, and the binaries the step above wrote are where the commands below look for them"
+  log "local run: the bundle is read where it is, and the binaries the step above wrote are where the commands below look for them"
 else
   log "uploading $HANDOFF_DIR to $REMOTE_TARGET:$REMOTE_HANDOFF_DIR; this is the long part of a remote run"
   upload_tree "$HANDOFF_DIR" "$REMOTE_HANDOFF_DIR"

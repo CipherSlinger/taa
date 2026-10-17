@@ -566,19 +566,24 @@ starts the api/worker/redis stack, and then starts this host's TAA instance unde
 supervisor.
 
 ```bash
-# On the GPU host itself
-HOST_RUNTIME_DIR=/srv/latti-runtime TAA_CALLBACK_BASE_URL=http://10.0.0.5:6001 \
-  ./deploy-fhe.sh
+# From a workstation: the default target is root@172.16.10.178 over ssh
+./deploy-fhe.sh
 
-# Same run, driven from a workstation: every host-side command goes over ssh
-TARGET_PASSWORD=... ./deploy-fhe.sh --remote
+# On the GPU host itself
+./deploy-fhe.sh --local
 ```
 
-- **`--remote`** runs against `REMOTE_HOST` (default `172.16.10.178`) over ssh, the same host
-  `deploy.sh remote` uses, and takes the same credentials (`TARGET_PASSWORD`). It uploads the
-  handoff bundle to `REMOTE_HANDOFF_DIR`, builds `bin/taa` and `bin/platform-mock` here and copies
-  them over, then runs every command of the local path on that host. Everything else — the paths in
-  the report, the render, the readiness wait — reads as a path on the deployment host.
+- **Remote by default.** The run targets `REMOTE_HOST` (default `172.16.10.178`) over ssh, the
+  same host `deploy.sh remote` uses, and takes the same credentials (`TARGET_PASSWORD`). It
+  uploads the handoff bundle to `REMOTE_HANDOFF_DIR`, builds `bin/taa` and `bin/platform-mock`
+  here and copies them over, then runs every command of the local path on that host. Everything
+  else — the paths in the report, the render, the readiness wait — reads as a path on the
+  deployment host. Defaults filled in by the script: `HOST_RUNTIME_DIR=$REMOTE_DIR/latti-runtime`,
+  `TAA_CALLBACK_BASE_URL=http://$REMOTE_HOST:6001`, and a callback token. `REMOTE_HOST`,
+  `REMOTE_USER`, `TARGET_PASSWORD`, `REMOTE_DIR` and `REMOTE_HANDOFF_DIR` override the target;
+  setting any of the defaults in the environment still wins.
+- **`--local`** deploys on the machine running the script instead, which then needs a CUDA GPU and
+  a writable `HOST_DATA_DIR`/`HOST_TAA_STATE_DIR`.
 - **`-n` / `--dry-run`** prints the whole plan and connects to nothing; it does not need the remote
   to be reachable, or the binaries to be built, or the bundle to be unpacked.
 - **`--skip-build`** uses the binaries already on disk instead of building them.
@@ -588,8 +593,8 @@ TARGET_PASSWORD=... ./deploy-fhe.sh --remote
 the script asks the platform what `dockerId` it recorded, and refuses unless it is the one this
 run's identity resolves to and it was accepted. TAA being up and the platform having heard from it
 are two different statements: a rejected registration is a warning in TAA's own log and a background
-retry, so the daemon looks perfectly healthy while nothing reaches the platform. Without
-`--remote` the same check runs against a platform-mock this script starts on the host.
+retry, so the daemon looks perfectly healthy while nothing reaches the platform. Under `--local`
+the same check runs against a platform-mock this script starts on the host.
 
 Two notes for a remote run: the platform-mock is started with `-allow-empty-attestation`, because an
 `fhe` instance writes an empty attestation by design; and `REMOTE_HANDOFF_DIR` has to be a directory
