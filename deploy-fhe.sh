@@ -503,10 +503,12 @@ Arguments:
       platform-mock and the binaries they need are not built, uploaded or
       started.
   taa
-      Deploy only the TAA instance: build and upload the TAA binary and its
-      supervisor, render the config, create the container and start it, then
-      wait for its health endpoint and check its registration. The FHE stack
-      is assumed to be running already, and model activation is not repeated.
+      Deploy only the TAA instance and the platform-mock it registers with:
+      build and upload the TAA and platform-mock binaries plus the supervisor,
+      start platform-mock (unless --no-platform-mock), render the config,
+      create the container and start it, then wait for its health endpoint and
+      check its registration against the mock. The FHE stack is assumed to be
+      running already, and model activation is not repeated.
   (no argument)
       Deploy both, in that order. This is the original behaviour.
 
