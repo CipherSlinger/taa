@@ -585,9 +585,11 @@ supervisor.
   (`taa-env:slim-v2`), tags the result `TAA_FHE_SAVE_IMAGE` (`taa-fhe:<date>`) and exports it as
   `TAA_FHE_SAVE_ARCHIVE` (default `deploy/taa-fhe-<date>.tar.gz`). Nothing is started. The rendered
   config is deliberately not baked in — it carries the callback token and this host's data/state
-  paths, and `deploy-fhe.sh taa` installs it at start time anyway. On the default remote target the
-  image is assembled and saved where docker runs, copied back to `deploy/`, and the host copy is
-  removed. `save` is only accepted with the `taa` argument.
+  paths, and `deploy-fhe.sh taa` installs it at start time anyway. The image is assembled and
+  saved **locally**, so the archive lands in the local `deploy/` directory. On the default remote
+  target it is then uploaded and loaded into the host's docker daemon automatically, and the
+  uploaded copy is removed afterwards; with `--local` there is nothing to upload or load.
+  `save` is only accepted with the `taa` argument.
 
 - **Positional modes.** The bare form deploys the FHE stack, platform-mock and TAA together.
   `fhe`, `taa` and `platform-mock` narrow the run to one component: `fhe` touches no TAA or
