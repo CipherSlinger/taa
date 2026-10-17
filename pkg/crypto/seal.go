@@ -88,7 +88,7 @@ func SealSM2SM4GCM(pub *SM2PublicKey, plaintext []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	sealed := make([]byte, 0, len(wrappedKey)+len(plaintext)+sm4GCMSealedOverhead)
+	sealed := make([]byte, 0, len(wrappedKey)+len(plaintext)+SM4GCMSealedOverhead)
 	sealed = append(sealed, wrappedKey...)
 	return encryptGCM(sealed, dataKey, plaintext)
 }
@@ -197,8 +197,7 @@ func DeriveSealingKey(privKey *SM2PrivateKey) []byte {
 		return nil
 	}
 
-	dBytes := make([]byte, 32)
-	privKey.D.FillBytes(dBytes)
+	dBytes := privKey.ScalarBytes()
 
 	label := []byte("TAA-STATE-SEALING-V1")
 	counter := []byte{0x00, 0x00, 0x00, 0x01}

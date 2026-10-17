@@ -266,15 +266,13 @@ func parseSM2ECPrivateKey(der []byte) (*SM2PrivateKey, error) {
 	if _, err := asn1.Unmarshal(der, &ecKey); err != nil {
 		return nil, fmt.Errorf("teecrypto: 解析 SM2 EC 私钥失败: %w", err)
 	}
+	// Check the range before padding: leftPad32 panics on a scalar wider than
+	// 32 bytes, and a malformed PEM can carry one.
 	d := new(big.Int).SetBytes(ecKey.PrivateKey)
 	if d.Sign() <= 0 || d.Cmp(sm2Curve.Params().N) >= 0 {
 		return nil, errors.New("teecrypto: SM2 私钥标量无效")
 	}
-	x, y := sm2Curve.ScalarBaseMult(sm2ScalarBytes(d))
-	if x == nil || y == nil {
-		return nil, errors.New("teecrypto: SM2 私钥生成公钥失败")
-	}
-	return &SM2PrivateKey{PublicKey: SM2PublicKey{X: x, Y: y}, D: d}, nil
+	return NewSM2PrivateKeyFromScalar(sm2ScalarBytes(d))
 }
 
 func sm2AlgorithmIdentifier() sm2AlgorithmID {

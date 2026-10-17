@@ -14,8 +14,9 @@ const (
 	// SM4KeySize 是 SM4 密钥的字节长度。
 	SM4KeySize = 16
 
-	// sm4GCMSealedOverhead 是 Encrypt 输出中 nonce 与认证标签的总长度。
-	sm4GCMSealedOverhead = 28
+	// SM4GCMSealedOverhead is the total size of the nonce and authentication tag
+	// that Encrypt prepends/appends to the ciphertext.
+	SM4GCMSealedOverhead = 28
 
 	// SM4FileVersion is the format version the platform writes as the first byte of
 	// its bare SM4 files -- [version][nonce][ciphertext][tag]. It is a container

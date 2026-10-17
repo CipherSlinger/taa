@@ -48,6 +48,9 @@ func PlatformURL(platformAddr, endpoint string) string {
 // the wrapped private key does not land in the log. Anything that is not a JSON
 // object carrying that field is returned unchanged.
 func redactedPayload(payload []byte) []byte {
+	if !bytes.Contains(payload, []byte(`"taaSecretKey"`)) {
+		return payload
+	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &obj); err != nil {
 		return payload

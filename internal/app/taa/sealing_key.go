@@ -36,7 +36,7 @@ func fetchStartupHardwareKey(fetch hardwareSealingKeyFetcher) ([]byte, error) {
 	if fetch == nil {
 		return nil, errors.New("csv-hw state sealing key source requires a hardware fetcher")
 	}
-	hwKey := make([]byte, csvattest.SealingKeySize)
+	hwKey := make([]byte, teecrypto.CSVSealingKeySize)
 	if err := fetch(hwKey); err != nil {
 		clear(hwKey)
 		return nil, fmt.Errorf("acquire CSV hardware sealing key via /dev/csv-guest: %w", err)
@@ -66,9 +66,9 @@ func resolveStateSealingKey(
 		return key, store.KeySourceSM2, nil
 
 	case config.StateSealingKeySourceCSVHW:
-		if len(hwKey) != csvattest.SealingKeySize {
+		if len(hwKey) != teecrypto.CSVSealingKeySize {
 			return nil, "", fmt.Errorf("csv-hw state sealing key source requires a %d-byte hardware key (got %d)",
-				csvattest.SealingKeySize, len(hwKey))
+				teecrypto.CSVSealingKeySize, len(hwKey))
 		}
 		key, err := teecrypto.DeriveSealingKeyFromCSV(hwKey)
 		if err != nil {

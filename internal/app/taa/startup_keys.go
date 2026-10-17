@@ -59,7 +59,7 @@ func resolveStartupKeyMaterial(
 		if err != nil {
 			return nil, fmt.Errorf("recover TAA SM2 key pair from %s: %w", taaSecretKeyEnv, err)
 		}
-		keyPair, _, err = persistRecoveredTAAKeyPair(keysDir, priv)
+		keyPair, err = persistRecoveredTAAKeyPair(keysDir, priv)
 		if err != nil {
 			return nil, fmt.Errorf("persist recovered TAA SM2 key pair: %w", err)
 		}
@@ -106,25 +106,21 @@ func resolveStartupKeyMaterial(
 // aborting, because the operator explicitly supplied the key. When the files
 // already hold the recovered pair they are reused unchanged, so keeping the
 // variable set across restarts does not rewrite or archive anything.
-func persistRecoveredTAAKeyPair(keysDir string, priv *teecrypto.SM2PrivateKey) (*taaKeyPair, bool, error) {
-	cleanDir := strings.TrimSpace(keysDir)
-	if cleanDir == "" {
-		cleanDir = "/root/taa/keys"
-	}
-	cleanDir = filepath.Clean(cleanDir)
+func persistRecoveredTAAKeyPair(keysDir string, priv *teecrypto.SM2PrivateKey) (*taaKeyPair, error) {
+	cleanDir := normalizeKeysDir(keysDir)
 	privPath := filepath.Join(cleanDir, defaultSM2PrivateKeyFile)
 	pubPath := filepath.Join(cleanDir, defaultSM2PublicKeyFile)
 
 	if existing, ok := matchingKeyPairOnDisk(privPath, pubPath, priv); ok {
 		if err := ensureKeyPermissions(privPath, cleanDir); err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		log.Printf("%s matches the persisted TAA SM2 key pair in %s", taaSecretKeyEnv, cleanDir)
-		return existing, true, nil
+		return existing, nil
 	}
 
 	if err := os.MkdirAll(cleanDir, 0o700); err != nil {
-		return nil, false, fmt.Errorf("create keys dir %s: %w", cleanDir, err)
+		return nil, fmt.Errorf("create keys dir %s: %w", cleanDir, err)
 	}
 
 	stamp := time.Now().Unix()
@@ -134,33 +130,33 @@ func persistRecoveredTAAKeyPair(keysDir string, priv *teecrypto.SM2PrivateKey) (
 			continue
 		}
 		if err != nil {
-			return nil, false, fmt.Errorf("stat key file %s: %w", path, err)
+			return nil, fmt.Errorf("stat key file %s: %w", path, err)
 		}
 		backup := fmt.Sprintf("%s.bak.%d", path, stamp)
 		if err := os.Rename(path, backup); err != nil {
-			return nil, false, fmt.Errorf("archive key file %s to %s: %w", path, backup, err)
+			return nil, fmt.Errorf("archive key file %s to %s: %w", path, backup, err)
 		}
 		log.Printf("WARNING: archived key file %s to %s (%s takes precedence)", path, backup, taaSecretKeyEnv)
 	}
 
 	pubPEM, err := teecrypto.MarshalSM2PublicKeyPEM(&priv.PublicKey)
 	if err != nil {
-		return nil, false, fmt.Errorf("marshal recovered public key: %w", err)
+		return nil, fmt.Errorf("marshal recovered public key: %w", err)
 	}
 	privPEM, err := teecrypto.MarshalSM2PrivateKeyPEM(priv)
 	if err != nil {
-		return nil, false, fmt.Errorf("marshal recovered private key: %w", err)
+		return nil, fmt.Errorf("marshal recovered private key: %w", err)
 	}
 
 	if err := writeKeyFileAtomic(privPath, privPEM, 0o600); err != nil {
-		return nil, false, fmt.Errorf("persist recovered private key to %s: %w", privPath, err)
+		return nil, fmt.Errorf("persist recovered private key to %s: %w", privPath, err)
 	}
 	if err := writeKeyFileAtomic(pubPath, pubPEM, 0o644); err != nil {
-		return nil, false, fmt.Errorf("persist recovered public key to %s: %w", pubPath, err)
+		return nil, fmt.Errorf("persist recovered public key to %s: %w", pubPath, err)
 	}
 
 	log.Printf("recovered and persisted TAA SM2 key pair from %s to %s", taaSecretKeyEnv, cleanDir)
-	return &taaKeyPair{PrivateKey: priv, PublicKeyPEM: string(pubPEM)}, false, nil
+	return &taaKeyPair{PrivateKey: priv, PublicKeyPEM: string(pubPEM)}, nil
 }
 
 // matchingKeyPairOnDisk reports whether both key files exist, parse, and hold
@@ -186,8 +182,6 @@ func matchingKeyPairOnDisk(privPath, pubPath string, want *teecrypto.SM2PrivateK
 	}
 
 	if diskPriv.D.Cmp(want.D) != 0 ||
-		diskPriv.PublicKey.X.Cmp(want.PublicKey.X) != 0 ||
-		diskPriv.PublicKey.Y.Cmp(want.PublicKey.Y) != 0 ||
 		diskPub.X.Cmp(want.PublicKey.X) != 0 ||
 		diskPub.Y.Cmp(want.PublicKey.Y) != 0 {
 		return nil, false

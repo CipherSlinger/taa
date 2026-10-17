@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	teecrypto "taa/pkg/crypto"
-	"taa/pkg/csvattest"
 )
 
 const (
@@ -15,8 +14,8 @@ const (
 	// instance after its key directory was lost.
 	taaSecretKeyEnv = "TAASECRETKEY"
 
-	// taaSecretKeyCiphertextSize is nonce(12) || scalar(32) || tag(16).
-	taaSecretKeyCiphertextSize = 12 + teecrypto.SM2ScalarSize + 16
+	// taaSecretKeyCiphertextSize is nonce || scalar || tag.
+	taaSecretKeyCiphertextSize = teecrypto.SM4GCMSealedOverhead + teecrypto.SM2ScalarSize
 
 	// taaSecretSM4KeySize is the truncated SM3 digest used as the SM4 key.
 	taaSecretSM4KeySize = 16
@@ -26,9 +25,9 @@ const (
 // SM3(hardware key || CONTRACT_ID)[:16]. The construction is a wire contract with
 // the platform, so it must not add a domain label or a separator.
 func deriveTAASecretSM4Key(hwKey []byte, contract string) ([]byte, error) {
-	if len(hwKey) != csvattest.SealingKeySize {
+	if len(hwKey) != teecrypto.CSVSealingKeySize {
 		return nil, fmt.Errorf("derive taaSecretKey: hardware key length %d, want %d",
-			len(hwKey), csvattest.SealingKeySize)
+			len(hwKey), teecrypto.CSVSealingKeySize)
 	}
 
 	material := make([]byte, 0, len(hwKey)+len(contract))

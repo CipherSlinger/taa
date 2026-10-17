@@ -15,10 +15,10 @@ import (
 	"testing"
 )
 
-func TestPostRegisterIncludesNewFields(t *testing.T) {
+func TestNoticeRegisterSendsFullPayload(t *testing.T) {
 	tmpDir := t.TempDir()
 	attestationPath := filepath.Join(tmpDir, "attestation.report")
-	originalData := []byte("attestation-body")
+	originalData := make([]byte, 2548)
 	if err := os.WriteFile(attestationPath, originalData, 0o600); err != nil {
 		t.Fatalf("write attestation file: %v", err)
 	}
@@ -75,8 +75,8 @@ func TestPostRegisterIncludesNewFields(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := postRegister(context.Background(), server.Client(), server.URL+registerEndpoint, "docker-1", attestationPath, "-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----", "{}", true, 1234567890, ""); err != nil {
-		t.Fatalf("postRegister() error = %v", err)
+	if err := NoticeRegister(context.Background(), server.URL, "docker-1", attestationPath, "-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----", 1234567890, true, ""); err != nil {
+		t.Fatalf("NoticeRegister() error = %v", err)
 	}
 
 	mu.Lock()
@@ -87,8 +87,8 @@ func TestPostRegisterIncludesNewFields(t *testing.T) {
 	if gotMethod != http.MethodPost {
 		t.Fatalf("method = %s, want %s", gotMethod, http.MethodPost)
 	}
-	if gotPath != registerEndpoint {
-		t.Fatalf("path = %s, want %s", gotPath, registerEndpoint)
+	if gotPath != "/v1/taa/register" {
+		t.Fatalf("path = %s, want /v1/taa/register", gotPath)
 	}
 	if gotContentTyp != "application/json" {
 		t.Fatalf("content-type = %s, want application/json", gotContentTyp)
@@ -102,8 +102,8 @@ func TestPostRegisterIncludesNewFields(t *testing.T) {
 	if gotTaaPubKey != "-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----" {
 		t.Fatalf("taaPublicKey = %q", gotTaaPubKey)
 	}
-	if gotAttestationValues != "{}" {
-		t.Fatalf("attestationValues = %s, want {}", gotAttestationValues)
+	if gotAttestationValues == "" {
+		t.Fatal("attestationValues should be extracted from a full-size report")
 	}
 	if gotTimestamp != "1234567890" {
 		t.Fatalf("timestamp = %q, want 1234567890", gotTimestamp)
@@ -119,15 +119,15 @@ func TestPostRegisterIncludesNewFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode attestation base64: %v", err)
 	}
-	if string(decoded) != string(originalData) {
-		t.Fatalf("attestation body = %q, want %q", string(decoded), string(originalData))
+	if !bytes.Equal(decoded, originalData) {
+		t.Fatalf("attestation body length = %d, want %d", len(decoded), len(originalData))
 	}
 }
 
-func TestPostRegisterLogsRedactedRequestOnPlatformError(t *testing.T) {
+func TestNoticeRegisterLogsRedactedRequestOnPlatformError(t *testing.T) {
 	tmpDir := t.TempDir()
 	attestationPath := filepath.Join(tmpDir, "attestation.report")
-	if err := os.WriteFile(attestationPath, []byte("attestation-body"), 0o600); err != nil {
+	if err := os.WriteFile(attestationPath, make([]byte, 2548), 0o600); err != nil {
 		t.Fatalf("write attestation file: %v", err)
 	}
 
@@ -142,7 +142,7 @@ func TestPostRegisterLogsRedactedRequestOnPlatformError(t *testing.T) {
 	defer log.SetOutput(oldOutput)
 
 	const secret = "00112233445566778899aabbccddeeff"
-	err := postRegister(context.Background(), server.Client(), server.URL+registerEndpoint, "docker-1", attestationPath, "-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----", "{}", true, 1234567890, secret)
+	err := NoticeRegister(context.Background(), server.URL, "docker-1", attestationPath, "-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----", 1234567890, true, secret)
 	if err == nil {
 		t.Fatal("expected platform error")
 	}
@@ -151,16 +151,14 @@ func TestPostRegisterLogsRedactedRequestOnPlatformError(t *testing.T) {
 	for _, want := range []string{
 		"platform register request rejected: status=400",
 		"platform register request dump:",
-		"POST " + server.URL + registerEndpoint,
+		"POST " + server.URL + "/v1/taa/register",
 		"Content-Type: application/json",
 		`"dockerId":"docker-1"`,
 		`"authInfo":null`,
 		`"taaPublicKey":"-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----"`,
 		`"taaSecretKey":"<redacted>"`,
-		`"attestationValues":"{}"`,
 		`"timestamp":"1234567890"`,
 		`"verifiedPass":true`,
-		`"attestation":"` + base64.StdEncoding.EncodeToString([]byte("attestation-body")) + `"`,
 	} {
 		if !strings.Contains(logText, want) {
 			t.Fatalf("log does not contain %q:\n%s", want, logText)
@@ -252,6 +250,7 @@ func TestNoticeRegisterValidation(t *testing.T) {
 		{name: "docker", platform: "127.0.0.1:65535", dockerID: "", file: attestationPath, pubKey: "pub", wantErr: "DOCKER_ID is required"},
 		{name: "attestation", platform: "127.0.0.1:65535", dockerID: "docker-1", file: "", pubKey: "pub", wantErr: "attestation report file is required"},
 		{name: "public-key", platform: "127.0.0.1:65535", dockerID: "docker-1", file: attestationPath, pubKey: "", wantErr: "taaPublicKey is required"},
+		{name: "missing-file", platform: "127.0.0.1:65535", dockerID: "docker-1", file: filepath.Join(t.TempDir(), "missing.report"), pubKey: "pub", wantErr: "not accessible"},
 	}
 
 	for _, tc := range tests {
@@ -264,17 +263,6 @@ func TestNoticeRegisterValidation(t *testing.T) {
 				t.Fatalf("error = %v, want substring %q", err, tc.wantErr)
 			}
 		})
-	}
-}
-
-func TestPostRegisterRejectsMissingFile(t *testing.T) {
-	missingPath := filepath.Join(t.TempDir(), "missing.report")
-	err := postRegister(context.Background(), http.DefaultClient, "http://127.0.0.1:65535", "docker-1", missingPath, "pub", "{}", true, 1234567890, "")
-	if err == nil {
-		t.Fatal("expected postRegister to fail for missing attestation file")
-	}
-	if !strings.Contains(err.Error(), "no such file") && !strings.Contains(err.Error(), "cannot find") {
-		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

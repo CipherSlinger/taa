@@ -36,7 +36,19 @@ const (
 
 	// defaultSM2PublicKeyFile 为 TAA 实例 SM2 公钥存储文件名（SubjectPublicKeyInfo PEM 格式，权限 0644）
 	defaultSM2PublicKeyFile = "sm2_public_key.pem"
+
+	// defaultKeysDir is the keys directory used when the configuration leaves it empty.
+	defaultKeysDir = "/root/taa/keys"
 )
+
+// normalizeKeysDir applies the default keys directory and cleans the path.
+func normalizeKeysDir(keysDir string) string {
+	dir := strings.TrimSpace(keysDir)
+	if dir == "" {
+		dir = defaultKeysDir
+	}
+	return filepath.Clean(dir)
+}
 
 // taaKeyPair 保存 TAA 启动时生成的国密 SM2 私钥对象与 PEM 格式公钥字符串
 type taaKeyPair struct {
@@ -103,10 +115,7 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 
 	// 2. 加载或恢复本 TAA 实例专用的国密 SM2 密钥对（优先从持久化目录加载，若不存在则生成并落盘）；
 	//    CSV 环境下同时导出可经 TAASECRETKEY 带回的私钥密文
-	keysDir := cfg.KeysDir
-	if keysDir == "" {
-		keysDir = "/root/taa/keys"
-	}
+	keysDir := normalizeKeysDir(cfg.KeysDir)
 	material, err := resolveStartupKeyMaterial(
 		keysDir, cfg.StateSealingKeySource, cfg.Contract,
 		os.Getenv(taaSecretKeyEnv), fetchCSVHardwareSealingKey)
@@ -142,8 +151,9 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	}
 	// isNewKey describes the SM2 key pair only; it has nothing to do with the
 	// hardware key, so a csv-hw store must never be told the key is new. A key
-	// recovered from TAASECRETKEY is not new either.
-	keyIsNew := !material.loaded && !material.recovered && keySource == store.KeySourceSM2
+	// recovered from TAASECRETKEY is not new either, and recovery requires
+	// csv-hw, so the source check already excludes it.
+	keyIsNew := !material.loaded && keySource == store.KeySourceSM2
 	drifted, err := stateStore.DetectAndHandleKeyDrift(keyIsNew)
 	if err != nil {
 		return fmt.Errorf("detect and handle key drift (fail-closed): %w", err)
@@ -491,11 +501,7 @@ func ensureKeyPermissions(privPath, dir string) error {
 // 若仅公钥缺失而私钥完整，则通过私钥自愈派生公钥并补齐落盘。
 // 返回的 loaded 表示是否从现有文件中成功加载。
 func loadOrGenerateTAAKeyPair(keysDir string) (*taaKeyPair, bool, error) {
-	cleanDir := strings.TrimSpace(keysDir)
-	if cleanDir == "" {
-		cleanDir = "/root/taa/keys"
-	}
-	cleanDir = filepath.Clean(cleanDir)
+	cleanDir := normalizeKeysDir(keysDir)
 
 	privPath := filepath.Join(cleanDir, defaultSM2PrivateKeyFile)
 	pubPath := filepath.Join(cleanDir, defaultSM2PublicKeyFile)
