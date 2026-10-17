@@ -588,7 +588,8 @@ Arguments:
       The image is assembled and saved on this machine, so the archive lands
       in the local deploy/ directory. On the default remote target the archive
       is then uploaded and loaded into the host's docker daemon automatically;
-      the uploaded copy is removed afterwards. Nothing is started and no config
+      the uploaded copy is kept at REMOTE_DIR so a later reload or deployment
+      does not upload it again. Nothing is started and no config
       is baked in: the rendered config carries this deployment's callback token
       and paths, and the taa argument installs it at start time.
 
@@ -1812,10 +1813,10 @@ if ! is_dry_run; then
   host_sh "docker image inspect $(shell_quote "$TAA_FHE_SAVE_IMAGE") >/dev/null 2>&1" \
     || die "docker load finished but $TAA_FHE_SAVE_IMAGE is not present on $REMOTE_TARGET"
   log "image $TAA_FHE_SAVE_IMAGE is present on $REMOTE_TARGET"
-  # The host copy was transport, not a deliverable: the archive that matters is
-  # the one in deploy/. It stays in place if the load fails, so a retry does not
-  # upload tens of gigabytes again.
-  run rm -f "$host_archive"
+  # The host copy is kept: it is the delivered archive on the remote side, so a
+  # re-load or a later deployment does not need to upload tens of gigabytes
+  # again. It is left where it was uploaded, at $host_archive.
+  log "archive $host_archive kept on $REMOTE_TARGET"
 fi
 else
   log "local run: $TAA_FHE_SAVE_IMAGE was committed into this docker daemon; nothing to upload or load"
@@ -1832,7 +1833,8 @@ else
   log "contents   : $TAA_CONTAINER_WORKDIR/$BINARY_NAME and start.sh baked in"
   log "archive    : $TAA_FHE_SAVE_ARCHIVE (${archive_mb}MB)"
   if [ -n "$REMOTE_TARGET" ]; then
-    log "loaded on  : $REMOTE_TARGET (the uploaded copy was removed)"
+    log "loaded on  : $REMOTE_TARGET"
+    log "remote copy: $REMOTE_DIR/$(basename "$TAA_FHE_SAVE_ARCHIVE") (kept)"
   fi
   log "deploy with: TAA_IMAGE=$TAA_FHE_SAVE_IMAGE ./deploy-fhe.sh taa"
   log "config     : not baked in; the taa path renders and copies it at start time"
