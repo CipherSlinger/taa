@@ -781,6 +781,26 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 		cfg.ServerType = trimmed
 	}
 
+	// An fhe instance runs no code audit and produces no attestation report: its
+	// model packages are FHE layers rather than executable code, its results are
+	// ciphertext, and its trust rests on the encrypted computation rather than on
+	// a local quote. Both blocks therefore mean nothing here, and are ignored
+	// instead of applied and left unused. Their absence is the normal shape of an
+	// fhe config, not an error - which is also why the values that do matter to
+	// an fhe instance (maxFileBytes and the legacy top-level switches) are read
+	// outside the guarded regions below.
+	readsAuditAndAttestation := cfg.ServerType != ServerTypeFHE
+
+	// The startup path builds the security configuration even on an fhe instance,
+	// and that resolves the code scan engine against the disk. The generic default
+	// (semgrep) refuses to construct without a rules file, and the fhe image
+	// carries none, so leaving it in place would turn "this instance never scans"
+	// into a restart loop. The rule-carrying engine is the one that needs nothing
+	// on disk; that no scan ever runs here is the point, not a side effect.
+	if !readsAuditAndAttestation {
+		cfg.CodeScan.Engine = "regex"
+	}
+
 	if trimmed := strings.TrimSpace(fileCfg.PlatformIP); trimmed != "" {
 		cfg.PlatformIP = trimmed
 	}
@@ -804,44 +824,46 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 		cfg.Contract = fileCfg.Platform.Contract
 	}
 
-	if fileCfg.EnableSecurityScan != nil {
-		cfg.EnableCodeAudit = *fileCfg.EnableSecurityScan
-	}
-	if fileCfg.CodeAudit.Scan != nil {
-		cfg.EnableCodeAudit = *fileCfg.CodeAudit.Scan
-	}
-	if fileCfg.CodeAudit.Enabled != nil {
-		cfg.EnableCodeAudit = *fileCfg.CodeAudit.Enabled
-	}
+	if readsAuditAndAttestation {
+		if fileCfg.EnableSecurityScan != nil {
+			cfg.EnableCodeAudit = *fileCfg.EnableSecurityScan
+		}
+		if fileCfg.CodeAudit.Scan != nil {
+			cfg.EnableCodeAudit = *fileCfg.CodeAudit.Scan
+		}
+		if fileCfg.CodeAudit.Enabled != nil {
+			cfg.EnableCodeAudit = *fileCfg.CodeAudit.Enabled
+		}
 
-	if trimmed := strings.ToLower(strings.TrimSpace(fileCfg.CodeAudit.CodeScan.Engine)); trimmed != "" {
-		cfg.CodeScan.Engine = trimmed
-	}
-	if trimmed := strings.TrimSpace(fileCfg.CodeAudit.CodeScan.RulesPath); trimmed != "" {
-		cfg.CodeScan.RulesPath = trimmed
-	}
-	if seconds := fileCfg.CodeAudit.CodeScan.TimeoutSeconds; seconds != 0 {
-		cfg.CodeScan.Timeout = time.Duration(seconds) * time.Second
-	}
+		if trimmed := strings.ToLower(strings.TrimSpace(fileCfg.CodeAudit.CodeScan.Engine)); trimmed != "" {
+			cfg.CodeScan.Engine = trimmed
+		}
+		if trimmed := strings.TrimSpace(fileCfg.CodeAudit.CodeScan.RulesPath); trimmed != "" {
+			cfg.CodeScan.RulesPath = trimmed
+		}
+		if seconds := fileCfg.CodeAudit.CodeScan.TimeoutSeconds; seconds != 0 {
+			cfg.CodeScan.Timeout = time.Duration(seconds) * time.Second
+		}
 
-	ba := fileCfg.CodeAudit.BinaryAudit
-	if ba.Enabled != nil {
-		cfg.BinaryAuditEnabled = *ba.Enabled
-	}
-	if ba.MaxArchiveMembers != nil {
-		cfg.BinaryAuditMaxArchiveMembers = *ba.MaxArchiveMembers
-	}
-	if ba.HighEntropyThreshold != nil {
-		cfg.BinaryAuditHighEntropyThreshold = *ba.HighEntropyThreshold
-	}
-	if ba.MaxFindings != nil {
-		cfg.BinaryAuditMaxFindings = *ba.MaxFindings
-	}
-	if ba.MaxFullScanBytes != nil {
-		cfg.BinaryAuditMaxFullScanBytes = int(*ba.MaxFullScanBytes)
-	}
-	if ba.MaxStreamBytes != nil {
-		cfg.BinaryAuditMaxStreamBytes = int(*ba.MaxStreamBytes)
+		ba := fileCfg.CodeAudit.BinaryAudit
+		if ba.Enabled != nil {
+			cfg.BinaryAuditEnabled = *ba.Enabled
+		}
+		if ba.MaxArchiveMembers != nil {
+			cfg.BinaryAuditMaxArchiveMembers = *ba.MaxArchiveMembers
+		}
+		if ba.HighEntropyThreshold != nil {
+			cfg.BinaryAuditHighEntropyThreshold = *ba.HighEntropyThreshold
+		}
+		if ba.MaxFindings != nil {
+			cfg.BinaryAuditMaxFindings = *ba.MaxFindings
+		}
+		if ba.MaxFullScanBytes != nil {
+			cfg.BinaryAuditMaxFullScanBytes = int(*ba.MaxFullScanBytes)
+		}
+		if ba.MaxStreamBytes != nil {
+			cfg.BinaryAuditMaxStreamBytes = int(*ba.MaxStreamBytes)
+		}
 	}
 
 	if trimmed := strings.TrimSpace(fileCfg.ModelDir); trimmed != "" {
@@ -860,7 +882,7 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	if fileCfg.EnableResultCheck != nil {
 		cfg.EnableResultCheck = *fileCfg.EnableResultCheck
 	}
-	if fileCfg.CodeAudit.ResultCheck.Enabled != nil {
+	if readsAuditAndAttestation && fileCfg.CodeAudit.ResultCheck.Enabled != nil {
 		cfg.EnableResultCheck = *fileCfg.CodeAudit.ResultCheck.Enabled
 	}
 
@@ -870,11 +892,13 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	if fileCfg.MaxFileBytes != nil {
 		cfg.MaxFileBytes = *fileCfg.MaxFileBytes
 	}
-	if fileCfg.CodeAudit.MaxFileBytes != nil {
-		cfg.MaxFileBytes = *fileCfg.CodeAudit.MaxFileBytes
-	}
-	if fileCfg.CodeAudit.ResultCheck.MaxFileBytes != nil {
-		cfg.MaxFileBytes = *fileCfg.CodeAudit.ResultCheck.MaxFileBytes
+	if readsAuditAndAttestation {
+		if fileCfg.CodeAudit.MaxFileBytes != nil {
+			cfg.MaxFileBytes = *fileCfg.CodeAudit.MaxFileBytes
+		}
+		if fileCfg.CodeAudit.ResultCheck.MaxFileBytes != nil {
+			cfg.MaxFileBytes = *fileCfg.CodeAudit.ResultCheck.MaxFileBytes
+		}
 	}
 	cfg.MaxResultBytes = cfg.MaxFileBytes
 
@@ -935,72 +959,74 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	if trimmed := strings.TrimSpace(fileCfg.Model.Output.Progress); trimmed != "" {
 		cfg.ModelProgressDir = trimmed
 	}
-	if trimmed := strings.TrimSpace(fileCfg.Attestation.HRKCertPath); trimmed != "" {
-		cfg.AttestationHRKCertPath = trimmed
-	}
-	if trimmed := strings.TrimSpace(fileCfg.Attestation.HSKCekCertPath); trimmed != "" {
-		cfg.AttestationHSKCekCertPath = trimmed
-	}
-	if fileCfg.CodeAudit.LLM.Enabled != nil {
-		cfg.LLM.Enabled = *fileCfg.CodeAudit.LLM.Enabled
-	}
-	if fileCfg.CodeAudit.LLM.Transport != "" {
-		cfg.LLM.Transport = strings.TrimSpace(fileCfg.CodeAudit.LLM.Transport)
-	}
-	if fileCfg.CodeAudit.LLM.Endpoint != "" {
-		cfg.LLM.Endpoint = fileCfg.CodeAudit.LLM.Endpoint
-	}
-	if trimmed := strings.TrimSpace(fileCfg.CodeAudit.LLM.AttestationMode); trimmed != "" {
-		cfg.LLM.AttestationMode = trimmed
-	}
-	if trimmed := strings.TrimSpace(fileCfg.CodeAudit.LLM.HRKCertPath); trimmed != "" {
-		cfg.LLM.HRKCertPath = trimmed
-	}
-	if trimmed := strings.TrimSpace(fileCfg.CodeAudit.LLM.HSKCekCertPath); trimmed != "" {
-		cfg.LLM.HSKCekCertPath = trimmed
-	}
-	if len(fileCfg.CodeAudit.LLM.ExpectedMeasurements) > 0 {
-		cfg.LLM.ExpectedMeasurements = fileCfg.CodeAudit.LLM.ExpectedMeasurements
-	}
-	if fileCfg.CodeAudit.LLM.RequireMutualAttest != nil {
-		cfg.LLM.RequireMutualAttest = *fileCfg.CodeAudit.LLM.RequireMutualAttest
-	}
-	if fileCfg.CodeAudit.LLM.InsecureSkipVerify != nil {
-		cfg.LLM.InsecureSkipVerify = *fileCfg.CodeAudit.LLM.InsecureSkipVerify
-	}
-	if fileCfg.CodeAudit.LLM.AuthToken != "" {
-		cfg.LLM.AuthToken = fileCfg.CodeAudit.LLM.AuthToken
-	}
-	if fileCfg.CodeAudit.LLM.RequestTimeoutMs > 0 {
-		cfg.LLM.TimeoutMs = fileCfg.CodeAudit.LLM.RequestTimeoutMs
-	}
-	if len(fileCfg.CodeAudit.LLM.AllowedHosts) > 0 {
-		cfg.LLM.AllowedHosts = fileCfg.CodeAudit.LLM.AllowedHosts
-	}
-	if fileCfg.CodeAudit.LLM.CircuitBreakerThreshold > 0 {
-		cfg.LLM.CircuitBreakerThreshold = fileCfg.CodeAudit.LLM.CircuitBreakerThreshold
-	}
-	if fileCfg.CodeAudit.LLM.CooldownSec > 0 {
-		cfg.LLM.CooldownSec = fileCfg.CodeAudit.LLM.CooldownSec
-	}
-	if fileCfg.CodeAudit.LLM.Model != "" {
-		cfg.LLM.Model = fileCfg.CodeAudit.LLM.Model
-	}
-	if fileCfg.CodeAudit.LLM.Policy != "" {
-		cfg.LLM.Policy = strings.ToLower(strings.TrimSpace(fileCfg.CodeAudit.LLM.Policy))
-	}
-	// nil-guard rather than the "> 0" guard the neighbouring LLM numerics use.
-	// nil means "not configured"; zero is a real sampling value here (greedy
-	// decoding, which is what the audit wants), so a "> 0" guard would make it
-	// impossible to state zero explicitly.
-	if fileCfg.CodeAudit.LLM.Temperature != nil {
-		cfg.LLM.Temperature = fileCfg.CodeAudit.LLM.Temperature
-	}
-	if fileCfg.CodeAudit.LLM.FailClosed != nil {
-		cfg.LLM.FailClosed = *fileCfg.CodeAudit.LLM.FailClosed
-	}
-	if fileCfg.CodeAudit.LLM.Dir != "" {
-		cfg.LLM.Dir = fileCfg.CodeAudit.LLM.Dir
+	if readsAuditAndAttestation {
+		if trimmed := strings.TrimSpace(fileCfg.Attestation.HRKCertPath); trimmed != "" {
+			cfg.AttestationHRKCertPath = trimmed
+		}
+		if trimmed := strings.TrimSpace(fileCfg.Attestation.HSKCekCertPath); trimmed != "" {
+			cfg.AttestationHSKCekCertPath = trimmed
+		}
+		if fileCfg.CodeAudit.LLM.Enabled != nil {
+			cfg.LLM.Enabled = *fileCfg.CodeAudit.LLM.Enabled
+		}
+		if fileCfg.CodeAudit.LLM.Transport != "" {
+			cfg.LLM.Transport = strings.TrimSpace(fileCfg.CodeAudit.LLM.Transport)
+		}
+		if fileCfg.CodeAudit.LLM.Endpoint != "" {
+			cfg.LLM.Endpoint = fileCfg.CodeAudit.LLM.Endpoint
+		}
+		if trimmed := strings.TrimSpace(fileCfg.CodeAudit.LLM.AttestationMode); trimmed != "" {
+			cfg.LLM.AttestationMode = trimmed
+		}
+		if trimmed := strings.TrimSpace(fileCfg.CodeAudit.LLM.HRKCertPath); trimmed != "" {
+			cfg.LLM.HRKCertPath = trimmed
+		}
+		if trimmed := strings.TrimSpace(fileCfg.CodeAudit.LLM.HSKCekCertPath); trimmed != "" {
+			cfg.LLM.HSKCekCertPath = trimmed
+		}
+		if len(fileCfg.CodeAudit.LLM.ExpectedMeasurements) > 0 {
+			cfg.LLM.ExpectedMeasurements = fileCfg.CodeAudit.LLM.ExpectedMeasurements
+		}
+		if fileCfg.CodeAudit.LLM.RequireMutualAttest != nil {
+			cfg.LLM.RequireMutualAttest = *fileCfg.CodeAudit.LLM.RequireMutualAttest
+		}
+		if fileCfg.CodeAudit.LLM.InsecureSkipVerify != nil {
+			cfg.LLM.InsecureSkipVerify = *fileCfg.CodeAudit.LLM.InsecureSkipVerify
+		}
+		if fileCfg.CodeAudit.LLM.AuthToken != "" {
+			cfg.LLM.AuthToken = fileCfg.CodeAudit.LLM.AuthToken
+		}
+		if fileCfg.CodeAudit.LLM.RequestTimeoutMs > 0 {
+			cfg.LLM.TimeoutMs = fileCfg.CodeAudit.LLM.RequestTimeoutMs
+		}
+		if len(fileCfg.CodeAudit.LLM.AllowedHosts) > 0 {
+			cfg.LLM.AllowedHosts = fileCfg.CodeAudit.LLM.AllowedHosts
+		}
+		if fileCfg.CodeAudit.LLM.CircuitBreakerThreshold > 0 {
+			cfg.LLM.CircuitBreakerThreshold = fileCfg.CodeAudit.LLM.CircuitBreakerThreshold
+		}
+		if fileCfg.CodeAudit.LLM.CooldownSec > 0 {
+			cfg.LLM.CooldownSec = fileCfg.CodeAudit.LLM.CooldownSec
+		}
+		if fileCfg.CodeAudit.LLM.Model != "" {
+			cfg.LLM.Model = fileCfg.CodeAudit.LLM.Model
+		}
+		if fileCfg.CodeAudit.LLM.Policy != "" {
+			cfg.LLM.Policy = strings.ToLower(strings.TrimSpace(fileCfg.CodeAudit.LLM.Policy))
+		}
+		// nil-guard rather than the "> 0" guard the neighbouring LLM numerics use.
+		// nil means "not configured"; zero is a real sampling value here (greedy
+		// decoding, which is what the audit wants), so a "> 0" guard would make it
+		// impossible to state zero explicitly.
+		if fileCfg.CodeAudit.LLM.Temperature != nil {
+			cfg.LLM.Temperature = fileCfg.CodeAudit.LLM.Temperature
+		}
+		if fileCfg.CodeAudit.LLM.FailClosed != nil {
+			cfg.LLM.FailClosed = *fileCfg.CodeAudit.LLM.FailClosed
+		}
+		if fileCfg.CodeAudit.LLM.Dir != "" {
+			cfg.LLM.Dir = fileCfg.CodeAudit.LLM.Dir
+		}
 	}
 
 	// The fhe section is only meaningful on an fhe instance. A tee instance that

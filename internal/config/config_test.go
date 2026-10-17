@@ -236,6 +236,128 @@ func TestLoadStartupConfigFHEPlatformSection(t *testing.T) {
 	}
 }
 
+// auditAndAttestationConfig carries both blocks with values that differ from
+// every default, so a test can tell "applied" from "ignored" on each field.
+const auditAndAttestationConfig = `{
+	"server": {"type": "__SERVER_TYPE__"},
+	"maxFileBytes": 12345,
+	"codeAudit": {
+		"enabled": false,
+		"codeScan": {"engine": "regex", "rulesPath": "/bogus/rules", "timeoutSeconds": 7},
+		"binaryAudit": {"enabled": false, "maxFindings": 1},
+		"resultCheck": {"enabled": false, "maxFileBytes": 999999},
+		"llm": {
+			"enabled": false,
+			"endpoint": "https://bogus.example:1",
+			"model": "bogus-model",
+			"policy": "gate",
+			"failClosed": false
+		}
+	},
+	"attestation": {"hrkCertPath": "/bogus/hrk.cert", "hskCekCertPath": "/bogus/hsk_cek.cert"},
+	"fhe": {
+		"endpoint": "http://127.0.0.1:58996",
+		"dataDir": "/opt/fhe-data",
+		"keyCacheDir": "/opt/fhe-data/taa-fhe-keys",
+		"callbackBaseUrl": "http://127.0.0.1:6001",
+		"callbackToken": "test-token"
+	}
+}`
+
+func writeAuditAndAttestationConfig(t *testing.T, path, serverType string) {
+	t.Helper()
+	writeTestConfig(t, path, strings.Replace(auditAndAttestationConfig, `"__SERVER_TYPE__"`, `"`+serverType+`"`, 1))
+}
+
+// TestLoadStartupConfigFHEIgnoresAuditAndAttestation pins what the two blocks
+// mean on an fhe instance: nothing. Such an instance never audits a model (FHE
+// packages are layers, not code) and never produces a quote, so a config that
+// still carries the blocks must load as if it did not carry them - the defaults
+// stay, and the top-level settings that do matter are read as usual.
+func TestLoadStartupConfigFHEIgnoresAuditAndAttestation(t *testing.T) {
+	t.Setenv("PLATFORM_IP", "")
+	t.Setenv("DOCKER_ID", "")
+
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeAuditAndAttestationConfig(t, path, ServerTypeFHE)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if !cfg.EnableCodeAudit {
+		t.Errorf("EnableCodeAudit = false, want the default on an fhe instance")
+	}
+	// The engine is the one value an fhe instance does not simply inherit: startup
+	// builds the security configuration anyway, and only the rule-carrying engine
+	// can do that in an image with no rules file. It never scans anything here.
+	if cfg.CodeScan.Engine != "regex" || cfg.CodeScan.RulesPath != "" || cfg.CodeScan.Timeout != 0 {
+		t.Errorf("CodeScan = %+v, want the rule-carrying engine and otherwise defaults on an fhe instance", cfg.CodeScan)
+	}
+	if !cfg.BinaryAuditEnabled || cfg.BinaryAuditMaxFindings != 0 {
+		t.Errorf("binary audit = enabled:%v maxFindings:%d, want defaults on an fhe instance",
+			cfg.BinaryAuditEnabled, cfg.BinaryAuditMaxFindings)
+	}
+	if !cfg.EnableResultCheck {
+		t.Errorf("EnableResultCheck = false, want the default on an fhe instance")
+	}
+	// The codeAudit copy of maxFileBytes is ignored; the top-level one is not. An
+	// fhe instance's export cap must come from the place that still applies.
+	if cfg.MaxFileBytes != 12345 {
+		t.Errorf("MaxFileBytes = %d, want the top-level value 12345", cfg.MaxFileBytes)
+	}
+	if cfg.AttestationHRKCertPath == "/bogus/hrk.cert" || cfg.AttestationHSKCekCertPath == "/bogus/hsk_cek.cert" {
+		t.Errorf("attestation paths = %q/%q, want defaults on an fhe instance",
+			cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
+	}
+	if !cfg.LLM.Enabled || cfg.LLM.Endpoint != "https://127.0.0.1:8443" || cfg.LLM.Model != "qwen2.5-coder:0.5b" ||
+		cfg.LLM.Policy != "assist" || !cfg.LLM.FailClosed {
+		t.Errorf("LLM = %+v, want defaults on an fhe instance", cfg.LLM)
+	}
+}
+
+// TestLoadStartupConfigTEEAppliesAuditAndAttestation is the other half: the same
+// blocks on a tee instance still configure what they name. Without it, deleting
+// the blocks from applyStartupConfigFile outright would keep the test above green.
+func TestLoadStartupConfigTEEAppliesAuditAndAttestation(t *testing.T) {
+	t.Setenv("PLATFORM_IP", "")
+	t.Setenv("DOCKER_ID", "")
+
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeAuditAndAttestationConfig(t, path, ServerTypeTEE)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+
+	if cfg.EnableCodeAudit {
+		t.Errorf("EnableCodeAudit = true, want the file's false on a tee instance")
+	}
+	if cfg.CodeScan.Engine != "regex" || cfg.CodeScan.RulesPath != "/bogus/rules" || cfg.CodeScan.Timeout != 7*time.Second {
+		t.Errorf("CodeScan = %+v, want the file values on a tee instance", cfg.CodeScan)
+	}
+	if cfg.BinaryAuditEnabled || cfg.BinaryAuditMaxFindings != 1 {
+		t.Errorf("binary audit = enabled:%v maxFindings:%d, want the file values on a tee instance",
+			cfg.BinaryAuditEnabled, cfg.BinaryAuditMaxFindings)
+	}
+	if cfg.EnableResultCheck {
+		t.Errorf("EnableResultCheck = true, want the file's false on a tee instance")
+	}
+	if cfg.MaxFileBytes != 999999 {
+		t.Errorf("MaxFileBytes = %d, want the codeAudit.resultCheck value 999999", cfg.MaxFileBytes)
+	}
+	if cfg.AttestationHRKCertPath != "/bogus/hrk.cert" || cfg.AttestationHSKCekCertPath != "/bogus/hsk_cek.cert" {
+		t.Errorf("attestation paths = %q/%q, want the file values on a tee instance",
+			cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
+	}
+	if cfg.LLM.Enabled || cfg.LLM.Endpoint != "https://bogus.example:1" || cfg.LLM.Model != "bogus-model" ||
+		cfg.LLM.Policy != "gate" || cfg.LLM.FailClosed {
+		t.Errorf("LLM = %+v, want the file values on a tee instance", cfg.LLM)
+	}
+}
+
 func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{}`)
