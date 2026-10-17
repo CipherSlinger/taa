@@ -2,6 +2,7 @@ package taa
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"testing"
 
@@ -91,6 +92,25 @@ func TestResolveStateSealingKey_CSVHWRejectsAllZeroKey(t *testing.T) {
 	})
 	if !errors.Is(err, teecrypto.ErrInvalidCSVSealingKey) {
 		t.Fatalf("expected ErrInvalidCSVSealingKey, got %v", err)
+	}
+}
+
+func TestSealingKeyFingerprintIsStableAndSized(t *testing.T) {
+	key := bytes.Repeat([]byte{0x11}, 16)
+	fp := sealingKeyFingerprint(key)
+	if len(fp) != 16 {
+		t.Fatalf("fingerprint %q has %d hex chars, want 16", fp, len(fp))
+	}
+	if got := sealingKeyFingerprint(key); got != fp {
+		t.Fatalf("fingerprint is not stable: %q then %q", fp, got)
+	}
+	if other := sealingKeyFingerprint(bytes.Repeat([]byte{0x22}, 16)); other == fp {
+		t.Fatalf("different keys share a fingerprint: %q", fp)
+	}
+
+	sum := teecrypto.SM3Sum(key)
+	if want := hex.EncodeToString(sum[:8]); fp != want {
+		t.Fatalf("fingerprint = %q, want the first 8 bytes of SM3 = %q", fp, want)
 	}
 }
 

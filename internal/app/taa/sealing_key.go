@@ -3,6 +3,7 @@ package taa
 import (
 	"errors"
 	"fmt"
+	"log"
 
 	"taa/internal/config"
 	"taa/internal/store"
@@ -17,6 +18,14 @@ type hardwareSealingKeyFetcher func(keyBuf []byte) error
 // fetchCSVHardwareSealingKey reads the sealing key from /dev/csv-guest.
 func fetchCSVHardwareSealingKey(keyBuf []byte) error {
 	return csvattest.NewClient().GetSealingKeyIOCTL(keyBuf)
+}
+
+// sealingKeyFingerprint returns a stable, non-reversible identifier for a key:
+// the first 8 bytes of its SM3 digest, in hex. Two runs can be compared with it
+// without exposing the key itself.
+func sealingKeyFingerprint(key []byte) string {
+	sum := teecrypto.SM3Sum(key)
+	return fmt.Sprintf("%x", sum[:8])
 }
 
 // resolveStateSealingKey returns the 16-byte SM4 key that seals the persistent
@@ -46,6 +55,10 @@ func resolveStateSealingKey(
 		if err := fetch(hwKey); err != nil {
 			return nil, "", fmt.Errorf("acquire CSV hardware sealing key via /dev/csv-guest: %w", err)
 		}
+		log.Printf("csv hardware sealing key fingerprint: %s", sealingKeyFingerprint(hwKey))
+		// Debug-only: the full hardware key is printed until the CSV hardware
+		// path has been verified on the target host. Remove this line after.
+		log.Printf("DEBUG: csv hardware sealing key: %x", hwKey)
 		key, err := teecrypto.DeriveSealingKeyFromCSV(hwKey)
 		if err != nil {
 			return nil, "", fmt.Errorf("derive state sealing key from CSV hardware key: %w", err)

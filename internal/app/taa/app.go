@@ -122,7 +122,10 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	if err != nil {
 		return fmt.Errorf("resolve state sealing key: %w", err)
 	}
-	log.Printf("state sealing key source: %s", keySource)
+	log.Printf("state sealing key source: %s fingerprint: %s", keySource, sealingKeyFingerprint(sealingKey))
+	// Debug-only: the full derived key is printed until the CSV hardware path
+	// has been verified on the target host. Remove this line after.
+	log.Printf("DEBUG: state sealing key (%s): %x", keySource, sealingKey)
 
 	statePath := filepath.Join(keysDir, "state.sealed")
 	stateStore, err := store.NewStateStore(statePath, sealingKey, keySource)
