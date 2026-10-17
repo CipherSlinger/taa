@@ -478,6 +478,107 @@ async function clearUploadedFiles() {
   }
 }
 
+// ── Upload progress ──
+// fetch exposes no upload progress at all, and an eval key is exactly the file
+// large enough for "something is happening" to need a visible answer. This is
+// the same request as fetch would send, with the upload events surfacing
+// through onProgress. It resolves with the status and the decoded body, which
+// is the shape the caller already used.
+function postFormWithProgress(url, formData, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    if (xhr.upload && typeof onProgress === 'function') {
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable) onProgress(ev.loaded, ev.total);
+      };
+    }
+    xhr.onload = () => {
+      let data = {};
+      try {
+        data = JSON.parse(xhr.responseText || '{}');
+      } catch (_) {
+        data = {};
+      }
+      resolve({ status: xhr.status, data });
+    };
+    xhr.onerror = () => reject(new Error('网络错误，上传中断'));
+    xhr.onabort = () => reject(new Error('上传已取消'));
+    xhr.send(formData);
+  });
+}
+
+let uploadProgressHideTimer = null;
+
+function setUploadButtonBusy(busy) {
+  const btn = document.getElementById('uploadSubmitBtn');
+  if (!btn) return;
+  btn.disabled = busy;
+  btn.classList.toggle('is-loading', busy);
+}
+
+// showUploadProgress resets the panel for a new transfer. The bar keeps the
+// shimmer class for the whole run: while the bytes are moving its width
+// follows the progress event, and once they are all sent the same animation
+// stands in for the server-side encryption the browser is waiting on.
+function showUploadProgress(label, hint) {
+  clearTimeout(uploadProgressHideTimer);
+  const box = document.getElementById('uploadProgress');
+  const bar = document.getElementById('uploadProgressBar');
+  const pct = document.getElementById('uploadProgressPercent');
+  const labelEl = document.getElementById('uploadProgressLabel');
+  const sizeEl = document.getElementById('uploadProgressSize');
+  const hintEl = document.getElementById('uploadProgressHint');
+  if (box) {
+    box.style.display = 'block';
+    box.classList.remove('is-complete', 'is-failed');
+    // The entrance animation plays once per transfer, not on every update.
+    box.style.animation = 'none';
+    void box.offsetWidth;
+    box.style.animation = '';
+  }
+  if (bar) {
+    bar.className = 'progress-bar-inner shimmer';
+    bar.style.width = '0%';
+  }
+  if (pct) pct.textContent = '0%';
+  if (labelEl) labelEl.textContent = label || '正在上传文件...';
+  if (sizeEl) sizeEl.textContent = '';
+  if (hintEl) hintEl.textContent = hint || '';
+}
+
+function setUploadProgress(loaded, total, waitingLabel) {
+  const bar = document.getElementById('uploadProgressBar');
+  const pct = document.getElementById('uploadProgressPercent');
+  const sizeEl = document.getElementById('uploadProgressSize');
+  const labelEl = document.getElementById('uploadProgressLabel');
+  const percent = total > 0 ? Math.min(100, Math.round((loaded * 100) / total)) : 0;
+  if (bar) bar.style.width = `${percent}%`;
+  if (pct) pct.textContent = `${percent}%`;
+  if (sizeEl) sizeEl.textContent = `${formatUploadSize(loaded)} / ${formatUploadSize(total)}`;
+  if (percent >= 100 && labelEl && waitingLabel) labelEl.textContent = waitingLabel;
+}
+
+function finishUploadProgress(ok, label) {
+  clearTimeout(uploadProgressHideTimer);
+  const box = document.getElementById('uploadProgress');
+  const bar = document.getElementById('uploadProgressBar');
+  const pct = document.getElementById('uploadProgressPercent');
+  const labelEl = document.getElementById('uploadProgressLabel');
+  if (box) box.classList.add(ok ? 'is-complete' : 'is-failed');
+  if (bar) {
+    bar.classList.remove('shimmer');
+    bar.style.width = '100%';
+  }
+  if (pct) pct.textContent = ok ? '100%' : '失败';
+  if (labelEl) labelEl.textContent = label || (ok ? '上传完成' : '上传失败');
+  // The failure panel stays long enough to be read; the success panel only
+  // confirms what the result box below already says.
+  uploadProgressHideTimer = setTimeout(() => {
+    if (box) box.style.display = 'none';
+  }, ok ? 1800 : 6000);
+}
+
 async function uploadFile() {
   const fileInput = document.getElementById('uploadFile');
   if (!fileInput || !fileInput.files.length) {
@@ -513,29 +614,38 @@ async function uploadFile() {
   });
 
   showResultRunning('uploadResult', isEncrypted ? '正在加密并上传文件...' : '正在上传文件...');
+  setUploadButtonBusy(true);
+  showUploadProgress(
+    isEncrypted ? '正在加密并上传文件...' : '正在上传文件...',
+    isEncrypted ? '服务端将使用 TAA 注册公钥加密' : ''
+  );
   try {
-    const res = await fetch('/api/upload', {
-      method: 'POST',
-      body: formData,
+    const res = await postFormWithProgress('/api/upload', formData, (loaded, total) => {
+      setUploadProgress(loaded, total, isEncrypted ? '上传完成，正在服务端加密...' : '上传完成，正在等待返回...');
     });
-    const data = await res.json();
+    const data = res.data;
     recordInteraction('upload', { primaryContent: data, respBody: data, statusCode: res.status });
     if (res.status === 200 && data.error === 0) {
       const uploaded = normalizeUploadedFile(data.result);
       if (uploaded) {
         renderUploadedFiles([uploaded, ...uploadedFiles.filter(item => item.filename !== uploaded.filename)]);
       }
+      finishUploadProgress(true);
       const encNote = data.result.encrypted ? ' (已使用 TAA 注册公钥加密)' : '';
       const keyNote = data.result.dataKeyCipher ? `\n信封 (dataKeyCipher): ${data.result.dataKeyCipher}` : '';
       showResult('uploadResult', true, `文件上传成功${encNote}\n\n文件名: ${data.result.originalName}\n保存名: ${data.result.filename}\n大小: ${data.result.size} bytes\nURL: ${data.result.url}${keyNote}`);
       fileInput.value = '';
       await refreshUploadedFiles();
     } else {
+      finishUploadProgress(false, `上传失败: ${data.msg || '未知错误'}`);
       showResult('uploadResult', false, `上传失败: ${data.msg}`);
     }
   } catch (e) {
     recordInteraction('upload', { primaryContent: '上传失败: ' + e.message, respBody: e.message, statusCode: 500 });
+    finishUploadProgress(false, '上传失败: ' + e.message);
     showResult('uploadResult', false, '上传失败: ' + e.message);
+  } finally {
+    setUploadButtonBusy(false);
   }
 }
 

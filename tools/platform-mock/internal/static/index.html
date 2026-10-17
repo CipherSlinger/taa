@@ -160,7 +160,20 @@
         </select>
       </div>
       <div class="actions">
-        <button onclick="uploadFile()">上传文件</button>
+        <button id="uploadSubmitBtn" onclick="uploadFile()">上传文件</button>
+      </div>
+      <div id="uploadProgress" class="upload-progress" style="display:none;">
+        <div class="upload-progress-head">
+          <span id="uploadProgressLabel" class="upload-progress-label">正在上传文件...</span>
+          <span id="uploadProgressPercent" class="upload-progress-percent">0%</span>
+        </div>
+        <div class="progress-track">
+          <div id="uploadProgressBar" class="progress-bar-inner shimmer" style="width:0%; height:100%;"></div>
+        </div>
+        <div class="upload-progress-meta">
+          <span id="uploadProgressSize"></span>
+          <span id="uploadProgressHint"></span>
+        </div>
       </div>
       <div id="uploadResult" style="display:none;"></div>
       <div class="upload-history">
