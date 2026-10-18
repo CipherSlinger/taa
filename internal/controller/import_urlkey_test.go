@@ -89,6 +89,10 @@ func TestImportDecryptsWithDataKeyCipherFromURL(t *testing.T) {
 		t.Fatalf("download hits = %d, want 1", got)
 	}
 
+	// The body is logged as received for diagnosis, with the envelope masked.
+	requireLog(t, state, "原始请求=")
+	requireLog(t, state, "dataKeyCipher=<redacted>")
+
 	sum := teecrypto.SM3Sum(archive)
 	dataDir := filepath.Join(state.Security.DataDir, hex.EncodeToString(sum[:]))
 	if _, err := os.Stat(filepath.Join(dataDir, "data", "sample.txt")); err != nil {

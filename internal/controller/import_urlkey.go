@@ -2,10 +2,27 @@ package controller
 
 import (
 	"fmt"
+	"regexp"
 
 	"taa/internal/resource"
 	teecrypto "taa/pkg/crypto"
 )
+
+// dataKeyCipherInBody matches a dataKeyCipher query value inside a request body,
+// where it travels as part of resourceUrl. The value is the SM2-wrapped data key
+// the payload is decrypted with; the delivery contract keeps it out of logs, and
+// the request body is logged and reported to the platform.
+//
+// The value pattern stops at any character that cannot belong to a query
+// parameter in a JSON string, so a malformed value is masked too: a value that is
+// not hex is not a usable key, but it is still the field the contract says must
+// not be logged.
+var dataKeyCipherInBody = regexp.MustCompile(`(?i)(dataKeyCipher=)[^&\s"\\]*`)
+
+// redactDataKeyCipher returns a request body safe to log.
+func redactDataKeyCipher(body []byte) string {
+	return dataKeyCipherInBody.ReplaceAllString(string(body), "${1}<redacted>")
+}
 
 // unwrapDataKeyCipherFromURL splits the SM2 data key envelope out of a resource
 // delivery URL and unwraps it with TAA's own SM2 private key.
