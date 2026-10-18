@@ -470,7 +470,7 @@ does not reach it, so `TAASECRETKEY` there needs an additional injection path.
 
 An instance whose `server.type` is `fhe` exposes the same API surface as a `tee` instance with one addition — `POST /v1/taa/fheCallback` exists only on an `fhe` instance. Every other path listed below exists on both, and behaves differently on the `fhe` one as described:
 
-- `POST /v1/taa/import` must carry `evalKeyUrl` and `evalKeyFileHash` (SM3, lower-case hex, 64 characters); a `tee` instance returns 400 when either field is present.
+- `POST /v1/taa/import` must carry `evalKeyUrl`, `evalKeyFileHash` (SM3, lower-case hex, 64 characters) and `taskId` (the FHE service keys the run, its input directory and its results by it); a `tee` instance returns 400 when either eval key field is present.
 - `importModel` on an FHE instance lays the model package out under `<fhe.dataDir>/models/<modelHash>/` and requires a `server/` directory inside the package.
 - **Execution is triggered by the `import` landing on disk**, so `switch` does not have to be called first; `switch` only moves the phase.
 - `POST /v1/taa/fheCallback?token=<callbackToken>` is new and lets the FHE service report a terminal state; a token mismatch returns 404.
