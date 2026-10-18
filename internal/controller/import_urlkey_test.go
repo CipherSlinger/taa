@@ -62,6 +62,29 @@ func TestImportDecryptsWithDataKeyCipherFromURL(t *testing.T) {
 
 	waitForIdle(t, state)
 
+	// The delivery contract keeps the envelope and the data key out of the logs:
+	// logs are drained and reported to the platform, so neither half may appear in
+	// any line. Search for the exact values rather than for a marker, because a
+	// debug line that prints only the key would otherwise pass.
+	wrapped, err := teecrypto.ParseWrappedDataKeyHex(keyHex)
+	if err != nil {
+		t.Fatalf("parse wrapped key: %v", err)
+	}
+	dataKey, err := teecrypto.UnwrapKeySM2(state.SM2PrivateKey, wrapped)
+	if err != nil {
+		t.Fatalf("unwrap data key: %v", err)
+	}
+	dataKeyHex := hex.EncodeToString(dataKey)
+	for _, entry := range state.Logs.All() {
+		line := entry.FormatMessage()
+		if strings.Contains(line, keyHex) {
+			t.Errorf("log line carries dataKeyCipher: %s", line)
+		}
+		if strings.Contains(line, dataKeyHex) {
+			t.Errorf("log line carries the data key: %s", line)
+		}
+	}
+
 	if got := atomic.LoadInt32(&hits); got != 1 {
 		t.Fatalf("download hits = %d, want 1", got)
 	}

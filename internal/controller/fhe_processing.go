@@ -25,6 +25,11 @@ const fheResultArchiveName = "output.zip"
 // so an import without them has no meaning. On a tee instance their presence is
 // an error rather than something to ignore - silently dropping them would let the
 // platform believe an FHE task was submitted when nothing was.
+//
+// An fhe import also needs a taskId. The FHE service keys the task, its input
+// directory and its results by that id, so a request carrying only a requestId
+// has nothing to submit under. Rejecting it here answers 400 instead of letting
+// the async stage discover it and report a failure.
 func (s *TAAState) validateFHEFields(req importRequest) error {
 	hasURL := strings.TrimSpace(req.EvalKeyURL) != ""
 	hasHash := strings.TrimSpace(req.EvalKeyFileHash) != ""
@@ -40,6 +45,9 @@ func (s *TAAState) validateFHEFields(req importRequest) error {
 	}
 	if !fhe.ValidHash(req.EvalKeyFileHash) {
 		return fmt.Errorf("evalKeyFileHash 必须是 64 位小写十六进制 SM3 摘要")
+	}
+	if strings.TrimSpace(req.TaskID) == "" {
+		return fmt.Errorf("本实例类型为 fhe，taskId 不能为空")
 	}
 	return nil
 }

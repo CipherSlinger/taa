@@ -62,37 +62,44 @@ func TestValidateFHEFields(t *testing.T) {
 		msgTee  = "本实例类型为 tee，不接受 evalKeyUrl / evalKeyFileHash 字段"
 		msgFHE  = "本实例类型为 fhe，evalKeyUrl 与 evalKeyFileHash 必须同时提供"
 		msgHash = "evalKeyFileHash 必须是 64 位小写十六进制 SM3 摘要"
+		msgTask = "本实例类型为 fhe，taskId 不能为空"
 	)
 
 	tests := []struct {
 		name    string
 		fhe     bool
+		taskID  string
 		url     string
 		hash    string
 		wantErr string // "" means the request must be accepted
 	}{
-		{"tee with neither field is accepted", false, "", "", ""},
-		{"tee with evalKeyUrl only is rejected", false, "http://keys/1.bin", "", msgTee},
-		{"tee with evalKeyFileHash only is rejected", false, "", validEvalKeyHash, msgTee},
-		{"tee with both fields is rejected", false, "http://keys/1.bin", validEvalKeyHash, msgTee},
+		{"tee with neither field is accepted", false, "", "", "", ""},
+		{"tee with evalKeyUrl only is rejected", false, "", "http://keys/1.bin", "", msgTee},
+		{"tee with evalKeyFileHash only is rejected", false, "", "", validEvalKeyHash, msgTee},
+		{"tee with both fields is rejected", false, "", "http://keys/1.bin", validEvalKeyHash, msgTee},
 
 		// Whitespace-only input must count as absent, which is what makes the
 		// "only one provided" case below a real rejection rather than a blank
 		// string that happened to be non-empty.
-		{"tee with whitespace-only fields is accepted", false, "   ", "\t\n", ""},
+		{"tee with whitespace-only fields is accepted", false, "", "   ", "\t\n", ""},
 
-		{"fhe with neither field is rejected", true, "", "", msgFHE},
-		{"fhe with evalKeyUrl only is rejected", true, "http://keys/1.bin", "", msgFHE},
-		{"fhe with evalKeyFileHash only is rejected", true, "", validEvalKeyHash, msgFHE},
-		{"fhe with a whitespace-only url is rejected", true, "   ", validEvalKeyHash, msgFHE},
-		{"fhe with a whitespace-only hash is rejected", true, "http://keys/1.bin", "  ", msgFHE},
+		{"fhe with neither field is rejected", true, "task-1", "", "", msgFHE},
+		{"fhe with evalKeyUrl only is rejected", true, "task-1", "http://keys/1.bin", "", msgFHE},
+		{"fhe with evalKeyFileHash only is rejected", true, "task-1", "", validEvalKeyHash, msgFHE},
+		{"fhe with a whitespace-only url is rejected", true, "task-1", "   ", validEvalKeyHash, msgFHE},
+		{"fhe with a whitespace-only hash is rejected", true, "task-1", "http://keys/1.bin", "  ", msgFHE},
 
-		{"fhe with an uppercase hash is rejected", true, "http://keys/1.bin", strings.ToUpper(validEvalKeyHash), msgHash},
-		{"fhe with a short hash is rejected", true, "http://keys/1.bin", validEvalKeyHash[:63], msgHash},
-		{"fhe with a non-hex hash is rejected", true, "http://keys/1.bin", strings.Repeat("z", 64), msgHash},
-		{"fhe with a path-traversal hash is rejected", true, "http://keys/1.bin", "../../etc/passwd", msgHash},
+		{"fhe with an uppercase hash is rejected", true, "task-1", "http://keys/1.bin", strings.ToUpper(validEvalKeyHash), msgHash},
+		{"fhe with a short hash is rejected", true, "task-1", "http://keys/1.bin", validEvalKeyHash[:63], msgHash},
+		{"fhe with a non-hex hash is rejected", true, "task-1", "http://keys/1.bin", strings.Repeat("z", 64), msgHash},
+		{"fhe with a path-traversal hash is rejected", true, "task-1", "http://keys/1.bin", "../../etc/passwd", msgHash},
 
-		{"fhe with both fields and a valid hash is accepted", true, "http://keys/1.bin", validEvalKeyHash, ""},
+		// The FHE service keys the run, its input directory and its results by taskId,
+		// so an import carrying only a requestId has nothing to submit under.
+		{"fhe without a taskId is rejected", true, "", "http://keys/1.bin", validEvalKeyHash, msgTask},
+		{"fhe with a whitespace-only taskId is rejected", true, "   ", "http://keys/1.bin", validEvalKeyHash, msgTask},
+
+		{"fhe with both fields, a valid hash and a taskId is accepted", true, "task-1", "http://keys/1.bin", validEvalKeyHash, ""},
 	}
 
 	for _, tc := range tests {
@@ -103,6 +110,7 @@ func TestValidateFHEFields(t *testing.T) {
 			}
 
 			err := state.validateFHEFields(importRequest{
+				TaskID:          tc.taskID,
 				EvalKeyURL:      tc.url,
 				EvalKeyFileHash: tc.hash,
 			})
