@@ -116,9 +116,10 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	// 2. 加载或恢复本 TAA 实例专用的国密 SM2 密钥对（优先从持久化目录加载，若不存在则生成并落盘）；
 	//    CSV 环境下同时导出可经 TAASECRETKEY 带回的私钥密文
 	keysDir := normalizeKeysDir(cfg.KeysDir)
+	secretEnv := os.Getenv(taaSecretKeyEnv)
 	material, err := resolveStartupKeyMaterial(
 		keysDir, cfg.StateSealingKeySource, cfg.Contract,
-		os.Getenv(taaSecretKeyEnv), fetchCSVHardwareSealingKey)
+		secretEnv, fetchCSVHardwareSealingKey)
 	if err != nil {
 		return fmt.Errorf("initialize TAA key material: %w", err)
 	}
@@ -127,6 +128,15 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	keyPair := material.keyPair
 	if material.recovered {
 		log.Printf("recovered TAA SM2 key pair from %s", taaSecretKeyEnv)
+		// DEBUG: dump the recovered key material so an operator can compare it with
+		// what the platform holds. This intentionally prints the private key.
+		log.Printf("[DEBUG] %s read from environment: %s", taaSecretKeyEnv, secretEnv)
+		if privPEM, marshalErr := teecrypto.MarshalSM2PrivateKeyPEM(keyPair.PrivateKey); marshalErr != nil {
+			log.Printf("[DEBUG] marshal recovered TAA SM2 private key failed: %v", marshalErr)
+		} else {
+			log.Printf("[DEBUG] recovered TAA SM2 private key:\n%s", privPEM)
+		}
+		log.Printf("[DEBUG] recovered TAA SM2 public key:\n%s", keyPair.PublicKeyPEM)
 	} else if material.loaded {
 		log.Printf("loaded persistent TAA SM2 key pair from %s", keysDir)
 	} else {
