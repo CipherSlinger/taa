@@ -195,6 +195,23 @@ func TestImportRejectsFHEFieldsOnTEEInstance(t *testing.T) {
 	}
 }
 
+// TestImportLogsEvalKeyFields covers the operator-facing record of which eval key
+// a task is attributed to. The download target is a closed port: the handler logs
+// the fields before it starts downloading, so the failed request still carries
+// the line.
+func TestImportLogsEvalKeyFields(t *testing.T) {
+	env := newFHETestEnv(t)
+	keyURL := env.stub.URL + "/eval_context.bin"
+	rec := postImport(t, env.state, `{"resourceUrl":"http://127.0.0.1:1/in.zip",
+	  "requestId":"req-log","taskId":"task-log",
+	  "evalKeyUrl":"`+keyURL+`","evalKeyFileHash":"`+env.keyHash+`"}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 for a failed download: %s", rec.Code, rec.Body.String())
+	}
+	requireLog(t, env.state, "evalKeyUrl="+keyURL)
+	requireLog(t, env.state, "evalKeyFileHash="+env.keyHash)
+}
+
 // fheServiceStub answers the calls the runner makes, so a controller-level test
 // can drive a whole FHE task without the real service.
 type fheServiceStub struct {

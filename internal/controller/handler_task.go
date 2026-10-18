@@ -194,8 +194,8 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 	phase := s.CurrentPhase
 	s.mu.RUnlock()
 
-	s.Logs.Add(LogInfo, "import", "收到数据 import 请求: taskId=%s, requestId=%s, phase=%d",
-		req.TaskID, req.RequestID, phase)
+	s.Logs.Add(LogInfo, "import", "收到数据 import 请求: taskId=%s, requestId=%s, phase=%d, evalKeyUrl=%s, evalKeyFileHash=%s",
+		req.TaskID, req.RequestID, phase, req.EvalKeyURL, req.EvalKeyFileHash)
 
 	// publicKey and runtimeConfig belong to /v1/taa/importModel: the export key is
 	// saved when the model is delivered in phase 1, and training runs the
