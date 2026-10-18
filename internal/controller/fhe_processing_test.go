@@ -212,6 +212,25 @@ func TestImportLogsEvalKeyFields(t *testing.T) {
 	requireLog(t, env.state, "evalKeyFileHash="+env.keyHash)
 }
 
+// TestImportLogsRejectedEvalKeyRequest covers the request an operator actually
+// has to diagnose: one the handler refuses for missing eval key fields. The
+// record has to be written before the check, and it has to name the fields the
+// request carried, so a field sent under a name TAA does not know is visible as
+// such instead of looking like a field that was never sent.
+func TestImportLogsRejectedEvalKeyRequest(t *testing.T) {
+	env := newFHETestEnv(t)
+	rec := postImport(t, env.state, `{"resourceUrl":"http://127.0.0.1:1/in.zip",
+	  "requestId":"req-log-reject","taskId":"task-log-reject",
+	  "evalKeyUrl":"http://keys/1.bin"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a missing evalKeyFileHash: %s", rec.Code, rec.Body.String())
+	}
+	requireLog(t, env.state, "evalKeyUrl=http://keys/1.bin")
+	requireLog(t, env.state, "evalKeyFileHash=,")
+	requireLog(t, env.state, "请求字段=evalKeyUrl,requestId,resourceUrl,taskId")
+	requireLog(t, env.state, "拒绝数据 import 请求")
+}
+
 // fheServiceStub answers the calls the runner makes, so a controller-level test
 // can drive a whole FHE task without the real service.
 type fheServiceStub struct {

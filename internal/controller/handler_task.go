@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -45,6 +46,13 @@ type importRequest struct {
 	// belongs to, which the URL alone cannot say.
 	EvalKeyURL      string `json:"evalKeyUrl,omitempty"`
 	EvalKeyFileHash string `json:"evalKeyFileHash,omitempty"`
+
+	// rawFields holds the top-level JSON names the request actually carried,
+	// recorded while decoding. A field that is absent and a field that arrived
+	// under a name TAA does not know both decode to the same empty string; the
+	// names are what tell the two apart when an import is refused for missing
+	// eval key fields.
+	rawFields []string
 }
 
 func (r *importRequest) UnmarshalJSON(data []byte) error {
@@ -57,6 +65,15 @@ func (r *importRequest) UnmarshalJSON(data []byte) error {
 	}
 	if err := json.Unmarshal(data, aux); err != nil {
 		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err == nil {
+		names := make([]string, 0, len(fields))
+		for name := range fields {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		r.rawFields = names
 	}
 	switch v := aux.RuntimeConfig.(type) {
 	case string:
@@ -155,7 +172,21 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 	// unchanged.
 	req.EvalKeyURL = strings.TrimSpace(req.EvalKeyURL)
 	req.EvalKeyFileHash = strings.TrimSpace(req.EvalKeyFileHash)
+
+	s.mu.RLock()
+	phase := s.CurrentPhase
+	s.mu.RUnlock()
+
+	// Logged before validation, not after: an import refused for missing or
+	// malformed eval key fields is exactly the request an operator needs a record
+	// of, and a log placed past the check never sees it. The field names are
+	// listed as well, because a request that sends nothing and one that sends a
+	// field TAA does not know are indistinguishable from the decoded values alone.
+	s.Logs.Add(LogInfo, "import", "收到数据 import 请求: taskId=%s, requestId=%s, phase=%d, evalKeyUrl=%s, evalKeyFileHash=%s, 请求字段=%s",
+		req.TaskID, req.RequestID, phase, req.EvalKeyURL, req.EvalKeyFileHash, strings.Join(req.rawFields, ","))
+
 	if err := s.validateFHEFields(req); err != nil {
+		s.Logs.Add(LogWarn, "import", "拒绝数据 import 请求: %v", err)
 		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, err.Error(), err))
 		return
 	}
@@ -189,13 +220,6 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, err.Error(), err))
 		return
 	}
-
-	s.mu.RLock()
-	phase := s.CurrentPhase
-	s.mu.RUnlock()
-
-	s.Logs.Add(LogInfo, "import", "收到数据 import 请求: taskId=%s, requestId=%s, phase=%d, evalKeyUrl=%s, evalKeyFileHash=%s",
-		req.TaskID, req.RequestID, phase, req.EvalKeyURL, req.EvalKeyFileHash)
 
 	// publicKey and runtimeConfig belong to /v1/taa/importModel: the export key is
 	// saved when the model is delivered in phase 1, and training runs the
