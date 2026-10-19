@@ -205,10 +205,10 @@ trap 'on_error $?' ERR
 trap 'on_signal INT' INT
 trap 'on_signal TERM' TERM
 
-# The rendered config carries the callback token, and a --remote run writes it to a
-# private directory here before uploading it. No exit path may leave that behind, so
-# the cleanup hangs off EXIT, which every path above ends in -- including the ones
-# that exit through die(), a signal, or set -e.
+# A --remote run writes the rendered config to a private directory here before
+# uploading it. The config carries no secret, but the cleanup still hangs off
+# EXIT, which every path above ends in -- including the ones that exit through
+# die(), a signal, or set -e.
 TAA_RENDER_TMPDIR=""
 cleanup_render_out() {
   [ -n "${TAA_RENDER_TMPDIR:-}" ] || return 0
@@ -591,10 +591,10 @@ Arguments:
       host's docker daemon automatically; the uploaded copy is kept at
       REMOTE_DIR so a later reload or deployment does not upload it again.
       Nothing is started. The config is rendered from TAA_FHE_CONFIG with the
-      callback URL/token and the data/state paths below, then placed at
+      data/state paths below, then placed at
       \$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE, so the image boots without the
       taa argument's copy step; a taa run still renders and copies its own
-      config over it. The image therefore carries TAA_CALLBACK_TOKEN.
+      config over it.
 
 Options:
   -n, --dry-run
@@ -694,24 +694,10 @@ Environment:
       directory inside HOST_DATA_DIR; set it to keep an AOF that already exists
       elsewhere.
   TAA_FHE_CONFIG=${TAA_FHE_CONFIG:-}
-      TAA configuration template rendered with the callback URL/token below and
-      the data/state paths. Defaults to $PROJECT_DIR/configs/taa-fhe.json; an
-      override is used as given. A save run bakes the rendered result into the
-      image, so the template is an input to both the taa and the save path.
-  TAA_CALLBACK_BASE_URL=${TAA_CALLBACK_BASE_URL:-auto}
-      Base URL of this TAA instance as the FHE containers reach it. Defaults to
-      'auto': TAA derives the address at startup (the server.addr port plus the
-      address this instance resolves itself to), which is the only value that
-      can be right for an instance that has not been deployed yet -- a Pod's
-      address does not exist at packaging time and changes when the Pod is
-      recreated. Set an explicit URL to pin an address that cannot be derived
-      unambiguously (several interfaces, or a name that resolves to none of
-      them).
-  TAA_CALLBACK_TOKEN=${TAA_CALLBACK_TOKEN:-}
-      Shared secret the FHE service presents on the callback endpoint. A default
-      is set in this script so the plain invocation is complete; set it in the
-      environment to use another one. An empty value is refused, because an
-      unauthenticated callback endpoint is open to every local process.
+      TAA configuration template rendered with the data/state paths. Defaults to
+      $PROJECT_DIR/configs/taa-fhe.json; an override is used as given. A save run
+      bakes the rendered result into the image, so the template is an input to
+      both the taa and the save path.
   API_HOST_PORT=${API_HOST_PORT:-58996}
       Host port the FHE api service publishes. Exported to the stack like the
       directory variables above.
@@ -769,8 +755,9 @@ Environment:
       Log the TAA supervisor writes, inside the container.
   TAA_DOCKER_NETWORK=${TAA_DOCKER_NETWORK}
       Docker network for the TAA container. It must stay host: the rendered
-      fhe.endpoint is http://127.0.0.1:${API_HOST_PORT:-58996} and the FHE callback
-      arrives on the host address.
+      fhe.endpoint is http://127.0.0.1:${API_HOST_PORT:-58996}, and the FHE
+      callback targets http://127.0.0.1:${TAA_PORT:-6001}, which only reaches TAA
+      when the FHE stack shares the host's network namespace.
   TAA_PORT=${TAA_PORT}
       TAA listening port; must match server.addr in \$TAA_FHE_CONFIG.
   TAA_READY_TIMEOUT=${TAA_READY_TIMEOUT}
@@ -888,18 +875,6 @@ if [ -n "$REMOTE_TARGET" ]; then
 else
   HOST_RUNTIME_DIR="${HOST_RUNTIME_DIR:-$HANDOFF_DIR/third_party/latti-ai-runtime}"
 fi
-# The callback address defaults to 'auto' rather than to this packaging host's
-# address: the image is packaged before it is deployed, so at render time there is
-# no real instance to name -- and a Pod's address only exists once it is scheduled,
-# and changes every time it is recreated. TAA resolves 'auto' in its own network
-# namespace at startup (see config.ResolveFHECallbackBaseURL), so one image is
-# valid wherever it lands. Set this only to pin an address that cannot be derived
-# unambiguously.
-TAA_CALLBACK_BASE_URL="${TAA_CALLBACK_BASE_URL:-auto}"
-# Shared secret the FHE service presents on the callback endpoint. It is set here
-# so the default invocation (`./deploy-fhe.sh`) is complete; override it from the
-# environment to use a different one. This file is the only place it is stored.
-TAA_CALLBACK_TOKEN="${TAA_CALLBACK_TOKEN:-8a9711dfcb0b55a296d9db255dba7dc47be23ca06deeff58}"
 # The runtime directory is only consumed by the staging step, so it is required
 # only when the side that reads it is part of this run.
 if [ "$DEPLOY_FHE_STACK" = 1 ]; then
@@ -1028,11 +1003,10 @@ export NODE_ID_OVERRIDE NODE_IP_OVERRIDE
 TAA_RENDERED_CONFIG="${TAA_RENDERED_CONFIG:-$HOST_DATA_DIR/taa-fhe.rendered.json}"
 TAA_CONTAINER_CONFIG_PATH="${TAA_CONTAINER_CONFIG_PATH:-$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE}"
 # Where jq writes, which is not always where the deployment host wants it. jq runs
-# here in both modes -- it holds the callback token in its environment, and this is
-# the side that can create the file 0600 from the start -- so a remote run renders
-# into a private temporary directory (mktemp -d is 0700, and the EXIT trap above
-# removes it) and uploads the result, while TAA_RENDERED_CONFIG stays what it always
-# was: the path on the deployment host the config is deployed to. Everything that
+# here in both modes, so a remote run renders into a private temporary directory
+# (mktemp -d is 0700, and the EXIT trap above removes it) and uploads the result,
+# while TAA_RENDERED_CONFIG stays what it always was: the path on the deployment
+# host the config is deployed to. Everything that
 # reads the rendered bytes -- the two guards in render_taa_config -- reads the local
 # copy either way; only where it lives during the run differs.
 TAA_RENDER_OUT="$TAA_RENDERED_CONFIG"
@@ -1294,33 +1268,21 @@ render_taa_config() {
   local rendered_dir
   rendered_dir="$(dirname "$TAA_RENDER_OUT")"
   [ -d "$rendered_dir" ] || die "cannot write $TAA_RENDER_OUT: $rendered_dir does not exist"
-  # Two things happen here that the shell has to do rather than jq: the callback
-  # token reaches jq through its environment, never through argv (--arg token would
-  # publish the secret in /proc/<pid>/cmdline to every local user for as long as jq
-  # lives), and umask 077 creates the file 0600 from the start instead of leaving it
-  # at the caller's umask until the chmod below runs. $ENV needs jq 1.5 or newer.
-  #
   # storage.keys is the one path taken from a second variable, because it is the one
   # that does not belong on the data bind: see the loop at the end of this function.
-  ( umask 077; TAA_CALLBACK_TOKEN="$TAA_CALLBACK_TOKEN" jq \
-      --arg url "$TAA_CALLBACK_BASE_URL" \
+  jq \
       --arg endpoint "http://127.0.0.1:${API_HOST_PORT}" \
       --arg data "$HOST_DATA_DIR" \
       --arg state "$HOST_TAA_STATE_DIR" \
-      '.fhe.callbackBaseUrl = $url | .fhe.callbackToken = $ENV.TAA_CALLBACK_TOKEN
-       | .fhe.endpoint = $endpoint | .fhe.dataDir = $data
+      '.fhe.endpoint = $endpoint | .fhe.dataDir = $data
        | .fhe.keyCacheDir = ($data + "/taa-fhe-keys")
        | .storage.result  = ($data + "/taa-results")
        | .storage.keys    = ($state + "/keys")' \
-      "$TAA_FHE_CONFIG" > "$TAA_RENDER_OUT" ) \
+      "$TAA_FHE_CONFIG" > "$TAA_RENDER_OUT" \
     || die "failed to render $TAA_FHE_CONFIG -> $TAA_RENDER_OUT (jq rejected the template, or the redirect could not create that file)"
-  # The file carries the callback token. The redirect above already created it 0600;
-  # this is for the case where it already existed with a wider mode.
-  chmod 600 "$TAA_RENDER_OUT"
   log "rendered $TAA_FHE_CONFIG -> $TAA_RENDER_OUT"
   # The second hop, on a remote run: docker cp below reads the config from the
-  # deployment host, so it has to be there before that step. Mode 600 all the way --
-  # the file carries the callback token.
+  # deployment host, so it has to be there before that step.
   if [ -n "$REMOTE_TARGET" ] && [ "$upload" = 1 ]; then
     upload_file "$TAA_RENDER_OUT" "$TAA_RENDERED_CONFIG" 600
   fi
@@ -1791,7 +1753,7 @@ if ! is_dry_run; then
   # to upload it to on this path.
   render_taa_config 0
 else
-  log "would render $TAA_FHE_CONFIG -> $TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE (callback $TAA_CALLBACK_BASE_URL) and bake it into the image"
+  log "would render $TAA_FHE_CONFIG -> $TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE and bake it into the image"
 fi
 builder="taa-fhe-builder-$$"
 SAVE_BUILDER_CONTAINER="$builder"
@@ -2041,7 +2003,7 @@ step "starting the TAA fhe instance"
 # also what a TAA container needs: it bind-mounts this directory.
 run mkdir -p "$HOST_DATA_DIR"
 if is_dry_run; then
-  log "would render $TAA_FHE_CONFIG -> $TAA_RENDERED_CONFIG (callbackBaseUrl, callbackToken, endpoint, dataDir, keyCacheDir, storage.result, storage.keys)"
+  log "would render $TAA_FHE_CONFIG -> $TAA_RENDERED_CONFIG (endpoint, dataDir, keyCacheDir, storage.result, storage.keys)"
 else
   render_taa_config
 fi
@@ -2151,7 +2113,7 @@ else
     warn "no running start.sh supervisor observed in $TAA_CONTAINER_NAME: something answers on 127.0.0.1:$TAA_PORT, but nothing will restart taa if it exits (log $TAA_LOG_FILE, stop with docker rm -f $TAA_CONTAINER_NAME)"
   fi
   log "TAA config     : $TAA_RENDERED_CONFIG -> $TAA_CONTAINER_NAME:$TAA_CONTAINER_CONFIG_PATH"
-  log "Callback URL   : $TAA_CALLBACK_BASE_URL"
+  log "Callback URL   : http://127.0.0.1:${TAA_PORT} (derived from server.addr)"
   log "stop the stack : (cd $NODE_DOCKER_DIR && ./scripts/run-node.sh down)"
   log "stop TAA       : docker rm -f $TAA_CONTAINER_NAME"
 fi

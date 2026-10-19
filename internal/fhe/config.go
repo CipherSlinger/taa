@@ -1,7 +1,6 @@
 package fhe
 
 import (
-	"crypto/subtle"
 	"fmt"
 	"net/url"
 	"strings"
@@ -34,13 +33,10 @@ type Config struct {
 	// KeyCacheDir holds eval keys by content digest, so a repeat user never
 	// re-downloads several gigabytes.
 	KeyCacheDir string
-	// CallbackBaseURL is how the FHE service reaches this TAA instance, e.g.
-	// http://172.16.10.130:6001.
+	// CallbackBaseURL is how the FHE service reaches this TAA instance. It is
+	// derived at startup as http://127.0.0.1:<listen port>: TAA and the FHE
+	// service share the host's network namespace.
 	CallbackBaseURL string
-	// CallbackToken authenticates the callback endpoint. An unauthenticated
-	// callback endpoint is open to every process on the host, so an empty token
-	// is refused rather than defaulted.
-	CallbackToken string
 	// MaxEvalKeyBytes bounds the eval key download; see DefaultMaxEvalKeyBytes.
 	MaxEvalKeyBytes int64
 	// PollInterval is the fallback poll period while waiting for a task.
@@ -64,10 +60,10 @@ type Config struct {
 
 // validateBaseURL checks that raw is an absolute http or https URL with a host.
 //
-// Both URL-shaped fields go through here: this package appends a path and a
-// query to each of them and hands the result to the FHE service, so a value the
-// service cannot POST to has to be an operator-facing startup error rather than
-// a silent failure discovered at task time.
+// Both URL-shaped fields go through here: this package appends a path to each of
+// them and hands the result to the FHE service, so a value the service cannot
+// POST to has to be an operator-facing startup error rather than a silent
+// failure discovered at task time.
 func validateBaseURL(field, raw string) error {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
@@ -111,14 +107,10 @@ func (c Config) Validate() error {
 	if err := validateBaseURL("callbackBaseUrl", c.CallbackBaseURL); err != nil {
 		return err
 	}
-	// CallbackURL appends "/v1/taa/fheCallback?token=..." to this value, so either
-	// character corrupts the result: a '#' swallows the appended path and the
-	// token, and a '?' leaves the token in the path of an already-queried URL.
+	// CallbackURL appends "/v1/taa/fheCallback" to this value, so either
+	// character would corrupt the result.
 	if strings.ContainsAny(c.CallbackBaseURL, "?#") {
 		return fmt.Errorf("fhe.callbackBaseUrl %q must not contain a query or a fragment", c.CallbackBaseURL)
-	}
-	if strings.TrimSpace(c.CallbackToken) == "" {
-		return fmt.Errorf("fhe.callbackToken is required")
 	}
 	if c.MaxEvalKeyBytes <= 0 {
 		return fmt.Errorf("fhe.maxEvalKeyBytes must be positive, got %d", c.MaxEvalKeyBytes)
@@ -138,19 +130,9 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// TokenMatches compares a presented callback token against the configured one in
-// constant time, so the comparison leaks nothing about how much of a guess was
-// correct. An unconfigured token never matches, not even an empty presented one.
-func (c Config) TokenMatches(presented string) bool {
-	if c.CallbackToken == "" {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(presented), []byte(c.CallbackToken)) == 1
-}
-
 // CallbackURL is the URL handed to the FHE service so it can report a terminal
 // state back to this instance.
 func (c Config) CallbackURL() string {
 	return strings.TrimRight(strings.TrimSpace(c.CallbackBaseURL), "/") +
-		"/v1/taa/fheCallback?token=" + url.QueryEscape(c.CallbackToken)
+		"/v1/taa/fheCallback"
 }

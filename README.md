@@ -298,7 +298,7 @@ All TAA APIs are exposed over HTTP `POST`. For comprehensive request/response sc
 | `/v1/taa/stopTraining` | `POST` | Forcibly interrupts the active training job and recursively cleans up child process trees |
 | `/v1/taa/export` | `POST` | Exports computation results (supports plaintext or SM2/SM4 digital envelope encryption) |
 | `/v1/taa/getResourceInfo` | `POST` | Inspects metadata, file listings, and sizes of uploaded resource packages |
-| `/v1/taa/fheCallback?token=<callbackToken>` | `POST` | **`fhe` instances only.** Called by the FHE service rather than the platform, to report a task's terminal state. It is authenticated with the configured `fhe.callbackToken` in the `token` query parameter: an empty token is refused at startup rather than defaulted, and a request whose token does not match is rejected |
+| `/v1/taa/fheCallback` | `POST` | **`fhe` instances only.** Called by the FHE service rather than the platform, to report a task's terminal state. The endpoint is not authenticated: the callback address TAA hands out is `http://127.0.0.1:<port>`, so the handler accepts loopback sources only and answers 404 to everything else |
 
 ### 3. Observability & Diagnostics (Platform → TAA)
 
@@ -414,8 +414,6 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `fhe.endpoint` | **required** | String. FHE API base URL, an absolute `http`/`https` URL with a host, e.g. `http://127.0.0.1:58996` |
 | `fhe.dataDir` | **required** | String. The shared directory, given as the local path of the same bind mount the FHE containers see as `/data` |
 | `fhe.keyCacheDir` | **required** | String. Holds eval keys by content digest, so a repeat user never re-downloads several gigabytes |
-| `fhe.callbackBaseUrl` | **required** | String. How the FHE service reaches this TAA instance, e.g. `http://172.16.10.130:6001`. It must carry no query and no fragment, because `/v1/taa/fheCallback?token=...` is appended to it. The value `auto` (and only that value) makes TAA derive the address at startup: the port from `server.addr` and the host from the same lookup `hostname -i` performs, falling back to the first non-loopback IPv4 on the local interfaces. That keeps one image valid for a host-network container and for a Pod whose IP changes on every recreation |
-| `fhe.callbackToken` | **required** | String. Authenticates the callback endpoint, compared in constant time; an empty token is refused at startup rather than defaulted, because the endpoint would otherwise be open to every process on the host |
 | `fhe.maxEvalKeyBytes` | `6442450944` (6 GiB) | Integer. Cap on the eval key download. It is **independent of** `codeAudit.resultCheck.maxFileBytes`: a measured evaluation key of 3.101 GiB already exceeds the latter's 3 GiB default |
 | `fhe.pollIntervalMs` | `5000` | Integer. Fallback poll period used while waiting for a task |
 | `fhe.requestTimeoutMs` | `30000` | Integer. Bounds one HTTP call to the FHE service |
@@ -464,7 +462,7 @@ does not reach it, so `TAASECRETKEY` there needs an additional injection path.
 
 - **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths, with explicit `platform` configuration, `attestationMode: "permissive"`, and `insecureSkipVerify: true`.
 - **`configs/taa-production.json`**: For production Kubernetes Pods. Omits `platform` so parameters are dynamically injected by the orchestration platform via environment variables, and enforces `attestationMode: "strict"`.
-- **`configs/taa-fhe.json`**: For an `fhe` instance — the GPU host co-located with the FHE service. Sets `server.type: "fhe"` and the `fhe` section, and carries a `platform` block (`127.0.0.1:18081`, `taa-fhe`) naming the mock used in end-to-end testing; on this instance type the environment overrides both fields, so the block is the fallback rather than the last word. `fhe.callbackBaseUrl` ships as `auto`, so a packaged image derives the address it is reachable on instead of carrying the packaging host's; set an explicit URL when the address cannot be derived unambiguously. **`fhe.callbackToken` ships empty and must be filled in before use**: startup refuses an empty token rather than defaulting one, so this template will not boot as-is. `deploy-fhe.sh` renders it before starting taa — and `taa save` bakes the same rendered result into the image — and that is where `fhe.dataDir` and `storage.keys` come from: the data directory is the tree the FHE stack shares as `/data`, and `storage.keys` is a directory that stack does not mount at all, so the SM2 key pair and the sealed instance state stay out of the FHE service's reach.
+- **`configs/taa-fhe.json`**: For an `fhe` instance — the GPU host co-located with the FHE service. Sets `server.type: "fhe"` and the `fhe` section, and carries a `platform` block (`127.0.0.1:18081`, `taa-fhe`) naming the mock used in end-to-end testing; on this instance type the environment overrides both fields, so the block is the fallback rather than the last word. The callback address is not configured: TAA derives it at startup as `http://127.0.0.1:<port>` from `server.addr`, and the callback endpoint is unauthenticated but loopback-only. `deploy-fhe.sh` renders the template before starting taa — and `taa save` bakes the same rendered result into the image — and that is where `fhe.dataDir` and `storage.keys` come from: the data directory is the tree the FHE stack shares as `/data`, and `storage.keys` is a directory that stack does not mount at all, so the SM2 key pair and the sealed instance state stay out of the FHE service's reach.
 
 ### FHE Instance Interface Differences
 
@@ -473,7 +471,7 @@ An instance whose `server.type` is `fhe` exposes the same API surface as a `tee`
 - `POST /v1/taa/import` must carry `evalKeyUrl`, `evalKeyFileHash` (SM3, lower-case hex, 64 characters) and `taskId` (the FHE service keys the run, its input directory and its results by it); a `tee` instance returns 400 when either eval key field is present.
 - `importModel` on an FHE instance lays the model package out under `<fhe.dataDir>/models/<modelHash>/` and requires a `server/` directory inside the package.
 - **Execution is triggered by the `import` landing on disk**, so `switch` does not have to be called first; `switch` only moves the phase.
-- `POST /v1/taa/fheCallback?token=<callbackToken>` is new and lets the FHE service report a terminal state; a token mismatch returns 404.
+- `POST /v1/taa/fheCallback` is new and lets the FHE service report a terminal state; it accepts loopback sources only.
 - `export` on an FHE instance is always a plaintext zip (holding `output.zip` and `training_report.json`); a `publicKey` in the request is ignored and logged as a WARN.
 
 ---
@@ -615,12 +613,11 @@ supervisor.
 - **`taa save`** builds the TAA binary, bakes it, `deploy/start.sh` and the rendered config into
   `TAA_IMAGE` (`taa-env:slim-v2`), tags the result `TAA_FHE_SAVE_IMAGE` (`taa-fhe:<date>`) and
   exports it as `TAA_FHE_SAVE_ARCHIVE` (default `deploy/taa-fhe-<date>.tar.gz`). Nothing is
-  started. The config is rendered from `TAA_FHE_CONFIG` with `TAA_CALLBACK_BASE_URL`,
-  `TAA_CALLBACK_TOKEN` and the `HOST_DATA_DIR`/`HOST_TAA_STATE_DIR` paths, and placed at
+  started. The config is rendered from `TAA_FHE_CONFIG` with the
+  `HOST_DATA_DIR`/`HOST_TAA_STATE_DIR` paths, and placed at
   `/root/taa/taa-config.json` — the path taa reads by default — so an image started without
   `deploy-fhe.sh taa` (a k8s pod, a bare `docker run`) still boots. A `deploy-fhe.sh taa` run
-  renders and copies its own config over it at start time. **The image therefore carries the
-  callback token**: treat the archive as holding that secret. The image is assembled and saved
+  renders and copies its own config over it at start time. The image is assembled and saved
   **locally**, so the archive lands in the local `deploy/` directory. On the default remote
   target it is then uploaded and loaded into the host's docker daemon automatically, and the
   uploaded copy is removed afterwards; with `--local` there is nothing to upload or load.
@@ -635,11 +632,9 @@ supervisor.
   uploads the handoff bundle to `REMOTE_HANDOFF_DIR`, builds `bin/taa` and `bin/platform-mock`
   here and copies them over, then runs every command of the local path on that host. Everything
   else — the paths in the report, the render, the readiness wait — reads as a path on the
-  deployment host. Defaults filled in by the script: `HOST_RUNTIME_DIR=$REMOTE_DIR/latti-runtime`,
-  `TAA_CALLBACK_BASE_URL=auto`, and a callback token. `auto` is deliberate: packaging happens
-  before deployment, so the address the FHE containers will reach does not exist yet (a Pod's IP is
-  assigned when it is scheduled and changes when it is recreated). TAA resolves it at startup in
-  its own network namespace, and the config therefore carries the sentinel rather than a host.
+  deployment host. Defaults filled in by the script: `HOST_RUNTIME_DIR=$REMOTE_DIR/latti-runtime`.
+  The callback address needs no default: it is always `http://127.0.0.1:<port>`, derived by TAA
+  from `server.addr` at startup, and therefore valid on any host the image lands on.
   `REMOTE_HOST`, `REMOTE_USER`, `TARGET_PASSWORD`, `REMOTE_DIR` and `REMOTE_HANDOFF_DIR` override
   the target; setting any of the defaults in the environment still wins.
 - **`--local`** deploys on the machine running the script instead, which then needs a CUDA GPU and

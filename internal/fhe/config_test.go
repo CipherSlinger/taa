@@ -1,7 +1,6 @@
 package fhe
 
 import (
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +14,6 @@ func validConfig() Config {
 		DataDir:               "/opt/fhe-data",
 		KeyCacheDir:           "/root/taa/fhe-keys",
 		CallbackBaseURL:       "http://172.16.10.130:6001",
-		CallbackToken:         "s3cret",
 		MaxEvalKeyBytes:       DefaultMaxEvalKeyBytes,
 		PollInterval:          DefaultPollInterval,
 		RequestTimeout:        DefaultRequestTimeout,
@@ -36,7 +34,6 @@ func TestConfigValidateRejectsMissingRequiredFields(t *testing.T) {
 		"dataDir":         func(c *Config) { c.DataDir = "  " },
 		"keyCacheDir":     func(c *Config) { c.KeyCacheDir = "" },
 		"callbackBaseUrl": func(c *Config) { c.CallbackBaseURL = "" },
-		"callbackToken":   func(c *Config) { c.CallbackToken = "" },
 	}
 	for name, mutate := range mutators {
 		c := validConfig()
@@ -117,7 +114,7 @@ func TestConfigValidateRejectsBadEndpointShape(t *testing.T) {
 }
 
 // TestConfigValidateRejectsBadCallbackBaseURL pins the same shape checks for the
-// callback base URL, which callers append a path and "?token=" to. A base URL
+// callback base URL, which callers append "/v1/taa/fheCallback" to. A base URL
 // that is not absolute, or that already carries a query or a fragment, then
 // produces a URL the FHE service cannot POST to - and the failure is silent,
 // because the callback is the primary terminal-state channel and only the poll
@@ -148,14 +145,13 @@ func TestConfigValidateRejectsBadCallbackBaseURL(t *testing.T) {
 			want: `fhe.callbackBaseUrl "http://:1" has no host name`,
 		},
 		{
-			// A fragment swallows the appended path *and* the token, so the
-			// service posts to "/" with no token and our endpoint 404s.
+			// A fragment would swallow the appended path.
 			base: "http://172.16.10.130:6001/#frag",
 			want: `fhe.callbackBaseUrl "http://172.16.10.130:6001/#frag" must not contain a query or a fragment`,
 		},
 		{
 			// A whole callback URL pasted in by mistake yields
-			// "token=old/v1/taa/fheCallback?token=s3cret".
+			// "/v1/taa/fheCallback/v1/taa/fheCallback".
 			base: "http://172.16.10.130:6001/v1/taa/fheCallback?token=old",
 			want: `fhe.callbackBaseUrl "http://172.16.10.130:6001/v1/taa/fheCallback?token=old" must not contain a query or a fragment`,
 		},
@@ -204,27 +200,10 @@ func TestConfigValidateDurationErrorsPrintMilliseconds(t *testing.T) {
 	}
 }
 
-func TestConfigTokenMatches(t *testing.T) {
-	c := validConfig()
-	if !c.TokenMatches("s3cret") {
-		t.Error("TokenMatches(exact) = false, want true")
-	}
-	for _, bad := range []string{"", "s3cre", "s3cret ", "S3CRET", "s3cretx"} {
-		if c.TokenMatches(bad) {
-			t.Errorf("TokenMatches(%q) = true, want false", bad)
-		}
-	}
-	empty := validConfig()
-	empty.CallbackToken = ""
-	if empty.TokenMatches("") {
-		t.Error("an unset token must not match an empty presented token")
-	}
-}
-
 func TestConfigCallbackURL(t *testing.T) {
 	c := validConfig()
 	got := c.CallbackURL()
-	want := "http://172.16.10.130:6001/v1/taa/fheCallback?token=s3cret"
+	want := "http://172.16.10.130:6001/v1/taa/fheCallback"
 	if got != want {
 		t.Errorf("CallbackURL() = %q, want %q", got, want)
 	}
@@ -232,32 +211,6 @@ func TestConfigCallbackURL(t *testing.T) {
 	c.CallbackBaseURL = "http://172.16.10.130:6001/"
 	if got := c.CallbackURL(); got != want {
 		t.Errorf("CallbackURL() with a trailing slash = %q, want %q", got, want)
-	}
-}
-
-// TestConfigCallbackURLEscapesTheToken round-trips a token that carries every
-// character the query syntax reserves. The escaping is correct today; this test
-// exists because dropping url.QueryEscape would otherwise leave the suite green
-// while breaking every token containing '&', '#', '=', '+' or a space.
-func TestConfigCallbackURLEscapesTheToken(t *testing.T) {
-	for _, token := range []string{"s3cret", "tok&x=1#frag", "a b+c=d", "tok?/frag", "令牌+值"} {
-		c := validConfig()
-		c.CallbackToken = token
-		raw := c.CallbackURL()
-		u, err := url.Parse(raw)
-		if err != nil {
-			t.Errorf("token %q: CallbackURL() = %q does not parse: %v", token, raw, err)
-			continue
-		}
-		if u.Path != "/v1/taa/fheCallback" {
-			t.Errorf("token %q: path = %q, want /v1/taa/fheCallback", token, u.Path)
-		}
-		if u.Fragment != "" {
-			t.Errorf("token %q: CallbackURL() = %q carries a fragment %q, which would swallow the token", token, raw, u.Fragment)
-		}
-		if got := u.Query().Get("token"); got != c.CallbackToken {
-			t.Errorf("token %q: the service would present %q, want %q", token, got, c.CallbackToken)
-		}
 	}
 }
 

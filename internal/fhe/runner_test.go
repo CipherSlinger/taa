@@ -151,7 +151,6 @@ func newTestRunner(t *testing.T, srvURL string, layout Layout) *Runner {
 		DataDir:         layout.DataDir(),
 		KeyCacheDir:     t.TempDir(),
 		CallbackBaseURL: "http://taa.test:6001",
-		CallbackToken:   "tok",
 		MaxEvalKeyBytes: DefaultMaxEvalKeyBytes,
 		PollInterval:    20 * time.Millisecond,
 		RequestTimeout:  5 * time.Second,
@@ -173,7 +172,6 @@ func newRunnerWithTimeout(t *testing.T, srvURL string, layout Layout, taskTimeou
 		DataDir:         layout.DataDir(),
 		KeyCacheDir:     t.TempDir(),
 		CallbackBaseURL: "http://taa.test:6001",
-		CallbackToken:   "tok",
 		MaxEvalKeyBytes: DefaultMaxEvalKeyBytes,
 		PollInterval:    10 * time.Millisecond,
 		RequestTimeout:  5 * time.Second,
@@ -284,9 +282,9 @@ func TestRunnerExecuteStagesSharedDirectoryAndCompletes(t *testing.T) {
 		t.Errorf("published input = %q, err = %v", b, err)
 	}
 
-	// The callback URL must carry the token, and must be pointed at our endpoint.
+	// The callback URL must be pointed at our endpoint; no token travels with it.
 	cb := fake.callback()
-	if !strings.Contains(cb, "/v1/taa/fheCallback") || !strings.Contains(cb, "token=tok") {
+	if cb != "http://taa.test:6001/v1/taa/fheCallback" {
 		t.Errorf("callback url = %q", cb)
 	}
 	if fake.activateHits != 0 {
@@ -400,7 +398,7 @@ func TestRunnerExecuteTimesOut(t *testing.T) {
 
 	cfg := Config{
 		Endpoint: srv.URL, DataDir: layout.DataDir(), KeyCacheDir: t.TempDir(),
-		CallbackBaseURL: "http://taa.test:6001", CallbackToken: "tok",
+		CallbackBaseURL: "http://taa.test:6001",
 		MaxEvalKeyBytes: DefaultMaxEvalKeyBytes,
 		PollInterval:    10 * time.Millisecond,
 		RequestTimeout:  5 * time.Second,
@@ -573,7 +571,7 @@ func TestRunnerCopyResultDownloadIsNotBoundedByRequestTimeout(t *testing.T) {
 
 	cfg := Config{
 		Endpoint: srv.URL, DataDir: layout.DataDir(), KeyCacheDir: t.TempDir(),
-		CallbackBaseURL: "http://taa.test:6001", CallbackToken: "tok",
+		CallbackBaseURL: "http://taa.test:6001",
 		MaxEvalKeyBytes: DefaultMaxEvalKeyBytes,
 		PollInterval:    20 * time.Millisecond,
 		RequestTimeout:  150 * time.Millisecond,
@@ -755,7 +753,7 @@ func TestNewValidatesConfigAndCreatesDirs(t *testing.T) {
 	layout := NewLayout(t.TempDir())
 	cfg := Config{
 		Endpoint: "http://127.0.0.1:1", DataDir: layout.DataDir(), KeyCacheDir: t.TempDir(),
-		CallbackBaseURL: "http://taa:6001", CallbackToken: "t",
+		CallbackBaseURL: "http://taa:6001",
 		MaxEvalKeyBytes: DefaultMaxEvalKeyBytes, PollInterval: time.Second,
 		RequestTimeout: time.Second, TaskTimeout: time.Minute,
 	}
@@ -763,9 +761,9 @@ func TestNewValidatesConfigAndCreatesDirs(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	bad := cfg
-	bad.CallbackToken = ""
+	bad.CallbackBaseURL = ""
 	if _, err := New(bad, nil); err == nil {
-		t.Error("New with an empty callback token = nil, want error")
+		t.Error("New with an empty callback base URL = nil, want error")
 	}
 }
 

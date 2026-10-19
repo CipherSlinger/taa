@@ -71,7 +71,7 @@ func TestCreateTaskSendsUserHeaderAndBody(t *testing.T) {
 		UserID:             testHashA,
 		ModelID:            testHashB,
 		TaskID:             "task-1",
-		CallbackURL:        "http://taa/v1/taa/fheCallback?token=x",
+		CallbackURL:        "http://taa/v1/taa/fheCallback",
 		CancelOnDisconnect: false,
 	}
 	if err := c.CreateTask(context.Background(), req); err != nil {
@@ -82,7 +82,7 @@ func TestCreateTaskSendsUserHeaderAndBody(t *testing.T) {
 	}
 	for k, want := range map[string]any{
 		"user_id": testHashA, "model_id": testHashB, "task_id": "task-1",
-		"callback_url": "http://taa/v1/taa/fheCallback?token=x", "cancel_on_disconnect": false,
+		"callback_url": "http://taa/v1/taa/fheCallback", "cancel_on_disconnect": false,
 	} {
 		if got := gotBody[k]; got != want {
 			t.Errorf("body[%q] = %v, want %v", k, got, want)

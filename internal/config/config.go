@@ -194,16 +194,6 @@ const (
 	DefaultFHEPollIntervalMs   = 5000
 	DefaultFHERequestTimeoutMs = 30000
 	DefaultFHETaskTimeoutMs    = 1800000
-
-	// FHECallbackBaseURLAuto is the fhe.callbackBaseUrl sentinel that asks TAA
-	// to derive the address at startup instead of reading it from the image.
-	//
-	// An FHE instance is addressed by whatever network it happens to run in: the
-	// host address for a container on the host network, the Pod IP for a Pod,
-	// and a Pod IP changes when the Pod is recreated. Baked into the image, the
-	// URL is wrong for every deployment but the one it was rendered for, so the
-	// template ships this sentinel and the startup layer resolves it.
-	FHECallbackBaseURLAuto = "auto"
 )
 
 // FHEConfig is the parsed fhe section. It is only consulted when
@@ -212,8 +202,6 @@ type FHEConfig struct {
 	Endpoint         string `json:"endpoint"`
 	DataDir          string `json:"dataDir"`
 	KeyCacheDir      string `json:"keyCacheDir"`
-	CallbackBaseURL  string `json:"callbackBaseUrl"`
-	CallbackToken    string `json:"callbackToken"`
 	MaxEvalKeyBytes  int64  `json:"maxEvalKeyBytes"`
 	PollIntervalMs   int    `json:"pollIntervalMs"`
 	RequestTimeoutMs int    `json:"requestTimeoutMs"`
@@ -222,6 +210,14 @@ type FHEConfig struct {
 	// must not collapse: the field defaults to true, so an absent one read as
 	// false would turn a missing setting into a deliberate opt-out.
 	ActivateModelOnImport *bool `json:"activateModelOnImport"`
+
+	// RemovedCallbackBaseURL and RemovedCallbackToken are declared only so a
+	// config written against the old layout is rejected instead of silently
+	// accepted. The address is now derived from server.addr and the callback is
+	// no longer authenticated; ignoring a leftover token would quietly turn an
+	// authenticated endpoint into an open one. See rejectRemovedKeys.
+	RemovedCallbackBaseURL json.RawMessage `json:"callbackBaseUrl"`
+	RemovedCallbackToken   json.RawMessage `json:"callbackToken"`
 }
 
 type startupConfigFile struct {
@@ -233,7 +229,7 @@ type startupConfigFile struct {
 	Attestation startupAttestationConfigFile `json:"attestation"`
 	// FHE is a pointer because "absent" and "present but empty" must be
 	// distinguishable: a type=fhe instance with no section at all is a different
-	// mistake from one with an empty callbackToken, and both are startup errors.
+	// mistake from one missing endpoint or dataDir, and both are startup errors.
 	FHE *FHEConfig `json:"fhe"`
 
 	// Removed keys. These are declared for one reason only: to make their
@@ -522,6 +518,14 @@ func rejectRemovedKeys(path string, fileCfg startupConfigFile) error {
 	if hasJSONValue(fileCfg.CodeAudit.RemovedSemgrepTimeout) {
 		found = append(found, `"codeAudit.semgrepTimeoutSeconds" (move to "codeAudit.codeScan.timeoutSeconds")`)
 	}
+	if fileCfg.FHE != nil {
+		if hasJSONValue(fileCfg.FHE.RemovedCallbackBaseURL) {
+			found = append(found, `"fhe.callbackBaseUrl" (removed: the callback address is derived from "server.addr" as http://127.0.0.1:<port>)`)
+		}
+		if hasJSONValue(fileCfg.FHE.RemovedCallbackToken) {
+			found = append(found, `"fhe.callbackToken" (removed: the callback endpoint is no longer authenticated and accepts loopback requests only)`)
+		}
+	}
 	if len(found) == 0 {
 		return nil
 	}
@@ -611,11 +615,9 @@ func validateStateSealingKeySource(cfg StartupConfig) error {
 		cfg.StateSealingKeySource, strings.Join(stateSealingKeySources, ", "))
 }
 
-// validateFHEConfig enforces the fhe section on an fhe instance. All five
+// validateFHEConfig enforces the fhe section on an fhe instance. The three
 // connection fields are required: a half-configured instance would fail at task
-// time, after the platform was already told the import succeeded. callbackToken
-// especially - an unauthenticated callback endpoint is open to every process on
-// the host.
+// time, after the platform was already told the import succeeded.
 func validateFHEConfig(cfg StartupConfig) error {
 	if cfg.ServerType != ServerTypeFHE {
 		return nil
@@ -630,8 +632,6 @@ func validateFHEConfig(cfg StartupConfig) error {
 		{"endpoint", cfg.FHE.Endpoint},
 		{"dataDir", cfg.FHE.DataDir},
 		{"keyCacheDir", cfg.FHE.KeyCacheDir},
-		{"callbackBaseUrl", cfg.FHE.CallbackBaseURL},
-		{"callbackToken", cfg.FHE.CallbackToken},
 	}
 	for _, r := range required {
 		if strings.TrimSpace(r.value) == "" {
@@ -640,15 +640,6 @@ func validateFHEConfig(cfg StartupConfig) error {
 	}
 	if err := validateFHEURL("endpoint", cfg.FHE.Endpoint); err != nil {
 		return err
-	}
-	// "auto" is not a URL by design: it is the sentinel that makes the startup
-	// layer derive the address from this instance's own network namespace. It
-	// passed the required-non-empty check above; only a literal value goes
-	// through URL validation.
-	if !IsFHECallbackBaseURLAuto(cfg.FHE.CallbackBaseURL) {
-		if err := validateFHEURL("callbackBaseUrl", cfg.FHE.CallbackBaseURL); err != nil {
-			return err
-		}
 	}
 	if cfg.FHE.MaxEvalKeyBytes <= 0 {
 		return fmt.Errorf("unsupported fhe.maxEvalKeyBytes %d in startup config: must be positive", cfg.FHE.MaxEvalKeyBytes)
@@ -684,94 +675,31 @@ func validateFHEURL(name, value string) error {
 	return nil
 }
 
-// IsFHECallbackBaseURLAuto reports whether raw asks TAA to derive its callback
-// address at startup instead of using a value baked into the image.
-func IsFHECallbackBaseURLAuto(raw string) bool {
-	return strings.EqualFold(strings.TrimSpace(raw), FHECallbackBaseURLAuto)
-}
-
-// ResolveFHECallbackBaseURL turns the configured fhe.callbackBaseUrl into the
-// URL the FHE service is told to call back on. A literal value is returned
-// trimmed and unchanged; the "auto" sentinel is resolved here, at startup.
+// DeriveFHECallbackBaseURL returns the address the FHE service is told to call
+// back on. It is always loopback: TAA and the FHE service share the host's
+// network namespace, so 127.0.0.1 is the only address that needs no discovery
+// and stays correct across container and Pod recreation.
 //
-// The resolution mirrors `hostname -i`: the host name is resolved through the
-// system resolver, so a Pod gets its Pod IP from the /etc/hosts entry the
-// kubelet writes and a host-network container gets whatever that host name
-// resolves to. A host name that resolves only to loopback (the hygon host maps
-// its own name to 127.0.0.1) falls back to the first non-loopback IPv4 on the
-// local interfaces, which is how a host-network container still obtains the
-// host address. The port comes from server.addr, because that is the socket
-// this instance actually listens on; a callback URL pointing at any other port
-// would never be accepted.
-func ResolveFHECallbackBaseURL(raw, listenAddr string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if !IsFHECallbackBaseURLAuto(trimmed) {
-		return trimmed, nil
-	}
+// The port comes from server.addr, because that is the socket this instance
+// actually listens on; a callback URL pointing at any other port would never be
+// accepted.
+func DeriveFHECallbackBaseURL(listenAddr string) (string, error) {
 	port, err := listenAddrPort(listenAddr)
 	if err != nil {
 		return "", err
 	}
-	hostname, _ := os.Hostname()
-	ip, err := deriveSelfIPv4(hostname, net.LookupHost, net.InterfaceAddrs)
-	if err != nil {
-		return "", fmt.Errorf("fhe.callbackBaseUrl is %q but TAA cannot determine its own address: %w; set fhe.callbackBaseUrl explicitly", trimmed, err)
-	}
-	return "http://" + net.JoinHostPort(ip, port), nil
+	return "http://" + net.JoinHostPort("127.0.0.1", port), nil
 }
 
 // listenAddrPort extracts the port from a server.addr value. Only the port is
-// used: the address the FHE service must reach is this instance's own address,
-// not the wildcard or bind address in the config.
+// used: the callback target is always loopback, not the wildcard or bind
+// address in the config.
 func listenAddrPort(addr string) (string, error) {
 	_, port, err := net.SplitHostPort(strings.TrimSpace(addr))
 	if err != nil || port == "" {
-		return "", fmt.Errorf("server.addr %q does not name a port, so fhe.callbackBaseUrl %q cannot be resolved", addr, FHECallbackBaseURLAuto)
+		return "", fmt.Errorf("server.addr %q does not name a port, so the fhe callback address cannot be derived", addr)
 	}
 	return port, nil
-}
-
-// deriveSelfIPv4 returns the IPv4 address this instance is reachable on.
-//
-// The host name is tried first, because that is the lookup `hostname -i`
-// performs and what a Pod's /etc/hosts entry answers. Interface enumeration is
-// the fallback for hosts whose own name resolves to loopback. Loopback and
-// link-local addresses are skipped: neither can reach a callback from another
-// container, and returning one would turn a visible startup error into a task
-// that silently times out.
-func deriveSelfIPv4(hostname string, lookup func(string) ([]string, error), interfaceAddrs func() ([]net.Addr, error)) (string, error) {
-	if strings.TrimSpace(hostname) != "" && lookup != nil {
-		if addrs, err := lookup(hostname); err == nil {
-			if ip := firstUsableIPv4(addrs); ip != "" {
-				return ip, nil
-			}
-		}
-	}
-	if interfaceAddrs != nil {
-		if addrs, err := interfaceAddrs(); err == nil {
-			candidates := make([]string, 0, len(addrs))
-			for _, addr := range addrs {
-				if ipnet, ok := addr.(*net.IPNet); ok {
-					candidates = append(candidates, ipnet.IP.String())
-				}
-			}
-			if ip := firstUsableIPv4(candidates); ip != "" {
-				return ip, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("host name %q and the local interfaces expose no non-loopback IPv4 address", hostname)
-}
-
-func firstUsableIPv4(addrs []string) string {
-	for _, raw := range addrs {
-		ip := net.ParseIP(raw).To4()
-		if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-			continue
-		}
-		return ip.String()
-	}
-	return ""
 }
 
 // validateBinaryAudit rejects limits that cannot mean what they say.

@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -91,9 +90,7 @@ func writeFHEConfig(t *testing.T, path, platformBlock string) {
 		"fhe": {
 			"endpoint": "http://127.0.0.1:58996",
 			"dataDir": "/opt/fhe-data",
-			"keyCacheDir": "/opt/fhe-data/taa-fhe-keys",
-			"callbackBaseUrl": "http://127.0.0.1:6001",
-			"callbackToken": "test-token"
+			"keyCacheDir": "/opt/fhe-data/taa-fhe-keys"
 		}
 	}`)
 }
@@ -184,43 +181,20 @@ func TestLoadStartupConfigTEEIdentityIgnoresEnvironment(t *testing.T) {
 // subject rather than a synthetic config: it is what an fhe deployment actually
 // loads, and the platform block it carries is the fallback the environment
 // overrides.
-//
-// It is not in TestLoadStartupConfigTemplateFiles because that table loads each
-// template as it stands, and this one is a render input: its callbackToken is
-// empty and deploy-fhe.sh supplies it (from TAA_CALLBACK_TOKEN), so loading it
-// unrendered is correctly refused. The patch below is that one render step.
 func TestLoadStartupConfigFHEPlatformSection(t *testing.T) {
 	t.Setenv("PLATFORM_IP", "")
 	t.Setenv("DOCKER_ID", "")
 
+	path := filepath.Join(t.TempDir(), DefaultFileName)
 	raw, err := os.ReadFile("../../configs/taa-fhe.json")
 	if err != nil {
 		t.Fatalf("read taa-fhe.json: %v", err)
 	}
-	var doc map[string]any
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("parse taa-fhe.json: %v", err)
-	}
-	fheSection, ok := doc["fhe"].(map[string]any)
-	if !ok {
-		t.Fatalf("taa-fhe.json has no fhe section to render into")
-	}
-	if fheSection["callbackToken"] != "" {
-		t.Fatalf("taa-fhe.json ships callbackToken %v, want it empty so deploy-fhe.sh supplies it",
-			fheSection["callbackToken"])
-	}
-	fheSection["callbackToken"] = "rendered-by-deploy-fhe"
-	patched, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatalf("marshal patched taa-fhe.json: %v", err)
-	}
-
-	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, string(patched))
+	writeTestConfig(t, path, string(raw))
 
 	cfg, err := LoadStartupConfig(path)
 	if err != nil {
-		t.Fatalf("LoadStartupConfig(rendered taa-fhe.json) error = %v", err)
+		t.Fatalf("LoadStartupConfig(taa-fhe.json) error = %v", err)
 	}
 
 	if cfg.ServerType != ServerTypeFHE {
@@ -258,9 +232,7 @@ const auditAndAttestationConfig = `{
 	"fhe": {
 		"endpoint": "http://127.0.0.1:58996",
 		"dataDir": "/opt/fhe-data",
-		"keyCacheDir": "/opt/fhe-data/taa-fhe-keys",
-		"callbackBaseUrl": "http://127.0.0.1:6001",
-		"callbackToken": "test-token"
+		"keyCacheDir": "/opt/fhe-data/taa-fhe-keys"
 	}
 }`
 

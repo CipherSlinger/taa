@@ -2,9 +2,7 @@ package config
 
 import (
 	"bytes"
-	"fmt"
 	"log"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,8 +25,6 @@ const fheConfigBody = `{
     "endpoint": "http://127.0.0.1:58996",
     "dataDir": "/opt/fhe-data",
     "keyCacheDir": "/root/taa/fhe-keys",
-    "callbackBaseUrl": "http://172.16.10.130:6001",
-    "callbackToken": "shared-token",
     "maxEvalKeyBytes": 6442450944,
     "pollIntervalMs": 5000,
     "requestTimeoutMs": 30000,
@@ -86,9 +82,6 @@ func TestFHESectionIsParsedWhenTypeIsFHE(t *testing.T) {
 	if cfg.FHE.KeyCacheDir != "/root/taa/fhe-keys" {
 		t.Errorf("KeyCacheDir = %q", cfg.FHE.KeyCacheDir)
 	}
-	if cfg.FHE.CallbackToken != "shared-token" {
-		t.Errorf("CallbackToken = %q", cfg.FHE.CallbackToken)
-	}
 	if cfg.FHE.MaxEvalKeyBytes != 6442450944 {
 		t.Errorf("MaxEvalKeyBytes = %d", cfg.FHE.MaxEvalKeyBytes)
 	}
@@ -106,9 +99,7 @@ func TestFHEConfigDefaultsAreFilled(t *testing.T) {
 	  "fhe": {
 	    "endpoint": "http://127.0.0.1:58996",
 	    "dataDir": "/opt/fhe-data",
-	    "keyCacheDir": "/root/taa/fhe-keys",
-	    "callbackBaseUrl": "http://172.16.10.130:6001",
-	    "callbackToken": "t"
+	    "keyCacheDir": "/root/taa/fhe-keys"
 	  }}`)
 	cfg, err := LoadStartupConfig(p)
 	if err != nil {
@@ -133,11 +124,9 @@ func TestFHEConfigDefaultsAreFilled(t *testing.T) {
 
 func TestFHEConfigRejectsMissingRequiredFields(t *testing.T) {
 	base := map[string]string{
-		"endpoint":        `"http://127.0.0.1:58996"`,
-		"dataDir":         `"/opt/fhe-data"`,
-		"keyCacheDir":     `"/root/taa/fhe-keys"`,
-		"callbackBaseUrl": `"http://172.16.10.130:6001"`,
-		"callbackToken":   `"token"`,
+		"endpoint":    `"http://127.0.0.1:58996"`,
+		"dataDir":     `"/opt/fhe-data"`,
+		"keyCacheDir": `"/root/taa/fhe-keys"`,
 	}
 	for missing := range base {
 		var b strings.Builder
@@ -195,28 +184,11 @@ func TestFHESectionIsWarnedAndIgnoredWhenTypeIsTEE(t *testing.T) {
 func TestFHEConfigRejectsBadEndpoint(t *testing.T) {
 	for _, bad := range []string{`"127.0.0.1:58996"`, `"ftp://host"`, `"://"`, `"http://:1"`, `"not a url at all"`} {
 		body := `{"server":{"type":"fhe"},"fhe":{
-		  "endpoint":` + bad + `,"dataDir":"/d","keyCacheDir":"/k",
-		  "callbackBaseUrl":"http://t","callbackToken":"x"}}`
+		  "endpoint":` + bad + `,"dataDir":"/d","keyCacheDir":"/k"}}`
 		if _, err := LoadStartupConfig(writeConfig(t, body)); err == nil {
 			t.Errorf("endpoint %s accepted, want error", bad)
 		} else if !strings.Contains(err.Error(), "fhe.endpoint") {
 			t.Errorf("endpoint %s: error %q does not name the field", bad, err)
-		}
-	}
-}
-
-// callbackBaseUrl is the other URL-shaped field, and it gets the same shape
-// check as endpoint: a value with no scheme, an unusable scheme, or an empty
-// host is rejected at startup rather than stored for the task runner to fail on.
-func TestFHEConfigRejectsBadCallbackBaseURL(t *testing.T) {
-	for _, bad := range []string{`"172.16.10.130:6001"`, `"ftp://host"`, `"http://:1"`, `"not a url at all"`, `"javascript:1"`, `"://"`} {
-		body := `{"server":{"type":"fhe"},"fhe":{
-		  "endpoint":"http://h:1","dataDir":"/d","keyCacheDir":"/k",
-		  "callbackBaseUrl":` + bad + `,"callbackToken":"x"}}`
-		if _, err := LoadStartupConfig(writeConfig(t, body)); err == nil {
-			t.Errorf("callbackBaseUrl %s accepted, want error", bad)
-		} else if !strings.Contains(err.Error(), "fhe.callbackBaseUrl") {
-			t.Errorf("callbackBaseUrl %s: error %q does not name the field", bad, err)
 		}
 	}
 }
@@ -227,7 +199,6 @@ func TestFHEConfigRejectsBadCallbackBaseURL(t *testing.T) {
 func zeroBoundsBody() string {
 	return `{"server":{"type":"fhe"},"fhe":{
 	  "endpoint":"http://h:1","dataDir":"/d","keyCacheDir":"/k",
-	  "callbackBaseUrl":"http://t","callbackToken":"x",
 	  "maxEvalKeyBytes":0,"pollIntervalMs":0,"requestTimeoutMs":0,"taskTimeoutMs":0}}`
 }
 
@@ -264,8 +235,7 @@ func TestFHEConfigRejectsNonPositiveBounds(t *testing.T) {
 		{"taskTimeoutMs", "-1"},
 	} {
 		body := `{"server":{"type":"fhe"},"fhe":{
-		  "endpoint":"http://h:1","dataDir":"/d","keyCacheDir":"/k",
-		  "callbackBaseUrl":"http://t","callbackToken":"x","` + tc.field + `":` + tc.value + `}}`
+		  "endpoint":"http://h:1","dataDir":"/d","keyCacheDir":"/k","` + tc.field + `":` + tc.value + `}}`
 		if _, err := LoadStartupConfig(writeConfig(t, body)); err == nil {
 			t.Errorf("negative %s accepted, want error", tc.field)
 		} else if !strings.Contains(err.Error(), "fhe."+tc.field) {
@@ -281,8 +251,7 @@ func TestFHEConfigRejectsNonPositiveBounds(t *testing.T) {
 func TestFHEActivateModelOnImportDistinguishesFalseFromAbsent(t *testing.T) {
 	body := func(field string) string {
 		return `{"server":{"type":"fhe"},"fhe":{
-		  "endpoint":"http://h:1","dataDir":"/d","keyCacheDir":"/k",
-		  "callbackBaseUrl":"http://t","callbackToken":"x"` + field + `}}`
+		  "endpoint":"http://h:1","dataDir":"/d","keyCacheDir":"/k"` + field + `}}`
 	}
 	for _, tc := range []struct {
 		name string
@@ -309,46 +278,50 @@ func TestFHEActivateModelOnImportDistinguishesFalseFromAbsent(t *testing.T) {
 	}
 }
 
-// The "auto" sentinel is not a URL, so it must be exempt from URL validation at
-// load time; the address is resolved when the FHE runner is built, which happens
-// after the instance is already inside its own network namespace.
-func TestFHECallbackBaseURLAcceptsAutoSentinel(t *testing.T) {
-	body := strings.Replace(fheConfigBody, `"callbackBaseUrl": "http://172.16.10.130:6001"`,
-		`"callbackBaseUrl": "auto"`, 1)
-	cfg, err := LoadStartupConfig(writeConfig(t, body))
-	if err != nil {
-		t.Fatalf("LoadStartupConfig with callbackBaseUrl=auto: %v", err)
+// The callback address is derived from server.addr: the host is always loopback
+// and only the port is taken from the listening address.
+func TestDeriveFHECallbackBaseURL(t *testing.T) {
+	for _, tc := range []struct {
+		addr string
+		want string
+	}{
+		{":6001", "http://127.0.0.1:6001"},
+		{"0.0.0.0:6001", "http://127.0.0.1:6001"},
+		{"[::]:6002", "http://127.0.0.1:6002"},
+		{"172.16.10.178:7000", "http://127.0.0.1:7000"},
+	} {
+		got, err := DeriveFHECallbackBaseURL(tc.addr)
+		if err != nil {
+			t.Errorf("DeriveFHECallbackBaseURL(%q) error = %v", tc.addr, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("DeriveFHECallbackBaseURL(%q) = %q, want %q", tc.addr, got, tc.want)
+		}
 	}
-	if !IsFHECallbackBaseURLAuto(cfg.FHE.CallbackBaseURL) {
-		t.Errorf("CallbackBaseURL = %q, want the auto sentinel", cfg.FHE.CallbackBaseURL)
-	}
-}
-
-func TestResolveFHECallbackBaseURLKeepsLiteralValue(t *testing.T) {
-	got, err := ResolveFHECallbackBaseURL("  http://172.16.10.178:6001  ", ":6001")
-	if err != nil {
-		t.Fatalf("ResolveFHECallbackBaseURL: %v", err)
-	}
-	if want := "http://172.16.10.178:6001"; got != want {
-		t.Errorf("ResolveFHECallbackBaseURL = %q, want %q", got, want)
-	}
-}
-
-// A literal value is never re-derived, even when server.addr is malformed: the
-// operator named the address, so that value is what the FHE service is told.
-func TestResolveFHECallbackBaseURLLiteralIgnoresListenAddr(t *testing.T) {
-	if _, err := ResolveFHECallbackBaseURL("http://172.16.10.178:6001", "no-port"); err != nil {
-		t.Errorf("ResolveFHECallbackBaseURL(literal, bad addr) error = %v, want nil", err)
+	for _, bad := range []string{"", "6001", "127.0.0.1"} {
+		if _, err := DeriveFHECallbackBaseURL(bad); err == nil {
+			t.Errorf("DeriveFHECallbackBaseURL(%q) accepted, want error", bad)
+		} else if !strings.Contains(err.Error(), "server.addr") {
+			t.Errorf("DeriveFHECallbackBaseURL(%q): error %q does not name server.addr", bad, err)
+		}
 	}
 }
 
-func TestResolveFHECallbackBaseURLAutoRequiresListenPort(t *testing.T) {
-	_, err := ResolveFHECallbackBaseURL(FHECallbackBaseURLAuto, "no-port")
-	if err == nil {
-		t.Fatal("auto with a server.addr that has no port was accepted")
-	}
-	if !strings.Contains(err.Error(), "server.addr") {
-		t.Errorf("error %q does not name server.addr", err)
+// The removed keys must fail startup instead of being ignored: silently dropping
+// callbackToken would turn an authenticated endpoint into an open one.
+func TestFHEConfigRejectsRemovedCallbackKeys(t *testing.T) {
+	for _, key := range []string{"callbackBaseUrl", "callbackToken"} {
+		body := `{"server":{"type":"fhe"},"fhe":{
+		  "endpoint":"http://h:1","dataDir":"/d","keyCacheDir":"/k","` + key + `":"x"}}`
+		_, err := LoadStartupConfig(writeConfig(t, body))
+		if err == nil {
+			t.Errorf("removed key %s accepted, want error", key)
+			continue
+		}
+		if !strings.Contains(err.Error(), "removed keys") || !strings.Contains(err.Error(), key) {
+			t.Errorf("removed key %s: error %q does not name the removed key", key, err)
+		}
 	}
 }
 
@@ -374,87 +347,5 @@ func TestListenAddrPort(t *testing.T) {
 		if _, err := listenAddrPort(bad); err == nil {
 			t.Errorf("listenAddrPort(%q) accepted, want error", bad)
 		}
-	}
-}
-
-// deriveSelfIPv4 is the `hostname -i` equivalent. The host name is tried
-// first; only when it yields nothing usable does the interface list count.
-// Loopback and link-local addresses are never returned, because a callback URL
-// built from one can only be reached from inside the same namespace.
-func TestDeriveSelfIPv4(t *testing.T) {
-	lookup := func(addrs []string) func(string) ([]string, error) {
-		return func(string) ([]string, error) { return addrs, nil }
-	}
-	ifaces := func(addrs []string) func() ([]net.Addr, error) {
-		return func() ([]net.Addr, error) {
-			out := make([]net.Addr, 0, len(addrs))
-			for _, raw := range addrs {
-				ip := net.ParseIP(raw)
-				out = append(out, &net.IPNet{IP: ip, Mask: net.CIDRMask(32, 32)})
-			}
-			return out, nil
-		}
-	}
-	failingLookup := func(string) ([]string, error) { return nil, fmt.Errorf("no such host") }
-
-	for _, tc := range []struct {
-		name     string
-		hostname string
-		lookup   func(string) ([]string, error)
-		ifaces   func() ([]net.Addr, error)
-		want     string
-		wantErr  bool
-	}{
-		{
-			name:     "host name resolves to the pod IP",
-			hostname: "pod",
-			lookup:   lookup([]string{"127.0.0.1", "10.244.0.89"}),
-			ifaces:   ifaces([]string{"172.17.0.1"}),
-			want:     "10.244.0.89",
-		},
-		{
-			name:     "loopback-only host name falls back to the interfaces",
-			hostname: "hygon-master",
-			lookup:   lookup([]string{"127.0.0.1"}),
-			ifaces:   ifaces([]string{"127.0.0.1", "172.16.10.178", "10.244.0.1"}),
-			want:     "172.16.10.178",
-		},
-		{
-			name:     "unresolvable host name falls back to the interfaces",
-			hostname: "unknown",
-			lookup:   failingLookup,
-			ifaces:   ifaces([]string{"10.244.0.89"}),
-			want:     "10.244.0.89",
-		},
-		{
-			name:     "link-local addresses are skipped",
-			hostname: "host",
-			lookup:   lookup([]string{"169.254.10.1", "192.168.1.5"}),
-			ifaces:   nil,
-			want:     "192.168.1.5",
-		},
-		{
-			name:     "nothing usable is an error",
-			hostname: "host",
-			lookup:   lookup([]string{"127.0.0.1"}),
-			ifaces:   ifaces([]string{"127.0.0.1"}),
-			wantErr:  true,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := deriveSelfIPv4(tc.hostname, tc.lookup, tc.ifaces)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("deriveSelfIPv4 = %q, want error", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("deriveSelfIPv4: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("deriveSelfIPv4 = %q, want %q", got, tc.want)
-			}
-		})
 	}
 }

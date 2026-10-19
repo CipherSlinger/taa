@@ -1,7 +1,6 @@
 package taa
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -123,30 +122,11 @@ func TestShippedFHEConfigKeepsStateOnTheBinds(t *testing.T) {
 	}
 }
 
-// loadShippedFHEConfig loads the shipped template with the one field a template
-// cannot carry filled in.
-//
-// The callbackToken ships empty - it belongs to the deployment, which
-// deploy-fhe.sh injects - and an empty token is refused by design, so the field is
-// replaced and every other byte is loaded exactly as shipped.
+// loadShippedFHEConfig loads the shipped template exactly as it is.
 func loadShippedFHEConfig(t *testing.T) config.StartupConfig {
 	t.Helper()
 
-	raw, err := os.ReadFile(shippedFHEConfigPath)
-	if err != nil {
-		t.Fatalf("read the shipped fhe template: %v", err)
-	}
-	const emptyToken = `"callbackToken": ""`
-	if strings.Count(string(raw), emptyToken) != 1 {
-		t.Fatalf("the shipped fhe template does not carry exactly one empty callbackToken; deploy-fhe.sh fills that field from the environment and this test relies on doing the same")
-	}
-	patched := strings.Replace(string(raw), emptyToken, `"callbackToken": "test-token"`, 1)
-	path := filepath.Join(t.TempDir(), "taa-fhe.json")
-	if err := os.WriteFile(path, []byte(patched), 0o600); err != nil {
-		t.Fatalf("write the patched template: %v", err)
-	}
-
-	cfg, err := config.LoadStartupConfig(path)
+	cfg, err := config.LoadStartupConfig(shippedFHEConfigPath)
 	if err != nil {
 		t.Fatalf("the shipped fhe template does not load: %v", err)
 	}

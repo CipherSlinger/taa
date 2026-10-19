@@ -2,6 +2,7 @@ package controller
 
 import (
 	"io"
+	"net"
 	"net/http"
 
 	"taa/internal/fhe"
@@ -9,11 +10,29 @@ import (
 )
 
 // maxFHECallbackBytes bounds a callback body. The real payload is a small JSON
-// document listing cases; the bound exists so a caller holding the token cannot
-// make TAA allocate without limit.
+// document listing cases; the bound exists so a caller cannot make TAA allocate
+// without limit.
 const maxFHECallbackBytes = 4 << 20
 
+// isLoopbackRequest reports whether the request originated on this host's
+// loopback interface.
+func isLoopbackRequest(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // fheCallbackHandler receives the FHE service's terminal-state notification.
+//
+// The endpoint is not authenticated. It accepts only loopback sources as a
+// compensating control: the callback address TAA hands out is 127.0.0.1, so the
+// FHE service always reaches it over loopback, while a process elsewhere on the
+// network cannot forge a task's terminal state. Loopback filtering cannot tell
+// processes on this host apart; that is the deliberate trade for dropping the
+// shared token.
 //
 // The service posts the same payload up to four times (0/1/4/16s backoff), so
 // this endpoint is idempotent by construction: only the delivery that resolves
@@ -27,9 +46,7 @@ func (s *TAAState) fheCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if !runner.Config().TokenMatches(r.URL.Query().Get("token")) {
-		// 404, not 401: a caller that does not hold the token must not learn that
-		// this endpoint exists.
+	if !isLoopbackRequest(r) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}

@@ -30,7 +30,6 @@ func newFHETestState(t *testing.T) *TAAState {
 		DataDir:         t.TempDir(),
 		KeyCacheDir:     t.TempDir(),
 		CallbackBaseURL: "http://127.0.0.1:6001",
-		CallbackToken:   "test-token",
 		MaxEvalKeyBytes: fhe.DefaultMaxEvalKeyBytes,
 		PollInterval:    fhe.DefaultPollInterval,
 		RequestTimeout:  fhe.DefaultRequestTimeout,
@@ -143,7 +142,7 @@ func newStubRunner(t *testing.T) *fhe.Runner {
 	t.Helper()
 	r, err := fhe.New(fhe.Config{
 		Endpoint: "http://127.0.0.1:1", DataDir: t.TempDir(), KeyCacheDir: t.TempDir(),
-		CallbackBaseURL: "http://taa:6001", CallbackToken: "t",
+		CallbackBaseURL: "http://taa:6001",
 		MaxEvalKeyBytes: fhe.DefaultMaxEvalKeyBytes,
 		PollInterval:    time.Second, RequestTimeout: time.Second, TaskTimeout: time.Minute,
 	}, nil)
@@ -469,8 +468,6 @@ func newFHETestEnv(t *testing.T) *fheTestEnv {
 		DataDir:         sharedDir,
 		KeyCacheDir:     t.TempDir(),
 		CallbackBaseURL: "http://127.0.0.1:6001",
-		CallbackToken:   "test-token",
-
 		MaxEvalKeyBytes: fhe.DefaultMaxEvalKeyBytes,
 		PollInterval:    5 * time.Millisecond,
 		RequestTimeout:  2 * time.Second,
@@ -712,8 +709,8 @@ func TestFHEImportDispatchesTaskAndLandsResult(t *testing.T) {
 	if created[0].TaskID != "task-data" {
 		t.Errorf("task id = %q, want task-data", created[0].TaskID)
 	}
-	if !strings.Contains(created[0].CallbackURL, "/v1/taa/fheCallback?token=test-token") {
-		t.Errorf("callback url = %q, want the token-authenticated callback", created[0].CallbackURL)
+	if got, want := created[0].CallbackURL, "http://127.0.0.1:6001/v1/taa/fheCallback"; got != want {
+		t.Errorf("callback url = %q, want %q", got, want)
 	}
 
 	// The plaintext zip arrived without an .enc suffix, so it must have been taken

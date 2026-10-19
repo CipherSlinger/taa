@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -13,13 +12,13 @@ import (
 // ── /v1/taa/fheCallback ──────────────────────────────────────────────────
 
 // postCallback drives fheCallbackHandler the way the FHE service does: a POST
-// with the shared token in the query.
-func postCallback(t *testing.T, s *TAAState, token, body string) *httptest.ResponseRecorder {
+// from loopback with no credentials.
+func postCallback(t *testing.T, s *TAAState, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/v1/taa/fheCallback", strings.NewReader(body))
-	// Escaped rather than concatenated: a token that carries a space has to arrive
-	// as a query value, not as a malformed request line.
-	req.URL.RawQuery = "token=" + url.QueryEscape(token)
+	// The handler accepts loopback sources only, so the request must originate
+	// there; httptest would otherwise default to 192.0.2.1.
+	req.RemoteAddr = "127.0.0.1:54321"
 	rec := httptest.NewRecorder()
 	s.fheCallbackHandler(rec, req)
 	return rec
@@ -35,30 +34,41 @@ func envelopeMsg(t *testing.T, rec *httptest.ResponseRecorder) string {
 	return api.Msg
 }
 
-func TestFHECallbackRejectsMissingOrWrongTokenWithoutConfirmingTheEndpoint(t *testing.T) {
+// TestFHECallbackRejectsNonLoopbackSources pins the compensating control for the
+// missing token: the callback address is loopback, so a request from anywhere
+// else is not the FHE service and must not be able to resolve a task.
+func TestFHECallbackRejectsNonLoopbackSources(t *testing.T) {
 	s, _ := setupTestState(t)
-	s.SetFHERunner(newStubRunner(t)) // its callback token is "t"
+	s.SetFHERunner(newStubRunner(t))
 
-	for _, token := range []string{"", "wrong", "T", "tt", "t "} {
-		rec := postCallback(t, s, token, `{"task_id":"t1","status":"completed"}`)
-		// 404 rather than 401: a caller without the token must not learn that this
-		// endpoint exists.
+	for _, remote := range []string{
+		"192.0.2.1:1234",
+		"10.0.0.7:1234",
+		"::1:1234", // not a valid host:port, so it must fail closed
+		"",
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/taa/fheCallback",
+			strings.NewReader(`{"task_id":"t1","status":"completed"}`))
+		req.RemoteAddr = remote
+		rec := httptest.NewRecorder()
+		s.fheCallbackHandler(rec, req)
+		// 404 rather than 401: a caller must not learn that this endpoint exists.
 		if rec.Code != http.StatusNotFound {
-			t.Errorf("token %q: status = %d, want 404", token, rec.Code)
+			t.Errorf("RemoteAddr %q: status = %d, want 404", remote, rec.Code)
 		}
 	}
 
-	// The token that does match is accepted, so a handler that answered 404 to
+	// A loopback source is accepted, so a handler that answered 404 to
 	// everything would not pass the loop above.
-	if rec := postCallback(t, s, "t", `{"task_id":"t1","status":"completed"}`); rec.Code != http.StatusOK {
-		t.Errorf("the configured token: status = %d, want 200: %s", rec.Code, rec.Body.String())
+	if rec := postCallback(t, s, `{"task_id":"t1","status":"completed"}`); rec.Code != http.StatusOK {
+		t.Errorf("loopback source: status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 }
 
 func TestFHECallbackIsAbsentOnTEEInstance(t *testing.T) {
 	s, _ := setupTestState(t) // a tee boot: buildFHERunner installs no runner
 
-	rec := postCallback(t, s, "anything", `{"task_id":"t1","status":"completed"}`)
+	rec := postCallback(t, s, `{"task_id":"t1","status":"completed"}`)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 on a tee instance: %s", rec.Code, rec.Body.String())
 	}
@@ -74,7 +84,7 @@ func TestFHECallbackRejectsMalformedBody(t *testing.T) {
 		`{"task_id":"t1","status":"   "}`,
 		`{`, // not JSON at all
 	} {
-		rec := postCallback(t, s, "t", body)
+		rec := postCallback(t, s, body)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("body %q: status = %d, want 400: %s", body, rec.Code, rec.Body.String())
 		}
@@ -92,7 +102,7 @@ func TestFHECallbackAcceptsUnknownTasksAndIsIdempotent(t *testing.T) {
 	s.SetFHERunner(newStubRunner(t))
 
 	for i := 0; i < 4; i++ {
-		rec := postCallback(t, s, "t", `{"task_id":"t1","status":"completed"}`)
+		rec := postCallback(t, s, `{"task_id":"t1","status":"completed"}`)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("delivery %d: status = %d, want 200: %s", i+1, rec.Code, rec.Body.String())
 		}
@@ -118,7 +128,7 @@ func TestFHECallbackResolvesAnInFlightRunAndItsRetriesStayIdempotent(t *testing.
 	waitForInFlightFHETask(t, env)
 
 	body := `{"task_id":"task-data","status":"completed"}`
-	if rec := postCallback(t, env.state, "test-token", body); rec.Code != http.StatusOK {
+	if rec := postCallback(t, env.state, body); rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 
@@ -129,7 +139,7 @@ func TestFHECallbackResolvesAnInFlightRunAndItsRetriesStayIdempotent(t *testing.
 	}
 
 	for i := 0; i < 3; i++ {
-		if rec := postCallback(t, env.state, "test-token", body); rec.Code != http.StatusOK {
+		if rec := postCallback(t, env.state, body); rec.Code != http.StatusOK {
 			t.Fatalf("retry %d of an already resolved task: status = %d, want 200", i+1, rec.Code)
 		}
 	}
@@ -147,7 +157,7 @@ func TestFHECallbackIsRegisteredOnTheRouteTable(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/taa/fheCallback",
 		strings.NewReader(`{"task_id":"t1","status":"completed"}`))
-	req.URL.RawQuery = "token=t"
+	req.RemoteAddr = "127.0.0.1:54321"
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -273,7 +283,7 @@ func TestStopTrainingDoesNotCallAFailedStopOnAFinishedFHETask(t *testing.T) {
 
 	// The callback ends the run while its importer is still parked: the task is
 	// finished, the state still reports it in flight, and the runner still holds it.
-	if rec := postCallback(t, env.state, "test-token", `{"task_id":"task-data","status":"completed"}`); rec.Code != http.StatusOK {
+	if rec := postCallback(t, env.state, `{"task_id":"task-data","status":"completed"}`); rec.Code != http.StatusOK {
 		t.Fatalf("callback status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 
