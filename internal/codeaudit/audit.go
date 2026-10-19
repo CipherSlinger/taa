@@ -34,10 +34,10 @@ type AuditTarget struct {
 
 // AuditConclusion is the final audit verdict.
 type AuditConclusion struct {
-	Passed         bool   `json:"passed"`
-	RiskLevel      string `json:"risk_level"` // CRITICAL / HIGH / MEDIUM / LOW / NONE
-	Summary        string `json:"summary"`
-	Recommendation string `json:"recommendation"`
+	Passed         bool            `json:"passed"`
+	RiskLevel      string          `json:"risk_level"` // CRITICAL / HIGH / MEDIUM / LOW / NONE
+	Summary        string          `json:"summary"`
+	Recommendation string          `json:"recommendation"`
 	Statistics     AuditStatistics `json:"statistics"`
 }
 
@@ -59,14 +59,14 @@ func (s AuditStatistics) Total() int {
 type FileReport struct {
 	File                   string    `json:"file"`
 	FilePath               string    `json:"file_path"`
-	FindingsCount         int       `json:"findings_count"`
-	HighCount             int       `json:"high_count"`
-	MediumCount           int       `json:"medium_count"`
-	RiskLevel             string    `json:"risk_level"`  // LLM or inferred
-	Summary               string    `json:"summary"`     // LLM or inferred
-	HasExfiltrationPattern bool     `json:"has_exfiltration_pattern"` // LLM
-	Chained               bool      `json:"chained"`     // LLM
-	Findings              []Finding `json:"findings"`
+	FindingsCount          int       `json:"findings_count"`
+	HighCount              int       `json:"high_count"`
+	MediumCount            int       `json:"medium_count"`
+	RiskLevel              string    `json:"risk_level"`               // LLM or inferred
+	Summary                string    `json:"summary"`                  // LLM or inferred
+	HasExfiltrationPattern bool      `json:"has_exfiltration_pattern"` // LLM
+	Chained                bool      `json:"chained"`                  // LLM
+	Findings               []Finding `json:"findings"`
 }
 
 // AuditMetadata records scan configuration and timing.
@@ -179,12 +179,12 @@ func BuildFileReport(filePath string, findings []Finding) FileReport {
 	}
 
 	fr := FileReport{
-		File:            filepath.Base(filePath),
-		FilePath:        filePath,
-		FindingsCount:  len(findings),
-		HighCount:      highCount,
-		MediumCount:    mediumCount,
-		Findings:       findings,
+		File:          filepath.Base(filePath),
+		FilePath:      filePath,
+		FindingsCount: len(findings),
+		HighCount:     highCount,
+		MediumCount:   mediumCount,
+		Findings:      findings,
 	}
 
 	// If no LLM, infer risk level from static data.
@@ -296,16 +296,19 @@ type ConclusionContext struct {
 	FailClosed   bool
 }
 
-// ComputeConclusion determines the audit conclusion from statistics and policy.
+// ComputeConclusion determines the audit conclusion from statistics.
 // Retained for backward compatibility.
-func ComputeConclusion(stats AuditStatistics, fileReports []FileReport, policy string) AuditConclusion {
-	return ComputeConclusionContext(stats, fileReports, policy, ConclusionContext{
+func ComputeConclusion(stats AuditStatistics, fileReports []FileReport) AuditConclusion {
+	return ComputeConclusionContext(stats, fileReports, ConclusionContext{
 		HasLLMBenign: true,
 	})
 }
 
-// ComputeConclusionContext determines the audit conclusion from statistics, policy, and scan context.
-func ComputeConclusionContext(stats AuditStatistics, fileReports []FileReport, policy string, ctx ConclusionContext) AuditConclusion {
+// ComputeConclusionContext determines the audit conclusion from statistics and
+// scan context. Arbitration is always gate: a finding blocks when its classified
+// risk is HIGH or MEDIUM, and ClassifyFindingRisk lets the LLM verdict decide
+// that classification (BENIGN lowers a static HIGH, MALICIOUS raises anything).
+func ComputeConclusionContext(stats AuditStatistics, fileReports []FileReport, ctx ConclusionContext) AuditConclusion {
 	riskLevel := "NONE"
 
 	if stats.High > 0 {
@@ -316,15 +319,8 @@ func ComputeConclusionContext(stats AuditStatistics, fileReports []FileReport, p
 		riskLevel = "LOW"
 	}
 
-	var passed bool
-	switch policy {
-	case "gate":
-		// Gate mode: block on High and Medium risk findings. Low (benign) findings pass.
-		passed = stats.High == 0 && stats.Medium == 0
-	default:
-		// Assist mode (default): block on High risk findings.
-		passed = stats.High == 0
-	}
+	// Gate arbitration: block on classified HIGH and MEDIUM; LOW passes.
+	passed := stats.High == 0 && stats.Medium == 0
 
 	if ctx.ScanPassed != nil && !*ctx.ScanPassed {
 		passed = false
@@ -377,7 +373,7 @@ func AssembleAuditReport(
 		}
 	}
 
-	conclusion := ComputeConclusionContext(stats, fileReports, cfg.Policy, ConclusionContext{
+	conclusion := ComputeConclusionContext(stats, fileReports, ConclusionContext{
 		LLMDegraded:  llmDegraded,
 		HasLLMBenign: hasLLMBenign,
 		ScanPassed:   scanPassed,
@@ -422,15 +418,15 @@ func AssembleAuditReport(
 			TotalLines:        totalLines,
 			FilesWithFindings: len(fileReports),
 		},
-		Conclusion: conclusion,
-		Statistics: stats,
+		Conclusion:  conclusion,
+		Statistics:  stats,
 		FileReports: fileReports,
 		ScanMetadata: AuditMetadata{
 			ScannerVersion: "1.0.0",
 			RulesCount:     len(DefaultRules()),
 			LLMModel:       cfg.Model,
 			LLMEnabled:     cfg.Enabled,
-			Policy:         cfg.Policy,
+			Policy:         llmArbitrationPolicy,
 			ScanDurationMs: duration.Milliseconds(),
 			LLMDegraded:    scanReport != nil && scanReport.LLMDegraded,
 
@@ -688,8 +684,8 @@ func riskOrder(level string) int {
 // scan_metadata.truncated, and ProvesCleanScan refuses on it: a merge that set
 // it from the binary arm's own cap would make the channel refuse an import for
 // having found too much. The cap drops LOW findings and only LOW (see
-// BinaryScanner.ScanDirectory), and LOW blocks under neither the `assist` nor the
-// `gate` policy - the two severities that can block, HIGH and MEDIUM, are kept
+// BinaryScanner.ScanDirectory), and LOW does not block under the gate
+// arbitration - the two severities that can block, HIGH and MEDIUM, are kept
 // whatever the budget - so nothing the cap drops could have blocked the import on
 // its own. A reader who wants the binary cap sees findings_capped and
 // findings_dropped in scan_metadata.binary, next to the max_findings it ran

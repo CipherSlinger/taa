@@ -131,7 +131,6 @@ type LLMConfig struct {
 	CircuitBreakerThreshold int
 	CooldownSec             int
 	Model                   string
-	Policy                  string
 	FailClosed              bool
 	Dir                     string
 
@@ -422,7 +421,6 @@ type startupLLMConfigFile struct {
 	CircuitBreakerThreshold int      `json:"circuitBreakerThreshold"`
 	CooldownSec             int      `json:"cooldownSec"`
 	Model                   string   `json:"model"`
-	Policy                  string   `json:"policy"`
 	Temperature             *float32 `json:"temperature"`
 	FailClosed              *bool    `json:"failClosed"`
 	Dir                     string   `json:"dir"`
@@ -430,6 +428,7 @@ type startupLLMConfigFile struct {
 	// Removed keys, declared only so their presence is detectable. See
 	// rejectRemovedKeys.
 	RemovedTransport json.RawMessage `json:"transport"`
+	RemovedPolicy    json.RawMessage `json:"policy"`
 }
 
 func LoadStartupConfig(path string) (StartupConfig, error) {
@@ -537,6 +536,9 @@ func rejectRemovedKeys(path string, fileCfg startupConfigFile) error {
 	if fileCfg.CodeAudit.LLM != nil && hasJSONValue(fileCfg.CodeAudit.LLM.RemovedTransport) {
 		found = append(found, `"codeAudit.llm.transport" (replace with "codeAudit.llm.attestationEnabled": true is the old "teetls", false is the old non-attested transport)`)
 	}
+	if fileCfg.CodeAudit.LLM != nil && hasJSONValue(fileCfg.CodeAudit.LLM.RemovedPolicy) {
+		found = append(found, `"codeAudit.llm.policy" (removed: arbitration is always "gate", and the LLM verdict decides a static HIGH)`)
+	}
 	if len(found) == 0 {
 		return nil
 	}
@@ -550,12 +552,6 @@ func hasJSONValue(raw json.RawMessage) bool {
 	trimmed := strings.TrimSpace(string(raw))
 	return trimmed != "" && trimmed != "null"
 }
-
-// llmPolicies lists the arbitration modes understood by the audit code
-// (see codeaudit.LLMConfig.Policy). Any other value matches neither the gate
-// nor the assist branch, silently degrading a blocking gate to assist
-// behaviour, so it is rejected at load time instead.
-var llmPolicies = []string{"assist", "gate"}
 
 // staticEngines lists the Tier 1 engines understood by the audit code (see
 // codeaudit.NewEngine). The list is repeated here rather than imported, because
@@ -587,7 +583,7 @@ func validateStartupConfig(cfg StartupConfig) error {
 	if err := validateBinaryAudit(cfg); err != nil {
 		return err
 	}
-	return validateLLMPolicy(cfg)
+	return nil
 }
 
 // serverTypes lists the instance roles understood by the startup config (see
@@ -827,7 +823,7 @@ func validateBinaryAudit(cfg StartupConfig) error {
 // validateLLMTemperature rejects a sampling temperature outside [0, 2].
 //
 // Sampling and audit integrity pull against each other: the audit needs the same
-// finding to yield the same verdict, because under assist + failClosed a single
+// finding to yield the same verdict, because under fail-closed a single
 // MALICIOUS verdict blocks the import of code that never changed. Any temperature
 // above zero re-enables sampling, and the higher it goes the more the verdict is
 // a draw rather than a reading - at 2 the distribution is already nearly flat, so
@@ -868,16 +864,6 @@ func validateCodeScanEngine(cfg StartupConfig) error {
 	}
 	return fmt.Errorf("unsupported codeAudit.codeScan.engine %q in startup config: must be one of %s",
 		cfg.CodeScan.Engine, strings.Join(staticEngines, ", "))
-}
-
-func validateLLMPolicy(cfg StartupConfig) error {
-	for _, policy := range llmPolicies {
-		if cfg.LLM.Policy == policy {
-			return nil
-		}
-	}
-	return fmt.Errorf("unsupported codeAudit.llm.policy %q in startup config: must be one of %s",
-		cfg.LLM.Policy, strings.Join(llmPolicies, ", "))
 }
 
 func defaultStartupConfig() StartupConfig {
@@ -926,7 +912,6 @@ func defaultStartupConfig() StartupConfig {
 			CircuitBreakerThreshold: 3,
 			CooldownSec:             30,
 			Model:                   "qwen2.5-coder:0.5b",
-			Policy:                  "assist",
 			FailClosed:              true,
 		},
 	}
@@ -1176,9 +1161,6 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 			}
 			if llm.Model != "" {
 				cfg.LLM.Model = llm.Model
-			}
-			if llm.Policy != "" {
-				cfg.LLM.Policy = strings.ToLower(strings.TrimSpace(llm.Policy))
 			}
 			// nil-guard rather than the "> 0" guard the neighbouring LLM numerics use.
 			// nil means "not configured"; zero is a real sampling value here (greedy

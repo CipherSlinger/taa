@@ -1,6 +1,7 @@
 package codeaudit
 
 import (
+	"regexp"
 	"testing"
 	"time"
 
@@ -79,23 +80,34 @@ func TestProvesCleanScanHandlesNil(t *testing.T) {
 //
 // import_processing.go:645 acts on audit.Conclusion.Passed. A scan that hit the
 // finding cap has dropped findings the engine did find, and Passed is computed
-// from what remains — so a truncated scan of medium-only findings passed the
-// assist policy while parts of the input had never been examined. The fixture is
+// from what remains — so a truncated scan whose kept findings do not block passed
+// the conclusion while parts of the input had never been examined. The fixture is
 // asserted to be truncated and to have passed on the strength of its findings
 // alone, so the test cannot quietly become vacuous.
 func TestTruncatedScanCannotPassTheAuditConclusion(t *testing.T) {
 	dir := t.TempDir()
-	// Five medium findings against a cap of two. No HIGH, so under assist the
-	// finding-based decision alone is a pass.
+	// Five LOW findings against a cap of two. The severity is load-bearing: gate
+	// blocks HIGH and MEDIUM, so a fixture built from either would fail this test
+	// on its kept findings alone and stop isolating the truncation signal. A LOW
+	// finding does not block, so only the completeness precondition can withdraw
+	// the pass. The built-in rule set has no LOW rule, hence the local one.
 	writeTestFile(t, dir, "train.py",
-		"import os\n"+
-			"a = os.environ.get('api_key')\n"+
-			"b = os.environ.get('api_key')\n"+
-			"c = os.environ.get('api_key')\n"+
-			"d = os.environ.get('api_key')\n"+
-			"e = os.environ.get('api_key')\n")
+		"low_fixture_line_1\n"+
+			"low_fixture_line_2\n"+
+			"low_fixture_line_3\n"+
+			"low_fixture_line_4\n"+
+			"low_fixture_line_5\n")
 
-	scanReport, lineCounts, err := truncatingScanner(2).ScanDirectoryWithLines(dir)
+	lowRule := Rule{
+		ID:          "TEST_LOW",
+		Category:    "test",
+		Severity:    SeverityLow,
+		Description: "fixture rule",
+		Patterns:    []*regexp.Regexp{regexp.MustCompile(`low_fixture_line`)},
+	}
+	cfg := DefaultConfig()
+	cfg.MaxFindings = 2
+	scanReport, lineCounts, err := NewScanner([]Rule{lowRule}, cfg).ScanDirectoryWithLines(dir)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -109,7 +121,7 @@ func TestTruncatedScanCannotPassTheAuditConclusion(t *testing.T) {
 
 	audit := AssembleAuditReport(dir, scanReport,
 		[]FileReport{BuildFileReport("train.py", scanReport.Findings)},
-		lineCounts, LLMConfig{Policy: "assist"}, 10*time.Millisecond)
+		lineCounts, LLMConfig{}, 10*time.Millisecond)
 
 	if audit.Conclusion.Passed {
 		t.Error("a scan that dropped findings at the cap passed the audit; " +
@@ -139,7 +151,7 @@ func TestIncompleteScanCannotPassTheAuditConclusion(t *testing.T) {
 	// What an engine reports when it could not read the input.
 	scanReport.ScanComplete = false
 
-	audit := AssembleAuditReport(dir, scanReport, nil, lineCounts, LLMConfig{Policy: "assist"}, 10*time.Millisecond)
+	audit := AssembleAuditReport(dir, scanReport, nil, lineCounts, LLMConfig{}, 10*time.Millisecond)
 
 	if audit.Conclusion.Passed {
 		t.Error("a report whose scan did not complete passed the audit on an empty finding list")
@@ -163,7 +175,7 @@ func TestScanMetadataCarriesIncompletenessToTheReportThatLeaves(t *testing.T) {
 	scanReport.Truncated = true
 	scanReport.ParserErrors = 3
 
-	audit := AssembleAuditReport(dir, scanReport, nil, lineCounts, LLMConfig{Policy: "assist"}, 10*time.Millisecond)
+	audit := AssembleAuditReport(dir, scanReport, nil, lineCounts, LLMConfig{}, 10*time.Millisecond)
 
 	if !audit.ScanMetadata.Truncated {
 		t.Error("ScanMetadata.Truncated = false although the scan dropped findings")

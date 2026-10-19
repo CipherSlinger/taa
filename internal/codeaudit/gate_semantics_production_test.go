@@ -12,16 +12,14 @@ import (
 
 // TestProductionGateSemantics derives the production gate outcome for every
 // sample of the six engine-comparison runs, using the real aggregation and
-// policy functions rather than a re-implementation.
+// arbitration functions rather than a re-implementation.
 //
 // This exists because the production severity path differs from a static
 // reading of the rule table, and reading the rule table got it wrong three
 // times. ComputeStatistics does not consume Finding.Severity directly: it
 // calls ClassifyFindingRisk, which lets an LLM verdict override the static
 // severity (MALICIOUS -> HIGH, SUSPICIOUS -> MEDIUM, BENIGN -> LOW) and only
-// falls back to the static severity when no verdict is present. A MEDIUM rule
-// hit that the LLM calls MALICIOUS therefore blocks under assist, which blocks
-// on HIGH alone.
+// falls back to the static severity when no verdict is present.
 //
 // It is gated behind TAA_PRODUCTION_GATE=1 because it reads benchmark
 // artifacts rather than exercising the package, and it writes its result next
@@ -112,35 +110,23 @@ func TestProductionGateSemantics(t *testing.T) {
 		High     int    `json:"classified_high"`
 		Medium   int    `json:"classified_medium"`
 		Low      int    `json:"classified_low"`
-		// ConclusionGate/Assist are AuditReport.Conclusion.Passed, which is the
-		// value production consumes (controller/import_processing.go:645).
-		ConclusionGate   bool `json:"conclusion_passed_gate"`
-		ConclusionAssist bool `json:"conclusion_passed_assist"`
-		// ReportGate/Assist are Report.Passed as the verifier's recalculators
-		// leave it. It can only force the conclusion to false, never true.
-		ReportGate   bool `json:"report_passed_gate"`
-		ReportAssist bool `json:"report_passed_assist"`
+		// ConclusionPassed is AuditReport.Conclusion.Passed, which is the value
+		// production consumes (controller/import_processing.go).
+		ConclusionPassed bool `json:"conclusion_passed"`
+		// ReportPassed is Report.Passed as the verifier's gate recalculation
+		// leaves it. It can only force the conclusion to false, never true.
+		ReportPassed bool `json:"report_passed"`
 	}
 	type runSummary struct {
-		Run           string          `json:"run"`
-		Samples       int             `json:"samples"`
-		GateFPR       float64         `json:"gate_fpr"`
-		GateRecall    float64         `json:"gate_recall"`
-		AssistFPR     float64         `json:"assist_fpr"`
-		AssistRecall  float64         `json:"assist_recall"`
-		FinalGateFPR  float64         `json:"final_gate_fpr"`
-		FinalGateRec  float64         `json:"final_gate_recall"`
-		FinalAssistFP float64         `json:"final_assist_fpr"`
-		FinalAssistRe float64         `json:"final_assist_recall"`
-		SamplesDetail []sampleOutcome `json:"samples_detail"`
-		MissedAssist  []string        `json:"missed_malicious_under_assist"`
-		FalseAssist   []string        `json:"blocked_benign_under_assist"`
-		// RescuedAssist lists malicious samples whose conclusion under assist
-		// would have let them through but whose Report.Passed is false, so the
-		// second gate blocks them. They are the reason the conclusion alone
-		// scores 0.94-0.98 recall while the final value scores 1.0000, and they
-		// are always samples where the LLM downgraded a static HIGH.
-		RescuedAssist []string                  `json:"rescued_by_report_gate_under_assist"`
+		Run           string                    `json:"run"`
+		Samples       int                       `json:"samples"`
+		FPR           float64                   `json:"fpr"`
+		Recall        float64                   `json:"recall"`
+		FinalFPR      float64                   `json:"final_fpr"`
+		FinalRecall   float64                   `json:"final_recall"`
+		SamplesDetail []sampleOutcome           `json:"samples_detail"`
+		Missed        []string                  `json:"missed_malicious"`
+		BlockedBenign []string                  `json:"blocked_benign"`
 		Stats         map[string]map[string]int `json:"verdict_severity_crosstab"`
 	}
 
@@ -153,8 +139,7 @@ func TestProductionGateSemantics(t *testing.T) {
 		sort.Strings(reports)
 
 		rs := runSummary{Run: filepath.Base(runDir), Stats: map[string]map[string]int{}}
-		var bTotal, mTotal, bBlockGate, mBlockGate, bBlockAssist, mBlockAssist int
-		var bFinalGate, mFinalGate, bFinalAssist, mFinalAssist int
+		var bTotal, mTotal, bBlock, mBlock, bFinal, mFinal int
 
 		for _, rp := range reports {
 			raw, err := os.ReadFile(rp)
@@ -184,24 +169,18 @@ func TestProductionGateSemantics(t *testing.T) {
 
 			// Reproduce Report.Passed exactly as the verifier leaves it, for the
 			// scan these runs actually were: one that completed and dropped
-			// nothing. The fail-closed branches can only set it to false, so
-			// these two are the most permissive values for each policy.
+			// nothing. The fail-closed branches can only set it to false.
 			//
 			// The completeness fields are set explicitly rather than left at
 			// their zero values, and that is load-bearing rather than tidiness.
 			// The zero value of ScanComplete means "did not complete", and the
 			// pass decision withholds a pass on exactly that, so a report literal
 			// that leaves the field unset is the least permissive value, not the
-			// most: it blocks every sample and would misreport the production
-			// decision as a total denial of service.
-			reportGate := &Report{Findings: all, ScanComplete: true}
-			recalculateGatePassed(reportGate)
-			reportAssist := &Report{Findings: all, ScanComplete: true}
-			recalculateStaticPassed(reportAssist)
+			// most: it blocks every sample.
+			report := &Report{Findings: all, ScanComplete: true}
+			recalculateGatePassed(report)
 
-			ctx := ConclusionContext{HasLLMBenign: true}
-			conclGate := ComputeConclusionContext(stats, fileReports, "gate", ctx)
-			conclAssist := ComputeConclusionContext(stats, fileReports, "assist", ctx)
+			concl := ComputeConclusionContext(stats, fileReports, ConclusionContext{HasLLMBenign: true})
 
 			sampleID := filepath.Base(filepath.Dir(rp))
 			label, labelled := labels[sampleID]
@@ -221,14 +200,12 @@ func TestProductionGateSemantics(t *testing.T) {
 
 			// Final production verdict: the conclusion, forced false by the
 			// report value when the verifier's recalculation disagrees.
-			finalGate := conclGate.Passed && reportGate.Passed
-			finalAssist := conclAssist.Passed && reportAssist.Passed
+			final := concl.Passed && report.Passed
 
 			so := sampleOutcome{
 				SampleID: sampleID, Label: label, Findings: len(all),
 				High: stats.High, Medium: stats.Medium, Low: stats.Low,
-				ConclusionGate: conclGate.Passed, ConclusionAssist: conclAssist.Passed,
-				ReportGate: reportGate.Passed, ReportAssist: reportAssist.Passed,
+				ConclusionPassed: concl.Passed, ReportPassed: report.Passed,
 			}
 			rs.SamplesDetail = append(rs.SamplesDetail, so)
 			rs.Samples++
@@ -246,43 +223,22 @@ func TestProductionGateSemantics(t *testing.T) {
 
 			if label == "benign" {
 				bTotal++
-				if !conclGate.Passed {
-					bBlockGate++
+				if !concl.Passed {
+					bBlock++
 				}
-				if !conclAssist.Passed {
-					bBlockAssist++
-				}
-				if !finalGate {
-					bFinalGate++
-				}
-				if !finalAssist {
-					bFinalAssist++
-				}
-				if !finalAssist {
-					rs.FalseAssist = append(rs.FalseAssist, sampleID)
+				if !final {
+					bFinal++
+					rs.BlockedBenign = append(rs.BlockedBenign, sampleID)
 				}
 			} else {
 				mTotal++
-				if !conclGate.Passed {
-					mBlockGate++
+				if !concl.Passed {
+					mBlock++
 				}
-				if !conclAssist.Passed {
-					mBlockAssist++
-				}
-				if !finalGate {
-					mFinalGate++
-				}
-				if !finalAssist {
-					mFinalAssist++
-				}
-				if finalAssist {
-					rs.MissedAssist = append(rs.MissedAssist, sampleID)
-				}
-				// The conclusion alone would pass this malicious sample; the
-				// report gate is what blocks it. This is the second gate doing
-				// real work, not a vestigial field.
-				if conclAssist.Passed && !reportAssist.Passed {
-					rs.RescuedAssist = append(rs.RescuedAssist, sampleID)
+				if !final {
+					mFinal++
+				} else {
+					rs.Missed = append(rs.Missed, sampleID)
 				}
 			}
 		}
@@ -302,37 +258,29 @@ func TestProductionGateSemantics(t *testing.T) {
 			}
 			return float64(num) / float64(den)
 		}
-		rs.GateFPR = ratio(bBlockGate, bTotal)
-		rs.GateRecall = ratio(mBlockGate, mTotal)
-		rs.AssistFPR = ratio(bBlockAssist, bTotal)
-		rs.AssistRecall = ratio(mBlockAssist, mTotal)
-		rs.FinalGateFPR = ratio(bFinalGate, bTotal)
-		rs.FinalGateRec = ratio(mFinalGate, mTotal)
-		rs.FinalAssistFP = ratio(bFinalAssist, bTotal)
-		rs.FinalAssistRe = ratio(mFinalAssist, mTotal)
-		sort.Strings(rs.MissedAssist)
-		sort.Strings(rs.FalseAssist)
-		sort.Strings(rs.RescuedAssist)
+		rs.FPR = ratio(bBlock, bTotal)
+		rs.Recall = ratio(mBlock, mTotal)
+		rs.FinalFPR = ratio(bFinal, bTotal)
+		rs.FinalRecall = ratio(mFinal, mTotal)
+		sort.Strings(rs.Missed)
+		sort.Strings(rs.BlockedBenign)
 		out = append(out, rs)
 
-		t.Logf("%s n=%d  conclusion: gate FPR=%.4f recall=%.4f | assist FPR=%.4f recall=%.4f"+
-			"  ||  final: gate FPR=%.4f recall=%.4f | assist FPR=%.4f recall=%.4f",
-			rs.Run, rs.Samples,
-			rs.GateFPR, rs.GateRecall, rs.AssistFPR, rs.AssistRecall,
-			rs.FinalGateFPR, rs.FinalGateRec, rs.FinalAssistFP, rs.FinalAssistRe)
-		if len(rs.MissedAssist) > 0 {
-			t.Logf("  missed under assist: %v", rs.MissedAssist)
+		t.Logf("%s n=%d  conclusion: FPR=%.4f recall=%.4f  ||  final: FPR=%.4f recall=%.4f",
+			rs.Run, rs.Samples, rs.FPR, rs.Recall, rs.FinalFPR, rs.FinalRecall)
+		if len(rs.Missed) > 0 {
+			t.Logf("  missed: %v", rs.Missed)
 		}
-		if len(rs.RescuedAssist) > 0 {
-			t.Logf("  conclusion would pass, report gate blocks: %v", rs.RescuedAssist)
+		if len(rs.BlockedBenign) > 0 {
+			t.Logf("  blocked benign: %v", rs.BlockedBenign)
 		}
 	}
 
 	blob, err := json.MarshalIndent(map[string]any{
 		"source": "internal/codeaudit.TestProductionGateSemantics",
 		"note": "ComputeStatistics/ComputeConclusionContext/recalculate* are the real " +
-			"production functions. conclusion_passed_* is AuditReport.Conclusion.Passed, " +
-			"the value production consumes. report_passed_* is Report.Passed; it can only " +
+			"production functions. conclusion_passed is AuditReport.Conclusion.Passed, " +
+			"the value production consumes. report_passed is Report.Passed; it can only " +
 			"force the conclusion to false, never true, so final <= conclusion.",
 		"runs": out,
 	}, "", "  ")

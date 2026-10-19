@@ -9,9 +9,9 @@ import (
 
 // endToEndConfig is the audit configuration the integration tests share: Tier 1
 // only, so a verdict comes from the matchers rather than from a model.
-func endToEndConfig(policy string) AuditConfig {
+func endToEndConfig() AuditConfig {
 	return AuditConfig{
-		LLM:    LLMConfig{Enabled: false, Policy: policy},
+		LLM:    LLMConfig{Enabled: false},
 		Binary: DefaultBinaryConfig(),
 	}
 }
@@ -41,7 +41,7 @@ func TestEndToEndMaliciousPackageIsBlocked(t *testing.T) {
 		"archive/data.pkl": []byte("\x80\x04cposix\nsystem\n."),
 	}, []string{"archive/data.pkl"}))
 
-	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), endToEndConfig("assist"), nil)
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), endToEndConfig(), nil)
 	if err != nil {
 		t.Fatalf("GenerateAuditReport: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestEndToEndCleanPackageStillPasses(t *testing.T) {
 	}))
 	writeTestBytes(t, dir, "weights.safetensors", uniformBytes(4096))
 
-	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), endToEndConfig("assist"), nil)
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), endToEndConfig(), nil)
 	if err != nil {
 		t.Fatalf("GenerateAuditReport: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestEndToEndCleanPackageStillPasses(t *testing.T) {
 	for _, fr := range audit.FileReports {
 		for _, f := range fr.Findings {
 			if f.Severity == "HIGH" || f.Severity == "MEDIUM" {
-				t.Errorf("%s was reported %s by %s, which blocks under gate and under assist; "+
+				t.Errorf("%s was reported %s by %s, which blocks under gate; "+
 					"a near-random tensor blob and a kernel's ordinary imports must not reach that tier",
 					f.File, f.Severity, f.RuleID)
 			}
@@ -158,46 +158,40 @@ func TestEndToEndCleanPackageStillPasses(t *testing.T) {
 // This fixture has neither, so the finding must come out LOW with a reason
 // attached, the count must be recorded, and the import must be allowed through.
 //
-// Both policies are run because they disagree about what the downgrade has to
-// reach. assist passes on High == 0; gate passes on High == 0 && Medium == 0. A
-// gate that stopped at MEDIUM would leave this package passable under assist and
-// block it in production, and only the gate half of this test would notice.
+// Arbitration is always gate, so the downgrade has to reach LOW: gate passes on
+// High == 0 && Medium == 0, and a MEDIUM downgrade would still refuse the import.
 func TestEndToEndUncorroboratedPresenceStillPasses(t *testing.T) {
-	for _, policy := range []string{"assist", "gate"} {
-		t.Run(policy, func(t *testing.T) {
-			dir := t.TempDir()
-			writeTestBytes(t, dir, "native/libnet.so", elfFixtureBytes(t, elfSpec{
-				imports: []string{"socket"},
-				needed:  []string{"libc.so.6"},
-				text:    []byte("ordinary code, no packed section"),
-			}))
+	dir := t.TempDir()
+	writeTestBytes(t, dir, "native/libnet.so", elfFixtureBytes(t, elfSpec{
+		imports: []string{"socket"},
+		needed:  []string{"libc.so.6"},
+		text:    []byte("ordinary code, no packed section"),
+	}))
 
-			audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), endToEndConfig(policy), nil)
-			if err != nil {
-				t.Fatalf("GenerateAuditReport: %v", err)
-			}
-			if !audit.Conclusion.Passed {
-				t.Fatalf("a shared object whose only evidence is an uncorroborated symbol name was blocked under %s; findings: %s",
-					policy, dumpFindings(audit))
-			}
+	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), endToEndConfig(), nil)
+	if err != nil {
+		t.Fatalf("GenerateAuditReport: %v", err)
+	}
+	if !audit.Conclusion.Passed {
+		t.Fatalf("a shared object whose only evidence is an uncorroborated symbol name was blocked; findings: %s",
+			dumpFindings(audit))
+	}
 
-			f, ok := endToEndFinding(audit, "native/libnet.so", "NET_002")
-			if !ok {
-				t.Fatalf("no NET_002 finding for native/libnet.so; the dynsym import did not reach the report at all. findings: %s",
-					dumpFindings(audit))
-			}
-			if f.Severity != "LOW" {
-				t.Errorf("NET_002 severity = %s, want LOW: this file carries no corroboration, and %s blocks the import under assist and gate alike",
-					f.Severity, f.Severity)
-			}
-			if f.DowngradeReason == "" {
-				t.Error("NET_002 was reported below its rule's severity with no downgrade reason attached; " +
-					"a reader cannot tell 'the rule says LOW' from 'the rule says HIGH and this file did not earn it'")
-			}
-			if got := binarySummary(t, audit).PresenceDowngraded; got != 1 {
-				t.Errorf("Binary.PresenceDowngraded = %d, want 1", got)
-			}
-		})
+	f, ok := endToEndFinding(audit, "native/libnet.so", "NET_002")
+	if !ok {
+		t.Fatalf("no NET_002 finding for native/libnet.so; the dynsym import did not reach the report at all. findings: %s",
+			dumpFindings(audit))
+	}
+	if f.Severity != "LOW" {
+		t.Errorf("NET_002 severity = %s, want LOW: this file carries no corroboration, and %s blocks the import",
+			f.Severity, f.Severity)
+	}
+	if f.DowngradeReason == "" {
+		t.Error("NET_002 was reported below its rule's severity with no downgrade reason attached; " +
+			"a reader cannot tell 'the rule says LOW' from 'the rule says HIGH and this file did not earn it'")
+	}
+	if got := binarySummary(t, audit).PresenceDowngraded; got != 1 {
+		t.Errorf("Binary.PresenceDowngraded = %d, want 1", got)
 	}
 }
 
@@ -224,7 +218,7 @@ func TestEndToEndBoundedExecutableBlocks(t *testing.T) {
 		textExec: true,
 	}))
 
-	cfg := endToEndConfig("assist")
+	cfg := endToEndConfig()
 	// Only MaxStreamBytes is set: normalizeBinaryConfig resolves every other zero
 	// to its default, and Enabled is the one field it cannot touch, so it is
 	// spelled out. A zero-valued BinaryConfig would run the channel disabled and

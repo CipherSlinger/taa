@@ -787,7 +787,6 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 			// adjudicated. The scanner's own cap (ScannerConfig.MaxFindings, 200) is
 			// the real ceiling on how many calls this can produce.
 			MaxFindings:             0,
-			Policy:                  cfg.LLM.Policy,
 			Temperature:             cfg.LLM.Temperature,
 			FailClosed:              cfg.LLM.FailClosed,
 			AllowedHosts:            cfg.LLM.AllowedHosts,
@@ -866,8 +865,8 @@ func logSecurityConfig(sec controller.SecurityConfig) {
 	if sec.ScanEnabled {
 		log.Printf("security scan enabled: model-dir=%s", sec.ModelDir)
 		if sec.LLM.Enabled {
-			log.Printf("  LLM verifier enabled: model=%s attestation-enabled=%v endpoint=%s attestMode=%s policy=%s fail-closed=%v",
-				sec.LLM.Model, sec.LLM.AttestationEnabled, sec.LLM.Endpoint, sec.LLM.AttestationMode, sec.LLM.Policy, sec.LLM.FailClosed)
+			log.Printf("  LLM verifier enabled: model=%s attestation-enabled=%v endpoint=%s attestMode=%s fail-closed=%v",
+				sec.LLM.Model, sec.LLM.AttestationEnabled, sec.LLM.Endpoint, sec.LLM.AttestationMode, sec.LLM.FailClosed)
 		}
 	}
 	if sec.ResultCheck {

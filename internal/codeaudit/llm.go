@@ -9,6 +9,12 @@ import (
 	"github.com/CipherSlinger/teetls"
 )
 
+// llmArbitrationPolicy is the mode sent to the inference service and the only
+// arbitration the audit applies: the LLM's verdict decides a static HIGH, and
+// MEDIUM findings still block. It is a constant rather than a setting because a
+// deployment must not be able to turn the LLM's decision back into advisory.
+const llmArbitrationPolicy = "gate"
+
 // LLMConfig controls the local LLM verifier.
 type LLMConfig struct {
 	Enabled bool
@@ -21,7 +27,6 @@ type LLMConfig struct {
 	Model                   string
 	Timeout                 time.Duration
 	MaxFindings             int
-	Policy                  string
 	FailClosed              bool
 	AllowedHosts            []string
 	CircuitBreakerThreshold int
@@ -31,8 +36,8 @@ type LLMConfig struct {
 	// nil leaves the choice to the inference service, which decodes
 	// deterministically (temperature 0) so that the same finding yields the
 	// same verdict. A non-nil value overrides that and re-enables sampling:
-	// identical findings may then be judged differently, and under assist +
-	// failClosed a single MALICIOUS draw blocks the import.
+	// identical findings may then be judged differently, and under fail-closed
+	// a single MALICIOUS draw blocks the import.
 	Temperature *float32
 
 	// TEE-TLS configuration
@@ -54,7 +59,6 @@ func DefaultLLMConfig() LLMConfig {
 		Model:                   "qwen2.5-coder:0.5b",
 		Timeout:                 30 * time.Second,
 		MaxFindings:             0,
-		Policy:                  "assist",
 		FailClosed:              true,
 		CircuitBreakerThreshold: 3,
 		CooldownSec:             30,

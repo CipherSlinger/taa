@@ -504,9 +504,8 @@ func (e *semgrepEngine) buildFindings(output *semgrepOutput, targets []string) (
 	}
 	if len(unmapped) > 0 {
 		// An unmapped rule is not assigned a default severity. The default would
-		// have to be MEDIUM to be safe, and MEDIUM is the level where the gate
-		// and assist policies disagree, so the same misconfiguration would block
-		// in one deployment and pass in another.
+		// have to be MEDIUM to be safe, and MEDIUM blocks, so the import would be
+		// refused without naming the rule that caused it.
 		return nil, fmt.Errorf("semgrep rules map to no TAA rule: %s", strings.Join(unmapped, ", "))
 	}
 

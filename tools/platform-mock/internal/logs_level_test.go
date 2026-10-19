@@ -54,7 +54,7 @@ func TestTaaLogLevelClassification(t *testing.T) {
 				Level:     logger.LevelInfo,
 				Component: "audit",
 				Message: "开始模型代码审计: engine=semgrep, dir=/root/taa/models, " +
-					"llmEnabled=true, policy=assist, failClosed=true",
+					"llmEnabled=true, failClosed=true",
 			}.FormatMessage(),
 			Want: "INFO",
 		},
@@ -65,7 +65,7 @@ func TestTaaLogLevelClassification(t *testing.T) {
 				Level:     logger.LevelInfo,
 				Component: "audit",
 				Message: "开始模型代码审计: engine=semgrep, dir=/root/taa/models, " +
-					"llmEnabled=false, policy=assist, failClosed=false",
+					"llmEnabled=false, failClosed=false",
 			}.FormatMessage(),
 			Want: "INFO",
 		},

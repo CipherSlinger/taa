@@ -28,7 +28,6 @@ func TestLoadStartupConfigFallsBackToIdentityEnvironment(t *testing.T) {
 				"enabled": false,
 				"endpoint": "http://llm.example:11434",
 				"model": "qwen-test",
-				"policy": "gate",
 				"failClosed": false
 			}
 		}
@@ -250,7 +249,6 @@ const auditAndAttestationConfig = `{
 			"enabled": false,
 			"endpoint": "https://bogus.example:1",
 			"model": "bogus-model",
-			"policy": "gate",
 			"failClosed": false
 		}
 	},
@@ -312,7 +310,7 @@ func TestLoadStartupConfigFHEIgnoresAuditAndAttestation(t *testing.T) {
 			cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
 	}
 	if cfg.LLM.Enabled || cfg.LLM.Endpoint != "https://127.0.0.1:8443" || cfg.LLM.Model != "qwen2.5-coder:0.5b" ||
-		cfg.LLM.Policy != "assist" || !cfg.LLM.FailClosed {
+		!cfg.LLM.FailClosed {
 		t.Errorf("LLM = %+v, want audit disabled and otherwise defaults on an fhe instance", cfg.LLM)
 	}
 }
@@ -353,7 +351,7 @@ func TestLoadStartupConfigTEEAppliesAuditAndAttestation(t *testing.T) {
 			cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
 	}
 	if cfg.LLM.Enabled || cfg.LLM.Endpoint != "https://bogus.example:1" || cfg.LLM.Model != "bogus-model" ||
-		cfg.LLM.Policy != "gate" || cfg.LLM.FailClosed {
+		cfg.LLM.FailClosed {
 		t.Errorf("LLM = %+v, want the file values on a tee instance", cfg.LLM)
 	}
 }
@@ -417,9 +415,6 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	}
 	if cfg.LLM.Model != "qwen2.5-coder:0.5b" {
 		t.Fatalf("LLM.Model = %q, want default", cfg.LLM.Model)
-	}
-	if cfg.LLM.Policy != "assist" {
-		t.Fatalf("LLM.Policy = %q, want default", cfg.LLM.Policy)
 	}
 	if !cfg.LLM.FailClosed {
 		t.Fatalf("LLM.FailClosed = false, want default true")
@@ -632,7 +627,6 @@ func TestLoadStartupConfigDoesNotReadOtherRuntimeEnvironment(t *testing.T) {
 	t.Setenv("SECURITY_LLM_VERIFY", "false")
 	t.Setenv("SECURITY_LLM_ENDPOINT", "http://env-llm:11434")
 	t.Setenv("SECURITY_LLM_MODEL", "env-model")
-	t.Setenv("SECURITY_LLM_POLICY", "gate")
 	t.Setenv("SECURITY_LLM_FAIL_CLOSED", "false")
 	t.Setenv("MODEL_DIR", "/env/models")
 	t.Setenv("DATA_DIR", "/env/data")
@@ -654,7 +648,7 @@ func TestLoadStartupConfigDoesNotReadOtherRuntimeEnvironment(t *testing.T) {
 	if cfg.ModelDir != "/opt/taa/models" || cfg.DataDir != "/opt/taa/data" || cfg.ResultDir != "/opt/taa/results" || cfg.KeysDir != "/root/taa/keys" {
 		t.Fatalf("directory runtime config unexpectedly read from environment: %+v", cfg)
 	}
-	if cfg.LLM.Endpoint != "https://127.0.0.1:8443" || cfg.LLM.Model != "qwen2.5-coder:0.5b" || cfg.LLM.Policy != "assist" || cfg.LLM.Dir != "" {
+	if cfg.LLM.Endpoint != "https://127.0.0.1:8443" || cfg.LLM.Model != "qwen2.5-coder:0.5b" || cfg.LLM.Dir != "" {
 		t.Fatalf("LLM runtime config unexpectedly read from environment: %+v", cfg)
 	}
 }
@@ -1103,7 +1097,6 @@ func TestStartupConfig_InferenceOptions(t *testing.T) {
 				"requireMutualAttest": true,
 				"insecureSkipVerify": true,
 				"model": "qwen2.5-coder:3b",
-				"policy": "gate",
 				"temperature": 0.3,
 				"failClosed": true,
 				"authToken": "secret-token",
@@ -1242,53 +1235,8 @@ func TestLoadStartupConfigExplicitZeroTemperature(t *testing.T) {
 	}
 }
 
-// TestLoadStartupConfigRejectsUnknownLLMPolicy guards the audit gate against a
-// silently ineffective policy: an unrecognized value used to be stored verbatim
-// and then matched neither "gate" nor "assist" in the audit arbitration,
-// falling back to assist behaviour (HIGH-only blocking) without any signal.
-func TestLoadStartupConfigRejectsUnknownLLMPolicy(t *testing.T) {
-	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, `{
-		"codeAudit": {
-			"llm": {
-				"policy": "enforce"
-			}
-		}
-	}`)
-
-	cfg, err := LoadStartupConfig(path)
-	if err == nil {
-		t.Fatalf("LoadStartupConfig() error = nil, want rejection of unknown llm policy; got policy %q", cfg.LLM.Policy)
-	}
-	if !strings.Contains(err.Error(), "enforce") {
-		t.Fatalf("error %q should name the rejected value", err)
-	}
-}
-
-func TestLoadStartupConfigNormalizesLLMPolicy(t *testing.T) {
-	for _, policy := range []string{"assist", "gate", "GATE", " gate ", ""} {
-		t.Run("policy="+policy, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), DefaultFileName)
-			writeTestConfig(t, path, fmt.Sprintf(`{"codeAudit":{"llm":{"policy":%q}}}`, policy))
-
-			cfg, err := LoadStartupConfig(path)
-			if err != nil {
-				t.Fatalf("LoadStartupConfig() error = %v, want nil for supported value", err)
-			}
-
-			want := strings.ToLower(strings.TrimSpace(policy))
-			if want == "" {
-				want = "assist"
-			}
-			if cfg.LLM.Policy != want {
-				t.Fatalf("LLM.Policy = %q, want %q", cfg.LLM.Policy, want)
-			}
-		})
-	}
-}
-
 // TestLoadStartupConfigRejectsUnknownCodeScanEngine is the same guard as the
-// policy one above, for the Tier 1 engine. An unrecognized engine name must not
+// removed-key one above, for the Tier 1 engine. An unrecognized engine name must not
 // be stored verbatim: the scan would then run the regex baseline while the
 // deployment believes it enabled Semgrep, and the audit report's engine field
 // would honestly say "regex" — a field nobody reads.
@@ -1633,6 +1581,11 @@ func TestLoadStartupConfigRejectsRemovedKeys(t *testing.T) {
 			name:    "the old semgrepTimeoutSeconds key",
 			content: `{"codeAudit":{"semgrepTimeoutSeconds":900}}`,
 			want:    []string{`"codeAudit.semgrepTimeoutSeconds"`, `"codeAudit.codeScan.timeoutSeconds"`},
+		},
+		{
+			name:    "the removed llm policy key",
+			content: `{"codeAudit":{"llm":{"policy":"gate"}}}`,
+			want:    []string{`"codeAudit.llm.policy"`, `"gate"`},
 		},
 		{
 			name: "the whole old block, reported together",

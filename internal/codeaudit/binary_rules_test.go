@@ -334,13 +334,12 @@ func TestBinaryTableStillFiresHighOnStructuralEvidence(t *testing.T) {
 
 // TestBinaryFamilySeveritiesArePinned pins the severity column of the resolved
 // table, one family at a time, because that column is the only control that
-// decides whether a finding blocks. Under the default `assist` policy `Passed`
-// is `highCount == 0`; under `gate` it is `High == 0 && Medium == 0`, and a
-// false `Passed` makes internal/controller/import_processing.go:655-660 refuse
-// the import and report the package as unsafe. The two policies therefore
-// impose two different bars, and a family's severity has to be right for both:
+// decides whether a finding blocks. Under the gate arbitration `Passed` is
+// `High == 0 && Medium == 0`, and a false `Passed` makes
+// internal/controller/import_processing.go:655-660 refuse the import and report
+// the package as unsafe. A family's severity therefore has to be right on its own:
 // the four string families are LOW, not MEDIUM, precisely because MEDIUM would
-// still refuse the import once an operator switches to `gate`.
+// refuse the import.
 //
 // It pins the resolved Rule, so it is a statement about the table and not about
 // what a scan reports: a NET_002/CMD_001/BIN_002 finding on a file with no
@@ -351,11 +350,10 @@ func TestBinaryTableStillFiresHighOnStructuralEvidence(t *testing.T) {
 // would be reading the table for the report.
 //
 // TestBinaryTableProducesNoHighFindingsOnLegitimateInputs asserts silence at
-// HIGH only, which is the `assist` bar; this test is the other half, and the
-// half that keeps a later edit from quietly moving a family to MEDIUM and
-// turning a warning into a re-import. It reads the rules the matcher resolved,
-// not the two tables, so it pins what the scanner's rule table will report
-// however the id was resolved.
+// HIGH only; this test is the other half, and the half that keeps a later edit
+// from quietly moving a family to MEDIUM and turning a warning into a
+// re-import. It reads the rules the matcher resolved, not the two tables, so it
+// pins what the scanner's rule table will report however the id was resolved.
 func TestBinaryFamilySeveritiesArePinned(t *testing.T) {
 	matcher, err := NewBinaryMatcher()
 	if err != nil {
@@ -378,13 +376,12 @@ func TestBinaryFamilySeveritiesArePinned(t *testing.T) {
 		{"PKL_001", SeverityHigh},
 		{"NET_002", SeverityHigh},
 		{"CMD_001", SeverityHigh},
-		// Borrowed and deliberate: MEDIUM does not block under `assist`, but it
-		// does under `gate`, so this value is load-bearing too.
+		// Borrowed and deliberate: MEDIUM blocks under gate, so this value is
+		// load-bearing too.
 		{"DYN_001", SeverityMedium},
-		// String evidence must not block under either policy. LOW, and not
-		// MEDIUM, because MEDIUM alone refuses the import once the operator
-		// switches to `gate`. rules.go defines no SeverityLow constant, so the
-		// table writes the string and this test matches it.
+		// String evidence must not block. LOW, and not MEDIUM, because MEDIUM
+		// alone refuses the import. rules.go defines no SeverityLow constant, so
+		// the table writes the string and this test matches it.
 		{"CMD_002", "LOW"},
 		{"PER_002", "LOW"},
 		{"FIL_002", "LOW"},

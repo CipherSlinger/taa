@@ -113,7 +113,6 @@ func TestBuildSecurityConfig(t *testing.T) {
 			CircuitBreakerThreshold: 5,
 			CooldownSec:             45,
 			Model:                   "qwen2.5-coder:0.5b",
-			Policy:                  "strict",
 			FailClosed:              true,
 		},
 		BinaryAuditEnabled:              true,
@@ -177,7 +176,6 @@ func TestBuildSecurityConfig(t *testing.T) {
 		Model:                   cfg.LLM.Model,
 		Timeout:                 60 * time.Second,
 		MaxFindings:             0,
-		Policy:                  cfg.LLM.Policy,
 		FailClosed:              cfg.LLM.FailClosed,
 		AllowedHosts:            cfg.LLM.AllowedHosts,
 		CircuitBreakerThreshold: cfg.LLM.CircuitBreakerThreshold,
@@ -221,9 +219,6 @@ func TestBuildSecurityConfig(t *testing.T) {
 	}
 	if sec.LLM.MaxFindings != wantLLM.MaxFindings {
 		t.Errorf("LLM.MaxFindings = %d, want %d", sec.LLM.MaxFindings, wantLLM.MaxFindings)
-	}
-	if sec.LLM.Policy != wantLLM.Policy {
-		t.Errorf("LLM.Policy = %q, want %q", sec.LLM.Policy, wantLLM.Policy)
 	}
 	if sec.LLM.FailClosed != wantLLM.FailClosed {
 		t.Errorf("LLM.FailClosed = %v, want %v", sec.LLM.FailClosed, wantLLM.FailClosed)

