@@ -311,9 +311,9 @@ func TestLoadStartupConfigFHEIgnoresAuditAndAttestation(t *testing.T) {
 		t.Errorf("attestation paths = %q/%q, want defaults on an fhe instance",
 			cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
 	}
-	if !cfg.LLM.Enabled || cfg.LLM.Endpoint != "https://127.0.0.1:8443" || cfg.LLM.Model != "qwen2.5-coder:0.5b" ||
+	if cfg.LLM.Enabled || cfg.LLM.Endpoint != "https://127.0.0.1:8443" || cfg.LLM.Model != "qwen2.5-coder:0.5b" ||
 		cfg.LLM.Policy != "assist" || !cfg.LLM.FailClosed {
-		t.Errorf("LLM = %+v, want defaults on an fhe instance", cfg.LLM)
+		t.Errorf("LLM = %+v, want audit disabled and otherwise defaults on an fhe instance", cfg.LLM)
 	}
 }
 
@@ -409,8 +409,8 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if cfg.StateSealingKeySource != StateSealingKeySourceSM2 {
 		t.Fatalf("StateSealingKeySource = %q, want default %q", cfg.StateSealingKeySource, StateSealingKeySourceSM2)
 	}
-	if !cfg.LLM.Enabled {
-		t.Fatalf("LLM.Enabled = false, want default true")
+	if cfg.LLM.Enabled {
+		t.Fatalf("LLM.Enabled = true, want false when the config carries no llm block")
 	}
 	if cfg.LLM.Endpoint != "https://127.0.0.1:8443" {
 		t.Fatalf("LLM.Endpoint = %q, want default", cfg.LLM.Endpoint)
@@ -426,6 +426,59 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	}
 	if cfg.AttestationHRKCertPath == "" || cfg.AttestationHSKCekCertPath == "" {
 		t.Fatalf("Attestation cert paths unexpectedly empty: hrk=%q, hsk=%q", cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
+	}
+}
+
+// TestLoadStartupConfigLLMEnabledRequiresTheBlock pins where the audit's
+// on/off default comes from. Only a config that carries an llm block keeps the
+// default on: without one there is no inference service to reach, and an fhe
+// instance never reads the block at all, so neither should start a probe.
+func TestLoadStartupConfigLLMEnabledRequiresTheBlock(t *testing.T) {
+	t.Setenv("PLATFORM_IP", "")
+	t.Setenv("DOCKER_ID", "")
+
+	const fheSection = `"fhe": {
+		"endpoint": "http://127.0.0.1:58996",
+		"dataDir": "/opt/fhe-data",
+		"keyCacheDir": "/opt/fhe-data/taa-fhe-keys",
+		"callbackBaseUrl": "http://127.0.0.1:6001",
+		"callbackToken": "test-token"
+	}`
+
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "tee without llm block",
+			body: `{"server": {"type": "tee"}}`,
+			want: false,
+		},
+		{
+			name: "tee with llm block",
+			body: `{"server": {"type": "tee"}, "codeAudit": {"llm": {"endpoint": "https://llm.example:8443"}}}`,
+			want: true,
+		},
+		{
+			name: "fhe with llm block",
+			body: `{"server": {"type": "fhe"}, "codeAudit": {"llm": {"enabled": true}}, ` + fheSection + `}`,
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), DefaultFileName)
+			writeTestConfig(t, path, tc.body)
+
+			cfg, err := LoadStartupConfig(path)
+			if err != nil {
+				t.Fatalf("LoadStartupConfig() error = %v", err)
+			}
+			if cfg.LLM.Enabled != tc.want {
+				t.Fatalf("LLM.Enabled = %v, want %v", cfg.LLM.Enabled, tc.want)
+			}
+		})
 	}
 }
 
@@ -595,7 +648,7 @@ func TestLoadStartupConfigDoesNotReadOtherRuntimeEnvironment(t *testing.T) {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
-	if !cfg.EnableCodeAudit || !cfg.EnableResultCheck || !cfg.LLM.Enabled || !cfg.LLM.FailClosed {
+	if !cfg.EnableCodeAudit || !cfg.EnableResultCheck || cfg.LLM.Enabled || !cfg.LLM.FailClosed {
 		t.Fatalf("boolean runtime config unexpectedly read from environment: %+v", cfg)
 	}
 	if cfg.ModelDir != "/opt/taa/models" || cfg.DataDir != "/opt/taa/data" || cfg.ResultDir != "/opt/taa/results" || cfg.KeysDir != "/root/taa/keys" {

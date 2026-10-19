@@ -300,7 +300,11 @@ type startupCodeAuditConfigFile struct {
 	BinaryAudit  startupBinaryAuditConfigFile `json:"binaryAudit"`
 	ResultCheck  startupResultCheckConfigFile `json:"resultCheck"`
 	MaxFileBytes *int64                       `json:"maxFileBytes"`
-	LLM          startupLLMConfigFile         `json:"llm"`
+	// LLM is a pointer because "absent" and "present but empty" must not
+	// collapse: an instance whose config carries no LLM block has no inference
+	// service to reach, and the audit defaults off rather than probing an
+	// endpoint nobody configured (see the end of applyStartupConfigFile).
+	LLM *startupLLMConfigFile `json:"llm"`
 
 	// Removed keys, declared only so their presence is detectable. See
 	// rejectRemovedKeys.
@@ -1116,67 +1120,78 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 		if trimmed := strings.TrimSpace(fileCfg.Attestation.HSKCekCertPath); trimmed != "" {
 			cfg.AttestationHSKCekCertPath = trimmed
 		}
-		if fileCfg.CodeAudit.LLM.Enabled != nil {
-			cfg.LLM.Enabled = *fileCfg.CodeAudit.LLM.Enabled
+		if llm := fileCfg.CodeAudit.LLM; llm != nil {
+			if llm.Enabled != nil {
+				cfg.LLM.Enabled = *llm.Enabled
+			}
+			if llm.Transport != "" {
+				cfg.LLM.Transport = strings.TrimSpace(llm.Transport)
+			}
+			if llm.Endpoint != "" {
+				cfg.LLM.Endpoint = llm.Endpoint
+			}
+			if trimmed := strings.TrimSpace(llm.AttestationMode); trimmed != "" {
+				cfg.LLM.AttestationMode = trimmed
+			}
+			if trimmed := strings.TrimSpace(llm.HRKCertPath); trimmed != "" {
+				cfg.LLM.HRKCertPath = trimmed
+			}
+			if trimmed := strings.TrimSpace(llm.HSKCekCertPath); trimmed != "" {
+				cfg.LLM.HSKCekCertPath = trimmed
+			}
+			if len(llm.ExpectedMeasurements) > 0 {
+				cfg.LLM.ExpectedMeasurements = llm.ExpectedMeasurements
+			}
+			if llm.RequireMutualAttest != nil {
+				cfg.LLM.RequireMutualAttest = *llm.RequireMutualAttest
+			}
+			if llm.InsecureSkipVerify != nil {
+				cfg.LLM.InsecureSkipVerify = *llm.InsecureSkipVerify
+			}
+			if llm.AuthToken != "" {
+				cfg.LLM.AuthToken = llm.AuthToken
+			}
+			if llm.RequestTimeoutMs > 0 {
+				cfg.LLM.TimeoutMs = llm.RequestTimeoutMs
+			}
+			if len(llm.AllowedHosts) > 0 {
+				cfg.LLM.AllowedHosts = llm.AllowedHosts
+			}
+			if llm.CircuitBreakerThreshold > 0 {
+				cfg.LLM.CircuitBreakerThreshold = llm.CircuitBreakerThreshold
+			}
+			if llm.CooldownSec > 0 {
+				cfg.LLM.CooldownSec = llm.CooldownSec
+			}
+			if llm.Model != "" {
+				cfg.LLM.Model = llm.Model
+			}
+			if llm.Policy != "" {
+				cfg.LLM.Policy = strings.ToLower(strings.TrimSpace(llm.Policy))
+			}
+			// nil-guard rather than the "> 0" guard the neighbouring LLM numerics use.
+			// nil means "not configured"; zero is a real sampling value here (greedy
+			// decoding, which is what the audit wants), so a "> 0" guard would make it
+			// impossible to state zero explicitly.
+			if llm.Temperature != nil {
+				cfg.LLM.Temperature = llm.Temperature
+			}
+			if llm.FailClosed != nil {
+				cfg.LLM.FailClosed = *llm.FailClosed
+			}
+			if llm.Dir != "" {
+				cfg.LLM.Dir = llm.Dir
+			}
 		}
-		if fileCfg.CodeAudit.LLM.Transport != "" {
-			cfg.LLM.Transport = strings.TrimSpace(fileCfg.CodeAudit.LLM.Transport)
-		}
-		if fileCfg.CodeAudit.LLM.Endpoint != "" {
-			cfg.LLM.Endpoint = fileCfg.CodeAudit.LLM.Endpoint
-		}
-		if trimmed := strings.TrimSpace(fileCfg.CodeAudit.LLM.AttestationMode); trimmed != "" {
-			cfg.LLM.AttestationMode = trimmed
-		}
-		if trimmed := strings.TrimSpace(fileCfg.CodeAudit.LLM.HRKCertPath); trimmed != "" {
-			cfg.LLM.HRKCertPath = trimmed
-		}
-		if trimmed := strings.TrimSpace(fileCfg.CodeAudit.LLM.HSKCekCertPath); trimmed != "" {
-			cfg.LLM.HSKCekCertPath = trimmed
-		}
-		if len(fileCfg.CodeAudit.LLM.ExpectedMeasurements) > 0 {
-			cfg.LLM.ExpectedMeasurements = fileCfg.CodeAudit.LLM.ExpectedMeasurements
-		}
-		if fileCfg.CodeAudit.LLM.RequireMutualAttest != nil {
-			cfg.LLM.RequireMutualAttest = *fileCfg.CodeAudit.LLM.RequireMutualAttest
-		}
-		if fileCfg.CodeAudit.LLM.InsecureSkipVerify != nil {
-			cfg.LLM.InsecureSkipVerify = *fileCfg.CodeAudit.LLM.InsecureSkipVerify
-		}
-		if fileCfg.CodeAudit.LLM.AuthToken != "" {
-			cfg.LLM.AuthToken = fileCfg.CodeAudit.LLM.AuthToken
-		}
-		if fileCfg.CodeAudit.LLM.RequestTimeoutMs > 0 {
-			cfg.LLM.TimeoutMs = fileCfg.CodeAudit.LLM.RequestTimeoutMs
-		}
-		if len(fileCfg.CodeAudit.LLM.AllowedHosts) > 0 {
-			cfg.LLM.AllowedHosts = fileCfg.CodeAudit.LLM.AllowedHosts
-		}
-		if fileCfg.CodeAudit.LLM.CircuitBreakerThreshold > 0 {
-			cfg.LLM.CircuitBreakerThreshold = fileCfg.CodeAudit.LLM.CircuitBreakerThreshold
-		}
-		if fileCfg.CodeAudit.LLM.CooldownSec > 0 {
-			cfg.LLM.CooldownSec = fileCfg.CodeAudit.LLM.CooldownSec
-		}
-		if fileCfg.CodeAudit.LLM.Model != "" {
-			cfg.LLM.Model = fileCfg.CodeAudit.LLM.Model
-		}
-		if fileCfg.CodeAudit.LLM.Policy != "" {
-			cfg.LLM.Policy = strings.ToLower(strings.TrimSpace(fileCfg.CodeAudit.LLM.Policy))
-		}
-		// nil-guard rather than the "> 0" guard the neighbouring LLM numerics use.
-		// nil means "not configured"; zero is a real sampling value here (greedy
-		// decoding, which is what the audit wants), so a "> 0" guard would make it
-		// impossible to state zero explicitly.
-		if fileCfg.CodeAudit.LLM.Temperature != nil {
-			cfg.LLM.Temperature = fileCfg.CodeAudit.LLM.Temperature
-		}
-		if fileCfg.CodeAudit.LLM.FailClosed != nil {
-			cfg.LLM.FailClosed = *fileCfg.CodeAudit.LLM.FailClosed
-		}
-		if fileCfg.CodeAudit.LLM.Dir != "" {
-			cfg.LLM.Dir = fileCfg.CodeAudit.LLM.Dir
-		}
+	}
+
+	// An instance whose config did not supply an LLM block has no inference
+	// service to reach: the audit defaults off instead of probing a default
+	// endpoint nobody configured. That covers an fhe instance too, whose
+	// codeAudit block is not read at all - leaving the default on there would
+	// probe a gateway this instance can never use and fail on every startup.
+	if !readsAuditAndAttestation || fileCfg.CodeAudit.LLM == nil {
+		cfg.LLM.Enabled = false
 	}
 
 	// The fhe section is only meaningful on an fhe instance. A tee instance that
