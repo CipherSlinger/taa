@@ -462,7 +462,7 @@ does not reach it, so `TAASECRETKEY` there needs an additional injection path.
 
 - **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths, with explicit `platform` configuration, an empty `attestation.measurement`, and `insecureSkipVerify: true`.
 - **`configs/taa-production.json`**: For production Kubernetes Pods. Omits `platform` so parameters are dynamically injected by the orchestration platform via environment variables, keeps attestation enabled, and leaves `attestation.measurement` unset so the measurement comparison is skipped with a startup warning while the TLS trust chain is still verified.
-- **`configs/taa-fhe.json`**: For an `fhe` instance — the GPU host co-located with the FHE service. Sets `server.type: "fhe"` and the `fhe` section, and carries a `platform` block (`127.0.0.1:18081`, `taa-fhe`) naming the mock used in end-to-end testing; on this instance type the environment overrides both fields, so the block is the fallback rather than the last word. The callback address is not configured: TAA derives it at startup as `http://127.0.0.1:<port>` from `server.addr`, and the callback endpoint is unauthenticated but loopback-only. `deploy-fhe.sh` renders the template before starting taa — and `taa save` bakes the same rendered result into the image — and that is where `fhe.dataDir` and `storage.keys` come from: the data directory is the tree the FHE stack shares as `/data`, and `storage.keys` is a directory that stack does not mount at all, so the SM2 key pair and the sealed instance state stay out of the FHE service's reach.
+- **`configs/taa-fhe.json`**: For an `fhe` instance — the GPU host co-located with the FHE service. Sets `server.type: "fhe"` and the `fhe` section, and carries a `platform` block (`127.0.0.1:18081`, `taa-fhe`) naming the mock used in end-to-end testing; on this instance type the environment overrides both fields, so the block is the fallback rather than the last word. The callback address is not configured: TAA derives it at startup as `http://127.0.0.1:<port>` from `server.addr`, and the callback endpoint is unauthenticated but loopback-only. `deploy-fhe.sh` renders the template before starting taa — and `taa save` bakes the same rendered result into the image — and that is where `fhe.dataDir` and `storage.keys` come from: the data directory is the tree the FHE entrypoint reads as `/data`, and `storage.keys` sits on a bind the FHE side does not mount at all, so the SM2 key pair and the sealed instance state stay out of the FHE service's reach.
 
 ### FHE Instance Interface Differences
 
@@ -589,10 +589,11 @@ Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (d
 
 ## Deploying the FHE Side (`deploy-fhe.sh`)
 
-`deploy.sh` owns the TAA image; `deploy-fhe.sh` owns the FHE side of a GPU host. It imports the
-delivered `latti/latti-server` image, stages the runtime and models into the shared data directory,
-starts the api/worker/redis stack, and then starts this host's TAA instance under the same
-supervisor.
+`deploy.sh` owns the TAA image; `deploy-fhe.sh` owns the FHE side of a GPU host. The handoff
+bundle ships one self-contained image (`latti/latti-server-node:latest`) that already contains
+redis, the FHE api, the worker, the runtime and the CUDA libraries. The script starts one
+container from it and puts TAA and its supervisor inside that same container, so TAA reaches the
+FHE API at `127.0.0.1:58996` over container loopback.
 
 ```bash
 # From a workstation: the default target is root@172.16.10.178 over ssh
@@ -602,41 +603,59 @@ supervisor.
 ./deploy-fhe.sh --local
 
 # Deploy one component only (mutually exclusive)
-./deploy-fhe.sh fhe             # fhe-api + fhe-worker + fhe-redis
-./deploy-fhe.sh taa             # only this host's TAA instance
+./deploy-fhe.sh taa             # the unified FHE + TAA container
 ./deploy-fhe.sh platform-mock   # only platform-mock
 
-# Package instead of deploy: bake taa into the base image and export an archive
+# Package instead of deploy: bake TAA into the FHE image and export an archive
 ./deploy-fhe.sh taa save        # -> deploy/taa-fhe-<date>.tar.gz
 ```
 
-- **`taa save`** builds the TAA binary, bakes it, `deploy/start.sh` and the rendered config into
-  `TAA_IMAGE` (`taa-env:slim-v2`), tags the result `TAA_FHE_SAVE_IMAGE` (`taa-fhe:<date>`) and
-  exports it as `TAA_FHE_SAVE_ARCHIVE` (default `deploy/taa-fhe-<date>.tar.gz`). Nothing is
-  started. The config is rendered from `TAA_FHE_CONFIG` with the
-  `HOST_DATA_DIR`/`HOST_TAA_STATE_DIR` paths, and placed at
-  `/root/taa/taa-config.json` — the path taa reads by default — so an image started without
-  `deploy-fhe.sh taa` (a k8s pod, a bare `docker run`) still boots. A `deploy-fhe.sh taa` run
-  renders and copies its own config over it at start time. The image is assembled and saved
-  **locally**, so the archive lands in the local `deploy/` directory. On the default remote
-  target it is then uploaded and loaded into the host's docker daemon automatically, and the
-  uploaded copy is removed afterwards; with `--local` there is nothing to upload or load.
-  `save` is only accepted with the `taa` argument.
-
-- **Positional modes.** The bare form deploys the FHE stack, platform-mock and TAA together.
-  `fhe`, `taa` and `platform-mock` narrow the run to one component: `fhe` touches no TAA or
-  platform-mock, `taa` assumes both the FHE stack and a platform are already running and skips
-  model activation, and `platform-mock` touches neither the FHE stack nor TAA.
+- **One container, one network namespace.** The container runs the image's own
+  `/opt/entrypoint.sh` (redis on `127.0.0.1:6379`, api_server on 58996, the worker) beside
+  `deploy/taa-fhe-entrypoint.sh`, which starts that entrypoint and the TAA supervisor, and
+  restarts the supervisor when it exits on its own. If the FHE entrypoint exits, the wrapper
+  stops TAA and exits with that status, so the restart policy acts on real FHE failures. The
+  container runs on the default `bridge` network; `TAA_DOCKER_NETWORK=host` is refused, because
+  host networking would put 58996 on the host.
+- **Ports.** Only TAA's port is published:
+  `-p ${TAA_PUBLISH_ADDR:-0.0.0.0}:$TAA_PORT:$TAA_PORT` (6001). 58996 is never published and
+  `-P` is never used, so a leftover FHE compose stack on the host cannot collide with this
+  container — which is also why `./deploy-fhe.sh fhe` no longer exists.
+- **Mounts.** `HOST_DATA_DIR` (default `/opt/fhe-data`) is mounted at `/data` for the FHE
+  entrypoint and at itself for the paths TAA's rendered config names; `HOST_TAA_STATE_DIR`
+  (default `/opt/taa-state`) is a bind of its own, so the FHE side cannot read TAA's SM2 key
+  pair or sealed state, and the two paths must not overlap. `HOST_FHE_REDIS_DIR` (default
+  `$HOST_DATA_DIR/redis-unified`) is mounted at `/data/redis`: the image's redis 7.0 cannot
+  read the RDB version a newer `redis:7-alpine` from a leftover compose stack writes into
+  `$HOST_DATA_DIR/redis`, and sharing that directory made the unified container exit on boot.
+- **The platform address.** On a bridge network, `127.0.0.1` inside the container is the
+  container itself, so an unset `PLATFORM_IP` is defaulted to the gateway of
+  `TAA_DOCKER_NETWORK` plus `PLATFORM_PORT` (normally `172.17.0.1:18081`) and injected with
+  `-e`; on `type=fhe` the environment wins over the template. A loopback `PLATFORM_IP` is
+  refused on a non-host network.
+- **`taa` mode** assumes platform-mock is already running. Set `PLATFORM_IP` explicitly when
+  the platform is not on this host.
+- **`taa save`** builds the TAA binary, bakes it, `deploy/start.sh`, the combined entrypoint
+  and the rendered config into an image built **from the FHE image**, tags the result
+  `TAA_FHE_SAVE_IMAGE` (`taa-fhe:<date>`) and exports it as `TAA_FHE_SAVE_ARCHIVE` (default
+  `deploy/taa-fhe-<date>.tar.gz`). Nothing is started. If the FHE base image is not present
+  locally, the bundle archive is verified against `SHA256SUMS` and loaded first. The image is
+  assembled and saved **locally**; on the default remote target it is then uploaded and
+  `docker load`ed, and the uploaded copy is kept. Run the result with
+  `TAA_IMAGE=taa-fhe:<date> ./deploy-fhe.sh taa`; a deploy run never loads the FHE bundle
+  archive over a custom tag. `save` is only accepted with the `taa` argument.
+- **Positional modes.** The bare form deploys platform-mock and the unified container together.
+  `taa` skips platform-mock; `platform-mock` touches neither the FHE side nor TAA.
 - **Remote by default.** The run targets `REMOTE_HOST` (default `172.16.10.178`) over ssh, the
   same host `deploy.sh remote` uses, and takes the same credentials (`TARGET_PASSWORD`). It
-  uploads the handoff bundle to `REMOTE_HANDOFF_DIR`, builds `bin/taa` and `bin/platform-mock`
-  here and copies them over, then runs every command of the local path on that host. Everything
-  else — the paths in the report, the render, the readiness wait — reads as a path on the
-  deployment host. Defaults filled in by the script: `HOST_RUNTIME_DIR=$REMOTE_DIR/latti-runtime`.
-  The callback address needs no default: it is always `http://127.0.0.1:<port>`, derived by TAA
-  from `server.addr` at startup, and therefore valid on any host the image lands on.
-  `REMOTE_HOST`, `REMOTE_USER`, `TARGET_PASSWORD`, `REMOTE_DIR` and `REMOTE_HANDOFF_DIR` override
-  the target; setting any of the defaults in the environment still wins.
+  stages the bundle's models into `HOST_DATA_DIR/models` (`rsync -a`, no `--delete`, so models
+  an operator added survive), uploads `deploy/start.sh`, `bin/taa` and the combined entrypoint
+  to `REMOTE_DIR`, builds both binaries here and runs every command of the local path on that
+  host. Everything else — the paths in the report, the render, the readiness wait — reads as a
+  path on the deployment host. The callback address needs no default: it is always
+  `http://127.0.0.1:<port>`, derived by TAA from `server.addr` at startup, and valid in any
+  container the image lands in. `REMOTE_HOST`, `REMOTE_USER`, `TARGET_PASSWORD` and
+  `REMOTE_DIR` override the target; setting any of the defaults in the environment still wins.
 - **`--local`** deploys on the machine running the script instead, which then needs a CUDA GPU and
   a writable `HOST_DATA_DIR`/`HOST_TAA_STATE_DIR`.
 - **`-n` / `--dry-run`** prints the whole plan and connects to nothing; it does not need the remote
@@ -654,9 +673,11 @@ the same check runs against a platform-mock this script starts on the host. In a
 runs only when something answers on `PLATFORM_PORT`; with no platform there, the run warns instead
 of failing.
 
-Two notes for a remote run: the platform-mock is started with `-allow-empty-attestation`, because an
-`fhe` instance writes an empty attestation by design; and `REMOTE_HANDOFF_DIR` has to be a directory
-of its own, since the upload is an `rsync -a --delete`.
+The platform-mock is started with `-allow-empty-attestation`, because an `fhe` instance writes an
+empty attestation by design. A re-run reuses the container only when image, binds, environment,
+network, entrypoint, published port, restart policy and GPU request all match; otherwise it
+recreates it, and a running container is refreshed in place (the supervisor is stopped, the files
+are replaced atomically, and the wrapper restarts it).
 
 > **The GPU has to be able to run the delivered runtime.** The bundle's `liblattisense.so` needs
 > CUDA 12 and is built for compute capability 8.9 (Ada), and the worker's memory pool pre-allocates
