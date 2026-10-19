@@ -172,12 +172,12 @@ func recomputeReportPassed(report *Report, honorExoneration bool) {
 // recalculateGatePassed recomputes Report.Passed on the normal path, honoring
 // LLM exoneration. MEDIUM never blocks this value.
 //
-// It is deliberately not the whole gate decision. AssembleAuditReport copies it
-// into ConclusionContext.ScanPassed, and ComputeConclusionContext ANDs it with
-// the classified check over the statistics (audit.go), which does block
-// on MEDIUM. That check is keyed on the classified severity and this one on the
-// static severity, so the same word "gate" names two different tests on
-// purpose: the AND of them is the decision.
+// It is not the audit verdict. ComputeConclusionContext decides that from the
+// classified statistics (audit.go), where MEDIUM blocks and an LLM BENIGN
+// verdict can clear a static HIGH. Report.Passed remains the scan report's own
+// decision - static HIGH plus the completeness precondition - so callers of
+// CheckImportWithLLM still get a fail-closed answer. The audit conclusion does
+// not AND it in: scan gaps are reported as follow-up items instead.
 func recalculateGatePassed(report *Report) {
 	recomputeReportPassed(report, true)
 }

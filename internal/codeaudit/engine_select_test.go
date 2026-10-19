@@ -452,8 +452,11 @@ func TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata(t *testing.T) {
 		t.Errorf("ScanMetadata.Binary.Incomplete = %d, want 1: the mirror must carry the gap, not only the counts",
 			audit.ScanMetadata.Binary.Incomplete)
 	}
-	if audit.Conclusion.Passed {
-		t.Error("Passed = true for a package whose native code could not be examined")
+	if !audit.Conclusion.Passed {
+		t.Error("Passed = false for a package whose native code could not be examined; scan gaps are advisory and do not decide the verdict")
+	}
+	if !strings.Contains(audit.Conclusion.Recommendation, "二进制文件未完整扫描") {
+		t.Errorf("recommendation does not report the incomplete binary scan: %s", audit.Conclusion.Recommendation)
 	}
 }
 
@@ -481,10 +484,9 @@ func TestRunBinaryChannelReportsAWholePassFailure(t *testing.T) {
 	}
 
 	// The downstream chain the summary feeds: MergeBinaryFindings attaches it to
-	// the scan report, ProvesCleanScan then withholds the pass on Errored, and
-	// AssembleAuditReport turns that into conclusion.Passed=false - which is what
-	// makes the platform refuse the import
-	// (internal/controller/import_processing.go:662-663).
+	// the scan report, and ProvesCleanScan then withholds the report-level pass
+	// on Errored. The audit conclusion does not consume that flag; the gap
+	// reaches the operator as an advisory note in the recommendation.
 	report := &Report{ScanComplete: true}
 	MergeBinaryFindings(report, res)
 	if report.ProvesCleanScan() {

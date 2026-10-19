@@ -932,10 +932,9 @@ func TestBinaryScannerDowngradedEvidenceDoesNotBlock(t *testing.T) {
 		t.Fatalf("MediumCount = %d, want 0: MEDIUM blocks under gate, so a MEDIUM downgrade is not a fix", report.MediumCount)
 	}
 	stats := ComputeStatistics(report.Findings)
-	// ScanPassed carries the completeness precondition the production path folds
-	// in (AssembleAuditReport), so a pass here is the finding decision alone.
-	scanPassed := report.ProvesCleanScan()
-	concl := ComputeConclusionContext(stats, nil, ConclusionContext{ScanPassed: &scanPassed})
+	// Scan gaps are advisory and do not participate in the conclusion, so the
+	// pass here is the finding decision alone.
+	concl := ComputeConclusionContext(stats, nil, ConclusionContext{})
 	if !concl.Passed {
 		t.Errorf("passed = false for a package whose only evidence is a symbol name")
 	}

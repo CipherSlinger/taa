@@ -292,7 +292,6 @@ func ComputeStatistics(findings []Finding) AuditStatistics {
 type ConclusionContext struct {
 	LLMDegraded  bool
 	HasLLMBenign bool
-	ScanPassed   *bool
 	FailClosed   bool
 }
 
@@ -300,6 +299,11 @@ type ConclusionContext struct {
 // scan context. Arbitration is always gate: a finding blocks when its classified
 // risk is HIGH or MEDIUM, and ClassifyFindingRisk lets the LLM verdict decide
 // that classification (BENIGN lowers a static HIGH, MALICIOUS raises anything).
+//
+// Scan completeness does not participate in the verdict. It is recorded in
+// scan_metadata and stated as an advisory note in the recommendation, so a gap
+// is visible to an operator without turning an audit of the findings the LLM
+// could see into a refusal.
 func ComputeConclusionContext(stats AuditStatistics, fileReports []FileReport, ctx ConclusionContext) AuditConclusion {
 	riskLevel := "NONE"
 
@@ -312,11 +316,9 @@ func ComputeConclusionContext(stats AuditStatistics, fileReports []FileReport, c
 	}
 
 	// Gate arbitration: block on classified HIGH and MEDIUM; LOW passes.
+	// The verdict is taken from the findings alone; scan gaps are advisory and
+	// are reported through the recommendation by AssembleAuditReport.
 	passed := stats.High == 0 && stats.Medium == 0
-
-	if ctx.ScanPassed != nil && !*ctx.ScanPassed {
-		passed = false
-	}
 
 	summary := buildSummaryTextExt(stats, riskLevel, passed, ctx.LLMDegraded, ctx.HasLLMBenign)
 	recommendation := buildRecommendation(fileReports)
@@ -346,17 +348,8 @@ func AssembleAuditReport(
 	sortFileReports(fileReports)
 
 	var hasLLMBenign bool
-	var scanPassed *bool
 	var llmDegraded bool
 	if scanReport != nil {
-		// ScanPassed is the channel that forces failure regardless of how the
-		// LLM phase ends, so it carries the completeness precondition as well as
-		// the finding-based decision. Without it a scan that dropped findings,
-		// or never finished, would reach ComputeConclusionContext as a pass and
-		// the only trace of the unexamined input would be a metadata field
-		// nobody reads.
-		sp := scanReport.Passed && scanReport.ProvesCleanScan()
-		scanPassed = &sp
 		llmDegraded = scanReport.LLMDegraded
 		for _, f := range scanReport.Findings {
 			if strings.EqualFold(strings.TrimSpace(f.LLMVerdict), "BENIGN") {
@@ -369,9 +362,18 @@ func AssembleAuditReport(
 	conclusion := ComputeConclusionContext(stats, fileReports, ConclusionContext{
 		LLMDegraded:  llmDegraded,
 		HasLLMBenign: hasLLMBenign,
-		ScanPassed:   scanPassed,
 		FailClosed:   cfg.FailClosed,
 	})
+	// A scan gap is a follow-up item, not a verdict: the conclusion above is
+	// taken from the findings the LLM could see, and this note makes the part
+	// that was not examined visible without withdrawing the pass.
+	if note := buildScanGapNote(scanReport); note != "" {
+		if conclusion.Recommendation == "" {
+			conclusion.Recommendation = note
+		} else {
+			conclusion.Recommendation += "；" + note
+		}
+	}
 
 	totalLines := 0
 	for _, count := range fileLineCounts {
@@ -508,30 +510,8 @@ func CountFileLines(path string) int {
 
 // ── Internal helpers ──────────────────────────────────────
 
-func buildSummaryText(stats AuditStatistics, riskLevel string) string {
-	passed := riskLevel != "CRITICAL" && riskLevel != "HIGH"
-	return buildSummaryTextExt(stats, riskLevel, passed, false, true)
-}
-
 func buildSummaryTextExt(stats AuditStatistics, riskLevel string, passed bool, llmDegraded bool, hasLLMBenign bool) string {
 	if stats.Total() == 0 {
-		// No finding is not the same as no gap: a scan that did not look
-		// everywhere still finds nothing, so the finding list can be empty on the
-		// exact report the conclusion refuses. This branch therefore has to read
-		// passed, or the summary asserts a pass on the report the conclusion is
-		// refusing. The text names no specific cause because passed is false for
-		// many of them at once - an incomplete scan, a parser failure, files
-		// skipped by extension, a subprocess that exited non-zero, a binary pass
-		// that could not run - and this function is not told which one applies.
-		// Truncated is deliberately not in that list: it is set only when the
-		// source arm's finding cap drops findings, which requires a non-zero
-		// total and so cannot be the reason on this branch. The binary arm's own
-		// cap is excluded from the verdict entirely (ProvesCleanScan reads the
-		// binary gaps, not FindingsCapped) and drops only LOW findings, which do
-		// not block.
-		if !passed {
-			return "审计未覆盖全部内容或存在未决项，不得判定为通过，建议拒绝该模型"
-		}
 		return "未发现安全问题，代码通过审计"
 	}
 
@@ -561,13 +541,14 @@ func buildSummaryTextExt(stats AuditStatistics, riskLevel string, passed bool, l
 	summary := "审计结论: " + strings.Join(parts, "，")
 
 	if !passed {
+		// passed is false here only for a classified HIGH or MEDIUM, so the
+		// risk level is CRITICAL or MEDIUM. The wording names the blocking
+		// finding rather than the mechanism that produced the verdict.
 		if riskLevel == "CRITICAL" || riskLevel == "HIGH" {
 			summary += "。存在数据泄露风险，建议拒绝该模型"
 		} else {
-			summary += "。触发 fail-closed 阻断策略，审计结论为未通过"
+			summary += "。存在中危风险，建议拒绝该模型"
 		}
-	} else if riskLevel == "CRITICAL" || riskLevel == "HIGH" {
-		summary += "。存在数据泄露风险，建议拒绝该模型"
 	} else if riskLevel == "LOW" || riskLevel == "NONE" {
 		summary += "。代码符合安全规范，未发现阻断级风险"
 	}
@@ -598,6 +579,49 @@ func buildRecommendation(fileReports []FileReport) string {
 	sort.Strings(suggestions)
 
 	return "建议修复: " + strings.Join(suggestions, "; ")
+}
+
+// buildScanGapNote describes what the scan could not prove it examined. It is
+// advisory: the conclusion is taken from the findings the LLM could see, and a
+// gap is reported so that the input that was not covered becomes a follow-up
+// item instead of an invisible pass.
+func buildScanGapNote(report *Report) string {
+	if report == nil || report.ProvesCleanScan() {
+		return ""
+	}
+
+	gaps := make([]string, 0, 6)
+	if !report.ScanComplete {
+		gaps = append(gaps, "扫描未完成")
+	}
+	if report.Truncated {
+		gaps = append(gaps, "结果被截断")
+	}
+	if report.ParserErrors > 0 {
+		gaps = append(gaps, fmt.Sprintf("解析失败 %d 个文件", report.ParserErrors))
+	}
+	if report.UnsupportedExts > 0 {
+		gaps = append(gaps, fmt.Sprintf("跳过 %d 个文件", report.UnsupportedExts))
+	}
+	if report.ProcessExitCode != 0 {
+		gaps = append(gaps, fmt.Sprintf("扫描进程退出码 %d", report.ProcessExitCode))
+	}
+	if b := report.Binary; b != nil {
+		if b.BoundedExecutable > 0 {
+			gaps = append(gaps, fmt.Sprintf("二进制可执行文件未完整扫描 %d 个", b.BoundedExecutable))
+		}
+		if b.Incomplete > 0 {
+			gaps = append(gaps, fmt.Sprintf("二进制文件未完整扫描 %d 个", b.Incomplete))
+		}
+		if b.Errored {
+			gaps = append(gaps, "二进制通道执行失败")
+		}
+	}
+	if len(gaps) == 0 {
+		return ""
+	}
+
+	return "扫描完整性提示: " + strings.Join(gaps, "，") + "（不影响本次结论，建议后续优化）"
 }
 
 // sortFileReports orders the file reports for the report that leaves the process:

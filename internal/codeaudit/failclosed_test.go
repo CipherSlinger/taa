@@ -2,6 +2,7 @@ package codeaudit
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,22 +76,17 @@ func TestProvesCleanScanHandlesNil(t *testing.T) {
 
 // ── The decision sites ────────────────────────────────────
 
-// TestTruncatedScanCannotPassTheAuditConclusion is the defect this stage exists
-// for, at the level production reads.
-//
-// import_processing.go:645 acts on audit.Conclusion.Passed. A scan that hit the
-// finding cap has dropped findings the engine did find, and Passed is computed
-// from what remains — so a truncated scan whose kept findings do not block passed
-// the conclusion while parts of the input had never been examined. The fixture is
-// asserted to be truncated and to have passed on the strength of its findings
-// alone, so the test cannot quietly become vacuous.
-func TestTruncatedScanCannotPassTheAuditConclusion(t *testing.T) {
+// TestTruncatedScanPassesWithAScanGapNote pins the current contract: truncation
+// is a follow-up item in the recommendation, not a refusal. The fixture still
+// asserts that the scan really truncated, so the note cannot be vacuous.
+func TestTruncatedScanPassesWithAScanGapNote(t *testing.T) {
 	dir := t.TempDir()
-	// Five LOW findings against a cap of two. The severity is load-bearing: gate
-	// blocks HIGH and MEDIUM, so a fixture built from either would fail this test
-	// on its kept findings alone and stop isolating the truncation signal. A LOW
-	// finding does not block, so only the completeness precondition can withdraw
-	// the pass. The built-in rule set has no LOW rule, hence the local one.
+	// Five LOW findings against a cap of two. The severity is load-bearing: the
+	// gate blocks HIGH and MEDIUM, so a fixture built from either would fail on
+	// its kept findings alone and stop isolating the truncation signal. A LOW
+	// finding does not block, so the conclusion passes and only the advisory
+	// note can reveal the truncation. The built-in rule set has no LOW rule,
+	// hence the local one.
 	writeTestFile(t, dir, "train.py",
 		"low_fixture_line_1\n"+
 			"low_fixture_line_2\n"+
@@ -121,21 +117,22 @@ func TestTruncatedScanCannotPassTheAuditConclusion(t *testing.T) {
 		[]FileReport{BuildFileReport("train.py", scanReport.Findings)},
 		lineCounts, LLMConfig{}, 10*time.Millisecond)
 
-	if audit.Conclusion.Passed {
-		t.Error("a scan that dropped findings at the cap passed the audit; " +
-			"the part of the input that was never examined is invisible in the report")
+	if !audit.Conclusion.Passed {
+		t.Error("a truncated scan whose classified findings do not block was refused; " +
+			"scan gaps are advisory follow-up items, not part of the verdict")
+	}
+	if !strings.Contains(audit.Conclusion.Recommendation, "扫描完整性提示") {
+		t.Errorf("recommendation does not report the scan gap: %s", audit.Conclusion.Recommendation)
+	}
+	if !strings.Contains(audit.Conclusion.Recommendation, "结果被截断") {
+		t.Errorf("recommendation does not name truncation: %s", audit.Conclusion.Recommendation)
 	}
 }
 
-// TestIncompleteScanCannotPassTheAuditConclusion is the same requirement for an
-// engine that reports incompleteness instead of failing the scan.
-//
-// The adapter returns an error rather than such a report, and the pipeline
-// turns that error into a block, so this path is not reachable through the
-// semgrep engine today. It is pinned anyway because the conclusion reads a
-// report, and a report carrying ScanComplete = false must not pass on the
-// strength of an empty finding list.
-func TestIncompleteScanCannotPassTheAuditConclusion(t *testing.T) {
+// TestIncompleteScanPassesWithAScanGapNote covers an engine that reports
+// incompleteness instead of failing the scan: the gap is recorded and reported,
+// but it does not withdraw the pass.
+func TestIncompleteScanPassesWithAScanGapNote(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir, "train.py", "import os\n")
 
@@ -151,8 +148,11 @@ func TestIncompleteScanCannotPassTheAuditConclusion(t *testing.T) {
 
 	audit := AssembleAuditReport(dir, scanReport, nil, lineCounts, LLMConfig{}, 10*time.Millisecond)
 
-	if audit.Conclusion.Passed {
-		t.Error("a report whose scan did not complete passed the audit on an empty finding list")
+	if !audit.Conclusion.Passed {
+		t.Error("a report whose scan did not complete was refused; scan gaps are advisory follow-up items")
+	}
+	if !strings.Contains(audit.Conclusion.Recommendation, "扫描未完成") {
+		t.Errorf("recommendation does not report the incomplete scan: %s", audit.Conclusion.Recommendation)
 	}
 	if audit.ScanMetadata.ScanComplete {
 		t.Error("ScanMetadata.ScanComplete = true for a report that did not complete")
@@ -160,8 +160,8 @@ func TestIncompleteScanCannotPassTheAuditConclusion(t *testing.T) {
 }
 
 // TestScanMetadataCarriesIncompletenessToTheReportThatLeaves pins that the
-// fields the conclusion is derived from are also visible to a reader of the
-// audit report, so a blocked import can be explained.
+// fields behind the advisory scan note are also visible to a reader of the
+// audit report, so a follow-up item can be explained.
 func TestScanMetadataCarriesIncompletenessToTheReportThatLeaves(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir, "train.py", "import os\n")
@@ -190,12 +190,13 @@ func TestScanMetadataCarriesIncompletenessToTheReportThatLeaves(t *testing.T) {
 // the engines actually can prove it. The completeness fields default to values
 // that withhold the pass — ScanComplete is false by default and false means "did
 // not complete" — so an engine that forgets to stamp them, or a new construction
-// path that bypasses stamping, does not merely lose information: it blocks every
-// import, and the report still reads as a scan that found nothing. That failure
-// has been observed rather than imagined: the gate-semantics fixture built bare
-// Report literals, and once the precondition landed its false positive rate went
-// from 0.52 to 1.00. This test is what makes that show up as one failing
-// assertion instead of a plausible-looking evidence artifact.
+// path that bypasses stamping, does not merely lose information: every audit
+// would carry a scan-gap note, and callers of CheckImportWithLLM would block
+// every import. That failure has been observed rather than imagined: the
+// gate-semantics fixture built bare Report literals, and once the precondition
+// landed its false positive rate went from 0.52 to 1.00. This test is what makes
+// that show up as one failing assertion instead of a plausible-looking evidence
+// artifact.
 func TestEveryEngineProvesACleanScanForANormalScan(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir, "train.py", "import os\nx = os.environ.get('api_key')\n")

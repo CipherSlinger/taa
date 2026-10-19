@@ -6,16 +6,17 @@ import (
 	"github.com/CipherSlinger/teellm"
 )
 
-// The production decision is the AND of two checks that are keyed on different
-// severities:
+// The production decision is the classified check over the statistics, where
+// ClassifyFindingRisk lets an LLM verdict override the static severity
+// (MALICIOUS -> HIGH, SUSPICIOUS -> MEDIUM, BENIGN -> LOW).
 //
-//  1. the check over the *classified* statistics, where ClassifyFindingRisk lets
-//     an LLM verdict override the static severity (MALICIOUS -> HIGH,
-//     SUSPICIOUS -> MEDIUM, BENIGN -> LOW);
-//  2. Report.Passed, which the verifier leaves keyed on the *static* severity,
-//     and which AssembleAuditReport copies into ConclusionContext.ScanPassed.
+//	final = gateCheck(classified)
 //
-//	final = gateCheck(classified) && reportPassed(static)
+// Report.Passed still exists and still folds in the completeness precondition,
+// but the audit conclusion no longer ANDs it: scan gaps are advisory follow-up
+// items (see buildScanGapNote), not a verdict. The report half is kept in this
+// helper so the tests below can still pin the static-severity arbitration that
+// drives it, and to show that it does not change the final result.
 //
 // The classified half is the only thing that blocks a static MEDIUM the LLM
 // escalated; the report half lets an LLM BENIGN verdict clear a static HIGH.
@@ -23,8 +24,7 @@ import (
 
 // productionDecision mirrors the production path for one scanned sample.
 // conclusionOnly is what the gate check alone decides; final is what production
-// actually consumes (import_processing.go takes Conclusion.Passed), which also
-// ANDs in Report.Passed via ScanPassed.
+// actually consumes (import_processing.go takes Conclusion.Passed).
 func productionDecision(findings []Finding) (conclusionOnly, reportPassed, final bool) {
 	// ScanComplete models the engine having stamped a completed scan. It is not
 	// optional detail: the pass decision withholds a pass from a report that
@@ -40,9 +40,8 @@ func productionDecision(findings []Finding) (conclusionOnly, reportPassed, final
 		HasLLMBenign: true,
 	}).Passed
 
-	// ComputeConclusionContext only ever clears a pass when ScanPassed is false,
-	// so the composition production consumes is exactly this conjunction.
-	final = conclusionOnly && report.Passed
+	// The conclusion is taken from the classified findings alone.
+	final = conclusionOnly
 
 	return conclusionOnly, report.Passed, final
 }

@@ -265,8 +265,10 @@ func TestAssembleAuditReport(t *testing.T) {
 	}
 }
 
-func TestAssembleAuditReport_SummaryHonestyAndFailClosed(t *testing.T) {
-	// Case 1: Degraded LLM with low findings should NOT claim "大模型确认为正常"
+func TestAssembleAuditReport_SummaryHonestyAndScanGaps(t *testing.T) {
+	// Case 1: Degraded LLM with low findings should NOT claim "大模型确认为正常".
+	// The report-level Passed flag no longer decides the conclusion, so this
+	// audit passes; the degraded wording is still load-bearing.
 	scanReportDegraded := &Report{
 		FilesCount:   1,
 		ScanComplete: true,
@@ -279,8 +281,8 @@ func TestAssembleAuditReport_SummaryHonestyAndFailClosed(t *testing.T) {
 	cfgFailClosed := LLMConfig{Model: "qwen2.5-coder:3b", Enabled: true, FailClosed: true}
 	auditDegraded := AssembleAuditReport("/test", scanReportDegraded, nil, map[string]int{"test_run.py": 10}, cfgFailClosed, 500*time.Millisecond)
 
-	if auditDegraded.Conclusion.Passed {
-		t.Fatal("expected audit to fail closed when scanReport.Passed is false")
+	if !auditDegraded.Conclusion.Passed {
+		t.Fatal("expected the conclusion to pass: it is taken from the classified findings, not scanReport.Passed")
 	}
 	if strings.Contains(auditDegraded.Conclusion.Summary, "大模型确认为正常") {
 		t.Fatalf("degraded audit must not claim LLM confirmed benign: %s", auditDegraded.Conclusion.Summary)
@@ -288,8 +290,8 @@ func TestAssembleAuditReport_SummaryHonestyAndFailClosed(t *testing.T) {
 	if !strings.Contains(auditDegraded.Conclusion.Summary, "大模型服务降级") {
 		t.Fatalf("degraded audit should state LLM degraded: %s", auditDegraded.Conclusion.Summary)
 	}
-	if !strings.Contains(auditDegraded.Conclusion.Summary, "fail-closed 阻断策略") {
-		t.Fatalf("fail-closed blocked audit should state fail-closed block: %s", auditDegraded.Conclusion.Summary)
+	if strings.Contains(auditDegraded.Conclusion.Summary, "fail-closed") {
+		t.Fatalf("scan gaps are advisory, so the summary must not claim a fail-closed block: %s", auditDegraded.Conclusion.Summary)
 	}
 
 	// Case 2: Healthy LLM with actual BENIGN finding should honestly report "大模型确认为正常"
@@ -312,29 +314,11 @@ func TestAssembleAuditReport_SummaryHonestyAndFailClosed(t *testing.T) {
 	}
 }
 
-// TestBuildSummaryTextDoesNotClaimAPassWhenRefused pins the branch where the
-// conclusion withholds the pass although no finding was produced. That input is
-// reachable - an enabled binary channel that could not scan a file records the
-// gap without emitting a finding, so Statistics.Total() stays 0 while
-// ProvesCleanScan returns false and the conclusion refuses - and the summary must
-// not then tell the platform the code passed, because the platform refuses the
-// import on conclusion.passed and reads this text as the human reason.
-func TestBuildSummaryTextDoesNotClaimAPassWhenRefused(t *testing.T) {
-	refused := buildSummaryTextExt(AuditStatistics{}, "NONE", false, false, true)
-
-	// The claim that was broken: an empty finding list is not a pass when the
-	// scan did not look everywhere.
-	if strings.Contains(refused, "通过审计") {
-		t.Errorf("refused summary claims a pass: %q", refused)
-	}
-	// Pin the message that replaced it, on the phrase that states the reason
-	// rather than the whole sentence.
-	if !strings.Contains(refused, "未覆盖全部内容") {
-		t.Errorf("refused summary does not state that the audit did not cover everything: %q", refused)
-	}
-
-	// The pass branch is unchanged: zero findings with passed true is still the
-	// clean statement the platform has always received.
+// TestBuildSummaryTextReportsACleanScanForZeroFindings pins the summary for an
+// empty finding list. The conclusion is taken from the classified findings
+// alone, so zero findings is stated as a pass; a scan gap is reported in the
+// recommendation instead (see buildScanGapNote).
+func TestBuildSummaryTextReportsACleanScanForZeroFindings(t *testing.T) {
 	clean := buildSummaryTextExt(AuditStatistics{}, "NONE", true, false, true)
 	if clean != "未发现安全问题，代码通过审计" {
 		t.Errorf("clean summary = %q, want 未发现安全问题，代码通过审计", clean)

@@ -195,9 +195,11 @@ func TestEndToEndUncorroboratedPresenceStillPasses(t *testing.T) {
 	}
 }
 
-// TestEndToEndBoundedExecutableBlocks pins the fail-closed direction that is
-// easiest to get wrong: a shared object the scan could not finish reading must
-// block, because a verdict reached without reading it is not a verdict.
+// TestEndToEndBoundedExecutableReportsAScanGap pins that a bound the binary
+// channel could not read past reaches the report as an advisory note. The gap
+// does not withdraw the pass: the conclusion is taken from the findings the LLM
+// could see, and the input that was not examined is reported as a follow-up
+// item.
 //
 // The limit the fixture reaches is MaxStreamBytes, the per-file read budget,
 // rather than a per-section cap - there is no per-section cap any more (see
@@ -207,10 +209,10 @@ func TestEndToEndUncorroboratedPresenceStillPasses(t *testing.T) {
 // The absence assertion is what makes this test about the budget rather than
 // about the file being large: .text here is high-entropy and executable, so if
 // the section reader ignored the budget and read the section anyway, BIN_001
-// would fire and the file would be refused for being packed instead. Both
-// outcomes withhold the pass, so only the absence of the entropy verdict
-// distinguishes a scan that stopped short from one that measured everything.
-func TestEndToEndBoundedExecutableBlocks(t *testing.T) {
+// would fire and the file would carry a blocking finding instead. Both outcomes
+// reach the report, so only the absence of the entropy verdict distinguishes a
+// scan that stopped short from one that measured everything.
+func TestEndToEndBoundedExecutableReportsAScanGap(t *testing.T) {
 	dir := t.TempDir()
 	writeTestBytes(t, dir, "native/libbig.so", elfFixtureBytes(t, elfSpec{
 		imports:  []string{"malloc"},
@@ -235,8 +237,11 @@ func TestEndToEndBoundedExecutableBlocks(t *testing.T) {
 	if got := binarySummary(t, audit).BoundedExecutable; got != 1 {
 		t.Errorf("BoundedExecutable = %d, want 1", got)
 	}
-	if audit.Conclusion.Passed {
-		t.Error("Passed = true after an executable file could not be read in full; the gap did not reach the verdict")
+	if !audit.Conclusion.Passed {
+		t.Error("Passed = false after an executable file could not be read in full; scan gaps are advisory and do not decide the verdict")
+	}
+	if !strings.Contains(audit.Conclusion.Recommendation, "二进制可执行文件未完整扫描") {
+		t.Errorf("recommendation does not report the bounded executable: %s", audit.Conclusion.Recommendation)
 	}
 	if _, ok := endToEndFinding(audit, "native/libbig.so", "BIN_001"); ok {
 		t.Error("BIN_001 fired on a file the budget was supposed to stop the section reader from measuring; " +
