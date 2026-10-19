@@ -296,14 +296,6 @@ type ConclusionContext struct {
 	FailClosed   bool
 }
 
-// ComputeConclusion determines the audit conclusion from statistics.
-// Retained for backward compatibility.
-func ComputeConclusion(stats AuditStatistics, fileReports []FileReport) AuditConclusion {
-	return ComputeConclusionContext(stats, fileReports, ConclusionContext{
-		HasLLMBenign: true,
-	})
-}
-
 // ComputeConclusionContext determines the audit conclusion from statistics and
 // scan context. Arbitration is always gate: a finding blocks when its classified
 // risk is HIGH or MEDIUM, and ClassifyFindingRisk lets the LLM verdict decide
@@ -357,11 +349,12 @@ func AssembleAuditReport(
 	var scanPassed *bool
 	var llmDegraded bool
 	if scanReport != nil {
-		// ScanPassed is the channel that forces failure under both policies, so
-		// it carries the completeness precondition as well as the finding-based
-		// decision. Without it a scan that dropped findings, or never finished,
-		// would reach ComputeConclusionContext as a pass and the only trace of
-		// the unexamined input would be a metadata field nobody reads.
+		// ScanPassed is the channel that forces failure regardless of how the
+		// LLM phase ends, so it carries the completeness precondition as well as
+		// the finding-based decision. Without it a scan that dropped findings,
+		// or never finished, would reach ComputeConclusionContext as a pass and
+		// the only trace of the unexamined input would be a metadata field
+		// nobody reads.
 		sp := scanReport.Passed && scanReport.ProvesCleanScan()
 		scanPassed = &sp
 		llmDegraded = scanReport.LLMDegraded
@@ -535,7 +528,7 @@ func buildSummaryTextExt(stats AuditStatistics, riskLevel string, passed bool, l
 		// total and so cannot be the reason on this branch. The binary arm's own
 		// cap is excluded from the verdict entirely (ProvesCleanScan reads the
 		// binary gaps, not FindingsCapped) and drops only LOW findings, which do
-		// not block under either policy.
+		// not block.
 		if !passed {
 			return "审计未覆盖全部内容或存在未决项，不得判定为通过，建议拒绝该模型"
 		}
@@ -764,7 +757,8 @@ func MergeBinaryFindings(report *Report, res *BinaryScanResult) {
 	// it reads each finding's LLMVerdict, and nothing reaches the merge carrying
 	// one - the binary arm attaches no verdict and this function writes none - so
 	// on the list being merged the exonerating spelling could not change
-	// HighCount either way. Where the choice is observable, VerifyReport owns it
-	// per policy: recalculateGatePassed (true) or recalculateStaticPassed (false).
+	// HighCount either way. Where the choice is observable, VerifyReport owns it:
+	// recalculateGatePassed on the normal path, recalculateStaticPassed when
+	// inference failed with fail-closed off.
 	recomputeReportPassed(report, false)
 }

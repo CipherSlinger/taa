@@ -105,9 +105,7 @@ func TestTruncatedScanCannotPassTheAuditConclusion(t *testing.T) {
 		Description: "fixture rule",
 		Patterns:    []*regexp.Regexp{regexp.MustCompile(`low_fixture_line`)},
 	}
-	cfg := DefaultConfig()
-	cfg.MaxFindings = 2
-	scanReport, lineCounts, err := NewScanner([]Rule{lowRule}, cfg).ScanDirectoryWithLines(dir)
+	scanReport, lineCounts, err := truncatingScannerWithRules([]Rule{lowRule}, 2).ScanDirectoryWithLines(dir)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}

@@ -364,6 +364,9 @@ func TestVerifyReport_InferenceClient_GateFailOpen(t *testing.T) {
 	if res.Findings[0].LLMVerdict != "UNCERTAIN" {
 		t.Fatalf("verdict = %s, want UNCERTAIN", res.Findings[0].LLMVerdict)
 	}
+	if res.Findings[0].LLMReason != "SERVICE_UNAVAILABLE: circuit breaker open" {
+		t.Fatalf("reason = %s, want SERVICE_UNAVAILABLE: circuit breaker open", res.Findings[0].LLMReason)
+	}
 }
 
 func TestSynthesizeFileSummary_BenignExfilIgnored(t *testing.T) {
@@ -554,37 +557,6 @@ func TestVerifyReport_ContextCancelled(t *testing.T) {
 		if !containsStr(f.LLMReason, "context canceled") {
 			t.Fatalf("finding[%d].LLMReason = %s, want context canceled", i, f.LLMReason)
 		}
-	}
-}
-
-func TestVerifyReport_InferenceClient_CircuitOpen_Degraded(t *testing.T) {
-	report := &Report{
-		ScanComplete: true,
-		HighCount:    0,
-		MediumCount:  1,
-		Passed:       true,
-		Findings: []Finding{
-			{File: "a.py", Line: 1, RuleID: "DYN_001", Severity: SeverityMedium, CodeSnippet: "eval(expr)"},
-		},
-	}
-	client := &mockInferenceClient{err: teellm.ErrCircuitOpen}
-	cfg := LLMConfig{Enabled: true, MaxFindings: 10}
-
-	res, err := VerifyReport(context.Background(), report, cfg, client)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !res.LLMDegraded {
-		t.Fatal("expected LLMDegraded = true with fail-closed off on inference error")
-	}
-	if !res.Passed {
-		t.Fatal("expected Passed to be preserved from static scan (true for medium-only findings)")
-	}
-	if res.Findings[0].LLMVerdict != "UNCERTAIN" {
-		t.Fatalf("verdict = %s, want UNCERTAIN", res.Findings[0].LLMVerdict)
-	}
-	if res.Findings[0].LLMReason != "SERVICE_UNAVAILABLE: circuit breaker open" {
-		t.Fatalf("reason = %s, want SERVICE_UNAVAILABLE: circuit breaker open", res.Findings[0].LLMReason)
 	}
 }
 

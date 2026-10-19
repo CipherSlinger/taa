@@ -116,7 +116,7 @@ func TestComputeStatistics(t *testing.T) {
 
 func TestComputeConclusionClean(t *testing.T) {
 	stats := AuditStatistics{}
-	conclusion := ComputeConclusion(stats, nil)
+	conclusion := ComputeConclusionContext(stats, nil, ConclusionContext{HasLLMBenign: true})
 	if !conclusion.Passed {
 		t.Fatal("clean code should pass")
 	}
@@ -127,7 +127,7 @@ func TestComputeConclusionClean(t *testing.T) {
 
 func TestComputeConclusionCritical(t *testing.T) {
 	stats := AuditStatistics{High: 1, Low: 1}
-	conclusion := ComputeConclusion(stats, nil)
+	conclusion := ComputeConclusionContext(stats, nil, ConclusionContext{HasLLMBenign: true})
 	if conclusion.Passed {
 		t.Fatal("malicious code should not pass")
 	}
@@ -139,7 +139,7 @@ func TestComputeConclusionCritical(t *testing.T) {
 func TestComputeConclusionGatePolicyDowngrade(t *testing.T) {
 	// HIGH findings exist but all judged BENIGN by LLM -> categorized as Low
 	stats := AuditStatistics{Low: 2}
-	conclusion := ComputeConclusion(stats, nil)
+	conclusion := ComputeConclusionContext(stats, nil, ConclusionContext{HasLLMBenign: true})
 	if !conclusion.Passed {
 		t.Fatal("gate mode should pass when all HIGH are BENIGN")
 	}
@@ -150,7 +150,7 @@ func TestComputeConclusionGatePolicyDowngrade(t *testing.T) {
 
 func TestComputeConclusionGateStaticOnlyBlocks(t *testing.T) {
 	stats := AuditStatistics{High: 1, Medium: 1}
-	conclusion := ComputeConclusion(stats, nil)
+	conclusion := ComputeConclusionContext(stats, nil, ConclusionContext{HasLLMBenign: true})
 	if conclusion.Passed {
 		t.Fatal("gate mode should block static findings when no LLM verdicts are present")
 	}
@@ -745,7 +745,7 @@ func TestRetinaDKDScenarioConclusionIsLow(t *testing.T) {
 		benignFindings[i].LLMRisk = "LOW"
 	}
 	statsA := ComputeStatistics(benignFindings)
-	conclusionA := ComputeConclusion(statsA, nil)
+	conclusionA := ComputeConclusionContext(statsA, nil, ConclusionContext{HasLLMBenign: true})
 	if conclusionA.RiskLevel != "LOW" {
 		t.Errorf("Scenario A (BENIGN) RiskLevel = %s, want LOW", conclusionA.RiskLevel)
 	}
@@ -760,7 +760,7 @@ func TestRetinaDKDScenarioConclusionIsLow(t *testing.T) {
 		uncertainFindings[i].LLMVerdict = "UNCERTAIN"
 	}
 	statsB := ComputeStatistics(uncertainFindings)
-	conclusionB := ComputeConclusion(statsB, nil)
+	conclusionB := ComputeConclusionContext(statsB, nil, ConclusionContext{HasLLMBenign: true})
 	if conclusionB.RiskLevel != "LOW" {
 		t.Errorf("Scenario B (UNCERTAIN fallback) RiskLevel = %s, want LOW", conclusionB.RiskLevel)
 	}
@@ -1041,7 +1041,7 @@ func TestMergeBinaryFindingsKeepsBothChannelsFindings(t *testing.T) {
 // that keeps the cap from refusing an import.
 //
 // The binary arm's cap drops LOW findings and only LOW (see
-// BinaryScanner.ScanDirectory), and LOW blocks under neither policy, so it
+// BinaryScanner.ScanDirectory), and LOW does not block, so it
 // cannot have dropped anything that would have blocked the import - but the
 // report's Truncated is a completeness flag
 // that ProvesCleanScan refuses on, and folding this into it would turn "the

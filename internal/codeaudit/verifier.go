@@ -108,16 +108,12 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 		}
 	}
 
-	// Unconditional LLMDegraded setting on inference failure
-	if hasInferenceFailure {
-		report.LLMDegraded = true
-	}
-
 	// Gate arbitration: the LLM's verdict decides a static HIGH. An LLM BENIGN
 	// verdict clears it; every other verdict, including UNCERTAIN, leaves it
 	// blocking. When the inference service could not answer, fail-closed keeps
 	// the block, while fail-closed off falls back to the static severities.
 	if hasInferenceFailure {
+		report.LLMDegraded = true
 		if cfg.FailClosed {
 			failedClosed := false
 			for _, f := range report.Findings {
@@ -173,12 +169,12 @@ func recomputeReportPassed(report *Report, honorExoneration bool) {
 	report.Passed = highCount == 0 && report.ProvesCleanScan()
 }
 
-// recalculateGatePassed recomputes Report.Passed for the gate policy, honoring
+// recalculateGatePassed recomputes Report.Passed on the normal path, honoring
 // LLM exoneration. MEDIUM never blocks this value.
 //
 // It is deliberately not the whole gate decision. AssembleAuditReport copies it
 // into ConclusionContext.ScanPassed, and ComputeConclusionContext ANDs it with
-// the policy check over the classified statistics (audit.go), which does block
+// the classified check over the statistics (audit.go), which does block
 // on MEDIUM. That check is keyed on the classified severity and this one on the
 // static severity, so the same word "gate" names two different tests on
 // purpose: the AND of them is the decision.
@@ -407,7 +403,7 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	// static-only verdict while the report says otherwise. Both phases below are
 	// skipped, so nothing downstream can tell this apart from an audit the LLM
 	// actually adjudicated — and under fail-closed, skipping the adjudication is
-	// the silent allow the policy exists to prevent.
+	// the silent allow fail-closed exists to prevent.
 	//
 	// llmWanted rather than llmActive is the point: with no findings the LLM would
 	// not have been called even if it were reachable — VerifyReport returns early on

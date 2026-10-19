@@ -13,7 +13,7 @@ import (
 // arbitration the audit applies: the LLM's verdict decides a static HIGH, and
 // MEDIUM findings still block. It is a constant rather than a setting because a
 // deployment must not be able to turn the LLM's decision back into advisory.
-const llmArbitrationPolicy = "gate"
+const llmArbitrationPolicy = teellm.PolicyModeGate
 
 // LLMConfig controls the local LLM verifier.
 type LLMConfig struct {

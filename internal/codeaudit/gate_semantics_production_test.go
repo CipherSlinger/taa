@@ -159,28 +159,17 @@ func TestProductionGateSemantics(t *testing.T) {
 			}
 
 			var all []Finding
-			var fileReports []FileReport
 			for _, fr := range doc.FileReports {
 				all = append(all, fr.Findings...)
-				fileReports = append(fileReports, BuildFileReport(fr.File, fr.Findings))
 			}
 
 			stats := ComputeStatistics(all)
 
-			// Reproduce Report.Passed exactly as the verifier leaves it, for the
-			// scan these runs actually were: one that completed and dropped
-			// nothing. The fail-closed branches can only set it to false.
-			//
-			// The completeness fields are set explicitly rather than left at
-			// their zero values, and that is load-bearing rather than tidiness.
-			// The zero value of ScanComplete means "did not complete", and the
-			// pass decision withholds a pass on exactly that, so a report literal
-			// that leaves the field unset is the least permissive value, not the
-			// most: it blocks every sample.
-			report := &Report{Findings: all, ScanComplete: true}
-			recalculateGatePassed(report)
-
-			concl := ComputeConclusionContext(stats, fileReports, ConclusionContext{HasLLMBenign: true})
+			// productionDecision runs the same composition the controller uses:
+			// the report-level gate recalculation (which withholds a pass from a
+			// scan that cannot prove it looked) ANDed with the conclusion over
+			// the classified statistics.
+			conclusionOnly, reportPassed, final := productionDecision(all)
 
 			sampleID := filepath.Base(filepath.Dir(rp))
 			label, labelled := labels[sampleID]
@@ -198,14 +187,10 @@ func TestProductionGateSemantics(t *testing.T) {
 				}
 			}
 
-			// Final production verdict: the conclusion, forced false by the
-			// report value when the verifier's recalculation disagrees.
-			final := concl.Passed && report.Passed
-
 			so := sampleOutcome{
 				SampleID: sampleID, Label: label, Findings: len(all),
 				High: stats.High, Medium: stats.Medium, Low: stats.Low,
-				ConclusionPassed: concl.Passed, ReportPassed: report.Passed,
+				ConclusionPassed: conclusionOnly, ReportPassed: reportPassed,
 			}
 			rs.SamplesDetail = append(rs.SamplesDetail, so)
 			rs.Samples++
@@ -223,7 +208,7 @@ func TestProductionGateSemantics(t *testing.T) {
 
 			if label == "benign" {
 				bTotal++
-				if !concl.Passed {
+				if !conclusionOnly {
 					bBlock++
 				}
 				if !final {
@@ -232,7 +217,7 @@ func TestProductionGateSemantics(t *testing.T) {
 				}
 			} else {
 				mTotal++
-				if !concl.Passed {
+				if !conclusionOnly {
 					mBlock++
 				}
 				if !final {

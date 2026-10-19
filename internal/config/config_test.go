@@ -235,6 +235,16 @@ func TestLoadStartupConfigFHEPlatformSection(t *testing.T) {
 	}
 }
 
+// fheConfigSection is the fhe block shared by the fixtures that only need a
+// config which passes validation.
+const fheConfigSection = `"fhe": {
+		"endpoint": "http://127.0.0.1:58996",
+		"dataDir": "/opt/fhe-data",
+		"keyCacheDir": "/opt/fhe-data/taa-fhe-keys",
+		"callbackBaseUrl": "http://127.0.0.1:6001",
+		"callbackToken": "test-token"
+	}`
+
 // auditAndAttestationConfig carries both blocks with values that differ from
 // every default, so a test can tell "applied" from "ignored" on each field.
 const auditAndAttestationConfig = `{
@@ -253,13 +263,7 @@ const auditAndAttestationConfig = `{
 		}
 	},
 	"attestation": {"hrkCertPath": "/bogus/hrk.cert", "hskCekCertPath": "/bogus/hsk_cek.cert"},
-	"fhe": {
-		"endpoint": "http://127.0.0.1:58996",
-		"dataDir": "/opt/fhe-data",
-		"keyCacheDir": "/opt/fhe-data/taa-fhe-keys",
-		"callbackBaseUrl": "http://127.0.0.1:6001",
-		"callbackToken": "test-token"
-	}
+	` + fheConfigSection + `
 }`
 
 func writeAuditAndAttestationConfig(t *testing.T, path, serverType string) {
@@ -432,14 +436,6 @@ func TestLoadStartupConfigLLMEnabledRequiresTheBlock(t *testing.T) {
 	t.Setenv("PLATFORM_IP", "")
 	t.Setenv("DOCKER_ID", "")
 
-	const fheSection = `"fhe": {
-		"endpoint": "http://127.0.0.1:58996",
-		"dataDir": "/opt/fhe-data",
-		"keyCacheDir": "/opt/fhe-data/taa-fhe-keys",
-		"callbackBaseUrl": "http://127.0.0.1:6001",
-		"callbackToken": "test-token"
-	}`
-
 	cases := []struct {
 		name string
 		body string
@@ -457,7 +453,7 @@ func TestLoadStartupConfigLLMEnabledRequiresTheBlock(t *testing.T) {
 		},
 		{
 			name: "fhe with llm block",
-			body: `{"server": {"type": "fhe"}, "codeAudit": {"llm": {"enabled": true}}, ` + fheSection + `}`,
+			body: `{"server": {"type": "fhe"}, "codeAudit": {"llm": {"enabled": true}}, ` + fheConfigSection + `}`,
 			want: false,
 		},
 	}

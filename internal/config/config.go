@@ -50,8 +50,8 @@ type StartupConfig struct {
 	// family goes quiet on this deployment. Lower down, a threshold that lands
 	// inside the band compiled code already occupies (roughly 6.0-6.5) starts
 	// calling ordinary shared objects packed - and BIN_001 is HIGH, so those
-	// imports are refused under both policies. The default is 7.5, clear of the
-	// band.
+	// imports are refused regardless of arbitration. The default is 7.5, clear
+	// of the band.
 	BinaryAuditHighEntropyThreshold float64
 	// BinaryAuditMaxFindings is the listing budget for the binary pass, not a
 	// completeness bound: reaching it drops LOW findings (and only LOW - HIGH and
@@ -533,11 +533,13 @@ func rejectRemovedKeys(path string, fileCfg startupConfigFile) error {
 	if hasJSONValue(fileCfg.CodeAudit.RemovedSemgrepTimeout) {
 		found = append(found, `"codeAudit.semgrepTimeoutSeconds" (move to "codeAudit.codeScan.timeoutSeconds")`)
 	}
-	if fileCfg.CodeAudit.LLM != nil && hasJSONValue(fileCfg.CodeAudit.LLM.RemovedTransport) {
-		found = append(found, `"codeAudit.llm.transport" (replace with "codeAudit.llm.attestationEnabled": true is the old "teetls", false is the old non-attested transport)`)
-	}
-	if fileCfg.CodeAudit.LLM != nil && hasJSONValue(fileCfg.CodeAudit.LLM.RemovedPolicy) {
-		found = append(found, `"codeAudit.llm.policy" (removed: arbitration is always "gate", and the LLM verdict decides a static HIGH)`)
+	if llm := fileCfg.CodeAudit.LLM; llm != nil {
+		if hasJSONValue(llm.RemovedTransport) {
+			found = append(found, `"codeAudit.llm.transport" (replace with "codeAudit.llm.attestationEnabled": true is the old "teetls", false is the old non-attested transport)`)
+		}
+		if hasJSONValue(llm.RemovedPolicy) {
+			found = append(found, `"codeAudit.llm.policy" (removed: arbitration is always "gate", and the LLM verdict decides a static HIGH)`)
+		}
 	}
 	if len(found) == 0 {
 		return nil
@@ -946,6 +948,9 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	// on disk; that no scan ever runs here is the point, not a side effect.
 	if !readsAuditAndAttestation {
 		cfg.CodeScan.Engine = "regex"
+		// An fhe instance never reads the llm block, so it has no inference
+		// service to probe.
+		cfg.LLM.Enabled = false
 	}
 
 	if trimmed := strings.TrimSpace(fileCfg.PlatformIP); trimmed != "" {
@@ -1119,6 +1124,9 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 		if llm := fileCfg.CodeAudit.LLM; llm != nil {
 			if llm.Enabled != nil {
 				cfg.LLM.Enabled = *llm.Enabled
+			} else {
+				// A block with no explicit switch keeps the audit on.
+				cfg.LLM.Enabled = true
 			}
 			if llm.AttestationEnabled != nil {
 				cfg.LLM.AttestationEnabled = *llm.AttestationEnabled
@@ -1175,16 +1183,12 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 			if llm.Dir != "" {
 				cfg.LLM.Dir = llm.Dir
 			}
+		} else {
+			// No llm block means no inference service to reach: the audit
+			// defaults off instead of probing a default endpoint nobody
+			// configured.
+			cfg.LLM.Enabled = false
 		}
-	}
-
-	// An instance whose config did not supply an LLM block has no inference
-	// service to reach: the audit defaults off instead of probing a default
-	// endpoint nobody configured. That covers an fhe instance too, whose
-	// codeAudit block is not read at all - leaving the default on there would
-	// probe a gateway this instance can never use and fail on every startup.
-	if !readsAuditAndAttestation || fileCfg.CodeAudit.LLM == nil {
-		cfg.LLM.Enabled = false
 	}
 
 	// The fhe section is only meaningful on an fhe instance. A tee instance that

@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/CipherSlinger/teellm"
-	"github.com/CipherSlinger/teetls"
 	"taa/internal/attestation"
 	"taa/internal/codeaudit"
 	"taa/internal/config"
@@ -326,30 +324,21 @@ func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error 
 	log.Printf("inference service connectivity probe: endpoint=%s attestationEnabled=%v attestMode=%s mutualAttest=%v timeout=%s",
 		cfg.LLM.Endpoint, cfg.LLM.AttestationEnabled, cfg.LLM.AttestationMode, cfg.LLM.RequireMutualAttest, probeTimeout)
 
-	var teeTLSConfig *teetls.Config
-	if cfg.LLM.AttestationEnabled {
-		mode := teetls.ModeStrict
-		if cfg.LLM.AttestationMode == "permissive" {
-			mode = teetls.ModePermissive
-		}
-		teeTLSConfig = &teetls.Config{
-			Mode:                          mode,
-			InsecureSkipAttestationVerify: cfg.LLM.InsecureSkipVerify,
-			ExpectedMeasurements:          cfg.LLM.ExpectedMeasurements,
-			VerifyMutualAttestation:       cfg.LLM.RequireMutualAttest,
-		}
-		if cfg.LLM.HRKCertPath != "" || cfg.LLM.HSKCekCertPath != "" {
-			teeTLSConfig.EvidenceProvider = teetls.NewHygonHardwareProvider("", cfg.LLM.HRKCertPath, cfg.LLM.HSKCekCertPath)
-		}
-	}
-
-	client, err := teellm.NewClient(teellm.Config{
-		Endpoint:                       cfg.LLM.Endpoint,
-		Timeout:                        timeout,
-		AllowedHosts:                   cfg.LLM.AllowedHosts,
-		TEETLS:                         teeTLSConfig,
-		CircuitBreakerFailureThreshold: cfg.LLM.CircuitBreakerThreshold,
-		CircuitBreakerCooldown:         time.Duration(cfg.LLM.CooldownSec) * time.Second,
+	// Reuse the audit's client construction so the probe cannot diverge from the
+	// transport the audit actually uses.
+	client, err := codeaudit.NewInferenceClient(codeaudit.LLMConfig{
+		Endpoint:                cfg.LLM.Endpoint,
+		Timeout:                 timeout,
+		AttestationEnabled:      cfg.LLM.AttestationEnabled,
+		AttestationMode:         cfg.LLM.AttestationMode,
+		InsecureSkipVerify:      cfg.LLM.InsecureSkipVerify,
+		ExpectedMeasurements:    cfg.LLM.ExpectedMeasurements,
+		RequireMutualAttest:     cfg.LLM.RequireMutualAttest,
+		HRKCertPath:             cfg.LLM.HRKCertPath,
+		HSKCekCertPath:          cfg.LLM.HSKCekCertPath,
+		AllowedHosts:            cfg.LLM.AllowedHosts,
+		CircuitBreakerThreshold: cfg.LLM.CircuitBreakerThreshold,
+		CooldownSec:             cfg.LLM.CooldownSec,
 	})
 	if err != nil {
 		return fmt.Errorf("create inference client: %w", err)

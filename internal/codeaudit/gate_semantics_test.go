@@ -40,11 +40,9 @@ func productionDecision(findings []Finding) (conclusionOnly, reportPassed, final
 		HasLLMBenign: true,
 	}).Passed
 
-	sp := report.Passed
-	final = ComputeConclusionContext(stats, fileReports, ConclusionContext{
-		HasLLMBenign: true,
-		ScanPassed:   &sp,
-	}).Passed
+	// ComputeConclusionContext only ever clears a pass when ScanPassed is false,
+	// so the composition production consumes is exactly this conjunction.
+	final = conclusionOnly && report.Passed
 
 	return conclusionOnly, report.Passed, final
 }
@@ -100,59 +98,53 @@ func TestGateStaticHighNonBenignBlocks(t *testing.T) {
 	}
 }
 
-// TestGateStaticMediumFollowsVerdict pins that the LLM also decides a static
-// MEDIUM: BENIGN lowers it to LOW and passes, any other verdict leaves it
-// classified at MEDIUM and blocks.
-func TestGateStaticMediumFollowsVerdict(t *testing.T) {
+// TestStaticSeverityFollowsVerdict pins both directions of the arbitration for
+// the static severities that do not block on their own. BENIGN lowers either to
+// LOW and passes, while every other verdict replaces the static severity, so a
+// static LOW the LLM calls MALICIOUS blocks and a static MEDIUM only clears on
+// BENIGN. The empty verdict is the static fallback.
+func TestStaticSeverityFollowsVerdict(t *testing.T) {
 	cases := []struct {
-		verdict string
-		want    bool
+		name     string
+		ruleID   string
+		severity string
+		want     map[string]bool
 	}{
-		{teellm.VerdictMalicious, false},  // classified HIGH
-		{teellm.VerdictSuspicious, false}, // classified MEDIUM
-		{teellm.VerdictBenign, true},      // classified LOW
-		{teellm.VerdictUncertain, false},  // classified MEDIUM
-		{"", false},                       // static fallback: MEDIUM
+		{"medium", "ENV_001", SeverityMedium, map[string]bool{
+			teellm.VerdictMalicious:  false, // classified HIGH
+			teellm.VerdictSuspicious: false, // classified MEDIUM
+			teellm.VerdictBenign:     true,  // classified LOW
+			teellm.VerdictUncertain:  false, // classified MEDIUM
+			"":                       false, // static fallback: MEDIUM
+		}},
+		{"low", "CMD_002", SeverityLow, map[string]bool{
+			teellm.VerdictMalicious:  false, // classified HIGH
+			teellm.VerdictSuspicious: false, // classified MEDIUM
+			teellm.VerdictBenign:     true,  // classified LOW
+			teellm.VerdictUncertain:  false, // classified MEDIUM
+			"":                       true,  // static fallback: LOW
+		}},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.verdict, func(t *testing.T) {
-			findings := []Finding{finding("ENV_001", SeverityMedium, tc.verdict)}
+		t.Run(tc.name, func(t *testing.T) {
+			for verdict, want := range tc.want {
+				t.Run(verdict, func(t *testing.T) {
+					findings := []Finding{finding(tc.ruleID, tc.severity, verdict)}
 
-			conclusionOnly, _, final := productionDecision(findings)
+					conclusionOnly, reportPassed, final := productionDecision(findings)
 
-			if conclusionOnly != tc.want {
-				t.Errorf("conclusion only = %v, want %v", conclusionOnly, tc.want)
-			}
-			if final != tc.want {
-				t.Errorf("final = %v, want %v", final, tc.want)
-			}
-		})
-	}
-}
-
-// TestGateStaticLowFollowsVerdict pins the escalation direction: a static LOW is
-// harmless unless the LLM raises it.
-func TestGateStaticLowFollowsVerdict(t *testing.T) {
-	cases := []struct {
-		verdict string
-		want    bool
-	}{
-		{teellm.VerdictMalicious, false},  // classified HIGH
-		{teellm.VerdictSuspicious, false}, // classified MEDIUM
-		{teellm.VerdictBenign, true},      // classified LOW
-		{teellm.VerdictUncertain, false},  // classified MEDIUM
-		{"", true},                        // static fallback: LOW
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.verdict, func(t *testing.T) {
-			findings := []Finding{finding("CMD_002", SeverityLow, tc.verdict)}
-
-			_, _, final := productionDecision(findings)
-
-			if final != tc.want {
-				t.Errorf("final = %v, want %v for verdict %q", final, tc.want, tc.verdict)
+					if !reportPassed {
+						t.Fatalf("Report.Passed = false for a %s finding with verdict %q; "+
+							"the report gate has no reason to withhold here", tc.severity, verdict)
+					}
+					if conclusionOnly != want {
+						t.Errorf("conclusion only = %v, want %v", conclusionOnly, want)
+					}
+					if final != want {
+						t.Errorf("final = %v, want %v", final, want)
+					}
+				})
 			}
 		})
 	}

@@ -399,7 +399,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `codeAudit.binaryAudit.maxFullScanBytes` | `67108864` (64 MiB) | Above this size a file is no longer read end to end, only its head and tail (1 MiB each). A windowed executable or pickle records a completeness gap and withholds the pass - without that, padding a pickle past the cut would hide a mid-stream target and still pass. On a data file the gap is recorded but does not withhold |
 | `codeAudit.binaryAudit.maxStreamBytes` | `3221225472` (3 GiB) | Per-file read budget for the end-to-end pass. Against the shipped `maxFullScanBytes` (64 MiB) it never binds; **lowering** it below `maxFullScanBytes` makes files in between stop short, which records a completeness gap and withholds the pass on executable kinds |
 | `codeAudit.maxFileBytes` | `3221225472` (3 GB) | Alias for `maxFileBytes` set inside the audit block rather than at the root |
-| `codeAudit.llm.enabled` | `true` | Enables local LLM semantic arbitration for code security audits |
+| `codeAudit.llm.enabled` | `true` | Enables local LLM semantic arbitration for code security audits. An absent `llm` block forces it off |
 | `codeAudit.llm.attestationEnabled` | `true` | `true` uses TEE-TLS (RFC 8998 TLS 1.3 ShangMi) and verifies the gateway's CSV remote attestation; `false` uses ordinary TLS with no attestation |
 | `codeAudit.llm.endpoint` | `https://127.0.0.1:8443` | Decoupled TEE-LLM service endpoint |
 | `codeAudit.llm.model` | `qwen2.5-coder:0.5b` | Target LLM model for code analysis. The shipped templates all override this with `qwen2.5-coder:7b`, which is what a deployment actually runs |

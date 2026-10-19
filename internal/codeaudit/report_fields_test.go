@@ -9,9 +9,15 @@ import (
 // truncatingScanner builds a scanner with a small finding cap so that
 // truncation can be reached with a two-line fixture.
 func truncatingScanner(maxFindings int) *Scanner {
+	return truncatingScannerWithRules(DefaultRules(), maxFindings)
+}
+
+// truncatingScannerWithRules is truncatingScanner over a caller-supplied rule
+// set, for fixtures that need a severity the built-in table does not produce.
+func truncatingScannerWithRules(rules []Rule, maxFindings int) *Scanner {
 	cfg := DefaultConfig()
 	cfg.MaxFindings = maxFindings
-	return NewScanner(DefaultRules(), cfg)
+	return NewScanner(rules, cfg)
 }
 
 // manyHighFindings returns Python source with n independent HIGH-finding lines.

@@ -16,8 +16,8 @@ type ResultCheckReport struct {
 
 // ResultCheckIssue is a single issue found in exported results.
 type ResultCheckIssue struct {
-	Check   string `json:"check"`
-	Detail  string `json:"detail"`
+	Check    string `json:"check"`
+	Detail   string `json:"detail"`
 	Severity string `json:"severity"`
 }
 
