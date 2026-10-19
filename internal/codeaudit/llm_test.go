@@ -604,6 +604,49 @@ func newTestTEETLSServer(t *testing.T, handler http.Handler) *httptest.Server {
 	return server
 }
 
+// ── TEE-TLS config tests ─────────────────────────────────
+
+// TestBuildTEETLSConfigMeasurement pins the measurement policy. A configured
+// digest must reach teetls as a strict expectation, while an absent one must
+// not: teetls rejects a strict client with no expectation, so the empty case
+// has to be permissive rather than strict.
+func TestBuildTEETLSConfigMeasurement(t *testing.T) {
+	t.Run("a configured measurement is enforced", func(t *testing.T) {
+		got := buildTEETLSConfig(LLMConfig{
+			AttestationEnabled:     true,
+			AttestationMeasurement: " deadbeef01234567 ",
+		})
+		if got == nil {
+			t.Fatal("buildTEETLSConfig returned nil")
+		}
+		if got.Mode != teetls.ModeStrict {
+			t.Errorf("Mode = %q, want %q", got.Mode, teetls.ModeStrict)
+		}
+		if len(got.ExpectedMeasurements) != 1 || got.ExpectedMeasurements[0] != "deadbeef01234567" {
+			t.Errorf("ExpectedMeasurements = %v, want [deadbeef01234567]", got.ExpectedMeasurements)
+		}
+	})
+
+	t.Run("an empty measurement skips the comparison", func(t *testing.T) {
+		got := buildTEETLSConfig(LLMConfig{AttestationEnabled: true})
+		if got == nil {
+			t.Fatal("buildTEETLSConfig returned nil")
+		}
+		if got.Mode != teetls.ModePermissive {
+			t.Errorf("Mode = %q, want %q", got.Mode, teetls.ModePermissive)
+		}
+		if len(got.ExpectedMeasurements) != 0 {
+			t.Errorf("ExpectedMeasurements = %v, want none", got.ExpectedMeasurements)
+		}
+	})
+
+	t.Run("attestation disabled builds no TEE-TLS config", func(t *testing.T) {
+		if got := buildTEETLSConfig(LLMConfig{}); got != nil {
+			t.Errorf("buildTEETLSConfig = %+v, want nil", got)
+		}
+	})
+}
+
 // ── OllamaClient adapter tests with httptest ─────────────
 
 func TestOllamaClientSuccess(t *testing.T) {

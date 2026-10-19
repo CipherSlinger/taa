@@ -355,12 +355,14 @@ TAA reads its configuration from `taa-config.json` located in its working direct
     },
     "llm": {
       "enabled": true,
-      "attestationEnabled": true,
+      "attestation": {
+        "enabled": true,
+        "measurement": ""
+      },
       "endpoint": "https://127.0.0.1:8443",
       "model": "qwen2.5-coder:7b",
       "failClosed": true,
-      "insecureSkipVerify": false,
-      "attestationMode": "strict"
+      "insecureSkipVerify": false
     }
   },
   "attestation": {
@@ -400,13 +402,13 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `codeAudit.binaryAudit.maxStreamBytes` | `3221225472` (3 GiB) | Per-file read budget for the end-to-end pass. Against the shipped `maxFullScanBytes` (64 MiB) it never binds; **lowering** it below `maxFullScanBytes` makes files in between stop short, which records a completeness gap and withholds the pass on executable kinds |
 | `codeAudit.maxFileBytes` | `3221225472` (3 GB) | Alias for `maxFileBytes` set inside the audit block rather than at the root |
 | `codeAudit.llm.enabled` | `true` | Enables local LLM semantic arbitration for code security audits. An absent `llm` block forces it off |
-| `codeAudit.llm.attestationEnabled` | `true` | `true` uses TEE-TLS (RFC 8998 TLS 1.3 ShangMi) and verifies the gateway's CSV remote attestation; `false` uses ordinary TLS with no attestation |
+| `codeAudit.llm.attestation.enabled` | `true` | `true` uses TEE-TLS (RFC 8998 TLS 1.3 ShangMi) and verifies the gateway's CSV remote attestation; `false` uses ordinary TLS with no attestation |
 | `codeAudit.llm.endpoint` | `https://127.0.0.1:8443` | Decoupled TEE-LLM service endpoint |
 | `codeAudit.llm.model` | `qwen2.5-coder:0.5b` | Target LLM model for code analysis. The shipped templates all override this with `qwen2.5-coder:7b`, which is what a deployment actually runs |
 | `codeAudit.llm.failClosed` | `true` | Fails code audit if the LLM inference service is unreachable or encounters timeout. It also decides what the export gate does when the result leakage check left no usable verdict: with `true`, a missing verdict or a verdict recording that the check could not run rejects the export with a 500; with `false`, both are logged as warnings and the export proceeds. A verdict that says the result leaks is never affected - it always returns 400 |
 | `codeAudit.llm.temperature` | unset | Sampling temperature sent with each verify request, in `[0, 2]`. Unset leaves the choice to the inference service, which decodes deterministically so the same finding always yields the same verdict. Setting anything other than `0` re-enables sampling: identical findings may then be judged differently, and a single `MALICIOUS` verdict under `failClosed` fails the audit. A non-zero value is therefore logged as a startup warning. Out-of-range values are rejected at startup |
 | `codeAudit.llm.insecureSkipVerify` | `false` | Skips TLS CA certificate verification (set to `true` only for local Docker testing) |
-| `codeAudit.llm.attestationMode` | `strict` | Hardware attestation verification policy for TEE-TLS (`strict` in production, `permissive` in local simulation) |
+| `codeAudit.llm.attestation.measurement` | unset | Expected measurement digest from the gateway's attestation report. Non-empty requires a match or the handshake fails. Empty or absent skips the measurement comparison and logs a warning; the trust chain and key binding are still verified (unless `insecureSkipVerify` is set) |
 | `attestation.hrkCertPath` | `/root/taa/certs/hrk.cert` | Hygon Root Key (HRK) certificate path for CSV attestation verification |
 | `attestation.hskCekCertPath` | `/root/taa/certs/hsk_cek.cert` | Hygon Sign Key (HSK) / Chip Endorsement Key (CEK) certificate path |
 | `fhe.endpoint` | **required** | String. FHE API base URL, an absolute `http`/`https` URL with a host, e.g. `http://127.0.0.1:58996` |
@@ -460,8 +462,8 @@ does not reach it, so `TAASECRETKEY` there needs an additional injection path.
 
 ### Configuration Templates
 
-- **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths, with explicit `platform` configuration, `attestationMode: "permissive"`, and `insecureSkipVerify: true`.
-- **`configs/taa-production.json`**: For production Kubernetes Pods. Omits `platform` so parameters are dynamically injected by the orchestration platform via environment variables, and enforces `attestationMode: "strict"`.
+- **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths, with explicit `platform` configuration, an empty `attestation.measurement`, and `insecureSkipVerify: true`.
+- **`configs/taa-production.json`**: For production Kubernetes Pods. Omits `platform` so parameters are dynamically injected by the orchestration platform via environment variables, keeps attestation enabled, and leaves `attestation.measurement` unset so the measurement comparison is skipped with a startup warning while the TLS trust chain is still verified.
 - **`configs/taa-fhe.json`**: For an `fhe` instance — the GPU host co-located with the FHE service. Sets `server.type: "fhe"` and the `fhe` section, and carries a `platform` block (`127.0.0.1:18081`, `taa-fhe`) naming the mock used in end-to-end testing; on this instance type the environment overrides both fields, so the block is the fallback rather than the last word. `fhe.callbackBaseUrl` ships as `auto`, so a packaged image derives the address it is reachable on instead of carrying the packaging host's; set an explicit URL when the address cannot be derived unambiguously. **`fhe.callbackToken` ships empty and must be filled in before use**: startup refuses an empty token rather than defaulting one, so this template will not boot as-is. `deploy-fhe.sh` renders it before starting taa — and `taa save` bakes the same rendered result into the image — and that is where `fhe.dataDir` and `storage.keys` come from: the data directory is the tree the FHE stack shares as `/data`, and `storage.keys` is a directory that stack does not mount at all, so the SM2 key pair and the sealed instance state stay out of the FHE service's reach.
 
 ### FHE Instance Interface Differences

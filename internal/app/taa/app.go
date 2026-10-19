@@ -321,8 +321,8 @@ func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error 
 
 	// Announce the probe before building the client, so that even a configuration failure
 	// (bad endpoint, host outside AllowedHosts) is preceded by the endpoint it was aimed at.
-	log.Printf("inference service connectivity probe: endpoint=%s attestationEnabled=%v attestMode=%s mutualAttest=%v timeout=%s",
-		cfg.LLM.Endpoint, cfg.LLM.AttestationEnabled, cfg.LLM.AttestationMode, cfg.LLM.RequireMutualAttest, probeTimeout)
+	log.Printf("inference service connectivity probe: endpoint=%s attestationEnabled=%v measurement=%s mutualAttest=%v timeout=%s",
+		cfg.LLM.Endpoint, cfg.LLM.AttestationEnabled, cfg.LLM.AttestationMeasurement, cfg.LLM.RequireMutualAttest, probeTimeout)
 
 	// Reuse the audit's client construction so the probe cannot diverge from the
 	// transport the audit actually uses.
@@ -330,9 +330,8 @@ func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error 
 		Endpoint:                cfg.LLM.Endpoint,
 		Timeout:                 timeout,
 		AttestationEnabled:      cfg.LLM.AttestationEnabled,
-		AttestationMode:         cfg.LLM.AttestationMode,
+		AttestationMeasurement:  cfg.LLM.AttestationMeasurement,
 		InsecureSkipVerify:      cfg.LLM.InsecureSkipVerify,
-		ExpectedMeasurements:    cfg.LLM.ExpectedMeasurements,
 		RequireMutualAttest:     cfg.LLM.RequireMutualAttest,
 		HRKCertPath:             cfg.LLM.HRKCertPath,
 		HSKCekCertPath:          cfg.LLM.HSKCekCertPath,
@@ -759,18 +758,17 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 		ModelLogDir:      cfg.ModelLogDir,
 		ModelProgressDir: cfg.ModelProgressDir,
 		LLM: codeaudit.LLMConfig{
-			Enabled:              cfg.LLM.Enabled,
-			AttestationEnabled:   cfg.LLM.AttestationEnabled,
-			Endpoint:             cfg.LLM.Endpoint,
-			AttestationMode:      cfg.LLM.AttestationMode,
-			HRKCertPath:          cfg.LLM.HRKCertPath,
-			HSKCekCertPath:       cfg.LLM.HSKCekCertPath,
-			ExpectedMeasurements: cfg.LLM.ExpectedMeasurements,
-			RequireMutualAttest:  cfg.LLM.RequireMutualAttest,
-			InsecureSkipVerify:   cfg.LLM.InsecureSkipVerify,
-			AuthToken:            cfg.LLM.AuthToken,
-			Model:                cfg.LLM.Model,
-			Timeout:              timeout,
+			Enabled:                cfg.LLM.Enabled,
+			AttestationEnabled:     cfg.LLM.AttestationEnabled,
+			Endpoint:               cfg.LLM.Endpoint,
+			AttestationMeasurement: cfg.LLM.AttestationMeasurement,
+			HRKCertPath:            cfg.LLM.HRKCertPath,
+			HSKCekCertPath:         cfg.LLM.HSKCekCertPath,
+			RequireMutualAttest:    cfg.LLM.RequireMutualAttest,
+			InsecureSkipVerify:     cfg.LLM.InsecureSkipVerify,
+			AuthToken:              cfg.LLM.AuthToken,
+			Model:                  cfg.LLM.Model,
+			Timeout:                timeout,
 			// 0 means no cap: every finding the static scanner reports gets a verdict.
 			// The old value of 20 left the tail of a large scan reported but never
 			// adjudicated. The scanner's own cap (ScannerConfig.MaxFindings, 200) is
@@ -854,8 +852,8 @@ func logSecurityConfig(sec controller.SecurityConfig) {
 	if sec.ScanEnabled {
 		log.Printf("security scan enabled: model-dir=%s", sec.ModelDir)
 		if sec.LLM.Enabled {
-			log.Printf("  LLM verifier enabled: model=%s attestation-enabled=%v endpoint=%s attestMode=%s fail-closed=%v",
-				sec.LLM.Model, sec.LLM.AttestationEnabled, sec.LLM.Endpoint, sec.LLM.AttestationMode, sec.LLM.FailClosed)
+			log.Printf("  LLM verifier enabled: model=%s attestation-enabled=%v endpoint=%s measurement=%s fail-closed=%v",
+				sec.LLM.Model, sec.LLM.AttestationEnabled, sec.LLM.Endpoint, sec.LLM.AttestationMeasurement, sec.LLM.FailClosed)
 		}
 	}
 	if sec.ResultCheck {

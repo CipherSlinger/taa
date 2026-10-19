@@ -1084,12 +1084,13 @@ func TestStartupConfig_InferenceOptions(t *testing.T) {
 		"codeAudit": {
 			"llm": {
 				"enabled": true,
-				"attestationEnabled": true,
+				"attestation": {
+					"enabled": true,
+					"measurement": "deadbeef01234567"
+				},
 				"endpoint": "https://127.0.0.1:8443",
-				"attestationMode": "permissive",
 				"hrkCertPath": "/custom/hrk.cert",
 				"hskCekCertPath": "/custom/hsk_cek.cert",
-				"expectedMeasurements": ["deadbeef01234567"],
 				"requireMutualAttest": true,
 				"insecureSkipVerify": true,
 				"model": "qwen2.5-coder:3b",
@@ -1110,22 +1111,19 @@ func TestStartupConfig_InferenceOptions(t *testing.T) {
 	}
 
 	if !cfg.LLM.AttestationEnabled {
-		t.Errorf("got attestationEnabled false, want true")
+		t.Errorf("got attestation.enabled false, want true")
 	}
 	if cfg.LLM.Endpoint != "https://127.0.0.1:8443" {
 		t.Errorf("got endpoint %q, want 'https://127.0.0.1:8443'", cfg.LLM.Endpoint)
 	}
-	if cfg.LLM.AttestationMode != "permissive" {
-		t.Errorf("got attestationMode %q, want 'permissive'", cfg.LLM.AttestationMode)
+	if cfg.LLM.AttestationMeasurement != "deadbeef01234567" {
+		t.Errorf("got attestation measurement %q, want 'deadbeef01234567'", cfg.LLM.AttestationMeasurement)
 	}
 	if cfg.LLM.HRKCertPath != "/custom/hrk.cert" {
 		t.Errorf("got hrkCertPath %q, want '/custom/hrk.cert'", cfg.LLM.HRKCertPath)
 	}
 	if cfg.LLM.HSKCekCertPath != "/custom/hsk_cek.cert" {
 		t.Errorf("got hskCekCertPath %q, want '/custom/hsk_cek.cert'", cfg.LLM.HSKCekCertPath)
-	}
-	if len(cfg.LLM.ExpectedMeasurements) != 1 || cfg.LLM.ExpectedMeasurements[0] != "deadbeef01234567" {
-		t.Errorf("got expectedMeasurements %v, want ['deadbeef01234567']", cfg.LLM.ExpectedMeasurements)
 	}
 	if !cfg.LLM.RequireMutualAttest {
 		t.Errorf("got requireMutualAttest false, want true")
@@ -1166,19 +1164,16 @@ func TestStartupConfig_InferenceDefaults(t *testing.T) {
 	}
 
 	if !cfg.LLM.AttestationEnabled {
-		t.Errorf("got default attestationEnabled false, want true")
+		t.Errorf("got default attestation.enabled false, want true")
 	}
 	if cfg.LLM.Endpoint != "https://127.0.0.1:8443" {
 		t.Errorf("got default endpoint %q, want 'https://127.0.0.1:8443'", cfg.LLM.Endpoint)
 	}
-	if cfg.LLM.AttestationMode != "strict" {
-		t.Errorf("got default attestationMode %q, want 'strict'", cfg.LLM.AttestationMode)
+	if cfg.LLM.AttestationMeasurement != "" {
+		t.Errorf("got default attestation measurement %q, want empty", cfg.LLM.AttestationMeasurement)
 	}
 	if cfg.LLM.HRKCertPath == "" || cfg.LLM.HSKCekCertPath == "" {
 		t.Errorf("got empty default cert paths: hrk=%q, hsk=%q", cfg.LLM.HRKCertPath, cfg.LLM.HSKCekCertPath)
-	}
-	if cfg.LLM.ExpectedMeasurements != nil {
-		t.Errorf("got default expectedMeasurements %v, want nil", cfg.LLM.ExpectedMeasurements)
 	}
 	if cfg.LLM.RequireMutualAttest {
 		t.Errorf("got default requireMutualAttest true, want false")
@@ -1200,6 +1195,56 @@ func TestStartupConfig_InferenceDefaults(t *testing.T) {
 	}
 	if cfg.LLM.Temperature != nil {
 		t.Errorf("got default temperature %v, want nil (unset, leaving the choice to the inference service)", *cfg.LLM.Temperature)
+	}
+}
+
+// TestStartupConfigAttestationBlock pins the nested shape: enabled switches the
+// TEE-TLS transport, and measurement is the single digest to compare against.
+// An absent block keeps attestation on, and an absent measurement stays empty,
+// which the client reads as "skip the comparison and log a warning".
+func TestStartupConfigAttestationBlock(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        string
+		wantEnabled bool
+		wantMeas    string
+	}{
+		{
+			name:        "absent block keeps attestation on",
+			body:        `{}`,
+			wantEnabled: true,
+			wantMeas:    "",
+		},
+		{
+			name:        "enabled false",
+			body:        `{"codeAudit":{"llm":{"attestation":{"enabled":false}}}}`,
+			wantEnabled: false,
+			wantMeas:    "",
+		},
+		{
+			name:        "measurement is trimmed",
+			body:        `{"codeAudit":{"llm":{"attestation":{"measurement":" deadbeef01234567 "}}}}`,
+			wantEnabled: true,
+			wantMeas:    "deadbeef01234567",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), DefaultFileName)
+			writeTestConfig(t, path, tc.body)
+
+			cfg, err := LoadStartupConfig(path)
+			if err != nil {
+				t.Fatalf("LoadStartupConfig() error = %v", err)
+			}
+			if cfg.LLM.AttestationEnabled != tc.wantEnabled {
+				t.Errorf("AttestationEnabled = %v, want %v", cfg.LLM.AttestationEnabled, tc.wantEnabled)
+			}
+			if cfg.LLM.AttestationMeasurement != tc.wantMeas {
+				t.Errorf("AttestationMeasurement = %q, want %q", cfg.LLM.AttestationMeasurement, tc.wantMeas)
+			}
+		})
 	}
 }
 
@@ -1582,6 +1627,21 @@ func TestLoadStartupConfigRejectsRemovedKeys(t *testing.T) {
 			name:    "the removed llm policy key",
 			content: `{"codeAudit":{"llm":{"policy":"gate"}}}`,
 			want:    []string{`"codeAudit.llm.policy"`, `"gate"`},
+		},
+		{
+			name:    "the removed llm attestationEnabled key",
+			content: `{"codeAudit":{"llm":{"attestationEnabled":true}}}`,
+			want:    []string{`"codeAudit.llm.attestationEnabled"`, `"codeAudit.llm.attestation.enabled"`},
+		},
+		{
+			name:    "the removed llm attestationMode key",
+			content: `{"codeAudit":{"llm":{"attestationMode":"permissive"}}}`,
+			want:    []string{`"codeAudit.llm.attestationMode"`, `"codeAudit.llm.attestation.measurement"`},
+		},
+		{
+			name:    "the removed llm expectedMeasurements key",
+			content: `{"codeAudit":{"llm":{"expectedMeasurements":["deadbeef"]}}}`,
+			want:    []string{`"codeAudit.llm.expectedMeasurements"`, `"codeAudit.llm.attestation.measurement"`},
 		},
 		{
 			name: "the whole old block, reported together",

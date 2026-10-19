@@ -297,7 +297,6 @@ func TestIsLLMServiceAvailable_TEETLS(t *testing.T) {
 		Endpoint:           "https://" + server.Addr(),
 		Model:              "qwen2.5-coder:3b",
 		InsecureSkipVerify: true,
-		AttestationMode:    "permissive",
 	}
 
 	client := newLLMClient(cfg)

@@ -116,13 +116,19 @@ type StartupConfig struct {
 // findings its static scan raised. Field names carry no "LLM" prefix - the type
 // already says it.
 type LLMConfig struct {
-	Enabled                 bool
-	AttestationEnabled      bool
-	Endpoint                string
-	AttestationMode         string
+	Enabled bool
+	// AttestationEnabled selects the transport: true uses TEE-TLS and verifies
+	// the gateway's CSV attestation, false uses ordinary TLS with no
+	// attestation.
+	AttestationEnabled bool
+	Endpoint           string
+	// AttestationMeasurement is the measurement digest expected in the
+	// inference service's attestation report. Empty skips the measurement
+	// check and logs a warning; the trust chain and key binding are still
+	// verified.
+	AttestationMeasurement  string
 	HRKCertPath             string
 	HSKCekCertPath          string
-	ExpectedMeasurements    []string
 	RequireMutualAttest     bool
 	InsecureSkipVerify      bool
 	AuthToken               string
@@ -401,34 +407,42 @@ type startupAttestationConfigFile struct {
 	HSKCekCertPath string `json:"hskCekCertPath"`
 }
 
-type startupLLMConfigFile struct {
-	Enabled *bool `json:"enabled"`
-	// AttestationEnabled selects the transport: true (the default) uses TEE-TLS
-	// and verifies the gateway's CSV attestation, false uses ordinary TLS with
-	// no attestation. It is a pointer so an absent field keeps the default on
+type startupLLMAttestationConfigFile struct {
+	// Enabled selects the transport: true (the default) uses TEE-TLS and
+	// verifies the gateway's CSV attestation, false uses ordinary TLS with no
+	// attestation. It is a pointer so an absent field keeps the default on
 	// instead of reading as a deliberate opt-out.
-	AttestationEnabled      *bool    `json:"attestationEnabled"`
-	Endpoint                string   `json:"endpoint"`
-	AttestationMode         string   `json:"attestationMode"`
-	HRKCertPath             string   `json:"hrkCertPath"`
-	HSKCekCertPath          string   `json:"hskCekCertPath"`
-	ExpectedMeasurements    []string `json:"expectedMeasurements"`
-	RequireMutualAttest     *bool    `json:"requireMutualAttest"`
-	InsecureSkipVerify      *bool    `json:"insecureSkipVerify"`
-	AuthToken               string   `json:"authToken"`
-	RequestTimeoutMs        int64    `json:"requestTimeoutMs"`
-	AllowedHosts            []string `json:"allowedHosts"`
-	CircuitBreakerThreshold int      `json:"circuitBreakerThreshold"`
-	CooldownSec             int      `json:"cooldownSec"`
-	Model                   string   `json:"model"`
-	Temperature             *float32 `json:"temperature"`
-	FailClosed              *bool    `json:"failClosed"`
-	Dir                     string   `json:"dir"`
+	Enabled *bool `json:"enabled"`
+	// Measurement is the expected measurement digest. Empty or absent skips
+	// the measurement check and logs a warning at client construction.
+	Measurement string `json:"measurement"`
+}
+
+type startupLLMConfigFile struct {
+	Enabled                 *bool                            `json:"enabled"`
+	Attestation             *startupLLMAttestationConfigFile `json:"attestation"`
+	Endpoint                string                           `json:"endpoint"`
+	HRKCertPath             string                           `json:"hrkCertPath"`
+	HSKCekCertPath          string                           `json:"hskCekCertPath"`
+	RequireMutualAttest     *bool                            `json:"requireMutualAttest"`
+	InsecureSkipVerify      *bool                            `json:"insecureSkipVerify"`
+	AuthToken               string                           `json:"authToken"`
+	RequestTimeoutMs        int64                            `json:"requestTimeoutMs"`
+	AllowedHosts            []string                         `json:"allowedHosts"`
+	CircuitBreakerThreshold int                              `json:"circuitBreakerThreshold"`
+	CooldownSec             int                              `json:"cooldownSec"`
+	Model                   string                           `json:"model"`
+	Temperature             *float32                         `json:"temperature"`
+	FailClosed              *bool                            `json:"failClosed"`
+	Dir                     string                           `json:"dir"`
 
 	// Removed keys, declared only so their presence is detectable. See
 	// rejectRemovedKeys.
-	RemovedTransport json.RawMessage `json:"transport"`
-	RemovedPolicy    json.RawMessage `json:"policy"`
+	RemovedTransport            json.RawMessage `json:"transport"`
+	RemovedPolicy               json.RawMessage `json:"policy"`
+	RemovedAttestationEnabled   json.RawMessage `json:"attestationEnabled"`
+	RemovedAttestationMode      json.RawMessage `json:"attestationMode"`
+	RemovedExpectedMeasurements json.RawMessage `json:"expectedMeasurements"`
 }
 
 func LoadStartupConfig(path string) (StartupConfig, error) {
@@ -535,10 +549,19 @@ func rejectRemovedKeys(path string, fileCfg startupConfigFile) error {
 	}
 	if llm := fileCfg.CodeAudit.LLM; llm != nil {
 		if hasJSONValue(llm.RemovedTransport) {
-			found = append(found, `"codeAudit.llm.transport" (replace with "codeAudit.llm.attestationEnabled": true is the old "teetls", false is the old non-attested transport)`)
+			found = append(found, `"codeAudit.llm.transport" (replace with "codeAudit.llm.attestation.enabled": true is the old "teetls", false is the old non-attested transport)`)
 		}
 		if hasJSONValue(llm.RemovedPolicy) {
 			found = append(found, `"codeAudit.llm.policy" (removed: arbitration is always "gate", and the LLM verdict decides a static HIGH)`)
+		}
+		if hasJSONValue(llm.RemovedAttestationEnabled) {
+			found = append(found, `"codeAudit.llm.attestationEnabled" (move to "codeAudit.llm.attestation.enabled")`)
+		}
+		if hasJSONValue(llm.RemovedAttestationMode) {
+			found = append(found, `"codeAudit.llm.attestationMode" (removed: use "codeAudit.llm.attestation.measurement"; empty skips the measurement check)`)
+		}
+		if hasJSONValue(llm.RemovedExpectedMeasurements) {
+			found = append(found, `"codeAudit.llm.expectedMeasurements" (use the single "codeAudit.llm.attestation.measurement" value)`)
 		}
 	}
 	if len(found) == 0 {
@@ -905,7 +928,6 @@ func defaultStartupConfig() StartupConfig {
 			Enabled:                 true,
 			AttestationEnabled:      true,
 			Endpoint:                "https://127.0.0.1:8443",
-			AttestationMode:         "strict",
 			HRKCertPath:             hrkDefault,
 			HSKCekCertPath:          hskDefault,
 			RequireMutualAttest:     false,
@@ -1128,23 +1150,22 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 				// A block with no explicit switch keeps the audit on.
 				cfg.LLM.Enabled = true
 			}
-			if llm.AttestationEnabled != nil {
-				cfg.LLM.AttestationEnabled = *llm.AttestationEnabled
+			if llm.Attestation != nil {
+				if llm.Attestation.Enabled != nil {
+					cfg.LLM.AttestationEnabled = *llm.Attestation.Enabled
+				}
+				if trimmed := strings.TrimSpace(llm.Attestation.Measurement); trimmed != "" {
+					cfg.LLM.AttestationMeasurement = trimmed
+				}
 			}
 			if llm.Endpoint != "" {
 				cfg.LLM.Endpoint = llm.Endpoint
-			}
-			if trimmed := strings.TrimSpace(llm.AttestationMode); trimmed != "" {
-				cfg.LLM.AttestationMode = trimmed
 			}
 			if trimmed := strings.TrimSpace(llm.HRKCertPath); trimmed != "" {
 				cfg.LLM.HRKCertPath = trimmed
 			}
 			if trimmed := strings.TrimSpace(llm.HSKCekCertPath); trimmed != "" {
 				cfg.LLM.HSKCekCertPath = trimmed
-			}
-			if len(llm.ExpectedMeasurements) > 0 {
-				cfg.LLM.ExpectedMeasurements = llm.ExpectedMeasurements
 			}
 			if llm.RequireMutualAttest != nil {
 				cfg.LLM.RequireMutualAttest = *llm.RequireMutualAttest

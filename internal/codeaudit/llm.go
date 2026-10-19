@@ -3,6 +3,8 @@ package codeaudit
 import (
 	"context"
 	"encoding/json"
+	"log"
+	"strings"
 	"time"
 
 	"github.com/CipherSlinger/teellm"
@@ -41,13 +43,16 @@ type LLMConfig struct {
 	Temperature *float32
 
 	// TEE-TLS configuration
-	TEETLS               *teetls.Config
-	AttestationMode      string
-	HRKCertPath          string
-	HSKCekCertPath       string
-	ExpectedMeasurements []string
-	RequireMutualAttest  bool
-	InsecureSkipVerify   bool
+	TEETLS *teetls.Config
+	// AttestationMeasurement is the measurement digest expected in the
+	// inference service's attestation report. Empty skips the measurement
+	// check and logs a warning; the trust chain and key binding are still
+	// verified.
+	AttestationMeasurement string
+	HRKCertPath            string
+	HSKCekCertPath         string
+	RequireMutualAttest    bool
+	InsecureSkipVerify     bool
 }
 
 // DefaultLLMConfig returns safe default configuration.
@@ -62,7 +67,6 @@ func DefaultLLMConfig() LLMConfig {
 		FailClosed:              true,
 		CircuitBreakerThreshold: 3,
 		CooldownSec:             30,
-		AttestationMode:         "strict",
 	}
 }
 
@@ -81,26 +85,41 @@ type FileAnalyzer interface {
 	AnalyzeFile(ctx context.Context, prompt string) (FileSummary, error)
 }
 
+// buildTEETLSConfig derives the TEE-TLS client configuration. A non-empty
+// measurement turns the comparison into a hard requirement; without one the
+// handshake still verifies the trust chain and key binding, but the measurement
+// comparison is skipped. The skip is logged rather than silent.
+func buildTEETLSConfig(cfg LLMConfig) *teetls.Config {
+	if cfg.TEETLS != nil {
+		return cfg.TEETLS
+	}
+	if !cfg.AttestationEnabled {
+		return nil
+	}
+
+	mode := teetls.ModePermissive
+	var expected []string
+	if m := strings.TrimSpace(cfg.AttestationMeasurement); m != "" {
+		mode = teetls.ModeStrict
+		expected = []string{m}
+	} else {
+		log.Printf("[WARN] [codeaudit] attestation.measurement is empty; skipping the inference service measurement check")
+	}
+	teeTLSConfig := &teetls.Config{
+		Mode:                          mode,
+		InsecureSkipAttestationVerify: cfg.InsecureSkipVerify,
+		ExpectedMeasurements:          expected,
+		VerifyMutualAttestation:       cfg.RequireMutualAttest,
+	}
+	if cfg.HRKCertPath != "" || cfg.HSKCekCertPath != "" {
+		teeTLSConfig.EvidenceProvider = teetls.NewHygonHardwareProvider("", cfg.HRKCertPath, cfg.HSKCekCertPath)
+	}
+	return teeTLSConfig
+}
+
 // NewInferenceClient constructs a standardized inference client based on LLMConfig.
 func NewInferenceClient(cfg LLMConfig) (LLMClient, error) {
-	var teeTLSConfig *teetls.Config
-	if cfg.TEETLS != nil {
-		teeTLSConfig = cfg.TEETLS
-	} else if cfg.AttestationEnabled {
-		mode := teetls.ModeStrict
-		if cfg.AttestationMode == "permissive" {
-			mode = teetls.ModePermissive
-		}
-		teeTLSConfig = &teetls.Config{
-			Mode:                          mode,
-			InsecureSkipAttestationVerify: cfg.InsecureSkipVerify,
-			ExpectedMeasurements:          cfg.ExpectedMeasurements,
-			VerifyMutualAttestation:       cfg.RequireMutualAttest,
-		}
-		if cfg.HRKCertPath != "" || cfg.HSKCekCertPath != "" {
-			teeTLSConfig.EvidenceProvider = teetls.NewHygonHardwareProvider("", cfg.HRKCertPath, cfg.HSKCekCertPath)
-		}
-	}
+	teeTLSConfig := buildTEETLSConfig(cfg)
 
 	timeout := cfg.Timeout
 	if timeout <= 0 {

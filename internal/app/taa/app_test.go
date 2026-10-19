@@ -101,10 +101,9 @@ func TestBuildSecurityConfig(t *testing.T) {
 			Enabled:                 true,
 			AttestationEnabled:      true,
 			Endpoint:                "https://127.0.0.1:8443",
-			AttestationMode:         "permissive",
+			AttestationMeasurement:  "measure-1",
 			HRKCertPath:             "/path/hrk.cert",
 			HSKCekCertPath:          "/path/hsk.cert",
-			ExpectedMeasurements:    []string{"measure-1"},
 			RequireMutualAttest:     true,
 			InsecureSkipVerify:      true,
 			AuthToken:               "test-secret-token",
@@ -166,10 +165,9 @@ func TestBuildSecurityConfig(t *testing.T) {
 		Enabled:                 cfg.LLM.Enabled,
 		AttestationEnabled:      cfg.LLM.AttestationEnabled,
 		Endpoint:                cfg.LLM.Endpoint,
-		AttestationMode:         cfg.LLM.AttestationMode,
+		AttestationMeasurement:  cfg.LLM.AttestationMeasurement,
 		HRKCertPath:             cfg.LLM.HRKCertPath,
 		HSKCekCertPath:          cfg.LLM.HSKCekCertPath,
-		ExpectedMeasurements:    cfg.LLM.ExpectedMeasurements,
 		RequireMutualAttest:     cfg.LLM.RequireMutualAttest,
 		InsecureSkipVerify:      cfg.LLM.InsecureSkipVerify,
 		AuthToken:               cfg.LLM.AuthToken,
@@ -190,17 +188,14 @@ func TestBuildSecurityConfig(t *testing.T) {
 	if sec.LLM.Endpoint != wantLLM.Endpoint {
 		t.Errorf("LLM.Endpoint = %q, want %q", sec.LLM.Endpoint, wantLLM.Endpoint)
 	}
-	if sec.LLM.AttestationMode != wantLLM.AttestationMode {
-		t.Errorf("LLM.AttestationMode = %q, want %q", sec.LLM.AttestationMode, wantLLM.AttestationMode)
+	if sec.LLM.AttestationMeasurement != wantLLM.AttestationMeasurement {
+		t.Errorf("LLM.AttestationMeasurement = %q, want %q", sec.LLM.AttestationMeasurement, wantLLM.AttestationMeasurement)
 	}
 	if sec.LLM.HRKCertPath != wantLLM.HRKCertPath {
 		t.Errorf("LLM.HRKCertPath = %q, want %q", sec.LLM.HRKCertPath, wantLLM.HRKCertPath)
 	}
 	if sec.LLM.HSKCekCertPath != wantLLM.HSKCekCertPath {
 		t.Errorf("LLM.HSKCekCertPath = %q, want %q", sec.LLM.HSKCekCertPath, wantLLM.HSKCekCertPath)
-	}
-	if len(sec.LLM.ExpectedMeasurements) != len(wantLLM.ExpectedMeasurements) || (len(wantLLM.ExpectedMeasurements) > 0 && sec.LLM.ExpectedMeasurements[0] != wantLLM.ExpectedMeasurements[0]) {
-		t.Errorf("LLM.ExpectedMeasurements = %v, want %v", sec.LLM.ExpectedMeasurements, wantLLM.ExpectedMeasurements)
 	}
 	if sec.LLM.RequireMutualAttest != wantLLM.RequireMutualAttest {
 		t.Errorf("LLM.RequireMutualAttest = %v, want %v", sec.LLM.RequireMutualAttest, wantLLM.RequireMutualAttest)
