@@ -3,7 +3,7 @@
     "addr": ":6001"
   },
   "platform": {
-    "ip": "127.0.0.1:18080",
+    "ip": "127.0.0.1:28080",
     "dockerID": "taa-env-slim-v2",
     "contract": ""
   },
