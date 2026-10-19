@@ -155,6 +155,53 @@ func TestTaskToleratesUnknownShape(t *testing.T) {
 	}
 }
 
+// TestTaskLogsAsksForAReplay pins the one query parameter the poller depends
+// on: without follow=false the service keeps the response open until the task
+// ends, so a poll would block instead of returning what has been logged so far.
+func TestTaskLogsAsksForAReplay(t *testing.T) {
+	var gotPath, gotUser string
+	var gotFollow []string
+
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotUser = r.Header.Get("X-User-Id")
+		gotFollow = r.URL.Query()["follow"]
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("Importing eval_context\nCase 00 done\n"))
+	})
+
+	body, err := c.TaskLogs(context.Background(), "task-1", testHashA)
+	if err != nil {
+		t.Fatalf("TaskLogs: %v", err)
+	}
+	if gotPath != "/api/v1/tasks/task-1/logs" {
+		t.Errorf("path = %q, want /api/v1/tasks/task-1/logs", gotPath)
+	}
+	if gotUser != testHashA {
+		t.Errorf("X-User-Id = %q, want %q", gotUser, testHashA)
+	}
+	if len(gotFollow) != 1 || gotFollow[0] != "false" {
+		t.Errorf("follow = %v, want exactly [false]", gotFollow)
+	}
+	if want := "Importing eval_context\nCase 00 done\n"; body != want {
+		t.Errorf("body = %q, want %q", body, want)
+	}
+}
+
+func TestTaskLogsSurfacesNon2xx(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no such task", http.StatusNotFound)
+	})
+	_, err := c.TaskLogs(context.Background(), "task-1", testHashA)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("TaskLogs error = %v, want an *APIError", err)
+	}
+	if apiErr.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", apiErr.StatusCode)
+	}
+}
+
 func TestTaskFallsBackToResultsKey(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"completed","results":[{"entry":"a","result_id":"a.bin"}]}`))
@@ -502,6 +549,7 @@ func TestTaskScopedCallsRejectAnEmptyTenant(t *testing.T) {
 			return c.CreateTask(ctx, CreateTaskRequest{TaskID: "task-1", UserID: ""})
 		}},
 		{"Task", func() error { _, err := c.Task(ctx, "task-1", ""); return err }},
+		{"TaskLogs", func() error { _, err := c.TaskLogs(ctx, "task-1", ""); return err }},
 		{"CancelTask", func() error { return c.CancelTask(ctx, "task-1", "") }},
 		{"ContinueTask", func() error { return c.ContinueTask(ctx, "task-1", "") }},
 		{"DownloadResult", func() error {
@@ -541,6 +589,9 @@ func TestTaskScopedCallsRejectAnUnsafeTaskID(t *testing.T) {
 		dir := t.TempDir()
 		if _, err := c.Task(ctx, id, testHashA); err == nil {
 			t.Errorf("Task(%q) = nil, want an error", id)
+		}
+		if _, err := c.TaskLogs(ctx, id, testHashA); err == nil {
+			t.Errorf("TaskLogs(%q) = nil, want an error", id)
 		}
 		if err := c.CancelTask(ctx, id, testHashA); err == nil {
 			t.Errorf("CancelTask(%q) = nil, want an error", id)

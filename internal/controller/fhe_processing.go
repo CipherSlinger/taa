@@ -201,6 +201,12 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 	s.promoteCurrentTaskToFHE()
 
 	s.Logs.Add(LogInfo, "fhe", "开始执行 FHE 任务: taskId=%s, userId=%s, modelId=%s", req.TaskID, spec.UserID, spec.ModelID)
+	// The model runs inside the FHE service, so the training-side log watcher
+	// (which tails ModelLogDir) has nothing to read here. The service's task log
+	// is the training terminal log for this instance, and polling it is what
+	// keeps the platform's log view populated while Execute blocks.
+	stopLogs := s.startFHELogPoller(runner, req.RequestID, req.TaskID, spec.UserID)
+	defer stopLogs()
 	outcome, execErr := runner.Execute(context.Background(), spec, func(done, total int) {
 		if total <= 0 {
 			return

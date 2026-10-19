@@ -246,6 +246,7 @@ type fheServiceStub struct {
 	caseEntries    int
 	downloadStatus int
 	downloadBody   string
+	logBody        string
 
 	// pollGate, when non-nil, holds a poll response until it is closed. A test
 	// uses it to park a run inside its poll loop: that is the one moment a run can
@@ -323,6 +324,11 @@ func (s *fheServiceStub) serveTask(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "download refused", status)
 			return
 		}
+		_, _ = w.Write([]byte(body))
+	case strings.HasSuffix(path, "/logs"):
+		s.mu.Lock()
+		body := s.logBody
+		s.mu.Unlock()
 		_, _ = w.Write([]byte(body))
 	case strings.HasSuffix(path, "/cancel"):
 		s.mu.Lock()

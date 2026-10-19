@@ -284,7 +284,7 @@ All TAA APIs are exposed over HTTP `POST`. For comprehensive request/response sc
 | `/v1/taa/reportModelImport` | `POST` | Reports model download/import status, error messages, and SM3 checksum |
 | `/v1/taa/reportAudit` | `POST` | Reports code security audit status, risk statistics (`high`/`medium`/`low`), and report URL |
 | `/v1/taa/reportProgress` | `POST` | Periodically reports training progress percentage, message, and timestamp |
-| `/v1/taa/modelLog` | `POST` | Streams incremental, deduplicated training terminal execution logs written by the model under `/opt/taa/output/log` |
+| `/v1/taa/modelLog` | `POST` | Streams incremental, deduplicated training terminal execution logs written by the model under `/opt/taa/output/log`; on an `fhe` instance the FHE service's task log (`GET /api/v1/tasks/{task_id}/logs?follow=false`) is polled instead |
 | `/v1/taa/taaLog` | `POST` | Streams incremental, deduplicated TAA internal operational logs with monotonic sequence IDs |
 | `/v1/taa/reportRes` | `POST` | Asynchronously reports final training/debugging results packaged as a zip archive |
 

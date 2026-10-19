@@ -286,6 +286,48 @@ func (c *Client) Task(ctx context.Context, taskID, userID string) (TaskStatus, e
 	return st, err
 }
 
+// maxTaskLogBytes bounds one replay of a task's terminal log. The log is
+// re-read on every poll, so the cap is what keeps a runaway progress bar from
+// growing the poll response without limit.
+const maxTaskLogBytes = 8 << 20
+
+// TaskLogs fetches the task's terminal log.
+//
+// The request asks for follow=false. The service's default follows the live
+// stream and only returns once the task ends, which would make polling a
+// second, slower copy of the callback; with follow=false it replays everything
+// logged so far and closes, so each poll answers with the whole log and the
+// caller is the one that must not report the replayed prefix twice.
+func (c *Client) TaskLogs(ctx context.Context, taskID, userID string) (string, error) {
+	if err := guardTaskCall(taskID, userID); err != nil {
+		return "", err
+	}
+	path := "/tasks/" + url.PathEscape(taskID) + "/logs?follow=false"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return "", fmt.Errorf("build fhe log request for task %s: %w", taskID, err)
+	}
+	req.Header.Set("X-User-Id", userID)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fhe task log for %s: %w", taskID, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		return "", &APIError{Method: http.MethodGet, Path: path, StatusCode: resp.StatusCode, Body: string(snippet)}
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTaskLogBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read fhe task log for %s: %w", taskID, err)
+	}
+	if len(body) > maxTaskLogBytes {
+		return "", fmt.Errorf("fhe task log for %s exceeds %d bytes", taskID, maxTaskLogBytes)
+	}
+	return string(body), nil
+}
+
 // CancelTask maps TAA's stopTraining onto the service's cancel endpoint.
 func (c *Client) CancelTask(ctx context.Context, taskID, userID string) error {
 	if err := guardTaskCall(taskID, userID); err != nil {
