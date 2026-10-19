@@ -1,0 +1,25 @@
+{
+  "base_remote_branch": "HEAD~1",
+  "base_commit": "5e2954c8cc6978a7477d87faf1a66cd842407718",
+  "latti_ai_commit": "41c29472366e11aa655850d3013d9350f383611f",
+  "lattisense_commit": "3f21dc047261a4098529ea24fde611bfc0a01c00",
+  "lattigo_commit": "6950b19e47ddb03672d2df1872e322500f3f4801",
+  "build_type": "Release",
+  "python": "CPython 3.10 (cp310 x86_64)",
+  "cuda": "12.8",
+  "cuda_architecture": "89",
+  "key_generation": "streaming by default",
+  "python_binding_additions": [
+    "InferenceClient.export_eval_context_to_file",
+    "InferenceServer.import_eval_context_file",
+    "InferenceServer.release_device"
+  ],
+  "device_release": "InferenceServer.release_device() -> lattisense::release_device_memory_pool() -> heongpu::MemoryPool::release()",
+  "pool_budget_env": [
+    "HEONGPU_DEVICE_POOL_INITIAL_BYTES",
+    "HEONGPU_DEVICE_POOL_MAX_BYTES",
+    "HEONGPU_HOST_POOL_INITIAL_BYTES",
+    "HEONGPU_HOST_POOL_MAX_BYTES"
+  ],
+  "models_bundled": false
+}

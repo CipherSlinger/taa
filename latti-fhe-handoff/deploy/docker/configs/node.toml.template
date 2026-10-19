@@ -1,0 +1,41 @@
+[server]
+host = "0.0.0.0"
+port = ${API_PORT}
+node_id = "${NODE_ID}"
+api_url = "${NODE_API_URL}"
+use_gpu = true
+gpu_devices = [${GPU_DEVICES}]
+gpu_lease_ttl_seconds = 60
+gpu_memory_log_interval_seconds = 10
+gpu_unavailable_exit_enabled = ${GPU_UNAVAILABLE_EXIT_ENABLED}
+gpu_unavailable_exit_threshold = ${GPU_UNAVAILABLE_EXIT_THRESHOLD}
+gpu_unavailable_exit_code = ${GPU_UNAVAILABLE_EXIT_CODE}
+isolate_gpu_task_process = ${ISOLATE_GPU_TASK_PROCESS}
+resident_server_enabled = ${RESIDENT_SERVER_ENABLED}
+resident_max_servers = ${RESIDENT_MAX_SERVERS}
+
+[redis]
+url = "redis://fhe-redis:6379/${LOCAL_REDIS_DB}"
+password = "${LOCAL_REDIS_PASSWORD}"
+key_prefix = "${LOCAL_REDIS_KEY_PREFIX}"
+
+# Models are NOT declared statically here. Put each model's server resources in
+# <CONTAINER_DATA_DIR>/models/<model_id>/server/ and let the registry below load
+# them (POST /api/v1/models/activate, or lazily on the first task):
+#   ckks_parameter.json task_config.json nn_layers_ct_0.json
+#   model_parameters.h5 mega_ag.json task_signature.json
+#   -> param_hash = sha256(ckks_parameter.json)
+#   -> required_inputs = task_config.json["task_input_id"]
+
+[storage]
+data_dir = "${CONTAINER_DATA_DIR}"
+
+[model_registry]
+dir = "${CONTAINER_DATA_DIR}/models"
+
+[paths]
+# One eval context per user (all models share the same FHE parameter set):
+#   <keys_dir>/<user_id>/eval_context.bin
+keys_dir = "${CONTAINER_DATA_DIR}/keys"
+tasks_dir = "${CONTAINER_DATA_DIR}/tasks"
+results_dir = "${CONTAINER_DATA_DIR}/results"

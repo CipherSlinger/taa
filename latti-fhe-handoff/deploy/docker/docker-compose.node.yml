@@ -1,0 +1,114 @@
+x-latti-server: &latti-server
+  image: ${LATTI_SERVER_IMAGE:-latti/latti-server:latest}
+  build:
+    context: ../../server
+    dockerfile: Dockerfile
+    args:
+      LATTI_SERVER_BASE_IMAGE: ${LATTI_SERVER_BASE_IMAGE:-ubuntu:24.04}
+
+x-latti-runtime-env: &latti-runtime-env
+  NODE_ID: ${NODE_ID:-node}
+  NODE_IP: ${NODE_IP:-127.0.0.1}
+  NODE_API_URL: ${NODE_API_URL:-http://127.0.0.1:58996}
+  API_PORT: ${API_PORT:-58996}
+  LOCAL_REDIS_PASSWORD: ${LOCAL_REDIS_PASSWORD:-Latti@2024}
+  LOCAL_REDIS_KEY_PREFIX: ${LOCAL_REDIS_KEY_PREFIX:-Latti-node:}
+  LOCAL_REDIS_DB: ${LOCAL_REDIS_DB:-14}
+  GPU_UNAVAILABLE_EXIT_ENABLED: ${GPU_UNAVAILABLE_EXIT_ENABLED:-true}
+  GPU_UNAVAILABLE_EXIT_THRESHOLD: ${GPU_UNAVAILABLE_EXIT_THRESHOLD:-5}
+  GPU_UNAVAILABLE_EXIT_CODE: ${GPU_UNAVAILABLE_EXIT_CODE:-75}
+  CONTAINER_DATA_DIR: ${CONTAINER_DATA_DIR:-/data}
+  CONFIG_PATH: /config/config.toml
+  LATTI_AI_ROOT: ${RUNTIME_DIR:-/runtime/latti-ai-runtime}
+  LATTI_AI_BUILD: ${RUNTIME_DIR:-/runtime/latti-ai-runtime}/build
+  CUDA_HOME: ${CONTAINER_CUDA_DIR:-/usr/local/cuda}
+  LD_LIBRARY_PATH: ${RUNTIME_DIR:-/runtime/latti-ai-runtime}/lib:${RUNTIME_DIR:-/runtime/latti-ai-runtime}/build/inference/lattisense:${RUNTIME_DIR:-/runtime/latti-ai-runtime}/build/inference/lattisense/abi:${RUNTIME_DIR:-/runtime/latti-ai-runtime}/build/inference/lattisense/cxx_sdk_v2:${RUNTIME_DIR:-/runtime/latti-ai-runtime}/build/inference/lattisense/fhe_ops_lib:${RUNTIME_DIR:-/runtime/latti-ai-runtime}/build/inference/lattisense/mega_ag_runners/gpu:${RUNTIME_DIR:-/runtime/latti-ai-runtime}/build/inference/lattisense/mega_ag_runners/cpu:${RUNTIME_DIR:-/runtime/latti-ai-runtime}/inference/lattisense/backends/HEonGPU/install/lib:${RUNTIME_DIR:-/runtime/latti-ai-runtime}/inference/lattisense/fhe_ops_lib/lattigo/go_sdk:/usr/lib/x86_64-linux-gnu:${CONTAINER_CUDA_DIR:-/usr/local/cuda}/lib64:${CONTAINER_CUDA_DIR:-/usr/local/cuda}/targets/x86_64-linux/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+  NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+  NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+
+services:
+  fhe-redis:
+    image: redis:7-alpine
+    container_name: fhe-redis-${NODE_INSTANCE:-node}
+    env_file:
+      - ./env/node.env
+    environment:
+      LOCAL_REDIS_PASSWORD: ${LOCAL_REDIS_PASSWORD:-Latti@2024}
+    command: ["sh", "-c", "redis-server --appendonly yes --requirepass \"$$LOCAL_REDIS_PASSWORD\" --maxmemory-policy noeviction"]
+    volumes:
+      - ${HOST_REDIS_DIR:-../../var/latti/node/redis}:/data
+    ports:
+      - "${LOCAL_REDIS_BIND_HOST:-127.0.0.1}:${LOCAL_REDIS_HOST_PORT:-58998}:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${LOCAL_REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  fhe-api:
+    <<: *latti-server
+    container_name: fhe-api-${NODE_INSTANCE:-node}
+    env_file:
+      - ./env/node.env
+    environment:
+      <<: *latti-runtime-env
+    volumes:
+      - ${HOST_DATA_DIR:-../../var/latti/node/data}:${CONTAINER_DATA_DIR:-/data}
+      - ${HOST_RUNTIME_DIR:-../../third_party/latti-ai-runtime}:${RUNTIME_DIR:-/runtime/latti-ai-runtime}:ro
+      - ${HOST_CUDA_DIR:-/usr/local/cuda}:${CONTAINER_CUDA_DIR:-/usr/local/cuda}:ro
+      - ./configs:/deploy/configs:ro
+      - ./scripts:/deploy/scripts:ro
+      - node-config:/config
+    working_dir: /app/server
+    command: ["bash", "-lc", "/deploy/scripts/render-node-config.sh && python3 -u api_server.py"]
+    ports:
+      - "${API_HOST_PORT:-58996}:${API_PORT:-58996}"
+    depends_on:
+      fhe-redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  fhe-worker:
+    <<: *latti-server
+    container_name: fhe-worker-${NODE_INSTANCE:-node}
+    env_file:
+      - ./env/node.env
+    environment:
+      <<: *latti-runtime-env
+    volumes:
+      - ${HOST_DATA_DIR:-../../var/latti/node/data}:${CONTAINER_DATA_DIR:-/data}
+      - ${HOST_RUNTIME_DIR:-../../third_party/latti-ai-runtime}:${RUNTIME_DIR:-/runtime/latti-ai-runtime}:ro
+      - ${HOST_CUDA_DIR:-/usr/local/cuda}:${CONTAINER_CUDA_DIR:-/usr/local/cuda}:ro
+      - ./configs:/deploy/configs:ro
+      - ./scripts:/deploy/scripts:ro
+      - node-config:/config
+    working_dir: /app/server
+    command: ["bash", "-lc", "/deploy/scripts/render-node-config.sh && python3 -u worker.py"]
+    depends_on:
+      fhe-redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "nvidia-smi -L >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  node-config:

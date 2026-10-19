@@ -1,0 +1,6 @@
+# Delivery payloads stay local: they are large, and data/keys holds secrets.
+data/
+image/
+client/*.zip
+third_party/latti-ai-runtime/build/
+third_party/latti-ai-runtime/inference/interface/python/build/
