@@ -177,8 +177,8 @@ func (r *Report) ProvesCleanScan() bool {
 	// platform runs such a file, and no blocking family reads the free-string
 	// source that a capped listing can drop from one, so a cut there cannot be
 	// hiding a blocking finding. FindingsCapped is a different thing again: it
-	// records the LOW findings the finding cap dropped, and LOW does not block
-	// under either policy (assist withholds on HIGH, gate on HIGH or MEDIUM).
+	// records the LOW findings the finding cap dropped, and LOW does not block:
+	// the gate withholds on HIGH or MEDIUM.
 	// Neither is a look that did not happen, and only a look that did not happen
 	// can make a pass a claim about absence.
 	if b := r.Binary; b != nil {

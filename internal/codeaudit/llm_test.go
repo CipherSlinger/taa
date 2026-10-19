@@ -127,48 +127,6 @@ func (m *mockInferenceClient) Close() error                          { return ni
 
 // ── VerifyReport tests ───────────────────────────────────
 
-func TestVerifyReportAssistPolicy(t *testing.T) {
-	// ScanComplete models the engine having stamped a completed scan. The
-	// completeness fields are not optional detail: VerifyReport's recalculation
-	// withholds a pass from a report that cannot prove it looked, and the
-	// field's zero value means "did not complete", so a bare literal would
-	// decide every one of these fixtures as blocked.
-	report := &Report{
-		ScanComplete: true,
-		HighCount:    2,
-		MediumCount:  0,
-		Passed:       false,
-		Findings: []Finding{
-			{File: "a.py", Line: 1, RuleID: "NET_001", Severity: SeverityHigh, CodeSnippet: "requests.post(url)"},
-			{File: "a.py", Line: 5, RuleID: "CMD_001", Severity: SeverityHigh, CodeSnippet: "subprocess.run(cmd)"},
-		},
-	}
-
-	mock := &mockLLMClient{
-		decisions: []LLMDecision{
-			{Verdict: "BENIGN", Reason: "sends model metrics only"},
-			{Verdict: "BENIGN", Reason: "runs local test script"},
-		},
-	}
-
-	cfg := LLMConfig{Enabled: true, Policy: "assist", MaxFindings: 10}
-	result, err := VerifyReport(context.Background(), report, cfg, mock)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Assist mode: LLM verdicts are recorded but do not change Passed.
-	if result.Passed {
-		t.Fatal("assist mode should not change Passed even if LLM says BENIGN")
-	}
-	if result.Findings[0].LLMVerdict != "BENIGN" {
-		t.Fatalf("finding[0] verdict = %s, want BENIGN", result.Findings[0].LLMVerdict)
-	}
-	if result.Findings[1].LLMVerdict != "BENIGN" {
-		t.Fatalf("finding[1] verdict = %s, want BENIGN", result.Findings[1].LLMVerdict)
-	}
-}
-
 func TestVerifyReportGatePolicyDowngradesBenign(t *testing.T) {
 	report := &Report{
 		ScanComplete: true,
@@ -188,7 +146,7 @@ func TestVerifyReportGatePolicyDowngradesBenign(t *testing.T) {
 		},
 	}
 
-	cfg := LLMConfig{Enabled: true, Policy: "gate", MaxFindings: 10}
+	cfg := LLMConfig{Enabled: true, MaxFindings: 10}
 	result, err := VerifyReport(context.Background(), report, cfg, mock)
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +178,7 @@ func TestVerifyReportGatePolicyBlocksMalicious(t *testing.T) {
 		},
 	}
 
-	cfg := LLMConfig{Enabled: true, Policy: "gate", MaxFindings: 10}
+	cfg := LLMConfig{Enabled: true, MaxFindings: 10}
 	result, err := VerifyReport(context.Background(), report, cfg, mock)
 	if err != nil {
 		t.Fatal(err)
@@ -273,7 +231,7 @@ func TestVerifyReportMaxFindingsCap(t *testing.T) {
 				mock.decisions[i] = LLMDecision{Verdict: "BENIGN", Reason: "ok"}
 			}
 
-			cfg := LLMConfig{Enabled: true, Policy: "gate", MaxFindings: tc.maxFindings}
+			cfg := LLMConfig{Enabled: true, MaxFindings: tc.maxFindings}
 			if _, err := VerifyReport(context.Background(), report, cfg, mock); err != nil {
 				t.Fatal(err)
 			}
@@ -307,7 +265,7 @@ func TestVerifyReport_InferenceClient_Malicious(t *testing.T) {
 		},
 	}
 	client := &mockInferenceClient{verdict: teellm.VerdictMalicious}
-	cfg := LLMConfig{Enabled: true, Policy: "gate", MaxFindings: 10}
+	cfg := LLMConfig{Enabled: true, MaxFindings: 10}
 
 	res, err := VerifyReport(context.Background(), report, cfg, client)
 	if err != nil {
@@ -331,7 +289,7 @@ func TestVerifyReport_InferenceClient_BenignDowngrade(t *testing.T) {
 		},
 	}
 	client := &mockInferenceClient{verdict: teellm.VerdictBenign}
-	cfg := LLMConfig{Enabled: true, Policy: "gate", MaxFindings: 10}
+	cfg := LLMConfig{Enabled: true, MaxFindings: 10}
 
 	res, err := VerifyReport(context.Background(), report, cfg, client)
 	if err != nil {
@@ -358,7 +316,7 @@ func TestVerifyReport_InferenceClient_CircuitOpen_GateFailClosed(t *testing.T) {
 		},
 	}
 	client := &mockInferenceClient{err: teellm.ErrCircuitOpen}
-	cfg := LLMConfig{Enabled: true, Policy: "gate", FailClosed: true, MaxFindings: 10}
+	cfg := LLMConfig{Enabled: true, FailClosed: true, MaxFindings: 10}
 
 	res, err := VerifyReport(context.Background(), report, cfg, client)
 	if err != nil {
@@ -391,7 +349,7 @@ func TestVerifyReport_InferenceClient_GateFailOpen(t *testing.T) {
 	}
 	client := &mockInferenceClient{err: teellm.ErrCircuitOpen}
 	// FailClosed: false -> fallback to static scan result
-	cfg := LLMConfig{Enabled: true, Policy: "gate", FailClosed: false, MaxFindings: 10}
+	cfg := LLMConfig{Enabled: true, FailClosed: false, MaxFindings: 10}
 
 	res, err := VerifyReport(context.Background(), report, cfg, client)
 	if err != nil {
@@ -405,6 +363,9 @@ func TestVerifyReport_InferenceClient_GateFailOpen(t *testing.T) {
 	}
 	if res.Findings[0].LLMVerdict != "UNCERTAIN" {
 		t.Fatalf("verdict = %s, want UNCERTAIN", res.Findings[0].LLMVerdict)
+	}
+	if res.Findings[0].LLMReason != "SERVICE_UNAVAILABLE: circuit breaker open" {
+		t.Fatalf("reason = %s, want SERVICE_UNAVAILABLE: circuit breaker open", res.Findings[0].LLMReason)
 	}
 }
 
@@ -455,7 +416,7 @@ func TestVerifyReport_NilDecisionTreatedAsFailure(t *testing.T) {
 		},
 	}
 	client := &mockNilDecisionClient{}
-	cfg := LLMConfig{Enabled: true, Policy: "gate", FailClosed: true, MaxFindings: 10}
+	cfg := LLMConfig{Enabled: true, FailClosed: true, MaxFindings: 10}
 
 	res, err := VerifyReport(context.Background(), report, cfg, client)
 	if err != nil {
@@ -502,7 +463,7 @@ func TestVerifyReport_ModelRefPopulated(t *testing.T) {
 		},
 	}
 	client := &mockCaptureEnvelopeClient{}
-	cfg := LLMConfig{Enabled: true, Policy: "gate", Model: "qwen2.5-coder:0.5b", MaxFindings: 10}
+	cfg := LLMConfig{Enabled: true, Model: "qwen2.5-coder:0.5b", MaxFindings: 10}
 
 	_, err := VerifyReport(context.Background(), report, cfg, client)
 	if err != nil {
@@ -544,7 +505,7 @@ func TestVerifyReport_PolicyTemperature(t *testing.T) {
 				},
 			}
 			client := &mockCaptureEnvelopeClient{}
-			cfg := LLMConfig{Enabled: true, Policy: "assist", MaxFindings: 10, Temperature: tc.given}
+			cfg := LLMConfig{Enabled: true, MaxFindings: 10, Temperature: tc.given}
 
 			if _, err := VerifyReport(context.Background(), report, cfg, client); err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -577,7 +538,7 @@ func TestVerifyReport_ContextCancelled(t *testing.T) {
 		},
 	}
 	client := &mockInferenceClient{verdict: teellm.VerdictBenign}
-	cfg := LLMConfig{Enabled: true, Policy: "gate", FailClosed: true, MaxFindings: 10}
+	cfg := LLMConfig{Enabled: true, FailClosed: true, MaxFindings: 10}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -599,7 +560,7 @@ func TestVerifyReport_ContextCancelled(t *testing.T) {
 	}
 }
 
-func TestVerifyReport_InferenceClient_CircuitOpen_AssistDegraded(t *testing.T) {
+func TestVerifyReport_InferenceClient_CircuitOpen_FailClosed(t *testing.T) {
 	report := &Report{
 		ScanComplete: true,
 		HighCount:    0,
@@ -610,48 +571,17 @@ func TestVerifyReport_InferenceClient_CircuitOpen_AssistDegraded(t *testing.T) {
 		},
 	}
 	client := &mockInferenceClient{err: teellm.ErrCircuitOpen}
-	cfg := LLMConfig{Enabled: true, Policy: "assist", MaxFindings: 10}
+	cfg := LLMConfig{Enabled: true, FailClosed: true, MaxFindings: 10}
 
 	res, err := VerifyReport(context.Background(), report, cfg, client)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !res.LLMDegraded {
-		t.Fatal("expected LLMDegraded = true in assist mode on inference error")
-	}
-	if !res.Passed {
-		t.Fatal("expected Passed to be preserved from static scan (true for medium-only findings)")
-	}
-	if res.Findings[0].LLMVerdict != "UNCERTAIN" {
-		t.Fatalf("verdict = %s, want UNCERTAIN", res.Findings[0].LLMVerdict)
-	}
-	if res.Findings[0].LLMReason != "SERVICE_UNAVAILABLE: circuit breaker open" {
-		t.Fatalf("reason = %s, want SERVICE_UNAVAILABLE: circuit breaker open", res.Findings[0].LLMReason)
-	}
-}
-
-func TestVerifyReport_InferenceClient_CircuitOpen_AssistFailClosed(t *testing.T) {
-	report := &Report{
-		ScanComplete: true,
-		HighCount:    0,
-		MediumCount:  1,
-		Passed:       true,
-		Findings: []Finding{
-			{File: "a.py", Line: 1, RuleID: "DYN_001", Severity: SeverityMedium, CodeSnippet: "eval(expr)"},
-		},
-	}
-	client := &mockInferenceClient{err: teellm.ErrCircuitOpen}
-	cfg := LLMConfig{Enabled: true, Policy: "assist", FailClosed: true, MaxFindings: 10}
-
-	res, err := VerifyReport(context.Background(), report, cfg, client)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !res.LLMDegraded {
-		t.Fatal("expected LLMDegraded = true in assist mode on inference error")
+		t.Fatal("expected LLMDegraded = true with fail-closed on inference error")
 	}
 	if res.Passed {
-		t.Fatal("expected Passed = false when FailClosed=true in assist mode and inference fails")
+		t.Fatal("expected Passed = false when FailClosed=true and inference fails on a blocking finding")
 	}
 	if res.Findings[0].LLMVerdict != "UNCERTAIN" {
 		t.Fatalf("verdict = %s, want UNCERTAIN", res.Findings[0].LLMVerdict)
@@ -674,6 +604,49 @@ func newTestTEETLSServer(t *testing.T, handler http.Handler) *httptest.Server {
 	return server
 }
 
+// ── TEE-TLS config tests ─────────────────────────────────
+
+// TestBuildTEETLSConfigMeasurement pins the measurement policy. A configured
+// digest must reach teetls as a strict expectation, while an absent one must
+// not: teetls rejects a strict client with no expectation, so the empty case
+// has to be permissive rather than strict.
+func TestBuildTEETLSConfigMeasurement(t *testing.T) {
+	t.Run("a configured measurement is enforced", func(t *testing.T) {
+		got := buildTEETLSConfig(LLMConfig{
+			AttestationEnabled:     true,
+			AttestationMeasurement: " deadbeef01234567 ",
+		})
+		if got == nil {
+			t.Fatal("buildTEETLSConfig returned nil")
+		}
+		if got.Mode != teetls.ModeStrict {
+			t.Errorf("Mode = %q, want %q", got.Mode, teetls.ModeStrict)
+		}
+		if len(got.ExpectedMeasurements) != 1 || got.ExpectedMeasurements[0] != "deadbeef01234567" {
+			t.Errorf("ExpectedMeasurements = %v, want [deadbeef01234567]", got.ExpectedMeasurements)
+		}
+	})
+
+	t.Run("an empty measurement skips the comparison", func(t *testing.T) {
+		got := buildTEETLSConfig(LLMConfig{AttestationEnabled: true})
+		if got == nil {
+			t.Fatal("buildTEETLSConfig returned nil")
+		}
+		if got.Mode != teetls.ModePermissive {
+			t.Errorf("Mode = %q, want %q", got.Mode, teetls.ModePermissive)
+		}
+		if len(got.ExpectedMeasurements) != 0 {
+			t.Errorf("ExpectedMeasurements = %v, want none", got.ExpectedMeasurements)
+		}
+	})
+
+	t.Run("attestation disabled builds no TEE-TLS config", func(t *testing.T) {
+		if got := buildTEETLSConfig(LLMConfig{}); got != nil {
+			t.Errorf("buildTEETLSConfig = %+v, want nil", got)
+		}
+	})
+}
+
 // ── OllamaClient adapter tests with httptest ─────────────
 
 func TestOllamaClientSuccess(t *testing.T) {
@@ -693,7 +666,7 @@ func TestOllamaClientSuccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewInferenceClient(LLMConfig{Endpoint: server.URL, Model: "test-model", Timeout: 5 * time.Second, InsecureSkipVerify: true})
+	client, err := NewInferenceClient(LLMConfig{AttestationEnabled: true, Endpoint: server.URL, Model: "test-model", Timeout: 5 * time.Second, InsecureSkipVerify: true})
 	if err != nil {
 		t.Fatalf("NewInferenceClient failed: %v", err)
 	}
@@ -804,11 +777,11 @@ def report_metrics(acc, loss):
 
 	cfg := LLMConfig{
 		Enabled:            true,
+		AttestationEnabled: true,
 		Endpoint:           server.URL,
 		Model:              "test-model",
 		Timeout:            5 * time.Second,
 		MaxFindings:        10,
-		Policy:             "gate",
 		FailClosed:         true,
 		InsecureSkipVerify: true,
 	}
@@ -911,7 +884,7 @@ func TestBinaryFilePromptCarriesEvidenceAndNotRawBytes(t *testing.T) {
 
 	mock := &mockLLMClient{fileSummaries: []FileSummary{{RiskLevel: "HIGH", Summary: "外联"}}}
 	cfg := AuditConfig{
-		LLM:    LLMConfig{Enabled: true, Policy: "assist", Model: "test"},
+		LLM:    LLMConfig{Enabled: true, Model: "test"},
 		Binary: DefaultBinaryConfig(),
 	}
 	if _, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, mock); err != nil {
@@ -958,7 +931,7 @@ func TestSourceFilePromptIsUnchangedByTheBinaryChannel(t *testing.T) {
 
 	mock := &mockLLMClient{fileSummaries: []FileSummary{{RiskLevel: "HIGH", Summary: "x"}}}
 	cfg := AuditConfig{
-		LLM:    LLMConfig{Enabled: true, Policy: "assist", Model: "test"},
+		LLM:    LLMConfig{Enabled: true, Model: "test"},
 		Binary: DefaultBinaryConfig(),
 	}
 	if _, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, mock); err != nil {
@@ -1005,7 +978,7 @@ func TestBinaryFilePromptExcerptKeepsStructuralEvidenceUnderSymbolFlood(t *testi
 
 	mock := &mockLLMClient{fileSummaries: []FileSummary{{RiskLevel: "LOW", Summary: "x"}}}
 	cfg := AuditConfig{
-		LLM:    LLMConfig{Enabled: true, Policy: "assist", Model: "test"},
+		LLM:    LLMConfig{Enabled: true, Model: "test"},
 		Binary: DefaultBinaryConfig(),
 	}
 	if _, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, mock); err != nil {

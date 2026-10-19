@@ -675,8 +675,8 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 	StepSeparator("Code Audit")
 	s.setCurrentAuditOp("auditing")
 	defer s.setCurrentAuditOp("idle")
-	s.Logs.Add(LogInfo, "audit", "开始模型代码审计: engine=%s, dir=%s, llmEnabled=%v, policy=%s, failClosed=%v",
-		engineName(s.Security.Engine), s.Security.ModelDir, cfg.Enabled, cfg.Policy, cfg.FailClosed)
+	s.Logs.Add(LogInfo, "audit", "开始模型代码审计: engine=%s, dir=%s, llmEnabled=%v, failClosed=%v",
+		engineName(s.Security.Engine), s.Security.ModelDir, cfg.Enabled, cfg.FailClosed)
 
 	llmClient := newLLMClient(cfg)
 

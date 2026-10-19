@@ -99,12 +99,11 @@ func TestBuildSecurityConfig(t *testing.T) {
 		ModelProgressDir:  "/opt/taa/models/progress",
 		LLM: config.LLMConfig{
 			Enabled:                 true,
-			Transport:               "teetls",
+			AttestationEnabled:      true,
 			Endpoint:                "https://127.0.0.1:8443",
-			AttestationMode:         "permissive",
+			AttestationMeasurement:  "measure-1",
 			HRKCertPath:             "/path/hrk.cert",
 			HSKCekCertPath:          "/path/hsk.cert",
-			ExpectedMeasurements:    []string{"measure-1"},
 			RequireMutualAttest:     true,
 			InsecureSkipVerify:      true,
 			AuthToken:               "test-secret-token",
@@ -113,7 +112,6 @@ func TestBuildSecurityConfig(t *testing.T) {
 			CircuitBreakerThreshold: 5,
 			CooldownSec:             45,
 			Model:                   "qwen2.5-coder:0.5b",
-			Policy:                  "strict",
 			FailClosed:              true,
 		},
 		BinaryAuditEnabled:              true,
@@ -165,19 +163,17 @@ func TestBuildSecurityConfig(t *testing.T) {
 
 	wantLLM := codeaudit.LLMConfig{
 		Enabled:                 cfg.LLM.Enabled,
-		Transport:               cfg.LLM.Transport,
+		AttestationEnabled:      cfg.LLM.AttestationEnabled,
 		Endpoint:                cfg.LLM.Endpoint,
-		AttestationMode:         cfg.LLM.AttestationMode,
+		AttestationMeasurement:  cfg.LLM.AttestationMeasurement,
 		HRKCertPath:             cfg.LLM.HRKCertPath,
 		HSKCekCertPath:          cfg.LLM.HSKCekCertPath,
-		ExpectedMeasurements:    cfg.LLM.ExpectedMeasurements,
 		RequireMutualAttest:     cfg.LLM.RequireMutualAttest,
 		InsecureSkipVerify:      cfg.LLM.InsecureSkipVerify,
 		AuthToken:               cfg.LLM.AuthToken,
 		Model:                   cfg.LLM.Model,
 		Timeout:                 60 * time.Second,
 		MaxFindings:             0,
-		Policy:                  cfg.LLM.Policy,
 		FailClosed:              cfg.LLM.FailClosed,
 		AllowedHosts:            cfg.LLM.AllowedHosts,
 		CircuitBreakerThreshold: cfg.LLM.CircuitBreakerThreshold,
@@ -186,23 +182,20 @@ func TestBuildSecurityConfig(t *testing.T) {
 	if sec.LLM.Enabled != wantLLM.Enabled {
 		t.Errorf("LLM.Enabled = %v, want %v", sec.LLM.Enabled, wantLLM.Enabled)
 	}
-	if sec.LLM.Transport != wantLLM.Transport {
-		t.Errorf("LLM.Transport = %q, want %q", sec.LLM.Transport, wantLLM.Transport)
+	if sec.LLM.AttestationEnabled != wantLLM.AttestationEnabled {
+		t.Errorf("LLM.AttestationEnabled = %v, want %v", sec.LLM.AttestationEnabled, wantLLM.AttestationEnabled)
 	}
 	if sec.LLM.Endpoint != wantLLM.Endpoint {
 		t.Errorf("LLM.Endpoint = %q, want %q", sec.LLM.Endpoint, wantLLM.Endpoint)
 	}
-	if sec.LLM.AttestationMode != wantLLM.AttestationMode {
-		t.Errorf("LLM.AttestationMode = %q, want %q", sec.LLM.AttestationMode, wantLLM.AttestationMode)
+	if sec.LLM.AttestationMeasurement != wantLLM.AttestationMeasurement {
+		t.Errorf("LLM.AttestationMeasurement = %q, want %q", sec.LLM.AttestationMeasurement, wantLLM.AttestationMeasurement)
 	}
 	if sec.LLM.HRKCertPath != wantLLM.HRKCertPath {
 		t.Errorf("LLM.HRKCertPath = %q, want %q", sec.LLM.HRKCertPath, wantLLM.HRKCertPath)
 	}
 	if sec.LLM.HSKCekCertPath != wantLLM.HSKCekCertPath {
 		t.Errorf("LLM.HSKCekCertPath = %q, want %q", sec.LLM.HSKCekCertPath, wantLLM.HSKCekCertPath)
-	}
-	if len(sec.LLM.ExpectedMeasurements) != len(wantLLM.ExpectedMeasurements) || (len(wantLLM.ExpectedMeasurements) > 0 && sec.LLM.ExpectedMeasurements[0] != wantLLM.ExpectedMeasurements[0]) {
-		t.Errorf("LLM.ExpectedMeasurements = %v, want %v", sec.LLM.ExpectedMeasurements, wantLLM.ExpectedMeasurements)
 	}
 	if sec.LLM.RequireMutualAttest != wantLLM.RequireMutualAttest {
 		t.Errorf("LLM.RequireMutualAttest = %v, want %v", sec.LLM.RequireMutualAttest, wantLLM.RequireMutualAttest)
@@ -221,9 +214,6 @@ func TestBuildSecurityConfig(t *testing.T) {
 	}
 	if sec.LLM.MaxFindings != wantLLM.MaxFindings {
 		t.Errorf("LLM.MaxFindings = %d, want %d", sec.LLM.MaxFindings, wantLLM.MaxFindings)
-	}
-	if sec.LLM.Policy != wantLLM.Policy {
-		t.Errorf("LLM.Policy = %q, want %q", sec.LLM.Policy, wantLLM.Policy)
 	}
 	if sec.LLM.FailClosed != wantLLM.FailClosed {
 		t.Errorf("LLM.FailClosed = %v, want %v", sec.LLM.FailClosed, wantLLM.FailClosed)
@@ -449,7 +439,7 @@ func TestProbeInferenceService_ContextCancelled(t *testing.T) {
 
 	cfg := config.StartupConfig{
 		LLM: config.LLMConfig{
-			Transport:          "teetls",
+			AttestationEnabled: true,
 			Endpoint:           "https://127.0.0.1:65534",
 			InsecureSkipVerify: true,
 			TimeoutMs:          3000,
@@ -476,7 +466,7 @@ func TestProbeInferenceService_HealthyEndpoint(t *testing.T) {
 
 	cfg := config.StartupConfig{
 		LLM: config.LLMConfig{
-			Transport:          "teetls",
+			AttestationEnabled: true,
 			Endpoint:           server.URL,
 			InsecureSkipVerify: true,
 			TimeoutMs:          3000,
@@ -503,7 +493,7 @@ func TestProbeInferenceService_UnhealthyEndpoint(t *testing.T) {
 
 	cfg := config.StartupConfig{
 		LLM: config.LLMConfig{
-			Transport:          "teetls",
+			AttestationEnabled: true,
 			Endpoint:           server.URL,
 			InsecureSkipVerify: true,
 			TimeoutMs:          3000,
@@ -536,7 +526,7 @@ func TestRunWithConfig_LLMProbeFailureDoesNotAbortStartup(t *testing.T) {
 		LLM: config.LLMConfig{
 			Enabled:            true,
 			FailClosed:         true,
-			Transport:          "teetls",
+			AttestationEnabled: true,
 			Endpoint:           "https://127.0.0.1:65534",
 			InsecureSkipVerify: true,
 			TimeoutMs:          100,

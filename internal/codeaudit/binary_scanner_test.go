@@ -272,11 +272,11 @@ func TestBinaryScannerCapPreservesEveryHighFinding(t *testing.T) {
 	// sibling test below is the one that separates them; the pair is needed
 	// because a change that re-broke MEDIUM would leave this test green.
 	//
-	// It matters because a finding that blocks under either policy may not be
-	// dropped: HIGH blocks under `assist` and `gate` alike, so a cap that dropped
-	// one would turn a withholding package into a passing one - and an attacker
-	// could aim at exactly that by padding a package with cheap LOW findings until
-	// its HIGH ones fell off the end of the list.
+	// It matters because a finding that blocks may not be dropped: HIGH blocks
+	// under gate, so a cap that dropped one would turn a withholding package into
+	// a passing one - and an attacker could aim at exactly that by padding a
+	// package with cheap LOW findings until its HIGH ones fell off the end of the
+	// list.
 	writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{
 		imports:  []string{"socket", "connect", "system", "popen"},
 		text:     uniformBytes(512),
@@ -336,12 +336,12 @@ func TestBinaryScannerCapPreservesEveryHighFinding(t *testing.T) {
 }
 
 // TestBinaryScannerCapKeepsAMediumFindingBeyondTheBudget is the case the HIGH
-// test above cannot see. MEDIUM does not block under the default `assist`
-// policy, but it does under `gate`, where `passed` is `High == 0 && Medium == 0`
-// (internal/codeaudit/audit.go:298-309). A cap that dropped MEDIUM would
+// test above cannot see. MEDIUM blocks under the gate arbitration, where
+// `passed` is `High == 0 && Medium == 0`
+// (internal/codeaudit/audit.go:311-327). A cap that dropped MEDIUM would
 // therefore let a crafted package pass under `gate` with its blocking findings
 // sitting past the budget - the padding attack the HIGH test describes, aimed at
-// the other policy. DYN_001 is the concrete family: it is MEDIUM in the shared
+// the other severity. DYN_001 is the concrete family: it is MEDIUM in the shared
 // table and the binary arm borrows it, so `dlopen` in a dynamic symbol table is
 // an ordinary-looking way to put a MEDIUM finding in the list.
 //
@@ -912,11 +912,9 @@ func TestBinaryScannerDowngradeHappensBeforeTheCap(t *testing.T) {
 	}
 }
 
-// TestBinaryScannerDowngradedEvidenceDoesNotBlockUnderEitherPolicy pins the
-// severity the decision needs. It asserts both policies, because assist passes on
-// a MEDIUM downgrade too - only the gate assertion distinguishes LOW from MEDIUM,
-// and MEDIUM under gate refuses the import.
-func TestBinaryScannerDowngradedEvidenceDoesNotBlockUnderEitherPolicy(t *testing.T) {
+// TestBinaryScannerDowngradedEvidenceDoesNotBlock pins the severity the decision
+// needs: only LOW keeps an uncorroborated presence finding from blocking.
+func TestBinaryScannerDowngradedEvidenceDoesNotBlock(t *testing.T) {
 	dir := t.TempDir()
 	writeTestBytes(t, dir, "libnet.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket"}}))
 
@@ -937,11 +935,9 @@ func TestBinaryScannerDowngradedEvidenceDoesNotBlockUnderEitherPolicy(t *testing
 	// ScanPassed carries the completeness precondition the production path folds
 	// in (AssembleAuditReport), so a pass here is the finding decision alone.
 	scanPassed := report.ProvesCleanScan()
-	for _, mode := range []string{"assist", "gate"} {
-		concl := ComputeConclusionContext(stats, nil, mode, ConclusionContext{ScanPassed: &scanPassed})
-		if !concl.Passed {
-			t.Errorf("policy %s: passed = false for a package whose only evidence is a symbol name", mode)
-		}
+	concl := ComputeConclusionContext(stats, nil, ConclusionContext{ScanPassed: &scanPassed})
+	if !concl.Passed {
+		t.Errorf("passed = false for a package whose only evidence is a symbol name")
 	}
 }
 

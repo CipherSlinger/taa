@@ -50,8 +50,8 @@ type StartupConfig struct {
 	// family goes quiet on this deployment. Lower down, a threshold that lands
 	// inside the band compiled code already occupies (roughly 6.0-6.5) starts
 	// calling ordinary shared objects packed - and BIN_001 is HIGH, so those
-	// imports are refused under both policies. The default is 7.5, clear of the
-	// band.
+	// imports are refused regardless of arbitration. The default is 7.5, clear
+	// of the band.
 	BinaryAuditHighEntropyThreshold float64
 	// BinaryAuditMaxFindings is the listing budget for the binary pass, not a
 	// completeness bound: reaching it drops LOW findings (and only LOW - HIGH and
@@ -116,13 +116,19 @@ type StartupConfig struct {
 // findings its static scan raised. Field names carry no "LLM" prefix - the type
 // already says it.
 type LLMConfig struct {
-	Enabled                 bool
-	Transport               string
-	Endpoint                string
-	AttestationMode         string
+	Enabled bool
+	// AttestationEnabled selects the transport: true uses TEE-TLS and verifies
+	// the gateway's CSV attestation, false uses ordinary TLS with no
+	// attestation.
+	AttestationEnabled bool
+	Endpoint           string
+	// AttestationMeasurement is the measurement digest expected in the
+	// inference service's attestation report. Empty skips the measurement
+	// check and logs a warning; the trust chain and key binding are still
+	// verified.
+	AttestationMeasurement  string
 	HRKCertPath             string
 	HSKCekCertPath          string
-	ExpectedMeasurements    []string
 	RequireMutualAttest     bool
 	InsecureSkipVerify      bool
 	AuthToken               string
@@ -131,7 +137,6 @@ type LLMConfig struct {
 	CircuitBreakerThreshold int
 	CooldownSec             int
 	Model                   string
-	Policy                  string
 	FailClosed              bool
 	Dir                     string
 
@@ -296,7 +301,11 @@ type startupCodeAuditConfigFile struct {
 	BinaryAudit  startupBinaryAuditConfigFile `json:"binaryAudit"`
 	ResultCheck  startupResultCheckConfigFile `json:"resultCheck"`
 	MaxFileBytes *int64                       `json:"maxFileBytes"`
-	LLM          startupLLMConfigFile         `json:"llm"`
+	// LLM is a pointer because "absent" and "present but empty" must not
+	// collapse: an instance whose config carries no LLM block has no inference
+	// service to reach, and the audit defaults off rather than probing an
+	// endpoint nobody configured (see the end of applyStartupConfigFile).
+	LLM *startupLLMConfigFile `json:"llm"`
 
 	// Removed keys, declared only so their presence is detectable. See
 	// rejectRemovedKeys.
@@ -394,26 +403,42 @@ type startupAttestationConfigFile struct {
 	HSKCekCertPath string `json:"hskCekCertPath"`
 }
 
+type startupLLMAttestationConfigFile struct {
+	// Enabled selects the transport: true (the default) uses TEE-TLS and
+	// verifies the gateway's CSV attestation, false uses ordinary TLS with no
+	// attestation. It is a pointer so an absent field keeps the default on
+	// instead of reading as a deliberate opt-out.
+	Enabled *bool `json:"enabled"`
+	// Measurement is the expected measurement digest. Empty or absent skips
+	// the measurement check and logs a warning at client construction.
+	Measurement string `json:"measurement"`
+}
+
 type startupLLMConfigFile struct {
-	Enabled                 *bool    `json:"enabled"`
-	Transport               string   `json:"transport"`
-	Endpoint                string   `json:"endpoint"`
-	AttestationMode         string   `json:"attestationMode"`
-	HRKCertPath             string   `json:"hrkCertPath"`
-	HSKCekCertPath          string   `json:"hskCekCertPath"`
-	ExpectedMeasurements    []string `json:"expectedMeasurements"`
-	RequireMutualAttest     *bool    `json:"requireMutualAttest"`
-	InsecureSkipVerify      *bool    `json:"insecureSkipVerify"`
-	AuthToken               string   `json:"authToken"`
-	RequestTimeoutMs        int64    `json:"requestTimeoutMs"`
-	AllowedHosts            []string `json:"allowedHosts"`
-	CircuitBreakerThreshold int      `json:"circuitBreakerThreshold"`
-	CooldownSec             int      `json:"cooldownSec"`
-	Model                   string   `json:"model"`
-	Policy                  string   `json:"policy"`
-	Temperature             *float32 `json:"temperature"`
-	FailClosed              *bool    `json:"failClosed"`
-	Dir                     string   `json:"dir"`
+	Enabled                 *bool                            `json:"enabled"`
+	Attestation             *startupLLMAttestationConfigFile `json:"attestation"`
+	Endpoint                string                           `json:"endpoint"`
+	HRKCertPath             string                           `json:"hrkCertPath"`
+	HSKCekCertPath          string                           `json:"hskCekCertPath"`
+	RequireMutualAttest     *bool                            `json:"requireMutualAttest"`
+	InsecureSkipVerify      *bool                            `json:"insecureSkipVerify"`
+	AuthToken               string                           `json:"authToken"`
+	RequestTimeoutMs        int64                            `json:"requestTimeoutMs"`
+	AllowedHosts            []string                         `json:"allowedHosts"`
+	CircuitBreakerThreshold int                              `json:"circuitBreakerThreshold"`
+	CooldownSec             int                              `json:"cooldownSec"`
+	Model                   string                           `json:"model"`
+	Temperature             *float32                         `json:"temperature"`
+	FailClosed              *bool                            `json:"failClosed"`
+	Dir                     string                           `json:"dir"`
+
+	// Removed keys, declared only so their presence is detectable. See
+	// rejectRemovedKeys.
+	RemovedTransport            json.RawMessage `json:"transport"`
+	RemovedPolicy               json.RawMessage `json:"policy"`
+	RemovedAttestationEnabled   json.RawMessage `json:"attestationEnabled"`
+	RemovedAttestationMode      json.RawMessage `json:"attestationMode"`
+	RemovedExpectedMeasurements json.RawMessage `json:"expectedMeasurements"`
 }
 
 func LoadStartupConfig(path string) (StartupConfig, error) {
@@ -526,6 +551,23 @@ func rejectRemovedKeys(path string, fileCfg startupConfigFile) error {
 			found = append(found, `"fhe.callbackToken" (removed: the callback endpoint is no longer authenticated and accepts loopback requests only)`)
 		}
 	}
+	if llm := fileCfg.CodeAudit.LLM; llm != nil {
+		if hasJSONValue(llm.RemovedTransport) {
+			found = append(found, `"codeAudit.llm.transport" (replace with "codeAudit.llm.attestation.enabled": true is the old "teetls", false is the old non-attested transport)`)
+		}
+		if hasJSONValue(llm.RemovedPolicy) {
+			found = append(found, `"codeAudit.llm.policy" (removed: arbitration is always "gate", and the LLM verdict decides a static HIGH)`)
+		}
+		if hasJSONValue(llm.RemovedAttestationEnabled) {
+			found = append(found, `"codeAudit.llm.attestationEnabled" (move to "codeAudit.llm.attestation.enabled")`)
+		}
+		if hasJSONValue(llm.RemovedAttestationMode) {
+			found = append(found, `"codeAudit.llm.attestationMode" (removed: use "codeAudit.llm.attestation.measurement"; empty skips the measurement check)`)
+		}
+		if hasJSONValue(llm.RemovedExpectedMeasurements) {
+			found = append(found, `"codeAudit.llm.expectedMeasurements" (use the single "codeAudit.llm.attestation.measurement" value)`)
+		}
+	}
 	if len(found) == 0 {
 		return nil
 	}
@@ -539,12 +581,6 @@ func hasJSONValue(raw json.RawMessage) bool {
 	trimmed := strings.TrimSpace(string(raw))
 	return trimmed != "" && trimmed != "null"
 }
-
-// llmPolicies lists the arbitration modes understood by the audit code
-// (see codeaudit.LLMConfig.Policy). Any other value matches neither the gate
-// nor the assist branch, silently degrading a blocking gate to assist
-// behaviour, so it is rejected at load time instead.
-var llmPolicies = []string{"assist", "gate"}
 
 // staticEngines lists the Tier 1 engines understood by the audit code (see
 // codeaudit.NewEngine). The list is repeated here rather than imported, because
@@ -576,7 +612,7 @@ func validateStartupConfig(cfg StartupConfig) error {
 	if err := validateBinaryAudit(cfg); err != nil {
 		return err
 	}
-	return validateLLMPolicy(cfg)
+	return nil
 }
 
 // serverTypes lists the instance roles understood by the startup config (see
@@ -740,7 +776,7 @@ func validateBinaryAudit(cfg StartupConfig) error {
 // validateLLMTemperature rejects a sampling temperature outside [0, 2].
 //
 // Sampling and audit integrity pull against each other: the audit needs the same
-// finding to yield the same verdict, because under assist + failClosed a single
+// finding to yield the same verdict, because under fail-closed a single
 // MALICIOUS verdict blocks the import of code that never changed. Any temperature
 // above zero re-enables sampling, and the higher it goes the more the verdict is
 // a draw rather than a reading - at 2 the distribution is already nearly flat, so
@@ -783,16 +819,6 @@ func validateCodeScanEngine(cfg StartupConfig) error {
 		cfg.CodeScan.Engine, strings.Join(staticEngines, ", "))
 }
 
-func validateLLMPolicy(cfg StartupConfig) error {
-	for _, policy := range llmPolicies {
-		if cfg.LLM.Policy == policy {
-			return nil
-		}
-	}
-	return fmt.Errorf("unsupported codeAudit.llm.policy %q in startup config: must be one of %s",
-		cfg.LLM.Policy, strings.Join(llmPolicies, ", "))
-}
-
 func defaultStartupConfig() StartupConfig {
 	hrkDefault := "/root/taa/certs/hrk.cert"
 	hskDefault := "/root/taa/certs/hsk_cek.cert"
@@ -828,9 +854,8 @@ func defaultStartupConfig() StartupConfig {
 		AttestationHSKCekCertPath: hskDefault,
 		LLM: LLMConfig{
 			Enabled:                 true,
-			Transport:               "teetls",
+			AttestationEnabled:      true,
 			Endpoint:                "https://127.0.0.1:8443",
-			AttestationMode:         "strict",
 			HRKCertPath:             hrkDefault,
 			HSKCekCertPath:          hskDefault,
 			RequireMutualAttest:     false,
@@ -839,7 +864,6 @@ func defaultStartupConfig() StartupConfig {
 			CircuitBreakerThreshold: 3,
 			CooldownSec:             30,
 			Model:                   "qwen2.5-coder:0.5b",
-			Policy:                  "assist",
 			FailClosed:              true,
 		},
 	}
@@ -874,6 +898,9 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	// on disk; that no scan ever runs here is the point, not a side effect.
 	if !readsAuditAndAttestation {
 		cfg.CodeScan.Engine = "regex"
+		// An fhe instance never reads the llm block, so it has no inference
+		// service to probe.
+		cfg.LLM.Enabled = false
 	}
 
 	if trimmed := strings.TrimSpace(fileCfg.PlatformIP); trimmed != "" {
@@ -1044,66 +1071,72 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 		if trimmed := strings.TrimSpace(fileCfg.Attestation.HSKCekCertPath); trimmed != "" {
 			cfg.AttestationHSKCekCertPath = trimmed
 		}
-		if fileCfg.CodeAudit.LLM.Enabled != nil {
-			cfg.LLM.Enabled = *fileCfg.CodeAudit.LLM.Enabled
-		}
-		if fileCfg.CodeAudit.LLM.Transport != "" {
-			cfg.LLM.Transport = strings.TrimSpace(fileCfg.CodeAudit.LLM.Transport)
-		}
-		if fileCfg.CodeAudit.LLM.Endpoint != "" {
-			cfg.LLM.Endpoint = fileCfg.CodeAudit.LLM.Endpoint
-		}
-		if trimmed := strings.TrimSpace(fileCfg.CodeAudit.LLM.AttestationMode); trimmed != "" {
-			cfg.LLM.AttestationMode = trimmed
-		}
-		if trimmed := strings.TrimSpace(fileCfg.CodeAudit.LLM.HRKCertPath); trimmed != "" {
-			cfg.LLM.HRKCertPath = trimmed
-		}
-		if trimmed := strings.TrimSpace(fileCfg.CodeAudit.LLM.HSKCekCertPath); trimmed != "" {
-			cfg.LLM.HSKCekCertPath = trimmed
-		}
-		if len(fileCfg.CodeAudit.LLM.ExpectedMeasurements) > 0 {
-			cfg.LLM.ExpectedMeasurements = fileCfg.CodeAudit.LLM.ExpectedMeasurements
-		}
-		if fileCfg.CodeAudit.LLM.RequireMutualAttest != nil {
-			cfg.LLM.RequireMutualAttest = *fileCfg.CodeAudit.LLM.RequireMutualAttest
-		}
-		if fileCfg.CodeAudit.LLM.InsecureSkipVerify != nil {
-			cfg.LLM.InsecureSkipVerify = *fileCfg.CodeAudit.LLM.InsecureSkipVerify
-		}
-		if fileCfg.CodeAudit.LLM.AuthToken != "" {
-			cfg.LLM.AuthToken = fileCfg.CodeAudit.LLM.AuthToken
-		}
-		if fileCfg.CodeAudit.LLM.RequestTimeoutMs > 0 {
-			cfg.LLM.TimeoutMs = fileCfg.CodeAudit.LLM.RequestTimeoutMs
-		}
-		if len(fileCfg.CodeAudit.LLM.AllowedHosts) > 0 {
-			cfg.LLM.AllowedHosts = fileCfg.CodeAudit.LLM.AllowedHosts
-		}
-		if fileCfg.CodeAudit.LLM.CircuitBreakerThreshold > 0 {
-			cfg.LLM.CircuitBreakerThreshold = fileCfg.CodeAudit.LLM.CircuitBreakerThreshold
-		}
-		if fileCfg.CodeAudit.LLM.CooldownSec > 0 {
-			cfg.LLM.CooldownSec = fileCfg.CodeAudit.LLM.CooldownSec
-		}
-		if fileCfg.CodeAudit.LLM.Model != "" {
-			cfg.LLM.Model = fileCfg.CodeAudit.LLM.Model
-		}
-		if fileCfg.CodeAudit.LLM.Policy != "" {
-			cfg.LLM.Policy = strings.ToLower(strings.TrimSpace(fileCfg.CodeAudit.LLM.Policy))
-		}
-		// nil-guard rather than the "> 0" guard the neighbouring LLM numerics use.
-		// nil means "not configured"; zero is a real sampling value here (greedy
-		// decoding, which is what the audit wants), so a "> 0" guard would make it
-		// impossible to state zero explicitly.
-		if fileCfg.CodeAudit.LLM.Temperature != nil {
-			cfg.LLM.Temperature = fileCfg.CodeAudit.LLM.Temperature
-		}
-		if fileCfg.CodeAudit.LLM.FailClosed != nil {
-			cfg.LLM.FailClosed = *fileCfg.CodeAudit.LLM.FailClosed
-		}
-		if fileCfg.CodeAudit.LLM.Dir != "" {
-			cfg.LLM.Dir = fileCfg.CodeAudit.LLM.Dir
+		if llm := fileCfg.CodeAudit.LLM; llm != nil {
+			if llm.Enabled != nil {
+				cfg.LLM.Enabled = *llm.Enabled
+			} else {
+				// A block with no explicit switch keeps the audit on.
+				cfg.LLM.Enabled = true
+			}
+			if llm.Attestation != nil {
+				if llm.Attestation.Enabled != nil {
+					cfg.LLM.AttestationEnabled = *llm.Attestation.Enabled
+				}
+				if trimmed := strings.TrimSpace(llm.Attestation.Measurement); trimmed != "" {
+					cfg.LLM.AttestationMeasurement = trimmed
+				}
+			}
+			if llm.Endpoint != "" {
+				cfg.LLM.Endpoint = llm.Endpoint
+			}
+			if trimmed := strings.TrimSpace(llm.HRKCertPath); trimmed != "" {
+				cfg.LLM.HRKCertPath = trimmed
+			}
+			if trimmed := strings.TrimSpace(llm.HSKCekCertPath); trimmed != "" {
+				cfg.LLM.HSKCekCertPath = trimmed
+			}
+			if llm.RequireMutualAttest != nil {
+				cfg.LLM.RequireMutualAttest = *llm.RequireMutualAttest
+			}
+			if llm.InsecureSkipVerify != nil {
+				cfg.LLM.InsecureSkipVerify = *llm.InsecureSkipVerify
+			}
+			if llm.AuthToken != "" {
+				cfg.LLM.AuthToken = llm.AuthToken
+			}
+			if llm.RequestTimeoutMs > 0 {
+				cfg.LLM.TimeoutMs = llm.RequestTimeoutMs
+			}
+			if len(llm.AllowedHosts) > 0 {
+				cfg.LLM.AllowedHosts = llm.AllowedHosts
+			}
+			if llm.CircuitBreakerThreshold > 0 {
+				cfg.LLM.CircuitBreakerThreshold = llm.CircuitBreakerThreshold
+			}
+			if llm.CooldownSec > 0 {
+				cfg.LLM.CooldownSec = llm.CooldownSec
+			}
+			if llm.Model != "" {
+				cfg.LLM.Model = llm.Model
+			}
+			// nil-guard rather than the "> 0" guard the neighbouring LLM numerics use.
+			// nil means "not configured"; zero is a real sampling value here (greedy
+			// decoding, which is what the audit wants), so a "> 0" guard would make it
+			// impossible to state zero explicitly.
+			if llm.Temperature != nil {
+				cfg.LLM.Temperature = llm.Temperature
+			}
+			if llm.FailClosed != nil {
+				cfg.LLM.FailClosed = *llm.FailClosed
+			}
+			if llm.Dir != "" {
+				cfg.LLM.Dir = llm.Dir
+			}
+		} else {
+			// No llm block means no inference service to reach: the audit
+			// defaults off instead of probing a default endpoint nobody
+			// configured.
+			cfg.LLM.Enabled = false
 		}
 	}
 

@@ -182,9 +182,9 @@ func TestNewEngineTreatsAnEmptyRulesPathAsTheBuiltInDefault(t *testing.T) {
 
 // TestDefaultEngineIsStillTheRegexBaseline pins the default, which is a decision
 // rather than an implementation detail: the production engine stays regex until
-// the holdout evidence passes under the assist policy (spec §6.5, §9.4). It also
-// pins that the default and the selector agree, so the two ways of asking for
-// the baseline engine cannot drift into different engines.
+// the holdout evidence passes the audit gate (spec §6.5, §9.4). It also pins
+// that the default and the selector agree, so the two ways of asking for the
+// baseline engine cannot drift into different engines.
 func TestDefaultEngineIsStillTheRegexBaseline(t *testing.T) {
 	def := DefaultEngine()
 	if def == nil {
@@ -232,7 +232,7 @@ func TestGenerateAuditReportUsesTheEngineItWasGiven(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewEngine(%+v): %v", tc.cfg, err)
 			}
-			audit, err := GenerateAuditReport(context.Background(), dir, engine, AuditConfig{LLM: LLMConfig{Policy: "assist"}}, nil)
+			audit, err := GenerateAuditReport(context.Background(), dir, engine, AuditConfig{LLM: LLMConfig{}}, nil)
 			if err != nil {
 				t.Fatalf("GenerateAuditReport: %v", err)
 			}
@@ -312,7 +312,7 @@ func TestGenerateAuditReportRejectsAMissingEngine(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, dir, "train.py", "import os\n")
 
-	audit, err := GenerateAuditReport(context.Background(), dir, nil, AuditConfig{LLM: LLMConfig{Policy: "assist"}}, nil)
+	audit, err := GenerateAuditReport(context.Background(), dir, nil, AuditConfig{LLM: LLMConfig{}}, nil)
 	if err == nil {
 		t.Fatalf("GenerateAuditReport with a nil engine returned an audit: %+v", audit)
 	}
@@ -360,9 +360,9 @@ func TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine(t *testing.T) {
 			// The packed section is not decoration: the corroboration gate downgrades
 			// a presence-only family (NET_002, from the socket/connect imports) to LOW
 			// unless the same file carries independent corroboration, so a fixture that
-			// imported socket without a near-random executable section would pass under
-			// assist and this assertion could not hold. The measured entropy is what
-			// makes the package block on evidence rather than on a name.
+			// imported socket without a near-random executable section would carry no
+			// blocking finding and this assertion could not hold. The measured entropy
+			// is what makes the package block on evidence rather than on a name.
 			writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{
 				imports:  []string{"socket", "connect"},
 				needed:   []string{"libcurl.so.4"},
@@ -371,7 +371,7 @@ func TestGenerateAuditReportRunsTheBinaryChannelForEveryEngine(t *testing.T) {
 			}))
 
 			cfg := AuditConfig{
-				LLM:    LLMConfig{Enabled: false, Policy: "assist"},
+				LLM:    LLMConfig{Enabled: false},
 				Binary: DefaultBinaryConfig(),
 			}
 			audit, err := GenerateAuditReport(context.Background(), dir, engine, cfg, nil)
@@ -410,7 +410,7 @@ func TestGenerateAuditReportWithBinaryDisabledIsUnchanged(t *testing.T) {
 	writeTestBytes(t, dir, "libevil.so", elfFixtureBytes(t, elfSpec{imports: []string{"socket", "connect"}}))
 
 	cfg := AuditConfig{
-		LLM:    LLMConfig{Enabled: false, Policy: "assist"},
+		LLM:    LLMConfig{Enabled: false},
 		Binary: BinaryConfig{Enabled: false},
 	}
 	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), cfg, nil)
@@ -441,7 +441,7 @@ func TestGenerateAuditReportMirrorsBinaryGapsIntoMetadata(t *testing.T) {
 	writeTestBytes(t, dir, "truncated.so", raw)
 
 	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(),
-		AuditConfig{LLM: LLMConfig{Enabled: false, Policy: "assist"}, Binary: DefaultBinaryConfig()}, nil)
+		AuditConfig{LLM: LLMConfig{Enabled: false}, Binary: DefaultBinaryConfig()}, nil)
 	if err != nil {
 		t.Fatalf("GenerateAuditReport: %v", err)
 	}

@@ -50,7 +50,7 @@ func auditFixtureWithoutFindings(t *testing.T) string {
 func TestAuditWithoutAClientIsRejectedUnderFailClosed(t *testing.T) {
 	dir := auditFixtureWithFindings(t)
 
-	cfg := LLMConfig{Enabled: true, Policy: "assist", FailClosed: true}
+	cfg := LLMConfig{Enabled: true, FailClosed: true}
 	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), AuditConfig{LLM: cfg}, nil)
 
 	if err == nil {
@@ -76,7 +76,7 @@ func TestAuditWithoutAClientIsRejectedUnderFailClosed(t *testing.T) {
 func TestAuditWithoutAClientIsMarkedDegraded(t *testing.T) {
 	dir := auditFixtureWithFindings(t)
 
-	cfg := LLMConfig{Enabled: true, Policy: "assist", FailClosed: false}
+	cfg := LLMConfig{Enabled: true, FailClosed: false}
 	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), AuditConfig{LLM: cfg}, nil)
 	if err != nil {
 		t.Fatalf("GenerateAuditReport: %v", err)
@@ -101,7 +101,7 @@ func TestAuditWithoutAClientIsMarkedDegraded(t *testing.T) {
 func TestAuditWithNothingToAdjudicateIsNotDegraded(t *testing.T) {
 	dir := auditFixtureWithoutFindings(t)
 
-	cfg := LLMConfig{Enabled: true, Policy: "assist", FailClosed: true}
+	cfg := LLMConfig{Enabled: true, FailClosed: true}
 	audit, err := GenerateAuditReport(context.Background(), dir, DefaultEngine(), AuditConfig{LLM: cfg}, nil)
 	if err != nil {
 		t.Fatalf("a clean scan was refused because the LLM was unreachable, although it had nothing to "+

@@ -33,14 +33,14 @@
     },
     "llm": {
       "enabled": true,
-      "transport": "teetls",
+      "attestation": {
+        "enabled": true
+      },
       "endpoint": "https://172.16.10.116:8443",
       "model": "qwen2.5-coder:7b",
-      "policy": "assist",
       "failClosed": true,
       "requestTimeoutMs": 120000,
-      "insecureSkipVerify": true,
-      "attestationMode": "permissive"
+      "insecureSkipVerify": true
     }
   },
   "attestation": {

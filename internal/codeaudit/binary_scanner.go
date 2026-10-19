@@ -48,9 +48,9 @@ type BinaryScanSummary struct {
 	// did not happen, and the report's Truncated is one of the conditions
 	// ProvesCleanScan refuses on - folding this into it would make the channel
 	// refuse an import for having found too much. Only LOW findings are ever
-	// dropped (see ScanDirectory), and LOW blocks under neither the `assist` nor
-	// the `gate` policy - MEDIUM does block under `gate`, which is exactly why the
-	// cap keeps it - so nothing the cap drops could have blocked the import.
+	// dropped (see ScanDirectory), and LOW does not block under the gate
+	// arbitration - MEDIUM does block, which is exactly why the cap keeps it -
+	// so nothing the cap drops could have blocked the import.
 	FindingsCapped bool `json:"findings_capped,omitempty"`
 	// FindingsDropped is how many LOW findings the cap dropped, so the count
 	// travels with the flag rather than being re-derived from a list that no
@@ -280,14 +280,12 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 	// pass keep a different set each time.
 	//
 	// The cap drops LOW findings and only LOW. A finding that can block the
-	// import under either supported policy is kept whether or not it fits the
+	// import under the gate arbitration is kept whether or not it fits the
 	// budget, and the list grows past MaxFindings instead. The keep rule below
 	// therefore names the one severity that cannot block and keeps everything
-	// else, rather than naming the severities that can - naming those would read
-	// one policy's answer into a decision both policies have to survive:
-	// `assist` withholds on HIGH alone, but `gate` withholds on HIGH or MEDIUM
-	// (internal/codeaudit/audit.go:298-309), and DYN_001 - MEDIUM in the shared
-	// table - refuses the import the moment an operator switches to `gate`.
+	// else, rather than naming the severities that can: HIGH and MEDIUM both
+	// block (internal/codeaudit/audit.go:311-327), and DYN_001 - MEDIUM in the
+	// shared table - refuses the import just as a HIGH does.
 	// Dropping a blocking finding would turn a package that must be withheld
 	// into one that passes, which is the one failure a cap must not be
 	// able to cause, and an attacker aims at exactly it by padding a package with

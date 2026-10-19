@@ -42,9 +42,9 @@ import (
 // libllama-server-impl.so import socket/connect/getaddrinfo/inet_pton inside
 // httplib::detail::*, libggml-base.so.0.20.2 imports execlp inside
 // ggml_print_backtrace, libgfortran.so.5.0.0 imports system, and
-// libcudart.so.12 with libcudnn_*.so import socket/connect. Under the default
-// `assist` policy, where Passed is `highCount == 0`, any one of them refused the
-// import of a legitimate package.
+// libcudart.so.12 with libcudnn_*.so import socket/connect. Under the gate
+// arbitration, where a HIGH or MEDIUM finding refuses the import, any one of
+// them refused the import of a legitimate package.
 //
 // Reachability, the other candidate fix, was measured and rejected. These C++
 // and Rust objects are not built with -fvisibility=hidden: libllama-common
@@ -75,11 +75,10 @@ import (
 // the same claim as harmless.
 //
 // The reason this has to be stated rather than felt is that the severity column
-// is the only control that exists downstream. `Passed` is computed as
-// `highCount == 0` under the default `assist` policy, and with the medium count
-// added under `gate`, both in ComputeConclusionContext. A `Passed` that comes
-// out false refuses the import (internal/controller/import_processing.go) and
-// reports the package as unsafe; it deletes nothing, because the audit never
+// is the only control that exists downstream. `Passed` is
+// `High == 0 && Medium == 0` in ComputeConclusionContext, and a `Passed` that
+// comes out false refuses the import (internal/controller/import_processing.go)
+// and reports the package as unsafe; it deletes nothing, because the audit never
 // writes to, deletes, or modifies the package it reads. Measured against the
 // real files on this machine, the table as first written refused legitimate
 // packages: one free-string rule fired on 23 of 28 legitimate shared libraries.
@@ -93,11 +92,10 @@ import (
 // severity that is neither HIGH nor MEDIUM. A LOW finding still reaches the
 // report and still goes to the Tier-2 verifier, which can raise it
 // to MALICIOUS on its own evidence; it simply does not block by itself. LOW and
-// not MEDIUM is deliberate for the gated families too: `assist` withholds on
-// HIGH alone but `gate` withholds on HIGH or MEDIUM (internal/codeaudit/audit.go),
-// so a MEDIUM downgrade would still refuse the import under `gate` - the same
-// block under a different number. LOW is the only value that does not block
-// under either policy.
+// not MEDIUM is deliberate for the gated families too: the gate withholds on
+// HIGH or MEDIUM (internal/codeaudit/audit.go), so a MEDIUM downgrade would
+// still refuse the import - the same block under a different number. LOW is the
+// only value that does not block.
 var binaryOnlyRules = map[string]Rule{
 	"BIN_001": {
 		ID:       "BIN_001",
@@ -215,8 +213,8 @@ var binaryFamilies = []binaryFamily{
 		// family on a legitimate library too: `nm -D` shows
 		// libggml-base.so.0.20.2 importing `execlp`, so as written CMD_001
 		// reported HIGH on ggml's own backend loader, and on libgfortran.so.5.0.0
-		// - which imports `system` - and so refused legitimate packages under
-		// `assist`. It is now one of the three presence families the
+		// - which imports `system` - and so refused legitimate packages. It is now
+		// one of the three presence families the
 		// corroboration gate covers (see the table header): a name in the symbol
 		// table is the capability, never the call, so a finding here is withheld
 		// from HIGH unless the same file carries an independent corroborator.
@@ -249,10 +247,9 @@ var binaryFamilies = []binaryFamily{
 		// cuda_v12/cuda_v13 import `bind`/`connect`/`socket`.
 		//
 		// So on this machine's bundle NET_002 reports HIGH on legitimate
-		// libraries, and under the default `assist` policy, where `Passed` is
-		// `highCount == 0`, that meant passed=false for a package that holds one
-		// of them. The "or needs libcurl" half of the original claim does hold:
-		// no library in the bundle carries a curl or ssl DT_NEEDED.
+		// libraries, and a HIGH finding means passed=false for a package that
+		// holds one of them. The "or needs libcurl" half of the original claim
+		// does hold: no library in the bundle carries a curl or ssl DT_NEEDED.
 		//
 		// This is now decided, not left open. Narrowing the pattern set further
 		// and dropping the family to MEDIUM were both rejected: the client

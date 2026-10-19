@@ -27,7 +27,6 @@ func TestLoadStartupConfigFallsBackToIdentityEnvironment(t *testing.T) {
 				"enabled": false,
 				"endpoint": "http://llm.example:11434",
 				"model": "qwen-test",
-				"policy": "gate",
 				"failClosed": false
 			}
 		}
@@ -210,6 +209,14 @@ func TestLoadStartupConfigFHEPlatformSection(t *testing.T) {
 	}
 }
 
+// fheConfigSection is the fhe block shared by the fixtures that only need a
+// config which passes validation.
+const fheConfigSection = `"fhe": {
+		"endpoint": "http://127.0.0.1:58996",
+		"dataDir": "/opt/fhe-data",
+		"keyCacheDir": "/opt/fhe-data/taa-fhe-keys"
+	}`
+
 // auditAndAttestationConfig carries both blocks with values that differ from
 // every default, so a test can tell "applied" from "ignored" on each field.
 const auditAndAttestationConfig = `{
@@ -224,16 +231,11 @@ const auditAndAttestationConfig = `{
 			"enabled": false,
 			"endpoint": "https://bogus.example:1",
 			"model": "bogus-model",
-			"policy": "gate",
 			"failClosed": false
 		}
 	},
 	"attestation": {"hrkCertPath": "/bogus/hrk.cert", "hskCekCertPath": "/bogus/hsk_cek.cert"},
-	"fhe": {
-		"endpoint": "http://127.0.0.1:58996",
-		"dataDir": "/opt/fhe-data",
-		"keyCacheDir": "/opt/fhe-data/taa-fhe-keys"
-	}
+	` + fheConfigSection + `
 }`
 
 func writeAuditAndAttestationConfig(t *testing.T, path, serverType string) {
@@ -283,9 +285,9 @@ func TestLoadStartupConfigFHEIgnoresAuditAndAttestation(t *testing.T) {
 		t.Errorf("attestation paths = %q/%q, want defaults on an fhe instance",
 			cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
 	}
-	if !cfg.LLM.Enabled || cfg.LLM.Endpoint != "https://127.0.0.1:8443" || cfg.LLM.Model != "qwen2.5-coder:0.5b" ||
-		cfg.LLM.Policy != "assist" || !cfg.LLM.FailClosed {
-		t.Errorf("LLM = %+v, want defaults on an fhe instance", cfg.LLM)
+	if cfg.LLM.Enabled || cfg.LLM.Endpoint != "https://127.0.0.1:8443" || cfg.LLM.Model != "qwen2.5-coder:0.5b" ||
+		!cfg.LLM.FailClosed {
+		t.Errorf("LLM = %+v, want audit disabled and otherwise defaults on an fhe instance", cfg.LLM)
 	}
 }
 
@@ -325,7 +327,7 @@ func TestLoadStartupConfigTEEAppliesAuditAndAttestation(t *testing.T) {
 			cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
 	}
 	if cfg.LLM.Enabled || cfg.LLM.Endpoint != "https://bogus.example:1" || cfg.LLM.Model != "bogus-model" ||
-		cfg.LLM.Policy != "gate" || cfg.LLM.FailClosed {
+		cfg.LLM.FailClosed {
 		t.Errorf("LLM = %+v, want the file values on a tee instance", cfg.LLM)
 	}
 }
@@ -381,8 +383,8 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if cfg.StateSealingKeySource != StateSealingKeySourceSM2 {
 		t.Fatalf("StateSealingKeySource = %q, want default %q", cfg.StateSealingKeySource, StateSealingKeySourceSM2)
 	}
-	if !cfg.LLM.Enabled {
-		t.Fatalf("LLM.Enabled = false, want default true")
+	if cfg.LLM.Enabled {
+		t.Fatalf("LLM.Enabled = true, want false when the config carries no llm block")
 	}
 	if cfg.LLM.Endpoint != "https://127.0.0.1:8443" {
 		t.Fatalf("LLM.Endpoint = %q, want default", cfg.LLM.Endpoint)
@@ -390,14 +392,56 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	if cfg.LLM.Model != "qwen2.5-coder:0.5b" {
 		t.Fatalf("LLM.Model = %q, want default", cfg.LLM.Model)
 	}
-	if cfg.LLM.Policy != "assist" {
-		t.Fatalf("LLM.Policy = %q, want default", cfg.LLM.Policy)
-	}
 	if !cfg.LLM.FailClosed {
 		t.Fatalf("LLM.FailClosed = false, want default true")
 	}
 	if cfg.AttestationHRKCertPath == "" || cfg.AttestationHSKCekCertPath == "" {
 		t.Fatalf("Attestation cert paths unexpectedly empty: hrk=%q, hsk=%q", cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
+	}
+}
+
+// TestLoadStartupConfigLLMEnabledRequiresTheBlock pins where the audit's
+// on/off default comes from. Only a config that carries an llm block keeps the
+// default on: without one there is no inference service to reach, and an fhe
+// instance never reads the block at all, so neither should start a probe.
+func TestLoadStartupConfigLLMEnabledRequiresTheBlock(t *testing.T) {
+	t.Setenv("PLATFORM_IP", "")
+	t.Setenv("DOCKER_ID", "")
+
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "tee without llm block",
+			body: `{"server": {"type": "tee"}}`,
+			want: false,
+		},
+		{
+			name: "tee with llm block",
+			body: `{"server": {"type": "tee"}, "codeAudit": {"llm": {"endpoint": "https://llm.example:8443"}}}`,
+			want: true,
+		},
+		{
+			name: "fhe with llm block",
+			body: `{"server": {"type": "fhe"}, "codeAudit": {"llm": {"enabled": true}}, ` + fheConfigSection + `}`,
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), DefaultFileName)
+			writeTestConfig(t, path, tc.body)
+
+			cfg, err := LoadStartupConfig(path)
+			if err != nil {
+				t.Fatalf("LoadStartupConfig() error = %v", err)
+			}
+			if cfg.LLM.Enabled != tc.want {
+				t.Fatalf("LLM.Enabled = %v, want %v", cfg.LLM.Enabled, tc.want)
+			}
+		})
 	}
 }
 
@@ -551,7 +595,6 @@ func TestLoadStartupConfigDoesNotReadOtherRuntimeEnvironment(t *testing.T) {
 	t.Setenv("SECURITY_LLM_VERIFY", "false")
 	t.Setenv("SECURITY_LLM_ENDPOINT", "http://env-llm:11434")
 	t.Setenv("SECURITY_LLM_MODEL", "env-model")
-	t.Setenv("SECURITY_LLM_POLICY", "gate")
 	t.Setenv("SECURITY_LLM_FAIL_CLOSED", "false")
 	t.Setenv("MODEL_DIR", "/env/models")
 	t.Setenv("DATA_DIR", "/env/data")
@@ -567,13 +610,13 @@ func TestLoadStartupConfigDoesNotReadOtherRuntimeEnvironment(t *testing.T) {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
-	if !cfg.EnableCodeAudit || !cfg.EnableResultCheck || !cfg.LLM.Enabled || !cfg.LLM.FailClosed {
+	if !cfg.EnableCodeAudit || !cfg.EnableResultCheck || cfg.LLM.Enabled || !cfg.LLM.FailClosed {
 		t.Fatalf("boolean runtime config unexpectedly read from environment: %+v", cfg)
 	}
 	if cfg.ModelDir != "/opt/taa/models" || cfg.DataDir != "/opt/taa/data" || cfg.ResultDir != "/opt/taa/results" || cfg.KeysDir != "/root/taa/keys" {
 		t.Fatalf("directory runtime config unexpectedly read from environment: %+v", cfg)
 	}
-	if cfg.LLM.Endpoint != "https://127.0.0.1:8443" || cfg.LLM.Model != "qwen2.5-coder:0.5b" || cfg.LLM.Policy != "assist" || cfg.LLM.Dir != "" {
+	if cfg.LLM.Endpoint != "https://127.0.0.1:8443" || cfg.LLM.Model != "qwen2.5-coder:0.5b" || cfg.LLM.Dir != "" {
 		t.Fatalf("LLM runtime config unexpectedly read from environment: %+v", cfg)
 	}
 }
@@ -673,7 +716,7 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantKeysDir:               "/root/taa/keys",
 			wantHRK:                   "/root/taa/certs/hrk.cert",
 			wantHSKCek:                "/root/taa/certs/hsk_cek.cert",
-			wantMaxResultBytes:        3221225472,
+			wantMaxResultBytes:        5368709120,
 			wantModelInputDir:         "/opt/taa/input",
 			wantModelOutputDir:        "/opt/taa/output/result",
 			wantModelLogDir:           "/opt/taa/output/log",
@@ -702,7 +745,7 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantModelProgressDir:      "/opt/taa/output/progress/progress.json",
 			wantCodeAudit:             true,
 			wantResultCheck:           true,
-			wantPlatformIP:            "127.0.0.1:18080",
+			wantPlatformIP:            "127.0.0.1:28080",
 			wantDockerID:              "taa-env-slim-v2",
 			wantStateSealingKeySource: StateSealingKeySourceSM2,
 			wantLLMTimeoutMs:          120000,
@@ -1013,16 +1056,16 @@ func TestStartupConfig_InferenceOptions(t *testing.T) {
 		"codeAudit": {
 			"llm": {
 				"enabled": true,
-				"transport": "teetls",
+				"attestation": {
+					"enabled": true,
+					"measurement": "deadbeef01234567"
+				},
 				"endpoint": "https://127.0.0.1:8443",
-				"attestationMode": "permissive",
 				"hrkCertPath": "/custom/hrk.cert",
 				"hskCekCertPath": "/custom/hsk_cek.cert",
-				"expectedMeasurements": ["deadbeef01234567"],
 				"requireMutualAttest": true,
 				"insecureSkipVerify": true,
 				"model": "qwen2.5-coder:3b",
-				"policy": "gate",
 				"temperature": 0.3,
 				"failClosed": true,
 				"authToken": "secret-token",
@@ -1039,23 +1082,20 @@ func TestStartupConfig_InferenceOptions(t *testing.T) {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
-	if cfg.LLM.Transport != "teetls" {
-		t.Errorf("got transport %q, want 'teetls'", cfg.LLM.Transport)
+	if !cfg.LLM.AttestationEnabled {
+		t.Errorf("got attestation.enabled false, want true")
 	}
 	if cfg.LLM.Endpoint != "https://127.0.0.1:8443" {
 		t.Errorf("got endpoint %q, want 'https://127.0.0.1:8443'", cfg.LLM.Endpoint)
 	}
-	if cfg.LLM.AttestationMode != "permissive" {
-		t.Errorf("got attestationMode %q, want 'permissive'", cfg.LLM.AttestationMode)
+	if cfg.LLM.AttestationMeasurement != "deadbeef01234567" {
+		t.Errorf("got attestation measurement %q, want 'deadbeef01234567'", cfg.LLM.AttestationMeasurement)
 	}
 	if cfg.LLM.HRKCertPath != "/custom/hrk.cert" {
 		t.Errorf("got hrkCertPath %q, want '/custom/hrk.cert'", cfg.LLM.HRKCertPath)
 	}
 	if cfg.LLM.HSKCekCertPath != "/custom/hsk_cek.cert" {
 		t.Errorf("got hskCekCertPath %q, want '/custom/hsk_cek.cert'", cfg.LLM.HSKCekCertPath)
-	}
-	if len(cfg.LLM.ExpectedMeasurements) != 1 || cfg.LLM.ExpectedMeasurements[0] != "deadbeef01234567" {
-		t.Errorf("got expectedMeasurements %v, want ['deadbeef01234567']", cfg.LLM.ExpectedMeasurements)
 	}
 	if !cfg.LLM.RequireMutualAttest {
 		t.Errorf("got requireMutualAttest false, want true")
@@ -1095,20 +1135,17 @@ func TestStartupConfig_InferenceDefaults(t *testing.T) {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
-	if cfg.LLM.Transport != "teetls" {
-		t.Errorf("got default transport %q, want 'teetls'", cfg.LLM.Transport)
+	if !cfg.LLM.AttestationEnabled {
+		t.Errorf("got default attestation.enabled false, want true")
 	}
 	if cfg.LLM.Endpoint != "https://127.0.0.1:8443" {
 		t.Errorf("got default endpoint %q, want 'https://127.0.0.1:8443'", cfg.LLM.Endpoint)
 	}
-	if cfg.LLM.AttestationMode != "strict" {
-		t.Errorf("got default attestationMode %q, want 'strict'", cfg.LLM.AttestationMode)
+	if cfg.LLM.AttestationMeasurement != "" {
+		t.Errorf("got default attestation measurement %q, want empty", cfg.LLM.AttestationMeasurement)
 	}
 	if cfg.LLM.HRKCertPath == "" || cfg.LLM.HSKCekCertPath == "" {
 		t.Errorf("got empty default cert paths: hrk=%q, hsk=%q", cfg.LLM.HRKCertPath, cfg.LLM.HSKCekCertPath)
-	}
-	if cfg.LLM.ExpectedMeasurements != nil {
-		t.Errorf("got default expectedMeasurements %v, want nil", cfg.LLM.ExpectedMeasurements)
 	}
 	if cfg.LLM.RequireMutualAttest {
 		t.Errorf("got default requireMutualAttest true, want false")
@@ -1130,6 +1167,56 @@ func TestStartupConfig_InferenceDefaults(t *testing.T) {
 	}
 	if cfg.LLM.Temperature != nil {
 		t.Errorf("got default temperature %v, want nil (unset, leaving the choice to the inference service)", *cfg.LLM.Temperature)
+	}
+}
+
+// TestStartupConfigAttestationBlock pins the nested shape: enabled switches the
+// TEE-TLS transport, and measurement is the single digest to compare against.
+// An absent block keeps attestation on, and an absent measurement stays empty,
+// which the client reads as "skip the comparison and log a warning".
+func TestStartupConfigAttestationBlock(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        string
+		wantEnabled bool
+		wantMeas    string
+	}{
+		{
+			name:        "absent block keeps attestation on",
+			body:        `{}`,
+			wantEnabled: true,
+			wantMeas:    "",
+		},
+		{
+			name:        "enabled false",
+			body:        `{"codeAudit":{"llm":{"attestation":{"enabled":false}}}}`,
+			wantEnabled: false,
+			wantMeas:    "",
+		},
+		{
+			name:        "measurement is trimmed",
+			body:        `{"codeAudit":{"llm":{"attestation":{"measurement":" deadbeef01234567 "}}}}`,
+			wantEnabled: true,
+			wantMeas:    "deadbeef01234567",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), DefaultFileName)
+			writeTestConfig(t, path, tc.body)
+
+			cfg, err := LoadStartupConfig(path)
+			if err != nil {
+				t.Fatalf("LoadStartupConfig() error = %v", err)
+			}
+			if cfg.LLM.AttestationEnabled != tc.wantEnabled {
+				t.Errorf("AttestationEnabled = %v, want %v", cfg.LLM.AttestationEnabled, tc.wantEnabled)
+			}
+			if cfg.LLM.AttestationMeasurement != tc.wantMeas {
+				t.Errorf("AttestationMeasurement = %q, want %q", cfg.LLM.AttestationMeasurement, tc.wantMeas)
+			}
+		})
 	}
 }
 
@@ -1161,53 +1248,8 @@ func TestLoadStartupConfigExplicitZeroTemperature(t *testing.T) {
 	}
 }
 
-// TestLoadStartupConfigRejectsUnknownLLMPolicy guards the audit gate against a
-// silently ineffective policy: an unrecognized value used to be stored verbatim
-// and then matched neither "gate" nor "assist" in the audit arbitration,
-// falling back to assist behaviour (HIGH-only blocking) without any signal.
-func TestLoadStartupConfigRejectsUnknownLLMPolicy(t *testing.T) {
-	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, `{
-		"codeAudit": {
-			"llm": {
-				"policy": "enforce"
-			}
-		}
-	}`)
-
-	cfg, err := LoadStartupConfig(path)
-	if err == nil {
-		t.Fatalf("LoadStartupConfig() error = nil, want rejection of unknown llm policy; got policy %q", cfg.LLM.Policy)
-	}
-	if !strings.Contains(err.Error(), "enforce") {
-		t.Fatalf("error %q should name the rejected value", err)
-	}
-}
-
-func TestLoadStartupConfigNormalizesLLMPolicy(t *testing.T) {
-	for _, policy := range []string{"assist", "gate", "GATE", " gate ", ""} {
-		t.Run("policy="+policy, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), DefaultFileName)
-			writeTestConfig(t, path, fmt.Sprintf(`{"codeAudit":{"llm":{"policy":%q}}}`, policy))
-
-			cfg, err := LoadStartupConfig(path)
-			if err != nil {
-				t.Fatalf("LoadStartupConfig() error = %v, want nil for supported value", err)
-			}
-
-			want := strings.ToLower(strings.TrimSpace(policy))
-			if want == "" {
-				want = "assist"
-			}
-			if cfg.LLM.Policy != want {
-				t.Fatalf("LLM.Policy = %q, want %q", cfg.LLM.Policy, want)
-			}
-		})
-	}
-}
-
 // TestLoadStartupConfigRejectsUnknownCodeScanEngine is the same guard as the
-// policy one above, for the Tier 1 engine. An unrecognized engine name must not
+// removed-key one above, for the Tier 1 engine. An unrecognized engine name must not
 // be stored verbatim: the scan would then run the regex baseline while the
 // deployment believes it enabled Semgrep, and the audit report's engine field
 // would honestly say "regex" — a field nobody reads.
@@ -1552,6 +1594,26 @@ func TestLoadStartupConfigRejectsRemovedKeys(t *testing.T) {
 			name:    "the old semgrepTimeoutSeconds key",
 			content: `{"codeAudit":{"semgrepTimeoutSeconds":900}}`,
 			want:    []string{`"codeAudit.semgrepTimeoutSeconds"`, `"codeAudit.codeScan.timeoutSeconds"`},
+		},
+		{
+			name:    "the removed llm policy key",
+			content: `{"codeAudit":{"llm":{"policy":"gate"}}}`,
+			want:    []string{`"codeAudit.llm.policy"`, `"gate"`},
+		},
+		{
+			name:    "the removed llm attestationEnabled key",
+			content: `{"codeAudit":{"llm":{"attestationEnabled":true}}}`,
+			want:    []string{`"codeAudit.llm.attestationEnabled"`, `"codeAudit.llm.attestation.enabled"`},
+		},
+		{
+			name:    "the removed llm attestationMode key",
+			content: `{"codeAudit":{"llm":{"attestationMode":"permissive"}}}`,
+			want:    []string{`"codeAudit.llm.attestationMode"`, `"codeAudit.llm.attestation.measurement"`},
+		},
+		{
+			name:    "the removed llm expectedMeasurements key",
+			content: `{"codeAudit":{"llm":{"expectedMeasurements":["deadbeef"]}}}`,
+			want:    []string{`"codeAudit.llm.expectedMeasurements"`, `"codeAudit.llm.attestation.measurement"`},
 		},
 		{
 			name: "the whole old block, reported together",

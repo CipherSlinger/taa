@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/CipherSlinger/teellm"
-	"github.com/CipherSlinger/teetls"
 	"taa/internal/attestation"
 	"taa/internal/codeaudit"
 	"taa/internal/config"
@@ -323,33 +321,23 @@ func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error 
 
 	// Announce the probe before building the client, so that even a configuration failure
 	// (bad endpoint, host outside AllowedHosts) is preceded by the endpoint it was aimed at.
-	log.Printf("inference service connectivity probe: endpoint=%s transport=%s attestMode=%s mutualAttest=%v timeout=%s",
-		cfg.LLM.Endpoint, cfg.LLM.Transport, cfg.LLM.AttestationMode, cfg.LLM.RequireMutualAttest, probeTimeout)
+	log.Printf("inference service connectivity probe: endpoint=%s attestationEnabled=%v measurement=%s mutualAttest=%v timeout=%s",
+		cfg.LLM.Endpoint, cfg.LLM.AttestationEnabled, cfg.LLM.AttestationMeasurement, cfg.LLM.RequireMutualAttest, probeTimeout)
 
-	var teeTLSConfig *teetls.Config
-	if cfg.LLM.Transport == "teetls" || cfg.LLM.Transport == "https" || cfg.LLM.Transport == "" {
-		mode := teetls.ModeStrict
-		if cfg.LLM.AttestationMode == "permissive" {
-			mode = teetls.ModePermissive
-		}
-		teeTLSConfig = &teetls.Config{
-			Mode:                          mode,
-			InsecureSkipAttestationVerify: cfg.LLM.InsecureSkipVerify,
-			ExpectedMeasurements:          cfg.LLM.ExpectedMeasurements,
-			VerifyMutualAttestation:       cfg.LLM.RequireMutualAttest,
-		}
-		if cfg.LLM.HRKCertPath != "" || cfg.LLM.HSKCekCertPath != "" {
-			teeTLSConfig.EvidenceProvider = teetls.NewHygonHardwareProvider("", cfg.LLM.HRKCertPath, cfg.LLM.HSKCekCertPath)
-		}
-	}
-
-	client, err := teellm.NewClient(teellm.Config{
-		Endpoint:                       cfg.LLM.Endpoint,
-		Timeout:                        timeout,
-		AllowedHosts:                   cfg.LLM.AllowedHosts,
-		TEETLS:                         teeTLSConfig,
-		CircuitBreakerFailureThreshold: cfg.LLM.CircuitBreakerThreshold,
-		CircuitBreakerCooldown:         time.Duration(cfg.LLM.CooldownSec) * time.Second,
+	// Reuse the audit's client construction so the probe cannot diverge from the
+	// transport the audit actually uses.
+	client, err := codeaudit.NewInferenceClient(codeaudit.LLMConfig{
+		Endpoint:                cfg.LLM.Endpoint,
+		Timeout:                 timeout,
+		AttestationEnabled:      cfg.LLM.AttestationEnabled,
+		AttestationMeasurement:  cfg.LLM.AttestationMeasurement,
+		InsecureSkipVerify:      cfg.LLM.InsecureSkipVerify,
+		RequireMutualAttest:     cfg.LLM.RequireMutualAttest,
+		HRKCertPath:             cfg.LLM.HRKCertPath,
+		HSKCekCertPath:          cfg.LLM.HSKCekCertPath,
+		AllowedHosts:            cfg.LLM.AllowedHosts,
+		CircuitBreakerThreshold: cfg.LLM.CircuitBreakerThreshold,
+		CooldownSec:             cfg.LLM.CooldownSec,
 	})
 	if err != nil {
 		return fmt.Errorf("create inference client: %w", err)
@@ -770,24 +758,22 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 		ModelLogDir:      cfg.ModelLogDir,
 		ModelProgressDir: cfg.ModelProgressDir,
 		LLM: codeaudit.LLMConfig{
-			Enabled:              cfg.LLM.Enabled,
-			Transport:            cfg.LLM.Transport,
-			Endpoint:             cfg.LLM.Endpoint,
-			AttestationMode:      cfg.LLM.AttestationMode,
-			HRKCertPath:          cfg.LLM.HRKCertPath,
-			HSKCekCertPath:       cfg.LLM.HSKCekCertPath,
-			ExpectedMeasurements: cfg.LLM.ExpectedMeasurements,
-			RequireMutualAttest:  cfg.LLM.RequireMutualAttest,
-			InsecureSkipVerify:   cfg.LLM.InsecureSkipVerify,
-			AuthToken:            cfg.LLM.AuthToken,
-			Model:                cfg.LLM.Model,
-			Timeout:              timeout,
+			Enabled:                cfg.LLM.Enabled,
+			AttestationEnabled:     cfg.LLM.AttestationEnabled,
+			Endpoint:               cfg.LLM.Endpoint,
+			AttestationMeasurement: cfg.LLM.AttestationMeasurement,
+			HRKCertPath:            cfg.LLM.HRKCertPath,
+			HSKCekCertPath:         cfg.LLM.HSKCekCertPath,
+			RequireMutualAttest:    cfg.LLM.RequireMutualAttest,
+			InsecureSkipVerify:     cfg.LLM.InsecureSkipVerify,
+			AuthToken:              cfg.LLM.AuthToken,
+			Model:                  cfg.LLM.Model,
+			Timeout:                timeout,
 			// 0 means no cap: every finding the static scanner reports gets a verdict.
 			// The old value of 20 left the tail of a large scan reported but never
 			// adjudicated. The scanner's own cap (ScannerConfig.MaxFindings, 200) is
 			// the real ceiling on how many calls this can produce.
 			MaxFindings:             0,
-			Policy:                  cfg.LLM.Policy,
 			Temperature:             cfg.LLM.Temperature,
 			FailClosed:              cfg.LLM.FailClosed,
 			AllowedHosts:            cfg.LLM.AllowedHosts,
@@ -862,8 +848,8 @@ func logSecurityConfig(sec controller.SecurityConfig) {
 	if sec.ScanEnabled {
 		log.Printf("security scan enabled: model-dir=%s", sec.ModelDir)
 		if sec.LLM.Enabled {
-			log.Printf("  LLM verifier enabled: model=%s transport=%s endpoint=%s attestMode=%s policy=%s fail-closed=%v",
-				sec.LLM.Model, sec.LLM.Transport, sec.LLM.Endpoint, sec.LLM.AttestationMode, sec.LLM.Policy, sec.LLM.FailClosed)
+			log.Printf("  LLM verifier enabled: model=%s attestation-enabled=%v endpoint=%s measurement=%s fail-closed=%v",
+				sec.LLM.Model, sec.LLM.AttestationEnabled, sec.LLM.Endpoint, sec.LLM.AttestationMeasurement, sec.LLM.FailClosed)
 		}
 	}
 	if sec.ResultCheck {

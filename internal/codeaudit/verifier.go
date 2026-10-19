@@ -13,8 +13,8 @@ import (
 )
 
 // VerifyReport runs the LLM verifier on a static scan report.
-// It enriches each finding with LLM verdict/reason/risk.
-// Returns the enriched report. If policy is "gate", it recalculates Passed.
+// It enriches each finding with LLM verdict/reason/risk and recalculates Passed
+// under the gate arbitration, where an LLM BENIGN verdict clears a static HIGH.
 func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLMClient) (*Report, error) {
 	if !cfg.Enabled || client == nil || report == nil {
 		return report, nil
@@ -69,7 +69,7 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 				},
 			},
 			Policy: teellm.PolicyOptions{
-				Mode:        cfg.Policy,
+				Mode:        llmArbitrationPolicy,
 				Temperature: cfg.Temperature,
 			},
 		}
@@ -108,48 +108,29 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 		}
 	}
 
-	// Unconditional LLMDegraded setting on inference failure
+	// Gate arbitration: the LLM's verdict decides a static HIGH. An LLM BENIGN
+	// verdict clears it; every other verdict, including UNCERTAIN, leaves it
+	// blocking. When the inference service could not answer, fail-closed keeps
+	// the block, while fail-closed off falls back to the static severities.
 	if hasInferenceFailure {
 		report.LLMDegraded = true
-	}
-
-	// Fail-closed / Gate arbitration
-	if cfg.Policy == "gate" {
-		if hasInferenceFailure {
-			if cfg.FailClosed {
-				failedClosed := false
-				for _, f := range report.Findings {
-					if (f.Severity == SeverityHigh || f.Severity == SeverityMedium) && f.LLMVerdict != teellm.VerdictBenign {
-						failedClosed = true
-						break
-					}
-				}
-				recalculateGatePassed(report)
-				if failedClosed {
-					report.Passed = false
-				}
-			} else {
-				recalculateStaticPassed(report)
-			}
-		} else {
-			recalculateGatePassed(report)
-		}
-	} else {
-		recalculateStaticPassed(report)
-		if hasInferenceFailure && cfg.FailClosed {
-			// In assist mode with fail-closed enabled, if all findings failed inference (e.g. service down or circuit open),
-			// block the audit rather than silently passing via static fallback.
-			allFailed := len(report.Findings) > 0
+		if cfg.FailClosed {
+			failedClosed := false
 			for _, f := range report.Findings {
-				if f.LLMVerdict != "" && f.LLMVerdict != "UNCERTAIN" {
-					allFailed = false
+				if (f.Severity == SeverityHigh || f.Severity == SeverityMedium) && f.LLMVerdict != teellm.VerdictBenign {
+					failedClosed = true
 					break
 				}
 			}
-			if allFailed {
+			recalculateGatePassed(report)
+			if failedClosed {
 				report.Passed = false
 			}
+		} else {
+			recalculateStaticPassed(report)
 		}
+	} else {
+		recalculateGatePassed(report)
 	}
 
 	return report, nil
@@ -180,20 +161,20 @@ func recomputeReportPassed(report *Report, honorExoneration bool) {
 	report.HighCount = highCount
 	report.MediumCount = mediumCount
 	// The completeness precondition is folded in here rather than at the call
-	// sites or in the scanner, because this is the one function both policies
-	// recompute through. Put anywhere else it would be a rule that a later
-	// recalculation could drop: recalculateStaticPassed recomputes Passed from
-	// the findings alone, so a check applied before it would be overwritten by
-	// the same code that is supposed to preserve it.
+	// sites or in the scanner, because this is the one function every
+	// recalculation goes through. Put anywhere else it would be a rule that a
+	// later recalculation could drop: recalculateStaticPassed recomputes Passed
+	// from the findings alone, so a check applied before it would be overwritten
+	// by the same code that is supposed to preserve it.
 	report.Passed = highCount == 0 && report.ProvesCleanScan()
 }
 
-// recalculateGatePassed recomputes Report.Passed for the gate policy, honoring
+// recalculateGatePassed recomputes Report.Passed on the normal path, honoring
 // LLM exoneration. MEDIUM never blocks this value.
 //
 // It is deliberately not the whole gate decision. AssembleAuditReport copies it
 // into ConclusionContext.ScanPassed, and ComputeConclusionContext ANDs it with
-// the policy check over the classified statistics (audit.go), which does block
+// the classified check over the statistics (audit.go), which does block
 // on MEDIUM. That check is keyed on the classified severity and this one on the
 // static severity, so the same word "gate" names two different tests on
 // purpose: the AND of them is the decision.
@@ -202,12 +183,8 @@ func recalculateGatePassed(report *Report) {
 }
 
 // recalculateStaticPassed recomputes Report.Passed from the static severities
-// alone, ignoring every LLM verdict. This is the assist-mode value and it is
-// load-bearing rather than vestigial: it is the only thing that blocks a static
-// HIGH the LLM downgraded to SUSPICIOUS or BENIGN. Dropping it in favor of the
-// classified check would turn those samples into misses; see
-// gate_semantics_test.go and models/audit/audit-results/engine-compare/REPORT.md
-// section 7.5.
+// alone, ignoring every LLM verdict. It is the fallback used when inference
+// fails with fail-closed off, and its one blocking severity is static HIGH.
 func recalculateStaticPassed(report *Report) {
 	recomputeReportPassed(report, false)
 }
@@ -261,14 +238,6 @@ func CheckImportWithLLM(ctx context.Context, dir string, engine StaticEngine, cf
 		}
 		log.Printf("LLM verifier failed (non-fatal): %v", err)
 		return report.Passed, report, nil
-	}
-
-	// In assist mode, LLM results are informational only.
-	// The static scan's original pass/fail is preserved, unless fail-closed has rejected the report.
-	if cfg.Policy == "assist" {
-		if !(cfg.FailClosed && report.LLMDegraded && !report.Passed) {
-			recalculateStaticPassed(report)
-		}
 	}
 
 	return report.Passed, report, nil
@@ -434,7 +403,7 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	// static-only verdict while the report says otherwise. Both phases below are
 	// skipped, so nothing downstream can tell this apart from an audit the LLM
 	// actually adjudicated — and under fail-closed, skipping the adjudication is
-	// the silent allow the policy exists to prevent.
+	// the silent allow fail-closed exists to prevent.
 	//
 	// llmWanted rather than llmActive is the point: with no findings the LLM would
 	// not have been called even if it were reachable — VerifyReport returns early on

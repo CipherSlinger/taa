@@ -177,9 +177,9 @@ func TestSemgrepEngineReadsSeverityFromTheProductionRuleTable(t *testing.T) {
 // TestSemgrepEngineRejectsUnknownRuleFamily pins the fail-fast requirement.
 //
 // The dangerous default is MEDIUM: an unmapped rule silently becomes a medium
-// finding, which the gate policy blocks and the assist policy lets through, so
-// the same misconfiguration means one thing in one deployment and something
-// else in another. A rule the adapter cannot place must stop the scan.
+// finding, which the gate blocks, so a misconfiguration would refuse every
+// import without naming the rule that caused it. A rule the adapter cannot place
+// must stop the scan.
 func TestSemgrepEngineRejectsUnknownRuleFamily(t *testing.T) {
 	stub := &stubSemgrep{}
 	engine, target := semgrepTestEngine(t, stub)

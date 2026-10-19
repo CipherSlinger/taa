@@ -146,8 +146,7 @@ func NewEngine(cfg EngineConfig) (StaticEngine, error) {
 // This is the single selection point for the engine, and it returns the regex
 // baseline. That is a decision, not a placeholder: the Semgrep adapter is
 // reachable through NewEngine and through the codeAudit.codeScan.engine item,
-// and the default moves only after the holdout evidence passes under the assist
-// policy. It is written as the literal rather than as NewEngine(...) because the
+// and the default moves only after the holdout evidence passes the audit gate. It is written as the literal rather than as NewEngine(...) because the
 // baseline engine's construction has no failure mode, and routing it through the
 // error-returning selector would mean either an impossible error to discard or a
 // panic on a path that cannot fail. A test pins that the two agree.

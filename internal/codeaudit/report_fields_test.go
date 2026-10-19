@@ -9,9 +9,15 @@ import (
 // truncatingScanner builds a scanner with a small finding cap so that
 // truncation can be reached with a two-line fixture.
 func truncatingScanner(maxFindings int) *Scanner {
+	return truncatingScannerWithRules(DefaultRules(), maxFindings)
+}
+
+// truncatingScannerWithRules is truncatingScanner over a caller-supplied rule
+// set, for fixtures that need a severity the built-in table does not produce.
+func truncatingScannerWithRules(rules []Rule, maxFindings int) *Scanner {
 	cfg := DefaultConfig()
 	cfg.MaxFindings = maxFindings
-	return NewScanner(DefaultRules(), cfg)
+	return NewScanner(rules, cfg)
 }
 
 // manyHighFindings returns Python source with n independent HIGH-finding lines.
@@ -189,7 +195,7 @@ func TestAuditMetadataCarriesEngineProvenance(t *testing.T) {
 
 	audit := AssembleAuditReport(dir, scanReport,
 		[]FileReport{BuildFileReport("train.py", scanReport.Findings)},
-		lineCounts, LLMConfig{Policy: "assist"}, 10*time.Millisecond)
+		lineCounts, LLMConfig{}, 10*time.Millisecond)
 
 	if audit.ScanMetadata.Engine != EngineNameRegex {
 		t.Errorf("ScanMetadata.Engine = %q, want %q; the report cannot prove which engine produced it",
@@ -218,7 +224,7 @@ func TestAuditMetadataCarriesTruncation(t *testing.T) {
 		t.Fatal("fixture did not truncate; the assertion below would be vacuous")
 	}
 
-	audit := AssembleAuditReport(dir, scanReport, nil, lineCounts, LLMConfig{Policy: "assist"}, 10*time.Millisecond)
+	audit := AssembleAuditReport(dir, scanReport, nil, lineCounts, LLMConfig{}, 10*time.Millisecond)
 
 	if !audit.ScanMetadata.Truncated {
 		t.Error("ScanMetadata.Truncated = false although the scan hit the finding cap; " +
