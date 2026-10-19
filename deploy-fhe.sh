@@ -37,6 +37,14 @@ FHE_MODELS_SRC="${FHE_MODELS_SRC:-$HANDOFF_DIR/data/models}"
 # from the version that published this port on the host; nothing publishes it
 # now.
 FHE_API_PORT="${FHE_API_PORT:-${API_HOST_PORT:-58996}}"
+# Container-internal FHE data root. The FHE entrypoint reads CONTAINER_DATA_DIR
+# (default /data) and renders model_registry.dir = $CONTAINER_DATA_DIR/models,
+# keys_dir = $CONTAINER_DATA_DIR/keys. TAA writes the models, eval-key cache and
+# results into the same tree, so both sides must use this one path; when they
+# diverge the FHE registry scans an empty models directory and task creation
+# fails with "Model ... not found". The value is also passed to the container as
+# CONTAINER_DATA_DIR so the two cannot drift.
+FHE_CONTAINER_DATA_DIR="${FHE_CONTAINER_DATA_DIR:-/data}"
 FHE_ACTIVATE_TIMEOUT="${FHE_ACTIVATE_TIMEOUT:-300}"
 
 # ── TAA side ─────────────────────────────────────────────────────────────────
@@ -502,8 +510,13 @@ Environment:
   PLATFORM_PORT=${PLATFORM_PORT}
       Port platform-mock listens on.
   HOST_DATA_DIR=${HOST_DATA_DIR}
-      Host directory mounted twice: at /data for the FHE entrypoint and at
-      itself for TAA's rendered config paths.
+      Host directory mounted at FHE_CONTAINER_DATA_DIR. It holds the model
+      tree, per-user eval contexts, tasks and results.
+  FHE_CONTAINER_DATA_DIR=${FHE_CONTAINER_DATA_DIR}
+      Container-internal FHE data root. The FHE entrypoint derives
+      models/keys/tasks/results from it, and TAA's rendered config now uses
+      the same path, so one bind serves both. Passed to the container as
+      CONTAINER_DATA_DIR.
   HOST_TAA_STATE_DIR=${HOST_TAA_STATE_DIR}
       TAA's SM2 key pair and sealed state, on a bind of its own so the FHE
       side cannot read it.
@@ -612,8 +625,13 @@ esac
 case "$HOST_TAA_STATE_DIR" in
   ""|/) die "HOST_TAA_STATE_DIR='$HOST_TAA_STATE_DIR' is not a usable directory" ;;
 esac
+case "$FHE_CONTAINER_DATA_DIR" in
+  ""|/) die "FHE_CONTAINER_DATA_DIR='$FHE_CONTAINER_DATA_DIR' is not a usable directory" ;;
+  /*) ;;
+  *) die "FHE_CONTAINER_DATA_DIR='$FHE_CONTAINER_DATA_DIR' is a container path and must be absolute" ;;
+esac
 if paths_overlap "$HOST_TAA_STATE_DIR" "$HOST_DATA_DIR"; then
-  die "HOST_TAA_STATE_DIR=$HOST_TAA_STATE_DIR and HOST_DATA_DIR=$HOST_DATA_DIR overlap; the FHE entrypoint reads HOST_DATA_DIR as /data, so TAA's SM2 key pair and sealed state would be readable from the FHE side, which is what the second bind exists to prevent"
+  die "HOST_TAA_STATE_DIR=$HOST_TAA_STATE_DIR and HOST_DATA_DIR=$HOST_DATA_DIR overlap; the FHE entrypoint reads HOST_DATA_DIR as $FHE_CONTAINER_DATA_DIR, so TAA's SM2 key pair and sealed state would be readable from the FHE side, which is what the separate state bind exists to prevent"
 fi
 if paths_overlap "$FHE_MODELS_SRC" "$STAGED_MODELS_DIR" && ! same_path "$FHE_MODELS_SRC" "$STAGED_MODELS_DIR"; then
   die "$STAGED_MODELS_DIR and the bundle models $FHE_MODELS_SRC overlap (one contains the other); the model copy would recurse into itself"
@@ -649,7 +667,7 @@ render_taa_config() {
   [ -d "$rendered_dir" ] || die "cannot write $TAA_RENDER_OUT: $rendered_dir does not exist"
   jq \
       --arg endpoint "http://127.0.0.1:${FHE_API_PORT}" \
-      --arg data "$HOST_DATA_DIR" \
+      --arg data "$FHE_CONTAINER_DATA_DIR" \
       --arg state "$HOST_TAA_STATE_DIR" \
       '.fhe.endpoint = $endpoint | .fhe.dataDir = $data
        | .fhe.keyCacheDir = ($data + "/taa-fhe-keys")
@@ -671,8 +689,8 @@ render_taa_config() {
   # TAA's stateful paths have to land inside the bind that carries them.
   local state_pair state_key state_bind state_path
   for state_pair in \
-    ".fhe.keyCacheDir|$HOST_DATA_DIR" \
-    ".storage.result|$HOST_DATA_DIR" \
+    ".fhe.keyCacheDir|$FHE_CONTAINER_DATA_DIR" \
+    ".storage.result|$FHE_CONTAINER_DATA_DIR" \
     ".storage.keys|$HOST_TAA_STATE_DIR"; do
     state_key="${state_pair%%|*}"
     state_bind="${state_pair#*|}"
@@ -756,14 +774,14 @@ wait_for_platform_mock() {
 CONTAINER_STATE=""
 
 create_or_reuse_container() {
-  local -a binds=("$HOST_DATA_DIR:/data")
-  if ! same_path "$HOST_DATA_DIR" "/data"; then
-    binds+=("$HOST_DATA_DIR:$HOST_DATA_DIR")
-  fi
-  binds+=("$HOST_FHE_REDIS_DIR:/data/redis")
+  # One bind carries the whole shared tree: the FHE side reads it as its data
+  # root and TAA's rendered config uses the same container path for models,
+  # the eval-key cache and results. HOST_DATA_DIR stays a host-side name only.
+  local -a binds=("$HOST_DATA_DIR:$FHE_CONTAINER_DATA_DIR")
+  binds+=("$HOST_FHE_REDIS_DIR:$FHE_CONTAINER_DATA_DIR/redis")
   binds+=("$HOST_TAA_STATE_DIR:$HOST_TAA_STATE_DIR")
 
-  local -a required_envs=("TAA_ENTRYPOINT_SHA256=$TAA_ENTRYPOINT_SHA256")
+  local -a required_envs=("TAA_ENTRYPOINT_SHA256=$TAA_ENTRYPOINT_SHA256" "CONTAINER_DATA_DIR=$FHE_CONTAINER_DATA_DIR")
   [ -z "$PLATFORM_IP" ] || required_envs+=("PLATFORM_IP=$PLATFORM_IP")
   [ -z "$DOCKER_ID" ] || required_envs+=("DOCKER_ID=$DOCKER_ID")
 
@@ -1022,9 +1040,8 @@ else
   fi
   log "deploy with: TAA_IMAGE=$TAA_FHE_SAVE_IMAGE ./deploy-fhe.sh taa"
   log "standalone : docker run -d --gpus all -p $TAA_PORT:$TAA_PORT"
-  log "             -v $HOST_DATA_DIR:/data -v $HOST_DATA_DIR:$HOST_DATA_DIR"
-  log "             -v $HOST_FHE_REDIS_DIR:/data/redis -v $HOST_TAA_STATE_DIR:$HOST_TAA_STATE_DIR"
-  log "             -e PLATFORM_IP=<bridge-gateway>:$PLATFORM_PORT $TAA_FHE_SAVE_IMAGE"
+  log "             -v $HOST_DATA_DIR:$FHE_CONTAINER_DATA_DIR -v $HOST_FHE_REDIS_DIR:$FHE_CONTAINER_DATA_DIR/redis -v $HOST_TAA_STATE_DIR:$HOST_TAA_STATE_DIR"
+  log "             -e CONTAINER_DATA_DIR=$FHE_CONTAINER_DATA_DIR -e PLATFORM_IP=<bridge-gateway>:$PLATFORM_PORT $TAA_FHE_SAVE_IMAGE"
 fi
 exit 0
 fi
@@ -1318,7 +1335,7 @@ if [ "$DEPLOY_TAA" = 1 ] && ! is_dry_run; then
   log "container      : $TAA_CONTAINER_NAME (image $TAA_IMAGE, network $TAA_DOCKER_NETWORK)"
   log "FHE API        : http://127.0.0.1:$FHE_API_PORT (container-internal, not published; model $FHE_MODEL_ID activated)"
   log "TAA            : http://${TAA_PROBE_HOST}:${TAA_PORT}/v1/taa/health (published)"
-  log "FHE data dir   : $HOST_DATA_DIR (mounted at /data and at itself)"
+  log "FHE data dir   : $HOST_DATA_DIR (mounted at $FHE_CONTAINER_DATA_DIR, shared with TAA's rendered paths)"
   log "TAA state dir  : $HOST_TAA_STATE_DIR (SM2 key pair and sealed state; on a bind of its own)"
   log "platform       : PLATFORM_IP=$PLATFORM_IP"
   log "logs           : docker logs -f $TAA_CONTAINER_NAME"

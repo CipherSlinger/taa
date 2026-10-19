@@ -52,7 +52,7 @@ func TestShippedFHEConfigStartsWithoutAnyFileOnDisk(t *testing.T) {
 	}
 }
 
-// fheStateDir is the directory deploy-fhe.sh binds second, for TAA's own state; the
+// fheStateDir is the directory deploy-fhe.sh binds for TAA's own state; the
 // template's storage.keys points at the keys directory inside it.
 //
 // Both paths in that sentence are literals here because nothing else in the template
@@ -68,8 +68,8 @@ const fheStateDir = "/opt/taa-state"
 // TestShippedFHEConfigKeepsStateOnTheBinds pins where the fhe template's three
 // stateful paths point.
 //
-// deploy-fhe.sh creates the TAA container with two binds and recreates it whenever
-// the image or either bind changes. Anything outside a bind lives in the container's
+// deploy-fhe.sh creates the TAA container with binds and recreates it whenever
+// the image or a bind changes. Anything outside a bind lives in the container's
 // writable layer and is gone after such a recreate. For the eval key cache that means
 // re-downloading 3.1 GiB per user on every deploy, against a cache the design says is
 // never evicted; for the result directory it means the finished task's result and
@@ -80,16 +80,18 @@ const fheStateDir = "/opt/taa-state"
 // refuses every data import as "no model imported yet" - while the model package
 // itself is still sitting on the bind.
 //
-// Two paths sit on the first bind, $HOST_DATA_DIR, which is also fhe.dataDir. The
-// third is on a bind of its own, and that is the point of it: $HOST_DATA_DIR is the
-// tree the FHE stack mounts as /data, so TAA's SM2 private key under it would be
-// readable from inside the FHE containers.
+// Two paths sit on the shared data bind, whose container path is
+// FHE_CONTAINER_DATA_DIR and is also fhe.dataDir. The third is on a bind of its
+// own, and that is the point of it: FHE_CONTAINER_DATA_DIR is the tree the FHE
+// stack reads, so TAA's SM2 private key under it would be readable from inside
+// the FHE containers.
 //
-// The assertions are about the template as shipped, whose fhe.dataDir is
-// /opt/fhe-data - the default HOST_DATA_DIR. deploy-fhe.sh renders fhe.dataDir,
-// fhe.keyCacheDir and storage.result from HOST_DATA_DIR and storage.keys from
-// HOST_TAA_STATE_DIR, so a deployment that overrides either gets the paths moved with
-// it rather than silently landing back inside the container.
+// The assertions are about the template as shipped, whose fhe.dataDir is /data -
+// the default FHE_CONTAINER_DATA_DIR. deploy-fhe.sh renders fhe.dataDir,
+// fhe.keyCacheDir and storage.result from FHE_CONTAINER_DATA_DIR and
+// storage.keys from HOST_TAA_STATE_DIR, so a deployment that overrides either
+// gets the paths moved with it rather than silently landing back inside the
+// container.
 func TestShippedFHEConfigKeepsStateOnTheBinds(t *testing.T) {
 	cfg := loadShippedFHEConfig(t)
 	if cfg.FHE == nil {

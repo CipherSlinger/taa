@@ -11,7 +11,7 @@
   "storage": {
     "model": "/root/taa/models",
     "data": "/root/taa/data",
-    "result": "/opt/fhe-data/taa-results",
+    "result": "/data/taa-results",
     "keys": "/opt/taa-state/keys",
     "stateSealingKeySource": "sm2"
   },
@@ -26,8 +26,8 @@
   "maxFileBytes": 5368709120,
   "fhe": {
     "endpoint": "http://127.0.0.1:58996",
-    "dataDir": "/opt/fhe-data",
-    "keyCacheDir": "/opt/fhe-data/taa-fhe-keys",
+    "dataDir": "/data",
+    "keyCacheDir": "/data/taa-fhe-keys",
     "maxEvalKeyBytes": 6442450944,
     "pollIntervalMs": 5000,
     "requestTimeoutMs": 30000,
