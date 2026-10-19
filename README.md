@@ -355,7 +355,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
     },
     "llm": {
       "enabled": true,
-      "transport": "teetls",
+      "attestationEnabled": true,
       "endpoint": "https://127.0.0.1:8443",
       "model": "qwen2.5-coder:7b",
       "policy": "assist",
@@ -401,7 +401,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `codeAudit.binaryAudit.maxStreamBytes` | `3221225472` (3 GiB) | Per-file read budget for the end-to-end pass. Against the shipped `maxFullScanBytes` (64 MiB) it never binds; **lowering** it below `maxFullScanBytes` makes files in between stop short, which records a completeness gap and withholds the pass on executable kinds |
 | `codeAudit.maxFileBytes` | `3221225472` (3 GB) | Alias for `maxFileBytes` set inside the audit block rather than at the root |
 | `codeAudit.llm.enabled` | `true` | Enables local LLM semantic arbitration for code security audits |
-| `codeAudit.llm.transport` | `teetls` | Transport protocol for TEE-LLM communication (`teetls` for RFC 8998 TLS 1.3 ShangMi, or `http`) |
+| `codeAudit.llm.attestationEnabled` | `true` | `true` uses TEE-TLS (RFC 8998 TLS 1.3 ShangMi) and verifies the gateway's CSV remote attestation; `false` uses ordinary TLS with no attestation |
 | `codeAudit.llm.endpoint` | `https://127.0.0.1:8443` | Decoupled TEE-LLM service endpoint |
 | `codeAudit.llm.model` | `qwen2.5-coder:0.5b` | Target LLM model for code analysis. The shipped templates all override this with `qwen2.5-coder:7b`, which is what a deployment actually runs |
 | `codeAudit.llm.policy` | `assist` | LLM arbitration mode (`assist`: LLM results are informational and the static verdict stands; `gate`: strict — HIGH findings fail the audit unless the LLM rules them benign, MEDIUM findings always fail it). Values are normalized to lower case; any other value is rejected at startup |

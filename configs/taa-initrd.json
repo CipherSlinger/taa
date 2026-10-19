@@ -33,7 +33,7 @@
     },
     "llm": {
       "enabled": true,
-      "transport": "teetls",
+      "attestationEnabled": true,
       "endpoint": "https://172.16.10.116:8443",
       "model": "qwen2.5-coder:7b",
       "policy": "assist",

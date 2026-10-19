@@ -1094,7 +1094,7 @@ func TestStartupConfig_InferenceOptions(t *testing.T) {
 		"codeAudit": {
 			"llm": {
 				"enabled": true,
-				"transport": "teetls",
+				"attestationEnabled": true,
 				"endpoint": "https://127.0.0.1:8443",
 				"attestationMode": "permissive",
 				"hrkCertPath": "/custom/hrk.cert",
@@ -1120,8 +1120,8 @@ func TestStartupConfig_InferenceOptions(t *testing.T) {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
-	if cfg.LLM.Transport != "teetls" {
-		t.Errorf("got transport %q, want 'teetls'", cfg.LLM.Transport)
+	if !cfg.LLM.AttestationEnabled {
+		t.Errorf("got attestationEnabled false, want true")
 	}
 	if cfg.LLM.Endpoint != "https://127.0.0.1:8443" {
 		t.Errorf("got endpoint %q, want 'https://127.0.0.1:8443'", cfg.LLM.Endpoint)
@@ -1176,8 +1176,8 @@ func TestStartupConfig_InferenceDefaults(t *testing.T) {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
-	if cfg.LLM.Transport != "teetls" {
-		t.Errorf("got default transport %q, want 'teetls'", cfg.LLM.Transport)
+	if !cfg.LLM.AttestationEnabled {
+		t.Errorf("got default attestationEnabled false, want true")
 	}
 	if cfg.LLM.Endpoint != "https://127.0.0.1:8443" {
 		t.Errorf("got default endpoint %q, want 'https://127.0.0.1:8443'", cfg.LLM.Endpoint)

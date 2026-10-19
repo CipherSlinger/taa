@@ -293,7 +293,7 @@ func TestIsLLMServiceAvailable_TEETLS(t *testing.T) {
 
 	cfg := codeaudit.LLMConfig{
 		Enabled:            true,
-		Transport:          "teetls",
+		AttestationEnabled: true,
 		Endpoint:           "https://" + server.Addr(),
 		Model:              "qwen2.5-coder:3b",
 		InsecureSkipVerify: true,

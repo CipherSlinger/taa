@@ -5,14 +5,17 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/CipherSlinger/teetls"
 	"github.com/CipherSlinger/teellm"
+	"github.com/CipherSlinger/teetls"
 )
 
 // LLMConfig controls the local LLM verifier.
 type LLMConfig struct {
-	Enabled                 bool
-	Transport               string
+	Enabled bool
+	// AttestationEnabled selects the transport: true uses TEE-TLS and verifies
+	// the gateway's CSV attestation, false uses ordinary TLS with no
+	// attestation.
+	AttestationEnabled      bool
 	Endpoint                string
 	AuthToken               string
 	Model                   string
@@ -46,7 +49,7 @@ type LLMConfig struct {
 func DefaultLLMConfig() LLMConfig {
 	return LLMConfig{
 		Enabled:                 true,
-		Transport:               "teetls",
+		AttestationEnabled:      true,
 		Endpoint:                "https://127.0.0.1:8443",
 		Model:                   "qwen2.5-coder:0.5b",
 		Timeout:                 30 * time.Second,
@@ -79,7 +82,7 @@ func NewInferenceClient(cfg LLMConfig) (LLMClient, error) {
 	var teeTLSConfig *teetls.Config
 	if cfg.TEETLS != nil {
 		teeTLSConfig = cfg.TEETLS
-	} else if cfg.Transport == "teetls" || cfg.Transport == "https" || cfg.Transport == "" {
+	} else if cfg.AttestationEnabled {
 		mode := teetls.ModeStrict
 		if cfg.AttestationMode == "permissive" {
 			mode = teetls.ModePermissive

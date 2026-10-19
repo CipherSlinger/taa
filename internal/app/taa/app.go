@@ -323,11 +323,11 @@ func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error 
 
 	// Announce the probe before building the client, so that even a configuration failure
 	// (bad endpoint, host outside AllowedHosts) is preceded by the endpoint it was aimed at.
-	log.Printf("inference service connectivity probe: endpoint=%s transport=%s attestMode=%s mutualAttest=%v timeout=%s",
-		cfg.LLM.Endpoint, cfg.LLM.Transport, cfg.LLM.AttestationMode, cfg.LLM.RequireMutualAttest, probeTimeout)
+	log.Printf("inference service connectivity probe: endpoint=%s attestationEnabled=%v attestMode=%s mutualAttest=%v timeout=%s",
+		cfg.LLM.Endpoint, cfg.LLM.AttestationEnabled, cfg.LLM.AttestationMode, cfg.LLM.RequireMutualAttest, probeTimeout)
 
 	var teeTLSConfig *teetls.Config
-	if cfg.LLM.Transport == "teetls" || cfg.LLM.Transport == "https" || cfg.LLM.Transport == "" {
+	if cfg.LLM.AttestationEnabled {
 		mode := teetls.ModeStrict
 		if cfg.LLM.AttestationMode == "permissive" {
 			mode = teetls.ModePermissive
@@ -771,7 +771,7 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 		ModelProgressDir: cfg.ModelProgressDir,
 		LLM: codeaudit.LLMConfig{
 			Enabled:              cfg.LLM.Enabled,
-			Transport:            cfg.LLM.Transport,
+			AttestationEnabled:   cfg.LLM.AttestationEnabled,
 			Endpoint:             cfg.LLM.Endpoint,
 			AttestationMode:      cfg.LLM.AttestationMode,
 			HRKCertPath:          cfg.LLM.HRKCertPath,
@@ -866,8 +866,8 @@ func logSecurityConfig(sec controller.SecurityConfig) {
 	if sec.ScanEnabled {
 		log.Printf("security scan enabled: model-dir=%s", sec.ModelDir)
 		if sec.LLM.Enabled {
-			log.Printf("  LLM verifier enabled: model=%s transport=%s endpoint=%s attestMode=%s policy=%s fail-closed=%v",
-				sec.LLM.Model, sec.LLM.Transport, sec.LLM.Endpoint, sec.LLM.AttestationMode, sec.LLM.Policy, sec.LLM.FailClosed)
+			log.Printf("  LLM verifier enabled: model=%s attestation-enabled=%v endpoint=%s attestMode=%s policy=%s fail-closed=%v",
+				sec.LLM.Model, sec.LLM.AttestationEnabled, sec.LLM.Endpoint, sec.LLM.AttestationMode, sec.LLM.Policy, sec.LLM.FailClosed)
 		}
 	}
 	if sec.ResultCheck {

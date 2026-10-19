@@ -99,7 +99,7 @@ func TestBuildSecurityConfig(t *testing.T) {
 		ModelProgressDir:  "/opt/taa/models/progress",
 		LLM: config.LLMConfig{
 			Enabled:                 true,
-			Transport:               "teetls",
+			AttestationEnabled:      true,
 			Endpoint:                "https://127.0.0.1:8443",
 			AttestationMode:         "permissive",
 			HRKCertPath:             "/path/hrk.cert",
@@ -165,7 +165,7 @@ func TestBuildSecurityConfig(t *testing.T) {
 
 	wantLLM := codeaudit.LLMConfig{
 		Enabled:                 cfg.LLM.Enabled,
-		Transport:               cfg.LLM.Transport,
+		AttestationEnabled:      cfg.LLM.AttestationEnabled,
 		Endpoint:                cfg.LLM.Endpoint,
 		AttestationMode:         cfg.LLM.AttestationMode,
 		HRKCertPath:             cfg.LLM.HRKCertPath,
@@ -186,8 +186,8 @@ func TestBuildSecurityConfig(t *testing.T) {
 	if sec.LLM.Enabled != wantLLM.Enabled {
 		t.Errorf("LLM.Enabled = %v, want %v", sec.LLM.Enabled, wantLLM.Enabled)
 	}
-	if sec.LLM.Transport != wantLLM.Transport {
-		t.Errorf("LLM.Transport = %q, want %q", sec.LLM.Transport, wantLLM.Transport)
+	if sec.LLM.AttestationEnabled != wantLLM.AttestationEnabled {
+		t.Errorf("LLM.AttestationEnabled = %v, want %v", sec.LLM.AttestationEnabled, wantLLM.AttestationEnabled)
 	}
 	if sec.LLM.Endpoint != wantLLM.Endpoint {
 		t.Errorf("LLM.Endpoint = %q, want %q", sec.LLM.Endpoint, wantLLM.Endpoint)
@@ -449,7 +449,7 @@ func TestProbeInferenceService_ContextCancelled(t *testing.T) {
 
 	cfg := config.StartupConfig{
 		LLM: config.LLMConfig{
-			Transport:          "teetls",
+			AttestationEnabled: true,
 			Endpoint:           "https://127.0.0.1:65534",
 			InsecureSkipVerify: true,
 			TimeoutMs:          3000,
@@ -476,7 +476,7 @@ func TestProbeInferenceService_HealthyEndpoint(t *testing.T) {
 
 	cfg := config.StartupConfig{
 		LLM: config.LLMConfig{
-			Transport:          "teetls",
+			AttestationEnabled: true,
 			Endpoint:           server.URL,
 			InsecureSkipVerify: true,
 			TimeoutMs:          3000,
@@ -503,7 +503,7 @@ func TestProbeInferenceService_UnhealthyEndpoint(t *testing.T) {
 
 	cfg := config.StartupConfig{
 		LLM: config.LLMConfig{
-			Transport:          "teetls",
+			AttestationEnabled: true,
 			Endpoint:           server.URL,
 			InsecureSkipVerify: true,
 			TimeoutMs:          3000,
@@ -536,7 +536,7 @@ func TestRunWithConfig_LLMProbeFailureDoesNotAbortStartup(t *testing.T) {
 		LLM: config.LLMConfig{
 			Enabled:            true,
 			FailClosed:         true,
-			Transport:          "teetls",
+			AttestationEnabled: true,
 			Endpoint:           "https://127.0.0.1:65534",
 			InsecureSkipVerify: true,
 			TimeoutMs:          100,

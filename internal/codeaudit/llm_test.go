@@ -693,7 +693,7 @@ func TestOllamaClientSuccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewInferenceClient(LLMConfig{Endpoint: server.URL, Model: "test-model", Timeout: 5 * time.Second, InsecureSkipVerify: true})
+	client, err := NewInferenceClient(LLMConfig{AttestationEnabled: true, Endpoint: server.URL, Model: "test-model", Timeout: 5 * time.Second, InsecureSkipVerify: true})
 	if err != nil {
 		t.Fatalf("NewInferenceClient failed: %v", err)
 	}
@@ -804,6 +804,7 @@ def report_metrics(acc, loss):
 
 	cfg := LLMConfig{
 		Enabled:            true,
+		AttestationEnabled: true,
 		Endpoint:           server.URL,
 		Model:              "test-model",
 		Timeout:            5 * time.Second,

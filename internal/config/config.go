@@ -117,7 +117,7 @@ type StartupConfig struct {
 // already says it.
 type LLMConfig struct {
 	Enabled                 bool
-	Transport               string
+	AttestationEnabled      bool
 	Endpoint                string
 	AttestationMode         string
 	HRKCertPath             string
@@ -403,8 +403,12 @@ type startupAttestationConfigFile struct {
 }
 
 type startupLLMConfigFile struct {
-	Enabled                 *bool    `json:"enabled"`
-	Transport               string   `json:"transport"`
+	Enabled *bool `json:"enabled"`
+	// AttestationEnabled selects the transport: true (the default) uses TEE-TLS
+	// and verifies the gateway's CSV attestation, false uses ordinary TLS with
+	// no attestation. It is a pointer so an absent field keeps the default on
+	// instead of reading as a deliberate opt-out.
+	AttestationEnabled      *bool    `json:"attestationEnabled"`
 	Endpoint                string   `json:"endpoint"`
 	AttestationMode         string   `json:"attestationMode"`
 	HRKCertPath             string   `json:"hrkCertPath"`
@@ -422,6 +426,10 @@ type startupLLMConfigFile struct {
 	Temperature             *float32 `json:"temperature"`
 	FailClosed              *bool    `json:"failClosed"`
 	Dir                     string   `json:"dir"`
+
+	// Removed keys, declared only so their presence is detectable. See
+	// rejectRemovedKeys.
+	RemovedTransport json.RawMessage `json:"transport"`
 }
 
 func LoadStartupConfig(path string) (StartupConfig, error) {
@@ -525,6 +533,9 @@ func rejectRemovedKeys(path string, fileCfg startupConfigFile) error {
 	}
 	if hasJSONValue(fileCfg.CodeAudit.RemovedSemgrepTimeout) {
 		found = append(found, `"codeAudit.semgrepTimeoutSeconds" (move to "codeAudit.codeScan.timeoutSeconds")`)
+	}
+	if fileCfg.CodeAudit.LLM != nil && hasJSONValue(fileCfg.CodeAudit.LLM.RemovedTransport) {
+		found = append(found, `"codeAudit.llm.transport" (replace with "codeAudit.llm.attestationEnabled": true is the old "teetls", false is the old non-attested transport)`)
 	}
 	if len(found) == 0 {
 		return nil
@@ -904,7 +915,7 @@ func defaultStartupConfig() StartupConfig {
 		AttestationHSKCekCertPath: hskDefault,
 		LLM: LLMConfig{
 			Enabled:                 true,
-			Transport:               "teetls",
+			AttestationEnabled:      true,
 			Endpoint:                "https://127.0.0.1:8443",
 			AttestationMode:         "strict",
 			HRKCertPath:             hrkDefault,
@@ -1124,8 +1135,8 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 			if llm.Enabled != nil {
 				cfg.LLM.Enabled = *llm.Enabled
 			}
-			if llm.Transport != "" {
-				cfg.LLM.Transport = strings.TrimSpace(llm.Transport)
+			if llm.AttestationEnabled != nil {
+				cfg.LLM.AttestationEnabled = *llm.AttestationEnabled
 			}
 			if llm.Endpoint != "" {
 				cfg.LLM.Endpoint = llm.Endpoint
