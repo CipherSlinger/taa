@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"time"
@@ -121,35 +120,35 @@ func (s *TAAState) buildAttestationResult(ctx context.Context, attestationFile s
 		OutputPath: attestationFile,
 		UserData:   userData,
 	}); err != nil {
-		log.Printf("get attestation failed: generate report: %v", err)
+		s.Logs.Add(LogError, "getAttestation", "生成证明报告失败: %v", err)
 		return nil, "", false, "获取报告失败: " + err.Error()
 	}
 
 	reportData, err := os.ReadFile(attestationFile)
 	if err != nil {
-		log.Printf("get attestation failed: read report: %v", err)
+		s.Logs.Add(LogError, "getAttestation", "读取证明报告失败: %v", err)
 		return nil, "", false, "获取报告失败: " + err.Error()
 	}
 
 	reportValues, err := attestation.ExtractReportValues(attestationFile)
 	if err != nil {
-		log.Printf("get attestation failed: extract report values: %v", err)
+		s.Logs.Add(LogError, "getAttestation", "解析证明报告字段失败: %v", err)
 		return nil, "", false, "获取报告失败: " + err.Error()
 	}
 
 	formattedValues, err := formatAttestationValuesUserDataPEM(reportValues, userData)
 	if err != nil {
-		log.Printf("get attestation failed: format userdata as PEM: %v", err)
+		s.Logs.Add(LogError, "getAttestation", "格式化 userData 失败: %v", err)
 		return nil, "", false, "获取报告失败: " + err.Error()
 	}
 
 	verifiedPass := false
 	var verifyMsg string
 	if _, verifyErr := attestation.VerifyReport(reportData, hrkCertPath, hskCekCertPath); verifyErr != nil {
-		log.Printf("get attestation self-verification failed: %v", verifyErr)
+		s.Logs.Add(LogWarn, "getAttestation", "证明报告自检验证失败: %v", verifyErr)
 		verifyMsg = "自检验证失败: " + verifyErr.Error()
 	} else {
-		log.Printf("get attestation self-verification passed")
+		s.Logs.Add(LogInfo, "getAttestation", "证明报告自检验证通过")
 		verifiedPass = true
 		verifyMsg = "success"
 	}
@@ -163,6 +162,10 @@ func (s *TAAState) getAttestationHandler(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("请求解析失败: %v", err), err))
 		return
 	}
+
+	// Logged before validation so a request refused for an empty requestId is
+	// still visible in the log, the same way an import request is recorded.
+	s.Logs.Add(LogInfo, "getAttestation", "收到远程证明请求: requestId=%s", req.RequestID)
 
 	if req.RequestID == "" {
 		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "requestId 不能为空"))
@@ -187,9 +190,9 @@ func (s *TAAState) getAttestationHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	if verifiedPass {
-		log.Printf("attestation report regenerated: requestId=%s report=%d bytes", req.RequestID, len(reportData))
+		s.Logs.Add(LogInfo, "getAttestation", "远程证明报告已重新生成: requestId=%s report=%d bytes", req.RequestID, len(reportData))
 	} else {
-		log.Printf("attestation report downgraded: requestId=%s report=%d bytes msg=%s", req.RequestID, len(reportData), msg)
+		s.Logs.Add(LogWarn, "getAttestation", "远程证明报告已降级: requestId=%s report=%d bytes msg=%s", req.RequestID, len(reportData), msg)
 	}
 
 	writeEnvelope(w, http.StatusOK, msg, map[string]any{
