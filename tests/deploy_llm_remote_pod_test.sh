@@ -340,6 +340,19 @@ run_deploy --create-pod --model qwen2.5-coder:0.5b
   || fail "the bare invocation applied the manifest again instead of reusing the Pod"
 grep -q "reusing the running TEE-LLM Pod" <<<"$output" || fail "the bare invocation did not reuse the Pod"
 
+# ── 2b. A bare TARGET_POD run re-execs the supervisor it just installed ──────
+# `--create-pod` is not the only way in: a plain `TARGET_POD=... ./deploy-llm.sh` skips pod_up, so
+# nothing marks the Pod as reused. If the restart request depended on that flag, the deployment
+# would install a new supervisor script and leave the old copy running -- which is how a liveness
+# fix silently failed to take effect once.
+
+before="$(wc -l < "$MOCK_LOG")"
+TARGET_POD="$COPY_POD_NAME" run_deploy
+[[ $status -eq 0 ]] || fail "a bare TARGET_POD deployment exited $status"
+tail -n +"$((before + 1))" "$MOCK_LOG" > "$TMP_DIR/bare.log"
+grep -q "\.teellm-supervisor-restart" "$TMP_DIR/bare.log" \
+  || fail "a bare TARGET_POD deployment did not ask the installed supervisor to re-exec"
+
 # ── 3. Negative control: a Pod without /dev/csv-guest ────────────────────────
 
 rm -f "$MOCK_STATE_DIR/csv_device"

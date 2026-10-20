@@ -302,9 +302,6 @@ TEELLM_SUPERVISOR_START_WAIT="${TEELLM_SUPERVISOR_START_WAIT:-5}"
 TEELLM_POD_CC_INIT_DATA="${TEELLM_POD_CC_INIT_DATA:-}"
 TEELLM_POD_IP=""
 CREATE_POD=false
-# Whether pod_up found the Pod already running. A freshly created Pod has no supervisor yet (the
-# script arrives with the deployment), so there is nothing to ask to restart.
-TEELLM_POD_REUSED=false
 TEMP_POD_MANIFEST=""
 
 SSH_OPTS=(
@@ -450,7 +447,6 @@ pod_up() {
       exit 1
     fi
     info "reusing the running TEE-LLM Pod (nothing applied)"
-    TEELLM_POD_REUSED=true
   else
     local cc_init_data
     cc_init_data="$(derive_cc_init_data)"
@@ -534,15 +530,14 @@ pod_supervisor_pause() {
 }
 
 # Lifting the pause is also when an installed supervisor script takes effect: the restart request
-# makes a running copy re-exec the file the deployment just moved into place. A freshly created
-# Pod started the supervisor from the copy that was just installed, so there is nothing older to
-# replace and no restart request is needed.
+# makes the running copy re-exec the file the deployment just moved into place. The request is
+# made unconditionally. Whether the Pod came from pod_up or was named by a bare TARGET_POD run,
+# and whether the container command or the fallback started the supervisor, the copy in memory may
+# predate the installed file -- a conditional request once left a stale supervisor running after
+# its replacement had been installed, and the fix it carried never took effect. Re-execing a copy
+# that already runs the current file costs one restart of the daemons, before they are up.
 pod_supervisor_resume() {
-  if [[ "$TEELLM_POD_REUSED" == true ]]; then
-    remote_ssh "$(container_exec) sh -lc 'touch \"$CON_WORKDIR/.teellm-supervisor-restart\"; rm -f \"$CON_WORKDIR/.teellm-supervisor-pause\"'"
-  else
-    remote_ssh "$(container_exec) sh -lc 'rm -f \"$CON_WORKDIR/.teellm-supervisor-pause\"'"
-  fi
+  remote_ssh "$(container_exec) sh -lc 'touch \"$CON_WORKDIR/.teellm-supervisor-restart\"; rm -f \"$CON_WORKDIR/.teellm-supervisor-pause\"'"
 }
 
 # A Pod created with this template runs the supervisor itself as soon as the file is installed.
