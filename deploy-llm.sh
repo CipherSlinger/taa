@@ -289,11 +289,17 @@ TEELLM_POD_MEMORY="${TEELLM_POD_MEMORY:-16Gi}"
 # this image inside it, through the in-guest CDH.
 TEELLM_POD_READY_TIMEOUT="${TEELLM_POD_READY_TIMEOUT:-600}"
 TEELLM_POD_TEMPLATE="${TEELLM_POD_TEMPLATE:-$PROJECT_DIR/deploy/manifest/k8s/teellm-pod.yaml.tmpl}"
+# The script that becomes the Pod's PID 1 and owns teellm-service and ollama. It is installed into
+# the Pod by the deployment, so it is versioned here rather than baked into the image.
+TEELLM_SUPERVISOR_SCRIPT="${TEELLM_SUPERVISOR_SCRIPT:-$PROJECT_DIR/deploy/teellm-supervisor.sh}"
 # Optional escape hatch for hosts with no CoCo Pod to copy the annotation from; leave empty to
 # derive it (see derive_cc_init_data).
 TEELLM_POD_CC_INIT_DATA="${TEELLM_POD_CC_INIT_DATA:-}"
 TEELLM_POD_IP=""
 CREATE_POD=false
+# Whether pod_up found the Pod already running. A freshly created Pod has no supervisor yet (the
+# script arrives with the deployment), so there is nothing to ask to restart.
+TEELLM_POD_REUSED=false
 TEMP_POD_MANIFEST=""
 
 SSH_OPTS=(
@@ -439,6 +445,7 @@ pod_up() {
       exit 1
     fi
     info "reusing the running TEE-LLM Pod (nothing applied)"
+    TEELLM_POD_REUSED=true
   else
     local cc_init_data
     cc_init_data="$(derive_cc_init_data)"
@@ -453,6 +460,7 @@ pod_up() {
         -e "s|__RUNTIME_CLASS__|$TEELLM_POD_RUNTIME_CLASS|g" \
         -e "s|__CPU__|$TEELLM_POD_CPU|g" \
         -e "s|__MEMORY__|$TEELLM_POD_MEMORY|g" \
+        -e "s|__MODEL__|$OLLAMA_MODEL|g" \
         -e "s|__CC_INIT_DATA__|$cc_init_data|g" \
         "$TEELLM_POD_TEMPLATE" > "$TEMP_POD_MANIFEST"
     step "creating the TEE-LLM Pod (runtimeClassName: $TEELLM_POD_RUNTIME_CLASS, node: $TEELLM_POD_NODE)"
@@ -513,10 +521,29 @@ pod_down() {
   info "TEE-LLM Pod '$TARGET_POD' deleted"
 }
 
-# Stops the three daemons this deployment owns inside the Pod. Both the 'stop' action and the start
+# The Pod supervisor owns teellm-service and ollama, so the deployment cannot simply kill them:
+# it pauses the supervisor first, and resumes it only after every new file is in place. A
+# supervisor left running during the stream would restart a daemon on a half-written binary.
+pod_supervisor_pause() {
+  remote_ssh "$(container_exec) sh -lc 'touch \"$CON_WORKDIR/.teellm-supervisor-pause\"'"
+}
+
+# Lifting the pause is also when an installed supervisor script takes effect: the restart request
+# makes a running copy re-exec the file the deployment just moved into place. A freshly created
+# Pod has no copy to restart, and the flag would only make its first start re-exec once.
+pod_supervisor_resume() {
+  if [[ "$TEELLM_POD_REUSED" == true ]]; then
+    remote_ssh "$(container_exec) sh -lc 'touch \"$CON_WORKDIR/.teellm-supervisor-restart\"; rm -f \"$CON_WORKDIR/.teellm-supervisor-pause\"'"
+  else
+    remote_ssh "$(container_exec) sh -lc 'rm -f \"$CON_WORKDIR/.teellm-supervisor-pause\"'"
+  fi
+}
+
+# Stops the three daemons the supervisor owns inside the Pod. Both the 'stop' action and the start
 # path's "stopping old daemons" step need the whole list, so it lives here and is written once.
 # 'killall' and 'pkill -x' are both tried: a busybox userland has only the former. A miss is not an
 # error -- the daemon may simply not be running -- hence the trailing || true on every clause.
+# Callers pause the supervisor first; without that it would restart them within its delay.
 stop_pod_daemons() {
   remote_ssh "$(container_exec) sh -lc 'pkill -x teellm-service >/dev/null 2>&1 || true; killall teellm-service >/dev/null 2>&1 || true; pkill -x ollama >/dev/null 2>&1 || true; killall ollama >/dev/null 2>&1 || true; pkill -x llama-server >/dev/null 2>&1 || true; killall llama-server >/dev/null 2>&1 || true'"
 }
@@ -1466,8 +1493,9 @@ Model Management Commands:
   models switch <model>        Verify and switch active model across configurations.
 
 Actions:
-  start        Build binary, incrementally sync model & runtime, start daemons, and verify (default).
-  stop         Stop the Pod's services (teellm-service, ollama, llama-server).
+  start        Build binary, incrementally sync model & runtime, hand the daemons to the Pod
+               supervisor, and verify (default).
+  stop         Pause the Pod supervisor and stop its services (teellm-service, ollama, llama-server).
   probe        Probe the TEE-LLM HTTPS endpoint for RFC 8998 TEE-TLS 1.3 readiness.
   pod-down     Delete the dedicated TEE-LLM Pod (see --create-pod).
 
@@ -1711,6 +1739,8 @@ fi
 
 if [[ "$ACTION" == "stop" ]]; then
   banner "Stopping TEE-LLM Services"
+  step "pausing the Pod supervisor in remote pod ($TARGET_POD)"
+  pod_supervisor_pause 2>/dev/null || true
   step "stopping teellm-service, ollama, and llama-server in remote pod ($TARGET_POD)"
   stop_pod_daemons 2>/dev/null || true
   info "teellm-service, ollama, and llama-server stopped cleanly in remote pod $TARGET_POD"
@@ -1739,6 +1769,7 @@ OLLAMA_MODEL="$(resolve_target_model)"
 require_dir "ollama offline package" "$OLLAMA_LOCAL_DIR"
 require_file "ollama executable" "$OLLAMA_LOCAL_DIR/ollama"
 require_file "start-ollama.sh script" "$OLLAMA_LOCAL_DIR/start-ollama.sh"
+require_file "TEE-LLM Pod supervisor script" "$TEELLM_SUPERVISOR_SCRIPT"
 require_dir "ollama models directory" "$OLLAMA_LOCAL_DIR/models/models"
 require_dir "ollama lib directory" "$OLLAMA_LOCAL_DIR/lib/ollama"
 verify_ollama_binary "$OLLAMA_LOCAL_DIR/ollama"
@@ -1913,46 +1944,16 @@ deploy_teellm() {
 
   build_local_binary
 
+  # Before anything is killed or written. The supervisor restarts whatever it finds missing, so a
+  # daemon left running during the stream could execute a half-copied runtime.
+  step "pausing the Pod supervisor inside remote pod"
+  pod_supervisor_pause
+
   step "stopping old daemons inside remote pod"
   stop_pod_daemons
 
   sync_ollama_to_remote
   copy_ollama_to_remote_pod
-
-  # Start Ollama daemon in remote pod
-  step "starting ollama daemon inside remote pod"
-  remote_ssh "$(container_exec) sh -lc 'cd \"$CONTAINER_OLLAMA_DIR\" && exec env OLLAMA_HOST=\"$OLLAMA_HOST\" OLLAMA_MODELS=\"$CONTAINER_OLLAMA_DIR/models/models\" OLLAMA_LIBRARY_PATH=\"$CONTAINER_OLLAMA_DIR/lib/ollama\" nohup ./start-ollama.sh > \"$OLLAMA_LOG_FILE\" 2>&1 &'"
-
-  step "waiting for remote ollama service to become ready"
-  local ollama_ready=false
-  local wait_start_ts
-  wait_start_ts=$(date +%s)
-  cursor_hide
-  local spin_len=${#SPIN_FRAMES[@]}
-  local i=0
-  for ((attempt=1; attempt<=OLLAMA_READY_TIMEOUT/OLLAMA_READY_INTERVAL; attempt++)); do
-    if remote_ssh "$(container_exec) curl -fsS 'http://$OLLAMA_HOST/api/tags' >/dev/null 2>&1"; then
-      ollama_ready=true
-      break
-    fi
-    if [[ "$IS_TTY" == true ]]; then
-      local now
-      now=$(date +%s)
-      local elapsed=$((now - wait_start_ts))
-      local frame="${SPIN_FRAMES[$i]}"
-      printf "\r   ${CYAN}%s${NC} waiting for remote ollama daemon ${DIM}(%ds / %ds)...${NC}" "$frame" "$elapsed" "$OLLAMA_READY_TIMEOUT"
-      i=$(( (i + 1) % spin_len ))
-    fi
-    sleep "$OLLAMA_READY_INTERVAL"
-  done
-  cursor_show
-  printf "\r\033[K"
-  if [[ "$ollama_ready" != true ]]; then
-    err "remote ollama daemon did not become ready within ${OLLAMA_READY_TIMEOUT}s"
-    remote_ssh "$(container_exec) tail -n 50 '$OLLAMA_LOG_FILE' || true"
-    exit 1
-  fi
-  info "remote ollama daemon ready and responding on http://$OLLAMA_HOST"
 
   # Deploy certificates and binary to remote host then into pod
   step "preparing and uploading configuration and binary"
@@ -1964,6 +1965,7 @@ deploy_teellm() {
 
   remote_ssh "mkdir -p '$REMOTE_DIR/configs' '$REMOTE_DIR/certs'"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_DIR/bin/teellm-service" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/teellm-service.new"
+  sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_SUPERVISOR_SCRIPT" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/teellm-supervisor.sh"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$tmp_cfg" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/configs/teellm-production.json"
   if [[ -f "$TEELLM_DIR/configs/models.json" ]]; then
     sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TEELLM_DIR/configs/models.json" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/configs/models.json"
@@ -1999,11 +2001,54 @@ deploy_teellm() {
     remote_ssh "$(container_cp "$REMOTE_DIR/certs/hsk_cek.cert" "$CON_WORKDIR/certs/hsk_cek.cert")"
   fi
 
-  # Start teellm-service inside remote pod
-  step "starting teellm-service daemon inside remote pod"
-  remote_ssh "$(container_exec) sh -lc 'cd \"$CON_WORKDIR\" && exec nohup \"$CON_WORKDIR/teellm-service\" -config \"$CON_WORKDIR/configs/teellm-production.json\" -model \"$OLLAMA_MODEL\" > \"$TEELLM_LOG_FILE\" 2>&1 &'"
+  # The supervisor is the Pod's PID 1 and the only thing that starts or restarts a daemon. It is
+  # moved into place rather than written in place: `mv` swaps the inode, while overwriting a
+  # running script fails with ETXTBSY. A running copy re-execs the new file on resume.
+  remote_ssh "$(container_cp "$REMOTE_DIR/teellm-supervisor.sh" "$CON_WORKDIR/.teellm-supervisor.sh.new")"
+  remote_ssh "$(container_exec) sh -lc 'chmod +x \"$CON_WORKDIR/.teellm-supervisor.sh.new\" && mv \"$CON_WORKDIR/.teellm-supervisor.sh.new\" \"$CON_WORKDIR/teellm-supervisor.sh\"'"
 
-  # Probe remote service
+  # Written every deployment: a reused Pod keeps the env it was created with, so this file is what
+  # carries a `models switch` into a Pod that is not recreated.
+  remote_ssh "$(container_exec) sh -lc 'printf %s \"$OLLAMA_MODEL\" > \"$CON_WORKDIR/.teellm-model\"'"
+
+  # Hand the daemons back. On a reused Pod this also re-execs the supervisor that was just
+  # installed, so a supervisor change takes effect without recreating the CSV2 guest.
+  step "resuming the Pod supervisor inside remote pod"
+  pod_supervisor_resume
+
+  step "waiting for remote ollama service to become ready"
+  local ollama_ready=false
+  local wait_start_ts
+  wait_start_ts=$(date +%s)
+  cursor_hide
+  local spin_len=${#SPIN_FRAMES[@]}
+  local i=0
+  for ((attempt=1; attempt<=OLLAMA_READY_TIMEOUT/OLLAMA_READY_INTERVAL; attempt++)); do
+    if remote_ssh "$(container_exec) curl -fsS 'http://$OLLAMA_HOST/api/tags' >/dev/null 2>&1"; then
+      ollama_ready=true
+      break
+    fi
+    if [[ "$IS_TTY" == true ]]; then
+      local now
+      now=$(date +%s)
+      local elapsed=$((now - wait_start_ts))
+      local frame="${SPIN_FRAMES[$i]}"
+      printf "\r   ${CYAN}%s${NC} waiting for remote ollama daemon ${DIM}(%ds / %ds)...${NC}" "$frame" "$elapsed" "$OLLAMA_READY_TIMEOUT"
+      i=$(( (i + 1) % spin_len ))
+    fi
+    sleep "$OLLAMA_READY_INTERVAL"
+  done
+  cursor_show
+  printf "\r\033[K"
+  if [[ "$ollama_ready" != true ]]; then
+    err "remote ollama daemon did not become ready within ${OLLAMA_READY_TIMEOUT}s"
+    remote_ssh "$(container_exec) tail -n 50 '$OLLAMA_LOG_FILE' || true"
+    exit 1
+  fi
+  info "remote ollama daemon ready and responding on http://$OLLAMA_HOST"
+
+  # Probe remote service. The supervisor starts it once ollama answers; there is no separate start
+  # step here, and adding one would race the supervisor for the port.
   step "probing remote teellm-service readiness via TEE-TLS 1.3"
   local teellm_ready=false
   local wait_start_ts
@@ -2067,6 +2112,7 @@ deploy_teellm() {
   echo -e "    ${MUTED}↳ Remote Host:${NC} ${REMOTE_USER}@${REMOTE_HOST}"
   echo -e "    ${MUTED}↳ Port       :${NC} ${TEELLM_PORT}"
   echo -e "    ${MUTED}↳ Config     :${NC} ${CON_WORKDIR}/configs/teellm-production.json"
+  echo -e "    ${MUTED}↳ Supervisor :${NC} ${CON_WORKDIR}/teellm-supervisor.sh (restarts teellm-service and ollama)"
   echo -e "    ${MUTED}↳ Log file   :${NC} ${TEELLM_LOG_FILE}"
   if [[ -n "$TEELLM_POD_IP" ]]; then
     # The Pod IP, not a Service name: a kata guest cannot resolve cluster DNS, so TAA has to be

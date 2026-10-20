@@ -161,6 +161,8 @@ mkdir -p "$REPO/deploy/manifest/k8s" "$REPO/deploy/certs" \
 
 cp "$ROOT_DIR/deploy-llm.sh" "$REPO/deploy-llm.sh"
 cp "$ROOT_DIR/deploy/manifest/k8s/teellm-pod.yaml.tmpl" "$REPO/deploy/manifest/k8s/"
+cp "$ROOT_DIR/deploy/teellm-supervisor.sh" "$REPO/deploy/teellm-supervisor.sh"
+chmod +x "$REPO/deploy/teellm-supervisor.sh"
 printf 'hrk\n' > "$REPO/deploy/certs/hrk.cert"
 printf 'hsk\n' > "$REPO/deploy/certs/hsk_cek.cert"
 
@@ -272,7 +274,35 @@ grep -qE '^    io\.katacontainers\.config\.runtime\.cc_init_data:' "$APPLIED" \
 grep -q "mknod /dev/csv-guest" "$APPLIED" || fail "the manifest does not create /dev/csv-guest"
 grep -q "/sys/class/misc/csv-guest/dev" "$APPLIED" \
   || fail "the manifest does not read the csv-guest device numbers from sysfs"
-grep -q "exec sleep infinity" "$APPLIED" || fail "the manifest does not keep the container alive"
+
+# The container's PID 1 is the supervisor, not `sleep infinity`: restartPolicy only reacts to PID 1
+# exiting, so an owned teellm-service and ollama is what keeps a dead daemon from staying dead.
+grep -q "exec /root/taa/teellm-supervisor.sh" "$APPLIED" \
+  || fail "the manifest does not hand PID 1 to the TEE-LLM supervisor"
+grep -q "teellm-supervisor.sh" "$APPLIED" || fail "the manifest does not mention the supervisor"
+# The supervisor reads the model from the deployment; a Pod that already exists keeps its env.
+grep -q "TEELLM_MODEL" "$APPLIED" || fail "the selected model is not in the Pod environment"
+grep -q 'value: "qwen2.5-coder:0.5b"' "$APPLIED" \
+  || fail "the Pod environment does not carry the selected model"
+
+# The deployment must hand the daemons to the supervisor rather than start or stop them behind its
+# back, and it must pause it before it writes over the live tree: a daemon starting mid-stream
+# would execute a half-written binary.
+grep -q "\.teellm-supervisor-pause" "$MOCK_LOG" \
+  || fail "the deployment never paused the Pod supervisor"
+grep -q "rm -f .*\.teellm-supervisor-pause" "$MOCK_LOG" \
+  || fail "the deployment never resumed the Pod supervisor"
+grep -q "teellm-supervisor.sh" "$MOCK_LOG" \
+  || fail "the supervisor script was not installed into the Pod"
+grep -q "\.teellm-model" "$MOCK_LOG" \
+  || fail "the selected model was not written for the supervisor"
+if grep -q "nohup" "$MOCK_LOG"; then
+  fail "the deployment still starts daemons itself instead of leaving them to the supervisor"
+fi
+pause_line="$(grep -n "\.teellm-supervisor-pause" "$MOCK_LOG" | head -n1 | cut -d: -f1)"
+live_write_line="$(grep -nE "KUBECTL cp|tar -xf" "$MOCK_LOG" | head -n1 | cut -d: -f1)"
+[[ -n "$pause_line" && -n "$live_write_line" && "$pause_line" -lt "$live_write_line" ]] \
+  || fail "the supervisor was not paused before the Pod's live tree was written to"
 
 # The deployment body must address the TEE-LLM Pod and nothing else. Aimed at the default TARGET_POD
 # it would still pass every gate -- that Pod has /dev/csv-guest too -- and fail in production.
@@ -328,7 +358,24 @@ grep -q "no Hygon attestation certificates found" <<<"$output" \
   || fail "the missing certificates were not named in the error"
 mv "$TMP_DIR/certs-hidden" "$REPO/deploy/certs"
 
-# ── 6. pod-down: the Pod is deleted, and nothing else is ─────────────────────
+# ── 6. stop: the daemons are paused, not resurrected ─────────────────────────
+# A supervisor that owns the daemons would restart them within the restart delay, so a stop that
+# only killed processes would quietly do nothing.
+
+before="$(wc -l < "$MOCK_LOG")"
+run_deploy --create-pod stop
+[[ $status -eq 0 ]] || fail "stop exited $status"
+stop_log="$TMP_DIR/stop.log"
+tail -n +"$((before + 1))" "$MOCK_LOG" > "$stop_log"
+grep -q "\.teellm-supervisor-pause" "$stop_log" || fail "stop did not pause the supervisor"
+grep -q "pkill -x teellm-service\|killall teellm-service" "$stop_log" \
+  || fail "stop did not stop teellm-service"
+stop_pause_line="$(grep -n "\.teellm-supervisor-pause" "$stop_log" | head -n1 | cut -d: -f1)"
+stop_kill_line="$(grep -n "teellm-service" "$stop_log" | grep -v supervisor-pause | head -n1 | cut -d: -f1)"
+[[ -n "$stop_pause_line" && -n "$stop_kill_line" && "$stop_pause_line" -lt "$stop_kill_line" ]] \
+  || fail "stop killed the daemons before pausing the supervisor"
+
+# ── 7. pod-down: the Pod is deleted, and nothing else is ─────────────────────
 
 # Pointed at a bundle that does not exist: a teardown must not depend on the machine that deployed
 # the bundle still having it, so this also pins down where the action is handled.

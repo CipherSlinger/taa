@@ -14,6 +14,7 @@
 #    IMAGE            containers[0].image    (TEELLM_POD_IMAGE)
 #    RUNTIME_CLASS    runtimeClassName       (TEELLM_POD_RUNTIME_CLASS)
 #    CPU, MEMORY      container resources    (TEELLM_POD_CPU, TEELLM_POD_MEMORY)
+#    MODEL            env TEELLM_MODEL       (the model selected for the deployment)
 #    CC_INIT_DATA     cc_init_data annotation, read from a running CoCo Pod
 #
 #  The placeholders in this comment carry no underscores; the fields below carry
@@ -67,11 +68,24 @@ spec:
     - name: teellm
       image: __IMAGE__
       imagePullPolicy: IfNotPresent
-      # Overrides the image ENTRYPOINT (TAA's own start script) and keeps the
-      # container alive so teellm-service, ollama and the model can be copied
-      # in and started over kubectl cp/exec. A dead container would take the
-      # guest's writable layer -- and the multi-GB model with it -- out of
-      # reach of the deployment.
+      # The supervisor's own defaults match these paths; naming them here keeps the Pod's runtime
+      # contract in one place. TEELLM_MODEL is the fallback for the first start, before the
+      # deployment has written .teellm-model (which is what a later `models switch` updates).
+      env:
+        - name: TEELLM_WORKDIR
+          value: "/root/taa"
+        - name: OLLAMA_DIR
+          value: "/root/taa/ollama"
+        - name: OLLAMA_HOST
+          value: "127.0.0.1:11434"
+        - name: TEELLM_CONFIG
+          value: "/root/taa/configs/teellm-production.json"
+        - name: TEELLM_MODEL
+          value: "__MODEL__"
+      # Overrides the image ENTRYPOINT (TAA's own start script) and hands PID 1 to the TEE-LLM
+      # supervisor, which owns teellm-service and ollama inside this container. A plain
+      # `sleep infinity` would leave both unowned: restartPolicy only reacts to PID 1 exiting and
+      # there is no liveness probe, so a dead daemon would stay dead until someone redeployed.
       command: ["/bin/sh", "-c"]
       # Creating /dev/csv-guest is part of starting, not an afterthought. The
       # CSV2 guest kernel registers a csv-guest misc device, but /dev inside the
@@ -101,7 +115,15 @@ spec:
           if [ ! -e /dev/csv-guest ]; then
             echo "warning: could not create /dev/csv-guest; teellm-service will fall back to mock evidence" >&2
           fi
-          exec sleep infinity
+          # PID 1 is the supervisor, not a keep-alive sleep. The deployment installs the script
+          # after this container is Ready, so wait for it instead of exiting: an exited container
+          # takes the guest's writable layer -- and the multi-GB model in it -- out of reach. Until
+          # the script arrives this loop is the keep-alive.
+          while [ ! -x /root/taa/teellm-supervisor.sh ]; do
+            echo "waiting for /root/taa/teellm-supervisor.sh" >&2
+            sleep 2
+          done
+          exec /root/taa/teellm-supervisor.sh
       resources:
         # Kata sizes the VM from the limits: guest RAM = the kata default_memory
         # (23552M in this host's configuration-qemu-csv2.toml) + limits.memory,
