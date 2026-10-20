@@ -88,6 +88,17 @@ PASSWORD="${TARGET_PASSWORD:-Osrd@2026}"
 REMOTE_DIR="${REMOTE_DIR:-/root/taa-fhe}"
 REMOTE_TARGET="${REMOTE_TARGET:-${REMOTE_USER}@${REMOTE_HOST}}"
 
+# Pod deployment (pod=<name>). A Kubernetes pod replaces the docker container on
+# this host, so this mode copies the TAA files into an existing pod instead of
+# creating a container. The pod env carries the platform identity and the FHE
+# service decides the data root; both are read from the pod, never guessed.
+TARGET_POD="${TARGET_POD:-}"
+POD_NAMESPACE="${POD_NAMESPACE:-${TARGET_NAMESPACE:-osr}}"
+POD_CONTAINER="${POD_CONTAINER:-}"
+POD_MODE=0
+POD_PAUSED=0
+POD_ARG_SEEN=0
+
 # Two host directories that decide the binds. They are named here as well as in
 # the path block below so --help can print them before anything is resolved.
 HOST_DATA_DIR="${HOST_DATA_DIR:-/opt/fhe-data}"
@@ -145,7 +156,14 @@ report_left_running() {
   [ "$REPORTING" = 0 ] || return 0
   REPORTING=1
   printf '\n[deploy-fhe] state left on the host (%s):\n' "$1" >&2
-  if [ "$TAA_CONTAINER_TOUCHED" = 1 ]; then
+  if [ "$POD_MODE" = 1 ]; then
+    printf '[deploy-fhe]   pod %s/%s received TAA files in place; a failed run may have left its supervisor paused\n' \
+      "$POD_NAMESPACE" "$TARGET_POD" >&2
+    printf '[deploy-fhe]     resume: kubectl -n %s exec %s -- rm -f %s/manual\n' \
+      "$POD_NAMESPACE" "$TARGET_POD" "$TAA_CONTAINER_WORKDIR" >&2
+    printf '[deploy-fhe]     logs  : kubectl -n %s exec %s -- tail -n 60 %s\n' \
+      "$POD_NAMESPACE" "$TARGET_POD" "$TAA_LOG_FILE" >&2
+  elif [ "$TAA_CONTAINER_TOUCHED" = 1 ]; then
     printf '[deploy-fhe]   container %s runs the FHE entrypoint and the TAA supervisor\n' "$TAA_CONTAINER_NAME" >&2
     printf '[deploy-fhe]     logs : docker logs --tail 100 %s\n' "$TAA_CONTAINER_NAME" >&2
     printf '[deploy-fhe]     taa  : docker exec %s tail -n 60 %s\n' "$TAA_CONTAINER_NAME" "$TAA_LOG_FILE" >&2
@@ -154,6 +172,15 @@ report_left_running() {
     printf '[deploy-fhe]   nothing this run started is still running.\n' >&2
   fi
   printf '[deploy-fhe] this script stops none of it; run the stop commands yourself.\n' >&2
+}
+
+# A run that died between "touch manual" and "rm manual" would leave the pod's
+# TAA stopped for good; every exit path tries to undo just that one file.
+pod_unpause() {
+  [ "${POD_MODE:-0}" = 1 ] && [ "${POD_PAUSED:-0}" = 1 ] || return 0
+  is_dry_run && return 0
+  POD_PAUSED=0
+  pod_sh "rm -f $(shell_quote "$TAA_CONTAINER_WORKDIR/manual")" >/dev/null 2>&1 || true
 }
 
 die() { printf '[deploy-fhe] ERROR: %s\n' "$*" >&2; report_left_running "the run failed"; exit 1; }
@@ -165,12 +192,14 @@ on_error() {
   if [ "$BASHPID" != "$$" ]; then
     exit "$rc"
   fi
+  if declare -F pod_unpause >/dev/null 2>&1; then pod_unpause || true; fi
   report_left_running "step ${STEP} failed (exit ${rc})"
   exit "$rc"
 }
 on_signal() {
   local sig="${1:-INT}" num
   trap - INT TERM
+  if declare -F pod_unpause >/dev/null 2>&1; then pod_unpause || true; fi
   report_left_running "interrupted"
   num="$(kill -l "$sig" 2>/dev/null)" || num=2
   exit $((128 + num))
@@ -409,6 +438,92 @@ upload_archive() {
   log "uploaded $src -> $REMOTE_TARGET:$dest"
 }
 
+# ── Pod helpers (pod=<name>) ─────────────────────────────────────────────────
+# kubectl runs on the deployment host, exactly like docker does, so every
+# command goes through host_sh/host_capture and --local/--remote stay symmetric.
+POD_UID=""
+POD_RESTARTS=""
+
+pod_sh() {
+  host_sh "$(shell_quote "${POD_KCTL[@]}" exec "$TARGET_POD" -- sh -c "$1")"
+}
+pod_capture() {
+  host_capture "$(shell_quote "${POD_KCTL[@]}" exec "$TARGET_POD" -- sh -c "$1")"
+}
+pod_cp() {
+  local src="$1" dest="$2"
+  host_sh "$(shell_quote "${POD_KCTL[@]}" cp "$src" "$TARGET_POD:$dest")"
+}
+pod_field() {
+  host_capture "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD" -o "jsonpath=$1")"
+}
+
+# Running and Ready, and not on its way out: copying files into a terminating
+# pod would report success for a container that is about to be replaced.
+pod_ready() {
+  local phase ready deleting
+  phase="$(pod_field '{.status.phase}')"
+  [ "$phase" = "Running" ] || return 1
+  deleting="$(pod_field '{.metadata.deletionTimestamp}')"
+  [ -z "$deleting" ] || return 1
+  ready="$(pod_field '{range .status.containerStatuses[*]}{.ready}{"\n"}{end}')"
+  printf '%s\n' "$ready" | grep -qx true
+}
+
+pod_state() {
+  POD_UID="$(pod_field '{.metadata.uid}')"
+  POD_RESTARTS="$(pod_field '{range .status.containerStatuses[*]}{.restartCount}{"\n"}{end}' \
+    | awk '{s+=$1} END {print s+0}')"
+}
+
+# One variable from the container's PID 1 environment. The FHE entrypoint and
+# the pod spec put CONTAINER_DATA_DIR and PLATFORM_IP there; reading them is
+# what keeps the rendered config on the tree the FHE side really uses.
+pod_env() {
+  pod_capture "tr '\0' '\n' < /proc/1/environ" 2>/dev/null \
+    | sed -n "s/^$1=//p" | head -n1
+}
+
+# The image has no curl, so the in-pod probe uses python3, like the container
+# probe above.
+wait_for_pod_taa() {
+  local deadline=$((SECONDS + TAA_READY_TIMEOUT))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if pod_sh "python3 -c 'import urllib.request; urllib.request.urlopen(urllib.request.Request(\"http://127.0.0.1:$TAA_PORT/v1/taa/health\", data=b\"\", method=\"POST\"), timeout=5).read(1)'" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$TAA_READY_INTERVAL"
+  done
+  return 1
+}
+
+# Best effort on purpose: health is the gate, but a model that is never
+# activated answers tasks with "Model ... not found" until the FHE side imports
+# it again, so try every directory that looks like a model id.
+activate_pod_models() {
+  local ids id py
+  ids="$(pod_capture "ls -1 $(shell_quote "$FHE_CONTAINER_DATA_DIR/models") 2>/dev/null || true")"
+  if [ -z "$ids" ]; then
+    log "no model directories under $FHE_CONTAINER_DATA_DIR/models; skipping activation"
+    return 0
+  fi
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    case "$id" in
+      *[!0-9a-f]*)
+        warn "skipping $FHE_CONTAINER_DATA_DIR/models/$id: not a model id"
+        continue
+        ;;
+    esac
+    py='import urllib.request; urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:'"$FHE_API_PORT"'/api/v1/models/activate?model_id='"$id"'", data=b"", method="POST"), timeout=60).read(1)'
+    if pod_sh "python3 -c '$py'" >/dev/null 2>&1; then
+      log "activated FHE model $id"
+    else
+      warn "could not activate FHE model $id; the FHE side may import it on the first task instead"
+    fi
+  done <<< "$ids"
+}
+
 verify_one() {
   local rel="$1" file="${2:-$HANDOFF_DIR/$1}" expected="${3:-}" want got
   if is_dry_run; then
@@ -455,6 +570,19 @@ Arguments:
       nothing answers on PLATFORM_PORT, and clear its register state.
   (no argument)
       Deploy platform-mock and the unified container.
+
+  pod=<name>
+      Deploy TAA into an existing Kubernetes pod instead of starting a docker
+      container (implies taa; conflicts with save and platform-mock). The pod
+      must already run the TAA supervisor; this copies taa, deploy/start.sh
+      and a re-rendered config into /root/taa, restarts the supervisor in the
+      pod and waits for its health endpoint. The pod env supplies PLATFORM_IP
+      and CONTAINER_DATA_DIR, so the config is rendered against the data root
+      the running FHE side actually uses. The files live in the container's
+      writable layer and are lost when the pod restarts; build them into an
+      image for a durable change.
+  namespace=<ns>
+      Namespace of the pod (default: POD_NAMESPACE, else osr).
 
   save
       Package instead of deploy, and only with the taa argument: build
@@ -524,6 +652,13 @@ Environment:
       Redis persistence, mounted at /data/redis. Kept apart from the
       directory a leftover compose stack's redis writes, whose RDB the
       image's older redis cannot read.
+  TARGET_POD=${TARGET_POD}
+      Setting this enables pod mode, same as pod=<name>.
+  POD_NAMESPACE=${POD_NAMESPACE}
+      Namespace of the pod; namespace=<ns> wins over it.
+  POD_CONTAINER=${POD_CONTAINER}
+      Container to exec in a multi-container pod; required when the pod has
+      more than one container.
   REMOTE_HOST=${REMOTE_HOST}, REMOTE_USER=${REMOTE_USER}
       Remote target; TARGET_PASSWORD is the ssh password (empty means key or
       agent authentication). REMOTE_DIR=${REMOTE_DIR} holds uploaded files.
@@ -555,6 +690,11 @@ while [ $# -gt 0 ]; do
       fi
       SAVE_ACTION=1
       ;;
+    pod=*)
+      TARGET_POD="${1#pod=}"
+      POD_ARG_SEEN=1
+      ;;
+    namespace=*) POD_NAMESPACE="${1#namespace=}" ;;
     -n|--dry-run) DRY_RUN=1 ;;
     --remote) REMOTE_TARGET="${REMOTE_USER}@${REMOTE_HOST}" ;;
     --local) REMOTE_TARGET="" ;;
@@ -587,6 +727,46 @@ if [ "$SAVE_ACTION" = 1 ]; then
   DEPLOY_MOCK=0
 fi
 
+# Pod mode replaces the docker container with a pod that the platform already
+# created, so it only makes sense with taa and without save.
+if [ -n "$TARGET_POD" ]; then
+  if [ "$SAVE_ACTION" = 1 ]; then
+    printf '[deploy-fhe] ERROR: pod= cannot be combined with save: a saved image is built here, not deployed into a pod\n' >&2
+    usage >&2
+    exit 1
+  fi
+  if [ "$DEPLOY_MODE" = "platform-mock" ]; then
+    printf '[deploy-fhe] ERROR: pod= deploys TAA into a pod; it cannot be combined with platform-mock\n' >&2
+    usage >&2
+    exit 1
+  fi
+  if [ -z "$POD_NAMESPACE" ]; then
+    printf '[deploy-fhe] ERROR: the namespace is empty\n' >&2
+    usage >&2
+    exit 1
+  fi
+  if [[ ! "$TARGET_POD" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || [ "${#TARGET_POD}" -gt 63 ]; then
+    printf '[deploy-fhe] ERROR: pod name %s is not a valid DNS-1123 label\n' "$TARGET_POD" >&2
+    usage >&2
+    exit 1
+  fi
+  if [[ ! "$POD_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || [ "${#POD_NAMESPACE}" -gt 63 ]; then
+    printf '[deploy-fhe] ERROR: namespace %s is not a valid DNS-1123 label\n' "$POD_NAMESPACE" >&2
+    usage >&2
+    exit 1
+  fi
+  POD_MODE=1
+  DEPLOY_MODE=taa
+  DEPLOY_TAA=1
+  DEPLOY_MOCK=0
+  DEPLOY_PLATFORM_MOCK=0
+  if [ "$POD_ARG_SEEN" = 0 ]; then
+    log "pod mode enabled by TARGET_POD=$TARGET_POD"
+  fi
+  POD_KCTL=(kubectl -n "$POD_NAMESPACE")
+  [ -z "$POD_CONTAINER" ] || POD_KCTL+=(-c "$POD_CONTAINER")
+fi
+
 setup_remote_ssh
 
 # ── Paths this run uses ──────────────────────────────────────────────────────
@@ -595,6 +775,15 @@ HOST_TAA_STATE_DIR="${HOST_TAA_STATE_DIR:-/opt/taa-state}"
 TAA_FHE_CONFIG="${TAA_FHE_CONFIG:-$PROJECT_DIR/configs/taa-fhe.json}"
 STAGED_MODELS_DIR="$HOST_DATA_DIR/models"
 TAA_RENDERED_CONFIG="${TAA_RENDERED_CONFIG:-$HOST_DATA_DIR/taa-fhe.rendered.json}"
+# Pod mode stages the rendered config on its own: the docker data tree is not
+# involved, and writing into it would fake a host layout the pod never sees.
+if [ "$POD_MODE" = 1 ]; then
+  if [ -n "$REMOTE_TARGET" ]; then
+    TAA_RENDERED_CONFIG="$REMOTE_DIR/taa-fhe.rendered.json"
+  else
+    TAA_RENDERED_CONFIG="${TMPDIR:-/tmp}/taa-fhe.rendered.json"
+  fi
+fi
 TAA_CONTAINER_CONFIG_PATH="${TAA_CONTAINER_CONFIG_PATH:-$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE}"
 TAA_RENDER_OUT="$TAA_RENDERED_CONFIG"
 if [ "$DEPLOY_TAA" = 1 ] && [ -n "$REMOTE_TARGET" ] && ! is_dry_run && [ "$SAVE_ACTION" != 1 ]; then
@@ -630,10 +819,10 @@ case "$FHE_CONTAINER_DATA_DIR" in
   /*) ;;
   *) die "FHE_CONTAINER_DATA_DIR='$FHE_CONTAINER_DATA_DIR' is a container path and must be absolute" ;;
 esac
-if paths_overlap "$HOST_TAA_STATE_DIR" "$HOST_DATA_DIR"; then
+if [ "$POD_MODE" = 0 ] && paths_overlap "$HOST_TAA_STATE_DIR" "$HOST_DATA_DIR"; then
   die "HOST_TAA_STATE_DIR=$HOST_TAA_STATE_DIR and HOST_DATA_DIR=$HOST_DATA_DIR overlap; the FHE entrypoint reads HOST_DATA_DIR as $FHE_CONTAINER_DATA_DIR, so TAA's SM2 key pair and sealed state would be readable from the FHE side, which is what the separate state bind exists to prevent"
 fi
-if paths_overlap "$FHE_MODELS_SRC" "$STAGED_MODELS_DIR" && ! same_path "$FHE_MODELS_SRC" "$STAGED_MODELS_DIR"; then
+if [ "$POD_MODE" = 0 ] && paths_overlap "$FHE_MODELS_SRC" "$STAGED_MODELS_DIR" && ! same_path "$FHE_MODELS_SRC" "$STAGED_MODELS_DIR"; then
   die "$STAGED_MODELS_DIR and the bundle models $FHE_MODELS_SRC overlap (one contains the other); the model copy would recurse into itself"
 fi
 if [ "$TAA_DOCKER_NETWORK" = "host" ]; then
@@ -703,7 +892,16 @@ render_taa_config() {
 
   # PLATFORM_IP is injected at run time, but leaving it to the template on a
   # bridge network points TAA at itself.
-  if [ "$TAA_DOCKER_NETWORK" != "host" ]; then
+  if [ "$POD_MODE" = 1 ]; then
+    # There is no docker run to inject -e PLATFORM_IP here: the pod env is the
+    # only source, and the template's platform.ip is TAA's fallback.
+    local pod_platform="${PLATFORM_IP:-$(jq -r '.platform.ip // empty' "$TAA_RENDER_OUT")}"
+    case "$pod_platform" in
+      ""|127.0.0.1:*|localhost:*)
+        warn "platform ip is '${pod_platform:-unset}', which is the pod itself; the pod env has no PLATFORM_IP and the template names no reachable platform, so registration will fail"
+        ;;
+    esac
+  elif [ "$TAA_DOCKER_NETWORK" != "host" ]; then
     local effective_platform="${PLATFORM_IP:-$(jq -r '.platform.ip // empty' "$TAA_RENDER_OUT")}"
     case "$effective_platform" in
       127.0.0.1:*|localhost:*)
@@ -916,6 +1114,175 @@ install_taa_files() {
   fi
 }
 
+# ── Pod deployment (pod=<name>) ──────────────────────────────────────────────
+# The pod, its image and the FHE side belong to the platform: this path only
+# replaces TAA's files and re-renders the config against the data root the
+# running FHE service really uses. It never creates, starts or removes the pod.
+deploy_into_pod() {
+  step "uploading TAA inputs to ${REMOTE_TARGET:-this host}"
+  upload_file "$PROJECT_DIR/deploy/start.sh" "$HOST_START_SH" 755
+  upload_file "$TAA_BINARY_PATH" "$HOST_TAA_BINARY_PATH" 755
+
+  step "inspecting pod $POD_NAMESPACE/$TARGET_POD"
+  local data_dir="" old_data_dir="" state_base="/opt/taa-state" fhe_port=""
+  local old_config="" keys_path="" endpoint="" pod_platform=""
+  if is_dry_run; then
+    log "dry-run: would read CONTAINER_DATA_DIR, PLATFORM_IP and the current config from the pod"
+    data_dir="$FHE_CONTAINER_DATA_DIR"
+    state_base="$HOST_TAA_STATE_DIR"
+  else
+    pod_ready || die "pod $POD_NAMESPACE/$TARGET_POD is not Running and Ready"
+    pod_state
+    old_config="$(pod_capture "cat $(shell_quote "$TAA_CONTAINER_CONFIG_PATH") 2>/dev/null || true")"
+    if [ -n "$old_config" ] && printf '%s' "$old_config" | jq -e . >/dev/null 2>&1; then
+      old_data_dir="$(printf '%s' "$old_config" | jq -r '.fhe.dataDir // empty')"
+      keys_path="$(printf '%s' "$old_config" | jq -r '.storage.keys // empty')"
+      endpoint="$(printf '%s' "$old_config" | jq -r '.fhe.endpoint // empty')"
+      [ -z "$keys_path" ] || state_base="$(dirname "$keys_path")"
+      case "$endpoint" in
+        http://127.0.0.1:[0-9]*) fhe_port="${endpoint#http://127.0.0.1:}" ;;
+      esac
+    else
+      warn "pod $POD_NAMESPACE/$TARGET_POD has no readable $TAA_CONTAINER_CONFIG_PATH; rendering a fresh config"
+    fi
+    data_dir="$(pod_env CONTAINER_DATA_DIR)"
+    if [ -z "$data_dir" ]; then
+      data_dir="$old_data_dir"
+      [ -z "$data_dir" ] || warn "the pod env has no CONTAINER_DATA_DIR; using the config's fhe.dataDir=$data_dir"
+    fi
+    pod_platform="$(pod_env PLATFORM_IP)"
+    PLATFORM_IP="$pod_platform"
+  fi
+  data_dir="${data_dir%/}"
+  [ -n "$data_dir" ] || data_dir="$FHE_CONTAINER_DATA_DIR"
+  state_base="${state_base%/}"
+  [ -n "$state_base" ] || state_base="$HOST_TAA_STATE_DIR"
+  [ -z "$fhe_port" ] || FHE_API_PORT="$fhe_port"
+
+  # These are container paths, so they are checked lexically, not against the
+  # machine running this script.
+  case "$data_dir" in
+    ""|/) die "the pod's FHE data root is '$data_dir', which cannot hold TAA's files" ;;
+    /*) ;;
+    *) die "the pod's FHE data root '$data_dir' is not absolute" ;;
+  esac
+  case "$state_base" in
+    ""|/) die "the pod's TAA state base is '$state_base', which cannot hold TAA's keys" ;;
+    /*) ;;
+    *) die "the pod's TAA state base '$state_base' is not absolute" ;;
+  esac
+  if paths_overlap "$state_base" "$data_dir"; then
+    die "the pod config puts TAA's state ($state_base) inside the FHE data root ($data_dir); the FHE side could read TAA's SM2 key pair, so point storage.keys at a separate directory"
+  fi
+
+  FHE_CONTAINER_DATA_DIR="$data_dir"
+  HOST_TAA_STATE_DIR="$state_base"
+  log "pod layout: data root=$FHE_CONTAINER_DATA_DIR state=$HOST_TAA_STATE_DIR fhe port=$FHE_API_PORT platform=${PLATFORM_IP:-<none>}"
+
+  step "rendering $TAA_FHE_CONFIG against the pod"
+  if is_dry_run; then
+    log "would render $TAA_FHE_CONFIG -> $TAA_RENDERED_CONFIG (dataDir=$FHE_CONTAINER_DATA_DIR, keyCacheDir=$FHE_CONTAINER_DATA_DIR/taa-fhe-keys, result=$FHE_CONTAINER_DATA_DIR/taa-results, keys=$HOST_TAA_STATE_DIR/keys)"
+  else
+    render_taa_config 0
+    upload_file "$TAA_RENDER_OUT" "$TAA_RENDERED_CONFIG" 600
+  fi
+
+  step "pausing the TAA supervisor in the pod"
+  if is_dry_run; then
+    log "would touch $TAA_CONTAINER_WORKDIR/manual, stop $BINARY_NAME and start.sh, and wait up to 30s for $BINARY_NAME to exit"
+  else
+    pod_sh "touch $(shell_quote "$TAA_CONTAINER_WORKDIR/manual")"
+    POD_PAUSED=1
+    pod_sh "pkill -x $(shell_quote "$BINARY_NAME") >/dev/null 2>&1 || true; pkill -f $(shell_quote "$SUPERVISOR_PATTERN") >/dev/null 2>&1 || true"
+    # Killing start.sh makes the pod's entrypoint re-exec the copied start.sh
+    # after its delay; the pause file keeps that one from starting taa early.
+    pod_sh "i=0; while pgrep -x $BINARY_NAME >/dev/null 2>&1; do i=\$((i+1)); if [ \"\$i\" -ge 30 ]; then pkill -KILL -x $BINARY_NAME >/dev/null 2>&1 || true; break; fi; sleep 1; done"
+  fi
+
+  step "aligning the pod's data paths"
+  if is_dry_run; then
+    log "would move models, keys, taa-fhe-keys and taa-results from the config's current fhe.dataDir to $FHE_CONTAINER_DATA_DIR when it differs and the destination is absent"
+  elif [ "$old_data_dir" = "$FHE_CONTAINER_DATA_DIR" ]; then
+    log "the pod config already uses $FHE_CONTAINER_DATA_DIR; nothing to move"
+  elif [ -z "$old_data_dir" ]; then
+    log "no previous fhe.dataDir to move from"
+  else
+    local entry src dest
+    for entry in models keys taa-fhe-keys taa-results; do
+      src="$old_data_dir/$entry"
+      dest="$FHE_CONTAINER_DATA_DIR/$entry"
+      pod_sh "test -e $(shell_quote "$src")" 2>/dev/null || continue
+      if pod_sh "test -e $(shell_quote "$dest")" 2>/dev/null; then
+        warn "$dest already exists; leaving $src in place"
+        continue
+      fi
+      pod_sh "mkdir -p $(shell_quote "$FHE_CONTAINER_DATA_DIR") && mv $(shell_quote "$src") $(shell_quote "$dest")" \
+        || die "failed to move $src into $FHE_CONTAINER_DATA_DIR"
+      log "moved $src -> $dest"
+    done
+  fi
+
+  step "installing the TAA files in the pod"
+  local pod_config_src="$TAA_RENDER_OUT"
+  [ -z "$REMOTE_TARGET" ] || pod_config_src="$TAA_RENDERED_CONFIG"
+  local bin_new="$TAA_CONTAINER_WORKDIR/$BINARY_NAME.new"
+  local sh_new="$TAA_CONTAINER_WORKDIR/start.sh.new"
+  local cfg_new="$TAA_CONTAINER_CONFIG_PATH.new"
+  if is_dry_run; then
+    log "would copy $HOST_TAA_BINARY_PATH, $HOST_START_SH and $pod_config_src into $TARGET_POD:$TAA_CONTAINER_WORKDIR as *.new, then mv them over the live files"
+  else
+    pod_sh "mkdir -p $(shell_quote "$TAA_CONTAINER_WORKDIR")"
+    pod_cp "$HOST_TAA_BINARY_PATH" "$bin_new"
+    pod_cp "$HOST_START_SH" "$sh_new"
+    pod_cp "$pod_config_src" "$cfg_new"
+    pod_sh "chown root:root $(shell_quote "$bin_new") $(shell_quote "$sh_new") $(shell_quote "$cfg_new") \
+      && chmod 755 $(shell_quote "$bin_new") $(shell_quote "$sh_new") \
+      && chmod 600 $(shell_quote "$cfg_new") \
+      && mv -f $(shell_quote "$sh_new") $(shell_quote "$TAA_CONTAINER_WORKDIR/start.sh") \
+      && mv -f $(shell_quote "$bin_new") $(shell_quote "$TAA_CONTAINER_WORKDIR/$BINARY_NAME") \
+      && mv -f $(shell_quote "$cfg_new") $(shell_quote "$TAA_CONTAINER_CONFIG_PATH")"
+    log "replaced $BINARY_NAME, start.sh and $TAA_CONFIG_FILE in the pod"
+  fi
+
+  step "restarting TAA in the pod"
+  if is_dry_run; then
+    log "would remove $TAA_CONTAINER_WORKDIR/manual and wait for POST http://127.0.0.1:$TAA_PORT/v1/taa/health inside the pod"
+    log "dry-run: no files were copied and the pod was not stopped"
+    return 0
+  fi
+  pod_sh "rm -f $(shell_quote "$TAA_CONTAINER_WORKDIR/manual")"
+  POD_PAUSED=0
+  if ! wait_for_pod_taa; then
+    pod_sh "tail -n 80 $(shell_quote "$TAA_LOG_FILE")" || true
+    die "TAA did not answer on 127.0.0.1:$TAA_PORT inside pod $POD_NAMESPACE/$TARGET_POD (log $TAA_LOG_FILE)"
+  fi
+
+  # A restart erases the writable layer: the image's TAA would answer health
+  # while the files this run copied are already gone, which looks like success.
+  local uid_after restarts_after
+  uid_after="$(pod_field '{.metadata.uid}')"
+  restarts_after="$(pod_field '{range .status.containerStatuses[*]}{.restartCount}{"\n"}{end}' | awk '{s+=$1} END {print s+0}')"
+  [ "$uid_after" = "$POD_UID" ] \
+    || die "the pod was replaced during the deployment ($POD_UID -> $uid_after); the copied files are gone"
+  [ "$restarts_after" = "$POD_RESTARTS" ] \
+    || warn "the container restarted during the deployment (restartCount $POD_RESTARTS -> $restarts_after); the copied files are gone and the image's TAA is what answered"
+
+  step "activating FHE models"
+  activate_pod_models
+
+  local sha pod_ip
+  sha="$(sha256sum "$TAA_BINARY_PATH" | awk '{print $1}')"
+  pod_ip="$(pod_field '{.status.podIP}')"
+  printf '\n'
+  log "TAA updated in pod $POD_NAMESPACE/$TARGET_POD (pod IP ${pod_ip:-unknown})"
+  log "  binary   : $TAA_BINARY_PATH (sha256 $sha)"
+  log "  data root: $FHE_CONTAINER_DATA_DIR"
+  log "  state    : $HOST_TAA_STATE_DIR"
+  log "  health   : POST http://127.0.0.1:$TAA_PORT/v1/taa/health (inside the pod)"
+  log "  logs     : kubectl -n $POD_NAMESPACE exec $TARGET_POD -- tail -n 60 $TAA_LOG_FILE"
+  log "  NOTE: these files live in the container's writable layer; a pod restart brings back the image's TAA"
+}
+
 # ── Save path ────────────────────────────────────────────────────────────────
 if [ "$SAVE_ACTION" = 1 ]; then
 step "packaging the taa-fhe image locally ($TAA_FHE_SAVE_IMAGE)"
@@ -1053,7 +1420,13 @@ else
   for cmd in jq sha256sum awk realpath; do
     require_command "$cmd"
   done
-  if [ -n "$REMOTE_TARGET" ]; then
+  if [ "$POD_MODE" = 1 ]; then
+    if [ -n "$REMOTE_TARGET" ]; then
+      require_host_command kubectl
+    else
+      require_command kubectl
+    fi
+  elif [ -n "$REMOTE_TARGET" ]; then
     for cmd in docker curl rsync; do
       require_host_command "$cmd"
     done
@@ -1067,7 +1440,24 @@ else
   fi
 fi
 
-if [ "$DEPLOY_TAA" = 1 ]; then
+if [ "$POD_MODE" = 1 ] && ! is_dry_run; then
+  # The pod is the deployment target: refuse before touching anything when it
+  # cannot host this run, instead of failing halfway through the copy.
+  host_sh "$(shell_quote "${POD_KCTL[@]}" get pod "$TARGET_POD" >/dev/null 2>&1)" \
+    || die "pod $POD_NAMESPACE/$TARGET_POD was not found on ${REMOTE_TARGET:-this host}"
+  pod_ready || die "pod $POD_NAMESPACE/$TARGET_POD is not Running and Ready"
+  containers="$(pod_field '{range .spec.containers[*]}{.name}{"\n"}{end}')"
+  container_count="$(printf '%s\n' "$containers" | grep -c . || true)"
+  if [ "${container_count:-0}" -gt 1 ] && [ -z "$POD_CONTAINER" ]; then
+    die "pod $POD_NAMESPACE/$TARGET_POD has $container_count containers ($(printf '%s' "$containers" | tr '\n' ' ')); set POD_CONTAINER=<name>"
+  fi
+  pod_sh 'command -v python3 >/dev/null && command -v tar >/dev/null && command -v pgrep >/dev/null && command -v pkill >/dev/null && [ "$(id -u)" = 0 ]' \
+    || die "pod $POD_NAMESPACE/$TARGET_POD needs python3, tar, pgrep and pkill and must run as root; the health probe and the file copy rely on them"
+  pod_sh "pgrep -f $(shell_quote "$SUPERVISOR_PATTERN") >/dev/null 2>&1" \
+    || die "no TAA supervisor ($SUPERVISOR_PATTERN) is running in pod $POD_NAMESPACE/$TARGET_POD; this path updates an already-injected TAA, it does not install the entrypoint"
+fi
+
+if [ "$DEPLOY_TAA" = 1 ] && [ "$POD_MODE" = 0 ]; then
   # The GPU is what the FHE worker needs. Reported rather than refused: this
   # script cannot know what else the card is for.
   gpu_report="$(host_capture 'nvidia-smi --query-gpu=name,compute_cap,memory.total,memory.used --format=csv,noheader' 2>/dev/null || true)"
@@ -1117,6 +1507,13 @@ else
     build_binary "$PLATFORM_MOCK_BINARY_PATH" ./tools/platform-mock/cmd/platform-mock
   fi
 fi
+fi
+
+# Pod mode ends the docker path here: staging models, loading the image and
+# creating a container all belong to the platform's pod.
+if [ "$POD_MODE" = 1 ]; then
+  deploy_into_pod
+  exit 0
 fi
 
 # ── Upload ───────────────────────────────────────────────────────────────────

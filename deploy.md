@@ -14,6 +14,22 @@
 # 只部署 platform-mock
 ./deploy-fhe.sh platform-mock
 
+# 把 TAA 部署进已有 pod（Kubernetes 里的 FHE 实例）
+# 会重渲染配置以匹配 pod 内的 FHE 数据根，重启 pod 内的 supervisor 并等待健康检查
+./deploy-fhe.sh pod=<pod 名>
+
+# 默认命名空间 osr；其它命名空间用 namespace=<ns> 或 POD_NAMESPACE=<ns>
+./deploy-fhe.sh namespace=osr pod=<pod 名>
+
+# 同一 pod 里有多个容器时指定容器
+POD_CONTAINER=<容器名> ./deploy-fhe.sh pod=<pod 名>
+
+# 只看会执行什么
+./deploy-fhe.sh pod=<pod 名> -n
+
+# 查当前 pod 名
+kubectl -n osr get pods | grep taa-fhe
+
 # 全量（platform-mock → 统一容器）
 ./deploy-fhe.sh
 
@@ -29,4 +45,11 @@ TAA_IMAGE=taa-fhe:20261019 ./deploy-fhe.sh taa
 ```bash
 TARGET_POD=taa-env-slim-v2-20261016-7104e03003ae0072-f7fbbf8f5-kkdb2 ./deploy.sh taa 
 ./deploy.sh docker save
+```
+
+
+# taa-teellm 部署命令
+
+```bash
+TARGET_POD=taa-teellm ./deploy-llm.sh taa 
 ```
