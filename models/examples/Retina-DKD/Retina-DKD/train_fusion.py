@@ -1,3 +1,4 @@
+import _taa_deps  # noqa: F401  # expose the bundled wheels before other imports
 import torch.nn as nn
 import torch.optim as optim
 from data_pre_process.data_process import my_default_collate, DrdatasetMultidataFactor5
@@ -33,7 +34,7 @@ parser.add_argument('-ld', '--load_model', type=int, required=False, default='-1
 parser.add_argument('-d', '--dataset', type=str, required=False, default='', help="dataset describe")
 parser.add_argument('-nw', '--num_workers', type=int, required=False, default=4, help="num_workers for DataLoader")
 parser.add_argument('--data-root', type=str, required=False, default=None, help='data root (default: /opt/taa/input)')
-parser.add_argument('--output-dir', type=str, required=False, default=None, help='output root directory for checkpoints and results (default: /opt/taa/output)')
+parser.add_argument('--output-dir', type=str, required=False, default=None, help='output root directory for checkpoints and results (default: TAA_OUTPUT_DIR, else /opt/taa/output)')
 parser.add_argument('--log-dir', type=str, required=False, default=None, help='log directory for training output (default: None)')
 parser.add_argument('--progress-dir', type=str, required=False, default=None, help='progress directory for training progress (default: None)')
 args = parser.parse_args()
@@ -105,8 +106,15 @@ def resolve_data_root(data_root_text: str | None) -> Path:
 
 
 def resolve_output_dir(output_dir_text: str | None) -> Path:
-    """Resolve the output root: --output-dir when given, /opt/taa/output otherwise."""
-    target = output_dir_text if output_dir_text else '/opt/taa/output'
+    """Resolve the output root: --output-dir, then TAA_OUTPUT_DIR, then /opt/taa/output.
+
+    TAA injects TAA_OUTPUT_DIR pointing at the result directory it collects,
+    so a launch command without --output-dir still lands where TAA expects.
+    """
+    if output_dir_text is not None and str(output_dir_text).strip():
+        target = str(output_dir_text)
+    else:
+        target = os.environ.get('TAA_OUTPUT_DIR', '') or '/opt/taa/output'
     return Path(target).expanduser().resolve(strict=False)
 
 
@@ -377,8 +385,8 @@ def main():
     seg_lesion_root = data_root / 'seg' / 'lesion'
     xlsx_path = data_root / 'risk_factor_5.xlsx'
 
-    log_dir = resolve_log_dir(args.log_dir, args.output_dir)
-    progress_dir = resolve_progress_dir(args.progress_dir, args.output_dir)
+    log_dir = resolve_log_dir(args.log_dir, output_root)
+    progress_dir = resolve_progress_dir(args.progress_dir, output_root)
     logger = ModelLogger(log_dir)
     progress = ProgressTracker(progress_dir)
 

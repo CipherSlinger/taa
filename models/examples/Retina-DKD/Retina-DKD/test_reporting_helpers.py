@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # 确保在未安装 PyTorch/CUDA 等重量级依赖的环境中也能独立执行 reporting helper 的单元测试
 for _mod in [
@@ -45,6 +45,7 @@ from train_fusion import (
     ModelLogger,
     ProgressTracker,
     resolve_log_dir,
+    resolve_output_dir,
     resolve_progress_dir,
 )
 
@@ -60,6 +61,20 @@ class TestReportingHelpers(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_resolve_output_dir_env_fallback(self):
+        # TAA injects TAA_OUTPUT_DIR; a launch without --output-dir must honour it
+        with patch.dict(os.environ, {"TAA_OUTPUT_DIR": str(self.output_dir)}):
+            self.assertEqual(resolve_output_dir(None), self.output_dir.resolve())
+
+    def test_resolve_output_dir_explicit_wins_over_env(self):
+        explicit = self.temp_dir / "explicit"
+        with patch.dict(os.environ, {"TAA_OUTPUT_DIR": str(self.output_dir)}):
+            self.assertEqual(resolve_output_dir(str(explicit)), explicit.resolve())
+
+    def test_resolve_output_dir_default_without_env(self):
+        with patch.dict(os.environ, {"TAA_OUTPUT_DIR": ""}):
+            self.assertEqual(resolve_output_dir(None), Path("/opt/taa/output").resolve())
 
     def test_resolve_log_dir_explicit(self):
         explicit = self.temp_dir / "custom_log"

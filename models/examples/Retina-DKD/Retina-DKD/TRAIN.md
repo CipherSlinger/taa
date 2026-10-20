@@ -21,7 +21,7 @@ python train_fusion.py -b TransMUF -g cpu -bc 4 -e 150 -d _dkd -s 512 -nw 4
 - `-s 512`: 输入图像尺寸 `img_size`
 - `-nw 4`: DataLoader 数据加载线程数 `num_workers`
 - `--data-root`: 数据集根目录（默认为 `/opt/taa/input` 直读目录）
-- `--output-dir`: 结果输出根目录（默认为 `/opt/taa/output`）
+- `--output-dir`: 结果输出根目录（默认依次取 `--output-dir`、环境变量 `TAA_OUTPUT_DIR`、`/opt/taa/output`）
 - `--log-dir`: 终端执行日志目录（默认为 `None`，推导为 `<output_dir>/log` 或同级 `log`）
 - `--progress-dir`: 训练进度文件目录（默认为 `None`，推导为 `<output_dir>/progress` 或同级 `progress`）
 
@@ -99,3 +99,12 @@ python test_fusion_pat.py -s main -m TransMUF -x test_result_pat.xlsx -d 1 \
 - `-df _dkd`: 数据集描述后缀
 - `-el 1 -er 2`: 测试 epoch 范围（从 epoch 1 测试到 epoch 1，步长为 4）
 - `-nw 4`: DataLoader 读取线程数
+- `--data-root`: 输入根目录（默认为 `/opt/taa/input`）
+- `--output-dir`: 结果输出根目录（默认依次取 `--output-dir`、环境变量 `TAA_OUTPUT_DIR`、`/opt/taa/output`）
+- `--log-dir` / `--progress-dir`: 日志与进度目录（默认由结果输出根目录推导；根目录末级为 `result` 时取其同级的 `log` / `progress`，否则取其下的 `log` / `progress`）
+
+测试产物写入输出根目录：
+- 指标汇总：`<output>/test_result.xlsx`、`<output>/isolate_test/cls_metrics/...`
+- ROC 数据：`<output>/excel_data/roc_data/...`
+- 任务终端日志：`<log_dir>/test.log`（JSONL 单行格式，记录每行执行日志及 UTC 时间戳）
+- 任务进度：`<progress_dir>/progress.json`（原子写入，记录加载、逐批次评估、结果与完成阶段）
