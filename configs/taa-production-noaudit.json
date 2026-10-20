@@ -1,0 +1,47 @@
+{
+  "server": {
+    "addr": ":6001"
+  },
+  "storage": {
+    "model": "/root/taa/models",
+    "data": "/root/taa/data",
+    "result": "/root/taa/results",
+    "keys": "/root/taa/keys",
+    "stateSealingKeySource": "csv-hw"
+  },
+  "model": {
+    "input": "/opt/taa/input",
+    "output": {
+      "result": "/opt/taa/output/result",
+      "log": "/opt/taa/output/log",
+      "progress": "/opt/taa/output/progress/progress.json"
+    }
+  },
+  "codeAudit": {
+    "enabled": false,
+    "codeScan": {
+      "engine": "regex"
+    },
+    "resultCheck": {
+      "enabled": false,
+      "maxFileBytes": 5368709120
+    },
+    "binaryAudit": {
+      "enabled": false
+    },
+    "llm": {
+      "enabled": false,
+      "attestation": {
+        "enabled": false,
+        "measurement": ""
+      },
+      "endpoint": "https://10.244.0.188:8443",
+      "model": "qwen2.5-coder:7b",
+      "failClosed": false
+    }
+  },
+  "attestation": {
+    "hrkCertPath": "/root/taa/certs/hrk.cert",
+    "hskCekCertPath": "/root/taa/certs/hsk_cek.cert"
+  }
+}
