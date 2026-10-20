@@ -205,8 +205,9 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 	// (which tails ModelLogDir) has nothing to read here. The service's task log
 	// is the training terminal log for this instance, and polling it is what
 	// keeps the platform's log view populated while Execute blocks.
-	stopLogs := s.startFHELogPoller(runner, req.RequestID, req.TaskID, spec.UserID)
+	stopLogs, onTaskCreated := s.startFHELogPoller(runner, req.RequestID, req.TaskID, spec.UserID)
 	defer stopLogs()
+	spec.OnCreated = onTaskCreated
 	outcome, execErr := runner.Execute(context.Background(), spec, func(done, total int) {
 		if total <= 0 {
 			return

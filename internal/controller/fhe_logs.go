@@ -2,7 +2,10 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"taa/internal/fhe"
@@ -46,24 +49,29 @@ type fheLogPoller struct {
 	nextSeq  uint64 // seq of the next queued entry
 	pending  []ModelLogEntry
 	lastErr  string
+
+	// created is set when Execute reports the task exists on the service. Until
+	// then a 404 from the log endpoint means "not created yet", not a failure.
+	created atomic.Bool
 }
 
 // startFHELogPoller starts forwarding the task's log and returns the stop
-// function. Stopping cancels the loop, waits for it, and takes one final replay
-// so the closing line is not lost.
+// function and the callback Execute calls once the task exists. Stopping
+// cancels the loop, waits for it, and takes one final replay so the closing
+// line is not lost.
 //
 // Without a platform address there is nowhere to report to, which is the same
 // condition reportFHEProgress checks before it sends anything.
-func (s *TAAState) startFHELogPoller(runner *fhe.Runner, requestID, taskID, userID string) func() {
+func (s *TAAState) startFHELogPoller(runner *fhe.Runner, requestID, taskID, userID string) (stop func(), onCreated func()) {
 	noop := func() {}
 	if runner == nil {
-		return noop
+		return noop, noop
 	}
 	s.mu.RLock()
 	platformAddr, dockerID := s.PlatformIP, s.DockerID
 	s.mu.RUnlock()
 	if strings.TrimSpace(platformAddr) == "" {
-		return noop
+		return noop, noop
 	}
 
 	p := &fheLogPoller{
@@ -85,7 +93,8 @@ func (s *TAAState) startFHELogPoller(runner *fhe.Runner, requestID, taskID, user
 		// The first poll waits for the first tick: the poller starts before
 		// Execute creates the task, and asking for the log of a task that does
 		// not exist yet would only report a 404. The replay makes the wait
-		// invisible - the first poll returns every line from the start.
+		// invisible - the first poll returns every line from the start - and
+		// poll() keeps a 404 quiet until Execute says the task exists.
 		for {
 			select {
 			case <-ctx.Done():
@@ -102,7 +111,7 @@ func (s *TAAState) startFHELogPoller(runner *fhe.Runner, requestID, taskID, user
 		flushCtx, flushCancel := context.WithTimeout(context.Background(), fheLogFlushTimeout)
 		defer flushCancel()
 		p.poll(flushCtx, true)
-	}
+	}, func() { p.created.Store(true) }
 }
 
 // poll replays the log once and reports what is new. A failure never ends the
@@ -111,12 +120,25 @@ func (s *TAAState) startFHELogPoller(runner *fhe.Runner, requestID, taskID, user
 func (p *fheLogPoller) poll(ctx context.Context, final bool) {
 	text, err := p.client.TaskLogs(ctx, p.taskID, p.userID)
 	if err != nil {
+		// Until Execute has created the task, the service answers 404 for the
+		// log. Staging the eval key and the input can take minutes, so this is
+		// the normal state for the first polls, not a reportable failure; the
+		// first replay after creation carries every line from the start.
+		if !p.created.Load() && isTaskNotFound(err) {
+			return
+		}
 		p.warn(err)
 		return
 	}
 	p.lastErr = ""
 	p.absorb(text, final)
 	p.flush(ctx)
+}
+
+// isTaskNotFound reports the service's 404 for a task that does not exist (yet).
+func isTaskNotFound(err error) bool {
+	var apiErr *fhe.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
 }
 
 // absorb queues the lines appended since the last replay.

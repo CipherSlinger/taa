@@ -242,6 +242,8 @@ func TestRunnerExecuteStagesSharedDirectoryAndCompletes(t *testing.T) {
 	fake, srv := newFakeFHE(t, layout)
 	r := newTestRunner(t, srv.URL, layout)
 	spec := specFor(t, r, keySrv.URL, keyBytes, inputBytes)
+	var created int32
+	spec.OnCreated = func() { atomic.AddInt32(&created, 1) }
 
 	// Complete the task as soon as it is created, so the first poll after the
 	// create call already sees a terminal state.
@@ -289,6 +291,11 @@ func TestRunnerExecuteStagesSharedDirectoryAndCompletes(t *testing.T) {
 	}
 	if fake.activateHits != 0 {
 		t.Errorf("activateHits = %d, want 0 (model activation belongs to importModel)", fake.activateHits)
+	}
+	// The log poller starts before Execute, so it learns about the task through
+	// this callback; it must fire exactly once, on the created task.
+	if got := atomic.LoadInt32(&created); got != 1 {
+		t.Errorf("OnCreated calls = %d, want 1", got)
 	}
 }
 

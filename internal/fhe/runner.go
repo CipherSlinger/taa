@@ -58,6 +58,11 @@ type TaskSpec struct {
 	// Reusing it avoids downloading the same bytes twice and reuses the import
 	// download cap the caller already enforced.
 	InputZipPath string
+	// OnCreated, when set, is called once the service is known to have the
+	// task: after POST /tasks succeeds, or after the probe that handles a
+	// replayed create finds it. Callers that read /tasks/{id}/logs use this to
+	// tell "not created yet" (a 404) from a real failure.
+	OnCreated func()
 }
 
 // TaskOutcome is a task's terminal state.
@@ -457,6 +462,7 @@ func (r *Runner) Execute(ctx context.Context, spec TaskSpec, onProgress func(don
 			out, _ := r.finish(run, TaskOutcome{Status: StatusFailed, Err: fmt.Errorf("create fhe task: %w", err)})
 			return out, out.Err
 		}
+		spec.notifyCreated()
 		// A task that already ran to a successful end is adopted as it is: it has
 		// a stored result, and /continue on it would destroy that result to rerun
 		// cases that are already done. A task that ended unsuccessfully is the case
@@ -475,9 +481,19 @@ func (r *Runner) Execute(ctx context.Context, spec TaskSpec, onProgress func(don
 			out, _ := r.finish(run, TaskOutcome{Status: StatusFailed, Err: fmt.Errorf("continue existing fhe task: %w (create failed: %v)", contErr, err)})
 			return out, out.Err
 		}
+	} else {
+		spec.notifyCreated()
 	}
 
 	return r.wait(ctx, run, deadline, onProgress)
+}
+
+// notifyCreated reports that the service has the task. The latch lives with the
+// caller; this only has to fire once per successful create or probe.
+func (spec TaskSpec) notifyCreated() {
+	if spec.OnCreated != nil {
+		spec.OnCreated()
+	}
 }
 
 // prepare validates the spec, publishes the key and the input package, and

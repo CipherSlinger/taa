@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 type fheLogFixture struct {
 	mu       sync.Mutex
 	body     string
+	notFound bool
 	reads    int
 	failNext int
 	batches  []modelLogRequest
@@ -39,7 +41,12 @@ func newFHELogFixture(t *testing.T) *fheLogFixture {
 		fx.mu.Lock()
 		fx.reads++
 		body := fx.body
+		notFound := fx.notFound
 		fx.mu.Unlock()
+		if notFound {
+			http.Error(w, `{"detail":"Task not found"}`, http.StatusNotFound)
+			return
+		}
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(fx.service.Close)
@@ -73,6 +80,12 @@ func (fx *fheLogFixture) setBody(body string) {
 	fx.mu.Lock()
 	defer fx.mu.Unlock()
 	fx.body = body
+}
+
+func (fx *fheLogFixture) setNotFound(notFound bool) {
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	fx.notFound = notFound
 }
 
 func (fx *fheLogFixture) setFailNext(n int) {
@@ -224,8 +237,43 @@ func TestStartFHELogPollerNeedsAPlatform(t *testing.T) {
 		t.Fatalf("fhe.New: %v", err)
 	}
 
-	stop := state.startFHELogPoller(runner, "req-data", "task-1", validEvalKeyHash)
-	stop() // must not block or panic
+	stop, onCreated := state.startFHELogPoller(runner, "req-data", "task-1", validEvalKeyHash)
+	stop()      // must not block or panic
+	onCreated() // the noop the caller would hand to Execute
+}
+
+// TestFHELogPollerKeeps404QuietUntilTheTaskExists pins the ordering the poller
+// lives with: it starts before Execute creates the task, and staging the eval
+// key and the input can take minutes. A 404 before then means "not created
+// yet" and must not surface as a warning; the same 404 after Execute reports
+// the task exists is a real failure and is reported once.
+func TestFHELogPollerKeeps404QuietUntilTheTaskExists(t *testing.T) {
+	fx := newFHELogFixture(t)
+	p := fx.newFHELogPoller(t)
+	fx.setNotFound(true)
+	before := fx.state.Logs.Count()
+
+	p.poll(context.Background(), false)
+	if got := fx.state.Logs.Count(); got != before {
+		t.Fatalf("a 404 before the task exists added %d log entries, want 0", got-before)
+	}
+
+	p.created.Store(true) // what Execute calls through TaskSpec.OnCreated
+	p.poll(context.Background(), false)
+	entries := fx.state.Logs.All()
+	if len(entries) != before+1 {
+		t.Fatalf("a 404 after creation added %d entries, want 1", len(entries)-before)
+	}
+	last := entries[len(entries)-1]
+	if last.Level != LogWarn || !strings.Contains(last.Message, "Task not found") {
+		t.Errorf("last entry = %+v, want a warning mentioning the 404", last)
+	}
+
+	// Once the service knows the task, the log resumes without a restart.
+	fx.setNotFound(false)
+	fx.setBody("case-00 done\n")
+	p.poll(context.Background(), false)
+	assertMessages(t, fx.entries(), []string{"case-00 done"})
 }
 
 func assertMessages(t *testing.T, entries []ModelLogEntry, want []string) {
