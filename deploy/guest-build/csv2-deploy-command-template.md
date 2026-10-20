@@ -193,6 +193,38 @@ ${REMOTE_BUNDLE_DIR}
 
 ## 4. 配置 Kata / containerd / RuntimeClass 并拉起测试 Pod
 
+这一步现在是**本地渲染 → 上传 → 远端安装**：`.toml` 和 YAML 全部在本地生成，
+因此同样的文件既是 `launch` 的输入，也是可以直接交给别人的交付物。
+
+### 4.1 先渲染交付包（本地，不访问宿主）
+
+`launch` 会自己渲染一次到临时目录；要把配置留存或交付时，显式渲染到固定目录：
+
+```bash
+cd /home/hjy/taa/deploy/guest-build
+./build-initrd.sh render
+```
+
+产物在 `dist/kata-qemu-csv2-taa/`：
+
+- `config/kata-config.toml` — 改写后的 Kata hypervisor 配置
+- `config/containerd-runtime-handler.toml` — containerd handler 片段（供审阅）
+- `k8s/runtimeclass.yaml`、`k8s/test-pod.yaml`
+- `install.sh`、`render.py` — 包内自带的安装器与合并器
+- `manifest.env` — 本次交付的全部参数，以及度量输入（`KERNEL_PARAMS`、
+  `OVMF_SHA256`、`KERNEL_SHA256`、`INITRD_SHA256`）
+- `SHA256SUMS` — 包内文件校验和
+- `README.md` — 包内使用说明
+
+渲染是离线的：`REMOTE_HOST` 不参与，也不执行 ssh/scp。Kata 配置模板来自
+`fetch-base` 拉下来的宿主权威副本 `base/configuration-qemu-csv2.toml`；
+宿主的模板变了就要重新 `fetch-base` 再 `render`，否则安装时会因模板 sha 不一致而拒绝。
+
+交付包只含配置，不含 initrd/kernel/OVMF（约 153 MB）。对方宿主仍需先有 bundle
+（由 `deploy` 或 `build-initrd.sh deploy` 放置），包里的 `install.sh` 会在缺失时明确报错。
+
+### 4.2 在目标宿主上安装
+
 ```bash
 cd /home/hjy/taa/deploy/guest-build
 REMOTE_USER="${REMOTE_USER}" \
@@ -203,19 +235,34 @@ TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS}" \
 ./build-initrd.sh launch
 ```
 
-这一步会自动完成：
+`launch` 等价于：`render` → `scp` 到远端临时目录 → `sudo bash install.sh`。
+`install.sh` 会自动完成：
 
-1. 生成新的 Kata 配置：
+1. 校验包内 `SHA256SUMS`、宿主 Kata 模板 sha、base initrd sha 与 bundle 三个文件
+2. 安装新的 Kata 配置：
    - `/etc/kata-containers/configuration-qemu-csv2-taa.toml`
-2. 在 `containerd` 中新增 runtime handler：
+3. 在 `containerd` 中新增 runtime handler：
    - `kata-qemu-csv2-taa`
-3. 重启 `containerd`——**只有在配置真的变了才重启**（先 `cmp` 一次，未变化就打印
+4. 重启 `containerd`——**只有在配置真的变了才重启**（先 `cmp` 一次，未变化就打印
    `containerd 配置未变化，跳过重启`）。这决定了 `launch` 对已在跑的 Pod 有没有动效
-4. 视配置可选重启 `kubelet`
-5. 创建 Kubernetes `RuntimeClass`
-6. 创建测试 Pod（带 `TEST_POD_ANNOTATIONS`）
-7. 等待 Pod Ready；超时会打印 Pod 状态与 `Events:` 再退出
-8. 校验 QEMU 是否使用了新的 initrd
+5. 视配置可选重启 `kubelet`
+6. 创建 Kubernetes `RuntimeClass`
+7. 创建测试 Pod（带 `TEST_POD_ANNOTATIONS`）
+8. 等待 Pod Ready；超时会打印 Pod 状态与 `Events:` 再退出
+9. 校验 QEMU 是否使用了新的 initrd
+
+手工在目标宿主上安装同一个包时：
+
+```bash
+cd dist/kata-qemu-csv2-taa
+sha256sum -c SHA256SUMS
+sudo bash install.sh --dry-run   # 先看会改什么
+sudo bash install.sh
+```
+
+`install.sh` 支持 `--dry-run`、`--skip-template-check`、`--skip-base-check`；
+包里的 `manifest.env` 记录绝对路径与节点名，所以包是**目标宿主特定**的，换宿主或换
+`REMOTE_BUNDLE_DIR` 要重新 `render`。
 
 `TEST_IMAGE` 默认就是宿主上**已有**的镜像 `172.16.10.178:31313/taa-env:slim-v2-20260916`
 （本地 registry，guest 拉得通，且带 curl 供 verify 使用）。改成 Docker Hub 上的 tag 会等满
@@ -275,14 +322,17 @@ kubectl exec test-kata-csv2-taa -- \
 - `REMOTE_BUNDLE_DIR=/opt/kata/share/kata-containers/taa-csv-20260901`
 - `REMOTE_KATA_CONFIG=/etc/kata-containers/configuration-qemu-csv2-taa.toml`
 - `RUNTIME_HANDLER=kata-qemu-csv2-taa`
+- `DIST_DIR=dist/kata-qemu-csv2-taa`（`render` 的固定输出目录）
+- `KATA_CONFIG_TEMPLATE=base/configuration-qemu-csv2.toml`（宿主权威模板，`fetch-base` 拉取）
+- `LAUNCH_KEEP_DIST=1`（`launch` 用的临时渲染结果额外复制一份到 `DIST_DIR`）
 - `TEST_POD_NAME=test-kata-csv2-taa`
 - `TEST_IMAGE=172.16.10.178:31313/taa-env:slim-v2-20260916`（宿主本地 registry；guest 无外网）
 - `TEST_POD_ANNOTATIONS='{}'`（该宿主上需填 `cc_init_data`，见 §0）
 - `TAA_REQUIRED=1`、`TAA_REQUIRE_ATTESTATION=1`（证明闸门）
 - `TAA_PLATFORM_IP`、`TAA_DOCKER_ID`：平台注册身份，必须成对。由**驱动**给默认值
-  （`${REMOTE_HOST}:${PLATFORM_PORT}` / `kata-csv2-taa-test-0001`），直接调
-  `build-initrd.sh` 时默认仍为空。用 `ALLOW_MISSING_TAA_ENV=1` 可显式放弃注册
-  （注册失败本就只是 warning，不影响 TAA 启动）
+  （`172.16.10.116:${PLATFORM_PORT}` / `kata-csv2-taa-test-0001`；平台跑在自己的宿主上，
+  不跟随 `REMOTE_HOST`），直接调 `build-initrd.sh` 时默认仍为空。用
+  `ALLOW_MISSING_TAA_ENV=1` 可显式放弃注册（注册失败本就只是 warning，不影响 TAA 启动）
 - 本地输入覆盖（主要给测试用）：`BASE_INITRD`、`INITRD_OUT`、`TAA_SRC`、`TAA_INIT_SRC`、`TAA_CONFIG_SRC`
 
 ### ../deploy.sh
@@ -299,14 +349,16 @@ kubectl exec test-kata-csv2-taa -- \
 ## 7. 备注
 
 - 这份模板**不执行部署**，只整理可复制命令。
-- 合一入口与清理见仓库根的 `deploy-taa-vm.sh`：`up` / `verify` / `delete [--dry-run] [--force]`
-  / `print-config`（打印解析后的实际取值，确认这次会用什么）；它的离线自测是根目录的
-  `./test-deploy-taa-vm.sh`。
+- 合一入口与清理见仓库根的 `deploy-taa-vm.sh`：`up` / `render` / `verify` /
+  `delete [--dry-run] [--force]` / `print-config`（打印解析后的实际取值，确认这次会用什么）；
+  离线自测是根目录的 `./test-deploy-taa-vm.sh` 和 `deploy/guest-build/test-render.sh`。
 - 真实密码、证书、环境变量值请按现场环境填入，不要直接写死到仓库。
 - 如果远程 base initrd 与本地 `guest-build/base/` 不一致，`build-initrd.sh deploy` 可能会拒绝，需要先同步 base 文件。
-- base 资产**不入库**（`base/*.img`、`base/*.container`、`base/*.fd`、`out/` 已在 `.gitignore` 里）：
+- base 资产**不入库**（`base/*.img`、`base/*.container`、`base/*.fd`、`base/*.toml`、`out/`、
+  `dist/` 已在 `.gitignore` 里）：
   宿主机是权威，入库的副本只会静默过期——历史上那份 `out/kata-containers-initrd-taa-csv.initrd`
-  与 base 逐字节相同，就是复制品而非构建产物。用 `./build-initrd.sh fetch-base` 取。
+  与 base 逐字节相同，就是复制品而非构建产物。用 `./build-initrd.sh fetch-base` 取
+  （同时拉 Kata 配置模板，供 `render` 使用）。
 - 宿主上做度量预测时注意 `csv-measure.py` 的四个坑：必须 `python3 <脚本>` 调用（shebang 指向
   不存在的 `/usr/libexec/platform-python`）；`--cmdline` 收**文件**；**输出是 base64 不是 hex**；
   `--smp` 必填且 `--vcpumodel host` 与真机 QEMU 参数绑定。真机记录见 spec 的 §5.5。

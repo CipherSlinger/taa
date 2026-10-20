@@ -53,6 +53,12 @@ BASE_INITRD="${BASE_INITRD:-$SCRIPT_DIR/base/kata-containers-initrd-confidential
 OUT_DIR="${OUT_DIR:-$SCRIPT_DIR/out}"
 INITRD_OUT="${INITRD_OUT:-$OUT_DIR/kata-containers-initrd-taa-csv.initrd}"
 
+# Renderer support files and the shipped Kata config the rendered config is
+# derived from. The template is host-authoritative like the base initrd:
+# fetch-base copies it, and `render` refuses to guess when it is missing.
+RENDER_DIR="${RENDER_DIR:-$SCRIPT_DIR/render}"
+KATA_CONFIG_TEMPLATE="${KATA_CONFIG_TEMPLATE:-$SCRIPT_DIR/base/configuration-qemu-csv2.toml}"
+
 # Optional semgrep payload. configs/taa-initrd.json selects the scan engine, so
 # the payload is only required when that config asks for semgrep -- but when it
 # does, the guest has to carry its own interpreter and wheels: the base initrd
@@ -111,12 +117,16 @@ REMOTE_KERNEL_SRC="${REMOTE_KERNEL_SRC:-/opt/kata/share/kata-containers/vmlinuz-
 REMOTE_OVMF_SRC="${REMOTE_OVMF_SRC:-/opt/kata/share/ovmf/OVMFCSV.fd}"
 REMOTE_KATA_CONFIG_SRC="${REMOTE_KATA_CONFIG_SRC:-/opt/kata/share/defaults/kata-containers/configuration-qemu-csv2.toml}"
 REMOTE_KATA_CONFIG="${REMOTE_KATA_CONFIG:-/etc/kata-containers/configuration-qemu-csv2-taa.toml}"
+CONTAINERD_CONFIG="${CONTAINERD_CONFIG:-/etc/containerd/config.toml}"
 KATA_HYPERVISOR_SECTION="${KATA_HYPERVISOR_SECTION:-hypervisor.qemu}"
 RUNTIME_HANDLER="${RUNTIME_HANDLER:-kata-qemu-csv2-taa}"
 RUNTIME_TYPE="${RUNTIME_TYPE:-io.containerd.kata-qemu-csv2.v2}"
 RUNTIME_PATH="${RUNTIME_PATH:-/opt/kata/bin/containerd-shim-kata-v2}"
 SNAPSHOTTER="${SNAPSHOTTER:-nydus}"
 RESTART_KUBELET="${RESTART_KUBELET:-0}"
+# Default delivery package location. `render` overwrites it; `launch` renders
+# into a temporary directory unless LAUNCH_KEEP_DIST=1.
+DIST_DIR="${DIST_DIR:-$SCRIPT_DIR/dist/$RUNTIME_HANDLER}"
 TEST_NODE_NAME="${TEST_NODE_NAME:-}"
 TEST_POD_NAME="${TEST_POD_NAME:-test-kata-csv2-taa}"
 # The image is pulled by CDH *inside* the guest, which has no route to Docker
@@ -141,13 +151,17 @@ SKIP_REMOTE_BASE_CHECK="${SKIP_REMOTE_BASE_CHECK:-0}"
 # 因此本地反复调试是安全的；只有显式指定 deploy、launch 或 all 时才会触碰远程服务器。
 usage() {
   cat <<EOF
-Usage: $0 [build|fetch-base|deploy|launch|all|print-config]
+Usage: $0 [build|fetch-base|deploy|render|launch|all|print-config]
 
 Commands:
   build       Build $INITRD_OUT from $BASE_INITRD and inject TAA + init wrapper.
-  fetch-base  Copy the real base initrd, kernel and OVMF from $REMOTE into $(basename "$SCRIPT_DIR")/base/.
+  fetch-base  Copy the real base initrd, kernel, OVMF and shipped Kata config
+              from $REMOTE into $(basename "$SCRIPT_DIR")/base/.
   deploy      Upload the built initrd to $REMOTE and install the remote Kata guest bundle.
-  launch      Configure Kata/containerd RuntimeClass on $REMOTE and create a test Pod.
+  render      Render the Kata config, containerd handler, K8s manifests and an
+              install script into $DIST_DIR. Local only; no host access.
+  launch      Render locally, upload, then install the package on $REMOTE and
+              create a test Pod.
   all         Run build, deploy, then launch.
   print-config  Print the resolved remote/test settings as sourceable KEY=value
                 lines. Internal interface for deploy-taa-vm.sh, so that the
@@ -179,6 +193,11 @@ Environment overrides:
   TAA_REQUIRE_ATTESTATION=$TAA_REQUIRE_ATTESTATION
   ALLOW_MISSING_TAA_ENV=$ALLOW_MISSING_TAA_ENV
   SKIP_REMOTE_BASE_CHECK=$SKIP_REMOTE_BASE_CHECK
+  SKIP_REMOTE_KATA_TEMPLATE_CHECK=${SKIP_REMOTE_KATA_TEMPLATE_CHECK:-0}
+  CONTAINERD_CONFIG=$CONTAINERD_CONFIG
+  KATA_CONFIG_TEMPLATE=$KATA_CONFIG_TEMPLATE
+  DIST_DIR=$DIST_DIR
+  LAUNCH_KEEP_DIST=${LAUNCH_KEEP_DIST:-0}
 
 Local input/output overrides (mainly for testing the build path against a
 synthetic archive):
@@ -671,12 +690,16 @@ fetch_base() {
   local initrd_dst="$base_dir/$(basename "$REMOTE_BASE_INITRD_SRC")"
   local kernel_dst="$base_dir/$(basename "$REMOTE_KERNEL_SRC")"
   local ovmf_dst="$base_dir/$(basename "$REMOTE_OVMF_SRC")"
+  # The shipped CSV2 config is the template `render` rewrites. It is as
+  # host-specific as the base initrd, so it is fetched rather than committed.
+  local kata_config_dst="$base_dir/$(basename "$REMOTE_KATA_CONFIG_SRC")"
 
   local src dst pair
   for pair in \
     "$REMOTE_BASE_INITRD_SRC:$initrd_dst" \
     "$REMOTE_KERNEL_SRC:$kernel_dst" \
-    "$REMOTE_OVMF_SRC:$ovmf_dst"; do
+    "$REMOTE_OVMF_SRC:$ovmf_dst" \
+    "$REMOTE_KATA_CONFIG_SRC:$kata_config_dst"; do
     src="${pair%%:*}"
     dst="${pair#*:}"
 
@@ -701,7 +724,7 @@ fetch_base() {
 
   echo
   echo "base assets in $base_dir:"
-  for dst in "$initrd_dst" "$kernel_dst" "$ovmf_dst"; do
+  for dst in "$initrd_dst" "$kernel_dst" "$ovmf_dst" "$kata_config_dst"; do
     printf '  %s\n    sha256: %s\n    bytes:  %s\n' \
       "$(basename "$dst")" \
       "$(sha256sum "$dst" | awk '{print $1}')" \
@@ -825,486 +848,296 @@ REMOTE_DEPLOY
 # 修改配置、启动测试、等待结果，并在最后做主机级校验。
 # 这里创建独立 RuntimeClass，而不是覆盖已有 kata-qemu-csv2 handler；
 # 回滚时只需继续使用旧 RuntimeClass，或从 containerd 配置中移除新增 handler。
-launch_remote() {
-  echo "校验依赖与输入"
-  require_cmd ssh
+# ── Kata config template ─────────────────────────────────────────────────────
+#
+# The rendered Kata config is derived from the host's shipped CSV2 config. That
+# file is host-authoritative, like the base initrd, so it is fetched and its
+# hash compared before it is used as a template.
+ensure_kata_template() {
+  require_cmd scp ssh sha256sum
 
-  echo "生成 Kata 配置并写入 $REMOTE"
-  remote_args="$(printf '%q ' "$REMOTE_BUNDLE_DIR" "$REMOTE_KATA_CONFIG_SRC" "$REMOTE_KATA_CONFIG" "$KATA_HYPERVISOR_SECTION" "$RUNTIME_HANDLER" "$RUNTIME_TYPE" "$RUNTIME_PATH" "$SNAPSHOTTER" "$RESTART_KUBELET" "$TEST_NODE_NAME" "$TEST_POD_NAME" "$TEST_IMAGE" "$TEST_POD_ANNOTATIONS")"
-  ssh "$REMOTE" "bash -s -- $remote_args" <<'REMOTE_LAUNCH'
-set -euo pipefail
-bundle_dir="$1"
-kata_config_src="$2"
-kata_config="$3"
-kata_hypervisor_section="$4"
-runtime_handler="$5"
-runtime_type="$6"
-runtime_path="$7"
-snapshotter="$8"
-restart_kubelet="$9"
-test_node_name="${10}"
-test_pod_name="${11}"
-test_image="${12}"
-test_pod_annotations="${13}"
-containerd_config="/etc/containerd/config.toml"
+  if [[ ! -f "$KATA_CONFIG_TEMPLATE" ]]; then
+    echo "获取 Kata 配置模板: $REMOTE:$REMOTE_KATA_CONFIG_SRC"
+    mkdir -p "$(dirname "$KATA_CONFIG_TEMPLATE")"
+    if ! scp -q "$REMOTE:$REMOTE_KATA_CONFIG_SRC" "$KATA_CONFIG_TEMPLATE.part"; then
+      rm -f "$KATA_CONFIG_TEMPLATE.part"
+      echo "error: 无法从 $REMOTE 获取 $REMOTE_KATA_CONFIG_SRC" >&2
+      exit 1
+    fi
+    mv "$KATA_CONFIG_TEMPLATE.part" "$KATA_CONFIG_TEMPLATE"
+  fi
 
-# 修改 Kata 或 containerd 配置前，先校验主机依赖和 bundle 路径。
-# containerd 配置要求是 TOML version 2，与远程 CSV 服务器上观察到的配置格式一致。
-for cmd in kubectl sudo grep ps python3 containerd hostname cmp; do
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "error: $cmd is not installed or not in PATH" >&2
+  if [[ "${SKIP_REMOTE_KATA_TEMPLATE_CHECK:-0}" == "1" ]]; then
+    echo "warning: SKIP_REMOTE_KATA_TEMPLATE_CHECK=1，跳过模板一致性校验" >&2
+    return 0
+  fi
+
+  local local_sha remote_sha
+  local_sha="$(sha256sum "$KATA_CONFIG_TEMPLATE" | awk '{print $1}')"
+  remote_sha="$(ssh "$REMOTE" "sha256sum $(printf '%q' "$REMOTE_KATA_CONFIG_SRC") 2>/dev/null | awk '{print \$1}'" || true)"
+  remote_sha="${remote_sha//$'\r'/}"
+  remote_sha="${remote_sha//$'\n'/}"
+  if [[ -z "$remote_sha" ]]; then
+    echo "error: 无法读取远端模板 $REMOTE:$REMOTE_KATA_CONFIG_SRC" >&2
     exit 1
+  fi
+  if [[ "$remote_sha" != "$local_sha" ]]; then
+    echo "error: 本地 Kata 配置模板与远端不一致" >&2
+    echo "       local:  $local_sha  $KATA_CONFIG_TEMPLATE" >&2
+    echo "       remote: $remote_sha  $REMOTE_KATA_CONFIG_SRC" >&2
+    echo "hint: 重新运行 $0 fetch-base 刷新模板，或设置 SKIP_REMOTE_KATA_TEMPLATE_CHECK=1" >&2
+    exit 1
+  fi
+  echo "Kata 配置模板一致: $local_sha"
+}
+
+# ── Local rendering ──────────────────────────────────────────────────────────
+#
+# Everything launch used to generate inside the remote heredoc is produced here
+# instead, so the very same files can be installed by launch and shipped as a
+# delivery package. Rendering never contacts the host.
+render_package() {
+  local out_dir="$1"
+  local template="${2:-$KATA_CONFIG_TEMPLATE}"
+  local name_re='^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+
+  require_cmd python3 sha256sum awk
+
+  if [[ ! -f "$template" ]]; then
+    echo "error: Kata 配置模板缺失: $template" >&2
+    echo "hint: 先运行 $0 fetch-base（或指定 KATA_CONFIG_TEMPLATE）" >&2
+    exit 1
+  fi
+  if [[ ! -f "$RENDER_DIR/render.py" || ! -f "$RENDER_DIR/install.sh" ]]; then
+    echo "error: 渲染器缺失: $RENDER_DIR" >&2
+    exit 1
+  fi
+  case "$out_dir" in
+    /|/opt|/opt/kata|/opt/kata/share|"$SCRIPT_DIR")
+      echo "error: 拒绝渲染到共享目录: $out_dir" >&2
+      exit 1
+      ;;
+  esac
+
+  if [[ ! "$RUNTIME_HANDLER" =~ $name_re ]]; then
+    echo "error: RUNTIME_HANDLER must be a Kubernetes DNS label: $RUNTIME_HANDLER" >&2
+    exit 1
+  fi
+  if [[ ! "$TEST_POD_NAME" =~ $name_re ]]; then
+    echo "error: TEST_POD_NAME must be a Kubernetes DNS label: $TEST_POD_NAME" >&2
+    exit 1
+  fi
+  if [[ "$TEST_IMAGE" == *$'\n'* || "$TEST_IMAGE" == *$'\r'* ]]; then
+    echo "error: TEST_IMAGE must not contain newlines" >&2
+    exit 1
+  fi
+
+  rm -rf "$out_dir"
+  mkdir -p "$out_dir/config" "$out_dir/k8s"
+
+  python3 "$RENDER_DIR/render.py" kata-config \
+    --template "$template" \
+    --section "$KATA_HYPERVISOR_SECTION" \
+    --bundle-dir "$REMOTE_BUNDLE_DIR" \
+    --out "$out_dir/config/kata-config.toml"
+
+  python3 "$RENDER_DIR/render.py" containerd-fragment \
+    --handler "$RUNTIME_HANDLER" \
+    --runtime-type "$RUNTIME_TYPE" \
+    --runtime-path "$RUNTIME_PATH" \
+    --snapshotter "$SNAPSHOTTER" \
+    --kata-config "$REMOTE_KATA_CONFIG" \
+    --out "$out_dir/config/containerd-runtime-handler.toml"
+
+  python3 "$RENDER_DIR/render.py" k8s \
+    --handler "$RUNTIME_HANDLER" \
+    --pod "$TEST_POD_NAME" \
+    --node "$TEST_NODE_NAME" \
+    --image "$TEST_IMAGE" \
+    --annotations "$TEST_POD_ANNOTATIONS" \
+    --out-dir "$out_dir/k8s"
+
+  # The package is self-contained: the installer and the merger travel with it.
+  cp "$RENDER_DIR/render.py" "$out_dir/render.py"
+  cp "$RENDER_DIR/install.sh" "$out_dir/install.sh"
+
+  # MEASUREMENT is SM3(OVMF || cmdline || initrd || kernel), so the package
+  # records exactly those inputs where it can see them.
+  local kernel_params template_sha base_sha initrd_sha kernel_sha ovmf_sha
+  local kernel_src="$SCRIPT_DIR/base/$(basename "$REMOTE_KERNEL_SRC")"
+  local ovmf_src="$SCRIPT_DIR/base/$(basename "$REMOTE_OVMF_SRC")"
+  kernel_params="$(sed -n 's/^kernel_params = "\(.*\)"$/\1/p' "$out_dir/config/kata-config.toml" | head -n 1)"
+  template_sha="$(sha256sum "$template" | awk '{print $1}')"
+  base_sha=""
+  [[ -f "$BASE_INITRD" ]] && base_sha="$(sha256sum "$BASE_INITRD" | awk '{print $1}')"
+  initrd_sha=""
+  [[ -f "$INITRD_OUT" ]] && initrd_sha="$(sha256sum "$INITRD_OUT" | awk '{print $1}')"
+  kernel_sha=""
+  [[ -f "$kernel_src" ]] && kernel_sha="$(sha256sum "$kernel_src" | awk '{print $1}')"
+  ovmf_sha=""
+  [[ -f "$ovmf_src" ]] && ovmf_sha="$(sha256sum "$ovmf_src" | awk '{print $1}')"
+
+  {
+    printf 'RUNTIME_HANDLER=%q\n' "$RUNTIME_HANDLER"
+    printf 'RUNTIME_TYPE=%q\n' "$RUNTIME_TYPE"
+    printf 'RUNTIME_PATH=%q\n' "$RUNTIME_PATH"
+    printf 'SNAPSHOTTER=%q\n' "$SNAPSHOTTER"
+    printf 'REMOTE_BUNDLE_DIR=%q\n' "$REMOTE_BUNDLE_DIR"
+    printf 'REMOTE_KATA_CONFIG=%q\n' "$REMOTE_KATA_CONFIG"
+    printf 'CONTAINERD_CONFIG=%q\n' "$CONTAINERD_CONFIG"
+    printf 'PACKAGE_KATA_CONFIG=%q\n' "config/kata-config.toml"
+    printf 'KATA_CONFIG_TEMPLATE_SRC=%q\n' "$REMOTE_KATA_CONFIG_SRC"
+    printf 'KATA_CONFIG_TEMPLATE_SHA256=%q\n' "$template_sha"
+    printf 'BASE_INITRD_SRC=%q\n' "$REMOTE_BASE_INITRD_SRC"
+    printf 'BASE_INITRD_SHA256=%q\n' "$base_sha"
+    printf 'INITRD_OUT=%q\n' "$INITRD_OUT"
+    printf 'INITRD_SHA256=%q\n' "$initrd_sha"
+    printf 'KERNEL_SHA256=%q\n' "$kernel_sha"
+    printf 'OVMF_SHA256=%q\n' "$ovmf_sha"
+    printf 'KERNEL_PARAMS=%q\n' "$kernel_params"
+    printf 'TEST_POD_NAME=%q\n' "$TEST_POD_NAME"
+    printf 'TEST_NODE_NAME=%q\n' "$TEST_NODE_NAME"
+    printf 'TEST_IMAGE=%q\n' "$TEST_IMAGE"
+    printf 'TEST_POD_ANNOTATIONS=%q\n' "$TEST_POD_ANNOTATIONS"
+    printf 'RESTART_KUBELET=%q\n' "$RESTART_KUBELET"
+    printf 'TAA_PLATFORM_IP=%q\n' "${TAA_PLATFORM_IP:-}"
+    printf 'TAA_DOCKER_ID=%q\n' "${TAA_DOCKER_ID:-}"
+  } > "$out_dir/manifest.env"
+
+  cat > "$out_dir/README.md" <<EOF
+# TAA-in-initrd 交付包
+
+由 \`build-initrd.sh render\` 生成。TAA 运行在 Kata CSV2 机密 VM 的 initrd 里，
+自证通过后才放行 kata-agent。
+
+## 内容
+
+- \`config/kata-config.toml\` — 指向 bundle 的 Kata hypervisor 配置
+- \`config/containerd-runtime-handler.toml\` — containerd handler 片段（供审阅）
+- \`k8s/runtimeclass.yaml\` / \`k8s/test-pod.yaml\` — 运行时类与测试 Pod
+- \`install.sh\` / \`render.py\` — 安装脚本与合并器
+- \`manifest.env\` — 本次交付的全部参数与度量输入
+- \`SHA256SUMS\` — 包内文件校验和
+
+## 前置条件
+
+- 目标宿主已安装海光 CSV2 可用的 Kata（含 \`$REMOTE_KATA_CONFIG_SRC\`）
+- containerd 配置为 TOML \`version = 2\`，并装有 \`$SNAPSHOTTER\` snapshotter
+- bundle 已就位：\`$REMOTE_BUNDLE_DIR/{initramfs.img,vmlinuz,OVMF.fd}\`
+  （由 \`build-initrd.sh deploy\` 或手工放置）
+- kubectl 可用；需要 root 或免密 sudo
+
+## 安装
+
+\`\`\`bash
+cd $(basename "$out_dir")
+sha256sum -c SHA256SUMS
+sudo bash install.sh --dry-run   # 先看会改什么
+sudo bash install.sh
+\`\`\`
+
+## 使用
+
+创建任意 Pod 时指定：
+
+\`\`\`yaml
+spec:
+  runtimeClassName: $RUNTIME_HANDLER
+\`\`\`
+
+测试 Pod 名：\`$TEST_POD_NAME\`（TAA 在 Pod 网络命名空间的 6001 端口）。
+
+## 度量口径
+
+MEASUREMENT = SM3(OVMF || cmdline || initrd || kernel)。本包记录：
+
+- OVMF: \`$ovmf_sha\`
+- kernel: \`$kernel_sha\`
+- initrd: \`$initrd_sha\`
+- cmdline: \`$kernel_params\`
+EOF
+
+  (cd "$out_dir" && find . -type f ! -name SHA256SUMS -print0 |
+    LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS)
+
+  echo "交付包: $out_dir"
+  local file
+  while IFS= read -r file; do
+    printf '  %s\n' "${file#"$out_dir"/}"
+  done < <(find "$out_dir" -type f | LC_ALL=C sort)
+}
+
+launch_remote() {
+  require_cmd ssh scp python3
+
+  echo "确保 Kata 配置模板在本地"
+  ensure_kata_template
+
+  # The rendered Pod carries nodeName only when it is known. Resolve it now,
+  # read-only, so both the launcher and the delivered package agree.
+  if [[ -z "$TEST_NODE_NAME" ]]; then
+    TEST_NODE_NAME="$(ssh "$REMOTE" 'bash -s' <<'REMOTE_NODE' || true
+set -u
+for candidate in "$(hostname)" "$(hostname -s)"; do
+  if kubectl get node "$candidate" >/dev/null 2>&1; then
+    echo "$candidate"
+    exit 0
   fi
 done
-
-# Least-recoverable step of the flow comes next (a containerd config rewrite and
-# restart), so establish that privilege is available before touching anything.
-if [[ "$(id -u)" -ne 0 ]] && ! sudo -n true 2>/dev/null; then
-  echo "error: this SSH account needs passwordless sudo on the host (sudo -n true failed)" >&2
-  echo "hint: log in as root, or add a NOPASSWD sudoers entry for this account" >&2
-  exit 1
-fi
-
-k8s_name_re='^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
-if [[ ! "$runtime_handler" =~ $k8s_name_re ]]; then
-  echo "error: RUNTIME_HANDLER must be a Kubernetes DNS label: $runtime_handler" >&2
-  exit 1
-fi
-if [[ ! "$test_pod_name" =~ $k8s_name_re ]]; then
-  echo "error: TEST_POD_NAME must be a Kubernetes DNS label: $test_pod_name" >&2
-  exit 1
-fi
-if [[ "$test_image" == *$'\n'* || "$test_image" == *$'\r'* ]]; then
-  echo "error: TEST_IMAGE must not contain newlines" >&2
-  exit 1
-fi
-# Validate the annotation JSON before any host config is touched, so a typo
-# cannot leave the runtime configured but the Pod uncreatable.
-if ! printf '%s' "$test_pod_annotations" |
-     python3 -c 'import json, sys; sys.exit(0 if isinstance(json.load(sys.stdin), dict) else 1)' 2>/dev/null; then
-  echo "error: TEST_POD_ANNOTATIONS must be a JSON object" >&2
-  exit 1
-fi
-
-if [[ ! -f "$bundle_dir/initramfs.img" ]]; then
-  echo "error: remote initrd not found: $bundle_dir/initramfs.img" >&2
-  echo "hint: run deploy first" >&2
-  exit 1
-fi
-if [[ ! -f "$bundle_dir/vmlinuz" ]]; then
-  echo "error: remote kernel not found: $bundle_dir/vmlinuz" >&2
-  echo "hint: run deploy first" >&2
-  exit 1
-fi
-if [[ ! -f "$bundle_dir/OVMF.fd" ]]; then
-  echo "error: remote OVMF not found: $bundle_dir/OVMF.fd" >&2
-  echo "hint: run deploy first" >&2
-  exit 1
-fi
-if [[ ! -f "$kata_config_src" ]]; then
-  echo "error: source Kata config not found: $kata_config_src" >&2
-  exit 1
-fi
-if [[ ! -f "$containerd_config" ]]; then
-  echo "error: containerd config not found: $containerd_config" >&2
-  exit 1
-fi
-if ! grep -qE '^[[:space:]]*version[[:space:]]*=[[:space:]]*2([[:space:]]|$)' "$containerd_config"; then
-  echo "error: unsupported containerd config format in $containerd_config" >&2
-  exit 1
-fi
-
-if [[ -z "$test_node_name" ]]; then
-  for candidate in "$(hostname)" "$(hostname -s)"; do
-    if kubectl get node "$candidate" >/dev/null 2>&1; then
-      test_node_name="$candidate"
-      break
-    fi
-  done
-fi
-if [[ -z "$test_node_name" ]]; then
-  echo "error: could not determine Kubernetes node name for this remote host" >&2
-  echo "hint: set TEST_NODE_NAME to the node name shown by 'kubectl get nodes'" >&2
-  exit 1
-fi
-if ! kubectl get node "$test_node_name" >/dev/null 2>&1; then
-  echo "error: TEST_NODE_NAME does not exist in Kubernetes: $test_node_name" >&2
-  exit 1
-fi
-
-tmp_kata_config="$(mktemp /tmp/kata-config.XXXXXX.toml)"
-tmp_containerd_config="$(mktemp /tmp/containerd-config.XXXXXX.toml)"
-containerd_backup=""
-cleanup_launch() {
-  rm -f "$tmp_kata_config" "$tmp_containerd_config"
-  if [[ -n "$containerd_backup" ]]; then
-    sudo rm -f "$containerd_backup" || true
-  fi
-}
-trap cleanup_launch EXIT
-
-# 只改目标 hypervisor 表：切到 bundle、注释掉 image，并设置 rdinit=/usr/local/bin/taa-init。
-echo "生成 Kata 配置"
-cp "$kata_config_src" "$tmp_kata_config"
-python3 - "$tmp_kata_config" "$bundle_dir" "$kata_hypervisor_section" <<'PY'
-import json
-import re
-import shlex
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-bundle_dir = sys.argv[2]
-target_section = sys.argv[3]
-lines = path.read_text().splitlines()
-out = []
-seen = {"kernel": False, "initrd": False, "firmware": False, "kernel_params": False}
-in_target = False
-target_seen = False
-
-def toml_string(value):
-    return json.dumps(value)
-
-def active_key(line, key):
-    stripped = line.lstrip()
-    return not stripped.startswith("#") and re.match(rf'^\s*{re.escape(key)}\s*=', line)
-
-def table_name(line):
-    stripped = line.strip()
-    if stripped.startswith("[["):
-        return None
-    if stripped.startswith("[") and stripped.endswith("]"):
-        return stripped[1:-1].strip()
-    return None
-
-def emit_missing():
-    if not seen["kernel"]:
-        out.append(f'kernel = {toml_string(bundle_dir + "/vmlinuz")}')
-        seen["kernel"] = True
-    if not seen["initrd"]:
-        out.append(f'initrd = {toml_string(bundle_dir + "/initramfs.img")}')
-        seen["initrd"] = True
-    if not seen["firmware"]:
-        out.append(f'firmware = {toml_string(bundle_dir + "/OVMF.fd")}')
-        seen["firmware"] = True
-    if not seen["kernel_params"]:
-        out.append('kernel_params = "rdinit=/usr/local/bin/taa-init"')
-        seen["kernel_params"] = True
-
-for line in lines:
-    table = table_name(line)
-    if table is not None:
-        if in_target:
-            emit_missing()
-        in_target = table == target_section
-        if in_target:
-            target_seen = True
-        out.append(line)
-        continue
-
-    if not in_target:
-        out.append(line)
-        continue
-
-    if active_key(line, "image"):
-        out.append("# " + line)
-        continue
-    if active_key(line, "kernel"):
-        out.append(f'kernel = {toml_string(bundle_dir + "/vmlinuz")}')
-        seen["kernel"] = True
-        continue
-    if active_key(line, "initrd"):
-        out.append(f'initrd = {toml_string(bundle_dir + "/initramfs.img")}')
-        seen["initrd"] = True
-        continue
-    if active_key(line, "firmware"):
-        out.append(f'firmware = {toml_string(bundle_dir + "/OVMF.fd")}')
-        seen["firmware"] = True
-        continue
-    if active_key(line, "kernel_params"):
-        m = re.match(r'^\s*kernel_params\s*=\s*"([^"]*)"', line)
-        if not m:
-            raise SystemExit(f"unrecognized kernel_params line: {line}")
-        existing = m.group(1).strip()
-        params = shlex.split(existing) if existing else []
-        # Strip both keys: init= is dead config once /init exists in the initrd
-        # (the kernel tries rdinit= first) and leaving a stale init= would
-        # suggest it still has an effect.
-        params = [p for p in params if not p.startswith("init=") and not p.startswith("rdinit=")]
-        params.insert(0, "rdinit=/usr/local/bin/taa-init")
-        out.append(f'kernel_params = {toml_string(" ".join(params))}')
-        seen["kernel_params"] = True
-        continue
-    out.append(line)
-
-if in_target:
-    emit_missing()
-if not target_seen:
-    if out and out[-1].strip():
-        out.append("")
-    out.append(f'[{target_section}]')
-    emit_missing()
-
-path.write_text("\n".join(out) + "\n")
-PY
-sudo mkdir -p "${kata_config%/*}"
-sudo install -o root -g root -m 0644 "$tmp_kata_config" "$kata_config"
-
-# 幂等地新增或替换 containerd runtime handler 配置块。
-echo "生成 containerd 配置"
-cp "$containerd_config" "$tmp_containerd_config"
-python3 - "$tmp_containerd_config" "$kata_config" "$runtime_handler" "$runtime_type" "$runtime_path" "$snapshotter" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-kata_config = sys.argv[2]
-runtime_handler = sys.argv[3]
-runtime_type = sys.argv[4]
-runtime_path = sys.argv[5]
-snapshotter = sys.argv[6]
-
-lines = path.read_text().splitlines()
-out = []
-target = ["plugins", "io.containerd.grpc.v1.cri", "containerd", "runtimes", runtime_handler]
-
-def toml_string(value):
-    return json.dumps(value)
-
-
-def split_table_path(src):
-    parts = []
-    buf = []
-    in_quote = False
-    escape = False
-    for ch in src:
-        if in_quote:
-            if escape:
-                buf.append(ch)
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_quote = False
-            else:
-                buf.append(ch)
-        else:
-            if ch == '"':
-                in_quote = True
-            elif ch == ".":
-                parts.append("".join(buf).strip())
-                buf = []
-            else:
-                buf.append(ch)
-    parts.append("".join(buf).strip())
-    return parts
-
-def table_path(line):
-    stripped = line.strip()
-    if stripped.startswith("[["):
-        return None
-    if stripped.startswith("[") and stripped.endswith("]"):
-        return split_table_path(stripped[1:-1].strip())
-    return None
-
-def is_target_or_child(path_parts):
-    return path_parts is not None and len(path_parts) >= len(target) and path_parts[:len(target)] == target
-
-skip = False
-for line in lines:
-    path_parts = table_path(line)
-    if path_parts is not None:
-        skip = is_target_or_child(path_parts)
-        if skip:
-            continue
-    if not skip:
-        out.append(line)
-
-handler = f'[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.{toml_string(runtime_handler)}]'
-options = f'[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.{toml_string(runtime_handler)}.options]'
-if out and out[-1].strip():
-    out.append("")
-out.extend([
-    handler,
-    f'runtime_type = {toml_string(runtime_type)}',
-])
-if runtime_path:
-    out.append(f'runtime_path = {toml_string(runtime_path)}')
-out.extend([
-    'privileged_without_host_devices = true',
-    'pod_annotations = ["io.katacontainers.*"]',
-])
-if snapshotter:
-    out.append(f'snapshotter = {toml_string(snapshotter)}')
-out.extend([
-    "",
-    options,
-    f'ConfigPath = {toml_string(kata_config)}',
-])
-
-path.write_text("\n".join(out) + "\n")
-PY
-
-# 重启服务前校验两处配置改写结果。
-echo "Kata guest assets in $kata_config:"
-grep -nE '^[[:space:]]*(kernel|initrd|firmware|kernel_params)[[:space:]]*=' "$kata_config"
-python3 - "$kata_config" "$kata_hypervisor_section" <<'PY'
-import re
-import sys
-from pathlib import Path
-path = Path(sys.argv[1])
-target = sys.argv[2]
-section = None
-values = {}
-for line in path.read_text().splitlines():
-    stripped = line.strip()
-    if stripped.startswith("[") and stripped.endswith("]") and not stripped.startswith("[["):
-        section = stripped[1:-1].strip()
-        continue
-    if section != target or stripped.startswith("#"):
-        continue
-    m = re.match(r'^(image|kernel|initrd|firmware|kernel_params)\s*=\s*(.*)$', stripped)
-    if m:
-        values[m.group(1)] = m.group(2)
-if "image" in values:
-    raise SystemExit("active image setting remains in target Kata hypervisor section")
-for key in ("kernel", "initrd", "firmware", "kernel_params"):
-    if key not in values:
-        raise SystemExit(f"missing active {key} in target Kata hypervisor section")
-if "rdinit=/usr/local/bin/taa-init" not in values["kernel_params"]:
-    raise SystemExit("kernel_params does not contain rdinit=/usr/local/bin/taa-init")
-PY
-
-handler_header="[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.\"$runtime_handler\"]"
-handler_options="[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.\"$runtime_handler\".options]"
-if ! grep -qF "$handler_header" "$tmp_containerd_config"; then
-  echo "error: containerd runtime handler was not written: $runtime_handler" >&2
-  exit 1
-fi
-if ! grep -qF "ConfigPath = \"$kata_config\"" "$tmp_containerd_config"; then
-  echo "error: containerd runtime handler ConfigPath was not updated: $kata_config" >&2
-  exit 1
-fi
-if ! grep -qF "$handler_options" "$tmp_containerd_config"; then
-  echo "error: containerd runtime handler options block missing: $runtime_handler" >&2
-  exit 1
-fi
-if ! sudo containerd --config "$tmp_containerd_config" config dump >/dev/null; then
-  echo "error: generated containerd config is invalid; original config was not changed" >&2
-  exit 1
-fi
-
-rollback_containerd() {
-  if [[ -n "$containerd_backup" && -f "$containerd_backup" ]]; then
-    echo "rolling back containerd config from $containerd_backup" >&2
-    sudo install -o root -g root -m 0644 "$containerd_backup" "$containerd_config"
-    sudo systemctl restart containerd || true
-  fi
-}
-
-containerd_backup=""
-if sudo cmp -s "$tmp_containerd_config" "$containerd_config"; then
-  # The runtimes map is only read when containerd starts, so an unchanged config
-  # needs no restart -- and skipping it keeps the CRI up for the Pods that are
-  # already running on this host.
-  echo "containerd 配置未变化，跳过重启"
-else
-  echo "重启 containerd"
-
-  # 重启 containerd；只有需要时才重启 kubelet。
-  containerd_backup="$(mktemp /tmp/containerd-config.backup.XXXXXX.toml)"
-  sudo cp -a "$containerd_config" "$containerd_backup"
-  sudo install -o root -g root -m 0644 "$tmp_containerd_config" "$containerd_config"
-  if ! sudo systemctl restart containerd; then
-    sudo journalctl -u containerd -n 50 --no-pager >&2 || true
-    rollback_containerd
-    echo "error: containerd restart failed; original config restored" >&2
-    exit 1
-  fi
-  if ! sudo systemctl is-active --quiet containerd; then
-    sudo journalctl -u containerd -n 50 --no-pager >&2 || true
-    rollback_containerd
-    echo "error: containerd is not active after restart; original config restored" >&2
-    exit 1
-  fi
-  if [[ "$restart_kubelet" == "1" ]]; then
-    echo "可选重启 kubelet"
-    sudo systemctl restart kubelet
-    if ! sudo systemctl is-active --quiet kubelet; then
-      sudo journalctl -u kubelet -n 50 --no-pager >&2 || true
-      echo "error: kubelet is not active after restart" >&2
+exit 1
+REMOTE_NODE
+)"
+    TEST_NODE_NAME="${TEST_NODE_NAME//$'\r'/}"
+    TEST_NODE_NAME="${TEST_NODE_NAME//$'\n'/}"
+    if [[ -z "$TEST_NODE_NAME" ]]; then
+      echo "error: could not determine Kubernetes node name for $REMOTE" >&2
+      echo "hint: set TEST_NODE_NAME to the node name shown by 'kubectl get nodes'" >&2
       exit 1
     fi
   fi
-  sudo rm -f "$containerd_backup"
-  containerd_backup=""
-fi
+  export TEST_NODE_NAME
 
-echo "创建 RuntimeClass"
+  local render_dir
+  render_dir="$(mktemp -d /tmp/taa-render.XXXXXX)"
+  cleanup_render() { rm -rf "${render_dir:-}"; }
+  trap cleanup_render EXIT
 
-# 创建 RuntimeClass。Pod 会固定调度到当前远程节点。
-python3 - "$runtime_handler" <<'PY' | kubectl apply -f -
-import json
-import sys
-handler = sys.argv[1]
-print(json.dumps({
-    "apiVersion": "node.k8s.io/v1",
-    "kind": "RuntimeClass",
-    "metadata": {"name": handler},
-    "handler": handler,
-}))
-PY
+  echo "本地渲染"
+  render_package "$render_dir"
 
-echo "创建测试 Pod"
+  if [[ "${LAUNCH_KEEP_DIST:-0}" == "1" ]]; then
+    rm -rf "$DIST_DIR"
+    mkdir -p "$(dirname "$DIST_DIR")"
+    cp -a "$render_dir" "$DIST_DIR"
+    echo "保留交付包: $DIST_DIR"
+  fi
 
-kubectl delete pod "$test_pod_name" --ignore-not-found --wait=true
-python3 - "$runtime_handler" "$test_pod_name" "$test_node_name" "$test_image" "$test_pod_annotations" <<'PY' | kubectl apply -f -
-import json
-import sys
-handler, pod_name, node_name, image, annotations_json = sys.argv[1:]
-annotations = json.loads(annotations_json)
-metadata = {"name": pod_name}
-if annotations:
-    metadata["annotations"] = annotations
-print(json.dumps({
-    "apiVersion": "v1",
-    "kind": "Pod",
-    "metadata": metadata,
-    "spec": {
-        "runtimeClassName": handler,
-        "nodeName": node_name,
-        "restartPolicy": "Never",
-        "containers": [{
-            "name": "test",
-            "image": image,
-            "command": ["sh", "-c", "echo hello from kata csv2 taa guest; sleep 3600"],
-        }],
-    },
-}))
-PY
+  echo "上传并安装到 $REMOTE"
+  local remote_tmp
+  remote_tmp="$(ssh "$REMOTE" 'mktemp -d /tmp/taa-launch.XXXXXX')"
+  remote_tmp="${remote_tmp//$'\r'/}"
+  remote_tmp="${remote_tmp//$'\n'/}"
+  if [[ -z "$remote_tmp" ]]; then
+    echo "error: could not create a remote temporary directory" >&2
+    exit 1
+  fi
+  scp -q -r "$render_dir/." "$REMOTE:$remote_tmp/"
 
-echo "等待测试 Pod Ready"
+  # Forward the explicit skip flags the pre-check already honours: install.sh
+  # repeats both checks on the host, and silently dropping an operator override
+  # would turn a deliberate bypass into a hard failure.
+  local install_flags=""
+  [[ "${SKIP_REMOTE_BASE_CHECK:-0}" == "1" ]] && install_flags+=" --skip-base-check"
+  [[ "${SKIP_REMOTE_KATA_TEMPLATE_CHECK:-0}" == "1" ]] && install_flags+=" --skip-template-check"
 
-# Print why it never became Ready: a bare wait timeout sends the reader back to
-# the host for the status the script already has in hand.
-if ! kubectl wait --for=condition=Ready "pod/$test_pod_name" --timeout=180s; then
-  echo "error: test Pod did not become Ready within 180s; status and events follow" >&2
-  kubectl get pod "$test_pod_name" -o wide >&2 || true
-  kubectl describe pod "$test_pod_name" 2>&1 | sed -n '/Events:/,$p' >&2 || true
-  exit 1
-fi
-kubectl get pod "$test_pod_name" -o wide
-
-# 最后的主机级校验：Pod Ready 只能证明 Kubernetes 接受了 RuntimeClass。
-if ps -eo args= | grep -F "qemu" | grep -F "$bundle_dir/initramfs.img" | grep -v grep >/dev/null; then
-  echo "verified QEMU is using: $bundle_dir/initramfs.img"
-else
-  echo "error: test Pod is ready, but QEMU command line with $bundle_dir/initramfs.img was not found on node $test_node_name" >&2
-  echo "hint: run: ps -eo args= | grep -F qemu | grep -F '$bundle_dir'" >&2
-  exit 1
-fi
-REMOTE_LAUNCH
+  ssh "$REMOTE" "bash -s -- $(printf '%q ' "$remote_tmp")$install_flags" <<'REMOTE_INSTALL'
+set -euo pipefail
+pkg="$1"
+shift
+cleanup() { sudo rm -rf "$pkg"; }
+trap cleanup EXIT
+sudo bash "$pkg/install.sh" "$@"
+REMOTE_INSTALL
 }
 
 # 命令分发。默认保持为 build，避免无参数运行脚本时意外写入远程服务器。
@@ -1318,6 +1151,9 @@ case "$cmd" in
     ;;
   deploy)
     deploy_remote
+    ;;
+  render)
+    render_package "$DIST_DIR"
     ;;
   launch)
     launch_remote
@@ -1334,6 +1170,7 @@ case "$cmd" in
     for key in REMOTE_USER REMOTE_HOST REMOTE_BUNDLE_DIR REMOTE_BASE_INITRD_SRC \
                REMOTE_KATA_CONFIG_SRC REMOTE_KATA_CONFIG KATA_HYPERVISOR_SECTION \
                RUNTIME_HANDLER RUNTIME_TYPE RUNTIME_PATH SNAPSHOTTER \
+               CONTAINERD_CONFIG KATA_CONFIG_TEMPLATE DIST_DIR \
                TEST_NODE_NAME TEST_POD_NAME TEST_IMAGE TEST_POD_ANNOTATIONS \
                OUT_DIR INITRD_OUT BASE_INITRD; do
       printf '%s=%q\n' "$key" "${!key}"

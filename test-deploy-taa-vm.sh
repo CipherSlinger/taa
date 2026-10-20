@@ -51,6 +51,8 @@ default_config="$("$BUILD" print-config)"
 eval "$default_config"
 check "print-config: default annotations are an empty object" "{}" "$TEST_POD_ANNOTATIONS"
 check "print-config: default handler" "kata-qemu-csv2-taa" "$RUNTIME_HANDLER"
+check_contains "print-config: exposes the Kata config template" "KATA_CONFIG_TEMPLATE=" "$default_config"
+check_contains "print-config: exposes the delivery package directory" "DIST_DIR=" "$default_config"
 # The flow writes host config through sudo all the way through, so the default
 # account has to be one that can. A non-root default needs NOPASSWD sudo set up
 # on the host first, which is exactly the failure this default avoids.
@@ -67,13 +69,19 @@ esac
 
 # ── 1b. the test identity the driver supplies ────────────────────────────────
 #
-# `up` is meant to run with no environment set, so the platform address has to
-# be derived rather than remembered. The contract is "follow the SSH host", not
-# "equal this literal", so assert it against whatever the host default is.
+# `up` is meant to run with no environment set, so a platform address has to be
+# supplied rather than remembered. The platform runs on its own host (not the
+# Kata host), so the default is a literal address on PLATFORM_PORT; the port is
+# what tracks the environment, and an explicit TAA_PLATFORM_IP must win.
 DRIVER="$SCRIPT_DIR/deploy-taa-vm.sh"
-host_default="$("$BUILD" print-config | sed -n 's/^REMOTE_HOST=//p' | tr -d "'")"
 eval "$("$DRIVER" print-config)"
-check "print-config: platform address follows the SSH host" "${host_default}:18080" "$TAA_PLATFORM_IP"
+check "print-config: default platform port" "18080" "${TAA_PLATFORM_IP##*:}"
+if [[ -n "${TAA_PLATFORM_IP%:*}" && "${TAA_PLATFORM_IP%:*}" != "172.16.10.178" ]]; then
+  echo "ok   print-config: the platform is not assumed to run on the Kata host ($TAA_PLATFORM_IP)"
+else
+  echo "FAIL print-config: platform address is empty or follows REMOTE_HOST: $TAA_PLATFORM_IP" >&2
+  failures=$((failures + 1))
+fi
 if [[ -n "$TAA_DOCKER_ID" ]]; then
   echo "ok   print-config: ships a non-empty docker id ($TAA_DOCKER_ID)"
 else
@@ -81,8 +89,10 @@ else
   failures=$((failures + 1))
 fi
 
-eval "$(REMOTE_HOST=10.0.0.9 PLATFORM_PORT=28080 TAA_DOCKER_ID=mine "$DRIVER" print-config)"
+eval "$(REMOTE_HOST=10.0.0.9 TAA_PLATFORM_IP=10.0.0.9:28080 TAA_DOCKER_ID=mine "$DRIVER" print-config)"
 check "print-config: overrides beat the defaults" "10.0.0.9:28080 mine" "$TAA_PLATFORM_IP $TAA_DOCKER_ID"
+eval "$(PLATFORM_PORT=28080 "$DRIVER" print-config)"
+check "print-config: PLATFORM_PORT moves the default platform port" "28080" "${TAA_PLATFORM_IP##*:}"
 
 # The pair has to reach build-initrd.sh, which runs as a child process; an
 # unexported default would look right in print-config and still build an initrd
@@ -191,11 +201,16 @@ check_contains "guard: checks passwordless sudo before mutating" 'passwordless s
 check_contains "delete defaults to dry-run-able, mutation goes through one point" 'dry-run: %s' "$driver_src"
 
 # The same check must exist in build-initrd.sh's own remote steps, since those
-# are reachable without the driver.
+# are reachable without the driver. launch delegates its check to the packaged
+# install.sh, so the count stays at one here and one there.
 build_src="$(cat "$BUILD")"
+install_src="$(cat "$SCRIPT_DIR/deploy/guest-build/render/install.sh")"
 sudo_checks="$(grep -c 'id -u' "$BUILD")"
-check "build-initrd.sh: sudo precheck in both deploy and launch" "2" "$sudo_checks"
+check "build-initrd.sh: sudo precheck for deploy" "1" "$sudo_checks"
+sudo_checks="$(grep -c 'id -u' "$SCRIPT_DIR/deploy/guest-build/render/install.sh")"
+check "install.sh: sudo precheck for launch" "1" "$sudo_checks"
 check_contains "build-initrd.sh: the precheck explains the hint" 'NOPASSWD sudoers' "$build_src"
+check_contains "install.sh: the precheck explains the hint" 'NOPASSWD sudoers' "$install_src"
 
 # ── 4. argv handling ────────────────────────────────────────────────────────
 "$DRIVER" help >/dev/null 2>&1 && echo "ok   help exits 0" ||

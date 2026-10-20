@@ -16,3 +16,14 @@ out/
 # selects the semgrep engine. Rebuild it with build-semgrep-payload.sh; the size
 # is exactly why it is not tracked.
 semgrep-payload/
+
+# The shipped Kata config is host-authoritative like the initrd above; fetch-base
+# copies it and render rewrites it. A committed copy would go stale silently.
+base/*.toml
+
+# Rendered delivery packages (Kata config, containerd fragment, K8s manifests,
+# manifest.env, SHA256SUMS). Derived state: rebuild with `render`.
+dist/
+
+# Python bytecode from the renderer (render/render.py).
+__pycache__/

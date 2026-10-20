@@ -14,6 +14,9 @@
 # Commands:
 #   up      build -> deploy -> launch -> verify   (the whole flow)
 #   build | deploy | launch | fetch-base          (single steps, passed through)
+#   render  Render the delivery package locally (Kata config, containerd
+#           fragment + merger, K8s manifests, install.sh, checksums). No host
+#           access; also what `launch` renders before uploading.
 #   verify  Read-only: ask the running TAA for a health answer and a report.
 #   delete  Remove everything this flow installed on the host, including the
 #           test Pod. Supports --dry-run.
@@ -90,7 +93,9 @@ Commands:
   up            生成 initrd -> 上传部署 -> 配置并拉起测试 Pod -> 验证 TAA（推荐入口）
   build         只构建本地 initrd（等价于 build-initrd.sh build）
   deploy        只上传并安装远程 bundle（等价于 build-initrd.sh deploy）
-  launch        只配置 Kata/containerd 并拉起测试 Pod（等价于 build-initrd.sh launch）
+  render        只在本地生成交付包（Kata 配置 / containerd handler / K8s YAML /
+                安装脚本 / 校验和），不访问宿主机
+  launch        本地渲染 -> 上传 -> 在远端安装并拉起测试 Pod
   fetch-base    从远端拉取权威 base 资产（等价于 build-initrd.sh fetch-base）
   verify        只读校验：向 Pod 内 TAA 要健康应答与证明报告
   delete        删除本流程在远端安装的全部产物与测试 Pod
@@ -139,6 +144,7 @@ print_config() {
   local key
   for key in REMOTE_USER REMOTE_HOST REMOTE PLATFORM_PORT TAA_PLATFORM_IP \
              TAA_DOCKER_ID RUNTIME_HANDLER RUNTIME_TYPE SNAPSHOTTER \
+             CONTAINERD_CONFIG KATA_CONFIG_TEMPLATE DIST_DIR \
              REMOTE_BUNDLE_DIR REMOTE_KATA_CONFIG TEST_POD_NAME TEST_NODE_NAME \
              TEST_IMAGE TEST_POD_ANNOTATIONS INITRD_OUT; do
     printf '%s=%q\n' "$key" "${!key}"
@@ -709,7 +715,7 @@ case "$cmd" in
     echo
     echo "全流程完成。清理用：$0 delete（先看 $0 delete --dry-run）"
     ;;
-  build|deploy|launch|fetch-base)
+  build|deploy|launch|fetch-base|render)
     case "$cmd" in
       build) preflight build ;;
       deploy) preflight deploy ;;
