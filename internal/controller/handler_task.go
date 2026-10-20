@@ -150,9 +150,9 @@ func (s *TAAState) stopTrainingHandler(w http.ResponseWriter, r *http.Request) {
 // ── Handler: /v1/taa/import ──────────────────────────────
 
 func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
-	// The body is read whole so it can be logged as received. Decoding still goes
-	// through json.Unmarshal, which keeps the same struct decoding (including the
-	// runtimeConfig alias) the endpoint had with a streaming decoder.
+	// The body is read whole and decoded with json.Unmarshal, which keeps the same
+	// struct decoding (including the runtimeConfig alias) the endpoint had with a
+	// streaming decoder.
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		s.Logs.Add(LogWarn, "import", "读取 import 请求体失败: %v", err)
@@ -161,7 +161,7 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	var req importRequest
 	if err := json.Unmarshal(rawBody, &req); err != nil {
-		s.Logs.Add(LogWarn, "import", "import 请求体解析失败: %v, 原始请求=%s", err, redactDataKeyCipher(rawBody))
+		s.Logs.Add(LogWarn, "import", "import 请求体解析失败: %v", err)
 		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("请求解析失败: %v", err), err))
 		return
 	}
@@ -193,9 +193,9 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 	// of, and a log placed past the check never sees it. The field names are
 	// listed as well, because a request that sends nothing and one that sends a
 	// field TAA does not know are indistinguishable from the decoded values alone.
-	s.Logs.Add(LogInfo, "import", "收到数据 import 请求: taskId=%s, requestId=%s, phase=%d, evalKeyUrl=%s, evalKeyFileHash=%s, 请求字段=%s, 原始请求=%s",
+	s.Logs.Add(LogInfo, "import", "收到数据 import 请求: taskId=%s, requestId=%s, phase=%d, evalKeyUrl=%s, evalKeyFileHash=%s, 请求字段=%s",
 		req.TaskID, req.RequestID, phase, req.EvalKeyURL, req.EvalKeyFileHash,
-		strings.Join(req.rawFields, ","), redactDataKeyCipher(rawBody))
+		strings.Join(req.rawFields, ","))
 
 	if err := s.validateFHEFields(req); err != nil {
 		s.Logs.Add(LogWarn, "import", "拒绝数据 import 请求: %v", err)
