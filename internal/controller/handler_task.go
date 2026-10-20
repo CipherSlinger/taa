@@ -408,18 +408,25 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("当前已有训练任务正在执行中 (taskId: %s, op: %s)，请等待完成后再提交", task, op)))
 			return
 		}
-		if strings.TrimSpace(runtimeConfigToUse) == "" {
-			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "runtimeConfig 不能为空"))
-			return
-		}
-		cfg, _, err := parseRuntimeConfig(runtimeConfigToUse)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("runtimeConfig 解析失败: %v", err), err))
-			return
-		}
-		if len(cfg.Commands) == 0 {
-			writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "runtimeConfig.commands 不能为空"))
-			return
+		// An fhe instance never runs the training command: its model is served by
+		// the fhe runner, so runtimeConfig is not an input this endpoint acts on.
+		// Parsing it here would refuse a platform over a value that changes nothing
+		// on this instance - the same reason publicKey above is ignored rather than
+		// validated. A tee instance runs it, so the checks stay there untouched.
+		if !s.fheEnabled() {
+			if strings.TrimSpace(runtimeConfigToUse) == "" {
+				writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "runtimeConfig 不能为空"))
+				return
+			}
+			cfg, _, err := parseRuntimeConfig(runtimeConfigToUse)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("runtimeConfig 解析失败: %v", err), err))
+				return
+			}
+			if len(cfg.Commands) == 0 {
+				writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument, "runtimeConfig.commands 不能为空"))
+				return
+			}
 		}
 
 		s.mu.Lock()
@@ -447,7 +454,7 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	s.setSavedModelResourceURL(req.ResourceURL)
-	if strings.TrimSpace(req.RuntimeConfig) == "" {
+	if !s.fheEnabled() && strings.TrimSpace(req.RuntimeConfig) == "" {
 		s.Logs.Add(LogWarn, "importModel", "runtimeConfig 为空，后续训练将失败")
 	}
 
