@@ -33,6 +33,9 @@ cleanup() {
     kill "$SUP_PID" 2>/dev/null || true
     wait "$SUP_PID" 2>/dev/null || true
   fi
+  if [[ -n "${ZOMBIE_HOLDER:-}" ]]; then
+    kill "$ZOMBIE_HOLDER" 2>/dev/null || true
+  fi
   rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
@@ -54,6 +57,12 @@ cat > "$MOCK_BIN/curl" <<'MOCK'
 MOCK
 cat > "$MOCK_BIN/pgrep" <<'MOCK'
 #!/bin/sh
+# A zombie still carries the process name, so `pgrep -x ollama` matches it and exits 0. The fake
+# has to answer the same way, or the supervisor's liveness check is never exercised on one.
+if [ -n "${OLLAMA_ZOMBIE_PID:-}" ] && [ -r "/proc/$OLLAMA_ZOMBIE_PID/stat" ]; then
+  echo "$OLLAMA_ZOMBIE_PID"
+  exit 0
+fi
 [ -f "$OLLAMA_MARKER" ] && exit 0 || exit 1
 MOCK
 chmod +x "$MOCK_BIN"/*
@@ -209,4 +218,35 @@ grep -q "another supervisor holds the lock" "$WORK/teellm-service.log" \
   || fail "the second supervisor did not report the singleton lock"
 stop_supervisor
 
-echo "PASS: the TEE-LLM Pod supervisor restarts both daemons, honours the pause file, passes the selected model, re-execs on request, and is a singleton"
+# ── 7. A zombie ollama does not count as running ─────────────────────────────
+# Killing ollama leaves a zombie until its parent reaps it, and `pgrep -x` still matches the name.
+# On a Pod whose PID 1 is `sleep infinity` nothing ever reaps, so a name-only check would report
+# the dead daemon as alive for the container's whole lifetime -- and a deployment would wait out
+# its full readiness timeout while no ollama was running.
+
+new_work zombie 'sleep 300'
+ZOMBIE_BIN="$TMP_DIR/zombie-bin"
+mkdir -p "$ZOMBIE_BIN"
+cp "$(command -v sleep)" "$ZOMBIE_BIN/ollama"
+# The holder execs into sleep, so it can never reap the exited child: the `ollama` process stays
+# a zombie under it, exactly as on a Pod whose init does not reap.
+( "$ZOMBIE_BIN/ollama" 0.1 & echo $! > "$TMP_DIR/zombie.pid"; exec sleep 300 ) &
+ZOMBIE_HOLDER=$!
+ZOMBIE_PID=""
+for _ in $(seq 1 100); do
+  ZOMBIE_PID="$(cat "$TMP_DIR/zombie.pid" 2>/dev/null || true)"
+  [[ -n "$ZOMBIE_PID" && "$(awk '{print $3}' "/proc/$ZOMBIE_PID/stat" 2>/dev/null)" == "Z" ]] && break
+  sleep 0.1
+done
+[[ "$(awk '{print $3}' "/proc/$ZOMBIE_PID/stat" 2>/dev/null)" == "Z" ]] \
+  || fail "could not produce a zombie named ollama"
+export OLLAMA_ZOMBIE_PID="$ZOMBIE_PID"
+start_supervisor
+for _ in $(seq 1 100); do [[ -f "$OLLAMA_MARKER" ]] && break; sleep 0.1; done
+[[ -f "$OLLAMA_MARKER" ]] || fail "a zombie ollama was treated as live, so ollama was never started"
+stop_supervisor
+unset OLLAMA_ZOMBIE_PID
+kill "$ZOMBIE_HOLDER" 2>/dev/null || true
+ZOMBIE_HOLDER=""
+
+echo "PASS: the TEE-LLM Pod supervisor restarts both daemons, honours the pause file, passes the selected model, re-execs on request, is a singleton, and ignores a zombie ollama"

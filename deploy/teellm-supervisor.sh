@@ -52,6 +52,7 @@ RESTART_DELAY="${TEELLM_SUPERVISOR_RESTART_DELAY:-10}"
 OLLAMA_WAIT="${TEELLM_SUPERVISOR_OLLAMA_WAIT:-30}"
 
 TEELLM_CHILD=""
+OLLAMA_MISSING_WARNED=""
 
 cd "$WORKDIR" 2>/dev/null || {
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): working directory $WORKDIR is not reachable" >&2
@@ -92,12 +93,28 @@ trap cleanup SIGTERM SIGINT
 # A process can hold the port while being unable to answer; treat either signal as alive. The
 # process check also keeps a slow model load (which can outlast the wait below) from being read
 # as a crash and duplicated: a second ollama would only fail to bind.
+#
+# The name check must ignore zombies. A killed process keeps its name until its parent reaps it,
+# and `pgrep -x` matches it with exit 0; on a Pod whose PID 1 is `sleep infinity` nothing reaps,
+# so a killed ollama would look alive for the container's whole lifetime. That is not theoretical:
+# a deployment stopped the daemons, the killed ollama was reparented to PID 1 and stayed a
+# zombie, this check reported it alive, no new ollama was started, and the deployment waited out
+# its full readiness timeout with no backend at all.
+process_is_live() {
+  local state
+  state="$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null)"
+  [ -n "$state" ] && [ "$state" != "Z" ]
+}
+
 ollama_alive() {
   if curl -fsS "http://$OLLAMA_HOST/api/tags" >/dev/null 2>&1; then
     return 0
   fi
-  if command -v pgrep >/dev/null 2>&1 && pgrep -x ollama >/dev/null 2>&1; then
-    return 0
+  if command -v pgrep >/dev/null 2>&1; then
+    local pid
+    for pid in $(pgrep -x ollama 2>/dev/null); do
+      process_is_live "$pid" && return 0
+    done
   fi
   return 1
 }
@@ -107,8 +124,14 @@ ensure_ollama() {
   [ -f "$PAUSE_FILE" ] && return 0
   ollama_alive && return 0
   if [ ! -x "$OLLAMA_DIR/start-ollama.sh" ]; then
+    # Once per absence, not once per check: this runs every few seconds.
+    if [ "$OLLAMA_MISSING_WARNED" != "1" ]; then
+      log "warning: $OLLAMA_DIR/start-ollama.sh is missing or not executable; cannot start ollama"
+      OLLAMA_MISSING_WARNED=1
+    fi
     return 0
   fi
+  OLLAMA_MISSING_WARNED=""
 
   log "ollama is not running; starting $OLLAMA_DIR/start-ollama.sh"
   # 9>&-: a child must not inherit the singleton lock, or killing the supervisor would leave the
