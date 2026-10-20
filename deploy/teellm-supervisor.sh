@@ -42,6 +42,8 @@ CONFIG="${TEELLM_CONFIG:-$WORKDIR/configs/teellm-production.json}"
 MODEL_FILE="$WORKDIR/.teellm-model"
 PAUSE_FILE="$WORKDIR/.teellm-supervisor-pause"
 RESTART_FILE="$WORKDIR/.teellm-supervisor-restart"
+PID_FILE="$WORKDIR/.teellm-supervisor.pid"
+LOCK_FILE="$WORKDIR/.teellm-supervisor.lock"
 LOG_FILE="$WORKDIR/teellm-service.log"
 OLLAMA_LOG_FILE="$WORKDIR/ollama.log"
 
@@ -60,7 +62,25 @@ log() {
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): $*" >> "$LOG_FILE"
 }
 
+# Singleton. Two ways in: the container command on a Pod created with this template, and the
+# deployment's fallback on a Pod that predates the supervisor (its PID 1 is still `sleep infinity`,
+# so nothing inside will ever exec the script). Both can race; the loser exits rather than fight
+# for :8443. flock is kernel state released when the process dies, so a stale file can never wedge
+# the Pod. The pid file below is not the lock -- it is how the deployment asks whether a copy is
+# already running.
+exec 9>"$LOCK_FILE"
+if command -v flock >/dev/null 2>&1; then
+  if ! flock -n 9; then
+    log "another supervisor holds the lock; exiting"
+    exit 0
+  fi
+fi
+echo $$ > "$PID_FILE"
+
+# Installed only after the lock is held, so a copy that loses the race cannot remove the winner's
+# pid file.
 cleanup() {
+  rm -f "$PID_FILE"
   if [ -n "$TEELLM_CHILD" ]; then
     kill -TERM "$TEELLM_CHILD" 2>/dev/null || true
     wait "$TEELLM_CHILD" 2>/dev/null || true
@@ -91,7 +111,9 @@ ensure_ollama() {
   fi
 
   log "ollama is not running; starting $OLLAMA_DIR/start-ollama.sh"
-  ( cd "$OLLAMA_DIR" && OLLAMA_HOST="$OLLAMA_HOST" ./start-ollama.sh ) >> "$OLLAMA_LOG_FILE" 2>&1 &
+  # 9>&-: a child must not inherit the singleton lock, or killing the supervisor would leave the
+  # lock held by an orphan and no future copy could start.
+  ( cd "$OLLAMA_DIR" && OLLAMA_HOST="$OLLAMA_HOST" ./start-ollama.sh ) >> "$OLLAMA_LOG_FILE" 2>&1 9>&- &
 
   i=0
   while [ "$i" -lt "$OLLAMA_WAIT" ]; do
@@ -120,10 +142,10 @@ run_service() {
   model="$(current_model)"
   if [ -n "$model" ]; then
     log "starting teellm-service -config $CONFIG -model $model"
-    "$WORKDIR/teellm-service" -config "$CONFIG" -model "$model" >> "$LOG_FILE" 2>&1 &
+    "$WORKDIR/teellm-service" -config "$CONFIG" -model "$model" >> "$LOG_FILE" 2>&1 9>&- &
   else
     log "starting teellm-service -config $CONFIG"
-    "$WORKDIR/teellm-service" -config "$CONFIG" >> "$LOG_FILE" 2>&1 &
+    "$WORKDIR/teellm-service" -config "$CONFIG" >> "$LOG_FILE" 2>&1 9>&- &
   fi
   TEELLM_CHILD=$!
 

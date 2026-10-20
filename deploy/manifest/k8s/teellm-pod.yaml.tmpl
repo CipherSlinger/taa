@@ -115,15 +115,21 @@ spec:
           if [ ! -e /dev/csv-guest ]; then
             echo "warning: could not create /dev/csv-guest; teellm-service will fall back to mock evidence" >&2
           fi
-          # PID 1 is the supervisor, not a keep-alive sleep. The deployment installs the script
-          # after this container is Ready, so wait for it instead of exiting: an exited container
-          # takes the guest's writable layer -- and the multi-GB model in it -- out of reach. Until
-          # the script arrives this loop is the keep-alive.
+          # PID 1 is a bootstrap that runs the supervisor, not a keep-alive sleep. The deployment
+          # installs the script after this container is Ready, so wait for it instead of exiting:
+          # an exited container takes the guest's writable layer -- and the multi-GB model in it --
+          # out of reach. Until the script arrives this loop is the keep-alive. If the supervisor
+          # ever exits (a lost singleton race with the deployment's own fallback start, or a bug),
+          # restart it here rather than taking the container down with it.
           while [ ! -x /root/taa/teellm-supervisor.sh ]; do
             echo "waiting for /root/taa/teellm-supervisor.sh" >&2
             sleep 2
           done
-          exec /root/taa/teellm-supervisor.sh
+          while true; do
+            /root/taa/teellm-supervisor.sh
+            echo "supervisor exited; restarting in 2s" >&2
+            sleep 2
+          done
       resources:
         # Kata sizes the VM from the limits: guest RAM = the kata default_memory
         # (23552M in this host's configuration-qemu-csv2.toml) + limits.memory,

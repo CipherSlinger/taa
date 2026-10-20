@@ -292,6 +292,10 @@ TEELLM_POD_TEMPLATE="${TEELLM_POD_TEMPLATE:-$PROJECT_DIR/deploy/manifest/k8s/tee
 # The script that becomes the Pod's PID 1 and owns teellm-service and ollama. It is installed into
 # the Pod by the deployment, so it is versioned here rather than baked into the image.
 TEELLM_SUPERVISOR_SCRIPT="${TEELLM_SUPERVISOR_SCRIPT:-$PROJECT_DIR/deploy/teellm-supervisor.sh}"
+# Seconds to wait for the container command to start the supervisor before starting it from here.
+# A Pod created before the supervisor existed has `sleep infinity` as PID 1, so nothing inside
+# will ever run the script and the fallback is the only way to migrate it without recreating it.
+TEELLM_SUPERVISOR_START_WAIT="${TEELLM_SUPERVISOR_START_WAIT:-5}"
 # Optional escape hatch for hosts with no CoCo Pod to copy the annotation from; leave empty to
 # derive it (see derive_cc_init_data).
 TEELLM_POD_CC_INIT_DATA="${TEELLM_POD_CC_INIT_DATA:-}"
@@ -530,13 +534,33 @@ pod_supervisor_pause() {
 
 # Lifting the pause is also when an installed supervisor script takes effect: the restart request
 # makes a running copy re-exec the file the deployment just moved into place. A freshly created
-# Pod has no copy to restart, and the flag would only make its first start re-exec once.
+# Pod started the supervisor from the copy that was just installed, so there is nothing older to
+# replace and no restart request is needed.
 pod_supervisor_resume() {
   if [[ "$TEELLM_POD_REUSED" == true ]]; then
     remote_ssh "$(container_exec) sh -lc 'touch \"$CON_WORKDIR/.teellm-supervisor-restart\"; rm -f \"$CON_WORKDIR/.teellm-supervisor-pause\"'"
   else
     remote_ssh "$(container_exec) sh -lc 'rm -f \"$CON_WORKDIR/.teellm-supervisor-pause\"'"
   fi
+}
+
+# A Pod created with this template runs the supervisor itself as soon as the file is installed.
+# A Pod created before the supervisor existed still has `sleep infinity` as PID 1 and no process
+# that would ever exec the script, so after a short grace period the deployment starts it
+# detached. The supervisor is a flock singleton, so a race between the two cannot yield two copies.
+# On such a Pod the copy is not PID 1: a restart of the container loses it until the next
+# deployment. Recreating the Pod is what makes supervision container-durable.
+ensure_pod_supervisor_running() {
+  local attempt
+  for ((attempt = 1; attempt <= TEELLM_SUPERVISOR_START_WAIT; attempt++)); do
+    if remote_ssh "$(container_exec) sh -lc 'p=\"$CON_WORKDIR/.teellm-supervisor.pid\"; pid=\$(cat \"\$p\" 2>/dev/null); [ -n \"\$pid\" ] && kill -0 \"\$pid\" 2>/dev/null'" >/dev/null 2>&1; then
+      info "Pod supervisor is already running"
+      return 0
+    fi
+    sleep 1
+  done
+  step "starting the Pod supervisor (this Pod has no process that would exec it)"
+  remote_ssh "$(container_exec) sh -lc 'cd \"$CON_WORKDIR\" && nohup ./teellm-supervisor.sh >> \"$CON_WORKDIR/teellm-service.log\" 2>&1 &'"
 }
 
 # Stops the three daemons the supervisor owns inside the Pod. Both the 'stop' action and the start
@@ -2010,6 +2034,10 @@ deploy_teellm() {
   # Written every deployment: a reused Pod keeps the env it was created with, so this file is what
   # carries a `models switch` into a Pod that is not recreated.
   remote_ssh "$(container_exec) sh -lc 'printf %s \"$OLLAMA_MODEL\" > \"$CON_WORKDIR/.teellm-model\"'"
+
+  # Migrates a Pod that predates the supervisor; a no-op on one that already runs it.
+  step "ensuring the Pod supervisor is running"
+  ensure_pod_supervisor_running
 
   # Hand the daemons back. On a reused Pod this also re-execs the supervisor that was just
   # installed, so a supervisor change takes effect without recreating the CSV2 guest.

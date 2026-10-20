@@ -187,4 +187,26 @@ grep -q "restart requested" "$WORK/teellm-service.log" \
 [[ "$(grep -c "supervisor started" "$WORK/teellm-service.log")" -ge 2 ]] \
   || fail "the supervisor did not re-exec itself after the restart request"
 
-echo "PASS: the TEE-LLM Pod supervisor restarts both daemons, honours the pause file, passes the selected model, and re-execs on request"
+# ── 6. The supervisor is a singleton and advertises its pid ──────────────────
+# A Pod created before supervision still runs `sleep infinity` as PID 1, so the deployment starts
+# the supervisor itself -- while on a new Pod the container command does. Both must be safe, and
+# the pid file is how the deployment tells "already running" from "nothing will ever start it".
+
+new_work singleton 'sleep 60'
+start_supervisor
+for _ in $(seq 1 100); do [[ -s "$WORK/.teellm-supervisor.pid" ]] && break; sleep 0.1; done
+[[ -s "$WORK/.teellm-supervisor.pid" ]] || fail "the supervisor did not write a pid file"
+sup_pid="$(cat "$WORK/.teellm-supervisor.pid")"
+kill -0 "$sup_pid" 2>/dev/null || fail "the pid file does not name a running process"
+
+set +e
+TEELLM_WORKDIR="$WORK" OLLAMA_DIR="$WORK/ollama" PATH="$MOCK_BIN:$PATH" \
+  OLLAMA_MARKER="$OLLAMA_MARKER" timeout 5 "$SUPERVISOR" >/dev/null 2>&1
+second_rc=$?
+set -e
+[[ $second_rc -eq 0 ]] || fail "a second supervisor did not exit cleanly (exit $second_rc)"
+grep -q "another supervisor holds the lock" "$WORK/teellm-service.log" \
+  || fail "the second supervisor did not report the singleton lock"
+stop_supervisor
+
+echo "PASS: the TEE-LLM Pod supervisor restarts both daemons, honours the pause file, passes the selected model, re-execs on request, and is a singleton"

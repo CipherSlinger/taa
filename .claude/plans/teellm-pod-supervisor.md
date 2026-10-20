@@ -28,6 +28,15 @@ cannot own a process that outlives it:
 The ollama health check runs inside the teellm-service supervision loop, not only between
 service exits, so a dead ollama is recovered while the service keeps running.
 
+### Pods that predate the supervisor
+
+Their container command is still `sleep infinity`, and a Pod's command is immutable, so no
+process inside the Pod will ever exec the installed script. After a short grace period the
+deployment starts the supervisor detached. That copy is a flock singleton, so it cannot race
+the container command of a Pod created with the new template. It is not PID 1, though: a
+restart of the container on such a Pod loses it until the next deployment. Recreating the Pod
+is what makes supervision container-durable.
+
 ## Deployment flow
 
 1. Reuse or create the Pod (`pod_up`), recording `TEELLM_POD_REUSED`.
@@ -36,7 +45,8 @@ service exits, so a dead ollama is recovered while the service keeps running.
 4. Sync and stream the ollama bundle into the Pod.
 5. Copy the binary, config and certificates; install the supervisor with `mv` (overwriting a
    running script fails with ETXTBSY).
-6. Write `.teellm-model`.
+6. Write `.teellm-model`, then make sure a supervisor is running (the container command starts
+   it on a new Pod; the deployment starts it detached on one that predates it).
 7. Resume: request a restart on a reused Pod, then remove the pause file.
 8. Wait for ollama, then probe teellm-service through TEE-TLS.
 

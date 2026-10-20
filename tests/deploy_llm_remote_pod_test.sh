@@ -132,6 +132,7 @@ case "$verb" in
     # Matched against the whole command, not its last word: `tail -n 200 <log>` ends in the log
     # path, and the readiness probe ends in its URL.
     case "$*" in
+      *".teellm-supervisor.pid"*) exit 1 ;;
       *"/dev/csv-guest"*) [[ -f "$MOCK_STATE_DIR/csv_device" ]] && exit 0 || exit 1 ;;
       *"tar -xf"*) cat >/dev/null; exit 0 ;;
       *"/api/tags"*) echo '{"models":[{"name":"qwen2.5-coder:0.5b"}]}'; exit 0 ;;
@@ -215,6 +216,7 @@ run_deploy() {
     OLLAMA_READY_TIMEOUT=2 \
     OLLAMA_READY_INTERVAL=1 \
     TEELLM_POD_READY_TIMEOUT=5 \
+    TEELLM_SUPERVISOR_START_WAIT=1 \
     timeout 300 "$REPO/deploy-llm.sh" "$@" 2>&1)"
   status=$?
   set -e
@@ -277,9 +279,10 @@ grep -q "/sys/class/misc/csv-guest/dev" "$APPLIED" \
 
 # The container's PID 1 is the supervisor, not `sleep infinity`: restartPolicy only reacts to PID 1
 # exiting, so an owned teellm-service and ollama is what keeps a dead daemon from staying dead.
-grep -q "exec /root/taa/teellm-supervisor.sh" "$APPLIED" \
+grep -q "/root/taa/teellm-supervisor.sh" "$APPLIED" \
   || fail "the manifest does not hand PID 1 to the TEE-LLM supervisor"
-grep -q "teellm-supervisor.sh" "$APPLIED" || fail "the manifest does not mention the supervisor"
+grep -q "supervisor exited; restarting" "$APPLIED" \
+  || fail "the manifest does not restart a supervisor that exits"
 # The supervisor reads the model from the deployment; a Pod that already exists keeps its env.
 grep -q "TEELLM_MODEL" "$APPLIED" || fail "the selected model is not in the Pod environment"
 grep -q 'value: "qwen2.5-coder:0.5b"' "$APPLIED" \
@@ -296,13 +299,21 @@ grep -q "teellm-supervisor.sh" "$MOCK_LOG" \
   || fail "the supervisor script was not installed into the Pod"
 grep -q "\.teellm-model" "$MOCK_LOG" \
   || fail "the selected model was not written for the supervisor"
-if grep -q "nohup" "$MOCK_LOG"; then
+# A Pod created before the supervisor existed still runs `sleep infinity` as PID 1, so nothing in
+# the container will ever exec the script; the deployment has to start it.
+grep -qE "nohup \./teellm-supervisor\.sh" "$MOCK_LOG" \
+  || fail "a Pod with no running supervisor was never given one"
+if grep -qE 'nohup.*(start-ollama\.sh|teellm-service")' "$MOCK_LOG"; then
   fail "the deployment still starts daemons itself instead of leaving them to the supervisor"
 fi
 pause_line="$(grep -n "\.teellm-supervisor-pause" "$MOCK_LOG" | head -n1 | cut -d: -f1)"
 live_write_line="$(grep -nE "KUBECTL cp|tar -xf" "$MOCK_LOG" | head -n1 | cut -d: -f1)"
 [[ -n "$pause_line" && -n "$live_write_line" && "$pause_line" -lt "$live_write_line" ]] \
   || fail "the supervisor was not paused before the Pod's live tree was written to"
+start_line="$(grep -nE "nohup \./teellm-supervisor\.sh" "$MOCK_LOG" | head -n1 | cut -d: -f1)"
+resume_line="$(grep -n "rm -f .*\.teellm-supervisor-pause" "$MOCK_LOG" | head -n1 | cut -d: -f1)"
+[[ -n "$start_line" && -n "$resume_line" && "$start_line" -lt "$resume_line" ]] \
+  || fail "the supervisor was resumed before it was running"
 
 # The deployment body must address the TEE-LLM Pod and nothing else. Aimed at the default TARGET_POD
 # it would still pass every gate -- that Pod has /dev/csv-guest too -- and fail in production.
