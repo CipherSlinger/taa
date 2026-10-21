@@ -208,11 +208,8 @@ func (s *TAAState) executeFHETask(req importRequest, phase int, plaintextPath st
 	stopLogs, onTaskCreated := s.startFHELogPoller(runner, req.RequestID, req.TaskID, spec.UserID)
 	defer stopLogs()
 	spec.OnCreated = onTaskCreated
-	outcome, execErr := runner.Execute(context.Background(), spec, func(done, total int) {
-		if total <= 0 {
-			return
-		}
-		s.reportFHEProgress(req.RequestID, req.TaskID, float64(done)/float64(total)*100)
+	outcome, execErr := runner.Execute(context.Background(), spec, func(percent float64) {
+		s.reportFHEProgress(req.RequestID, req.TaskID, percent)
 	})
 	// Released the moment the run stops being cancellable, which is here: Execute
 	// drops the run from the runner's in-flight table before it returns, so from

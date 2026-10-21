@@ -153,6 +153,65 @@ func TestTaskToleratesUnknownShape(t *testing.T) {
 	if done, total := st.Progress(); done != 0 || total != 0 {
 		t.Errorf("Progress() = (%d, %d), want (0, 0)", done, total)
 	}
+	if percent, ok := st.ProgressPercent(); ok {
+		t.Errorf("ProgressPercent() = (%v, true), want no percentage without cases", percent)
+	}
+}
+
+// TestTaskPrefersServiceTaskProgress pins the v1 field: the service computes
+// the task percentage across cases, and its number wins over anything derived
+// from the case list.
+func TestTaskPrefersServiceTaskProgress(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"task_id":"task-1","status":"running","progress":67,"cases":[
+			{"entry":"case-00","result_id":"case-00.result.bin"},
+			{"entry":"case-01"}]}`))
+	})
+	st, err := c.Task(context.Background(), "task-1", testHashA)
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	// The case list alone averages to 50, so a 67 can only come from the field.
+	if percent, ok := st.ProgressPercent(); !ok || percent != 67 {
+		t.Errorf("ProgressPercent() = (%v, %v), want (67, true)", percent, ok)
+	}
+}
+
+// TestTaskDerivesProgressFromCaseProgress covers the service shape that predates
+// task-level progress: no field, cases carrying their own percentage. A running
+// case must contribute its fraction, otherwise the platform sees a bar that
+// only moves once per case.
+func TestTaskDerivesProgressFromCaseProgress(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"task_id":"task-1","status":"running","cases":[
+			{"entry":"case-00","status":"completed"},
+			{"entry":"case-01","status":"running","progress":40},
+			{"entry":"case-02","status":"pending"},
+			{"entry":"case-03","status":"failed"}]}`))
+	})
+	st, err := c.Task(context.Background(), "task-1", testHashA)
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	// (100 + 40 + 0 + 100) / 4
+	if percent, ok := st.ProgressPercent(); !ok || percent != 60 {
+		t.Errorf("ProgressPercent() = (%v, %v), want (60, true)", percent, ok)
+	}
+}
+
+// TestTaskProgressPercentClamps covers a service number the platform would
+// reject: ReportProgress refuses anything outside 0-100.
+func TestTaskProgressPercentClamps(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"task_id":"task-1","status":"running","progress":150}`))
+	})
+	st, err := c.Task(context.Background(), "task-1", testHashA)
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	if percent, ok := st.ProgressPercent(); !ok || percent != 100 {
+		t.Errorf("ProgressPercent() = (%v, %v), want (100, true)", percent, ok)
+	}
 }
 
 // TestTaskLogsAsksForAReplay pins the one query parameter the poller depends

@@ -242,6 +242,7 @@ type fheServiceStub struct {
 	cancels        []string
 	polls          int
 	taskStatus     string
+	taskProgress   *int
 	caseEntries    int
 	downloadStatus int
 	downloadBody   string
@@ -340,7 +341,7 @@ func (s *fheServiceStub) serveTask(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.polls++
 		gate := s.pollGate
-		status, entries := s.taskStatus, s.caseEntries
+		status, entries, taskProgress := s.taskStatus, s.caseEntries, s.taskProgress
 		s.mu.Unlock()
 		if gate != nil {
 			<-gate
@@ -349,7 +350,7 @@ func (s *fheServiceStub) serveTask(w http.ResponseWriter, r *http.Request) {
 		for i := 0; i < entries; i++ {
 			cases = append(cases, fhe.CaseStatus{Entry: "case", ResultID: "r"})
 		}
-		_ = json.NewEncoder(w).Encode(fhe.TaskStatus{TaskID: path, Status: status, Cases: cases})
+		_ = json.NewEncoder(w).Encode(fhe.TaskStatus{TaskID: path, Status: status, TaskProgress: taskProgress, Cases: cases})
 	}
 }
 
@@ -1444,5 +1445,76 @@ func TestFHESuccessReportsFullProgress(t *testing.T) {
 	case <-reported:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the FHE run never reported its result")
+	}
+}
+
+// TestFHEProgressFollowsServiceProgress pins the per-poll report: while the
+// task runs, the percentage the service reports must reach the platform
+// unchanged, not be collapsed into the 0/100 steps of a finished-case count.
+//
+// The stub answers "running" with a fixed 55%, so the only way a 55 can arrive
+// is the poll path forwarding the service's own number.
+func TestFHEProgressFollowsServiceProgress(t *testing.T) {
+	env := newFHETestEnv(t)
+	env.importModel()
+
+	progress := make(chan float64, 64)
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/taa/reportProgress" {
+			var payload struct {
+				Percent float64 `json:"percent"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err == nil {
+				select {
+				case progress <- payload.Percent:
+				default:
+				}
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer platform.Close()
+
+	env.state.mu.Lock()
+	env.state.PlatformIP = platform.URL
+	env.state.mu.Unlock()
+
+	running := 55
+	env.stub.mu.Lock()
+	env.stub.taskStatus = "running"
+	env.stub.caseEntries = 2
+	env.stub.taskProgress = &running
+	env.stub.mu.Unlock()
+
+	pkgPath, _ := writeTestZip(t, t.TempDir(), map[string]string{"case-00.ct": "ciphertext"})
+	done := make(chan struct{})
+	go func() {
+		env.state.processImportedResource(env.dataRequest(), 2, false, pkgPath, nil)
+		close(done)
+	}()
+
+	deadline := time.After(10 * time.Second)
+	for seen := false; !seen; {
+		select {
+		case percent := <-progress:
+			if percent == 55 {
+				seen = true
+			}
+		case <-deadline:
+			t.Fatal("the service's 55% never reached the platform")
+		}
+	}
+
+	// Finish the task so the run returns; the final 100% report is covered by
+	// TestFHESuccessReportsFullProgress.
+	env.stub.mu.Lock()
+	env.stub.taskStatus = "completed"
+	env.stub.taskProgress = nil
+	env.stub.mu.Unlock()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the FHE run did not finish after the service reported completion")
 	}
 }

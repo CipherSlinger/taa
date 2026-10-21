@@ -217,6 +217,8 @@ func (c *Client) CreateTask(ctx context.Context, req CreateTaskRequest) error {
 // CaseStatus is one entry of a task's case list.
 type CaseStatus struct {
 	Entry    string `json:"entry"`
+	Status   string `json:"status"`
+	Progress int    `json:"progress"`
 	ResultID string `json:"result_id"`
 	Error    string `json:"error"`
 }
@@ -224,16 +226,19 @@ type CaseStatus struct {
 // TaskStatus is what the service reports for a task.
 //
 // Only Status is load-bearing: it is the field the service's own callback
-// documents. The per-case list feeds percentage reporting alone, so an
-// unrecognised shape degrades progress reporting without touching the outcome -
-// it keeps polling until the service reports a terminal state or the caller
-// cancels.
+// documents. Progress and the per-case list feed percentage reporting alone, so
+// an unrecognised shape degrades progress reporting without touching the
+// outcome - it keeps polling until the service reports a terminal state or the
+// caller cancels.
 type TaskStatus struct {
-	TaskID    string       `json:"task_id"`
-	Status    string       `json:"status"`
-	ResultZip string       `json:"result_zip"`
-	Cases     []CaseStatus `json:"cases"`
-	Results   []CaseStatus `json:"results"`
+	TaskID string `json:"task_id"`
+	Status string `json:"status"`
+	// TaskProgress is the task-level percentage. It is a pointer because a
+	// service that predates the field omits it, and 0 is a valid percentage.
+	TaskProgress *int         `json:"progress"`
+	ResultZip    string       `json:"result_zip"`
+	Cases        []CaseStatus `json:"cases"`
+	Results      []CaseStatus `json:"results"`
 }
 
 // caseList returns the case entries the service reported.
@@ -263,6 +268,61 @@ func (t TaskStatus) Progress() (done, total int) {
 		}
 	}
 	return done, len(cases)
+}
+
+// ProgressPercent returns the task's completion in percent, and whether the
+// service reported anything to base it on.
+//
+// v1 of the service reports task-level progress: a finished case counts 100, a
+// running case contributes its own percentage, and the value stays below 100
+// until the task reaches its terminal state. A service that predates the field
+// omits it, so the per-case list is averaged here instead - the same scale,
+// just coarser between case boundaries.
+func (t TaskStatus) ProgressPercent() (float64, bool) {
+	if t.TaskProgress != nil {
+		return clampPercent(*t.TaskProgress, 100), true
+	}
+	cases := t.caseList()
+	if len(cases) == 0 {
+		return 0, false
+	}
+	sum := 0.0
+	for _, c := range cases {
+		if isFinishedCase(c) {
+			sum += 100
+			continue
+		}
+		sum += clampPercent(c.Progress, 99)
+	}
+	return sum / float64(len(cases)), true
+}
+
+// isFinishedCase reports whether the service is done with a case. A failed or
+// cancelled case still counts as finished, so it must not hold the reported
+// percentage below 100; the per-case progress of a case the service has not
+// started is zero anyway.
+func isFinishedCase(c CaseStatus) bool {
+	if c.ResultID != "" || c.Error != "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Status)) {
+	case "completed", "failed", "cancelled":
+		return true
+	}
+	return false
+}
+
+// clampPercent keeps a value the service reported within [0, maxValue]. The
+// service owns these numbers; the clamp only makes a malformed one harmless,
+// since the platform rejects a percentage outside 0-100 outright.
+func clampPercent(value, maxValue int) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > maxValue {
+		return float64(maxValue)
+	}
+	return float64(value)
 }
 
 // Failed returns the number of cases the service reported as failed.

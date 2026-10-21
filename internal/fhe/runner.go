@@ -403,8 +403,8 @@ func (r *Runner) Cancel(ctx context.Context, taskID string) error {
 //
 // It publishes the eval key and the input archive into the shared directory,
 // creates the task, then waits for the callback or the poll fallback, whichever
-// arrives first. onProgress, when non-nil, receives the finished and total case
-// counts the service reported.
+// arrives first. onProgress, when non-nil, receives the task's completion
+// percentage as the service reports it.
 //
 // There is deliberately no task-level deadline: an FHE task is a long batch by
 // nature, and any fixed budget either kills a legitimate run or is so large it
@@ -424,7 +424,7 @@ func (r *Runner) Cancel(ctx context.Context, taskID string) error {
 // cancelled import releases its goroutine when that copy finishes rather than
 // when the cancel arrives. Bounding them means giving these helpers a context,
 // which is a change to the publishing path rather than to this comment.
-func (r *Runner) Execute(ctx context.Context, spec TaskSpec, onProgress func(done, total int)) (TaskOutcome, error) {
+func (r *Runner) Execute(ctx context.Context, spec TaskSpec, onProgress func(percent float64)) (TaskOutcome, error) {
 	run, err := r.prepare(ctx, spec)
 	if err != nil {
 		return TaskOutcome{Status: StatusFailed, Err: err}, err
@@ -555,7 +555,7 @@ func (r *Runner) prepare(ctx context.Context, spec TaskSpec) (*taskRun, error) {
 //
 // There is no deadline of its own; the caller's context is the only bound. See
 // Execute for why the task itself is not capped.
-func (r *Runner) wait(ctx context.Context, run *taskRun, onProgress func(done, total int)) (TaskOutcome, error) {
+func (r *Runner) wait(ctx context.Context, run *taskRun, onProgress func(percent float64)) (TaskOutcome, error) {
 	ticker := time.NewTicker(r.cfg.PollInterval)
 	defer ticker.Stop()
 
@@ -580,7 +580,7 @@ func (r *Runner) wait(ctx context.Context, run *taskRun, onProgress func(done, t
 
 // pollOnce asks the service for the task state once. It reports ok when the task
 // reached a terminal state.
-func (r *Runner) pollOnce(ctx context.Context, run *taskRun, onProgress func(done, total int)) (TaskOutcome, bool) {
+func (r *Runner) pollOnce(ctx context.Context, run *taskRun, onProgress func(percent float64)) (TaskOutcome, bool) {
 	pollCtx, cancel := context.WithTimeout(ctx, r.cfg.RequestTimeout)
 	defer cancel()
 
@@ -592,8 +592,8 @@ func (r *Runner) pollOnce(ctx context.Context, run *taskRun, onProgress func(don
 		return TaskOutcome{}, false
 	}
 	if onProgress != nil {
-		if done, total := st.Progress(); total > 0 {
-			onProgress(done, total)
+		if percent, ok := st.ProgressPercent(); ok {
+			onProgress(percent)
 		}
 	}
 	if !IsTerminal(st.Status) {
@@ -607,8 +607,8 @@ func (r *Runner) pollOnce(ctx context.Context, run *taskRun, onProgress func(don
 func (r *Runner) outcomeFromStatus(spec TaskSpec, st TaskStatus) TaskOutcome {
 	out := TaskOutcome{Status: strings.ToLower(strings.TrimSpace(st.Status))}
 	// Progress reports (done, total). The outcome keeps the total and the number
-	// of cases the service reported as failed; the finished count is reporting
-	// only, and travels through onProgress instead.
+	// of cases the service reported as failed; the percentage is reporting only,
+	// and travels through onProgress instead.
 	_, out.Total = st.Progress()
 	out.Failed = st.Failed()
 	if out.Status == "" {
