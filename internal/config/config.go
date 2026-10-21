@@ -22,7 +22,8 @@ type StartupConfig struct {
 	PlatformIP string
 	DockerID   string
 	Contract   string
-	// ServerType is "tee" (the default) or "fhe", from server.type.
+	// ServerType is one of "tee" (the default), "fhe" or "data-anaylsis", from
+	// server.type.
 	ServerType string
 	// FHE is non-nil only on a server.type=fhe instance.
 	FHE *FHEConfig
@@ -176,6 +177,12 @@ const (
 	// ServerTypeFHE orchestrates the FHE service on a GPU host. Such an instance
 	// is not a TEE, does not attest, and runs no training pipeline.
 	ServerTypeFHE = "fhe"
+	// ServerTypeDataAnalysis runs data-analysis tasks in the CSV guest. It is a
+	// TEE role like tee -- it attests and seals its state with the CSV hardware
+	// key -- but its template disables the code audit and the LLM, so it neither
+	// needs the semgrep payload nor a TEE-LLM gateway. Nothing in the runtime
+	// switches on this value beyond the fhe/not-fhe split.
+	ServerTypeDataAnalysis = "data-anaylsis"
 )
 
 // State sealing key sources, selected by storage.stateSealingKeySource.
@@ -616,7 +623,7 @@ func validateStartupConfig(cfg StartupConfig) error {
 // serverTypes lists the instance roles understood by the startup config (see
 // StartupConfig.ServerType). It is declared once so the membership test and the
 // accepted-values message cannot drift apart when a role is added.
-var serverTypes = []string{ServerTypeTEE, ServerTypeFHE}
+var serverTypes = []string{ServerTypeTEE, ServerTypeFHE, ServerTypeDataAnalysis}
 
 // validateServerType rejects an unrecognised server.type rather than falling back
 // to tee. A silent fallback would leave a deployment believing it runs one kind

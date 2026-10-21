@@ -1,6 +1,7 @@
 {
   "server": {
-    "addr": ":6001"
+    "addr": ":6001",
+    "type": "data-anaylsis"
   },
   "storage": {
     "model": "/root/taa/models",

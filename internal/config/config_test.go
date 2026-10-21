@@ -209,6 +209,45 @@ func TestLoadStartupConfigFHEPlatformSection(t *testing.T) {
 	}
 }
 
+// The data-analysis template is what deploy-dataanaylsis.sh ships, and its
+// whole point is that the instance carries neither the code audit nor the LLM.
+// Loading the real file is what proves the new server.type value is accepted
+// outside a synthetic fixture, and that the template still says so after an
+// edit.
+func TestLoadStartupConfigDataAnalysisTemplate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	raw, err := os.ReadFile("../../configs/taa-dataanaylsis.json")
+	if err != nil {
+		t.Fatalf("read taa-dataanaylsis.json: %v", err)
+	}
+	writeTestConfig(t, path, string(raw))
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig(taa-dataanaylsis.json) error = %v", err)
+	}
+
+	if cfg.ServerType != ServerTypeDataAnalysis {
+		t.Fatalf("ServerType = %q, want %q", cfg.ServerType, ServerTypeDataAnalysis)
+	}
+	if cfg.FHE != nil {
+		t.Errorf("FHE = %+v, want nil on a data-analysis instance", cfg.FHE)
+	}
+	if cfg.EnableCodeAudit {
+		t.Error("EnableCodeAudit = true, want the template's code audit disabled")
+	}
+	if cfg.LLM.Enabled {
+		t.Error("LLM.Enabled = true, want the template's LLM disabled")
+	}
+	if cfg.CodeScan.Engine == "semgrep" {
+		t.Errorf("CodeScan.Engine = %q, want an engine that needs no semgrep payload", cfg.CodeScan.Engine)
+	}
+	if cfg.StateSealingKeySource != StateSealingKeySourceCSVHW {
+		t.Errorf("StateSealingKeySource = %q, want %q: the data-analysis instance still runs in the CSV guest",
+			cfg.StateSealingKeySource, StateSealingKeySourceCSVHW)
+	}
+}
+
 // fheConfigSection is the fhe block shared by the fixtures that only need a
 // config which passes validation.
 const fheConfigSection = `"fhe": {

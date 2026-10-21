@@ -46,6 +46,20 @@ func TestServerTypeDefaultsToTee(t *testing.T) {
 	}
 }
 
+func TestServerTypeAcceptsDataAnalysis(t *testing.T) {
+	p := writeConfig(t, `{"server": {"addr": ":6001", "type": "data-anaylsis"}}`)
+	cfg, err := LoadStartupConfig(p)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig: %v", err)
+	}
+	if cfg.ServerType != ServerTypeDataAnalysis {
+		t.Errorf("ServerType = %q, want %q", cfg.ServerType, ServerTypeDataAnalysis)
+	}
+	if cfg.FHE != nil {
+		t.Errorf("FHE = %+v, want nil on a data-analysis instance", cfg.FHE)
+	}
+}
+
 func TestServerTypeRejectsUnknownValue(t *testing.T) {
 	p := writeConfig(t, `{"server": {"addr": ":6001", "type": "gpu"}}`)
 	_, err := LoadStartupConfig(p)
