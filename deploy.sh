@@ -451,7 +451,11 @@ ensure_local_docker_container() {
     docker start "$LOCAL_DOCKER_CONTAINER" >/dev/null
   else
     info "creating and starting local docker container: $LOCAL_DOCKER_CONTAINER (image: $LOCAL_DOCKER_IMAGE, network: $LOCAL_DOCKER_NETWORK)"
-    docker run -d --name "$LOCAL_DOCKER_CONTAINER" --network "$LOCAL_DOCKER_NETWORK" --entrypoint tail "$LOCAL_DOCKER_IMAGE" -f /dev/null >/dev/null
+    # --user root: TAA always lives under /root/taa, while a base image may default
+    # to an unprivileged user (jupyter-nologin-full runs as jovyan). Without this the
+    # very next mkdir and every later exec fail with EACCES. Harmless on a base image
+    # that already runs as root.
+    docker run -d --name "$LOCAL_DOCKER_CONTAINER" --network "$LOCAL_DOCKER_NETWORK" --user root --entrypoint tail "$LOCAL_DOCKER_IMAGE" -f /dev/null >/dev/null
   fi
 
   # 在容器工作目录标记 manual 模式，防止镜像内置的 start.sh 自启动造成端口竞争
@@ -595,7 +599,11 @@ save_local_docker_image() {
     # stopped container refuses; the previous foreground form ran its init command and exited, so the
     # container was already stopped by the next line. `docker cp` and `docker commit` work either
     # way, which is why this went unnoticed until the packaging steps needed an exec.
-    docker run -d --name "$1" --entrypoint bash "$2" -c "sleep infinity" >/dev/null
+    # --user root for the same reason as the runtime container: the assembly steps
+    # below create /root/taa and /opt/taa, which an unprivileged base-image user
+    # cannot write. The committed image declares USER root so the same layout is
+    # usable when the image is started directly.
+    docker run -d --name "$1" --user root --entrypoint bash "$2" -c "sleep infinity" >/dev/null
     docker exec -i "$1" bash -c "
       rm -f /root/taa/manual /root/taa/taa.log 2>/dev/null || true
       mkdir -p /root/taa/models /root/taa/data /root/taa/results /root/taa/certs /root/taa/keys /opt/taa/input /opt/taa/output
@@ -629,6 +637,7 @@ save_local_docker_image() {
     docker commit \
       -c 'ENTRYPOINT ["bash", "/root/taa/start.sh"]' \
       -c 'CMD []' \
+      -c 'USER root' \
       -c 'WORKDIR /root/taa' \
       -c 'EXPOSE 6001' \
       -m "$commit_msg" \
