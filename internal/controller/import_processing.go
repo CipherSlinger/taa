@@ -43,11 +43,25 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 	}
 	if err != nil {
 		s.setCurrentOp("idle")
+		// reportImportFailure builds a training report; this instance type never
+		// trains, so its failures go out with an empty report instead.
+		if s.dataAnalysisEnabled() {
+			s.reportDataAnalysisResult(req, 1, err.Error())
+			return
+		}
 		s.reportImportFailure(req, phase, isModel, startedAt, err.Error())
 		return
 	}
 	if isDecrypted {
 		defer os.Remove(plaintextPath)
+	}
+
+	// A data-anaylsis instance lands the plaintext and stops: no checksum, no
+	// import index, no audit, no training. The branch comes before the FHE one so
+	// a runner left attached by mistake cannot divert this instance type.
+	if s.dataAnalysisEnabled() {
+		s.processImportedResourceDataAnalysis(req, plaintextPath)
+		return
 	}
 
 	// An fhe instance hands the resolved resource straight to the FHE service

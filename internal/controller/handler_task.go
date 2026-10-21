@@ -54,6 +54,12 @@ type importRequest struct {
 	// names are what tell the two apart when an import is refused for missing
 	// eval key fields.
 	rawFields []string
+
+	// DataAnalysisFileName and DataAnalysisResourceCode are set by
+	// handleDataAnalysisImport from the delivery URL, never from the body:
+	// json:"-" keeps a body field from spoofing them.
+	DataAnalysisFileName     string `json:"-"`
+	DataAnalysisResourceCode string `json:"-"`
 }
 
 func (r *importRequest) UnmarshalJSON(data []byte) error {
@@ -197,6 +203,14 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 		req.TaskID, req.RequestID, phase, req.EvalKeyURL, req.EvalKeyFileHash,
 		strings.Join(req.rawFields, ","))
 
+	// A data-anaylsis instance stops at the data landing directory: it decrypts
+	// and saves, and never trains. The branch sits before validateFHEFields
+	// because the eval key parameters belong to neither instance type here.
+	if s.dataAnalysisEnabled() {
+		s.handleDataAnalysisImport(w, &req, phase)
+		return
+	}
+
 	if err := s.validateFHEFields(req); err != nil {
 		s.Logs.Add(LogWarn, "import", "拒绝数据 import 请求: %v", err)
 		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, err.Error(), err))
@@ -268,6 +282,14 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 // ── Handler: /v1/taa/importModel ─────────────────────────
 
 func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
+	// A data-anaylsis instance has no model, no audit and no training pipeline;
+	// accepting a model package would only create state nothing reads. Refused
+	// before the body is decoded, so the request touches nothing.
+	if s.dataAnalysisEnabled() {
+		writeErr(w, http.StatusBadRequest, pkgerrors.New(pkgerrors.CodeInvalidArgument,
+			"data-anaylsis 实例不支持模型导入"))
+		return
+	}
 	var req importRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, pkgerrors.Wrap(pkgerrors.CodeInvalidArgument, fmt.Sprintf("请求解析失败: %v", err), err))

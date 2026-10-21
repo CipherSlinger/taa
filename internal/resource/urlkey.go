@@ -81,6 +81,81 @@ func SplitDataKeyCipher(rawURL string) (cleanURL, hexValue string, found bool, e
 	return clean + fragment, hexValue, true, nil
 }
 
+// SplitDeliveryParams strips every requested query parameter from rawURL and
+// returns the remaining URL together with the raw (still percent-encoded) value
+// of each parameter it found.
+//
+// A requested name that is absent is simply missing from values. A requested
+// name that appears more than once, or with an empty value, is an error: the
+// caller cannot tell which value is meant. Everything that survives the strip -
+// other parameters, their order, delimiters and escaping - is preserved
+// byte-for-byte, for the same reason SplitDataKeyCipher preserves it: the URL
+// that remains must still be one the file server accepts.
+//
+// Removal is one segment at a time, re-splitting after each pass. That keeps the
+// proven single-parameter surgery of SplitDataKeyCipher and avoids corrupting
+// the delimiter between two survivors when adjacent parameters are removed.
+func SplitDeliveryParams(rawURL string, names ...string) (cleanURL string, values map[string]string, err error) {
+	wanted := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		wanted[name] = struct{}{}
+	}
+	values = make(map[string]string, len(names))
+	cleanURL = rawURL
+
+	for {
+		base, query, fragment := splitURLParts(cleanURL)
+		if query == "" {
+			return cleanURL, values, nil
+		}
+		segments := splitQuerySegments(query)
+		target := -1
+		for i, seg := range segments {
+			eq := strings.Index(seg.text, "=")
+			key := seg.text
+			if eq >= 0 {
+				key = seg.text[:eq]
+			}
+			if _, ok := wanted[key]; !ok {
+				continue
+			}
+			if _, seen := values[key]; seen {
+				return "", nil, fmt.Errorf("URL 中 %s 参数重复出现，无法判定使用哪一个", key)
+			}
+			value := ""
+			if eq >= 0 {
+				value = seg.text[eq+1:]
+			}
+			if value == "" {
+				return "", nil, fmt.Errorf("URL 中 %s 参数值为空", key)
+			}
+			values[key] = value
+			target = i
+			break
+		}
+		if target < 0 {
+			return cleanURL, values, nil
+		}
+
+		// Same cut as SplitDataKeyCipher: the parameter leaves together with one
+		// adjacent delimiter, so the survivors keep the delimiters they had.
+		var cleanQuery string
+		switch {
+		case target == 0 && len(segments) == 1:
+			cleanQuery = ""
+		case target == 0:
+			cleanQuery = query[segments[1].start:]
+		default:
+			cleanQuery = query[:segments[target].start-1] + query[segments[target].start+len(segments[target].text):]
+		}
+		cleanURL = base
+		if cleanQuery != "" {
+			cleanURL += "?" + cleanQuery
+		}
+		cleanURL += fragment
+	}
+}
+
 // querySegment is one key=value chunk of a URL query: its text, where it starts in
 // the query, and the delimiter that introduces it.
 type querySegment struct {

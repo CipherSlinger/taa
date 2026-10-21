@@ -32,16 +32,27 @@ func (s *TAAState) unwrapDataKeyCipherFromURL(rawURL string) (downloadURL string
 	if !hasDataKeyCipher {
 		return downloadURL, nil, nil
 	}
-	wrapped, err := teecrypto.ParseWrappedDataKeyHex(dataKeyCipherHex)
+	dataKey, err = s.unwrapDataKeyCipherHex(dataKeyCipherHex)
 	if err != nil {
 		return "", nil, err
-	}
-	dataKey, err = teecrypto.UnwrapKeySM2(s.SM2PrivateKey, wrapped)
-	if err != nil {
-		return "", nil, fmt.Errorf("dataKeyCipher 解封失败: %w", err)
 	}
 	// Neither the envelope nor the unwrapped data key is logged: the delivery
 	// contract keeps the dataKeyCipher out of logs, and the key it carries is the
 	// one that decrypts the payload.
 	return downloadURL, dataKey, nil
+}
+
+// unwrapDataKeyCipherHex decodes one hex C1C3C2 envelope and unwraps it with
+// TAA's SM2 private key. It is shared by both delivery URL shapes: the legacy
+// dataKeyCipher query parameter and the data-anaylsis delivery URL.
+func (s *TAAState) unwrapDataKeyCipherHex(hexValue string) ([]byte, error) {
+	wrapped, err := teecrypto.ParseWrappedDataKeyHex(hexValue)
+	if err != nil {
+		return nil, err
+	}
+	dataKey, err := teecrypto.UnwrapKeySM2(s.SM2PrivateKey, wrapped)
+	if err != nil {
+		return nil, fmt.Errorf("dataKeyCipher 解封失败: %w", err)
+	}
+	return dataKey, nil
 }

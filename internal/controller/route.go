@@ -55,6 +55,12 @@ type SecurityConfig struct {
 	ModelLogDir      string                 // Model log file or directory path (default /opt/taa/output/log)
 	ModelProgressDir string                 // Model progress file or directory path (default /opt/taa/output/progress/progress.json)
 	LLM              codeaudit.LLMConfig    // 本地 LLM 语义验证配置
+	// ServerType is the startup config's server.type. It is read only to select
+	// the data-anaylsis import path; FHE still keys on the runner being non-nil.
+	ServerType string
+	// DataAnalysisDir is where a data-anaylsis instance lands imported data. It
+	// is inert on every other instance type.
+	DataAnalysisDir string
 }
 
 const (
@@ -72,6 +78,20 @@ func (sec SecurityConfig) GetMaxFileBytes() int64 {
 		return sec.MaxResultBytes
 	}
 	return config.DefaultMaxFileBytes
+}
+
+// GetDataAnalysisDir returns the root a data-anaylsis instance lands imported
+// data under. The directory is created lazily by the import path, not at
+// startup, so a tee or fhe instance never has it created for it.
+func (sec SecurityConfig) GetDataAnalysisDir() string {
+	dir := config.DefaultDataAnalysisOutputDir
+	if strings.TrimSpace(sec.DataAnalysisDir) != "" {
+		dir = sec.DataAnalysisDir
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(dir)
 }
 
 func (sec SecurityConfig) GetModelInputDir() string {
@@ -578,6 +598,12 @@ func (s *TAAState) fheEnabled() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.FHE != nil
+}
+
+// dataAnalysisEnabled reports whether this instance runs the data-anaylsis
+// import path. Security is immutable after construction, so no lock is needed.
+func (s *TAAState) dataAnalysisEnabled() bool {
+	return s.Security.ServerType == config.ServerTypeDataAnalysis
 }
 
 // fheRunner returns the FHE runner, or nil on a tee instance.

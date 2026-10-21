@@ -757,6 +757,8 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 		ModelOutputDir:   cfg.ModelOutputDir,
 		ModelLogDir:      cfg.ModelLogDir,
 		ModelProgressDir: cfg.ModelProgressDir,
+		ServerType:       cfg.ServerType,
+		DataAnalysisDir:  cfg.DataAnalysisOutputDir,
 		LLM: codeaudit.LLMConfig{
 			Enabled:                cfg.LLM.Enabled,
 			AttestationEnabled:     cfg.LLM.AttestationEnabled,

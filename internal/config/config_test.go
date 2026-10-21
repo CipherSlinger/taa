@@ -246,6 +246,35 @@ func TestLoadStartupConfigDataAnalysisTemplate(t *testing.T) {
 		t.Errorf("StateSealingKeySource = %q, want %q: the data-analysis instance still runs in the CSV guest",
 			cfg.StateSealingKeySource, StateSealingKeySourceCSVHW)
 	}
+	if cfg.DataAnalysisOutputDir != DefaultDataAnalysisOutputDir {
+		t.Errorf("DataAnalysisOutputDir = %q, want the template's %q",
+			cfg.DataAnalysisOutputDir, DefaultDataAnalysisOutputDir)
+	}
+}
+
+// The dataAnalysis block is read regardless of instance type; only a data-anaylsis
+// instance acts on it, so loading it on a tee config must not disturb anything.
+func TestLoadStartupConfigDataAnalysisOutputDirOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{"server":{"type":"data-anaylsis"},"dataAnalysis":{"outputDir":"  /srv/landing  "}}`)
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+	if cfg.DataAnalysisOutputDir != "/srv/landing" {
+		t.Errorf("DataAnalysisOutputDir = %q, want the trimmed override", cfg.DataAnalysisOutputDir)
+	}
+
+	blank := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, blank, `{"dataAnalysis":{"outputDir":"   "}}`)
+	cfg, err = LoadStartupConfig(blank)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+	if cfg.DataAnalysisOutputDir != DefaultDataAnalysisOutputDir {
+		t.Errorf("blank outputDir = %q, want the default %q", cfg.DataAnalysisOutputDir, DefaultDataAnalysisOutputDir)
+	}
 }
 
 // fheConfigSection is the fhe block shared by the fixtures that only need a
@@ -400,6 +429,9 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	}
 	if cfg.DataDir != "/opt/taa/data" {
 		t.Fatalf("DataDir = %q, want default", cfg.DataDir)
+	}
+	if cfg.DataAnalysisOutputDir != DefaultDataAnalysisOutputDir {
+		t.Fatalf("DataAnalysisOutputDir = %q, want default %q", cfg.DataAnalysisOutputDir, DefaultDataAnalysisOutputDir)
 	}
 	if cfg.ResultDir != "/opt/taa/results" {
 		t.Fatalf("ResultDir = %q, want default", cfg.ResultDir)
