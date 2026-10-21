@@ -210,18 +210,32 @@ cd /home/hjy/taa/deploy/guest-build
 - `config/kata-config.toml` — 改写后的 Kata hypervisor 配置
 - `config/containerd-runtime-handler.toml` — containerd handler 片段（供审阅）
 - `k8s/runtimeclass.yaml`、`k8s/test-pod.yaml`
-- `install.sh`、`render.py` — 包内自带的安装器与合并器
-- `manifest.env` — 本次交付的全部参数，以及度量输入（`KERNEL_PARAMS`、
-  `OVMF_SHA256`、`KERNEL_SHA256`、`INITRD_SHA256`）
+- `install.sh`、`render.py`、`measure.py` — 包内自带的安装器、合并器与度量计算器
+- `manifest.env` — 本次交付的全部参数，以及度量输入/结果（`KERNEL_PARAMS`、
+  `OVMF_SHA256`、`KERNEL_SHA256`、`INITRD_SHA256`、`MEASUREMENT_HEX`、
+  `MEASUREMENT_BASE64`、`MEASUREMENT_CMDLINE`、`MEASUREMENT_SMP`）
+- `cmdline.txt` — 计算预期度量所用的 QEMU `-append` 原文（输入齐全时才生成）
 - `SHA256SUMS` — 包内文件校验和
-- `README.md` — 包内使用说明
+- `README.md` — 包内使用说明，含预期 MEASUREMENT
 
 渲染是离线的：`REMOTE_HOST` 不参与，也不执行 ssh/scp。Kata 配置模板来自
 `fetch-base` 拉下来的宿主权威副本 `base/configuration-qemu-csv2.toml`；
 宿主的模板变了就要重新 `fetch-base` 再 `render`，否则安装时会因模板 sha 不一致而拒绝。
 
+`render` 会顺带算出预期 MEASUREMENT：
+
+- 公式：`SM3(OVMF || 哈希表)`，哈希表里按 cmdline、initrd、kernel 各放一个 SHA256，
+  cmdline 是 QEMU 实际 `-append` 的字节（末尾换行替换为 NUL）
+- 输入：`base/` 下的 OVMF/kernel、`out/` 下的 initrd；任一缺失时包照样生成，
+  但 README/manifest 会标成 `MEASUREMENT_STATUS=unavailable`
+- cmdline 由渲染后的 Kata 配置推导（`kernel_params`、`enable_debug`、
+  `debug_console_enabled`、`default_vcpus`）；`nr_cpus` 和调试参数最终由 Kata 版本决定，
+  所以安装后以 `/proc/<qemu>/cmdline` 里的实际值为准重算（见 §5）
+- 需要手工指定时可用 `MEASURE_SMP`、`MEASURE_APPEND` 覆盖
+
 交付包只含配置，不含 initrd/kernel/OVMF（约 153 MB）。对方宿主仍需先有 bundle
-（由 `deploy` 或 `build-initrd.sh deploy` 放置），包里的 `install.sh` 会在缺失时明确报错。
+（由 `deploy` 或 `build-initrd.sh deploy` 放置），包里的 `install.sh` 会在缺失时明确报错，
+并在安装前核对 bundle 三个文件的 sha256 与包内记录一致（度量就是基于它们算的）。
 
 ### 4.2 在目标宿主上安装
 
@@ -238,7 +252,7 @@ TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS}" \
 `launch` 等价于：`render` → `scp` 到远端临时目录 → `sudo bash install.sh`。
 `install.sh` 会自动完成：
 
-1. 校验包内 `SHA256SUMS`、宿主 Kata 模板 sha、base initrd sha 与 bundle 三个文件
+1. 校验包内 `SHA256SUMS`、宿主 Kata 模板 sha、base initrd sha，以及 bundle 三个文件的 sha256
 2. 安装新的 Kata 配置：
    - `/etc/kata-containers/configuration-qemu-csv2-taa.toml`
 3. 在 `containerd` 中新增 runtime handler：
@@ -250,6 +264,8 @@ TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS}" \
 7. 创建测试 Pod（带 `TEST_POD_ANNOTATIONS`）
 8. 等待 Pod Ready；超时会打印 Pod 状态与 `Events:` 再退出
 9. 校验 QEMU 是否使用了新的 initrd
+10. 从 QEMU 的 `/proc/<pid>/cmdline` 取实际 `-append`，用包内 `measure.py` 重算
+    MEASUREMENT，并与包内预期值对照（不一致只告警，并打印实际 cmdline）
 
 手工在目标宿主上安装同一个包时：
 
@@ -309,6 +325,18 @@ kubectl exec test-kata-csv2-taa -- curl -s -X POST localhost:6001/v1/taa/health
 kubectl exec test-kata-csv2-taa -- \
   curl -s -X POST localhost:6001/v1/taa/getAttestation \
   -H 'Content-Type: application/json' -d '{"requestId":"probe"}'
+
+# 用实际 QEMU append 重算预期度量（在宿主上执行；与包内 README 的 hex 对照，
+# 也应与上面 getAttestation 的 digest 一致）
+pkg=/path/to/kata-qemu-csv2-taa
+pid=$(ps -eo pid=,args= | grep -F qemu | grep -F /opt/kata/share/kata-containers/taa-csv-20260901/initramfs.img | awk '{print $1}' | head -1)
+tr '\0' '\n' < /proc/$pid/cmdline | grep -A1 '^-append$' | tail -n1 > /tmp/append
+echo >> /tmp/append
+python3 "$pkg/measure.py" digest \
+  --ovmf /opt/kata/share/kata-containers/taa-csv-20260901/OVMF.fd \
+  --kernel /opt/kata/share/kata-containers/taa-csv-20260901/vmlinuz \
+  --initrd /opt/kata/share/kata-containers/taa-csv-20260901/initramfs.img \
+  --cmdline /tmp/append
 ```
 
 ---
@@ -325,6 +353,10 @@ kubectl exec test-kata-csv2-taa -- \
 - `DIST_DIR=dist/kata-qemu-csv2-taa`（`render` 的固定输出目录）
 - `KATA_CONFIG_TEMPLATE=base/configuration-qemu-csv2.toml`（宿主权威模板，`fetch-base` 拉取）
 - `LAUNCH_KEEP_DIST=1`（`launch` 用的临时渲染结果额外复制一份到 `DIST_DIR`）
+- `MEASURE_OVMF` / `MEASURE_KERNEL` / `MEASURE_INITRD`：预期度量的本地输入
+  （默认 `base/` 下的 OVMF/kernel 与 `out/` 下的 initrd）
+- `MEASURE_SMP`：覆盖推导出的 `nr_cpus=`（默认取渲染配置的 `default_vcpus`）
+- `MEASURE_APPEND`：整条覆盖推导出的 QEMU `-append`（单行）
 - `TEST_POD_NAME=test-kata-csv2-taa`
 - `TEST_IMAGE=172.16.10.178:31313/taa-env:slim-v2-20260916`（宿主本地 registry；guest 无外网）
 - `TEST_POD_ANNOTATIONS='{}'`（该宿主上需填 `cc_init_data`，见 §0）
@@ -362,5 +394,7 @@ kubectl exec test-kata-csv2-taa -- \
 - 宿主上做度量预测时注意 `csv-measure.py` 的四个坑：必须 `python3 <脚本>` 调用（shebang 指向
   不存在的 `/usr/libexec/platform-python`）；`--cmdline` 收**文件**；**输出是 base64 不是 hex**；
   `--smp` 必填且 `--vcpumodel host` 与真机 QEMU 参数绑定。真机记录见 spec 的 §5.5。
+  包内 `render/measure.py` 是同一算法的 stdlib 实现（纯 Python SM3，无 pysmx 依赖）：
+  `render` 用它离线算预期值，宿主上也能直接用它复核 `csv-measure.py` 的结果。
 - 注入的 TAA 必须是静态链接的：`CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa`。
 - wrapper（`taa-init.sh`）的判定逻辑有单测：`./test-taa-init.sh`，改动后先跑它。

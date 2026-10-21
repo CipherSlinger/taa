@@ -124,16 +124,22 @@ for asset in initramfs.img vmlinuz OVMF.fd; do
     exit 1
   fi
 done
-if [[ -n "$INITRD_SHA256" && -f "$REMOTE_BUNDLE_DIR/initramfs.img" ]]; then
-  bundle_sha="$(sha256sum "$REMOTE_BUNDLE_DIR/initramfs.img" | awk '{print $1}')"
-  if [[ "$bundle_sha" != "$INITRD_SHA256" ]]; then
-    echo "error: 已安装的 initramfs.img 与本包记录的 initrd 不一致" >&2
-    echo "       包:   $INITRD_SHA256" >&2
-    echo "       bundle: $bundle_sha" >&2
+# The predicted MEASUREMENT was computed from exactly these three files. A
+# mismatch means the host would boot different bytes than the package claims.
+for spec in "initramfs.img:$INITRD_SHA256" "vmlinuz:$KERNEL_SHA256" "OVMF.fd:$OVMF_SHA256"; do
+  asset="${spec%%:*}"
+  expected="${spec#*:}"
+  [[ -z "$expected" ]] && continue
+  bundle_sha="$(sha256sum "$REMOTE_BUNDLE_DIR/$asset" | awk '{print $1}')"
+  if [[ "$bundle_sha" != "$expected" ]]; then
+    echo "error: bundle/$asset 与本包记录的摘要不一致" >&2
+    echo "       包:     $expected" >&2
+    echo "       bundle: $bundle_sha  $REMOTE_BUNDLE_DIR/$asset" >&2
+    echo "hint: 重新部署与包匹配的 bundle，或重新 render 生成与宿主一致的包" >&2
     exit 1
   fi
-  echo "bundle initrd 一致: $bundle_sha"
-fi
+  echo "bundle $asset 一致: $bundle_sha"
+done
 
 if [[ -n "$TEST_NODE_NAME" ]]; then
   if ! kubectl get node "$TEST_NODE_NAME" >/dev/null 2>&1; then
@@ -155,6 +161,9 @@ tmp_containerd="$(mktemp /tmp/containerd-config.taa.XXXXXX.toml)"
 containerd_backup=""
 cleanup() {
   rm -f "$tmp_containerd"
+  if [[ -n "${append_file:-}" ]]; then
+    rm -f "$append_file"
+  fi
   if [[ -n "$containerd_backup" ]]; then
     sudo rm -f "$containerd_backup" || true
   fi
@@ -244,6 +253,51 @@ else
   echo "error: Pod is ready, but no QEMU command line with $REMOTE_BUNDLE_DIR/initramfs.img was found" >&2
   echo "hint: run: ps -eo args= | grep -F qemu | grep -F '$REMOTE_BUNDLE_DIR'" >&2
   exit 1
+fi
+
+echo
+echo "== 7. 度量核对 =="
+if [[ -z "${MEASUREMENT_HEX:-}" ]]; then
+  echo "包内未包含预期 MEASUREMENT，跳过核对"
+else
+  qpid="$(ps -eo pid=,args= | grep -F qemu | grep -F "$REMOTE_BUNDLE_DIR/initramfs.img" |
+    grep -v grep | awk '{print $1}' | head -n 1 || true)"
+  append_file="$(mktemp /tmp/taa-append.XXXXXX.txt)"
+  if [[ -z "$qpid" ]]; then
+    echo "warning: 找不到使用本 bundle 的 QEMU 进程，无法重算 MEASUREMENT" >&2
+  else
+    tr '\0' '\n' < "/proc/$qpid/cmdline" | grep -A1 -- '^-append$' | tail -n1 > "$append_file" || true
+    if [[ ! -s "$append_file" ]]; then
+      echo "warning: 未能从 /proc/$qpid/cmdline 取到 -append" >&2
+    else
+      # measure.py replaces the trailing newline with NUL, like the vendor tool.
+      printf '\n' >> "$append_file"
+      if ! actual_measure="$(python3 "$pkg_dir/measure.py" digest \
+        --ovmf "$REMOTE_BUNDLE_DIR/OVMF.fd" \
+        --kernel "$REMOTE_BUNDLE_DIR/vmlinuz" \
+        --initrd "$REMOTE_BUNDLE_DIR/initramfs.img" \
+        --cmdline "$append_file")"; then
+        echo "warning: measure.py 重算失败，跳过度量核对" >&2
+        actual_measure=""
+      fi
+      actual_hex="$(sed -n 's/^hex=//p' <<<"$actual_measure")"
+      actual_b64="$(sed -n 's/^base64=//p' <<<"$actual_measure")"
+      if [[ -z "$actual_hex" ]]; then
+        :
+      elif [[ "$actual_hex" == "$MEASUREMENT_HEX" ]]; then
+        echo "实际 MEASUREMENT (hex):    $actual_hex"
+        echo "实际 MEASUREMENT (base64): $actual_b64"
+        echo "与包内预期一致"
+      else
+        echo "实际 MEASUREMENT (hex):    $actual_hex"
+        echo "实际 MEASUREMENT (base64): $actual_b64"
+        echo "warning: 实际度量与本包预期不一致" >&2
+        echo "  预期 hex: $MEASUREMENT_HEX" >&2
+        echo "  实际 cmdline: $(cat "$append_file")" >&2
+        echo "hint: 以实际 cmdline 的重算结果为准；若宿主升级了 Kata，请重新 render" >&2
+      fi
+    fi
+  fi
 fi
 
 echo

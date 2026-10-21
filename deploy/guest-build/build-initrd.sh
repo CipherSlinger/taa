@@ -146,6 +146,14 @@ TEST_IMAGE="${TEST_IMAGE:-172.16.10.178:31313/taa-env:slim-v2-20260916}"
 #   TEST_POD_ANNOTATIONS="$(kubectl get pod <working> -o jsonpath='{.metadata.annotations}')"
 TEST_POD_ANNOTATIONS="${TEST_POD_ANNOTATIONS:-{\}}"
 SKIP_REMOTE_BASE_CHECK="${SKIP_REMOTE_BASE_CHECK:-0}"
+# Inputs of the expected CSV2 MEASUREMENT. render() reads them locally; when one
+# is missing it still renders the package but records that the digest is
+# unavailable. MEASURE_APPEND replaces the auto-derived QEMU -append string.
+MEASURE_OVMF="${MEASURE_OVMF:-$SCRIPT_DIR/base/$(basename "$REMOTE_OVMF_SRC")}"
+MEASURE_KERNEL="${MEASURE_KERNEL:-$SCRIPT_DIR/base/$(basename "$REMOTE_KERNEL_SRC")}"
+MEASURE_INITRD="${MEASURE_INITRD:-$INITRD_OUT}"
+MEASURE_SMP="${MEASURE_SMP:-}"
+MEASURE_APPEND="${MEASURE_APPEND:-}"
 
 # 打印支持的子命令和主要环境变量覆盖项。脚本默认执行 build，
 # 因此本地反复调试是安全的；只有显式指定 deploy、launch 或 all 时才会触碰远程服务器。
@@ -198,6 +206,14 @@ Environment overrides:
   KATA_CONFIG_TEMPLATE=$KATA_CONFIG_TEMPLATE
   DIST_DIR=$DIST_DIR
   LAUNCH_KEEP_DIST=${LAUNCH_KEEP_DIST:-0}
+
+  # render prints the digest it computes from these local files; when one is
+  # missing the package records that the expected value is unavailable.
+  MEASURE_OVMF=$MEASURE_OVMF
+  MEASURE_KERNEL=$MEASURE_KERNEL
+  MEASURE_INITRD=$MEASURE_INITRD
+  MEASURE_SMP=${MEASURE_SMP:-(from default_vcpus)}
+  MEASURE_APPEND=${MEASURE_APPEND:-(derived from the rendered config)}
 
 Local input/output overrides (mainly for testing the build path against a
 synthetic archive):
@@ -957,12 +973,56 @@ render_package() {
     --annotations "$TEST_POD_ANNOTATIONS" \
     --out-dir "$out_dir/k8s"
 
-  # The package is self-contained: the installer and the merger travel with it.
+  # The package is self-contained: the installer, the merger and the
+  # measurement helper travel with it.
   cp "$RENDER_DIR/render.py" "$out_dir/render.py"
+  cp "$RENDER_DIR/measure.py" "$out_dir/measure.py"
   cp "$RENDER_DIR/install.sh" "$out_dir/install.sh"
 
-  # MEASUREMENT is SM3(OVMF || cmdline || initrd || kernel), so the package
-  # records exactly those inputs where it can see them.
+  # MEASUREMENT is SM3(OVMF || hashes-table), and the table hashes the exact
+  # QEMU -append string plus the initrd and kernel. All three files come from
+  # the same local copies that deploy uploads, so the value describes what the
+  # target will actually boot.
+  local measure_status="unavailable" measure_reason="" measure_hex="" measure_b64=""
+  local measure_cmdline="" measure_smp=""
+  if [[ ! -f "$MEASURE_OVMF" || ! -f "$MEASURE_KERNEL" || ! -f "$MEASURE_INITRD" ]]; then
+    measure_reason="缺少本地度量输入（OVMF/kernel/initrd）"
+  else
+    if [[ -n "$MEASURE_APPEND" ]]; then
+      if [[ "$MEASURE_APPEND" == *$'\n'* || "$MEASURE_APPEND" == *$'\r'* ]]; then
+        echo "error: MEASURE_APPEND must be a single line without CR/LF" >&2
+        exit 1
+      fi
+      measure_cmdline="$MEASURE_APPEND"
+    else
+      local -a smp_args=()
+      [[ -n "$MEASURE_SMP" ]] && smp_args=(--smp "$MEASURE_SMP")
+      measure_cmdline="$(python3 "$RENDER_DIR/measure.py" cmdline \
+        --config "$out_dir/config/kata-config.toml" \
+        --section "$KATA_HYPERVISOR_SECTION" \
+        "${smp_args[@]}")"
+    fi
+    printf '%s\n' "$measure_cmdline" > "$out_dir/cmdline.txt"
+
+    local measure_out
+    if ! measure_out="$(python3 "$RENDER_DIR/measure.py" digest \
+      --ovmf "$MEASURE_OVMF" \
+      --kernel "$MEASURE_KERNEL" \
+      --initrd "$MEASURE_INITRD" \
+      --cmdline "$out_dir/cmdline.txt")"; then
+      echo "error: 计算预期 MEASUREMENT 失败" >&2
+      exit 1
+    fi
+    measure_hex="$(sed -n 's/^hex=//p' <<<"$measure_out")"
+    measure_b64="$(sed -n 's/^base64=//p' <<<"$measure_out")"
+    measure_smp="$(sed -n 's/.*nr_cpus=\([0-9][0-9]*\).*/\1/p' <<<"$measure_cmdline")"
+    if [[ -z "$measure_hex" || -z "$measure_b64" ]]; then
+      echo "error: measure.py 未输出度量值: $measure_out" >&2
+      exit 1
+    fi
+    measure_status="computed"
+  fi
+
   local kernel_params template_sha base_sha initrd_sha kernel_sha ovmf_sha
   local kernel_src="$SCRIPT_DIR/base/$(basename "$REMOTE_KERNEL_SRC")"
   local ovmf_src="$SCRIPT_DIR/base/$(basename "$REMOTE_OVMF_SRC")"
@@ -995,6 +1055,12 @@ render_package() {
     printf 'KERNEL_SHA256=%q\n' "$kernel_sha"
     printf 'OVMF_SHA256=%q\n' "$ovmf_sha"
     printf 'KERNEL_PARAMS=%q\n' "$kernel_params"
+    printf 'MEASUREMENT_STATUS=%q\n' "$measure_status"
+    printf 'MEASUREMENT_HEX=%q\n' "$measure_hex"
+    printf 'MEASUREMENT_BASE64=%q\n' "$measure_b64"
+    printf 'MEASUREMENT_CMDLINE=%q\n' "$measure_cmdline"
+    printf 'MEASUREMENT_SMP=%q\n' "$measure_smp"
+    printf 'PACKAGE_CMDLINE=%q\n' "$([[ -f "$out_dir/cmdline.txt" ]] && echo cmdline.txt || echo '')"
     printf 'TEST_POD_NAME=%q\n' "$TEST_POD_NAME"
     printf 'TEST_NODE_NAME=%q\n' "$TEST_NODE_NAME"
     printf 'TEST_IMAGE=%q\n' "$TEST_IMAGE"
@@ -1003,6 +1069,52 @@ render_package() {
     printf 'TAA_PLATFORM_IP=%q\n' "${TAA_PLATFORM_IP:-}"
     printf 'TAA_DOCKER_ID=%q\n' "${TAA_DOCKER_ID:-}"
   } > "$out_dir/manifest.env"
+
+  local measure_section
+  if [[ "$measure_status" == "computed" ]]; then
+    measure_section="$(cat <<MEASURE
+## 预期 MEASUREMENT
+
+CSV2 的启动度量是 \`SM3(OVMF || 哈希表)\`：哈希表里按 cmdline、initrd、kernel
+三项各放一个 SHA256，cmdline 是 QEMU 实际 \`-append\` 的字节（末尾换行替换为 NUL）。
+
+- smp（\`nr_cpus=\`）：\`$measure_smp\`
+- cmdline 原文：\`cmdline.txt\`
+- OVMF SHA256：\`$ovmf_sha\`
+- kernel SHA256：\`$kernel_sha\`
+- initrd SHA256：\`$initrd_sha\`
+
+预期值：
+
+- hex：\`$measure_hex\`
+- base64：\`$measure_b64\`
+
+安装后 \`install.sh\` 会从 QEMU 进程的 \`/proc/<pid>/cmdline\` 取实际 \`-append\`，
+用包内 \`measure.py\` 重算并打印。也可以手工重算：
+
+\`\`\`bash
+pid=\$(ps -eo pid=,args= | grep -F qemu | grep -F "$REMOTE_BUNDLE_DIR/initramfs.img" | awk '{print \$1}' | head -1)
+tr '\\0' '\\n' < /proc/\$pid/cmdline | grep -A1 '^-append\$' | tail -n1 > /tmp/append
+echo >> /tmp/append
+python3 measure.py digest --ovmf "$REMOTE_BUNDLE_DIR/OVMF.fd" \\
+  --kernel "$REMOTE_BUNDLE_DIR/vmlinuz" \\
+  --initrd "$REMOTE_BUNDLE_DIR/initramfs.img" --cmdline /tmp/append
+\`\`\`
+
+再与 guest 报告里的 digest（\`getAttestation\` 的 attestationValues，已解掩码）对照。
+cmdline 里的 \`nr_cpus\` 与调试参数由 Kata 版本决定；若与本包预测不一致，
+以 \`/proc\` 里取到的实际 cmdline 重算结果为准。
+MEASURE
+)"
+  else
+    measure_section="$(cat <<MEASURE
+## 预期 MEASUREMENT
+
+本包未计算预期值：$measure_reason。
+在构建机上先 \`fetch-base\` 并 \`build\`，再 \`render\`，即可写入预期值。
+MEASURE
+)"
+  fi
 
   cat > "$out_dir/README.md" <<EOF
 # TAA-in-initrd 交付包
@@ -1015,9 +1127,10 @@ render_package() {
 - \`config/kata-config.toml\` — 指向 bundle 的 Kata hypervisor 配置
 - \`config/containerd-runtime-handler.toml\` — containerd handler 片段（供审阅）
 - \`k8s/runtimeclass.yaml\` / \`k8s/test-pod.yaml\` — 运行时类与测试 Pod
-- \`install.sh\` / \`render.py\` — 安装脚本与合并器
+- \`install.sh\` / \`render.py\` / \`measure.py\` — 安装脚本、合并器与度量计算器
 - \`manifest.env\` — 本次交付的全部参数与度量输入
 - \`SHA256SUMS\` — 包内文件校验和
+$([[ -f "$out_dir/cmdline.txt" ]] && echo '- `cmdline.txt` — 计算预期度量所用的 QEMU `-append` 原文')
 
 ## 前置条件
 
@@ -1047,14 +1160,7 @@ spec:
 
 测试 Pod 名：\`$TEST_POD_NAME\`（TAA 在 Pod 网络命名空间的 6001 端口）。
 
-## 度量口径
-
-MEASUREMENT = SM3(OVMF || cmdline || initrd || kernel)。本包记录：
-
-- OVMF: \`$ovmf_sha\`
-- kernel: \`$kernel_sha\`
-- initrd: \`$initrd_sha\`
-- cmdline: \`$kernel_params\`
+$measure_section
 EOF
 
   (cd "$out_dir" && find . -type f ! -name SHA256SUMS -print0 |

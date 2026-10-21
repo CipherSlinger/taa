@@ -76,13 +76,23 @@ image = "/usr/share/kata-containers/kata-containers.img"
 initrd = "/usr/share/kata-containers/kata-containers-initrd.img"
 firmware = "/usr/share/ovmf/OVMF.fd"
 kernel_params = "console=ttyS0 init=/sbin/init rdinit=/old/init quiet"
+enable_debug = true
+disable_guest_selinux = true
+default_vcpus = 3
 
 [hypervisor.qemu.rate_limiter]
 burst = 10
 
 [agent.kata]
 kernel_params = "must not be touched"
+debug_console_enabled = true
 TOML
+
+# Small measurement inputs; the real digest vectors are checked separately
+# against the base assets when they are present.
+printf 'fixture-ovmf\n' > "$tmp_dir/fixture-ovmf.fd"
+printf 'fixture-kernel\n' > "$tmp_dir/fixture-vmlinuz"
+printf 'fixture-initrd\n' > "$tmp_dir/fixture-initrd.img"
 
 bundle="/opt/kata/share/kata-containers/taa-csv2"
 common_env=(
@@ -94,6 +104,9 @@ common_env=(
   TEST_POD_NAME=test-kata-csv2-taa
   TEST_NODE_NAME=fixture-node
   TEST_POD_ANNOTATIONS='{"io.katacontainers.config.hypervisor.cc_init_data":"abc+/="}'
+  MEASURE_OVMF="$tmp_dir/fixture-ovmf.fd"
+  MEASURE_KERNEL="$tmp_dir/fixture-vmlinuz"
+  MEASURE_INITRD="$tmp_dir/fixture-initrd.img"
 )
 
 # ── 1. render produces a self-contained package, offline ────────────────────
@@ -102,7 +115,7 @@ env "${common_env[@]}" DIST_DIR="$pkg" REMOTE_HOST=invalid.invalid "$BUILD" rend
 
 for f in config/kata-config.toml config/containerd-runtime-handler.toml \
          k8s/runtimeclass.yaml k8s/test-pod.yaml manifest.env SHA256SUMS \
-         install.sh render.py README.md; do
+         install.sh render.py measure.py cmdline.txt README.md; do
   if [[ -f "$pkg/$f" ]]; then
     echo "ok   render: produced $f"
   else
@@ -264,6 +277,87 @@ check_contains "manifest: records the measurement cmdline" \
 check "manifest: template sha is recorded" "1" \
   "$(sed -n 's/^KATA_CONFIG_TEMPLATE_SHA256=//p' "$pkg/manifest.env" | tr -d "'" | grep -cE '^[0-9a-f]{64}$')"
 
+# ── 5b. expected MEASUREMENT ───────────────────────────────────────────────
+MEASURE="$SCRIPT_DIR/render/measure.py"
+expected_cmdline='tsc=reliable no_timer_check rcupdate.rcu_expedited=1 i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 i8042.noaux=1 noreplace-smp reboot=k cryptomgr.notests net.ifnames=0 pci=lastbus=0 console=hvc0 console=hvc1 debug panic=1 nr_cpus=3 selinux=0 scsi_mod.scan=none agent.log=debug agent.debug_console agent.debug_console_vport=1026 rdinit=/usr/local/bin/taa-init console=ttyS0 quiet'
+check "measure: cmdline follows the rendered config" "$expected_cmdline" "$(cat "$pkg/cmdline.txt")"
+check_contains "manifest: measurement status is computed" 'MEASUREMENT_STATUS=computed' "$manifest"
+check_contains "manifest: records the SMP" 'MEASUREMENT_SMP=3' "$manifest"
+check "manifest: records a 64-hex MEASUREMENT" "1" \
+  "$(sed -n 's/^MEASUREMENT_HEX=//p' "$pkg/manifest.env" | tr -d "'" | grep -cE '^[0-9a-f]{64}$')"
+
+measure_hex="$(sed -n 's/^MEASUREMENT_HEX=//p' "$pkg/manifest.env" | tr -d "'")"
+direct_hex="$(python3 "$MEASURE" digest \
+  --ovmf "$tmp_dir/fixture-ovmf.fd" \
+  --kernel "$tmp_dir/fixture-vmlinuz" \
+  --initrd "$tmp_dir/fixture-initrd.img" \
+  --cmdline "$pkg/cmdline.txt" | sed -n 's/^hex=//p')"
+check "measure: manifest value matches a direct recompute" "$measure_hex" "$direct_hex"
+check_contains "README: shows the expected hex" "$measure_hex" "$(cat "$pkg/README.md")"
+check_contains "README: points at cmdline.txt" 'cmdline.txt' "$(cat "$pkg/README.md")"
+
+# The pure-Python SM3 must agree with an independent implementation when one
+# is available (OpenSSL 3 ships sm3).
+if python3 - "$MEASURE" <<'PY'
+import hashlib, importlib.util, os, sys
+if "sm3" not in hashlib.algorithms_available:
+    print("no hashlib sm3; skipped")
+    sys.exit(0)
+spec = importlib.util.spec_from_file_location("measure", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+for payload in (b"", b"abc", b"a" * 64, os.urandom(4097)):
+    sm3 = module.SM3()
+    for offset in range(0, len(payload), 37):
+        sm3.update(payload[offset:offset + 37])
+    assert sm3.digest() == hashlib.new("sm3", payload).digest()
+PY
+then
+  echo "ok   measure: SM3 matches hashlib (or hashlib has no sm3)"
+else
+  echo "FAIL measure: SM3 disagrees with hashlib" >&2
+  failures=$((failures + 1))
+fi
+
+# Recorded vector from the base initrd control cell (2026-10-10): with the
+# unmodified base initrd and the debug-off cmdline, the computed value matched
+# the guest report exactly. Only run when those base assets are present.
+base_ovmf="$SCRIPT_DIR/base/OVMFCSV.fd"
+base_kernel="$SCRIPT_DIR/base/vmlinuz-confidential-csv.container"
+base_initrd="$SCRIPT_DIR/base/kata-containers-initrd-confidential-csv.img"
+if [[ -f "$base_ovmf" && -f "$base_kernel" && -f "$base_initrd" ]] &&
+  [[ "$(sha256sum "$base_ovmf" | awk '{print $1}')" == 508b8679be680fbc4462145870175f8624f05a9177f09239e34d557a5229fe79 ]] &&
+  [[ "$(sha256sum "$base_kernel" | awk '{print $1}')" == cc7e8e9f3acd8fae7dadcff7184e5584f1304e2a95e2ea6915b3be3b3499084d ]] &&
+  [[ "$(sha256sum "$base_initrd" | awk '{print $1}')" == a19d387cfd1822d8aedcd47f443fc691d6460adabdabcf46cfbe6e28ec842287 ]]; then
+  cat > "$tmp_dir/historical-cmdline.txt" <<'EOF'
+tsc=reliable no_timer_check rcupdate.rcu_expedited=1 i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 i8042.noaux=1 noreplace-smp reboot=k cryptomgr.notests net.ifnames=0 pci=lastbus=0 console=hvc0 console=hvc1 quiet panic=1 nr_cpus=1 selinux=0 scsi_mod.scan=none rdinit=/usr/local/bin/taa-init cgroup_no_v1=all systemd.unified_cgroup_hierarchy=1
+EOF
+  check "measure: reproduces the recorded base-cell vector" \
+    "hex=b8ad1d1168b5e1367c3acebc39adfdd4b8559a8845db6e9818c9c2f2d54a8d26" \
+    "$(python3 "$MEASURE" digest --ovmf "$base_ovmf" --kernel "$base_kernel" \
+      --initrd "$base_initrd" --cmdline "$tmp_dir/historical-cmdline.txt" | grep '^hex=')"
+else
+  echo "skip measure: recorded base vector (base assets absent or replaced)"
+fi
+
+# Without the three local input files the package must say so instead of
+# publishing a made-up value.
+pkg_missing="$tmp_dir/missing/pkg"
+env "${common_env[@]}" MEASURE_INITRD="$tmp_dir/absent.initrd" \
+  DIST_DIR="$pkg_missing" REMOTE_HOST=invalid.invalid "$BUILD" render >/dev/null
+check_contains "manifest: missing inputs mark the measurement unavailable" \
+  'MEASUREMENT_STATUS=unavailable' "$(cat "$pkg_missing/manifest.env")"
+check "package: no cmdline.txt without measurement inputs" "absent" \
+  "$([[ -e "$pkg_missing/cmdline.txt" ]] && echo present || echo absent)"
+check_contains "README: explains why the measurement is missing" \
+  '本包未计算预期值' "$(cat "$pkg_missing/README.md")"
+if (cd "$pkg_missing" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1; then
+  echo "ok   missing-input package still verifies"
+else
+  echo "FAIL missing-input package does not verify" >&2
+  failures=$((failures + 1))
+fi
+
 if (cd "$pkg" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1; then
   echo "ok   SHA256SUMS verifies from inside the package"
 else
@@ -299,6 +393,10 @@ else
 fi
 check_contains "install.sh: guards the template sha" 'Kata 配置模板与本包不一致' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: guards the base initrd sha" 'base initrd 与构建时不一致' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: guards every bundle digest" '与本包记录的摘要不一致' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: recomputes MEASUREMENT from the running QEMU" \
+  '/proc/$qpid/cmdline' "$(cat "$pkg/install.sh")"
+check_contains "install.sh: compares against the package value" '与包内预期一致' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: verifies the package first" 'sha256sum -c --quiet SHA256SUMS' "$(cat "$pkg/install.sh")"
 check_contains "install.sh: supports dry-run" '--dry-run' "$(cat "$pkg/install.sh")"
 
