@@ -19,7 +19,6 @@ const (
 
 	DefaultPollInterval   = 5 * time.Second
 	DefaultRequestTimeout = 30 * time.Second
-	DefaultTaskTimeout    = 30 * time.Minute
 )
 
 // Config is the runtime configuration of the FHE integration on a
@@ -43,8 +42,6 @@ type Config struct {
 	PollInterval time.Duration
 	// RequestTimeout bounds one HTTP call to the FHE service.
 	RequestTimeout time.Duration
-	// TaskTimeout bounds a whole task, polls and callback together.
-	TaskTimeout time.Duration
 	// ActivateModelOnImport calls /models/activate right after a model is staged.
 	//
 	// This field is the exception to this struct's rule that a zero value is an
@@ -123,9 +120,6 @@ func (c Config) Validate() error {
 	}
 	if c.RequestTimeout <= 0 {
 		return fmt.Errorf("fhe.requestTimeoutMs must be positive, got %d", int64(c.RequestTimeout/time.Millisecond))
-	}
-	if c.TaskTimeout <= 0 {
-		return fmt.Errorf("fhe.taskTimeoutMs must be positive, got %d", int64(c.TaskTimeout/time.Millisecond))
 	}
 	return nil
 }

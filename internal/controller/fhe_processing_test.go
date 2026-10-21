@@ -33,7 +33,6 @@ func newFHETestState(t *testing.T) *TAAState {
 		MaxEvalKeyBytes: fhe.DefaultMaxEvalKeyBytes,
 		PollInterval:    fhe.DefaultPollInterval,
 		RequestTimeout:  fhe.DefaultRequestTimeout,
-		TaskTimeout:     fhe.DefaultTaskTimeout,
 	}, nil)
 	if err != nil {
 		t.Fatalf("fhe.New: %v", err)
@@ -144,7 +143,7 @@ func newStubRunner(t *testing.T) *fhe.Runner {
 		Endpoint: "http://127.0.0.1:1", DataDir: t.TempDir(), KeyCacheDir: t.TempDir(),
 		CallbackBaseURL: "http://taa:6001",
 		MaxEvalKeyBytes: fhe.DefaultMaxEvalKeyBytes,
-		PollInterval:    time.Second, RequestTimeout: time.Second, TaskTimeout: time.Minute,
+		PollInterval:    time.Second, RequestTimeout: time.Second,
 	}, nil)
 	if err != nil {
 		t.Fatalf("fhe.New: %v", err)
@@ -477,7 +476,6 @@ func newFHETestEnv(t *testing.T) *fheTestEnv {
 		MaxEvalKeyBytes: fhe.DefaultMaxEvalKeyBytes,
 		PollInterval:    5 * time.Millisecond,
 		RequestTimeout:  2 * time.Second,
-		TaskTimeout:     5 * time.Second,
 		// Set explicitly, because this field's zero value is a working-but-wrong
 		// configuration: a Config built without it stages models and never
 		// hot-loads them (see fhe.Config.ActivateModelOnImport).

@@ -813,7 +813,6 @@ func buildFHERunner(cfg config.StartupConfig) (*fhe.Runner, error) {
 		MaxEvalKeyBytes:       f.MaxEvalKeyBytes,
 		PollInterval:          time.Duration(f.PollIntervalMs) * time.Millisecond,
 		RequestTimeout:        time.Duration(f.RequestTimeoutMs) * time.Millisecond,
-		TaskTimeout:           time.Duration(f.TaskTimeoutMs) * time.Millisecond,
 		ActivateModelOnImport: activate,
 	}, nil)
 }

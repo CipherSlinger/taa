@@ -17,7 +17,6 @@ func validConfig() Config {
 		MaxEvalKeyBytes:       DefaultMaxEvalKeyBytes,
 		PollInterval:          DefaultPollInterval,
 		RequestTimeout:        DefaultRequestTimeout,
-		TaskTimeout:           DefaultTaskTimeout,
 		ActivateModelOnImport: true,
 	}
 }
@@ -60,12 +59,6 @@ func TestConfigValidateRejectsBadBounds(t *testing.T) {
 	badPoll.PollInterval = 0
 	if err := badPoll.Validate(); err == nil {
 		t.Error("pollInterval=0 accepted, want error")
-	}
-
-	badTimeout := validConfig()
-	badTimeout.TaskTimeout = 0
-	if err := badTimeout.Validate(); err == nil {
-		t.Error("taskTimeout=0 accepted, want error")
 	}
 }
 
@@ -184,7 +177,6 @@ func TestConfigValidateDurationErrorsPrintMilliseconds(t *testing.T) {
 	}{
 		{"pollIntervalMs", func(c *Config) { c.PollInterval = -1 * time.Millisecond }, "fhe.pollIntervalMs must be positive, got -1"},
 		{"requestTimeoutMs", func(c *Config) { c.RequestTimeout = 0 }, "fhe.requestTimeoutMs must be positive, got 0"},
-		{"taskTimeoutMs", func(c *Config) { c.TaskTimeout = -1500 * time.Millisecond }, "fhe.taskTimeoutMs must be positive, got -1500"},
 	}
 	for _, tc := range tests {
 		c := validConfig()
@@ -227,31 +219,17 @@ func TestConfigDefaults(t *testing.T) {
 	if DefaultRequestTimeout != 30*time.Second {
 		t.Errorf("DefaultRequestTimeout = %s, want 30s", DefaultRequestTimeout)
 	}
-	if DefaultTaskTimeout != 30*time.Minute {
-		t.Errorf("DefaultTaskTimeout = %s, want 30m", DefaultTaskTimeout)
-	}
-	// One HTTP call is bounded by the request timeout and the whole wait by the
-	// task timeout; a request timeout that reached the task timeout would leave
-	// no room for a second poll.
-	if DefaultRequestTimeout >= DefaultTaskTimeout {
-		t.Errorf("DefaultRequestTimeout %s must stay below DefaultTaskTimeout %s",
-			DefaultRequestTimeout, DefaultTaskTimeout)
-	}
-	if DefaultPollInterval >= DefaultTaskTimeout {
-		t.Errorf("DefaultPollInterval %s must stay below DefaultTaskTimeout %s",
-			DefaultPollInterval, DefaultTaskTimeout)
-	}
 }
 
-// TestDefaultsMatchTheStartupConfigDefaults binds this package's four constants to
-// the config package's, which are the ones production actually uses.
+// TestDefaultsMatchTheStartupConfigDefaults binds this package's constants to the
+// config package's, which are the ones production actually uses.
 //
-// The same four numbers are spelled twice: internal/config defines DefaultFHE*, and
+// The same numbers are spelled twice: internal/config defines DefaultFHE*, and
 // applyFHEDefaults fills a template that omitted one with them, while the constants
 // below are what this package's own tests build a Config from. Nothing made the two
 // agree, so raising a default on the production side alone would have left every
 // test here green against a number no deployment uses - and this package's tests
-// are the evidence that the timeout, poll and key-cap agree with each other.
+// are the evidence that the poll interval and key cap agree with each other.
 func TestDefaultsMatchTheStartupConfigDefaults(t *testing.T) {
 	if DefaultMaxEvalKeyBytes != config.DefaultFHEMaxEvalKeyBytes {
 		t.Errorf("DefaultMaxEvalKeyBytes = %d, but the startup config defaults to %d",
@@ -262,8 +240,5 @@ func TestDefaultsMatchTheStartupConfigDefaults(t *testing.T) {
 	}
 	if got, want := DefaultRequestTimeout, time.Duration(config.DefaultFHERequestTimeoutMs)*time.Millisecond; got != want {
 		t.Errorf("DefaultRequestTimeout = %s, but the startup config defaults to %s", got, want)
-	}
-	if got, want := DefaultTaskTimeout, time.Duration(config.DefaultFHETaskTimeoutMs)*time.Millisecond; got != want {
-		t.Errorf("DefaultTaskTimeout = %s, but the startup config defaults to %s", got, want)
 	}
 }

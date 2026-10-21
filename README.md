@@ -417,8 +417,9 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `fhe.maxEvalKeyBytes` | `6442450944` (6 GiB) | Integer. Cap on the eval key download. It is **independent of** `codeAudit.resultCheck.maxFileBytes`: a measured evaluation key of 3.101 GiB already exceeds the latter's 3 GiB default |
 | `fhe.pollIntervalMs` | `5000` | Integer. Fallback poll period used while waiting for a task |
 | `fhe.requestTimeoutMs` | `30000` | Integer. Bounds one HTTP call to the FHE service |
-| `fhe.taskTimeoutMs` | `1800000` (30 min) | Integer. Bounds a whole task, polls and callback together |
 | `fhe.activateModelOnImport` | `true` | Boolean (`*bool` in the config struct). Calls `/models/activate` right after a model is staged. It is a pointer precisely so that "unset" stays distinguishable from "false": unset resolves to `true`, and a missing setting read as `false` would turn into a deliberate opt-out that leaves every task to fail at run time, against a model the service was never told to load |
+
+There is deliberately no task-level timeout: an FHE batch is long by nature, so a fixed budget would either kill legitimate runs or be too large to bound anything. A task runs until the service reports a terminal state or the caller cancels. A config that still carries the removed `fhe.taskTimeoutMs` key loads, and the key is ignored.
 
 The whole `fhe` section is read only when `server.type` is `fhe`; a `tee` instance that carries one logs a warning and ignores it.
 

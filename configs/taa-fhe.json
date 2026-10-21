@@ -31,7 +31,6 @@
     "maxEvalKeyBytes": 6442450944,
     "pollIntervalMs": 5000,
     "requestTimeoutMs": 30000,
-    "taskTimeoutMs": 1800000,
     "activateModelOnImport": true
   }
 }

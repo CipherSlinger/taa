@@ -154,28 +154,6 @@ func newTestRunner(t *testing.T, srvURL string, layout Layout) *Runner {
 		MaxEvalKeyBytes: DefaultMaxEvalKeyBytes,
 		PollInterval:    20 * time.Millisecond,
 		RequestTimeout:  5 * time.Second,
-		TaskTimeout:     5 * time.Second,
-	}
-	r, err := New(cfg, nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	return r
-}
-
-// newRunnerWithTimeout wires a Runner against a fake service with the given task
-// budget, for the tests whose subject is a deadline or a cancellation.
-func newRunnerWithTimeout(t *testing.T, srvURL string, layout Layout, taskTimeout time.Duration) *Runner {
-	t.Helper()
-	cfg := Config{
-		Endpoint:        srvURL,
-		DataDir:         layout.DataDir(),
-		KeyCacheDir:     t.TempDir(),
-		CallbackBaseURL: "http://taa.test:6001",
-		MaxEvalKeyBytes: DefaultMaxEvalKeyBytes,
-		PollInterval:    10 * time.Millisecond,
-		RequestTimeout:  5 * time.Second,
-		TaskTimeout:     taskTimeout,
 	}
 	r, err := New(cfg, nil)
 	if err != nil {
@@ -394,39 +372,6 @@ func TestRunnerCallbackWinsOverPollingExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestRunnerExecuteTimesOut(t *testing.T) {
-	layout := NewLayout(t.TempDir())
-	keyBytes := []byte("k")
-	keySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(keyBytes)
-	}))
-	defer keySrv.Close()
-	_, srv := newFakeFHE(t, layout)
-
-	cfg := Config{
-		Endpoint: srv.URL, DataDir: layout.DataDir(), KeyCacheDir: t.TempDir(),
-		CallbackBaseURL: "http://taa.test:6001",
-		MaxEvalKeyBytes: DefaultMaxEvalKeyBytes,
-		PollInterval:    10 * time.Millisecond,
-		RequestTimeout:  5 * time.Second,
-		TaskTimeout:     150 * time.Millisecond,
-	}
-	r, err := New(cfg, nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	out, err := r.Execute(context.Background(), specFor(t, r, keySrv.URL, keyBytes, []byte("i")), nil)
-	if err == nil {
-		t.Fatal("Execute on a task that never terminates = nil, want error")
-	}
-	if out.Status != StatusFailed {
-		t.Errorf("Status = %q, want %q", out.Status, StatusFailed)
-	}
-	if !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("error %q does not mention the timeout", err)
-	}
-}
-
 func TestRunnerExecuteRetriesAnExistingTask(t *testing.T) {
 	layout := NewLayout(t.TempDir())
 	keyBytes := []byte("k")
@@ -555,7 +500,7 @@ func TestRunnerCancelTrackedTaskStillWorks(t *testing.T) {
 // handed DownloadResult a RequestTimeout-sized context, so an archive that
 // needed longer than 30s was aborted mid-body in production while a suite using
 // ten-byte payloads passed. The body here takes longer than RequestTimeout and
-// is still far inside TaskTimeout.
+// has no task-level bound to fall back on.
 func TestRunnerCopyResultDownloadIsNotBoundedByRequestTimeout(t *testing.T) {
 	layout := NewLayout(t.TempDir())
 	head, tail := []byte("result-head"), []byte("result-tail")
@@ -582,7 +527,6 @@ func TestRunnerCopyResultDownloadIsNotBoundedByRequestTimeout(t *testing.T) {
 		MaxEvalKeyBytes: DefaultMaxEvalKeyBytes,
 		PollInterval:    20 * time.Millisecond,
 		RequestTimeout:  150 * time.Millisecond,
-		TaskTimeout:     30 * time.Second,
 	}
 	r, err := New(cfg, nil)
 	if err != nil {
@@ -762,7 +706,7 @@ func TestNewValidatesConfigAndCreatesDirs(t *testing.T) {
 		Endpoint: "http://127.0.0.1:1", DataDir: layout.DataDir(), KeyCacheDir: t.TempDir(),
 		CallbackBaseURL: "http://taa:6001",
 		MaxEvalKeyBytes: DefaultMaxEvalKeyBytes, PollInterval: time.Second,
-		RequestTimeout: time.Second, TaskTimeout: time.Minute,
+		RequestTimeout: time.Second,
 	}
 	if _, err := New(cfg, nil); err != nil {
 		t.Fatalf("New: %v", err)
@@ -781,15 +725,15 @@ func TestNewValidatesConfigAndCreatesDirs(t *testing.T) {
 // the first is still in flight - both register under that id, and the second
 // prepare replaces the first's entry in the table. Whichever run returns first
 // then used to delete the other's entry, after which that run's terminal
-// callback was dropped as "unknown task" and Execute sat there until its own
-// timeout - which is why the second run here must still be resolved by its
-// callback.
+// callback was dropped as "unknown task" and Execute waited forever for a
+// resolution that could no longer arrive - which is why the second run here must
+// still be resolved by its callback.
 func TestRunnerConcurrentRunsForOneTaskIDDoNotForgetEachOther(t *testing.T) {
 	layout := NewLayout(t.TempDir())
 	keyBytes := []byte("k")
 	keySrv := keyServer(t, keyBytes)
 	_, srv := newFakeFHE(t, layout)
-	r := newRunnerWithTimeout(t, srv.URL, layout, 5*time.Second)
+	r := newTestRunner(t, srv.URL, layout)
 	spec := specFor(t, r, keySrv.URL, keyBytes, []byte("i"))
 
 	ctx1, cancel1 := context.WithCancel(context.Background())
@@ -852,13 +796,13 @@ func TestRunnerConcurrentRunsForOneTaskIDDoNotForgetEachOther(t *testing.T) {
 // A replayed import whose task has already completed failed to create - the task
 // exists - and was then handed a /continue that reset it to running and dropped
 // the result already sitting in the shared directory, so the import ended as a
-// timeout failure for a task that had succeeded.
+// failure for a task that had succeeded.
 func TestRunnerExecuteAdoptsAnAlreadyCompletedTask(t *testing.T) {
 	layout := NewLayout(t.TempDir())
 	keyBytes := []byte("k")
 	keySrv := keyServer(t, keyBytes)
 	fake, srv := newFakeFHE(t, layout)
-	r := newRunnerWithTimeout(t, srv.URL, layout, 500*time.Millisecond)
+	r := newTestRunner(t, srv.URL, layout)
 	spec := specFor(t, r, keySrv.URL, keyBytes, []byte("i"))
 
 	// The task already ran to a successful end, and its result is on disk.
@@ -932,7 +876,7 @@ func TestRunnerExecuteIsResolvedByACallbackWhileItWaits(t *testing.T) {
 	keyBytes := []byte("k")
 	keySrv := keyServer(t, keyBytes)
 	_, srv := newFakeFHE(t, layout)
-	r := newRunnerWithTimeout(t, srv.URL, layout, 10*time.Second)
+	r := newTestRunner(t, srv.URL, layout)
 	spec := specFor(t, r, keySrv.URL, keyBytes, []byte("i"))
 
 	done := make(chan TaskOutcome, 1)
@@ -995,7 +939,7 @@ func TestRunnerExecuteAbortsStagingWhenTheCallerGivesUp(t *testing.T) {
 	defer keySrv.Close()
 
 	fake, srv := newFakeFHE(t, layout)
-	r := newRunnerWithTimeout(t, srv.URL, layout, time.Minute)
+	r := newTestRunner(t, srv.URL, layout)
 	spec := specFor(t, r, keySrv.URL, payload, []byte("i"))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1037,7 +981,7 @@ func TestRunnerPublishedFilesAreReadableDespiteTheUmask(t *testing.T) {
 	keyBytes := []byte("eval-key-bytes")
 	keySrv := keyServer(t, keyBytes)
 	fake, srv := newFakeFHE(t, layout)
-	r := newRunnerWithTimeout(t, srv.URL, layout, 2*time.Second)
+	r := newTestRunner(t, srv.URL, layout)
 	spec := specFor(t, r, keySrv.URL, keyBytes, []byte("i"))
 
 	go func() {
@@ -1091,7 +1035,7 @@ func TestRunnerPublishedDirectoriesAreTraversableDespiteTheUmask(t *testing.T) {
 	keyBytes := []byte("eval-key-bytes")
 	keySrv := keyServer(t, keyBytes)
 	fake, srv := newFakeFHE(t, layout)
-	r := newRunnerWithTimeout(t, srv.URL, layout, 2*time.Second)
+	r := newTestRunner(t, srv.URL, layout)
 	spec := specFor(t, r, keySrv.URL, keyBytes, []byte("i"))
 
 	go func() {
@@ -1301,7 +1245,7 @@ func TestRunnerForgetIsOrderIndependent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	r := newRunnerWithTimeout(t, srv.URL, layout, 5*time.Second)
+	r := newTestRunner(t, srv.URL, layout)
 	specA := specFor(t, r, keySrvA.URL, keyA, []byte("i"))
 	specB := specFor(t, r, keySrvB.URL, keyB, []byte("i"))
 	if specA.UserID == specB.UserID {
@@ -1383,7 +1327,7 @@ func TestRunnerEarlyFailureReturnsTheRecordedOutcome(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	r := newRunnerWithTimeout(t, srv.URL, layout, 5*time.Second)
+	r := newTestRunner(t, srv.URL, layout)
 	spec := specFor(t, r, keySrv.URL, keyBytes, []byte("i"))
 
 	type result struct {

@@ -25,7 +25,6 @@ func newFHEHandlerTestState(t *testing.T) *TAAState {
 		MaxEvalKeyBytes: fhe.DefaultMaxEvalKeyBytes,
 		PollInterval:    fhe.DefaultPollInterval,
 		RequestTimeout:  fhe.DefaultRequestTimeout,
-		TaskTimeout:     fhe.DefaultTaskTimeout,
 	}, nil)
 	if err != nil {
 		t.Fatalf("fhe.New: %v", err)

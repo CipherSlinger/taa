@@ -198,7 +198,6 @@ const (
 	DefaultFHEMaxEvalKeyBytes  = int64(6) << 30 // 6442450944
 	DefaultFHEPollIntervalMs   = 5000
 	DefaultFHERequestTimeoutMs = 30000
-	DefaultFHETaskTimeoutMs    = 1800000
 )
 
 // FHEConfig is the parsed fhe section. It is only consulted when
@@ -210,7 +209,6 @@ type FHEConfig struct {
 	MaxEvalKeyBytes  int64  `json:"maxEvalKeyBytes"`
 	PollIntervalMs   int    `json:"pollIntervalMs"`
 	RequestTimeoutMs int    `json:"requestTimeoutMs"`
-	TaskTimeoutMs    int    `json:"taskTimeoutMs"`
 	// ActivateModelOnImport is a pointer because "absent" and "explicitly false"
 	// must not collapse: the field defaults to true, so an absent one read as
 	// false would turn a missing setting into a deliberate opt-out.
@@ -686,7 +684,6 @@ func validateFHEConfig(cfg StartupConfig) error {
 	}{
 		{"pollIntervalMs", cfg.FHE.PollIntervalMs},
 		{"requestTimeoutMs", cfg.FHE.RequestTimeoutMs},
-		{"taskTimeoutMs", cfg.FHE.TaskTimeoutMs},
 	} {
 		if b.value <= 0 {
 			return fmt.Errorf("unsupported fhe.%s %d in startup config: must be positive", b.name, b.value)
@@ -1165,9 +1162,6 @@ func applyFHEDefaults(f *FHEConfig) {
 	}
 	if f.RequestTimeoutMs == 0 {
 		f.RequestTimeoutMs = DefaultFHERequestTimeoutMs
-	}
-	if f.TaskTimeoutMs == 0 {
-		f.TaskTimeoutMs = DefaultFHETaskTimeoutMs
 	}
 	if f.ActivateModelOnImport == nil {
 		v := true

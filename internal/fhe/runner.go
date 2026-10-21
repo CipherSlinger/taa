@@ -18,8 +18,8 @@ import (
 //
 // The service's own status string is passed through as-is, so these are what this
 // package writes when it is the one deciding, not the vocabulary it reads: a
-// locally decided terminal state is StatusFailed (staging, probe, continue, or
-// the wait's deadline) or StatusCancelled (a stop that landed).
+// locally decided terminal state is StatusFailed (staging, probe or continue) or
+// StatusCancelled (a stop that landed).
 //
 // StatusCompleted is the one value here this package never produces. A task
 // completes only when the service says so, and that answer travels through as the
@@ -314,9 +314,10 @@ func (r *Runner) ResolveTask(taskID string) (TaskOutcome, bool) {
 // implements the contract), and IsTerminal also covers the plausible synonyms
 // succeeded / success / error / canceled / timeout / timed_out / expired /
 // deleted. A status word outside that set is treated as non-terminal here, so
-// such a callback is ignored and the run is left to its poll and its TaskTimeout
-// - it waits for the timeout instead of being resolved, which is the failure
-// mode this predicate trades for.
+// such a callback is ignored and the run is left to its poll and to the
+// caller's context - it waits to be resolved rather than resolved on a status
+// the service did not mean as terminal, which is the failure mode this
+// predicate trades for.
 func (r *Runner) Deliver(p CallbackPayload) bool {
 	run := r.lookup(p.TaskID)
 	if run == nil {
@@ -402,38 +403,35 @@ func (r *Runner) Cancel(ctx context.Context, taskID string) error {
 //
 // It publishes the eval key and the input archive into the shared directory,
 // creates the task, then waits for the callback or the poll fallback, whichever
-// arrives first, bounded by TaskTimeout. onProgress, when non-nil, receives the
-// finished and total case counts the service reported.
+// arrives first. onProgress, when non-nil, receives the finished and total case
+// counts the service reported.
 //
-// The task's budget is derived here, at the entry, and covers staging as well as
-// waiting: publishing the key is a multi-gigabyte download when the cache is
-// cold, so a key server that never answers would otherwise hold the import
-// goroutine open forever, and TaskTimeout's claim to bound "a whole task" would
-// be false. Staging, the create/probe/continue calls and the wait all run on that
-// one deadline, so the caller's cancellation reaches the key download.
+// There is deliberately no task-level deadline: an FHE task is a long batch by
+// nature, and any fixed budget either kills a legitimate run or is so large it
+// bounds nothing. The caller's context is the only way to stop an in-flight
+// task, so a caller that passes context.Background() keeps it running until the
+// service reports a terminal state; per-call bounds (RequestTimeout) still keep
+// an unresponsive service from stalling one HTTP call forever.
 //
-// It does not reach everything in staging, and the difference is worth stating
-// rather than rounding away. The bytes this package moves after the download -
-// the SM3 digest the key cache takes over the downloaded key, the rename or copy
-// into the cache, and the link-or-copy that publishes the key and the input
-// archive into the shared directory - take no context, so neither the deadline
-// nor the caller's cancellation interrupts one. A multi-gigabyte copy runs to
-// completion behind a returned Execute, and a cancelled import releases its
-// goroutine when that copy finishes rather than when the cancel arrives. Bounding
-// them means giving these helpers a context, which is a change to the publishing
-// path rather than to this comment.
+// The context reaches the eval key download and the create/probe/continue
+// calls. It does not reach everything in staging, and the difference is worth
+// stating rather than rounding away. The bytes this package moves after the
+// download - the SM3 digest the key cache takes over the downloaded key, the
+// rename or copy into the cache, and the link-or-copy that publishes the key
+// and the input archive into the shared directory - take no context, so neither
+// the deadline the caller may have set nor its cancellation interrupts one. A
+// multi-gigabyte copy runs to completion behind a returned Execute, and a
+// cancelled import releases its goroutine when that copy finishes rather than
+// when the cancel arrives. Bounding them means giving these helpers a context,
+// which is a change to the publishing path rather than to this comment.
 func (r *Runner) Execute(ctx context.Context, spec TaskSpec, onProgress func(done, total int)) (TaskOutcome, error) {
-	deadline := time.Now().Add(r.cfg.TaskTimeout)
-	stageCtx, cancelStage := context.WithDeadline(ctx, deadline)
-	defer cancelStage()
-
-	run, err := r.prepare(stageCtx, spec)
+	run, err := r.prepare(ctx, spec)
 	if err != nil {
 		return TaskOutcome{Status: StatusFailed, Err: err}, err
 	}
 	defer r.forget(run)
 
-	createCtx, cancel := context.WithTimeout(stageCtx, r.cfg.RequestTimeout)
+	createCtx, cancel := context.WithTimeout(ctx, r.cfg.RequestTimeout)
 	err = r.client.CreateTask(createCtx, CreateTaskRequest{
 		UserID:             spec.UserID,
 		ModelID:            spec.ModelID,
@@ -455,7 +453,7 @@ func (r *Runner) Execute(ctx context.Context, spec TaskSpec, onProgress func(don
 		// The probe proves only that a task with this id exists for this tenant. It
 		// cannot prove the task belongs to this spec, so reusing one task id for
 		// two different specs is the caller's responsibility.
-		probeCtx, probeCancel := context.WithTimeout(stageCtx, r.cfg.RequestTimeout)
+		probeCtx, probeCancel := context.WithTimeout(ctx, r.cfg.RequestTimeout)
 		st, probeErr := r.client.Task(probeCtx, spec.TaskID, spec.UserID)
 		probeCancel()
 		if probeErr != nil {
@@ -474,7 +472,7 @@ func (r *Runner) Execute(ctx context.Context, spec TaskSpec, onProgress func(don
 			return out, out.Err
 		}
 		r.log(LevelInfo, "任务已存在，改用 continue 重跑未完成 case: taskId=%s, status=%s", spec.TaskID, st.Status)
-		contCtx, contCancel := context.WithTimeout(stageCtx, r.cfg.RequestTimeout)
+		contCtx, contCancel := context.WithTimeout(ctx, r.cfg.RequestTimeout)
 		contErr := r.client.ContinueTask(contCtx, spec.TaskID, spec.UserID)
 		contCancel()
 		if contErr != nil {
@@ -485,7 +483,7 @@ func (r *Runner) Execute(ctx context.Context, spec TaskSpec, onProgress func(don
 		spec.notifyCreated()
 	}
 
-	return r.wait(ctx, run, deadline, onProgress)
+	return r.wait(ctx, run, onProgress)
 }
 
 // notifyCreated reports that the service has the task. The latch lives with the
@@ -551,27 +549,18 @@ func (r *Runner) prepare(ctx context.Context, spec TaskSpec) (*taskRun, error) {
 	return run, nil
 }
 
-// wait blocks until the run reaches a terminal state, through any of its four
+// wait blocks until the run reaches a terminal state, through any of its three
 // channels: a poll that saw one, a callback that resolved the run while this
-// loop was sleeping, the task's own deadline, or the caller giving up.
+// loop was sleeping, or the caller giving up.
 //
-// deadline is the one derived in Execute, not a fresh TaskTimeout: staging has
-// already spent part of the budget, and giving the wait its own full timeout
-// would let one task run for a multiple of what Config.TaskTimeout promises.
-func (r *Runner) wait(ctx context.Context, run *taskRun, deadline time.Time, onProgress func(done, total int)) (TaskOutcome, error) {
-	expired := time.NewTimer(time.Until(deadline))
-	defer expired.Stop()
-	// The polls are bounded by whichever runs out first: the per-call request
-	// budget, or what is left of the task budget. The task deadline itself is
-	// reported by the timer below rather than by ctx, so which of the two ends the
-	// task does not change the error the caller sees.
-	pollCtx, stopPolling := context.WithDeadline(ctx, deadline)
-	defer stopPolling()
+// There is no deadline of its own; the caller's context is the only bound. See
+// Execute for why the task itself is not capped.
+func (r *Runner) wait(ctx context.Context, run *taskRun, onProgress func(done, total int)) (TaskOutcome, error) {
 	ticker := time.NewTicker(r.cfg.PollInterval)
 	defer ticker.Stop()
 
 	for {
-		if out, ok := r.pollOnce(pollCtx, run, onProgress); ok {
+		if out, ok := r.pollOnce(ctx, run, onProgress); ok {
 			final, _ := r.finish(run, out)
 			return final, final.Err
 		}
@@ -582,13 +571,6 @@ func (r *Runner) wait(ctx context.Context, run *taskRun, deadline time.Time, onP
 			// on, so this is the path a healthy task normally takes.
 			return run.outcome, run.outcome.Err
 		case <-ticker.C:
-		case <-expired.C:
-			out, _ := r.finish(run, TaskOutcome{
-				Status: StatusFailed,
-				Err:    fmt.Errorf("fhe task %s timed out after %s", run.spec.TaskID, r.cfg.TaskTimeout),
-			})
-			r.log(LevelError, "FHE 任务超时: taskId=%s, timeout=%s", run.spec.TaskID, r.cfg.TaskTimeout)
-			return out, out.Err
 		case <-ctx.Done():
 			out, _ := r.finish(run, TaskOutcome{Status: StatusFailed, Err: ctx.Err()})
 			return out, out.Err
@@ -715,13 +697,10 @@ func (r *Runner) CopyResult(ctx context.Context, spec TaskSpec, out TaskOutcome,
 	// A result archive is a bulk transfer, not a request/response round trip, so
 	// RequestTimeout - a per-call budget that defaults to 30s - is the wrong bound
 	// for it: with it, any archive that needed longer than 30s died mid-body even
-	// though the download client has no whole-request timeout of its own.
-	// TaskTimeout is the budget this config already has for "as long as one task
-	// may take", which is the scale a multi-gigabyte archive belongs to. It is
-	// derived from the caller's ctx, so cancelling the caller still cancels the
-	// transfer.
-	dlCtx, cancel := context.WithTimeout(ctx, r.cfg.TaskTimeout)
-	defer cancel()
+	// though the download client has no whole-request timeout of its own. The
+	// transfer runs on the caller's context, and is not capped by the runner:
+	// see Execute for why the task as a whole has no deadline. Cancelling the
+	// caller still cancels the transfer.
 
 	deadline := time.Now().Add(resultReadyWait)
 	for {
@@ -731,7 +710,7 @@ func (r *Runner) CopyResult(ctx context.Context, spec TaskSpec, out TaskOutcome,
 			}
 			return p, nil
 		}
-		err := r.client.DownloadResult(dlCtx, spec.TaskID, spec.UserID, dst)
+		err := r.client.DownloadResult(ctx, spec.TaskID, spec.UserID, dst)
 		if err == nil {
 			return "", nil
 		}

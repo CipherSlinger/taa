@@ -28,7 +28,6 @@ const fheConfigBody = `{
     "maxEvalKeyBytes": 6442450944,
     "pollIntervalMs": 5000,
     "requestTimeoutMs": 30000,
-    "taskTimeoutMs": 1800000,
     "activateModelOnImport": true
   }
 }`
@@ -85,8 +84,8 @@ func TestFHESectionIsParsedWhenTypeIsFHE(t *testing.T) {
 	if cfg.FHE.MaxEvalKeyBytes != 6442450944 {
 		t.Errorf("MaxEvalKeyBytes = %d", cfg.FHE.MaxEvalKeyBytes)
 	}
-	if cfg.FHE.PollIntervalMs != 5000 || cfg.FHE.RequestTimeoutMs != 30000 || cfg.FHE.TaskTimeoutMs != 1800000 {
-		t.Errorf("timeouts = %d/%d/%d", cfg.FHE.PollIntervalMs, cfg.FHE.RequestTimeoutMs, cfg.FHE.TaskTimeoutMs)
+	if cfg.FHE.PollIntervalMs != 5000 || cfg.FHE.RequestTimeoutMs != 30000 {
+		t.Errorf("timeouts = %d/%d", cfg.FHE.PollIntervalMs, cfg.FHE.RequestTimeoutMs)
 	}
 	if cfg.FHE.ActivateModelOnImport == nil || !*cfg.FHE.ActivateModelOnImport {
 		t.Error("ActivateModelOnImport = false, want true")
@@ -113,9 +112,6 @@ func TestFHEConfigDefaultsAreFilled(t *testing.T) {
 	}
 	if cfg.FHE.RequestTimeoutMs != DefaultFHERequestTimeoutMs {
 		t.Errorf("RequestTimeoutMs = %d", cfg.FHE.RequestTimeoutMs)
-	}
-	if cfg.FHE.TaskTimeoutMs != DefaultFHETaskTimeoutMs {
-		t.Errorf("TaskTimeoutMs = %d", cfg.FHE.TaskTimeoutMs)
 	}
 	if cfg.FHE.ActivateModelOnImport == nil || !*cfg.FHE.ActivateModelOnImport {
 		t.Error("ActivateModelOnImport must default to true")
@@ -199,7 +195,7 @@ func TestFHEConfigRejectsBadEndpoint(t *testing.T) {
 func zeroBoundsBody() string {
 	return `{"server":{"type":"fhe"},"fhe":{
 	  "endpoint":"http://h:1","dataDir":"/d","keyCacheDir":"/k",
-	  "maxEvalKeyBytes":0,"pollIntervalMs":0,"requestTimeoutMs":0,"taskTimeoutMs":0}}`
+	  "maxEvalKeyBytes":0,"pollIntervalMs":0,"requestTimeoutMs":0}}`
 }
 
 func TestFHEConfigZeroBoundsTakeDefaults(t *testing.T) {
@@ -216,9 +212,6 @@ func TestFHEConfigZeroBoundsTakeDefaults(t *testing.T) {
 	if cfg.FHE.RequestTimeoutMs != DefaultFHERequestTimeoutMs {
 		t.Errorf("RequestTimeoutMs = %d, want the default %d", cfg.FHE.RequestTimeoutMs, DefaultFHERequestTimeoutMs)
 	}
-	if cfg.FHE.TaskTimeoutMs != DefaultFHETaskTimeoutMs {
-		t.Errorf("TaskTimeoutMs = %d, want the default %d", cfg.FHE.TaskTimeoutMs, DefaultFHETaskTimeoutMs)
-	}
 }
 
 // A negative bound is rejected even though zero is not: zero is the unset
@@ -232,7 +225,6 @@ func TestFHEConfigRejectsNonPositiveBounds(t *testing.T) {
 		{"maxEvalKeyBytes", "-1"},
 		{"pollIntervalMs", "-1"},
 		{"requestTimeoutMs", "-5000"},
-		{"taskTimeoutMs", "-1"},
 	} {
 		body := `{"server":{"type":"fhe"},"fhe":{
 		  "endpoint":"http://h:1","dataDir":"/d","keyCacheDir":"/k","` + tc.field + `":` + tc.value + `}}`

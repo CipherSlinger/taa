@@ -226,7 +226,8 @@ type CaseStatus struct {
 // Only Status is load-bearing: it is the field the service's own callback
 // documents. The per-case list feeds percentage reporting alone, so an
 // unrecognised shape degrades progress reporting without touching the outcome -
-// a task whose status never becomes terminal still ends at TaskTimeout.
+// it keeps polling until the service reports a terminal state or the caller
+// cancels.
 type TaskStatus struct {
 	TaskID    string       `json:"task_id"`
 	Status    string       `json:"status"`

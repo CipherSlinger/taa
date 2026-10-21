@@ -352,11 +352,10 @@ func TestDownloadResultHonoursTheCallerContext(t *testing.T) {
 // whose body has to be allowed to stream for minutes had no bound at all in front
 // of the response: a service that accepted the connection and then said nothing
 // held the download until the caller's context expired. The runner's fallback
-// passes context.WithTimeout(ctx, TaskTimeout), so the whole task budget - half an
-// hour by default - was spent on a header that never came, after the task had
-// already finished. The doc comment claimed the connection phases stayed bounded
-// either way and that the two clients differed in exactly one way; neither was
-// true.
+// passed a context derived from the task budget, so half an hour by default was
+// spent on a header that never came, after the task had already finished. The
+// doc comment claimed the connection phases stayed bounded either way and that
+// the two clients differed in exactly one way; neither was true.
 func TestDownloadResultBoundsTheHeaderPhase(t *testing.T) {
 	// The handler accepts the request and never sends a response head, which is
 	// what a service whose worker has wedged looks like. The release channel keeps
