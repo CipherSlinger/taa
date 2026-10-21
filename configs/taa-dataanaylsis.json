@@ -5,13 +5,10 @@
   },
   "storage": {
     "model": "/root/taa/models",
-    "data": "/root/taa/data",
+    "data": "/home/jovyan/systemAuthData",
     "result": "/root/taa/results",
     "keys": "/root/taa/keys",
     "stateSealingKeySource": "csv-hw"
-  },
-  "dataAnalysis": {
-    "outputDir": "/home/jovyan/systemAuthData"
   },
   "model": {
     "input": "/opt/taa/input",

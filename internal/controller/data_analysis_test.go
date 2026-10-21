@@ -16,14 +16,13 @@ import (
 )
 
 // setupDataAnalysisServer builds the normal test state and switches it to the
-// data-anaylsis instance type. The switch happens before the HTTP server starts,
-// so no request can observe a half-configured state.
+// data-anaylsis instance type. Imported data lands under storage.data, which the
+// fixture already points at a temporary directory.
 func setupDataAnalysisServer(t *testing.T) (*TAAState, *httptest.Server, string) {
 	t.Helper()
 	state, _ := setupTestState(t)
-	root := filepath.Join(t.TempDir(), "systemAuthData")
 	state.Security.ServerType = config.ServerTypeDataAnalysis
-	state.Security.DataAnalysisDir = root
+	root := state.Security.DataDir
 
 	mux := http.NewServeMux()
 	RegisterRoutes(mux, state)

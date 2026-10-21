@@ -85,20 +85,19 @@ func TestBuildSecurityConfig(t *testing.T) {
 	// loader must not get a scan with an engine nobody chose. The loader's own
 	// default is "semgrep" and is asserted in the config package.
 	cfg := config.StartupConfig{
-		EnableCodeAudit:       true,
-		ServerType:            config.ServerTypeDataAnalysis,
-		DataAnalysisOutputDir: "/srv/systemAuthData",
-		CodeScan:              config.CodeScanConfig{Engine: "regex"},
-		ModelDir:              "/opt/taa/models",
-		EnableResultCheck:     true,
-		MaxFileBytes:          3 * 1024 * 1024 * 1024,
-		MaxResultBytes:        3 * 1024 * 1024 * 1024,
-		DataDir:               "/opt/taa/data",
-		ResultDir:             "/opt/taa/results",
-		ModelInputDir:         "/opt/taa/models/input",
-		ModelOutputDir:        "/opt/taa/models/output",
-		ModelLogDir:           "/opt/taa/models/log",
-		ModelProgressDir:      "/opt/taa/models/progress",
+		EnableCodeAudit:   true,
+		ServerType:        config.ServerTypeDataAnalysis,
+		CodeScan:          config.CodeScanConfig{Engine: "regex"},
+		ModelDir:          "/opt/taa/models",
+		EnableResultCheck: true,
+		MaxFileBytes:      3 * 1024 * 1024 * 1024,
+		MaxResultBytes:    3 * 1024 * 1024 * 1024,
+		DataDir:           "/opt/taa/data",
+		ResultDir:         "/opt/taa/results",
+		ModelInputDir:     "/opt/taa/models/input",
+		ModelOutputDir:    "/opt/taa/models/output",
+		ModelLogDir:       "/opt/taa/models/log",
+		ModelProgressDir:  "/opt/taa/models/progress",
 		LLM: config.LLMConfig{
 			Enabled:                 true,
 			AttestationEnabled:      true,
@@ -149,9 +148,6 @@ func TestBuildSecurityConfig(t *testing.T) {
 	}
 	if sec.ServerType != cfg.ServerType {
 		t.Errorf("ServerType = %q, want %q", sec.ServerType, cfg.ServerType)
-	}
-	if sec.DataAnalysisDir != cfg.DataAnalysisOutputDir {
-		t.Errorf("DataAnalysisDir = %q, want %q", sec.DataAnalysisDir, cfg.DataAnalysisOutputDir)
 	}
 	if sec.ResultDir != cfg.ResultDir {
 		t.Errorf("ResultDir = %q, want %q", sec.ResultDir, cfg.ResultDir)

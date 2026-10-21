@@ -58,9 +58,6 @@ type SecurityConfig struct {
 	// ServerType is the startup config's server.type. It is read only to select
 	// the data-anaylsis import path; FHE still keys on the runner being non-nil.
 	ServerType string
-	// DataAnalysisDir is where a data-anaylsis instance lands imported data. It
-	// is inert on every other instance type.
-	DataAnalysisDir string
 }
 
 const (
@@ -78,20 +75,6 @@ func (sec SecurityConfig) GetMaxFileBytes() int64 {
 		return sec.MaxResultBytes
 	}
 	return config.DefaultMaxFileBytes
-}
-
-// GetDataAnalysisDir returns the root a data-anaylsis instance lands imported
-// data under. The directory is created lazily by the import path, not at
-// startup, so a tee or fhe instance never has it created for it.
-func (sec SecurityConfig) GetDataAnalysisDir() string {
-	dir := config.DefaultDataAnalysisOutputDir
-	if strings.TrimSpace(sec.DataAnalysisDir) != "" {
-		dir = sec.DataAnalysisDir
-	}
-	if abs, err := filepath.Abs(dir); err == nil {
-		return filepath.Clean(abs)
-	}
-	return filepath.Clean(dir)
 }
 
 func (sec SecurityConfig) GetModelInputDir() string {

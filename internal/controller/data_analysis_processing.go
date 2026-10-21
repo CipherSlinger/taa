@@ -35,7 +35,12 @@ func (s *TAAState) processImportedResourceDataAnalysis(req importRequest, plaint
 // delivery URL was parsed; SafeJoinWithBase is applied again here as defence in
 // depth, since these values decide where bytes are written.
 func (s *TAAState) saveDataAnalysisResource(req importRequest, plaintextPath string) error {
-	root := s.Security.GetDataAnalysisDir()
+	// Imported data lands under storage.data, one subdirectory per resource code.
+	// The default template points it at the Jupyter system-auth data directory.
+	root := strings.TrimSpace(s.Security.DataDir)
+	if root == "" {
+		return fmt.Errorf("数据目录未配置 (storage.data)")
+	}
 	// ExtractArchiveToDir stages into a temp directory under the parent, so the
 	// root has to exist even before the per-resource directory does.
 	if err := os.MkdirAll(root, 0o755); err != nil {

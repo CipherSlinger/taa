@@ -100,10 +100,6 @@ type StartupConfig struct {
 	ModelLogDir               string
 	ModelProgressDir          string
 	KeysDir                   string
-	// DataAnalysisOutputDir is the root under which a server.type=data-anaylsis
-	// instance lands imported data, from dataAnalysis.outputDir. It is inert on
-	// every other instance type.
-	DataAnalysisOutputDir string
 	// StateSealingKeySource selects where the persistent state sealing key
 	// comes from: "sm2" (derived from the SM2 private scalar) or "csv-hw"
 	// (Hygon CSV hardware key via /dev/csv-guest). See
@@ -185,13 +181,10 @@ const (
 	// TEE role like tee -- it attests and seals its state with the CSV hardware
 	// key -- but its template disables the code audit and the LLM, so it neither
 	// needs the semgrep payload nor a TEE-LLM gateway. Its import path also stops
-	// at the data landing directory: nothing is trained, audited or modelled.
+	// at the data landing directory (storage.data): nothing is trained, audited
+	// or modelled.
 	ServerTypeDataAnalysis = "data-anaylsis"
 )
-
-// DefaultDataAnalysisOutputDir is where a data-anaylsis instance unpacks imported
-// data when dataAnalysis.outputDir is not set.
-const DefaultDataAnalysisOutputDir = "/home/jovyan/systemAuthData"
 
 // State sealing key sources, selected by storage.stateSealingKeySource.
 const (
@@ -239,16 +232,12 @@ type FHEConfig struct {
 }
 
 type startupConfigFile struct {
-	Server   startupServerConfigFile   `json:"server"`
-	Platform startupPlatformConfigFile `json:"platform"`
-	Storage  startupStorageConfigFile  `json:"storage"`
-	// DataAnalysis configures the data landing area of a server.type=data-anaylsis
-	// instance. Like the fhe section it is read regardless of instance type and
-	// only acted on by the type that owns it.
-	DataAnalysis startupDataAnalysisConfigFile `json:"dataAnalysis"`
-	Model        startupModelConfigFile        `json:"model"`
-	CodeAudit    startupCodeAuditConfigFile    `json:"codeAudit"`
-	Attestation  startupAttestationConfigFile  `json:"attestation"`
+	Server      startupServerConfigFile      `json:"server"`
+	Platform    startupPlatformConfigFile    `json:"platform"`
+	Storage     startupStorageConfigFile     `json:"storage"`
+	Model       startupModelConfigFile       `json:"model"`
+	CodeAudit   startupCodeAuditConfigFile   `json:"codeAudit"`
+	Attestation startupAttestationConfigFile `json:"attestation"`
 	// FHE is a pointer because "absent" and "present but empty" must be
 	// distinguishable: a type=fhe instance with no section at all is a different
 	// mistake from one missing endpoint or dataDir, and both are startup errors.
@@ -304,14 +293,6 @@ type startupStorageConfigFile struct {
 	DataDir               string `json:"dataDir"`
 	ResultDir             string `json:"resultDir"`
 	KeysDir               string `json:"keysDir"`
-}
-
-// startupDataAnalysisConfigFile is the dataAnalysis block. Only instances whose
-// server.type is data-anaylsis read it.
-type startupDataAnalysisConfigFile struct {
-	// OutputDir is the root under which imported files and packages are landed,
-	// one subdirectory per dataResourceCode.
-	OutputDir string `json:"outputDir"`
 }
 
 // startupCodeAuditConfigFile is the codeAudit block: everything the audit needs,
@@ -873,7 +854,6 @@ func defaultStartupConfig() StartupConfig {
 		ModelLogDir:               "/opt/taa/output/log",
 		ModelProgressDir:          "/opt/taa/output/progress/progress.json",
 		KeysDir:                   "/root/taa/keys",
-		DataAnalysisOutputDir:     DefaultDataAnalysisOutputDir,
 		StateSealingKeySource:     StateSealingKeySourceSM2,
 		AttestationHRKCertPath:    hrkDefault,
 		AttestationHSKCekCertPath: hskDefault,
@@ -1037,9 +1017,6 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	}
 	if trimmed := strings.TrimSpace(fileCfg.Storage.Data); trimmed != "" {
 		cfg.DataDir = trimmed
-	}
-	if trimmed := strings.TrimSpace(fileCfg.DataAnalysis.OutputDir); trimmed != "" {
-		cfg.DataAnalysisOutputDir = trimmed
 	}
 
 	if trimmed := strings.TrimSpace(fileCfg.ResultDir); trimmed != "" {
