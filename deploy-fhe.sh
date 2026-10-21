@@ -1296,9 +1296,13 @@ else
 fi
 if ! is_dry_run; then
   docker info >/dev/null 2>&1 || die "docker daemon is not running or accessible on this machine"
-  if ! docker image inspect "$FHE_IMAGE" >/dev/null 2>&1; then
-    [ -f "$FHE_IMAGE_ARCHIVE" ] \
-      || die "base image $FHE_IMAGE is not present and no archive was found at $FHE_IMAGE_ARCHIVE"
+  # The archive wins over an existing tag. `docker image inspect` proves only
+  # that the tag exists, not that it holds the image this bundle ships: a host
+  # that deployed an older bundle keeps that image under the same tag, and
+  # packaging it would silently pair the new binary with the old service. The
+  # archive is verified against SHA256SUMS first, so loading it unconditionally
+  # is what makes the package match the bundle.
+  if [ -f "$FHE_IMAGE_ARCHIVE" ]; then
     if same_path "$FHE_IMAGE_ARCHIVE" "$BUNDLE_IMAGE_ARCHIVE"; then
       verify_one image/latti-server-latest.tar.gz "$FHE_IMAGE_ARCHIVE"
     elif [ -n "$FHE_IMAGE_ARCHIVE_SHA256" ]; then
@@ -1306,9 +1310,15 @@ if ! is_dry_run; then
     else
       warn "FHE_IMAGE_ARCHIVE=$FHE_IMAGE_ARCHIVE is not the archive this bundle ships, so it is NOT covered by SHA256SUMS; set FHE_IMAGE_ARCHIVE_SHA256 to have it verified"
     fi
-    log "loading base image $FHE_IMAGE from $FHE_IMAGE_ARCHIVE"
+    log "loading base image $FHE_IMAGE from $FHE_IMAGE_ARCHIVE (replacing any image already tagged $FHE_IMAGE)"
     docker load -i "$FHE_IMAGE_ARCHIVE" || die "failed to load $FHE_IMAGE_ARCHIVE"
+  elif docker image inspect "$FHE_IMAGE" >/dev/null 2>&1; then
+    warn "no archive at $FHE_IMAGE_ARCHIVE; packaging with the image already tagged $FHE_IMAGE, whose version is not checked against the bundle"
+  else
+    die "base image $FHE_IMAGE is not present and no archive was found at $FHE_IMAGE_ARCHIVE"
   fi
+  docker image inspect "$FHE_IMAGE" >/dev/null 2>&1 \
+    || die "the base image step finished but $FHE_IMAGE is not present"
   if [ -z "${TAA_RENDER_TMPDIR:-}" ]; then
     TAA_RENDER_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/deploy-fhe-save.XXXXXX")" \
       || die "cannot create a temporary directory for the rendered config"
@@ -1316,7 +1326,7 @@ if ! is_dry_run; then
   TAA_RENDER_OUT="$TAA_RENDER_TMPDIR/$TAA_CONFIG_FILE"
   render_taa_config 0
 else
-  log "would ensure $FHE_IMAGE is present locally, loading $FHE_IMAGE_ARCHIVE if needed"
+  log "would verify and load $FHE_IMAGE from $FHE_IMAGE_ARCHIVE, replacing any image already tagged $FHE_IMAGE"
   log "would render $TAA_FHE_CONFIG -> $TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE and bake it into the image"
 fi
 
@@ -1397,8 +1407,9 @@ if is_dry_run; then
 else
   archive_size=$(stat -c %s "$TAA_FHE_SAVE_ARCHIVE" 2>/dev/null || echo 0)
   archive_mb=$(awk -v b="$archive_size" 'BEGIN { printf "%.1f", b / 1048576 }')
+  base_id="$(docker image inspect "$FHE_IMAGE" --format '{{.Id}}' 2>/dev/null || true)"
   printf '\n[deploy-fhe] taa-fhe image packaged\n'
-  log "image      : $TAA_FHE_SAVE_IMAGE (base $FHE_IMAGE)"
+  log "image      : $TAA_FHE_SAVE_IMAGE (base $FHE_IMAGE ${base_id:-unknown})"
   log "contents   : $TAA_CONTAINER_WORKDIR/{$BINARY_NAME,start.sh,$TAA_CONFIG_FILE} + $TAA_ENTRYPOINT_CONTAINER"
   log "archive    : $TAA_FHE_SAVE_ARCHIVE (${archive_mb}MB)"
   if [ -n "$REMOTE_TARGET" ]; then
