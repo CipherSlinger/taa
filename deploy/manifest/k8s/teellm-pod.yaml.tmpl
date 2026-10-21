@@ -69,8 +69,9 @@ spec:
       image: __IMAGE__
       imagePullPolicy: IfNotPresent
       # The supervisor's own defaults match these paths; naming them here keeps the Pod's runtime
-      # contract in one place. TEELLM_MODEL is the fallback for the first start, before the
-      # deployment has written .teellm-model (which is what a later `models switch` updates).
+      # contract in one place. TEELLM_MODEL is the fallback when .teellm-model is absent -- an
+      # image that does not bake the model, or a Pod before the deployment has written the file
+      # (which is what a later `models switch` updates).
       env:
         - name: TEELLM_WORKDIR
           value: "/root/taa"
@@ -115,16 +116,15 @@ spec:
           if [ ! -e /dev/csv-guest ]; then
             echo "warning: could not create /dev/csv-guest; teellm-service will fall back to mock evidence" >&2
           fi
-          # PID 1 is a bootstrap that runs the supervisor, not a keep-alive sleep. The deployment
-          # installs the script after this container is Ready, so wait for it instead of exiting:
-          # an exited container takes the guest's writable layer -- and the multi-GB model in it --
-          # out of reach. Until the script arrives this loop is the keep-alive. If the supervisor
-          # ever exits (a lost singleton race with the deployment's own fallback start, or a bug),
-          # restart it here rather than taking the container down with it.
-          while [ ! -x /root/taa/teellm-supervisor.sh ]; do
-            echo "waiting for /root/taa/teellm-supervisor.sh" >&2
-            sleep 2
-          done
+          # PID 1 is the supervisor, not a keep-alive sleep: restartPolicy only reacts to PID 1
+          # exiting and there is no liveness probe, so an unowned daemon would stay down until
+          # someone redeployed. The script ships in the image (the TEE-LLM image carries it, the
+          # deployment copies its current build over the top), so a freshly booted guest starts
+          # the service without waiting for anything -- which is what keeps it alive across a host
+          # reboot, since that wipes the guest's writable layer. If the supervisor exits (a lost
+          # singleton race with the deployment's own fallback start, or a bug), restart it here
+          # rather than taking the container down with it: an exited container puts the writable
+          # layer, and the model in it, out of reach.
           while true; do
             /root/taa/teellm-supervisor.sh
             echo "supervisor exited; restarting in 2s" >&2

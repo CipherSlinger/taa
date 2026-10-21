@@ -1897,6 +1897,27 @@ sync_ollama_to_remote() {
   info "ollama package verified on remote host ($REMOTE_OLLAMA_DIR)"
 }
 
+# A TEE-LLM image can carry the ollama runtime and the model (build-teellm-image.sh), which is what
+# lets a freshly booted guest serve without the deployment copying anything in. When the Pod
+# already has both, streaming several GB from the packaging host to the remote host and then into
+# the Pod is pure overhead, so the Pod is probed first and the host sync is skipped. The probes are
+# the same ones copy_ollama_to_remote_pod uses to decide whether it has anything left to copy.
+sync_ollama_to_remote_if_missing() {
+  # A forced copy is an explicit request to restage the bundle, so the probe is not consulted.
+  if [[ "$FORCE_QWEN_COPY" == true ]]; then
+    sync_ollama_to_remote
+    return 0
+  fi
+  local check_script
+  check_script="$(resolve_ollama_model_artifacts "$OLLAMA_LOCAL_DIR" "$OLLAMA_MODEL" "check_model_sh" "$CONTAINER_OLLAMA_DIR")"
+  if remote_ssh "$(container_exec) sh -lc 'test -f \"$CONTAINER_OLLAMA_DIR/ollama\" && test -f \"$CONTAINER_OLLAMA_DIR/start-ollama.sh\" && test -f \"$CONTAINER_OLLAMA_DIR/lib/ollama/libllama-server-impl.so\"'" >/dev/null 2>&1 \
+     && remote_ssh "$(container_exec) sh -lc '$check_script'" >/dev/null 2>&1; then
+    info "ollama runtime and model '$OLLAMA_MODEL' are already inside the Pod; skipping the host sync"
+    return 0
+  fi
+  sync_ollama_to_remote
+}
+
 copy_ollama_to_remote_pod() {
   step "checking ollama package inside remote pod ($TARGET_POD)"
   remote_ssh "$(container_exec) sh -lc 'command -v tar >/dev/null 2>&1 || { echo kubectl exec requires tar inside container; exit 1; }'"
@@ -1999,7 +2020,7 @@ deploy_teellm() {
   step "stopping old daemons inside remote pod"
   stop_pod_daemons
 
-  sync_ollama_to_remote
+  sync_ollama_to_remote_if_missing
   copy_ollama_to_remote_pod
 
   # Deploy certificates and binary to remote host then into pod

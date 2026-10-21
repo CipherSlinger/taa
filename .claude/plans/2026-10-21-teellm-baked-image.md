@@ -41,8 +41,8 @@ Same `docker run -d` + `docker cp` + `docker commit` + `docker save` shape as
 
 Steps:
 
-1. Resolve the base image `taa-env:slim-v2-20260916`; `docker load -i deploy/taa-env-slim-v2.tar.gz`
-   when it is absent locally.
+1. Resolve the base image `taa-env:slim-v2` (the tag inside `deploy/taa-env-slim-v2.tar.gz`);
+   `docker load -i deploy/taa-env-slim-v2.tar.gz` when it is absent locally.
 2. `docker run -d --name taa-teellm-builder --user root --entrypoint bash "$BASE" -c 'sleep infinity'`
 3. Create `/root/taa/configs`, `/root/taa/certs`, `/root/taa/ollama`.
 4. Copy the service payload:
@@ -65,7 +65,8 @@ Steps:
 7. `docker commit -c 'WORKDIR /root/taa'` (the base image's ENTRYPOINT is left alone; the Pod
    overrides `command`/`args` anyway).
 8. `docker save | pigz > deploy/taa-env-teellm-<date>.tar.gz`.
-9. On 178: `docker load`, `docker tag`, `docker push 172.16.10.178:31313/taa-env:teellm-<date>`.
+9. On 178: `docker load`, `docker tag`, `docker push 172.16.10.178:31313/taa-env:teellm-<date>`
+   — the script's `--push` does these three over SSH.
 
 Acceptance check before tagging: in the builder container, `test -s` every payload path, run the
 soname-link check, and `./ollama --version`. Image unpacked size should be ~7 GB (base ~2.5 GB +
