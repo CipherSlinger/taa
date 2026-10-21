@@ -582,9 +582,13 @@ save_local_docker_image() {
   # network namespace -- so baking it in replaced the template's endpoint with a guess. The image
   # carries exactly the endpoint configs/taa-production.json names; a deployment that needs a
   # different one sets TAA_LLM_ENDPOINT at container startup, which still overrides it.
+  # storage.data is left to the template ("") on purpose: the data-anaylsis
+  # template points it at /home/jovyan/systemAuthData, where imported files must
+  # land, while every other template keeps /root/taa/data -- the value the
+  # override used to force anyway.
   write_taa_config "$prod_config_source" "$prod_config_template" \
     ":6001" "" "" "" \
-    "/root/taa/models" "/root/taa/data" "/root/taa/results" \
+    "/root/taa/models" "" "/root/taa/results" \
     "" "$target_model" \
     false "/opt/taa/input" "/opt/taa/output/result" "/root/taa/keys"
   info "production config prepared for image (model: $target_model)"
@@ -1842,9 +1846,10 @@ deploy_docker_taa() {
   ensure_parent_dir "$LOCAL_DOCKER_CONFIG_SOURCE"
   local target_llm_endpoint="${TAA_LLM_ENDPOINT:-https://127.0.0.1:${TAA_TEELLM_PORT}}"
   info "taa llm endpoint: $target_llm_endpoint"
+  # storage.data stays as the template says (see save_local_docker_image).
   write_taa_config "$LOCAL_DOCKER_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" \
     "$TAA_CONTAINER_ADDR" "$LOCAL_PLATFORM_IP" "$LOCAL_DOCKER_CONTAINER" "$CONTRACT_ID" \
-    "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" \
+    "$TAA_CONTAINER_WORKDIR/models" "" "$TAA_CONTAINER_WORKDIR/results" \
     "$target_llm_endpoint" "$TARGET_MODEL" true \
     "$LOCAL_DOCKER_INPUT_DIR" "$LOCAL_DOCKER_OUTPUT_DIR" "$TAA_CONTAINER_WORKDIR/keys"
   docker cp "$LOCAL_DOCKER_CONFIG_SOURCE" "$LOCAL_DOCKER_CONTAINER:$CONTAINER_TAA_CONFIG_PATH" >/dev/null
@@ -1978,9 +1983,10 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
   step "writing remote taa config from $(basename "$TAA_CONFIG_TEMPLATE")"
   INCLUDE_TAA_IDENTITY=false
+  # storage.data stays as the template says (see save_local_docker_image).
   write_taa_config "$REMOTE_TAA_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" \
     "$TAA_CONTAINER_ADDR" "$REMOTE_PLATFORM_IP" "$REMOTE_DOCKER_ID" "$CONTRACT_ID" \
-    "$TAA_CONTAINER_WORKDIR/models" "$TAA_CONTAINER_WORKDIR/data" "$TAA_CONTAINER_WORKDIR/results" \
+    "$TAA_CONTAINER_WORKDIR/models" "" "$TAA_CONTAINER_WORKDIR/results" \
     "${TAA_LLM_ENDPOINT:-}" "$TARGET_MODEL" "$INCLUDE_TAA_IDENTITY" "" "" "$TAA_CONTAINER_WORKDIR/keys"
 
   step "uploading taa, config, and certificates to remote host"
