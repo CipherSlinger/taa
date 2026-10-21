@@ -18,7 +18,7 @@ latti-fhe-handoff/
 │       ├── resnet20/server/             # ResNet20（CIFAR-10）模型（12 MB）
 │       └── retina/server/               # Retina-DKD degree8_02 模型（444 MB）
 ├── client/
-│   └── latti-e2e-0.1.2.zip              # 浏览器客户端 + 两个模型的 task/data 包（5.0 MB）
+│   └── latti-e2e-0.1.2-v1.zip              # 浏览器客户端 + 两个模型的 task/data 包（5.0 MB）
 ├── TAA-FHE-对接说明.md                   # 对接流程 / 目录 / 接口示例
 ├── 模型端到端性能验证报告.md              # 耗时 / 内存 / 显存实测
 ├── SHA256SUMS
@@ -142,7 +142,7 @@ curl -N 'http://127.0.0.1:58996/api/v1/tasks/task-abc123/logs' -H 'X-User-Id: te
 | `GPU_DEVICES` | `0` | 可见 GPU 列表 |
 | `NODE_ID` / `NODE_INSTANCE` | 容器主机名 | 节点标识，进 redis key 前缀 |
 | `HEONGPU_DEVICE_POOL_INITIAL_BYTES` | `21474836480` | 显存池起步 20 GiB |
-| `HEONGPU_DEVICE_POOL_MAX_BYTES` | `50453282816` | 显存池上限 47 GiB |
+| `HEONGPU_DEVICE_POOL_MAX_BYTES` | 不设 | 不设时上限 = `0.95 × 启动时空闲显存`（随卡自适应） |
 | `INFERENCE_STALL_TIMEOUT_SECONDS` | `600` | 任务看护超时 |
 | `LOCAL_REDIS_PASSWORD` | 空 | 设了就要求 redis AUTH |
 
@@ -152,10 +152,14 @@ curl -N 'http://127.0.0.1:58996/api/v1/tasks/task-abc123/logs' -H 'X-User-Id: te
 
 - 显存池是**进程级**的：首次上卡按 `INITIAL` 预占，之后**按需增长**（每次扩到
   「上限与当前值的中点」），任务结束由 `release_device()` **整池归还**（空闲只剩 ~0.5 GiB）。
-- 默认 20 GiB 起步足够跑 resnet20（实测峰值 20,993 MiB）；大模型会自动涨到 47 GiB。
+- 默认 20 GiB 起步足够跑 resnet20（实测峰值 20,993 MiB）；retina 会自动涨到 ~34 GiB。
+- `MAX_BYTES` **默认不设**：上限按 `0.95 × 启动时空闲显存` 自适应，不会因为"上限贴着整卡"
+  而在初始化时和别的进程抢不过就失败。
 - ⚠️ 预算**别贴着真实用量设**：不够时 RMM 抛 `out_of_memory`，任务直接 `failed`
   并把原因写进 `task.error`（不会静默卡住）。
-- **一卡多容器**：想让一张卡并放多个容器，把每个容器的 `MAX_BYTES` 设成份额即可。
+- **一卡多容器**：需要把一张卡并放多个容器时，才显式给每个容器设 `MAX_BYTES` 份额。
+- **内存**：常驻的解析结果约 14–15 GiB（3.2 GiB 公钥展开）；每个 case 结束后 worker 会做一次
+  `malloc_trim`，把该次计算的临时内存还回系统（实测每次还 3–4 GiB）。
 - **任务看护**：`INFERENCE_STALL_TIMEOUT_SECONDS` 内推理无任何进度推进，worker 会把该 case
   记为失败、写入 `task.error` 并重启自己，避免任务永久停在 `running`。
 
@@ -166,10 +170,11 @@ curl -N 'http://127.0.0.1:58996/api/v1/tasks/task-abc123/logs' -H 'X-User-Id: te
 - **模型**：把 `data/models/<model_id>/server/` 拷进卷里的 `<data>/models/` 即可，启动后
   `POST /api/v1/models/activate?model_id=<model_id>` 热加载（日志打印 `Model registry: N model(s)`）。
   当前提供两个：`resnet20`（CIFAR-10 数据集，12 MB）、`retina`（Retina-DKD degree8_02，444 MB）。
-- **客户端**：`client/latti-e2e-0.1.2.zip` 内 `manifest.json` + `README.md` 说明各包含什么——
+- **客户端**：`client/latti-e2e-0.1.2-v1.zip` 内 `manifest.json` + `README.md` 说明各包含什么——
   `WASM-0.1.2.zip`（浏览器运行时）、`<model>-task-*.zip`（解出 `tasks/<model>/client/` 客户端目录）、
   `<model>-data-*.zip`（测试数据）。把 `client/` 作为 `clientDirectory`、`dist/` 作为静态资源托管
   （`.wasm` 需 `application/wasm`），导入 `dist/index.js`。浏览器本地生成密钥（`setup()` 约 466 s，一次性）、加密、解密。
+  **客户端内容与 v0 完全相同**（就是同事给的 `latti-e2e-0.1.2.zip`），本次只随服务端重命名为 `-v1` 以便配对；v1 的改动全在服务端镜像里。
 
 ---
 

@@ -125,11 +125,11 @@ curl -N 'http://127.0.0.1:58996/api/v1/tasks/task-abc123/logs' -H 'X-User-Id: te
 
 ## 5. 浏览器客户端与任务参数包
 
-浏览器侧用 WASM 包，**不需要 Node，也不需要本地代理**。`client/latti-e2e-0.1.2.zip`
-解压出 `latti-e2e-0.1.2/`：
+浏览器侧用 WASM 包，**不需要 Node，也不需要本地代理**。`client/latti-e2e-0.1.2-v1.zip`
+解压出 `latti-e2e-0.1.2-v1/`：
 
 ```
-latti-e2e-0.1.2/
+latti-e2e-0.1.2-v1/
 ├── WASM-0.1.2.zip                      # 浏览器客户端运行时（Dedicated Worker + Go/WASM）
 ├── resnet20-task-0.1.2.zip             # tasks/resnet20/client/（config + 前后处理 js）
 ├── resnet20-data-0.1.2.zip             # 10 张测试图 + label.csv
@@ -139,6 +139,7 @@ latti-e2e-0.1.2/
 └── SHA256SUMS
 ```
 
+- 客户端脚本与 v0 完全相同（同一份内容，只改了压缩包名），v1 的差异全部在服务端镜像。
 - `WASM-0.1.2.zip` 解出的 `dist/` 作为静态资源托管（`.wasm` 必须返回 `application/wasm`；
   页面须为 HTTPS 或 `http://localhost`），导入 `dist/index.js`，调
   `openBrowserClient({ clientDirectory, keyDirectory })`。密钥落在
@@ -149,7 +150,9 @@ latti-e2e-0.1.2/
   其 `ckks_parameter.json` 与服务端模型目录逐字节一致
   （`resnet20`，sha256 `c985b737…`；
   客户端 `retina_degree8_02` ↔ 服务端 `retina`，sha256 `157248129f…`）。
-- `*-data-*.zip` 是验证数据（`images/001..010.png` + `label.csv`）。
+- `*-data-*.zip` 是验证数据，解出的 `dataset/` 直接作为 `preprocess_batch` 的
+  `inputDirectory`：`resnet20` 为 `images/001..010.png` + `label.csv`；
+  `retina_degree8_02` 为 `images/*.jpg` + `disk/` + `lesion/` + `risk_factor_5.xlsx` + `label.csv`。
 
 调用顺序：
 
