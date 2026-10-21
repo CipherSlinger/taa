@@ -1535,6 +1535,10 @@ Options:
       Specify TEE-LLM service listening port (default: $TEELLM_PORT).
   --config <path> (or --config=<path>)
       Specify path to alternate service JSON configuration template.
+  --pod <name> (or --pod=<name>, pod=<name>)
+      Deploy into the existing Pod named <name>; same as setting TARGET_POD, and it wins over the
+      variable. Nothing about the Pod's lifecycle is touched unless --create-pod is also given,
+      and then <name> must equal TEELLM_POD_NAME.
   -h, --help, help
       Display this help documentation.
 
@@ -1593,6 +1597,8 @@ Examples:
   $(basename "$0") --create-pod start
   $(basename "$0") --create-pod start --model qwen2.5-coder:7b
   $(basename "$0") start
+  $(basename "$0") --pod taa-teellm start
+  $(basename "$0") pod=taa-teellm start
   $(basename "$0") probe
   $(basename "$0") stop
   $(basename "$0") pod-down
@@ -1701,6 +1707,27 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       CLI_CONFIG="$1"
+      ;;
+    # Names the Pod to install into. Setting TARGET_POD_WAS_SET is what keeps --create-pod honest:
+    # the check that refuses a mis-aimed dedicated-Pod command keys off "the operator named a Pod".
+    --pod=*|pod=*)
+      TARGET_POD="${arg#*=}"
+      if [[ -z "$TARGET_POD" ]]; then
+        err "--pod requires a Pod name argument"
+        usage >&2
+        exit 1
+      fi
+      TARGET_POD_WAS_SET="set"
+      ;;
+    --pod)
+      shift
+      if [[ $# -eq 0 || "$1" == -* ]]; then
+        err "--pod requires a Pod name argument"
+        usage >&2
+        exit 1
+      fi
+      TARGET_POD="$1"
+      TARGET_POD_WAS_SET="set"
       ;;
     -h|--help|help)
       usage
