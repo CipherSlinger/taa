@@ -76,8 +76,12 @@ type AuditMetadata struct {
 	LLMModel       string `json:"llm_model"`
 	LLMEnabled     bool   `json:"llm_enabled"`
 	Policy         string `json:"policy"`
-	ScanDurationMs int64  `json:"scan_duration_ms"`
-	LLMDegraded    bool   `json:"llm_degraded,omitempty"`
+	// ScanDurationMs is the wall-clock time of the whole audit, not of the
+	// static scan alone: GenerateAuditReport measures from the start of the
+	// scan through the binary channel and both LLM phases. It is also what
+	// projectCodeAuditSection reports to the platform as duration_ms.
+	ScanDurationMs int64 `json:"scan_duration_ms"`
+	LLMDegraded    bool  `json:"llm_degraded,omitempty"`
 
 	// Provenance and completeness of the Tier 1 scan. These are copied from the
 	// scan report so that the report leaving the process states which engine
@@ -98,10 +102,10 @@ type AuditMetadata struct {
 	// internal/controller/import_processing.go:668-672 reads it, and so does any
 	// caller holding the *AuditReport directly. It does not travel in the report
 	// that leaves the process - projectCodeAuditSection
-	// (internal/controller/codeaudit_projection.go:21-33) emits only conclusion and
-	// file_reports, so scan_metadata crosses no boundary - and the refusal the
-	// channel can cause reaches the platform through conclusion.passed, not
-	// through this struct.
+	// (internal/controller/codeaudit_projection.go:21-36) emits only conclusion,
+	// file_reports and duration_ms, so the rest of scan_metadata crosses no
+	// boundary - and the refusal the channel can cause reaches the platform
+	// through conclusion.passed, not through this struct.
 	//
 	// It is a copy rather than a recomputation: the summary is produced where the
 	// loss happens, and a second derivation from the findings could not see a loss

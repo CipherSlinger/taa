@@ -29,6 +29,11 @@ func projectCodeAuditSection(audit *codeaudit.AuditReport) map[string]any {
 	return map[string]any{
 		"conclusion":   audit.Conclusion,
 		"file_reports": fileReports,
+		// The whole audit's wall-clock time, measured by GenerateAuditReport from
+		// the start of the static scan through the LLM phases. Lifted out of
+		// scan_metadata because that struct does not leave the process; without
+		// this the platform has no way to see how long an audit took.
+		"duration_ms": audit.ScanMetadata.ScanDurationMs,
 	}
 }
 
