@@ -275,7 +275,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 0,
   "msg": null,
-  "report": "{\"generated_at\":\"2026-09-02T10:03:43Z\",\"report_id\":\"train-report-20260902-100343-ae53fa14\",\"dataset\":{\"total_samples\":12500,\"splits\":{\"train\":10000,\"test\":1000},\"checksum\":{\"size\":540672,\"algorithm\":\"sm3\",\"value\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}},\"training_task\":{\"task_id\":\"task-20260825-001\",\"status\":\"succeeded\",\"exit_code\":0,\"failure_reason\":null,\"started_at\":\"2026-09-02T10:03:35Z\",\"finished_at\":\"2026-09-02T10:03:43Z\",\"duration_seconds\":8,\"model_checksum\":{\"size\":581632,\"algorithm\":\"sm3\",\"value\":\"a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd\"},\"metrics\":{\"final_accuracy\":0.9087,\"final_loss\":0.2145,\"epochs\":[{\"epoch\":1,\"accuracy\":0.5231,\"loss\":1.2345},{\"epoch\":2,\"accuracy\":0.6789,\"loss\":0.9876}]}},\"result_files\":{\"total_files\":3,\"total_size\":541184,\"total_size_h\":\"528.5KB\",\"tree\":{\"name\":\"result\",\"type\":\"dir\",\"file_count\":3,\"children\":[{\"name\":\"metrics.csv\",\"type\":\"file\",\"fmt\":\"csv\",\"size\":428,\"rows\":2,\"fields\":[{\"name\":\"epoch\",\"type\":\"int\"},{\"name\":\"val_accuracy\",\"type\":\"float\"}],\"preview\":[[\"1\",\"0.5231\"],[\"2\",\"0.6789\"]]},{\"name\":\"model.pt\",\"type\":\"file\",\"fmt\":\"zip\",\"size\":540672}]}},\"codeaudit\":{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"\u672a\u53d1\u73b0\u5b89\u5168\u95ee\u9898\uff0c\u4ee3\u7801\u901a\u8fc7\u5ba1\u8ba1\",\"recommendation\":\"\u65e0\u9700\u4fee\u590d\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null}}"
+  "report": "{\"generated_at\":\"2026-09-02T10:03:43Z\",\"report_id\":\"train-report-20260902-100343-ae53fa14\",\"dataset\":{\"total_samples\":12500,\"splits\":{\"train\":10000,\"test\":1000},\"checksum\":{\"size\":540672,\"algorithm\":\"sm3\",\"value\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}},\"training_task\":{\"task_id\":\"task-20260825-001\",\"status\":\"succeeded\",\"exit_code\":0,\"failure_reason\":null,\"started_at\":\"2026-09-02T10:03:35Z\",\"finished_at\":\"2026-09-02T10:03:43Z\",\"duration_seconds\":8,\"model_checksum\":{\"size\":581632,\"algorithm\":\"sm3\",\"value\":\"a1b2c3d4e5f67890abcdef1234567890abcdefabcdefabcdefabcdefabcd\"},\"metrics\":{\"final_accuracy\":0.9087,\"final_loss\":0.2145,\"epochs\":[{\"epoch\":1,\"accuracy\":0.5231,\"loss\":1.2345},{\"epoch\":2,\"accuracy\":0.6789,\"loss\":0.9876}]}},\"result_files\":{\"total_files\":3,\"total_size\":541184,\"total_size_h\":\"528.5KB\",\"tree\":{\"name\":\"result\",\"type\":\"dir\",\"file_count\":3,\"children\":[{\"name\":\"metrics.csv\",\"type\":\"file\",\"fmt\":\"csv\",\"size\":428,\"rows\":2,\"fields\":[{\"name\":\"epoch\",\"type\":\"int\"},{\"name\":\"val_accuracy\",\"type\":\"float\"}],\"preview\":[[\"1\",\"0.5231\"],[\"2\",\"0.6789\"]]},{\"name\":\"model.pt\",\"type\":\"file\",\"fmt\":\"zip\",\"size\":540672}]}},\"codeaudit\":{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"\u672a\u53d1\u73b0\u5b89\u5168\u95ee\u9898\uff0c\u4ee3\u7801\u901a\u8fc7\u5ba1\u8ba1\",\"recommendation\":\"\u65e0\u9700\u4fee\u590d\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"duration_ms\":12345,\"file_reports\":null}}"
 }
 ```
 
@@ -389,6 +389,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
         "low": 0                                          // 大模型归类为低危/良性的数量
       }
     },
+    "duration_ms": 12345,                                  // 审计整体耗时（毫秒）：从静态扫描开始到 LLM 语义审查结束，不含审计前的 LLM 可用性探测
     "file_reports": null                                   // 按文件聚合的 findings 明细；null 表示无 findings，存在 findings 时为数组
   }
 }
@@ -517,7 +518,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 0,
   "msg": null,
-  "report": "{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"未发现安全问题，代码通过审计\",\"recommendation\":\"无需修复\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"file_reports\":null}"
+  "report": "{\"conclusion\":{\"passed\":true,\"risk_level\":\"NONE\",\"summary\":\"未发现安全问题，代码通过审计\",\"recommendation\":\"无需修复\",\"statistics\":{\"high\":0,\"medium\":0,\"low\":0}},\"duration_ms\":12345,\"file_reports\":null}"
 }
 ```
 
@@ -530,7 +531,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
   "taskId": "task-001",
   "code": 1,
   "msg": "审计结论: 发现 1 处高危风险代码。存在数据泄露风险，建议拒绝该模型",
-  "report": "{\"conclusion\":{\"passed\":false,\"risk_level\":\"CRITICAL\",\"summary\":\"审计结论: 发现 1 处高危风险代码。存在数据泄露风险，建议拒绝该模型\",\"recommendation\":\"建议修复: CMD_001: 移除子进程调用，使用安全的替代方案\",\"statistics\":{\"high\":1,\"medium\":0,\"low\":0}},\"file_reports\":[{\"file\":\"train.py\",\"findings_count\":1,\"high_count\":1,\"risk_level\":\"HIGH\",\"findings\":[{\"rule_id\":\"CMD_001\",\"line\":2,\"severity\":\"HIGH\",\"description\":\"shell 命令执行或危险外部命令\"}]}]}"
+  "report": "{\"conclusion\":{\"passed\":false,\"risk_level\":\"CRITICAL\",\"summary\":\"审计结论: 发现 1 处高危风险代码。存在数据泄露风险，建议拒绝该模型\",\"recommendation\":\"建议修复: CMD_001: 移除子进程调用，使用安全的替代方案\",\"statistics\":{\"high\":1,\"medium\":0,\"low\":0}},\"duration_ms\":18342,\"file_reports\":[{\"file\":\"train.py\",\"findings_count\":1,\"high_count\":1,\"risk_level\":\"HIGH\",\"findings\":[{\"rule_id\":\"CMD_001\",\"line\":2,\"severity\":\"HIGH\",\"description\":\"shell 命令执行或危险外部命令\"}]}]}"
 }
 ```
 
@@ -560,7 +561,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-**`report` 字段内容格式**：与训练结果报告中的 `codeaudit` 字段完全一致，详见 [3.4 节 `report` 字段内容示例](#34-taa-上报训练完成结果) 中的 `codeaudit` 部分。
+**`report` 字段内容格式**：与训练结果报告中的 `codeaudit` 字段完全一致，详见 [3.4 节 `report` 字段内容示例](#34-taa-上报训练完成结果) 中的 `codeaudit` 部分。其中 `duration_ms` 为本轮审计的整体耗时（毫秒）：从静态扫描开始，覆盖二进制审计通道与两轮 LLM 语义审查，但不含审计前的 LLM 可用性探测；`report` 为空字符串（LLM 服务不可用或审计中断）时该字段不存在。
 
 **响应内容类型**：`application/json`
 
