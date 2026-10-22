@@ -427,6 +427,7 @@ func TestConcurrency_AuditPanicKeepsModelAndTrainingTask(t *testing.T) {
 	state.ActiveAuditRequestID = "req-audit-panicking"
 	state.ModelImported = true
 	state.SavedModelResourceURL = "https://example.test/model.tar.gz"
+	state.auditGen = 7
 	state.pendingAudit = &AuditPendingSnapshot{
 		RequestID: "req-audit-panicking",
 		TaskID:    "task-audit-panicking",
@@ -436,7 +437,7 @@ func TestConcurrency_AuditPanicKeepsModelAndTrainingTask(t *testing.T) {
 	state.mu.Unlock()
 
 	// Invoke panic handler for modelAudit
-	state.handleAsyncPanic("modelAudit", "simulated audit failure")
+	state.handleAuditPanic(7, importRequest{RequestID: "req-audit-panicking", TaskID: "task-audit-panicking"}, "simulated audit failure")
 
 	state.mu.RLock()
 	defer state.mu.RUnlock()

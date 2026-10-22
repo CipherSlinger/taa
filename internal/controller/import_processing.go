@@ -657,13 +657,33 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 // which must have sealed before this is called: the marker is what tells a later
 // restart that an audit was owed for this model.
 func (s *TAAState) launchModelAudit(req importRequest) {
-	s.runAsyncSafe("modelAudit", func() {
-		s.clearAuditState()
-	}, func() {
-		if !s.auditAndReportModelImport(req) {
-			s.Logs.Add(LogWarn, "import", "模型代码审计未通过，结论仅作参考，不阻断导入与训练: taskId=%s", req.TaskID)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	s.mu.Lock()
+	s.auditGen++
+	gen := s.auditGen
+	s.auditCancel = cancel
+	s.auditDone = done
+	s.mu.Unlock()
+
+	go func() {
+		defer close(done)
+		defer s.finishAudit(gen, done)
+		defer func() {
+			if r := recover(); r != nil {
+				s.handleAuditPanic(gen, req, r)
+			}
+		}()
+		if !s.auditAndReportModelImport(ctx, gen, req) {
+			// A superseded or cancelled audit is not a failed verdict. It says so
+			// through logAuditAborted's Info line; warning here would read as a
+			// refusal of the model that was never actually judged.
+			if ctx.Err() == nil && s.isCurrentAuditGen(gen) {
+				s.Logs.Add(LogWarn, "import", "模型代码审计未通过，结论仅作参考，不阻断导入与训练: taskId=%s", req.TaskID)
+			}
 		}
-	})
+	}()
 }
 
 // auditAndReportModelImport 对解压后的模型代码执行安全审计（静态扫描 + 可选 LLM 语义验证），
@@ -673,14 +693,14 @@ func (s *TAAState) launchModelAudit(req importRequest) {
 // what it reads. The verdict is advisory - the caller only logs it - so the model
 // package and its bundled dependency libraries stay exactly as uploaded, and the
 // import remains usable whatever the verdict says.
-func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
+func (s *TAAState) auditAndReportModelImport(ctx context.Context, gen uint64, req importRequest) bool {
 	// Cleared as soon as a verdict exists, not when the goroutine unwinds. The
 	// unwind happens after the platform report, so a crash in between would leave
 	// a pending marker for a model that had in fact been adjudicated — and the
 	// next restart would report the same interrupted audit a second time.
-	defer s.concludeAuditPending()
+	defer s.concludeAuditPending(gen)
 
-	s.setLastAudit(nil)
+	s.setLastAudit(gen, nil)
 	if !s.Security.ScanEnabled {
 		s.Logs.Add(LogInfo, "audit", "安全扫描未启用，跳过模型代码审计")
 		return true
@@ -688,8 +708,8 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 
 	cfg := s.Security.LLM
 	StepSeparator("Code Audit")
-	s.setCurrentAuditOp("auditing")
-	defer s.setCurrentAuditOp("idle")
+	s.setCurrentAuditOp(gen, "auditing")
+	defer s.setCurrentAuditOp(gen, "idle")
 	s.Logs.Add(LogInfo, "audit", "开始模型代码审计: engine=%s, dir=%s, llmEnabled=%v, failClosed=%v",
 		engineName(s.Security.Engine), s.Security.ModelDir, cfg.Enabled, cfg.FailClosed)
 
@@ -697,22 +717,34 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 
 	// fail-closed：LLM 启用且要求不可用时阻断时，先探测 LLM 可用性；
 	// 若不可用则直接判定失败，避免降级为纯静态扫描静默放行。
-	if cfg.Enabled && cfg.FailClosed && !isLLMServiceAvailable(llmClient, cfg.Endpoint, cfg.Model) {
+	if cfg.Enabled && cfg.FailClosed && !isLLMServiceAvailable(ctx, llmClient, cfg.Endpoint, cfg.Model) {
+		if ctx.Err() != nil || !s.isCurrentAuditGen(gen) {
+			s.logAuditAborted(req)
+			return false
+		}
 		s.Logs.Add(LogError, "audit", "LLM 服务不可用，按 fail-closed 策略上报失败: endpoint=%s model=%s", cfg.Endpoint, cfg.Model)
 		s.Logs.Add(LogWarn, "audit", "审计未通过：仅上报结论，未删除或改动模型包与依赖库: dir=%s", s.Security.ModelDir)
-		s.reportAuditAsync(req.RequestID, req.TaskID, 2, "LLM 服务不可用，按 fail-closed 策略上报失败", "")
+		s.reportAuditIfCurrent(gen, req.RequestID, req.TaskID, 2, "LLM 服务不可用，按 fail-closed 策略上报失败", "")
 		return false
 	}
 
-	audit, err := codeaudit.GenerateAuditReport(context.Background(), s.Security.ModelDir, s.Security.Engine,
+	audit, err := codeaudit.GenerateAuditReport(ctx, s.Security.ModelDir, s.Security.Engine,
 		codeaudit.AuditConfig{LLM: cfg, Binary: s.Security.Binary}, llmClient)
 	if err != nil {
+		if ctx.Err() != nil || !s.isCurrentAuditGen(gen) {
+			s.logAuditAborted(req)
+			return false
+		}
 		s.Logs.Add(LogError, "audit", "模型代码审计失败: %v", err)
 		s.Logs.Add(LogWarn, "audit", "审计未通过：仅上报结论，未删除或改动模型包与依赖库: dir=%s", s.Security.ModelDir)
-		s.reportAuditAsync(req.RequestID, req.TaskID, 2, fmt.Sprintf("代码审计失败: %v", err), "")
+		s.reportAuditIfCurrent(gen, req.RequestID, req.TaskID, 2, fmt.Sprintf("代码审计失败: %v", err), "")
 		return false
 	}
-	s.setLastAudit(audit)
+	if ctx.Err() != nil || !s.isCurrentAuditGen(gen) {
+		s.logAuditAborted(req)
+		return false
+	}
+	s.setLastAudit(gen, audit)
 
 	code := 0
 	msg := audit.Conclusion.Summary
@@ -729,8 +761,15 @@ func (s *TAAState) auditAndReportModelImport(req importRequest) bool {
 			b.FilesCount, b.Kinds, b.BoundedExecutable, b.BoundedData, b.Incomplete, b.Errored, b.FindingsCapped, b.FindingsDropped)
 	}
 
-	s.reportAuditAsync(req.RequestID, req.TaskID, code, msg, auditReportJSON(audit))
+	s.reportAuditIfCurrent(gen, req.RequestID, req.TaskID, code, msg, auditReportJSON(audit))
 	return passed
+}
+
+// logAuditAborted records that an audit stopped because it was cancelled or
+// superseded rather than because it reached a verdict.
+func (s *TAAState) logAuditAborted(req importRequest) {
+	s.Logs.Add(LogInfo, "audit", "模型代码审计已中止: 收到新的模型下发或状态已被取代; taskId=%s, requestId=%s",
+		req.TaskID, req.RequestID)
 }
 
 // engineName reports the configured Tier 1 engine for a log line, tolerating the
@@ -789,7 +828,7 @@ func (s *TAAState) reportModelImportAsync(requestID, taskID string, code int, ms
 	}()
 }
 
-// reportAuditAsync 异步将模型代码安全审计结果上报平台。
+// reportAuditAsync 异步将模型代码安全审计结果上报平台（无代际校验）。
 func (s *TAAState) reportAuditAsync(requestID, taskID string, code int, msg, report string) {
 	s.mu.RLock()
 	platformIP, dockerID := s.PlatformIP, s.DockerID
@@ -797,13 +836,39 @@ func (s *TAAState) reportAuditAsync(requestID, taskID string, code int, msg, rep
 
 	log.Printf("reportAuditAsync: scheduling audit report upload, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, reportLen=%d",
 		platformIP, dockerID, requestID, taskID, code, len(report))
+	go s.sendAuditReport(platformIP, dockerID, requestID, taskID, code, msg, report)
+}
+
+// reportAuditIfCurrent schedules the report only while gen still owns the
+// audit. The check runs inside the goroutine, immediately before the request,
+// so an abort that lands after the audit's last context check still drops the
+// verdict.
+func (s *TAAState) reportAuditIfCurrent(gen uint64, requestID, taskID string, code int, msg, report string) {
+	s.mu.RLock()
+	platformIP, dockerID := s.PlatformIP, s.DockerID
+	s.mu.RUnlock()
+
+	log.Printf("reportAuditIfCurrent: scheduling audit report, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, reportLen=%d",
+		platformIP, dockerID, requestID, taskID, code, len(report))
 	go func() {
-		if err := ReportAudit(context.Background(), platformIP, dockerID, requestID, taskID, code, msg, report); err != nil {
-			log.Printf("reportAuditAsync: report audit result failed: requestID=%s taskID=%s, err=%v", requestID, taskID, err)
-		} else {
-			log.Printf("reportAuditAsync: report audit result succeeded: requestID=%s taskID=%s", requestID, taskID)
+		s.mu.RLock()
+		current := s.auditGen == gen
+		s.mu.RUnlock()
+		if !current {
+			log.Printf("reportAuditIfCurrent: dropping stale audit report: requestID=%s taskID=%s", requestID, taskID)
+			return
 		}
+		s.sendAuditReport(platformIP, dockerID, requestID, taskID, code, msg, report)
 	}()
+}
+
+// sendAuditReport performs the platform upload and logs its outcome.
+func (s *TAAState) sendAuditReport(platformIP, dockerID, requestID, taskID string, code int, msg, report string) {
+	if err := ReportAudit(context.Background(), platformIP, dockerID, requestID, taskID, code, msg, report); err != nil {
+		log.Printf("sendAuditReport: report audit result failed: requestID=%s taskID=%s, err=%v", requestID, taskID, err)
+	} else {
+		log.Printf("sendAuditReport: report audit result succeeded: requestID=%s taskID=%s", requestID, taskID)
+	}
 }
 
 // newLLMClient creates an inference client based on configuration; returns nil if disabled or endpoint is empty.
@@ -832,18 +897,21 @@ const auditLLMHealthCheckTimeout = teellm.DefaultHealthCheckTimeout
 // isLLMServiceAvailable probes whether the inference service is healthy and reachable.
 // It prioritizes standard TEE-LLM client health checking (/healthz over TEE-TLS),
 // and falls back to legacy raw Ollama probe (/api/tags) if client creation failed but endpoint is HTTP.
-func isLLMServiceAvailable(client codeaudit.LLMClient, endpoint, model string) bool {
+func isLLMServiceAvailable(ctx context.Context, client codeaudit.LLMClient, endpoint, model string) bool {
 	if client != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), auditLLMHealthCheckTimeout)
+		// The probe budget is the client's health budget, but it must not outlive
+		// the audit: a cancelled audit stops waiting for a cold load it no longer
+		// needs.
+		probeCtx, cancel := context.WithTimeout(ctx, auditLLMHealthCheckTimeout)
 		defer cancel()
-		if err := client.HealthCheck(ctx); err != nil {
+		if err := client.HealthCheck(probeCtx); err != nil {
 			log.Printf("isLLMServiceAvailable: health check failed: endpoint=%s model=%s timeout=%s error=%v",
 				endpoint, model, auditLLMHealthCheckTimeout, err)
 			return false
 		}
 		return true
 	}
-	return llmAvailable(endpoint, model)
+	return llmAvailable(ctx, endpoint, model)
 }
 
 // auditReportJSON is implemented in codeaudit_projection.go.
@@ -858,7 +926,7 @@ func isLLMServiceAvailable(client codeaudit.LLMClient, endpoint, model string) b
 // seconds, and cutting it off cancels the load it was waiting on. One timeout for
 // both is wrong in both directions - too short to survive a cold load, too long to
 // be a sensible ping budget.
-func llmAvailable(endpoint, model string) bool {
+func llmAvailable(ctx context.Context, endpoint, model string) bool {
 	if strings.TrimSpace(endpoint) == "" {
 		return false
 	}
@@ -868,8 +936,13 @@ func llmAvailable(endpoint, model string) bool {
 	}
 	base = strings.TrimRight(base, "/")
 
-	tagsClient := &http.Client{Timeout: 3 * time.Second}
-	resp, err := tagsClient.Get(base + "/api/tags")
+	tagsCtx, tagsCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer tagsCancel()
+	tagsReq, err := http.NewRequestWithContext(tagsCtx, http.MethodGet, base+"/api/tags", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(tagsReq)
 	if err != nil {
 		return false
 	}
@@ -884,9 +957,15 @@ func llmAvailable(endpoint, model string) bool {
 
 	// Active generate probe to verify tensor weights can be mapped and executed.
 	if model != "" {
-		probeClient := &http.Client{Timeout: auditLLMHealthCheckTimeout}
+		probeCtx, probeCancel := context.WithTimeout(ctx, auditLLMHealthCheckTimeout)
+		defer probeCancel()
 		probePayload := fmt.Sprintf(`{"model":%q,"prompt":"ping","stream":false,"options":{"num_predict":1}}`, model)
-		genResp, err := probeClient.Post(base+"/api/generate", "application/json", strings.NewReader(probePayload))
+		genReq, err := http.NewRequestWithContext(probeCtx, http.MethodPost, base+"/api/generate", strings.NewReader(probePayload))
+		if err != nil {
+			return false
+		}
+		genReq.Header.Set("Content-Type", "application/json")
+		genResp, err := http.DefaultClient.Do(genReq)
 		if err != nil {
 			return false
 		}

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -111,7 +112,7 @@ func TestAuditPanicLeavesModelImported(t *testing.T) {
 	state.PlatformIP = platform.URL
 	state.DockerID = "docker-test"
 
-	state.handleAsyncPanic("modelAudit", "simulated audit failure")
+	state.handleAuditPanic(currentAuditGen(t, state), importRequest{RequestID: "req-panic", TaskID: "task-panic"}, "simulated audit failure")
 
 	state.mu.RLock()
 	modelImported := state.ModelImported
@@ -183,7 +184,7 @@ func TestAuditVerdictClearsPending(t *testing.T) {
 	state.saveModelSuccessLocked("https://example.test/model.tar.gz")
 	state.mu.Unlock()
 
-	if passed := state.auditAndReportModelImport(req); !passed {
+	if passed := state.auditAndReportModelImport(context.Background(), currentAuditGen(t, state), req); !passed {
 		t.Fatal("a clean model did not pass its audit")
 	}
 
@@ -222,7 +223,7 @@ func TestAuditFailureClearsPending(t *testing.T) {
 	state.saveModelSuccessLocked("https://example.test/model.tar.gz")
 	state.mu.Unlock()
 
-	if passed := state.auditAndReportModelImport(req); passed {
+	if passed := state.auditAndReportModelImport(context.Background(), currentAuditGen(t, state), req); passed {
 		t.Fatal("a model shelling out to curl did not fail its audit")
 	}
 

@@ -139,6 +139,15 @@ type TAAState struct {
 	ActiveAuditTaskID     string                   // Current active audit task ID
 	ActiveAuditRequestID  string                   // Current active audit request ID
 
+	// auditGen identifies the audit that currently owns the audit fields above.
+	// Every audit goroutine carries the generation it started with; writes and
+	// reports are dropped once the field no longer matches, so an aborted or
+	// superseded audit cannot clear or overwrite its successor's state. It is
+	// in-memory only and deliberately not persisted.
+	auditGen    uint64
+	auditCancel context.CancelFunc
+	auditDone   chan struct{}
+
 	// pendingAudit is the durable counterpart of the audit fields above: it is
 	// what makes an audit that never concluded visible after a restart, so the
 	// startup path can report it to the platform as an interrupted audit. It is
@@ -600,12 +609,105 @@ func (s *TAAState) fheActiveTask() string {
 	return s.fheActiveTaskID
 }
 
-// setCurrentAuditOp is a helper to update the audit operation status.
-func (s *TAAState) setCurrentAuditOp(op string) {
+// setCurrentAuditOp is a helper to update the audit operation status. It is
+// generation-gated so a superseded audit cannot leave its operation behind.
+func (s *TAAState) setCurrentAuditOp(gen uint64, op string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.auditGen != gen {
+		return
+	}
 	s.CurrentAuditOp = op
 	s.AuditRunning = (op != "idle" && op != "")
+}
+
+// isCurrentAuditGen reports whether gen still owns the audit state.
+func (s *TAAState) isCurrentAuditGen(gen uint64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.auditGen == gen
+}
+
+// finishAudit releases one audit goroutine's registration. The busy fields and
+// the pending marker are cleared only when the generation still owns them; a
+// stale goroutine must not erase the state of the audit that replaced it.
+func (s *TAAState) finishAudit(gen uint64, done chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.auditDone == done {
+		s.auditDone = nil
+		if s.auditCancel != nil {
+			s.auditCancel()
+		}
+		s.auditCancel = nil
+	}
+	if s.auditGen != gen {
+		return
+	}
+	s.resetAuditStateLocked()
+	if s.pendingAudit != nil {
+		s.clearAuditPendingLocked()
+		if err := s.sealStateLocked(); err != nil {
+			s.Logs.Add(LogError, "state", "持久化审计结论状态失败: %v", err)
+		}
+	}
+}
+
+// abortModelAudit cancels the running model audit, if any. It is silent: no
+// platform callback is sent. The durable marker is dropped so a restart does
+// not report an audit that was deliberately abandoned.
+//
+// The generation is incremented before the cancel, so every later write from
+// the old goroutine (state, last audit, platform report) fails its ownership
+// check even if it was already past the context check.
+func (s *TAAState) abortModelAudit() {
+	s.mu.Lock()
+	if !s.isAuditBusyLocked() {
+		s.mu.Unlock()
+		return
+	}
+	oldTask := s.ActiveAuditTaskID
+	oldRequest := s.ActiveAuditRequestID
+	s.auditGen++
+	s.resetAuditStateLocked()
+	s.clearAuditPendingLocked()
+	if err := s.sealStateLocked(); err != nil {
+		s.Logs.Add(LogError, "state", "持久化审计中止状态失败: %v", err)
+	}
+	cancel := s.auditCancel
+	s.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	s.Logs.Add(LogInfo, "audit", "模型代码审计已中止: 收到新的模型下发; 旧 taskId=%s, requestId=%s", oldTask, oldRequest)
+}
+
+// auditAbortWaitTimeout bounds how long an import waits for the aborted audit to
+// leave the model directory before overwriting it.
+const auditAbortWaitTimeout = 30 * time.Second
+
+// waitAuditStopped waits for the audit goroutine to exit before ModelDir is
+// replaced. A superseded audit's result is discarded either way, so a timeout
+// only logs: blocking the import forever on a scan that refuses to die would
+// defeat the point of aborting it.
+func (s *TAAState) waitAuditStopped() {
+	s.mu.RLock()
+	done := s.auditDone
+	s.mu.RUnlock()
+	if done == nil {
+		return
+	}
+
+	timer := time.NewTimer(auditAbortWaitTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		s.Logs.Add(LogWarn, "audit",
+			"旧模型审计未在 %s 内退出，继续覆盖模型目录；其结论已被代际号作废", auditAbortWaitTimeout)
+	}
 }
 
 // isAuditBusyLocked checks if model code audit is currently running (caller must hold s.mu RLock or Lock).
@@ -619,14 +721,6 @@ func (s *TAAState) resetAuditStateLocked() {
 	s.ActiveAuditRequestID = ""
 	s.CurrentAuditOp = "idle"
 	s.AuditRunning = false
-}
-
-// clearAuditState resets model audit fields under lock.
-func (s *TAAState) clearAuditState() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.resetAuditStateLocked()
-	s.clearAuditPendingLocked()
 }
 
 // markModelAuditPendingLocked records that an audit is about to run for the model
@@ -660,7 +754,8 @@ func (s *TAAState) markModelAuditPendingLocked(req importRequest, phase int) {
 }
 
 // clearAuditPendingLocked drops the durable pending marker (caller must hold
-// s.mu Lock). Idempotent: clearAuditState calls it on every audit conclusion.
+// s.mu Lock). Idempotent: abortModelAudit, finishAudit, concludeAuditPending and
+// ConcludeAuditPending all call it when an audit concludes or is abandoned.
 func (s *TAAState) clearAuditPendingLocked() {
 	s.pendingAudit = nil
 }
@@ -670,10 +765,13 @@ func (s *TAAState) clearAuditPendingLocked() {
 // restart. Called when the verdict is known rather than when the goroutine
 // unwinds: the unwind happens after the platform report, and a crash in between
 // would otherwise have startup report an audit that had in fact concluded.
-func (s *TAAState) concludeAuditPending() {
+//
+// It is generation-gated: an audit that no longer owns the state must not clear
+// the marker its successor is relying on.
+func (s *TAAState) concludeAuditPending(gen uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.pendingAudit == nil {
+	if s.auditGen != gen || s.pendingAudit == nil {
 		return
 	}
 	s.clearAuditPendingLocked()
@@ -685,7 +783,15 @@ func (s *TAAState) concludeAuditPending() {
 // ConcludeAuditPending 导出供调用的待决审计标记清除方法，供启动期对账使用：
 // 被遗弃的审计补报平台后调用，避免同一次中断审计在下次启动被重复上报。
 func (s *TAAState) ConcludeAuditPending() {
-	s.concludeAuditPending()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pendingAudit == nil {
+		return
+	}
+	s.clearAuditPendingLocked()
+	if err := s.sealStateLocked(); err != nil {
+		s.Logs.Add(LogError, "state", "持久化审计结论状态失败: %v", err)
+	}
 }
 
 // PendingAudit reports the audit that was in flight when the process last sealed
@@ -880,39 +986,7 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 	s.Logs.Add(LogError, "panic", "%s 发生异常恢复: %v", name, r)
 	log.Printf("[PANIC RECOVERY] %s recovered from panic: %v", name, r)
 
-	// A panicking audit is an audit that will never reach a verdict. The verdict
-	// is advisory, so nothing about the import is rolled back here: the model stays
-	// imported and a training run in flight is left alone. What this branch owes
-	// the platform is the record that the audit did not conclude, reported under
-	// the same ids the audit itself would have used.
-	//
-	// The audit contract is that it never writes to, deletes, or modifies the
-	// package it reads, and a panic is not an exception to it: the extracted model
-	// directory and its dependency libraries are left exactly as they were.
-	//
-	// The durable marker is dropped here instead of being left for the next
-	// restart: this branch reports the interruption itself, so leaving the marker
-	// would only make startup report the same interrupted audit a second time.
-	if name == "modelAudit" {
-		s.mu.Lock()
-		taskID := s.ActiveAuditTaskID
-		requestID := s.ActiveAuditRequestID
-		platformIP := s.PlatformIP
-		dockerID := s.DockerID
-		s.resetAuditStateLocked()
-		s.clearAuditPendingLocked()
-		if err := s.sealStateLocked(); err != nil {
-			s.Logs.Add(LogError, "panic", "持久化审计中断状态失败: %v", err)
-		}
-		s.mu.Unlock()
-
-		if platformIP != "" && dockerID != "" && (taskID != "" || requestID != "") {
-			s.reportAuditAsync(requestID, taskID, 2, fmt.Sprintf("model audit panic: %s", panicMsg), "")
-		}
-		return
-	}
-
-	// 1. 读取当前在飞任务信息并清空内存在飞任务，落盘密封存储
+	// 1. 读取当前在飞任务信息并清空内存中飞任务，落盘密封存储
 	s.mu.Lock()
 	snapshot := s.activeTask
 	taskID := s.ActiveTaskID
@@ -985,6 +1059,45 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 		if repErr := ReportTaskOutcome(context.Background(), platformIP, dockerID, requestID, taskID, taskType, 1, failureReason, reportJSON); repErr != nil {
 			log.Printf("[PANIC RECOVERY] ReportTaskOutcome failed: %v", repErr)
 		}
+	}
+}
+
+// handleAuditPanic is the model audit's panic recovery. A panic in a superseded
+// audit is not reported: the audit that replaced it owns the task ids now.
+//
+// The audit contract is that it never writes to, deletes, or modifies the
+// package it reads, and a panic is not an exception to it: the extracted model
+// directory and its dependency libraries are left exactly as they were.
+func (s *TAAState) handleAuditPanic(gen uint64, req importRequest, r any) {
+	panicMsg := fmt.Sprintf("%v", r)
+	s.Logs.Add(LogError, "panic", "modelAudit 发生异常恢复: %v", r)
+	log.Printf("[PANIC RECOVERY] modelAudit recovered from panic: %v", r)
+
+	s.mu.Lock()
+	if s.auditGen != gen {
+		s.mu.Unlock()
+		return
+	}
+	taskID := s.ActiveAuditTaskID
+	requestID := s.ActiveAuditRequestID
+	if taskID == "" {
+		taskID = req.TaskID
+	}
+	if requestID == "" {
+		requestID = req.RequestID
+	}
+	platformIP := s.PlatformIP
+	dockerID := s.DockerID
+	s.auditGen++
+	s.resetAuditStateLocked()
+	s.clearAuditPendingLocked()
+	if err := s.sealStateLocked(); err != nil {
+		s.Logs.Add(LogError, "panic", "持久化审计中断状态失败: %v", err)
+	}
+	s.mu.Unlock()
+
+	if platformIP != "" && dockerID != "" && (taskID != "" || requestID != "") {
+		s.reportAuditAsync(requestID, taskID, 2, fmt.Sprintf("model audit panic: %s", panicMsg), "")
 	}
 }
 

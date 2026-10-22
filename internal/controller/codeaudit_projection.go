@@ -6,9 +6,14 @@ import (
 	"taa/internal/codeaudit"
 )
 
-func (s *TAAState) setLastAudit(audit *codeaudit.AuditReport) {
+// setLastAudit records the latest audit result. It is generation-gated so a
+// superseded audit cannot overwrite the result of the audit that replaced it.
+func (s *TAAState) setLastAudit(gen uint64, audit *codeaudit.AuditReport) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.auditGen != gen {
+		return
+	}
 	s.LastAudit = audit
 }
 
