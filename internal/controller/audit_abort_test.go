@@ -149,6 +149,35 @@ func TestFinishAuditStaleGenerationKeepsTheNewAudit(t *testing.T) {
 	}
 }
 
+// TestModelImportSupersedesTheOldGenerationBeforeLaunch pins that recording a
+// new model's audit marker invalidates the previous generation in the same
+// locked write. An audit that has already cleared its busy flags but is still
+// unwinding would otherwise keep the current generation, and its deferred
+// concludeAuditPending could erase the new marker between the seal and
+// launchModelAudit's bump.
+func TestModelImportSupersedesTheOldGenerationBeforeLaunch(t *testing.T) {
+	state, _ := setupTestState(t)
+	store, _ := createTestStateStore(t)
+	state.SetStateStore(store)
+	state.Security.ScanEnabled = true
+
+	state.mu.Lock()
+	state.auditGen++
+	oldGen := state.auditGen
+	state.mu.Unlock()
+
+	state.beginModelImportAndAudit(importRequest{RequestID: "req-new", TaskID: "task-new"}, 1)
+
+	// The old audit now unwinds and clears what it believes is still its marker.
+	state.concludeAuditPending(oldGen)
+
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	if state.pendingAudit == nil || state.pendingAudit.TaskID != "task-new" {
+		t.Fatalf("the superseded audit erased the new model's pending marker: %+v", state.pendingAudit)
+	}
+}
+
 // TestAbortedAuditDoesNotReport pins the silent-abort decision: the old audit
 // must not reach the platform, even though it was interrupted rather than
 // completed.

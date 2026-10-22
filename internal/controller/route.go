@@ -362,6 +362,11 @@ func (s *TAAState) saveModelSuccessLocked(resourceURL string) {
 func (s *TAAState) beginModelImportAndAudit(req importRequest, phase int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Supersede any audit goroutine still unwinding: its generation-gated defers
+	// must not clear the marker written below. abortModelAudit cannot cover this
+	// window, because it returns early once the old audit has already cleared its
+	// busy flags.
+	s.auditGen++
 	s.markModelAuditPendingLocked(req, phase)
 	s.saveModelSuccessLocked(req.ResourceURL)
 }
