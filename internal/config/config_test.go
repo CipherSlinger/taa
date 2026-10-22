@@ -1795,6 +1795,60 @@ func TestLoadStartupConfigLLMEndpointEnvOverride(t *testing.T) {
 		}
 	})
 
+	t.Run("ENV_LLM_IP without a port gets the default port", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{
+			"codeAudit": {
+				"llm": { "endpoint": "https://from-file:8443" }
+			}
+		}`)
+		t.Setenv("ENV_LLM_IP", "https://from-env-llm-ip")
+
+		cfg, err := LoadStartupConfig(path)
+		if err != nil {
+			t.Fatalf("LoadStartupConfig() error = %v", err)
+		}
+		if cfg.LLM.Endpoint != "https://from-env-llm-ip:8443" {
+			t.Fatalf("LLM.Endpoint = %q, want %q", cfg.LLM.Endpoint, "https://from-env-llm-ip:8443")
+		}
+	})
+
+	t.Run("ENV_LLM_IP as a bare IP gets the https scheme and default port", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{
+			"codeAudit": {
+				"llm": { "endpoint": "https://from-file:8443" }
+			}
+		}`)
+		t.Setenv("ENV_LLM_IP", "10.244.0.188")
+
+		cfg, err := LoadStartupConfig(path)
+		if err != nil {
+			t.Fatalf("LoadStartupConfig() error = %v", err)
+		}
+		if cfg.LLM.Endpoint != "https://10.244.0.188:8443" {
+			t.Fatalf("LLM.Endpoint = %q, want %q", cfg.LLM.Endpoint, "https://10.244.0.188:8443")
+		}
+	})
+
+	t.Run("an explicit port in ENV_LLM_IP is kept", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{
+			"codeAudit": {
+				"llm": { "endpoint": "https://from-file:8443" }
+			}
+		}`)
+		t.Setenv("ENV_LLM_IP", "https://from-env-llm-ip:9443")
+
+		cfg, err := LoadStartupConfig(path)
+		if err != nil {
+			t.Fatalf("LoadStartupConfig() error = %v", err)
+		}
+		if cfg.LLM.Endpoint != "https://from-env-llm-ip:9443" {
+			t.Fatalf("LLM.Endpoint = %q, want %q", cfg.LLM.Endpoint, "https://from-env-llm-ip:9443")
+		}
+	})
+
 	t.Run("an empty environment leaves the configured endpoint alone", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), DefaultFileName)
 		writeTestConfig(t, path, `{

@@ -571,7 +571,9 @@ Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (d
 >
 > **Pointing the image at a separately deployed TEE-LLM.** `ENV_LLM_IP` (preferred) or
 > `TAA_LLM_ENDPOINT` overrides `codeAudit.llm.endpoint` at startup, so the endpoint baked into an
-> image is only a default. Both take a full URL; when both are set, `ENV_LLM_IP` wins:
+> image is only a default. Both take a full URL, but a value that omits the port gets the gateway's
+> internal `:8443`, and a bare IP also gets the `https://` scheme (`10.0.0.2` →
+> `https://10.0.0.2:8443`). When both are set, `ENV_LLM_IP` wins:
 >
 > ```bash
 > ./deploy.sh docker save --tag my-taa:v1 -o /tmp/taa.tar.gz

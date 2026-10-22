@@ -15,6 +15,9 @@ const (
 	DefaultFileName       = "taa-config.json"
 	DefaultMaxFileBytes   = 5 * 1024 * 1024 * 1024 // 5 GiB
 	DefaultMaxResultBytes = DefaultMaxFileBytes
+	// DefaultLLMPort is the port the TEE-LLM gateway listens on when an
+	// endpoint override names a host without one.
+	DefaultLLMPort = "8443"
 )
 
 type StartupConfig struct {
@@ -479,7 +482,8 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 //
 // ENV_LLM_IP is the preferred name and wins over TAA_LLM_ENDPOINT, which is
 // still read so that scripts and manifests written before the rename keep
-// working. Both carry a full endpoint URL.
+// working. Both carry a full endpoint URL; a value that omits the scheme or
+// the port is completed with https:// and DefaultLLMPort.
 //
 // This is deliberately the opposite precedence from PlatformIP, DockerID and
 // Contract: those are seeded in defaultStartupConfig and the config file wins
@@ -498,7 +502,29 @@ func applyLLMEndpointOverride(cfg *StartupConfig) {
 	if endpoint == "" {
 		return
 	}
-	cfg.LLM.Endpoint = endpoint
+	cfg.LLM.Endpoint = completeLLMEndpoint(endpoint)
+}
+
+// completeLLMEndpoint fills in what a deployment environment is likely to
+// leave out: the scheme, so a bare IP still names a URL, and the port, which
+// defaults to the TEE-LLM gateway's internal port. A value that already has
+// both is returned with only its formatting normalized.
+func completeLLMEndpoint(raw string) string {
+	endpoint := strings.TrimSpace(raw)
+	if endpoint == "" {
+		return ""
+	}
+	if !strings.Contains(endpoint, "://") {
+		endpoint = "https://" + endpoint
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return endpoint
+	}
+	if u.Port() == "" {
+		u.Host = net.JoinHostPort(u.Hostname(), DefaultLLMPort)
+	}
+	return u.String()
 }
 
 // applyFHEIdentityOverride lets the deployment environment point a type=fhe
