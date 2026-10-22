@@ -167,7 +167,7 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	if err != nil {
 		return err
 	}
-	logUserDataSummary(platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, userData)
+	logUserDataSummary(userData)
 
 	// 4. Generate attestation report containing UserData and perform certificate self-verification
 	//
@@ -632,11 +632,9 @@ func logGeneratedTAAKeyPair(keyPair *taaKeyPair) {
 	log.Printf("generated TAA SM2 public key:\n%s", keyPair.PublicKeyPEM)
 }
 
-// logUserDataSummary 打印 UserData 与关联元数据摘要日志
-func logUserDataSummary(platformIP, dockerID, publicKeyPEM string, timestamp int64, userData []byte) {
+// logUserDataSummary 打印 UserData 摘要日志
+func logUserDataSummary(userData []byte) {
 	log.Printf("generated userdata: taa SM2 public key raw X||Y")
-	log.Printf("  input: taaPublicKey(%d bytes) + dockerId(%s) + platformIP(%s) + timestamp(%d)",
-		len(publicKeyPEM), dockerID, platformIP, timestamp)
 	log.Printf("  userdata (64 bytes hex): %x", userData)
 }
 
