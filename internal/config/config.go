@@ -469,6 +469,9 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 
 	applyStartupConfigFile(&cfg, fileCfg)
 	applyLLMEndpointOverride(&cfg)
+	// Complete the endpoint whichever source named it: deploy.sh writes LLM_IP
+	// into the config file, so a bare IP has to work there too.
+	cfg.LLM.Endpoint = completeLLMEndpoint(cfg.LLM.Endpoint)
 	applyFHEIdentityOverride(&cfg)
 	if err := validateStartupConfig(cfg); err != nil {
 		return StartupConfig{}, err
@@ -482,8 +485,9 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 //
 // LLM_IP is the preferred name and wins over TAA_LLM_ENDPOINT, which is
 // still read so that scripts and manifests written before the rename keep
-// working. Either value may be a bare IP or a URL; a value that omits the
-// scheme or the port is completed with https:// and DefaultLLMPort.
+// working. Either value may be a bare IP or a URL; completion of a missing
+// scheme and port happens once the file has been applied too (see
+// completeLLMEndpoint).
 //
 // This is deliberately the opposite precedence from PlatformIP, DockerID and
 // Contract: those are seeded in defaultStartupConfig and the config file wins
@@ -502,7 +506,7 @@ func applyLLMEndpointOverride(cfg *StartupConfig) {
 	if endpoint == "" {
 		return
 	}
-	cfg.LLM.Endpoint = completeLLMEndpoint(endpoint)
+	cfg.LLM.Endpoint = endpoint
 }
 
 // completeLLMEndpoint fills in what a deployment environment is likely to

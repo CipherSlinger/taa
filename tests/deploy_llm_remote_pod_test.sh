@@ -326,8 +326,8 @@ grep -q "reusing the running TEE-LLM Pod\|TEE-LLM Pod created and Ready" <<<"$ou
   || fail "the Pod lifecycle steps are missing from the output"
 grep -q "service is serving Hygon hardware evidence" <<<"$output" \
   || fail "the hardware evidence provider was not confirmed"
-grep -q "TAA_LLM_ENDPOINT=https://$MOCK_POD_IP:8443" <<<"$output" \
-  || fail "the summary does not hand over TAA_LLM_ENDPOINT"
+grep -q "LLM_IP=https://$MOCK_POD_IP:8443" <<<"$output" \
+  || fail "the summary does not hand over LLM_IP"
 
 # ── 2. Second run, with no action keyword: the Pod exists and is Ready ───────
 # With the target keyword gone there is nothing left to name a target with, so the bare form has to

@@ -494,7 +494,7 @@ An instance whose `server.type` is `fhe` exposes the same API surface as a `tee`
 
 - **`start`** (default): Builds binaries, prepares configs/certs, starts supervisor daemon, and launches target services.
 - **`stop`**: Gracefully stops target services in the chosen mode.
-- **`save`**: **Exclusively valid in `docker` mode** (`./deploy.sh docker save`). Assembles a **TAA-only production image — TAA plus the code scan engine** — and exports it as an archive. It removes every TEE-LLM and ollama artifact the base image may carry (asserting each is gone), installs the supervisor from `deploy/start.sh` instead of inheriting the base image's copy, provisions semgrep offline from a payload archive and verifies it with a real scan, then copies the binary, certificates and generated production config (`configs/taa-production.json`) before `docker commit` + `docker save`. TEE-LLM and ollama are **not** in this image; deploy them separately with `./deploy-llm.sh`. The generated config's `codeAudit.llm.endpoint` is the template's value verbatim — nothing is discovered on the packaging host — so a deployment that needs a different address sets `TAA_LLM_ENDPOINT` at container startup.
+- **`save`**: **Exclusively valid in `docker` mode** (`./deploy.sh docker save`). Assembles a **TAA-only production image — TAA plus the code scan engine** — and exports it as an archive. It removes every TEE-LLM and ollama artifact the base image may carry (asserting each is gone), installs the supervisor from `deploy/start.sh` instead of inheriting the base image's copy, provisions semgrep offline from a payload archive and verifies it with a real scan, then copies the binary, certificates and generated production config (`configs/taa-production.json`) before `docker commit` + `docker save`. TEE-LLM and ollama are **not** in this image; deploy them separately with `./deploy-llm.sh`. The generated config's `codeAudit.llm.endpoint` is the template's value verbatim — nothing is discovered on the packaging host — so a deployment that needs a different address sets `LLM_IP` at container startup.
 
 ### 3. Component Selection
 
@@ -587,7 +587,7 @@ Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (d
 > `PLATFORM_IP`, `DOCKER_ID` and `CONTRACT_ID` only seed defaults that the file wins over — on a `tee`
 > instance. On an `fhe` instance the first two flip to environment-wins (see
 > [Platform Identity Precedence](#platform-identity-precedence)). Read the endpoint off the
-> deployment summary: `deploy-llm.sh` prints `TAA_LLM_ENDPOINT=https://<pod-ip>:8443`, and the Pod
+> deployment summary: `deploy-llm.sh` prints `LLM_IP=https://<pod-ip>:8443`, and the Pod
 > IP is the only address that works — a Kata guest cannot resolve cluster DNS.
 
 ---

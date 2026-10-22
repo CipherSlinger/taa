@@ -92,7 +92,7 @@ export LOCAL_DOCKER_CONTAINER="$LOCAL_CONTAINER"
 # No gateway is deployed behind this instance, and llm.enabled=false is what
 # makes that binding; an endpoint injected by the environment would only be a
 # leftover from the audit flavour.
-unset TAA_LLM_ENDPOINT
+unset LLM_IP TAA_LLM_ENDPOINT
 
 # deploy.sh derives its save defaults from the taa-env image (including the
 # archive basename), so a save run gets both names here unless the caller

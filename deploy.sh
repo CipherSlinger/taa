@@ -213,11 +213,12 @@ CUSTOM_SAVE_CONFIG=""
 LOCAL_DOCKER_NETWORK="${LOCAL_DOCKER_NETWORK:-host}"
 # TEE-LLM gateway endpoint written into taa's config. The gateway does not run on the machine that
 # writes the config: it is deployed as a Kata CSV2 Pod on the remote host (see deploy-llm.sh), which
-# prints the Pod IP to use, so this is set explicitly in practice. Empty means "keep the endpoint
-# the config template names"; the local docker start path falls back to loopback, which is correct
-# when the gateway shares taa's network namespace.
+# prints the Pod IP to use, so this is set explicitly in practice. LLM_IP is the preferred variable;
+# TAA_LLM_ENDPOINT is still read so that callers written before the rename keep working. Empty means
+# "keep the endpoint the config template names"; the local docker start path falls back to loopback,
+# which is correct when the gateway shares taa's network namespace.
 TAA_TEELLM_PORT="${TAA_TEELLM_PORT:-8443}"
-TAA_LLM_ENDPOINT="${TAA_LLM_ENDPOINT:-}"
+LLM_IP="${LLM_IP:-${TAA_LLM_ENDPOINT:-}}"
 LOCAL_DOCKER_INPUT_DIR="${LOCAL_DOCKER_INPUT_DIR:-/opt/taa/input}"
 # The result directory itself, not the output root: this value becomes model.output.result, and all
 # three templates put it one level down (/opt/taa/output/result) so results do not share a directory
@@ -581,7 +582,7 @@ save_local_docker_image() {
   # IP changes when the Pod is recreated, and loopback is only right when the gateway shares taa's
   # network namespace -- so baking it in replaced the template's endpoint with a guess. The image
   # carries exactly the endpoint configs/taa-production.json names; a deployment that needs a
-  # different one sets TAA_LLM_ENDPOINT at container startup, which still overrides it.
+  # different one sets LLM_IP at container startup, which still overrides it.
   # storage.data is left to the template ("") on purpose: the data-anaylsis
   # template points it at /home/jovyan/systemAuthData, where imported files must
   # land, while every other template keeps /root/taa/data -- the value the
@@ -1844,7 +1845,7 @@ deploy_docker_taa() {
   TAA_CONFIG_TEMPLATE="$(select_taa_config_template)"
   step "writing taa config for docker from $(basename "$TAA_CONFIG_TEMPLATE")"
   ensure_parent_dir "$LOCAL_DOCKER_CONFIG_SOURCE"
-  local target_llm_endpoint="${TAA_LLM_ENDPOINT:-https://127.0.0.1:${TAA_TEELLM_PORT}}"
+  local target_llm_endpoint="${LLM_IP:-https://127.0.0.1:${TAA_TEELLM_PORT}}"
   info "taa llm endpoint: $target_llm_endpoint"
   # storage.data stays as the template says (see save_local_docker_image).
   write_taa_config "$LOCAL_DOCKER_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" \
@@ -1987,7 +1988,7 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   write_taa_config "$REMOTE_TAA_CONFIG_SOURCE" "$TAA_CONFIG_TEMPLATE" \
     "$TAA_CONTAINER_ADDR" "$REMOTE_PLATFORM_IP" "$REMOTE_DOCKER_ID" "$CONTRACT_ID" \
     "$TAA_CONTAINER_WORKDIR/models" "" "$TAA_CONTAINER_WORKDIR/results" \
-    "${TAA_LLM_ENDPOINT:-}" "$TARGET_MODEL" "$INCLUDE_TAA_IDENTITY" "" "" "$TAA_CONTAINER_WORKDIR/keys"
+    "${LLM_IP:-}" "$TARGET_MODEL" "$INCLUDE_TAA_IDENTITY" "" "" "$TAA_CONTAINER_WORKDIR/keys"
 
   step "uploading taa, config, and certificates to remote host"
   sshpass -p "$PASSWORD" scp "${SSH_OPTS[@]}" "$TAA_BINARY_PATH" "${REMOTE_USER}@${REMOTE_HOST}:$REMOTE_DIR/$BINARY_NAME.new"

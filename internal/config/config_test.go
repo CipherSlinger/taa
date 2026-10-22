@@ -1868,3 +1868,25 @@ func TestLoadStartupConfigLLMEndpointEnvOverride(t *testing.T) {
 		}
 	})
 }
+
+// TestLoadStartupConfigCompletesConfiguredLLMEndpoint pins that the completion
+// also applies to the file, because deploy.sh writes LLM_IP into the config
+// before the image is assembled.
+func TestLoadStartupConfigCompletesConfiguredLLMEndpoint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultFileName)
+	writeTestConfig(t, path, `{
+		"codeAudit": {
+			"llm": { "endpoint": "10.244.0.188" }
+		}
+	}`)
+	t.Setenv("LLM_IP", "")
+	t.Setenv("TAA_LLM_ENDPOINT", "")
+
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+	if cfg.LLM.Endpoint != "https://10.244.0.188:8443" {
+		t.Fatalf("LLM.Endpoint = %q, want %q", cfg.LLM.Endpoint, "https://10.244.0.188:8443")
+	}
+}

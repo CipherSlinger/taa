@@ -1608,7 +1608,7 @@ Examples:
   $(basename "$0") pod-down
 
 Point TAA at the Pod afterwards: the deployment prints
-  TAA_LLM_ENDPOINT=https://<pod-ip>:${TEELLM_PORT}
+  LLM_IP=https://<pod-ip>:${TEELLM_PORT}
 which deploy.sh writes into TAA's llm.endpoint. Use the Pod IP, not a Service name: a kata guest
 cannot resolve cluster DNS.
 EOF
@@ -2193,8 +2193,8 @@ deploy_teellm() {
   if [[ -n "$TEELLM_POD_IP" ]]; then
     # The Pod IP, not a Service name: a kata guest cannot resolve cluster DNS, so TAA has to be
     # pointed at the address itself. This is also the only knob that changes TAA's llm.endpoint
-    # on the remote path -- deploy.sh always writes it from TAA_LLM_ENDPOINT.
-    echo -e "    ${MUTED}↳ For TAA    :${NC} TAA_LLM_ENDPOINT=https://${TEELLM_POD_IP}:${TEELLM_PORT}"
+    # on the remote path -- deploy.sh always writes it from LLM_IP.
+    echo -e "    ${MUTED}↳ For TAA    :${NC} LLM_IP=https://${TEELLM_POD_IP}:${TEELLM_PORT}"
   fi
   echo ""
   echo -e "  ${BOLD}${CYAN}● Ollama / Qwen Engine${NC}  ${DIM}(In-Pod Engine)${NC}"
