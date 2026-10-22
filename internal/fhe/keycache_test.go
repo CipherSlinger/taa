@@ -39,7 +39,7 @@ func TestKeyCacheEnsureDownloadsAndVerifies(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, err := NewKeyCache(t.TempDir(), DefaultMaxEvalKeyBytes)
+	c, err := NewKeyCache(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewKeyCache: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestKeyCacheRejectsHashMismatchAndCleansUp(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
-	c, err := NewKeyCache(dir, DefaultMaxEvalKeyBytes)
+	c, err := NewKeyCache(dir)
 	if err != nil {
 		t.Fatalf("NewKeyCache: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestKeyCacheRejectsInvalidHashBeforeAnyIO(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, err := NewKeyCache(t.TempDir(), DefaultMaxEvalKeyBytes)
+	c, err := NewKeyCache(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewKeyCache: %v", err)
 	}
@@ -118,23 +118,6 @@ func TestKeyCacheRejectsInvalidHashBeforeAnyIO(t *testing.T) {
 	}
 	if atomic.LoadInt64(&hits) != 0 {
 		t.Errorf("an invalid hash triggered %d downloads, want 0", hits)
-	}
-}
-
-func TestKeyCacheRejectsOversizedDownload(t *testing.T) {
-	payload := []byte(strings.Repeat("x", 4096))
-	hash := sm3HexOf(t, payload)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(payload)
-	}))
-	defer srv.Close()
-
-	c, err := NewKeyCache(t.TempDir(), 1024)
-	if err != nil {
-		t.Fatalf("NewKeyCache: %v", err)
-	}
-	if _, err := c.Ensure(context.Background(), hash, srv.URL); err == nil {
-		t.Fatal("Ensure of an oversized key = nil, want error")
 	}
 }
 
@@ -150,7 +133,7 @@ func TestKeyCacheRequiresAURLOnAMiss(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, err := NewKeyCache(t.TempDir(), DefaultMaxEvalKeyBytes)
+	c, err := NewKeyCache(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewKeyCache: %v", err)
 	}
@@ -168,11 +151,8 @@ func TestKeyCacheRequiresAURLOnAMiss(t *testing.T) {
 
 // TestNewKeyCacheValidatesArguments covers the cache's own argument checks.
 func TestNewKeyCacheValidatesArguments(t *testing.T) {
-	if _, err := NewKeyCache("", 1024); err == nil {
+	if _, err := NewKeyCache(""); err == nil {
 		t.Error("empty dir accepted, want error")
-	}
-	if _, err := NewKeyCache(t.TempDir(), 0); err == nil {
-		t.Error("zero max bytes accepted, want error")
 	}
 }
 
@@ -202,7 +182,7 @@ func TestKeyCacheEnsureDoesNotSerializeUnrelatedDigests(t *testing.T) {
 	}))
 	defer fast.Close()
 
-	c, err := NewKeyCache(t.TempDir(), DefaultMaxEvalKeyBytes)
+	c, err := NewKeyCache(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewKeyCache: %v", err)
 	}
@@ -240,7 +220,7 @@ func TestKeyCacheEnsureConcurrentSameDigest(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
-	c, err := NewKeyCache(dir, DefaultMaxEvalKeyBytes)
+	c, err := NewKeyCache(dir)
 	if err != nil {
 		t.Fatalf("NewKeyCache: %v", err)
 	}
@@ -417,7 +397,7 @@ func TestDownloadKeyIsBoundedByTheCallerContext(t *testing.T) {
 		cancel()
 	}()
 	start := time.Now()
-	tmp, err := downloadKey(ctx, srv.URL, DefaultMaxEvalKeyBytes)
+	tmp, err := downloadKey(ctx, srv.URL)
 	if err == nil {
 		_ = os.Remove(tmp)
 		t.Fatal("downloadKey with a cancelled context = nil, want error")
@@ -447,7 +427,7 @@ func TestKeyCacheDirsStayRestrictive(t *testing.T) {
 	defer srv.Close()
 
 	dir := filepath.Join(t.TempDir(), "cache")
-	c, err := NewKeyCache(dir, DefaultMaxEvalKeyBytes)
+	c, err := NewKeyCache(dir)
 	if err != nil {
 		t.Fatalf("NewKeyCache: %v", err)
 	}

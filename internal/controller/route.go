@@ -24,9 +24,6 @@ import (
 	pkgerrors "taa/pkg/errors"
 )
 
-// maxDownloadBytes 限制单次资源下载的最大字节数，防止 OOM。
-const maxDownloadBytes = config.DefaultMaxFileBytes // 5 GiB
-
 // ── TAA 全局状态 ──────────────────────────────────────────
 
 // SecurityConfig holds immutable security settings configured at startup.
@@ -48,8 +45,6 @@ type SecurityConfig struct {
 	DataDir          string                 // 数据目录（type=2 测试数据，type=3 训练数据，用于数据指纹比对）
 	ResultCheck      bool                   // 是否在 export 时检查明文数据泄露
 	ResultDir        string                 // 训练结果目录（导出前检查）
-	MaxFileBytes     int64                  // Maximum file size limit in bytes (downloads and exports, default 5GiB)
-	MaxResultBytes   int64                  // Backward-compatible alias for MaxFileBytes
 	ModelInputDir    string                 // 模型数据输入目录（缺省 /opt/taa/input）
 	ModelOutputDir   string                 // 模型结果输出目录（缺省 /opt/taa/output/result）
 	ModelLogDir      string                 // Model log file or directory path (default /opt/taa/output/log)
@@ -66,16 +61,6 @@ const (
 	DefaultModelLogDir      = "/opt/taa/output/log"
 	DefaultModelProgressDir = "/opt/taa/output/progress/progress.json"
 )
-
-func (sec SecurityConfig) GetMaxFileBytes() int64 {
-	if sec.MaxFileBytes > 0 {
-		return sec.MaxFileBytes
-	}
-	if sec.MaxResultBytes > 0 {
-		return sec.MaxResultBytes
-	}
-	return config.DefaultMaxFileBytes
-}
 
 func (sec SecurityConfig) GetModelInputDir() string {
 	dir := DefaultModelInputDir
@@ -1004,16 +989,10 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 	}
 }
 
-// downloadToTempFile streams resource from URL to a temporary file using the default limit (5 GiB).
+// downloadToTempFile streams resource from URL to a temporary file.
 // Returns the temporary file path, caller is responsible for deleting it.
 func downloadToTempFile(resourceURL string) (string, int64, error) {
-	return resource.DownloadToTempFile(resourceURL, maxDownloadBytes)
-}
-
-// downloadToTempFile streams resource from URL to a temporary file using the instance MaxFileBytes limit.
-// Returns the temporary file path, caller is responsible for deleting it.
-func (s *TAAState) downloadToTempFile(resourceURL string) (string, int64, error) {
-	return resource.DownloadToTempFile(resourceURL, s.Security.GetMaxFileBytes())
+	return resource.DownloadToTempFile(resourceURL)
 }
 
 // decryptResourceToTempFile 从磁盘密文文件中读取 SM2+SM4-GCM 封装密文，

@@ -22,7 +22,6 @@ func newFHEHandlerTestState(t *testing.T) *TAAState {
 		DataDir:         t.TempDir(),
 		KeyCacheDir:     t.TempDir(),
 		CallbackBaseURL: "http://127.0.0.1:6001",
-		MaxEvalKeyBytes: fhe.DefaultMaxEvalKeyBytes,
 		PollInterval:    fhe.DefaultPollInterval,
 		RequestTimeout:  fhe.DefaultRequestTimeout,
 	}, nil)

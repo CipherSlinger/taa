@@ -24,8 +24,7 @@
       "rulesPath": "/opt/taa/semgrep/rules"
     },
     "resultCheck": {
-      "enabled": true,
-      "maxFileBytes": 5368709120
+      "enabled": true
     },
     "binaryAudit": {
       "enabled": true

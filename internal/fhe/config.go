@@ -8,15 +8,6 @@ import (
 )
 
 const (
-	// DefaultMaxEvalKeyBytes bounds the eval key download.
-	//
-	// This cap must stay separate from codeAudit.resultCheck.maxFileBytes. That
-	// setting is the import download cap and is operator-configurable, while a
-	// measured eval_context.bin is 3,329,929,205 B; reusing a cap an operator may
-	// lower below that makes the key impossible to download at all. 6 GiB leaves
-	// room for parameter growth while remaining a finite bound.
-	DefaultMaxEvalKeyBytes = int64(6) << 30 // 6442450944
-
 	DefaultPollInterval   = 5 * time.Second
 	DefaultRequestTimeout = 30 * time.Second
 )
@@ -36,8 +27,6 @@ type Config struct {
 	// derived at startup as http://127.0.0.1:<listen port>: TAA and the FHE
 	// service share the host's network namespace.
 	CallbackBaseURL string
-	// MaxEvalKeyBytes bounds the eval key download; see DefaultMaxEvalKeyBytes.
-	MaxEvalKeyBytes int64
 	// PollInterval is the fallback poll period while waiting for a task.
 	PollInterval time.Duration
 	// RequestTimeout bounds one HTTP call to the FHE service.
@@ -108,9 +97,6 @@ func (c Config) Validate() error {
 	// character would corrupt the result.
 	if strings.ContainsAny(c.CallbackBaseURL, "?#") {
 		return fmt.Errorf("fhe.callbackBaseUrl %q must not contain a query or a fragment", c.CallbackBaseURL)
-	}
-	if c.MaxEvalKeyBytes <= 0 {
-		return fmt.Errorf("fhe.maxEvalKeyBytes must be positive, got %d", c.MaxEvalKeyBytes)
 	}
 	// The ...Ms keys are milliseconds, so the message prints milliseconds rather
 	// than the raw time.Duration ("got -1ns" names a unit the operator cannot

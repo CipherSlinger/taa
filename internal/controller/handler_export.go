@@ -112,7 +112,6 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 	s.Logs.Add(LogInfo, "export", "收到导出请求: requestId=%s, taskId=%s, hash=%s, resultDir=%s, recordPhase=%d, currentPhase=%d",
 		req.RequestID, req.TaskID, record.Hash, record.ResultDir, recordPhase, currentPhase)
 
-	maxBytes := s.Security.GetMaxFileBytes()
 	// The leakage check itself runs right after training finishes and its verdict is
 	// persisted on this record, so export never pays the scan again. A verdict that
 	// says the result leaks always blocks. The two states without a usable verdict -
@@ -202,12 +201,6 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if int64(len(resultData)) > maxBytes {
-		s.Logs.Add(LogError, "export", "导出产物大小超限: %d bytes > %d bytes", len(resultData), maxBytes)
-		writeErr(w, http.StatusBadRequest, pkgerrors.Errorf(pkgerrors.CodeInvalidArgument, "导出产物大小超过限制: %d bytes, 上限 %d bytes", len(resultData), maxBytes))
-		return
-	}
-
 	filename := filepath.Base(record.ResultDir) + ".zip"
 
 	if pubKeyPEM != "" {
@@ -221,11 +214,6 @@ func (s *TAAState) exportHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.Logs.Add(LogError, "export", "加密失败: %v", err)
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("加密失败: %v", err))
-			return
-		}
-		if int64(len(sealed)) > maxBytes {
-			s.Logs.Add(LogError, "export", "导出加密产物大小超限: %d bytes > %d bytes", len(sealed), maxBytes)
-			writeErr(w, http.StatusBadRequest, pkgerrors.Errorf(pkgerrors.CodeInvalidArgument, "导出加密产物大小超过限制: %d bytes, 上限 %d bytes", len(sealed), maxBytes))
 			return
 		}
 		filename += ".enc"

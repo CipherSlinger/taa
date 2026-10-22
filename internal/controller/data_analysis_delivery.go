@@ -139,7 +139,7 @@ func (s *TAAState) handleDataAnalysisImport(w http.ResponseWriter, req *importRe
 	// The delivery URL is logged without the envelope and the path parameters.
 	s.Logs.Add(LogInfo, "import", "data-anaylsis: 开始下载资源: %s (fileName=%s, dataResourceCode=%s, phase=%d)",
 		delivery.DownloadURL, delivery.FileName, delivery.DataResourceCode, phase)
-	ciphertextPath, size, err := s.downloadToTempFile(delivery.DownloadURL)
+	ciphertextPath, size, err := downloadToTempFile(delivery.DownloadURL)
 	if err != nil {
 		release()
 		s.Logs.Add(LogError, "import", "下载资源失败: %v", err)

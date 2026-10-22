@@ -23,12 +23,10 @@
       "progress": "/opt/taa/output/progress/progress.json"
     }
   },
-  "maxFileBytes": 5368709120,
   "fhe": {
     "endpoint": "http://127.0.0.1:58996",
     "dataDir": "/data",
     "keyCacheDir": "/data/taa-fhe-keys",
-    "maxEvalKeyBytes": 6442450944,
     "pollIntervalMs": 5000,
     "requestTimeoutMs": 30000,
     "activateModelOnImport": true

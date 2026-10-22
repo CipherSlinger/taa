@@ -264,12 +264,11 @@ const fheConfigSection = `"fhe": {
 // every default, so a test can tell "applied" from "ignored" on each field.
 const auditAndAttestationConfig = `{
 	"server": {"type": "__SERVER_TYPE__"},
-	"maxFileBytes": 12345,
 	"codeAudit": {
 		"enabled": false,
 		"codeScan": {"engine": "regex", "rulesPath": "/bogus/rules", "timeoutSeconds": 7},
 		"binaryAudit": {"enabled": false, "maxFindings": 1},
-		"resultCheck": {"enabled": false, "maxFileBytes": 999999},
+		"resultCheck": {"enabled": false},
 		"llm": {
 			"enabled": false,
 			"endpoint": "https://bogus.example:1",
@@ -319,11 +318,6 @@ func TestLoadStartupConfigFHEIgnoresAuditAndAttestation(t *testing.T) {
 	if !cfg.EnableResultCheck {
 		t.Errorf("EnableResultCheck = false, want the default on an fhe instance")
 	}
-	// The codeAudit copy of maxFileBytes is ignored; the top-level one is not. An
-	// fhe instance's export cap must come from the place that still applies.
-	if cfg.MaxFileBytes != 12345 {
-		t.Errorf("MaxFileBytes = %d, want the top-level value 12345", cfg.MaxFileBytes)
-	}
 	if cfg.AttestationHRKCertPath == "/bogus/hrk.cert" || cfg.AttestationHSKCekCertPath == "/bogus/hsk_cek.cert" {
 		t.Errorf("attestation paths = %q/%q, want defaults on an fhe instance",
 			cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
@@ -362,9 +356,6 @@ func TestLoadStartupConfigTEEAppliesAuditAndAttestation(t *testing.T) {
 	if cfg.EnableResultCheck {
 		t.Errorf("EnableResultCheck = true, want the file's false on a tee instance")
 	}
-	if cfg.MaxFileBytes != 999999 {
-		t.Errorf("MaxFileBytes = %d, want the codeAudit.resultCheck value 999999", cfg.MaxFileBytes)
-	}
 	if cfg.AttestationHRKCertPath != "/bogus/hrk.cert" || cfg.AttestationHSKCekCertPath != "/bogus/hsk_cek.cert" {
 		t.Errorf("attestation paths = %q/%q, want the file values on a tee instance",
 			cfg.AttestationHRKCertPath, cfg.AttestationHSKCekCertPath)
@@ -395,12 +386,6 @@ func TestLoadStartupConfigAppliesDefaults(t *testing.T) {
 	}
 	if !cfg.EnableResultCheck {
 		t.Fatalf("EnableResultCheck = false, want default true")
-	}
-	if cfg.MaxFileBytes != DefaultMaxFileBytes {
-		t.Fatalf("MaxFileBytes = %d, want default %d", cfg.MaxFileBytes, DefaultMaxFileBytes)
-	}
-	if cfg.MaxResultBytes != DefaultMaxResultBytes {
-		t.Fatalf("MaxResultBytes = %d, want default %d", cfg.MaxResultBytes, DefaultMaxResultBytes)
 	}
 	if cfg.DataDir != "/opt/taa/data" {
 		t.Fatalf("DataDir = %q, want default", cfg.DataDir)
@@ -503,100 +488,6 @@ func TestLoadStartupConfigReadsKeysDir(t *testing.T) {
 	}
 }
 
-func TestLoadStartupConfigReadsMaxFileBytes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, `{
-		"maxFileBytes": 5368709120
-	}`)
-
-	cfg, err := LoadStartupConfig(path)
-	if err != nil {
-		t.Fatalf("LoadStartupConfig() error = %v", err)
-	}
-	if cfg.MaxFileBytes != 5368709120 {
-		t.Fatalf("MaxFileBytes = %d, want 5368709120", cfg.MaxFileBytes)
-	}
-	if cfg.MaxResultBytes != 5368709120 {
-		t.Fatalf("MaxResultBytes = %d, want 5368709120", cfg.MaxResultBytes)
-	}
-}
-
-func TestLoadStartupConfigReadsMaxResultBytes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, `{
-		"maxResultBytes": 5368709120
-	}`)
-
-	cfg, err := LoadStartupConfig(path)
-	if err != nil {
-		t.Fatalf("LoadStartupConfig() error = %v", err)
-	}
-	if cfg.MaxFileBytes != 5368709120 {
-		t.Fatalf("MaxFileBytes = %d, want 5368709120", cfg.MaxFileBytes)
-	}
-	if cfg.MaxResultBytes != 5368709120 {
-		t.Fatalf("MaxResultBytes = %d, want 5368709120", cfg.MaxResultBytes)
-	}
-}
-
-func TestLoadStartupConfigMaxFileBytesPrecedence(t *testing.T) {
-	t.Run("resultCheck.maxFileBytes takes precedence over all", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), DefaultFileName)
-		writeTestConfig(t, path, `{
-			"maxResultBytes": 100,
-			"maxFileBytes": 200,
-			"codeAudit": {
-				"maxFileBytes": 300,
-				"resultCheck": {
-					"maxFileBytes": 400
-				}
-			}
-		}`)
-
-		cfg, err := LoadStartupConfig(path)
-		if err != nil {
-			t.Fatalf("LoadStartupConfig() error = %v", err)
-		}
-		if cfg.MaxFileBytes != 400 || cfg.MaxResultBytes != 400 {
-			t.Fatalf("MaxFileBytes = %d, MaxResultBytes = %d, want 400", cfg.MaxFileBytes, cfg.MaxResultBytes)
-		}
-	})
-
-	t.Run("security.maxFileBytes takes precedence over root", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), DefaultFileName)
-		writeTestConfig(t, path, `{
-			"maxResultBytes": 100,
-			"maxFileBytes": 200,
-			"codeAudit": {
-				"maxFileBytes": 300
-			}
-		}`)
-
-		cfg, err := LoadStartupConfig(path)
-		if err != nil {
-			t.Fatalf("LoadStartupConfig() error = %v", err)
-		}
-		if cfg.MaxFileBytes != 300 || cfg.MaxResultBytes != 300 {
-			t.Fatalf("MaxFileBytes = %d, MaxResultBytes = %d, want 300", cfg.MaxFileBytes, cfg.MaxResultBytes)
-		}
-	})
-
-	t.Run("root maxFileBytes takes precedence over legacy maxResultBytes", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), DefaultFileName)
-		writeTestConfig(t, path, `{
-			"maxResultBytes": 100,
-			"maxFileBytes": 200
-		}`)
-
-		cfg, err := LoadStartupConfig(path)
-		if err != nil {
-			t.Fatalf("LoadStartupConfig() error = %v", err)
-		}
-		if cfg.MaxFileBytes != 200 || cfg.MaxResultBytes != 200 {
-			t.Fatalf("MaxFileBytes = %d, MaxResultBytes = %d, want 200", cfg.MaxFileBytes, cfg.MaxResultBytes)
-		}
-	})
-}
 
 func TestLoadStartupConfigIgnoresWhitespaceKeysDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
@@ -725,7 +616,6 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 		wantKeysDir          string
 		wantHRK              string
 		wantHSKCek           string
-		wantMaxResultBytes   int64
 		wantModelInputDir    string
 		wantModelOutputDir   string
 		wantModelLogDir      string
@@ -759,7 +649,6 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantKeysDir:               "/root/taa/keys",
 			wantHRK:                   "/root/taa/certs/hrk.cert",
 			wantHSKCek:                "/root/taa/certs/hsk_cek.cert",
-			wantMaxResultBytes:        5368709120,
 			wantModelInputDir:         "/opt/taa/input",
 			wantModelOutputDir:        "/opt/taa/output/result",
 			wantModelLogDir:           "/opt/taa/output/log",
@@ -781,7 +670,6 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantKeysDir:               "/root/taa/keys",
 			wantHRK:                   "/root/taa/certs/hrk.cert",
 			wantHSKCek:                "/root/taa/certs/hsk_cek.cert",
-			wantMaxResultBytes:        3221225472,
 			wantModelInputDir:         "/opt/taa/input",
 			wantModelOutputDir:        "/opt/taa/output/result",
 			wantModelLogDir:           "/opt/taa/output/log",
@@ -826,12 +714,6 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			}
 			if cfg.AttestationHSKCekCertPath != tc.wantHSKCek {
 				t.Errorf("AttestationHSKCekCertPath = %q, want %q", cfg.AttestationHSKCekCertPath, tc.wantHSKCek)
-			}
-			if cfg.MaxFileBytes != tc.wantMaxResultBytes {
-				t.Errorf("MaxFileBytes = %d, want %d", cfg.MaxFileBytes, tc.wantMaxResultBytes)
-			}
-			if cfg.MaxResultBytes != tc.wantMaxResultBytes {
-				t.Errorf("MaxResultBytes = %d, want %d", cfg.MaxResultBytes, tc.wantMaxResultBytes)
 			}
 			if cfg.ModelInputDir != tc.wantModelInputDir {
 				t.Errorf("ModelInputDir = %q, want %q", cfg.ModelInputDir, tc.wantModelInputDir)
@@ -890,8 +772,7 @@ func TestLoadStartupConfig_ModularSections(t *testing.T) {
 		"codeAudit": {
 			"enabled": false,
 			"resultCheck": {
-				"enabled": false,
-				"maxFileBytes": 1048576
+				"enabled": false
 			}
 		}
 	}`)
@@ -930,12 +811,6 @@ func TestLoadStartupConfig_ModularSections(t *testing.T) {
 	}
 	if cfg.EnableResultCheck {
 		t.Errorf("EnableResultCheck = true, want false")
-	}
-	if cfg.MaxFileBytes != 1048576 {
-		t.Errorf("MaxFileBytes = %d, want 1048576", cfg.MaxFileBytes)
-	}
-	if cfg.MaxResultBytes != 1048576 {
-		t.Errorf("MaxResultBytes = %d, want 1048576", cfg.MaxResultBytes)
 	}
 }
 

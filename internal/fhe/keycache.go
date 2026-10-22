@@ -14,7 +14,6 @@ import (
 	"time"
 
 	teecrypto "taa/pkg/crypto"
-	pkgerrors "taa/pkg/errors"
 )
 
 // hashFileSM3 is the digest used for every content-addressed name in this
@@ -34,24 +33,20 @@ func hashFileSM3(path string) (int64, string, error) {
 // another multi-gigabyte download; disk is sized for the expected user count
 // instead.
 type KeyCache struct {
-	dir      string
-	maxBytes int64
-	mu       sync.Mutex
+	dir string
+	mu  sync.Mutex
 }
 
 // NewKeyCache prepares the cache directory and returns it.
-func NewKeyCache(dir string, maxBytes int64) (*KeyCache, error) {
+func NewKeyCache(dir string) (*KeyCache, error) {
 	d := strings.TrimSpace(dir)
 	if d == "" {
 		return nil, fmt.Errorf("fhe key cache dir is empty")
 	}
-	if maxBytes <= 0 {
-		return nil, fmt.Errorf("fhe max eval key bytes must be positive, got %d", maxBytes)
-	}
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		return nil, fmt.Errorf("create fhe key cache dir %s: %w", d, err)
 	}
-	return &KeyCache{dir: d, maxBytes: maxBytes}, nil
+	return &KeyCache{dir: d}, nil
 }
 
 // Dir returns the cache root.
@@ -103,9 +98,7 @@ func (c *KeyCache) Ensure(ctx context.Context, hash, url string) (string, error)
 		return "", fmt.Errorf("eval key %s is not cached and no download url was given", hash)
 	}
 
-	// The cap is this package's own, never the import cap: a real key is 3.101 GiB
-	// and codeAudit.resultCheck.maxFileBytes is operator-configurable.
-	tmp, err := downloadKey(ctx, url, c.maxBytes)
+	tmp, err := downloadKey(ctx, url)
 	if err != nil {
 		return "", fmt.Errorf("download eval key: %w", err)
 	}
@@ -154,8 +147,7 @@ var keyDownloadClient = func() *http.Client {
 	return &http.Client{Transport: transport}
 }()
 
-// downloadKey streams url into a temp file, bounded by ctx and by maxBytes,
-// which NewKeyCache has already checked is positive.
+// downloadKey streams url into a temp file, bounded by ctx.
 //
 // resource.DownloadToTempFile does the same thing without a context - it calls
 // http.Get - so a cancelled import could not stop it and a hung server could
@@ -163,7 +155,7 @@ var keyDownloadClient = func() *http.Client {
 // may not change the resource package, and because a wrapper around it (a
 // goroutine plus a select on ctx.Done) would leak the download it walked away
 // from.
-func downloadKey(ctx context.Context, url string, maxBytes int64) (string, error) {
+func downloadKey(ctx context.Context, url string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", fmt.Errorf("build the eval key download request for %s: %w", url, err)
@@ -177,10 +169,6 @@ func downloadKey(ctx context.Context, url string, maxBytes int64) (string, error
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	if resp.ContentLength > maxBytes {
-		return "", pkgerrors.Errorf(pkgerrors.CodeInvalidArgument,
-			"eval key is %d bytes, over the %d byte cap", resp.ContentLength, maxBytes)
-	}
 
 	f, err := os.CreateTemp("", "taa-download-*")
 	if err != nil {
@@ -188,17 +176,11 @@ func downloadKey(ctx context.Context, url string, maxBytes int64) (string, error
 	}
 	path := f.Name()
 
-	reader := io.LimitReader(resp.Body, maxBytes+1)
-	n, err := io.Copy(f, reader)
+	_, err = io.Copy(f, resp.Body)
 	f.Close()
 	if err != nil {
 		_ = os.Remove(path)
 		return "", fmt.Errorf("write the eval key download to %s: %w", path, err)
-	}
-	if n > maxBytes {
-		_ = os.Remove(path)
-		return "", pkgerrors.Errorf(pkgerrors.CodeInvalidArgument,
-			"eval key is over the %d byte cap: %d bytes", maxBytes, n)
 	}
 	return path, nil
 }

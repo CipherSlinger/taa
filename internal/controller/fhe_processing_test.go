@@ -30,7 +30,6 @@ func newFHETestState(t *testing.T) *TAAState {
 		DataDir:         t.TempDir(),
 		KeyCacheDir:     t.TempDir(),
 		CallbackBaseURL: "http://127.0.0.1:6001",
-		MaxEvalKeyBytes: fhe.DefaultMaxEvalKeyBytes,
 		PollInterval:    fhe.DefaultPollInterval,
 		RequestTimeout:  fhe.DefaultRequestTimeout,
 	}, nil)
@@ -142,7 +141,6 @@ func newStubRunner(t *testing.T) *fhe.Runner {
 	r, err := fhe.New(fhe.Config{
 		Endpoint: "http://127.0.0.1:1", DataDir: t.TempDir(), KeyCacheDir: t.TempDir(),
 		CallbackBaseURL: "http://taa:6001",
-		MaxEvalKeyBytes: fhe.DefaultMaxEvalKeyBytes,
 		PollInterval:    time.Second, RequestTimeout: time.Second,
 	}, nil)
 	if err != nil {
@@ -474,7 +472,6 @@ func newFHETestEnv(t *testing.T) *fheTestEnv {
 		DataDir:         sharedDir,
 		KeyCacheDir:     t.TempDir(),
 		CallbackBaseURL: "http://127.0.0.1:6001",
-		MaxEvalKeyBytes: fhe.DefaultMaxEvalKeyBytes,
 		PollInterval:    5 * time.Millisecond,
 		RequestTimeout:  2 * time.Second,
 		// Set explicitly, because this field's zero value is a working-but-wrong

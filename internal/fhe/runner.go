@@ -160,7 +160,7 @@ func New(cfg Config, logf Logger) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	keys, err := NewKeyCache(cfg.KeyCacheDir, cfg.MaxEvalKeyBytes)
+	keys, err := NewKeyCache(cfg.KeyCacheDir)
 	if err != nil {
 		return nil, err
 	}

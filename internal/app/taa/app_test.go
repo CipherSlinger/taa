@@ -90,8 +90,6 @@ func TestBuildSecurityConfig(t *testing.T) {
 		CodeScan:          config.CodeScanConfig{Engine: "regex"},
 		ModelDir:          "/opt/taa/models",
 		EnableResultCheck: true,
-		MaxFileBytes:      3 * 1024 * 1024 * 1024,
-		MaxResultBytes:    3 * 1024 * 1024 * 1024,
 		DataDir:           "/opt/taa/data",
 		ResultDir:         "/opt/taa/results",
 		ModelInputDir:     "/opt/taa/models/input",
@@ -136,12 +134,6 @@ func TestBuildSecurityConfig(t *testing.T) {
 	}
 	if sec.ResultCheck != cfg.EnableResultCheck {
 		t.Errorf("ResultCheck = %v, want %v", sec.ResultCheck, cfg.EnableResultCheck)
-	}
-	if sec.MaxFileBytes != cfg.MaxFileBytes {
-		t.Errorf("MaxFileBytes = %d, want %d", sec.MaxFileBytes, cfg.MaxFileBytes)
-	}
-	if sec.MaxResultBytes != cfg.MaxResultBytes {
-		t.Errorf("MaxResultBytes = %d, want %d", sec.MaxResultBytes, cfg.MaxResultBytes)
 	}
 	if sec.DataDir != cfg.DataDir {
 		t.Errorf("DataDir = %q, want %q", sec.DataDir, cfg.DataDir)

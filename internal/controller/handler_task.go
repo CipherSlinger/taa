@@ -261,7 +261,7 @@ func (s *TAAState) importHandler(w http.ResponseWriter, r *http.Request) {
 	msg := "资源已接收，下载处理中"
 	s.setCurrentOp("downloading")
 	s.Logs.Add(LogInfo, "import", "开始下载资源: %s", downloadURL)
-	ciphertextPath, size, err := s.downloadToTempFile(downloadURL)
+	ciphertextPath, size, err := downloadToTempFile(downloadURL)
 	if err != nil {
 		store.Rollback(req.RequestID, req.TaskID)
 		release()
@@ -481,7 +481,7 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.Logs.Add(LogInfo, "importModel", "开始下载资源: %s", req.ResourceURL)
-	ciphertextPath, size, err := s.downloadToTempFile(req.ResourceURL)
+	ciphertextPath, size, err := downloadToTempFile(req.ResourceURL)
 	if err != nil {
 		// ModelImported was sealed before the download, so a failure here has to
 		// undo it explicitly. Relying on release() alone left the flag set with no

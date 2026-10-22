@@ -14,7 +14,6 @@ func validConfig() Config {
 		DataDir:               "/opt/fhe-data",
 		KeyCacheDir:           "/root/taa/fhe-keys",
 		CallbackBaseURL:       "http://172.16.10.130:6001",
-		MaxEvalKeyBytes:       DefaultMaxEvalKeyBytes,
 		PollInterval:          DefaultPollInterval,
 		RequestTimeout:        DefaultRequestTimeout,
 		ActivateModelOnImport: true,
@@ -49,12 +48,6 @@ func TestConfigValidateRejectsMissingRequiredFields(t *testing.T) {
 }
 
 func TestConfigValidateRejectsBadBounds(t *testing.T) {
-	negative := validConfig()
-	negative.MaxEvalKeyBytes = 0
-	if err := negative.Validate(); err == nil {
-		t.Error("maxEvalKeyBytes=0 accepted, want error")
-	}
-
 	badPoll := validConfig()
 	badPoll.PollInterval = 0
 	if err := badPoll.Validate(); err == nil {
@@ -207,12 +200,6 @@ func TestConfigCallbackURL(t *testing.T) {
 }
 
 func TestConfigDefaults(t *testing.T) {
-	// The default must stay above the measured eval_context.bin (3,329,929,205 B)
-	// and must not be confused with codeAudit.resultCheck.maxFileBytes (3 GiB),
-	// which is 103.7 MiB too small to download a real key.
-	if DefaultMaxEvalKeyBytes <= 3329929205 {
-		t.Errorf("DefaultMaxEvalKeyBytes = %d, must exceed the measured key size 3329929205", DefaultMaxEvalKeyBytes)
-	}
 	if DefaultPollInterval != 5*time.Second {
 		t.Errorf("DefaultPollInterval = %s, want 5s", DefaultPollInterval)
 	}
@@ -228,13 +215,8 @@ func TestConfigDefaults(t *testing.T) {
 // applyFHEDefaults fills a template that omitted one with them, while the constants
 // below are what this package's own tests build a Config from. Nothing made the two
 // agree, so raising a default on the production side alone would have left every
-// test here green against a number no deployment uses - and this package's tests
-// are the evidence that the poll interval and key cap agree with each other.
+// test here green against a number no deployment uses.
 func TestDefaultsMatchTheStartupConfigDefaults(t *testing.T) {
-	if DefaultMaxEvalKeyBytes != config.DefaultFHEMaxEvalKeyBytes {
-		t.Errorf("DefaultMaxEvalKeyBytes = %d, but the startup config defaults to %d",
-			DefaultMaxEvalKeyBytes, config.DefaultFHEMaxEvalKeyBytes)
-	}
 	if got, want := DefaultPollInterval, time.Duration(config.DefaultFHEPollIntervalMs)*time.Millisecond; got != want {
 		t.Errorf("DefaultPollInterval = %s, but the startup config defaults to %s", got, want)
 	}

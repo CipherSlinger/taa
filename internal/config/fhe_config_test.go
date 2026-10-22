@@ -25,7 +25,6 @@ const fheConfigBody = `{
     "endpoint": "http://127.0.0.1:58996",
     "dataDir": "/opt/fhe-data",
     "keyCacheDir": "/root/taa/fhe-keys",
-    "maxEvalKeyBytes": 6442450944,
     "pollIntervalMs": 5000,
     "requestTimeoutMs": 30000,
     "activateModelOnImport": true
@@ -95,9 +94,6 @@ func TestFHESectionIsParsedWhenTypeIsFHE(t *testing.T) {
 	if cfg.FHE.KeyCacheDir != "/root/taa/fhe-keys" {
 		t.Errorf("KeyCacheDir = %q", cfg.FHE.KeyCacheDir)
 	}
-	if cfg.FHE.MaxEvalKeyBytes != 6442450944 {
-		t.Errorf("MaxEvalKeyBytes = %d", cfg.FHE.MaxEvalKeyBytes)
-	}
 	if cfg.FHE.PollIntervalMs != 5000 || cfg.FHE.RequestTimeoutMs != 30000 {
 		t.Errorf("timeouts = %d/%d", cfg.FHE.PollIntervalMs, cfg.FHE.RequestTimeoutMs)
 	}
@@ -117,9 +113,6 @@ func TestFHEConfigDefaultsAreFilled(t *testing.T) {
 	cfg, err := LoadStartupConfig(p)
 	if err != nil {
 		t.Fatalf("LoadStartupConfig: %v", err)
-	}
-	if cfg.FHE.MaxEvalKeyBytes != DefaultFHEMaxEvalKeyBytes {
-		t.Errorf("MaxEvalKeyBytes = %d, want the default %d", cfg.FHE.MaxEvalKeyBytes, DefaultFHEMaxEvalKeyBytes)
 	}
 	if cfg.FHE.PollIntervalMs != DefaultFHEPollIntervalMs {
 		t.Errorf("PollIntervalMs = %d", cfg.FHE.PollIntervalMs)
@@ -209,16 +202,13 @@ func TestFHEConfigRejectsBadEndpoint(t *testing.T) {
 func zeroBoundsBody() string {
 	return `{"server":{"type":"fhe"},"fhe":{
 	  "endpoint":"http://h:1","dataDir":"/d","keyCacheDir":"/k",
-	  "maxEvalKeyBytes":0,"pollIntervalMs":0,"requestTimeoutMs":0}}`
+	  "pollIntervalMs":0,"requestTimeoutMs":0}}`
 }
 
 func TestFHEConfigZeroBoundsTakeDefaults(t *testing.T) {
 	cfg, err := LoadStartupConfig(writeConfig(t, zeroBoundsBody()))
 	if err != nil {
 		t.Fatalf("LoadStartupConfig: %v", err)
-	}
-	if cfg.FHE.MaxEvalKeyBytes != DefaultFHEMaxEvalKeyBytes {
-		t.Errorf("MaxEvalKeyBytes = %d, want the default %d", cfg.FHE.MaxEvalKeyBytes, DefaultFHEMaxEvalKeyBytes)
 	}
 	if cfg.FHE.PollIntervalMs != DefaultFHEPollIntervalMs {
 		t.Errorf("PollIntervalMs = %d, want the default %d", cfg.FHE.PollIntervalMs, DefaultFHEPollIntervalMs)
@@ -236,7 +226,6 @@ func TestFHEConfigRejectsNonPositiveBounds(t *testing.T) {
 		field string
 		value string
 	}{
-		{"maxEvalKeyBytes", "-1"},
 		{"pollIntervalMs", "-1"},
 		{"requestTimeoutMs", "-5000"},
 	} {

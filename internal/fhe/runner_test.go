@@ -151,7 +151,6 @@ func newTestRunner(t *testing.T, srvURL string, layout Layout) *Runner {
 		DataDir:         layout.DataDir(),
 		KeyCacheDir:     t.TempDir(),
 		CallbackBaseURL: "http://taa.test:6001",
-		MaxEvalKeyBytes: DefaultMaxEvalKeyBytes,
 		PollInterval:    20 * time.Millisecond,
 		RequestTimeout:  5 * time.Second,
 	}
@@ -524,7 +523,6 @@ func TestRunnerCopyResultDownloadIsNotBoundedByRequestTimeout(t *testing.T) {
 	cfg := Config{
 		Endpoint: srv.URL, DataDir: layout.DataDir(), KeyCacheDir: t.TempDir(),
 		CallbackBaseURL: "http://taa.test:6001",
-		MaxEvalKeyBytes: DefaultMaxEvalKeyBytes,
 		PollInterval:    20 * time.Millisecond,
 		RequestTimeout:  150 * time.Millisecond,
 	}
@@ -705,7 +703,7 @@ func TestNewValidatesConfigAndCreatesDirs(t *testing.T) {
 	cfg := Config{
 		Endpoint: "http://127.0.0.1:1", DataDir: layout.DataDir(), KeyCacheDir: t.TempDir(),
 		CallbackBaseURL: "http://taa:6001",
-		MaxEvalKeyBytes: DefaultMaxEvalKeyBytes, PollInterval: time.Second,
+		PollInterval:    time.Second,
 		RequestTimeout: time.Second,
 	}
 	if _, err := New(cfg, nil); err != nil {

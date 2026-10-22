@@ -12,9 +12,7 @@ import (
 )
 
 const (
-	DefaultFileName       = "taa-config.json"
-	DefaultMaxFileBytes   = 5 * 1024 * 1024 * 1024 // 5 GiB
-	DefaultMaxResultBytes = DefaultMaxFileBytes
+	DefaultFileName = "taa-config.json"
 	// DefaultLLMPort is the port the TEE-LLM gateway listens on when an
 	// endpoint override names a host without one.
 	DefaultLLMPort = "8443"
@@ -94,8 +92,6 @@ type StartupConfig struct {
 	BinaryAuditMaxStreamBytes int
 	ModelDir                  string
 	EnableResultCheck         bool
-	MaxFileBytes              int64
-	MaxResultBytes            int64
 	DataDir                   string
 	ResultDir                 string
 	ModelInputDir             string
@@ -201,13 +197,8 @@ const (
 
 var stateSealingKeySources = []string{StateSealingKeySourceSM2, StateSealingKeySourceCSVHW}
 
-// FHE section defaults. maxEvalKeyBytes is deliberately independent of
-// codeAudit.resultCheck.maxFileBytes: a measured eval_context.bin is
-// 3,329,929,205 B, and the result-check cap is operator-configurable, so a
-// deployment that lowers it below a real key must not make the key
-// undownloadable.
+// FHE section defaults.
 const (
-	DefaultFHEMaxEvalKeyBytes  = int64(6) << 30 // 6442450944
 	DefaultFHEPollIntervalMs   = 5000
 	DefaultFHERequestTimeoutMs = 30000
 )
@@ -218,7 +209,6 @@ type FHEConfig struct {
 	Endpoint         string `json:"endpoint"`
 	DataDir          string `json:"dataDir"`
 	KeyCacheDir      string `json:"keyCacheDir"`
-	MaxEvalKeyBytes  int64  `json:"maxEvalKeyBytes"`
 	PollIntervalMs   int    `json:"pollIntervalMs"`
 	RequestTimeoutMs int    `json:"requestTimeoutMs"`
 	// ActivateModelOnImport is a pointer because "absent" and "explicitly false"
@@ -264,8 +254,6 @@ type startupConfigFile struct {
 	EnableSecurityScan *bool  `json:"securityScan"`
 	ModelDir           string `json:"modelDir"`
 	EnableResultCheck  *bool  `json:"resultCheck"`
-	MaxFileBytes       *int64 `json:"maxFileBytes"`
-	MaxResultBytes     *int64 `json:"maxResultBytes"`
 	DataDir            string `json:"dataDir"`
 	ResultDir          string `json:"resultDir"`
 	ModelInputDir      string `json:"modelInputDir"`
@@ -310,7 +298,6 @@ type startupCodeAuditConfigFile struct {
 	CodeScan     startupCodeScanConfigFile    `json:"codeScan"`
 	BinaryAudit  startupBinaryAuditConfigFile `json:"binaryAudit"`
 	ResultCheck  startupResultCheckConfigFile `json:"resultCheck"`
-	MaxFileBytes *int64                       `json:"maxFileBytes"`
 	// LLM is a pointer because "absent" and "present but empty" must not
 	// collapse: an instance whose config carries no LLM block has no inference
 	// service to reach, and the audit defaults off rather than probing an
@@ -377,8 +364,7 @@ type startupBinaryAuditConfigFile struct {
 }
 
 type startupResultCheckConfigFile struct {
-	Enabled      *bool  `json:"enabled"`
-	MaxFileBytes *int64 `json:"maxFileBytes"`
+	Enabled *bool `json:"enabled"`
 }
 
 func (r *startupResultCheckConfigFile) UnmarshalJSON(data []byte) error {
@@ -721,9 +707,6 @@ func validateFHEConfig(cfg StartupConfig) error {
 	if err := validateFHEURL("endpoint", cfg.FHE.Endpoint); err != nil {
 		return err
 	}
-	if cfg.FHE.MaxEvalKeyBytes <= 0 {
-		return fmt.Errorf("unsupported fhe.maxEvalKeyBytes %d in startup config: must be positive", cfg.FHE.MaxEvalKeyBytes)
-	}
 	for _, b := range []struct {
 		name  string
 		value int
@@ -883,8 +866,6 @@ func defaultStartupConfig() StartupConfig {
 		BinaryAuditEnabled:        true,
 		ModelDir:                  "/opt/taa/models",
 		EnableResultCheck:         true,
-		MaxFileBytes:              DefaultMaxFileBytes,
-		MaxResultBytes:            DefaultMaxResultBytes,
 		DataDir:                   "/opt/taa/data",
 		ResultDir:                 "/opt/taa/results",
 		ModelInputDir:             "/opt/taa/input",
@@ -1033,22 +1014,6 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	if readsAuditAndAttestation && fileCfg.CodeAudit.ResultCheck.Enabled != nil {
 		cfg.EnableResultCheck = *fileCfg.CodeAudit.ResultCheck.Enabled
 	}
-
-	if fileCfg.MaxResultBytes != nil {
-		cfg.MaxFileBytes = *fileCfg.MaxResultBytes
-	}
-	if fileCfg.MaxFileBytes != nil {
-		cfg.MaxFileBytes = *fileCfg.MaxFileBytes
-	}
-	if readsAuditAndAttestation {
-		if fileCfg.CodeAudit.MaxFileBytes != nil {
-			cfg.MaxFileBytes = *fileCfg.CodeAudit.MaxFileBytes
-		}
-		if fileCfg.CodeAudit.ResultCheck.MaxFileBytes != nil {
-			cfg.MaxFileBytes = *fileCfg.CodeAudit.ResultCheck.MaxFileBytes
-		}
-	}
-	cfg.MaxResultBytes = cfg.MaxFileBytes
 
 	if trimmed := strings.TrimSpace(fileCfg.DataDir); trimmed != "" {
 		cfg.DataDir = trimmed
@@ -1203,9 +1168,6 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 // applyFHEDefaults fills the optional fhe fields. Required fields are left as
 // they are: an empty required field must be rejected, not silently defaulted.
 func applyFHEDefaults(f *FHEConfig) {
-	if f.MaxEvalKeyBytes == 0 {
-		f.MaxEvalKeyBytes = DefaultFHEMaxEvalKeyBytes
-	}
 	if f.PollIntervalMs == 0 {
 		f.PollIntervalMs = DefaultFHEPollIntervalMs
 	}

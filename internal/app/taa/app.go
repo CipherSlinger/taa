@@ -706,13 +706,6 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 	}
 
 	timeout := time.Duration(cfg.LLM.TimeoutMs) * time.Millisecond
-	maxBytes := cfg.MaxFileBytes
-	if maxBytes <= 0 {
-		maxBytes = cfg.MaxResultBytes
-	}
-	if maxBytes <= 0 {
-		maxBytes = config.DefaultMaxFileBytes
-	}
 	// The audit is reproducible only while the inference service decodes
 	// deterministically, which it does unless a temperature is sent. Warn rather
 	// than reject: a non-zero temperature is a deliberate choice, but its symptom
@@ -738,8 +731,6 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 		ResultCheck:      cfg.EnableResultCheck,
 		DataDir:          cfg.DataDir,
 		ResultDir:        cfg.ResultDir,
-		MaxFileBytes:     maxBytes,
-		MaxResultBytes:   maxBytes,
 		ModelInputDir:    cfg.ModelInputDir,
 		ModelOutputDir:   cfg.ModelOutputDir,
 		ModelLogDir:      cfg.ModelLogDir,
@@ -798,7 +789,6 @@ func buildFHERunner(cfg config.StartupConfig) (*fhe.Runner, error) {
 		DataDir:               f.DataDir,
 		KeyCacheDir:           f.KeyCacheDir,
 		CallbackBaseURL:       callbackBaseURL,
-		MaxEvalKeyBytes:       f.MaxEvalKeyBytes,
 		PollInterval:          time.Duration(f.PollIntervalMs) * time.Millisecond,
 		RequestTimeout:        time.Duration(f.RequestTimeoutMs) * time.Millisecond,
 		ActivateModelOnImport: activate,
@@ -840,6 +830,6 @@ func logSecurityConfig(sec controller.SecurityConfig) {
 		}
 	}
 	if sec.ResultCheck {
-		log.Printf("result check enabled: data-dir=%s result-dir=%s max-bytes=%d", sec.DataDir, sec.ResultDir, sec.GetMaxFileBytes())
+		log.Printf("result check enabled: data-dir=%s result-dir=%s", sec.DataDir, sec.ResultDir)
 	}
 }

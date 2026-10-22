@@ -24,8 +24,7 @@
       "engine": "regex"
     },
     "resultCheck": {
-      "enabled": false,
-      "maxFileBytes": 5368709120
+      "enabled": false
     },
     "binaryAudit": {
       "enabled": false

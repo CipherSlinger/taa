@@ -5,21 +5,11 @@ import (
 	"io"
 	"net/http"
 	"os"
-
-	pkgerrors "taa/pkg/errors"
 )
 
-const (
-	// DefaultMaxDownloadBytes is the default maximum download limit (3 GB).
-	DefaultMaxDownloadBytes int64 = 3 * 1024 * 1024 * 1024
-)
-
-// DownloadToTempFile downloads resources from resourceURL to a temp file, enforcing size limits.
-func DownloadToTempFile(resourceURL string, maxBytes int64) (string, int64, error) {
-	if maxBytes <= 0 {
-		maxBytes = DefaultMaxDownloadBytes
-	}
-
+// DownloadToTempFile downloads resources from resourceURL to a temp file.
+// The download is streamed to disk and is not bounded by a size limit.
+func DownloadToTempFile(resourceURL string) (string, int64, error) {
 	resp, err := http.Get(resourceURL)
 	if err != nil {
 		return "", 0, err
@@ -29,9 +19,6 @@ func DownloadToTempFile(resourceURL string, maxBytes int64) (string, int64, erro
 	if resp.StatusCode != http.StatusOK {
 		return "", 0, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	if resp.ContentLength > maxBytes {
-		return "", 0, pkgerrors.Errorf(pkgerrors.CodeInvalidArgument, "资源过大: %d bytes, 上限 %d bytes", resp.ContentLength, maxBytes)
-	}
 
 	f, err := os.CreateTemp("", "taa-download-*")
 	if err != nil {
@@ -39,16 +26,11 @@ func DownloadToTempFile(resourceURL string, maxBytes int64) (string, int64, erro
 	}
 	path := f.Name()
 
-	reader := io.LimitReader(resp.Body, maxBytes+1)
-	n, err := io.Copy(f, reader)
+	n, err := io.Copy(f, resp.Body)
 	f.Close()
 	if err != nil {
 		_ = os.Remove(path)
 		return "", 0, fmt.Errorf("下载写入失败: %w", err)
-	}
-	if n > maxBytes {
-		_ = os.Remove(path)
-		return "", 0, pkgerrors.Errorf(pkgerrors.CodeInvalidArgument, "资源超过大小上限: %d bytes > %d bytes", n, maxBytes)
 	}
 	return path, n, nil
 }
