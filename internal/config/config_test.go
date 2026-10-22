@@ -1746,6 +1746,7 @@ func TestLoadStartupConfigLLMEndpointEnvOverride(t *testing.T) {
 				"llm": { "endpoint": "https://from-file:8443" }
 			}
 		}`)
+		t.Setenv("ENV_LLM_IP", "")
 		t.Setenv("TAA_LLM_ENDPOINT", "https://from-env:8443")
 
 		cfg, err := LoadStartupConfig(path)
@@ -1757,6 +1758,43 @@ func TestLoadStartupConfigLLMEndpointEnvOverride(t *testing.T) {
 		}
 	})
 
+	t.Run("ENV_LLM_IP overrides the configured endpoint", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{
+			"codeAudit": {
+				"llm": { "endpoint": "https://from-file:8443" }
+			}
+		}`)
+		t.Setenv("ENV_LLM_IP", "https://from-env-llm-ip:8443")
+
+		cfg, err := LoadStartupConfig(path)
+		if err != nil {
+			t.Fatalf("LoadStartupConfig() error = %v", err)
+		}
+		if cfg.LLM.Endpoint != "https://from-env-llm-ip:8443" {
+			t.Fatalf("LLM.Endpoint = %q, want %q", cfg.LLM.Endpoint, "https://from-env-llm-ip:8443")
+		}
+	})
+
+	t.Run("ENV_LLM_IP wins over TAA_LLM_ENDPOINT", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DefaultFileName)
+		writeTestConfig(t, path, `{
+			"codeAudit": {
+				"llm": { "endpoint": "https://from-file:8443" }
+			}
+		}`)
+		t.Setenv("ENV_LLM_IP", "https://from-env-llm-ip:8443")
+		t.Setenv("TAA_LLM_ENDPOINT", "https://from-env:8443")
+
+		cfg, err := LoadStartupConfig(path)
+		if err != nil {
+			t.Fatalf("LoadStartupConfig() error = %v", err)
+		}
+		if cfg.LLM.Endpoint != "https://from-env-llm-ip:8443" {
+			t.Fatalf("LLM.Endpoint = %q, want %q", cfg.LLM.Endpoint, "https://from-env-llm-ip:8443")
+		}
+	})
+
 	t.Run("an empty environment leaves the configured endpoint alone", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), DefaultFileName)
 		writeTestConfig(t, path, `{
@@ -1764,6 +1802,7 @@ func TestLoadStartupConfigLLMEndpointEnvOverride(t *testing.T) {
 				"llm": { "endpoint": "https://from-file:8443" }
 			}
 		}`)
+		t.Setenv("ENV_LLM_IP", "")
 		t.Setenv("TAA_LLM_ENDPOINT", "")
 
 		cfg, err := LoadStartupConfig(path)
