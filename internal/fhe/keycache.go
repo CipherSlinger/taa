@@ -104,7 +104,7 @@ func (c *KeyCache) Ensure(ctx context.Context, hash, url string) (string, error)
 	}
 
 	// The cap is this package's own, never the import cap: a real key is 3.101 GiB
-	// and codeAudit.resultCheck.maxFileBytes defaults to 3 GiB.
+	// and codeAudit.resultCheck.maxFileBytes is operator-configurable.
 	tmp, err := downloadKey(ctx, url, c.maxBytes)
 	if err != nil {
 		return "", fmt.Errorf("download eval key: %w", err)

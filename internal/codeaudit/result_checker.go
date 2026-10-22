@@ -21,8 +21,8 @@ type ResultCheckIssue struct {
 	Severity string `json:"severity"`
 }
 
-// DefaultMaxFileBytes is the default maximum size of an exported result file (3 GB).
-const DefaultMaxFileBytes int64 = 3 * 1024 * 1024 * 1024 // 3 GB
+// DefaultMaxFileBytes is the default maximum size of an exported result file (5 GiB).
+const DefaultMaxFileBytes int64 = 5 * 1024 * 1024 * 1024 // 5 GiB
 
 // DefaultMaxResultBytes is a backward-compatible alias for DefaultMaxFileBytes.
 const DefaultMaxResultBytes int64 = DefaultMaxFileBytes
@@ -59,7 +59,7 @@ func DefaultResultChecker() *ResultChecker {
 }
 
 // NewResultChecker creates a ResultChecker with specified data directory and max result file size.
-// If maxFileBytes is <= 0, DefaultMaxFileBytes (3 GB) is used.
+// If maxFileBytes is <= 0, DefaultMaxFileBytes (5 GiB) is used.
 func NewResultChecker(dataDir string, maxFileBytes int64) *ResultChecker {
 	if maxFileBytes <= 0 {
 		maxFileBytes = DefaultMaxFileBytes

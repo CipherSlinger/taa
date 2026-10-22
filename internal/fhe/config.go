@@ -11,10 +11,10 @@ const (
 	// DefaultMaxEvalKeyBytes bounds the eval key download.
 	//
 	// This cap must stay separate from codeAudit.resultCheck.maxFileBytes. That
-	// setting is the import download cap and defaults to 3 GiB, while a measured
-	// eval_context.bin is 3,329,929,205 B - 103.7 MiB over. Reusing it makes the
-	// key impossible to download at all. 6 GiB leaves room for parameter growth
-	// while remaining a finite bound.
+	// setting is the import download cap and is operator-configurable, while a
+	// measured eval_context.bin is 3,329,929,205 B; reusing a cap an operator may
+	// lower below that makes the key impossible to download at all. 6 GiB leaves
+	// room for parameter growth while remaining a finite bound.
 	DefaultMaxEvalKeyBytes = int64(6) << 30 // 6442450944
 
 	DefaultPollInterval   = 5 * time.Second

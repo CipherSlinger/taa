@@ -25,7 +25,7 @@ import (
 )
 
 // maxDownloadBytes 限制单次资源下载的最大字节数，防止 OOM。
-const maxDownloadBytes = config.DefaultMaxFileBytes // 3 GB
+const maxDownloadBytes = config.DefaultMaxFileBytes // 5 GiB
 
 // ── TAA 全局状态 ──────────────────────────────────────────
 
@@ -48,7 +48,7 @@ type SecurityConfig struct {
 	DataDir          string                 // 数据目录（type=2 测试数据，type=3 训练数据，用于数据指纹比对）
 	ResultCheck      bool                   // 是否在 export 时检查明文数据泄露
 	ResultDir        string                 // 训练结果目录（导出前检查）
-	MaxFileBytes     int64                  // Maximum file size limit in bytes (downloads and exports, default 3GB)
+	MaxFileBytes     int64                  // Maximum file size limit in bytes (downloads and exports, default 5GiB)
 	MaxResultBytes   int64                  // Backward-compatible alias for MaxFileBytes
 	ModelInputDir    string                 // 模型数据输入目录（缺省 /opt/taa/input）
 	ModelOutputDir   string                 // 模型结果输出目录（缺省 /opt/taa/output/result）
@@ -1004,7 +1004,7 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 	}
 }
 
-// downloadToTempFile streams resource from URL to a temporary file using the default limit (3 GB).
+// downloadToTempFile streams resource from URL to a temporary file using the default limit (5 GiB).
 // Returns the temporary file path, caller is responsible for deleting it.
 func downloadToTempFile(resourceURL string) (string, int64, error) {
 	return resource.DownloadToTempFile(resourceURL, maxDownloadBytes)

@@ -13,7 +13,7 @@ import (
 
 const (
 	DefaultFileName       = "taa-config.json"
-	DefaultMaxFileBytes   = 3 * 1024 * 1024 * 1024 // 3 GB
+	DefaultMaxFileBytes   = 5 * 1024 * 1024 * 1024 // 5 GiB
 	DefaultMaxResultBytes = DefaultMaxFileBytes
 )
 
@@ -200,8 +200,9 @@ var stateSealingKeySources = []string{StateSealingKeySourceSM2, StateSealingKeyS
 
 // FHE section defaults. maxEvalKeyBytes is deliberately independent of
 // codeAudit.resultCheck.maxFileBytes: a measured eval_context.bin is
-// 3,329,929,205 B and the result-check cap defaults to 3 GiB, which is 103.7 MiB
-// too small to download a real key.
+// 3,329,929,205 B, and the result-check cap is operator-configurable, so a
+// deployment that lowers it below a real key must not make the key
+// undownloadable.
 const (
 	DefaultFHEMaxEvalKeyBytes  = int64(6) << 30 // 6442450944
 	DefaultFHEPollIntervalMs   = 5000

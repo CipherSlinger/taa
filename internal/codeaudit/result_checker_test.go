@@ -213,10 +213,10 @@ func TestResultCheckerNonExistentFile(t *testing.T) {
 func TestDefaultResultCheckerMaxResultBytes(t *testing.T) {
 	checker := DefaultResultChecker()
 	if checker.MaxResultBytes != DefaultMaxResultBytes {
-		t.Fatalf("MaxResultBytes = %d, want %d (3GB)", checker.MaxResultBytes, DefaultMaxResultBytes)
+		t.Fatalf("MaxResultBytes = %d, want %d (5GiB)", checker.MaxResultBytes, DefaultMaxResultBytes)
 	}
-	if checker.MaxResultBytes != 3*1024*1024*1024 {
-		t.Fatalf("DefaultMaxResultBytes = %d, want 3221225472", checker.MaxResultBytes)
+	if checker.MaxResultBytes != 5*1024*1024*1024 {
+		t.Fatalf("DefaultMaxResultBytes = %d, want 5368709120", checker.MaxResultBytes)
 	}
 }
 
