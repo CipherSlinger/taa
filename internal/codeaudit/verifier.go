@@ -106,6 +106,15 @@ func VerifyReport(ctx context.Context, report *Report, cfg LLMConfig, client LLM
 		if f.LLMRisk == "" && resp.Decision.SuggestedRemediation != "" {
 			f.LLMRisk = resp.Decision.SuggestedRemediation
 		}
+		// Record why a presence-only finding is reported below its rule's
+		// severity, so the report can tell "the rule says LOW" from "the rule
+		// says HIGH but this finding did not earn it". The conditions mirror
+		// the demotion in ClassifyFindingRisk.
+		if strings.EqualFold(strings.TrimSpace(f.LLMVerdict), "SUSPICIOUS") &&
+			presenceOnlyRule(f.RuleID) && !corroboratedSuspicion(*f) &&
+			!blockingRiskText(f.LLMRisk) && f.DowngradeReason == "" {
+			f.DowngradeReason = suspiciousPresenceDowngradeReason
+		}
 	}
 
 	// Gate arbitration: the LLM's verdict decides a static HIGH. An LLM BENIGN
@@ -600,9 +609,9 @@ func synthesizeFileSummary(filePath string, findings []Finding) FileSummary {
 			continue
 		}
 		risk := ClassifyFindingRisk(f)
-		if risk == "HIGH" || strings.ToUpper(f.LLMVerdict) == "MALICIOUS" {
+		if risk == "HIGH" {
 			hasHigh = true
-		} else if risk == "MEDIUM" || strings.ToUpper(f.LLMVerdict) == "SUSPICIOUS" {
+		} else if risk == "MEDIUM" {
 			hasMedium = true
 		}
 		if f.RuleID == "EXF_001" || strings.Contains(f.Category, "外传") || strings.Contains(f.Category, "网络") {

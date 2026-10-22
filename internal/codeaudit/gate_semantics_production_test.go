@@ -19,7 +19,9 @@ import (
 // times. ComputeStatistics does not consume Finding.Severity directly: it
 // calls ClassifyFindingRisk, which lets an LLM verdict override the static
 // severity (MALICIOUS -> HIGH, SUSPICIOUS -> MEDIUM, BENIGN -> LOW) and only
-// falls back to the static severity when no verdict is present.
+// falls back to the static severity when no verdict is present. A SUSPICIOUS
+// verdict on a presence-only rule (CMD_001 / DYN_001) without corroborating
+// evidence is the one exception: it is demoted to LOW.
 //
 // It is gated behind TAA_PRODUCTION_GATE=1 because it reads benchmark
 // artifacts rather than exercising the package, and it writes its result next

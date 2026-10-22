@@ -8,7 +8,9 @@ import (
 
 // The production decision is the classified check over the statistics, where
 // ClassifyFindingRisk lets an LLM verdict override the static severity
-// (MALICIOUS -> HIGH, SUSPICIOUS -> MEDIUM, BENIGN -> LOW).
+// (MALICIOUS -> HIGH, SUSPICIOUS -> MEDIUM, BENIGN -> LOW). A SUSPICIOUS
+// verdict on a presence-only rule (CMD_001 / DYN_001) with no corroborating
+// evidence is the one exception: it is demoted to LOW.
 //
 //	final = gateCheck(classified)
 //
@@ -77,7 +79,9 @@ func TestGateLLMBenignClearsStaticHigh(t *testing.T) {
 
 // TestGateStaticHighNonBenignBlocks is the other half: every verdict other than
 // BENIGN leaves a static HIGH blocking, including UNCERTAIN and no verdict at
-// all (the LLM was not consulted).
+// all (the LLM was not consulted). NET_001 is the carrier here rather than
+// CMD_001 because a SUSPICIOUS verdict on the presence-only families is
+// demoted to LOW; TestPresenceOnlySuspiciousDemotesToLow pins that exception.
 func TestGateStaticHighNonBenignBlocks(t *testing.T) {
 	for _, verdict := range []string{
 		teellm.VerdictMalicious,
@@ -86,7 +90,7 @@ func TestGateStaticHighNonBenignBlocks(t *testing.T) {
 		"",
 	} {
 		t.Run(verdict, func(t *testing.T) {
-			findings := []Finding{finding("CMD_001", SeverityHigh, verdict)}
+			findings := []Finding{finding("NET_001", SeverityHigh, verdict)}
 
 			_, _, final := productionDecision(findings)
 

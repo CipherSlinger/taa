@@ -226,9 +226,61 @@ func isTestFile(path string) bool {
 	return false
 }
 
+// presenceOnlyRules are the rules whose static finding records that a
+// dangerous API is called, not that it is misused: CMD_001 matches the command
+// execution sink and DYN_001 matches the dynamic evaluation sink (see
+// models/audit/semgrep/rules/python/rules.yaml). For these two families the
+// finding text is the same for a training launcher and for an exfiltration
+// payload, so the LLM verdict is the only thing that can tell them apart.
+var presenceOnlyRules = map[string]bool{
+	"CMD_001": true,
+	"DYN_001": true,
+}
+
+// presenceOnlyRule reports whether ruleID belongs to the presence-only family.
+func presenceOnlyRule(ruleID string) bool {
+	return presenceOnlyRules[strings.ToUpper(strings.TrimSpace(ruleID))]
+}
+
+// corroboratedSuspicion reports whether something other than the sink itself
+// points at misuse. A cross-file chain or a taint trace names a path from an
+// untrusted source to the sink; without one, SUSPICIOUS on a presence-only rule
+// is the model saying it could not establish misuse, not evidence that misuse
+// exists.
+func corroboratedSuspicion(f Finding) bool {
+	return f.IsCrossFile || len(f.TaintTrace) > 0
+}
+
+// blockingRiskText reports whether the inference service returned an explicit
+// blocking severity in the risk field. The field is free text today (the
+// service forwards the model's own "risk" string), so only the severity words
+// the switch below recognizes are treated as an assessment; prose is not.
+func blockingRiskText(s string) bool {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "HIGH", "CRITICAL":
+		return true
+	}
+	return false
+}
+
+// suspiciousPresenceDowngradeReason explains a finding reported below its rule's
+// severity by the presence-only demotion in ClassifyFindingRisk.
+const suspiciousPresenceDowngradeReason = "该规则命中的是危险调用的存在（命令执行 / 动态执行），而非其被滥用；大模型判定为 SUSPICIOUS 只表示无法确证用途，且没有跨文件链路或污点证据佐证，故按 LOW 提示项上报；若判定为 MALICIOUS 或存在佐证，仍按中危/高危阻断。"
+
 // ClassifyFindingRisk determines the final risk level (HIGH, MEDIUM, LOW) of a finding,
 // prioritized by the LLM's evaluation and falling back to static scan severity.
+//
+// One exception sits ahead of the verdict switch: a SUSPICIOUS verdict on a
+// presence-only rule, with no corroborating evidence, is an advisory LOW rather
+// than a blocking MEDIUM. The rule only shows the API exists; the model's
+// inability to prove misuse is not a finding of misuse. MALICIOUS still blocks,
+// and an explicit HIGH/CRITICAL risk assessment still blocks.
 func ClassifyFindingRisk(f Finding) string {
+	if strings.EqualFold(strings.TrimSpace(f.LLMVerdict), "SUSPICIOUS") &&
+		presenceOnlyRule(f.RuleID) && !corroboratedSuspicion(f) && !blockingRiskText(f.LLMRisk) {
+		return "LOW"
+	}
+
 	switch strings.ToUpper(strings.TrimSpace(f.LLMRisk)) {
 	case "HIGH", "CRITICAL":
 		return "HIGH"
