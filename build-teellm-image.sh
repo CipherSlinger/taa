@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds the dedicated TEE-LLM image: the TAA base image plus teellm-service, the Pod supervisor,
+# Builds the dedicated TEE-LLM image: a TAA-free base plus teellm-service, the Pod supervisor,
 # the attestation certificates and the ollama runtime with one model baked in.
 #
 # Why this exists: the TEE-LLM Pod runs on a Kata CSV2 guest whose container rootfs upperdir is a
@@ -10,8 +10,10 @@ set -euo pipefail
 # reboot leaves a confidential VM that listens on nothing. Baking the payload into the image makes
 # a freshly booted guest serve without any host-side step.
 #
-# The TAA images never carry this payload on purpose (deploy.sh's strip_teellm_from_image), so this
-# is a second image built from the same base rather than a change to the TAA build.
+# The base image is derived from a TAA image, but /root/taa (the TAA binary and its autostart
+# wrapper) is removed first: an inference image has no reason to carry an unrelated service, and
+# its payload lives under /opt/teellm. deploy.sh's strip_teellm_from_image keeps the payload out of
+# the TAA images, so this stays a second image built from the same source.
 #
 # Usage:
 #   ./build-teellm-image.sh [--push] [--keep] [-h|--help]
@@ -24,12 +26,16 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEELLM_DIR="${TEELLM_DIR:-$PROJECT_DIR/teellm}"
 OLLAMA_LOCAL_DIR="${OLLAMA_LOCAL_DIR:-$TEELLM_DIR/models/ollama}"
 OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5-coder:7b}"
+DATE_TAG="${DATE_TAG:-$(date +%Y%m%d)}"
+# Source image (still carries TAA) and the TAA-free base derived from it.
 BASE_IMAGE="${BASE_IMAGE:-taa-env:slim-v2}"
 BASE_ARCHIVE="${BASE_ARCHIVE:-$PROJECT_DIR/deploy/taa-env-slim-v2.tar.gz}"
-DATE_TAG="${DATE_TAG:-$(date +%Y%m%d)}"
-TARGET_IMAGE="${TARGET_IMAGE:-taa-env:teellm-$DATE_TAG}"
-TARGET_ARCHIVE="${TARGET_ARCHIVE:-$PROJECT_DIR/deploy/taa-env-teellm-$DATE_TAG.tar.gz}"
-REGISTRY_IMAGE="${REGISTRY_IMAGE:-172.16.10.178:31313/taa-env:teellm-$DATE_TAG}"
+CLEAN_BASE_IMAGE="${CLEAN_BASE_IMAGE:-teellm-base:$DATE_TAG}"
+# Every path inside the image lives here; nothing under /root/taa is used or created.
+IMAGE_WORKDIR="${IMAGE_WORKDIR:-/opt/teellm}"
+TARGET_IMAGE="${TARGET_IMAGE:-teellm:teellm-$DATE_TAG}"
+TARGET_ARCHIVE="${TARGET_ARCHIVE:-$PROJECT_DIR/deploy/teellm-image-$DATE_TAG.tar.gz}"
+REGISTRY_IMAGE="${REGISTRY_IMAGE:-172.16.10.178:31313/teellm:teellm-$DATE_TAG}"
 BUILDER_CONTAINER="${BUILDER_CONTAINER:-taa-teellm-builder-$$}"
 
 REMOTE_HOST="${REMOTE_HOST:-172.16.10.178}"
@@ -109,7 +115,27 @@ if ! docker image inspect "$BASE_IMAGE" >/dev/null 2>&1; then
   docker load -i "$BASE_ARCHIVE" >/dev/null
   docker image inspect "$BASE_IMAGE" >/dev/null 2>&1 || die "base image '$BASE_IMAGE' is not in $BASE_ARCHIVE"
 fi
-info "base image ready: $BASE_IMAGE"
+info "source image ready: $BASE_IMAGE"
+
+# Strip the TAA payload before anything teellm is added. The TAA images carry /root/taa with the
+# taa binary and an autostart wrapper; the inference image must contain neither. An empty build
+# context keeps docker from packing the multi-GB archives that sit in deploy/.
+if ! docker image inspect "$CLEAN_BASE_IMAGE" >/dev/null 2>&1; then
+  step "building the TAA-free base image: $CLEAN_BASE_IMAGE"
+  clean_ctx="$(mktemp -d /tmp/teellm-clean-base.XXXXXX)"
+  docker build -q -t "$CLEAN_BASE_IMAGE" -f - "$clean_ctx" >/dev/null <<EOF
+FROM $BASE_IMAGE
+USER root
+RUN rm -rf /root/taa
+EOF
+  rm -rf "$clean_ctx"
+fi
+BASE_IMAGE="$CLEAN_BASE_IMAGE"
+if docker run --rm --entrypoint sh "$BASE_IMAGE" -c 'test ! -e /root/taa' >/dev/null 2>&1; then
+  info "base image ready (no /root/taa): $BASE_IMAGE"
+else
+  die "base image '$BASE_IMAGE' still contains /root/taa"
+fi
 info "model: $OLLAMA_MODEL ($manifest_rel)"
 
 # ── Payload list ─────────────────────────────────────────────
@@ -151,27 +177,27 @@ info "payload: $(wc -l < "$file_list") files, ${payload_mb}MB"
 step "starting the builder container"
 docker rm -f "$BUILDER_CONTAINER" >/dev/null 2>&1 || true
 docker run -d --name "$BUILDER_CONTAINER" --user root --entrypoint bash "$BASE_IMAGE" -c 'sleep infinity' >/dev/null
-docker exec -i "$BUILDER_CONTAINER" sh -c 'mkdir -p /root/taa/configs /root/taa/certs /root/taa/ollama'
+docker exec -i "$BUILDER_CONTAINER" sh -c 'mkdir -p /opt/teellm/configs /opt/teellm/certs /opt/teellm/ollama'
 
 step "copying teellm-service, supervisor, configs and certificates"
-docker cp "$TEELLM_DIR/bin/teellm-service"            "$BUILDER_CONTAINER:/root/taa/teellm-service"
-docker cp "$PROJECT_DIR/deploy/teellm-supervisor.sh"  "$BUILDER_CONTAINER:/root/taa/teellm-supervisor.sh"
-docker cp "$TEELLM_DIR/configs/teellm-production.json" "$BUILDER_CONTAINER:/root/taa/configs/teellm-production.json"
-docker cp "$TEELLM_DIR/configs/models.json"           "$BUILDER_CONTAINER:/root/taa/configs/models.json"
-docker cp "$PROJECT_DIR/deploy/certs/hrk.cert"        "$BUILDER_CONTAINER:/root/taa/certs/hrk.cert"
-docker cp "$PROJECT_DIR/deploy/certs/hsk_cek.cert"    "$BUILDER_CONTAINER:/root/taa/certs/hsk_cek.cert"
+docker cp "$TEELLM_DIR/bin/teellm-service"            "$BUILDER_CONTAINER:/opt/teellm/teellm-service"
+docker cp "$PROJECT_DIR/deploy/teellm-supervisor.sh"  "$BUILDER_CONTAINER:/opt/teellm/teellm-supervisor.sh"
+docker cp "$TEELLM_DIR/configs/teellm-production.json" "$BUILDER_CONTAINER:/opt/teellm/configs/teellm-production.json"
+docker cp "$TEELLM_DIR/configs/models.json"           "$BUILDER_CONTAINER:/opt/teellm/configs/models.json"
+docker cp "$PROJECT_DIR/deploy/certs/hrk.cert"        "$BUILDER_CONTAINER:/opt/teellm/certs/hrk.cert"
+docker cp "$PROJECT_DIR/deploy/certs/hsk_cek.cert"    "$BUILDER_CONTAINER:/opt/teellm/certs/hsk_cek.cert"
 
 step "streaming the ollama runtime and model into the image (${payload_mb}MB)"
-tar -C "$OLLAMA_LOCAL_DIR" -cf - -T "$file_list" | docker exec -i "$BUILDER_CONTAINER" tar -xf - -C /root/taa/ollama
+tar -C "$OLLAMA_LOCAL_DIR" -cf - -T "$file_list" | docker exec -i "$BUILDER_CONTAINER" tar -xf - -C /opt/teellm/ollama
 
 step "finishing the payload inside the image"
 # llama-server links against the soname forms of its libraries and carries RUNPATH=$ORIGIN, while
 # the bundle ships versioned files only; without these links it exits 127 and ollama answers 500.
 docker exec -i -e MODEL="$OLLAMA_MODEL" "$BUILDER_CONTAINER" sh -c '
 set -e
-d=/root/taa/ollama/lib/ollama
-chmod +x /root/taa/teellm-service /root/taa/teellm-supervisor.sh \
-         /root/taa/ollama/ollama /root/taa/ollama/start-ollama.sh "$d"/llama-* 2>/dev/null || true
+d=/opt/teellm/ollama/lib/ollama
+chmod +x /opt/teellm/teellm-service /opt/teellm/teellm-supervisor.sh \
+         /opt/teellm/ollama/ollama /opt/teellm/ollama/start-ollama.sh "$d"/llama-* 2>/dev/null || true
 n=0
 for f in "$d"/lib*.so.*; do
   [ -e "$f" ] || continue
@@ -182,33 +208,33 @@ for f in "$d"/lib*.so.*; do
   if [ ! -e "$d/$s" ]; then ln -sf "$b" "$d/$s"; n=$((n+1)); fi
 done
 echo "soname links created: $n"
-printf %s "$MODEL" > /root/taa/.teellm-model
-printf "model file: "; cat /root/taa/.teellm-model; echo
+printf %s "$MODEL" > /opt/teellm/.teellm-model
+printf "model file: "; cat /opt/teellm/.teellm-model; echo
 '
 
 step "verifying the payload inside the image"
 docker exec -i -e MODEL="$OLLAMA_MODEL" "$BUILDER_CONTAINER" sh -c '
 set -e
-for p in /root/taa/teellm-service /root/taa/teellm-supervisor.sh \
-         /root/taa/configs/teellm-production.json /root/taa/configs/models.json \
-         /root/taa/certs/hrk.cert /root/taa/certs/hsk_cek.cert \
-         /root/taa/ollama/ollama /root/taa/ollama/start-ollama.sh \
-         /root/taa/ollama/lib/ollama/libllama-server-impl.so \
-         /root/taa/ollama/lib/ollama/libllama-common.so.0 \
-         /root/taa/ollama/lib/ollama/libggml.so.0; do
+for p in /opt/teellm/teellm-service /opt/teellm/teellm-supervisor.sh \
+         /opt/teellm/configs/teellm-production.json /opt/teellm/configs/models.json \
+         /opt/teellm/certs/hrk.cert /opt/teellm/certs/hsk_cek.cert \
+         /opt/teellm/ollama/ollama /opt/teellm/ollama/start-ollama.sh \
+         /opt/teellm/ollama/lib/ollama/libllama-server-impl.so \
+         /opt/teellm/ollama/lib/ollama/libllama-common.so.0 \
+         /opt/teellm/ollama/lib/ollama/libggml.so.0; do
   test -s "$p" || { echo "missing: $p" >&2; exit 1; }
 done
-[ "$(cat /root/taa/.teellm-model)" = "$MODEL" ] || { echo "wrong .teellm-model" >&2; exit 1; }
-/root/taa/ollama/ollama --version
-du -sh /root/taa/ollama /root/taa/teellm-service
+[ "$(cat /opt/teellm/.teellm-model)" = "$MODEL" ] || { echo "wrong .teellm-model" >&2; exit 1; }
+/opt/teellm/ollama/ollama --version
+du -sh /opt/teellm/ollama /opt/teellm/teellm-service
 '
 
 step "committing the image: $TARGET_IMAGE"
 docker commit \
-  -c 'ENTRYPOINT ["bash", "/root/taa/teellm-supervisor.sh"]' \
+  -c 'ENTRYPOINT ["bash", "/opt/teellm/teellm-supervisor.sh"]' \
   -c 'CMD []' \
   -c 'USER root' \
-  -c 'WORKDIR /root/taa' \
+  -c 'WORKDIR /opt/teellm' \
   -c 'EXPOSE 8443' \
   -m "TEE-LLM image: base $BASE_IMAGE + teellm-service + ollama $OLLAMA_MODEL at $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   "$BUILDER_CONTAINER" "$TARGET_IMAGE" >/dev/null

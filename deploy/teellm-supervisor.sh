@@ -24,7 +24,7 @@
 # exit would leave inference broken for exactly that long.
 #
 # Environment (all optional, defaults match the Pod):
-#   TEELLM_WORKDIR                     /root/taa
+#   TEELLM_WORKDIR                     /opt/teellm
 #   OLLAMA_DIR                         $TEELLM_WORKDIR/ollama
 #   OLLAMA_HOST                        127.0.0.1:11434
 #   TEELLM_CONFIG                      $TEELLM_WORKDIR/configs/teellm-production.json
@@ -34,7 +34,7 @@
 #   TEELLM_SUPERVISOR_OLLAMA_WAIT      seconds to wait for ollama to answer (default 30)
 set -u
 
-WORKDIR="${TEELLM_WORKDIR:-/root/taa}"
+WORKDIR="${TEELLM_WORKDIR:-/opt/teellm}"
 OLLAMA_DIR="${OLLAMA_DIR:-$WORKDIR/ollama}"
 OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
 CONFIG="${TEELLM_CONFIG:-$WORKDIR/configs/teellm-production.json}"

@@ -226,10 +226,10 @@ require_command() {
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEELLM_DIR="${TEELLM_DIR:-$PROJECT_DIR/teellm}"
 
-# Paths inside the TEE-LLM Pod. /root/taa is the tree the teellm submodule's deploy/start.sh
-# expects, and the Pod is the only target left, so there is nothing to vary these by.
-CON_WORKDIR="${CON_WORKDIR:-/root/taa}"
-CONTAINER_OLLAMA_DIR="${CONTAINER_OLLAMA_DIR:-/root/taa/ollama}"
+# Paths inside the TEE-LLM Pod. The image carries no TAA payload, so the service tree lives under
+# /opt/teellm: /root/taa belongs to the TAA images and must not appear in an inference image.
+CON_WORKDIR="${CON_WORKDIR:-/opt/teellm}"
+CONTAINER_OLLAMA_DIR="${CONTAINER_OLLAMA_DIR:-/opt/teellm/ollama}"
 # Older image revisions ship the same ollama bundle under this name. It carries the identical
 # runtime (only the model set differs), so a container that still has it can be migrated into
 # $CONTAINER_OLLAMA_DIR instead of streaming the runtime in again.
@@ -256,7 +256,8 @@ TARGET_POD="${TARGET_POD:-taa-env-slim-v2-20260916-b2038037072e1052-54f554445c-n
 REMOTE_HOST="${REMOTE_HOST:-172.16.10.178}"
 REMOTE_USER="${REMOTE_USER:-root}"
 PASSWORD="${TARGET_PASSWORD:-${PASSWORD:-Osrd@2026}}"
-REMOTE_DIR="${REMOTE_DIR:-/root/taa}"
+# Host-side staging directory. Kept out of /root/taa, which is the TAA deployment's tree.
+REMOTE_DIR="${REMOTE_DIR:-/root/teellm}"
 OLLAMA_DIR_NAME="$(basename "$CONTAINER_OLLAMA_DIR")"
 REMOTE_OLLAMA_DIR="${REMOTE_OLLAMA_DIR:-$REMOTE_DIR/$OLLAMA_DIR_NAME}"
 K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
@@ -271,7 +272,10 @@ K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
 # run, and aiming the deployment at it would make every later gate pass while the service never
 # reaches the Pod the endpoint points at).
 TEELLM_POD_NAME="${TEELLM_POD_NAME:-taa-teellm}"
-TEELLM_POD_IMAGE="${TEELLM_POD_IMAGE:-172.16.10.178:31313/taa-env:slim-v2-20260916}"
+# The image built by build-teellm-image.sh carries the service, the supervisor, the certificates
+# and the ollama runtime, so a fresh guest serves without any host-side copy.
+TEELLM_IMAGE_DATE="${TEELLM_IMAGE_DATE:-$(date +%Y%m%d)}"
+TEELLM_POD_IMAGE="${TEELLM_POD_IMAGE:-172.16.10.178:31313/teellm:teellm-$TEELLM_IMAGE_DATE}"
 TEELLM_POD_NODE="${TEELLM_POD_NODE:-hygon-master}"
 TEELLM_POD_RUNTIME_CLASS="${TEELLM_POD_RUNTIME_CLASS:-kata-qemu-csv2}"
 # Kata sizes the guest as default_memory + limits.memory and default_vcpus + limits.cpu, and

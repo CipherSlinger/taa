@@ -74,17 +74,17 @@ spec:
       # (which is what a later `models switch` updates).
       env:
         - name: TEELLM_WORKDIR
-          value: "/root/taa"
+          value: "/opt/teellm"
         - name: OLLAMA_DIR
-          value: "/root/taa/ollama"
+          value: "/opt/teellm/ollama"
         - name: OLLAMA_HOST
           value: "127.0.0.1:11434"
         - name: TEELLM_CONFIG
-          value: "/root/taa/configs/teellm-production.json"
+          value: "/opt/teellm/configs/teellm-production.json"
         - name: TEELLM_MODEL
           value: "__MODEL__"
-      # Overrides the image ENTRYPOINT (TAA's own start script) and hands PID 1 to the TEE-LLM
-      # supervisor, which owns teellm-service and ollama inside this container. A plain
+      # Overrides the image ENTRYPOINT and hands PID 1 to the TEE-LLM supervisor, which owns
+      # teellm-service and ollama inside this container. A plain
       # `sleep infinity` would leave both unowned: restartPolicy only reacts to PID 1 exiting and
       # there is no liveness probe, so a dead daemon would stay dead until someone redeployed.
       command: ["/bin/sh", "-c"]
@@ -126,7 +126,7 @@ spec:
           # rather than taking the container down with it: an exited container puts the writable
           # layer, and the model in it, out of reach.
           while true; do
-            /root/taa/teellm-supervisor.sh
+            /opt/teellm/teellm-supervisor.sh
             echo "supervisor exited; restarting in 2s" >&2
             sleep 2
           done

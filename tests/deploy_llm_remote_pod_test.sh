@@ -37,7 +37,7 @@ MOCK_REMOTE_ROOT="$TMP_DIR/remote"
 MOCK_STATE_DIR="$TMP_DIR/pod-state"
 MOCK_POD_IP="10.244.1.77"
 export MOCK_LOG MOCK_REMOTE_ROOT MOCK_STATE_DIR MOCK_POD_IP
-mkdir -p "$MOCK_BIN" "$MOCK_REMOTE_ROOT/root/taa" "$MOCK_STATE_DIR"
+mkdir -p "$MOCK_BIN" "$MOCK_REMOTE_ROOT/root/teellm" "$MOCK_STATE_DIR"
 : > "$MOCK_LOG"
 
 # ── Mocks ────────────────────────────────────────────────────────────────────
@@ -49,7 +49,7 @@ if [[ "${1:-}" == "-p" ]]; then shift 2; fi
 exec "$@"
 MOCK
 
-# ssh <options> user@host <command>: run the remote command locally, with paths under /root/taa
+# ssh <options> user@host <command>: run the remote command locally, with paths under /root/teellm
 # redirected into the mock remote root so no root privileges are needed. The rsync probe is
 # answered "no" so the sync takes the plain tar path instead of driving a real rsync over the
 # mock transport.
@@ -65,7 +65,7 @@ while [[ $i -lt ${#args[@]} ]]; do
 done
 host="${args[$i]}"; i=$((i+1))
 cmd="${args[$i]}"
-cmd="${cmd//\/root\/taa/$MOCK_REMOTE_ROOT\/root\/taa}"
+cmd="${cmd//\/root\/teellm/$MOCK_REMOTE_ROOT\/root\/teellm}"
 echo "SSH[$host] $cmd" >> "$MOCK_LOG"
 case "$cmd" in
   *"command -v rsync"*) exit 1 ;;
@@ -86,7 +86,7 @@ while [[ $i -lt ${#args[@]} ]]; do
 done
 src="${args[$i]}"; dest="${args[$((i+1))]}"
 path="${dest#*:}"
-path="${path//\/root\/taa/$MOCK_REMOTE_ROOT\/root\/taa}"
+path="${path//\/root\/teellm/$MOCK_REMOTE_ROOT\/root\/teellm}"
 echo "SCP[$src -> $path]" >> "$MOCK_LOG"
 mkdir -p "$(dirname "$path")"
 cp "$src" "$path"
@@ -137,7 +137,7 @@ case "$verb" in
       *"tar -xf"*) cat >/dev/null; exit 0 ;;
       *"/api/tags"*) echo '{"models":[{"name":"qwen2.5-coder:0.5b"}]}'; exit 0 ;;
       *"-probe"*) exit 0 ;;
-      *"tail -n"*) echo "2026-10-15T10:00:00Z using Hygon hardware evidence provider (hrk=/root/taa/certs/hrk.cert)"; exit 0 ;;
+      *"tail -n"*) echo "2026-10-15T10:00:00Z using Hygon hardware evidence provider (hrk=/opt/teellm/certs/hrk.cert)"; exit 0 ;;
       *) exit 0 ;;
     esac
     ;;
@@ -279,7 +279,7 @@ grep -q "/sys/class/misc/csv-guest/dev" "$APPLIED" \
 
 # The container's PID 1 is the supervisor, not `sleep infinity`: restartPolicy only reacts to PID 1
 # exiting, so an owned teellm-service and ollama is what keeps a dead daemon from staying dead.
-grep -q "/root/taa/teellm-supervisor.sh" "$APPLIED" \
+grep -q "/opt/teellm/teellm-supervisor.sh" "$APPLIED" \
   || fail "the manifest does not hand PID 1 to the TEE-LLM supervisor"
 grep -q "supervisor exited; restarting" "$APPLIED" \
   || fail "the manifest does not restart a supervisor that exits"
