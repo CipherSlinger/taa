@@ -863,18 +863,7 @@ func (s *TAAState) tryAcquireTask(taskID, requestID, initialOp string, isModel b
 			fmt.Sprintf("当前已有训练任务正在执行中 (taskId: %s, op: %s)，请等待完成后再提交", task, op))
 	}
 
-	// 2. If requesting model import, ensure no previous model code audit is actively running.
-	// Data import and training are decoupled from model audit and can proceed concurrently.
-	if isModel && s.isAuditBusyLocked() {
-		auditTask := s.ActiveAuditTaskID
-		if auditTask == "" {
-			auditTask = "model_audit"
-		}
-		return nil, pkgerrors.New(pkgerrors.CodeConflict,
-			fmt.Sprintf("当前已有模型代码审计正在执行中 (taskId: %s, op: auditing)，请等待完成后再提交", auditTask))
-	}
-
-	// 3. 检查是否有其他任务正在处理（如正在下载、解密等）
+	// 2. 检查是否有其他任务正在处理（如正在下载、解密等）
 	if s.ActiveTaskID != "" || (s.CurrentOp != "" && s.CurrentOp != "idle") {
 		isSameTaskPair := false
 		if taskID != "" && s.ActiveTaskID == taskID {

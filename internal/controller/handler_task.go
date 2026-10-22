@@ -471,6 +471,12 @@ func (s *TAAState) modelImportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A new model replaces the one the running audit is judging. Cancel that
+	// audit before the download, so its scan releases the CPU at once; the
+	// model directory itself is not touched until the async stage has waited
+	// for the goroutine to exit.
+	s.abortModelAudit()
+
 	s.mu.Lock()
 	s.ModelImported = true
 	_ = s.sealStateLocked()

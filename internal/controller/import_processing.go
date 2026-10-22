@@ -89,6 +89,12 @@ func (s *TAAState) processImportedResource(req importRequest, phase int, isModel
 		})
 		s.Logs.Add(LogInfo, "hash", "计算模型压缩包哈希成功: %s (%d bytes)", hash, size)
 
+		// The previous model's audit reads ModelDir. Let it stop before the
+		// directory is removed and replaced; a scan racing this overwrite would
+		// read a tree that is being deleted. Bounded, because a superseded
+		// audit's verdict is discarded either way.
+		s.waitAuditStopped()
+
 		s.Logs.Add(LogInfo, "extract", "开始解压到: %s", s.Security.ModelDir)
 		if err := extractArchiveToDir(s.Security.ModelDir, plaintextPath); err != nil {
 			s.Logs.Add(LogError, "extract", "解压失败: %v", err)

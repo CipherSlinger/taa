@@ -349,12 +349,11 @@ func TestConcurrency_DataImportAllowedWhileAuditing(t *testing.T) {
 	}
 }
 
-// TestConcurrency_ModelImportRejectedWhileAuditing verifies that when model code audit
-// is running in the background, a second model import is rejected to prevent directory race conditions.
-func TestConcurrency_ModelImportRejectedWhileAuditing(t *testing.T) {
+// TestConcurrency_ModelImportNotBlockedByAuditing pins that a running audit no
+// longer refuses a model import: the new import is what cancels that audit.
+func TestConcurrency_ModelImportNotBlockedByAuditing(t *testing.T) {
 	state, server := setupTestServer(t)
 
-	// Simulate background model audit actively running
 	state.mu.Lock()
 	state.AuditRunning = true
 	state.CurrentAuditOp = "auditing"
@@ -362,36 +361,20 @@ func TestConcurrency_ModelImportRejectedWhileAuditing(t *testing.T) {
 	state.ActiveAuditRequestID = "contract-model-import-req-01"
 	state.mu.Unlock()
 
-	// 1. Direct tryAcquireTask for another model import (isModel = true) must return 409 Conflict
 	release, err := state.tryAcquireTask("task-model-02", "req-model-02", "downloading", true)
-	if err == nil {
-		if release != nil {
-			release()
-		}
-		t.Fatal("expected conflict error for model import while audit is running, got nil")
+	if err != nil {
+		t.Fatalf("model import was refused while an audit was running: %v", err)
 	}
-	code := pkgerrors.CodeOf(err, 0)
-	if code != http.StatusConflict {
-		t.Fatalf("expected 409 Conflict, got %d (err: %v)", code, err)
-	}
-	if !strings.Contains(err.Error(), "模型代码审计正在执行中") {
-		t.Fatalf("expected audit busy message, got: %v", err)
-	}
+	release()
 
-	// 2. HTTP POST /v1/taa/importModel must return 409 Conflict
 	resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
-		"resourceUrl": "http://127.0.0.1:9999/model2.tar.gz",
-		"requestId":   "req-model-02",
-		"taskId":      "task-model-02",
+		"resourceUrl": "http://127.0.0.1:1/model2.tar.gz",
+		"requestId":   "req-model-02b",
+		"taskId":      "task-model-02b",
 	})
 	api := decodeResponse(t, resp)
-
-	if resp.StatusCode != http.StatusConflict || api.Error != http.StatusConflict {
-		t.Fatalf("expected 409 Conflict for concurrent model import, got status=%d, error=%d, msg=%s",
-			resp.StatusCode, api.Error, api.Msg)
-	}
-	if !strings.Contains(api.Msg, "模型代码审计正在执行中") {
-		t.Fatalf("expected audit busy error message, got: %s", api.Msg)
+	if resp.StatusCode == http.StatusConflict || api.Error == http.StatusConflict {
+		t.Fatalf("model import returned 409 while an audit was running: %s", api.Msg)
 	}
 }
 
