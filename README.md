@@ -569,20 +569,20 @@ Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (d
 > *able to run the rules*. Overrides: `SEMGREP_PAYLOAD_BUNDLE`, `CONTAINER_SEMGREP_DIR`,
 > `SEMGREP_VERSION`.
 >
-> **Pointing the image at a separately deployed TEE-LLM.** `ENV_LLM_IP` (preferred) or
+> **Pointing the image at a separately deployed TEE-LLM.** `LLM_IP` (preferred) or
 > `TAA_LLM_ENDPOINT` overrides `codeAudit.llm.endpoint` at startup, so the endpoint baked into an
-> image is only a default. Both take a full URL, but a value that omits the port gets the gateway's
-> internal `:8443`, and a bare IP also gets the `https://` scheme (`10.0.0.2` →
-> `https://10.0.0.2:8443`). When both are set, `ENV_LLM_IP` wins:
+> image is only a default. Either may be a bare IP or a URL, but a value that omits the port gets the
+> gateway's internal `:8443`, and a bare IP also gets the `https://` scheme (`10.0.0.2` →
+> `https://10.0.0.2:8443`). When both are set, `LLM_IP` wins:
 >
 > ```bash
 > ./deploy.sh docker save --tag my-taa:v1 -o /tmp/taa.tar.gz
 > ./deploy-llm.sh --create-pod start                # TEE-LLM in its own Kata CSV2 Pod
-> docker run -e TAA_LLM_ENDPOINT=https://10.0.0.2:8443 my-taa:v1
+> docker run -e LLM_IP=https://10.0.0.2:8443 my-taa:v1
 > ```
 >
-> `ENV_LLM_IP` / `TAA_LLM_ENDPOINT` are the only variables that **override** the config file (leave
-> both empty to keep the endpoint the image was packaged with); the `platform` identity fields do not
+> `LLM_IP` / `TAA_LLM_ENDPOINT` are the only variables that **override** the config file (leave them
+> empty to keep the endpoint the image was packaged with); the `platform` identity fields do not
 > follow that rule.
 > `PLATFORM_IP`, `DOCKER_ID` and `CONTRACT_ID` only seed defaults that the file wins over — on a `tee`
 > instance. On an `fhe` instance the first two flip to environment-wins (see

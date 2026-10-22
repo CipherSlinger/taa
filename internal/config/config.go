@@ -480,10 +480,10 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 // TEE-LLM instance that does not live at the address baked into the image,
 // without rebuilding the image.
 //
-// ENV_LLM_IP is the preferred name and wins over TAA_LLM_ENDPOINT, which is
+// LLM_IP is the preferred name and wins over TAA_LLM_ENDPOINT, which is
 // still read so that scripts and manifests written before the rename keep
-// working. Both carry a full endpoint URL; a value that omits the scheme or
-// the port is completed with https:// and DefaultLLMPort.
+// working. Either value may be a bare IP or a URL; a value that omits the
+// scheme or the port is completed with https:// and DefaultLLMPort.
 //
 // This is deliberately the opposite precedence from PlatformIP, DockerID and
 // Contract: those are seeded in defaultStartupConfig and the config file wins
@@ -495,7 +495,7 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 // applyFHEIdentityOverride is the one exception to that rule, and only for
 // server.type=fhe.
 func applyLLMEndpointOverride(cfg *StartupConfig) {
-	endpoint := strings.TrimSpace(os.Getenv("ENV_LLM_IP"))
+	endpoint := strings.TrimSpace(os.Getenv("LLM_IP"))
 	if endpoint == "" {
 		endpoint = strings.TrimSpace(os.Getenv("TAA_LLM_ENDPOINT"))
 	}
