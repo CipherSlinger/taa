@@ -183,7 +183,7 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	// empty-attestation registration the degraded TEE path already produces.
 	verifiedPass := false
 	if cfg.ServerType == config.ServerTypeFHE {
-		log.Printf("instance type is fhe: remote attestation is not provided by this instance")
+		log.Printf("[INFO] [attestation] instance type is fhe: remote attestation is not provided by this instance")
 		if err := os.WriteFile(fixedAttestationFile, nil, 0o600); err != nil {
 			return fmt.Errorf("write empty attestation report: %w", err)
 		}
@@ -197,7 +197,7 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 
 	// 5. 向管控平台注册本 TAA 实例，通知平台就绪并提交度量报告与公钥
 	if err := registerPlatform(ctx, platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, verifiedPass, material.taaSecretKey); err != nil {
-		log.Printf("WARNING: platform register failed, continuing startup: %v", err)
+		log.Printf("[WARN] [register] platform register failed, continuing startup: %v", err)
 		// The first attempt is expected to fail in a Kata CSV2 guest: it runs before
 		// the sandbox network exists (see register_retry.go). Keep trying in the
 		// background so the platform still learns about this instance, and keep using
@@ -209,11 +209,11 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 					return registerPlatform(attemptCtx, platformIP, dockerID, keyPair.PublicKeyPEM, timestamp, verifiedPass, material.taaSecretKey)
 				})
 			if err != nil {
-				log.Printf("WARNING: platform register retries gave up: %v", err)
+				log.Printf("[WARN] [register] platform register retries gave up: %v", err)
 			}
 		}()
 	} else {
-		log.Printf("platform register completed")
+		log.Printf("[INFO] [register] platform register completed")
 	}
 	logGeneratedTAAKeyPair(keyPair)
 
@@ -645,12 +645,12 @@ func logUserDataSummary(userData []byte) {
 // prepareAttestationReport invokes underlying TEE tools to generate attestation report and performs certificate self-verification.
 // In non-TEE environments or upon generation failure, writes an empty report and logs a warning, allowing service to start in degraded mode (verifiedPass=false).
 func prepareAttestationReport(ctx context.Context, userData []byte, hrkCertPath, hskCekCertPath string) (bool, error) {
-	log.Printf("generating attestation report: output=%s", fixedAttestationFile)
+	log.Printf("[INFO] [attestation] generating attestation report: output=%s", fixedAttestationFile)
 	if err := attestation.Generate(ctx, attestation.Config{
 		OutputPath: fixedAttestationFile,
 		UserData:   userData,
 	}); err != nil {
-		log.Printf("WARNING: generating attestation report failed, continuing with empty report: %v", err)
+		log.Printf("[WARN] [attestation] generating attestation report failed, continuing with empty report: %v", err)
 		if writeErr := os.WriteFile(fixedAttestationFile, nil, 0o600); writeErr != nil {
 			return false, fmt.Errorf("write empty attestation report: %w", writeErr)
 		}
@@ -659,7 +659,7 @@ func prepareAttestationReport(ctx context.Context, userData []byte, hrkCertPath,
 
 	reportBytes, err := os.ReadFile(fixedAttestationFile)
 	if err != nil {
-		log.Printf("WARNING: failed to read attestation report %s: %v", fixedAttestationFile, err)
+		log.Printf("[WARN] [attestation] failed to read attestation report %s: %v", fixedAttestationFile, err)
 		return false, nil
 	}
 	if len(reportBytes) == 0 {
@@ -667,17 +667,17 @@ func prepareAttestationReport(ctx context.Context, userData []byte, hrkCertPath,
 	}
 
 	if _, verifyErr := attestation.VerifyReport(reportBytes, hrkCertPath, hskCekCertPath); verifyErr != nil {
-		log.Printf("WARNING: attestation self-verification failed: %v", verifyErr)
+		log.Printf("[WARN] [attestation] attestation self-verification failed: %v", verifyErr)
 		return false, nil
 	}
 
-	log.Printf("attestation report verified successfully: %s", fixedAttestationFile)
+	log.Printf("[INFO] [attestation] attestation report verified successfully: %s", fixedAttestationFile)
 	return true, nil
 }
 
 // registerPlatform sends a registration request to the platform, reporting DockerID, attestation report, TAA public key, timestamp, self-verification status and, when available, the wrapped TAA private key.
 func registerPlatform(ctx context.Context, platformIP, dockerID, publicKeyPEM string, timestamp int64, verifiedPass bool, taaSecretKey string) error {
-	log.Printf("notifying platform register: platform=%s dockerId=%s attestation=%s timestamp=%d verifiedPass=%v",
+	log.Printf("[INFO] [register] notifying platform register: platform=%s dockerId=%s attestation=%s timestamp=%d verifiedPass=%v",
 		platformIP, dockerID, fixedAttestationFile, timestamp, verifiedPass)
 	return controller.NoticeRegister(ctx, platformIP, dockerID, fixedAttestationFile, publicKeyPEM, timestamp, verifiedPass, taaSecretKey)
 }
