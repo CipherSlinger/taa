@@ -203,6 +203,16 @@ func (e *semgrepEngine) ScanDirectoryWithLines(dir string) (*Report, map[string]
 	return e.scan(dir, true)
 }
 
+// ScanDirectoryWithLinesContext is ScanDirectoryWithLines with cancellation.
+// The context is checked before the scan starts; the semgrep subprocess itself
+// stays bounded by the engine timeout.
+func (e *semgrepEngine) ScanDirectoryWithLinesContext(ctx context.Context, dir string) (*Report, map[string]int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	return e.scan(dir, true)
+}
+
 func (e *semgrepEngine) scan(dir string, withLineCounts bool) (*Report, map[string]int, error) {
 	info, err := os.Stat(dir)
 	if err != nil {

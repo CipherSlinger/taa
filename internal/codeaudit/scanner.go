@@ -1,6 +1,7 @@
 package codeaudit
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -265,6 +266,15 @@ func CheckExport(resultDir, dataDir string) (bool, *ResultCheckReport, error) {
 // ScanDirectoryWithLines is like ScanDirectory but also returns per-file line counts.
 // The lineCounts map is keyed by absolute file path.
 func (s *Scanner) ScanDirectoryWithLines(dir string) (*Report, map[string]int, error) {
+	return s.ScanDirectoryWithLinesContext(context.Background(), dir)
+}
+
+// ScanDirectoryWithLinesContext is ScanDirectoryWithLines that can be
+// cancelled: it returns ctx.Err() rather than a partial report.
+func (s *Scanner) ScanDirectoryWithLinesContext(ctx context.Context, dir string) (*Report, map[string]int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	info, err := os.Stat(dir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("scan directory: %w", err)
@@ -279,6 +289,9 @@ func (s *Scanner) ScanDirectoryWithLines(dir string) (*Report, map[string]int, e
 	truncated := false
 
 	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return nil
 		}
@@ -314,6 +327,9 @@ func (s *Scanner) ScanDirectoryWithLines(dir string) (*Report, map[string]int, e
 		return nil
 	})
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, nil, ctxErr
+		}
 		return nil, nil, fmt.Errorf("walk directory: %w", err)
 	}
 

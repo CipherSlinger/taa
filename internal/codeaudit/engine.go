@@ -1,6 +1,7 @@
 package codeaudit
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -21,9 +22,9 @@ const (
 // rather than a change to its callers.
 //
 // Two implementations are expected: regexEngine, wrapping the existing Scanner,
-// and a Semgrep CLI adapter. Callers must not depend on anything beyond these
-// three methods — in particular, nothing may type-assert back to *Scanner, or
-// the abstraction stops being a boundary.
+// and a Semgrep CLI adapter. Callers must not depend on anything beyond the
+// methods declared here — in particular, nothing may type-assert back to
+// *Scanner, or the abstraction stops being a boundary.
 type StaticEngine interface {
 	// ScanDirectory walks dir and returns a report whose Passed field is keyed
 	// on the static severities alone.
@@ -32,6 +33,11 @@ type StaticEngine interface {
 	// ScanDirectoryWithLines is ScanDirectory plus a per-file line count, which
 	// the file-level LLM prompt needs.
 	ScanDirectoryWithLines(dir string) (*Report, map[string]int, error)
+
+	// ScanDirectoryWithLinesContext is ScanDirectoryWithLines with cancellation.
+	// A cancelled context makes the scan return ctx.Err() promptly instead of a
+	// report, so a superseded audit stops reading the model directory.
+	ScanDirectoryWithLinesContext(ctx context.Context, dir string) (*Report, map[string]int, error)
 
 	// Name reports the engine identity, for Report.Engine.
 	Name() string
@@ -58,6 +64,13 @@ func (e regexEngine) ScanDirectory(dir string) (*Report, error) {
 // identity onto the result.
 func (e regexEngine) ScanDirectoryWithLines(dir string) (*Report, map[string]int, error) {
 	report, lineCounts, err := e.scanner.ScanDirectoryWithLines(dir)
+	return e.stamp(report), lineCounts, err
+}
+
+// ScanDirectoryWithLinesContext delegates to the wrapped scanner with the
+// caller's cancellation attached.
+func (e regexEngine) ScanDirectoryWithLinesContext(ctx context.Context, dir string) (*Report, map[string]int, error) {
+	report, lineCounts, err := e.scanner.ScanDirectoryWithLinesContext(ctx, dir)
 	return e.stamp(report), lineCounts, err
 }
 

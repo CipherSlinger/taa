@@ -376,7 +376,7 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	}
 
 	// Phase 1: Static scan with line counts.
-	scanReport, lineCounts, err := engine.ScanDirectoryWithLines(dir)
+	scanReport, lineCounts, err := engine.ScanDirectoryWithLinesContext(ctx, dir)
 	if err != nil {
 		return nil, fmt.Errorf("static scan: %w", err)
 	}
