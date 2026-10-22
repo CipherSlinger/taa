@@ -234,8 +234,7 @@ func TestExecuteTrainingReleasesFullProgressWhenTheResultIsRejected(t *testing.T
 	if err := os.WriteFile(filepath.Join(dataDir, "train.csv"), data, 0o644); err != nil {
 		t.Fatalf("write training data: %v", err)
 	}
-	// The check fingerprints against the configured data directory, not the one on the
-	// import record.
+	// The check hashes the training input directory named on the import record.
 	state.Security.DataDir = dataDir
 
 	req := importRequest{TaskID: "task-progress-leak", RequestID: "req-progress-leak"}

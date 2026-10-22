@@ -3,126 +3,66 @@ package codeaudit
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func TestResultCheckerDetectsPlaintextCSV(t *testing.T) {
-	dir := t.TempDir()
-	// Create a "result" file that contains CSV training data
-	resultContent := []byte("some binary model data...\n" +
-		"id,label,image\n" +
-		"001,DN,img_001.jpg\n" +
-		"002,NDRD,img_002.jpg\n" +
-		"more binary data...")
-	resultPath := filepath.Join(dir, "model_result.bin")
-	if err := os.WriteFile(resultPath, resultContent, 0o644); err != nil {
+func writeResultTestFile(t *testing.T, dir, name string, data []byte) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
 
-	checker := DefaultResultChecker()
-	report, err := checker.CheckFile(resultPath)
+func TestResultCheckerFailsOnCopiedInputFile(t *testing.T) {
+	inputDir := t.TempDir()
+	resultDir := t.TempDir()
+	data := []byte("id,label,image\n001,DN,img_001.jpg\n002,NDRD,img_002.jpg\n")
+	writeResultTestFile(t, inputDir, "train.csv", data)
+	// A different name must not matter: the digest is what is compared.
+	writeResultTestFile(t, resultDir, "copied_but_renamed.csv", data)
+
+	report, err := NewResultChecker(inputDir).CheckDirectory(resultDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if report.Passed {
-		t.Fatal("expected result check to FAIL for plaintext CSV in result")
+		t.Fatal("expected the check to fail when a result file is a copy of an input file")
 	}
-	assertResultHasCheck(t, report, "plaintext_section")
+	assertResultHasCheck(t, report, "file_hash_match")
 }
 
-func TestResultCheckerDetectsSecrets(t *testing.T) {
-	dir := t.TempDir()
-	resultContent := []byte("model weights binary..." +
-		"-----BEGIN RSA PRIVATE KEY-----\nMIIEpA...\n-----END RSA PRIVATE KEY-----\n" +
-		"more binary...")
-	resultPath := filepath.Join(dir, "exported.bin")
-	if err := os.WriteFile(resultPath, resultContent, 0o644); err != nil {
-		t.Fatal(err)
-	}
+func TestResultCheckerPassesWhenNoHashMatches(t *testing.T) {
+	inputDir := t.TempDir()
+	resultDir := t.TempDir()
+	data := []byte("id,label,image\n001,DN,img_001.jpg\n")
+	writeResultTestFile(t, inputDir, "train.csv", data)
+	// The result embeds the training rows, but is not a byte-for-byte copy. The
+	// hash comparison is whole-file only and deliberately lets this through.
+	writeResultTestFile(t, resultDir, "model_result.bin",
+		append([]byte("model header..."), append(data, []byte("...footer")...)...))
 
-	checker := DefaultResultChecker()
-	report, err := checker.CheckFile(resultPath)
+	report, err := NewResultChecker(inputDir).CheckDirectory(resultDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Passed {
-		t.Fatal("expected result check to FAIL for embedded private key")
-	}
-	assertResultHasCheck(t, report, "plaintext_section")
-}
-
-func TestResultCheckerDetectsDataFingerprint(t *testing.T) {
-	dir := t.TempDir()
-
-	// Create a "data" directory with a training CSV
-	dataDir := filepath.Join(dir, "data")
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// Create a CSV with enough content for a 64-byte fingerprint
-	csvContent := strings.Repeat("id,label,image_path,patient_name,diagnosis\n", 5) +
-		strings.Repeat("001,DN,/data/img/001.jpg,张三,糖尿病肾病\n", 10)
-	if err := os.WriteFile(filepath.Join(dataDir, "training.csv"), []byte(csvContent), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create a "result" file that contains the exact data file content
-	resultContent := append([]byte("model_output_header..."), []byte(csvContent)...)
-	resultContent = append(resultContent, []byte("...model_output_footer")...)
-	resultPath := filepath.Join(dir, "result.bin")
-	if err := os.WriteFile(resultPath, resultContent, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	checker := &ResultChecker{DataDir: dataDir, MaxResultBytes: 1024 * 1024}
-	report, err := checker.CheckFile(resultPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Passed {
-		t.Fatal("expected result check to FAIL for data fingerprint match")
-	}
-	assertResultHasCheck(t, report, "data_fingerprint")
-}
-
-func TestResultCheckerDetectsSizeAnomaly(t *testing.T) {
-	dir := t.TempDir()
-	// Create a result file larger than the limit
-	resultContent := make([]byte, 2048) // 2KB
-	resultPath := filepath.Join(dir, "big_result.bin")
-	if err := os.WriteFile(resultPath, resultContent, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	checker := &ResultChecker{MaxResultBytes: 1024} // limit = 1KB
-	report, err := checker.CheckFile(resultPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Size anomaly is MEDIUM, so it should still pass but with warnings
 	if !report.Passed {
-		t.Fatal("size anomaly alone should not cause failure (MEDIUM only)")
+		t.Fatalf("expected a pass without a hash intersection, got warnings: %+v", report.Warnings)
 	}
-	assertResultHasCheck(t, report, "size_anomaly")
 }
 
-func TestResultCheckerCleanResultPasses(t *testing.T) {
-	dir := t.TempDir()
-	// Create a clean binary result (model weights only)
-	resultContent := []byte{
-		0x80, 0x02, 0x00, 0x00, // some binary header
-		0x00, 0x00, 0x00, 0x00,
-		0xFF, 0xFE, 0xFD, 0xFC,
-	}
-	resultContent = append(resultContent, make([]byte, 256)...) // pad with zeros
-	resultPath := filepath.Join(dir, "model_weights.pth")
-	if err := os.WriteFile(resultPath, resultContent, 0o644); err != nil {
-		t.Fatal(err)
-	}
+func TestResultCheckerCleanDirectoryPasses(t *testing.T) {
+	inputDir := t.TempDir()
+	resultDir := t.TempDir()
+	writeResultTestFile(t, inputDir, "train.csv", []byte("id,label\n1,cat\n"))
+	writeResultTestFile(t, resultDir, "model.pth", []byte{0x80, 0x02, 0x00, 0x00, 0xFF, 0xFE})
+	writeResultTestFile(t, resultDir, "metrics.json", []byte(`{"accuracy":0.99}`))
 
-	checker := DefaultResultChecker()
-	report, err := checker.CheckFile(resultPath)
+	report, err := NewResultChecker(inputDir).CheckDirectory(resultDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,42 +74,40 @@ func TestResultCheckerCleanResultPasses(t *testing.T) {
 	}
 }
 
-func TestResultCheckerDirectory(t *testing.T) {
-	dir := t.TempDir()
-	// Clean file
-	if err := os.WriteFile(filepath.Join(dir, "model.pth"), []byte{0x80, 0x02}, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Dirty file with CSV header
-	if err := os.WriteFile(filepath.Join(dir, "data_leak.bin"),
-		[]byte("binary...id,label,image\n...more"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+func TestResultCheckerFailsOnOneCopiedFileAmongCleanOnes(t *testing.T) {
+	inputDir := t.TempDir()
+	resultDir := t.TempDir()
+	leaked := []byte("patient_id,image\n7,img_007.jpg\n")
+	writeResultTestFile(t, inputDir, "nested/train.csv", leaked)
+	writeResultTestFile(t, resultDir, "model.pth", []byte{1, 2, 3})
+	writeResultTestFile(t, resultDir, "assets/leaked.csv", leaked)
 
-	checker := DefaultResultChecker()
-	report, err := checker.CheckDirectory(dir)
+	report, err := NewResultChecker(inputDir).CheckDirectory(resultDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if report.Passed {
-		t.Fatal("directory with leaked data should fail")
+		t.Fatal("one copied file must fail the directory")
 	}
+	if len(report.Warnings) != 1 {
+		t.Fatalf("warnings = %+v, want exactly one match", report.Warnings)
+	}
+	assertResultHasCheck(t, report, "file_hash_match")
 }
 
 // 根目录下被点名的文件是调用方自己的元数据（训练报告），它按设计带样本行预览，
-// 扫它等于把检查自己的产物报成泄露。
+// 比它等于把检查自己的产物报成泄露。
 func TestResultCheckerSkipsNamedRootFiles(t *testing.T) {
 	reported := "training_report.json"
+	leaked := []byte(`{"preview":[["1","cat","img1.jpg"]]}`)
 
 	t.Run("skipped at the root", func(t *testing.T) {
-		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, reported),
-			[]byte(`{"preview":[["1","cat","img1.jpg"]]}`), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		inputDir := t.TempDir()
+		resultDir := t.TempDir()
+		writeResultTestFile(t, inputDir, "train.csv", leaked)
+		writeResultTestFile(t, resultDir, reported, leaked)
 
-		checker := DefaultResultChecker()
-		report, err := checker.CheckDirectory(dir, reported)
+		report, err := NewResultChecker(inputDir).CheckDirectory(resultDir, reported)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -178,21 +116,15 @@ func TestResultCheckerSkipsNamedRootFiles(t *testing.T) {
 		}
 	})
 
-	// 跳过规则只认根目录：同名文件出现在深处就是训练脚本自己的产物，必须照扫，
+	// 跳过规则只认根目录：同名文件出现在深处就是训练脚本自己的产物，必须照查，
 	// 否则"没被检查过的文件照样进导出包"。
-	t.Run("still scanned deeper in the tree", func(t *testing.T) {
-		dir := t.TempDir()
-		sub := filepath.Join(dir, "sub")
-		if err := os.MkdirAll(sub, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(sub, reported),
-			[]byte("binary...id,label,image\n...more"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	t.Run("still checked deeper in the tree", func(t *testing.T) {
+		inputDir := t.TempDir()
+		resultDir := t.TempDir()
+		writeResultTestFile(t, inputDir, "train.csv", leaked)
+		writeResultTestFile(t, resultDir, "sub/"+reported, leaked)
 
-		checker := DefaultResultChecker()
-		report, err := checker.CheckDirectory(dir, reported)
+		report, err := NewResultChecker(inputDir).CheckDirectory(resultDir, reported)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -202,36 +134,85 @@ func TestResultCheckerSkipsNamedRootFiles(t *testing.T) {
 	})
 }
 
-func TestResultCheckerNonExistentFile(t *testing.T) {
-	checker := DefaultResultChecker()
-	_, err := checker.CheckFile("/nonexistent/file.bin")
-	if err == nil {
-		t.Fatal("expected error for non-existent file")
+// Empty and hidden files carry no training data, and two unrelated empty files
+// share a digest; skipping them keeps a clean run from failing on bookkeeping.
+func TestResultCheckerSkipsEmptyAndHiddenFiles(t *testing.T) {
+	inputDir := t.TempDir()
+	resultDir := t.TempDir()
+	for _, dir := range []string{inputDir, resultDir} {
+		writeResultTestFile(t, dir, "placeholder", []byte{})
+		writeResultTestFile(t, dir, ".DS_Store", []byte{0x00, 0x01, 0x02})
+	}
+	writeResultTestFile(t, inputDir, "train.csv", []byte("id,label\n1,cat\n"))
+
+	report, err := NewResultChecker(inputDir).CheckDirectory(resultDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Passed {
+		t.Fatalf("empty and hidden files must not fail the check, got warnings: %+v", report.Warnings)
 	}
 }
 
-func TestDefaultResultCheckerMaxResultBytes(t *testing.T) {
-	checker := DefaultResultChecker()
-	if checker.MaxResultBytes != DefaultMaxResultBytes {
-		t.Fatalf("MaxResultBytes = %d, want %d (5GiB)", checker.MaxResultBytes, DefaultMaxResultBytes)
-	}
-	if checker.MaxResultBytes != 5*1024*1024*1024 {
-		t.Fatalf("DefaultMaxResultBytes = %d, want 5368709120", checker.MaxResultBytes)
-	}
+func TestResultCheckerCheckFile(t *testing.T) {
+	inputDir := t.TempDir()
+	data := []byte("training data\n")
+	writeResultTestFile(t, inputDir, "data/sample.txt", data)
+	checker := NewResultChecker(inputDir)
+
+	t.Run("copied file fails", func(t *testing.T) {
+		path := writeResultTestFile(t, t.TempDir(), "copy.txt", data)
+		report, err := checker.CheckFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Passed {
+			t.Fatal("expected a copied input file to fail")
+		}
+		assertResultHasCheck(t, report, "file_hash_match")
+	})
+
+	t.Run("different content passes", func(t *testing.T) {
+		path := writeResultTestFile(t, t.TempDir(), "result.bin", []byte("other bytes\n"))
+		report, err := checker.CheckFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !report.Passed {
+			t.Fatalf("expected a pass, got warnings: %+v", report.Warnings)
+		}
+	})
+
+	t.Run("empty file passes", func(t *testing.T) {
+		path := writeResultTestFile(t, t.TempDir(), "empty.bin", []byte{})
+		report, err := checker.CheckFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !report.Passed {
+			t.Fatalf("empty file should pass, got warnings: %+v", report.Warnings)
+		}
+	})
+
+	t.Run("missing file errors", func(t *testing.T) {
+		if _, err := checker.CheckFile(filepath.Join(t.TempDir(), "missing.bin")); err == nil {
+			t.Fatal("expected an error for a non-existent result file")
+		}
+	})
 }
 
-func TestNewResultChecker(t *testing.T) {
-	c1 := NewResultChecker("/tmp/data", 1024)
-	if c1.DataDir != "/tmp/data" || c1.MaxResultBytes != 1024 {
-		t.Fatalf("NewResultChecker got %+v", c1)
+func TestResultCheckerRequiresInputDirectory(t *testing.T) {
+	resultDir := t.TempDir()
+	writeResultTestFile(t, resultDir, "model.pth", []byte{1, 2, 3})
+
+	for _, inputDir := range []string{"", filepath.Join(t.TempDir(), "missing")} {
+		if _, err := NewResultChecker(inputDir).CheckDirectory(resultDir); err == nil {
+			t.Fatalf("inputDir %q: expected an error, the check cannot run without inputs", inputDir)
+		}
 	}
-	c2 := NewResultChecker("/tmp/data", 0)
-	if c2.MaxResultBytes != DefaultMaxResultBytes {
-		t.Fatalf("NewResultChecker with 0 max bytes should default to %d, got %d", DefaultMaxResultBytes, c2.MaxResultBytes)
-	}
-	c3 := NewResultChecker("/tmp/data", -10)
-	if c3.MaxResultBytes != DefaultMaxResultBytes {
-		t.Fatalf("NewResultChecker with negative max bytes should default to %d, got %d", DefaultMaxResultBytes, c3.MaxResultBytes)
+
+	if _, err := NewResultChecker(t.TempDir()).CheckDirectory(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("expected an error for a non-existent result directory")
 	}
 }
 

@@ -1,11 +1,13 @@
 package codeaudit
 
 import (
-	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+
+	taacrypto "taa/pkg/crypto"
 )
 
 // ResultCheckReport describes findings from checking exported results.
@@ -21,128 +23,84 @@ type ResultCheckIssue struct {
 	Severity string `json:"severity"`
 }
 
-// DefaultMaxFileBytes is the default maximum size of an exported result file (5 GiB).
-const DefaultMaxFileBytes int64 = 5 * 1024 * 1024 * 1024 // 5 GiB
-
-// DefaultMaxResultBytes is a backward-compatible alias for DefaultMaxFileBytes.
-const DefaultMaxResultBytes int64 = DefaultMaxFileBytes
-
-// ResultChecker validates that exported training results do not contain
-// plaintext training data.
+// ResultChecker compares every file in a result directory with every file in the
+// training input directory by content hash. A result passes only when the two
+// digest sets do not intersect: an identical digest means a result file is a
+// byte-for-byte copy of a training input, which is the leakage this check exists
+// to catch.
+//
+// The comparison is whole-file only. A result that embeds part of an input file
+// (a CSV pasted into a notebook, a row set inside a model blob) has a different
+// digest and is not detected; dropping the byte-pattern scan was a deliberate
+// trade for a verdict that rests on exact evidence.
 type ResultChecker struct {
-	// DataDir is the directory containing training data files.
-	// If set, the checker computes fingerprints to detect data leakage.
-	DataDir string
-	// MaxFileBytes is the maximum expected size of a result file.
-	// Results larger than this are flagged as suspicious.
-	MaxFileBytes int64
-	// MaxResultBytes is a backward-compatible alias for MaxFileBytes.
-	MaxResultBytes int64
+	// InputDir is the directory holding the training inputs.
+	InputDir string
 }
 
-func (rc *ResultChecker) limit() int64 {
-	if rc.MaxFileBytes > 0 {
-		return rc.MaxFileBytes
-	}
-	if rc.MaxResultBytes > 0 {
-		return rc.MaxResultBytes
-	}
-	return DefaultMaxFileBytes
+// NewResultChecker creates a checker over inputDir.
+func NewResultChecker(inputDir string) *ResultChecker {
+	return &ResultChecker{InputDir: inputDir}
 }
 
-// DefaultResultChecker returns a checker with sensible defaults.
-func DefaultResultChecker() *ResultChecker {
-	return &ResultChecker{
-		MaxFileBytes:   DefaultMaxFileBytes,
-		MaxResultBytes: DefaultMaxResultBytes,
-	}
-}
-
-// NewResultChecker creates a ResultChecker with specified data directory and max result file size.
-// If maxFileBytes is <= 0, DefaultMaxFileBytes (5 GiB) is used.
-func NewResultChecker(dataDir string, maxFileBytes int64) *ResultChecker {
-	if maxFileBytes <= 0 {
-		maxFileBytes = DefaultMaxFileBytes
-	}
-	return &ResultChecker{
-		DataDir:        dataDir,
-		MaxFileBytes:   maxFileBytes,
-		MaxResultBytes: maxFileBytes,
-	}
-}
-
-// CheckFile inspects a single result file for plaintext data leakage.
+// CheckFile hashes one result file and reports it when its digest matches any
+// input file. A zero-length result file carries no data and always passes.
 func (rc *ResultChecker) CheckFile(resultPath string) (*ResultCheckReport, error) {
+	inputHashes, err := rc.inputHashes()
+	if err != nil {
+		return nil, err
+	}
+
 	info, err := os.Stat(resultPath)
 	if err != nil {
 		return nil, fmt.Errorf("stat result file: %w", err)
 	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("result file is not a regular file: %s", resultPath)
+	}
+	if info.Size() == 0 {
+		return &ResultCheckReport{Passed: true}, nil
+	}
+
+	_, digest, err := taacrypto.HashFileSM3(resultPath)
+	if err != nil {
+		return nil, fmt.Errorf("hash result file: %w", err)
+	}
 
 	var warnings []ResultCheckIssue
-
-	// ── Check 1: Size anomaly ──
-	maxBytes := rc.limit()
-	if maxBytes > 0 && info.Size() > maxBytes {
-		warnings = append(warnings, ResultCheckIssue{
-			Check:    "size_anomaly",
-			Detail:   fmt.Sprintf("结果文件 %d 字节，超过预期上限 %d 字节，可能嵌入了额外数据", info.Size(), maxBytes),
-			Severity: SeverityMedium,
-		})
+	if inputPath, ok := inputHashes[digest]; ok {
+		warnings = append(warnings, hashMatchIssue(filepath.Base(resultPath), inputPath, digest))
 	}
-
-	// ── Check 2: Plaintext sections in binary files ──
-	content, err := os.ReadFile(resultPath)
-	if err != nil {
-		return nil, fmt.Errorf("read result file: %w", err)
-	}
-	plaintextHits := detectPlaintextSections(content)
-	for _, hit := range plaintextHits {
-		warnings = append(warnings, ResultCheckIssue{
-			Check:    "plaintext_section",
-			Detail:   fmt.Sprintf("结果文件中检测到明文段: %s", hit),
-			Severity: SeverityHigh,
-		})
-	}
-
-	// ── Check 3: Data fingerprint matching ──
-	if rc.DataDir != "" {
-		fingerprintHits, fpErr := rc.checkDataFingerprints(content)
-		if fpErr == nil {
-			for _, hit := range fingerprintHits {
-				warnings = append(warnings, ResultCheckIssue{
-					Check:    "data_fingerprint",
-					Detail:   fmt.Sprintf("结果文件中检测到训练数据特征: %s", hit),
-					Severity: SeverityHigh,
-				})
-			}
-		}
-	}
-
-	passed := true
-	for _, w := range warnings {
-		if w.Severity == SeverityHigh {
-			passed = false
-			break
-		}
-	}
-
-	return &ResultCheckReport{
-		Passed:   passed,
-		Warnings: warnings,
-	}, nil
+	return &ResultCheckReport{Passed: len(warnings) == 0, Warnings: warnings}, nil
 }
 
-// CheckDirectory inspects all files in a result directory.
+// CheckDirectory inspects every regular file in a result directory.
 //
 // skipRootNames lists file names to ignore when they are direct children of
 // resultDir. TAA's own report belongs there and is not a training artifact: it
-// carries table previews by design, so scanning it would report the check's own
-// bookkeeping as leaked dataset rows. Only direct children are skipped, matching
-// the export packer's rule - a same-named file produced deeper in the tree is
-// still scanned, so nothing can travel in an export unchecked.
+// carries table previews by design, so hashing it could report the check's own
+// bookkeeping as a leaked dataset file. Only direct children are skipped,
+// matching the export packer's rule - a same-named file produced deeper in the
+// tree is still checked, so nothing can travel in an export unchecked.
+//
+// Hidden files (dot-prefixed) and empty files are skipped in both trees: they
+// carry no training data, and two unrelated empty files would otherwise share a
+// digest and fail an otherwise clean run. Symlinks are not followed, so a link
+// cannot pull a file from outside either directory into the comparison.
 func (rc *ResultChecker) CheckDirectory(resultDir string, skipRootNames ...string) (*ResultCheckReport, error) {
-	var allWarnings []ResultCheckIssue
-	passed := true
+	inputHashes, err := rc.inputHashes()
+	if err != nil {
+		return nil, err
+	}
+
+	root := filepath.Clean(resultDir)
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, fmt.Errorf("stat result directory: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("result path is not a directory: %s", resultDir)
+	}
 
 	skip := make(map[string]bool, len(skipRootNames))
 	for _, name := range skipRootNames {
@@ -150,28 +108,38 @@ func (rc *ResultChecker) CheckDirectory(resultDir string, skipRootNames ...strin
 			skip[name] = true
 		}
 	}
-	root := filepath.Clean(resultDir)
 
-	err := filepath.Walk(resultDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+	var warnings []ResultCheckIssue
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.Type().IsRegular() {
 			return nil
 		}
-		// Skip hidden files and common non-result files.
-		if strings.HasPrefix(info.Name(), ".") {
+		if strings.HasPrefix(entry.Name(), ".") {
 			return nil
 		}
-		if len(skip) > 0 && filepath.Dir(path) == root && skip[info.Name()] {
+		if len(skip) > 0 && filepath.Dir(path) == root && skip[entry.Name()] {
 			return nil
 		}
 
-		report, checkErr := rc.CheckFile(path)
-		if checkErr != nil {
-			return nil // skip unreadable files
+		size, digest, err := taacrypto.HashFileSM3(path)
+		if err != nil {
+			return err
 		}
-		allWarnings = append(allWarnings, report.Warnings...)
-		if !report.Passed {
-			passed = false
+		if size == 0 {
+			return nil
 		}
+		inputPath, ok := inputHashes[digest]
+		if !ok {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			rel = path
+		}
+		warnings = append(warnings, hashMatchIssue(rel, inputPath, digest))
 		return nil
 	})
 	if err != nil {
@@ -179,81 +147,65 @@ func (rc *ResultChecker) CheckDirectory(resultDir string, skipRootNames ...strin
 	}
 
 	return &ResultCheckReport{
-		Passed:   passed,
-		Warnings: allWarnings,
+		Passed:   len(warnings) == 0,
+		Warnings: warnings,
 	}, nil
 }
 
-// ── Internal helpers ─────────────────────────────────────
-
-// suspiciousPatterns are plaintext strings that should NOT appear in
-// model weight files or encrypted result blobs.
-var suspiciousPatterns = []struct {
-	name    string
-	pattern []byte
-}{
-	{"CSV header (training data)", []byte("id,label,image")},
-	{"CSV header (patient data)", []byte("patient_id")},
-	{"JSON data array", []byte(`"data":[`)},
-	{"JSON samples array", []byte(`"samples":[`)},
-	{"PEM private key", []byte("-----BEGIN")},
-	{"AWS credentials", []byte("aws_secret_access_key")},
-	{"database connection", []byte("postgresql://")},
-	{"database connection", []byte("mysql://")},
-	{"environment dump", []byte("SECRET_KEY=")},
-	{"environment dump", []byte("API_KEY=")},
-}
-
-func detectPlaintextSections(content []byte) []string {
-	var hits []string
-	for _, sp := range suspiciousPatterns {
-		if bytes.Contains(content, sp.pattern) {
-			hits = append(hits, sp.name)
-		}
+// inputHashes returns digest -> path relative to InputDir for every input file,
+// applying the same regular-file, hidden-file and empty-file rules as the result
+// side so the two sets are comparable.
+func (rc *ResultChecker) inputHashes() (map[string]string, error) {
+	inputDir := strings.TrimSpace(rc.InputDir)
+	if inputDir == "" {
+		return nil, fmt.Errorf("training input directory is not configured")
 	}
-	return hits
-}
-
-// checkDataFingerprints compares the result content against known
-// data file snippets. It reads the first 64 bytes of each data file
-// as a fingerprint and checks if that fingerprint appears in the result.
-func (rc *ResultChecker) checkDataFingerprints(resultContent []byte) ([]string, error) {
-	if _, err := os.Stat(rc.DataDir); os.IsNotExist(err) {
-		return nil, nil // no data dir to fingerprint against
+	info, err := os.Stat(inputDir)
+	if err != nil {
+		return nil, fmt.Errorf("stat training input directory: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("training input path is not a directory: %s", rc.InputDir)
 	}
 
-	var hits []string
-	const fingerprintSize = 64
-
-	err := filepath.Walk(rc.DataDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || info.Size() < fingerprintSize {
+	hashes := make(map[string]string)
+	err = filepath.WalkDir(inputDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.Type().IsRegular() {
 			return nil
 		}
-		ext := strings.ToLower(filepath.Ext(path))
-		// Only fingerprint data files, not code.
-		switch ext {
-		case ".csv", ".json", ".txt", ".xlsx", ".npy", ".npz", ".png", ".jpg", ".jpeg":
-		default:
+		if strings.HasPrefix(entry.Name(), ".") {
 			return nil
 		}
 
-		f, openErr := os.Open(path)
-		if openErr != nil {
+		size, digest, err := taacrypto.HashFileSM3(path)
+		if err != nil {
+			return err
+		}
+		if size == 0 {
 			return nil
 		}
-		defer f.Close()
-
-		fingerprint := make([]byte, fingerprintSize)
-		n, readErr := f.Read(fingerprint)
-		if readErr != nil || n < fingerprintSize {
-			return nil
+		rel, err := filepath.Rel(inputDir, path)
+		if err != nil {
+			rel = path
 		}
-
-		if bytes.Contains(resultContent, fingerprint) {
-			hits = append(hits, fmt.Sprintf("与数据文件 %s 的前 %d 字节匹配", filepath.Base(path), fingerprintSize))
+		if _, seen := hashes[digest]; !seen {
+			hashes[digest] = rel
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, fmt.Errorf("walk training input directory: %w", err)
+	}
+	return hashes, nil
+}
 
-	return hits, err
+func hashMatchIssue(resultPath, inputPath, digest string) ResultCheckIssue {
+	return ResultCheckIssue{
+		Check:    "file_hash_match",
+		Detail:   fmt.Sprintf("结果文件 %s 与输入文件 %s 的 SM3 哈希相同 (%s)", resultPath, inputPath, digest),
+		Severity: SeverityHigh,
+	}
 }

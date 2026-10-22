@@ -247,20 +247,15 @@ func CheckImport(dir string, engine StaticEngine) (bool, *Report, error) {
 	return report.Passed && report.ProvesCleanScan(), report, nil
 }
 
-// CheckExport inspects resultDir for plaintext data leakage against dataDir.
+// CheckExport inspects resultDir for plaintext data leakage against dataDir by
+// comparing file hashes; a result file that is a byte-for-byte copy of an input
+// file fails the check.
 // Returns (pass, report, error). A check error is treated as a rejection.
 func CheckExport(resultDir, dataDir string) (bool, *ResultCheckReport, error) {
-	return CheckExportWithLimit(resultDir, dataDir, DefaultMaxResultBytes)
-}
-
-// CheckExportWithLimit inspects resultDir for plaintext data leakage against dataDir with a custom size limit.
-// Returns (pass, report, error). A check error is treated as a rejection.
-func CheckExportWithLimit(resultDir, dataDir string, maxResultBytes int64) (bool, *ResultCheckReport, error) {
 	if resultDir == "" {
 		return true, nil, nil
 	}
-	checker := NewResultChecker(dataDir, maxResultBytes)
-	report, err := checker.CheckDirectory(resultDir)
+	report, err := NewResultChecker(dataDir).CheckDirectory(resultDir)
 	if err != nil {
 		return false, nil, err
 	}

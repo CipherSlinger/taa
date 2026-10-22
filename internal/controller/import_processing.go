@@ -562,16 +562,17 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 		return
 	}
 
-	// Plaintext leakage check on the finished artifacts. It runs before the report
-	// is written (so training_report.json itself is not scanned) and its verdict is
-	// persisted on the import index record, which is what the export handler reads
-	// later. Deliberately non-fatal: a failing or impossible check must not turn a
-	// successful training run into a failure, so every error below only warns.
+	// Hash comparison between the finished artifacts and the training inputs. It
+	// runs before the report is written (so training_report.json itself is not
+	// hashed) and its verdict is persisted on the import index record, which is
+	// what the export handler reads later. Deliberately non-fatal: a failing or
+	// impossible check must not turn a successful training run into a failure, so
+	// every error below only warns.
 	var trainResultCheck *resource.ResultCheckVerdict
 	if s.Security.ResultCheck {
 		StepSeparator("Result Leakage Check")
-		s.Logs.Add(LogInfo, "resultcheck", "训练结束，执行结果明文泄露检查: resultDir=%s", trainOutputDir)
-		verdict := s.runResultCheck(trainOutputDir)
+		s.Logs.Add(LogInfo, "resultcheck", "训练结束，比对结果目录与输入目录的文件哈希: resultDir=%s, inputDir=%s", trainOutputDir, trainDataDir)
+		verdict := s.runResultCheck(trainOutputDir, trainDataDir)
 		trainResultCheck = verdict
 		switch {
 		case verdict.Error != "":

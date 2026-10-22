@@ -124,7 +124,7 @@ func TestPhase1ResultCheckRunsAtTrainingEnd(t *testing.T) {
 			wantReportCode:    reportCodeResultLeak,
 			wantReportStatus:  "failed",
 			extraRuntimeCommands: []string{
-				`printf 'id,label,image\n1,cat,img1.jpg\n' > "$TAA_OUTPUT_DIR/leak.csv"`,
+				`cp "$TAA_INPUT_DIR/data/sample.txt" "$TAA_OUTPUT_DIR/leak.txt"`,
 			},
 		})
 	})
