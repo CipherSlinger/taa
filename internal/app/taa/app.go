@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CipherSlinger/teellm"
+
 	"taa/internal/attestation"
 	"taa/internal/codeaudit"
 	"taa/internal/config"
@@ -300,12 +302,11 @@ func probeInferenceService(ctx context.Context, cfg config.StartupConfig) error 
 		return err
 	}
 
+	// A zero request timeout means "no deadline", not "give up quickly": the
+	// probe must then wait out the health check's own budget, which is what a
+	// cold, model-loading gateway needs.
 	timeout := time.Duration(cfg.LLM.TimeoutMs) * time.Millisecond
-	if timeout <= 0 {
-		timeout = 3 * time.Second
-	}
-
-	probeTimeout := 5 * time.Second
+	probeTimeout := teellm.DefaultHealthCheckTimeout
 	if cfg.LLM.TimeoutMs > 0 {
 		probeTimeout = timeout
 	}
@@ -705,9 +706,6 @@ func buildSecurityConfig(cfg config.StartupConfig) (controller.SecurityConfig, e
 	}
 
 	timeout := time.Duration(cfg.LLM.TimeoutMs) * time.Millisecond
-	if timeout <= 0 {
-		timeout = 120 * time.Second
-	}
 	maxBytes := cfg.MaxFileBytes
 	if maxBytes <= 0 {
 		maxBytes = cfg.MaxResultBytes

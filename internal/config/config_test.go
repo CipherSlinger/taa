@@ -1199,8 +1199,11 @@ func TestStartupConfig_InferenceDefaults(t *testing.T) {
 	if cfg.LLM.AuthToken != "" {
 		t.Errorf("got default token %q, want empty", cfg.LLM.AuthToken)
 	}
-	if cfg.LLM.TimeoutMs != 30000 {
-		t.Errorf("got default timeout %d, want 30000", cfg.LLM.TimeoutMs)
+	// Zero means no request deadline: the default must not cap generation,
+	// because a cap shorter than the inference itself is reported to the
+	// caller as the service being unavailable.
+	if cfg.LLM.TimeoutMs != 0 {
+		t.Errorf("got default timeout %d, want 0 (no deadline)", cfg.LLM.TimeoutMs)
 	}
 	if cfg.LLM.CircuitBreakerThreshold != 3 {
 		t.Errorf("got default threshold %d, want 3", cfg.LLM.CircuitBreakerThreshold)

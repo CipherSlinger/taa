@@ -896,14 +896,17 @@ func defaultStartupConfig() StartupConfig {
 		AttestationHRKCertPath:    hrkDefault,
 		AttestationHSKCekCertPath: hskDefault,
 		LLM: LLMConfig{
-			Enabled:                 true,
-			AttestationEnabled:      true,
-			Endpoint:                "https://127.0.0.1:8443",
-			HRKCertPath:             hrkDefault,
-			HSKCekCertPath:          hskDefault,
-			RequireMutualAttest:     false,
-			InsecureSkipVerify:      false,
-			TimeoutMs:               30000,
+			Enabled:             true,
+			AttestationEnabled:  true,
+			Endpoint:            "https://127.0.0.1:8443",
+			HRKCertPath:         hrkDefault,
+			HSKCekCertPath:      hskDefault,
+			RequireMutualAttest: false,
+			InsecureSkipVerify:  false,
+			// No request deadline by default. A verdict on the CPU-only
+			// inference service can take minutes; a shorter deadline cancels
+			// the generation and is recorded as the service being unavailable.
+			TimeoutMs:               0,
 			CircuitBreakerThreshold: 3,
 			CooldownSec:             30,
 			Model:                   "qwen2.5-coder:0.5b",

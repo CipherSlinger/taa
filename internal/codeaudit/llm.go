@@ -23,10 +23,15 @@ type LLMConfig struct {
 	// AttestationEnabled selects the transport: true uses TEE-TLS and verifies
 	// the gateway's CSV attestation, false uses ordinary TLS with no
 	// attestation.
-	AttestationEnabled      bool
-	Endpoint                string
-	AuthToken               string
-	Model                   string
+	AttestationEnabled bool
+	Endpoint           string
+	AuthToken          string
+	Model              string
+	// Timeout bounds one verification request. Zero disables the bounds: a
+	// verdict on this CPU-only inference service can take minutes, and a
+	// deadline shorter than the generation itself turns every finding into a
+	// transport failure (recorded as SERVICE_UNAVAILABLE / UNCERTAIN) rather
+	// than a verdict. The health check keeps its own, separate budget.
 	Timeout                 time.Duration
 	MaxFindings             int
 	FailClosed              bool
@@ -58,11 +63,14 @@ type LLMConfig struct {
 // DefaultLLMConfig returns safe default configuration.
 func DefaultLLMConfig() LLMConfig {
 	return LLMConfig{
-		Enabled:                 true,
-		AttestationEnabled:      true,
-		Endpoint:                "https://127.0.0.1:8443",
-		Model:                   "qwen2.5-coder:0.5b",
-		Timeout:                 30 * time.Second,
+		Enabled:            true,
+		AttestationEnabled: true,
+		Endpoint:           "https://127.0.0.1:8443",
+		Model:              "qwen2.5-coder:0.5b",
+		// No request deadline by default: the verifier cannot know how long a
+		// verdict takes on the deployment's hardware, and cutting it short is
+		// misreported as the service being unavailable.
+		Timeout:                 0,
 		MaxFindings:             0,
 		FailClosed:              true,
 		CircuitBreakerThreshold: 3,
@@ -121,14 +129,9 @@ func buildTEETLSConfig(cfg LLMConfig) *teetls.Config {
 func NewInferenceClient(cfg LLMConfig) (LLMClient, error) {
 	teeTLSConfig := buildTEETLSConfig(cfg)
 
-	timeout := cfg.Timeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-
 	return teellm.NewClient(teellm.Config{
 		Endpoint:                       cfg.Endpoint,
-		Timeout:                        timeout,
+		Timeout:                        cfg.Timeout,
 		AllowedHosts:                   cfg.AllowedHosts,
 		TEETLS:                         teeTLSConfig,
 		CircuitBreakerFailureThreshold: cfg.CircuitBreakerThreshold,
@@ -137,10 +140,8 @@ func NewInferenceClient(cfg LLMConfig) (LLMClient, error) {
 }
 
 // NewOllamaClient provides backward compatibility, returning an LLMClient via NewInferenceClient.
+// A zero timeout means no request deadline.
 func NewOllamaClient(endpoint, model string, timeout time.Duration) LLMClient {
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
 	client, err := NewInferenceClient(LLMConfig{
 		Endpoint:           endpoint,
 		Model:              model,
