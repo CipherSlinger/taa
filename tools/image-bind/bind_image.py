@@ -21,7 +21,9 @@ import argparse
 import datetime as _dt
 import json
 import os
+import socket
 import ssl
+import struct
 import sys
 import urllib.error
 import urllib.request
@@ -207,6 +209,40 @@ def parse_image_ref(ref, default_registry):
 # Database discovery
 # --------------------------------------------------------------------------- #
 
+def db_endpoint(args):
+    host = args.db_host or os.environ.get("CCS_DB_HOST", "172.16.10.113")
+    port = int(args.db_port or os.environ.get("CCS_DB_PORT", "3306"))
+    return host, port
+
+
+def probe_db_version(args):
+    """Read the MySQL handshake banner.  This needs no account, but it cannot
+    query or write anything: every SQL statement still requires authentication.
+    """
+    host, port = db_endpoint(args)
+    sock = socket.create_connection((host, port), timeout=5)
+    try:
+        header = sock.recv(4)
+        if len(header) < 4:
+            raise SystemExit("No MySQL handshake received from %s:%d." % (host, port))
+        length = header[0] | (header[1] << 8) | (header[2] << 16)
+        data = b""
+        while len(data) < length:
+            chunk = sock.recv(length - len(data))
+            if not chunk:
+                break
+            data += chunk
+        if not data or data[0] != 10:
+            raise SystemExit("%s:%d did not answer with a MySQL handshake." % (host, port))
+        end = data.index(b"\x00", 1)
+        version = data[1:end].decode("utf-8", "replace")
+        conn_id = struct.unpack("<I", data[end + 1:end + 5])[0]
+    finally:
+        sock.close()
+    log("MySQL server %s at %s:%d (connection id %d)" % (version, host, port, conn_id))
+    log("Handshake is unauthenticated by design; SELECT/INSERT still need an account.")
+
+
 def connect_db(args):
     user = args.db_user or os.environ.get("CCS_DB_USER")
     if not user:
@@ -214,9 +250,10 @@ def connect_db(args):
             "Set CCS_DB_USER (and optionally CCS_DB_PASSWORD) or pass --db-user."
         )
     password = os.environ.get("CCS_DB_PASSWORD", "")
+    host, port = db_endpoint(args)
     return pymysql.connect(
-        host=args.db_host or os.environ.get("CCS_DB_HOST", "172.16.10.113"),
-        port=int(args.db_port or os.environ.get("CCS_DB_PORT", "3306")),
+        host=host,
+        port=port,
         user=user,
         password=password,
         database=args.db_name or os.environ.get("CCS_DB_NAME") or None,
@@ -727,6 +764,8 @@ def build_parser():
     p.add_argument("--no-insecure", action="store_true",
                    help="Verify the registry TLS certificate")
     p.add_argument("--registry-user", help="Registry user (password from CCS_REGISTRY_PASSWORD)")
+    p.add_argument("--db-version", action="store_true",
+                   help="Print the MySQL handshake version and exit (no account needed)")
     p.add_argument("--db-host")
     p.add_argument("--db-port")
     p.add_argument("--db-user")
@@ -736,6 +775,9 @@ def build_parser():
 
 def main():
     args = build_parser().parse_args()
+    if args.db_version:
+        probe_db_version(args)
+        return
     if args.list_images:
         cmd_list(args)
         return

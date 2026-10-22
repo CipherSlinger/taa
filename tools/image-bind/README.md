@@ -29,6 +29,9 @@ export CCS_REGISTRY_PASSWORD='' # 仓库需要认证时才用
 ```bash
 cd tools/image-bind
 
+# 0. 只读确认数据库类型/版本（握手包，不需要账号）
+./bind-image.sh --db-version
+
 # 1. 看仓库里有什么
 ./bind-image.sh --list-images
 
@@ -66,6 +69,8 @@ cd tools/image-bind
 
 ## 注意
 
+- `--db-version` 只读握手包，能确认 MySQL 版本，但**不能**替代账号：MySQL 的握手本来就不需要认证，
+  任何 `SELECT`/`INSERT` 仍要 `CCS_DB_USER`/`CCS_DB_PASSWORD`。
 - `--inspect` 是只读的，应始终先跑一次，确认选中的表与列。
 - 插入的只是**元数据**：镜像必须已经在该节点的仓库里，否则前端能显示，但创建 Pod 时
   guest 内拉取会失败。
