@@ -1,34 +1,28 @@
 #!/usr/bin/env bash
 # TAA autostart wrapper: starts taa, keeps the container alive, retries on exit.
-# Also brings up the TEE-LLM supervisor (ollama + teellm-service) when present,
-# so the inference gateway is reachable for taa's fail-closed readiness probe.
+# TEE-LLM is a separate deployment (teellm/deploy/start.sh owns it) and is reached
+# through taa's llm.endpoint, so this wrapper starts nothing but taa.
 # Manual mode: touch /root/taa/manual to pause taa autostart; rm it to resume.
-#              touch /root/taa/manual-teellm to pause only the TEE-LLM side.
 set -u
 cd /root/taa || exit 1
 LOG=/root/taa/taa.log
-TEELLM_LOG=/root/taa/teellm-service.log
 LOCK=/root/taa/.start.lock
 TAAPID=""
-TEEPID=""
 
 cleanup() {
   if [ -n "$TAAPID" ]; then
     kill -TERM "$TAAPID" 2>/dev/null || true
   fi
-  if [ -n "$TEEPID" ]; then
-    kill -TERM "$TEEPID" 2>/dev/null || true
-  fi
   exit 0
 }
 trap cleanup SIGTERM SIGINT
 
-# Singleton guard: only one supervisor may own taa and the TEE-LLM wrapper. Two of them --
-# one started by each deploy script -- race for :6001 and :8443 and interleave the same log
-# files. flock is used instead of a pidfile because the lock is kernel state released when
-# this process dies, so a stale lock can never wedge the container's ENTRYPOINT. Every child
-# below closes the lock fd, so an orphaned daemon cannot keep the lock after the supervisor
-# itself is gone.
+# Singleton guard: only one supervisor may own taa. Two of them -- one started by
+# each deploy script -- race for :6001 and interleave the same log file. flock is
+# used instead of a pidfile because the lock is kernel state released when this
+# process dies, so a stale lock can never wedge the container's ENTRYPOINT. Every
+# child below closes the lock fd, so an orphaned daemon cannot keep the lock after
+# the supervisor itself is gone.
 exec 9>"$LOCK"
 if command -v flock >/dev/null 2>&1; then
   flock -n 9
@@ -47,16 +41,6 @@ fi
 
 [ -f get-attestation.bak ] && [ ! -f get-attestation ] && mv get-attestation.bak get-attestation
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): taa autostart wrapper started" >> "$LOG"
-
-# Start the TEE-LLM supervisor before taa so it wins the startup race; taa's own
-# retry loop tolerates the gateway not being ready on the very first probe.
-if [ -x ./start-teellm.sh ]; then
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): starting teellm autostart wrapper" >> "$LOG"
-  nohup ./start-teellm.sh >> "$TEELLM_LOG" 2>&1 9>&- &
-  TEEPID=$!
-else
-  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): ./start-teellm.sh not found, teellm autostart skipped" >> "$LOG"
-fi
 
 while true; do
   if [ -f ./manual ]; then
