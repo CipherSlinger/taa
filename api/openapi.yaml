@@ -229,7 +229,7 @@ paths:
                 result: null
                 error: 400
         '409':
-          description: 并发冲突（已有训练任务或任务正在执行中；已有模型代码审计正在执行中）
+          description: 并发冲突（已有训练任务或任务正在执行中）。模型代码审计进行中不阻止新的模型下发：新模型会中止旧审计并覆盖模型目录后重新审计
           content:
             application/json:
               schema:

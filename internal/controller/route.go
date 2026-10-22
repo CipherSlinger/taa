@@ -152,8 +152,10 @@ type TAAState struct {
 	// what makes an audit that never concluded visible after a restart, so the
 	// startup path can report it to the platform as an interrupted audit. It is
 	// held separately rather than derived from AuditRunning/CurrentAuditOp on
-	// restore, because restoring those would make isAuditBusyLocked() true
-	// forever and, through tryAcquireTask, permanently refuse every model import.
+	// restore: no goroutine survives the restart to clear those fields, so
+	// restoring them would leave the status stuck at "auditing" with no
+	// goroutine left to clear it, and isAuditBusyLocked() would keep rejecting
+	// phase switches.
 	pendingAudit    *AuditPendingSnapshot
 	trainingControl *trainingControl // 当前训练任务的中止控制对象
 	stateStore      *StateStore      // 持久化密封存储
