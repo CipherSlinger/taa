@@ -192,7 +192,7 @@ type semgrepError struct {
 // therefore establishes completeness before it reports anything, and
 // Report.ScanComplete is true on every report it does return.
 func (e *semgrepEngine) ScanDirectory(dir string) (*Report, error) {
-	report, _, err := e.scan(dir, false)
+	report, _, err := e.scan(context.Background(), dir, false)
 	return report, err
 }
 
@@ -200,20 +200,24 @@ func (e *semgrepEngine) ScanDirectory(dir string) (*Report, error) {
 // file-level LLM prompt needs. Both entry points go through scan, so neither
 // can drift from the other's completeness checks.
 func (e *semgrepEngine) ScanDirectoryWithLines(dir string) (*Report, map[string]int, error) {
-	return e.scan(dir, true)
+	return e.scan(context.Background(), dir, true)
 }
 
-// ScanDirectoryWithLinesContext is ScanDirectoryWithLines with cancellation.
-// The context is checked before the scan starts; the semgrep subprocess itself
-// stays bounded by the engine timeout.
+// ScanDirectoryWithLinesContext is ScanDirectoryWithLines with the caller's
+// cancellation attached. Cancellation stops the directory walk, the line
+// counting, the CLI subprocess, and the scan at the CPG boundaries; the report
+// assembly itself is short and unchecked.
 func (e *semgrepEngine) ScanDirectoryWithLinesContext(ctx context.Context, dir string) (*Report, map[string]int, error) {
+	return e.scan(ctx, dir, true)
+}
+
+// scan is the single implementation behind every entry point: it walks, counts
+// lines when asked, runs semgrep, and turns the output into a report, checking
+// ctx at each stage that can run long.
+func (e *semgrepEngine) scan(ctx context.Context, dir string, withLineCounts bool) (*Report, map[string]int, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
-	return e.scan(dir, true)
-}
-
-func (e *semgrepEngine) scan(dir string, withLineCounts bool) (*Report, map[string]int, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("scan directory: %w", err)
@@ -222,14 +226,20 @@ func (e *semgrepEngine) scan(dir string, withLineCounts bool) (*Report, map[stri
 		return nil, nil, fmt.Errorf("%s is not a directory", dir)
 	}
 
-	targets, err := e.walkSourceFiles(dir)
+	targets, err := e.walkSourceFiles(ctx, dir)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, nil, ctxErr
+		}
 		return nil, nil, err
 	}
 
 	var lineCounts map[string]int
 	if withLineCounts {
-		lineCounts = e.countLines(targets)
+		lineCounts, err = e.countLines(ctx, targets)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	// A directory with nothing to scan is complete, not failed: there is no
@@ -239,8 +249,11 @@ func (e *semgrepEngine) scan(dir string, withLineCounts bool) (*Report, map[stri
 		return e.stamp(e.scanner.buildReport(dir, 0, nil, false)), lineCounts, nil
 	}
 
-	output, err := e.run(targets)
+	output, err := e.run(ctx, targets)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, nil, ctxErr
+		}
 		return nil, nil, err
 	}
 
@@ -252,8 +265,17 @@ func (e *semgrepEngine) scan(dir string, withLineCounts bool) (*Report, map[stri
 	// The graph pass runs only because something was found, and only reports on
 	// flows that cross a file or a service boundary. It is deliberately before
 	// the sort and the cap, so that what the cap keeps does not depend on
-	// whether the graph ran.
+	// whether the graph ran. It has no cancellation of its own, so the
+	// boundary is checked here: a superseded audit must not start it at all,
+	// and its possibly slow fixed-point traversal must not begin after a
+	// cancel.
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	findings = enrichFindingsWithCPG(dir, targets, findings)
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 
 	// Sort before capping, not after: the cap keeps the first N findings, so an
 	// order that varies between runs would make a truncated scan keep a
@@ -293,12 +315,16 @@ func (e *semgrepEngine) stamp(report *Report) *Report {
 	return report
 }
 
-// walkSourceFiles returns the files to scan, in walk order.
-// It includes multi-language source files (.py, .go, .c, .cpp, .cu, .h, .hpp, .java, .sh)
-// as well as any extension configured on the scanner.
-func (e *semgrepEngine) walkSourceFiles(dir string) ([]string, error) {
+// walkSourceFiles returns the files to scan, in walk order. It includes
+// multi-language source files (.py, .go, .c, .cpp, .cu, .h, .hpp, .java, .sh)
+// as well as any extension configured on the scanner. The walk checks ctx at
+// every entry, so a cancelled scan stops early rather than finishing the tree.
+func (e *semgrepEngine) walkSourceFiles(ctx context.Context, dir string) ([]string, error) {
 	var targets []string
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return nil
 		}
@@ -315,14 +341,12 @@ func (e *semgrepEngine) walkSourceFiles(dir string) ([]string, error) {
 		return nil
 	})
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, fmt.Errorf("walk directory: %w", err)
 	}
 	return targets, nil
-}
-
-// walkTargets is kept as an alias to walkSourceFiles for backward compatibility.
-func (e *semgrepEngine) walkTargets(dir string) ([]string, error) {
-	return e.walkSourceFiles(dir)
 }
 
 // isSourceFile checks if a file matches supported multi-language extensions or scanner extensions.
@@ -374,17 +398,22 @@ func (e *semgrepEngine) isSourceFile(path string) bool {
 }
 
 // countLines reads each target to report its line count. A file that cannot be
-// read is left out, which is the regex scanner's behaviour too.
-func (e *semgrepEngine) countLines(targets []string) map[string]int {
+// read is left out, which is the regex scanner's behaviour too. It checks ctx
+// before each file and returns the context error, so cancellation stops the
+// counting and no partial map is handed back.
+func (e *semgrepEngine) countLines(ctx context.Context, targets []string) (map[string]int, error) {
 	counts := make(map[string]int, len(targets))
 	for _, path := range targets {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		content, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
 		counts[path] = len(strings.Split(string(content), "\n"))
 	}
-	return counts
+	return counts, nil
 }
 
 // semgrepArgs is the argument vector, kept apart from the invocation so that the
@@ -409,12 +438,21 @@ func (e *semgrepEngine) semgrepArgs(targets []string) []string {
 }
 
 // run invokes semgrep and turns every way the invocation can fail into an error.
-func (e *semgrepEngine) run(targets []string) (*semgrepOutput, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
+// The caller's cancellation is attached to the subprocess, alongside the engine
+// timeout, so a cancelled audit stops it promptly.
+func (e *semgrepEngine) run(ctx context.Context, targets []string) (*semgrepOutput, error) {
+	// The parent is kept so a caller's cancellation can be told apart from the
+	// engine's own deadline: only the former replaces the CLI error, while an
+	// expired engine timeout keeps the wrapped stderr, which names the cause.
+	parent := ctx
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
 	stdout, exitCode, err := e.execFn(ctx, e.bin, e.semgrepArgs(targets))
 	if err != nil {
+		if pErr := parent.Err(); pErr != nil {
+			return nil, pErr
+		}
 		return nil, fmt.Errorf("semgrep did not run: %w", err)
 	}
 	// A non-zero exit is not "found something": measured on 1.177.0, semgrep

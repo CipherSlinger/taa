@@ -754,7 +754,7 @@ func TestGA11PacksMatchTheirSamples(t *testing.T) {
 	// into a failed scan - loudly, instead of reporting a clean pass over a file
 	// no rule ever saw.
 	decoyEngine := NewSemgrepEngine(DefaultScanner(), rulesDir, SemgrepLimits{})
-	if _, err := decoyEngine.run([]string{decoyJSON}); err == nil {
+	if _, err := decoyEngine.run(context.Background(), []string{decoyJSON}); err == nil {
 		t.Errorf("the engine scanned %s without complaint: a target the pack filters out must fail the "+
 			"completeness check, not be reported as scanned", decoyJSON)
 	} else if !strings.Contains(err.Error(), "did not scan") {
