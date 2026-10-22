@@ -387,12 +387,22 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	// need a second quota and a second failure mode.
 	//
 	// It returns no error, and that is the point rather than an oversight: see
-	// runBinaryChannel. A binary-channel failure is a gap the report records and
+	// runBinaryChannelContext. A binary-channel failure is a gap the report records and
 	// ProvesCleanScan refuses on, not a second way for the audit to return an
 	// error - the caller turns any error into a refusal that skips the report
-	// (internal/controller/import_processing.go:651-656), which is the outcome
+	// (internal/controller/import_processing.go:709-714), which is the outcome
 	// this channel exists to make accurate rather than to make easy.
-	binaryRes := runBinaryChannel(dir, cfg.Binary)
+	binaryRes := runBinaryChannelContext(ctx, dir, cfg.Binary)
+
+	// The binary pass reports a cancellation as a withheld (errored) pass, which
+	// is right for the report but must not let a cancelled audit continue: the
+	// LLM phases below would then run against a package the audit was told to
+	// stop examining. This check is about the caller's cancellation, not about a
+	// channel failure - a channel failure is still the gap the comment above
+	// describes and never an error return.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	// Phase 1c: merge.
 	if binaryRes != nil {
@@ -462,38 +472,35 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	return audit, nil
 }
 
-// runBinaryChannel runs the binary pass when it is enabled, and returns nil when
-// it is not.
+// runBinaryChannelContext runs the binary pass for GenerateAuditReport, with the
+// audit's cancellation attached, and returns nil when the channel is disabled.
+// A cancelled pass is reported as errored (a gap), never as a clean binary
+// channel: the caller decides what a gap means.
 //
-// Nil rather than an empty result is the signal the rest of the function keys on:
-// an empty result would be indistinguishable from a pass that examined a package
-// with no binary files in it, and the report's metadata would then claim a
-// channel ran that never did.
-//
-// It deliberately returns no error, and the reason is the caller's failure path
-// rather than this function's convenience. GenerateAuditReport's caller turns any
-// error into a refusal that skips the report entirely (Task 11a removed the
-// package deletion that used to be here; what remains is that the audit returns
-// before any report exists), so an error returned here decides the import before
-// the report it belongs to exists - with nothing recorded about which file, or
-// which channel, or why. A per-file failure is already the scanner's own business:
-// it is counted as Incomplete and withholds the pass through ProvesCleanScan. A
-// whole-pass failure is recorded the same way, as Errored: the fact travels as
-// errored: true in the in-process summary, and the reason - a matcher that would
-// not build, or a scan that would not run - travels only in the log line its
-// branch below writes, not in anything the report carries.
-func runBinaryChannel(dir string, binCfg BinaryConfig) *BinaryScanResult {
+// It returns no error by design: the caller turns any error into a refusal that
+// skips the report entirely, so a whole-pass failure is recorded as Errored in
+// the summary instead, with the reason in the log line its branch below writes.
+func runBinaryChannelContext(ctx context.Context, dir string, binCfg BinaryConfig) *BinaryScanResult {
 	if !binCfg.Enabled {
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return &BinaryScanResult{Summary: BinaryScanSummary{Errored: true}}
 	}
 	matcher, err := NewBinaryMatcher()
 	if err != nil {
 		log.Printf("binary channel: matcher build failed, pass withheld: %v", err)
 		return &BinaryScanResult{Summary: BinaryScanSummary{Errored: true}}
 	}
-	res, err := NewBinaryScanner(matcher, binCfg).ScanDirectory(dir)
+	res, err := NewBinaryScanner(matcher, binCfg).ScanDirectoryContext(ctx, dir)
 	if err != nil {
-		log.Printf("binary channel: scan failed, pass withheld: %v", err)
+		// A cancellation is not a scan failure, and wording it as one would send
+		// an operator looking for a broken pass instead of a superseded audit.
+		if errors.Is(err, context.Canceled) {
+			log.Printf("binary channel: pass cancelled: %v", err)
+		} else {
+			log.Printf("binary channel: scan failed, pass withheld: %v", err)
+		}
 		return &BinaryScanResult{Summary: BinaryScanSummary{Errored: true}}
 	}
 	return res

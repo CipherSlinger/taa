@@ -474,9 +474,9 @@ func TestRunBinaryChannelReportsAWholePassFailure(t *testing.T) {
 	// is what makes this the input that exercises the branch.
 	notADir := writeTestFile(t, t.TempDir(), "model.py", "import os\n")
 
-	res := runBinaryChannel(notADir, BinaryConfig{Enabled: true})
+	res := runBinaryChannelContext(context.Background(), notADir, BinaryConfig{Enabled: true})
 	if res == nil {
-		t.Fatal("runBinaryChannel returned nil for an enabled channel that could not scan: " +
+		t.Fatal("runBinaryChannelContext returned nil for an enabled channel that could not scan: " +
 			"an enabled failure is now indistinguishable from a disabled channel")
 	}
 	if !res.Summary.Errored {

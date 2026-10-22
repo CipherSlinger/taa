@@ -3,6 +3,7 @@ package codeaudit
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -147,5 +148,85 @@ func TestSemgrepCancelStopsTheRun(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("semgrep scan did not stop after cancellation")
+	}
+}
+
+// TestBinaryScannerCancelStopsWalk pins that cancellation is observed inside the
+// walk and not only at the entry: the entry check and the root-directory callback
+// both pass, and the file's callback observes the cancellation before the file is
+// read. With the callback check removed the walk runs to completion, the post-walk
+// check is still passing the allowed calls, and the scan returns a full result
+// with no error - so the assertions below discriminate the two paths.
+func TestBinaryScannerCancelStopsWalk(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "blob.bin", "\x7fELF")
+
+	ctx := &cancelAfterCallsContext{Context: context.Background(), allowed: 2}
+
+	res, err := NewBinaryScanner(nil, BinaryConfig{}).ScanDirectoryContext(ctx, dir)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if res != nil {
+		t.Fatalf("a cancelled scan returned a result: %+v", res)
+	}
+}
+
+// cancelingEngine is a StaticEngine stub that cancels the audit's context during
+// the source scan, so GenerateAuditReport's post-binary cancellation exit is what
+// stops the audit before the LLM phases.
+type cancelingEngine struct {
+	cancel func()
+}
+
+func (e *cancelingEngine) ScanDirectory(dir string) (*Report, error) {
+	report, _, err := e.ScanDirectoryWithLinesContext(context.Background(), dir)
+	return report, err
+}
+
+func (e *cancelingEngine) ScanDirectoryWithLines(dir string) (*Report, map[string]int, error) {
+	return e.ScanDirectoryWithLinesContext(context.Background(), dir)
+}
+
+func (e *cancelingEngine) ScanDirectoryWithLinesContext(_ context.Context, dir string) (*Report, map[string]int, error) {
+	e.cancel()
+	file := filepath.Join(dir, "train.py")
+	return &Report{
+		ScanComplete: true,
+		Findings: []Finding{{
+			File:     file,
+			Line:     1,
+			RuleID:   "TEST_001",
+			Severity: SeverityHigh,
+		}},
+	}, map[string]int{file: 1}, nil
+}
+
+func (e *cancelingEngine) Name() string { return "canceling" }
+
+// TestGenerateAuditReportStopsOnScanCancellation pins the exit that follows the
+// binary pass: when the source scan cancels the audit context, GenerateAuditReport
+// returns the cancellation rather than a report, and the LLM phases never run.
+// The scan reports one finding so that a run which did reach Phase 2 would have a
+// finding to adjudicate, and the mock carries a decision so that adjudication
+// would be counted rather than silently answered without a call.
+func TestGenerateAuditReportStopsOnScanCancellation(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "train.py", "import os\nos.system('x')\n")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	engine := &cancelingEngine{cancel: cancel}
+	client := &mockLLMClient{decisions: []LLMDecision{{Verdict: "BENIGN", Reason: "test decision"}}}
+
+	audit, err := GenerateAuditReport(ctx, dir, engine, AuditConfig{LLM: LLMConfig{Enabled: true}}, client)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if audit != nil {
+		t.Fatalf("a cancelled audit returned a report: %+v", audit)
+	}
+	if client.callCount != 0 || client.fileCallCount != 0 {
+		t.Fatalf("the LLM was called after cancellation: verify=%d file=%d",
+			client.callCount, client.fileCallCount)
 	}
 }

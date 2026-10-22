@@ -1,6 +1,7 @@
 package codeaudit
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -118,7 +119,26 @@ func NewBinaryScanner(matcher *BinaryMatcher, cfg BinaryConfig) *BinaryScanner {
 // found and a text file named .so is found, and neither depends on a list
 // somebody could rename around. Reading 4 KiB of each of a few hundred files
 // costs less than one semgrep invocation.
+//
+// It is the context-free entry point: it delegates to ScanDirectoryContext with
+// context.Background(), so a scan through it is never cancelled.
 func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
+	return s.ScanDirectoryContext(context.Background(), dir)
+}
+
+// ScanDirectoryContext is ScanDirectory with the audit's cancellation attached.
+//
+// Cancellation is observed at the entry and at the top of every walk callback,
+// so a cancelled scan stops before reading the next file rather than at the end
+// of the directory. On cancellation it returns the context's error - ctx.Err(),
+// not a wrapped walk error - and a nil result, never a partial one: a partial
+// pass would look like a package that examined only the files it reached, and
+// nothing downstream could tell that apart from one that examined all of them.
+func (s *BinaryScanner) ScanDirectoryContext(ctx context.Context, dir string) (*BinaryScanResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	info, err := os.Stat(dir)
 	if err != nil {
 		return nil, fmt.Errorf("scan directory: %w", err)
@@ -136,6 +156,13 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 	}
 
 	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		// Checked before the traversal error so cancellation is not reported as
+		// an unreadable path: a cancelled walk is not a subtree that failed to
+		// read, and only the raw context error tells the caller it was cancelled
+		// rather than incomplete.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			// The walk could not read this path. Two shapes arrive here: an entry
 			// whose lstat failed (filepath.Walk passes info as nil, because there
@@ -272,7 +299,17 @@ func (s *BinaryScanner) ScanDirectory(dir string) (*BinaryScanResult, error) {
 		return nil
 	})
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, fmt.Errorf("walk directory: %w", err)
+	}
+
+	// Checked again after a successful walk: a cancellation that arrives as the
+	// last callback returns would otherwise leave the sort and the cap to finish
+	// and hand back a full result, which the contract above rules out.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
 	}
 
 	// Sorted before capping, for the same reason the semgrep adapter sorts before
