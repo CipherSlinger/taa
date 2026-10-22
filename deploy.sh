@@ -1467,7 +1467,7 @@ else:
 for key in ("platformIP", "dockerID", "contract"):
     cfg.pop(key, None)
 
-for key in ("securityScan", "resultCheck", "maxFileBytes", "maxResultBytes"):
+for key in ("securityScan", "resultCheck"):
     if key in cfg and not isinstance(cfg[key], dict):
         cfg.pop(key, None)
 

@@ -304,9 +304,10 @@ func TestDeriveFHECallbackBaseURL(t *testing.T) {
 }
 
 // The removed keys must fail startup instead of being ignored: silently dropping
-// callbackToken would turn an authenticated endpoint into an open one.
-func TestFHEConfigRejectsRemovedCallbackKeys(t *testing.T) {
-	for _, key := range []string{"callbackBaseUrl", "callbackToken"} {
+// callbackToken would turn an authenticated endpoint into an open one, and
+// silently dropping maxEvalKeyBytes would make the old cap disappear.
+func TestFHEConfigRejectsRemovedKeys(t *testing.T) {
+	for _, key := range []string{"callbackBaseUrl", "callbackToken", "maxEvalKeyBytes"} {
 		body := `{"server":{"type":"fhe"},"fhe":{
 		  "endpoint":"http://h:1","dataDir":"/d","keyCacheDir":"/k","` + key + `":"x"}}`
 		_, err := LoadStartupConfig(writeConfig(t, body))

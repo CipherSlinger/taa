@@ -414,9 +414,7 @@ func (c *Client) ContinueTask(ctx context.Context, taskID, userID string) error 
 //
 // The archive is streamed by the download client, which has no whole-request
 // timeout, so the caller's context is what bounds it. There is deliberately no
-// size cap here: a cap would have to be a caller-supplied parameter, which would
-// change this signature; the eval key download is capped separately, by the key
-// cache's MaxEvalKeyBytes.
+// size cap here: neither result archives nor eval keys are bounded by one.
 func (c *Client) DownloadResult(ctx context.Context, taskID, userID, dst string) error {
 	if err := guardTaskCall(taskID, userID); err != nil {
 		return err

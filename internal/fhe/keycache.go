@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"taa/internal/resource"
 	teecrypto "taa/pkg/crypto"
 )
 
@@ -147,42 +148,13 @@ var keyDownloadClient = func() *http.Client {
 	return &http.Client{Transport: transport}
 }()
 
-// downloadKey streams url into a temp file, bounded by ctx.
-//
-// resource.DownloadToTempFile does the same thing without a context - it calls
-// http.Get - so a cancelled import could not stop it and a hung server could
-// hold it forever. The same download is implemented here because this package
-// may not change the resource package, and because a wrapper around it (a
-// goroutine plus a select on ctx.Done) would leak the download it walked away
-// from.
+// downloadKey streams url into a temp file, bounded by ctx and without a size
+// cap. It shares the streaming and cleanup logic with resource downloads; only
+// the client differs, because a key transfer needs a response-header timeout
+// rather than a whole-request one.
 func downloadKey(ctx context.Context, url string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", fmt.Errorf("build the eval key download request for %s: %w", url, err)
-	}
-	resp, err := keyDownloadClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	f, err := os.CreateTemp("", "taa-download-*")
-	if err != nil {
-		return "", fmt.Errorf("create the eval key temp file: %w", err)
-	}
-	path := f.Name()
-
-	_, err = io.Copy(f, resp.Body)
-	f.Close()
-	if err != nil {
-		_ = os.Remove(path)
-		return "", fmt.Errorf("write the eval key download to %s: %w", path, err)
-	}
-	return path, nil
+	path, _, err := resource.DownloadToTempFileWithClient(ctx, keyDownloadClient, url)
+	return path, err
 }
 
 // moveIntoCache moves src onto dst, falling back to a copy when the two paths are

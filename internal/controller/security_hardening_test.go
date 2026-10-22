@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -335,28 +334,6 @@ func TestCompressDirToZipSkipsNamedRootFiles(t *testing.T) {
 	}
 	if !entries[baseName+"/model.bin"] {
 		t.Fatalf("model.bin missing from zip: %v", entries)
-	}
-}
-
-// 4. 流式下载超限熔断防护测试
-func TestDownloadToTempFileLimit(t *testing.T) {
-	// 创建一个超过 512MB 或者使用 chunked 传输的 mock server
-	// 由于 512MB 较大，测试中验证 chunked 超限（这里以小数据测试 LimitReader 逻辑通过 route_test 验证）
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/octet-stream")
-		// 不设置 Content-Length，触发 chunked 编码
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("short content"))
-	}))
-	defer srv.Close()
-
-	path, n, err := downloadToTempFile(srv.URL)
-	if err != nil {
-		t.Fatalf("expected downloadToTempFile to succeed, got %v", err)
-	}
-	defer os.Remove(path)
-	if n != int64(len("short content")) {
-		t.Fatalf("downloaded %d bytes, want %d", n, len("short content"))
 	}
 }
 

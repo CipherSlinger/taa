@@ -415,7 +415,7 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `fhe.requestTimeoutMs` | `30000` | Integer. Bounds one HTTP call to the FHE service |
 | `fhe.activateModelOnImport` | `true` | Boolean (`*bool` in the config struct). Calls `/models/activate` right after a model is staged. It is a pointer precisely so that "unset" stays distinguishable from "false": unset resolves to `true`, and a missing setting read as `false` would turn into a deliberate opt-out that leaves every task to fail at run time, against a model the service was never told to load |
 
-File transfers are not size-capped: resource downloads (`import`, `importModel`, `getResourceInfo`), result exports and FHE eval key downloads stream until the source is exhausted. The removed `maxFileBytes`, `maxResultBytes` and `fhe.maxEvalKeyBytes` keys are ignored if an older config still carries them.
+File transfers are not size-capped: resource downloads (`import`, `importModel`, `getResourceInfo`) and FHE eval key downloads are streamed to disk without a limit, and result exports are produced and returned without a size check. A config that still carries a removed `maxFileBytes`, `maxResultBytes` or `fhe.maxEvalKeyBytes` key fails startup with a message naming it, rather than silently losing the old cap.
 
 There is deliberately no task-level timeout: an FHE batch is long by nature, so a fixed budget would either kill legitimate runs or be too large to bound anything. A task runs until the service reports a terminal state or the caller cancels. A config that still carries the removed `fhe.taskTimeoutMs` key loads, and the key is ignored.
 

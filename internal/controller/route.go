@@ -18,7 +18,6 @@ import (
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 	"taa/internal/fhe"
-	"taa/internal/resource"
 	"taa/internal/runtime"
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
@@ -987,12 +986,6 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 			log.Printf("[PANIC RECOVERY] ReportTaskOutcome failed: %v", repErr)
 		}
 	}
-}
-
-// downloadToTempFile streams resource from URL to a temporary file.
-// Returns the temporary file path, caller is responsible for deleting it.
-func downloadToTempFile(resourceURL string) (string, int64, error) {
-	return resource.DownloadToTempFile(resourceURL)
 }
 
 // decryptResourceToTempFile 从磁盘密文文件中读取 SM2+SM4-GCM 封装密文，

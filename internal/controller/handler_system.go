@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"taa/internal/attestation"
+	"taa/internal/resource"
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
 )
@@ -220,7 +221,7 @@ func (s *TAAState) resourceInfoHandler(w http.ResponseWriter, r *http.Request) {
 
 	s.setCurrentOp("downloading")
 	s.Logs.Add(LogInfo, "getResourceInfo", "开始下载资源: %s", req.ResourceURL)
-	ciphertextPath, size, err := downloadToTempFile(req.ResourceURL)
+	ciphertextPath, size, err := resource.DownloadToTempFile(req.ResourceURL)
 	if err != nil {
 		s.Logs.Add(LogError, "getResourceInfo", "下载资源失败: %v", err)
 		s.setCurrentOp("idle")

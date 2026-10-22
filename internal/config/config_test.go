@@ -488,7 +488,6 @@ func TestLoadStartupConfigReadsKeysDir(t *testing.T) {
 	}
 }
 
-
 func TestLoadStartupConfigIgnoresWhitespaceKeysDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{
@@ -1517,6 +1516,31 @@ func TestLoadStartupConfigRejectsRemovedKeys(t *testing.T) {
 			want:    []string{`"codeAudit.semgrepTimeoutSeconds"`, `"codeAudit.codeScan.timeoutSeconds"`},
 		},
 		{
+			name:    "the removed root maxFileBytes key",
+			content: `{"maxFileBytes":5368709120}`,
+			want:    []string{`"maxFileBytes"`, "no longer size-capped"},
+		},
+		{
+			name:    "the removed legacy maxResultBytes key",
+			content: `{"maxResultBytes":5368709120}`,
+			want:    []string{`"maxResultBytes"`, "no longer size-capped"},
+		},
+		{
+			name:    "the removed codeAudit maxFileBytes key",
+			content: `{"codeAudit":{"maxFileBytes":5368709120}}`,
+			want:    []string{`"codeAudit.maxFileBytes"`, "no longer size-capped"},
+		},
+		{
+			name:    "the removed resultCheck maxFileBytes key",
+			content: `{"codeAudit":{"resultCheck":{"enabled":true,"maxFileBytes":5368709120}}}`,
+			want:    []string{`"codeAudit.resultCheck.maxFileBytes"`, "no longer size-capped"},
+		},
+		{
+			name:    "the removed fhe maxEvalKeyBytes key",
+			content: `{"server":{"type":"fhe"},"fhe":{"maxEvalKeyBytes":6442450944}}`,
+			want:    []string{`"fhe.maxEvalKeyBytes"`, "no longer size-capped"},
+		},
+		{
 			name:    "the removed llm policy key",
 			content: `{"codeAudit":{"llm":{"policy":"gate"}}}`,
 			want:    []string{`"codeAudit.llm.policy"`, `"gate"`},
@@ -1609,7 +1633,9 @@ func TestLoadStartupConfigRejectsTheOldCodeScanShape(t *testing.T) {
 func TestLoadStartupConfigAcceptsExplicitNullRemovedKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
 	writeTestConfig(t, path, `{"security":null,"llm":null,"codeAudit":{`+
-		`"codeScanEngine":null,"semgrepRulesPath":null,"semgrepTimeoutSeconds":null}}`)
+		`"codeScanEngine":null,"semgrepRulesPath":null,"semgrepTimeoutSeconds":null,`+
+		`"maxFileBytes":null,"resultCheck":{"enabled":true,"maxFileBytes":null}},`+
+		`"maxFileBytes":null,"maxResultBytes":null,"fhe":{"maxEvalKeyBytes":null}}`)
 
 	if _, err := LoadStartupConfig(path); err != nil {
 		t.Fatalf("LoadStartupConfig() error = %v, want nil for explicit nulls", err)

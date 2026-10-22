@@ -216,13 +216,15 @@ type FHEConfig struct {
 	// false would turn a missing setting into a deliberate opt-out.
 	ActivateModelOnImport *bool `json:"activateModelOnImport"`
 
-	// RemovedCallbackBaseURL and RemovedCallbackToken are declared only so a
-	// config written against the old layout is rejected instead of silently
-	// accepted. The address is now derived from server.addr and the callback is
-	// no longer authenticated; ignoring a leftover token would quietly turn an
+	// RemovedCallbackBaseURL, RemovedCallbackToken and RemovedMaxEvalKeyBytes
+	// are declared only so a config written against an old layout is rejected
+	// instead of silently accepted. The address is now derived from server.addr,
+	// the callback is no longer authenticated, and eval key downloads are no
+	// longer size-capped; ignoring a leftover token would quietly turn an
 	// authenticated endpoint into an open one. See rejectRemovedKeys.
 	RemovedCallbackBaseURL json.RawMessage `json:"callbackBaseUrl"`
 	RemovedCallbackToken   json.RawMessage `json:"callbackToken"`
+	RemovedMaxEvalKeyBytes json.RawMessage `json:"maxEvalKeyBytes"`
 }
 
 type startupConfigFile struct {
@@ -243,8 +245,10 @@ type startupConfigFile struct {
 	// load cleanly with every audit setting at its default - the scan silently
 	// back on the regex baseline, the inference service back on 127.0.0.1:8443 -
 	// and nothing in the log would say so. See rejectRemovedKeys.
-	RemovedSecurity json.RawMessage `json:"security"`
-	RemovedLLM      json.RawMessage `json:"llm"`
+	RemovedSecurity       json.RawMessage `json:"security"`
+	RemovedLLM            json.RawMessage `json:"llm"`
+	RemovedMaxFileBytes   json.RawMessage `json:"maxFileBytes"`
+	RemovedMaxResultBytes json.RawMessage `json:"maxResultBytes"`
 
 	// Legacy flat fields for backward compatibility
 	Addr               string `json:"addr"`
@@ -294,10 +298,10 @@ type startupCodeAuditConfigFile struct {
 	Enabled *bool `json:"enabled"`
 	// Scan is the second accepted spelling of the same switch; when a config
 	// writes both, this one is applied first and Enabled wins.
-	Scan         *bool                        `json:"scan"`
-	CodeScan     startupCodeScanConfigFile    `json:"codeScan"`
-	BinaryAudit  startupBinaryAuditConfigFile `json:"binaryAudit"`
-	ResultCheck  startupResultCheckConfigFile `json:"resultCheck"`
+	Scan        *bool                        `json:"scan"`
+	CodeScan    startupCodeScanConfigFile    `json:"codeScan"`
+	BinaryAudit startupBinaryAuditConfigFile `json:"binaryAudit"`
+	ResultCheck startupResultCheckConfigFile `json:"resultCheck"`
 	// LLM is a pointer because "absent" and "present but empty" must not
 	// collapse: an instance whose config carries no LLM block has no inference
 	// service to reach, and the audit defaults off rather than probing an
@@ -309,6 +313,7 @@ type startupCodeAuditConfigFile struct {
 	RemovedCodeScanEngine   json.RawMessage `json:"codeScanEngine"`
 	RemovedSemgrepRulesPath json.RawMessage `json:"semgrepRulesPath"`
 	RemovedSemgrepTimeout   json.RawMessage `json:"semgrepTimeoutSeconds"`
+	RemovedMaxFileBytes     json.RawMessage `json:"maxFileBytes"`
 }
 
 // startupCodeScanConfigFile is the codeAudit.codeScan block.
@@ -365,6 +370,9 @@ type startupBinaryAuditConfigFile struct {
 
 type startupResultCheckConfigFile struct {
 	Enabled *bool `json:"enabled"`
+	// RemovedMaxFileBytes is declared only so its presence is detectable. See
+	// rejectRemovedKeys.
+	RemovedMaxFileBytes json.RawMessage `json:"maxFileBytes"`
 }
 
 func (r *startupResultCheckConfigFile) UnmarshalJSON(data []byte) error {
@@ -564,6 +572,18 @@ func rejectRemovedKeys(path string, fileCfg startupConfigFile) error {
 	if hasJSONValue(fileCfg.RemovedLLM) {
 		found = append(found, `"llm" (move under "codeAudit.llm")`)
 	}
+	if hasJSONValue(fileCfg.RemovedMaxFileBytes) {
+		found = append(found, `"maxFileBytes" (removed: downloads and exports are no longer size-capped)`)
+	}
+	if hasJSONValue(fileCfg.RemovedMaxResultBytes) {
+		found = append(found, `"maxResultBytes" (removed: downloads and exports are no longer size-capped)`)
+	}
+	if hasJSONValue(fileCfg.CodeAudit.RemovedMaxFileBytes) {
+		found = append(found, `"codeAudit.maxFileBytes" (removed: downloads and exports are no longer size-capped)`)
+	}
+	if hasJSONValue(fileCfg.CodeAudit.ResultCheck.RemovedMaxFileBytes) {
+		found = append(found, `"codeAudit.resultCheck.maxFileBytes" (removed: downloads and exports are no longer size-capped)`)
+	}
 	if hasJSONValue(fileCfg.CodeAudit.RemovedCodeScanEngine) {
 		found = append(found, `"codeAudit.codeScanEngine" (move to "codeAudit.codeScan.engine")`)
 	}
@@ -579,6 +599,9 @@ func rejectRemovedKeys(path string, fileCfg startupConfigFile) error {
 		}
 		if hasJSONValue(fileCfg.FHE.RemovedCallbackToken) {
 			found = append(found, `"fhe.callbackToken" (removed: the callback endpoint is no longer authenticated and accepts loopback requests only)`)
+		}
+		if hasJSONValue(fileCfg.FHE.RemovedMaxEvalKeyBytes) {
+			found = append(found, `"fhe.maxEvalKeyBytes" (removed: eval key downloads are no longer size-capped)`)
 		}
 	}
 	if llm := fileCfg.CodeAudit.LLM; llm != nil {
@@ -912,9 +935,9 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	// ciphertext, and its trust rests on the encrypted computation rather than on
 	// a local quote. Both blocks therefore mean nothing here, and are ignored
 	// instead of applied and left unused. Their absence is the normal shape of an
-	// fhe config, not an error - which is also why the values that do matter to
-	// an fhe instance (maxFileBytes and the legacy top-level switches) are read
-	// outside the guarded regions below.
+	// fhe config, not an error - which is also why the legacy top-level
+	// switches that do matter to an fhe instance are read outside the guarded
+	// regions below.
 	readsAuditAndAttestation := cfg.ServerType != ServerTypeFHE
 
 	// The startup path builds the security configuration even on an fhe instance,
