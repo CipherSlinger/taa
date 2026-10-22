@@ -32,6 +32,7 @@
 #   TEELLM_SUPERVISOR_CHECK_INTERVAL   seconds between health checks (default 5)
 #   TEELLM_SUPERVISOR_RESTART_DELAY    seconds before restarting a dead daemon (default 10)
 #   TEELLM_SUPERVISOR_OLLAMA_WAIT      seconds to wait for ollama to answer (default 30)
+#   TEELLM_SUPERVISOR_CSV_DEVICE_WAIT  seconds to wait for the csv-guest device to register (default 0)
 set -u
 
 WORKDIR="${TEELLM_WORKDIR:-/opt/teellm}"
@@ -50,6 +51,7 @@ OLLAMA_LOG_FILE="$WORKDIR/ollama.log"
 CHECK_INTERVAL="${TEELLM_SUPERVISOR_CHECK_INTERVAL:-5}"
 RESTART_DELAY="${TEELLM_SUPERVISOR_RESTART_DELAY:-10}"
 OLLAMA_WAIT="${TEELLM_SUPERVISOR_OLLAMA_WAIT:-30}"
+CSV_DEVICE_WAIT="${TEELLM_SUPERVISOR_CSV_DEVICE_WAIT:-0}"
 
 TEELLM_CHILD=""
 OLLAMA_MISSING_WARNED=""
@@ -160,6 +162,52 @@ current_model() {
   fi
 }
 
+# The CSV2 guest kernel registers the csv-guest misc device at boot, but /dev inside the
+# container is a fresh tmpfs: the device exists, the node does not. teellm-service reads the node
+# once at startup and silently falls back to a mock evidence provider when it is absent, and TAA
+# then rejects every handshake with "untrusted HRK certificate". The node has to be created here
+# rather than in a Pod command, because a Pod created outside the repository's template (the
+# platform's own manifest) carries no command and runs this image's entrypoint directly.
+#
+# Returns non-zero when the node cannot be created, so the caller can log the consequence; the
+# service is still started, because a mock-evidence gateway is better than no gateway at all.
+ensure_csv_guest_device() {
+  [ -e /dev/csv-guest ] && return 0
+
+  local dev="" i=0
+  # The device is probed before the loop, so a zero wait still looks at it: the registration
+  # happens during guest boot, long before this container starts, and the wait only covers a
+  # guest whose driver probe is unusually late.
+  dev="$(cat /sys/class/misc/csv-guest/dev 2>/dev/null || true)"
+  [ -z "$dev" ] && dev="$(awk '$2 == "csv-guest" {print $1}' /proc/misc 2>/dev/null || true)"
+  i=0
+  while [ -z "$dev" ] && [ "$i" -lt "$CSV_DEVICE_WAIT" ]; do
+    sleep 1
+    dev="$(cat /sys/class/misc/csv-guest/dev 2>/dev/null || true)"
+    [ -z "$dev" ] && dev="$(awk '$2 == "csv-guest" {print $1}' /proc/misc 2>/dev/null || true)"
+    i=$((i + 1))
+  done
+  if [ -z "$dev" ]; then
+    log "warning: csv-guest is not registered in the guest kernel; teellm-service will use mock evidence"
+    return 1
+  fi
+
+  # /sys reports "major:minor" (misc devices use major 10); /proc/misc lists only the minor, so
+  # that fallback has to pair it with the misc major rather than treat it as one.
+  local major minor
+  case "$dev" in
+    *:*) major="${dev%%:*}"; minor="${dev##*:}" ;;
+    *)   major=10; minor="$dev" ;;
+  esac
+  if mknod /dev/csv-guest c "$major" "$minor" 2>/dev/null; then
+    chmod 666 /dev/csv-guest 2>/dev/null || true
+    log "created /dev/csv-guest (c $major $minor)"
+    return 0
+  fi
+  log "warning: could not create /dev/csv-guest; teellm-service will use mock evidence"
+  return 1
+}
+
 run_service() {
   local model
   model="$(current_model)"
@@ -205,6 +253,7 @@ while true; do
   fi
 
   ensure_ollama
+  ensure_csv_guest_device
 
   if [ ! -x "$WORKDIR/teellm-service" ]; then
     log "teellm-service is missing or not executable; retry in ${RESTART_DELAY}s"
