@@ -174,18 +174,11 @@ func TestBinaryScannerCancelStopsWalk(t *testing.T) {
 
 // cancelingEngine is a StaticEngine stub that cancels the audit's context during
 // the source scan, so GenerateAuditReport's post-binary cancellation exit is what
-// stops the audit before the LLM phases.
+// stops the audit before the LLM phases. The embedded interface supplies the rest
+// of the contract without hand-written forwards.
 type cancelingEngine struct {
+	StaticEngine
 	cancel func()
-}
-
-func (e *cancelingEngine) ScanDirectory(dir string) (*Report, error) {
-	report, _, err := e.ScanDirectoryWithLinesContext(context.Background(), dir)
-	return report, err
-}
-
-func (e *cancelingEngine) ScanDirectoryWithLines(dir string) (*Report, map[string]int, error) {
-	return e.ScanDirectoryWithLinesContext(context.Background(), dir)
 }
 
 func (e *cancelingEngine) ScanDirectoryWithLinesContext(_ context.Context, dir string) (*Report, map[string]int, error) {
@@ -202,6 +195,8 @@ func (e *cancelingEngine) ScanDirectoryWithLinesContext(_ context.Context, dir s
 	}, map[string]int{file: 1}, nil
 }
 
+// Name is overridden because the embedded interface is nil: a promoted method
+// would dereference it.
 func (e *cancelingEngine) Name() string { return "canceling" }
 
 // TestGenerateAuditReportStopsOnScanCancellation pins the exit that follows the

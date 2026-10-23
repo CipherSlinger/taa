@@ -321,10 +321,7 @@ func (e *semgrepEngine) stamp(report *Report) *Report {
 // every entry, so a cancelled scan stops early rather than finishing the tree.
 func (e *semgrepEngine) walkSourceFiles(ctx context.Context, dir string) ([]string, error) {
 	var targets []string
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
+	err := walkContext(ctx, dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -341,10 +338,7 @@ func (e *semgrepEngine) walkSourceFiles(ctx context.Context, dir string) ([]stri
 		return nil
 	})
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
-		}
-		return nil, fmt.Errorf("walk directory: %w", err)
+		return nil, err
 	}
 	return targets, nil
 }
@@ -441,16 +435,15 @@ func (e *semgrepEngine) semgrepArgs(targets []string) []string {
 // The caller's cancellation is attached to the subprocess, alongside the engine
 // timeout, so a cancelled audit stops it promptly.
 func (e *semgrepEngine) run(ctx context.Context, targets []string) (*semgrepOutput, error) {
-	// The parent is kept so a caller's cancellation can be told apart from the
+	// The caller's ctx is kept as-is so a cancellation can be told apart from the
 	// engine's own deadline: only the former replaces the CLI error, while an
 	// expired engine timeout keeps the wrapped stderr, which names the cause.
-	parent := ctx
-	ctx, cancel := context.WithTimeout(ctx, e.timeout)
+	runCtx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
-	stdout, exitCode, err := e.execFn(ctx, e.bin, e.semgrepArgs(targets))
+	stdout, exitCode, err := e.execFn(runCtx, e.bin, e.semgrepArgs(targets))
 	if err != nil {
-		if pErr := parent.Err(); pErr != nil {
+		if pErr := ctx.Err(); pErr != nil {
 			return nil, pErr
 		}
 		return nil, fmt.Errorf("semgrep did not run: %w", err)

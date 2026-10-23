@@ -155,14 +155,7 @@ func (s *BinaryScanner) ScanDirectoryContext(ctx context.Context, dir string) (*
 		Evidence: map[string]*EvidenceSet{},
 	}
 
-	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		// Checked before the traversal error so cancellation is not reported as
-		// an unreadable path: a cancelled walk is not a subtree that failed to
-		// read, and only the raw context error tells the caller it was cancelled
-		// rather than incomplete.
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
+	err = walkContext(ctx, dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			// The walk could not read this path. Two shapes arrive here: an entry
 			// whose lstat failed (filepath.Walk passes info as nil, because there
@@ -299,10 +292,7 @@ func (s *BinaryScanner) ScanDirectoryContext(ctx context.Context, dir string) (*
 		return nil
 	})
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
-		}
-		return nil, fmt.Errorf("walk directory: %w", err)
+		return nil, err
 	}
 
 	// Checked again after a successful walk: a cancellation that arrives as the

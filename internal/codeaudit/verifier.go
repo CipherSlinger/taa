@@ -387,12 +387,12 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	// need a second quota and a second failure mode.
 	//
 	// It returns no error, and that is the point rather than an oversight: see
-	// runBinaryChannelContext. A binary-channel failure is a gap the report records and
+	// runBinaryChannel. A binary-channel failure is a gap the report records and
 	// ProvesCleanScan refuses on, not a second way for the audit to return an
 	// error - the caller turns any error into a refusal that skips the report
 	// (internal/controller/import_processing.go:709-714), which is the outcome
 	// this channel exists to make accurate rather than to make easy.
-	binaryRes := runBinaryChannelContext(ctx, dir, cfg.Binary)
+	binaryRes := runBinaryChannel(ctx, dir, cfg.Binary)
 
 	// The binary pass reports a cancellation as a withheld (errored) pass, which
 	// is right for the report but must not let a cancelled audit continue: the
@@ -472,7 +472,7 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 	return audit, nil
 }
 
-// runBinaryChannelContext runs the binary pass for GenerateAuditReport, with the
+// runBinaryChannel runs the binary pass for GenerateAuditReport, with the
 // audit's cancellation attached, and returns nil when the channel is disabled.
 // A cancelled pass is reported as errored (a gap), never as a clean binary
 // channel: the caller decides what a gap means.
@@ -480,7 +480,7 @@ func GenerateAuditReport(ctx context.Context, dir string, engine StaticEngine, c
 // It returns no error by design: the caller turns any error into a refusal that
 // skips the report entirely, so a whole-pass failure is recorded as Errored in
 // the summary instead, with the reason in the log line its branch below writes.
-func runBinaryChannelContext(ctx context.Context, dir string, binCfg BinaryConfig) *BinaryScanResult {
+func runBinaryChannel(ctx context.Context, dir string, binCfg BinaryConfig) *BinaryScanResult {
 	if !binCfg.Enabled {
 		return nil
 	}

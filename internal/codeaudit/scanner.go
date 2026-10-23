@@ -288,10 +288,7 @@ func (s *Scanner) ScanDirectoryWithLinesContext(ctx context.Context, dir string)
 	lineCounts := make(map[string]int)
 	truncated := false
 
-	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
+	err = walkContext(ctx, dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -327,10 +324,7 @@ func (s *Scanner) ScanDirectoryWithLinesContext(ctx context.Context, dir string)
 		return nil
 	})
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, nil, ctxErr
-		}
-		return nil, nil, fmt.Errorf("walk directory: %w", err)
+		return nil, nil, err
 	}
 
 	return s.buildReport(dir, filesCount, findings, truncated), lineCounts, nil
