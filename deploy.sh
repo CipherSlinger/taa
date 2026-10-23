@@ -198,7 +198,7 @@ LOCAL_HOST_IP="${LOCAL_HOST_IP:-$(detect_local_host_ip)}"
 LOCAL_TAA_URL="${LOCAL_TAA_URL:-http://${LOCAL_HOST_IP:-127.0.0.1}:${LOCAL_TAA_PORT}}"
 LOCAL_PLATFORM_LOG_FILE="${LOCAL_PLATFORM_LOG_FILE:-$PROJECT_DIR/.local/logs/platform-mock.log}"
 LOCAL_DOCKER_CONTAINER="${LOCAL_DOCKER_CONTAINER:-taa-env-slim-v2}"
-LOCAL_DOCKER_IMAGE_ARCHIVE="${LOCAL_DOCKER_IMAGE_ARCHIVE:-$PROJECT_DIR/deploy/taa-env-slim-v2.tar.gz}"
+LOCAL_DOCKER_IMAGE_ARCHIVE="${LOCAL_DOCKER_IMAGE_ARCHIVE:-$PROJECT_DIR/deploy/base/taa-env-slim-v2.tar.gz}"
 LOCAL_DOCKER_IMAGE="${LOCAL_DOCKER_IMAGE:-taa-env:slim-v2}"
 SAVE_DATE_TAG="$(date +%Y%m%d)"
 BASE_DOCKER_IMAGE_ARCHIVE="${BASE_DOCKER_IMAGE_ARCHIVE:-$LOCAL_DOCKER_IMAGE_ARCHIVE}"
@@ -766,7 +766,7 @@ Environment overrides:
   LOCAL_DOCKER_CONTAINER=${LOCAL_DOCKER_CONTAINER}
       本地 Docker 目标容器名称（默认 taa-env-slim-v2）。
   LOCAL_DOCKER_IMAGE_ARCHIVE=${LOCAL_DOCKER_IMAGE_ARCHIVE}
-      本地基础镜像归档文件��径（默认 deploy/taa-env-slim-v2.tar.gz）。
+      本地基础镜像归档文件路径（默认 deploy/base/taa-env-slim-v2.tar.gz）。
   LOCAL_DOCKER_IMAGE=${LOCAL_DOCKER_IMAGE}
       本地 Docker 基础镜像名称（默认 taa-env:slim-v2）。
   LOCAL_DOCKER_NETWORK=${LOCAL_DOCKER_NETWORK}

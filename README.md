@@ -186,6 +186,7 @@ flowchart TB
 │   └── taa-production.json           # Production Kubernetes Pod template (identity injected via env)
 ├── deploy/                           # Container deployment manifests & supervisor scripts
 │   ├── start.sh                      # TAA autostart supervisor daemon with keep-alive & manual mode
+│   ├── base/                         # Base image archives (taa-env, jupyter-nologin-full)
 │   ├── certs/                        # Hygon CSV certificate chain (hrk.cert, hsk_cek.cert)
 │   └── manifest/docker/              # Base environment Dockerfiles & build assets
 ├── models/                           # Bundled offline models & runtimes (e.g., Ollama / Qwen)

@@ -29,7 +29,7 @@
 #
 # Environment (all optional):
 #   CONTAINER_IMAGE      taa-env:slim-v2   image whose Python the payload is built for
-#   IMAGE_ARCHIVE        $ROOT_DIR/deploy/taa-env-slim-v2.tar.gz  loaded when the image is absent
+#   IMAGE_ARCHIVE        $ROOT_DIR/deploy/base/taa-env-slim-v2.tar.gz  loaded when the image is absent
 #   SEMGREP_VERSION      1.177.0           (keep in step with deploy.sh)
 #   OUT                  $SCRIPT_DIR/out/semgrep-bundle.tar.gz
 #   PIP_INDEX_URL        passed through to pip when set
@@ -45,7 +45,7 @@ if [[ ! -f "$ROOT_DIR/go.mod" ]]; then
 fi
 
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-taa-env:slim-v2}"
-IMAGE_ARCHIVE="${IMAGE_ARCHIVE:-$ROOT_DIR/deploy/taa-env-slim-v2.tar.gz}"
+IMAGE_ARCHIVE="${IMAGE_ARCHIVE:-$ROOT_DIR/deploy/base/taa-env-slim-v2.tar.gz}"
 SEMGREP_VERSION="${SEMGREP_VERSION:-1.177.0}"
 OUT="${OUT:-$SCRIPT_DIR/out/semgrep-bundle.tar.gz}"
 KEEP_BUILDER="${KEEP_BUILDER:-false}"

@@ -21,7 +21,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_TEMPLATE="$PROJECT_DIR/configs/taa-dataanaylsis.json"
 BASE_IMAGE="${DATAANALYSIS_IMAGE:-jupyter-nologin-full:v2.2}"
-BASE_ARCHIVE="${DATAANALYSIS_IMAGE_ARCHIVE:-$PROJECT_DIR/deploy/jupyter-nologin-full-v2.2.tar.gz}"
+BASE_ARCHIVE="${DATAANALYSIS_IMAGE_ARCHIVE:-$PROJECT_DIR/deploy/base/jupyter-nologin-full-v2.2.tar.gz}"
 LOCAL_CONTAINER="${DATAANALYSIS_CONTAINER:-taa-dataanaylsis}"
 
 die() { printf '[deploy-dataanaylsis] ERROR: %s\n' "$*" >&2; exit 1; }

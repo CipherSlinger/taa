@@ -29,7 +29,7 @@ OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5-coder:7b}"
 DATE_TAG="${DATE_TAG:-$(date +%Y%m%d)}"
 # Source image (still carries TAA) and the TAA-free base derived from it.
 BASE_IMAGE="${BASE_IMAGE:-taa-env:slim-v2}"
-BASE_ARCHIVE="${BASE_ARCHIVE:-$PROJECT_DIR/deploy/taa-env-slim-v2.tar.gz}"
+BASE_ARCHIVE="${BASE_ARCHIVE:-$PROJECT_DIR/deploy/base/taa-env-slim-v2.tar.gz}"
 CLEAN_BASE_IMAGE="${CLEAN_BASE_IMAGE:-teellm-base:$DATE_TAG}"
 # Every path inside the image lives here; nothing under /root/taa is used or created.
 IMAGE_WORKDIR="${IMAGE_WORKDIR:-/opt/teellm}"
