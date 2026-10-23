@@ -39,7 +39,7 @@ flowchart TB
 
         subgraph EnclaveMgmt["Enclave Lifecycle & Supervisor"]
             direction LR
-            Supervisor["<b>Container Supervisor</b><br/><code>deploy/start.sh</code> • Auto-Restart Daemon"]
+            Supervisor["<b>Container Supervisor</b><br/><code>deploy/taa-supervisor.sh</code> • Auto-Restart Daemon"]
             TAA["<b>TAA Enclave Daemon (:6001)</b><br/><code>State Machine Coordinator • HTTP API Gateway</code>"]
             Supervisor -.->|"Keep-Alive & Guard"| TAA
         end
@@ -185,7 +185,9 @@ flowchart TB
 │   ├── taa-fhe.json                  # FHE instance template for the GPU host (server.type=fhe)
 │   └── taa-production.json           # Production Kubernetes Pod template (identity injected via env)
 ├── deploy/                           # Container deployment manifests & supervisor scripts
-│   ├── start.sh                      # TAA autostart supervisor daemon with keep-alive & manual mode
+│   ├── taa-supervisor.sh             # TAA autostart supervisor daemon with keep-alive & manual mode
+│   ├── taa-fhe-supervisor.sh         # FHE + TAA combined container entrypoint (FHE priority)
+│   ├── teellm-supervisor.sh          # TEE-LLM Pod supervisor (teellm-service + ollama)
 │   ├── base/                         # Base image archives (inputs: taa-env, jupyter-nologin-full)
 │   ├── certs/                        # Hygon CSV certificate chain (hrk.cert, hsk_cek.cert)
 │   ├── out/                          # Packaged image archives produced by the deploy scripts
@@ -487,14 +489,14 @@ An instance whose `server.type` is `fhe` exposes the same API surface as a `tee`
 ./deploy.sh [docker|remote] [start|stop|save] [components...] [options...]
 ```
 
-- **`docker`**: Local Docker container mode. Runs TAA inside a local Docker container (`taa-env-slim-v2`) managed by a supervisor daemon (`deploy/start.sh`), while platform-mock runs on the host.
+- **`docker`**: Local Docker container mode. Runs TAA inside a local Docker container (`taa-env-slim-v2`) managed by a supervisor daemon (`deploy/taa-supervisor.sh`), while platform-mock runs on the host.
 - **`remote`**: Remote Kubernetes mode (default when omitted). Deploys to a remote TEE Kubernetes Pod via SSH and `kubectl`.
 
 ### 2. Supported Actions
 
 - **`start`** (default): Builds binaries, prepares configs/certs, starts supervisor daemon, and launches target services.
 - **`stop`**: Gracefully stops target services in the chosen mode.
-- **`save`**: **Exclusively valid in `docker` mode** (`./deploy.sh docker save`). Assembles a **TAA-only production image — TAA plus the code scan engine** — and exports it as an archive. It removes every TEE-LLM and ollama artifact the base image may carry (asserting each is gone), installs the supervisor from `deploy/start.sh` instead of inheriting the base image's copy, provisions semgrep offline from a payload archive and verifies it with a real scan, then copies the binary, certificates and generated production config (`configs/taa-production.json`) before `docker commit` + `docker save`. TEE-LLM and ollama are **not** in this image; deploy them separately with `./deploy-llm.sh`. The generated config's `codeAudit.llm.endpoint` is the template's value verbatim — nothing is discovered on the packaging host — so a deployment that needs a different address sets `LLM_IP` at container startup.
+- **`save`**: **Exclusively valid in `docker` mode** (`./deploy.sh docker save`). Assembles a **TAA-only production image — TAA plus the code scan engine** — and exports it as an archive. It removes every TEE-LLM and ollama artifact the base image may carry (asserting each is gone), installs the supervisor from `deploy/taa-supervisor.sh` instead of inheriting the base image's copy, provisions semgrep offline from a payload archive and verifies it with a real scan, then copies the binary, certificates and generated production config (`configs/taa-production.json`) before `docker commit` + `docker save`. TEE-LLM and ollama are **not** in this image; deploy them separately with `./deploy-llm.sh`. The generated config's `codeAudit.llm.endpoint` is the template's value verbatim — nothing is discovered on the packaging host — so a deployment that needs a different address sets `LLM_IP` at container startup.
 
 ### 3. Component Selection
 
@@ -503,9 +505,9 @@ Specify one or more components: `platform-mock`, `taa`. If omitted:
 - In `remote` mode: defaults to `taa` (omits `platform-mock` to avoid port 18080 conflict with host production agents).
 - **Note on TEE-LLM / Qwen / Ollama**: The LLM inference service sources live in the `teellm` submodule, but its deployment script sits at the repository root. TEE-LLM needs a real `/dev/csv-guest` to produce a genuine attestation, so it is deployed as a Kata CSV2 Pod on the remote host: run `./deploy-llm.sh` (add `--create-pod` the first time, to create that Pod).
 
-### 4. Container Autostart Supervisor (`deploy/start.sh`)
+### 4. Container Autostart Supervisor (`deploy/taa-supervisor.sh`)
 
-Inside Docker containers, TAA runs under the supervision of `deploy/start.sh` (deployed to `/root/taa/start.sh`):
+Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervisor.sh` (deployed to `/root/taa/taa-supervisor.sh`):
 - Automatically restarts `taa` upon unexpected exits (10s retry interval).
 - Provides a manual debug override: `touch /root/taa/manual` pauses autostart; removing the file resumes supervisor management.
 - Logs runtime supervisor events to `/root/taa/taa.log`.
@@ -617,7 +619,7 @@ FHE API at `127.0.0.1:58996` over container loopback.
 
 - **One container, one network namespace.** The container runs the image's own
   `/opt/entrypoint.sh` (redis on `127.0.0.1:6379`, api_server on 58996, the worker) beside
-  `deploy/taa-fhe-entrypoint.sh`, which starts that entrypoint and the TAA supervisor, and
+  `deploy/taa-fhe-supervisor.sh`, which starts that entrypoint and the TAA supervisor, and
   restarts the supervisor when it exits on its own. If the FHE entrypoint exits, the wrapper
   stops TAA and exits with that status, so the restart policy acts on real FHE failures. The
   container runs on the default `bridge` network; `TAA_DOCKER_NETWORK=host` is refused, because
@@ -640,7 +642,7 @@ FHE API at `127.0.0.1:58996` over container loopback.
   refused on a non-host network.
 - **`taa` mode** assumes platform-mock is already running. Set `PLATFORM_IP` explicitly when
   the platform is not on this host.
-- **`taa save`** builds the TAA binary, bakes it, `deploy/start.sh`, the combined entrypoint
+- **`taa save`** builds the TAA binary, bakes it, `deploy/taa-supervisor.sh`, the combined entrypoint
   and the rendered config into an image built **from the FHE image**, tags the result
   `TAA_FHE_SAVE_IMAGE` (`taa-fhe:<date>`) and exports it as `TAA_FHE_SAVE_ARCHIVE` (default
   `deploy/out/taa-fhe-<date>.tar.gz`). Nothing is started. If the FHE base image is not present
@@ -654,7 +656,7 @@ FHE API at `127.0.0.1:58996` over container loopback.
 - **Remote by default.** The run targets `REMOTE_HOST` (default `172.16.10.178`) over ssh, the
   same host `deploy.sh remote` uses, and takes the same credentials (`TARGET_PASSWORD`). It
   stages the bundle's models into `HOST_DATA_DIR/models` (`rsync -a`, no `--delete`, so models
-  an operator added survive), uploads `deploy/start.sh`, `bin/taa` and the combined entrypoint
+  an operator added survive), uploads `deploy/taa-supervisor.sh`, `bin/taa` and the combined entrypoint
   to `REMOTE_DIR`, builds both binaries here and runs every command of the local path on that
   host. Everything else — the paths in the report, the render, the readiness wait — reads as a
   path on the deployment host. The callback address needs no default: it is always
@@ -778,7 +780,7 @@ For a full historical record of changes, see [CHANGELOG.md](CHANGELOG.md).
 ### Recent Iterations & Milestones
 
 - **2026-09-19: Architecture Decoupling, Supervisor Integration & Advanced UI/UX**
-  - **Container Supervisor**: Extracted container autostart daemon (`deploy/start.sh`) for TAA with retry backoff and manual debug override (`manual`).
+  - **Container Supervisor**: Extracted container autostart daemon (`deploy/taa-supervisor.sh`) for TAA with retry backoff and manual debug override (`manual`).
   - **Platform-Mock UI/UX Overhaul**: Interactive pipeline stage stepper, visual audit dashboard with expandable findings accordion, live dual-log viewer with level filtering and instant search, and global stacked toast notification system.
   - **Microservice Decoupling**: Decoupled `teellm` into an independent repository and embedded as a recursive git submodule; isolated backend inference lifecycle from TAA core.
   - **Toolchain Organization**: Reorganized auxiliary tools into top-level `tools/` directory (`tools/platform-mock` and `tools/sdk`).

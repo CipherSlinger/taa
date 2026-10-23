@@ -59,9 +59,9 @@ TAA_CONFIG_FILE="taa-config.json"
 BINARY_NAME="${BINARY_NAME:-taa}"
 TAA_LOG_FILE="${TAA_LOG_FILE:-$TAA_CONTAINER_WORKDIR/taa.log}"
 # The supervisor's command line as a pgrep/pkill pattern, bracketed in the first
-# letter and in the dot so it matches start.sh without matching the shell that
+# letter and in the dot so it matches taa-supervisor.sh without matching the shell that
 # carries the pattern.
-SUPERVISOR_PATTERN='[s]tart[.]sh'
+SUPERVISOR_PATTERN='[t]aa-supervisor[.]sh'
 # Must match server.addr in $TAA_FHE_CONFIG. This is the one port published on
 # the host: the platform reaches TAA through it. TAA_PUBLISH_ADDR narrows the
 # bind (127.0.0.1 is enough for a host-local platform-mock); an empty value
@@ -75,8 +75,8 @@ esac
 # An explicitly empty TAA_GPUS omits --gpus.
 TAA_GPUS="${TAA_GPUS-all}"
 TAA_RESTART_POLICY="${TAA_RESTART_POLICY:-unless-stopped}"
-TAA_ENTRYPOINT_SOURCE="${TAA_ENTRYPOINT_SOURCE:-$PROJECT_DIR/deploy/taa-fhe-entrypoint.sh}"
-TAA_ENTRYPOINT_CONTAINER="/opt/taa-entrypoint.sh"
+TAA_ENTRYPOINT_SOURCE="${TAA_ENTRYPOINT_SOURCE:-$PROJECT_DIR/deploy/taa-fhe-supervisor.sh}"
+TAA_ENTRYPOINT_CONTAINER="/opt/taa-fhe-supervisor.sh"
 TAA_READY_TIMEOUT="${TAA_READY_TIMEOUT:-120}"
 TAA_READY_INTERVAL="${TAA_READY_INTERVAL:-2}"
 FHE_READY_TIMEOUT="${FHE_READY_TIMEOUT:-180}"
@@ -574,7 +574,7 @@ Arguments:
   pod=<name>
       Deploy TAA into an existing Kubernetes pod instead of starting a docker
       container (implies taa; conflicts with save and platform-mock). The pod
-      must already run the TAA supervisor; this copies taa, deploy/start.sh
+      must already run the TAA supervisor; this copies taa, deploy/taa-supervisor.sh
       and a re-rendered config into /root/taa, restarts the supervisor in the
       pod and waits for its health endpoint. The pod env supplies PLATFORM_IP
       and CONTAINER_DATA_DIR, so the config is rendered against the data root
@@ -586,7 +586,7 @@ Arguments:
 
   save
       Package instead of deploy, and only with the taa argument: build
-      TAA into the handoff image (TAA binary, deploy/start.sh, the rendered
+      TAA into the handoff image (TAA binary, deploy/taa-supervisor.sh, the rendered
       config and the combined entrypoint), tag the result
       TAA_FHE_SAVE_IMAGE (taa-fhe:<date>), export it to
       TAA_FHE_SAVE_ARCHIVE, then upload and docker-load it on the default
@@ -792,13 +792,13 @@ if [ "$DEPLOY_TAA" = 1 ] && [ -n "$REMOTE_TARGET" ] && ! is_dry_run && [ "$SAVE_
   TAA_RENDER_OUT="$TAA_RENDER_TMPDIR/taa-fhe.rendered.json"
 fi
 
-HOST_START_SH="$PROJECT_DIR/deploy/start.sh"
+HOST_START_SH="$PROJECT_DIR/deploy/taa-supervisor.sh"
 HOST_TAA_BINARY_PATH="$TAA_BINARY_PATH"
 HOST_PLATFORM_MOCK_BINARY_PATH="$PLATFORM_MOCK_BINARY_PATH"
 HOST_ENTRYPOINT_PATH="$TAA_ENTRYPOINT_SOURCE"
 HOST_FHE_IMAGE_ARCHIVE="$FHE_IMAGE_ARCHIVE"
 if [ -n "$REMOTE_TARGET" ]; then
-  HOST_START_SH="$REMOTE_DIR/deploy/start.sh"
+  HOST_START_SH="$REMOTE_DIR/deploy/taa-supervisor.sh"
   HOST_TAA_BINARY_PATH="$REMOTE_DIR/bin/$BINARY_NAME"
   HOST_PLATFORM_MOCK_BINARY_PATH="$REMOTE_DIR/bin/$PLATFORM_MOCK_BINARY_NAME"
   HOST_ENTRYPOINT_PATH="$REMOTE_DIR/deploy/$(basename "$TAA_ENTRYPOINT_SOURCE")"
@@ -832,16 +832,16 @@ case "$TAA_PORT" in
   ''|*[!0-9]*) die "TAA_PORT='$TAA_PORT' is not a number" ;;
 esac
 if [ "$TAA_CONTAINER_WORKDIR" != "/root/taa" ]; then
-  die "TAA_CONTAINER_WORKDIR=$TAA_CONTAINER_WORKDIR, but deploy/start.sh runs taa in /root/taa and taa reads ./$TAA_CONFIG_FILE from its working directory"
+  die "TAA_CONTAINER_WORKDIR=$TAA_CONTAINER_WORKDIR, but deploy/taa-supervisor.sh runs taa in /root/taa and taa reads ./$TAA_CONFIG_FILE from its working directory"
 fi
 if [ "$TAA_CONTAINER_CONFIG_PATH" != "$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE" ]; then
-  die "TAA_CONTAINER_CONFIG_PATH=$TAA_CONTAINER_CONFIG_PATH, but deploy/start.sh runs taa with no --config, so taa reads $TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE"
+  die "TAA_CONTAINER_CONFIG_PATH=$TAA_CONTAINER_CONFIG_PATH, but deploy/taa-supervisor.sh runs taa with no --config, so taa reads $TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE"
 fi
 if ! is_dry_run; then
   [ -f "$TAA_ENTRYPOINT_SOURCE" ] || die "combined entrypoint not found: $TAA_ENTRYPOINT_SOURCE"
-  [ -f "$PROJECT_DIR/deploy/start.sh" ] || die "TAA supervisor script missing: $PROJECT_DIR/deploy/start.sh"
+  [ -f "$PROJECT_DIR/deploy/taa-supervisor.sh" ] || die "TAA supervisor script missing: $PROJECT_DIR/deploy/taa-supervisor.sh"
   bash -n "$TAA_ENTRYPOINT_SOURCE" || die "syntax error in $TAA_ENTRYPOINT_SOURCE"
-  bash -n "$PROJECT_DIR/deploy/start.sh" || die "syntax error in $PROJECT_DIR/deploy/start.sh"
+  bash -n "$PROJECT_DIR/deploy/taa-supervisor.sh" || die "syntax error in $PROJECT_DIR/deploy/taa-supervisor.sh"
 fi
 TAA_ENTRYPOINT_SHA256="$(sha256sum "$TAA_ENTRYPOINT_SOURCE" 2>/dev/null | awk '{print $1}')"
 [ -n "$TAA_ENTRYPOINT_SHA256" ] || TAA_ENTRYPOINT_SHA256="<unset>"
@@ -1066,7 +1066,7 @@ create_or_reuse_container() {
 install_taa_files() {
   local state="$1"
   if [ "$state" = "running" ]; then
-    # The wrapper owns start.sh; killing both makes it restart the supervisor
+    # The wrapper owns taa-supervisor.sh; killing both makes it restart the supervisor
     # after its 10s delay, and the copies below fit well inside that window.
     # .new + mv keeps a running taa from seeing a half-written binary
     # (docker cp directly onto a running executable fails with ETXTBSY).
@@ -1081,15 +1081,15 @@ install_taa_files() {
         sleep 0.2
       done
     fi
-    run docker cp "$HOST_START_SH" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_WORKDIR/start.sh.new"
+    run docker cp "$HOST_START_SH" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_WORKDIR/taa-supervisor.sh.new"
     run docker cp "$HOST_TAA_BINARY_PATH" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_WORKDIR/$BINARY_NAME.new"
     run docker cp "$TAA_RENDERED_CONFIG" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_CONFIG_PATH.new"
     run docker exec -i "$TAA_CONTAINER_NAME" sh -lc \
-      "mv -f '$TAA_CONTAINER_WORKDIR/start.sh.new' '$TAA_CONTAINER_WORKDIR/start.sh' \
+      "mv -f '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh.new' '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh' \
        && mv -f '$TAA_CONTAINER_WORKDIR/$BINARY_NAME.new' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' \
        && mv -f '$TAA_CONTAINER_CONFIG_PATH.new' '$TAA_CONTAINER_CONFIG_PATH' \
-       && chown root:root '$TAA_CONTAINER_WORKDIR/start.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' '$TAA_CONTAINER_CONFIG_PATH' \
-       && chmod +x '$TAA_CONTAINER_WORKDIR/start.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' \
+       && chown root:root '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' '$TAA_CONTAINER_CONFIG_PATH' \
+       && chmod +x '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' \
        && chmod 600 '$TAA_CONTAINER_CONFIG_PATH' \
        && rm -f '$TAA_CONTAINER_WORKDIR/manual'"
     log "refreshed TAA files in the running container; the supervisor restarts taa by itself"
@@ -1098,18 +1098,18 @@ install_taa_files() {
 
   # A new or stopped container starts without /root/taa: the FHE image does not
   # carry the TAA workdir, and docker cp cannot create a missing parent. The
-  # wrapper copes with that (it logs the missing start.sh and retries every
+  # wrapper copes with that (it logs the missing taa-supervisor.sh and retries every
   # 10s), so the container is started first and the workdir is created from
-  # inside it. Docker cp then copies over the start.sh that is not there yet,
+  # inside it. Docker cp then copies over the taa-supervisor.sh that is not there yet,
   # so there is no running binary to collide with.
   run docker cp "$HOST_ENTRYPOINT_PATH" "$TAA_CONTAINER_NAME:$TAA_ENTRYPOINT_CONTAINER"
   run docker start "$TAA_CONTAINER_NAME"
   run docker exec -i "$TAA_CONTAINER_NAME" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR'"
-  run docker cp "$HOST_START_SH" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_WORKDIR/start.sh"
+  run docker cp "$HOST_START_SH" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_WORKDIR/taa-supervisor.sh"
   run docker cp "$HOST_TAA_BINARY_PATH" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_WORKDIR/$BINARY_NAME"
   run docker cp "$TAA_RENDERED_CONFIG" "$TAA_CONTAINER_NAME:$TAA_CONTAINER_CONFIG_PATH"
   if ! is_dry_run; then
-    host_sh "docker exec -i '$TAA_CONTAINER_NAME' sh -lc \"chown root:root '$TAA_ENTRYPOINT_CONTAINER' '$TAA_CONTAINER_WORKDIR/start.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' '$TAA_CONTAINER_CONFIG_PATH' && chmod +x '$TAA_ENTRYPOINT_CONTAINER' '$TAA_CONTAINER_WORKDIR/start.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' && chmod 600 '$TAA_CONTAINER_CONFIG_PATH' && rm -f '$TAA_CONTAINER_WORKDIR/manual'\"" \
+    host_sh "docker exec -i '$TAA_CONTAINER_NAME' sh -lc \"chown root:root '$TAA_ENTRYPOINT_CONTAINER' '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' '$TAA_CONTAINER_CONFIG_PATH' && chmod +x '$TAA_ENTRYPOINT_CONTAINER' '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' && chmod 600 '$TAA_CONTAINER_CONFIG_PATH' && rm -f '$TAA_CONTAINER_WORKDIR/manual'\"" \
       || die "container $TAA_CONTAINER_NAME started but the TAA files are not in place (see docker logs $TAA_CONTAINER_NAME)"
   fi
 }
@@ -1120,7 +1120,7 @@ install_taa_files() {
 # running FHE service really uses. It never creates, starts or removes the pod.
 deploy_into_pod() {
   step "uploading TAA inputs to ${REMOTE_TARGET:-this host}"
-  upload_file "$PROJECT_DIR/deploy/start.sh" "$HOST_START_SH" 755
+  upload_file "$PROJECT_DIR/deploy/taa-supervisor.sh" "$HOST_START_SH" 755
   upload_file "$TAA_BINARY_PATH" "$HOST_TAA_BINARY_PATH" 755
 
   step "inspecting pod $POD_NAMESPACE/$TARGET_POD"
@@ -1189,12 +1189,12 @@ deploy_into_pod() {
 
   step "pausing the TAA supervisor in the pod"
   if is_dry_run; then
-    log "would touch $TAA_CONTAINER_WORKDIR/manual, stop $BINARY_NAME and start.sh, and wait up to 30s for $BINARY_NAME to exit"
+    log "would touch $TAA_CONTAINER_WORKDIR/manual, stop $BINARY_NAME and taa-supervisor.sh, and wait up to 30s for $BINARY_NAME to exit"
   else
     pod_sh "touch $(shell_quote "$TAA_CONTAINER_WORKDIR/manual")"
     POD_PAUSED=1
     pod_sh "pkill -x $(shell_quote "$BINARY_NAME") >/dev/null 2>&1 || true; pkill -f $(shell_quote "$SUPERVISOR_PATTERN") >/dev/null 2>&1 || true"
-    # Killing start.sh makes the pod's entrypoint re-exec the copied start.sh
+    # Killing taa-supervisor.sh makes the pod's entrypoint re-exec the copied taa-supervisor.sh
     # after its delay; the pause file keeps that one from starting taa early.
     pod_sh "i=0; while pgrep -x $BINARY_NAME >/dev/null 2>&1; do i=\$((i+1)); if [ \"\$i\" -ge 30 ]; then pkill -KILL -x $BINARY_NAME >/dev/null 2>&1 || true; break; fi; sleep 1; done"
   fi
@@ -1226,7 +1226,7 @@ deploy_into_pod() {
   local pod_config_src="$TAA_RENDER_OUT"
   [ -z "$REMOTE_TARGET" ] || pod_config_src="$TAA_RENDERED_CONFIG"
   local bin_new="$TAA_CONTAINER_WORKDIR/$BINARY_NAME.new"
-  local sh_new="$TAA_CONTAINER_WORKDIR/start.sh.new"
+  local sh_new="$TAA_CONTAINER_WORKDIR/taa-supervisor.sh.new"
   local cfg_new="$TAA_CONTAINER_CONFIG_PATH.new"
   if is_dry_run; then
     log "would copy $HOST_TAA_BINARY_PATH, $HOST_START_SH and $pod_config_src into $TARGET_POD:$TAA_CONTAINER_WORKDIR as *.new, then mv them over the live files"
@@ -1238,10 +1238,10 @@ deploy_into_pod() {
     pod_sh "chown root:root $(shell_quote "$bin_new") $(shell_quote "$sh_new") $(shell_quote "$cfg_new") \
       && chmod 755 $(shell_quote "$bin_new") $(shell_quote "$sh_new") \
       && chmod 600 $(shell_quote "$cfg_new") \
-      && mv -f $(shell_quote "$sh_new") $(shell_quote "$TAA_CONTAINER_WORKDIR/start.sh") \
+      && mv -f $(shell_quote "$sh_new") $(shell_quote "$TAA_CONTAINER_WORKDIR/taa-supervisor.sh") \
       && mv -f $(shell_quote "$bin_new") $(shell_quote "$TAA_CONTAINER_WORKDIR/$BINARY_NAME") \
       && mv -f $(shell_quote "$cfg_new") $(shell_quote "$TAA_CONTAINER_CONFIG_PATH")"
-    log "replaced $BINARY_NAME, start.sh and $TAA_CONFIG_FILE in the pod"
+    log "replaced $BINARY_NAME, taa-supervisor.sh and $TAA_CONFIG_FILE in the pod"
   fi
 
   step "restarting TAA in the pod"
@@ -1334,7 +1334,7 @@ builder="taa-fhe-builder-$$"
 SAVE_BUILDER_CONTAINER="$builder"
 run_local docker run -d --name "$builder" --entrypoint tail "$FHE_IMAGE" -f /dev/null
 run_local docker exec -i "$builder" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR'"
-run_local docker cp "$PROJECT_DIR/deploy/start.sh" "$builder:$TAA_CONTAINER_WORKDIR/start.sh"
+run_local docker cp "$PROJECT_DIR/deploy/taa-supervisor.sh" "$builder:$TAA_CONTAINER_WORKDIR/taa-supervisor.sh"
 run_local docker cp "$TAA_ENTRYPOINT_SOURCE" "$builder:$TAA_ENTRYPOINT_CONTAINER"
 run_local docker cp "$TAA_BINARY_PATH" "$builder:$TAA_CONTAINER_WORKDIR/$BINARY_NAME"
 if is_dry_run; then
@@ -1344,17 +1344,17 @@ else
   run_local docker cp "$TAA_RENDER_OUT" "$builder:$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE"
 fi
 run_local docker exec -i "$builder" sh -lc \
-  "chown root:root '$TAA_ENTRYPOINT_CONTAINER' '$TAA_CONTAINER_WORKDIR/start.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' '$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE' \
-   && chmod +x '$TAA_ENTRYPOINT_CONTAINER' '$TAA_CONTAINER_WORKDIR/start.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' \
+  "chown root:root '$TAA_ENTRYPOINT_CONTAINER' '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' '$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE' \
+   && chmod +x '$TAA_ENTRYPOINT_CONTAINER' '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh' '$TAA_CONTAINER_WORKDIR/$BINARY_NAME' \
    && chmod 600 '$TAA_CONTAINER_WORKDIR/$TAA_CONFIG_FILE'"
 # /opt/entrypoint.sh is the FHE side the combined entrypoint starts; a base
 # image without it would commit an image that cannot boot.
 run_local docker exec -i "$builder" sh -lc "test -x /opt/entrypoint.sh" \
   || die "$FHE_IMAGE does not contain /opt/entrypoint.sh"
 run_local docker exec -i "$builder" sh -lc \
-  "rm -f '$TAA_CONTAINER_WORKDIR/manual' '$TAA_CONTAINER_WORKDIR/manual-teellm' '$TAA_CONTAINER_WORKDIR/taa.log' '$TAA_CONTAINER_WORKDIR/.start.lock'"
+  "rm -f '$TAA_CONTAINER_WORKDIR/manual' '$TAA_CONTAINER_WORKDIR/manual-teellm' '$TAA_CONTAINER_WORKDIR/taa.log' '$TAA_CONTAINER_WORKDIR/.taa-supervisor.lock'"
 run_local docker commit \
-  -c 'ENTRYPOINT ["/opt/taa-entrypoint.sh"]' \
+  -c 'ENTRYPOINT ["/opt/taa-fhe-supervisor.sh"]' \
   -c 'CMD []' \
   -c 'WORKDIR /root/taa' \
   -c 'EXPOSE 58996 6001' \
@@ -1410,7 +1410,7 @@ else
   base_id="$(docker image inspect "$FHE_IMAGE" --format '{{.Id}}' 2>/dev/null || true)"
   printf '\n[deploy-fhe] taa-fhe image packaged\n'
   log "image      : $TAA_FHE_SAVE_IMAGE (base $FHE_IMAGE ${base_id:-unknown})"
-  log "contents   : $TAA_CONTAINER_WORKDIR/{$BINARY_NAME,start.sh,$TAA_CONFIG_FILE} + $TAA_ENTRYPOINT_CONTAINER"
+  log "contents   : $TAA_CONTAINER_WORKDIR/{$BINARY_NAME,taa-supervisor.sh,$TAA_CONFIG_FILE} + $TAA_ENTRYPOINT_CONTAINER"
   log "archive    : $TAA_FHE_SAVE_ARCHIVE (${archive_mb}MB)"
   if [ -n "$REMOTE_TARGET" ]; then
     log "loaded on  : $REMOTE_TARGET"
@@ -1532,7 +1532,7 @@ if [ "$DEPLOY_TAA" = 1 ] || { [ "$DEPLOY_MOCK" = 1 ] && [ "$DEPLOY_PLATFORM_MOCK
 step "uploading this run's inputs to ${REMOTE_TARGET:-this host}"
 if [ "$DEPLOY_TAA" = 1 ]; then
   upload_models "$FHE_MODELS_SRC" "$STAGED_MODELS_DIR"
-  upload_file "$PROJECT_DIR/deploy/start.sh" "$HOST_START_SH" 755
+  upload_file "$PROJECT_DIR/deploy/taa-supervisor.sh" "$HOST_START_SH" 755
   upload_file "$TAA_BINARY_PATH" "$HOST_TAA_BINARY_PATH" 755
   upload_file "$TAA_ENTRYPOINT_SOURCE" "$HOST_ENTRYPOINT_PATH" 755
 fi

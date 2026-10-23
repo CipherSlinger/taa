@@ -6,7 +6,7 @@
 set -u
 cd /root/taa || exit 1
 LOG=/root/taa/taa.log
-LOCK=/root/taa/.start.lock
+LOCK=/root/taa/.taa-supervisor.lock
 TAAPID=""
 
 cleanup() {
@@ -28,7 +28,7 @@ if command -v flock >/dev/null 2>&1; then
   flock -n 9
   lock_rc=$?
   if [ "$lock_rc" -eq 1 ]; then
-    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): another start.sh already holds the singleton lock, exiting" >> "$LOG"
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): another taa-supervisor.sh already holds the singleton lock, exiting" >> "$LOG"
     exit 0
   elif [ "$lock_rc" -ne 0 ]; then
     # An unusable lock (e.g. flock rc=65, bad fd) must never be read as "someone else owns

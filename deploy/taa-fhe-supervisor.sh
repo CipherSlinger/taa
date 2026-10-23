@@ -46,18 +46,18 @@ fi
 fhe_pid=$!
 log "FHE entrypoint started (pid $fhe_pid)"
 
-# ./start.sh is the supervisor deploy.sh installs. It cds to the workdir, holds
+# ./taa-supervisor.sh is the supervisor deploy.sh installs. It cds to the workdir, holds
 # a singleton flock, runs ./taa and restarts it every 10 seconds. Running it
 # through exec makes $! the supervisor itself, so the TERM below reaches it
 # directly instead of a subshell that would leave it orphaned.
 start_taa() {
-  if [ -x "$TAA_WORKDIR/start.sh" ]; then
-    ( cd "$TAA_WORKDIR" && exec ./start.sh ) &
+  if [ -x "$TAA_WORKDIR/taa-supervisor.sh" ]; then
+    ( cd "$TAA_WORKDIR" && exec ./taa-supervisor.sh ) &
     taa_pid=$!
     log "TAA supervisor started (pid $taa_pid)"
   else
     taa_pid=""
-    log "$TAA_WORKDIR/start.sh is missing; retrying in ${TAA_RESTART_DELAY}s"
+    log "$TAA_WORKDIR/taa-supervisor.sh is missing; retrying in ${TAA_RESTART_DELAY}s"
   fi
 }
 start_taa

@@ -459,7 +459,7 @@ ensure_local_docker_container() {
     docker run -d --name "$LOCAL_DOCKER_CONTAINER" --network "$LOCAL_DOCKER_NETWORK" --user root --entrypoint tail "$LOCAL_DOCKER_IMAGE" -f /dev/null >/dev/null
   fi
 
-  # 在容器工作目录标记 manual 模式，防止镜像内置的 start.sh 自启动造成端口竞争
+  # 在容器工作目录标记 manual 模式，防止镜像内置的 taa-supervisor.sh 自启动造成端口竞争
   docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "mkdir -p '$TAA_CONTAINER_WORKDIR' && touch '$TAA_CONTAINER_WORKDIR/manual'" >/dev/null 2>&1 || true
 
   if ! docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "command -v python3 >/dev/null 2>&1"; then
@@ -618,12 +618,12 @@ save_local_docker_image() {
 
   # Order matters: the engine is provisioned before the binary and config are copied so the image is
   # assembled once, and the supervisor is installed from the repository rather than inherited --
-  # save never copied start.sh, so whatever the base image happened to carry became the ENTRYPOINT.
+  # save never copied taa-supervisor.sh, so whatever the base image happened to carry became the ENTRYPOINT.
   strip_teellm_from_image "$builder_container"
 
   step "installing the TAA supervisor"
-  spin_task "copying deploy/start.sh into the image" \
-    docker cp "$PROJECT_DIR/deploy/start.sh" "$builder_container:/root/taa/start.sh"
+  spin_task "copying deploy/taa-supervisor.sh into the image" \
+    docker cp "$PROJECT_DIR/deploy/taa-supervisor.sh" "$builder_container:/root/taa/taa-supervisor.sh"
 
   provision_local_scan_engine "$builder_container" "$prod_config_template"
 
@@ -640,7 +640,7 @@ save_local_docker_image() {
   local commit_msg="Production image packaged from base $(basename "$base_archive") with $(basename "$prod_config_template") at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   spin_task "committing image state ($target_image)" \
     docker commit \
-      -c 'ENTRYPOINT ["bash", "/root/taa/start.sh"]' \
+      -c 'ENTRYPOINT ["bash", "/root/taa/taa-supervisor.sh"]' \
       -c 'CMD []' \
       -c 'USER root' \
       -c 'WORKDIR /root/taa' \
@@ -1793,7 +1793,7 @@ if [[ "$DEPLOY_PLATFORM_MOCK" == true && ! -f "$MOCK_BINARY_PATH" ]]; then
 fi
 if [[ "$DEPLOY_TAA" == true ]]; then
   require_file "build verification failed (taa binary missing)" "$TAA_BINARY_PATH"
-  require_file "taa supervisor script missing" "$PROJECT_DIR/deploy/start.sh"
+  require_file "taa supervisor script missing" "$PROJECT_DIR/deploy/taa-supervisor.sh"
   require_file "certificate missing" "$ATT_HRK_SOURCE"
   require_file "certificate missing" "$ATT_HSK_SOURCE"
 fi
@@ -1857,8 +1857,8 @@ deploy_docker_taa() {
   info "config written to container: $CONTAINER_TAA_CONFIG_PATH"
 
   step "deploying taa daemon script into container"
-  docker cp "$PROJECT_DIR/deploy/start.sh" "$LOCAL_DOCKER_CONTAINER:$TAA_CONTAINER_WORKDIR/start.sh"
-  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "chmod +x '$TAA_CONTAINER_WORKDIR/start.sh'"
+  docker cp "$PROJECT_DIR/deploy/taa-supervisor.sh" "$LOCAL_DOCKER_CONTAINER:$TAA_CONTAINER_WORKDIR/taa-supervisor.sh"
+  docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "chmod +x '$TAA_CONTAINER_WORKDIR/taa-supervisor.sh'"
 
   step "stopping old taa and daemon wrapper inside container"
   stop_pidfile "taa" "$LOCAL_RUN_DIR/taa.pid"
@@ -1878,7 +1878,7 @@ deploy_docker_taa() {
     sleep 0.2
   done
   if [[ "$stopped" != true ]]; then
-    warn "taa or start.sh did not terminate gracefully; force-killing"
+    warn "taa or taa-supervisor.sh did not terminate gracefully; force-killing"
     docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "pkill -9 -f '[s]tart\.sh' >/dev/null 2>&1 || true; pkill -9 -x '$BINARY_NAME' >/dev/null 2>&1 || true; killall -9 '$BINARY_NAME' >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
     sleep 0.5
   fi
@@ -1886,7 +1886,7 @@ deploy_docker_taa() {
 
   step "starting taa supervisor inside container"
   docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "rm -f '$TAA_CONTAINER_WORKDIR/manual'"
-  docker exec -d "$LOCAL_DOCKER_CONTAINER" sh -lc "cd '$TAA_CONTAINER_WORKDIR' && nohup bash ./start.sh >/dev/null 2>&1 &"
+  docker exec -d "$LOCAL_DOCKER_CONTAINER" sh -lc "cd '$TAA_CONTAINER_WORKDIR' && nohup bash ./taa-supervisor.sh >/dev/null 2>&1 &"
 
   step "waiting for taa service to become ready"
   if ! wait_for_http_ready "taa" POST "$LOCAL_TAA_URL/v1/taa/health" "$READY_TIMEOUT" "$READY_INTERVAL"; then

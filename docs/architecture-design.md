@@ -539,7 +539,7 @@ TAA_DEBUG_MODE=true ./deploy.sh taa
 /root/taa/                        容器工作目录 (WORKDIR / CON_WORKDIR)
 ├── taa                           TAA 二进制
 ├── taa-config.json               TAA 运行时配置（部署时由部署脚本写入）
-├── start.sh                      启动监督脚本（保持 TAA 常驻）
+├── taa-supervisor.sh             启动监督脚本（保持 TAA 常驻）
 ├── taa.log                       TAA 运行日志
 ├── attestation.report            远程证明报告
 ├── certs/
