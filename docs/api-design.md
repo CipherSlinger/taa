@@ -7,27 +7,30 @@
   - [2.1 接口一览](#21-接口一览)
     - [2.1.1 TAA → 平台（回调与上报接口）](#211-taa--平台回调与上报接口)
     - [2.1.2 平台 → TAA（业务与控制接口）](#212-平台--taa业务与控制接口)
-    - [2.1.3 调试接口（平台 → TAA）](#213-调试接口平台--taa)
+    - [2.1.3 内部回调（FHE 服务 → TAA）](#213-内部回调fhe-服务--taa)
+    - [2.1.4 调试接口（平台 → TAA）](#214-调试接口平台--taa)
 - [3. TAA → 平台](#3-taa--平台)
   - [3.1 TAA 启动后生成远程证明报告并通知平台（/v1/taa/register）](#31-taa-启动后生成远程证明报告并通知平台v1taaregister)
-  - [3.2 获取远程证明报告（/v1/taa/getAttestation）](#32-获取远程证明报告v1taagetattestation)
-    - [3.2.1 远程证明报告二进制格式](#321-远程证明报告二进制格式)
-  - [3.4 TAA 上报训练完成结果（/v1/taa/reportRes）](#34-taa-上报训练完成结果v1taareportres)
-  - [3.5 TAA 上报模型导入结果（/v1/taa/reportModelImport）](#35-taa-上报模型导入结果v1taareportmodelimport)
-  - [3.6 TAA 上报代码安全审计结果（/v1/taa/reportAudit）](#36-taa-上报代码安全审计结果v1taareportaudit)
-  - [3.7 TAA 上报任务终端日志（/v1/taa/modelLog）](#37-taa-上报任务终端日志v1taamodellog)
-  - [3.8 TAA 上报运行日志（/v1/taa/taaLog）](#38-taa-上报运行日志v1taataalog)
-  - [3.9 TAA 上报任务进度（/v1/taa/reportProgress）](#39-taa-上报任务进度v1taareportprogress)
+  - [3.2 TAA 上报训练完成结果（/v1/taa/reportRes）](#32-taa-上报训练完成结果v1taareportres)
+  - [3.3 TAA 上报模型导入结果（/v1/taa/reportModelImport）](#33-taa-上报模型导入结果v1taareportmodelimport)
+  - [3.4 TAA 上报代码安全审计结果（/v1/taa/reportAudit）](#34-taa-上报代码安全审计结果v1taareportaudit)
+  - [3.5 TAA 上报任务终端日志（/v1/taa/modelLog）](#35-taa-上报任务终端日志v1taamodellog)
+  - [3.6 TAA 上报运行日志（/v1/taa/taaLog）](#36-taa-上报运行日志v1taataalog)
+  - [3.7 TAA 上报任务进度（/v1/taa/reportProgress）](#37-taa-上报任务进度v1taareportprogress)
 - [4. 平台 → TAA](#4-平台--taa)
-  - [4.1 资源信息获取（/v1/taa/getResourceInfo）](#41-资源信息获取v1taagetresourceinfo)
-  - [4.2 下发资源数据（/v1/taa/import）](#42-下发资源数据v1taaimport)
-  - [4.3 下发模型资源（/v1/taa/importModel）](#43-下发模型资源v1taaimportmodel)
-  - [4.4 中止当前训练任务（/v1/taa/stopTraining）](#44-中止当前训练任务v1taastoptraining)
-  - [4.5 通知 TAA 阶段切换（/v1/taa/switch）](#45-通知-taa-阶段切换v1taaswitch)
-  - [4.6 请求 TAA 导出结果（/v1/taa/export）](#46-请求-taa-导出结果v1taaexport)
-- [5. 调试接口](#5-调试接口)
-  - [5.1 连通性检查（/v1/taa/health）](#51-连通性检查v1taahealth)
-  - [5.2 查询 TAA 完整状态（/v1/taa/status）](#52-查询-taa-完整状态v1taastatus)
+  - [4.1 获取远程证明报告（/v1/taa/getAttestation）](#41-获取远程证明报告v1taagetattestation)
+    - [4.1.1 远程证明报告二进制格式](#411-远程证明报告二进制格式)
+  - [4.2 资源信息获取（/v1/taa/getResourceInfo）](#42-资源信息获取v1taagetresourceinfo)
+  - [4.3 下发资源数据（/v1/taa/import）](#43-下发资源数据v1taaimport)
+  - [4.4 下发模型资源（/v1/taa/importModel）](#44-下发模型资源v1taaimportmodel)
+  - [4.5 中止当前训练任务（/v1/taa/stopTraining）](#45-中止当前训练任务v1taastoptraining)
+  - [4.6 通知 TAA 阶段切换（/v1/taa/switch）](#46-通知-taa-阶段切换v1taaswitch)
+  - [4.7 请求 TAA 导出结果（/v1/taa/export）](#47-请求-taa-导出结果v1taaexport)
+- [5. 内部回调（FHE 服务 → TAA）](#5-内部回调fhe-服务--taa)
+  - [5.1 FHE 服务终态回调（/v1/taa/fheCallback）](#51-fhe-服务终态回调v1taafhecallback)
+- [6. 调试接口](#6-调试接口)
+  - [6.1 连通性检查（/v1/taa/health）](#61-连通性检查v1taahealth)
+  - [6.2 查询 TAA 完整状态（/v1/taa/status）](#62-查询-taa-完整状态v1taastatus)
 
 ---
 
@@ -43,12 +46,20 @@ LLM_IP={IP}:{PORT}
 ```
 
 ```env
-# 模型方路径约定
+# 路径约定（默认模板；以配置文件为准）
 /opt/taa/input/           # 输入目录（只读权限路径 READ_ONLY）
 /opt/taa/output/result/   # 训练代码结果输出目录（写权限路径 READ_WRITE）
 /opt/taa/output/log       # 模型终端日志目录（写权限路径 READ_WRITE）
 /opt/taa/output/progress  # 训练进度目录（写权限路径 READ_WRITE）
 ```
+
+**实例类型**（配置项 `server.type`）：同一份二进制按该值走不同链路，本文各接口都会标注类型差异。
+
+| 取值 | 说明 |
+| --- | --- |
+| `tee`（默认） | CSV 客户机里的训练实例：导入模型与数据、代码审计、训练、加密导出 |
+| `fhe` | GPU 宿主机上的 FHE 编排实例：数据下发即提交 FHE 任务，无训练、无审计，导出为明文结果包 |
+| `data-anaylsis` | 数据落盘实例：只解密并保存数据（注意该字面值就是拼错的 `anaylsis`），不训练、不审计、不接受模型 |
 
 ## 2. 公共返回格式
 
@@ -66,7 +77,22 @@ Agent 公共请求返回参数如下：
 | --- | --- | --- |
 | `msg` | `string` | 返回信息 |
 | `result` | `object/null` | 业务返回结果；无业务返回时为 `null` |
-| `error` | `number` | 错误码，`0` 表示成功，非 `0` 表示失败 |
+| `error` | `number` | 错误码，`0` 表示成功，非 `0` 表示失败；失败时与 HTTP 状态码一致（`400`/`404`/`405`/`409`/`500`） |
+
+**方法与跨域**：TAA 对外暴露的每个路由都只接受 `POST`。
+
+- 所有响应都带 `Access-Control-Allow-Origin: *`、`Access-Control-Allow-Methods: POST, OPTIONS`、`Access-Control-Allow-Headers: Content-Type`，
+  以及 `Access-Control-Expose-Headers: Content-Disposition, Content-Length, X-TAA-Task-Id, X-TAA-Encrypted`（导出接口的响应头需要被浏览器读到）。
+- `OPTIONS` 预检直接返回 `204 No Content`，不带响应体。
+- 其他方法返回 `405`，带 `Allow: POST` 头：
+
+```jsonc
+{
+  "msg": "仅支持 POST 方法",
+  "result": null,
+  "error": 405
+}
+```
 
 ### 2.1 接口一览
 
@@ -87,14 +113,20 @@ Agent 公共请求返回参数如下：
 | 序号 | 接口 | 方法 | 功能说明 |
 | --- | --- | --- | --- |
 | 1 | `/v1/taa/getAttestation` | `POST` | 平台获取远程证明报告 |
-| 2 | `/v1/taa/import` | `POST` | 平台下发数据资源 |
+| 2 | `/v1/taa/import` | `POST` | 平台下发数据资源（`tee`/`fhe` 触发训练或 FHE 任务，`data-anaylsis` 仅落盘） |
 | 3 | `/v1/taa/importModel` | `POST` | 平台下发模型训练代码 |
 | 4 | `/v1/taa/getResourceInfo` | `POST` | 平台传入 resourceUrl，TAA 下载、解密、分析后返回资源信息，按 SM3 哈希持久化保存目录与唯一标识备份 |
 | 5 | `/v1/taa/switch` | `POST` | 平台通知 TAA 切换运行阶段 |
-| 6 | `/v1/taa/export` | `POST` | 平台请求 TAA 导出当前阶段结果目录压缩包，成功时直接返回文件流 |
-| 7 | `/v1/taa/stopTraining` | `POST` | 平台同步请求 TAA 中止当前训练任务 |
+| 6 | `/v1/taa/export` | `POST` | 平台请求 TAA 导出任务结果目录压缩包，成功时直接返回文件流 |
+| 7 | `/v1/taa/stopTraining` | `POST` | 平台同步请求 TAA 中止当前训练任务（`fhe` 实例上取消 FHE 任务） |
 
-#### 2.1.3 调试接口（平台 → TAA）
+#### 2.1.3 内部回调（FHE 服务 → TAA）
+
+| 序号 | 接口 | 方法 | 功能说明 |
+| --- | --- | --- | --- |
+| 1 | `/v1/taa/fheCallback` | `POST` | FHE 服务通知任务终态；仅接受本机环回地址，非 `fhe` 实例返回 404 |
+
+#### 2.1.4 调试接口（平台 → TAA）
 
 | 序号 | 接口 | 方法 | 功能说明 |
 | --- | --- | --- | --- |
@@ -113,7 +145,7 @@ TAA 服务启动时先生成随机 SM2 公私钥对（若注入了环境变量 `
 
 **请求内容类型**：`application/json`
 
-**触发时机**：TAA 启动后主动调用平台接口；平台返回 HTTP `200` 即表示注册通知成功。若请求失败或平台返回非 `200`，TAA 持续重试。
+**触发时机**：TAA 启动后主动调用平台接口；平台返回 HTTP `200` 即表示注册通知成功。请求失败或平台返回非 `200` 时，TAA 在后台退避重试：首次等待 `5s`，此后每次翻倍，上限 `30s`，整个重试窗口为 **5 分钟**；窗口耗尽后放弃并记录日志，不再重试。窗口按分钟计是刻意的——TAA 在 Kata CSV2 客户机里是第一个用户态进程，首次注册必然早于客户机拿到 IP，而重试日志落在客户机 tmpfs 上，无限重试会一直占用客户机内存。
 
 **参数**：
 
@@ -123,7 +155,7 @@ TAA 服务启动时先生成随机 SM2 公私钥对（若注入了环境变量 `
 | `attestation` | `string` | 是 | 远程证明报告文件，Base64 编码格式（原始 2548 字节 → 编码后约 3400 字符） |
 | `taaPublicKey` | `string` | 是 | TAA 启动时生成（或从 `TAASECRETKEY` 恢复）的 SM2 公钥 PEM（国密标准） |
 | `taaSecretKey` | `string` | 否 | 加密后的 TAA SM2 私钥，hex 小写编码（60 字节 → 120 字符）。仅在 CSV 环境下、且本次启动**未**从 `TAASECRETKEY` 恢复私钥时携带；恢复模式与非 CSV 实例省略该字段 |
-| `attestationValues` | `string` | 是 | attestation report 核心字段提取的 JSON 字符串，包含 USERDATA、MNONCE、DIGEST、CHIP_ID 等关键字段 |
+| `attestationValues` | `string` | 是 | attestation report 核心字段提取的 JSON **字符串**，即 `{"userdata","mnonce","digest","chipId"}`：`userdata` 为 hex（报告里的 64 字节原值，**不转 PEM**），`mnonce`/`digest` 为 hex，`chipId` 为 ASCII 原文（去掉尾部 NUL）。字段含义见 [4.1 节](#41-获取远程证明报告v1taagetattestation) |
 | `timestamp` | `string` | 是 | 生成 attestation 时的 Unix 时间戳（秒），随注册请求单独上报；不参与 USERDATA 构成 |
 | `verifiedPass` | `bool` | 是 | TAA 验证远程证明报告结果，`true` 表示成功，`false` 表示失败 |
 | `authInfo` | `object/null` | 否 | 当前固定传 `null` |
@@ -174,82 +206,18 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 **成功响应示例**（200 OK）
 
-### 3.2 获取远程证明报告（/v1/taa/getAttestation）
-
-**请求**：`POST /v1/taa/getAttestation`
-
-**请求内容类型**：`application/json`
-
-**请求格式**：与注册接口保持一致，使用 JSON 格式。
-
-**参数**：
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `requestId` | `string` | 是 | 随机值，用于防重放 |
-
-**请求示例**：
-
-```jsonc
-{
-  "requestId": "req-att-001"
-}
-```
-
-**响应内容类型**：`application/json`
-
-**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，业务字段放在 `result` 中。
-
-**响应结果字段**：
-
-| 参数 | 类型 | 说明 |
-| --- | --- | --- |
-| `requestId` | `string` | 请求 ID，与请求中的 `requestId` 一致 |
-| `verifiedPass` | `bool` | TAA 验证结果：`true` 表示验证通过，`false` 表示验证失败 |
-| `attestation` | `string` | 远程证明报告，Base64 编码后的二进制内容（`0x9F4` = 2548 字节原始数据） |
-| `attestationValues` | `string` (JSON) | attestation report 核心字段提取，JSON 字符串，包含 `userdata`（PEM 格式 SM2 公钥）、`mnonce`、`digest`、`chipId`，其中后3项为 hex 编码 |
-
-**成功响应示例**（200 OK）：
-
 ```jsonc
 {
   "msg": "success",
   "result": {
-    "requestId": "req-att-001",
-    "verifiedPass": true,
-    "attestation": "base64-encoded-attestation-report...",
-    "attestationValues": "{\"userdata\":\"-----BEGIN PUBLIC KEY-----\\n...\\n-----END PUBLIC KEY-----\",\"mnonce\":\"0123...\",\"digest\":\"0123...\",\"chipId\":\"0123...\"}"
+    "received": true,
+    "verifiedPass": true
   },
   "error": 0
 }
 ```
 
-#### 3.2.1 远程证明报告二进制格式
-
-`attestation` 为 Hygon CSV attestation report 二进制结构，总长度 `0x9F4` 字节。多字节整数按小端序解析。
-
-| 偏移 | 长度 | 字段 | 说明 | ANONCE 异或还原 |
-| --- | ---: | --- | --- | --- |
-| `0x000` | 32 bytes | `PUBKEY_DIGEST` | DH 公钥的 SM3 摘要值，用于确认启动虚拟机的用户身份 | 否 |
-| `0x020` | 16 bytes | `ID` | 虚拟机 ID，虚拟机用户自定义 | 否 |
-| `0x030` | 16 bytes | `Version` | 虚拟机版本号，虚拟机用户自定义 | 否 |
-| `0x040` | 64 bytes | `USERDATA` | 用户自定义数据 | 是 |
-| `0x080` | 16 bytes | `MNONCE` | 一次性随机数，用于区别报告内容、防重放攻击，由请求方/虚拟机用户生成 | 是 |
-| `0x090` | 32 bytes | `DIGEST` | 虚拟机启动摘要，通常为 initrd、OVMF.fd、内核镜像等启动参数的 SM3 摘要 | 是 |
-| `0x0B0` | 4 bytes | `POLICY` | 虚拟机规则 | 是 |
-| `0x0B4` | 4 bytes | `SIG_USAGE` | 签名密钥用途，PEK | 是 |
-| `0x0B8` | 4 bytes | `SIG_ALGO` | 签名算法，SM2 | 是 |
-| `0x0BC` | 4 bytes | `ANONCE` | CSV 固件产生的随机数，用于对报告部分字段做混淆处理，防止主机侧攻击 | 否 |
-| `0x0C0` | 144 bytes | `Signature` | PEK 签名，按报告格式定义覆盖 `0x00` ~ `0xBF` | 否 |
-| `0x150` | 2084 bytes | `PEK_CERT` | 平台 PEK 证书 | 是 |
-| `0x974` | 64 bytes | `CHIP_ID` | 芯片 ID 字符串 | 是 |
-| `0x9B4` | 32 bytes | `Reserved2` | 保留字段 | 否 |
-| `0x9D4` | 32 bytes | `MAC` | 使用 `MNONCE` 对 `PEK_CERT + CHIP_ID + Reserved2` 生成的 SM3-HMAC | 否 |
-
-
----
-
-### 3.4 TAA 上报训练完成结果（/v1/taa/reportRes）
+### 3.2 TAA 上报训练完成结果（/v1/taa/reportRes）
 
 **请求**：`POST /v1/taa/reportRes`
 
@@ -262,9 +230,13 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 | `dockerId` | `string` | 是 | 取值为容器启动参数 `DOCKER_ID` |
 | `requestId` | `string` | 是 | 启动测试时对应的请求 ID |
 | `taskId` | `string` | 否 | 训练任务 ID |
-| `code` | `number` | 是 | `0` 表示成功；`1` 表示训练执行失败；`2` 表示训练执行完成但结果被拒（结果目录含原始训练数据，见下方说明） |
+| `code` | `number` | 是 | `0` 成功；`1` 训练执行失败；`2` 训练执行完成但结果被拒（结果目录含原始训练数据，见下方说明）；`3` FHE 任务失败（仅 `fhe` 实例） |
 | `msg` | `string` | 否 | 失败时为失败原因 |
-| `report` | `string` | 否 | 训练结果报告字符串 |
+| `report` | `string` | 否 | 训练结果报告字符串；`data-anaylsis` 实例上恒为空字符串 |
+
+> **`code=3`（FHE 任务失败）**：`fhe` 实例上，FHE 服务执行失败或结果包取回落盘失败都按 `3` 上报，`msg` 为 `FHE 任务失败: <原因>` 或 `取回 FHE 结果失败: <原因>`。它刻意不复用 `1`：两种实例类型的失败原因不同，同一个码会让平台的日志无法区分。
+>
+> **`data-anaylsis` 实例**：该类型既无训练报告也无可审计的内容，落盘成功与失败都走本接口上报（`code` 为 `0` / `1`），`report` 恒为空字符串，`msg` 为 `数据导入成功` 或具体失败原因。
 
 **示例**：
 
@@ -400,12 +372,12 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 > phase 2 测试阶段（明文结果返回平台）
 > phase 3 拒绝调用
 
-**关于 `result_files`**：该字段是导出目录（`/v1/taa/export` 打包的那个目录）的文件结构树，节点结构与 [4.1 节](#41-资源信息获取v1taagetresourceinfo) `getResourceInfo` 返回的 `tree` 完全一致——**含表格类文件的 `preview` 前 5 行**，平台据此核对产物并看到样本行。两点差异：
+**关于 `result_files`**：该字段是导出目录（`/v1/taa/export` 打包的那个目录）的文件结构树，节点结构与 [4.2 节](#42-资源信息获取v1taagetresourceinfo) `getResourceInfo` 返回的 `tree` 完全一致——**含表格类文件的 `preview` 前 5 行**，平台据此核对产物并看到样本行。两点差异：
 
 - **不含报告自身**：扫描发生在 `training_report.json` 落盘之前，所以树里不会出现该文件。
 - **检查指认泄露时整段不出现**：训练结束时若明文泄露检查（`bytes.Contains`）在结果目录里发现了原始训练数据，该字段**整个不出现**（`code` 为 `2`，原因见 `msg`，报告体内 `training_task.status` 为 `failed`）——目录树的预览就是那些数据行，正是要拒的东西，TAA 连扫都不扫。没有裁决（未开启检查、训练执行失败/崩溃路径）或裁决记着检查自身没跑起来时照常给出该字段：那是没有证据，不是有证据说泄露。
 
-> 报告里的样本行不会外流：`training_report.json` 已被排除在导出清单之外（见 [4.6 节](#46-请求-taa-导出结果v1taaexport)），这份报告只经 `/v1/taa/reportRes` 上报给平台；导出目录中真正会被打包外发的文件照旧受明文泄露检查约束。
+> 报告里的样本行不会外流：`training_report.json` 已被排除在导出清单之外（见 [4.7 节](#47-请求-taa-导出结果v1taaexport)），这份报告只经 `/v1/taa/reportRes` 上报给平台；导出目录中真正会被打包外发的文件照旧受明文泄露检查约束。
 
 目录为空或扫描失败时省略该字段，报告其余部分照常生成。
 
@@ -413,11 +385,11 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 
 - `code` 为 `2`（区别于 `1`——训练进程本身跑完了，是产物被拒），`msg` 为 `结果目录包含原始训练数据，训练结果拒绝提供目录清单与预览: <高危明细>`；
 - 报告体内 `training_task.status` 为 `failed`、`failure_reason` 为同样的原因、**`exit_code` 仍为 `0`**（训练进程正常退出），且不带 `result_files`；
-- 随后 `/v1/taa/export` 对该任务一律返回 `400`（见 [4.6 节](#46-请求-taa-导出结果v1taaexport)）。
+- 随后 `/v1/taa/export` 对该任务一律返回 `400`（见 [4.7 节](#47-请求-taa-导出结果v1taaexport)）。
 
 检查自身没跑起来（裁决里 `error` 非空）不算被拒：报告照常给出、`code` 仍为 `0`，只有导出闸门在 `codeAudit.llm.failClosed` 为 `true` 时会拦。
 
-### 3.5 TAA 上报模型导入结果（/v1/taa/reportModelImport）
+### 3.3 TAA 上报模型导入结果（/v1/taa/reportModelImport）
 
 **请求**：`POST /v1/taa/reportModelImport`
 
@@ -435,6 +407,8 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 | `code` | `number` | 是 | `0` 表示模型下载、解密、解压和校验成功，`1` 表示资源下载/解密/解压等导入流程失败 |
 | `msg` | `string` | 否 | 成功时固定为 `"模型导入成功"`，失败时为具体失败原因 |
 | `checksum` | `object` | 否 | 模型压缩包完整性校验（逻辑与 `/v1/taa/reportRes` 的 `training_task.model_checksum` 完全一致，包含 `size`、`algorithm`、`value`，导入成功时必填） |
+
+> **`fhe` 实例**：模型包按 SM3 解压到 FHE 共享模型目录并激活后，同样经本接口上报（`code=0`、`checksum` 与训练链路同格式）。FHE 模型是一组 FHE 层与参数、不是用户可执行代码，因此**没有对应的 `/v1/taa/reportAudit`**。
 
 **请求示例（成功）**：
 
@@ -488,7 +462,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-### 3.6 TAA 上报代码安全审计结果（/v1/taa/reportAudit）
+### 3.4 TAA 上报代码安全审计结果（/v1/taa/reportAudit）
 
 **请求**：`POST /v1/taa/reportAudit`
 
@@ -561,7 +535,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-**`report` 字段内容格式**：与训练结果报告中的 `codeaudit` 字段完全一致，详见 [3.4 节 `report` 字段内容示例](#34-taa-上报训练完成结果) 中的 `codeaudit` 部分。其中 `duration_ms` 为本轮审计的整体耗时（毫秒）：从静态扫描开始，覆盖二进制审计通道与两轮 LLM 语义审查，但不含审计前的 LLM 可用性探测；`report` 为空字符串（LLM 服务不可用或审计中断）时该字段不存在。
+**`report` 字段内容格式**：与训练结果报告中的 `codeaudit` 字段完全一致，详见 [3.2 节 `report` 字段内容示例](#32-taa-上报训练完成结果v1taareportres) 中的 `codeaudit` 部分。其中 `duration_ms` 为本轮审计的整体耗时（毫秒）：从静态扫描开始，覆盖二进制审计通道与两轮 LLM 语义审查，但不含审计前的 LLM 可用性探测；`report` 为空字符串（LLM 服务不可用或审计中断）时该字段不存在。
 
 **响应内容类型**：`application/json`
 
@@ -585,7 +559,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-### 3.7 TAA 上报任务终端日志（/v1/taa/modelLog）
+### 3.5 TAA 上报任务终端日志（/v1/taa/modelLog）
 
 **请求**：`POST http://{PLATFORM_IP}/v1/taa/modelLog`
 
@@ -629,7 +603,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-平台按 `dockerId + requestId + seq` 去重，允许 TAA 因网络失败重复发送同一日志。TAA 仅在平台返回 HTTP `200` 且公共返回格式中的 `error=0` 时确认本批日志已接收；网络错误、HTTP `408`、`429` 或 `5xx` 可按指数退避重试，参数错误等其他 `4xx` 不应自动重试。
+平台按 `dockerId + requestId + seq` 去重，允许 TAA 因网络失败重复发送同一日志。TAA 仅在平台返回 HTTP `200`、公共返回格式中的 `error=0` **且** `result.received=true` 时确认本批日志已接收；三者任一不满足即视为本批未送达，条目留在缓冲区里，在下一个 `500ms` 定时刷新时随下一批重发——按状态码区分重试与否、指数退避，本仓库都没有实现。
 
 **响应内容类型**：`application/json`
 
@@ -653,7 +627,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-### 3.8 TAA 上报运行日志（/v1/taa/taaLog）
+### 3.6 TAA 上报运行日志（/v1/taa/taaLog）
 
 **请求**：`POST http://{PLATFORM_IP}/v1/taa/taaLog`
 
@@ -697,7 +671,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-平台按 `dockerId + requestId + seq` 去重，允许 TAA 因网络失败重复发送同一日志。TAA 仅在平台返回 HTTP `200` 且公共返回格式中的 `error=0` 时确认本批日志已接收；网络错误、HTTP `408`、`429` 或 `5xx` 可按指数退避重试，参数错误等其他 `4xx` 不应自动重试。
+平台按 `dockerId + requestId + seq` 去重，允许 TAA 因网络失败重复发送同一日志。TAA 仅在平台返回 HTTP `200`、公共返回格式中的 `error=0` **且** `result.received=true` 时确认本批日志已接收；三者任一不满足即视为本批未送达，条目留在缓冲区里，在下一个 `500ms` 定时刷新时随下一批重发——按状态码区分重试与否、指数退避，本仓库都没有实现。
 
 **响应内容类型**：`application/json`
 
@@ -721,7 +695,7 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 }
 ```
 
-### 3.9 TAA 上报任务进度（/v1/taa/reportProgress）
+### 3.7 TAA 上报任务进度（/v1/taa/reportProgress）
 
 TAA 在任务执行过程中通过该接口向平台上报当前任务的数值进度。
 
@@ -730,6 +704,10 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 **请求内容类型**：`application/json`
 
 **触发时机**：任务执行过程中，TAA 根据进度变化主动上报当前进度快照。**`percent` 为 `100` 的快照不在读到它时上报**：训练收尾后 TAA 还要归集产物、跑结果明文泄露检查，所以 `100%` 被推迟到那次检查出结论之后才补报（模型没写过 `100%` 就不补，平台停在最后一个真实进度；训练失败或任务被中止时也不补）。
+
+`fhe` 实例的进度来自 FHE 服务自己的百分比回调（不读进度文件）：服务每推进一次就上报一次，任务失败时可能停在中间值；任务成功结束后，即使回调没报过 `100`，TAA 也会显式补报一次 `100`，所以 FHE 任务的成功进度一定收在 `100`。
+
+平台按 `dockerId + requestId` 关联进度快照，并依据 `timestamp` 防止较早的进度覆盖较新的进度。同样按日志的确认规则：只有 HTTP `200`、`error=0` 且 `result.received=true` 才算送达。
 
 **参数**：
 
@@ -740,8 +718,6 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | `taskId` | `string` | 否 | 平台任务 ID；单任务模式下可缺省 |
 | `percent` | `number` | 是 | 当前任务进度百分比，取值范围为 `0` ~ `100` |
 | `timestamp` | `string` | 是 | 进度产生时间，RFC3339 格式 |
-
-平台按 `dockerId + requestId` 关联进度快照，并依据 `timestamp` 防止较早的进度覆盖较新的进度。
 
 **请求示例**：
 
@@ -781,7 +757,104 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 
 ## 4. 平台 → TAA
 
-### 4.1 资源信息获取（/v1/taa/getResourceInfo）
+### 4.1 获取远程证明报告（/v1/taa/getAttestation）
+
+**请求**：`POST /v1/taa/getAttestation`
+
+**请求内容类型**：`application/json`
+
+**触发时机**：每次请求都会**重新生成**一份远程证明报告（不是返回启动时那份），并用部署时下发的 HRK 与 HSK-CEK 证书对报告做一次自检验证。重新生成带 `30s` 超时，且同一时刻只允许一个请求进入（进程内互斥）。
+
+**参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `requestId` | `string` | 是 | 随机值，用于防重放；为空返回 `400` |
+
+**请求示例**：
+
+```jsonc
+{
+  "requestId": "req-att-001"
+}
+```
+
+**响应内容类型**：`application/json`
+
+**响应参数**：遵循 [2. 公共返回格式](#2-公共返回格式)，业务字段放在 `result` 中。
+
+**响应结果字段**：
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `requestId` | `string` | 请求 ID，与请求中的 `requestId` 一致 |
+| `verifiedPass` | `bool` | 本报告的自检验证结果：`true` 表示通过，`false` 表示失败 |
+| `attestation` | `string` | 远程证明报告，Base64 编码后的二进制内容（`0x9F4` = 2548 字节原始数据）；生成失败时为空字符串 |
+| `attestationValues` | `string` (JSON) | 从报告中提取的核心字段，JSON **字符串**（不是嵌套对象），字段见下表 |
+
+**`attestationValues` 反序列化后的字段**：
+
+| 字段 | 类型 | 编码 | 说明 |
+| --- | --- | --- | --- |
+| `userdata` | `string` | PEM | USERDATA 的 64 字节按 `X(32) ‖ Y(32)` 还原成 SM2 公钥后转成的 PEM，即 TAA 自己的 SM2 公钥 |
+| `mnonce` | `string` | hex | 报告中的 `MNONCE`（16 字节） |
+| `digest` | `string` | hex | 报告中的 `DIGEST`（32 字节） |
+| `chipId` | `string` | **ASCII** | 报告中的 `CHIP_ID`，去掉尾部 `NUL` 填充后的原样字符串，**不是** hex |
+
+> `/v1/taa/register` 上报的 `attestationValues` 与这里同源同格式，差异只有一处：注册路径不把 `userdata` 转成 PEM，保留报告里的 hex 原值。
+
+**成功响应示例**（200 OK）：
+
+```jsonc
+{
+  "msg": "success",
+  "result": {
+    "requestId": "req-att-001",
+    "verifiedPass": true,
+    "attestation": "base64-encoded-attestation-report...",
+    "attestationValues": "{\"userdata\":\"-----BEGIN PUBLIC KEY-----\\n...\\n-----END PUBLIC KEY-----\",\"mnonce\":\"0123...\",\"digest\":\"0123...\",\"chipId\":\"CSV-CHIP-0123456789\"}"
+  },
+  "error": 0
+}
+```
+
+> 自检验证失败时 HTTP 仍为 `200`、`error` 仍为 `0`：`verifiedPass` 为 `false`，`msg` 为 `自检验证失败: <原因>`。只有报告本身生成/读取/解析失败时 `attestation` 为空、`msg` 为 `获取报告失败: <原因>`。平台应依据 `verifiedPass` 而不是 HTTP 状态码判断。
+
+**错误响应示例**（400，`requestId` 为空）：
+
+```jsonc
+{
+  "msg": "requestId 不能为空",
+  "result": null,
+  "error": 400
+}
+```
+
+#### 4.1.1 远程证明报告二进制格式
+
+`attestation` 为 Hygon CSV attestation report 二进制结构，总长度 `0x9F4` 字节。多字节整数按小端序解析。
+
+| 偏移 | 长度 | 字段 | 说明 | ANONCE 异或还原 |
+| --- | ---: | --- | --- | --- |
+| `0x000` | 32 bytes | `PUBKEY_DIGEST` | DH 公钥的 SM3 摘要值，用于确认启动虚拟机的用户身份 | 否 |
+| `0x020` | 16 bytes | `ID` | 虚拟机 ID，虚拟机用户自定义 | 否 |
+| `0x030` | 16 bytes | `Version` | 虚拟机版本号，虚拟机用户自定义 | 否 |
+| `0x040` | 64 bytes | `USERDATA` | 用户自定义数据 | 是 |
+| `0x080` | 16 bytes | `MNONCE` | 一次性随机数，用于区别报告内容、防重放攻击，由请求方/虚拟机用户生成 | 是 |
+| `0x090` | 32 bytes | `DIGEST` | 虚拟机启动摘要，通常为 initrd、OVMF.fd、内核镜像等启动参数的 SM3 摘要 | 是 |
+| `0x0B0` | 4 bytes | `POLICY` | 虚拟机规则 | 是 |
+| `0x0B4` | 4 bytes | `SIG_USAGE` | 签名密钥用途，PEK | 是 |
+| `0x0B8` | 4 bytes | `SIG_ALGO` | 签名算法，SM2 | 是 |
+| `0x0BC` | 4 bytes | `ANONCE` | CSV 固件产生的随机数，用于对报告部分字段做混淆处理，防止主机侧攻击 | 否 |
+| `0x0C0` | 144 bytes | `Signature` | PEK 签名，按报告格式定义覆盖 `0x00` ~ `0xBF` | 否 |
+| `0x150` | 2084 bytes | `PEK_CERT` | 平台 PEK 证书 | 是 |
+| `0x974` | 64 bytes | `CHIP_ID` | 芯片 ID 字符串 | 是 |
+| `0x9B4` | 32 bytes | `Reserved2` | 保留字段 | 否 |
+| `0x9D4` | 32 bytes | `MAC` | 使用 `MNONCE` 对 `PEK_CERT + CHIP_ID + Reserved2` 生成的 SM3-HMAC | 否 |
+
+---
+
+### 4.2 资源信息获取（/v1/taa/getResourceInfo）
 
 **请求**：`POST /v1/taa/getResourceInfo`
 
@@ -832,7 +905,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | `tree.tables[].columns` | `array` | 该表的列定义，元素结构同 `fields`，用于解释 `preview` 的列位置 |
 | `tree.tables[].preview` | `array` | 该表的前 5 行数据，与 `columns` 按位置对齐 |
 
-> **`preview` 的两个出口**：`getResourceInfo` 是对资源包的一次性应答，平台需要看到样本数据本身；训练报告 `report.result_files` 的结构树与本接口完全一致，**同样带 `preview`**——这份报告只上报给平台，不会进导出包（`training_report.json` 已被排除在导出清单之外）。唯一的例外是泄露被查出的那次：报告干脆不带 `result_files`（见 [3.4 节](#34-taa-上报训练完成结果v1taareportres)），因为预览就是那些数据行。本接口不受此影响。
+> **`preview` 的两个出口**：`getResourceInfo` 是对资源包的一次性应答，平台需要看到样本数据本身；训练报告 `report.result_files` 的结构树与本接口完全一致，**同样带 `preview`**——这份报告只上报给平台，不会进导出包（`training_report.json` 已被排除在导出清单之外）。唯一的例外是泄露被查出的那次：报告干脆不带 `result_files`（见 [3.2 节](#32-taa-上报训练完成结果v1taareportres)），因为预览就是那些数据行。本接口不受此影响。
 
 **成功响应示例**（200 OK）：
 
@@ -866,7 +939,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 }
 ```
 
-### 4.2 下发资源数据（/v1/taa/import）
+### 4.3 下发资源数据（/v1/taa/import）
 
 **请求**：`POST /v1/taa/import`
 
@@ -883,6 +956,16 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | `evalKeyFileHash` | `string` | 否* | 仅 `fhe` 实例：求值密钥的 SM3 摘要，64 位小写十六进制。同时作为 FHE 侧的 `userId` 与密钥缓存目录名 |
 
 > **`fhe` 实例的数据下发**：`server.type=fhe` 时本接口不走训练链路——数据包与求值密钥落盘后直接提交 FHE 任务，任务结果仍通过 `/v1/taa/reportRes` 上报。该类型下 `evalKeyUrl`、`evalKeyFileHash` 与 `taskId` 均为必填：FHE 服务以 `taskId` 命名任务、输入目录与结果目录。`tee` 实例不接受 FHE 字段，携带任一字段返回 400。
+
+> **`data-anaylsis` 实例的数据下发**（`server.type` 的字面值就是 `data-anaylsis`）：该类型只做解密落盘，不训练、不审计、不写导入索引。它用的是另一套 URL 参数，三个都必填：
+>
+> | 参数 | 说明 |
+> | --- | --- |
+> | `dataKeyCipher` | SM2 数据密钥信封 hex，与 `fhe`/`tee` 同格式 |
+> | `fileName` | 原始上传文件名，需 URL 编码；解码后必须是单个路径元素 |
+> | `dataResourceCode` | 资源编号，需 URL 编码；决定落盘子目录 `<storage.data>/<dataResourceCode>/` |
+>
+> 三个参数都会从下载 URL 中剥离后再发起下载（签名链接因此保持有效）。`fileName`/`dataResourceCode` 解码后不能为空、不能为空白、不能是 `.`/`..`、不能含 `/`、`\`、`NUL`，也不能是绝对路径。资源包（按魔数判定）解压到该目录；Office/EPUB 这类本质是 zip 的文档容器按单文件保存。`evalKeyUrl`/`evalKeyFileHash` 在该类型下被忽略（记日志），不报错。落盘结果仍经 `/v1/taa/reportRes` 上报（成功 `code=0`，`msg` 为 `数据导入成功`）。
 
 > **密态资源的两种形态**（**资源/数据下发与模型下发通用**：`/v1/taa/import` 与 `/v1/taa/importModel` 都接受这两种形态；仅 `/v1/taa/getResourceInfo` 不解析该参数，仍按整文件信封处理）：
 > 1. **URL 密钥信封（当前协议）**：`resourceUrl` 形如 `<下载链接>?dataKeyCipher=<hex>`。
@@ -952,6 +1035,16 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 }
 ```
 
+`data-anaylsis` 实例的 `msg` 不同：
+
+```jsonc
+{
+  "msg": "数据已接收，处理中",
+  "result": null,
+  "error": 0
+}
+```
+
 > 该响应在资源**下载完成后**才返回：下载失败会返回 500 而不是本响应，因此收到 200 时资源已在 TAA 本地。此后的解密、解压与训练结果是否产生均通过回调体现。
 
 **验证失败响应示例**（400 Bad Request）：
@@ -964,7 +1057,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 }
 ```
 
-其余 400 场景：`requestId` 和 `taskId` 同时为空；`requestId` 或 `taskId` 已存在或正在处理中；`dataKeyCipher` 重复、为空、hex 非法、长度非法或信封解不开；`fhe` 实例缺少 `evalKeyUrl`/`evalKeyFileHash`/`taskId` 或 `evalKeyFileHash` 格式不符；`tee` 实例携带 `evalKeyUrl` 或 `evalKeyFileHash`。
+其余 400 场景：`requestId` 和 `taskId` 同时为空；`requestId` 或 `taskId` 已存在或正在处理中；`dataKeyCipher` 重复、为空、hex 非法、长度非法或信封解不开；`fhe` 实例缺少 `evalKeyUrl`/`evalKeyFileHash`/`taskId` 或 `evalKeyFileHash` 格式不符；`tee` 实例携带 `evalKeyUrl` 或 `evalKeyFileHash`；`data-anaylsis` 实例缺少 `dataKeyCipher`/`fileName`/`dataResourceCode`、剥离后无下载地址，或 `fileName`/`dataResourceCode` 不是合法的单个路径元素。
 
 **并发冲突响应示例**（409 Conflict）：
 
@@ -990,7 +1083,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 
 其余 500 场景：加载导入索引失败。
 
-### 4.3 下发模型资源（/v1/taa/importModel）
+### 4.4 下发模型资源（/v1/taa/importModel）
 
 **请求**：`POST /v1/taa/importModel`
 
@@ -1003,14 +1096,19 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | `resourceUrl` | `string` | 否* | 模型资源下载地址。密态资源可携带 `?dataKeyCipher=<hex>` 参数承载 SM2 数据密钥信封，见下方说明；为空时表示只更新 `runtimeConfig` 并复用已导入的模型，此时此前必须已导入过模型（**只有** `?dataKeyCipher=<hex>`、没有下载地址的 `resourceUrl` 不算「为空」，按 400 拒绝） |
 | `requestId` | `string` | 否* | 随机值，与 `taskId` 不能同时为空 |
 | `taskId` | `string` | 否* | 任务 ID，与 `requestId` 不能同时为空 |
-| `publicKey` | `string` | 否 | 平台侧 SM2 公钥 PEM，**非必填**。仅 phase 1 且请求携带时校验并保存（已保存过则保留首个公钥）；为空时不校验、不保存、也不返回失败。资源解封使用 TAA 自身私钥，与此参数无关；阶段 3 导出时的公钥选择顺序见 [4.6](#46-请求-taa-导出结果v1taaexport) |
+| `publicKey` | `string` | 否 | 平台侧 SM2 公钥 PEM，**非必填**。仅 phase 1 且请求携带时校验并保存（已保存过则保留首个公钥）；为空时不校验、不保存、也不返回失败。资源解封使用 TAA 自身私钥，与此参数无关；阶段 3 导出时的公钥选择顺序见 [4.7](#47-请求-taa-导出结果v1taaexport) |
 | `runtimeConfig` | `string` | 否 | 运行配置 JSON 字符串（`{"commands":[...]}`）；非空即覆盖已保存的配置，与 `resourceUrl` 是否为空无关 |
 
-> **密态资源的两种形态**（机制与 [4.2 /v1/taa/import](#42-下发资源数据v1taaimport) 完全一致，模型下发同样支持）：
+> **密态资源的两种形态**（机制与 [4.3 /v1/taa/import](#43-下发资源数据v1taaimport) 完全一致，模型下发同样支持）：
 > 1. **URL 密钥信封（当前协议）**：`resourceUrl` 形如 `<下载链接>?dataKeyCipher=<hex>`，下载链接指向的响应体只含 SM4-GCM 密文。TAA 在下载前剥离该参数，用自身 SM2 私钥解出数据密钥后再下载密文；参数重复、值为空、hex 非法、长度非法或信封解不开均直接返回 400，**不发起下载**。被剥离的 `dataKeyCipher` 不进入下载请求，作为投递记录保存的 `resourceUrl` 也只保留剥离后的 URL。
 > 2. **整文件信封（兼容形态）**：URL 不带 `dataKeyCipher` 时沿用原逻辑——文件内容为 `WrappedKey(113B) ‖ Ciphertext`，或 `.enc` 后缀强制解密，或按压缩包魔数判定为明文直通。
 >
 > 解封与下载都正常、但下载体解不开的失败发生在异步阶段，经 `/v1/taa/reportModelImport`（`code=1`，`msg` 含 `解密资源失败` 与 `taaPublicKey:`）上报。
+
+> **实例类型差异**：
+> - `data-anaylsis` 实例**直接拒绝本接口**：在解码请求体之前就返回 `400 data-anaylsis 实例不支持模型导入`——该类型没有模型、审计与训练链路，收下模型包只会留下没人读的状态。
+> - `fhe` 实例不保存 `publicKey`（导出从不加密），携带时记警告后忽略；`resourceUrl` 为空时**不校验** `runtimeConfig`（FHE 模型由 FHE 运行时加载，训练命令不是它的输入）。`evalKeyUrl`/`evalKeyFileHash` 在本接口上一律忽略并记警告——求值密钥随数据下发提交。
+> - 仅 `tee` 实例会解析并执行 `runtimeConfig`。
 
 **请求示例**：
 
@@ -1095,7 +1193,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 
 > **加密格式说明**：与 `/v1/taa/import` 相同——支持 URL 密钥信封（`?dataKeyCipher=<hex>`）与整文件信封两种形态，解封与解密逻辑完全共用。格式非法或信封解不开在下载前返回 400；密文解不开的失败发生在异步阶段，经 `/v1/taa/reportModelImport`（`code=1`）上报。
 
-### 4.4 中止当前训练任务（/v1/taa/stopTraining）
+### 4.5 中止当前训练任务（/v1/taa/stopTraining）
 
 该接口用于平台请求 TAA 中止当前正在执行的训练任务。TAA 当前为单任务模式，请求不需要传入 `taskId` 或 `requestId`，接口始终针对当前训练任务处理。
 
@@ -1111,10 +1209,19 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 
 **处理规则**：
 
-- 接口采用同步处理方式，TAA 等待训练进程及其子进程退出，并完成训练任务状态清理后返回。
+- 接口采用同步处理方式，TAA 等待训练进程及其子进程退出，并完成训练任务状态清理后返回；明确等待上限为 `5s`，超时返回 `500`。
 - 当前存在训练任务时，成功中止后返回 HTTP `200`，公共返回格式中的 `error=0`。
 - 当前不存在训练任务时，仍返回 HTTP `200`，公共返回格式中的 `error=0`，仅通过 `msg` 提示不存在训练任务；该场景按幂等成功处理。
 - 该接口不区分或处理其他非训练任务，也不调用 `modelLog`、`reportProgress` 或 `/v1/taa/reportRes`。
+
+**`fhe` 实例**：FHE 任务没有本地进程组可杀，停止要通过 FHE 服务自己的取消接口，因此该分支排在训练分支之前：
+
+| 场景 | HTTP | `msg` |
+| --- | --- | --- |
+| 有在飞 FHE 任务且取消成功 | `200` | `FHE 任务已取消` |
+| 任务在停止请求到达前已到终态 | `200` | `FHE 任务已结束` |
+| 取消失败 | `500` | `取消 FHE 任务失败: <原因>` |
+| 当前无 FHE 任务 | `200` | `不存在训练任务` |
 
 **成功响应示例（当前存在训练任务并已中止）**：
 
@@ -1136,7 +1243,18 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 }
 ```
 
-### 4.5 通知 TAA 阶段切换（/v1/taa/switch）
+**失败响应示例（500，等待中止超时）**：
+
+```jsonc
+{
+  "msg": "中止训练任务超时",
+  "result": null,
+  "error": 500
+}
+```
+```
+
+### 4.6 通知 TAA 阶段切换（/v1/taa/switch）
 
 **请求**：`POST /v1/taa/switch`
 
@@ -1170,13 +1288,23 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 }
 ```
 
-### 4.6 请求 TAA 导出结果（/v1/taa/export）
+**失败条件**：
+
+- `phase` 不在 `1`–`4`（含缺省为 0）：`400 无效的阶段值: <n>，有效范围 1-4`
+- 有任务在飞（训练、FHE、导入下载/解密，或代码审计在跑）：`409 当前已有任务正在执行中 (taskId: <id>, op: <op>)，严禁切换运行阶段`
+- 请求体 JSON 解析失败：`400 请求解析失败: ...`
+
+切换成功后会清空当前活跃任务与令牌，并把新阶段落盘（`sealState`）；落盘失败只记错误日志，不影响本次响应。
+
+### 4.7 请求 TAA 导出结果（/v1/taa/export）
 
 该接口用于导出某个任务的结果目录压缩包：目录取自导入索引（`{security.resultDir}/import-index.json`）中按 `requestId`/`taskId` 命中的那条记录。考虑到结果文件可能较大，成功时接口直接返回二进制文件流。
 
 > **打包的是该任务自己的结果目录，文件名取自该目录名**：导出对象是记录里的 `{security.resultDir}/{requestId}-{taskId}`（`resultDir` 默认 `/opt/taa/results`），也就是这次训练执行时 `<out>` 指向的目录；压缩包文件名等于该目录名，即 `{requestId}-{taskId}.zip`，加密导出时追加 `.enc`。`requestId`/`taskId` 在拼进路径前会做文件名净化：非 `A-Za-z0-9-_.` 的字符替换为 `-`，净化后为空的片段落为 `request`（例如只给 `taskId=task-001` 时文件名是 `request-task-001.zip`）。接口不按阶段去挑 `debug`/`train` 子目录。
 
 > **导出用哪把公钥由「记录阶段」决定**：记录的阶段来自该次数据下发（`/v1/taa/import`）落库时的当前阶段；记录里没有阶段（为 0）时回退到当前阶段。阶段只支持 1/2/3，落在其他值（例如 4 推理）时返回 400。
+
+> **`fhe` 实例导出的是服务产出的原始结果包**：FHE 结果在落盘时就是 FHE 服务给的 `output.zip`，按字节原样保存。导出时直接返回这份字节，**不再二次压缩**（否则平台要解两层包），因此文件名是结果目录名加 `.zip`。这类实例**从不加密**：不保存导出公钥，请求里带的 `publicKey` 也会被忽略并记一条警告——调用方期望拿到信封时静默丢弃，只会让它读不出结果。
 
 > 公钥为非必填：能取到公钥就加密导出，取不到就明文导出。阶段 3 的公钥选择顺序为「阶段 1 `/v1/taa/importModel` 保存的公钥 → 本请求的 `publicKey` → 明文」；阶段 1/2 为「本请求的 `publicKey` → 明文」。
 
@@ -1224,6 +1352,7 @@ TAA 在任务执行过程中通过该接口向平台上报当前任务的数值�
 | phase 2（测试） | 该任务结果目录压缩得到的 zip | `{requestId}-{taskId}.zip` | 请求 `publicKey` 非空时加密，文件名追加 `.enc` |
 | phase 3（正式训练） | 该任务结果目录压缩得到的 zip | `{requestId}-{taskId}.zip` | 优先使用 phase 1 `/v1/taa/importModel` 保存的公钥加密；未保存时使用请求 `publicKey`；两者均为空则明文导出。加密时文件名追加 `.enc` |
 | 其他值（如 phase 4 推理） | 暂不支持 | - | 返回 400 |
+| `fhe` 实例（任意阶段） | 服务产出的 `output.zip` 原样字节，不再压缩 | `{requestId}-{taskId}.zip` | 从不加密，`publicKey` 被忽略 |
 
 **成功响应内容类型**：`application/octet-stream`
 
@@ -1357,13 +1486,68 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
 > 上面两条 500 只在 `codeAudit.llm.failClosed` 为 `true` 时返回；设为 `false` 时这两种状态记警告后照常导出，只有第一条"未通过"的 400 与开关无关。
 
-其余失败场景：请求体 JSON 解析失败、`requestId` 与 `taskId` 命中了不同记录（均为 400）；加载导入索引失败、检查结果文件失败（`training_report.json` 存在但无法 stat）、加密失败（均为 500）。结果目录不存在时不会走到压缩这一步——入口的文件检查会先返回 404。
+其余失败场景：请求体 JSON 解析失败、`requestId` 与 `taskId` 命中了不同记录（均为 400）；加载导入索引失败、检查结果文件失败（`training_report.json` 存在但无法 stat）、加密失败（均为 500）。结果目录不存在时不会走到压缩这一步——入口的文件检查会先返回 404。`fhe` 实例上还有一条 `500 读取 FHE 结果包失败: ...`：记录里没有 `output.zip`，或它读不出来。
 
 ---
 
-## 5. 调试接口
+## 5. 内部回调（FHE 服务 → TAA）
 
-### 5.1 连通性检查（/v1/taa/health）
+### 5.1 FHE 服务终态回调（/v1/taa/fheCallback）
+
+只有 `server.type=fhe` 的实例提供该接口：FHE 服务用它通知某个任务的终态（成功/失败）。TAA 收到后据此结束等待、取回 `output.zip` 并通过 `/v1/taa/reportRes` 上报。平台不调用它。
+
+**请求**：`POST /v1/taa/fheCallback`
+
+**请求内容类型**：`application/json`
+
+**访问控制**：
+
+- 接口不鉴权，改为**只接受本机环回地址**（`127.0.0.0/8`、`::1`）的来源。TAA 交给 FHE 服务的回调地址就是 `127.0.0.1`，因此服务必然经环回访问；网络上的其他进程无法伪造某个任务的终态。
+- 环回过滤区分不了同一台机器上的不同进程，这是为了去掉共享令牌而刻意接受的代价。
+- 非 `fhe` 实例、或来源不是环回地址，一律返回 `404 {"msg":"not found"}`——而不是 `400`，这样该接口在不提供它的实例上不可见。
+
+**幂等性**：FHE 服务对同一任务最多投递 4 次（退避 `0/1/4/16s`）。本接口按构造幂等：只有真正结束任务的那次投递起作用，其余投递不做任何事；**每次投递都返回 `200`**——返回非 2xx 只会让服务对着一个已经结束的任务继续重试。
+
+**参数**（由 FHE 服务按其回调约定提交）：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `taskId` / `task_id` | `string` | 是 | 任务 ID，两种下划线/驼峰写法都接受；为空返回 400 |
+| `status` | `string` | 是 | 任务终态，为空返回 400 |
+| `resultZip` / `result_zip` | `string` | 否 | 结果包位置 |
+| `cases` / `results` | `array` | 否 | 各用例的执行结果；`cases` 为空时读取 `results` |
+
+> 请求体上限 `4 MiB`，超限返回 `400 回调请求体过大`。解析失败返回 `400`，`msg` 为解析错误本身（`decode fhe callback: ...`、`fhe callback has no task id`、`fhe callback for task <id> has no status` 等）。
+
+**响应内容类型**：`application/json`
+
+**响应结果字段**：`result` 恒为 `null`。
+
+**成功响应示例**（200 OK）：
+
+```jsonc
+{
+  "msg": "ok",
+  "result": null,
+  "error": 0
+}
+```
+
+**失败响应示例**（400，请求体解析失败）：
+
+```jsonc
+{
+  "msg": "decode fhe callback: unexpected end of JSON input",
+  "result": null,
+  "error": 400
+}
+```
+
+---
+
+## 6. 调试接口
+
+### 6.1 连通性检查（/v1/taa/health）
 
 **请求**：`POST /v1/taa/health`
 
@@ -1388,11 +1572,10 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `phase` | `number` | 当前阶段：`1` 调试，`2` 测试，`3` 正式训练，`4` 推理 |
-| `phaseName` | `string` | 阶段名称 |
+| `phaseName` | `string` | 阶段名称：`调试`、`测试`、`正式训练`、`推理`；未知值返回 `未知(<n>)` |
 | `modelImported` | `bool` | 模型是否已导入 |
-| `dataImported` | `bool` | 数据是否已导入 |
-| `trainingDone` | `bool` | 训练是否已完成 |
-| `currentOp` | `string` | 当前操作状态：`idle`、`downloading`、`decrypting`、`training` 等 |
+| `trainingRunning` | `bool` | 当前是否有训练在跑 |
+| `currentOp` | `string` | 当前操作状态：`idle`、`downloading`、`decrypting`、`analyzing`、`saving`（`data-anaylsis` 落盘）、`staging`、`training`、`reporting`；审计在跑且没有其他操作时为 `auditing` |
 
 **成功响应示例**（200 OK）：
 
@@ -1403,8 +1586,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
     "phase": 1,
     "phaseName": "调试",
     "modelImported": false,
-    "dataImported": false,
-    "trainingDone": false,
+    "trainingRunning": false,
     "currentOp": "idle"
   },
   "error": 0
@@ -1414,9 +1596,9 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 **使用场景**：
 - 在调用其他接口前，先确认 TAA 服务是否正常运行
 - 检查 TAA 当前所处的阶段状态
-- 查看资源导入和训练完成状态
+- 查看模型导入与训练运行状态
 
-### 5.2 查询 TAA 完整状态（/v1/taa/status）
+### 6.2 查询 TAA 完整状态（/v1/taa/status）
 
 该接口用于查询 TAA 的完整状态信息，比 `/v1/taa/health` 返回更多字段。
 
@@ -1441,13 +1623,11 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `phase` | `number` | 当前阶段：`1` 调试，`2` 测试，`3` 正式训练，`4` 推理 |
-| `phaseName` | `string` | 阶段名称 |
+| `phaseName` | `string` | 阶段名称：`调试`、`测试`、`正式训练`、`推理`；未知值返回 `未知(<n>)` |
 | `modelImported` | `bool` | 模型是否已导入 |
-| `dataImported` | `bool` | 数据是否已导入 |
-| `trainingDataImported` | `bool` | 训练数据是否已导入 |
-| `trainingDone` | `bool` | 训练是否已完成 |
-| `currentOp` | `string` | 当前操作状态 |
-| `logCount` | `number` | 日志缓冲区中的日志数量 |
+| `trainingRunning` | `bool` | 当前是否有训练在跑（`fhe` 实例上恒为 `false`，FHE 任务在 `currentOp` 上体现） |
+| `currentOp` | `string` | 当前操作状态：`idle`、`downloading`、`decrypting`、`analyzing`、`saving`（`data-anaylsis` 落盘）、`staging`、`training`、`reporting`；审计在跑且没有其他操作时为 `auditing` |
+| `logCount` | `number` | 日志缓冲区中尚未被上报例程取走的条数 |
 
 **成功响应示例**（200 OK）：
 
@@ -1458,9 +1638,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
     "phase": 1,
     "phaseName": "调试",
     "modelImported": true,
-    "dataImported": false,
-    "trainingDataImported": false,
-    "trainingDone": false,
+    "trainingRunning": false,
     "currentOp": "idle",
     "logCount": 5
   },
