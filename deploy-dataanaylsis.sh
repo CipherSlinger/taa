@@ -112,7 +112,7 @@ done
 if [[ "$want_save" == true ]]; then
   date_tag="$(date +%Y%m%d)"
   [[ "$has_image" == true ]] || args+=(--image "taa-dataanaylsis:$date_tag")
-  [[ "$has_archive" == true ]] || args+=(--archive "$PROJECT_DIR/deploy/taa-dataanaylsis-$date_tag.tar.gz")
+  [[ "$has_archive" == true ]] || args+=(--archive "$PROJECT_DIR/deploy/out/taa-dataanaylsis-$date_tag.tar.gz")
 fi
 
 log "config: $CONFIG_TEMPLATE (server.type=data-anaylsis, no semgrep, no LLM)"

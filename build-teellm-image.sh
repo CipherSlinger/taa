@@ -34,7 +34,7 @@ CLEAN_BASE_IMAGE="${CLEAN_BASE_IMAGE:-teellm-base:$DATE_TAG}"
 # Every path inside the image lives here; nothing under /root/taa is used or created.
 IMAGE_WORKDIR="${IMAGE_WORKDIR:-/opt/teellm}"
 TARGET_IMAGE="${TARGET_IMAGE:-teellm:teellm-$DATE_TAG}"
-TARGET_ARCHIVE="${TARGET_ARCHIVE:-$PROJECT_DIR/deploy/teellm-image-$DATE_TAG.tar.gz}"
+TARGET_ARCHIVE="${TARGET_ARCHIVE:-$PROJECT_DIR/deploy/out/teellm-image-$DATE_TAG.tar.gz}"
 REGISTRY_IMAGE="${REGISTRY_IMAGE:-172.16.10.178:31313/teellm:teellm-$DATE_TAG}"
 BUILDER_CONTAINER="${BUILDER_CONTAINER:-taa-teellm-builder-$$}"
 

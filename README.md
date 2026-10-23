@@ -186,8 +186,9 @@ flowchart TB
 │   └── taa-production.json           # Production Kubernetes Pod template (identity injected via env)
 ├── deploy/                           # Container deployment manifests & supervisor scripts
 │   ├── start.sh                      # TAA autostart supervisor daemon with keep-alive & manual mode
-│   ├── base/                         # Base image archives (taa-env, jupyter-nologin-full)
+│   ├── base/                         # Base image archives (inputs: taa-env, jupyter-nologin-full)
 │   ├── certs/                        # Hygon CSV certificate chain (hrk.cert, hsk_cek.cert)
+│   ├── out/                          # Packaged image archives produced by the deploy scripts
 │   └── manifest/docker/              # Base environment Dockerfiles & build assets
 ├── models/                           # Bundled offline models & runtimes (e.g., Ollama / Qwen)
 ├── docs/                             # Architecture specifications & API design documents
@@ -611,7 +612,7 @@ FHE API at `127.0.0.1:58996` over container loopback.
 ./deploy-fhe.sh platform-mock   # only platform-mock
 
 # Package instead of deploy: bake TAA into the FHE image and export an archive
-./deploy-fhe.sh taa save        # -> deploy/taa-fhe-<date>.tar.gz
+./deploy-fhe.sh taa save        # -> deploy/out/taa-fhe-<date>.tar.gz
 ```
 
 - **One container, one network namespace.** The container runs the image's own
@@ -642,7 +643,7 @@ FHE API at `127.0.0.1:58996` over container loopback.
 - **`taa save`** builds the TAA binary, bakes it, `deploy/start.sh`, the combined entrypoint
   and the rendered config into an image built **from the FHE image**, tags the result
   `TAA_FHE_SAVE_IMAGE` (`taa-fhe:<date>`) and exports it as `TAA_FHE_SAVE_ARCHIVE` (default
-  `deploy/taa-fhe-<date>.tar.gz`). Nothing is started. If the FHE base image is not present
+  `deploy/out/taa-fhe-<date>.tar.gz`). Nothing is started. If the FHE base image is not present
   locally, the bundle archive is verified against `SHA256SUMS` and loaded first. The image is
   assembled and saved **locally**; on the default remote target it is then uploaded and
   `docker load`ed, and the uploaded copy is kept. Run the result with

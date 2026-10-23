@@ -133,7 +133,7 @@ DOCKER_ID="${DOCKER_ID:-}"
 # ── Packaging the taa-fhe image (taa save) ───────────────────────────────────
 SAVE_DATE_TAG="$(date +%Y%m%d)"
 TAA_FHE_SAVE_IMAGE="${TAA_FHE_SAVE_IMAGE:-taa-fhe:${SAVE_DATE_TAG}}"
-TAA_FHE_SAVE_ARCHIVE="${TAA_FHE_SAVE_ARCHIVE:-$PROJECT_DIR/deploy/taa-fhe-${SAVE_DATE_TAG}.tar.gz}"
+TAA_FHE_SAVE_ARCHIVE="${TAA_FHE_SAVE_ARCHIVE:-$PROJECT_DIR/deploy/out/taa-fhe-${SAVE_DATE_TAG}.tar.gz}"
 SAVE_ACTION=0
 SAVE_BUILDER_CONTAINER=""
 
