@@ -17,8 +17,10 @@ import (
 
 // blockingAuditEngine blocks the audit's static scan until the audit context is
 // cancelled. Every call blocks, so a test that starts two audits releases the
-// second one explicitly.
+// second one explicitly. The embedded interface supplies the rest of the
+// contract without hand-written forwards.
 type blockingAuditEngine struct {
+	codeaudit.StaticEngine
 	startedOnce sync.Once
 	stoppedOnce sync.Once
 	started     chan struct{}
@@ -32,15 +34,6 @@ func newBlockingAuditEngine() *blockingAuditEngine {
 	}
 }
 
-func (e *blockingAuditEngine) ScanDirectory(dir string) (*codeaudit.Report, error) {
-	report, _, err := e.ScanDirectoryWithLinesContext(context.Background(), dir)
-	return report, err
-}
-
-func (e *blockingAuditEngine) ScanDirectoryWithLines(dir string) (*codeaudit.Report, map[string]int, error) {
-	return e.ScanDirectoryWithLinesContext(context.Background(), dir)
-}
-
 func (e *blockingAuditEngine) ScanDirectoryWithLinesContext(ctx context.Context, dir string) (*codeaudit.Report, map[string]int, error) {
 	e.startedOnce.Do(func() { close(e.started) })
 	<-ctx.Done()
@@ -48,7 +41,62 @@ func (e *blockingAuditEngine) ScanDirectoryWithLinesContext(ctx context.Context,
 	return nil, nil, ctx.Err()
 }
 
+// Name is overridden because the embedded interface is nil: a promoted method
+// would dereference it. The audit path calls Name for logging before it scans.
 func (e *blockingAuditEngine) Name() string { return "blocking" }
+
+// waitFor fails the test unless ch is closed within the timeout, with what
+// naming the event that was expected.
+func waitFor(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s", what)
+	}
+}
+
+// auditReportRecorder is a platform stub that records /reportAudit requests and
+// answers everything else with 200, so a test can assert what the platform was
+// (never) told.
+type auditReportRecorder struct {
+	mu      sync.Mutex
+	reports []reportRequest
+	server  *httptest.Server
+}
+
+func newAuditReportRecorder(t *testing.T) *auditReportRecorder {
+	t.Helper()
+	rec := &auditReportRecorder{}
+	rec.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == reportAuditEndpoint {
+			var rr reportRequest
+			_ = json.NewDecoder(r.Body).Decode(&rr)
+			rec.mu.Lock()
+			rec.reports = append(rec.reports, rr)
+			rec.mu.Unlock()
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(rec.server.Close)
+	return rec
+}
+
+func (rec *auditReportRecorder) received() []reportRequest {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	return append([]reportRequest(nil), rec.reports...)
+}
+
+// assertNotReported fails if the platform was told anything about req.
+func (rec *auditReportRecorder) assertNotReported(t *testing.T, req importRequest) {
+	t.Helper()
+	for _, rr := range rec.received() {
+		if rr.RequestID == req.RequestID || rr.TaskID == req.TaskID {
+			t.Fatalf("aborted audit was reported to the platform: %+v", rr)
+		}
+	}
+}
 
 // TestAbortModelAuditStopsTheRunningAudit pins that an abort cancels the scan,
 // clears the durable pending marker, and leaves the audit fields idle.
@@ -202,11 +250,7 @@ func TestAbortedAuditDoesNotReport(t *testing.T) {
 
 	req := importRequest{RequestID: "req-old", TaskID: "task-old"}
 	state.launchModelAudit(req)
-	select {
-	case <-engine.started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("audit did not start")
-	}
+	waitFor(t, engine.started, "audit did not start")
 
 	state.abortModelAudit()
 	state.waitAuditStopped()
@@ -230,20 +274,8 @@ func TestModelImportReplacesAuditingModelAndAuditsAgain(t *testing.T) {
 	state.Security.Engine = engine
 	state.Security.ScanEnabled = true
 
-	var mu sync.Mutex
-	var auditReports []reportRequest
-	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == reportAuditEndpoint {
-			var rr reportRequest
-			_ = json.NewDecoder(r.Body).Decode(&rr)
-			mu.Lock()
-			auditReports = append(auditReports, rr)
-			mu.Unlock()
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer platform.Close()
-	state.PlatformIP = platform.URL
+	rec := newAuditReportRecorder(t)
+	state.PlatformIP = rec.server.URL
 	state.DockerID = "docker-test"
 
 	oldReq := importRequest{RequestID: "req-old", TaskID: "task-old"}
@@ -252,11 +284,7 @@ func TestModelImportReplacesAuditingModelAndAuditsAgain(t *testing.T) {
 	state.saveModelSuccessLocked("https://example.test/old.tar.gz")
 	state.mu.Unlock()
 	state.launchModelAudit(oldReq)
-	select {
-	case <-engine.started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("old audit did not start")
-	}
+	waitFor(t, engine.started, "old audit did not start")
 	state.mu.RLock()
 	oldDone := state.auditDone
 	state.mu.RUnlock()
@@ -330,14 +358,7 @@ func TestModelImportReplacesAuditingModelAndAuditsAgain(t *testing.T) {
 	// processImportedResource calls waitAuditStopped before registering the new
 	// pending marker, and the loop above waits for that registration. Nothing is
 	// therefore still in flight that could report the aborted audit.
-	mu.Lock()
-	for _, rr := range auditReports {
-		if rr.RequestID == "req-old" || rr.TaskID == "task-old" {
-			mu.Unlock()
-			t.Fatalf("aborted audit was reported to the platform: %+v", rr)
-		}
-	}
-	mu.Unlock()
+	rec.assertNotReported(t, oldReq)
 
 	// Release the second blocking audit and wait for it, so it cannot outlive
 	// the test's TempDir cleanup.
@@ -354,21 +375,9 @@ func TestModelImportDownloadFailureAfterAbortRollsBack(t *testing.T) {
 	state.Security.Engine = engine
 	state.Security.ScanEnabled = true
 
-	var mu sync.Mutex
-	var auditReports []reportRequest
-	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == reportAuditEndpoint {
-			var rr reportRequest
-			_ = json.NewDecoder(r.Body).Decode(&rr)
-			mu.Lock()
-			auditReports = append(auditReports, rr)
-			mu.Unlock()
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer platform.Close()
+	rec := newAuditReportRecorder(t)
 	state.mu.Lock()
-	state.PlatformIP = platform.URL
+	state.PlatformIP = rec.server.URL
 	state.DockerID = "docker-test"
 	state.ModelImported = true
 	state.mu.Unlock()
@@ -378,11 +387,7 @@ func TestModelImportDownloadFailureAfterAbortRollsBack(t *testing.T) {
 	state.markModelAuditPendingLocked(oldReq, 1)
 	state.mu.Unlock()
 	state.launchModelAudit(oldReq)
-	select {
-	case <-engine.started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("old audit did not start")
-	}
+	waitFor(t, engine.started, "old audit did not start")
 
 	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
@@ -414,12 +419,5 @@ func TestModelImportDownloadFailureAfterAbortRollsBack(t *testing.T) {
 		t.Fatal("ModelImported stayed true after the download failed")
 	}
 
-	mu.Lock()
-	for _, rr := range auditReports {
-		if rr.RequestID == "req-old" || rr.TaskID == "task-old" {
-			mu.Unlock()
-			t.Fatalf("aborted audit was reported to the platform: %+v", rr)
-		}
-	}
-	mu.Unlock()
+	rec.assertNotReported(t, oldReq)
 }

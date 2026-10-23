@@ -673,23 +673,38 @@ func (s *TAAState) launchModelAudit(req importRequest) {
 	s.auditDone = done
 	s.mu.Unlock()
 
-	go func() {
-		defer close(done)
-		defer s.finishAudit(gen, done)
-		defer func() {
-			if r := recover(); r != nil {
-				s.handleAuditPanic(gen, req, r)
-			}
-		}()
+	s.runAsyncSafeWith(func() {
+		s.finishAudit(gen, done)
+		close(done)
+	}, func(r any) {
+		s.handleAuditPanic(gen, req, r)
+	}, func() {
 		if !s.auditAndReportModelImport(ctx, gen, req) {
 			// A superseded or cancelled audit is not a failed verdict. It says so
 			// through logAuditAborted's Info line; warning here would read as a
 			// refusal of the model that was never actually judged.
-			if ctx.Err() == nil && s.isCurrentAuditGen(gen) {
+			if !s.auditSuperseded(ctx, gen) {
 				s.Logs.Add(LogWarn, "import", "模型代码审计未通过，结论仅作参考，不阻断导入与训练: taskId=%s", req.TaskID)
 			}
 		}
-	}()
+	})
+}
+
+// auditSuperseded reports whether this audit no longer owns the state: it was
+// cancelled, or a newer import replaced it. Such an audit stops without
+// reporting anything.
+func (s *TAAState) auditSuperseded(ctx context.Context, gen uint64) bool {
+	return ctx.Err() != nil || !s.isCurrentAuditGen(gen)
+}
+
+// abortAuditIfSuperseded is the logging form used at the stage boundaries: it
+// reports the abort once and tells the caller to return early.
+func (s *TAAState) abortAuditIfSuperseded(ctx context.Context, gen uint64, req importRequest) bool {
+	if !s.auditSuperseded(ctx, gen) {
+		return false
+	}
+	s.logAuditAborted(req)
+	return true
 }
 
 // auditAndReportModelImport 对解压后的模型代码执行安全审计（静态扫描 + 可选 LLM 语义验证），
@@ -724,8 +739,7 @@ func (s *TAAState) auditAndReportModelImport(ctx context.Context, gen uint64, re
 	// fail-closed：LLM 启用且要求不可用时阻断时，先探测 LLM 可用性；
 	// 若不可用则直接判定失败，避免降级为纯静态扫描静默放行。
 	if cfg.Enabled && cfg.FailClosed && !isLLMServiceAvailable(ctx, llmClient, cfg.Endpoint, cfg.Model) {
-		if ctx.Err() != nil || !s.isCurrentAuditGen(gen) {
-			s.logAuditAborted(req)
+		if s.abortAuditIfSuperseded(ctx, gen, req) {
 			return false
 		}
 		s.Logs.Add(LogError, "audit", "LLM 服务不可用，按 fail-closed 策略上报失败: endpoint=%s model=%s", cfg.Endpoint, cfg.Model)
@@ -737,8 +751,7 @@ func (s *TAAState) auditAndReportModelImport(ctx context.Context, gen uint64, re
 	audit, err := codeaudit.GenerateAuditReport(ctx, s.Security.ModelDir, s.Security.Engine,
 		codeaudit.AuditConfig{LLM: cfg, Binary: s.Security.Binary}, llmClient)
 	if err != nil {
-		if ctx.Err() != nil || !s.isCurrentAuditGen(gen) {
-			s.logAuditAborted(req)
+		if s.abortAuditIfSuperseded(ctx, gen, req) {
 			return false
 		}
 		s.Logs.Add(LogError, "audit", "模型代码审计失败: %v", err)
@@ -746,8 +759,7 @@ func (s *TAAState) auditAndReportModelImport(ctx context.Context, gen uint64, re
 		s.reportAuditIfCurrent(gen, req.RequestID, req.TaskID, 2, fmt.Sprintf("代码审计失败: %v", err), "")
 		return false
 	}
-	if ctx.Err() != nil || !s.isCurrentAuditGen(gen) {
-		s.logAuditAborted(req)
+	if s.abortAuditIfSuperseded(ctx, gen, req) {
 		return false
 	}
 	s.setLastAudit(gen, audit)

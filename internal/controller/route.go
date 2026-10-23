@@ -653,12 +653,30 @@ func (s *TAAState) finishAudit(gen uint64, done chan struct{}) {
 		return
 	}
 	s.resetAuditStateLocked()
-	if s.pendingAudit != nil {
-		s.clearAuditPendingLocked()
-		if err := s.sealStateLocked(); err != nil {
-			s.Logs.Add(LogError, "state", "持久化审计结论状态失败: %v", err)
-		}
+	s.concludeAuditPendingLocked()
+}
+
+// concludeAuditPendingLocked drops the durable pending marker and seals, so a
+// restart does not report an audit that already concluded or was abandoned.
+// Sealing is skipped when there is no marker: the audit busy fields this
+// normally accompanies are not persisted. Caller must hold s.mu Lock.
+func (s *TAAState) concludeAuditPendingLocked() {
+	if s.pendingAudit == nil {
+		return
 	}
+	s.clearAuditPendingLocked()
+	if err := s.sealStateLocked(); err != nil {
+		s.Logs.Add(LogError, "state", "持久化审计状态失败: %v", err)
+	}
+}
+
+// supersedeAuditLocked invalidates the current audit run: the generation is
+// bumped so every later write from its goroutine fails its ownership check, and
+// its busy fields and durable marker are cleared. Caller must hold s.mu Lock.
+func (s *TAAState) supersedeAuditLocked() {
+	s.auditGen++
+	s.resetAuditStateLocked()
+	s.concludeAuditPendingLocked()
 }
 
 // abortModelAudit cancels the running model audit, if any. It is silent: no
@@ -676,12 +694,7 @@ func (s *TAAState) abortModelAudit() {
 	}
 	oldTask := s.ActiveAuditTaskID
 	oldRequest := s.ActiveAuditRequestID
-	s.auditGen++
-	s.resetAuditStateLocked()
-	s.clearAuditPendingLocked()
-	if err := s.sealStateLocked(); err != nil {
-		s.Logs.Add(LogError, "state", "持久化审计中止状态失败: %v", err)
-	}
+	s.supersedeAuditLocked()
 	cancel := s.auditCancel
 	s.mu.Unlock()
 
@@ -781,10 +794,7 @@ func (s *TAAState) concludeAuditPending(gen uint64) {
 	if s.auditGen != gen || s.pendingAudit == nil {
 		return
 	}
-	s.clearAuditPendingLocked()
-	if err := s.sealStateLocked(); err != nil {
-		s.Logs.Add(LogError, "state", "持久化审计结论状态失败: %v", err)
-	}
+	s.concludeAuditPendingLocked()
 }
 
 // ConcludeAuditPending 导出供调用的待决审计标记清除方法，供启动期对账使用：
@@ -792,13 +802,7 @@ func (s *TAAState) concludeAuditPending(gen uint64) {
 func (s *TAAState) ConcludeAuditPending() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.pendingAudit == nil {
-		return
-	}
-	s.clearAuditPendingLocked()
-	if err := s.sealStateLocked(); err != nil {
-		s.Logs.Add(LogError, "state", "持久化审计结论状态失败: %v", err)
-	}
+	s.concludeAuditPendingLocked()
 }
 
 // PendingAudit reports the audit that was in flight when the process last sealed
@@ -963,15 +967,24 @@ func (s *TAAState) promoteCurrentTaskToTraining() error {
 
 // runAsyncSafe 在独立 goroutine 中安全执行异步处理逻辑，统一管理锁释放与 panic 恢复。
 func (s *TAAState) runAsyncSafe(name string, release func(), fn func()) {
+	s.runAsyncSafeWith(release, func(r any) { s.handleAsyncPanic(name, r) }, fn)
+}
+
+// runAsyncSafeWith is runAsyncSafe with a caller-supplied panic handler, for
+// asynchronous paths whose recovery must not be the generic in-flight-task
+// compensation (the model audit owns its own state and reports itself).
+func (s *TAAState) runAsyncSafeWith(release func(), onPanic func(any), fn func()) {
 	go func() {
 		if release != nil {
 			defer release()
 		}
-		defer func() {
-			if r := recover(); r != nil {
-				s.handleAsyncPanic(name, r)
-			}
-		}()
+		if onPanic != nil {
+			defer func() {
+				if r := recover(); r != nil {
+					onPanic(r)
+				}
+			}()
+		}
 		fn()
 	}()
 }
@@ -1084,12 +1097,7 @@ func (s *TAAState) handleAuditPanic(gen uint64, req importRequest, r any) {
 	}
 	platformIP := s.PlatformIP
 	dockerID := s.DockerID
-	s.auditGen++
-	s.resetAuditStateLocked()
-	s.clearAuditPendingLocked()
-	if err := s.sealStateLocked(); err != nil {
-		s.Logs.Add(LogError, "panic", "持久化审计中断状态失败: %v", err)
-	}
+	s.supersedeAuditLocked()
 	s.mu.Unlock()
 
 	if platformIP != "" && dockerID != "" && (taskID != "" || requestID != "") {
