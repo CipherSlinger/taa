@@ -59,7 +59,8 @@ TARGET_POD=taa-teellm ./deploy-llm.sh taa
 
 # 打包镜像依赖清单：基础镜像自带什么
 
-四个部署脚本共五条打包链路。每一节先列该镜像**从基础镜像继承到的依赖**，最后标注打包脚本
+四个部署脚本共五条打包链路；第 6 节是远端 DCU 测试 Pod 用的 vLLM 镜像，不由本仓库脚本打包。
+每一节先列该镜像**从基础镜像继承到的依赖**，最后标注打包脚本
 自己补进去的东西（"新增"），以便区分"镜像凭什么能跑"和"打包补了什么"。
 
 体积取 `docker image inspect .Size`。`docker images` 的 SIZE 列对同一镜像会显示成 3.77 GB
@@ -223,7 +224,62 @@ HOME/WORKDIR = `/home/jovyan`，EXPOSE 8888。
 `etc/default/taa.env`；选中 semgrep 时整棵 `semgrep-payload/rootfs`（4242 文件，
 **自带 `python3.10`**，不依赖基座）。
 
-## 四个基础镜像横向对照
+## 6. DCU 机密测试 Pod — `/home/wj/dcu/dcu-tee-test-pod-create.sh`
+
+基础镜像 `harbor.sourcefind.cn:5443/dcu/admin/base/vllm:0.9.2-ubuntu22.04-dtk26.04-0130-py3.10-20260202`：
+Ubuntu 22.04.5，glibc 2.35，dpkg 984 个包，29 层，解压 25.6 GB（25611144188 B），
+用户 root，WORKDIR `/workspace`（空），ENTRYPOINT `docker-entrypoint.sh`（figlet 横幅 +
+检查 `/dev/kfd`、`/dev/dri`），CMD `/bin/bash`。
+
+脚本本身**不构建镜像**：它只保证本地私有仓库有 `172.16.10.178:31313/vllm:ubuntu-dtk`
+（没有就 `docker tag` + `docker push` 这份 25.6 GB 的上游镜像，`PULL_TIMEOUT=2400`），
+把 initdata 与 root 口令渲染进 `dcu-tee-test-pod-template.yaml`，apply 后校验 vfio 绑定和
+NodePort。所以这一节的"依赖"就是镜像里已经烘好的东西。
+
+**基础镜像自带**
+
+- 系统：`/usr/bin/python3` = 3.10.12（无 conda），237 个 pip 包，CA 证书齐全，`TZ=Asia/Shanghai`
+- AI 栈（全是海光 das 分支）：`vllm 0.9.2+das.opt5.dtk2604.20260129.g56d6c689`、
+  `torch 2.5.1+das.opt1.dtk2604.20260116.g78471bfd`、
+  `triton 3.1.0+das.opt1.dtk2604.20260123.g0732375a`、`transformers 4.57.6`、`ray 2.48.0`、
+  `numpy 1.25.0`、`fastapi 0.128.0`、`uvicorn 0.40.0`、`pydantic 2.12.5`、`accelerate 1.12.0`、
+  `safetensors 0.7.0`、`tokenizers 0.22.2`、`sentencepiece 0.2.1`；`python3.10-dev` 也在
+- DTK 26.04：`/opt/dtk -> /opt/dtk-26.04`，clang 17.0.0、dcc 25.10.0、`hipcc`、`rocminfo`、
+  `rocm-smi`、`rocm_agent_enumerator`、`librccl.so.1`、hipblas/hipblaslt/opencl/dushmem/dcc-gcvm、
+  `hipkernel.bin.gfx906/926/928/936/938`；另带 `/opt/ucx`、`/opt/mpi`、`/opt/hwloc`、
+  `/opt/mellanox`（MOFED 23.10-4.0.9.1）
+- 相关 ENV 已烘进镜像：`PATH`、`LD_LIBRARY_PATH`、`HYHAL_PATH=/opt/hyhal/`、
+  `AMDGPU_TARGETS=gfx906;gfx926;gfx928;gfx936;gfx938`、`ROCM_PATH`、`HIP_PATH`、
+  `MIOPEN_FIND_MODE=3`、`CMAKE_PREFIX_PATH`、`LIBRARY_PATH`、`*_INCLUDE_PATH`、
+  `MOFED_VERSION`、`UCX_HOME`
+- ssh：`openssh-server`/`client 1:8.9p1-3ubuntu0.13`，四把 host key 全部烘好
+  （`ssh_host_{rsa,ecdsa,ed25519,dsa}_key`，重建 Pod 指纹不变），`chpasswd`/`useradd`/`passwd` 可用
+- 命令：`bash`/`sh`/`dash`、`curl`、`wget`、`git`、`tar`、`gzip`、`xz`、`unzip`、`rsync`、
+  `openssl`、`vim`、`sudo`、`figlet`、`gcc`/`g++ 11.4.0`、`make`、`cmake 3.29.0`、`ninja`、
+  `ld`、`ifconfig`（net-tools）、`pgrep`/`pkill`、`flock`、`timeout`、`sha256sum`、`nproc`、`ldconfig`
+
+**基础镜像没有（别调）**
+
+`jq`、`ip`（iproute2，只有 `ifconfig`）、`less`、`nc`、`conda`、CUDA
+
+**已知坑：`/opt/hyhal` 不存在**
+
+镜像 ENV 里的 `HYHAL_PATH=/opt/hyhal/` 是宿主驱动路径，镜像和宿主上都没有这个目录。
+`/opt/dtk-26.04/env.sh` 会连报两次找不到，然后回退到 `/opt/dtk-26.04/.hyhal`（把
+`.hyhal/rocm_smi/lib` 追加进 `LD_LIBRARY_PATH`）。**不 source 就直接 `import torch` 会失败**：
+`librocm_smi64.so.2: cannot open shared object file`；source 之后 torch / vllm 都能 import，
+只留一条 `get hyhal driver version error!` 警告。`hy-smi` 在
+`/opt/dtk-26.04/.hyhal/bin/hy-smi`，**不在烘好的 PATH 里**（`/opt/dtk/bin/hy-smi` 不存在）；
+在没透传卡的普通容器里执行会报 `/dev/dri is empty or missing`。
+`/etc/bash.bashrc` 第 72–73 行会 source `env.sh`，但只对交互式 shell 生效。
+
+**不属于镜像的部分**（模板 command 运行时才造）
+
+`/dev/kfd`、`/dev/mkfd`、`/dev/dri/*`（vfio 直通）、`/etc/profile.d/00-dtk-env.sh`、
+root 口令、`sshd_config` 改动（放开 root 登录）。这些每次起 Pod 由
+`dcu-tee-test-pod-template.yaml` 的 command 现场写入，镜像里没有。
+
+## 基础镜像横向对照
 
 taa-env（TEE 训练/推理、teellm）
 - `bash` ✓，`python3` 3.12.3，`curl` ✓，`flock`/`timeout` ✓/✓
@@ -240,3 +296,7 @@ jupyter（数据分析）
 initrd 基座（CSV2 机密 VM）
 - `bash` ✓，`python3` ✗（payload 自带 3.10），`curl` ✗，`flock`/`timeout` ✓/✓
 - `libstdc++` ✗，`jq`/`rsync` ✗/✗，`torch` ✗
+
+vllm:ubuntu-dtk（DCU 机密测试 Pod）
+- `bash` ✓，`python3` 3.10.12，`curl` ✓，`flock`/`timeout` ✓/✓
+- `libstdc++` ✓，`jq` ✗ / `rsync` ✓，`torch` ✓ 2.5.1+das（DTK 26.04，需先 source `env.sh`）
