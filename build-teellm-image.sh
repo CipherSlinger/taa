@@ -33,9 +33,11 @@ BASE_ARCHIVE="${BASE_ARCHIVE:-$PROJECT_DIR/deploy/base/taa-env-slim-v2.tar.gz}"
 CLEAN_BASE_IMAGE="${CLEAN_BASE_IMAGE:-teellm-base:$DATE_TAG}"
 # Every path inside the image lives here; nothing under /root/taa is used or created.
 IMAGE_WORKDIR="${IMAGE_WORKDIR:-/opt/teellm}"
-TARGET_IMAGE="${TARGET_IMAGE:-teellm:teellm-$DATE_TAG}"
-TARGET_ARCHIVE="${TARGET_ARCHIVE:-$PROJECT_DIR/deploy/out/teellm-image-$DATE_TAG.tar.gz}"
-REGISTRY_IMAGE="${REGISTRY_IMAGE:-172.16.10.178:31313/teellm:teellm-$DATE_TAG}"
+# Same naming rule as the other packaging paths: <repo>:<YYYYMMDD>, with the archive named after
+# the image. No extra "teellm-" inside the tag, and no separate archive prefix.
+TARGET_IMAGE="${TARGET_IMAGE:-teellm:$DATE_TAG}"
+TARGET_ARCHIVE="${TARGET_ARCHIVE:-$PROJECT_DIR/deploy/out/teellm-$DATE_TAG.tar.gz}"
+REGISTRY_IMAGE="${REGISTRY_IMAGE:-172.16.10.178:31313/teellm:$DATE_TAG}"
 BUILDER_CONTAINER="${BUILDER_CONTAINER:-taa-teellm-builder-$$}"
 
 REMOTE_HOST="${REMOTE_HOST:-172.16.10.178}"

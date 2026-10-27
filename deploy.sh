@@ -203,8 +203,14 @@ LOCAL_DOCKER_IMAGE="${LOCAL_DOCKER_IMAGE:-taa-env:slim-v2}"
 SAVE_DATE_TAG="$(date +%Y%m%d)"
 BASE_DOCKER_IMAGE_ARCHIVE="${BASE_DOCKER_IMAGE_ARCHIVE:-$LOCAL_DOCKER_IMAGE_ARCHIVE}"
 BASE_DOCKER_IMAGE="${BASE_DOCKER_IMAGE:-$LOCAL_DOCKER_IMAGE}"
-DEFAULT_SAVE_IMAGE="${BASE_DOCKER_IMAGE}-${SAVE_DATE_TAG}"
-DEFAULT_SAVE_ARCHIVE="$PROJECT_DIR/deploy/out/taa-env-slim-v2-${SAVE_DATE_TAG}.tar.gz"
+# Packaging names follow one rule across this repository: <repo>:<YYYYMMDD>, with the archive
+# named after the image (<repo>-<YYYYMMDD>.tar.gz) under deploy/out. The tag carries only the
+# date, never the base image's tag, so the packaged image is not mistaken for the base it was
+# derived from (deploy-dataanaylsis.sh, deploy-fhe.sh and build-teellm-image.sh follow the same
+# rule). The name is independent of BASE_DOCKER_IMAGE: pointing --base at another image changes
+# what goes in, not what comes out.
+DEFAULT_SAVE_IMAGE="taa-train-infer:${SAVE_DATE_TAG}"
+DEFAULT_SAVE_ARCHIVE="$PROJECT_DIR/deploy/out/taa-train-infer-${SAVE_DATE_TAG}.tar.gz"
 CUSTOM_SAVE_IMAGE=""
 CUSTOM_SAVE_ARCHIVE=""
 CUSTOM_BASE_ARCHIVE=""
@@ -479,8 +485,9 @@ ensure_local_docker_container() {
 }
 
 # Removes every TEE-LLM and ollama artifact a base image may carry, then asserts each one is gone.
-# The list is enumerated from the combined images this repository produces (taa-env:slim-v2-<date>),
-# not guessed. A base image that never carried teellm makes every rm a no-op and every assertion
+# The list is enumerated from the combined images this repository produces
+# (taa-train-infer:<date>, taa-fhe:<date>, taa-dataanaylsis:<date>), not guessed.
+# A base image that never carried teellm makes every rm a no-op and every assertion
 # pass, so the same code covers both the slim base and a previously combined image.
 strip_teellm_from_image() {
   local container="$1"
@@ -746,7 +753,7 @@ Examples:
   $(basename "$0") docker start --model qwen2.5-coder:7b
   $(basename "$0") docker stop
   $(basename "$0") docker save
-  $(basename "$0") docker save --tag taa-env:slim-v2-$(date +%Y%m%d)
+  $(basename "$0") docker save --tag taa-train-infer:$(date +%Y%m%d)
   $(basename "$0") docker save -o /tmp/taa-env-production.tar.gz
   $(basename "$0") docker
   $(basename "$0") docker taa

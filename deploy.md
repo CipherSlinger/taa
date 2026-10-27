@@ -66,6 +66,21 @@ TARGET_POD=taa-teellm ./deploy-llm.sh taa
 体积取 `docker image inspect .Size`。`docker images` 的 SIZE 列对同一镜像会显示成 3.77 GB
 这类更大的数字（实测与 inspect 不一致），本文一律用前者。
 
+**镜像与归档命名规则**（四条打包链路统一）
+
+| 打包路径 | 镜像 | 归档 |
+|---|---|---|
+| `deploy.sh save` | `taa-train-infer:<YYYYMMDD>` | `deploy/out/taa-train-infer-<YYYYMMDD>.tar.gz` |
+| `deploy-fhe.sh taa save` | `taa-fhe:<YYYYMMDD>` | `deploy/out/taa-fhe-<YYYYMMDD>.tar.gz` |
+| `deploy-dataanaylsis.sh save` | `taa-dataanaylsis:<YYYYMMDD>` | `deploy/out/taa-dataanaylsis-<YYYYMMDD>.tar.gz` |
+| `build-teellm-image.sh` | `teellm:<YYYYMMDD>` | `deploy/out/teellm-<YYYYMMDD>.tar.gz` |
+
+标签只有打包当天的本地日期，不带基础镜像的标签、不带 commit、不自动打 `latest`；
+归档名与镜像名一一对应，只把 `:` 换成 `-`。推 registry 时加统一前缀
+`172.16.10.178:31313/`，仓库名不变。基础镜像（`taa-env:slim-v2`、
+`jupyter-nologin-full:v2.2`、`latti/latti-server-node:latest`、中间层 `teellm-base:<日期>`）
+不适用本规则。每个名字都能用环境变量或 `--image`/`--tag`、`--archive` 覆盖。
+
 ## 1. TEE 训练/推理（审计） — `deploy.sh`
 
 基础镜像 `taa-env:slim-v2`：Ubuntu 24.04.4，glibc 2.39，dpkg 130 个包，解压 1.84 GB，`/opt` 为空。

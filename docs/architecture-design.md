@@ -515,7 +515,7 @@ TAA_DEBUG_MODE=true ./deploy.sh taa
 ./deploy.sh docker taa                  # 仅本地启动 TAA
 ./deploy.sh docker platform-mock        # 仅本地启动平台模拟器
 ./deploy.sh docker stop                 # 停止容器内服务
-./deploy.sh docker save --tag taa-env:slim-v2-$(date +%Y%m%d)
+./deploy.sh docker save --tag taa-train-infer:$(date +%Y%m%d)
 
 # LLM 推理服务（Qwen / Ollama / TEE-LLM）不在这里管理
 # 它部署在远端宿主机的 Kata CSV2 Pod 里（首次需 --create-pod），TAA 通过 Pod IP 访问

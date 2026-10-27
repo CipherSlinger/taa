@@ -275,7 +275,7 @@ TEELLM_POD_NAME="${TEELLM_POD_NAME:-taa-teellm}"
 # The image built by build-teellm-image.sh carries the service, the supervisor, the certificates
 # and the ollama runtime, so a fresh guest serves without any host-side copy.
 TEELLM_IMAGE_DATE="${TEELLM_IMAGE_DATE:-$(date +%Y%m%d)}"
-TEELLM_POD_IMAGE="${TEELLM_POD_IMAGE:-172.16.10.178:31313/teellm:teellm-$TEELLM_IMAGE_DATE}"
+TEELLM_POD_IMAGE="${TEELLM_POD_IMAGE:-172.16.10.178:31313/teellm:$TEELLM_IMAGE_DATE}"
 TEELLM_POD_NODE="${TEELLM_POD_NODE:-hygon-master}"
 TEELLM_POD_RUNTIME_CLASS="${TEELLM_POD_RUNTIME_CLASS:-kata-qemu-csv2}"
 # Kata sizes the guest as default_memory + limits.memory and default_vcpus + limits.cpu, and
