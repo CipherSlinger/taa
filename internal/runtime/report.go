@@ -70,14 +70,6 @@ func BuildTrainingReport(taskID string, startedAt, finishedAt time.Time, status 
 	trainingTask["exit_code"] = exitCode
 	trainingTask["failure_reason"] = NullableString(failureReason)
 
-	trainingTaskMetrics := ObjectField(trainingTaskSource, "metrics")
-	if len(trainingTaskMetrics) == 0 {
-		trainingTaskMetrics = ObjectField(trainingResult, "metrics")
-	}
-	if len(trainingTaskMetrics) > 0 {
-		trainingTask["metrics"] = trainingTaskMetrics
-	}
-
 	if modelChecksum != nil {
 		trainingTask["model_checksum"] = modelChecksum
 	}

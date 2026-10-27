@@ -77,9 +77,9 @@ func TestBuildTrainingReport(t *testing.T) {
 		t.Fatalf("unexpected status/exit_code: %v, %v", trainingTask["status"], trainingTask["exit_code"])
 	}
 
-	metrics, ok := trainingTask["metrics"].(map[string]any)
-	if !ok || metrics["loss"] != 0.05 {
-		t.Fatalf("metrics mismatch: %v", trainingTask["metrics"])
+	metrics, ok := trainingTask["metrics"]
+	if ok {
+		t.Fatalf("training_result metrics should be ignored, got %v", metrics)
 	}
 
 	dataset, ok := report["dataset"].(map[string]any)
