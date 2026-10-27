@@ -274,8 +274,20 @@ K_NS="${TARGET_NAMESPACE:+-n $TARGET_NAMESPACE}"
 TEELLM_POD_NAME="${TEELLM_POD_NAME:-taa-teellm}"
 # The image built by build-teellm-image.sh carries the service, the supervisor, the certificates
 # and the ollama runtime, so a fresh guest serves without any host-side copy.
-TEELLM_IMAGE_DATE="${TEELLM_IMAGE_DATE:-$(date +%Y%m%d)}"
-TEELLM_POD_IMAGE="${TEELLM_POD_IMAGE:-172.16.10.178:31313/teellm:$TEELLM_IMAGE_DATE}"
+#
+# Its tag is the date it was built on, so the same-day default is only a guess: build on the 27th
+# and deploy on the 28th and today's tag names an image nobody pushed. Left alone, that guess is
+# the one the guest's CDH tries to pull, and the Pod stops in ImagePullBackOff after the guest has
+# already booted. resolve_teellm_pod_image() therefore replaces it with the newest teellm tag the
+# registry actually has, and refuses rather than falling back to a tag it cannot see.
+TEELLM_IMAGE_REGISTRY="${TEELLM_IMAGE_REGISTRY:-172.16.10.178:31313}"
+TEELLM_IMAGE_REPO="${TEELLM_IMAGE_REPO:-teellm}"
+# Captured before the default below, so resolution can tell "the operator named an image" from
+# "the script guessed one from today's date". Only a guess is replaced by a tag the registry
+# actually has; an explicit name is the operator's decision, and a registry whose tag listing is
+# slow, filtered or 401-guarded is no reason to override it.
+TEELLM_POD_IMAGE_WAS_SET="${TEELLM_POD_IMAGE+set}"
+TEELLM_POD_IMAGE="${TEELLM_POD_IMAGE:-$TEELLM_IMAGE_REGISTRY/$TEELLM_IMAGE_REPO:$(date +%Y%m%d)}"
 TEELLM_POD_NODE="${TEELLM_POD_NODE:-hygon-master}"
 TEELLM_POD_RUNTIME_CLASS="${TEELLM_POD_RUNTIME_CLASS:-kata-qemu-csv2}"
 # Kata sizes the guest as default_memory + limits.memory and default_vcpus + limits.cpu, and
@@ -388,6 +400,45 @@ check_remote_pod() {
   info "remote target pod verified: ${TARGET_POD} (namespace: ${TARGET_NAMESPACE:-default})"
 }
 
+# Replaces the date-guessed TEE-LLM image with the newest one the registry actually lists.
+#
+# The image tag is the build date (build-teellm-image.sh), so "today" is a guess that is only
+# right on the day of the build. Deployed a day later it names a tag nobody pushed, and the
+# failure is expensive and late: the Pod is applied, its guest boots, the in-guest CDH pulls, and
+# the Pod ends up in ImagePullBackOff after the confidential VM is already resident. Asking the
+# registry which teellm tags exist turns that guess into a fact.
+#
+# Only a guessed image is resolved. An explicit TEELLM_POD_IMAGE is used as given, and a registry
+# whose listing cannot be read falls back to the guess with a warning rather than failing: the
+# listing is a convenience, while a registry that answers 401 or is unreachable from the deploy
+# host says nothing about whether the guest's CDH can pull the tag.
+resolve_teellm_pod_image() {
+  if [[ -n "$TEELLM_POD_IMAGE_WAS_SET" ]]; then
+    return 0
+  fi
+
+  local listing tags newest
+  listing="$(remote_ssh "curl -sk --max-time 10 'https://$TEELLM_IMAGE_REGISTRY/v2/$TEELLM_IMAGE_REPO/tags/list'" 2>/dev/null || true)"
+  # One line per tag, date tags only: the repository root also answers with other names, and a
+  # tag this script cannot compare by date is not a candidate.
+  tags="$(grep -o '"[0-9]\{8\}"' <<<"$listing" | tr -d '"' | sort -r || true)"
+  if [[ -z "$tags" ]]; then
+    warn "could not list tags of $TEELLM_IMAGE_REGISTRY/$TEELLM_IMAGE_REPO; keeping $(date +%Y%m%d)"
+    detail "Set TEELLM_POD_IMAGE explicitly if today's tag is not the one in the registry."
+    return 0
+  fi
+
+  newest="${tags%%$'\n'*}"
+  if [[ "$newest" == "$(date +%Y%m%d)" ]]; then
+    info "TEE-LLM image: $TEELLM_POD_IMAGE (built today)"
+  else
+    local previous="$TEELLM_POD_IMAGE"
+    TEELLM_POD_IMAGE="$TEELLM_IMAGE_REGISTRY/$TEELLM_IMAGE_REPO:$newest"
+    info "TEE-LLM image: $TEELLM_POD_IMAGE (newest in the registry)"
+    detail "today's date tag is not there; $previous would fail the guest's image pull"
+  fi
+}
+
 # ── Dedicated TEE-LLM Pod lifecycle ───────────────────────────
 
 # Reads the cc_init_data annotation off a CoCo Pod that already runs on the remote host. The
@@ -452,6 +503,9 @@ pod_up() {
     fi
     info "reusing the running TEE-LLM Pod (nothing applied)"
   else
+    # Resolved only on the creating path: an existing Pod's image cannot change, so asking the
+    # registry there would be a request whose answer nothing acts on.
+    resolve_teellm_pod_image
     local cc_init_data
     cc_init_data="$(derive_cc_init_data)"
     TEMP_POD_MANIFEST="$(mktemp /tmp/teellm-pod.XXXXXX.yaml)"
@@ -1565,6 +1619,11 @@ Environment overrides:
       Name of the dedicated TEE-LLM Pod (--create-pod, pod-down).
   TEELLM_POD_IMAGE=${TEELLM_POD_IMAGE}
       Image for the dedicated TEE-LLM Pod; it must carry ollama, tar/curl and python3.
+      Left unset, it is today's date tag, replaced on --create-pod by the newest date tag the
+      registry lists ($TEELLM_IMAGE_REGISTRY/$TEELLM_IMAGE_REPO). Set explicitly, it is used
+      as given.
+  TEELLM_IMAGE_REGISTRY / TEELLM_IMAGE_REPO
+      Registry queried for the newest TEE-LLM tag, and the repository looked up in it.
   TEELLM_POD_NODE=${TEELLM_POD_NODE}
       Node the dedicated TEE-LLM Pod is pinned to.
   TEELLM_POD_RUNTIME_CLASS=${TEELLM_POD_RUNTIME_CLASS}

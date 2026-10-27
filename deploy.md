@@ -81,6 +81,12 @@ TARGET_POD=taa-teellm ./deploy-llm.sh taa
 `jupyter-nologin-full:v2.2`、`latti/latti-server-node:latest`、中间层 `teellm-base:<日期>`）
 不适用本规则。每个名字都能用环境变量或 `--image`/`--tag`、`--archive` 覆盖。
 
+**部署侧不按日期猜**：`deploy-llm.sh --create-pod` 建 Pod 前会查 registry 的
+`/v2/teellm/tags/list`，取最新的日期 tag 填进 Pod 清单，而不是直接用当天日期 ——
+镜像 tag 是构建日期，隔天部署时"今天"指向一个没人推过的 tag，Pod 会在 guest 启动之后
+停在 ImagePullBackOff。显式给了 `TEELLM_POD_IMAGE` 就原样使用；查询失败（401、不可达）
+则退回当天日期并告警。
+
 ## 1. TEE 训练/推理（审计） — `deploy.sh`
 
 基础镜像 `taa-env:slim-v2`：Ubuntu 24.04.4，glibc 2.39，dpkg 130 个包，解压 1.84 GB，`/opt` 为空。

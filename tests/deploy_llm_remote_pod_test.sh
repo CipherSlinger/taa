@@ -73,6 +73,17 @@ esac
 exec sh -c "$cmd"
 MOCK
 
+# curl, standing in for the local registry's tag listing. Only the teellm repository is answered;
+# CURL_FAILS makes every request fail, which is how case 7 checks the fallback.
+cat > "$MOCK_BIN/curl" <<'MOCK'
+#!/usr/bin/env bash
+if [[ "${CURL_FAILS:-false}" == "true" ]]; then exit 7; fi
+case "$*" in
+  *"/v2/teellm/tags/list"*) printf '{"name":"teellm","tags":["20261025","20261026","latest"]}'; exit 0 ;;
+esac
+exit 22
+MOCK
+
 # scp <options> <src> user@host:<path>: copy into the mock remote root.
 cat > "$MOCK_BIN/scp" <<'MOCK'
 #!/usr/bin/env bash
@@ -209,9 +220,13 @@ JSON
 
 output=""
 status=0
+# Extra VAR=value pairs for the next invocation, e.g. RUN_ENV=(CURL_FAILS=true). A name given here
+# must not already be exported: an exported variable is inherited by every run, so the caller of
+# this test setting CURL_FAILS would leak it into the cases that expect a working registry.
+RUN_ENV=()
 run_deploy() {
   set +e
-  output="$(PATH="$MOCK_BIN:$PATH" \
+  output="$(PATH="$MOCK_BIN:$PATH" env "${RUN_ENV[@]}" \
     OLLAMA_LOCAL_DIR="${RUN_OLLAMA_DIR:-$OLLAMA_DIR}" \
     OLLAMA_READY_TIMEOUT=2 \
     OLLAMA_READY_INTERVAL=1 \
@@ -329,6 +344,16 @@ grep -q "service is serving Hygon hardware evidence" <<<"$output" \
 grep -q "LLM_IP=https://$MOCK_POD_IP:8443" <<<"$output" \
   || fail "the summary does not hand over LLM_IP"
 
+# The image tag is a build date, so today's date only names a real image on the day it was built.
+# Left as a guess, a deployment the next day applies a Pod whose guest cannot pull, and the
+# failure lands in ImagePullBackOff after a confidential VM has already booted. The registry's
+# newest date tag has to win.
+grep -q "^      image: 172.16.10.178:31313/teellm:20261026$" "$APPLIED" \
+  || fail "the Pod image is not the newest tag the registry lists"
+if grep -q "teellm:$(date +%Y%m%d)$" "$APPLIED"; then
+  fail "the Pod image is still today's date tag, which the registry does not list"
+fi
+
 # ── 2. Second run, with no action keyword: the Pod exists and is Ready ───────
 # With the target keyword gone there is nothing left to name a target with, so the bare form has to
 # reach the same Pod lifecycle as the explicit one rather than falling through to a no-op. Case 1
@@ -360,6 +385,32 @@ run_deploy --create-pod start --model qwen2.5-coder:0.5b
 [[ $status -ne 0 ]] || fail "a Pod without /dev/csv-guest was accepted"
 grep -q "/dev/csv-guest" <<<"$output" || fail "the missing device was not named in the error"
 touch "$MOCK_STATE_DIR/csv_device"
+
+# ── 3b. An explicit image is never second-guessed ────────────────────────────
+# Resolution exists to fix a guess, not to overrule an operator. A tag the listing does not show
+# (a mirror, a manually pushed name) has to reach the manifest unchanged.
+
+rm -f "$MOCK_STATE_DIR/pod"
+RUN_ENV=(TEELLM_POD_IMAGE="172.16.10.178:31313/teellm:pinned")
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "an explicit TEELLM_POD_IMAGE exited $status"
+grep -q "^      image: 172.16.10.178:31313/teellm:pinned$" "$APPLIED" \
+  || fail "an explicit TEELLM_POD_IMAGE was replaced by a registry tag"
+
+# ── 3c. An unreadable registry listing falls back to the guessed tag ─────────
+# The listing is a convenience on top of the guess. A registry that cannot be queried from the
+# deploy host -- 401, unreachable, filtered -- says nothing about whether the guest's CDH can
+# pull the tag, so the deployment proceeds and warns instead of failing.
+
+rm -f "$MOCK_STATE_DIR/pod"
+RUN_ENV=(CURL_FAILS=true)
+run_deploy --create-pod start --model qwen2.5-coder:0.5b
+RUN_ENV=()
+[[ $status -eq 0 ]] || fail "an unreadable tag listing failed the deployment"
+grep -q "^      image: 172.16.10.178:31313/teellm:$(date +%Y%m%d)$" "$APPLIED" \
+  || fail "the guessed tag was not kept when the listing failed"
+grep -q "could not list tags of" <<<"$output" || fail "the fallback was not reported"
 
 # ── 4. Negative control: --create-pod with a different explicit TARGET_POD ───
 
