@@ -98,6 +98,34 @@
   td>code,th>code{white-space:nowrap;}
   .placeholder{color:var(--muted);text-align:center;padding:60px 0;}
   .placeholder .kv{display:block;color:#9b7f70;font-size:12.5px;word-break:break-all;}
+  /* editor */
+  #editor{max-width:1400px;margin:18px auto 40px;padding:0 24px;}
+  .editor-bar{display:flex;align-items:center;gap:10px;padding:6px 0 12px;}
+  .editor-bar .state{font-size:12.5px;color:var(--muted);}
+  .editor-bar .state.dirty{color:var(--orange);font-weight:600;}
+  .editor-bar .state.saved{color:#2f6b4f;font-weight:600;}
+  .editor-bar .grow{flex:1;}
+  .editor-body{display:flex;gap:14px;height:calc(100vh - 168px);min-height:420px;}
+  #textarea{
+    flex:1 1 50%;min-width:0;resize:none;tab-size:2;
+    font-family:"JetBrains Mono","SFMono-Regular",Consolas,"Liberation Mono",monospace;
+    font-size:13px;line-height:1.65;padding:14px 16px;color:#2a1e18;background:#fff;
+    border:1px solid var(--rule);border-radius:10px;
+    box-shadow:0 2px 12px rgba(120,60,30,.05);
+  }
+  #textarea:focus{outline:none;border-color:var(--orange);box-shadow:0 0 0 3px rgba(224,99,10,.12);}
+  .editor-preview{
+    flex:1 1 50%;min-width:0;overflow:auto;padding:22px 26px;
+    background:var(--paper);border:1px solid var(--rule);border-radius:10px;
+    box-shadow:0 2px 12px rgba(120,60,30,.05);
+  }
+  .editor-preview h1{font-size:22px;}
+  .editor-preview h2{font-size:18px;}
+  @media (max-width:900px){
+    .editor-body{flex-direction:column;height:auto;}
+    #textarea{height:50vh;}
+    .editor-preview{height:50vh;padding:16px;}
+  }
   .placeholder code{white-space:nowrap;}
   @media (max-width:760px){
     .topbar{flex-wrap:wrap;padding:10px 16px;}
@@ -114,6 +142,7 @@
     <div class="doc-sub" id="meta">正在加载 api-design.md …</div>
   </div>
   <div class="actions">
+    <button class="btn" id="btn-edit">编辑</button>
     <button class="btn" id="btn-status">检查线上版本</button>
     <button class="btn primary" id="btn-sync">同步到 ShowDoc</button>
   </div>
@@ -121,6 +150,20 @@
 
 <div class="banner" id="banner" hidden></div>
 <main id="content"><div class="placeholder">正在加载 api-design.md …</div></main>
+
+<section id="editor" hidden>
+  <div class="editor-bar">
+    <span class="state" id="edit-state">api-design.md</span>
+    <span class="grow"></span>
+    <button class="btn primary" id="btn-save">保存</button>
+    <button class="btn" id="btn-revert">还原</button>
+    <button class="btn" id="btn-exit">退出编辑</button>
+  </div>
+  <div class="editor-body">
+    <textarea id="textarea" spellcheck="false" wrap="off" aria-label="api-design.md"></textarea>
+    <div class="editor-preview" id="preview"></div>
+  </div>
+</section>
 
 <script>
 /* ---------------------------------------------------------------- markdown */
@@ -313,6 +356,10 @@ function renderMarkdown(src) {
 const $ = id => document.getElementById(id);
 const banner = $('banner');
 
+/* Text of api-design.md as it was last loaded or saved; the editor compares
+   against it to know whether there are unsaved changes. */
+let currentMd = '';
+
 function showBanner(kind, html) {
   banner.hidden = false;
   banner.className = 'banner ' + kind;
@@ -351,6 +398,7 @@ async function loadDoc() {
   try {
     if (location.protocol === 'file:') throw new Error('file:// 页面无法读取本地 api-design.md');
     const md = await fetchText('./api-design.md', 10000);
+    currentMd = md;
     $('content').innerHTML = renderMarkdown(md);
     $('meta').textContent = md.length.toLocaleString() + ' 字符 · 加载于 ' +
       new Date().toLocaleString('zh-CN', { hour12: false });
@@ -430,6 +478,122 @@ $('btn-sync').onclick = async () => {
     btn.textContent = '同步到 ShowDoc';
   }
 };
+
+/* ------------------------------------------------------------------ editor */
+
+const textarea = $('textarea');
+const previewEl = $('preview');
+const editState = $('edit-state');
+let dirty = false;
+let previewTimer = null;
+
+function refreshState(savedText) {
+  dirty = textarea.value !== currentMd;
+  editState.className = 'state' + (dirty ? ' dirty' : '');
+  editState.textContent = 'api-design.md · ' + textarea.value.length.toLocaleString() + ' 字符' +
+    (dirty ? ' · 未保存' : (savedText ? ' · 已保存' : ''));
+}
+
+function paintPreview() {
+  const top = previewEl.scrollTop;
+  previewEl.innerHTML = renderMarkdown(textarea.value);
+  previewEl.scrollTop = top;
+}
+
+function schedulePreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(paintPreview, 250);
+}
+
+function enterEdit() {
+  if (!currentMd) {
+    showBanner('err', '<strong>文档尚未加载，无法编辑。</strong>' +
+      '<div class="kv">请通过 <code>python3 tools/showdoc-sync/serve.py</code> 打开本页。</div>');
+    return;
+  }
+  textarea.value = currentMd;
+  refreshState();
+  previewEl.innerHTML = renderMarkdown(currentMd);
+  $('content').hidden = true;
+  $('editor').hidden = false;
+  $('btn-edit').textContent = '返回预览';
+  textarea.focus();
+  textarea.setSelectionRange(0, 0);
+  textarea.scrollTop = 0;
+}
+
+function exitEdit() {
+  if (dirty && !confirm('有未保存的修改，退出后会丢失。确定退出？')) return;
+  $('editor').hidden = true;
+  $('content').hidden = false;
+  $('btn-edit').textContent = '编辑';
+  if (!dirty) return;
+  /* Re-render from the text on disk, not from the discarded edits. */
+  renderMainFromDisk();
+}
+
+async function renderMainFromDisk() {
+  try {
+    const md = await fetchText('./api-design.md', 10000);
+    currentMd = md;
+    $('content').innerHTML = renderMarkdown(md);
+    $('meta').textContent = md.length.toLocaleString() + ' 字符 · ' +
+      new Date().toLocaleString('zh-CN', { hour12: false });
+  } catch (err) {
+    $('content').innerHTML = fileHint(err.message);
+  }
+}
+
+async function saveDoc() {
+  if ($('editor').hidden) return;
+  const btn = $('btn-save');
+  const text = textarea.value;
+  if (!text.trim()) {
+    showBanner('err', '<strong>未保存：</strong>文档内容为空。');
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = '保存中…';
+  try {
+    const d = await callApi('/api/save', new URLSearchParams({ content: text }));
+    currentMd = text;
+    refreshState(true);
+    $('content').innerHTML = renderMarkdown(currentMd);
+    $('meta').textContent = currentMd.length.toLocaleString() + ' 字符 · 保存于 ' +
+      new Date().toLocaleString('zh-CN', { hour12: false });
+    showBanner('ok', '<strong>已写入 docs/api-design.md</strong>' +
+      '<div class="kv">' + d.chars.toLocaleString() + ' 字符 · sha1 ' + d.sha1.slice(0, 12) +
+      (d.backup ? ' · 旧版备份 ' + esc(d.backup) : '') +
+      ' · 尚未同步到 ShowDoc，需要时点「同步到 ShowDoc」</div>');
+  } catch (err) {
+    showBanner('err', '<strong>保存失败：</strong>' + esc(err.message));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '保存';
+  }
+}
+
+$('btn-edit').onclick = () => { $('editor').hidden ? enterEdit() : exitEdit(); };
+$('btn-save').onclick = saveDoc;
+$('btn-exit').onclick = exitEdit;
+$('btn-revert').onclick = () => {
+  if (dirty && !confirm('放弃未保存的修改，还原到上次保存的内容？')) return;
+  textarea.value = currentMd;
+  refreshState();
+  paintPreview();
+};
+textarea.addEventListener('input', () => { refreshState(); schedulePreview(); });
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+    e.preventDefault();
+    if (!$('editor').hidden) saveDoc();
+  }
+});
+window.addEventListener('beforeunload', (e) => {
+  if (!dirty) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
 
 let TARGET = 'ShowDoc';
 fetch('/api/config').then(r => r.json()).then(d => {

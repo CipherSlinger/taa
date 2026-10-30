@@ -8,6 +8,7 @@ served from this tiny stdlib-only HTTP server. The same server exposes the
     GET  /                 the viewer page (docs/api-design.html)
     GET  /api-design.md    the document being previewed
     GET  /api/status       compare the local file with the online page
+    POST /api/save         write the text edited in the page back to disk
     POST /api/sync         publish the local file to the ShowDoc page
 
 Configuration, first match wins:
@@ -120,6 +121,36 @@ def fetch_online(cfg):
 
 def local_text():
     return PAGE_FILE.read_text(encoding="utf-8")
+
+
+def do_save(content):
+    """Write the edited document back to docs/api-design.md.
+
+    The previous version is copied to the backup directory first: the editor is
+    the only path that rewrites the working file, so a bad save must be cheap to
+    undo.
+    """
+    if not content.strip():
+        raise SyncError("拒绝保存空文档")
+    old = local_text() if PAGE_FILE.exists() else ""
+    if content == old:
+        return {"ok": True, "changed": False, "chars": len(content), "sha1": sha1(content)}
+
+    result = {"ok": True, "changed": True, "backup": ""}
+    if old:
+        out = Path(CONFIG["backup_dir"]).expanduser()
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / ("api-design-%s.md" % time.strftime("%Y%m%d-%H%M%S"))
+        path.write_text(old, encoding="utf-8")
+        result["backup"] = str(path)
+
+    tmp = PAGE_FILE.with_name(PAGE_FILE.name + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, PAGE_FILE)
+    result["chars"] = len(content)
+    result["sha1"] = sha1(content)
+    result["saved_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    return result
 
 
 def backup(cfg, content):
@@ -250,6 +281,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/sync":
                 return self._send_json(200, do_sync(force=force))
+            if path == "/api/save":
+                content = params.get("content", [""])[0]
+                return self._send_json(200, do_save(content))
             return self._send_json(404, {"ok": False, "error": "not found"})
         except SyncError as exc:
             return self._send_json(502, {"ok": False, "error": str(exc)})
