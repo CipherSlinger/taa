@@ -343,7 +343,7 @@ benchmarks/base-projects/
 
 | 工件文件路径 | 承担角色 | 更新与修复重点 |
 | :--- | :--- | :--- |
-| `docs/superpowers/specs/2026-09-15-benchmark-redesign-design.md` | 本设计规范文件 | 固化 4 真实基座、全正交矩阵、清洗规范、微缩数据集、引擎 80 行修复与白名单定义。 |
+| `.claude/specs/2026-09-15-benchmark-redesign-design.md` | 本设计规范文件 | 固化 4 真实基座、全正交矩阵、清洗规范、微缩数据集、引擎 80 行修复与白名单定义。 |
 | `models/audit/research/taa-audit-design.html` | 核心架构设计全景 HTML | 第 4 节更新为 v2 架构；第 5 节增加协议版本标记（说明第 5 节为 v1 历史实测矩阵，v2 待物化执行刷新）。 |
 | `models/audit/research/audit-benchmark-manifest.md` | 基准样本与家族清单 | 声明 4 大真实基座的工程来源与文件规范，明确 4 基座 × 10 家族 100 样本分配清单。 |
 | `models/audit/research/audit-eval-iteration-log.md` | 评测迭代与设计日志 | 新增轮次 21 记录，详述发现混淆偏置缺陷、淘汰模拟模型、解决 80 行截断与确立 v2 全正交基准的决策链条。 |

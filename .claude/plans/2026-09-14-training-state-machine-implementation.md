@@ -29,7 +29,7 @@
   - 崩溃恢复完成后清除 `TrainingRunning` 并密封状态。
 - Modify: `internal/controller/*_test.go`
   - 删除旧字段断言，增加字段删除、状态接口、跨阶段训练、训练释放和并发拒绝测试。
-- Create: `docs/superpowers/plans/2026-09-14-training-state-machine-implementation.md`
+- Create: `.claude/plans/2026-09-14-training-state-machine-implementation.md`
   - 本实现计划；不覆盖已有未提交的 `TODO` 和审计页面修改。
 
 ---

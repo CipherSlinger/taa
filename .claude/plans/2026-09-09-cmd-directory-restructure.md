@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.22+, standard library (`net/http`, `os/signal`, `embed`, `flag`), SM2/SM4 crypto (`taa/crypto`), CSV TEE hardware attestation (`taa/internal/attestation`).
 
-**Spec:** `docs/superpowers/specs/2026-09-09-cmd-directory-restructure-design.md`
+**Spec:** `.claude/specs/2026-09-09-cmd-directory-restructure-design.md`
 
 ## Global Constraints
 
