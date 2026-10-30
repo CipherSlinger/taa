@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TAA 接口设计文档</title>
+<style>
+  :root{
+    --red:#b81c18;
+    --orange:#e0630a;
+    --ink:#241b17;
+    --muted:#6b5b54;
+    --rule:#e9dad2;
+    --paper:#fffdfb;
+    --code-bg:#fbf3ee;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-padding-top:84px;}
+  body{
+    margin:0;
+    background:#f7efe9;
+    color:var(--ink);
+    font:15px/1.75 -apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  }
+  .topbar{
+    position:sticky; top:0; z-index:10;
+    display:flex; align-items:center; gap:16px;
+    padding:10px 28px;
+    background:linear-gradient(180deg,#fff 0%,#fffaf6 100%);
+    border-bottom:1px solid var(--rule);
+    box-shadow:0 2px 10px rgba(120,60,30,.06);
+  }
+  .brand-logo{width:133px;height:40px;object-fit:contain;flex:none;}
+  .titles{flex:1;min-width:0;}
+  .doc-title{font-size:17px;font-weight:700;color:var(--red);letter-spacing:.5px;}
+  .doc-sub{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .actions{display:flex;gap:10px;flex:none;}
+  .btn{
+    font:inherit;font-size:13px;padding:7px 16px;border-radius:6px;cursor:pointer;
+    border:1px solid var(--rule);background:#fff;color:var(--ink);transition:.15s;
+  }
+  .btn:hover{border-color:var(--orange);color:var(--orange);}
+  .btn.primary{background:var(--red);border-color:var(--red);color:#fff;}
+  .btn.primary:hover{background:#9d1714;border-color:#9d1714;color:#fff;}
+  .btn:disabled{opacity:.55;cursor:progress;}
+  .banner{
+    margin:18px auto 0;max-width:1020px;padding:12px 18px;border-radius:8px;
+    border-left:4px solid var(--orange);background:#fff;font-size:13.5px;
+    box-shadow:0 1px 6px rgba(120,60,30,.07);
+  }
+  .banner.ok{border-left-color:#2f6b4f;}
+  .banner.err{border-left-color:var(--red);color:#7d1310;}
+  .banner .kv{color:var(--muted);font-size:12.5px;}
+  main{
+    max-width:1020px;margin:22px auto 80px;padding:36px 48px;
+    background:var(--paper);border:1px solid var(--rule);border-radius:10px;
+    box-shadow:0 4px 24px rgba(120,60,30,.06);
+  }
+  h1,h2,h3,h4,h5,h6{color:var(--red);line-height:1.4;margin:1.6em 0 .6em;font-weight:700;}
+  h1{font-size:28px;text-align:center;margin-top:.2em;padding-bottom:.5em;border-bottom:3px solid var(--orange);}
+  h2{font-size:21px;border-left:5px solid var(--orange);padding-left:12px;}
+  h3{font-size:17.5px;color:#9d4a12;}
+  h4{font-size:15.5px;color:#6b3a1a;}
+  h5,h6{font-size:14.5px;color:#6b3a1a;}
+  p{margin:.7em 0;}
+  a{color:var(--orange);text-decoration:none;border-bottom:1px solid rgba(224,99,10,.35);}
+  a:hover{color:var(--red);border-bottom-color:var(--red);}
+  ul,ol{margin:.6em 0;padding-left:1.7em;}
+  li{margin:.28em 0;}
+  li>ul,li>ol{margin:.2em 0;}
+  strong{color:#7a2410;}
+  hr{border:0;border-top:1px dashed var(--rule);margin:2em 0;}
+  blockquote{
+    margin:1em 0;padding:10px 16px;background:#fdf3ec;
+    border-left:4px solid var(--orange);border-radius:0 6px 6px 0;color:#5a4336;
+  }
+  blockquote p{margin:0;}
+  code{
+    font-family:"JetBrains Mono","SFMono-Regular",Consolas,"Liberation Mono",monospace;
+    font-size:.88em;background:var(--code-bg);color:#8a2f0c;
+    padding:.12em .38em;border-radius:4px;border:1px solid #f0ded2;
+  }
+  pre.code{
+    position:relative;margin:1em 0;padding:14px 16px;overflow:auto;
+    background:var(--code-bg);border:1px solid var(--rule);border-radius:8px;
+    font-size:13px;line-height:1.6;
+  }
+  pre.code code{background:none;border:0;padding:0;color:#3d2b22;font-size:1em;}
+  pre.code::before{
+    content:attr(data-lang);position:absolute;top:6px;right:10px;
+    font-size:11px;letter-spacing:.5px;color:#b58a6e;text-transform:uppercase;
+  }
+  .table-wrap{overflow-x:auto;margin:1em 0;}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;}
+  th,td{border:1px solid var(--rule);padding:7px 11px;text-align:left;vertical-align:top;}
+  th{background:#fbeadf;color:#8a2f0c;font-weight:600;white-space:nowrap;}
+  tbody tr:nth-child(even){background:#fdf8f4;}
+  td>code,th>code{white-space:nowrap;}
+  .placeholder{color:var(--muted);text-align:center;padding:60px 0;}
+  .placeholder code{white-space:nowrap;}
+  @media (max-width:760px){
+    .topbar{flex-wrap:wrap;padding:10px 16px;}
+    .actions{width:100%;justify-content:flex-end;}
+    main{padding:22px 18px;margin:14px 10px 60px;}
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <img class="brand-logo" alt="纽创信安 OSR" src="data:image/png;base64,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">
+  <div class="titles">
+    <div class="doc-title">TAA 接口设计文档</div>
+    <div class="doc-sub" id="meta">正在加载 api-design.md …</div>
+  </div>
+  <div class="actions">
+    <button class="btn" id="btn-status">检查线上版本</button>
+    <button class="btn primary" id="btn-sync">同步到 ShowDoc</button>
+  </div>
+</header>
+
+<div class="banner" id="banner" hidden></div>
+<main id="content"><div class="placeholder">正在加载 api-design.md …</div></main>
+
+<script>
+/* ---------------------------------------------------------------- markdown */
+
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/* GitHub-style heading anchor, so the document's own table of contents works.
+   Each space becomes one hyphen (no collapsing), which is what the anchors that
+   the document already carries expect: "TAA → 平台" -> "taa--平台". */
+function slug(text) {
+  return text.toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, '')
+    .trim()
+    .replace(/\s/g, '-');
+}
+
+/* Join hard-wrapped source lines: no space between CJK, one space otherwise. */
+function joinLines(lines) {
+  let out = '';
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!out) { out = line; continue; }
+    const cjk = /[一-鿿　-〿＀-￯]$/.test(out) &&
+                /^[一-鿿　-〿＀-￯]/.test(line);
+    out += (cjk ? '' : ' ') + line;
+  }
+  return out;
+}
+
+function inline(text) {
+  const codes = [];
+  let s = text.replace(/`([^`]+)`/g, (m, c) => {
+    codes.push(esc(c));
+    return '\u0000C' + (codes.length - 1) + '\u0000';
+  });
+  s = esc(s);
+  s = s.replace(/&lt;br\s*\/?&gt;/gi, '<br>');
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t, href) =>
+    '<a href="' + href.replace(/"/g, '&quot;') + '">' + t + '</a>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+  s = s.replace(/\u0000C(\d+)\u0000/g, (m, i) => '<code>' + codes[+i] + '</code>');
+  return s;
+}
+
+function renderTable(head, rows) {
+  const cells = line => line.trim().replace(/^\|/, '').replace(/\|$/, '')
+    .split('|').map(c => c.trim());
+  const header = cells(head);
+  let html = '<div class="table-wrap"><table><thead><tr>' +
+    header.map(c => '<th>' + inline(c) + '</th>').join('') + '</tr></thead><tbody>';
+  for (const row of rows) {
+    const cs = cells(row).slice(0, header.length);
+    while (cs.length < header.length) cs.push('');
+    html += '<tr>' + cs.map(c => '<td>' + inline(c) + '</td>').join('') + '</tr>';
+  }
+  return html + '</tbody></table></div>';
+}
+
+const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+const BLOCK_START = /^(#{1,6}\s|```|\s*\||\s*>|\s*([-*+]|\d+[.)])\s)/;
+const TABLE_SEP = /^\s*\|[\s:|-]+\|?\s*$/;
+const isTableStart = (ls, k) => /^\s*\|/.test(ls[k]) && k + 1 < ls.length && TABLE_SEP.test(ls[k + 1]);
+
+/* A blockquote may carry a table (used for the FHE callback parameters), so
+   table runs are rendered as tables and the rest as line-broken text. */
+function renderQuote(lines) {
+  const parts = [];
+  let k = 0;
+  while (k < lines.length) {
+    if (isTableStart(lines, k)) {
+      const head = lines[k], rows = [];
+      k += 2;
+      while (k < lines.length && /^\s*\|/.test(lines[k])) rows.push(lines[k++]);
+      parts.push(renderTable(head, rows));
+      continue;
+    }
+    const group = [];
+    while (k < lines.length && !isTableStart(lines, k)) group.push(lines[k++]);
+    if (!group.length) group.push(lines[k++]);
+    parts.push(group.map(t => t.trim() ? inline(t) : '').join('<br>'));
+  }
+  return parts.join('');
+}
+
+function renderList(items) {
+  let idx = 0;
+  function build(level) {
+    const tag = items[idx].ordered ? 'ol' : 'ul';
+    let html = '<' + tag + '>';
+    while (idx < items.length && items[idx].indent >= level) {
+      const item = items[idx++];
+      let nested = '';
+      if (idx < items.length && items[idx].indent > item.indent) {
+        nested = build(items[idx].indent);
+      }
+      html += '<li>' + inline(joinLines(item.text)) + nested + '</li>';
+    }
+    return html + '</' + tag + '>';
+  }
+  let html = '';
+  while (idx < items.length) html += build(items[idx].indent);
+  return html;
+}
+
+function renderMarkdown(src) {
+  const lines = src.replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+
+    let m = /^```(\w*)\s*$/.exec(line);
+    if (m) {
+      const lang = m[1], buf = [];
+      i++;
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) buf.push(lines[i++]);
+      i++;
+      out.push('<pre class="code"' + (lang ? ' data-lang="' + esc(lang) + '"' : '') +
+        '><code>' + esc(buf.join('\n')) + '</code></pre>');
+      continue;
+    }
+
+    m = /^(#{1,6})\s+(.*?)\s*$/.exec(line);
+    if (m) {
+      const lv = m[1].length, text = m[2];
+      out.push('<h' + lv + ' id="' + slug(text) + '">' + inline(text) + '</h' + lv + '>');
+      i++;
+      continue;
+    }
+
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { out.push('<hr>'); i++; continue; }
+
+    if (isTableStart(lines, i)) {
+      const head = line, rows = [];
+      i += 2;
+      while (i < lines.length && /^\s*\|/.test(lines[i])) rows.push(lines[i++]);
+      out.push(renderTable(head, rows));
+      continue;
+    }
+
+    if (/^\s*>/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) {
+        buf.push(lines[i++].replace(/^\s*>\s?/, ''));
+      }
+      out.push('<blockquote>' + renderQuote(buf) + '</blockquote>');
+      continue;
+    }
+
+    if (LIST_ITEM.test(line)) {
+      const items = [];
+      while (i < lines.length) {
+        const cur = lines[i];
+        const mm = LIST_ITEM.exec(cur);
+        if (mm) {
+          items.push({
+            indent: mm[1].replace(/\t/g, '  ').length,
+            ordered: /\d/.test(mm[2]),
+            text: [mm[3]],
+          });
+          i++;
+        } else if (cur.trim() && /^\s{2,}\S/.test(cur) && items.length && !BLOCK_START.test(cur)) {
+          items[items.length - 1].text.push(cur);
+          i++;
+        } else {
+          break;
+        }
+      }
+      out.push(renderList(items));
+      continue;
+    }
+
+    const buf = [];
+    while (i < lines.length && lines[i].trim() && !BLOCK_START.test(lines[i]) &&
+           !/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i])) {
+      buf.push(lines[i++]);
+    }
+    out.push('<p>' + inline(joinLines(buf)) + '</p>');
+  }
+  return out.join('\n');
+}
+
+/* ------------------------------------------------------------------- page */
+
+const $ = id => document.getElementById(id);
+const banner = $('banner');
+
+function showBanner(kind, html) {
+  banner.hidden = false;
+  banner.className = 'banner ' + kind;
+  banner.innerHTML = html;
+}
+
+function fileHint() {
+  return '<div class="placeholder">' +
+    '无法直接读取 <code>api-design.md</code>（浏览器不允许 <code>file://</code> 页面读取本地文件）。<br><br>' +
+    '请在仓库根目录运行：<br><br>' +
+    '<code>python3 tools/showdoc-sync/serve.py</code><br><br>' +
+    '然后打开 <code>http://127.0.0.1:8770/</code>。</div>';
+}
+
+async function loadDoc() {
+  try {
+    const res = await fetch('./api-design.md', { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const md = await res.text();
+    $('content').innerHTML = renderMarkdown(md);
+    $('meta').textContent = md.length.toLocaleString() + ' 字符 · 加载于 ' +
+      new Date().toLocaleString('zh-CN', { hour12: false });
+    /* The content is built after load, so a deep link needs an explicit jump. */
+    if (location.hash) {
+      const target = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+      if (target) target.scrollIntoView();
+    }
+  } catch (err) {
+    $('content').innerHTML = fileHint();
+    $('meta').textContent = '加载失败：' + err.message;
+  }
+}
+
+async function callApi(path, body) {
+  const res = await fetch(path, { method: body === undefined ? 'GET' : 'POST', body });
+  let data;
+  try { data = await res.json(); } catch (e) { throw new Error('接口返回的不是 JSON（HTTP ' + res.status + '）'); }
+  if (!data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+
+$('btn-status').onclick = async () => {
+  const btn = $('btn-status');
+  btn.disabled = true;
+  btn.textContent = '检查中…';
+  try {
+    const d = await callApi('/api/status');
+    const same = d.same;
+    showBanner(same ? 'ok' : '', same
+      ? '<strong>线上与本地一致。</strong><div class="kv">page ' + d.page_id + '「' + d.title + '」· ' +
+        d.local_chars.toLocaleString() + ' 字符 · sha1 ' + d.local_sha1.slice(0, 12) + '</div>'
+      : '<strong>线上与本地不一致。</strong><div class="kv">本地 ' + d.local_chars.toLocaleString() +
+        ' 字符 sha1 ' + d.local_sha1.slice(0, 12) + ' · 线上 ' + d.online_chars.toLocaleString() +
+        ' 字符 sha1 ' + d.online_sha1.slice(0, 12) + '。可点击「同步到 ShowDoc」更新。</div>');
+  } catch (err) {
+    showBanner('err', '<strong>检查失败：</strong>' + esc(err.message) +
+      '<div class="kv">确认已通过 <code>python3 tools/showdoc-sync/serve.py</code> 打开本页，并且 ShowDoc 可达。</div>');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '检查线上版本';
+  }
+};
+
+$('btn-sync').onclick = async () => {
+  const btn = $('btn-sync');
+  if (!confirm('用本地 docs/api-design.md 覆盖 ShowDoc 页面 ' + TARGET + '？\n线上旧版会先备份到 .claude/backup/。')) return;
+  btn.disabled = true;
+  btn.textContent = '同步中…';
+  try {
+    const d = await callApi('/api/sync', '');
+    const lines = [
+      '<strong>' + (d.changed ? '同步完成。' : '未写入。') + '</strong> ' + esc(d.message || ''),
+      '<div class="kv">page ' + d.page_id + '「' + esc(d.title) + '」· 本地 ' +
+        d.local_chars.toLocaleString() + ' 字符 sha1 ' + d.local_sha1.slice(0, 12) + '</div>',
+    ];
+    if (d.changed) {
+      lines.push('<div class="kv">线上更新前 ' + d.online_chars_before.toLocaleString() + ' 字符 → 更新后 ' +
+        (d.online_chars_after || 0).toLocaleString() + ' 字符 · 回读 sha1 ' +
+        (d.online_sha1_after || '').slice(0, 12) + ' · ' + esc(d.saved_at) + '</div>');
+      if (d.backup) lines.push('<div class="kv">旧版备份：' + esc(d.backup) + '</div>');
+    }
+    showBanner('ok', lines.join(''));
+  } catch (err) {
+    showBanner('err', '<strong>同步失败：</strong>' + esc(err.message));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '同步到 ShowDoc';
+  }
+};
+
+let TARGET = 'ShowDoc';
+fetch('/api/config').then(r => r.json()).then(d => {
+  if (d && !d.error) TARGET = d.page_id + (d.title ? '「' + d.title + '」' : '');
+}).catch(() => {});
+
+loadDoc();
+</script>
+</body>
+</html>
