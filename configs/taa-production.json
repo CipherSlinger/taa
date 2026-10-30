@@ -32,9 +32,10 @@
     "llm": {
       "enabled": true,
       "attestation": {
-        "enabled": true
+        "enabled": true,
+        "measurement": ""
       },
-      "endpoint": "https://10.244.0.246:8443",
+      "endpoint": "https://10.244.0.188:8443",
       "model": "qwen2.5-coder:7b",
       "failClosed": false
     }

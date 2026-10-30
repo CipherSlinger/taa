@@ -764,7 +764,7 @@ go vet ./...
 - **API Specifications (Markdown)**: `docs/api-design.md`
 - **OpenAPI 3.0.3 Specification**: `api/openapi.yaml`
 - **Model Provider Integration Guide**: `docs/model-provider-integration-guide.md`
-- **Model File I/O Conventions**: `docs/model-file-io-guide.html`
+- **Model File I/O Conventions**: `docs/manual/model-file-io-guide.html`
 - **Platform Mock Emulator**: `tools/platform-mock/README.md`
 - **TEE-LLM Inference Service**: `teellm/README.md`
 - **TEE Crypto SDK**: `tools/sdk/README.md`
