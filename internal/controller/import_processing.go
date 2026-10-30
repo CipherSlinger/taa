@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"taa/internal/codeaudit"
 	"taa/internal/resource"
@@ -517,7 +518,7 @@ func (s *TAAState) executeTraining(trainReq importRequest, phase int, trainRecor
 			return
 		}
 		s.Logs.Add(LogError, "train", "执行 runtimeConfig 失败: %v\noutput: %s", err, output)
-		s.reportImportFailure(trainReq, phase, false, startedAt, fmt.Sprintf("执行 runtimeConfig 失败: %v", err))
+		s.reportImportFailure(trainReq, phase, false, startedAt, runtimeFailureReason(err, output))
 		return
 	}
 	if checkCancelled() {
@@ -1099,6 +1100,50 @@ func (s *TAAState) resolvePlaintextResourceWithDataKey(dataKey []byte, ciphertex
 
 func (s *TAAState) clearImportedState(isModel bool, phase int) {
 	s.updateImportState(isModel, false, phase)
+}
+
+// maxFailureOutputBytes caps how much of the failed task's own output travels to
+// the platform inside the failure message.
+//
+// The executor error alone ("exit status 1") says nothing an operator can act on;
+// the traceback or the last error line is what names the cause. Both are captured
+// together in one buffer, so the tail is kept and the head dropped: progress
+// logging fills the head, and the line that explains the exit sits at the end.
+//
+// The cap exists because the message crosses the platform API and lands in a
+// store TAA does not control. 4 KiB fits an ordinary Python traceback with room
+// to spare while keeping one failed task from turning into a multi-megabyte
+// report body.
+const maxFailureOutputBytes = 4096
+
+// runtimeFailureReason builds the reason reported through reportRes for a
+// non-zero runtimeConfig exit: the executor error, followed by the tail of the
+// process output when there is any.
+func runtimeFailureReason(err error, output string) string {
+	reason := fmt.Sprintf("执行 runtimeConfig 失败: %v", err)
+	tail := lastBytes(output, maxFailureOutputBytes)
+	if tail == "" {
+		return reason
+	}
+	return reason + "\n进程输出（末尾）:\n" + tail
+}
+
+// lastBytes returns at most max trailing bytes of s, trimmed and cut on a rune
+// boundary. A truncation notice states how much was dropped, so a reader can tell
+// a short log from a cut one.
+func lastBytes(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	cut := len(s) - max
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
+	}
+	return fmt.Sprintf("...(已截断，共 %d 字节，仅显示最后 %d 字节)\n%s", len(s), len(s)-cut, s[cut:])
 }
 
 func (s *TAAState) reportTrainingFailureFromResult(req importRequest, startedAt time.Time, reason string, audit *codeaudit.AuditReport, includeAudit bool, resultDir string) {

@@ -234,6 +234,8 @@ curl -X POST "http://${PLATFORM_IP}/v1/taa/register" \
 | `msg` | `string` | 否 | 失败时为失败原因 |
 | `report` | `string` | 否 | 训练结果报告字符串；`data-anaylsis` 实例上恒为空字符串 |
 
+> **`code=1` 的 `msg` 带上进程输出**：`runtimeConfig` 命令非零退出时，`msg` 与报告里的 `failure_reason` 形如 `执行 runtimeConfig 失败: runtimeConfig command exited with error: exit status N`，其后换行接 `进程输出（末尾）:` 和该命令 stdout/stderr 的**末尾**片段（上限 4096 字节）。取末尾而不是开头，是因为进度日志刷满开头，说明退出原因的那一行在结尾；超限时片段前会有一行 `...(已截断，共 X 字节，仅显示最后 Y 字节)`。命令启动失败、或被 `stopTraining` 中止时不产生该片段（后者本就不上报）。
+>
 > **`code=3`（FHE 任务失败）**：`fhe` 实例上，FHE 服务执行失败或结果包取回落盘失败都按 `3` 上报，`msg` 为 `FHE 任务失败: <原因>` 或 `取回 FHE 结果失败: <原因>`。它刻意不复用 `1`：两种实例类型的失败原因不同，同一个码会让平台的日志无法区分。
 >
 > **`data-anaylsis` 实例**：该类型既无训练报告也无可审计的内容，落盘成功与失败都走本接口上报（`code` 为 `0` / `1`），`report` 恒为空字符串，`msg` 为 `数据导入成功` 或具体失败原因。
