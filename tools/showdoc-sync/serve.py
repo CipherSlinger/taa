@@ -6,10 +6,11 @@ served from this tiny stdlib-only HTTP server. The same server exposes the
 "sync to ShowDoc" action the page's button calls:
 
     GET  /                 the viewer page (docs/api-design.html)
-    GET  /api-design.md    the document being previewed
-    GET  /api/status       compare the local file with the online page
+    GET  /api/docs         the markdown files the page can switch between
+    GET  /doc?name=FILE    one of those files
+    GET  /api/status       compare api-design.md with the online page
     POST /api/save         write the text edited in the page back to disk
-    POST /api/sync         publish the local file to the ShowDoc page
+    POST /api/sync         publish api-design.md to the ShowDoc page
 
 Configuration, first match wins:
     --config PATH, $SHOWDOC_CONFIG, ~/.config/taa-showdoc.json
@@ -28,6 +29,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -123,30 +125,58 @@ def local_text():
     return PAGE_FILE.read_text(encoding="utf-8")
 
 
-def do_save(content):
-    """Write the edited document back to docs/api-design.md.
+def doc_files():
+    """Every markdown file in docs/, which is what the page's picker offers."""
+    files = []
+    for path in sorted(DOCS.glob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        heading = re.search(r"^#\s+(.+)$", text, re.M)
+        files.append({
+            "name": path.name,
+            "title": heading.group(1).strip() if heading else path.stem,
+            "chars": len(text),
+            "mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime)),
+        })
+    return files
+
+
+def resolve_doc(name):
+    """Only bare *.md names inside docs/ are addressable."""
+    name = (name or PAGE_FILE.name).strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]+\.md", name):
+        raise SyncError("文件名不合法: %s" % name)
+    path = DOCS / name
+    if not path.is_file():
+        raise SyncError("文件不存在: %s" % name)
+    return path
+
+
+def do_save(content, name=None):
+    """Write the edited document back to docs/.
 
     The previous version is copied to the backup directory first: the editor is
-    the only path that rewrites the working file, so a bad save must be cheap to
+    the only path that rewrites a working file, so a bad save must be cheap to
     undo.
     """
     if not content.strip():
         raise SyncError("拒绝保存空文档")
-    old = local_text() if PAGE_FILE.exists() else ""
+    path = resolve_doc(name)
+    old = path.read_text(encoding="utf-8") if path.exists() else ""
     if content == old:
-        return {"ok": True, "changed": False, "chars": len(content), "sha1": sha1(content)}
+        return {"ok": True, "changed": False, "file": path.name,
+                "chars": len(content), "sha1": sha1(content)}
 
-    result = {"ok": True, "changed": True, "backup": ""}
+    result = {"ok": True, "changed": True, "file": path.name, "backup": ""}
     if old:
         out = Path(CONFIG["backup_dir"]).expanduser()
         out.mkdir(parents=True, exist_ok=True)
-        path = out / ("api-design-%s.md" % time.strftime("%Y%m%d-%H%M%S"))
-        path.write_text(old, encoding="utf-8")
-        result["backup"] = str(path)
+        bak = out / ("%s-%s.md" % (path.stem, time.strftime("%Y%m%d-%H%M%S")))
+        bak.write_text(old, encoding="utf-8")
+        result["backup"] = str(bak)
 
-    tmp = PAGE_FILE.with_name(PAGE_FILE.name + ".tmp")
+    tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(content, encoding="utf-8")
-    os.replace(tmp, PAGE_FILE)
+    os.replace(tmp, path)
     result["chars"] = len(content)
     result["sha1"] = sha1(content)
     result["saved_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -258,6 +288,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, VIEW_FILE.read_bytes(), "text/html; charset=utf-8")
             if path == "/api-design.md":
                 return self._send(200, PAGE_FILE.read_bytes(), "text/markdown; charset=utf-8")
+            if path == "/api/docs":
+                return self._send_json(200, {
+                    "ok": True,
+                    "default": PAGE_FILE.name,
+                    "files": doc_files(),
+                })
+            if path == "/doc":
+                name = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("name", [""])[0]
+                doc = resolve_doc(name)
+                return self._send(200, doc.read_bytes(), "text/markdown; charset=utf-8")
             if path == "/api/status":
                 return self._send_json(200, do_status())
             if path == "/api/config":
@@ -283,7 +323,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(200, do_sync(force=force))
             if path == "/api/save":
                 content = params.get("content", [""])[0]
-                return self._send_json(200, do_save(content))
+                name = params.get("name", [PAGE_FILE.name])[0]
+                return self._send_json(200, do_save(content, name))
             return self._send_json(404, {"ok": False, "error": "not found"})
         except SyncError as exc:
             return self._send_json(502, {"ok": False, "error": str(exc)})

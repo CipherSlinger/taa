@@ -34,7 +34,14 @@
   .titles{flex:1;min-width:0;}
   .doc-title{font-size:17px;font-weight:700;color:var(--red);letter-spacing:.5px;}
   .doc-sub{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .actions{display:flex;gap:10px;flex:none;}
+  .actions{display:flex;gap:10px;flex:none;align-items:center;}
+  .picker{
+    font:inherit;font-size:13px;padding:7px 10px;max-width:200px;
+    border:1px solid var(--rule);border-radius:6px;background:#fff;color:var(--ink);
+    cursor:pointer;
+  }
+  .picker:hover{border-color:var(--orange);color:var(--orange);}
+  .picker:focus{outline:none;border-color:var(--orange);box-shadow:0 0 0 3px rgba(224,99,10,.12);}
   .btn{
     font:inherit;font-size:13px;padding:7px 16px;border-radius:6px;cursor:pointer;
     border:1px solid var(--rule);background:#fff;color:var(--ink);transition:.15s;
@@ -138,10 +145,11 @@
 <header class="topbar">
   <img class="brand-logo" alt="纽创信安 OSR" src="data:image/png;base64,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">
   <div class="titles">
-    <div class="doc-title">TAA 接口设计文档</div>
+    <div class="doc-title" id="doc-title">TAA 接口设计文档</div>
     <div class="doc-sub" id="meta">正在加载 api-design.md …</div>
   </div>
   <div class="actions">
+    <select class="picker" id="file-select" aria-label="选择文件"></select>
     <button class="btn" id="btn-edit">编辑</button>
     <button class="btn" id="btn-status">检查线上版本</button>
     <button class="btn primary" id="btn-sync">同步到 ShowDoc</button>
@@ -394,14 +402,63 @@ async function fetchText(url, ms) {
   }
 }
 
-async function loadDoc() {
+/* ------------------------------------------------------------- file switch */
+
+const SYNCED_FILE = 'api-design.md';   // the only file with a ShowDoc page
+let currentFile = SYNCED_FILE;
+
+function mdTitle(md) {
+  const m = /^#\s+(.+)$/m.exec(md);
+  return m ? m[1].trim() : currentFile;
+}
+
+function stamp() {
+  return new Date().toLocaleString('zh-CN', { hour12: false });
+}
+
+/* Paint the reading view and keep the header in step with the file on screen. */
+function paintMain(md, note) {
+  currentMd = md;
+  $('content').innerHTML = renderMarkdown(md);
+  const title = mdTitle(md);
+  $('doc-title').textContent = title;
+  document.title = title;
+  $('meta').textContent = md.length.toLocaleString() + ' 字符 · ' + currentFile +
+    ' · ' + (note || '加载于 ' + stamp());
+  updateSyncButtons();
+}
+
+/* Only api-design.md has a ShowDoc counterpart, so the sync actions are tied
+   to it rather than to whatever file happens to be open. */
+function updateSyncButtons() {
+  const synced = currentFile === SYNCED_FILE;
+  for (const id of ['btn-status', 'btn-sync']) {
+    const btn = $(id);
+    btn.disabled = !synced;
+    btn.title = synced ? '' : '只有 ' + SYNCED_FILE + ' 对应 ShowDoc 页面';
+  }
+}
+
+function fillFileSelect(files) {
+  const sel = $('file-select');
+  sel.innerHTML = '';
+  for (const f of files) {
+    const opt = document.createElement('option');
+    opt.value = f.name;
+    opt.textContent = f.name;
+    opt.title = f.title;
+    sel.appendChild(opt);
+  }
+  sel.value = currentFile;
+}
+
+async function loadDoc(name) {
   try {
-    if (location.protocol === 'file:') throw new Error('file:// 页面无法读取本地 api-design.md');
-    const md = await fetchText('./api-design.md', 10000);
-    currentMd = md;
-    $('content').innerHTML = renderMarkdown(md);
-    $('meta').textContent = md.length.toLocaleString() + ' 字符 · 加载于 ' +
-      new Date().toLocaleString('zh-CN', { hour12: false });
+    if (location.protocol === 'file:') throw new Error('file:// 页面无法读取本地文件');
+    const md = await fetchText('/doc?name=' + encodeURIComponent(name), 10000);
+    currentFile = name;
+    $('file-select').value = name;
+    paintMain(md);
     /* The content is built after load, so a deep link needs an explicit jump. */
     if (location.hash) {
       const target = document.getElementById(decodeURIComponent(location.hash.slice(1)));
@@ -411,6 +468,23 @@ async function loadDoc() {
     $('content').innerHTML = fileHint(err.message);
     $('meta').textContent = '加载失败：' + err.message;
   }
+}
+
+async function boot() {
+  if (location.protocol === 'file:') {
+    $('content').innerHTML = fileHint('file:// 页面无法读取本地文件');
+    return;
+  }
+  try {
+    const list = await callApi('/api/docs');
+    fillFileSelect(list.files || []);
+    if (list.default && list.files.some(f => f.name === list.default)) {
+      currentFile = list.default;
+    }
+  } catch (err) {
+    showBanner('err', '<strong>读取文件列表失败：</strong>' + esc(err.message));
+  }
+  await loadDoc(currentFile);
 }
 
 async function callApi(path, body) {
@@ -490,7 +564,7 @@ let previewTimer = null;
 function refreshState(savedText) {
   dirty = textarea.value !== currentMd;
   editState.className = 'state' + (dirty ? ' dirty' : '');
-  editState.textContent = 'api-design.md · ' + textarea.value.length.toLocaleString() + ' 字符' +
+  editState.textContent = currentFile + ' · ' + textarea.value.length.toLocaleString() + ' 字符' +
     (dirty ? ' · 未保存' : (savedText ? ' · 已保存' : ''));
 }
 
@@ -534,11 +608,8 @@ function exitEdit() {
 
 async function renderMainFromDisk() {
   try {
-    const md = await fetchText('./api-design.md', 10000);
-    currentMd = md;
-    $('content').innerHTML = renderMarkdown(md);
-    $('meta').textContent = md.length.toLocaleString() + ' 字符 · ' +
-      new Date().toLocaleString('zh-CN', { hour12: false });
+    const md = await fetchText('/doc?name=' + encodeURIComponent(currentFile), 10000);
+    paintMain(md);
   } catch (err) {
     $('content').innerHTML = fileHint(err.message);
   }
@@ -555,16 +626,15 @@ async function saveDoc() {
   btn.disabled = true;
   btn.textContent = '保存中…';
   try {
-    const d = await callApi('/api/save', new URLSearchParams({ content: text }));
+    const d = await callApi('/api/save', new URLSearchParams({ name: currentFile, content: text }));
     currentMd = text;
     refreshState(true);
-    $('content').innerHTML = renderMarkdown(currentMd);
-    $('meta').textContent = currentMd.length.toLocaleString() + ' 字符 · 保存于 ' +
-      new Date().toLocaleString('zh-CN', { hour12: false });
-    showBanner('ok', '<strong>已写入 docs/api-design.md</strong>' +
+    paintMain(currentMd, '保存于 ' + stamp());
+    showBanner('ok', '<strong>已写入 docs/' + esc(currentFile) + '</strong>' +
       '<div class="kv">' + d.chars.toLocaleString() + ' 字符 · sha1 ' + d.sha1.slice(0, 12) +
       (d.backup ? ' · 旧版备份 ' + esc(d.backup) : '') +
-      ' · 尚未同步到 ShowDoc，需要时点「同步到 ShowDoc」</div>');
+      (currentFile === SYNCED_FILE ? ' · 尚未同步到 ShowDoc，需要时点「同步到 ShowDoc」'
+                                   : ' · 该文件没有对应的 ShowDoc 页面') + '</div>');
   } catch (err) {
     showBanner('err', '<strong>保存失败：</strong>' + esc(err.message));
   } finally {
@@ -595,12 +665,30 @@ window.addEventListener('beforeunload', (e) => {
   e.returnValue = '';
 });
 
+$('file-select').onchange = async (e) => {
+  const next = e.target.value;
+  if (next === currentFile) return;
+  if (dirty && !confirm('有未保存的修改，切换文件会丢失。确定切换？')) {
+    e.target.value = currentFile;
+    return;
+  }
+  if (!$('editor').hidden) {
+    $('editor').hidden = true;
+    $('content').hidden = false;
+    $('btn-edit').textContent = '编辑';
+    dirty = false;
+  }
+  history.replaceState(null, '', location.pathname);
+  window.scrollTo({ top: 0 });
+  await loadDoc(next);
+};
+
 let TARGET = 'ShowDoc';
 fetch('/api/config').then(r => r.json()).then(d => {
   if (d && !d.error) TARGET = d.page_id + (d.title ? '「' + d.title + '」' : '');
 }).catch(() => {});
 
-loadDoc();
+boot();
 </script>
 </body>
 </html>
