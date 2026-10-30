@@ -423,13 +423,14 @@
 
     strong { font-weight: 700; }
 
-    /* ── 代码块 ─────────────────────────────────────────────────────── */
+    /* ── 代码块（终端窗口样式） ─────────────────────────────────────── */
     .code {
       margin: 10px 0 22px;
-      border: 1px solid var(--code-border);
-      border-radius: 6px;
-      background: var(--code-bg);
+      border: 1px solid #e4d2c8;
+      border-radius: 7px;
+      background: #fdf9f6;
       overflow: hidden;
+      box-shadow: 0 1px 0 rgba(184, 28, 24, 0.04);
     }
 
     .code-bar {
@@ -437,32 +438,38 @@
       align-items: center;
       gap: 6px;
       padding: 9px 14px;
-      border-bottom: 1px solid var(--code-border);
-      background: var(--code-bar);
+      border-bottom: 1px solid #3c2822;
+      background: #2b1a15;
     }
 
     .dot {
       width: 9px;
       height: 9px;
       border-radius: 50%;
-      background: #e3d3ca;
+      background: #7c6157;
     }
+
+    .dot:nth-child(1) { background: #e0630a; }
+    .dot:nth-child(2) { background: #d99a3c; }
+    .dot:nth-child(3) { background: #8a6a5f; }
 
     .lang {
       margin-left: auto;
       font: 500 10.5px/1 var(--font-mono);
-      letter-spacing: 0.1em;
+      letter-spacing: 0.16em;
       text-transform: uppercase;
-      color: var(--ink-3);
+      color: #e3cdc2;
     }
 
     .code pre {
       margin: 0;
-      padding: 16px 18px;
+      padding: 18px 20px;
       overflow-x: auto;
-      font: 400 12.5px/1.78 var(--font-mono);
+      font: 400 12.8px/1.85 var(--font-mono);
+      font-variant-ligatures: none;
       color: #241b17;
       tab-size: 4;
+      background: #fdf9f6;
     }
 
     .code code {
@@ -471,7 +478,16 @@
       background: none;
       font: inherit;
       color: inherit;
+      white-space: pre;
     }
+
+    /* 语法着色：暖色系，与红/橙主题一致；导出的 DOCX 逐 token 复刻这些颜色 */
+    .tok-kw  { color: #b81c18; font-weight: 600; }
+    .tok-str { color: #2f6f4f; }
+    .tok-num { color: #b45309; }
+    .tok-com { color: #a08b81; font-style: italic; }
+    .tok-fn  { color: #8f2a1c; }
+    .tok-key { color: #a14a12; }
 
     /* ── 注意框 ─────────────────────────────────────────────────────── */
     .note {
@@ -1495,12 +1511,106 @@ def train(epochs=150):
       }
 
       /* ── 代码块 ─────────────────────────────────────────────────── */
+      /* 页面与 DOCX 共用同一套 token 分类；颜色在两边逐字复刻 */
+      const TOKEN_COLORS = {
+        kw: "B81C18", str: "2F6F4F", num: "B45309",
+        com: "A08B81", fn: "8F2A1C", key: "A14A12"
+      };
+
+      const PY_RE = new RegExp(
+        "(#[^\\n]*)" +
+        "|(\"\"\"[\\s\\S]*?\"\"\"|'''[\\s\\S]*?'''|\"(?:\\\\.|[^\"\\\\\\n])*\"|'(?:\\\\.|[^'\\\\\\n])*')" +
+        "|\\b(0x[0-9a-fA-F]+|\\d+\\.\\d+|\\d+)\\b" +
+        "|\\b(def|class|return|if|elif|else|for|while|try|except|finally|with|as|import|from|in|is|not|and|or|None|True|False|lambda|raise|yield|pass|break|continue|self|global|nonlocal|assert|del|async|await)\\b" +
+        "|\\b(print|open|len|max|min|round|abs|str|int|float|bool|dict|list|tuple|set|range|isinstance|super|enumerate)\\b" +
+        "|([A-Za-z_]\\w*)(?=\\()", "g"
+      );
+      const JSON_RE = new RegExp(
+        "(\"(?:\\\\.|[^\"\\\\])*\")(\\s*:)?|\\b(true|false|null)\\b|(-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)", "g"
+      );
+
+      function highlight(text, lang) {
+        const out = [];
+        const put = (s, cls) => {
+          if (!s) return;
+          out.push(cls ? `<span class="${cls}">${esc(s)}</span>` : esc(s));
+        };
+        const re = new RegExp((lang === "json" ? JSON_RE : PY_RE).source, "g");
+        let last = 0;
+        let m;
+        while ((m = re.exec(text))) {
+          put(text.slice(last, m.index));
+          if (lang === "json") {
+            if (m[1] !== undefined) {
+              put(m[1], m[2] ? "tok-key" : "tok-str");
+              if (m[2]) put(m[2]);
+            } else if (m[3]) put(m[3], "tok-kw");
+            else put(m[4], "tok-num");
+          } else {
+            const cls = m[1] ? "tok-com" : m[2] ? "tok-str" : m[3] ? "tok-num"
+              : m[4] ? "tok-kw" : m[5] ? "tok-fn" : m[6] ? "tok-fn" : "";
+            put(m[0], cls);
+          }
+          last = re.lastIndex;
+        }
+        put(text.slice(last));
+        return out.join("");
+      }
+
+      function highlightCodeBlocks() {
+        document.querySelectorAll(".code pre code").forEach((code) => {
+          const box = code.closest(".code");
+          const langEl = box && box.querySelector(".lang");
+          const lang = (langEl ? langEl.textContent : "").trim().toLowerCase();
+          code.innerHTML = highlight(code.textContent, lang === "json" ? "json" : "python");
+        });
+      }
+
+      /* 把 code 的 DOM 展平成逐行 token 列表 */
+      function codeLines(root) {
+        const lines = [[]];
+        const pushText = (text, cls) => {
+          String(text).split("\n").forEach((part, i) => {
+            if (i > 0) lines.push([]);
+            if (part) lines[lines.length - 1].push({ text: part, cls });
+          });
+        };
+        const walk = (node, cls) => {
+          if (node.nodeType === Node.TEXT_NODE) { pushText(node.nodeValue, cls); return; }
+          if (node.nodeType !== Node.ELEMENT_NODE) return;
+          let next = cls;
+          if (node.tagName.toLowerCase() === "span") {
+            const m = /tok-(kw|str|num|com|fn|key)/.exec(node.className);
+            if (m) next = m[1];
+          }
+          node.childNodes.forEach((child) => walk(child, next));
+        };
+        root.childNodes.forEach((child) => walk(child, null));
+        while (lines.length > 1 && lines[lines.length - 1].length === 0) lines.pop();
+        return lines;
+      }
+
       function xmlCode(el) {
         const pre = el.querySelector("pre") || el;
-        const lines = pre.textContent.replace(/\n+$/, "").split("\n");
-        const out = lines.map((line) =>
-          para(run(line || " ", { mono: true, size: 18 }), { style: "Code" })
-        );
+        const root = pre.querySelector("code") || pre;
+        const langEl = el.querySelector(".lang");
+        const lang = (langEl ? langEl.textContent : "").trim().toUpperCase();
+        const out = [
+          para(run("●  ●  ●    " + lang, { mono: true, size: 15, color: "E8D0C4" }),
+            { style: "CodeBar" })
+        ];
+        codeLines(root).forEach((tokens) => {
+          const inner = tokens.length
+            ? tokens.map((t) => run(t.text, {
+                mono: true,
+                size: 18,
+                bold: t.cls === "kw",
+                italic: t.cls === "com",
+                color: TOKEN_COLORS[t.cls] || "241B17"
+              })).join("")
+            : run(" ", { mono: true, size: 18 });
+          out.push(para(inner, { style: "Code" }));
+        });
         out.push(para("", { style: "TableGap" }));
         return out.join("");
       }
@@ -1747,10 +1857,18 @@ def train(epochs=150):
           '<w:style w:type="paragraph" w:styleId="Code"><w:name w:val="Code Block"/>' +
           '<w:basedOn w:val="Normal"/><w:pPr><w:keepLines/>' +
           '<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>' +
-          '<w:shd w:val="clear" w:color="auto" w:fill="FBF7F4"/>' +
+          '<w:shd w:val="clear" w:color="auto" w:fill="FDF9F6"/>' +
           '<w:ind w:left="120" w:right="120"/></w:pPr>' +
           '<w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:eastAsia="宋体" w:cs="Consolas"/>' +
           '<w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr></w:style>' +
+
+          '<w:style w:type="paragraph" w:styleId="CodeBar"><w:name w:val="Code Bar"/>' +
+          '<w:basedOn w:val="Normal"/><w:pPr><w:keepNext/>' +
+          '<w:spacing w:before="160" w:after="0" w:line="240" w:lineRule="auto"/>' +
+          '<w:shd w:val="clear" w:color="auto" w:fill="2B1A15"/>' +
+          '<w:ind w:left="120" w:right="120"/></w:pPr>' +
+          '<w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:eastAsia="宋体" w:cs="Consolas"/>' +
+          '<w:sz w:val="15"/><w:szCs w:val="15"/></w:rPr></w:style>' +
 
           '<w:style w:type="paragraph" w:styleId="ListBlock"><w:name w:val="List Block"/>' +
           '<w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="60" w:after="60" w:line="320" w:lineRule="auto"/>' +
@@ -1995,6 +2113,9 @@ def train(epochs=150):
       }
 
       window.__taaBuildDocx = buildDocx;
+
+      /* 代码着色：在导出前完成，DOCX 直接读取 token 颜色 */
+      highlightCodeBlocks();
 
       /* 表格列宽：data-cols 同时决定屏幕版式与 DOCX 的 gridCol，二者保持一致 */
       document.querySelectorAll("table.data[data-cols]").forEach((tbl) => {
