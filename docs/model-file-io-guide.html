@@ -4,1007 +4,2041 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>模型提供方文件读写约定</title>
-  <meta name="description" content="模型代码在 TEE 内的目录布局，以及日志、进度与结果文件的写入格式和上线检查清单。">
+  <title>TAA 模型提供方用户手册 · 模型代码的文件读写约定</title>
+  <meta name="description" content="TAA 模型提供方用户手册：模型代码在 TEE 内的目录布局、日志与进度上报、结果汇总文件、禁止事项与上传检查清单。支持离线导出 DOCX。">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet"
-    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=swap">
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@400;600;700&display=swap">
   <style>
-    /* ── 设计令牌：冷青灰纸面 + 蓝绿强调色，语义色用于文件读写角色 ──────
-     布局：单栏正文（68ch 行宽），宽屏时左侧固定章节导航，窄屏自动堆叠 */
+    /* ── 设计令牌 ─────────────────────────────────────────────────────────
+       版式对齐用户手册：宋体正文、黑体标题、A4 文字栏宽、表格与图题居中留白。
+       页面为浅色纸面（与 Word 手册一致），不提供深色模式。 */
     :root {
       color-scheme: light;
-      --paper: #f6f9f9;
-      --surface: #ffffff;
-      --surface-2: #edf3f4;
-      --surface-3: #10232a;
-      --ink: #13222b;
-      --ink-muted: #56676f;
-      --ink-faint: #7d8d94;
-      --rule: #d6e0e2;
-      --rule-soft: #e6edee;
-      --accent: #0c6d73;
-      --accent-ink: #0a5b60;
-      --accent-soft: #dceff0;
-      --ok: #2c7a4e;
-      --ok-soft: #e0f0e7;
-      --warn: #96620f;
-      --warn-soft: #f7ecd8;
-      --danger: #a2382f;
-      --danger-soft: #f8e5e2;
-      --code-ink: #dbe9ec;
-      --code-key: #7fd0d2;
-      --code-str: #b9d68f;
-      --code-punc: #7f9aa2;
+      --backdrop: #efe7e2;
+      --page: #ffffff;
+      --ink: #241b17;
+      --ink-2: #6b5b54;
+      --ink-3: #9c8a81;
+      --rule: #e9dad2;
+      --rule-soft: #f4ebe6;
+      --accent: #b81c18;
+      --accent-hover: #9a1613;
+      --accent-soft: #fbece8;
+      --brand: #c2550a;
+      --brand-orange: #e0630a;
+      --caption: #b81c18;
+      --code-bg: #fbf7f4;
+      --code-border: #efe2da;
+      --code-bar: #f7eeea;
+      --warn: #b26a00;
+      --warn-bg: #fff6e8;
+      --warn-border: #f3ddb9;
 
-      --font-display: "Noto Serif SC", "Songti SC", "SimSun", serif;
-      --font-body: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+      --font-body: "Noto Serif SC", "Songti SC", "SimSun", serif;
+      --font-head: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
       --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
-
-      --step--1: 0.8125rem;
-      --step-0: 1rem;
-      --step-1: 1.125rem;
-      --step-2: 1.375rem;
-      --step-3: 1.875rem;
-      --step-4: 2.5rem;
-
-      --rail: 232px;
-      --gutter: 22px;
+      --sheet: 900px;
     }
 
-    @media (prefers-color-scheme: dark) {
-      :root:not([data-theme="light"]) {
-        color-scheme: dark;
-        --paper: #0d1618;
-        --surface: #131f22;
-        --surface-2: #1a282c;
-        --surface-3: #0a1315;
-        --ink: #e4edef;
-        --ink-muted: #9badb3;
-        --ink-faint: #7a8c92;
-        --rule: #26363a;
-        --rule-soft: #1d2b2f;
-        --accent: #4fc0c2;
-        --accent-ink: #7ad4d6;
-        --accent-soft: #123236;
-        --ok: #63b98a;
-        --ok-soft: #12301f;
-        --warn: #d0a04a;
-        --warn-soft: #2e2412;
-        --danger: #e28d84;
-        --danger-soft: #331916;
-        --code-ink: #dbe9ec;
-      }
-    }
+    *,
+    *::before,
+    *::after { box-sizing: border-box; }
 
-    :root[data-theme="dark"] {
-      color-scheme: dark;
-      --paper: #0d1618;
-      --surface: #131f22;
-      --surface-2: #1a282c;
-      --surface-3: #0a1315;
-      --ink: #e4edef;
-      --ink-muted: #9badb3;
-      --ink-faint: #7a8c92;
-      --rule: #26363a;
-      --rule-soft: #1d2b2f;
-      --accent: #4fc0c2;
-      --accent-ink: #7ad4d6;
-      --accent-soft: #123236;
-      --ok: #63b98a;
-      --ok-soft: #12301f;
-      --warn: #d0a04a;
-      --warn-soft: #2e2412;
-      --danger: #e28d84;
-      --danger-soft: #331916;
-      --code-ink: #dbe9ec;
-    }
-
-    * {
-      box-sizing: border-box;
-    }
-
-    html {
-      background: var(--paper);
-    }
+    html { -webkit-text-size-adjust: 100%; }
 
     body {
       margin: 0;
-      background: var(--paper);
+      background: var(--backdrop);
       color: var(--ink);
-      font-family: var(--font-body);
-      font-size: var(--step-0);
-      line-height: 1.75;
+      font: 400 15px/1.9 var(--font-body);
+      text-rendering: optimizeLegibility;
       -webkit-font-smoothing: antialiased;
     }
 
-    .shell {
-      max-width: 1180px;
-      margin: 0 auto;
-      padding-block: 0 72px;
-      padding-inline: var(--gutter);
+    /* ── 顶部工具条 ─────────────────────────────────────────────────── */
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: rgba(239, 231, 226, 0.9);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid rgba(90, 50, 35, 0.1);
     }
 
-    /* ── 页眉 ─────────────────────────────────────────────── */
-    .masthead {
-      border-bottom: 1px solid var(--rule);
-      padding-block: 44px 30px;
+    .toolbar-inner {
+      max-width: var(--sheet);
+      margin: 0 auto;
+      padding: 10px 24px;
       display: flex;
-      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .toolbar-brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .brand-logo {
+      display: block;
+      height: 26px;
+      width: auto;
+      flex: none;
+    }
+
+    .doc-tag {
+      font: 500 12.5px/1.4 var(--font-head);
+      color: var(--ink-2);
+      letter-spacing: 0.04em;
+      display: inline-flex;
+      align-items: center;
+      padding-left: 14px;
+      border-left: 1px solid var(--rule);
+      white-space: nowrap;
+    }
+
+    .toolbar-actions {
+      display: flex;
+      align-items: center;
       gap: 14px;
     }
 
-    .eyebrow {
-      font-family: var(--font-mono);
-      font-size: var(--step--1);
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--accent);
-      margin: 0;
+    .toolbar-status {
+      font: 400 12.5px/1.4 var(--font-head);
+      color: var(--ink-3);
+      min-height: 1em;
     }
 
-    h1 {
-      font-family: var(--font-display);
-      font-size: var(--step-4);
-      font-weight: 700;
-      line-height: 1.2;
-      letter-spacing: 0.01em;
-      text-wrap: balance;
-      margin: 0;
-    }
-
-    .standfirst {
-      max-width: 62ch;
-      color: var(--ink-muted);
-      margin: 0;
-    }
-
-    .chips {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 6px;
-    }
-
-    .chip {
+    .export-btn {
       display: inline-flex;
-      align-items: baseline;
-      gap: 6px;
-      font-family: var(--font-mono);
-      font-size: 0.75rem;
-      letter-spacing: 0.02em;
-      padding: 3px 9px;
-      border-radius: 999px;
-      border: 1px solid var(--rule);
-      background: var(--surface);
-      color: var(--ink-muted);
+      align-items: center;
+      gap: 8px;
+      padding: 9px 18px;
+      border: 0;
+      border-radius: 6px;
+      background: var(--accent);
+      color: #fff;
+      font: 500 14px/1 var(--font-head);
+      cursor: pointer;
       white-space: nowrap;
+      box-shadow: 0 1px 2px rgba(120, 25, 15, 0.25);
+      transition: background 0.15s ease, transform 0.15s ease;
     }
 
-    .chip.is-read {
-      color: var(--ink-muted);
-      border-color: var(--rule);
-      background: var(--surface-2);
+    .export-btn:hover { background: var(--accent-hover); }
+    .export-btn:active { transform: translateY(1px); }
+    .export-btn:focus-visible { outline: 2px solid #b81c18; outline-offset: 2px; }
+    .export-btn[disabled] { opacity: 0.6; cursor: progress; }
+    .export-btn svg { width: 16px; height: 16px; flex: none; }
+
+    /* ── 纸面 ───────────────────────────────────────────────────────── */
+    .manual {
+      display: flex;
+      flex-direction: column;
+      gap: 26px;
+      padding: 30px 20px 90px;
     }
 
-    .chip.is-write {
-      color: var(--ok);
-      border-color: var(--ok);
-      background: var(--ok-soft);
+    .sheet {
+      width: 100%;
+      max-width: var(--sheet);
+      margin: 0 auto;
+      padding: 72px 78px;
+      background: var(--page);
+      border-radius: 3px;
+      box-shadow:
+        0 1px 2px rgba(80, 45, 35, 0.06),
+        0 20px 44px -30px rgba(80, 45, 35, 0.35);
     }
 
-    .chip.is-ship {
-      color: var(--accent-ink);
-      border-color: var(--accent);
-      background: var(--accent-soft);
+    /* ── 封面 ───────────────────────────────────────────────────────── */
+    .cover {
+      min-height: 820px;
+      display: flex;
+      flex-direction: column;
+      text-align: center;
+      padding-top: 96px;
+      padding-bottom: 64px;
     }
 
-    .chip.is-side {
-      color: var(--warn);
-      border-color: var(--warn);
-      background: var(--warn-soft);
+    .cover-kicker {
+      margin: 0;
+      font: 500 13px/1.6 var(--font-head);
+      letter-spacing: 0.32em;
+      color: var(--ink-3);
     }
 
-    /* ── 主体网格 ─────────────────────────────────────────── */
-    .body-grid {
-      display: grid;
-      grid-template-columns: var(--rail) minmax(0, 1fr);
-      gap: 48px;
-      padding-top: 40px;
-      align-items: start;
+    .cover-title {
+      margin: 34px 0 10px;
+      font: 700 34px/1.4 var(--font-head);
+      letter-spacing: 0.06em;
+      color: #7f1d15;
     }
 
-    @media (max-width: 940px) {
-      .body-grid {
-        grid-template-columns: minmax(0, 1fr);
-        gap: 32px;
-      }
-
-      .rail {
-        position: static !important;
-        order: 2;
-        border-top: 1px solid var(--rule);
-        padding-top: 22px;
-      }
-    }
-
-    .rail {
-      position: sticky;
-      top: 22px;
-    }
-
-    .rail-title {
-      font-family: var(--font-mono);
-      font-size: 0.75rem;
+    .cover-sub {
+      margin: 0;
+      font: 400 19px/1.6 var(--font-head);
       letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--ink-faint);
-      margin: 0 0 10px;
+      color: var(--ink-2);
     }
 
-    .rail ol {
+    .cover-rule {
+      width: 84px;
+      height: 2px;
+      margin: 30px auto 0;
+      background: linear-gradient(90deg, var(--accent), var(--brand-orange));
+      opacity: 0.85;
+    }
+
+    .cover-info {
+      width: 74%;
+      margin: 64px auto 0;
+      border-collapse: collapse;
+      font: 400 13.5px/1.7 var(--font-body);
+      text-align: left;
+    }
+
+    .cover-info th,
+    .cover-info td {
+      border: 1px solid var(--rule);
+      padding: 9px 16px;
+    }
+
+    .cover-info th {
+      width: 34%;
+      background: #fbf1ec;
+      font-weight: 600;
+      color: var(--ink-2);
+    }
+
+    .cover-foot {
+      margin-top: auto;
+      padding-top: 72px;
+    }
+
+    .cover-org {
+      margin: 0;
+      font: 600 16px/1.6 var(--font-head);
+      letter-spacing: 0.22em;
+      color: #7f1d15;
+    }
+
+    /* ── 前置页（文档信息 / 修订记录） ───────────────────────────────── */
+    .fm-title {
+      margin: 0 0 22px;
+      padding-bottom: 10px;
+      border-bottom: 2px solid var(--accent);
+      font: 700 20px/1.4 var(--font-head);
+      color: #7f1d15;
+    }
+
+    /* ── 目录 ───────────────────────────────────────────────────────── */
+    .toc-title {
+      margin: 0 0 20px;
+      font: 700 22px/1.4 var(--font-head);
+      color: #7f1d15;
+      letter-spacing: 0.2em;
+      text-align: center;
+    }
+
+    .toc-list,
+    .toc-sub {
       list-style: none;
       margin: 0;
       padding: 0;
+    }
+
+    .toc-list { border-top: 1px solid var(--rule-soft); }
+    .toc-list > li { border-bottom: 1px solid var(--rule-soft); }
+
+    .toc-list a {
       display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-
-    .rail a {
-      display: flex;
-      gap: 10px;
-      padding: 5px 8px;
-      border-radius: 5px;
-      color: var(--ink-muted);
-      text-decoration: none;
-      font-size: 0.9375rem;
-      line-height: 1.45;
-      border-left: 2px solid transparent;
-    }
-
-    .rail a:hover,
-    .rail a:focus-visible {
-      background: var(--surface-2);
-      color: var(--ink);
-    }
-
-    .rail a:focus-visible {
-      outline: 2px solid var(--accent);
-      outline-offset: 1px;
-    }
-
-    .rail .num {
-      font-family: var(--font-mono);
-      font-size: 0.75rem;
-      color: var(--ink-faint);
-      padding-top: 3px;
-    }
-
-    main {
-      display: flex;
-      flex-direction: column;
-      gap: 46px;
-      min-width: 0;
-    }
-
-    main>section {
-      scroll-margin-top: 20px;
-    }
-
-    h2 {
-      font-family: var(--font-display);
-      font-size: var(--step-3);
-      font-weight: 600;
-      line-height: 1.3;
-      letter-spacing: 0.01em;
-      margin: 0 0 4px;
-      text-wrap: balance;
-      display: flex;
-      gap: 12px;
       align-items: baseline;
+      gap: 16px;
+      padding: 8px 6px;
+      color: var(--ink);
+      text-decoration: none;
+      line-height: 1.65;
+      transition: background 0.12s ease, color 0.12s ease;
     }
 
-    h2 .num {
-      font-family: var(--font-mono);
-      font-size: 0.9375rem;
-      color: var(--accent);
-      font-weight: 500;
+    .toc-list a:hover,
+    .toc-list a:focus-visible { background: #fdf3ef; color: var(--accent); }
+
+    .toc-num {
+      min-width: 74px;
+      font: 600 13px/1.6 var(--font-mono);
+      color: var(--brand);
     }
 
-    h3 {
-      font-family: var(--font-body);
-      font-size: var(--step-1);
+    .toc-title-text { flex: 1; }
+    .toc-page { font: 400 12px/1.6 var(--font-mono); color: var(--ink-3); }
+
+    .toc-sub { padding: 0 0 6px 0; }
+
+    .toc-sub a {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      padding: 3px 6px 3px 36px;
+      font-size: 13.8px;
+      color: var(--ink-2);
+    }
+
+    .toc-sub .toc-num {
+      min-width: 44px;
+      font-weight: 400;
+      color: var(--ink-3);
+    }
+
+    /* ── 章节 ───────────────────────────────────────────────────────── */
+    .chapter h1 {
+      display: flex;
+      align-items: baseline;
+      gap: 16px;
+      margin: 0 0 30px;
+      padding-bottom: 14px;
+      border-bottom: 2px solid var(--accent);
+      font: 700 29px/1.35 var(--font-head);
+      letter-spacing: 0.02em;
+      color: #7f1d15;
+      scroll-margin-top: 72px;
+    }
+
+    .hnum {
+      font-size: 0.72em;
       font-weight: 700;
-      margin: 0 0 6px;
-      letter-spacing: 0.005em;
-    }
-
-    p {
-      margin: 0 0 14px;
-      max-width: 68ch;
-    }
-
-    section>p:last-child,
-    section>*:last-child {
-      margin-bottom: 0;
-    }
-
-    .lede {
-      color: var(--ink-muted);
-      margin-bottom: 20px;
-    }
-
-    strong {
-      font-weight: 700;
-    }
-
-    a {
-      color: var(--accent-ink);
-      text-underline-offset: 3px;
-    }
-
-    ul.plain,
-    ol.plain {
-      margin: 0 0 16px;
-      padding-left: 1.15em;
-      max-width: 68ch;
-      display: flex;
-      flex-direction: column;
-      gap: 7px;
-    }
-
-    ul.plain li::marker {
-      color: var(--accent);
-    }
-
-    ol.plain li::marker {
-      color: var(--accent);
-      font-family: var(--font-mono);
-      font-size: 0.875em;
-    }
-
-    /* ── 目录契约面板 ─────────────────────────────────────── */
-    .tree-card {
-      border: 1px solid var(--rule);
-      border-radius: 10px;
-      background: var(--surface);
-      overflow: hidden;
-      margin-bottom: 20px;
-    }
-
-    .tree-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      padding: 11px 16px;
-      border-bottom: 1px solid var(--rule-soft);
-      background: var(--surface-2);
-      font-family: var(--font-mono);
-      font-size: 0.75rem;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--ink-faint);
-    }
-
-    .tree {
-      padding: 14px 16px 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      overflow-x: auto;
-    }
-
-    .row {
-      display: flex;
-      align-items: center;
-      gap: 12px;
+      letter-spacing: 0.06em;
+      color: var(--brand);
       white-space: nowrap;
     }
 
-    .row.gap-top {
-      margin-top: 12px;
+    .chapter h2 {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin: 42px 0 14px;
+      font: 700 19.5px/1.5 var(--font-head);
+      color: #8f2a1c;
+      scroll-margin-top: 72px;
     }
 
-    .path {
-      font-family: var(--font-mono);
-      font-size: 0.875rem;
-      color: var(--ink);
-      min-width: 0;
+    .chapter h2 .hnum {
+      font: 600 14px/1.5 var(--font-mono);
+      color: var(--brand);
+      letter-spacing: 0;
     }
 
-    .row .chip {
-      margin-left: auto;
+    .chapter h3 {
+      position: relative;
+      margin: 30px 0 8px;
+      padding-left: 14px;
+      font: 600 16.5px/1.6 var(--font-head);
+      color: #241b17;
+      scroll-margin-top: 72px;
     }
 
-    .tree-note {
-      margin: 12px 0 0;
-      font-size: 0.8125rem;
-      line-height: 1.6;
-      color: var(--ink-faint);
+    .chapter h3::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0.52em;
+      width: 3px;
+      height: 0.95em;
+      border-radius: 1px;
+      background: var(--accent);
+      opacity: 0.75;
     }
 
-    /* ── 表格 ─────────────────────────────────────────────── */
-    .table-wrap {
-      overflow-x: auto;
-      margin: 0 0 18px;
-      border: 1px solid var(--rule);
-      border-radius: 10px;
-      background: var(--surface);
+    .chapter p {
+      margin: 0 0 15px;
+      text-align: justify;
+      text-justify: inter-ideograph;
     }
 
-    table {
-      border-collapse: collapse;
+    .caption,
+    .example figcaption {
+      margin: 28px 0 9px;
+      font: 600 13px/1.6 var(--font-head);
+      letter-spacing: 0.02em;
+      color: var(--caption);
+    }
+
+    .example { margin: 0; }
+    .example figcaption { margin-top: 26px; }
+
+    /* ── 表格 ───────────────────────────────────────────────────────── */
+    .table-wrap { margin: 0 0 20px; overflow-x: auto; }
+
+    table.data {
       width: 100%;
-      font-size: 0.9375rem;
+      border-collapse: collapse;
+      font: 400 13.5px/1.7 var(--font-body);
     }
 
-    th,
-    td {
+    table.data th,
+    table.data td {
+      border: 1px solid var(--rule);
+      padding: 9px 12px;
       text-align: left;
-      padding: 10px 14px;
-      border-bottom: 1px solid var(--rule-soft);
       vertical-align: top;
     }
 
-    th {
-      font-family: var(--font-mono);
-      font-size: 0.75rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--ink-faint);
-      font-weight: 500;
-      background: var(--surface-2);
+    table.data thead th {
+      background: #f9ece7;
+      font: 600 13px/1.6 var(--font-head);
+      color: #4a2a20;
+    }
+
+    table.data td code,
+    table.data th code {
+      font-size: 12.5px;
+      overflow-wrap: normal;
+      word-break: normal;
       white-space: nowrap;
     }
 
-    tbody tr:last-child td {
-      border-bottom: none;
-    }
-
-    td.mono,
-    th.mono,
-    .mono {
+    .tree-path {
       font-family: var(--font-mono);
-      font-size: 0.8125rem;
+      font-size: 12.5px;
+      white-space: pre-wrap;
+      color: #3a2a24;
     }
 
-    td .req-yes {
-      color: var(--accent-ink);
-      font-weight: 500;
-    }
-
-    td .req-no {
-      color: var(--ink-faint);
-    }
-
-    td {
-      font-variant-numeric: tabular-nums;
-    }
-
-    /* ── 代码 ─────────────────────────────────────────────── */
-    pre {
-      margin: 0 0 18px;
-      padding: 15px 17px;
-      border-radius: 10px;
-      background: var(--surface-3);
-      border: 1px solid var(--rule);
-      overflow-x: auto;
-      font-family: var(--font-mono);
-      font-size: 0.8125rem;
-      line-height: 1.65;
-      color: var(--code-ink);
-      tab-size: 2;
-    }
-
+    /* ── 行内元素 ───────────────────────────────────────────────────── */
     code {
-      font-family: var(--font-mono);
-      font-size: 0.875em;
+      padding: 1px 5px;
+      border: 1px solid #f0e1d9;
+      border-radius: 3px;
+      background: #fbf2ed;
+      font: 400 0.87em/1.5 var(--font-mono);
+      color: #241b17;
+      overflow-wrap: anywhere;
     }
 
-    p code,
-    li code,
-    td code {
-      background: var(--surface-2);
-      border: 1px solid var(--rule-soft);
-      border-radius: 4px;
-      padding: 1px 5px;
-      color: var(--accent-ink);
+    strong { font-weight: 700; }
+
+    /* ── 代码块 ─────────────────────────────────────────────────────── */
+    .code {
+      margin: 10px 0 22px;
+      border: 1px solid var(--code-border);
+      border-radius: 6px;
+      background: var(--code-bg);
+      overflow: hidden;
+    }
+
+    .code-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 9px 14px;
+      border-bottom: 1px solid var(--code-border);
+      background: var(--code-bar);
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #e3d3ca;
+    }
+
+    .lang {
+      margin-left: auto;
+      font: 500 10.5px/1 var(--font-mono);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+    }
+
+    .code pre {
+      margin: 0;
+      padding: 16px 18px;
+      overflow-x: auto;
+      font: 400 12.5px/1.78 var(--font-mono);
+      color: #241b17;
+      tab-size: 4;
+    }
+
+    .code code {
+      padding: 0;
+      border: 0;
+      background: none;
+      font: inherit;
+      color: inherit;
+    }
+
+    /* ── 注意框 ─────────────────────────────────────────────────────── */
+    .note {
+      display: flex;
+      gap: 12px;
+      margin: 22px 0;
+      padding: 14px 18px;
+      border: 1px solid var(--warn-border);
+      border-left: 4px solid var(--warn);
+      border-radius: 0 6px 6px 0;
+      background: var(--warn-bg);
+    }
+
+    .note-label {
+      flex: none;
+      font: 600 13px/1.9 var(--font-head);
+      color: var(--warn);
       white-space: nowrap;
     }
 
-    .k {
-      color: var(--code-key);
+    .note p {
+      margin: 0;
+      font-size: 14.5px;
+      text-align: left;
     }
 
-    .s {
-      color: var(--code-str);
-    }
-
-    .c {
-      color: var(--code-punc);
-    }
-
-    /* ── 规则清单 ─────────────────────────────────────────── */
-    .rules {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      margin: 0 0 18px;
+    /* ── 编号步骤与检查清单 ─────────────────────────────────────────── */
+    ol.steps {
+      margin: 10px 0 20px;
       padding: 0;
       list-style: none;
+      counter-reset: step;
     }
 
-    .rules li {
-      display: grid;
-      grid-template-columns: 22px minmax(0, 1fr);
-      gap: 12px;
-      align-items: start;
-      max-width: 68ch;
+    ol.steps li {
+      position: relative;
+      margin: 13px 0;
+      padding-left: 52px;
     }
 
-    .rules .mark {
-      font-family: var(--font-mono);
-      font-size: 0.8125rem;
-      line-height: 1.75;
+    ol.steps li::before {
+      counter-increment: step;
+      content: counter(step, decimal-leading-zero);
+      position: absolute;
+      left: 0;
+      top: 3px;
+      padding: 1px 7px;
+      border-radius: 3px;
+      background: var(--accent-soft);
+      font: 600 12px/1.6 var(--font-mono);
       color: var(--accent);
     }
 
-    .callout {
-      border-left: 3px solid var(--accent);
-      background: var(--accent-soft);
-      border-radius: 0 8px 8px 0;
-      padding: 12px 16px;
-      margin: 0 0 18px;
-      max-width: 68ch;
-    }
-
-    .callout p {
-      margin: 0;
-      max-width: none;
-      font-size: 0.9375rem;
-    }
-
-    .callout.warn {
-      border-left-color: var(--warn);
-      background: var(--warn-soft);
-    }
-
-    /* ── 检查清单 ─────────────────────────────────────────── */
-    .checklist {
-      list-style: none;
-      margin: 0;
+    ul.checklist {
+      margin: 12px 0 8px;
       padding: 0;
-      display: flex;
-      flex-direction: column;
-      gap: 1px;
-      border: 1px solid var(--rule);
-      border-radius: 10px;
-      overflow: hidden;
-      background: var(--rule-soft);
+      list-style: none;
     }
 
-    .checklist li {
-      display: grid;
-      grid-template-columns: 26px minmax(0, 1fr);
-      gap: 10px;
-      align-items: start;
-      padding: 10px 14px;
-      background: var(--surface);
-      font-size: 0.9375rem;
+    ul.checklist li {
+      position: relative;
+      margin: 10px 0;
+      padding-left: 30px;
     }
 
-    .checklist .box {
-      width: 15px;
-      height: 15px;
-      margin-top: 5px;
-      border: 1.5px solid var(--ink-faint);
-      border-radius: 4px;
+    ul.checklist li::before {
+      content: "☐";
+      position: absolute;
+      left: 2px;
+      top: 0;
+      font-size: 16px;
+      line-height: 1.75;
+      color: var(--brand);
     }
 
-    footer {
-      margin-top: 56px;
-      padding-top: 20px;
-      border-top: 1px solid var(--rule);
-      color: var(--ink-faint);
-      font-size: var(--step--1);
+    /* ── 页脚 ───────────────────────────────────────────────────────── */
+    .docfoot {
+      max-width: var(--sheet);
+      width: 100%;
+      margin: 0 auto;
+      padding: 8px 4px 0;
+      text-align: center;
+      font: 400 12px/1.6 var(--font-head);
+      letter-spacing: 0.12em;
+      color: var(--ink-3);
+    }
+
+    /* ── 响应式 ─────────────────────────────────────────────────────── */
+    @media (max-width: 760px) {
+      .manual { gap: 18px; padding: 16px 10px 56px; }
+      .sheet { padding: 40px 22px; border-radius: 2px; }
+      .cover { min-height: 0; padding-top: 56px; }
+      .cover-title { font-size: 26px; }
+      .cover-sub { font-size: 16px; }
+      .cover-info { width: 100%; margin-top: 40px; }
+      .chapter h1 { font-size: 23px; }
+      .chapter h2 { font-size: 17.5px; }
+      .toolbar-inner { padding: 8px 14px; }
+      .toolbar-status { display: none; }
+      .toc-sub a { padding-left: 28px; }
+      .toc-num { min-width: 56px; }
+    }
+
+    @media (max-width: 520px) {
+      .tag-date { display: none; }
+      .doc-tag { font-size: 12px; }
+      .export-btn { padding: 8px 13px; font-size: 13px; }
+    }
+
+    /* ── 打印 ───────────────────────────────────────────────────────── */
+    @media print {
+      body { background: #fff; font-size: 10.5pt; }
+      .toolbar { display: none; }
+      .manual { padding: 0; gap: 0; }
+      .sheet {
+        max-width: none;
+        padding: 0;
+        border-radius: 0;
+        box-shadow: none;
+      }
+      .cover,
+      .frontmatter,
+      .toc { break-after: page; }
+      .cover { min-height: auto; }
+      .chapter { break-before: page; }
+      .chapter h1 { break-after: avoid; }
+      .chapter h2,
+      .chapter h3 { break-after: avoid; }
+      .caption,
+      .example figcaption { break-after: avoid; }
+      table.data,
+      .code,
+      .note { break-inside: avoid; }
+      .table-wrap,
+      .code pre { overflow: visible; }
+      a { color: inherit; text-decoration: none; }
     }
 
     @media (prefers-reduced-motion: reduce) {
-      * {
-        animation: none !important;
-        transition: none !important;
-      }
-    }
-
-    /* ── 打印 ─────────────────────────────────────────────── */
-    @media print {
-      :root {
-        --paper: #fff;
-        --surface: #fff;
-        --surface-2: #fff;
-        --surface-3: #f2f5f6;
-        --rule: #bbb;
-        --rule-soft: #ddd;
-      }
-
-      body {
-        font-size: 10.5pt;
-      }
-
-      .rail {
-        display: none;
-      }
-
-      .body-grid {
-        grid-template-columns: minmax(0, 1fr);
-        padding-top: 0;
-        gap: 0;
-      }
-
-      main {
-        gap: 24px;
-      }
-
-      main>section {
-        break-inside: avoid-page;
-      }
-
-      pre,
-      .table-wrap,
-      .tree-card {
-        break-inside: avoid;
-      }
-
-      a {
-        color: inherit;
-        text-decoration: none;
-      }
+      * { transition: none !important; }
     }
   </style>
 </head>
 
 <body>
 
-  <div class="shell">
-
-    <header class="masthead">
-      <p class="eyebrow">TAA · 模型提供方手册</p>
-      <h1>模型提供方文件读写约定</h1>
-      <p class="standfirst">
-        搬进 TEE 内部执行的训练与推理代码，应该从哪里读文件、往哪里写文件，以及写的时候要遵守什么格式。
-        按本手册改造后的代码不调用任何网络接口，也不需要引入专有依赖，在普通环境下同样能跑。
-      </p>
-      <div class="chips">
-        <span class="chip is-read">输入只读</span>
-        <span class="chip is-ship">产物集中在一处</span>
-        <span class="chip is-write">原子写入</span>
-        <span class="chip is-side">日志与进度是旁路</span>
+  <header class="toolbar">
+    <div class="toolbar-inner">
+      <div class="toolbar-brand">
+        <img class="brand-logo" width="266" height="80" alt="纽创信安 OSR"
+          src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQoAAABQCAMAAADWd8veAAAA4VBMVEUAAABmZmZmZmaLi4uLi4tmZmaLi4vnZg/nZg/nZg/nZg/nZg+Li4vnZhCLi4uLi4uLi4vnZhGLi4vnZQ++GiCLi4uLi4u/GiC+GR/nZg+/GiDmZQ6Li4uLi4tmZmbnZg/nZQ+Li4tmZmZmZmZmZmZmZmbmZQ6Li4vmZQ+Li4tmZma+GR++GR++Gh++GiBmZma+GR/mZhFmZmZmZmZmZmbnZhG+GiDnZhHmZQ++GyC+GyG+GiC+GiBmZmZmZmbnZhHmZQ++GiC+GR/nZg+/GyC/GyC+GR+Li4u+Gh/nZg9mZmbQ4UMiAAAAR3RSTlMAgb+/QECB74EQQJ8wIBDP77+Pz79g3xBgj4G/nyAg369wnxDvYGBQUK/f389An1DvYDBwrzAgcHAw76+Pj89gMFAwUO9wcE9x9/wAAAroSURBVHja5Zt5W9s4EMaV2PEdkxMICZALQoBwhLMtBdrurgnf/wOtbkuyfITj2U2YP1o7lmXr55l3RrIBINtm/zy0WicvyFqts51ft+BL2uzh9CVhJ2fbW1+Mw++zi5c0+7H9hUBsn75k2vedL+Ia2ycv+fbwBWDMTl8K2cXOmoPYepDGe9pqPez8aLW0wnH6bZ1JfDsRc4WQOrdmOxpvWWPH+Jt7/4Pmid/+naDRWlfFOGMOkZotZy21zljLINk6zQOhg3Hxe31J5GbJX3/JNcba+QUlcTIr0FR2jO/r5hetZWRwZ539gijmWdHm27J2rlMe2V6OhMqipWsyLEMrAbBXSpqu/Tk/ei7+jH85+Njh/kS3pu/z9/clSagsNLXW1SuyOQCV16Tpehzzo8fiz/iXsqZ9RYJaySEmPYlj3Kf00x5td5r6aIuySKjtCI8M3WlBFAfCYeQWc/TkyhkoHtGBIR9qWjORaIZVBBXMCPgbL11emFyoR6/54y2I4lg4POSnpaOY4wNXZWr49DHbWx4FaXWLB5OWBqq+vVgsmnee5zmOcxhT2TrNCJHzGDV+vNhHjtGWFkWldE2GTIcEHTYPxRD3WMka2BIoHkmrHy8nD7M0n7hEIESz/SpTGCmj3ibDYxj/UGbhArS3WnplI54zh81BQa5wtRyKskbBiXCQW51dZFTanYXGOkAILGZnifAYj664spWZBGSiqLCW+SjIGaPlUJRSVYQcQeu21ft+vV7vHLpqdOzrUCx8GiLSMobgFuQGz0mU/OQoKjkoyoJ85qAop2civZXT8udISiBenQ+yfyk3dJtaFveaLHKmjKxMfPh4VAAFToVXI5JKyL1lo+BPX+fyfGAFrIKMtz+URtl8llkIWmHX2Y5Nj4pucbEloxiWhSz1mo1ir6IaKIgiKzMqg9YekgLnUNXFQ61a3OHcUe2TvSONWmyroY/sWrjiXp5WiNH+wSgOSkOSpxUHYnKK7u0o6f5HYh8O/ZHt74vKeSutdWpGNh6RwpvA51vvRiFLSQEU5fwSiweA3bnz2WY1icKW9+uAJWKdcJbEurFIibU0Cu5dRbWiAAo2/D5KHtWmlCFEFGzsgEjsPtAI5z9C6J+PWXh8LorCGSQXRVVOj8xHBLfoyihYC6CJkB/CpX/i8NhbBkVZlLeiKD5OKzrKMz+Mk+Wz57mxVziyk3TZCeKbtAtVrq9Y4f1Iy+q0wvvzUeRnkH3VC/BD77heH2/Y/UuXRA1Fcb+QychiEc9jjuUBVOLd/y0KWkvEh5AUXLp1IbceYT3x8XSMFVw2L0v16bQUJ89PRlHW2fztKBwJxeGNPAV7chPld1x6/NJNT+dqxX9QEMUcFldXnyKbRVF4okp2XHUy6ilVmC1U5zPdwp5QRpCVpVJcbWWiKC+dQbRecZCO4lFKtKOrDBT7+25f9YE6kNyiK5Yd39JRvMajKMVeUgzF47u0opSOAuYQDmM+HL+mo6gunrxk+en6iy7fUSZs0rreh6G4/jwUsPMKdohjub2KwrFBn0++HLbpOQvvDw8bu9s5WhLFdUEUP6mHX88/HgVZ96I3dXAtNB/PYxS8unRt32UzVDeurxAKUK2L89dMFAdC3MbLFQfFMggLYzJBLYRC7UmPAuwNddyG9F0DHdkNbewv/jCJrAql5rODHedelFKdbL5klr2VpVBIQ/4YFGidZixzKB+M2DHm8x4lsXA74kyU1pYwaHC+rXbfiOKxCIpHab2CLWIUQSEU0uVMFHCaLJMQ3j753OM7TgflCVAXx0pm8H1Yg9LS43Bfmahu5wVIuVJg8bGka1BSBOddWkFUaJwxHUvUEBwF1gqSRT1I5I71eYl+sm+01aZONl//AxRXKSEq6MPPcaJWVyrLRVxVNNFw0eEOaDbvhF5v7oUEIn1gcPFWFJUcFKWlUIxHmSiOySLq+VDxCjkxwJJaKCsc5BheNbOcvcgrsV7nunowIRbHGSiOdbFPu9Es3FxpSPA0XR7GpffoXFztQWHg+dwz9jtVcClU2I6bU9h/y3+jviqGJp4oNXh3juNQB/hj696F6W1nfT5eRFOK5IsgcRZi32WdL3+L9GuVUdTFNzyxed3kuzCtSXP0l5X+cxFHWrQVYQhq6hR0i79WmQTw1Nmmz6PF4+8I9zM6mKW9QV49s5XBwnj4w7Hkoeh49Isd9fXYSpqvuAWuJbuOc+R0mnkBUkUL30LlveIf6h0p67b3yYWbZlpx0Ufz1y3ta5AVjhA45WJOn/iwxM2geC8I58r/SRl7PfzE3d4XSqz6XWq9WbXJu6SdtC/TVs7Yq8J4somKzyf8CVpmpdmkyxqz9fk7GT9PEjJPu2Fi8V0UzXBgGEZ7Zd1iORZ+/C3GRcIpgs0I2UaY203Yq+GmkZF/SSMy4b+algbpIuqFbxi+1F/nDSx8IdG2VKcIa5ExAZONAiw2oqhmIGvkX7NhBGkocBeQ/XtRxCtZhVn4CxWFmD56pPtwI7JEB2hbg12lnyDa3H3PrTMUgF7PfCcK4Rsk+7nI2eLbZZ+8TJdWKmoRGZ8ZbZokUgIWNG3izTXKyBQfpAldZHMCN3Yt9JDbDYP6AtzpmcQr4LOHXtTAhwLmShQFsCCKAPXfoGplID9qoPALQRvvD2Br8h8we/gqqL9pLGv9YlMvap64BtjF2VT6ljfgoDcjE11pM6oFMBQMqxfVdo1ow4Bjthg1w4I2CdFpUQ3iCsCERL5FRggVAu/uYq2gwoIPmew6zCvg5WBs1gzUO9UPE7poZNQgcYtpEukcE0IbilSJi73NHMdwfakAIyik6orfIrwfC2/3ommAn38vGmDxg/5C21LVhKymCE8jmkI8UxPaboyiZ07x6ExgQj8yzUBFgZ7vRoQHPEVQawA6JLJwF3UNQ2eyi3YntQgSNweRsRtFA3wV1N9kMwr4g5a+1c0qJxxlWRijOFMEQPQKtB1GtUHEH6iJj8QKAs1ANx+hLXijLGhiFBYwKQoa2yoK2ncIN3uwE3RdvGGCAXY7+EzAZGogB4VXQJ0MooagFZagMvJnA2kwXBUE0YpTpZmkFfh2uSMyFCy840xi0gZ45AkUgdGWUYSJALGiXkzFpOgtfl0adgSF0eCDT6AAvjIFu0vQcI/6mk+cobYk/hyzQbIoyiDkdtuRIdy3DgVWBAub0DLgKJS6YhpNEijCGtaTAQkMgAJiEG0OSLShmLLgfz2CAg0+zSsSLCAN/8ljyfXmyKlrP/bWyizUr8222d6Eng4dw7KgQk1gSGzggepQBO0oCqdQEkLiVFZAiZphEgWMfcgWi68smw3oFoNoY4JGDgIsDTBXR7U2VR4Lj5miCLhWJFEkWVAxqNuLDDvUBVKwwapN6vYWr0AtGQWLCviMghrV8jY9J6zJEUPO7OHurJqg+7QzOOowJFeOWKQ0eKaQAgSAOINoUKSxyDZPryrtqdFrk8IBoSfSgZ9CgB99QC9tEMOJfbdBy06a8UHYILUBnc2QajPssdlNm6Fo0P8tWOOGA6SOBmgYSv1AZBNuGLS1OSW7KFDaRiDf/+XyJOo59alZZHKxvJkw1ODsZQA+zTx7SRKd3Hv+HBQWS56fZ253GRD2UW6HoRl8xn3ieikAn2t3xR3Dd8F6m1tQPZvemoNAVi0AY//yC4AgMLLDpP70RUDgMHnqpzpEp/qFQBAah37iLyvt/v3zV+PAzLt0OvVut1vv9vmnKOtp/wIsXyLQK75M7QAAAABJRU5ErkJggg==">
+        <span class="doc-tag">TAA 用户文档 · V1.0<span class="tag-date"> · 2026-10-26</span></span>
       </div>
-    </header>
+      <div class="toolbar-actions">
+        <span class="toolbar-status" id="export-status" role="status" aria-live="polite"></span>
+        <button class="export-btn" id="export-docx" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3v12"></path>
+            <path d="m7 10 5 5 5-5"></path>
+            <path d="M5 21h14"></path>
+          </svg>
+          导出 DOCX
+        </button>
+      </div>
+    </div>
+  </header>
 
-    <div class="body-grid">
+  <main class="manual" id="manual">
 
-      <nav class="rail" aria-label="章节导航">
-        <p class="rail-title">目录</p>
-        <ol>
-          <li><a href="#layout"><span class="num">01</span><span>目录布局</span></a></li>
-          <li><a href="#log"><span class="num">02</span><span>写日志</span></a></li>
-          <li><a href="#progress"><span class="num">03</span><span>写进度</span></a></li>
-          <li><a href="#result"><span class="num">04</span><span>写结果汇总</span></a></li>
-          <li><a href="#forbidden"><span class="num">05</span><span>禁止事项</span></a></li>
-          <li><a href="#checklist"><span class="num">06</span><span>上线前检查清单</span></a></li>
-        </ol>
-      </nav>
+    <!-- 封面 -->
+    <section class="sheet cover" id="cover">
+      <p class="cover-kicker">TAA 平台 · 用户文档</p>
+      <h1 class="cover-title">TAA 模型提供方用户手册</h1>
+      <p class="cover-sub">模型代码的文件读写约定</p>
+      <div class="cover-rule" aria-hidden="true"></div>
 
-      <main>
+      <table class="cover-info">
+        <tbody>
+          <tr><th>文档版本</th><td>V1.0</td></tr>
+          <tr><th>发布日期</th><td>2026-10-26</td></tr>
+          <tr><th>适用产品</th><td>TAA 机密计算平台</td></tr>
+          <tr><th>读者对象</th><td>模型提供方开发人员</td></tr>
+        </tbody>
+      </table>
 
-        <!-- 01 -->
-        <section id="layout">
-          <h2><span class="num">01</span><span>目录布局</span></h2>
-          <p class="lede">TEE 内固定提供以下目录，训练代码只与它们打交道。</p>
+      <div class="cover-foot">
+        <p class="cover-org">纽创信安（OSR）</p>
+      </div>
+    </section>
 
-          <div class="tree-card">
-            <div class="tree-head"><span>TEE 文件系统</span><span>角色</span></div>
-            <div class="tree">
-              <div class="row"><span class="path">/opt/taa/input/</span><span class="chip is-read">只读</span></div>
-              <p class="tree-note">输入目录下的内容按模型所需的数据而定，此处不列举。</p>
+    <!-- 文档信息 -->
+    <section class="sheet frontmatter" id="frontmatter">
+      <h2 class="fm-title">文档信息</h2>
 
-              <div class="row gap-top"><span class="path">/opt/taa/output/</span><span class="chip is-write">可写</span>
-              </div>
-              <div class="row"><span class="path">&nbsp;&nbsp;├── result/</span><span class="chip is-ship">交付 ·
-                  唯一会被导出</span></div>
-              <div class="row"><span class="path">&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;├── weights/</span></div>
-              <div class="row"><span class="path">&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;├── training_result.json</span>
-              </div>
-              <div class="row"><span class="path">&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;└── test_result.xlsx</span></div>
-              <div class="row"><span class="path">&nbsp;&nbsp;├── log/</span><span class="chip is-side">旁路 · 不导出</span>
-              </div>
-              <div class="row"><span class="path">&nbsp;&nbsp;└── progress/</span><span class="chip is-side">旁路 ·
-                  不导出</span></div>
+      <p class="caption">表 0-1  文档信息</p>
+      <div class="table-wrap">
+        <table class="data">
+          <tbody>
+            <tr><th>项目</th><th>内容</th></tr>
+            <tr><td>文档名称</td><td>TAA 模型提供方用户手册</td></tr>
+            <tr><td>文档版本</td><td>V1.0</td></tr>
+            <tr><td>发布日期</td><td>2026-10-26</td></tr>
+            <tr><td>适用产品</td><td>TAA 机密计算平台</td></tr>
+            <tr><td>读者对象</td><td>模型提供方开发人员</td></tr>
+            <tr><td>编写单位</td><td>纽创信安（OSR）</td></tr>
+          </tbody>
+        </table>
+      </div>
 
-              <div class="row gap-top"><span class="path">/opt/taa/models/</span><span class="chip is-read">你的源码 ·
-                  进程工作目录</span></div>
-            </div>
-          </div>
+      <p class="caption">表 0-2  修订记录</p>
+      <div class="table-wrap">
+        <table class="data">
+          <tbody>
+            <tr><th>版本</th><th>日期</th><th>修订说明</th><th>修订人</th></tr>
+            <tr><td>V1.0</td><td>2026-10-26</td><td>首次发布</td><td>黄建业</td></tr>
+          </tbody>
+        </table>
+      </div>
 
-          <p>三条硬性规则：</p>
-          <ol class="plain">
-            <li><strong>输入目录只读。</strong>不得在 <code>/opt/taa/input</code> 下创建、修改或删除任何文件，包括缓存与临时文件。</li>
-            <li><strong>产物集中在 <code>result/</code>。</strong><code>log/</code> 与 <code>progress/</code> 只是旁路通道；需要交付的文件一律放
-              <code>result/</code>。
-            </li>
-            <li><strong>不要写相对路径。</strong>进程的工作目录是你的源码目录，相对路径会落到代码目录而不是产物目录。</li>
-          </ol>
-        </section>
+      <p>本手册描述模型代码在 TAA 机密计算平台内的文件读写约定。手册内容与平台版本同步更新，后续修订会记录在上表中。</p>
+    </section>
 
-        <!-- 02 -->
-        <section id="log">
-          <h2><span class="num">02</span><span>写日志</span></h2>
-          <p><strong>位置</strong>：<code>/opt/taa/output/log/</code>。目录下所有 <code>*.jsonl</code> 与 <code>*.log</code>
-            文件都会被读取。</p>
-          <p><strong>格式</strong>：每行一个 JSON 对象，追加写入。</p>
-
-          <pre><span class="c">{</span><span class="s">"timestamp"</span><span class="c">:</span> <span class="s">"2026-10-12T07:15:32Z"</span><span class="c">,</span> <span class="s">"message"</span><span class="c">:</span> <span class="s">"[Train] Epoch 3/150 finished - loss: 0.3821"</span><span class="c">}</span></pre>
-
-          <ul class="plain">
-            <li>消息字段取 <code>message</code>，也接受 <code>msg</code>；时间字段取 <code>timestamp</code>，也接受
-              <code>time</code>、<code>ts</code>。
-            </li>
-            <li>时间戳可选；写了会显示为日志前缀。</li>
-            <li>也接受不含 JSON 的纯文本行；未识别的字段会被忽略，可以按需增加。</li>
+    <!-- 目录 -->
+    <nav class="sheet toc" id="toc" aria-label="目录">
+      <h2 class="toc-title">目录</h2>
+      <ul class="toc-list">
+        <li>
+          <a href="#ch1"><span class="toc-num">1</span><span class="toc-title-text">概述</span></a>
+          <ul class="toc-sub">
+            <li><a href="#s1-1"><span class="toc-num">1.1</span>编写目的</a></li>
+            <li><a href="#s1-2"><span class="toc-num">1.2</span>适用范围</a></li>
+            <li><a href="#s1-3"><span class="toc-num">1.3</span>读者对象</a></li>
+            <li><a href="#s1-4"><span class="toc-num">1.4</span>术语与缩略语</a></li>
           </ul>
-
-          <p>必须遵守：</p>
-          <ul class="rules">
-            <li><span class="mark">01</span><span><strong>每行以换行符结尾。</strong>没有换行的尾部（包括正在写入的半行）不会被读取，直到换行符落盘为止。</span>
-            </li>
-            <li><span class="mark">02</span><span><strong>只追加，不覆盖、不回退。</strong>文件如果变小（被截断重写），会被当作新文件从头读取，导致日志重复。</span>
-            </li>
+        </li>
+        <li>
+          <a href="#ch2"><span class="toc-num">2</span><span class="toc-title-text">运行环境与目录布局</span></a>
+          <ul class="toc-sub">
+            <li><a href="#s2-1"><span class="toc-num">2.1</span>TEE 内目录结构</a></li>
+            <li><a href="#s2-2"><span class="toc-num">2.2</span>目录职责与生命周期</a></li>
+            <li><a href="#s2-3"><span class="toc-num">2.3</span>基本约定</a></li>
           </ul>
+        </li>
+        <li>
+          <a href="#ch3"><span class="toc-num">3</span><span class="toc-title-text">接入流程</span></a>
+          <ul class="toc-sub">
+            <li><a href="#s3-1"><span class="toc-num">3.1</span>接入步骤总览</a></li>
+            <li><a href="#s3-2"><span class="toc-num">3.2</span>步骤一：确认输入与输出目录</a></li>
+            <li><a href="#s3-3"><span class="toc-num">3.3</span>步骤二：参数化目录配置</a></li>
+            <li><a href="#s3-4"><span class="toc-num">3.4</span>步骤三：实现三类输出</a></li>
+            <li><a href="#s3-5"><span class="toc-num">3.5</span>步骤四：本地自检并上传</a></li>
+          </ul>
+        </li>
+        <li>
+          <a href="#ch4"><span class="toc-num">4</span><span class="toc-title-text">写日志</span></a>
+          <ul class="toc-sub">
+            <li><a href="#s4-1"><span class="toc-num">4.1</span>文件位置与命名</a></li>
+            <li><a href="#s4-2"><span class="toc-num">4.2</span>格式与字段</a></li>
+            <li><a href="#s4-3"><span class="toc-num">4.3</span>编写要求</a></li>
+            <li><a href="#s4-4"><span class="toc-num">4.4</span>参考实现</a></li>
+          </ul>
+        </li>
+        <li>
+          <a href="#ch5"><span class="toc-num">5</span><span class="toc-title-text">上报训练进度</span></a>
+          <ul class="toc-sub">
+            <li><a href="#s5-1"><span class="toc-num">5.1</span>文件位置</a></li>
+            <li><a href="#s5-2"><span class="toc-num">5.2</span>格式与字段</a></li>
+            <li><a href="#s5-3"><span class="toc-num">5.3</span>写入要求</a></li>
+            <li><a href="#s5-4"><span class="toc-num">5.4</span>参考实现</a></li>
+            <li><a href="#s5-5"><span class="toc-num">5.5</span>进度预算建议</a></li>
+          </ul>
+        </li>
+        <li>
+          <a href="#ch6"><span class="toc-num">6</span><span class="toc-title-text">生成结果汇总文件</span></a>
+          <ul class="toc-sub">
+            <li><a href="#s6-1"><span class="toc-num">6.1</span>文件位置与生效条件</a></li>
+            <li><a href="#s6-2"><span class="toc-num">6.2</span>文件格式</a></li>
+            <li><a href="#s6-3"><span class="toc-num">6.3</span>采集范围</a></li>
+            <li><a href="#s6-4"><span class="toc-num">6.4</span>写入示例</a></li>
+            <li><a href="#s6-5"><span class="toc-num">6.5</span>失败路径</a></li>
+          </ul>
+        </li>
+        <li>
+          <a href="#ch7"><span class="toc-num">7</span><span class="toc-title-text">禁止事项</span></a>
+        </li>
+        <li>
+          <a href="#ch8"><span class="toc-num">8</span><span class="toc-title-text">常见问题</span></a>
+          <ul class="toc-sub">
+            <li><a href="#s8-1"><span class="toc-num">8.1</span>代码在普通环境调试时也要写这些文件吗？</a></li>
+            <li><a href="#s8-2"><span class="toc-num">8.2</span>日志可以直接打印到标准输出吗？</a></li>
+            <li><a href="#s8-3"><span class="toc-num">8.3</span>一次运行写了多个日志文件会怎样？</a></li>
+            <li><a href="#s8-4"><span class="toc-num">8.4</span>进度长时间不动会怎样？</a></li>
+            <li><a href="#s8-5"><span class="toc-num">8.5</span>训练中途失败，还要写 training_result.json 吗？</a></li>
+            <li><a href="#s8-6"><span class="toc-num">8.6</span>可以把中间 checkpoint 写在 result/ 下吗？</a></li>
+          </ul>
+        </li>
+        <li>
+          <a href="#ch9"><span class="toc-num">9</span><span class="toc-title-text">上传前检查清单</span></a>
+        </li>
+        <li>
+          <a href="#apxA"><span class="toc-num">附录 A</span><span class="toc-title-text">关键路径速查</span></a>
+        </li>
+        <li>
+          <a href="#apxB"><span class="toc-num">附录 B</span><span class="toc-title-text">端到端示例</span></a>
+        </li>
+      </ul>
+    </nav>
 
-          <h3>参考实现</h3>
-          <pre><span class="k">import</span> json
-<span class="k">from</span> datetime <span class="k">import</span> datetime, timezone
+    <!-- 1 概述 -->
+    <section class="sheet chapter" id="ch1">
+      <h1><span class="hnum">1</span>概述</h1>
 
-<span class="k">class</span> ModelLogger:
-    <span class="k">def</span> __init__(self, log_dir, filename=<span class="s">"train.log"</span>):
+      <h2 id="s1-1"><span class="hnum">1.1</span>编写目的</h2>
+      <p>本手册面向接入 TAA 机密计算平台的模型提供方，说明模型代码在 TEE（可信执行环境）内应如何读取输入、写出日志、上报训练进度并生成结果汇总文件。按本手册改造后的代码不调用任何网络接口，也不需要引入专有依赖，在普通环境下同样可以运行。</p>
+
+      <h2 id="s1-2"><span class="hnum">1.2</span>适用范围</h2>
+      <p>本手册适用于在 TAA 内执行的训练任务；推理任务沿用同一套目录与文件约定。手册只覆盖文件读写约定；代码审计红线、任务阶段划分与产物导出口径不在本手册范围内。</p>
+
+      <h2 id="s1-3"><span class="hnum">1.3</span>读者对象</h2>
+      <p>负责模型训练或推理代码开发、需要将代码接入 TAA 的工程人员。读者应熟悉 Linux 文件操作与 JSON 格式，并具备一定编程能力。</p>
+
+      <h2 id="s1-4"><span class="hnum">1.4</span>术语与缩略语</h2>
+      <p class="caption">表 1-1  术语说明</p>
+      <div class="table-wrap">
+        <table class="data" data-cols="18,82">
+          <thead>
+            <tr><th>术语</th><th>说明</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>TAA</td><td>Trusted Application Agent，可信应用代理；模型训练与推理的机密计算平台，模型代码在其中的 TEE 内执行</td></tr>
+            <tr><td>TEE</td><td>Trusted Execution Environment，可信执行环境；宿主无法读取或篡改其中的内存与文件</td></tr>
+            <tr><td>输入</td><td>平台提供、模型只读的数据，位于 <code>/opt/taa/input</code></td></tr>
+            <tr><td>产物</td><td>需要导出的输出文件，位于 <code>/opt/taa/output/result</code>，任务结束后统一导出</td></tr>
+            <tr><td>旁路文件</td><td>日志与进度文件，用于展示运行状态，不随任务导出</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>文中「注意」框表示必须遵守的限制，「提示」框给出建议做法；代码示例可直接复制使用。</p>
+    </section>
+
+    <!-- 2 运行环境与目录布局 -->
+    <section class="sheet chapter" id="ch2">
+      <h1><span class="hnum">2</span>运行环境与目录布局</h1>
+
+      <h2 id="s2-1"><span class="hnum">2.1</span>TEE 内目录结构</h2>
+      <p>TEE 内固定提供以下目录，模型代码只与它们打交道。输入目录的内容按模型实际需要而定，由平台在任务开始时准备。</p>
+
+      <p class="caption">表 2-1  目录结构</p>
+      <div class="table-wrap">
+        <table class="data" data-cols="48,52">
+          <thead>
+            <tr><th>路径</th><th>角色</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="tree-path">/opt/taa/input/</td><td>只读</td></tr>
+            <tr><td class="tree-path">/opt/taa/output/</td><td>可写</td></tr>
+            <tr><td class="tree-path">&nbsp;&nbsp;&nbsp;&nbsp;├── result/</td><td>交付 · 唯一会被导出</td></tr>
+            <tr><td class="tree-path">&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── weights/</td><td>模型权重（示例）</td></tr>
+            <tr><td class="tree-path">&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── training_result.json</td><td>结果汇总文件，见第 6 章</td></tr>
+            <tr><td class="tree-path">&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── test_result.xlsx</td><td>测试结果（示例）</td></tr>
+            <tr><td class="tree-path">&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;└── …</td><td>按实际交付内容增删</td></tr>
+            <tr><td class="tree-path">&nbsp;&nbsp;&nbsp;&nbsp;├── log/</td><td>旁路 · 不导出 · 平台据此展示训练过程</td></tr>
+            <tr><td class="tree-path">&nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;└── train.jsonl</td><td>每行一条 JSON 日志，可拆成多个文件</td></tr>
+            <tr><td class="tree-path">&nbsp;&nbsp;&nbsp;&nbsp;└── progress/</td><td>旁路 · 不导出 · 平台据此显示进度条</td></tr>
+            <tr><td class="tree-path">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── progress.json</td><td>文件名固定，进度写在其中</td></tr>
+            <tr><td class="tree-path">/opt/taa/models/</td><td>你的源码 · 进程工作目录</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="s2-2"><span class="hnum">2.2</span>目录职责与生命周期</h2>
+      <p class="caption">表 2-2  目录职责与生命周期</p>
+      <div class="table-wrap">
+        <table class="data" data-cols="30,20,14,36">
+          <thead>
+            <tr><th>目录</th><th>用途</th><th>是否导出</th><th>生命周期</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>/opt/taa/input/</code></td><td>模型只读的输入数据</td><td>否</td><td>任务开始时由 TAA 将所需数据集拷贝到该目录</td></tr>
+            <tr><td><code>/opt/taa/output/result/</code></td><td>交付产物</td><td>是（唯一）</td><td>任务开始时创建；进程正常结束后移出并落盘</td></tr>
+            <tr><td><code>/opt/taa/output/log/</code></td><td>运行日志</td><td>否</td><td>任务结束后清空；执行期间逐行追加，可拆成多个 <code>*.jsonl</code> / <code>*.log</code></td></tr>
+            <tr><td><code>/opt/taa/output/progress/</code></td><td>进度文件所在目录</td><td>否</td><td>任务结束后清空；执行期间反复覆盖写入 <code>progress.json</code></td></tr>
+            <tr><td><code>/opt/taa/models/</code></td><td>模型源码，进程工作目录</td><td>否</td><td>任务开始时提供</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="s2-3"><span class="hnum">2.3</span>基本约定</h2>
+      <p>接入前请先确认以下三条约定，它们贯穿全文：</p>
+      <ol class="steps">
+        <li><strong>输入目录只读。</strong>不得在 <code>/opt/taa/input</code> 下创建、修改或删除任何文件，包括缓存与临时文件。</li>
+        <li><strong>产物集中在 result/。</strong><code>log/</code> 与 <code>progress/</code> 只是旁路通道；需要交付的文件一律放 <code>result/</code>。</li>
+        <li><strong>不要写相对路径。</strong>进程的工作目录是源码目录，相对路径会落到代码目录而不是产物目录。</li>
+      </ol>
+    </section>
+
+    <!-- 3 接入流程 -->
+    <section class="sheet chapter" id="ch3">
+      <h1><span class="hnum">3</span>接入流程</h1>
+
+      <h2 id="s3-1"><span class="hnum">3.1</span>接入步骤总览</h2>
+      <p>把一份已有代码接入 TAA，通常按以下五步完成：</p>
+
+      <p class="caption">表 3-1  接入步骤</p>
+      <div class="table-wrap">
+        <table class="data" data-cols="10,55,35">
+          <thead>
+            <tr><th>步骤</th><th>内容</th><th>参见</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>1</td><td>确认输入与输出目录</td><td>2.1、2.2</td></tr>
+            <tr><td>2</td><td>参数化目录配置</td><td>3.3</td></tr>
+            <tr><td>3</td><td>实现日志与进度输出</td><td>第 4 章、第 5 章</td></tr>
+            <tr><td>4</td><td>写出结果汇总文件</td><td>第 6 章</td></tr>
+            <tr><td>5</td><td>本地自检并上传</td><td>3.5、第 9 章</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="s3-2"><span class="hnum">3.2</span>步骤一：确认输入与输出目录</h2>
+      <p>先确认代码读取什么、产出什么。所有读取只应发生在 <code>/opt/taa/input</code> 下；所有需要交付的文件只应写到 <code>/opt/taa/output/result</code> 下。</p>
+
+      <h2 id="s3-3"><span class="hnum">3.3</span>步骤二：参数化目录配置</h2>
+      <p>建议把三个目录写成模块级常量，并允许用环境变量覆盖，这样同一份代码在本地调试与 TEE 内运行可以使用不同路径：</p>
+
+      <figure class="example">
+        <figcaption>示例 3-1  目录常量</figcaption>
+        <div class="code">
+          <div class="code-bar" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="lang">python</span></div>
+          <pre><code>from pathlib import Path
+import os
+
+INPUT_DIR  = Path(os.environ.get(
+    "TAA_INPUT_DIR",  "/opt/taa/input"))
+OUTPUT_DIR = Path(os.environ.get(
+    "TAA_OUTPUT_DIR", "/opt/taa/output"))
+RESULT_DIR = OUTPUT_DIR / "result"
+LOG_DIR    = OUTPUT_DIR / "log"
+PROGRESS   = OUTPUT_DIR / "progress" / "progress.json"</code></pre>
+        </div>
+      </figure>
+
+      <h2 id="s3-4"><span class="hnum">3.4</span>步骤三：实现三类输出</h2>
+      <p>日志、进度与结果汇总文件的作用不同，实现方式也不同：日志用于展示运行过程，按行追加；进度用于驱动平台上的进度条，需要原子写入且单调不回退；结果汇总文件在任务结束时写出，被合并进最终报告。三类输出的格式分别见第 4、5、6 章。</p>
+
+      <h2 id="s3-5"><span class="hnum">3.5</span>步骤四：本地自检并上传</h2>
+      <p>改造完成后，先在普通环境用临时目录完整跑一遍，确认三个文件都按预期生成、内容可以正常解析；随后按第 9 章的检查清单逐项确认，再提交上传。</p>
+    </section>
+
+    <!-- 4 写日志 -->
+    <section class="sheet chapter" id="ch4">
+      <h1><span class="hnum">4</span>写日志</h1>
+
+      <h2 id="s4-1"><span class="hnum">4.1</span>文件位置与命名</h2>
+      <p>日志写在 <code>/opt/taa/output/log/</code> 下。文件名不限，后缀为 <code>*.jsonl</code> 或 <code>*.log</code> 就会被读取（后缀不区分大小写），可以按阶段拆成多个文件。子目录不会被扫描，日志请直接放在该目录下。多个文件按文件名排序后读取，平台上的展示先后顺序与文件名一致。</p>
+
+      <h2 id="s4-2"><span class="hnum">4.2</span>格式与字段</h2>
+      <p>每行一个 JSON 对象，追加写入：</p>
+
+      <div class="code">
+        <div class="code-bar" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="lang">json</span></div>
+        <pre><code>{"timestamp": "2026-10-12T07:15:32Z", "message": "loss 0.3821"}</code></pre>
+      </div>
+
+      <p class="caption">表 4-1  日志字段</p>
+      <div class="table-wrap">
+        <table class="data" data-cols="20,14,66">
+          <thead>
+            <tr><th>字段</th><th>必填</th><th>说明</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>message</code></td><td>是</td><td>日志正文，也接受 <code>msg</code></td></tr>
+            <tr><td><code>timestamp</code></td><td>否</td><td>RFC3339 时间戳，也接受 <code>time</code>、<code>ts</code>；写入后显示为日志前缀</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>未识别的字段会被忽略，可以按需增加。也接受不含 JSON 的纯文本行。</p>
+
+      <h2 id="s4-3"><span class="hnum">4.3</span>编写要求</h2>
+      <ol class="steps">
+        <li><strong>每行以换行符结尾。</strong>没有换行的尾部（包括正在写入的半行）不会被读取，直到换行符落盘为止。</li>
+        <li><strong>只追加，不覆盖、不回退。</strong>文件如果变小（被截断重写），会被当作新文件从头读取，导致日志重复。</li>
+      </ol>
+
+      <h2 id="s4-4"><span class="hnum">4.4</span>参考实现</h2>
+
+      <figure class="example">
+        <figcaption>示例 4-1  日志写入参考实现</figcaption>
+        <div class="code">
+          <div class="code-bar" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="lang">python</span></div>
+          <pre><code>import json
+from datetime import datetime, timezone
+
+class ModelLogger:
+    def __init__(self, log_dir, filename="train.log"):
         self.path = Path(log_dir) / filename
-        self.path.parent.mkdir(parents=<span class="k">True</span>, exist_ok=<span class="k">True</span>)
-        self._file = open(self.path, <span class="s">"a"</span>, encoding=<span class="s">"utf-8"</span>)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = open(self.path, "a", encoding="utf-8")
 
-    <span class="k">def</span> log(self, message: str) -&gt; <span class="k">None</span>:
-        ts = datetime.now(timezone.utc).strftime(<span class="s">"%Y-%m-%dT%H:%M:%SZ"</span>)
-        self._file.write(json.dumps({<span class="s">"timestamp"</span>: ts, <span class="s">"message"</span>: str(message)},
-                                    ensure_ascii=<span class="k">False</span>) + <span class="s">"\n"</span>)
-        self._file.flush()          <span class="c"># 不 flush，日志会滞留在缓冲区</span>
-        print(message)              <span class="c"># 同时输出到控制台，便于本地调试</span>
+    def log(self, message: str) -&gt; None:
+        now = datetime.now(timezone.utc)
+        ts = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        record = {"timestamp": ts, "message": str(message)}
+        line = json.dumps(record, ensure_ascii=False) + "\n"
+        self._file.write(line)
+        self._file.flush()      # 不 flush 会滞留在缓冲区
+        print(message)          # 同时输出到控制台，便于调试
 
-    <span class="k">def</span> close(self) -&gt; <span class="k">None</span>:
-        <span class="k">if</span> self._file <span class="k">and</span> <span class="k">not</span> self._file.closed:
+    def close(self) -&gt; None:
+        if self._file and not self._file.closed:
             self._file.flush()
-            self._file.close()</pre>
+            self._file.close()</code></pre>
+        </div>
+      </figure>
 
-          <div class="callout warn">
-            <p>每次任务开始前 <code>log/</code> 目录会被清空。不要依赖上一次运行留下的文件，每次运行重新创建。</p>
-          </div>
-        </section>
+      <aside class="note">
+        <span class="note-label">注意</span>
+        <p>任务结束后 <code>log/</code> 目录会被清空。不要依赖上一次运行留下的文件，每次运行重新创建。</p>
+      </aside>
+    </section>
 
-        <!-- 03 -->
-        <section id="progress">
-          <h2><span class="num">03</span><span>写进度</span></h2>
-          <p><strong>位置</strong>：<code>/opt/taa/output/progress/progress.json</code>。注意这是一个<strong>文件路径</strong>，不是目录。
-          </p>
+    <!-- 5 上报训练进度 -->
+    <section class="sheet chapter" id="ch5">
+      <h1><span class="hnum">5</span>上报训练进度</h1>
 
-          <pre><span class="c">{</span>
-  <span class="s">"percent"</span><span class="c">:</span> 34.6525<span class="c">,</span>
-  <span class="s">"timestamp"</span><span class="c">:</span> <span class="s">"2026-10-12T07:15:32.123456Z"</span>
-<span class="c">}</span></pre>
+      <h2 id="s5-1"><span class="hnum">5.1</span>文件位置</h2>
+      <p>进度写在 <code>/opt/taa/output/progress/progress.json</code>。注意这是一个文件路径，不是目录，文件名固定为 <code>progress.json</code>。</p>
 
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>字段</th>
-                  <th>必填</th>
-                  <th>说明</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td class="mono">percent</td>
-                  <td><span class="req-yes">是</span></td>
-                  <td>0.0 – 100.0，也接受 <code>percentage</code>。越界、非数字或整个文件不是 JSON 对象都会被忽略，进度停在原处</td>
-                </tr>
-                <tr>
-                  <td class="mono">timestamp</td>
-                  <td><span class="req-no">否</span></td>
-                  <td>RFC3339 / RFC3339Nano UTC，建议带微秒。缺失或格式非法时使用文件修改时间</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+      <h2 id="s5-2"><span class="hnum">5.2</span>格式与字段</h2>
 
-          <p>整个文件只会被读取这两个字段，其余字段一律忽略：写了不报错，但不会展示、也不会被使用。进度之外的信息请写进日志。</p>
+      <div class="code">
+        <div class="code-bar" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="lang">json</span></div>
+        <pre><code>{
+  "percent": 34.6525,
+  "timestamp": "2026-10-12T07:15:32.123456Z"
+}</code></pre>
+      </div>
 
-          <h3>参考实现</h3>
-          <pre><span class="k">import</span> json, os, time
-<span class="k">from</span> datetime <span class="k">import</span> datetime, timezone
+      <p class="caption">表 5-1  进度字段</p>
+      <div class="table-wrap">
+        <table class="data" data-cols="20,12,68">
+          <thead>
+            <tr><th>字段</th><th>必填</th><th>说明</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>percent</code></td><td>是</td><td>0.0 – 100.0，也接受 <code>percentage</code>。越界、非数字或整个文件不是 JSON 对象都会被忽略，进度停在原处</td></tr>
+            <tr><td><code>timestamp</code></td><td>否</td><td>RFC3339 / RFC3339Nano UTC，建议带微秒。缺失或格式非法时使用文件修改时间</td></tr>
+          </tbody>
+        </table>
+      </div>
 
-<span class="k">class</span> ProgressTracker:
-    <span class="k">def</span> __init__(self, progress_path, min_interval_seconds=0.2, min_percent_delta=0.0001):
+      <p>整个文件只会被读取这两个字段，其余字段一律忽略：写了不报错，但不会展示、也不会被使用。进度之外的信息请写进日志。</p>
+
+      <h2 id="s5-3"><span class="hnum">5.3</span>写入要求</h2>
+      <p>进度文件会被频繁读取，必须保证任何时刻读到的都是完整内容：</p>
+      <ol class="steps">
+        <li><strong>原子写入。</strong>先写临时文件，<code>fsync</code> 后再 <code>os.replace</code> 覆盖目标文件。</li>
+        <li><strong>单调不回退。</strong>新值不得小于已写入的值，避免进度条跳回。</li>
+        <li><strong>限频写入。</strong>建议最小间隔 0.2 秒，且百分比变化小于 0.0001 时跳过。</li>
+      </ol>
+
+      <h2 id="s5-4"><span class="hnum">5.4</span>参考实现</h2>
+
+      <figure class="example">
+        <figcaption>示例 5-1  进度写入参考实现</figcaption>
+        <div class="code">
+          <div class="code-bar" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="lang">python</span></div>
+          <pre><code>import json, os, time
+from datetime import datetime, timezone
+
+class ProgressTracker:
+    def __init__(self, progress_path, min_interval_seconds=0.2,
+                 min_percent_delta=0.0001):
         self.path = Path(progress_path)
-        self.tmp_path = self.path.with_suffix(self.path.suffix + <span class="s">".tmp"</span>)
-        self.path.parent.mkdir(parents=<span class="k">True</span>, exist_ok=<span class="k">True</span>)
+        self.tmp_path = self.path.with_suffix(
+            self.path.suffix + ".tmp")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self.min_interval_seconds = min_interval_seconds
         self.min_percent_delta = min_percent_delta
         self._last_percent = -1.0
         self._last_write_time = 0.0
 
-    <span class="k">def</span> update(self, percent, force=<span class="k">False</span>) -&gt; bool:
+    def update(self, percent, force=False) -&gt; bool:
         percent = max(0.0, min(100.0, round(float(percent), 4)))
-        <span class="k">if</span> self._last_percent &gt;= 0.0:
-            percent = max(percent, self._last_percent)          <span class="c"># 单调不回退</span>
-        <span class="k">if</span> <span class="k">not</span> force <span class="k">and</span> self._last_percent &gt;= 0.0:
+        if self._last_percent &gt;= 0.0:
+            # 单调不回退
+            percent = max(percent, self._last_percent)
+        if not force and self._last_percent &gt;= 0.0:
             elapsed = time.time() - self._last_write_time
-            <span class="k">if</span> elapsed &lt; self.min_interval_seconds <span class="k">and</span> abs(percent - self._last_percent) &lt; self.min_percent_delta:
-                <span class="k">return</span> <span class="k">False</span>
+            delta = abs(percent - self._last_percent)
+            if (elapsed &lt; self.min_interval_seconds
+                    and delta &lt; self.min_percent_delta):
+                return False
 
         payload = {
-            <span class="s">"percent"</span>: percent,
-            <span class="s">"timestamp"</span>: datetime.now(timezone.utc).strftime(<span class="s">"%Y-%m-%dT%H:%M:%S.%fZ"</span>),
+            "percent": percent,
+            "timestamp": datetime.now(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%S.%fZ"),
         }
-        <span class="k">with</span> open(self.tmp_path, <span class="s">"w"</span>, encoding=<span class="s">"utf-8"</span>) <span class="k">as</span> f:
-            f.write(json.dumps(payload, ensure_ascii=<span class="k">False</span>, indent=2) + <span class="s">"\n"</span>)
+        with open(self.tmp_path, "w", encoding="utf-8") as f:
+            data = json.dumps(
+                payload, ensure_ascii=False, indent=2)
+            f.write(data + "\n")
             f.flush()
             os.fsync(f.fileno())
-        os.replace(self.tmp_path, self.path)                    <span class="c"># 原子替换</span>
+        os.replace(self.tmp_path, self.path)  # 原子替换
 
         self._last_percent = percent
         self._last_write_time = time.time()
-        <span class="k">return</span> <span class="k">True</span></pre>
+        return True</code></pre>
+        </div>
+      </figure>
 
-          <h3>建议的进度预算</h3>
-          <p>可按任务调整，原则是初始化与收尾都要覆盖，长循环中间要有细粒度变化。</p>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>区间</th>
-                  <th>内容</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td class="mono">0% – 2%</td>
-                  <td>参数解析、模型构建、损失与优化器、DataLoader 就绪</td>
-                </tr>
-                <tr>
-                  <td class="mono">2% – 96%</td>
-                  <td>按 epoch 均分；epoch 内按 batch 平滑插值；每 epoch 开始、25%、50%、75%、收尾各强制写一次</td>
-                </tr>
-                <tr>
-                  <td class="mono">96% – 100%</td>
-                  <td>指标汇总、写 <code>training_result.json</code>、完成</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+      <h2 id="s5-5"><span class="hnum">5.5</span>进度预算建议</h2>
+      <p>可按任务调整，原则是初始化与收尾都要覆盖，长循环中间要有细粒度变化。</p>
 
-          <div class="callout warn">
-            <p>每次任务开始前进度文件会被删除。若进度长时间不动，平台侧看到的进度条也会停住。</p>
-          </div>
-        </section>
+      <p class="caption">表 5-2  建议的进度预算</p>
+      <div class="table-wrap">
+        <table class="data" data-cols="18,82">
+          <thead>
+            <tr><th>区间</th><th>内容</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>0% – 2%</td><td>参数解析、模型构建、损失与优化器、DataLoader 就绪</td></tr>
+            <tr><td>2% – 96%</td><td>按 epoch 均分；epoch 内按 batch 平滑插值；每 epoch 开始、25%、50%、75%、收尾各强制写一次</td></tr>
+            <tr><td>96% – 100%</td><td>数据集统计、写 <code>training_result.json</code>、完成</td></tr>
+          </tbody>
+        </table>
+      </div>
 
-        <!-- 04 -->
-        <section id="result">
-          <h2><span class="num">04</span><span>写结果汇总</span></h2>
-          <p><strong>位置</strong>：产物目录根部，即 <code>/opt/taa/output/result/training_result.json</code>。</p>
-          <p>进程以退出码 0 结束后，该文件会被读取并与审计信息、数据校验和合并成最终报告。<strong>只有 <code>result/</code> 里的产物会被导出</strong>；进程非 0 退出时产物不会被收集。
-          </p>
+      <aside class="note">
+        <span class="note-label">注意</span>
+        <p>任务结束后进度文件会被清空。若进度长时间不动，平台侧看到的进度条也会停住。</p>
+      </aside>
+    </section>
 
-          <pre><span class="c">{</span>
-  <span class="s">"training_task"</span><span class="c">:</span> <span class="c">{</span>
-    <span class="s">"metrics"</span><span class="c">:</span> <span class="c">{</span>
-      <span class="s">"final_accuracy"</span><span class="c">:</span> 0.9425<span class="c">,</span>
-      <span class="s">"final_loss"</span><span class="c">:</span> 0.1352<span class="c">,</span>
-      <span class="s">"final_auc"</span><span class="c">:</span> 0.9810<span class="c">,</span>
-      <span class="s">"final_f1"</span><span class="c">:</span> 0.9380<span class="c">,</span>
-      <span class="s">"epochs"</span><span class="c">:</span> [
-        <span class="c">{</span><span class="s">"epoch"</span><span class="c">:</span> 1<span class="c">,</span> <span class="s">"accuracy"</span><span class="c">:</span> 0.6500<span class="c">,</span> <span class="s">"loss"</span><span class="c">:</span> 0.8500<span class="c">}</span><span class="c">,</span>
-        <span class="c">{</span><span class="s">"epoch"</span><span class="c">:</span> 2<span class="c">,</span> <span class="s">"accuracy"</span><span class="c">:</span> 0.8100<span class="c">,</span> <span class="s">"loss"</span><span class="c">:</span> 0.4200<span class="c">}</span><span class="c">,</span>
-        <span class="c">{</span><span class="s">"epoch"</span><span class="c">:</span> 3<span class="c">,</span> <span class="s">"accuracy"</span><span class="c">:</span> 0.9425<span class="c">,</span> <span class="s">"loss"</span><span class="c">:</span> 0.1352<span class="c">}</span>
-      ]
-    <span class="c">}</span>
-  <span class="c">}</span><span class="c">,</span>
-  <span class="s">"dataset"</span><span class="c">:</span> <span class="c">{</span>
-    <span class="s">"total_samples"</span><span class="c">:</span> 12500<span class="c">,</span>
-    <span class="s">"splits"</span><span class="c">:</span> <span class="c">{</span><span class="s">"train"</span><span class="c">:</span> 10000<span class="c">,</span> <span class="s">"test"</span><span class="c">:</span> 2500<span class="c">}</span>
-  <span class="c">}</span>
-<span class="c">}</span></pre>
+    <!-- 6 生成结果汇总文件 -->
+    <section class="sheet chapter" id="ch6">
+      <h1><span class="hnum">6</span>生成结果汇总文件</h1>
 
-          <ul class="plain">
-            <li><code>training_task.metrics</code> 与 <code>dataset</code> 是实际被采集的两块内容，指标键名自定。</li>
-            <li>文件缺失不会导致任务失败，但报告里就没有对应指标。<strong>无论成功失败都应尽量写出该文件。</strong></li>
-          </ul>
+      <h2 id="s6-1"><span class="hnum">6.1</span>文件位置与生效条件</h2>
+      <p>结果汇总文件位于产物目录根部，即 <code>/opt/taa/output/result/training_result.json</code>。进程以退出码 0 结束后，该文件会被读取，并与审计信息、数据校验和合并成最终报告。只有 <code>result/</code> 里的产物会被导出；进程非 0 退出时产物不会被收集。</p>
 
-          <pre>result_path = OUTPUT_DIR / <span class="s">"training_result.json"</span>
-<span class="k">with</span> open(result_path, <span class="s">"w"</span>, encoding=<span class="s">"utf-8"</span>) <span class="k">as</span> f:
-    json.dump(training_result, f, indent=2, ensure_ascii=<span class="k">False</span>)
-    f.write(<span class="s">"\n"</span>)</pre>
-        </section>
+      <h2 id="s6-2"><span class="hnum">6.2</span>文件格式</h2>
 
-        <!-- 05 -->
-        <section id="forbidden">
-          <h2><span class="num">05</span><span>禁止事项</span></h2>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>行为</th>
-                  <th>后果</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>在 <code>/opt/taa/input</code> 下创建、修改、删除文件</td>
-                  <td>违反 TEE 内只读约束</td>
-                </tr>
-                <tr>
-                  <td>把输入数据原样拷进 <code>result/</code>（原始图片、CSV、标注文件）</td>
-                  <td>导出前的反泄露检查会比对数据特征，命中即<strong>拒绝导出</strong></td>
-                </tr>
-                <tr>
-                  <td>在产物中写入明文 PEM 私钥、<code>SECRET_KEY=</code> / <code>API_KEY=</code> 等环境变量转储</td>
-                  <td>同上，命中明文特征即拒绝导出</td>
-                </tr>
-                <tr>
-                  <td>任何网络外联（<code>socket</code> / <code>requests</code> / <code>urllib</code> / <code>httpx</code> /
-                    <code>aiohttp</code>）
-                  </td>
-                  <td>代码审计红线，审计结论将判为未通过并上报平台（结论仅供参考，由平台侧处置）</td>
-                </tr>
-                <tr>
-                  <td>反弹 Shell、提权、危险系统调用</td>
-                  <td>同上</td>
-                </tr>
-                <tr>
-                  <td>单次产物超过大小上限（默认 3 GB）</td>
-                  <td>导出被拒绝</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
+      <div class="code">
+        <div class="code-bar" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="lang">json</span></div>
+        <pre><code>{
+  "dataset": {
+    "total_samples": 12500,
+    "splits": {"train": 10000, "test": 2500}
+  }
+}</code></pre>
+      </div>
 
-        <!-- 06 -->
-        <section id="checklist">
-          <h2><span class="num">06</span><span>上线前检查清单</span></h2>
-          <ul class="checklist">
-            <li><span class="box"></span><span>输入目录只读，代码中没有任何指向 <code>/opt/taa/input</code> 的写操作</span></li>
-            <li><span class="box"></span><span>所有需要交付导出的文件都写在 <code>/opt/taa/output/result/</code> 下，没有散落在别处</span></li>
-            <li><span class="box"></span><span>路径按上述绝对路径书写，没有写成相对路径</span></li>
-            <li><span class="box"></span><span>日志写在 <code>/opt/taa/output/log/</code>，每行以换行符结尾，只追加不重写</span></li>
-            <li><span class="box"></span><span>进度原子写入
-                <code>/opt/taa/output/progress/progress.json</code>，<code>percent</code> 在 0–100 之间且单调不回退</span></li>
-            <li><span class="box"></span><span>结束前写出 <code>/opt/taa/output/result/training_result.json</code>，含
-                <code>training_task.metrics</code> 与 <code>dataset</code></span></li>
-            <li><span class="box"></span><span>失败路径同样写出 <code>training_result.json</code>，或至少保证日志与进度可用</span></li>
-            <li><span class="box"></span><span>产物中没有原始数据副本、密钥、环境变量转储</span></li>
-            <li><span class="box"></span><span>代码中不存在任何网络调用</span></li>
-          </ul>
-        </section>
+      <h2 id="s6-3"><span class="hnum">6.3</span>采集范围</h2>
 
-        <footer>
-          本手册只覆盖文件读写约定。审计红线、阶段划分与导出口径见 <code>docs/api-design.md</code> 与 <code>docs/architecture-design.md</code>；模型代码审计结论仅供参考，不阻断 TAA 侧的模型导入与训练。
-        </footer>
+      <p class="caption">表 6-1  被采集的内容</p>
+      <div class="table-wrap">
+        <table class="data" data-cols="22,78">
+          <thead>
+            <tr><th>位置</th><th>说明</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>dataset</code></td><td>数据集规模，常用 <code>total_samples</code> 与 <code>splits</code></td></tr>
+            <tr><td>其他键</td><td>不会进入报告，可以自由增加</td></tr>
+          </tbody>
+        </table>
+      </div>
 
-      </main>
-    </div>
-  </div>
+      <h2 id="s6-4"><span class="hnum">6.4</span>写入示例</h2>
 
+      <figure class="example">
+        <figcaption>示例 6-1  写出结果汇总文件</figcaption>
+        <div class="code">
+          <div class="code-bar" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="lang">python</span></div>
+          <pre><code>result_path = RESULT_DIR / "training_result.json"
+with open(result_path, "w", encoding="utf-8") as f:
+    json.dump(training_result, f, indent=2, ensure_ascii=False)
+    f.write("\n")</code></pre>
+        </div>
+      </figure>
+
+      <h2 id="s6-5"><span class="hnum">6.5</span>失败路径</h2>
+      <p>文件缺失不会导致任务失败，但报告里会缺少数据集规模等信息，事后核对样本量、划分比例只能翻日志，平台也难以按统一口径统计。该文件被采集的内容只有 <code>dataset</code>。</p>
+      <p>字段缺失时报告只是留空，不会报错，因此容易到验收阶段才发现漏写。建议在 <code>finally</code> 中写出该文件，使异常退出时也能留下可用的信息；进程非 0 退出时 <code>result/</code> 不会被导出，此时以日志与进度为准。</p>
+    </section>
+
+    <!-- 7 禁止事项 -->
+    <section class="sheet chapter" id="ch7">
+      <h1><span class="hnum">7</span>禁止事项</h1>
+      <p>以下行为会导致导出被拒绝或审计结论不通过，接入前请逐项核对：</p>
+
+      <p class="caption">表 7-1  禁止事项与后果</p>
+      <div class="table-wrap">
+        <table class="data" data-cols="48,52">
+          <thead>
+            <tr><th>行为</th><th>后果</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>在 <code>/opt/taa/input</code> 下创建、修改、删除文件</td><td>违反 TEE 内只读约束</td></tr>
+            <tr><td>把输入数据原样拷进 <code>result/</code>（原始图片、CSV、标注文件）</td><td>导出前的反泄露检查会比对数据特征，命中即拒绝导出</td></tr>
+            <tr><td>在产物中写入明文 PEM 私钥、<code>SECRET_KEY=</code> / <code>API_KEY=</code> 等环境变量转储</td><td>同上，命中明文特征即拒绝导出</td></tr>
+            <tr><td>任何网络外联（<code>socket</code> / <code>requests</code> / <code>urllib</code> / <code>httpx</code> / <code>aiohttp</code>）</td><td>代码审计红线，审计结论将判为未通过并上报平台（结论仅供参考，由平台侧处置）</td></tr>
+            <tr><td>反弹 Shell、提权、危险系统调用</td><td>同上</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 8 常见问题 -->
+    <section class="sheet chapter" id="ch8">
+      <h1><span class="hnum">8</span>常见问题</h1>
+
+      <h3 id="s8-1"><span class="hnum">8.1</span>代码在普通环境调试时也要写这些文件吗？</h3>
+      <p>建议保持一致。用 3.3 节的环境变量把目录指向本地临时目录即可，读写方式与 TEE 内完全相同，便于提前发现格式问题。</p>
+
+      <h3 id="s8-2"><span class="hnum">8.2</span>日志可以直接打印到标准输出吗？</h3>
+      <p>可以用于本地调试，但平台只读取 <code>log/</code> 目录下的文件。正式运行必须把日志落到文件，同时打印到控制台不影响使用。</p>
+
+      <h3 id="s8-3"><span class="hnum">8.3</span>一次运行写了多个日志文件会怎样？</h3>
+      <p>目录下所有 <code>*.jsonl</code> 与 <code>*.log</code> 都会被读取，可以按阶段拆分文件。但不要重写或截断已经写过的内容，否则会被当作新文件重新读取。</p>
+
+      <h3 id="s8-4"><span class="hnum">8.4</span>进度长时间不动会怎样？</h3>
+      <p>平台显示的进度会停在最后一次成功读取的值。进度文件被删除、内容非法或 <code>percent</code> 越界时，同样停留在原处。</p>
+
+      <h3 id="s8-5"><span class="hnum">8.5</span>训练中途失败，还要写 training_result.json 吗？</h3>
+      <p>应在退出前尽量写出。进程非 0 退出时 <code>result/</code> 不会被导出，但保留该文件便于排查；失败信息同时写进日志与进度，平台侧才能看到。</p>
+
+      <h3 id="s8-6"><span class="hnum">8.6</span>可以把中间 checkpoint 写在 result/ 下吗？</h3>
+      <p>可以，但 <code>result/</code> 下的文件都会被导出，体积越大导出耗时越长。只放需要交付的文件，中间产物写到别处或不保留。</p>
+    </section>
+
+    <!-- 9 上传前检查清单 -->
+    <section class="sheet chapter" id="ch9">
+      <h1><span class="hnum">9</span>上传前检查清单</h1>
+      <p>上传前，请逐项确认以下内容：</p>
+
+      <ul class="checklist">
+        <li>输入目录只读，代码中没有任何指向 <code>/opt/taa/input</code> 的写操作</li>
+        <li>所有需要交付导出的文件都写在 <code>/opt/taa/output/result/</code> 下，没有散落在别处</li>
+        <li>路径按绝对路径书写，没有写成相对路径</li>
+        <li>日志写在 <code>/opt/taa/output/log/</code>，每行以换行符结尾，只追加不重写</li>
+        <li>进度原子写入 <code>/opt/taa/output/progress/progress.json</code>，<code>percent</code> 在 0–100 之间且单调不回退</li>
+        <li>结束前写出 <code>/opt/taa/output/result/training_result.json</code>，含 <code>dataset</code></li>
+        <li>失败路径同样写出 <code>training_result.json</code>，或至少保证日志与进度可用</li>
+        <li>产物中没有原始数据副本、密钥、环境变量转储</li>
+        <li>代码中不存在任何网络调用</li>
+      </ul>
+    </section>
+
+    <!-- 附录 A -->
+    <section class="sheet chapter appendix" id="apxA">
+      <h1><span class="hnum">附录 A</span>关键路径速查</h1>
+
+      <p class="caption">表 A-1  关键路径与格式</p>
+      <div class="table-wrap">
+        <table class="data" data-cols="12,48,22,18">
+          <thead>
+            <tr><th>项目</th><th>路径</th><th>格式</th><th>备注</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>运行日志</td><td><code>/opt/taa/output/log/</code></td><td><code>*.jsonl</code> / <code>*.log</code>，每行一个 JSON 对象</td><td>建议写，不导出</td></tr>
+            <tr><td>训练进度</td><td><code>/opt/taa/output/progress/progress.json</code></td><td>JSON 对象，<code>percent</code> 为 0–100</td><td>建议写，不导出</td></tr>
+            <tr><td>结果汇总</td><td><code>/opt/taa/output/result/training_result.json</code></td><td>JSON 对象</td><td>建议写，并入最终报告</td></tr>
+            <tr><td>交付产物</td><td><code>/opt/taa/output/result/</code></td><td>任意文件</td><td>会被导出，注意体积</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 附录 B -->
+    <section class="sheet chapter appendix" id="apxB">
+      <h1><span class="hnum">附录 B</span>端到端示例</h1>
+      <p>下面的骨架把三类输出串在一起，可作为改造既有代码的起点：</p>
+
+      <figure class="example">
+        <figcaption>示例 B-1  端到端骨架</figcaption>
+        <div class="code">
+          <div class="code-bar" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="lang">python</span></div>
+          <pre><code>import json
+from pathlib import Path
+
+INPUT_DIR  = Path("/opt/taa/input")
+OUTPUT_DIR = Path("/opt/taa/output")
+RESULT_DIR = OUTPUT_DIR / "result"
+LOG_DIR    = OUTPUT_DIR / "log"
+PROGRESS   = OUTPUT_DIR / "progress" / "progress.json"
+
+def train(epochs=150):
+    logger = ModelLogger(LOG_DIR)
+    progress = ProgressTracker(PROGRESS)
+    progress.update(1.0, force=True)
+    try:
+        model, loader = build(INPUT_DIR)        # 只读输入
+        for epoch in range(1, epochs + 1):
+            loss = run_epoch(model, loader)
+            logger.log("[Train] Epoch %d/%d loss: %.4f"
+                       % (epoch, epochs, loss))
+            progress.update(2.0 + 94.0 * epoch / epochs)
+        report = {
+            "dataset": {
+                "total_samples": len(loader.dataset),
+            },
+        }
+        text = json.dumps(report, indent=2, ensure_ascii=False)
+        (RESULT_DIR / "training_result.json").write_text(
+            text + "\n", encoding="utf-8")
+        progress.update(100.0, force=True)
+    finally:
+        logger.close()</code></pre>
+        </div>
+      </figure>
+
+      <p>其中 <code>ModelLogger</code> 见示例 4-1，<code>ProgressTracker</code> 见示例 5-1；<code>build</code> 与 <code>run_epoch</code> 是需要自行实现的模型代码，此处仅为示意。</p>
+    </section>
+
+    <p class="docfoot">纽创信安（OSR）</p>
+  </main>
+
+  <script>
+    /* ═══════════════════════════════════════════════════════════════════
+       DOCX 导出：零依赖、纯前端。把页面按手册结构重新生成为 OOXML：
+       [Content_Types].xml / _rels / document.xml / styles.xml / header / footer。
+       ZIP 用 store（不压缩）自行拼装，因此离线可用，也不需要任何 CDN。
+       ═══════════════════════════════════════════════════════════════════ */
+    (function () {
+      "use strict";
+
+      const NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+      const NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+      const TOTAL_W = 9298;            // A4 正文宽度（twips）
+      const DOCX_NAME = "TAA 模型提供方用户手册 - 模型代码的文件读写约定.docx";
+
+      /* 页眉 logo（取自原始手册 docx 的 word/media/image1.png） */
+      const LOGO_B64 = "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";
+
+      function logoBytes() {
+        const bin = atob(LOGO_B64);
+        const out = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        return out;
+      }
+
+      /* ── 基础工具 ─────────────────────────────────────────────────── */
+      const esc = (s) => String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+
+      const CJK = /[⺀-鿿豈-﫿＀-￯]/;
+
+      function textWidth(s) {
+        let w = 0;
+        for (const ch of String(s)) w += CJK.test(ch) ? 2 : 1;
+        return w;
+      }
+
+      /* ── WordprocessingML 片段 ────────────────────────────────────── */
+      function run(text, opt = {}) {
+        if (!text) return "";
+        const rPr = [];
+        if (opt.font || opt.mono) {
+          const ascii = opt.mono ? "Consolas" : "Calibri";
+          const ea = opt.font || "宋体";
+          rPr.push(`<w:rFonts w:ascii="${ascii}" w:hAnsi="${ascii}" w:eastAsia="${ea}" w:cs="${ascii}"/>`);
+        }
+        if (opt.bold) rPr.push("<w:b/><w:bCs/>");
+        if (opt.italic) rPr.push("<w:i/>");
+        if (opt.color) rPr.push(`<w:color w:val="${opt.color}"/>`);
+        if (opt.size) rPr.push(`<w:sz w:val="${opt.size}"/><w:szCs w:val="${opt.size}"/>`);
+        if (opt.spacing) rPr.push(`<w:spacing w:val="${opt.spacing}"/>`);
+        return `<w:r>${rPr.length ? `<w:rPr>${rPr.join("")}</w:rPr>` : ""}<w:t xml:space="preserve">${esc(text)}</w:t></w:r>`;
+      }
+
+      function para(inner, opt = {}) {
+        const pPr = [];
+        if (opt.style) pPr.push(`<w:pStyle w:val="${opt.style}"/>`);
+        if (opt.keepNext) pPr.push("<w:keepNext/>");
+        if (opt.pageBreak) pPr.push("<w:pageBreakBefore/>");
+        if (opt.align) pPr.push(`<w:jc w:val="${opt.align}"/>`);
+        if (opt.indent) pPr.push(`<w:ind w:left="${opt.indent}" w:hanging="${opt.hanging || 0}"/>`);
+        if (opt.spacing) pPr.push(opt.spacing);
+        return `<w:p>${pPr.length ? `<w:pPr>${pPr.join("")}</w:pPr>` : ""}${inner}</w:p>`;
+      }
+
+      const pageBreak = () => `<w:p><w:r><w:br w:type="page"/></w:r></w:p>`;
+
+      function field(name, placeholder) {
+        return [
+          '<w:r><w:fldChar w:fldCharType="begin"/></w:r>',
+          `<w:r><w:instrText xml:space="preserve"> ${name} </w:instrText></w:r>`,
+          '<w:r><w:fldChar w:fldCharType="separate"/></w:r>',
+          run(placeholder, { size: 18 }),
+          '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
+        ].join("");
+      }
+
+      /* ── DOM → runs ──────────────────────────────────────────────── */
+      function inlineRuns(node, base = {}) {
+        let out = "";
+        node.childNodes.forEach((child) => {
+          if (child.nodeType === Node.TEXT_NODE) {
+            const t = child.nodeValue.replace(/\s+/g, " ");
+            if (!t.trim() && !t.includes(" ")) return;
+            out += run(t, base);
+            return;
+          }
+          if (child.nodeType !== Node.ELEMENT_NODE) return;
+          const tag = child.tagName.toLowerCase();
+          if (tag === "br") { out += "<w:r><w:br/></w:r>"; return; }
+          if (tag === "code") { out += run(child.textContent, { ...base, mono: true }); return; }
+          if (tag === "strong" || tag === "b") { out += inlineRuns(child, { ...base, bold: true }); return; }
+          if (tag === "em" || tag === "i") { out += inlineRuns(child, { ...base, italic: true }); return; }
+          if (tag === "span" && /(^|\s)lang(\s|$)/.test(child.className)) return;
+          out += inlineRuns(child, base);
+        });
+        return out;
+      }
+
+      const cellText = (el) => (el.textContent || "").replace(/\s+/g, " ").trim();
+
+      function headingParts(el) {
+        const numEl = el.querySelector(".hnum");
+        const clone = el.cloneNode(true);
+        const cnum = clone.querySelector(".hnum");
+        if (cnum) cnum.remove();
+        return {
+          num: numEl ? numEl.textContent.trim() : "",
+          text: clone.textContent.replace(/\s+/g, " ").trim()
+        };
+      }
+
+      /* ── 表格 ───────────────────────────────────────────────────── */
+      function measureCols(rows) {
+        const n = rows[0].length;
+        const w = new Array(n).fill(4);
+        rows.forEach((cells) => cells.forEach((td, i) => {
+          w[i] = Math.max(w[i], Math.min(textWidth(cellText(td)), 44));
+        }));
+        return w;
+      }
+
+      function xmlTable(tbl) {
+        const trs = [...tbl.querySelectorAll("tr")];
+        if (!trs.length) return "";
+        const rows = trs.map((tr) => [...tr.children]);
+        const n = rows[0].length;
+        const hasHead = !!tbl.querySelector("thead th") ||
+          rows[0].every((c) => c.tagName === "TH");
+
+        let weights;
+        const colsAttr = tbl.getAttribute("data-cols");
+        if (colsAttr) {
+          weights = colsAttr.split(",").map((v) => parseFloat(v.trim()) || 1);
+        } else {
+          weights = measureCols(rows);
+        }
+        const sum = weights.reduce((a, b) => a + b, 0) || 1;
+        const widths = weights.map((v) => Math.max(560, Math.round(TOTAL_W * v / sum)));
+        const drift = TOTAL_W - widths.reduce((a, b) => a + b, 0);
+        widths[widths.length - 1] += drift;
+
+        const grid = widths.map((w) => `<w:gridCol w:w="${w}"/>`).join("");
+
+        const body = rows.map((cells, ri) => {
+          const header = hasHead && ri === 0;
+          const tcs = cells.map((td, ci) => {
+            const tcPr = [`<w:tcW w:w="${widths[ci]}" w:type="dxa"/>`];
+            if (header) tcPr.push('<w:shd w:val="clear" w:color="auto" w:fill="FBEFEA"/>');
+            const inner = para(inlineRuns(td, header ? { bold: true } : {}), { style: "TableText" });
+            return `<w:tc><w:tcPr>${tcPr.join("")}</w:tcPr>${inner}</w:tc>`;
+          }).join("");
+          const trPr = header ? "<w:trPr><w:tblHeader/></w:trPr>" : "";
+          return `<w:tr>${trPr}${tcs}</w:tr>`;
+        }).join("");
+
+        return [
+          "<w:tbl>",
+          '<w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="5000" w:type="pct"/>',
+          '<w:tblLayout w:type="fixed"/>',
+          '<w:tblCellMar><w:top w:w="40" w:type="dxa"/><w:left w:w="80" w:type="dxa"/>',
+          '<w:bottom w:w="40" w:type="dxa"/><w:right w:w="80" w:type="dxa"/></w:tblCellMar>',
+          "</w:tblPr>",
+          `<w:tblGrid>${grid}</w:tblGrid>`,
+          body,
+          "</w:tbl>",
+          para("", { style: "TableGap" })
+        ].join("");
+      }
+
+      /* ── 注意框 ─────────────────────────────────────────────────── */
+      function xmlNote(el) {
+        const label = (el.querySelector(".note-label")?.textContent || "注意").trim();
+        const body = el.querySelector("p") || el;
+        const inner = para(
+          run(label + "  ", { bold: true, color: "B26A00" }) + inlineRuns(body),
+          { style: "TableText" }
+        );
+        return [
+          "<w:tbl>",
+          '<w:tblPr><w:tblW w:w="5000" w:type="pct"/><w:tblBorders>',
+          '<w:top w:val="single" w:sz="4" w:space="0" w:color="F3DDB9"/>',
+          '<w:left w:val="single" w:sz="24" w:space="0" w:color="B26A00"/>',
+          '<w:bottom w:val="single" w:sz="4" w:space="0" w:color="F3DDB9"/>',
+          '<w:right w:val="single" w:sz="4" w:space="0" w:color="F3DDB9"/>',
+          "</w:tblBorders>",
+          '<w:shd w:val="clear" w:color="auto" w:fill="FFF6E8"/>',
+          '<w:tblCellMar><w:top w:w="120" w:type="dxa"/><w:left w:w="160" w:type="dxa"/>',
+          '<w:bottom w:w="120" w:type="dxa"/><w:right w:w="160" w:type="dxa"/></w:tblCellMar>',
+          "</w:tblPr>",
+          `<w:tblGrid><w:gridCol w:w="${TOTAL_W}"/></w:tblGrid>`,
+          `<w:tr><w:tc><w:tcPr><w:tcW w:w="${TOTAL_W}" w:type="dxa"/></w:tcPr>${inner}</w:tc></w:tr>`,
+          "</w:tbl>",
+          para("", { style: "TableGap" })
+        ].join("");
+      }
+
+      /* ── 代码块 ─────────────────────────────────────────────────── */
+      function xmlCode(el) {
+        const pre = el.querySelector("pre") || el;
+        const lines = pre.textContent.replace(/\n+$/, "").split("\n");
+        const out = lines.map((line) =>
+          para(run(line || " ", { mono: true, size: 18 }), { style: "Code" })
+        );
+        out.push(para("", { style: "TableGap" }));
+        return out.join("");
+      }
+
+      /* ── 块级分发 ───────────────────────────────────────────────── */
+      function block(el) {
+        const tag = el.tagName;
+        const cls = el.classList;
+
+        if (tag === "H1") {
+          const h = headingParts(el);
+          return para(run(h.num + "  ", { font: "黑体", bold: true }) + run(h.text, { font: "黑体", bold: true }),
+            { style: "Heading1" });
+        }
+        if (tag === "H2") {
+          const h = headingParts(el);
+          return para(run(h.num + "  " + h.text, { font: "黑体", bold: true }), { style: "Heading2" });
+        }
+        if (tag === "H3") {
+          const h = headingParts(el);
+          return para(run(h.num + "  " + h.text, { font: "黑体", bold: true }), { style: "Heading3" });
+        }
+        if (tag === "P") {
+          if (cls.contains("caption")) {
+            return para(run(cellText(el), { bold: true, color: "B81C18" }), { style: "Caption" });
+          }
+          return para(inlineRuns(el), {});
+        }
+        if (tag === "TABLE") return xmlTable(el);
+        if (tag === "FIGURE") {
+          const cap = el.querySelector("figcaption");
+          const code = el.querySelector(".code");
+          let out = "";
+          if (cap) out += para(run(cellText(cap), { bold: true, color: "B81C18" }), { style: "Caption" });
+          if (code) out += xmlCode(code);
+          return out;
+        }
+        if (tag === "DIV" || tag === "ASIDE") {
+          if (cls.contains("note")) return xmlNote(el);
+          if (cls.contains("code")) return xmlCode(el);
+          if (cls.contains("table-wrap")) {
+            const t = el.querySelector("table");
+            return t ? xmlTable(t) : "";
+          }
+        }
+        if (tag === "OL" && cls.contains("steps")) {
+          return [...el.children].map((li, i) =>
+            para(
+              run(String(i + 1).padStart(2, "0") + "  ", { bold: true, color: "B81C18" }) + inlineRuns(li),
+              { style: "ListBlock" }
+            )
+          ).join("");
+        }
+        if (tag === "UL" && cls.contains("checklist")) {
+          return [...el.children].map((li) =>
+            para(run("☐  ") + inlineRuns(li), { style: "ListBlock" })
+          ).join("");
+        }
+        return "";
+      }
+
+      /* ── 封面与前置页 ───────────────────────────────────────────── */
+      function coverXml() {
+        const q = (s) => document.querySelector(s);
+        const kicker = q("#cover .cover-kicker")?.textContent.trim() || "";
+        const title = q("#cover .cover-title")?.textContent.trim() || "";
+        const sub = q("#cover .cover-sub")?.textContent.trim() || "";
+        const org = q("#cover .cover-org")?.textContent.trim() || "";
+        const conf = q("#cover .cover-confidential")?.textContent.trim() || "";
+        const info = q("#cover .cover-info");
+
+        const out = [];
+        out.push(para(run(kicker, { size: 18, color: "9C8A81", spacing: 60 }),
+          { align: "center", spacing: '<w:spacing w:before="2600" w:after="360" w:line="240" w:lineRule="auto"/>' }));
+        out.push(para(run(title, { size: 48, bold: true, font: "黑体", color: "7F1D15" }),
+          { align: "center", spacing: '<w:spacing w:before="240" w:after="120" w:line="360" w:lineRule="auto"/>' }));
+        out.push(para(run(sub, { size: 32, font: "黑体", color: "6B5B54" }),
+          { align: "center", spacing: '<w:spacing w:after="240" w:line="320" w:lineRule="auto"/>' }));
+
+        out.push(para("", { spacing: '<w:spacing w:after="600"/>' }));
+
+        if (info) {
+          const tbl = info.cloneNode(true);
+          out.push(xmlCoverInfo(tbl));
+        }
+
+        out.push(para("", { spacing: '<w:spacing w:after="900"/>' }));
+        out.push(para(run(org, { size: 30, bold: true, font: "黑体", color: "7F1D15", spacing: 40 }),
+          { align: "center" }));
+        if (conf) out.push(para(run(conf, { size: 21, color: "A32219", spacing: 30 }), { align: "center" }));
+        out.push(pageBreak());
+        return out.join("");
+      }
+
+      function xmlCoverInfo(tbl) {
+        const rows = [...tbl.querySelectorAll("tr")].map((tr) => [...tr.children]);
+        const widths = [2200, 4300];
+        const grid = widths.map((w) => `<w:gridCol w:w="${w}"/>`).join("");
+        const body = rows.map((cells) => {
+          const tcs = cells.map((c, i) => {
+            const shd = i === 0 ? '<w:shd w:val="clear" w:color="auto" w:fill="FBF1EC"/>' : "";
+            const r = run(cellText(c), { bold: i === 0 });
+            return `<w:tc><w:tcPr><w:tcW w:w="${widths[i]}" w:type="dxa"/>${shd}</w:tcPr>${para(r, { style: "TableText" })}</w:tc>`;
+          }).join("");
+          return `<w:tr>${tcs}</w:tr>`;
+        }).join("");
+        return [
+          "<w:tbl>",
+          '<w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="6500" w:type="dxa"/>',
+          '<w:jc w:val="center"/><w:tblLayout w:type="fixed"/>',
+          '<w:tblCellMar><w:top w:w="80" w:type="dxa"/><w:left w:w="140" w:type="dxa"/>',
+          '<w:bottom w:w="80" w:type="dxa"/><w:right w:w="140" w:type="dxa"/></w:tblCellMar>',
+          "</w:tblPr>",
+          `<w:tblGrid>${grid}</w:tblGrid>`,
+          body,
+          "</w:tbl>"
+        ].join("");
+      }
+
+      function frontmatterXml() {
+        const sec = document.querySelector("#frontmatter");
+        let out = para(run("文档信息", { font: "黑体", bold: true }), { style: "FMTitle" });
+        [...sec.children].forEach((el) => {
+          if (el.classList.contains("fm-title")) return;
+          out += block(el);
+        });
+        out += pageBreak();
+        return out;
+      }
+
+      /* ── 目录（由正文标题生成，与页面结构保持一致） ──────────────── */
+      function collectHeadings() {
+        const list = [];
+        document.querySelectorAll("#manual section.chapter").forEach((sec) => {
+          sec.querySelectorAll("h1, h2, h3").forEach((h) => {
+            const p = headingParts(h);
+            list.push({ level: Number(h.tagName[1]), num: p.num, text: p.text });
+          });
+        });
+        return list;
+      }
+
+      function tocXml() {
+        const out = [];
+        out.push(para(run("目录", { font: "黑体", bold: true, spacing: 80 }),
+          { style: "TOCHead", align: "center" }));
+        collectHeadings().forEach((h) => {
+          const indent = h.level === 1 ? 0 : 360;
+          const text = h.num ? `${h.num}  ${h.text}` : h.text;
+          out.push(para(run(text, { size: h.level === 1 ? 21 : 19, bold: h.level === 1 }), {
+            style: h.level === 1 ? "TOC1" : "TOC2",
+            indent
+          }));
+        });
+        return out.join("");
+      }
+
+      /* ── 文档装配 ───────────────────────────────────────────────── */
+      function documentXml() {
+        const body = [];
+        body.push(coverXml());
+        body.push(frontmatterXml());
+        body.push(tocXml());
+        document.querySelectorAll("#manual section.chapter").forEach((sec) => {
+          [...sec.children].forEach((el) => { body.push(block(el)); });
+        });
+        body.push('<w:sectPr><w:headerReference w:type="default" r:id="rId2"/>' +
+          '<w:footerReference w:type="default" r:id="rId3"/>' +
+          '<w:pgSz w:w="11906" w:h="16838"/>' +
+          '<w:pgMar w:top="1440" w:right="1304" w:bottom="1440" w:left="1304" ' +
+          'w:header="720" w:footer="720" w:gutter="0"/>' +
+          '<w:cols w:space="425"/><w:docGrid w:linePitch="312"/></w:sectPr>');
+
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          `<w:document xmlns:w="${NS_W}" xmlns:r="${NS_R}"><w:body>` +
+          body.join("") +
+          "</w:body></w:document>";
+      }
+
+      function stylesXml() {
+        const hdr = (id, name, lvl, opts) => {
+          const { sz, color, before, after, indent } = opts;
+          return `<w:style w:type="paragraph" w:styleId="${id}"><w:name w:val="${name}"/>` +
+            `<w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/>` +
+            `<w:pPr><w:keepNext/><w:keepLines/>${lvl === 0 ? "<w:pageBreakBefore/>" : ""}` +
+            `<w:spacing w:before="${before}" w:after="${after}" w:line="320" w:lineRule="auto"/>` +
+            `${indent ? `<w:ind w:left="${indent}"/>` : ""}` +
+            `${lvl >= 0 ? `<w:outlineLvl w:val="${lvl}"/>` : ""}</w:pPr>` +
+            `<w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="黑体"/>` +
+            `<w:b/><w:bCs/><w:color w:val="${color}"/><w:sz w:val="${sz}"/><w:szCs w:val="${sz}"/></w:rPr></w:style>`;
+        };
+
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          `<w:styles xmlns:w="${NS_W}">` +
+          "<w:docDefaults><w:rPrDefault><w:rPr>" +
+          '<w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="宋体" w:cs="Calibri"/>' +
+          '<w:sz w:val="21"/><w:szCs w:val="21"/>' +
+          '<w:lang w:val="en-US" w:eastAsia="zh-CN"/>' +
+          "</w:rPr></w:rPrDefault><w:pPrDefault><w:pPr>" +
+          '<w:spacing w:after="120" w:line="360" w:lineRule="auto"/>' +
+          "</w:pPr></w:pPrDefault></w:docDefaults>" +
+
+          '<w:style w:type="paragraph" w:default="1" w:styleId="Normal">' +
+          '<w:name w:val="Normal"/><w:qFormat/></w:style>' +
+
+          hdr("Heading1", "heading 1", 0, { sz: 36, color: "7F1D15", before: 240, after: 240 }) +
+          hdr("Heading2", "heading 2", 1, { sz: 28, color: "8F2A1C", before: 320, after: 120 }) +
+          hdr("Heading3", "heading 3", 2, { sz: 24, color: "241B17", before: 240, after: 80 }) +
+
+          '<w:style w:type="paragraph" w:styleId="FMTitle"><w:name w:val="Front Matter Title"/>' +
+          '<w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/>' +
+          '<w:pPr><w:keepNext/><w:pBdr><w:bottom w:val="single" w:sz="12" w:space="6" w:color="B81C18"/></w:pBdr>' +
+          '<w:spacing w:before="0" w:after="240"/></w:pPr>' +
+          '<w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="黑体"/>' +
+          '<w:b/><w:color w:val="7F1D15"/><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr></w:style>' +
+
+          '<w:style w:type="paragraph" w:styleId="TOCHead"><w:name w:val="TOC Heading"/>' +
+          '<w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/>' +
+          '<w:pPr><w:spacing w:before="0" w:after="360"/></w:pPr>' +
+          '<w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="黑体"/>' +
+          '<w:b/><w:color w:val="7F1D15"/><w:sz w:val="32"/><w:szCs w:val="32"/></w:rPr></w:style>' +
+
+          '<w:style w:type="paragraph" w:styleId="TOC1"><w:name w:val="toc 1"/>' +
+          '<w:basedOn w:val="Normal"/><w:next w:val="TOC1"/>' +
+          '<w:pPr><w:spacing w:before="120" w:after="40" w:line="300" w:lineRule="auto"/></w:pPr></w:style>' +
+
+          '<w:style w:type="paragraph" w:styleId="TOC2"><w:name w:val="toc 2"/>' +
+          '<w:basedOn w:val="Normal"/><w:next w:val="TOC2"/>' +
+          '<w:pPr><w:spacing w:after="20" w:line="280" w:lineRule="auto"/></w:pPr></w:style>' +
+
+          '<w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="caption"/>' +
+          '<w:basedOn w:val="Normal"/><w:next w:val="Normal"/>' +
+          '<w:pPr><w:keepNext/><w:spacing w:before="200" w:after="60" w:line="260" w:lineRule="auto"/></w:pPr>' +
+          '<w:rPr><w:b/><w:bCs/><w:color w:val="B81C18"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr></w:style>' +
+
+          '<w:style w:type="paragraph" w:styleId="TableText"><w:name w:val="Table Text"/>' +
+          '<w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="0" w:after="0" w:line="260" w:lineRule="auto"/></w:pPr>' +
+          '<w:rPr><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr></w:style>' +
+
+          '<w:style w:type="paragraph" w:styleId="TableGap"><w:name w:val="Table Gap"/>' +
+          '<w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>' +
+          '<w:rPr><w:sz w:val="10"/><w:szCs w:val="10"/></w:rPr></w:style>' +
+
+          '<w:style w:type="paragraph" w:styleId="Code"><w:name w:val="Code Block"/>' +
+          '<w:basedOn w:val="Normal"/><w:pPr><w:keepLines/>' +
+          '<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>' +
+          '<w:shd w:val="clear" w:color="auto" w:fill="FBF7F4"/>' +
+          '<w:ind w:left="120" w:right="120"/></w:pPr>' +
+          '<w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:eastAsia="宋体" w:cs="Consolas"/>' +
+          '<w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr></w:style>' +
+
+          '<w:style w:type="paragraph" w:styleId="ListBlock"><w:name w:val="List Block"/>' +
+          '<w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="60" w:after="60" w:line="320" w:lineRule="auto"/>' +
+          '<w:ind w:left="360" w:hanging="360"/></w:pPr></w:style>' +
+
+          '<w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Normal Table"/><w:uiPriority w:val="99"/>' +
+          '<w:tblPr><w:tblInd w:w="0" w:type="dxa"/><w:tblCellMar><w:top w:w="0" w:type="dxa"/>' +
+          '<w:left w:w="108" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="108" w:type="dxa"/>' +
+          '</w:tblCellMar></w:tblPr></w:style>' +
+
+          '<w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/>' +
+          '<w:basedOn w:val="TableNormal"/><w:uiPriority w:val="59"/>' +
+          '<w:tblPr><w:tblBorders>' +
+          '<w:top w:val="single" w:sz="4" w:space="0" w:color="E9DAD2"/>' +
+          '<w:left w:val="single" w:sz="4" w:space="0" w:color="E9DAD2"/>' +
+          '<w:bottom w:val="single" w:sz="4" w:space="0" w:color="E9DAD2"/>' +
+          '<w:right w:val="single" w:sz="4" w:space="0" w:color="E9DAD2"/>' +
+          '<w:insideH w:val="single" w:sz="4" w:space="0" w:color="E9DAD2"/>' +
+          '<w:insideV w:val="single" w:sz="4" w:space="0" w:color="E9DAD2"/>' +
+          "</w:tblBorders></w:tblPr></w:style>" +
+
+          "</w:styles>";
+      }
+
+      /* 页眉：左 logo、右手册名，与原始手册版式一致 */
+      function headerXml() {
+        const bis = '<w:tcBorders><w:bottom w:val="single" w:sz="4" w:space="0" w:color="E9DAD2"/></w:tcBorders>';
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          `<w:hdr xmlns:w="${NS_W}" xmlns:r="${NS_R}" ` +
+          'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">' +
+          '<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/><w:tblBorders>' +
+          '<w:top w:val="nil"/><w:left w:val="nil"/><w:bottom w:val="nil"/>' +
+          '<w:right w:val="nil"/><w:insideH w:val="nil"/><w:insideV w:val="nil"/>' +
+          '</w:tblBorders><w:tblLayout w:type="fixed"/><w:tblCellMar>' +
+          '<w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/>' +
+          '<w:bottom w:w="60" w:type="dxa"/><w:right w:w="0" w:type="dxa"/>' +
+          '</w:tblCellMar></w:tblPr>' +
+          `<w:tblGrid><w:gridCol w:w="${TOTAL_W / 2}"/><w:gridCol w:w="${TOTAL_W / 2}"/></w:tblGrid>` +
+          '<w:tr>' +
+          `<w:tc><w:tcPr><w:tcW w:w="${TOTAL_W / 2}" w:type="dxa"/>${bis}</w:tcPr>` +
+          '<w:p><w:pPr><w:spacing w:before="0" w:after="40" w:line="240" w:lineRule="auto"/></w:pPr>' +
+          '<w:r><w:drawing>' +
+          '<wp:inline xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ' +
+          'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+          '<wp:extent cx="1116000" cy="335639"/><wp:docPr id="1" name="OSR logo"/>' +
+          '<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>' +
+          '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+          '<pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="logo.png"/><pic:cNvPicPr/></pic:nvPicPr>' +
+          '<pic:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
+          '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1116000" cy="335639"/></a:xfrm>' +
+          '<a:prstGeom prst="rect"/></pic:spPr></pic:pic>' +
+          '</a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:tc>' +
+          `<w:tc><w:tcPr><w:tcW w:w="${TOTAL_W / 2}" w:type="dxa"/>${bis}</w:tcPr>` +
+          '<w:p><w:pPr><w:spacing w:before="0" w:after="40" w:line="240" w:lineRule="auto"/>' +
+          '<w:jc w:val="right"/></w:pPr>' +
+          run("TAA 模型提供方用户手册  ·  V1.0", { size: 17, color: "6B5B54" }) +
+          '</w:p></w:tc></w:tr></w:tbl>' +
+          '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr></w:p>' +
+          "</w:hdr>";
+      }
+
+      function headerRelsXml() {
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+          '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>' +
+          "</Relationships>";
+      }
+
+      function footerXml() {
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          `<w:ftr xmlns:w="${NS_W}" xmlns:r="${NS_R}"><w:p><w:pPr>` +
+          `<w:tabs><w:tab w:val="right" w:pos="${TOTAL_W}"/></w:tabs>` +
+          '<w:spacing w:before="0" w:after="0"/></w:pPr>' +
+          run("纽创信安（OSR）", { size: 18, color: "6B5B54" }) +
+          "<w:r><w:tab/></w:r>" +
+          run("第 ", { size: 18, color: "6B5B54" }) +
+          field("PAGE", "1") +
+          run(" 页 共 ", { size: 18, color: "6B5B54" }) +
+          field("NUMPAGES", "1") +
+          run(" 页", { size: 18, color: "6B5B54" }) +
+          "</w:p></w:ftr>";
+      }
+
+      function contentTypesXml() {
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+          '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+          '<Default Extension="xml" ContentType="application/xml"/>' +
+          '<Default Extension="png" ContentType="image/png"/>' +
+          '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+          '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
+          '<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>' +
+          '<Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>' +
+          '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>' +
+          '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>' +
+          "</Types>";
+      }
+
+      function rootRelsXml() {
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+          '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
+          '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>' +
+          '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>' +
+          "</Relationships>";
+      }
+
+      function docRelsXml() {
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+          '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+          '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>' +
+          '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>' +
+          "</Relationships>";
+      }
+
+      function coreXml() {
+        const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" ' +
+          'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" ' +
+          'xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">' +
+          "<dc:title>TAA 模型提供方用户手册 - 模型代码的文件读写约定</dc:title>" +
+          "<dc:subject>TAA 机密计算平台 · 用户文档</dc:subject>" +
+          "<dc:creator>纽创信安（OSR）</dc:creator>" +
+          "<cp:keywords>TAA;TEE;文件读写;用户手册</cp:keywords>" +
+          `<dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created>` +
+          `<dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified>` +
+          "</cp:coreProperties>";
+      }
+
+      function appXml() {
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" ' +
+          'xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">' +
+          "<Application>TAA 用户手册导出器</Application><Company>纽创信安（OSR）</Company>" +
+          "</Properties>";
+      }
+
+      /* ── ZIP（store 方式） ──────────────────────────────────────── */
+      const CRC_TABLE = (() => {
+        const t = new Uint32Array(256);
+        for (let n = 0; n < 256; n++) {
+          let c = n;
+          for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+          t[n] = c >>> 0;
+        }
+        return t;
+      })();
+
+      function crc32(bytes) {
+        let c = 0xFFFFFFFF;
+        for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+        return (c ^ 0xFFFFFFFF) >>> 0;
+      }
+
+      function zipStore(files) {
+        const enc = new TextEncoder();
+        const chunks = [];
+        const central = [];
+        let offset = 0;
+        const DOS_TIME = (10 << 11) | (0 << 5) | 0;
+        const DOS_DATE = ((2026 - 1980) << 9) | (10 << 5) | 26;
+
+        for (const f of files) {
+          const name = enc.encode(f.name);
+          const data = f.data instanceof Uint8Array ? f.data : enc.encode(f.data);
+          const crc = crc32(data);
+
+          const local = new Uint8Array(30 + name.length);
+          const dv = new DataView(local.buffer);
+          dv.setUint32(0, 0x04034b50, true);
+          dv.setUint16(4, 20, true);
+          dv.setUint16(6, 0x0800, true);        // UTF-8 文件名
+          dv.setUint16(8, 0, true);             // store
+          dv.setUint16(10, DOS_TIME, true);
+          dv.setUint16(12, DOS_DATE, true);
+          dv.setUint32(14, crc, true);
+          dv.setUint32(18, data.length, true);
+          dv.setUint32(22, data.length, true);
+          dv.setUint16(26, name.length, true);
+          dv.setUint16(28, 0, true);
+          local.set(name, 30);
+
+          chunks.push(local, data);
+
+          const cd = new Uint8Array(46 + name.length);
+          const cdv = new DataView(cd.buffer);
+          cdv.setUint32(0, 0x02014b50, true);
+          cdv.setUint16(4, 20, true);
+          cdv.setUint16(6, 20, true);
+          cdv.setUint16(8, 0x0800, true);
+          cdv.setUint16(10, 0, true);
+          cdv.setUint16(12, DOS_TIME, true);
+          cdv.setUint16(14, DOS_DATE, true);
+          cdv.setUint32(16, crc, true);
+          cdv.setUint32(20, data.length, true);
+          cdv.setUint32(24, data.length, true);
+          cdv.setUint16(28, name.length, true);
+          cdv.setUint32(42, offset, true);
+          cd.set(name, 46);
+          central.push(cd);
+
+          offset += local.length + data.length;
+        }
+
+        const centralSize = central.reduce((a, c) => a + c.length, 0);
+        const end = new Uint8Array(22);
+        const edv = new DataView(end.buffer);
+        edv.setUint32(0, 0x06054b50, true);
+        edv.setUint16(8, files.length, true);
+        edv.setUint16(10, files.length, true);
+        edv.setUint32(12, centralSize, true);
+        edv.setUint32(16, offset, true);
+
+        return concat([...chunks, ...central, end]);
+      }
+
+      function concat(parts) {
+        const total = parts.reduce((a, p) => a + p.length, 0);
+        const out = new Uint8Array(total);
+        let pos = 0;
+        for (const p of parts) { out.set(p, pos); pos += p.length; }
+        return out;
+      }
+
+      /* ── 入口 ───────────────────────────────────────────────────── */
+      function buildDocx() {
+        return zipStore([
+          { name: "[Content_Types].xml", data: contentTypesXml() },
+          { name: "_rels/.rels", data: rootRelsXml() },
+          { name: "word/document.xml", data: documentXml() },
+          { name: "word/_rels/document.xml.rels", data: docRelsXml() },
+          { name: "word/styles.xml", data: stylesXml() },
+          { name: "word/header1.xml", data: headerXml() },
+          { name: "word/_rels/header1.xml.rels", data: headerRelsXml() },
+          { name: "word/footer1.xml", data: footerXml() },
+          { name: "word/media/image1.png", data: logoBytes() },
+          { name: "docProps/core.xml", data: coreXml() },
+          { name: "docProps/app.xml", data: appXml() }
+        ]);
+      }
+
+      window.__taaBuildDocx = buildDocx;
+
+      /* 表格列宽：data-cols 同时决定屏幕版式与 DOCX 的 gridCol，二者保持一致 */
+      document.querySelectorAll("table.data[data-cols]").forEach((tbl) => {
+        const cg = document.createElement("colgroup");
+        tbl.dataset.cols.split(",").forEach((v) => {
+          const col = document.createElement("col");
+          col.style.width = v.trim() + "%";
+          cg.appendChild(col);
+        });
+        tbl.insertBefore(cg, tbl.firstChild);
+        tbl.style.tableLayout = "fixed";
+      });
+
+      function download() {
+        const btn = document.getElementById("export-docx");
+        const status = document.getElementById("export-status");
+        btn.disabled = true;
+        status.textContent = "正在生成…";
+        try {
+          const bytes = buildDocx();
+          const blob = new Blob([bytes], {
+            type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = DOCX_NAME;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 4000);
+          status.textContent = "已生成 " + Math.round(bytes.length / 1024) + " KB";
+          setTimeout(() => { status.textContent = ""; }, 5000);
+        } catch (err) {
+          console.error(err);
+          status.textContent = "导出失败：" + err.message;
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      document.getElementById("export-docx").addEventListener("click", download);
+    })();
+  </script>
 </body>
 
 </html>
