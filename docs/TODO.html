@@ -489,14 +489,14 @@ footer {
         <li><a href="#s3"><span class="n">03</span><span>批次二 · 代码结构</span><span class="dot mid"></span></a></li>
         <li><a href="#s4"><span class="n">04</span><span>批次三 · 部署工程</span><span class="dot mid"></span></a></li>
         <li><a href="#s5"><span class="n">05</span><span>批次四 · 审计推理</span><span class="dot high"></span></a></li>
-        <li><a href="#s5b"><span class="n">06</span><span>新增需求 · 运行时可靠性</span><span class="dot high"></span></a></li>
+        <li><a href="#s5b"><span class="n">06</span><span>新增需求 · 可靠性与鉴权</span><span class="dot high"></span></a></li>
         <li><a href="#s6"><span class="n">07</span><span>明确不做</span></a></li>
         <li><a href="#s7"><span class="n">08</span><span>待确认决策</span></a></li>
         <li><a href="#s8"><span class="n">09</span><span>提交拆分</span></a></li>
       </ul>
     </nav>
     <div class="progress">
-      <div class="progress-label"><span>完成</span><span class="progress-num" id="progressNum">0 / 27</span></div>
+      <div class="progress-label"><span>完成</span><span class="progress-num" id="progressNum">0 / 28</span></div>
       <div class="track"><div class="fill" id="progressFill"></div></div>
     </div>
   </aside>
@@ -509,7 +509,7 @@ footer {
       <div class="constraint">
         <h2>硬约束（已确认）</h2>
         <p><strong>严格行为不变。</strong>配置结构、HTTP 接口与返回体、日志语义、审计判定、结果报告字段、initrd/镜像内容、部署 CLI 行为均保持现状。</p>
-        <p>第 06 节的三个新增需求<b>不属于</b>这条约束：它们会改变运行时行为，需独立 spec 与验收，不与前四批混合提交。</p>
+        <p>第 06 节的四个新增需求<b>不属于</b>这条约束：它们会改变运行时行为，需独立 spec 与验收，不与前四批混合提交。</p>
         <p>每批在独立 worktree 中完成，避免与并发会话共享检出；不要并行运行测试。每批独立提交，验收不过即整批回退。</p>
       </div>
     </header>
@@ -697,7 +697,7 @@ footer {
               <td><span class="chip high">最高</span></td><td>批次一、二；必须先测量后改动</td>
             </tr>
             <tr>
-              <td>五</td><td>运行时可靠性（新增需求，行为变更）</td>
+              <td>五</td><td>运行时可靠性、兼容性与鉴权（新增需求，行为变更）</td>
               <td><span class="chip high">最高</span></td><td>独立立项；每项单独 spec，不并入前四批</td>
             </tr>
           </tbody>
@@ -1094,12 +1094,12 @@ footer {
       <div class="batch-head">
         <p class="eyebrow">06 — 新增需求</p>
         <div class="batch-top">
-          <h2>运行时可靠性与失败可诊断</h2>
+          <h2>可靠性、兼容性与访问控制</h2>
           <span class="chip high">行为变更</span>
-          <span class="counter" data-count="6">0 / 3</span>
+          <span class="counter" data-count="6">0 / 4</span>
         </div>
         <p class="deps">依赖：独立立项；不受“行为不变”约束，每项需单独 spec 与验收</p>
-        <p class="goal">目标：解决三个已在真实环境暴露的问题——链路存活靠超时判断、macOS 打包导致 semgrep 扫描不通过、训练/推理失败拿不到具体原因。三项都会改变现有行为，不得混入前四批的等价重构提交。</p>
+        <p class="goal">目标：解决三个已在真实环境暴露的问题——链路存活靠超时判断、macOS 打包导致 semgrep 扫描不通过、训练/推理失败拿不到具体原因，并补上 TAA 接口鉴权这一基础能力。四项都会改变现有行为，不得混入前四批的等价重构提交。</p>
       </div>
 
       <h3>任务</h3>
@@ -1137,6 +1137,18 @@ footer {
             <li>失败写盘尽力而为，不改变原始退出码与成功路径的响应；新增字段需在 API 文档中标注为可选。</li>
           </ul>
         </li>
+        <li class="task">
+          <input type="checkbox" id="t6-4" data-batch="6">
+          <label for="t6-4"><span class="tid">6.4</span>为 TAA 接口增加鉴权能力</label>
+          <ul class="sub">
+            <li>现状：TAA 的 HTTP 接口只靠网络隔离，任何能连到端口的一方都能触发导入、训练、审计与产物导出，调用方身份不可验证。</li>
+            <li>目标：为控制面接口增加可验证的调用方身份。候选方案：mTLS（平台侧客户端证书）、请求签名（HMAC + 时间戳 + nonce 防重放）、平台签发的短期 bearer token；具体选型由 spec 决定。</li>
+            <li>密钥与证书不得写进镜像或仓库：通过 Kubernetes Secret 或 CoCo initdata 注入，读取后不出现在日志、错误信息与报告中。</li>
+            <li>鉴权失败统一返回 401/403，文案不泄露内部路径与实现细节；<code class="inline">/healthz</code> 保持免鉴权，但只返回存活状态，不返回任务与配置信息。</li>
+            <li>至少区分“平台控制面”与“模型提供方上传”两类调用方；是否按任务或租户细分权限由 spec 决定。</li>
+            <li>迁移路径：先观察模式（只记录不拒绝）→ 灰度强制 → 默认强制，旧客户端有明确窗口；<code class="inline">tools/platform-mock</code> 与现有测试同步适配。</li>
+          </ul>
+        </li>
       </ul>
 
       <div class="gate">
@@ -1147,14 +1159,15 @@ footer {
             <li>6.1 用固定负载证明：慢而持续的请求不被误杀，真正失联的请求能被及时判定。</li>
             <li>6.2 用 macOS 实测产物跑通导入 → 审计，扫描目标集合干净且源码集合与手工解包一致。</li>
             <li>6.3 构造典型失败（缺文件、字段非法、OOM、非 0 退出），报告与日志都能给出具体原因且无敏感信息。</li>
+            <li>6.4 未携带凭证、凭证错误、凭证过期、重放请求分别被拒绝；合法调用与现有流程一致；观察模式下旧客户端不受影响。</li>
             <li>成功路径的响应体、日志正文与现有测试保持通过。</li>
           </ul>
         </div>
         <div>
           <h4>风险与回滚</h4>
           <ul>
-            <li>三项都改变运行时行为，风险最高；不得与批次一至四的提交混在一起。</li>
-            <li>6.1 触碰超时与探针语义，可能影响审计可用性，必须先测量；6.2 改变导入接受的包形态，需保留旧用例；6.3 新增对外字段，需评估接口兼容性。</li>
+            <li>四项都改变运行时行为，风险最高；不得与批次一至四的提交混在一起。</li>
+            <li>6.1 触碰超时与探针语义，可能影响审计可用性，必须先测量；6.2 改变导入接受的包形态，需保留旧用例；6.3 新增对外字段，需评估接口兼容性；6.4 改变调用方接入方式，需保留观察模式与回退开关。</li>
             <li>每项单独提交、单独回滚；回滚后仍应保留测量数据与夹具。</li>
           </ul>
         </div>
@@ -1214,6 +1227,11 @@ footer {
           <p class="muted small">批次三是否需要在 178 上做真实远程部署验证？</p>
           <p class="reco"><b>默认建议</b><span>先只做帮助/预检/输出对比；真实部署单独申请窗口。</span></p>
         </div>
+        <div class="decision">
+          <div class="decision-head"><span class="n">07</span><h3>TAA 鉴权方式</h3></div>
+          <p class="muted small">mTLS、请求签名，还是平台签发的短期 token？是否要求平台侧同步改造？</p>
+          <p class="reco"><b>默认建议</b><span>mTLS 优先；无法上证书时用签名加防重放，先观察模式再强制。</span></p>
+        </div>
       </div>
     </section>
 
@@ -1237,6 +1255,7 @@ footer {
         <li><span class="n">12</span><code><span class="type">feat(controller)</span>: replace the timeout-based LLM liveness check with progress deadlines</code></li>
         <li><span class="n">13</span><code><span class="type">feat(controller)</span>: strip macOS archive metadata and normalize the source root</code></li>
         <li><span class="n">14</span><code><span class="type">feat(runtime)</span>: report structured reasons for failed training and inference runs</code></li>
+        <li><span class="n">15</span><code><span class="type">feat(api)</span>: authenticate TAA control-plane endpoints</code></li>
       </ol>
     </section>
 
