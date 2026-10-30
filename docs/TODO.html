@@ -1,0 +1,1295 @@
+<title>TAA 工程优化路线图</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=swap">
+
+<style>
+/* Layout: sticky spec-sheet rail on the left, one readable column on the right.
+   Color: cool blue-grey neutral ground, one steel-blue accent, reserved risk hues.
+   Type: Noto Serif SC for headings, Noto Sans SC for body, IBM Plex Mono for paths and commands. */
+:root {
+  color-scheme: light;
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #eef1f4;
+  --ink: #131a21;
+  --ink-2: #47535f;
+  --ink-3: #7a8794;
+  --line: #dde3e9;
+  --line-strong: #c4cdd6;
+  --accent: #1d5e8c;
+  --accent-soft: #e4edf4;
+  --risk-low: #2c7a57;   --risk-low-bg: #e6f1eb;
+  --risk-mid: #8a5e0d;   --risk-mid-bg: #f4ecda;
+  --risk-high: #a33b32;  --risk-high-bg: #f7e6e3;
+  --font-display: "Noto Serif SC", "Songti SC", Georgia, serif;
+  --font-body: "Noto Sans SC", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0e1319;
+    --surface: #151c23;
+    --surface-2: #1b242c;
+    --ink: #e3e9ee;
+    --ink-2: #a6b2bd;
+    --ink-3: #77848f;
+    --line: #26313a;
+    --line-strong: #3a4752;
+    --accent: #6fa8d6;
+    --accent-soft: #17293a;
+    --risk-low: #6bbf95;   --risk-low-bg: #16291f;
+    --risk-mid: #d6a94a;   --risk-mid-bg: #2a2213;
+    --risk-high: #e0857a;  --risk-high-bg: #2c1a17;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1319;
+  --surface: #151c23;
+  --surface-2: #1b242c;
+  --ink: #e3e9ee;
+  --ink-2: #a6b2bd;
+  --ink-3: #77848f;
+  --line: #26313a;
+  --line-strong: #3a4752;
+  --accent: #6fa8d6;
+  --accent-soft: #17293a;
+  --risk-low: #6bbf95;   --risk-low-bg: #16291f;
+  --risk-mid: #d6a94a;   --risk-mid-bg: #2a2213;
+  --risk-high: #e0857a;  --risk-high-bg: #2c1a17;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+  padding: 0 24px;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 3px; }
+a:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+code, pre { font-family: var(--font-mono); }
+
+.page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding-block: 48px 96px;
+  display: grid;
+  grid-template-columns: 224px minmax(0, 1fr);
+  gap: 56px;
+  align-items: start;
+}
+
+/* ---- rail ---- */
+.side { position: sticky; top: 24px; max-height: calc(100vh - 48px); overflow-y: auto; }
+.side-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 14px;
+}
+.toc { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.toc a {
+  display: grid;
+  grid-template-columns: 24px 1fr auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 8px;
+  border-radius: 5px;
+  color: var(--ink-2);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.toc a:hover { background: var(--surface-2); color: var(--ink); text-decoration: none; }
+.toc .n { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
+.toc .dot { width: 6px; height: 6px; border-radius: 50%; align-self: center; }
+.dot.low { background: var(--risk-low); }
+.dot.mid { background: var(--risk-mid); }
+.dot.high { background: var(--risk-high); }
+
+.progress {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+.progress-label {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: .06em;
+  color: var(--ink-3);
+  margin-bottom: 8px;
+}
+.progress-num { color: var(--ink); font-variant-numeric: tabular-nums; }
+.track { height: 4px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+.fill { height: 100%; width: 0%; background: var(--accent); border-radius: 2px; transition: width .25s ease; }
+
+/* ---- hero ---- */
+main { display: flex; flex-direction: column; gap: 68px; min-width: 0; }
+.hero { display: flex; flex-direction: column; gap: 22px; }
+.kicker {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.kicker span:first-child { color: var(--accent); }
+h1 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(1.9rem, 4vw, 2.7rem);
+  line-height: 1.28;
+  letter-spacing: .01em;
+  margin: 0;
+  text-wrap: balance;
+}
+.lede { font-size: 1.02rem; color: var(--ink-2); max-width: 34em; margin: 0; }
+.constraint {
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  background: var(--surface);
+  border-radius: 0 6px 6px 0;
+  padding: 18px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.constraint h2 {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0;
+  font-weight: 500;
+}
+.constraint p { margin: 0; color: var(--ink-2); font-size: 14px; line-height: 1.7; }
+.constraint strong { color: var(--ink); }
+
+/* ---- sections ---- */
+section { scroll-margin-top: 24px; display: flex; flex-direction: column; gap: 20px; }
+.sec-head { display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--line); padding-bottom: 14px; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+h2 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.55rem;
+  line-height: 1.4;
+  margin: 0;
+  text-wrap: balance;
+}
+h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.06rem;
+  line-height: 1.5;
+  margin: 6px 0 0;
+  color: var(--ink);
+}
+h4 {
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: .92rem;
+  margin: 0;
+}
+p { margin: 0; }
+.muted { color: var(--ink-2); }
+.small { font-size: 13.5px; }
+
+/* ---- stat strip ---- */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.stat { background: var(--surface); padding: 16px 18px; display: flex; flex-direction: column; gap: 2px; }
+.stat b {
+  font-family: var(--font-mono);
+  font-size: 1.45rem;
+  font-weight: 500;
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.stat span { font-size: 12.5px; color: var(--ink-3); }
+
+/* ---- callout ---- */
+.note {
+  border: 1px dashed var(--line-strong);
+  border-radius: 6px;
+  padding: 14px 18px;
+  font-size: 14px;
+  color: var(--ink-2);
+  background: var(--surface);
+}
+.note b { color: var(--ink); }
+.fence {
+  border-left: 3px solid var(--risk-high);
+  background: var(--surface);
+  border-radius: 0 6px 6px 0;
+  padding: 14px 18px;
+  font-size: 14px;
+  color: var(--ink-2);
+}
+.fence b { color: var(--risk-high); }
+
+/* ---- lists ---- */
+ul.plain, ol.plain { margin: 0; padding-left: 1.15em; display: flex; flex-direction: column; gap: 8px; }
+ul.plain li::marker, ol.plain li::marker { color: var(--ink-3); font-family: var(--font-mono); font-size: .85em; }
+.problems { display: flex; flex-direction: column; gap: 26px; }
+.problems > li { list-style: none; }
+.problems { list-style: none; padding: 0; margin: 0; }
+.problem { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; }
+.problem .idx {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-3);
+  padding-top: 4px;
+}
+.problem-body { display: flex; flex-direction: column; gap: 8px; }
+
+/* ---- chart ---- */
+figure.chart { margin: 4px 0 0; display: flex; flex-direction: column; gap: 14px; }
+.chart-title { font-family: var(--font-mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); margin: 0; }
+.brow { display: flex; flex-direction: column; gap: 6px; }
+.blabel { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.blabel code { font-size: 12.5px; color: var(--ink-2); word-break: break-all; }
+.bval { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.bars { display: flex; flex-direction: column; gap: 14px; }
+.bar-track { height: 8px; background: var(--surface-2); border-radius: 4px; }
+.bar { height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; }
+.chart-note { font-size: 12.5px; color: var(--ink-3); margin: 0; }
+
+/* ---- tasks ---- */
+.tasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 18px; }
+.task { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 4px 12px; align-items: start; }
+.task > input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px; height: 16px;
+  margin: 6px 0 0;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  display: grid;
+  place-content: center;
+  cursor: pointer;
+  flex: none;
+}
+.task > input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
+.task > input[type="checkbox"]:checked::after {
+  content: "";
+  width: 9px; height: 5px;
+  border-left: 2px solid var(--surface);
+  border-bottom: 2px solid var(--surface);
+  transform: rotate(-45deg) translateY(-1px);
+}
+.task > label { font-weight: 500; font-size: 15px; line-height: 1.65; cursor: pointer; }
+.task > label .tid {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-3);
+  margin-right: 8px;
+  font-weight: 400;
+}
+.task > input:checked + label { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--line-strong); }
+.task .sub { grid-column: 2; margin: 6px 0 0; padding-left: 1.1em; display: flex; flex-direction: column; gap: 5px; font-size: 13.5px; color: var(--ink-2); line-height: 1.65; }
+.task .sub li::marker { color: var(--ink-3); }
+
+/* ---- batch header ---- */
+.batch-head { display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--line); padding-bottom: 16px; }
+.batch-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.chip {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: .08em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.chip.low { color: var(--risk-low); background: var(--risk-low-bg); }
+.chip.mid { color: var(--risk-mid); background: var(--risk-mid-bg); }
+.chip.high { color: var(--risk-high); background: var(--risk-high-bg); }
+.counter {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.deps { font-size: 13px; color: var(--ink-3); margin: 0; }
+.goal { font-size: 14px; color: var(--ink-2); margin: 0; max-width: 62ch; }
+.deps code { font-size: 12px; }
+
+/* ---- command block ---- */
+pre.cmd {
+  margin: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.9;
+  color: var(--ink-2);
+}
+pre.cmd .num { color: var(--ink-3); margin-right: 10px; user-select: none; }
+
+code.inline {
+  font-size: .88em;
+  background: var(--surface-2);
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: var(--ink-2);
+  word-break: break-word;
+}
+
+/* ---- table ---- */
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 500;
+  padding: 0 14px 10px 0;
+  border-bottom: 1px solid var(--line-strong);
+  white-space: nowrap;
+}
+td { padding: 12px 14px 12px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+td:first-child { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink-2); white-space: nowrap; }
+td:last-child, th:last-child { padding-right: 0; }
+
+/* ---- acceptance / rollback ---- */
+.gate {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.gate > div { background: var(--surface); padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; }
+.gate h4 {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 500;
+}
+.gate ul { margin: 0; padding-left: 1.05em; font-size: 13.5px; color: var(--ink-2); display: flex; flex-direction: column; gap: 6px; }
+.gate ul li::marker { color: var(--ink-3); }
+
+/* ---- decisions ---- */
+.decisions { display: flex; flex-direction: column; }
+.decision { display: flex; flex-direction: column; gap: 8px; padding: 20px 0; border-bottom: 1px solid var(--line); }
+.decision:first-child { padding-top: 0; }
+.decision:last-child { border-bottom: 0; padding-bottom: 0; }
+.decision-head { display: flex; gap: 12px; align-items: baseline; }
+.decision-head .n { font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); }
+.reco { font-size: 14px; color: var(--ink-2); display: flex; gap: 10px; align-items: baseline; }
+.reco b {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 500;
+  flex: none;
+}
+
+/* ---- commits ---- */
+.commits { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.commits li {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+  align-items: baseline;
+}
+.commits li:last-child { border-bottom: 0; }
+.commits .n { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-3); }
+.commits code { font-size: 13px; color: var(--ink-2); word-break: break-word; line-height: 1.6; }
+.commits .type { color: var(--accent); }
+
+footer {
+  margin-top: 8px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 880px) {
+  body { padding: 0 18px; }
+  .page { grid-template-columns: 1fr; gap: 36px; padding-block: 32px 72px; }
+  .side { position: static; max-height: none; overflow: visible; }
+  .toc { flex-direction: row; flex-wrap: wrap; gap: 6px; }
+  .toc a { grid-template-columns: auto auto; padding: 4px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; }
+  .toc .dot { display: none; }
+  .progress { margin-top: 16px; padding-top: 14px; }
+  main { gap: 52px; }
+  .gate { grid-template-columns: 1fr; }
+}
+@media (max-width: 480px) {
+  .blabel code { font-size: 11px; }
+  .bval { font-size: 11.5px; }
+  .stat b { font-size: 1.3rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fill { transition: none; }
+}
+</style>
+
+<div class="page">
+  <aside class="side">
+    <p class="side-title">目录</p>
+    <nav>
+      <ul class="toc">
+        <li><a href="#s0"><span class="n">00</span><span>现状诊断</span></a></li>
+        <li><a href="#s1"><span class="n">01</span><span>总体策略</span></a></li>
+        <li><a href="#s2"><span class="n">02</span><span>批次一 · 工程卫生</span><span class="dot low"></span></a></li>
+        <li><a href="#s3"><span class="n">03</span><span>批次二 · 代码结构</span><span class="dot mid"></span></a></li>
+        <li><a href="#s4"><span class="n">04</span><span>批次三 · 部署工程</span><span class="dot mid"></span></a></li>
+        <li><a href="#s5"><span class="n">05</span><span>批次四 · 审计推理</span><span class="dot high"></span></a></li>
+        <li><a href="#s5b"><span class="n">06</span><span>新增需求 · 运行时可靠性</span><span class="dot high"></span></a></li>
+        <li><a href="#s6"><span class="n">07</span><span>明确不做</span></a></li>
+        <li><a href="#s7"><span class="n">08</span><span>待确认决策</span></a></li>
+        <li><a href="#s8"><span class="n">09</span><span>提交拆分</span></a></li>
+      </ul>
+    </nav>
+    <div class="progress">
+      <div class="progress-label"><span>完成</span><span class="progress-num" id="progressNum">0 / 27</span></div>
+      <div class="track"><div class="fill" id="progressFill"></div></div>
+    </div>
+  </aside>
+
+  <main>
+    <header class="hero">
+      <p class="kicker"><span>Engineering Roadmap</span><span>2026-10-30</span></p>
+      <h1>TAA 工程优化路线图</h1>
+      <p class="lede">在不改变生产行为的前提下，梳理项目组织与实现，分四批完成可验证、可回滚的工程优化。</p>
+      <div class="constraint">
+        <h2>硬约束（已确认）</h2>
+        <p><strong>严格行为不变。</strong>配置结构、HTTP 接口与返回体、日志语义、审计判定、结果报告字段、initrd/镜像内容、部署 CLI 行为均保持现状。</p>
+        <p>第 06 节的三个新增需求<b>不属于</b>这条约束：它们会改变运行时行为，需独立 spec 与验收，不与前四批混合提交。</p>
+        <p>每批在独立 worktree 中完成，避免与并发会话共享检出；不要并行运行测试。每批独立提交，验收不过即整批回退。</p>
+      </div>
+    </header>
+
+    <section id="s0">
+      <div class="sec-head">
+        <span class="eyebrow">00 — 现状</span>
+        <h2>现状诊断（证据）</h2>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><b>4.0万</b><span>行主模块 Go 代码</span></div>
+        <div class="stat"><b>4.6万</b><span>行测试代码</span></div>
+        <div class="stat"><b>951</b><span>个 Test* 函数</span></div>
+        <div class="stat"><b>12</b><span>个未 gofmt 文件</span></div>
+      </div>
+
+      <h3>0.1 构建与测试基线</h3>
+      <ul class="plain">
+        <li><code class="inline">CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa</code> 通过。</li>
+        <li><code class="inline">go vet ./internal/...</code> 通过；<code class="inline">go test ./internal/... ./pkg/... ./tools/... -run '^$'</code> 可编译。</li>
+      </ul>
+      <div class="note">
+        <b>文档命令 <code class="inline">go test ./...</code> 在当前工作区不可用。</b>本地未跟踪的
+        <code class="inline">models/audit/holdout-sources/semgrep-rules-develop</code> 位于主模块内，包含大量不可编译的审计语料
+        <code class="inline">.go</code> 文件，<code class="inline">go list ./...</code> / <code class="inline">go test ./...</code>
+        直接报错退出（实测 10 类错误，exit 1）。干净检出中该目录不存在，因此这是本地语料污染，不是 CI 问题，但会误导日常验证。
+      </div>
+      <ul class="plain">
+        <li>全量测试较慢，且部分用例真实调用 semgrep/python3；本次未在隔离环境中跑完基线（共享检出中有另一会话在并行跑测试），批次一必须补做并记录。</li>
+        <li>已知不稳定：<code class="inline">internal/controller</code> 并发用例约 7.5% 概率受 <code class="inline">t.TempDir()</code> 清理竞争影响；与本次改动无关，但基线需要重复采样确认。</li>
+      </ul>
+
+      <h3>0.2 主要结构问题</h3>
+      <ol class="problems">
+        <li class="problem">
+          <span class="idx">01</span>
+          <div class="problem-body">
+            <h4>超大文件，职责混杂</h4>
+            <p class="muted small">六个文件的体积已经超出单文件可维护的范围，最小的一处也接近千行。</p>
+          </div>
+        </li>
+      </ol>
+
+      <figure class="chart" style="margin-left:36px">
+        <p class="chart-title">超大文件 · 行数</p>
+        <div class="bars">
+          <div class="brow">
+            <div class="blabel"><code>internal/codeaudit/binary_evidence.go</code><span class="bval">2,125</span></div>
+            <div class="bar-track"><div class="bar" style="width:100%"></div></div>
+          </div>
+          <div class="brow">
+            <div class="blabel"><code>pkg/filetree/filetree.go</code><span class="bval">1,524</span></div>
+            <div class="bar-track"><div class="bar" style="width:71.7%"></div></div>
+          </div>
+          <div class="brow">
+            <div class="blabel"><code>internal/controller/route.go</code><span class="bval">1,322</span></div>
+            <div class="bar-track"><div class="bar" style="width:62.2%"></div></div>
+          </div>
+          <div class="brow">
+            <div class="blabel"><code>internal/controller/import_processing.go</code><span class="bval">1,238</span></div>
+            <div class="bar-track"><div class="bar" style="width:58.3%"></div></div>
+          </div>
+          <div class="brow">
+            <div class="blabel"><code>internal/config/config.go</code><span class="bval">1,204</span></div>
+            <div class="bar-track"><div class="bar" style="width:56.7%"></div></div>
+          </div>
+          <div class="brow">
+            <div class="blabel"><code>internal/app/taa/app.go</code><span class="bval">835</span></div>
+            <div class="bar-track"><div class="bar" style="width:39.3%"></div></div>
+          </div>
+        </div>
+        <figcaption class="chart-note">按行数等比；满格 = 2,125 行（最长文件）。</figcaption>
+      </figure>
+
+      <div class="problems">
+        <div class="problem">
+          <span class="idx">02</span>
+        <div class="problem-body">
+          <h4>入口流程重复</h4>
+          <p class="muted small"><code class="inline">importHandler</code> 与 <code class="inline">modelImportHandler</code> 在请求读取、日志脱敏、字段 trim、空值校验、任务抢占、下载、异步派发上高度重复（<code class="inline">internal/controller/handler_task.go:159,285</code>）。</p>
+        </div>
+      </div>
+
+      <div class="problem">
+        <span class="idx">03</span>
+        <div class="problem-body">
+          <h4>死代码与重复实现</h4>
+          <ul class="plain small muted">
+            <li><code class="inline">internal/controller/import_processing.go</code> 中 10 个零调用包装函数：<code class="inline">extractArchiveFile</code>、<code class="inline">extractZipArchive</code>、<code class="inline">chmodScripts</code>、<code class="inline">extractTarStream</code>、<code class="inline">safeJoinWithBase</code>、<code class="inline">cleanDatasetField</code>、<code class="inline">objectField</code>、<code class="inline">durationSeconds</code>、<code class="inline">newTrainingReportID</code>、<code class="inline">nullableString</code>（实测 calls=0）。</li>
+            <li><code class="inline">loadTrainingResult</code> 与 <code class="inline">internal/runtime/report.go:LoadTrainingResult</code> 是重复实现，不是一行委托。</li>
+            <li>多个 <code class="inline">downloadToTempFile</code> / <code class="inline">buildDirectoryChecksum</code> 包装层只做一行转发。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="problem">
+        <span class="idx">04</span>
+        <div class="problem-body">
+          <h4>部署脚本重复且体量大</h4>
+          <ul class="plain small muted">
+            <li><code class="inline">deploy.sh</code> 2073 行、<code class="inline">deploy-llm.sh</code> 2269 行、<code class="inline">deploy-fhe.sh</code> 1761 行。</li>
+            <li><code class="inline">deploy.sh</code> 与 <code class="inline">deploy-llm.sh</code> 有 24 个同名函数，其中 15 个函数体逐字节相同（合计 43 行完全相同），主要是颜色/终端、spinner、SSH、容器执行、<code class="inline">require_*</code> 等基础设施。</li>
+            <li>其余同名函数已发生分叉（<code class="inline">cleanup_display</code>、<code class="inline">banner</code>、<code class="inline">spin_task</code>、<code class="inline">usage</code> 等），不能直接合并。</li>
+            <li><code class="inline">deploy-fhe.sh</code> 使用不同的错误模型（<code class="inline">set -E</code>、<code class="inline">die</code>/<code class="inline">log</code>），与另两个脚本只有 2 个同名函数且均已分叉。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="problem">
+        <span class="idx">05</span>
+        <div class="problem-body">
+          <h4>文档与仓库卫生</h4>
+          <ul class="plain small muted">
+            <li>README 引用了 2 个不存在的文件：<code class="inline">docs/model-provider-integration-guide.md</code>、<code class="inline">docs/state-persistence-and-self-healing.md</code>。</li>
+            <li>README 的仓库结构缺少 <code class="inline">internal/fhe</code>、<code class="inline">tools/csv2-vm</code>、<code class="inline">latti-fhe-handoff</code>、<code class="inline">deploy/guest-build</code> 等现有目录。</li>
+            <li><code class="inline">docs/superpowers/</code> 下仍有 15 份历史 spec/plan，与 CLAUDE.md 要求的 <code class="inline">.claude/specs/</code>、<code class="inline">.claude/plans/</code> 约定冲突。</li>
+            <li><code class="inline">gofmt -l</code> 报告 12 个未格式化文件（含 <code class="inline">tools/sdk</code> 与 <code class="inline">tools/platform-mock</code>）。</li>
+            <li>仓库跟踪了构建产物：<code class="inline">tools/sdk/teecrypto-cli</code>（约 9 MB）、两个 <code class="inline">.exe</code>、<code class="inline">tools/sdk/decrypt-result</code>、<code class="inline">dcu/HIP-Examples-master.zip</code>。是否为交付物需要确认。</li>
+            <li><code class="inline">models/audit/audit-results/</code> 有 676 个跟踪文件，是审计证据，<b>不得删除</b>。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="problem">
+        <span class="idx">06</span>
+        <div class="problem-body">
+          <h4>审计/推理链路缺少测量基线</h4>
+          <ul class="plain small muted">
+            <li>没有任何 <code class="inline">Benchmark*</code>。</li>
+            <li>Finding 级 LLM 仲裁是串行逐条调用；文件级分析按文件串行。</li>
+            <li>既有实测结论：并发不是吞吐杠杆；提示词中评分标准的位置是承重配置；同输入判定存在已证实的非确定性。因此本轮不得用“加并发/改提示词/批处理”作为优化手段。</li>
+          </ul>
+        </div>
+      </div>
+      </div>
+    </section>
+
+    <section id="s1">
+      <div class="sec-head">
+        <span class="eyebrow">01 — 策略</span>
+        <h2>总体策略</h2>
+      </div>
+
+      <h3>1.1 “行为不变”的定义</h3>
+      <p class="muted small">以下任一项发生变化即视为行为改变，批次验收直接失败：</p>
+      <ul class="plain">
+        <li>HTTP 请求字段、响应 JSON、状态码、CORS/响应头；</li>
+        <li>日志级别与日志正文（允许新增仅测试/基准使用的输出）；</li>
+        <li>配置键、默认值、别名、校验错误文案；</li>
+        <li>审计 finding、风险分级、通过/拒绝结论、报告字段（<code class="inline">ReportID</code> / <code class="inline">AuditTime</code> / <code class="inline">ScanDurationMs</code> 等易变字段除外）；</li>
+        <li>部署脚本的帮助文本、非 TTY 输出、预检行为、生成的文件/容器；</li>
+        <li>initrd 内容与镜像内容（本路线图不重建二者）。</li>
+      </ul>
+
+      <h3>1.2 每批通用门禁</h3>
+      <pre class="cmd"><span class="num">1</span>CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa
+<span class="num">2</span>go vet ./internal/... ./pkg/... ./tools/...
+<span class="num">3</span>go test ./internal/... ./pkg/... ./tools/... -count=1
+<span class="num">4</span>gofmt -l internal pkg cmd tools
+<span class="num">5</span>bash -n deploy.sh deploy-llm.sh deploy-fhe.sh deploy-taa-vm.sh deploy/taa-supervisor.sh deploy/guest-build/*.sh
+<span class="num">6</span>configs/*  ·  api/openapi.yaml  ·  api/proto/**   哈希与批次开始前一致</pre>
+
+      <h3>1.3 批次顺序与依赖</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>批次</th><th>内容</th><th>风险</th><th>依赖</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>一</td><td>工程卫生与可信基线</td>
+              <td><span class="chip low">最低</span></td><td>无</td>
+            </tr>
+            <tr>
+              <td>二</td><td>代码结构与可维护性</td>
+              <td><span class="chip mid">中</span></td><td>批次一的可信构建/测试命令</td>
+            </tr>
+            <tr>
+              <td>三</td><td>部署与构建工程</td>
+              <td><span class="chip mid">中</span></td><td>批次一；与批次二独立，可交换顺序</td>
+            </tr>
+            <tr>
+              <td>四</td><td>审计/推理链路</td>
+              <td><span class="chip high">最高</span></td><td>批次一、二；必须先测量后改动</td>
+            </tr>
+            <tr>
+              <td>五</td><td>运行时可靠性（新增需求，行为变更）</td>
+              <td><span class="chip high">最高</span></td><td>独立立项；每项单独 spec，不并入前四批</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 批次一 -->
+    <section id="s2">
+      <div class="batch-head">
+        <p class="eyebrow">02 — 批次一</p>
+        <div class="batch-top">
+          <h2>工程卫生与可信基线</h2>
+          <span class="chip low">最低风险</span>
+          <span class="counter" data-count="1">0 / 7</span>
+        </div>
+        <p class="deps">依赖：无</p>
+        <p class="goal">目标：先让“怎么构建、怎么测试、文档在哪、哪些产物该入库”这件事只有一个可信答案，为后续三批提供可复现的验收基线。</p>
+      </div>
+
+      <h3>任务</h3>
+      <ul class="tasks">
+        <li class="task">
+          <input type="checkbox" id="t1-1" data-batch="1">
+          <label for="t1-1"><span class="tid">1.1</span>记录基线快照</label>
+          <ul class="sub">
+            <li>记录 <code class="inline">git rev-parse HEAD</code>、<code class="inline">git status --short</code>、Go 版本、semgrep/python3 版本。</li>
+            <li>在<b>无并发测试</b>的隔离环境运行并记录 <code class="inline">go build</code>、<code class="inline">go vet</code>、<code class="inline">go test ./internal/... ./pkg/... ./tools/... -count=1</code> 的退出码、耗时、失败/跳过用例。</li>
+            <li>记录 <code class="inline">go test ./...</code> 失败于本地审计语料的完整原因，避免后续误判为代码问题。</li>
+            <li>记录 <code class="inline">gofmt -l</code> 和 <code class="inline">bash -n</code> 结果。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t1-2" data-batch="1">
+          <label for="t1-2"><span class="tid">1.2</span>修正文档中的构建/测试命令</label>
+          <ul class="sub">
+            <li>在 README 的 Build &amp; Development 一节明确：本仓库主模块测试命令为 <code class="inline">go test ./internal/... ./pkg/... ./tools/...</code>。</li>
+            <li>说明 <code class="inline">models/audit/holdout-sources/</code> 是本地研究语料，不能放在主模块扫描路径内；干净检出不需要它。</li>
+            <li>不修改 CLAUDE.md（未跟踪文件），只修正仓库内文档。</li>
+            <li>可选：新增 <code class="inline">scripts/test.sh</code>（或 Makefile 的 <code class="inline">build</code>/<code class="inline">test</code>/<code class="inline">lint</code>/<code class="inline">fmt-check</code>），把上述命令固化；新增脚本不得改变现有构建产物。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t1-3" data-batch="1">
+          <label for="t1-3"><span class="tid">1.3</span>格式化</label>
+          <ul class="sub">
+            <li>对 <code class="inline">gofmt -l</code> 报告的 12 个文件执行 <code class="inline">gofmt -w</code>。</li>
+            <li>逐文件确认 diff 仅为空白/对齐，无逻辑变化。</li>
+            <li><code class="inline">tools/sdk/gui/*windows.go</code> 若因构建标签无法本地验证，只做 gofmt，不手改。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t1-4" data-batch="1">
+          <label for="t1-4"><span class="tid">1.4</span>文档位置与链接纠偏</label>
+          <ul class="sub">
+            <li>将 <code class="inline">docs/superpowers/specs/</code> 的 6 份文件迁入 <code class="inline">.claude/specs/</code>；将 <code class="inline">docs/superpowers/plans/</code> 的 9 份文件迁入 <code class="inline">.claude/plans/</code>。<code class="inline">.claude/</code> 在 <code class="inline">.gitignore</code> 中，迁移后需 <code class="inline">git add -f</code>；原路径删除。</li>
+            <li>修正 README 中 2 个不存在的文档链接：删除链接或改指向现有文档，<b>不要凭空补写内容</b>。</li>
+            <li>全仓库检查引用旧路径的地方并同步更新。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t1-5" data-batch="1">
+          <label for="t1-5"><span class="tid">1.5</span>README 仓库结构同步</label>
+          <ul class="sub">
+            <li>补上 <code class="inline">internal/fhe</code>、<code class="inline">tools/csv2-vm</code>、<code class="inline">latti-fhe-handoff</code>、<code class="inline">deploy/guest-build</code>、<code class="inline">deploy/manifest</code>、<code class="inline">api/proto/cipherflow</code> 等现有目录。</li>
+            <li>修正 <code class="inline">models/</code> 的描述：当前目录是本地模型/审计证据/语料，不是“随镜像打包的模型”。</li>
+            <li>修正 <code class="inline">configs/</code> 列表，补上 <code class="inline">taa-initrd.json</code>。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t1-6" data-batch="1">
+          <label for="t1-6"><span class="tid">1.6</span>仓库产物决策（需确认）</label>
+          <ul class="sub">
+            <li>列出跟踪产物：<code class="inline">tools/sdk/teecrypto-cli</code>、<code class="inline">tools/sdk/cmd/*.exe</code>、<code class="inline">tools/sdk/decrypt-result</code>、<code class="inline">dcu/HIP-Examples-master.zip</code>。</li>
+            <li>默认建议：从 git 移除并加入 <code class="inline">.gitignore</code>，在 <code class="inline">tools/sdk/README.md</code> 写明构建/获取方式；同时保留本地文件。</li>
+            <li>若这些是必须随仓库分发的交付物，则保留，并在 README 记录原因与校验和。</li>
+            <li><b>不删除</b> <code class="inline">models/audit/audit-results/</code>、<code class="inline">models/audit/holdout-sources/</code> 等审计证据。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t1-7" data-batch="1">
+          <label for="t1-7"><span class="tid">1.7</span>测试分层与稳定性基线</label>
+          <ul class="sub">
+            <li>明确三层：快速单元测试（不依赖外部二进制）；依赖 semgrep/python3 的集成测试；需要 <code class="inline">TAA_*</code> 环境变量或运行产物的研究/证据测试。</li>
+            <li>为依赖外部工具的测试补 <code class="inline">testing.Short()</code> 或环境变量门禁，保证默认测试可预期；不得删除或放宽现有断言。</li>
+            <li>对 <code class="inline">internal/controller</code> 并发用例重复运行 20 次，记录失败率；仅记录，不在本批修复。</li>
+          </ul>
+        </li>
+      </ul>
+
+      <div class="gate">
+        <div>
+          <h4>验收</h4>
+          <ul>
+            <li>上述通用门禁全部通过。</li>
+            <li>在隔离环境跑完一次全量测试，结果与基线一致；不稳定用例已记录而非掩盖。</li>
+            <li>README 中不再有失效链接；仓库结构描述与实际目录一致。</li>
+            <li><code class="inline">git status</code> 只包含本批预期的文档/格式化/产物变更。</li>
+          </ul>
+        </div>
+        <div>
+          <h4>风险与回滚</h4>
+          <ul>
+            <li>风险最低；文档迁移与产物移除可能影响外部引用，逐项确认后单独提交。</li>
+            <li>回滚：整批 revert；因每项独立提交，也可只回滚单项。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- 批次二 -->
+    <section id="s3">
+      <div class="batch-head">
+        <p class="eyebrow">03 — 批次二</p>
+        <div class="batch-top">
+          <h2>代码结构与可维护性</h2>
+          <span class="chip mid">中风险</span>
+          <span class="counter" data-count="2">0 / 7</span>
+        </div>
+        <p class="deps">依赖：批次一的可信构建/测试命令</p>
+        <p class="goal">目标：在不改包边界、不改导出符号、不改任何日志/响应/配置的前提下，把超大文件拆成单一职责文件，清掉死代码，消除入口重复。</p>
+      </div>
+
+      <h3>任务</h3>
+      <ul class="tasks">
+        <li class="task">
+          <input type="checkbox" id="t2-1" data-batch="2">
+          <label for="t2-1"><span class="tid">2.1</span>拆分 <code class="inline">internal/controller/route.go</code>（1322 行，同包内纯移动）</label>
+          <ul class="sub">
+            <li><code class="inline">state.go</code>：<code class="inline">TAAState</code>、<code class="inline">NewTAAState</code>、字段访问器、<code class="inline">RestoreFromPersistentState</code>、<code class="inline">sealStateLocked</code>、导入状态/校验和访问器。</li>
+            <li><code class="inline">state_audit.go</code>：<code class="inline">CurrentAuditOp</code> / <code class="inline">AuditRunning</code> / pendingAudit 的全部读写。</li>
+            <li><code class="inline">state_task.go</code>：<code class="inline">tryAcquireTask</code>、token/release、<code class="inline">promoteCurrentTaskToTraining</code>、<code class="inline">runAsyncSafe</code>、<code class="inline">handleAsyncPanic</code>。</li>
+            <li><code class="inline">transfer.go</code>：<code class="inline">downloadToTempFile</code>、<code class="inline">decryptResourceToTempFile</code>、<code class="inline">decryptCiphertextWithDataKey</code>。</li>
+            <li><code class="inline">runtime_helpers.go</code>：<code class="inline">parseRuntimeConfig</code>、<code class="inline">resolveRuntime*</code>、<code class="inline">runRuntimeConfig*</code>、<code class="inline">KillProcessGroup</code>、<code class="inline">mergedRuntimeEnv</code>、<code class="inline">envKeys</code>、<code class="inline">runPythonScript</code>、<code class="inline">runScript</code>。</li>
+            <li>只做 <code class="inline">git mv</code> + 代码块搬移；不重命名符号，不改函数体。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t2-2" data-batch="2">
+          <label for="t2-2"><span class="tid">2.2</span>拆分 <code class="inline">internal/config/config.go</code>（1204 行）</label>
+          <ul class="sub">
+            <li><code class="inline">types.go</code>：<code class="inline">StartupConfig</code>、<code class="inline">LLMConfig</code>、<code class="inline">CodeScanConfig</code>、<code class="inline">FHEConfig</code> 及常量。</li>
+            <li><code class="inline">defaults.go</code>：<code class="inline">defaultStartupConfig</code>、<code class="inline">applyFHEDefaults</code>。</li>
+            <li><code class="inline">load.go</code>：<code class="inline">LoadStartupConfig</code>、<code class="inline">applyStartupConfigFile</code>、endpoint/identity override、<code class="inline">rejectRemovedKeys</code>、<code class="inline">hasJSONValue</code>。</li>
+            <li><code class="inline">validate.go</code>：全部 <code class="inline">validate*</code>、<code class="inline">deriveSelfIPv4</code>、<code class="inline">firstUsableIPv4</code>、<code class="inline">ResolveFHECallbackBaseURL</code> 等。</li>
+            <li>保持文件内顺序与注释不变，避免无意义 diff。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t2-3" data-batch="2">
+          <label for="t2-3"><span class="tid">2.3</span>拆分 <code class="inline">internal/codeaudit/binary_evidence.go</code>（2125 行）</label>
+          <ul class="sub">
+            <li><code class="inline">binary_evidence.go</code>：<code class="inline">EvidenceSet</code>、<code class="inline">EvidenceLine</code>、<code class="inline">RenderExcerpt</code>、熵计算、配置。</li>
+            <li><code class="inline">binary_elf.go</code>：<code class="inline">collectELF</code>、<code class="inline">collectELFReader</code>、<code class="inline">countSection</code>、符号表检查。</li>
+            <li><code class="inline">binary_pickle.go</code>：pickle 解释器全部类型与函数。</li>
+            <li><code class="inline">binary_archive.go</code>：<code class="inline">collectArchive</code>、<code class="inline">collectCompressed</code>、zip member 读取、<code class="inline">streamHeadAndTail</code>、<code class="inline">streamWithSizeSwitch</code>、<code class="inline">streamReaderEvidence</code>。</li>
+            <li>不改任何解析逻辑、预算常量或输出文本。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t2-4" data-batch="2">
+          <label for="t2-4"><span class="tid">2.4</span>清理死代码与重复实现</label>
+          <ul class="sub">
+            <li>删除 0.2 诊断中列出的 10 个零调用包装函数。</li>
+            <li>将 <code class="inline">loadTrainingResult</code> 改为调用 <code class="inline">runtime.LoadTrainingResult</code>，删除重复实现。</li>
+            <li>只保留有语义增值的一行包装（如带 <code class="inline">TAAState</code> 日志/错误封装的版本），其余直接调用 <code class="inline">internal/resource</code>、<code class="inline">internal/runtime</code>。</li>
+            <li>更新唯一引用它们的测试（如 <code class="inline">security_hardening_test.go</code> 对包级 <code class="inline">downloadToTempFile</code> 的调用）。</li>
+            <li>验收时用 <code class="inline">grep</code> 确认无遗漏调用点，且 <code class="inline">go vet</code> 无未使用告警。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t2-5" data-batch="2">
+          <label for="t2-5"><span class="tid">2.5</span>去重 <code class="inline">importHandler</code> / <code class="inline">modelImportHandler</code>（决策门禁）</label>
+          <ul class="sub">
+            <li>先抽取无歧义的公共步骤：读取 body、日志脱敏、trim、空值校验、phase 读取、dataKeyCipher 解析、任务抢占、下载、异步派发。</li>
+            <li>保留端点特有分支：phase 1 publicKey 处理、runtimeConfig-only 路径、FHE 分支、模型审计启动。</li>
+            <li><b>门禁</b>：只有现有 handler 测试能逐字节证明响应与日志不变时才执行；否则保留重复并在代码中标注原因，后续再用更细的测试覆盖后再做。</li>
+            <li>不新增导出符号，不改变错误文案与状态码。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t2-6" data-batch="2">
+          <label for="t2-6"><span class="tid">2.6</span>状态机文档化</label>
+          <ul class="sub">
+            <li>在 <code class="inline">state_task.go</code> 顶部用注释（英文）列出状态/操作迁移表：<code class="inline">idle → downloading → decrypting/extracting → auditing → training → reporting</code>，以及 model import 与 data import 的分支、FHE 分支、崩溃恢复入口。</li>
+            <li>只写文档，不改逻辑。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t2-7" data-batch="2">
+          <label for="t2-7"><span class="tid">2.7</span>包级拆分（默认不做）</label>
+          <ul class="sub">
+            <li>文件拆分完成后再评估是否把 <code class="inline">transfer</code>/<code class="inline">reporting</code> 提成独立包。</li>
+            <li>只有在不产生 import cycle、不改测试导入路径、不增加公开 API 时才执行；否则明确放弃（YAGNI）。</li>
+          </ul>
+        </li>
+      </ul>
+
+      <div class="gate">
+        <div>
+          <h4>验收</h4>
+          <ul>
+            <li>通用门禁全部通过。</li>
+            <li><code class="inline">git diff -M</code> 能识别为 rename/移动；函数体 diff 为空或仅删除死代码。</li>
+            <li><code class="inline">go list</code> 的包依赖图不新增边；<code class="inline">internal/controller</code> 不再新增对下层包的依赖。</li>
+            <li>HTTP 响应、日志正文、配置错误文案与批次前一致（由现有测试覆盖）。</li>
+            <li>不触碰 <code class="inline">configs/</code>、<code class="inline">api/</code>、<code class="inline">deploy/guest-build/</code>。</li>
+          </ul>
+        </div>
+        <div>
+          <h4>风险与回滚</h4>
+          <ul>
+            <li>纯移动风险低；<code class="inline">importHandler</code> 去重风险最高，独立提交，验收不过单独回滚。</li>
+            <li>每完成一个文件拆分即跑一次测试，不把多个拆分堆在一个提交里。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- 批次三 -->
+    <section id="s4">
+      <div class="batch-head">
+        <p class="eyebrow">04 — 批次三</p>
+        <div class="batch-top">
+          <h2>部署与构建工程</h2>
+          <span class="chip mid">中风险</span>
+          <span class="counter" data-count="3">0 / 5</span>
+        </div>
+        <p class="deps">依赖：批次一；与批次二独立，可交换顺序</p>
+        <p class="goal">目标：把 <code class="inline">deploy.sh</code> / <code class="inline">deploy-llm.sh</code> 的公共基础设施抽成共享 shell 库，消除逐字节重复，同时保持每个脚本的帮助文本、非 TTY 输出和预检行为不变。</p>
+      </div>
+
+      <h3>任务</h3>
+      <ul class="tasks">
+        <li class="task">
+          <input type="checkbox" id="t3-1" data-batch="3">
+          <label for="t3-1"><span class="tid">3.1</span>建立共享库</label>
+          <ul class="sub">
+            <li>新增 <code class="inline">deploy/lib/ui.sh</code>：<code class="inline">IS_TTY</code>、颜色、<code class="inline">SPIN_FRAMES</code>、<code class="inline">cursor_hide/show</code>、<code class="inline">banner</code>、<code class="inline">step</code>、<code class="inline">info</code>、<code class="inline">warn</code>、<code class="inline">err</code>、<code class="inline">detail</code>、<code class="inline">handle_err</code>。</li>
+            <li>新增 <code class="inline">deploy/lib/remote.sh</code>：<code class="inline">remote_ssh</code>、<code class="inline">container_exec</code>、<code class="inline">container_cp</code>、<code class="inline">require_command</code>、<code class="inline">require_dir</code>、<code class="inline">require_file</code>。</li>
+            <li>新增 <code class="inline">deploy/lib/gate.sh</code>（如需要）：<code class="inline">ensure_remote_ssh</code>、<code class="inline">check_remote_connectivity</code>、<code class="inline">check_remote_pod</code> 的公共骨架。</li>
+            <li>先迁移 12 个<b>逐字节相同</b>的函数，再评估其余分叉函数。</li>
+            <li>顶层脚本用 <code class="inline">SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &amp;&amp; pwd)"</code> 定位库，保证从任意工作目录执行一致。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t3-2" data-batch="3">
+          <label for="t3-2"><span class="tid">3.2</span>参数化 <code class="inline">cleanup_display</code> 与错误横幅</label>
+          <ul class="sub">
+            <li>两个脚本的 <code class="inline">cleanup_display</code> 差异只在：错误日志路径、临时文件列表、临时容器、是否抑制部署横幅。</li>
+            <li>用变量/回调参数化，不复制函数体：<code class="inline">DEPLOY_ERR_LOG</code>、<code class="inline">DEPLOY_CLEANUP_FILES</code>、<code class="inline">DEPLOY_CLEANUP_CONTAINERS</code>、<code class="inline">TRAP_SUPPRESS_DEPLOYMENT_BANNER</code>。</li>
+            <li><code class="inline">banner</code>/<code class="inline">spin_task</code> 如需合并，必须用 3.3 的输出对比证明逐字节一致；不一致就保留各自实现。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t3-3" data-batch="3">
+          <label for="t3-3"><span class="tid">3.3</span>建立脚本输出黄金对比</label>
+          <ul class="sub">
+            <li>在批次开始前保存：<code class="inline">./deploy.sh --help</code>、<code class="inline">./deploy-llm.sh --help</code>、<code class="inline">./deploy-fhe.sh --help</code>、<code class="inline">./deploy-taa-vm.sh print-config</code>，以及非 TTY（<code class="inline">TERM=dumb</code>、管道）下的 <code class="inline">info/warn/err/step</code> 输出样例。</li>
+            <li>重构后逐字节 diff；任何差异都必须能用“重构前也存在”解释，否则不通过。</li>
+            <li>增加 <code class="inline">bash -n</code> 到常规检查；如环境可安装 <code class="inline">shellcheck</code>，作为可选门禁运行，不把新增告警当作行为变更。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t3-4" data-batch="3">
+          <label for="t3-4"><span class="tid">3.4</span>构建与打包一致性检查</label>
+          <ul class="sub">
+            <li>确认所有脚本与文档使用静态构建：<code class="inline">CGO_ENABLED=0 GOOS=linux go build -o bin/taa ./cmd/taa</code>。</li>
+            <li>确认 <code class="inline">bin/</code>、<code class="inline">*.tar.gz</code> 仍被忽略；不在本批改动镜像或 initrd 内容。</li>
+            <li>记录各脚本生成的临时文件/容器命名，确保 cleanup 参数化后不泄漏。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t3-5" data-batch="3">
+          <label for="t3-5"><span class="tid">3.5</span><code class="inline">deploy-fhe.sh</code> 范围决策</label>
+          <ul class="sub">
+            <li>默认<b>不纳入</b>共享库：它使用 <code class="inline">set -E</code>、<code class="inline">die</code>/<code class="inline">log</code> 和独立错误模型，强行统一会改变错误路径。</li>
+            <li>只做低风险一致性：<code class="inline">require_command</code>、<code class="inline">usage</code> 的命名/帮助文本若可逐字节保持一致，再考虑合并；否则单列后续批次。</li>
+            <li>在 TODO 中记录该决定，避免后续重复评估。</li>
+          </ul>
+        </li>
+      </ul>
+
+      <div class="gate">
+        <div>
+          <h4>验收</h4>
+          <ul>
+            <li>所有脚本 <code class="inline">bash -n</code> 通过；<code class="inline">--help</code> 与 <code class="inline">print-config</code> 输出与基线逐字节一致。</li>
+            <li>非 TTY 日志输出与基线逐字节一致（颜色码不出现）。</li>
+            <li>未执行真实远程部署；如需冒烟测试，单独在 178 上按批次申请。</li>
+            <li>不改 <code class="inline">deploy/taa-supervisor.sh</code>、<code class="inline">deploy/guest-build/</code>、<code class="inline">deploy/manifest/</code>、<code class="inline">configs/</code>。</li>
+          </ul>
+        </div>
+        <div>
+          <h4>风险与回滚</h4>
+          <ul>
+            <li>shell 函数被同名覆盖时可能产生隐蔽行为差异；共享库必须只包含已验证相同的函数。</li>
+            <li>每个脚本的接入单独提交；出问题只回滚对应脚本的 source 行与库文件。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- 批次四 -->
+    <section id="s5">
+      <div class="batch-head">
+        <p class="eyebrow">05 — 批次四</p>
+        <div class="batch-top">
+          <h2>审计 / 推理链路</h2>
+          <span class="chip high">最高风险</span>
+          <span class="counter" data-count="4">0 / 5</span>
+        </div>
+        <p class="deps">依赖：批次一、二；必须先测量后改动</p>
+        <p class="goal">目标：先建立可复现的性能与内存基线，再只做<b>不改变判定结果</b>的优化。本批不以“更快”为唯一成功标准；没有安全收益时，交付基准与证据即可关闭。</p>
+      </div>
+
+      <div class="fence">
+        <b>明确不做（会改变行为或已被实测否定）：</b>不做 Finding 级并发 worker pool；不做同文件多 Finding 聚合批处理；不改提示词、评分标准位置、温度、超时、降级/fail-closed 语义；不做跨任务缓存或结果复用；不重建 initrd，不调整 semgrep/ollama 的部署参数。
+      </div>
+
+      <h3>任务</h3>
+      <ul class="tasks">
+        <li class="task">
+          <input type="checkbox" id="t4-1" data-batch="4">
+          <label for="t4-1"><span class="tid">5.1</span>建立基准测试</label>
+          <ul class="sub">
+            <li>新增 <code class="inline">internal/codeaudit/bench_test.go</code>（仅测试代码）：<code class="inline">BenchmarkGenerateAuditReport</code>、<code class="inline">BenchmarkVerifyReport</code>、<code class="inline">BenchmarkRenderExcerpt</code>、<code class="inline">BenchmarkApplyScopeContext</code>、<code class="inline">BenchmarkBinaryCollectEvidence</code>，各自配固定的样本或 fake LLM client。</li>
+            <li>使用 <code class="inline">-benchmem</code>，记录 <code class="inline">ns/op</code>、<code class="inline">B/op</code>、<code class="inline">allocs/op</code>。</li>
+            <li>基准不得依赖网络、真实 semgrep 或大语料；外部工具测试单独分层。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t4-2" data-batch="4">
+          <label for="t4-2"><span class="tid">5.2</span>生产路径分段测量</label>
+          <ul class="sub">
+            <li>在隔离环境用真实语料测量：静态扫描（semgrep）耗时与峰值内存；二进制通道耗时；LLM finding 仲裁次数/耗时；文件级分析次数/耗时；报告组装与校验和计算耗时。</li>
+            <li>用 <code class="inline">pprof</code>（CPU/heap）定位热点；记录最大分配点。</li>
+            <li>注意宿主内存上限：ollama 与 Semgrep 并发会 OOM，测量必须串行。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t4-3" data-batch="4">
+          <label for="t4-3"><span class="tid">5.3</span>安全的候选优化（仅在 5.1 / 5.2 证明有收益时实施）</label>
+          <ul class="sub">
+            <li>减少重复文件读取/重复 <code class="inline">stat</code>：<code class="inline">CountFileLines</code> 与 <code class="inline">ReadFileForAnalysis</code> 的二次打开；若合并后输出逐字节一致才做。</li>
+            <li>降低 <code class="inline">RenderExcerpt</code>、<code class="inline">BuildFindingsSummary</code>、上下文切片的分配与拷贝。</li>
+            <li>调整 <code class="inline">bufio.Scanner</code> 缓冲区，避免超长行截断；调整前后必须验证相同文件输出一致。</li>
+            <li>消除 CPG/二进制通道中的重复遍历或重复解析。</li>
+            <li>所有改动必须满足：固定输入下 <code class="inline">audit_report.json</code> 除易变字段外逐字节一致；通过/拒绝结论、finding 列表、风险分级完全一致。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t4-4" data-batch="4">
+          <label for="t4-4"><span class="tid">5.4</span>确定性与可靠性文档化</label>
+          <ul class="sub">
+            <li>记录已知非确定性（同输入不同判定）及其证据，不把“temperature 0 已配置”误当作“已修复”。</li>
+            <li>核对超时/熔断/降级路径的实际生效点，标注无效或未读取的配置项，但本批不修改这些配置语义。</li>
+            <li>在 README 或 <code class="inline">.claude/specs/</code> 记录审计链路的测量方法与基线数字。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t4-5" data-batch="4">
+          <label for="t4-5"><span class="tid">5.5</span>结论与 go/no-go</label>
+          <ul class="sub">
+            <li>输出：基线数字、热点、已尝试项、收益、是否改变行为。</li>
+            <li>若无安全收益，明确关闭本批，不为了“优化”而引入语义风险。</li>
+            <li>如要尝试并发/批处理/提示词调整，必须另开 spec，单独评审，不并入本批。</li>
+          </ul>
+        </li>
+      </ul>
+
+      <div class="gate">
+        <div>
+          <h4>验收</h4>
+          <ul>
+            <li>基准可重复运行，数字稳定（至少 3 次取中位数）。</li>
+            <li>固定输入的审计报告与基线逐字节一致（排除易变字段）。</li>
+            <li>不改变任何提示词、并发度、超时、配置默认值。</li>
+            <li>通用门禁通过；新增代码仅测试/基准。</li>
+          </ul>
+        </div>
+        <div>
+          <h4>风险与回滚</h4>
+          <ul>
+            <li>审计判定是安全边界，任何语义变化都必须回滚。</li>
+            <li>优化按“一个热点一个提交”，每个提交都带报告对比；无法证明等价即回滚。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- 批次五 · 新增需求 -->
+    <section id="s5b">
+      <div class="batch-head">
+        <p class="eyebrow">06 — 新增需求</p>
+        <div class="batch-top">
+          <h2>运行时可靠性与失败可诊断</h2>
+          <span class="chip high">行为变更</span>
+          <span class="counter" data-count="6">0 / 3</span>
+        </div>
+        <p class="deps">依赖：独立立项；不受“行为不变”约束，每项需单独 spec 与验收</p>
+        <p class="goal">目标：解决三个已在真实环境暴露的问题——链路存活靠超时判断、macOS 打包导致 semgrep 扫描不通过、训练/推理失败拿不到具体原因。三项都会改变现有行为，不得混入前四批的等价重构提交。</p>
+      </div>
+
+      <h3>任务</h3>
+      <ul class="tasks">
+        <li class="task">
+          <input type="checkbox" id="t6-1" data-batch="6">
+          <label for="t6-1"><span class="tid">6.1</span>TAA 与 LLM 之间的存活判定不再依赖超时</label>
+          <ul class="sub">
+            <li>现状：链路存活靠固定超时（请求 read deadline、探针时限）判断；实测 CPU 争用会让 llama-server 慢 36 倍，超时无法区分“很慢”和“已死”，单纯加大超时只会拖住主流程。</li>
+            <li>目标：用“有进展”作为存活证据——以流式分块/心跳的到达间隔判定，把总时长 deadline 换成 idle deadline（多久没有任何进展才判失败），慢但持续输出的请求不被打断。</li>
+            <li>核对 <code class="inline">/healthz</code> 语义：它会做真实推理探针，冷加载本身就要 120s；需要区分“模型未驻留”“进程存活但无响应”“进程已退出”三种状态，而不是都归为超时。</li>
+            <li>失败要么有明确证据（连接断开、进程退出、心跳停止），要么显式标注“无法判定”，不得靠调大超时掩盖。</li>
+            <li>先测量再改：记录当前超时在实际负载下的命中率与误判率；不改审计判定结论与提示词。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t6-2" data-batch="6">
+          <label for="t6-2"><span class="tid">6.2</span>兼容 macOS 打出的代码包</label>
+          <ul class="sub">
+            <li>问题：macOS 压缩包会带 <code class="inline">__MACOSX/</code>、<code class="inline">._*</code> AppleDouble 与 <code class="inline">.DS_Store</code>，解包后混进文件树，semgrep 扫到这些元数据会报错/非零退出，审计因此不通过。</li>
+            <li>在解包阶段统一过滤这些条目（不落盘），并处理“压缩包内再套一层同名目录”的常见结构，按包内真实源码根计算扫描路径，而不是外层目录名。</li>
+            <li>不改文件内容与相对路径，不影响 Linux/Windows 包；顶层目录归一化必须证明等价（同一逻辑包解出的源码集合一致）。</li>
+            <li>把 macOS 实际产出的 zip 作为回归夹具，断言 semgrep 的目标集合不含任何元数据文件；同时保留现有压缩包用例。</li>
+            <li>对损坏包是清洗还是拒绝，由 spec 决定，默认清洗并在日志中记录被剔除的条目。</li>
+          </ul>
+        </li>
+        <li class="task">
+          <input type="checkbox" id="t6-3" data-batch="6">
+          <label for="t6-3"><span class="tid">6.3</span>训练/推理失败日志与具体原因回传</label>
+          <ul class="sub">
+            <li>现状：进程非 0 退出时宿主侧只看到退出码，具体原因留在 guest 内的 stdout/stderr，排障只能靠猜。</li>
+            <li>采集：退出码与信号、失败阶段（下载 / 解包 / 审计 / 训练 / 推理 / 上报）、stdout/stderr 尾部（有界，例如各 64 KiB）、可用的 <code class="inline">/opt/taa/output/log</code> 路径。</li>
+            <li>回传：新增结构化失败原因字段写进任务状态与报告，已有字段保持不变；文案里不得出现宿主路径、密钥或环境变量转储，需先脱敏。</li>
+            <li>区分用户代码失败与平台失败（OOM、超时、沙箱重建、模型未驻留），对前者给出可直接修正的原因（异常类型、缺失文件、字段错误）。</li>
+            <li>失败写盘尽力而为，不改变原始退出码与成功路径的响应；新增字段需在 API 文档中标注为可选。</li>
+          </ul>
+        </li>
+      </ul>
+
+      <div class="gate">
+        <div>
+          <h4>验收</h4>
+          <ul>
+            <li>每项都有独立 spec；实施前记录现状证据（超时误判率、mac zip 的失败复现、失败原因缺失的样例）。</li>
+            <li>6.1 用固定负载证明：慢而持续的请求不被误杀，真正失联的请求能被及时判定。</li>
+            <li>6.2 用 macOS 实测产物跑通导入 → 审计，扫描目标集合干净且源码集合与手工解包一致。</li>
+            <li>6.3 构造典型失败（缺文件、字段非法、OOM、非 0 退出），报告与日志都能给出具体原因且无敏感信息。</li>
+            <li>成功路径的响应体、日志正文与现有测试保持通过。</li>
+          </ul>
+        </div>
+        <div>
+          <h4>风险与回滚</h4>
+          <ul>
+            <li>三项都改变运行时行为，风险最高；不得与批次一至四的提交混在一起。</li>
+            <li>6.1 触碰超时与探针语义，可能影响审计可用性，必须先测量；6.2 改变导入接受的包形态，需保留旧用例；6.3 新增对外字段，需评估接口兼容性。</li>
+            <li>每项单独提交、单独回滚；回滚后仍应保留测量数据与夹具。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="s6">
+      <div class="sec-head">
+        <span class="eyebrow">07 — 边界</span>
+        <h2>明确不做 / 暂缓</h2>
+      </div>
+      <ul class="plain">
+        <li>不修改配置结构、配置键、默认值、别名与校验文案。</li>
+        <li>不修改 HTTP 路由、请求/响应字段、状态码、CORS 头。</li>
+        <li>不重建 initrd、镜像或 semgrep payload；不改变度量内容。</li>
+        <li>不删除审计证据、holdout 语料、基准结果。</li>
+        <li>不做大规模中文注释翻译（CLAUDE.md 要求英文注释，但全量翻译是噪声；新代码与本次移动涉及的注释保持英文即可）。</li>
+        <li>不引入新的运行时依赖或框架。</li>
+        <li>不把 <code class="inline">deploy-fhe.sh</code> 强行并入共享库。</li>
+        <li>不做审计并发/批处理/提示词优化（见批次四）。</li>
+      </ul>
+    </section>
+
+    <section id="s7">
+      <div class="sec-head">
+        <span class="eyebrow">08 — 决策</span>
+        <h2>需要确认的决策点</h2>
+      </div>
+      <div class="decisions">
+        <div class="decision">
+          <div class="decision-head"><span class="n">01</span><h3>跟踪产物</h3></div>
+          <p class="muted small"><code class="inline">tools/sdk/teecrypto-cli</code>、<code class="inline">.exe</code>、<code class="inline">decrypt-result</code>、<code class="inline">dcu/HIP-Examples-master.zip</code> 是交付物还是构建产物？</p>
+          <p class="reco"><b>默认建议</b><span>移出 git，保留本地文件并补构建说明。</span></p>
+        </div>
+        <div class="decision">
+          <div class="decision-head"><span class="n">02</span><h3>历史文档迁移</h3></div>
+          <p class="muted small"><code class="inline">docs/superpowers/</code> 的 15 份文件是否同意迁入 <code class="inline">.claude/</code>？</p>
+          <p class="reco"><b>默认建议</b><span>迁移，符合 CLAUDE.md。</span></p>
+        </div>
+        <div class="decision">
+          <div class="decision-head"><span class="n">03</span><h3><code class="inline">importHandler</code> 去重</h3></div>
+          <p class="muted small">若现有测试无法证明逐字节等价，是否接受保留重复？</p>
+          <p class="reco"><b>默认建议</b><span>接受保留，优先保证行为不变。</span></p>
+        </div>
+        <div class="decision">
+          <div class="decision-head"><span class="n">04</span><h3><code class="inline">deploy-fhe.sh</code></h3></div>
+          <p class="muted small">是否接受本路线图暂不统一其错误模型？</p>
+          <p class="reco"><b>默认建议</b><span>接受。</span></p>
+        </div>
+        <div class="decision">
+          <div class="decision-head"><span class="n">05</span><h3>批次四范围</h3></div>
+          <p class="muted small">是否允许在测量后另开 spec 讨论并发/批处理/提示词？</p>
+          <p class="reco"><b>默认建议</b><span>本轮不允许；先交付测量结论。</span></p>
+        </div>
+        <div class="decision">
+          <div class="decision-head"><span class="n">06</span><h3>部署冒烟</h3></div>
+          <p class="muted small">批次三是否需要在 178 上做真实远程部署验证？</p>
+          <p class="reco"><b>默认建议</b><span>先只做帮助/预检/输出对比；真实部署单独申请窗口。</span></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="s8">
+      <div class="sec-head">
+        <span class="eyebrow">09 — 提交</span>
+        <h2>建议提交拆分</h2>
+      </div>
+      <ol class="commits">
+        <li><span class="n">01</span><code><span class="type">docs(repo)</span>: refresh the roadmap and fix the documented commands</code></li>
+        <li><span class="n">02</span><code><span class="type">style</span>: apply gofmt to the reported files</code></li>
+        <li><span class="n">03</span><code><span class="type">docs</span>: move the legacy specs and plans under .claude</code></li>
+        <li><span class="n">04</span><code><span class="type">refactor(controller)</span>: split route.go by responsibility</code></li>
+        <li><span class="n">05</span><code><span class="type">refactor(config)</span>: split the loader, defaults, types and validation</code></li>
+        <li><span class="n">06</span><code><span class="type">refactor(codeaudit)</span>: split binary evidence by format</code></li>
+        <li><span class="n">07</span><code><span class="type">refactor(controller)</span>: drop the dead wrappers and the duplicate loader</code></li>
+        <li><span class="n">08</span><code><span class="type">refactor(controller)</span>: share the import request pipeline（仅当门禁通过）</code></li>
+        <li><span class="n">09</span><code><span class="type">refactor(deploy)</span>: extract the shared shell library</code></li>
+        <li><span class="n">10</span><code><span class="type">test(codeaudit)</span>: add the audit benchmark harness</code></li>
+        <li><span class="n">11</span><code><span class="type">perf(codeaudit)</span>: …（仅在有测量收益且报告逐字节一致时）</code></li>
+        <li><span class="n">12</span><code><span class="type">feat(controller)</span>: replace the timeout-based LLM liveness check with progress deadlines</code></li>
+        <li><span class="n">13</span><code><span class="type">feat(controller)</span>: strip macOS archive metadata and normalize the source root</code></li>
+        <li><span class="n">14</span><code><span class="type">feat(runtime)</span>: report structured reasons for failed training and inference runs</code></li>
+      </ol>
+    </section>
+
+    <footer>
+      <span>TODO · 2026-10-30</span>
+      <span>勾选状态仅保存在本机浏览器</span>
+    </footer>
+  </main>
+</div>
+
+<script>
+(function () {
+  var KEY = "taa-roadmap-tasks";
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('.task > input[type="checkbox"]'));
+  var state = {};
+
+  try {
+    var raw = localStorage.getItem(KEY);
+    if (raw) state = JSON.parse(raw) || {};
+  } catch (e) { state = {}; }
+
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {}
+  }
+
+  function render() {
+    var done = 0;
+    var perBatch = {};
+    boxes.forEach(function (box) {
+      if (box.checked) done++;
+      var b = box.getAttribute("data-batch");
+      perBatch[b] = perBatch[b] || { done: 0, total: 0 };
+      perBatch[b].total++;
+      if (box.checked) perBatch[b].done++;
+    });
+    document.getElementById("progressNum").textContent = done + " / " + boxes.length;
+    document.getElementById("progressFill").style.width = (done / boxes.length * 100) + "%";
+    document.querySelectorAll(".counter").forEach(function (el) {
+      var b = el.getAttribute("data-count");
+      var p = perBatch[b] || { done: 0, total: 0 };
+      el.textContent = p.done + " / " + p.total;
+    });
+  }
+
+  boxes.forEach(function (box) {
+    box.checked = !!state[box.id];
+    box.addEventListener("change", function () {
+      state[box.id] = box.checked;
+      save();
+      render();
+    });
+  });
+
+  render();
+})();
+</script>
