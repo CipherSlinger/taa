@@ -97,6 +97,7 @@
   tbody tr:nth-child(even){background:#fdf8f4;}
   td>code,th>code{white-space:nowrap;}
   .placeholder{color:var(--muted);text-align:center;padding:60px 0;}
+  .placeholder .kv{display:block;color:#9b7f70;font-size:12.5px;word-break:break-all;}
   .placeholder code{white-space:nowrap;}
   @media (max-width:760px){
     .topbar{flex-wrap:wrap;padding:10px 16px;}
@@ -299,6 +300,9 @@ function renderMarkdown(src) {
            !/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i])) {
       buf.push(lines[i++]);
     }
+    /* Never leave the cursor in place: a block starter that no branch claimed
+       would otherwise spin here forever. */
+    if (!buf.length) buf.push(lines[i++]);
     out.push('<p>' + inline(joinLines(buf)) + '</p>');
   }
   return out.join('\n');
@@ -315,19 +319,38 @@ function showBanner(kind, html) {
   banner.innerHTML = html;
 }
 
-function fileHint() {
+function fileHint(detail) {
   return '<div class="placeholder">' +
-    '无法直接读取 <code>api-design.md</code>（浏览器不允许 <code>file://</code> 页面读取本地文件）。<br><br>' +
-    '请在仓库根目录运行：<br><br>' +
+    '读取 <code>api-design.md</code> 失败。<br><br>' +
+    '本页需要通过本地服务打开（浏览器不允许 <code>file://</code> 页面读取本地文件）。<br><br>' +
+    '在仓库根目录运行：<br><br>' +
     '<code>python3 tools/showdoc-sync/serve.py</code><br><br>' +
-    '然后打开 <code>http://127.0.0.1:8770/</code>。</div>';
+    '然后打开 <code>http://127.0.0.1:8770/</code>。<br><br>' +
+    '<span class="kv">当前地址：' + esc(location.href) + '</span><br>' +
+    '<span class="kv">错误：' + esc(detail || '未知') + '</span></div>';
+}
+
+/* A fetch that never settles would leave the page on "loading" forever, so
+   every request carries a deadline and the failure names the URL it tried. */
+async function fetchText(url, ms) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(url, { cache: 'no-store', signal: ctrl.signal });
+    if (!res.ok) throw new Error(url + ' 返回 HTTP ' + res.status);
+    return await res.text();
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error(url + ' 请求超时（' + ms + 'ms 无响应）');
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function loadDoc() {
   try {
-    const res = await fetch('./api-design.md', { cache: 'no-store' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const md = await res.text();
+    if (location.protocol === 'file:') throw new Error('file:// 页面无法读取本地 api-design.md');
+    const md = await fetchText('./api-design.md', 10000);
     $('content').innerHTML = renderMarkdown(md);
     $('meta').textContent = md.length.toLocaleString() + ' 字符 · 加载于 ' +
       new Date().toLocaleString('zh-CN', { hour12: false });
@@ -337,13 +360,22 @@ async function loadDoc() {
       if (target) target.scrollIntoView();
     }
   } catch (err) {
-    $('content').innerHTML = fileHint();
+    $('content').innerHTML = fileHint(err.message);
     $('meta').textContent = '加载失败：' + err.message;
   }
 }
 
 async function callApi(path, body) {
-  const res = await fetch(path, { method: body === undefined ? 'GET' : 'POST', body });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 120000);
+  let res;
+  try {
+    res = await fetch(path, { method: body === undefined ? 'GET' : 'POST', body, signal: ctrl.signal });
+  } catch (err) {
+    throw new Error(err.name === 'AbortError' ? path + ' 请求超时' : path + ' 请求失败：' + err.message);
+  } finally {
+    clearTimeout(timer);
+  }
   let data;
   try { data = await res.json(); } catch (e) { throw new Error('接口返回的不是 JSON（HTTP ' + res.status + '）'); }
   if (!data.ok) throw new Error(data.error || ('HTTP ' + res.status));
