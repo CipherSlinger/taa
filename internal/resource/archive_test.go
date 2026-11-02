@@ -168,3 +168,116 @@ func TestWriteExtractedFileDoesNotTruncate(t *testing.T) {
 		t.Fatalf("extracted file is %d bytes; want %d", info.Size(), len(payload))
 	}
 }
+
+// extractedFiles returns every regular file under root, keyed by its slash
+// path relative to root. Directories are deliberately left out: an empty
+// metadata directory is still a defect, so the callers check for it by name.
+func extractedFiles(t *testing.T, root string) map[string]bool {
+	t.Helper()
+	got := map[string]bool{}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		got[filepath.ToSlash(rel)] = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk extracted tree: %v", err)
+	}
+	return got
+}
+
+// assertOnlyContent checks that extraction kept the real source and dropped
+// every packaging metadata entry, including a backslash-spelled one.
+func assertOnlyContent(t *testing.T, dst string) {
+	t.Helper()
+	got := extractedFiles(t, dst)
+	if len(got) != 1 || !got["train.py"] {
+		t.Fatalf("extracted files = %v, want only train.py", got)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "__MACOSX")); !os.IsNotExist(err) {
+		t.Errorf("__MACOSX directory exists after extraction (err=%v), want it dropped", err)
+	}
+}
+
+func TestExtractZipArchiveSkipsPackagingMetadata(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	entries := []struct{ name, content string }{
+		{"train.py", "print('ok')\n"},
+		{"__MACOSX/._train.py", "\x00\x05\x16\x07appledouble"},
+		{"__MACOSX/sub/._train.py", "appledouble"},
+		{"pkg/models/._weights.py", "appledouble"},
+		{"pkg\\models\\._weights.py", "appledouble"},
+		{".DS_Store", "finder"},
+		{"pkg/.DS_Store", "finder"},
+	}
+	for _, e := range entries {
+		w, err := zw.Create(e.name)
+		if err != nil {
+			t.Fatalf("create zip entry %q: %v", e.name, err)
+		}
+		if _, err := w.Write([]byte(e.content)); err != nil {
+			t.Fatalf("write zip entry %q: %v", e.name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip writer: %v", err)
+	}
+
+	dst := t.TempDir()
+	if err := ExtractZipArchive(dst, buf.Bytes()); err != nil {
+		t.Fatalf("ExtractZipArchive: %v", err)
+	}
+	assertOnlyContent(t, dst)
+}
+
+func TestExtractTarStreamSkipsPackagingMetadata(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	entries := []struct {
+		name     string
+		mode     int64
+		typeflag byte
+		content  string
+	}{
+		{"__MACOSX/", 0o755, tar.TypeDir, ""},
+		{"train.py", 0o644, tar.TypeReg, "print('ok')\n"},
+		{"__MACOSX/._train.py", 0o644, tar.TypeReg, "\x00\x05\x16\x07appledouble"},
+		{"pkg/models/._weights.py", 0o644, tar.TypeReg, "appledouble"},
+		{".DS_Store", 0o644, tar.TypeReg, "finder"},
+	}
+	for _, e := range entries {
+		hdr := &tar.Header{
+			Name:     e.name,
+			Mode:     e.mode,
+			Size:     int64(len(e.content)),
+			Typeflag: e.typeflag,
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("write tar header %q: %v", e.name, err)
+		}
+		if e.typeflag == tar.TypeReg {
+			if _, err := tw.Write([]byte(e.content)); err != nil {
+				t.Fatalf("write tar entry %q: %v", e.name, err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar writer: %v", err)
+	}
+
+	dst := t.TempDir()
+	if err := ExtractTarStream(dst, &buf); err != nil {
+		t.Fatalf("ExtractTarStream: %v", err)
+	}
+	assertOnlyContent(t, dst)
+}

@@ -1270,3 +1270,29 @@ func TestBinaryScannerCountsAStreamThatDesynchronisesPastTheHead(t *testing.T) {
 		t.Errorf("bounded_executable = %d, want 1: summary = %+v", res.Summary.BoundedExecutable, res.Summary)
 	}
 }
+
+// TestBinaryScannerSkipsPackagingMetadata pins that AppleDouble sidecars are not
+// claimed. Each has NUL bytes in its head, which the content sniff would
+// otherwise classify as a raw binary and count against the package.
+func TestBinaryScannerSkipsPackagingMetadata(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "train.py", "import os\n")
+	writeTestBytes(t, dir, "._train.py", []byte("data\x00literal"))
+	writeTestBytes(t, dir, "__MACOSX/._train.py", []byte("data\x00literal"))
+	writeTestBytes(t, dir, ".DS_Store", []byte("data\x00literal"))
+
+	s, err := newTestBinaryScanner(DefaultBinaryConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if len(res.Claimed) != 0 {
+		t.Errorf("claimed = %v, want none: packaging metadata is not package content", res.Claimed)
+	}
+	if res.Summary.FilesCount != 0 {
+		t.Errorf("Summary.FilesCount = %d, want 0", res.Summary.FilesCount)
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"taa/pkg/archiveentry"
 )
 
 // BinaryScanSummary is what one binary pass knows about its own completeness.
@@ -172,6 +174,16 @@ func (s *BinaryScanner) ScanDirectoryContext(ctx context.Context, dir string) (*
 			// difference between a clean scan of zero files and a scan that admits
 			// it looked at nothing.
 			res.Summary.Incomplete++
+			return nil
+		}
+		// Packaging metadata is neither package content nor evidence: an
+		// AppleDouble sidecar's bytes describe the file beside it, so reading
+		// them would attribute metadata to the package and spend the scan
+		// budget on it.
+		if archiveentry.IsMetadataPath(info.Name()) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if info.IsDir() {

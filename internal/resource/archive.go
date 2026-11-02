@@ -13,8 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	filetree "taa/pkg/filetree"
+	"taa/pkg/archiveentry"
 	pkgerrors "taa/pkg/errors"
+	filetree "taa/pkg/filetree"
 	"taa/pkg/utils"
 )
 
@@ -199,7 +200,16 @@ func ExtractZipArchive(dst string, data []byte) error {
 	if err != nil {
 		return err
 	}
+	skipped := 0
 	for _, f := range r.File {
+		// Packaging metadata is not package content: it must not land on disk,
+		// where the audit walk and the model runtime would both see it. The
+		// check runs before the path join so a skipped entry cannot influence
+		// path resolution.
+		if archiveentry.IsMetadataPath(f.Name) {
+			skipped++
+			continue
+		}
 		target, err := SafeJoinWithBase(dst, baseAbs, f.Name)
 		if err != nil {
 			return err
@@ -224,6 +234,9 @@ func ExtractZipArchive(dst string, data []byte) error {
 			return err
 		}
 	}
+	if skipped > 0 {
+		log.Printf("extractZipArchive: skipped %d packaging metadata entry(ies)", skipped)
+	}
 	return nil
 }
 
@@ -234,13 +247,22 @@ func ExtractTarStream(dst string, src io.Reader) error {
 		return err
 	}
 	tr := tar.NewReader(src)
+	skipped := 0
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
-			return nil
+			break
 		}
 		if err != nil {
 			return err
+		}
+
+		// Same filter as the ZIP arm: tar produced by macOS or by a tool that
+		// materialises its extended attributes can carry ._* sidecars, and they
+		// are metadata wherever the archive came from.
+		if archiveentry.IsMetadataPath(hdr.Name) {
+			skipped++
+			continue
 		}
 
 		target, err := SafeJoinWithBase(dst, baseAbs, hdr.Name)
@@ -267,6 +289,10 @@ func ExtractTarStream(dst string, src io.Reader) error {
 			// 忽略其他非关键条目
 		}
 	}
+	if skipped > 0 {
+		log.Printf("extractTarStream: skipped %d packaging metadata entry(ies)", skipped)
+	}
+	return nil
 }
 
 // WriteExtractedFile 将归档条目内容写入目标文件

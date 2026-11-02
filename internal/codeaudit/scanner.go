@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"taa/pkg/archiveentry"
 )
 
 // Config controls scanner behavior.
@@ -34,6 +36,11 @@ func DefaultConfig() Config {
 			// JavaScript and iOS toolchains, and the rest for build output.
 			"vendor": true, "target": true, "dist": true, "build": true,
 			".tox": true, "bower_components": true, "Pods": true,
+			// macOS packaging metadata. Extraction drops it before it reaches
+			// disk, but the walk skips it too: a tree assembled by any other
+			// path (an extraction older than this filter, a directory copy) must
+			// not hand an engine a binary ._* sidecar named like source.
+			"__MACOSX": true,
 		},
 	}
 }
@@ -85,6 +92,14 @@ func (s *Scanner) ScanDirectory(dir string) (*Report, error) {
 
 	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			return nil
+		}
+		// Packaging metadata is not source, whatever its extension says: an
+		// AppleDouble sidecar is named ._train.py but carries binary bytes.
+		if archiveentry.IsMetadataPath(info.Name()) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if info.IsDir() {
@@ -290,6 +305,14 @@ func (s *Scanner) ScanDirectoryWithLinesContext(ctx context.Context, dir string)
 
 	err = walkContext(ctx, dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			return nil
+		}
+		// Packaging metadata is not source, whatever its extension says: an
+		// AppleDouble sidecar is named ._train.py but carries binary bytes.
+		if archiveentry.IsMetadataPath(info.Name()) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if info.IsDir() {

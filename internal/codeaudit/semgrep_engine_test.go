@@ -902,3 +902,33 @@ func TestStubPayloadIsValidJSON(t *testing.T) {
 		t.Errorf("len(paths.scanned) = %d, want 2", got)
 	}
 }
+
+// TestSemgrepWalkSkipsPackagingMetadata pins the target list handed to the CLI.
+// The stub claims only the real source as scanned, so if the walk still admits
+// an AppleDouble sidecar the completeness check fails and the scan returns an
+// error - the production symptom this change removes.
+func TestSemgrepWalkSkipsPackagingMetadata(t *testing.T) {
+	stub := &stubSemgrep{}
+	engine, target := semgrepTestEngine(t, stub)
+	scanDir := filepath.Dir(target)
+	writeTestFile(t, scanDir, "__MACOSX/._train.py", "\x00\x05\x16\x07")
+	writeTestFile(t, scanDir, "pkg/._train.py", "\x00\x05\x16\x07")
+	writeTestFile(t, scanDir, ".DS_Store", "finder")
+
+	stub.stdout = semgrepPayload([]string{target}, "", "")
+	if _, _, err := engine.ScanDirectoryWithLines(scanDir); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(stub.calls) != 1 {
+		t.Fatalf("exec calls = %d, want 1", len(stub.calls))
+	}
+	args := stub.calls[0].args
+	if got := args[len(args)-1]; got != target {
+		t.Errorf("last target = %q, want %q", got, target)
+	}
+	for _, a := range args {
+		if strings.Contains(a, "__MACOSX") || strings.Contains(a, "._train") || strings.HasSuffix(a, ".DS_Store") {
+			t.Errorf("semgrep was handed packaging metadata: %q", a)
+		}
+	}
+}

@@ -576,3 +576,26 @@ func assertFindingHasRule(t *testing.T, report *Report, ruleID string) {
 	}
 	t.Fatalf("expected finding with rule %s, got: %s", ruleID, strings.Join(ids, ", "))
 }
+
+// TestScannerSkipsPackagingMetadata pins that a macOS metadata sidecar is not
+// source even though its name ends in .py. The sidecar's content is a command
+// execution call on purpose: if the walk hands it to the engine, the finding
+// count proves it was read rather than merely that the file set is smaller.
+func TestScannerSkipsPackagingMetadata(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "train.py", "print('ok')\n")
+	writeTestFile(t, dir, "__MACOSX/._train.py", "import os\nos.system('x')\n")
+	writeTestFile(t, dir, "pkg/._train.py", "import os\nos.system('x')\n")
+	writeTestFile(t, dir, ".DS_Store", "\x00\x05\x16\x07")
+
+	report, err := NewDefaultScanner().ScanDirectory(dir)
+	if err != nil {
+		t.Fatalf("ScanDirectory: %v", err)
+	}
+	if report.FilesCount != 1 {
+		t.Errorf("FilesCount = %d, want 1: only train.py is source", report.FilesCount)
+	}
+	if len(report.Findings) != 0 {
+		t.Errorf("findings = %d, want 0: packaging metadata must not be scanned", len(report.Findings))
+	}
+}

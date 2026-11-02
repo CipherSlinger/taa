@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"taa/pkg/archiveentry"
 )
 
 // defaultSemgrepBin is the CLI the adapter shells out to. It is resolved through
@@ -323,6 +325,16 @@ func (e *semgrepEngine) walkSourceFiles(ctx context.Context, dir string) ([]stri
 	var targets []string
 	err := walkContext(ctx, dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			return nil
+		}
+		// Packaging metadata is not source, whatever its extension says. The
+		// extraction filter drops these entries before they reach disk; this
+		// check keeps the engine's target set clean when the tree came from
+		// somewhere else.
+		if archiveentry.IsMetadataPath(info.Name()) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if info.IsDir() {
