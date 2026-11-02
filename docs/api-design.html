@@ -465,14 +465,21 @@ async function loadDoc(name) {
       if (target) target.scrollIntoView();
     }
   } catch (err) {
-    $('content').innerHTML = fileHint(err.message);
-    $('meta').textContent = '加载失败：' + err.message;
+    showLoadError(err.message);
   }
+}
+
+/* The header line is the first thing a reader reads, so no failure path may
+   leave it on "loading": both the early return below and loadDoc's catch
+   have to repaint it. */
+function showLoadError(detail) {
+  $('content').innerHTML = fileHint(detail);
+  $('meta').textContent = '加载失败：' + detail;
 }
 
 async function boot() {
   if (location.protocol === 'file:') {
-    $('content').innerHTML = fileHint('file:// 页面无法读取本地文件');
+    showLoadError('file:// 页面无法读取本地文件');
     return;
   }
   try {
