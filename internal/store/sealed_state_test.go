@@ -127,6 +127,70 @@ func TestPersistentState_NoAuditPendingOmitsTheKey(t *testing.T) {
 	}
 }
 
+// A terminal platform report the platform never acknowledged has to survive a
+// restart, or a long outage silently loses a task's final outcome. The wire
+// format matters as much as the round trip: an unacknowledged report is a list,
+// and a state file written before this field existed must keep unsealing.
+func TestPersistentState_PendingReportsRoundTrip(t *testing.T) {
+	created := time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)
+	state := &store.PersistentState{
+		Version:       store.DefaultStateVersion,
+		IncarnationID: "inc-outbox",
+		UpdatedAt:     time.Now().UTC(),
+		PendingReports: []store.PendingReportSnapshot{
+			{
+				ID:           "report-1",
+				Kind:         store.ReportKindRes,
+				RequestID:    "req-1",
+				TaskID:       "task-1",
+				Code:         1,
+				Msg:          "failed",
+				Report:       `{"status":"failed"}`,
+				PlatformAddr: "127.0.0.1:18081",
+				DockerID:     "docker-1",
+				CreatedAt:    created,
+			},
+			{
+				ID:           "report-2",
+				Kind:         store.ReportKindModelImport,
+				RequestID:    "req-2",
+				TaskID:       "task-2",
+				Code:         0,
+				Checksum:     map[string]any{"value": "abc"},
+				PlatformAddr: "127.0.0.1:18081",
+				DockerID:     "docker-1",
+				CreatedAt:    created,
+			},
+		},
+	}
+
+	st, err := store.NewStateStore(filepath.Join(t.TempDir(), "state.sealed"), testSealingKey(), store.KeySourceSM2)
+	if err != nil {
+		t.Fatalf("new state store: %v", err)
+	}
+	if err := st.SealState(state); err != nil {
+		t.Fatalf("seal state: %v", err)
+	}
+	recovered, err := st.UnsealState()
+	if err != nil {
+		t.Fatalf("unseal state: %v", err)
+	}
+
+	if len(recovered.PendingReports) != 2 {
+		t.Fatalf("pending reports lost across seal: %+v", recovered.PendingReports)
+	}
+	first := recovered.PendingReports[0]
+	if first.ID != "report-1" || first.Kind != store.ReportKindRes || first.TaskID != "task-1" {
+		t.Errorf("first pending report did not round-trip: %+v", first)
+	}
+	if !first.CreatedAt.Equal(created) {
+		t.Errorf("createdAt = %v, want %v", first.CreatedAt, created)
+	}
+	if recovered.PendingReports[1].Checksum["value"] != "abc" {
+		t.Errorf("checksum did not round-trip: %+v", recovered.PendingReports[1].Checksum)
+	}
+}
+
 func testSealingKey() []byte {
 	key := make([]byte, 16)
 	for i := range key {

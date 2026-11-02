@@ -19,6 +19,18 @@ type ActiveTaskSnapshot = store.ActiveTaskSnapshot
 // AuditPendingSnapshot 在飞安全审计快照，用于跨重启识别被遗弃的审计
 type AuditPendingSnapshot = store.AuditPendingSnapshot
 
+// PendingReportSnapshot 待平台确认的终止性上报
+type PendingReportSnapshot = store.PendingReportSnapshot
+
+const (
+	// ReportKindRes 对应 /v1/taa/reportRes
+	ReportKindRes = store.ReportKindRes
+	// ReportKindModelImport 对应 /v1/taa/reportModelImport
+	ReportKindModelImport = store.ReportKindModelImport
+	// ReportKindAudit 对应 /v1/taa/reportAudit
+	ReportKindAudit = store.ReportKindAudit
+)
+
 // StateStore 管理持久化状态文件的密封存储与内存缓存
 type StateStore = store.StateStore
 

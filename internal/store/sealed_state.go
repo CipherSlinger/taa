@@ -46,6 +46,36 @@ type PersistentState struct {
 	// nil AuditPending means no audit was owed (scanning disabled) or the audit
 	// concluded. It is written only while scanning is enabled.
 	AuditPending *AuditPendingSnapshot `json:"auditPending,omitempty"`
+
+	// PendingReports holds terminal platform reports that have not been
+	// acknowledged yet. They are retried until delivery succeeds and survive a
+	// restart, so a platform outage cannot lose a task's final outcome.
+	PendingReports []PendingReportSnapshot `json:"pendingReports,omitempty"`
+}
+
+// Terminal platform report kinds. Each one maps to a single platform endpoint
+// and is retried until the platform acknowledges it.
+const (
+	ReportKindRes         = "reportRes"
+	ReportKindModelImport = "modelImport"
+	ReportKindAudit       = "audit"
+)
+
+// PendingReportSnapshot is one terminal platform report the platform has not
+// acknowledged yet. It carries the platform identity captured at enqueue time,
+// so a restart cannot redirect an old report to a different platform.
+type PendingReportSnapshot struct {
+	ID           string         `json:"id"`
+	Kind         string         `json:"kind"`
+	RequestID    string         `json:"requestId"`
+	TaskID       string         `json:"taskId"`
+	Code         int            `json:"code"`
+	Msg          string         `json:"msg,omitempty"`
+	Report       string         `json:"report,omitempty"`
+	Checksum     map[string]any `json:"checksum,omitempty"`
+	PlatformAddr string         `json:"platformAddr"`
+	DockerID     string         `json:"dockerId"`
+	CreatedAt    time.Time      `json:"createdAt"`
 }
 
 // AuditPendingSnapshot identifies the security audit that was in flight when the
