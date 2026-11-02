@@ -148,7 +148,7 @@ sequenceDiagram
 
 | 流转步骤 | 发起方 → 接收方 | 传输格式 / 算法 | 安全保护与控制目标 |
 |---------|----------------|----------------|-------------------|
-| **控制面信封** | 平台 ↔ TAA（全部 HTTP 消息） | `{dockerId, cipher, sign}`：SM2 C1C3C2 密文 + 对**明文**的 DER 签名 | **逐条消息加密验签**：仅 `/v1/taa/fheCallback` 豁免；缺平台公钥则启动 FATAL，无明文旁路（§8.3） |
+| **控制面信封** | 平台 ↔ TAA（全部 HTTP 消息） | 平台请求与 TAA 响应为 `{cipher, sign}`；TAA 主动上报额外带 `dockerId`，即 `{dockerId, cipher, sign}`。SM2 C1C3C2 密文 + 对**明文**的 DER 签名 | **逐条消息加密验签**：仅 `/v1/taa/fheCallback` 豁免；缺平台公钥则启动 FATAL，无明文旁路（§8.3） |
 | **身份注册** | TAA → 管控平台 | Base64(CSV 报告) + SM2 公钥 | **启动即证明**：海光硬件 PSP 签名与 `USERDATA` 绑定，防止伪造实例身份与公钥劫持；注册失败后台重试 |
 | **客户端验签** | SDK 内部验证 | SM2 验签 + 证书链 (HRK→PEK) | **离线背书**：客户端独立校验 TAA 是否运行在合法 CSV TEE 中 |
 | **资源封装** | 客户端 → 平台 | SM2 信封 + SM4-GCM 密文 | **出端即加密**：平台侧全程无法窥探模型源码与敏感原始数据 |
@@ -171,7 +171,7 @@ sequenceDiagram
 | 运行时 | `internal/runtime/` | `runtimeConfig` 解析、子进程编排、日志/进度遥测 |
 | 资源处理 | `internal/resource/` | 下载、信封解封、解包、SM3 校验、导入索引 |
 | 平台客户端 | `internal/platform/` | 注册与各类上报的 HTTP 封装；出站请求在此统一加 SM2 信封 |
-| 消息信封 | `internal/platform/envelope/` | 双向 `{cipher,sign}` 封装：SM2 C1C3C2 加解密 + DER 签名（对明文签名），不含 HTTP 逻辑 |
+| 消息信封 | `internal/platform/envelope/` | 双向 `{cipher,sign}` 封装（TAA 主动上报时外层再加 `dockerId`）：SM2 C1C3C2 加解密 + DER 签名（对明文签名），不含 HTTP 逻辑 |
 | 密封状态 | `internal/store/` | 受保护运行状态的密封持久化与密钥漂移处理 |
 | 加密工具 | `pkg/crypto/` | SM2 信封加密/解密、SM4-GCM、SM3、证书与密钥工具 |
 | LLM 推理服务 | `teellm/`（独立 go.work 模块） | `teellm-service` 网关 + Ollama/Qwen，供代码审计的语义验证 |
@@ -295,8 +295,8 @@ TAA 作为服务端注册的路由（`internal/controller/router.go`）：
 全部路由**只接受 POST**（`postOnly` 中间件统一强制，其余方法返回 405），并统一附加 CORS 头。
 
 **入站信封**：除 `/v1/taa/fheCallback` 外，每个路由外面都套了一层 `envelopeMiddleware`
-（`internal/controller/envelope_middleware.go`）。请求体必须是 `{dockerId, cipher, sign}`：
-`cipher` 是平台公钥加密的明文 JSON，`sign` 是平台私钥对**明文**的 DER 签名。中间件的顺序固定为
+（`internal/controller/envelope_middleware.go`）。请求体必须是一个信封 `{cipher, sign}`
+（`dockerId` 是可选字段，TAA 收到后忽略）：`cipher` 是平台公钥加密的明文 JSON，`sign` 是平台私钥对**明文**的 DER 签名。中间件的顺序固定为
 读体（上限 8 MiB）→ 解析信封 → 解密 → 对解密结果验签 → 把明文换回 `r.Body` 交给原 handler，
 所以业务代码完全不知道信封存在；任一步失败都在进入业务逻辑前以同样封装的错误返回
 （400 缺字段/非信封、413 过大、401 解密或验签失败）。`fheCallback` 豁免：调用方是 FHE 服务，
@@ -307,7 +307,7 @@ TAA 作为服务端注册的路由（`internal/controller/router.go`）：
 
 响应侧 `writeJSON` 先试 `writeSealedJSON`：在信封路由上把明文用 `json.Marshal` 序列化后
 （不用 `json.NewEncoder`，避免尾随换行混进签名内容）以 TAA 私钥签名、平台公钥加密返回；
-非信封 writer 则保持原有明文行为。封不出来直接 500，不回落明文。
+响应外层只有 `{cipher, sign}`，不带 `dockerId`。非信封 writer 则保持原有明文行为。封不出来直接 500，不回落明文。
 `/v1/taa/export` 成功时的文件流不套信封。
 
 > 这条规则带来一个部署侧后果：`health` / `status` 也要求合法信封，因此 `curl` 和就绪探针不可达，
@@ -580,13 +580,20 @@ USERDATA = taaPublicKey.X || taaPublicKey.Y
 
 8.1 描述的是**资源包**的静态封装：一条随机 SM4 密钥加密数据，再用 SM2 包装该密钥，落盘/传输的是一个密文文件。
 
-控制面信封是**每条消息**的封装（`internal/platform/envelope/`），用于平台 ↔ TAA 的所有 HTTP 消息：
+控制面信封是**每条消息**的封装（`internal/platform/envelope/`），用于平台 ↔ TAA 的所有 HTTP 消息。两个方向的密钥对调，外层字段也不同：
+
+| 方向 | 外层 |
+| --- | --- |
+| 平台 → TAA 的请求 | `{dockerId, cipher, sign}`；`dockerId` 可选，TAA 收到后忽略 |
+| TAA → 平台的响应 | `{cipher, sign}`，不带 `dockerId` |
+| TAA → 平台的主动上报（注册 + 6 类上报） | `{dockerId, cipher, sign}`；`dockerId` 固定填本实例的 docker id |
 
 ```
 明文 JSON ──SM2 加密(平台公钥)──→ cipher = base64(C1C3C2 原始密文)
          └─SM2 签名(TAA 私钥)───→ sign   = base64(DER)
-外层: {"dockerId": "...", "cipher": "...", "sign": "..."}
 ```
+
+上图是 TAA 主动上报的方向；平台发来的请求把加密与签名用的钥匙对调（TAA 公钥加密、平台私钥签名）。
 
 - **签名对象是明文**，不是 `cipher`。若签密文，任何持有平台公钥的人都能构造出一条 TAA 会接受的请求。
 - 收方向顺序固定：解 base64 → SM2 解密 → **对明文验签** → 才解析 JSON。先解析或先重序列化再验签都会改字节，签名必然对不上。
