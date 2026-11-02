@@ -823,7 +823,7 @@ func (s *TAAState) resolveModelChecksum() map[string]any {
 	return modelChecksum
 }
 
-// reportModelImportAsync 异步将模型导入及完整性校验结果上报平台。
+// reportModelImportAsync 将模型导入及完整性校验结果写入持久化 outbox。
 func (s *TAAState) reportModelImportAsync(requestID, taskID string, code int, msg string, checksum ...map[string]any) {
 	s.mu.RLock()
 	platformIP, dockerID := s.PlatformIP, s.DockerID
@@ -836,38 +836,42 @@ func (s *TAAState) reportModelImportAsync(requestID, taskID string, code int, ms
 		cs = s.resolveModelChecksum()
 	}
 
-	log.Printf("reportModelImportAsync: scheduling model import upload, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, hasChecksum=%v",
+	log.Printf("reportModelImportAsync: enqueueing model import result, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, hasChecksum=%v",
 		platformIP, dockerID, requestID, taskID, code, cs != nil)
-	go func() {
-		if err := ReportModelImport(context.Background(), platformIP, dockerID, requestID, taskID, code, msg, cs); err != nil {
-			log.Printf("reportModelImportAsync: report model import result failed: requestID=%s taskID=%s, err=%v", requestID, taskID, err)
-		} else {
-			log.Printf("reportModelImportAsync: report model import result succeeded: requestID=%s taskID=%s", requestID, taskID)
-		}
-	}()
+	if err := s.EnqueuePlatformReport(PendingReportSnapshot{
+		Kind:         ReportKindModelImport,
+		RequestID:    requestID,
+		TaskID:       taskID,
+		Code:         code,
+		Msg:          msg,
+		Checksum:     cs,
+		PlatformAddr: platformIP,
+		DockerID:     dockerID,
+	}); err != nil {
+		log.Printf("reportModelImportAsync: enqueue model import result failed: requestID=%s taskID=%s, err=%v", requestID, taskID, err)
+	}
 }
 
-// reportAuditAsync 异步将模型代码安全审计结果上报平台（无代际校验）。
+// reportAuditAsync 将模型代码安全审计结果写入持久化 outbox（无代际校验）。
 func (s *TAAState) reportAuditAsync(requestID, taskID string, code int, msg, report string) {
 	s.mu.RLock()
 	platformIP, dockerID := s.PlatformIP, s.DockerID
 	s.mu.RUnlock()
 
-	log.Printf("reportAuditAsync: scheduling audit report upload, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, reportLen=%d",
+	log.Printf("reportAuditAsync: enqueueing audit result, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, reportLen=%d",
 		platformIP, dockerID, requestID, taskID, code, len(report))
-	go s.sendAuditReport(platformIP, dockerID, requestID, taskID, code, msg, report)
+	s.enqueueAuditReport(platformIP, dockerID, requestID, taskID, code, msg, report)
 }
 
-// reportAuditIfCurrent schedules the report only while gen still owns the
-// audit. The check runs inside the goroutine, immediately before the request,
-// so an abort that lands after the audit's last context check still drops the
-// verdict.
+// reportAuditIfCurrent enqueues the report only while gen still owns the audit.
+// The check runs inside the goroutine, immediately before the enqueue, so an
+// abort that lands after the audit's last context check still drops the verdict.
 func (s *TAAState) reportAuditIfCurrent(gen uint64, requestID, taskID string, code int, msg, report string) {
 	s.mu.RLock()
 	platformIP, dockerID := s.PlatformIP, s.DockerID
 	s.mu.RUnlock()
 
-	log.Printf("reportAuditIfCurrent: scheduling audit report, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, reportLen=%d",
+	log.Printf("reportAuditIfCurrent: enqueueing audit result, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, reportLen=%d",
 		platformIP, dockerID, requestID, taskID, code, len(report))
 	go func() {
 		s.mu.RLock()
@@ -877,16 +881,22 @@ func (s *TAAState) reportAuditIfCurrent(gen uint64, requestID, taskID string, co
 			log.Printf("reportAuditIfCurrent: dropping stale audit report: requestID=%s taskID=%s", requestID, taskID)
 			return
 		}
-		s.sendAuditReport(platformIP, dockerID, requestID, taskID, code, msg, report)
+		s.enqueueAuditReport(platformIP, dockerID, requestID, taskID, code, msg, report)
 	}()
 }
 
-// sendAuditReport performs the platform upload and logs its outcome.
-func (s *TAAState) sendAuditReport(platformIP, dockerID, requestID, taskID string, code int, msg, report string) {
-	if err := ReportAudit(context.Background(), platformIP, dockerID, requestID, taskID, code, msg, report); err != nil {
-		log.Printf("sendAuditReport: report audit result failed: requestID=%s taskID=%s, err=%v", requestID, taskID, err)
-	} else {
-		log.Printf("sendAuditReport: report audit result succeeded: requestID=%s taskID=%s", requestID, taskID)
+func (s *TAAState) enqueueAuditReport(platformIP, dockerID, requestID, taskID string, code int, msg, report string) {
+	if err := s.EnqueuePlatformReport(PendingReportSnapshot{
+		Kind:         ReportKindAudit,
+		RequestID:    requestID,
+		TaskID:       taskID,
+		Code:         code,
+		Msg:          msg,
+		Report:       report,
+		PlatformAddr: platformIP,
+		DockerID:     dockerID,
+	}); err != nil {
+		log.Printf("enqueueAuditReport: enqueue audit result failed: requestID=%s taskID=%s, err=%v", requestID, taskID, err)
 	}
 }
 

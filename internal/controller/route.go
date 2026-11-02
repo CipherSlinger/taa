@@ -295,14 +295,7 @@ func (s *TAAState) RestoreFromPersistentState(p *PersistentState) {
 	} else {
 		s.pendingAudit = nil
 	}
-	if len(p.PendingReports) > 0 {
-		s.pendingReports = make([]PendingReportSnapshot, len(p.PendingReports))
-		for i := range p.PendingReports {
-			s.pendingReports[i] = clonePendingReport(p.PendingReports[i])
-		}
-	} else {
-		s.pendingReports = nil
-	}
+	s.pendingReports = clonePendingReports(p.PendingReports)
 	s.AuditRunning = false
 	s.CurrentAuditOp = "idle"
 	s.ActiveAuditTaskID = ""
@@ -366,14 +359,7 @@ func (s *TAAState) sealStateLocked() error {
 		state.AuditPending = nil
 	}
 
-	if len(s.pendingReports) > 0 {
-		state.PendingReports = make([]PendingReportSnapshot, len(s.pendingReports))
-		for i := range s.pendingReports {
-			state.PendingReports[i] = clonePendingReport(s.pendingReports[i])
-		}
-	} else {
-		state.PendingReports = nil
-	}
+	state.PendingReports = clonePendingReports(s.pendingReports)
 
 	return s.stateStore.SealState(&state)
 }
@@ -1105,11 +1091,24 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 		_ = writeJSONFile(filepath.Join(resultDir, trainingReportFileName), reportMap)
 	}
 
-	// 3. Fail-Closed: 主动向管控平台发送失败通知（通过 ReportTaskOutcome 自动分流）
+	// 3. Fail-Closed: 把失败通知写入持久化 outbox，平台恢复后自动补发
 	if platformIP != "" && dockerID != "" && (requestID != "" || taskID != "") {
-		log.Printf("[PANIC RECOVERY] notifying platform of %s failure: requestId=%s, taskId=%s", taskType, requestID, taskID)
-		if repErr := ReportTaskOutcome(context.Background(), platformIP, dockerID, requestID, taskID, taskType, 1, failureReason, reportJSON); repErr != nil {
-			log.Printf("[PANIC RECOVERY] ReportTaskOutcome failed: %v", repErr)
+		log.Printf("[PANIC RECOVERY] enqueueing platform failure notification: requestId=%s, taskId=%s", requestID, taskID)
+		kind := ReportKindRes
+		if taskType == "model_import" {
+			kind = ReportKindModelImport
+		}
+		if enqueueErr := s.EnqueuePlatformReport(PendingReportSnapshot{
+			Kind:         kind,
+			RequestID:    requestID,
+			TaskID:       taskID,
+			Code:         1,
+			Msg:          failureReason,
+			Report:       reportJSON,
+			PlatformAddr: platformIP,
+			DockerID:     dockerID,
+		}); enqueueErr != nil {
+			log.Printf("[PANIC RECOVERY] enqueue failure notification failed: %v", enqueueErr)
 		}
 	}
 }
@@ -1278,16 +1277,20 @@ func (s *TAAState) reportTrainingAsync(requestID, taskID string, code int, msg, 
 	s.mu.RLock()
 	platformIP, dockerID := s.PlatformIP, s.DockerID
 	s.mu.RUnlock()
-	log.Printf("reportTrainingAsync: scheduling report upload, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, reportLen=%d",
+	log.Printf("reportTrainingAsync: enqueueing training result, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, reportLen=%d",
 		platformIP, dockerID, requestID, taskID, code, len(report))
-	go func() {
-		log.Printf("reportTrainingAsync: calling ReportRes, requestID=%s, taskID=%s", requestID, taskID)
-		if err := ReportRes(nil, platformIP, dockerID, requestID, taskID, code, msg, report); err != nil {
-			log.Printf("reportTrainingAsync: report training result failed: requestID=%s, taskID=%s, err=%v", requestID, taskID, err)
-		} else {
-			log.Printf("reportTrainingAsync: report upload succeeded: requestID=%s, taskID=%s", requestID, taskID)
-		}
-	}()
+	if err := s.EnqueuePlatformReport(PendingReportSnapshot{
+		Kind:         ReportKindRes,
+		RequestID:    requestID,
+		TaskID:       taskID,
+		Code:         code,
+		Msg:          msg,
+		Report:       report,
+		PlatformAddr: platformIP,
+		DockerID:     dockerID,
+	}); err != nil {
+		log.Printf("reportTrainingAsync: enqueue training result failed: requestID=%s, taskID=%s, err=%v", requestID, taskID, err)
+	}
 }
 
 // ── Script helpers ──────────────────────────────────────

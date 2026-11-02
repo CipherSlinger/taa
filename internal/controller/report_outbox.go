@@ -31,6 +31,19 @@ func clonePendingReport(in PendingReportSnapshot) PendingReportSnapshot {
 	return out
 }
 
+// clonePendingReports deep-copies a whole queue. It is used on both sides of the
+// sealed state boundary, which is why it lives next to the per-entry clone.
+func clonePendingReports(in []PendingReportSnapshot) []PendingReportSnapshot {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]PendingReportSnapshot, len(in))
+	for i := range in {
+		out[i] = clonePendingReport(in[i])
+	}
+	return out
+}
+
 // reportOutbox drains pendingReports in FIFO order and retries each entry with
 // exponential backoff until the platform acknowledges it. It is the only writer
 // of the platform terminal-report endpoints once an entry is queued.
@@ -44,6 +57,12 @@ type reportOutbox struct {
 	wg        sync.WaitGroup
 	startOnce sync.Once
 	stopOnce  sync.Once
+
+	// mu guards the per-entry retry schedule. It is in-memory only: a restart
+	// retries everything immediately, which is the right response to a restart.
+	mu      sync.Mutex
+	backoff map[string]time.Duration
+	nextAt  map[string]time.Time
 }
 
 func newReportOutbox(ctx context.Context, state *TAAState, initial, max time.Duration) *reportOutbox {
@@ -64,6 +83,8 @@ func newReportOutbox(ctx context.Context, state *TAAState, initial, max time.Dur
 		wake:    make(chan struct{}, 1),
 		initial: initial,
 		max:     max,
+		backoff: make(map[string]time.Duration),
+		nextAt:  make(map[string]time.Time),
 	}
 }
 
@@ -100,33 +121,104 @@ func (o *reportOutbox) run() {
 		case <-o.wake:
 		}
 
-		backoff := o.initial
-		for {
-			if o.ctx.Err() != nil {
-				return
+		if !o.drain() {
+			return
+		}
+	}
+}
+
+// drain attempts every pending report once, oldest first, until the queue is
+// empty or the context ends. Ready entries are delivered in enqueue order; an
+// entry that fails does not block the ones behind it, because a report captured
+// against an address that no longer answers would otherwise starve every later
+// report forever.
+func (o *reportOutbox) drain() bool {
+	for {
+		entries := o.state.pendingReportsSnapshot()
+		if len(entries) == 0 {
+			return true
+		}
+
+		queued := make(map[string]struct{}, len(entries))
+		var next time.Duration
+		now := time.Now()
+		delivered := false
+
+		for _, entry := range entries {
+			queued[entry.ID] = struct{}{}
+
+			o.mu.Lock()
+			wait, seen := o.backoff[entry.ID]
+			nextAt := o.nextAt[entry.ID]
+			o.mu.Unlock()
+			if !seen {
+				wait = o.initial
 			}
-			entry, ok := o.state.peekPendingReport()
-			if !ok {
-				break
-			}
-			if err := o.send(entry); err != nil {
-				log.Printf("report outbox: %s delivery failed, retrying in %s: %v", entry.Kind, backoff, err)
-				if !o.wait(backoff) {
-					return
-				}
-				backoff *= 2
-				if backoff > o.max {
-					backoff = o.max
+			if !nextAt.IsZero() && now.Before(nextAt) {
+				if d := nextAt.Sub(now); next == 0 || d < next {
+					next = d
 				}
 				continue
 			}
+
+			if err := o.send(entry); err != nil {
+				log.Printf("report outbox: %s delivery failed, retrying in %s: %v", entry.Kind, wait, err)
+				o.mu.Lock()
+				o.backoff[entry.ID] = minDuration(wait*2, o.max)
+				o.nextAt[entry.ID] = time.Now().Add(wait)
+				o.mu.Unlock()
+				if next == 0 || wait < next {
+					next = wait
+				}
+				continue
+			}
+
+			o.clearRetryState(entry.ID)
 			o.state.ackPendingReport(entry.ID)
+			delivered = true
 			if o.state.Logs != nil {
 				o.state.Logs.Add(LogInfo, "report", "平台上报补发成功: kind=%s, taskId=%s", entry.Kind, entry.TaskID)
 			}
-			backoff = o.initial
 		}
+
+		// Forget retry state for entries that are no longer queued, so a
+		// long-lived process does not accumulate it.
+		o.mu.Lock()
+		for id := range o.backoff {
+			if _, ok := queued[id]; !ok {
+				delete(o.backoff, id)
+				delete(o.nextAt, id)
+			}
+		}
+		o.mu.Unlock()
+
+		// A delivery shortened the queue, so look again right away: whatever was
+		// behind the acknowledged entry is due now, not when the last timer fires.
+		if delivered {
+			continue
+		}
+		if next > 0 {
+			if !o.wait(next) {
+				return false
+			}
+			continue
+		}
+		return true
 	}
+}
+
+func (o *reportOutbox) clearRetryState(id string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.backoff, id)
+	delete(o.nextAt, id)
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (o *reportOutbox) wait(d time.Duration) bool {
@@ -235,13 +327,19 @@ func (s *TAAState) hasPendingReports() bool {
 	return len(s.pendingReports) > 0
 }
 
-func (s *TAAState) peekPendingReport() (PendingReportSnapshot, bool) {
+// pendingReportsSnapshot copies the queue so the worker can attempt deliveries
+// without holding the state lock across network calls.
+func (s *TAAState) pendingReportsSnapshot() []PendingReportSnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if len(s.pendingReports) == 0 {
-		return PendingReportSnapshot{}, false
+		return nil
 	}
-	return clonePendingReport(s.pendingReports[0]), true
+	out := make([]PendingReportSnapshot, len(s.pendingReports))
+	for i := range s.pendingReports {
+		out[i] = clonePendingReport(s.pendingReports[i])
+	}
+	return out
 }
 
 func (s *TAAState) ackPendingReport(id string) {
