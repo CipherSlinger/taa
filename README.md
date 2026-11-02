@@ -280,8 +280,10 @@ Alongside source auditing, the import audit also walks the **binary files** in a
 
 All TAA APIs are exposed over HTTP `POST`. For comprehensive request/response schemas, refer to the OpenAPI 3.0.3 specification in `api/openapi.yaml`.
 
-**Every request and JSON response is an SM2 envelope.** The body is
-`{"cipher": "<base64>", "sign": "<base64>"}`, where `cipher` is `base64(SM2_Encrypt(platform_pub, plaintext))` over the raw `C1C3C2` bytes and `sign` is `base64(DER(SM2 signature over the plaintext))` under the shared SM2 user ID. The plaintext inside is exactly the JSON object each endpoint documents, unchanged. `/v1/taa/fheCallback` is the only unsealed route (FHE service → TAA, loopback only). A successful `/v1/taa/export` still returns a binary octet-stream; export errors are sealed JSON. See [2.1 Message Envelope](docs/api-design.md#21-消息信封平台--taa) for the byte-level rules.
+**Every request and JSON response is an SM2 envelope.** Platform requests to
+TAA and TAA's responses to them use `{"cipher": "<base64>", "sign": "<base64>"}`; TAA's own
+callbacks and reports to the platform use `{"dockerId": "...", "cipher": "...", "sign": "..."}`.
+`cipher` is `base64(SM2_Encrypt(recipient_pub, plaintext))` over the raw `C1C3C2` bytes and `sign` is `base64(DER(SM2 signature over the plaintext))` under the shared SM2 user ID. The plaintext inside is exactly the JSON object each endpoint documents, unchanged. `/v1/taa/fheCallback` is the only unsealed route (FHE service → TAA, loopback only). A successful `/v1/taa/export` still returns a binary octet-stream; export errors are sealed JSON. See [2.1 Message Envelope](docs/api-design.md#21-消息信封平台请求与-taa-响应) for the byte-level rules.
 
 ### 1. TAA → Platform (Callbacks & Reporting)
 
