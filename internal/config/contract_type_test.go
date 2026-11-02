@@ -88,7 +88,10 @@ func TestContractTypeOverridesTheFileEndToEnd(t *testing.T) {
 	if cfg.FHE != nil {
 		t.Fatalf("FHE = %+v, want nil on a data-analysis instance", cfg.FHE)
 	}
-	if cfg.CodeScan.Engine != "semgrep" {
-		t.Errorf("CodeScan.Engine = %q, want semgrep: the fhe-only engine override leaked into a data-analysis instance", cfg.CodeScan.Engine)
+	// A data-analysis instance audits nothing either, so the role selects the
+	// rule-carrying engine even though the file said semgrep. The point of the
+	// ordering is that the role, not the file, decides which blocks apply.
+	if cfg.CodeScan.Engine != "regex" {
+		t.Errorf("CodeScan.Engine = %q, want regex: the role decides, and a data-analysis instance audits nothing", cfg.CodeScan.Engine)
 	}
 }

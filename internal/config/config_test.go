@@ -209,22 +209,24 @@ func TestLoadStartupConfigFHEPlatformSection(t *testing.T) {
 	}
 }
 
-// The data-analysis template is what deploy-dataanaylsis.sh ships, and its
-// whole point is that the instance carries neither the code audit nor the LLM.
-// Loading the real file is what proves the new server.type value is accepted
-// outside a synthetic fixture, and that the template still says so after an
-// edit.
-func TestLoadStartupConfigDataAnalysisTemplate(t *testing.T) {
+// The data-analysis role is selected by CONTRACT_TYPE, not by a template of its
+// own: deploy-dataanaylsis.sh renders a copy of configs/taa-production.json for
+// the role. Loading the real template with the environment value the platform
+// injects is what proves the role both overrides the template's tee-shaped audit
+// block and keeps the CSV hardware sealing key.
+func TestLoadStartupConfigDataAnalysisRole(t *testing.T) {
+	t.Setenv("CONTRACT_TYPE", "3")
+
 	path := filepath.Join(t.TempDir(), DefaultFileName)
-	raw, err := os.ReadFile("../../configs/taa-dataanaylsis.json")
+	raw, err := os.ReadFile("../../configs/taa-production.json")
 	if err != nil {
-		t.Fatalf("read taa-dataanaylsis.json: %v", err)
+		t.Fatalf("read taa-production.json: %v", err)
 	}
 	writeTestConfig(t, path, string(raw))
 
 	cfg, err := LoadStartupConfig(path)
 	if err != nil {
-		t.Fatalf("LoadStartupConfig(taa-dataanaylsis.json) error = %v", err)
+		t.Fatalf("LoadStartupConfig(taa-production.json) error = %v", err)
 	}
 
 	if cfg.ServerType != ServerTypeDataAnalysis {
@@ -234,10 +236,16 @@ func TestLoadStartupConfigDataAnalysisTemplate(t *testing.T) {
 		t.Errorf("FHE = %+v, want nil on a data-analysis instance", cfg.FHE)
 	}
 	if cfg.EnableCodeAudit {
-		t.Error("EnableCodeAudit = true, want the template's code audit disabled")
+		t.Error("EnableCodeAudit = true, want the role to disable the code audit")
+	}
+	if cfg.BinaryAuditEnabled {
+		t.Error("BinaryAuditEnabled = true, want the role to disable the binary channel")
+	}
+	if cfg.EnableResultCheck {
+		t.Error("EnableResultCheck = true, want the role to disable the result check")
 	}
 	if cfg.LLM.Enabled {
-		t.Error("LLM.Enabled = true, want the template's LLM disabled")
+		t.Error("LLM.Enabled = true, want the role to disable the LLM")
 	}
 	if cfg.CodeScan.Engine == "semgrep" {
 		t.Errorf("CodeScan.Engine = %q, want an engine that needs no semgrep payload", cfg.CodeScan.Engine)
@@ -246,9 +254,12 @@ func TestLoadStartupConfigDataAnalysisTemplate(t *testing.T) {
 		t.Errorf("StateSealingKeySource = %q, want %q: the data-analysis instance still runs in the CSV guest",
 			cfg.StateSealingKeySource, StateSealingKeySourceCSVHW)
 	}
-	if cfg.DataDir != "/home/jovyan/systemAuthData" {
-		t.Errorf("DataDir = %q, want the template's data landing directory %q",
-			cfg.DataDir, "/home/jovyan/systemAuthData")
+	if cfg.DataDir != "/root/taa/data" {
+		t.Errorf("DataDir = %q, want the shared template's data landing directory %q",
+			cfg.DataDir, "/root/taa/data")
+	}
+	if cfg.AttestationHRKCertPath == "" || cfg.AttestationHSKCekCertPath == "" {
+		t.Error("attestation certificate paths are empty: a data-analysis instance still produces a quote")
 	}
 }
 
@@ -288,8 +299,9 @@ func writeAuditAndAttestationConfig(t *testing.T, path, serverType string) {
 // TestLoadStartupConfigFHEIgnoresAuditAndAttestation pins what the two blocks
 // mean on an fhe instance: nothing. Such an instance never audits a model (FHE
 // packages are layers, not code) and never produces a quote, so a config that
-// still carries the blocks must load as if it did not carry them - the defaults
-// stay, and the top-level settings that do matter are read as usual.
+// still carries the blocks must load as if it did not carry them - the role
+// disables the audit, and the top-level settings that do matter are read as
+// usual.
 func TestLoadStartupConfigFHEIgnoresAuditAndAttestation(t *testing.T) {
 	t.Setenv("PLATFORM_IP", "")
 	t.Setenv("DOCKER_ID", "")
@@ -302,8 +314,8 @@ func TestLoadStartupConfigFHEIgnoresAuditAndAttestation(t *testing.T) {
 		t.Fatalf("LoadStartupConfig() error = %v", err)
 	}
 
-	if !cfg.EnableCodeAudit {
-		t.Errorf("EnableCodeAudit = false, want the default on an fhe instance")
+	if cfg.EnableCodeAudit {
+		t.Errorf("EnableCodeAudit = true, want the role to disable the audit on an fhe instance")
 	}
 	// The engine is the one value an fhe instance does not simply inherit: startup
 	// builds the security configuration anyway, and only the rule-carrying engine
@@ -311,12 +323,12 @@ func TestLoadStartupConfigFHEIgnoresAuditAndAttestation(t *testing.T) {
 	if cfg.CodeScan.Engine != "regex" || cfg.CodeScan.RulesPath != "" || cfg.CodeScan.Timeout != 0 {
 		t.Errorf("CodeScan = %+v, want the rule-carrying engine and otherwise defaults on an fhe instance", cfg.CodeScan)
 	}
-	if !cfg.BinaryAuditEnabled || cfg.BinaryAuditMaxFindings != 0 {
-		t.Errorf("binary audit = enabled:%v maxFindings:%d, want defaults on an fhe instance",
+	if cfg.BinaryAuditEnabled || cfg.BinaryAuditMaxFindings != 0 {
+		t.Errorf("binary audit = enabled:%v maxFindings:%d, want it disabled with defaults on an fhe instance",
 			cfg.BinaryAuditEnabled, cfg.BinaryAuditMaxFindings)
 	}
-	if !cfg.EnableResultCheck {
-		t.Errorf("EnableResultCheck = false, want the default on an fhe instance")
+	if cfg.EnableResultCheck {
+		t.Errorf("EnableResultCheck = true, want the role to disable it on an fhe instance")
 	}
 	if cfg.AttestationHRKCertPath == "/bogus/hrk.cert" || cfg.AttestationHSKCekCertPath == "/bogus/hsk_cek.cert" {
 		t.Errorf("attestation paths = %q/%q, want defaults on an fhe instance",

@@ -206,9 +206,9 @@ BASE_DOCKER_IMAGE="${BASE_DOCKER_IMAGE:-$LOCAL_DOCKER_IMAGE}"
 # Packaging names follow one rule across this repository: <repo>:<YYYYMMDD>, with the archive
 # named after the image (<repo>-<YYYYMMDD>.tar.gz) under deploy/out. The tag carries only the
 # date, never the base image's tag, so the packaged image is not mistaken for the base it was
-# derived from (deploy-dataanaylsis.sh, deploy-fhe.sh and build-teellm-image.sh follow the same
-# rule). The name is independent of BASE_DOCKER_IMAGE: pointing --base at another image changes
-# what goes in, not what comes out.
+# derived from (deploy-dataanaylsis.sh delegates save here, deploy-fhe.sh and
+# build-teellm-image.sh follow the same rule). The name is independent of BASE_DOCKER_IMAGE:
+# pointing --base at another image changes what goes in, not what comes out.
 DEFAULT_SAVE_IMAGE="taa-train-infer:${SAVE_DATE_TAG}"
 DEFAULT_SAVE_ARCHIVE="$PROJECT_DIR/deploy/out/taa-train-infer-${SAVE_DATE_TAG}.tar.gz"
 CUSTOM_SAVE_IMAGE=""
@@ -486,7 +486,7 @@ ensure_local_docker_container() {
 
 # Removes every TEE-LLM and ollama artifact a base image may carry, then asserts each one is gone.
 # The list is enumerated from the combined images this repository produces
-# (taa-train-infer:<date>, taa-fhe:<date>, taa-dataanaylsis:<date>), not guessed.
+# (taa-train-infer:<date>, taa-fhe:<date>), not guessed.
 # A base image that never carried teellm makes every rm a no-op and every assertion
 # pass, so the same code covers both the slim base and a previously combined image.
 strip_teellm_from_image() {
@@ -590,10 +590,10 @@ save_local_docker_image() {
   # network namespace -- so baking it in replaced the template's endpoint with a guess. The image
   # carries exactly the endpoint configs/taa-production.json names; a deployment that needs a
   # different one sets LLM_IP at container startup, which still overrides it.
-  # storage.data is left to the template ("") on purpose: the data-anaylsis
-  # template points it at /home/jovyan/systemAuthData, where imported files must
-  # land, while every other template keeps /root/taa/data -- the value the
-  # override used to force anyway.
+  # storage.data is left to the template ("") on purpose: deploy-dataanaylsis.sh
+  # renders its copy to /home/jovyan/systemAuthData, where the jupyter runtime
+  # reads imported files, while the shared template keeps /root/taa/data -- the
+  # value the override used to force anyway.
   write_taa_config "$prod_config_source" "$prod_config_template" \
     ":6001" "" "" "" \
     "/root/taa/models" "" "/root/taa/results" \

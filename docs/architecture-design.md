@@ -9,13 +9,15 @@ TAA（Trusted Application Attestation）是一个运行在 Hygon CSV（可信安
 - 在 TEE 安全环境中解密、审计、执行训练任务
 - 将训练结果加密导出给平台
 
-同一个二进制还承担另外两种实例角色，由 `server.type` 决定，三条流水线互斥：
+同一个二进制还承担另外两种实例角色，由 `CONTRACT_TYPE` 环境变量（部署时注入）或 `server.type` 决定，三条流水线互斥：
 
-| `server.type` | 运行位置 | 职责 | 不做的部分 |
+| 角色 | 运行位置 | 职责 | 不做的部分 |
 |---|---|---|---|
 | `tee`（默认） | Hygon CSV 机密 VM / 容器 | 远程证明、密态导入、代码审计、训练/推理、结果防泄露检查与导出 | — |
 | `fhe` | 普通 GPU 宿主机（非 TEE） | 把模型与密文数据转交给同机 FHE 服务（redis + api_server + worker），轮询进度、接收回调、取回密文结果并导出 | **不做**远程证明、不做本地训练、不做代码审计、不提供导出信封 |
 | `data-anaylsis` | CSV guest（jupyter 基座） | 只接管平台下发的数据：解密后按 `dataResourceCode` 落盘 | **不做**审计、不做训练、不写导入索引、不接受模型导入 |
+
+角色不只决定流水线，也决定配置里哪些段生效（`internal/config` 的 `roleCapabilitySets`）：`tee` 审计 + 证明；`data-anaylsis` 保留证明、关闭审计/二进制通道/结果检查/LLM；`fhe` 两者都不做，并把密封密钥来源从模板的 `csv-hw` 解析为 `sm2`（它不在 CSV guest 内）。`tee` 训练与 `tee` 推理共用同一个 `taa-env` 镜像和 `configs/taa-production.json`；`data-anaylsis` 仍用 jupyter 基座镜像，但配置同样取自该共享模板（部署脚本按角色渲染副本）。
 
 > 拼写 `data-anaylsis` 是配置契约的既有取值（`internal/config/config.go` 的 `ServerTypeDataAnalysis`），不是笔误。
 
@@ -257,17 +259,16 @@ sequenceDiagram
 
 | 模板 | 用途 |
 |---|---|
-| `configs/taa-production.json` | 生产 Pod（`csv-hw` 密封，Semgrep + LLM 审计） |
+| `configs/taa-production.json` | 生产 Pod，`tee` 训练 / `tee` 推理 / `data-anaylsis` 共用（`csv-hw` 密封、Semgrep + LLM 审计；后两者的审计由角色关闭） |
 | `configs/taa-docker.json` | 本地 Docker 测试（`sm2` 密封，LLM 指向 `127.0.0.1:8443`） |
 | `configs/taa-fhe.json` | FHE 实例（`server.type=fhe`，指向同容器 `127.0.0.1:58996`） |
-| `configs/taa-dataanaylsis.json` | 数据分析实例（审计/LLM 全关，数据落 `/home/jovyan/systemAuthData`） |
 | `configs/taa-initrd.json` | CSV2 机密 VM initrd 内运行（证书在 `/etc/taa/certs`） |
 
 ### 3.3 持久化状态与崩溃恢复
 
 运行状态（当前阶段、模型/数据摘要、`ExportPublicKey`、`RuntimeConfig`、在飞任务、未决审计标记）密封写入 `storage.keys/state.sealed`，由 `internal/store` 管理：
 
-- 密封密钥来源：`sm2` 由 TAA SM2 私钥派生；`csv-hw` 由 `/dev/csv-guest` 硬件密钥派生（fhe 实例禁止使用 `csv-hw`）。
+- 密封密钥来源：`sm2` 由 TAA SM2 私钥派生；`csv-hw` 由 `/dev/csv-guest` 硬件密钥派生。共享模板写 `csv-hw`，`fhe` 角色在加载时解析为 `sm2`（fhe 不在 CSV guest 内，没有该硬件密钥）。
 - 来源切换或解封认证失败时，旧状态归档为 `<keys>/.orphaned.<unix>` 并初始化干净状态，而不是带病继续。
 - 重启时若发现 `RUNNING` 在飞任务，执行崩溃恢复：失败任务归档为 `.failed-<taskId>-<timestamp>`、清理临时文件与孤儿进程、补写失败报告、双轨补偿上报；连续恢复 3 次仍失败则进入熔断，归档为 `.dead-letter`。
 - 后台审计可能比导入任务活得更久，因此单独记录 `AuditPending`；重启时据此对账，并把中断的审计作为参考结论上报平台。
@@ -610,9 +611,9 @@ USERDATA = taaPublicKey.X || taaPublicKey.Y
 
 | 脚本 | 目标 | 基础镜像 | 产出 |
 |---|---|---|---|
-| `deploy.sh` | TEE 训练/推理（审计） | `taa-env:slim-v2` | `taa-train-infer:<YYYYMMDD>` / `deploy/out/taa-train-infer-<YYYYMMDD>.tar.gz` |
+| `deploy.sh` | TEE 训练 / TEE 推理（同一镜像，角色由 `CONTRACT_TYPE` 选择） | `taa-env:slim-v2` | `taa-train-infer:<YYYYMMDD>` / `deploy/out/taa-train-infer-<YYYYMMDD>.tar.gz` |
 | `deploy-fhe.sh` | FHE 实例（与 FHE 服务同容器） | `latti/latti-server-node:latest` | `taa-fhe:<YYYYMMDD>` / `deploy/out/taa-fhe-<YYYYMMDD>.tar.gz` |
-| `deploy-dataanaylsis.sh` | 数据分析实例 | `jupyter-nologin-full:v2.2` | `taa-dataanaylsis:<YYYYMMDD>` / `deploy/out/taa-dataanaylsis-<YYYYMMDD>.tar.gz` |
+| `deploy-dataanaylsis.sh` | 数据分析实例（共享模板按角色渲染） | `jupyter-nologin-full:v2.2` | `taa-dataanaylsis:<YYYYMMDD>` / `deploy/out/taa-dataanaylsis-<YYYYMMDD>.tar.gz` |
 | `build-teellm-image.sh`（构建）+ `deploy-llm.sh`（部署） | TEE-LLM 网关 | `taa-env:slim-v2` 去掉 `/root/taa` | `teellm:<YYYYMMDD>` / `deploy/out/teellm-<YYYYMMDD>.tar.gz` |
 | `deploy-taa-vm.sh`（驱动 `deploy/guest-build/build-initrd.sh`） | CSV2 机密 VM initrd | `kata-containers-initrd-confidential-csv.img` | 追加 TAA 的 initrd 与测试 Pod 清单 |
 
@@ -729,7 +730,7 @@ taa/
 │   ├── image-bind/              镜像绑定工具
 │   └── showdoc-sync/            api-design.html 本地预览与 ShowDoc 同步（Python 标准库）
 ├── api/                         OpenAPI 定义与 proto
-├── configs/                     部署配置模板（production / docker / fhe / dataanaylsis / initrd）
+├── configs/                     部署配置模板（production / docker / fhe / initrd）
 ├── deploy/                      基础镜像归档、证书、supervisor、guest-build 与 K8s/Docker 清单
 ├── models/                      模型项目与审计语料
 ├── tests/                       集成与回归测试脚本

@@ -87,7 +87,7 @@ TARGET_POD=taa-teellm ./deploy-llm.sh taa
 停在 ImagePullBackOff。显式给了 `TEELLM_POD_IMAGE` 就原样使用；查询失败（401、不可达）
 则退回当天日期并告警。
 
-## 1. TEE 训练/推理（审计） — `deploy.sh`
+## 1. TEE 训练 / 推理 / 数据分析 — `deploy.sh`
 
 基础镜像 `taa-env:slim-v2`：Ubuntu 24.04.4，glibc 2.39，dpkg 130 个包，解压 1.84 GB，`/opt` 为空。
 
@@ -161,9 +161,15 @@ nvidia-container-toolkit 提供，镜像自带的只有上面那两个 CUDA 用�
 
 ## 3. 数据分析 — `deploy-dataanaylsis.sh`
 
-透传 `deploy.sh`，只换基座为 `jupyter-nologin-full:v2.2`：Ubuntu 22.04.3，glibc 2.35，
+透传 `deploy.sh`，基座为 `jupyter-nologin-full:v2.2`：Ubuntu 22.04.3，glibc 2.35，
 dpkg 437 个包，解压 7.55 GB，ENTRYPOINT `tini -g --`，USER `jovyan`(1000)，
 HOME/WORKDIR = `/home/jovyan`，EXPOSE 8888。
+
+配置不再有自己的模板：脚本把 `configs/taa-production.json` 渲染成副本，写入
+`server.type=data-anaylsis`、`storage.data=/home/jovyan/systemAuthData`（jupyter 运行时读取的位置），
+并把 `codeAudit` 三项与 LLM 关掉、引擎落到 `regex`。即使不渲染，加载器也会按角色关闭审计；
+渲染是为了让 `deploy.sh save` 的打包前检查不再去装这个镜像用不了的 semgrep payload。
+docker 模式另外把密封来源改成 `sm2`（容器不在 CSV guest 内）。
 
 **基础镜像自带**
 
@@ -187,8 +193,8 @@ HOME/WORKDIR = `/home/jovyan`，EXPOSE 8888。
 
 与审计镜像相同的 TAA 载荷（`taa` 静态二进制、两份证书、`taa-supervisor.sh`、
 渲染后的 `taa-config.json`、空目录 `/root/taa/{models,data,results,keys}` 与
-`/opt/taa/{input,output}`）。**不装 semgrep、不装 teellm**（配置 `codeScan.engine=regex`、
-`codeAudit` 三项全关，前置闸门会拒绝相反配置）。
+`/opt/taa/{input,output}`）。**不装 semgrep、不装 teellm**（渲染后的配置 `codeScan.engine=regex`、
+`codeAudit` 与 LLM 全关）。
 
 ## 4. TEE 推理网关 — `build-teellm-image.sh`（由 `deploy-llm.sh` 部署）
 
@@ -302,7 +308,7 @@ root 口令、`sshd_config` 改动（放开 root 登录）。这些每次起 Pod
 
 ## 基础镜像横向对照
 
-taa-env（TEE 训练/推理、teellm）
+taa-env（TEE 训练 / 推理、teellm）
 - `bash` ✓，`python3` 3.12.3，`curl` ✓，`flock`/`timeout` ✓/✓
 - `libstdc++` ✓，`jq`/`rsync` ✗/✗，`torch` ✓ 2.13.0+cpu
 

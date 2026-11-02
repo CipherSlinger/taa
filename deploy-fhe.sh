@@ -1001,7 +1001,10 @@ create_or_reuse_container() {
   binds+=("$HOST_FHE_REDIS_DIR:$FHE_CONTAINER_DATA_DIR/redis")
   binds+=("$HOST_TAA_STATE_DIR:$HOST_TAA_STATE_DIR")
 
-  local -a required_envs=("TAA_ENTRYPOINT_SHA256=$TAA_ENTRYPOINT_SHA256" "CONTAINER_DATA_DIR=$FHE_CONTAINER_DATA_DIR")
+  # The role is injected explicitly even though the rendered template names
+  # server.type=fhe: the environment wins, so the same image can also be started
+  # with a different CONTRACT_TYPE without re-rendering the config.
+  local -a required_envs=("TAA_ENTRYPOINT_SHA256=$TAA_ENTRYPOINT_SHA256" "CONTAINER_DATA_DIR=$FHE_CONTAINER_DATA_DIR" "CONTRACT_TYPE=4")
   [ -z "$PLATFORM_IP" ] || required_envs+=("PLATFORM_IP=$PLATFORM_IP")
   [ -z "$DOCKER_ID" ] || required_envs+=("DOCKER_ID=$DOCKER_ID")
 

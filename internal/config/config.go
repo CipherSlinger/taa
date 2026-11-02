@@ -721,16 +721,14 @@ func validateServerType(cfg StartupConfig) error {
 }
 
 // validateStateSealingKeySource rejects an unrecognised key source rather than
-// falling back to sm2, and refuses csv-hw on an fhe instance: fhe runs outside
-// the CSV guest and has no /dev/csv-guest.
+// falling back to sm2. csv-hw on an fhe instance is not rejected here: the role
+// resolves that combination to sm2 while the file is applied (see
+// applyStartupConfigFile), because one template is shared by every role and fhe
+// cannot exist inside the CSV guest the template's default targets.
 func validateStateSealingKeySource(cfg StartupConfig) error {
 	for _, source := range stateSealingKeySources {
 		if cfg.StateSealingKeySource != source {
 			continue
-		}
-		if source == StateSealingKeySourceCSVHW && cfg.ServerType == ServerTypeFHE {
-			return fmt.Errorf("storage.stateSealingKeySource is %q but server.type is %q: an fhe instance is not a CSV guest and has no /dev/csv-guest; use %q",
-				source, ServerTypeFHE, StateSealingKeySourceSM2)
 		}
 		return nil
 	}
@@ -966,6 +964,29 @@ var contractTypeServerTypes = map[string]string{
 	"4": ServerTypeFHE,
 }
 
+// roleCapabilities states which parts of the startup config an instance role
+// actually uses. One template is shipped for every role, so a section that means
+// nothing to the running role is ignored instead of applied and left unused.
+type roleCapabilities struct {
+	// audit covers the code audit: the static engine, the binary channel, the
+	// result check and the LLM arbitration that settles Tier 1 findings.
+	audit bool
+	// attestation covers the quote and the certificate paths it needs. An fhe
+	// instance has no local quote to produce; a data-analysis instance still
+	// runs inside the CSV guest and keeps it.
+	attestation bool
+}
+
+// roleCapabilitySets is the role -> capabilities mapping. A missing entry is
+// the zero value, which disables both: an unknown role is rejected by
+// validateServerType after the file is applied, so the permissive default only
+// affects a config that is about to fail anyway.
+var roleCapabilitySets = map[string]roleCapabilities{
+	ServerTypeTEE:          {audit: true, attestation: true},
+	ServerTypeDataAnalysis: {audit: false, attestation: true},
+	ServerTypeFHE:          {audit: false, attestation: false},
+}
+
 // applyServerType resolves the instance role with the precedence CONTRACT_TYPE
 // > server.type > tee. An unrecognised CONTRACT_TYPE is rejected rather than
 // ignored: a deployment that asked for a role it did not get would look like a
@@ -993,28 +1014,14 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 		cfg.Addr = trimmed
 	}
 
-	// An fhe instance runs no code audit and produces no attestation report: its
-	// model packages are FHE layers rather than executable code, its results are
-	// ciphertext, and its trust rests on the encrypted computation rather than on
-	// a local quote. Both blocks therefore mean nothing here, and are ignored
-	// instead of applied and left unused. Their absence is the normal shape of an
-	// fhe config, not an error - which is also why the legacy top-level
-	// switches that do matter to an fhe instance are read outside the guarded
-	// regions below.
-	readsAuditAndAttestation := cfg.ServerType != ServerTypeFHE
-
-	// The startup path builds the security configuration even on an fhe instance,
-	// and that resolves the code scan engine against the disk. The generic default
-	// (semgrep) refuses to construct without a rules file, and the fhe image
-	// carries none, so leaving it in place would turn "this instance never scans"
-	// into a restart loop. The rule-carrying engine is the one that needs nothing
-	// on disk; that no scan ever runs here is the point, not a side effect.
-	if !readsAuditAndAttestation {
-		cfg.CodeScan.Engine = "regex"
-		// An fhe instance never reads the llm block, so it has no inference
-		// service to probe.
-		cfg.LLM.Enabled = false
-	}
+	// A role that never audits reads none of the audit blocks: an fhe instance
+	// carries FHE layers rather than executable code, and a data-analysis
+	// instance only lands data. Both blocks are therefore ignored instead of
+	// applied and left unused. Their absence is the normal shape of a
+	// non-auditing config, not an error - which is also why the legacy
+	// top-level switches that do matter are read outside the guarded regions
+	// below.
+	caps := roleCapabilitySets[cfg.ServerType]
 
 	if trimmed := strings.TrimSpace(fileCfg.PlatformIP); trimmed != "" {
 		cfg.PlatformIP = trimmed
@@ -1052,7 +1059,7 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 		cfg.Contract = fileCfg.Platform.Contract
 	}
 
-	if readsAuditAndAttestation {
+	if caps.audit {
 		if fileCfg.EnableSecurityScan != nil {
 			cfg.EnableCodeAudit = *fileCfg.EnableSecurityScan
 		}
@@ -1110,7 +1117,7 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	if fileCfg.EnableResultCheck != nil {
 		cfg.EnableResultCheck = *fileCfg.EnableResultCheck
 	}
-	if readsAuditAndAttestation && fileCfg.CodeAudit.ResultCheck.Enabled != nil {
+	if caps.audit && fileCfg.CodeAudit.ResultCheck.Enabled != nil {
 		cfg.EnableResultCheck = *fileCfg.CodeAudit.ResultCheck.Enabled
 	}
 
@@ -1174,13 +1181,15 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	if trimmed := strings.TrimSpace(fileCfg.Model.Output.Progress); trimmed != "" {
 		cfg.ModelProgressDir = trimmed
 	}
-	if readsAuditAndAttestation {
+	if caps.attestation {
 		if trimmed := strings.TrimSpace(fileCfg.Attestation.HRKCertPath); trimmed != "" {
 			cfg.AttestationHRKCertPath = trimmed
 		}
 		if trimmed := strings.TrimSpace(fileCfg.Attestation.HSKCekCertPath); trimmed != "" {
 			cfg.AttestationHSKCekCertPath = trimmed
 		}
+	}
+	if caps.audit {
 		if llm := fileCfg.CodeAudit.LLM; llm != nil {
 			if llm.Enabled != nil {
 				cfg.LLM.Enabled = *llm.Enabled
@@ -1248,6 +1257,33 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 			// configured.
 			cfg.LLM.Enabled = false
 		}
+	}
+
+	// The role's capabilities win over whatever the shared template says. A
+	// template is loaded by every role, so its audit switches and semgrep
+	// selection are the tee defaults; a role that never audits must not inherit
+	// them. The engine matters even when no scan runs, because the startup path
+	// builds the security configuration unconditionally and resolves the engine
+	// against the disk: semgrep refuses to construct without a rules file, and
+	// the fhe and data-analysis payloads carry none, so leaving it in place
+	// would turn "this instance never scans" into a restart loop. The
+	// rule-carrying engine is the one that needs nothing on disk; that no scan
+	// ever runs here is the point, not a side effect.
+	if !caps.audit {
+		cfg.EnableCodeAudit = false
+		cfg.BinaryAuditEnabled = false
+		cfg.EnableResultCheck = false
+		cfg.CodeScan.Engine = "regex"
+		cfg.LLM.Enabled = false
+	}
+
+	// An fhe instance runs outside the CSV guest, so the hardware sealing key
+	// does not exist there. The role therefore resolves the shared template's
+	// csv-hw selection to the only source that can work; this mirrors the audit
+	// engine above, where the role, not the template, decides what is possible.
+	if cfg.ServerType == ServerTypeFHE && cfg.StateSealingKeySource == StateSealingKeySourceCSVHW {
+		log.Printf("INFO: server.type=fhe cannot read the CSV hardware sealing key; using stateSealingKeySource=%s", StateSealingKeySourceSM2)
+		cfg.StateSealingKeySource = StateSealingKeySourceSM2
 	}
 
 	// The fhe section is only meaningful on an fhe instance. A tee instance that

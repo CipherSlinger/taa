@@ -45,14 +45,22 @@ func TestLoadStartupConfigRejectsUnknownStateSealingKeySource(t *testing.T) {
 	}
 }
 
-func TestLoadStartupConfigRejectsCSVHWOnFHE(t *testing.T) {
+// One template is shared by every role, and its csv-hw default targets the CSV
+// guest. An fhe instance runs outside that guest, so the role resolves the
+// selection to sm2 instead of failing: the hardware key does not exist there,
+// and refusing the template would mean the shared template cannot name a
+// sealing source at all.
+func TestLoadStartupConfigResolvesCSVHWToSM2OnFHE(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultFileName)
-	writeTestConfig(t, path, `{"server":{"type":"fhe"},"storage":{"stateSealingKeySource":"csv-hw"}}`)
+	writeTestConfig(t, path, `{"server":{"type":"fhe"},"storage":{"stateSealingKeySource":"csv-hw"},`+fheConfigSection+`}`)
 
-	if _, err := LoadStartupConfig(path); err == nil {
-		t.Fatal("expected csv-hw on an fhe instance to be rejected")
-	} else if !strings.Contains(err.Error(), "stateSealingKeySource") {
-		t.Fatalf("error does not name the setting: %v", err)
+	cfg, err := LoadStartupConfig(path)
+	if err != nil {
+		t.Fatalf("LoadStartupConfig() error = %v", err)
+	}
+	if cfg.StateSealingKeySource != StateSealingKeySourceSM2 {
+		t.Fatalf("StateSealingKeySource = %q, want %q on an fhe instance",
+			cfg.StateSealingKeySource, StateSealingKeySourceSM2)
 	}
 }
 
