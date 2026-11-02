@@ -230,6 +230,7 @@ sequenceDiagram
 | 变量 | 作用 |
 |------|------|
 | `LLM_IP` / `TAA_LLM_ENDPOINT` | 覆盖 `codeAudit.llm.endpoint`；前者优先。可写裸 IP，缺省补 `https://` 与 `:8443` |
+| `CONTRACT_TYPE` | 选择实例角色：`1` tee 训练、`2` tee 推理、`3` 数据分析、`4` fhe；`1`/`2` 都落到普通 `tee` 角色。**环境变量优先于 `server.type`**，两者都没有则 `tee`；取值非法启动即报错 |
 | `PLATFORM_IP` / `DOCKER_ID` / `CONTRACT_ID` | 作为默认值填充 `platform.ip` / `platform.dockerID` / `platform.contract`（配置文件优先） |
 | `PLATFORM_IP` / `DOCKER_ID`（`server.type=fhe` 时） | 反向覆盖配置文件：fhe 实例注册到哪里属于部署位置属性，环境变量优先 |
 | `TAASECRETKEY` | 密钥目录丢失后恢复 SM2 私钥；要求 `storage.stateSealingKeySource=csv-hw` |

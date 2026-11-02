@@ -384,7 +384,8 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | Field | Default | Description |
 | :--- | :--- | :--- |
 | `server.addr` | `:6001` | HTTP server listening address |
-| `server.type` | `tee` | Instance role, `tee` or `fhe`. `fhe` means this instance orchestrates an FHE service on a GPU node and performs no code audit, no remote attestation and no training pipeline |
+| `server.type` | `tee` | Instance role, `tee`, `data-anaylsis` or `fhe`. The `CONTRACT_TYPE` environment variable overrides it when set; otherwise this key decides, and `tee` is the fallback. `fhe` means this instance orchestrates an FHE service on a GPU node and performs no code audit, no remote attestation and no training pipeline |
+| `CONTRACT_TYPE` (env only) | `tee` | Selects the instance role: `1` tee training, `2` tee inference, `3` data analysis, `4` fhe. `1` and `2` both run the ordinary `tee` role — the training/inference difference is carried by the requests, not by the daemon. **Environment wins over `server.type`**; unset means the file decides, and neither means `tee`. An unrecognised value is a startup error |
 | `platform.ip` | Env `PLATFORM_IP` | Platform IP and port (`host:port`); dynamically injected via environment in production. The file wins over the environment, except on an `fhe` instance — see [Platform Identity Precedence](#platform-identity-precedence) |
 | `platform.dockerID` | Env `DOCKER_ID` | Container / Pod identifier; dynamically injected via environment in production. Same precedence rule as `platform.ip` |
 | `platform.contract` | Env `CONTRACT_ID` | Contract identifier (reserved optional). Always the file-wins rule, on both instance types. It is also the second input of the `taaSecretKey` derivation, so changing it makes previously reported `TAASECRETKEY` values undecryptable |
@@ -619,9 +620,9 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 > docker run -e LLM_IP=https://10.0.0.2:8443 my-taa:v1
 > ```
 >
-> `LLM_IP` / `TAA_LLM_ENDPOINT` are the only variables that **override** the config file (leave them
-> empty to keep the endpoint the image was packaged with); the `platform` identity fields do not
-> follow that rule. The one platform field that is environment-wins is `PLATFORM_PUBLIC_KEY` (see
+> `LLM_IP` / `TAA_LLM_ENDPOINT` are not the only variables that **override** the config file:
+> `CONTRACT_TYPE` also wins over `server.type` (see the field table above), and `PLATFORM_PUBLIC_KEY`
+> is environment-wins on every instance type (see
 > [SM2 Envelope Key Material](#sm2-envelope-key-material)); without it a deployment does not start.
 > `PLATFORM_IP`, `DOCKER_ID` and `CONTRACT_ID` only seed defaults that the file wins over — on a `tee`
 > instance. On an `fhe` instance the first two flip to environment-wins (see

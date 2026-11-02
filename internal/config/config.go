@@ -43,8 +43,9 @@ type StartupConfig struct {
 	// crypto.SM2DefaultUserID. It is not an error, because the default is the
 	// value the protocol specified.
 	PlatformSM2ID string
-	// ServerType is one of "tee" (the default), "fhe" or "data-anaylsis", from
-	// server.type.
+	// ServerType is one of "tee" (the default), "fhe" or "data-anaylsis".
+	// CONTRACT_TYPE selects it when set, server.type otherwise; the tee default
+	// stands when neither names a role.
 	ServerType string
 	// FHE is non-nil only on a server.type=fhe instance.
 	FHE *FHEConfig
@@ -188,7 +189,8 @@ type CodeScanConfig struct {
 	Timeout time.Duration
 }
 
-// Server instance roles, selected by the server.type config key.
+// Server instance roles, selected by CONTRACT_TYPE or the server.type config
+// key.
 const (
 	// ServerTypeTEE is the CSV guest that audits models and attests to the
 	// platform. It is the default, so every existing config keeps its behaviour.
@@ -485,6 +487,13 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 		return StartupConfig{}, err
 	}
 
+	// Resolve the role before applying the file: applyStartupConfigFile makes
+	// decisions from cfg.ServerType (it ignores the audit and attestation blocks
+	// on an fhe instance), so those decisions have to see the role that will
+	// actually run.
+	if err := applyServerType(&cfg, fileCfg.Server.Type); err != nil {
+		return StartupConfig{}, err
+	}
 	applyStartupConfigFile(&cfg, fileCfg)
 	applyLLMEndpointOverride(&cfg)
 	// Complete the endpoint whichever source named it: deploy.sh writes LLM_IP
@@ -514,8 +523,9 @@ func LoadStartupConfig(path string) (StartupConfig, error) {
 // every shipped template, so an environment value that could not override it
 // would never take effect.
 //
-// applyFHEIdentityOverride is the one exception to that rule, and only for
-// server.type=fhe.
+// applyFHEIdentityOverride is an exception to that rule, and only for
+// server.type=fhe; CONTRACT_TYPE is another, and it applies on every instance
+// type because the role itself is what the deployment is choosing.
 func applyLLMEndpointOverride(cfg *StartupConfig) {
 	endpoint := strings.TrimSpace(os.Getenv("LLM_IP"))
 	if endpoint == "" {
@@ -945,15 +955,42 @@ func defaultStartupConfig() StartupConfig {
 	}
 }
 
+// contractTypeServerTypes maps the CONTRACT_TYPE environment values to the
+// role they select. 1 and 2 both select the plain tee role: the difference
+// between a training and an inference instance is carried by the requests the
+// platform sends, not by the daemon's role.
+var contractTypeServerTypes = map[string]string{
+	"1": ServerTypeTEE,
+	"2": ServerTypeTEE,
+	"3": ServerTypeDataAnalysis,
+	"4": ServerTypeFHE,
+}
+
+// applyServerType resolves the instance role with the precedence CONTRACT_TYPE
+// > server.type > tee. An unrecognised CONTRACT_TYPE is rejected rather than
+// ignored: a deployment that asked for a role it did not get would look like a
+// routing bug far from the cause.
+func applyServerType(cfg *StartupConfig, fileType string) error {
+	if raw := strings.TrimSpace(os.Getenv("CONTRACT_TYPE")); raw != "" {
+		serverType, ok := contractTypeServerTypes[raw]
+		if !ok {
+			return fmt.Errorf("unsupported CONTRACT_TYPE %q in environment: must be 1 (tee training), 2 (tee inference), 3 (data analysis) or 4 (fhe)", raw)
+		}
+		cfg.ServerType = serverType
+		return nil
+	}
+	if trimmed := strings.ToLower(strings.TrimSpace(fileType)); trimmed != "" {
+		cfg.ServerType = trimmed
+	}
+	return nil
+}
+
 func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 	if trimmed := strings.TrimSpace(fileCfg.Addr); trimmed != "" {
 		cfg.Addr = trimmed
 	}
 	if trimmed := strings.TrimSpace(fileCfg.Server.Addr); trimmed != "" {
 		cfg.Addr = trimmed
-	}
-	if trimmed := strings.ToLower(strings.TrimSpace(fileCfg.Server.Type)); trimmed != "" {
-		cfg.ServerType = trimmed
 	}
 
 	// An fhe instance runs no code audit and produces no attestation report: its
