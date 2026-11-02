@@ -212,20 +212,26 @@ func reconcileCrashRecovery(ctx context.Context, state *controller.TAAState, sto
 		dockerID = state.DockerID
 	}
 
-	if platformIP != "" && dockerID != "" && (activeTask.RequestID != "" || activeTask.TaskID != "") {
-		fastSyncCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	if state != nil && platformIP != "" && dockerID != "" && (activeTask.RequestID != "" || activeTask.TaskID != "") {
 		msg := "TAA 异常崩溃重启，训练执行已被安全终止，请重新下发"
+		kind := controller.ReportKindRes
 		if activeTask.Type == "model_import" {
 			msg = "TAA 异常崩溃重启，模型导入与代码审计中断，请重新下发"
+			kind = controller.ReportKindModelImport
 		}
-		syncErr := controller.ReportTaskOutcome(fastSyncCtx, platformIP, dockerID, activeTask.RequestID, activeTask.TaskID, activeTask.Type, 1, msg, reportJSON)
-		cancel()
-
-		if syncErr != nil {
-			log.Printf("[RECOVERY FAST-SYNC] fast-sync report failed or timed out: %v; dispatching to detached background worker", syncErr)
-			dispatchDetachedCompensationWorker(platformIP, dockerID, activeTask.RequestID, activeTask.TaskID, activeTask.Type, reportJSON)
+		if enqueueErr := state.EnqueuePlatformReport(controller.PendingReportSnapshot{
+			Kind:         kind,
+			RequestID:    activeTask.RequestID,
+			TaskID:       activeTask.TaskID,
+			Code:         1,
+			Msg:          msg,
+			Report:       reportJSON,
+			PlatformAddr: platformIP,
+			DockerID:     dockerID,
+		}); enqueueErr != nil {
+			log.Printf("[RECOVERY] enqueue compensation report failed: %v", enqueueErr)
 		} else {
-			log.Printf("[RECOVERY FAST-SYNC] fast-sync report succeeded for task %s", activeTask.TaskID)
+			log.Printf("[RECOVERY] compensation report queued for task %s", activeTask.TaskID)
 		}
 	}
 
@@ -270,25 +276,31 @@ func reconcileAbandonedAudit(ctx context.Context, state *controller.TAAState, pe
 			"检测到被遗弃的模型代码审计 (taskId: %s)，审计未出裁决，向平台补报参考结论；模型保持已导入状态，模型包保持上传原样", pending.TaskID)
 	}
 
-	// 清除待决标记并落盘：本次中断审计就在下面补报，留着标记只会让下次启动重复上报同一次中断。
+	// 先入队再清标记：报告先变成持久化事实，清标记只是防止下次启动重复补报。
+	// 反过来做的话，两步之间崩溃会让这次审计永远消失。
 	// 这里只动审计标记，绝不复位导入状态——审计结论仅供参考，不决定模型可用性。
-	state.ConcludeAuditPending()
-
-	// 规约 7 补报：用持久化下来的审计 task/request id 告知平台该次审计未完成。
 	platformIP := state.PlatformIP
 	dockerID := state.DockerID
 	if platformIP == "" || dockerID == "" || (pending.RequestID == "" && pending.TaskID == "") {
+		state.ConcludeAuditPending()
 		return nil
 	}
 
 	msg := "TAA 异常崩溃重启，模型代码审计中断未出裁决，该结论仅供参考（不阻断模型导入与训练），模型包保持上传原样"
-	reportCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	if err := controller.ReportAudit(reportCtx, platformIP, dockerID, pending.RequestID, pending.TaskID, 2, msg, ""); err != nil {
-		log.Printf("WARNING: report abandoned audit failed: requestId=%s taskId=%s, err=%v", pending.RequestID, pending.TaskID, err)
+	if err := state.EnqueuePlatformReport(controller.PendingReportSnapshot{
+		Kind:         controller.ReportKindAudit,
+		RequestID:    pending.RequestID,
+		TaskID:       pending.TaskID,
+		Code:         2,
+		Msg:          msg,
+		PlatformAddr: platformIP,
+		DockerID:     dockerID,
+	}); err != nil {
+		log.Printf("WARNING: enqueue abandoned audit report failed: requestId=%s taskId=%s, err=%v", pending.RequestID, pending.TaskID, err)
 		return err
 	}
-	log.Printf("[RECOVERY AUDIT] abandoned audit reported to platform: taskId=%s", pending.TaskID)
+	state.ConcludeAuditPending()
+	log.Printf("[RECOVERY AUDIT] abandoned audit queued for platform delivery: taskId=%s", pending.TaskID)
 	return nil
 }
 
@@ -396,41 +408,4 @@ func killOrphanTrainingProcesses() {
 			_ = syscall.Kill(-pid, syscall.SIGKILL)
 		}
 	}
-}
-
-// dispatchDetachedCompensationWorker 转交后台 goroutine 执行指数退避重试（最多持续 60 秒），自愈流水线不阻塞
-func dispatchDetachedCompensationWorker(platformIP, dockerID, requestID, taskID, taskType, reportJSON string) {
-	go func() {
-		deadline := time.Now().Add(60 * time.Second)
-		backoff := 1 * time.Second
-		maxBackoff := 8 * time.Second
-
-		msg := "TAA 异常崩溃重启，训练执行已被安全终止，请重新下发"
-		if taskType == "model_import" {
-			msg = "TAA 异常崩溃重启，模型导入与代码审计中断，请重新下发"
-		}
-
-		for {
-			if time.Now().After(deadline) {
-				log.Printf("[DETACHED RECOVERY] compensation report timed out after 60s for task %s", taskID)
-				return
-			}
-
-			reqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			err := controller.ReportTaskOutcome(reqCtx, platformIP, dockerID, requestID, taskID, taskType, 1, msg, reportJSON)
-			cancel()
-
-			if err == nil {
-				log.Printf("[DETACHED RECOVERY] compensation report succeeded for task %s", taskID)
-				return
-			}
-
-			log.Printf("[DETACHED RECOVERY] compensation report retry failed: %v; next backoff=%v", err, backoff)
-			time.Sleep(backoff)
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-		}
-	}()
 }

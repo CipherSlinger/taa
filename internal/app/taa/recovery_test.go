@@ -479,9 +479,13 @@ func TestRecovery_StandardSchemaReport(t *testing.T) {
 // TestRecovery_DualTrackDrain 校验双轨补偿投递（规约 7）：
 // 1. 极速探测成功：平台在线时，2秒硬超时内同步成功完成上报；
 // 2. 平台离线转后台重试：平台离线或超时后，自愈流水线不阻塞，启动流程瞬间完成，后台 Detached Worker 继续重试。
+// TestRecovery_DualTrackDrain pins the two shapes of crash compensation now that
+// it goes through the durable outbox instead of a fast-sync call plus a 60-second
+// background retry: a reachable platform receives the report, and an unreachable
+// one leaves it queued in the sealed state rather than losing it.
 func TestRecovery_DualTrackDrain(t *testing.T) {
-	// ── 场景 1: 前置同步极速通道成功 ──
-	t.Run("FastSyncSuccess", func(t *testing.T) {
+	// ── 场景 1: 平台可达，补偿报告经 outbox 送达 ──
+	t.Run("ReportQueuedAndDelivered", func(t *testing.T) {
 		state, store, tempDir := setupTestRecoveryState(t)
 
 		reported := make(chan struct{}, 1)
@@ -514,20 +518,19 @@ func TestRecovery_DualTrackDrain(t *testing.T) {
 			RecoveryAttempts: 0,
 		}
 
-		start := time.Now()
+		outboxCtx, outboxCancel := context.WithCancel(context.Background())
+		defer outboxCancel()
+		outbox := state.StartReportOutbox(outboxCtx)
+		defer outbox.Stop()
+
 		if err := reconcileCrashRecovery(context.Background(), state, store, task); err != nil {
 			t.Fatalf("reconcileCrashRecovery failed: %v", err)
-		}
-		duration := time.Since(start)
-
-		if duration > 2*time.Second {
-			t.Fatalf("fast-sync took too long: %v", duration)
 		}
 
 		select {
 		case <-reported:
-		case <-time.After(1 * time.Second):
-			t.Fatalf("expected fast-sync report received by platform server")
+		case <-time.After(2 * time.Second):
+			t.Fatalf("expected the compensation report to reach the platform")
 		}
 
 		// 验证任务已完全解封复位
@@ -540,8 +543,8 @@ func TestRecovery_DualTrackDrain(t *testing.T) {
 		}
 	})
 
-	// ── 场景 2: 平台离线转后台重试，不阻塞启动 ──
-	t.Run("DetachedAsyncNonBlocking", func(t *testing.T) {
+	// ── 场景 2: 平台离线时报告留在密封状态里，不阻塞启动 ──
+	t.Run("OfflineKeepsDurableReport", func(t *testing.T) {
 		state, store, tempDir := setupTestRecoveryState(t)
 
 		// 指向一个不可达或超时的地址
@@ -559,21 +562,30 @@ func TestRecovery_DualTrackDrain(t *testing.T) {
 			RecoveryAttempts: 0,
 		}
 
+		outboxCtx, outboxCancel := context.WithCancel(context.Background())
+		defer outboxCancel()
+		outbox := state.StartReportOutbox(outboxCtx)
+		defer outbox.Stop()
+
 		start := time.Now()
-		// reconcileCrashRecovery 在前置同步 2 秒硬超时后，应立即转后台并返回，绝对不等待 60 秒
+		// 入队只是一次本地密封写盘，绝不等平台
 		if err := reconcileCrashRecovery(context.Background(), state, store, task); err != nil {
 			t.Fatalf("reconcileCrashRecovery failed: %v", err)
 		}
-		duration := time.Since(start)
-
-		if duration > 3*time.Second {
-			t.Fatalf("recovery took %v, should not block longer than fast-sync timeout (2s)", duration)
+		if duration := time.Since(start); duration > 2*time.Second {
+			t.Fatalf("recovery took %v; enqueueing must not wait for the platform", duration)
 		}
 
 		// 验证即使上报未成功，任务快照依然被安全解封，允许服务开放探针
 		persisted := store.GetState()
 		if persisted.ActiveTask != nil {
 			t.Fatalf("expected ActiveTask cleared even when platform offline")
+		}
+		if len(persisted.PendingReports) != 1 {
+			t.Fatalf("expected the offline report to be queued, got %+v", persisted.PendingReports)
+		}
+		if persisted.PendingReports[0].TaskID != "task-async-001" || persisted.PendingReports[0].Kind != controller.ReportKindRes {
+			t.Fatalf("queued report = %+v", persisted.PendingReports[0])
 		}
 		if state.CurrentOp != "idle" {
 			t.Fatalf("expected state.CurrentOp=idle, got %s", state.CurrentOp)
@@ -649,6 +661,11 @@ func TestRecovery_AbandonedAuditReportsOnly(t *testing.T) {
 	if pending == nil {
 		t.Fatalf("restoring the sealed state lost the pending audit marker")
 	}
+
+	outboxCtx, outboxCancel := context.WithCancel(context.Background())
+	defer outboxCancel()
+	outbox := state.StartReportOutbox(outboxCtx)
+	defer outbox.Stop()
 
 	if err := reconcileAbandonedAudit(context.Background(), state, pending); err != nil {
 		t.Fatalf("reconcileAbandonedAudit failed: %v", err)
