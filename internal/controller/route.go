@@ -168,6 +168,8 @@ type TAAState struct {
 	// pendingReports is the durable outbox of terminal platform reports. It is
 	// sealed with the rest of the state and drained by reportOutbox.
 	pendingReports  []PendingReportSnapshot
+	outboxMu        sync.Mutex
+	outbox          *reportOutbox
 	trainingControl *trainingControl // 当前训练任务的中止控制对象
 	stateStore      *StateStore      // 持久化密封存储
 	importIndex     *ImportIndexStore
