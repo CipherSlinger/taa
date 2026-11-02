@@ -23,9 +23,24 @@ func RegisterRoutes(mux *http.ServeMux, state *TAAState) {
 	}
 
 	for _, route := range taaRoutes {
-		mux.HandleFunc(route.path, postOnly(route.handler))
+		handler := route.handler
+		// fheCallback is the only unsealed route. Its caller is the FHE service,
+		// not the platform, and it has no platform private key to seal with; the
+		// endpoint keeps its loopback-source check instead. Every other route is
+		// called by the platform and requires an envelope in both directions.
+		if route.path != fheCallbackPath {
+			// Inside postOnly: a method rejection has no request body to open and
+			// no handler to protect, so it must not be reported as a malformed
+			// envelope.
+			handler = state.envelopeMiddleware(handler)
+		}
+		mux.HandleFunc(route.path, postOnly(handler))
 	}
 }
+
+// fheCallbackPath is referenced by name so the exemption above cannot silently
+// stop matching when a route is renamed.
+const fheCallbackPath = "/v1/taa/fheCallback"
 
 // postOnly 强制仅允许 POST 请求并注入 CORS 安全头
 func postOnly(next http.HandlerFunc) http.HandlerFunc {

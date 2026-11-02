@@ -17,7 +17,18 @@ type apiResponse struct {
 	Error  int    `json:"error"`
 }
 
+// writeJSON is the single JSON response exit. On an envelope route the response
+// is sealed with {cipher,sign}; on every other route (fheCallback, and any
+// internal caller that passes a plain writer) it stays plaintext.
+//
+// The plaintext branch still uses json.NewEncoder, which appends a newline.
+// That is the pre-envelope wire shape and is left untouched so a non-envelope
+// consumer sees byte-identical output; the sealed branch uses json.Marshal
+// because there the newline would become part of the signed plaintext.
 func writeJSON(w http.ResponseWriter, status int, resp apiResponse) {
+	if writeSealedJSON(w, status, resp) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(resp)

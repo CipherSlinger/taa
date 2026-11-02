@@ -509,6 +509,21 @@ func TestProbeInferenceService_UnhealthyEndpoint(t *testing.T) {
 // over (measured 2026-10-10: "connect: network is unreachable" -> "[TAA-FATAL] probe
 // inference service (fail-closed)"). The fail-closed guarantee lives in the pre-audit
 // probe instead, which runs with the network up.
+func TestRunWithConfig_MissingPlatformPublicKeyIsFatal(t *testing.T) {
+	cfg := config.StartupConfig{
+		KeysDir:               filepath.Join(t.TempDir(), "keys"),
+		StateSealingKeySource: config.StateSealingKeySourceSM2,
+	}
+
+	err := RunWithConfig(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected startup to fail without PLATFORM_PUBLIC_KEY, got nil")
+	}
+	if !strings.Contains(err.Error(), "PLATFORM_PUBLIC_KEY") {
+		t.Fatalf("error does not name the missing setting: %v", err)
+	}
+}
+
 func TestRunWithConfig_LLMProbeFailureDoesNotAbortStartup(t *testing.T) {
 	// A regular file where the keys directory belongs: the key-pair step then fails
 	// deterministically, and the error it returns is the proof that control reached it

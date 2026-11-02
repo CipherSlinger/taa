@@ -2,6 +2,9 @@
   "server": {
     "addr": ":6001"
   },
+  "platform": {
+    "publicKey": ""
+  },
   "storage": {
     "model": "/root/taa/models",
     "data": "/root/taa/data",

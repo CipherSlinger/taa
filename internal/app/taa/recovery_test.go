@@ -278,9 +278,13 @@ func TestRecovery_TempCleanAndOrphanReclamation(t *testing.T) {
 	_ = os.WriteFile(dirtyInput, []byte("dirty-data"), 0o644)
 	_ = os.WriteFile(dirtyOutput, []byte("dirty-output"), 0o644)
 
-	// 2. 制造 /tmp 碎片文件
-	fragment1 := fmt.Sprintf("/tmp/taa-download-test-%d.tmp", time.Now().UnixNano())
-	fragment2 := fmt.Sprintf("/tmp/test.extract-%d.part", time.Now().UnixNano())
+	// 2. 制造临时目录碎片文件。
+	// These must be created under os.TempDir() rather than a literal "/tmp":
+	// cleanTempFragments deliberately scans only the temp directory the process
+	// actually uses, so a hardcoded path would be testing a location the cleanup
+	// no longer (and must not) reach.
+	fragment1 := filepath.Join(os.TempDir(), fmt.Sprintf("taa-download-test-%d.tmp", time.Now().UnixNano()))
+	fragment2 := filepath.Join(os.TempDir(), fmt.Sprintf("test.extract-%d.part", time.Now().UnixNano()))
 	_ = os.WriteFile(fragment1, []byte("fragment1"), 0o644)
 	_ = os.WriteFile(fragment2, []byte("fragment2"), 0o644)
 

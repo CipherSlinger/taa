@@ -3,6 +3,9 @@
     "addr": ":6001",
     "type": "data-anaylsis"
   },
+  "platform": {
+    "publicKey": ""
+  },
   "storage": {
     "model": "/root/taa/models",
     "data": "/home/jovyan/systemAuthData",

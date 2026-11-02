@@ -17,7 +17,7 @@
 #   render  Render the delivery package locally (Kata config, containerd
 #           fragment + merger, K8s manifests, install.sh, checksums). No host
 #           access; also what `launch` renders before uploading.
-#   verify  Read-only: ask the running TAA for a health answer and a report.
+#   verify  Read-only: TCP liveness + startup-log attestation self-check.
 #   delete  Remove everything this flow installed on the host, including the
 #           test Pod. Supports --dry-run.
 #
@@ -97,7 +97,7 @@ Commands:
                 安装脚本 / 校验和），不访问宿主机
   launch        本地渲染 -> 上传 -> 在远端安装并拉起测试 Pod
   fetch-base    从远端拉取权威 base 资产（等价于 build-initrd.sh fetch-base）
-  verify        只读校验：向 Pod 内 TAA 要健康应答与证明报告
+  verify        只读校验：TCP 探活 + 启动日志里的证明自检结论
   delete        删除本流程在远端安装的全部产物与测试 Pod
   print-config  打印解析后的实际取值（KEY=%q，可直接 eval），用来确认这次会用什么
   help          显示本帮助
@@ -281,7 +281,7 @@ preflight() {
       ensure_pod_annotations
       if [[ "$TEST_IMAGE" == "busybox:latest" ]]; then
         echo "note: 这台宿主的 guest 拉不到 Docker Hub（实测 CDH 报 error sending request for index.docker.io）" >&2
-        echo "note: 本地 registry 里有 172.16.10.178:31313/taa-env:slim-v2-20260916（verify 需要镜像里有 curl）" >&2
+        echo "note: 本地 registry 里有 172.16.10.178:31313/taa-env:slim-v2-20260916（verify 用 guest 内的 /dev/tcp 与 /tmp/taa.log，不需要 curl）" >&2
       fi
       ;;
   esac
@@ -318,86 +318,83 @@ if ! kubectl get pod "$pod" >/dev/null 2>&1; then
 fi
 
 # The Pod's netns is the guest's netns, so TAA is reachable on localhost.
-echo "--- health ---"
-if ! kubectl exec "$pod" -c "$container" -- curl -sS -X POST localhost:6001/v1/taa/health; then
-  echo "error: /v1/taa/health 无应答；容器内可能没有 curl，或 TAA 没起来" >&2
+#
+# Everything under /v1/taa/ except fheCallback is now sealed with an SM2
+# {cipher,sign} envelope. This script holds no platform private key to sign a
+# request and no TAA private key to open the reply, so the API is not a checking
+# surface available to an operator at all. What is left is a TCP connect, which
+# is still a real gate: TAA reaches ListenAndServe only after config loading,
+# key recovery and the first registration attempt have all returned.
+#
+# The startup log is NOT reachable from here in the initrd flow: TAA runs as the
+# guest's first userspace process and writes /tmp/taa.log in the GUEST, while
+# this exec lands in a container whose /tmp is its own tmpfs. So the log checks
+# below are best-effort and only warn -- a hard failure on an unreachable file
+# would report "verification failed" for a perfectly healthy instance.
+echo "--- liveness ---"
+# /dev/tcp is a bash feature: busybox ash does not have it, and a slim image may
+# carry any of bash, python3 or nc depending on what it was built for. Try each
+# in turn rather than assume, so a missing client reports "cannot probe" instead
+# of "TAA is down".
+if kubectl exec "$pod" -c "$container" -- bash -c 'exec 3<>/dev/tcp/127.0.0.1/6001' 2>/dev/null \
+   || kubectl exec "$pod" -c "$container" -- python3 -c 'import socket; socket.create_connection(("127.0.0.1", 6001), timeout=5).close()' 2>/dev/null \
+   || kubectl exec "$pod" -c "$container" -- nc -z -w 2 127.0.0.1 6001 2>/dev/null; then
+  echo "OK:   tcp 127.0.0.1:6001 accepts connections"
+else
+  echo "error: 127.0.0.1:6001 不接受连接，或容器内没有可用于探测的客户端（bash/python3/nc）" >&2
+  echo "hint: TAA 在 guest 内，日志是 guest 的 /tmp/taa.log（容器里的 /tmp 是另一份）" >&2
+  kubectl exec "$pod" -c "$container" -- tail -n 60 /tmp/taa.log 2>/dev/null || true
   exit 1
 fi
 echo
-echo "--- getAttestation ---"
-kubectl exec "$pod" -c "$container" -- \
-  curl -sS -X POST localhost:6001/v1/taa/getAttestation \
-    -H 'Content-Type: application/json' \
-    -d '{"requestId":"deploy-taa-vm"}'
+
+echo "--- startup log (best effort) ---"
+if kubectl exec "$pod" -c "$container" -- sh -c "test -f /tmp/taa.log" 2>/dev/null; then
+  if kubectl exec "$pod" -c "$container" -- sh -c "grep -q 'taa service listening on' /tmp/taa.log" 2>/dev/null; then
+    echo "OK:   listener logged itself"
+  else
+    echo "WARN: 容器内 /tmp/taa.log 里没有 'taa service listening on'（端口已开，可能是旧进程或启动未完成）"
+  fi
+  kubectl exec "$pod" -c "$container" -- sh -c "grep -i 'attestation\|service listening' /tmp/taa.log | tail -n 20" 2>/dev/null || true
+else
+  echo "WARN: 容器内没有 /tmp/taa.log —— TAA 在 guest init ns，它的日志在 guest 的 /tmp/taa.log。"
+  echo "      要读它需要 kata debug console（agent.debug_console_enabled = true + kata-runtime exec）。"
+  echo "      本流程无法从容器侧读到，故仅作提示，不影响校验结论。"
+fi
 echo
 REMOTE_VERIFY
 )"
 
-  # The raw envelopes are printed above for the reader; this parse supplies the
-  # exit status a script can rely on. Written to a file rather than passed with
-  # -c so the program can use quotes freely.
+  # The remote side already reduced each check to an OK/error line and exits
+  # non-zero on the first failure, so this parse only has to turn that into the
+  # exit status a caller can branch on. Written to a file rather than passed
+  # with -c so the program can use quotes freely.
   local prog rc=0
   prog="$(mktemp /tmp/taa-verify.XXXXXX.py)"
   cat > "$prog" <<'PY'
-import base64
-import json
 import sys
 
 text = sys.stdin.read()
 
-# The remote output interleaves two JSON envelopes with human-readable markers,
-# so pick out the balanced top-level objects instead of splitting on lines.
-bodies, depth, start = [], 0, None
-for i, ch in enumerate(text):
-    if ch == "{":
-        if depth == 0:
-            start = i
-        depth += 1
-    elif ch == "}":
-        depth -= 1
-        if depth == 0 and start is not None:
-            bodies.append(text[start:i + 1])
-            start = None
+# Only the script's own verdict lines count. The log excerpt below them is
+# diagnostic output and regularly contains the word "error", so matching it
+# anywhere in the line would fail a healthy run.
+failures = [line for line in text.splitlines() if line.startswith("FAIL:") or line.startswith("error:")]
+oks = [line for line in text.splitlines() if line.startswith("OK:")]
 
-if not bodies:
-    print("FAIL: 没有解析到任何 JSON 应答")
+for line in oks:
+    print(line)
+for line in failures:
+    print(line)
+
+# An empty answer is a failure, not a pass: ssh to a live host that ran nothing
+# would otherwise look like verification succeeded.
+if not oks:
+    print("FAIL: 远端没有返回任何校验结果")
     sys.exit(1)
-
-ok = True
-health = json.loads(bodies[0])
-if health.get("error") != 0 or health.get("msg") != "ok":
-    print("FAIL: health 应答异常: error={} msg={}".format(health.get("error"), health.get("msg")))
-    ok = False
-else:
-    phase = (health.get("result") or {}).get("phaseName")
-    print("OK:   health msg=ok phaseName={}".format(phase))
-
-if len(bodies) < 2:
-    print("FAIL: 没有拿到 getAttestation 应答")
+if failures:
     sys.exit(1)
-
-att = json.loads(bodies[1])
-if att.get("error") != 0:
-    print("FAIL: getAttestation error={} msg={}".format(att.get("error"), att.get("msg")))
-    sys.exit(1)
-
-result = att.get("result") or {}
-if not result.get("verifiedPass"):
-    print("FAIL: verifiedPass=false msg={}".format(att.get("msg")))
-    ok = False
-else:
-    print("OK:   verifiedPass=true")
-
-report = base64.b64decode(result.get("attestation") or "")
-print("      attestation report = {} bytes".format(len(report)))
-
-values = result.get("attestationValues") or "{}"
-if isinstance(values, str):
-    values = json.loads(values)
-print("      chipId      = {}".format(values.get("chipId")))
-print("      MEASUREMENT = {}".format(values.get("digest")))
-
-sys.exit(0 if ok else 1)
+sys.exit(0)
 PY
   printf '%s' "$out" | python3 "$prog" || rc=$?
   rm -f "$prog"

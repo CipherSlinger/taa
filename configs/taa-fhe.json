@@ -6,7 +6,8 @@
   "platform": {
     "ip": "127.0.0.1:18081",
     "dockerID": "taa-fhe",
-    "contract": ""
+    "contract": "",
+    "publicKey": ""
   },
   "storage": {
     "model": "/root/taa/models",

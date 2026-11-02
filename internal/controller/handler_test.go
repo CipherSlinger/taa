@@ -14,11 +14,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"taa/internal/attestation"
 	"taa/internal/codeaudit"
+	"taa/internal/platform/envelope"
 	"taa/internal/resource"
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
@@ -57,11 +59,7 @@ func setupTestState(t *testing.T) (*TAAState, string) {
 		t.Fatalf("write mock result: %v", err)
 	}
 
-	sm2Key, err := teecrypto.GenerateSM2KeyPair()
-	if err != nil {
-		t.Fatalf("generate SM2 key: %v", err)
-	}
-
+	sm2Key := testTAAKeyPair(t)
 	userData := sm2UserDataFromPublicKey(&sm2Key.PublicKey)
 
 	inputDir := filepath.Join(tmpDir, "input")
@@ -84,6 +82,7 @@ func setupTestState(t *testing.T) (*TAAState, string) {
 		ModelLogDir:      logDir,
 		ModelProgressDir: progressDir,
 	})
+	installTestEnvelope(t, state)
 	return state, attestationPath
 }
 
@@ -150,27 +149,140 @@ func makePhase1TrainingRuntimeConfigJSON(t *testing.T, marker string, extra ...s
 	return makeRuntimeConfigJSON(t, phase1TrainingCommands(marker, extra...), map[string]string{"PYTHONUNBUFFERED": "1"})
 }
 
+// The envelope is unavoidably in the path of every route test: the routes are
+// exercised over HTTP, not by calling handlers directly, so a test that did not
+// seal would only prove the middleware rejects everything.
+//
+// Both key pairs are therefore process-wide, created once and shared by every
+// state in the package:
+//
+//   - the platform pair is what every test seals requests with and opens
+//     responses with;
+//   - the TAA pair is installed into every state, so a state built anywhere in
+//     the package can open what a shared helper sealed.
+//
+// Making them per-state instead would not work: helpers like sealForTAA and
+// postJSON take no state, and setupTestState is called several times per test.
+var testKeys struct {
+	once         sync.Once
+	taaPriv      *teecrypto.SM2PrivateKey
+	platformPriv *teecrypto.SM2PrivateKey
+	initErr      error
+}
+
+func initTestKeys(t *testing.T) {
+	t.Helper()
+	testKeys.once.Do(func() {
+		taaPriv, err := teecrypto.GenerateSM2KeyPair()
+		if err != nil {
+			testKeys.initErr = err
+			return
+		}
+		platformPriv, err := teecrypto.GenerateSM2KeyPair()
+		if err != nil {
+			testKeys.initErr = err
+			return
+		}
+		testKeys.taaPriv = taaPriv
+		testKeys.platformPriv = platformPriv
+	})
+	if testKeys.initErr != nil {
+		t.Fatalf("initialise test key pairs: %v", testKeys.initErr)
+	}
+}
+
+// testTAAKeyPair is the SM2 key pair every state under test carries.
+func testTAAKeyPair(t *testing.T) *teecrypto.SM2PrivateKey {
+	t.Helper()
+	initTestKeys(t)
+	return testKeys.taaPriv
+}
+
+func testPlatformKeyPair(t *testing.T) *teecrypto.SM2PrivateKey {
+	t.Helper()
+	initTestKeys(t)
+	return testKeys.platformPriv
+}
+
+// installTestEnvelope binds a state's envelope key material to the shared test
+// platform key. setupTestState and every hand-built state go through it, so a
+// state under test is never missing the material the middleware requires.
+func installTestEnvelope(t *testing.T, state *TAAState) {
+	t.Helper()
+	keys, err := envelope.NewKeys(&testPlatformKeyPair(t).PublicKey, state.SM2PrivateKey, nil)
+	if err != nil {
+		t.Fatalf("build test envelope keys: %v", err)
+	}
+	state.SetEnvelopeKeys(keys)
+}
+
+// sealRequest seals a body the way the platform does: encrypt with TAA's public
+// key, sign with the platform's private key.
+func sealRequest(t *testing.T, body any) []byte {
+	t.Helper()
+	plain, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+	return sealPlaintext(t, plain)
+}
+
+func sealPlaintext(t *testing.T, plain []byte) []byte {
+	t.Helper()
+	sealed, err := envelope.SealForPlatform(
+		testPlatformKeyPair(t), &testTAAKeyPair(t).PublicKey, nil, plain)
+	if err != nil {
+		t.Fatalf("seal request: %v", err)
+	}
+	return sealed
+}
+
 func postJSON(t *testing.T, url string, body any) *http.Response {
 	t.Helper()
-	data, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("marshal body: %v", err)
-	}
-	resp, err := http.Post(url, "application/json", bytes.NewReader(data))
+	sealed := sealRequest(t, body)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(sealed))
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
 	}
 	return resp
 }
 
+// decodeResponse opens a sealed response and returns the apiResponse inside.
+// A plaintext body still decodes, so a route that (correctly) has no envelope
+// (fheCallback) works through the same helper.
 func decodeResponse(t *testing.T, resp *http.Response) apiResponse {
 	t.Helper()
 	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	plain := openSealedResponse(t, raw)
 	var api apiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&api); err != nil {
+	if err := json.Unmarshal(plain, &api); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	return api
+}
+
+// openSealedResponse opens a response TAA sealed, or returns the bytes
+// unchanged when the body is not an envelope.
+//
+// The fallback is not leniency: fheCallback is deliberately unsealed, and a
+// test failure such as a 500 from the sealing path is a plaintext body too.
+// Both have to be readable, and only the bytes decide which one this is.
+func openSealedResponse(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	env, err := envelope.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	plain, err := envelope.OpenFromPlatform(
+		testPlatformKeyPair(t), &testTAAKeyPair(t).PublicKey, nil, env)
+	if err != nil {
+		t.Fatalf("open response envelope: %v", err)
+	}
+	return plain
 }
 
 // sealForTAA envelope-encrypts plaintext with TAA's SM2 public key and returns

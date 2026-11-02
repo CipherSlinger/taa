@@ -18,6 +18,7 @@ import (
 	"taa/internal/codeaudit"
 	"taa/internal/config"
 	"taa/internal/fhe"
+	"taa/internal/platform/envelope"
 	"taa/internal/runtime"
 	teecrypto "taa/pkg/crypto"
 	pkgerrors "taa/pkg/errors"
@@ -106,38 +107,45 @@ func (sec SecurityConfig) GetModelProgressDir() string {
 }
 
 type TAAState struct {
-	mu                    sync.RWMutex
-	attestMu              sync.Mutex
-	importIndexOnce       sync.Once
-	CurrentPhase          int
-	ModelImported         bool
-	TrainingRunning       bool
-	AttestationFile       string
-	PlatformIP            string
-	DockerID              string
-	HRKCertPath           string
-	HSKCekCertPath        string
-	SM2PrivateKey         *teecrypto.SM2PrivateKey // TAA 启动时生成的 SM2 私钥，用于解密资源信封
-	UserData              []byte                   // TAA 启动时生成的 64 字节 USERDATA，用于重新生成远程证明报告
-	ExportPublicKey       string                   // phase1 import 时保存的公钥，phase3 export 时使用
-	SavedModelResourceURL string                   // phase1 / importModel 保存的模型资源 URL，允许后续下发模型时为空复用
-	RuntimeConfig         string                   // importModel 保存的运行配置，训练时按该配置执行命令
-	Security              SecurityConfig           // immutable after startup — no mutex needed
-	Logs                  *LogStore                // 结构化日志存储
-	LastAudit             *codeaudit.AuditReport   // 最近一次模型代码审计结果，用于训练报告输出
-	CurrentDataRecord     ImportIndexRecord        // 当前绑定的数据导入记录
-	LatestDataRecord      ImportIndexRecord        // 下发数据接口始终记录的最新数据索引
-	ModelChecksum         map[string]any           // 模型压缩包校验和 (size, algorithm, value)
-	DataChecksum          map[string]any           // 数据压缩包校验和 (size, algorithm, value)
-	CurrentOp             string                   // Current operation: idle/downloading/decrypting/extracting/debugging/training/reporting
-	ActiveTaskID          string                   // Current active task ID for data/model transfer and training
-	ActiveRequestID       string                   // Current active request ID
-	activeToken           int64                    // Current active token
-	activeTask            *ActiveTaskSnapshot      // Snapshot of currently active task
-	CurrentAuditOp        string                   // Current audit operation: idle/auditing
-	AuditRunning          bool                     // Whether model code audit is actively running
-	ActiveAuditTaskID     string                   // Current active audit task ID
-	ActiveAuditRequestID  string                   // Current active audit request ID
+	mu              sync.RWMutex
+	attestMu        sync.Mutex
+	importIndexOnce sync.Once
+	CurrentPhase    int
+	ModelImported   bool
+	TrainingRunning bool
+	AttestationFile string
+	PlatformIP      string
+	DockerID        string
+	HRKCertPath     string
+	HSKCekCertPath  string
+	SM2PrivateKey   *teecrypto.SM2PrivateKey // TAA 启动时生成的 SM2 私钥，用于解密资源信封
+	// EnvelopeKeys is the TAA <-> platform key material: the platform's public
+	// key, TAA's private key, and the SM2 identity both sides sign under. It is
+	// set once at boot and read-only afterwards. Nil is not a valid production
+	// state - startup refuses to run without the platform public key - but it is
+	// the shape a hand-built state has, so the middleware reports it as a
+	// configuration error rather than dereferencing it.
+	EnvelopeKeys          *envelope.Keys
+	UserData              []byte                 // TAA 启动时生成的 64 字节 USERDATA，用于重新生成远程证明报告
+	ExportPublicKey       string                 // phase1 import 时保存的公钥，phase3 export 时使用
+	SavedModelResourceURL string                 // phase1 / importModel 保存的模型资源 URL，允许后续下发模型时为空复用
+	RuntimeConfig         string                 // importModel 保存的运行配置，训练时按该配置执行命令
+	Security              SecurityConfig         // immutable after startup — no mutex needed
+	Logs                  *LogStore              // 结构化日志存储
+	LastAudit             *codeaudit.AuditReport // 最近一次模型代码审计结果，用于训练报告输出
+	CurrentDataRecord     ImportIndexRecord      // 当前绑定的数据导入记录
+	LatestDataRecord      ImportIndexRecord      // 下发数据接口始终记录的最新数据索引
+	ModelChecksum         map[string]any         // 模型压缩包校验和 (size, algorithm, value)
+	DataChecksum          map[string]any         // 数据压缩包校验和 (size, algorithm, value)
+	CurrentOp             string                 // Current operation: idle/downloading/decrypting/extracting/debugging/training/reporting
+	ActiveTaskID          string                 // Current active task ID for data/model transfer and training
+	ActiveRequestID       string                 // Current active request ID
+	activeToken           int64                  // Current active token
+	activeTask            *ActiveTaskSnapshot    // Snapshot of currently active task
+	CurrentAuditOp        string                 // Current audit operation: idle/auditing
+	AuditRunning          bool                   // Whether model code audit is actively running
+	ActiveAuditTaskID     string                 // Current active audit task ID
+	ActiveAuditRequestID  string                 // Current active audit request ID
 
 	// auditGen identifies the audit that currently owns the audit fields above.
 	// Every audit goroutine carries the generation it started with; writes and
@@ -169,6 +177,19 @@ type TAAState struct {
 	// fheActiveTaskID is the FHE task currently in flight, so stopTraining can be
 	// mapped onto the service's cancel endpoint. It is empty when no FHE task runs.
 	fheActiveTaskID string
+}
+
+// SetEnvelopeKeys installs the TAA <-> platform envelope key material. It is
+// called once at boot, before the HTTP server starts, so no lock is needed.
+func (s *TAAState) SetEnvelopeKeys(keys *envelope.Keys) {
+	s.EnvelopeKeys = keys
+}
+
+// envelopeKeys returns the installed key material, or nil when none was
+// installed. nil is a configuration error at request time, never "plaintext
+// mode".
+func (s *TAAState) envelopeKeys() *envelope.Keys {
+	return s.EnvelopeKeys
 }
 
 // SetStateStore 注入密封状态存储引擎

@@ -14,9 +14,12 @@ import (
 	"testing"
 )
 
+// postEmptyJSON posts an empty JSON object, sealed the way the platform sends
+// it. The body cannot literally be empty: every sealed route rejects a request
+// that carries no cipher/sign, and most handlers decode an object anyway.
 func postEmptyJSON(t *testing.T, url string) *http.Response {
 	t.Helper()
-	resp, err := http.Post(url, "application/json", bytes.NewReader(nil))
+	resp, err := http.Post(url, "application/json", bytes.NewReader(sealRequest(t, map[string]any{})))
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
 	}

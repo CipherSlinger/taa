@@ -439,6 +439,31 @@ result = {"dataset": {"total_samples": 1, "splits": {"train": 1, "test": 0}}, "m
 	}
 }
 
+// waitForModelImportSettled blocks until the model import goroutine has finished
+// and released its in-flight task.
+//
+// The HTTP 200 is not a completion signal: the handler returns before the archive
+// is unpacked, audited and reported. A data delivery that arrives inside that
+// window is stored but does not train - the documented behavior is that only a
+// data delivery finding the model ready triggers training. Tests that expect the
+// following data delivery to train therefore have to wait for the model import to
+// settle, or they race it.
+func waitForModelImportSettled(t *testing.T, state *TAAState) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		state.mu.RLock()
+		idle := state.CurrentOp == "idle" || state.CurrentOp == ""
+		settled := state.activeTask == nil
+		state.mu.RUnlock()
+		if idle && settled {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the model import to settle")
+}
+
 type phase1FlowCase struct {
 	name              string
 	modelArchiveData  []byte
@@ -515,11 +540,15 @@ func runPhase1FlowCase(t *testing.T, tc phase1FlowCase) {
 
 	runtimeConfig := makePhase1TrainingRuntimeConfigJSON(t, tc.name, tc.extraRuntimeCommands...)
 
+	slug := strings.ReplaceAll(tc.name, " ", "-")
+	dataRequestID := "req-" + slug + "-data"
+	dataTaskID := "task-" + slug
+
 	importModel := func() {
 		resp := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
 			"resourceUrl":   resourceServer.URL + "/model.tar.gz",
-			"requestId":     "req-" + strings.ReplaceAll(tc.name, " ", "-") + "-model",
-			"taskId":        "task-" + strings.ReplaceAll(tc.name, " ", "-"),
+			"requestId":     "req-" + slug + "-model",
+			"taskId":        "task-" + slug,
 			"publicKey":     string(pubKeyPEM),
 			"runtimeConfig": runtimeConfig,
 		})
@@ -529,11 +558,11 @@ func runPhase1FlowCase(t *testing.T, tc phase1FlowCase) {
 		}
 	}
 
-	importData := func() {
+	importData := func(requestID, taskID string) {
 		resp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
 			"resourceUrl": resourceServer.URL + "/data.tar.gz",
-			"requestId":   "req-" + strings.ReplaceAll(tc.name, " ", "-") + "-data",
-			"taskId":      "task-" + strings.ReplaceAll(tc.name, " ", "-"),
+			"requestId":   requestID,
+			"taskId":      taskID,
 		})
 		api := decodeResponse(t, resp)
 		if resp.StatusCode != http.StatusOK || api.Error != 0 {
@@ -542,11 +571,19 @@ func runPhase1FlowCase(t *testing.T, tc phase1FlowCase) {
 	}
 
 	if tc.importDataFirst {
-		importData()
+		// A data delivery that arrives before the model is ready is stored but does
+		// not train; the contract is that training is triggered by the next data
+		// delivery (docs/api-design.md). Deliver once to exercise that, then after
+		// the model import settles deliver again under fresh IDs to trigger training.
+		importData(dataRequestID+"-early", dataTaskID+"-early")
+		waitForIdle(t, state)
 		importModel()
+		waitForModelImportSettled(t, state)
+		importData(dataRequestID, dataTaskID)
 	} else {
 		importModel()
-		importData()
+		waitForModelImportSettled(t, state)
+		importData(dataRequestID, dataTaskID)
 	}
 
 	var payload importedReportPayload
@@ -580,7 +617,7 @@ func runPhase1FlowCase(t *testing.T, tc phase1FlowCase) {
 		t.Fatalf("training_task.exit_code = %v, want 0", trainingTask["exit_code"])
 	}
 	if tc.wantTrainMarker {
-		markerDir := resultDirForRequestTask(state.Security.ResultDir, "req-"+strings.ReplaceAll(tc.name, " ", "-")+"-data", "task-"+strings.ReplaceAll(tc.name, " ", "-"))
+		markerDir := resultDirForRequestTask(state.Security.ResultDir, dataRequestID, dataTaskID)
 		markerPath := filepath.Join(markerDir, "marker.txt")
 		if _, err := os.Stat(markerPath); err != nil {
 			t.Fatalf("train marker missing at %s: %v", markerPath, err)
@@ -809,16 +846,6 @@ result = {"dataset": {"total_samples": 10, "splits": {"train": 10, "test": 0}}, 
 	}))
 	defer resourceServer.Close()
 
-	dataResp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
-		"resourceUrl": resourceServer.URL + "/data.tar.gz",
-		"requestId":   "req-data-in-out-01",
-		"taskId":      "task-in-out-01",
-	})
-	apiData := decodeResponse(t, dataResp)
-	if dataResp.StatusCode != http.StatusOK || apiData.Error != 0 {
-		t.Fatalf("import data failed: code=%d msg=%s", dataResp.StatusCode, apiData.Msg)
-	}
-
 	runtimeCfgJSON := makeRuntimeConfigJSON(t, []string{
 		"python3 train.py --input <in> --output <out>",
 	}, map[string]string{"PYTHONUNBUFFERED": "1"})
@@ -832,6 +859,17 @@ result = {"dataset": {"total_samples": 10, "splits": {"train": 10, "test": 0}}, 
 	apiModel := decodeResponse(t, modelResp)
 	if modelResp.StatusCode != http.StatusOK || apiModel.Error != 0 {
 		t.Fatalf("import model failed: code=%d msg=%s", modelResp.StatusCode, apiModel.Msg)
+	}
+	waitForModelImportSettled(t, state)
+
+	dataResp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+		"resourceUrl": resourceServer.URL + "/data.tar.gz",
+		"requestId":   "req-data-in-out-01",
+		"taskId":      "task-in-out-01",
+	})
+	apiData := decodeResponse(t, dataResp)
+	if dataResp.StatusCode != http.StatusOK || apiData.Error != 0 {
+		t.Fatalf("import data failed: code=%d msg=%s", dataResp.StatusCode, apiData.Msg)
 	}
 
 	var payload importedReportPayload
@@ -998,16 +1036,6 @@ result = {"dataset": {"total_samples": 5, "splits": {"train": 5, "test": 0}}, "m
 	}))
 	defer resourceServer.Close()
 
-	dataResp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
-		"resourceUrl": resourceServer.URL + "/data.tar.gz",
-		"requestId":   "req-data-direct-01",
-		"taskId":      "task-direct-01",
-	})
-	apiData := decodeResponse(t, dataResp)
-	if dataResp.StatusCode != http.StatusOK || apiData.Error != 0 {
-		t.Fatalf("import data failed: code=%d msg=%s", dataResp.StatusCode, apiData.Msg)
-	}
-
 	// 使用直接路径（不含 <in>/<out> 占位符），模拟模型方配置固定的输入输出路径
 	modelInputDir := state.Security.GetModelInputDir()
 	modelOutputDir := state.Security.GetModelOutputDir()
@@ -1026,6 +1054,17 @@ result = {"dataset": {"total_samples": 5, "splits": {"train": 5, "test": 0}}, "m
 	apiModel := decodeResponse(t, modelResp)
 	if modelResp.StatusCode != http.StatusOK || apiModel.Error != 0 {
 		t.Fatalf("import model failed: code=%d msg=%s", modelResp.StatusCode, apiModel.Msg)
+	}
+	waitForModelImportSettled(t, state)
+
+	dataResp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+		"resourceUrl": resourceServer.URL + "/data.tar.gz",
+		"requestId":   "req-data-direct-01",
+		"taskId":      "task-direct-01",
+	})
+	apiData := decodeResponse(t, dataResp)
+	if dataResp.StatusCode != http.StatusOK || apiData.Error != 0 {
+		t.Fatalf("import data failed: code=%d msg=%s", dataResp.StatusCode, apiData.Msg)
 	}
 
 	var payload importedReportPayload
@@ -1139,16 +1178,6 @@ result = {"dataset": {"total_samples": 5, "splits": {"train": 5, "test": 0}}, "m
 	}))
 	defer resourceServer.Close()
 
-	dataResp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
-		"resourceUrl": resourceServer.URL + "/data.tar.gz",
-		"requestId":   "req-data-opt-01",
-		"taskId":      "task-opt-01",
-	})
-	apiData := decodeResponse(t, dataResp)
-	if dataResp.StatusCode != http.StatusOK || apiData.Error != 0 {
-		t.Fatalf("import data failed: code=%d msg=%s", dataResp.StatusCode, apiData.Msg)
-	}
-
 	// 模拟平台下发默认固定的 /opt/taa/input 与 /opt/taa/output
 	command := "python3 train.py --input /opt/taa/input --output /opt/taa/output"
 	runtimeCfgJSON := makeRuntimeConfigJSON(t, []string{
@@ -1164,6 +1193,17 @@ result = {"dataset": {"total_samples": 5, "splits": {"train": 5, "test": 0}}, "m
 	apiModel := decodeResponse(t, modelResp)
 	if modelResp.StatusCode != http.StatusOK || apiModel.Error != 0 {
 		t.Fatalf("import model failed: code=%d msg=%s", modelResp.StatusCode, apiModel.Msg)
+	}
+	waitForModelImportSettled(t, state)
+
+	dataResp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+		"resourceUrl": resourceServer.URL + "/data.tar.gz",
+		"requestId":   "req-data-opt-01",
+		"taskId":      "task-opt-01",
+	})
+	apiData := decodeResponse(t, dataResp)
+	if dataResp.StatusCode != http.StatusOK || apiData.Error != 0 {
+		t.Fatalf("import data failed: code=%d msg=%s", dataResp.StatusCode, apiData.Msg)
 	}
 
 	var payload importedReportPayload
@@ -1284,18 +1324,8 @@ result = {"dataset": {"content": data_content}, "metrics": {"marker": args.marke
 		t.Fatalf("expected 400 with 'resourceUrl 不能为空', got %d / %s", respFail.StatusCode, apiFail.Msg)
 	}
 
-	// 2. Import dataset 1
-	data1Resp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
-		"resourceUrl": resourceServer.URL + "/data1.tar.gz",
-		"requestId":   "req-data-01",
-		"taskId":      "task-data-01",
-	})
-	apiData1 := decodeResponse(t, data1Resp)
-	if data1Resp.StatusCode != http.StatusOK || apiData1.Error != 0 {
-		t.Fatalf("import data1 failed: %d / %s", data1Resp.StatusCode, apiData1.Msg)
-	}
-
-	// 3. Import model with valid resourceUrl
+	// 2. Import model with valid resourceUrl (training is triggered by data, not by
+	// the model, so the model has to settle before the first data delivery arrives)
 	cmd1 := "python3 train.py --input <in> --output <out> --marker run1"
 	runtimeCfgJSON1 := makeRuntimeConfigJSON(t, []string{cmd1}, nil)
 	modelResp1 := postJSON(t, server.URL+"/v1/taa/importModel", map[string]any{
@@ -1308,6 +1338,18 @@ result = {"dataset": {"content": data_content}, "metrics": {"marker": args.marke
 	if modelResp1.StatusCode != http.StatusOK || apiModel1.Error != 0 {
 		t.Fatalf("import model 1 failed: %d / %s", modelResp1.StatusCode, apiModel1.Msg)
 	}
+	waitForModelImportSettled(t, state)
+
+	// 3. Import dataset 1 (triggers training with the model and runtimeConfig above)
+	data1Resp := postJSON(t, server.URL+"/v1/taa/import", map[string]any{
+		"resourceUrl": resourceServer.URL + "/data1.tar.gz",
+		"requestId":   "req-data-01",
+		"taskId":      "task-data-01",
+	})
+	apiData1 := decodeResponse(t, data1Resp)
+	if data1Resp.StatusCode != http.StatusOK || apiData1.Error != 0 {
+		t.Fatalf("import data1 failed: %d / %s", data1Resp.StatusCode, apiData1.Msg)
+	}
 
 	// Wait for reportRes 1
 	select {
@@ -1318,6 +1360,7 @@ result = {"dataset": {"content": data_content}, "metrics": {"marker": args.marke
 	case <-time.After(15 * time.Second):
 		t.Fatal("timed out waiting for reportRes 1")
 	}
+	waitForIdle(t, state)
 
 	// Check marker for run1
 	resultDir1 := resultDirForRequestTask(state.Security.ResultDir, "req-data-01", "task-data-01")

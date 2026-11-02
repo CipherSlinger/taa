@@ -133,6 +133,15 @@ func sendReportingJSON(ctx context.Context, platformAddr, endpoint string, paylo
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// This path owns its own POST instead of calling platform.SendPlatformJSON, so
+	// it has to apply the same seal. Sealed payloads are applied unconditionally,
+	// including when sealing itself fails: there is no plaintext fallback.
+	if sealed, ok, err := platform.SealOutbound(payload); ok {
+		if err != nil {
+			return err
+		}
+		payload = sealed
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, platformURL(platformAddr, endpoint), bytes.NewReader(payload))
 	if err != nil {
 		return err

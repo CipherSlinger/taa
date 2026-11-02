@@ -4,10 +4,12 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/asn1"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 
 	gmsmsm2 "github.com/tjfoc/gmsm/sm2"
 )
@@ -102,6 +104,37 @@ func (k *SM2PrivateKey) ScalarBytes() []byte {
 
 // ─── PEM 序列化 ──────────────────────────────────────────────────────
 
+// ParseSM2PublicKeyHex parses a bare SM2 public key point given as hex.
+//
+// The expected input is the uncompressed point 04 || X(32B) || Y(32B), which is
+// the same length and layout as a PEM SubjectPublicKeyInfo payload but without
+// the DER envelope. This is the wire format the control platform publishes, so
+// it is parsed here rather than reconstructed by callers that have no access to
+// the unexported point parser.
+func ParseSM2PublicKeyHex(hexValue string) (*SM2PublicKey, error) {
+	trimmed := strings.TrimSpace(hexValue)
+	if trimmed == "" {
+		return nil, errors.New("teecrypto: SM2 公钥 hex 为空")
+	}
+	point, err := hex.DecodeString(trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("teecrypto: SM2 公钥 hex 解码失败: %w", err)
+	}
+	return parseSM2Point(point)
+}
+
+// MarshalSM2PublicKeyHex renders a public key in the platform's published wire
+// format: "04 || X(32B) || Y(32B)", hex encoded. It is the counterpart of
+// ParseSM2PublicKeyHex and is used wherever an operator-facing value has to be
+// produced (config templates, the local platform mock).
+func MarshalSM2PublicKeyHex(pub *SM2PublicKey) (string, error) {
+	point, err := marshalSM2Point(pub)
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(point), nil
+}
+
 func ParseSM2PublicKeyPEM(pemData []byte) (*SM2PublicKey, error) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {
@@ -192,10 +225,23 @@ func EncryptSM2(pub *SM2PublicKey, plaintext []byte) ([]byte, error) {
 	return ciphertext, nil
 }
 
+// SM2MinCiphertextSize is the shortest well-formed C1C3C2 ciphertext: the
+// uncompressed point (1+32+32) followed by the 32-byte C3 digest, with an
+// optionally empty C2. A shorter input cannot be a valid ciphertext.
+const SM2MinCiphertextSize = 1 + 32 + 32 + 32
+
 // DecryptSM2 使用 SM2 私钥解密由 EncryptSM2 生成的密文。
 func DecryptSM2(priv *SM2PrivateKey, ciphertext []byte) ([]byte, error) {
 	if err := validateSM2PrivateKey(priv); err != nil {
 		return nil, err
+	}
+	// gmsm slices the input without bounds checks and panics on anything
+	// shorter than 96 bytes. Ciphertext arrives straight off the wire, so the
+	// length has to be rejected here: a 3-byte body must be an error, not a
+	// process crash. A short C2 (empty plaintext) also fails in gmsm, so the
+	// minimum is one byte more than its own bound.
+	if len(ciphertext) < SM2MinCiphertextSize+1 {
+		return nil, fmt.Errorf("teecrypto: SM2 密文长度无效: %d", len(ciphertext))
 	}
 	plaintext, err := gmsmsm2.Decrypt(toGmsmPrivateKey(priv), ciphertext, gmsmsm2.C1C3C2)
 	if err != nil {
@@ -205,6 +251,18 @@ func DecryptSM2(priv *SM2PrivateKey, ciphertext []byte) ([]byte, error) {
 }
 
 // ─── SM2 签名（委托 gmsm）───────────────────────────────────────────
+
+// SM2DefaultUserID is the SM2 signature identity ("ID_A") TAA uses when no
+// override is supplied. It is the value GB/T 32918.2 uses in its examples and
+// the one gmsm hardcodes internally, so a peer that signs with its library
+// default interoperates with TAA without any configuration.
+//
+// The ID is not a credential: SM2 folds it into the signed digest via
+// ZA = SM3(ENTLA || ID_A || a || b || xG || yG || xA || yA), so it only has to
+// match on both sides. A mismatch still produces a well-formed signature; it
+// simply never verifies, and the failure surfaces as "signature invalid" on the
+// receiving side rather than as a configuration error.
+var SM2DefaultUserID = []byte("1234567812345678")
 
 // SignSM2Signature 使用 SM2 私钥对 msg 生成数字签名。
 // userID 为签名者标识,空值时使用默认值 "1234567812345678"。
@@ -225,6 +283,44 @@ func VerifySM2Signature(pub *SM2PublicKey, userID, msg []byte, r, s *big.Int) bo
 		return false
 	}
 	return gmsmsm2.Sm2Verify(toGmsmPublicKey(pub), msg, userID, r, s)
+}
+
+// sm2DERSignature is the ASN.1 SEQUENCE { r INTEGER, s INTEGER } encoding SM2
+// signatures use on the wire. It is declared here so callers never have to
+// touch gmsm's unexported counterpart.
+type sm2DERSignature struct {
+	R, S *big.Int
+}
+
+// MarshalSM2SignatureDER encodes an (r, s) pair as a DER SIGNED SEQUENCE's
+// contents: SEQUENCE { INTEGER r, INTEGER s }.
+func MarshalSM2SignatureDER(r, s *big.Int) ([]byte, error) {
+	if r == nil || s == nil {
+		return nil, errors.New("teecrypto: SM2 签名分量不能为空")
+	}
+	der, err := asn1.Marshal(sm2DERSignature{R: r, S: s})
+	if err != nil {
+		return nil, fmt.Errorf("teecrypto: SM2 签名 DER 编码失败: %w", err)
+	}
+	return der, nil
+}
+
+// UnmarshalSM2SignatureDER decodes DER bytes produced by MarshalSM2SignatureDER.
+// Trailing bytes are rejected: a signature is a complete, self-delimiting value,
+// so anything left over means the input is not what the caller thinks it is.
+func UnmarshalSM2SignatureDER(der []byte) (*big.Int, *big.Int, error) {
+	var sig sm2DERSignature
+	rest, err := asn1.Unmarshal(der, &sig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("teecrypto: SM2 签名 DER 解码失败: %w", err)
+	}
+	if len(rest) != 0 {
+		return nil, nil, fmt.Errorf("teecrypto: SM2 签名 DER 尾部有多余字节: %d", len(rest))
+	}
+	if sig.R == nil || sig.S == nil {
+		return nil, nil, errors.New("teecrypto: SM2 签名 DER 缺少分量")
+	}
+	return sig.R, sig.S, nil
 }
 
 // ─── PEM ASN.1 结构 ──────────────────────────────────────────────────

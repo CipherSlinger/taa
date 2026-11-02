@@ -21,40 +21,66 @@ paths:
   /v1/taa/health:
     post:
       summary: 健康检查
-      description: 平台检查 TAA 服务的连通性与存活状态。
+      description: >-
+        平台检查 TAA 服务的连通性与存活状态。
+        请求与响应都套 SM2 信封（见 Envelope）；明文请求为 `{}`，明文响应见 x-plaintext-response-schema。
+        由于该接口也要求信封，本地探针签不出合法 sign，部署侧的就绪判定改为 TCP 探测。
       tags:
         - 运维与监控
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
       responses:
         '200':
-          description: 服务正常
+          description: 服务正常（响应体为信封，明文见 x-plaintext-response-schema）
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiResponse'
-              example:
+                $ref: '#/components/schemas/Envelope'
+              x-plaintext-response-schema: '#/components/schemas/ApiResponse'
+              x-plaintext-response-example:
                 msg: "success"
                 result:
                   status: "ok"
                 error: 0
+        '400':
+          $ref: '#/components/responses/EnvelopeBadRequest'
+        '401':
+          $ref: '#/components/responses/EnvelopeUnauthorized'
+        '413':
+          $ref: '#/components/responses/EnvelopeTooLarge'
 
   /v1/taa/status:
     post:
       summary: 状态查询
-      description: 查询 TAA 运行状态、当前阶段、资源导入就绪情况以及当前执行的操作。
+      description: >-
+        查询 TAA 运行状态、当前阶段、资源导入就绪情况以及当前执行的操作。
+        请求与响应都套 SM2 信封（见 Envelope）；明文请求为 `{}`，明文响应见 x-plaintext-response-*。
       tags:
         - 运维与监控
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
       responses:
         '200':
           description: 成功返回状态
           content:
             application/json:
               schema:
+                $ref: '#/components/schemas/Envelope'
+              x-plaintext-response-schema:
                 allOf:
                   - $ref: '#/components/schemas/ApiResponse'
                   - properties:
                       result:
                         $ref: '#/components/schemas/StatusResult'
-              example:
+              x-plaintext-response-example:
                 msg: "success"
                 result:
                   currentPhase: 1
@@ -76,21 +102,24 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/GetAttestationRequest'
-            example:
+              $ref: '#/components/schemas/Envelope'
+            x-plaintext-request-example:
               requestId: "req-att-001"
+      x-plaintext-request-schema: '#/components/schemas/GetAttestationRequest'
       responses:
         '200':
           description: 成功获取远程证明报告
           content:
             application/json:
               schema:
+                $ref: '#/components/schemas/Envelope'
+              x-plaintext-response-schema:
                 allOf:
                   - $ref: '#/components/schemas/ApiResponse'
                   - properties:
                       result:
                         $ref: '#/components/schemas/GetAttestationResult'
-              example:
+              x-plaintext-response-example:
                 msg: "success"
                 result:
                   requestId: "req-att-001"
@@ -120,11 +149,12 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ImportRequest'
-            example:
+              $ref: '#/components/schemas/Envelope'
+            x-plaintext-request-example:
               resourceUrl: "http://platform.internal/files/encrypted-data.tar.gz.enc"
               taskId: "task-20260902-001"
               requestId: "req-imp-001"
+      x-plaintext-request-schema: '#/components/schemas/ImportRequest'
       responses:
         '200':
           description: >-
@@ -133,8 +163,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiResponse'
-              example:
+                $ref: '#/components/schemas/Envelope'
+              x-plaintext-response-schema: '#/components/schemas/ApiResponse'
+              x-plaintext-response-example:
                 msg: "数据已接收，训练结果将通过 reportRes 上报"
                 result: null
                 error: 0
@@ -143,8 +174,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiResponse'
-              example:
+                $ref: '#/components/schemas/Envelope'
+              x-plaintext-response-schema: '#/components/schemas/ApiResponse'
+              x-plaintext-response-example:
                 msg: "resourceUrl 不能为空"
                 result: null
                 error: 400
@@ -153,8 +185,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiResponse'
-              example:
+                $ref: '#/components/schemas/Envelope'
+              x-plaintext-response-schema: '#/components/schemas/ApiResponse'
+              x-plaintext-response-example:
                 msg: "当前已有训练任务正在执行中 (taskId: task-001, op: training)，请等待完成后再提交"
                 result: null
                 error: 409
@@ -163,8 +196,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiResponse'
-              example:
+                $ref: '#/components/schemas/Envelope'
+              x-plaintext-response-schema: '#/components/schemas/ApiResponse'
+              x-plaintext-response-example:
                 msg: "下载资源失败: HTTP 404"
                 result: null
                 error: 500
@@ -173,7 +207,8 @@ paths:
     post:
       summary: 导入模型代码
       description: >-
-        平台向 TAA 下发模型代码密态资源包（Phase 1）。TAA 同步接收请求并异步完成解封、解压，
+        平台向 TAA 下发模型代码密态资源包（Phase 1）。请求与响应都套 SM2 信封（见 Envelope）。
+        这里的 publicKey 与信封无关：信封用的是 TAA 自身的 SM2 密钥对，publicKey 是导出结果时使用的接收方公钥。TAA 同步接收请求并异步完成解封、解压，
         随后在 TEE 内执行静态代码扫描及 LLM 语义安全审计。审计在后台异步进行，其结论通过
         /v1/taa/reportAudit 单独回传，仅供参考：本接口不等待审计结论，也不由审计结论触发或阻止训练。
         本接口不触发训练，训练由后续数据下发 /v1/taa/import 拉起。
@@ -189,12 +224,13 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ImportModelRequest'
-            example:
+              $ref: '#/components/schemas/Envelope'
+            x-plaintext-request-example:
               resourceUrl: "http://platform.internal/files/model-package.tar.gz.enc"
               taskId: "task-20260902-001"
               requestId: "req-model-001"
               runtimeConfig: '{"commands":["python3 train.py --epochs 10"]}'
+      x-plaintext-request-schema: '#/components/schemas/ImportModelRequest'
       responses:
         '200':
           description: >-
@@ -204,8 +240,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiResponse'
-              examples:
+                $ref: '#/components/schemas/Envelope'
+              x-plaintext-response-schema: '#/components/schemas/ApiResponse'
+              x-plaintext-response-examples:
                 resourceAccepted:
                   summary: resourceUrl 非空，资源已下载完成，解密、解压与审计随后异步执行
                   value:
@@ -223,8 +260,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiResponse'
-              example:
+                $ref: '#/components/schemas/Envelope'
+              x-plaintext-response-schema: '#/components/schemas/ApiResponse'
+              x-plaintext-response-example:
                 msg: "resourceUrl 不能为空: 之前未传输过且请求中为空"
                 result: null
                 error: 400
@@ -233,8 +271,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiResponse'
-              example:
+                $ref: '#/components/schemas/Envelope'
+              x-plaintext-response-schema: '#/components/schemas/ApiResponse'
+              x-plaintext-response-example:
                 msg: "当前已有训练任务正在执行中 (taskId: task-001, op: training)，请等待完成后再提交"
                 result: null
                 error: 409
@@ -243,8 +282,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiResponse'
-              example:
+                $ref: '#/components/schemas/Envelope'
+              x-plaintext-response-schema: '#/components/schemas/ApiResponse'
+              x-plaintext-response-example:
                 msg: "下载资源失败: HTTP 404"
                 result: null
                 error: 500
@@ -260,21 +300,24 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/GetResourceInfoRequest'
-            example:
+              $ref: '#/components/schemas/Envelope'
+            x-plaintext-request-example:
               resourceUrl: "http://platform.internal/files/dataset.zip"
+      x-plaintext-request-schema: '#/components/schemas/GetResourceInfoRequest'
       responses:
         '200':
           description: 成功解析资源结构
           content:
             application/json:
               schema:
+                $ref: '#/components/schemas/Envelope'
+              x-plaintext-response-schema:
                 allOf:
                   - $ref: '#/components/schemas/ApiResponse'
                   - properties:
                       result:
                         $ref: '#/components/schemas/ResourceInfoResult'
-              example:
+              x-plaintext-response-example:
                 msg: "success"
                 result:
                   name: "dataset.zip"
@@ -297,17 +340,19 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SwitchRequest'
-            example:
+              $ref: '#/components/schemas/Envelope'
+            x-plaintext-request-example:
               phase: 2
+      x-plaintext-request-schema: '#/components/schemas/SwitchRequest'
       responses:
         '200':
           description: 阶段切换成功
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiResponse'
-              example:
+                $ref: '#/components/schemas/Envelope'
+              x-plaintext-response-schema: '#/components/schemas/ApiResponse'
+              x-plaintext-response-example:
                 msg: "阶段切换成功"
                 result:
                   phase: 2
@@ -331,13 +376,16 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ExportRequest'
-            example:
+              $ref: '#/components/schemas/Envelope'
+            x-plaintext-request-example:
               taskId: "task-20260902-001"
               publicKey: "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
+      x-plaintext-request-schema: '#/components/schemas/ExportRequest'
       responses:
         '200':
-          description: 导出结果二进制流（或自包含信封密文）
+          description: >-
+            导出结果二进制流（或自包含信封密文）。注意：本接口的成功响应是裸文件流，
+            **不**套 Envelope；只有错误响应（400/404/500）是封装 JSON。
           headers:
             Content-Disposition:
               schema:
@@ -361,19 +409,22 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiResponse'
+                $ref: '#/components/schemas/Envelope'
+              x-plaintext-response-schema: '#/components/schemas/ApiResponse'
         '404':
           description: 该任务的结果目录下不存在 training_report.json
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiResponse'
+                $ref: '#/components/schemas/Envelope'
+              x-plaintext-response-schema: '#/components/schemas/ApiResponse'
         '500':
           description: 加载导入索引失败、检查结果文件失败、压缩结果目录失败、加密失败，或结果泄露检查裁决不可用且 llm.failClosed=true
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiResponse'
+                $ref: '#/components/schemas/Envelope'
+              x-plaintext-response-schema: '#/components/schemas/ApiResponse'
 
   # =========================================================================
   # TAA → 平台 回调与上报接口
@@ -390,7 +441,8 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RegisterRequest'
+              $ref: '#/components/schemas/Envelope'
+      x-plaintext-request-schema: '#/components/schemas/RegisterRequest'
       responses:
         '200':
           description: 平台成功确认注册
@@ -416,7 +468,8 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ReportResRequest'
+              $ref: '#/components/schemas/Envelope'
+      x-plaintext-request-schema: '#/components/schemas/ReportResRequest'
       responses:
         '200':
           description: 平台成功接收训练结果
@@ -441,7 +494,8 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ReportModelImportRequest'
+              $ref: '#/components/schemas/Envelope'
+      x-plaintext-request-schema: '#/components/schemas/ReportModelImportRequest'
       responses:
         '200':
           description: 平台成功接收模型导入结果
@@ -468,7 +522,8 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ReportAuditRequest'
+              $ref: '#/components/schemas/Envelope'
+      x-plaintext-request-schema: '#/components/schemas/ReportAuditRequest'
       responses:
         '200':
           description: 平台成功接收代码安全审计结果
@@ -493,7 +548,8 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ModelLogRequest'
+              $ref: '#/components/schemas/Envelope'
+      x-plaintext-request-schema: '#/components/schemas/ModelLogRequest'
       responses:
         '200':
           description: 平台成功接收日志
@@ -518,7 +574,8 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/TaaLogRequest'
+              $ref: '#/components/schemas/Envelope'
+      x-plaintext-request-schema: '#/components/schemas/TaaLogRequest'
       responses:
         '200':
           description: 平台成功接收日志
@@ -543,7 +600,8 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ReportProgressRequest'
+              $ref: '#/components/schemas/Envelope'
+      x-plaintext-request-schema: '#/components/schemas/ReportProgressRequest'
       responses:
         '200':
           description: 平台成功接收进度
@@ -558,7 +616,58 @@ paths:
                 error: 0
 
 components:
+  responses:
+    EnvelopeBadRequest:
+      description: 不是信封，或缺少 cipher/sign（响应同样封装）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    EnvelopeUnauthorized:
+      description: 请求解密或验签失败（响应同样封装）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+    EnvelopeTooLarge:
+      description: 请求体超过 8 MiB（响应同样封装）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
   schemas:
+    # ── 消息信封 ────────────────────────────────────────────────────────────
+    Envelope:
+      type: object
+      description: >-
+        除 /v1/taa/fheCallback 外所有路由的传输层封装。请求方向为 {dockerId, cipher, sign}，
+        响应方向为 {cipher, sign}。cipher 为 SM2 C1C3C2 原始密文字节的 Base64，
+        明文为业务 JSON；sign 为对明文（不是对 cipher）的 SM2 签名 DER 字节的 Base64。
+        TAA 的解封顺序固定为：解 Base64 → SM2 解密 → 对解密后的明文验签 → 才交给业务处理。
+        信封里的明文就是各接口下文给出的请求体/响应体，字段一个不改。
+      required:
+        - cipher
+        - sign
+      properties:
+        dockerId:
+          type: string
+          description: 仅 TAA → 平台的请求携带，固定为本实例的 docker id；平台 → TAA 的请求可省略，TAA 收到后忽略
+          example: "taa-env-slim-v2"
+        cipher:
+          type: string
+          format: byte
+          description: >-
+            base64(SM2_Encrypt(接收方公钥, UTF-8 明文 JSON))。平台 → TAA 用平台公钥加密、
+            TAA 用自身私钥解密；TAA → 平台用 TAA 公钥加密、平台用自身私钥解密。
+            加密输出为 C1C3C2 布局的原始字节（含 0x04 未压缩点前缀），此处 Base64 编码，不是 hex 再 Base64
+        sign:
+          type: string
+          format: byte
+          description: >-
+            base64(DER(SM2 签名(发送方私钥, 明文 JSON, ID_A)))。签名对象是明文，不是 cipher：
+            签名 cipher 会让任何持有接收方公钥的人伪造出合法报文。
+            ID_A 默认 1234567812345678，仅可由环境变量 PLATFORM_SM2_ID 覆盖
+
     # ── 公共响应包装 ────────────────────────────────────────────────────────
     ApiResponse:
       type: object
@@ -665,7 +774,7 @@ components:
         publicKey:
           type: string
           description: >-
-            SM2 公钥 PEM，非必填。TAA 在 phase=1 且本字段非空时保存，作为 phase=3 结果加密导出的首选公钥；
+            SM2 公钥 PEM（导出结果的接收方公钥，与本次请求的信封无关），非必填。TAA 在 phase=1 且本字段非空时保存，作为 phase=3 结果加密导出的首选公钥；
             为空时不校验、不保存、也不返回失败，phase=3 导出会回退到导出请求携带的 publicKey，仍为空则明文导出
         runtimeConfig:
           type: string

@@ -318,16 +318,20 @@ kubectl get runtimeclass kata-qemu-csv2-taa
 kubectl get pod test-kata-csv2-taa -o wide
 kubectl describe pod test-kata-csv2-taa
 
-# TAA 是否真的在跑：/v1/taa/* 全部是 POST-only（GET 得到 405），容器里只有 curl
-kubectl exec test-kata-csv2-taa -- curl -s -X POST localhost:6001/v1/taa/health
+# TAA 是否真的在跑：/v1/taa/* 全部是 POST-only（GET 得到 405），且除 fheCallback
+# 外每条路由都要求 SM2 {cipher,sign} 信封 —— 本地探针签不出合法请求，所以这里只能
+# 用 TCP 探活。端口能连上说明配置加载、密钥恢复、首次注册都返回了（TAA 最后才
+# ListenAndServe）。
+kubectl exec test-kata-csv2-taa -- bash -c 'exec 3<>/dev/tcp/127.0.0.1/6001'
 
-# 取证明（attestationValues 里已解掩码的 digest 就是报告的 MEASUREMENT）
-kubectl exec test-kata-csv2-taa -- \
-  curl -s -X POST localhost:6001/v1/taa/getAttestation \
-  -H 'Content-Type: application/json' -d '{"requestId":"probe"}'
+# 取证明：换成平台侧的调用方来做（平台持有 TAA 公钥与自己的私钥，能封包也能解包）。
+# 本地拿不到这两把钥匙，所以健康与证明的校验改看 guest 的启动日志：
+# TAA 是 guest 的第一个用户态进程，日志在 guest 的 /tmp/taa.log，不在容器里。
+# 读它需要 kata debug console（agent.debug_console_enabled = true 后
+# kata-runtime exec <sandbox-id>），容器侧的 kubectl exec 读不到。
 
 # 用实际 QEMU append 重算预期度量（在宿主上执行；与包内 README 的 hex 对照，
-# 也应与上面 getAttestation 的 digest 一致）
+# 也应与平台经 getAttestation 拿到的 digest 一致）
 pkg=/path/to/kata-qemu-csv2-taa
 pid=$(ps -eo pid=,args= | grep -F qemu | grep -F /opt/kata/share/kata-containers/taa-csv-20260901/initramfs.img | awk '{print $1}' | head -1)
 tr '\0' '\n' < /proc/$pid/cmdline | grep -A1 '^-append$' | tail -n1 > /tmp/append

@@ -900,6 +900,64 @@ start_local_background() {
   info "started $name (pid $pid)"
 }
 
+# taa_tcp_probe HOST PORT
+#
+# TAA's own routes are sealed with an SM2 {cipher,sign} envelope, so no local
+# probe can get an answer out of /v1/taa/health: it would have to hold the
+# platform private key to sign a request and TAA's private key to open the
+# reply. A TCP connect is what is left, and it is still a meaningful gate —
+# TAA calls ListenAndServe only after config loading, key recovery and
+# registration have all returned, so a reachable port means startup completed.
+#
+# The reverse is not true: a failed registration is logged and startup
+# continues, so "port open" does NOT mean the platform knows this instance.
+# Callers confirm the listening log line separately for that reason.
+taa_tcp_probe() {
+  local host="$1"
+  local port="$2"
+  if command -v nc >/dev/null 2>&1; then
+    nc -z -w 2 "$host" "$port" >/dev/null 2>&1 && return 0
+  fi
+  # bash's /dev/tcp needs no external binary and is available wherever this
+  # script's own bash is. -z keeps it quiet; the subshell keeps the failure
+  # from being reported as a syntax error on shells built without it.
+  (exec 3<>"/dev/tcp/$host/$port") >/dev/null 2>&1
+}
+
+wait_for_taa_tcp_ready() {
+  local label="$1"
+  local host="$2"
+  local port="$3"
+  local timeout_seconds="$4"
+  local interval_seconds="${5:-2}"
+  local start_ts
+  start_ts=$(date +%s)
+  while :; do
+    if taa_tcp_probe "$host" "$port"; then
+      info "$label ready: tcp $host:$port ${DIM}(took $(( $(date +%s) - start_ts ))s)${NC}"
+      return 0
+    fi
+    if (( $(date +%s) - start_ts >= timeout_seconds )); then
+      err "$label did not become ready within ${timeout_seconds}s: tcp $host:$port"
+      return 1
+    fi
+    sleep "$interval_seconds"
+  done
+}
+
+# confirm_taa_listening CMD runs CMD (which should print the tail of TAA's log)
+# after a successful TCP probe and looks for the startup line. Without it a stale
+# process from a previous run, or a listener that is up but short of the
+# configuration step, looks the same as a healthy daemon -- the probe alone
+# cannot tell them apart. The command is a string because the two callers reach
+# the log by different routes (docker exec locally, kubectl exec over SSH).
+confirm_taa_listening() {
+  local tail_cmd="$1"
+  local haystack
+  haystack=$(eval "$tail_cmd" 2>/dev/null || true)
+  grep -q 'taa service listening on' <<<"$haystack"
+}
+
 http_probe() {
   local method="$1"
   local url="$2"
@@ -1695,7 +1753,10 @@ wait_for_remote_taa_ready() {
   local spin_len=${#SPIN_FRAMES[@]}
   local i=0
   for ((attempt=1; attempt<=ready_attempts; attempt++)); do
-    if remote_ssh "$(container_exec) curl -fsS -X POST http://127.0.0.1:$CON_PORT/v1/taa/health >/dev/null 2>&1"; then
+    # TCP inside the Pod's network namespace: its /v1/taa/health now requires an
+    # SM2 envelope that a local probe cannot produce. The Pod netns is the
+    # guest's, so 127.0.0.1 here is the daemon.
+    if remote_ssh "$(container_exec) sh -lc '</dev/tcp/127.0.0.1/$CON_PORT' >/dev/null 2>&1"; then
       taa_ready=true
       break
     fi
@@ -1713,7 +1774,12 @@ wait_for_remote_taa_ready() {
   printf "\r\033[K"
   if [[ "$taa_ready" == true ]]; then
     local total_elapsed=$(( $(date +%s) - wait_start_ts ))
-    info "remote taa ready: http://127.0.0.1:$CON_PORT/v1/taa/health ${DIM}(took ${total_elapsed}s)${NC}"
+    info "remote taa ready: tcp 127.0.0.1:$CON_PORT ${DIM}(took ${total_elapsed}s)${NC}"
+    # A reachable port only proves a listener; the log line is what shows the
+    # daemon that owns it finished loading its configuration.
+    if ! confirm_taa_listening "remote_ssh \"\$(container_exec) sh -lc 'tail -n 200 $TAA_LOG_FILE'\""; then
+      warn "remote taa port is open but the 'taa service listening on' line was not found in $TAA_LOG_FILE"
+    fi
     return 0
   else
     err "remote taa did not become ready within ${READY_TIMEOUT}s"
@@ -1896,10 +1962,14 @@ deploy_docker_taa() {
   docker exec -d "$LOCAL_DOCKER_CONTAINER" sh -lc "cd '$TAA_CONTAINER_WORKDIR' && nohup bash ./taa-supervisor.sh >/dev/null 2>&1 &"
 
   step "waiting for taa service to become ready"
-  if ! wait_for_http_ready "taa" POST "$LOCAL_TAA_URL/v1/taa/health" "$READY_TIMEOUT" "$READY_INTERVAL"; then
+  # TCP, not HTTP: /v1/taa/health is sealed and unreachable to a local probe.
+  if ! wait_for_taa_tcp_ready "taa" 127.0.0.1 "$LOCAL_TAA_PORT" "$READY_TIMEOUT" "$READY_INTERVAL"; then
     echo -e "   ${YELLOW}↳${NC} taa container log (${TAA_LOG_FILE}):"
     docker exec -i "$LOCAL_DOCKER_CONTAINER" sh -lc "tail -n 60 '$TAA_LOG_FILE' 2>/dev/null || true"
     exit 1
+  fi
+  if ! confirm_taa_listening "docker exec -i '$LOCAL_DOCKER_CONTAINER' sh -lc 'tail -n 200 $TAA_LOG_FILE' 2>/dev/null"; then
+    warn "taa port is open but the 'taa service listening on' line was not found in the container log; the daemon may be an older process or still starting"
   fi
 }
 
@@ -1933,7 +2003,7 @@ if [[ "$DEPLOY_DOCKER" == true ]]; then
   fi
   if [[ "$DEPLOY_TAA" == true ]]; then
     echo -e "  ${BOLD}${CYAN}● TAA Secure Enclave Daemon${NC}  ${DIM}(In-Container Daemon)${NC}"
-    echo -e "    ${MUTED}↳ Health API :${NC} ${BOLD}${LOCAL_TAA_URL}/v1/taa/health${NC}"
+    echo -e "    ${MUTED}↳ API        :${NC} ${BOLD}${LOCAL_TAA_URL}/v1/taa/*${NC} ${DIM}(sealed: needs the platform key pair)${NC}"
     echo -e "    ${MUTED}↳ Container  :${NC} ${LOCAL_DOCKER_CONTAINER}"
     echo -e "    ${MUTED}↳ Config     :${NC} ${CONTAINER_TAA_CONFIG_PATH}"
     echo -e "    ${MUTED}↳ Log file   :${NC} ${TAA_LOG_FILE}"

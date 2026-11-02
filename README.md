@@ -280,6 +280,9 @@ Alongside source auditing, the import audit also walks the **binary files** in a
 
 All TAA APIs are exposed over HTTP `POST`. For comprehensive request/response schemas, refer to the OpenAPI 3.0.3 specification in `api/openapi.yaml`.
 
+**Every request and JSON response is an SM2 envelope.** The body is
+`{"cipher": "<base64>", "sign": "<base64>"}`, where `cipher` is `base64(SM2_Encrypt(platform_pub, plaintext))` over the raw `C1C3C2` bytes and `sign` is `base64(DER(SM2 signature over the plaintext))` under the shared SM2 user ID. The plaintext inside is exactly the JSON object each endpoint documents, unchanged. `/v1/taa/fheCallback` is the only unsealed route (FHE service → TAA, loopback only). A successful `/v1/taa/export` still returns a binary octet-stream; export errors are sealed JSON. See [2.1 Message Envelope](docs/api-design.md#21-消息信封平台--taa) for the byte-level rules.
+
 ### 1. TAA → Platform (Callbacks & Reporting)
 
 | Endpoint | Method | Description |
@@ -328,7 +331,8 @@ TAA reads its configuration from `taa-config.json` located in its working direct
   "platform": {
     "ip": "127.0.0.1:18080",
     "dockerID": "taa-env-slim-v2",
-    "contract": ""
+    "contract": "",
+    "publicKey": ""
   },
   "storage": {
     "model": "/root/taa/models",
@@ -382,6 +386,8 @@ TAA reads its configuration from `taa-config.json` located in its working direct
 | `platform.ip` | Env `PLATFORM_IP` | Platform IP and port (`host:port`); dynamically injected via environment in production. The file wins over the environment, except on an `fhe` instance — see [Platform Identity Precedence](#platform-identity-precedence) |
 | `platform.dockerID` | Env `DOCKER_ID` | Container / Pod identifier; dynamically injected via environment in production. Same precedence rule as `platform.ip` |
 | `platform.contract` | Env `CONTRACT_ID` | Contract identifier (reserved optional). Always the file-wins rule, on both instance types. It is also the second input of the `taaSecretKey` derivation, so changing it makes previously reported `TAASECRETKEY` values undecryptable |
+| `platform.publicKey` | Env `PLATFORM_PUBLIC_KEY` | The control platform's SM2 public key, hex of `04 \|\| X(32 bytes) \|\| Y(32 bytes)` (130 hex characters). Every message to and from the platform is sealed with it, so **here the environment always wins over the file** — the opposite of `platform.ip`. Every shipped template leaves the field empty, and an empty value is a startup failure with no plaintext fallback: supply it through `PLATFORM_PUBLIC_KEY` or fill in this field. See [SM2 Envelope Key Material](#sm2-envelope-key-material) |
+| `PLATFORM_SM2_ID` (env only) | `1234567812345678` | The SM2 signature identity (`ID_A`) both ends must share. **Deliberately not a config-file field**: it is read only from the environment, because an extra file source would be another way for one host to drift. The bytes are used verbatim, with no trimming or decoding. See [SM2 Envelope Key Material](#sm2-envelope-key-material) |
 | `storage.model` | `/root/taa/models` | TAA platform-internal storage directory for imported model code |
 | `storage.data` | `/root/taa/data` | TAA platform-internal storage directory for imported datasets and resources |
 | `storage.result` | `/root/taa/results` | TAA platform-internal storage directory for final packaged computation results |
@@ -434,6 +440,31 @@ The whole `fhe` section is read only when `server.type` is `fhe`; a `tee` instan
 
 `platform.contract` / `CONTRACT_ID` is not part of the flip: it stays file-wins on both types.
 
+### SM2 Envelope Key Material
+
+Every request the platform sends to TAA — and every JSON response TAA sends back — is wrapped in an
+SM2 envelope `{cipher, sign}`. TAA therefore needs two startup settings:
+
+- **`PLATFORM_PUBLIC_KEY`** (env) or **`platform.publicKey`** (file): the platform's SM2 public key,
+  hex of `04 || X(32 bytes) || Y(32 bytes)`. The environment **always wins**; the file only fills the
+  gap. This is deliberately the only platform field with that precedence — overriding a key means
+  rotating credentials, and a stale key baked into the image must not shadow it. A missing or
+  unparseable key aborts startup: there is no plaintext mode, and continuing would only turn "this
+  instance cannot talk to the platform" into runtime failures after the process reported itself ready.
+- **`PLATFORM_SM2_ID`** (env only): the SM2 signature identity `ID_A`. It is deliberately **not** a
+  config-file field, because both ends must use byte-identical bytes and every extra source is
+  another way to drift. Empty is not an error — it means the protocol default
+  `1234567812345678`. The value is used verbatim (no trimming, no decoding); a mismatch on the two
+  ends shows up only as `signature verification failed`, so startup logs the effective ID for
+  comparison.
+
+Both settings apply on every instance type, including `fhe`, whose outbound reports are sealed the
+same way. TAA's own half of the envelope is its generated SM2 key pair, whose public key the platform
+already learns from the attestation report and from registration.
+
+`/v1/taa/fheCallback` is the only unsealed route: its caller is the FHE service, which has no
+platform private key. It keeps its loopback-source restriction instead.
+
 ### TAA Key Recovery (`TAASECRETKEY`)
 
 In a CSV2 deployment the `storage.keys` directory lives inside the guest, so recreating the
@@ -463,9 +494,12 @@ does not reach it, so `TAASECRETKEY` there needs an additional injection path.
 
 ### Configuration Templates
 
-- **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths, with explicit `platform` configuration, an empty `attestation.measurement`, and `insecureSkipVerify: true`.
-- **`configs/taa-production.json`**: For production Kubernetes Pods. Omits `platform` so parameters are dynamically injected by the orchestration platform via environment variables, keeps attestation enabled, and leaves `attestation.measurement` unset so the measurement comparison is skipped with a startup warning while the TLS trust chain is still verified.
-- **`configs/taa-fhe.json`**: For an `fhe` instance — the GPU host co-located with the FHE service. Sets `server.type: "fhe"` and the `fhe` section, and carries a `platform` block (`127.0.0.1:18081`, `taa-fhe`) naming the mock used in end-to-end testing; on this instance type the environment overrides both fields, so the block is the fallback rather than the last word. The callback address is not configured: TAA derives it at startup as `http://127.0.0.1:<port>` from `server.addr`, and the callback endpoint is unauthenticated but loopback-only. `deploy-fhe.sh` renders the template before starting taa — and `taa save` bakes the same rendered result into the image — and that is where `fhe.dataDir` and `storage.keys` come from: the data directory is the tree the FHE entrypoint reads as `/data`, and `storage.keys` sits on a bind the FHE side does not mount at all, so the SM2 key pair and the sealed instance state stay out of the FHE service's reach.
+- **`configs/taa-docker.json`**: For local Docker container testing. Uses standard `/root/taa/...` and `/opt/taa/...` container paths, with explicit `platform` configuration (including `publicKey`, left empty for the deployment to fill), an empty `attestation.measurement`, and `insecureSkipVerify: true`.
+- **`configs/taa-production.json`**: For production Kubernetes Pods. Omits `platform.ip`/`platform.dockerID` so those are dynamically injected by the orchestration platform via environment variables, and carries a `platform` block only to declare `publicKey`; keeps attestation enabled, and leaves `attestation.measurement` unset so the measurement comparison is skipped with a startup warning while the TLS trust chain is still verified.
+- **`configs/taa-fhe.json`**: For an `fhe` instance — the GPU host co-located with the FHE service. Sets `server.type: "fhe"` and the `fhe` section, and carries a `platform` block (`127.0.0.1:18081`, `taa-fhe`, empty `publicKey`) naming the mock used in end-to-end testing; on this instance type the environment overrides `ip` and `dockerID`, so the block is the fallback rather than the last word (the public key already follows an environment-wins rule on every instance type). The callback address is not configured: TAA derives it at startup as `http://127.0.0.1:<port>` from `server.addr`, and the callback endpoint is unauthenticated but loopback-only. `deploy-fhe.sh` renders the template before starting taa — and `taa save` bakes the same rendered result into the image — and that is where `fhe.dataDir` and `storage.keys` come from: the data directory is the tree the FHE entrypoint reads as `/data`, and `storage.keys` sits on a bind the FHE side does not mount at all, so the SM2 key pair and the sealed instance state stay out of the FHE service's reach.
+- **`configs/taa-initrd.json`** and **`configs/taa-dataanaylsis.json`**: The CSV2 initrd and the data-landing instance respectively. Both carry a `platform` block whose `publicKey` is empty; the initrd's environment comes from the guest's `/etc/default/taa.env` written at image build time, so that variable has to be written there rather than injected into the Pod.
+
+All five templates ship `platform.publicKey` as an empty string rather than a real key: the key is deployment-specific, and an empty value makes TAA refuse to start (see [SM2 Envelope Key Material](#sm2-envelope-key-material)) instead of silently exchanging plaintext with a platform that expects an envelope. The JSON templates are parsed by `encoding/json`, which does not accept comments, so the field is documented here rather than inline in the files.
 
 ### FHE Instance Interface Differences
 
@@ -585,7 +619,8 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 >
 > `LLM_IP` / `TAA_LLM_ENDPOINT` are the only variables that **override** the config file (leave them
 > empty to keep the endpoint the image was packaged with); the `platform` identity fields do not
-> follow that rule.
+> follow that rule. The one platform field that is environment-wins is `PLATFORM_PUBLIC_KEY` (see
+> [SM2 Envelope Key Material](#sm2-envelope-key-material)); without it a deployment does not start.
 > `PLATFORM_IP`, `DOCKER_ID` and `CONTRACT_ID` only seed defaults that the file wins over — on a `tee`
 > instance. On an `fhe` instance the first two flip to environment-wins (see
 > [Platform Identity Precedence](#platform-identity-precedence)). Read the endpoint off the

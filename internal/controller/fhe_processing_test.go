@@ -2,6 +2,7 @@ package controller
 
 import (
 	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -1414,11 +1415,19 @@ func TestFHESuccessReportsFullProgress(t *testing.T) {
 	callback := httptest.NewServer(mux)
 	defer callback.Close()
 
-	resp := postJSON(t, callback.URL+"/v1/taa/fheCallback?token=test-token", map[string]any{
+	// fheCallback is the one route without an envelope, so it is posted as-is.
+	callbackBody, err := json.Marshal(map[string]any{
 		"task_id": "task-data",
 		"status":  "completed",
 		"cases":   []map[string]any{{"entry": "case-00", "result_id": "r"}},
 	})
+	if err != nil {
+		t.Fatalf("marshal callback: %v", err)
+	}
+	resp, err := http.Post(callback.URL+"/v1/taa/fheCallback?token=test-token", "application/json", bytes.NewReader(callbackBody))
+	if err != nil {
+		t.Fatalf("post callback: %v", err)
+	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("callback: status = %d, want 200", resp.StatusCode)

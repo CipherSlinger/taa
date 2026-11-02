@@ -23,6 +23,26 @@ type StartupConfig struct {
 	PlatformIP string
 	DockerID   string
 	Contract   string
+	// PlatformPublicKey is the control platform's SM2 public key as
+	// "04 || X(32) || Y(32)" hex. It encrypts everything TAA sends and verifies
+	// everything the platform sends, so it has no default and no fallback: an
+	// instance that cannot load it refuses to start rather than silently
+	// exchanging plaintext with a peer that expects an envelope.
+	//
+	// PLATFORM_PUBLIC_KEY wins over platform.publicKey in the config file. That
+	// is deliberately unlike platform.ip, where the file wins on a tee instance:
+	// an operator who sets the environment variable is rotating credentials, and
+	// letting a stale key baked into the image shadow it would make the rotation
+	// look applied while the instance kept using the old key.
+	PlatformPublicKey string
+	// PlatformSM2ID is the SM2 signature identity ("ID_A") both sides must
+	// agree on. It is read from PLATFORM_SM2_ID only - deliberately not from
+	// the config file - because the value has to be byte-identical on the two
+	// ends and every additional source is another way for one host to drift.
+	// Empty means the protocol default ("1234567812345678"); see
+	// crypto.SM2DefaultUserID. It is not an error, because the default is the
+	// value the protocol specified.
+	PlatformSM2ID string
 	// ServerType is one of "tee" (the default), "fhe" or "data-anaylsis", from
 	// server.type.
 	ServerType string
@@ -277,6 +297,10 @@ type startupPlatformConfigFile struct {
 	Endpoint string `json:"endpoint"`
 	DockerID string `json:"dockerID"`
 	Contract string `json:"contract"`
+	// PublicKey is the platform SM2 public key, "04||X||Y" hex. There is
+	// deliberately no publicKey field for the SM2 identity string: that one is
+	// environment-only (PLATFORM_SM2_ID).
+	PublicKey string `json:"publicKey"`
 }
 
 type startupStorageConfigFile struct {
@@ -884,6 +908,8 @@ func defaultStartupConfig() StartupConfig {
 		PlatformIP:                os.Getenv("PLATFORM_IP"),
 		DockerID:                  os.Getenv("DOCKER_ID"),
 		Contract:                  os.Getenv("CONTRACT_ID"),
+		PlatformPublicKey:         os.Getenv("PLATFORM_PUBLIC_KEY"),
+		PlatformSM2ID:             os.Getenv("PLATFORM_SM2_ID"),
 		EnableCodeAudit:           true,
 		CodeScan:                  CodeScanConfig{Engine: "semgrep"},
 		BinaryAuditEnabled:        true,
@@ -960,6 +986,19 @@ func applyStartupConfigFile(cfg *StartupConfig, fileCfg startupConfigFile) {
 		cfg.PlatformIP = trimmed
 	} else if trimmed := strings.TrimSpace(fileCfg.Platform.Endpoint); trimmed != "" {
 		cfg.PlatformIP = trimmed
+	}
+
+	// The platform public key is the one place the file does NOT win. Every
+	// other platform field follows the historical rule (the file overrides the
+	// environment on a tee instance), but a key is different: an operator
+	// overriding it in the environment is rotating credentials, and silently
+	// preferring a stale key baked into the image would make the override look
+	// accepted while the instance kept using the old one. A non-empty
+	// PLATFORM_PUBLIC_KEY therefore always wins; the file only fills the gap.
+	if strings.TrimSpace(cfg.PlatformPublicKey) == "" {
+		if trimmed := strings.TrimSpace(fileCfg.Platform.PublicKey); trimmed != "" {
+			cfg.PlatformPublicKey = trimmed
+		}
 	}
 
 	if trimmed := strings.TrimSpace(fileCfg.DockerID); trimmed != "" {

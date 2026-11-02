@@ -484,12 +484,17 @@ pod_env() {
     | sed -n "s/^$1=//p" | head -n1
 }
 
-# The image has no curl, so the in-pod probe uses python3, like the container
-# probe above.
+# The in-pod probe opens a TCP connection rather than calling /v1/taa/health:
+# that route is sealed with an SM2 {cipher,sign} envelope a local probe cannot
+# produce. python3 is used because the image ships no curl, and a bare socket
+# needs nothing else.
 wait_for_pod_taa() {
   local deadline=$((SECONDS + TAA_READY_TIMEOUT))
   while [ "$SECONDS" -lt "$deadline" ]; do
-    if pod_sh "python3 -c 'import urllib.request; urllib.request.urlopen(urllib.request.Request(\"http://127.0.0.1:$TAA_PORT/v1/taa/health\", data=b\"\", method=\"POST\"), timeout=5).read(1)'" >/dev/null 2>&1; then
+    if pod_sh "python3 -c 'import socket,sys; socket.create_connection((\"127.0.0.1\", int(sys.argv[1])), timeout=5).close()' $TAA_PORT" >/dev/null 2>&1; then
+      if ! pod_capture "tail -n 200 $TAA_LOG_FILE" 2>/dev/null | grep -q 'taa service listening on'; then
+        warn "pod taa port $TAA_PORT is open but the 'taa service listening on' line was not found in $TAA_LOG_FILE"
+      fi
       return 0
     fi
     sleep "$TAA_READY_INTERVAL"
@@ -942,10 +947,27 @@ wait_for_fhe_health() {
   return 1
 }
 
+# TAA's routes are sealed with an SM2 {cipher,sign} envelope, so /v1/taa/health
+# answers nothing to a local probe — it would need the platform private key to
+# sign and TAA's private key to open the reply. A TCP connect is the gate: TAA
+# reaches ListenAndServe only after config loading, key recovery and the first
+# registration attempt, so a reachable port means startup completed.
+taa_tcp_probe() {
+  local host="$1"
+  local port="$2"
+  host_sh "bash -c '</dev/tcp/$host/$port'" >/dev/null 2>&1
+}
+
 wait_for_taa() {
   local deadline=$((SECONDS + TAA_READY_TIMEOUT))
   while [ "$SECONDS" -lt "$deadline" ]; do
-    if host_sh "curl -fsS -o /dev/null -X POST 'http://${TAA_PROBE_HOST}:${TAA_PORT}/v1/taa/health'" 2>/dev/null; then
+    if taa_tcp_probe "$TAA_PROBE_HOST" "$TAA_PORT"; then
+      # The port proves a listener, not which process owns it or that it finished
+      # loading. The listening line is the only local evidence of that.
+      if ! host_capture "docker logs --tail 200 $(shell_quote "$TAA_CONTAINER_NAME") 2>&1" 2>/dev/null \
+          | grep -q 'taa service listening on'; then
+        warn "taa port $TAA_PORT is open but the 'taa service listening on' line was not found in the container log"
+      fi
       return 0
     fi
     sleep "$TAA_READY_INTERVAL"
@@ -1246,7 +1268,7 @@ deploy_into_pod() {
 
   step "restarting TAA in the pod"
   if is_dry_run; then
-    log "would remove $TAA_CONTAINER_WORKDIR/manual and wait for POST http://127.0.0.1:$TAA_PORT/v1/taa/health inside the pod"
+    log "would remove $TAA_CONTAINER_WORKDIR/manual and wait for TCP 127.0.0.1:$TAA_PORT inside the pod"
     log "dry-run: no files were copied and the pod was not stopped"
     return 0
   fi
@@ -1278,7 +1300,7 @@ deploy_into_pod() {
   log "  binary   : $TAA_BINARY_PATH (sha256 $sha)"
   log "  data root: $FHE_CONTAINER_DATA_DIR"
   log "  state    : $HOST_TAA_STATE_DIR"
-  log "  health   : POST http://127.0.0.1:$TAA_PORT/v1/taa/health (inside the pod)"
+  log "  probe    : TCP 127.0.0.1:$TAA_PORT (inside the pod; /v1/taa/* is sealed)"
   log "  logs     : kubectl -n $POD_NAMESPACE exec $TARGET_POD -- tail -n 60 $TAA_LOG_FILE"
   log "  NOTE: these files live in the container's writable layer; a pod restart brings back the image's TAA"
 }
@@ -1686,11 +1708,11 @@ fi
 
 step "waiting for TAA to answer on ${TAA_PROBE_HOST}:$TAA_PORT"
 if is_dry_run; then
-  log "would wait up to ${TAA_READY_TIMEOUT}s for POST http://${TAA_PROBE_HOST}:${TAA_PORT}/v1/taa/health"
+  log "would wait up to ${TAA_READY_TIMEOUT}s for a TCP connect to ${TAA_PROBE_HOST}:${TAA_PORT}"
 else
   if ! wait_for_taa; then
     host_sh "docker exec -i '$TAA_CONTAINER_NAME' sh -lc \"tail -n 60 '$TAA_LOG_FILE' 2>/dev/null || true\"" || true
-    die "TAA did not answer POST http://${TAA_PROBE_HOST}:${TAA_PORT}/v1/taa/health within ${TAA_READY_TIMEOUT}s"
+    die "TAA did not accept a TCP connection on ${TAA_PROBE_HOST}:${TAA_PORT} within ${TAA_READY_TIMEOUT}s"
   fi
   log "TAA fhe instance is ready"
 fi
@@ -1742,7 +1764,7 @@ if [ "$DEPLOY_TAA" = 1 ] && ! is_dry_run; then
   printf '\n[deploy-fhe] unified FHE + TAA node deployed\n'
   log "container      : $TAA_CONTAINER_NAME (image $TAA_IMAGE, network $TAA_DOCKER_NETWORK)"
   log "FHE API        : http://127.0.0.1:$FHE_API_PORT (container-internal, not published; model $FHE_MODEL_ID activated)"
-  log "TAA            : http://${TAA_PROBE_HOST}:${TAA_PORT}/v1/taa/health (published)"
+  log "TAA            : tcp ${TAA_PROBE_HOST}:${TAA_PORT} (published; /v1/taa/* is sealed)"
   log "FHE data dir   : $HOST_DATA_DIR (mounted at $FHE_CONTAINER_DATA_DIR, shared with TAA's rendered paths)"
   log "TAA state dir  : $HOST_TAA_STATE_DIR (SM2 key pair and sealed state; on a bind of its own)"
   log "platform       : PLATFORM_IP=$PLATFORM_IP"

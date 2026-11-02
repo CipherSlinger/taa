@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -70,7 +71,7 @@ func TestTAAState_SwitchPhase_SealingIntegration(t *testing.T) {
 	initSeq := baseState.StateSeq
 
 	// 切换到 Phase 2
-	body, _ := json.Marshal(switchRequest{Phase: 2})
+	body := sealRequest(t, switchRequest{Phase: 2})
 	resp, err := http.Post(server.URL+"/v1/taa/switch", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("post switch failed: %v", err)
@@ -244,16 +245,13 @@ func TestDataImportIgnoresPublicKeyAndRuntimeConfig(t *testing.T) {
 	defer archiveServer.Close()
 
 	deliveredCfg := `{"commands":["python3 train.py --tag delivered-with-data"]}`
-	body, err := json.Marshal(map[string]any{
+	body := sealRequest(t, map[string]any{
 		"resourceUrl":   archiveServer.URL + "/data.tar.gz",
 		"requestId":     "req-ignore-1",
 		"taskId":        "task-ignore-1",
 		"runtimeConfig": deliveredCfg,
 		"publicKey":     string(pubPEM),
 	})
-	if err != nil {
-		t.Fatalf("marshal body: %v", err)
-	}
 
 	failed := make(chan int, 1)
 	go func() {
@@ -263,8 +261,9 @@ func TestDataImportIgnoresPublicKeyAndRuntimeConfig(t *testing.T) {
 			return
 		}
 		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
 		var api apiResponse
-		_ = json.NewDecoder(resp.Body).Decode(&api)
+		_ = json.Unmarshal(openSealedResponse(t, raw), &api)
 		failed <- api.Error
 	}()
 

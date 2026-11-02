@@ -306,13 +306,19 @@ func resetRecoveryTaskState(state *controller.TAAState, store *controller.StateS
 	}
 }
 
-// cleanTempFragments 扫描清除 /tmp/taa-download-* 与 /tmp/*.extract-* 残留碎片文件
+// cleanTempFragments 扫描清除 os.TempDir() 下的 taa-download-* 与 *.extract-* 残留碎片文件。
+//
+// Only os.TempDir() is scanned, never "/tmp" directly. The two are the same path
+// in a normally-configured container, but a hardcoded "/tmp" defeats TMPDIR: a
+// caller that redirects the temp directory (a test, or a deployment on a host
+// where /tmp is shared) would keep writing into the redirected directory while
+// this cleanup still reached into the shared one and deleted files other
+// processes are using. The downloader and the extractor both name their files
+// under os.TempDir(), so that is the only directory this may touch.
 func cleanTempFragments() {
 	patterns := []string{
 		filepath.Join(os.TempDir(), "taa-download-*"),
 		filepath.Join(os.TempDir(), "*.extract-*"),
-		"/tmp/taa-download-*",
-		"/tmp/*.extract-*",
 	}
 	seen := make(map[string]struct{})
 	for _, pattern := range patterns {

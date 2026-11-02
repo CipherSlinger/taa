@@ -5,7 +5,8 @@
   "platform": {
     "ip": "127.0.0.1:28080",
     "dockerID": "taa-env-slim-v2",
-    "contract": ""
+    "contract": "",
+    "publicKey": ""
   },
   "storage": {
     "model": "/root/taa/models",

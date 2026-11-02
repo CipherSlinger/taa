@@ -19,6 +19,7 @@ import (
 	"taa/internal/config"
 	"taa/internal/controller"
 	"taa/internal/fhe"
+	"taa/internal/platform"
 	"taa/internal/store"
 	teecrypto "taa/pkg/crypto"
 )
@@ -137,6 +138,16 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		log.Printf("derived taaSecretKey for platform registration (%d hex chars)", len(material.taaSecretKey))
 	}
 
+	// 2b. Assemble the TAA <-> platform envelope key material. This runs before
+	// attestation and registration on purpose: both talk to the platform, and a
+	// missing or malformed platform public key must stop the process here rather
+	// than after a slow attestation and a registration the platform can only
+	// reject.
+	envelopeKeys, err := resolveEnvelopeKeys(cfg, keyPair.PrivateKey)
+	if err != nil {
+		return err
+	}
+
 	// The sealing key source and the sealed state store
 	sealingKey := material.sealingKey
 	keySource := material.keySource
@@ -163,6 +174,16 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 	platformIP := cfg.PlatformIP
 	dockerID := cfg.DockerID
 	timestamp := time.Now().Unix()
+
+	// Install the outbound sealer before registration: registration itself is a
+	// platform request like any other and must arrive sealed. The dockerID is
+	// bound here rather than passed per call because the sealer is a process-wide
+	// seam over six senders, and every one of them already resolves the same
+	// instance identity.
+	platform.SetOutboundEnvelope(func(plaintext []byte) ([]byte, error) {
+		return envelopeKeys.Seal(plaintext, dockerID)
+	})
+	log.Printf("[INFO] [envelope] outbound sealing enabled (dockerId=%q)", dockerID)
 
 	// 3. 将 SM2 公钥坐标 (X||Y) 填充为 64 字节 UserData，供 TEE 硬件报告度量签名
 	userData, err := deriveUserData(&keyPair.PrivateKey.PublicKey)
@@ -264,6 +285,7 @@ func RunWithConfig(ctx context.Context, cfg config.StartupConfig) error {
 		log.Printf("instance type: tee")
 	}
 
+	state.SetEnvelopeKeys(envelopeKeys)
 	state.SetStateStore(stateStore)
 
 	pState := stateStore.GetState()
