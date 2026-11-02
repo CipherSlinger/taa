@@ -148,6 +148,7 @@ sequenceDiagram
 
 | 流转步骤 | 发起方 → 接收方 | 传输格式 / 算法 | 安全保护与控制目标 |
 |---------|----------------|----------------|-------------------|
+| **控制面信封** | 平台 ↔ TAA（全部 HTTP 消息） | `{dockerId, cipher, sign}`：SM2 C1C3C2 密文 + 对**明文**的 DER 签名 | **逐条消息加密验签**：仅 `/v1/taa/fheCallback` 豁免；缺平台公钥则启动 FATAL，无明文旁路（§8.3） |
 | **身份注册** | TAA → 管控平台 | Base64(CSV 报告) + SM2 公钥 | **启动即证明**：海光硬件 PSP 签名与 `USERDATA` 绑定，防止伪造实例身份与公钥劫持；注册失败后台重试 |
 | **客户端验签** | SDK 内部验证 | SM2 验签 + 证书链 (HRK→PEK) | **离线背书**：客户端独立校验 TAA 是否运行在合法 CSV TEE 中 |
 | **资源封装** | 客户端 → 平台 | SM2 信封 + SM4-GCM 密文 | **出端即加密**：平台侧全程无法窥探模型源码与敏感原始数据 |
@@ -169,7 +170,8 @@ sequenceDiagram
 | FHE 编排 | `internal/fhe/` | FHE 服务客户端、任务布局、eval key 缓存、进度轮询与回调 |
 | 运行时 | `internal/runtime/` | `runtimeConfig` 解析、子进程编排、日志/进度遥测 |
 | 资源处理 | `internal/resource/` | 下载、信封解封、解包、SM3 校验、导入索引 |
-| 平台客户端 | `internal/platform/` | 注册与各类上报的 HTTP 封装 |
+| 平台客户端 | `internal/platform/` | 注册与各类上报的 HTTP 封装；出站请求在此统一加 SM2 信封 |
+| 消息信封 | `internal/platform/envelope/` | 双向 `{cipher,sign}` 封装：SM2 C1C3C2 加解密 + DER 签名（对明文签名），不含 HTTP 逻辑 |
 | 密封状态 | `internal/store/` | 受保护运行状态的密封持久化与密钥漂移处理 |
 | 加密工具 | `pkg/crypto/` | SM2 信封加密/解密、SM4-GCM、SM3、证书与密钥工具 |
 | LLM 推理服务 | `teellm/`（独立 go.work 模块） | `teellm-service` 网关 + Ollama/Qwen，供代码审计的语义验证 |
@@ -193,6 +195,9 @@ sequenceDiagram
 │     └─ 否则从 storage.keys 加载/生成 SM2 密钥对（私钥 0600）        │
 │     └─ 解析状态密封密钥：sm2（由 SM2 私钥派生）或 csv-hw（硬件）    │
 │     └─ 打开 keys/state.sealed；密钥来源切换或解封失败时归档重建     │
+│  3b. 装配信封密钥：平台 SM2 公钥 + TAA 私钥 + SM2 ID_A              │
+│     └─ 公钥缺失/非法 → FATAL（没有明文降级），且必须在证明与注册前   │
+│     └─ 装上出站密封钩子：此后的注册与全部上报都走信封               │
 │  4. 计算 USERDATA = taaPublicKey.X || taaPublicKey.Y                │
 │  5. 生成远程证明报告 attestation.report 并自校验                    │
 │     └─ tee：进程内 ioctl；生成/校验失败只告警，verifiedPass=false   │
@@ -228,6 +233,8 @@ sequenceDiagram
 | `PLATFORM_IP` / `DOCKER_ID` / `CONTRACT_ID` | 作为默认值填充 `platform.ip` / `platform.dockerID` / `platform.contract`（配置文件优先） |
 | `PLATFORM_IP` / `DOCKER_ID`（`server.type=fhe` 时） | 反向覆盖配置文件：fhe 实例注册到哪里属于部署位置属性，环境变量优先 |
 | `TAASECRETKEY` | 密钥目录丢失后恢复 SM2 私钥；要求 `storage.stateSealingKeySource=csv-hw` |
+| `PLATFORM_PUBLIC_KEY` | 平台 SM2 公钥（`04||X||Y` 的 hex）。**环境变量始终优先于配置文件**（与 `platform.ip` 相反），配置文件里的 `platform.publicKey` 只在环境变量为空时兜底；两者都没有则启动 FATAL |
+| `PLATFORM_SM2_ID` | 信封签名/验签用的 SM2 `ID_A`，只认环境变量，缺省 `1234567812345678`；按原始 UTF-8 字节使用，不 trim、不解码 |
 
 ### 3.2 配置文件
 
@@ -236,7 +243,7 @@ sequenceDiagram
 | 段 | 关键字段 | 说明 |
 |---|---|---|
 | `server` | `addr`、`type` | `type`：`tee`（默认）/ `fhe` / `data-anaylsis` |
-| `platform` | `ip`、`endpoint`、`dockerID`、`contract` | 平台地址与实例身份；`contract` 参与 `taaSecretKey` 派生 |
+| `platform` | `ip`、`endpoint`、`dockerID`、`contract`、`publicKey` | 平台地址与实例身份；`contract` 参与 `taaSecretKey` 派生；`publicKey` 是信封用的平台 SM2 公钥，环境变量 `PLATFORM_PUBLIC_KEY` 优先于它 |
 | `storage` | `model`、`data`、`result`、`keys`、`stateSealingKeySource` | 目录与状态密封密钥来源（`sm2` / `csv-hw`） |
 | `model` | `input`、`output.result` / `.log` / `.progress` | 训练输入/输出/日志/进度路径 |
 | `codeAudit` | `enabled`、`codeScan.engine`（`regex`/`semgrep`）、`codeScan.rulesPath`、`codeScan.timeoutSeconds`、`binaryAudit`、`resultCheck`、`llm` | 审计总开关及各通道参数 |
@@ -264,7 +271,7 @@ sequenceDiagram
 - 重启时若发现 `RUNNING` 在飞任务，执行崩溃恢复：失败任务归档为 `.failed-<taskId>-<timestamp>`、清理临时文件与孤儿进程、补写失败报告、双轨补偿上报；连续恢复 3 次仍失败则进入熔断，归档为 `.dead-letter`。
 - 后台审计可能比导入任务活得更久，因此单独记录 `AuditPending`；重启时据此对账，并把中断的审计作为参考结论上报平台。
 
-细节见 `docs/state-persistence-and-self-healing.md`。
+`state.sealed` 前 8 字节是明文头：`"TAAS"`（4B）+ 格式版本 `1`（1B）+ 密封密钥来源字节（1B，`sm2`=1 / `csv-hw`=2）+ 2 字节保留位，之后才是 SM4-GCM 密文。头全字段校验不通过的文件按旧格式处理（隐式按 SM2 派生密钥解封），实现见 `internal/store/sealed_state_header.go`。
 
 ## 4. API 接口
 
@@ -287,9 +294,34 @@ TAA 作为服务端注册的路由（`internal/controller/router.go`）：
 
 全部路由**只接受 POST**（`postOnly` 中间件统一强制，其余方法返回 405），并统一附加 CORS 头。
 
-> 反向的、由 TAA 主动调用平台的方向是另一组路径，定义在 `internal/platform/` 与
-> `internal/controller/taa_reporting.go`：`register` / `reportRes` / `reportModelImport` /
-> `reportAudit` / `reportProgress` / `modelLog` / `taaLog`。它们不出现在 TAA 的路由表里。
+**入站信封**：除 `/v1/taa/fheCallback` 外，每个路由外面都套了一层 `envelopeMiddleware`
+（`internal/controller/envelope_middleware.go`）。请求体必须是 `{dockerId, cipher, sign}`：
+`cipher` 是平台公钥加密的明文 JSON，`sign` 是平台私钥对**明文**的 DER 签名。中间件的顺序固定为
+读体（上限 8 MiB）→ 解析信封 → 解密 → 对解密结果验签 → 把明文换回 `r.Body` 交给原 handler，
+所以业务代码完全不知道信封存在；任一步失败都在进入业务逻辑前以同样封装的错误返回
+（400 缺字段/非信封、413 过大、401 解密或验签失败）。`fheCallback` 豁免：调用方是 FHE 服务，
+拿不到平台私钥，沿用回环地址保护。
+
+信封中间件挂在 `postOnly` **内层**：方法过滤在外、拆信封在内。非 `POST` 请求没有信封可解，
+`405` 因此是一条明文 JSON 响应，`OPTIONS` 预检也保持 `204` 空体——这两条不携带业务数据。
+
+响应侧 `writeJSON` 先试 `writeSealedJSON`：在信封路由上把明文用 `json.Marshal` 序列化后
+（不用 `json.NewEncoder`，避免尾随换行混进签名内容）以 TAA 私钥签名、平台公钥加密返回；
+非信封 writer 则保持原有明文行为。封不出来直接 500，不回落明文。
+`/v1/taa/export` 成功时的文件流不套信封。
+
+> 这条规则带来一个部署侧后果：`health` / `status` 也要求合法信封，因此 `curl` 和就绪探针不可达，
+> 部署脚本的就绪判定只能改成 TCP 探测端口。`deploy.sh`、`deploy-fhe.sh`、`deploy-taa-vm.sh`
+> 三处都已改为 TCP 连接（`/dev/tcp`、python socket 或 `nc`，按镜像实际带了哪个客户端选择），
+> 并辅以启动日志里的 `taa service listening on` 一行作为补充证据——端口能连上只证明有人在监听。
+
+**出站信封**：反向的、由 TAA 主动调用平台的方向是另一组路径，定义在 `internal/platform/` 与
+`internal/controller/taa_reporting.go`、`model_reporting.go`：`register` / `reportRes` /
+`reportModelImport` / `reportAudit` / `reportProgress` / `modelLog` / `taaLog`。它们不出现在 TAA 的路由表里。
+所有出站请求都经 `platform.SendPlatformJSON`，而该函数在发送前调用 `platform.SealOutbound`——
+一个启动时安装一次、进程内全局生效的密封钩子（`app.go` 里用 `platform.SetOutboundEnvelope` 装上）。
+因此 7 个接口（注册 + 6 类上报）全部以 `{dockerId, cipher, sign}` 发出，密封失败即不发送。
+**反向的应答不封装**：平台回的是明文 JSON，TAA 多数只判 HTTP 200，`modelLog` 会解析明文 ack 的 `error` / `result.received`。
 
 ### 4.2 公共返回格式
 
@@ -300,6 +332,8 @@ TAA 作为服务端注册的路由（`internal/controller/router.go`）：
   "error": 0
 }
 ```
+
+这是**信封内**的明文对象；实际响应体外层是 `{cipher, sign}`（`fheCallback` 除外）。
 
 ### 4.3 阶段语义
 
@@ -519,7 +553,7 @@ USERDATA = taaPublicKey.X || taaPublicKey.Y
 
 ## 8. 加密方案
 
-### 8.1 SM2 信封加密
+### 8.1 资源包信封（SM2 包装 SM4 数据密钥）
 
 ```
 明文 → SM4-GCM 加密 → 密文
@@ -531,6 +565,8 @@ USERDATA = taaPublicKey.X || taaPublicKey.Y
 输出格式: WrappedKey(113B) || Ciphertext(可变长)
 ```
 
+本文其他小节里不带限定的「信封」通常指这一种：一个密文文件，或 `?dataKeyCipher=` 携带的单个 SM4 密钥信封。控制面的逐条消息信封见 §8.3。
+
 ### 8.2 密钥关系
 
 - **TAA SM2 密钥对**：持久化于 `storage.keys`（私钥 `sm2_private_key.pem` 0600，公钥 `sm2_public_key.pem` 0644）；首次启动生成，公钥注册到平台
@@ -538,6 +574,25 @@ USERDATA = taaPublicKey.X || taaPublicKey.Y
 - **SM4 数据密钥**：每次加密随机生成，用 TAA SM2 公钥包装
 - **导出公钥**：阶段 1 由 `importModel` 保存，或由 `/v1/taa/export` 请求携带，TAA 用于加密结果
 - **状态密封密钥**：`sm2` 由 SM2 私钥派生；`csv-hw` 由 `/dev/csv-guest` 硬件密封密钥派生
+- **平台 SM2 公钥**：启动时从 `PLATFORM_PUBLIC_KEY` 或 `platform.publicKey` 读取，仅用于信封；缺失即 FATAL
+
+### 8.3 控制面信封（与 8.1 的数据包信封不是一回事）
+
+8.1 描述的是**资源包**的静态封装：一条随机 SM4 密钥加密数据，再用 SM2 包装该密钥，落盘/传输的是一个密文文件。
+
+控制面信封是**每条消息**的封装（`internal/platform/envelope/`），用于平台 ↔ TAA 的所有 HTTP 消息：
+
+```
+明文 JSON ──SM2 加密(平台公钥)──→ cipher = base64(C1C3C2 原始密文)
+         └─SM2 签名(TAA 私钥)───→ sign   = base64(DER)
+外层: {"dockerId": "...", "cipher": "...", "sign": "..."}
+```
+
+- **签名对象是明文**，不是 `cipher`。若签密文，任何持有平台公钥的人都能构造出一条 TAA 会接受的请求。
+- 收方向顺序固定：解 base64 → SM2 解密 → **对明文验签** → 才解析 JSON。先解析或先重序列化再验签都会改字节，签名必然对不上。
+- 响应明文用 `json.Marshal` 而非 `json.NewEncoder`：后者追加的换行会成为签名内容的一部分，而在任何 JSON 视图里都看不见。
+- SM2 `ID_A` 同时参与签名与验签的摘要（`ZA = SM3(ENTLA || ID_A || ...)`），因此它是密钥材料的一部分而不是参数。默认 `1234567812345678`，`PLATFORM_SM2_ID` 可覆盖，按原始字节使用。
+- 只有 `/v1/taa/fheCallback` 不套信封（调用方是 FHE 服务，拿不到平台私钥）。
 
 ## 9. 部署
 
@@ -663,7 +718,8 @@ taa/
 │   ├── sdk/                     客户端 SDK（独立 go.work 模块）
 │   ├── csv2-vm/                 CSV2 机密虚拟机脚本与 DCU 测试 Pod 清单
 │   ├── fake-fhe/                FHE 服务测试替身
-│   └── image-bind/              镜像绑定工具
+│   ├── image-bind/              镜像绑定工具
+│   └── showdoc-sync/            api-design.html 本地预览与 ShowDoc 同步（Python 标准库）
 ├── api/                         OpenAPI 定义与 proto
 ├── configs/                     部署配置模板（production / docker / fhe / dataanaylsis / initrd）
 ├── deploy/                      基础镜像归档、证书、supervisor、guest-build 与 K8s/Docker 清单
@@ -674,8 +730,9 @@ taa/
 ├── deploy.sh / deploy-fhe.sh / deploy-dataanaylsis.sh / deploy-llm.sh
 ├── deploy-taa-vm.sh / build-teellm-image.sh
 └── docs/                        文档
-    ├── api-design.md
+    ├── api-design.md            接口设计文档
+    ├── api-design.html          接口文档的本地预览/编辑页（配合 tools/showdoc-sync）
     ├── architecture-design.md   (本文件)
-    ├── model-provider-integration-guide.md
-    └── state-persistence-and-self-healing.md
+    ├── taa-agent-delivery.md    平台 ↔ TAA 交付协议说明
+    └── manual/                  交付手册
 ```
