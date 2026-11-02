@@ -476,14 +476,12 @@ func TestRecovery_StandardSchemaReport(t *testing.T) {
 	}
 }
 
-// TestRecovery_DualTrackDrain 校验双轨补偿投递（规约 7）：
-// 1. 极速探测成功：平台在线时，2秒硬超时内同步成功完成上报；
-// 2. 平台离线转后台重试：平台离线或超时后，自愈流水线不阻塞，启动流程瞬间完成，后台 Detached Worker 继续重试。
-// TestRecovery_DualTrackDrain pins the two shapes of crash compensation now that
-// it goes through the durable outbox instead of a fast-sync call plus a 60-second
-// background retry: a reachable platform receives the report, and an unreachable
-// one leaves it queued in the sealed state rather than losing it.
-func TestRecovery_DualTrackDrain(t *testing.T) {
+// TestRecovery_CrashCompensationViaOutbox pins the two shapes of crash
+// compensation (规约 7) now that it goes through the durable outbox instead of a
+// fast-sync call plus a 60-second background retry: a reachable platform
+// receives the report, and an unreachable one leaves it queued in the sealed
+// state rather than losing it.
+func TestRecovery_CrashCompensationViaOutbox(t *testing.T) {
 	// ── 场景 1: 平台可达，补偿报告经 outbox 送达 ──
 	t.Run("ReportQueuedAndDelivered", func(t *testing.T) {
 		state, store, tempDir := setupTestRecoveryState(t)

@@ -214,25 +214,12 @@ func reconcileCrashRecovery(ctx context.Context, state *controller.TAAState, sto
 
 	if state != nil && platformIP != "" && dockerID != "" && (activeTask.RequestID != "" || activeTask.TaskID != "") {
 		msg := "TAA 异常崩溃重启，训练执行已被安全终止，请重新下发"
-		kind := controller.ReportKindRes
 		if activeTask.Type == "model_import" {
 			msg = "TAA 异常崩溃重启，模型导入与代码审计中断，请重新下发"
-			kind = controller.ReportKindModelImport
 		}
-		if enqueueErr := state.EnqueuePlatformReport(controller.PendingReportSnapshot{
-			Kind:         kind,
-			RequestID:    activeTask.RequestID,
-			TaskID:       activeTask.TaskID,
-			Code:         1,
-			Msg:          msg,
-			Report:       reportJSON,
-			PlatformAddr: platformIP,
-			DockerID:     dockerID,
-		}); enqueueErr != nil {
-			log.Printf("[RECOVERY] enqueue compensation report failed: %v", enqueueErr)
-		} else {
-			log.Printf("[RECOVERY] compensation report queued for task %s", activeTask.TaskID)
-		}
+		state.QueueReport(controller.ReportKindForTaskType(activeTask.Type),
+			activeTask.RequestID, activeTask.TaskID, 1, msg, reportJSON, nil)
+		log.Printf("[RECOVERY] compensation report queued for task %s", activeTask.TaskID)
 	}
 
 	// ------------------------------------------------------------------------
@@ -288,13 +275,11 @@ func reconcileAbandonedAudit(ctx context.Context, state *controller.TAAState, pe
 
 	msg := "TAA 异常崩溃重启，模型代码审计中断未出裁决，该结论仅供参考（不阻断模型导入与训练），模型包保持上传原样"
 	if err := state.EnqueuePlatformReport(controller.PendingReportSnapshot{
-		Kind:         controller.ReportKindAudit,
-		RequestID:    pending.RequestID,
-		TaskID:       pending.TaskID,
-		Code:         2,
-		Msg:          msg,
-		PlatformAddr: platformIP,
-		DockerID:     dockerID,
+		Kind:      controller.ReportKindAudit,
+		RequestID: pending.RequestID,
+		TaskID:    pending.TaskID,
+		Code:      2,
+		Msg:       msg,
 	}); err != nil {
 		log.Printf("WARNING: enqueue abandoned audit report failed: requestId=%s taskId=%s, err=%v", pending.RequestID, pending.TaskID, err)
 		return err

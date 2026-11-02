@@ -1094,22 +1094,7 @@ func (s *TAAState) handleAsyncPanic(name string, r any) {
 	// 3. Fail-Closed: 把失败通知写入持久化 outbox，平台恢复后自动补发
 	if platformIP != "" && dockerID != "" && (requestID != "" || taskID != "") {
 		log.Printf("[PANIC RECOVERY] enqueueing platform failure notification: requestId=%s, taskId=%s", requestID, taskID)
-		kind := ReportKindRes
-		if taskType == "model_import" {
-			kind = ReportKindModelImport
-		}
-		if enqueueErr := s.EnqueuePlatformReport(PendingReportSnapshot{
-			Kind:         kind,
-			RequestID:    requestID,
-			TaskID:       taskID,
-			Code:         1,
-			Msg:          failureReason,
-			Report:       reportJSON,
-			PlatformAddr: platformIP,
-			DockerID:     dockerID,
-		}); enqueueErr != nil {
-			log.Printf("[PANIC RECOVERY] enqueue failure notification failed: %v", enqueueErr)
-		}
+		s.QueueReport(ReportKindForTaskType(taskType), requestID, taskID, 1, failureReason, reportJSON, nil)
 	}
 }
 
@@ -1265,32 +1250,7 @@ func (s *TAAState) decryptCiphertextWithDataKey(dataKey []byte, ciphertextPath s
 }
 
 func (s *TAAState) reportTrainingAsync(requestID, taskID string, code int, msg, report string) {
-	requestID = strings.TrimSpace(requestID)
-	taskID = strings.TrimSpace(taskID)
-	if taskID == "" && requestID != "" {
-		taskID = requestID
-	}
-	if requestID == "" && taskID != "" {
-		requestID = taskID
-	}
-
-	s.mu.RLock()
-	platformIP, dockerID := s.PlatformIP, s.DockerID
-	s.mu.RUnlock()
-	log.Printf("reportTrainingAsync: enqueueing training result, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, reportLen=%d",
-		platformIP, dockerID, requestID, taskID, code, len(report))
-	if err := s.EnqueuePlatformReport(PendingReportSnapshot{
-		Kind:         ReportKindRes,
-		RequestID:    requestID,
-		TaskID:       taskID,
-		Code:         code,
-		Msg:          msg,
-		Report:       report,
-		PlatformAddr: platformIP,
-		DockerID:     dockerID,
-	}); err != nil {
-		log.Printf("reportTrainingAsync: enqueue training result failed: requestID=%s, taskID=%s, err=%v", requestID, taskID, err)
-	}
+	s.QueueReport(ReportKindRes, requestID, taskID, code, msg, report, nil)
 }
 
 // ── Script helpers ──────────────────────────────────────

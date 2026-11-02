@@ -100,22 +100,31 @@ type PendingReportSnapshot struct {
 3. 密封失败只记 `LogError`，条目仍留在内存，worker 照常尝试发送；下次状态密封会
    顺带补上。
 
-配置校验：`PlatformAddr` 或 `DockerID` 为空属于部署配置错误，不是暂时断连。
-此时记错误日志并**不入队**，否则会永久堆积且永远无法送达。
+配置校验：身份（addr / dockerId / requestId 或 taskId）为空属于部署配置错误，
+不是暂时断连。校验直接复用 `platform.ValidateAndNormalizePlatformParams`，它同时
+做 trim 与 requestId/taskId 的互相回填；失败则记错误日志并**不入队**，否则会永久
+堆积且永远无法送达。
+
+调用点只提供报告内容，统一经 `TAAState.QueueReport(kind, requestID, taskID, code,
+msg, report, checksum)` 入队：平台身份从 `TAAState` 自动回填，失败日志只有一处，
+新增上报路径时不会再各写一套。
 
 ### 改为入队的调用点
 
 | 位置 | 原行为 | 新行为 |
 | --- | --- | --- |
-| `internal/controller/route.go` `reportTrainingAsync` | goroutine 单发 `ReportRes` | 入队 `reportRes` |
-| `internal/controller/import_processing.go` `reportModelImportAsync` | goroutine 单发 `ReportModelImport` | 入队 `modelImport`；`resolveModelChecksum` 仍在入队前同步完成 |
-| `internal/controller/import_processing.go` `reportAuditAsync` / `reportAuditIfCurrent` | goroutine 单发 `ReportAudit` | 代际检查通过后入队 `audit` |
-| `internal/controller/route.go` `handleAsyncPanic` | 直接调用 `ReportTaskOutcome` | 按 `taskType` 入队 `modelImport` 或 `reportRes` |
+| `internal/controller/route.go` `reportTrainingAsync` | goroutine 单发 `ReportRes` | `QueueReport(ReportKindRes, ...)` |
+| `internal/controller/import_processing.go` `reportModelImportAsync` | goroutine 单发 `ReportModelImport` | `QueueReport(ReportKindModelImport, ...)`；`resolveModelChecksum` 仍在入队前同步完成 |
+| `internal/controller/import_processing.go` `reportAuditAsync` / `reportAuditIfCurrent` | goroutine 单发 `ReportAudit` | 代际检查通过后 `QueueReport(ReportKindAudit, ...)` |
+| `internal/controller/route.go` `handleAsyncPanic` | 直接调用 `ReportTaskOutcome` | `QueueReport(ReportKindForTaskType(taskType), ...)` |
 | `internal/app/taa/recovery.go` `reconcileCrashRecovery` | 2 秒快速同步 + 60 秒退避补偿 | 直接入队；删除 `dispatchDetachedCompensationWorker` |
 | `internal/app/taa/recovery.go` `reconcileAbandonedAudit` | 直接调用 `ReportAudit` | 入队 `audit` |
 
-`ReportTaskOutcome` 的分流逻辑在入队时解析为具体的 `Kind`，worker 不再需要
-`taskType`。
+taskType → `Kind` 的映射收敛到 `ReportKindForTaskType`，`handleAsyncPanic` 与崩溃
+恢复共用；worker 不再需要 `taskType`。审计的旧包装
+`controller.ReportTaskOutcome` 因此没有生产调用者，已删除——留着它就是一条绕过
+outbox、丢掉持久化保证的后门。`reportAuditIfCurrent` 的代际检查改为同步执行：
+调用方本来就在异步路径上，额外一层 goroutine 只是让窗口看起来被关上了。
 
 ## 6. 补发 worker
 
@@ -123,18 +132,20 @@ type PendingReportSnapshot struct {
 
 ```go
 type reportOutbox struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	state    *TAAState
-	wake     chan struct{}
-	initial  time.Duration // 默认 1s
-	max      time.Duration // 默认 60s
+	ctx     context.Context
+	cancel  context.CancelFunc
+	state   *TAAState
+	wake    chan struct{}
+	initial time.Duration // 默认 1s
+	max     time.Duration // 默认 60s
+	retry   map[string]retryState // per-entry backoff, in memory only
 }
 ```
 
 ### 生命周期
 
-- `TAAState.StartReportOutbox(ctx)`：幂等启动，`sync.Once` 保护。
+- `TAAState.StartReportOutbox(ctx)`：幂等启动，`outboxMu` 下判空即可，无需额外的
+  `sync.Once`。
 - `internal/app/taa/app.go` 的启动顺序：
   `RestoreFromPersistentState` → `StartReportOutbox(ctx)` → 崩溃/审计恢复（入队）
   → `startServer`。先启动 worker，恢复路径入队时就能立刻投递，且 worker 跟随
@@ -150,24 +161,36 @@ type reportOutbox struct {
 ```text
 启动时若 pending 非空，先唤醒一次
 loop:
-  wait for wake or ctx.Done
-  backoff = initial
-  while pending 非空:
-     entry := 取队首副本
+  wait for wake / ctx.Done / 下一个到期时刻
+  entries := 队列快照（按入队顺序）
+  acked := []
+  next := 最早到期时刻
+  对每个 entry:
+     if 有退避记录且未到期:
+        next = min(next, 到期时刻); continue
      err := send(entry)
      if err == nil:
-        ack(entry.ID)   // 删除并密封
-        backoff = initial
-        continue
-     log.Printf 首次失败与退避时间
-     backoff 内等待（同时监听 ctx.Done）
-     backoff = min(backoff*2, max)
+        acked = append(acked, entry.ID); continue
+     log.Printf 失败与退避时间
+     retry[entry.ID] = {wait: min(wait*2, max), due: now + wait}
+     next = min(next, wait)
+  if len(acked) > 0:
+     ackPendingReports(acked...)   // 一次删除
+     continue                      // 队列变短了，立刻重新评估
+  if next > 0: wait(next); continue
+  return
 ```
 
-- FIFO 顺序保留入队顺序，因此 `modelImport → audit → reportRes` 的自然顺序不变。
+- **逐条目调度，而非严格队首阻塞**：就绪条目仍按入队顺序送达，因此
+  `modelImport → audit → reportRes` 的自然顺序不变；但一条失败不会堵住后面的条目。
+  严格 FIFO 下，一条指向已失效地址的报告会永久饿死整条队列——FHE 测试正是这样
+  暴露了问题（一条指向不可达平台的 `modelImport` 让后续所有报告都卡住）。
+- 退避状态只存在内存（`retry map[string]retryState`），重启后全部立即重试。
+- 一轮里确认成功的条目合并成**一次** `ackPendingReports`，因为密封会重写整个状态
+  文件（marshal + 加密 + fsync + rename）：一轮送达 N 条不应付出 N 次 fsync。
+- 等待期间同时监听 `wake`，新入队的报告不必等满别人的退避计时。
 - `send` 按 `Kind` 分派到现有的 `platform.ReportRes` / `platform.ReportModelImport` /
-  `platform.ReportAudit`，���次请求使用 10 秒超时的 context。
-- 成功即删除并重新密封；失败不修改条目、不持久化重试次数，重启后从队首立即重试。
+  `platform.ReportAudit`，每次请求使用与 `platform.DefaultTimeout` 相同的超时。
 - 重试失败只写 `log.Printf`（stderr），不写 `s.Logs`，避免重试日志反过来进入
   `taaLog` 上报通道形成噪声。成功补发时写一条 `LogInfo`。
 
@@ -191,7 +214,7 @@ loop:
    启动 outbox 后继续补发。
 3. 三种 `Kind` 分别打到 `/v1/taa/reportRes`、`/v1/taa/reportModelImport`、
    `/v1/taa/reportAudit`，请求体字段完整。
-4. FIFO：同一时刻多条待发报告按入队顺序到达平台。
+4. FIFO：同一时刻多条待发报告按入队顺序到达平台（逐条目调度不改变就绪条目的顺序）。
 5. 立即成功路径不留 pending。
 6. 配置为空（`PlatformAddr` 或 `DockerID`）时拒绝入队并记错误日志。
 

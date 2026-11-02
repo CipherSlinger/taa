@@ -22,6 +22,11 @@ type reportRequest struct {
 	Checksum  map[string]any `json:"checksum,omitempty"`
 }
 
+// The functions below send one report each and are used only by tests that pin
+// the wire format. Production terminal reports go through
+// TAAState.QueueReport, which is durable; calling these directly would ship a
+// report with no retry and lose it on a platform outage.
+
 // ReportRes notifies the platform of the training/test completion result.
 func ReportRes(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report string) error {
 	return platform.ReportRes(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report)
@@ -35,11 +40,6 @@ func ReportModelImport(ctx context.Context, platformAddr, dockerID, requestID, t
 // ReportAudit notifies the platform of the code security audit result.
 func ReportAudit(ctx context.Context, platformAddr, dockerID, requestID, taskID string, code int, msg, report string) error {
 	return platform.ReportAudit(ctx, platformAddr, dockerID, requestID, taskID, code, msg, report)
-}
-
-// ReportTaskOutcome 根据任务类型自动分流上报至相应平台通道。
-func ReportTaskOutcome(ctx context.Context, platformAddr, dockerID, requestID, taskID, taskType string, code int, msg, report string, checksum ...map[string]any) error {
-	return platform.ReportTaskOutcome(ctx, platformAddr, dockerID, requestID, taskID, taskType, code, msg, report, checksum...)
 }
 
 func validateAndNormalizePlatformParams(platformAddr, dockerID, requestID, taskID string, requireRequestID bool) (string, string, string, string, error) {

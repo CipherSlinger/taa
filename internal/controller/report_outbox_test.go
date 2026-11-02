@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -16,16 +15,8 @@ import (
 // the outbox needs: the queue is the sealed state, not an in-memory list.
 func newOutboxTestState(t *testing.T, platformAddr string) (*TAAState, *StateStore) {
 	t.Helper()
-	dir := t.TempDir()
-	key := make([]byte, 16)
-	for i := range key {
-		key[i] = byte(i + 1)
-	}
-	st, err := NewStateStore(filepath.Join(dir, "state.sealed"), key, KeySourceSM2)
-	if err != nil {
-		t.Fatalf("new state store: %v", err)
-	}
-	state := NewTAAState(filepath.Join(dir, "attestation.report"), platformAddr, "docker-outbox", "", "", nil, nil, SecurityConfig{})
+	st, _ := createTestStateStore(t)
+	state := NewTAAState("", platformAddr, "docker-outbox", "", "", nil, nil, SecurityConfig{})
 	state.SetStateStore(st)
 	return state, st
 }
@@ -61,6 +52,31 @@ func TestPendingReportsSurviveSealAndRestore(t *testing.T) {
 	restored.RestoreFromPersistentState(persisted)
 	if len(restored.pendingReports) != 1 || restored.pendingReports[0].ID != "report-1" {
 		t.Fatalf("pending report was not restored: %+v", restored.pendingReports)
+	}
+}
+
+// TestAckPendingReportsRemovesOnlyAcked pins the batch ack used by a drain pass,
+// which delivers several reports but must seal them away in one write.
+func TestAckPendingReportsRemovesOnlyAcked(t *testing.T) {
+	state, st := newOutboxTestState(t, "127.0.0.1:18081")
+	state.pendingReports = []PendingReportSnapshot{
+		{ID: "keep-1", Kind: ReportKindRes, RequestID: "req-1", TaskID: "task-1"},
+		{ID: "drop-1", Kind: ReportKindRes, RequestID: "req-2", TaskID: "task-2"},
+		{ID: "drop-2", Kind: ReportKindAudit, RequestID: "req-3", TaskID: "task-3"},
+		{ID: "keep-2", Kind: ReportKindRes, RequestID: "req-4", TaskID: "task-4"},
+	}
+
+	state.ackPendingReports("drop-1", "drop-2")
+
+	if got := state.pendingReportsSnapshot(); len(got) != 2 || got[0].ID != "keep-1" || got[1].ID != "keep-2" {
+		t.Fatalf("remaining queue = %+v, want keep-1 and keep-2", got)
+	}
+	persisted, err := st.UnsealState()
+	if err != nil {
+		t.Fatalf("unseal state: %v", err)
+	}
+	if len(persisted.PendingReports) != 2 {
+		t.Fatalf("sealed queue = %+v, want the two survivors", persisted.PendingReports)
 	}
 }
 
@@ -208,12 +224,7 @@ func TestReportOutboxKeepsFIFO(t *testing.T) {
 }
 
 func TestReportOutboxResumesAfterRestart(t *testing.T) {
-	dir := t.TempDir()
-	statePath := filepath.Join(dir, "state.sealed")
-	key := make([]byte, 16)
-	for i := range key {
-		key[i] = byte(i + 1)
-	}
+	st, statePath := createTestStateStore(t)
 
 	// First process: the platform is down, so the report can only stay in the
 	// sealed state.
@@ -222,12 +233,8 @@ func TestReportOutboxResumesAfterRestart(t *testing.T) {
 	}))
 	defer down.Close()
 
-	firstStore, err := NewStateStore(statePath, key, KeySourceSM2)
-	if err != nil {
-		t.Fatalf("new first store: %v", err)
-	}
 	first := NewTAAState("", down.Listener.Addr().String(), "docker-outbox", "", "", nil, nil, SecurityConfig{})
-	first.SetStateStore(firstStore)
+	first.SetStateStore(st)
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	firstOutbox := first.startReportOutbox(ctx1, 5*time.Millisecond, 20*time.Millisecond)
 	if err := first.EnqueuePlatformReport(PendingReportSnapshot{
@@ -236,7 +243,7 @@ func TestReportOutboxResumesAfterRestart(t *testing.T) {
 		t.Fatalf("enqueue: %v", err)
 	}
 
-	persisted, err := firstStore.UnsealState()
+	persisted, err := st.UnsealState()
 	if err != nil {
 		t.Fatalf("unseal first store: %v", err)
 	}
@@ -247,22 +254,19 @@ func TestReportOutboxResumesAfterRestart(t *testing.T) {
 	cancel1()
 
 	// Second process: the platform is back, and the worker started from the
-	// restored queue has to deliver what the previous process could not.
+	// restored queue has to deliver what the previous process could not. Reusing
+	// the same store is the restart: it re-reads the sealed file from disk.
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer up.Close()
 
-	secondStore, err := NewStateStore(statePath, key, KeySourceSM2)
-	if err != nil {
-		t.Fatalf("new second store: %v", err)
-	}
-	if _, err := secondStore.DetectAndHandleKeyDrift(false); err != nil {
-		t.Fatalf("load sealed state: %v", err)
+	if _, err := st.DetectAndHandleKeyDrift(false); err != nil {
+		t.Fatalf("load sealed state %s: %v", statePath, err)
 	}
 	second := NewTAAState("", up.Listener.Addr().String(), "docker-outbox", "", "", nil, nil, SecurityConfig{})
-	second.SetStateStore(secondStore)
-	second.RestoreFromPersistentState(secondStore.GetState())
+	second.SetStateStore(st)
+	second.RestoreFromPersistentState(st.GetState())
 
 	// The entry carries the platform identity captured when it was queued, so
 	// the test repoints it at the recovered server the way an operator would

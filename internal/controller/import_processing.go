@@ -825,79 +825,34 @@ func (s *TAAState) resolveModelChecksum() map[string]any {
 
 // reportModelImportAsync 将模型导入及完整性校验结果写入持久化 outbox。
 func (s *TAAState) reportModelImportAsync(requestID, taskID string, code int, msg string, checksum ...map[string]any) {
-	s.mu.RLock()
-	platformIP, dockerID := s.PlatformIP, s.DockerID
-	s.mu.RUnlock()
-
 	var cs map[string]any
 	if len(checksum) > 0 {
 		cs = checksum[0]
 	} else if code == 0 {
 		cs = s.resolveModelChecksum()
 	}
-
-	log.Printf("reportModelImportAsync: enqueueing model import result, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, hasChecksum=%v",
-		platformIP, dockerID, requestID, taskID, code, cs != nil)
-	if err := s.EnqueuePlatformReport(PendingReportSnapshot{
-		Kind:         ReportKindModelImport,
-		RequestID:    requestID,
-		TaskID:       taskID,
-		Code:         code,
-		Msg:          msg,
-		Checksum:     cs,
-		PlatformAddr: platformIP,
-		DockerID:     dockerID,
-	}); err != nil {
-		log.Printf("reportModelImportAsync: enqueue model import result failed: requestID=%s taskID=%s, err=%v", requestID, taskID, err)
-	}
+	s.QueueReport(ReportKindModelImport, requestID, taskID, code, msg, "", cs)
 }
 
 // reportAuditAsync 将模型代码安全审计结果写入持久化 outbox（无代际校验）。
 func (s *TAAState) reportAuditAsync(requestID, taskID string, code int, msg, report string) {
-	s.mu.RLock()
-	platformIP, dockerID := s.PlatformIP, s.DockerID
-	s.mu.RUnlock()
-
-	log.Printf("reportAuditAsync: enqueueing audit result, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, reportLen=%d",
-		platformIP, dockerID, requestID, taskID, code, len(report))
-	s.enqueueAuditReport(platformIP, dockerID, requestID, taskID, code, msg, report)
+	s.QueueReport(ReportKindAudit, requestID, taskID, code, msg, report, nil)
 }
 
 // reportAuditIfCurrent enqueues the report only while gen still owns the audit.
-// The check runs inside the goroutine, immediately before the enqueue, so an
-// abort that lands after the audit's last context check still drops the verdict.
+// The check is a cheap filter, not a fence: an abort landing between the check
+// and the enqueue still slips a stale verdict through, exactly as it did when
+// this ran in its own goroutine. The caller is already on an async path, so the
+// goroutine only added a layer that looked like it closed that window.
 func (s *TAAState) reportAuditIfCurrent(gen uint64, requestID, taskID string, code int, msg, report string) {
-	s.mu.RLock()
-	platformIP, dockerID := s.PlatformIP, s.DockerID
-	s.mu.RUnlock()
-
-	log.Printf("reportAuditIfCurrent: enqueueing audit result, platformIP=%s, dockerID=%s, requestID=%s, taskID=%s, code=%d, reportLen=%d",
-		platformIP, dockerID, requestID, taskID, code, len(report))
-	go func() {
-		s.mu.RLock()
-		current := s.auditGen == gen
-		s.mu.RUnlock()
-		if !current {
-			log.Printf("reportAuditIfCurrent: dropping stale audit report: requestID=%s taskID=%s", requestID, taskID)
-			return
-		}
-		s.enqueueAuditReport(platformIP, dockerID, requestID, taskID, code, msg, report)
-	}()
-}
-
-func (s *TAAState) enqueueAuditReport(platformIP, dockerID, requestID, taskID string, code int, msg, report string) {
-	if err := s.EnqueuePlatformReport(PendingReportSnapshot{
-		Kind:         ReportKindAudit,
-		RequestID:    requestID,
-		TaskID:       taskID,
-		Code:         code,
-		Msg:          msg,
-		Report:       report,
-		PlatformAddr: platformIP,
-		DockerID:     dockerID,
-	}); err != nil {
-		log.Printf("enqueueAuditReport: enqueue audit result failed: requestID=%s taskID=%s, err=%v", requestID, taskID, err)
+	s.mu.Lock()
+	current := s.auditGen == gen
+	s.mu.Unlock()
+	if !current {
+		log.Printf("reportAuditIfCurrent: dropping stale audit report: requestID=%s taskID=%s", requestID, taskID)
+		return
 	}
+	s.reportAuditAsync(requestID, taskID, code, msg, report)
 }
 
 // newLLMClient creates an inference client based on configuration; returns nil if disabled or endpoint is empty.
