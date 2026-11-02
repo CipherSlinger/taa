@@ -50,8 +50,6 @@ PLATFORM_SM2_ID=1234567812345678           # 可选，签名用 ID_A，缺省即
 
 `TAA_LLM_ENDPOINT` 指向 TEE-LLM 推理服务，覆盖配置文件的 `codeAudit.llm.endpoint`。可写裸 IP 或完整 URL：没有 `://` 补 `https://`，没有端口补 `:8443`。旧名 `LLM_IP` 仍被读取，但 `LLM_IP` 优先于 `TAA_LLM_ENDPOINT`——两个都设时以 `LLM_IP` 为准。
 
-`PLATFORM_PUBLIC_KEY` 也可写在配置文件的 `platform.publicKey` 里，但环境变量**始终优先**（与 `platform.ip` 的「tee 文件优先」相反：覆盖即轮换密钥，不能让镜像里烤进去的旧公钥把覆盖静默吃掉）。两者都没有时 TAA 启动直接失败，没有明文降级模式。`PLATFORM_SM2_ID` 只认环境变量，不读配置文件。
-
 ```env
 # 路径约定（默认模板；以配置文件为准）
 /opt/taa/input/           # 输入目录（只读权限路径 READ_ONLY）
