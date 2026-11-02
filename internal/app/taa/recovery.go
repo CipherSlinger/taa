@@ -28,7 +28,7 @@ const maxCrashRecoveryAttempts = 3
 // 4. 规约 6/9 孤儿进程回收：扫描并杀灭残留的训练孤儿进程树（python/torch等），释放 GPU 显存；
 // 5. 规约 4 索引清洗与归档：调用 Purge 清除孤儿索引，重命名产物目录为 .failed-<taskId>-<timestamp> 黑匣子留存；
 // 6. 规约 5 产物规范补齐：调用 controller.BuildCrashFailureReport 生成标准 Schema 1.0 占位报告并落盘；
-// 7. 规约 7 双轨补偿投递：前置同步极速通道(2s硬超时) + 离线后台容错重试(指数退避最多60s)，不阻塞启动；
+// 7. 规约 7 补偿投递：写入持久化 outbox，平台恢复后由后台 worker 无限重试；
 // 8. 规约 7/8 任务解封与状态复位：持久化擦除 ActiveTask 并密封落盘，内存复位 CurrentOp = idle。
 func reconcileCrashRecovery(ctx context.Context, state *controller.TAAState, store *controller.StateStore, activeTask *controller.ActiveTaskSnapshot) error {
 	if activeTask == nil {
@@ -203,7 +203,7 @@ func reconcileCrashRecovery(ctx context.Context, state *controller.TAAState, sto
 	}
 
 	// ------------------------------------------------------------------------
-	// 规约 7 双轨补偿投递 (Dual-Track Drain: Fast-Sync + Detached-Async)
+	// 规约 7 补偿投递 (Durable Compensation via Report Outbox)
 	// ------------------------------------------------------------------------
 	platformIP := ""
 	dockerID := ""
