@@ -164,7 +164,10 @@ type TAAState struct {
 	// restoring them would leave the status stuck at "auditing" with no
 	// goroutine left to clear it, and isAuditBusyLocked() would keep rejecting
 	// phase switches.
-	pendingAudit    *AuditPendingSnapshot
+	pendingAudit *AuditPendingSnapshot
+	// pendingReports is the durable outbox of terminal platform reports. It is
+	// sealed with the rest of the state and drained by reportOutbox.
+	pendingReports  []PendingReportSnapshot
 	trainingControl *trainingControl // 当前训练任务的中止控制对象
 	stateStore      *StateStore      // 持久化密封存储
 	importIndex     *ImportIndexStore
@@ -290,6 +293,14 @@ func (s *TAAState) RestoreFromPersistentState(p *PersistentState) {
 	} else {
 		s.pendingAudit = nil
 	}
+	if len(p.PendingReports) > 0 {
+		s.pendingReports = make([]PendingReportSnapshot, len(p.PendingReports))
+		for i := range p.PendingReports {
+			s.pendingReports[i] = clonePendingReport(p.PendingReports[i])
+		}
+	} else {
+		s.pendingReports = nil
+	}
 	s.AuditRunning = false
 	s.CurrentAuditOp = "idle"
 	s.ActiveAuditTaskID = ""
@@ -351,6 +362,15 @@ func (s *TAAState) sealStateLocked() error {
 		state.AuditPending = &pendingCopy
 	} else {
 		state.AuditPending = nil
+	}
+
+	if len(s.pendingReports) > 0 {
+		state.PendingReports = make([]PendingReportSnapshot, len(s.pendingReports))
+		for i := range s.pendingReports {
+			state.PendingReports[i] = clonePendingReport(s.pendingReports[i])
+		}
+	} else {
+		state.PendingReports = nil
 	}
 
 	return s.stateStore.SealState(&state)
