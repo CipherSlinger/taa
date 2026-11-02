@@ -14,6 +14,21 @@ import (
 	"taa/pkg/utils"
 )
 
+// openTAARequestBody reads a request TAA sent and returns the plaintext inside
+// its envelope. Every callback route uses this, so no handler can decode the
+// outer {dockerId, cipher, sign} object as if it were the business body.
+func openTAARequestBody(r *http.Request) ([]byte, error) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取请求体失败: %w", err)
+	}
+	plaintext, err := currentPlatformKeys().openBody(body)
+	if err != nil {
+		return nil, fmt.Errorf("报文解密或验签失败: %w", err)
+	}
+	return plaintext, nil
+}
+
 type reportRequest struct {
 	DockerID  string         `json:"dockerId"`
 	RequestID string         `json:"requestId"`
@@ -43,8 +58,29 @@ func registerHandler(store *registerStateStore, allowEmptyAttestation bool) http
 		}
 
 		state.ContentType = r.Header.Get("Content-Type")
+		rawBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			state.StatusCode = http.StatusBadRequest
+			state.Message = "读取请求体失败: " + err.Error()
+			store.set(state)
+			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
+			return
+		}
+
+		// Registration is sealed like every other callback. The signature is
+		// checked against the taaPublicKey carried in the plaintext, because the
+		// platform has no other copy before this request arrives.
+		plaintext, registeredPub, err := currentPlatformKeys().openRegister(rawBody)
+		if err != nil {
+			state.StatusCode = http.StatusUnauthorized
+			state.Message = "报文解密或验签失败: " + err.Error()
+			store.set(state)
+			writeEnvelope(w, http.StatusUnauthorized, state.Message, nil, http.StatusUnauthorized)
+			return
+		}
+
 		var req registerRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.Unmarshal(plaintext, &req); err != nil {
 			state.StatusCode = http.StatusBadRequest
 			state.Message = "解析 application/json 失败: " + err.Error()
 			store.set(state)
@@ -117,6 +153,17 @@ func registerHandler(store *registerStateStore, allowEmptyAttestation bool) http
 			return
 		}
 
+		// Adopt the key only once the registration is accepted: a request that
+		// failed validation must not replace the key a running TAA is using.
+		if err := currentPlatformKeys().setTaaPublicKey(registeredPub); err != nil {
+			state.Accepted = false
+			state.StatusCode = http.StatusInternalServerError
+			state.Message = "保存 TAA 公钥失败: " + err.Error()
+			store.set(state)
+			writeEnvelope(w, http.StatusInternalServerError, state.Message, nil, http.StatusInternalServerError)
+			return
+		}
+
 		log.Printf("register accepted: dockerId=%s attestation size=%d timestamp=%s", state.DockerID, state.AttestationSize, state.Timestamp)
 		writeEnvelope(w, http.StatusOK, "success", map[string]any{
 			"received":     true,
@@ -143,12 +190,12 @@ func reportResourceResHandler(store *reportStateStore) http.HandlerFunc {
 			ReceivedAt: time.Now().Format(time.RFC3339),
 		}
 
-		bodyBytes, err := io.ReadAll(r.Body)
+		bodyBytes, err := openTAARequestBody(r)
 		if err != nil {
-			state.StatusCode = http.StatusBadRequest
-			state.Message = "读取请求体失败: " + err.Error()
+			state.StatusCode = http.StatusUnauthorized
+			state.Message = err.Error()
 			store.set(state)
-			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
+			writeEnvelope(w, http.StatusUnauthorized, state.Message, nil, http.StatusUnauthorized)
 			return
 		}
 		state.RawBody = string(bodyBytes)
@@ -224,12 +271,12 @@ func reportResHandler(store *reportStateStore) http.HandlerFunc {
 			ReceivedAt: time.Now().Format(time.RFC3339),
 		}
 
-		bodyBytes, err := io.ReadAll(r.Body)
+		bodyBytes, err := openTAARequestBody(r)
 		if err != nil {
-			state.StatusCode = http.StatusBadRequest
-			state.Message = "读取请求体失败: " + err.Error()
+			state.StatusCode = http.StatusUnauthorized
+			state.Message = err.Error()
 			store.set(state)
-			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
+			writeEnvelope(w, http.StatusUnauthorized, state.Message, nil, http.StatusUnauthorized)
 			return
 		}
 		state.RawBody = string(bodyBytes)
@@ -336,12 +383,12 @@ func reportModelImportHandler(store *reportStateStore) http.HandlerFunc {
 			ReceivedAt: time.Now().Format(time.RFC3339),
 		}
 
-		bodyBytes, err := io.ReadAll(r.Body)
+		bodyBytes, err := openTAARequestBody(r)
 		if err != nil {
-			state.StatusCode = http.StatusBadRequest
-			state.Message = "读取请求体失败: " + err.Error()
+			state.StatusCode = http.StatusUnauthorized
+			state.Message = err.Error()
 			store.set(state)
-			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
+			writeEnvelope(w, http.StatusUnauthorized, state.Message, nil, http.StatusUnauthorized)
 			return
 		}
 		state.RawBody = string(bodyBytes)
@@ -414,12 +461,12 @@ func reportAuditHandler(store *reportStateStore) http.HandlerFunc {
 			ReceivedAt: time.Now().Format(time.RFC3339),
 		}
 
-		bodyBytes, err := io.ReadAll(r.Body)
+		bodyBytes, err := openTAARequestBody(r)
 		if err != nil {
-			state.StatusCode = http.StatusBadRequest
-			state.Message = "读取请求体失败: " + err.Error()
+			state.StatusCode = http.StatusUnauthorized
+			state.Message = err.Error()
 			store.set(state)
-			writeEnvelope(w, http.StatusBadRequest, state.Message, nil, http.StatusBadRequest)
+			writeEnvelope(w, http.StatusUnauthorized, state.Message, nil, http.StatusUnauthorized)
 			return
 		}
 		state.RawBody = string(bodyBytes)
@@ -499,9 +546,9 @@ func reportProgressHandler(store *progressStateStore) http.HandlerFunc {
 			return
 		}
 
-		bodyBytes, err := io.ReadAll(r.Body)
+		bodyBytes, err := openTAARequestBody(r)
 		if err != nil {
-			writeEnvelope(w, http.StatusBadRequest, "读取请求体失败: "+err.Error(), nil, http.StatusBadRequest)
+			writeEnvelope(w, http.StatusUnauthorized, err.Error(), nil, http.StatusUnauthorized)
 			return
 		}
 
@@ -584,9 +631,9 @@ func modelLogHandler(store *modelLogStore) http.HandlerFunc {
 			return
 		}
 
-		bodyBytes, err := io.ReadAll(r.Body)
+		bodyBytes, err := openTAARequestBody(r)
 		if err != nil {
-			writeEnvelope(w, http.StatusBadRequest, "读取请求体失败: "+err.Error(), nil, http.StatusBadRequest)
+			writeEnvelope(w, http.StatusUnauthorized, err.Error(), nil, http.StatusUnauthorized)
 			return
 		}
 
@@ -641,9 +688,9 @@ func taaLogHandler(store *taaLogStore) http.HandlerFunc {
 			return
 		}
 
-		bodyBytes, err := io.ReadAll(r.Body)
+		bodyBytes, err := openTAARequestBody(r)
 		if err != nil {
-			writeEnvelope(w, http.StatusBadRequest, "读取请求体失败: "+err.Error(), nil, http.StatusBadRequest)
+			writeEnvelope(w, http.StatusUnauthorized, err.Error(), nil, http.StatusUnauthorized)
 			return
 		}
 

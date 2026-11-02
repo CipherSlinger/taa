@@ -92,7 +92,7 @@ func TestReportResStatusIncludesTaskIDReportAndRawBody(t *testing.T) {
 	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportRes-state.json")}
 	handler := reportResHandler(store)
 
-	body := strings.NewReader(`{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","code":0,"msg":null,"report":"{\"schema_version\":\"1.0\"}"}`)
+	body := sealedReader(t, `{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","code":0,"msg":null,"report":"{\"schema_version\":\"1.0\"}"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportRes", body)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -117,7 +117,7 @@ func TestReportModelImportStatusIncludesRequestID(t *testing.T) {
 	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportModelImport-state.json")}
 	handler := reportModelImportHandler(store)
 
-	body := strings.NewReader(`{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","code":0,"msg":null,"report":"{\"conclusion\":{\"passed\":true}}","checksum":{"size":581632,"algorithm":"sm3","value":"a1b2c3d4"}}`)
+	body := sealedReader(t, `{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","code":0,"msg":null,"report":"{\"conclusion\":{\"passed\":true}}","checksum":{"size":581632,"algorithm":"sm3","value":"a1b2c3d4"}}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportModelImport", body)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -145,7 +145,7 @@ func TestReportModelImportRequiresDockerID(t *testing.T) {
 	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportModelImport-state.json")}
 	handler := reportModelImportHandler(store)
 
-	body := strings.NewReader(`{"taskId":"task-1","code":0}`)
+	body := sealedReader(t, `{"taskId":"task-1","code":0}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportModelImport", body)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -159,7 +159,7 @@ func TestReportAuditStatusIncludesRequestID(t *testing.T) {
 	store := &reportStateStore{path: filepath.Join(t.TempDir(), "reportAudit-state.json")}
 	handler := reportAuditHandler(store)
 
-	body := strings.NewReader(`{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","code":0,"msg":null,"report":"{\"conclusion\":{\"passed\":true}}"}`)
+	body := sealedReader(t, `{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","code":0,"msg":null,"report":"{\"conclusion\":{\"passed\":true}}"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", body)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -181,6 +181,7 @@ func TestReportAuditStatusIncludesRequestID(t *testing.T) {
 }
 
 func TestTAAGetResourceInfoProxy(t *testing.T) {
+	registerTestTAAKey(t)
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Skipf("network listeners unavailable: %v", err)
@@ -193,8 +194,8 @@ func TestTAAGetResourceInfoProxy(t *testing.T) {
 			t.Fatalf("method = %s, want POST", r.Method)
 		}
 		body, _ := io.ReadAll(r.Body)
-		if !strings.Contains(string(body), "sample.tar.gz") {
-			t.Fatalf("body = %s, want to contain resourceUrl", body)
+		if !strings.Contains(string(openAsTAA(t, body)), "sample.tar.gz") {
+			t.Fatalf("sealed body = %s, want to open to a body containing resourceUrl", body)
 		}
 		writeEnvelope(w, http.StatusOK, "success", map[string]any{"total_samples": 2000}, 0)
 	}))
@@ -219,7 +220,7 @@ func TestRegisterHandlerAcceptsJSONPayload(t *testing.T) {
 	store := &registerStateStore{path: filepath.Join(t.TempDir(), "register-state.json")}
 	handler := registerHandler(store, false)
 	attestation := base64.StdEncoding.EncodeToString([]byte("attestation-body"))
-	body := strings.NewReader(`{"dockerId":"docker-1","authInfo":null,"taaPublicKey":"-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----","taaSecretKey":"c0ffee","attestationValues":"{\"userdata\":\"abcd\",\"mnonce\":\"ef01\",\"digest\":\"2345\",\"chipId\":\"6789\"}","timestamp":"1234567890","verifiedPass":true,"attestation":"` + attestation + `"}`)
+	body := sealedReader(t, `{"dockerId":"docker-1","authInfo":null,"taaPublicKey":"`+taaPublicKeyHex(t)+`","taaSecretKey":"c0ffee","attestationValues":"{\"userdata\":\"abcd\",\"mnonce\":\"ef01\",\"digest\":\"2345\",\"chipId\":\"6789\"}","timestamp":"1234567890","verifiedPass":true,"attestation":"`+attestation+`"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/taa/register", body)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -235,7 +236,7 @@ func TestRegisterHandlerAcceptsJSONPayload(t *testing.T) {
 	if state.ContentType != "application/json" {
 		t.Fatalf("contentType = %q, want application/json", state.ContentType)
 	}
-	if state.TaaPublicKey != "-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----" {
+	if state.TaaPublicKey != taaPublicKeyHex(t) {
 		t.Fatalf("taaPublicKey = %q", state.TaaPublicKey)
 	}
 	if state.TaaSecretKey != "c0ffee" {
@@ -1023,7 +1024,7 @@ func TestReportModelImportStrictValidationAndChecksum(t *testing.T) {
 	handler := reportModelImportHandler(store)
 
 	// 1. 缺少 requestId 时返回 400
-	reqNoReqID := httptest.NewRequest(http.MethodPost, "/v1/taa/reportModelImport", strings.NewReader(`{
+	reqNoReqID := httptest.NewRequest(http.MethodPost, "/v1/taa/reportModelImport", sealedReader(t, `{
 		"dockerId": "docker-1",
 		"code": 0,
 		"checksum": {"size": 581632, "algorithm": "sm3", "value": "a1b2c3d4"}
@@ -1039,7 +1040,7 @@ func TestReportModelImportStrictValidationAndChecksum(t *testing.T) {
 	}
 
 	// 2. code=0 时缺少 checksum 返回 400
-	reqNoChecksum := httptest.NewRequest(http.MethodPost, "/v1/taa/reportModelImport", strings.NewReader(`{
+	reqNoChecksum := httptest.NewRequest(http.MethodPost, "/v1/taa/reportModelImport", sealedReader(t, `{
 		"dockerId": "docker-1",
 		"requestId": "req-1",
 		"code": 0
@@ -1062,7 +1063,7 @@ func TestReportModelImportStrictValidationAndChecksum(t *testing.T) {
 		"code": 0,
 		"checksum": {"size": 581632, "algorithm": "sm3", "value": "a1b2c3d4"}
 	}`
-	reqValid := httptest.NewRequest(http.MethodPost, "/v1/taa/reportModelImport", strings.NewReader(validBody))
+	reqValid := httptest.NewRequest(http.MethodPost, "/v1/taa/reportModelImport", sealedReader(t, validBody))
 	reqValid.Header.Set("Content-Type", "application/json")
 	wValid := httptest.NewRecorder()
 	handler(wValid, reqValid)
@@ -1104,7 +1105,7 @@ func TestReportAuditStatisticsParsing(t *testing.T) {
 	handler := reportAuditHandler(store)
 
 	// 1. 测试缺少 dockerId
-	reqNoDockerID := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", strings.NewReader(`{
+	reqNoDockerID := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", sealedReader(t, `{
 		"requestId": "req-1",
 		"code": 0
 	}`))
@@ -1116,7 +1117,7 @@ func TestReportAuditStatisticsParsing(t *testing.T) {
 	}
 
 	// 2. 测试缺少 requestId
-	reqNoReqID := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", strings.NewReader(`{
+	reqNoReqID := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", sealedReader(t, `{
 		"dockerId": "docker-1",
 		"code": 0
 	}`))
@@ -1128,7 +1129,7 @@ func TestReportAuditStatisticsParsing(t *testing.T) {
 	}
 
 	// 3. 测试 code 校验 (必须为 0, 1, 2)
-	reqBadCode := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", strings.NewReader(`{
+	reqBadCode := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", sealedReader(t, `{
 		"dockerId": "docker-1",
 		"requestId": "req-1",
 		"code": 3
@@ -1149,7 +1150,7 @@ func TestReportAuditStatisticsParsing(t *testing.T) {
 		"code":      0,
 		"report":    reportContent,
 	})
-	reqValid := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", bytes.NewReader(bodyBytes))
+	reqValid := httptest.NewRequest(http.MethodPost, "/v1/taa/reportAudit", sealedReader(t, string(bodyBytes)))
 	reqValid.Header.Set("Content-Type", "application/json")
 	wValid := httptest.NewRecorder()
 	handler(wValid, reqValid)
@@ -1193,7 +1194,7 @@ func TestReportProgressHandlingAndTimestampOrdering(t *testing.T) {
 	handler := reportProgressHandler(store)
 
 	sendProgress := func(body string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportProgress", strings.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/v1/taa/reportProgress", sealedReader(t, body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		handler(w, req)
@@ -1293,7 +1294,7 @@ func TestReportProgressStatusAndReset(t *testing.T) {
 	resetHandler := progressResetHandler(store)
 
 	// 上报一次进度
-	reqReport := httptest.NewRequest(http.MethodPost, "/v1/taa/reportProgress", strings.NewReader(`{
+	reqReport := httptest.NewRequest(http.MethodPost, "/v1/taa/reportProgress", sealedReader(t, `{
 		"dockerId": "docker-1",
 		"requestId": "req-1",
 		"taskId": "task-1",
@@ -1343,7 +1344,7 @@ func TestModelLogDeduplicationAndRingBuffer(t *testing.T) {
 	handler := modelLogHandler(store)
 
 	sendLogs := func(body string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", strings.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", sealedReader(t, body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		handler(w, req)
@@ -1443,7 +1444,7 @@ func TestModelLogValidation(t *testing.T) {
 	handler := modelLogHandler(store)
 
 	send := func(body string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", strings.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", sealedReader(t, body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		handler(w, req)
@@ -1491,7 +1492,7 @@ func TestModelLogStatusAndReset(t *testing.T) {
 	resetHandler := modelLogResetHandler(store)
 
 	// 发送一条日志
-	reqLog := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", strings.NewReader(`{
+	reqLog := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", sealedReader(t, `{
 		"dockerId": "docker-1",
 		"requestId": "req-1",
 		"taskId": "task-1",
@@ -1548,7 +1549,7 @@ func TestTaaLogDeduplicationAndRingBuffer(t *testing.T) {
 	handler := taaLogHandler(store)
 
 	sendLogs := func(body string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/v1/taa/taaLog", strings.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/v1/taa/taaLog", sealedReader(t, body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		handler(w, req)
@@ -1641,7 +1642,7 @@ func TestTaaLogValidation(t *testing.T) {
 	handler := taaLogHandler(store)
 
 	send := func(body string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/v1/taa/taaLog", strings.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/v1/taa/taaLog", sealedReader(t, body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		handler(w, req)
@@ -1688,7 +1689,7 @@ func TestTaaLogStatusAndReset(t *testing.T) {
 	statusHandler := taaLogStatusHandler(store)
 	resetHandler := taaLogResetHandler(store)
 
-	reqLog := httptest.NewRequest(http.MethodPost, "/v1/taa/taaLog", strings.NewReader(`{
+	reqLog := httptest.NewRequest(http.MethodPost, "/v1/taa/taaLog", sealedReader(t, `{
 		"dockerId": "docker-taa",
 		"requestId": "req-1",
 		"taskId": "task-1",
@@ -1739,11 +1740,19 @@ func TestTaaLogStatusAndReset(t *testing.T) {
 }
 
 func TestTAAStopTrainingProxyAndLogging(t *testing.T) {
+	registerTestTAAKey(t)
 	var taaCalled bool
 	taaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/taa/stopTraining" && r.Method == http.MethodPost {
 			taaCalled = true
-			writeEnvelope(w, http.StatusOK, "训练任务已中止", nil, 0)
+			body, _ := io.ReadAll(r.Body)
+			// openAsTAA fails the test when the body is not a sealed envelope.
+			openAsTAA(t, body)
+			// TAA seals its responses too, so answer the way it does.
+			sealed := sealAsTAA(t, `{"msg":"训练任务已中止","result":null,"error":0}`)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(sealed)
 			return
 		}
 		http.NotFound(w, r)
@@ -1828,7 +1837,7 @@ func TestModelLogPrintsMessagesInSeqOrder(t *testing.T) {
 		]
 	}`
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", sealedReader(t, body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	handler(w, req)
@@ -1853,7 +1862,7 @@ func TestModelLogPrintsMessagesInSeqOrder(t *testing.T) {
 			{"seq": 4, "message": "[2026-09-16T10:00:03Z] fourth log"}
 		]
 	}`
-	req2 := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", strings.NewReader(body2))
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/taa/modelLog", sealedReader(t, body2))
 	req2.Header.Set("Content-Type", "application/json")
 	w2 := httptest.NewRecorder()
 	handler(w2, req2)
@@ -2116,7 +2125,7 @@ func TestReportResHistoryPersistenceAndReset(t *testing.T) {
 	handler := reportResHandler(store)
 
 	// Post report 1
-	body1 := strings.NewReader(`{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","code":0,"msg":null,"report":"{\"step\":1}"}`)
+	body1 := sealedReader(t, `{"dockerId":"docker-1","requestId":"req-1","taskId":"task-1","code":0,"msg":null,"report":"{\"step\":1}"}`)
 	req1 := httptest.NewRequest(http.MethodPost, "/v1/taa/reportRes", body1)
 	req1.Header.Set("Content-Type", "application/json")
 	w1 := httptest.NewRecorder()
@@ -2126,7 +2135,7 @@ func TestReportResHistoryPersistenceAndReset(t *testing.T) {
 	}
 
 	// Post report 2
-	body2 := strings.NewReader(`{"dockerId":"docker-1","requestId":"req-2","taskId":"task-2","code":0,"msg":null,"report":"{\"step\":2}"}`)
+	body2 := sealedReader(t, `{"dockerId":"docker-1","requestId":"req-2","taskId":"task-2","code":0,"msg":null,"report":"{\"step\":2}"}`)
 	req2 := httptest.NewRequest(http.MethodPost, "/v1/taa/reportRes", body2)
 	req2.Header.Set("Content-Type", "application/json")
 	w2 := httptest.NewRecorder()

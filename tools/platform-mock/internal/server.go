@@ -88,6 +88,17 @@ func NewServer(cfg Config) *Server {
 		log.Printf("TAA reverse proxy disabled: set -taa-target or ensure kubectl can reach pod %q", cfg.TAAPod)
 	}
 
+	// The keystore is installed before anything is routed: the envelope is
+	// mandatory on every TAA route, so a server without one could not serve a
+	// single callback. A failure here is logged and leaves the routes answering
+	// with an envelope error rather than silently exchanging plaintext.
+	keys, err := newKeystore(cfg.StateDir, cfg.PlatformKeyFile, []byte(cfg.SM2ID))
+	if err != nil {
+		log.Printf("[envelope] platform keystore unavailable, TAA callbacks will be refused: %v", err)
+	} else {
+		setPlatformKeys(keys)
+	}
+
 	registerStore := newRegisterStateStore(cfg.StateDir)
 	reportStore := newReportStateStore(cfg.StateDir)
 	reportResStore := newReportStateStore(cfg.StateDir, "reportRes-state.json")
@@ -171,7 +182,13 @@ func NewServer(cfg Config) *Server {
 				log.Printf("TAA proxy error: %s %s → %v", r.Method, r.URL.Path, err)
 				writeEnvelope(w, http.StatusBadGateway, "TAA proxy error: "+err.Error(), nil, http.StatusBadGateway)
 			}
-			mux.Handle("/taa/", http.StripPrefix("/taa", loggingReverseProxyHandler(proxy)))
+			// The console posts plaintext to this proxy; TAA only accepts
+			// envelopes, so the body is sealed on the way out and the JSON
+			// response is opened on the way back.
+			proxy.ModifyResponse = openProxyResponse
+			// Logging wraps sealing so the request log keeps the console's
+			// plaintext body rather than the ciphertext that goes on the wire.
+			mux.Handle("/taa/", loggingReverseProxyHandler(sealProxyRequestBody(http.StripPrefix("/taa", proxy))))
 		}
 	}
 
@@ -335,4 +352,3 @@ func dedupe(values []string) []string {
 	}
 	return out
 }
-

@@ -45,11 +45,17 @@ type recordingTAA struct {
 
 func newRecordingTAA(t *testing.T) *recordingTAA {
 	t.Helper()
+	// The mock seals what it sends, and it can only seal once it knows TAA's
+	// public key; a real instance learns it at registration.
+	registerTestTAAKey(t)
 	rec := &recordingTAA{status: http.StatusOK, response: `{"msg":"success","result":{"taskId":"task-1"},"error":0}`}
 	rec.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec.requests++
 		rec.path = r.URL.Path
 		rec.bodyRaw, _ = io.ReadAll(r.Body)
+		// The mock seals every request now; open it here so the assertions keep
+		// looking at the business JSON the way TAA will.
+		rec.bodyRaw = openAsTAA(t, rec.bodyRaw)
 		_ = json.Unmarshal(rec.bodyRaw, &rec.body)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(rec.status)
@@ -315,6 +321,9 @@ func TestFHESubmitIsRegisteredOnTheServerMux(t *testing.T) {
 		UploadDir: uploadDir,
 		TAATarget: taa.URL,
 	})
+	// NewServer installs its own keystore, so the test TAA key has to be
+	// registered with it.
+	registerTestTAAKey(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/fhe/submit", strings.NewReader(fheSubmitBody(t, testEvalKeyName, testInputZip)))
 	req.Header.Set("Content-Type", "application/json")

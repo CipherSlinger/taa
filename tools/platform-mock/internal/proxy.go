@@ -5,10 +5,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
+
+	"taa/internal/platform/envelope"
 )
 
 var requestLogs = newRequestLogStore(1000)
@@ -163,10 +167,25 @@ func discoverTAAAddr(kubectlPod, kubectlNS, port string) string {
 	return fmt.Sprintf("http://%s:%s", ip, port)
 }
 
+// proxyJSONToTAA sends a platform request to TAA. body is the business JSON:
+// it is sealed here, once, so every caller keeps writing plain bodies and none
+// can accidentally send plaintext to a TAA that now refuses it.
+//
+// The response is unsealed when it is an envelope, because TAA seals every JSON
+// response. Anything that does not parse as an envelope is returned unchanged:
+// that covers a non-envelope TAA build, a plain error page and the endpoints
+// whose response is binary.
 func proxyJSONToTAA(ctx context.Context, taaAddr, endpoint string, body []byte) (int, []byte, error) {
 	component := requestComponentFromPath(endpoint)
 	targetURL := strings.TrimRight(taaAddr, "/") + endpoint
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+
+	sealed, err := currentPlatformKeys().sealForTAA(body)
+	if err != nil {
+		logRequest(requestLogs, "out", component, http.MethodPost, endpoint, http.StatusInternalServerError, "封装请求失败: "+err.Error(), body)
+		return 0, nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(sealed))
 	if err != nil {
 		if !strings.Contains(endpoint, "/logs") && !strings.Contains(endpoint, "/status") {
 			logRequest(requestLogs, "out", component, http.MethodPost, endpoint, http.StatusInternalServerError, "创建请求失败: "+err.Error(), body)
@@ -195,5 +214,70 @@ func proxyJSONToTAA(ctx context.Context, taaAddr, endpoint string, body []byte) 
 	if !strings.Contains(endpoint, "/status") {
 		logRequest(requestLogs, "out", component, http.MethodPost, endpoint, resp.StatusCode, fmt.Sprintf("TAA HTTP %d (%s)", resp.StatusCode, time.Since(start).Round(time.Millisecond)), body)
 	}
-	return resp.StatusCode, respBody, nil
+	return resp.StatusCode, openTAAResponse(respBody), nil
+}
+
+// openTAAResponse returns the plaintext of a sealed TAA response, or the body
+// unchanged when it is not an envelope (binary export captured by mistake, a
+// plain error, or a TAA that did not seal). A sealed body whose signature does
+// not verify is left sealed rather than decoded: the caller then shows the
+// envelope, which is honest, instead of business data taken on trust.
+func openTAAResponse(body []byte) []byte {
+	env, err := envelope.Parse(body)
+	if err != nil {
+		return body
+	}
+	plaintext, err := currentPlatformKeys().openFromTAAResponse(env)
+	if err != nil {
+		log.Printf("could not open a TAA response envelope: %v", err)
+		return body
+	}
+	return plaintext
+}
+
+// sealProxyRequestBody seals what the embedded console forwards to TAA.
+//
+// The console talks to the mock's own /taa/* reverse proxy, so its calls are
+// plaintext on the browser side but must be envelopes on the TAA side. Sealing
+// here keeps the browser code unchanged and leaves one place responsible for
+// the wire format. GET/HEAD requests carry no body and are passed through.
+func sealProxyRequestBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			next.ServeHTTP(w, r)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeEnvelope(w, http.StatusBadRequest, "读取请求体失败: "+err.Error(), nil, http.StatusBadRequest)
+			return
+		}
+		sealed, err := currentPlatformKeys().sealForTAA(body)
+		if err != nil {
+			log.Printf("TAA proxy: cannot seal %s: %v", r.URL.Path, err)
+			writeEnvelope(w, http.StatusBadGateway, "TAA 请求封装失败: "+err.Error(), nil, http.StatusBadGateway)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(sealed))
+		r.ContentLength = int64(len(sealed))
+		next.ServeHTTP(w, r)
+	})
+}
+
+// openProxyResponse replaces a sealed JSON response with its plaintext so the
+// console can decode it. Non-JSON responses (the binary export) are left alone.
+func openProxyResponse(resp *http.Response) error {
+	if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "json") {
+		return nil
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	plaintext := openTAAResponse(data)
+	resp.Body = io.NopCloser(bytes.NewReader(plaintext))
+	resp.ContentLength = int64(len(plaintext))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(plaintext)))
+	return nil
 }

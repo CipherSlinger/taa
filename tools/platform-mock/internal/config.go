@@ -34,6 +34,14 @@ type Config struct {
 	// AllowEmptyAttestation allows registration without an attestation
 	// report, for local testing without TEE hardware.
 	AllowEmptyAttestation bool
+	// SM2ID is the SM2 signature identity ("ID_A") both sides must agree on.
+	// Empty means the protocol default ("1234567812345678"). It must match the
+	// value TAA was started with (PLATFORM_SM2_ID), or its signatures will not
+	// verify and its requests will not seal.
+	SM2ID string
+	// PlatformKeyFile overrides where the platform SM2 key pair is persisted.
+	// Empty means <StateDir>/platform-key.json.
+	PlatformKeyFile string
 }
 
 func (c Config) withDefaults() Config {
@@ -63,13 +71,17 @@ func envOrDefault(key, fallback string) string {
 
 // DefaultConfig returns the default Config for the platform mock service,
 // resolving values from environment variables where applicable (STATE_DIR,
-// UPLOAD_DIR, TAA_POD, TAA_NS, TAA_PORT).
+// UPLOAD_DIR, TAA_POD, TAA_NS, TAA_PORT, PLATFORM_SM2_ID,
+// PLATFORM_KEY_FILE). PLATFORM_SM2_ID is deliberately the same variable TAA
+// reads, so one exported value configures both ends.
 func DefaultConfig() Config {
 	return Config{
-		StateDir:  envOrDefault("STATE_DIR", defaultStateDir),
-		UploadDir: envOrDefault("UPLOAD_DIR", defaultUploadDir),
-		TAAPod:    envOrDefault("TAA_POD", defaultTAAPod),
-		TAANS:     envOrDefault("TAA_NS", ""),
-		TAAPort:   envOrDefault("TAA_PORT", defaultTAAPort),
+		StateDir:        envOrDefault("STATE_DIR", defaultStateDir),
+		UploadDir:       envOrDefault("UPLOAD_DIR", defaultUploadDir),
+		TAAPod:          envOrDefault("TAA_POD", defaultTAAPod),
+		TAANS:           envOrDefault("TAA_NS", ""),
+		TAAPort:         envOrDefault("TAA_PORT", defaultTAAPort),
+		SM2ID:           os.Getenv("PLATFORM_SM2_ID"),
+		PlatformKeyFile: envOrDefault("PLATFORM_KEY_FILE", ""),
 	}.withDefaults()
 }
