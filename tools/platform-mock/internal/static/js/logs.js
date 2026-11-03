@@ -119,7 +119,7 @@ window.applyLogFilteringAndHighlight = applyLogFilteringAndHighlight;
 async function fetchModelLogs() {
   if (modelLogPaused) return;
   try {
-    const res = await fetch('/api/modelLog/status', { cache: 'no-store' });
+    const res = await mockFetch('/api/modelLog/status', { cache: 'no-store' });
     const data = await res.json();
     const result = responseResult(data);
     if (!result) return;
@@ -174,7 +174,7 @@ function toggleModelLogPause() {
 
 async function clearModelLogs() {
   try {
-    await fetch('/api/modelLog/reset', { method: 'POST' });
+    await mockFetch('/api/modelLog/reset', { method: 'POST' });
   } catch {}
   const output = document.getElementById('modelLogOutput');
   if (output) output.innerHTML = '';
@@ -192,7 +192,7 @@ async function clearModelLogs() {
 async function fetchTaaLogs() {
   if (taaLogPaused) return;
   try {
-    const res = await fetch('/api/taaLog/status', { cache: 'no-store' });
+    const res = await mockFetch('/api/taaLog/status', { cache: 'no-store' });
     const data = await res.json();
     const result = responseResult(data);
     if (!result) return;
@@ -248,7 +248,7 @@ function toggleTaaLogPause() {
 
 async function clearTaaLogs() {
   try {
-    await fetch('/api/taaLog/reset', { method: 'POST' });
+    await mockFetch('/api/taaLog/reset', { method: 'POST' });
   } catch {}
   const output = document.getElementById('taaLogOutput');
   if (output) output.innerHTML = '';

@@ -55,6 +55,8 @@
     <!-- Row 2: TAA service address and health check toolbar -->
     <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; background:var(--panel-sub); border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin-bottom:12px; flex-wrap:wrap;">
       <div style="display:flex; align-items:center; gap:10px; flex:1; min-width:280px;">
+        <label for="instanceSelect" id="instanceSelectLabel" style="font-size:13px; font-weight:650; white-space:nowrap; margin:0; display:none;">实例</label>
+        <select id="instanceSelect" style="display:none; max-width:260px; padding:6px 10px; font-size:13px; border-radius:6px; border:1px solid var(--line); background:var(--bg);" title="选择要查看的 TAA 实例"></select>
         <label for="taaAddr" style="font-size:13px; font-weight:650; white-space:nowrap; margin:0;">TAA 服务地址</label>
         <input id="taaAddr" value="" placeholder="自动检测中..." style="flex:1; min-width:180px; padding:6px 10px; font-size:13px; border-radius:6px; border:1px solid var(--line); background:var(--bg);">
       </div>

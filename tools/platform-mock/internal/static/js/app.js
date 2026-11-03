@@ -237,7 +237,7 @@ async function submitFheTask() {
   showResultRunning('fheSubmitResult', '正在下发 FHE 任务...');
 
   try {
-    const res = await fetch('/api/fhe/submit', {
+    const res = await mockFetch('/api/fhe/submit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(reqBody),
@@ -427,7 +427,7 @@ async function deleteUploadedFile(filename) {
   if (!confirm(`确认删除文件 ${filename} 吗？`)) return;
 
   try {
-    const res = await fetch('/api/upload/delete', {
+    const res = await mockFetch('/api/upload/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filename }),
@@ -620,7 +620,7 @@ async function uploadFile() {
     isEncrypted ? '服务端将使用 TAA 注册公钥加密' : ''
   );
   try {
-    const res = await postFormWithProgress('/api/upload', formData, (loaded, total) => {
+    const res = await postFormWithProgress(withDockerId('/api/upload'), formData, (loaded, total) => {
       setUploadProgress(loaded, total, isEncrypted ? '上传完成，正在服务端加密...' : '上传完成，正在等待返回...');
     });
     const data = res.data;
@@ -1080,7 +1080,7 @@ function openRegisterBodyModal() {
 
 async function refreshStatus() {
   try {
-    const res = await fetch('/api/register/status', { cache: 'no-store' });
+    const res = await mockFetch('/api/register/status', { cache: 'no-store' });
     const data = await res.json();
     renderRegister(responseResult(data));
   } catch (err) {
@@ -1090,7 +1090,7 @@ async function refreshStatus() {
 }
 
 async function resetStatus() {
-  await fetch('/api/register/reset', { method: 'POST' });
+  await mockFetch('/api/register/reset', { method: 'POST' });
   await refreshStatus();
 }
 
@@ -1223,7 +1223,7 @@ function openReportResBodyModal() {
 
 async function refreshReportResStatus() {
   try {
-    const res = await fetch('/api/reportRes/status', { cache: 'no-store' });
+    const res = await mockFetch('/api/reportRes/status', { cache: 'no-store' });
     const data = await res.json();
     renderReportRes({ ...responseResult(data), code: data.error, msg: data.msg });
   } catch (err) {
@@ -1234,7 +1234,7 @@ async function refreshReportResStatus() {
 async function resetReportResStatus() {
   reportResHistory = [];
   renderReportResHistory([]);
-  await fetch('/api/reportRes/reset', { method: 'POST' });
+  await mockFetch('/api/reportRes/reset', { method: 'POST' });
   await refreshReportResStatus();
 }
 
@@ -1294,7 +1294,7 @@ function openReportModelImportBodyModal() {
 
 async function refreshReportModelImportStatus() {
   try {
-    const res = await fetch('/api/reportModelImport/status', { cache: 'no-store' });
+    const res = await mockFetch('/api/reportModelImport/status', { cache: 'no-store' });
     const data = await res.json();
     renderReportModelImport({ ...responseResult(data), code: data.error, msg: data.msg });
   } catch (err) {
@@ -1303,7 +1303,7 @@ async function refreshReportModelImportStatus() {
 }
 
 async function resetReportModelImportStatus() {
-  await fetch('/api/reportModelImport/reset', { method: 'POST' }).catch(() => {});
+  await mockFetch('/api/reportModelImport/reset', { method: 'POST' }).catch(() => {});
   setReportModelImportPending();
 }
 
@@ -1359,7 +1359,7 @@ function openReportAuditBodyModal() {
 
 async function refreshReportAuditStatus() {
   try {
-    const res = await fetch('/api/reportAudit/status', { cache: 'no-store' });
+    const res = await mockFetch('/api/reportAudit/status', { cache: 'no-store' });
     const data = await res.json();
     renderReportAudit({ ...responseResult(data), code: data.error, msg: data.msg });
   } catch (err) {
@@ -1368,7 +1368,7 @@ async function refreshReportAuditStatus() {
 }
 
 async function resetReportAuditStatus() {
-  await fetch('/api/reportAudit/reset', { method: 'POST' }).catch(() => {});
+  await mockFetch('/api/reportAudit/reset', { method: 'POST' }).catch(() => {});
   setReportAuditPending();
 }
 
@@ -1505,7 +1505,7 @@ function renderReportProgress(result) {
 
 async function refreshReportProgress() {
   try {
-    const res = await fetch('/api/reportProgress/status', { cache: 'no-store' });
+    const res = await mockFetch('/api/reportProgress/status', { cache: 'no-store' });
     const data = await res.json();
     renderReportProgress(responseResult(data));
   } catch (err) {}
@@ -1513,7 +1513,7 @@ async function refreshReportProgress() {
 
 async function resetReportProgress() {
   try {
-    await fetch('/api/reportProgress/reset', { method: 'POST' });
+    await mockFetch('/api/reportProgress/reset', { method: 'POST' });
     await refreshReportProgress();
   } catch (err) {}
 }
@@ -1628,7 +1628,7 @@ window.syncStepperState = syncStepperState;
 
 async function refreshDashboardStatus() {
   try {
-    const res = await fetch('/api/dashboard/status', { cache: 'no-store' });
+    const res = await mockFetch('/api/dashboard/status', { cache: 'no-store' });
     const data = await res.json();
     if (data && data.error === 0 && data.result) {
       syncStepperState(data.result);
@@ -1728,8 +1728,8 @@ async function testImportModel() {
   setReportModelImportPending();
   setReportAuditPending();
   try {
-    await fetch('/api/reportModelImport/reset', { method: 'POST' }).catch(() => {});
-    await fetch('/api/reportAudit/reset', { method: 'POST' }).catch(() => {});
+    await mockFetch('/api/reportModelImport/reset', { method: 'POST' }).catch(() => {});
+    await mockFetch('/api/reportAudit/reset', { method: 'POST' }).catch(() => {});
     const commands = collectModelCommands();
     const env = collectModelEnv();
     const runtimeConfig = buildRuntimeConfig(commands, env);
@@ -1781,7 +1781,7 @@ async function testStopTraining() {
     reqBody: {},
   });
   try {
-    const res = await fetch('/api/taa/stopTraining', {
+    const res = await mockFetch('/api/taa/stopTraining', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
@@ -1890,7 +1890,7 @@ async function detectTAAProxy() {
   // then point at the reader's own computer instead of the TAA service.
   const fallbackAddr = 'http://' + (location.hostname || '127.0.0.1') + ':6001';
   try {
-    const res = await fetch('/api/taa-target', { cache: 'no-store' });
+    const res = await mockFetch('/api/taa-target', { cache: 'no-store' });
     const data = await res.json();
     const payload = responseResult(data);
     if (payload.taaTarget) {
@@ -1931,6 +1931,7 @@ async function detectTAAProxy() {
 document.addEventListener('DOMContentLoaded', () => {
   // First, so the page never paints the wrong console's panels on the way in.
   initConsoleMode();
+  initInstanceSelector();
   detectTAAProxy();
   setupResourceUrlDropZones();
   refreshUploadedFiles();

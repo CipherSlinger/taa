@@ -2767,3 +2767,33 @@ func TestConsoleModePanelsAreTaggedAndHidden(t *testing.T) {
 		t.Error("body has no data-mode attribute, so both panel sets render until the script runs")
 	}
 }
+
+func TestFrontendInstanceSelector(t *testing.T) {
+	for _, want := range []string{
+		`id="instanceSelect"`,
+		"function currentDockerId()",
+		"function withDockerId(url)",
+		"function mockFetch(url, opts)",
+		"function loadInstances()",
+		"fetch('/api/instances'",
+		"instanceSelect').style.display",
+		"dockerId=",
+	} {
+		if !strings.Contains(frontendBundle, want) {
+			t.Fatalf("frontendBundle missing %q", want)
+		}
+	}
+	// The instance-scoped calls must go through mockFetch, otherwise switching
+	// the selector would still show the default instance's data.
+	for _, want := range []string{
+		"mockFetch('/api/register/status'",
+		"mockFetch('/api/reportRes/status'",
+		"mockFetch('/api/modelLog/status'",
+		"mockFetch('/api/taaLog/status'",
+		"mockFetch('/api/dashboard/status'",
+	} {
+		if !strings.Contains(frontendBundle, want) {
+			t.Fatalf("frontendBundle missing instance-aware call %q", want)
+		}
+	}
+}

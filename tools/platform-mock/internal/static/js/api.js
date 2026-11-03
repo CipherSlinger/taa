@@ -5,6 +5,82 @@ function getTaaAddr() {
   return el ? el.value.replace(/\/+$/, '') : '';
 }
 
+// ── Instance selection ──
+//
+// Every instance-scoped /api/* call carries ?dockerId=. The selection is held
+// in one module-level variable so polling functions keep their existing shape.
+let currentInstanceDockerId = '';
+
+function currentDockerId() {
+  return currentInstanceDockerId;
+}
+
+function withDockerId(url) {
+  const id = currentDockerId();
+  if (!id) return url;
+  const sep = url.indexOf('?') === -1 ? '?' : '&';
+  return url + sep + 'dockerId=' + encodeURIComponent(id);
+}
+
+function mockFetch(url, opts) {
+  return fetch(withDockerId(url), opts);
+}
+
+function applyInstanceList(list, defaultId) {
+  const sel = document.getElementById('instanceSelect');
+  const label = document.getElementById('instanceSelectLabel');
+  if (!sel) return;
+  const previous = sel.value || currentInstanceDockerId;
+  sel.innerHTML = '';
+  list.forEach((item) => {
+    const opt = document.createElement('option');
+    opt.value = item.dockerId || '';
+    const name = item.dockerId || '(legacy)';
+    opt.textContent = item.accepted ? name : name + ' (未注册)';
+    sel.appendChild(opt);
+  });
+  if (previous && list.some((item) => (item.dockerId || '') === previous)) {
+    sel.value = previous;
+  } else {
+    sel.value = defaultId || '';
+  }
+  currentInstanceDockerId = sel.value;
+  const show = list.length > 1;
+  document.getElementById('instanceSelect').style.display = show ? '' : 'none';
+  if (label) label.style.display = show ? '' : 'none';
+}
+
+async function loadInstances() {
+  let payload = null;
+  try {
+    const res = await fetch('/api/instances', { cache: 'no-store' });
+    payload = await res.json();
+  } catch (_) {
+    return;
+  }
+  const result = (payload && payload.result) || {};
+  applyInstanceList(result.instances || [], result.defaultDockerId || '');
+}
+
+function initInstanceSelector() {
+  const sel = document.getElementById('instanceSelect');
+  if (sel) {
+    sel.addEventListener('change', () => {
+      currentInstanceDockerId = sel.value;
+      if (typeof refreshStatus === 'function') refreshStatus();
+      if (typeof refreshReportResStatus === 'function') refreshReportResStatus();
+      if (typeof refreshReportModelImportStatus === 'function') refreshReportModelImportStatus();
+      if (typeof refreshReportAuditStatus === 'function') refreshReportAuditStatus();
+      if (typeof refreshReportProgress === 'function') refreshReportProgress();
+      if (typeof refreshDashboardStatus === 'function') refreshDashboardStatus();
+      if (typeof fetchModelLogs === 'function') fetchModelLogs();
+      if (typeof fetchTaaLogs === 'function') fetchTaaLogs();
+    });
+  }
+  loadInstances();
+  setInterval(loadInstances, 5000);
+}
+
 function formatResp(r) {
   return JSON.stringify(r, null, 2);
 }
@@ -61,7 +137,11 @@ function taaFetch(endpoint, body, timeoutMs = 10000) {
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  return fetch(target + endpoint, {
+  let url = target + endpoint;
+  if (target.endsWith('/taa')) {
+    url = withDockerId(url);
+  }
+  return fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: typeof body === 'string' ? body : JSON.stringify(body),
@@ -193,7 +273,7 @@ const PollingManager = {
   async pollFastTier() {
     if (this.isPaused) return;
     try {
-      const resp = await fetch('/api/dashboard/status');
+      const resp = await mockFetch('/api/dashboard/status');
       if (!resp.ok) return;
       const data = await resp.json();
       if (data && data.error === 0 && data.result) {
