@@ -43,9 +43,15 @@ TAA_IMAGE=taa-fhe:20261019 ./deploy-fhe.sh taa
 # taa 部署命令
 
 ```bash
+# 将 taa 更新到目标 pod 中
 TARGET_POD=taa-env-slim-v2-20261016-7104e03003ae0072-f7fbbf8f5-kkdb2 ./deploy.sh taa 
 ./deploy.sh docker save
 ```
+
+不指定 `TARGET_POD` 时，`./deploy.sh taa` 会在远端创建并接管一个 Kata CSV2 Pod
+（默认名 `taa-deploy`），后续部署复用它，`./deploy.sh taa stop` 停止并删除该 Pod
+（连带 guest 可写层里的数据、密钥和模型）。显式给出 `TARGET_POD` 时脚本只部署进该 Pod，
+既不会创建也不会删除它。
 
 
 # platform-mock 部署命令

@@ -92,6 +92,11 @@ case "$verb" in
   exec)
     script="${args[${#args[@]}-1]}"
     case "$script" in
+      *"pgrep -x taa"*)
+        # The pause step signals taa and then waits for it to disappear; a Pod that kept
+        # reporting a live process would (correctly) abort the deploy.
+        exit 1
+        ;;
       *engine=*)
         e=no; r=no
         [[ -f "$MOCK_STATE_DIR/engine" ]] && e=yes

@@ -61,6 +61,9 @@ cleanup_display() {
   if [[ -n "${TEMP_FILELIST:-}" && -f "$TEMP_FILELIST" ]]; then
     rm -f "$TEMP_FILELIST" 2>/dev/null || true
   fi
+  if [[ -n "${TEMP_TAA_POD_MANIFEST:-}" && -f "$TEMP_TAA_POD_MANIFEST" ]]; then
+    rm -f "$TEMP_TAA_POD_MANIFEST" 2>/dev/null || true
+  fi
   if [[ -n "${TEMP_BUILDER_CONTAINER:-}" ]]; then
     docker rm -f "$TEMP_BUILDER_CONTAINER" >/dev/null 2>&1 || true
     TEMP_BUILDER_CONTAINER=""
@@ -86,15 +89,43 @@ cleanup_display() {
 }
 trap cleanup_display EXIT INT TERM
 
-# Kubernetes 目标：默认部署到 osr 命名空间下的指定 TAA Pod。
+# Kubernetes target: the TAA Pod lives in the osr namespace by default. An explicit TARGET_POD
+# names a Pod the deployment must not create; when it is unset, remote mode owns a Pod of its own
+# and creates it on the remote host (see ensure_remote_pod). The effective name is resolved after
+# argument parsing, because a run that does not deploy TAA (platform-mock only) must keep its own
+# target instead of the name a TAA deployment would create.
 TARGET_NAMESPACE="${TARGET_NAMESPACE:-osr}"
-TARGET_POD="${TARGET_POD:-taa-env-slim-v2-20260916-506ca9a0790167bf-768d54479-m8b9z}"
+TARGET_POD_WAS_SET="${TARGET_POD:+set}"
+TAA_POD_NAME="${TAA_POD_NAME:-taa-deploy}"
+# The historical default target, still used by runs that do not deploy TAA.
+TARGET_POD_LEGACY_DEFAULT="taa-env-slim-v2-20260916-506ca9a0790167bf-768d54479-m8b9z"
 
-# 项目与远程宿主机：本地源码目录、SSH 登录信息和远程工作目录。
+# Project and remote host: local source tree, SSH login, and the remote working directory.
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_HOST="${REMOTE_HOST:-172.16.10.178}"
 REMOTE_DIR="${REMOTE_DIR:-/root/taa}"
+
+# Parameters of the Pod created when TARGET_POD was not set. The defaults mirror the production
+# TAA Pod on the host (kata-qemu-csv2, 3 CPU, 98Gi), because CSV2 encrypted memory is sized from
+# the limits and is resident from boot. The image is the registry's mutable slim-v2 tag; pin a
+# date tag through TAA_POD_IMAGE when the deployment has to be reproducible.
+TAA_POD_IMAGE="${TAA_POD_IMAGE:-172.16.10.178:31313/taa-env:slim-v2}"
+TAA_POD_NODE="${TAA_POD_NODE:-hygon-master}"
+TAA_POD_RUNTIME_CLASS="${TAA_POD_RUNTIME_CLASS:-kata-qemu-csv2}"
+TAA_POD_CPU="${TAA_POD_CPU:-3}"
+TAA_POD_MEMORY="${TAA_POD_MEMORY:-98Gi}"
+# A fresh CSV2 Pod boots its guest before it can pull the image inside it, so this is longer than
+# the 120s readiness timeout the deployment uses once the Pod already exists.
+TAA_POD_READY_TIMEOUT="${TAA_POD_READY_TIMEOUT:-600}"
+# Optional escape hatch for hosts with no CoCo Pod to copy the annotation from; leave empty to
+# derive it from a running Pod (see derive_cc_init_data).
+TAA_POD_CC_INIT_DATA="${TAA_POD_CC_INIT_DATA:-}"
+# Identity registered with the platform. The Pod name is stable across redeploys, which keeps the
+# instance the platform sees from changing on every deployment.
+TAA_POD_DOCKER_ID="${TAA_POD_DOCKER_ID:-}"
+TAA_POD_TEMPLATE="${TAA_POD_TEMPLATE:-$PROJECT_DIR/deploy/manifest/k8s/taa-pod.yaml.tmpl}"
+TEMP_TAA_POD_MANIFEST=""
 
 # Platform：远程平台模拟器的监听端口、绑定地址，以及 TAA 容器访问平台的地址。
 PLATFORM_PORT="${PLATFORM_PORT:-18080}"
@@ -407,16 +438,175 @@ check_remote_connectivity() {
   info "remote host SSH connection verified: ${REMOTE_USER}@${REMOTE_HOST}"
 }
 
-check_remote_pod() {
+# Prints success when the target Pod exists. Unlike check_remote_pod this never exits: the stop
+# path has to tolerate a Pod that is already gone.
+remote_pod_exists() {
+  remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"
+}
+
+# Reads the cc_init_data annotation off a CoCo Pod that already runs on the remote host. The
+# guest's CDH needs it to trust the local registry's self-signed certificate when it pulls the
+# image -- the host's own trust does not carry into the guest -- and a Pod without it stops in
+# StartError. Only that one annotation is ever copied: the runtime-handler key would hijack the
+# runtime, and an empty hypervisor kernel_params value would erase the rdinit= that boots the
+# guest. Prints the bare value; the caller substitutes it into the manifest.
+derive_cc_init_data() {
+  if [[ -n "$TAA_POD_CC_INIT_DATA" ]]; then
+    printf '%s' "$TAA_POD_CC_INIT_DATA"
+    return 0
+  fi
+  local derived
+  derived="$(remote_ssh 'bash -s' <<'REMOTE_DERIVE' || true
+set -euo pipefail
+command -v kubectl >/dev/null 2>&1 || exit 1
+# The dots inside the annotation key are escaped for jsonpath. Inside this quoted heredoc the
+# backslashes reach the remote shell unchanged.
+kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.annotations.io\.katacontainers\.config\.runtime\.cc_init_data}{"\n"}{end}' 2>/dev/null |
+  awk 'NF {print; exit}'
+REMOTE_DERIVE
+)"
+  derived="${derived//$'\r'/}"
+  derived="${derived//$'\n'/}"
+  if [[ -z "$derived" ]]; then
+    err "no Pod on ${REMOTE_USER}@${REMOTE_HOST} carries the cc_init_data annotation"
+    detail "Without it the guest's CDH cannot pull the image and the new Pod stops in StartError."
+    detail "Bring up any CoCo Pod once (deploy-taa-vm.sh up) or pass TAA_POD_CC_INIT_DATA=<base64>."
+    exit 1
+  fi
+  printf '%s' "$derived"
+}
+
+# Escapes what is special on the right-hand side of a sed s||| expression, so a Pod name or an id
+# containing &, \ or | cannot corrupt the rendered manifest.
+sed_escape() {
+  printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+
+# Stops the daemon inside the target Pod and holds the supervisor there: the `manual` file keeps
+# it from restarting, then the process is signalled. Called right after a Pod is created (so the
+# binary baked into the image never serves the deployment window) and again before the update.
+pause_remote_taa() {
+  remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_CONTAINER_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
+}
+
+# Creates the deployment-owned TAA Pod. Reached only when TARGET_POD was not set and no Pod with
+# that name exists, so an immutable-Pod rewrite cannot happen here. The rendered manifest uses |
+# as the delimiter because the injected base64 value contains / and + but never |.
+create_taa_pod() {
+  require_file "TAA Pod template" "$TAA_POD_TEMPLATE"
+  local cc_init_data docker_id pod_namespace
+  # An empty namespace in the manifest is not the same as "the context's namespace", so resolve
+  # what kubectl itself would use. The common case (TARGET_NAMESPACE=osr) never gets here.
+  pod_namespace="$TARGET_NAMESPACE"
+  if [[ -z "$pod_namespace" ]]; then
+    pod_namespace="$(remote_ssh "kubectl config view --minify -o jsonpath='{..namespace}' 2>/dev/null" || true)"
+    pod_namespace="${pod_namespace:-default}"
+  fi
+  cc_init_data="$(derive_cc_init_data)"
+  docker_id="${TAA_POD_DOCKER_ID:-$TARGET_POD}"
+  if [[ -z "${CONTRACT_ID:-}" ]]; then
+    warn "CONTRACT_ID is empty; the Pod will register without a contract id"
+  fi
+  TEMP_TAA_POD_MANIFEST="$(mktemp /tmp/taa-pod.XXXXXX.yaml)"
+  sed -e "s|__POD_NAME__|$(sed_escape "$TARGET_POD")|g" \
+      -e "s|__NAMESPACE__|$(sed_escape "$pod_namespace")|g" \
+      -e "s|__NODE_NAME__|$(sed_escape "$TAA_POD_NODE")|g" \
+      -e "s|__IMAGE__|$(sed_escape "$TAA_POD_IMAGE")|g" \
+      -e "s|__RUNTIME_CLASS__|$(sed_escape "$TAA_POD_RUNTIME_CLASS")|g" \
+      -e "s|__CPU__|$(sed_escape "$TAA_POD_CPU")|g" \
+      -e "s|__MEMORY__|$(sed_escape "$TAA_POD_MEMORY")|g" \
+      -e "s|__CC_INIT_DATA__|$(sed_escape "$cc_init_data")|g" \
+      -e "s|__DOCKER_ID__|$(sed_escape "$docker_id")|g" \
+      -e "s|__PLATFORM_IP__|$(sed_escape "$REMOTE_PLATFORM_IP")|g" \
+      -e "s|__CONTRACT_ID__|$(sed_escape "${CONTRACT_ID:-}")|g" \
+      "$TAA_POD_TEMPLATE" > "$TEMP_TAA_POD_MANIFEST"
+  step "creating the TAA Pod $TARGET_POD (runtimeClassName: $TAA_POD_RUNTIME_CLASS, node: $TAA_POD_NODE, image: $TAA_POD_IMAGE)"
+  # create, not apply: the name was verified absent a moment ago, and create turns a race with
+  # another operator into an error instead of silently rewriting a Pod whose spec is immutable.
+  if ! remote_ssh "kubectl $K_NS create -f -" < "$TEMP_TAA_POD_MANIFEST"; then
+    if ! remote_pod_exists; then
+      err "failed to create TAA Pod '$TARGET_POD'"
+      exit 1
+    fi
+    info "TAA Pod '$TARGET_POD' already exists; reusing it"
+  fi
+  rm -f "$TEMP_TAA_POD_MANIFEST"
+  TEMP_TAA_POD_MANIFEST=""
+  # Long, because the guest boots before it can pull the image. Dumping the events first keeps a
+  # timeout diagnosable, which a bare "timed out" is not.
+  if ! remote_ssh "kubectl $K_NS wait --for=condition=Ready --timeout=${TAA_POD_READY_TIMEOUT}s pod/'$TARGET_POD'"; then
+    err "TAA Pod '$TARGET_POD' did not become Ready within ${TAA_POD_READY_TIMEOUT}s"
+    remote_ssh "kubectl $K_NS describe pod '$TARGET_POD' | tail -n 40" || true
+    detail "The Pod is left in place for inspection: kubectl $K_NS describe pod '$TARGET_POD'"
+    exit 1
+  fi
+  # The device is the point of this Pod: without it TAA cannot produce a real CSV attestation,
+  # and the absence is silent rather than an error inside the container.
+  if ! remote_ssh "$(container_exec) test -e /dev/csv-guest"; then
+    err "TAA Pod '$TARGET_POD' has no /dev/csv-guest, so it cannot produce a real CSV attestation"
+    detail "Expected runtimeClassName $TAA_POD_RUNTIME_CLASS. Pod left running for inspection:"
+    detail "kubectl $K_NS exec '$TARGET_POD' -- ls -l /dev/csv*"
+    exit 1
+  fi
+  # The image's ENTRYPOINT has already started the daemon baked into it. Left running, it would
+  # register and accept a request with the old binary during the scan-engine provisioning, and
+  # the deployment's later pause would come after that window.
+  step "holding the daemon baked into the new Pod"
+  pause_remote_taa || true
+  info "TAA Pod created and Ready: $TARGET_POD"
+}
+
+# Makes sure the deployment has a Pod to work in. An existing Pod is reused and never recreated:
+# its annotations and limits are immutable, and a fresh Pod would throw away the guest's writable
+# layer (data, keys, models) and be a second confidential VM of host-resident memory.
+ensure_remote_pod() {
   if [[ "$DEPLOY_DOCKER" == true ]]; then
     return 0
   fi
-  if ! remote_ssh "kubectl $K_NS get pod '$TARGET_POD' >/dev/null 2>&1"; then
+  if remote_pod_exists; then
+    if [[ -z "$TARGET_POD_WAS_SET" ]]; then
+      # The Pod this deployment owns should already be Ready. A short wait turns a wedged or
+      # restarting Pod into a clear error here rather than a misleading readiness timeout after
+      # the binary has already been replaced.
+      if ! remote_ssh "kubectl $K_NS wait --for=condition=Ready --timeout=30s pod/'$TARGET_POD' >/dev/null 2>&1"; then
+        err "TAA Pod '$TARGET_POD' exists but did not become Ready within 30s"
+        remote_ssh "kubectl $K_NS describe pod '$TARGET_POD' | tail -n 20" || true
+        detail "It is the Pod this deployment owns. If it is wedged, delete it with:"
+        detail "  TARGET_POD= $(basename "$0") remote taa stop"
+        exit 1
+      fi
+      info "remote target pod verified: ${TARGET_POD} (namespace: ${TARGET_NAMESPACE:-default}, reused, nothing applied)"
+    else
+      info "remote target pod verified: ${TARGET_POD} (namespace: ${TARGET_NAMESPACE:-default})"
+    fi
+    return 0
+  fi
+  if [[ -n "$TARGET_POD_WAS_SET" ]]; then
     err "target pod '$TARGET_POD' not found in namespace '${TARGET_NAMESPACE:-default}' on remote host"
     detail "Please check TARGET_POD or run 'kubectl get pods -n ${TARGET_NAMESPACE:-default}' on the remote host to check running pods."
+    detail "Leave TARGET_POD unset to have this deployment create and own a Pod instead."
     exit 1
   fi
-  info "remote target pod verified: ${TARGET_POD} (namespace: ${TARGET_NAMESPACE:-default})"
+  create_taa_pod
+}
+
+# Deletes the deployment-owned TAA Pod. Destructive by design: the guest's writable layer -- the
+# data, keys and models the deployment put there -- goes with it, which is why this only runs when
+# the Pod is one this deployment created (TARGET_POD was left unset).
+delete_taa_pod() {
+  step "deleting the deployment-owned TAA Pod ($TARGET_POD in $TARGET_NAMESPACE)"
+  remote_ssh "kubectl $K_NS delete pod '$TARGET_POD' --ignore-not-found --wait=true --timeout=90s" || true
+  # A VM-backed Pod whose guest is wedged will not answer a graceful delete; fall back to force so
+  # a broken Pod cannot block the teardown. Its memory is host-resident, so leaving it costs GiB.
+  if remote_pod_exists; then
+    warn "Pod '$TARGET_POD' did not exit within 90s; forcing deletion"
+    remote_ssh "kubectl $K_NS delete pod '$TARGET_POD' --force --grace-period=0" || true
+  fi
+  if remote_pod_exists; then
+    err "Pod '$TARGET_POD' is still present after a forced delete"
+    exit 1
+  fi
+  info "TAA Pod '$TARGET_POD' deleted (its writable layer goes with it)"
 }
 
 ensure_local_docker_container() {
@@ -722,7 +912,8 @@ Running modes (mutually exclusive, default: remote):
 
 Actions (mutually exclusive, default: start):
   start     Deploy and start services (default action).
-  stop      Stop target running services.
+  stop      Stop target running services. In remote mode, a Pod created by this script (i.e. when
+            TARGET_POD was not set) is deleted as well; an explicitly named Pod is left in place.
   save      Package base image archive ($BASE_DOCKER_IMAGE_ARCHIVE) with production config ($TAA_PRODUCTION_CONFIG_TEMPLATE),
             commit with a date-stamped tag ($DEFAULT_SAVE_IMAGE), and export to an image archive ($DEFAULT_SAVE_ARCHIVE).
             NOTE: save action is ONLY valid in docker mode (e.g. $(basename "$0") docker save).
@@ -745,6 +936,14 @@ Component selection:
   When no component names are given, target components are deployed by default (in remote mode, platform-mock is omitted to avoid port 18080 conflict with ccs-node-agent).
   Provide one or more component names (platform-mock, taa) to deploy or operate on them separately.
   Note: Qwen / Ollama / TEE-LLM inference service is managed independently via deploy-llm.sh.
+
+Remote Pod lifecycle:
+  TARGET_POD names the Pod to deploy into. When it is unset, remote mode creates a dedicated Kata
+  CSV2 Pod (default name: TAA_POD_NAME, i.e. taa-deploy) on the remote host, reuses it on later
+  runs, and deletes it on stop. A Pod named explicitly through TARGET_POD is never created and
+  never deleted by this script. The Pod's LLM endpoint comes from taa-config.json, which is
+  rewritten on every deploy; pin TAA_POD_IMAGE to an immutable tag if the Pod must be
+  reproducible.
 
 Examples:
   # Docker mode (local Docker container)
@@ -779,10 +978,27 @@ Environment overrides:
       本地 Docker 容器网络模式（默认 host）。
 
   # Kubernetes / Pod (Remote mode)
-  TARGET_POD=${TARGET_POD}
-      目标 TAA Pod 名称。
+  TARGET_POD=${TARGET_POD:-<unset>}
+      目标 TAA Pod 名称。未设置时由脚本创建并管理一个 Pod（见下方 TAA_POD_*）。
   TARGET_NAMESPACE=${TARGET_NAMESPACE}
       Kubernetes 命名空间；置空时使用当前/默认命名空间。
+  TAA_POD_NAME=${TAA_POD_NAME}
+      TARGET_POD 未设置时创建/复用的 Pod 名称（默认 taa-deploy）。
+  TAA_POD_IMAGE=${TAA_POD_IMAGE}
+      新建 Pod 使用的镜像（默认 172.16.10.178:31313/taa-env:slim-v2）。
+  TAA_POD_NODE=${TAA_POD_NODE}
+      新建 Pod 绑定的节点（默认 hygon-master）。
+  TAA_POD_RUNTIME_CLASS=${TAA_POD_RUNTIME_CLASS}
+      新建 Pod 的 RuntimeClass（默认 kata-qemu-csv2）。
+  TAA_POD_CPU=${TAA_POD_CPU}
+  TAA_POD_MEMORY=${TAA_POD_MEMORY}
+      新建 Pod 的 CPU/内存 limits（默认 3 / 98Gi；CSV2 加密内存按 limits 常驻）。
+  TAA_POD_READY_TIMEOUT=${TAA_POD_READY_TIMEOUT}
+      等待新建 Pod Ready 的秒数（默认 600）。
+  TAA_POD_CC_INIT_DATA=<base64>
+      cc_init_data 注解；置空时从宿主上已有 CoCo Pod 推导。
+  TAA_POD_DOCKER_ID=<id>
+      注册到平台的 DOCKER_ID；置空时使用 Pod 名称。
 
   # Remote host / SSH
   REMOTE_USER=${REMOTE_USER}
@@ -1745,6 +1961,18 @@ else
   fi
 fi
 
+# Resolve the effective Pod name only now that the components are known. A run that does not
+# deploy TAA (for example `remote platform-mock`) must keep its own target, not the name a TAA
+# deployment would create: pointing discovery at a Pod only this script creates would leave that
+# run looking at a Pod that is about to change.
+if [[ -z "${TARGET_POD:-}" ]]; then
+  if [[ "$DEPLOY_TAA" == true ]]; then
+    TARGET_POD="$TAA_POD_NAME"
+  else
+    TARGET_POD="$TARGET_POD_LEGACY_DEFAULT"
+  fi
+fi
+
 cd "$PROJECT_DIR"
 
 wait_for_remote_taa_ready() {
@@ -1808,6 +2036,7 @@ if [[ "$ACTION" == "stop" ]]; then
     fi
   else
     step "stopping remote processes"
+    check_remote_connectivity
     if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
       ensure_remote_ssh
       "$PROJECT_DIR/deploy-platform-mock.sh" remote stop \
@@ -1819,7 +2048,19 @@ if [[ "$ACTION" == "stop" ]]; then
         --pid-file "$REMOTE_DIR/platform-mock.pid"
     fi
     if [[ "$DEPLOY_TAA" == true ]]; then
-      remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_CONTAINER_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
+      if remote_pod_exists; then
+        # A Pod that is Pending or wedged cannot be exec'd into; that must not stop the deletion
+        # of a Pod this deployment owns, whose memory is host-resident either way.
+        remote_ssh "$(container_exec) sh -lc 'touch \"$TAA_CONTAINER_WORKDIR/manual\" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'" \
+          || warn "could not signal taa inside Pod '$TARGET_POD' (it may not be running)"
+        # Only a Pod this deployment created is deleted. An explicitly named Pod belongs to the
+        # operator, and its guest writable layer is where their data, keys and models live.
+        if [[ -z "$TARGET_POD_WAS_SET" ]]; then
+          delete_taa_pod
+        fi
+      else
+        info "taa Pod '$TARGET_POD' does not exist; nothing to stop"
+      fi
     fi
   fi
   info "all target services stopped cleanly"
@@ -2027,7 +2268,7 @@ check_remote_connectivity
 
 if [[ "$DEPLOY_TAA" == true ]]; then
   step "checking remote target pod: ${TARGET_POD} (${TARGET_NAMESPACE})"
-  check_remote_pod
+  ensure_remote_pod
 fi
 
 if [[ "$DEPLOY_PLATFORM_MOCK" == true ]]; then
@@ -2091,13 +2332,22 @@ if [[ "$DEPLOY_TAA" == true ]]; then
   provision_remote_scan_engine "$TAA_CONFIG_TEMPLATE"
 
   step "pausing old taa inside container for update"
-  remote_ssh "$(container_exec) sh -lc 'touch "$TAA_CONTAINER_WORKDIR/manual" && pkill -x taa >/dev/null 2>&1 || true; killall taa >/dev/null 2>&1 || true'"
+  pause_remote_taa
+  old_taa_alive=true
   for _ in {1..30}; do
     if ! remote_ssh "$(container_exec) sh -lc 'pgrep -x taa >/dev/null 2>&1'"; then
+      old_taa_alive=false
       break
     fi
     sleep 1
   done
+  if [[ "$old_taa_alive" == true ]]; then
+    # Writing the new binary over a running one would leave the old image serving the port while
+    # every later check -- port open, log line present -- still passes.
+    err "the old taa inside '$TARGET_POD' is still running; refusing to replace its binary"
+    detail "Inspect it with: kubectl $K_NS exec '$TARGET_POD' -- ps -ef | grep taa"
+    exit 1
+  fi
 
   step "copying runtime files into container"
   remote_ssh "$(container_cp "$REMOTE_DIR/$BINARY_NAME" "$TAA_CONTAINER_WORKDIR/$BINARY_NAME")"

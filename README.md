@@ -569,6 +569,20 @@ Inside Docker containers, TAA runs under the supervision of `deploy/taa-supervis
 ./deploy-llm.sh pod-down                      # Delete the dedicated TEE-LLM Pod
 ```
 
+> **Remote mode can create its own Pod.** When `TARGET_POD` is unset, `deploy.sh` creates a
+> dedicated Kata CSV2 Pod on the remote host (`TAA_POD_NAME`, default `taa-deploy`), waits for it
+> to become Ready, and reuses it on later runs; `stop` deletes that Pod, taking its guest writable
+> layer (data, keys, models) with it. When `TARGET_POD` is set, the deployment only targets that
+> Pod and fails if it does not exist — it never creates or deletes it. Pod creation knobs:
+> `TAA_POD_IMAGE` (default `172.16.10.178:31313/taa-env:slim-v2`), `TAA_POD_NODE`,
+> `TAA_POD_RUNTIME_CLASS`, `TAA_POD_CPU`, `TAA_POD_MEMORY`, `TAA_POD_READY_TIMEOUT`,
+> `TAA_POD_CC_INIT_DATA` and `TAA_POD_DOCKER_ID`. The template lives at
+> `deploy/manifest/k8s/taa-pod.yaml.tmpl`. Pin `TAA_POD_IMAGE` to an immutable tag for a
+> reproducible Pod: the default is a mutable tag and the Pod is pulled with `IfNotPresent`, so a
+> tag that moves under the same name is only picked up by a fresh Pod. The LLM endpoint is not an
+> env var on the Pod — it is written into `taa-config.json` on every deploy, so a later `LLM_IP`
+> takes effect without recreating the Pod.
+
 > **Remote deploys provision the code scan engine.** When the config selects the semgrep engine
 > (`codeAudit.codeScan.engine`), `deploy.sh remote` makes sure the container has both the CLI and the
 > rules *before* it touches the running daemon. The engine comes from a payload archive kept on the

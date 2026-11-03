@@ -1,0 +1,132 @@
+# ============================================================================
+#  TAA Pod (Kata CSV2 confidential VM) -- TEMPLATE
+# ----------------------------------------------------------------------------
+#  This is a TEMPLATE, not a file to apply by hand. deploy.sh renders it and
+#  creates the Pod only when TARGET_POD was not set; when the operator names a
+#  Pod, the deployment never creates one.
+#
+#  Placeholders, all substituted by deploy.sh:
+#
+#    POD_NAME         metadata.name          (TARGET_POD, default taa-deploy)
+#    NAMESPACE        metadata.namespace     (TARGET_NAMESPACE, default osr)
+#    IMAGE            containers[0].image    (TAA_POD_IMAGE)
+#    NODE_NAME        spec.nodeName          (TAA_POD_NODE)
+#    RUNTIME_CLASS    runtimeClassName       (TAA_POD_RUNTIME_CLASS)
+#    CPU, MEMORY      container resources    (TAA_POD_CPU, TAA_POD_MEMORY)
+#    CC_INIT_DATA     cc_init_data annotation, read from a running CoCo Pod
+#    DOCKER_ID        env DOCKER_ID          (TAA_POD_DOCKER_ID, default Pod name)
+#    PLATFORM_IP      env PLATFORM_IP        (REMOTE_PLATFORM_IP)
+#    CONTRACT_ID      env CONTRACT_ID        (CONTRACT_ID)
+#
+#  The LLM endpoint is deliberately not an env var here: an env value outlives every deployment
+#  and would override the endpoint written into taa-config.json on each run, so a later deploy
+#  with a different LLM_IP would silently keep the old one. The config file is the sole source.
+#
+#  The placeholders in this comment carry no underscores; the fields below carry
+#  them wrapped in double underscores, so the sed pass substitutes the fields
+#  and leaves the documentation readable.
+#
+#  The container has no `command`: the image's ENTRYPOINT is
+#  `bash /root/taa/start.sh`, the same supervisor as deploy/taa-supervisor.sh
+#  (manual-file gate, flock singleton, restart loop, log at /root/taa/taa.log).
+#  That is what makes the deployment's `touch manual` / `rm manual` protocol
+#  work on a freshly created Pod.
+# ============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  # A literal name, never generateName: a second Pod is a second confidential
+  # VM, and CSV2 encrypted memory is resident from boot, so a stray duplicate
+  # costs tens of GiB until someone notices it.
+  name: __POD_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    app: taa
+  annotations:
+    # Required. The guest pulls the image through its own CDH, and the host's
+    # trust in the local registry's self-signed certificate does not carry into
+    # the guest. Without this annotation the Pod stops in StartError.
+    io.katacontainers.config.runtime.cc_init_data: __CC_INIT_DATA__
+    # Non-empty on purpose: a hypervisor parameter value is appended to the
+    # config file's own parameters, so an empty value would erase the rdinit=
+    # that boots the guest. These are the same timeouts the production TAA Pod
+    # carries for an in-guest image pull.
+    io.katacontainers.config.hypervisor.kernel_params: "agent.cdh_api_timeout=1200 agent.image_pull_timeout=3600"
+    # io.containerd.cri.runtime-handler is deliberately not set: it hijacks the
+    # runtime selection away from runtimeClassName (see teellm-pod.yaml.tmpl).
+spec:
+  # The RuntimeClass that boots a CSV2 guest, which is what makes the
+  # /dev/csv-guest kernel driver available at all.
+  runtimeClassName: __RUNTIME_CLASS__
+  nodeName: __NODE_NAME__
+  nodeSelector:
+    katacontainers.io/kata-runtime: "true"
+  restartPolicy: Always
+  terminationGracePeriodSeconds: 30
+  containers:
+    - name: taa
+      image: __IMAGE__
+      imagePullPolicy: IfNotPresent
+      env:
+        # The remote config path writes a template without a `platform` block,
+        # so these are the only source of the registration identity; deploy.sh
+        # refuses to finish when either is empty.
+        - name: DOCKER_ID
+          value: "__DOCKER_ID__"
+        - name: PLATFORM_IP
+          value: "__PLATFORM_IP__"
+        - name: CONTRACT_ID
+          value: "__CONTRACT_ID__"
+        - name: TZ
+          value: "Asia/Shanghai"
+      securityContext:
+        privileged: true
+        allowPrivilegeEscalation: true
+        runAsNonRoot: false
+        runAsUser: 0
+      # The CSV2 guest kernel registers a csv-guest misc device, but /dev inside
+      # the container is a fresh tmpfs: /proc/misc lists the device while /dev
+      # stays empty, and TAA then has no hardware device to attest with. The
+      # minor number is not stable -- read it. Failure here is deliberately not
+      # fatal: the deploy gate checks for the device and names the cause.
+      lifecycle:
+        postStart:
+          exec:
+            command:
+              - /bin/sh
+              - -c
+              - |
+                if [ -e /dev/csv-guest ]; then
+                  chmod 666 /dev/csv-guest 2>/dev/null || true
+                  exit 0
+                fi
+                retry=0
+                while [ ! -r /sys/class/misc/csv-guest/dev ] && [ "$retry" -lt 60 ]; do
+                  retry=$((retry + 1))
+                  sleep 1
+                done
+                if [ -r /sys/class/misc/csv-guest/dev ]; then
+                  dev=$(cat /sys/class/misc/csv-guest/dev 2>/dev/null || true)
+                  major=${dev%%:*}
+                  minor=${dev##*:}
+                  if [ -n "$major" ] && [ -n "$minor" ]; then
+                    mknod /dev/csv-guest c "$major" "$minor" 2>/dev/null || true
+                    chmod 666 /dev/csv-guest 2>/dev/null || true
+                  else
+                    echo "csv guest device major/minor invalid: $dev" >&2
+                  fi
+                else
+                  echo "csv guest device info missing, skip init in postStart" >&2
+                fi
+                exit 0
+      resources:
+        # Kata sizes the guest from the limits (default_memory + limits.memory,
+        # default_vcpus + limits.cpu). Requests equal the limits because CSV2
+        # encrypted memory is resident from boot: it is a permanent host cost,
+        # not a burstable request.
+        limits:
+          cpu: "__CPU__"
+          memory: "__MEMORY__"
+        requests:
+          cpu: "__CPU__"
+          memory: "__MEMORY__"
