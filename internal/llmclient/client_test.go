@@ -178,35 +178,42 @@ func TestGenerateCountsOneFailurePerLogicalCall(t *testing.T) {
 }
 
 func TestHalfOpenProbeIsReleasedOnMalformedBody(t *testing.T) {
-	var good bool
+	var mode int32 // 0 = 503, 1 = malformed body, 2 = good
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if good {
+		switch atomic.LoadInt32(&mode) {
+		case 0:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case 1:
+			_, _ = w.Write([]byte("not json"))
+		default:
 			_, _ = w.Write([]byte(`{"status":"SUCCESS","text":"ok"}`))
-			return
 		}
-		_, _ = w.Write([]byte("not json"))
 	}))
 	defer server.Close()
 
 	c := newTestClient(t, server, func(cfg *Config) {
 		cfg.CircuitBreakerFailureThreshold = 1
 		cfg.CircuitBreakerCooldown = 10 * time.Millisecond
+		cfg.MaxRetries = 1
 	})
 
-	// Trip it.
+	// Trip the breaker on a transient status.
 	if _, err := c.Generate(context.Background(), &GenerateRequest{ProtocolVersion: CurrentProtocolVersion, Prompt: "p"}); err == nil {
-		t.Fatal("expected a decode error")
+		t.Fatal("expected a transient failure")
 	}
 	time.Sleep(20 * time.Millisecond)
 
-	// This call runs as the half-open probe and fails again. Before the fix the
-	// probe stayed active forever and every later call returned ErrCircuitOpen.
+	// The half-open probe answers 200 with an undecodable body. Before the fix
+	// this neither recorded a failure nor released the probe, so the breaker
+	// stayed HALF-OPEN with probeActive=true and every later call returned
+	// ErrCircuitOpen.
+	atomic.StoreInt32(&mode, 1)
 	if _, err := c.Generate(context.Background(), &GenerateRequest{ProtocolVersion: CurrentProtocolVersion, Prompt: "p"}); err == nil || errors.Is(err, ErrCircuitOpen) {
 		t.Fatalf("half-open probe must report the real error, got %v", err)
 	}
 
 	time.Sleep(20 * time.Millisecond)
-	good = true
+	atomic.StoreInt32(&mode, 2)
 	resp, err := c.Generate(context.Background(), &GenerateRequest{ProtocolVersion: CurrentProtocolVersion, Prompt: "p"})
 	if err != nil {
 		t.Fatalf("breaker must recover after a good probe: %v", err)

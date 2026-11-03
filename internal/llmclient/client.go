@@ -67,9 +67,8 @@ func NewClient(cfg Config) (Client, error) {
 	var httpClient *http.Client
 	if cfg.TEETLS != nil {
 		httpClient = teetls.NewHTTPClient(cfg.TEETLS)
-		httpClient.Timeout = cfg.Timeout
 	} else {
-		httpClient = &http.Client{Timeout: cfg.Timeout}
+		httpClient = &http.Client{}
 	}
 
 	return newClient(cfg, httpClient), nil
@@ -106,6 +105,8 @@ func withDefaults(cfg Config) Config {
 // Tests call it directly to supply a test server's TLS client, so the health
 // client copy and the circuit breaker construction stay on the production path.
 func newClient(cfg Config, httpClient *http.Client) *client {
+	httpClient.Timeout = cfg.Timeout
+
 	// A second client, sharing the transport so the connection pool and any
 	// TEE-TLS state stay common, but carrying the health budget instead of the
 	// request budget.
