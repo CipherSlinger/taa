@@ -150,9 +150,52 @@ platform-mock 的构建、启动、停止和就绪检查统一由仓库根目录
 # taa-teellm 部署命令
 
 ```bash
-TARGET_POD=taa-teellm ./deploy-llm.sh taa 
-./deploy-llm.sh pod=***
+# 建专用 Pod 并部署（Pod 不存在时先构建镜像；数十分钟）
+./deploy-llm.sh --create-pod start
+
+# 指定模型
+./deploy-llm.sh --create-pod start --model qwen2.5-coder:7b
+
+# 已有 Pod：复用，不重建、不构建镜像（运行中的 Pod 镜像不可变）
+./deploy-llm.sh --create-pod start
+./deploy-llm.sh --pod taa-teellm start
+
+# 其余动作
+./deploy-llm.sh probe       # 探 RFC 8998 TEE-TLS 就绪
+./deploy-llm.sh stop        # 暂停 supervisor 并停掉 teellm-service / ollama
+./deploy-llm.sh pod-down    # 删 Pod，并核对宿主是否留下 kata 沙箱
+
+# 模型管理
+./deploy-llm.sh models list
+./deploy-llm.sh models info qwen2.5-coder:7b
+./deploy-llm.sh models switch qwen2.5-coder:7b
 ```
+
+**镜像内建构建**：`build-teellm-image.sh` 已删除，构建逻辑并入 `deploy-llm.sh`，只在
+**创建** Pod 时执行，不需要再单独跑任何脚本。流程与原来一致 —— 取 `taa-env:slim-v2` 派生一份
+剥掉 `/root/taa` 的 `teellm-base:<日期>`，把当前工作树编出的 `teellm-service`、两份配置、
+`teellm-supervisor.sh`、ollama 运行库与模型塞进一次性容器，补齐 6 个 soname 软链后
+`docker commit` 成 `teellm:<YYYYMMDD>`。
+
+**相同构建不上传**：提交镜像只是为了拿到 ID。提交之后先读 registry 上当天 tag 的 schema2
+清单，把 `config.digest` 与本地 `docker image inspect --format '{{.Id}}'` 比对，相同就跳过
+`docker save` / `scp` / `docker push`，直接用该 tag 建 Pod；不同才导出、上传、在远端
+`docker load` → `tag` → 推送（推送前先删同 tag 的旧 manifest，当天重建不会冲突）。
+无论有没有推送，这条路径都用 `imagePullPolicy: Always`，因为当天 tag 会被覆盖。
+
+**建之前先算内存**：`VM = kata default_memory + TEELLM_POD_MEMORY`，guest 可写层上限是可见内存
+的一半，镜像解包体积要放得下（另加 15% 可写余量），VM 也不能超过宿主 available。不满足直接
+拒绝，`TEELLM_POD_FORCE_MEMORY=true` 是显式逃生口，`TEELLM_POD_IMAGE_SIZE_GIB` 可指定镜像体积。
+
+**删除后查残留**：`pod-down` 提交 `--grace-period=30 --wait=false`，轮询 180s 后必要时强制删除，
+再比较三个数 —— 集群里的 kata Pod 数、`/run/vc/sbs` 目录数、`qemu-system` 进程数。不等就打印
+每个 qemu 的 RSS 与 `-m`，并给出 `crictl pods` → `stopsandbox` → `rmp` 的顺序（不要直接 kill）。
+
+**相关环境变量**：`TEELLM_POD_IMAGE`（显式指定则不构建也不解析）、
+`TEELLM_BUILD_POD_IMAGE=false`（回到"取 registry 最新日期 tag"的旧行为）、
+`TEELLM_POD_IMAGE_REPO` / `TEELLM_IMAGE_REGISTRY` / `TEELLM_POD_PULL_POLICY`、
+构建用的 `TEELLM_IMAGE_BASE` / `TEELLM_IMAGE_BASE_ARCHIVE` / `TEELLM_IMAGE_KEEP_BUILDER`。
+`TEELLM_IMAGE_KEEP_BUILDER=true` 会把构建容器留下，便于查 payload 为什么没打进去。
 
 ---
 
@@ -180,11 +223,12 @@ TARGET_POD=taa-teellm ./deploy-llm.sh taa
 `jupyter-nologin-full:v2.2`、`latti/latti-server-node:latest`、中间层 `teellm-base:<日期>`）
 不适用本规则。每个名字都能用环境变量或 `--image`/`--tag`、`--archive` 覆盖。
 
-**部署侧不按日期猜**：`deploy-llm.sh --create-pod` 建 Pod 前会查 registry 的
-`/v2/teellm/tags/list`，取最新的日期 tag 填进 Pod 清单，而不是直接用当天日期 ——
-镜像 tag 是构建日期，隔天部署时"今天"指向一个没人推过的 tag，Pod 会在 guest 启动之后
-停在 ImagePullBackOff。显式给了 `TEELLM_POD_IMAGE` 就原样使用；查询失败（401、不可达）
-则退回当天日期并告警。
+**默认构建，不按日期猜**：`deploy-llm.sh --create-pod` 建 Pod 前用当前工作树构建镜像，tag 是
+当天日期，所以不存在"今天的 tag 没人推过"的问题 —— 这次运行自己推。显式给了
+`TEELLM_POD_IMAGE` 就原样使用，不构建。只有 `TEELLM_BUILD_POD_IMAGE=false` 时才回到旧行为：
+查 registry 的 `/v2/teellm/tags/list` 取最新的日期 tag，因为隔天部署时"今天"指向一个没人推过的
+tag，Pod 会在 guest 启动之后停在 ImagePullBackOff；此时查询失败（401、不可达）则退回当天日期
+并告警。
 
 ## 1. TEE 训练 / 推理 — `deploy.sh`
 
