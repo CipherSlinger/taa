@@ -75,15 +75,12 @@ func NewServer(cfg Config) *Server {
 		log.Printf("failed to create state directory %s: %v", cfg.StateDir, err)
 	}
 
-	// Resolve TAA proxy target
+	// Resolve the console's default TAA address. The /taa/* proxy does not use
+	// this value: it selects the target per request, and newInstanceManager
+	// below logs the mode it will use.
 	taaAddr := strings.TrimRight(strings.TrimSpace(cfg.TAATarget), "/")
 	if taaAddr == "" {
 		taaAddr = discoverTAAAddr(cfg.TAAPod, cfg.TAANS, strings.TrimSpace(cfg.TAAPort))
-	}
-	if taaAddr != "" {
-		log.Printf("TAA reverse proxy target: %s (pod=%s)", taaAddr, cfg.TAAPod)
-	} else {
-		log.Printf("TAA reverse proxy disabled: set -taa-target or ensure kubectl can reach pod %q", cfg.TAAPod)
 	}
 
 	// The keystore is installed before anything is routed: the envelope is

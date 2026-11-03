@@ -2,6 +2,7 @@ package mock
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,16 +15,37 @@ import (
 // sealedBackend answers every request with a sealed body that echoes which
 // backend served it and what it saw, so the assertions can prove both routing
 // and query stripping without shared variables.
+//
+// It also opens the forwarded request with its own instance key. A request
+// sealed for the wrong instance cannot be opened here, which turns a
+// wrong-identity seal into a loud failure instead of a passing test.
 func sealedBackend(t *testing.T, name, dockerID string, priv *crypto.SM2PrivateKey, ks *keystore) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The forwarded request is platform-direction: encrypt to TAA's key and
+		// sign with the platform's. Keys.Open is the matching reader, and it is
+		// keyed to this instance, so a request sealed for another instance
+		// cannot be opened here.
 		keys, err := envelope.NewKeys(&ks.platformPrivate().PublicKey, priv, ks.userIDBytes())
 		if err != nil {
 			t.Errorf("build keys for %s: %v", name, err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		reply := fmt.Sprintf(`{"backend":%q,"path":%q,"query":%q}`, name, r.URL.Path, r.URL.RawQuery)
+		raw, _ := io.ReadAll(r.Body)
+		env, err := envelope.Parse(raw)
+		if err != nil {
+			t.Errorf("%s received an unparseable envelope: %v", name, err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		payload, err := keys.Open(env)
+		if err != nil {
+			t.Errorf("%s could not open the forwarded request: %v", name, err)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		reply := fmt.Sprintf(`{"backend":%q,"path":%q,"query":%q,"echo":%q}`, name, r.URL.Path, r.URL.RawQuery, string(payload))
 		sealed, err := keys.Seal([]byte(reply), dockerID)
 		if err != nil {
 			t.Errorf("seal the reply from %s: %v", name, err)
@@ -57,6 +79,16 @@ func TestTAAProxyRoutesByDockerIDAndStripsTheQuery(t *testing.T) {
 	registerInstanceForTest(t, mgr, "docker-a", keyA)
 	registerInstanceForTest(t, mgr, "docker-b", keyB)
 
+	// Pin which instance is the default instead of leaving it to registration
+	// wall-clock order: the request below names the non-default instance, so a
+	// handler that ignored ?dockerId= would route to A and fail the assertion.
+	a := mgr.lookup("docker-a").register.get()
+	a.ReceivedAt = "2026-01-02T00:00:00Z"
+	mgr.lookup("docker-a").register.set(a)
+	b := mgr.lookup("docker-b").register.get()
+	b.ReceivedAt = "2026-01-01T00:00:00Z"
+	mgr.lookup("docker-b").register.set(b)
+
 	backendA := sealedBackend(t, "a", "docker-a", keyA, ks)
 	defer backendA.Close()
 	backendB := sealedBackend(t, "b", "docker-b", keyB, ks)
@@ -65,7 +97,7 @@ func TestTAAProxyRoutesByDockerIDAndStripsTheQuery(t *testing.T) {
 	mgr.lookup("docker-b").setTarget(backendB.URL)
 
 	handler := loggingReverseProxyHandler(dynamicTAAProxyHandler(mgr, newProxyPool()))
-	req := httptest.NewRequest(http.MethodPost, "/v1/taa/health?dockerId=docker-a", strings.NewReader(`{"probe":1}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/taa/health?dockerId=docker-b", strings.NewReader(`{"probe":1}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -74,11 +106,14 @@ func TestTAAProxyRoutesByDockerIDAndStripsTheQuery(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, `"backend":"a"`) {
-		t.Fatalf("response = %s, want backend a", body)
+	if !strings.Contains(body, `"backend":"b"`) {
+		t.Fatalf("response = %s, want backend b", body)
 	}
 	if !strings.Contains(body, `"path":"/v1/taa/health"`) {
 		t.Fatalf("backend path = %s, want /v1/taa/health", body)
+	}
+	if !strings.Contains(body, `"echo":"{\"probe\":1}"`) {
+		t.Fatalf("forwarded body = %s, want it sealed to and opened by instance b", body)
 	}
 	if strings.Contains(body, `dockerId`) {
 		t.Fatalf("forwarded query still contains dockerId: %s", body)
