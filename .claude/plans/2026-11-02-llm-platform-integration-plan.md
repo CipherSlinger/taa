@@ -890,7 +890,6 @@ const (
 	DefaultHeartbeatInterval        = 30 * time.Second
 	DefaultLogFlushInterval         = 5 * time.Second
 	DefaultRegisterRefreshInterval  = 6 * time.Hour
-	DefaultRegisterRetryWindow      = 10 * time.Minute
 	DefaultLogBufferSize            = 2000
 	DefaultHeartbeatSeconds         = 30
 	DefaultLogFlushSeconds          = 5
@@ -899,11 +898,17 @@ const (
 	DefaultRequestTimeout           = 10 * time.Second
 )
 
-// Register retry ladder. It mirrors the shape of TAA's register retry: double
-// from a short delay up to a cap, inside a bounded window.
+// Register retry ladder. It mirrors the shape of TAA's register retry -- double
+// from a short delay up to a cap -- but it has no give-up window: registration
+// is the only step that makes this instance exist as far as the platform is
+// concerned, so it keeps trying for the life of the process.
 const (
 	registerRetryInitialDelay = 1 * time.Second
 	registerRetryMaxDelay     = 60 * time.Second
+	// registerFailureLogEvery throttles the stderr reminder once the ladder has
+	// settled at its cap. Retrying forever at 60s must not mean one log line per
+	// minute forever in the guest, so only every tenth attempt is printed.
+	registerFailureLogEvery = 10
 )
 
 // Config configures the platform reporter.
@@ -920,8 +925,6 @@ type Config struct {
 	// RegisterRefreshInterval re-registers periodically so the platform keeps a
 	// report bound to the certificate this process is currently presenting.
 	RegisterRefreshInterval time.Duration
-	// RegisterRetryWindow bounds the startup registration retry loop.
-	RegisterRetryWindow time.Duration
 	// LogBufferSize is the ring capacity, and also the cap on the pending queue.
 	LogBufferSize int
 	// Logs is the shared buffer. When nil an internal one is created; the caller
@@ -944,9 +947,6 @@ func (c Config) withDefaults() Config {
 	}
 	if c.RegisterRefreshInterval <= 0 {
 		c.RegisterRefreshInterval = DefaultRegisterRefreshInterval
-	}
-	if c.RegisterRetryWindow <= 0 {
-		c.RegisterRetryWindow = DefaultRegisterRetryWindow
 	}
 	if c.LogBufferSize <= 0 {
 		c.LogBufferSize = DefaultLogBufferSize
@@ -1411,18 +1411,20 @@ func (a *Agent) postJSON(ctx context.Context, path string, payload any) error {
 	return nil
 }
 
-// reportFailure writes a reporting failure to stderr and, on the transition
-// from healthy to failing, also into the platform log buffer. Repeats stay out
-// of the buffer so an outage cannot crowd out real service logs.
+// reportFailure records a reporting failure. Both stderr and the platform log
+// buffer get one entry per outage -- the transition into failure -- not one per
+// attempt: these loops keep running for the life of the process, so an
+// unconditional line would grow the guest's tmpfs for as long as the platform is
+// unreachable. The registration ladder prints its own throttled progress line,
+// because "still retrying" is the state a reader of that log wants to see.
 func (a *Agent) reportFailure(channel string, err error) {
-	log.Printf("[WARN] [platform] %s reporting failed: %v", channel, err)
-
 	a.mu.Lock()
 	wasFailing := a.failing[channel]
 	a.failing[channel] = true
 	a.mu.Unlock()
 
 	if !wasFailing {
+		log.Printf("[WARN] [platform] %s reporting failed: %v", channel, err)
 		a.logs.Add(LevelWarn, "platform", "%s reporting failed: %v", channel, err)
 	}
 }
@@ -1720,39 +1722,17 @@ func (a *Agent) Stop() {
 	})
 }
 
-// registerLoop registers once, retrying inside a bounded window, and then
-// refreshes periodically so the platform keeps a report bound to the
-// certificate this process is currently presenting.
+// registerLoop registers, retrying for as long as it takes, and then refreshes
+// periodically so the platform keeps a report bound to the certificate this
+// process is currently presenting.
 func (a *Agent) registerLoop(ctx context.Context) {
 	defer a.wg.Done()
 
-	deadline := time.Now().Add(a.cfg.RegisterRetryWindow)
-	delay := registerRetryInitialDelay
-	for {
-		if err := a.registerOnce(ctx); err == nil {
-			a.logs.Add(LevelInfo, "platform", "registered with %s as %s", a.cfg.PlatformAddr, a.cfg.DockerID)
-			close(a.registered)
-			break
-		} else {
-			a.reportFailure("register", err)
-		}
-
-		// Give up when the next sleep would land past the window, so the loop
-		// cannot sleep past its own deadline.
-		if time.Now().Add(delay).After(deadline) {
-			a.logs.Add(LevelError, "platform", "register retry window of %s exhausted", a.cfg.RegisterRetryWindow)
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(delay):
-		}
-		delay *= 2
-		if delay > registerRetryMaxDelay {
-			delay = registerRetryMaxDelay
-		}
+	if err := a.registerUntilSuccess(ctx); err != nil {
+		return
 	}
+	a.logs.Add(LevelInfo, "platform", "registered with %s as %s", a.cfg.PlatformAddr, a.cfg.DockerID)
+	close(a.registered)
 
 	ticker := time.NewTicker(a.cfg.RegisterRefreshInterval)
 	defer ticker.Stop()
@@ -1761,11 +1741,48 @@ func (a *Agent) registerLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := a.registerOnce(ctx); err != nil {
-				a.reportFailure("register", err)
-			} else {
-				a.reportSuccess("register")
+			// A failed refresh goes back onto the same ladder. Waiting a full
+			// period would leave the platform holding a record for a certificate
+			// the process has already rotated away from.
+			if err := a.registerUntilSuccess(ctx); err != nil {
+				return
 			}
+		}
+	}
+}
+
+// registerUntilSuccess attempts registration on the retry ladder until it
+// succeeds or ctx is cancelled. It returns nil only on success.
+//
+// The ladder has no give-up window. Registration is what makes this instance
+// exist on the platform: a bounded window would mean that any platform outage
+// longer than the window leaves a perfectly healthy inference service
+// permanently invisible -- no record, heartbeats blocked on the registration
+// signal, logs undeliverable -- with no way back short of restarting the pod.
+// TAA bounds its own retry for a different reason (its log lives on the guest's
+// tmpfs and every attempt carries the full attestation payload); here the
+// payload is small and the logging is throttled, so nothing accumulates.
+func (a *Agent) registerUntilSuccess(ctx context.Context) error {
+	delay := registerRetryInitialDelay
+	for attempt := 1; ; attempt++ {
+		err := a.registerOnce(ctx)
+		if err == nil {
+			a.reportSuccess("register")
+			return nil
+		}
+		a.reportFailure("register", err)
+		if attempt == 1 || attempt%registerFailureLogEvery == 0 {
+			log.Printf("[WARN] [platform] register attempt %d failed, retrying in %s: %v", attempt, delay, err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+		delay *= 2
+		if delay > registerRetryMaxDelay {
+			delay = registerRetryMaxDelay
 		}
 	}
 }
@@ -2687,11 +2704,12 @@ appear in any Service, NodePort or Ingress.
 ### Platform Reporting
 
 Set `platform.addr` to enable outbound plaintext JSON reporting to the control
-platform. The instance registers once at startup (retrying with backoff for up
-to 10 minutes), refreshes its registration every `registerRefreshSeconds`,
-sends a liveness heartbeat every `heartbeatSeconds`, and pushes buffered logs
-every `logFlushSeconds`. An empty `platform.addr` disables all three; the
-attestation listener is controlled separately by `server.attestationAddr`.
+platform. The instance registers once at startup (retrying with backoff until it
+succeeds -- it never gives up), refreshes its registration every
+`registerRefreshSeconds`, sends a liveness heartbeat every `heartbeatSeconds`,
+and pushes buffered logs every `logFlushSeconds`. An empty `platform.addr`
+disables all three; the attestation listener is controlled separately by
+`server.attestationAddr`.
 
 ```json
 "platform": {
