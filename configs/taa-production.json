@@ -35,6 +35,7 @@
       "enabled": true,
       "attestation": {
         "enabled": true,
+        "skipChainVerify": true,
         "measurement": ""
       },
       "endpoint": "https://10.244.0.188:8443",

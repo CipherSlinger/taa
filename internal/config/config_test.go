@@ -608,6 +608,11 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 		// other assertion here, since those pin values the defaults already have.
 		wantRulesPath string
 		wantLLMModel  string
+		// wantSkipChainVerify pins that the shipped templates verify only the
+		// report's PEK signature. The images no longer carry the vendor
+		// certificates, so a template that left the chain required would fail
+		// the TEE-LLM handshake at every audit.
+		wantSkipChainVerify bool
 	}{
 		{
 			relPath:              "../../configs/taa-production.json",
@@ -626,6 +631,7 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantDockerID:         "",
 			wantRulesPath:        "/opt/taa/semgrep/rules",
 			wantLLMModel:         "qwen2.5-coder:7b",
+			wantSkipChainVerify:  true,
 		},
 		{
 			relPath:              "../../configs/taa-docker.json",
@@ -645,6 +651,7 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			wantLLMTimeoutMs:     120000,
 			wantRulesPath:        "/opt/taa/semgrep/rules",
 			wantLLMModel:         "qwen2.5-coder:7b",
+			wantSkipChainVerify:  true,
 		},
 	}
 
@@ -695,6 +702,9 @@ func TestLoadStartupConfigTemplateFiles(t *testing.T) {
 			}
 			if tc.wantLLMTimeoutMs != 0 && cfg.LLM.TimeoutMs != tc.wantLLMTimeoutMs {
 				t.Errorf("LLM.TimeoutMs = %d, want %d", cfg.LLM.TimeoutMs, tc.wantLLMTimeoutMs)
+			}
+			if cfg.LLM.SkipChainVerify != tc.wantSkipChainVerify {
+				t.Errorf("LLM.SkipChainVerify = %v, want %v", cfg.LLM.SkipChainVerify, tc.wantSkipChainVerify)
 			}
 			if cfg.CodeScan.RulesPath != tc.wantRulesPath {
 				t.Errorf("CodeScan.RulesPath = %q, want %q", cfg.CodeScan.RulesPath, tc.wantRulesPath)

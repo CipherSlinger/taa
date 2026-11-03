@@ -37,7 +37,8 @@
     "llm": {
       "enabled": true,
       "attestation": {
-        "enabled": true
+        "enabled": true,
+        "skipChainVerify": true
       },
       "endpoint": "https://127.0.0.1:8443",
       "model": "qwen2.5-coder:7b",
