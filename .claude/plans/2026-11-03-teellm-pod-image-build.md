@@ -96,3 +96,8 @@ inspect`/`push`），并新增一例：`MOCK_REGISTRY_CONFIG` 等于本地 ID �
 测试：`deploy_llm_remote_pod_test.sh` 增加预检断言（含 `--raw /version` 与 RuntimeClass）、
 CPU=2、业务内存余量的输出断言，以及新增用例 8：命名空间不存在时必须**先失败**，
 既不提交镜像也不 apply。
+
+6. **不再复用已存在的 Pod**：`--create-pod` 只创建。查到 Pod 时打印 `-o wide`、说明这里
+   不复用也不替换、提示 `./deploy-llm.sh pod-down` 后再跑，然后非 0 退出（不构建、不 apply）。
+   复用会部署进它当时在跑的镜像；同路径自动"删了重建"会悄悄丢掉 guest 可写层与 Pod IP。
+   更新已存在的 Pod 仍走 `./deploy-llm.sh start` / `--pod <name>`。
