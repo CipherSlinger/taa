@@ -187,3 +187,128 @@ func TestKeystoreRejectsARegistrationSignedByAnotherKey(t *testing.T) {
 		t.Fatal("a registration signed by a key other than the carried one was accepted")
 	}
 }
+
+func TestKeystoreKeepsOneKeyPerInstance(t *testing.T) {
+	ks, err := newMemoryKeystore(nil)
+	if err != nil {
+		t.Fatalf("create the keystore: %v", err)
+	}
+	keyA, _ := crypto.GenerateSM2KeyPair()
+	keyB, _ := crypto.GenerateSM2KeyPair()
+	if err := ks.setTaaPublicKeyFor("docker-a", &keyA.PublicKey); err != nil {
+		t.Fatalf("register key A: %v", err)
+	}
+	if err := ks.setTaaPublicKeyFor("docker-b", &keyB.PublicKey); err != nil {
+		t.Fatalf("register key B: %v", err)
+	}
+
+	for id, want := range map[string]*crypto.SM2PrivateKey{"docker-a": keyA, "docker-b": keyB} {
+		got, err := crypto.MarshalSM2PublicKeyHex(ks.taaPublicFor(id))
+		if err != nil {
+			t.Fatalf("encode key for %s: %v", id, err)
+		}
+		expected, _ := crypto.MarshalSM2PublicKeyHex(&want.PublicKey)
+		if got != expected {
+			t.Fatalf("key for %s = %s, want %s", id, got, expected)
+		}
+	}
+	if ks.taaPublicFor("docker-c") != nil {
+		t.Fatal("an unregistered dockerId resolved to a key")
+	}
+}
+
+func TestKeystorePersistsOneKeyPerInstance(t *testing.T) {
+	stateDir := t.TempDir()
+	ks, err := newKeystore(stateDir, "", nil)
+	if err != nil {
+		t.Fatalf("create the keystore: %v", err)
+	}
+	keyA, _ := crypto.GenerateSM2KeyPair()
+	keyB, _ := crypto.GenerateSM2KeyPair()
+	if err := ks.setTaaPublicKeyFor("docker-a", &keyA.PublicKey); err != nil {
+		t.Fatalf("register key A: %v", err)
+	}
+	if err := ks.setTaaPublicKeyFor("docker-b", &keyB.PublicKey); err != nil {
+		t.Fatalf("register key B: %v", err)
+	}
+
+	reopened, err := newKeystore(stateDir, "", nil)
+	if err != nil {
+		t.Fatalf("reopen the keystore: %v", err)
+	}
+	for _, id := range []string{"docker-a", "docker-b"} {
+		if reopened.taaPublicFor(id) == nil {
+			t.Fatalf("key for %s did not survive a restart", id)
+		}
+	}
+}
+
+func TestKeystoreFallsBackToTheLegacySingleKey(t *testing.T) {
+	ks, err := newMemoryKeystore(nil)
+	if err != nil {
+		t.Fatalf("create the keystore: %v", err)
+	}
+	legacy, _ := crypto.GenerateSM2KeyPair()
+	if err := ks.setTaaPublicKey(&legacy.PublicKey); err != nil {
+		t.Fatalf("register the legacy key: %v", err)
+	}
+	if ks.taaPublicFor("any-docker") == nil {
+		t.Fatal("the legacy single key was not offered as a fallback")
+	}
+}
+
+func TestKeystoreRejectsAPlaintextDockerIDMismatch(t *testing.T) {
+	ks, err := newMemoryKeystore(nil)
+	if err != nil {
+		t.Fatalf("create the keystore: %v", err)
+	}
+	keyA, _ := crypto.GenerateSM2KeyPair()
+	if err := ks.setTaaPublicKeyFor("docker-a", &keyA.PublicKey); err != nil {
+		t.Fatalf("register key A: %v", err)
+	}
+
+	platformPriv := ks.platformPrivate()
+	keys, err := envelope.NewKeys(&platformPriv.PublicKey, keyA, ks.userIDBytes())
+	if err != nil {
+		t.Fatalf("build the TAA envelope keys: %v", err)
+	}
+	// The hint says A, the plaintext claims B: both are non-empty and differ.
+	sealed, err := keys.Seal([]byte(`{"dockerId":"docker-b"}`), "docker-a")
+	if err != nil {
+		t.Fatalf("seal the mismatched body: %v", err)
+	}
+	if _, _, err := ks.openBodyWithID(sealed); err == nil {
+		t.Fatal("a hint/plaintext dockerId mismatch was accepted")
+	}
+}
+
+func TestKeystoreOpensWithTheHintedInstanceKey(t *testing.T) {
+	ks, err := newMemoryKeystore(nil)
+	if err != nil {
+		t.Fatalf("create the keystore: %v", err)
+	}
+	keyA, _ := crypto.GenerateSM2KeyPair()
+	keyB, _ := crypto.GenerateSM2KeyPair()
+	_ = ks.setTaaPublicKeyFor("docker-a", &keyA.PublicKey)
+	_ = ks.setTaaPublicKeyFor("docker-b", &keyB.PublicKey)
+
+	platformPriv := ks.platformPrivate()
+	keys, err := envelope.NewKeys(&platformPriv.PublicKey, keyA, ks.userIDBytes())
+	if err != nil {
+		t.Fatalf("build the TAA envelope keys: %v", err)
+	}
+	sealed, err := keys.Seal([]byte(`{"dockerId":"docker-a"}`), "docker-a")
+	if err != nil {
+		t.Fatalf("seal as A: %v", err)
+	}
+	plaintext, id, err := ks.openBodyWithID(sealed)
+	if err != nil {
+		t.Fatalf("open as A: %v", err)
+	}
+	if id != "docker-a" {
+		t.Fatalf("recovered dockerId = %q, want docker-a", id)
+	}
+	if string(plaintext) != `{"dockerId":"docker-a"}` {
+		t.Fatalf("plaintext = %s", plaintext)
+	}
+}
