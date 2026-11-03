@@ -40,7 +40,7 @@ var (
 	// ErrInvalidStatus is returned when the server returns an unexpected non-success HTTP status.
 	ErrInvalidStatus = errors.New("unexpected response status")
 	// ErrCircuitOpen is returned while the circuit breaker rejects requests.
-	ErrCircuitOpen = errors.New("circuit breaker is open")
+	ErrCircuitOpen = errors.New("circuit breaker is OPEN: inference service is unavailable")
 	// ErrRetryable marks an error eligible for retry.
 	ErrRetryable = errors.New("retryable error")
 )
