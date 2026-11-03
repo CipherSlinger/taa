@@ -44,8 +44,6 @@
     - [7.2.3 LLM 上报运行日志（/v1/llm/log）](#723-llm-上报运行日志v1llmlog)
   - [7.3 平台 → LLM](#73-平台--llm)
     - [7.3.1 获取远程证明报告（/v1/llm/getAttestation，明文 :8444）](#731-获取远程证明报告v1llmgetattestation明文-8444)
-    - [7.3.2 代码审计判定（/v1/llm/verify，TEE-TLS :8443）](#732-代码审计判定v1llmverifytee-tls-8443)
-    - [7.3.3 就绪检查（/v1/llm/healthz，TEE-TLS :8443）](#733-就绪检查v1llmhealthztee-tls-8443)
   - [7.4 上报器行为与配置](#74-上报器行为与配置)
 
 ---
@@ -1754,7 +1752,7 @@ curl -X POST "http://{TAA_ADDR}/v1/taa/export" \
 
 三个接口全部由 `teellm-service` 主动调用平台，`Content-Type: application/json`，请求与响应都是**明文 JSON**。平台应答同样不经信封，LLM 只校验 HTTP `200`（日志上报额外解析 `result.received`）。
 
-**重试只有注册一处**：启动注册在后台指数退避（`1s → 2s → 4s …`，封顶 `60s`，总窗口 10 分钟）；心跳与日志是周期任务，失败只写本地 stderr，等下一个周期自然重来。全部失败路径都不阻塞推理、不影响 `/v1/llm/healthz`。
+**重试只有注册一处**：启动注册在后台指数退避（`1s → 2s → 4s …`，封顶 `60s`，总窗口 10 分钟）；心跳与日志是周期任务，失败只写本地 stderr，等下一个周期自然重来。全部失败路径都不阻塞推理，也不影响推理服务的就绪状态。
 
 #### 7.2.1 LLM 启动注册（/v1/llm/register）
 
@@ -1903,17 +1901,15 @@ curl -X POST "http://${PLATFORM_ADDR}/v1/llm/register" \
 
 ### 7.3 平台 → LLM
 
-`teellm-service` 对外只有两个监听端口，用途严格分开：
+平台访问 LLM 只有一个接口，走新增的明文监听 `:8444`：
 
 | 监听 | 路径 | 方法 | 传输 | 用途 |
 | --- | --- | --- | --- | --- |
-| `:8443` | `/v1/llm/verify` | `POST` | TEE-TLS 1.3 | 代码审计判定 |
-| `:8443` | `/v1/llm/healthz` | `GET` | TEE-TLS 1.3 | 就绪检查 |
 | `:8444` | `/v1/llm/getAttestation` | `POST` | **明文 HTTP** | 平台获取远程证明报告与出示的证书 |
 
-两个端口共用同一份证书缓存，因此 `:8443` 握手时出示的证书与 `:8444` 返回的 `certificate` 是**同一张**。
+`:8443` 上的 `/v1/llm/verify`（审计判定）与 `/v1/llm/healthz`（就绪检查）是 **TAA 调 LLM** 的接口，平台不参与，不在本文范围内。
 
-> 旧路径 `/v1/verify`、`/healthz` **没有保留别名**，改名即断。TAA 侧（`internal/codeaudit`、`internal/app/taa`）已同步改到新路径，两侧必须同批发布。
+两个监听共用同一份证书缓存，因此 `:8443` 握手时出示的证书与 `:8444` 返回的 `certificate` 是**同一张**。
 
 #### 7.3.1 获取远程证明报告（/v1/llm/getAttestation，明文 :8444）
 
@@ -2018,82 +2014,6 @@ openssl x509 -in /tmp/cert.pem -pubkey -noout \
 ```
 
 两段输出的摘要值必须逐字节相同。
-
-#### 7.3.2 代码审计判定（/v1/llm/verify，TEE-TLS :8443）
-
-**请求**：`POST https://{llm-host}:8443/v1/llm/verify`
-
-**请求内容类型**：`application/json`
-
-协议版本 `teellm-protocol/v1`，请求体是 `RequestEnvelope`：
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `protocolVersion` | `string` | 是 | 固定 `teellm-protocol/v1` |
-| `requestId` | `string` | 是 | 请求标识，原样回填到响应 |
-| `taskId` | `string` | 否 | 平台任务 ID |
-| `timestamp` | `int64` | 是 | Unix 时间戳（秒） |
-| `nonce` | `string` | 是 | 防重放随机值 |
-| `deadlineMs` | `int64` | 否 | 推理超时预算（毫秒） |
-| `action` | `string` | 是 | `VERIFY_FINDING` |
-| `findingPayload` | `object` | 是 | 待判定的静态扫描发现，见下 |
-| `policy` | `object` | 是 | `{"mode":"gate"}` 或 `{"mode":"assist"}` |
-
-**`findingPayload`**：
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `ruleId` | `string` | 是 | 静态规则 ID，如 `BIN_001` |
-| `category` | `string` | 是 | 发现类别 |
-| `severity` | `string` | 是 | 静态扫描给出的严重级别 |
-| `description` | `string` | 是 | 发现描述 |
-| `target` | `object` | 是 | `{filePath, line, codeSnippet, contextBefore?, contextAfter?, contentSha256?}` |
-
-**请求示例**：
-
-```jsonc
-{
-  "protocolVersion": "teellm-protocol/v1",
-  "requestId": "req-verify-001",
-  "taskId": "task-001",
-  "timestamp": 1730000000,
-  "nonce": "n-001",
-  "deadlineMs": 60000,
-  "action": "VERIFY_FINDING",
-  "findingPayload": {
-    "ruleId": "BIN_001",
-    "category": "binary",
-    "severity": "HIGH",
-    "description": "packed executable detected",
-    "target": { "filePath": "model.bin", "line": 1, "codeSnippet": "UPX!" }
-  },
-  "policy": { "mode": "gate" }
-}
-```
-
-**响应结果字段**：
-
-| 参数 | 类型 | 说明 |
-| --- | --- | --- |
-| `protocolVersion` | `string` | 固定 `teellm-protocol/v1` |
-| `requestId` | `string` | 与请求一致 |
-| `status` | `string` | `SUCCESS` / `INVALID_REQUEST` / `INTERNAL_ERROR` / `SERVICE_UNAVAILABLE` 等 |
-| `errorMessage` | `string` | 失败时的原因 |
-| `decision` | `object` | `{verdict, confidence, riskLevel, reasonCode, explanation, suggestedRemediation?, reasoningChain?}`；`verdict` 取 `MALICIOUS` / `SUSPICIOUS` / `BENIGN` / `UNCERTAIN` |
-| `metrics` | `object` | `{latencyMs, promptTokens, completionTokens}` |
-| `engineInfo` | `object` | `{backend, modelLoaded, modelDigest?}` |
-
-> **传输限制**：`:8443` 是 RFC 8998 TLS 1.3，只协商 SM2 / SM4-GCM 一类国密套件。**普通 curl 连不上**（发行版自带的 OpenSSL 通常没有 `SM4_GCM_SM3` 套件，握手阶段即失败）。调用方必须使用 `teellm.Client`，或链接 Tongsuo/BabaSSL 等支持国密 TLS 1.3 的客户端。
-
-#### 7.3.3 就绪检查（/v1/llm/healthz，TEE-TLS :8443）
-
-**请求**：`GET https://{llm-host}:8443/v1/llm/healthz`
-
-**参数**：无。
-
-**响应**：成功为 HTTP `200` + 纯文本 `OK`；后端未就绪时为 HTTP `503` + 错误文本。
-
-该接口会真实触发一次后端推理探针，模型冷加载可能耗时数十秒，因此客户端超时预算默认 **120 秒**——按普通请求的超时去探测，冷启动的服务永远过不了闸门。同样受上面的传输限制，普通 curl 不可达。
 
 ### 7.4 上报器行为与配置
 
