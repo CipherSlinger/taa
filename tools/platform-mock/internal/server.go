@@ -1,8 +1,8 @@
 // Package mock implements the platform mock service used to exercise the
 // TAA daemon during local development and integration testing. It embeds a
 // small web console (index.html), exposes the register/report/upload HTTP
-// endpoints that a real platform backend would expose, and optionally
-// reverse-proxies requests to a real TAA instance for end-to-end testing.
+// endpoints that a real platform backend would expose, and reverse-proxies
+// console requests to the TAA instance the console names.
 package mock
 
 import (
@@ -61,13 +61,14 @@ func init() {
 type Server struct {
 	cfg        Config
 	uploadDir  string
-	taaAddr    string
 	httpServer *http.Server
 }
 
-// NewServer builds a Server from cfg: it resolves the TAA reverse-proxy
-// target, prepares the state/upload directories, and registers all HTTP
-// routes. It does not start listening; call Start (or Run) for that.
+// NewServer builds a Server from cfg: it prepares the state/upload directories,
+// builds the per-instance manager, and registers all HTTP routes. The console's
+// default TAA address is resolved for the status endpoints; the /taa/* proxy
+// selects each instance's target per request. It does not start listening; call
+// Start (or Run) for that.
 func NewServer(cfg Config) *Server {
 	cfg = cfg.withDefaults()
 
@@ -184,7 +185,6 @@ func NewServer(cfg Config) *Server {
 	return &Server{
 		cfg:       cfg,
 		uploadDir: uploadDir,
-		taaAddr:   taaAddr,
 		httpServer: &http.Server{
 			Addr:              cfg.Addr,
 			Handler:           mux,

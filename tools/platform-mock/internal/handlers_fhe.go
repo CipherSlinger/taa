@@ -56,7 +56,9 @@ func fheSubmitHandler(cfg Config, mgr *instanceManager) http.HandlerFunc {
 		}
 		id, target, err := mgr.targetFor(requestedDockerID(r))
 		if err != nil {
-			writeEnvelope(w, http.StatusServiceUnavailable, "TAA 地址未配置: "+err.Error(), nil, http.StatusServiceUnavailable)
+			if !writeInstanceError(w, err) {
+				writeEnvelope(w, http.StatusServiceUnavailable, err.Error(), nil, http.StatusServiceUnavailable)
+			}
 			return
 		}
 

@@ -214,9 +214,12 @@ func dockerIDFromContext(ctx context.Context) string {
 
 // proxyJSONToTAA sends a platform request to TAA. body is the business JSON:
 // it is sealed here, once, so every caller keeps writing plain bodies and none
-// can accidentally send plaintext to a TAA that now refuses it. dockerID picks
-// both the address the caller resolved and the key the body is sealed to, so a
-// request cannot be addressed to one instance and sealed for another.
+// can accidentally send plaintext to a TAA that now refuses it.
+//
+// dockerID and taaAddr must be the pair returned by the same targetFor call.
+// Nothing here enforces that: the identity selects the sealing key and the
+// address selects the destination, so a caller that pairs them from different
+// instances produces a request the addressed TAA cannot open.
 //
 // The response is unsealed when it is an envelope, because TAA seals every JSON
 // response. Anything that does not parse as an envelope is returned unchanged:
@@ -348,8 +351,11 @@ func (p *proxyPool) forTarget(target string) (*httputil.ReverseProxy, error) {
 		return proxy, nil
 	}
 	u, err := url.Parse(target)
-	if err != nil || u.Scheme == "" || u.Host == "" {
+	if err != nil {
 		return nil, fmt.Errorf("invalid TAA target %q: %v", target, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return nil, fmt.Errorf("invalid TAA target %q: missing scheme or host", target)
 	}
 	proxy := httputil.NewSingleHostReverseProxy(u)
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
@@ -368,7 +374,9 @@ func dynamicTAAProxyHandler(mgr *instanceManager, pool *proxyPool) http.Handler 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, target, err := mgr.targetFor(requestedDockerID(r))
 		if err != nil {
-			writeEnvelope(w, http.StatusBadGateway, "TAA 代理不可用: "+err.Error(), nil, http.StatusBadGateway)
+			if !writeInstanceError(w, err) {
+				writeEnvelope(w, http.StatusBadGateway, "TAA 代理不可用: "+err.Error(), nil, http.StatusBadGateway)
+			}
 			return
 		}
 		proxy, err := pool.forTarget(target)

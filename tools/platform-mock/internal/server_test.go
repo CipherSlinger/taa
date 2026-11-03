@@ -1808,7 +1808,7 @@ func TestTAAStopTrainingProxyAndLogging(t *testing.T) {
 		t.Fatalf("requestLogs missing outbound request for /v1/taa/stopTraining: %+v", entries)
 	}
 
-	// 测试当未配置 TAA 地址（taaAddr 为空）时，返回 502 Bad Gateway
+	// 测试当没有任何实例可提供地址（manager 无目标）时，返回 502 Bad Gateway
 	emptyHandler := taaStopTrainingHandler(testManagerWith(t, "", nil))
 	reqEmpty := httptest.NewRequest(http.MethodPost, "/api/taa/stopTraining", strings.NewReader(`{}`))
 	reqEmpty.Header.Set("Content-Type", "application/json")

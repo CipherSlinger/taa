@@ -20,9 +20,10 @@ type Config struct {
 	StateDir string
 	// UploadDir is the directory used to store uploaded files, served at /files/.
 	UploadDir string
-	// TAATarget is the TAA service address used for the reverse proxy
-	// (e.g. http://10.244.0.5:6001). When empty, TAAPod is used to
-	// auto-discover the address via kubectl.
+	// TAATarget is the console's default TAA address (e.g.
+	// http://10.244.0.5:6001). The /taa/* proxy does not use it: each request
+	// selects the target of the instance it names or the default instance.
+	// When empty, TAAPod is used to auto-discover a fallback address via kubectl.
 	TAATarget string
 	// TAAPod is the Kubernetes pod name used for auto-discovering the TAA
 	// address when TAATarget is empty.

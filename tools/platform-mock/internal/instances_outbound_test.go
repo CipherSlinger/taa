@@ -32,7 +32,12 @@ func sealedBackend(t *testing.T, name, dockerID string, priv *crypto.SM2PrivateK
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		raw, _ := io.ReadAll(r.Body)
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("%s could not read the forwarded body: %v", name, err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		env, err := envelope.Parse(raw)
 		if err != nil {
 			t.Errorf("%s received an unparseable envelope: %v", name, err)
@@ -106,6 +111,9 @@ func TestTAAProxyRoutesByDockerIDAndStripsTheQuery(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
+	if !strings.Contains(body, `"backend"`) {
+		t.Fatalf("response did not open (still sealed?): %s", body)
+	}
 	if !strings.Contains(body, `"backend":"b"`) {
 		t.Fatalf("response = %s, want backend b", body)
 	}
@@ -116,7 +124,7 @@ func TestTAAProxyRoutesByDockerIDAndStripsTheQuery(t *testing.T) {
 		t.Fatalf("forwarded body = %s, want it sealed to and opened by instance b", body)
 	}
 	if strings.Contains(body, `dockerId`) {
-		t.Fatalf("forwarded query still contains dockerId: %s", body)
+		t.Fatalf("response = %s, want it opened and the forwarded query free of dockerId", body)
 	}
 }
 

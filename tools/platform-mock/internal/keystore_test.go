@@ -107,7 +107,7 @@ func TestKeystoreRefusesToSealWithoutATAAPublicKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create the keystore: %v", err)
 	}
-	if _, err := ks.sealForTAA([]byte(`{}`)); err == nil {
+	if _, err := ks.sealForTAAFor("", []byte(`{}`)); err == nil {
 		t.Fatal("sealing without a registered TAA public key succeeded, want an error")
 	}
 }

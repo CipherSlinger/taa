@@ -281,10 +281,6 @@ func (s *keystore) sealForTAAFor(dockerID string, plaintext []byte) ([]byte, err
 	return envelope.SealForPlatform(priv, taaPub, userID, plaintext)
 }
 
-func (s *keystore) sealForTAA(plaintext []byte) ([]byte, error) {
-	return s.sealForTAAFor("", plaintext)
-}
-
 // openBodyWithID opens a sealed callback and returns both the plaintext and the
 // identity that signed it.
 //
@@ -408,10 +404,6 @@ func (s *keystore) openFromTAAResponseFor(dockerID string, env *envelope.Envelop
 		return nil, fmt.Errorf("no TAA public key registered for dockerId %q", dockerID)
 	}
 	return envelope.OpenFromPlatform(priv, taaPub, userID, env)
-}
-
-func (s *keystore) openFromTAAResponse(env *envelope.Envelope) ([]byte, error) {
-	return s.openFromTAAResponseFor("", env)
 }
 
 // userIDOrProtocolDefault resolves nil/empty to the protocol identity without

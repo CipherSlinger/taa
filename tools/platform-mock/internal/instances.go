@@ -465,7 +465,7 @@ func (m *instanceManager) targetFor(requestedID string) (string, string, error) 
 		if m.discoveredTarget != "" {
 			return id, m.discoveredTarget, nil
 		}
-		return id, "", fmt.Errorf("TAA 地址未配置: 实例 %q 没有推导地址，且未设置 -taa-target 或 -taa-pod", id)
+		return id, "", fmt.Errorf("实例 %q 没有推导地址，且未设置 -taa-target 或 -taa-pod", id)
 	}
 
 	if m.staticTarget != "" {

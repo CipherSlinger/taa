@@ -2,9 +2,25 @@ package mock
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 )
+
+// writeInstanceError maps the manager's sentinel errors onto their HTTP status.
+// It reports whether it wrote a response. The sentinel texts are deliberately
+// not surfaced: they are internal, and each handler localizes its own answer.
+func writeInstanceError(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, errInstanceNotFound):
+		writeEnvelope(w, http.StatusNotFound, "指定的 dockerId 不存在", nil, http.StatusNotFound)
+		return true
+	case errors.Is(err, errNoInstance):
+		writeEnvelope(w, http.StatusServiceUnavailable, "尚无 TAA 实例注册", nil, http.StatusServiceUnavailable)
+		return true
+	}
+	return false
+}
 
 func dashboardStatusHandler(registerStore *registerStateStore, modelImportStore, auditStore *reportStateStore, progressStore *progressStateStore, taaAddr string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -205,7 +221,9 @@ func taaStatusHandler(mgr *instanceManager) http.HandlerFunc {
 		setCORS(w)
 		id, target, err := mgr.targetFor(requestedDockerID(r))
 		if err != nil {
-			writeEnvelope(w, http.StatusServiceUnavailable, "TAA 地址未配置: "+err.Error(), nil, http.StatusServiceUnavailable)
+			if !writeInstanceError(w, err) {
+				writeEnvelope(w, http.StatusServiceUnavailable, err.Error(), nil, http.StatusServiceUnavailable)
+			}
 			return
 		}
 
@@ -230,7 +248,9 @@ func taaGetResourceInfoHandler(mgr *instanceManager) http.HandlerFunc {
 		setCORS(w)
 		id, target, err := mgr.targetFor(requestedDockerID(r))
 		if err != nil {
-			writeEnvelope(w, http.StatusServiceUnavailable, "TAA 地址未配置: "+err.Error(), nil, http.StatusServiceUnavailable)
+			if !writeInstanceError(w, err) {
+				writeEnvelope(w, http.StatusServiceUnavailable, err.Error(), nil, http.StatusServiceUnavailable)
+			}
 			return
 		}
 
@@ -270,7 +290,9 @@ func taaStopTrainingHandler(mgr *instanceManager) http.HandlerFunc {
 		}
 		id, target, err := mgr.targetFor(requestedDockerID(r))
 		if err != nil {
-			writeEnvelope(w, http.StatusBadGateway, "未配置 TAA 目标地址（-taa-target 或 TAA_POD）", nil, http.StatusBadGateway)
+			if !writeInstanceError(w, err) {
+				writeEnvelope(w, http.StatusBadGateway, "未配置 TAA 目标地址（-taa-target 或 TAA_POD）: "+err.Error(), nil, http.StatusBadGateway)
+			}
 			return
 		}
 
